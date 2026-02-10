@@ -1,0 +1,133 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.38.1.
+--
+-- see: https://github.com/sol/hpack
+
+name:           topo-seer
+version:        0.1.0.0
+synopsis:       SDL app for terrain generation
+category:       Terrain
+author:         You
+maintainer:     you@example.com
+license:        MPL-2.0
+license-file:   LICENSE
+build-type:     Simple
+
+library
+  exposed-modules:
+      Actor.Data
+      Actor.Log
+      Actor.Render
+      Actor.SnapshotReceiver
+      Actor.Terrain
+      Actor.TerrainCacheWorker
+      Actor.UiActions
+      Actor.UiActions.Command
+      Actor.UiActions.Protocol
+      Actor.UiActions.Terrain
+      Actor.UI
+      Actor.AtlasCache
+      Actor.AtlasManager
+      Actor.AtlasResult
+      Actor.AtlasResultBroker
+      Actor.AtlasScheduleBroker
+      Actor.AtlasScheduler
+      Actor.AtlasWorker
+      Actor.TerrainCacheBroker
+      Seer
+      Seer.App
+      Seer.Config
+      Seer.Config.Runtime
+      Seer.Draw
+      Seer.Input
+      Seer.System
+      Seer.System.ThreadPriority
+      Seer.Input.ConfigScroll
+      Seer.Input.Router
+      Seer.Input.Seed
+      Seer.Input.ViewControls
+      Seer.Render
+      Seer.Render.Atlas
+      Seer.Render.Frame
+      Seer.Render.Terrain
+      Seer.Render.Ui
+      UI.Font
+      UI.Layout
+      UI.HexPick
+      UI.TerrainAtlas
+      UI.TerrainCache
+      UI.TerrainRender
+      UI.Widgets
+      UI.WidgetsDraw
+      UI.WidgetTree
+  other-modules:
+      UI.TerrainColor
+      Paths_topo_seer
+  hs-source-dirs:
+      src
+  build-depends:
+      aeson
+    , base >=4.18 && <5
+    , bytestring
+    , containers
+    , directory
+    , filepath
+    , hyperspace
+    , linear
+    , random
+    , sdl2
+    , sdl2-ttf
+    , stm
+    , text
+    , time
+    , topo
+    , vector
+  default-language: Haskell2010
+
+executable topo-seer
+  main-is: Main.hs
+  other-modules:
+      Paths_topo_seer
+  hs-source-dirs:
+      app
+  ghc-options: -O2 -Wall -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base
+    , topo-seer
+  default-language: Haskell2010
+
+test-suite topo-seer-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Spec.AtlasResultBroker
+      Spec.AtlasScheduleBroker
+      Spec.AtlasScheduler
+      Spec.CacheProperties
+      Spec.HexPick
+      Spec.Layout
+      Spec.LogActor
+      Spec.RenderActor
+      Spec.SnapshotReceiver
+      Spec.TerrainActor
+      Spec.TerrainCacheWorker
+      Spec.TerrainRender
+      Spec.UiActor
+      Spec.Widgets
+      Spec.WidgetTree
+      Paths_topo_seer
+  hs-source-dirs:
+      test
+  build-depends:
+      QuickCheck
+    , base
+    , containers
+    , hspec
+    , hyperspace
+    , linear
+    , text
+    , topo
+    , topo-seer
+    , vector
+  default-language: Haskell2010

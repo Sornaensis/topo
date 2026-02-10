@@ -1,0 +1,22 @@
+- error: {name: "Redundant $"}
+- error: {name: "Redundant bracket"}
+- error: {name: "Redundant do"}
+- error: {name: "Redundant return"}
+- error: {name: "Redundant =="}
+- error: {name: "Use concatMap"}
+- error: {name: "Use mapM_"}
+- error: {name: "Use traverse_"}
+- error: {name: "Use for_"}
+- error: {name: "Use when"}
+- error: {name: "Use unless"}
+- error: {name: "Use void"}
+- functions:
+  - {name: head, within: []}
+  - {name: tail, within: []}
+  - {name: last, within: []}
+  - {name: init, within: []}
+  - {name: fromJust, within: []}
+  - {name: read, within: []}
+  - {name: "!!", within: []}
+- group: {name: future, enabled: true}
+- ignore: {name: "Eta reduce"}

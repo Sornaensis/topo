@@ -1,0 +1,64 @@
+name: topo
+version: 0.1.0.0
+license: MPL-2.0
+license-file: LICENSE
+author: You
+maintainer: you@example.com
+category: Terrain
+synopsis: Terrain data generation library
+
+library:
+  source-dirs: src
+  exposed-modules:
+    - Topo
+    - Topo.Types
+    - Topo.World
+    - Topo.Hex
+    - Topo.Metadata
+    - Topo.Plugin
+    - Topo.Pipeline
+    - Topo.BaseHeight
+    - Topo.Gen
+    - Topo.Tectonics
+    - Topo.Erosion
+    - Topo.Glacier
+    - Topo.Hydrology
+    - Topo.Volcanism
+    - Topo.Parameters
+    - Topo.Climate
+    - Topo.BiomeConfig
+    - Topo.Weather
+    - Topo.Math
+    - Topo.TerrainGrid
+    - Topo.Noise
+    - Topo.Sample
+    - Topo.Export
+    - Topo.Storage
+    - Topo.Mesh
+    - Topo.WorldGen
+    - Topo.Biome
+    - Topo.PlateMetadata
+    - Topo.Planet
+  dependencies:
+    - base >=4.18 && <5
+    - binary
+    - bytestring
+    - containers
+    - mtl
+    - text
+    - transformers
+    - vector
+    - vector-th-unbox
+
+tests:
+  topo-test:
+    main: Spec.hs
+    source-dirs: test
+    dependencies:
+      - base
+      - topo
+      - hspec
+      - QuickCheck
+      - containers
+      - text
+      - vector

@@ -1,0 +1,103 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.38.1.
+--
+-- see: https://github.com/sol/hpack
+
+name:           topo
+version:        0.1.0.0
+synopsis:       Terrain data generation library
+category:       Terrain
+author:         You
+maintainer:     you@example.com
+license:        MPL-2.0
+license-file:   LICENSE
+build-type:     Simple
+
+library
+  exposed-modules:
+      Topo
+      Topo.Types
+      Topo.World
+      Topo.Hex
+      Topo.Metadata
+      Topo.Plugin
+      Topo.Pipeline
+      Topo.BaseHeight
+      Topo.Gen
+      Topo.Tectonics
+      Topo.Erosion
+      Topo.Glacier
+      Topo.Hydrology
+      Topo.Volcanism
+      Topo.Parameters
+      Topo.Climate
+      Topo.BiomeConfig
+      Topo.Weather
+      Topo.Math
+      Topo.TerrainGrid
+      Topo.Noise
+      Topo.Sample
+      Topo.Export
+      Topo.Storage
+      Topo.Mesh
+      Topo.WorldGen
+      Topo.Biome
+      Topo.PlateMetadata
+      Topo.Planet
+  other-modules:
+      Topo.Config
+      Paths_topo
+  hs-source-dirs:
+      src
+  build-depends:
+      base >=4.18 && <5
+    , binary
+    , bytestring
+    , containers
+    , mtl
+    , text
+    , transformers
+    , vector
+    , vector-th-unbox
+  default-language: Haskell2010
+
+test-suite topo-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      HexProperty
+      Spec.BaseHeight
+      Spec.Biome
+      Spec.Climate
+      Spec.Determinism
+      Spec.Erosion
+      Spec.Export
+      Spec.Glacier
+      Spec.Hex
+      Spec.Hydrology
+      Spec.Mesh
+      Spec.Metadata
+      Spec.Noise
+      Spec.Pipeline
+      Spec.Planet
+      Spec.Provenance
+      Spec.Storage
+      Spec.Tectonics
+      Spec.Vegetation
+      Spec.Volcanism
+      Spec.Weather
+      Spec.World
+      WorldProperty
+      Paths_topo
+  hs-source-dirs:
+      test
+  build-depends:
+      QuickCheck
+    , base
+    , containers
+    , hspec
+    , text
+    , topo
+    , vector
+  default-language: Haskell2010
