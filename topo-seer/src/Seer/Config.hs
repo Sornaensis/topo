@@ -17,7 +17,7 @@ import Topo.Climate (ClimateConfig(..))
 import Topo.Erosion (ErosionConfig(..))
 import Topo.Hydrology (HydroConfig(..))
 import Topo.Parameters (ParameterConfig(..))
-import Topo.Planet (PlanetConfig(..), WorldSlice(..), defaultPlanetConfig, defaultWorldSlice)
+import Topo.Planet (PlanetConfig(..), WorldSlice(..), defaultPlanetConfig, defaultWorldSlice, hexesPerDegreeLatitude, hexesPerDegreeLongitude)
 import Topo.Tectonics (TectonicsConfig(..))
 import Topo.Weather (WeatherConfig(..))
 import Topo.WorldGen (TerrainConfig(..), WorldGenConfig(..))
@@ -107,7 +107,6 @@ applyUiConfig ui cfg =
         , ccEquatorTemp = uiEquatorTemp ui
         , ccPoleTemp = uiPoleTemp ui
         , ccLapseRate = uiLapseRate ui
-        , ccLatitudeBias = mapRange (-1) 1 (uiLatitudeBias ui)
         , ccWindIterations = mapIntRange 1 8 (uiWindIterations ui)
         , ccMoistureIterations = mapIntRange 2 12 (uiMoistureIterations ui)
         , ccBoundaryMotionTemp = mapRange 0 2 (uiBoundaryMotionTemp ui)
@@ -138,9 +137,13 @@ applyUiConfig ui cfg =
         , pcInsolation = insolation
         }
       sliceLatCenter = mapRange (-90) 90 (uiSliceLatCenter ui)
-      sliceLatExtent = mapRange 0.1 180 (uiSliceLatExtent ui)
       sliceLonCenter = mapRange (-180) 180 (uiSliceLonCenter ui)
-      sliceLonExtent = mapRange 0.1 360 (uiSliceLonExtent ui)
+      -- Derive lat/lon extent from chunk radii + planet radius
+      hpdLat = hexesPerDegreeLatitude planet
+      hpdLon = hexesPerDegreeLongitude planet sliceLatCenter
+      cs = max 1 (uiChunkSize ui)
+      sliceLatExtent = max 0.1 (fromIntegral (extentY * 2 * cs) / hpdLat)
+      sliceLonExtent = max 0.1 (fromIntegral (extentX * 2 * cs) / hpdLon)
       slice = defaultWorldSlice
         { wsLatCenter = sliceLatCenter
         , wsLatExtent = sliceLatExtent
@@ -211,7 +214,7 @@ configSummary ui =
     , "trenchDepth=" <> Text.pack (show (uiTrenchDepth ui))
     , "ridgeHeight=" <> Text.pack (show (uiRidgeHeight ui))
     , "detailScale=" <> Text.pack (show (uiDetailScale ui))
-    , "latBias=" <> Text.pack (show (uiLatitudeBias ui))
+    , "latBias=(derived)"
     , "windIter=" <> Text.pack (show (uiWindIterations ui))
     , "moistIter=" <> Text.pack (show (uiMoistureIterations ui))
     , "motionTemp=" <> Text.pack (show (uiBoundaryMotionTemp ui))
@@ -227,9 +230,9 @@ configSummary ui =
     , "tilt=" <> Text.pack (show (mapRange 0 45 (uiAxialTilt ui)))
     , "insol=" <> Text.pack (show (mapRange 0.7 1.3 (uiInsolation ui)))
     , "sliceLatC=" <> Text.pack (show (mapRange (-90) 90 (uiSliceLatCenter ui)))
-    , "sliceLatE=" <> Text.pack (show (mapRange 0.1 180 (uiSliceLatExtent ui)))
+    , "sliceLatE=(derived)"
     , "sliceLonC=" <> Text.pack (show (mapRange (-180) 180 (uiSliceLonCenter ui)))
-    , "sliceLonE=" <> Text.pack (show (mapRange 0.1 360 (uiSliceLonExtent ui)))
+    , "sliceLonE=(derived)"
     ]
 
 mapRange :: Float -> Float -> Float -> Float

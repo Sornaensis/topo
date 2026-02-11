@@ -13,6 +13,11 @@ import qualified SDL
 import Seer.Config.SliderSpec (tooltipForWidget)
 import Seer.Draw
   ( drawEscapeMenu
+  , drawPresetSaveDialog
+  , drawPresetLoadDialog
+  , drawWorldSaveDialog
+  , drawWorldLoadDialog
+  , drawTopBar
   , drawHexContext
   , drawLogFilters
   , drawLogLines
@@ -39,6 +44,7 @@ drawUiOverlay renderer fontCache snapshot terrainSnap layout logFilters (V2 winW
   let logSnap = rsLog snapshot
       ui = rsUi snapshot
   drawUiLabels renderer fontCache ui layout
+  drawTopBar renderer fontCache ui layout
   SDL.rendererDrawColor renderer SDL.$= V4 30 30 30 220
   SDL.fillRect renderer (Just (rectToSDL (logPanelRect layout)))
   SDL.rendererDrawColor renderer SDL.$= V4 45 45 45 235
@@ -47,6 +53,10 @@ drawUiOverlay renderer fontCache snapshot terrainSnap layout logFilters (V2 winW
   drawLogLines renderer fontCache logSnap (logBodyRect layout)
   drawLogFilters renderer fontCache (lsMinLevel logSnap) logFilters
   drawEscapeMenu renderer fontCache ui layout
+  drawPresetSaveDialog renderer fontCache ui layout
+  drawPresetLoadDialog renderer fontCache ui layout
+  drawWorldSaveDialog renderer fontCache ui layout
+  drawWorldLoadDialog renderer fontCache ui layout
   drawHexContext renderer fontCache ui terrainSnap (V2 (fromIntegral winW) (fromIntegral winH))
   -- Tooltip rendering for hovered config widgets
   case uiHoverWidget ui of

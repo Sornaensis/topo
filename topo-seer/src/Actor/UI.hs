@@ -8,6 +8,7 @@ module Actor.UI
   ( Ui
   , ConfigTab(..)
   , LeftTab(..)
+  , UiMenuMode(..)
   , ViewMode(..)
   , UiState(..)
   , emptyUiState
@@ -80,7 +81,6 @@ module Actor.UI
   , setUiPlateBiasEdge
   , setUiPlateBiasNorth
   , setUiPlateBiasSouth
-  , setUiLatitudeBias
   , setUiWindIterations
   , setUiMoistureIterations
   , setUiBoundaryMotionTemp
@@ -96,12 +96,18 @@ module Actor.UI
   , setUiAxialTilt
   , setUiInsolation
   , setUiSliceLatCenter
-  , setUiSliceLatExtent
   , setUiSliceLonCenter
-  , setUiSliceLonExtent
   , setUiHoverHex
   , setUiHoverWidget
-  , setUiShowMenu
+  , setUiMenuMode
+  , setUiPresetInput
+  , setUiPresetList
+  , setUiPresetSelected
+  , setUiWorldConfig
+  , setUiWorldName
+  , setUiWorldSaveInput
+  , setUiWorldList
+  , setUiWorldSelected
   , setUiContextHex
   , setUiContextPos
   , setUiSeedEditing
@@ -117,6 +123,8 @@ import qualified Data.Text as Text
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
 import Hyperspace.Actor.Spec (OpTag(..))
+import Seer.Config.Preset.Types (ConfigPreset)
+import Seer.World.Persist.Types (WorldSaveManifest)
 import UI.WidgetTree (WidgetId)
 
 data ViewMode
@@ -145,6 +153,16 @@ data LeftTab
   | LeftView
   deriving (Eq, Show)
 
+-- | Active modal overlay mode.
+data UiMenuMode
+  = MenuNone
+  | MenuEscape
+  | MenuPresetSave
+  | MenuPresetLoad
+  | MenuWorldSave
+  | MenuWorldLoad
+  deriving (Eq, Show)
+
 data UiState = UiState
   { uiSeed :: !Word64
   , uiGenerating :: !Bool
@@ -155,7 +173,10 @@ data UiState = UiState
   , uiConfigTab :: !ConfigTab
   , uiConfigScroll :: !Int
   , uiLeftTab :: !LeftTab
-  , uiShowMenu :: !Bool
+  , uiMenuMode :: !UiMenuMode
+  , uiPresetInput :: !Text
+  , uiPresetList :: ![Text]
+  , uiPresetSelected :: !Int
   , uiContextHex :: !(Maybe (Int, Int))
   , uiContextPos :: !(Maybe (Int, Int))
   , uiSeedEditing :: !Bool
@@ -219,7 +240,6 @@ data UiState = UiState
   , uiPlateBiasEdge :: !Float
   , uiPlateBiasNorth :: !Float
   , uiPlateBiasSouth :: !Float
-  , uiLatitudeBias :: !Float
   , uiWindIterations :: !Float
   , uiMoistureIterations :: !Float
   , uiBoundaryMotionTemp :: !Float
@@ -235,11 +255,14 @@ data UiState = UiState
   , uiAxialTilt :: !Float
   , uiInsolation :: !Float
   , uiSliceLatCenter :: !Float
-  , uiSliceLatExtent :: !Float
   , uiSliceLonCenter :: !Float
-  , uiSliceLonExtent :: !Float
   , uiHoverHex :: !(Maybe (Int, Int))
   , uiHoverWidget :: !(Maybe WidgetId)
+  , uiWorldConfig :: !(Maybe ConfigPreset)
+  , uiWorldName :: !Text
+  , uiWorldSaveInput :: !Text
+  , uiWorldList :: ![WorldSaveManifest]
+  , uiWorldSelected :: !Int
   } deriving (Eq, Show)
 
 emptyUiState :: UiState
@@ -253,7 +276,10 @@ emptyUiState = UiState
   , uiConfigTab = ConfigTerrain
   , uiConfigScroll = 0
   , uiLeftTab = LeftTopo
-  , uiShowMenu = False
+  , uiMenuMode = MenuNone
+  , uiPresetInput = Text.empty
+  , uiPresetList = []
+  , uiPresetSelected = 0
   , uiContextHex = Nothing
   , uiContextPos = Nothing
   , uiSeedEditing = False
@@ -317,7 +343,6 @@ emptyUiState = UiState
   , uiPlateBiasEdge = 0.5
   , uiPlateBiasNorth = 0.5
   , uiPlateBiasSouth = 0.5
-  , uiLatitudeBias = 0.5
   , uiWindIterations = 0.5
   , uiMoistureIterations = 0.5
   , uiBoundaryMotionTemp = 0.5
@@ -333,11 +358,14 @@ emptyUiState = UiState
   , uiAxialTilt = 0.5209      -- maps to 23.44 in [0..45]
   , uiInsolation = 0.5        -- maps to 1.0 in [0.7..1.3]
   , uiSliceLatCenter = 0.5    -- maps to 0 in [-90..90]
-  , uiSliceLatExtent = 0.2222 -- maps to 40 in [0.1..180]
   , uiSliceLonCenter = 0.5    -- maps to 0 in [-180..180]
-  , uiSliceLonExtent = 0.1666 -- maps to 60 in [0.1..360]
   , uiHoverHex = Nothing
   , uiHoverWidget = Nothing
+  , uiWorldConfig = Nothing
+  , uiWorldName = Text.pack "Untitled"
+  , uiWorldSaveInput = Text.empty
+  , uiWorldList = []
+  , uiWorldSelected = 0
   }
 
 -- | Sum type encoding all possible UI state mutations.
@@ -355,7 +383,10 @@ data UiUpdate
   | SetConfigTab !ConfigTab
   | SetConfigScroll !Int
   | SetLeftTab !LeftTab
-  | SetShowMenu !Bool
+  | SetMenuMode !UiMenuMode
+  | SetPresetInput !Text
+  | SetPresetList ![Text]
+  | SetPresetSelected !Int
   | SetContextHex !(Maybe (Int, Int))
   | SetContextPos !(Maybe (Int, Int))
   | SetSeedEditing !Bool
@@ -419,7 +450,6 @@ data UiUpdate
   | SetPlateBiasEdge !Float
   | SetPlateBiasNorth !Float
   | SetPlateBiasSouth !Float
-  | SetLatitudeBias !Float
   | SetWindIterations !Float
   | SetMoistureIterations !Float
   | SetBoundaryMotionTemp !Float
@@ -435,11 +465,14 @@ data UiUpdate
   | SetAxialTilt !Float
   | SetInsolation !Float
   | SetSliceLatCenter !Float
-  | SetSliceLatExtent !Float
   | SetSliceLonCenter !Float
-  | SetSliceLonExtent !Float
   | SetHoverHex !(Maybe (Int, Int))
   | SetHoverWidget !(Maybe WidgetId)
+  | SetWorldConfig !(Maybe ConfigPreset)
+  | SetWorldName !Text
+  | SetWorldSaveInput !Text
+  | SetWorldList ![WorldSaveManifest]
+  | SetWorldSelected !Int
 
 -- | Apply a 'UiUpdate' to the current 'UiState'.  Total and exhaustive.
 applyUpdate :: UiUpdate -> UiState -> UiState
@@ -453,7 +486,10 @@ applyUpdate upd st = case upd of
   SetConfigTab v       -> st { uiConfigTab = v }
   SetConfigScroll v    -> st { uiConfigScroll = max 0 v }
   SetLeftTab v         -> st { uiLeftTab = v }
-  SetShowMenu v        -> st { uiShowMenu = v }
+  SetMenuMode v        -> st { uiMenuMode = v }
+  SetPresetInput v     -> st { uiPresetInput = v }
+  SetPresetList v      -> st { uiPresetList = v }
+  SetPresetSelected v  -> st { uiPresetSelected = max 0 v }
   SetContextHex v      -> st { uiContextHex = v }
   SetContextPos v      -> st { uiContextPos = v }
   SetSeedEditing v     -> st { uiSeedEditing = v }
@@ -517,7 +553,6 @@ applyUpdate upd st = case upd of
   SetPlateBiasEdge v   -> st { uiPlateBiasEdge = clamp01 v }
   SetPlateBiasNorth v  -> st { uiPlateBiasNorth = clamp01 v }
   SetPlateBiasSouth v  -> st { uiPlateBiasSouth = clamp01 v }
-  SetLatitudeBias v    -> st { uiLatitudeBias = clamp01 v }
   SetWindIterations v  -> st { uiWindIterations = clamp01 v }
   SetMoistureIterations v -> st { uiMoistureIterations = clamp01 v }
   SetBoundaryMotionTemp v -> st { uiBoundaryMotionTemp = clamp01 v }
@@ -533,11 +568,14 @@ applyUpdate upd st = case upd of
   SetAxialTilt v       -> st { uiAxialTilt = clamp01 v }
   SetInsolation v      -> st { uiInsolation = clamp01 v }
   SetSliceLatCenter v  -> st { uiSliceLatCenter = clamp01 v }
-  SetSliceLatExtent v  -> st { uiSliceLatExtent = clamp01 v }
   SetSliceLonCenter v  -> st { uiSliceLonCenter = clamp01 v }
-  SetSliceLonExtent v  -> st { uiSliceLonExtent = clamp01 v }
   SetHoverHex v        -> st { uiHoverHex = v }
   SetHoverWidget v     -> st { uiHoverWidget = v }
+  SetWorldConfig v     -> st { uiWorldConfig = v }
+  SetWorldName v       -> st { uiWorldName = v }
+  SetWorldSaveInput v  -> st { uiWorldSaveInput = v }
+  SetWorldList v       -> st { uiWorldList = v }
+  SetWorldSelected v   -> st { uiWorldSelected = v }
 
 uiSnapshotTag :: OpTag "uiSnapshot"
 uiSnapshotTag = OpTag
@@ -602,9 +640,50 @@ setUiLeftTab :: ActorHandle Ui (Protocol Ui) -> LeftTab -> IO ()
 setUiLeftTab handle tab =
   cast @"update" handle #update (SetLeftTab tab)
 
-setUiShowMenu :: ActorHandle Ui (Protocol Ui) -> Bool -> IO ()
-setUiShowMenu handle flag =
-  cast @"update" handle #update (SetShowMenu flag)
+-- | Set the active modal overlay mode.
+setUiMenuMode :: ActorHandle Ui (Protocol Ui) -> UiMenuMode -> IO ()
+setUiMenuMode handle mode =
+  cast @"update" handle #update (SetMenuMode mode)
+
+-- | Set the text buffer for the preset save dialog.
+setUiPresetInput :: ActorHandle Ui (Protocol Ui) -> Text -> IO ()
+setUiPresetInput handle txt =
+  cast @"update" handle #update (SetPresetInput txt)
+
+-- | Set the cached list of preset names for the preset load dialog.
+setUiPresetList :: ActorHandle Ui (Protocol Ui) -> [Text] -> IO ()
+setUiPresetList handle names =
+  cast @"update" handle #update (SetPresetList names)
+
+-- | Set the selected preset index in the load dialog.
+setUiPresetSelected :: ActorHandle Ui (Protocol Ui) -> Int -> IO ()
+setUiPresetSelected handle idx =
+  cast @"update" handle #update (SetPresetSelected idx)
+
+-- | Set the captured world config for revert support.
+setUiWorldConfig :: ActorHandle Ui (Protocol Ui) -> Maybe ConfigPreset -> IO ()
+setUiWorldConfig handle cfg =
+  cast @"update" handle #update (SetWorldConfig cfg)
+
+-- | Set the world name displayed in the top bar.
+setUiWorldName :: ActorHandle Ui (Protocol Ui) -> Text -> IO ()
+setUiWorldName handle name =
+  cast @"update" handle #update (SetWorldName name)
+
+-- | Set the text buffer for the world save dialog.
+setUiWorldSaveInput :: ActorHandle Ui (Protocol Ui) -> Text -> IO ()
+setUiWorldSaveInput handle txt =
+  cast @"update" handle #update (SetWorldSaveInput txt)
+
+-- | Set the cached list of world manifests for the world load dialog.
+setUiWorldList :: ActorHandle Ui (Protocol Ui) -> [WorldSaveManifest] -> IO ()
+setUiWorldList handle worlds =
+  cast @"update" handle #update (SetWorldList worlds)
+
+-- | Set the selected world index in the load dialog.
+setUiWorldSelected :: ActorHandle Ui (Protocol Ui) -> Int -> IO ()
+setUiWorldSelected handle idx =
+  cast @"update" handle #update (SetWorldSelected idx)
 
 setUiContextHex :: ActorHandle Ui (Protocol Ui) -> Maybe (Int, Int) -> IO ()
 setUiContextHex handle hex =
@@ -861,10 +940,6 @@ setUiPlateBiasSouth :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
 setUiPlateBiasSouth handle value =
   cast @"update" handle #update (SetPlateBiasSouth value)
 
-setUiLatitudeBias :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
-setUiLatitudeBias handle value =
-  cast @"update" handle #update (SetLatitudeBias value)
-
 setUiWindIterations :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
 setUiWindIterations handle value =
   cast @"update" handle #update (SetWindIterations value)
@@ -925,17 +1000,9 @@ setUiSliceLatCenter :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
 setUiSliceLatCenter handle value =
   cast @"update" handle #update (SetSliceLatCenter value)
 
-setUiSliceLatExtent :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
-setUiSliceLatExtent handle value =
-  cast @"update" handle #update (SetSliceLatExtent value)
-
 setUiSliceLonCenter :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
 setUiSliceLonCenter handle value =
   cast @"update" handle #update (SetSliceLonCenter value)
-
-setUiSliceLonExtent :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
-setUiSliceLonExtent handle value =
-  cast @"update" handle #update (SetSliceLonExtent value)
 
 setUiHoverHex :: ActorHandle Ui (Protocol Ui) -> Maybe (Int, Int) -> IO ()
 setUiHoverHex handle hex =

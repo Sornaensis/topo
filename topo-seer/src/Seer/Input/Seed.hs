@@ -10,11 +10,12 @@ module Seer.Input.Seed
 
 import Actor.UI
   ( Ui
+  , UiMenuMode(..)
   , UiState(..)
   , setUiSeed
   , setUiSeedEditing
   , setUiSeedInput
-  , setUiShowMenu
+  , setUiMenuMode
   )
 import Data.Char (isDigit)
 import Data.Text (Text)
@@ -38,7 +39,9 @@ handleSeedKey uiHandle getUiSnapshot key =
     SDL.KeycodeEscape -> do
       cancelSeedEdit uiHandle getUiSnapshot
       uiSnap <- getUiSnapshot
-      setUiShowMenu uiHandle (not (uiShowMenu uiSnap))
+      case uiMenuMode uiSnap of
+        MenuNone -> setUiMenuMode uiHandle MenuEscape
+        _        -> setUiMenuMode uiHandle MenuNone
     SDL.KeycodeReturn -> commitSeedEdit uiHandle getUiSnapshot
     SDL.KeycodeBackspace -> do
       uiSnap <- getUiSnapshot

@@ -146,7 +146,6 @@ allConfigWidgets =
   , WidgetConfigEquatorTempMinus, WidgetConfigEquatorTempPlus
   , WidgetConfigPoleTempMinus, WidgetConfigPoleTempPlus
   , WidgetConfigLapseRateMinus, WidgetConfigLapseRatePlus
-  , WidgetConfigLatitudeBiasMinus, WidgetConfigLatitudeBiasPlus
   , WidgetConfigWindIterationsMinus, WidgetConfigWindIterationsPlus
   , WidgetConfigMoistureIterationsMinus, WidgetConfigMoistureIterationsPlus
   , WidgetConfigWeatherTickMinus, WidgetConfigWeatherTickPlus
@@ -162,9 +161,7 @@ allConfigWidgets =
   , WidgetConfigAxialTiltMinus, WidgetConfigAxialTiltPlus
   , WidgetConfigInsolationMinus, WidgetConfigInsolationPlus
   , WidgetConfigSliceLatCenterMinus, WidgetConfigSliceLatCenterPlus
-  , WidgetConfigSliceLatExtentMinus, WidgetConfigSliceLatExtentPlus
   , WidgetConfigSliceLonCenterMinus, WidgetConfigSliceLonCenterPlus
-  , WidgetConfigSliceLonExtentMinus, WidgetConfigSliceLonExtentPlus
   -- Erosion tab
   , WidgetConfigErosionHydraulicMinus, WidgetConfigErosionHydraulicPlus
   , WidgetConfigErosionThermalMinus, WidgetConfigErosionThermalPlus

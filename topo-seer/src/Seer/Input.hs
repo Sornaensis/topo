@@ -10,13 +10,14 @@ module Seer.Input
   , tooltipDelayFrames
   ) where
 
-import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..))
+import Actor.Data (Data, DataSnapshot(..), DataSnapshotReply, TerrainSnapshot(..), replaceTerrainData, requestDataSnapshot)
 import Actor.Log (Log, LogLevel(..), LogSnapshot(..), setLogCollapsed, setLogMinLevel, setLogScroll)
 import Actor.Terrain (Terrain, TerrainReplyOps)
 import Actor.UI
   ( ConfigTab(..)
   , LeftTab(..)
   , Ui
+  , UiMenuMode(..)
   , UiState(..)
   , ViewMode(..)
   , setUiChunkSize
@@ -72,7 +73,6 @@ import Actor.UI
   , setUiPlateBiasEdge
   , setUiPlateBiasNorth
   , setUiPlateBiasSouth
-  , setUiLatitudeBias
   , setUiMoistureIterations
   , setUiBoundaryMotionTemp
   , setUiBoundaryMotionPrecip
@@ -80,9 +80,7 @@ import Actor.UI
   , setUiAxialTilt
   , setUiInsolation
   , setUiSliceLatCenter
-  , setUiSliceLatExtent
   , setUiSliceLonCenter
-  , setUiSliceLonExtent
   , setUiPlateSize
   , setUiRiftDepth
   , setUiUplift
@@ -106,7 +104,15 @@ import Actor.UI
   , setUiSeedInput
   , setUiShowConfig
   , setUiShowLeftPanel
-  , setUiShowMenu
+  , setUiMenuMode
+  , setUiPresetInput
+  , setUiPresetList
+  , setUiPresetSelected
+  , setUiWorldName
+  , setUiWorldConfig
+  , setUiWorldSaveInput
+  , setUiWorldList
+  , setUiWorldSelected
   , setUiViewMode
   , setUiWaterLevel
   , setUiWindDiffuse
@@ -122,13 +128,18 @@ import qualified Data.IntMap.Strict as IntMap
 import Linear (V2(..))
 import qualified SDL
 import qualified SDL.Raw.Types as Raw
+import System.FilePath ((</>))
 import Seer.Draw (seedMaxDigits)
+import Seer.Config.Preset (listPresets, loadPreset, presetDir, presetFromUi, savePreset, applyPresetToUi)
+import Seer.World.Persist (listWorlds, saveNamedWorld, loadNamedWorld, snapshotToWorld)
+import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Seer.Input.ConfigScroll
   ( ScrollSettings
   , computeScrollUpdates
   , configRowCount
   , defaultScrollSettings
   )
+import Seer.Input.Modal (handleModalTextKey, handleModalTextInput, handleModalListKey)
 import Seer.Input.Router (isQuit)
 import Seer.Input.Seed (bumpSeed, handleSeedKey, handleSeedTextInput)
 import Seer.Input.ViewControls
@@ -317,28 +328,41 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
             _ -> pure ()
     SDL.TextInputEvent textEvent -> do
       uiSnap <- getUiSnapshot uiHandle
+      let txt = SDL.textInputEventText textEvent
       when (uiSeedEditing uiSnap) $
-        handleSeedTextInput uiHandle (getUiSnapshot uiHandle) (SDL.textInputEventText textEvent)
+        handleSeedTextInput uiHandle (getUiSnapshot uiHandle) txt
+      when (uiMenuMode uiSnap == MenuPresetSave) $
+        handleModalTextInput (uiPresetInput uiSnap) txt
+          (setUiPresetInput uiHandle)
+      when (uiMenuMode uiSnap == MenuWorldSave) $
+        handleModalTextInput (uiWorldSaveInput uiSnap) txt
+          (setUiWorldSaveInput uiHandle)
     SDL.KeyboardEvent keyboardEvent
       | SDL.keyboardEventKeyMotion keyboardEvent == SDL.Pressed ->
           do
             uiSnap <- getUiSnapshot uiHandle
+            let keycode = SDL.keysymKeycode (SDL.keyboardEventKeysym keyboardEvent)
             if uiSeedEditing uiSnap
-              then handleSeedKey uiHandle (getUiSnapshot uiHandle) (SDL.keysymKeycode (SDL.keyboardEventKeysym keyboardEvent))
-              else
-                case SDL.keysymKeycode (SDL.keyboardEventKeysym keyboardEvent) of
-                  SDL.KeycodeEscape -> closeContextOrMenu
-                  SDL.KeycodeG -> submitUiAction uiActionsHandle (actionRequest UiActionGenerate)
-                  SDL.KeycodeC -> toggleConfig
-                  SDL.KeycodeUp -> bumpSeed uiHandle (getUiSnapshot uiHandle) 1
-                  SDL.KeycodeDown -> bumpSeed uiHandle (getUiSnapshot uiHandle) (-1)
-                  SDL.KeycodeL -> do
-                    logSnap <- getLogSnapshot logHandle
-                    setLogCollapsed logHandle (not (lsCollapsed logSnap))
-                  keycode ->
-                    case viewModeForKey keycode of
-                      Just mode -> submitUiAction uiActionsHandle (actionRequest (UiActionSetViewMode mode))
-                      Nothing -> pure ()
+              then handleSeedKey uiHandle (getUiSnapshot uiHandle) keycode
+              else case uiMenuMode uiSnap of
+                MenuPresetSave -> handlePresetSaveKey uiSnap keycode
+                MenuPresetLoad -> handlePresetLoadKey uiSnap keycode
+                MenuWorldSave  -> handleWorldSaveKey uiSnap keycode
+                MenuWorldLoad  -> handleWorldLoadKey uiSnap keycode
+                _ ->
+                  case keycode of
+                    SDL.KeycodeEscape -> closeContextOrMenu
+                    SDL.KeycodeG -> submitUiAction uiActionsHandle (actionRequest UiActionGenerate)
+                    SDL.KeycodeC -> toggleConfig
+                    SDL.KeycodeUp -> bumpSeed uiHandle (getUiSnapshot uiHandle) 1
+                    SDL.KeycodeDown -> bumpSeed uiHandle (getUiSnapshot uiHandle) (-1)
+                    SDL.KeycodeL -> do
+                      logSnap <- getLogSnapshot logHandle
+                      setLogCollapsed logHandle (not (lsCollapsed logSnap))
+                    _ ->
+                      case viewModeForKey keycode of
+                        Just mode -> submitUiAction uiActionsHandle (actionRequest (UiActionSetViewMode mode))
+                        Nothing -> pure ()
     _ -> pure ()
   where
     getUiSnapshot :: ActorHandle Ui (Protocol Ui) -> IO UiState
@@ -388,9 +412,97 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
         Just _ -> do
           setUiContextHex uiHandle Nothing
           setUiContextPos uiHandle Nothing
-          setUiShowMenu uiHandle True
+          setUiMenuMode uiHandle MenuEscape
         Nothing ->
-          setUiShowMenu uiHandle (not (uiShowMenu uiSnap))
+          case uiMenuMode uiSnap of
+            MenuNone -> setUiMenuMode uiHandle MenuEscape
+            _        -> setUiMenuMode uiHandle MenuNone
+
+    handlePresetSaveKey :: UiState -> SDL.Keycode -> IO ()
+    handlePresetSaveKey _uiSnap keycode =
+      handleModalTextKey keycode
+        -- onConfirm
+        (do uiSnap' <- getUiSnapshot uiHandle
+            let name = uiPresetInput uiSnap'
+            dir <- presetDir
+            let path = dir </> Text.unpack name <> ".json"
+            _result <- savePreset path (presetFromUi uiSnap' name)
+            setUiMenuMode uiHandle MenuNone
+            SDL.stopTextInput)
+        -- onCancel
+        (setUiMenuMode uiHandle MenuNone >> SDL.stopTextInput)
+        -- onBackspace
+        (do uiSnap' <- getUiSnapshot uiHandle
+            setUiPresetInput uiHandle (Text.dropEnd 1 (uiPresetInput uiSnap')))
+
+    handlePresetLoadKey :: UiState -> SDL.Keycode -> IO ()
+    handlePresetLoadKey uiSnap keycode =
+      handleModalListKey keycode
+        (uiPresetSelected uiSnap)
+        (length (uiPresetList uiSnap) - 1)
+        -- onConfirm
+        (do let names = uiPresetList uiSnap
+                sel = uiPresetSelected uiSnap
+            when (sel >= 0 && sel < length names) $ do
+              let name = names !! sel
+              dir <- presetDir
+              let path = dir </> Text.unpack name <> ".json"
+              result <- loadPreset path
+              case result of
+                Right cp -> applyPresetToUi cp uiHandle
+                Left _err -> pure ()
+            setUiMenuMode uiHandle MenuNone)
+        -- onCancel
+        (setUiMenuMode uiHandle MenuNone >> SDL.stopTextInput)
+        -- setSelection
+        (setUiPresetSelected uiHandle)
+
+    handleWorldSaveKey :: UiState -> SDL.Keycode -> IO ()
+    handleWorldSaveKey _uiSnap keycode =
+      handleModalTextKey keycode
+        -- onConfirm
+        (do uiSnap' <- getUiSnapshot uiHandle
+            let name = uiWorldSaveInput uiSnap'
+            when (not (Text.null name)) $ do
+              terrainSnap <- getTerrainSnapshot dataHandle
+              let world = snapshotToWorld terrainSnap
+              _result <- saveNamedWorld name uiSnap' world
+              setUiWorldName uiHandle name
+              setUiWorldConfig uiHandle (Just (presetFromUi uiSnap' name))
+            setUiMenuMode uiHandle MenuNone
+            SDL.stopTextInput)
+        -- onCancel
+        (setUiMenuMode uiHandle MenuNone >> SDL.stopTextInput)
+        -- onBackspace
+        (do uiSnap' <- getUiSnapshot uiHandle
+            setUiWorldSaveInput uiHandle (Text.dropEnd 1 (uiWorldSaveInput uiSnap')))
+
+    handleWorldLoadKey :: UiState -> SDL.Keycode -> IO ()
+    handleWorldLoadKey uiSnap keycode =
+      handleModalListKey keycode
+        (uiWorldSelected uiSnap)
+        (length (uiWorldList uiSnap) - 1)
+        -- onConfirm
+        (do let manifests = uiWorldList uiSnap
+                sel = uiWorldSelected uiSnap
+            when (sel >= 0 && sel < length manifests) $ do
+              let manifest = manifests !! sel
+                  name = wsmName manifest
+              result <- loadNamedWorld name
+              case result of
+                Right (_manifest, preset, world) -> do
+                  replaceTerrainData dataHandle world
+                  requestDataSnapshot dataHandle (replyTo @DataSnapshotReply snapshotReceiverHandle)
+                  applyPresetToUi preset uiHandle
+                  setUiWorldName uiHandle name
+                  setUiWorldConfig uiHandle (Just preset)
+                  submitUiAction uiActionsHandle (actionRequest (UiActionRebuildAtlas (uiViewMode uiSnap)))
+                Left _err -> pure ()
+            setUiMenuMode uiHandle MenuNone)
+        -- onCancel
+        (setUiMenuMode uiHandle MenuNone >> SDL.stopTextInput)
+        -- setSelection
+        (setUiWorldSelected uiHandle)
 
 -- | Per-frame tick for the tooltip hover delay.  Decrements the
 -- remaining frame count and promotes the pending hover to a visible
@@ -467,8 +579,6 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           WidgetConfigPoleTempPlus -> True
           WidgetConfigLapseRateMinus -> True
           WidgetConfigLapseRatePlus -> True
-          WidgetConfigLatitudeBiasMinus -> True
-          WidgetConfigLatitudeBiasPlus -> True
           WidgetConfigWindIterationsMinus -> True
           WidgetConfigWindIterationsPlus -> True
           WidgetConfigMoistureIterationsMinus -> True
@@ -485,12 +595,8 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           WidgetConfigInsolationPlus -> True
           WidgetConfigSliceLatCenterMinus -> True
           WidgetConfigSliceLatCenterPlus -> True
-          WidgetConfigSliceLatExtentMinus -> True
-          WidgetConfigSliceLatExtentPlus -> True
           WidgetConfigSliceLonCenterMinus -> True
           WidgetConfigSliceLonCenterPlus -> True
-          WidgetConfigSliceLonExtentMinus -> True
-          WidgetConfigSliceLonExtentPlus -> True
           WidgetConfigWeatherTickMinus -> True
           WidgetConfigWeatherTickPlus -> True
           WidgetConfigWeatherPhaseMinus -> True
@@ -627,8 +733,6 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           WidgetConfigPoleTempPlus -> tab == ConfigClimate
           WidgetConfigLapseRateMinus -> tab == ConfigClimate
           WidgetConfigLapseRatePlus -> tab == ConfigClimate
-          WidgetConfigLatitudeBiasMinus -> tab == ConfigClimate
-          WidgetConfigLatitudeBiasPlus -> tab == ConfigClimate
           WidgetConfigWindIterationsMinus -> tab == ConfigClimate
           WidgetConfigWindIterationsPlus -> tab == ConfigClimate
           WidgetConfigMoistureIterationsMinus -> tab == ConfigClimate
@@ -645,12 +749,8 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           WidgetConfigInsolationPlus -> tab == ConfigClimate
           WidgetConfigSliceLatCenterMinus -> tab == ConfigClimate
           WidgetConfigSliceLatCenterPlus -> tab == ConfigClimate
-          WidgetConfigSliceLatExtentMinus -> tab == ConfigClimate
-          WidgetConfigSliceLatExtentPlus -> tab == ConfigClimate
           WidgetConfigSliceLonCenterMinus -> tab == ConfigClimate
           WidgetConfigSliceLonCenterPlus -> tab == ConfigClimate
-          WidgetConfigSliceLonExtentMinus -> tab == ConfigClimate
-          WidgetConfigSliceLonExtentPlus -> tab == ConfigClimate
           WidgetConfigWeatherTickMinus -> tab == ConfigClimate
           WidgetConfigWeatherTickPlus -> tab == ConfigClimate
           WidgetConfigWeatherPhaseMinus -> tab == ConfigClimate
@@ -787,10 +887,10 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           whenLeftTopo action = when (uiShowLeftPanel uiSnap && uiLeftTab uiSnap == LeftTopo) action
           whenLeftView action = when (uiShowLeftPanel uiSnap && uiLeftTab uiSnap == LeftView) action
           whenConfigVisible action = when (uiShowConfig uiSnap) action
-      if uiShowMenu uiSnap
-        then handleMenuClick widgets point
+      if uiMenuMode uiSnap /= MenuNone
+        then handleMenuClick layout widgets point
         else case hitWidget of
-          { Just WidgetGenerate -> submit UiActionGenerate
+          { Just WidgetGenerate -> whenLeftTopo (submit UiActionGenerate)
           ; Just WidgetLeftToggle -> setUiShowLeftPanel uiHandle (not (uiShowLeftPanel uiSnap))
           ; Just WidgetLeftTabTopo -> whenLeftPanel (setUiLeftTab uiHandle LeftTopo)
           ; Just WidgetLeftTabView -> whenLeftPanel (setUiLeftTab uiHandle LeftView)
@@ -802,9 +902,10 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           ; Just WidgetConfigTabTerrain -> whenConfigVisible (setUiConfigTab uiHandle ConfigTerrain >> setUiConfigScroll uiHandle 0)
           ; Just WidgetConfigTabClimate -> whenConfigVisible (setUiConfigTab uiHandle ConfigClimate >> setUiConfigScroll uiHandle 0)
           ; Just WidgetConfigTabErosion -> whenConfigVisible (setUiConfigTab uiHandle ConfigErosion >> setUiConfigScroll uiHandle 0)
-          ; Just WidgetConfigApply -> whenConfigVisible (submit UiActionApply)
-          ; Just WidgetConfigReplay -> whenConfigVisible (submit UiActionReplay)
+          ; Just WidgetConfigPresetSave -> whenConfigVisible (openPresetSaveDialog layout uiSnap)
+          ; Just WidgetConfigPresetLoad -> whenConfigVisible openPresetLoadDialog
           ; Just WidgetConfigReset -> whenConfigVisible (SDL.stopTextInput >> submit UiActionReset)
+          ; Just WidgetConfigRevert -> whenConfigVisible (submit UiActionRevert)
           ; Just WidgetConfigWaterMinus -> whenConfigVisible (bumpWater (-0.05))
           ; Just WidgetConfigWaterPlus -> whenConfigVisible (bumpWater 0.05)
           ; Just WidgetConfigEvapMinus -> whenConfigVisible (bumpEvap (-0.05))
@@ -917,8 +1018,6 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           ; Just WidgetConfigErosionTalusPlus -> whenConfigVisible (bumpErosionTalus 0.05)
           ; Just WidgetConfigErosionMaxDropMinus -> whenConfigVisible (bumpErosionMaxDrop (-0.05))
           ; Just WidgetConfigErosionMaxDropPlus -> whenConfigVisible (bumpErosionMaxDrop 0.05)
-          ; Just WidgetConfigLatitudeBiasMinus -> whenConfigVisible (bumpLatitudeBias (-0.05))
-          ; Just WidgetConfigLatitudeBiasPlus -> whenConfigVisible (bumpLatitudeBias 0.05)
           ; Just WidgetConfigWindIterationsMinus -> whenConfigVisible (bumpWindIterations (-0.1))
           ; Just WidgetConfigWindIterationsPlus -> whenConfigVisible (bumpWindIterations 0.1)
           ; Just WidgetConfigMoistureIterationsMinus -> whenConfigVisible (bumpMoistureIterations (-0.1))
@@ -935,12 +1034,8 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           ; Just WidgetConfigInsolationPlus -> whenConfigVisible (bumpInsolation 0.05)
           ; Just WidgetConfigSliceLatCenterMinus -> whenConfigVisible (bumpSliceLatCenter (-0.05))
           ; Just WidgetConfigSliceLatCenterPlus -> whenConfigVisible (bumpSliceLatCenter 0.05)
-          ; Just WidgetConfigSliceLatExtentMinus -> whenConfigVisible (bumpSliceLatExtent (-0.05))
-          ; Just WidgetConfigSliceLatExtentPlus -> whenConfigVisible (bumpSliceLatExtent 0.05)
           ; Just WidgetConfigSliceLonCenterMinus -> whenConfigVisible (bumpSliceLonCenter (-0.05))
           ; Just WidgetConfigSliceLonCenterPlus -> whenConfigVisible (bumpSliceLonCenter 0.05)
-          ; Just WidgetConfigSliceLonExtentMinus -> whenConfigVisible (bumpSliceLonExtent (-0.05))
-          ; Just WidgetConfigSliceLonExtentPlus -> whenConfigVisible (bumpSliceLonExtent 0.05)
           ; Just WidgetConfigWeatherTickMinus -> whenConfigVisible (bumpWeatherTick (-0.05))
           ; Just WidgetConfigWeatherTickPlus -> whenConfigVisible (bumpWeatherTick 0.05)
           ; Just WidgetConfigWeatherPhaseMinus -> whenConfigVisible (bumpWeatherPhase (-0.05))
@@ -988,14 +1083,150 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
     getTerrainSnapshot :: ActorHandle Data (Protocol Data) -> IO TerrainSnapshot
     getTerrainSnapshot _ = pure terrainSnapCached
 
-    handleMenuClick widgets point =
-      case hitTest widgets point of
-        Just WidgetMenuExit -> do
-          setUiShowMenu uiHandle False
+    handleMenuClick ly _widgets point = do
+      uiSnap <- getUiSnapshot uiHandle
+      case uiMenuMode uiSnap of
+        MenuEscape -> handleEscapeMenuClick ly point
+        MenuPresetSave -> handlePresetSaveClick ly point uiSnap
+        MenuPresetLoad -> handlePresetLoadClick ly point uiSnap
+        MenuWorldSave  -> handleWorldSaveClick ly point uiSnap
+        MenuWorldLoad  -> handleWorldLoadClick ly point uiSnap
+        _ -> pure ()
+
+    handleEscapeMenuClick ly point
+      | containsPoint (menuExitRect ly) point = do
+          setUiMenuMode uiHandle MenuNone
           writeIORef quitRef True
-        Just WidgetMenuSave -> setUiShowMenu uiHandle False
-        Just WidgetMenuLoad -> setUiShowMenu uiHandle False
-        _ -> setUiShowMenu uiHandle False
+      | containsPoint (menuSaveRect ly) point = do
+          uiSnap <- getUiSnapshot uiHandle
+          openWorldSaveDialog ly uiSnap
+      | containsPoint (menuLoadRect ly) point =
+          openWorldLoadDialog
+      | otherwise = setUiMenuMode uiHandle MenuNone
+
+    handlePresetSaveClick ly point uiSnap
+      | containsPoint (presetSaveOkRect ly) point = confirmPresetSave uiSnap
+      | containsPoint (presetSaveCancelRect ly) point = cancelPresetDialog
+      | otherwise = pure ()
+
+    handlePresetLoadClick ly point uiSnap
+      | containsPoint (presetLoadOkRect ly) point = confirmPresetLoad uiSnap
+      | containsPoint (presetLoadCancelRect ly) point = cancelPresetDialog
+      | containsPoint (presetLoadListRect ly) point = do
+          -- Determine which item was clicked by y position
+          let V2 _mx my = point
+              Rect (V2 _lx listY, _) = presetLoadListRect ly
+              idx = max 0 (my - listY) `div` 24
+          setUiPresetSelected uiHandle idx
+      | otherwise = pure ()
+
+    -- Preset dialog helpers
+
+    openPresetSaveDialog ly uiSnap = do
+      let defaultName = "preset-" <> Text.pack (show (uiSeed uiSnap))
+          Rect (V2 rx ry, V2 rw rh) = presetSaveInputRect ly
+          rawRect = Raw.Rect (fromIntegral rx) (fromIntegral ry) (fromIntegral rw) (fromIntegral rh)
+      setUiPresetInput uiHandle defaultName
+      setUiMenuMode uiHandle MenuPresetSave
+      SDL.startTextInput rawRect
+
+    openPresetLoadDialog = do
+      names <- listPresets
+      setUiPresetList uiHandle names
+      setUiPresetSelected uiHandle 0
+      setUiMenuMode uiHandle MenuPresetLoad
+
+    cancelPresetDialog = do
+      setUiMenuMode uiHandle MenuNone
+      SDL.stopTextInput
+
+    confirmPresetSave uiSnap = do
+      let name = uiPresetInput uiSnap
+      dir <- presetDir
+      let path = dir </> Text.unpack name <> ".json"
+      _result <- savePreset path (presetFromUi uiSnap name)
+      setUiMenuMode uiHandle MenuNone
+      SDL.stopTextInput
+
+    confirmPresetLoad uiSnap = do
+      let names = uiPresetList uiSnap
+          sel = uiPresetSelected uiSnap
+      when (sel >= 0 && sel < length names) $ do
+        let name = names !! sel
+        dir <- presetDir
+        let path = dir </> Text.unpack name <> ".json"
+        result <- loadPreset path
+        case result of
+          Right cp -> applyPresetToUi cp uiHandle
+          Left _err -> pure ()
+      setUiMenuMode uiHandle MenuNone
+
+    -- World save/load click handlers
+
+    handleWorldSaveClick ly point uiSnap
+      | containsPoint (worldSaveOkRect ly) point = confirmWorldSave uiSnap
+      | containsPoint (worldSaveCancelRect ly) point = cancelWorldDialog
+      | otherwise = pure ()
+
+    handleWorldLoadClick ly point uiSnap
+      | containsPoint (worldLoadOkRect ly) point = confirmWorldLoad uiSnap
+      | containsPoint (worldLoadCancelRect ly) point = cancelWorldDialog
+      | containsPoint (worldLoadListRect ly) point = do
+          let V2 _mx my = point
+              Rect (V2 _lx listY, _) = worldLoadListRect ly
+              idx = max 0 (my - listY) `div` 28
+          setUiWorldSelected uiHandle idx
+      | otherwise = pure ()
+
+    -- World dialog helpers
+
+    openWorldSaveDialog ly uiSnap = do
+      let defaultName = uiWorldName uiSnap
+          Rect (V2 rx ry, V2 rw rh) = worldSaveInputRect ly
+          rawRect = Raw.Rect (fromIntegral rx) (fromIntegral ry) (fromIntegral rw) (fromIntegral rh)
+      setUiWorldSaveInput uiHandle defaultName
+      setUiMenuMode uiHandle MenuWorldSave
+      SDL.startTextInput rawRect
+
+    openWorldLoadDialog = do
+      worlds <- listWorlds
+      setUiWorldList uiHandle worlds
+      setUiWorldSelected uiHandle 0
+      setUiMenuMode uiHandle MenuWorldLoad
+
+    cancelWorldDialog = do
+      setUiMenuMode uiHandle MenuNone
+      SDL.stopTextInput
+
+    confirmWorldSave uiSnap = do
+      let name = uiWorldSaveInput uiSnap
+      when (not (Text.null name)) $ do
+        terrainSnap <- getTerrainSnapshot dataHandle
+        let world = snapshotToWorld terrainSnap
+        _result <- saveNamedWorld name uiSnap world
+        setUiWorldName uiHandle name
+        setUiWorldConfig uiHandle (Just (presetFromUi uiSnap name))
+      setUiMenuMode uiHandle MenuNone
+      SDL.stopTextInput
+
+    confirmWorldLoad uiSnap = do
+      let manifests = uiWorldList uiSnap
+          sel = uiWorldSelected uiSnap
+      when (sel >= 0 && sel < length manifests) $ do
+        let manifest = manifests !! sel
+            name = wsmName manifest
+        result <- loadNamedWorld name
+        case result of
+          Right (_manifest, preset, world) -> do
+            replaceTerrainData dataHandle world
+            requestDataSnapshot dataHandle (replyTo @DataSnapshotReply snapshotReceiverHandle)
+            applyPresetToUi preset uiHandle
+            setUiWorldName uiHandle name
+            setUiWorldConfig uiHandle (Just preset)
+            submit (UiActionRebuildAtlas (uiViewMode uiSnap))
+          Left _err -> pure ()
+      setUiMenuMode uiHandle MenuNone
+
     bumpSeed delta = do
       uiSnap <- getUiSnapshot uiHandle
       let newSeed = uiSeed uiSnap + fromIntegral delta
@@ -1196,9 +1427,6 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
     bumpPlateBiasSouth delta = do
       uiSnap <- getUiSnapshot uiHandle
       setUiPlateBiasSouth uiHandle (uiPlateBiasSouth uiSnap + delta)
-    bumpLatitudeBias delta = do
-      uiSnap <- getUiSnapshot uiHandle
-      setUiLatitudeBias uiHandle (uiLatitudeBias uiSnap + delta)
     bumpWindIterations delta = do
       uiSnap <- getUiSnapshot uiHandle
       setUiWindIterations uiHandle (uiWindIterations uiSnap + delta)
@@ -1223,15 +1451,9 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
     bumpSliceLatCenter delta = do
       uiSnap <- getUiSnapshot uiHandle
       setUiSliceLatCenter uiHandle (uiSliceLatCenter uiSnap + delta)
-    bumpSliceLatExtent delta = do
-      uiSnap <- getUiSnapshot uiHandle
-      setUiSliceLatExtent uiHandle (uiSliceLatExtent uiSnap + delta)
     bumpSliceLonCenter delta = do
       uiSnap <- getUiSnapshot uiHandle
       setUiSliceLonCenter uiHandle (uiSliceLonCenter uiSnap + delta)
-    bumpSliceLonExtent delta = do
-      uiSnap <- getUiSnapshot uiHandle
-      setUiSliceLonExtent uiHandle (uiSliceLonExtent uiSnap + delta)
     bumpWeatherTick delta = do
       uiSnap <- getUiSnapshot uiHandle
       setUiWeatherTick uiHandle (uiWeatherTick uiSnap + delta)

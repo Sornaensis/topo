@@ -1,8 +1,11 @@
 module UI.Layout
   ( Layout
+  , topBarHeight
+  , topBarRect
   , layoutFor
   , layoutForSeed
   , genButtonRect
+  , leftGenButtonRect
   , seedMinusRect
   , seedPlusRect
   , seedValueRect
@@ -20,9 +23,10 @@ module UI.Layout
   , configToggleRect
   , configPanelRect
   , configTabRects
-  , configApplyRect
-  , configReplayRect
+  , configPresetSaveRect
+  , configPresetLoadRect
   , configResetRect
+  , configRevertRect
   , configScrollAreaRect
   , configScrollBarRect
   , configRowTopPad
@@ -47,9 +51,6 @@ module UI.Layout
   , configLapseRateMinusRect
   , configLapseRatePlusRect
   , configLapseRateBarRect
-  , configLatitudeBiasMinusRect
-  , configLatitudeBiasPlusRect
-  , configLatitudeBiasBarRect
   , configWindIterationsMinusRect
   , configWindIterationsPlusRect
   , configWindIterationsBarRect
@@ -95,15 +96,9 @@ module UI.Layout
   , configSliceLatCenterMinusRect
   , configSliceLatCenterPlusRect
   , configSliceLatCenterBarRect
-  , configSliceLatExtentMinusRect
-  , configSliceLatExtentPlusRect
-  , configSliceLatExtentBarRect
   , configSliceLonCenterMinusRect
   , configSliceLonCenterPlusRect
   , configSliceLonCenterBarRect
-  , configSliceLonExtentMinusRect
-  , configSliceLonExtentPlusRect
-  , configSliceLonExtentBarRect
   , configErosionHydraulicMinusRect
   , configErosionHydraulicPlusRect
   , configErosionHydraulicBarRect
@@ -263,6 +258,28 @@ module UI.Layout
   , menuSaveRect
   , menuLoadRect
   , menuExitRect
+    -- Preset save dialog
+  , presetSaveDialogRect
+  , presetSaveInputRect
+  , presetSaveOkRect
+  , presetSaveCancelRect
+    -- Preset load dialog
+  , presetLoadDialogRect
+  , presetLoadListRect
+  , presetLoadItemRect
+  , presetLoadOkRect
+  , presetLoadCancelRect
+    -- World save dialog
+  , worldSaveDialogRect
+  , worldSaveInputRect
+  , worldSaveOkRect
+  , worldSaveCancelRect
+    -- World load dialog
+  , worldLoadDialogRect
+  , worldLoadListRect
+  , worldLoadItemRect
+  , worldLoadOkRect
+  , worldLoadCancelRect
   ) where
 
 import Linear (V2(..))
@@ -274,6 +291,15 @@ data Layout = Layout
   , layoutSeedWidth :: Int
   } deriving (Eq, Show)
 
+-- | Height of the top bar in pixels.
+topBarHeight :: Int
+topBarHeight = 28
+
+-- | Full-width bar at the top of the window displaying the world name.
+topBarRect :: Layout -> Rect
+topBarRect (Layout (V2 w _) _ _) =
+  Rect (V2 0 0, V2 w topBarHeight)
+
 layoutFor :: V2 Int -> Int -> Layout
 layoutFor size logHeight = layoutForSeed size logHeight 120
 
@@ -284,8 +310,19 @@ layoutForSeed size logHeight seedWidth = Layout
   , layoutSeedWidth = seedWidth
   }
 
+-- | Legacy generate button rect (now redirects to leftGenButtonRect).
 genButtonRect :: Layout -> Rect
-genButtonRect _ = Rect (V2 16 16, V2 140 32)
+genButtonRect = leftGenButtonRect
+
+-- | Generate button inside the left panel, below seed value (Row 4).
+leftGenButtonRect :: Layout -> Rect
+leftGenButtonRect layout =
+  let Rect (V2 x _y, V2 w _) = leftPanelRect layout
+      pad = 12
+      rowHeight = 24
+      gap = 10
+      top = leftControlsTop layout + 4 * (rowHeight + gap)
+  in Rect (V2 (x + pad) top, V2 (w - pad * 2) 28)
 
 seedMinusRect :: Layout -> Rect
 seedMinusRect = leftSeedMinusRect
@@ -312,8 +349,8 @@ leftPanelRect :: Layout -> Rect
 leftPanelRect (Layout (V2 _ h) logHeight _) =
   let panelW = 240
       x = 16
-      y = 56
-  in Rect (V2 x y, V2 panelW (h - logHeight - 72))
+      y = 56 + topBarHeight
+  in Rect (V2 x y, V2 panelW (h - logHeight - 72 - topBarHeight))
 
 leftToggleRect :: Layout -> Rect
 leftToggleRect layout =
@@ -352,7 +389,7 @@ configPanelRect (Layout (V2 w h) logHeight seedWidth) =
       minW = 300
       desiredW = max minW (pad * 2 + seedWidth + buttonW + 20)
       panelX = w - desiredW - 16
-  in Rect (V2 panelX 16, V2 desiredW (h - logHeight - 32))
+  in Rect (V2 panelX (16 + topBarHeight), V2 desiredW (h - logHeight - 32 - topBarHeight))
 
 configTabRects :: Layout -> (Rect, Rect, Rect)
 configTabRects layout =
@@ -432,178 +469,151 @@ configLapseRatePlusRect = configParamPlusRect 6
 configLapseRateBarRect :: Layout -> Rect
 configLapseRateBarRect = configParamBarRect 6
 
-configLatitudeBiasMinusRect :: Layout -> Rect
-configLatitudeBiasMinusRect = configParamMinusRect 7
-
-configLatitudeBiasPlusRect :: Layout -> Rect
-configLatitudeBiasPlusRect = configParamPlusRect 7
-
-configLatitudeBiasBarRect :: Layout -> Rect
-configLatitudeBiasBarRect = configParamBarRect 7
-
 configWindIterationsMinusRect :: Layout -> Rect
-configWindIterationsMinusRect = configParamMinusRect 8
+configWindIterationsMinusRect = configParamMinusRect 7
 
 configWindIterationsPlusRect :: Layout -> Rect
-configWindIterationsPlusRect = configParamPlusRect 8
+configWindIterationsPlusRect = configParamPlusRect 7
 
 configWindIterationsBarRect :: Layout -> Rect
-configWindIterationsBarRect = configParamBarRect 8
+configWindIterationsBarRect = configParamBarRect 7
 
 configMoistureIterationsMinusRect :: Layout -> Rect
-configMoistureIterationsMinusRect = configParamMinusRect 9
+configMoistureIterationsMinusRect = configParamMinusRect 8
 
 configMoistureIterationsPlusRect :: Layout -> Rect
-configMoistureIterationsPlusRect = configParamPlusRect 9
+configMoistureIterationsPlusRect = configParamPlusRect 8
 
 configMoistureIterationsBarRect :: Layout -> Rect
-configMoistureIterationsBarRect = configParamBarRect 9
+configMoistureIterationsBarRect = configParamBarRect 8
 
 configWeatherTickMinusRect :: Layout -> Rect
-configWeatherTickMinusRect = configParamMinusRect 10
+configWeatherTickMinusRect = configParamMinusRect 9
 
 configWeatherTickPlusRect :: Layout -> Rect
-configWeatherTickPlusRect = configParamPlusRect 10
+configWeatherTickPlusRect = configParamPlusRect 9
 
 configWeatherTickBarRect :: Layout -> Rect
-configWeatherTickBarRect = configParamBarRect 10
+configWeatherTickBarRect = configParamBarRect 9
 
 configWeatherPhaseMinusRect :: Layout -> Rect
-configWeatherPhaseMinusRect = configParamMinusRect 11
+configWeatherPhaseMinusRect = configParamMinusRect 10
 
 configWeatherPhasePlusRect :: Layout -> Rect
-configWeatherPhasePlusRect = configParamPlusRect 11
+configWeatherPhasePlusRect = configParamPlusRect 10
 
 configWeatherPhaseBarRect :: Layout -> Rect
-configWeatherPhaseBarRect = configParamBarRect 11
+configWeatherPhaseBarRect = configParamBarRect 10
 
 configWeatherAmplitudeMinusRect :: Layout -> Rect
-configWeatherAmplitudeMinusRect = configParamMinusRect 12
+configWeatherAmplitudeMinusRect = configParamMinusRect 11
 
 configWeatherAmplitudePlusRect :: Layout -> Rect
-configWeatherAmplitudePlusRect = configParamPlusRect 12
+configWeatherAmplitudePlusRect = configParamPlusRect 11
 
 configWeatherAmplitudeBarRect :: Layout -> Rect
-configWeatherAmplitudeBarRect = configParamBarRect 12
+configWeatherAmplitudeBarRect = configParamBarRect 11
 
 configVegBaseMinusRect :: Layout -> Rect
-configVegBaseMinusRect = configParamMinusRect 13
+configVegBaseMinusRect = configParamMinusRect 12
 
 configVegBasePlusRect :: Layout -> Rect
-configVegBasePlusRect = configParamPlusRect 13
+configVegBasePlusRect = configParamPlusRect 12
 
 configVegBaseBarRect :: Layout -> Rect
-configVegBaseBarRect = configParamBarRect 13
+configVegBaseBarRect = configParamBarRect 12
 
 configVegBoostMinusRect :: Layout -> Rect
-configVegBoostMinusRect = configParamMinusRect 14
+configVegBoostMinusRect = configParamMinusRect 13
 
 configVegBoostPlusRect :: Layout -> Rect
-configVegBoostPlusRect = configParamPlusRect 14
+configVegBoostPlusRect = configParamPlusRect 13
 
 configVegBoostBarRect :: Layout -> Rect
-configVegBoostBarRect = configParamBarRect 14
+configVegBoostBarRect = configParamBarRect 13
 
 configVegTempWeightMinusRect :: Layout -> Rect
-configVegTempWeightMinusRect = configParamMinusRect 15
+configVegTempWeightMinusRect = configParamMinusRect 14
 
 configVegTempWeightPlusRect :: Layout -> Rect
-configVegTempWeightPlusRect = configParamPlusRect 15
+configVegTempWeightPlusRect = configParamPlusRect 14
 
 configVegTempWeightBarRect :: Layout -> Rect
-configVegTempWeightBarRect = configParamBarRect 15
+configVegTempWeightBarRect = configParamBarRect 14
 
 configVegPrecipWeightMinusRect :: Layout -> Rect
-configVegPrecipWeightMinusRect = configParamMinusRect 16
+configVegPrecipWeightMinusRect = configParamMinusRect 15
 
 configVegPrecipWeightPlusRect :: Layout -> Rect
-configVegPrecipWeightPlusRect = configParamPlusRect 16
+configVegPrecipWeightPlusRect = configParamPlusRect 15
 
 configVegPrecipWeightBarRect :: Layout -> Rect
-configVegPrecipWeightBarRect = configParamBarRect 16
+configVegPrecipWeightBarRect = configParamBarRect 15
 
 configBoundaryMotionTempMinusRect :: Layout -> Rect
-configBoundaryMotionTempMinusRect = configParamMinusRect 17
+configBoundaryMotionTempMinusRect = configParamMinusRect 16
 
 configBoundaryMotionTempPlusRect :: Layout -> Rect
-configBoundaryMotionTempPlusRect = configParamPlusRect 17
+configBoundaryMotionTempPlusRect = configParamPlusRect 16
 
 configBoundaryMotionTempBarRect :: Layout -> Rect
-configBoundaryMotionTempBarRect = configParamBarRect 17
+configBoundaryMotionTempBarRect = configParamBarRect 16
 
 configBoundaryMotionPrecipMinusRect :: Layout -> Rect
-configBoundaryMotionPrecipMinusRect = configParamMinusRect 18
+configBoundaryMotionPrecipMinusRect = configParamMinusRect 17
 
 configBoundaryMotionPrecipPlusRect :: Layout -> Rect
-configBoundaryMotionPrecipPlusRect = configParamPlusRect 18
+configBoundaryMotionPrecipPlusRect = configParamPlusRect 17
 
 configBoundaryMotionPrecipBarRect :: Layout -> Rect
-configBoundaryMotionPrecipBarRect = configParamBarRect 18
+configBoundaryMotionPrecipBarRect = configParamBarRect 17
 
--- Planet / Slice sliders (climate tab rows 19–25)
+-- Planet / Slice sliders (climate tab rows 18–22)
 
 configPlanetRadiusMinusRect :: Layout -> Rect
-configPlanetRadiusMinusRect = configParamMinusRect 19
+configPlanetRadiusMinusRect = configParamMinusRect 18
 
 configPlanetRadiusPlusRect :: Layout -> Rect
-configPlanetRadiusPlusRect = configParamPlusRect 19
+configPlanetRadiusPlusRect = configParamPlusRect 18
 
 configPlanetRadiusBarRect :: Layout -> Rect
-configPlanetRadiusBarRect = configParamBarRect 19
+configPlanetRadiusBarRect = configParamBarRect 18
 
 configAxialTiltMinusRect :: Layout -> Rect
-configAxialTiltMinusRect = configParamMinusRect 20
+configAxialTiltMinusRect = configParamMinusRect 19
 
 configAxialTiltPlusRect :: Layout -> Rect
-configAxialTiltPlusRect = configParamPlusRect 20
+configAxialTiltPlusRect = configParamPlusRect 19
 
 configAxialTiltBarRect :: Layout -> Rect
-configAxialTiltBarRect = configParamBarRect 20
+configAxialTiltBarRect = configParamBarRect 19
 
 configInsolationMinusRect :: Layout -> Rect
-configInsolationMinusRect = configParamMinusRect 21
+configInsolationMinusRect = configParamMinusRect 20
 
 configInsolationPlusRect :: Layout -> Rect
-configInsolationPlusRect = configParamPlusRect 21
+configInsolationPlusRect = configParamPlusRect 20
 
 configInsolationBarRect :: Layout -> Rect
-configInsolationBarRect = configParamBarRect 21
+configInsolationBarRect = configParamBarRect 20
 
 configSliceLatCenterMinusRect :: Layout -> Rect
-configSliceLatCenterMinusRect = configParamMinusRect 22
+configSliceLatCenterMinusRect = configParamMinusRect 21
 
 configSliceLatCenterPlusRect :: Layout -> Rect
-configSliceLatCenterPlusRect = configParamPlusRect 22
+configSliceLatCenterPlusRect = configParamPlusRect 21
 
 configSliceLatCenterBarRect :: Layout -> Rect
-configSliceLatCenterBarRect = configParamBarRect 22
-
-configSliceLatExtentMinusRect :: Layout -> Rect
-configSliceLatExtentMinusRect = configParamMinusRect 23
-
-configSliceLatExtentPlusRect :: Layout -> Rect
-configSliceLatExtentPlusRect = configParamPlusRect 23
-
-configSliceLatExtentBarRect :: Layout -> Rect
-configSliceLatExtentBarRect = configParamBarRect 23
+configSliceLatCenterBarRect = configParamBarRect 21
 
 configSliceLonCenterMinusRect :: Layout -> Rect
-configSliceLonCenterMinusRect = configParamMinusRect 24
+configSliceLonCenterMinusRect = configParamMinusRect 22
 
 configSliceLonCenterPlusRect :: Layout -> Rect
-configSliceLonCenterPlusRect = configParamPlusRect 24
+configSliceLonCenterPlusRect = configParamPlusRect 22
 
 configSliceLonCenterBarRect :: Layout -> Rect
-configSliceLonCenterBarRect = configParamBarRect 24
-
-configSliceLonExtentMinusRect :: Layout -> Rect
-configSliceLonExtentMinusRect = configParamMinusRect 25
-
-configSliceLonExtentPlusRect :: Layout -> Rect
-configSliceLonExtentPlusRect = configParamPlusRect 25
-
-configSliceLonExtentBarRect :: Layout -> Rect
-configSliceLonExtentBarRect = configParamBarRect 25
+configSliceLonCenterBarRect = configParamBarRect 22
 
 configErosionHydraulicMinusRect :: Layout -> Rect
 configErosionHydraulicMinusRect = configParamMinusRect 0
@@ -1064,27 +1074,34 @@ configSeedLabelRect = leftSeedLabelRect
 configSeedRandomRect :: Layout -> Rect
 configSeedRandomRect = leftSeedRandomRect
 
-configApplyRect :: Layout -> Rect
-configApplyRect layout =
+-- | Config preset save button (top of 4-button stack).
+configPresetSaveRect :: Layout -> Rect
+configPresetSaveRect layout =
   let Rect (V2 x y, V2 w h) = configPanelRect layout
-      baseY = y + h - 40
-  in Rect (V2 (x + 12) (baseY - 64), V2 (w - 24) 24)
+  in Rect (V2 (x + 12) (y + h - 136), V2 (w - 24) 24)
 
-configReplayRect :: Layout -> Rect
-configReplayRect layout =
+-- | Config preset load button (second in 4-button stack).
+configPresetLoadRect :: Layout -> Rect
+configPresetLoadRect layout =
   let Rect (V2 x y, V2 w h) = configPanelRect layout
-      baseY = y + h - 40
-  in Rect (V2 (x + 12) (baseY - 32), V2 (w - 24) 24)
+  in Rect (V2 (x + 12) (y + h - 104), V2 (w - 24) 24)
 
+-- | Config reset button (third in 4-button stack).
 configResetRect :: Layout -> Rect
 configResetRect layout =
+  let Rect (V2 x y, V2 w h) = configPanelRect layout
+  in Rect (V2 (x + 12) (y + h - 72), V2 (w - 24) 24)
+
+-- | Config revert button (bottom of 4-button stack).
+configRevertRect :: Layout -> Rect
+configRevertRect layout =
   let Rect (V2 x y, V2 w h) = configPanelRect layout
   in Rect (V2 (x + 12) (y + h - 40), V2 (w - 24) 24)
 
 configScrollAreaRect :: Layout -> Rect
 configScrollAreaRect layout =
   let Rect (V2 x y, V2 w _) = configPanelRect layout
-      Rect (V2 _ applyY, V2 _ _) = configApplyRect layout
+      Rect (V2 _ applyY, V2 _ _) = configPresetSaveRect layout
       pad = 16
       tabOffset = 80
       barW = 8
@@ -1308,3 +1325,149 @@ menuButtonRect layout index =
       gap = 12
       top = y + pad + index * (buttonH + gap)
   in Rect (V2 (x + pad) top, V2 (w - pad * 2) buttonH)
+
+-- ---------------------------------------------------------------------------
+-- Preset save dialog
+-- ---------------------------------------------------------------------------
+
+-- | Centered overlay for the preset save dialog (280 × 150).
+presetSaveDialogRect :: Layout -> Rect
+presetSaveDialogRect (Layout (V2 w h) _ _) =
+  let dw = 280; dh = 150
+      dx = (w - dw) `div` 2
+      dy = (h - dh) `div` 2
+  in Rect (V2 dx dy, V2 dw dh)
+
+-- | Text input field inside the preset save dialog.
+presetSaveInputRect :: Layout -> Rect
+presetSaveInputRect layout =
+  let Rect (V2 dx dy, V2 dw _) = presetSaveDialogRect layout
+      pad = 16
+  in Rect (V2 (dx + pad) (dy + 40), V2 (dw - pad * 2) 24)
+
+-- | \"Ok\" button in the preset save dialog.
+presetSaveOkRect :: Layout -> Rect
+presetSaveOkRect layout =
+  let Rect (V2 dx dy, V2 dw dh) = presetSaveDialogRect layout
+      pad = 16; btnW = 100; btnH = 28
+  in Rect (V2 (dx + pad) (dy + dh - pad - btnH), V2 btnW btnH)
+
+-- | \"Cancel\" button in the preset save dialog.
+presetSaveCancelRect :: Layout -> Rect
+presetSaveCancelRect layout =
+  let Rect (V2 dx dy, V2 dw dh) = presetSaveDialogRect layout
+      pad = 16; btnW = 100; btnH = 28
+  in Rect (V2 (dx + dw - pad - btnW) (dy + dh - pad - btnH), V2 btnW btnH)
+
+-- ---------------------------------------------------------------------------
+-- Preset load dialog
+-- ---------------------------------------------------------------------------
+
+-- | Centered overlay for the preset load dialog (280 × 320).
+presetLoadDialogRect :: Layout -> Rect
+presetLoadDialogRect (Layout (V2 w h) _ _) =
+  let dw = 280; dh = 320
+      dx = (w - dw) `div` 2
+      dy = (h - dh) `div` 2
+  in Rect (V2 dx dy, V2 dw dh)
+
+-- | Scrollable list area inside the preset load dialog.
+presetLoadListRect :: Layout -> Rect
+presetLoadListRect layout =
+  let Rect (V2 dx dy, V2 dw _) = presetLoadDialogRect layout
+      pad = 16
+  in Rect (V2 (dx + pad) (dy + 40), V2 (dw - pad * 2) 200)
+
+-- | Individual item rect inside the preset load list.
+presetLoadItemRect :: Layout -> Int -> Rect
+presetLoadItemRect layout index =
+  let Rect (V2 lx ly, V2 lw _) = presetLoadListRect layout
+      itemH = 24
+  in Rect (V2 lx (ly + index * itemH), V2 lw itemH)
+
+-- | \"Load\" button in the preset load dialog.
+presetLoadOkRect :: Layout -> Rect
+presetLoadOkRect layout =
+  let Rect (V2 dx dy, V2 _dw dh) = presetLoadDialogRect layout
+      pad = 16; btnW = 100; btnH = 28
+  in Rect (V2 (dx + pad) (dy + dh - pad - btnH), V2 btnW btnH)
+
+-- | \"Cancel\" button in the preset load dialog.
+presetLoadCancelRect :: Layout -> Rect
+presetLoadCancelRect layout =
+  let Rect (V2 dx dy, V2 dw dh) = presetLoadDialogRect layout
+      pad = 16; btnW = 100; btnH = 28
+  in Rect (V2 (dx + dw - pad - btnW) (dy + dh - pad - btnH), V2 btnW btnH)
+
+-- ---------------------------------------------------------------------------
+-- World save dialog
+-- ---------------------------------------------------------------------------
+
+-- | Centered overlay for the world save dialog (300 × 140).
+worldSaveDialogRect :: Layout -> Rect
+worldSaveDialogRect (Layout (V2 w h) _ _) =
+  let dw = 300; dh = 140
+      dx = (w - dw) `div` 2
+      dy = (h - dh) `div` 2
+  in Rect (V2 dx dy, V2 dw dh)
+
+-- | Text input field inside the world save dialog.
+worldSaveInputRect :: Layout -> Rect
+worldSaveInputRect layout =
+  let Rect (V2 dx dy, V2 dw _) = worldSaveDialogRect layout
+      pad = 16
+  in Rect (V2 (dx + pad) (dy + 40), V2 (dw - pad * 2) 24)
+
+-- | \"Save\" button in the world save dialog.
+worldSaveOkRect :: Layout -> Rect
+worldSaveOkRect layout =
+  let Rect (V2 dx dy, V2 _dw dh) = worldSaveDialogRect layout
+      pad = 16; btnW = 100; btnH = 28
+  in Rect (V2 (dx + pad) (dy + dh - pad - btnH), V2 btnW btnH)
+
+-- | \"Cancel\" button in the world save dialog.
+worldSaveCancelRect :: Layout -> Rect
+worldSaveCancelRect layout =
+  let Rect (V2 dx dy, V2 dw dh) = worldSaveDialogRect layout
+      pad = 16; btnW = 100; btnH = 28
+  in Rect (V2 (dx + dw - pad - btnW) (dy + dh - pad - btnH), V2 btnW btnH)
+
+-- ---------------------------------------------------------------------------
+-- World load dialog
+-- ---------------------------------------------------------------------------
+
+-- | Centered overlay for the world load dialog (320 × 360).
+worldLoadDialogRect :: Layout -> Rect
+worldLoadDialogRect (Layout (V2 w h) _ _) =
+  let dw = 320; dh = 360
+      dx = (w - dw) `div` 2
+      dy = (h - dh) `div` 2
+  in Rect (V2 dx dy, V2 dw dh)
+
+-- | Scrollable list area inside the world load dialog.
+worldLoadListRect :: Layout -> Rect
+worldLoadListRect layout =
+  let Rect (V2 dx dy, V2 dw _) = worldLoadDialogRect layout
+      pad = 16
+  in Rect (V2 (dx + pad) (dy + 40), V2 (dw - pad * 2) 240)
+
+-- | Individual item rect inside the world load list.
+worldLoadItemRect :: Layout -> Int -> Rect
+worldLoadItemRect layout index =
+  let Rect (V2 lx ly, V2 lw _) = worldLoadListRect layout
+      itemH = 28
+  in Rect (V2 lx (ly + index * itemH), V2 lw itemH)
+
+-- | \"Load\" button in the world load dialog.
+worldLoadOkRect :: Layout -> Rect
+worldLoadOkRect layout =
+  let Rect (V2 dx dy, V2 _dw dh) = worldLoadDialogRect layout
+      pad = 16; btnW = 100; btnH = 28
+  in Rect (V2 (dx + pad) (dy + dh - pad - btnH), V2 btnW btnH)
+
+-- | \"Cancel\" button in the world load dialog.
+worldLoadCancelRect :: Layout -> Rect
+worldLoadCancelRect layout =
+  let Rect (V2 dx dy, V2 dw dh) = worldLoadDialogRect layout
+      pad = 16; btnW = 100; btnH = 28
+  in Rect (V2 (dx + dw - pad - btnW) (dy + dh - pad - btnH), V2 btnW btnH)

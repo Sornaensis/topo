@@ -5,6 +5,7 @@ import qualified Spec.HexPick
 import qualified Spec.Layout
 import qualified Spec.LogActor
 import qualified Spec.CacheProperties
+import qualified Spec.ConfigPreset
 import qualified Spec.AtlasResultBroker
 import qualified Spec.AtlasScheduleBroker
 import qualified Spec.AtlasScheduler
@@ -17,11 +18,13 @@ import qualified Spec.UiActor
 import qualified Spec.Widgets
 import qualified Spec.WidgetTree
 import qualified Spec.SliderSpec
+import qualified Spec.WorldPersist
 
 main :: IO ()
 main = hspec $ do
   Spec.LogActor.spec
   Spec.CacheProperties.spec
+  Spec.ConfigPreset.spec
   Spec.SliderSpec.spec
   Spec.AtlasResultBroker.spec
   Spec.AtlasScheduleBroker.spec
@@ -36,3 +39,4 @@ main = hspec $ do
   Spec.UiActor.spec
   Spec.Widgets.spec
   Spec.WidgetTree.spec
+  Spec.WorldPersist.spec

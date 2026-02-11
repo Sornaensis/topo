@@ -66,7 +66,6 @@ module Seer.Config.SliderSpec
   , specEquatorTemp
   , specPoleTemp
   , specLapseRate
-  , specLatitudeBias
   , specWindIterations
   , specMoistureIterations
   , specWeatherTick
@@ -82,9 +81,7 @@ module Seer.Config.SliderSpec
   , specAxialTilt
   , specInsolation
   , specSliceLatCenter
-  , specSliceLatExtent
   , specSliceLonCenter
-  , specSliceLonExtent
     -- * Erosion tab specs
   , specErosionHydraulic
   , specErosionThermal
@@ -247,8 +244,6 @@ tooltipForWidget wid = case wid of
   WidgetConfigPoleTempPlus           -> tip specPoleTemp
   WidgetConfigLapseRateMinus         -> tip specLapseRate
   WidgetConfigLapseRatePlus          -> tip specLapseRate
-  WidgetConfigLatitudeBiasMinus      -> tip specLatitudeBias
-  WidgetConfigLatitudeBiasPlus       -> tip specLatitudeBias
   WidgetConfigWindIterationsMinus    -> tip specWindIterations
   WidgetConfigWindIterationsPlus     -> tip specWindIterations
   WidgetConfigMoistureIterationsMinus -> tip specMoistureIterations
@@ -279,12 +274,8 @@ tooltipForWidget wid = case wid of
   WidgetConfigInsolationPlus         -> tip specInsolation
   WidgetConfigSliceLatCenterMinus    -> tip specSliceLatCenter
   WidgetConfigSliceLatCenterPlus     -> tip specSliceLatCenter
-  WidgetConfigSliceLatExtentMinus    -> tip specSliceLatExtent
-  WidgetConfigSliceLatExtentPlus     -> tip specSliceLatExtent
   WidgetConfigSliceLonCenterMinus    -> tip specSliceLonCenter
   WidgetConfigSliceLonCenterPlus     -> tip specSliceLonCenter
-  WidgetConfigSliceLonExtentMinus    -> tip specSliceLonExtent
-  WidgetConfigSliceLonExtentPlus     -> tip specSliceLonExtent
   -- Erosion tab
   WidgetConfigErosionHydraulicMinus  -> tip specErosionHydraulic
   WidgetConfigErosionHydraulicPlus   -> tip specErosionHydraulic
@@ -514,10 +505,6 @@ specLapseRate :: SliderSpec
 specLapseRate = SliderSpec
   "Lapse Rate" "Temperature decrease per unit of elevation" 0 1 False
 
-specLatitudeBias :: SliderSpec
-specLatitudeBias = SliderSpec
-  "Latitude Bias" "Shift of the temperature gradient north or south" (-1) 1 False
-
 specWindIterations :: SliderSpec
 specWindIterations = SliderSpec
   "Wind Iter" "Number of wind simulation iterations" 1 8 True
@@ -578,17 +565,9 @@ specSliceLatCenter :: SliderSpec
 specSliceLatCenter = SliderSpec
   "Lat Center" "Latitude of the world-slice centre in degrees" (-90) 90 False
 
-specSliceLatExtent :: SliderSpec
-specSliceLatExtent = SliderSpec
-  "Lat Extent" "Latitude span of the world slice in degrees" 0.1 180 False
-
 specSliceLonCenter :: SliderSpec
 specSliceLonCenter = SliderSpec
   "Lon Center" "Longitude of the world-slice centre in degrees" (-180) 180 False
-
-specSliceLonExtent :: SliderSpec
-specSliceLonExtent = SliderSpec
-  "Lon Extent" "Longitude span of the world slice in degrees" 0.1 360 False
 
 ------------------------------------------------------------------------
 -- Erosion tab specs

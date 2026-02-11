@@ -23,9 +23,10 @@ data WidgetId
   | WidgetConfigTabTerrain
   | WidgetConfigTabClimate
   | WidgetConfigTabErosion
-  | WidgetConfigApply
-  | WidgetConfigReplay
+  | WidgetConfigPresetSave
+  | WidgetConfigPresetLoad
   | WidgetConfigReset
+  | WidgetConfigRevert
   | WidgetConfigWaterMinus
   | WidgetConfigWaterPlus
   | WidgetConfigEvapMinus
@@ -40,8 +41,6 @@ data WidgetId
   | WidgetConfigPoleTempPlus
   | WidgetConfigLapseRateMinus
   | WidgetConfigLapseRatePlus
-  | WidgetConfigLatitudeBiasMinus
-  | WidgetConfigLatitudeBiasPlus
   | WidgetConfigWindIterationsMinus
   | WidgetConfigWindIterationsPlus
   | WidgetConfigMoistureIterationsMinus
@@ -72,12 +71,8 @@ data WidgetId
   | WidgetConfigInsolationPlus
   | WidgetConfigSliceLatCenterMinus
   | WidgetConfigSliceLatCenterPlus
-  | WidgetConfigSliceLatExtentMinus
-  | WidgetConfigSliceLatExtentPlus
   | WidgetConfigSliceLonCenterMinus
   | WidgetConfigSliceLonCenterPlus
-  | WidgetConfigSliceLonExtentMinus
-  | WidgetConfigSliceLonExtentPlus
   | WidgetConfigErosionHydraulicMinus
   | WidgetConfigErosionHydraulicPlus
   | WidgetConfigErosionThermalMinus
@@ -196,6 +191,20 @@ data WidgetId
   | WidgetMenuSave
   | WidgetMenuLoad
   | WidgetMenuExit
+    -- Preset save dialog
+  | WidgetPresetSaveOk
+  | WidgetPresetSaveCancel
+    -- Preset load dialog
+  | WidgetPresetLoadOk
+  | WidgetPresetLoadCancel
+  | WidgetPresetLoadItem
+    -- World save dialog
+  | WidgetWorldSaveOk
+  | WidgetWorldSaveCancel
+    -- World load dialog
+  | WidgetWorldLoadOk
+  | WidgetWorldLoadCancel
+  | WidgetWorldLoadItem
   deriving (Eq, Show)
 
 data Widget = Widget
@@ -221,9 +230,10 @@ buildWidgets layout =
      , Widget WidgetConfigTabTerrain tabTerrain
      , Widget WidgetConfigTabClimate tabClimate
      , Widget WidgetConfigTabErosion tabErosion
-     , Widget WidgetConfigApply (configApplyRect layout)
-    , Widget WidgetConfigReplay (configReplayRect layout)
+     , Widget WidgetConfigPresetSave (configPresetSaveRect layout)
+     , Widget WidgetConfigPresetLoad (configPresetLoadRect layout)
      , Widget WidgetConfigReset (configResetRect layout)
+     , Widget WidgetConfigRevert (configRevertRect layout)
        , Widget WidgetConfigWaterMinus (configWaterMinusRect layout)
        , Widget WidgetConfigWaterPlus (configWaterPlusRect layout)
        , Widget WidgetConfigEvapMinus (configEvapMinusRect layout)
@@ -238,8 +248,6 @@ buildWidgets layout =
       , Widget WidgetConfigPoleTempPlus (configPoleTempPlusRect layout)
       , Widget WidgetConfigLapseRateMinus (configLapseRateMinusRect layout)
       , Widget WidgetConfigLapseRatePlus (configLapseRatePlusRect layout)
-      , Widget WidgetConfigLatitudeBiasMinus (configLatitudeBiasMinusRect layout)
-      , Widget WidgetConfigLatitudeBiasPlus (configLatitudeBiasPlusRect layout)
       , Widget WidgetConfigWindIterationsMinus (configWindIterationsMinusRect layout)
       , Widget WidgetConfigWindIterationsPlus (configWindIterationsPlusRect layout)
       , Widget WidgetConfigMoistureIterationsMinus (configMoistureIterationsMinusRect layout)
@@ -270,12 +278,8 @@ buildWidgets layout =
       , Widget WidgetConfigInsolationPlus (configInsolationPlusRect layout)
       , Widget WidgetConfigSliceLatCenterMinus (configSliceLatCenterMinusRect layout)
       , Widget WidgetConfigSliceLatCenterPlus (configSliceLatCenterPlusRect layout)
-      , Widget WidgetConfigSliceLatExtentMinus (configSliceLatExtentMinusRect layout)
-      , Widget WidgetConfigSliceLatExtentPlus (configSliceLatExtentPlusRect layout)
       , Widget WidgetConfigSliceLonCenterMinus (configSliceLonCenterMinusRect layout)
       , Widget WidgetConfigSliceLonCenterPlus (configSliceLonCenterPlusRect layout)
-      , Widget WidgetConfigSliceLonExtentMinus (configSliceLonExtentMinusRect layout)
-      , Widget WidgetConfigSliceLonExtentPlus (configSliceLonExtentPlusRect layout)
       , Widget WidgetConfigErosionHydraulicMinus (configErosionHydraulicMinusRect layout)
       , Widget WidgetConfigErosionHydraulicPlus (configErosionHydraulicPlusRect layout)
       , Widget WidgetConfigErosionThermalMinus (configErosionThermalMinusRect layout)
@@ -394,6 +398,18 @@ buildWidgets layout =
     , Widget WidgetMenuSave (menuSaveRect layout)
     , Widget WidgetMenuLoad (menuLoadRect layout)
     , Widget WidgetMenuExit (menuExitRect layout)
+      -- Preset save dialog
+    , Widget WidgetPresetSaveOk (presetSaveOkRect layout)
+    , Widget WidgetPresetSaveCancel (presetSaveCancelRect layout)
+      -- Preset load dialog
+    , Widget WidgetPresetLoadOk (presetLoadOkRect layout)
+    , Widget WidgetPresetLoadCancel (presetLoadCancelRect layout)
+      -- World save dialog
+    , Widget WidgetWorldSaveOk (worldSaveOkRect layout)
+    , Widget WidgetWorldSaveCancel (worldSaveCancelRect layout)
+      -- World load dialog
+    , Widget WidgetWorldLoadOk (worldLoadOkRect layout)
+    , Widget WidgetWorldLoadCancel (worldLoadCancelRect layout)
      ]
 
 -- | Build full-row tooltip hit areas for config sliders, grouped by tab.
@@ -464,25 +480,22 @@ buildSliderRowWidgets layout = (terrain, climate, erosion)
       , row WidgetConfigEquatorTempMinus 4
       , row WidgetConfigPoleTempMinus 5
       , row WidgetConfigLapseRateMinus 6
-      , row WidgetConfigLatitudeBiasMinus 7
-      , row WidgetConfigWindIterationsMinus 8
-      , row WidgetConfigMoistureIterationsMinus 9
-      , row WidgetConfigWeatherTickMinus 10
-      , row WidgetConfigWeatherPhaseMinus 11
-      , row WidgetConfigWeatherAmplitudeMinus 12
-      , row WidgetConfigVegBaseMinus 13
-      , row WidgetConfigVegBoostMinus 14
-      , row WidgetConfigVegTempWeightMinus 15
-      , row WidgetConfigVegPrecipWeightMinus 16
-      , row WidgetConfigBoundaryMotionTempMinus 17
-      , row WidgetConfigBoundaryMotionPrecipMinus 18
-      , row WidgetConfigPlanetRadiusMinus 19
-      , row WidgetConfigAxialTiltMinus 20
-      , row WidgetConfigInsolationMinus 21
-      , row WidgetConfigSliceLatCenterMinus 22
-      , row WidgetConfigSliceLatExtentMinus 23
-      , row WidgetConfigSliceLonCenterMinus 24
-      , row WidgetConfigSliceLonExtentMinus 25
+      , row WidgetConfigWindIterationsMinus 7
+      , row WidgetConfigMoistureIterationsMinus 8
+      , row WidgetConfigWeatherTickMinus 9
+      , row WidgetConfigWeatherPhaseMinus 10
+      , row WidgetConfigWeatherAmplitudeMinus 11
+      , row WidgetConfigVegBaseMinus 12
+      , row WidgetConfigVegBoostMinus 13
+      , row WidgetConfigVegTempWeightMinus 14
+      , row WidgetConfigVegPrecipWeightMinus 15
+      , row WidgetConfigBoundaryMotionTempMinus 16
+      , row WidgetConfigBoundaryMotionPrecipMinus 17
+      , row WidgetConfigPlanetRadiusMinus 18
+      , row WidgetConfigAxialTiltMinus 19
+      , row WidgetConfigInsolationMinus 20
+      , row WidgetConfigSliceLatCenterMinus 21
+      , row WidgetConfigSliceLonCenterMinus 22
       ]
 
     erosion =

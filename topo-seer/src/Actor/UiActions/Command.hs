@@ -14,9 +14,7 @@ import Actor.AtlasCache (AtlasKey(..))
 import Actor.AtlasManager (AtlasJob(..), AtlasManager, enqueueAtlasBuild)
 import Actor.Data
   ( Data
-  , DataSnapshot(..)
   , TerrainSnapshot(..)
-  , getDataSnapshot
   , getTerrainSnapshot
   )
 import Actor.Log (Log, LogEntry(..), LogLevel(..), LogSnapshotReply, appendLog, requestLogSnapshot)
@@ -71,7 +69,6 @@ import Actor.UI
   , setUiEdgeDepthFalloff
   , setUiGenerating
   , setUiLapseRate
-  , setUiLatitudeBias
   , setUiMoistureIterations
   , setUiPlateBiasCenter
   , setUiPlateBiasEdge
@@ -101,9 +98,7 @@ import Actor.UI
   , setUiAxialTilt
   , setUiInsolation
   , setUiSliceLatCenter
-  , setUiSliceLatExtent
   , setUiSliceLonCenter
-  , setUiSliceLonExtent
   , setUiTrenchDepth
   , setUiUplift
   , setUiVegBase
@@ -118,7 +113,9 @@ import Actor.UI
   , setUiWeatherTick
   , setUiWindDiffuse
   , setUiWindIterations
+  , setUiWorldConfig
   )
+import Seer.Config.Preset (presetFromUi, applyPresetToUi)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import GHC.Clock (getMonotonicTimeNSec)
@@ -131,9 +128,8 @@ import Topo.WorldGen (defaultWorldGenConfig)
 -- | UI-triggered actions that can be executed asynchronously.
 data UiAction
   = UiActionGenerate
-  | UiActionApply
-  | UiActionReplay
   | UiActionReset
+  | UiActionRevert
   | UiActionSetViewMode !ViewMode
   | UiActionRebuildAtlas !ViewMode
   deriving (Eq, Show)
@@ -155,13 +151,11 @@ runUiAction :: UiActionRequest -> IO ()
 runUiAction req =
   case uarAction req of
     UiActionGenerate ->
-      logTimed req "Generate" (startGeneration req)
-    UiActionApply ->
-      logTimed req "Config Apply" (startGeneration req >> rebuildAtlas req)
-    UiActionReplay ->
-      logTimed req "Config Replay" (replayLastSeed req)
+      logTimed req "Generate" (startGeneration req >> rebuildAtlas req)
     UiActionReset ->
       logTimed req "Config Reset" (resetConfig req)
+    UiActionRevert ->
+      logTimed req "Config Revert" (revertConfig req)
     UiActionSetViewMode mode ->
       logTimed req ("View " <> viewModeLabel mode) (setViewMode req mode >> rebuildAtlasFor req mode)
     UiActionRebuildAtlas mode ->
@@ -207,6 +201,8 @@ startGeneration req = do
   setUiGenerating uiHandle True
   -- Commit the pending water level so atlas/terrain caches use the applied value
   setUiRenderWaterLevel uiHandle (uiWaterLevel uiSnap)
+  -- Capture config snapshot for revert support
+  setUiWorldConfig uiHandle (Just (presetFromUi uiSnap "world"))
   requestUiSnapshot uiHandle (replyTo @UiSnapshotReply (uarSnapshotHandle req))
   appendLog logHandle (LogEntry LogInfo (configSummary uiSnap))
   requestLogSnapshot logHandle (replyTo @LogSnapshotReply (uarSnapshotHandle req))
@@ -242,14 +238,19 @@ setViewMode :: UiActionRequest -> ViewMode -> IO ()
 setViewMode req mode =
   setUiViewMode (uarUiHandle req) mode
 
-replayLastSeed :: UiActionRequest -> IO ()
-replayLastSeed req = do
-  dataSnap <- getDataSnapshot (uarDataHandle req)
-  case dsLastSeed dataSnap of
-    Just seed -> do
-      setUiSeed (uarUiHandle req) seed
-      setUiSeedInput (uarUiHandle req) (Text.pack (show seed))
-    Nothing -> pure ()
+-- | Revert config sliders to the values captured at the last generation.
+-- No-op if no world has been generated yet.
+revertConfig :: UiActionRequest -> IO ()
+revertConfig req = do
+  let uiHandle = uarUiHandle req
+      logHandle = uarLogHandle req
+  uiSnap <- getUiSnapshot uiHandle
+  case uiWorldConfig uiSnap of
+    Just preset -> do
+      applyPresetToUi preset uiHandle
+      appendLog logHandle (LogEntry LogInfo "Config reverted to last generation")
+    Nothing ->
+      appendLog logHandle (LogEntry LogWarn "No world config to revert to")
 
 resetConfig :: UiActionRequest -> IO ()
 resetConfig req = do
@@ -317,7 +318,6 @@ resetConfig req = do
   setUiPlateBiasEdge uiHandle 0.5
   setUiPlateBiasNorth uiHandle 0.5
   setUiPlateBiasSouth uiHandle 0.5
-  setUiLatitudeBias uiHandle 0.5
   setUiWindIterations uiHandle 0.5
   setUiMoistureIterations uiHandle 0.5
   setUiBoundaryMotionTemp uiHandle 0.5
@@ -333,6 +333,4 @@ resetConfig req = do
   setUiAxialTilt uiHandle 0.5209
   setUiInsolation uiHandle 0.5
   setUiSliceLatCenter uiHandle 0.5
-  setUiSliceLatExtent uiHandle 0.2222
   setUiSliceLonCenter uiHandle 0.5
-  setUiSliceLonExtent uiHandle 0.1666

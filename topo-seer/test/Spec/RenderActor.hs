@@ -8,7 +8,7 @@ import Test.Hspec
 import Actor.Data (DataSnapshot(..), TerrainSnapshot(..))
 import Actor.Log (LogLevel(..), LogSnapshot(..))
 import Actor.Render
-import Actor.UI (ConfigTab(..), UiState(..), ViewMode(..), emptyUiState)
+import Actor.UI (ConfigTab(..), UiMenuMode(..), UiState(..), ViewMode(..), emptyUiState)
 import qualified Data.Text as Text
 
 withSystem :: (ActorSystem -> IO a) -> IO a
@@ -25,7 +25,7 @@ spec = describe "RenderActor" $ do
           , uiChunkSize = 64
           , uiShowConfig = True
           , uiConfigTab = ConfigClimate
-          , uiShowMenu = False
+          , uiMenuMode = MenuNone
           , uiContextHex = Nothing
           , uiContextPos = Nothing
           , uiSeedEditing = False

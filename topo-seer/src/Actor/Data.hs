@@ -19,6 +19,7 @@ module Actor.Data
   , requestDataSnapshot
   , getDataSnapshot
   , getTerrainSnapshot
+  , replaceTerrainData
   ) where
 
 import Control.Exception (evaluate)
@@ -29,6 +30,8 @@ import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
 import Hyperspace.Actor.Spec (OpTag(..))
 import Topo (ChunkId(..), ClimateChunk, TerrainChunk, WeatherChunk)
+import Topo.World (TerrainWorld(..))
+import Topo.Types (WorldConfig(..))
 
 data DataSnapshot = DataSnapshot
   { dsTerrainChunks :: !Int
@@ -187,3 +190,20 @@ getTerrainSnapshot handle =
 requestDataSnapshot :: ActorHandle Data (Protocol Data) -> ReplyTo DataSnapshotReply -> IO ()
 requestDataSnapshot handle replyTo =
   castReply @"snapshotAsync" handle replyTo #snapshotAsync ()
+
+-- | Replace all terrain data from a loaded 'TerrainWorld'.
+--
+-- Sends terrain, climate, and weather chunk data as three separate
+-- messages. The terrain message increments 'tsVersion', triggering
+-- atlas/cache invalidation.  Also sets the terrain chunk count so
+-- the render pipeline's @dataReady@ guard passes.
+replaceTerrainData :: ActorHandle Data (Protocol Data) -> TerrainWorld -> IO ()
+replaceTerrainData handle world = do
+  let size = wcChunkSize (twConfig world)
+      toList m = map (\(k, v) -> (ChunkId k, v)) (IntMap.toList m)
+  setTerrainChunkData handle size (toList (twTerrain world))
+  setClimateChunkData handle size (toList (twClimate world))
+  setWeatherChunkData handle size (toList (twWeather world))
+  -- Update the chunk count so dsTerrainChunks matches the IntMap size
+  -- and the render pipeline considers the data ready.
+  setTerrainChunkCount handle (IntMap.size (twTerrain world))

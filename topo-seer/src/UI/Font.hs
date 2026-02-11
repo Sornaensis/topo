@@ -12,6 +12,7 @@ import Control.Exception (SomeException, try)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import qualified Data.Text as Text
 import Data.Word (Word8)
 import Foreign.C.Types (CInt)
 import Linear (V2(..), V4(..))
@@ -66,12 +67,17 @@ destroyFontCache cache = do
   mapM_ (SDL.destroyTexture . ctTexture) (Map.elems cached)
   Font.free (fcFont cache)
 
-getCachedText :: FontCache -> V4 Word8 -> Text -> IO CachedText
+-- | Render text to a cached texture.  Returns 'Nothing' for empty or
+-- whitespace-only input (SDL's @TTF_RenderUTF8_Blended@ rejects
+-- zero-width text).
+getCachedText :: FontCache -> V4 Word8 -> Text -> IO (Maybe CachedText)
+getCachedText _cache _color text
+  | Text.null (Text.strip text) = pure Nothing
 getCachedText cache color text = do
   let key = CacheKey (text, color)
   cached <- readIORef (fcCache cache)
   case Map.lookup key cached of
-    Just hit -> pure hit
+    Just hit -> pure (Just hit)
     Nothing -> do
       surface <- Font.blended (fcFont cache) color text
       texture <- SDL.createTextureFromSurface (fcRenderer cache) surface
@@ -82,18 +88,24 @@ getCachedText cache color text = do
           h = fromIntegral (SDL.textureHeight info)
           entry = CachedText texture (V2 w h)
       writeIORef (fcCache cache) (Map.insert key entry cached)
-      pure entry
+      pure (Just entry)
 
 drawText :: FontCache -> V4 Word8 -> V2 Int -> Text -> IO ()
 drawText cache color (V2 x y) text = do
-  CachedText texture (V2 w h) <- getCachedText cache color text
-  let dst = SDL.Rectangle (SDL.P (V2 (fromIntegral x) (fromIntegral y))) (V2 w h)
-  SDL.copy (fcRenderer cache) texture Nothing (Just dst)
+  result <- getCachedText cache color text
+  case result of
+    Nothing -> pure ()
+    Just (CachedText texture (V2 w h)) -> do
+      let dst = SDL.Rectangle (SDL.P (V2 (fromIntegral x) (fromIntegral y))) (V2 w h)
+      SDL.copy (fcRenderer cache) texture Nothing (Just dst)
 
 textSize :: FontCache -> V4 Word8 -> Text -> IO (V2 Int)
 textSize cache color text = do
-  CachedText _ (V2 w h) <- getCachedText cache color text
-  pure (V2 (fromIntegral w) (fromIntegral h))
+  result <- getCachedText cache color text
+  case result of
+    Nothing -> pure (V2 0 0)
+    Just (CachedText _ (V2 w h)) ->
+      pure (V2 (fromIntegral w) (fromIntegral h))
 
 drawTextCentered :: FontCache -> V4 Word8 -> SDL.Rectangle CInt -> Text -> IO ()
 drawTextCentered cache color (SDL.Rectangle (SDL.P (V2 x y)) (V2 w h)) text = do

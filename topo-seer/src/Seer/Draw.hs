@@ -15,6 +15,11 @@ module Seer.Draw
   , drawLogLines
   , drawLogScrollbar
   , drawEscapeMenu
+  , drawPresetSaveDialog
+  , drawPresetLoadDialog
+  , drawWorldSaveDialog
+  , drawWorldLoadDialog
+  , drawTopBar
   , drawConfigPanel
   , drawChunkControl
   , drawSeedControl
@@ -27,7 +32,7 @@ module Seer.Draw
 
 import Actor.Data (DataSnapshot(..), TerrainSnapshot(..))
 import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshot(..))
-import Actor.UI (ConfigTab(..), LeftTab(..), UiState(..), ViewMode(..))
+import Actor.UI (ConfigTab(..), LeftTab(..), UiMenuMode(..), UiState(..), ViewMode(..))
 import Control.Monad (when)
 import Data.Int (Int32)
 import Data.IntMap.Strict (IntMap)
@@ -36,17 +41,20 @@ import Data.List (sort)
 import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Time.Format (defaultTimeLocale, formatTime)
 import Data.Word (Word8)
 import Foreign.C.Types (CInt)
 import Linear (V2(..), V4(..))
 import qualified SDL
 import Seer.Config (mapIntRange)
 import Seer.Config.SliderSpec
+import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Topo (BiomeId, ChunkCoord(..), ChunkId(..), ClimateChunk(..), TerrainChunk(..), TileCoord(..), TileIndex(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord, tileIndex)
 import UI.Font (FontCache, textSize)
 import UI.HexPick (axialToScreen)
 import UI.Layout
 import UI.Widgets (Rect(..))
+import Seer.Draw.Dialog (drawDialogButton, drawDialogPanel, drawDialogTitle, drawListSelection, drawTextInputField)
 import UI.WidgetsDraw (drawCentered, drawLabelAbove, drawLabelLeft, drawLeft, drawTextLine, rectToSDL)
 import qualified Data.Vector.Unboxed as U
 
@@ -225,26 +233,107 @@ drawLogScrollbar renderer logSnap (Rect (V2 x y, V2 w h)) = do
 
 drawEscapeMenu :: SDL.Renderer -> Maybe FontCache -> UiState -> Layout -> IO ()
 drawEscapeMenu renderer fontCache ui layout =
-  if uiShowMenu ui
-    then do
+  case uiMenuMode ui of
+    MenuEscape -> do
       let panel = menuPanelRect layout
           saveRect = menuSaveRect layout
           loadRect = menuLoadRect layout
           exitRect = menuExitRect layout
       SDL.rendererDrawColor renderer SDL.$= V4 20 25 35 230
       SDL.fillRect renderer (Just (rectToSDL panel))
-      drawMenuButton renderer fontCache saveRect "Save" False
-      drawMenuButton renderer fontCache loadRect "Load" False
-      drawMenuButton renderer fontCache exitRect "Exit" True
-  else pure ()
+      drawDialogButton renderer fontCache saveRect "Save" True
+      drawDialogButton renderer fontCache loadRect "Load" True
+      drawDialogButton renderer fontCache exitRect "Exit" True
+    _ -> pure ()
 
-drawMenuButton :: SDL.Renderer -> Maybe FontCache -> Rect -> Text -> Bool -> IO ()
-drawMenuButton renderer fontCache rect label isEnabled = do
-  let fill = if isEnabled then V4 70 90 120 255 else V4 55 55 65 255
-      textColor = if isEnabled then V4 230 230 235 255 else V4 140 140 150 255
-  SDL.rendererDrawColor renderer SDL.$= fill
-  SDL.fillRect renderer (Just (rectToSDL rect))
-  drawCentered fontCache textColor rect label
+-- | Draw the preset save dialog (text input + Ok/Cancel).
+drawPresetSaveDialog :: SDL.Renderer -> Maybe FontCache -> UiState -> Layout -> IO ()
+drawPresetSaveDialog renderer fontCache ui layout =
+  case uiMenuMode ui of
+    MenuPresetSave -> do
+      let dialog  = presetSaveDialogRect layout
+          inputR  = presetSaveInputRect layout
+          okR     = presetSaveOkRect layout
+          cancelR = presetSaveCancelRect layout
+      drawDialogPanel renderer dialog
+      drawDialogTitle renderer fontCache dialog "Save Preset"
+      drawTextInputField renderer fontCache inputR (uiPresetInput ui)
+      drawDialogButton renderer fontCache okR "Ok" True
+      drawDialogButton renderer fontCache cancelR "Cancel" True
+    _ -> pure ()
+
+-- | Draw the preset load dialog (list + Load/Cancel).
+drawPresetLoadDialog :: SDL.Renderer -> Maybe FontCache -> UiState -> Layout -> IO ()
+drawPresetLoadDialog renderer fontCache ui layout =
+  case uiMenuMode ui of
+    MenuPresetLoad -> do
+      let dialog  = presetLoadDialogRect layout
+          listR   = presetLoadListRect layout
+          okR     = presetLoadOkRect layout
+          cancelR = presetLoadCancelRect layout
+          items   = uiPresetList ui
+          sel     = uiPresetSelected ui
+      drawDialogPanel renderer dialog
+      drawDialogTitle renderer fontCache dialog "Load Preset"
+      drawListSelection renderer fontCache listR 24 8 sel
+        (presetLoadItemRect layout) (\_ name -> name) items
+      drawDialogButton renderer fontCache okR "Load" True
+      drawDialogButton renderer fontCache cancelR "Cancel" True
+    _ -> pure ()
+
+-- | Draw the world save dialog (text input + Save/Cancel).
+drawWorldSaveDialog :: SDL.Renderer -> Maybe FontCache -> UiState -> Layout -> IO ()
+drawWorldSaveDialog renderer fontCache ui layout =
+  case uiMenuMode ui of
+    MenuWorldSave -> do
+      let dialog  = worldSaveDialogRect layout
+          inputR  = worldSaveInputRect layout
+          okR     = worldSaveOkRect layout
+          cancelR = worldSaveCancelRect layout
+      drawDialogPanel renderer dialog
+      drawDialogTitle renderer fontCache dialog "Save World"
+      drawTextInputField renderer fontCache inputR (uiWorldSaveInput ui)
+      drawDialogButton renderer fontCache okR "Save" True
+      drawDialogButton renderer fontCache cancelR "Cancel" True
+    _ -> pure ()
+
+-- | Draw the world load dialog (list + Load/Cancel).
+drawWorldLoadDialog :: SDL.Renderer -> Maybe FontCache -> UiState -> Layout -> IO ()
+drawWorldLoadDialog renderer fontCache ui layout =
+  case uiMenuMode ui of
+    MenuWorldLoad -> do
+      let dialog  = worldLoadDialogRect layout
+          listR   = worldLoadListRect layout
+          okR     = worldLoadOkRect layout
+          cancelR = worldLoadCancelRect layout
+          items   = uiWorldList ui
+          sel     = uiWorldSelected ui
+      drawDialogPanel renderer dialog
+      drawDialogTitle renderer fontCache dialog "Load World"
+      drawListSelection renderer fontCache listR 28 8 sel
+        (worldLoadItemRect layout) worldLoadLabel items
+      let hasItems = not (null items)
+      drawDialogButton renderer fontCache okR "Load" hasItems
+      drawDialogButton renderer fontCache cancelR "Cancel" True
+    _ -> pure ()
+
+-- | Format a world manifest entry for display in the load list.
+worldLoadLabel :: Int -> WorldSaveManifest -> Text
+worldLoadLabel _i manifest =
+  wsmName manifest
+    <> " (seed " <> Text.pack (show (wsmSeed manifest))
+    <> ", " <> Text.pack (formatTime defaultTimeLocale "%Y-%m-%d" (wsmCreatedAt manifest))
+    <> ")"
+
+-- | Draw the top bar showing the current world name.
+drawTopBar :: SDL.Renderer -> Maybe FontCache -> UiState -> Layout -> IO ()
+drawTopBar renderer fontCache ui layout = do
+  let bar = topBarRect layout
+      Rect (V2 bx by, V2 bw bh) = bar
+      textRect = Rect (V2 (bx + 16) by, V2 (bw - 32) bh)
+  SDL.rendererDrawColor renderer SDL.$= V4 25 30 42 230
+  SDL.fillRect renderer (Just (rectToSDL bar))
+  drawLeft fontCache (V4 200 210 225 255) textRect (uiWorldName ui)
 
 drawConfigPanel
   :: SDL.Renderer
@@ -256,9 +345,7 @@ drawConfigPanel
   -> Rect
   -> Rect
   -> Rect
-  -> (Rect, Rect, Rect)
-  -> (Rect, Rect, Rect)
-  -> (Rect, Rect, Rect)
+  -> Rect
   -> (Rect, Rect, Rect)
   -> (Rect, Rect, Rect)
   -> (Rect, Rect, Rect)
@@ -332,7 +419,7 @@ drawConfigPanel
   -> (Rect, Rect, Rect)
   -> (Rect, Rect, Rect)
   -> IO ()
-drawConfigPanel renderer ui rect (tabTerrain, tabClimate, tabErosion) applyRect replayRect resetRect scrollAreaRect scrollBarRect
+drawConfigPanel renderer ui rect (tabTerrain, tabClimate, tabErosion) presetSaveRect presetLoadRect resetRect revertRect scrollAreaRect scrollBarRect
   (waterMinus, waterBar, waterPlus)
   (evapMinus, evapBar, evapPlus)
   (rainShadowMinus, rainShadowBar, rainShadowPlus)
@@ -340,7 +427,6 @@ drawConfigPanel renderer ui rect (tabTerrain, tabClimate, tabErosion) applyRect 
   (equatorTempMinus, equatorTempBar, equatorTempPlus)
   (poleTempMinus, poleTempBar, poleTempPlus)
   (lapseRateMinus, lapseRateBar, lapseRatePlus)
-  (latitudeBiasMinus, latitudeBiasBar, latitudeBiasPlus)
   (windIterationsMinus, windIterationsBar, windIterationsPlus)
   (moistureIterationsMinus, moistureIterationsBar, moistureIterationsPlus)
   (weatherTickMinus, weatherTickBar, weatherTickPlus)
@@ -356,9 +442,7 @@ drawConfigPanel renderer ui rect (tabTerrain, tabClimate, tabErosion) applyRect 
   (axialTiltMinus, axialTiltBar, axialTiltPlus)
   (insolationMinus, insolationBar, insolationPlus)
   (sliceLatCenterMinus, sliceLatCenterBar, sliceLatCenterPlus)
-  (sliceLatExtentMinus, sliceLatExtentBar, sliceLatExtentPlus)
   (sliceLonCenterMinus, sliceLonCenterBar, sliceLonCenterPlus)
-  (sliceLonExtentMinus, sliceLonExtentBar, sliceLonExtentPlus)
   (genScaleMinus, genScaleBar, genScalePlus)
   (genCoordScaleMinus, genCoordScaleBar, genCoordScalePlus)
   (genOffsetXMinus, genOffsetXBar, genOffsetXPlus)
@@ -483,7 +567,6 @@ drawConfigPanel renderer ui rect (tabTerrain, tabClimate, tabErosion) applyRect 
           drawConfigSlider renderer (uiEquatorTemp ui) (scrollRect equatorTempMinus) (scrollRect equatorTempBar) (scrollRect equatorTempPlus) (V4 180 120 90 255)
           drawConfigSlider renderer (uiPoleTemp ui) (scrollRect poleTempMinus) (scrollRect poleTempBar) (scrollRect poleTempPlus) (V4 90 150 200 255)
           drawConfigSlider renderer (uiLapseRate ui) (scrollRect lapseRateMinus) (scrollRect lapseRateBar) (scrollRect lapseRatePlus) (V4 120 120 160 255)
-          drawConfigSlider renderer (uiLatitudeBias ui) (scrollRect latitudeBiasMinus) (scrollRect latitudeBiasBar) (scrollRect latitudeBiasPlus) (V4 140 120 180 255)
           drawConfigSlider renderer (uiWindIterations ui) (scrollRect windIterationsMinus) (scrollRect windIterationsBar) (scrollRect windIterationsPlus) (V4 120 140 200 255)
           drawConfigSlider renderer (uiMoistureIterations ui) (scrollRect moistureIterationsMinus) (scrollRect moistureIterationsBar) (scrollRect moistureIterationsPlus) (V4 120 150 160 255)
           drawConfigSlider renderer (uiWeatherTick ui) (scrollRect weatherTickMinus) (scrollRect weatherTickBar) (scrollRect weatherTickPlus) (V4 140 120 140 255)
@@ -499,9 +582,7 @@ drawConfigPanel renderer ui rect (tabTerrain, tabClimate, tabErosion) applyRect 
           drawConfigSlider renderer (uiAxialTilt ui) (scrollRect axialTiltMinus) (scrollRect axialTiltBar) (scrollRect axialTiltPlus) (V4 140 140 100 255)
           drawConfigSlider renderer (uiInsolation ui) (scrollRect insolationMinus) (scrollRect insolationBar) (scrollRect insolationPlus) (V4 180 150 80 255)
           drawConfigSlider renderer (uiSliceLatCenter ui) (scrollRect sliceLatCenterMinus) (scrollRect sliceLatCenterBar) (scrollRect sliceLatCenterPlus) (V4 110 140 130 255)
-          drawConfigSlider renderer (uiSliceLatExtent ui) (scrollRect sliceLatExtentMinus) (scrollRect sliceLatExtentBar) (scrollRect sliceLatExtentPlus) (V4 120 140 130 255)
           drawConfigSlider renderer (uiSliceLonCenter ui) (scrollRect sliceLonCenterMinus) (scrollRect sliceLonCenterBar) (scrollRect sliceLonCenterPlus) (V4 110 130 150 255)
-          drawConfigSlider renderer (uiSliceLonExtent ui) (scrollRect sliceLonExtentMinus) (scrollRect sliceLonExtentBar) (scrollRect sliceLonExtentPlus) (V4 120 130 150 255)
         ConfigErosion -> do
           drawConfigSlider renderer (uiErosionHydraulic ui) (scrollRect erosionHydraulicMinus) (scrollRect erosionHydraulicBar) (scrollRect erosionHydraulicPlus) (V4 90 140 180 255)
           drawConfigSlider renderer (uiErosionThermal ui) (scrollRect erosionThermalMinus) (scrollRect erosionThermalBar) (scrollRect erosionThermalPlus) (V4 120 120 160 255)
@@ -523,11 +604,16 @@ drawConfigPanel renderer ui rect (tabTerrain, tabClimate, tabErosion) applyRect 
       SDL.rendererDrawColor renderer SDL.$= V4 160 160 170 255
       SDL.fillRect renderer (Just (rectToSDL (Rect (V2 bx handleY, V2 bw handleH))))
       SDL.rendererDrawColor renderer SDL.$= V4 60 120 80 255
-      SDL.fillRect renderer (Just (rectToSDL applyRect))
+      SDL.fillRect renderer (Just (rectToSDL presetSaveRect))
       SDL.rendererDrawColor renderer SDL.$= V4 80 110 160 255
-      SDL.fillRect renderer (Just (rectToSDL replayRect))
+      SDL.fillRect renderer (Just (rectToSDL presetLoadRect))
       SDL.rendererDrawColor renderer SDL.$= V4 120 80 80 255
       SDL.fillRect renderer (Just (rectToSDL resetRect))
+      let revertColor = case uiWorldConfig ui of
+            Just _  -> V4 140 100 50 255
+            Nothing -> V4 70 60 45 120
+      SDL.rendererDrawColor renderer SDL.$= revertColor
+      SDL.fillRect renderer (Just (rectToSDL revertRect))
   else pure ()
 
 drawConfigSlider :: SDL.Renderer -> Float -> Rect -> Rect -> Rect -> V4 Word8 -> IO ()
@@ -567,9 +653,10 @@ drawUiLabels renderer fontCache ui layout = do
       leftToggle = leftToggleRect layout
       (leftTabTopo, leftTabView) = leftTabRects layout
       configToggle = configToggleRect layout
-      configApply = configApplyRect layout
-      configReplay = configReplayRect layout
+      configPresetSave = configPresetSaveRect layout
+      configPresetLoad = configPresetLoadRect layout
       configReset = configResetRect layout
+      configRevert = configRevertRect layout
       (tabTerrain, tabClimate, tabErosion) = configTabRects layout
       configWaterMinus = configWaterMinusRect layout
       configWaterPlus = configWaterPlusRect layout
@@ -592,9 +679,6 @@ drawUiLabels renderer fontCache ui layout = do
       configLapseRateMinus = configLapseRateMinusRect layout
       configLapseRatePlus = configLapseRatePlusRect layout
       configLapseRateBar = configLapseRateBarRect layout
-      configLatitudeBiasMinus = configLatitudeBiasMinusRect layout
-      configLatitudeBiasPlus = configLatitudeBiasPlusRect layout
-      configLatitudeBiasBar = configLatitudeBiasBarRect layout
       configWindIterationsMinus = configWindIterationsMinusRect layout
       configWindIterationsPlus = configWindIterationsPlusRect layout
       configWindIterationsBar = configWindIterationsBarRect layout
@@ -640,15 +724,9 @@ drawUiLabels renderer fontCache ui layout = do
       configSliceLatCenterMinus = configSliceLatCenterMinusRect layout
       configSliceLatCenterPlus = configSliceLatCenterPlusRect layout
       configSliceLatCenterBar = configSliceLatCenterBarRect layout
-      configSliceLatExtentMinus = configSliceLatExtentMinusRect layout
-      configSliceLatExtentPlus = configSliceLatExtentPlusRect layout
-      configSliceLatExtentBar = configSliceLatExtentBarRect layout
       configSliceLonCenterMinus = configSliceLonCenterMinusRect layout
       configSliceLonCenterPlus = configSliceLonCenterPlusRect layout
       configSliceLonCenterBar = configSliceLonCenterBarRect layout
-      configSliceLonExtentMinus = configSliceLonExtentMinusRect layout
-      configSliceLonExtentPlus = configSliceLonExtentPlusRect layout
-      configSliceLonExtentBar = configSliceLonExtentBarRect layout
       configErosionHydraulicMinus = configErosionHydraulicMinusRect layout
       configErosionHydraulicPlus = configErosionHydraulicPlusRect layout
       configErosionHydraulicBar = configErosionHydraulicBarRect layout
@@ -817,7 +895,6 @@ drawUiLabels renderer fontCache ui layout = do
       maxOffset = max 0 (contentHeight - scrollH)
       scrollY = min maxOffset (uiConfigScroll ui)
       scrollRect (Rect (V2 x y, V2 w h)) = Rect (V2 x (y - scrollY), V2 w h)
-  drawCentered fontCache labelColor buttonRect "Generate"
   let configLabel = if uiShowConfig ui then ">>" else "<<"
   drawCentered fontCache labelColor configToggle configLabel
   let leftLabel = if uiShowLeftPanel ui then "<<" else ">>"
@@ -830,13 +907,13 @@ drawUiLabels renderer fontCache ui layout = do
         LeftTopo -> do
           drawCentered fontCache labelColor configChunkMinus "-"
           drawCentered fontCache labelColor configChunkPlus "+"
-          drawLabelLeft fontCache labelColor configChunkMinus "Chunk Size"
           drawLabelAbove fontCache labelColor configChunkValue "Chunk Size"
           drawCentered fontCache labelColor configChunkValue (Text.pack (show (uiChunkSize ui)))
           drawLeft fontCache labelColor seedLabel "Seed"
           drawCentered fontCache labelColor seedRandom "Random"
           let seedText = if uiSeedEditing ui then uiSeedInput ui else Text.pack (show (uiSeed ui))
           drawCentered fontCache labelColor seedValue seedText
+          drawCentered fontCache labelColor buttonRect "Generate"
         LeftView -> do
           drawCentered fontCache labelColor viewRect1 "Elev"
           drawCentered fontCache labelColor viewRect2 "Biome"
@@ -854,9 +931,13 @@ drawUiLabels renderer fontCache ui layout = do
     drawCentered fontCache labelColor tabTerrain "Terrain"
     drawCentered fontCache labelColor tabClimate "Climate"
     drawCentered fontCache labelColor tabErosion "Erosion"
-    drawCentered fontCache labelColor configApply "Apply"
-    drawCentered fontCache labelColor configReplay "Replay"
+    drawCentered fontCache labelColor configPresetSave "Save"
+    drawCentered fontCache labelColor configPresetLoad "Load"
     drawCentered fontCache labelColor configReset "Reset"
+    let revertLabelColor = case uiWorldConfig ui of
+          Just _  -> labelColor
+          Nothing -> V4 120 120 130 140
+    drawCentered fontCache revertLabelColor configRevert "Revert"
     SDL.rendererClipRect renderer SDL.$= Just (rectToSDL scrollArea)
     case uiConfigTab ui of
       ConfigTerrain -> do
@@ -1007,8 +1088,6 @@ drawUiLabels renderer fontCache ui layout = do
         drawCentered fontCache labelColor (scrollRect configPoleTempPlus) "+"
         drawCentered fontCache labelColor (scrollRect configLapseRateMinus) "-"
         drawCentered fontCache labelColor (scrollRect configLapseRatePlus) "+"
-        drawCentered fontCache labelColor (scrollRect configLatitudeBiasMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configLatitudeBiasPlus) "+"
         drawCentered fontCache labelColor (scrollRect configWindIterationsMinus) "-"
         drawCentered fontCache labelColor (scrollRect configWindIterationsPlus) "+"
         drawCentered fontCache labelColor (scrollRect configMoistureIterationsMinus) "-"
@@ -1039,12 +1118,8 @@ drawUiLabels renderer fontCache ui layout = do
         drawCentered fontCache labelColor (scrollRect configInsolationPlus) "+"
         drawCentered fontCache labelColor (scrollRect configSliceLatCenterMinus) "-"
         drawCentered fontCache labelColor (scrollRect configSliceLatCenterPlus) "+"
-        drawCentered fontCache labelColor (scrollRect configSliceLatExtentMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configSliceLatExtentPlus) "+"
         drawCentered fontCache labelColor (scrollRect configSliceLonCenterMinus) "-"
         drawCentered fontCache labelColor (scrollRect configSliceLonCenterPlus) "+"
-        drawCentered fontCache labelColor (scrollRect configSliceLonExtentMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configSliceLonExtentPlus) "+"
         drawLabelAbove fontCache labelColor (scrollRect configWaterBar) (sliderLabel specWaterLevel (uiWaterLevel ui))
         drawLabelAbove fontCache labelColor (scrollRect configEvapBar) (sliderLabel specEvaporation (uiEvaporation ui))
         drawLabelAbove fontCache labelColor (scrollRect configRainShadowBar) (sliderLabel specRainShadow (uiRainShadow ui))
@@ -1052,7 +1127,6 @@ drawUiLabels renderer fontCache ui layout = do
         drawLabelAbove fontCache labelColor (scrollRect configEquatorTempBar) (sliderLabel specEquatorTemp (uiEquatorTemp ui))
         drawLabelAbove fontCache labelColor (scrollRect configPoleTempBar) (sliderLabel specPoleTemp (uiPoleTemp ui))
         drawLabelAbove fontCache labelColor (scrollRect configLapseRateBar) (sliderLabel specLapseRate (uiLapseRate ui))
-        drawLabelAbove fontCache labelColor (scrollRect configLatitudeBiasBar) (sliderLabel specLatitudeBias (uiLatitudeBias ui))
         drawLabelAbove fontCache labelColor (scrollRect configWindIterationsBar) (sliderLabel specWindIterations (uiWindIterations ui))
         drawLabelAbove fontCache labelColor (scrollRect configMoistureIterationsBar) (sliderLabel specMoistureIterations (uiMoistureIterations ui))
         drawLabelAbove fontCache labelColor (scrollRect configWeatherTickBar) (sliderLabel specWeatherTick (uiWeatherTick ui))
@@ -1068,9 +1142,7 @@ drawUiLabels renderer fontCache ui layout = do
         drawLabelAbove fontCache labelColor (scrollRect configAxialTiltBar) (sliderLabel specAxialTilt (uiAxialTilt ui))
         drawLabelAbove fontCache labelColor (scrollRect configInsolationBar) (sliderLabel specInsolation (uiInsolation ui))
         drawLabelAbove fontCache labelColor (scrollRect configSliceLatCenterBar) (sliderLabel specSliceLatCenter (uiSliceLatCenter ui))
-        drawLabelAbove fontCache labelColor (scrollRect configSliceLatExtentBar) (sliderLabel specSliceLatExtent (uiSliceLatExtent ui))
         drawLabelAbove fontCache labelColor (scrollRect configSliceLonCenterBar) (sliderLabel specSliceLonCenter (uiSliceLonCenter ui))
-        drawLabelAbove fontCache labelColor (scrollRect configSliceLonExtentBar) (sliderLabel specSliceLonExtent (uiSliceLonExtent ui))
       ConfigErosion -> do
         drawCentered fontCache labelColor (scrollRect configErosionHydraulicMinus) "-"
         drawCentered fontCache labelColor (scrollRect configErosionHydraulicPlus) "+"

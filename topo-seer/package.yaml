@@ -32,13 +32,17 @@ library:
     - Seer
     - Seer.App
     - Seer.Config
+    - Seer.Config.Preset
+    - Seer.Config.Preset.Types
     - Seer.Config.Runtime
     - Seer.Config.SliderSpec
     - Seer.Draw
+    - Seer.Draw.Dialog
     - Seer.Input
     - Seer.System
     - Seer.System.ThreadPriority
     - Seer.Input.ConfigScroll
+    - Seer.Input.Modal
     - Seer.Input.Router
     - Seer.Input.Seed
     - Seer.Input.ViewControls
@@ -47,6 +51,8 @@ library:
     - Seer.Render.Frame
     - Seer.Render.Terrain
     - Seer.Render.Ui
+    - Seer.World.Persist
+    - Seer.World.Persist.Types
     - UI.Font
     - UI.Layout
     - UI.HexPick
@@ -93,10 +99,15 @@ tests:
     main: Spec.hs
     source-dirs: test
     dependencies:
+      - aeson
       - base
+      - bytestring
       - containers
+      - directory
+      - filepath
       - QuickCheck
       - linear
+      - time
       - topo
       - topo-seer
       - hspec

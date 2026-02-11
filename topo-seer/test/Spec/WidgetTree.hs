@@ -4,13 +4,16 @@ import Test.Hspec
 import Linear (V2(..))
 import UI.Layout
 import UI.WidgetTree
+import UI.Widgets (Rect(..))
 
 spec :: Spec
 spec = describe "UI.WidgetTree" $ do
-  it "hit tests widgets" $ do
+  it "hit tests generate button in left panel" $ do
     let layout = layoutFor (V2 800 600) 160
         widgets = buildWidgets layout
-        result = hitTest widgets (V2 20 20)
+        -- Gen button is now inside left panel at Row 4
+        Rect (V2 gx gy, V2 gw gh) = leftGenButtonRect layout
+        result = hitTest widgets (V2 (gx + 5) (gy + 5))
     result `shouldBe` Just WidgetGenerate
 
   it "hit tests chunk buttons" $ do
@@ -34,12 +37,17 @@ spec = describe "UI.WidgetTree" $ do
         widgets = buildWidgets layout
     hitTest widgets (V2 560 30) `shouldBe` Just WidgetConfigToggle
 
-  it "hit tests config apply/reset" $ do
+  it "hit tests config preset save/load/reset/revert" $ do
     let layout = layoutFor (V2 800 600) 160
         widgets = buildWidgets layout
-    hitTest widgets (V2 600 328) `shouldBe` Just WidgetConfigApply
-    hitTest widgets (V2 600 360) `shouldBe` Just WidgetConfigReplay
-    hitTest widgets (V2 600 392) `shouldBe` Just WidgetConfigReset
+        Rect (V2 sx sy, _) = configPresetSaveRect layout
+        Rect (V2 lx ly, _) = configPresetLoadRect layout
+        Rect (V2 rstx rsty, _) = configResetRect layout
+        Rect (V2 rvx rvy, _) = configRevertRect layout
+    hitTest widgets (V2 (sx + 5) (sy + 5)) `shouldBe` Just WidgetConfigPresetSave
+    hitTest widgets (V2 (lx + 5) (ly + 5)) `shouldBe` Just WidgetConfigPresetLoad
+    hitTest widgets (V2 (rstx + 5) (rsty + 5)) `shouldBe` Just WidgetConfigReset
+    hitTest widgets (V2 (rvx + 5) (rvy + 5)) `shouldBe` Just WidgetConfigRevert
 
   it "hit tests config slider buttons" $ do
     let layout = layoutFor (V2 800 600) 160

@@ -94,9 +94,10 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
       configToggle = configToggleRect layout
       configPanel = configPanelRect layout
       (tabTerrain, tabClimate, tabErosion) = configTabRects layout
-      configApply = configApplyRect layout
-      configReplay = configReplayRect layout
+      configPresetSave = configPresetSaveRect layout
+      configPresetLoad = configPresetLoadRect layout
       configReset = configResetRect layout
+      configRevert = configRevertRect layout
       configScrollArea = configScrollAreaRect layout
       configScrollBar = configScrollBarRect layout
       configWaterMinus = configWaterMinusRect layout
@@ -135,9 +136,6 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
       configLapseRateMinus = configLapseRateMinusRect layout
       configLapseRatePlus = configLapseRatePlusRect layout
       configLapseRateBar = configLapseRateBarRect layout
-      configLatitudeBiasMinus = configLatitudeBiasMinusRect layout
-      configLatitudeBiasPlus = configLatitudeBiasPlusRect layout
-      configLatitudeBiasBar = configLatitudeBiasBarRect layout
       configWindIterationsMinus = configWindIterationsMinusRect layout
       configWindIterationsPlus = configWindIterationsPlusRect layout
       configWindIterationsBar = configWindIterationsBarRect layout
@@ -183,15 +181,9 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
       configSliceLatCenterMinus = configSliceLatCenterMinusRect layout
       configSliceLatCenterPlus = configSliceLatCenterPlusRect layout
       configSliceLatCenterBar = configSliceLatCenterBarRect layout
-      configSliceLatExtentMinus = configSliceLatExtentMinusRect layout
-      configSliceLatExtentPlus = configSliceLatExtentPlusRect layout
-      configSliceLatExtentBar = configSliceLatExtentBarRect layout
       configSliceLonCenterMinus = configSliceLonCenterMinusRect layout
       configSliceLonCenterPlus = configSliceLonCenterPlusRect layout
       configSliceLonCenterBar = configSliceLonCenterBarRect layout
-      configSliceLonExtentMinus = configSliceLonExtentMinusRect layout
-      configSliceLonExtentPlus = configSliceLonExtentPlusRect layout
-      configSliceLonExtentBar = configSliceLonExtentBarRect layout
       configGenScaleMinus = configGenScaleMinusRect layout
       configGenScalePlus = configGenScalePlusRect layout
       configGenScaleBar = configGenScaleBarRect layout
@@ -399,12 +391,6 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
     logTiming logHandle timingLogThresholdMs (Text.pack "draw hover") elapsed Nothing
   loggedChrome <- do
     (_, elapsed) <- timedMs $ do
-      let Rect (V2 bx by, V2 bw bh) = buttonRect
-          bgRect = Rect (V2 (bx - 6) (by - 6), V2 (bw + 12) (bh + 12))
-      SDL.rendererDrawColor renderer SDL.$= V4 25 30 40 220
-      SDL.fillRect renderer (Just (rectToSDL bgRect))
-      SDL.rendererDrawColor renderer SDL.$= buttonLabel
-      SDL.fillRect renderer (Just (rectToSDL buttonRect))
       let configColor = if uiShowConfig (rsUi snapshot) then V4 140 160 200 255 else V4 100 120 160 255
       SDL.rendererDrawColor renderer SDL.$= configColor
       SDL.fillRect renderer (Just (rectToSDL configToggle))
@@ -419,10 +405,12 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
           LeftTopo -> do
             drawChunkControl renderer (rsUi snapshot) chunkMinus chunkValue chunkPlus
             drawSeedControl renderer (rsUi snapshot) seedValue seedRandom
+            SDL.rendererDrawColor renderer SDL.$= buttonLabel
+            SDL.fillRect renderer (Just (rectToSDL buttonRect))
             drawStatusBars renderer fontCache (rsUi snapshot) dataSnap layout
           LeftView ->
             drawViewModeButtons renderer mode (viewRect1, viewRect2, viewRect3, viewRect4, viewRect5, viewRect6, viewRect7, viewRect8, viewRect9, viewRect10, viewRect11, viewRect12)
-      drawConfigPanel renderer (rsUi snapshot) configPanel (tabTerrain, tabClimate, tabErosion) configApply configReplay configReset configScrollArea configScrollBar
+      drawConfigPanel renderer (rsUi snapshot) configPanel (tabTerrain, tabClimate, tabErosion) configPresetSave configPresetLoad configReset configRevert configScrollArea configScrollBar
         (configWaterMinus, configWaterBar, configWaterPlus)
         (configEvapMinus, configEvapBar, configEvapPlus)
         (configRainShadowMinus, configRainShadowBar, configRainShadowPlus)
@@ -430,7 +418,6 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
         (configEquatorTempMinus, configEquatorTempBar, configEquatorTempPlus)
         (configPoleTempMinus, configPoleTempBar, configPoleTempPlus)
         (configLapseRateMinus, configLapseRateBar, configLapseRatePlus)
-        (configLatitudeBiasMinus, configLatitudeBiasBar, configLatitudeBiasPlus)
         (configWindIterationsMinus, configWindIterationsBar, configWindIterationsPlus)
         (configMoistureIterationsMinus, configMoistureIterationsBar, configMoistureIterationsPlus)
         (configWeatherTickMinus, configWeatherTickBar, configWeatherTickPlus)
@@ -446,9 +433,7 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
         (configAxialTiltMinus, configAxialTiltBar, configAxialTiltPlus)
         (configInsolationMinus, configInsolationBar, configInsolationPlus)
         (configSliceLatCenterMinus, configSliceLatCenterBar, configSliceLatCenterPlus)
-        (configSliceLatExtentMinus, configSliceLatExtentBar, configSliceLatExtentPlus)
         (configSliceLonCenterMinus, configSliceLonCenterBar, configSliceLonCenterPlus)
-        (configSliceLonExtentMinus, configSliceLonExtentBar, configSliceLonExtentPlus)
         (configGenScaleMinus, configGenScaleBar, configGenScalePlus)
         (configGenCoordScaleMinus, configGenCoordScaleBar, configGenCoordScalePlus)
         (configGenOffsetXMinus, configGenOffsetXBar, configGenOffsetXPlus)

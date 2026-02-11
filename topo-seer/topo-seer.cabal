@@ -38,13 +38,17 @@ library
       Seer
       Seer.App
       Seer.Config
+      Seer.Config.Preset
+      Seer.Config.Preset.Types
       Seer.Config.Runtime
       Seer.Config.SliderSpec
       Seer.Draw
+      Seer.Draw.Dialog
       Seer.Input
       Seer.System
       Seer.System.ThreadPriority
       Seer.Input.ConfigScroll
+      Seer.Input.Modal
       Seer.Input.Router
       Seer.Input.Seed
       Seer.Input.ViewControls
@@ -53,6 +57,8 @@ library
       Seer.Render.Frame
       Seer.Render.Terrain
       Seer.Render.Ui
+      Seer.World.Persist
+      Seer.World.Persist.Types
       UI.Font
       UI.Layout
       UI.HexPick
@@ -106,6 +112,7 @@ test-suite topo-seer-test
       Spec.AtlasScheduleBroker
       Spec.AtlasScheduler
       Spec.CacheProperties
+      Spec.ConfigPreset
       Spec.HexPick
       Spec.Layout
       Spec.LogActor
@@ -118,17 +125,23 @@ test-suite topo-seer-test
       Spec.UiActor
       Spec.Widgets
       Spec.WidgetTree
+      Spec.WorldPersist
       Paths_topo_seer
   hs-source-dirs:
       test
   build-depends:
       QuickCheck
+    , aeson
     , base
+    , bytestring
     , containers
+    , directory
+    , filepath
     , hspec
     , hyperspace
     , linear
     , text
+    , time
     , topo
     , topo-seer
     , vector

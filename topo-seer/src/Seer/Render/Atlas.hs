@@ -160,7 +160,7 @@ resolveAtlasTiles
   -> IO (Maybe [TerrainAtlasTile], AtlasTextureCache)
 resolveAtlasTiles renderTargetOk snapshot atlasCache atlasScale = do
   let terrainSnap = rsTerrain snapshot
-      atlasKey = AtlasKey (uiViewMode (rsUi snapshot)) (uiWaterLevel (rsUi snapshot)) (tsVersion terrainSnap)
+      atlasKey = AtlasKey (uiViewMode (rsUi snapshot)) (uiRenderWaterLevel (rsUi snapshot)) (tsVersion terrainSnap)
       dataReady = dsTerrainChunks (rsData snapshot) == IntMap.size (tsTerrainChunks terrainSnap)
       cacheWithKey = setAtlasKey atlasKey atlasCache
       atlasTiles = if renderTargetOk && dataReady
