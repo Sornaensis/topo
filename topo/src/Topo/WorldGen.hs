@@ -13,10 +13,11 @@ module Topo.WorldGen
   , buildPipelineConfig
   , buildFullPipelineConfig
   , buildBaseHeightPipelineConfig
+  , autoOceanEdgeDepth
   ) where
 
 import Data.Word (Word64)
-import Topo.BaseHeight (GenConfig(..), defaultGenConfig)
+import Topo.BaseHeight (GenConfig(..), OceanEdgeDepth(..), defaultGenConfig)
 import Topo.BiomeConfig
   ( BiomeConfig(..)
   , aridBiomeConfig
@@ -40,10 +41,17 @@ import Topo.Hydrology
   )
 import Topo.Volcanism (VolcanismConfig(..), applyVolcanismStage, defaultVolcanismConfig)
 import Topo.Parameters (ParameterConfig(..), applyParameterLayersStage, defaultParameterConfig)
-import Topo.Planet (PlanetConfig(..), WorldSlice, defaultPlanetConfig, defaultWorldSlice)
+import Topo.Planet
+  ( PlanetConfig(..)
+  , WorldSlice(..)
+  , defaultPlanetConfig
+  , defaultWorldSlice
+  , sliceToWorldExtent
+  )
 import Topo.Tectonics (TectonicsConfig(..), defaultTectonicsConfig, generateTectonicsStage)
 import Topo.Weather (WeatherConfig(..), defaultWeatherConfig, tickWeatherStage)
 import Topo.Pipeline (PipelineConfig(..))
+import Topo.Types (WorldConfig(..), defaultWorldExtent)
 
 data TerrainConfig = TerrainConfig
   { terrainGen :: !GenConfig
@@ -193,10 +201,29 @@ buildPipelineConfig cfg seed =
 --
 -- Stage seeds are deterministically derived from the pipeline seed and
 -- the stage tag, so all sub-generators remain repeatable.
-buildFullPipelineConfig :: WorldGenConfig -> Word64 -> PipelineConfig
-buildFullPipelineConfig cfg seed =
+--
+-- Automatically derives 'gcWorldExtent' from the planet\/slice config via
+-- 'sliceToWorldExtent'.  If the caller has explicitly set @gcWorldExtent@
+-- to a non-default value it is preserved as a manual override.
+--
+-- Exposed slice edges that do not reach the planet boundary receive
+-- automatic ocean-edge falloff (see 'autoOceanEdgeDepth').
+buildFullPipelineConfig :: WorldGenConfig -> WorldConfig -> Word64 -> PipelineConfig
+buildFullPipelineConfig cfg worldCfg seed =
   let terrain = worldTerrain cfg
       precip = worldPrecip cfg
+      planet = worldPlanet cfg
+      slice = worldSlice cfg
+      -- Auto-derive world extent from slice unless manually overridden
+      gen0 = terrainGen terrain
+      derivedExtent = either (const defaultWorldExtent) id
+                        (sliceToWorldExtent planet slice worldCfg)
+      gen1 = if gcWorldExtent gen0 == defaultWorldExtent
+                then gen0 { gcWorldExtent = derivedExtent }
+                else gen0
+      -- Auto-derive ocean edge depth for exposed slice edges
+      gen2 = autoOceanEdgeDepth planet slice gen1
+      terrain' = terrain { terrainGen = gen2 }
       climate = (worldClimate cfg)
         { ccEvaporation = ccEvaporation (worldClimate cfg) * precipEvaporation precip
         , ccRainShadow = ccRainShadow (worldClimate cfg) * precipRainShadow precip
@@ -205,23 +232,52 @@ buildFullPipelineConfig cfg seed =
         , ccBoundaryPrecipTransform = ccBoundaryPrecipTransform (worldClimate cfg) * precipBoundary precip
         , ccOrographicScale = ccOrographicScale (worldClimate cfg) * precipOrographic precip
         , ccCoastalMoistureBoost = ccCoastalMoistureBoost (worldClimate cfg) * precipCoastal precip
-        , ccInsolation = pcInsolation (worldPlanet cfg)
+        , ccInsolation = pcInsolation planet
         }
   in PipelineConfig
       { pipelineSeed = seed
       , pipelineStages =
-          [ generatePlateTerrainStage (terrainGen terrain) (terrainTectonics terrain)
-          , applyErosionStage (terrainErosion terrain) (hcWaterLevel (terrainHydrology terrain))
-          , applyVolcanismStage (terrainVolcanism terrain)
-          , applyHydrologyStage (terrainHydrology terrain)
-          , applyRiverStage (terrainRivers terrain) (terrainGroundwater terrain)
-          , applyParameterLayersStage (terrainParameters terrain)
-          , generateClimateStage climate (hcWaterLevel (terrainHydrology terrain))
-          , applyGlacierStage (terrainGlacier terrain)
-          , classifyBiomesStage (worldBiome cfg) (hcWaterLevel (terrainHydrology terrain))
+          [ generatePlateTerrainStage (terrainGen terrain') (terrainTectonics terrain')
+          , applyErosionStage (terrainErosion terrain') (hcWaterLevel (terrainHydrology terrain'))
+          , applyVolcanismStage (terrainVolcanism terrain')
+          , applyHydrologyStage (terrainHydrology terrain')
+          , applyRiverStage (terrainRivers terrain') (terrainGroundwater terrain')
+          , applyParameterLayersStage (terrainParameters terrain')
+          , generateClimateStage climate (hcWaterLevel (terrainHydrology terrain'))
+          , applyGlacierStage (terrainGlacier terrain')
+          , classifyBiomesStage (worldBiome cfg) (hcWaterLevel (terrainHydrology terrain'))
             , tickWeatherStage (worldWeather cfg)
           ]
       , pipelineSnapshots = False
+      }
+
+-- | Derive ocean edge depth from the slice boundaries.
+--
+-- When a slice edge does not reach the planet boundary (i.e. latitude
+-- extent does not span pole-to-pole, or longitude extent < 360°),
+-- a default edge-depth and falloff are injected on the exposed edges.
+-- If the user has already configured edge depth (any field > 0),
+-- the per-edge values are preserved.
+--
+-- Default auto-values: depth = 0.8, falloff = 64 tiles.
+autoOceanEdgeDepth :: PlanetConfig -> WorldSlice -> GenConfig -> GenConfig
+autoOceanEdgeDepth _planet slice gen
+  | hasManualEdge = gen
+  | otherwise     = gen { gcOceanEdgeDepth = computedEdge }
+  where
+    oed = gcOceanEdgeDepth gen
+    hasManualEdge = oedNorth oed > 0 || oedSouth oed > 0
+                 || oedEast oed > 0  || oedWest oed > 0
+    autoDepth   = 0.8
+    autoFalloff = 64.0
+    latN = wsLatCenter slice + wsLatExtent slice / 2
+    latS = wsLatCenter slice - wsLatExtent slice / 2
+    computedEdge = OceanEdgeDepth
+      { oedNorth   = if latN < 89  then autoDepth else 0
+      , oedSouth   = if latS > (-89) then autoDepth else 0
+      , oedEast    = if wsLonExtent slice < 359 then autoDepth else 0
+      , oedWest    = if wsLonExtent slice < 359 then autoDepth else 0
+      , oedFalloff = autoFalloff
       }
 
 -- | Build a base-height-only pipeline for noise-driven terrain.

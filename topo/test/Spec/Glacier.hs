@@ -6,6 +6,7 @@ import Test.QuickCheck
 import qualified Data.Vector.Unboxed as U
 import Topo.Math (clamp01)
 import Topo
+import Topo.Planet (defaultPlanetConfig, defaultWorldSlice, WorldSlice(..))
 
 spec :: Spec
 spec = describe "Glacier" $ do
@@ -90,6 +91,41 @@ spec = describe "Glacier" $ do
           case getGlacierChunk (ChunkId 0) world2 of
             Nothing -> pure False
             Just glacier -> pure (U.all (\v -> abs (v - iceExpected) < 1e-5) (glIceThickness glacier))
+
+  it "produces more ice at high latitude than at equator" $ do
+    -- Generate worlds at 70°N and 0° equator using the full climate+glacier
+    -- pipeline.  The high-latitude world should accumulate more ice because
+    -- the climate stage produces lower temperatures at 70°N.
+    let config = WorldConfig { wcChunkSize = 4 }
+        sliceArctic  = defaultWorldSlice { wsLatCenter = 70, wsLatExtent = 10 }
+        sliceEquator = defaultWorldSlice { wsLatCenter = 0,  wsLatExtent = 10 }
+        worldArctic  = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig sliceArctic
+        worldEquator = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig sliceEquator
+        terrain = generateTerrainChunk config (\_ -> 0.8)  -- land above water
+        cid = chunkIdFromCoord (ChunkCoord 0 0)
+        setupWorld w = setTerrainChunk cid terrain w
+        glacierCfg = defaultGlacierConfig
+        climateCfg = defaultClimateConfig
+        waterLevel = 0.5
+        buildPipeline = PipelineConfig
+          { pipelineSeed = 42
+          , pipelineStages =
+              [ generateClimateStage climateCfg waterLevel
+              , applyGlacierStage glacierCfg
+              ]
+          , pipelineSnapshots = False
+          }
+        env = TopoEnv { teLogger = \_ -> pure () }
+    resultA <- runPipeline buildPipeline env (setupWorld worldArctic)
+    resultE <- runPipeline buildPipeline env (setupWorld worldEquator)
+    wA <- expectPipeline resultA
+    wE <- expectPipeline resultE
+    case (getGlacierChunk cid wA, getGlacierChunk cid wE) of
+      (Just arcticGl, Just equatorGl) -> do
+        let iceArctic  = U.sum (glIceThickness arcticGl)
+            iceEquator = U.sum (glIceThickness equatorGl)
+        iceArctic `shouldSatisfy` (> iceEquator)
+      _ -> expectationFailure "missing glacier chunks"
 
 expectPipeline :: Either PipelineError (TerrainWorld, [PipelineSnapshot]) -> IO TerrainWorld
 expectPipeline result =

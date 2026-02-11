@@ -33,8 +33,8 @@ spec = describe "Cache properties" $ do
     property $ \(Positive chunkSize) (NonNegative levelA) (NonNegative levelB) ->
       levelA /= levelB ==>
         let terrainSnap = emptyTerrainSnapshot { tsChunkSize = chunkSize }
-            uiA = emptyUiState { uiWaterLevel = levelA }
-            uiB = emptyUiState { uiWaterLevel = levelB }
+            uiA = emptyUiState { uiRenderWaterLevel = levelA }
+            uiB = emptyUiState { uiRenderWaterLevel = levelB }
             cacheA = buildTerrainCache uiA terrainSnap
             updated = updateTerrainCache uiB terrainSnap cacheA
         in not (sameTerrainCache updated cacheA)

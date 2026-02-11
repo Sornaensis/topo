@@ -112,6 +112,7 @@ import Actor.UI
   , setUiVegTempWeight
   , setUiViewMode
   , setUiWaterLevel
+  , setUiRenderWaterLevel
   , setUiWeatherAmplitude
   , setUiWeatherPhase
   , setUiWeatherTick
@@ -204,6 +205,8 @@ startGeneration req = do
       logHandle = uarLogHandle req
   uiSnap <- getUiSnapshot uiHandle
   setUiGenerating uiHandle True
+  -- Commit the pending water level so atlas/terrain caches use the applied value
+  setUiRenderWaterLevel uiHandle (uiWaterLevel uiSnap)
   requestUiSnapshot uiHandle (replyTo @UiSnapshotReply (uarSnapshotHandle req))
   appendLog logHandle (LogEntry LogInfo (configSummary uiSnap))
   requestLogSnapshot logHandle (replyTo @LogSnapshotReply (uarSnapshotHandle req))
@@ -224,12 +227,12 @@ rebuildAtlasFor :: UiActionRequest -> ViewMode -> IO ()
 rebuildAtlasFor req mode = do
   terrainSnap <- getTerrainSnapshot (uarDataHandle req)
   uiSnap <- getUiSnapshot (uarUiHandle req)
-  let atlasKey = AtlasKey mode (uiWaterLevel uiSnap) (tsVersion terrainSnap)
+  let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
       scales = [1 .. 6]
       job scale = AtlasJob
         { ajKey = atlasKey
         , ajViewMode = mode
-        , ajWaterLevel = uiWaterLevel uiSnap
+        , ajWaterLevel = uiRenderWaterLevel uiSnap
         , ajTerrain = terrainSnap
         , ajScale = scale
         }
@@ -257,6 +260,7 @@ resetConfig req = do
   setUiChunkSize uiHandle 64
   setUiViewMode uiHandle ViewElevation
   setUiWaterLevel uiHandle 0.5
+  setUiRenderWaterLevel uiHandle 0.5
   setUiEvaporation uiHandle 0.25
   setUiRainShadow uiHandle 0.4
   setUiWindDiffuse uiHandle 0.5

@@ -2,6 +2,7 @@ module UI.WidgetTree
   ( WidgetId(..)
   , Widget(..)
   , buildWidgets
+  , buildSliderRowWidgets
   , hitTest
   ) where
 
@@ -394,6 +395,103 @@ buildWidgets layout =
     , Widget WidgetMenuLoad (menuLoadRect layout)
     , Widget WidgetMenuExit (menuExitRect layout)
      ]
+
+-- | Build full-row tooltip hit areas for config sliders, grouped by tab.
+--
+-- Returns @(terrain, climate, erosion)@ widget lists. Each slider row
+-- is represented by a single 'Widget' using the slider's minus 'WidgetId',
+-- with a 'configParamRowRect' that covers buttons, bar, and label area.
+-- The caller selects the appropriate list based on the active config tab
+-- and applies scroll offset before 'hitTest'.
+buildSliderRowWidgets :: Layout -> ([Widget], [Widget], [Widget])
+buildSliderRowWidgets layout = (terrain, climate, erosion)
+  where
+    row :: WidgetId -> Int -> Widget
+    row wid idx = Widget wid (configParamRowRect idx layout)
+
+    terrain =
+      [ row WidgetConfigGenScaleMinus 0
+      , row WidgetConfigGenFrequencyMinus 1
+      , row WidgetConfigGenOctavesMinus 2
+      , row WidgetConfigGenLacunarityMinus 3
+      , row WidgetConfigGenGainMinus 4
+      , row WidgetConfigGenWarpScaleMinus 5
+      , row WidgetConfigGenWarpStrengthMinus 6
+      , row WidgetConfigPlateSizeMinus 7
+      , row WidgetConfigUpliftMinus 8
+      , row WidgetConfigRiftDepthMinus 9
+      , row WidgetConfigDetailScaleMinus 10
+      , row WidgetConfigPlateSpeedMinus 11
+      , row WidgetConfigBoundarySharpnessMinus 12
+      , row WidgetConfigBoundaryNoiseScaleMinus 13
+      , row WidgetConfigBoundaryNoiseStrengthMinus 14
+      , row WidgetConfigBoundaryWarpOctavesMinus 15
+      , row WidgetConfigBoundaryWarpLacunarityMinus 16
+      , row WidgetConfigBoundaryWarpGainMinus 17
+      , row WidgetConfigPlateMergeScaleMinus 18
+      , row WidgetConfigPlateMergeBiasMinus 19
+      , row WidgetConfigPlateDetailScaleMinus 20
+      , row WidgetConfigPlateDetailStrengthMinus 21
+      , row WidgetConfigPlateRidgeStrengthMinus 22
+      , row WidgetConfigPlateHeightBaseMinus 23
+      , row WidgetConfigPlateHeightVarianceMinus 24
+      , row WidgetConfigPlateHardnessBaseMinus 25
+      , row WidgetConfigPlateHardnessVarianceMinus 26
+      , row WidgetConfigTrenchDepthMinus 27
+      , row WidgetConfigRidgeHeightMinus 28
+      , row WidgetConfigPlateBiasStrengthMinus 29
+      , row WidgetConfigPlateBiasCenterMinus 30
+      , row WidgetConfigPlateBiasEdgeMinus 31
+      , row WidgetConfigPlateBiasNorthMinus 32
+      , row WidgetConfigPlateBiasSouthMinus 33
+      , row WidgetConfigGenCoordScaleMinus 34
+      , row WidgetConfigGenOffsetXMinus 35
+      , row WidgetConfigGenOffsetYMinus 36
+      , row WidgetConfigExtentXMinus 37
+      , row WidgetConfigExtentYMinus 38
+      , row WidgetConfigEdgeNorthMinus 39
+      , row WidgetConfigEdgeSouthMinus 40
+      , row WidgetConfigEdgeEastMinus 41
+      , row WidgetConfigEdgeWestMinus 42
+      , row WidgetConfigEdgeFalloffMinus 43
+      ]
+
+    climate =
+      [ row WidgetConfigWaterMinus 0
+      , row WidgetConfigEvapMinus 1
+      , row WidgetConfigRainShadowMinus 2
+      , row WidgetConfigWindDiffuseMinus 3
+      , row WidgetConfigEquatorTempMinus 4
+      , row WidgetConfigPoleTempMinus 5
+      , row WidgetConfigLapseRateMinus 6
+      , row WidgetConfigLatitudeBiasMinus 7
+      , row WidgetConfigWindIterationsMinus 8
+      , row WidgetConfigMoistureIterationsMinus 9
+      , row WidgetConfigWeatherTickMinus 10
+      , row WidgetConfigWeatherPhaseMinus 11
+      , row WidgetConfigWeatherAmplitudeMinus 12
+      , row WidgetConfigVegBaseMinus 13
+      , row WidgetConfigVegBoostMinus 14
+      , row WidgetConfigVegTempWeightMinus 15
+      , row WidgetConfigVegPrecipWeightMinus 16
+      , row WidgetConfigBoundaryMotionTempMinus 17
+      , row WidgetConfigBoundaryMotionPrecipMinus 18
+      , row WidgetConfigPlanetRadiusMinus 19
+      , row WidgetConfigAxialTiltMinus 20
+      , row WidgetConfigInsolationMinus 21
+      , row WidgetConfigSliceLatCenterMinus 22
+      , row WidgetConfigSliceLatExtentMinus 23
+      , row WidgetConfigSliceLonCenterMinus 24
+      , row WidgetConfigSliceLonExtentMinus 25
+      ]
+
+    erosion =
+      [ row WidgetConfigErosionHydraulicMinus 0
+      , row WidgetConfigErosionThermalMinus 1
+      , row WidgetConfigErosionRainRateMinus 2
+      , row WidgetConfigErosionTalusMinus 3
+      , row WidgetConfigErosionMaxDropMinus 4
+      ]
 
 hitTest :: [Widget] -> V2 Int -> Maybe WidgetId
 hitTest widgets point =

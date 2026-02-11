@@ -131,12 +131,12 @@ castSnapshots handles dataSnap terrainSnap uiSnap = do
 rebuildAtlas :: UiActionHandles -> TerrainSnapshot -> UiState -> IO ()
 rebuildAtlas handles terrainSnap uiSnap = do
   start <- getMonotonicTimeNSec
-  let atlasKey = AtlasKey (uiViewMode uiSnap) (uiWaterLevel uiSnap) (tsVersion terrainSnap)
+  let atlasKey = AtlasKey (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
       scales = [1 .. 6]
       job scale = AtlasJob
         { ajKey = atlasKey
         , ajViewMode = uiViewMode uiSnap
-        , ajWaterLevel = uiWaterLevel uiSnap
+        , ajWaterLevel = uiRenderWaterLevel uiSnap
         , ajTerrain = terrainSnap
         , ajScale = scale
         }

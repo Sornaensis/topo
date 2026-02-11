@@ -20,6 +20,7 @@ module Actor.UI
   , setUiConfigScroll
   , setUiShowLeftPanel
   , setUiWaterLevel
+  , setUiRenderWaterLevel
   , setUiEvaporation
   , setUiRainShadow
   , setUiWindDiffuse
@@ -99,6 +100,7 @@ module Actor.UI
   , setUiSliceLonCenter
   , setUiSliceLonExtent
   , setUiHoverHex
+  , setUiHoverWidget
   , setUiShowMenu
   , setUiContextHex
   , setUiContextPos
@@ -115,6 +117,7 @@ import qualified Data.Text as Text
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
 import Hyperspace.Actor.Spec (OpTag(..))
+import UI.WidgetTree (WidgetId)
 
 data ViewMode
   = ViewElevation
@@ -158,6 +161,7 @@ data UiState = UiState
   , uiSeedEditing :: !Bool
   , uiSeedInput :: !Text
   , uiWaterLevel :: !Float
+  , uiRenderWaterLevel :: !Float
   , uiEvaporation :: !Float
   , uiRainShadow :: !Float
   , uiWindDiffuse :: !Float
@@ -235,6 +239,7 @@ data UiState = UiState
   , uiSliceLonCenter :: !Float
   , uiSliceLonExtent :: !Float
   , uiHoverHex :: !(Maybe (Int, Int))
+  , uiHoverWidget :: !(Maybe WidgetId)
   } deriving (Eq, Show)
 
 emptyUiState :: UiState
@@ -254,6 +259,7 @@ emptyUiState = UiState
   , uiSeedEditing = False
   , uiSeedInput = Text.empty
   , uiWaterLevel = 0.5
+  , uiRenderWaterLevel = 0.5
   , uiEvaporation = 0.25
   , uiRainShadow = 0.4
   , uiWindDiffuse = 0.5
@@ -331,6 +337,7 @@ emptyUiState = UiState
   , uiSliceLonCenter = 0.5    -- maps to 0 in [-180..180]
   , uiSliceLonExtent = 0.1666 -- maps to 60 in [0.1..360]
   , uiHoverHex = Nothing
+  , uiHoverWidget = Nothing
   }
 
 -- | Sum type encoding all possible UI state mutations.
@@ -354,6 +361,7 @@ data UiUpdate
   | SetSeedEditing !Bool
   | SetSeedInput !Text
   | SetWaterLevel !Float
+  | SetRenderWaterLevel !Float
   | SetEvaporation !Float
   | SetRainShadow !Float
   | SetWindDiffuse !Float
@@ -431,6 +439,7 @@ data UiUpdate
   | SetSliceLonCenter !Float
   | SetSliceLonExtent !Float
   | SetHoverHex !(Maybe (Int, Int))
+  | SetHoverWidget !(Maybe WidgetId)
 
 -- | Apply a 'UiUpdate' to the current 'UiState'.  Total and exhaustive.
 applyUpdate :: UiUpdate -> UiState -> UiState
@@ -450,6 +459,7 @@ applyUpdate upd st = case upd of
   SetSeedEditing v     -> st { uiSeedEditing = v }
   SetSeedInput v       -> st { uiSeedInput = v }
   SetWaterLevel v      -> st { uiWaterLevel = clamp01 v }
+  SetRenderWaterLevel v -> st { uiRenderWaterLevel = clamp01 v }
   SetEvaporation v     -> st { uiEvaporation = clamp01 v }
   SetRainShadow v      -> st { uiRainShadow = clamp01 v }
   SetWindDiffuse v     -> st { uiWindDiffuse = clamp01 v }
@@ -527,6 +537,7 @@ applyUpdate upd st = case upd of
   SetSliceLonCenter v  -> st { uiSliceLonCenter = clamp01 v }
   SetSliceLonExtent v  -> st { uiSliceLonExtent = clamp01 v }
   SetHoverHex v        -> st { uiHoverHex = v }
+  SetHoverWidget v     -> st { uiHoverWidget = v }
 
 uiSnapshotTag :: OpTag "uiSnapshot"
 uiSnapshotTag = OpTag
@@ -614,6 +625,13 @@ setUiSeedInput handle input =
 setUiWaterLevel :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
 setUiWaterLevel handle value =
   cast @"update" handle #update (SetWaterLevel value)
+
+-- | Commit the render water level (used in 'AtlasKey').
+--
+-- Only called on Apply\/Generate to avoid atlas invalidation on +/- clicks.
+setUiRenderWaterLevel :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiRenderWaterLevel handle value =
+  cast @"update" handle #update (SetRenderWaterLevel value)
 
 setUiEvaporation :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
 setUiEvaporation handle value =
@@ -922,6 +940,11 @@ setUiSliceLonExtent handle value =
 setUiHoverHex :: ActorHandle Ui (Protocol Ui) -> Maybe (Int, Int) -> IO ()
 setUiHoverHex handle hex =
   cast @"update" handle #update (SetHoverHex hex)
+
+-- | Set the currently hovered widget (for tooltip display).
+setUiHoverWidget :: ActorHandle Ui (Protocol Ui) -> Maybe WidgetId -> IO ()
+setUiHoverWidget handle wid =
+  cast @"update" handle #update (SetHoverWidget wid)
 
 getUiSnapshot :: ActorHandle Ui (Protocol Ui) -> IO UiState
 getUiSnapshot handle =

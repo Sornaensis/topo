@@ -79,8 +79,8 @@ spec = describe "Pipeline" $ do
               , precipCoastal = 1
               }
           }
-        pipelineA = buildFullPipelineConfig cfgA 42
-        pipelineB = buildFullPipelineConfig cfgB 42
+        pipelineA = buildFullPipelineConfig cfgA config 42
+        pipelineB = buildFullPipelineConfig cfgB config 42
         env = TopoEnv { teLogger = \_ -> pure () }
     resultA <- runPipeline pipelineA env world0
     resultB <- runPipeline pipelineB env world0

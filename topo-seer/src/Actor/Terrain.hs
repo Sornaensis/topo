@@ -38,10 +38,10 @@ import Topo
   , WeatherChunk
   , TerrainWorld(..)
   , defaultHexGridMeta
-  , emptyWorld
+  , emptyWorldWithPlanet
   )
 import Topo.Pipeline (PipelineConfig(..), runPipeline)
-import Topo.WorldGen (WorldGenConfig, buildFullPipelineConfig)
+import Topo.WorldGen (WorldGenConfig(..), buildFullPipelineConfig)
 
 progressTag :: OpTag "progress"
 progressTag = OpTag
@@ -111,8 +111,9 @@ actor Terrain
     genStart <- getCurrentTime
     let cfg = tgrGenConfig req
         worldCfg = tgrWorldConfig req
-        world0 = emptyWorld worldCfg defaultHexGridMeta
-        pipeline = buildFullPipelineConfig cfg (tgrSeed req)
+        world0 = emptyWorldWithPlanet worldCfg defaultHexGridMeta
+                   (worldPlanet cfg) (worldSlice cfg)
+        pipeline = buildFullPipelineConfig cfg worldCfg (tgrSeed req)
         stageCount = length (pipelineStages pipeline)
     stageRef <- newIORef 0
     stageStartRef <- newIORef Nothing

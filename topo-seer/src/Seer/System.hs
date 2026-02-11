@@ -78,7 +78,7 @@ import qualified SDL
 import qualified SDL.Font as Font
 import Hyperspace.Actor (ActorHandle, Protocol, cast, getSingleton, newActorSystem, replyTo, shutdownActorSystem)
 import Seer.Draw (logLineHeight)
-import Seer.Input (handleEvent, isQuit)
+import Seer.Input (handleEvent, isQuit, tickTooltipHover)
 import Seer.Render
   ( TerrainCache(..)
   , emptyTerrainCache
@@ -168,6 +168,7 @@ runApp = do
   lineHeightRef <- logLineHeight fontCache >>= newIORef
   mousePosRef <- newIORef (0, 0)
   dragRef <- newIORef Nothing
+  tooltipHoverRef <- newIORef Nothing
   runtimeCfg <- loadConfig
   let frameDelayMs         = cfgFrameDelayMs runtimeCfg
       atlasUploadsPerFrame = cfgAtlasUploadsPerFrame runtimeCfg
@@ -239,10 +240,18 @@ runApp = do
         let coalescedEvents = coalesceMouseMotion events
         handleElapsed <-
           if null events
-            then pure 0
+            then do
+              -- Even when idle, tick the tooltip frame counter; if it
+              -- fires we must request a fresh UI snapshot so the render
+              -- thread picks up the hover widget.
+              fired <- tickTooltipHover tooltipHoverRef uiHandle
+              when fired $
+                requestUiSnapshot uiHandle (replyTo @UiSnapshotReply snapshotReceiverHandle)
+              pure 0
             else do
               handleStart <- getMonotonicTimeNSec
-              forM_ coalescedEvents (handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandle uiActionsHandle snapshotReceiverHandle (rsUi renderSnap) (rsLog renderSnap) (rsData renderSnap) (rsTerrain renderSnap) quitRef lineHeightRef mousePosRef dragRef)
+              forM_ coalescedEvents (handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandle uiActionsHandle snapshotReceiverHandle (rsUi renderSnap) (rsLog renderSnap) (rsData renderSnap) (rsTerrain renderSnap) quitRef lineHeightRef mousePosRef dragRef tooltipHoverRef)
+              _ <- tickTooltipHover tooltipHoverRef uiHandle
               afterEvents <- getMonotonicTimeNSec
               requestUiSnapshot uiHandle (replyTo @UiSnapshotReply snapshotReceiverHandle)
               handleEnd <- getMonotonicTimeNSec
@@ -372,7 +381,7 @@ terrainCacheNeedsRebuild uiSnap terrainSnap cache
         || not (IntMap.null (tcClimateChunks cache))
         || not (IntMap.null (tcWeatherChunks cache))
   | tcViewMode cache /= uiViewMode uiSnap = True
-  | tcWaterLevel cache /= uiWaterLevel uiSnap = True
+  | tcWaterLevel cache /= uiRenderWaterLevel uiSnap = True
   | tcChunkSize cache /= tsChunkSize terrainSnap = True
   | tcVersion cache /= tsVersion terrainSnap = True
   | otherwise = False

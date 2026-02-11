@@ -33,6 +33,7 @@ library:
     - Seer.App
     - Seer.Config
     - Seer.Config.Runtime
+    - Seer.Config.SliderSpec
     - Seer.Draw
     - Seer.Input
     - Seer.System

@@ -21,6 +21,7 @@ module Seer.Draw
   , drawStatusBars
   , drawHoverHex
   , drawHexContext
+  , drawTooltip
   , drawUiLabels
   ) where
 
@@ -40,6 +41,7 @@ import Foreign.C.Types (CInt)
 import Linear (V2(..), V4(..))
 import qualified SDL
 import Seer.Config (mapIntRange)
+import Seer.Config.SliderSpec
 import Topo (BiomeId, ChunkCoord(..), ChunkId(..), ClimateChunk(..), TerrainChunk(..), TileCoord(..), TileIndex(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord, tileIndex)
 import UI.Font (FontCache, textSize)
 import UI.HexPick (axialToScreen)
@@ -418,7 +420,7 @@ drawConfigPanel renderer ui rect (tabTerrain, tabClimate, tabErosion) applyRect 
       let rowHeight = 24
           gap = 10
           rows = case uiConfigTab ui of
-            ConfigTerrain -> 45
+            ConfigTerrain -> 44
             ConfigClimate -> 26
             ConfigErosion -> 5
           contentHeight = max rowHeight (configRowTopPad + rows * rowHeight + max 0 (rows - 1) * gap)
@@ -855,9 +857,6 @@ drawUiLabels renderer fontCache ui layout = do
     drawCentered fontCache labelColor configApply "Apply"
     drawCentered fontCache labelColor configReplay "Replay"
     drawCentered fontCache labelColor configReset "Reset"
-    let Rect (V2 sx sy, V2 _ _) = scrollArea
-    when (uiConfigTab ui == ConfigTerrain) $
-      drawTextLine fontCache (V2 (sx + 4) (sy - 16)) labelColor "Edge depth biases height near borders"
     SDL.rendererClipRect renderer SDL.$= Just (rectToSDL scrollArea)
     case uiConfigTab ui of
       ConfigTerrain -> do
@@ -949,50 +948,50 @@ drawUiLabels renderer fontCache ui layout = do
         drawCentered fontCache labelColor (scrollRect configPlateBiasNorthPlus) "+"
         drawCentered fontCache labelColor (scrollRect configPlateBiasSouthMinus) "-"
         drawCentered fontCache labelColor (scrollRect configPlateBiasSouthPlus) "+"
-        drawLabelAbove fontCache labelColor (scrollRect configGenScaleBar) "Scale"
-        drawLabelAbove fontCache labelColor (scrollRect configGenCoordScaleBar) "Noise Scale"
-        drawLabelAbove fontCache labelColor (scrollRect configGenOffsetXBar) "Noise Off X"
-        drawLabelAbove fontCache labelColor (scrollRect configGenOffsetYBar) "Noise Off Y"
-        drawLabelAbove fontCache labelColor (scrollRect configGenFrequencyBar) "Frequency"
-        drawLabelAbove fontCache labelColor (scrollRect configGenOctavesBar) "Octaves"
-        drawLabelAbove fontCache labelColor (scrollRect configGenLacunarityBar) "Lacunarity"
-        drawLabelAbove fontCache labelColor (scrollRect configGenGainBar) "Gain"
-        drawLabelAbove fontCache labelColor (scrollRect configGenWarpScaleBar) "Warp Scale"
-        drawLabelAbove fontCache labelColor (scrollRect configGenWarpStrengthBar) "Warp Strength"
-        drawLabelAbove fontCache labelColor (scrollRect configExtentXBar) "Extent X"
-        drawLabelAbove fontCache labelColor (scrollRect configExtentYBar) "Extent Y"
-        drawLabelAbove fontCache labelColor (scrollRect configEdgeNorthBar) "Edge North"
-        drawLabelAbove fontCache labelColor (scrollRect configEdgeSouthBar) "Edge South"
-        drawLabelAbove fontCache labelColor (scrollRect configEdgeEastBar) "Edge East"
-        drawLabelAbove fontCache labelColor (scrollRect configEdgeWestBar) "Edge West"
-        drawLabelAbove fontCache labelColor (scrollRect configEdgeFalloffBar) "Edge Falloff"
-        drawLabelAbove fontCache labelColor (scrollRect configPlateSizeBar) "Plate Size"
-        drawLabelAbove fontCache labelColor (scrollRect configUpliftBar) "Uplift"
-        drawLabelAbove fontCache labelColor (scrollRect configRiftDepthBar) "Rift Depth"
-        drawLabelAbove fontCache labelColor (scrollRect configDetailScaleBar) "Detail Scale"
-        drawLabelAbove fontCache labelColor (scrollRect configPlateSpeedBar) "Plate Speed"
-        drawLabelAbove fontCache labelColor (scrollRect configBoundarySharpnessBar) "Boundary Sharp"
-        drawLabelAbove fontCache labelColor (scrollRect configBoundaryNoiseScaleBar) "Boundary Scale"
-        drawLabelAbove fontCache labelColor (scrollRect configBoundaryNoiseStrengthBar) "Boundary Strength"
-        drawLabelAbove fontCache labelColor (scrollRect configBoundaryWarpOctavesBar) "Warp Octaves"
-        drawLabelAbove fontCache labelColor (scrollRect configBoundaryWarpLacunarityBar) "Warp Lac"
-        drawLabelAbove fontCache labelColor (scrollRect configBoundaryWarpGainBar) "Warp Gain"
-        drawLabelAbove fontCache labelColor (scrollRect configPlateMergeScaleBar) "Merge Scale"
-        drawLabelAbove fontCache labelColor (scrollRect configPlateMergeBiasBar) "Merge Bias"
-        drawLabelAbove fontCache labelColor (scrollRect configPlateDetailScaleBar) "Plate Detail S"
-        drawLabelAbove fontCache labelColor (scrollRect configPlateDetailStrengthBar) "Plate Detail St"
-        drawLabelAbove fontCache labelColor (scrollRect configPlateRidgeStrengthBar) "Plate Ridge St"
-        drawLabelAbove fontCache labelColor (scrollRect configPlateHeightBaseBar) "Plate Height B"
-        drawLabelAbove fontCache labelColor (scrollRect configPlateHeightVarianceBar) "Plate Height V"
-        drawLabelAbove fontCache labelColor (scrollRect configPlateHardnessBaseBar) "Plate Hard B"
-        drawLabelAbove fontCache labelColor (scrollRect configPlateHardnessVarianceBar) "Plate Hard V"
-        drawLabelAbove fontCache labelColor (scrollRect configTrenchDepthBar) "Trench Depth"
-        drawLabelAbove fontCache labelColor (scrollRect configRidgeHeightBar) "Ridge Height"
-        drawLabelAbove fontCache labelColor (scrollRect configPlateBiasStrengthBar) "Bias Strength"
-        drawLabelAbove fontCache labelColor (scrollRect configPlateBiasCenterBar) "Bias Center"
-        drawLabelAbove fontCache labelColor (scrollRect configPlateBiasEdgeBar) "Bias Edge"
-        drawLabelAbove fontCache labelColor (scrollRect configPlateBiasNorthBar) "Bias North"
-        drawLabelAbove fontCache labelColor (scrollRect configPlateBiasSouthBar) "Bias South"
+        drawLabelAbove fontCache labelColor (scrollRect configGenScaleBar) (sliderLabel specGenScale (uiGenScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configGenCoordScaleBar) (sliderLabel specGenCoordScale (uiGenCoordScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configGenOffsetXBar) (sliderLabel specGenOffsetX (uiGenOffsetX ui))
+        drawLabelAbove fontCache labelColor (scrollRect configGenOffsetYBar) (sliderLabel specGenOffsetY (uiGenOffsetY ui))
+        drawLabelAbove fontCache labelColor (scrollRect configGenFrequencyBar) (sliderLabel specGenFrequency (uiGenFrequency ui))
+        drawLabelAbove fontCache labelColor (scrollRect configGenOctavesBar) (sliderLabel specGenOctaves (uiGenOctaves ui))
+        drawLabelAbove fontCache labelColor (scrollRect configGenLacunarityBar) (sliderLabel specGenLacunarity (uiGenLacunarity ui))
+        drawLabelAbove fontCache labelColor (scrollRect configGenGainBar) (sliderLabel specGenGain (uiGenGain ui))
+        drawLabelAbove fontCache labelColor (scrollRect configGenWarpScaleBar) (sliderLabel specGenWarpScale (uiGenWarpScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configGenWarpStrengthBar) (sliderLabel specGenWarpStrength (uiGenWarpStrength ui))
+        drawLabelAbove fontCache labelColor (scrollRect configExtentXBar) (sliderLabel specExtentX (uiWorldExtentX ui))
+        drawLabelAbove fontCache labelColor (scrollRect configExtentYBar) (sliderLabel specExtentY (uiWorldExtentY ui))
+        drawLabelAbove fontCache labelColor (scrollRect configEdgeNorthBar) (sliderLabel specEdgeNorth (uiEdgeDepthNorth ui))
+        drawLabelAbove fontCache labelColor (scrollRect configEdgeSouthBar) (sliderLabel specEdgeSouth (uiEdgeDepthSouth ui))
+        drawLabelAbove fontCache labelColor (scrollRect configEdgeEastBar) (sliderLabel specEdgeEast (uiEdgeDepthEast ui))
+        drawLabelAbove fontCache labelColor (scrollRect configEdgeWestBar) (sliderLabel specEdgeWest (uiEdgeDepthWest ui))
+        drawLabelAbove fontCache labelColor (scrollRect configEdgeFalloffBar) (sliderLabel specEdgeFalloff (uiEdgeDepthFalloff ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPlateSizeBar) (sliderLabel specPlateSize (uiPlateSize ui))
+        drawLabelAbove fontCache labelColor (scrollRect configUpliftBar) (sliderLabel specUplift (uiUplift ui))
+        drawLabelAbove fontCache labelColor (scrollRect configRiftDepthBar) (sliderLabel specRiftDepth (uiRiftDepth ui))
+        drawLabelAbove fontCache labelColor (scrollRect configDetailScaleBar) (sliderLabel specDetailScale (uiDetailScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPlateSpeedBar) (sliderLabel specPlateSpeed (uiPlateSpeed ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBoundarySharpnessBar) (sliderLabel specBoundarySharpness (uiBoundarySharpness ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBoundaryNoiseScaleBar) (sliderLabel specBoundaryNoiseScale (uiBoundaryNoiseScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBoundaryNoiseStrengthBar) (sliderLabel specBoundaryNoiseStrength (uiBoundaryNoiseStrength ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBoundaryWarpOctavesBar) (sliderLabel specBoundaryWarpOctaves (uiBoundaryWarpOctaves ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBoundaryWarpLacunarityBar) (sliderLabel specBoundaryWarpLacunarity (uiBoundaryWarpLacunarity ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBoundaryWarpGainBar) (sliderLabel specBoundaryWarpGain (uiBoundaryWarpGain ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPlateMergeScaleBar) (sliderLabel specPlateMergeScale (uiPlateMergeScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPlateMergeBiasBar) (sliderLabel specPlateMergeBias (uiPlateMergeBias ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPlateDetailScaleBar) (sliderLabel specPlateDetailScale (uiPlateDetailScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPlateDetailStrengthBar) (sliderLabel specPlateDetailStrength (uiPlateDetailStrength ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPlateRidgeStrengthBar) (sliderLabel specPlateRidgeStrength (uiPlateRidgeStrength ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPlateHeightBaseBar) (sliderLabel specPlateHeightBase (uiPlateHeightBase ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPlateHeightVarianceBar) (sliderLabel specPlateHeightVariance (uiPlateHeightVariance ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPlateHardnessBaseBar) (sliderLabel specPlateHardnessBase (uiPlateHardnessBase ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPlateHardnessVarianceBar) (sliderLabel specPlateHardnessVariance (uiPlateHardnessVariance ui))
+        drawLabelAbove fontCache labelColor (scrollRect configTrenchDepthBar) (sliderLabel specTrenchDepth (uiTrenchDepth ui))
+        drawLabelAbove fontCache labelColor (scrollRect configRidgeHeightBar) (sliderLabel specRidgeHeight (uiRidgeHeight ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPlateBiasStrengthBar) (sliderLabel specPlateBiasStrength (uiPlateBiasStrength ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPlateBiasCenterBar) (sliderLabel specPlateBiasCenter (uiPlateBiasCenter ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPlateBiasEdgeBar) (sliderLabel specPlateBiasEdge (uiPlateBiasEdge ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPlateBiasNorthBar) (sliderLabel specPlateBiasNorth (uiPlateBiasNorth ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPlateBiasSouthBar) (sliderLabel specPlateBiasSouth (uiPlateBiasSouth ui))
       ConfigClimate -> do
         drawCentered fontCache labelColor (scrollRect configWaterMinus) "-"
         drawCentered fontCache labelColor (scrollRect configWaterPlus) "+"
@@ -1046,32 +1045,32 @@ drawUiLabels renderer fontCache ui layout = do
         drawCentered fontCache labelColor (scrollRect configSliceLonCenterPlus) "+"
         drawCentered fontCache labelColor (scrollRect configSliceLonExtentMinus) "-"
         drawCentered fontCache labelColor (scrollRect configSliceLonExtentPlus) "+"
-        drawLabelAbove fontCache labelColor (scrollRect configWaterBar) "Water Level"
-        drawLabelAbove fontCache labelColor (scrollRect configEvapBar) "Evaporation"
-        drawLabelAbove fontCache labelColor (scrollRect configRainShadowBar) "Rain Shadow"
-        drawLabelAbove fontCache labelColor (scrollRect configWindDiffuseBar) "Wind Diffuse"
-        drawLabelAbove fontCache labelColor (scrollRect configEquatorTempBar) "Equator Temp"
-        drawLabelAbove fontCache labelColor (scrollRect configPoleTempBar) "Pole Temp"
-        drawLabelAbove fontCache labelColor (scrollRect configLapseRateBar) "Lapse Rate"
-        drawLabelAbove fontCache labelColor (scrollRect configLatitudeBiasBar) "Latitude Bias"
-        drawLabelAbove fontCache labelColor (scrollRect configWindIterationsBar) "Wind Iter"
-        drawLabelAbove fontCache labelColor (scrollRect configMoistureIterationsBar) "Moist Iter"
-        drawLabelAbove fontCache labelColor (scrollRect configWeatherTickBar) "Weather Tick"
-        drawLabelAbove fontCache labelColor (scrollRect configWeatherPhaseBar) "Weather Phase"
-        drawLabelAbove fontCache labelColor (scrollRect configWeatherAmplitudeBar) "Weather Amp"
-        drawLabelAbove fontCache labelColor (scrollRect configVegBaseBar) "Veg Base"
-        drawLabelAbove fontCache labelColor (scrollRect configVegBoostBar) "Veg Boost"
-        drawLabelAbove fontCache labelColor (scrollRect configVegTempWeightBar) "Veg Temp W"
-        drawLabelAbove fontCache labelColor (scrollRect configVegPrecipWeightBar) "Veg Precip W"
-        drawLabelAbove fontCache labelColor (scrollRect configBoundaryMotionTempBar) "Bound Temp"
-        drawLabelAbove fontCache labelColor (scrollRect configBoundaryMotionPrecipBar) "Bound Precip"
-        drawLabelAbove fontCache labelColor (scrollRect configPlanetRadiusBar) "Planet R"
-        drawLabelAbove fontCache labelColor (scrollRect configAxialTiltBar) "Axial Tilt"
-        drawLabelAbove fontCache labelColor (scrollRect configInsolationBar) "Insolation"
-        drawLabelAbove fontCache labelColor (scrollRect configSliceLatCenterBar) "Lat Center"
-        drawLabelAbove fontCache labelColor (scrollRect configSliceLatExtentBar) "Lat Extent"
-        drawLabelAbove fontCache labelColor (scrollRect configSliceLonCenterBar) "Lon Center"
-        drawLabelAbove fontCache labelColor (scrollRect configSliceLonExtentBar) "Lon Extent"
+        drawLabelAbove fontCache labelColor (scrollRect configWaterBar) (sliderLabel specWaterLevel (uiWaterLevel ui))
+        drawLabelAbove fontCache labelColor (scrollRect configEvapBar) (sliderLabel specEvaporation (uiEvaporation ui))
+        drawLabelAbove fontCache labelColor (scrollRect configRainShadowBar) (sliderLabel specRainShadow (uiRainShadow ui))
+        drawLabelAbove fontCache labelColor (scrollRect configWindDiffuseBar) (sliderLabel specWindDiffuse (uiWindDiffuse ui))
+        drawLabelAbove fontCache labelColor (scrollRect configEquatorTempBar) (sliderLabel specEquatorTemp (uiEquatorTemp ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPoleTempBar) (sliderLabel specPoleTemp (uiPoleTemp ui))
+        drawLabelAbove fontCache labelColor (scrollRect configLapseRateBar) (sliderLabel specLapseRate (uiLapseRate ui))
+        drawLabelAbove fontCache labelColor (scrollRect configLatitudeBiasBar) (sliderLabel specLatitudeBias (uiLatitudeBias ui))
+        drawLabelAbove fontCache labelColor (scrollRect configWindIterationsBar) (sliderLabel specWindIterations (uiWindIterations ui))
+        drawLabelAbove fontCache labelColor (scrollRect configMoistureIterationsBar) (sliderLabel specMoistureIterations (uiMoistureIterations ui))
+        drawLabelAbove fontCache labelColor (scrollRect configWeatherTickBar) (sliderLabel specWeatherTick (uiWeatherTick ui))
+        drawLabelAbove fontCache labelColor (scrollRect configWeatherPhaseBar) (sliderLabel specWeatherPhase (uiWeatherPhase ui))
+        drawLabelAbove fontCache labelColor (scrollRect configWeatherAmplitudeBar) (sliderLabel specWeatherAmplitude (uiWeatherAmplitude ui))
+        drawLabelAbove fontCache labelColor (scrollRect configVegBaseBar) (sliderLabel specVegBase (uiVegBase ui))
+        drawLabelAbove fontCache labelColor (scrollRect configVegBoostBar) (sliderLabel specVegBoost (uiVegBoost ui))
+        drawLabelAbove fontCache labelColor (scrollRect configVegTempWeightBar) (sliderLabel specVegTempWeight (uiVegTempWeight ui))
+        drawLabelAbove fontCache labelColor (scrollRect configVegPrecipWeightBar) (sliderLabel specVegPrecipWeight (uiVegPrecipWeight ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBoundaryMotionTempBar) (sliderLabel specBoundaryMotionTemp (uiBoundaryMotionTemp ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBoundaryMotionPrecipBar) (sliderLabel specBoundaryMotionPrecip (uiBoundaryMotionPrecip ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPlanetRadiusBar) (sliderLabel specPlanetRadius (uiPlanetRadius ui))
+        drawLabelAbove fontCache labelColor (scrollRect configAxialTiltBar) (sliderLabel specAxialTilt (uiAxialTilt ui))
+        drawLabelAbove fontCache labelColor (scrollRect configInsolationBar) (sliderLabel specInsolation (uiInsolation ui))
+        drawLabelAbove fontCache labelColor (scrollRect configSliceLatCenterBar) (sliderLabel specSliceLatCenter (uiSliceLatCenter ui))
+        drawLabelAbove fontCache labelColor (scrollRect configSliceLatExtentBar) (sliderLabel specSliceLatExtent (uiSliceLatExtent ui))
+        drawLabelAbove fontCache labelColor (scrollRect configSliceLonCenterBar) (sliderLabel specSliceLonCenter (uiSliceLonCenter ui))
+        drawLabelAbove fontCache labelColor (scrollRect configSliceLonExtentBar) (sliderLabel specSliceLonExtent (uiSliceLonExtent ui))
       ConfigErosion -> do
         drawCentered fontCache labelColor (scrollRect configErosionHydraulicMinus) "-"
         drawCentered fontCache labelColor (scrollRect configErosionHydraulicPlus) "+"
@@ -1083,11 +1082,11 @@ drawUiLabels renderer fontCache ui layout = do
         drawCentered fontCache labelColor (scrollRect configErosionTalusPlus) "+"
         drawCentered fontCache labelColor (scrollRect configErosionMaxDropMinus) "-"
         drawCentered fontCache labelColor (scrollRect configErosionMaxDropPlus) "+"
-        drawLabelAbove fontCache labelColor (scrollRect configErosionHydraulicBar) "Hydraulic Iters"
-        drawLabelAbove fontCache labelColor (scrollRect configErosionThermalBar) "Thermal Iters"
-        drawLabelAbove fontCache labelColor (scrollRect configErosionRainRateBar) "Rain Rate"
-        drawLabelAbove fontCache labelColor (scrollRect configErosionTalusBar) "Thermal Talus"
-        drawLabelAbove fontCache labelColor (scrollRect configErosionMaxDropBar) "Max Drop"
+        drawLabelAbove fontCache labelColor (scrollRect configErosionHydraulicBar) (sliderLabel specErosionHydraulic (uiErosionHydraulic ui))
+        drawLabelAbove fontCache labelColor (scrollRect configErosionThermalBar) (sliderLabel specErosionThermal (uiErosionThermal ui))
+        drawLabelAbove fontCache labelColor (scrollRect configErosionRainRateBar) (sliderLabel specErosionRainRate (uiRainRate ui))
+        drawLabelAbove fontCache labelColor (scrollRect configErosionTalusBar) (sliderLabel specErosionTalus (uiErosionTalus ui))
+        drawLabelAbove fontCache labelColor (scrollRect configErosionMaxDropBar) (sliderLabel specErosionMaxDrop (uiErosionMaxDrop ui))
     SDL.rendererClipRect renderer SDL.$= Nothing
 
 drawStatusBars :: SDL.Renderer -> Maybe FontCache -> UiState -> DataSnapshot -> Layout -> IO ()
@@ -1306,3 +1305,30 @@ formatF :: Float -> String
 formatF v =
   let scaled = fromIntegral (round (v * 100) :: Int) / 100 :: Double
   in show scaled
+
+-- | Draw a tooltip near the given screen position.
+--
+-- Renders a filled rectangle with the tooltip text, clamped so it
+-- stays within @(winW, winH)@ bounds.
+drawTooltip :: SDL.Renderer -> Maybe FontCache -> V2 Int -> V2 Int -> Text -> IO ()
+drawTooltip renderer fontCache (V2 winW winH) (V2 mx my) tipText = do
+  let tipPad = 6
+      tipOffsetY = 20
+  let tipColor = V4 220 220 230 255 :: V4 Word8
+  V2 tw th <- case fontCache of
+    Just fc -> textSize fc tipColor tipText
+    Nothing -> pure (V2 (Text.length tipText * 8) 16)
+  let boxW = tw + tipPad * 2
+      boxH = th + tipPad * 2
+      -- Position below cursor, clamped to window
+      rawX = mx + 8
+      rawY = my + tipOffsetY
+      x = max 0 (min (winW - boxW) rawX)
+      y = max 0 (min (winH - boxH) rawY)
+      bgRect = SDL.Rectangle (SDL.P (V2 (fromIntegral x) (fromIntegral y)))
+                              (V2 (fromIntegral boxW) (fromIntegral boxH))
+  SDL.rendererDrawColor renderer SDL.$= V4 20 20 30 240
+  SDL.fillRect renderer (Just bgRect)
+  SDL.rendererDrawColor renderer SDL.$= V4 80 80 100 255
+  SDL.drawRect renderer (Just bgRect)
+  drawTextLine fontCache (V2 (x + tipPad) (y + tipPad)) tipColor tipText

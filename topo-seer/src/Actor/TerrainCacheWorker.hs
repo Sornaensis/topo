@@ -101,7 +101,7 @@ terrainCacheKeyFrom uiSnap terrainSnap
   | tsChunkSize terrainSnap <= 0 = Nothing
   | otherwise = Just TerrainCacheKey
       { tckViewMode = uiViewMode uiSnap
-      , tckWaterLevel = uiWaterLevel uiSnap
+      , tckWaterLevel = uiRenderWaterLevel uiSnap
       , tckChunkSize = tsChunkSize terrainSnap
       , tckVersion = tsVersion terrainSnap
       }

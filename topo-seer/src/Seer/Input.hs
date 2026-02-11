@@ -5,6 +5,9 @@ module Seer.Input
   ( isQuit
   , handleEvent
   , handleClick
+  , TooltipHover
+  , tickTooltipHover
+  , tooltipDelayFrames
   ) where
 
 import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..))
@@ -92,6 +95,7 @@ import Actor.UI
   , setUiVegTempWeight
   , setUiVegPrecipWeight
   , setUiHoverHex
+  , setUiHoverWidget
   , setUiLapseRate
   , setUiLeftTab
   , setUiPoleTemp
@@ -110,7 +114,7 @@ import Actor.UI
   )
 import Control.Monad (when)
 import Data.Int (Int32)
-import Data.IORef (IORef, readIORef, writeIORef)
+import Data.IORef (IORef, readIORef, writeIORef, modifyIORef')
 import Data.List (partition)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -136,7 +140,7 @@ import Seer.Input.ViewControls
 import Topo (ChunkCoord(..), ChunkId(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
 import UI.HexPick (screenToAxial)
 import UI.Layout
-import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, hitTest)
+import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildSliderRowWidgets, hitTest)
 import UI.Widgets (Rect(..), containsPoint)
 import System.Random (randomIO)
 import Hyperspace.Actor (ActorHandle, Protocol, replyTo)
@@ -149,6 +153,15 @@ data DragState = DragState
   , dsLast :: !(Int, Int)
   , dsDragging :: !Bool
   }
+
+-- | Pending tooltip hover: which widget is under the cursor and how
+-- many frames remain before the tooltip fires.
+type TooltipHover = Maybe (WidgetId, Int)
+
+-- | Number of consecutive frames the cursor must remain still on a
+-- slider row before the tooltip appears.
+tooltipDelayFrames :: Int
+tooltipDelayFrames = 15
 
 handleEvent
   :: SDL.Window
@@ -167,9 +180,10 @@ handleEvent
   -> IORef Int
   -> IORef (Int, Int)
   -> IORef (Maybe DragState)
+  -> IORef TooltipHover
   -> SDL.Event
   -> IO ()
-handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandle uiActionsHandle snapshotReceiverHandle uiSnapCached logSnapCached dataSnapCached terrainSnapCached quitRef lineHeightRef mousePosRef dragRef event = do
+handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandle uiActionsHandle snapshotReceiverHandle uiSnapCached logSnapCached dataSnapCached terrainSnapCached quitRef lineHeightRef mousePosRef dragRef tooltipHoverRef event = do
   case SDL.eventPayload event of
     SDL.MouseMotionEvent motionEvent -> do
       let SDL.P (V2 mx my) = SDL.mouseMotionEventPos motionEvent
@@ -201,6 +215,51 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
       if isTerrainHex terrainSnap (q, r)
         then setUiHoverHex uiHandle (Just (q, r))
         else setUiHoverHex uiHandle Nothing
+      -- Widget hover detection for tooltips (only for active tab sliders)
+      do (V2 winW winH) <- SDL.get (SDL.windowSize window)
+         logSnap <- getLogSnapshot logHandle
+         let logHeight = if lsCollapsed logSnap then 24 else 160
+             seedWidth = max 120 (seedMaxDigits * 10)
+             hoverLayout = layoutForSeed (V2 (fromIntegral winW) (fromIntegral winH)) logHeight seedWidth
+             point = V2 (fromIntegral mx) (fromIntegral my)
+         if uiShowConfig uiSnap
+           then do
+             let scrollArea = configScrollAreaRect hoverLayout
+                 scrollOffset = uiConfigScroll uiSnap
+                 scrolledPoint = V2 (fromIntegral mx) (fromIntegral my + scrollOffset)
+                 (terrainRows, climateRows, erosionRows) = buildSliderRowWidgets hoverLayout
+                 activeRows = case uiConfigTab uiSnap of
+                   ConfigTerrain -> terrainRows
+                   ConfigClimate -> climateRows
+                   ConfigErosion -> erosionRows
+                 hoverResult
+                   | containsPoint scrollArea point = hitTest activeRows scrolledPoint
+                   | otherwise = Nothing
+             -- Record which widget the cursor is over and reset the
+             -- frame counter.  The actual tooltip is fired by
+             -- 'tickTooltipHover' once the counter reaches 0.
+             pending <- readIORef tooltipHoverRef
+             case hoverResult of
+               Nothing -> do
+                 writeIORef tooltipHoverRef Nothing
+                 setUiHoverWidget uiHandle Nothing
+               Just wid -> do
+                 case pending of
+                   Just (prevWid, _)
+                     | prevWid == wid ->
+                         -- Same widget; reset the frame counter so
+                         -- tooltip only appears after the cursor stops.
+                         writeIORef tooltipHoverRef (Just (wid, tooltipDelayFrames))
+                     | otherwise -> do
+                         -- Different widget; restart counter, hide tooltip
+                         writeIORef tooltipHoverRef (Just (wid, tooltipDelayFrames))
+                         setUiHoverWidget uiHandle Nothing
+                   Nothing -> do
+                     writeIORef tooltipHoverRef (Just (wid, tooltipDelayFrames))
+                     setUiHoverWidget uiHandle Nothing
+           else do
+             writeIORef tooltipHoverRef Nothing
+             setUiHoverWidget uiHandle Nothing
     SDL.MouseWheelEvent wheelEvent -> do
       let SDL.V2 _ dy = SDL.mouseWheelEventPos wheelEvent
       when (dy /= 0) $ do
@@ -332,6 +391,28 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           setUiShowMenu uiHandle True
         Nothing ->
           setUiShowMenu uiHandle (not (uiShowMenu uiSnap))
+
+-- | Per-frame tick for the tooltip hover delay.  Decrements the
+-- remaining frame count and promotes the pending hover to a visible
+-- tooltip once it reaches zero.  Returns 'True' when it fired so
+-- the caller can request a UI snapshot refresh.
+tickTooltipHover
+  :: IORef TooltipHover
+  -> ActorHandle Ui (Protocol Ui)
+  -> IO Bool
+tickTooltipHover tooltipHoverRef uiHandle = do
+  pending <- readIORef tooltipHoverRef
+  case pending of
+    Just (wid, n)
+      | n <= 1 -> do
+          -- Counter expired; lock it at 0 and show tooltip
+          writeIORef tooltipHoverRef (Just (wid, 0))
+          setUiHoverWidget uiHandle (Just wid)
+          pure True
+      | otherwise -> do
+          modifyIORef' tooltipHoverRef (fmap (\(w, c) -> (w, c - 1)))
+          pure False
+    Nothing -> pure False
 
 handleClick
   :: SDL.Window

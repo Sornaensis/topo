@@ -39,6 +39,7 @@ library
       Seer.App
       Seer.Config
       Seer.Config.Runtime
+      Seer.Config.SliderSpec
       Seer.Draw
       Seer.Input
       Seer.System
@@ -109,6 +110,7 @@ test-suite topo-seer-test
       Spec.Layout
       Spec.LogActor
       Spec.RenderActor
+      Spec.SliderSpec
       Spec.SnapshotReceiver
       Spec.TerrainActor
       Spec.TerrainCacheWorker

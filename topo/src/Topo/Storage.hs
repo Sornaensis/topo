@@ -170,6 +170,11 @@ magic = BS.pack [0x54, 0x4f, 0x50, 0x4f]
 --   * 7: glacier chunks added.
 --   * 8: volcanism chunks added.
 --   * 9: planet config + world slice fields added.
+--         PlanetConfig: radius (Float32), axialTilt (Float32),
+--         insolation (Float32).
+--         WorldSlice: latCenter (Float32), latExtent (Float32),
+--         lonCenter (Float32), lonExtent (Float32).
+--         Files < v9 decode with 'defaultPlanetConfig' / 'defaultWorldSlice'.
 fileVersion :: Word32
 fileVersion = 9
 

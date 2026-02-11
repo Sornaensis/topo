@@ -16,11 +16,13 @@ import qualified Spec.TerrainActor
 import qualified Spec.UiActor
 import qualified Spec.Widgets
 import qualified Spec.WidgetTree
+import qualified Spec.SliderSpec
 
 main :: IO ()
 main = hspec $ do
   Spec.LogActor.spec
   Spec.CacheProperties.spec
+  Spec.SliderSpec.spec
   Spec.AtlasResultBroker.spec
   Spec.AtlasScheduleBroker.spec
   Spec.AtlasScheduler.spec
