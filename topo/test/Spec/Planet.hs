@@ -138,7 +138,7 @@ spec = describe "Planet" $ do
       True `shouldBe` True
 
   describe "sliceToWorldExtent" $ do
-    it "produces at least 1×1 radii for defaults" $ do
+    it "produces at least 1x1 radii for defaults" $ do
       let config = WorldConfig { wcChunkSize = 16 }
           Right extent = sliceToWorldExtent defaultPlanetConfig defaultWorldSlice config
           (rx, ry) = worldExtentRadii extent

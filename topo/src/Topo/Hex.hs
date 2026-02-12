@@ -1,3 +1,5 @@
+{-# LANGUAGE BangPatterns #-}
+
 module Topo.Hex
   ( HexGridMeta(..)
   , HexLayout(..)
@@ -8,6 +10,8 @@ module Topo.Hex
   , cubeToAxial
   , hexDistance
   , hexNeighbors
+    -- * Grid-index hex neighbours
+  , hexNeighborIndices
   ) where
 
 import Topo.Types (HexCoord(..), WorldPos(..))
@@ -58,3 +62,34 @@ hexNeighbors coord =
         , (0, 1)
         ]
   in [HexAxial (q + dq) (r + dr) | (dq, dr) <- dirs]
+
+-- | The 6 axial hex direction offsets @(dq, dr)@.
+--
+-- Order matches the standard hex edge convention:
+-- E(0), NE(1), NW(2), W(3), SW(4), SE(5).
+hexDirs :: [(Int, Int)]
+hexDirs =
+  [ ( 1,  0)   -- E
+  , ( 1, -1)   -- NE
+  , ( 0, -1)   -- NW
+  , (-1,  0)   -- W
+  , (-1,  1)   -- SW
+  , ( 0,  1)   -- SE
+  ]
+
+-- | Return the flat-array indices of the 6 hex neighbours of tile @i@
+-- in a @gridW * gridH@ axial grid.  Only indices that fall within
+-- bounds are returned.
+--
+-- The grid stores tiles in row-major order: @index = y * gridW + x@
+-- where @(x, y)@ corresponds to axial coordinates @(q, r)@.
+hexNeighborIndices :: Int -> Int -> Int -> [Int]
+hexNeighborIndices gridW gridH i =
+  let !x = i `mod` gridW
+      !y = i `div` gridW
+  in [ nx + ny * gridW
+     | (dx, dy) <- hexDirs
+     , let !nx = x + dx
+           !ny = y + dy
+     , nx >= 0, nx < gridW, ny >= 0, ny < gridH
+     ]

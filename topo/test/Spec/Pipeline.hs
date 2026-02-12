@@ -66,18 +66,13 @@ spec = describe "Pipeline" $ do
     world1 <- expectPipeline result
     IntMap.size (twTerrain world1) `shouldBe` expected
 
-  it "applies worldPrecip scaling" $ do
+  it "applies moisture evaporation scaling" $ do
     let config = WorldConfig { wcChunkSize = 8 }
         world0 = emptyWorld config defaultHexGridMeta
         cfgA = defaultWorldGenConfig
         cfgB = defaultWorldGenConfig
-          { worldPrecip = PrecipConfig
-              { precipEvaporation = 0
-              , precipRainShadow = 1
-              , precipBoundary = 1
-              , precipOrographic = 1
-              , precipCoastal = 1
-              }
+          { worldClimate = let cc = defaultClimateConfig
+                           in cc { ccMoisture = (ccMoisture cc) { moistEvapCoeff = 0 } }
           }
         pipelineA = buildFullPipelineConfig cfgA config 42
         pipelineB = buildFullPipelineConfig cfgB config 42

@@ -37,13 +37,18 @@ import Data.Text.Encoding (decodeUtf8', encodeUtf8)
 import Topo.Export
   ( ExportError
   , decodeClimateChunk
+  , decodeClimateChunkV1
   , decodeGroundwaterChunk
   , decodeVolcanismChunk
   , decodeGlacierChunk
   , decodeRiverChunk
   , decodeRiverChunkV1
+  , decodeRiverChunkV2
   , decodeTerrainChunk
   , decodeTerrainChunkV2
+  , decodeVegetationChunk
+  , decodeVegetationChunkV1
+  , decodeWaterBodyChunk
   , decodeWeatherChunk
   , encodeClimateChunk
   , encodeGroundwaterChunk
@@ -51,6 +56,8 @@ import Topo.Export
   , encodeGlacierChunk
   , encodeRiverChunk
   , encodeTerrainChunk
+  , encodeVegetationChunk
+  , encodeWaterBodyChunk
   , encodeWeatherChunk
   )
 import Topo.Hex (HexGridMeta(..), defaultHexGridMeta)
@@ -123,6 +130,8 @@ encodeWorldWithProvenance prov world = do
   groundwater <- encodeChunkMap config encodeGroundwaterChunk (twGroundwater world)
   glaciers <- encodeChunkMap config encodeGlacierChunk (twGlaciers world)
   volcanism <- encodeChunkMap config encodeVolcanismChunk (twVolcanism world)
+  waterBodies <- encodeChunkMap config encodeWaterBodyChunk (twWaterBodies world)
+  vegetation <- encodeChunkMap config encodeVegetationChunk (twVegetation world)
   pure $ BL.toStrict $ runPut $ do
     putByteString magic
     putWord32le fileVersion
@@ -132,6 +141,7 @@ encodeWorldWithProvenance prov world = do
     putMetadataStore (twMeta world)
     putPlanetConfig (twPlanet world)
     putWorldSlice (twSlice world)
+    putFloatle (twWorldTime world)
     putChunkMapBytes terrain
     putChunkMapBytes climate
     putChunkMapBytes weather
@@ -139,6 +149,8 @@ encodeWorldWithProvenance prov world = do
     putChunkMapBytes groundwater
     putChunkMapBytes glaciers
     putChunkMapBytes volcanism
+    putChunkMapBytes waterBodies
+    putChunkMapBytes vegetation
 
 decodeWorld :: BS.ByteString -> Either StorageError TerrainWorld
 decodeWorld bytes =
@@ -175,8 +187,17 @@ magic = BS.pack [0x54, 0x4f, 0x50, 0x4f]
 --         WorldSlice: latCenter (Float32), latExtent (Float32),
 --         lonCenter (Float32), lonExtent (Float32).
 --         Files < v9 decode with 'defaultPlanetConfig' / 'defaultWorldSlice'.
+--   * 10: world time field (twWorldTime :: Float32) added.
+--         Files < v10 decode with twWorldTime = 0.
+--   * 11: river chunks include flow-direction and segment topology.
+--   * 12: water body chunks and vegetation chunks serialized.
+--         Vegetation chunks now include 'vegDensity'.
+--         Files < v12 decode with empty waterBodies/vegetation.
+--   * 13: climate chunks include humidity average, temperature range,
+--         and precipitation seasonality.
+--         Files < v13 decode with legacy 4-field climate chunks.
 fileVersion :: Word32
-fileVersion = 9
+fileVersion = 13
 
 defaultMetadataCodecs :: [MetadataCodec]
 defaultMetadataCodecs =
@@ -239,16 +260,25 @@ getWorldWithProvenance codecs = do
   (planet, slice) <- if version >= 9
     then (,) <$> getPlanetConfig <*> getWorldSlice
     else pure (defaultPlanetConfig, defaultWorldSlice)
+  worldTime <- if version >= 10
+    then getFloatle
+    else pure 0
   let terrainDecoder = if version < 3 then decodeTerrainChunkV2 else decodeTerrainChunk
   terrain <- getChunkMap terrainDecoder config
-  climate <- getChunkMap decodeClimateChunk config
+  climate <- getChunkMap (if version >= 13 then decodeClimateChunk else decodeClimateChunkV1) config
   weather <- getChunkMap decodeWeatherChunk config
   rivers <- if version >= 5
-    then getChunkMap (if version >= 6 then decodeRiverChunk else decodeRiverChunkV1) config
+    then getChunkMap (if version >= 11 then decodeRiverChunk
+                      else if version >= 6 then decodeRiverChunkV2
+                      else decodeRiverChunkV1) config
     else pure IntMap.empty
   groundwater <- if version >= 5 then getChunkMap decodeGroundwaterChunk config else pure IntMap.empty
   glaciers <- if version >= 7 then getChunkMap decodeGlacierChunk config else pure IntMap.empty
   volcanism <- if version >= 8 then getChunkMap decodeVolcanismChunk config else pure IntMap.empty
+  waterBodies <- if version >= 12 then getChunkMap decodeWaterBodyChunk config else pure IntMap.empty
+  vegetation <- if version >= 12
+    then getChunkMap decodeVegetationChunk config
+    else pure IntMap.empty
   pure
     ( prov
     , TerrainWorld
@@ -259,11 +289,14 @@ getWorldWithProvenance codecs = do
         , twGroundwater = groundwater
         , twVolcanism = volcanism
         , twGlaciers = glaciers
+        , twWaterBodies = waterBodies
+        , twVegetation = vegetation
         , twHexGrid = hexMeta
         , twMeta = metaStore
         , twConfig = config
         , twPlanet = planet
         , twSlice = slice
+        , twWorldTime = worldTime
         }
     )
 

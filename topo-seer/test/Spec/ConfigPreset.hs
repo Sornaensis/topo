@@ -176,18 +176,62 @@ instance Arbitrary ConfigPreset where
     <*> choose (8, 256)             -- chunkSize
     <*> unitFloat                   -- waterLevel
     <*> unitFloat                   -- renderWaterLevel
+    -- Climate
     <*> unitFloat <*> unitFloat <*> unitFloat         -- evap, rainShadow, windDiffuse
     <*> unitFloat <*> unitFloat <*> unitFloat         -- equatorTemp, poleTemp, lapseRate
     <*> unitFloat <*> unitFloat                       -- windIter, moistureIter
     <*> unitFloat <*> unitFloat                       -- boundaryMotionTemp, boundaryMotionPrecip
+    -- Temperature
+    <*> unitFloat <*> unitFloat <*> unitFloat         -- latitudeExponent, plateHeightCooling, tempNoiseScale
+    <*> unitFloat <*> unitFloat                       -- oceanModeration, oceanModerateTemp
+    <*> unitFloat <*> unitFloat                       -- albedoSensitivity, albedoReference
+    -- Moisture
+    <*> unitFloat <*> unitFloat                       -- moistAdvect, moistLocal
+    <*> unitFloat <*> unitFloat                       -- moistWindEvapScale, moistEvapNoiseScale
+    <*> unitFloat <*> unitFloat                       -- moistLandETCoeff, moistBareEvapFrac
+    <*> unitFloat <*> unitFloat                       -- moistVegTranspFrac, moistWindETScale
+    <*> unitFloat <*> unitFloat                       -- moistCondensationRate, moistRecycleRate
+    <*> unitFloat <*> unitFloat                       -- moistITCZStrength, moistITCZWidth
+    -- Precipitation
+    <*> unitFloat <*> unitFloat                       -- orographicScale, orographicStep
+    <*> unitFloat <*> unitFloat <*> unitFloat         -- coastalIterations, coastalDiffuse, coastalMoistureBoost
+    -- Wind
+    <*> unitFloat <*> unitFloat <*> unitFloat         -- windBeltStrength, windBeltHarmonics, windBeltBase
+    <*> unitFloat <*> unitFloat                       -- windBeltRange, windBeltSpeedScale
+    -- Boundary model
+    <*> unitFloat <*> unitFloat <*> unitFloat         -- bndLandRange, bndTempConvergent, bndTempDivergent
+    <*> unitFloat                                     -- bndTempTransform
+    <*> unitFloat <*> unitFloat <*> unitFloat         -- bndPrecipConvergent, bndPrecipDivergent, bndPrecipTransform
+    -- Erosion
     <*> unitFloat                                     -- rainRate
-    <*> unitFloat <*> unitFloat <*> unitFloat <*> unitFloat  -- erosion fields
+    <*> unitFloat <*> unitFloat <*> unitFloat <*> unitFloat  -- erosionHydraulic, erosionThermal, erosionTalus, erosionMaxDrop
+    -- Glacier
+    <*> unitFloat <*> unitFloat <*> unitFloat         -- glacierSnowTemp, glacierSnowRange, glacierMeltTemp
+    <*> unitFloat <*> unitFloat <*> unitFloat         -- glacierMeltRate, glacierAccumScale, glacierFlowIters
+    <*> unitFloat <*> unitFloat                       -- glacierFlowRate, glacierErosionScale
+    <*> unitFloat <*> unitFloat                       -- glacierCarveScale, glacierDepositScale
+    -- Volcanism
+    <*> unitFloat <*> unitFloat                       -- ventDensity, ventThreshold
+    <*> unitFloat <*> unitFloat                       -- hotspotScale, hotspotThreshold
+    <*> unitFloat <*> unitFloat                       -- magmaRecharge, lavaScale
+    <*> unitFloat <*> unitFloat                       -- ashScale, volcanicDepositScale
+    -- Soil
+    <*> unitFloat <*> unitFloat                       -- soilMoistureThreshold, soilHardnessThreshold
+    <*> unitFloat <*> unitFloat                       -- soilFertilityMoistWeight, soilFertilityDepthWeight
+    -- Hydrology / WaterBody / Parameters
+    <*> unitFloat <*> unitFloat                       -- sinkBreachDepth, streamPowerMaxErosion
+    <*> unitFloat <*> unitFloat                       -- riverCarveMaxDepth, coastalErodeStrength
+    <*> unitFloat <*> unitFloat                       -- hydroHardnessWeight, minLakeSize
+    <*> unitFloat <*> unitFloat                       -- inlandSeaMinSize, roughnessScale
+    -- Generation
     <*> unitFloat <*> unitFloat                       -- genScale, genCoordScale
     <*> unitFloat <*> unitFloat                       -- genOffsetX, genOffsetY
     <*> unitFloat <*> unitFloat <*> unitFloat <*> unitFloat  -- genFreq, genOct, genLac, genGain
     <*> unitFloat <*> unitFloat                       -- genWarpScale, genWarpStrength
     <*> unitFloat <*> unitFloat                       -- worldExtentX, worldExtentY
+    -- Ocean edge depth
     <*> unitFloat <*> unitFloat <*> unitFloat <*> unitFloat <*> unitFloat  -- edgeDepth N/S/E/W + falloff
+    -- Tectonics
     <*> unitFloat <*> unitFloat                       -- plateSize, plateSpeed
     <*> unitFloat <*> unitFloat <*> unitFloat         -- boundarySharp, noiseScale, noiseStrength
     <*> unitFloat <*> unitFloat <*> unitFloat         -- warpOct, warpLac, warpGain
@@ -199,10 +243,40 @@ instance Arbitrary ConfigPreset where
     <*> unitFloat                                     -- detailScale
     <*> unitFloat <*> unitFloat <*> unitFloat         -- plateBiasStrength, plateBiasCenter, plateBiasEdge
     <*> unitFloat <*> unitFloat                       -- plateBiasNorth, plateBiasSouth
+    <*> unitFloat <*> unitFloat <*> unitFloat         -- tfcCliffSlope, tfcMountainSlope, tfcMountainRelief
+    <*> unitFloat <*> unitFloat <*> unitFloat         -- tfcHillSlope, tfcRollingSlope, valleyCurvature
+    <*> unitFloat <*> unitFloat <*> unitFloat         -- rockElevThreshold, rockHardThreshold, rockHardSecondary
+    -- Weather
     <*> unitFloat <*> unitFloat <*> unitFloat         -- weatherTick, weatherPhase, weatherAmplitude
+    <*> unitFloat <*> unitFloat                       -- seasonCycleLength, jitterAmplitude
+    <*> unitFloat <*> unitFloat <*> unitFloat         -- pressureBase, pressureTempScale, pressureCoriolisScale
+    <*> unitFloat <*> unitFloat                       -- seasonalBase, seasonalRange
+    <*> unitFloat <*> unitFloat                       -- humidityNoiseScale, precipNoiseScale
+    <*> unitFloat <*> unitFloat                       -- weatherITCZWidth, weatherITCZPrecipBoost
+    <*> unitFloat <*> unitFloat                       -- pressureHumidityScale, pressureGradientWindScale
+    <*> unitFloat <*> unitFloat                       -- windNoiseScale, itczMigrationScale
+    <*> unitFloat <*> unitFloat <*> unitFloat         -- cloudRHExponent, cloudAlbedoEffect, cloudPrecipBoost
+    -- Vegetation
     <*> unitFloat <*> unitFloat                       -- vegBase, vegBoost
     <*> unitFloat <*> unitFloat                       -- vegTempWeight, vegPrecipWeight
+    -- Biome Thresholds
+    <*> unitFloat <*> unitFloat <*> unitFloat         -- btCoastalBand, btSnowElevation, btAlpineElevation
+    <*> unitFloat <*> unitFloat <*> unitFloat         -- btIceCapTemp, btMontaneLow, btMontanePrecip
+    <*> unitFloat <*> unitFloat                       -- btCliffSlope, btValleyMoisture
+    <*> unitFloat <*> unitFloat                       -- btDepressionMoisture, btPrecipWeight
+    -- Vegetation Bootstrap
+    <*> unitFloat <*> unitFloat <*> unitFloat         -- vbcTempMin, vbcTempRange, vbcFertilityBoost
+    <*> unitFloat <*> unitFloat                       -- vbcAlbedoBase, vbcAlbedoBare
+    <*> unitFloat <*> unitFloat <*> unitFloat         -- vbcAlbedoVeg, vbcOceanAlbedo, vbcIceAlbedo
+    -- Biome Misc
+    <*> unitFloat <*> unitFloat                       -- biomeSmoothing, volcanicAshBoost
+    <*> unitFloat <*> unitFloat                       -- volcanicLavaPenalty, biomeFeedbackBlend
+    -- Planet
     <*> unitFloat <*> unitFloat <*> unitFloat         -- planetRadius, axialTilt, insolation
+    -- Ocean currents
+    <*> unitFloat <*> unitFloat                       -- occWarmScale, occColdScale
+    <*> unitFloat <*> unitFloat                       -- occLatPeakDeg, occLatWidthDeg
+    -- World slice
     <*> unitFloat <*> unitFloat                       -- sliceLatCenter, sliceLonCenter
 
 propertySpec :: Spec

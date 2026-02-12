@@ -16,6 +16,7 @@ module Actor.Data
   , setTerrainChunkData
   , setClimateChunkData
   , setWeatherChunkData
+  , setRiverChunkData
   , requestDataSnapshot
   , getDataSnapshot
   , getTerrainSnapshot
@@ -29,7 +30,7 @@ import Data.Word (Word64)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
 import Hyperspace.Actor.Spec (OpTag(..))
-import Topo (ChunkId(..), ClimateChunk, TerrainChunk, WeatherChunk)
+import Topo (ChunkId(..), ClimateChunk, RiverChunk, TerrainChunk, WeatherChunk)
 import Topo.World (TerrainWorld(..))
 import Topo.Types (WorldConfig(..))
 
@@ -50,6 +51,7 @@ data TerrainSnapshot = TerrainSnapshot
   , tsTerrainChunks :: !(IntMap TerrainChunk)
   , tsClimateChunks :: !(IntMap ClimateChunk)
   , tsWeatherChunks :: !(IntMap WeatherChunk)
+  , tsRiverChunks :: !(IntMap RiverChunk)
   } deriving (Eq, Show)
 
 data DataState = DataState
@@ -61,6 +63,7 @@ data DataState = DataState
   , stTerrainChunks :: !(IntMap TerrainChunk)
   , stClimateChunks :: !(IntMap ClimateChunk)
   , stWeatherChunks :: !(IntMap WeatherChunk)
+  , stRiverChunks :: !(IntMap RiverChunk)
   }
 
 emptyDataState :: DataState
@@ -73,6 +76,7 @@ emptyDataState = DataState
   , stTerrainChunks = IntMap.empty
   , stClimateChunks = IntMap.empty
   , stWeatherChunks = IntMap.empty
+  , stRiverChunks = IntMap.empty
   }
 
 snapshotData :: DataState -> DataSnapshot
@@ -89,6 +93,7 @@ snapshotTerrain st = TerrainSnapshot
   , tsTerrainChunks = stTerrainChunks st
   , tsClimateChunks = stClimateChunks st
   , tsWeatherChunks = stWeatherChunks st
+  , tsRiverChunks = stRiverChunks st
   }
 
 chunkKey :: ChunkId -> Int
@@ -119,6 +124,7 @@ actor Data
   cast setTerrainData :: (Int, [(ChunkId, TerrainChunk)])
   cast setClimateData :: (Int, [(ChunkId, ClimateChunk)])
   cast setWeatherData :: (Int, [(ChunkId, WeatherChunk)])
+  cast setRiverData :: (Int, [(ChunkId, RiverChunk)])
   cast snapshotAsync :: () reply DataSnapshotReply
   call snapshot :: () -> DataSnapshot
   call terrainSnapshot :: () -> TerrainSnapshot
@@ -145,6 +151,12 @@ actor Data
     _ <- evaluate (IntMap.size m)
     pure st { stChunkSize = size
             , stWeatherChunks = m
+            }
+  on_ setRiverData = \(size, chunks) st -> do
+    let m = IntMap.fromList (map (\(cid, chunk) -> (chunkKey cid, chunk)) chunks)
+    _ <- evaluate (IntMap.size m)
+    pure st { stChunkSize = size
+            , stRiverChunks = m
             }
   onReply snapshotAsync = \() replyTo st -> do
     replyCast replyTo dataSnapshotTag (snapshotData st)
@@ -182,6 +194,11 @@ setWeatherChunkData :: ActorHandle Data (Protocol Data) -> Int -> [(ChunkId, Wea
 setWeatherChunkData handle size chunks =
   cast @"setWeatherData" handle #setWeatherData (size, chunks)
 
+-- | Send river chunk data to the Data actor.
+setRiverChunkData :: ActorHandle Data (Protocol Data) -> Int -> [(ChunkId, RiverChunk)] -> IO ()
+setRiverChunkData handle size chunks =
+  cast @"setRiverData" handle #setRiverData (size, chunks)
+
 getTerrainSnapshot :: ActorHandle Data (Protocol Data) -> IO TerrainSnapshot
 getTerrainSnapshot handle =
   call @"terrainSnapshot" handle #terrainSnapshot ()
@@ -193,7 +210,7 @@ requestDataSnapshot handle replyTo =
 
 -- | Replace all terrain data from a loaded 'TerrainWorld'.
 --
--- Sends terrain, climate, and weather chunk data as three separate
+-- Sends terrain, climate, weather, and river chunk data as four separate
 -- messages. The terrain message increments 'tsVersion', triggering
 -- atlas/cache invalidation.  Also sets the terrain chunk count so
 -- the render pipeline's @dataReady@ guard passes.
@@ -204,6 +221,7 @@ replaceTerrainData handle world = do
   setTerrainChunkData handle size (toList (twTerrain world))
   setClimateChunkData handle size (toList (twClimate world))
   setWeatherChunkData handle size (toList (twWeather world))
+  setRiverChunkData   handle size (toList (twRivers world))
   -- Update the chunk count so dsTerrainChunks matches the IntMap size
   -- and the render pipeline considers the data ready.
   setTerrainChunkCount handle (IntMap.size (twTerrain world))

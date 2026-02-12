@@ -3,6 +3,7 @@ module Spec.Climate (spec) where
 import Test.Hspec
 import Test.Hspec.QuickCheck
 import Test.QuickCheck
+import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Vector.Unboxed as U
 import Topo
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice, PlanetConfig(..), WorldSlice(..))
@@ -120,9 +121,17 @@ spec = describe "Climate" $ do
           }
         world1 = setTerrainChunk (chunkIdFromCoord (ChunkCoord 0 0)) fast
               $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 1 0)) slow world0
+        -- Use amplified motion sensitivity and zero noise so the
+        -- boundary-motion signal is not overwhelmed by spatial noise.
+        climateCfg = defaultClimateConfig
+          { ccBoundary = (ccBoundary defaultClimateConfig)
+              { bndMotionTemp = 2.0 }
+          , ccTemperature = (ccTemperature defaultClimateConfig)
+              { tmpNoiseScale = 0 }
+          }
         pipeline = PipelineConfig
           { pipelineSeed = 24
-          , pipelineStages = [generateClimateStage defaultClimateConfig 0.5]
+          , pipelineStages = [generateClimateStage climateCfg 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -156,7 +165,8 @@ spec = describe "Climate" $ do
         world1 = setTerrainChunk (chunkIdFromCoord (ChunkCoord 0 0)) fast
               $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 1 0)) slow world0
         climateCfg = defaultClimateConfig
-          { ccBoundaryMotionPrecip = motionPrecipBias }
+          { ccBoundary = (ccBoundary defaultClimateConfig)
+              { bndMotionPrecip = motionPrecipBias } }
         pipeline = PipelineConfig
           { pipelineSeed = 31
           , pipelineStages = [generateClimateStage climateCfg waterLevel]
@@ -330,6 +340,383 @@ spec = describe "Climate" $ do
             diff = min angleDiff (2 * pi - angleDiff)
         -- Wind direction should differ by at least 0.5 radians (~29°)
         diff `shouldSatisfy` (> 0.5)
+      _ -> expectationFailure "missing climate chunks"
+
+  -- 4.7.1: equator > high-latitude for varied valid ClimateConfig parameters.
+  prop "equator temp exceeds high latitude for varied climate parameters" $
+    forAll (choose (0.3, 1.0)) $ \latExp ->
+      forAll (choose (0.1, 1.0)) $ \lapseRate ->
+        ioProperty $ do
+          let climateCfg = defaultClimateConfig
+                { ccTemperature = (ccTemperature defaultClimateConfig)
+                    { tmpLatitudeExponent = latExp
+                    , tmpLapseRate        = lapseRate
+                    , tmpNoiseScale       = 0  -- deterministic comparison
+                    }
+                }
+              config   = WorldConfig { wcChunkSize = 4 }
+              sliceEq  = defaultWorldSlice { wsLatCenter = 0,  wsLatExtent = 10 }
+              slice70  = defaultWorldSlice { wsLatCenter = 70, wsLatExtent = 10 }
+              worldEq  = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig sliceEq
+              world70  = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig slice70
+              terrain  = generateTerrainChunk config (\_ -> 0.6)
+              cid      = chunkIdFromCoord (ChunkCoord 0 0)
+              pipeline = PipelineConfig
+                { pipelineSeed   = 99
+                , pipelineStages = [generateClimateStage climateCfg 0.5]
+                , pipelineSnapshots = False
+                }
+              env = TopoEnv { teLogger = \_ -> pure () }
+          resultEq <- runPipeline pipeline env (setTerrainChunk cid terrain worldEq)
+          result70 <- runPipeline pipeline env (setTerrainChunk cid terrain world70)
+          wEq <- expectPipelineProp resultEq
+          w70 <- expectPipelineProp result70
+          case (wEq >>= getClimateChunk cid, w70 >>= getClimateChunk cid) of
+            (Just cEq, Just c70) ->
+              pure (avgVector (ccTempAvg cEq) > avgVector (ccTempAvg c70))
+            _ -> pure False
+
+  -- 4.7.2: ocean tiles should have equal temps regardless of depth.
+  it "ocean tiles at same latitude have similar temps regardless of depth" $ do
+    let config     = WorldConfig { wcChunkSize = 8 }
+        climateCfg = defaultClimateConfig
+          { ccTemperature = (ccTemperature defaultClimateConfig)
+              { tmpNoiseScale = 0 } }
+        deepOcean    = generateTerrainChunk config (\_ -> 0.1)
+        shallowOcean = generateTerrainChunk config (\_ -> 0.3)
+        cid     = chunkIdFromCoord (ChunkCoord 0 0)
+        worldD  = setTerrainChunk cid deepOcean    (emptyWorld config defaultHexGridMeta)
+        worldS  = setTerrainChunk cid shallowOcean (emptyWorld config defaultHexGridMeta)
+        pipeline = PipelineConfig
+          { pipelineSeed   = 42
+          , pipelineStages = [generateClimateStage climateCfg 0.5]
+          , pipelineSnapshots = False
+          }
+        env = TopoEnv { teLogger = \_ -> pure () }
+    resultD <- runPipeline pipeline env worldD
+    resultS <- runPipeline pipeline env worldS
+    wD <- expectPipeline resultD
+    wS <- expectPipeline resultS
+    case (getClimateChunk cid wD, getClimateChunk cid wS) of
+      (Just cD, Just cS) ->
+        abs (avgVector (ccTempAvg cD) - avgVector (ccTempAvg cS))
+          `shouldSatisfy` (< 0.05)
+      _ -> expectationFailure "missing climate chunks"
+
+  -- 4.7.3: ocean moderation warms coastal land at high latitudes.
+  it "coastal land is warmer than interior at high latitude" $ do
+    let config     = WorldConfig { wcChunkSize = 8 }
+        climateCfg = defaultClimateConfig
+          { ccTemperature = (ccTemperature defaultClimateConfig)
+              { tmpNoiseScale  = 0
+              , tmpOceanModeration = 0.5  -- amplify to make effect reliable
+              }
+          }
+        n          = chunkTileCount config
+        oceanChunk = generateTerrainChunk config (\_ -> 0.2)
+        landChunk  = generateTerrainChunk config (\_ -> 0.6)
+        slice70    = defaultWorldSlice { wsLatCenter = 70, wsLatExtent = 10 }
+        world0     = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig slice70
+        world1     = setTerrainChunk (chunkIdFromCoord (ChunkCoord (-1) 0)) oceanChunk
+                   $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 0 0))    landChunk
+                   $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 1 0))    landChunk
+                   $ world0
+        pipeline = PipelineConfig
+          { pipelineSeed   = 55
+          , pipelineStages = [generateClimateStage climateCfg 0.5]
+          , pipelineSnapshots = False
+          }
+        env = TopoEnv { teLogger = \_ -> pure () }
+    result <- runPipeline pipeline env world1
+    w <- expectPipeline result
+    case ( getClimateChunk (chunkIdFromCoord (ChunkCoord 0 0)) w
+         , getClimateChunk (chunkIdFromCoord (ChunkCoord 1 0)) w ) of
+      (Just coastal, Just interior) ->
+        avgVector (ccTempAvg coastal) `shouldSatisfy`
+          (> avgVector (ccTempAvg interior))
+      _ -> expectationFailure "missing climate chunks"
+
+  -- 4.7.4: lapse rate affects only height above sea level.
+  prop "lapse rate only affects tiles above sea level" $
+    forAll (choose (0.55, 0.99)) $ \elevation ->
+      forAll (choose (0.3, 1.0)) $ \lapseRate ->
+        ioProperty $ do
+          let climateCfg = defaultClimateConfig
+                { ccTemperature = (ccTemperature defaultClimateConfig)
+                    { tmpLapseRate  = lapseRate
+                    , tmpNoiseScale = 0
+                    }
+                }
+              config   = WorldConfig { wcChunkSize = 4 }
+              seaLevel = generateTerrainChunk config (\_ -> 0.5)   -- at waterLevel
+              elevated = generateTerrainChunk config (\_ -> elevation) -- above waterLevel
+              cid      = chunkIdFromCoord (ChunkCoord 0 0)
+              worldSL  = setTerrainChunk cid seaLevel (emptyWorld config defaultHexGridMeta)
+              worldEl  = setTerrainChunk cid elevated (emptyWorld config defaultHexGridMeta)
+              pipeline = PipelineConfig
+                { pipelineSeed   = 33
+                , pipelineStages = [generateClimateStage climateCfg 0.5]
+                , pipelineSnapshots = False
+                }
+              env = TopoEnv { teLogger = \_ -> pure () }
+          resultSL <- runPipeline pipeline env worldSL
+          resultEl <- runPipeline pipeline env worldEl
+          wSL <- expectPipelineProp resultSL
+          wEl <- expectPipelineProp resultEl
+          case (wSL >>= getClimateChunk cid, wEl >>= getClimateChunk cid) of
+            (Just cSL, Just cEl) ->
+              -- Sea-level land (zero lapse) should be warmer than elevated land.
+              pure (avgVector (ccTempAvg cSL) > avgVector (ccTempAvg cEl))
+            _ -> pure False
+
+  -- 4.7.5: integration — a mixed-elevation world has a reasonable temp spread.
+  it "integration: mixed-elevation world has reasonable temperature distribution" $ do
+    let config  = WorldConfig { wcChunkSize = 8 }
+        slice30 = defaultWorldSlice { wsLatCenter = 30, wsLatExtent = 30 }
+        world0  = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig slice30
+        ocean    = generateTerrainChunk config (\_ -> 0.2)
+        coastal  = generateTerrainChunk config (\_ -> 0.55)
+        highland = generateTerrainChunk config (\_ -> 0.8)
+        world1 = setTerrainChunk (chunkIdFromCoord (ChunkCoord 0 0)) ocean
+               $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 1 0)) coastal
+               $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 0 1)) coastal
+               $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 1 1)) highland
+               $ world0
+        pipeline = PipelineConfig
+          { pipelineSeed   = 42
+          , pipelineStages = [generateClimateStage defaultClimateConfig 0.5]
+          , pipelineSnapshots = False
+          }
+        env = TopoEnv { teLogger = \_ -> pure () }
+    result <- runPipeline pipeline env world1
+    w <- expectPipeline result
+    let allTemps = concatMap (U.toList . ccTempAvg)
+          [ chunk
+          | cx <- [0, 1], cy <- [0, 1]
+          , Just chunk <- [getClimateChunk (chunkIdFromCoord (ChunkCoord cx cy)) w]
+          ]
+        n     = length allTemps
+        meanT = sum allTemps / fromIntegral n
+        minT  = minimum allTemps
+        maxT  = maximum allTemps
+    -- Should produce non-degenerate output
+    n `shouldSatisfy` (> 0)
+    -- Mean temperature in a reasonable range (not all-max or all-min)
+    meanT `shouldSatisfy` (\t -> t > 0.3 && t < 0.95)
+    -- Some spread should exist from the elevation + latitude variation
+    (maxT - minT) `shouldSatisfy` (> 0.05)
+
+  ---------------------------------------------------------------------------
+  -- Phase 2 tests: Physical Moisture Transport
+  ---------------------------------------------------------------------------
+
+  -- 2.9.1: interior tiles receive non-trivial moisture (not just coast).
+  it "interior land receives moisture from transport + ITCZ" $ do
+    let config = WorldConfig { wcChunkSize = 8 }
+        n = chunkTileCount config
+        ocean = generateTerrainChunk config (\_ -> 0.2)
+        land  = generateTerrainChunk config (\_ -> 0.6)
+        world0 = emptyWorld config defaultHexGridMeta
+        world1 = setTerrainChunk (chunkIdFromCoord (ChunkCoord 0 0)) ocean
+               $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 1 0)) land
+               $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 2 0)) land
+               $ world0
+        pipeline = PipelineConfig
+          { pipelineSeed   = 42
+          , pipelineStages = [generateClimateStage defaultClimateConfig 0.5]
+          , pipelineSnapshots = False
+          }
+        env = TopoEnv { teLogger = \_ -> pure () }
+    result <- runPipeline pipeline env world1
+    w <- expectPipeline result
+    case getClimateChunk (chunkIdFromCoord (ChunkCoord 2 0)) w of
+      Nothing -> expectationFailure "missing interior climate chunk"
+      Just interior ->
+        -- Interior land should receive non-zero precipitation via
+        -- wind transport, ITCZ boost, or both.
+        avgVector (ccPrecipAvg interior) `shouldSatisfy` (> 0.02)
+
+  -- 2.9.2: vegetation recycling enhances interior precipitation.
+  it "vegetation recycling increases interior precipitation" $ do
+    let config = WorldConfig { wcChunkSize = 8 }
+        n = chunkTileCount config
+        ocean = generateTerrainChunk config (\_ -> 0.2)
+        -- Land with soil moisture (enables landEvapotranspiration)
+        landWithMoist = (generateTerrainChunk config (\_ -> 0.6))
+          { tcMoisture = U.replicate n 0.5 }
+        vegChunk = VegetationChunk
+          { vegCover   = U.replicate n 0.8
+          , vegAlbedo  = U.replicate n 0.15
+          , vegDensity = U.replicate n 0
+          }
+        setupWorld recycleRate =
+          let climateCfg = defaultClimateConfig
+                { ccMoisture = (ccMoisture defaultClimateConfig)
+                    { moistRecycleRate = recycleRate }
+                }
+              w0 = emptyWorld config defaultHexGridMeta
+              w1 = setTerrainChunk (chunkIdFromCoord (ChunkCoord 0 0)) ocean
+                 $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 1 0)) landWithMoist
+                 $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 2 0)) landWithMoist
+                 $ w0
+              -- Inject vegetation on both land chunks
+              vk1 = let ChunkId k = chunkIdFromCoord (ChunkCoord 1 0) in k
+              vk2 = let ChunkId k = chunkIdFromCoord (ChunkCoord 2 0) in k
+              w2 = w1 { twVegetation = IntMap.fromList [(vk1, vegChunk), (vk2, vegChunk)] }
+              pipeline = PipelineConfig
+                { pipelineSeed   = 100
+                , pipelineStages = [generateClimateStage climateCfg 0.5]
+                , pipelineSnapshots = False
+                }
+          in (pipeline, w2)
+        env = TopoEnv { teLogger = \_ -> pure () }
+    let (pipWith, worldWith) = setupWorld 0.35
+        (pipNone, worldNone) = setupWorld 0.0
+    resultWith <- runPipeline pipWith env worldWith
+    resultNone <- runPipeline pipNone env worldNone
+    wWith <- expectPipeline resultWith
+    wNone <- expectPipeline resultNone
+    case ( getClimateChunk (chunkIdFromCoord (ChunkCoord 2 0)) wWith
+         , getClimateChunk (chunkIdFromCoord (ChunkCoord 2 0)) wNone ) of
+      (Just withRecycling, Just noRecycling) ->
+        -- With recycling, vegetated interior should retain more moisture.
+        avgVector (ccPrecipAvg withRecycling) `shouldSatisfy`
+          (>= avgVector (ccPrecipAvg noRecycling))
+      _ -> expectationFailure "missing interior climate chunks"
+
+  -- 2.9.3: ITCZ creates equatorial precipitation enhancement.
+  it "ITCZ enhances equatorial precipitation over mid-latitude" $ do
+    let config = WorldConfig { wcChunkSize = 8 }
+        sliceEq  = defaultWorldSlice { wsLatCenter = 0,  wsLatExtent = 10 }
+        slice30  = defaultWorldSlice { wsLatCenter = 30, wsLatExtent = 10 }
+        worldEq  = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig sliceEq
+        world30  = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig slice30
+        terrain  = generateTerrainChunk config (\_ -> 0.6)
+        cid = chunkIdFromCoord (ChunkCoord 0 0)
+        pipeline = PipelineConfig
+          { pipelineSeed   = 77
+          , pipelineStages = [generateClimateStage defaultClimateConfig 0.5]
+          , pipelineSnapshots = False
+          }
+        env = TopoEnv { teLogger = \_ -> pure () }
+    resultEq <- runPipeline pipeline env (setTerrainChunk cid terrain worldEq)
+    result30 <- runPipeline pipeline env (setTerrainChunk cid terrain world30)
+    wEq <- expectPipeline resultEq
+    w30 <- expectPipeline result30
+    case (getClimateChunk cid wEq, getClimateChunk cid w30) of
+      (Just cEq, Just c30) ->
+        -- Equatorial world should have higher average precipitation
+        -- due to ITCZ convergence boost.
+        avgVector (ccPrecipAvg cEq) `shouldSatisfy`
+          (> avgVector (ccPrecipAvg c30))
+      _ -> expectationFailure "missing climate chunks"
+
+  -- 2.9.4: ocean tiles provide persistent moisture source.
+  it "ocean tiles maintain high moisture across iterations" $ do
+    let config = WorldConfig { wcChunkSize = 8 }
+        oceanTerrain = generateTerrainChunk config (\_ -> 0.2)
+        cid = chunkIdFromCoord (ChunkCoord 0 0)
+        world0 = setTerrainChunk cid oceanTerrain (emptyWorld config defaultHexGridMeta)
+        pipeline = PipelineConfig
+          { pipelineSeed   = 42
+          , pipelineStages = [generateClimateStage defaultClimateConfig 0.5]
+          , pipelineSnapshots = False
+          }
+        env = TopoEnv { teLogger = \_ -> pure () }
+    result <- runPipeline pipeline env world0
+    w <- expectPipeline result
+    case getClimateChunk cid w of
+      Nothing -> expectationFailure "missing climate chunk"
+      Just chunk ->
+        -- Ocean tiles with reinjection should have substantial precipitation.
+        avgVector (ccPrecipAvg chunk) `shouldSatisfy` (> 0.10)
+
+  ---------------------------------------------------------------------------
+  -- Phase 3 tests: Albedo -> Temperature Feedback (Model H)
+  ---------------------------------------------------------------------------
+
+  -- 3.3.1: high-albedo surface (ice/snow) is cooler than reference.
+  it "high albedo surface is cooler than reference" $ do
+    let config = WorldConfig { wcChunkSize = 8 }
+        n = chunkTileCount config
+        terrain = generateTerrainChunk config (\_ -> 0.6)
+        -- High albedo (ice-like)
+        iceVeg = VegetationChunk
+          { vegCover   = U.replicate n 0.0
+          , vegAlbedo  = U.replicate n 0.80
+          , vegDensity = U.replicate n 0
+          }
+        -- Reference albedo (no correction)
+        refVeg = VegetationChunk
+          { vegCover   = U.replicate n 0.3
+          , vegAlbedo  = U.replicate n 0.30
+          , vegDensity = U.replicate n 0
+          }
+        cid = chunkIdFromCoord (ChunkCoord 0 0)
+        key = let ChunkId k = cid in k
+        makeWorld veg =
+          let w = setTerrainChunk cid terrain (emptyWorld config defaultHexGridMeta)
+          in w { twVegetation = IntMap.singleton key veg }
+        climateCfg = defaultClimateConfig
+          { ccTemperature = (ccTemperature defaultClimateConfig)
+              { tmpNoiseScale = 0 }
+          }
+        pipeline = PipelineConfig
+          { pipelineSeed = 42
+          , pipelineStages = [generateClimateStage climateCfg 0.5]
+          , pipelineSnapshots = False
+          }
+        env = TopoEnv { teLogger = \_ -> pure () }
+    resultIce <- runPipeline pipeline env (makeWorld iceVeg)
+    resultRef <- runPipeline pipeline env (makeWorld refVeg)
+    wIce <- expectPipeline resultIce
+    wRef <- expectPipeline resultRef
+    case (getClimateChunk cid wIce, getClimateChunk cid wRef) of
+      (Just cIce, Just cRef) ->
+        avgVector (ccTempAvg cIce) `shouldSatisfy`
+          (< avgVector (ccTempAvg cRef))
+      _ -> expectationFailure "missing climate chunks"
+
+  -- 3.3.2: low-albedo surface (forest) is warmer than reference.
+  it "low albedo surface (forest) is warmer than reference" $ do
+    let config = WorldConfig { wcChunkSize = 8 }
+        n = chunkTileCount config
+        terrain = generateTerrainChunk config (\_ -> 0.6)
+        -- Low albedo (dense forest)
+        forestVeg = VegetationChunk
+          { vegCover   = U.replicate n 0.9
+          , vegAlbedo  = U.replicate n 0.12
+          , vegDensity = U.replicate n 0
+          }
+        -- Reference albedo
+        refVeg = VegetationChunk
+          { vegCover   = U.replicate n 0.3
+          , vegAlbedo  = U.replicate n 0.30
+          , vegDensity = U.replicate n 0
+          }
+        cid = chunkIdFromCoord (ChunkCoord 0 0)
+        key = let ChunkId k = cid in k
+        makeWorld veg =
+          let w = setTerrainChunk cid terrain (emptyWorld config defaultHexGridMeta)
+          in w { twVegetation = IntMap.singleton key veg }
+        climateCfg = defaultClimateConfig
+          { ccTemperature = (ccTemperature defaultClimateConfig)
+              { tmpNoiseScale = 0 }
+          }
+        pipeline = PipelineConfig
+          { pipelineSeed = 42
+          , pipelineStages = [generateClimateStage climateCfg 0.5]
+          , pipelineSnapshots = False
+          }
+        env = TopoEnv { teLogger = \_ -> pure () }
+    resultForest <- runPipeline pipeline env (makeWorld forestVeg)
+    resultRef    <- runPipeline pipeline env (makeWorld refVeg)
+    wForest <- expectPipeline resultForest
+    wRef    <- expectPipeline resultRef
+    case (getClimateChunk cid wForest, getClimateChunk cid wRef) of
+      (Just cForest, Just cRef) ->
+        avgVector (ccTempAvg cForest) `shouldSatisfy`
+          (> avgVector (ccTempAvg cRef))
       _ -> expectationFailure "missing climate chunks"
 
 expectPipeline :: Either PipelineError (TerrainWorld, [PipelineSnapshot]) -> IO TerrainWorld

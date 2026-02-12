@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Hydrology stages for flow routing and moisture.
@@ -10,19 +11,30 @@ module Topo.Hydrology
   , GroundwaterConfig(..)
   , defaultGroundwaterConfig
   , applyRiverStage
+    -- * Flow routing (exported for testing)
+  , flowDirections
+  , flowDirectionsLand
+    -- * Depression filling (exported for testing)
+  , fillDepressions
+  , breachRemainingSinks
+    -- * Sink breaching (exported for testing, deprecated)
+  , breachSinksLand
   ) where
 
-import Control.Monad (forM_)
-import Control.Monad.ST (ST)
+import Control.Monad (forM_, when, foldM)
+import Control.Monad.ST (ST, runST)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (sortBy)
 import Data.Ord (comparing)
+import qualified Data.Set as Set
 import Data.Word (Word16, Word32)
 import Topo.Math (clamp01)
+import Topo.Hex (hexNeighborIndices)
 import Topo.Pipeline (PipelineStage(..))
 import Control.Monad.Except (throwError)
 import Topo.Plugin (logInfo, getWorldP, putWorldP, PluginError(..))
+import Topo.River (RiverTopologyConfig, defaultRiverTopologyConfig, computeRiverSegments)
 import Topo.TerrainGrid
   ( buildElevationGrid
   , buildHardnessGrid
@@ -95,6 +107,13 @@ data RiverConfig = RiverConfig
   , rcDischargeScale :: !Float
   , rcChannelDepthScale :: !Float
   , rcChannelMaxDepth :: !Float
+  -- | Water level threshold.  Tiles at or below this elevation are
+  -- considered submerged and act as flow sinks during river routing.
+  , rcWaterLevel :: !Float
+  -- | Depth by which local land-sinks are breached before flow routing.
+  -- Eliminates spurious terminus points caused by post-hydrology
+  -- depressions.  Same concept as 'hcSinkBreachDepth'.
+  , rcSinkBreachDepth :: !Float
   -- | [0..1] scaling of hardness against channel depth.
   , rcHardnessDepthWeight :: !Float
   -- | [0..1] scaling of hardness against erosion potential.
@@ -114,9 +133,11 @@ defaultRiverConfig = RiverConfig
   { rcBaseAccumulation = 1
   , rcMinAccumulation = 4
   , rcOrderMinAccumulation = 6
-  , rcDischargeScale = 0.01
+  , rcDischargeScale = 0.05
   , rcChannelDepthScale = 0.002
   , rcChannelMaxDepth = 0.2
+  , rcWaterLevel = 0.5
+  , rcSinkBreachDepth = 0.02
   , rcHardnessDepthWeight = 0.6
   , rcHardnessErosionWeight = 0.5
   , rcErosionScale = 1
@@ -160,10 +181,14 @@ applyHydrologyStage cfg = PipelineStage "applyHydrology" "applyHydrology" $ do
       gridH = (maxCy - minCy + 1) * size
       elev0 = buildElevationGrid config terrain (ChunkCoord minCx minCy) gridW gridH
       hardness = buildHardnessGrid config terrain (ChunkCoord minCx minCy) gridW gridH
-      elev1 = breachSinks cfg gridW gridH elev0
+      -- Fill depressions so every land tile drains to the ocean.
+      -- The filled surface is used ONLY for flow routing and accumulation;
+      -- erosion is applied to the original terrain so the displayed surface
+      -- matches the actual flow paths carved by erosion.
+      elev1 = fillDepressions (hcWaterLevel cfg) gridW gridH elev0
       flow = flowDirections gridW gridH elev1
       acc = flowAccumulation cfg elev1 flow
-      elevCarved = carveRiversGrid cfg gridW gridH elev1 acc hardness
+      elevCarved = carveRiversGrid cfg gridW gridH elev0 acc hardness
       elevBanks = riverBankErodeGrid cfg gridW gridH elevCarved acc hardness
       elev2 = applyStreamPowerErosion cfg elevBanks flow acc hardness
       elev3 = coastalErodeGrid cfg gridW gridH elev2 hardness
@@ -188,20 +213,27 @@ applyRiverStage riverCfg gwCfg = PipelineStage "applyRivers" "applyRivers" $ do
   let size = wcChunkSize config
       gridW = (maxCx - minCx + 1) * size
       gridH = (maxCy - minCy + 1) * size
-      elev = buildElevationGrid config terrain (ChunkCoord minCx minCy) gridW gridH
+      elev0 = buildElevationGrid config terrain (ChunkCoord minCx minCy) gridW gridH
       hardness = buildHardnessGrid config terrain (ChunkCoord minCx minCy) gridW gridH
       moisture = buildMoistureGrid config terrain (ChunkCoord minCx minCy) gridW gridH
-      flow = flowDirections gridW gridH elev
-      acc = flowAccumulationWithBase (rcBaseAccumulation riverCfg) elev flow
+      wl = rcWaterLevel riverCfg
+      -- Fill depressions for routing so rivers follow connected drainage
+      -- paths to the sea (or large lake).  The filled surface is used
+      -- ONLY for flow direction and accumulation; all other calculations
+      -- (segments, potentials, Strahler order) use the actual terrain
+      -- (elev0) so rivers render consistently with visible topography.
+      elevFilled = fillDepressions wl gridW gridH elev0
+      flow = flowDirectionsLand wl gridW gridH elevFilled
+      acc = flowAccumulationWithBase (rcBaseAccumulation riverCfg) elevFilled flow
       basinIds = basinIdsFromFlow flow
       basinStats = basinRechargeStats basinIds moisture gwCfg
       (basinStorage, basinDischarge, basinSize) = basinStorageStats basinStats gwCfg
       baseflow = basinBaseflow basinIds basinDischarge basinSize (rcBaseflowScale riverCfg)
-      riverOrder = strahlerOrder gridW gridH elev flow acc (rcOrderMinAccumulation riverCfg)
+      riverOrder = strahlerOrder gridW gridH elev0 flow acc (rcOrderMinAccumulation riverCfg)
       discharge = U.zipWith (+) (U.map (* rcDischargeScale riverCfg) acc) baseflow
       depth = riverDepthWithHardness acc hardness riverCfg
-      erosionPotential = riverErosionPotential gridW gridH elev acc hardness riverCfg
-      depositPotential = riverDepositPotential gridW gridH elev acc riverCfg
+      erosionPotential = riverErosionPotential gridW gridH elev0 acc hardness riverCfg
+      depositPotential = riverDepositPotential gridW gridH elev0 acc riverCfg
       rivers = RiverChunk
         { rcFlowAccum = acc
         , rcDischarge = discharge
@@ -211,7 +243,15 @@ applyRiverStage riverCfg gwCfg = PipelineStage "applyRivers" "applyRivers" $ do
         , rcBaseflow = baseflow
         , rcErosionPotential = erosionPotential
         , rcDepositPotential = depositPotential
+        , rcFlowDir = flow
+        , rcSegOffsets = segOffsets
+        , rcSegEntryEdge = segEntry
+        , rcSegExitEdge = segExit
+        , rcSegDischarge = segDisc
+        , rcSegOrder = segOrd
         }
+      (segOffsets, segEntry, segExit, segDisc, segOrd) =
+        computeRiverSegments defaultRiverTopologyConfig gridW gridH flow discharge riverOrder elev0 wl
       groundwater = GroundwaterChunk
         { gwStorage = basinPerTile basinIds basinStorage basinSize
         , gwRecharge = U.map (* gwRechargeScale gwCfg) (U.map clamp01 moisture)
@@ -232,32 +272,172 @@ breachSinks cfg gridW gridH elev =
         breachDepth = hcSinkBreachDepth cfg
     in if isSink && h0 > waterLevel then h0 - breachDepth else h0)
 
+-- | Breach land-sinks (local minima above @waterLevel@) by lowering them
+-- by @breachDepth@.  Submerged tiles are left untouched.  This is the
+-- same algorithm as 'breachSinks' but parameterised directly instead of
+-- pulling fields from a 'HydroConfig', so it can be used by the river
+-- stage without constructing a full 'HydroConfig'.
+breachSinksLand
+  :: Float          -- ^ waterLevel
+  -> Float          -- ^ breachDepth
+  -> Int -> Int     -- ^ gridW, gridH
+  -> U.Vector Float -- ^ elevation grid
+  -> U.Vector Float
+breachSinksLand waterLevel breachDepth gridW gridH elev =
+  U.generate (U.length elev) $ \i ->
+    let !h0   = elev U.! i
+        !hmin = neighborMin gridW gridH elev i
+        isSink = hmin >= h0
+    in if isSink && h0 > waterLevel then h0 - breachDepth else h0
+
+-- | Fill land depressions using priority-flood so every land tile has a
+-- monotonic flow path to the ocean (or grid boundary).
+--
+-- Algorithm (Barnes et al. 2014, \"Priority-Flood\"):
+--
+-- 1. Seed the priority queue with all grid-boundary tiles and all
+--    submerged tiles (elevation ≤ @waterLevel@).
+-- 2. Pop the lowest-elevation cell from the queue.
+-- 3. For each unvisited hex neighbour, set its filled elevation to
+--    @max(own_elev, pourer_elev + epsilon)@ and add it to the queue.
+-- 4. Repeat until all cells are visited.
+--
+-- The tiny epsilon (@1e-5@) guarantees a strictly monotonic gradient
+-- from filled tiles toward their pour point, so steepest-descent
+-- routing always finds a unique downhill path.
+--
+-- Submerged tiles are never modified.  The result replaces the
+-- elevation grid before flow routing.
+fillDepressions
+  :: Float          -- ^ waterLevel — tiles at or below are ocean seeds
+  -> Int -> Int     -- ^ gridW, gridH
+  -> U.Vector Float -- ^ elevation grid
+  -> U.Vector Float
+fillDepressions waterLevel gridW gridH elev = runST $ do
+  let !n = gridW * gridH
+      -- Tiny elevation increment to maintain strict monotonic gradient
+      -- through filled areas.  Must be small enough not to distort
+      -- terrain but large enough to break ties in flow routing.
+      eps = 1e-5 :: Float
+  filled  <- U.thaw elev
+  visited <- UM.replicate n False
+
+  -- Seed: boundary cells + submerged cells
+  let isBoundary i =
+        let !x = i `mod` gridW
+            !y = i `div` gridW
+        in x == 0 || x == gridW - 1 || y == 0 || y == gridH - 1
+      mkSeed i = (elev U.! i, i)
+      seeds = [ mkSeed i
+              | i <- [0 .. n - 1]
+              , isBoundary i || elev U.! i <= waterLevel
+              ]
+
+  -- Mark seeds as visited
+  forM_ seeds $ \(_, i) -> UM.write visited i True
+
+  -- Priority-flood loop using Data.Set as a min-heap on (elevation, index).
+  -- Each (Float, Int) pair is unique by index.
+  let loop !queue
+        | Set.null queue = pure ()
+        | otherwise = do
+            let !((h, i), queue') = Set.deleteFindMin queue
+            queue'' <- foldM (\q j -> do
+              vis <- UM.read visited j
+              if vis then pure q
+              else do
+                UM.write visited j True
+                let !hj  = elev U.! j
+                    !newH = max hj (h + eps)
+                UM.write filled j newH
+                pure (Set.insert (newH, j) q)
+              ) queue' (hexNeighborIndices gridW gridH i)
+            loop queue''
+
+  loop (Set.fromList seeds)
+  U.freeze filled
+
+-- | Breach shallow isolated land-sinks by raising them just above the rim.
+--
+-- A single pass over the grid that finds every land local-minimum
+-- (tile whose elevation is ≤ all 6 hex neighbours) and raises it to
+-- @min(neighbour_elev) + epsilon@.  This gives steepest-descent
+-- routing an exit towards the lowest neighbour.  Only sinks whose
+-- depth (rim − floor) is at most @maxBreachDepth@ are modified —
+-- deeper sinks are left intact as natural terrain features (lakes).
+--
+-- Submerged tiles (≤ @waterLevel@) are never modified.
+--
+-- __Limitation:__ a single parallel pass can only resolve /isolated/
+-- single-tile sinks (tile strictly below all neighbours).  Multi-tile
+-- flat depressions or plateaux require 'fillDepressions'.
+--
+-- Note: this function is /not/ currently wired into the pipeline
+-- (river routing uses 'fillDepressions' instead), but it is exported
+-- for testing and potential future use.
+breachRemainingSinks
+  :: Float          -- ^ waterLevel — tiles at or below are skipped
+  -> Int -> Int     -- ^ gridW, gridH
+  -> U.Vector Float -- ^ elevation grid
+  -> U.Vector Float
+breachRemainingSinks waterLevel gridW gridH elev =
+  let eps = 1e-5 :: Float
+      -- Only breach sinks whose depth (rim − floor) is at most this.
+      -- Deeper sinks are left as natural features (lakes).
+      maxBreachDepth = 0.05 :: Float
+  in U.imap (\i h0 ->
+    if h0 <= waterLevel
+      then h0  -- submerged, leave alone
+      else
+        let nbrs  = hexNeighborIndices gridW gridH i
+            nbrHs = map (elev U.!) nbrs
+            hmin  = minimum nbrHs
+            depth = hmin - h0  -- positive when h0 is below rim
+        in if h0 <= hmin && depth <= maxBreachDepth
+             then hmin + eps  -- raise just above lowest neighbour
+             else h0
+    ) elev
+
+-- | Minimum elevation among a tile's 6 hex neighbours (and itself).
 neighborMin :: Int -> Int -> U.Vector Float -> Int -> Float
 neighborMin gridW gridH elev i =
-  let x = i `mod` gridW
-      y = i `div` gridW
-      h0 = elev U.! i
-      hL = if x > 0 then elev U.! (i - 1) else h0
-      hR = if x + 1 < gridW then elev U.! (i + 1) else h0
-      hU = if y > 0 then elev U.! (i - gridW) else h0
-      hD = if y + 1 < gridH then elev U.! (i + gridW) else h0
-  in minimum [h0, hL, hR, hU, hD]
+  let h0 = elev U.! i
+      nbrHeights = map (elev U.!) (hexNeighborIndices gridW gridH i)
+  in minimum (h0 : nbrHeights)
 
+-- | Compute steepest-descent flow directions using all 6 hex neighbours.
+-- Returns the index of the lowest neighbour, or @-1@ if no neighbour is
+-- lower (sink).
 flowDirections :: Int -> Int -> U.Vector Float -> U.Vector Int
 flowDirections gridW gridH elev =
-  U.generate (U.length elev) (\i ->
-    let x = i `mod` gridW
-        y = i `div` gridW
-        h0 = elev U.! i
-        candidates =
-          [ (i - 1, elev U.! (i - 1)) | x > 0 ]
-          <> [ (i + 1, elev U.! (i + 1)) | x + 1 < gridW ]
-          <> [ (i - gridW, elev U.! (i - gridW)) | y > 0 ]
-          <> [ (i + gridW, elev U.! (i + gridW)) | y + 1 < gridH ]
+  U.generate (U.length elev) $ \i ->
+    let h0 = elev U.! i
+        candidates = [(j, elev U.! j) | j <- hexNeighborIndices gridW gridH i]
         lower = filter (\(_, h) -> h < h0) candidates
     in case lower of
-        [] -> -1
-        _ -> fst (minimumByElevation lower))
+         [] -> -1
+         _  -> fst (minimumByElevation lower)
+  where
+    minimumByElevation = foldl1 (\a b -> if snd a <= snd b then a else b)
+
+-- | Like 'flowDirections' but treats submerged tiles (elevation ≤ waterLevel)
+-- as terminal sinks.  Flow from a land tile never enters an ocean tile, and
+-- submerged tiles themselves receive flow direction @-1@.  This confines
+-- flow accumulation to the land surface so that river discharge totals
+-- reflect continental drainage rather than ocean-floor topology.
+-- Uses all 6 hex neighbours.
+flowDirectionsLand :: Float -> Int -> Int -> U.Vector Float -> U.Vector Int
+flowDirectionsLand waterLevel gridW gridH elev =
+  U.generate (U.length elev) $ \i ->
+    let h0 = elev U.! i
+    in if h0 <= waterLevel
+       then -1  -- submerged tile is a sink
+       else
+         let candidates = [(j, elev U.! j) | j <- hexNeighborIndices gridW gridH i]
+             lowerLand = filter (\(_, h) -> h < h0) candidates
+         in case lowerLand of
+              [] -> -1
+              _  -> fst (minimumByElevation lowerLand)
   where
     minimumByElevation = foldl1 (\a b -> if snd a <= snd b then a else b)
 
@@ -319,21 +499,19 @@ riverBankErodeGrid cfg gridW gridH elev acc hardness =
   in U.generate (U.length elev) (bankAt threshold)
   where
     bankAt threshold i =
-      let x = i `mod` gridW
-          y = i `div` gridW
-          h0 = elev U.! i
-          neighborHigh =
-            any (> threshold)
-              [ acc U.! (i - 1) | x > 0 ]
-            || any (> threshold)
-              [ acc U.! (i + 1) | x + 1 < gridW ]
-            || any (> threshold)
-              [ acc U.! (i - gridW) | y > 0 ]
-            || any (> threshold)
-              [ acc U.! (i + gridW) | y + 1 < gridH ]
+      let h0 = elev U.! i
+          neighborHigh = any (\j -> acc U.! j > threshold)
+                             (hexNeighborIndices gridW gridH i)
           bankDepth = hcRiverBankDepth cfg * hardnessFactor cfg (hardness U.! i)
       in if neighborHigh then h0 - bankDepth else h0
 
+-- | Deposit alluvial sediment where rivers decelerate.
+--
+-- Deposition occurs on low-slope land tiles, scaled inversely with slope
+-- (more deposit where the gradient is gentler) and by normalized flow.
+-- A sink-protection guard prevents deposits from creating new local
+-- minima: the deposit is clamped so the tile never rises above the
+-- elevation of its lowest neighbour.
 alluvialDepositGrid :: HydroConfig -> Int -> Int -> U.Vector Float -> U.Vector Float -> U.Vector Float
 alluvialDepositGrid cfg gridW gridH elev acc =
   let maxAcc = max (hcMinAccumulation cfg) (U.maximum acc)
@@ -346,9 +524,15 @@ alluvialDepositGrid cfg gridW gridH elev acc =
           a = acc U.! i
           flowNorm = clamp01 (a / maxAcc)
           slope = gridSlopeAt gridW gridH elev i
-          isLowSlope = slope < maxSlope
-          deposit = if h0 > waterLevel && isLowSlope then flowNorm * hcAlluvialDepositScale cfg else 0
-      in h0 + deposit
+          -- Deposit inversely proportional to slope (more on flatter ground)
+          slopeFactor = if slope >= maxSlope then 0 else clamp01 (1 - slope / maxSlope)
+          rawDeposit = if h0 > waterLevel
+                         then flowNorm * slopeFactor * hcAlluvialDepositScale cfg
+                         else 0
+          -- Sink guard: never raise above the lowest neighbour
+          nbrMin = neighborMin gridW gridH elev i
+          maxDeposit = if nbrMin > h0 then nbrMin - h0 else 0
+      in h0 + min rawDeposit maxDeposit
 
 wetErodeGrid :: HydroConfig -> Int -> Int -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float
 wetErodeGrid cfg gridW gridH elev moisture hardness =
@@ -362,18 +546,14 @@ wetErodeGrid cfg gridW gridH elev moisture hardness =
           depth = clamp01 m * hcWetErodeScale cfg * hardnessFactor cfg (hardness U.! i)
       in if h0 > waterLevel then h0 - depth else h0
 
+-- | Maximum absolute elevation difference to any of the 6 hex neighbours.
 gridSlopeAt :: Int -> Int -> U.Vector Float -> Int -> Float
 gridSlopeAt gridW gridH elev i =
-  let x = i `mod` gridW
-      y = i `div` gridW
-      h0 = elev U.! i
-      hL = if x > 0 then elev U.! (i - 1) else h0
-      hR = if x + 1 < gridW then elev U.! (i + 1) else h0
-      hU = if y > 0 then elev U.! (i - gridW) else h0
-      hD = if y + 1 < gridH then elev U.! (i + gridW) else h0
-      dx = max (abs (hR - h0)) (abs (hL - h0))
-      dy = max (abs (hD - h0)) (abs (hU - h0))
-  in max dx dy
+  let h0 = elev U.! i
+      nbrs = hexNeighborIndices gridW gridH i
+  in case nbrs of
+       [] -> 0
+       _  -> maximum [abs (elev U.! j - h0) | j <- nbrs]
 
 coastalErodeGrid :: HydroConfig -> Int -> Int -> U.Vector Float -> U.Vector Float -> U.Vector Float
 coastalErodeGrid cfg gridW gridH elev hardness =
@@ -384,15 +564,9 @@ coastalErodeGrid cfg gridW gridH elev hardness =
 
 coastalAt :: HydroConfig -> Int -> Int -> Float -> Float -> Float -> U.Vector Float -> U.Vector Float -> Int -> Float
 coastalAt cfg gridW gridH waterLevel strength raiseFactor elev hardness i =
-  let x = i `mod` gridW
-      y = i `div` gridW
-      h0 = elev U.! i
+  let h0 = elev U.! i
       localStrength = strength * hardnessFactor cfg (hardness U.! i)
-      neighbors =
-        [ elev U.! (i - 1) | x > 0 ]
-        <> [ elev U.! (i + 1) | x + 1 < gridW ]
-        <> [ elev U.! (i - gridW) | y > 0 ]
-        <> [ elev U.! (i + gridW) | y + 1 < gridH ]
+      neighbors = map (elev U.!) (hexNeighborIndices gridW gridH i)
       anyWater = any (< waterLevel) neighbors
       anyLand = any (>= waterLevel) neighbors
       lower = min localStrength (h0 - waterLevel)
@@ -590,21 +764,56 @@ strahlerOrder gridW gridH elev flow acc minAccum = U.create $ do
             UM.write orders i nextOrder
   pure orders
 
+-- | Compute Strahler stream orders using 6 hex neighbours for upstream
+-- detection.
 upstreamOrders :: Int -> Int -> U.Vector Int -> UM.MVector s Word16 -> Int -> ST s [Word16]
 upstreamOrders gridW gridH flow orders i =
-  let x = i `mod` gridW
-      y = i `div` gridW
-      candidates =
-        [ (i - 1) | x > 0 ]
-        <> [ (i + 1) | x + 1 < gridW ]
-        <> [ (i - gridW) | y > 0 ]
-        <> [ (i + gridW) | y + 1 < gridH ]
-      incoming = filter (\n -> flow U.! n == i) candidates
+  let incoming = filter (\j -> flow U.! j == i) (hexNeighborIndices gridW gridH i)
   in mapM (UM.read orders) incoming
 
 sliceRiverChunk :: WorldConfig -> ChunkCoord -> Int -> RiverChunk -> Int -> TerrainChunk -> RiverChunk
 sliceRiverChunk config minCoord gridW rivers _key _chunk =
-  RiverChunk
+  let flowSlice = chunkGridSliceGeneric config minCoord gridW (rcFlowDir rivers) _key
+      -- Segment data is global-grid-indexed via offsets; we need to
+      -- re-index for the chunk-local tile set.
+      size  = wcChunkSize config
+      n     = size * size
+      ChunkCoord cx cy = chunkCoordFromId (ChunkId _key)
+      ChunkCoord minCx minCy = minCoord
+      baseX = (cx - minCx) * size
+      baseY = (cy - minCy) * size
+      globalOffsets = rcSegOffsets rivers
+      globalEntry   = rcSegEntryEdge rivers
+      globalExit    = rcSegExitEdge rivers
+      globalDisc    = rcSegDischarge rivers
+      globalOrd     = rcSegOrder rivers
+      -- Build local offsets and segment slices
+      segCounts = U.generate n (\i ->
+        let lx = i `mod` size
+            ly = i `div` size
+            gx = baseX + lx
+            gy = baseY + ly
+            gi = gy * gridW + gx
+        in if gi + 1 < U.length globalOffsets
+           then globalOffsets U.! (gi + 1) - globalOffsets U.! gi
+           else 0)
+      localOffsets = U.scanl' (+) 0 segCounts
+      totalLocalSegs = U.last localOffsets
+      -- Collect global segment indices for this chunk
+      globalSegIndices = U.concatMap (\i ->
+        let lx = i `mod` size
+            ly = i `div` size
+            gx = baseX + lx
+            gy = baseY + ly
+            gi = gy * gridW + gx
+            start = globalOffsets U.! gi
+            end   = globalOffsets U.! (gi + 1)
+        in U.generate (end - start) (+ start)) (U.enumFromN 0 n)
+      localEntry = U.map (globalEntry U.!) globalSegIndices
+      localExit  = U.map (globalExit U.!) globalSegIndices
+      localDisc  = U.map (globalDisc U.!) globalSegIndices
+      localOrd   = U.map (globalOrd U.!) globalSegIndices
+  in RiverChunk
     { rcFlowAccum = chunkGridSlice config minCoord gridW (rcFlowAccum rivers) _key
     , rcDischarge = chunkGridSlice config minCoord gridW (rcDischarge rivers) _key
     , rcChannelDepth = chunkGridSlice config minCoord gridW (rcChannelDepth rivers) _key
@@ -613,6 +822,12 @@ sliceRiverChunk config minCoord gridW rivers _key _chunk =
     , rcBaseflow = chunkGridSlice config minCoord gridW (rcBaseflow rivers) _key
     , rcErosionPotential = chunkGridSlice config minCoord gridW (rcErosionPotential rivers) _key
     , rcDepositPotential = chunkGridSlice config minCoord gridW (rcDepositPotential rivers) _key
+    , rcFlowDir = flowSlice
+    , rcSegOffsets = localOffsets
+    , rcSegEntryEdge = localEntry
+    , rcSegExitEdge = localExit
+    , rcSegDischarge = localDisc
+    , rcSegOrder = localOrd
     }
 
 sliceGroundwaterChunk :: WorldConfig -> ChunkCoord -> Int -> GroundwaterChunk -> Int -> TerrainChunk -> GroundwaterChunk

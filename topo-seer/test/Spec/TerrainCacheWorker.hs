@@ -44,7 +44,7 @@ spec = describe "TerrainCacheWorker" $ do
     workerHandle <- getSingleton system terrainCacheWorkerActorDef
     brokerHandle <- getSingleton system terrainCacheBrokerActorDef
     let uiSnap = emptyUiState
-        terrainSnap = TerrainSnapshot 0 sampleChunkSize sampleTerrainChunks sampleClimateChunks sampleWeatherChunks
+        terrainSnap = TerrainSnapshot 0 sampleChunkSize sampleTerrainChunks sampleClimateChunks sampleWeatherChunks mempty
     case terrainCacheKeyFrom uiSnap terrainSnap of
       Nothing -> expectationFailure "Expected terrain cache key to be available"
       Just key -> do

@@ -4,6 +4,7 @@ module UI.TerrainAtlas
   , AtlasTileGeometry(..)
   , buildAtlasTileGeometry
   , composeTilesFromGeometry
+  , attachRiverOverlay
   , renderAtlasTileTextures
   , maxAtlasTextureSize
   ) where
@@ -14,11 +15,12 @@ import qualified Data.IntMap.Strict as IntMap
 import Data.Maybe (mapMaybe)
 import Data.Vector.Storable (Vector)
 import qualified Data.Vector.Storable as SV
-import Foreign.C.Types (CInt)
+import Foreign.C.Types (CFloat, CInt)
 import Linear (V2(..), V4(..))
 import qualified SDL
 import qualified SDL.Raw.Types as Raw
 import Topo (ClimateChunk(..), TerrainChunk(..), WeatherChunk(..), WorldConfig(..))
+import UI.RiverRender (RiverGeometry(..))
 import UI.TerrainRender (ChunkGeometry(..), buildChunkGeometry)
 import UI.Widgets (Rect(..))
 
@@ -41,6 +43,7 @@ data AtlasTileGeometry = AtlasTileGeometry
   { atgBounds :: !Rect
   , atgScale :: !Int
   , atgChunks :: ![AtlasChunkGeometry]
+  , atgRiverOverlay :: ![AtlasChunkGeometry]
   }
 
 maxAtlasTextureSize :: Int
@@ -92,6 +95,7 @@ composeTilesFromGeometry geometryMap scale
               { atgBounds = tileRect
               , atgScale = sc
               , atgChunks = chunks
+              , atgRiverOverlay = []
               }
 
     buildChunk minX minY sc geom =
@@ -105,10 +109,43 @@ composeTilesFromGeometry geometryMap scale
           , acgIndices = cgIndices geom
           }
 
-    offsetVertex dx dy scaleF (Raw.Vertex (Raw.FPoint x y) color tex) =
-      let x' = (x + realToFrac dx) * scaleF
-          y' = (y + realToFrac dy) * scaleF
-      in Raw.Vertex (Raw.FPoint x' y') color tex
+-- | Transform a vertex by an offset (in world pixels) and a uniform scale.
+offsetVertex :: Int -> Int -> CFloat -> Raw.Vertex -> Raw.Vertex
+offsetVertex dx dy scaleF (Raw.Vertex (Raw.FPoint x y) color tex) =
+  let x' = (x + realToFrac dx) * scaleF
+      y' = (y + realToFrac dy) * scaleF
+  in Raw.Vertex (Raw.FPoint x' y') color tex
+
+-- | Attach river overlay geometry to pre-built atlas tiles.
+--
+-- For each tile, finds overlapping river geometries and applies the
+-- same offset\/scale transform that the terrain chunks use.
+attachRiverOverlay :: IntMap RiverGeometry -> [AtlasTileGeometry] -> [AtlasTileGeometry]
+attachRiverOverlay riverGeoMap tiles
+  | IntMap.null riverGeoMap = tiles
+  | otherwise = map attachToTile tiles
+  where
+    riverGeos = IntMap.elems riverGeoMap
+
+    attachToTile tile =
+      let overlapping = filter (rectsOverlap (atgBounds tile) . rgBounds) riverGeos
+      in if null overlapping
+        then tile
+        else
+          let Rect (V2 minX minY, _) = atgBounds tile
+              sc = realToFrac (atgScale tile) :: CFloat
+              chunks = map (buildRiverChunk minX minY sc) overlapping
+          in tile { atgRiverOverlay = chunks }
+
+    buildRiverChunk minX minY scaleF rg =
+      let Rect (V2 bx by, _) = rgBounds rg
+          dx = bx - minX
+          dy = by - minY
+          verts = SV.map (offsetVertex dx dy scaleF) (rgVertices rg)
+      in AtlasChunkGeometry
+          { acgVertices = verts
+          , acgIndices = rgIndices rg
+          }
 
 -- | Upload pre-built atlas geometry into render-target textures.
 renderAtlasTileTextures :: SDL.Renderer -> [AtlasTileGeometry] -> IO [TerrainAtlasTile]
@@ -127,6 +164,7 @@ renderAtlasTileTextures renderer tiles =
       SDL.rendererDrawColor renderer SDL.$= V4 0 0 0 0
       SDL.clear renderer
       mapM_ renderChunk (atgChunks tile)
+      mapM_ renderChunk (atgRiverOverlay tile)
       SDL.rendererRenderTarget renderer SDL.$= Nothing
       pure [TerrainAtlasTile
         { tatTexture = texture

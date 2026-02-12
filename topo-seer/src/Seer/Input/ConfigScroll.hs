@@ -34,9 +34,12 @@ defaultScrollSettings = ScrollSettings
 
 -- | Total number of config rows for each tab.
 configRowCount :: ConfigTab -> Int
-configRowCount ConfigTerrain = 44
-configRowCount ConfigClimate = 23
-configRowCount ConfigErosion = 5
+configRowCount ConfigTerrain = 53
+configRowCount ConfigPlanet = 7
+configRowCount ConfigClimate = 49
+configRowCount ConfigWeather = 21
+configRowCount ConfigBiome = 26
+configRowCount ConfigErosion = 35
 
 -- | Compute scroll updates for config panel and log view.
 computeScrollUpdates

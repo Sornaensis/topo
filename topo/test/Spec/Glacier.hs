@@ -19,6 +19,9 @@ spec = describe "Glacier" $ do
           , ccPrecipAvg = U.replicate (chunkTileCount config) 0.8
           , ccWindDirAvg = U.replicate (chunkTileCount config) 0
           , ccWindSpdAvg = U.replicate (chunkTileCount config) 0
+          , ccHumidityAvg = U.replicate (chunkTileCount config) 0
+          , ccTempRange = U.replicate (chunkTileCount config) 0
+          , ccPrecipSeasonality = U.replicate (chunkTileCount config) 0
           }
         world1 = setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) terrain world0)
         pipeline = PipelineConfig
@@ -43,6 +46,9 @@ spec = describe "Glacier" $ do
               , ccPrecipAvg = U.replicate (chunkTileCount config) 1
               , ccWindDirAvg = U.replicate (chunkTileCount config) 0
               , ccWindSpdAvg = U.replicate (chunkTileCount config) 0
+              , ccHumidityAvg = U.replicate (chunkTileCount config) 0
+              , ccTempRange = U.replicate (chunkTileCount config) 0
+              , ccPrecipSeasonality = U.replicate (chunkTileCount config) 0
               }
             world1 = setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) terrain world0)
             pipeline = PipelineConfig
@@ -69,6 +75,9 @@ spec = describe "Glacier" $ do
                 , ccPrecipAvg = U.replicate (chunkTileCount config) precip
                 , ccWindDirAvg = U.replicate (chunkTileCount config) 0
                 , ccWindSpdAvg = U.replicate (chunkTileCount config) 0
+                , ccHumidityAvg = U.replicate (chunkTileCount config) 0
+                , ccTempRange = U.replicate (chunkTileCount config) 0
+                , ccPrecipSeasonality = U.replicate (chunkTileCount config) 0
                 }
               world1 = setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) terrain world0)
               pipeline = PipelineConfig
@@ -93,11 +102,11 @@ spec = describe "Glacier" $ do
             Just glacier -> pure (U.all (\v -> abs (v - iceExpected) < 1e-5) (glIceThickness glacier))
 
   it "produces more ice at high latitude than at equator" $ do
-    -- Generate worlds at 70°N and 0° equator using the full climate+glacier
+    -- Generate worlds at 85°N and 0° equator using the full climate+glacier
     -- pipeline.  The high-latitude world should accumulate more ice because
-    -- the climate stage produces lower temperatures at 70°N.
+    -- the climate stage produces lower temperatures at 85°N.
     let config = WorldConfig { wcChunkSize = 4 }
-        sliceArctic  = defaultWorldSlice { wsLatCenter = 70, wsLatExtent = 10 }
+        sliceArctic  = defaultWorldSlice { wsLatCenter = 85, wsLatExtent = 5 }
         sliceEquator = defaultWorldSlice { wsLatCenter = 0,  wsLatExtent = 10 }
         worldArctic  = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig sliceArctic
         worldEquator = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig sliceEquator

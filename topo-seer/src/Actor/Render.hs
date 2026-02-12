@@ -66,7 +66,7 @@ actor Render
   cast setTerrain :: TerrainSnapshot
   call snapshot :: () -> RenderSnapshot
 
-  initial (emptyRenderState emptyUiState (LogSnapshot [] False 0 LogDebug) (DataSnapshot 0 0 Nothing) (TerrainSnapshot 0 0 mempty mempty mempty))
+  initial (emptyRenderState emptyUiState (LogSnapshot [] False 0 LogDebug) (DataSnapshot 0 0 Nothing) (TerrainSnapshot 0 0 mempty mempty mempty mempty))
   onPure_ setUi = \ui st -> st { rsUiState = ui }
   onPure_ setLog = \logSnap st -> st { rsLogState = logSnap }
   onPure_ setData = \dataSnap st -> st { rsDataState = dataSnap }

@@ -11,6 +11,7 @@ module Topo.World
   , emptyGroundwaterChunk
   , emptyVolcanismChunk
   , emptyGlacierChunk
+  , emptyVegetationChunk
   , ensureTerrainChunk
   , ensureClimateChunk
   , ensureWeatherChunk
@@ -18,6 +19,7 @@ module Topo.World
   , ensureGroundwaterChunk
   , ensureVolcanismChunk
   , ensureGlacierChunk
+  , ensureVegetationChunk
   , getChunk
   , updateChunk
   , mapChunks
@@ -43,6 +45,12 @@ module Topo.World
   , setVolcanismChunk
   , getGlacierChunk
   , setGlacierChunk
+  , getVegetationChunk
+  , setVegetationChunk
+  , getWaterBodyChunk
+  , setWaterBodyChunk
+  , emptyWaterBodyChunk
+  , ensureWaterBodyChunk
   ) where
 
 import Data.IntMap.Strict (IntMap)
@@ -64,11 +72,23 @@ data TerrainWorld = TerrainWorld
   , twGroundwater :: !(ChunkMap GroundwaterChunk)
   , twVolcanism :: !(ChunkMap VolcanismChunk)
   , twGlaciers :: !(ChunkMap GlacierChunk)
+  -- | Per-chunk water body classification (ocean vs lake vs inland sea).
+  -- Produced by 'Topo.WaterBody.applyWaterBodyStage'.
+  , twWaterBodies :: !(ChunkMap WaterBodyChunk)
+  -- | Pre-climate vegetation bootstrap data produced by
+  -- 'Topo.Vegetation.bootstrapVegetationStage'.  Stores vegetation cover
+  -- fraction and surface albedo per tile, used by the climate stage for
+  -- evapotranspiration and albedo–temperature feedback.
+  , twVegetation :: !(ChunkMap VegetationChunk)
   , twHexGrid :: !HexGridMeta
   , twMeta    :: !MetadataStore
   , twConfig  :: !WorldConfig
   , twPlanet  :: !PlanetConfig
   , twSlice   :: !WorldSlice
+  -- | Elapsed simulation time in weather ticks.  Incremented by
+  -- 'tickWeatherStage' each call; used for time-varying weather noise
+  -- and seasonal phase computation.
+  , twWorldTime :: !Float
   }
 
 emptyWorld :: WorldConfig -> HexGridMeta -> TerrainWorld
@@ -84,11 +104,14 @@ emptyWorldWithPlanet config hexMeta planet slice = TerrainWorld
   , twGroundwater = IntMap.empty
   , twVolcanism = IntMap.empty
   , twGlaciers = IntMap.empty
+  , twWaterBodies = IntMap.empty
+  , twVegetation = IntMap.empty
   , twHexGrid = hexMeta
   , twMeta = emptyMetadataStore
   , twConfig = config
   , twPlanet = planet
   , twSlice = slice
+  , twWorldTime = 0
   }
 
 emptyTerrainChunk :: WorldConfig -> TerrainChunk
@@ -111,6 +134,9 @@ emptyTerrainChunk config =
       , tcRoughness = zeros
       , tcRockDensity = zeros
       , tcSoilGrain = zeros
+      , tcRelief = zeros
+      , tcRuggedness = zeros
+      , tcTerrainForm = U.replicate n FormFlat
       , tcFlags = biomeZeros
     , tcPlateId = zeros16
     , tcPlateBoundary = boundaryZeros
@@ -144,6 +170,9 @@ generateTerrainChunk config f =
       , tcRoughness = zeros
       , tcRockDensity = zeros
       , tcSoilGrain = zeros
+      , tcRelief = zeros
+      , tcRuggedness = zeros
+      , tcTerrainForm = U.replicate n FormFlat
       , tcFlags = biomeZeros
     , tcPlateId = zeros16
     , tcPlateBoundary = boundaryZeros
@@ -164,6 +193,9 @@ emptyClimateChunk config =
       , ccPrecipAvg = zeros
       , ccWindDirAvg = zeros
       , ccWindSpdAvg = zeros
+      , ccHumidityAvg = zeros
+      , ccTempRange = zeros
+      , ccPrecipSeasonality = zeros
       }
 
 emptyWeatherChunk :: WorldConfig -> WeatherChunk
@@ -185,6 +217,8 @@ emptyRiverChunk config =
       zeros = U.replicate n 0
       zeros16 = U.replicate n 0
       zeros32 = U.replicate n 0
+      sinkFlow = U.replicate n (-1 :: Int)
+      emptyOffsets = U.replicate (n + 1) (0 :: Int)
   in RiverChunk
       { rcFlowAccum = zeros
       , rcDischarge = zeros
@@ -194,6 +228,12 @@ emptyRiverChunk config =
       , rcBaseflow = zeros
       , rcErosionPotential = zeros
       , rcDepositPotential = zeros
+      , rcFlowDir = sinkFlow
+      , rcSegOffsets = emptyOffsets
+      , rcSegEntryEdge = U.empty
+      , rcSegExitEdge = U.empty
+      , rcSegDischarge = U.empty
+      , rcSegOrder = U.empty
       }
 
 emptyGroundwaterChunk :: WorldConfig -> GroundwaterChunk
@@ -366,6 +406,55 @@ ensureGlacierChunk cid world =
   case getGlacierChunk cid world of
     Just _ -> world
     Nothing -> setGlacierChunk cid (emptyGlacierChunk (twConfig world)) world
+
+-- | An empty vegetation chunk with zero cover, default bare-ground albedo,
+-- and zero density.
+emptyVegetationChunk :: WorldConfig -> VegetationChunk
+emptyVegetationChunk config =
+  let n = chunkTileCount config
+  in VegetationChunk
+      { vegCover   = U.replicate n 0
+      , vegAlbedo  = U.replicate n 0.30
+      , vegDensity = U.replicate n 0
+      }
+
+getVegetationChunk :: ChunkId -> TerrainWorld -> Maybe VegetationChunk
+getVegetationChunk cid world = IntMap.lookup (chunkKey cid) (twVegetation world)
+
+setVegetationChunk :: ChunkId -> VegetationChunk -> TerrainWorld -> TerrainWorld
+setVegetationChunk cid chunk world =
+  world { twVegetation = IntMap.insert (chunkKey cid) chunk (twVegetation world) }
+
+ensureVegetationChunk :: ChunkId -> TerrainWorld -> TerrainWorld
+ensureVegetationChunk cid world =
+  case getVegetationChunk cid world of
+    Just _ -> world
+    Nothing -> setVegetationChunk cid (emptyVegetationChunk (twConfig world)) world
+
+-- | An empty water body chunk (all tiles classified as dry).
+emptyWaterBodyChunk :: WorldConfig -> WaterBodyChunk
+emptyWaterBodyChunk config =
+  let n = chunkTileCount config
+  in WaterBodyChunk
+      { wbType         = U.replicate n WaterDry
+      , wbSurfaceElev  = U.replicate n 0
+      , wbBasinId      = U.replicate n 0
+      , wbDepth        = U.replicate n 0
+      , wbAdjacentType = U.replicate n WaterDry
+      }
+
+getWaterBodyChunk :: ChunkId -> TerrainWorld -> Maybe WaterBodyChunk
+getWaterBodyChunk cid world = IntMap.lookup (chunkKey cid) (twWaterBodies world)
+
+setWaterBodyChunk :: ChunkId -> WaterBodyChunk -> TerrainWorld -> TerrainWorld
+setWaterBodyChunk cid chunk world =
+  world { twWaterBodies = IntMap.insert (chunkKey cid) chunk (twWaterBodies world) }
+
+ensureWaterBodyChunk :: ChunkId -> TerrainWorld -> TerrainWorld
+ensureWaterBodyChunk cid world =
+  case getWaterBodyChunk cid world of
+    Just _ -> world
+    Nothing -> setWaterBodyChunk cid (emptyWaterBodyChunk (twConfig world)) world
 
 getElevationAt :: ChunkId -> TileCoord -> TerrainWorld -> Maybe Float
 getElevationAt cid coord world = do

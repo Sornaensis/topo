@@ -34,6 +34,7 @@ import Topo
   , WorldConfig(..)
   , ChunkId(..)
   , ClimateChunk
+  , RiverChunk
   , TerrainChunk
   , WeatherChunk
   , TerrainWorld(..)
@@ -75,6 +76,7 @@ data TerrainGenResult = TerrainGenResult
   , tgrResultTerrainChunks :: ![(ChunkId, TerrainChunk)]
   , tgrResultClimateChunks :: ![(ChunkId, ClimateChunk)]
   , tgrResultWeatherChunks :: ![(ChunkId, WeatherChunk)]
+  , tgrResultRiverChunks :: ![(ChunkId, RiverChunk)]
   , tgrResultTerrainCount :: !Int
   , tgrResultBiomeCount :: !Int
   } deriving (Eq, Show)
@@ -151,6 +153,7 @@ actor Terrain
         let terrainChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twTerrain world1))
             climateChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twClimate world1))
             weatherChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twWeather world1))
+            riverChunks   = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twRivers world1))
             terrainCount = IntMap.size (twTerrain world1)
             biomeCount = terrainCount
         -- Force the full list spines + tuple WHNF on the terrain actor's
@@ -161,12 +164,14 @@ actor Terrain
         _ <- evaluate (length terrainChunks)
         _ <- evaluate (length climateChunks)
         _ <- evaluate (length weatherChunks)
+        _ <- evaluate (length riverChunks)
         let result = TerrainGenResult
               { tgrResultSeed = tgrSeed req
               , tgrResultChunkSize = wcChunkSize worldCfg
               , tgrResultTerrainChunks = terrainChunks
               , tgrResultClimateChunks = climateChunks
               , tgrResultWeatherChunks = weatherChunks
+              , tgrResultRiverChunks = riverChunks
               , tgrResultTerrainCount = terrainCount
               , tgrResultBiomeCount = biomeCount
               }

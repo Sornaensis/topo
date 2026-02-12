@@ -21,6 +21,7 @@ import Actor.Data
   , setBiomeChunkCount
   , setClimateChunkData
   , setLastSeed
+  , setRiverChunkData
   , setTerrainChunkCount
   , setTerrainChunkData
   , setWeatherChunkData
@@ -76,14 +77,17 @@ applyTerrainResult handles resultMsg = do
       terrainChunks = tgrResultTerrainChunks resultMsg
       climateChunks = tgrResultClimateChunks resultMsg
       weatherChunks = tgrResultWeatherChunks resultMsg
+      riverChunks   = tgrResultRiverChunks resultMsg
       terrainCount = tgrResultTerrainCount resultMsg
       biomeCount = tgrResultBiomeCount resultMsg
   setTerrainChunkData (uahData handles) chunkSize []
   setClimateChunkData (uahData handles) chunkSize []
   setWeatherChunkData (uahData handles) chunkSize []
+  setRiverChunkData   (uahData handles) chunkSize []
   setTerrainChunkData (uahData handles) chunkSize terrainChunks
   setClimateChunkData (uahData handles) chunkSize climateChunks
   setWeatherChunkData (uahData handles) chunkSize weatherChunks
+  setRiverChunkData   (uahData handles) chunkSize riverChunks
   setTerrainChunkCount (uahData handles) terrainCount
   setBiomeChunkCount (uahData handles) biomeCount
   setLastSeed (uahData handles) (tgrResultSeed resultMsg)

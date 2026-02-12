@@ -65,6 +65,7 @@ library
       UI.TerrainAtlas
       UI.TerrainCache
       UI.TerrainRender
+      UI.RiverRender
       UI.Widgets
       UI.WidgetsDraw
       UI.WidgetTree
@@ -117,6 +118,7 @@ test-suite topo-seer-test
       Spec.Layout
       Spec.LogActor
       Spec.RenderActor
+      Spec.RiverRender
       Spec.SliderSpec
       Spec.SnapshotReceiver
       Spec.TerrainActor

@@ -57,6 +57,7 @@ emptyTerrainSnapshot = TerrainSnapshot
   , tsTerrainChunks = IntMap.empty
   , tsClimateChunks = IntMap.empty
   , tsWeatherChunks = IntMap.empty
+  , tsRiverChunks = IntMap.empty
   }
 
 distinctViewModes :: Gen (ViewMode, ViewMode)

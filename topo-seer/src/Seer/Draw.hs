@@ -42,14 +42,14 @@ import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time.Format (defaultTimeLocale, formatTime)
-import Data.Word (Word8)
+import Data.Word (Word8, Word16)
 import Foreign.C.Types (CInt)
 import Linear (V2(..), V4(..))
 import qualified SDL
 import Seer.Config (mapIntRange)
 import Seer.Config.SliderSpec
 import Seer.World.Persist.Types (WorldSaveManifest(..))
-import Topo (BiomeId, ChunkCoord(..), ChunkId(..), ClimateChunk(..), TerrainChunk(..), TileCoord(..), TileIndex(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord, tileIndex)
+import Topo (BiomeId, ChunkCoord(..), ChunkId(..), ClimateChunk(..), PlateBoundary(..), TerrainChunk(..), TileCoord(..), TileIndex(..), WeatherChunk(..), WorldConfig(..), biomeDisplayName, chunkCoordFromTile, chunkIdFromCoord, plateBoundaryToCode, tileIndex)
 import UI.Font (FontCache, textSize)
 import UI.HexPick (axialToScreen)
 import UI.Layout
@@ -120,10 +120,13 @@ logTextYOffset (Just cache) lineHeight = do
   V2 _ th <- textSize cache (V4 255 255 255 255) "Ag"
   pure (max 1 ((lineHeight - fromIntegral th) `div` 2))
 
-drawConfigTabs :: SDL.Renderer -> UiState -> (Rect, Rect, Rect) -> IO ()
-drawConfigTabs renderer ui (tabTerrain, tabClimate, tabErosion) = do
+drawConfigTabs :: SDL.Renderer -> UiState -> (Rect, Rect, Rect, Rect, Rect, Rect) -> IO ()
+drawConfigTabs renderer ui (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion) = do
   drawTab tabTerrain (uiConfigTab ui == ConfigTerrain)
+  drawTab tabPlanet (uiConfigTab ui == ConfigPlanet)
   drawTab tabClimate (uiConfigTab ui == ConfigClimate)
+  drawTab tabWeather (uiConfigTab ui == ConfigWeather)
+  drawTab tabBiome (uiConfigTab ui == ConfigBiome)
   drawTab tabErosion (uiConfigTab ui == ConfigErosion)
   where
     drawTab rect isActive = do
@@ -339,13 +342,132 @@ drawConfigPanel
   :: SDL.Renderer
   -> UiState
   -> Rect
+  -> (Rect, Rect, Rect, Rect, Rect, Rect)
+  -> Rect
+  -> Rect
+  -> Rect
+  -> Rect
+  -> Rect
+  -> Rect
   -> (Rect, Rect, Rect)
-  -> Rect
-  -> Rect
-  -> Rect
-  -> Rect
-  -> Rect
-  -> Rect
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
   -> (Rect, Rect, Rect)
   -> (Rect, Rect, Rect)
   -> (Rect, Rect, Rect)
@@ -419,7 +541,7 @@ drawConfigPanel
   -> (Rect, Rect, Rect)
   -> (Rect, Rect, Rect)
   -> IO ()
-drawConfigPanel renderer ui rect (tabTerrain, tabClimate, tabErosion) presetSaveRect presetLoadRect resetRect revertRect scrollAreaRect scrollBarRect
+drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion) presetSaveRect presetLoadRect resetRect revertRect scrollAreaRect scrollBarRect
   (waterMinus, waterBar, waterPlus)
   (evapMinus, evapBar, evapPlus)
   (rainShadowMinus, rainShadowBar, rainShadowPlus)
@@ -432,17 +554,97 @@ drawConfigPanel renderer ui rect (tabTerrain, tabClimate, tabErosion) presetSave
   (weatherTickMinus, weatherTickBar, weatherTickPlus)
   (weatherPhaseMinus, weatherPhaseBar, weatherPhasePlus)
   (weatherAmplitudeMinus, weatherAmplitudeBar, weatherAmplitudePlus)
+  (seasonCycleLengthMinus, seasonCycleLengthBar, seasonCycleLengthPlus)
+  (jitterAmplitudeMinus, jitterAmplitudeBar, jitterAmplitudePlus)
+  (pressureBaseMinus, pressureBaseBar, pressureBasePlus)
+  (pressureTempScaleMinus, pressureTempScaleBar, pressureTempScalePlus)
+  (pressureCoriolisScaleMinus, pressureCoriolisScaleBar, pressureCoriolisScalePlus)
+  (seasonalBaseMinus, seasonalBaseBar, seasonalBasePlus)
+  (seasonalRangeMinus, seasonalRangeBar, seasonalRangePlus)
+  (humidityNoiseScaleMinus, humidityNoiseScaleBar, humidityNoiseScalePlus)
+  (precipNoiseScaleMinus, precipNoiseScaleBar, precipNoiseScalePlus)
+  (weatherITCZWidthMinus, weatherITCZWidthBar, weatherITCZWidthPlus)
+  (weatherITCZPrecipBoostMinus, weatherITCZPrecipBoostBar, weatherITCZPrecipBoostPlus)
+  (pressureHumidityScaleMinus, pressureHumidityScaleBar, pressureHumidityScalePlus)
+  (pressureGradientWindScaleMinus, pressureGradientWindScaleBar, pressureGradientWindScalePlus)
+  (windNoiseScaleMinus, windNoiseScaleBar, windNoiseScalePlus)
+  (itczMigrationScaleMinus, itczMigrationScaleBar, itczMigrationScalePlus)
+  (cloudRHExponentMinus, cloudRHExponentBar, cloudRHExponentPlus)
+  (cloudAlbedoEffectMinus, cloudAlbedoEffectBar, cloudAlbedoEffectPlus)
+  (cloudPrecipBoostMinus, cloudPrecipBoostBar, cloudPrecipBoostPlus)
   (vegBaseMinus, vegBaseBar, vegBasePlus)
   (vegBoostMinus, vegBoostBar, vegBoostPlus)
   (vegTempWeightMinus, vegTempWeightBar, vegTempWeightPlus)
   (vegPrecipWeightMinus, vegPrecipWeightBar, vegPrecipWeightPlus)
+  (btCoastalBandMinus, btCoastalBandBar, btCoastalBandPlus)
+  (btSnowElevationMinus, btSnowElevationBar, btSnowElevationPlus)
+  (btAlpineElevationMinus, btAlpineElevationBar, btAlpineElevationPlus)
+  (btIceCapTempMinus, btIceCapTempBar, btIceCapTempPlus)
+  (btMontaneLowMinus, btMontaneLowBar, btMontaneLowPlus)
+  (btMontanePrecipMinus, btMontanePrecipBar, btMontanePrecipPlus)
+  (btCliffSlopeMinus, btCliffSlopeBar, btCliffSlopePlus)
+  (btValleyMoistureMinus, btValleyMoistureBar, btValleyMoisturePlus)
+  (btDepressionMoistureMinus, btDepressionMoistureBar, btDepressionMoisturePlus)
+  (btPrecipWeightMinus, btPrecipWeightBar, btPrecipWeightPlus)
+  (vbcTempMinMinus, vbcTempMinBar, vbcTempMinPlus)
+  (vbcTempRangeMinus, vbcTempRangeBar, vbcTempRangePlus)
+  (vbcFertilityBoostMinus, vbcFertilityBoostBar, vbcFertilityBoostPlus)
+  (vbcAlbedoBaseMinus, vbcAlbedoBaseBar, vbcAlbedoBasePlus)
+  (vbcAlbedoBareMinus, vbcAlbedoBareBar, vbcAlbedoBarePlus)
+  (vbcAlbedoVegMinus, vbcAlbedoVegBar, vbcAlbedoVegPlus)
+  (vbcOceanAlbedoMinus, vbcOceanAlbedoBar, vbcOceanAlbedoPlus)
+  (vbcIceAlbedoMinus, vbcIceAlbedoBar, vbcIceAlbedoPlus)
+  (biomeSmoothingMinus, biomeSmoothingBar, biomeSmoothingPlus)
+  (volcanicAshBoostMinus, volcanicAshBoostBar, volcanicAshBoostPlus)
+  (volcanicLavaPenaltyMinus, volcanicLavaPenaltyBar, volcanicLavaPenaltyPlus)
+  (biomeFeedbackBlendMinus, biomeFeedbackBlendBar, biomeFeedbackBlendPlus)
   (boundaryMotionTempMinus, boundaryMotionTempBar, boundaryMotionTempPlus)
   (boundaryMotionPrecipMinus, boundaryMotionPrecipBar, boundaryMotionPrecipPlus)
   (planetRadiusMinus, planetRadiusBar, planetRadiusPlus)
   (axialTiltMinus, axialTiltBar, axialTiltPlus)
   (insolationMinus, insolationBar, insolationPlus)
+  (occWarmScaleMinus, occWarmScaleBar, occWarmScalePlus)
+  (occColdScaleMinus, occColdScaleBar, occColdScalePlus)
+  (occLatPeakDegMinus, occLatPeakDegBar, occLatPeakDegPlus)
+  (occLatWidthDegMinus, occLatWidthDegBar, occLatWidthDegPlus)
   (sliceLatCenterMinus, sliceLatCenterBar, sliceLatCenterPlus)
   (sliceLonCenterMinus, sliceLonCenterBar, sliceLonCenterPlus)
+  (latitudeExponentMinus, latitudeExponentBar, latitudeExponentPlus)
+  (plateHeightCoolingMinus, plateHeightCoolingBar, plateHeightCoolingPlus)
+  (tempNoiseScaleMinus, tempNoiseScaleBar, tempNoiseScalePlus)
+  (oceanModerationMinus, oceanModerationBar, oceanModerationPlus)
+  (oceanModerateTempMinus, oceanModerateTempBar, oceanModerateTempPlus)
+  (albedoSensitivityMinus, albedoSensitivityBar, albedoSensitivityPlus)
+  (albedoReferenceMinus, albedoReferenceBar, albedoReferencePlus)
+  (moistAdvectMinus, moistAdvectBar, moistAdvectPlus)
+  (moistLocalMinus, moistLocalBar, moistLocalPlus)
+  (moistWindEvapScaleMinus, moistWindEvapScaleBar, moistWindEvapScalePlus)
+  (moistEvapNoiseScaleMinus, moistEvapNoiseScaleBar, moistEvapNoiseScalePlus)
+  (moistLandETCoeffMinus, moistLandETCoeffBar, moistLandETCoeffPlus)
+  (moistBareEvapFracMinus, moistBareEvapFracBar, moistBareEvapFracPlus)
+  (moistVegTranspFracMinus, moistVegTranspFracBar, moistVegTranspFracPlus)
+  (moistWindETScaleMinus, moistWindETScaleBar, moistWindETScalePlus)
+  (moistCondensationRateMinus, moistCondensationRateBar, moistCondensationRatePlus)
+  (moistRecycleRateMinus, moistRecycleRateBar, moistRecycleRatePlus)
+  (moistITCZStrengthMinus, moistITCZStrengthBar, moistITCZStrengthPlus)
+  (moistITCZWidthMinus, moistITCZWidthBar, moistITCZWidthPlus)
+  (orographicScaleMinus, orographicScaleBar, orographicScalePlus)
+  (orographicStepMinus, orographicStepBar, orographicStepPlus)
+  (coastalIterationsMinus, coastalIterationsBar, coastalIterationsPlus)
+  (coastalDiffuseMinus, coastalDiffuseBar, coastalDiffusePlus)
+  (coastalMoistureBoostMinus, coastalMoistureBoostBar, coastalMoistureBoostPlus)
+  (windBeltStrengthMinus, windBeltStrengthBar, windBeltStrengthPlus)
+  (windBeltHarmonicsMinus, windBeltHarmonicsBar, windBeltHarmonicsPlus)
+  (windBeltBaseMinus, windBeltBaseBar, windBeltBasePlus)
+  (windBeltRangeMinus, windBeltRangeBar, windBeltRangePlus)
+  (windBeltSpeedScaleMinus, windBeltSpeedScaleBar, windBeltSpeedScalePlus)
+  (bndLandRangeMinus, bndLandRangeBar, bndLandRangePlus)
+  (bndTempConvergentMinus, bndTempConvergentBar, bndTempConvergentPlus)
+  (bndTempDivergentMinus, bndTempDivergentBar, bndTempDivergentPlus)
+  (bndTempTransformMinus, bndTempTransformBar, bndTempTransformPlus)
+  (bndPrecipConvergentMinus, bndPrecipConvergentBar, bndPrecipConvergentPlus)
+  (bndPrecipDivergentMinus, bndPrecipDivergentBar, bndPrecipDivergentPlus)
+  (bndPrecipTransformMinus, bndPrecipTransformBar, bndPrecipTransformPlus)
   (genScaleMinus, genScaleBar, genScalePlus)
   (genCoordScaleMinus, genCoordScaleBar, genCoordScalePlus)
   (genOffsetXMinus, genOffsetXBar, genOffsetXPlus)
@@ -487,16 +689,55 @@ drawConfigPanel renderer ui rect (tabTerrain, tabClimate, tabErosion) presetSave
   (plateBiasEdgeMinus, plateBiasEdgeBar, plateBiasEdgePlus)
   (plateBiasNorthMinus, plateBiasNorthBar, plateBiasNorthPlus)
   (plateBiasSouthMinus, plateBiasSouthBar, plateBiasSouthPlus)
+  (tfcCliffSlopeMinus, tfcCliffSlopeBar, tfcCliffSlopePlus)
+  (tfcMountainSlopeMinus, tfcMountainSlopeBar, tfcMountainSlopePlus)
+  (tfcMountainReliefMinus, tfcMountainReliefBar, tfcMountainReliefPlus)
+  (tfcHillSlopeMinus, tfcHillSlopeBar, tfcHillSlopePlus)
+  (tfcRollingSlopeMinus, tfcRollingSlopeBar, tfcRollingSlopePlus)
+  (valleyCurvatureMinus, valleyCurvatureBar, valleyCurvaturePlus)
+  (rockElevationThresholdMinus, rockElevationThresholdBar, rockElevationThresholdPlus)
+  (rockHardnessThresholdMinus, rockHardnessThresholdBar, rockHardnessThresholdPlus)
+  (rockHardnessSecondaryMinus, rockHardnessSecondaryBar, rockHardnessSecondaryPlus)
   (erosionHydraulicMinus, erosionHydraulicBar, erosionHydraulicPlus)
   (erosionThermalMinus, erosionThermalBar, erosionThermalPlus)
   (erosionRainRateMinus, erosionRainRateBar, erosionRainRatePlus)
   (erosionTalusMinus, erosionTalusBar, erosionTalusPlus)
-  (erosionMaxDropMinus, erosionMaxDropBar, erosionMaxDropPlus) =
+  (erosionMaxDropMinus, erosionMaxDropBar, erosionMaxDropPlus)
+  (glacierSnowTempMinus, glacierSnowTempBar, glacierSnowTempPlus)
+  (glacierSnowRangeMinus, glacierSnowRangeBar, glacierSnowRangePlus)
+  (glacierMeltTempMinus, glacierMeltTempBar, glacierMeltTempPlus)
+  (glacierMeltRateMinus, glacierMeltRateBar, glacierMeltRatePlus)
+  (glacierAccumScaleMinus, glacierAccumScaleBar, glacierAccumScalePlus)
+  (glacierFlowItersMinus, glacierFlowItersBar, glacierFlowItersPlus)
+  (glacierFlowRateMinus, glacierFlowRateBar, glacierFlowRatePlus)
+  (glacierErosionScaleMinus, glacierErosionScaleBar, glacierErosionScalePlus)
+  (glacierCarveScaleMinus, glacierCarveScaleBar, glacierCarveScalePlus)
+  (glacierDepositScaleMinus, glacierDepositScaleBar, glacierDepositScalePlus)
+  (ventDensityMinus, ventDensityBar, ventDensityPlus)
+  (ventThresholdMinus, ventThresholdBar, ventThresholdPlus)
+  (hotspotScaleMinus, hotspotScaleBar, hotspotScalePlus)
+  (hotspotThresholdMinus, hotspotThresholdBar, hotspotThresholdPlus)
+  (magmaRechargeMinus, magmaRechargeBar, magmaRechargePlus)
+  (lavaScaleMinus, lavaScaleBar, lavaScalePlus)
+  (ashScaleMinus, ashScaleBar, ashScalePlus)
+  (volcanicDepositScaleMinus, volcanicDepositScaleBar, volcanicDepositScalePlus)
+  (soilMoistureThresholdMinus, soilMoistureThresholdBar, soilMoistureThresholdPlus)
+  (soilHardnessThresholdMinus, soilHardnessThresholdBar, soilHardnessThresholdPlus)
+  (soilFertilityMoistWeightMinus, soilFertilityMoistWeightBar, soilFertilityMoistWeightPlus)
+  (soilFertilityDepthWeightMinus, soilFertilityDepthWeightBar, soilFertilityDepthWeightPlus)
+  (sinkBreachDepthMinus, sinkBreachDepthBar, sinkBreachDepthPlus)
+  (streamPowerMaxErosionMinus, streamPowerMaxErosionBar, streamPowerMaxErosionPlus)
+  (riverCarveMaxDepthMinus, riverCarveMaxDepthBar, riverCarveMaxDepthPlus)
+  (coastalErodeStrengthMinus, coastalErodeStrengthBar, coastalErodeStrengthPlus)
+  (hydroHardnessWeightMinus, hydroHardnessWeightBar, hydroHardnessWeightPlus)
+  (minLakeSizeMinus, minLakeSizeBar, minLakeSizePlus)
+  (inlandSeaMinSizeMinus, inlandSeaMinSizeBar, inlandSeaMinSizePlus)
+  (roughnessScaleMinus, roughnessScaleBar, roughnessScalePlus) =
   if uiShowConfig ui
     then do
       SDL.rendererDrawColor renderer SDL.$= V4 35 45 60 230
       SDL.fillRect renderer (Just (rectToSDL rect))
-      drawConfigTabs renderer ui (tabTerrain, tabClimate, tabErosion)
+      drawConfigTabs renderer ui (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion)
       SDL.rendererDrawColor renderer SDL.$= V4 30 38 52 230
       SDL.fillRect renderer (Just (rectToSDL scrollAreaRect))
       SDL.rendererDrawColor renderer SDL.$= V4 60 70 90 255
@@ -504,9 +745,12 @@ drawConfigPanel renderer ui rect (tabTerrain, tabClimate, tabErosion) presetSave
       let rowHeight = 24
           gap = 10
           rows = case uiConfigTab ui of
-            ConfigTerrain -> 44
-            ConfigClimate -> 26
-            ConfigErosion -> 5
+            ConfigTerrain -> 53
+            ConfigPlanet -> 7
+            ConfigClimate -> 49
+            ConfigWeather -> 21
+            ConfigBiome -> 26
+            ConfigErosion -> 35
           contentHeight = max rowHeight (configRowTopPad + rows * rowHeight + max 0 (rows - 1) * gap)
           Rect (V2 _ _ , V2 _ scrollH) = scrollAreaRect
           maxOffset = max 0 (contentHeight - scrollH)
@@ -559,6 +803,15 @@ drawConfigPanel renderer ui rect (tabTerrain, tabClimate, tabErosion) presetSave
           drawConfigSlider renderer (uiPlateBiasEdge ui) (scrollRect plateBiasEdgeMinus) (scrollRect plateBiasEdgeBar) (scrollRect plateBiasEdgePlus) (V4 120 120 160 255)
           drawConfigSlider renderer (uiPlateBiasNorth ui) (scrollRect plateBiasNorthMinus) (scrollRect plateBiasNorthBar) (scrollRect plateBiasNorthPlus) (V4 120 120 160 255)
           drawConfigSlider renderer (uiPlateBiasSouth ui) (scrollRect plateBiasSouthMinus) (scrollRect plateBiasSouthBar) (scrollRect plateBiasSouthPlus) (V4 120 120 160 255)
+          drawConfigSlider renderer (uiTfcCliffSlope ui) (scrollRect tfcCliffSlopeMinus) (scrollRect tfcCliffSlopeBar) (scrollRect tfcCliffSlopePlus) (V4 150 100 100 255)
+          drawConfigSlider renderer (uiTfcMountainSlope ui) (scrollRect tfcMountainSlopeMinus) (scrollRect tfcMountainSlopeBar) (scrollRect tfcMountainSlopePlus) (V4 140 110 100 255)
+          drawConfigSlider renderer (uiTfcMountainRelief ui) (scrollRect tfcMountainReliefMinus) (scrollRect tfcMountainReliefBar) (scrollRect tfcMountainReliefPlus) (V4 130 120 100 255)
+          drawConfigSlider renderer (uiTfcHillSlope ui) (scrollRect tfcHillSlopeMinus) (scrollRect tfcHillSlopeBar) (scrollRect tfcHillSlopePlus) (V4 120 130 110 255)
+          drawConfigSlider renderer (uiTfcRollingSlope ui) (scrollRect tfcRollingSlopeMinus) (scrollRect tfcRollingSlopeBar) (scrollRect tfcRollingSlopePlus) (V4 110 140 120 255)
+          drawConfigSlider renderer (uiValleyCurvature ui) (scrollRect valleyCurvatureMinus) (scrollRect valleyCurvatureBar) (scrollRect valleyCurvaturePlus) (V4 100 140 140 255)
+          drawConfigSlider renderer (uiRockElevationThreshold ui) (scrollRect rockElevationThresholdMinus) (scrollRect rockElevationThresholdBar) (scrollRect rockElevationThresholdPlus) (V4 140 130 120 255)
+          drawConfigSlider renderer (uiRockHardnessThreshold ui) (scrollRect rockHardnessThresholdMinus) (scrollRect rockHardnessThresholdBar) (scrollRect rockHardnessThresholdPlus) (V4 130 130 130 255)
+          drawConfigSlider renderer (uiRockHardnessSecondary ui) (scrollRect rockHardnessSecondaryMinus) (scrollRect rockHardnessSecondaryBar) (scrollRect rockHardnessSecondaryPlus) (V4 120 130 140 255)
         ConfigClimate -> do
           drawConfigSlider renderer (uiWaterLevel ui) (scrollRect waterMinus) (scrollRect waterBar) (scrollRect waterPlus) (V4 70 120 180 255)
           drawConfigSlider renderer (uiEvaporation ui) (scrollRect evapMinus) (scrollRect evapBar) (scrollRect evapPlus) (V4 140 110 80 255)
@@ -569,26 +822,139 @@ drawConfigPanel renderer ui rect (tabTerrain, tabClimate, tabErosion) presetSave
           drawConfigSlider renderer (uiLapseRate ui) (scrollRect lapseRateMinus) (scrollRect lapseRateBar) (scrollRect lapseRatePlus) (V4 120 120 160 255)
           drawConfigSlider renderer (uiWindIterations ui) (scrollRect windIterationsMinus) (scrollRect windIterationsBar) (scrollRect windIterationsPlus) (V4 120 140 200 255)
           drawConfigSlider renderer (uiMoistureIterations ui) (scrollRect moistureIterationsMinus) (scrollRect moistureIterationsBar) (scrollRect moistureIterationsPlus) (V4 120 150 160 255)
+          drawConfigSlider renderer (uiBoundaryMotionTemp ui) (scrollRect boundaryMotionTempMinus) (scrollRect boundaryMotionTempBar) (scrollRect boundaryMotionTempPlus) (V4 110 130 160 255)
+          drawConfigSlider renderer (uiBoundaryMotionPrecip ui) (scrollRect boundaryMotionPrecipMinus) (scrollRect boundaryMotionPrecipBar) (scrollRect boundaryMotionPrecipPlus) (V4 120 140 170 255)
+          drawConfigSlider renderer (uiSliceLatCenter ui) (scrollRect sliceLatCenterMinus) (scrollRect sliceLatCenterBar) (scrollRect sliceLatCenterPlus) (V4 110 140 130 255)
+          drawConfigSlider renderer (uiSliceLonCenter ui) (scrollRect sliceLonCenterMinus) (scrollRect sliceLonCenterBar) (scrollRect sliceLonCenterPlus) (V4 110 130 150 255)
+          drawConfigSlider renderer (uiLatitudeExponent ui) (scrollRect latitudeExponentMinus) (scrollRect latitudeExponentBar) (scrollRect latitudeExponentPlus) (V4 150 110 130 255)
+          drawConfigSlider renderer (uiPlateHeightCooling ui) (scrollRect plateHeightCoolingMinus) (scrollRect plateHeightCoolingBar) (scrollRect plateHeightCoolingPlus) (V4 130 130 150 255)
+          drawConfigSlider renderer (uiTempNoiseScale ui) (scrollRect tempNoiseScaleMinus) (scrollRect tempNoiseScaleBar) (scrollRect tempNoiseScalePlus) (V4 140 120 150 255)
+          drawConfigSlider renderer (uiOceanModeration ui) (scrollRect oceanModerationMinus) (scrollRect oceanModerationBar) (scrollRect oceanModerationPlus) (V4 80 140 170 255)
+          drawConfigSlider renderer (uiOceanModerateTemp ui) (scrollRect oceanModerateTempMinus) (scrollRect oceanModerateTempBar) (scrollRect oceanModerateTempPlus) (V4 90 130 180 255)
+          drawConfigSlider renderer (uiAlbedoSensitivity ui) (scrollRect albedoSensitivityMinus) (scrollRect albedoSensitivityBar) (scrollRect albedoSensitivityPlus) (V4 170 150 100 255)
+          drawConfigSlider renderer (uiAlbedoReference ui) (scrollRect albedoReferenceMinus) (scrollRect albedoReferenceBar) (scrollRect albedoReferencePlus) (V4 160 140 110 255)
+          drawConfigSlider renderer (uiMoistAdvect ui) (scrollRect moistAdvectMinus) (scrollRect moistAdvectBar) (scrollRect moistAdvectPlus) (V4 100 150 160 255)
+          drawConfigSlider renderer (uiMoistLocal ui) (scrollRect moistLocalMinus) (scrollRect moistLocalBar) (scrollRect moistLocalPlus) (V4 110 140 170 255)
+          drawConfigSlider renderer (uiMoistWindEvapScale ui) (scrollRect moistWindEvapScaleMinus) (scrollRect moistWindEvapScaleBar) (scrollRect moistWindEvapScalePlus) (V4 90 160 150 255)
+          drawConfigSlider renderer (uiMoistEvapNoiseScale ui) (scrollRect moistEvapNoiseScaleMinus) (scrollRect moistEvapNoiseScaleBar) (scrollRect moistEvapNoiseScalePlus) (V4 120 140 160 255)
+          drawConfigSlider renderer (uiMoistLandETCoeff ui) (scrollRect moistLandETCoeffMinus) (scrollRect moistLandETCoeffBar) (scrollRect moistLandETCoeffPlus) (V4 100 170 140 255)
+          drawConfigSlider renderer (uiMoistBareEvapFrac ui) (scrollRect moistBareEvapFracMinus) (scrollRect moistBareEvapFracBar) (scrollRect moistBareEvapFracPlus) (V4 130 150 120 255)
+          drawConfigSlider renderer (uiMoistVegTranspFrac ui) (scrollRect moistVegTranspFracMinus) (scrollRect moistVegTranspFracBar) (scrollRect moistVegTranspFracPlus) (V4 80 160 130 255)
+          drawConfigSlider renderer (uiMoistWindETScale ui) (scrollRect moistWindETScaleMinus) (scrollRect moistWindETScaleBar) (scrollRect moistWindETScalePlus) (V4 110 150 150 255)
+          drawConfigSlider renderer (uiMoistCondensationRate ui) (scrollRect moistCondensationRateMinus) (scrollRect moistCondensationRateBar) (scrollRect moistCondensationRatePlus) (V4 90 140 170 255)
+          drawConfigSlider renderer (uiMoistRecycleRate ui) (scrollRect moistRecycleRateMinus) (scrollRect moistRecycleRateBar) (scrollRect moistRecycleRatePlus) (V4 100 130 160 255)
+          drawConfigSlider renderer (uiMoistITCZStrength ui) (scrollRect moistITCZStrengthMinus) (scrollRect moistITCZStrengthBar) (scrollRect moistITCZStrengthPlus) (V4 120 150 140 255)
+          drawConfigSlider renderer (uiMoistITCZWidth ui) (scrollRect moistITCZWidthMinus) (scrollRect moistITCZWidthBar) (scrollRect moistITCZWidthPlus) (V4 110 160 130 255)
+          drawConfigSlider renderer (uiOrographicScale ui) (scrollRect orographicScaleMinus) (scrollRect orographicScaleBar) (scrollRect orographicScalePlus) (V4 160 130 80 255)
+          drawConfigSlider renderer (uiOrographicStep ui) (scrollRect orographicStepMinus) (scrollRect orographicStepBar) (scrollRect orographicStepPlus) (V4 150 140 90 255)
+          drawConfigSlider renderer (uiCoastalIterations ui) (scrollRect coastalIterationsMinus) (scrollRect coastalIterationsBar) (scrollRect coastalIterationsPlus) (V4 100 160 160 255)
+          drawConfigSlider renderer (uiCoastalDiffuse ui) (scrollRect coastalDiffuseMinus) (scrollRect coastalDiffuseBar) (scrollRect coastalDiffusePlus) (V4 90 150 170 255)
+          drawConfigSlider renderer (uiCoastalMoistureBoost ui) (scrollRect coastalMoistureBoostMinus) (scrollRect coastalMoistureBoostBar) (scrollRect coastalMoistureBoostPlus) (V4 80 140 180 255)
+          drawConfigSlider renderer (uiWindBeltStrength ui) (scrollRect windBeltStrengthMinus) (scrollRect windBeltStrengthBar) (scrollRect windBeltStrengthPlus) (V4 130 150 180 255)
+          drawConfigSlider renderer (uiWindBeltHarmonics ui) (scrollRect windBeltHarmonicsMinus) (scrollRect windBeltHarmonicsBar) (scrollRect windBeltHarmonicsPlus) (V4 120 140 170 255)
+          drawConfigSlider renderer (uiWindBeltBase ui) (scrollRect windBeltBaseMinus) (scrollRect windBeltBaseBar) (scrollRect windBeltBasePlus) (V4 110 130 160 255)
+          drawConfigSlider renderer (uiWindBeltRange ui) (scrollRect windBeltRangeMinus) (scrollRect windBeltRangeBar) (scrollRect windBeltRangePlus) (V4 100 140 175 255)
+          drawConfigSlider renderer (uiWindBeltSpeedScale ui) (scrollRect windBeltSpeedScaleMinus) (scrollRect windBeltSpeedScaleBar) (scrollRect windBeltSpeedScalePlus) (V4 90 135 185 255)
+          drawConfigSlider renderer (uiBndLandRange ui) (scrollRect bndLandRangeMinus) (scrollRect bndLandRangeBar) (scrollRect bndLandRangePlus) (V4 140 130 100 255)
+          drawConfigSlider renderer (uiBndTempConvergent ui) (scrollRect bndTempConvergentMinus) (scrollRect bndTempConvergentBar) (scrollRect bndTempConvergentPlus) (V4 130 120 110 255)
+          drawConfigSlider renderer (uiBndTempDivergent ui) (scrollRect bndTempDivergentMinus) (scrollRect bndTempDivergentBar) (scrollRect bndTempDivergentPlus) (V4 150 130 100 255)
+          drawConfigSlider renderer (uiBndTempTransform ui) (scrollRect bndTempTransformMinus) (scrollRect bndTempTransformBar) (scrollRect bndTempTransformPlus) (V4 140 140 110 255)
+          drawConfigSlider renderer (uiBndPrecipConvergent ui) (scrollRect bndPrecipConvergentMinus) (scrollRect bndPrecipConvergentBar) (scrollRect bndPrecipConvergentPlus) (V4 100 140 170 255)
+          drawConfigSlider renderer (uiBndPrecipDivergent ui) (scrollRect bndPrecipDivergentMinus) (scrollRect bndPrecipDivergentBar) (scrollRect bndPrecipDivergentPlus) (V4 90 130 160 255)
+          drawConfigSlider renderer (uiBndPrecipTransform ui) (scrollRect bndPrecipTransformMinus) (scrollRect bndPrecipTransformBar) (scrollRect bndPrecipTransformPlus) (V4 110 140 150 255)
+        ConfigPlanet -> do
+          drawConfigSlider renderer (uiPlanetRadius ui) (scrollRect planetRadiusMinus) (scrollRect planetRadiusBar) (scrollRect planetRadiusPlus) (V4 150 130 100 255)
+          drawConfigSlider renderer (uiAxialTilt ui) (scrollRect axialTiltMinus) (scrollRect axialTiltBar) (scrollRect axialTiltPlus) (V4 140 140 100 255)
+          drawConfigSlider renderer (uiInsolation ui) (scrollRect insolationMinus) (scrollRect insolationBar) (scrollRect insolationPlus) (V4 180 150 80 255)
+          drawConfigSlider renderer (uiOccWarmScale ui) (scrollRect occWarmScaleMinus) (scrollRect occWarmScaleBar) (scrollRect occWarmScalePlus) (V4 180 120 100 255)
+          drawConfigSlider renderer (uiOccColdScale ui) (scrollRect occColdScaleMinus) (scrollRect occColdScaleBar) (scrollRect occColdScalePlus) (V4 100 140 180 255)
+          drawConfigSlider renderer (uiOccLatPeakDeg ui) (scrollRect occLatPeakDegMinus) (scrollRect occLatPeakDegBar) (scrollRect occLatPeakDegPlus) (V4 140 130 160 255)
+          drawConfigSlider renderer (uiOccLatWidthDeg ui) (scrollRect occLatWidthDegMinus) (scrollRect occLatWidthDegBar) (scrollRect occLatWidthDegPlus) (V4 130 150 140 255)
+        ConfigWeather -> do
           drawConfigSlider renderer (uiWeatherTick ui) (scrollRect weatherTickMinus) (scrollRect weatherTickBar) (scrollRect weatherTickPlus) (V4 140 120 140 255)
           drawConfigSlider renderer (uiWeatherPhase ui) (scrollRect weatherPhaseMinus) (scrollRect weatherPhaseBar) (scrollRect weatherPhasePlus) (V4 110 130 150 255)
           drawConfigSlider renderer (uiWeatherAmplitude ui) (scrollRect weatherAmplitudeMinus) (scrollRect weatherAmplitudeBar) (scrollRect weatherAmplitudePlus) (V4 140 120 90 255)
+          drawConfigSlider renderer (uiSeasonCycleLength ui) (scrollRect seasonCycleLengthMinus) (scrollRect seasonCycleLengthBar) (scrollRect seasonCycleLengthPlus) (V4 130 110 140 255)
+          drawConfigSlider renderer (uiJitterAmplitude ui) (scrollRect jitterAmplitudeMinus) (scrollRect jitterAmplitudeBar) (scrollRect jitterAmplitudePlus) (V4 120 130 130 255)
+          drawConfigSlider renderer (uiPressureBase ui) (scrollRect pressureBaseMinus) (scrollRect pressureBaseBar) (scrollRect pressureBasePlus) (V4 110 140 120 255)
+          drawConfigSlider renderer (uiPressureTempScale ui) (scrollRect pressureTempScaleMinus) (scrollRect pressureTempScaleBar) (scrollRect pressureTempScalePlus) (V4 100 150 110 255)
+          drawConfigSlider renderer (uiPressureCoriolisScale ui) (scrollRect pressureCoriolisScaleMinus) (scrollRect pressureCoriolisScaleBar) (scrollRect pressureCoriolisScalePlus) (V4 130 120 150 255)
+          drawConfigSlider renderer (uiSeasonalBase ui) (scrollRect seasonalBaseMinus) (scrollRect seasonalBaseBar) (scrollRect seasonalBasePlus) (V4 140 110 130 255)
+          drawConfigSlider renderer (uiSeasonalRange ui) (scrollRect seasonalRangeMinus) (scrollRect seasonalRangeBar) (scrollRect seasonalRangePlus) (V4 120 140 140 255)
+          drawConfigSlider renderer (uiHumidityNoiseScale ui) (scrollRect humidityNoiseScaleMinus) (scrollRect humidityNoiseScaleBar) (scrollRect humidityNoiseScalePlus) (V4 110 130 160 255)
+          drawConfigSlider renderer (uiPrecipNoiseScale ui) (scrollRect precipNoiseScaleMinus) (scrollRect precipNoiseScaleBar) (scrollRect precipNoiseScalePlus) (V4 100 120 170 255)
+          drawConfigSlider renderer (uiWeatherITCZWidth ui) (scrollRect weatherITCZWidthMinus) (scrollRect weatherITCZWidthBar) (scrollRect weatherITCZWidthPlus) (V4 130 140 150 255)
+          drawConfigSlider renderer (uiWeatherITCZPrecipBoost ui) (scrollRect weatherITCZPrecipBoostMinus) (scrollRect weatherITCZPrecipBoostBar) (scrollRect weatherITCZPrecipBoostPlus) (V4 120 150 140 255)
+          drawConfigSlider renderer (uiPressureHumidityScale ui) (scrollRect pressureHumidityScaleMinus) (scrollRect pressureHumidityScaleBar) (scrollRect pressureHumidityScalePlus) (V4 110 140 130 255)
+          drawConfigSlider renderer (uiPressureGradientWindScale ui) (scrollRect pressureGradientWindScaleMinus) (scrollRect pressureGradientWindScaleBar) (scrollRect pressureGradientWindScalePlus) (V4 100 130 150 255)
+          drawConfigSlider renderer (uiWindNoiseScale ui) (scrollRect windNoiseScaleMinus) (scrollRect windNoiseScaleBar) (scrollRect windNoiseScalePlus) (V4 130 120 160 255)
+          drawConfigSlider renderer (uiITCZMigrationScale ui) (scrollRect itczMigrationScaleMinus) (scrollRect itczMigrationScaleBar) (scrollRect itczMigrationScalePlus) (V4 140 130 170 255)
+          drawConfigSlider renderer (uiCloudRHExponent ui) (scrollRect cloudRHExponentMinus) (scrollRect cloudRHExponentBar) (scrollRect cloudRHExponentPlus) (V4 120 120 140 255)
+          drawConfigSlider renderer (uiCloudAlbedoEffect ui) (scrollRect cloudAlbedoEffectMinus) (scrollRect cloudAlbedoEffectBar) (scrollRect cloudAlbedoEffectPlus) (V4 110 110 150 255)
+          drawConfigSlider renderer (uiCloudPrecipBoost ui) (scrollRect cloudPrecipBoostMinus) (scrollRect cloudPrecipBoostBar) (scrollRect cloudPrecipBoostPlus) (V4 100 100 160 255)
+        ConfigBiome -> do
           drawConfigSlider renderer (uiVegBase ui) (scrollRect vegBaseMinus) (scrollRect vegBaseBar) (scrollRect vegBasePlus) (V4 100 130 120 255)
           drawConfigSlider renderer (uiVegBoost ui) (scrollRect vegBoostMinus) (scrollRect vegBoostBar) (scrollRect vegBoostPlus) (V4 120 150 120 255)
           drawConfigSlider renderer (uiVegTempWeight ui) (scrollRect vegTempWeightMinus) (scrollRect vegTempWeightBar) (scrollRect vegTempWeightPlus) (V4 130 140 170 255)
           drawConfigSlider renderer (uiVegPrecipWeight ui) (scrollRect vegPrecipWeightMinus) (scrollRect vegPrecipWeightBar) (scrollRect vegPrecipWeightPlus) (V4 120 140 190 255)
-          drawConfigSlider renderer (uiBoundaryMotionTemp ui) (scrollRect boundaryMotionTempMinus) (scrollRect boundaryMotionTempBar) (scrollRect boundaryMotionTempPlus) (V4 110 130 160 255)
-          drawConfigSlider renderer (uiBoundaryMotionPrecip ui) (scrollRect boundaryMotionPrecipMinus) (scrollRect boundaryMotionPrecipBar) (scrollRect boundaryMotionPrecipPlus) (V4 120 140 170 255)
-          drawConfigSlider renderer (uiPlanetRadius ui) (scrollRect planetRadiusMinus) (scrollRect planetRadiusBar) (scrollRect planetRadiusPlus) (V4 150 130 100 255)
-          drawConfigSlider renderer (uiAxialTilt ui) (scrollRect axialTiltMinus) (scrollRect axialTiltBar) (scrollRect axialTiltPlus) (V4 140 140 100 255)
-          drawConfigSlider renderer (uiInsolation ui) (scrollRect insolationMinus) (scrollRect insolationBar) (scrollRect insolationPlus) (V4 180 150 80 255)
-          drawConfigSlider renderer (uiSliceLatCenter ui) (scrollRect sliceLatCenterMinus) (scrollRect sliceLatCenterBar) (scrollRect sliceLatCenterPlus) (V4 110 140 130 255)
-          drawConfigSlider renderer (uiSliceLonCenter ui) (scrollRect sliceLonCenterMinus) (scrollRect sliceLonCenterBar) (scrollRect sliceLonCenterPlus) (V4 110 130 150 255)
+          drawConfigSlider renderer (uiBtCoastalBand ui) (scrollRect btCoastalBandMinus) (scrollRect btCoastalBandBar) (scrollRect btCoastalBandPlus) (V4 100 160 180 255)
+          drawConfigSlider renderer (uiBtSnowElevation ui) (scrollRect btSnowElevationMinus) (scrollRect btSnowElevationBar) (scrollRect btSnowElevationPlus) (V4 180 180 200 255)
+          drawConfigSlider renderer (uiBtAlpineElevation ui) (scrollRect btAlpineElevationMinus) (scrollRect btAlpineElevationBar) (scrollRect btAlpineElevationPlus) (V4 160 160 180 255)
+          drawConfigSlider renderer (uiBtIceCapTemp ui) (scrollRect btIceCapTempMinus) (scrollRect btIceCapTempBar) (scrollRect btIceCapTempPlus) (V4 180 200 220 255)
+          drawConfigSlider renderer (uiBtMontaneLow ui) (scrollRect btMontaneLowMinus) (scrollRect btMontaneLowBar) (scrollRect btMontaneLowPlus) (V4 140 130 110 255)
+          drawConfigSlider renderer (uiBtMontanePrecip ui) (scrollRect btMontanePrecipMinus) (scrollRect btMontanePrecipBar) (scrollRect btMontanePrecipPlus) (V4 120 140 120 255)
+          drawConfigSlider renderer (uiBtCliffSlope ui) (scrollRect btCliffSlopeMinus) (scrollRect btCliffSlopeBar) (scrollRect btCliffSlopePlus) (V4 150 130 100 255)
+          drawConfigSlider renderer (uiBtValleyMoisture ui) (scrollRect btValleyMoistureMinus) (scrollRect btValleyMoistureBar) (scrollRect btValleyMoisturePlus) (V4 100 150 130 255)
+          drawConfigSlider renderer (uiBtDepressionMoisture ui) (scrollRect btDepressionMoistureMinus) (scrollRect btDepressionMoistureBar) (scrollRect btDepressionMoisturePlus) (V4 110 140 140 255)
+          drawConfigSlider renderer (uiBtPrecipWeight ui) (scrollRect btPrecipWeightMinus) (scrollRect btPrecipWeightBar) (scrollRect btPrecipWeightPlus) (V4 120 130 150 255)
+          drawConfigSlider renderer (uiVbcTempMin ui) (scrollRect vbcTempMinMinus) (scrollRect vbcTempMinBar) (scrollRect vbcTempMinPlus) (V4 130 120 100 255)
+          drawConfigSlider renderer (uiVbcTempRange ui) (scrollRect vbcTempRangeMinus) (scrollRect vbcTempRangeBar) (scrollRect vbcTempRangePlus) (V4 140 130 110 255)
+          drawConfigSlider renderer (uiVbcFertilityBoost ui) (scrollRect vbcFertilityBoostMinus) (scrollRect vbcFertilityBoostBar) (scrollRect vbcFertilityBoostPlus) (V4 100 150 100 255)
+          drawConfigSlider renderer (uiVbcAlbedoBase ui) (scrollRect vbcAlbedoBaseMinus) (scrollRect vbcAlbedoBaseBar) (scrollRect vbcAlbedoBasePlus) (V4 160 160 140 255)
+          drawConfigSlider renderer (uiVbcAlbedoBare ui) (scrollRect vbcAlbedoBareMinus) (scrollRect vbcAlbedoBareBar) (scrollRect vbcAlbedoBarePlus) (V4 170 160 130 255)
+          drawConfigSlider renderer (uiVbcAlbedoVeg ui) (scrollRect vbcAlbedoVegMinus) (scrollRect vbcAlbedoVegBar) (scrollRect vbcAlbedoVegPlus) (V4 100 140 100 255)
+          drawConfigSlider renderer (uiVbcOceanAlbedo ui) (scrollRect vbcOceanAlbedoMinus) (scrollRect vbcOceanAlbedoBar) (scrollRect vbcOceanAlbedoPlus) (V4 100 120 170 255)
+          drawConfigSlider renderer (uiVbcIceAlbedo ui) (scrollRect vbcIceAlbedoMinus) (scrollRect vbcIceAlbedoBar) (scrollRect vbcIceAlbedoPlus) (V4 190 200 210 255)
+          drawConfigSlider renderer (uiBiomeSmoothing ui) (scrollRect biomeSmoothingMinus) (scrollRect biomeSmoothingBar) (scrollRect biomeSmoothingPlus) (V4 130 140 150 255)
+          drawConfigSlider renderer (uiVolcanicAshBoost ui) (scrollRect volcanicAshBoostMinus) (scrollRect volcanicAshBoostBar) (scrollRect volcanicAshBoostPlus) (V4 160 120 80 255)
+          drawConfigSlider renderer (uiVolcanicLavaPenalty ui) (scrollRect volcanicLavaPenaltyMinus) (scrollRect volcanicLavaPenaltyBar) (scrollRect volcanicLavaPenaltyPlus) (V4 180 100 60 255)
+          drawConfigSlider renderer (uiBiomeFeedbackBlend ui) (scrollRect biomeFeedbackBlendMinus) (scrollRect biomeFeedbackBlendBar) (scrollRect biomeFeedbackBlendPlus) (V4 120 130 140 255)
         ConfigErosion -> do
           drawConfigSlider renderer (uiErosionHydraulic ui) (scrollRect erosionHydraulicMinus) (scrollRect erosionHydraulicBar) (scrollRect erosionHydraulicPlus) (V4 90 140 180 255)
           drawConfigSlider renderer (uiErosionThermal ui) (scrollRect erosionThermalMinus) (scrollRect erosionThermalBar) (scrollRect erosionThermalPlus) (V4 120 120 160 255)
           drawConfigSlider renderer (uiRainRate ui) (scrollRect erosionRainRateMinus) (scrollRect erosionRainRateBar) (scrollRect erosionRainRatePlus) (V4 100 110 170 255)
           drawConfigSlider renderer (uiErosionTalus ui) (scrollRect erosionTalusMinus) (scrollRect erosionTalusBar) (scrollRect erosionTalusPlus) (V4 160 120 90 255)
           drawConfigSlider renderer (uiErosionMaxDrop ui) (scrollRect erosionMaxDropMinus) (scrollRect erosionMaxDropBar) (scrollRect erosionMaxDropPlus) (V4 140 120 120 255)
+          drawConfigSlider renderer (uiGlacierSnowTemp ui) (scrollRect glacierSnowTempMinus) (scrollRect glacierSnowTempBar) (scrollRect glacierSnowTempPlus) (V4 180 210 240 255)
+          drawConfigSlider renderer (uiGlacierSnowRange ui) (scrollRect glacierSnowRangeMinus) (scrollRect glacierSnowRangeBar) (scrollRect glacierSnowRangePlus) (V4 170 200 235 255)
+          drawConfigSlider renderer (uiGlacierMeltTemp ui) (scrollRect glacierMeltTempMinus) (scrollRect glacierMeltTempBar) (scrollRect glacierMeltTempPlus) (V4 160 195 230 255)
+          drawConfigSlider renderer (uiGlacierMeltRate ui) (scrollRect glacierMeltRateMinus) (scrollRect glacierMeltRateBar) (scrollRect glacierMeltRatePlus) (V4 150 190 225 255)
+          drawConfigSlider renderer (uiGlacierAccumScale ui) (scrollRect glacierAccumScaleMinus) (scrollRect glacierAccumScaleBar) (scrollRect glacierAccumScalePlus) (V4 140 185 220 255)
+          drawConfigSlider renderer (uiGlacierFlowIters ui) (scrollRect glacierFlowItersMinus) (scrollRect glacierFlowItersBar) (scrollRect glacierFlowItersPlus) (V4 130 180 215 255)
+          drawConfigSlider renderer (uiGlacierFlowRate ui) (scrollRect glacierFlowRateMinus) (scrollRect glacierFlowRateBar) (scrollRect glacierFlowRatePlus) (V4 120 175 210 255)
+          drawConfigSlider renderer (uiGlacierErosionScale ui) (scrollRect glacierErosionScaleMinus) (scrollRect glacierErosionScaleBar) (scrollRect glacierErosionScalePlus) (V4 110 170 210 255)
+          drawConfigSlider renderer (uiGlacierCarveScale ui) (scrollRect glacierCarveScaleMinus) (scrollRect glacierCarveScaleBar) (scrollRect glacierCarveScalePlus) (V4 100 165 205 255)
+          drawConfigSlider renderer (uiGlacierDepositScale ui) (scrollRect glacierDepositScaleMinus) (scrollRect glacierDepositScaleBar) (scrollRect glacierDepositScalePlus) (V4 90 160 200 255)
+          drawConfigSlider renderer (uiVentDensity ui) (scrollRect ventDensityMinus) (scrollRect ventDensityBar) (scrollRect ventDensityPlus) (V4 200 80 60 255)
+          drawConfigSlider renderer (uiVentThreshold ui) (scrollRect ventThresholdMinus) (scrollRect ventThresholdBar) (scrollRect ventThresholdPlus) (V4 190 90 70 255)
+          drawConfigSlider renderer (uiHotspotScale ui) (scrollRect hotspotScaleMinus) (scrollRect hotspotScaleBar) (scrollRect hotspotScalePlus) (V4 210 100 50 255)
+          drawConfigSlider renderer (uiHotspotThreshold ui) (scrollRect hotspotThresholdMinus) (scrollRect hotspotThresholdBar) (scrollRect hotspotThresholdPlus) (V4 200 110 60 255)
+          drawConfigSlider renderer (uiMagmaRecharge ui) (scrollRect magmaRechargeMinus) (scrollRect magmaRechargeBar) (scrollRect magmaRechargePlus) (V4 220 90 40 255)
+          drawConfigSlider renderer (uiLavaScale ui) (scrollRect lavaScaleMinus) (scrollRect lavaScaleBar) (scrollRect lavaScalePlus) (V4 230 80 30 255)
+          drawConfigSlider renderer (uiAshScale ui) (scrollRect ashScaleMinus) (scrollRect ashScaleBar) (scrollRect ashScalePlus) (V4 170 130 100 255)
+          drawConfigSlider renderer (uiVolcanicDepositScale ui) (scrollRect volcanicDepositScaleMinus) (scrollRect volcanicDepositScaleBar) (scrollRect volcanicDepositScalePlus) (V4 180 120 80 255)
+          drawConfigSlider renderer (uiSoilMoistureThreshold ui) (scrollRect soilMoistureThresholdMinus) (scrollRect soilMoistureThresholdBar) (scrollRect soilMoistureThresholdPlus) (V4 140 120 80 255)
+          drawConfigSlider renderer (uiSoilHardnessThreshold ui) (scrollRect soilHardnessThresholdMinus) (scrollRect soilHardnessThresholdBar) (scrollRect soilHardnessThresholdPlus) (V4 150 130 90 255)
+          drawConfigSlider renderer (uiSoilFertilityMoistWeight ui) (scrollRect soilFertilityMoistWeightMinus) (scrollRect soilFertilityMoistWeightBar) (scrollRect soilFertilityMoistWeightPlus) (V4 120 140 80 255)
+          drawConfigSlider renderer (uiSoilFertilityDepthWeight ui) (scrollRect soilFertilityDepthWeightMinus) (scrollRect soilFertilityDepthWeightBar) (scrollRect soilFertilityDepthWeightPlus) (V4 130 140 90 255)
+          drawConfigSlider renderer (uiSinkBreachDepth ui) (scrollRect sinkBreachDepthMinus) (scrollRect sinkBreachDepthBar) (scrollRect sinkBreachDepthPlus) (V4 70 130 170 255)
+          drawConfigSlider renderer (uiStreamPowerMaxErosion ui) (scrollRect streamPowerMaxErosionMinus) (scrollRect streamPowerMaxErosionBar) (scrollRect streamPowerMaxErosionPlus) (V4 80 140 170 255)
+          drawConfigSlider renderer (uiRiverCarveMaxDepth ui) (scrollRect riverCarveMaxDepthMinus) (scrollRect riverCarveMaxDepthBar) (scrollRect riverCarveMaxDepthPlus) (V4 60 120 160 255)
+          drawConfigSlider renderer (uiCoastalErodeStrength ui) (scrollRect coastalErodeStrengthMinus) (scrollRect coastalErodeStrengthBar) (scrollRect coastalErodeStrengthPlus) (V4 70 110 150 255)
+          drawConfigSlider renderer (uiHydroHardnessWeight ui) (scrollRect hydroHardnessWeightMinus) (scrollRect hydroHardnessWeightBar) (scrollRect hydroHardnessWeightPlus) (V4 90 130 160 255)
+          drawConfigSlider renderer (uiMinLakeSize ui) (scrollRect minLakeSizeMinus) (scrollRect minLakeSizeBar) (scrollRect minLakeSizePlus) (V4 60 140 180 255)
+          drawConfigSlider renderer (uiInlandSeaMinSize ui) (scrollRect inlandSeaMinSizeMinus) (scrollRect inlandSeaMinSizeBar) (scrollRect inlandSeaMinSizePlus) (V4 50 130 170 255)
+          drawConfigSlider renderer (uiRoughnessScale ui) (scrollRect roughnessScaleMinus) (scrollRect roughnessScaleBar) (scrollRect roughnessScalePlus) (V4 110 130 140 255)
       SDL.rendererClipRect renderer SDL.$= Nothing
       let
         { Rect (V2 bx by, V2 bw bh) = scrollBarRect
@@ -657,7 +1023,7 @@ drawUiLabels renderer fontCache ui layout = do
       configPresetLoad = configPresetLoadRect layout
       configReset = configResetRect layout
       configRevert = configRevertRect layout
-      (tabTerrain, tabClimate, tabErosion) = configTabRects layout
+      (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion) = configTabRects layout
       configWaterMinus = configWaterMinusRect layout
       configWaterPlus = configWaterPlusRect layout
       configWaterBar = configWaterBarRect layout
@@ -694,6 +1060,60 @@ drawUiLabels renderer fontCache ui layout = do
       configWeatherAmplitudeMinus = configWeatherAmplitudeMinusRect layout
       configWeatherAmplitudePlus = configWeatherAmplitudePlusRect layout
       configWeatherAmplitudeBar = configWeatherAmplitudeBarRect layout
+      configSeasonCycleLengthMinus = configSeasonCycleLengthMinusRect layout
+      configSeasonCycleLengthPlus = configSeasonCycleLengthPlusRect layout
+      configSeasonCycleLengthBar = configSeasonCycleLengthBarRect layout
+      configJitterAmplitudeMinus = configJitterAmplitudeMinusRect layout
+      configJitterAmplitudePlus = configJitterAmplitudePlusRect layout
+      configJitterAmplitudeBar = configJitterAmplitudeBarRect layout
+      configPressureBaseMinus = configPressureBaseMinusRect layout
+      configPressureBasePlus = configPressureBasePlusRect layout
+      configPressureBaseBar = configPressureBaseBarRect layout
+      configPressureTempScaleMinus = configPressureTempScaleMinusRect layout
+      configPressureTempScalePlus = configPressureTempScalePlusRect layout
+      configPressureTempScaleBar = configPressureTempScaleBarRect layout
+      configPressureCoriolisScaleMinus = configPressureCoriolisScaleMinusRect layout
+      configPressureCoriolisScalePlus = configPressureCoriolisScalePlusRect layout
+      configPressureCoriolisScaleBar = configPressureCoriolisScaleBarRect layout
+      configSeasonalBaseMinus = configSeasonalBaseMinusRect layout
+      configSeasonalBasePlus = configSeasonalBasePlusRect layout
+      configSeasonalBaseBar = configSeasonalBaseBarRect layout
+      configSeasonalRangeMinus = configSeasonalRangeMinusRect layout
+      configSeasonalRangePlus = configSeasonalRangePlusRect layout
+      configSeasonalRangeBar = configSeasonalRangeBarRect layout
+      configHumidityNoiseScaleMinus = configHumidityNoiseScaleMinusRect layout
+      configHumidityNoiseScalePlus = configHumidityNoiseScalePlusRect layout
+      configHumidityNoiseScaleBar = configHumidityNoiseScaleBarRect layout
+      configPrecipNoiseScaleMinus = configPrecipNoiseScaleMinusRect layout
+      configPrecipNoiseScalePlus = configPrecipNoiseScalePlusRect layout
+      configPrecipNoiseScaleBar = configPrecipNoiseScaleBarRect layout
+      configWeatherITCZWidthMinus = configWeatherITCZWidthMinusRect layout
+      configWeatherITCZWidthPlus = configWeatherITCZWidthPlusRect layout
+      configWeatherITCZWidthBar = configWeatherITCZWidthBarRect layout
+      configWeatherITCZPrecipBoostMinus = configWeatherITCZPrecipBoostMinusRect layout
+      configWeatherITCZPrecipBoostPlus = configWeatherITCZPrecipBoostPlusRect layout
+      configWeatherITCZPrecipBoostBar = configWeatherITCZPrecipBoostBarRect layout
+      configPressureHumidityScaleMinus = configPressureHumidityScaleMinusRect layout
+      configPressureHumidityScalePlus = configPressureHumidityScalePlusRect layout
+      configPressureHumidityScaleBar = configPressureHumidityScaleBarRect layout
+      configPressureGradientWindScaleMinus = configPressureGradientWindScaleMinusRect layout
+      configPressureGradientWindScalePlus = configPressureGradientWindScalePlusRect layout
+      configPressureGradientWindScaleBar = configPressureGradientWindScaleBarRect layout
+      configWindNoiseScaleMinus = configWindNoiseScaleMinusRect layout
+      configWindNoiseScalePlus = configWindNoiseScalePlusRect layout
+      configWindNoiseScaleBar = configWindNoiseScaleBarRect layout
+      configITCZMigrationScaleMinus = configITCZMigrationScaleMinusRect layout
+      configITCZMigrationScalePlus = configITCZMigrationScalePlusRect layout
+      configITCZMigrationScaleBar = configITCZMigrationScaleBarRect layout
+      configCloudRHExponentMinus = configCloudRHExponentMinusRect layout
+      configCloudRHExponentPlus = configCloudRHExponentPlusRect layout
+      configCloudRHExponentBar = configCloudRHExponentBarRect layout
+      configCloudAlbedoEffectMinus = configCloudAlbedoEffectMinusRect layout
+      configCloudAlbedoEffectPlus = configCloudAlbedoEffectPlusRect layout
+      configCloudAlbedoEffectBar = configCloudAlbedoEffectBarRect layout
+      configCloudPrecipBoostMinus = configCloudPrecipBoostMinusRect layout
+      configCloudPrecipBoostPlus = configCloudPrecipBoostPlusRect layout
+      configCloudPrecipBoostBar = configCloudPrecipBoostBarRect layout
       configVegBaseMinus = configVegBaseMinusRect layout
       configVegBasePlus = configVegBasePlusRect layout
       configVegBaseBar = configVegBaseBarRect layout
@@ -706,6 +1126,72 @@ drawUiLabels renderer fontCache ui layout = do
       configVegPrecipWeightMinus = configVegPrecipWeightMinusRect layout
       configVegPrecipWeightPlus = configVegPrecipWeightPlusRect layout
       configVegPrecipWeightBar = configVegPrecipWeightBarRect layout
+      configBtCoastalBandMinus = configBtCoastalBandMinusRect layout
+      configBtCoastalBandPlus = configBtCoastalBandPlusRect layout
+      configBtCoastalBandBar = configBtCoastalBandBarRect layout
+      configBtSnowElevationMinus = configBtSnowElevationMinusRect layout
+      configBtSnowElevationPlus = configBtSnowElevationPlusRect layout
+      configBtSnowElevationBar = configBtSnowElevationBarRect layout
+      configBtAlpineElevationMinus = configBtAlpineElevationMinusRect layout
+      configBtAlpineElevationPlus = configBtAlpineElevationPlusRect layout
+      configBtAlpineElevationBar = configBtAlpineElevationBarRect layout
+      configBtIceCapTempMinus = configBtIceCapTempMinusRect layout
+      configBtIceCapTempPlus = configBtIceCapTempPlusRect layout
+      configBtIceCapTempBar = configBtIceCapTempBarRect layout
+      configBtMontaneLowMinus = configBtMontaneLowMinusRect layout
+      configBtMontaneLowPlus = configBtMontaneLowPlusRect layout
+      configBtMontaneLowBar = configBtMontaneLowBarRect layout
+      configBtMontanePrecipMinus = configBtMontanePrecipMinusRect layout
+      configBtMontanePrecipPlus = configBtMontanePrecipPlusRect layout
+      configBtMontanePrecipBar = configBtMontanePrecipBarRect layout
+      configBtCliffSlopeMinus = configBtCliffSlopeMinusRect layout
+      configBtCliffSlopePlus = configBtCliffSlopePlusRect layout
+      configBtCliffSlopeBar = configBtCliffSlopeBarRect layout
+      configBtValleyMoistureMinus = configBtValleyMoistureMinusRect layout
+      configBtValleyMoisturePlus = configBtValleyMoisturePlusRect layout
+      configBtValleyMoistureBar = configBtValleyMoistureBarRect layout
+      configBtDepressionMoistureMinus = configBtDepressionMoistureMinusRect layout
+      configBtDepressionMoisturePlus = configBtDepressionMoisturePlusRect layout
+      configBtDepressionMoistureBar = configBtDepressionMoistureBarRect layout
+      configBtPrecipWeightMinus = configBtPrecipWeightMinusRect layout
+      configBtPrecipWeightPlus = configBtPrecipWeightPlusRect layout
+      configBtPrecipWeightBar = configBtPrecipWeightBarRect layout
+      configVbcTempMinMinus = configVbcTempMinMinusRect layout
+      configVbcTempMinPlus = configVbcTempMinPlusRect layout
+      configVbcTempMinBar = configVbcTempMinBarRect layout
+      configVbcTempRangeMinus = configVbcTempRangeMinusRect layout
+      configVbcTempRangePlus = configVbcTempRangePlusRect layout
+      configVbcTempRangeBar = configVbcTempRangeBarRect layout
+      configVbcFertilityBoostMinus = configVbcFertilityBoostMinusRect layout
+      configVbcFertilityBoostPlus = configVbcFertilityBoostPlusRect layout
+      configVbcFertilityBoostBar = configVbcFertilityBoostBarRect layout
+      configVbcAlbedoBaseMinus = configVbcAlbedoBaseMinusRect layout
+      configVbcAlbedoBasePlus = configVbcAlbedoBasePlusRect layout
+      configVbcAlbedoBaseBar = configVbcAlbedoBaseBarRect layout
+      configVbcAlbedoBareMinus = configVbcAlbedoBareMinusRect layout
+      configVbcAlbedoBarePlus = configVbcAlbedoBarePlusRect layout
+      configVbcAlbedoBareBar = configVbcAlbedoBareBarRect layout
+      configVbcAlbedoVegMinus = configVbcAlbedoVegMinusRect layout
+      configVbcAlbedoVegPlus = configVbcAlbedoVegPlusRect layout
+      configVbcAlbedoVegBar = configVbcAlbedoVegBarRect layout
+      configVbcOceanAlbedoMinus = configVbcOceanAlbedoMinusRect layout
+      configVbcOceanAlbedoPlus = configVbcOceanAlbedoPlusRect layout
+      configVbcOceanAlbedoBar = configVbcOceanAlbedoBarRect layout
+      configVbcIceAlbedoMinus = configVbcIceAlbedoMinusRect layout
+      configVbcIceAlbedoPlus = configVbcIceAlbedoPlusRect layout
+      configVbcIceAlbedoBar = configVbcIceAlbedoBarRect layout
+      configBiomeSmoothingMinus = configBiomeSmoothingMinusRect layout
+      configBiomeSmoothingPlus = configBiomeSmoothingPlusRect layout
+      configBiomeSmoothingBar = configBiomeSmoothingBarRect layout
+      configVolcanicAshBoostMinus = configVolcanicAshBoostMinusRect layout
+      configVolcanicAshBoostPlus = configVolcanicAshBoostPlusRect layout
+      configVolcanicAshBoostBar = configVolcanicAshBoostBarRect layout
+      configVolcanicLavaPenaltyMinus = configVolcanicLavaPenaltyMinusRect layout
+      configVolcanicLavaPenaltyPlus = configVolcanicLavaPenaltyPlusRect layout
+      configVolcanicLavaPenaltyBar = configVolcanicLavaPenaltyBarRect layout
+      configBiomeFeedbackBlendMinus = configBiomeFeedbackBlendMinusRect layout
+      configBiomeFeedbackBlendPlus = configBiomeFeedbackBlendPlusRect layout
+      configBiomeFeedbackBlendBar = configBiomeFeedbackBlendBarRect layout
       configBoundaryMotionTempMinus = configBoundaryMotionTempMinusRect layout
       configBoundaryMotionTempPlus = configBoundaryMotionTempPlusRect layout
       configBoundaryMotionTempBar = configBoundaryMotionTempBarRect layout
@@ -721,12 +1207,132 @@ drawUiLabels renderer fontCache ui layout = do
       configInsolationMinus = configInsolationMinusRect layout
       configInsolationPlus = configInsolationPlusRect layout
       configInsolationBar = configInsolationBarRect layout
+      configOccWarmScaleMinus = configOccWarmScaleMinusRect layout
+      configOccWarmScalePlus = configOccWarmScalePlusRect layout
+      configOccWarmScaleBar = configOccWarmScaleBarRect layout
+      configOccColdScaleMinus = configOccColdScaleMinusRect layout
+      configOccColdScalePlus = configOccColdScalePlusRect layout
+      configOccColdScaleBar = configOccColdScaleBarRect layout
+      configOccLatPeakDegMinus = configOccLatPeakDegMinusRect layout
+      configOccLatPeakDegPlus = configOccLatPeakDegPlusRect layout
+      configOccLatPeakDegBar = configOccLatPeakDegBarRect layout
+      configOccLatWidthDegMinus = configOccLatWidthDegMinusRect layout
+      configOccLatWidthDegPlus = configOccLatWidthDegPlusRect layout
+      configOccLatWidthDegBar = configOccLatWidthDegBarRect layout
       configSliceLatCenterMinus = configSliceLatCenterMinusRect layout
       configSliceLatCenterPlus = configSliceLatCenterPlusRect layout
       configSliceLatCenterBar = configSliceLatCenterBarRect layout
       configSliceLonCenterMinus = configSliceLonCenterMinusRect layout
       configSliceLonCenterPlus = configSliceLonCenterPlusRect layout
       configSliceLonCenterBar = configSliceLonCenterBarRect layout
+      configLatitudeExponentMinus = configLatitudeExponentMinusRect layout
+      configLatitudeExponentPlus = configLatitudeExponentPlusRect layout
+      configLatitudeExponentBar = configLatitudeExponentBarRect layout
+      configPlateHeightCoolingMinus = configPlateHeightCoolingMinusRect layout
+      configPlateHeightCoolingPlus = configPlateHeightCoolingPlusRect layout
+      configPlateHeightCoolingBar = configPlateHeightCoolingBarRect layout
+      configTempNoiseScaleMinus = configTempNoiseScaleMinusRect layout
+      configTempNoiseScalePlus = configTempNoiseScalePlusRect layout
+      configTempNoiseScaleBar = configTempNoiseScaleBarRect layout
+      configOceanModerationMinus = configOceanModerationMinusRect layout
+      configOceanModerationPlus = configOceanModerationPlusRect layout
+      configOceanModerationBar = configOceanModerationBarRect layout
+      configOceanModerateTempMinus = configOceanModerateTempMinusRect layout
+      configOceanModerateTempPlus = configOceanModerateTempPlusRect layout
+      configOceanModerateTempBar = configOceanModerateTempBarRect layout
+      configAlbedoSensitivityMinus = configAlbedoSensitivityMinusRect layout
+      configAlbedoSensitivityPlus = configAlbedoSensitivityPlusRect layout
+      configAlbedoSensitivityBar = configAlbedoSensitivityBarRect layout
+      configAlbedoReferenceMinus = configAlbedoReferenceMinusRect layout
+      configAlbedoReferencePlus = configAlbedoReferencePlusRect layout
+      configAlbedoReferenceBar = configAlbedoReferenceBarRect layout
+      configMoistAdvectMinus = configMoistAdvectMinusRect layout
+      configMoistAdvectPlus = configMoistAdvectPlusRect layout
+      configMoistAdvectBar = configMoistAdvectBarRect layout
+      configMoistLocalMinus = configMoistLocalMinusRect layout
+      configMoistLocalPlus = configMoistLocalPlusRect layout
+      configMoistLocalBar = configMoistLocalBarRect layout
+      configMoistWindEvapScaleMinus = configMoistWindEvapScaleMinusRect layout
+      configMoistWindEvapScalePlus = configMoistWindEvapScalePlusRect layout
+      configMoistWindEvapScaleBar = configMoistWindEvapScaleBarRect layout
+      configMoistEvapNoiseScaleMinus = configMoistEvapNoiseScaleMinusRect layout
+      configMoistEvapNoiseScalePlus = configMoistEvapNoiseScalePlusRect layout
+      configMoistEvapNoiseScaleBar = configMoistEvapNoiseScaleBarRect layout
+      configMoistLandETCoeffMinus = configMoistLandETCoeffMinusRect layout
+      configMoistLandETCoeffPlus = configMoistLandETCoeffPlusRect layout
+      configMoistLandETCoeffBar = configMoistLandETCoeffBarRect layout
+      configMoistBareEvapFracMinus = configMoistBareEvapFracMinusRect layout
+      configMoistBareEvapFracPlus = configMoistBareEvapFracPlusRect layout
+      configMoistBareEvapFracBar = configMoistBareEvapFracBarRect layout
+      configMoistVegTranspFracMinus = configMoistVegTranspFracMinusRect layout
+      configMoistVegTranspFracPlus = configMoistVegTranspFracPlusRect layout
+      configMoistVegTranspFracBar = configMoistVegTranspFracBarRect layout
+      configMoistWindETScaleMinus = configMoistWindETScaleMinusRect layout
+      configMoistWindETScalePlus = configMoistWindETScalePlusRect layout
+      configMoistWindETScaleBar = configMoistWindETScaleBarRect layout
+      configMoistCondensationRateMinus = configMoistCondensationRateMinusRect layout
+      configMoistCondensationRatePlus = configMoistCondensationRatePlusRect layout
+      configMoistCondensationRateBar = configMoistCondensationRateBarRect layout
+      configMoistRecycleRateMinus = configMoistRecycleRateMinusRect layout
+      configMoistRecycleRatePlus = configMoistRecycleRatePlusRect layout
+      configMoistRecycleRateBar = configMoistRecycleRateBarRect layout
+      configMoistITCZStrengthMinus = configMoistITCZStrengthMinusRect layout
+      configMoistITCZStrengthPlus = configMoistITCZStrengthPlusRect layout
+      configMoistITCZStrengthBar = configMoistITCZStrengthBarRect layout
+      configMoistITCZWidthMinus = configMoistITCZWidthMinusRect layout
+      configMoistITCZWidthPlus = configMoistITCZWidthPlusRect layout
+      configMoistITCZWidthBar = configMoistITCZWidthBarRect layout
+      configOrographicScaleMinus = configOrographicScaleMinusRect layout
+      configOrographicScalePlus = configOrographicScalePlusRect layout
+      configOrographicScaleBar = configOrographicScaleBarRect layout
+      configOrographicStepMinus = configOrographicStepMinusRect layout
+      configOrographicStepPlus = configOrographicStepPlusRect layout
+      configOrographicStepBar = configOrographicStepBarRect layout
+      configCoastalIterationsMinus = configCoastalIterationsMinusRect layout
+      configCoastalIterationsPlus = configCoastalIterationsPlusRect layout
+      configCoastalIterationsBar = configCoastalIterationsBarRect layout
+      configCoastalDiffuseMinus = configCoastalDiffuseMinusRect layout
+      configCoastalDiffusePlus = configCoastalDiffusePlusRect layout
+      configCoastalDiffuseBar = configCoastalDiffuseBarRect layout
+      configCoastalMoistureBoostMinus = configCoastalMoistureBoostMinusRect layout
+      configCoastalMoistureBoostPlus = configCoastalMoistureBoostPlusRect layout
+      configCoastalMoistureBoostBar = configCoastalMoistureBoostBarRect layout
+      configWindBeltStrengthMinus = configWindBeltStrengthMinusRect layout
+      configWindBeltStrengthPlus = configWindBeltStrengthPlusRect layout
+      configWindBeltStrengthBar = configWindBeltStrengthBarRect layout
+      configWindBeltHarmonicsMinus = configWindBeltHarmonicsMinusRect layout
+      configWindBeltHarmonicsPlus = configWindBeltHarmonicsPlusRect layout
+      configWindBeltHarmonicsBar = configWindBeltHarmonicsBarRect layout
+      configWindBeltBaseMinus = configWindBeltBaseMinusRect layout
+      configWindBeltBasePlus = configWindBeltBasePlusRect layout
+      configWindBeltBaseBar = configWindBeltBaseBarRect layout
+      configWindBeltRangeMinus = configWindBeltRangeMinusRect layout
+      configWindBeltRangePlus = configWindBeltRangePlusRect layout
+      configWindBeltRangeBar = configWindBeltRangeBarRect layout
+      configWindBeltSpeedScaleMinus = configWindBeltSpeedScaleMinusRect layout
+      configWindBeltSpeedScalePlus = configWindBeltSpeedScalePlusRect layout
+      configWindBeltSpeedScaleBar = configWindBeltSpeedScaleBarRect layout
+      configBndLandRangeMinus = configBndLandRangeMinusRect layout
+      configBndLandRangePlus = configBndLandRangePlusRect layout
+      configBndLandRangeBar = configBndLandRangeBarRect layout
+      configBndTempConvergentMinus = configBndTempConvergentMinusRect layout
+      configBndTempConvergentPlus = configBndTempConvergentPlusRect layout
+      configBndTempConvergentBar = configBndTempConvergentBarRect layout
+      configBndTempDivergentMinus = configBndTempDivergentMinusRect layout
+      configBndTempDivergentPlus = configBndTempDivergentPlusRect layout
+      configBndTempDivergentBar = configBndTempDivergentBarRect layout
+      configBndTempTransformMinus = configBndTempTransformMinusRect layout
+      configBndTempTransformPlus = configBndTempTransformPlusRect layout
+      configBndTempTransformBar = configBndTempTransformBarRect layout
+      configBndPrecipConvergentMinus = configBndPrecipConvergentMinusRect layout
+      configBndPrecipConvergentPlus = configBndPrecipConvergentPlusRect layout
+      configBndPrecipConvergentBar = configBndPrecipConvergentBarRect layout
+      configBndPrecipDivergentMinus = configBndPrecipDivergentMinusRect layout
+      configBndPrecipDivergentPlus = configBndPrecipDivergentPlusRect layout
+      configBndPrecipDivergentBar = configBndPrecipDivergentBarRect layout
+      configBndPrecipTransformMinus = configBndPrecipTransformMinusRect layout
+      configBndPrecipTransformPlus = configBndPrecipTransformPlusRect layout
+      configBndPrecipTransformBar = configBndPrecipTransformBarRect layout
       configErosionHydraulicMinus = configErosionHydraulicMinusRect layout
       configErosionHydraulicPlus = configErosionHydraulicPlusRect layout
       configErosionHydraulicBar = configErosionHydraulicBarRect layout
@@ -742,6 +1348,96 @@ drawUiLabels renderer fontCache ui layout = do
       configErosionMaxDropMinus = configErosionMaxDropMinusRect layout
       configErosionMaxDropPlus = configErosionMaxDropPlusRect layout
       configErosionMaxDropBar = configErosionMaxDropBarRect layout
+      configGlacierSnowTempMinus = configGlacierSnowTempMinusRect layout
+      configGlacierSnowTempPlus = configGlacierSnowTempPlusRect layout
+      configGlacierSnowTempBar = configGlacierSnowTempBarRect layout
+      configGlacierSnowRangeMinus = configGlacierSnowRangeMinusRect layout
+      configGlacierSnowRangePlus = configGlacierSnowRangePlusRect layout
+      configGlacierSnowRangeBar = configGlacierSnowRangeBarRect layout
+      configGlacierMeltTempMinus = configGlacierMeltTempMinusRect layout
+      configGlacierMeltTempPlus = configGlacierMeltTempPlusRect layout
+      configGlacierMeltTempBar = configGlacierMeltTempBarRect layout
+      configGlacierMeltRateMinus = configGlacierMeltRateMinusRect layout
+      configGlacierMeltRatePlus = configGlacierMeltRatePlusRect layout
+      configGlacierMeltRateBar = configGlacierMeltRateBarRect layout
+      configGlacierAccumScaleMinus = configGlacierAccumScaleMinusRect layout
+      configGlacierAccumScalePlus = configGlacierAccumScalePlusRect layout
+      configGlacierAccumScaleBar = configGlacierAccumScaleBarRect layout
+      configGlacierFlowItersMinus = configGlacierFlowItersMinusRect layout
+      configGlacierFlowItersPlus = configGlacierFlowItersPlusRect layout
+      configGlacierFlowItersBar = configGlacierFlowItersBarRect layout
+      configGlacierFlowRateMinus = configGlacierFlowRateMinusRect layout
+      configGlacierFlowRatePlus = configGlacierFlowRatePlusRect layout
+      configGlacierFlowRateBar = configGlacierFlowRateBarRect layout
+      configGlacierErosionScaleMinus = configGlacierErosionScaleMinusRect layout
+      configGlacierErosionScalePlus = configGlacierErosionScalePlusRect layout
+      configGlacierErosionScaleBar = configGlacierErosionScaleBarRect layout
+      configGlacierCarveScaleMinus = configGlacierCarveScaleMinusRect layout
+      configGlacierCarveScalePlus = configGlacierCarveScalePlusRect layout
+      configGlacierCarveScaleBar = configGlacierCarveScaleBarRect layout
+      configGlacierDepositScaleMinus = configGlacierDepositScaleMinusRect layout
+      configGlacierDepositScalePlus = configGlacierDepositScalePlusRect layout
+      configGlacierDepositScaleBar = configGlacierDepositScaleBarRect layout
+      configVentDensityMinus = configVentDensityMinusRect layout
+      configVentDensityPlus = configVentDensityPlusRect layout
+      configVentDensityBar = configVentDensityBarRect layout
+      configVentThresholdMinus = configVentThresholdMinusRect layout
+      configVentThresholdPlus = configVentThresholdPlusRect layout
+      configVentThresholdBar = configVentThresholdBarRect layout
+      configHotspotScaleMinus = configHotspotScaleMinusRect layout
+      configHotspotScalePlus = configHotspotScalePlusRect layout
+      configHotspotScaleBar = configHotspotScaleBarRect layout
+      configHotspotThresholdMinus = configHotspotThresholdMinusRect layout
+      configHotspotThresholdPlus = configHotspotThresholdPlusRect layout
+      configHotspotThresholdBar = configHotspotThresholdBarRect layout
+      configMagmaRechargeMinus = configMagmaRechargeMinusRect layout
+      configMagmaRechargePlus = configMagmaRechargePlusRect layout
+      configMagmaRechargeBar = configMagmaRechargeBarRect layout
+      configLavaScaleMinus = configLavaScaleMinusRect layout
+      configLavaScalePlus = configLavaScalePlusRect layout
+      configLavaScaleBar = configLavaScaleBarRect layout
+      configAshScaleMinus = configAshScaleMinusRect layout
+      configAshScalePlus = configAshScalePlusRect layout
+      configAshScaleBar = configAshScaleBarRect layout
+      configVolcanicDepositScaleMinus = configVolcanicDepositScaleMinusRect layout
+      configVolcanicDepositScalePlus = configVolcanicDepositScalePlusRect layout
+      configVolcanicDepositScaleBar = configVolcanicDepositScaleBarRect layout
+      configSoilMoistureThresholdMinus = configSoilMoistureThresholdMinusRect layout
+      configSoilMoistureThresholdPlus = configSoilMoistureThresholdPlusRect layout
+      configSoilMoistureThresholdBar = configSoilMoistureThresholdBarRect layout
+      configSoilHardnessThresholdMinus = configSoilHardnessThresholdMinusRect layout
+      configSoilHardnessThresholdPlus = configSoilHardnessThresholdPlusRect layout
+      configSoilHardnessThresholdBar = configSoilHardnessThresholdBarRect layout
+      configSoilFertilityMoistWeightMinus = configSoilFertilityMoistWeightMinusRect layout
+      configSoilFertilityMoistWeightPlus = configSoilFertilityMoistWeightPlusRect layout
+      configSoilFertilityMoistWeightBar = configSoilFertilityMoistWeightBarRect layout
+      configSoilFertilityDepthWeightMinus = configSoilFertilityDepthWeightMinusRect layout
+      configSoilFertilityDepthWeightPlus = configSoilFertilityDepthWeightPlusRect layout
+      configSoilFertilityDepthWeightBar = configSoilFertilityDepthWeightBarRect layout
+      configSinkBreachDepthMinus = configSinkBreachDepthMinusRect layout
+      configSinkBreachDepthPlus = configSinkBreachDepthPlusRect layout
+      configSinkBreachDepthBar = configSinkBreachDepthBarRect layout
+      configStreamPowerMaxErosionMinus = configStreamPowerMaxErosionMinusRect layout
+      configStreamPowerMaxErosionPlus = configStreamPowerMaxErosionPlusRect layout
+      configStreamPowerMaxErosionBar = configStreamPowerMaxErosionBarRect layout
+      configRiverCarveMaxDepthMinus = configRiverCarveMaxDepthMinusRect layout
+      configRiverCarveMaxDepthPlus = configRiverCarveMaxDepthPlusRect layout
+      configRiverCarveMaxDepthBar = configRiverCarveMaxDepthBarRect layout
+      configCoastalErodeStrengthMinus = configCoastalErodeStrengthMinusRect layout
+      configCoastalErodeStrengthPlus = configCoastalErodeStrengthPlusRect layout
+      configCoastalErodeStrengthBar = configCoastalErodeStrengthBarRect layout
+      configHydroHardnessWeightMinus = configHydroHardnessWeightMinusRect layout
+      configHydroHardnessWeightPlus = configHydroHardnessWeightPlusRect layout
+      configHydroHardnessWeightBar = configHydroHardnessWeightBarRect layout
+      configMinLakeSizeMinus = configMinLakeSizeMinusRect layout
+      configMinLakeSizePlus = configMinLakeSizePlusRect layout
+      configMinLakeSizeBar = configMinLakeSizeBarRect layout
+      configInlandSeaMinSizeMinus = configInlandSeaMinSizeMinusRect layout
+      configInlandSeaMinSizePlus = configInlandSeaMinSizePlusRect layout
+      configInlandSeaMinSizeBar = configInlandSeaMinSizeBarRect layout
+      configRoughnessScaleMinus = configRoughnessScaleMinusRect layout
+      configRoughnessScalePlus = configRoughnessScalePlusRect layout
+      configRoughnessScaleBar = configRoughnessScaleBarRect layout
       configGenScaleMinus = configGenScaleMinusRect layout
       configGenScalePlus = configGenScalePlusRect layout
       configGenScaleBar = configGenScaleBarRect layout
@@ -874,6 +1570,33 @@ drawUiLabels renderer fontCache ui layout = do
       configPlateBiasSouthMinus = configPlateBiasSouthMinusRect layout
       configPlateBiasSouthPlus = configPlateBiasSouthPlusRect layout
       configPlateBiasSouthBar = configPlateBiasSouthBarRect layout
+      configTfcCliffSlopeMinus = configTfcCliffSlopeMinusRect layout
+      configTfcCliffSlopePlus = configTfcCliffSlopePlusRect layout
+      configTfcCliffSlopeBar = configTfcCliffSlopeBarRect layout
+      configTfcMountainSlopeMinus = configTfcMountainSlopeMinusRect layout
+      configTfcMountainSlopePlus = configTfcMountainSlopePlusRect layout
+      configTfcMountainSlopeBar = configTfcMountainSlopeBarRect layout
+      configTfcMountainReliefMinus = configTfcMountainReliefMinusRect layout
+      configTfcMountainReliefPlus = configTfcMountainReliefPlusRect layout
+      configTfcMountainReliefBar = configTfcMountainReliefBarRect layout
+      configTfcHillSlopeMinus = configTfcHillSlopeMinusRect layout
+      configTfcHillSlopePlus = configTfcHillSlopePlusRect layout
+      configTfcHillSlopeBar = configTfcHillSlopeBarRect layout
+      configTfcRollingSlopeMinus = configTfcRollingSlopeMinusRect layout
+      configTfcRollingSlopePlus = configTfcRollingSlopePlusRect layout
+      configTfcRollingSlopeBar = configTfcRollingSlopeBarRect layout
+      configValleyCurvatureMinus = configValleyCurvatureMinusRect layout
+      configValleyCurvaturePlus = configValleyCurvaturePlusRect layout
+      configValleyCurvatureBar = configValleyCurvatureBarRect layout
+      configRockElevationThresholdMinus = configRockElevationThresholdMinusRect layout
+      configRockElevationThresholdPlus = configRockElevationThresholdPlusRect layout
+      configRockElevationThresholdBar = configRockElevationThresholdBarRect layout
+      configRockHardnessThresholdMinus = configRockHardnessThresholdMinusRect layout
+      configRockHardnessThresholdPlus = configRockHardnessThresholdPlusRect layout
+      configRockHardnessThresholdBar = configRockHardnessThresholdBarRect layout
+      configRockHardnessSecondaryMinus = configRockHardnessSecondaryMinusRect layout
+      configRockHardnessSecondaryPlus = configRockHardnessSecondaryPlusRect layout
+      configRockHardnessSecondaryBar = configRockHardnessSecondaryBarRect layout
       configChunkMinus = configChunkMinusRect layout
       configChunkPlus = configChunkPlusRect layout
       configChunkValue = configChunkValueRect layout
@@ -887,9 +1610,12 @@ drawUiLabels renderer fontCache ui layout = do
       rowHeight = 24
       gap = 10
       rows = case uiConfigTab ui of
-        ConfigTerrain -> 45
-        ConfigClimate -> 26
-        ConfigErosion -> 5
+        ConfigTerrain -> 54
+        ConfigPlanet -> 7
+        ConfigClimate -> 49
+        ConfigWeather -> 21
+        ConfigBiome -> 26
+        ConfigErosion -> 35
       contentHeight = max rowHeight (configRowTopPad + rows * rowHeight + max 0 (rows - 1) * gap)
       Rect (V2 _ _ , V2 _ scrollH) = scrollArea
       maxOffset = max 0 (contentHeight - scrollH)
@@ -929,7 +1655,10 @@ drawUiLabels renderer fontCache ui layout = do
           drawCentered fontCache labelColor viewRect12 "PVel"
   when (uiShowConfig ui) $ do
     drawCentered fontCache labelColor tabTerrain "Terrain"
+    drawCentered fontCache labelColor tabPlanet "Planet"
     drawCentered fontCache labelColor tabClimate "Climate"
+    drawCentered fontCache labelColor tabWeather "Weather"
+    drawCentered fontCache labelColor tabBiome "Biome"
     drawCentered fontCache labelColor tabErosion "Erosion"
     drawCentered fontCache labelColor configPresetSave "Save"
     drawCentered fontCache labelColor configPresetLoad "Load"
@@ -1029,6 +1758,24 @@ drawUiLabels renderer fontCache ui layout = do
         drawCentered fontCache labelColor (scrollRect configPlateBiasNorthPlus) "+"
         drawCentered fontCache labelColor (scrollRect configPlateBiasSouthMinus) "-"
         drawCentered fontCache labelColor (scrollRect configPlateBiasSouthPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configTfcCliffSlopeMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configTfcCliffSlopePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configTfcMountainSlopeMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configTfcMountainSlopePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configTfcMountainReliefMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configTfcMountainReliefPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configTfcHillSlopeMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configTfcHillSlopePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configTfcRollingSlopeMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configTfcRollingSlopePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configValleyCurvatureMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configValleyCurvaturePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configRockElevationThresholdMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configRockElevationThresholdPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configRockHardnessThresholdMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configRockHardnessThresholdPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configRockHardnessSecondaryMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configRockHardnessSecondaryPlus) "+"
         drawLabelAbove fontCache labelColor (scrollRect configGenScaleBar) (sliderLabel specGenScale (uiGenScale ui))
         drawLabelAbove fontCache labelColor (scrollRect configGenCoordScaleBar) (sliderLabel specGenCoordScale (uiGenCoordScale ui))
         drawLabelAbove fontCache labelColor (scrollRect configGenOffsetXBar) (sliderLabel specGenOffsetX (uiGenOffsetX ui))
@@ -1073,6 +1820,15 @@ drawUiLabels renderer fontCache ui layout = do
         drawLabelAbove fontCache labelColor (scrollRect configPlateBiasEdgeBar) (sliderLabel specPlateBiasEdge (uiPlateBiasEdge ui))
         drawLabelAbove fontCache labelColor (scrollRect configPlateBiasNorthBar) (sliderLabel specPlateBiasNorth (uiPlateBiasNorth ui))
         drawLabelAbove fontCache labelColor (scrollRect configPlateBiasSouthBar) (sliderLabel specPlateBiasSouth (uiPlateBiasSouth ui))
+        drawLabelAbove fontCache labelColor (scrollRect configTfcCliffSlopeBar) (sliderLabel specTfcCliffSlope (uiTfcCliffSlope ui))
+        drawLabelAbove fontCache labelColor (scrollRect configTfcMountainSlopeBar) (sliderLabel specTfcMountainSlope (uiTfcMountainSlope ui))
+        drawLabelAbove fontCache labelColor (scrollRect configTfcMountainReliefBar) (sliderLabel specTfcMountainRelief (uiTfcMountainRelief ui))
+        drawLabelAbove fontCache labelColor (scrollRect configTfcHillSlopeBar) (sliderLabel specTfcHillSlope (uiTfcHillSlope ui))
+        drawLabelAbove fontCache labelColor (scrollRect configTfcRollingSlopeBar) (sliderLabel specTfcRollingSlope (uiTfcRollingSlope ui))
+        drawLabelAbove fontCache labelColor (scrollRect configValleyCurvatureBar) (sliderLabel specValleyCurvature (uiValleyCurvature ui))
+        drawLabelAbove fontCache labelColor (scrollRect configRockElevationThresholdBar) (sliderLabel specRockElevationThreshold (uiRockElevationThreshold ui))
+        drawLabelAbove fontCache labelColor (scrollRect configRockHardnessThresholdBar) (sliderLabel specRockHardnessThreshold (uiRockHardnessThreshold ui))
+        drawLabelAbove fontCache labelColor (scrollRect configRockHardnessSecondaryBar) (sliderLabel specRockHardnessSecondary (uiRockHardnessSecondary ui))
       ConfigClimate -> do
         drawCentered fontCache labelColor (scrollRect configWaterMinus) "-"
         drawCentered fontCache labelColor (scrollRect configWaterPlus) "+"
@@ -1092,34 +1848,86 @@ drawUiLabels renderer fontCache ui layout = do
         drawCentered fontCache labelColor (scrollRect configWindIterationsPlus) "+"
         drawCentered fontCache labelColor (scrollRect configMoistureIterationsMinus) "-"
         drawCentered fontCache labelColor (scrollRect configMoistureIterationsPlus) "+"
-        drawCentered fontCache labelColor (scrollRect configWeatherTickMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configWeatherTickPlus) "+"
-        drawCentered fontCache labelColor (scrollRect configWeatherPhaseMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configWeatherPhasePlus) "+"
-        drawCentered fontCache labelColor (scrollRect configWeatherAmplitudeMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configWeatherAmplitudePlus) "+"
-        drawCentered fontCache labelColor (scrollRect configVegBaseMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configVegBasePlus) "+"
-        drawCentered fontCache labelColor (scrollRect configVegBoostMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configVegBoostPlus) "+"
-        drawCentered fontCache labelColor (scrollRect configVegTempWeightMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configVegTempWeightPlus) "+"
-        drawCentered fontCache labelColor (scrollRect configVegPrecipWeightMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configVegPrecipWeightPlus) "+"
         drawCentered fontCache labelColor (scrollRect configBoundaryMotionTempMinus) "-"
         drawCentered fontCache labelColor (scrollRect configBoundaryMotionTempPlus) "+"
         drawCentered fontCache labelColor (scrollRect configBoundaryMotionPrecipMinus) "-"
         drawCentered fontCache labelColor (scrollRect configBoundaryMotionPrecipPlus) "+"
-        drawCentered fontCache labelColor (scrollRect configPlanetRadiusMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configPlanetRadiusPlus) "+"
-        drawCentered fontCache labelColor (scrollRect configAxialTiltMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configAxialTiltPlus) "+"
-        drawCentered fontCache labelColor (scrollRect configInsolationMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configInsolationPlus) "+"
         drawCentered fontCache labelColor (scrollRect configSliceLatCenterMinus) "-"
         drawCentered fontCache labelColor (scrollRect configSliceLatCenterPlus) "+"
         drawCentered fontCache labelColor (scrollRect configSliceLonCenterMinus) "-"
         drawCentered fontCache labelColor (scrollRect configSliceLonCenterPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configLatitudeExponentMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configLatitudeExponentPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configPlateHeightCoolingMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configPlateHeightCoolingPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configTempNoiseScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configTempNoiseScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configOceanModerationMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configOceanModerationPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configOceanModerateTempMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configOceanModerateTempPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configAlbedoSensitivityMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configAlbedoSensitivityPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configAlbedoReferenceMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configAlbedoReferencePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configMoistAdvectMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configMoistAdvectPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configMoistLocalMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configMoistLocalPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configMoistWindEvapScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configMoistWindEvapScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configMoistEvapNoiseScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configMoistEvapNoiseScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configMoistLandETCoeffMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configMoistLandETCoeffPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configMoistBareEvapFracMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configMoistBareEvapFracPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configMoistVegTranspFracMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configMoistVegTranspFracPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configMoistWindETScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configMoistWindETScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configMoistCondensationRateMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configMoistCondensationRatePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configMoistRecycleRateMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configMoistRecycleRatePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configMoistITCZStrengthMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configMoistITCZStrengthPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configMoistITCZWidthMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configMoistITCZWidthPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configOrographicScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configOrographicScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configOrographicStepMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configOrographicStepPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configCoastalIterationsMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configCoastalIterationsPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configCoastalDiffuseMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configCoastalDiffusePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configCoastalMoistureBoostMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configCoastalMoistureBoostPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configWindBeltStrengthMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configWindBeltStrengthPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configWindBeltHarmonicsMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configWindBeltHarmonicsPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configWindBeltBaseMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configWindBeltBasePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configWindBeltRangeMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configWindBeltRangePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configWindBeltSpeedScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configWindBeltSpeedScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configBndLandRangeMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configBndLandRangePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configBndTempConvergentMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configBndTempConvergentPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configBndTempDivergentMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configBndTempDivergentPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configBndTempTransformMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configBndTempTransformPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configBndPrecipConvergentMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configBndPrecipConvergentPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configBndPrecipDivergentMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configBndPrecipDivergentPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configBndPrecipTransformMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configBndPrecipTransformPlus) "+"
         drawLabelAbove fontCache labelColor (scrollRect configWaterBar) (sliderLabel specWaterLevel (uiWaterLevel ui))
         drawLabelAbove fontCache labelColor (scrollRect configEvapBar) (sliderLabel specEvaporation (uiEvaporation ui))
         drawLabelAbove fontCache labelColor (scrollRect configRainShadowBar) (sliderLabel specRainShadow (uiRainShadow ui))
@@ -1129,20 +1937,211 @@ drawUiLabels renderer fontCache ui layout = do
         drawLabelAbove fontCache labelColor (scrollRect configLapseRateBar) (sliderLabel specLapseRate (uiLapseRate ui))
         drawLabelAbove fontCache labelColor (scrollRect configWindIterationsBar) (sliderLabel specWindIterations (uiWindIterations ui))
         drawLabelAbove fontCache labelColor (scrollRect configMoistureIterationsBar) (sliderLabel specMoistureIterations (uiMoistureIterations ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBoundaryMotionTempBar) (sliderLabel specBoundaryMotionTemp (uiBoundaryMotionTemp ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBoundaryMotionPrecipBar) (sliderLabel specBoundaryMotionPrecip (uiBoundaryMotionPrecip ui))
+        drawLabelAbove fontCache labelColor (scrollRect configSliceLatCenterBar) (sliderLabel specSliceLatCenter (uiSliceLatCenter ui))
+        drawLabelAbove fontCache labelColor (scrollRect configSliceLonCenterBar) (sliderLabel specSliceLonCenter (uiSliceLonCenter ui))
+        drawLabelAbove fontCache labelColor (scrollRect configLatitudeExponentBar) (sliderLabel specLatitudeExponent (uiLatitudeExponent ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPlateHeightCoolingBar) (sliderLabel specPlateHeightCooling (uiPlateHeightCooling ui))
+        drawLabelAbove fontCache labelColor (scrollRect configTempNoiseScaleBar) (sliderLabel specTempNoiseScale (uiTempNoiseScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configOceanModerationBar) (sliderLabel specOceanModeration (uiOceanModeration ui))
+        drawLabelAbove fontCache labelColor (scrollRect configOceanModerateTempBar) (sliderLabel specOceanModerateTemp (uiOceanModerateTemp ui))
+        drawLabelAbove fontCache labelColor (scrollRect configAlbedoSensitivityBar) (sliderLabel specAlbedoSensitivity (uiAlbedoSensitivity ui))
+        drawLabelAbove fontCache labelColor (scrollRect configAlbedoReferenceBar) (sliderLabel specAlbedoReference (uiAlbedoReference ui))
+        drawLabelAbove fontCache labelColor (scrollRect configMoistAdvectBar) (sliderLabel specMoistAdvect (uiMoistAdvect ui))
+        drawLabelAbove fontCache labelColor (scrollRect configMoistLocalBar) (sliderLabel specMoistLocal (uiMoistLocal ui))
+        drawLabelAbove fontCache labelColor (scrollRect configMoistWindEvapScaleBar) (sliderLabel specMoistWindEvapScale (uiMoistWindEvapScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configMoistEvapNoiseScaleBar) (sliderLabel specMoistEvapNoiseScale (uiMoistEvapNoiseScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configMoistLandETCoeffBar) (sliderLabel specMoistLandETCoeff (uiMoistLandETCoeff ui))
+        drawLabelAbove fontCache labelColor (scrollRect configMoistBareEvapFracBar) (sliderLabel specMoistBareEvapFrac (uiMoistBareEvapFrac ui))
+        drawLabelAbove fontCache labelColor (scrollRect configMoistVegTranspFracBar) (sliderLabel specMoistVegTranspFrac (uiMoistVegTranspFrac ui))
+        drawLabelAbove fontCache labelColor (scrollRect configMoistWindETScaleBar) (sliderLabel specMoistWindETScale (uiMoistWindETScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configMoistCondensationRateBar) (sliderLabel specMoistCondensationRate (uiMoistCondensationRate ui))
+        drawLabelAbove fontCache labelColor (scrollRect configMoistRecycleRateBar) (sliderLabel specMoistRecycleRate (uiMoistRecycleRate ui))
+        drawLabelAbove fontCache labelColor (scrollRect configMoistITCZStrengthBar) (sliderLabel specMoistITCZStrength (uiMoistITCZStrength ui))
+        drawLabelAbove fontCache labelColor (scrollRect configMoistITCZWidthBar) (sliderLabel specMoistITCZWidth (uiMoistITCZWidth ui))
+        drawLabelAbove fontCache labelColor (scrollRect configOrographicScaleBar) (sliderLabel specOrographicScale (uiOrographicScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configOrographicStepBar) (sliderLabel specOrographicStep (uiOrographicStep ui))
+        drawLabelAbove fontCache labelColor (scrollRect configCoastalIterationsBar) (sliderLabel specCoastalIterations (uiCoastalIterations ui))
+        drawLabelAbove fontCache labelColor (scrollRect configCoastalDiffuseBar) (sliderLabel specCoastalDiffuse (uiCoastalDiffuse ui))
+        drawLabelAbove fontCache labelColor (scrollRect configCoastalMoistureBoostBar) (sliderLabel specCoastalMoistureBoost (uiCoastalMoistureBoost ui))
+        drawLabelAbove fontCache labelColor (scrollRect configWindBeltStrengthBar) (sliderLabel specWindBeltStrength (uiWindBeltStrength ui))
+        drawLabelAbove fontCache labelColor (scrollRect configWindBeltHarmonicsBar) (sliderLabel specWindBeltHarmonics (uiWindBeltHarmonics ui))
+        drawLabelAbove fontCache labelColor (scrollRect configWindBeltBaseBar) (sliderLabel specWindBeltBase (uiWindBeltBase ui))
+        drawLabelAbove fontCache labelColor (scrollRect configWindBeltRangeBar) (sliderLabel specWindBeltRange (uiWindBeltRange ui))
+        drawLabelAbove fontCache labelColor (scrollRect configWindBeltSpeedScaleBar) (sliderLabel specWindBeltSpeedScale (uiWindBeltSpeedScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBndLandRangeBar) (sliderLabel specBndLandRange (uiBndLandRange ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBndTempConvergentBar) (sliderLabel specBndTempConvergent (uiBndTempConvergent ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBndTempDivergentBar) (sliderLabel specBndTempDivergent (uiBndTempDivergent ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBndTempTransformBar) (sliderLabel specBndTempTransform (uiBndTempTransform ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBndPrecipConvergentBar) (sliderLabel specBndPrecipConvergent (uiBndPrecipConvergent ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBndPrecipDivergentBar) (sliderLabel specBndPrecipDivergent (uiBndPrecipDivergent ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBndPrecipTransformBar) (sliderLabel specBndPrecipTransform (uiBndPrecipTransform ui))
+      ConfigPlanet -> do
+        drawCentered fontCache labelColor (scrollRect configPlanetRadiusMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configPlanetRadiusPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configAxialTiltMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configAxialTiltPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configInsolationMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configInsolationPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configOccWarmScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configOccWarmScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configOccColdScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configOccColdScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configOccLatPeakDegMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configOccLatPeakDegPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configOccLatWidthDegMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configOccLatWidthDegPlus) "+"
+        drawLabelAbove fontCache labelColor (scrollRect configPlanetRadiusBar) (sliderLabel specPlanetRadius (uiPlanetRadius ui))
+        drawLabelAbove fontCache labelColor (scrollRect configAxialTiltBar) (sliderLabel specAxialTilt (uiAxialTilt ui))
+        drawLabelAbove fontCache labelColor (scrollRect configInsolationBar) (sliderLabel specInsolation (uiInsolation ui))
+        drawLabelAbove fontCache labelColor (scrollRect configOccWarmScaleBar) (sliderLabel specOccWarmScale (uiOccWarmScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configOccColdScaleBar) (sliderLabel specOccColdScale (uiOccColdScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configOccLatPeakDegBar) (sliderLabel specOccLatPeakDeg (uiOccLatPeakDeg ui))
+        drawLabelAbove fontCache labelColor (scrollRect configOccLatWidthDegBar) (sliderLabel specOccLatWidthDeg (uiOccLatWidthDeg ui))
+      ConfigWeather -> do
+        drawCentered fontCache labelColor (scrollRect configWeatherTickMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configWeatherTickPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configWeatherPhaseMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configWeatherPhasePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configWeatherAmplitudeMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configWeatherAmplitudePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configSeasonCycleLengthMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configSeasonCycleLengthPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configJitterAmplitudeMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configJitterAmplitudePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configPressureBaseMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configPressureBasePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configPressureTempScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configPressureTempScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configPressureCoriolisScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configPressureCoriolisScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configSeasonalBaseMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configSeasonalBasePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configSeasonalRangeMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configSeasonalRangePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configHumidityNoiseScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configHumidityNoiseScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configPrecipNoiseScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configPrecipNoiseScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configWeatherITCZWidthMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configWeatherITCZWidthPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configWeatherITCZPrecipBoostMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configWeatherITCZPrecipBoostPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configPressureHumidityScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configPressureHumidityScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configPressureGradientWindScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configPressureGradientWindScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configWindNoiseScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configWindNoiseScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configITCZMigrationScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configITCZMigrationScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configCloudRHExponentMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configCloudRHExponentPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configCloudAlbedoEffectMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configCloudAlbedoEffectPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configCloudPrecipBoostMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configCloudPrecipBoostPlus) "+"
         drawLabelAbove fontCache labelColor (scrollRect configWeatherTickBar) (sliderLabel specWeatherTick (uiWeatherTick ui))
         drawLabelAbove fontCache labelColor (scrollRect configWeatherPhaseBar) (sliderLabel specWeatherPhase (uiWeatherPhase ui))
         drawLabelAbove fontCache labelColor (scrollRect configWeatherAmplitudeBar) (sliderLabel specWeatherAmplitude (uiWeatherAmplitude ui))
+        drawLabelAbove fontCache labelColor (scrollRect configSeasonCycleLengthBar) (sliderLabel specSeasonCycleLength (uiSeasonCycleLength ui))
+        drawLabelAbove fontCache labelColor (scrollRect configJitterAmplitudeBar) (sliderLabel specJitterAmplitude (uiJitterAmplitude ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPressureBaseBar) (sliderLabel specPressureBase (uiPressureBase ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPressureTempScaleBar) (sliderLabel specPressureTempScale (uiPressureTempScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPressureCoriolisScaleBar) (sliderLabel specPressureCoriolisScale (uiPressureCoriolisScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configSeasonalBaseBar) (sliderLabel specSeasonalBase (uiSeasonalBase ui))
+        drawLabelAbove fontCache labelColor (scrollRect configSeasonalRangeBar) (sliderLabel specSeasonalRange (uiSeasonalRange ui))
+        drawLabelAbove fontCache labelColor (scrollRect configHumidityNoiseScaleBar) (sliderLabel specHumidityNoiseScale (uiHumidityNoiseScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPrecipNoiseScaleBar) (sliderLabel specPrecipNoiseScale (uiPrecipNoiseScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configWeatherITCZWidthBar) (sliderLabel specWeatherITCZWidth (uiWeatherITCZWidth ui))
+        drawLabelAbove fontCache labelColor (scrollRect configWeatherITCZPrecipBoostBar) (sliderLabel specWeatherITCZPrecipBoost (uiWeatherITCZPrecipBoost ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPressureHumidityScaleBar) (sliderLabel specPressureHumidityScale (uiPressureHumidityScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPressureGradientWindScaleBar) (sliderLabel specPressureGradientWindScale (uiPressureGradientWindScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configWindNoiseScaleBar) (sliderLabel specWindNoiseScale (uiWindNoiseScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configITCZMigrationScaleBar) (sliderLabel specITCZMigrationScale (uiITCZMigrationScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configCloudRHExponentBar) (sliderLabel specCloudRHExponent (uiCloudRHExponent ui))
+        drawLabelAbove fontCache labelColor (scrollRect configCloudAlbedoEffectBar) (sliderLabel specCloudAlbedoEffect (uiCloudAlbedoEffect ui))
+        drawLabelAbove fontCache labelColor (scrollRect configCloudPrecipBoostBar) (sliderLabel specCloudPrecipBoost (uiCloudPrecipBoost ui))
+      ConfigBiome -> do
+        drawCentered fontCache labelColor (scrollRect configVegBaseMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configVegBasePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configVegBoostMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configVegBoostPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configVegTempWeightMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configVegTempWeightPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configVegPrecipWeightMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configVegPrecipWeightPlus) "+"
         drawLabelAbove fontCache labelColor (scrollRect configVegBaseBar) (sliderLabel specVegBase (uiVegBase ui))
         drawLabelAbove fontCache labelColor (scrollRect configVegBoostBar) (sliderLabel specVegBoost (uiVegBoost ui))
         drawLabelAbove fontCache labelColor (scrollRect configVegTempWeightBar) (sliderLabel specVegTempWeight (uiVegTempWeight ui))
         drawLabelAbove fontCache labelColor (scrollRect configVegPrecipWeightBar) (sliderLabel specVegPrecipWeight (uiVegPrecipWeight ui))
-        drawLabelAbove fontCache labelColor (scrollRect configBoundaryMotionTempBar) (sliderLabel specBoundaryMotionTemp (uiBoundaryMotionTemp ui))
-        drawLabelAbove fontCache labelColor (scrollRect configBoundaryMotionPrecipBar) (sliderLabel specBoundaryMotionPrecip (uiBoundaryMotionPrecip ui))
-        drawLabelAbove fontCache labelColor (scrollRect configPlanetRadiusBar) (sliderLabel specPlanetRadius (uiPlanetRadius ui))
-        drawLabelAbove fontCache labelColor (scrollRect configAxialTiltBar) (sliderLabel specAxialTilt (uiAxialTilt ui))
-        drawLabelAbove fontCache labelColor (scrollRect configInsolationBar) (sliderLabel specInsolation (uiInsolation ui))
-        drawLabelAbove fontCache labelColor (scrollRect configSliceLatCenterBar) (sliderLabel specSliceLatCenter (uiSliceLatCenter ui))
-        drawLabelAbove fontCache labelColor (scrollRect configSliceLonCenterBar) (sliderLabel specSliceLonCenter (uiSliceLonCenter ui))
+        drawCentered fontCache labelColor (scrollRect configBtCoastalBandMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configBtCoastalBandPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configBtSnowElevationMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configBtSnowElevationPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configBtAlpineElevationMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configBtAlpineElevationPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configBtIceCapTempMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configBtIceCapTempPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configBtMontaneLowMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configBtMontaneLowPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configBtMontanePrecipMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configBtMontanePrecipPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configBtCliffSlopeMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configBtCliffSlopePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configBtValleyMoistureMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configBtValleyMoisturePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configBtDepressionMoistureMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configBtDepressionMoisturePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configBtPrecipWeightMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configBtPrecipWeightPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configVbcTempMinMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configVbcTempMinPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configVbcTempRangeMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configVbcTempRangePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configVbcFertilityBoostMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configVbcFertilityBoostPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configVbcAlbedoBaseMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configVbcAlbedoBasePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configVbcAlbedoBareMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configVbcAlbedoBarePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configVbcAlbedoVegMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configVbcAlbedoVegPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configVbcOceanAlbedoMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configVbcOceanAlbedoPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configVbcIceAlbedoMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configVbcIceAlbedoPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configBiomeSmoothingMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configBiomeSmoothingPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configVolcanicAshBoostMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configVolcanicAshBoostPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configVolcanicLavaPenaltyMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configVolcanicLavaPenaltyPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configBiomeFeedbackBlendMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configBiomeFeedbackBlendPlus) "+"
+        drawLabelAbove fontCache labelColor (scrollRect configBtCoastalBandBar) (sliderLabel specBtCoastalBand (uiBtCoastalBand ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBtSnowElevationBar) (sliderLabel specBtSnowElevation (uiBtSnowElevation ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBtAlpineElevationBar) (sliderLabel specBtAlpineElevation (uiBtAlpineElevation ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBtIceCapTempBar) (sliderLabel specBtIceCapTemp (uiBtIceCapTemp ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBtMontaneLowBar) (sliderLabel specBtMontaneLow (uiBtMontaneLow ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBtMontanePrecipBar) (sliderLabel specBtMontanePrecip (uiBtMontanePrecip ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBtCliffSlopeBar) (sliderLabel specBtCliffSlope (uiBtCliffSlope ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBtValleyMoistureBar) (sliderLabel specBtValleyMoisture (uiBtValleyMoisture ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBtDepressionMoistureBar) (sliderLabel specBtDepressionMoisture (uiBtDepressionMoisture ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBtPrecipWeightBar) (sliderLabel specBtPrecipWeight (uiBtPrecipWeight ui))
+        drawLabelAbove fontCache labelColor (scrollRect configVbcTempMinBar) (sliderLabel specVbcTempMin (uiVbcTempMin ui))
+        drawLabelAbove fontCache labelColor (scrollRect configVbcTempRangeBar) (sliderLabel specVbcTempRange (uiVbcTempRange ui))
+        drawLabelAbove fontCache labelColor (scrollRect configVbcFertilityBoostBar) (sliderLabel specVbcFertilityBoost (uiVbcFertilityBoost ui))
+        drawLabelAbove fontCache labelColor (scrollRect configVbcAlbedoBaseBar) (sliderLabel specVbcAlbedoBase (uiVbcAlbedoBase ui))
+        drawLabelAbove fontCache labelColor (scrollRect configVbcAlbedoBareBar) (sliderLabel specVbcAlbedoBare (uiVbcAlbedoBare ui))
+        drawLabelAbove fontCache labelColor (scrollRect configVbcAlbedoVegBar) (sliderLabel specVbcAlbedoVeg (uiVbcAlbedoVeg ui))
+        drawLabelAbove fontCache labelColor (scrollRect configVbcOceanAlbedoBar) (sliderLabel specVbcOceanAlbedo (uiVbcOceanAlbedo ui))
+        drawLabelAbove fontCache labelColor (scrollRect configVbcIceAlbedoBar) (sliderLabel specVbcIceAlbedo (uiVbcIceAlbedo ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBiomeSmoothingBar) (sliderLabel specBiomeSmoothing (uiBiomeSmoothing ui))
+        drawLabelAbove fontCache labelColor (scrollRect configVolcanicAshBoostBar) (sliderLabel specVolcanicAshBoost (uiVolcanicAshBoost ui))
+        drawLabelAbove fontCache labelColor (scrollRect configVolcanicLavaPenaltyBar) (sliderLabel specVolcanicLavaPenalty (uiVolcanicLavaPenalty ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBiomeFeedbackBlendBar) (sliderLabel specBiomeFeedbackBlend (uiBiomeFeedbackBlend ui))
       ConfigErosion -> do
         drawCentered fontCache labelColor (scrollRect configErosionHydraulicMinus) "-"
         drawCentered fontCache labelColor (scrollRect configErosionHydraulicPlus) "+"
@@ -1154,11 +2153,101 @@ drawUiLabels renderer fontCache ui layout = do
         drawCentered fontCache labelColor (scrollRect configErosionTalusPlus) "+"
         drawCentered fontCache labelColor (scrollRect configErosionMaxDropMinus) "-"
         drawCentered fontCache labelColor (scrollRect configErosionMaxDropPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configGlacierSnowTempMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configGlacierSnowTempPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configGlacierSnowRangeMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configGlacierSnowRangePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configGlacierMeltTempMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configGlacierMeltTempPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configGlacierMeltRateMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configGlacierMeltRatePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configGlacierAccumScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configGlacierAccumScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configGlacierFlowItersMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configGlacierFlowItersPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configGlacierFlowRateMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configGlacierFlowRatePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configGlacierErosionScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configGlacierErosionScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configGlacierCarveScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configGlacierCarveScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configGlacierDepositScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configGlacierDepositScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configVentDensityMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configVentDensityPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configVentThresholdMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configVentThresholdPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configHotspotScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configHotspotScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configHotspotThresholdMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configHotspotThresholdPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configMagmaRechargeMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configMagmaRechargePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configLavaScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configLavaScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configAshScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configAshScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configVolcanicDepositScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configVolcanicDepositScalePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configSoilMoistureThresholdMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configSoilMoistureThresholdPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configSoilHardnessThresholdMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configSoilHardnessThresholdPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configSoilFertilityMoistWeightMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configSoilFertilityMoistWeightPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configSoilFertilityDepthWeightMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configSoilFertilityDepthWeightPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configSinkBreachDepthMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configSinkBreachDepthPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configStreamPowerMaxErosionMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configStreamPowerMaxErosionPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configRiverCarveMaxDepthMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configRiverCarveMaxDepthPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configCoastalErodeStrengthMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configCoastalErodeStrengthPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configHydroHardnessWeightMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configHydroHardnessWeightPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configMinLakeSizeMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configMinLakeSizePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configInlandSeaMinSizeMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configInlandSeaMinSizePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configRoughnessScaleMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configRoughnessScalePlus) "+"
         drawLabelAbove fontCache labelColor (scrollRect configErosionHydraulicBar) (sliderLabel specErosionHydraulic (uiErosionHydraulic ui))
         drawLabelAbove fontCache labelColor (scrollRect configErosionThermalBar) (sliderLabel specErosionThermal (uiErosionThermal ui))
         drawLabelAbove fontCache labelColor (scrollRect configErosionRainRateBar) (sliderLabel specErosionRainRate (uiRainRate ui))
         drawLabelAbove fontCache labelColor (scrollRect configErosionTalusBar) (sliderLabel specErosionTalus (uiErosionTalus ui))
         drawLabelAbove fontCache labelColor (scrollRect configErosionMaxDropBar) (sliderLabel specErosionMaxDrop (uiErosionMaxDrop ui))
+        drawLabelAbove fontCache labelColor (scrollRect configGlacierSnowTempBar) (sliderLabel specGlacierSnowTemp (uiGlacierSnowTemp ui))
+        drawLabelAbove fontCache labelColor (scrollRect configGlacierSnowRangeBar) (sliderLabel specGlacierSnowRange (uiGlacierSnowRange ui))
+        drawLabelAbove fontCache labelColor (scrollRect configGlacierMeltTempBar) (sliderLabel specGlacierMeltTemp (uiGlacierMeltTemp ui))
+        drawLabelAbove fontCache labelColor (scrollRect configGlacierMeltRateBar) (sliderLabel specGlacierMeltRate (uiGlacierMeltRate ui))
+        drawLabelAbove fontCache labelColor (scrollRect configGlacierAccumScaleBar) (sliderLabel specGlacierAccumScale (uiGlacierAccumScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configGlacierFlowItersBar) (sliderLabel specGlacierFlowIters (uiGlacierFlowIters ui))
+        drawLabelAbove fontCache labelColor (scrollRect configGlacierFlowRateBar) (sliderLabel specGlacierFlowRate (uiGlacierFlowRate ui))
+        drawLabelAbove fontCache labelColor (scrollRect configGlacierErosionScaleBar) (sliderLabel specGlacierErosionScale (uiGlacierErosionScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configGlacierCarveScaleBar) (sliderLabel specGlacierCarveScale (uiGlacierCarveScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configGlacierDepositScaleBar) (sliderLabel specGlacierDepositScale (uiGlacierDepositScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configVentDensityBar) (sliderLabel specVentDensity (uiVentDensity ui))
+        drawLabelAbove fontCache labelColor (scrollRect configVentThresholdBar) (sliderLabel specVentThreshold (uiVentThreshold ui))
+        drawLabelAbove fontCache labelColor (scrollRect configHotspotScaleBar) (sliderLabel specHotspotScale (uiHotspotScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configHotspotThresholdBar) (sliderLabel specHotspotThreshold (uiHotspotThreshold ui))
+        drawLabelAbove fontCache labelColor (scrollRect configMagmaRechargeBar) (sliderLabel specMagmaRecharge (uiMagmaRecharge ui))
+        drawLabelAbove fontCache labelColor (scrollRect configLavaScaleBar) (sliderLabel specLavaScale (uiLavaScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configAshScaleBar) (sliderLabel specAshScale (uiAshScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configVolcanicDepositScaleBar) (sliderLabel specVolcanicDepositScale (uiVolcanicDepositScale ui))
+        drawLabelAbove fontCache labelColor (scrollRect configSoilMoistureThresholdBar) (sliderLabel specSoilMoistureThreshold (uiSoilMoistureThreshold ui))
+        drawLabelAbove fontCache labelColor (scrollRect configSoilHardnessThresholdBar) (sliderLabel specSoilHardnessThreshold (uiSoilHardnessThreshold ui))
+        drawLabelAbove fontCache labelColor (scrollRect configSoilFertilityMoistWeightBar) (sliderLabel specSoilFertilityMoistWeight (uiSoilFertilityMoistWeight ui))
+        drawLabelAbove fontCache labelColor (scrollRect configSoilFertilityDepthWeightBar) (sliderLabel specSoilFertilityDepthWeight (uiSoilFertilityDepthWeight ui))
+        drawLabelAbove fontCache labelColor (scrollRect configSinkBreachDepthBar) (sliderLabel specSinkBreachDepth (uiSinkBreachDepth ui))
+        drawLabelAbove fontCache labelColor (scrollRect configStreamPowerMaxErosionBar) (sliderLabel specStreamPowerMaxErosion (uiStreamPowerMaxErosion ui))
+        drawLabelAbove fontCache labelColor (scrollRect configRiverCarveMaxDepthBar) (sliderLabel specRiverCarveMaxDepth (uiRiverCarveMaxDepth ui))
+        drawLabelAbove fontCache labelColor (scrollRect configCoastalErodeStrengthBar) (sliderLabel specCoastalErodeStrength (uiCoastalErodeStrength ui))
+        drawLabelAbove fontCache labelColor (scrollRect configHydroHardnessWeightBar) (sliderLabel specHydroHardnessWeight (uiHydroHardnessWeight ui))
+        drawLabelAbove fontCache labelColor (scrollRect configMinLakeSizeBar) (sliderLabel specMinLakeSize (uiMinLakeSize ui))
+        drawLabelAbove fontCache labelColor (scrollRect configInlandSeaMinSizeBar) (sliderLabel specInlandSeaMinSize (uiInlandSeaMinSize ui))
+        drawLabelAbove fontCache labelColor (scrollRect configRoughnessScaleBar) (sliderLabel specRoughnessScale (uiRoughnessScale ui))
     SDL.rendererClipRect renderer SDL.$= Nothing
 
 drawStatusBars :: SDL.Renderer -> Maybe FontCache -> UiState -> DataSnapshot -> Layout -> IO ()
@@ -1308,44 +2397,81 @@ drawHexContext :: SDL.Renderer -> Maybe FontCache -> UiState -> TerrainSnapshot 
 drawHexContext renderer fontCache ui terrainSnap (V2 winW winH) =
   case (uiContextHex ui, uiContextPos ui) of
     (Just (q, r), Just (sx, sy)) -> do
-      let lines = contextLines terrainSnap (q, r)
-          panelW = 220
-          lineH = 16
-          panelH = max 40 (20 + lineH * length lines)
+      let lns = contextLines (uiViewMode ui) terrainSnap (q, r)
+          lineH  = 16
+          hPad   = 12
+          vPad   = 10
+      panelW <- case fontCache of
+        Just fc -> do
+          widths <- mapM (\t -> do { V2 w _ <- textSize fc (V4 230 230 235 255) t; pure w }) lns
+          pure (maximum (220 : map (+ hPad * 2) widths))
+        Nothing ->
+          let approx = maximum (220 : map (\t -> Text.length t * 8 + hPad * 2) lns)
+          in pure approx
+      let panelH = max 40 (vPad * 2 + lineH * length lns)
           px = clamp 8 (winW - panelW - 8) (sx + 12)
           py = clamp 8 (winH - panelH - 8) (sy + 12)
       SDL.rendererDrawColor renderer SDL.$= V4 20 20 25 235
       SDL.fillRect renderer (Just (SDL.Rectangle (SDL.P (V2 (fromIntegral px) (fromIntegral py))) (V2 (fromIntegral panelW) (fromIntegral panelH))))
       case fontCache of
         Nothing -> pure ()
-        Just cache ->
-          sequence_ [ drawTextLine fontCache (V2 (px + 8) (py + 8 + idx * lineH)) (V4 230 230 235 255) line
-                    | (idx, line) <- zip [0..] lines
+        Just _cache ->
+          sequence_ [ drawTextLine fontCache (V2 (px + hPad) (py + vPad + idx * lineH)) (V4 230 230 235 255) line
+                    | (idx, line) <- zip [0..] lns
                     ]
     _ -> pure ()
   where
     clamp lo hi v = max lo (min hi v)
 
-contextLines :: TerrainSnapshot -> (Int, Int) -> [Text]
-contextLines terrainSnap (q, r) =
+-- | Produce the info-panel lines for a hex, tailored to the active view mode.
+--
+-- Every mode starts with a formatted coordinate header. The remaining
+-- lines show the fields most relevant to the current visualisation.
+contextLines :: ViewMode -> TerrainSnapshot -> (Int, Int) -> [Text]
+contextLines mode terrainSnap (q, r) =
   case sampleAt terrainSnap (q, r) of
-    Nothing -> ["Hex " <> Text.pack (show q) <> "," <> Text.pack (show r), "No data"]
-    Just sample ->
-      [ "Hex " <> Text.pack (show q) <> "," <> Text.pack (show r)
-      , "Chunk " <> Text.pack (show (hsChunk sample)) <> " Tile " <> Text.pack (show (hsLocal sample))
-      , "Elev " <> Text.pack (formatF (hsElevation sample))
-      , "Moist " <> Text.pack (formatF (hsMoisture sample))
-      , "Biome " <> Text.pack (show (hsBiome sample))
-      , "Temp " <> Text.pack (formatF (hsTemp sample))
+    Nothing -> [hexHeader q r, "No data"]
+    Just s  -> hexHeader q r : modeLines mode s
+  where
+    modeLines ViewElevation    s = ["Elev  " <> fmtF (hsElevation s), "Slope " <> fmtF (hsSlope s)]
+    modeLines ViewBiome        s = ["Biome " <> biomeDisplayName (hsBiome s), "Veg   " <> fmtF (hsFertility s)]
+    modeLines ViewClimate      s = ["Temp  " <> fmtF (hsTemp s), "Precip " <> fmtF (hsPrecipAvg s)]
+    modeLines ViewMoisture     s = ["Moist " <> fmtF (hsMoisture s), "Soil  " <> fmtF (hsSoilDepth s)]
+    modeLines ViewPrecip       s = ["Precip " <> fmtF (hsPrecipAvg s), "Humid " <> fmtF (hsHumidity s)]
+    modeLines ViewPlateId      s = ["Plate " <> Text.pack (show (hsPlateId s))]
+    modeLines ViewPlateBoundary s = ["Boundary " <> plateBoundaryDisplayName (hsPlateBoundary s)]
+    modeLines ViewPlateHardness s = ["Plate Hardness " <> fmtF (hsPlateHardness s)]
+    modeLines ViewPlateCrust   s = ["Crust " <> crustDisplayName (hsPlateCrust s)]
+    modeLines ViewPlateAge     s = ["Plate Age " <> fmtF (hsPlateAge s)]
+    modeLines ViewPlateHeight  s = ["Plate Height " <> fmtF (hsPlateHeight s)]
+    modeLines ViewPlateVelocity s =
+      [ "Vel X " <> fmtF (hsPlateVelX s)
+      , "Vel Y " <> fmtF (hsPlateVelY s)
+      , "Speed " <> fmtF (sqrt (hsPlateVelX s ** 2 + hsPlateVelY s ** 2))
       ]
 
+    fmtF = Text.pack . formatF
+
 data HexSample = HexSample
-  { hsChunk :: ChunkCoord
-  , hsLocal :: TileCoord
-  , hsElevation :: Float
-  , hsMoisture :: Float
-  , hsBiome :: BiomeId
-  , hsTemp :: Float
+  { hsChunk          :: !ChunkCoord
+  , hsLocal          :: !TileCoord
+  , hsElevation      :: !Float
+  , hsSlope          :: !Float
+  , hsMoisture       :: !Float
+  , hsSoilDepth      :: !Float
+  , hsFertility      :: !Float
+  , hsBiome          :: !BiomeId
+  , hsTemp           :: !Float
+  , hsPrecipAvg      :: !Float
+  , hsHumidity       :: !Float
+  , hsPlateId        :: !Word16
+  , hsPlateBoundary  :: !PlateBoundary
+  , hsPlateHardness  :: !Float
+  , hsPlateCrust     :: !Word16
+  , hsPlateAge       :: !Float
+  , hsPlateHeight    :: !Float
+  , hsPlateVelX      :: !Float
+  , hsPlateVelY      :: !Float
   }
 
 sampleAt :: TerrainSnapshot -> (Int, Int) -> Maybe HexSample
@@ -1357,26 +2483,55 @@ sampleAt terrainSnap (q, r)
           (chunkCoord, local) = chunkCoordFromTile config tile
           ChunkId key = chunkIdFromCoord chunkCoord
       TileIndex idx <- tileIndex config local
-      terrainChunk <- IntMap.lookup key (tsTerrainChunks terrainSnap)
-      let elev = tcElevation terrainChunk U.! idx
-          moist = tcMoisture terrainChunk U.! idx
-          biome = tcFlags terrainChunk U.! idx
-          temp = case IntMap.lookup key (tsClimateChunks terrainSnap) of
-            Just climateChunk -> ccTempAvg climateChunk U.! idx
-            Nothing -> 0
+      tc <- IntMap.lookup key (tsTerrainChunks terrainSnap)
+      let climate = IntMap.lookup key (tsClimateChunks terrainSnap)
+          weather = IntMap.lookup key (tsWeatherChunks terrainSnap)
       Just HexSample
-        { hsChunk = chunkCoord
-        , hsLocal = local
-        , hsElevation = elev
-        , hsMoisture = moist
-        , hsBiome = biome
-        , hsTemp = temp
+        { hsChunk          = chunkCoord
+        , hsLocal          = local
+        , hsElevation      = tcElevation tc U.! idx
+        , hsSlope          = tcSlope tc U.! idx
+        , hsMoisture       = tcMoisture tc U.! idx
+        , hsSoilDepth      = tcSoilDepth tc U.! idx
+        , hsFertility      = tcFertility tc U.! idx
+        , hsBiome          = tcFlags tc U.! idx
+        , hsTemp           = maybe 0 (\c -> ccTempAvg c U.! idx) climate
+        , hsPrecipAvg      = maybe 0 (\c -> ccPrecipAvg c U.! idx) climate
+        , hsHumidity       = maybe 0 (\w -> wcHumidity w U.! idx) weather
+        , hsPlateId        = tcPlateId tc U.! idx
+        , hsPlateBoundary  = tcPlateBoundary tc U.! idx
+        , hsPlateHardness  = tcPlateHardness tc U.! idx
+        , hsPlateCrust     = tcPlateCrust tc U.! idx
+        , hsPlateAge       = tcPlateAge tc U.! idx
+        , hsPlateHeight    = tcPlateHeight tc U.! idx
+        , hsPlateVelX      = tcPlateVelX tc U.! idx
+        , hsPlateVelY      = tcPlateVelY tc U.! idx
         }
 
 formatF :: Float -> String
 formatF v =
   let scaled = fromIntegral (round (v * 100) :: Int) / 100 :: Double
   in show scaled
+
+-- | Format a hex coordinate header line.
+hexHeader :: Int -> Int -> Text
+hexHeader q r = "Hex (" <> Text.pack (show q) <> ", " <> Text.pack (show r) <> ")"
+
+-- | Human-readable plate boundary name.
+plateBoundaryDisplayName :: PlateBoundary -> Text
+plateBoundaryDisplayName b =
+  case plateBoundaryToCode b of
+    0 -> "None"
+    1 -> "Convergent"
+    2 -> "Divergent"
+    3 -> "Transform"
+    n -> "Unknown (" <> Text.pack (show n) <> ")"
+
+-- | Human-readable crust type name.
+crustDisplayName :: Word16 -> Text
+crustDisplayName 0 = "Oceanic"
+crustDisplayName 1 = "Continental"
+crustDisplayName n = "Unknown (" <> Text.pack (show n) <> ")"
 
 -- | Draw a tooltip near the given screen position.
 --

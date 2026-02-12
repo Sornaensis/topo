@@ -25,7 +25,8 @@ import qualified Data.IntMap.Strict as IntMap
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
 import Topo (WorldConfig(..))
-import UI.TerrainAtlas (AtlasChunkGeometry(..), AtlasTileGeometry(..), composeTilesFromGeometry)
+import UI.RiverRender (RiverGeometry(..), buildChunkRiverGeometry, defaultRiverRenderConfig)
+import UI.TerrainAtlas (AtlasChunkGeometry(..), AtlasTileGeometry(..), attachRiverOverlay, composeTilesFromGeometry)
 import UI.TerrainRender (ChunkGeometry, buildChunkGeometry)
 
 
@@ -70,7 +71,14 @@ actor AtlasWorker
       threadDelay 100  -- 0.1ms, releases capability
       pure (k, geom)
     let geometryMap = IntMap.fromList geomPairs
-        tiles = composeTilesFromGeometry geometryMap (abScale job)
+        -- Build river overlay geometry (only in biome view)
+        riverGeoMap = case mode of
+          ViewBiome -> IntMap.mapMaybeWithKey
+            (\cid _chunk -> buildChunkRiverGeometry defaultRiverRenderConfig config cid (tsRiverChunks terrainSnap))
+            (tsTerrainChunks terrainSnap)
+          _ -> IntMap.empty
+        baseTiles = composeTilesFromGeometry geometryMap (abScale job)
+        tiles = attachRiverOverlay riverGeoMap baseTiles
         buildResult tile = AtlasBuildResult
           { abrKey = abKey job
           , abrScale = abScale job
@@ -86,6 +94,10 @@ actor AtlasWorker
                    -- vector allocations are deferred to the render thread,
                    -- causing ~250ms drain stalls during texture upload.
                    forM_ (atgChunks tile) $ \chunk -> do
+                     _ <- evaluate (acgVertices chunk)
+                     _ <- evaluate (acgIndices chunk)
+                     pure ()
+                   forM_ (atgRiverOverlay tile) $ \chunk -> do
                      _ <- evaluate (acgVertices chunk)
                      _ <- evaluate (acgIndices chunk)
                      pure ()

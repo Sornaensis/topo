@@ -1,10 +1,8 @@
 module Topo.WorldGen
   ( TerrainConfig(..)
-  , PrecipConfig(..)
   , WorldGenConfig(..)
   , WorldGenConfigError(..)
   , defaultTerrainConfig
-  , defaultPrecipConfig
   , defaultWorldGenConfig
   , aridWorldGenConfig
   , lushWorldGenConfig
@@ -25,7 +23,17 @@ import Topo.BiomeConfig
   , defaultBiomeConfig
   , lushBiomeConfig
   )
-import Topo.Climate (ClimateConfig(..), defaultClimateConfig, generateClimateStage)
+import Topo.Climate
+  ( ClimateConfig(..)
+  , TemperatureConfig(..)
+  , WindConfig(..)
+  , MoistureConfig(..)
+  , PrecipitationConfig(..)
+  , BoundaryConfig(..)
+  , SeasonalityConfig(..)
+  , defaultClimateConfig
+  , generateClimateStage
+  )
 import Topo.Erosion (ErosionConfig(..), applyErosionStage, defaultErosionConfig)
 import Topo.Glacier (GlacierConfig(..), applyGlacierStage, defaultGlacierConfig)
 import Topo.Gen (generateBaseHeightStage, generatePlateTerrainStage)
@@ -40,7 +48,23 @@ import Topo.Hydrology
   , defaultRiverConfig
   )
 import Topo.Volcanism (VolcanismConfig(..), applyVolcanismStage, defaultVolcanismConfig)
-import Topo.Parameters (ParameterConfig(..), applyParameterLayersStage, defaultParameterConfig)
+import Topo.WaterBody (WaterBodyConfig(..), applyWaterBodyStage, defaultWaterBodyConfig)
+import Topo.Parameters
+  ( ParameterConfig(..), TerrainFormConfig(..), applyParameterLayersStage
+  , defaultParameterConfig, defaultTerrainFormConfig
+  )
+import Topo.Soil (SoilConfig(..), applySoilStage, defaultSoilConfig)
+import Topo.Vegetation
+  ( VegetationBootstrapConfig(..), bootstrapVegetationStage
+  , defaultVegetationBootstrapConfig
+  , BiomeFeedbackConfig(..), defaultBiomeFeedbackConfig
+  , updateVegetationFromBiomeStage
+  )
+import Topo.OceanCurrent
+  ( OceanCurrentConfig(..)
+  , applyOceanCurrentsStage
+  , defaultOceanCurrentConfig
+  )
 import Topo.Planet
   ( PlanetConfig(..)
   , WorldSlice(..)
@@ -61,26 +85,23 @@ data TerrainConfig = TerrainConfig
   , terrainRivers :: !RiverConfig
   , terrainGroundwater :: !GroundwaterConfig
   , terrainVolcanism :: !VolcanismConfig
+  , terrainWaterBody :: !WaterBodyConfig
   , terrainGlacier :: !GlacierConfig
   , terrainParameters :: !ParameterConfig
-  } deriving (Eq, Show)
-
-data PrecipConfig = PrecipConfig
-  { precipEvaporation :: !Float
-  , precipRainShadow :: !Float
-  , precipBoundary :: !Float
-  , precipOrographic :: !Float
-  , precipCoastal :: !Float
+  , terrainFormConfig :: !TerrainFormConfig
+  , terrainSoil :: !SoilConfig
+  , terrainVegetation :: !VegetationBootstrapConfig
   } deriving (Eq, Show)
 
 data WorldGenConfig = WorldGenConfig
   { worldTerrain :: !TerrainConfig
   , worldClimate :: !ClimateConfig
-  , worldPrecip :: !PrecipConfig
   , worldBiome :: !BiomeConfig
   , worldWeather :: !WeatherConfig
   , worldPlanet :: !PlanetConfig
   , worldSlice :: !WorldSlice
+  , worldOceanCurrent :: !OceanCurrentConfig
+  , worldBiomeFeedback :: !BiomeFeedbackConfig
   } deriving (Eq, Show)
 
 data WorldGenConfigError
@@ -102,28 +123,24 @@ defaultTerrainConfig = TerrainConfig
   , terrainRivers = defaultRiverConfig
   , terrainGroundwater = defaultGroundwaterConfig
   , terrainVolcanism = defaultVolcanismConfig
+  , terrainWaterBody = defaultWaterBodyConfig
   , terrainGlacier = defaultGlacierConfig
   , terrainParameters = defaultParameterConfig
-  }
-
-defaultPrecipConfig :: PrecipConfig
-defaultPrecipConfig = PrecipConfig
-  { precipEvaporation = 1
-  , precipRainShadow = 1
-  , precipBoundary = 1
-  , precipOrographic = 1
-  , precipCoastal = 1
+  , terrainFormConfig = defaultTerrainFormConfig
+  , terrainSoil = defaultSoilConfig
+  , terrainVegetation = defaultVegetationBootstrapConfig
   }
 
 defaultWorldGenConfig :: WorldGenConfig
 defaultWorldGenConfig = WorldGenConfig
   { worldTerrain = defaultTerrainConfig
   , worldClimate = defaultClimateConfig
-  , worldPrecip = defaultPrecipConfig
   , worldBiome = defaultBiomeConfig
   , worldWeather = defaultWeatherConfig
   , worldPlanet = defaultPlanetConfig
   , worldSlice = defaultWorldSlice
+  , worldOceanCurrent = defaultOceanCurrentConfig
+  , worldBiomeFeedback = defaultBiomeFeedbackConfig
   }
 
 aridWorldGenConfig :: WorldGenConfig
@@ -140,21 +157,21 @@ lushWorldGenConfig = defaultWorldGenConfig
 mkWorldGenConfig
   :: TerrainConfig
   -> ClimateConfig
-  -> PrecipConfig
   -> BiomeConfig
   -> WeatherConfig
   -> PlanetConfig
   -> WorldSlice
   -> Either WorldGenConfigError WorldGenConfig
-mkWorldGenConfig terrain climate precip biome weather planet slice =
+mkWorldGenConfig terrain climate biome weather planet slice =
   validateWorldGenConfig WorldGenConfig
     { worldTerrain = terrain
     , worldClimate = climate
-    , worldPrecip = precip
     , worldBiome = biome
     , worldWeather = weather
     , worldPlanet = planet
     , worldSlice = slice
+    , worldOceanCurrent = defaultOceanCurrentConfig
+    , worldBiomeFeedback = defaultBiomeFeedbackConfig
     }
 
 -- | Validate iteration counts for world generation configs.
@@ -167,9 +184,9 @@ validateWorldGenConfig cfg = do
       glacier = terrainGlacier terrain
   checkNonNegative WorldGenNegativeHydraulicIterations (ecHydraulicIterations erosion)
   checkNonNegative WorldGenNegativeThermalIterations (ecThermalIterations erosion)
-  checkNonNegative WorldGenNegativeWindIterations (ccWindIterations climate)
-  checkNonNegative WorldGenNegativeMoistureIterations (ccMoistureIterations climate)
-  checkNonNegative WorldGenNegativeCoastalIterations (ccCoastalIterations climate)
+  checkNonNegative WorldGenNegativeWindIterations (windIterations (ccWind climate))
+  checkNonNegative WorldGenNegativeMoistureIterations (moistIterations (ccMoisture climate))
+  checkNonNegative WorldGenNegativeCoastalIterations (precCoastalIterations (ccPrecipitation climate))
   checkNonNegative WorldGenNegativeBiomeSmoothing (bcSmoothingIterations biome)
   checkNonNegative WorldGenNegativeGlacierIterations (gcFlowIterations glacier)
   pure cfg
@@ -194,10 +211,15 @@ buildPipelineConfig cfg seed =
 -- Stage ordering matters:
 --   * plate terrain must exist before erosion/hydrology.
 --   * volcanism uses plate boundaries and can adjust terrain.
---   * hydrology derives moisture used by rivers, parameter layers, and climate.
+--   * hydrology derives moisture used by rivers and climate.
 --   * river routing depends on hydrology moisture and elevation.
---   * glaciers use climate temperature/precip and can adjust terrain.
---   * climate must precede biome classification and weather ticks.
+--   * climate must precede glaciers (glaciers use temperature/precip).
+--   * glaciers can modify elevation, so terrain-shape parameters
+--     (slope, curvature, relief, ruggedness, terrain form) run after
+--     glaciers to reflect the final surface.
+--   * parameter layers must precede biome classification (biomes use
+--     slope, terrain form, etc.).
+--   * biome classification must precede weather ticks.
 --
 -- Stage seeds are deterministically derived from the pipeline seed and
 -- the stage tag, so all sub-generators remain repeatable.
@@ -211,7 +233,6 @@ buildPipelineConfig cfg seed =
 buildFullPipelineConfig :: WorldGenConfig -> WorldConfig -> Word64 -> PipelineConfig
 buildFullPipelineConfig cfg worldCfg seed =
   let terrain = worldTerrain cfg
-      precip = worldPrecip cfg
       planet = worldPlanet cfg
       slice = worldSlice cfg
       -- Auto-derive world extent from slice unless manually overridden
@@ -224,15 +245,19 @@ buildFullPipelineConfig cfg worldCfg seed =
       -- Auto-derive ocean edge depth for exposed slice edges
       gen2 = autoOceanEdgeDepth planet slice gen1
       terrain' = terrain { terrainGen = gen2 }
-      climate = (worldClimate cfg)
-        { ccEvaporation = ccEvaporation (worldClimate cfg) * precipEvaporation precip
-        , ccRainShadow = ccRainShadow (worldClimate cfg) * precipRainShadow precip
-        , ccBoundaryPrecipConvergent = ccBoundaryPrecipConvergent (worldClimate cfg) * precipBoundary precip
-        , ccBoundaryPrecipDivergent = ccBoundaryPrecipDivergent (worldClimate cfg) * precipBoundary precip
-        , ccBoundaryPrecipTransform = ccBoundaryPrecipTransform (worldClimate cfg) * precipBoundary precip
-        , ccOrographicScale = ccOrographicScale (worldClimate cfg) * precipOrographic precip
-        , ccCoastalMoistureBoost = ccCoastalMoistureBoost (worldClimate cfg) * precipCoastal precip
-        , ccInsolation = pcInsolation planet
+      climate = let cc = worldClimate cfg
+                    tmp = ccTemperature cc
+                    wCfg = worldWeather cfg
+                in cc
+        { ccTemperature = tmp
+            { tmpInsolation = pcInsolation planet }
+        -- Sync seasonality parameters from weather config so the
+        -- climate stage can compute analytical seasonality signals.
+        , ccSeasonality = (ccSeasonality cc)
+            { scSeasonAmplitude = wcSeasonAmplitude wCfg
+            , scSeasonalBase    = wcSeasonalBase wCfg
+            , scSeasonalRange   = wcSeasonalRange wCfg
+            }
         }
   in PipelineConfig
       { pipelineSeed = seed
@@ -241,11 +266,17 @@ buildFullPipelineConfig cfg worldCfg seed =
           , applyErosionStage (terrainErosion terrain') (hcWaterLevel (terrainHydrology terrain'))
           , applyVolcanismStage (terrainVolcanism terrain')
           , applyHydrologyStage (terrainHydrology terrain')
-          , applyRiverStage (terrainRivers terrain') (terrainGroundwater terrain')
-          , applyParameterLayersStage (terrainParameters terrain')
+          , applyRiverStage (terrainRivers terrain') { rcWaterLevel = hcWaterLevel (terrainHydrology terrain') }
+                            (terrainGroundwater terrain')
+          , applyWaterBodyStage (terrainWaterBody terrain') (hcWaterLevel (terrainHydrology terrain'))
+          , applySoilStage (terrainSoil terrain')
+          , bootstrapVegetationStage (terrainVegetation terrain') (hcWaterLevel (terrainHydrology terrain'))
           , generateClimateStage climate (hcWaterLevel (terrainHydrology terrain'))
+          , applyOceanCurrentsStage (worldOceanCurrent cfg) (hcWaterLevel (terrainHydrology terrain'))
           , applyGlacierStage (terrainGlacier terrain')
+          , applyParameterLayersStage (terrainParameters terrain') (terrainFormConfig terrain')
           , classifyBiomesStage (worldBiome cfg) (hcWaterLevel (terrainHydrology terrain'))
+          , updateVegetationFromBiomeStage (worldBiomeFeedback cfg) (terrainVegetation terrain')
             , tickWeatherStage (worldWeather cfg)
           ]
       , pipelineSnapshots = False

@@ -16,12 +16,20 @@ import qualified Spec.Glacier
 import qualified Spec.Volcanism
 import qualified Spec.Climate
 import qualified Spec.Biome
+import qualified Spec.BiomeRefine
 import qualified Spec.Vegetation
 import qualified Spec.Weather
 import qualified Spec.Noise
 import qualified Spec.Hydrology
+import qualified Spec.River
 import qualified Spec.BaseHeight
 import qualified Spec.Planet
+import qualified Spec.Parameters
+import qualified Spec.Soil
+import qualified Spec.Evaporation
+import qualified Spec.WaterBody
+import qualified Spec.Integration
+import qualified Spec.OceanCurrent
 import qualified WorldProperty
 import qualified HexProperty
 
@@ -42,11 +50,19 @@ main = hspec $ do
   Spec.Volcanism.spec
   Spec.Climate.spec
   Spec.Biome.spec
+  Spec.BiomeRefine.spec
   Spec.Vegetation.spec
   Spec.Weather.spec
   Spec.Noise.spec
   Spec.Hydrology.spec
+  Spec.River.spec
   Spec.BaseHeight.spec
   Spec.Planet.spec
+  Spec.Parameters.spec
+  Spec.Soil.spec
+  Spec.Evaporation.spec
+  Spec.WaterBody.spec
+  Spec.Integration.spec
+  Spec.OceanCurrent.spec
   WorldProperty.spec
   HexProperty.spec

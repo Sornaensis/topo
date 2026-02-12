@@ -13,6 +13,7 @@ import qualified Spec.RenderActor
 import qualified Spec.SnapshotReceiver
 import qualified Spec.TerrainCacheWorker
 import qualified Spec.TerrainRender
+import qualified Spec.RiverRender
 import qualified Spec.TerrainActor
 import qualified Spec.UiActor
 import qualified Spec.Widgets
@@ -35,6 +36,7 @@ main = hspec $ do
   Spec.SnapshotReceiver.spec
   Spec.TerrainCacheWorker.spec
   Spec.TerrainRender.spec
+  Spec.RiverRender.spec
   Spec.TerrainActor.spec
   Spec.UiActor.spec
   Spec.Widgets.spec

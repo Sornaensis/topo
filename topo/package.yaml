@@ -23,9 +23,15 @@ library:
     - Topo.Erosion
     - Topo.Glacier
     - Topo.Hydrology
+    - Topo.River
     - Topo.Volcanism
+    - Topo.WaterBody
     - Topo.Parameters
+    - Topo.Soil
+    - Topo.Vegetation
     - Topo.Climate
+    - Topo.Climate.Config
+    - Topo.Climate.Evaporation
     - Topo.BiomeConfig
     - Topo.Weather
     - Topo.Math
@@ -37,8 +43,25 @@ library:
     - Topo.Mesh
     - Topo.WorldGen
     - Topo.Biome
+    - Topo.Biome.Name
+    - Topo.Biome.Refine
+    - Topo.Biome.Refine.Alpine
+    - Topo.Biome.Refine.Coastal
+    - Topo.Biome.Refine.Desert
+    - Topo.Biome.Refine.Forest
+    - Topo.Biome.Refine.Grassland
+    - Topo.Biome.Refine.Ocean
+    - Topo.Biome.Refine.Rainforest
+    - Topo.Biome.Refine.Savanna
+    - Topo.Biome.Refine.Shrubland
+    - Topo.Biome.Refine.Snow
+    - Topo.Biome.Refine.Swamp
+    - Topo.Biome.Refine.Taiga
+    - Topo.Biome.Refine.Tundra
+    - Topo.Biome.Refine.Volcanic
     - Topo.PlateMetadata
     - Topo.Planet
+    - Topo.OceanCurrent
   dependencies:
     - base >=4.18 && <5
     - binary

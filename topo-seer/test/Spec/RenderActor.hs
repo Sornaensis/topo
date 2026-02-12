@@ -55,6 +55,6 @@ spec = describe "RenderActor" $ do
     handle <- getSingleton system renderActorDef
     setRenderLog handle (LogSnapshot [] True 0 LogInfo)
     setRenderData handle (DataSnapshot 2 1 (Just 9))
-    setRenderTerrain handle (TerrainSnapshot 0 0 mempty mempty mempty)
+    setRenderTerrain handle (TerrainSnapshot 0 0 mempty mempty mempty mempty)
     snapshot <- getRenderSnapshot handle
     uiSeed (rsUi snapshot) `shouldBe` 0

@@ -29,9 +29,15 @@ library
       Topo.Erosion
       Topo.Glacier
       Topo.Hydrology
+      Topo.River
       Topo.Volcanism
+      Topo.WaterBody
       Topo.Parameters
+      Topo.Soil
+      Topo.Vegetation
       Topo.Climate
+      Topo.Climate.Config
+      Topo.Climate.Evaporation
       Topo.BiomeConfig
       Topo.Weather
       Topo.Math
@@ -43,8 +49,25 @@ library
       Topo.Mesh
       Topo.WorldGen
       Topo.Biome
+      Topo.Biome.Name
+      Topo.Biome.Refine
+      Topo.Biome.Refine.Alpine
+      Topo.Biome.Refine.Coastal
+      Topo.Biome.Refine.Desert
+      Topo.Biome.Refine.Forest
+      Topo.Biome.Refine.Grassland
+      Topo.Biome.Refine.Ocean
+      Topo.Biome.Refine.Rainforest
+      Topo.Biome.Refine.Savanna
+      Topo.Biome.Refine.Shrubland
+      Topo.Biome.Refine.Snow
+      Topo.Biome.Refine.Swamp
+      Topo.Biome.Refine.Taiga
+      Topo.Biome.Refine.Tundra
+      Topo.Biome.Refine.Volcanic
       Topo.PlateMetadata
       Topo.Planet
+      Topo.OceanCurrent
   other-modules:
       Topo.Config
       Paths_topo
@@ -69,23 +92,31 @@ test-suite topo-test
       HexProperty
       Spec.BaseHeight
       Spec.Biome
+      Spec.BiomeRefine
       Spec.Climate
       Spec.Determinism
       Spec.Erosion
+      Spec.Evaporation
       Spec.Export
       Spec.Glacier
       Spec.Hex
       Spec.Hydrology
+      Spec.Integration
       Spec.Mesh
       Spec.Metadata
       Spec.Noise
+      Spec.OceanCurrent
+      Spec.Parameters
       Spec.Pipeline
       Spec.Planet
       Spec.Provenance
+      Spec.River
+      Spec.Soil
       Spec.Storage
       Spec.Tectonics
       Spec.Vegetation
       Spec.Volcanism
+      Spec.WaterBody
       Spec.Weather
       Spec.World
       WorldProperty

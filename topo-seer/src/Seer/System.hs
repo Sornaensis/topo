@@ -130,7 +130,7 @@ runApp = do
   uiSnap <- getUiSnapshot uiHandle
   let logSnap = LogSnapshot [] False 0 LogDebug
       dataSnap = DataSnapshot 0 0 Nothing
-      terrainSnap = TerrainSnapshot 0 0 mempty mempty mempty
+      terrainSnap = TerrainSnapshot 0 0 mempty mempty mempty mempty
   snapshotRef <- newIORef (SnapshotVersion 0, RenderSnapshot
     { rsUi = uiSnap
     , rsLog = logSnap

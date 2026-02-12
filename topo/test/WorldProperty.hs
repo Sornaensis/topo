@@ -30,9 +30,12 @@ spec = describe "World properties" $ do
                     }
                 }
             , worldClimate = defaultClimateConfig
-                { ccWindIterations = w
-                , ccMoistureIterations = m
-                , ccCoastalIterations = c
+                { ccWind = (ccWind defaultClimateConfig)
+                    { windIterations = w }
+                , ccMoisture = (ccMoisture defaultClimateConfig)
+                    { moistIterations = m }
+                , ccPrecipitation = (ccPrecipitation defaultClimateConfig)
+                    { precCoastalIterations = c }
                 }
             , worldBiome = defaultBiomeConfig
                 { bcSmoothingIterations = b

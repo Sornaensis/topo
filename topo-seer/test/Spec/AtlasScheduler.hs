@@ -52,7 +52,7 @@ spec = describe "AtlasScheduler" $ do
       , ashResultBroker = resultBrokerHandle
       , ashScheduleBroker = scheduleBrokerHandle
       }
-    let terrainSnap = TerrainSnapshot 0 0 mempty mempty mempty
+    let terrainSnap = TerrainSnapshot 0 0 mempty mempty mempty mempty
         atlasKey = AtlasKey ViewElevation 0.5 (tsVersion terrainSnap)
         job = AtlasJob
           { ajKey = atlasKey

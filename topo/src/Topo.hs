@@ -13,6 +13,7 @@ module Topo
   , module Topo.Erosion
   , module Topo.Glacier
   , module Topo.Hydrology
+  , module Topo.River
   , module Topo.Volcanism
   , module Topo.Parameters
   , module Topo.Climate
@@ -24,8 +25,10 @@ module Topo
   , module Topo.Mesh
   , module Topo.WorldGen
   , module Topo.Biome
+  , module Topo.Biome.Name
   , module Topo.PlateMetadata
   , module Topo.Planet
+  , module Topo.OceanCurrent
   ) where
 
 import Topo.Types
@@ -40,8 +43,11 @@ import Topo.Tectonics
 import Topo.Erosion
 import Topo.Glacier
 import Topo.Hydrology
+import Topo.River
 import Topo.Volcanism
 import Topo.Parameters
+import Topo.Soil
+import Topo.Vegetation
 import Topo.Climate
 import Topo.BiomeConfig
 import Topo.Weather
@@ -51,5 +57,7 @@ import Topo.Storage
 import Topo.Mesh
 import Topo.WorldGen
 import Topo.Biome
+import Topo.Biome.Name
 import Topo.PlateMetadata
 import Topo.Planet
+import Topo.OceanCurrent

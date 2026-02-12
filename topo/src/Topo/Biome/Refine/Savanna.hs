@@ -1,0 +1,65 @@
+{-# LANGUAGE PatternSynonyms #-}
+
+-- | Savanna sub-biome refinement.
+--
+-- Discriminates woodland savanna, tropical savanna, and grassland
+-- savanna from the family-level 'BiomeSavanna'.
+module Topo.Biome.Refine.Savanna
+  ( SavannaConfig(..)
+  , defaultSavannaConfig
+  , refineSavanna
+  ) where
+
+import Topo.Types (BiomeId, pattern BiomeSavanna,
+                   pattern BiomeWoodlandSavanna,
+                   pattern BiomeTropicalSavanna,
+                   pattern BiomeGrasslandSavanna)
+
+-- | Configuration for savanna sub-biome classification.
+data SavannaConfig = SavannaConfig
+  { saWoodlandMinPrecip    :: !Float  -- ^ default 0.35
+  , saWoodlandMinFertility :: !Float  -- ^ default 0.40
+  , saWoodlandMinHumidity  :: !Float
+  -- ^ Minimum annual humidity for woodland savanna.  Higher humidity
+  -- supports denser tree cover.  Default: @0.35@.
+  , saTropicalMinTemp      :: !Float  -- ^ default 0.75
+  , saGrasslandMaxPrecip   :: !Float  -- ^ default 0.25
+  , saGrasslandMaxHumidity :: !Float
+  -- ^ Maximum annual humidity for grassland savanna.  Drier
+  -- conditions favour grass over trees.  Default: @0.30@.
+  } deriving (Eq, Show)
+
+-- | Sensible defaults for savanna refinement.
+defaultSavannaConfig :: SavannaConfig
+defaultSavannaConfig = SavannaConfig
+  { saWoodlandMinPrecip    = 0.35
+  , saWoodlandMinFertility = 0.40
+  , saWoodlandMinHumidity  = 0.35
+  , saTropicalMinTemp      = 0.75
+  , saGrasslandMaxPrecip   = 0.25
+  , saGrasslandMaxHumidity = 0.30
+  }
+
+-- | Refine a savanna tile into a sub-biome.
+--
+-- Decision cascade:
+--
+-- 1. Woodland savanna: wet + fertile + humid
+-- 2. Tropical savanna: hot
+-- 3. Grassland savanna: dry + low humidity
+-- 4. Fallback: 'BiomeSavanna'
+refineSavanna
+  :: SavannaConfig
+  -> Float          -- ^ temperature
+  -> Float          -- ^ precipitation
+  -> Float          -- ^ fertility
+  -> Float          -- ^ humidity average (annual)
+  -> BiomeId
+refineSavanna cfg temp precip fertility humidity
+  | precip >= saWoodlandMinPrecip cfg
+    && fertility >= saWoodlandMinFertility cfg
+    && humidity >= saWoodlandMinHumidity cfg     = BiomeWoodlandSavanna
+  | temp >= saTropicalMinTemp cfg               = BiomeTropicalSavanna
+  | precip <= saGrasslandMaxPrecip cfg
+    && humidity <= saGrasslandMaxHumidity cfg    = BiomeGrasslandSavanna
+  | otherwise                                   = BiomeSavanna

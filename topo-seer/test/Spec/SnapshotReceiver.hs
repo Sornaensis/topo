@@ -44,5 +44,5 @@ emptyRenderSnapshot = RenderSnapshot
   { rsUi = emptyUiState
   , rsLog = LogSnapshot [] False 0 LogDebug
   , rsData = DataSnapshot 0 0 Nothing
-  , rsTerrain = TerrainSnapshot 0 0 mempty mempty mempty
+  , rsTerrain = TerrainSnapshot 0 0 mempty mempty mempty mempty
   }

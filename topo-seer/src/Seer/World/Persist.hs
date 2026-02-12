@@ -177,25 +177,28 @@ loadNamedWorld name = do
 
 -- | Reconstruct a 'TerrainWorld' from a 'TerrainSnapshot'.
 --
--- Only terrain, climate, and weather chunks are preserved from the
--- snapshot.  River, groundwater, volcanism, and glacier data are
--- stored as empty maps (they are not retained in the Data actor
--- after generation).  Planet and slice defaults are used because the
+-- Terrain, climate, weather, and river chunks are preserved from the
+-- snapshot.  Groundwater, volcanism, and glacier data are stored as
+-- empty maps (they are not retained in the Data actor after
+-- generation).  Planet and slice defaults are used because the
 -- UI-level values are captured separately in the config preset.
 snapshotToWorld :: TerrainSnapshot -> TerrainWorld
 snapshotToWorld ts = TerrainWorld
   { twTerrain     = tsTerrainChunks ts
   , twClimate     = tsClimateChunks ts
   , twWeather     = tsWeatherChunks ts
-  , twRivers      = IntMap.empty
+  , twRivers      = tsRiverChunks ts
   , twGroundwater = IntMap.empty
   , twVolcanism   = IntMap.empty
   , twGlaciers    = IntMap.empty
+  , twWaterBodies = IntMap.empty
+  , twVegetation  = IntMap.empty
   , twHexGrid     = defaultHexGridMeta
   , twMeta        = emptyMetadataStore
   , twConfig      = WorldConfig { wcChunkSize = tsChunkSize ts }
   , twPlanet      = defaultPlanetConfig
   , twSlice       = defaultWorldSlice
+  , twWorldTime   = 0
   }
 
 -------------------------------------------------------------------------------

@@ -77,6 +77,9 @@ mkClimateChunk config base =
       , ccPrecipAvg = U.replicate n base
       , ccWindDirAvg = U.replicate n 0.1
       , ccWindSpdAvg = U.replicate n 0.2
+      , ccHumidityAvg = U.replicate n 0
+      , ccTempRange = U.replicate n 0
+      , ccPrecipSeasonality = U.replicate n 0
       }
 
 mkWeatherChunk :: WorldConfig -> Float -> WeatherChunk
@@ -112,6 +115,12 @@ mkRiverChunk config base =
       , rcBaseflow = baseflow
       , rcErosionPotential = erosion
       , rcDepositPotential = deposit
+      , rcFlowDir = U.replicate n (-1)
+      , rcSegOffsets = U.replicate (n + 1) 0
+      , rcSegEntryEdge = U.empty
+      , rcSegExitEdge = U.empty
+      , rcSegDischarge = U.empty
+      , rcSegOrder = U.empty
       }
 
 mkGroundwaterChunk :: WorldConfig -> Float -> GroundwaterChunk

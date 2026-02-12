@@ -48,7 +48,7 @@ emptySnapshotReceiverState = SnapshotReceiverState
   { srsUi = emptyUiState
   , srsLog = LogSnapshot [] False 0 LogDebug
   , srsData = DataSnapshot 0 0 Nothing
-  , srsTerrain = TerrainSnapshot 0 0 mempty mempty mempty
+  , srsTerrain = TerrainSnapshot 0 0 mempty mempty mempty mempty
   , srsVersion = 0
   , srsRef = Nothing
   }
