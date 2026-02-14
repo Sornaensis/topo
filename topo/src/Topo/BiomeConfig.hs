@@ -19,7 +19,7 @@ import Topo.Biome
   , defaultBiomeRules
   , defaultBiomeThresholds
   , defaultVegetationConfig
-  , smoothBiomesChunk
+  , smoothBiomesGrid
   , vegetationDensityChunk
   )
 import Topo.Biome.Refine
@@ -32,6 +32,7 @@ import Topo.Biome.Refine
 import Topo.Math (clamp01)
 import Topo.Pipeline (PipelineStage(..))
 import Topo.Plugin (logInfo, modifyWorldP)
+import Topo.TerrainGrid (chunkCoordBounds)
 import Topo.Types
 import Topo.World (TerrainWorld(..))
 import qualified Data.Vector.Unboxed as U
@@ -103,8 +104,8 @@ classifyBiomesStage cfg waterLevel = PipelineStage "classifyBiomes" "classifyBio
             Nothing -> U.empty
             Just cc -> classifyChunk config (bcRules cfg) (bcThresholds cfg) waterLevel
                          (IntMap.lookup k waterBodies) tc cc) terrain
-        -- 2. Smoothing
-        biomes' = IntMap.map (smoothBiomesChunk config (bcSmoothingIterations cfg)) biomes
+        -- 2. Inter-chunk smoothing on a stitched global grid
+        biomes' = smoothBiomesGlobal config (bcSmoothingIterations cfg) biomes
         -- 3. Refinement pass (sub-biome discrimination)
         biomes'' = refineAllChunks (bcRefinement cfg) waterLevel biomes' terrain climate
                      (twWeather world) (twRivers world) (twGroundwater world)
@@ -201,3 +202,86 @@ defaultWeatherChunk = WeatherChunk
   , wcPressure = U.empty
   , wcPrecip   = U.empty
   }
+
+---------------------------------------------------------------------------
+-- Inter-chunk global smoothing
+---------------------------------------------------------------------------
+
+-- | Assemble all chunk biome vectors into a single flat grid, run
+-- hex-aware majority-vote smoothing at the global scale, then slice the
+-- results back into per-chunk vectors.
+--
+-- Falls back to no smoothing if the chunk map is empty.
+smoothBiomesGlobal
+  :: WorldConfig
+  -> Int                          -- ^ smoothing iterations
+  -> IntMap (U.Vector BiomeId)    -- ^ per-chunk biome vectors
+  -> IntMap (U.Vector BiomeId)
+smoothBiomesGlobal _ iterations biomes
+  | iterations <= 0 = biomes
+  | IntMap.null biomes = biomes
+smoothBiomesGlobal config iterations biomes =
+  case chunkCoordBounds biomes of
+    Nothing -> biomes
+    Just (ChunkCoord minCx minCy, ChunkCoord maxCx maxCy) ->
+      let size = wcChunkSize config
+          gridW = (maxCx - minCx + 1) * size
+          gridH = (maxCy - minCy + 1) * size
+          -- Assemble: per-chunk → global grid
+          globalGrid = buildBiomeGrid biomes config (ChunkCoord minCx minCy) gridW gridH
+          -- Smooth on the global grid (cross-chunk hex neighbours)
+          smoothed = smoothBiomesGrid iterations gridW gridH globalGrid
+          -- Slice back: global grid → per-chunk vectors
+      in IntMap.mapWithKey (\k _ -> sliceBiomeGrid config (ChunkCoord minCx minCy) gridW smoothed k) biomes
+
+-- | Assemble per-chunk biome vectors into a single flat row-major grid.
+buildBiomeGrid
+  :: IntMap (U.Vector BiomeId)
+  -> WorldConfig
+  -> ChunkCoord                   -- ^ min chunk coord
+  -> Int                          -- ^ gridW
+  -> Int                          -- ^ gridH
+  -> U.Vector BiomeId
+buildBiomeGrid biomeMap config (ChunkCoord minCx minCy) gridW gridH =
+  let size = wcChunkSize config
+      minTileX = minCx * size
+      minTileY = minCy * size
+      sampleAt idx =
+        let x = idx `mod` gridW
+            y = idx `div` gridW
+            gx = minTileX + x
+            gy = minTileY + y
+            tile = TileCoord gx gy
+            (chunkCoord, local) = chunkCoordFromTile config tile
+            ChunkId key = chunkIdFromCoord chunkCoord
+        in case IntMap.lookup key biomeMap of
+            Nothing -> BiomeDesert  -- safety fallback
+            Just vec ->
+              case tileIndex config local of
+                Nothing -> BiomeDesert
+                Just (TileIndex i)
+                  | i < U.length vec -> vec U.! i
+                  | otherwise        -> BiomeDesert
+  in U.generate (gridW * gridH) sampleAt
+
+-- | Extract a chunk-sized biome vector from a global grid.
+sliceBiomeGrid
+  :: WorldConfig
+  -> ChunkCoord                   -- ^ min chunk coord
+  -> Int                          -- ^ gridW
+  -> U.Vector BiomeId             -- ^ global grid
+  -> Int                          -- ^ chunk key
+  -> U.Vector BiomeId
+sliceBiomeGrid config (ChunkCoord minCx minCy) gridW grid key =
+  let ChunkCoord cx cy = chunkCoordFromId (ChunkId key)
+      size = wcChunkSize config
+      baseX = (cx - minCx) * size
+      baseY = (cy - minCy) * size
+      n = size * size
+  in U.generate n (\i ->
+      let x = i `mod` size
+          y = i `div` size
+          gx = baseX + x
+          gy = baseY + y
+          gi = gy * gridW + gx
+      in grid U.! gi)

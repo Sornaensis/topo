@@ -259,25 +259,34 @@ buildFullPipelineConfig cfg worldCfg seed =
             , scSeasonalRange   = wcSeasonalRange wCfg
             }
         }
+      wl = hcWaterLevel (terrainHydrology terrain')
+      -- Convergence: extra climate → classify → feedback cycles
+      convergenceIters = max 0 (bfcConvergenceIterations (worldBiomeFeedback cfg))
+      convergenceStages = concat $ replicate convergenceIters
+        [ generateClimateStage climate wl
+        , classifyBiomesStage (worldBiome cfg) wl
+        , updateVegetationFromBiomeStage (worldBiomeFeedback cfg) (terrainVegetation terrain')
+        ]
   in PipelineConfig
       { pipelineSeed = seed
       , pipelineStages =
           [ generatePlateTerrainStage (terrainGen terrain') (terrainTectonics terrain')
-          , applyErosionStage (terrainErosion terrain') (hcWaterLevel (terrainHydrology terrain'))
+          , applyErosionStage (terrainErosion terrain') wl
           , applyVolcanismStage (terrainVolcanism terrain')
           , applyHydrologyStage (terrainHydrology terrain')
-          , applyRiverStage (terrainRivers terrain') { rcWaterLevel = hcWaterLevel (terrainHydrology terrain') }
+          , applyRiverStage (terrainRivers terrain') { rcWaterLevel = wl }
                             (terrainGroundwater terrain')
-          , applyWaterBodyStage (terrainWaterBody terrain') (hcWaterLevel (terrainHydrology terrain'))
+          , applyWaterBodyStage (terrainWaterBody terrain') wl
           , applySoilStage (terrainSoil terrain')
-          , bootstrapVegetationStage (terrainVegetation terrain') (hcWaterLevel (terrainHydrology terrain'))
-          , generateClimateStage climate (hcWaterLevel (terrainHydrology terrain'))
-          , applyOceanCurrentsStage (worldOceanCurrent cfg) (hcWaterLevel (terrainHydrology terrain'))
+          , bootstrapVegetationStage (terrainVegetation terrain') wl
+          , generateClimateStage climate wl
+          , applyOceanCurrentsStage (worldOceanCurrent cfg) wl
           , applyGlacierStage (terrainGlacier terrain')
           , applyParameterLayersStage (terrainParameters terrain') (terrainFormConfig terrain')
-          , classifyBiomesStage (worldBiome cfg) (hcWaterLevel (terrainHydrology terrain'))
+          , classifyBiomesStage (worldBiome cfg) wl
           , updateVegetationFromBiomeStage (worldBiomeFeedback cfg) (terrainVegetation terrain')
-            , tickWeatherStage (worldWeather cfg)
+          ] ++ convergenceStages ++
+          [ tickWeatherStage (worldWeather cfg)
           ]
       , pipelineSnapshots = False
       }

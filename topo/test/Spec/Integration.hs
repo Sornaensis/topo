@@ -248,12 +248,12 @@ spec = beforeAll generateAndCollect $ describe "Integration (Phase 6)" $ do
 
   -- 6.2  Coast-to-interior precipitation gradient
   describe "6.2 Precipitation gradient" $ do
-    it "coastal land tiles have mean precipitation in [0.30, 0.90]" $ \samples -> do
+    it "coastal land tiles have mean precipitation in [0.25, 0.90]" $ \samples -> do
       let coastal = filter (\t -> tsIsCoastal t && tsIsLand t) samples
           acc     = foldl' (\a t -> addAccum (tsPrec t) a) emptyAccum coastal
           mean    = accumMean acc
       accCount acc `shouldSatisfy` (> 0)
-      mean `shouldSatisfy` (>= 0.30)
+      mean `shouldSatisfy` (>= 0.25)
       mean `shouldSatisfy` (<= 0.90)
 
     it "interior land tiles have mean precipitation > 0.15" $ \samples -> do

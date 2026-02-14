@@ -29,7 +29,7 @@ import Topo.Biome.Refine.Ocean     (defaultOceanConfig, refineOcean)
 import Topo.Biome.Refine.Coastal   (defaultCoastalConfig, refineCoastal)
 import Topo.Biome.Refine.Desert    (defaultDesertConfig, refineDesert)
 import Topo.Biome.Refine.Grassland (defaultGrasslandConfig, refineGrassland)
-import Topo.Biome.Refine.Forest    (defaultForestConfig, refineForest)
+import Topo.Biome.Refine.Forest    (defaultForestConfig, ForestConfig(..), refineForest)
 import Topo.Biome.Refine.Tundra    (defaultTundraConfig, refineTundra)
 import Topo.Biome.Refine.Rainforest (defaultRainforestConfig, refineRainforest)
 import Topo.Biome.Refine.Shrubland (defaultShrublandConfig, refineShrubland)
@@ -175,19 +175,27 @@ spec = describe "BiomeRefine" $ do
   -- -----------------------------------------------------------------------
   describe "refineOcean" $ do
     it "deep ocean when well below water level" $
-      refineOcean defaultOceanConfig WaterOcean 0.5 0.20 0.5 `shouldBe` BiomeDeepOcean
+      -- depth = 0.5 - 0.10 = 0.40 > 0.25
+      refineOcean defaultOceanConfig WaterOcean 0.5 0.10 0.5 0.01 0.5 `shouldBe` BiomeDeepOcean
 
-    it "coral reef when shallow + warm + ocean" $
-      refineOcean defaultOceanConfig WaterOcean 0.5 0.45 0.70 `shouldBe` BiomeCoralReef
+    it "coral reef when shallow + warm + flat + hard + ocean" $
+      -- depth = 0.5 - 0.47 = 0.03 <= 0.05, temp 0.80 >= 0.72, slope 0.02 <= 0.04, hardness 0.50 >= 0.35
+      refineOcean defaultOceanConfig WaterOcean 0.5 0.47 0.80 0.02 0.50 `shouldBe` BiomeCoralReef
 
     it "no coral reef in freshwater" $
-      refineOcean defaultOceanConfig WaterLake 0.5 0.45 0.70 `shouldBe` BiomeShallowSea
+      refineOcean defaultOceanConfig WaterLake 0.5 0.47 0.80 0.02 0.50 `shouldBe` BiomeShallowSea
+
+    it "no coral reef when slope too steep" $
+      refineOcean defaultOceanConfig WaterOcean 0.5 0.47 0.80 0.10 0.50 `shouldBe` BiomeShallowSea
+
+    it "no coral reef when substrate too soft" $
+      refineOcean defaultOceanConfig WaterOcean 0.5 0.47 0.80 0.02 0.10 `shouldBe` BiomeShallowSea
 
     it "shallow sea when shallow + cold" $
-      refineOcean defaultOceanConfig WaterOcean 0.5 0.45 0.30 `shouldBe` BiomeShallowSea
+      refineOcean defaultOceanConfig WaterOcean 0.5 0.45 0.30 0.01 0.5 `shouldBe` BiomeShallowSea
 
     it "fallback to ocean when depth is zero" $
-      refineOcean defaultOceanConfig WaterOcean 0.5 0.50 0.30 `shouldBe` BiomeOcean
+      refineOcean defaultOceanConfig WaterOcean 0.5 0.50 0.30 0.01 0.5 `shouldBe` BiomeOcean
 
   -- -----------------------------------------------------------------------
   -- 3.19.6: refineCoastal
@@ -228,10 +236,10 @@ spec = describe "BiomeRefine" $ do
       refineDesert defaultDesertConfig 0.50 0.10 0.25 0.50 FormFlat `shouldBe` BiomeSandDesert
 
     it "hot desert when temp >= threshold" $
-      refineDesert defaultDesertConfig 0.60 0.10 0.40 0.50 FormFlat `shouldBe` BiomeHotDesert
+      refineDesert defaultDesertConfig 0.75 0.10 0.40 0.50 FormFlat `shouldBe` BiomeHotDesert
 
     it "cold desert when temp <= threshold" $
-      refineDesert defaultDesertConfig 0.30 0.10 0.40 0.50 FormFlat `shouldBe` BiomeColdDesert
+      refineDesert defaultDesertConfig 0.35 0.10 0.40 0.50 FormFlat `shouldBe` BiomeColdDesert
 
   -- -----------------------------------------------------------------------
   -- 3.19.8: refineGrassland
@@ -256,26 +264,32 @@ spec = describe "BiomeRefine" $ do
   -- 3.19.9: refineForest
   -- -----------------------------------------------------------------------
   describe "refineForest" $ do
-    it "cloud forest at high elev + tropical + wet" $
-      refineForest defaultForestConfig 0.60 0.60 0.75 0.3 0.70 `shouldBe` BiomeCloudForest
+    it "cloud forest at high elev + tropical + wet + mountainous" $
+      refineForest defaultForestConfig 0.70 0.60 0.75 0.3 0.70 0.10 FormMountainous `shouldBe` BiomeCloudForest
 
-    it "montane forest at high elev" $
-      refineForest defaultForestConfig 0.55 0.50 0.50 0.3 0.50 `shouldBe` BiomeMontaneForest
+    it "montane forest at high elev + hilly" $
+      refineForest defaultForestConfig 0.65 0.50 0.50 0.3 0.50 0.05 FormHilly `shouldBe` BiomeMontaneForest
+
+    it "montane forest at high elev + steep slope" $
+      refineForest defaultForestConfig 0.65 0.50 0.50 0.3 0.50 0.08 FormFlat `shouldBe` BiomeMontaneForest
+
+    it "NOT montane on flat low-slope land even at threshold elev" $
+      refineForest defaultForestConfig 0.64 0.50 0.50 0.3 0.50 0.03 FormFlat `shouldNotBe` BiomeMontaneForest
 
     it "temperate rainforest when cool + very wet" $
-      refineForest defaultForestConfig 0.40 0.45 0.85 0.3 0.75 `shouldBe` BiomeTempRainforest
+      refineForest defaultForestConfig 0.40 0.45 0.85 0.3 0.75 0.03 FormFlat `shouldBe` BiomeTempRainforest
 
     it "tropical dry when hot + moderate precip" $
-      refineForest defaultForestConfig 0.40 0.75 0.50 0.3 0.50 `shouldBe` BiomeTropicalDryForest
+      refineForest defaultForestConfig 0.40 0.75 0.50 0.3 0.50 0.03 FormFlat `shouldBe` BiomeTropicalDryForest
 
     it "temperate deciduous when warm + wet" $
-      refineForest defaultForestConfig 0.40 0.45 0.55 0.3 0.50 `shouldBe` BiomeTempDeciduousForest
+      refineForest defaultForestConfig 0.40 0.45 0.55 0.3 0.50 0.03 FormFlat `shouldBe` BiomeTempDeciduousForest
 
     it "temperate coniferous when cool + rocky + drier" $
-      refineForest defaultForestConfig 0.40 0.40 0.35 0.50 0.50 `shouldBe` BiomeTempConiferousForest
+      refineForest defaultForestConfig 0.40 0.40 0.35 0.50 0.50 0.03 FormFlat `shouldBe` BiomeTempConiferousForest
 
     it "fallback to forest" $
-      refineForest defaultForestConfig 0.40 0.50 0.35 0.30 0.30 `shouldBe` BiomeForest
+      refineForest defaultForestConfig 0.40 0.50 0.35 0.30 0.30 0.03 FormFlat `shouldBe` BiomeForest
 
   -- -----------------------------------------------------------------------
   -- 3.19.10: refineTundra

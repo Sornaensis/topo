@@ -18,8 +18,8 @@ import Topo.Types (BiomeId, TerrainForm,
 
 -- | Configuration for desert sub-biome classification.
 data DesertConfig = DesertConfig
-  { dcHotMinTemp        :: !Float  -- ^ default 0.55
-  , dcColdMaxTemp       :: !Float  -- ^ default 0.35
+  { dcHotMinTemp        :: !Float  -- ^ default 0.70
+  , dcColdMaxTemp       :: !Float  -- ^ default 0.40
   , dcRockyMinHardness  :: !Float  -- ^ default 0.55
   , dcRockyMaxSoilDepth :: !Float  -- ^ default 0.20
   , dcSandMaxHardness   :: !Float  -- ^ default 0.30
@@ -29,8 +29,8 @@ data DesertConfig = DesertConfig
 -- | Sensible defaults for desert refinement.
 defaultDesertConfig :: DesertConfig
 defaultDesertConfig = DesertConfig
-  { dcHotMinTemp        = 0.55
-  , dcColdMaxTemp       = 0.35
+  { dcHotMinTemp        = 0.70
+  , dcColdMaxTemp       = 0.40
   , dcRockyMinHardness  = 0.55
   , dcRockyMaxSoilDepth = 0.20
   , dcSandMaxHardness   = 0.30

@@ -81,8 +81,8 @@ defaultRefinementConfig = RefinementConfig
 aridRefinementConfig :: RefinementConfig
 aridRefinementConfig = defaultRefinementConfig
   { rcDesert    = (defaultDesertConfig)
-      { dcHotMinTemp       = 0.50   -- easier to classify as hot desert
-      , dcColdMaxTemp      = 0.40   -- wider cold-desert band
+      { dcHotMinTemp       = 0.60   -- easier to classify as hot desert
+      , dcColdMaxTemp      = 0.45   -- wider cold-desert band
       , dcSaltFlatMaxMoist = 0.05   -- more salt flats in mildly moist basins
       }
   , rcGrassland = (defaultGrasslandConfig)
@@ -154,8 +154,8 @@ lushRefinementConfig = defaultRefinementConfig
       , gcFloodplainMinDischarge = 0.20  -- easier floodplain grassland
       }
   , rcDesert    = (defaultDesertConfig)
-      { dcHotMinTemp       = 0.60   -- harder to classify as hot desert
-      , dcColdMaxTemp      = 0.30   -- narrower cold-desert band
+      { dcHotMinTemp       = 0.75   -- harder to classify as hot desert
+      , dcColdMaxTemp      = 0.35   -- narrower cold-desert band
       , dcSaltFlatMaxMoist = 0.01   -- fewer salt flats
       }
   , rcSavanna   = (defaultSavannaConfig)
@@ -265,13 +265,13 @@ refineBiomesChunk cfg wl primary tc cc _wc mRiver mGw mVolc mGlac mWb =
 
             -- Family dispatch
             refined
-              | bid == BiomeOcean     = refineOcean     (rcOcean cfg)     wbt wl e t
+              | bid == BiomeOcean     = refineOcean     (rcOcean cfg)     wbt wl e t s h
               | bid == BiomeLake      = bid  -- lakes pass through (no sub-biomes)
               | bid == BiomeInlandSea = bid  -- inland seas pass through
               | bid == BiomeCoastal   = refineCoastal   (rcCoastal cfg)   t p m h sd dis
               | bid == BiomeDesert    = refineDesert     (rcDesert cfg)    t m h sd tf
               | bid == BiomeGrassland = refineGrassland  (rcGrassland cfg) e p sd m dis tRng
-              | bid == BiomeForest    = refineForest     (rcForest cfg)    e t p h hum
+              | bid == BiomeForest    = refineForest     (rcForest cfg)    e t p h hum s tf
               | bid == BiomeTundra    = refineTundra     (rcTundra cfg)    e t p tf
               | bid == BiomeRainforest= refineRainforest (rcRainforest cfg) t p
               | bid == BiomeShrubland = refineShrubland  (rcShrubland cfg) t p m f tf pSeason

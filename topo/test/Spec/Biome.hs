@@ -152,10 +152,14 @@ spec = describe "Biome" $ do
     ashResult <- runPipeline pipeline env worldAsh
     worldBase' <- expectPipeline baseResult
     worldAsh' <- expectPipeline ashResult
-    case (getTerrainChunk (ChunkId 0) worldBase', getTerrainChunk (ChunkId 0) worldAsh') of
-      (Just baseChunk, Just ashChunk) ->
-        tcFertility ashChunk U.! 0 `shouldSatisfy` (> tcFertility baseChunk U.! 0)
-      _ -> expectationFailure "missing terrain chunk"
+    -- classifyBiomesStage writes the ash-boosted vegetation density into
+    -- VegetationChunk.vegDensity (NOT tcFertility, which stays soil-derived).
+    case ( getVegetationChunk (ChunkId 0) worldBase'
+         , getVegetationChunk (ChunkId 0) worldAsh'
+         ) of
+      (Just baseVeg, Just ashVeg) ->
+        vegDensity ashVeg U.! 0 `shouldSatisfy` (> vegDensity baseVeg U.! 0)
+      _ -> expectationFailure "missing vegetation chunk"
 
   describe "biomeDisplayName" $ do
     -- Helper: safely construct a BiomeId from a known-valid code
@@ -209,9 +213,13 @@ spec = describe "Biome" $ do
           0.5           -- moisture (moderate)
           FormFlat      -- terrain form (no override)
 
-    it "desert only for P < 0.10 when warm" $ do
-      let hotDry = classify' 0.50 0.05
-      hotDry `shouldBe` BiomeDesert
+    it "cold steppe at T=0.50, P=0.05 (not desert)" $ do
+      let coldSteppe = classify' 0.50 0.05
+      coldSteppe `shouldBe` BiomeGrassland
+
+    it "desert at T=0.58, P=0.05 (above cold steppe band)" $ do
+      let coolDesert = classify' 0.58 0.05
+      coolDesert `shouldBe` BiomeDesert
 
     it "not desert at P = 0.12 for warm tile" $ do
       let hotModest = classify' 0.50 0.12

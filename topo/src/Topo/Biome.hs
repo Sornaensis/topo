@@ -12,6 +12,7 @@ module Topo.Biome
   , classifyBiome
   , classifyBiomesChunk
   , smoothBiomesChunk
+  , smoothBiomesGrid
   , VegetationConfig(..)
   , defaultVegetationConfig
   , vegetationDensityChunk
@@ -121,8 +122,11 @@ defaultBiomeRules = BiomeRule
     -- Boreal forest / taiga (wet extreme refined → BorealBog)
 
     -- ── Cool Temperate  (T 0.50–0.64, i.e., 5 °C to 15 °C) ────────
-  , (BiomeDesert,      (0.50, 0.64), (0.00, 0.10))
-    -- Cool / continental desert (Gobi fringe, Patagonia steppe)
+  , (BiomeGrassland,   (0.50, 0.57), (0.00, 0.10))
+    -- Cold steppe: continental interior at 45–55° latitude
+    -- (replaces desert at the lower half of cool-temperate band)
+  , (BiomeDesert,      (0.57, 0.64), (0.00, 0.10))
+    -- True cool / continental desert (Gobi fringe, Patagonia steppe)
   , (BiomeGrassland,   (0.50, 0.64), (0.10, 0.30))
     -- Temperate steppe and grassland
   , (BiomeForest,      (0.50, 0.64), (0.30, 0.75))
@@ -159,7 +163,7 @@ defaultBiomeThresholds = BiomeThresholds
   , btAlpineElevation    = 0.75
   , btFallbackBiome      = BiomeGrassland
   , btIceCapTemp         = 0.05
-  , btMontaneLow         = 0.52
+  , btMontaneLow         = 0.64
   , btMontanePrecip      = 0.35
   , btCliffSlope         = 0.40
   , btValleyMoisture     = 0.70
@@ -293,6 +297,37 @@ smoothOnce config biomes =
   let size = wcChunkSize config
       n = U.length biomes
   in U.generate n (smoothAt size biomes)
+
+-- | Smooth biomes on a stitched global grid (inter-chunk aware).
+--
+-- Unlike 'smoothBiomesChunk', which operates within a single chunk
+-- (and therefore misses neighbours across chunk boundaries), this
+-- function smooths a flat global vector with dimensions
+-- @gridW × gridH@ tiles.  Hex neighbours are resolved at the global
+-- scale so chunk-boundary tiles see their true 6 neighbours.
+smoothBiomesGrid
+  :: Int          -- ^ iterations
+  -> Int          -- ^ gridW (total tiles wide)
+  -> Int          -- ^ gridH (total tiles tall)
+  -> U.Vector BiomeId
+  -> U.Vector BiomeId
+smoothBiomesGrid iterations gridW gridH biomes
+  | iterations <= 0 = biomes
+  | otherwise = smoothBiomesGrid (iterations - 1) gridW gridH (smoothOnceGrid gridW gridH biomes)
+
+-- | A single pass of majority-vote smoothing on a global grid.
+smoothOnceGrid :: Int -> Int -> U.Vector BiomeId -> U.Vector BiomeId
+smoothOnceGrid gridW gridH biomes =
+  let n = U.length biomes
+  in U.generate n (smoothAtGrid gridW gridH biomes)
+
+-- | Smooth a single tile on a global grid using its 6 hex neighbours.
+smoothAtGrid :: Int -> Int -> U.Vector BiomeId -> Int -> BiomeId
+smoothAtGrid gridW gridH biomes i =
+  let b0 = biomes U.! i
+      nbs = hexNeighborIndices gridW gridH i
+      neighbors = b0 : map (biomes U.!) nbs
+  in majority neighbors
 
 -- | Smooth a single tile using its 6 hex neighbours (majority vote).
 --

@@ -322,6 +322,16 @@ data PrecipitationConfig = PrecipitationConfig
   -- Default: @0.5@.
   , precCoastalMoistureBoost :: !Float
   -- ^ Moisture boost from coastal proximity (0–1).  Default: @0.10@.
+  , precPolarFloor       :: !Float
+  -- ^ Minimum precipitation at extreme latitudes.  Earth's polar
+  -- regions receive ~100–200 mm/yr, which is low but non-zero.
+  -- This floor prevents \"false deserts\" in polar regions where
+  -- evaporation/transport produces near-zero moisture.
+  -- Default: @0.05@.
+  , precPolarLatitude    :: !Float
+  -- ^ Latitude (in degrees) beyond which the polar precipitation
+  -- floor is applied.  The floor ramps in linearly from this
+  -- latitude to the pole.  Default: @60.0@.
   } deriving (Eq, Show)
 
 -- | Sensible Earth-like defaults for the precipitation model.
@@ -333,6 +343,8 @@ defaultPrecipitationConfig = PrecipitationConfig
   , precCoastalIterations = 8
   , precCoastalDiffuse   = 0.5
   , precCoastalMoistureBoost = 0.20
+  , precPolarFloor       = 0.05
+  , precPolarLatitude    = 60.0
   }
 
 ------------------------------------------------------------------------

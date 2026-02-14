@@ -31,4 +31,4 @@ General _DESIGN_ Principles:
 - **_IMPORTANT_** Avoid hard coding 'magic numbers' or constants of any kind with the exception of display messages and error descriptions. Everything module of functionality should be trivial to configure from the outside to test. Use aggressive Defaults to provide a 'sensible' ground state for inputs.
 - **_EXTREMELY IMPORTANT_** Module use should be aggressive. Start by mapping out domains for functionality once you identify a new type of functionality to add, and anticipate extension, overriding, and separation of concerns from the very beginning. Deep nesting of modules is okay if it is logical! Flat modules can be hard to understand at a certain size anyway.
 
-**_ALWAYS KEEP IN MIND_** the major goals listed as bullet points in `goals.md`
+**_ALWAYS KEEP IN MIND_** the major goals listed as bullet points in `.etc/goals.md`

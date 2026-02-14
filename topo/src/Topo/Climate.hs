@@ -23,7 +23,7 @@ import qualified Data.IntMap.Strict as IntMap
 import Data.Word (Word64)
 import Topo.Climate.Config
 import Topo.Climate.Evaporation
-import Topo.Math (clamp01, iterateN, lerp)
+import Topo.Math (clamp01, clampLat, iterateN, lerp)
 import Topo.Noise (noise2D)
 import Topo.Pipeline (PipelineStage(..))
 import Control.Monad.Except (throwError)
@@ -148,7 +148,7 @@ buildClimateChunkWithPrecip config seed cfg waterLevel vegMap precipGrid coastal
             c = coastal U.! i
             TileCoord _lx ly = tileCoordFromIndex config (TileIndex i)
             gy = oy + ly
-            lat = fromIntegral gy * tmpLatitudeScale tmp + tmpLatitudeBias tmp
+            lat = clampLat (fromIntegral gy * tmpLatitudeScale tmp + tmpLatitudeBias tmp)
             latF = clamp01 (abs (cos lat) ** tmpOceanLatExponent tmp)
             -- Moderation target = SST at this latitude + optional offset
             moderateTarget = lerp (tmpOceanPoleSST tmp) (tmpOceanEquatorSST tmp) latF
@@ -197,7 +197,7 @@ climateTempRange config tmp amp origin temp n =
   in U.generate n $ \i ->
     let TileCoord _lx ly = tileCoordFromIndex config (TileIndex i)
         gy = oy + ly
-        latRad = fromIntegral gy * tmpLatitudeScale tmp + tmpLatitudeBias tmp
+        latRad = clampLat (fromIntegral gy * tmpLatitudeScale tmp + tmpLatitudeBias tmp)
         latScale = abs (sin latRad)
         t = temp U.! i
         tHigh = clamp01 (t + amp * latScale)
@@ -228,7 +228,7 @@ climatePrecipSeasonality config tmp seasonCfg origin n =
   in U.generate n $ \i ->
     let TileCoord _lx ly = tileCoordFromIndex config (TileIndex i)
         gy = oy + ly
-        latRad = fromIntegral gy * tmpLatitudeScale tmp + tmpLatitudeBias tmp
+        latRad = clampLat (fromIntegral gy * tmpLatitudeScale tmp + tmpLatitudeBias tmp)
         latScale = abs (sin latRad)
         rawMax = (latScale + 1) * 0.5
         rawMin = (1 - latScale) * 0.5
@@ -256,7 +256,7 @@ tempAt config seed cfg waterLevel origin elev boundaries plateHeight velX velY a
       TileCoord lx ly = tileCoordFromIndex config (TileIndex i)
       TileCoord ox oy = origin
       gy = oy + ly
-      lat = fromIntegral gy * tmpLatitudeScale tmp + tmpLatitudeBias tmp
+      lat = clampLat (fromIntegral gy * tmpLatitudeScale tmp + tmpLatitudeBias tmp)
       height = elev U.! i
       isOcean = height < waterLevel
       -- Ocean tiles: dedicated SST profile (Phase 1 temperature fix).
@@ -423,7 +423,7 @@ buildClimateGrids config seed cfg waterLevel terrain vegMap (ChunkCoord minCx mi
       itczBoostGrid = U.generate n (\i ->
         let y = i `div` gridW
             gy = minTileY + y
-            lat = fromIntegral gy * tmpLatitudeScale tmp + tmpLatitudeBias tmp
+            lat = clampLat (fromIntegral gy * tmpLatitudeScale tmp + tmpLatitudeBias tmp)
             latDeg = lat * (180.0 / pi)
             w = max 0.001 (moistITCZWidth mst)
             d = latDeg / w
@@ -437,7 +437,17 @@ buildClimateGrids config seed cfg waterLevel terrain vegMap (ChunkCoord minCx mi
             motion = clamp01 (plateVelocity U.! i * bndMotionPrecip bnd)
             tectonic = boundaryOrogenyAt cfg waterLevel elev boundaries motion i
             plateBias = plateHeightPrecipBiasAt cfg waterLevel (plateHeight U.! i)
-        in clamp01 (moisture U.! i + o + tectonic + plateBias))
+            rawPrecip = moisture U.! i + o + tectonic + plateBias
+            -- Polar precipitation floor: ramp from 0 at precPolarLatitude
+            -- to precPolarFloor at the pole (90°).
+            y = i `div` gridW
+            gy = minTileY + y
+            lat = clampLat (fromIntegral gy * tmpLatitudeScale tmp + tmpLatitudeBias tmp)
+            latDeg = abs (lat * (180.0 / pi))
+            polarLat = max 0.001 (precPolarLatitude prc)
+            polarFrac = clamp01 ((latDeg - polarLat) / (90.0 - polarLat))
+            polarFloor = precPolarFloor prc * polarFrac
+        in clamp01 (max rawPrecip polarFloor))
     in (precipGrid, coastal)
 
 -- | Build a scalar grid from a 'TerrainChunk' field accessor.
@@ -511,7 +521,7 @@ tempAtXY :: ClimateConfig -> Float -> Int -> Float -> PlateBoundary -> Float -> 
 tempAtXY cfg waterLevel gy height boundary plateHt velocity albedo =
   let tmp = ccTemperature cfg
       bnd = ccBoundary cfg
-      lat = fromIntegral gy * tmpLatitudeScale tmp + tmpLatitudeBias tmp
+      lat = clampLat (fromIntegral gy * tmpLatitudeScale tmp + tmpLatitudeBias tmp)
       isOcean = height < waterLevel
       -- Ocean: dedicated SST profile.  Land: original latitude curve.
       base

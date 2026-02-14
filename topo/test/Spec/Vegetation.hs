@@ -14,6 +14,7 @@ import Topo.Vegetation
   , vegetationAlbedo
   , vegetationPotential
   , biomeBaseCover
+  , biomeOptimalPrecip
   , BiomeFeedbackConfig(..)
   , defaultBiomeFeedbackConfig
   )
@@ -124,6 +125,39 @@ spec = describe "Vegetation" $ do
     it "blend weight 1 fully overrides with biome cover" $ do
       let bfc = defaultBiomeFeedbackConfig { bfcBlendWeight = 1 }
       bfcBlendWeight bfc `shouldBe` 1.0
+
+    it "default convergence iterations is positive" $ do
+      bfcConvergenceIterations defaultBiomeFeedbackConfig `shouldSatisfy` (> 0)
+
+  -- Phase 4.1: biome optimal precipitation
+  describe "biomeOptimalPrecip" $ do
+    it "returns positive for all terrestrial biomes" $ do
+      biomeOptimalPrecip BiomeForest `shouldSatisfy` (> 0)
+      biomeOptimalPrecip BiomeDesert `shouldSatisfy` (> 0)
+      biomeOptimalPrecip BiomeTundra `shouldSatisfy` (> 0)
+
+    it "forests need more precip than deserts" $ do
+      biomeOptimalPrecip BiomeForest `shouldSatisfy`
+        (> biomeOptimalPrecip BiomeDesert)
+
+    it "rainforest needs highest precipitation" $ do
+      biomeOptimalPrecip BiomeRainforest `shouldSatisfy`
+        (> biomeOptimalPrecip BiomeForest)
+
+    prop "result is in (0, 1]" $
+      forAll (elements allTestBiomes) $ \bid ->
+        let p = biomeOptimalPrecip bid
+        in p > 0 && p <= 1
+
+  -- Phase 4.3: coastal proximity config
+  describe "bootstrap coastal proximity config" $ do
+    it "default iterations is positive" $ do
+      vbcCoastalIterations defaultVegetationBootstrapConfig `shouldSatisfy` (> 0)
+
+    it "default coastal boost is in [0, 1]" $ do
+      let boost = vbcCoastalBoost defaultVegetationBootstrapConfig
+      boost `shouldSatisfy` (>= 0)
+      boost `shouldSatisfy` (<= 1)
 
 -- | Representative biome IDs covering all families for property tests.
 allTestBiomes :: [BiomeId]

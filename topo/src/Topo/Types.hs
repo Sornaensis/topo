@@ -6,6 +6,18 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeFamilies #-}
 
+-- | Core types for the topo procedural terrain generation library.
+--
+-- This module defines all per-tile chunk data structures ('TerrainChunk',
+-- 'ClimateChunk', 'WeatherChunk', 'RiverChunk', 'VolcanismChunk',
+-- 'GlacierChunk', 'WaterBodyChunk', 'VegetationChunk'), the tile-level
+-- query type ('TerrainSample'), world configuration ('WorldConfig',
+-- 'WorldExtent'), biome vocabulary ('BiomeId' and its 56+ pattern
+-- synonyms), terrain form classification, chunk coordinate system,
+-- and all supporting newtypes and enums.
+--
+-- Types in this module are serialised to the @.topo@ binary format by
+-- "Topo.Export" and sampled by "Topo.Sample".
 module Topo.Types
   ( ChunkId(..)
   , ChunkCoord(..)
@@ -786,38 +798,94 @@ pattern FormDepression = TerrainForm 6
   , FormDepression
   #-}
 
+-- | Per-chunk terrain data.  Each field holds one value per tile in a flat
+-- row-major unboxed vector of length @chunkSize × chunkSize@.
+--
+-- The first block of fields (elevation through soilGrain) is computed by
+-- the terrain generation stages (plates, erosion, hydrology, volcanism,
+-- soil).  The second block (relief through terrainForm) is derived by the
+-- parameter-layers stage from the raw terrain.  The plate fields record
+-- the originating tectonic plate properties.
+--
+-- 'tcFlags' stores the biome classification result after
+-- 'Topo.BiomeConfig.classifyBiomesStage' runs.
 data TerrainChunk = TerrainChunk
   { tcElevation   :: !(U.Vector Float)
+    -- ^ Normalised surface elevation (0–1).  Values below the water
+    -- level threshold are ocean/lake tiles.
   , tcSlope       :: !(U.Vector Float)
+    -- ^ Local slope magnitude (0–1).  Computed from elevation gradients.
   , tcCurvature   :: !(U.Vector Float)
+    -- ^ Profile curvature (−1 to +1).  Positive = convex, negative =
+    -- concave.  Influences erosion and deposition.
   , tcHardness    :: !(U.Vector Float)
+    -- ^ Rock hardness (0–1).  Higher values resist erosion.
   , tcRockType    :: !(U.Vector Word16)
+    -- ^ Encoded rock type (igneous, sedimentary, metamorphic, etc.).
   , tcSoilType    :: !(U.Vector Word16)
+    -- ^ Encoded soil type.
   , tcSoilDepth   :: !(U.Vector Float)
+    -- ^ Soil layer depth (0–1).  Deep soils support more vegetation.
   , tcMoisture    :: !(U.Vector Float)
+    -- ^ Terrain moisture from hydrology flow-routing (0–1).  High near
+    -- rivers and drainage sinks; low on ridges and inland plateaus.
   , tcFertility   :: !(U.Vector Float)
+    -- ^ Soil fertility (0–1).  Derived from soil type, depth, and
+    -- organic content.  Remains soil-derived throughout the pipeline;
+    -- biome-derived vegetation density is stored separately on
+    -- 'VegetationChunk'.
   , tcRoughness   :: !(U.Vector Float)
+    -- ^ Surface roughness (0–1).  Affects wind obstruction and erosion.
   , tcRockDensity :: !(U.Vector Float)
+    -- ^ Rock density (0–1, normalised kg/m³ proxy).
   , tcSoilGrain   :: !(U.Vector Float)
+    -- ^ Soil grain size (0–1).  Fine-grained soils hold more moisture.
   , tcRelief      :: !(U.Vector Float)
+    -- ^ Local relief (0–1): max − min elevation in a neighbourhood.
   , tcRuggedness  :: !(U.Vector Float)
+    -- ^ Terrain ruggedness index (0–1): standard deviation of elevation
+    -- differences to neighbours.
   , tcTerrainForm :: !(U.Vector TerrainForm)
+    -- ^ Classified terrain form (flat, ridge, valley, depression, peak,
+    -- cliff, slope).  Derived from curvature and slope thresholds.
   , tcFlags       :: !(U.Vector BiomeId)
+    -- ^ Biome classification ID.  Set by 'Topo.BiomeConfig.classifyBiomesStage'.
+    -- Named 'tcFlags' for historical reasons; the vector stores one 'BiomeId'
+    -- per tile using the pattern-synonym vocabulary ('BiomeDesert',
+    -- 'BiomeForest', etc.).
   , tcPlateId     :: !(U.Vector Word16)
+    -- ^ Tectonic plate identifier (0-based).
   , tcPlateBoundary :: !(U.Vector PlateBoundary)
+    -- ^ Boundary type of the nearest plate boundary (convergent,
+    -- divergent, transform, or none).
   , tcPlateHeight :: !(U.Vector Float)
+    -- ^ Plate base height (0–1).  Continental plates are higher.
   , tcPlateHardness :: !(U.Vector Float)
+    -- ^ Plate-level hardness (0–1).
   , tcPlateCrust :: !(U.Vector Word16)
+    -- ^ Crust type (continental vs oceanic).
   , tcPlateAge :: !(U.Vector Float)
+    -- ^ Plate age proxy (0–1).  Older plates are cooler and denser.
   , tcPlateVelX :: !(U.Vector Float)
+    -- ^ Plate velocity X component (normalised, −1 to +1).
   , tcPlateVelY :: !(U.Vector Float)
+    -- ^ Plate velocity Y component (normalised, −1 to +1).
   } deriving (Eq, Show)
 
+-- | Per-chunk climate averages.  Computed by 'Topo.Climate.generateClimateStage'.
 data ClimateChunk = ClimateChunk
   { ccTempAvg    :: !(U.Vector Float)
+    -- ^ Annual-average normalised temperature (0–1).
+    -- Maps to Celsius via @T_C = norm × 70 − 30@, giving a range
+    -- of approximately −30 °C to +40 °C.
   , ccPrecipAvg  :: !(U.Vector Float)
+    -- ^ Annual-average normalised precipitation (0–1).
+    -- Derived from physics-based evaporation and wind-driven moisture
+    -- transport with orographic uplift.
   , ccWindDirAvg :: !(U.Vector Float)
+    -- ^ Annual-average wind direction (radians, 0 = east, π/2 = north).
   , ccWindSpdAvg :: !(U.Vector Float)
+    -- ^ Annual-average wind speed (0–1 normalised).
   -- | Annual-average relative humidity (0–1).
   --
   -- Computed analytically as @clamp01(precip / satNorm(temp))@ during
@@ -837,13 +905,21 @@ data ClimateChunk = ClimateChunk
   , ccPrecipSeasonality :: !(U.Vector Float)
   } deriving (Eq, Show)
 
+-- | Per-chunk instantaneous weather snapshot.  Updated by
+-- 'Topo.Weather.tickWeatherStage'.
 data WeatherChunk = WeatherChunk
   { wcTemp     :: !(U.Vector Float)
+    -- ^ Instantaneous temperature (0–1).
   , wcHumidity :: !(U.Vector Float)
+    -- ^ Instantaneous relative humidity (0–1).
   , wcWindDir  :: !(U.Vector Float)
+    -- ^ Instantaneous wind direction (radians).
   , wcWindSpd  :: !(U.Vector Float)
+    -- ^ Instantaneous wind speed (0–1).
   , wcPressure :: !(U.Vector Float)
+    -- ^ Atmospheric pressure proxy (0–1).
   , wcPrecip   :: !(U.Vector Float)
+    -- ^ Instantaneous precipitation rate (0–1).
   } deriving (Eq, Show)
 
 -- | Per-tile river routing outputs for a chunk.
@@ -1111,22 +1187,42 @@ riverSizeFromOrder o
 -- Terrain sample
 -- ---------------------------------------------------------------------------
 
+-- | A sampled terrain point, aggregating data from all chunk layers.
+--
+-- Produced by 'Topo.Sample.sampleTerrain' and 'Topo.Sample.hexData'.
+-- Continuous fields support bilinear interpolation; discrete fields
+-- ('tsBiomeId', 'tsTerrainForm', 'tsWaterBodyType') use nearest-neighbour.
 data TerrainSample = TerrainSample
   { tsElevation     :: !Float
+    -- ^ Normalised surface elevation (0–1), from 'tcElevation'.
   , tsSlope         :: !Float
+    -- ^ Local slope (0–1), from 'tcSlope'.
   , tsCurvature     :: !Float
+    -- ^ Profile curvature (−1 to +1), from 'tcCurvature'.
   , tsHardness      :: !Float
+    -- ^ Rock hardness (0–1), from 'tcHardness'.
   , tsSoilDepth     :: !Float
+    -- ^ Soil depth (0–1), from 'tcSoilDepth'.
   , tsMoisture      :: !Float
+    -- ^ Terrain moisture (0–1), from 'tcMoisture'.
   , tsFertility     :: !Float
+    -- ^ Soil fertility (0–1), from 'tcFertility'.
   , tsRoughness     :: !Float
+    -- ^ Surface roughness (0–1), from 'tcRoughness'.
   , tsRockDensity   :: !Float
+    -- ^ Rock density (0–1), from 'tcRockDensity'.
   , tsSoilGrain     :: !Float
+    -- ^ Soil grain size (0–1), from 'tcSoilGrain'.
   , tsTemperature   :: !Float
+    -- ^ Instantaneous temperature (0–1), from 'wcTemp'.
   , tsHumidity      :: !Float
+    -- ^ Instantaneous relative humidity (0–1), from 'wcHumidity'.
   , tsWindSpeed     :: !Float
+    -- ^ Instantaneous wind speed (0–1), from 'wcWindSpd'.
   , tsPressure      :: !Float
+    -- ^ Atmospheric pressure proxy (0–1), from 'wcPressure'.
   , tsPrecip        :: !Float
+    -- ^ Instantaneous precipitation (0–1), from 'wcPrecip'.
   -- Extended fields (v12+)
   , tsBiomeId       :: !BiomeId
     -- ^ Biome classification from 'tcFlags'.
