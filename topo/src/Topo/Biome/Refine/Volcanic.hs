@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE PatternSynonyms #-}
 
 -- | Volcanic overlay pass.
@@ -11,6 +12,10 @@ module Topo.Biome.Refine.Volcanic
   , refineVolcanic
   ) where
 
+import GHC.Generics (Generic)
+import Topo.Config.JSON
+  (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
+   genericToJSON, genericParseJSON)
 import Topo.Types (BiomeId, pattern BiomeLavaField,
                    pattern BiomeVolcanicAshPlain)
 
@@ -19,7 +24,14 @@ data VolcanicConfig = VolcanicConfig
   { voLavaMinPotential :: !Float  -- ^ default 0.60
   , voAshMinPotential  :: !Float  -- ^ default 0.40
   , voAshMaxFertility  :: !Float  -- ^ default 0.30 (still barren)
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON VolcanicConfig where
+  toJSON = genericToJSON (configOptions "vo")
+
+instance FromJSON VolcanicConfig where
+  parseJSON v = genericParseJSON (configOptions "vo")
+                  (mergeDefaults (toJSON defaultVolcanicConfig) v)
 
 -- | Sensible defaults for volcanic overlay.
 defaultVolcanicConfig :: VolcanicConfig

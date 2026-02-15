@@ -30,6 +30,8 @@ import qualified Spec.Evaporation
 import qualified Spec.WaterBody
 import qualified Spec.Integration
 import qualified Spec.OceanCurrent
+import qualified Spec.ConfigJSON
+import qualified Spec.ConfigProperty
 import qualified WorldProperty
 import qualified HexProperty
 
@@ -64,5 +66,7 @@ main = hspec $ do
   Spec.WaterBody.spec
   Spec.Integration.spec
   Spec.OceanCurrent.spec
+  Spec.ConfigJSON.spec
+  Spec.ConfigProperty.spec
   WorldProperty.spec
   HexProperty.spec

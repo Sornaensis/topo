@@ -2,10 +2,12 @@ module Spec.Storage (spec) where
 
 import Test.Hspec
 import qualified Data.Vector.Unboxed as U
+import Data.Aeson (toJSON)
 import Data.Proxy (Proxy(..))
 import Data.Text (Text, pack)
 import Topo
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice)
+import Topo.WorldGen (defaultWorldGenConfig)
 
 newtype Note = Note Text
   deriving (Eq, Show)
@@ -63,6 +65,27 @@ spec = describe "Storage" $ do
           Left err -> expectationFailure (show err)
           Right (_, world2) ->
             getHexMetaWorld (HexAxial 1 2) world2 `shouldBe` Just (Note (pack "alpha"))
+
+  it "roundtrips Nothing genConfig" $ do
+    let config = WorldConfig { wcChunkSize = 4 }
+        world0 = emptyWorld config defaultHexGridMeta
+    case encodeWorld world0 of
+      Left err -> expectationFailure (show err)
+      Right encoded ->
+        case decodeWorld encoded of
+          Left err -> expectationFailure (show err)
+          Right world1 -> twGenConfig world1 `shouldBe` Nothing
+
+  it "roundtrips Just genConfig" $ do
+    let config = WorldConfig { wcChunkSize = 4 }
+        world0 = (emptyWorld config defaultHexGridMeta)
+          { twGenConfig = Just (toJSON defaultWorldGenConfig) }
+    case encodeWorld world0 of
+      Left err -> expectationFailure (show err)
+      Right encoded ->
+        case decodeWorld encoded of
+          Left err -> expectationFailure (show err)
+          Right world1 -> twGenConfig world1 `shouldBe` Just (toJSON defaultWorldGenConfig)
 
 isJust :: Maybe a -> Bool
 isJust Nothing = False

@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE PatternSynonyms #-}
 
 -- | Shrubland sub-biome refinement.
@@ -10,6 +11,10 @@ module Topo.Biome.Refine.Shrubland
   , refineShrubland
   ) where
 
+import GHC.Generics (Generic)
+import Topo.Config.JSON
+  (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
+   genericToJSON, genericParseJSON)
 import Topo.Types (BiomeId, TerrainForm,
                    pattern BiomeShrubland, pattern BiomeMediterranean,
                    pattern BiomeXericShrubland, pattern BiomeMoorland,
@@ -27,7 +32,14 @@ data ShrublandConfig = ShrublandConfig
   , scMoorlandMaxTemp        :: !Float  -- ^ default 0.40
   , scMoorlandMinMoisture    :: !Float  -- ^ default 0.50
   , scMoorlandMaxFertility   :: !Float  -- ^ default 0.25
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON ShrublandConfig where
+  toJSON = genericToJSON (configOptions "sc")
+
+instance FromJSON ShrublandConfig where
+  parseJSON v = genericParseJSON (configOptions "sc")
+                  (mergeDefaults (toJSON defaultShrublandConfig) v)
 
 -- | Sensible defaults for shrubland refinement.
 defaultShrublandConfig :: ShrublandConfig

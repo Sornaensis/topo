@@ -7,7 +7,7 @@
 -- containing:
 --
 -- * @world.topo@ — binary terrain data (via 'Topo.Storage')
--- * @config.json@ — 'ConfigPreset' snapshot at time of save
+-- * @config.json@ — 'ConfigSnapshot' snapshot at time of save
 -- * @meta.json@ — 'WorldSaveManifest' with seed, chunk size, etc.
 module Seer.World.Persist
   ( -- * Types (re-exported from "Seer.World.Persist.Types")
@@ -49,12 +49,12 @@ import System.FilePath ((</>))
 
 import Actor.Data (TerrainSnapshot(..))
 import Actor.UI (UiState(..))
-import Seer.Config.Preset (presetFromUi, savePreset, loadPreset)
-import Seer.Config.Preset.Types (ConfigPreset)
+import Seer.Config.Snapshot (snapshotFromUi, saveSnapshot, loadSnapshot)
+import Seer.Config.Snapshot.Types (ConfigSnapshot)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Topo.Hex (defaultHexGridMeta)
 import Topo.Metadata (emptyMetadataStore)
-import Topo.Planet (defaultPlanetConfig, defaultWorldSlice)
+import Topo.Planet (defaultPlanetConfig, defaultWorldSlice, mkLatitudeMapping)
 import Topo.Storage
   ( WorldProvenance(..)
   , MapProvenance(..)
@@ -82,7 +82,7 @@ worldDir = do
 -- Save
 -------------------------------------------------------------------------------
 
--- | Save a named world: terrain data, config preset, and metadata.
+-- | Save a named world: terrain data, config snapshot, and metadata.
 --
 -- Creates @~\/.topo\/worlds\/<name>\/@ containing @world.topo@,
 -- @config.json@, and @meta.json@.
@@ -108,9 +108,9 @@ saveNamedWorld name uiSnap world = do
       Left err -> fail ("Terrain save failed: " <> show err)
       Right () -> pure ()
 
-    -- 2. Write config preset
-    let preset = presetFromUi uiSnap name
-    cfgResult <- savePreset cfgFile preset
+    -- 2. Write config snapshot
+    let snapshot = snapshotFromUi uiSnap name
+    cfgResult <- saveSnapshot cfgFile snapshot
     case cfgResult of
       Left err -> fail ("Config save failed: " <> Text.unpack err)
       Right () -> pure ()
@@ -136,10 +136,12 @@ saveNamedWorld name uiSnap world = do
 
 -- | Load a named world from @~\/.topo\/worlds\/<name>\/@.
 --
--- Returns the manifest, config preset, and terrain data on success.
+-- Returns the manifest, config snapshot, and terrain data on success.
+-- Legacy @ConfigPreset@ files are automatically migrated to
+-- @ConfigSnapshot@ on load.
 loadNamedWorld
   :: Text
-  -> IO (Either Text (WorldSaveManifest, ConfigPreset, TerrainWorld))
+  -> IO (Either Text (WorldSaveManifest, ConfigSnapshot, TerrainWorld))
 loadNamedWorld name = do
   dir <- worldDir
   let nameStr   = Text.unpack name
@@ -157,11 +159,11 @@ loadNamedWorld name = do
       case metaResult of
         Left err -> pure (Left ("Failed to load meta.json: " <> err))
         Right manifest -> do
-          -- 2. Load config
-          cfgResult <- loadPreset cfgFile
+          -- 2. Load config (with legacy ConfigPreset fallback)
+          cfgResult <- loadSnapshot cfgFile
           case cfgResult of
             Left err -> pure (Left ("Failed to load config.json: " <> err))
-            Right preset -> do
+            Right snapshot -> do
               -- 3. Load terrain
               topoResult <- loadWorldWithProvenance topoFile
               case topoResult of
@@ -169,7 +171,7 @@ loadNamedWorld name = do
                   pure (Left ("Failed to load world.topo: "
                         <> Text.pack (show err)))
                 Right (_prov, world) ->
-                  pure (Right (manifest, preset, world))
+                  pure (Right (manifest, snapshot, world))
 
 -------------------------------------------------------------------------------
 -- Snapshot conversion
@@ -195,11 +197,15 @@ snapshotToWorld ts = TerrainWorld
   , twVegetation  = IntMap.empty
   , twHexGrid     = defaultHexGridMeta
   , twMeta        = emptyMetadataStore
-  , twConfig      = WorldConfig { wcChunkSize = tsChunkSize ts }
+  , twConfig      = wc
   , twPlanet      = defaultPlanetConfig
   , twSlice       = defaultWorldSlice
+  , twLatMapping  = mkLatitudeMapping defaultPlanetConfig defaultWorldSlice wc
   , twWorldTime   = 0
+  , twGenConfig   = Nothing
   }
+  where
+    wc = WorldConfig { wcChunkSize = tsChunkSize ts }
 
 -------------------------------------------------------------------------------
 -- Listing

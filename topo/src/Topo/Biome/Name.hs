@@ -111,5 +111,9 @@ nameFromCode code = case code of
   -- Water body biomes
   61 -> "Lake"
   62 -> "Inland Sea"
+  -- Phase 3 sub-biomes
+  63 -> "Tropical Seasonal Forest"
+  64 -> "Fog Desert"
+  65 -> "Oceanic Boreal"
   -- Unknown fallback
   n  -> "Unknown (" <> pack (show n) <> ")"

@@ -27,7 +27,7 @@ spec = describe "Vegetation" $ do
         biomes = U.replicate n BiomeForest
         temp = U.replicate n 0.8
         precip = U.replicate n 0.9
-        density = vegetationDensityChunk defaultVegetationConfig biomes temp precip
+        density = vegetationDensityChunk defaultBiomeVegetationConfig biomes temp precip
     U.any (> 0) density `shouldBe` True
 
   describe "roughTemperatureEstimate" $ do

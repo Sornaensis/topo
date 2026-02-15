@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Derived terrain parameter layers.
@@ -29,6 +30,10 @@ module Topo.Parameters
   ) where
 
 import Control.Monad.Reader (asks)
+import GHC.Generics (Generic)
+import Topo.Config.JSON
+  (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
+   genericToJSON, genericParseJSON)
 import Control.Monad.ST (runST)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
@@ -55,7 +60,14 @@ data ParameterConfig = ParameterConfig
   , pcRockElevationThreshold   :: !Float
   , pcRockHardnessThreshold    :: !Float
   , pcRockHardnessSecondary    :: !Float
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON ParameterConfig where
+  toJSON = genericToJSON (configOptions "pc")
+
+instance FromJSON ParameterConfig where
+  parseJSON v = genericParseJSON (configOptions "pc")
+                  (mergeDefaults (toJSON defaultParameterConfig) v)
 
 -- | Default parameter configuration.
 defaultParameterConfig :: ParameterConfig
@@ -84,7 +96,14 @@ data TerrainFormConfig = TerrainFormConfig
   -- ^ Relief threshold for 'FormHilly'.
   , tfcRollingSlope    :: !Float
   -- ^ Slope threshold for 'FormRolling'.
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON TerrainFormConfig where
+  toJSON = genericToJSON (configOptions "tfc")
+
+instance FromJSON TerrainFormConfig where
+  parseJSON v = genericParseJSON (configOptions "tfc")
+                  (mergeDefaults (toJSON defaultTerrainFormConfig) v)
 
 -- | Default terrain form thresholds.
 defaultTerrainFormConfig :: TerrainFormConfig

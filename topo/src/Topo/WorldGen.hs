@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 module Topo.WorldGen
   ( TerrainConfig(..)
   , WorldGenConfig(..)
@@ -15,6 +16,8 @@ module Topo.WorldGen
   ) where
 
 import Data.Word (Word64)
+import GHC.Generics (Generic)
+import Topo.Config.JSON (configOptions, mergeDefaults, ToJSON(..), FromJSON(..), genericToJSON, genericParseJSON, Value)
 import Topo.BaseHeight (GenConfig(..), OceanEdgeDepth(..), defaultGenConfig)
 import Topo.BiomeConfig
   ( BiomeConfig(..)
@@ -77,32 +80,79 @@ import Topo.Weather (WeatherConfig(..), defaultWeatherConfig, tickWeatherStage)
 import Topo.Pipeline (PipelineConfig(..))
 import Topo.Types (WorldConfig(..), defaultWorldExtent)
 
+-- | Bundle of all terrain-related sub-configs.
+--
+-- Held inside 'WorldGenConfig' as the 'worldTerrain' field.
+-- Each sub-config controls one pipeline stage.
 data TerrainConfig = TerrainConfig
   { terrainGen :: !GenConfig
+    -- ^ Base height noise sampling.
   , terrainTectonics :: !TectonicsConfig
+    -- ^ Plate tectonics generation.
   , terrainErosion :: !ErosionConfig
+    -- ^ Hydraulic and thermal erosion.
   , terrainHydrology :: !HydroConfig
+    -- ^ Flow routing, moisture, and sediment transport.
   , terrainRivers :: !RiverConfig
+    -- ^ River channel carving and routing.
   , terrainGroundwater :: !GroundwaterConfig
+    -- ^ Groundwater recharge, storage, and discharge.
   , terrainVolcanism :: !VolcanismConfig
+    -- ^ Volcanic vent generation and eruption effects.
   , terrainWaterBody :: !WaterBodyConfig
+    -- ^ Water body classification (ocean, lake, inland sea).
   , terrainGlacier :: !GlacierConfig
+    -- ^ Glacier accumulation, flow, and erosion.
   , terrainParameters :: !ParameterConfig
+    -- ^ Roughness, detail, and rock layer derivation.
   , terrainFormConfig :: !TerrainFormConfig
+    -- ^ Terrain form classification thresholds.
   , terrainSoil :: !SoilConfig
+    -- ^ Soil fertility and depth derivation.
   , terrainVegetation :: !VegetationBootstrapConfig
-  } deriving (Eq, Show)
+    -- ^ Bootstrap vegetation density and albedo.
+  } deriving (Eq, Show, Generic)
 
+-- | Serialise with @terrain@ prefix stripped from field names.
+instance ToJSON TerrainConfig where
+  toJSON = genericToJSON (configOptions "terrain")
+
+-- | Deserialise with defaults for any missing field.
+instance FromJSON TerrainConfig where
+  parseJSON v = genericParseJSON (configOptions "terrain") (mergeDefaults (toJSON defaultTerrainConfig) v)
+
+-- | Top-level world generation configuration.
+--
+-- Passed to 'buildFullPipelineConfig' to assemble the complete
+-- generation pipeline.  All pipeline stages ultimately receive their
+-- parameters from sub-fields of this type.
 data WorldGenConfig = WorldGenConfig
   { worldTerrain :: !TerrainConfig
+    -- ^ All terrain-stage sub-configs.
   , worldClimate :: !ClimateConfig
+    -- ^ Climate model (temperature, wind, moisture, precipitation,
+    -- boundary effects, seasonality).
   , worldBiome :: !BiomeConfig
+    -- ^ Biome classification rules and refinement.
   , worldWeather :: !WeatherConfig
+    -- ^ Weather tick configuration.
   , worldPlanet :: !PlanetConfig
+    -- ^ Planetary parameters (radius, axial tilt, insolation).
   , worldSlice :: !WorldSlice
+    -- ^ Geographic window (lat\/lon center and extent).
   , worldOceanCurrent :: !OceanCurrentConfig
+    -- ^ Ocean current SST modifications.
   , worldBiomeFeedback :: !BiomeFeedbackConfig
-  } deriving (Eq, Show)
+    -- ^ Biome→vegetation feedback loop parameters.
+  } deriving (Eq, Show, Generic)
+
+-- | Serialise with @world@ prefix stripped from field names.
+instance ToJSON WorldGenConfig where
+  toJSON = genericToJSON (configOptions "world")
+
+-- | Deserialise with defaults for any missing field.
+instance FromJSON WorldGenConfig where
+  parseJSON v = genericParseJSON (configOptions "world") (mergeDefaults (toJSON defaultWorldGenConfig) v)
 
 data WorldGenConfigError
   = WorldGenNegativeHydraulicIterations !Int
@@ -245,25 +295,13 @@ buildFullPipelineConfig cfg worldCfg seed =
       -- Auto-derive ocean edge depth for exposed slice edges
       gen2 = autoOceanEdgeDepth planet slice gen1
       terrain' = terrain { terrainGen = gen2 }
-      climate = let cc = worldClimate cfg
-                    tmp = ccTemperature cc
-                    wCfg = worldWeather cfg
-                in cc
-        { ccTemperature = tmp
-            { tmpInsolation = pcInsolation planet }
-        -- Sync seasonality parameters from weather config so the
-        -- climate stage can compute analytical seasonality signals.
-        , ccSeasonality = (ccSeasonality cc)
-            { scSeasonAmplitude = wcSeasonAmplitude wCfg
-            , scSeasonalBase    = wcSeasonalBase wCfg
-            , scSeasonalRange   = wcSeasonalRange wCfg
-            }
-        }
+      climate = worldClimate cfg
+      wCfg = worldWeather cfg
       wl = hcWaterLevel (terrainHydrology terrain')
       -- Convergence: extra climate → classify → feedback cycles
       convergenceIters = max 0 (bfcConvergenceIterations (worldBiomeFeedback cfg))
       convergenceStages = concat $ replicate convergenceIters
-        [ generateClimateStage climate wl
+        [ generateClimateStage climate wCfg wl
         , classifyBiomesStage (worldBiome cfg) wl
         , updateVegetationFromBiomeStage (worldBiomeFeedback cfg) (terrainVegetation terrain')
         ]
@@ -274,12 +312,12 @@ buildFullPipelineConfig cfg worldCfg seed =
           , applyErosionStage (terrainErosion terrain') wl
           , applyVolcanismStage (terrainVolcanism terrain')
           , applyHydrologyStage (terrainHydrology terrain')
-          , applyRiverStage (terrainRivers terrain') { rcWaterLevel = wl }
-                            (terrainGroundwater terrain')
+          , applyRiverStage (terrainRivers terrain')
+                            (terrainGroundwater terrain') wl
           , applyWaterBodyStage (terrainWaterBody terrain') wl
           , applySoilStage (terrainSoil terrain')
           , bootstrapVegetationStage (terrainVegetation terrain') wl
-          , generateClimateStage climate wl
+          , generateClimateStage climate wCfg wl
           , applyOceanCurrentsStage (worldOceanCurrent cfg) wl
           , applyGlacierStage (terrainGlacier terrain')
           , applyParameterLayersStage (terrainParameters terrain') (terrainFormConfig terrain')

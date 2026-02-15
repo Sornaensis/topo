@@ -41,11 +41,12 @@ generatePlateTerrainStage cfg tcfg = PipelineStage "generatePlateTerrain" "gener
   seed <- asks peSeed
   modifyWorldP $ \world ->
     let config = twConfig world
+        lm     = twLatMapping world
         chunkCoords = baseHeightChunkCoords (gcWorldExtent cfg)
         chunks =
           [ let cid@(ChunkId key) = chunkIdFromCoord coord
                 baseChunk = emptyTerrainChunk config
-                plateChunk = applyTectonicsChunk config seed cfg tcfg key baseChunk
+                plateChunk = applyTectonicsChunk config seed cfg lm tcfg key baseChunk
             in (cid, plateChunk)
           | coord <- chunkCoords
           ]

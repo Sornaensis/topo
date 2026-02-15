@@ -7,6 +7,7 @@ import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Vector.Unboxed as U
 import Topo
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice, PlanetConfig(..), WorldSlice(..))
+import Topo.Weather (defaultWeatherConfig)
 
 avgVector :: U.Vector Float -> Float
 avgVector vec =
@@ -21,7 +22,7 @@ spec = describe "Climate" $ do
         world1 = setTerrainChunk (ChunkId 0) terrain world0
         pipeline = PipelineConfig
           { pipelineSeed = 9
-          , pipelineStages = [generateClimateStage defaultClimateConfig 0.5]
+          , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -43,7 +44,7 @@ spec = describe "Climate" $ do
               $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 1 0)) high world0
         pipeline = PipelineConfig
           { pipelineSeed = 11
-          , pipelineStages = [generateClimateStage defaultClimateConfig 0.5]
+          , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -67,7 +68,7 @@ spec = describe "Climate" $ do
               $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 1 0)) plainChunk world0
         pipeline = PipelineConfig
           { pipelineSeed = 42
-          , pipelineStages = [generateClimateStage defaultClimateConfig 0.5]
+          , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -90,7 +91,7 @@ spec = describe "Climate" $ do
               $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 1 0)) plainChunk world0
         pipeline = PipelineConfig
           { pipelineSeed = 42
-          , pipelineStages = [generateClimateStage defaultClimateConfig 0.5]
+          , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -131,7 +132,7 @@ spec = describe "Climate" $ do
           }
         pipeline = PipelineConfig
           { pipelineSeed = 24
-          , pipelineStages = [generateClimateStage climateCfg 0.5]
+          , pipelineStages = [generateClimateStage climateCfg defaultWeatherConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -169,7 +170,7 @@ spec = describe "Climate" $ do
               { bndMotionPrecip = motionPrecipBias } }
         pipeline = PipelineConfig
           { pipelineSeed = 31
-          , pipelineStages = [generateClimateStage climateCfg waterLevel]
+          , pipelineStages = [generateClimateStage climateCfg defaultWeatherConfig waterLevel]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -192,7 +193,7 @@ spec = describe "Climate" $ do
               $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 1 0)) lowPlate world0
         pipeline = PipelineConfig
           { pipelineSeed = 7
-          , pipelineStages = [generateClimateStage defaultClimateConfig 0.5]
+          , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -215,7 +216,7 @@ spec = describe "Climate" $ do
               $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 1 0)) lowPlate world0
         pipeline = PipelineConfig
           { pipelineSeed = 9
-          , pipelineStages = [generateClimateStage defaultClimateConfig 0.5]
+          , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -240,7 +241,7 @@ spec = describe "Climate" $ do
         setupWorld w = setTerrainChunk cid terrain w
         pipeline = PipelineConfig
           { pipelineSeed = 77
-          , pipelineStages = [generateClimateStage defaultClimateConfig 0.5]
+          , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -263,7 +264,7 @@ spec = describe "Climate" $ do
         cid = chunkIdFromCoord (ChunkCoord 0 0)
         pipeline = PipelineConfig
           { pipelineSeed = 88
-          , pipelineStages = [generateClimateStage defaultClimateConfig 0.5]
+          , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -292,7 +293,7 @@ spec = describe "Climate" $ do
               cid = chunkIdFromCoord (ChunkCoord 0 0)
               pipeline = PipelineConfig
                 { pipelineSeed = 99
-                , pipelineStages = [generateClimateStage defaultClimateConfig 0.5]
+                , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
                 , pipelineSnapshots = False
                 }
               env = TopoEnv { teLogger = \_ -> pure () }
@@ -318,7 +319,7 @@ spec = describe "Climate" $ do
         cid = chunkIdFromCoord (ChunkCoord 0 0)
         pipeline = PipelineConfig
           { pipelineSeed = 55
-          , pipelineStages = [generateClimateStage defaultClimateConfig 0.5]
+          , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -363,7 +364,7 @@ spec = describe "Climate" $ do
               cid      = chunkIdFromCoord (ChunkCoord 0 0)
               pipeline = PipelineConfig
                 { pipelineSeed   = 99
-                , pipelineStages = [generateClimateStage climateCfg 0.5]
+                , pipelineStages = [generateClimateStage climateCfg defaultWeatherConfig 0.5]
                 , pipelineSnapshots = False
                 }
               env = TopoEnv { teLogger = \_ -> pure () }
@@ -389,7 +390,7 @@ spec = describe "Climate" $ do
         worldS  = setTerrainChunk cid shallowOcean (emptyWorld config defaultHexGridMeta)
         pipeline = PipelineConfig
           { pipelineSeed   = 42
-          , pipelineStages = [generateClimateStage climateCfg 0.5]
+          , pipelineStages = [generateClimateStage climateCfg defaultWeatherConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -423,7 +424,7 @@ spec = describe "Climate" $ do
                    $ world0
         pipeline = PipelineConfig
           { pipelineSeed   = 55
-          , pipelineStages = [generateClimateStage climateCfg 0.5]
+          , pipelineStages = [generateClimateStage climateCfg defaultWeatherConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -455,7 +456,7 @@ spec = describe "Climate" $ do
               worldEl  = setTerrainChunk cid elevated (emptyWorld config defaultHexGridMeta)
               pipeline = PipelineConfig
                 { pipelineSeed   = 33
-                , pipelineStages = [generateClimateStage climateCfg 0.5]
+                , pipelineStages = [generateClimateStage climateCfg defaultWeatherConfig 0.5]
                 , pipelineSnapshots = False
                 }
               env = TopoEnv { teLogger = \_ -> pure () }
@@ -484,7 +485,7 @@ spec = describe "Climate" $ do
                $ world0
         pipeline = PipelineConfig
           { pipelineSeed   = 42
-          , pipelineStages = [generateClimateStage defaultClimateConfig 0.5]
+          , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -523,7 +524,7 @@ spec = describe "Climate" $ do
                $ world0
         pipeline = PipelineConfig
           { pipelineSeed   = 42
-          , pipelineStages = [generateClimateStage defaultClimateConfig 0.5]
+          , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -565,7 +566,7 @@ spec = describe "Climate" $ do
               w2 = w1 { twVegetation = IntMap.fromList [(vk1, vegChunk), (vk2, vegChunk)] }
               pipeline = PipelineConfig
                 { pipelineSeed   = 100
-                , pipelineStages = [generateClimateStage climateCfg 0.5]
+                , pipelineStages = [generateClimateStage climateCfg defaultWeatherConfig 0.5]
                 , pipelineSnapshots = False
                 }
           in (pipeline, w2)
@@ -595,7 +596,7 @@ spec = describe "Climate" $ do
         cid = chunkIdFromCoord (ChunkCoord 0 0)
         pipeline = PipelineConfig
           { pipelineSeed   = 77
-          , pipelineStages = [generateClimateStage defaultClimateConfig 0.5]
+          , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -619,7 +620,7 @@ spec = describe "Climate" $ do
         world0 = setTerrainChunk cid oceanTerrain (emptyWorld config defaultHexGridMeta)
         pipeline = PipelineConfig
           { pipelineSeed   = 42
-          , pipelineStages = [generateClimateStage defaultClimateConfig 0.5]
+          , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -663,7 +664,7 @@ spec = describe "Climate" $ do
           }
         pipeline = PipelineConfig
           { pipelineSeed = 42
-          , pipelineStages = [generateClimateStage climateCfg 0.5]
+          , pipelineStages = [generateClimateStage climateCfg defaultWeatherConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -705,7 +706,7 @@ spec = describe "Climate" $ do
           }
         pipeline = PipelineConfig
           { pipelineSeed = 42
-          , pipelineStages = [generateClimateStage climateCfg 0.5]
+          , pipelineStages = [generateClimateStage climateCfg defaultWeatherConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }

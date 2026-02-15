@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Glacier and ice dynamics stage.
@@ -8,6 +9,10 @@ module Topo.Glacier
   ) where
 
 import Control.Monad.Except (throwError)
+import GHC.Generics (Generic)
+import Topo.Config.JSON
+  (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
+   genericToJSON, genericParseJSON)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Topo.Math (clamp01, iterateN)
@@ -54,7 +59,14 @@ data GlacierConfig = GlacierConfig
   , gcCarveScale :: !Float
     -- | Scale factor for raising elevation from deposition potential.
   , gcDepositRaiseScale :: !Float
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON GlacierConfig where
+  toJSON = genericToJSON (configOptions "gc")
+
+instance FromJSON GlacierConfig where
+  parseJSON v = genericParseJSON (configOptions "gc")
+                  (mergeDefaults (toJSON defaultGlacierConfig) v)
 
 -- | Default glacier configuration.
 defaultGlacierConfig :: GlacierConfig

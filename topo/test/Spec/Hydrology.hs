@@ -42,7 +42,7 @@ spec = describe "Hydrology" $ do
         world1 = setTerrainChunk (ChunkId 0) moistChunk world0
         pipeline = PipelineConfig
           { pipelineSeed = 2
-          , pipelineStages = [applyRiverStage defaultRiverConfig defaultGroundwaterConfig]
+          , pipelineStages = [applyRiverStage defaultRiverConfig defaultGroundwaterConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -70,7 +70,7 @@ spec = describe "Hydrology" $ do
           }
         pipeline = PipelineConfig
           { pipelineSeed = 4
-          , pipelineStages = [applyRiverStage riverCfg defaultGroundwaterConfig]
+          , pipelineStages = [applyRiverStage riverCfg defaultGroundwaterConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -97,7 +97,7 @@ spec = describe "Hydrology" $ do
               gwCfg = defaultGroundwaterConfig { gwMinBasinSize = minSize }
               pipeline = PipelineConfig
                 { pipelineSeed = 3
-                , pipelineStages = [applyRiverStage defaultRiverConfig gwCfg]
+                , pipelineStages = [applyRiverStage defaultRiverConfig gwCfg 0.5]
                 , pipelineSnapshots = False
                 }
               env = TopoEnv { teLogger = \_ -> pure () }

@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE PatternSynonyms #-}
 
 -- | River topology computation: converts flow-direction and discharge
@@ -20,6 +21,10 @@ module Topo.River
   ) where
 
 import Data.Word (Word8, Word16)
+import GHC.Generics (Generic)
+import Topo.Config.JSON
+  (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
+   genericToJSON, genericParseJSON)
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as UM
 import Control.Monad (forM_, when)
@@ -36,7 +41,14 @@ data RiverTopologyConfig = RiverTopologyConfig
     -- segment counts are set to zero).  This removes 1–3 tile stubs
     -- that look like "rivers to nowhere".
   , rtMinNetworkTiles :: !Int
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON RiverTopologyConfig where
+  toJSON = genericToJSON (configOptions "rt")
+
+instance FromJSON RiverTopologyConfig where
+  parseJSON v = genericParseJSON (configOptions "rt")
+                  (mergeDefaults (toJSON defaultRiverTopologyConfig) v)
 
 -- | Default topology configuration.
 defaultRiverTopologyConfig :: RiverTopologyConfig

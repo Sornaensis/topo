@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE PatternSynonyms #-}
 
 -- | Biome refinement dispatcher.
@@ -18,7 +19,9 @@ module Topo.Biome.Refine
   , refineBiomesChunk
   ) where
 
+import GHC.Generics (Generic)
 import qualified Data.Vector.Unboxed as U
+import Topo.Config.JSON (configOptions, mergeDefaults, ToJSON(..), FromJSON(..), genericToJSON, genericParseJSON, Value)
 import Topo.Biome.Refine.Alpine   (AlpineConfig, defaultAlpineConfig, refineAlpine)
 import Topo.Biome.Refine.Coastal  (CoastalConfig(..), defaultCoastalConfig, refineCoastal)
 import Topo.Biome.Refine.Desert   (DesertConfig(..), defaultDesertConfig, refineDesert)
@@ -36,22 +39,48 @@ import Topo.Biome.Refine.Volcanic (VolcanicConfig, defaultVolcanicConfig, refine
 import Topo.Types
 
 -- | Bundle of all per-family refinement configurations.
+--
+-- Each field corresponds to one biome family's refinement module
+-- under @Topo.Biome.Refine.*@.  Named variants 'aridRefinementConfig'
+-- and 'lushRefinementConfig' shift thresholds for dry and wet worlds.
 data RefinementConfig = RefinementConfig
   { rcOcean      :: !OceanConfig
+    -- ^ Ocean sub-biome refinement (deep, coral, etc.).
   , rcCoastal    :: !CoastalConfig
+    -- ^ Coastal sub-biome refinement (mangrove, dunes, rocky, etc.).
   , rcDesert     :: !DesertConfig
+    -- ^ Desert sub-biome refinement (hot, cold, rocky, sand, salt flat).
   , rcGrassland  :: !GrasslandConfig
+    -- ^ Grassland sub-biome refinement (steppe, prairie, meadow, etc.).
   , rcForest     :: !ForestConfig
+    -- ^ Forest sub-biome refinement (deciduous, coniferous, montane, etc.).
   , rcTundra     :: !TundraConfig
+    -- ^ Tundra sub-biome refinement (arctic, alpine, polar desert).
   , rcRainforest :: !RainforestConfig
+    -- ^ Rainforest sub-biome refinement (tropical, temperate).
   , rcShrubland  :: !ShrublandConfig
+    -- ^ Shrubland sub-biome refinement (Mediterranean, xeric, moorland).
   , rcSavanna    :: !SavannaConfig
+    -- ^ Savanna sub-biome refinement (woodland, tropical, grassland).
   , rcTaiga      :: !TaigaConfig
+    -- ^ Taiga sub-biome refinement (boreal forest, bog).
   , rcSwamp      :: !SwampConfig
+    -- ^ Swamp sub-biome refinement (marsh, bog, fen, floodplain, etc.).
   , rcSnow       :: !SnowConfig
+    -- ^ Snow sub-biome refinement (ice cap, glacier, snowfield).
   , rcAlpine     :: !AlpineConfig
+    -- ^ Alpine sub-biome refinement (scree, meadow, tundra).
   , rcVolcanic   :: !VolcanicConfig
-  } deriving (Eq, Show)
+    -- ^ Volcanic sub-biome refinement (lava field, ash plain).
+  } deriving (Eq, Show, Generic)
+
+-- | Serialise with two-letter @rc@ prefix stripped from field names.
+instance ToJSON RefinementConfig where
+  toJSON = genericToJSON (configOptions "rc")
+
+-- | Deserialise with defaults for any missing field.
+instance FromJSON RefinementConfig where
+  parseJSON v = genericParseJSON (configOptions "rc") (mergeDefaults (toJSON defaultRefinementConfig) v)
 
 -- | Default refinement configuration.
 defaultRefinementConfig :: RefinementConfig
@@ -84,11 +113,12 @@ aridRefinementConfig = defaultRefinementConfig
       { dcHotMinTemp       = 0.60   -- easier to classify as hot desert
       , dcColdMaxTemp      = 0.45   -- wider cold-desert band
       , dcSaltFlatMaxMoist = 0.05   -- more salt flats in mildly moist basins
+      , dcFogDesertMinHumidity = 0.25  -- easier fog-desert detection
       }
   , rcGrassland = (defaultGrasslandConfig)
-      { gcSteppeMaxPrecip      = 0.30  -- steppe eats into grassland range
-      , gcPrairieMinSoilDepth  = 0.70  -- harder to reach prairie
-      , gcPrairieMinMoisture   = 0.40
+      { grcSteppeMaxPrecip      = 0.30  -- steppe eats into grassland range
+      , grcPrairieMinSoilDepth  = 0.70  -- harder to reach prairie
+      , grcPrairieMinMoisture   = 0.40
       }
   , rcShrubland = (defaultShrublandConfig)
       { scXericMaxMoisture       = 0.20  -- wider xeric band
@@ -107,6 +137,7 @@ aridRefinementConfig = defaultRefinementConfig
       , fcCloudForestMinPrecip      = 0.75
       , fcCloudForestMinHumidity    = 0.70  -- cloud forest needs humidity
       , fcTempRainforestMinHumidity = 0.75  -- temperate rainforest needs humidity
+      , fcSeasonalForestMinSeason   = 0.35  -- easier seasonal forest in arid
       }
   , rcRainforest = (defaultRainforestConfig)
       { rfTempRainforestMinPrecip   = 0.80  -- harder to form temperate rainforest
@@ -117,8 +148,8 @@ aridRefinementConfig = defaultRefinementConfig
       , swFloodplainMinDischarge   = 0.50
       }
   , rcCoastal   = (defaultCoastalConfig)
-      { ccDunesMaxMoisture = 0.30  -- more coastal dunes
-      , ccDunesMaxPrecip   = 0.25
+      { cstDunesMaxMoisture = 0.30  -- more coastal dunes
+      , cstDunesMaxPrecip   = 0.25
       }
   }
 
@@ -137,6 +168,7 @@ lushRefinementConfig = defaultRefinementConfig
       , fcCloudForestMinHumidity    = 0.55  -- easier cloud forest
       , fcTempRainforestMinPrecip   = 0.55  -- easier temperate rainforest
       , fcTempRainforestMinHumidity = 0.60  -- easier temperate rainforest
+      , fcSeasonalForestMinSeason   = 0.55  -- harder seasonal forest in lush
       }
   , rcRainforest = (defaultRainforestConfig)
       { rfTropicalMinTemp           = 0.70  -- wider tropical rainforest band
@@ -148,10 +180,10 @@ lushRefinementConfig = defaultRefinementConfig
       , swFenMinGwDischarge        = 0.25  -- easier fen
       }
   , rcGrassland = (defaultGrasslandConfig)
-      { gcSteppeMaxPrecip      = 0.20  -- less steppe (more lush grassland)
-      , gcPrairieMinSoilDepth  = 0.50  -- easier prairie
-      , gcPrairieMinMoisture   = 0.30
-      , gcFloodplainMinDischarge = 0.20  -- easier floodplain grassland
+      { grcSteppeMaxPrecip      = 0.20  -- less steppe (more lush grassland)
+      , grcPrairieMinSoilDepth  = 0.50  -- easier prairie
+      , grcPrairieMinMoisture   = 0.30
+      , grcFloodplainMinDischarge = 0.20  -- easier floodplain grassland
       }
   , rcDesert    = (defaultDesertConfig)
       { dcHotMinTemp       = 0.75   -- harder to classify as hot desert
@@ -164,9 +196,9 @@ lushRefinementConfig = defaultRefinementConfig
       , saWoodlandMinHumidity  = 0.30  -- easier woodland savanna
       }
   , rcCoastal   = (defaultCoastalConfig)
-      { ccMangroveMinTemp    = 0.60  -- wider mangrove band
-      , ccMangroveMinPrecip  = 0.45
-      , ccSaltMarshMinMoist  = 0.50  -- easier salt marsh
+      { cstMangroveMinTemp    = 0.60  -- wider mangrove band
+      , cstMangroveMinPrecip  = 0.45
+      , cstSaltMarshMinMoist  = 0.50  -- easier salt marsh
       }
   }
 
@@ -269,17 +301,17 @@ refineBiomesChunk cfg wl primary tc cc _wc mRiver mGw mVolc mGlac mWb =
               | bid == BiomeLake      = bid  -- lakes pass through (no sub-biomes)
               | bid == BiomeInlandSea = bid  -- inland seas pass through
               | bid == BiomeCoastal   = refineCoastal   (rcCoastal cfg)   t p m h sd dis
-              | bid == BiomeDesert    = refineDesert     (rcDesert cfg)    t m h sd tf
-              | bid == BiomeGrassland = refineGrassland  (rcGrassland cfg) e p sd m dis tRng
-              | bid == BiomeForest    = refineForest     (rcForest cfg)    e t p h hum s tf
+              | bid == BiomeDesert    = refineDesert     (rcDesert cfg)    t m h sd tf hum pSeason
+              | bid == BiomeGrassland = refineGrassland  (rcGrassland cfg) e p sd m dis tRng t
+              | bid == BiomeForest    = refineForest     (rcForest cfg)    e t p h hum s tf pSeason
               | bid == BiomeTundra    = refineTundra     (rcTundra cfg)    e t p tf
               | bid == BiomeRainforest= refineRainforest (rcRainforest cfg) t p
               | bid == BiomeShrubland = refineShrubland  (rcShrubland cfg) t p m f tf pSeason
-              | bid == BiomeSavanna   = refineSavanna    (rcSavanna cfg)   t p f hum
-              | bid == BiomeTaiga     = refineTaiga      (rcTaiga cfg)     t p m tf
+              | bid == BiomeSavanna   = refineSavanna    (rcSavanna cfg)   t p f hum pSeason
+              | bid == BiomeTaiga     = refineTaiga      (rcTaiga cfg)     t p m tf tRng hum
               | bid == BiomeSwamp     = refineSwamp      (rcSwamp cfg)     t m f dis gwd tf
-              | bid == BiomeSnow      = refineSnow       (rcSnow cfg)     t ice snp
-              | bid == BiomeAlpine    = refineAlpine     (rcAlpine cfg)    e t p s rug sd
+              | bid == BiomeSnow      = refineSnow       (rcSnow cfg)     t ice snp s
+              | bid == BiomeAlpine    = refineAlpine     (rcAlpine cfg)    e t p s rug sd hum
               | otherwise             = bid
 
             -- Volcanic overlay (runs last, can override any biome)

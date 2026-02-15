@@ -27,7 +27,7 @@ import Topo.Math (clamp01, clampLat, iterateN, lerp)
 import Topo.Noise (noise2D)
 import Topo.Pipeline (PipelineStage(..))
 import Control.Monad.Except (throwError)
-import Topo.Planet (PlanetConfig(..), WorldSlice(..), hexesPerDegreeLatitude)
+import Topo.Planet (LatitudeMapping(..))
 import Topo.Plugin (logInfo, getWorldP, putWorldP, peSeed, PluginError(..))
 import Topo.TerrainGrid
   ( buildElevationGrid
@@ -37,42 +37,27 @@ import Topo.TerrainGrid
   , validateTerrainGrid
   )
 import Topo.Types
+import Topo.Weather (WeatherConfig(..))
 import Topo.World (TerrainWorld(..))
 import qualified Data.Vector.Unboxed as U
 
 -- | Generate climate chunks using the current terrain and water level.
-generateClimateStage :: ClimateConfig -> Float -> PipelineStage
-generateClimateStage cfg waterLevel = PipelineStage "generateClimate" "generateClimate" $ do
+--
+-- Latitude mapping is read from 'TerrainWorld'.  Seasonality parameters
+-- ('wcSeasonAmplitude', 'wcSeasonalBase', 'wcSeasonalRange') are read
+-- from the 'WeatherConfig' to avoid duplication.
+generateClimateStage :: ClimateConfig -> WeatherConfig -> Float -> PipelineStage
+generateClimateStage cfg wcfg waterLevel = PipelineStage "generateClimate" "generateClimate" $ do
   logInfo "generateClimate: generating climate"
   seed <- asks peSeed
   world <- getWorldP
   let config = twConfig world
       terrain = twTerrain world
-      -- Derive latitude mapping from planet / world-slice / chunk layout.
-      -- Chunks range from -ry to ry, so the center of chunk (0,0) at
-      -- tile Y = cs `div` 2 maps to wsLatCenter.
-      planet = twPlanet world
-      slice  = twSlice world
-      hpd    = hexesPerDegreeLatitude planet
-      degPerTile = 1.0 / max 0.001 hpd
-      cs     = wcChunkSize config
-      latBiasDeg = wsLatCenter slice - fromIntegral (cs `div` 2) * degPerTile
-      radPerTile = degPerTile * (pi / 180.0)
-      latBiasRad = latBiasDeg * (pi / 180.0)
-      cfg' = cfg
-        { ccTemperature = (ccTemperature cfg)
-            { tmpLatitudeScale = radPerTile
-            , tmpLatitudeBias  = latBiasRad
-            , tmpInsolation    = pcInsolation planet
-            }
-        , ccWind = (ccWind cfg)
-            { windBeltScale = radPerTile }
-        -- Scale season amplitude by axial tilt (same scaling as Weather.hs).
-        , ccSeasonality = (ccSeasonality cfg)
-            { scSeasonAmplitude = scSeasonAmplitude (ccSeasonality cfg)
-                                * pcAxialTilt planet / 23.44
-            }
-        }
+      lm     = twLatMapping world
+      -- Tilt-scaled season amplitude
+      seasonAmp = wcSeasonAmplitude wcfg * lmTiltScale lm
+      sBase     = wcSeasonalBase wcfg
+      sRange    = wcSeasonalRange wcfg
   (ChunkCoord minCx minCy, ChunkCoord maxCx maxCy) <-
     case validateTerrainGrid config terrain of
       Left err -> throwError (PluginInvariantError err)
@@ -81,47 +66,22 @@ generateClimateStage cfg waterLevel = PipelineStage "generateClimate" "generateC
       gridW = (maxCx - minCx + 1) * size
       gridH = (maxCy - minCy + 1) * size
       vegMap = twVegetation world
-      (precipGrid, coastalGrid) = buildClimateGrids config seed cfg' waterLevel terrain vegMap (ChunkCoord minCx minCy) gridW gridH
-      climate' = IntMap.mapWithKey (buildClimateChunkWithPrecip config seed cfg' waterLevel vegMap precipGrid coastalGrid (ChunkCoord minCx minCy) gridW) terrain
+      (precipGrid, coastalGrid) = buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx minCy) gridW gridH
+      climate' = IntMap.mapWithKey (buildClimateChunkWithPrecip config seed lm cfg seasonAmp sBase sRange waterLevel vegMap precipGrid coastalGrid (ChunkCoord minCx minCy) gridW) terrain
   putWorldP world { twClimate = climate' }
 
-buildClimateChunk :: WorldConfig -> Word64 -> ClimateConfig -> Float -> IntMap VegetationChunk -> Int -> TerrainChunk -> ClimateChunk
-buildClimateChunk config seed cfg waterLevel vegMap key terrain =
-  let origin = chunkOriginTile config (chunkCoordFromId (ChunkId key))
-      n = chunkTileCount config
-      wnd = ccWind cfg
-      -- Albedo: fall back to reference (no correction) when chunk is absent.
-      albedoRef = tmpAlbedoReference (ccTemperature cfg)
-      albedoVec = case IntMap.lookup key vegMap of
-        Nothing  -> U.replicate n albedoRef
-        Just veg -> vegAlbedo veg
-      temp = U.generate n (tempAt config seed cfg waterLevel origin (tcElevation terrain) (tcPlateBoundary terrain) (tcPlateHeight terrain) (tcPlateVelX terrain) (tcPlateVelY terrain) albedoVec)
-      windDir0 = U.generate n (windDirAt config seed cfg origin)
-      windSpd0 = U.generate n (windSpdAt config seed cfg origin)
-      windDir = diffuseField n (windIterations wnd) (windDiffuse wnd) windDir0
-      windSpd = diffuseField n (windIterations wnd) (windDiffuse wnd) windSpd0
-      precip = moistureTransport config seed cfg waterLevel origin windDir windSpd temp (tcElevation terrain)
-      -- Seasonality fields (Phase 2)
-      tmp = ccTemperature cfg
-      seasonCfg = ccSeasonality cfg
-      amp = scSeasonAmplitude seasonCfg
-      humidityAvg = climateHumidityAvg precip temp n
-      tempRange = climateTempRange config tmp amp origin temp n
-      precipSeason = climatePrecipSeasonality config tmp seasonCfg origin n
-  in ClimateChunk
-      { ccTempAvg = temp
-      , ccPrecipAvg = precip
-      , ccWindDirAvg = windDir
-      , ccWindSpdAvg = windSpd
-      , ccHumidityAvg = humidityAvg
-      , ccTempRange = tempRange
-      , ccPrecipSeasonality = precipSeason
-      }
-
+-- | Build a single chunk's climate data using global precipitation and
+-- coastal proximity grids.  Temperature, wind, and seasonality fields
+-- are computed here; precipitation comes from the pre-computed global
+-- moisture-transport grid.
 buildClimateChunkWithPrecip
   :: WorldConfig
   -> Word64
+  -> LatitudeMapping
   -> ClimateConfig
+  -> Float              -- ^ tilt-scaled season amplitude
+  -> Float              -- ^ seasonal base
+  -> Float              -- ^ seasonal range
   -> Float
   -> IntMap VegetationChunk -- ^ vegetation data for albedo feedback
   -> U.Vector Float   -- ^ global precipitation grid
@@ -131,114 +91,207 @@ buildClimateChunkWithPrecip
   -> Int              -- ^ chunk key
   -> TerrainChunk
   -> ClimateChunk
-buildClimateChunkWithPrecip config seed cfg waterLevel vegMap precipGrid coastalGrid minCoord gridW key terrain =
-  let base = buildClimateChunk config seed cfg waterLevel vegMap key terrain
-      precip = chunkGridSlice config minCoord gridW precipGrid key
-      coastal = chunkGridSlice config minCoord gridW coastalGrid key
-      -- Apply ocean thermal moderation: pull coastal temps toward
-      -- the latitude-dependent SST (Phase 2 fix), not a fixed constant.
+buildClimateChunkWithPrecip config seed lm cfg seasonAmp sBase sRange waterLevel vegMap precipGrid coastalGrid minCoord gridW key terrain =
+  let origin = chunkOriginTile config (chunkCoordFromId (ChunkId key))
+      TileCoord _ox oy = origin
+      n = chunkTileCount config
+      wnd = ccWind cfg
       tmp = ccTemperature cfg
-      temp0 = ccTempAvg base
+
+      -- Albedo: fall back to reference (no correction) when chunk is absent.
+      albedoRef = tmpAlbedoReference tmp
+      albedoVec = case IntMap.lookup key vegMap of
+        Nothing  -> U.replicate n albedoRef
+        Just veg -> vegAlbedo veg
+
+      -- Base temperature (pre-ocean-moderation)
+      temp0 = U.generate n (tempAt config seed lm cfg waterLevel origin (tcElevation terrain) (tcPlateBoundary terrain) (tcPlateHeight terrain) (tcPlateVelX terrain) (tcPlateVelY terrain) albedoVec)
+
+      -- Wind fields
+      windDir0 = U.generate n (windDirAt config seed lm cfg origin)
+      windSpd0 = U.generate n (windSpdAt config seed lm cfg origin)
+      windDir = diffuseField n (windIterations wnd) (windDiffuse wnd) windDir0
+      windSpd = diffuseField n (windIterations wnd) (windDiffuse wnd) windSpd0
+
+      -- Global-grid slices for this chunk
+      precip  = chunkGridSlice config minCoord gridW precipGrid key
+      coastal = chunkGridSlice config minCoord gridW coastalGrid key
+
+      -- Ocean thermal moderation: pull coastal temps toward the
+      -- latitude-dependent SST.
       moderation = tmpOceanModeration tmp
-      n = U.length temp0
-      origin = chunkOriginTile config (chunkCoordFromId (ChunkId key))
-      TileCoord ox oy = origin
-      temp' = U.generate n $ \i ->
+      temp = U.generate n $ \i ->
         let t = temp0 U.! i
             c = coastal U.! i
             TileCoord _lx ly = tileCoordFromIndex config (TileIndex i)
             gy = oy + ly
-            lat = clampLat (fromIntegral gy * tmpLatitudeScale tmp + tmpLatitudeBias tmp)
+            lat = clampLat (fromIntegral gy * lmRadPerTile lm + lmBiasRad lm)
             latF = clamp01 (abs (cos lat) ** tmpOceanLatExponent tmp)
-            -- Moderation target = SST at this latitude + optional offset
             moderateTarget = lerp (tmpOceanPoleSST tmp) (tmpOceanEquatorSST tmp) latF
                            + tmpOceanModerateTemp tmp
             pull = c * moderation * (moderateTarget - t)
         in clamp01 (t + pull)
-      -- Recompute seasonality fields with moderated temp and global precip
+
+      -- Seasonality fields with terrain-aware modulations
       seasonCfg = ccSeasonality cfg
-      amp = scSeasonAmplitude seasonCfg
-      humidityAvg = climateHumidityAvg precip temp' n
-      tempRange = climateTempRange config tmp amp origin temp' n
-  in base { ccPrecipAvg = precip
-          , ccTempAvg = temp'
-          , ccHumidityAvg = humidityAvg
-          , ccTempRange = tempRange
-          }
+      amp       = seasonAmp
+      soilMoist = tcMoisture terrain
+      humidityAvg   = climateHumidityAvg seasonCfg precip temp coastal soilMoist n
+      tempRange     = climateTempRange config lm seasonCfg amp origin temp coastal n
+      precipSeason  = climatePrecipSeasonality config lm seasonCfg sBase sRange origin coastal (tcElevation terrain) windDir n
+
+  in ClimateChunk
+      { ccTempAvg            = temp
+      , ccPrecipAvg          = precip
+      , ccWindDirAvg         = windDir
+      , ccWindSpdAvg         = windSpd
+      , ccHumidityAvg        = humidityAvg
+      , ccTempRange          = tempRange
+      , ccPrecipSeasonality  = precipSeason
+      }
 
 -- ---------------------------------------------------------------------------
 -- Seasonality helper functions (Phase 2)
 -- ---------------------------------------------------------------------------
 
--- | Annual-average relative humidity from precipitation and temperature.
+-- | Annual-average relative humidity from precipitation, temperature,
+-- coastal proximity, and soil moisture.
 --
--- @RH = clamp01(precip / satNorm(temp))@
+-- Base formula: @RH = clamp01(precip / satNorm(temp))@
 --
--- Uses the same saturation-based formula as
--- 'Topo.Weather.weatherHumidityAt' but without noise.
-climateHumidityAvg :: U.Vector Float -> U.Vector Float -> Int -> U.Vector Float
-climateHumidityAvg precip temp n =
-  U.generate n $ \i ->
+-- Phase 2 additions:
+--
+--   * __Coastal boost__: @+ coastalProximity × scHumidityCoastalBoost@
+--     — ocean vapour advection raises humidity for maritime tiles.
+--   * __Soil moisture__: @+ soilMoisture × scHumiditySoilContribution@
+--     — wet soils (from hydrology) contribute humidity independent of
+--     current-cycle precipitation.
+--
+-- Together these break humidity's pure dependence on T×P, giving the
+-- biome classifier a genuine third axis.
+climateHumidityAvg
+  :: SeasonalityConfig
+  -> U.Vector Float    -- ^ precipitation
+  -> U.Vector Float    -- ^ temperature
+  -> U.Vector Float    -- ^ coastal proximity (0 = interior, 1 = ocean)
+  -> U.Vector Float    -- ^ soil moisture (from hydrology tcMoisture)
+  -> Int
+  -> U.Vector Float
+climateHumidityAvg seasonCfg precip temp coastal soilMoist n =
+  let coastBoost = scHumidityCoastalBoost seasonCfg
+      soilContrib = scHumiditySoilContribution seasonCfg
+  in U.generate n $ \i ->
     let t = temp U.! i
         p = precip U.! i
         sat = max 0.001 (satNorm t)
-    in clamp01 (p / sat)
+        baseRH = p / sat
+        c = coastal U.! i
+        s = soilMoist U.! i
+    in clamp01 (baseRH + c * coastBoost + s * soilContrib)
 
--- | Annual temperature range from seasonal amplitude.
+-- | Annual temperature range from seasonal amplitude and coastal proximity.
 --
--- Evaluates the Weather.hs seasonal formula at its extremes:
+-- Base formula:
 -- @tempRange = clamp01(tempAvg + amp × |sin lat|)
 --            - clamp01(tempAvg - amp × |sin lat|)@
+--
+-- Phase 2 addition:
+--
+--   * __Ocean damping__: @tempRange *= 1 - scTempRangeOceanDamping × coastalProximity@
+--     — maritime tiles have moderated annual temperature range (oceanic\n--     thermal inertia), while continental interiors retain full range.
+--     This breaks the pure latitude dependence of continentality.
 climateTempRange
-  :: WorldConfig -> TemperatureConfig -> Float
-  -> TileCoord -> U.Vector Float -> Int -> U.Vector Float
-climateTempRange config tmp amp origin temp n =
+  :: WorldConfig -> LatitudeMapping -> SeasonalityConfig -> Float
+  -> TileCoord -> U.Vector Float -> U.Vector Float -> Int -> U.Vector Float
+climateTempRange config lm seasonCfg amp origin temp coastal n =
   let TileCoord _ox oy = origin
+      damping = scTempRangeOceanDamping seasonCfg
   in U.generate n $ \i ->
     let TileCoord _lx ly = tileCoordFromIndex config (TileIndex i)
         gy = oy + ly
-        latRad = clampLat (fromIntegral gy * tmpLatitudeScale tmp + tmpLatitudeBias tmp)
+        latRad = clampLat (fromIntegral gy * lmRadPerTile lm + lmBiasRad lm)
         latScale = abs (sin latRad)
         t = temp U.! i
         tHigh = clamp01 (t + amp * latScale)
         tLow  = clamp01 (t - amp * latScale)
-    in tHigh - tLow
+        baseRange = tHigh - tLow
+        c = coastal U.! i
+    in clamp01 (baseRange * (1 - damping * c))
 
--- | Precipitation seasonality index.
+-- | Precipitation seasonality index, modulated by terrain.
 --
--- Evaluates the Weather.hs seasonal precipitation factor at its
--- latitude-dependent extremes:
+-- Base formula (latitude-only):
 --
 -- @
 -- rawMax = (|sin lat| + 1) × 0.5
 -- rawMin = (1 - |sin lat|) × 0.5
 -- maxFactor = seasonalBase + rawMax × seasonalRange
 -- minFactor = seasonalBase + rawMin × seasonalRange
--- precipSeasonality = 1 - minFactor / max 0.001 maxFactor
+-- baseSeason = 1 - minFactor / max 0.001 maxFactor
 -- @
+--
+-- Phase 2 terrain modulations:
+--
+--   * __Continentality amplification__:
+--     @baseSeason *= 1 + scSeasonalityContinentalityFactor × (1 - coastalProx)@
+--     — interior tiles have amplified seasonality; coastal tiles stay moderate.
+--
+--   * __Rain-shadow boost__:
+--     @baseSeason += scSeasonalityRainShadowBoost × max 0 (upwindElev - localElev)@
+--     — leeward tiles receive a seasonality boost because orographic rain
+--     falls primarily in the wet season.
 --
 -- Range: 0 (uniform year-round) to ~1 (extreme seasonality).
 climatePrecipSeasonality
-  :: WorldConfig -> TemperatureConfig -> SeasonalityConfig
-  -> TileCoord -> Int -> U.Vector Float
-climatePrecipSeasonality config tmp seasonCfg origin n =
-  let TileCoord _ox oy = origin
-      sBase  = scSeasonalBase seasonCfg
-      sRange = scSeasonalRange seasonCfg
+  :: WorldConfig -> LatitudeMapping -> SeasonalityConfig
+  -> Float              -- ^ seasonal base
+  -> Float              -- ^ seasonal range
+  -> TileCoord
+  -> U.Vector Float    -- ^ coastal proximity
+  -> U.Vector Float    -- ^ elevation
+  -> U.Vector Float    -- ^ wind direction (radians)
+  -> Int
+  -> U.Vector Float
+climatePrecipSeasonality config lm seasonCfg sBase sRange origin coastal elev windDir n =
+  let TileCoord ox oy = origin
+      contFactor = scSeasonalityContinentalityFactor seasonCfg
+      rsFactor = scSeasonalityRainShadowBoost seasonCfg
+      size = case config of WorldConfig cs -> cs
   in U.generate n $ \i ->
     let TileCoord _lx ly = tileCoordFromIndex config (TileIndex i)
+        gx = ox + (i `mod` size)
         gy = oy + ly
-        latRad = clampLat (fromIntegral gy * tmpLatitudeScale tmp + tmpLatitudeBias tmp)
+        latRad = clampLat (fromIntegral gy * lmRadPerTile lm + lmBiasRad lm)
         latScale = abs (sin latRad)
         rawMax = (latScale + 1) * 0.5
         rawMin = (1 - latScale) * 0.5
         maxF = sBase + rawMax * sRange
         minF = sBase + rawMin * sRange
-    in 1 - minF / max 0.001 maxF
+        baseSeason = 1 - minF / max 0.001 maxF
+        -- Continentality: interior tiles amplify seasonality
+        c = coastal U.! i
+        contModulated = baseSeason * (1 + contFactor * (1 - c))
+        -- Rain shadow: sample upwind elevation
+        wdir = windDir U.! i
+        -- Upwind sample offset (1 tile distance)
+        udx = round (cos wdir) :: Int
+        udy = round (sin wdir) :: Int
+        -- Compute upwind tile index within the chunk (clamp to bounds)
+        lx0 = i `mod` size
+        ly0 = i `div` size
+        ux = max 0 (min (size - 1) (lx0 - udx))
+        uy = max 0 (min (size - 1) (ly0 - udy))
+        upIdx = uy * size + ux
+        upElev = elev U.! upIdx
+        localElev = elev U.! i
+        rsBias = rsFactor * max 0 (upElev - localElev)
+        _ = gx  -- suppress unused warning for gx (kept for clarity)
+    in clamp01 (contModulated + rsBias)
 
 tempAt
   :: WorldConfig
   -> Word64
+  -> LatitudeMapping
   -> ClimateConfig
   -> Float
   -> TileCoord
@@ -250,24 +303,25 @@ tempAt
   -> U.Vector Float          -- ^ Per-tile surface albedo (from vegetation)
   -> Int
   -> Float
-tempAt config seed cfg waterLevel origin elev boundaries plateHeight velX velY albedoVec i =
+tempAt config seed lm cfg waterLevel origin elev boundaries plateHeight velX velY albedoVec i =
   let tmp = ccTemperature cfg
       bnd = ccBoundary cfg
       TileCoord lx ly = tileCoordFromIndex config (TileIndex i)
       TileCoord ox oy = origin
       gy = oy + ly
-      lat = clampLat (fromIntegral gy * tmpLatitudeScale tmp + tmpLatitudeBias tmp)
+      lat = clampLat (fromIntegral gy * lmRadPerTile lm + lmBiasRad lm)
       height = elev U.! i
       isOcean = height < waterLevel
+      insol = lmInsolation lm
       -- Ocean tiles: dedicated SST profile (Phase 1 temperature fix).
       -- Land tiles: original latitude curve with lapse rate.
       base
         | isOcean =
             let latF = clamp01 (abs (cos lat) ** tmpOceanLatExponent tmp)
-            in tmpInsolation tmp * lerp (tmpOceanPoleSST tmp) (tmpOceanEquatorSST tmp) latF
+            in insol * lerp (tmpOceanPoleSST tmp) (tmpOceanEquatorSST tmp) latF
         | otherwise =
             let latF = clamp01 (abs (cos lat) ** tmpLatitudeExponent tmp)
-            in tmpInsolation tmp * lerp (tmpPoleTemp tmp) (tmpEquatorTemp tmp) latF
+            in insol * lerp (tmpPoleTemp tmp) (tmpEquatorTemp tmp) latF
       lapse = if isOcean
               then 0
               else (height - waterLevel) * tmpLapseRate tmp
@@ -297,22 +351,22 @@ boundaryTempBiasAt cfg waterLevel boundary height =
         PlateBoundaryNone -> 0
   in bias * land
 
-windDirAt :: WorldConfig -> Word64 -> ClimateConfig -> TileCoord -> Int -> Float
-windDirAt config seed cfg origin i =
+windDirAt :: WorldConfig -> Word64 -> LatitudeMapping -> ClimateConfig -> TileCoord -> Int -> Float
+windDirAt config seed lm cfg origin i =
   let TileCoord lx ly = tileCoordFromIndex config (TileIndex i)
       TileCoord ox oy = origin
-  in windDirAtXY seed cfg (ox + lx) (oy + ly)
+  in windDirAtXY seed lm cfg (ox + lx) (oy + ly)
 
-windSpdAt :: WorldConfig -> Word64 -> ClimateConfig -> TileCoord -> Int -> Float
-windSpdAt config seed cfg origin i =
+windSpdAt :: WorldConfig -> Word64 -> LatitudeMapping -> ClimateConfig -> TileCoord -> Int -> Float
+windSpdAt config seed lm cfg origin i =
   let TileCoord lx ly = tileCoordFromIndex config (TileIndex i)
       TileCoord ox oy = origin
-  in windSpdAtXY seed cfg (ox + lx) (oy + ly)
+  in windSpdAtXY seed lm cfg (ox + lx) (oy + ly)
 
-moistureTransport :: WorldConfig -> Word64 -> ClimateConfig -> Float -> TileCoord -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float
-moistureTransport config seed cfg waterLevel origin windDir windSpd tempVec elev =
+moistureTransport :: WorldConfig -> Word64 -> LatitudeMapping -> ClimateConfig -> Float -> TileCoord -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float
+moistureTransport config seed lm cfg waterLevel origin windDir windSpd tempVec elev =
   let n = U.length elev
-      initial = U.generate n (evapAt config seed cfg waterLevel origin elev tempVec windSpd)
+      initial = U.generate n (evapAt config seed lm cfg waterLevel origin elev tempVec windSpd)
   in iterateN (moistIterations (ccMoisture cfg)) (moistureStep config cfg windDir windSpd elev) initial
 
 -- | Build the global precipitation and coastal proximity grids.
@@ -325,6 +379,7 @@ moistureTransport config seed cfg waterLevel origin windDir windSpd tempVec elev
 buildClimateGrids
   :: WorldConfig
   -> Word64
+  -> LatitudeMapping
   -> ClimateConfig
   -> Float
   -> IntMap TerrainChunk
@@ -332,7 +387,7 @@ buildClimateGrids
   -> ChunkCoord
   -> Int -> Int
   -> (U.Vector Float, U.Vector Float)
-buildClimateGrids config seed cfg waterLevel terrain vegMap (ChunkCoord minCx minCy) gridW gridH =
+buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx minCy) gridW gridH =
   let prc = ccPrecipitation cfg
       wnd = ccWind cfg
       mst = ccMoisture cfg
@@ -341,7 +396,7 @@ buildClimateGrids config seed cfg waterLevel terrain vegMap (ChunkCoord minCx mi
       size = wcChunkSize config
       minTileX = minCx * size
       minTileY = minCy * size
-      insol = tmpInsolation tmp
+      insol = lmInsolation lm
       elev = buildElevationGrid config terrain (ChunkCoord minCx minCy) gridW gridH
       boundaries = buildPlateBoundaryGrid config terrain (ChunkCoord minCx minCy) gridW gridH
       plateHeight = buildPlateHeightGrid config terrain (ChunkCoord minCx minCy) gridW gridH
@@ -365,20 +420,20 @@ buildClimateGrids config seed cfg waterLevel terrain vegMap (ChunkCoord minCx mi
             -- Use vegAlbedo if available, else reference (no correction)
             a = let v = vegAlbedoGrid U.! i
                 in if v == 0 then albedoRef else v
-        in tempAtXY cfg waterLevel gy (elev U.! i)
+        in tempAtXY lm cfg waterLevel gy (elev U.! i)
              (boundaries U.! i) (plateHeight U.! i) (plateVelocity U.! i) a)
       windDir0 = U.generate n (\i ->
         let x = i `mod` gridW
             y = i `div` gridW
             gx = minTileX + x
             gy = minTileY + y
-        in windDirAtXY seed cfg gx gy)
+        in windDirAtXY seed lm cfg gx gy)
       windSpd0 = U.generate n (\i ->
         let x = i `mod` gridW
             y = i `div` gridW
             gx = minTileX + x
             gy = minTileY + y
-        in windSpdAtXY seed cfg gx gy)
+        in windSpdAtXY seed lm cfg gx gy)
       windDir = diffuseFieldGrid gridW gridH (windIterations wnd) (windDiffuse wnd) windDir0
       windSpd = diffuseFieldGrid gridW gridH (windIterations wnd) (windDiffuse wnd) windSpd0
       -- Physics-based initial moisture (Models B + C)
@@ -423,7 +478,7 @@ buildClimateGrids config seed cfg waterLevel terrain vegMap (ChunkCoord minCx mi
       itczBoostGrid = U.generate n (\i ->
         let y = i `div` gridW
             gy = minTileY + y
-            lat = clampLat (fromIntegral gy * tmpLatitudeScale tmp + tmpLatitudeBias tmp)
+            lat = clampLat (fromIntegral gy * lmRadPerTile lm + lmBiasRad lm)
             latDeg = lat * (180.0 / pi)
             w = max 0.001 (moistITCZWidth mst)
             d = latDeg / w
@@ -442,7 +497,7 @@ buildClimateGrids config seed cfg waterLevel terrain vegMap (ChunkCoord minCx mi
             -- to precPolarFloor at the pole (90°).
             y = i `div` gridW
             gy = minTileY + y
-            lat = clampLat (fromIntegral gy * tmpLatitudeScale tmp + tmpLatitudeBias tmp)
+            lat = clampLat (fromIntegral gy * lmRadPerTile lm + lmBiasRad lm)
             latDeg = abs (lat * (180.0 / pi))
             polarLat = max 0.001 (precPolarLatitude prc)
             polarFrac = clamp01 ((latDeg - polarLat) / (90.0 - polarLat))
@@ -517,20 +572,21 @@ buildVegFieldGrid config vegMap accessor (ChunkCoord minCx minCy) gridW gridH =
 -- interactions where we need the thermal structure, not pixel-level detail.
 --
 -- Applies albedo correction (Model H) when albedo is available.
-tempAtXY :: ClimateConfig -> Float -> Int -> Float -> PlateBoundary -> Float -> Float -> Float -> Float
-tempAtXY cfg waterLevel gy height boundary plateHt velocity albedo =
+tempAtXY :: LatitudeMapping -> ClimateConfig -> Float -> Int -> Float -> PlateBoundary -> Float -> Float -> Float -> Float
+tempAtXY lm cfg waterLevel gy height boundary plateHt velocity albedo =
   let tmp = ccTemperature cfg
       bnd = ccBoundary cfg
-      lat = clampLat (fromIntegral gy * tmpLatitudeScale tmp + tmpLatitudeBias tmp)
+      lat = clampLat (fromIntegral gy * lmRadPerTile lm + lmBiasRad lm)
       isOcean = height < waterLevel
+      insol = lmInsolation lm
       -- Ocean: dedicated SST profile.  Land: original latitude curve.
       base
         | isOcean =
             let latF = clamp01 (abs (cos lat) ** tmpOceanLatExponent tmp)
-            in tmpInsolation tmp * lerp (tmpOceanPoleSST tmp) (tmpOceanEquatorSST tmp) latF
+            in insol * lerp (tmpOceanPoleSST tmp) (tmpOceanEquatorSST tmp) latF
         | otherwise =
             let latF = clamp01 (abs (cos lat) ** tmpLatitudeExponent tmp)
-            in tmpInsolation tmp * lerp (tmpPoleTemp tmp) (tmpEquatorTemp tmp) latF
+            in insol * lerp (tmpPoleTemp tmp) (tmpEquatorTemp tmp) latF
       lapse = if isOcean
               then 0
               else (height - waterLevel) * tmpLapseRate tmp
@@ -558,12 +614,11 @@ boundaryTempBiasRaw cfg waterLevel boundary height =
         PlateBoundaryNone       -> 0
   in bias * land
 
-windDirAtXY :: Word64 -> ClimateConfig -> Int -> Int -> Float
-windDirAtXY seed cfg gx gy =
+windDirAtXY :: Word64 -> LatitudeMapping -> ClimateConfig -> Int -> Int -> Float
+windDirAtXY seed lm cfg gx gy =
   let wnd = ccWind cfg
-      tmp = ccTemperature cfg
       noiseDir = noise2D seed (gx + 2000) (gy + 2000) * 6.283185
-      latRad = fromIntegral gy * windBeltScale wnd + tmpLatitudeBias tmp
+      latRad = fromIntegral gy * lmRadPerTile lm + lmBiasRad lm
       belt = sin (latRad * 2 * windBeltHarmonics wnd)
       beltDir = if belt >= 0 then 0 else pi
   in blendAngle noiseDir beltDir (windBeltStrength wnd)
@@ -575,12 +630,11 @@ blendAngle a b t =
       y = lerp (sin a) (sin b) t'
   in atan2 y x
 
-windSpdAtXY :: Word64 -> ClimateConfig -> Int -> Int -> Float
-windSpdAtXY seed cfg gx gy =
+windSpdAtXY :: Word64 -> LatitudeMapping -> ClimateConfig -> Int -> Int -> Float
+windSpdAtXY seed lm cfg gx gy =
   let wnd = ccWind cfg
-      tmp = ccTemperature cfg
       noiseSpd = clamp01 (noise2D seed (gx + 3000) (gy + 3000))
-      latRad = fromIntegral gy * windBeltScale wnd + tmpLatitudeBias tmp
+      latRad = fromIntegral gy * lmRadPerTile lm + lmBiasRad lm
       belt = clamp01 (windBeltBase wnd + windBeltRange wnd * abs (sin (latRad * 2 * windBeltHarmonics wnd)))
       strength = clamp01 (windBeltStrength wnd * windBeltSpeedScale wnd)
   in clamp01 (lerp noiseSpd belt strength)
@@ -591,11 +645,10 @@ windSpdAtXY seed cfg gx gy =
 -- temperature and wind speed.  Used by the grid and per-chunk paths.
 -- For ocean tiles the result is scaled by CC-based saturation; for
 -- land tiles the result is just small noise.
-evapAtXY :: Word64 -> ClimateConfig -> Float -> Int -> Int -> Float -> Float -> Float -> Float
-evapAtXY seed cfg waterLevel gx gy elevation temp windSpdVal =
+evapAtXY :: Word64 -> LatitudeMapping -> ClimateConfig -> Float -> Int -> Int -> Float -> Float -> Float -> Float
+evapAtXY seed lm cfg waterLevel gx gy elevation temp windSpdVal =
   let mst = ccMoisture cfg
-      tmp = ccTemperature cfg
-      insol = tmpInsolation tmp
+      insol = lmInsolation lm
       n0 = noise2D seed (gx + 4000) (gy + 4000)
       noise = n0 * moistEvapNoiseScale mst
   in if elevation < waterLevel
@@ -781,13 +834,12 @@ plateVelocityMagAt vx vy =
   sqrt (vx * vx + vy * vy)
 
 -- | Per-chunk ocean evaporation using Dalton's Law (Model B).
-evapAt :: WorldConfig -> Word64 -> ClimateConfig -> Float -> TileCoord -> U.Vector Float -> U.Vector Float -> U.Vector Float -> Int -> Float
-evapAt config seed cfg waterLevel origin elev tempVec windSpdVec i =
+evapAt :: WorldConfig -> Word64 -> LatitudeMapping -> ClimateConfig -> Float -> TileCoord -> U.Vector Float -> U.Vector Float -> U.Vector Float -> Int -> Float
+evapAt config seed lm cfg waterLevel origin elev tempVec windSpdVec i =
   let mst = ccMoisture cfg
-      tmp = ccTemperature cfg
       TileCoord lx ly = tileCoordFromIndex config (TileIndex i)
       TileCoord ox oy = origin
-      insol = tmpInsolation tmp
+      insol = lmInsolation lm
       n0 = noise2D seed (ox + lx + 4000) (oy + ly + 4000)
       noise = n0 * moistEvapNoiseScale mst
       t = tempVec U.! i

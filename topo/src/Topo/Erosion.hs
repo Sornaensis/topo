@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Erosion stages and helpers.
@@ -9,6 +10,10 @@ module Topo.Erosion
 
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
+import GHC.Generics (Generic)
+import Topo.Config.JSON
+  (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
+   genericToJSON, genericParseJSON)
 import Topo.Math (clamp01, iterateN)
 import Topo.Pipeline (PipelineStage(..))
 import Control.Monad.Except (throwError)
@@ -24,18 +29,39 @@ import Topo.World (TerrainWorld(..))
 import qualified Data.Vector.Unboxed as U
 
 -- | Configuration parameters for erosion.
+--
+-- Controls both hydraulic and thermal erosion applied to the terrain
+-- grid after plate tectonics.
 data ErosionConfig = ErosionConfig
   { ecHydraulicIterations :: !Int
+    -- ^ Number of hydraulic erosion passes.
   , ecThermalIterations :: !Int
+    -- ^ Number of thermal erosion passes.
   , ecRainRate :: !Float
+    -- ^ Rainfall rate per hydraulic iteration (elevation units).
   , ecThermalTalus :: !Float
+    -- ^ Talus angle threshold for thermal erosion (slope).
   , ecMaxDrop :: !Float
+    -- ^ Maximum height drop per hydraulic step (elevation units).
   , ecHydraulicWetFactor :: !Float
+    -- ^ Wet-area amplification of hydraulic erosion [0..1].
   , ecHydraulicHardnessFactor :: !Float
+    -- ^ Hardness resistance to hydraulic erosion [0..1].
+    -- Higher = more resistance.
   , ecThermalStrength :: !Float
+    -- ^ Thermal erosion material transfer rate [0..1].
   , ecThermalHardnessFactor :: !Float
+    -- ^ Hardness resistance to thermal erosion [0..1].
   , ecThermalWetFactor :: !Float
-  } deriving (Eq, Show)
+    -- ^ Wet-area amplification of thermal erosion [0..1].
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON ErosionConfig where
+  toJSON = genericToJSON (configOptions "ec")
+
+instance FromJSON ErosionConfig where
+  parseJSON v = genericParseJSON (configOptions "ec")
+                  (mergeDefaults (toJSON defaultErosionConfig) v)
 
 -- | Default erosion configuration.
 defaultErosionConfig :: ErosionConfig

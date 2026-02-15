@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Hydrology stages for flow routing and moisture.
@@ -29,6 +30,10 @@ import Data.List (sortBy)
 import Data.Ord (comparing)
 import qualified Data.Set as Set
 import Data.Word (Word16, Word32)
+import GHC.Generics (Generic)
+import Topo.Config.JSON
+  (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
+   genericToJSON, genericParseJSON)
 import Topo.Math (clamp01)
 import Topo.Hex (hexNeighborIndices)
 import Topo.Pipeline (PipelineStage(..))
@@ -50,29 +55,60 @@ import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as UM
 
 -- | Hydrology configuration.
+--
+-- Controls flow routing, erosion, moisture derivation, and sediment
+-- transport across the terrain grid.
 data HydroConfig = HydroConfig
   { hcWaterLevel :: !Float
+    -- ^ Global water level [0..1 normalised elevation].
+    -- Tiles at or below this elevation are considered submerged.
   , hcSinkBreachDepth :: !Float
+    -- ^ Maximum depth to breach interior sinks during depression
+    -- filling (elevation units).
   , hcBaseAccumulation :: !Float
+    -- ^ Starting flow accumulation per tile.
   , hcMinAccumulation :: !Float
+    -- ^ Floor for flow accumulation (prevents zero-accumulation tiles).
   , hcStreamPowerMaxErosion :: !Float
+    -- ^ Maximum stream power erosion per step (elevation units).
   , hcStreamPowerScale :: !Float
+    -- ^ Scaling factor for stream power calculation.
   , hcStreamDepositRatio :: !Float
+    -- ^ Fraction of eroded material deposited downstream [0..1].
   , hcRiverCarveMaxDepth :: !Float
+    -- ^ Maximum river channel carving depth (elevation units).
   , hcRiverCarveScale :: !Float
+    -- ^ Scale factor for river carving intensity.
   , hcRiverBankThreshold :: !Float
+    -- ^ Flow accumulation threshold for bank erosion to begin.
   , hcRiverBankDepth :: !Float
+    -- ^ Bank erosion depth (elevation units).
   , hcAlluvialMaxSlope :: !Float
+    -- ^ Maximum slope for alluvial (flat-water) deposits.
   , hcAlluvialDepositScale :: !Float
+    -- ^ Alluvial deposit rate (elevation units per step).
   , hcWetErodeScale :: !Float
+    -- ^ Wet-area diffuse erosion scale.
   , hcCoastalErodeStrength :: !Float
+    -- ^ Coastal erosion strength (elevation units per step).
   , hcCoastalRaiseFactor :: !Float
+    -- ^ Fraction of coastal erosion redeposited as coastal raise [0..1].
   -- | [0..1] scaling of hardness against erosion intensity.
   , hcHardnessErodeWeight :: !Float
   , hcMoistureBaseWeight :: !Float
+    -- ^ Base moisture weight in the moisture blending formula [0..1].
   , hcMoistureFlowWeight :: !Float
+    -- ^ Flow-based moisture weight in the moisture blend [0..1].
   , hcMinMoisture :: !Float
-  } deriving (Eq, Show)
+    -- ^ Minimum moisture floor for all tiles.
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON HydroConfig where
+  toJSON = genericToJSON (configOptions "hc")
+
+instance FromJSON HydroConfig where
+  parseJSON v = genericParseJSON (configOptions "hc")
+                  (mergeDefaults (toJSON defaultHydroConfig) v)
 
 -- | Default hydrology configuration.
 defaultHydroConfig :: HydroConfig
@@ -107,13 +143,6 @@ data RiverConfig = RiverConfig
   , rcDischargeScale :: !Float
   , rcChannelDepthScale :: !Float
   , rcChannelMaxDepth :: !Float
-  -- | Water level threshold.  Tiles at or below this elevation are
-  -- considered submerged and act as flow sinks during river routing.
-  , rcWaterLevel :: !Float
-  -- | Depth by which local land-sinks are breached before flow routing.
-  -- Eliminates spurious terminus points caused by post-hydrology
-  -- depressions.  Same concept as 'hcSinkBreachDepth'.
-  , rcSinkBreachDepth :: !Float
   -- | [0..1] scaling of hardness against channel depth.
   , rcHardnessDepthWeight :: !Float
   -- | [0..1] scaling of hardness against erosion potential.
@@ -125,7 +154,14 @@ data RiverConfig = RiverConfig
   -- | Slope threshold for alluvial deposition.
   , rcDepositMaxSlope :: !Float
   , rcBaseflowScale :: !Float
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON RiverConfig where
+  toJSON = genericToJSON (configOptions "rc")
+
+instance FromJSON RiverConfig where
+  parseJSON v = genericParseJSON (configOptions "rc")
+                  (mergeDefaults (toJSON defaultRiverConfig) v)
 
 -- | Default river routing parameters.
 defaultRiverConfig :: RiverConfig
@@ -136,8 +172,6 @@ defaultRiverConfig = RiverConfig
   , rcDischargeScale = 0.05
   , rcChannelDepthScale = 0.002
   , rcChannelMaxDepth = 0.2
-  , rcWaterLevel = 0.5
-  , rcSinkBreachDepth = 0.02
   , rcHardnessDepthWeight = 0.6
   , rcHardnessErosionWeight = 0.5
   , rcErosionScale = 1
@@ -149,11 +183,23 @@ defaultRiverConfig = RiverConfig
 -- | Groundwater storage and baseflow configuration.
 data GroundwaterConfig = GroundwaterConfig
   { gwRechargeScale :: !Float
+    -- ^ Groundwater recharge rate from surface moisture [0..1].
   , gwStorageScale :: !Float
+    -- ^ Groundwater storage capacity scaling.
   , gwDischargeScale :: !Float
+    -- ^ Groundwater discharge rate back to surface flow.
   , gwPermeability :: !Float
+    -- ^ Soil permeability factor affecting recharge [0..1].
   , gwMinBasinSize :: !Int
-  } deriving (Eq, Show)
+    -- ^ Minimum basin size (tiles) for groundwater calculation.
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON GroundwaterConfig where
+  toJSON = genericToJSON (configOptions "gw")
+
+instance FromJSON GroundwaterConfig where
+  parseJSON v = genericParseJSON (configOptions "gw")
+                  (mergeDefaults (toJSON defaultGroundwaterConfig) v)
 
 -- | Default groundwater parameters.
 defaultGroundwaterConfig :: GroundwaterConfig
@@ -200,8 +246,16 @@ applyHydrologyStage cfg = PipelineStage "applyHydrology" "applyHydrology" $ do
   putWorldP world { twTerrain = terrain'' }
 
 -- | Apply river routing and basin-level groundwater storage.
-applyRiverStage :: RiverConfig -> GroundwaterConfig -> PipelineStage
-applyRiverStage riverCfg gwCfg = PipelineStage "applyRivers" "applyRivers" $ do
+--
+-- The water level parameter is the global sea-level threshold used for
+-- flow sinks during river routing.  It is typically sourced from
+-- 'hcWaterLevel' via the pipeline orchestrator.
+applyRiverStage
+  :: RiverConfig
+  -> GroundwaterConfig
+  -> Float          -- ^ Water level (from 'HydroConfig')
+  -> PipelineStage
+applyRiverStage riverCfg gwCfg waterLevel = PipelineStage "applyRivers" "applyRivers" $ do
   logInfo "applyRivers: routing rivers + groundwater"
   world <- getWorldP
   let config = twConfig world
@@ -216,7 +270,7 @@ applyRiverStage riverCfg gwCfg = PipelineStage "applyRivers" "applyRivers" $ do
       elev0 = buildElevationGrid config terrain (ChunkCoord minCx minCy) gridW gridH
       hardness = buildHardnessGrid config terrain (ChunkCoord minCx minCy) gridW gridH
       moisture = buildMoistureGrid config terrain (ChunkCoord minCx minCy) gridW gridH
-      wl = rcWaterLevel riverCfg
+      wl = waterLevel
       -- Fill depressions for routing so rivers follow connected drainage
       -- paths to the sea (or large lake).  The filled surface is used
       -- ONLY for flow direction and accumulation; all other calculations

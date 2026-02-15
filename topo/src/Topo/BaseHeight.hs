@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveGeneric #-}
+
 -- | Base height sampling configuration and helpers.
 module Topo.BaseHeight
   ( GenConfig(..)
@@ -9,39 +11,90 @@ module Topo.BaseHeight
   ) where
 
 import Data.Word (Word64)
+import GHC.Generics (Generic)
+import Topo.Config.JSON (ToJSON(..), FromJSON(..), configOptions, mergeDefaults, genericToJSON, genericParseJSON, withObject, (.:?), (.!=))
 import Topo.Math (clamp01, smoothstep)
 import Topo.Noise (domainWarp2D, fbm2D, noise2DContinuous, ridgedFbm2D)
 import Topo.Types (TileCoord(..), WorldConfig(..), WorldExtent, defaultWorldExtent, worldExtentRadii)
 
 -- | Configuration for base height sampling.
+--
+-- Controls the noise-based terrain generator that produces the initial
+-- elevation field before tectonics, erosion, and hydrology stages.
 data GenConfig = GenConfig
   { gcScale :: !Float
+    -- ^ Global height multiplier applied to the final sampled value.
   , gcCoordScale :: !Float
+    -- ^ Coordinate scaling factor applied to world-space positions
+    -- before noise evaluation.
   , gcOffsetX :: !Float
+    -- ^ X offset added to world-space coordinates before sampling.
+    -- /Derived/: set by the pipeline from the master seed; default 0.
   , gcOffsetY :: !Float
+    -- ^ Y offset added to world-space coordinates before sampling.
+    -- /Derived/: set by the pipeline from the master seed; default 0.
   , gcFrequency :: !Float
+    -- ^ Base frequency for the FBM noise (cycles per tile).
   , gcOctaves :: !Int
+    -- ^ Number of FBM octaves for terrain detail.
   , gcLacunarity :: !Float
+    -- ^ Frequency multiplier between successive FBM octaves.
   , gcGain :: !Float
+    -- ^ Amplitude decay between successive FBM octaves.
   , gcWarpScale :: !Float
+    -- ^ Frequency of the domain-warp noise (cycles per tile).
   , gcWarpStrength :: !Float
+    -- ^ Displacement strength of the domain warp (in tiles).
   , gcWorldExtent :: !WorldExtent
+    -- ^ Chunk radius extents for the generated world.
+    -- /Derived/: auto-computed from 'PlanetConfig' and 'WorldSlice'
+    -- by the pipeline unless manually overridden.
   , gcContinentScale :: !Float
+    -- ^ Frequency of the continent-level mask noise (cycles per tile).
   , gcLandRatio :: !Float
+    -- ^ Target fraction of land vs ocean [0..1].
   , gcShelfWidth :: !Float
+    -- ^ Width of the continental shelf transition zone [0..1].
   , gcCoastSharpness :: !Float
+    -- ^ Exponent controlling coast edge sharpness; higher = sharper.
   , gcOceanEdgeDepth :: !OceanEdgeDepth
-  , gcSeed  :: !Word64
-  } deriving (Eq, Show)
+    -- ^ Per-edge ocean depth biases at the world boundary.
+    -- /Derived/: auto-computed by 'autoOceanEdgeDepth' when all
+    -- fields are zero.
+  } deriving (Eq, Show, Generic)
 
 -- | Ocean depth bias near world edges.
+--
+-- Forces ocean depth at map boundaries so that slices that do not span
+-- the full planet produce plausible ocean margins.  All values default
+-- to zero (disabled); the pipeline auto-derives them via
+-- 'autoOceanEdgeDepth'.
 data OceanEdgeDepth = OceanEdgeDepth
   { oedNorth :: !Float
+    -- ^ Forced ocean depth at the north edge [0..1]; 0 = no bias.
   , oedSouth :: !Float
+    -- ^ Forced ocean depth at the south edge [0..1]; 0 = no bias.
   , oedEast :: !Float
+    -- ^ Forced ocean depth at the east edge [0..1]; 0 = no bias.
   , oedWest :: !Float
+    -- ^ Forced ocean depth at the west edge [0..1]; 0 = no bias.
   , oedFalloff :: !Float
-  } deriving (Eq, Show)
+    -- ^ Falloff distance in tiles; 0 = disabled.
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON OceanEdgeDepth where
+  toJSON = genericToJSON (configOptions "oed")
+
+instance FromJSON OceanEdgeDepth where
+  parseJSON v = genericParseJSON (configOptions "oed")
+                  (mergeDefaults (toJSON defaultOceanEdgeDepth) v)
+
+instance ToJSON GenConfig where
+  toJSON = genericToJSON (configOptions "gc")
+
+instance FromJSON GenConfig where
+  parseJSON v = genericParseJSON (configOptions "gc")
+                  (mergeDefaults (toJSON defaultGenConfig) v)
 
 -- | Default base height configuration.
 defaultGenConfig :: GenConfig
@@ -62,7 +115,6 @@ defaultGenConfig = GenConfig
   , gcShelfWidth = 0.08
   , gcCoastSharpness = 1.4
   , gcOceanEdgeDepth = defaultOceanEdgeDepth
-  , gcSeed = 0
   }
 
 -- | Default edge-depth bias configuration (disabled).

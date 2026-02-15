@@ -156,6 +156,10 @@ paletteById biomeId =
     -- Water body biomes
     61 -> V4  90 155 210 255 -- lake
     62 -> V4  55 120 170 255 -- inland sea
+    -- Phase 3 sub-biomes
+    63 -> V4  90 140  55 255 -- tropical seasonal forest
+    64 -> V4 200 195 160 255 -- fog desert
+    65 -> V4  50 100  90 255 -- oceanic boreal
     _ -> V4 90 140 90 255
 
 boundaryColor :: Word16 -> V4 Word8

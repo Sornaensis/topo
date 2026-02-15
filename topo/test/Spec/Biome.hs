@@ -52,13 +52,15 @@ spec = describe "Biome" $ do
         let flags = tcFlags chunk
         U.any (/= BiomeDesert) flags `shouldBe` True
 
-  it "assigns ocean and mountain elevation bands" $ do
+  it "assigns ocean and temperature-primary mountain bands" $ do
     let config = WorldConfig { wcChunkSize = 2 }
         world0 = emptyWorld config defaultHexGridMeta
         n = chunkTileCount config
         terrain = (emptyTerrainChunk config) { tcElevation = U.fromList [-0.1, 0.02, 0.8, 0.95] }
+        -- Tile 3 (elev=0.95, hASL=0.85) needs temp < btSnowMaxTemp (0.20)
+        -- to trigger the temperature-primary Snow guard.
         climate = ClimateChunk
-          { ccTempAvg = U.replicate n 0.5
+          { ccTempAvg = U.fromList [0.5, 0.5, 0.5, 0.10]
           , ccPrecipAvg = U.replicate n 0.5
           , ccWindDirAvg = U.replicate n 0
           , ccWindSpdAvg = U.replicate n 0
@@ -168,7 +170,7 @@ spec = describe "Biome" $ do
           Left  _   -> error $ "test setup: unexpected unknown code " ++ show code
 
     let knownCodes :: [Word16]
-        knownCodes = [0..8] ++ [10..60]
+        knownCodes = [0..8] ++ [10..65]
 
     it "returns a non-empty name for every known biome code" $
       mapM_ (\code ->
@@ -212,6 +214,9 @@ spec = describe "Biome" $ do
           0.0           -- relief
           0.5           -- moisture (moderate)
           FormFlat      -- terrain form (no override)
+          0.5           -- humidity (moderate)
+          0.10          -- tempRange (low, below grassland reclassification)
+          0.10          -- precipSeasonality (low, below savanna reclassification)
 
     it "cold steppe at T=0.50, P=0.05 (not desert)" $ do
       let coldSteppe = classify' 0.50 0.05

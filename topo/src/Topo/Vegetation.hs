@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Vegetation bootstrap and biome feedback.
@@ -28,9 +29,13 @@ module Topo.Vegetation
   ) where
 
 import qualified Data.IntMap.Strict as IntMap
+import GHC.Generics (Generic)
+import Topo.Config.JSON
+  (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
+   genericToJSON, genericParseJSON)
 import Topo.Math (clamp01, iterateN)
 import Topo.Pipeline (PipelineStage(..))
-import Topo.Planet (PlanetConfig(..), WorldSlice(..), hexesPerDegreeLatitude)
+import Topo.Planet (PlanetConfig(..), LatitudeMapping(..))
 import Topo.Plugin (logInfo, modifyWorldP)
 import Topo.TerrainGrid (buildElevationGrid, chunkCoordBounds, chunkGridSlice)
 import Topo.Types
@@ -77,7 +82,14 @@ data VegetationBootstrapConfig = VegetationBootstrapConfig
     -- ^ Maximum moisture boost from coastal proximity.  Tiles adjacent
     -- to ocean receive the full boost; it decays inland with diffusion.
     -- Default: @0.20@.
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON VegetationBootstrapConfig where
+  toJSON = genericToJSON (configOptions "vbc")
+
+instance FromJSON VegetationBootstrapConfig where
+  parseJSON v = genericParseJSON (configOptions "vbc")
+                  (mergeDefaults (toJSON defaultVegetationBootstrapConfig) v)
 
 -- | Sensible Earth-like defaults.
 defaultVegetationBootstrapConfig :: VegetationBootstrapConfig
@@ -115,8 +127,7 @@ bootstrapVegetationStage cfg waterLevel =
   logInfo "bootstrapVegetation: estimating cover + albedo"
   modifyWorldP $ \world ->
     let config = twConfig world
-        planet = twPlanet world
-        slice  = twSlice world
+        lm     = twLatMapping world
         terrainMap = twTerrain world
         wbMap      = twWaterBodies world
         -- Compute per-chunk coastal proximity from a global grid
@@ -126,7 +137,7 @@ bootstrapVegetationStage cfg waterLevel =
             let coastalVec = case IntMap.lookup k coastalSlices of
                   Just v  -> v
                   Nothing -> U.replicate (chunkTileCount config) 0
-            in deriveVegetationChunk cfg waterLevel config planet slice
+            in deriveVegetationChunk cfg waterLevel config lm
                  k tc (IntMap.lookup k wbMap) coastalVec)
           terrainMap
     in world { twVegetation = vegMap }
@@ -139,29 +150,24 @@ deriveVegetationChunk
   :: VegetationBootstrapConfig
   -> Float            -- ^ water level
   -> WorldConfig
-  -> PlanetConfig
-  -> WorldSlice
+  -> LatitudeMapping
   -> Int              -- ^ chunk key
   -> TerrainChunk
   -> Maybe WaterBodyChunk
   -> U.Vector Float   -- ^ coastal proximity (0–1) per tile
   -> VegetationChunk
-deriveVegetationChunk cfg wl wc planet slice key tc mbWb coastalVec =
+deriveVegetationChunk cfg wl wc lm key tc mbWb coastalVec =
   let elev      = tcElevation tc
       moisture  = tcMoisture tc
       soilDep   = tcSoilDepth tc
       fert      = tcFertility tc
       n         = U.length elev
 
-      -- Per-tile latitude (degrees).  Each hex is ~13 mi, so latitude
-      -- varies meaningfully across a chunk.
-      hpd     = hexesPerDegreeLatitude planet
       cs      = wcChunkSize wc
       origin  = chunkOriginTile wc (chunkCoordFromId (ChunkId key))
       TileCoord _ox oy = origin
-      centerY = cs `div` 2
 
-      insol     = pcInsolation planet
+      insol     = lmInsolation lm
       tiltExp   = 1.0 :: Float  -- latitude → temperature exponent
 
       cover = U.generate n $ \i ->
@@ -177,8 +183,7 @@ deriveVegetationChunk cfg wl wc planet slice key tc mbWb coastalVec =
             mBoosted = clamp01 (m + cBoost)
             TileCoord _lx ly = tileCoordFromIndex wc (TileIndex i)
             gy = oy + ly
-            latDeg = wsLatCenter slice
-                   + fromIntegral (gy - centerY) / hpd
+            latDeg = fromIntegral gy * lmDegPerTile lm + lmBiasDeg lm
             isWater = case mbWb of
                         Nothing -> h < wl
                         Just wb -> let wt = wbType wb U.! i
@@ -288,7 +293,14 @@ data BiomeFeedbackConfig = BiomeFeedbackConfig
     -- Each iteration re-runs the climate stage with updated vegetation
     -- albedo, then re-classifies biomes and re-derives cover.
     -- Default: @1@.
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON BiomeFeedbackConfig where
+  toJSON = genericToJSON (configOptions "bfc")
+
+instance FromJSON BiomeFeedbackConfig where
+  parseJSON v = genericParseJSON (configOptions "bfc")
+                  (mergeDefaults (toJSON defaultBiomeFeedbackConfig) v)
 
 -- | Sensible default: 85 % biome-derived, 15 % bootstrap; 1 convergence pass.
 defaultBiomeFeedbackConfig :: BiomeFeedbackConfig
@@ -385,12 +397,18 @@ biomeBaseCover bid
     || bid == BiomeCloudForest || bid == BiomeTempRainforest
     || bid == BiomeBorealForest || bid == BiomeFloodplainForest
   = 0.78
+  -- Tropical seasonal / monsoon forest (deciduous canopy, less dense)
+  | bid == BiomeTropicalSeasonalForest
+  = 0.62
   -- Tropical dry forest (seasonal leaf shedding)
   | bid == BiomeTropicalDryForest
   = 0.55
   -- Taiga / boreal
   | bid == BiomeTaiga
   = 0.55
+  -- Oceanic boreal (wet maritime boreal coast)
+  | bid == BiomeOceanicBoreal
+  = 0.65
   -- Wetlands
   | bid == BiomeSwamp || bid == BiomeWetland || bid == BiomeMarsh
     || bid == BiomeFen || bid == BiomeBog || bid == BiomeBorealBog
@@ -429,6 +447,9 @@ biomeBaseCover bid
     || bid == BiomeRockyDesert || bid == BiomeSandDesert
     || bid == BiomeSaltFlat || bid == BiomePolarDesert
   = 0.03
+  -- Fog desert (slightly more cover than barren desert)
+  | bid == BiomeFogDesert
+  = 0.06
   -- Volcanic
   | bid == BiomeLavaField || bid == BiomeVolcanicAshPlain
   = 0.02
@@ -462,12 +483,18 @@ biomeOptimalPrecip bid
     || bid == BiomeCloudForest || bid == BiomeTempRainforest
     || bid == BiomeBorealForest || bid == BiomeFloodplainForest
   = 0.50
+  -- Tropical seasonal forest (adapted to moderate seasonal drought)
+  | bid == BiomeTropicalSeasonalForest
+  = 0.45
   -- Tropical dry forest (adapted to seasonal drought)
   | bid == BiomeTropicalDryForest
   = 0.40
   -- Taiga / boreal
   | bid == BiomeTaiga
   = 0.35
+  -- Oceanic boreal (higher moisture needs)
+  | bid == BiomeOceanicBoreal
+  = 0.45
   -- Wetlands: high moisture requirement
   | bid == BiomeSwamp || bid == BiomeWetland || bid == BiomeMarsh
     || bid == BiomeFen || bid == BiomeBog || bid == BiomeBorealBog
@@ -506,6 +533,9 @@ biomeOptimalPrecip bid
     || bid == BiomeRockyDesert || bid == BiomeSandDesert
     || bid == BiomeSaltFlat || bid == BiomePolarDesert
   = 0.05
+  -- Fog desert (fog moisture sustains slightly more vegetation)
+  | bid == BiomeFogDesert
+  = 0.08
   -- Volcanic
   | bid == BiomeLavaField || bid == BiomeVolcanicAshPlain
   = 0.10

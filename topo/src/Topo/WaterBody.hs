@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Water body analysis – distinguishes ocean-connected water from
@@ -28,6 +29,10 @@ module Topo.WaterBody
   ) where
 
 import Control.Monad (forM_, when)
+import GHC.Generics (Generic)
+import Topo.Config.JSON
+  (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
+   genericToJSON, genericParseJSON)
 import Control.Monad.Except (throwError)
 import Control.Monad.ST (ST, runST)
 import Data.IntMap.Strict (IntMap)
@@ -61,7 +66,14 @@ data WaterBodyConfig = WaterBodyConfig
     -- ^ Minimum tile count for a landlocked basin to survive as a lake.
     -- Basins smaller than this are reclassified as 'WaterDry' (absorbed
     -- into surrounding land).  Default: 4.
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON WaterBodyConfig where
+  toJSON = genericToJSON (configOptions "wbc")
+
+instance FromJSON WaterBodyConfig where
+  parseJSON v = genericParseJSON (configOptions "wbc")
+                  (mergeDefaults (toJSON defaultWaterBodyConfig) v)
 
 -- | Sensible defaults for water body classification.
 defaultWaterBodyConfig :: WaterBodyConfig

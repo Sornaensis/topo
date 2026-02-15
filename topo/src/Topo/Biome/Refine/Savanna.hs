@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE PatternSynonyms #-}
 
 -- | Savanna sub-biome refinement.
@@ -10,6 +11,10 @@ module Topo.Biome.Refine.Savanna
   , refineSavanna
   ) where
 
+import GHC.Generics (Generic)
+import Topo.Config.JSON
+  (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
+   genericToJSON, genericParseJSON)
 import Topo.Types (BiomeId, pattern BiomeSavanna,
                    pattern BiomeWoodlandSavanna,
                    pattern BiomeTropicalSavanna,
@@ -27,7 +32,22 @@ data SavannaConfig = SavannaConfig
   , saGrasslandMaxHumidity :: !Float
   -- ^ Maximum annual humidity for grassland savanna.  Drier
   -- conditions favour grass over trees.  Default: @0.30@.
-  } deriving (Eq, Show)
+  , saWoodlandMinSeason    :: !Float
+  -- ^ Minimum precipitation seasonality for woodland savanna.
+  -- High seasonality with adequate moisture and fertility is the
+  -- defining characteristic of woodland savanna (e.g. Cerrado).
+  -- Default: @0.35@.
+  , saGrasslandMinSeason   :: !Float
+  -- ^ Minimum precipitation seasonality for grassland savanna (dry
+  -- savanna with strong wet/dry contrast).  Default: @0.50@.
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON SavannaConfig where
+  toJSON = genericToJSON (configOptions "sa")
+
+instance FromJSON SavannaConfig where
+  parseJSON v = genericParseJSON (configOptions "sa")
+                  (mergeDefaults (toJSON defaultSavannaConfig) v)
 
 -- | Sensible defaults for savanna refinement.
 defaultSavannaConfig :: SavannaConfig
@@ -38,15 +58,17 @@ defaultSavannaConfig = SavannaConfig
   , saTropicalMinTemp      = 0.75
   , saGrasslandMaxPrecip   = 0.25
   , saGrasslandMaxHumidity = 0.30
+  , saWoodlandMinSeason    = 0.35
+  , saGrasslandMinSeason   = 0.50
   }
 
 -- | Refine a savanna tile into a sub-biome.
 --
--- Decision cascade:
+-- Decision cascade (seasonality is the primary discriminant):
 --
--- 1. Woodland savanna: wet + fertile + humid
+-- 1. Woodland savanna: wet + fertile + humid + seasonal
 -- 2. Tropical savanna: hot
--- 3. Grassland savanna: dry + low humidity
+-- 3. Grassland savanna: dry + low humidity + high seasonality
 -- 4. Fallback: 'BiomeSavanna'
 refineSavanna
   :: SavannaConfig
@@ -54,12 +76,15 @@ refineSavanna
   -> Float          -- ^ precipitation
   -> Float          -- ^ fertility
   -> Float          -- ^ humidity average (annual)
+  -> Float          -- ^ precipitation seasonality (0–1)
   -> BiomeId
-refineSavanna cfg temp precip fertility humidity
+refineSavanna cfg temp precip fertility humidity precipSeason
   | precip >= saWoodlandMinPrecip cfg
     && fertility >= saWoodlandMinFertility cfg
-    && humidity >= saWoodlandMinHumidity cfg     = BiomeWoodlandSavanna
+    && humidity >= saWoodlandMinHumidity cfg
+    && precipSeason >= saWoodlandMinSeason cfg   = BiomeWoodlandSavanna
   | temp >= saTropicalMinTemp cfg               = BiomeTropicalSavanna
   | precip <= saGrasslandMaxPrecip cfg
-    && humidity <= saGrasslandMaxHumidity cfg    = BiomeGrasslandSavanna
+    && humidity <= saGrasslandMaxHumidity cfg
+    && precipSeason >= saGrasslandMinSeason cfg  = BiomeGrasslandSavanna
   | otherwise                                   = BiomeSavanna

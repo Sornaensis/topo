@@ -135,18 +135,18 @@ module UI.Layout
   , configBtCoastalBandMinusRect
   , configBtCoastalBandPlusRect
   , configBtCoastalBandBarRect
-  , configBtSnowElevationMinusRect
-  , configBtSnowElevationPlusRect
-  , configBtSnowElevationBarRect
-  , configBtAlpineElevationMinusRect
-  , configBtAlpineElevationPlusRect
-  , configBtAlpineElevationBarRect
+  , configBtSnowMaxTempMinusRect
+  , configBtSnowMaxTempPlusRect
+  , configBtSnowMaxTempBarRect
+  , configBtAlpineMaxTempMinusRect
+  , configBtAlpineMaxTempPlusRect
+  , configBtAlpineMaxTempBarRect
   , configBtIceCapTempMinusRect
   , configBtIceCapTempPlusRect
   , configBtIceCapTempBarRect
-  , configBtMontaneLowMinusRect
-  , configBtMontaneLowPlusRect
-  , configBtMontaneLowBarRect
+  , configBtMontaneMaxTempMinusRect
+  , configBtMontaneMaxTempPlusRect
+  , configBtMontaneMaxTempBarRect
   , configBtMontanePrecipMinusRect
   , configBtMontanePrecipPlusRect
   , configBtMontanePrecipBarRect
@@ -1079,19 +1079,19 @@ configBtCoastalBandPlusRect = configParamPlusRect 4
 configBtCoastalBandBarRect :: Layout -> Rect
 configBtCoastalBandBarRect = configParamBarRect 4
 
-configBtSnowElevationMinusRect :: Layout -> Rect
-configBtSnowElevationMinusRect = configParamMinusRect 5
-configBtSnowElevationPlusRect :: Layout -> Rect
-configBtSnowElevationPlusRect = configParamPlusRect 5
-configBtSnowElevationBarRect :: Layout -> Rect
-configBtSnowElevationBarRect = configParamBarRect 5
+configBtSnowMaxTempMinusRect :: Layout -> Rect
+configBtSnowMaxTempMinusRect = configParamMinusRect 5
+configBtSnowMaxTempPlusRect :: Layout -> Rect
+configBtSnowMaxTempPlusRect = configParamPlusRect 5
+configBtSnowMaxTempBarRect :: Layout -> Rect
+configBtSnowMaxTempBarRect = configParamBarRect 5
 
-configBtAlpineElevationMinusRect :: Layout -> Rect
-configBtAlpineElevationMinusRect = configParamMinusRect 6
-configBtAlpineElevationPlusRect :: Layout -> Rect
-configBtAlpineElevationPlusRect = configParamPlusRect 6
-configBtAlpineElevationBarRect :: Layout -> Rect
-configBtAlpineElevationBarRect = configParamBarRect 6
+configBtAlpineMaxTempMinusRect :: Layout -> Rect
+configBtAlpineMaxTempMinusRect = configParamMinusRect 6
+configBtAlpineMaxTempPlusRect :: Layout -> Rect
+configBtAlpineMaxTempPlusRect = configParamPlusRect 6
+configBtAlpineMaxTempBarRect :: Layout -> Rect
+configBtAlpineMaxTempBarRect = configParamBarRect 6
 
 configBtIceCapTempMinusRect :: Layout -> Rect
 configBtIceCapTempMinusRect = configParamMinusRect 7
@@ -1100,12 +1100,12 @@ configBtIceCapTempPlusRect = configParamPlusRect 7
 configBtIceCapTempBarRect :: Layout -> Rect
 configBtIceCapTempBarRect = configParamBarRect 7
 
-configBtMontaneLowMinusRect :: Layout -> Rect
-configBtMontaneLowMinusRect = configParamMinusRect 8
-configBtMontaneLowPlusRect :: Layout -> Rect
-configBtMontaneLowPlusRect = configParamPlusRect 8
-configBtMontaneLowBarRect :: Layout -> Rect
-configBtMontaneLowBarRect = configParamBarRect 8
+configBtMontaneMaxTempMinusRect :: Layout -> Rect
+configBtMontaneMaxTempMinusRect = configParamMinusRect 8
+configBtMontaneMaxTempPlusRect :: Layout -> Rect
+configBtMontaneMaxTempPlusRect = configParamPlusRect 8
+configBtMontaneMaxTempBarRect :: Layout -> Rect
+configBtMontaneMaxTempBarRect = configParamBarRect 8
 
 configBtMontanePrecipMinusRect :: Layout -> Rect
 configBtMontanePrecipMinusRect = configParamMinusRect 9

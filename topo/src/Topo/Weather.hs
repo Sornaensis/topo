@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Weather tick configuration and update stage.
@@ -16,13 +17,17 @@ module Topo.Weather
   ) where
 
 import Control.Monad.Reader (asks)
+import GHC.Generics (Generic)
+import Topo.Config.JSON
+  (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
+   genericToJSON, genericParseJSON)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Word (Word64)
 import Topo.Climate.Evaporation (satNorm)
 import Topo.Math (clamp01)
 import Topo.Noise (noise2D)
 import Topo.Pipeline (PipelineStage(..))
-import Topo.Planet (PlanetConfig(..), WorldSlice(..), hexesPerDegreeLatitude)
+import Topo.Planet (PlanetConfig(..), LatitudeMapping(..))
 import Topo.Plugin (logInfo, modifyWorldP, peSeed)
 import Topo.Types
 import Topo.World (TerrainWorld(..))
@@ -91,7 +96,14 @@ data WeatherConfig = WeatherConfig
     -- Higher cloud fraction increases precipitation probability.
     -- Default 0.12.
   , wcCloudPrecipBoost :: !Float
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON WeatherConfig where
+  toJSON = genericToJSON (configOptions "wc")
+
+instance FromJSON WeatherConfig where
+  parseJSON v = genericParseJSON (configOptions "wc")
+                  (mergeDefaults (toJSON defaultWeatherConfig) v)
 
 -- | Default weather configuration.
 defaultWeatherConfig :: WeatherConfig
@@ -139,15 +151,10 @@ tickWeatherStage cfg = PipelineStage "tickWeather" "tickWeather" $ do
   modifyWorldP $ \world ->
     let config = twConfig world
         planet = twPlanet world
-        slice  = twSlice world
-        hpd    = hexesPerDegreeLatitude planet
-        degPerTile = 1.0 / max 0.001 hpd
-        cs     = wcChunkSize config
-        latBiasDeg = wsLatCenter slice - fromIntegral (cs `div` 2) * degPerTile
-        radPerTile = degPerTile * (pi / 180.0)
-        latBiasRad = latBiasDeg * (pi / 180.0)
-        -- Scale season amplitude by axial tilt relative to Earth's 23.44°.
-        tiltScale  = pcAxialTilt planet / 23.44
+        lm     = twLatMapping world
+        radPerTile = lmRadPerTile lm
+        latBiasRad = lmBiasRad lm
+        tiltScale  = lmTiltScale lm
         -- 5.1.3: advance world time
         worldTime' = twWorldTime world + wcTickSeconds cfg
         -- 5.5: dynamic season phase = initial offset + time-derived angle

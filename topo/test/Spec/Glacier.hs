@@ -7,6 +7,7 @@ import qualified Data.Vector.Unboxed as U
 import Topo.Math (clamp01)
 import Topo
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice, WorldSlice(..))
+import Topo.Weather (defaultWeatherConfig)
 
 spec :: Spec
 spec = describe "Glacier" $ do
@@ -119,7 +120,7 @@ spec = describe "Glacier" $ do
         buildPipeline = PipelineConfig
           { pipelineSeed = 42
           , pipelineStages =
-              [ generateClimateStage climateCfg waterLevel
+              [ generateClimateStage climateCfg defaultWeatherConfig waterLevel
               , applyGlacierStage glacierCfg
               ]
           , pipelineSnapshots = False

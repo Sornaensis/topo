@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE PatternSynonyms #-}
 
 -- | Swamp / Wetland sub-biome refinement.
@@ -10,6 +11,10 @@ module Topo.Biome.Refine.Swamp
   , refineSwamp
   ) where
 
+import GHC.Generics (Generic)
+import Topo.Config.JSON
+  (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
+   genericToJSON, genericParseJSON)
 import Topo.Types (BiomeId, TerrainForm,
                    pattern BiomeSwamp, pattern BiomeFloodplainForest,
                    pattern BiomeFen, pattern BiomeBog,
@@ -27,7 +32,14 @@ data SwampConfig = SwampConfig
   , swFloodplainMinDischarge :: !Float  -- ^ default 0.40
   , swFloodplainMinTemp      :: !Float  -- ^ default 0.50
   , swWetlandMaxTemp         :: !Float  -- ^ default 0.55
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON SwampConfig where
+  toJSON = genericToJSON (configOptions "sw")
+
+instance FromJSON SwampConfig where
+  parseJSON v = genericParseJSON (configOptions "sw")
+                  (mergeDefaults (toJSON defaultSwampConfig) v)
 
 -- | Sensible defaults for swamp refinement.
 defaultSwampConfig :: SwampConfig

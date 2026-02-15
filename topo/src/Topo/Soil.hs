@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Early-pipeline soil derivation.
@@ -22,6 +23,10 @@ module Topo.Soil
   ) where
 
 import Data.IntMap.Strict (IntMap)
+import GHC.Generics (Generic)
+import Topo.Config.JSON
+  (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
+   genericToJSON, genericParseJSON)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Word (Word16)
 import Topo.Math (clamp01)
@@ -49,7 +54,14 @@ data SoilConfig = SoilConfig
   , scFertilityDepthWeight :: !Float
     -- ^ Weight of soil depth in the fertility blend.
     -- Default: @0.4@.
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON SoilConfig where
+  toJSON = genericToJSON (configOptions "sc")
+
+instance FromJSON SoilConfig where
+  parseJSON v = genericParseJSON (configOptions "sc")
+                  (mergeDefaults (toJSON defaultSoilConfig) v)
 
 -- | Sensible defaults for soil derivation.
 defaultSoilConfig :: SoilConfig

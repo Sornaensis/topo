@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE PatternSynonyms #-}
 
 -- | Tundra sub-biome refinement.
@@ -10,6 +11,10 @@ module Topo.Biome.Refine.Tundra
   , refineTundra
   ) where
 
+import GHC.Generics (Generic)
+import Topo.Config.JSON
+  (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
+   genericToJSON, genericParseJSON)
 import Topo.Types (BiomeId, TerrainForm,
                    pattern BiomeTundra, pattern BiomePolarDesert,
                    pattern BiomeAlpineTundra, pattern BiomeArcticTundra,
@@ -20,7 +25,14 @@ data TundraConfig = TundraConfig
   { tcArcticMaxTemp        :: !Float  -- ^ default 0.10
   , tcAlpineTundraMinElev  :: !Float  -- ^ default 0.60
   , tcPolarDesertMaxPrecip :: !Float  -- ^ default 0.10
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON TundraConfig where
+  toJSON = genericToJSON (configOptions "tc")
+
+instance FromJSON TundraConfig where
+  parseJSON v = genericParseJSON (configOptions "tc")
+                  (mergeDefaults (toJSON defaultTundraConfig) v)
 
 -- | Sensible defaults for tundra refinement.
 defaultTundraConfig :: TundraConfig

@@ -310,18 +310,18 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
       configBtCoastalBandMinus = configBtCoastalBandMinusRect layout
       configBtCoastalBandPlus = configBtCoastalBandPlusRect layout
       configBtCoastalBandBar = configBtCoastalBandBarRect layout
-      configBtSnowElevationMinus = configBtSnowElevationMinusRect layout
-      configBtSnowElevationPlus = configBtSnowElevationPlusRect layout
-      configBtSnowElevationBar = configBtSnowElevationBarRect layout
-      configBtAlpineElevationMinus = configBtAlpineElevationMinusRect layout
-      configBtAlpineElevationPlus = configBtAlpineElevationPlusRect layout
-      configBtAlpineElevationBar = configBtAlpineElevationBarRect layout
+      configBtSnowMaxTempMinus = configBtSnowMaxTempMinusRect layout
+      configBtSnowMaxTempPlus = configBtSnowMaxTempPlusRect layout
+      configBtSnowMaxTempBar = configBtSnowMaxTempBarRect layout
+      configBtAlpineMaxTempMinus = configBtAlpineMaxTempMinusRect layout
+      configBtAlpineMaxTempPlus = configBtAlpineMaxTempPlusRect layout
+      configBtAlpineMaxTempBar = configBtAlpineMaxTempBarRect layout
       configBtIceCapTempMinus = configBtIceCapTempMinusRect layout
       configBtIceCapTempPlus = configBtIceCapTempPlusRect layout
       configBtIceCapTempBar = configBtIceCapTempBarRect layout
-      configBtMontaneLowMinus = configBtMontaneLowMinusRect layout
-      configBtMontaneLowPlus = configBtMontaneLowPlusRect layout
-      configBtMontaneLowBar = configBtMontaneLowBarRect layout
+      configBtMontaneMaxTempMinus = configBtMontaneMaxTempMinusRect layout
+      configBtMontaneMaxTempPlus = configBtMontaneMaxTempPlusRect layout
+      configBtMontaneMaxTempBar = configBtMontaneMaxTempBarRect layout
       configBtMontanePrecipMinus = configBtMontanePrecipMinusRect layout
       configBtMontanePrecipPlus = configBtMontanePrecipPlusRect layout
       configBtMontanePrecipBar = configBtMontanePrecipBarRect layout
@@ -803,10 +803,10 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
         (configVegTempWeightMinus, configVegTempWeightBar, configVegTempWeightPlus)
         (configVegPrecipWeightMinus, configVegPrecipWeightBar, configVegPrecipWeightPlus)
         (configBtCoastalBandMinus, configBtCoastalBandBar, configBtCoastalBandPlus)
-        (configBtSnowElevationMinus, configBtSnowElevationBar, configBtSnowElevationPlus)
-        (configBtAlpineElevationMinus, configBtAlpineElevationBar, configBtAlpineElevationPlus)
+        (configBtSnowMaxTempMinus, configBtSnowMaxTempBar, configBtSnowMaxTempPlus)
+        (configBtAlpineMaxTempMinus, configBtAlpineMaxTempBar, configBtAlpineMaxTempPlus)
         (configBtIceCapTempMinus, configBtIceCapTempBar, configBtIceCapTempPlus)
-        (configBtMontaneLowMinus, configBtMontaneLowBar, configBtMontaneLowPlus)
+        (configBtMontaneMaxTempMinus, configBtMontaneMaxTempBar, configBtMontaneMaxTempPlus)
         (configBtMontanePrecipMinus, configBtMontanePrecipBar, configBtMontanePrecipPlus)
         (configBtCliffSlopeMinus, configBtCliffSlopeBar, configBtCliffSlopePlus)
         (configBtValleyMoistureMinus, configBtValleyMoistureBar, configBtValleyMoisturePlus)

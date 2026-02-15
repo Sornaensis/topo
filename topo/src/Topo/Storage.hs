@@ -21,6 +21,7 @@ module Topo.Storage
   ) where
 
 import Control.Monad (replicateM)
+import Data.Aeson (Value, decode, encode)
 import Data.Binary.Get (Get, getByteString, getFloatle, getInt32le, getWord32le, getWord64le, runGetOrFail)
 import Data.Binary.Put (Put, putByteString, putFloatle, putInt32le, putWord32le, putWord64le, runPut)
 import qualified Data.ByteString as BS
@@ -71,7 +72,7 @@ import Topo.Metadata
   , metadataCodec
   )
 import Topo.PlateMetadata (PlateHexMeta)
-import Topo.Planet (PlanetConfig(..), WorldSlice(..), defaultPlanetConfig, defaultWorldSlice)
+import Topo.Planet (PlanetConfig(..), WorldSlice(..), defaultPlanetConfig, defaultWorldSlice, mkLatitudeMapping)
 import Topo.Types
 import Topo.World
 
@@ -115,11 +116,11 @@ encodeWorld world =
 
 -- | Encode a full world file including provenance and metadata.
 --
--- Layout (version 9):
+-- Layout (version 14):
 --   magic, version, chunkSize, hexSize, provenance, metadata,
---   planetConfig, worldSlice,
+--   planetConfig, worldSlice, worldTime, genConfig (length-prefixed JSON blob),
 --   terrain chunks, climate chunks, weather chunks, river chunks, groundwater chunks,
---   glacier chunks, volcanism chunks.
+--   glacier chunks, volcanism chunks, waterBody chunks, vegetation chunks.
 encodeWorldWithProvenance :: WorldProvenance -> TerrainWorld -> Either StorageError BS.ByteString
 encodeWorldWithProvenance prov world = do
   let config = twConfig world
@@ -142,6 +143,7 @@ encodeWorldWithProvenance prov world = do
     putPlanetConfig (twPlanet world)
     putWorldSlice (twSlice world)
     putFloatle (twWorldTime world)
+    putGenConfig (twGenConfig world)
     putChunkMapBytes terrain
     putChunkMapBytes climate
     putChunkMapBytes weather
@@ -196,8 +198,10 @@ magic = BS.pack [0x54, 0x4f, 0x50, 0x4f]
 --   * 13: climate chunks include humidity average, temperature range,
 --         and precipitation seasonality.
 --         Files < v13 decode with legacy 4-field climate chunks.
+--   * 14: full WorldGenConfig stored as a length-prefixed JSON blob.
+--         Files < v14 decode with twGenConfig = Nothing.
 fileVersion :: Word32
-fileVersion = 13
+fileVersion = 14
 
 defaultMetadataCodecs :: [MetadataCodec]
 defaultMetadataCodecs =
@@ -263,6 +267,9 @@ getWorldWithProvenance codecs = do
   worldTime <- if version >= 10
     then getFloatle
     else pure 0
+  genConfig <- if version >= 14
+    then getGenConfig
+    else pure Nothing
   let terrainDecoder = if version < 3 then decodeTerrainChunkV2 else decodeTerrainChunk
   terrain <- getChunkMap terrainDecoder config
   climate <- getChunkMap (if version >= 13 then decodeClimateChunk else decodeClimateChunkV1) config
@@ -296,7 +303,9 @@ getWorldWithProvenance codecs = do
         , twConfig = config
         , twPlanet = planet
         , twSlice = slice
+        , twLatMapping = mkLatitudeMapping planet slice config
         , twWorldTime = worldTime
+        , twGenConfig = genConfig
         }
     )
 
@@ -516,6 +525,32 @@ getWorldSlice = do
     , wsLonCenter = lonC
     , wsLonExtent = lonE
     }
+
+-- | Encode the generation config as a length-prefixed JSON blob.
+--
+-- @Nothing@ is stored as a zero-length blob.  @Just cfg@ is encoded
+-- as @word32le(len) ++ jsonBytes@.
+putGenConfig :: Maybe Value -> Put
+putGenConfig Nothing = putWord32le 0
+putGenConfig (Just cfg) = do
+  let jsonBytes = BL.toStrict (encode cfg)
+  putWord32le (fromIntegral (BS.length jsonBytes))
+  putByteString jsonBytes
+
+-- | Decode the generation config from a length-prefixed JSON blob.
+--
+-- A zero-length blob yields 'Nothing'.  A non-zero blob is decoded
+-- via aeson; parse failure falls back to 'Nothing' (forward
+-- compatibility: if a future version adds fields that the current
+-- version's type doesn't know, we still load the world).
+getGenConfig :: Get (Maybe Value)
+getGenConfig = do
+  len <- fromIntegral <$> getWord32le
+  if len == 0
+    then pure Nothing
+    else do
+      jsonBytes <- getByteString len
+      pure (decode (BL.fromStrict jsonBytes))
 
 putHexCoord :: HexCoord -> Put
 putHexCoord coord =

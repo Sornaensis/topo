@@ -17,7 +17,7 @@ import System.FilePath ((</>))
 import Test.Hspec
 
 import Actor.UI (emptyUiState, UiState(..))
-import Seer.Config.Preset.Types (ConfigPreset(..), defaultPreset)
+import Seer.Config.Snapshot.Types (ConfigSnapshot(..), defaultSnapshot)
 import Seer.World.Persist
   ( WorldSaveManifest(..)
   , saveNamedWorld
@@ -99,17 +99,17 @@ worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
           loadResult <- loadNamedWorld testWorldName
           case loadResult of
             Left err -> expectationFailure (Text.unpack err)
-            Right (manifest, preset, loadedWorld) -> do
+            Right (manifest, snapshot, loadedWorld) -> do
               -- Manifest metadata
               wsmName manifest `shouldBe` testWorldName
               wsmSeed manifest `shouldBe` 42
               wsmChunkSize manifest `shouldBe` 64
               wsmChunkCount manifest `shouldBe` 0   -- empty world
 
-              -- Config preset values
-              cpSeed preset `shouldBe` 42
-              cpChunkSize preset `shouldBe` 64
-              cpName preset `shouldBe` testWorldName
+              -- Config snapshot values
+              csSeed snapshot `shouldBe` 42
+              csChunkSize snapshot `shouldBe` 64
+              csName snapshot `shouldBe` testWorldName
 
               -- Terrain data (empty world → empty IntMaps)
               IntMap.size (twTerrain loadedWorld) `shouldBe` 0

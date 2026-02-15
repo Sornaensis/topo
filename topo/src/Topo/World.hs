@@ -57,7 +57,8 @@ import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Topo.Hex (HexGridMeta)
 import Topo.Metadata (Metadata, MetadataMigration, MetadataStore, emptyMetadataStore, getHexMeta, getRegionMeta, migrateMetadataStore, putHexMeta, putRegionMeta)
-import Topo.Planet (PlanetConfig, WorldSlice, defaultPlanetConfig, defaultWorldSlice)
+import Data.Aeson (Value)
+import Topo.Planet (LatitudeMapping, PlanetConfig, WorldSlice, defaultPlanetConfig, defaultWorldSlice, mkLatitudeMapping)
 import Topo.Types
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as UM
@@ -85,10 +86,22 @@ data TerrainWorld = TerrainWorld
   , twConfig  :: !WorldConfig
   , twPlanet  :: !PlanetConfig
   , twSlice   :: !WorldSlice
+  -- | Pre-computed latitude mapping derived from planet, slice, and
+  -- world configuration.  Computed once at world creation; used by
+  -- every pipeline stage that needs tile-Y → latitude conversion.
+  , twLatMapping :: !LatitudeMapping
   -- | Elapsed simulation time in weather ticks.  Incremented by
   -- 'tickWeatherStage' each call; used for time-varying weather noise
   -- and seasonal phase computation.
   , twWorldTime :: !Float
+  -- | The generation config used to produce this world, stored as a
+  -- raw JSON 'Value'.  Persisted in the @.topo@ binary (version ≥ 14)
+  -- as a length-prefixed JSON blob.  'Nothing' for worlds loaded from
+  -- older file versions or constructed without a generation config.
+  --
+  -- Consumers that need a typed 'Topo.WorldGen.WorldGenConfig' should
+  -- decode this value via @Data.Aeson.fromJSON@.
+  , twGenConfig :: !(Maybe Value)
   }
 
 emptyWorld :: WorldConfig -> HexGridMeta -> TerrainWorld
@@ -111,7 +124,9 @@ emptyWorldWithPlanet config hexMeta planet slice = TerrainWorld
   , twConfig = config
   , twPlanet = planet
   , twSlice = slice
+  , twLatMapping = mkLatitudeMapping planet slice config
   , twWorldTime = 0
+  , twGenConfig = Nothing
   }
 
 emptyTerrainChunk :: WorldConfig -> TerrainChunk

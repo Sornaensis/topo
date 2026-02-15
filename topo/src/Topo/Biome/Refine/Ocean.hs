@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE PatternSynonyms #-}
 
 -- | Ocean sub-biome refinement.
@@ -11,6 +12,10 @@ module Topo.Biome.Refine.Ocean
   , refineOcean
   ) where
 
+import GHC.Generics (Generic)
+import Topo.Config.JSON
+  (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
+   genericToJSON, genericParseJSON)
 import Topo.Types (BiomeId, WaterBodyType,
                    pattern BiomeOcean, pattern BiomeDeepOcean,
                    pattern BiomeShallowSea, pattern BiomeCoralReef,
@@ -30,7 +35,14 @@ data OceanConfig = OceanConfig
   , ocCoralMinHardness  :: !Float
     -- ^ Minimum substrate hardness for coral reef attachment
     -- (default 0.35).
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON OceanConfig where
+  toJSON = genericToJSON (configOptions "oc")
+
+instance FromJSON OceanConfig where
+  parseJSON v = genericParseJSON (configOptions "oc")
+                  (mergeDefaults (toJSON defaultOceanConfig) v)
 
 -- | Sensible defaults for ocean refinement.
 --

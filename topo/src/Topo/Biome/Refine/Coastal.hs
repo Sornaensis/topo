@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE PatternSynonyms #-}
 
 -- | Coastal sub-biome refinement.
@@ -10,6 +11,10 @@ module Topo.Biome.Refine.Coastal
   , refineCoastal
   ) where
 
+import GHC.Generics (Generic)
+import Topo.Config.JSON
+  (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
+   genericToJSON, genericParseJSON)
 import Topo.Types (BiomeId, pattern BiomeCoastal, pattern BiomeMangrove,
                    pattern BiomeEstuary, pattern BiomeSaltMarsh,
                    pattern BiomeRockyShore, pattern BiomeCoastalDunes,
@@ -17,33 +22,40 @@ import Topo.Types (BiomeId, pattern BiomeCoastal, pattern BiomeMangrove,
 
 -- | Configuration for coastal sub-biome classification.
 data CoastalConfig = CoastalConfig
-  { ccMangroveMinTemp     :: !Float  -- ^ default 0.65
-  , ccMangroveMinPrecip   :: !Float  -- ^ default 0.50
-  , ccSaltMarshMaxTemp    :: !Float  -- ^ default 0.55
-  , ccSaltMarshMinMoist   :: !Float  -- ^ default 0.55
-  , ccDunesMaxMoisture    :: !Float  -- ^ default 0.25
-  , ccDunesMaxPrecip      :: !Float  -- ^ default 0.20
-  , ccEstuaryMinDischarge :: !Float  -- ^ default 0.30
-  , ccRockyMinHardness    :: !Float  -- ^ default 0.60
-  , ccRockyMaxSoilDepth   :: !Float  -- ^ default 0.15
-  , ccScrubMaxPrecip      :: !Float  -- ^ default 0.40
-  , ccScrubMinTemp        :: !Float  -- ^ default 0.40
-  } deriving (Eq, Show)
+  { cstMangroveMinTemp     :: !Float  -- ^ default 0.65
+  , cstMangroveMinPrecip   :: !Float  -- ^ default 0.50
+  , cstSaltMarshMaxTemp    :: !Float  -- ^ default 0.55
+  , cstSaltMarshMinMoist   :: !Float  -- ^ default 0.55
+  , cstDunesMaxMoisture    :: !Float  -- ^ default 0.25
+  , cstDunesMaxPrecip      :: !Float  -- ^ default 0.20
+  , cstEstuaryMinDischarge :: !Float  -- ^ default 0.30
+  , cstRockyMinHardness    :: !Float  -- ^ default 0.60
+  , cstRockyMaxSoilDepth   :: !Float  -- ^ default 0.15
+  , cstScrubMaxPrecip      :: !Float  -- ^ default 0.40
+  , cstScrubMinTemp        :: !Float  -- ^ default 0.40
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON CoastalConfig where
+  toJSON = genericToJSON (configOptions "cst")
+
+instance FromJSON CoastalConfig where
+  parseJSON v = genericParseJSON (configOptions "cst")
+                  (mergeDefaults (toJSON defaultCoastalConfig) v)
 
 -- | Sensible defaults for coastal refinement.
 defaultCoastalConfig :: CoastalConfig
 defaultCoastalConfig = CoastalConfig
-  { ccMangroveMinTemp     = 0.65
-  , ccMangroveMinPrecip   = 0.50
-  , ccSaltMarshMaxTemp    = 0.55
-  , ccSaltMarshMinMoist   = 0.55
-  , ccDunesMaxMoisture    = 0.25
-  , ccDunesMaxPrecip      = 0.20
-  , ccEstuaryMinDischarge = 0.30
-  , ccRockyMinHardness    = 0.60
-  , ccRockyMaxSoilDepth   = 0.15
-  , ccScrubMaxPrecip      = 0.40
-  , ccScrubMinTemp        = 0.40
+  { cstMangroveMinTemp     = 0.65
+  , cstMangroveMinPrecip   = 0.50
+  , cstSaltMarshMaxTemp    = 0.55
+  , cstSaltMarshMinMoist   = 0.55
+  , cstDunesMaxMoisture    = 0.25
+  , cstDunesMaxPrecip      = 0.20
+  , cstEstuaryMinDischarge = 0.30
+  , cstRockyMinHardness    = 0.60
+  , cstRockyMaxSoilDepth   = 0.15
+  , cstScrubMaxPrecip      = 0.40
+  , cstScrubMinTemp        = 0.40
   }
 
 -- | Refine a coastal tile into a sub-biome.
@@ -62,15 +74,15 @@ refineCoastal
   -> Float -> Float -> Float -> Float -> Float -> Float
   -> BiomeId
 refineCoastal cfg temp precip moisture hardness soilDepth discharge
-  | temp >= ccMangroveMinTemp cfg
-    && precip >= ccMangroveMinPrecip cfg        = BiomeMangrove
-  | discharge >= ccEstuaryMinDischarge cfg      = BiomeEstuary
-  | temp <= ccSaltMarshMaxTemp cfg
-    && moisture >= ccSaltMarshMinMoist cfg       = BiomeSaltMarsh
-  | hardness >= ccRockyMinHardness cfg
-    && soilDepth <= ccRockyMaxSoilDepth cfg      = BiomeRockyShore
-  | moisture <= ccDunesMaxMoisture cfg
-    && precip <= ccDunesMaxPrecip cfg            = BiomeCoastalDunes
-  | temp >= ccScrubMinTemp cfg
-    && precip <= ccScrubMaxPrecip cfg            = BiomeCoastalScrub
+  | temp >= cstMangroveMinTemp cfg
+    && precip >= cstMangroveMinPrecip cfg        = BiomeMangrove
+  | discharge >= cstEstuaryMinDischarge cfg      = BiomeEstuary
+  | temp <= cstSaltMarshMaxTemp cfg
+    && moisture >= cstSaltMarshMinMoist cfg       = BiomeSaltMarsh
+  | hardness >= cstRockyMinHardness cfg
+    && soilDepth <= cstRockyMaxSoilDepth cfg      = BiomeRockyShore
+  | moisture <= cstDunesMaxMoisture cfg
+    && precip <= cstDunesMaxPrecip cfg            = BiomeCoastalDunes
+  | temp >= cstScrubMinTemp cfg
+    && precip <= cstScrubMaxPrecip cfg            = BiomeCoastalScrub
   | otherwise                                   = BiomeCoastal

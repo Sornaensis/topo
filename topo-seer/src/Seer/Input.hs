@@ -189,10 +189,10 @@ import Actor.UI
   , setUiVegTempWeight
   , setUiVegPrecipWeight
   , setUiBtCoastalBand
-  , setUiBtSnowElevation
-  , setUiBtAlpineElevation
+  , setUiBtSnowMaxTemp
+  , setUiBtAlpineMaxTemp
   , setUiBtIceCapTemp
-  , setUiBtMontaneLow
+  , setUiBtMontaneMaxTemp
   , setUiBtMontanePrecip
   , setUiBtCliffSlope
   , setUiBtValleyMoisture
@@ -249,7 +249,7 @@ import qualified SDL
 import qualified SDL.Raw.Types as Raw
 import System.FilePath ((</>))
 import Seer.Draw (seedMaxDigits)
-import Seer.Config.Preset (listPresets, loadPreset, presetDir, presetFromUi, savePreset, applyPresetToUi)
+import Seer.Config.Snapshot (listSnapshots, loadSnapshot, snapshotDir, snapshotFromUi, saveSnapshot, applySnapshotToUi)
 import Seer.World.Persist (listWorlds, saveNamedWorld, loadNamedWorld, snapshotToWorld)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Seer.Input.ConfigScroll
@@ -546,9 +546,9 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
         -- onConfirm
         (do uiSnap' <- getUiSnapshot uiHandle
             let name = uiPresetInput uiSnap'
-            dir <- presetDir
+            dir <- snapshotDir
             let path = dir </> Text.unpack name <> ".json"
-            _result <- savePreset path (presetFromUi uiSnap' name)
+            _result <- saveSnapshot path (snapshotFromUi uiSnap' name)
             setUiMenuMode uiHandle MenuNone
             SDL.stopTextInput)
         -- onCancel
@@ -567,11 +567,11 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
                 sel = uiPresetSelected uiSnap
             when (sel >= 0 && sel < length names) $ do
               let name = names !! sel
-              dir <- presetDir
+              dir <- snapshotDir
               let path = dir </> Text.unpack name <> ".json"
-              result <- loadPreset path
+              result <- loadSnapshot path
               case result of
-                Right cp -> applyPresetToUi cp uiHandle
+                Right cp -> applySnapshotToUi cp uiHandle
                 Left _err -> pure ()
             setUiMenuMode uiHandle MenuNone)
         -- onCancel
@@ -590,7 +590,7 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
               let world = snapshotToWorld terrainSnap
               _result <- saveNamedWorld name uiSnap' world
               setUiWorldName uiHandle name
-              setUiWorldConfig uiHandle (Just (presetFromUi uiSnap' name))
+              setUiWorldConfig uiHandle (Just (snapshotFromUi uiSnap' name))
             setUiMenuMode uiHandle MenuNone
             SDL.stopTextInput)
         -- onCancel
@@ -612,12 +612,12 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
                   name = wsmName manifest
               result <- loadNamedWorld name
               case result of
-                Right (_manifest, preset, world) -> do
+                Right (_manifest, snapshot, world) -> do
                   replaceTerrainData dataHandle world
                   requestDataSnapshot dataHandle (replyTo @DataSnapshotReply snapshotReceiverHandle)
-                  applyPresetToUi preset uiHandle
+                  applySnapshotToUi snapshot uiHandle
                   setUiWorldName uiHandle name
-                  setUiWorldConfig uiHandle (Just preset)
+                  setUiWorldConfig uiHandle (Just snapshot)
                   submitUiAction uiActionsHandle (actionRequest (UiActionRebuildAtlas (uiViewMode uiSnap)))
                 Left _err -> pure ()
             setUiMenuMode uiHandle MenuNone)
@@ -851,14 +851,14 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           WidgetConfigVegPrecipWeightPlus -> True
           WidgetConfigBtCoastalBandMinus -> True
           WidgetConfigBtCoastalBandPlus -> True
-          WidgetConfigBtSnowElevationMinus -> True
-          WidgetConfigBtSnowElevationPlus -> True
-          WidgetConfigBtAlpineElevationMinus -> True
-          WidgetConfigBtAlpineElevationPlus -> True
+          WidgetConfigBtSnowMaxTempMinus -> True
+          WidgetConfigBtSnowMaxTempPlus -> True
+          WidgetConfigBtAlpineMaxTempMinus -> True
+          WidgetConfigBtAlpineMaxTempPlus -> True
           WidgetConfigBtIceCapTempMinus -> True
           WidgetConfigBtIceCapTempPlus -> True
-          WidgetConfigBtMontaneLowMinus -> True
-          WidgetConfigBtMontaneLowPlus -> True
+          WidgetConfigBtMontaneMaxTempMinus -> True
+          WidgetConfigBtMontaneMaxTempPlus -> True
           WidgetConfigBtMontanePrecipMinus -> True
           WidgetConfigBtMontanePrecipPlus -> True
           WidgetConfigBtCliffSlopeMinus -> True
@@ -1243,14 +1243,14 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           WidgetConfigVegPrecipWeightPlus -> tab == ConfigBiome
           WidgetConfigBtCoastalBandMinus -> tab == ConfigBiome
           WidgetConfigBtCoastalBandPlus -> tab == ConfigBiome
-          WidgetConfigBtSnowElevationMinus -> tab == ConfigBiome
-          WidgetConfigBtSnowElevationPlus -> tab == ConfigBiome
-          WidgetConfigBtAlpineElevationMinus -> tab == ConfigBiome
-          WidgetConfigBtAlpineElevationPlus -> tab == ConfigBiome
+          WidgetConfigBtSnowMaxTempMinus -> tab == ConfigBiome
+          WidgetConfigBtSnowMaxTempPlus -> tab == ConfigBiome
+          WidgetConfigBtAlpineMaxTempMinus -> tab == ConfigBiome
+          WidgetConfigBtAlpineMaxTempPlus -> tab == ConfigBiome
           WidgetConfigBtIceCapTempMinus -> tab == ConfigBiome
           WidgetConfigBtIceCapTempPlus -> tab == ConfigBiome
-          WidgetConfigBtMontaneLowMinus -> tab == ConfigBiome
-          WidgetConfigBtMontaneLowPlus -> tab == ConfigBiome
+          WidgetConfigBtMontaneMaxTempMinus -> tab == ConfigBiome
+          WidgetConfigBtMontaneMaxTempPlus -> tab == ConfigBiome
           WidgetConfigBtMontanePrecipMinus -> tab == ConfigBiome
           WidgetConfigBtMontanePrecipPlus -> tab == ConfigBiome
           WidgetConfigBtCliffSlopeMinus -> tab == ConfigBiome
@@ -1847,14 +1847,14 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           ; Just WidgetConfigVegPrecipWeightPlus -> whenConfigVisible (bumpVegPrecipWeight 0.05)
           ; Just WidgetConfigBtCoastalBandMinus -> whenConfigVisible (bumpBtCoastalBand (-0.05))
           ; Just WidgetConfigBtCoastalBandPlus -> whenConfigVisible (bumpBtCoastalBand 0.05)
-          ; Just WidgetConfigBtSnowElevationMinus -> whenConfigVisible (bumpBtSnowElevation (-0.05))
-          ; Just WidgetConfigBtSnowElevationPlus -> whenConfigVisible (bumpBtSnowElevation 0.05)
-          ; Just WidgetConfigBtAlpineElevationMinus -> whenConfigVisible (bumpBtAlpineElevation (-0.05))
-          ; Just WidgetConfigBtAlpineElevationPlus -> whenConfigVisible (bumpBtAlpineElevation 0.05)
+          ; Just WidgetConfigBtSnowMaxTempMinus -> whenConfigVisible (bumpBtSnowMaxTemp (-0.05))
+          ; Just WidgetConfigBtSnowMaxTempPlus -> whenConfigVisible (bumpBtSnowMaxTemp 0.05)
+          ; Just WidgetConfigBtAlpineMaxTempMinus -> whenConfigVisible (bumpBtAlpineMaxTemp (-0.05))
+          ; Just WidgetConfigBtAlpineMaxTempPlus -> whenConfigVisible (bumpBtAlpineMaxTemp 0.05)
           ; Just WidgetConfigBtIceCapTempMinus -> whenConfigVisible (bumpBtIceCapTemp (-0.05))
           ; Just WidgetConfigBtIceCapTempPlus -> whenConfigVisible (bumpBtIceCapTemp 0.05)
-          ; Just WidgetConfigBtMontaneLowMinus -> whenConfigVisible (bumpBtMontaneLow (-0.05))
-          ; Just WidgetConfigBtMontaneLowPlus -> whenConfigVisible (bumpBtMontaneLow 0.05)
+          ; Just WidgetConfigBtMontaneMaxTempMinus -> whenConfigVisible (bumpBtMontaneMaxTemp (-0.05))
+          ; Just WidgetConfigBtMontaneMaxTempPlus -> whenConfigVisible (bumpBtMontaneMaxTemp 0.05)
           ; Just WidgetConfigBtMontanePrecipMinus -> whenConfigVisible (bumpBtMontanePrecip (-0.05))
           ; Just WidgetConfigBtMontanePrecipPlus -> whenConfigVisible (bumpBtMontanePrecip 0.05)
           ; Just WidgetConfigBtCliffSlopeMinus -> whenConfigVisible (bumpBtCliffSlope (-0.05))
@@ -1970,7 +1970,7 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
       SDL.startTextInput rawRect
 
     openPresetLoadDialog = do
-      names <- listPresets
+      names <- listSnapshots
       setUiPresetList uiHandle names
       setUiPresetSelected uiHandle 0
       setUiMenuMode uiHandle MenuPresetLoad
@@ -1981,9 +1981,9 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
 
     confirmPresetSave uiSnap = do
       let name = uiPresetInput uiSnap
-      dir <- presetDir
+      dir <- snapshotDir
       let path = dir </> Text.unpack name <> ".json"
-      _result <- savePreset path (presetFromUi uiSnap name)
+      _result <- saveSnapshot path (snapshotFromUi uiSnap name)
       setUiMenuMode uiHandle MenuNone
       SDL.stopTextInput
 
@@ -1992,11 +1992,11 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           sel = uiPresetSelected uiSnap
       when (sel >= 0 && sel < length names) $ do
         let name = names !! sel
-        dir <- presetDir
+        dir <- snapshotDir
         let path = dir </> Text.unpack name <> ".json"
-        result <- loadPreset path
+        result <- loadSnapshot path
         case result of
-          Right cp -> applyPresetToUi cp uiHandle
+          Right cp -> applySnapshotToUi cp uiHandle
           Left _err -> pure ()
       setUiMenuMode uiHandle MenuNone
 
@@ -2044,7 +2044,7 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
         let world = snapshotToWorld terrainSnap
         _result <- saveNamedWorld name uiSnap world
         setUiWorldName uiHandle name
-        setUiWorldConfig uiHandle (Just (presetFromUi uiSnap name))
+        setUiWorldConfig uiHandle (Just (snapshotFromUi uiSnap name))
       setUiMenuMode uiHandle MenuNone
       SDL.stopTextInput
 
@@ -2056,12 +2056,12 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
             name = wsmName manifest
         result <- loadNamedWorld name
         case result of
-          Right (_manifest, preset, world) -> do
+          Right (_manifest, snapshot, world) -> do
             replaceTerrainData dataHandle world
             requestDataSnapshot dataHandle (replyTo @DataSnapshotReply snapshotReceiverHandle)
-            applyPresetToUi preset uiHandle
+            applySnapshotToUi snapshot uiHandle
             setUiWorldName uiHandle name
-            setUiWorldConfig uiHandle (Just preset)
+            setUiWorldConfig uiHandle (Just snapshot)
             submit (UiActionRebuildAtlas (uiViewMode uiSnap))
           Left _err -> pure ()
       setUiMenuMode uiHandle MenuNone
@@ -2518,18 +2518,18 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
     bumpBtCoastalBand delta = do
       uiSnap <- getUiSnapshot uiHandle
       setUiBtCoastalBand uiHandle (uiBtCoastalBand uiSnap + delta)
-    bumpBtSnowElevation delta = do
+    bumpBtSnowMaxTemp delta = do
       uiSnap <- getUiSnapshot uiHandle
-      setUiBtSnowElevation uiHandle (uiBtSnowElevation uiSnap + delta)
-    bumpBtAlpineElevation delta = do
+      setUiBtSnowMaxTemp uiHandle (uiBtSnowMaxTemp uiSnap + delta)
+    bumpBtAlpineMaxTemp delta = do
       uiSnap <- getUiSnapshot uiHandle
-      setUiBtAlpineElevation uiHandle (uiBtAlpineElevation uiSnap + delta)
+      setUiBtAlpineMaxTemp uiHandle (uiBtAlpineMaxTemp uiSnap + delta)
     bumpBtIceCapTemp delta = do
       uiSnap <- getUiSnapshot uiHandle
       setUiBtIceCapTemp uiHandle (uiBtIceCapTemp uiSnap + delta)
-    bumpBtMontaneLow delta = do
+    bumpBtMontaneMaxTemp delta = do
       uiSnap <- getUiSnapshot uiHandle
-      setUiBtMontaneLow uiHandle (uiBtMontaneLow uiSnap + delta)
+      setUiBtMontaneMaxTemp uiHandle (uiBtMontaneMaxTemp uiSnap + delta)
     bumpBtMontanePrecip delta = do
       uiSnap <- getUiSnapshot uiHandle
       setUiBtMontanePrecip uiHandle (uiBtMontanePrecip uiSnap + delta)

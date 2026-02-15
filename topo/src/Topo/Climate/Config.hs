@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 -- | Climate sub-configuration types.
 --
 -- Groups the 40+ fields of the old flat 'ClimateConfig' into five
@@ -37,6 +38,12 @@ module Topo.Climate.Config
   , SeasonalityConfig(..)
   , defaultSeasonalityConfig
   ) where
+
+import GHC.Generics (Generic)
+import Topo.Config.JSON
+  ( configOptions, multiPrefixOptions, mergeDefaults
+  , ToJSON(..), FromJSON(..), genericToJSON, genericParseJSON, Value
+  )
 
 ------------------------------------------------------------------------
 -- Temperature
@@ -84,15 +91,6 @@ data TemperatureConfig = TemperatureConfig
   -- ^ Offset added to the latitude-dependent SST when computing the
   -- ocean moderation target for coastal tiles.  The target is
   -- @SST(lat) + tmpOceanModerateTemp@.  Default: @0@ (pure SST pull).
-  , tmpInsolation        :: !Float
-  -- ^ Solar insolation multiplier.  Overridden by the pipeline to
-  -- match 'Topo.Planet.PlanetConfig.pcInsolation'.  Default: @1.0@.
-  , tmpLatitudeBias      :: !Float
-  -- ^ /Derived./  Latitude offset in radians, computed from the
-  -- planet\/slice configuration.  Default: @0@.
-  , tmpLatitudeScale     :: !Float
-  -- ^ /Derived./  Radians per tile-Y step, computed from the planet
-  -- configuration.  Default: @0.01@.
   , tmpAlbedoSensitivity :: !Float
   -- ^ How strongly surface albedo modifies temperature (Model H).
   -- @temp_corrected = temp × (1 - sensitivity × (albedo - reference))@.
@@ -112,7 +110,15 @@ data TemperatureConfig = TemperatureConfig
   -- ^ Latitude exponent for the ocean SST curve.  Higher than land
   -- because evaporative cooling steepens the tropical→polar gradient.
   -- Default: @2.0@.
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+-- | Serialise with @tmp@ prefix stripped from field names.
+instance ToJSON TemperatureConfig where
+  toJSON = genericToJSON (configOptions "tmp")
+
+-- | Deserialise with defaults for any missing field.
+instance FromJSON TemperatureConfig where
+  parseJSON v = genericParseJSON (configOptions "tmp") (mergeDefaults (toJSON defaultTemperatureConfig) v)
 
 -- | Sensible Earth-like defaults for the temperature model.
 defaultTemperatureConfig :: TemperatureConfig
@@ -125,9 +131,6 @@ defaultTemperatureConfig = TemperatureConfig
   , tmpNoiseScale        = 0.1
   , tmpOceanModeration   = 0.3
   , tmpOceanModerateTemp = 0
-  , tmpInsolation        = 1.0
-  , tmpLatitudeBias      = 0
-  , tmpLatitudeScale     = 0.01
   , tmpAlbedoSensitivity = 0.20
   , tmpAlbedoReference   = 0.30
   , tmpOceanEquatorSST   = 0.83
@@ -156,9 +159,6 @@ data WindConfig = WindConfig
   , windBeltStrength    :: !Float
   -- ^ Influence of zonal wind belts on direction (0–1).
   -- Default: @0.6@.
-  , windBeltScale       :: !Float
-  -- ^ /Derived./  Radians per tile for belt computation.
-  -- Default: @0.004@.
   , windBeltHarmonics   :: !Float
   -- ^ Number of harmonic cycles in the belt model.  Default: @3@.
   , windBeltBase        :: !Float
@@ -167,7 +167,15 @@ data WindConfig = WindConfig
   -- ^ Wind-speed variation range from belts (0–1).  Default: @0.6@.
   , windBeltSpeedScale  :: !Float
   -- ^ Speed multiplier from belt influence (0–1).  Default: @0.6@.
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+-- | Serialise with @wind@ prefix stripped from field names.
+instance ToJSON WindConfig where
+  toJSON = genericToJSON (configOptions "wind")
+
+-- | Deserialise with defaults for any missing field.
+instance FromJSON WindConfig where
+  parseJSON v = genericParseJSON (configOptions "wind") (mergeDefaults (toJSON defaultWindConfig) v)
 
 -- | Sensible Earth-like defaults for the wind model.
 defaultWindConfig :: WindConfig
@@ -175,7 +183,6 @@ defaultWindConfig = WindConfig
   { windIterations      = 4
   , windDiffuse         = 0.5
   , windBeltStrength    = 0.6
-  , windBeltScale       = 0.004
   , windBeltHarmonics   = 3
   , windBeltBase        = 0.4
   , windBeltRange       = 0.6
@@ -267,7 +274,17 @@ data MoistureConfig = MoistureConfig
   -- @moistBaseRecycleRate × vegCover × satNorm(T)@ moisture, modelling
   -- direct leaf and soil surface evaporation (\"flying rivers\").
   -- Default: @0.10@.
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+-- | Serialise with @moist@\/@cc@ prefixes stripped from field names.
+-- Uses 'multiPrefixOptions' because two fields use the @cc@ prefix
+-- ('ccTempToC_Scale', 'ccTempToC_Offset') while the rest use @moist@.
+instance ToJSON MoistureConfig where
+  toJSON = genericToJSON (multiPrefixOptions ["moist", "cc"])
+
+-- | Deserialise with defaults for any missing field.
+instance FromJSON MoistureConfig where
+  parseJSON v = genericParseJSON (multiPrefixOptions ["moist", "cc"]) (mergeDefaults (toJSON defaultMoistureConfig) v)
 
 -- | Sensible Earth-like defaults for the moisture model.
 defaultMoistureConfig :: MoistureConfig
@@ -332,7 +349,15 @@ data PrecipitationConfig = PrecipitationConfig
   -- ^ Latitude (in degrees) beyond which the polar precipitation
   -- floor is applied.  The floor ramps in linearly from this
   -- latitude to the pole.  Default: @60.0@.
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+-- | Serialise with @prec@ prefix stripped from field names.
+instance ToJSON PrecipitationConfig where
+  toJSON = genericToJSON (configOptions "prec")
+
+-- | Deserialise with defaults for any missing field.
+instance FromJSON PrecipitationConfig where
+  parseJSON v = genericParseJSON (configOptions "prec") (mergeDefaults (toJSON defaultPrecipitationConfig) v)
 
 -- | Sensible Earth-like defaults for the precipitation model.
 defaultPrecipitationConfig :: PrecipitationConfig
@@ -386,7 +411,15 @@ data BoundaryConfig = BoundaryConfig
   -- Default: @−0.05@.
   , bndPrecipTransform   :: !Float
   -- ^ Precipitation bias at transform boundaries.  Default: @0.02@.
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+-- | Serialise with @bnd@ prefix stripped from field names.
+instance ToJSON BoundaryConfig where
+  toJSON = genericToJSON (configOptions "bnd")
+
+-- | Deserialise with defaults for any missing field.
+instance FromJSON BoundaryConfig where
+  parseJSON v = genericParseJSON (configOptions "bnd") (mergeDefaults (toJSON defaultBoundaryConfig) v)
 
 -- | Sensible Earth-like defaults for the boundary model.
 defaultBoundaryConfig :: BoundaryConfig
@@ -424,25 +457,56 @@ defaultBoundaryConfig = BoundaryConfig
 -- where the seasonal factor extremes are derived from
 -- 'scSeasonalBase' and 'scSeasonalRange'.
 data SeasonalityConfig = SeasonalityConfig
-  { scSeasonAmplitude :: !Float
-  -- ^ Base seasonal temperature amplitude before tilt scaling.
-  -- Scaled by @pcAxialTilt / 23.44@ at pipeline construction time.
-  -- Default: @0.30@ (mirrors 'Topo.Weather.WeatherConfig.wcSeasonAmplitude').
-  , scSeasonalBase    :: !Float
-  -- ^ Dry-season minimum precipitation multiplier.
-  -- Default: @0.40@ (mirrors 'Topo.Weather.WeatherConfig.wcSeasonalBase').
-  , scSeasonalRange   :: !Float
-  -- ^ Range added to base for the wet-season maximum.
-  -- Wet-season max = 'scSeasonalBase' + 'scSeasonalRange'.
-  -- Default: @1.20@ (mirrors 'Topo.Weather.WeatherConfig.wcSeasonalRange').
-  } deriving (Eq, Show)
+  { scHumidityCoastalBoost :: !Float
+  -- ^ Additive humidity contribution from coastal proximity.
+  -- Coastal tiles receive @coastalProximity × scHumidityCoastalBoost@
+  -- extra humidity, modelling oceanic vapour advection that raises
+  -- humidity beyond what precipitation alone would produce.
+  -- Default: @0.15@.
+  , scHumiditySoilContribution :: !Float
+  -- ^ Additive humidity contribution from soil moisture.
+  -- Tiles with high soil moisture (from the hydrology stage) receive
+  -- @soilMoisture × scHumiditySoilContribution@ extra humidity,
+  -- breaking the circular @humidity = f(precip, temp)@ relationship.
+  -- Default: @0.20@.
+  , scSeasonalityContinentalityFactor :: !Float
+  -- ^ Continentality amplification of precipitation seasonality.
+  -- Interior (non-coastal) tiles have their seasonality multiplied by
+  -- @1 + scSeasonalityContinentalityFactor × (1 - coastalProximity)@.
+  -- Coastal tiles receive near-baseline seasonality; continental
+  -- interiors receive amplified seasonality.
+  -- Default: @0.40@.
+  , scSeasonalityRainShadowBoost :: !Float
+  -- ^ Rain-shadow amplification of precipitation seasonality.
+  -- On the leeward side of elevation rises, precipitation becomes
+  -- more seasonal because orographic rain falls primarily in the
+  -- wet season.  The boost is:
+  -- @scSeasonalityRainShadowBoost × max 0 (upwindElev − localElev)@.
+  -- Default: @0.15@.
+  , scTempRangeOceanDamping :: !Float
+  -- ^ Ocean damping of annual temperature range.
+  -- Coastal tiles have their temperature range damped by
+  -- @1 - scTempRangeOceanDamping × coastalProximity@, modelling
+  -- the moderating influence of oceanic thermal mass.
+  -- Default: @0.50@.
+  } deriving (Eq, Show, Generic)
+
+-- | Serialise with @sc@ prefix stripped from field names.
+instance ToJSON SeasonalityConfig where
+  toJSON = genericToJSON (configOptions "sc")
+
+-- | Deserialise with defaults for any missing field.
+instance FromJSON SeasonalityConfig where
+  parseJSON v = genericParseJSON (configOptions "sc") (mergeDefaults (toJSON defaultSeasonalityConfig) v)
 
 -- | Sensible Earth-like defaults for the seasonality model.
 defaultSeasonalityConfig :: SeasonalityConfig
 defaultSeasonalityConfig = SeasonalityConfig
-  { scSeasonAmplitude = 0.30
-  , scSeasonalBase    = 0.40
-  , scSeasonalRange   = 1.20
+  { scHumidityCoastalBoost = 0.15
+  , scHumiditySoilContribution = 0.20
+  , scSeasonalityContinentalityFactor = 0.40
+  , scSeasonalityRainShadowBoost = 0.15
+  , scTempRangeOceanDamping = 0.50
   }
 
 ------------------------------------------------------------------------
@@ -477,7 +541,15 @@ data ClimateConfig = ClimateConfig
   -- ^ Plate-boundary climate influence parameters.
   , ccSeasonality    :: !SeasonalityConfig
   -- ^ Analytical seasonality estimation parameters.
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+-- | Serialise with @cc@ prefix stripped from field names.
+instance ToJSON ClimateConfig where
+  toJSON = genericToJSON (configOptions "cc")
+
+-- | Deserialise with defaults for any missing field.
+instance FromJSON ClimateConfig where
+  parseJSON v = genericParseJSON (configOptions "cc") (mergeDefaults (toJSON defaultClimateConfig) v)
 
 -- | Earth-like default climate configuration.
 defaultClimateConfig :: ClimateConfig

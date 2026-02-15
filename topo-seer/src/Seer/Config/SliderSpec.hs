@@ -103,10 +103,10 @@ module Seer.Config.SliderSpec
   , specVegTempWeight
   , specVegPrecipWeight
   , specBtCoastalBand
-  , specBtSnowElevation
-  , specBtAlpineElevation
+  , specBtSnowMaxTemp
+  , specBtAlpineMaxTemp
   , specBtIceCapTemp
-  , specBtMontaneLow
+  , specBtMontaneMaxTemp
   , specBtMontanePrecip
   , specBtCliffSlope
   , specBtValleyMoisture
@@ -440,14 +440,14 @@ tooltipForWidget wid = case wid of
   WidgetConfigVegPrecipWeightPlus    -> tip specVegPrecipWeight
   WidgetConfigBtCoastalBandMinus     -> tip specBtCoastalBand
   WidgetConfigBtCoastalBandPlus      -> tip specBtCoastalBand
-  WidgetConfigBtSnowElevationMinus   -> tip specBtSnowElevation
-  WidgetConfigBtSnowElevationPlus    -> tip specBtSnowElevation
-  WidgetConfigBtAlpineElevationMinus -> tip specBtAlpineElevation
-  WidgetConfigBtAlpineElevationPlus  -> tip specBtAlpineElevation
+  WidgetConfigBtSnowMaxTempMinus    -> tip specBtSnowMaxTemp
+  WidgetConfigBtSnowMaxTempPlus     -> tip specBtSnowMaxTemp
+  WidgetConfigBtAlpineMaxTempMinus  -> tip specBtAlpineMaxTemp
+  WidgetConfigBtAlpineMaxTempPlus   -> tip specBtAlpineMaxTemp
   WidgetConfigBtIceCapTempMinus      -> tip specBtIceCapTemp
   WidgetConfigBtIceCapTempPlus       -> tip specBtIceCapTemp
-  WidgetConfigBtMontaneLowMinus      -> tip specBtMontaneLow
-  WidgetConfigBtMontaneLowPlus       -> tip specBtMontaneLow
+  WidgetConfigBtMontaneMaxTempMinus -> tip specBtMontaneMaxTemp
+  WidgetConfigBtMontaneMaxTempPlus  -> tip specBtMontaneMaxTemp
   WidgetConfigBtMontanePrecipMinus   -> tip specBtMontanePrecip
   WidgetConfigBtMontanePrecipPlus    -> tip specBtMontanePrecip
   WidgetConfigBtCliffSlopeMinus      -> tip specBtCliffSlope
@@ -1063,21 +1063,21 @@ specBtCoastalBand :: SliderSpec
 specBtCoastalBand = SliderSpec
   "Coast Band" "Coastal biome detection band width" 0 0.1 False
 
-specBtSnowElevation :: SliderSpec
-specBtSnowElevation = SliderSpec
-  "Snow Elev" "Minimum elevation for permanent snow" 0.5 1.0 False
+specBtSnowMaxTemp :: SliderSpec
+specBtSnowMaxTemp = SliderSpec
+  "Snow Max T" "Max temperature for snow biome" 0.0 0.5 False
 
-specBtAlpineElevation :: SliderSpec
-specBtAlpineElevation = SliderSpec
-  "Alpine Elev" "Minimum elevation for alpine biome" 0.4 0.9 False
+specBtAlpineMaxTemp :: SliderSpec
+specBtAlpineMaxTemp = SliderSpec
+  "Alpine Max T" "Max temperature for alpine biome" 0.1 0.7 False
 
 specBtIceCapTemp :: SliderSpec
 specBtIceCapTemp = SliderSpec
   "IceCap Temp" "Maximum temperature for ice cap biome" 0 0.2 False
 
-specBtMontaneLow :: SliderSpec
-specBtMontaneLow = SliderSpec
-  "Montane Low" "Lower elevation bound for montane biome" 0.3 0.8 False
+specBtMontaneMaxTemp :: SliderSpec
+specBtMontaneMaxTemp = SliderSpec
+  "Montane Max T" "Max temperature for montane biome" 0.2 0.8 False
 
 specBtMontanePrecip :: SliderSpec
 specBtMontanePrecip = SliderSpec

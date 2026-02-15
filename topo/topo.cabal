@@ -68,13 +68,15 @@ library
       Topo.PlateMetadata
       Topo.Planet
       Topo.OceanCurrent
+      Topo.Config.JSON
   other-modules:
       Topo.Config
       Paths_topo
   hs-source-dirs:
       src
   build-depends:
-      base >=4.18 && <5
+      aeson >=2.1 && <2.3
+    , base >=4.18 && <5
     , binary
     , bytestring
     , containers
@@ -89,11 +91,14 @@ test-suite topo-test
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
+      Arbitrary.Config
       HexProperty
       Spec.BaseHeight
       Spec.Biome
       Spec.BiomeRefine
       Spec.Climate
+      Spec.ConfigJSON
+      Spec.ConfigProperty
       Spec.Determinism
       Spec.Erosion
       Spec.Evaporation
@@ -125,7 +130,9 @@ test-suite topo-test
       test
   build-depends:
       QuickCheck
+    , aeson
     , base
+    , bytestring
     , containers
     , hspec
     , text

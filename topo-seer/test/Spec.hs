@@ -5,7 +5,7 @@ import qualified Spec.HexPick
 import qualified Spec.Layout
 import qualified Spec.LogActor
 import qualified Spec.CacheProperties
-import qualified Spec.ConfigPreset
+import qualified Spec.ConfigSnapshot
 import qualified Spec.AtlasResultBroker
 import qualified Spec.AtlasScheduleBroker
 import qualified Spec.AtlasScheduler
@@ -25,7 +25,7 @@ main :: IO ()
 main = hspec $ do
   Spec.LogActor.spec
   Spec.CacheProperties.spec
-  Spec.ConfigPreset.spec
+  Spec.ConfigSnapshot.spec
   Spec.SliderSpec.spec
   Spec.AtlasResultBroker.spec
   Spec.AtlasScheduleBroker.spec

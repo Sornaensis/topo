@@ -2,16 +2,19 @@
 
 module Seer.Config
   ( applyUiConfig
+  , configFromUi
   , configSummary
   , mapRange
   , mapIntRange
+  , unmapRange
+  , unmapIntRange
   ) where
 
 import Actor.UI (UiState(..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Topo.BaseHeight (GenConfig(..), OceanEdgeDepth(..))
-import Topo.Biome (BiomeThresholds(..), VegetationConfig(..))
+import Topo.Biome (BiomeThresholds(..), BiomeVegetationConfig(..))
 import Topo.BiomeConfig (BiomeConfig(..))
 import Topo.Climate (ClimateConfig(..), TemperatureConfig(..), WindConfig(..), MoistureConfig(..), PrecipitationConfig(..), BoundaryConfig(..))
 import Topo.Erosion (ErosionConfig(..))
@@ -26,7 +29,7 @@ import Topo.Planet (PlanetConfig(..), WorldSlice(..), defaultPlanetConfig, defau
 import Topo.Tectonics (TectonicsConfig(..))
 import Topo.Vegetation (VegetationBootstrapConfig(..), BiomeFeedbackConfig(..))
 import Topo.Weather (WeatherConfig(..))
-import Topo.WorldGen (TerrainConfig(..), WorldGenConfig(..))
+import Topo.WorldGen (TerrainConfig(..), WorldGenConfig(..), defaultWorldGenConfig)
 import Topo.Types (worldExtentOrDefault)
 
 applyUiConfig :: UiState -> WorldGenConfig -> WorldGenConfig
@@ -287,10 +290,10 @@ applyUiConfig ui cfg =
       thresh = bcThresholds biome
       thresh' = thresh
         { btCoastalBand = mapRange 0 0.1 (uiBtCoastalBand ui)
-        , btSnowElevation = mapRange 0.5 1.0 (uiBtSnowElevation ui)
-        , btAlpineElevation = mapRange 0.4 0.9 (uiBtAlpineElevation ui)
+        , btSnowMaxTemp = mapRange 0.0 0.5 (uiBtSnowMaxTemp ui)
+        , btAlpineMaxTemp = mapRange 0.1 0.7 (uiBtAlpineMaxTemp ui)
         , btIceCapTemp = mapRange 0 0.2 (uiBtIceCapTemp ui)
-        , btMontaneLow = mapRange 0.3 0.8 (uiBtMontaneLow ui)
+        , btMontaneMaxTemp = mapRange 0.2 0.8 (uiBtMontaneMaxTemp ui)
         , btMontanePrecip = mapRange 0.1 0.6 (uiBtMontanePrecip ui)
         , btCliffSlope = mapRange 0.2 0.8 (uiBtCliffSlope ui)
         , btValleyMoisture = mapRange 0.3 1.0 (uiBtValleyMoisture ui)
@@ -351,3 +354,25 @@ mapRange lo hi t =
 mapIntRange :: Int -> Int -> Float -> Int
 mapIntRange lo hi t =
   round (mapRange (fromIntegral lo) (fromIntegral hi) t)
+
+-- | Inverse of 'mapRange': given a domain value in @[lo, hi]@, return the
+-- normalised slider position in @[0, 1]@.  Clamps to @[0, 1]@ if the
+-- value falls outside the range.
+unmapRange :: Float -> Float -> Float -> Float
+unmapRange lo hi v
+  | hi == lo  = 0
+  | otherwise = max 0 (min 1 ((v - lo) / (hi - lo)))
+
+-- | Inverse of 'mapIntRange': given an @Int@ domain value in @[lo, hi]@,
+-- return the normalised slider position in @[0, 1]@.
+unmapIntRange :: Int -> Int -> Int -> Float
+unmapIntRange lo hi v =
+  unmapRange (fromIntegral lo) (fromIntegral hi) (fromIntegral v)
+
+-- | Build a 'WorldGenConfig' from the current slider state.
+--
+-- This is a thin wrapper around 'applyUiConfig' applied to the library
+-- default.  Every slider value in 'UiState' is mapped to its real domain
+-- value inside 'WorldGenConfig'.
+configFromUi :: UiState -> WorldGenConfig
+configFromUi ui = applyUiConfig ui defaultWorldGenConfig

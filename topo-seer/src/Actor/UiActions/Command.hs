@@ -115,7 +115,7 @@ import Actor.UI
   , setUiWindIterations
   , setUiWorldConfig
   )
-import Seer.Config.Preset (presetFromUi, applyPresetToUi)
+import Seer.Config.Snapshot (snapshotFromUi, applySnapshotToUi)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import GHC.Clock (getMonotonicTimeNSec)
@@ -202,7 +202,7 @@ startGeneration req = do
   -- Commit the pending water level so atlas/terrain caches use the applied value
   setUiRenderWaterLevel uiHandle (uiWaterLevel uiSnap)
   -- Capture config snapshot for revert support
-  setUiWorldConfig uiHandle (Just (presetFromUi uiSnap "world"))
+  setUiWorldConfig uiHandle (Just (snapshotFromUi uiSnap "world"))
   requestUiSnapshot uiHandle (replyTo @UiSnapshotReply (uarSnapshotHandle req))
   appendLog logHandle (LogEntry LogInfo (configSummary uiSnap))
   requestLogSnapshot logHandle (replyTo @LogSnapshotReply (uarSnapshotHandle req))
@@ -247,7 +247,7 @@ revertConfig req = do
   uiSnap <- getUiSnapshot uiHandle
   case uiWorldConfig uiSnap of
     Just preset -> do
-      applyPresetToUi preset uiHandle
+      applySnapshotToUi preset uiHandle
       appendLog logHandle (LogEntry LogInfo "Config reverted to last generation")
     Nothing ->
       appendLog logHandle (LogEntry LogWarn "No world config to revert to")

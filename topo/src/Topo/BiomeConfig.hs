@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Biome classification configuration and pipeline stage.
@@ -11,15 +12,18 @@ module Topo.BiomeConfig
 
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
+import GHC.Generics (Generic)
 import Topo.Biome
   ( BiomeRule
-  , BiomeThresholds
-  , VegetationConfig(..)
+  , BiomeThresholds(..)
+  , BiomeVegetationConfig(..)
   , classifyBiomesChunk
+  , constrainSmoothedBiomes
   , defaultBiomeRules
   , defaultBiomeThresholds
-  , defaultVegetationConfig
+  , defaultBiomeVegetationConfig
   , smoothBiomesGrid
+  , smoothMountainTransitions
   , vegetationDensityChunk
   )
 import Topo.Biome.Refine
@@ -28,6 +32,10 @@ import Topo.Biome.Refine
   , aridRefinementConfig
   , lushRefinementConfig
   , refineBiomesChunk
+  )
+import Topo.Config.JSON
+  ( ToJSON(..), FromJSON(..), configOptions, mergeDefaults
+  , genericToJSON, genericParseJSON, Value
   )
 import Topo.Math (clamp01)
 import Topo.Pipeline (PipelineStage(..))
@@ -38,15 +46,37 @@ import Topo.World (TerrainWorld(..))
 import qualified Data.Vector.Unboxed as U
 
 -- | Biome configuration for classification, refinement, and vegetation.
+--
+-- Consumed by 'classifyBiomesStage'.  Named variants 'aridBiomeConfig'
+-- and 'lushBiomeConfig' provide dry and wet presets respectively.
 data BiomeConfig = BiomeConfig
   { bcRules :: !BiomeRule
+    -- ^ Whittaker-style temperature × precipitation classification rules.
   , bcThresholds :: !BiomeThresholds
+    -- ^ Elevation, slope, and moisture thresholds for biome overrides.
   , bcRefinement :: !RefinementConfig
-  , bcVegetation :: !VegetationConfig
+    -- ^ Bundle of 14 per-family refinement sub-configs.
+  , bcVegetation :: !BiomeVegetationConfig
+    -- ^ Vegetation density parameters derived from biome classification.
   , bcSmoothingIterations :: !Int
+    -- ^ Post-classification spatial smoothing passes (default 1).
+  , bcTransitionSmoothingIterations :: !Int
+    -- ^ Mountain transition smoothing passes.  Penalises large
+    --   biome-family jumps (Forest\u2194Alpine\u2194Snow) to produce gradual
+    --   elevation gradients.  Runs after temperature-constraint and
+    --   before refinement.  Default: 1.
   , bcVolcanicAshBoost :: !Float
+    -- ^ Fertility boost from volcanic ash deposits [0..1].
   , bcVolcanicLavaPenalty :: !Float
-  } deriving (Eq, Show)
+    -- ^ Fertility penalty from lava deposits [0..1].
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON BiomeConfig where
+  toJSON = genericToJSON (configOptions "bc")
+
+instance FromJSON BiomeConfig where
+  parseJSON v = genericParseJSON (configOptions "bc")
+                  (mergeDefaults (toJSON defaultBiomeConfig) v)
 
 -- | Default biome configuration.
 defaultBiomeConfig :: BiomeConfig
@@ -54,8 +84,9 @@ defaultBiomeConfig = BiomeConfig
   { bcRules = defaultBiomeRules
   , bcThresholds = defaultBiomeThresholds
   , bcRefinement = defaultRefinementConfig
-  , bcVegetation = defaultVegetationConfig
+  , bcVegetation = defaultBiomeVegetationConfig
   , bcSmoothingIterations = 1
+  , bcTransitionSmoothingIterations = 1
   , bcVolcanicAshBoost = 0.2
   , bcVolcanicLavaPenalty = 0.35
   }
@@ -66,8 +97,9 @@ aridBiomeConfig = BiomeConfig
   { bcRules = defaultBiomeRules
   , bcThresholds = defaultBiomeThresholds
   , bcRefinement = aridRefinementConfig
-  , bcVegetation = (defaultVegetationConfig { vcBaseDensity = 0.08, vcBiomeBoost = 0.3, vcTempWeight = 0.4, vcPrecipWeight = 0.6 })
+  , bcVegetation = (defaultBiomeVegetationConfig { vcBaseDensity = 0.08, vcBiomeBoost = 0.3, vcTempWeight = 0.4, vcPrecipWeight = 0.6 })
   , bcSmoothingIterations = 1
+  , bcTransitionSmoothingIterations = 1
   , bcVolcanicAshBoost = 0.12
   , bcVolcanicLavaPenalty = 0.4
   }
@@ -78,8 +110,9 @@ lushBiomeConfig = BiomeConfig
   { bcRules = defaultBiomeRules
   , bcThresholds = defaultBiomeThresholds
   , bcRefinement = lushRefinementConfig
-  , bcVegetation = (defaultVegetationConfig { vcBaseDensity = 0.35, vcBiomeBoost = 0.8, vcTempWeight = 0.55, vcPrecipWeight = 0.45 })
+  , bcVegetation = (defaultBiomeVegetationConfig { vcBaseDensity = 0.35, vcBiomeBoost = 0.8, vcTempWeight = 0.55, vcPrecipWeight = 0.45 })
   , bcSmoothingIterations = 1
+  , bcTransitionSmoothingIterations = 1
   , bcVolcanicAshBoost = 0.28
   , bcVolcanicLavaPenalty = 0.25
   }
@@ -105,7 +138,20 @@ classifyBiomesStage cfg waterLevel = PipelineStage "classifyBiomes" "classifyBio
             Just cc -> classifyChunk config (bcRules cfg) (bcThresholds cfg) waterLevel
                          (IntMap.lookup k waterBodies) tc cc) terrain
         -- 2. Inter-chunk smoothing on a stitched global grid
-        biomes' = smoothBiomesGlobal config (bcSmoothingIterations cfg) biomes
+        biomesSmoothed = smoothBiomesGlobal config (bcSmoothingIterations cfg) biomes
+        -- 2b. Temperature-constrained correction: demote Snow/Alpine tiles
+        --     that smoothing spread into thermally incompatible areas.
+        biomesConstrained = IntMap.mapWithKey (\k smoothed ->
+          case IntMap.lookup k climate of
+            Nothing -> smoothed
+            Just cc ->
+              let orig = IntMap.findWithDefault smoothed k biomes
+              in constrainSmoothedBiomes (bcThresholds cfg) (ccTempAvg cc) orig smoothed
+          ) biomesSmoothed
+        -- 2c. Mountain transition smoothing: penalise large biome-family
+        --     jumps (Forest↔Alpine↔Snow) to produce gradual elevation gradients.
+        biomes' = transitionSmoothGlobal config
+                    (bcTransitionSmoothingIterations cfg) biomesConstrained
         -- 3. Refinement pass (sub-biome discrimination)
         biomes'' = refineAllChunks (bcRefinement cfg) waterLevel biomes' terrain climate
                      (twWeather world) (twRivers world) (twGroundwater world)
@@ -147,8 +193,10 @@ classifyChunk config rules thresholds waterLevel mWb terrain climate =
        (ccTempAvg climate) (ccPrecipAvg climate)
        (tcElevation terrain) (tcSlope terrain) (tcRelief terrain)
        (tcMoisture terrain) (tcTerrainForm terrain)
+       (ccHumidityAvg climate) (ccTempRange climate)
+       (ccPrecipSeasonality climate)
 
-vegetationChunk :: WorldConfig -> VegetationConfig -> U.Vector BiomeId -> ClimateChunk -> U.Vector Float
+vegetationChunk :: WorldConfig -> BiomeVegetationConfig -> U.Vector BiomeId -> ClimateChunk -> U.Vector Float
 vegetationChunk _ cfg biomes climate =
   vegetationDensityChunk cfg biomes (ccTempAvg climate) (ccPrecipAvg climate)
 
@@ -232,6 +280,31 @@ smoothBiomesGlobal config iterations biomes =
           -- Smooth on the global grid (cross-chunk hex neighbours)
           smoothed = smoothBiomesGrid iterations gridW gridH globalGrid
           -- Slice back: global grid → per-chunk vectors
+      in IntMap.mapWithKey (\k _ -> sliceBiomeGrid config (ChunkCoord minCx minCy) gridW smoothed k) biomes
+
+-- | Assemble chunks, run mountain transition smoothing on the global grid,
+-- and slice the results back into per-chunk vectors.
+--
+-- Same stitch\/unslice pattern as 'smoothBiomesGlobal', but calls
+-- 'smoothMountainTransitions' to penalise large biome-family jumps
+-- along the Forest↔Alpine↔Snow gradient.
+transitionSmoothGlobal
+  :: WorldConfig
+  -> Int                          -- ^ transition smoothing iterations
+  -> IntMap (U.Vector BiomeId)    -- ^ per-chunk biome vectors
+  -> IntMap (U.Vector BiomeId)
+transitionSmoothGlobal _ iterations biomes
+  | iterations <= 0 = biomes
+  | IntMap.null biomes = biomes
+transitionSmoothGlobal config iterations biomes =
+  case chunkCoordBounds biomes of
+    Nothing -> biomes
+    Just (ChunkCoord minCx minCy, ChunkCoord maxCx maxCy) ->
+      let size = wcChunkSize config
+          gridW = (maxCx - minCx + 1) * size
+          gridH = (maxCy - minCy + 1) * size
+          globalGrid = buildBiomeGrid biomes config (ChunkCoord minCx minCy) gridW gridH
+          smoothed   = smoothMountainTransitions iterations gridW gridH globalGrid
       in IntMap.mapWithKey (\k _ -> sliceBiomeGrid config (ChunkCoord minCx minCy) gridW smoothed k) biomes
 
 -- | Assemble per-chunk biome vectors into a single flat row-major grid.

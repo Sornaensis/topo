@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveGeneric #-}
+
 -- | Planetary parameters, world slices, and hex-to-geographic coordinate mapping.
 --
 -- One hex = 13 miles flat-to-flat. This is the universal physical scale constant.
@@ -23,10 +25,17 @@ module Topo.Planet
   , tileLatitude
   , tileLongitude
   , tileYToLatDeg
+    -- * Latitude mapping
+  , LatitudeMapping(..)
+  , mkLatitudeMapping
     -- * Extent from slice
   , sliceToWorldExtent
   ) where
 
+import GHC.Generics (Generic)
+import Topo.Config.JSON
+  (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
+   genericToJSON, genericParseJSON)
 import Topo.Types (TileCoord(..), WorldConfig(..), WorldExtent, WorldExtentError, mkWorldExtent)
 
 -- ---------------------------------------------------------------------------
@@ -50,7 +59,14 @@ data PlanetConfig = PlanetConfig
   { pcRadius    :: !Float
   , pcAxialTilt :: !Float
   , pcInsolation :: !Float
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON PlanetConfig where
+  toJSON = genericToJSON (configOptions "pc")
+
+instance FromJSON PlanetConfig where
+  parseJSON v = genericParseJSON (configOptions "pc")
+                  (mergeDefaults (toJSON defaultPlanetConfig) v)
 
 -- | Errors produced when constructing an invalid 'PlanetConfig'.
 data PlanetConfigError
@@ -107,7 +123,14 @@ data WorldSlice = WorldSlice
   , wsLatExtent :: !Float
   , wsLonCenter :: !Float
   , wsLonExtent :: !Float
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON WorldSlice where
+  toJSON = genericToJSON (configOptions "ws")
+
+instance FromJSON WorldSlice where
+  parseJSON v = genericParseJSON (configOptions "ws")
+                  (mergeDefaults (toJSON defaultWorldSlice) v)
 
 -- | Errors produced when constructing an invalid 'WorldSlice'.
 data WorldSliceError
@@ -232,6 +255,57 @@ tileLongitude planet slice config coord@(TileCoord tx _ty) =
 tileYToLatDeg :: PlanetConfig -> WorldSlice -> WorldConfig -> Int -> Float
 tileYToLatDeg planet slice config gy =
   tileLatitude planet slice config (TileCoord 0 gy)
+
+-- ---------------------------------------------------------------------------
+-- Latitude mapping
+-- ---------------------------------------------------------------------------
+
+-- | Pre-computed latitude mapping derived from planet, slice, and world
+-- configuration.  Stored on 'Topo.World.TerrainWorld' so every pipeline
+-- stage can access it without recomputation or formula duplication.
+--
+-- The mapping converts tile-grid Y coordinates to geographic latitude.
+-- @latDeg(ty) = lmBiasDeg + ty * lmDegPerTile@, and analogously for
+-- radians.
+data LatitudeMapping = LatitudeMapping
+  { lmDegPerTile  :: !Float
+    -- ^ Degrees of latitude per tile-Y step.
+  , lmRadPerTile  :: !Float
+    -- ^ Radians of latitude per tile-Y step.
+  , lmBiasDeg     :: !Float
+    -- ^ Latitude of tile Y = 0 in degrees.
+  , lmBiasRad     :: !Float
+    -- ^ Latitude of tile Y = 0 in radians.
+  , lmLatExtent   :: !Float
+    -- ^ Slice latitude extent in degrees (from 'WorldSlice').
+  , lmTiltScale   :: !Float
+    -- ^ Axial-tilt scaling factor: @pcAxialTilt / 23.44@.
+  , lmInsolation  :: !Float
+    -- ^ Solar insolation multiplier (from 'PlanetConfig').
+  } deriving (Eq, Show)
+
+-- | Construct a 'LatitudeMapping' from the planet, slice, and world
+-- configuration.  Consolidates the latitude derivation formula that
+-- was previously duplicated across Tectonics, Climate, Weather,
+-- OceanCurrent, and Vegetation modules.
+mkLatitudeMapping :: PlanetConfig -> WorldSlice -> WorldConfig -> LatitudeMapping
+mkLatitudeMapping planet slice wc =
+  let hpd        = hexesPerDegreeLatitude planet
+      degPerTile = 1.0 / max 0.001 hpd
+      cs         = wcChunkSize wc
+      latBiasDeg = wsLatCenter slice
+                 - fromIntegral (cs `div` 2) * degPerTile
+      radPerTile = degPerTile * (pi / 180.0)
+      latBiasRad = latBiasDeg * (pi / 180.0)
+  in LatitudeMapping
+      { lmDegPerTile = degPerTile
+      , lmRadPerTile = radPerTile
+      , lmBiasDeg    = latBiasDeg
+      , lmBiasRad    = latBiasRad
+      , lmLatExtent  = wsLatExtent slice
+      , lmTiltScale  = pcAxialTilt planet / 23.44
+      , lmInsolation = pcInsolation planet
+      }
 
 -- ---------------------------------------------------------------------------
 -- Internal constants

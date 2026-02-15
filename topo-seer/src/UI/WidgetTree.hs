@@ -100,14 +100,14 @@ data WidgetId
   | WidgetConfigVegPrecipWeightPlus
   | WidgetConfigBtCoastalBandMinus
   | WidgetConfigBtCoastalBandPlus
-  | WidgetConfigBtSnowElevationMinus
-  | WidgetConfigBtSnowElevationPlus
-  | WidgetConfigBtAlpineElevationMinus
-  | WidgetConfigBtAlpineElevationPlus
+  | WidgetConfigBtSnowMaxTempMinus
+  | WidgetConfigBtSnowMaxTempPlus
+  | WidgetConfigBtAlpineMaxTempMinus
+  | WidgetConfigBtAlpineMaxTempPlus
   | WidgetConfigBtIceCapTempMinus
   | WidgetConfigBtIceCapTempPlus
-  | WidgetConfigBtMontaneLowMinus
-  | WidgetConfigBtMontaneLowPlus
+  | WidgetConfigBtMontaneMaxTempMinus
+  | WidgetConfigBtMontaneMaxTempPlus
   | WidgetConfigBtMontanePrecipMinus
   | WidgetConfigBtMontanePrecipPlus
   | WidgetConfigBtCliffSlopeMinus
@@ -548,14 +548,14 @@ buildWidgets layout =
       , Widget WidgetConfigVegPrecipWeightPlus (configVegPrecipWeightPlusRect layout)
       , Widget WidgetConfigBtCoastalBandMinus (configBtCoastalBandMinusRect layout)
       , Widget WidgetConfigBtCoastalBandPlus (configBtCoastalBandPlusRect layout)
-      , Widget WidgetConfigBtSnowElevationMinus (configBtSnowElevationMinusRect layout)
-      , Widget WidgetConfigBtSnowElevationPlus (configBtSnowElevationPlusRect layout)
-      , Widget WidgetConfigBtAlpineElevationMinus (configBtAlpineElevationMinusRect layout)
-      , Widget WidgetConfigBtAlpineElevationPlus (configBtAlpineElevationPlusRect layout)
+      , Widget WidgetConfigBtSnowMaxTempMinus (configBtSnowMaxTempMinusRect layout)
+      , Widget WidgetConfigBtSnowMaxTempPlus (configBtSnowMaxTempPlusRect layout)
+      , Widget WidgetConfigBtAlpineMaxTempMinus (configBtAlpineMaxTempMinusRect layout)
+      , Widget WidgetConfigBtAlpineMaxTempPlus (configBtAlpineMaxTempPlusRect layout)
       , Widget WidgetConfigBtIceCapTempMinus (configBtIceCapTempMinusRect layout)
       , Widget WidgetConfigBtIceCapTempPlus (configBtIceCapTempPlusRect layout)
-      , Widget WidgetConfigBtMontaneLowMinus (configBtMontaneLowMinusRect layout)
-      , Widget WidgetConfigBtMontaneLowPlus (configBtMontaneLowPlusRect layout)
+      , Widget WidgetConfigBtMontaneMaxTempMinus (configBtMontaneMaxTempMinusRect layout)
+      , Widget WidgetConfigBtMontaneMaxTempPlus (configBtMontaneMaxTempPlusRect layout)
       , Widget WidgetConfigBtMontanePrecipMinus (configBtMontanePrecipMinusRect layout)
       , Widget WidgetConfigBtMontanePrecipPlus (configBtMontanePrecipPlusRect layout)
       , Widget WidgetConfigBtCliffSlopeMinus (configBtCliffSlopeMinusRect layout)
@@ -1055,10 +1055,10 @@ buildSliderRowWidgets layout = (terrain, planet, climate, weather, biome, erosio
       , row WidgetConfigVegTempWeightMinus 2
       , row WidgetConfigVegPrecipWeightMinus 3
       , row WidgetConfigBtCoastalBandMinus 4
-      , row WidgetConfigBtSnowElevationMinus 5
-      , row WidgetConfigBtAlpineElevationMinus 6
+      , row WidgetConfigBtSnowMaxTempMinus 5
+      , row WidgetConfigBtAlpineMaxTempMinus 6
       , row WidgetConfigBtIceCapTempMinus 7
-      , row WidgetConfigBtMontaneLowMinus 8
+      , row WidgetConfigBtMontaneMaxTempMinus 8
       , row WidgetConfigBtMontanePrecipMinus 9
       , row WidgetConfigBtCliffSlopeMinus 10
       , row WidgetConfigBtValleyMoistureMinus 11

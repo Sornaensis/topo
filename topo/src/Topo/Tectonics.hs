@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Plate tectonics configuration and terrain synthesis.
@@ -13,59 +14,101 @@ import Data.Bits (xor)
 import Data.List (foldl', sortBy)
 import Data.Ord (comparing)
 import Data.Word (Word16, Word64)
+import GHC.Generics (Generic)
 import qualified Data.IntMap.Strict as IntMap
 import Topo.BaseHeight (GenConfig(..), OceanEdgeDepth, defaultGenConfig, oceanEdgeBiasAt, sampleBaseHeightAt)
+import Topo.Config.JSON
+  (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
+   genericToJSON, genericParseJSON)
 import Topo.Math (clamp01, lerp, smoothstep)
 import Topo.Noise (directionalRidge2D, domainWarp2D, fbm2D, noise2DContinuous, ridgedFbm2D)
 import Topo.Pipeline (PipelineStage(..))
-import Topo.Planet (PlanetConfig(..), WorldSlice(..), hexesPerDegreeLatitude)
+import Topo.Planet (LatitudeMapping(..))
 import Topo.Plugin (logInfo, modifyWorldP, peSeed)
 import Topo.Types
 import Topo.World (TerrainWorld(..))
 import qualified Data.Vector.Unboxed as U
 
 -- | Configuration parameters for plate tectonics.
+--
+-- Controls plate generation, boundary shaping, and the interplay between
+-- plate motion and terrain elevation.
 data TectonicsConfig = TectonicsConfig
   { tcPlateSize :: !Int
+    -- ^ Target number of tiles per tectonic plate.
   , tcPlateCount :: !(Maybe Int)
+    -- ^ Override plate count.  'Nothing' auto-derives from world size
+    -- and 'tcPlateSize'.
   , tcPlateSpeed :: !Float
+    -- ^ Default plate motion speed (dimensionless, default 0.6).
   , tcBoundarySharpness :: !Float
+    -- ^ Boundary zone transition sharpness; higher = narrower boundary.
   , tcBoundaryNoiseScale :: !Float
+    -- ^ Frequency of boundary warp noise (cycles per tile).
   , tcBoundaryNoiseStrength :: !Float
+    -- ^ Displacement strength of boundary warp noise (tiles).
   , tcBoundaryWarpOctaves :: !Int
+    -- ^ FBM octaves for boundary warp noise.
   , tcBoundaryWarpLacunarity :: !Float
+    -- ^ Frequency multiplier between boundary warp FBM octaves.
   , tcBoundaryWarpGain :: !Float
+    -- ^ Amplitude decay between boundary warp FBM octaves.
   , tcPlateMergeScale :: !Float
+    -- ^ Noise frequency for plate merge decisions (cycles per tile).
   , tcPlateMergeBias :: !Float
+    -- ^ Threshold bias for plate merging [0..1]; higher = less merging.
   , tcPlateDetailScale :: !Float
+    -- ^ Frequency of intra-plate detail noise (cycles per tile).
   , tcPlateDetailStrength :: !Float
+    -- ^ Amplitude of intra-plate detail noise.
   , tcPlateRidgeStrength :: !Float
+    -- ^ Amplitude of mid-plate ridge features.
   , tcPlateBiasStrength :: !Float
+    -- ^ Global elevation bias strength applied via center\/edge\/N\/S fields.
   , tcPlateBiasCenter :: !Float
+    -- ^ Elevation bias at the map center (signed).
   , tcPlateBiasEdge :: !Float
+    -- ^ Elevation bias at the map edges (signed).
   , tcPlateBiasNorth :: !Float
+    -- ^ Elevation bias at the north edge (signed).
   , tcPlateBiasSouth :: !Float
+    -- ^ Elevation bias at the south edge (signed).
   , tcCenterFalloffScale :: !Float
+    -- ^ Strength of radial center-distance falloff [0..1].
   , tcBoundaryFadeScale :: !Float
+    -- ^ Control for fading boundary effects at plate edges.
   , tcCenterWeightScale :: !Float
+    -- ^ Weight multiplier for center-distance contributions.
   , tcEdgeWeightScale :: !Float
+    -- ^ Weight multiplier for edge-distance contributions.
   , tcPlateHeightBase :: !Float
+    -- ^ Base elevation assigned to each plate [0..1].
   , tcPlateHeightVariance :: !Float
+    -- ^ Random variance range for per-plate elevation.
   , tcCrustContinentalBias :: !Float
+    -- ^ Elevation bias for continental crust (positive raises land).
   , tcCrustOceanicBias :: !Float
+    -- ^ Elevation bias for oceanic crust (negative deepens ocean).
   , tcPlateHardnessBase :: !Float
+    -- ^ Base hardness assigned to each plate [0..1].
   , tcPlateHardnessVariance :: !Float
+    -- ^ Random variance range for per-plate hardness.
   , tcUplift :: !Float
+    -- ^ Uplift magnitude at convergent plate boundaries.
   , tcRiftDepth :: !Float
+    -- ^ Depth magnitude at divergent (rift) plate boundaries.
   , tcTrenchDepth :: !Float
+    -- ^ Depth magnitude at subduction-zone trenches.
   , tcRidgeHeight :: !Float
-  -- | Latitude degrees per tile Y step (derived from planet; default 0 = use tile Y fallback).
-  , tcLatDegPerTile :: !Float
-  -- | Latitude bias in degrees for tile Y = 0 (derived from planet/slice; default 0).
-  , tcLatBiasDeg :: !Float
-  -- | Slice latitude extent in degrees for north/south weight normalization (default 0 = use tile Y fallback).
-  , tcSliceLatExtent :: !Float
-  } deriving (Eq, Show)
+    -- ^ Height magnitude at mid-ocean ridges.
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON TectonicsConfig where
+  toJSON = genericToJSON (configOptions "tc")
+
+instance FromJSON TectonicsConfig where
+  parseJSON v = genericParseJSON (configOptions "tc")
+                  (mergeDefaults (toJSON defaultTectonicsConfig) v)
 
 -- | Default tectonics configuration.
 defaultTectonicsConfig :: TectonicsConfig
@@ -103,14 +146,11 @@ defaultTectonicsConfig = TectonicsConfig
   , tcRiftDepth = 0.2
   , tcTrenchDepth = 0.25
   , tcRidgeHeight = 0.08
-  , tcLatDegPerTile = 0
-  , tcLatBiasDeg = 0
-  , tcSliceLatExtent = 0
   }
 
 -- | Apply tectonic generation to the existing terrain chunks in a world.
 --
--- Derives latitude mapping from 'PlanetConfig' and 'WorldSlice' so that
+-- Uses the pre-computed 'LatitudeMapping' from 'TerrainWorld' so that
 -- north/south plate bias is latitude-aware for non-equator slices.
 generateTectonicsStage :: TectonicsConfig -> PipelineStage
 generateTectonicsStage cfg = PipelineStage "generateTectonics" "generateTectonics" $ do
@@ -118,29 +158,19 @@ generateTectonicsStage cfg = PipelineStage "generateTectonics" "generateTectonic
   seed <- asks peSeed
   modifyWorldP $ \world ->
     let config = twConfig world
-        planet = twPlanet world
-        slice  = twSlice world
-        hpd    = hexesPerDegreeLatitude planet
-        degPerTile = 1.0 / max 0.001 hpd
-        cs     = wcChunkSize config
-        latBiasDeg = wsLatCenter slice - fromIntegral (cs `div` 2) * degPerTile
-        cfg' = cfg
-          { tcLatDegPerTile  = degPerTile
-          , tcLatBiasDeg     = latBiasDeg
-          , tcSliceLatExtent = wsLatExtent slice
-          }
-        terrain' = IntMap.mapWithKey (applyTectonicsChunk config seed defaultGenConfig cfg') (twTerrain world)
+        lm     = twLatMapping world
+        terrain' = IntMap.mapWithKey (applyTectonicsChunk config seed defaultGenConfig lm cfg) (twTerrain world)
     in world { twTerrain = terrain' }
 
 -- | Apply tectonic shaping for a single terrain chunk.
-applyTectonicsChunk :: WorldConfig -> Word64 -> GenConfig -> TectonicsConfig -> Int -> TerrainChunk -> TerrainChunk
-applyTectonicsChunk config seed gcfg tcfg key chunk =
+applyTectonicsChunk :: WorldConfig -> Word64 -> GenConfig -> LatitudeMapping -> TectonicsConfig -> Int -> TerrainChunk -> TerrainChunk
+applyTectonicsChunk config seed gcfg lm tcfg key chunk =
   let tcfg' = normalizeTectonicsConfig config gcfg tcfg
       origin = chunkOriginTile config (chunkCoordFromId (ChunkId key))
       n = chunkTileCount config
       extent = gcWorldExtent gcfg
       edgeCfg = gcOceanEdgeDepth gcfg
-      baseHeightRaw = U.generate n (plateHeightAt config seed gcfg tcfg' origin)
+      baseHeightRaw = U.generate n (plateHeightAt config seed gcfg lm tcfg' origin)
       edgeBias = U.generate n (edgeBiasAt config extent edgeCfg origin)
       baseHeight = U.zipWith (+) baseHeightRaw edgeBias
       baseHardness = U.generate n (plateHardnessAt config seed tcfg' origin)
@@ -348,8 +378,8 @@ plateVelYAt config seed tcfg origin i =
       (_, vy) = plateInfoVelocity (plateInfoAtXY seed tcfg gx gy)
   in vy
 
-plateHeightAt :: WorldConfig -> Word64 -> GenConfig -> TectonicsConfig -> TileCoord -> Int -> Float
-plateHeightAt config seed gcfg tcfg origin i =
+plateHeightAt :: WorldConfig -> Word64 -> GenConfig -> LatitudeMapping -> TectonicsConfig -> TileCoord -> Int -> Float
+plateHeightAt config seed gcfg lm tcfg origin i =
   let TileCoord lx ly = tileCoordFromIndex config (TileIndex i)
       TileCoord ox oy = origin
       gx = ox + lx
@@ -389,10 +419,10 @@ plateHeightAt config seed gcfg tcfg origin i =
       maxCoordY = fromIntegral (max 1 (worldExtentRadiusY (gcWorldExtent gcfg))) * fromIntegral (wcChunkSize config)
       -- Use real latitude for north/south weights when available.
       (northWeight, southWeight)
-        | tcSliceLatExtent tcfg > 0 =
-            let latDeg = fromIntegral gy * tcLatDegPerTile tcfg + tcLatBiasDeg tcfg
-                latCenter = tcLatBiasDeg tcfg + fromIntegral (wcChunkSize config `div` 2) * tcLatDegPerTile tcfg
-                halfExtent = tcSliceLatExtent tcfg / 2
+        | lmLatExtent lm > 0 =
+            let latDeg = fromIntegral gy * lmDegPerTile lm + lmBiasDeg lm
+                latCenter = lmBiasDeg lm + fromIntegral (wcChunkSize config `div` 2) * lmDegPerTile lm
+                halfExtent = lmLatExtent lm / 2
                 norm = (latDeg - latCenter) / max 0.001 halfExtent
             in (clamp01 norm, clamp01 (-norm))
         | otherwise =

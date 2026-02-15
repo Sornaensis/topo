@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Simple ocean surface current model (Phase 7.4).
@@ -21,9 +22,13 @@ module Topo.OceanCurrent
   ) where
 
 import qualified Data.IntMap.Strict as IntMap
+import GHC.Generics (Generic)
+import Topo.Config.JSON
+  (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
+   genericToJSON, genericParseJSON)
 import Topo.Math (clamp01)
 import Topo.Pipeline (PipelineStage(..))
-import Topo.Planet (PlanetConfig(..), WorldSlice(..), hexesPerDegreeLatitude)
+import Topo.Planet (LatitudeMapping(..))
 import Topo.Plugin (logInfo, modifyWorldP)
 import Topo.Types
 import Topo.World (TerrainWorld(..))
@@ -47,7 +52,14 @@ data OceanCurrentConfig = OceanCurrentConfig
   , occLatWidthDeg :: !Float
     -- ^ Half-width (degrees) of the latitude response Gaussian
     -- (default 25).
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON OceanCurrentConfig where
+  toJSON = genericToJSON (configOptions "occ")
+
+instance FromJSON OceanCurrentConfig where
+  parseJSON v = genericParseJSON (configOptions "occ")
+                  (mergeDefaults (toJSON defaultOceanCurrentConfig) v)
 
 -- | Sensible Earth-like defaults.
 defaultOceanCurrentConfig :: OceanCurrentConfig
@@ -74,13 +86,10 @@ applyOceanCurrentsStage cfg waterLevel =
   logInfo "applyOceanCurrents: modifying coastal SST"
   modifyWorldP $ \world ->
     let config     = twConfig world
-        planet     = twPlanet world
-        slice      = twSlice world
-        hpd        = hexesPerDegreeLatitude planet
-        degPerTile = 1.0 / max 0.001 hpd
+        lm         = twLatMapping world
         cs         = wcChunkSize config
-        latBiasDeg = wsLatCenter slice
-                   - fromIntegral (cs `div` 2) * degPerTile
+        degPerTile = lmDegPerTile lm
+        latBiasDeg = lmBiasDeg lm
         climateMap = twClimate world
         terrainMap = twTerrain world
         climateMap' = IntMap.mapWithKey

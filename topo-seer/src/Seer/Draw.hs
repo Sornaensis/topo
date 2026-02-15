@@ -577,10 +577,10 @@ drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather,
   (vegTempWeightMinus, vegTempWeightBar, vegTempWeightPlus)
   (vegPrecipWeightMinus, vegPrecipWeightBar, vegPrecipWeightPlus)
   (btCoastalBandMinus, btCoastalBandBar, btCoastalBandPlus)
-  (btSnowElevationMinus, btSnowElevationBar, btSnowElevationPlus)
-  (btAlpineElevationMinus, btAlpineElevationBar, btAlpineElevationPlus)
+  (btSnowMaxTempMinus, btSnowMaxTempBar, btSnowMaxTempPlus)
+  (btAlpineMaxTempMinus, btAlpineMaxTempBar, btAlpineMaxTempPlus)
   (btIceCapTempMinus, btIceCapTempBar, btIceCapTempPlus)
-  (btMontaneLowMinus, btMontaneLowBar, btMontaneLowPlus)
+  (btMontaneMaxTempMinus, btMontaneMaxTempBar, btMontaneMaxTempPlus)
   (btMontanePrecipMinus, btMontanePrecipBar, btMontanePrecipPlus)
   (btCliffSlopeMinus, btCliffSlopeBar, btCliffSlopePlus)
   (btValleyMoistureMinus, btValleyMoistureBar, btValleyMoisturePlus)
@@ -898,10 +898,10 @@ drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather,
           drawConfigSlider renderer (uiVegTempWeight ui) (scrollRect vegTempWeightMinus) (scrollRect vegTempWeightBar) (scrollRect vegTempWeightPlus) (V4 130 140 170 255)
           drawConfigSlider renderer (uiVegPrecipWeight ui) (scrollRect vegPrecipWeightMinus) (scrollRect vegPrecipWeightBar) (scrollRect vegPrecipWeightPlus) (V4 120 140 190 255)
           drawConfigSlider renderer (uiBtCoastalBand ui) (scrollRect btCoastalBandMinus) (scrollRect btCoastalBandBar) (scrollRect btCoastalBandPlus) (V4 100 160 180 255)
-          drawConfigSlider renderer (uiBtSnowElevation ui) (scrollRect btSnowElevationMinus) (scrollRect btSnowElevationBar) (scrollRect btSnowElevationPlus) (V4 180 180 200 255)
-          drawConfigSlider renderer (uiBtAlpineElevation ui) (scrollRect btAlpineElevationMinus) (scrollRect btAlpineElevationBar) (scrollRect btAlpineElevationPlus) (V4 160 160 180 255)
+          drawConfigSlider renderer (uiBtSnowMaxTemp ui) (scrollRect btSnowMaxTempMinus) (scrollRect btSnowMaxTempBar) (scrollRect btSnowMaxTempPlus) (V4 180 180 200 255)
+          drawConfigSlider renderer (uiBtAlpineMaxTemp ui) (scrollRect btAlpineMaxTempMinus) (scrollRect btAlpineMaxTempBar) (scrollRect btAlpineMaxTempPlus) (V4 160 160 180 255)
           drawConfigSlider renderer (uiBtIceCapTemp ui) (scrollRect btIceCapTempMinus) (scrollRect btIceCapTempBar) (scrollRect btIceCapTempPlus) (V4 180 200 220 255)
-          drawConfigSlider renderer (uiBtMontaneLow ui) (scrollRect btMontaneLowMinus) (scrollRect btMontaneLowBar) (scrollRect btMontaneLowPlus) (V4 140 130 110 255)
+          drawConfigSlider renderer (uiBtMontaneMaxTemp ui) (scrollRect btMontaneMaxTempMinus) (scrollRect btMontaneMaxTempBar) (scrollRect btMontaneMaxTempPlus) (V4 140 130 110 255)
           drawConfigSlider renderer (uiBtMontanePrecip ui) (scrollRect btMontanePrecipMinus) (scrollRect btMontanePrecipBar) (scrollRect btMontanePrecipPlus) (V4 120 140 120 255)
           drawConfigSlider renderer (uiBtCliffSlope ui) (scrollRect btCliffSlopeMinus) (scrollRect btCliffSlopeBar) (scrollRect btCliffSlopePlus) (V4 150 130 100 255)
           drawConfigSlider renderer (uiBtValleyMoisture ui) (scrollRect btValleyMoistureMinus) (scrollRect btValleyMoistureBar) (scrollRect btValleyMoisturePlus) (V4 100 150 130 255)
@@ -1129,18 +1129,18 @@ drawUiLabels renderer fontCache ui layout = do
       configBtCoastalBandMinus = configBtCoastalBandMinusRect layout
       configBtCoastalBandPlus = configBtCoastalBandPlusRect layout
       configBtCoastalBandBar = configBtCoastalBandBarRect layout
-      configBtSnowElevationMinus = configBtSnowElevationMinusRect layout
-      configBtSnowElevationPlus = configBtSnowElevationPlusRect layout
-      configBtSnowElevationBar = configBtSnowElevationBarRect layout
-      configBtAlpineElevationMinus = configBtAlpineElevationMinusRect layout
-      configBtAlpineElevationPlus = configBtAlpineElevationPlusRect layout
-      configBtAlpineElevationBar = configBtAlpineElevationBarRect layout
+      configBtSnowMaxTempMinus = configBtSnowMaxTempMinusRect layout
+      configBtSnowMaxTempPlus = configBtSnowMaxTempPlusRect layout
+      configBtSnowMaxTempBar = configBtSnowMaxTempBarRect layout
+      configBtAlpineMaxTempMinus = configBtAlpineMaxTempMinusRect layout
+      configBtAlpineMaxTempPlus = configBtAlpineMaxTempPlusRect layout
+      configBtAlpineMaxTempBar = configBtAlpineMaxTempBarRect layout
       configBtIceCapTempMinus = configBtIceCapTempMinusRect layout
       configBtIceCapTempPlus = configBtIceCapTempPlusRect layout
       configBtIceCapTempBar = configBtIceCapTempBarRect layout
-      configBtMontaneLowMinus = configBtMontaneLowMinusRect layout
-      configBtMontaneLowPlus = configBtMontaneLowPlusRect layout
-      configBtMontaneLowBar = configBtMontaneLowBarRect layout
+      configBtMontaneMaxTempMinus = configBtMontaneMaxTempMinusRect layout
+      configBtMontaneMaxTempPlus = configBtMontaneMaxTempPlusRect layout
+      configBtMontaneMaxTempBar = configBtMontaneMaxTempBarRect layout
       configBtMontanePrecipMinus = configBtMontanePrecipMinusRect layout
       configBtMontanePrecipPlus = configBtMontanePrecipPlusRect layout
       configBtMontanePrecipBar = configBtMontanePrecipBarRect layout
@@ -2078,14 +2078,14 @@ drawUiLabels renderer fontCache ui layout = do
         drawLabelAbove fontCache labelColor (scrollRect configVegPrecipWeightBar) (sliderLabel specVegPrecipWeight (uiVegPrecipWeight ui))
         drawCentered fontCache labelColor (scrollRect configBtCoastalBandMinus) "-"
         drawCentered fontCache labelColor (scrollRect configBtCoastalBandPlus) "+"
-        drawCentered fontCache labelColor (scrollRect configBtSnowElevationMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configBtSnowElevationPlus) "+"
-        drawCentered fontCache labelColor (scrollRect configBtAlpineElevationMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configBtAlpineElevationPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configBtSnowMaxTempMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configBtSnowMaxTempPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configBtAlpineMaxTempMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configBtAlpineMaxTempPlus) "+"
         drawCentered fontCache labelColor (scrollRect configBtIceCapTempMinus) "-"
         drawCentered fontCache labelColor (scrollRect configBtIceCapTempPlus) "+"
-        drawCentered fontCache labelColor (scrollRect configBtMontaneLowMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configBtMontaneLowPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configBtMontaneMaxTempMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configBtMontaneMaxTempPlus) "+"
         drawCentered fontCache labelColor (scrollRect configBtMontanePrecipMinus) "-"
         drawCentered fontCache labelColor (scrollRect configBtMontanePrecipPlus) "+"
         drawCentered fontCache labelColor (scrollRect configBtCliffSlopeMinus) "-"
@@ -2121,10 +2121,10 @@ drawUiLabels renderer fontCache ui layout = do
         drawCentered fontCache labelColor (scrollRect configBiomeFeedbackBlendMinus) "-"
         drawCentered fontCache labelColor (scrollRect configBiomeFeedbackBlendPlus) "+"
         drawLabelAbove fontCache labelColor (scrollRect configBtCoastalBandBar) (sliderLabel specBtCoastalBand (uiBtCoastalBand ui))
-        drawLabelAbove fontCache labelColor (scrollRect configBtSnowElevationBar) (sliderLabel specBtSnowElevation (uiBtSnowElevation ui))
-        drawLabelAbove fontCache labelColor (scrollRect configBtAlpineElevationBar) (sliderLabel specBtAlpineElevation (uiBtAlpineElevation ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBtSnowMaxTempBar) (sliderLabel specBtSnowMaxTemp (uiBtSnowMaxTemp ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBtAlpineMaxTempBar) (sliderLabel specBtAlpineMaxTemp (uiBtAlpineMaxTemp ui))
         drawLabelAbove fontCache labelColor (scrollRect configBtIceCapTempBar) (sliderLabel specBtIceCapTemp (uiBtIceCapTemp ui))
-        drawLabelAbove fontCache labelColor (scrollRect configBtMontaneLowBar) (sliderLabel specBtMontaneLow (uiBtMontaneLow ui))
+        drawLabelAbove fontCache labelColor (scrollRect configBtMontaneMaxTempBar) (sliderLabel specBtMontaneMaxTemp (uiBtMontaneMaxTemp ui))
         drawLabelAbove fontCache labelColor (scrollRect configBtMontanePrecipBar) (sliderLabel specBtMontanePrecip (uiBtMontanePrecip ui))
         drawLabelAbove fontCache labelColor (scrollRect configBtCliffSlopeBar) (sliderLabel specBtCliffSlope (uiBtCliffSlope ui))
         drawLabelAbove fontCache labelColor (scrollRect configBtValleyMoistureBar) (sliderLabel specBtValleyMoisture (uiBtValleyMoisture ui))

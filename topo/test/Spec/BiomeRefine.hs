@@ -17,6 +17,7 @@ import Topo.Biome
   , classifyBiome
   , defaultBiomeRules
   , defaultBiomeThresholds
+  , smoothMountainTransitions
   )
 import Topo.Biome.Refine
   ( RefinementConfig(..)
@@ -45,9 +46,9 @@ import Topo.Types
 -- Helpers
 -- ---------------------------------------------------------------------------
 
--- | All valid biome codes (0-8, 10-62; code 9 is a gap).
+-- | All valid biome codes (0-8, 10-65; code 9 is a gap).
 allKnownCodes :: [Word16]
-allKnownCodes = [0..8] ++ [10..62]
+allKnownCodes = [0..8] ++ [10..65]
 
 -- | Safely build a BiomeId from a known-valid code.
 mkBid :: Word16 -> BiomeId
@@ -94,27 +95,42 @@ spec = describe "BiomeRefine" $ do
             -- Ensure land tile (above water level)
             elev = waterLevel + elev' * 0.5
         in isKnownBiome (classifyBiome defaultBiomeRules defaultBiomeThresholds
-                           waterLevel WaterDry WaterDry temp precip elev 0.1 0.1 0.3 FormFlat)
+                           waterLevel WaterDry WaterDry temp precip elev 0.1 0.1 0.3 FormFlat 0.5 0.10 0.10)
 
     prop "always produces a valid known BiomeId for any ocean tile" $
       \(Norm01 temp) (Norm01 precip) (Norm01 elev') ->
         let waterLevel = 0.5
             elev = elev' * waterLevel
         in isKnownBiome (classifyBiome defaultBiomeRules defaultBiomeThresholds
-                           waterLevel WaterOcean WaterOcean temp precip elev 0.1 0.1 0.3 FormFlat)
+                           waterLevel WaterOcean WaterOcean temp precip elev 0.1 0.1 0.3 FormFlat 0.5 0.10 0.10)
 
     prop "classifies ocean when WaterOcean" $
       \(Norm01 temp) (Norm01 precip) (Norm01 elev') ->
         let waterLevel = 0.5
             elev = elev' * 0.49  -- always below threshold
         in classifyBiome defaultBiomeRules defaultBiomeThresholds
-             waterLevel WaterOcean WaterOcean temp precip elev 0.1 0.1 0.3 FormFlat == BiomeOcean
+             waterLevel WaterOcean WaterOcean temp precip elev 0.1 0.1 0.3 FormFlat 0.5 0.10 0.10 == BiomeOcean
 
-    prop "classifies snow at very high elevation" $
+    prop "classifies snow or tundra at very high elevation" $
       \(Norm01 temp) (Norm01 precip) ->
         let waterLevel = 0.5
-        in classifyBiome defaultBiomeRules defaultBiomeThresholds
-             waterLevel WaterDry WaterDry temp precip 0.95 0.1 0.1 0.3 FormFlat == BiomeSnow
+            bid = classifyBiome defaultBiomeRules defaultBiomeThresholds
+                    waterLevel WaterDry WaterDry temp precip 0.95 0.1 0.1 0.3 FormFlat 0.5 0.10 0.10
+        in bid == BiomeSnow || bid == BiomeTundra
+
+    -- P3.6: dry high-elevation tiles route to tundra (not snow)
+    it "dry high-elevation tile classified as tundra (P3.6)" $
+      let waterLevel = 0.5
+      in classifyBiome defaultBiomeRules defaultBiomeThresholds
+           waterLevel WaterDry WaterDry 0.30 0.05 0.95 0.1 0.1 0.3 FormFlat 0.5 0.10 0.10
+           `shouldBe` BiomeTundra
+
+    -- P3.6: wet high-elevation tile still classified as snow
+    it "wet high-elevation tile classified as snow" $
+      let waterLevel = 0.5
+      in classifyBiome defaultBiomeRules defaultBiomeThresholds
+           waterLevel WaterDry WaterDry 0.30 0.30 0.95 0.1 0.1 0.3 FormFlat 0.5 0.10 0.10
+           `shouldBe` BiomeSnow
 
     -- Ocean-adjacent coastal check
     prop "ocean-adjacent low tile classifies as BiomeCoastal" $
@@ -122,27 +138,27 @@ spec = describe "BiomeRefine" $ do
         let waterLevel = 0.5
             elev = waterLevel + 0.01  -- just above water level, within coastal band
         in classifyBiome defaultBiomeRules defaultBiomeThresholds
-             waterLevel WaterDry WaterOcean temp precip elev 0.1 0.1 0.3 FormFlat == BiomeCoastal
+             waterLevel WaterDry WaterOcean temp precip elev 0.1 0.1 0.3 FormFlat 0.5 0.10 0.10 == BiomeCoastal
 
     prop "lake-adjacent low tile classifies as BiomeSwamp (not BiomeCoastal)" $
       \(Norm01 temp) (Norm01 precip) ->
         let waterLevel = 0.5
             elev = waterLevel + 0.01
         in classifyBiome defaultBiomeRules defaultBiomeThresholds
-             waterLevel WaterDry WaterLake temp precip elev 0.1 0.1 0.3 FormFlat == BiomeSwamp
+             waterLevel WaterDry WaterLake temp precip elev 0.1 0.1 0.3 FormFlat 0.5 0.10 0.10 == BiomeSwamp
 
     prop "no-adjacent-water low tile classifies as BiomeSwamp (not BiomeCoastal)" $
       \(Norm01 temp) (Norm01 precip) ->
         let waterLevel = 0.5
             elev = waterLevel + 0.01
         in classifyBiome defaultBiomeRules defaultBiomeThresholds
-             waterLevel WaterDry WaterDry temp precip elev 0.1 0.1 0.3 FormFlat == BiomeSwamp
+             waterLevel WaterDry WaterDry temp precip elev 0.1 0.1 0.3 FormFlat 0.5 0.10 0.10 == BiomeSwamp
 
   -- -----------------------------------------------------------------------
   -- 3.19.2: All sub-biome codes round-trip through biomeIdFromCode
   -- -----------------------------------------------------------------------
   describe "biomeIdFromCode round-trip" $
-    it "all codes 0-8, 10-62 round-trip" $
+    it "all codes 0-8, 10-65 round-trip" $
       mapM_ (\code ->
         case biomeIdFromCode code of
           Left _ -> expectationFailure $ "code " ++ show code ++ " should be valid"
@@ -163,12 +179,28 @@ spec = describe "BiomeRefine" $ do
                           , BiomeRainforest, BiomeShrubland, BiomeSavanna, BiomeTaiga]
           samples =
             [ classifyBiome defaultBiomeRules defaultBiomeThresholds
-                waterLevel WaterDry WaterDry t p 0.60 0.1 0.1 0.3 FormFlat
+                waterLevel WaterDry WaterDry t p 0.60 0.1 0.1 0.3 FormFlat 0.5 0.10 0.10
             | t <- [0.05, 0.10 .. 1.0]
             , p <- [0.05, 0.10 .. 1.0]
             ]
           found = nub samples
       mapM_ (\b -> b `elem` found `shouldBe` True) climateBiomes
+
+  -- -----------------------------------------------------------------------
+  -- 3.19.4: Relief / reclassification (P3.7)
+  -- -----------------------------------------------------------------------
+  describe "relief reclassification" $ do
+    it "high-relief warm grassland reclassified as savanna (P3.7)" $
+      -- Warm tile (T≥0.50), high relief (0.30 ≥ 0.25), rest of inputs
+      -- chosen so primary classification gives Grassland.
+      classifyBiome defaultBiomeRules defaultBiomeThresholds
+        0.0 WaterDry WaterDry 0.55 0.20 0.30 0.05 0.30 0.50 FormFlat 0.5 0.10 0.10
+        `shouldBe` BiomeSavanna
+
+    it "low-relief warm grassland stays grassland" $
+      classifyBiome defaultBiomeRules defaultBiomeThresholds
+        0.0 WaterDry WaterDry 0.55 0.20 0.30 0.05 0.10 0.50 FormFlat 0.5 0.10 0.10
+        `shouldBe` BiomeGrassland
 
   -- -----------------------------------------------------------------------
   -- 3.19.5: refineOcean
@@ -227,69 +259,78 @@ spec = describe "BiomeRefine" $ do
   -- -----------------------------------------------------------------------
   describe "refineDesert" $ do
     it "salt flat when depression + very dry" $
-      refineDesert defaultDesertConfig 0.60 0.01 0.3 0.5 FormDepression `shouldBe` BiomeSaltFlat
+      refineDesert defaultDesertConfig 0.60 0.01 0.3 0.5 FormDepression 0.10 0.10 `shouldBe` BiomeSaltFlat
+
+    it "fog desert when low precip + moderate humidity + low seasonality" $
+      refineDesert defaultDesertConfig 0.50 0.05 0.40 0.50 FormFlat 0.35 0.15 `shouldBe` BiomeFogDesert
 
     it "rocky desert when hard + thin soil" $
-      refineDesert defaultDesertConfig 0.50 0.10 0.60 0.15 FormFlat `shouldBe` BiomeRockyDesert
+      refineDesert defaultDesertConfig 0.50 0.10 0.60 0.15 FormFlat 0.10 0.10 `shouldBe` BiomeRockyDesert
 
     it "sand desert when soft" $
-      refineDesert defaultDesertConfig 0.50 0.10 0.25 0.50 FormFlat `shouldBe` BiomeSandDesert
+      refineDesert defaultDesertConfig 0.50 0.10 0.25 0.50 FormFlat 0.10 0.10 `shouldBe` BiomeSandDesert
 
     it "hot desert when temp >= threshold" $
-      refineDesert defaultDesertConfig 0.75 0.10 0.40 0.50 FormFlat `shouldBe` BiomeHotDesert
+      refineDesert defaultDesertConfig 0.75 0.10 0.40 0.50 FormFlat 0.10 0.10 `shouldBe` BiomeHotDesert
 
     it "cold desert when temp <= threshold" $
-      refineDesert defaultDesertConfig 0.35 0.10 0.40 0.50 FormFlat `shouldBe` BiomeColdDesert
+      refineDesert defaultDesertConfig 0.35 0.10 0.40 0.50 FormFlat 0.10 0.10 `shouldBe` BiomeColdDesert
 
   -- -----------------------------------------------------------------------
   -- 3.19.8: refineGrassland
   -- -----------------------------------------------------------------------
   describe "refineGrassland" $ do
-    it "alpine meadow at high elevation" $
-      refineGrassland defaultGrasslandConfig 0.60 0.30 0.5 0.5 0.1 0.10 `shouldBe` BiomeAlpineMeadow
+    it "alpine meadow at high elevation and cold temp" $
+      refineGrassland defaultGrasslandConfig 0.75 0.30 0.5 0.5 0.1 0.10 0.30 `shouldBe` BiomeAlpineMeadow
+
+    it "no alpine meadow when warm despite high elevation" $
+      refineGrassland defaultGrasslandConfig 0.75 0.30 0.5 0.5 0.1 0.10 0.60 `shouldNotBe` BiomeAlpineMeadow
 
     it "floodplain when high discharge" $
-      refineGrassland defaultGrasslandConfig 0.40 0.30 0.5 0.5 0.30 0.10 `shouldBe` BiomeFloodplainGrassland
+      refineGrassland defaultGrasslandConfig 0.40 0.30 0.5 0.5 0.30 0.10 0.50 `shouldBe` BiomeFloodplainGrassland
 
     it "steppe when dry" $
-      refineGrassland defaultGrasslandConfig 0.40 0.20 0.5 0.5 0.1 0.20 `shouldBe` BiomeSteppe
+      refineGrassland defaultGrasslandConfig 0.40 0.20 0.5 0.5 0.1 0.20 0.50 `shouldBe` BiomeSteppe
 
     it "prairie when deep soil + moist" $
-      refineGrassland defaultGrasslandConfig 0.40 0.35 0.70 0.40 0.1 0.10 `shouldBe` BiomePrairie
+      refineGrassland defaultGrasslandConfig 0.40 0.35 0.70 0.40 0.1 0.10 0.50 `shouldBe` BiomePrairie
 
     it "fallback to grassland" $
-      refineGrassland defaultGrasslandConfig 0.40 0.35 0.40 0.30 0.1 0.10 `shouldBe` BiomeGrassland
+      refineGrassland defaultGrasslandConfig 0.40 0.35 0.40 0.30 0.1 0.10 0.50 `shouldBe` BiomeGrassland
 
   -- -----------------------------------------------------------------------
   -- 3.19.9: refineForest
   -- -----------------------------------------------------------------------
   describe "refineForest" $ do
     it "cloud forest at high elev + tropical + wet + mountainous" $
-      refineForest defaultForestConfig 0.70 0.60 0.75 0.3 0.70 0.10 FormMountainous `shouldBe` BiomeCloudForest
+      refineForest defaultForestConfig 0.70 0.60 0.75 0.3 0.70 0.10 FormMountainous 0.10 `shouldBe` BiomeCloudForest
 
     it "montane forest at high elev + hilly" $
-      refineForest defaultForestConfig 0.65 0.50 0.50 0.3 0.50 0.05 FormHilly `shouldBe` BiomeMontaneForest
+      refineForest defaultForestConfig 0.65 0.50 0.50 0.3 0.50 0.05 FormHilly 0.10 `shouldBe` BiomeMontaneForest
 
     it "montane forest at high elev + steep slope" $
-      refineForest defaultForestConfig 0.65 0.50 0.50 0.3 0.50 0.08 FormFlat `shouldBe` BiomeMontaneForest
+      refineForest defaultForestConfig 0.65 0.50 0.50 0.3 0.50 0.08 FormFlat 0.10 `shouldBe` BiomeMontaneForest
 
     it "NOT montane on flat low-slope land even at threshold elev" $
-      refineForest defaultForestConfig 0.64 0.50 0.50 0.3 0.50 0.03 FormFlat `shouldNotBe` BiomeMontaneForest
+      refineForest defaultForestConfig 0.64 0.50 0.50 0.3 0.50 0.03 FormFlat 0.10 `shouldNotBe` BiomeMontaneForest
 
     it "temperate rainforest when cool + very wet" $
-      refineForest defaultForestConfig 0.40 0.45 0.85 0.3 0.75 0.03 FormFlat `shouldBe` BiomeTempRainforest
+      refineForest defaultForestConfig 0.40 0.45 0.85 0.3 0.75 0.03 FormFlat 0.10 `shouldBe` BiomeTempRainforest
 
-    it "tropical dry when hot + moderate precip" $
-      refineForest defaultForestConfig 0.40 0.75 0.50 0.3 0.50 0.03 FormFlat `shouldBe` BiomeTropicalDryForest
+    it "tropical seasonal forest when warm + high seasonality" $
+      refineForest defaultForestConfig 0.40 0.70 0.50 0.3 0.50 0.03 FormFlat 0.55 `shouldBe` BiomeTropicalSeasonalForest
+
+    it "tropical dry when hot + moderate precip (low seasonality)" $
+      refineForest defaultForestConfig 0.40 0.75 0.50 0.3 0.50 0.03 FormFlat 0.10 `shouldBe` BiomeTropicalDryForest
 
     it "temperate deciduous when warm + wet" $
-      refineForest defaultForestConfig 0.40 0.45 0.55 0.3 0.50 0.03 FormFlat `shouldBe` BiomeTempDeciduousForest
+      refineForest defaultForestConfig 0.40 0.45 0.55 0.3 0.50 0.03 FormFlat 0.10 `shouldBe` BiomeTempDeciduousForest
 
     it "temperate coniferous when cool + rocky + drier" $
-      refineForest defaultForestConfig 0.40 0.40 0.35 0.50 0.50 0.03 FormFlat `shouldBe` BiomeTempConiferousForest
+      refineForest defaultForestConfig 0.40 0.40 0.35 0.50 0.50 0.03 FormFlat 0.10 `shouldBe` BiomeTempConiferousForest
 
     it "fallback to forest" $
-      refineForest defaultForestConfig 0.40 0.50 0.35 0.30 0.30 0.03 FormFlat `shouldBe` BiomeForest
+      refineForest defaultForestConfig 0.40 0.50 0.35 0.30 0.30 0.03 FormFlat 0.10 `shouldBe` BiomeForest
 
   -- -----------------------------------------------------------------------
   -- 3.19.10: refineTundra
@@ -340,30 +381,33 @@ spec = describe "BiomeRefine" $ do
   -- 3.19.13: refineSavanna
   -- -----------------------------------------------------------------------
   describe "refineSavanna" $ do
-    it "woodland savanna when wet + fertile" $
-      refineSavanna defaultSavannaConfig 0.70 0.40 0.50 0.40 `shouldBe` BiomeWoodlandSavanna
+    it "woodland savanna when wet + fertile + seasonal" $
+      refineSavanna defaultSavannaConfig 0.70 0.40 0.50 0.40 0.40 `shouldBe` BiomeWoodlandSavanna
 
     it "tropical savanna when hot" $
-      refineSavanna defaultSavannaConfig 0.80 0.30 0.30 0.30 `shouldBe` BiomeTropicalSavanna
+      refineSavanna defaultSavannaConfig 0.80 0.30 0.30 0.20 0.10 `shouldBe` BiomeTropicalSavanna
 
-    it "grassland savanna when dry" $
-      refineSavanna defaultSavannaConfig 0.65 0.20 0.30 0.25 `shouldBe` BiomeGrasslandSavanna
+    it "grassland savanna when dry + seasonal" $
+      refineSavanna defaultSavannaConfig 0.65 0.20 0.25 0.20 0.55 `shouldBe` BiomeGrasslandSavanna
 
-    it "fallback to savanna" $
-      refineSavanna defaultSavannaConfig 0.65 0.30 0.30 0.30 `shouldBe` BiomeSavanna
+    it "fallback to savanna (low seasonality)" $
+      refineSavanna defaultSavannaConfig 0.65 0.30 0.30 0.30 0.10 `shouldBe` BiomeSavanna
 
   -- -----------------------------------------------------------------------
   -- 3.19.14: refineTaiga
   -- -----------------------------------------------------------------------
   describe "refineTaiga" $ do
     it "boreal bog when flat + very moist" $
-      refineTaiga defaultTaigaConfig 0.25 0.45 0.80 FormFlat `shouldBe` BiomeBorealBog
+      refineTaiga defaultTaigaConfig 0.25 0.45 0.80 FormFlat 0.20 0.30 `shouldBe` BiomeBorealBog
+
+    it "oceanic boreal when low temp range + high humidity" $
+      refineTaiga defaultTaigaConfig 0.25 0.45 0.50 FormFlat 0.10 0.50 `shouldBe` BiomeOceanicBoreal
 
     it "boreal forest when warmer + wetter" $
-      refineTaiga defaultTaigaConfig 0.25 0.45 0.50 FormFlat `shouldBe` BiomeBorealForest
+      refineTaiga defaultTaigaConfig 0.25 0.45 0.50 FormFlat 0.20 0.30 `shouldBe` BiomeBorealForest
 
     it "fallback to taiga" $
-      refineTaiga defaultTaigaConfig 0.20 0.35 0.50 FormFlat `shouldBe` BiomeTaiga
+      refineTaiga defaultTaigaConfig 0.20 0.35 0.50 FormFlat 0.20 0.30 `shouldBe` BiomeTaiga
 
   -- -----------------------------------------------------------------------
   -- 3.19.15: refineSwamp
@@ -391,33 +435,54 @@ spec = describe "BiomeRefine" $ do
   -- 3.19.16: refineSnow
   -- -----------------------------------------------------------------------
   describe "refineSnow" $ do
-    it "glacier when thick ice" $
-      refineSnow defaultSnowConfig 0.10 0.20 0.30 `shouldBe` BiomeGlacier
+    it "warm escape demotes to alpine" $
+      -- temp 0.30 > snWarmEscapeTemp 0.25; slope moderate
+      refineSnow defaultSnowConfig 0.30 0.05 0.30 0.10 `shouldBe` BiomeAlpine
+
+    it "marginal snow (temp in [0.15, 0.25]) demotes to alpine" $
+      -- temp 0.18 >= snMarginalMinTemp 0.15, < snWarmEscapeTemp 0.25
+      refineSnow defaultSnowConfig 0.18 0.05 0.30 0.10 `shouldBe` BiomeAlpine
+
+    it "glacier when thick ice and cold enough" $
+      -- temp 0.10 <= snGlacierMaxTemp 0.15, iceThickness 0.20 >= 0.10
+      refineSnow defaultSnowConfig 0.10 0.20 0.30 0.10 `shouldBe` BiomeGlacier
+
+    it "no glacier when too warm despite thick ice" $
+      -- temp 0.14 <= snGlacierMaxTemp 0.15 → still works (just under limit)
+      -- but temp 0.16 > snGlacierMaxTemp → falls through
+      refineSnow defaultSnowConfig 0.14 0.20 0.30 0.10 `shouldBe` BiomeGlacier
 
     it "ice cap when extreme cold" $
-      refineSnow defaultSnowConfig 0.03 0.05 0.30 `shouldBe` BiomeIceCap
+      refineSnow defaultSnowConfig 0.03 0.05 0.30 0.10 `shouldBe` BiomeIceCap
 
-    it "snowfield when high snowpack" $
-      refineSnow defaultSnowConfig 0.10 0.05 0.60 `shouldBe` BiomeSnowfield
+    it "snowfield when high snowpack and cold enough" $
+      -- temp 0.10 <= snGlacierMaxTemp 0.15, snowpack 0.60 >= 0.50
+      refineSnow defaultSnowConfig 0.10 0.05 0.60 0.10 `shouldBe` BiomeSnowfield
 
-    it "fallback to snow" $
-      refineSnow defaultSnowConfig 0.10 0.05 0.30 `shouldBe` BiomeSnow
+    it "steep slope becomes alpine scree" $
+      -- temp 0.12 < snMarginalMinTemp, slope 0.35 >= snSteepSlopeThreshold 0.30
+      -- no ice/snowpack/icecap triggers
+      refineSnow defaultSnowConfig 0.12 0.05 0.30 0.35 `shouldBe` BiomeAlpineScree
+
+    it "fallback to snow on gentle slope" $
+      -- temp 0.12 < snMarginalMinTemp, gentle slope, no ice/snow triggers
+      refineSnow defaultSnowConfig 0.12 0.05 0.30 0.10 `shouldBe` BiomeSnow
 
   -- -----------------------------------------------------------------------
   -- 3.19.17: refineAlpine
   -- -----------------------------------------------------------------------
   describe "refineAlpine" $ do
     it "alpine scree when rugged + thin soil" $
-      refineAlpine defaultAlpineConfig 0.80 0.12 0.30 0.3 0.40 0.05 `shouldBe` BiomeAlpineScree
+      refineAlpine defaultAlpineConfig 0.80 0.12 0.30 0.3 0.40 0.05 0.50 `shouldBe` BiomeAlpineScree
 
-    it "alpine tundra when cold + high" $
-      refineAlpine defaultAlpineConfig 0.85 0.10 0.20 0.2 0.10 0.30 `shouldBe` BiomeAlpineTundra
+    it "alpine tundra when cold" $
+      refineAlpine defaultAlpineConfig 0.85 0.10 0.20 0.2 0.10 0.30 0.50 `shouldBe` BiomeAlpineTundra
 
-    it "alpine meadow at lower band + wet" $
-      refineAlpine defaultAlpineConfig 0.75 0.20 0.35 0.1 0.10 0.30 `shouldBe` BiomeAlpineMeadow
+    it "alpine meadow when cool + wet + humid" $
+      refineAlpine defaultAlpineConfig 0.75 0.25 0.35 0.1 0.10 0.30 0.40 `shouldBe` BiomeAlpineMeadow
 
     it "fallback to alpine" $
-      refineAlpine defaultAlpineConfig 0.85 0.20 0.20 0.1 0.10 0.30 `shouldBe` BiomeAlpine
+      refineAlpine defaultAlpineConfig 0.85 0.20 0.20 0.1 0.10 0.30 0.50 `shouldBe` BiomeAlpine
 
   -- -----------------------------------------------------------------------
   -- 3.19.18: refineVolcanic
@@ -487,6 +552,37 @@ spec = describe "BiomeRefine" $ do
 
     it "aridRefinementConfig is distinct from lush" $
       aridRefinementConfig `shouldNotBe` lushRefinementConfig
+
+  -- -----------------------------------------------------------------------
+  -- P3.2: Mountain transition smoothing
+  -- -----------------------------------------------------------------------
+  describe "smoothMountainTransitions" $ do
+    it "inserts Alpine between Snow and Forest (2x2 grid)" $
+      -- 2×2 grid:
+      --   [Snow, Forest]
+      --   [Forest, Forest]
+      -- After 1 iteration, Snow (rank 3) is surrounded by Forest (rank 1)
+      -- neighbours. Median of [3,1,1] = 1, gap = 2 > 1, so Snow → Alpine.
+      let grid = U.fromList [BiomeSnow, BiomeForest, BiomeForest, BiomeForest]
+          result = smoothMountainTransitions 1 2 2 grid
+      in (result U.! 0) `shouldBe` BiomeAlpine
+
+    it "does not modify non-mountain biomes" $
+      -- 2×2 grid: all Desert (rank 0) — should pass through unchanged
+      let grid = U.fromList [BiomeDesert, BiomeDesert, BiomeDesert, BiomeDesert]
+          result = smoothMountainTransitions 1 2 2 grid
+      in result `shouldBe` grid
+
+    it "preserves already-smooth transitions (Forest→Alpine→Snow)" $
+      -- 3×1 grid: Forest, Alpine, Snow — each adjacent pair differs by 1 rank
+      let grid = U.fromList [BiomeForest, BiomeAlpine, BiomeSnow]
+          result = smoothMountainTransitions 1 3 1 grid
+      in result `shouldBe` grid
+
+    it "zero iterations returns input unchanged" $
+      let grid = U.fromList [BiomeSnow, BiomeForest, BiomeForest, BiomeForest]
+          result = smoothMountainTransitions 0 2 2 grid
+      in result `shouldBe` grid
 
 -- | Build an empty terrain chunk of a given tile count (for testing).
 emptyTerrainChunkN :: Int -> TerrainChunk

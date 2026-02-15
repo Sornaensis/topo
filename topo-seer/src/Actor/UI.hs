@@ -186,10 +186,10 @@ module Actor.UI
   , setUiVegTempWeight
   , setUiVegPrecipWeight
   , setUiBtCoastalBand
-  , setUiBtSnowElevation
-  , setUiBtAlpineElevation
+  , setUiBtSnowMaxTemp
+  , setUiBtAlpineMaxTemp
   , setUiBtIceCapTemp
-  , setUiBtMontaneLow
+  , setUiBtMontaneMaxTemp
   , setUiBtMontanePrecip
   , setUiBtCliffSlope
   , setUiBtValleyMoisture
@@ -242,7 +242,7 @@ import qualified Data.Text as Text
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
 import Hyperspace.Actor.Spec (OpTag(..))
-import Seer.Config.Preset.Types (ConfigPreset)
+import Seer.Config.Snapshot.Types (ConfigSnapshot)
 import Seer.World.Persist.Types (WorldSaveManifest)
 import UI.WidgetTree (WidgetId)
 
@@ -467,10 +467,10 @@ data UiState = UiState
   , uiVegTempWeight :: !Float
   , uiVegPrecipWeight :: !Float
   , uiBtCoastalBand :: !Float
-  , uiBtSnowElevation :: !Float
-  , uiBtAlpineElevation :: !Float
+  , uiBtSnowMaxTemp :: !Float
+  , uiBtAlpineMaxTemp :: !Float
   , uiBtIceCapTemp :: !Float
-  , uiBtMontaneLow :: !Float
+  , uiBtMontaneMaxTemp :: !Float
   , uiBtMontanePrecip :: !Float
   , uiBtCliffSlope :: !Float
   , uiBtValleyMoisture :: !Float
@@ -499,7 +499,7 @@ data UiState = UiState
   , uiSliceLonCenter :: !Float
   , uiHoverHex :: !(Maybe (Int, Int))
   , uiHoverWidget :: !(Maybe WidgetId)
-  , uiWorldConfig :: !(Maybe ConfigPreset)
+  , uiWorldConfig :: !(Maybe ConfigSnapshot)
   , uiWorldName :: !Text
   , uiWorldSaveInput :: !Text
   , uiWorldList :: ![WorldSaveManifest]
@@ -689,10 +689,10 @@ emptyUiState = UiState
   , uiVegTempWeight = 0.6
   , uiVegPrecipWeight = 0.4
   , uiBtCoastalBand = 0.3
-  , uiBtSnowElevation = 0.8
-  , uiBtAlpineElevation = 0.7
+  , uiBtSnowMaxTemp = 0.4
+  , uiBtAlpineMaxTemp = 0.42
   , uiBtIceCapTemp = 0.25
-  , uiBtMontaneLow = 0.44
+  , uiBtMontaneMaxTemp = 0.58
   , uiBtMontanePrecip = 0.5
   , uiBtCliffSlope = 0.3333
   , uiBtValleyMoisture = 0.5714
@@ -915,10 +915,10 @@ data UiUpdate
   | SetVegTempWeight !Float
   | SetVegPrecipWeight !Float
   | SetBtCoastalBand !Float
-  | SetBtSnowElevation !Float
-  | SetBtAlpineElevation !Float
+  | SetBtSnowMaxTemp !Float
+  | SetBtAlpineMaxTemp !Float
   | SetBtIceCapTemp !Float
-  | SetBtMontaneLow !Float
+  | SetBtMontaneMaxTemp !Float
   | SetBtMontanePrecip !Float
   | SetBtCliffSlope !Float
   | SetBtValleyMoisture !Float
@@ -947,7 +947,7 @@ data UiUpdate
   | SetSliceLonCenter !Float
   | SetHoverHex !(Maybe (Int, Int))
   | SetHoverWidget !(Maybe WidgetId)
-  | SetWorldConfig !(Maybe ConfigPreset)
+  | SetWorldConfig !(Maybe ConfigSnapshot)
   | SetWorldName !Text
   | SetWorldSaveInput !Text
   | SetWorldList ![WorldSaveManifest]
@@ -1137,10 +1137,10 @@ applyUpdate upd st = case upd of
   SetVegTempWeight v   -> st { uiVegTempWeight = clamp01 v }
   SetVegPrecipWeight v -> st { uiVegPrecipWeight = clamp01 v }
   SetBtCoastalBand v -> st { uiBtCoastalBand = clamp01 v }
-  SetBtSnowElevation v -> st { uiBtSnowElevation = clamp01 v }
-  SetBtAlpineElevation v -> st { uiBtAlpineElevation = clamp01 v }
+  SetBtSnowMaxTemp v -> st { uiBtSnowMaxTemp = clamp01 v }
+  SetBtAlpineMaxTemp v -> st { uiBtAlpineMaxTemp = clamp01 v }
   SetBtIceCapTemp v -> st { uiBtIceCapTemp = clamp01 v }
-  SetBtMontaneLow v -> st { uiBtMontaneLow = clamp01 v }
+  SetBtMontaneMaxTemp v -> st { uiBtMontaneMaxTemp = clamp01 v }
   SetBtMontanePrecip v -> st { uiBtMontanePrecip = clamp01 v }
   SetBtCliffSlope v -> st { uiBtCliffSlope = clamp01 v }
   SetBtValleyMoisture v -> st { uiBtValleyMoisture = clamp01 v }
@@ -1259,7 +1259,7 @@ setUiPresetSelected handle idx =
   cast @"update" handle #update (SetPresetSelected idx)
 
 -- | Set the captured world config for revert support.
-setUiWorldConfig :: ActorHandle Ui (Protocol Ui) -> Maybe ConfigPreset -> IO ()
+setUiWorldConfig :: ActorHandle Ui (Protocol Ui) -> Maybe ConfigSnapshot -> IO ()
 setUiWorldConfig handle cfg =
   cast @"update" handle #update (SetWorldConfig cfg)
 
@@ -1959,25 +1959,25 @@ setUiBtCoastalBand :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
 setUiBtCoastalBand handle value =
   cast @"update" handle #update (SetBtCoastalBand value)
 
--- | Set snow elevation biome threshold (0–1 normalized).
-setUiBtSnowElevation :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
-setUiBtSnowElevation handle value =
-  cast @"update" handle #update (SetBtSnowElevation value)
+-- | Set snow max temperature biome threshold (0–1 normalized).
+setUiBtSnowMaxTemp :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiBtSnowMaxTemp handle value =
+  cast @"update" handle #update (SetBtSnowMaxTemp value)
 
--- | Set alpine elevation biome threshold (0–1 normalized).
-setUiBtAlpineElevation :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
-setUiBtAlpineElevation handle value =
-  cast @"update" handle #update (SetBtAlpineElevation value)
+-- | Set alpine max temperature biome threshold (0–1 normalized).
+setUiBtAlpineMaxTemp :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiBtAlpineMaxTemp handle value =
+  cast @"update" handle #update (SetBtAlpineMaxTemp value)
 
 -- | Set ice cap temperature biome threshold (0–1 normalized).
 setUiBtIceCapTemp :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
 setUiBtIceCapTemp handle value =
   cast @"update" handle #update (SetBtIceCapTemp value)
 
--- | Set montane low elevation biome threshold (0–1 normalized).
-setUiBtMontaneLow :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
-setUiBtMontaneLow handle value =
-  cast @"update" handle #update (SetBtMontaneLow value)
+-- | Set montane max temperature biome threshold (0–1 normalized).
+setUiBtMontaneMaxTemp :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiBtMontaneMaxTemp handle value =
+  cast @"update" handle #update (SetBtMontaneMaxTemp value)
 
 -- | Set montane precipitation biome threshold (0–1 normalized).
 setUiBtMontanePrecip :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()

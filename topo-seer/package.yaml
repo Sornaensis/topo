@@ -32,10 +32,10 @@ library:
     - Seer
     - Seer.App
     - Seer.Config
-    - Seer.Config.Preset
-    - Seer.Config.Preset.Types
     - Seer.Config.Runtime
     - Seer.Config.SliderSpec
+    - Seer.Config.Snapshot
+    - Seer.Config.Snapshot.Types
     - Seer.Draw
     - Seer.Draw.Dialog
     - Seer.Input

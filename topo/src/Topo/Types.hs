@@ -1,3 +1,6 @@
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -107,6 +110,10 @@ module Topo.Types
   -- Water body biome codes (61–62)
   , pattern BiomeLake
   , pattern BiomeInlandSea
+  -- Phase 3 sub-biomes (63–65)
+  , pattern BiomeTropicalSeasonalForest
+  , pattern BiomeFogDesert
+  , pattern BiomeOceanicBoreal
   , WaterBodyType
   , WaterBodyTypeError(..)
   , waterBodyFromCode
@@ -193,8 +200,10 @@ module Topo.Types
   , regionSize
   ) where
 
+import Data.Aeson (FromJSON(..), ToJSON(..))
 import Data.Vector.Unboxed.Deriving (derivingUnbox)
 import Data.Word (Word8, Word16, Word32)
+import GHC.Generics (Generic)
 import qualified Data.Vector.Unboxed as U
 
 newtype ChunkId = ChunkId Int
@@ -228,7 +237,10 @@ mkWorldConfig size
 data WorldExtent = WorldExtent
   { weChunkRadiusX :: !Int
   , weChunkRadiusY :: !Int
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON WorldExtent
+instance FromJSON WorldExtent
 
 -- | Errors produced when constructing invalid world extents.
 data WorldExtentError
@@ -281,7 +293,8 @@ newtype RegionId = RegionId Int
   deriving (Eq, Ord, Show)
 
 newtype BiomeId = BiomeId Word16
-  deriving (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show)
+  deriving newtype (ToJSON, FromJSON)
 
 derivingUnbox "BiomeId"
   [t| BiomeId -> Word16 |]
@@ -357,6 +370,9 @@ biomeIdFromCode code =
     60 -> Right BiomeVolcanicAshPlain
     61 -> Right BiomeLake
     62 -> Right BiomeInlandSea
+    63 -> Right BiomeTropicalSeasonalForest
+    64 -> Right BiomeFogDesert
+    65 -> Right BiomeOceanicBoreal
     _ -> Left (BiomeIdUnknownCode code)
 
 biomeIdToCode :: BiomeId -> Word16
@@ -573,6 +589,20 @@ pattern BiomeLake = BiomeId 61
 
 pattern BiomeInlandSea :: BiomeId
 pattern BiomeInlandSea = BiomeId 62
+
+-- Phase 3 sub-biomes
+
+-- | Tropical seasonal / monsoon forest: high precip seasonality + warm.
+pattern BiomeTropicalSeasonalForest :: BiomeId
+pattern BiomeTropicalSeasonalForest = BiomeId 63
+
+-- | Fog desert: coastal desert sustained by fog moisture rather than rain.
+pattern BiomeFogDesert :: BiomeId
+pattern BiomeFogDesert = BiomeId 64
+
+-- | Oceanic boreal: wet, low-temp-range boreal coast (Norway, Pacific NW).
+pattern BiomeOceanicBoreal :: BiomeId
+pattern BiomeOceanicBoreal = BiomeId 65
 
 {-# COMPLETE BiomeDesert
   , BiomeGrassland

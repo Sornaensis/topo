@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Volcanism stage for vents, magma, and eruption outputs.
@@ -8,6 +9,10 @@ module Topo.Volcanism
   ) where
 
 import Control.Monad.Except (throwError)
+import GHC.Generics (Generic)
+import Topo.Config.JSON
+  (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
+   genericToJSON, genericParseJSON)
 import Control.Monad.Reader (ask)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
@@ -28,25 +33,52 @@ import Topo.World (TerrainWorld(..))
 import qualified Data.Vector.Unboxed as U
 
 -- | Volcanism stage configuration.
+--
+-- Controls vent generation, eruption thresholds, magma dynamics, and
+-- deposit effects on terrain and soil.
 data VolcanismConfig = VolcanismConfig
   { vcVentDensityBase :: !Float
+    -- ^ Base probability of vent formation [0..1].
   , vcVentThreshold :: !Float
+    -- ^ Noise threshold above which a vent forms [0..1].
   , vcBoundaryConvergentWeight :: !Float
+    -- ^ Weight of convergent plate boundaries in vent placement [0..1].
   , vcBoundaryDivergentWeight :: !Float
+    -- ^ Weight of divergent plate boundaries in vent placement [0..1].
   , vcBoundaryTransformWeight :: !Float
+    -- ^ Weight of transform plate boundaries in vent placement [0..1].
   , vcHotspotScale :: !Float
+    -- ^ Noise scale for hotspot detection (cycles per tile).
   , vcHotspotThreshold :: !Float
+    -- ^ Noise threshold for hotspot activation [0..1].
   , vcActiveThreshold :: !Float
+    -- ^ Magma level above which a volcano is considered active [0..1].
   , vcEruptThreshold :: !Float
+    -- ^ Magma level above which eruption occurs [0..1].
   , vcMagmaRecharge :: !Float
+    -- ^ Magma recharge rate per step.
   , vcEruptMagmaCost :: !Float
+    -- ^ Magma consumed per eruption event.
   , vcLavaScale :: !Float
+    -- ^ Lava deposit scale [0..1].
   , vcAshScale :: !Float
+    -- ^ Ash deposit scale [0..1].
   , vcDepositScale :: !Float
+    -- ^ Overall deposit intensity scale [0..1].
   , vcDepositRaiseScale :: !Float
+    -- ^ Elevation raise per unit of volcanic deposit (elevation units).
   , vcRockDensityLavaBoost :: !Float
+    -- ^ Rock density boost from lava deposits [0..1].
   , vcSoilGrainAshBoost :: !Float
-  } deriving (Eq, Show)
+    -- ^ Soil grain size boost from ash deposits [0..1].
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON VolcanismConfig where
+  toJSON = genericToJSON (configOptions "vc")
+
+instance FromJSON VolcanismConfig where
+  parseJSON v = genericParseJSON (configOptions "vc")
+                  (mergeDefaults (toJSON defaultVolcanismConfig) v)
 
 -- | Default volcanism configuration.
 defaultVolcanismConfig :: VolcanismConfig
