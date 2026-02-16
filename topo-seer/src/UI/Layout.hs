@@ -4,21 +4,15 @@ module UI.Layout
   , topBarRect
   , layoutFor
   , layoutForSeed
-  , genButtonRect
   , leftGenButtonRect
-  , seedMinusRect
-  , seedPlusRect
-  , seedValueRect
-  , seedRandomRect
   , leftPanelRect
   , leftToggleRect
   , leftTabRects
   , configSeedValueRect
   , configSeedLabelRect
   , configSeedRandomRect
-  , chunkMinusRect
-  , chunkPlusRect
-  , viewRects
+  , leftChunkMinusRect
+  , leftChunkPlusRect
   , leftViewRects
   , configToggleRect
   , configPanelRect
@@ -667,10 +661,6 @@ layoutForSeed size logHeight seedWidth = Layout
   , layoutSeedWidth = seedWidth
   }
 
--- | Legacy generate button rect (now redirects to leftGenButtonRect).
-genButtonRect :: Layout -> Rect
-genButtonRect = leftGenButtonRect
-
 -- | Generate button inside the left panel, below seed value (Row 4).
 leftGenButtonRect :: Layout -> Rect
 leftGenButtonRect layout =
@@ -680,27 +670,6 @@ leftGenButtonRect layout =
       gap = 10
       top = leftControlsTop layout + 4 * (rowHeight + gap)
   in Rect (V2 (x + pad) top, V2 (w - pad * 2) 28)
-
-seedMinusRect :: Layout -> Rect
-seedMinusRect = leftSeedMinusRect
-
-seedPlusRect :: Layout -> Rect
-seedPlusRect = leftSeedPlusRect
-
-seedValueRect :: Layout -> Rect
-seedValueRect = leftSeedValueRect
-
-seedRandomRect :: Layout -> Rect
-seedRandomRect = leftSeedRandomRect
-
-chunkMinusRect :: Layout -> Rect
-chunkMinusRect = leftChunkMinusRect
-
-chunkPlusRect :: Layout -> Rect
-chunkPlusRect = leftChunkPlusRect
-
-viewRects :: Layout -> (Rect, Rect, Rect, Rect, Rect, Rect, Rect, Rect, Rect, Rect, Rect, Rect)
-viewRects = leftViewRects
 
 leftPanelRect :: Layout -> Rect
 leftPanelRect (Layout (V2 _ h) logHeight _) =

@@ -18,7 +18,6 @@ library:
     - Actor.TerrainCacheWorker
     - Actor.UiActions
     - Actor.UiActions.Command
-    - Actor.UiActions.Protocol
     - Actor.UiActions.Terrain
     - Actor.UI
     - Actor.AtlasCache
@@ -51,6 +50,7 @@ library:
     - Seer.Render.Frame
     - Seer.Render.Terrain
     - Seer.Render.Ui
+    - Seer.Timing
     - Seer.World.Persist
     - Seer.World.Persist.Types
     - UI.Font
@@ -108,6 +108,7 @@ tests:
       - filepath
       - QuickCheck
       - linear
+      - sdl2
       - time
       - topo
       - topo-seer

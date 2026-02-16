@@ -1,7 +1,6 @@
 module Seer.Render
   ( TerrainCache(..)
   , emptyTerrainCache
-  , updateTerrainCache
   , buildTerrainCache
   , updateChunkTextures
   , drawTerrain
@@ -12,7 +11,6 @@ import Seer.Render.Frame (renderFrame)
 import Seer.Render.Terrain
   ( TerrainCache(..)
   , emptyTerrainCache
-  , updateTerrainCache
   , buildTerrainCache
   , updateChunkTextures
   , drawTerrain

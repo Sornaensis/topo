@@ -229,6 +229,10 @@ setLogScroll :: ActorHandle Log (Protocol Log) -> Int -> IO ()
 setLogScroll handle value =
   cast @"setScroll" handle #setScroll value
 
+-- | Synchronous snapshot call.
+--
+-- __Test-only:__ No production callers — the 'LogSnapshotRef' IORef
+-- supersedes this.  Kept exported for test coverage.
 getLogSnapshot :: ActorHandle Log (Protocol Log) -> IO LogSnapshot
 getLogSnapshot handle =
   call @"snapshot" handle #snapshot ()

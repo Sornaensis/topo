@@ -37,6 +37,7 @@ import qualified Data.Text as Text
 import Data.Word (Word32, Word64)
 import GHC.Clock (getMonotonicTimeNSec)
 import Hyperspace.Actor (ActorHandle, Protocol, cast, replyTo)
+import Seer.Timing (nsToMs)
 
 -- | Handles cached from the last UI action request.
 data UiActionHandles = UiActionHandles
@@ -175,7 +176,3 @@ publishSnapshotDirect (Just ref) uiSnap dataSnap terrainSnap =
 
 nsText :: Word64 -> Text
 nsText ns = Text.pack (show ns)
-
-nsToMs :: Word64 -> Word64 -> Word32
-nsToMs start end =
-  fromIntegral ((end - start) `div` 1000000)

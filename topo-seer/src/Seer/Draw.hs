@@ -1015,7 +1015,7 @@ drawSeedControl renderer ui valueRect randomRect = do
 
 drawUiLabels :: SDL.Renderer -> Maybe FontCache -> UiState -> Layout -> IO ()
 drawUiLabels renderer fontCache ui layout = do
-  let buttonRect = genButtonRect layout
+  let buttonRect = leftGenButtonRect layout
       leftToggle = leftToggleRect layout
       (leftTabTopo, leftTabView) = leftTabRects layout
       configToggle = configToggleRect layout
@@ -1603,7 +1603,7 @@ drawUiLabels renderer fontCache ui layout = do
       seedLabel = configSeedLabelRect layout
       seedValue = configSeedValueRect layout
       seedRandom = configSeedRandomRect layout
-      (viewRect1, viewRect2, viewRect3, viewRect4, viewRect5, viewRect6, viewRect7, viewRect8, viewRect9, viewRect10, viewRect11, viewRect12) = viewRects layout
+      (viewRect1, viewRect2, viewRect3, viewRect4, viewRect5, viewRect6, viewRect7, viewRect8, viewRect9, viewRect10, viewRect11, viewRect12) = leftViewRects layout
       logHeader = logHeaderRect layout
       labelColor = V4 235 235 235 255
       scrollArea = configScrollAreaRect layout

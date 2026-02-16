@@ -9,7 +9,6 @@ import qualified Spec.ConfigSnapshot
 import qualified Spec.AtlasResultBroker
 import qualified Spec.AtlasScheduleBroker
 import qualified Spec.AtlasScheduler
-import qualified Spec.RenderActor
 import qualified Spec.SnapshotReceiver
 import qualified Spec.TerrainCacheWorker
 import qualified Spec.TerrainRender
@@ -32,7 +31,6 @@ main = hspec $ do
   Spec.AtlasScheduler.spec
   Spec.HexPick.spec
   Spec.Layout.spec
-  Spec.RenderActor.spec
   Spec.SnapshotReceiver.spec
   Spec.TerrainCacheWorker.spec
   Spec.TerrainRender.spec

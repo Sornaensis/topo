@@ -24,7 +24,6 @@ library
       Actor.TerrainCacheWorker
       Actor.UiActions
       Actor.UiActions.Command
-      Actor.UiActions.Protocol
       Actor.UiActions.Terrain
       Actor.UI
       Actor.AtlasCache
@@ -57,6 +56,7 @@ library
       Seer.Render.Frame
       Seer.Render.Terrain
       Seer.Render.Ui
+      Seer.Timing
       Seer.World.Persist
       Seer.World.Persist.Types
       UI.Font
@@ -117,7 +117,6 @@ test-suite topo-seer-test
       Spec.HexPick
       Spec.Layout
       Spec.LogActor
-      Spec.RenderActor
       Spec.RiverRender
       Spec.SliderSpec
       Spec.SnapshotReceiver
@@ -142,6 +141,7 @@ test-suite topo-seer-test
     , hspec
     , hyperspace
     , linear
+    , sdl2
     , text
     , time
     , topo

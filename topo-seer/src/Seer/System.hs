@@ -78,6 +78,7 @@ import qualified SDL
 import qualified SDL.Font as Font
 import Hyperspace.Actor (ActorHandle, Protocol, cast, getSingleton, newActorSystem, replyTo, shutdownActorSystem)
 import Seer.Draw (logLineHeight)
+import Seer.Timing (nsToMs)
 import Seer.Input (handleEvent, isQuit, tickTooltipHover)
 import Seer.Render
   ( TerrainCache(..)
@@ -468,10 +469,6 @@ shouldPoll nowMs pollMs lastPoll =
   case lastPoll of
     Nothing -> True
     Just prev -> nowMs - prev >= fromIntegral pollMs
-
-nsToMs :: Word64 -> Word64 -> Word32
-nsToMs start end =
-  fromIntegral ((end - start) `div` 1000000)
 
 renderStepSummary :: Word32 -> Word32 -> Word32 -> Word32 -> Word32 -> Word32 -> Bool -> String
 renderStepSummary pollMs snapshotMs handleMs terrainMs frameMs delayMs unchangedSnapshot =

@@ -35,6 +35,7 @@ import Hyperspace.Actor (ActorHandle, Protocol)
 import Linear (V2(..))
 import Data.IORef ()
 import qualified SDL
+import Seer.Timing (nsToMs, timedMs)
 import UI.TerrainAtlas (TerrainAtlasTile(..), renderAtlasTileTextures)
 import UI.Widgets (Rect(..))
 import UI.WidgetsDraw (rectToSDL)
@@ -115,10 +116,6 @@ drainAtlasBuildResults renderTargetOk perFrame renderer atlasCache resultRef = d
             else storeAtlasTiles (abrKey result) (abrScale result) tiles cache
       pure (cache', totalMs + elapsedMs)
 
-nsToMs :: Word64 -> Word64 -> Word32
-nsToMs start end =
-  fromIntegral ((end - start) `div` 1000000)
-
 -- | Schedule atlas build work when rendering with atlas tiles.
 --
 -- Sends a scheduling request (cast), then reads the latest report from
@@ -143,13 +140,6 @@ scheduleAtlasBuilds renderTargetOk dataReady atlasSchedulerHandle scheduleRef sn
     Just report | asrSnapshotVersion report == snapshotVersion ->
       pure (asrJobCount report, asrDrainMs report, asrEnqueueMs report)
     _ -> pure (0, 0, 0)
-
-timedMs :: IO a -> IO (a, Word32)
-timedMs action = do
-  start <- getMonotonicTimeNSec
-  result <- action
-  end <- getMonotonicTimeNSec
-  pure (result, nsToMs start end)
 
 -- | Resolve which atlas tiles to draw and clean up pending textures.
 resolveAtlasTiles

@@ -27,10 +27,10 @@ import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion)
 import Actor.UI (UiState(..))
 import Control.Monad (forM_)
-import Data.Word (Word32, Word64)
-import GHC.Clock (getMonotonicTimeNSec)
+import Data.Word (Word32)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
+import Seer.Timing (timedMs)
 
 -- | Handles required by the atlas scheduler.
 data AtlasSchedulerHandles = AtlasSchedulerHandles
@@ -128,14 +128,3 @@ runSchedule handles req = do
             , asrEnqueueMs = 0
             }
       updateAtlasScheduleReport (ashScheduleBroker handles) report
-
-nsToMs :: Word64 -> Word64 -> Word32
-nsToMs start end =
-  fromIntegral ((end - start) `div` 1000000)
-
-timedMs :: IO a -> IO (a, Word32)
-timedMs action = do
-  start <- getMonotonicTimeNSec
-  result <- action
-  end <- getMonotonicTimeNSec
-  pure (result, nsToMs start end)

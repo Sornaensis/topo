@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Climate generation and precipitation fields.
@@ -15,6 +16,10 @@ module Topo.Climate
   , module Topo.Climate.Evaporation
     -- * Pipeline stage
   , generateClimateStage
+    -- * Moisture transport internals (for testing)
+  , moistureTransportAccum
+  , moistureStepGrid
+  , moistureFlowAtGrid
   ) where
 
 import Control.Monad.Reader (asks)
@@ -483,16 +488,21 @@ buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx
             w = max 0.001 (moistITCZWidth mst)
             d = latDeg / w
         in itczPerIter * exp (negate (d * d)))
-      moisture = iterateN (moistIterations mst)
-                   (moistureStepGrid gridW gridH cfg windDir windSpd elev tempGrid
-                     vegCoverGrid oceanEvapGrid oceanMask itczBoostGrid waterLevel)
-                   initial
+      -- Moisture transport with condensation accumulation:
+      -- Each iteration yields (newMoisture, netCondensation); the
+      -- accumulated condensation across all iterations forms the
+      -- physics-based precipitation field.
+      (_finalMoisture, accumCondensation) =
+        moistureTransportAccum (moistIterations mst)
+          (moistureStepGrid gridW gridH cfg windDir windSpd elev tempGrid
+            vegCoverGrid oceanEvapGrid oceanMask itczBoostGrid waterLevel)
+          initial
       precipGrid = U.generate n (\i ->
         let o = orographicAt gridW gridH cfg windDir elev i
             motion = clamp01 (plateVelocity U.! i * bndMotionPrecip bnd)
             tectonic = boundaryOrogenyAt cfg waterLevel elev boundaries motion i
             plateBias = plateHeightPrecipBiasAt cfg waterLevel (plateHeight U.! i)
-            rawPrecip = moisture U.! i + o + tectonic + plateBias
+            rawPrecip = accumCondensation U.! i + o + tectonic + plateBias
             -- Polar precipitation floor: ramp from 0 at precPolarLatitude
             -- to precPolarFloor at the pole (90°).
             y = i `div` gridW
@@ -655,6 +665,34 @@ evapAtXY seed lm cfg waterLevel gx gy elevation temp windSpdVal =
      then clamp01 (oceanEvaporation mst temp windSpdVal insol + noise)
      else clamp01 noise
 
+-- | Run moisture transport for @n@ iterations, accumulating per-tile
+-- net condensation (precipitation) across all steps.
+--
+-- Returns @(finalMoisture, accumulatedPrecipitation)@.  The accumulated
+-- precipitation vector sums per-tile net condensation from each
+-- iteration, providing a physics-based precipitation field where
+-- moisture that condenses (minus ET recycling) contributes to
+-- precipitation at the tile where condensation occurs.
+--
+-- Ocean\/land reinjection and ITCZ boost feed atmospheric moisture
+-- only and are /not/ double-counted in the precipitation accumulator.
+moistureTransportAccum
+  :: Int
+  -> (U.Vector Float -> (U.Vector Float, U.Vector Float))
+     -- ^ Step function: current moisture -> (new moisture, condensed this step)
+  -> U.Vector Float
+     -- ^ Initial moisture
+  -> (U.Vector Float, U.Vector Float)
+     -- ^ (final moisture, accumulated precipitation)
+moistureTransportAccum iters step initial =
+  go iters initial (U.replicate (U.length initial) 0)
+  where
+    go 0 moist accum = (moist, accum)
+    go !n moist !accum =
+      let (moist', condensed) = step moist
+          accum' = U.zipWith (+) accum condensed
+      in go (n - 1) moist' accum'
+
 -- | Single transport iteration over the global moisture grid.
 --
 -- Combines:
@@ -664,6 +702,10 @@ evapAtXY seed lm cfg waterLevel gx gy elevation temp windSpdVal =
 --   * Persistent ocean moisture reinjection (Model E.4)
 --   * ITCZ convergence moisture boost (Model E.5)
 --   * Persistent land ET reinjection (Model E.6)
+--
+-- Returns @(newMoisture, condensedThisStep)@.  The condensation vector
+-- tracks net precipitation (condensation minus recycling) per tile,
+-- for accumulation across iterations in 'moistureTransportAccum'.
 moistureStepGrid
   :: Int -> Int -> ClimateConfig
   -> U.Vector Float -> U.Vector Float   -- ^ windDir, windSpd
@@ -673,40 +715,49 @@ moistureStepGrid
   -> U.Vector Float                      -- ^ itczBoost
   -> Float                               -- ^ water level
   -> U.Vector Float                      -- ^ current moisture
-  -> U.Vector Float
+  -> (U.Vector Float, U.Vector Float)
 moistureStepGrid gridW gridH cfg windDir windSpd elev tempGrid
                  vegCover oceanEvap oceanMask itczBoost waterLevel moisture =
   let mst = ccMoisture cfg
-  in U.generate (U.length moisture) $ \i ->
-    let base = moistureFlowAtGrid gridW gridH cfg windDir windSpd elev
-                 tempGrid vegCover moisture i
-        -- Ocean reinjection (Model E.4): ocean tiles never drop below
-        -- their physical evaporation rate, keeping a persistent moisture
-        -- source independent of initial conditions.
-        reinject = if oceanMask U.! i > 0.5
-                   then max base (oceanEvap U.! i)
-                   else base
-        -- Land ET reinjection (Model E.6): vegetated land tiles inject
-        -- moisture from soil/leaf evapotranspiration each iteration,
-        -- sustaining the "flying rivers" mechanism.
-        landET = if elev U.! i >= waterLevel
-                 then moistBaseRecycleRate mst
-                        * (vegCover U.! i)
-                        * satNorm (tempGrid U.! i)
-                 else 0
-        -- ITCZ convergence boost (Model E.5): moisture concentrates
-        -- near the intertropical convergence zone.
-        boosted = reinject + itczBoost U.! i + landET
-    in clamp01 boosted
+      n = U.length moisture
+      pairs = U.generate n $ \i ->
+        let (base, precip) = moistureFlowAtGrid gridW gridH cfg windDir windSpd elev
+                               tempGrid vegCover moisture i
+            -- Ocean reinjection (Model E.4): ocean tiles never drop below
+            -- their physical evaporation rate, keeping a persistent moisture
+            -- source independent of initial conditions.
+            reinject = if oceanMask U.! i > 0.5
+                       then max base (oceanEvap U.! i)
+                       else base
+            -- Land ET reinjection (Model E.6): vegetated land tiles inject
+            -- moisture from soil/leaf evapotranspiration each iteration,
+            -- sustaining the "flying rivers" mechanism.
+            landET = if elev U.! i >= waterLevel
+                     then moistBaseRecycleRate mst
+                            * (vegCover U.! i)
+                            * satNorm (tempGrid U.! i)
+                     else 0
+            -- ITCZ convergence boost (Model E.5): moisture concentrates
+            -- near the intertropical convergence zone.
+            boosted = reinject + itczBoost U.! i + landET
+        in (clamp01 boosted, precip)
+      (newMoist, condensed) = U.unzip pairs
+  in (newMoist, condensed)
 
--- | Compute the new moisture at a single grid tile from advection,
--- saturation-based condensation, and vegetation recycling.
+-- | Compute the new moisture and net condensation at a single grid
+-- tile from advection, saturation-based condensation, and vegetation
+-- recycling.
+--
+-- Returns @(remainingMoisture, netPrecipitation)@ where
+-- @netPrecipitation = condensation − recycled@: moisture that actually
+-- fell as precipitation at this tile.  Recycled vapour re-enters the
+-- atmosphere and may condense in a later iteration.
 moistureFlowAtGrid
   :: Int -> Int -> ClimateConfig
   -> U.Vector Float -> U.Vector Float
   -> U.Vector Float -> U.Vector Float
   -> U.Vector Float                      -- ^ vegCover
-  -> U.Vector Float -> Int -> Float
+  -> U.Vector Float -> Int -> (Float, Float)
 moistureFlowAtGrid gridW gridH cfg windDir windSpd elev tempGrid vegCover moisture i =
   let prc = ccPrecipitation cfg
       mst = ccMoisture cfg
@@ -714,10 +765,11 @@ moistureFlowAtGrid gridW gridH cfg windDir windSpd elev tempGrid vegCover moistu
       y = i `div` gridW
       dir = windDir U.! i
       spd = windSpd U.! i * moistAdvectSpeed mst
-      -- Fractional upwind offset (no integer rounding — fixes RC-2)
+      -- Fractional upwind offset: subtract the wind vector to sample
+      -- the location the air came FROM (upwind), not where it is going.
       (fdx, fdy) = windOffsetFrac dir spd
-      ux = fromIntegral x + fdx
-      uy = fromIntegral y + fdy
+      ux = fromIntegral x - fdx
+      uy = fromIntegral y - fdy
       -- Bilinear-sampled upwind moisture
       upwindMoisture = bilinearSample gridW gridH moisture ux uy
       upwindElev     = bilinearSample gridW gridH elev ux uy
@@ -741,7 +793,10 @@ moistureFlowAtGrid gridW gridH cfg windDir windSpd elev tempGrid vegCover moistu
       vegC     = vegCover U.! i
       recycled = condensation * vegC * moistRecycleRate mst
                    * satNorm (tempGrid U.! i)
-  in clamp01 (totalMoisture - condensation + recycled)
+      -- Net precipitation: condensation minus what is immediately
+      -- recycled back to the atmosphere.
+      netPrecip = max 0 (condensation - recycled)
+  in (clamp01 (totalMoisture - condensation + recycled), netPrecip)
 
 orographicAt :: Int -> Int -> ClimateConfig -> U.Vector Float -> U.Vector Float -> Int -> Float
 orographicAt gridW gridH cfg windDir elev i =
@@ -861,9 +916,10 @@ moistureFlowAt config cfg windDir windSpd elev moisture i =
       y = i `div` size
       dir = windDir U.! i
       spd = windSpd U.! i * moistAdvectSpeed mst
+      -- Subtract wind vector to sample the upwind location.
       (fdx, fdy) = windOffsetFrac dir spd
-      ux = fromIntegral x + fdx
-      uy = fromIntegral y + fdy
+      ux = fromIntegral x - fdx
+      uy = fromIntegral y - fdy
       upwindMoisture = bilinearSample size size moisture ux uy
       upwindElev     = bilinearSample size size elev ux uy
       h0 = elev U.! i

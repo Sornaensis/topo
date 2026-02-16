@@ -18,7 +18,6 @@ module Actor.Data
   , setWeatherChunkData
   , setRiverChunkData
   , requestDataSnapshot
-  , getDataSnapshot
   , getTerrainSnapshot
   , replaceTerrainData
   ) where

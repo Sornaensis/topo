@@ -20,13 +20,13 @@ import Actor.SnapshotReceiver (SnapshotRef)
 import Actor.Terrain
   ( TerrainGenProgress
   , TerrainGenResult
+  , TerrainReplyOps
   )
 import Actor.UiActions.Command
   ( UiAction(..)
   , UiActionRequest(..)
   , runUiAction
   )
-import Actor.UiActions.Protocol (TerrainReplyOps)
 import Actor.UiActions.Terrain
   ( UiActionHandles(..)
   , applyTerrainResult

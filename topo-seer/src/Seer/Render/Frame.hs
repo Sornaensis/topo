@@ -46,6 +46,7 @@ import Seer.Render.Terrain
   , drawTerrain
   )
 import Seer.Render.Ui (drawUiOverlay)
+import Seer.Timing (nsToMs, timedMs)
 import UI.Font (FontCache)
 import UI.Layout
 import UI.TerrainCache (ChunkTextureCache(..), emptyChunkTextureCache)
@@ -90,7 +91,7 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
       seedWidth = max 120 (seedMaxDigits * 10)
       layout = layoutForSeed (V2 (fromIntegral winW) (fromIntegral winH)) logHeight seedWidth
       Rect (V2 _ panelY, V2 _ panelH) = logPanelRect layout
-      buttonRect = genButtonRect layout
+      buttonRect = leftGenButtonRect layout
       configToggle = configToggleRect layout
       configPanel = configPanelRect layout
       (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion) = configTabRects layout
@@ -679,11 +680,11 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
       seedLabel = configSeedLabelRect layout
       seedValue = configSeedValueRect layout
       seedRandom = configSeedRandomRect layout
-      chunkMinus = chunkMinusRect layout
-      chunkPlus = chunkPlusRect layout
+      chunkMinus = leftChunkMinusRect layout
+      chunkPlus = leftChunkPlusRect layout
       chunkValue = configChunkValueRect layout
       logFilters = logFilterRects layout
-      (viewRect1, viewRect2, viewRect3, viewRect4, viewRect5, viewRect6, viewRect7, viewRect8, viewRect9, viewRect10, viewRect11, viewRect12) = viewRects layout
+      (viewRect1, viewRect2, viewRect3, viewRect4, viewRect5, viewRect6, viewRect7, viewRect8, viewRect9, viewRect10, viewRect11, viewRect12) = leftViewRects layout
       buttonLabel = if uiGenerating (rsUi snapshot) then V4 120 120 120 255 else V4 80 160 240 255
   tAfterLet <- getMonotonicTimeNSec
   SDL.rendererDrawColor renderer SDL.$= V4 r g b 255
@@ -989,17 +990,6 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
     hFlush traceH
   let didLog = loggedWindowSize || loggedSchedule || loggedScheduleDrain || loggedScheduleEnqueue || loggedUpload || loggedTextureCreate || loggedAtlasResolve || loggedChunkTexture || loggedDraw || loggedHover || loggedChrome || loggedUi || loggedPresent
   pure (renderTargetOk && dataReady && isNothing atlasToDraw, textureCache', atlasCache'', didLog)
-
-timedMs :: IO a -> IO (a, Word32)
-timedMs action = do
-  start <- getMonotonicTimeNSec
-  result <- action
-  end <- getMonotonicTimeNSec
-  pure (result, nsToMs start end)
-
-nsToMs :: Word64 -> Word64 -> Word32
-nsToMs start end =
-  fromIntegral ((end - start) `div` 1000000)
 
 logTiming :: ActorHandle Log (Protocol Log) -> Word32 -> Text.Text -> Word32 -> Maybe Int -> IO Bool
 logTiming handle thresholdMs label elapsed maybeCount =

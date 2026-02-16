@@ -14,10 +14,8 @@ module Actor.AtlasResultBroker
   , AtlasResultRef
   , atlasResultBrokerActorDef
   , enqueueAtlasResult
-  , drainAtlasResults
   , drainAtlasResultsN
   , setAtlasResultRef
-  , drainAtlasResultRefN
   ) where
 
 import Actor.AtlasResult (AtlasBuildResult)
@@ -65,11 +63,6 @@ enqueueAtlasResult :: ActorHandle AtlasResultBroker (Protocol AtlasResultBroker)
 enqueueAtlasResult handle result =
   cast @"enqueue" handle #enqueue result
 
--- | Drain all pending atlas results via the IORef (lock-free).
-drainAtlasResults :: AtlasResultRef -> IO [AtlasBuildResult]
-drainAtlasResults ref =
-  atomicModifyIORef' ref (\xs -> ([], reverse xs))
-
 -- | Drain up to N pending atlas results in FIFO order via the IORef (lock-free).
 drainAtlasResultsN :: AtlasResultRef -> Int -> IO [AtlasBuildResult]
 drainAtlasResultsN ref count = do
@@ -87,6 +80,4 @@ setAtlasResultRef
 setAtlasResultRef handle ref =
   cast @"setRef" handle #setRef ref
 
--- | Read the current queue length without draining (for diagnostics).
-drainAtlasResultRefN :: AtlasResultRef -> Int -> IO [AtlasBuildResult]
-drainAtlasResultRefN = drainAtlasResultsN
+

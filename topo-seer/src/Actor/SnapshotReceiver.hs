@@ -14,6 +14,7 @@
 -- render thread can poll without a synchronous actor call.
 module Actor.SnapshotReceiver
   ( SnapshotReceiver
+  , RenderSnapshot(..)
   , SnapshotVersion(..)
   , SnapshotRef
   , snapshotReceiverActorDef
@@ -23,13 +24,22 @@ module Actor.SnapshotReceiver
 
 import Actor.Data (DataSnapshot(..), DataSnapshotReply, TerrainSnapshot(..))
 import Actor.Log (LogLevel(..), LogSnapshot(..), LogSnapshotReply)
-import Actor.Render (RenderSnapshot(..))
 import Actor.UI (UiSnapshotReply, UiState(..), emptyUiState)
 import Control.Exception (evaluate)
 import Data.IORef (IORef, writeIORef)
 import Data.Word (Word64)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
+
+-- | Composite render snapshot published to the render loop.
+--
+-- Contains one sub-snapshot per domain: UI state, log, data, and terrain.
+data RenderSnapshot = RenderSnapshot
+  { rsUi      :: !UiState
+  , rsLog     :: !LogSnapshot
+  , rsData    :: !DataSnapshot
+  , rsTerrain :: !TerrainSnapshot
+  } deriving (Eq, Show)
 
 -- | Shared reference for lock-free snapshot reads by the render loop.
 type SnapshotRef = IORef (SnapshotVersion, RenderSnapshot)
@@ -132,6 +142,8 @@ actor SnapshotReceiver
 -- This performs a synchronous actor call and may block if the actor is busy.
 -- Prefer reading the 'SnapshotRef' directly via 'Data.IORef.readIORef' on
 -- the render thread for lock-free access.
+--
+-- __Test-only:__ No production callers — kept exported for test coverage.
 getSnapshot :: ActorHandle SnapshotReceiver (Protocol SnapshotReceiver) -> IO (SnapshotVersion, RenderSnapshot)
 getSnapshot handle =
   call @"snapshot" handle #snapshot ()

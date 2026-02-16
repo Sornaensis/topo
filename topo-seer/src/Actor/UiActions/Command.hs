@@ -22,9 +22,9 @@ import Actor.SnapshotReceiver (SnapshotReceiver)
 import Actor.Terrain
   ( Terrain
   , TerrainGenRequest(..)
+  , TerrainReplyOps
   , startTerrainGen
   )
-import Actor.UiActions.Protocol (TerrainReplyOps)
 import Actor.UI
   ( ConfigTab(..)
   , Ui

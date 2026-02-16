@@ -455,18 +455,18 @@ data Widget = Widget
 
 buildWidgets :: Layout -> [Widget]
 buildWidgets layout =
-  let (view1, view2, view3, view4, view5, view6, view7, view8, view9, view10, view11, view12) = viewRects layout
+  let (view1, view2, view3, view4, view5, view6, view7, view8, view9, view10, view11, view12) = leftViewRects layout
       (logDebug, logInfo, logWarn, logError) = logFilterRects layout
       (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion) = configTabRects layout
       (leftTabTopo, leftTabView) = leftTabRects layout
-  in [ Widget WidgetGenerate (genButtonRect layout)
+  in [ Widget WidgetGenerate (leftGenButtonRect layout)
      , Widget WidgetLeftToggle (leftToggleRect layout)
      , Widget WidgetLeftTabTopo leftTabTopo
      , Widget WidgetLeftTabView leftTabView
       , Widget WidgetSeedValue (configSeedValueRect layout)
       , Widget WidgetSeedRandom (configSeedRandomRect layout)
-     , Widget WidgetChunkMinus (chunkMinusRect layout)
-     , Widget WidgetChunkPlus (chunkPlusRect layout)
+     , Widget WidgetChunkMinus (leftChunkMinusRect layout)
+     , Widget WidgetChunkPlus (leftChunkPlusRect layout)
      , Widget WidgetConfigToggle (configToggleRect layout)
      , Widget WidgetConfigTabTerrain tabTerrain
      , Widget WidgetConfigTabPlanet tabPlanet

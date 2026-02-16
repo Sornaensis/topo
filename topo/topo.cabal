@@ -68,6 +68,7 @@ library
       Topo.PlateMetadata
       Topo.Planet
       Topo.OceanCurrent
+      Topo.Units
       Topo.Config.JSON
   other-modules:
       Topo.Config
@@ -114,11 +115,13 @@ test-suite topo-test
       Spec.Parameters
       Spec.Pipeline
       Spec.Planet
+      Spec.Precipitation
       Spec.Provenance
       Spec.River
       Spec.Soil
       Spec.Storage
       Spec.Tectonics
+      Spec.Units
       Spec.Vegetation
       Spec.Volcanism
       Spec.WaterBody

@@ -672,7 +672,7 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
       logHeight = if lsCollapsed logSnap then 24 else 160
       seedWidth = max 120 (seedMaxDigits * 10)
       layout = layoutForSeed (V2 (fromIntegral winW) (fromIntegral winH)) logHeight seedWidth
-      seedValue = seedValueRect layout
+      seedValue = configSeedValueRect layout
       scrollArea = configScrollAreaRect layout
       scrollBar = configScrollBarRect layout
       inScrollBar = uiShowConfig uiSnap && containsPoint scrollBar point
