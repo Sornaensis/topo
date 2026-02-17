@@ -905,29 +905,38 @@ data TerrainChunk = TerrainChunk
 -- | Per-chunk climate averages.  Computed by 'Topo.Climate.generateClimateStage'.
 data ClimateChunk = ClimateChunk
   { ccTempAvg    :: !(U.Vector Float)
-    -- ^ Annual-average normalised temperature (0–1).
-    -- Maps to Celsius via @T_C = norm × 70 − 30@, giving a range
-    -- of approximately −30 °C to +40 °C.
+    -- ^ Annual-average normalised temperature [0, 1].
+    -- Convert to °C via @normToC defaultUnitScales@.
+    -- Default scale: 0.0 → −30 °C, 1.0 → +40 °C.
   , ccPrecipAvg  :: !(U.Vector Float)
-    -- ^ Annual-average normalised precipitation (0–1).
+    -- ^ Annual-average normalised precipitation [0, 1].
+    -- Convert to mm/yr via @normToMmYear defaultUnitScales@.
+    -- Default scale: 0.0 → 0 mm/yr, 1.0 → 6 000 mm/yr.
     -- Derived from physics-based evaporation and wind-driven moisture
     -- transport with orographic uplift.
   , ccWindDirAvg :: !(U.Vector Float)
-    -- ^ Annual-average wind direction (radians, 0 = east, π/2 = north).
+    -- ^ Annual-average wind direction in radians (0 = east, π/2 = north).
+    -- No normalised-to-unit conversion needed (already in radians).
   , ccWindSpdAvg :: !(U.Vector Float)
-    -- ^ Annual-average wind speed (0–1 normalised).
-  -- | Annual-average relative humidity (0–1).
+    -- ^ Annual-average wind speed [0, 1].
+    -- Convert to m/s via @normToWindMs defaultUnitScales@.
+    -- Default scale: 0.0 → 0 m/s, 1.0 → 50 m/s.
+  -- | Annual-average relative humidity [0, 1].
+  -- Convert to percentage via @normToRH defaultUnitScales@.
+  -- 0.0 → 0 %, 1.0 → 100 %.
   --
-  -- Computed analytically as @clamp01(precip / satNorm(temp))@ during
-  -- 'Topo.Climate.generateClimateStage'.
+  -- Derived from the moisture transport model's equilibrium atmospheric
+  -- moisture divided by the temperature-dependent saturation capacity:
+  -- @clamp01(moisture / satNorm(T) + soilMoisture × soilContrib)@.
   , ccHumidityAvg :: !(U.Vector Float)
-  -- | Annual temperature range (0–1 normalised).
+  -- | Annual temperature range [0, 1].
+  -- Convert to °C range via @normToC defaultUnitScales@.
   --
   -- Derived from the seasonal amplitude formula:
   -- @clamp01(tempAvg + amp × |sin lat|) - clamp01(tempAvg - amp × |sin lat|)@.
   -- High values indicate continental climates; low values maritime.
   , ccTempRange :: !(U.Vector Float)
-  -- | Precipitation seasonality index (0–1).
+  -- | Precipitation seasonality index [0, 1] (dimensionless).
   --
   -- @0@ = no seasonality (year-round uniform rain).
   -- @1@ = extreme seasonality (monsoon, Mediterranean).
@@ -939,17 +948,27 @@ data ClimateChunk = ClimateChunk
 -- 'Topo.Weather.tickWeatherStage'.
 data WeatherChunk = WeatherChunk
   { wcTemp     :: !(U.Vector Float)
-    -- ^ Instantaneous temperature (0–1).
+    -- ^ Instantaneous temperature [0, 1].
+    -- Convert to °C via @normToC defaultUnitScales@.
+    -- Default scale: 0.0 → −30 °C, 1.0 → +40 °C.
   , wcHumidity :: !(U.Vector Float)
-    -- ^ Instantaneous relative humidity (0–1).
+    -- ^ Instantaneous relative humidity [0, 1].
+    -- Convert to percentage via @normToRH defaultUnitScales@.
+    -- 0.0 → 0 %, 1.0 → 100 %.
   , wcWindDir  :: !(U.Vector Float)
-    -- ^ Instantaneous wind direction (radians).
+    -- ^ Instantaneous wind direction in radians (0 = east, π/2 = north).
   , wcWindSpd  :: !(U.Vector Float)
-    -- ^ Instantaneous wind speed (0–1).
+    -- ^ Instantaneous wind speed [0, 1].
+    -- Convert to m/s via @normToWindMs defaultUnitScales@.
+    -- Default scale: 0.0 → 0 m/s, 1.0 → 50 m/s.
   , wcPressure :: !(U.Vector Float)
-    -- ^ Atmospheric pressure proxy (0–1).
+    -- ^ Atmospheric pressure proxy [0, 1].
+    -- Convert to hPa via @normToHPa defaultUnitScales@.
+    -- Default scale: 0.0 → 870 hPa, 1.0 → 1 084 hPa.
   , wcPrecip   :: !(U.Vector Float)
-    -- ^ Instantaneous precipitation rate (0–1).
+    -- ^ Instantaneous precipitation rate [0, 1].
+    -- Convert to mm/yr via @normToMmYear defaultUnitScales@.
+    -- Default scale: 0.0 → 0 mm/yr, 1.0 → 6 000 mm/yr.
   } deriving (Eq, Show)
 
 -- | Per-tile river routing outputs for a chunk.
@@ -1224,56 +1243,95 @@ riverSizeFromOrder o
 -- ('tsBiomeId', 'tsTerrainForm', 'tsWaterBodyType') use nearest-neighbour.
 data TerrainSample = TerrainSample
   { tsElevation     :: !Float
-    -- ^ Normalised surface elevation (0–1), from 'tcElevation'.
+    -- ^ Normalised surface elevation [0, 1]. Sea level ≈ 0.5.
+    -- Convert to metres a.s.l. via @normToMetres defaultUnitScales@.
+    -- Default scale: 0.0 → −6 000 m, 0.5 → 0 m, 1.0 → +6 000 m.
+    -- Source: 'tcElevation'.
   , tsSlope         :: !Float
-    -- ^ Local slope (0–1), from 'tcSlope'.
+    -- ^ Local slope [0, 1], from 'tcSlope'.
+    -- Convert to degrees via @normSlopeToDeg@.
+    -- 0.0 → 0°, 0.5 → ~16°, 1.0 → ~30°.
   , tsCurvature     :: !Float
-    -- ^ Profile curvature (−1 to +1), from 'tcCurvature'.
+    -- ^ Profile curvature [−1, +1], from 'tcCurvature'.
+    -- Negative = concave (valley), positive = convex (ridge).
+    -- No unit conversion (dimensionless).
   , tsHardness      :: !Float
-    -- ^ Rock hardness (0–1), from 'tcHardness'.
+    -- ^ Rock hardness [0, 1], from 'tcHardness'.
+    -- 0 = soft sediment, 1 = hard crystalline rock.
+    -- No unit conversion (dimensionless index).
   , tsSoilDepth     :: !Float
-    -- ^ Soil depth (0–1), from 'tcSoilDepth'.
+    -- ^ Soil depth [0, 1], from 'tcSoilDepth'.
+    -- Convert to metres via @normToSoilM defaultUnitScales@.
+    -- Default scale: 0.0 → 0 m (bare rock), 1.0 → 5 m (deep tropical).
   , tsMoisture      :: !Float
-    -- ^ Terrain moisture (0–1), from 'tcMoisture'.
+    -- ^ Terrain moisture [0, 1], from 'tcMoisture'.
+    -- Interpret as a relative saturation index.
+    -- Convert to percentage via @normToRH defaultUnitScales@.
   , tsFertility     :: !Float
-    -- ^ Soil fertility (0–1), from 'tcFertility'.
+    -- ^ Soil fertility [0, 1], from 'tcFertility'.
+    -- 0 = barren, 1 = maximally fertile.
+    -- No unit conversion (dimensionless index).
   , tsRoughness     :: !Float
-    -- ^ Surface roughness (0–1), from 'tcRoughness'.
+    -- ^ Surface roughness [0, 1], from 'tcRoughness'.
+    -- 0 = smooth, 1 = maximally rough.
+    -- No unit conversion (dimensionless index).
   , tsRockDensity   :: !Float
-    -- ^ Rock density (0–1), from 'tcRockDensity'.
+    -- ^ Rock density [0, 1], from 'tcRockDensity'.
+    -- Relative density index.
+    -- No unit conversion (dimensionless index).
   , tsSoilGrain     :: !Float
-    -- ^ Soil grain size (0–1), from 'tcSoilGrain'.
+    -- ^ Soil grain size [0, 1], from 'tcSoilGrain'.
+    -- 0 = fine clay, 1 = coarse gravel.
+    -- No unit conversion (dimensionless index).
   , tsTemperature   :: !Float
-    -- ^ Instantaneous temperature (0–1), from 'wcTemp'.
+    -- ^ Instantaneous temperature [0, 1], from 'wcTemp'.
+    -- Convert to °C via @normToC defaultUnitScales@.
+    -- Default scale: 0.0 → −30 °C, 1.0 → +40 °C.
   , tsHumidity      :: !Float
-    -- ^ Instantaneous relative humidity (0–1), from 'wcHumidity'.
+    -- ^ Instantaneous relative humidity [0, 1], from 'wcHumidity'.
+    -- Convert to percentage via @normToRH defaultUnitScales@.
+    -- 0.0 → 0 %, 1.0 → 100 %.
   , tsWindSpeed     :: !Float
-    -- ^ Instantaneous wind speed (0–1), from 'wcWindSpd'.
+    -- ^ Instantaneous wind speed [0, 1], from 'wcWindSpd'.
+    -- Convert to m/s via @normToWindMs defaultUnitScales@.
+    -- Default scale: 0.0 → 0 m/s, 1.0 → 50 m/s.
   , tsPressure      :: !Float
-    -- ^ Atmospheric pressure proxy (0–1), from 'wcPressure'.
+    -- ^ Atmospheric pressure proxy [0, 1], from 'wcPressure'.
+    -- Convert to hPa via @normToHPa defaultUnitScales@.
+    -- Default scale: 0.0 → 870 hPa, 1.0 → 1 084 hPa.
   , tsPrecip        :: !Float
-    -- ^ Instantaneous precipitation (0–1), from 'wcPrecip'.
+    -- ^ Instantaneous precipitation [0, 1], from 'wcPrecip'.
+    -- Convert to mm/yr via @normToMmYear defaultUnitScales@.
+    -- Default scale: 0.0 → 0 mm/yr, 1.0 → 6 000 mm/yr.
   -- Extended fields (v12+)
   , tsBiomeId       :: !BiomeId
     -- ^ Biome classification from 'tcFlags'.
+    -- See 'Topo.Biome.biomeDisplayName' for human-readable labels.
   , tsVegCover      :: !Float
-    -- ^ Vegetation cover fraction from 'VegetationChunk'.
+    -- ^ Vegetation cover fraction [0, 1] from 'VegetationChunk'.
+    -- 0 = bare ground, 1 = full canopy cover.
   , tsVegDensity    :: !Float
-    -- ^ Biome-derived vegetation density from 'VegetationChunk'.
+    -- ^ Biome-derived vegetation density [0, 1] from 'VegetationChunk'.
+    -- 0 = no vegetation, 1 = dense forest.
   , tsRelief        :: !Float
-    -- ^ Local relief (elevation range in neighbourhood).
+    -- ^ Local relief (elevation range in neighbourhood) [0, 1].
+    -- Convert to metres via @normToMetres defaultUnitScales@.
   , tsRuggedness    :: !Float
-    -- ^ Terrain ruggedness index.
+    -- ^ Terrain ruggedness index [0, 1].
+    -- Dimensionless; higher = more rugged terrain.
   , tsTerrainForm   :: !TerrainForm
-    -- ^ Classified terrain landform.
+    -- ^ Classified terrain landform (e.g., plain, hill, mountain).
   , tsWaterBodyType :: !WaterBodyType
-    -- ^ Water body classification for this tile.
+    -- ^ Water body classification for this tile (e.g., ocean, lake, river).
   , tsDischarge     :: !Float
-    -- ^ River discharge (from 'RiverChunk').
+    -- ^ River discharge [0, 1] from 'RiverChunk'.
+    -- Relative magnitude; higher = larger river.
   , tsSnowpack      :: !Float
-    -- ^ Snow accumulation (from 'GlacierChunk').
+    -- ^ Snow accumulation [0, 1] from 'GlacierChunk'.
+    -- Relative depth; higher = deeper snowpack.
   , tsIceThickness  :: !Float
-    -- ^ Glacier ice thickness (from 'GlacierChunk').
+    -- ^ Glacier ice thickness [0, 1] from 'GlacierChunk'.
+    -- Relative thickness; higher = thicker ice.
   } deriving (Eq, Show)
 
 chunkTileCount :: WorldConfig -> Int

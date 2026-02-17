@@ -267,6 +267,16 @@ data MoistureConfig = MoistureConfig
   -- @moistBaseRecycleRate × vegCover × satNorm(T)@ moisture, modelling
   -- direct leaf and soil surface evaporation (\"flying rivers\").
   -- Default: @0.10@.
+  , moistConvectiveThreshold :: !Float
+  -- ^ Relative-humidity threshold for convective precipitation
+  -- (Model E.7).  When @totalMoisture / satNorm(T) > threshold@,
+  -- warm moist air undergoes spontaneous convective uplift, producing
+  -- precipitation even on flat terrain.  Earth-like default: @0.70@
+  -- (~70 % RH, realistic cloud-formation threshold).
+  , moistConvectiveRate     :: !Float
+  -- ^ Convective precipitation rate per unit excess RH (Model E.7).
+  -- Scales with temperature (warmer → more CAPE → more convective
+  -- rain) and local saturation capacity.  Default: @0.15@.
   } deriving (Eq, Show, Generic)
 
 -- | Serialise with @moist@\/@cc@ prefixes stripped from field names.
@@ -299,6 +309,8 @@ defaultMoistureConfig = MoistureConfig
   , moistInternalLandBase   = 0.25
   , moistAdvectSpeed        = 2.0
   , moistBaseRecycleRate    = 0.10
+  , moistConvectiveThreshold = 0.70
+  , moistConvectiveRate     = 0.15
   }
 
 ------------------------------------------------------------------------
@@ -465,18 +477,13 @@ defaultBoundaryConfig = BoundaryConfig
 -- where the seasonal factor extremes are derived from
 -- 'scSeasonalBase' and 'scSeasonalRange'.
 data SeasonalityConfig = SeasonalityConfig
-  { scHumidityCoastalBoost :: !Float
-  -- ^ Additive humidity contribution from coastal proximity.
-  -- Coastal tiles receive @coastalProximity × scHumidityCoastalBoost@
-  -- extra humidity, modelling oceanic vapour advection that raises
-  -- humidity beyond what precipitation alone would produce.
-  -- Default: @0.15@.
-  , scHumiditySoilContribution :: !Float
+  { scHumiditySoilContribution :: !Float
   -- ^ Additive humidity contribution from soil moisture.
   -- Tiles with high soil moisture (from the hydrology stage) receive
   -- @soilMoisture × scHumiditySoilContribution@ extra humidity,
-  -- breaking the circular @humidity = f(precip, temp)@ relationship.
-  -- Default: @0.20@.
+  -- capturing surface boundary-layer effects (fog, dew, microclimate)
+  -- that the column-average atmospheric transport model does not resolve.
+  -- Default: @0.10@.
   , scSeasonalityContinentalityFactor :: !Float
   -- ^ Continentality amplification of precipitation seasonality.
   -- Interior (non-coastal) tiles have their seasonality multiplied by
@@ -510,8 +517,7 @@ instance FromJSON SeasonalityConfig where
 -- | Sensible Earth-like defaults for the seasonality model.
 defaultSeasonalityConfig :: SeasonalityConfig
 defaultSeasonalityConfig = SeasonalityConfig
-  { scHumidityCoastalBoost = 0.15
-  , scHumiditySoilContribution = 0.20
+  { scHumiditySoilContribution = 0.10
   , scSeasonalityContinentalityFactor = 0.40
   , scSeasonalityRainShadowBoost = 0.15
   , scTempRangeOceanDamping = 0.50

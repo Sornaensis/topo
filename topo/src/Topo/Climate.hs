@@ -71,8 +71,8 @@ generateClimateStage cfg wcfg waterLevel = PipelineStage "generateClimate" "gene
       gridW = (maxCx - minCx + 1) * size
       gridH = (maxCy - minCy + 1) * size
       vegMap = twVegetation world
-      (precipGrid, coastalGrid) = buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx minCy) gridW gridH
-      climate' = IntMap.mapWithKey (buildClimateChunkWithPrecip config seed lm cfg seasonAmp sBase sRange waterLevel vegMap precipGrid coastalGrid (ChunkCoord minCx minCy) gridW) terrain
+      (precipGrid, coastalGrid, moistureGrid) = buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx minCy) gridW gridH
+      climate' = IntMap.mapWithKey (buildClimateChunkWithPrecip config seed lm cfg seasonAmp sBase sRange waterLevel vegMap precipGrid coastalGrid moistureGrid (ChunkCoord minCx minCy) gridW) terrain
   putWorldP world { twClimate = climate' }
 
 -- | Build a single chunk's climate data using global precipitation and
@@ -91,12 +91,13 @@ buildClimateChunkWithPrecip
   -> IntMap VegetationChunk -- ^ vegetation data for albedo feedback
   -> U.Vector Float   -- ^ global precipitation grid
   -> U.Vector Float   -- ^ global coastal proximity grid
+  -> U.Vector Float   -- ^ global equilibrium moisture grid (from transport)
   -> ChunkCoord       -- ^ min chunk coordinate
   -> Int              -- ^ grid width in tiles
   -> Int              -- ^ chunk key
   -> TerrainChunk
   -> ClimateChunk
-buildClimateChunkWithPrecip config seed lm cfg seasonAmp sBase sRange waterLevel vegMap precipGrid coastalGrid minCoord gridW key terrain =
+buildClimateChunkWithPrecip config seed lm cfg seasonAmp sBase sRange waterLevel vegMap precipGrid coastalGrid moistureGrid minCoord gridW key terrain =
   let origin = chunkOriginTile config (chunkCoordFromId (ChunkId key))
       TileCoord _ox oy = origin
       n = chunkTileCount config
@@ -119,8 +120,9 @@ buildClimateChunkWithPrecip config seed lm cfg seasonAmp sBase sRange waterLevel
       windSpd = diffuseField n (windIterations wnd) (windDiffuse wnd) windSpd0
 
       -- Global-grid slices for this chunk
-      precip  = chunkGridSlice config minCoord gridW precipGrid key
-      coastal = chunkGridSlice config minCoord gridW coastalGrid key
+      precip   = chunkGridSlice config minCoord gridW precipGrid key
+      coastal  = chunkGridSlice config minCoord gridW coastalGrid key
+      moisture = chunkGridSlice config minCoord gridW moistureGrid key
 
       -- Ocean thermal moderation: pull coastal temps toward the
       -- latitude-dependent SST.
@@ -141,7 +143,7 @@ buildClimateChunkWithPrecip config seed lm cfg seasonAmp sBase sRange waterLevel
       seasonCfg = ccSeasonality cfg
       amp       = seasonAmp
       soilMoist = tcMoisture terrain
-      humidityAvg   = climateHumidityAvg (ccMoisture cfg) seasonCfg precip temp coastal soilMoist n
+      humidityAvg   = climateHumidityAvg (ccMoisture cfg) seasonCfg moisture temp soilMoist n
       tempRange     = climateTempRange config lm seasonCfg amp origin temp coastal n
       precipSeason  = climatePrecipSeasonality config lm seasonCfg sBase sRange origin coastal (tcElevation terrain) windDir n
 
@@ -159,41 +161,36 @@ buildClimateChunkWithPrecip config seed lm cfg seasonAmp sBase sRange waterLevel
 -- Seasonality helper functions (Phase 2)
 -- ---------------------------------------------------------------------------
 
--- | Annual-average relative humidity from precipitation, temperature,
--- coastal proximity, and soil moisture.
+-- | Annual-average relative humidity from the moisture transport model.
 --
--- Base formula: @RH = clamp01(precip / satNorm(temp))@
+-- Uses the equilibrium atmospheric moisture from the transport
+-- simulation divided by the local saturation capacity
+-- (@satNormCfg mst T@), giving a physics-based relative humidity
+-- that accounts for advection, evaporation, condensation, and
+-- recycling.
 --
--- Phase 2 additions:
+-- @RH = clamp01(moisture / satNorm(T) + soilMoisture × soilContrib)@
 --
---   * __Coastal boost__: @+ coastalProximity × scHumidityCoastalBoost@
---     — ocean vapour advection raises humidity for maritime tiles.
---   * __Soil moisture__: @+ soilMoisture × scHumiditySoilContribution@
---     — wet soils (from hydrology) contribute humidity independent of
---     current-cycle precipitation.
---
--- Together these break humidity's pure dependence on T×P, giving the
--- biome classifier a genuine third axis.
+-- The soil moisture term captures surface boundary-layer humidity
+-- (fog, dew, microclimate) that the column-average transport model
+-- does not resolve.
 climateHumidityAvg
   :: MoistureConfig
   -> SeasonalityConfig
-  -> U.Vector Float    -- ^ precipitation
+  -> U.Vector Float    -- ^ equilibrium atmospheric moisture (from transport)
   -> U.Vector Float    -- ^ temperature
-  -> U.Vector Float    -- ^ coastal proximity (0 = interior, 1 = ocean)
   -> U.Vector Float    -- ^ soil moisture (from hydrology tcMoisture)
   -> Int
   -> U.Vector Float
-climateHumidityAvg mst seasonCfg precip temp coastal soilMoist n =
-  let coastBoost = scHumidityCoastalBoost seasonCfg
-      soilContrib = scHumiditySoilContribution seasonCfg
+climateHumidityAvg mst seasonCfg moisture temp soilMoist n =
+  let soilContrib = scHumiditySoilContribution seasonCfg
   in U.generate n $ \i ->
     let t = temp U.! i
-        p = precip U.! i
+        m = moisture U.! i
         sat = max 0.001 (satNormCfg mst t)
-        baseRH = p / sat
-        c = coastal U.! i
+        transportRH = m / sat
         s = soilMoist U.! i
-    in clamp01 (baseRH + c * coastBoost + s * soilContrib)
+    in clamp01 (transportRH + s * soilContrib)
 
 -- | Annual temperature range from seasonal amplitude and coastal proximity.
 --
@@ -375,13 +372,18 @@ moistureTransport config seed lm cfg waterLevel origin windDir windSpd tempVec e
       initial = U.generate n (evapAt config seed lm cfg waterLevel origin elev tempVec windSpd)
   in iterateN (moistIterations (ccMoisture cfg)) (moistureStep config cfg windDir windSpd elev) initial
 
--- | Build the global precipitation and coastal proximity grids.
+-- | Build the global precipitation, coastal proximity, and equilibrium
+-- moisture grids.
 --
--- Returns @(precipGrid, coastalGrid)@.  The precipitation grid uses
--- physics-based evaporation: Dalton's-Law ocean evaporation (Model B)
--- and Penman-Monteith-inspired land ET (Model C), both driven by the
--- Clausius-Clapeyron saturation curve.  Moisture is then transported
--- by wind with temperature-dependent condensation.
+-- Returns @(precipGrid, coastalGrid, moistureGrid)@.  The precipitation
+-- grid uses physics-based evaporation: Dalton's-Law ocean evaporation
+-- (Model B) and Penman-Monteith-inspired land ET (Model C), both
+-- driven by the Clausius-Clapeyron saturation curve.  Moisture is then
+-- transported by wind with temperature-dependent condensation.
+--
+-- The moisture grid is the equilibrium atmospheric moisture field after
+-- all transport iterations, used downstream to compute transport-model
+-- relative humidity (@moisture / satNorm(T)@).
 buildClimateGrids
   :: WorldConfig
   -> Word64
@@ -392,7 +394,7 @@ buildClimateGrids
   -> IntMap VegetationChunk  -- ^ Vegetation bootstrap data
   -> ChunkCoord
   -> Int -> Int
-  -> (U.Vector Float, U.Vector Float)
+  -> (U.Vector Float, U.Vector Float, U.Vector Float)
 buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx minCy) gridW gridH =
   let prc = ccPrecipitation cfg
       wnd = ccWind cfg
@@ -493,7 +495,7 @@ buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx
       -- Each iteration yields (newMoisture, netCondensation); the
       -- accumulated condensation across all iterations forms the
       -- physics-based precipitation field.
-      (_finalMoisture, accumCondensation) =
+      (finalMoisture, accumCondensation) =
         moistureTransportAccum (moistIterations mst)
           (moistureStepGrid gridW gridH cfg windDir windSpd elev tempGrid
             vegCoverGrid oceanEvapGrid oceanMask itczBoostGrid waterLevel)
@@ -514,7 +516,7 @@ buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx
             polarFrac = clamp01 ((latDeg - polarLat) / (90.0 - polarLat))
             polarFloor = precPolarFloor prc * polarFrac
         in clamp01 (max rawPrecip polarFloor))
-    in (precipGrid, coastal)
+    in (precipGrid, coastal, finalMoisture)
 
 -- | Build a scalar grid from a 'TerrainChunk' field accessor.
 --
@@ -787,7 +789,20 @@ moistureFlowAtGrid gridW gridH cfg windDir windSpd elev tempGrid vegCover moistu
       -- iterations.
       dstCapacity  = satNormCfg mst (tempGrid U.! i)
       excess       = max 0 (totalMoisture - dstCapacity)
-      condensation = excess * moistCondensationRate mst
+      forcedCond   = excess * moistCondensationRate mst
+      -- Convective precipitation (Model E.7):
+      -- Warm near-saturated air undergoes spontaneous convective
+      -- uplift even on flat terrain.  Fires when relative humidity
+      -- exceeds a configurable threshold and scales with temperature
+      -- (warmer → more CAPE → stronger updrafts) and with saturation
+      -- capacity to keep the result in moisture-fraction units.
+      rh           = if dstCapacity > 0.001
+                       then min 1 (totalMoisture / dstCapacity)
+                       else 0
+      convExcess   = max 0 (rh - moistConvectiveThreshold mst)
+      convective   = convExcess * moistConvectiveRate mst
+                       * (tempGrid U.! i) * dstCapacity
+      condensation = forcedCond + convective
       -- ET recycling (Model E.3):
       -- Vegetation transpires a fraction of condensed moisture back to
       -- the atmosphere, sustaining continental interior humidity.

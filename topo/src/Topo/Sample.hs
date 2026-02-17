@@ -6,10 +6,14 @@ module Topo.Sample
   , hexAt
   , hexData
   , hexSample
+    -- * Real-unit convenience
+  , TerrainSampleReal(..)
+  , convertSample
   ) where
 
 import Topo.Hex (hexToWorld, worldToHex)
 import Topo.Types
+import Topo.Units
 import Topo.World
 import qualified Data.Vector.Unboxed as U
 
@@ -203,3 +207,103 @@ bilerpSample fx fy s00 s10 s01 s11 =
       , tsTerrainForm   = tsTerrainForm s00
       , tsWaterBodyType = tsWaterBodyType s00
       }
+
+-- ---------------------------------------------------------------------------
+-- Real-unit terrain sample
+-- ---------------------------------------------------------------------------
+
+-- | A terrain sample with all continuous fields converted to real-world
+-- physical units via 'Topo.Units' conversions.
+--
+-- Produced by 'convertSample'.  Discrete fields ('tsrBiomeId', etc.)
+-- are carried through unchanged.
+data TerrainSampleReal = TerrainSampleReal
+  { tsrElevation     :: !Float
+    -- ^ Elevation in metres above sea level.
+  , tsrSlope         :: !Float
+    -- ^ Slope in degrees (0–~30°).
+  , tsrCurvature     :: !Float
+    -- ^ Profile curvature (dimensionless, −1 to +1).
+  , tsrHardness      :: !Float
+    -- ^ Rock hardness index (dimensionless, 0–1).
+  , tsrSoilDepth     :: !Float
+    -- ^ Soil depth in metres.
+  , tsrMoisture      :: !Float
+    -- ^ Terrain moisture as relative percentage (0–100%).
+  , tsrFertility     :: !Float
+    -- ^ Soil fertility index (dimensionless, 0–1).
+  , tsrRoughness     :: !Float
+    -- ^ Surface roughness index (dimensionless, 0–1).
+  , tsrRockDensity   :: !Float
+    -- ^ Rock density index (dimensionless, 0–1).
+  , tsrSoilGrain     :: !Float
+    -- ^ Soil grain size index (dimensionless, 0–1).
+  , tsrTemperature   :: !Float
+    -- ^ Temperature in °C.
+  , tsrHumidity      :: !Float
+    -- ^ Relative humidity in percent (0–100%).
+  , tsrWindSpeed     :: !Float
+    -- ^ Wind speed in m/s.
+  , tsrPressure      :: !Float
+    -- ^ Atmospheric pressure in hPa.
+  , tsrPrecip        :: !Float
+    -- ^ Precipitation in mm/yr.
+  , tsrBiomeId       :: !BiomeId
+    -- ^ Biome classification (unchanged).
+  , tsrVegCover      :: !Float
+    -- ^ Vegetation cover fraction (dimensionless, 0–1).
+  , tsrVegDensity    :: !Float
+    -- ^ Vegetation density (dimensionless, 0–1).
+  , tsrRelief        :: !Float
+    -- ^ Local relief in metres.
+  , tsrRuggedness    :: !Float
+    -- ^ Terrain ruggedness index (dimensionless, 0–1).
+  , tsrTerrainForm   :: !TerrainForm
+    -- ^ Terrain landform (unchanged).
+  , tsrWaterBodyType :: !WaterBodyType
+    -- ^ Water body type (unchanged).
+  , tsrDischarge     :: !Float
+    -- ^ River discharge (dimensionless, 0–1).
+  , tsrSnowpack      :: !Float
+    -- ^ Snow accumulation (dimensionless, 0–1).
+  , tsrIceThickness  :: !Float
+    -- ^ Glacier ice thickness (dimensionless, 0–1).
+  } deriving (Eq, Show)
+
+-- | Convert a normalised 'TerrainSample' to real-world units using
+-- the given 'UnitScales'.
+--
+-- @
+-- let real = convertSample defaultUnitScales sample
+-- tsrElevation real   -- metres a.s.l.
+-- tsrTemperature real -- °C
+-- tsrPrecip real      -- mm\/yr
+-- @
+convertSample :: UnitScales -> TerrainSample -> TerrainSampleReal
+convertSample us ts = TerrainSampleReal
+  { tsrElevation     = normToMetres us (tsElevation ts)
+  , tsrSlope         = normSlopeToDeg us (tsSlope ts)
+  , tsrCurvature     = tsCurvature ts
+  , tsrHardness      = tsHardness ts
+  , tsrSoilDepth     = normToSoilM us (tsSoilDepth ts)
+  , tsrMoisture      = normToRH (tsMoisture ts)
+  , tsrFertility     = tsFertility ts
+  , tsrRoughness     = tsRoughness ts
+  , tsrRockDensity   = tsRockDensity ts
+  , tsrSoilGrain     = tsSoilGrain ts
+  , tsrTemperature   = normToC us (tsTemperature ts)
+  , tsrHumidity      = normToRH (tsHumidity ts)
+  , tsrWindSpeed     = normToWindMs us (tsWindSpeed ts)
+  , tsrPressure      = normToHPa us (tsPressure ts)
+  , tsrPrecip        = normToMmYear us (tsPrecip ts)
+  , tsrBiomeId       = tsBiomeId ts
+  , tsrVegCover      = tsVegCover ts
+  , tsrVegDensity    = tsVegDensity ts
+  , tsrRelief        = normToMetres us (tsRelief ts)
+  , tsrRuggedness    = tsRuggedness ts
+  , tsrTerrainForm   = tsTerrainForm ts
+  , tsrWaterBodyType = tsWaterBodyType ts
+  , tsrDischarge     = tsDischarge ts
+  , tsrSnowpack      = tsSnowpack ts
+  , tsrIceThickness  = tsIceThickness ts
+  }

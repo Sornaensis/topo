@@ -1,5 +1,6 @@
 module Main (main) where
 
+import System.IO (hSetEncoding, stdout, stderr, utf8)
 import Test.Hspec
 import qualified Spec.World
 import qualified Spec.Hex
@@ -40,41 +41,44 @@ import qualified WorldProperty
 import qualified HexProperty
 
 main :: IO ()
-main = hspec $ do
-  Spec.World.spec
-  Spec.Hex.spec
-  Spec.Metadata.spec
-  Spec.Pipeline.spec
-  Spec.Storage.spec
-  Spec.Mesh.spec
-  Spec.Export.spec
-  Spec.Provenance.spec
-  Spec.Determinism.spec
-  Spec.Tectonics.spec
-  Spec.Erosion.spec
-  Spec.Glacier.spec
-  Spec.Volcanism.spec
-  Spec.Climate.spec
-  Spec.Biome.spec
-  Spec.BiomeRefine.spec
-  Spec.Vegetation.spec
-  Spec.Weather.spec
-  Spec.Noise.spec
-  Spec.Hydrology.spec
-  Spec.River.spec
-  Spec.BaseHeight.spec
-  Spec.Planet.spec
-  Spec.Parameters.spec
-  Spec.Soil.spec
-  Spec.Evaporation.spec
-  Spec.WaterBody.spec
-  Spec.Integration.spec
-  Spec.OceanCurrent.spec
-  Spec.ConfigJSON.spec
-  Spec.ConfigProperty.spec
-  Spec.Units.spec
-  Spec.Precipitation.spec
-  Spec.MoistureFixture.spec
-  Spec.ClimateAlignment.spec
-  WorldProperty.spec
-  HexProperty.spec
+main = do
+  hSetEncoding stdout utf8
+  hSetEncoding stderr utf8
+  hspec $ do
+    Spec.World.spec
+    Spec.Hex.spec
+    Spec.Metadata.spec
+    Spec.Pipeline.spec
+    Spec.Storage.spec
+    Spec.Mesh.spec
+    Spec.Export.spec
+    Spec.Provenance.spec
+    Spec.Determinism.spec
+    Spec.Tectonics.spec
+    Spec.Erosion.spec
+    Spec.Glacier.spec
+    Spec.Volcanism.spec
+    Spec.Climate.spec
+    Spec.Biome.spec
+    Spec.BiomeRefine.spec
+    Spec.Vegetation.spec
+    Spec.Weather.spec
+    Spec.Noise.spec
+    Spec.Hydrology.spec
+    Spec.River.spec
+    Spec.BaseHeight.spec
+    Spec.Planet.spec
+    Spec.Parameters.spec
+    Spec.Soil.spec
+    Spec.Evaporation.spec
+    Spec.WaterBody.spec
+    Spec.Integration.spec
+    Spec.OceanCurrent.spec
+    Spec.ConfigJSON.spec
+    Spec.ConfigProperty.spec
+    Spec.Units.spec
+    Spec.Precipitation.spec
+    Spec.MoistureFixture.spec
+    Spec.ClimateAlignment.spec
+    WorldProperty.spec
+    HexProperty.spec

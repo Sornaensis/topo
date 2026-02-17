@@ -50,6 +50,7 @@ import Seer.Config (mapIntRange)
 import Seer.Config.SliderSpec
 import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Topo (BiomeId, ChunkCoord(..), ChunkId(..), ClimateChunk(..), PlateBoundary(..), TerrainChunk(..), TileCoord(..), TileIndex(..), WeatherChunk(..), WorldConfig(..), biomeDisplayName, chunkCoordFromTile, chunkIdFromCoord, plateBoundaryToCode, tileIndex)
+import Topo.Units (defaultUnitScales, normToC, normToMetres, normToMmYear, normToRH, normToWindMs, normToSoilM, normSlopeToDeg)
 import UI.Font (FontCache, textSize)
 import UI.HexPick (axialToScreen)
 import UI.Layout
@@ -2424,17 +2425,34 @@ contextLines mode terrainSnap (q, r) =
     Nothing -> [hexHeader q r, "No data"]
     Just s  -> hexHeader q r : modeLines mode s
   where
-    modeLines ViewElevation    s = ["Elev  " <> fmtF (hsElevation s), "Slope " <> fmtF (hsSlope s)]
-    modeLines ViewBiome        s = ["Biome " <> biomeDisplayName (hsBiome s), "Veg   " <> fmtF (hsFertility s)]
-    modeLines ViewClimate      s = ["Temp  " <> fmtF (hsTemp s), "Precip " <> fmtF (hsPrecipAvg s)]
-    modeLines ViewMoisture     s = ["Moist " <> fmtF (hsMoisture s), "Soil  " <> fmtF (hsSoilDepth s)]
-    modeLines ViewPrecip       s = ["Precip " <> fmtF (hsPrecipAvg s), "Humid " <> fmtF (hsHumidity s)]
+    us = defaultUnitScales
+
+    modeLines ViewElevation    s =
+      [ "Elev  " <> fmtU (normToMetres us (hsElevation s)) "m"
+      , "Slope " <> fmtU (normSlopeToDeg us (hsSlope s)) "°"
+      ]
+    modeLines ViewBiome        s =
+      [ "Biome " <> biomeDisplayName (hsBiome s)
+      , "Veg   " <> fmtF (hsFertility s)
+      ]
+    modeLines ViewClimate      s =
+      [ "Temp  " <> fmtU (normToC us (hsTemp s)) "°C"
+      , "Precip " <> fmtU (normToMmYear us (hsPrecipAvg s)) "mm/yr"
+      ]
+    modeLines ViewMoisture     s =
+      [ "Moist " <> fmtU (normToRH (hsMoisture s)) "%"
+      , "Soil  " <> fmtU (normToSoilM us (hsSoilDepth s)) "m"
+      ]
+    modeLines ViewPrecip       s =
+      [ "Precip " <> fmtU (normToMmYear us (hsPrecipAvg s)) "mm/yr"
+      , "Humid " <> fmtU (normToRH (hsHumidity s)) "% RH"
+      ]
     modeLines ViewPlateId      s = ["Plate " <> Text.pack (show (hsPlateId s))]
     modeLines ViewPlateBoundary s = ["Boundary " <> plateBoundaryDisplayName (hsPlateBoundary s)]
-    modeLines ViewPlateHardness s = ["Plate Hardness " <> fmtF (hsPlateHardness s)]
+    modeLines ViewPlateHardness s = ["Hardness " <> fmtF (hsPlateHardness s)]
     modeLines ViewPlateCrust   s = ["Crust " <> crustDisplayName (hsPlateCrust s)]
-    modeLines ViewPlateAge     s = ["Plate Age " <> fmtF (hsPlateAge s)]
-    modeLines ViewPlateHeight  s = ["Plate Height " <> fmtF (hsPlateHeight s)]
+    modeLines ViewPlateAge     s = ["Age   " <> fmtF (hsPlateAge s)]
+    modeLines ViewPlateHeight  s = ["Height " <> fmtU (normToMetres us (hsPlateHeight s)) "m"]
     modeLines ViewPlateVelocity s =
       [ "Vel X " <> fmtF (hsPlateVelX s)
       , "Vel Y " <> fmtF (hsPlateVelY s)
@@ -2503,6 +2521,15 @@ formatF :: Float -> String
 formatF v =
   let scaled = fromIntegral (round (v * 100) :: Int) / 100 :: Double
   in show scaled
+
+-- | Format a physical value with its unit suffix.
+--
+-- Rounds to one decimal place for readability.
+-- @fmtU 1234.5 "m" == "1234.5 m"@
+fmtU :: Float -> Text -> Text
+fmtU v unit =
+  let d = fromIntegral (round (v * 10) :: Int) / 10 :: Double
+  in Text.pack (show d) <> " " <> unit
 
 -- | Format a hex coordinate header line.
 hexHeader :: Int -> Int -> Text
