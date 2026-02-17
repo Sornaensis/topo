@@ -238,8 +238,11 @@ spec = describe "Biome" $ do
       let tropWet = classify' 0.85 0.80
       tropWet `shouldBe` BiomeRainforest
 
-    it "tundra at T=0.10, P=0.20" $ do
-      let polar = classify' 0.10 0.20
+    -- Temperature-primary mountain guards intercept T < 0.35 at
+    -- elevation 0.3 (hASL = 0.3 > btSnowMinASL), so we test the
+    -- Tundra rule-table band at its warm edge where guards don't fire.
+    it "tundra at T=0.35, P=0.20 (warm-edge of tundra band)" $ do
+      let polar = classify' 0.35 0.20
       polar `shouldBe` BiomeTundra
 
     it "temperate forest at T=0.50, P=0.60" $ do

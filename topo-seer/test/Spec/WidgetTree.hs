@@ -54,15 +54,15 @@ spec = describe "UI.WidgetTree" $ do
         widgets = buildWidgets layout
     hitTest widgets (V2 560 118) `shouldBe` Just WidgetConfigWaterMinus
     hitTest widgets (V2 740 118) `shouldBe` Just WidgetConfigWaterPlus
-    hitTest widgets (V2 560 152) `shouldBe` Just WidgetConfigEvapMinus
-    hitTest widgets (V2 740 152) `shouldBe` Just WidgetConfigEvapPlus
-    hitTest widgets (V2 560 186) `shouldBe` Just WidgetConfigRainShadowMinus
-    hitTest widgets (V2 740 186) `shouldBe` Just WidgetConfigRainShadowPlus
+    hitTest widgets (V2 560 152) `shouldBe` Just WidgetConfigOrographicLiftMinus
+    hitTest widgets (V2 740 152) `shouldBe` Just WidgetConfigOrographicLiftPlus
+    hitTest widgets (V2 560 186) `shouldBe` Just WidgetConfigRainShadowLossMinus
+    hitTest widgets (V2 740 186) `shouldBe` Just WidgetConfigRainShadowLossPlus
     hitTest widgets (V2 560 220) `shouldBe` Just WidgetConfigWindDiffuseMinus
     hitTest widgets (V2 740 220) `shouldBe` Just WidgetConfigWindDiffusePlus
     hitTest widgets (V2 560 254) `shouldBe` Just WidgetConfigEquatorTempMinus
     hitTest widgets (V2 740 254) `shouldBe` Just WidgetConfigEquatorTempPlus
     hitTest widgets (V2 560 288) `shouldBe` Just WidgetConfigPoleTempMinus
     hitTest widgets (V2 740 288) `shouldBe` Just WidgetConfigPoleTempPlus
-    hitTest widgets (V2 560 312) `shouldBe` Just WidgetConfigLapseRateMinus
-    hitTest widgets (V2 740 312) `shouldBe` Just WidgetConfigLapseRatePlus
+    hitTest widgets (V2 560 322) `shouldBe` Just WidgetConfigLapseRateMinus
+    hitTest widgets (V2 740 322) `shouldBe` Just WidgetConfigLapseRatePlus

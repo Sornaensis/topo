@@ -126,6 +126,80 @@ landETSpec = describe "landEvapotranspiration" $ do
         in e1 <= e2
 
 ---------------------------------------------------------------------------
+-- satNormCfg — configurable saturation (Phase 2.2)
+---------------------------------------------------------------------------
+
+satNormCfgSpec :: Spec
+satNormCfgSpec = describe "satNormCfg" $ do
+  it "default config matches satNorm" $ do
+    abs (satNormCfg defaultMoistureConfig 0.43 - satNorm 0.43)
+      `shouldSatisfy` (< 1e-6)
+    abs (satNormCfg defaultMoistureConfig 0.80 - satNorm 0.80)
+      `shouldSatisfy` (< 1e-6)
+
+  it "narrower scale → steeper curve at mid-range" $ do
+    let narrow = defaultMoistureConfig { ccTempToC_Scale = 40.0
+                                       , ccTempToC_Offset = -10.0 }
+    -- At T=0.5: default maps to 5°C, narrow maps to 10°C.
+    -- Narrower warm band pushes midpoint saturation higher.
+    satNormCfg narrow 0.5 `shouldSatisfy` (> satNormCfg defaultMoistureConfig 0.5)
+
+  it "colder offset shifts whole curve down" $ do
+    let cold = defaultMoistureConfig { ccTempToC_Offset = -50.0 }
+    -- At T=0.5: default maps to 5°C, cold maps to -15°C.
+    satNormCfg cold 0.5 `shouldSatisfy` (< satNormCfg defaultMoistureConfig 0.5)
+
+  it "endpoints are 0 and 1 regardless of config" $ do
+    let cfg = defaultMoistureConfig { ccTempToC_Scale = 100.0
+                                    , ccTempToC_Offset = -50.0 }
+    satNormCfg cfg 0.0 `shouldSatisfy` (< 0.01)
+    satNormCfg cfg 1.0 `shouldSatisfy` (> 0.99)
+
+  prop "always in [0,1] for arbitrary configs" $
+    forAll ((,,,) <$> choose (20.0, 200.0) <*> choose (-60.0, 0.0)
+                  <*> unit <*> pure ()) $
+      \(scale, offset, t, _) ->
+        let cfg = defaultMoistureConfig { ccTempToC_Scale = scale
+                                        , ccTempToC_Offset = offset }
+            s = satNormCfg cfg t
+        in s >= 0 && s <= 1
+
+  it "changing scale/offset materially shifts ocean evaporation" $ do
+    let hot = defaultMoistureConfig { ccTempToC_Scale = 40.0
+                                    , ccTempToC_Offset = 0.0 }
+    -- With a warm-planet mapping, T=0.5 maps to 20°C vs default 5°C.
+    -- Ocean evaporation should be substantially higher.
+    let eDefault = oceanEvaporation defaultMoistureConfig 0.5 0.5 1.0
+        eHot     = oceanEvaporation hot 0.5 0.5 1.0
+    eHot `shouldSatisfy` (> eDefault * 1.5)
+
+  it "changing scale/offset materially shifts land ET" $ do
+    let hot = defaultMoistureConfig { ccTempToC_Scale = 40.0
+                                    , ccTempToC_Offset = 0.0 }
+    let etDefault = landEvapotranspiration defaultMoistureConfig 0.5 0.6 0.8 0.3
+        etHot     = landEvapotranspiration hot 0.5 0.6 0.8 0.3
+    etHot `shouldSatisfy` (> etDefault * 1.5)
+
+---------------------------------------------------------------------------
+-- magnusES
+---------------------------------------------------------------------------
+
+magnusESSpec :: Spec
+magnusESSpec = describe "magnusES" $ do
+  it "freezing point ≈ 6.1 hPa" $
+    abs (magnusES 0.0 - 6.1078) `shouldSatisfy` (< 0.01)
+
+  it "100°C → high vapour pressure" $
+    magnusES 100.0 `shouldSatisfy` (> 1000.0)
+
+  prop "monotonically increasing" $
+    \(a' :: Float) (b' :: Float) ->
+      let a = min a' b'
+          b = max a' b'
+      -- Restrict to physically meaningful range to avoid Float overflow
+      in (a >= -60 && b <= 120) ==> magnusES a <= magnusES b
+
+---------------------------------------------------------------------------
 -- Default config sanity
 ---------------------------------------------------------------------------
 
@@ -147,6 +221,8 @@ configSpec = describe "defaultMoistureConfig" $ do
 spec :: Spec
 spec = describe "Evaporation" $ do
   satNormSpec
+  satNormCfgSpec
+  magnusESSpec
   oceanEvaporationSpec
   landETSpec
   configSpec

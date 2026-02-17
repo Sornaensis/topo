@@ -32,10 +32,10 @@ data WidgetId
   | WidgetConfigRevert
   | WidgetConfigWaterMinus
   | WidgetConfigWaterPlus
-  | WidgetConfigEvapMinus
-  | WidgetConfigEvapPlus
-  | WidgetConfigRainShadowMinus
-  | WidgetConfigRainShadowPlus
+  | WidgetConfigOrographicLiftMinus
+  | WidgetConfigOrographicLiftPlus
+  | WidgetConfigRainShadowLossMinus
+  | WidgetConfigRainShadowLossPlus
   | WidgetConfigWindDiffuseMinus
   | WidgetConfigWindDiffusePlus
   | WidgetConfigEquatorTempMinus
@@ -186,8 +186,6 @@ data WidgetId
   | WidgetConfigMoistWindEvapScalePlus
   | WidgetConfigMoistEvapNoiseScaleMinus
   | WidgetConfigMoistEvapNoiseScalePlus
-  | WidgetConfigMoistLandETCoeffMinus
-  | WidgetConfigMoistLandETCoeffPlus
   | WidgetConfigMoistBareEvapFracMinus
   | WidgetConfigMoistBareEvapFracPlus
   | WidgetConfigMoistVegTranspFracMinus
@@ -480,10 +478,10 @@ buildWidgets layout =
      , Widget WidgetConfigRevert (configRevertRect layout)
        , Widget WidgetConfigWaterMinus (configWaterMinusRect layout)
        , Widget WidgetConfigWaterPlus (configWaterPlusRect layout)
-       , Widget WidgetConfigEvapMinus (configEvapMinusRect layout)
-       , Widget WidgetConfigEvapPlus (configEvapPlusRect layout)
-      , Widget WidgetConfigRainShadowMinus (configRainShadowMinusRect layout)
-      , Widget WidgetConfigRainShadowPlus (configRainShadowPlusRect layout)
+      , Widget WidgetConfigOrographicLiftMinus (configOrographicLiftMinusRect layout)
+      , Widget WidgetConfigOrographicLiftPlus (configOrographicLiftPlusRect layout)
+      , Widget WidgetConfigRainShadowLossMinus (configRainShadowLossMinusRect layout)
+      , Widget WidgetConfigRainShadowLossPlus (configRainShadowLossPlusRect layout)
       , Widget WidgetConfigWindDiffuseMinus (configWindDiffuseMinusRect layout)
       , Widget WidgetConfigWindDiffusePlus (configWindDiffusePlusRect layout)
       , Widget WidgetConfigEquatorTempMinus (configEquatorTempMinusRect layout)
@@ -634,8 +632,6 @@ buildWidgets layout =
       , Widget WidgetConfigMoistWindEvapScalePlus (configMoistWindEvapScalePlusRect layout)
       , Widget WidgetConfigMoistEvapNoiseScaleMinus (configMoistEvapNoiseScaleMinusRect layout)
       , Widget WidgetConfigMoistEvapNoiseScalePlus (configMoistEvapNoiseScalePlusRect layout)
-      , Widget WidgetConfigMoistLandETCoeffMinus (configMoistLandETCoeffMinusRect layout)
-      , Widget WidgetConfigMoistLandETCoeffPlus (configMoistLandETCoeffPlusRect layout)
       , Widget WidgetConfigMoistBareEvapFracMinus (configMoistBareEvapFracMinusRect layout)
       , Widget WidgetConfigMoistBareEvapFracPlus (configMoistBareEvapFracPlusRect layout)
       , Widget WidgetConfigMoistVegTranspFracMinus (configMoistVegTranspFracMinusRect layout)
@@ -975,8 +971,8 @@ buildSliderRowWidgets layout = (terrain, planet, climate, weather, biome, erosio
 
     climate =
       [ row WidgetConfigWaterMinus 0
-      , row WidgetConfigEvapMinus 1
-      , row WidgetConfigRainShadowMinus 2
+      , row WidgetConfigOrographicLiftMinus 1
+      , row WidgetConfigRainShadowLossMinus 2
       , row WidgetConfigWindDiffuseMinus 3
       , row WidgetConfigEquatorTempMinus 4
       , row WidgetConfigPoleTempMinus 5
@@ -998,31 +994,30 @@ buildSliderRowWidgets layout = (terrain, planet, climate, weather, biome, erosio
       , row WidgetConfigMoistLocalMinus 21
       , row WidgetConfigMoistWindEvapScaleMinus 22
       , row WidgetConfigMoistEvapNoiseScaleMinus 23
-      , row WidgetConfigMoistLandETCoeffMinus 24
-      , row WidgetConfigMoistBareEvapFracMinus 25
-      , row WidgetConfigMoistVegTranspFracMinus 26
-      , row WidgetConfigMoistWindETScaleMinus 27
-      , row WidgetConfigMoistCondensationRateMinus 28
-      , row WidgetConfigMoistRecycleRateMinus 29
-      , row WidgetConfigMoistITCZStrengthMinus 30
-      , row WidgetConfigMoistITCZWidthMinus 31
-      , row WidgetConfigOrographicScaleMinus 32
-      , row WidgetConfigOrographicStepMinus 33
-      , row WidgetConfigCoastalIterationsMinus 34
-      , row WidgetConfigCoastalDiffuseMinus 35
-      , row WidgetConfigCoastalMoistureBoostMinus 36
-      , row WidgetConfigWindBeltStrengthMinus 37
-      , row WidgetConfigWindBeltHarmonicsMinus 38
-      , row WidgetConfigWindBeltBaseMinus 39
-      , row WidgetConfigWindBeltRangeMinus 40
-      , row WidgetConfigWindBeltSpeedScaleMinus 41
-      , row WidgetConfigBndLandRangeMinus 42
-      , row WidgetConfigBndTempConvergentMinus 43
-      , row WidgetConfigBndTempDivergentMinus 44
-      , row WidgetConfigBndTempTransformMinus 45
-      , row WidgetConfigBndPrecipConvergentMinus 46
-      , row WidgetConfigBndPrecipDivergentMinus 47
-      , row WidgetConfigBndPrecipTransformMinus 48
+      , row WidgetConfigMoistBareEvapFracMinus 24
+      , row WidgetConfigMoistVegTranspFracMinus 25
+      , row WidgetConfigMoistWindETScaleMinus 26
+      , row WidgetConfigMoistCondensationRateMinus 27
+      , row WidgetConfigMoistRecycleRateMinus 28
+      , row WidgetConfigMoistITCZStrengthMinus 29
+      , row WidgetConfigMoistITCZWidthMinus 30
+      , row WidgetConfigOrographicScaleMinus 31
+      , row WidgetConfigOrographicStepMinus 32
+      , row WidgetConfigCoastalIterationsMinus 33
+      , row WidgetConfigCoastalDiffuseMinus 34
+      , row WidgetConfigCoastalMoistureBoostMinus 35
+      , row WidgetConfigWindBeltStrengthMinus 36
+      , row WidgetConfigWindBeltHarmonicsMinus 37
+      , row WidgetConfigWindBeltBaseMinus 38
+      , row WidgetConfigWindBeltRangeMinus 39
+      , row WidgetConfigWindBeltSpeedScaleMinus 40
+      , row WidgetConfigBndLandRangeMinus 41
+      , row WidgetConfigBndTempConvergentMinus 42
+      , row WidgetConfigBndTempDivergentMinus 43
+      , row WidgetConfigBndTempTransformMinus 44
+      , row WidgetConfigBndPrecipConvergentMinus 45
+      , row WidgetConfigBndPrecipDivergentMinus 46
+      , row WidgetConfigBndPrecipTransformMinus 47
       ]
 
     weather =

@@ -98,6 +98,7 @@ test-suite topo-test
       Spec.Biome
       Spec.BiomeRefine
       Spec.Climate
+      Spec.ClimateAlignment
       Spec.ConfigJSON
       Spec.ConfigProperty
       Spec.Determinism
@@ -110,6 +111,7 @@ test-suite topo-test
       Spec.Integration
       Spec.Mesh
       Spec.Metadata
+      Spec.MoistureFixture
       Spec.Noise
       Spec.OceanCurrent
       Spec.Parameters

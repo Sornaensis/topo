@@ -48,8 +48,8 @@ import Actor.UI
   , setUiChunkSize
   , setUiWaterLevel
   , setUiRenderWaterLevel
-  , setUiEvaporation
-  , setUiRainShadow
+  , setUiOrographicLift
+  , setUiRainShadowLoss
   , setUiWindDiffuse
   , setUiRainRate
   , setUiErosionHydraulic
@@ -157,7 +157,6 @@ import Actor.UI
   , setUiMoistLocal
   , setUiMoistWindEvapScale
   , setUiMoistEvapNoiseScale
-  , setUiMoistLandETCoeff
   , setUiMoistBareEvapFrac
   , setUiMoistVegTranspFrac
   , setUiMoistWindETScale
@@ -454,13 +453,11 @@ applySnapshotToUi cs h = do
   setUiWindBeltRange h (windBeltRange wind)
   setUiWindBeltSpeedScale h (windBeltSpeedScale wind)
   -- Climate: moisture
-  setUiEvaporation h (moistEvapCoeff moist)
   setUiMoistureIterations h (unmapIntRange 2 72 (moistIterations moist))
   setUiMoistAdvect h (moistAdvect moist)
   setUiMoistLocal h (moistLocal moist)
   setUiMoistWindEvapScale h (moistWindEvapScale moist)
   setUiMoistEvapNoiseScale h (unmapRange 0 0.2 (moistEvapNoiseScale moist))
-  setUiMoistLandETCoeff h (moistLandETCoeff moist)
   setUiMoistBareEvapFrac h (moistBareEvapFrac moist)
   setUiMoistVegTranspFrac h (moistVegTranspFrac moist)
   setUiMoistWindETScale h (moistWindETScale moist)
@@ -469,7 +466,8 @@ applySnapshotToUi cs h = do
   setUiMoistITCZStrength h (unmapRange 0 0.5 (moistITCZStrength moist))
   setUiMoistITCZWidth h (unmapRange 2 20 (moistITCZWidth moist))
   -- Climate: precipitation
-  setUiRainShadow h (precRainShadow prec)
+  setUiOrographicLift h (precOrographicLift prec)
+  setUiRainShadowLoss h (precRainShadowLoss prec)
   setUiOrographicScale h (unmapRange 0 2 (precOrographicScale prec))
   setUiOrographicStep h (unmapRange 0.5 3 (precOrographicStep prec))
   setUiCoastalIterations h (unmapIntRange 0 16 (precCoastalIterations prec))

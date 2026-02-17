@@ -539,12 +539,11 @@ drawConfigPanel
   -> (Rect, Rect, Rect)
   -> (Rect, Rect, Rect)
   -> (Rect, Rect, Rect)
-  -> (Rect, Rect, Rect)
   -> IO ()
 drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion) presetSaveRect presetLoadRect resetRect revertRect scrollAreaRect scrollBarRect
   (waterMinus, waterBar, waterPlus)
-  (evapMinus, evapBar, evapPlus)
-  (rainShadowMinus, rainShadowBar, rainShadowPlus)
+  (orographicLiftMinus, orographicLiftBar, orographicLiftPlus)
+  (rainShadowLossMinus, rainShadowLossBar, rainShadowLossPlus)
   (windDiffuseMinus, windDiffuseBar, windDiffusePlus)
   (equatorTempMinus, equatorTempBar, equatorTempPlus)
   (poleTempMinus, poleTempBar, poleTempPlus)
@@ -620,7 +619,6 @@ drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather,
   (moistLocalMinus, moistLocalBar, moistLocalPlus)
   (moistWindEvapScaleMinus, moistWindEvapScaleBar, moistWindEvapScalePlus)
   (moistEvapNoiseScaleMinus, moistEvapNoiseScaleBar, moistEvapNoiseScalePlus)
-  (moistLandETCoeffMinus, moistLandETCoeffBar, moistLandETCoeffPlus)
   (moistBareEvapFracMinus, moistBareEvapFracBar, moistBareEvapFracPlus)
   (moistVegTranspFracMinus, moistVegTranspFracBar, moistVegTranspFracPlus)
   (moistWindETScaleMinus, moistWindETScaleBar, moistWindETScalePlus)
@@ -747,7 +745,7 @@ drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather,
           rows = case uiConfigTab ui of
             ConfigTerrain -> 53
             ConfigPlanet -> 7
-            ConfigClimate -> 49
+            ConfigClimate -> 47
             ConfigWeather -> 21
             ConfigBiome -> 26
             ConfigErosion -> 35
@@ -814,8 +812,8 @@ drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather,
           drawConfigSlider renderer (uiRockHardnessSecondary ui) (scrollRect rockHardnessSecondaryMinus) (scrollRect rockHardnessSecondaryBar) (scrollRect rockHardnessSecondaryPlus) (V4 120 130 140 255)
         ConfigClimate -> do
           drawConfigSlider renderer (uiWaterLevel ui) (scrollRect waterMinus) (scrollRect waterBar) (scrollRect waterPlus) (V4 70 120 180 255)
-          drawConfigSlider renderer (uiEvaporation ui) (scrollRect evapMinus) (scrollRect evapBar) (scrollRect evapPlus) (V4 140 110 80 255)
-          drawConfigSlider renderer (uiRainShadow ui) (scrollRect rainShadowMinus) (scrollRect rainShadowBar) (scrollRect rainShadowPlus) (V4 110 140 190 255)
+          drawConfigSlider renderer (uiOrographicLift ui) (scrollRect orographicLiftMinus) (scrollRect orographicLiftBar) (scrollRect orographicLiftPlus) (V4 110 140 190 255)
+          drawConfigSlider renderer (uiRainShadowLoss ui) (scrollRect rainShadowLossMinus) (scrollRect rainShadowLossBar) (scrollRect rainShadowLossPlus) (V4 130 120 170 255)
           drawConfigSlider renderer (uiWindDiffuse ui) (scrollRect windDiffuseMinus) (scrollRect windDiffuseBar) (scrollRect windDiffusePlus) (V4 90 140 120 255)
           drawConfigSlider renderer (uiEquatorTemp ui) (scrollRect equatorTempMinus) (scrollRect equatorTempBar) (scrollRect equatorTempPlus) (V4 180 120 90 255)
           drawConfigSlider renderer (uiPoleTemp ui) (scrollRect poleTempMinus) (scrollRect poleTempBar) (scrollRect poleTempPlus) (V4 90 150 200 255)
@@ -837,7 +835,6 @@ drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather,
           drawConfigSlider renderer (uiMoistLocal ui) (scrollRect moistLocalMinus) (scrollRect moistLocalBar) (scrollRect moistLocalPlus) (V4 110 140 170 255)
           drawConfigSlider renderer (uiMoistWindEvapScale ui) (scrollRect moistWindEvapScaleMinus) (scrollRect moistWindEvapScaleBar) (scrollRect moistWindEvapScalePlus) (V4 90 160 150 255)
           drawConfigSlider renderer (uiMoistEvapNoiseScale ui) (scrollRect moistEvapNoiseScaleMinus) (scrollRect moistEvapNoiseScaleBar) (scrollRect moistEvapNoiseScalePlus) (V4 120 140 160 255)
-          drawConfigSlider renderer (uiMoistLandETCoeff ui) (scrollRect moistLandETCoeffMinus) (scrollRect moistLandETCoeffBar) (scrollRect moistLandETCoeffPlus) (V4 100 170 140 255)
           drawConfigSlider renderer (uiMoistBareEvapFrac ui) (scrollRect moistBareEvapFracMinus) (scrollRect moistBareEvapFracBar) (scrollRect moistBareEvapFracPlus) (V4 130 150 120 255)
           drawConfigSlider renderer (uiMoistVegTranspFrac ui) (scrollRect moistVegTranspFracMinus) (scrollRect moistVegTranspFracBar) (scrollRect moistVegTranspFracPlus) (V4 80 160 130 255)
           drawConfigSlider renderer (uiMoistWindETScale ui) (scrollRect moistWindETScaleMinus) (scrollRect moistWindETScaleBar) (scrollRect moistWindETScalePlus) (V4 110 150 150 255)
@@ -1027,12 +1024,12 @@ drawUiLabels renderer fontCache ui layout = do
       configWaterMinus = configWaterMinusRect layout
       configWaterPlus = configWaterPlusRect layout
       configWaterBar = configWaterBarRect layout
-      configEvapMinus = configEvapMinusRect layout
-      configEvapPlus = configEvapPlusRect layout
-      configEvapBar = configEvapBarRect layout
-      configRainShadowMinus = configRainShadowMinusRect layout
-      configRainShadowPlus = configRainShadowPlusRect layout
-      configRainShadowBar = configRainShadowBarRect layout
+      configOrographicLiftMinus = configOrographicLiftMinusRect layout
+      configOrographicLiftPlus = configOrographicLiftPlusRect layout
+      configOrographicLiftBar = configOrographicLiftBarRect layout
+      configRainShadowLossMinus = configRainShadowLossMinusRect layout
+      configRainShadowLossPlus = configRainShadowLossPlusRect layout
+      configRainShadowLossBar = configRainShadowLossBarRect layout
       configWindDiffuseMinus = configWindDiffuseMinusRect layout
       configWindDiffusePlus = configWindDiffusePlusRect layout
       configWindDiffuseBar = configWindDiffuseBarRect layout
@@ -1258,9 +1255,6 @@ drawUiLabels renderer fontCache ui layout = do
       configMoistEvapNoiseScaleMinus = configMoistEvapNoiseScaleMinusRect layout
       configMoistEvapNoiseScalePlus = configMoistEvapNoiseScalePlusRect layout
       configMoistEvapNoiseScaleBar = configMoistEvapNoiseScaleBarRect layout
-      configMoistLandETCoeffMinus = configMoistLandETCoeffMinusRect layout
-      configMoistLandETCoeffPlus = configMoistLandETCoeffPlusRect layout
-      configMoistLandETCoeffBar = configMoistLandETCoeffBarRect layout
       configMoistBareEvapFracMinus = configMoistBareEvapFracMinusRect layout
       configMoistBareEvapFracPlus = configMoistBareEvapFracPlusRect layout
       configMoistBareEvapFracBar = configMoistBareEvapFracBarRect layout
@@ -1832,10 +1826,10 @@ drawUiLabels renderer fontCache ui layout = do
       ConfigClimate -> do
         drawCentered fontCache labelColor (scrollRect configWaterMinus) "-"
         drawCentered fontCache labelColor (scrollRect configWaterPlus) "+"
-        drawCentered fontCache labelColor (scrollRect configEvapMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configEvapPlus) "+"
-        drawCentered fontCache labelColor (scrollRect configRainShadowMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configRainShadowPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configOrographicLiftMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configOrographicLiftPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configRainShadowLossMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configRainShadowLossPlus) "+"
         drawCentered fontCache labelColor (scrollRect configWindDiffuseMinus) "-"
         drawCentered fontCache labelColor (scrollRect configWindDiffusePlus) "+"
         drawCentered fontCache labelColor (scrollRect configEquatorTempMinus) "-"
@@ -1878,8 +1872,6 @@ drawUiLabels renderer fontCache ui layout = do
         drawCentered fontCache labelColor (scrollRect configMoistWindEvapScalePlus) "+"
         drawCentered fontCache labelColor (scrollRect configMoistEvapNoiseScaleMinus) "-"
         drawCentered fontCache labelColor (scrollRect configMoistEvapNoiseScalePlus) "+"
-        drawCentered fontCache labelColor (scrollRect configMoistLandETCoeffMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configMoistLandETCoeffPlus) "+"
         drawCentered fontCache labelColor (scrollRect configMoistBareEvapFracMinus) "-"
         drawCentered fontCache labelColor (scrollRect configMoistBareEvapFracPlus) "+"
         drawCentered fontCache labelColor (scrollRect configMoistVegTranspFracMinus) "-"
@@ -1929,8 +1921,8 @@ drawUiLabels renderer fontCache ui layout = do
         drawCentered fontCache labelColor (scrollRect configBndPrecipTransformMinus) "-"
         drawCentered fontCache labelColor (scrollRect configBndPrecipTransformPlus) "+"
         drawLabelAbove fontCache labelColor (scrollRect configWaterBar) (sliderLabel specWaterLevel (uiWaterLevel ui))
-        drawLabelAbove fontCache labelColor (scrollRect configEvapBar) (sliderLabel specEvaporation (uiEvaporation ui))
-        drawLabelAbove fontCache labelColor (scrollRect configRainShadowBar) (sliderLabel specRainShadow (uiRainShadow ui))
+        drawLabelAbove fontCache labelColor (scrollRect configOrographicLiftBar) (sliderLabel specOrographicLift (uiOrographicLift ui))
+        drawLabelAbove fontCache labelColor (scrollRect configRainShadowLossBar) (sliderLabel specRainShadowLoss (uiRainShadowLoss ui))
         drawLabelAbove fontCache labelColor (scrollRect configWindDiffuseBar) (sliderLabel specWindDiffuse (uiWindDiffuse ui))
         drawLabelAbove fontCache labelColor (scrollRect configEquatorTempBar) (sliderLabel specEquatorTemp (uiEquatorTemp ui))
         drawLabelAbove fontCache labelColor (scrollRect configPoleTempBar) (sliderLabel specPoleTemp (uiPoleTemp ui))
@@ -1952,7 +1944,6 @@ drawUiLabels renderer fontCache ui layout = do
         drawLabelAbove fontCache labelColor (scrollRect configMoistLocalBar) (sliderLabel specMoistLocal (uiMoistLocal ui))
         drawLabelAbove fontCache labelColor (scrollRect configMoistWindEvapScaleBar) (sliderLabel specMoistWindEvapScale (uiMoistWindEvapScale ui))
         drawLabelAbove fontCache labelColor (scrollRect configMoistEvapNoiseScaleBar) (sliderLabel specMoistEvapNoiseScale (uiMoistEvapNoiseScale ui))
-        drawLabelAbove fontCache labelColor (scrollRect configMoistLandETCoeffBar) (sliderLabel specMoistLandETCoeff (uiMoistLandETCoeff ui))
         drawLabelAbove fontCache labelColor (scrollRect configMoistBareEvapFracBar) (sliderLabel specMoistBareEvapFrac (uiMoistBareEvapFrac ui))
         drawLabelAbove fontCache labelColor (scrollRect configMoistVegTranspFracBar) (sliderLabel specMoistVegTranspFrac (uiMoistVegTranspFrac ui))
         drawLabelAbove fontCache labelColor (scrollRect configMoistWindETScaleBar) (sliderLabel specMoistWindETScale (uiMoistWindETScale ui))

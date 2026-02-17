@@ -111,25 +111,33 @@ spec = describe "BiomeRefine" $ do
         in classifyBiome defaultBiomeRules defaultBiomeThresholds
              waterLevel WaterOcean WaterOcean temp precip elev 0.1 0.1 0.3 FormFlat 0.5 0.10 0.10 == BiomeOcean
 
-    prop "classifies snow or tundra at very high elevation" $
-      \(Norm01 temp) (Norm01 precip) ->
-        let waterLevel = 0.5
+    -- Constrain temperature below btAlpineMaxTemp (0.35) so that the
+    -- temperature-primary mountain guards always fire.  At T < 0.20 we
+    -- get Snow or Tundra (polar desert); at T in [0.20, 0.35) Alpine.
+    prop "cold tiles at very high elevation classify as mountain biomes" $
+      \(Norm01 temp') (Norm01 precip) ->
+        let temp = temp' * 0.34 -- keep T < btAlpineMaxTemp (0.35)
+            waterLevel = 0.5
             bid = classifyBiome defaultBiomeRules defaultBiomeThresholds
                     waterLevel WaterDry WaterDry temp precip 0.95 0.1 0.1 0.3 FormFlat 0.5 0.10 0.10
-        in bid == BiomeSnow || bid == BiomeTundra
+        in bid `elem` [BiomeSnow, BiomeTundra, BiomeAlpine]
 
-    -- P3.6: dry high-elevation tiles route to tundra (not snow)
+    -- P3.6: dry high-elevation tiles route to tundra (not snow).
+    -- Temperature must be < btSnowMaxTemp (0.20) for the snow guard to
+    -- fire; precip < btSnowPolarDesertMaxPrecip (0.08) selects the
+    -- polar-desert / tundra branch.
     it "dry high-elevation tile classified as tundra (P3.6)" $
       let waterLevel = 0.5
       in classifyBiome defaultBiomeRules defaultBiomeThresholds
-           waterLevel WaterDry WaterDry 0.30 0.05 0.95 0.1 0.1 0.3 FormFlat 0.5 0.10 0.10
+           waterLevel WaterDry WaterDry 0.15 0.05 0.95 0.1 0.1 0.3 FormFlat 0.5 0.10 0.10
            `shouldBe` BiomeTundra
 
-    -- P3.6: wet high-elevation tile still classified as snow
+    -- P3.6: wet high-elevation tile still classified as snow.
+    -- Temperature < btSnowMaxTemp (0.20), precip > polar-desert cutoff.
     it "wet high-elevation tile classified as snow" $
       let waterLevel = 0.5
       in classifyBiome defaultBiomeRules defaultBiomeThresholds
-           waterLevel WaterDry WaterDry 0.30 0.30 0.95 0.1 0.1 0.3 FormFlat 0.5 0.10 0.10
+           waterLevel WaterDry WaterDry 0.15 0.30 0.95 0.1 0.1 0.3 FormFlat 0.5 0.10 0.10
            `shouldBe` BiomeSnow
 
     -- Ocean-adjacent coastal check
@@ -177,9 +185,12 @@ spec = describe "BiomeRefine" $ do
           -- appear in a flat-terrain sweep.
           climateBiomes = [BiomeDesert, BiomeGrassland, BiomeForest, BiomeTundra
                           , BiomeRainforest, BiomeShrubland, BiomeSavanna, BiomeTaiga]
+          -- Slope must be < btMontaneMinSlope (0.06) so the montane
+          -- guard does not intercept mid-temperature tiles and hide
+          -- Taiga from the Whittaker rule table.
           samples =
             [ classifyBiome defaultBiomeRules defaultBiomeThresholds
-                waterLevel WaterDry WaterDry t p 0.60 0.1 0.1 0.3 FormFlat 0.5 0.10 0.10
+                waterLevel WaterDry WaterDry t p 0.60 0.05 0.1 0.3 FormFlat 0.5 0.10 0.10
             | t <- [0.05, 0.10 .. 1.0]
             , p <- [0.05, 0.10 .. 1.0]
             ]

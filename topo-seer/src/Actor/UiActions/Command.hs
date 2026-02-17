@@ -49,7 +49,6 @@ import Actor.UI
   , setUiErosionTalus
   , setUiErosionThermal
   , setUiEquatorTemp
-  , setUiEvaporation
   , setUiGenCoordScale
   , setUiGenFrequency
   , setUiGenGain
@@ -88,7 +87,8 @@ import Actor.UI
   , setUiPlateSpeed
   , setUiPoleTemp
   , setUiRainRate
-  , setUiRainShadow
+  , setUiOrographicLift
+  , setUiRainShadowLoss
   , setUiRidgeHeight
   , setUiRiftDepth
   , setUiSeed
@@ -262,8 +262,8 @@ resetConfig req = do
   setUiViewMode uiHandle ViewElevation
   setUiWaterLevel uiHandle 0.5
   setUiRenderWaterLevel uiHandle 0.5
-  setUiEvaporation uiHandle 0.25
-  setUiRainShadow uiHandle 0.4
+  setUiOrographicLift uiHandle 0.35
+  setUiRainShadowLoss uiHandle 0.15
   setUiWindDiffuse uiHandle 0.5
   setUiRainRate uiHandle 0.2
   setUiErosionHydraulic uiHandle 0.5

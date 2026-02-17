@@ -217,18 +217,11 @@ data MoistureConfig = MoistureConfig
   , moistLocal              :: !Float
   -- ^ Fraction of local moisture retained per step (0–1).
   -- Default: @0.15@.
-  , moistEvapCoeff          :: !Float
-  -- ^ Ocean evaporation coefficient (0–1) for Dalton's Law model.
-  -- Replaces the old flat @moistEvaporation@.  Default: @0.85@.
   , moistWindEvapScale      :: !Float
   -- ^ Wind enhancement factor for ocean evaporation.
   -- Default: @0.30@.
   , moistEvapNoiseScale     :: !Float
   -- ^ Random noise amplitude on evaporation (0–1).  Default: @0.05@.
-  , moistLandETCoeff        :: !Float
-  -- ^ Land evapotranspiration coefficient for the Penman-Monteith-
-  -- inspired model.  Replaces old @moistLandEvapotranspiration@.
-  -- Default: @0.65@.
   , moistBareEvapFrac       :: !Float
   -- ^ Bare-soil evaporation fraction (0–1).  Even bare soil
   -- evaporates some moisture.  Default: @0.15@.
@@ -292,10 +285,8 @@ defaultMoistureConfig = MoistureConfig
   { moistIterations         = 36
   , moistAdvect             = 0.85
   , moistLocal              = 0.15
-  , moistEvapCoeff          = 0.85
   , moistWindEvapScale      = 0.30
   , moistEvapNoiseScale     = 0.05
-  , moistLandETCoeff        = 0.65
   , moistBareEvapFrac       = 0.15
   , moistVegTranspFrac      = 0.85
   , moistWindETScale        = 0.20
@@ -316,34 +307,50 @@ defaultMoistureConfig = MoistureConfig
 
 -- | Precipitation and orographic-effects configuration.
 --
--- Controls rain-shadow strength (how much elevation rise blocks
--- moisture), orographic uplift scaling, and the coastal proximity
--- moisture boost that keeps coastal tiles wetter than interiors.
+-- Controls orographic uplift (windward precipitation enhancement),
+-- rain-shadow moisture loss (leeward transport barrier), and the
+-- coastal proximity moisture boost that keeps coastal tiles wetter
+-- than interiors.
 --
--- __Orographic model:__ Moisture increases on the windward side of
--- elevation rises by @rise × 'precRainShadow' × 'precOrographicScale'@.
--- The leeward side receives correspondingly less moisture (rain
--- shadow).
+-- __Orographic model:__ Precipitation increases on the windward side
+-- of elevation rises by @rise × 'precOrographicLift' ×
+-- 'precOrographicScale'@.  The per-iteration moisture sink on the
+-- leeward side is controlled separately by 'precRainShadowLoss',
+-- preventing exponential drying over many transport iterations.
+--
+-- Prior to Phase 2.1, a single @precRainShadow@ field controlled
+-- both effects, causing excessive drying in mountain chains.
 data PrecipitationConfig = PrecipitationConfig
-  { precRainShadow       :: !Float
-  -- ^ Orographic rain-shadow strength.  Default: @0.4@.
+  { precOrographicLift   :: !Float
+  -- ^ Orographic precipitation enhancement strength.  Scales the
+  -- windward-side uplift precipitation (used in 'orographicAt',
+  -- 'boundaryOrogenyAt', and 'plateHeightPrecipBiasAt').
+  -- Higher values produce more rain on the windward side of
+  -- mountains and at plate boundaries.  Default: @0.35@.
+  , precRainShadowLoss   :: !Float
+  -- ^ Per-iteration moisture sink from elevation barriers.  When
+  -- air flows across a terrain rise, moisture is removed at
+  -- @max 0 (upwindElev − localElev) × precRainShadowLoss@ per
+  -- transport iteration.  Kept deliberately low (relative to the
+  -- old combined @precRainShadow = 0.4@) to avoid exponential
+  -- drying over 36 iterations.  Default: @0.15@.
   , precOrographicScale  :: !Float
   -- ^ Orographic uplift scaling factor.  Default: @0.6@.
   , precOrographicStep   :: !Float
   -- ^ Upwind sampling distance for orography (tiles).
   -- Default: @1@.
   , precCoastalIterations :: !Int
-  -- ^ Number of coastal-proximity diffusion passes.  Default: @3@.
+  -- ^ Number of coastal-proximity diffusion passes.  Default: @8@.
   , precCoastalDiffuse   :: !Float
   -- ^ Diffusion factor per coastal-proximity pass (0–1).
   -- Default: @0.5@.
   , precCoastalMoistureBoost :: !Float
-  -- ^ Moisture boost from coastal proximity (0–1).  Default: @0.10@.
+  -- ^ Moisture boost from coastal proximity (0–1).  Default: @0.20@.
   , precPolarFloor       :: !Float
   -- ^ Minimum precipitation at extreme latitudes.  Earth's polar
-  -- regions receive ~100–200 mm/yr, which is low but non-zero.
+  -- regions receive ~100–200 mm\/yr, which is low but non-zero.
   -- This floor prevents \"false deserts\" in polar regions where
-  -- evaporation/transport produces near-zero moisture.
+  -- evaporation\/transport produces near-zero moisture.
   -- Default: @0.05@.
   , precPolarLatitude    :: !Float
   -- ^ Latitude (in degrees) beyond which the polar precipitation
@@ -362,7 +369,8 @@ instance FromJSON PrecipitationConfig where
 -- | Sensible Earth-like defaults for the precipitation model.
 defaultPrecipitationConfig :: PrecipitationConfig
 defaultPrecipitationConfig = PrecipitationConfig
-  { precRainShadow       = 0.4
+  { precOrographicLift   = 0.35
+  , precRainShadowLoss   = 0.15
   , precOrographicScale  = 0.6
   , precOrographicStep   = 1
   , precCoastalIterations = 8

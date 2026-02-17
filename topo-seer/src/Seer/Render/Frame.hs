@@ -104,12 +104,12 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
       configWaterMinus = configWaterMinusRect layout
       configWaterPlus = configWaterPlusRect layout
       configWaterBar = configWaterBarRect layout
-      configEvapMinus = configEvapMinusRect layout
-      configEvapPlus = configEvapPlusRect layout
-      configEvapBar = configEvapBarRect layout
-      configRainShadowMinus = configRainShadowMinusRect layout
-      configRainShadowPlus = configRainShadowPlusRect layout
-      configRainShadowBar = configRainShadowBarRect layout
+      configOrographicLiftMinus = configOrographicLiftMinusRect layout
+      configOrographicLiftPlus = configOrographicLiftPlusRect layout
+      configOrographicLiftBar = configOrographicLiftBarRect layout
+      configRainShadowLossMinus = configRainShadowLossMinusRect layout
+      configRainShadowLossPlus = configRainShadowLossPlusRect layout
+      configRainShadowLossBar = configRainShadowLossBarRect layout
       configWindDiffuseMinus = configWindDiffuseMinusRect layout
       configWindDiffusePlus = configWindDiffusePlusRect layout
       configWindDiffuseBar = configWindDiffuseBarRect layout
@@ -440,9 +440,6 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
       configMoistEvapNoiseScaleMinus = configMoistEvapNoiseScaleMinusRect layout
       configMoistEvapNoiseScalePlus = configMoistEvapNoiseScalePlusRect layout
       configMoistEvapNoiseScaleBar = configMoistEvapNoiseScaleBarRect layout
-      configMoistLandETCoeffMinus = configMoistLandETCoeffMinusRect layout
-      configMoistLandETCoeffPlus = configMoistLandETCoeffPlusRect layout
-      configMoistLandETCoeffBar = configMoistLandETCoeffBarRect layout
       configMoistBareEvapFracMinus = configMoistBareEvapFracMinusRect layout
       configMoistBareEvapFracPlus = configMoistBareEvapFracPlusRect layout
       configMoistBareEvapFracBar = configMoistBareEvapFracBarRect layout
@@ -770,8 +767,8 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
             drawViewModeButtons renderer mode (viewRect1, viewRect2, viewRect3, viewRect4, viewRect5, viewRect6, viewRect7, viewRect8, viewRect9, viewRect10, viewRect11, viewRect12)
       drawConfigPanel renderer (rsUi snapshot) configPanel (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion) configPresetSave configPresetLoad configReset configRevert configScrollArea configScrollBar
         (configWaterMinus, configWaterBar, configWaterPlus)
-        (configEvapMinus, configEvapBar, configEvapPlus)
-        (configRainShadowMinus, configRainShadowBar, configRainShadowPlus)
+        (configOrographicLiftMinus, configOrographicLiftBar, configOrographicLiftPlus)
+        (configRainShadowLossMinus, configRainShadowLossBar, configRainShadowLossPlus)
         (configWindDiffuseMinus, configWindDiffuseBar, configWindDiffusePlus)
         (configEquatorTempMinus, configEquatorTempBar, configEquatorTempPlus)
         (configPoleTempMinus, configPoleTempBar, configPoleTempPlus)
@@ -847,7 +844,6 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
         (configMoistLocalMinus, configMoistLocalBar, configMoistLocalPlus)
         (configMoistWindEvapScaleMinus, configMoistWindEvapScaleBar, configMoistWindEvapScalePlus)
         (configMoistEvapNoiseScaleMinus, configMoistEvapNoiseScaleBar, configMoistEvapNoiseScalePlus)
-        (configMoistLandETCoeffMinus, configMoistLandETCoeffBar, configMoistLandETCoeffPlus)
         (configMoistBareEvapFracMinus, configMoistBareEvapFracBar, configMoistBareEvapFracPlus)
         (configMoistVegTranspFracMinus, configMoistVegTranspFracBar, configMoistVegTranspFracPlus)
         (configMoistWindETScaleMinus, configMoistWindETScaleBar, configMoistWindETScalePlus)

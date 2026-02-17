@@ -45,6 +45,4 @@ spec = describe "UI.Layout" $ do
   it "creates config slider rects" $ do
     let layout = layoutFor (V2 800 600) 160
         Rect (V2 wx wy, V2 ww wh) = configWaterBarRect layout
-        Rect (V2 ex ey, V2 ew eh) = configEvapBarRect layout
     (wx, wy, ww, wh) `shouldBe` (588, 114, 138, 12)
-    (ex, ey, ew, eh) `shouldBe` (588, 148, 138, 12)

@@ -141,7 +141,7 @@ buildClimateChunkWithPrecip config seed lm cfg seasonAmp sBase sRange waterLevel
       seasonCfg = ccSeasonality cfg
       amp       = seasonAmp
       soilMoist = tcMoisture terrain
-      humidityAvg   = climateHumidityAvg seasonCfg precip temp coastal soilMoist n
+      humidityAvg   = climateHumidityAvg (ccMoisture cfg) seasonCfg precip temp coastal soilMoist n
       tempRange     = climateTempRange config lm seasonCfg amp origin temp coastal n
       precipSeason  = climatePrecipSeasonality config lm seasonCfg sBase sRange origin coastal (tcElevation terrain) windDir n
 
@@ -175,20 +175,21 @@ buildClimateChunkWithPrecip config seed lm cfg seasonAmp sBase sRange waterLevel
 -- Together these break humidity's pure dependence on T×P, giving the
 -- biome classifier a genuine third axis.
 climateHumidityAvg
-  :: SeasonalityConfig
+  :: MoistureConfig
+  -> SeasonalityConfig
   -> U.Vector Float    -- ^ precipitation
   -> U.Vector Float    -- ^ temperature
   -> U.Vector Float    -- ^ coastal proximity (0 = interior, 1 = ocean)
   -> U.Vector Float    -- ^ soil moisture (from hydrology tcMoisture)
   -> Int
   -> U.Vector Float
-climateHumidityAvg seasonCfg precip temp coastal soilMoist n =
+climateHumidityAvg mst seasonCfg precip temp coastal soilMoist n =
   let coastBoost = scHumidityCoastalBoost seasonCfg
       soilContrib = scHumiditySoilContribution seasonCfg
   in U.generate n $ \i ->
     let t = temp U.! i
         p = precip U.! i
-        sat = max 0.001 (satNorm t)
+        sat = max 0.001 (satNormCfg mst t)
         baseRH = p / sat
         c = coastal U.! i
         s = soilMoist U.! i
@@ -735,7 +736,7 @@ moistureStepGrid gridW gridH cfg windDir windSpd elev tempGrid
             landET = if elev U.! i >= waterLevel
                      then moistBaseRecycleRate mst
                             * (vegCover U.! i)
-                            * satNorm (tempGrid U.! i)
+                            * satNormCfg mst (tempGrid U.! i)
                      else 0
             -- ITCZ convergence boost (Model E.5): moisture concentrates
             -- near the intertropical convergence zone.
@@ -774,7 +775,7 @@ moistureFlowAtGrid gridW gridH cfg windDir windSpd elev tempGrid vegCover moistu
       upwindMoisture = bilinearSample gridW gridH moisture ux uy
       upwindElev     = bilinearSample gridW gridH elev ux uy
       h0 = elev U.! i
-      cool = max 0 (upwindElev - h0) * precRainShadow prc
+      cool = max 0 (upwindElev - h0) * precRainShadowLoss prc
       -- Wind-driven advection + local retention
       adv   = upwindMoisture * moistAdvect mst
       local = moisture U.! i * moistLocal mst
@@ -784,7 +785,7 @@ moistureFlowAtGrid gridW gridH cfg windDir windSpd elev tempGrid vegCover moistu
       -- Excess above that capacity condenses, modulated by the
       -- condensation rate to allow gradual precipitation over many
       -- iterations.
-      dstCapacity  = satNorm (tempGrid U.! i)
+      dstCapacity  = satNormCfg mst (tempGrid U.! i)
       excess       = max 0 (totalMoisture - dstCapacity)
       condensation = excess * moistCondensationRate mst
       -- ET recycling (Model E.3):
@@ -792,7 +793,7 @@ moistureFlowAtGrid gridW gridH cfg windDir windSpd elev tempGrid vegCover moistu
       -- the atmosphere, sustaining continental interior humidity.
       vegC     = vegCover U.! i
       recycled = condensation * vegC * moistRecycleRate mst
-                   * satNorm (tempGrid U.! i)
+                   * satNormCfg mst (tempGrid U.! i)
       -- Net precipitation: condensation minus what is immediately
       -- recycled back to the atmosphere.
       netPrecip = max 0 (condensation - recycled)
@@ -811,7 +812,7 @@ orographicAt gridW gridH cfg windDir elev i =
       h0 = elev U.! i
       h1 = elev U.! ni
       rise = max 0 (h0 - h1)
-  in clamp01 (rise * precRainShadow prc * precOrographicScale prc)
+  in clamp01 (rise * precOrographicLift prc * precOrographicScale prc)
 
 boundaryOrogenyAt :: ClimateConfig -> Float -> U.Vector Float -> U.Vector PlateBoundary -> Float -> Int -> Float
 boundaryOrogenyAt cfg waterLevel elev boundaries motion i =
@@ -826,7 +827,7 @@ boundaryOrogenyAt cfg waterLevel elev boundaries motion i =
         PlateBoundaryDivergent -> bndPrecipDivergent bnd
         PlateBoundaryTransform -> bndPrecipTransform bnd
         PlateBoundaryNone -> 0
-  in strength * land * precRainShadow prc * (1 + motion)
+  in strength * land * precOrographicLift prc * (1 + motion)
 
 -- | Continental-elevation temperature effect: high plateaus are slightly
 -- cooler.  Uses 'ccPlateHeightCooling' (not the main lapse rate) to avoid
@@ -839,7 +840,7 @@ plateHeightTempBiasAt cfg waterLevel plateHeight =
 plateHeightPrecipBiasAt :: ClimateConfig -> Float -> Float -> Float
 plateHeightPrecipBiasAt cfg waterLevel plateHeight =
   let land = clamp01 (plateHeight - waterLevel)
-  in land * precRainShadow (ccPrecipitation cfg)
+  in land * precOrographicLift (ccPrecipitation cfg)
 
 buildPlateHeightGrid :: WorldConfig -> IntMap TerrainChunk -> ChunkCoord -> Int -> Int -> U.Vector Float
 buildPlateHeightGrid config terrain (ChunkCoord minCx minCy) gridW gridH =
@@ -923,7 +924,7 @@ moistureFlowAt config cfg windDir windSpd elev moisture i =
       upwindMoisture = bilinearSample size size moisture ux uy
       upwindElev     = bilinearSample size size elev ux uy
       h0 = elev U.! i
-      cool = max 0 (upwindElev - h0) * precRainShadow prc
+      cool = max 0 (upwindElev - h0) * precRainShadowLoss prc
       adv = upwindMoisture * moistAdvect mst
       local = moisture U.! i * moistLocal mst
   in clamp01 (adv + local - cool)

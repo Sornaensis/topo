@@ -22,8 +22,8 @@ module Actor.UI
   , setUiShowLeftPanel
   , setUiWaterLevel
   , setUiRenderWaterLevel
-  , setUiEvaporation
-  , setUiRainShadow
+  , setUiOrographicLift
+  , setUiRainShadowLoss
   , setUiWindDiffuse
   , setUiRainRate
   , setUiErosionHydraulic
@@ -74,7 +74,6 @@ module Actor.UI
   , setUiMoistLocal
   , setUiMoistWindEvapScale
   , setUiMoistEvapNoiseScale
-  , setUiMoistLandETCoeff
   , setUiMoistBareEvapFrac
   , setUiMoistVegTranspFrac
   , setUiMoistWindETScale
@@ -305,8 +304,8 @@ data UiState = UiState
   , uiSeedInput :: !Text
   , uiWaterLevel :: !Float
   , uiRenderWaterLevel :: !Float
-  , uiEvaporation :: !Float
-  , uiRainShadow :: !Float
+  , uiOrographicLift :: !Float
+  , uiRainShadowLoss :: !Float
   , uiWindDiffuse :: !Float
   , uiRainRate :: !Float
   , uiErosionHydraulic :: !Float
@@ -357,7 +356,6 @@ data UiState = UiState
   , uiMoistLocal :: !Float
   , uiMoistWindEvapScale :: !Float
   , uiMoistEvapNoiseScale :: !Float
-  , uiMoistLandETCoeff :: !Float
   , uiMoistBareEvapFrac :: !Float
   , uiMoistVegTranspFrac :: !Float
   , uiMoistWindETScale :: !Float
@@ -527,8 +525,8 @@ emptyUiState = UiState
   , uiSeedInput = Text.empty
   , uiWaterLevel = 0.5
   , uiRenderWaterLevel = 0.5
-  , uiEvaporation = 0.25
-  , uiRainShadow = 0.4
+  , uiOrographicLift = 0.35
+  , uiRainShadowLoss = 0.15
   , uiWindDiffuse = 0.5
   , uiRainRate = 0.2
   , uiErosionHydraulic = 0.5
@@ -579,7 +577,6 @@ emptyUiState = UiState
   , uiMoistLocal = 0.15
   , uiMoistWindEvapScale = 0.3
   , uiMoistEvapNoiseScale = 0.25
-  , uiMoistLandETCoeff = 0.65
   , uiMoistBareEvapFrac = 0.15
   , uiMoistVegTranspFrac = 0.85
   , uiMoistWindETScale = 0.2
@@ -753,8 +750,8 @@ data UiUpdate
   | SetSeedInput !Text
   | SetWaterLevel !Float
   | SetRenderWaterLevel !Float
-  | SetEvaporation !Float
-  | SetRainShadow !Float
+  | SetOrographicLift !Float
+  | SetRainShadowLoss !Float
   | SetWindDiffuse !Float
   | SetRainRate !Float
   | SetErosionHydraulic !Float
@@ -805,7 +802,6 @@ data UiUpdate
   | SetMoistLocal !Float
   | SetMoistWindEvapScale !Float
   | SetMoistEvapNoiseScale !Float
-  | SetMoistLandETCoeff !Float
   | SetMoistBareEvapFrac !Float
   | SetMoistVegTranspFrac !Float
   | SetMoistWindETScale !Float
@@ -975,8 +971,8 @@ applyUpdate upd st = case upd of
   SetSeedInput v       -> st { uiSeedInput = v }
   SetWaterLevel v      -> st { uiWaterLevel = clamp01 v }
   SetRenderWaterLevel v -> st { uiRenderWaterLevel = clamp01 v }
-  SetEvaporation v     -> st { uiEvaporation = clamp01 v }
-  SetRainShadow v      -> st { uiRainShadow = clamp01 v }
+  SetOrographicLift v  -> st { uiOrographicLift = clamp01 v }
+  SetRainShadowLoss v  -> st { uiRainShadowLoss = clamp01 v }
   SetWindDiffuse v     -> st { uiWindDiffuse = clamp01 v }
   SetRainRate v        -> st { uiRainRate = clamp01 v }
   SetErosionHydraulic v -> st { uiErosionHydraulic = clamp01 v }
@@ -1027,7 +1023,6 @@ applyUpdate upd st = case upd of
   SetMoistLocal v      -> st { uiMoistLocal = clamp01 v }
   SetMoistWindEvapScale v -> st { uiMoistWindEvapScale = clamp01 v }
   SetMoistEvapNoiseScale v -> st { uiMoistEvapNoiseScale = clamp01 v }
-  SetMoistLandETCoeff v -> st { uiMoistLandETCoeff = clamp01 v }
   SetMoistBareEvapFrac v -> st { uiMoistBareEvapFrac = clamp01 v }
   SetMoistVegTranspFrac v -> st { uiMoistVegTranspFrac = clamp01 v }
   SetMoistWindETScale v -> st { uiMoistWindETScale = clamp01 v }
@@ -1310,13 +1305,13 @@ setUiRenderWaterLevel :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
 setUiRenderWaterLevel handle value =
   cast @"update" handle #update (SetRenderWaterLevel value)
 
-setUiEvaporation :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
-setUiEvaporation handle value =
-  cast @"update" handle #update (SetEvaporation value)
+setUiOrographicLift :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiOrographicLift handle value =
+  cast @"update" handle #update (SetOrographicLift value)
 
-setUiRainShadow :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
-setUiRainShadow handle value =
-  cast @"update" handle #update (SetRainShadow value)
+setUiRainShadowLoss :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiRainShadowLoss handle value =
+  cast @"update" handle #update (SetRainShadowLoss value)
 
 setUiWindDiffuse :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
 setUiWindDiffuse handle value =
@@ -1517,10 +1512,6 @@ setUiMoistWindEvapScale handle value =
 setUiMoistEvapNoiseScale :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
 setUiMoistEvapNoiseScale handle value =
   cast @"update" handle #update (SetMoistEvapNoiseScale value)
-
-setUiMoistLandETCoeff :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
-setUiMoistLandETCoeff handle value =
-  cast @"update" handle #update (SetMoistLandETCoeff value)
 
 setUiMoistBareEvapFrac :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
 setUiMoistBareEvapFrac handle value =

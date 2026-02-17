@@ -27,12 +27,12 @@ module UI.Layout
   , configWaterMinusRect
   , configWaterPlusRect
   , configWaterBarRect
-  , configEvapMinusRect
-  , configEvapPlusRect
-  , configEvapBarRect
-  , configRainShadowMinusRect
-  , configRainShadowPlusRect
-  , configRainShadowBarRect
+  , configOrographicLiftMinusRect
+  , configOrographicLiftPlusRect
+  , configOrographicLiftBarRect
+  , configRainShadowLossMinusRect
+  , configRainShadowLossPlusRect
+  , configRainShadowLossBarRect
   , configWindDiffuseMinusRect
   , configWindDiffusePlusRect
   , configWindDiffuseBarRect
@@ -258,9 +258,6 @@ module UI.Layout
   , configMoistEvapNoiseScaleMinusRect
   , configMoistEvapNoiseScalePlusRect
   , configMoistEvapNoiseScaleBarRect
-  , configMoistLandETCoeffMinusRect
-  , configMoistLandETCoeffPlusRect
-  , configMoistLandETCoeffBarRect
   , configMoistBareEvapFracMinusRect
   , configMoistBareEvapFracPlusRect
   , configMoistBareEvapFracBarRect
@@ -744,23 +741,23 @@ configWaterPlusRect = configParamPlusRect 0
 configWaterBarRect :: Layout -> Rect
 configWaterBarRect = configParamBarRect 0
 
-configEvapMinusRect :: Layout -> Rect
-configEvapMinusRect = configParamMinusRect 1
+configOrographicLiftMinusRect :: Layout -> Rect
+configOrographicLiftMinusRect = configParamMinusRect 1
 
-configEvapPlusRect :: Layout -> Rect
-configEvapPlusRect = configParamPlusRect 1
+configOrographicLiftPlusRect :: Layout -> Rect
+configOrographicLiftPlusRect = configParamPlusRect 1
 
-configEvapBarRect :: Layout -> Rect
-configEvapBarRect = configParamBarRect 1
+configOrographicLiftBarRect :: Layout -> Rect
+configOrographicLiftBarRect = configParamBarRect 1
 
-configRainShadowMinusRect :: Layout -> Rect
-configRainShadowMinusRect = configParamMinusRect 2
+configRainShadowLossMinusRect :: Layout -> Rect
+configRainShadowLossMinusRect = configParamMinusRect 2
 
-configRainShadowPlusRect :: Layout -> Rect
-configRainShadowPlusRect = configParamPlusRect 2
+configRainShadowLossPlusRect :: Layout -> Rect
+configRainShadowLossPlusRect = configParamPlusRect 2
 
-configRainShadowBarRect :: Layout -> Rect
-configRainShadowBarRect = configParamBarRect 2
+configRainShadowLossBarRect :: Layout -> Rect
+configRainShadowLossBarRect = configParamBarRect 2
 
 configWindDiffuseMinusRect :: Layout -> Rect
 configWindDiffuseMinusRect = configParamMinusRect 3
@@ -835,175 +832,175 @@ configWeatherPhaseBarRect :: Layout -> Rect
 configWeatherPhaseBarRect = configParamBarRect 1
 
 configWeatherAmplitudeMinusRect :: Layout -> Rect
-configWeatherAmplitudeMinusRect = configParamMinusRect 2
+configWeatherAmplitudeMinusRect = configParamMinusRect 1
 
 configWeatherAmplitudePlusRect :: Layout -> Rect
-configWeatherAmplitudePlusRect = configParamPlusRect 2
+configWeatherAmplitudePlusRect = configParamPlusRect 1
 
 configWeatherAmplitudeBarRect :: Layout -> Rect
-configWeatherAmplitudeBarRect = configParamBarRect 2
+configWeatherAmplitudeBarRect = configParamBarRect 1
 
 configSeasonCycleLengthMinusRect :: Layout -> Rect
-configSeasonCycleLengthMinusRect = configParamMinusRect 3
+configSeasonCycleLengthMinusRect = configParamMinusRect 2
 
 configSeasonCycleLengthPlusRect :: Layout -> Rect
-configSeasonCycleLengthPlusRect = configParamPlusRect 3
+configSeasonCycleLengthPlusRect = configParamPlusRect 2
 
 configSeasonCycleLengthBarRect :: Layout -> Rect
-configSeasonCycleLengthBarRect = configParamBarRect 3
+configSeasonCycleLengthBarRect = configParamBarRect 2
 
 configJitterAmplitudeMinusRect :: Layout -> Rect
-configJitterAmplitudeMinusRect = configParamMinusRect 4
+configJitterAmplitudeMinusRect = configParamMinusRect 3
 
 configJitterAmplitudePlusRect :: Layout -> Rect
-configJitterAmplitudePlusRect = configParamPlusRect 4
+configJitterAmplitudePlusRect = configParamPlusRect 3
 
 configJitterAmplitudeBarRect :: Layout -> Rect
-configJitterAmplitudeBarRect = configParamBarRect 4
+configJitterAmplitudeBarRect = configParamBarRect 3
 
 configPressureBaseMinusRect :: Layout -> Rect
-configPressureBaseMinusRect = configParamMinusRect 5
+configPressureBaseMinusRect = configParamMinusRect 4
 
 configPressureBasePlusRect :: Layout -> Rect
-configPressureBasePlusRect = configParamPlusRect 5
+configPressureBasePlusRect = configParamPlusRect 4
 
 configPressureBaseBarRect :: Layout -> Rect
-configPressureBaseBarRect = configParamBarRect 5
+configPressureBaseBarRect = configParamBarRect 4
 
 configPressureTempScaleMinusRect :: Layout -> Rect
-configPressureTempScaleMinusRect = configParamMinusRect 6
+configPressureTempScaleMinusRect = configParamMinusRect 5
 
 configPressureTempScalePlusRect :: Layout -> Rect
-configPressureTempScalePlusRect = configParamPlusRect 6
+configPressureTempScalePlusRect = configParamPlusRect 5
 
 configPressureTempScaleBarRect :: Layout -> Rect
-configPressureTempScaleBarRect = configParamBarRect 6
+configPressureTempScaleBarRect = configParamBarRect 5
 
 configPressureCoriolisScaleMinusRect :: Layout -> Rect
-configPressureCoriolisScaleMinusRect = configParamMinusRect 7
+configPressureCoriolisScaleMinusRect = configParamMinusRect 6
 
 configPressureCoriolisScalePlusRect :: Layout -> Rect
-configPressureCoriolisScalePlusRect = configParamPlusRect 7
+configPressureCoriolisScalePlusRect = configParamPlusRect 6
 
 configPressureCoriolisScaleBarRect :: Layout -> Rect
-configPressureCoriolisScaleBarRect = configParamBarRect 7
+configPressureCoriolisScaleBarRect = configParamBarRect 6
 
 configSeasonalBaseMinusRect :: Layout -> Rect
-configSeasonalBaseMinusRect = configParamMinusRect 8
+configSeasonalBaseMinusRect = configParamMinusRect 7
 
 configSeasonalBasePlusRect :: Layout -> Rect
-configSeasonalBasePlusRect = configParamPlusRect 8
+configSeasonalBasePlusRect = configParamPlusRect 7
 
 configSeasonalBaseBarRect :: Layout -> Rect
-configSeasonalBaseBarRect = configParamBarRect 8
+configSeasonalBaseBarRect = configParamBarRect 7
 
 configSeasonalRangeMinusRect :: Layout -> Rect
-configSeasonalRangeMinusRect = configParamMinusRect 9
+configSeasonalRangeMinusRect = configParamMinusRect 8
 
 configSeasonalRangePlusRect :: Layout -> Rect
-configSeasonalRangePlusRect = configParamPlusRect 9
+configSeasonalRangePlusRect = configParamPlusRect 8
 
 configSeasonalRangeBarRect :: Layout -> Rect
-configSeasonalRangeBarRect = configParamBarRect 9
+configSeasonalRangeBarRect = configParamBarRect 8
 
 configHumidityNoiseScaleMinusRect :: Layout -> Rect
-configHumidityNoiseScaleMinusRect = configParamMinusRect 10
+configHumidityNoiseScaleMinusRect = configParamMinusRect 9
 
 configHumidityNoiseScalePlusRect :: Layout -> Rect
-configHumidityNoiseScalePlusRect = configParamPlusRect 10
+configHumidityNoiseScalePlusRect = configParamPlusRect 9
 
 configHumidityNoiseScaleBarRect :: Layout -> Rect
-configHumidityNoiseScaleBarRect = configParamBarRect 10
+configHumidityNoiseScaleBarRect = configParamBarRect 9
 
 configPrecipNoiseScaleMinusRect :: Layout -> Rect
-configPrecipNoiseScaleMinusRect = configParamMinusRect 11
+configPrecipNoiseScaleMinusRect = configParamMinusRect 10
 
 configPrecipNoiseScalePlusRect :: Layout -> Rect
-configPrecipNoiseScalePlusRect = configParamPlusRect 11
+configPrecipNoiseScalePlusRect = configParamPlusRect 10
 
 configPrecipNoiseScaleBarRect :: Layout -> Rect
-configPrecipNoiseScaleBarRect = configParamBarRect 11
+configPrecipNoiseScaleBarRect = configParamBarRect 10
 
 configWeatherITCZWidthMinusRect :: Layout -> Rect
-configWeatherITCZWidthMinusRect = configParamMinusRect 12
+configWeatherITCZWidthMinusRect = configParamMinusRect 11
 
 configWeatherITCZWidthPlusRect :: Layout -> Rect
-configWeatherITCZWidthPlusRect = configParamPlusRect 12
+configWeatherITCZWidthPlusRect = configParamPlusRect 11
 
 configWeatherITCZWidthBarRect :: Layout -> Rect
-configWeatherITCZWidthBarRect = configParamBarRect 12
+configWeatherITCZWidthBarRect = configParamBarRect 11
 
 configWeatherITCZPrecipBoostMinusRect :: Layout -> Rect
-configWeatherITCZPrecipBoostMinusRect = configParamMinusRect 13
+configWeatherITCZPrecipBoostMinusRect = configParamMinusRect 12
 
 configWeatherITCZPrecipBoostPlusRect :: Layout -> Rect
-configWeatherITCZPrecipBoostPlusRect = configParamPlusRect 13
+configWeatherITCZPrecipBoostPlusRect = configParamPlusRect 12
 
 configWeatherITCZPrecipBoostBarRect :: Layout -> Rect
-configWeatherITCZPrecipBoostBarRect = configParamBarRect 13
+configWeatherITCZPrecipBoostBarRect = configParamBarRect 12
 
 configPressureHumidityScaleMinusRect :: Layout -> Rect
-configPressureHumidityScaleMinusRect = configParamMinusRect 14
+configPressureHumidityScaleMinusRect = configParamMinusRect 13
 
 configPressureHumidityScalePlusRect :: Layout -> Rect
-configPressureHumidityScalePlusRect = configParamPlusRect 14
+configPressureHumidityScalePlusRect = configParamPlusRect 13
 
 configPressureHumidityScaleBarRect :: Layout -> Rect
-configPressureHumidityScaleBarRect = configParamBarRect 14
+configPressureHumidityScaleBarRect = configParamBarRect 13
 
 configPressureGradientWindScaleMinusRect :: Layout -> Rect
-configPressureGradientWindScaleMinusRect = configParamMinusRect 15
+configPressureGradientWindScaleMinusRect = configParamMinusRect 14
 
 configPressureGradientWindScalePlusRect :: Layout -> Rect
-configPressureGradientWindScalePlusRect = configParamPlusRect 15
+configPressureGradientWindScalePlusRect = configParamPlusRect 14
 
 configPressureGradientWindScaleBarRect :: Layout -> Rect
-configPressureGradientWindScaleBarRect = configParamBarRect 15
+configPressureGradientWindScaleBarRect = configParamBarRect 14
 
 configWindNoiseScaleMinusRect :: Layout -> Rect
-configWindNoiseScaleMinusRect = configParamMinusRect 16
+configWindNoiseScaleMinusRect = configParamMinusRect 15
 
 configWindNoiseScalePlusRect :: Layout -> Rect
-configWindNoiseScalePlusRect = configParamPlusRect 16
+configWindNoiseScalePlusRect = configParamPlusRect 15
 
 configWindNoiseScaleBarRect :: Layout -> Rect
-configWindNoiseScaleBarRect = configParamBarRect 16
+configWindNoiseScaleBarRect = configParamBarRect 15
 
 configITCZMigrationScaleMinusRect :: Layout -> Rect
-configITCZMigrationScaleMinusRect = configParamMinusRect 17
+configITCZMigrationScaleMinusRect = configParamMinusRect 16
 
 configITCZMigrationScalePlusRect :: Layout -> Rect
-configITCZMigrationScalePlusRect = configParamPlusRect 17
+configITCZMigrationScalePlusRect = configParamPlusRect 16
 
 configITCZMigrationScaleBarRect :: Layout -> Rect
-configITCZMigrationScaleBarRect = configParamBarRect 17
+configITCZMigrationScaleBarRect = configParamBarRect 16
 
 configCloudRHExponentMinusRect :: Layout -> Rect
-configCloudRHExponentMinusRect = configParamMinusRect 18
+configCloudRHExponentMinusRect = configParamMinusRect 17
 
 configCloudRHExponentPlusRect :: Layout -> Rect
-configCloudRHExponentPlusRect = configParamPlusRect 18
+configCloudRHExponentPlusRect = configParamPlusRect 17
 
 configCloudRHExponentBarRect :: Layout -> Rect
-configCloudRHExponentBarRect = configParamBarRect 18
+configCloudRHExponentBarRect = configParamBarRect 17
 
 configCloudAlbedoEffectMinusRect :: Layout -> Rect
-configCloudAlbedoEffectMinusRect = configParamMinusRect 19
+configCloudAlbedoEffectMinusRect = configParamMinusRect 18
 
 configCloudAlbedoEffectPlusRect :: Layout -> Rect
-configCloudAlbedoEffectPlusRect = configParamPlusRect 19
+configCloudAlbedoEffectPlusRect = configParamPlusRect 18
 
 configCloudAlbedoEffectBarRect :: Layout -> Rect
-configCloudAlbedoEffectBarRect = configParamBarRect 19
+configCloudAlbedoEffectBarRect = configParamBarRect 18
 
 configCloudPrecipBoostMinusRect :: Layout -> Rect
-configCloudPrecipBoostMinusRect = configParamMinusRect 20
+configCloudPrecipBoostMinusRect = configParamMinusRect 19
 
 configCloudPrecipBoostPlusRect :: Layout -> Rect
-configCloudPrecipBoostPlusRect = configParamPlusRect 20
+configCloudPrecipBoostPlusRect = configParamPlusRect 19
 
 configCloudPrecipBoostBarRect :: Layout -> Rect
-configCloudPrecipBoostBarRect = configParamBarRect 20
+configCloudPrecipBoostBarRect = configParamBarRect 19
 
 configVegBaseMinusRect :: Layout -> Rect
 configVegBaseMinusRect = configParamMinusRect 0
@@ -1024,169 +1021,169 @@ configVegBoostBarRect :: Layout -> Rect
 configVegBoostBarRect = configParamBarRect 1
 
 configVegTempWeightMinusRect :: Layout -> Rect
-configVegTempWeightMinusRect = configParamMinusRect 2
+configVegTempWeightMinusRect = configParamMinusRect 1
 
 configVegTempWeightPlusRect :: Layout -> Rect
-configVegTempWeightPlusRect = configParamPlusRect 2
+configVegTempWeightPlusRect = configParamPlusRect 1
 
 configVegTempWeightBarRect :: Layout -> Rect
-configVegTempWeightBarRect = configParamBarRect 2
+configVegTempWeightBarRect = configParamBarRect 1
 
 configVegPrecipWeightMinusRect :: Layout -> Rect
-configVegPrecipWeightMinusRect = configParamMinusRect 3
+configVegPrecipWeightMinusRect = configParamMinusRect 2
 
 configVegPrecipWeightPlusRect :: Layout -> Rect
-configVegPrecipWeightPlusRect = configParamPlusRect 3
+configVegPrecipWeightPlusRect = configParamPlusRect 2
 
 configVegPrecipWeightBarRect :: Layout -> Rect
-configVegPrecipWeightBarRect = configParamBarRect 3
+configVegPrecipWeightBarRect = configParamBarRect 2
 
 configBtCoastalBandMinusRect :: Layout -> Rect
-configBtCoastalBandMinusRect = configParamMinusRect 4
+configBtCoastalBandMinusRect = configParamMinusRect 3
 configBtCoastalBandPlusRect :: Layout -> Rect
-configBtCoastalBandPlusRect = configParamPlusRect 4
+configBtCoastalBandPlusRect = configParamPlusRect 3
 configBtCoastalBandBarRect :: Layout -> Rect
-configBtCoastalBandBarRect = configParamBarRect 4
+configBtCoastalBandBarRect = configParamBarRect 3
 
 configBtSnowMaxTempMinusRect :: Layout -> Rect
-configBtSnowMaxTempMinusRect = configParamMinusRect 5
+configBtSnowMaxTempMinusRect = configParamMinusRect 4
 configBtSnowMaxTempPlusRect :: Layout -> Rect
-configBtSnowMaxTempPlusRect = configParamPlusRect 5
+configBtSnowMaxTempPlusRect = configParamPlusRect 4
 configBtSnowMaxTempBarRect :: Layout -> Rect
-configBtSnowMaxTempBarRect = configParamBarRect 5
+configBtSnowMaxTempBarRect = configParamBarRect 4
 
 configBtAlpineMaxTempMinusRect :: Layout -> Rect
-configBtAlpineMaxTempMinusRect = configParamMinusRect 6
+configBtAlpineMaxTempMinusRect = configParamMinusRect 5
 configBtAlpineMaxTempPlusRect :: Layout -> Rect
-configBtAlpineMaxTempPlusRect = configParamPlusRect 6
+configBtAlpineMaxTempPlusRect = configParamPlusRect 5
 configBtAlpineMaxTempBarRect :: Layout -> Rect
-configBtAlpineMaxTempBarRect = configParamBarRect 6
+configBtAlpineMaxTempBarRect = configParamBarRect 5
 
 configBtIceCapTempMinusRect :: Layout -> Rect
-configBtIceCapTempMinusRect = configParamMinusRect 7
+configBtIceCapTempMinusRect = configParamMinusRect 6
 configBtIceCapTempPlusRect :: Layout -> Rect
-configBtIceCapTempPlusRect = configParamPlusRect 7
+configBtIceCapTempPlusRect = configParamPlusRect 6
 configBtIceCapTempBarRect :: Layout -> Rect
-configBtIceCapTempBarRect = configParamBarRect 7
+configBtIceCapTempBarRect = configParamBarRect 6
 
 configBtMontaneMaxTempMinusRect :: Layout -> Rect
-configBtMontaneMaxTempMinusRect = configParamMinusRect 8
+configBtMontaneMaxTempMinusRect = configParamMinusRect 7
 configBtMontaneMaxTempPlusRect :: Layout -> Rect
-configBtMontaneMaxTempPlusRect = configParamPlusRect 8
+configBtMontaneMaxTempPlusRect = configParamPlusRect 7
 configBtMontaneMaxTempBarRect :: Layout -> Rect
-configBtMontaneMaxTempBarRect = configParamBarRect 8
+configBtMontaneMaxTempBarRect = configParamBarRect 7
 
 configBtMontanePrecipMinusRect :: Layout -> Rect
-configBtMontanePrecipMinusRect = configParamMinusRect 9
+configBtMontanePrecipMinusRect = configParamMinusRect 8
 configBtMontanePrecipPlusRect :: Layout -> Rect
-configBtMontanePrecipPlusRect = configParamPlusRect 9
+configBtMontanePrecipPlusRect = configParamPlusRect 8
 configBtMontanePrecipBarRect :: Layout -> Rect
-configBtMontanePrecipBarRect = configParamBarRect 9
+configBtMontanePrecipBarRect = configParamBarRect 8
 
 configBtCliffSlopeMinusRect :: Layout -> Rect
-configBtCliffSlopeMinusRect = configParamMinusRect 10
+configBtCliffSlopeMinusRect = configParamMinusRect 9
 configBtCliffSlopePlusRect :: Layout -> Rect
-configBtCliffSlopePlusRect = configParamPlusRect 10
+configBtCliffSlopePlusRect = configParamPlusRect 9
 configBtCliffSlopeBarRect :: Layout -> Rect
-configBtCliffSlopeBarRect = configParamBarRect 10
+configBtCliffSlopeBarRect = configParamBarRect 9
 
 configBtValleyMoistureMinusRect :: Layout -> Rect
-configBtValleyMoistureMinusRect = configParamMinusRect 11
+configBtValleyMoistureMinusRect = configParamMinusRect 10
 configBtValleyMoisturePlusRect :: Layout -> Rect
-configBtValleyMoisturePlusRect = configParamPlusRect 11
+configBtValleyMoisturePlusRect = configParamPlusRect 10
 configBtValleyMoistureBarRect :: Layout -> Rect
-configBtValleyMoistureBarRect = configParamBarRect 11
+configBtValleyMoistureBarRect = configParamBarRect 10
 
 configBtDepressionMoistureMinusRect :: Layout -> Rect
-configBtDepressionMoistureMinusRect = configParamMinusRect 12
+configBtDepressionMoistureMinusRect = configParamMinusRect 11
 configBtDepressionMoisturePlusRect :: Layout -> Rect
-configBtDepressionMoisturePlusRect = configParamPlusRect 12
+configBtDepressionMoisturePlusRect = configParamPlusRect 11
 configBtDepressionMoistureBarRect :: Layout -> Rect
-configBtDepressionMoistureBarRect = configParamBarRect 12
+configBtDepressionMoistureBarRect = configParamBarRect 11
 
 configBtPrecipWeightMinusRect :: Layout -> Rect
-configBtPrecipWeightMinusRect = configParamMinusRect 13
+configBtPrecipWeightMinusRect = configParamMinusRect 12
 configBtPrecipWeightPlusRect :: Layout -> Rect
-configBtPrecipWeightPlusRect = configParamPlusRect 13
+configBtPrecipWeightPlusRect = configParamPlusRect 12
 configBtPrecipWeightBarRect :: Layout -> Rect
-configBtPrecipWeightBarRect = configParamBarRect 13
+configBtPrecipWeightBarRect = configParamBarRect 12
 
 configVbcTempMinMinusRect :: Layout -> Rect
-configVbcTempMinMinusRect = configParamMinusRect 14
+configVbcTempMinMinusRect = configParamMinusRect 13
 configVbcTempMinPlusRect :: Layout -> Rect
-configVbcTempMinPlusRect = configParamPlusRect 14
+configVbcTempMinPlusRect = configParamPlusRect 13
 configVbcTempMinBarRect :: Layout -> Rect
-configVbcTempMinBarRect = configParamBarRect 14
+configVbcTempMinBarRect = configParamBarRect 13
 
 configVbcTempRangeMinusRect :: Layout -> Rect
-configVbcTempRangeMinusRect = configParamMinusRect 15
+configVbcTempRangeMinusRect = configParamMinusRect 14
 configVbcTempRangePlusRect :: Layout -> Rect
-configVbcTempRangePlusRect = configParamPlusRect 15
+configVbcTempRangePlusRect = configParamPlusRect 14
 configVbcTempRangeBarRect :: Layout -> Rect
-configVbcTempRangeBarRect = configParamBarRect 15
+configVbcTempRangeBarRect = configParamBarRect 14
 
 configVbcFertilityBoostMinusRect :: Layout -> Rect
-configVbcFertilityBoostMinusRect = configParamMinusRect 16
+configVbcFertilityBoostMinusRect = configParamMinusRect 15
 configVbcFertilityBoostPlusRect :: Layout -> Rect
-configVbcFertilityBoostPlusRect = configParamPlusRect 16
+configVbcFertilityBoostPlusRect = configParamPlusRect 15
 configVbcFertilityBoostBarRect :: Layout -> Rect
-configVbcFertilityBoostBarRect = configParamBarRect 16
+configVbcFertilityBoostBarRect = configParamBarRect 15
 
 configVbcAlbedoBaseMinusRect :: Layout -> Rect
-configVbcAlbedoBaseMinusRect = configParamMinusRect 17
+configVbcAlbedoBaseMinusRect = configParamMinusRect 16
 configVbcAlbedoBasePlusRect :: Layout -> Rect
-configVbcAlbedoBasePlusRect = configParamPlusRect 17
+configVbcAlbedoBasePlusRect = configParamPlusRect 16
 configVbcAlbedoBaseBarRect :: Layout -> Rect
-configVbcAlbedoBaseBarRect = configParamBarRect 17
+configVbcAlbedoBaseBarRect = configParamBarRect 16
 
 configVbcAlbedoBareMinusRect :: Layout -> Rect
-configVbcAlbedoBareMinusRect = configParamMinusRect 18
+configVbcAlbedoBareMinusRect = configParamMinusRect 17
 configVbcAlbedoBarePlusRect :: Layout -> Rect
-configVbcAlbedoBarePlusRect = configParamPlusRect 18
+configVbcAlbedoBarePlusRect = configParamPlusRect 17
 configVbcAlbedoBareBarRect :: Layout -> Rect
-configVbcAlbedoBareBarRect = configParamBarRect 18
+configVbcAlbedoBareBarRect = configParamBarRect 17
 
 configVbcAlbedoVegMinusRect :: Layout -> Rect
-configVbcAlbedoVegMinusRect = configParamMinusRect 19
+configVbcAlbedoVegMinusRect = configParamMinusRect 18
 configVbcAlbedoVegPlusRect :: Layout -> Rect
-configVbcAlbedoVegPlusRect = configParamPlusRect 19
+configVbcAlbedoVegPlusRect = configParamPlusRect 18
 configVbcAlbedoVegBarRect :: Layout -> Rect
-configVbcAlbedoVegBarRect = configParamBarRect 19
+configVbcAlbedoVegBarRect = configParamBarRect 18
 
 configVbcOceanAlbedoMinusRect :: Layout -> Rect
-configVbcOceanAlbedoMinusRect = configParamMinusRect 20
+configVbcOceanAlbedoMinusRect = configParamMinusRect 19
 configVbcOceanAlbedoPlusRect :: Layout -> Rect
-configVbcOceanAlbedoPlusRect = configParamPlusRect 20
+configVbcOceanAlbedoPlusRect = configParamPlusRect 19
 configVbcOceanAlbedoBarRect :: Layout -> Rect
-configVbcOceanAlbedoBarRect = configParamBarRect 20
+configVbcOceanAlbedoBarRect = configParamBarRect 19
 
 configVbcIceAlbedoMinusRect :: Layout -> Rect
-configVbcIceAlbedoMinusRect = configParamMinusRect 21
+configVbcIceAlbedoMinusRect = configParamMinusRect 20
 configVbcIceAlbedoPlusRect :: Layout -> Rect
-configVbcIceAlbedoPlusRect = configParamPlusRect 21
+configVbcIceAlbedoPlusRect = configParamPlusRect 20
 configVbcIceAlbedoBarRect :: Layout -> Rect
-configVbcIceAlbedoBarRect = configParamBarRect 21
+configVbcIceAlbedoBarRect = configParamBarRect 20
 
 configBiomeSmoothingMinusRect :: Layout -> Rect
-configBiomeSmoothingMinusRect = configParamMinusRect 22
+configBiomeSmoothingMinusRect = configParamMinusRect 21
 configBiomeSmoothingPlusRect :: Layout -> Rect
-configBiomeSmoothingPlusRect = configParamPlusRect 22
+configBiomeSmoothingPlusRect = configParamPlusRect 21
 configBiomeSmoothingBarRect :: Layout -> Rect
-configBiomeSmoothingBarRect = configParamBarRect 22
+configBiomeSmoothingBarRect = configParamBarRect 21
 
 configVolcanicAshBoostMinusRect :: Layout -> Rect
-configVolcanicAshBoostMinusRect = configParamMinusRect 23
+configVolcanicAshBoostMinusRect = configParamMinusRect 22
 configVolcanicAshBoostPlusRect :: Layout -> Rect
-configVolcanicAshBoostPlusRect = configParamPlusRect 23
+configVolcanicAshBoostPlusRect = configParamPlusRect 22
 configVolcanicAshBoostBarRect :: Layout -> Rect
-configVolcanicAshBoostBarRect = configParamBarRect 23
+configVolcanicAshBoostBarRect = configParamBarRect 22
 
 configVolcanicLavaPenaltyMinusRect :: Layout -> Rect
-configVolcanicLavaPenaltyMinusRect = configParamMinusRect 24
+configVolcanicLavaPenaltyMinusRect = configParamMinusRect 23
 configVolcanicLavaPenaltyPlusRect :: Layout -> Rect
-configVolcanicLavaPenaltyPlusRect = configParamPlusRect 24
+configVolcanicLavaPenaltyPlusRect = configParamPlusRect 23
 configVolcanicLavaPenaltyBarRect :: Layout -> Rect
-configVolcanicLavaPenaltyBarRect = configParamBarRect 24
+configVolcanicLavaPenaltyBarRect = configParamBarRect 23
 
 configBiomeFeedbackBlendMinusRect :: Layout -> Rect
 configBiomeFeedbackBlendMinusRect = configParamMinusRect 25
@@ -1234,49 +1231,49 @@ configAxialTiltBarRect :: Layout -> Rect
 configAxialTiltBarRect = configParamBarRect 1
 
 configInsolationMinusRect :: Layout -> Rect
-configInsolationMinusRect = configParamMinusRect 2
+configInsolationMinusRect = configParamMinusRect 1
 
 configInsolationPlusRect :: Layout -> Rect
-configInsolationPlusRect = configParamPlusRect 2
+configInsolationPlusRect = configParamPlusRect 1
 
 configInsolationBarRect :: Layout -> Rect
-configInsolationBarRect = configParamBarRect 2
+configInsolationBarRect = configParamBarRect 1
 
 configOccWarmScaleMinusRect :: Layout -> Rect
-configOccWarmScaleMinusRect = configParamMinusRect 3
+configOccWarmScaleMinusRect = configParamMinusRect 2
 
 configOccWarmScalePlusRect :: Layout -> Rect
-configOccWarmScalePlusRect = configParamPlusRect 3
+configOccWarmScalePlusRect = configParamPlusRect 2
 
 configOccWarmScaleBarRect :: Layout -> Rect
-configOccWarmScaleBarRect = configParamBarRect 3
+configOccWarmScaleBarRect = configParamBarRect 2
 
 configOccColdScaleMinusRect :: Layout -> Rect
-configOccColdScaleMinusRect = configParamMinusRect 4
+configOccColdScaleMinusRect = configParamMinusRect 3
 
 configOccColdScalePlusRect :: Layout -> Rect
-configOccColdScalePlusRect = configParamPlusRect 4
+configOccColdScalePlusRect = configParamPlusRect 3
 
 configOccColdScaleBarRect :: Layout -> Rect
-configOccColdScaleBarRect = configParamBarRect 4
+configOccColdScaleBarRect = configParamBarRect 3
 
 configOccLatPeakDegMinusRect :: Layout -> Rect
-configOccLatPeakDegMinusRect = configParamMinusRect 5
+configOccLatPeakDegMinusRect = configParamMinusRect 4
 
 configOccLatPeakDegPlusRect :: Layout -> Rect
-configOccLatPeakDegPlusRect = configParamPlusRect 5
+configOccLatPeakDegPlusRect = configParamPlusRect 4
 
 configOccLatPeakDegBarRect :: Layout -> Rect
-configOccLatPeakDegBarRect = configParamBarRect 5
+configOccLatPeakDegBarRect = configParamBarRect 4
 
 configOccLatWidthDegMinusRect :: Layout -> Rect
-configOccLatWidthDegMinusRect = configParamMinusRect 6
+configOccLatWidthDegMinusRect = configParamMinusRect 5
 
 configOccLatWidthDegPlusRect :: Layout -> Rect
-configOccLatWidthDegPlusRect = configParamPlusRect 6
+configOccLatWidthDegPlusRect = configParamPlusRect 5
 
 configOccLatWidthDegBarRect :: Layout -> Rect
-configOccLatWidthDegBarRect = configParamBarRect 6
+configOccLatWidthDegBarRect = configParamBarRect 5
 
 configSliceLatCenterMinusRect :: Layout -> Rect
 configSliceLatCenterMinusRect = configParamMinusRect 11
@@ -1395,230 +1392,221 @@ configMoistEvapNoiseScalePlusRect = configParamPlusRect 23
 configMoistEvapNoiseScaleBarRect :: Layout -> Rect
 configMoistEvapNoiseScaleBarRect = configParamBarRect 23
 
-configMoistLandETCoeffMinusRect :: Layout -> Rect
-configMoistLandETCoeffMinusRect = configParamMinusRect 24
-
-configMoistLandETCoeffPlusRect :: Layout -> Rect
-configMoistLandETCoeffPlusRect = configParamPlusRect 24
-
-configMoistLandETCoeffBarRect :: Layout -> Rect
-configMoistLandETCoeffBarRect = configParamBarRect 24
-
 configMoistBareEvapFracMinusRect :: Layout -> Rect
-configMoistBareEvapFracMinusRect = configParamMinusRect 25
+configMoistBareEvapFracMinusRect = configParamMinusRect 24
 
 configMoistBareEvapFracPlusRect :: Layout -> Rect
-configMoistBareEvapFracPlusRect = configParamPlusRect 25
+configMoistBareEvapFracPlusRect = configParamPlusRect 24
 
 configMoistBareEvapFracBarRect :: Layout -> Rect
-configMoistBareEvapFracBarRect = configParamBarRect 25
+configMoistBareEvapFracBarRect = configParamBarRect 24
 
 configMoistVegTranspFracMinusRect :: Layout -> Rect
-configMoistVegTranspFracMinusRect = configParamMinusRect 26
+configMoistVegTranspFracMinusRect = configParamMinusRect 25
 
 configMoistVegTranspFracPlusRect :: Layout -> Rect
-configMoistVegTranspFracPlusRect = configParamPlusRect 26
+configMoistVegTranspFracPlusRect = configParamPlusRect 25
 
 configMoistVegTranspFracBarRect :: Layout -> Rect
-configMoistVegTranspFracBarRect = configParamBarRect 26
+configMoistVegTranspFracBarRect = configParamBarRect 25
 
 configMoistWindETScaleMinusRect :: Layout -> Rect
-configMoistWindETScaleMinusRect = configParamMinusRect 27
+configMoistWindETScaleMinusRect = configParamMinusRect 26
 
 configMoistWindETScalePlusRect :: Layout -> Rect
-configMoistWindETScalePlusRect = configParamPlusRect 27
+configMoistWindETScalePlusRect = configParamPlusRect 26
 
 configMoistWindETScaleBarRect :: Layout -> Rect
-configMoistWindETScaleBarRect = configParamBarRect 27
+configMoistWindETScaleBarRect = configParamBarRect 26
 
 configMoistCondensationRateMinusRect :: Layout -> Rect
-configMoistCondensationRateMinusRect = configParamMinusRect 28
+configMoistCondensationRateMinusRect = configParamMinusRect 27
 
 configMoistCondensationRatePlusRect :: Layout -> Rect
-configMoistCondensationRatePlusRect = configParamPlusRect 28
+configMoistCondensationRatePlusRect = configParamPlusRect 27
 
 configMoistCondensationRateBarRect :: Layout -> Rect
-configMoistCondensationRateBarRect = configParamBarRect 28
+configMoistCondensationRateBarRect = configParamBarRect 27
 
 configMoistRecycleRateMinusRect :: Layout -> Rect
-configMoistRecycleRateMinusRect = configParamMinusRect 29
+configMoistRecycleRateMinusRect = configParamMinusRect 28
 
 configMoistRecycleRatePlusRect :: Layout -> Rect
-configMoistRecycleRatePlusRect = configParamPlusRect 29
+configMoistRecycleRatePlusRect = configParamPlusRect 28
 
 configMoistRecycleRateBarRect :: Layout -> Rect
-configMoistRecycleRateBarRect = configParamBarRect 29
+configMoistRecycleRateBarRect = configParamBarRect 28
 
 configMoistITCZStrengthMinusRect :: Layout -> Rect
-configMoistITCZStrengthMinusRect = configParamMinusRect 30
+configMoistITCZStrengthMinusRect = configParamMinusRect 29
 
 configMoistITCZStrengthPlusRect :: Layout -> Rect
-configMoistITCZStrengthPlusRect = configParamPlusRect 30
+configMoistITCZStrengthPlusRect = configParamPlusRect 29
 
 configMoistITCZStrengthBarRect :: Layout -> Rect
-configMoistITCZStrengthBarRect = configParamBarRect 30
+configMoistITCZStrengthBarRect = configParamBarRect 29
 
 configMoistITCZWidthMinusRect :: Layout -> Rect
-configMoistITCZWidthMinusRect = configParamMinusRect 31
+configMoistITCZWidthMinusRect = configParamMinusRect 30
 
 configMoistITCZWidthPlusRect :: Layout -> Rect
-configMoistITCZWidthPlusRect = configParamPlusRect 31
+configMoistITCZWidthPlusRect = configParamPlusRect 30
 
 configMoistITCZWidthBarRect :: Layout -> Rect
-configMoistITCZWidthBarRect = configParamBarRect 31
+configMoistITCZWidthBarRect = configParamBarRect 30
 
 configOrographicScaleMinusRect :: Layout -> Rect
-configOrographicScaleMinusRect = configParamMinusRect 32
+configOrographicScaleMinusRect = configParamMinusRect 31
 
 configOrographicScalePlusRect :: Layout -> Rect
-configOrographicScalePlusRect = configParamPlusRect 32
+configOrographicScalePlusRect = configParamPlusRect 31
 
 configOrographicScaleBarRect :: Layout -> Rect
-configOrographicScaleBarRect = configParamBarRect 32
+configOrographicScaleBarRect = configParamBarRect 31
 
 configOrographicStepMinusRect :: Layout -> Rect
-configOrographicStepMinusRect = configParamMinusRect 33
+configOrographicStepMinusRect = configParamMinusRect 32
 
 configOrographicStepPlusRect :: Layout -> Rect
-configOrographicStepPlusRect = configParamPlusRect 33
+configOrographicStepPlusRect = configParamPlusRect 32
 
 configOrographicStepBarRect :: Layout -> Rect
-configOrographicStepBarRect = configParamBarRect 33
+configOrographicStepBarRect = configParamBarRect 32
 
 configCoastalIterationsMinusRect :: Layout -> Rect
-configCoastalIterationsMinusRect = configParamMinusRect 34
+configCoastalIterationsMinusRect = configParamMinusRect 33
 
 configCoastalIterationsPlusRect :: Layout -> Rect
-configCoastalIterationsPlusRect = configParamPlusRect 34
+configCoastalIterationsPlusRect = configParamPlusRect 33
 
 configCoastalIterationsBarRect :: Layout -> Rect
-configCoastalIterationsBarRect = configParamBarRect 34
+configCoastalIterationsBarRect = configParamBarRect 33
 
 configCoastalDiffuseMinusRect :: Layout -> Rect
-configCoastalDiffuseMinusRect = configParamMinusRect 35
+configCoastalDiffuseMinusRect = configParamMinusRect 34
 
 configCoastalDiffusePlusRect :: Layout -> Rect
-configCoastalDiffusePlusRect = configParamPlusRect 35
+configCoastalDiffusePlusRect = configParamPlusRect 34
 
 configCoastalDiffuseBarRect :: Layout -> Rect
-configCoastalDiffuseBarRect = configParamBarRect 35
+configCoastalDiffuseBarRect = configParamBarRect 34
 
 configCoastalMoistureBoostMinusRect :: Layout -> Rect
-configCoastalMoistureBoostMinusRect = configParamMinusRect 36
+configCoastalMoistureBoostMinusRect = configParamMinusRect 35
 
 configCoastalMoistureBoostPlusRect :: Layout -> Rect
-configCoastalMoistureBoostPlusRect = configParamPlusRect 36
+configCoastalMoistureBoostPlusRect = configParamPlusRect 35
 
 configCoastalMoistureBoostBarRect :: Layout -> Rect
-configCoastalMoistureBoostBarRect = configParamBarRect 36
+configCoastalMoistureBoostBarRect = configParamBarRect 35
 
 configWindBeltStrengthMinusRect :: Layout -> Rect
-configWindBeltStrengthMinusRect = configParamMinusRect 37
+configWindBeltStrengthMinusRect = configParamMinusRect 36
 
 configWindBeltStrengthPlusRect :: Layout -> Rect
-configWindBeltStrengthPlusRect = configParamPlusRect 37
+configWindBeltStrengthPlusRect = configParamPlusRect 36
 
 configWindBeltStrengthBarRect :: Layout -> Rect
-configWindBeltStrengthBarRect = configParamBarRect 37
+configWindBeltStrengthBarRect = configParamBarRect 36
 
 configWindBeltHarmonicsMinusRect :: Layout -> Rect
-configWindBeltHarmonicsMinusRect = configParamMinusRect 38
+configWindBeltHarmonicsMinusRect = configParamMinusRect 37
 
 configWindBeltHarmonicsPlusRect :: Layout -> Rect
-configWindBeltHarmonicsPlusRect = configParamPlusRect 38
+configWindBeltHarmonicsPlusRect = configParamPlusRect 37
 
 configWindBeltHarmonicsBarRect :: Layout -> Rect
-configWindBeltHarmonicsBarRect = configParamBarRect 38
+configWindBeltHarmonicsBarRect = configParamBarRect 37
 
 configWindBeltBaseMinusRect :: Layout -> Rect
-configWindBeltBaseMinusRect = configParamMinusRect 39
+configWindBeltBaseMinusRect = configParamMinusRect 38
 
 configWindBeltBasePlusRect :: Layout -> Rect
-configWindBeltBasePlusRect = configParamPlusRect 39
+configWindBeltBasePlusRect = configParamPlusRect 38
 
 configWindBeltBaseBarRect :: Layout -> Rect
-configWindBeltBaseBarRect = configParamBarRect 39
+configWindBeltBaseBarRect = configParamBarRect 38
 
 configWindBeltRangeMinusRect :: Layout -> Rect
-configWindBeltRangeMinusRect = configParamMinusRect 40
+configWindBeltRangeMinusRect = configParamMinusRect 39
 
 configWindBeltRangePlusRect :: Layout -> Rect
-configWindBeltRangePlusRect = configParamPlusRect 40
+configWindBeltRangePlusRect = configParamPlusRect 39
 
 configWindBeltRangeBarRect :: Layout -> Rect
-configWindBeltRangeBarRect = configParamBarRect 40
+configWindBeltRangeBarRect = configParamBarRect 39
 
 configWindBeltSpeedScaleMinusRect :: Layout -> Rect
-configWindBeltSpeedScaleMinusRect = configParamMinusRect 41
+configWindBeltSpeedScaleMinusRect = configParamMinusRect 40
 
 configWindBeltSpeedScalePlusRect :: Layout -> Rect
-configWindBeltSpeedScalePlusRect = configParamPlusRect 41
+configWindBeltSpeedScalePlusRect = configParamPlusRect 40
 
 configWindBeltSpeedScaleBarRect :: Layout -> Rect
-configWindBeltSpeedScaleBarRect = configParamBarRect 41
+configWindBeltSpeedScaleBarRect = configParamBarRect 40
 
 configBndLandRangeMinusRect :: Layout -> Rect
-configBndLandRangeMinusRect = configParamMinusRect 42
+configBndLandRangeMinusRect = configParamMinusRect 41
 
 configBndLandRangePlusRect :: Layout -> Rect
-configBndLandRangePlusRect = configParamPlusRect 42
+configBndLandRangePlusRect = configParamPlusRect 41
 
 configBndLandRangeBarRect :: Layout -> Rect
-configBndLandRangeBarRect = configParamBarRect 42
+configBndLandRangeBarRect = configParamBarRect 41
 
 configBndTempConvergentMinusRect :: Layout -> Rect
-configBndTempConvergentMinusRect = configParamMinusRect 43
+configBndTempConvergentMinusRect = configParamMinusRect 42
 
 configBndTempConvergentPlusRect :: Layout -> Rect
-configBndTempConvergentPlusRect = configParamPlusRect 43
+configBndTempConvergentPlusRect = configParamPlusRect 42
 
 configBndTempConvergentBarRect :: Layout -> Rect
-configBndTempConvergentBarRect = configParamBarRect 43
+configBndTempConvergentBarRect = configParamBarRect 42
 
 configBndTempDivergentMinusRect :: Layout -> Rect
-configBndTempDivergentMinusRect = configParamMinusRect 44
+configBndTempDivergentMinusRect = configParamMinusRect 43
 
 configBndTempDivergentPlusRect :: Layout -> Rect
-configBndTempDivergentPlusRect = configParamPlusRect 44
+configBndTempDivergentPlusRect = configParamPlusRect 43
 
 configBndTempDivergentBarRect :: Layout -> Rect
-configBndTempDivergentBarRect = configParamBarRect 44
+configBndTempDivergentBarRect = configParamBarRect 43
 
 configBndTempTransformMinusRect :: Layout -> Rect
-configBndTempTransformMinusRect = configParamMinusRect 45
+configBndTempTransformMinusRect = configParamMinusRect 44
 
 configBndTempTransformPlusRect :: Layout -> Rect
-configBndTempTransformPlusRect = configParamPlusRect 45
+configBndTempTransformPlusRect = configParamPlusRect 44
 
 configBndTempTransformBarRect :: Layout -> Rect
-configBndTempTransformBarRect = configParamBarRect 45
+configBndTempTransformBarRect = configParamBarRect 44
 
 configBndPrecipConvergentMinusRect :: Layout -> Rect
-configBndPrecipConvergentMinusRect = configParamMinusRect 46
+configBndPrecipConvergentMinusRect = configParamMinusRect 45
 
 configBndPrecipConvergentPlusRect :: Layout -> Rect
-configBndPrecipConvergentPlusRect = configParamPlusRect 46
+configBndPrecipConvergentPlusRect = configParamPlusRect 45
 
 configBndPrecipConvergentBarRect :: Layout -> Rect
-configBndPrecipConvergentBarRect = configParamBarRect 46
+configBndPrecipConvergentBarRect = configParamBarRect 45
 
 configBndPrecipDivergentMinusRect :: Layout -> Rect
-configBndPrecipDivergentMinusRect = configParamMinusRect 47
+configBndPrecipDivergentMinusRect = configParamMinusRect 46
 
 configBndPrecipDivergentPlusRect :: Layout -> Rect
-configBndPrecipDivergentPlusRect = configParamPlusRect 47
+configBndPrecipDivergentPlusRect = configParamPlusRect 46
 
 configBndPrecipDivergentBarRect :: Layout -> Rect
-configBndPrecipDivergentBarRect = configParamBarRect 47
+configBndPrecipDivergentBarRect = configParamBarRect 46
 
 configBndPrecipTransformMinusRect :: Layout -> Rect
-configBndPrecipTransformMinusRect = configParamMinusRect 48
+configBndPrecipTransformMinusRect = configParamMinusRect 47
 
 configBndPrecipTransformPlusRect :: Layout -> Rect
-configBndPrecipTransformPlusRect = configParamPlusRect 48
+configBndPrecipTransformPlusRect = configParamPlusRect 47
 
 configBndPrecipTransformBarRect :: Layout -> Rect
-configBndPrecipTransformBarRect = configParamBarRect 48
+configBndPrecipTransformBarRect = configParamBarRect 47
 
 configErosionHydraulicMinusRect :: Layout -> Rect
 configErosionHydraulicMinusRect = configParamMinusRect 0
@@ -1639,171 +1627,171 @@ configErosionThermalBarRect :: Layout -> Rect
 configErosionThermalBarRect = configParamBarRect 1
 
 configErosionRainRateMinusRect :: Layout -> Rect
-configErosionRainRateMinusRect = configParamMinusRect 2
+configErosionRainRateMinusRect = configParamMinusRect 1
 
 configErosionRainRatePlusRect :: Layout -> Rect
-configErosionRainRatePlusRect = configParamPlusRect 2
+configErosionRainRatePlusRect = configParamPlusRect 1
 
 configErosionRainRateBarRect :: Layout -> Rect
-configErosionRainRateBarRect = configParamBarRect 2
+configErosionRainRateBarRect = configParamBarRect 1
 
 configErosionTalusMinusRect :: Layout -> Rect
-configErosionTalusMinusRect = configParamMinusRect 3
+configErosionTalusMinusRect = configParamMinusRect 2
 
 configErosionTalusPlusRect :: Layout -> Rect
-configErosionTalusPlusRect = configParamPlusRect 3
+configErosionTalusPlusRect = configParamPlusRect 2
 
 configErosionTalusBarRect :: Layout -> Rect
-configErosionTalusBarRect = configParamBarRect 3
+configErosionTalusBarRect = configParamBarRect 2
 
 configErosionMaxDropMinusRect :: Layout -> Rect
-configErosionMaxDropMinusRect = configParamMinusRect 4
+configErosionMaxDropMinusRect = configParamMinusRect 3
 
 configErosionMaxDropPlusRect :: Layout -> Rect
-configErosionMaxDropPlusRect = configParamPlusRect 4
+configErosionMaxDropPlusRect = configParamPlusRect 3
 
 configErosionMaxDropBarRect :: Layout -> Rect
-configErosionMaxDropBarRect = configParamBarRect 4
+configErosionMaxDropBarRect = configParamBarRect 3
 
 configGlacierSnowTempMinusRect :: Layout -> Rect
-configGlacierSnowTempMinusRect = configParamMinusRect 5
+configGlacierSnowTempMinusRect = configParamMinusRect 4
 configGlacierSnowTempPlusRect :: Layout -> Rect
-configGlacierSnowTempPlusRect = configParamPlusRect 5
+configGlacierSnowTempPlusRect = configParamPlusRect 4
 configGlacierSnowTempBarRect :: Layout -> Rect
-configGlacierSnowTempBarRect = configParamBarRect 5
+configGlacierSnowTempBarRect = configParamBarRect 4
 
 configGlacierSnowRangeMinusRect :: Layout -> Rect
-configGlacierSnowRangeMinusRect = configParamMinusRect 6
+configGlacierSnowRangeMinusRect = configParamMinusRect 5
 configGlacierSnowRangePlusRect :: Layout -> Rect
-configGlacierSnowRangePlusRect = configParamPlusRect 6
+configGlacierSnowRangePlusRect = configParamPlusRect 5
 configGlacierSnowRangeBarRect :: Layout -> Rect
-configGlacierSnowRangeBarRect = configParamBarRect 6
+configGlacierSnowRangeBarRect = configParamBarRect 5
 
 configGlacierMeltTempMinusRect :: Layout -> Rect
-configGlacierMeltTempMinusRect = configParamMinusRect 7
+configGlacierMeltTempMinusRect = configParamMinusRect 6
 configGlacierMeltTempPlusRect :: Layout -> Rect
-configGlacierMeltTempPlusRect = configParamPlusRect 7
+configGlacierMeltTempPlusRect = configParamPlusRect 6
 configGlacierMeltTempBarRect :: Layout -> Rect
-configGlacierMeltTempBarRect = configParamBarRect 7
+configGlacierMeltTempBarRect = configParamBarRect 6
 
 configGlacierMeltRateMinusRect :: Layout -> Rect
-configGlacierMeltRateMinusRect = configParamMinusRect 8
+configGlacierMeltRateMinusRect = configParamMinusRect 7
 configGlacierMeltRatePlusRect :: Layout -> Rect
-configGlacierMeltRatePlusRect = configParamPlusRect 8
+configGlacierMeltRatePlusRect = configParamPlusRect 7
 configGlacierMeltRateBarRect :: Layout -> Rect
-configGlacierMeltRateBarRect = configParamBarRect 8
+configGlacierMeltRateBarRect = configParamBarRect 7
 
 configGlacierAccumScaleMinusRect :: Layout -> Rect
-configGlacierAccumScaleMinusRect = configParamMinusRect 9
+configGlacierAccumScaleMinusRect = configParamMinusRect 8
 configGlacierAccumScalePlusRect :: Layout -> Rect
-configGlacierAccumScalePlusRect = configParamPlusRect 9
+configGlacierAccumScalePlusRect = configParamPlusRect 8
 configGlacierAccumScaleBarRect :: Layout -> Rect
-configGlacierAccumScaleBarRect = configParamBarRect 9
+configGlacierAccumScaleBarRect = configParamBarRect 8
 
 configGlacierFlowItersMinusRect :: Layout -> Rect
-configGlacierFlowItersMinusRect = configParamMinusRect 10
+configGlacierFlowItersMinusRect = configParamMinusRect 9
 configGlacierFlowItersPlusRect :: Layout -> Rect
-configGlacierFlowItersPlusRect = configParamPlusRect 10
+configGlacierFlowItersPlusRect = configParamPlusRect 9
 configGlacierFlowItersBarRect :: Layout -> Rect
-configGlacierFlowItersBarRect = configParamBarRect 10
+configGlacierFlowItersBarRect = configParamBarRect 9
 
 configGlacierFlowRateMinusRect :: Layout -> Rect
-configGlacierFlowRateMinusRect = configParamMinusRect 11
+configGlacierFlowRateMinusRect = configParamMinusRect 10
 configGlacierFlowRatePlusRect :: Layout -> Rect
-configGlacierFlowRatePlusRect = configParamPlusRect 11
+configGlacierFlowRatePlusRect = configParamPlusRect 10
 configGlacierFlowRateBarRect :: Layout -> Rect
-configGlacierFlowRateBarRect = configParamBarRect 11
+configGlacierFlowRateBarRect = configParamBarRect 10
 
 configGlacierErosionScaleMinusRect :: Layout -> Rect
-configGlacierErosionScaleMinusRect = configParamMinusRect 12
+configGlacierErosionScaleMinusRect = configParamMinusRect 11
 configGlacierErosionScalePlusRect :: Layout -> Rect
-configGlacierErosionScalePlusRect = configParamPlusRect 12
+configGlacierErosionScalePlusRect = configParamPlusRect 11
 configGlacierErosionScaleBarRect :: Layout -> Rect
-configGlacierErosionScaleBarRect = configParamBarRect 12
+configGlacierErosionScaleBarRect = configParamBarRect 11
 
 configGlacierCarveScaleMinusRect :: Layout -> Rect
-configGlacierCarveScaleMinusRect = configParamMinusRect 13
+configGlacierCarveScaleMinusRect = configParamMinusRect 12
 configGlacierCarveScalePlusRect :: Layout -> Rect
-configGlacierCarveScalePlusRect = configParamPlusRect 13
+configGlacierCarveScalePlusRect = configParamPlusRect 12
 configGlacierCarveScaleBarRect :: Layout -> Rect
-configGlacierCarveScaleBarRect = configParamBarRect 13
+configGlacierCarveScaleBarRect = configParamBarRect 12
 
 configGlacierDepositScaleMinusRect :: Layout -> Rect
-configGlacierDepositScaleMinusRect = configParamMinusRect 14
+configGlacierDepositScaleMinusRect = configParamMinusRect 13
 configGlacierDepositScalePlusRect :: Layout -> Rect
-configGlacierDepositScalePlusRect = configParamPlusRect 14
+configGlacierDepositScalePlusRect = configParamPlusRect 13
 configGlacierDepositScaleBarRect :: Layout -> Rect
-configGlacierDepositScaleBarRect = configParamBarRect 14
+configGlacierDepositScaleBarRect = configParamBarRect 13
 
 configVentDensityMinusRect :: Layout -> Rect
-configVentDensityMinusRect = configParamMinusRect 15
+configVentDensityMinusRect = configParamMinusRect 14
 configVentDensityPlusRect :: Layout -> Rect
-configVentDensityPlusRect = configParamPlusRect 15
+configVentDensityPlusRect = configParamPlusRect 14
 configVentDensityBarRect :: Layout -> Rect
-configVentDensityBarRect = configParamBarRect 15
+configVentDensityBarRect = configParamBarRect 14
 
 configVentThresholdMinusRect :: Layout -> Rect
-configVentThresholdMinusRect = configParamMinusRect 16
+configVentThresholdMinusRect = configParamMinusRect 15
 configVentThresholdPlusRect :: Layout -> Rect
-configVentThresholdPlusRect = configParamPlusRect 16
+configVentThresholdPlusRect = configParamPlusRect 15
 configVentThresholdBarRect :: Layout -> Rect
-configVentThresholdBarRect = configParamBarRect 16
+configVentThresholdBarRect = configParamBarRect 15
 
 configHotspotScaleMinusRect :: Layout -> Rect
-configHotspotScaleMinusRect = configParamMinusRect 17
+configHotspotScaleMinusRect = configParamMinusRect 16
 configHotspotScalePlusRect :: Layout -> Rect
-configHotspotScalePlusRect = configParamPlusRect 17
+configHotspotScalePlusRect = configParamPlusRect 16
 configHotspotScaleBarRect :: Layout -> Rect
-configHotspotScaleBarRect = configParamBarRect 17
+configHotspotScaleBarRect = configParamBarRect 16
 
 configHotspotThresholdMinusRect :: Layout -> Rect
-configHotspotThresholdMinusRect = configParamMinusRect 18
+configHotspotThresholdMinusRect = configParamMinusRect 17
 configHotspotThresholdPlusRect :: Layout -> Rect
-configHotspotThresholdPlusRect = configParamPlusRect 18
+configHotspotThresholdPlusRect = configParamPlusRect 17
 configHotspotThresholdBarRect :: Layout -> Rect
-configHotspotThresholdBarRect = configParamBarRect 18
+configHotspotThresholdBarRect = configParamBarRect 17
 
 configMagmaRechargeMinusRect :: Layout -> Rect
-configMagmaRechargeMinusRect = configParamMinusRect 19
+configMagmaRechargeMinusRect = configParamMinusRect 18
 configMagmaRechargePlusRect :: Layout -> Rect
-configMagmaRechargePlusRect = configParamPlusRect 19
+configMagmaRechargePlusRect = configParamPlusRect 18
 configMagmaRechargeBarRect :: Layout -> Rect
-configMagmaRechargeBarRect = configParamBarRect 19
+configMagmaRechargeBarRect = configParamBarRect 18
 
 configLavaScaleMinusRect :: Layout -> Rect
-configLavaScaleMinusRect = configParamMinusRect 20
+configLavaScaleMinusRect = configParamMinusRect 19
 configLavaScalePlusRect :: Layout -> Rect
-configLavaScalePlusRect = configParamPlusRect 20
+configLavaScalePlusRect = configParamPlusRect 19
 configLavaScaleBarRect :: Layout -> Rect
-configLavaScaleBarRect = configParamBarRect 20
+configLavaScaleBarRect = configParamBarRect 19
 
 configAshScaleMinusRect :: Layout -> Rect
-configAshScaleMinusRect = configParamMinusRect 21
+configAshScaleMinusRect = configParamMinusRect 20
 configAshScalePlusRect :: Layout -> Rect
-configAshScalePlusRect = configParamPlusRect 21
+configAshScalePlusRect = configParamPlusRect 20
 configAshScaleBarRect :: Layout -> Rect
-configAshScaleBarRect = configParamBarRect 21
+configAshScaleBarRect = configParamBarRect 20
 
 configVolcanicDepositScaleMinusRect :: Layout -> Rect
-configVolcanicDepositScaleMinusRect = configParamMinusRect 22
+configVolcanicDepositScaleMinusRect = configParamMinusRect 21
 configVolcanicDepositScalePlusRect :: Layout -> Rect
-configVolcanicDepositScalePlusRect = configParamPlusRect 22
+configVolcanicDepositScalePlusRect = configParamPlusRect 21
 configVolcanicDepositScaleBarRect :: Layout -> Rect
-configVolcanicDepositScaleBarRect = configParamBarRect 22
+configVolcanicDepositScaleBarRect = configParamBarRect 21
 
 configSoilMoistureThresholdMinusRect :: Layout -> Rect
-configSoilMoistureThresholdMinusRect = configParamMinusRect 23
+configSoilMoistureThresholdMinusRect = configParamMinusRect 22
 configSoilMoistureThresholdPlusRect :: Layout -> Rect
-configSoilMoistureThresholdPlusRect = configParamPlusRect 23
+configSoilMoistureThresholdPlusRect = configParamPlusRect 22
 configSoilMoistureThresholdBarRect :: Layout -> Rect
-configSoilMoistureThresholdBarRect = configParamBarRect 23
+configSoilMoistureThresholdBarRect = configParamBarRect 22
 
 configSoilHardnessThresholdMinusRect :: Layout -> Rect
-configSoilHardnessThresholdMinusRect = configParamMinusRect 24
+configSoilHardnessThresholdMinusRect = configParamMinusRect 23
 configSoilHardnessThresholdPlusRect :: Layout -> Rect
-configSoilHardnessThresholdPlusRect = configParamPlusRect 24
+configSoilHardnessThresholdPlusRect = configParamPlusRect 23
 configSoilHardnessThresholdBarRect :: Layout -> Rect
-configSoilHardnessThresholdBarRect = configParamBarRect 24
+configSoilHardnessThresholdBarRect = configParamBarRect 23
 
 configSoilFertilityMoistWeightMinusRect :: Layout -> Rect
 configSoilFertilityMoistWeightMinusRect = configParamMinusRect 25
@@ -1813,67 +1801,67 @@ configSoilFertilityMoistWeightBarRect :: Layout -> Rect
 configSoilFertilityMoistWeightBarRect = configParamBarRect 25
 
 configSoilFertilityDepthWeightMinusRect :: Layout -> Rect
-configSoilFertilityDepthWeightMinusRect = configParamMinusRect 26
+configSoilFertilityDepthWeightMinusRect = configParamMinusRect 24
 configSoilFertilityDepthWeightPlusRect :: Layout -> Rect
-configSoilFertilityDepthWeightPlusRect = configParamPlusRect 26
+configSoilFertilityDepthWeightPlusRect = configParamPlusRect 24
 configSoilFertilityDepthWeightBarRect :: Layout -> Rect
-configSoilFertilityDepthWeightBarRect = configParamBarRect 26
+configSoilFertilityDepthWeightBarRect = configParamBarRect 24
 
 configSinkBreachDepthMinusRect :: Layout -> Rect
-configSinkBreachDepthMinusRect = configParamMinusRect 27
+configSinkBreachDepthMinusRect = configParamMinusRect 25
 configSinkBreachDepthPlusRect :: Layout -> Rect
-configSinkBreachDepthPlusRect = configParamPlusRect 27
+configSinkBreachDepthPlusRect = configParamPlusRect 25
 configSinkBreachDepthBarRect :: Layout -> Rect
-configSinkBreachDepthBarRect = configParamBarRect 27
+configSinkBreachDepthBarRect = configParamBarRect 25
 
 configStreamPowerMaxErosionMinusRect :: Layout -> Rect
-configStreamPowerMaxErosionMinusRect = configParamMinusRect 28
+configStreamPowerMaxErosionMinusRect = configParamMinusRect 26
 configStreamPowerMaxErosionPlusRect :: Layout -> Rect
-configStreamPowerMaxErosionPlusRect = configParamPlusRect 28
+configStreamPowerMaxErosionPlusRect = configParamPlusRect 26
 configStreamPowerMaxErosionBarRect :: Layout -> Rect
-configStreamPowerMaxErosionBarRect = configParamBarRect 28
+configStreamPowerMaxErosionBarRect = configParamBarRect 26
 
 configRiverCarveMaxDepthMinusRect :: Layout -> Rect
-configRiverCarveMaxDepthMinusRect = configParamMinusRect 29
+configRiverCarveMaxDepthMinusRect = configParamMinusRect 27
 configRiverCarveMaxDepthPlusRect :: Layout -> Rect
-configRiverCarveMaxDepthPlusRect = configParamPlusRect 29
+configRiverCarveMaxDepthPlusRect = configParamPlusRect 27
 configRiverCarveMaxDepthBarRect :: Layout -> Rect
-configRiverCarveMaxDepthBarRect = configParamBarRect 29
+configRiverCarveMaxDepthBarRect = configParamBarRect 27
 
 configCoastalErodeStrengthMinusRect :: Layout -> Rect
-configCoastalErodeStrengthMinusRect = configParamMinusRect 30
+configCoastalErodeStrengthMinusRect = configParamMinusRect 28
 configCoastalErodeStrengthPlusRect :: Layout -> Rect
-configCoastalErodeStrengthPlusRect = configParamPlusRect 30
+configCoastalErodeStrengthPlusRect = configParamPlusRect 28
 configCoastalErodeStrengthBarRect :: Layout -> Rect
-configCoastalErodeStrengthBarRect = configParamBarRect 30
+configCoastalErodeStrengthBarRect = configParamBarRect 28
 
 configHydroHardnessWeightMinusRect :: Layout -> Rect
-configHydroHardnessWeightMinusRect = configParamMinusRect 31
+configHydroHardnessWeightMinusRect = configParamMinusRect 29
 configHydroHardnessWeightPlusRect :: Layout -> Rect
-configHydroHardnessWeightPlusRect = configParamPlusRect 31
+configHydroHardnessWeightPlusRect = configParamPlusRect 29
 configHydroHardnessWeightBarRect :: Layout -> Rect
-configHydroHardnessWeightBarRect = configParamBarRect 31
+configHydroHardnessWeightBarRect = configParamBarRect 29
 
 configMinLakeSizeMinusRect :: Layout -> Rect
-configMinLakeSizeMinusRect = configParamMinusRect 32
+configMinLakeSizeMinusRect = configParamMinusRect 30
 configMinLakeSizePlusRect :: Layout -> Rect
-configMinLakeSizePlusRect = configParamPlusRect 32
+configMinLakeSizePlusRect = configParamPlusRect 30
 configMinLakeSizeBarRect :: Layout -> Rect
-configMinLakeSizeBarRect = configParamBarRect 32
+configMinLakeSizeBarRect = configParamBarRect 30
 
 configInlandSeaMinSizeMinusRect :: Layout -> Rect
-configInlandSeaMinSizeMinusRect = configParamMinusRect 33
+configInlandSeaMinSizeMinusRect = configParamMinusRect 31
 configInlandSeaMinSizePlusRect :: Layout -> Rect
-configInlandSeaMinSizePlusRect = configParamPlusRect 33
+configInlandSeaMinSizePlusRect = configParamPlusRect 31
 configInlandSeaMinSizeBarRect :: Layout -> Rect
-configInlandSeaMinSizeBarRect = configParamBarRect 33
+configInlandSeaMinSizeBarRect = configParamBarRect 31
 
 configRoughnessScaleMinusRect :: Layout -> Rect
-configRoughnessScaleMinusRect = configParamMinusRect 34
+configRoughnessScaleMinusRect = configParamMinusRect 32
 configRoughnessScalePlusRect :: Layout -> Rect
-configRoughnessScalePlusRect = configParamPlusRect 34
+configRoughnessScalePlusRect = configParamPlusRect 32
 configRoughnessScaleBarRect :: Layout -> Rect
-configRoughnessScaleBarRect = configParamBarRect 34
+configRoughnessScaleBarRect = configParamBarRect 32
 
 configGenScaleMinusRect :: Layout -> Rect
 configGenScaleMinusRect = configParamMinusRect 0
@@ -1885,31 +1873,31 @@ configGenScaleBarRect :: Layout -> Rect
 configGenScaleBarRect = configParamBarRect 0
 
 configGenCoordScaleMinusRect :: Layout -> Rect
-configGenCoordScaleMinusRect = configParamMinusRect 43
+configGenCoordScaleMinusRect = configParamMinusRect 41
 
 configGenCoordScalePlusRect :: Layout -> Rect
-configGenCoordScalePlusRect = configParamPlusRect 43
+configGenCoordScalePlusRect = configParamPlusRect 41
 
 configGenCoordScaleBarRect :: Layout -> Rect
-configGenCoordScaleBarRect = configParamBarRect 43
+configGenCoordScaleBarRect = configParamBarRect 41
 
 configGenOffsetXMinusRect :: Layout -> Rect
-configGenOffsetXMinusRect = configParamMinusRect 44
+configGenOffsetXMinusRect = configParamMinusRect 42
 
 configGenOffsetXPlusRect :: Layout -> Rect
-configGenOffsetXPlusRect = configParamPlusRect 44
+configGenOffsetXPlusRect = configParamPlusRect 42
 
 configGenOffsetXBarRect :: Layout -> Rect
-configGenOffsetXBarRect = configParamBarRect 44
+configGenOffsetXBarRect = configParamBarRect 42
 
 configGenOffsetYMinusRect :: Layout -> Rect
-configGenOffsetYMinusRect = configParamMinusRect 45
+configGenOffsetYMinusRect = configParamMinusRect 43
 
 configGenOffsetYPlusRect :: Layout -> Rect
-configGenOffsetYPlusRect = configParamPlusRect 45
+configGenOffsetYPlusRect = configParamPlusRect 43
 
 configGenOffsetYBarRect :: Layout -> Rect
-configGenOffsetYBarRect = configParamBarRect 45
+configGenOffsetYBarRect = configParamBarRect 43
 
 configGenFrequencyMinusRect :: Layout -> Rect
 configGenFrequencyMinusRect = configParamMinusRect 1
@@ -1921,85 +1909,85 @@ configGenFrequencyBarRect :: Layout -> Rect
 configGenFrequencyBarRect = configParamBarRect 1
 
 configGenOctavesMinusRect :: Layout -> Rect
-configGenOctavesMinusRect = configParamMinusRect 2
+configGenOctavesMinusRect = configParamMinusRect 1
 
 configGenOctavesPlusRect :: Layout -> Rect
-configGenOctavesPlusRect = configParamPlusRect 2
+configGenOctavesPlusRect = configParamPlusRect 1
 
 configGenOctavesBarRect :: Layout -> Rect
-configGenOctavesBarRect = configParamBarRect 2
+configGenOctavesBarRect = configParamBarRect 1
 
 configGenLacunarityMinusRect :: Layout -> Rect
-configGenLacunarityMinusRect = configParamMinusRect 3
+configGenLacunarityMinusRect = configParamMinusRect 2
 
 configGenLacunarityPlusRect :: Layout -> Rect
-configGenLacunarityPlusRect = configParamPlusRect 3
+configGenLacunarityPlusRect = configParamPlusRect 2
 
 configGenLacunarityBarRect :: Layout -> Rect
-configGenLacunarityBarRect = configParamBarRect 3
+configGenLacunarityBarRect = configParamBarRect 2
 
 configGenGainMinusRect :: Layout -> Rect
-configGenGainMinusRect = configParamMinusRect 4
+configGenGainMinusRect = configParamMinusRect 3
 
 configGenGainPlusRect :: Layout -> Rect
-configGenGainPlusRect = configParamPlusRect 4
+configGenGainPlusRect = configParamPlusRect 3
 
 configGenGainBarRect :: Layout -> Rect
-configGenGainBarRect = configParamBarRect 4
+configGenGainBarRect = configParamBarRect 3
 
 configGenWarpScaleMinusRect :: Layout -> Rect
-configGenWarpScaleMinusRect = configParamMinusRect 5
+configGenWarpScaleMinusRect = configParamMinusRect 4
 
 configGenWarpScalePlusRect :: Layout -> Rect
-configGenWarpScalePlusRect = configParamPlusRect 5
+configGenWarpScalePlusRect = configParamPlusRect 4
 
 configGenWarpScaleBarRect :: Layout -> Rect
-configGenWarpScaleBarRect = configParamBarRect 5
+configGenWarpScaleBarRect = configParamBarRect 4
 
 configGenWarpStrengthMinusRect :: Layout -> Rect
-configGenWarpStrengthMinusRect = configParamMinusRect 6
+configGenWarpStrengthMinusRect = configParamMinusRect 5
 
 configGenWarpStrengthPlusRect :: Layout -> Rect
-configGenWarpStrengthPlusRect = configParamPlusRect 6
+configGenWarpStrengthPlusRect = configParamPlusRect 5
 
 configGenWarpStrengthBarRect :: Layout -> Rect
-configGenWarpStrengthBarRect = configParamBarRect 6
+configGenWarpStrengthBarRect = configParamBarRect 5
 
 configExtentXMinusRect :: Layout -> Rect
-configExtentXMinusRect = configParamMinusRect 46
+configExtentXMinusRect = configParamMinusRect 44
 
 configExtentXPlusRect :: Layout -> Rect
-configExtentXPlusRect = configParamPlusRect 46
+configExtentXPlusRect = configParamPlusRect 44
 
 configExtentXBarRect :: Layout -> Rect
-configExtentXBarRect = configParamBarRect 46
+configExtentXBarRect = configParamBarRect 44
 
 configExtentYMinusRect :: Layout -> Rect
-configExtentYMinusRect = configParamMinusRect 47
+configExtentYMinusRect = configParamMinusRect 45
 
 configExtentYPlusRect :: Layout -> Rect
-configExtentYPlusRect = configParamPlusRect 47
+configExtentYPlusRect = configParamPlusRect 45
 
 configExtentYBarRect :: Layout -> Rect
-configExtentYBarRect = configParamBarRect 47
+configExtentYBarRect = configParamBarRect 45
 
 configEdgeNorthMinusRect :: Layout -> Rect
-configEdgeNorthMinusRect = configParamMinusRect 48
+configEdgeNorthMinusRect = configParamMinusRect 46
 
 configEdgeNorthPlusRect :: Layout -> Rect
-configEdgeNorthPlusRect = configParamPlusRect 48
+configEdgeNorthPlusRect = configParamPlusRect 46
 
 configEdgeNorthBarRect :: Layout -> Rect
-configEdgeNorthBarRect = configParamBarRect 48
+configEdgeNorthBarRect = configParamBarRect 46
 
 configEdgeSouthMinusRect :: Layout -> Rect
-configEdgeSouthMinusRect = configParamMinusRect 49
+configEdgeSouthMinusRect = configParamMinusRect 47
 
 configEdgeSouthPlusRect :: Layout -> Rect
-configEdgeSouthPlusRect = configParamPlusRect 49
+configEdgeSouthPlusRect = configParamPlusRect 47
 
 configEdgeSouthBarRect :: Layout -> Rect
-configEdgeSouthBarRect = configParamBarRect 49
+configEdgeSouthBarRect = configParamBarRect 47
 
 configEdgeEastMinusRect :: Layout -> Rect
 configEdgeEastMinusRect = configParamMinusRect 50
@@ -2029,166 +2017,166 @@ configEdgeFalloffBarRect :: Layout -> Rect
 configEdgeFalloffBarRect = configParamBarRect 52
 
 configPlateSizeMinusRect :: Layout -> Rect
-configPlateSizeMinusRect = configParamMinusRect 7
+configPlateSizeMinusRect = configParamMinusRect 6
 
 configPlateSizePlusRect :: Layout -> Rect
-configPlateSizePlusRect = configParamPlusRect 7
+configPlateSizePlusRect = configParamPlusRect 6
 
 configPlateSizeBarRect :: Layout -> Rect
-configPlateSizeBarRect = configParamBarRect 7
+configPlateSizeBarRect = configParamBarRect 6
 
 configUpliftMinusRect :: Layout -> Rect
-configUpliftMinusRect = configParamMinusRect 8
+configUpliftMinusRect = configParamMinusRect 7
 
 configUpliftPlusRect :: Layout -> Rect
-configUpliftPlusRect = configParamPlusRect 8
+configUpliftPlusRect = configParamPlusRect 7
 
 configUpliftBarRect :: Layout -> Rect
-configUpliftBarRect = configParamBarRect 8
+configUpliftBarRect = configParamBarRect 7
 
 configRiftDepthMinusRect :: Layout -> Rect
-configRiftDepthMinusRect = configParamMinusRect 9
+configRiftDepthMinusRect = configParamMinusRect 8
 
 configRiftDepthPlusRect :: Layout -> Rect
-configRiftDepthPlusRect = configParamPlusRect 9
+configRiftDepthPlusRect = configParamPlusRect 8
 
 configRiftDepthBarRect :: Layout -> Rect
-configRiftDepthBarRect = configParamBarRect 9
+configRiftDepthBarRect = configParamBarRect 8
 
 configDetailScaleMinusRect :: Layout -> Rect
-configDetailScaleMinusRect = configParamMinusRect 10
+configDetailScaleMinusRect = configParamMinusRect 9
 
 configDetailScalePlusRect :: Layout -> Rect
-configDetailScalePlusRect = configParamPlusRect 10
+configDetailScalePlusRect = configParamPlusRect 9
 
 configDetailScaleBarRect :: Layout -> Rect
-configDetailScaleBarRect = configParamBarRect 10
+configDetailScaleBarRect = configParamBarRect 9
 
 configPlateSpeedMinusRect :: Layout -> Rect
-configPlateSpeedMinusRect = configParamMinusRect 11
+configPlateSpeedMinusRect = configParamMinusRect 10
 
 configPlateSpeedPlusRect :: Layout -> Rect
-configPlateSpeedPlusRect = configParamPlusRect 11
+configPlateSpeedPlusRect = configParamPlusRect 10
 
 configPlateSpeedBarRect :: Layout -> Rect
-configPlateSpeedBarRect = configParamBarRect 11
+configPlateSpeedBarRect = configParamBarRect 10
 
 configBoundarySharpnessMinusRect :: Layout -> Rect
-configBoundarySharpnessMinusRect = configParamMinusRect 12
+configBoundarySharpnessMinusRect = configParamMinusRect 11
 
 configBoundarySharpnessPlusRect :: Layout -> Rect
-configBoundarySharpnessPlusRect = configParamPlusRect 12
+configBoundarySharpnessPlusRect = configParamPlusRect 11
 
 configBoundarySharpnessBarRect :: Layout -> Rect
-configBoundarySharpnessBarRect = configParamBarRect 12
+configBoundarySharpnessBarRect = configParamBarRect 11
 
 configBoundaryNoiseScaleMinusRect :: Layout -> Rect
-configBoundaryNoiseScaleMinusRect = configParamMinusRect 13
+configBoundaryNoiseScaleMinusRect = configParamMinusRect 12
 
 configBoundaryNoiseScalePlusRect :: Layout -> Rect
-configBoundaryNoiseScalePlusRect = configParamPlusRect 13
+configBoundaryNoiseScalePlusRect = configParamPlusRect 12
 
 configBoundaryNoiseScaleBarRect :: Layout -> Rect
-configBoundaryNoiseScaleBarRect = configParamBarRect 13
+configBoundaryNoiseScaleBarRect = configParamBarRect 12
 
 configBoundaryNoiseStrengthMinusRect :: Layout -> Rect
-configBoundaryNoiseStrengthMinusRect = configParamMinusRect 14
+configBoundaryNoiseStrengthMinusRect = configParamMinusRect 13
 
 configBoundaryNoiseStrengthPlusRect :: Layout -> Rect
-configBoundaryNoiseStrengthPlusRect = configParamPlusRect 14
+configBoundaryNoiseStrengthPlusRect = configParamPlusRect 13
 
 configBoundaryNoiseStrengthBarRect :: Layout -> Rect
-configBoundaryNoiseStrengthBarRect = configParamBarRect 14
+configBoundaryNoiseStrengthBarRect = configParamBarRect 13
 
 configBoundaryWarpOctavesMinusRect :: Layout -> Rect
-configBoundaryWarpOctavesMinusRect = configParamMinusRect 15
+configBoundaryWarpOctavesMinusRect = configParamMinusRect 14
 
 configBoundaryWarpOctavesPlusRect :: Layout -> Rect
-configBoundaryWarpOctavesPlusRect = configParamPlusRect 15
+configBoundaryWarpOctavesPlusRect = configParamPlusRect 14
 
 configBoundaryWarpOctavesBarRect :: Layout -> Rect
-configBoundaryWarpOctavesBarRect = configParamBarRect 15
+configBoundaryWarpOctavesBarRect = configParamBarRect 14
 
 configBoundaryWarpLacunarityMinusRect :: Layout -> Rect
-configBoundaryWarpLacunarityMinusRect = configParamMinusRect 16
+configBoundaryWarpLacunarityMinusRect = configParamMinusRect 15
 
 configBoundaryWarpLacunarityPlusRect :: Layout -> Rect
-configBoundaryWarpLacunarityPlusRect = configParamPlusRect 16
+configBoundaryWarpLacunarityPlusRect = configParamPlusRect 15
 
 configBoundaryWarpLacunarityBarRect :: Layout -> Rect
-configBoundaryWarpLacunarityBarRect = configParamBarRect 16
+configBoundaryWarpLacunarityBarRect = configParamBarRect 15
 
 configBoundaryWarpGainMinusRect :: Layout -> Rect
-configBoundaryWarpGainMinusRect = configParamMinusRect 17
+configBoundaryWarpGainMinusRect = configParamMinusRect 16
 
 configBoundaryWarpGainPlusRect :: Layout -> Rect
-configBoundaryWarpGainPlusRect = configParamPlusRect 17
+configBoundaryWarpGainPlusRect = configParamPlusRect 16
 
 configBoundaryWarpGainBarRect :: Layout -> Rect
-configBoundaryWarpGainBarRect = configParamBarRect 17
+configBoundaryWarpGainBarRect = configParamBarRect 16
 
 configPlateMergeScaleMinusRect :: Layout -> Rect
-configPlateMergeScaleMinusRect = configParamMinusRect 18
+configPlateMergeScaleMinusRect = configParamMinusRect 17
 
 configPlateMergeScalePlusRect :: Layout -> Rect
-configPlateMergeScalePlusRect = configParamPlusRect 18
+configPlateMergeScalePlusRect = configParamPlusRect 17
 
 configPlateMergeScaleBarRect :: Layout -> Rect
-configPlateMergeScaleBarRect = configParamBarRect 18
+configPlateMergeScaleBarRect = configParamBarRect 17
 
 configPlateMergeBiasMinusRect :: Layout -> Rect
-configPlateMergeBiasMinusRect = configParamMinusRect 19
+configPlateMergeBiasMinusRect = configParamMinusRect 18
 
 configPlateMergeBiasPlusRect :: Layout -> Rect
-configPlateMergeBiasPlusRect = configParamPlusRect 19
+configPlateMergeBiasPlusRect = configParamPlusRect 18
 
 configPlateMergeBiasBarRect :: Layout -> Rect
-configPlateMergeBiasBarRect = configParamBarRect 19
+configPlateMergeBiasBarRect = configParamBarRect 18
 
 configPlateDetailScaleMinusRect :: Layout -> Rect
-configPlateDetailScaleMinusRect = configParamMinusRect 20
+configPlateDetailScaleMinusRect = configParamMinusRect 19
 
 configPlateDetailScalePlusRect :: Layout -> Rect
-configPlateDetailScalePlusRect = configParamPlusRect 20
+configPlateDetailScalePlusRect = configParamPlusRect 19
 
 configPlateDetailScaleBarRect :: Layout -> Rect
-configPlateDetailScaleBarRect = configParamBarRect 20
+configPlateDetailScaleBarRect = configParamBarRect 19
 
 configPlateDetailStrengthMinusRect :: Layout -> Rect
-configPlateDetailStrengthMinusRect = configParamMinusRect 21
+configPlateDetailStrengthMinusRect = configParamMinusRect 20
 
 configPlateDetailStrengthPlusRect :: Layout -> Rect
-configPlateDetailStrengthPlusRect = configParamPlusRect 21
+configPlateDetailStrengthPlusRect = configParamPlusRect 20
 
 configPlateDetailStrengthBarRect :: Layout -> Rect
-configPlateDetailStrengthBarRect = configParamBarRect 21
+configPlateDetailStrengthBarRect = configParamBarRect 20
 
 configPlateRidgeStrengthMinusRect :: Layout -> Rect
-configPlateRidgeStrengthMinusRect = configParamMinusRect 22
+configPlateRidgeStrengthMinusRect = configParamMinusRect 21
 
 configPlateRidgeStrengthPlusRect :: Layout -> Rect
-configPlateRidgeStrengthPlusRect = configParamPlusRect 22
+configPlateRidgeStrengthPlusRect = configParamPlusRect 21
 
 configPlateRidgeStrengthBarRect :: Layout -> Rect
-configPlateRidgeStrengthBarRect = configParamBarRect 22
+configPlateRidgeStrengthBarRect = configParamBarRect 21
 
 configPlateHeightBaseMinusRect :: Layout -> Rect
-configPlateHeightBaseMinusRect = configParamMinusRect 23
+configPlateHeightBaseMinusRect = configParamMinusRect 22
 
 configPlateHeightBasePlusRect :: Layout -> Rect
-configPlateHeightBasePlusRect = configParamPlusRect 23
+configPlateHeightBasePlusRect = configParamPlusRect 22
 
 configPlateHeightBaseBarRect :: Layout -> Rect
-configPlateHeightBaseBarRect = configParamBarRect 23
+configPlateHeightBaseBarRect = configParamBarRect 22
 
 configPlateHeightVarianceMinusRect :: Layout -> Rect
-configPlateHeightVarianceMinusRect = configParamMinusRect 24
+configPlateHeightVarianceMinusRect = configParamMinusRect 23
 
 configPlateHeightVariancePlusRect :: Layout -> Rect
-configPlateHeightVariancePlusRect = configParamPlusRect 24
+configPlateHeightVariancePlusRect = configParamPlusRect 23
 
 configPlateHeightVarianceBarRect :: Layout -> Rect
-configPlateHeightVarianceBarRect = configParamBarRect 24
+configPlateHeightVarianceBarRect = configParamBarRect 23
 
 configPlateHardnessBaseMinusRect :: Layout -> Rect
 configPlateHardnessBaseMinusRect = configParamMinusRect 25
@@ -2200,157 +2188,157 @@ configPlateHardnessBaseBarRect :: Layout -> Rect
 configPlateHardnessBaseBarRect = configParamBarRect 25
 
 configPlateHardnessVarianceMinusRect :: Layout -> Rect
-configPlateHardnessVarianceMinusRect = configParamMinusRect 26
+configPlateHardnessVarianceMinusRect = configParamMinusRect 24
 
 configPlateHardnessVariancePlusRect :: Layout -> Rect
-configPlateHardnessVariancePlusRect = configParamPlusRect 26
+configPlateHardnessVariancePlusRect = configParamPlusRect 24
 
 configPlateHardnessVarianceBarRect :: Layout -> Rect
-configPlateHardnessVarianceBarRect = configParamBarRect 26
+configPlateHardnessVarianceBarRect = configParamBarRect 24
 
 configTrenchDepthMinusRect :: Layout -> Rect
-configTrenchDepthMinusRect = configParamMinusRect 27
+configTrenchDepthMinusRect = configParamMinusRect 25
 
 configTrenchDepthPlusRect :: Layout -> Rect
-configTrenchDepthPlusRect = configParamPlusRect 27
+configTrenchDepthPlusRect = configParamPlusRect 25
 
 configTrenchDepthBarRect :: Layout -> Rect
-configTrenchDepthBarRect = configParamBarRect 27
+configTrenchDepthBarRect = configParamBarRect 25
 
 configRidgeHeightMinusRect :: Layout -> Rect
-configRidgeHeightMinusRect = configParamMinusRect 28
+configRidgeHeightMinusRect = configParamMinusRect 26
 
 configRidgeHeightPlusRect :: Layout -> Rect
-configRidgeHeightPlusRect = configParamPlusRect 28
+configRidgeHeightPlusRect = configParamPlusRect 26
 
 configRidgeHeightBarRect :: Layout -> Rect
-configRidgeHeightBarRect = configParamBarRect 28
+configRidgeHeightBarRect = configParamBarRect 26
 
 configPlateBiasStrengthMinusRect :: Layout -> Rect
-configPlateBiasStrengthMinusRect = configParamMinusRect 29
+configPlateBiasStrengthMinusRect = configParamMinusRect 27
 
 configPlateBiasStrengthPlusRect :: Layout -> Rect
-configPlateBiasStrengthPlusRect = configParamPlusRect 29
+configPlateBiasStrengthPlusRect = configParamPlusRect 27
 
 configPlateBiasStrengthBarRect :: Layout -> Rect
-configPlateBiasStrengthBarRect = configParamBarRect 29
+configPlateBiasStrengthBarRect = configParamBarRect 27
 
 configPlateBiasCenterMinusRect :: Layout -> Rect
-configPlateBiasCenterMinusRect = configParamMinusRect 30
+configPlateBiasCenterMinusRect = configParamMinusRect 28
 
 configPlateBiasCenterPlusRect :: Layout -> Rect
-configPlateBiasCenterPlusRect = configParamPlusRect 30
+configPlateBiasCenterPlusRect = configParamPlusRect 28
 
 configPlateBiasCenterBarRect :: Layout -> Rect
-configPlateBiasCenterBarRect = configParamBarRect 30
+configPlateBiasCenterBarRect = configParamBarRect 28
 
 configPlateBiasEdgeMinusRect :: Layout -> Rect
-configPlateBiasEdgeMinusRect = configParamMinusRect 31
+configPlateBiasEdgeMinusRect = configParamMinusRect 29
 
 configPlateBiasEdgePlusRect :: Layout -> Rect
-configPlateBiasEdgePlusRect = configParamPlusRect 31
+configPlateBiasEdgePlusRect = configParamPlusRect 29
 
 configPlateBiasEdgeBarRect :: Layout -> Rect
-configPlateBiasEdgeBarRect = configParamBarRect 31
+configPlateBiasEdgeBarRect = configParamBarRect 29
 
 configPlateBiasNorthMinusRect :: Layout -> Rect
-configPlateBiasNorthMinusRect = configParamMinusRect 32
+configPlateBiasNorthMinusRect = configParamMinusRect 30
 
 configPlateBiasNorthPlusRect :: Layout -> Rect
-configPlateBiasNorthPlusRect = configParamPlusRect 32
+configPlateBiasNorthPlusRect = configParamPlusRect 30
 
 configPlateBiasNorthBarRect :: Layout -> Rect
-configPlateBiasNorthBarRect = configParamBarRect 32
+configPlateBiasNorthBarRect = configParamBarRect 30
 
 configPlateBiasSouthMinusRect :: Layout -> Rect
-configPlateBiasSouthMinusRect = configParamMinusRect 33
+configPlateBiasSouthMinusRect = configParamMinusRect 31
 
 configPlateBiasSouthPlusRect :: Layout -> Rect
-configPlateBiasSouthPlusRect = configParamPlusRect 33
+configPlateBiasSouthPlusRect = configParamPlusRect 31
 
 configPlateBiasSouthBarRect :: Layout -> Rect
-configPlateBiasSouthBarRect = configParamBarRect 33
+configPlateBiasSouthBarRect = configParamBarRect 31
 
 configTfcCliffSlopeMinusRect :: Layout -> Rect
-configTfcCliffSlopeMinusRect = configParamMinusRect 34
+configTfcCliffSlopeMinusRect = configParamMinusRect 32
 
 configTfcCliffSlopePlusRect :: Layout -> Rect
-configTfcCliffSlopePlusRect = configParamPlusRect 34
+configTfcCliffSlopePlusRect = configParamPlusRect 32
 
 configTfcCliffSlopeBarRect :: Layout -> Rect
-configTfcCliffSlopeBarRect = configParamBarRect 34
+configTfcCliffSlopeBarRect = configParamBarRect 32
 
 configTfcMountainSlopeMinusRect :: Layout -> Rect
-configTfcMountainSlopeMinusRect = configParamMinusRect 35
+configTfcMountainSlopeMinusRect = configParamMinusRect 33
 
 configTfcMountainSlopePlusRect :: Layout -> Rect
-configTfcMountainSlopePlusRect = configParamPlusRect 35
+configTfcMountainSlopePlusRect = configParamPlusRect 33
 
 configTfcMountainSlopeBarRect :: Layout -> Rect
-configTfcMountainSlopeBarRect = configParamBarRect 35
+configTfcMountainSlopeBarRect = configParamBarRect 33
 
 configTfcMountainReliefMinusRect :: Layout -> Rect
-configTfcMountainReliefMinusRect = configParamMinusRect 36
+configTfcMountainReliefMinusRect = configParamMinusRect 34
 
 configTfcMountainReliefPlusRect :: Layout -> Rect
-configTfcMountainReliefPlusRect = configParamPlusRect 36
+configTfcMountainReliefPlusRect = configParamPlusRect 34
 
 configTfcMountainReliefBarRect :: Layout -> Rect
-configTfcMountainReliefBarRect = configParamBarRect 36
+configTfcMountainReliefBarRect = configParamBarRect 34
 
 configTfcHillSlopeMinusRect :: Layout -> Rect
-configTfcHillSlopeMinusRect = configParamMinusRect 37
+configTfcHillSlopeMinusRect = configParamMinusRect 35
 
 configTfcHillSlopePlusRect :: Layout -> Rect
-configTfcHillSlopePlusRect = configParamPlusRect 37
+configTfcHillSlopePlusRect = configParamPlusRect 35
 
 configTfcHillSlopeBarRect :: Layout -> Rect
-configTfcHillSlopeBarRect = configParamBarRect 37
+configTfcHillSlopeBarRect = configParamBarRect 35
 
 configTfcRollingSlopeMinusRect :: Layout -> Rect
-configTfcRollingSlopeMinusRect = configParamMinusRect 38
+configTfcRollingSlopeMinusRect = configParamMinusRect 36
 
 configTfcRollingSlopePlusRect :: Layout -> Rect
-configTfcRollingSlopePlusRect = configParamPlusRect 38
+configTfcRollingSlopePlusRect = configParamPlusRect 36
 
 configTfcRollingSlopeBarRect :: Layout -> Rect
-configTfcRollingSlopeBarRect = configParamBarRect 38
+configTfcRollingSlopeBarRect = configParamBarRect 36
 
 configValleyCurvatureMinusRect :: Layout -> Rect
-configValleyCurvatureMinusRect = configParamMinusRect 39
+configValleyCurvatureMinusRect = configParamMinusRect 37
 
 configValleyCurvaturePlusRect :: Layout -> Rect
-configValleyCurvaturePlusRect = configParamPlusRect 39
+configValleyCurvaturePlusRect = configParamPlusRect 37
 
 configValleyCurvatureBarRect :: Layout -> Rect
-configValleyCurvatureBarRect = configParamBarRect 39
+configValleyCurvatureBarRect = configParamBarRect 37
 
 configRockElevationThresholdMinusRect :: Layout -> Rect
-configRockElevationThresholdMinusRect = configParamMinusRect 40
+configRockElevationThresholdMinusRect = configParamMinusRect 38
 
 configRockElevationThresholdPlusRect :: Layout -> Rect
-configRockElevationThresholdPlusRect = configParamPlusRect 40
+configRockElevationThresholdPlusRect = configParamPlusRect 38
 
 configRockElevationThresholdBarRect :: Layout -> Rect
-configRockElevationThresholdBarRect = configParamBarRect 40
+configRockElevationThresholdBarRect = configParamBarRect 38
 
 configRockHardnessThresholdMinusRect :: Layout -> Rect
-configRockHardnessThresholdMinusRect = configParamMinusRect 41
+configRockHardnessThresholdMinusRect = configParamMinusRect 39
 
 configRockHardnessThresholdPlusRect :: Layout -> Rect
-configRockHardnessThresholdPlusRect = configParamPlusRect 41
+configRockHardnessThresholdPlusRect = configParamPlusRect 39
 
 configRockHardnessThresholdBarRect :: Layout -> Rect
-configRockHardnessThresholdBarRect = configParamBarRect 41
+configRockHardnessThresholdBarRect = configParamBarRect 39
 
 configRockHardnessSecondaryMinusRect :: Layout -> Rect
-configRockHardnessSecondaryMinusRect = configParamMinusRect 42
+configRockHardnessSecondaryMinusRect = configParamMinusRect 40
 
 configRockHardnessSecondaryPlusRect :: Layout -> Rect
-configRockHardnessSecondaryPlusRect = configParamPlusRect 42
+configRockHardnessSecondaryPlusRect = configParamPlusRect 40
 
 configRockHardnessSecondaryBarRect :: Layout -> Rect
-configRockHardnessSecondaryBarRect = configParamBarRect 42
+configRockHardnessSecondaryBarRect = configParamBarRect 40
 
 configChunkMinusRect :: Layout -> Rect
 configChunkMinusRect = leftChunkMinusRect

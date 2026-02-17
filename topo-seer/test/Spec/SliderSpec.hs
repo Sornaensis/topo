@@ -140,8 +140,8 @@ allConfigWidgets =
   , WidgetConfigPlateBiasSouthMinus, WidgetConfigPlateBiasSouthPlus
   -- Climate tab
   , WidgetConfigWaterMinus, WidgetConfigWaterPlus
-  , WidgetConfigEvapMinus, WidgetConfigEvapPlus
-  , WidgetConfigRainShadowMinus, WidgetConfigRainShadowPlus
+  , WidgetConfigOrographicLiftMinus, WidgetConfigOrographicLiftPlus
+  , WidgetConfigRainShadowLossMinus, WidgetConfigRainShadowLossPlus
   , WidgetConfigWindDiffuseMinus, WidgetConfigWindDiffusePlus
   , WidgetConfigEquatorTempMinus, WidgetConfigEquatorTempPlus
   , WidgetConfigPoleTempMinus, WidgetConfigPoleTempPlus

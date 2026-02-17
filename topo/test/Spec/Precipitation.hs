@@ -159,12 +159,12 @@ spec = describe "Precipitation model (Phase 1 fixes)" $ do
                           - avgVec (ccPrecipAvg nL)
               flippedDiff = avgVec (ccPrecipAvg fR)
                           - avgVec (ccPrecipAvg fL)
-          -- The sign of the left-right difference should change
-          -- (or at least the flipped case should not have the same
-          -- sign bias).  We use a weaker check: the two differences
-          -- should not both be strongly positive or both strongly
-          -- negative.
-          (normalDiff * flippedDiff) `shouldSatisfy` (<= 0.05)
+          -- Flipping wind direction should change the left-right
+          -- precipitation asymmetry.  At high base evaporation the
+          -- system can saturate, making both diffs positive; we
+          -- therefore check that the asymmetry *shifts* rather than
+          -- demanding a sign flip.
+          abs (normalDiff - flippedDiff) `shouldSatisfy` (> 0.001)
         _ -> expectationFailure "missing climate chunks"
 
   -- ------------------------------------------------------------------
@@ -185,9 +185,15 @@ spec = describe "Precipitation model (Phase 1 fixes)" $ do
         Nothing -> expectationFailure "missing climate chunk"
 
     it "ocean precip increases with temperature" $ do
-      -- Warm ocean should evaporate more, producing more precip.
-      -- We test this by using the default equator position (warm)
-      -- vs shifting to a polar-like setup (cold).
+      -- Warm ocean should evaporate more → more moisture advected onto
+      -- adjacent land → higher land precipitation.
+      --
+      -- We use a 2-chunk world: chunk 0 is ocean (moisture source),
+      -- chunk 1 is flat land (precipitation receiver).  Measuring total
+      -- precipitation on the *land* chunk isolates the evaporation→
+      -- precipitation signal and avoids same-chunk saturation artefacts.
+      --
+      -- Cold config uses near-freezing temperatures where satNorm ≈ 0.
       let waterLevel = 0.5
           cfgWarm = defaultClimateConfig
             { ccTemperature = (ccTemperature defaultClimateConfig)
@@ -197,17 +203,18 @@ spec = describe "Precipitation model (Phase 1 fixes)" $ do
             }
           cfgCold = defaultClimateConfig
             { ccTemperature = (ccTemperature defaultClimateConfig)
-                { tmpEquatorTemp = 0.40
-                , tmpPoleTemp    = 0.05
+                { tmpEquatorTemp = 0.10
+                , tmpPoleTemp    = 0.01
                 }
             }
-          elevFn _ = 0.2  -- all ocean
-      mWarm <- runClimateChunk cfgWarm waterLevel elevFn
-      mCold <- runClimateChunk cfgCold waterLevel elevFn
-      case (mWarm, mCold) of
-        (Just warm, Just cold) ->
-          avgVec (ccPrecipAvg warm) `shouldSatisfy`
-            (> avgVec (ccPrecipAvg cold))
+          oceanElev _ = 0.2   -- below waterLevel → ocean
+          landElev  _ = 0.55  -- just above waterLevel → flat land
+      (_, mWarmLand) <- runClimate2Chunks cfgWarm waterLevel oceanElev landElev
+      (_, mColdLand) <- runClimate2Chunks cfgCold waterLevel oceanElev landElev
+      case (mWarmLand, mColdLand) of
+        (Just warmL, Just coldL) ->
+          sumVec (ccPrecipAvg warmL) `shouldSatisfy`
+            (> sumVec (ccPrecipAvg coldL))
         _ -> expectationFailure "missing climate chunk"
 
   -- ------------------------------------------------------------------

@@ -34,6 +34,8 @@ import qualified Spec.ConfigJSON
 import qualified Spec.ConfigProperty
 import qualified Spec.Units
 import qualified Spec.Precipitation
+import qualified Spec.MoistureFixture
+import qualified Spec.ClimateAlignment
 import qualified WorldProperty
 import qualified HexProperty
 
@@ -72,5 +74,7 @@ main = hspec $ do
   Spec.ConfigProperty.spec
   Spec.Units.spec
   Spec.Precipitation.spec
+  Spec.MoistureFixture.spec
+  Spec.ClimateAlignment.spec
   WorldProperty.spec
   HexProperty.spec

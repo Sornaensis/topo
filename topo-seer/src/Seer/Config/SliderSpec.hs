@@ -69,8 +69,8 @@ module Seer.Config.SliderSpec
   , specRockHardnessSecondary
     -- * Climate tab specs
   , specWaterLevel
-  , specEvaporation
-  , specRainShadow
+  , specOrographicLift
+  , specRainShadowLoss
   , specWindDiffuse
   , specEquatorTemp
   , specPoleTemp
@@ -146,7 +146,6 @@ module Seer.Config.SliderSpec
   , specMoistLocal
   , specMoistWindEvapScale
   , specMoistEvapNoiseScale
-  , specMoistLandETCoeff
   , specMoistBareEvapFrac
   , specMoistVegTranspFrac
   , specMoistWindETScale
@@ -372,10 +371,10 @@ tooltipForWidget wid = case wid of
   -- Climate tab
   WidgetConfigWaterMinus             -> tip specWaterLevel
   WidgetConfigWaterPlus              -> tip specWaterLevel
-  WidgetConfigEvapMinus              -> tip specEvaporation
-  WidgetConfigEvapPlus               -> tip specEvaporation
-  WidgetConfigRainShadowMinus        -> tip specRainShadow
-  WidgetConfigRainShadowPlus         -> tip specRainShadow
+  WidgetConfigOrographicLiftMinus     -> tip specOrographicLift
+  WidgetConfigOrographicLiftPlus       -> tip specOrographicLift
+  WidgetConfigRainShadowLossMinus      -> tip specRainShadowLoss
+  WidgetConfigRainShadowLossPlus       -> tip specRainShadowLoss
   WidgetConfigWindDiffuseMinus       -> tip specWindDiffuse
   WidgetConfigWindDiffusePlus        -> tip specWindDiffuse
   WidgetConfigEquatorTempMinus       -> tip specEquatorTemp
@@ -527,8 +526,6 @@ tooltipForWidget wid = case wid of
   WidgetConfigMoistWindEvapScalePlus  -> tip specMoistWindEvapScale
   WidgetConfigMoistEvapNoiseScaleMinus -> tip specMoistEvapNoiseScale
   WidgetConfigMoistEvapNoiseScalePlus  -> tip specMoistEvapNoiseScale
-  WidgetConfigMoistLandETCoeffMinus  -> tip specMoistLandETCoeff
-  WidgetConfigMoistLandETCoeffPlus   -> tip specMoistLandETCoeff
   WidgetConfigMoistBareEvapFracMinus -> tip specMoistBareEvapFrac
   WidgetConfigMoistBareEvapFracPlus  -> tip specMoistBareEvapFrac
   WidgetConfigMoistVegTranspFracMinus -> tip specMoistVegTranspFrac
@@ -927,13 +924,13 @@ specWaterLevel :: SliderSpec
 specWaterLevel = SliderSpec
   "Water Level" "Sea level threshold; tiles below this are ocean" 0 1 False
 
-specEvaporation :: SliderSpec
-specEvaporation = SliderSpec
-  "Evaporation" "Evaporation rate feeding atmospheric moisture" 0 1 False
+specOrographicLift :: SliderSpec
+specOrographicLift = SliderSpec
+  "Orographic Lift" "Windward precipitation enhancement from terrain rise" 0 1 False
 
-specRainShadow :: SliderSpec
-specRainShadow = SliderSpec
-  "Rain Shadow" "Strength of orographic rain-shadow effect" 0 1 False
+specRainShadowLoss :: SliderSpec
+specRainShadowLoss = SliderSpec
+  "Rain Shadow Loss" "Per-iteration moisture sink from elevation barriers" 0 1 False
 
 specWindDiffuse :: SliderSpec
 specWindDiffuse = SliderSpec
@@ -1238,10 +1235,6 @@ specMoistWindEvapScale = SliderSpec
 specMoistEvapNoiseScale :: SliderSpec
 specMoistEvapNoiseScale = SliderSpec
   "Evap Noise" "Spatial noise added to evaporation" 0 0.2 False
-
-specMoistLandETCoeff :: SliderSpec
-specMoistLandETCoeff = SliderSpec
-  "Land ET" "Land evapotranspiration coefficient" 0 1 False
 
 specMoistBareEvapFrac :: SliderSpec
 specMoistBareEvapFrac = SliderSpec

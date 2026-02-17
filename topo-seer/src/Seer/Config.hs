@@ -213,13 +213,11 @@ applyUiConfig ui cfg =
             , windBeltSpeedScale = uiWindBeltSpeedScale ui
             }
         , ccMoisture = climateMst
-            { moistEvapCoeff = uiEvaporation ui
-            , moistIterations = mapIntRange 2 72 (uiMoistureIterations ui)
+            { moistIterations = mapIntRange 2 72 (uiMoistureIterations ui)
             , moistAdvect = uiMoistAdvect ui
             , moistLocal = uiMoistLocal ui
             , moistWindEvapScale = uiMoistWindEvapScale ui
             , moistEvapNoiseScale = mapRange 0 0.2 (uiMoistEvapNoiseScale ui)
-            , moistLandETCoeff = uiMoistLandETCoeff ui
             , moistBareEvapFrac = uiMoistBareEvapFrac ui
             , moistVegTranspFrac = uiMoistVegTranspFrac ui
             , moistWindETScale = uiMoistWindETScale ui
@@ -229,7 +227,8 @@ applyUiConfig ui cfg =
             , moistITCZWidth = mapRange 2 20 (uiMoistITCZWidth ui)
             }
         , ccPrecipitation = climatePrc
-            { precRainShadow = uiRainShadow ui
+            { precOrographicLift = uiOrographicLift ui
+            , precRainShadowLoss = uiRainShadowLoss ui
             , precOrographicScale = mapRange 0 2 (uiOrographicScale ui)
             , precOrographicStep = mapRange 0.5 3 (uiOrographicStep ui)
             , precCoastalIterations = mapIntRange 0 16 (uiCoastalIterations ui)
@@ -340,7 +339,7 @@ configSummary :: UiState -> Text
 configSummary ui =
   Text.intercalate " | "
     [ "Config seed=" <> Text.pack (show (uiSeed ui)) <> " chunk=" <> Text.pack (show (uiChunkSize ui))
-    , kv "water" uiWaterLevel <> " " <> kv "evap" uiEvaporation <> " " <> kv "rainShadow" uiRainShadow
+    , kv "water" uiWaterLevel <> " " <> kv "oroLift" uiOrographicLift <> " " <> kv "rShadow" uiRainShadowLoss
     ]
   where
     kv :: Show a => Text -> (UiState -> a) -> Text

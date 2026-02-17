@@ -60,7 +60,6 @@ import Actor.UI
   , setUiInlandSeaMinSize
   , setUiRoughnessScale
   , setUiEquatorTemp
-  , setUiEvaporation
   , setUiGenFrequency
   , setUiGenGain
   , setUiGenLacunarity
@@ -134,7 +133,6 @@ import Actor.UI
   , setUiMoistLocal
   , setUiMoistWindEvapScale
   , setUiMoistEvapNoiseScale
-  , setUiMoistLandETCoeff
   , setUiMoistBareEvapFrac
   , setUiMoistVegTranspFrac
   , setUiMoistWindETScale
@@ -217,7 +215,8 @@ import Actor.UI
   , setUiLeftTab
   , setUiPoleTemp
   , setUiRainRate
-  , setUiRainShadow
+  , setUiOrographicLift
+  , setUiRainShadowLoss
   , setUiSeed
   , setUiSeedEditing
   , setUiSeedInput
@@ -689,10 +688,10 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
         case wid of
           WidgetConfigWaterMinus -> True
           WidgetConfigWaterPlus -> True
-          WidgetConfigEvapMinus -> True
-          WidgetConfigEvapPlus -> True
-          WidgetConfigRainShadowMinus -> True
-          WidgetConfigRainShadowPlus -> True
+          WidgetConfigOrographicLiftMinus -> True
+          WidgetConfigOrographicLiftPlus -> True
+          WidgetConfigRainShadowLossMinus -> True
+          WidgetConfigRainShadowLossPlus -> True
           WidgetConfigWindDiffuseMinus -> True
           WidgetConfigWindDiffusePlus -> True
           WidgetConfigEquatorTempMinus -> True
@@ -749,8 +748,6 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           WidgetConfigMoistWindEvapScalePlus -> True
           WidgetConfigMoistEvapNoiseScaleMinus -> True
           WidgetConfigMoistEvapNoiseScalePlus -> True
-          WidgetConfigMoistLandETCoeffMinus -> True
-          WidgetConfigMoistLandETCoeffPlus -> True
           WidgetConfigMoistBareEvapFracMinus -> True
           WidgetConfigMoistBareEvapFracPlus -> True
           WidgetConfigMoistVegTranspFracMinus -> True
@@ -1081,10 +1078,10 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
         case widgetId widget of
           WidgetConfigWaterMinus -> tab == ConfigClimate
           WidgetConfigWaterPlus -> tab == ConfigClimate
-          WidgetConfigEvapMinus -> tab == ConfigClimate
-          WidgetConfigEvapPlus -> tab == ConfigClimate
-          WidgetConfigRainShadowMinus -> tab == ConfigClimate
-          WidgetConfigRainShadowPlus -> tab == ConfigClimate
+          WidgetConfigOrographicLiftMinus -> tab == ConfigClimate
+          WidgetConfigOrographicLiftPlus -> tab == ConfigClimate
+          WidgetConfigRainShadowLossMinus -> tab == ConfigClimate
+          WidgetConfigRainShadowLossPlus -> tab == ConfigClimate
           WidgetConfigWindDiffuseMinus -> tab == ConfigClimate
           WidgetConfigWindDiffusePlus -> tab == ConfigClimate
           WidgetConfigEquatorTempMinus -> tab == ConfigClimate
@@ -1141,8 +1138,6 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           WidgetConfigMoistWindEvapScalePlus -> tab == ConfigClimate
           WidgetConfigMoistEvapNoiseScaleMinus -> tab == ConfigClimate
           WidgetConfigMoistEvapNoiseScalePlus -> tab == ConfigClimate
-          WidgetConfigMoistLandETCoeffMinus -> tab == ConfigClimate
-          WidgetConfigMoistLandETCoeffPlus -> tab == ConfigClimate
           WidgetConfigMoistBareEvapFracMinus -> tab == ConfigClimate
           WidgetConfigMoistBareEvapFracPlus -> tab == ConfigClimate
           WidgetConfigMoistVegTranspFracMinus -> tab == ConfigClimate
@@ -1509,10 +1504,10 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           ; Just WidgetConfigRevert -> whenConfigVisible (submit UiActionRevert)
           ; Just WidgetConfigWaterMinus -> whenConfigVisible (bumpWater (-0.05))
           ; Just WidgetConfigWaterPlus -> whenConfigVisible (bumpWater 0.05)
-          ; Just WidgetConfigEvapMinus -> whenConfigVisible (bumpEvap (-0.05))
-          ; Just WidgetConfigEvapPlus -> whenConfigVisible (bumpEvap 0.05)
-          ; Just WidgetConfigRainShadowMinus -> whenConfigVisible (bumpRainShadow (-0.05))
-          ; Just WidgetConfigRainShadowPlus -> whenConfigVisible (bumpRainShadow 0.05)
+          ; Just WidgetConfigOrographicLiftMinus -> whenConfigVisible (bumpOrographicLift (-0.05))
+          ; Just WidgetConfigOrographicLiftPlus -> whenConfigVisible (bumpOrographicLift 0.05)
+          ; Just WidgetConfigRainShadowLossMinus -> whenConfigVisible (bumpRainShadowLoss (-0.05))
+          ; Just WidgetConfigRainShadowLossPlus -> whenConfigVisible (bumpRainShadowLoss 0.05)
           ; Just WidgetConfigWindDiffuseMinus -> whenConfigVisible (bumpWindDiffuse (-0.05))
           ; Just WidgetConfigWindDiffusePlus -> whenConfigVisible (bumpWindDiffuse 0.05)
           ; Just WidgetConfigEquatorTempMinus -> whenConfigVisible (bumpEquatorTemp (-0.05))
@@ -1745,8 +1740,6 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           ; Just WidgetConfigMoistWindEvapScalePlus -> whenConfigVisible (bumpMoistWindEvapScale 0.05)
           ; Just WidgetConfigMoistEvapNoiseScaleMinus -> whenConfigVisible (bumpMoistEvapNoiseScale (-0.05))
           ; Just WidgetConfigMoistEvapNoiseScalePlus -> whenConfigVisible (bumpMoistEvapNoiseScale 0.05)
-          ; Just WidgetConfigMoistLandETCoeffMinus -> whenConfigVisible (bumpMoistLandETCoeff (-0.05))
-          ; Just WidgetConfigMoistLandETCoeffPlus -> whenConfigVisible (bumpMoistLandETCoeff 0.05)
           ; Just WidgetConfigMoistBareEvapFracMinus -> whenConfigVisible (bumpMoistBareEvapFrac (-0.05))
           ; Just WidgetConfigMoistBareEvapFracPlus -> whenConfigVisible (bumpMoistBareEvapFrac 0.05)
           ; Just WidgetConfigMoistVegTranspFracMinus -> whenConfigVisible (bumpMoistVegTranspFrac (-0.05))
@@ -2113,12 +2106,12 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
       uiSnap <- getUiSnapshot uiHandle
       let next = uiWaterLevel uiSnap + delta
       setUiWaterLevel uiHandle next
-    bumpEvap delta = do
+    bumpOrographicLift delta = do
       uiSnap <- getUiSnapshot uiHandle
-      setUiEvaporation uiHandle (uiEvaporation uiSnap + delta)
-    bumpRainShadow delta = do
+      setUiOrographicLift uiHandle (uiOrographicLift uiSnap + delta)
+    bumpRainShadowLoss delta = do
       uiSnap <- getUiSnapshot uiHandle
-      setUiRainShadow uiHandle (uiRainShadow uiSnap + delta)
+      setUiRainShadowLoss uiHandle (uiRainShadowLoss uiSnap + delta)
     bumpWindDiffuse delta = do
       uiSnap <- getUiSnapshot uiHandle
       setUiWindDiffuse uiHandle (uiWindDiffuse uiSnap + delta)
@@ -2365,9 +2358,6 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
     bumpMoistEvapNoiseScale delta = do
       uiSnap <- getUiSnapshot uiHandle
       setUiMoistEvapNoiseScale uiHandle (uiMoistEvapNoiseScale uiSnap + delta)
-    bumpMoistLandETCoeff delta = do
-      uiSnap <- getUiSnapshot uiHandle
-      setUiMoistLandETCoeff uiHandle (uiMoistLandETCoeff uiSnap + delta)
     bumpMoistBareEvapFrac delta = do
       uiSnap <- getUiSnapshot uiHandle
       setUiMoistBareEvapFrac uiHandle (uiMoistBareEvapFrac uiSnap + delta)
