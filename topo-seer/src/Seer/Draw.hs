@@ -746,7 +746,7 @@ drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather,
           rows = case uiConfigTab ui of
             ConfigTerrain -> 53
             ConfigPlanet -> 7
-            ConfigClimate -> 47
+            ConfigClimate -> 48
             ConfigWeather -> 21
             ConfigBiome -> 26
             ConfigErosion -> 35
@@ -1605,9 +1605,9 @@ drawUiLabels renderer fontCache ui layout = do
       rowHeight = 24
       gap = 10
       rows = case uiConfigTab ui of
-        ConfigTerrain -> 54
+        ConfigTerrain -> 53
         ConfigPlanet -> 7
-        ConfigClimate -> 49
+        ConfigClimate -> 48
         ConfigWeather -> 21
         ConfigBiome -> 26
         ConfigErosion -> 35

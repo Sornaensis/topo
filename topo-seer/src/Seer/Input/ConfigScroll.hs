@@ -36,7 +36,7 @@ defaultScrollSettings = ScrollSettings
 configRowCount :: ConfigTab -> Int
 configRowCount ConfigTerrain = 53
 configRowCount ConfigPlanet = 7
-configRowCount ConfigClimate = 49
+configRowCount ConfigClimate = 48
 configRowCount ConfigWeather = 21
 configRowCount ConfigBiome = 26
 configRowCount ConfigErosion = 35
