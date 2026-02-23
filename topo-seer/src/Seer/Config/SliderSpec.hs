@@ -1096,11 +1096,11 @@ specCloudPrecipBoost = SliderSpec
 
 specVegBase :: SliderSpec
 specVegBase = SliderSpec
-  "Veg Base" "Base vegetation density" 0.02 0.6 False
+  "Veg Scale" "Global vegetation density scale multiplier" 0.1 3.0 False
 
 specVegBoost :: SliderSpec
 specVegBoost = SliderSpec
-  "Veg Boost" "Biome-specific vegetation density boost" 0.1 1.0 False
+  "Clim Slope" "Global climate-slope scale for vegetation density" 0.1 3.0 False
 
 specVegTempWeight :: SliderSpec
 specVegTempWeight = SliderSpec

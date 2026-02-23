@@ -70,7 +70,7 @@ buildTerrainCache uiSnap terrainSnap =
   let config = WorldConfig { wcChunkSize = tsChunkSize terrainSnap }
       mode = uiViewMode uiSnap
       waterLevel = uiRenderWaterLevel uiSnap
-      cacheChunks = IntMap.mapWithKey (buildChunkGeometry config mode waterLevel (tsClimateChunks terrainSnap) (tsWeatherChunks terrainSnap)) (tsTerrainChunks terrainSnap)
+      cacheChunks = IntMap.mapWithKey (buildChunkGeometry config mode waterLevel (tsClimateChunks terrainSnap) (tsWeatherChunks terrainSnap) (tsVegetationChunks terrainSnap)) (tsTerrainChunks terrainSnap)
   in TerrainCache
       { tcVersion = tsVersion terrainSnap
       , tcViewMode = mode

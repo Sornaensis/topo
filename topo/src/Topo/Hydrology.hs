@@ -431,7 +431,7 @@ fillDepressions waterLevel gridW gridH elev = runST $ do
       mkSeed i = (elev U.! i, i)
       seeds = [ mkSeed i
               | i <- [0 .. n - 1]
-              , isBoundary i || elev U.! i <= waterLevel
+              , isBoundary i || elev U.! i < waterLevel
               ]
 
   -- Mark seeds as visited
@@ -477,7 +477,7 @@ fillDepressions waterLevel gridW gridH elev = runST $ do
 -- (river routing uses 'fillDepressions' instead), but it is exported
 -- for testing and potential future use.
 breachRemainingSinks
-  :: Float          -- ^ waterLevel — tiles at or below are skipped
+  :: Float          -- ^ waterLevel — tiles below this are skipped
   -> Int -> Int     -- ^ gridW, gridH
   -> U.Vector Float -- ^ elevation grid
   -> U.Vector Float
@@ -487,7 +487,7 @@ breachRemainingSinks waterLevel gridW gridH elev =
       -- Deeper sinks are left as natural features (lakes).
       maxBreachDepth = 0.05 :: Float
   in U.imap (\i h0 ->
-    if h0 <= waterLevel
+    if h0 < waterLevel
       then h0  -- submerged, leave alone
       else
         let nbrs  = hexNeighborIndices gridW gridH i
@@ -556,7 +556,7 @@ createRiverLakes waterLevel minDischarge minLakeSize gridW gridH elev flow disch
           !y = i `div` gridW
           onBoundary = x == 0 || x == gridW - 1
                     || y == 0 || y == gridH - 1
-      when (onBoundary && elev U.! i <= waterLevel) $ do
+      when (onBoundary && elev U.! i < waterLevel) $ do
         UM.write oceanMask i True
         enqueue i
     -- Flood through hex-connected submerged tiles
@@ -567,7 +567,7 @@ createRiverLakes waterLevel minDischarge minLakeSize gridW gridH elev flow disch
             Just cur -> do
               forM_ (hexNeighborIndices gridW gridH cur) $ \ni -> do
                 vis <- UM.read oceanMask ni
-                when (not vis && elev U.! ni <= waterLevel) $ do
+                when (not vis && elev U.! ni < waterLevel) $ do
                   UM.write oceanMask ni True
                   enqueue ni
               bfsLoop
@@ -582,7 +582,7 @@ createRiverLakes waterLevel minDischarge minLakeSize gridW gridH elev flow disch
   forM_ [0 .. n - 1] $ \i -> do
     isOcean <- UM.read oceanMask i
     cid <- UM.read compId i
-    when (not isOcean && elev U.! i <= waterLevel && cid < 0) $ do
+    when (not isOcean && elev U.! i < waterLevel && cid < 0) $ do
       label <- UM.read nextLabel 0
       UM.write nextLabel 0 (label + 1)
       -- Flood-fill this inland component
@@ -596,7 +596,7 @@ createRiverLakes waterLevel minDischarge minLakeSize gridW gridH elev flow disch
                 foldM (\t ni -> do
                   isO <- UM.read oceanMask ni
                   c <- UM.read compId ni
-                  if not isO && elev U.! ni <= waterLevel && c < 0
+                  if not isO && elev U.! ni < waterLevel && c < 0
                     then do
                       UM.write compId ni label
                       let t' = t + 1
@@ -621,7 +621,7 @@ createRiverLakes waterLevel minDischarge minLakeSize gridW gridH elev flow disch
       -- Check if any hex-neighbour is a land tile with significant
       -- discharge flowing INTO this submerged component.
       let hasRiverInflow = any (\ni ->
-            elev U.! ni > waterLevel          -- neighbour is land
+            elev U.! ni >= waterLevel         -- neighbour is land
             && flow U.! ni == i               -- flows into this tile
             && discharge U.! ni >= minDischarge  -- significant discharge
             ) (hexNeighborIndices gridW gridH i)
@@ -643,7 +643,7 @@ createRiverLakes waterLevel minDischarge minLakeSize gridW gridH elev flow disch
             | i <- [0 .. n - 1]
             , frozenCompId U.! i == cid
             , ni <- hexNeighborIndices gridW gridH i
-            , elev U.! ni > waterLevel
+            , elev U.! ni >= waterLevel
             , frozenCompId U.! ni < 0   -- not already in a component
             ]
       let expandLoop !curSz !frontier
@@ -656,7 +656,7 @@ createRiverLakes waterLevel minDischarge minLakeSize gridW gridH elev flow disch
                 let newCandidates =
                       [ (elev U.! ni, ni)
                       | ni <- hexNeighborIndices gridW gridH idx
-                      , elev U.! ni > waterLevel
+                      , elev U.! ni >= waterLevel
                       , frozenCompId U.! ni < 0
                       ]
                 expandLoop (curSz + 1)
@@ -687,7 +687,7 @@ flowDirections gridW gridH elev =
   where
     minimumByElevation = foldl1 (\a b -> if snd a <= snd b then a else b)
 
--- | Like 'flowDirections' but treats submerged tiles (elevation ≤ waterLevel)
+-- | Like 'flowDirections' but treats submerged tiles (elevation < waterLevel)
 -- as terminal sinks.  Submerged tiles always receive flow direction @-1@;
 -- land tiles may flow into submerged neighbours as terminal sinks (river
 -- mouths).  This confines flow /accumulation/ to the land surface so that
@@ -698,7 +698,7 @@ flowDirectionsLand :: Float -> Int -> Int -> U.Vector Float -> U.Vector Int
 flowDirectionsLand waterLevel gridW gridH elev =
   U.generate (U.length elev) $ \i ->
     let h0 = elev U.! i
-    in if h0 <= waterLevel
+    in if h0 < waterLevel
        then -1  -- submerged tile is a sink
        else
          let candidates = [(j, elev U.! j) | j <- hexNeighborIndices gridW gridH i]

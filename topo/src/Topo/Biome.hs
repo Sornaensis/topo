@@ -146,17 +146,24 @@ instance FromJSON BiomeThresholds where
 -- This is distinct from 'Topo.Vegetation.VegetationBootstrapConfig' which
 -- controls the pre-climate bootstrap.  This config controls how biome
 -- classification influences vegetation density in the post-biome pass.
+--
+-- Each biome has an intrinsic base density and climate slope looked up
+-- from 'Topo.Vegetation.biomeBaseDensity' and
+-- 'Topo.Vegetation.biomeClimateSlope'.  The @vcDensityScale@ and
+-- @vcClimateSlopeScale@ multipliers let the user globally shift these
+-- curves without editing per-biome tables.
 data BiomeVegetationConfig = BiomeVegetationConfig
-  { vcBaseDensity  :: !Float
-    -- ^ Base vegetation density for all tiles [0..1].
-  , vcBiomeBoost   :: !Float
-    -- ^ Extra density added for tiles in forest\/wetland biomes [0..1].
+  { vcDensityScale     :: !Float
+    -- ^ Global multiplier on per-biome base density (default 1.0).
+    -- Values > 1 push all biomes towards denser vegetation;
+    -- values < 1 make the world more barren.
+  , vcClimateSlopeScale :: !Float
+    -- ^ Global multiplier on per-biome climate slope (default 1.0).
+    -- Higher values make density more climate-responsive.
   , vcTempWeight   :: !Float
-    -- ^ Weight of temperature in the density blend [0..1].
+    -- ^ Weight of temperature in the climate suitability blend [0..1].
   , vcPrecipWeight :: !Float
-    -- ^ Weight of precipitation in the density blend [0..1].
-  , vcBoostBiomes  :: ![BiomeId]
-    -- ^ Biome families that receive the 'vcBiomeBoost' density bonus.
+    -- ^ Weight of precipitation in the climate suitability blend [0..1].
   , vcMinWeightSum :: !Float
     -- ^ Guard against division by zero in the weight normalisation.
   } deriving (Eq, Show, Generic)
@@ -170,22 +177,10 @@ instance FromJSON BiomeVegetationConfig where
 
 defaultBiomeVegetationConfig :: BiomeVegetationConfig
 defaultBiomeVegetationConfig = BiomeVegetationConfig
-  { vcBaseDensity  = 0.2
-  , vcBiomeBoost   = 0.6
+  { vcDensityScale      = 1.0
+  , vcClimateSlopeScale  = 1.0
   , vcTempWeight   = 0.6
   , vcPrecipWeight = 0.4
-  , vcBoostBiomes  = [ BiomeForest, BiomeRainforest, BiomeSwamp
-                      , BiomeTempDeciduousForest, BiomeTempConiferousForest
-                      , BiomeTropicalDryForest, BiomeMontaneForest
-                      , BiomeCloudForest, BiomeTempRainforest
-                      , BiomeTropicalRainforest, BiomeBorealForest
-                      , BiomeWetland, BiomeMarsh, BiomeFen
-                      , BiomeFloodplainForest, BiomeMangrove
-                      , BiomeBog, BiomeBorealBog
-                      , BiomeSavanna, BiomeWoodlandSavanna
-                      , BiomeTaiga, BiomeSaltMarsh, BiomeEstuary
-                      , BiomeTropicalSeasonalForest, BiomeOceanicBoreal
-                      ]
   , vcMinWeightSum = 0.0001
   }
 
@@ -691,17 +686,34 @@ median xs =
   in sorted !! mid
 {-# INLINE median #-}
 
-vegetationDensityChunk :: BiomeVegetationConfig -> U.Vector BiomeId -> U.Vector Float -> U.Vector Float -> U.Vector Float
-vegetationDensityChunk cfg biomes temp precip =
+-- | Compute per-tile vegetation density from biome classification and
+-- climate.
+--
+-- Each biome has an intrinsic base density and climate slope (looked up
+-- from 'Topo.Vegetation.biomeBaseDensity' and
+-- 'Topo.Vegetation.biomeClimateSlope').  The final density is:
+--
+-- @density = clamp01 (baseDensity * densityScale + climateSlope * climateSlopeScale * climate)@
+--
+-- where @climate = clamp01 ((temp * tw + precip * pw) / (tw + pw))@.
+vegetationDensityChunk
+  :: BiomeVegetationConfig
+  -> (BiomeId -> Float)   -- ^ per-biome base density lookup
+  -> (BiomeId -> Float)   -- ^ per-biome climate slope lookup
+  -> U.Vector BiomeId
+  -> U.Vector Float       -- ^ temperature per tile
+  -> U.Vector Float       -- ^ precipitation per tile
+  -> U.Vector Float
+vegetationDensityChunk cfg baseLookup slopeLookup biomes temp precip =
   U.generate (U.length biomes) (\i ->
     let biome = biomes U.! i
-        base = vcBaseDensity cfg
-        boost = if biome `elem` vcBoostBiomes cfg then vcBiomeBoost cfg else 0
-        tw = max 0 (vcTempWeight cfg)
-        pw = max 0 (vcPrecipWeight cfg)
+        base  = baseLookup biome * vcDensityScale cfg
+        slope = slopeLookup biome * vcClimateSlopeScale cfg
+        tw    = max 0 (vcTempWeight cfg)
+        pw    = max 0 (vcPrecipWeight cfg)
         denom = max (vcMinWeightSum cfg) (tw + pw)
         climate = clamp01 ((temp U.! i * tw + precip U.! i * pw) / denom)
-    in clamp01 (base + boost * climate))
+    in clamp01 (base + slope * climate))
 
 clamp01 :: Float -> Float
 clamp01 v

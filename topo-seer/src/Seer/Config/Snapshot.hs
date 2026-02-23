@@ -545,8 +545,8 @@ applySnapshotToUi cs h = do
   setUiCloudAlbedoEffect h (unmapRange 0 0.3 (wcCloudAlbedoEffect weather))
   setUiCloudPrecipBoost h (unmapRange 0 0.5 (wcCloudPrecipBoost weather))
   -- Vegetation (biome)
-  setUiVegBase h (unmapRange 0.02 0.6 (vcBaseDensity veg))
-  setUiVegBoost h (unmapRange 0.1 1.0 (vcBiomeBoost veg))
+  setUiVegBase h (unmapRange 0.1 3.0 (vcDensityScale veg))
+  setUiVegBoost h (unmapRange 0.1 3.0 (vcClimateSlopeScale veg))
   setUiVegTempWeight h (unmapRange 0 1 (vcTempWeight veg))
   setUiVegPrecipWeight h (unmapRange 0 1 (vcPrecipWeight veg))
   -- Biome thresholds

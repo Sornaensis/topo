@@ -42,6 +42,7 @@ import Topo.Pipeline (PipelineStage(..))
 import Topo.Plugin (logInfo, modifyWorldP)
 import Topo.TerrainGrid (chunkCoordBounds)
 import Topo.Types
+import Topo.Vegetation (biomeBaseDensity, biomeClimateSlope)
 import Topo.World (TerrainWorld(..))
 import qualified Data.Vector.Unboxed as U
 
@@ -97,7 +98,7 @@ aridBiomeConfig = BiomeConfig
   { bcRules = defaultBiomeRules
   , bcThresholds = defaultBiomeThresholds
   , bcRefinement = aridRefinementConfig
-  , bcVegetation = (defaultBiomeVegetationConfig { vcBaseDensity = 0.08, vcBiomeBoost = 0.3, vcTempWeight = 0.4, vcPrecipWeight = 0.6 })
+  , bcVegetation = (defaultBiomeVegetationConfig { vcDensityScale = 0.60, vcClimateSlopeScale = 0.70, vcTempWeight = 0.4, vcPrecipWeight = 0.6 })
   , bcSmoothingIterations = 1
   , bcTransitionSmoothingIterations = 1
   , bcVolcanicAshBoost = 0.12
@@ -110,7 +111,7 @@ lushBiomeConfig = BiomeConfig
   { bcRules = defaultBiomeRules
   , bcThresholds = defaultBiomeThresholds
   , bcRefinement = lushRefinementConfig
-  , bcVegetation = (defaultBiomeVegetationConfig { vcBaseDensity = 0.35, vcBiomeBoost = 0.8, vcTempWeight = 0.55, vcPrecipWeight = 0.45 })
+  , bcVegetation = (defaultBiomeVegetationConfig { vcDensityScale = 1.40, vcClimateSlopeScale = 1.30, vcTempWeight = 0.55, vcPrecipWeight = 0.45 })
   , bcSmoothingIterations = 1
   , bcTransitionSmoothingIterations = 1
   , bcVolcanicAshBoost = 0.28
@@ -198,7 +199,7 @@ classifyChunk config rules thresholds waterLevel mWb terrain climate =
 
 vegetationChunk :: WorldConfig -> BiomeVegetationConfig -> U.Vector BiomeId -> ClimateChunk -> U.Vector Float
 vegetationChunk _ cfg biomes climate =
-  vegetationDensityChunk cfg biomes (ccTempAvg climate) (ccPrecipAvg climate)
+  vegetationDensityChunk cfg biomeBaseDensity biomeClimateSlope biomes (ccTempAvg climate) (ccPrecipAvg climate)
 
 applyVolcanicVegetation :: BiomeConfig -> U.Vector Float -> VolcanismChunk -> U.Vector Float
 applyVolcanicVegetation cfg base volc =

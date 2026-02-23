@@ -17,6 +17,7 @@ module Actor.Data
   , setClimateChunkData
   , setWeatherChunkData
   , setRiverChunkData
+  , setVegetationChunkData
   , requestDataSnapshot
   , getTerrainSnapshot
   , replaceTerrainData
@@ -29,7 +30,7 @@ import Data.Word (Word64)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
 import Hyperspace.Actor.Spec (OpTag(..))
-import Topo (ChunkId(..), ClimateChunk, RiverChunk, TerrainChunk, WeatherChunk)
+import Topo (ChunkId(..), ClimateChunk, RiverChunk, TerrainChunk, VegetationChunk, WeatherChunk)
 import Topo.World (TerrainWorld(..))
 import Topo.Types (WorldConfig(..))
 
@@ -51,6 +52,7 @@ data TerrainSnapshot = TerrainSnapshot
   , tsClimateChunks :: !(IntMap ClimateChunk)
   , tsWeatherChunks :: !(IntMap WeatherChunk)
   , tsRiverChunks :: !(IntMap RiverChunk)
+  , tsVegetationChunks :: !(IntMap VegetationChunk)
   } deriving (Eq, Show)
 
 data DataState = DataState
@@ -63,6 +65,7 @@ data DataState = DataState
   , stClimateChunks :: !(IntMap ClimateChunk)
   , stWeatherChunks :: !(IntMap WeatherChunk)
   , stRiverChunks :: !(IntMap RiverChunk)
+  , stVegetationChunks :: !(IntMap VegetationChunk)
   }
 
 emptyDataState :: DataState
@@ -76,6 +79,7 @@ emptyDataState = DataState
   , stClimateChunks = IntMap.empty
   , stWeatherChunks = IntMap.empty
   , stRiverChunks = IntMap.empty
+  , stVegetationChunks = IntMap.empty
   }
 
 snapshotData :: DataState -> DataSnapshot
@@ -93,6 +97,7 @@ snapshotTerrain st = TerrainSnapshot
   , tsClimateChunks = stClimateChunks st
   , tsWeatherChunks = stWeatherChunks st
   , tsRiverChunks = stRiverChunks st
+  , tsVegetationChunks = stVegetationChunks st
   }
 
 chunkKey :: ChunkId -> Int
@@ -124,6 +129,7 @@ actor Data
   cast setClimateData :: (Int, [(ChunkId, ClimateChunk)])
   cast setWeatherData :: (Int, [(ChunkId, WeatherChunk)])
   cast setRiverData :: (Int, [(ChunkId, RiverChunk)])
+  cast setVegetationData :: (Int, [(ChunkId, VegetationChunk)])
   cast snapshotAsync :: () reply DataSnapshotReply
   call snapshot :: () -> DataSnapshot
   call terrainSnapshot :: () -> TerrainSnapshot
@@ -156,6 +162,12 @@ actor Data
     _ <- evaluate (IntMap.size m)
     pure st { stChunkSize = size
             , stRiverChunks = m
+            }
+  on_ setVegetationData = \(size, chunks) st -> do
+    let m = IntMap.fromList (map (\(cid, chunk) -> (chunkKey cid, chunk)) chunks)
+    _ <- evaluate (IntMap.size m)
+    pure st { stChunkSize = size
+            , stVegetationChunks = m
             }
   onReply snapshotAsync = \() replyTo st -> do
     replyCast replyTo dataSnapshotTag (snapshotData st)
@@ -198,6 +210,11 @@ setRiverChunkData :: ActorHandle Data (Protocol Data) -> Int -> [(ChunkId, River
 setRiverChunkData handle size chunks =
   cast @"setRiverData" handle #setRiverData (size, chunks)
 
+-- | Send vegetation chunk data to the Data actor.
+setVegetationChunkData :: ActorHandle Data (Protocol Data) -> Int -> [(ChunkId, VegetationChunk)] -> IO ()
+setVegetationChunkData handle size chunks =
+  cast @"setVegetationData" handle #setVegetationData (size, chunks)
+
 getTerrainSnapshot :: ActorHandle Data (Protocol Data) -> IO TerrainSnapshot
 getTerrainSnapshot handle =
   call @"terrainSnapshot" handle #terrainSnapshot ()
@@ -221,6 +238,7 @@ replaceTerrainData handle world = do
   setClimateChunkData handle size (toList (twClimate world))
   setWeatherChunkData handle size (toList (twWeather world))
   setRiverChunkData   handle size (toList (twRivers world))
+  setVegetationChunkData handle size (toList (twVegetation world))
   -- Update the chunk count so dsTerrainChunks matches the IntMap size
   -- and the render pipeline considers the data ready.
   setTerrainChunkCount handle (IntMap.size (twTerrain world))

@@ -19,7 +19,7 @@ import Foreign.C.Types (CFloat, CInt)
 import Linear (V2(..), V4(..))
 import qualified SDL
 import qualified SDL.Raw.Types as Raw
-import Topo (ClimateChunk(..), TerrainChunk(..), WeatherChunk(..), WorldConfig(..))
+import Topo (ClimateChunk(..), TerrainChunk(..), VegetationChunk(..), WeatherChunk(..), WorldConfig(..))
 import UI.RiverRender (RiverGeometry(..))
 import UI.TerrainRender (ChunkGeometry(..), buildChunkGeometry)
 import UI.Widgets (Rect(..))
@@ -56,11 +56,12 @@ buildAtlasTileGeometry
   -> IntMap TerrainChunk
   -> IntMap ClimateChunk
   -> IntMap WeatherChunk
+  -> IntMap VegetationChunk
   -> WorldConfig
   -> Int
   -> [AtlasTileGeometry]
-buildAtlasTileGeometry mode waterLevel terrainChunks climateChunks weatherChunks config scale =
-  let geometryMap = IntMap.mapWithKey (buildChunkGeometry config mode waterLevel climateChunks weatherChunks) terrainChunks
+buildAtlasTileGeometry mode waterLevel terrainChunks climateChunks weatherChunks vegChunks config scale =
+  let geometryMap = IntMap.mapWithKey (buildChunkGeometry config mode waterLevel climateChunks weatherChunks vegChunks) terrainChunks
   in composeTilesFromGeometry geometryMap scale
 
 -- | Compose atlas tiles from a pre-built chunk geometry map.

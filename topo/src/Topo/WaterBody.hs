@@ -97,7 +97,7 @@ data WaterBodyResult = WaterBodyResult
   , wbrBasinId      :: !(U.Vector Word32)
   , wbrDepth        :: !(U.Vector Float)
   , wbrAdjacentType :: !(U.Vector WaterBodyType)
-    -- ^ Per-tile: highest-priority water body type among 4-neighbours.
+    -- ^ Per-tile: highest-priority water body type among 6 hex-neighbours.
     -- For submerged tiles this matches 'wbrType'; for land tiles it is
     -- the most significant adjacent water type.  Priority:
     -- @WaterOcean > WaterInlandSea > WaterLake > WaterDry@.
@@ -226,7 +226,7 @@ classifyWaterBodies cfg waterLevel gridW gridH elev = runST $ do
             else max 0 (surfaceElevOf cid - (elev U.! i))
 
   -- Step 8: compute per-tile adjacent water type.
-  -- For each tile, inspect 4-neighbours and record the highest-priority
+  -- For each tile, inspect all 6 hex-neighbours and record the highest-priority
   -- water body type found.  Priority: Ocean > InlandSea > Lake > Dry.
   -- Submerged tiles get their own classified type.
   let adjacentType = U.generate n $ \i ->
@@ -234,21 +234,15 @@ classifyWaterBodies cfg waterLevel gridW gridH elev = runST $ do
         in if ownType /= WaterDry
            then ownType  -- submerged tile: adjacent type = own type
            else
-             let x = i `mod` gridW
-                 y = i `div` gridW
-                 look ni = resultType U.! ni
+             let look ni = resultType U.! ni
                  wbPriority wbt
                    | wbt == WaterOcean     = 3 :: Int
                    | wbt == WaterInlandSea = 2
                    | wbt == WaterLake      = 1
                    | otherwise             = 0
                  best a b = if wbPriority b > wbPriority a then b else a
-                 acc0 = WaterDry
-                 acc1 = if x > 0         then best acc0 (look (i - 1))     else acc0
-                 acc2 = if x + 1 < gridW then best acc1 (look (i + 1))     else acc1
-                 acc3 = if y > 0         then best acc2 (look (i - gridW)) else acc2
-                 acc4 = if y + 1 < gridH then best acc3 (look (i + gridW)) else acc3
-             in acc4
+             in foldl (\acc ni -> best acc (look ni)) WaterDry
+                      (hexNeighborIndices gridW gridH i)
 
   pure WaterBodyResult
     { wbrType         = resultType

@@ -45,4 +45,4 @@ spec = describe "AtlasResultBroker" $ do
     map abrKey (drained1 <> drained2) `shouldBe` [key, key]
 
 sampleTerrainSnapshot :: TerrainSnapshot
-sampleTerrainSnapshot = TerrainSnapshot 0 0 mempty mempty mempty mempty
+sampleTerrainSnapshot = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty

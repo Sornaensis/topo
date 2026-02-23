@@ -369,7 +369,7 @@ coastalSmoothGrid gridW gridH waterLevel cfg elev
                  -- waterLevel, otherwise flowDirectionsLand treats it
                  -- as ocean and rivers cannot reach the coast.
              in max (waterLevel + 1e-5) (h0 + blend * (nbrMean - h0))
-           else if h0 >= zoneBot && h0 <= waterLevel
+           else if h0 >= zoneBot && h0 < waterLevel
              then
                -- Shallow ocean tile: deposit toward neighbor mean
                -- (raise floor to build continental shelf)

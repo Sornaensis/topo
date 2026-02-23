@@ -435,6 +435,15 @@ data RealVegetationBootstrapConfig = RealVegetationBootstrapConfig
     -- ^ Temperature range for vegetation 0→1 (°C span).  Default: @35.0@.
   , rvbcFertilityBoost   :: !Float
     -- ^ Fertility boost (dimensionless).  Default: @0.50@.
+  , rvbcTempWeight       :: !Float
+    -- ^ Weight of temperature factor in bootstrap blend (dimensionless).
+    -- Default: @0.40@.
+  , rvbcMoistWeight      :: !Float
+    -- ^ Weight of moisture factor in bootstrap blend (dimensionless).
+    -- Default: @0.35@.
+  , rvbcSoilWeight       :: !Float
+    -- ^ Weight of soil factor in bootstrap blend (dimensionless).
+    -- Default: @0.25@.
   , rvbcAlbedoBase       :: !Float
     -- ^ Base albedo (dimensionless).  Default: @0.15@.
   , rvbcAlbedoBare       :: !Float
@@ -446,13 +455,13 @@ data RealVegetationBootstrapConfig = RealVegetationBootstrapConfig
   , rvbcIceAlbedo        :: !Float
     -- ^ Ice albedo (dimensionless).  Default: @0.80@.
   , rvbcMinMoisture      :: !Float
-    -- ^ Minimum moisture factor (dimensionless).  Default: @0.15@.
+    -- ^ Minimum moisture factor (dimensionless).  Default: @0.25@.
   , rvbcCoastalIterations :: !Int
     -- ^ Coastal diffusion iterations.  Default: @30@.
   , rvbcCoastalDiffuse   :: !Float
     -- ^ Coastal diffusion rate (dimensionless).  Default: @0.6@.
   , rvbcCoastalBoost     :: !Float
-    -- ^ Coastal vegetation boost (dimensionless).  Default: @0.20@.
+    -- ^ Coastal vegetation boost (dimensionless).  Default: @0.30@.
   } deriving stock (Show, Eq, Generic)
 
 -- | Default real-world vegetation bootstrap config.
@@ -467,6 +476,9 @@ realToVegetationBootstrapConfig s r = VegetationBootstrapConfig
   { vbcTempMin          = cToNorm s (rvbcTempMin r)
   , vbcTempRange        = rvbcTempRange r / usTempScale s
   , vbcFertilityBoost   = rvbcFertilityBoost r
+  , vbcTempWeight       = rvbcTempWeight r
+  , vbcMoistWeight      = rvbcMoistWeight r
+  , vbcSoilWeight       = rvbcSoilWeight r
   , vbcAlbedoBase       = rvbcAlbedoBase r
   , vbcAlbedoBare       = rvbcAlbedoBare r
   , vbcAlbedoVeg        = rvbcAlbedoVeg r
@@ -485,6 +497,9 @@ vegetationBootstrapConfigToReal s v = RealVegetationBootstrapConfig
   { rvbcTempMin          = normToC s (vbcTempMin v)
   , rvbcTempRange        = vbcTempRange v * usTempScale s
   , rvbcFertilityBoost   = vbcFertilityBoost v
+  , rvbcTempWeight       = vbcTempWeight v
+  , rvbcMoistWeight      = vbcMoistWeight v
+  , rvbcSoilWeight       = vbcSoilWeight v
   , rvbcAlbedoBase       = vbcAlbedoBase v
   , rvbcAlbedoBare       = vbcAlbedoBare v
   , rvbcAlbedoVeg        = vbcAlbedoVeg v

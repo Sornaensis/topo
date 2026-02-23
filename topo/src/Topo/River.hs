@@ -319,7 +319,7 @@ computeRiverSegments cfg gridW gridH flow discharge order elevRouting elevOrig w
           let traceOcean !cur !steps
                 | steps > maxSink = pure False
                 | cur < 0 || cur >= n = pure True   -- boundary exit
-                | elevRouting U.! cur <= waterLevel = pure True  -- reached ocean
+                | elevRouting U.! cur < waterLevel = pure True  -- reached ocean
                 | otherwise =
                     let !next = flow U.! cur
                     in if next < 0

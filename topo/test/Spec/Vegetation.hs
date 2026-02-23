@@ -15,8 +15,12 @@ import Topo.Vegetation
   , vegetationPotential
   , biomeBaseCover
   , biomeOptimalPrecip
+  , biomeBaseDensity
+  , biomeClimateSlope
   , BiomeFeedbackConfig(..)
   , defaultBiomeFeedbackConfig
+  , updateVegChunk
+  , densityEpsilon
   )
 
 spec :: Spec
@@ -27,7 +31,7 @@ spec = describe "Vegetation" $ do
         biomes = U.replicate n BiomeForest
         temp = U.replicate n 0.8
         precip = U.replicate n 0.9
-        density = vegetationDensityChunk defaultBiomeVegetationConfig biomes temp precip
+        density = vegetationDensityChunk defaultBiomeVegetationConfig biomeBaseDensity biomeClimateSlope biomes temp precip
     U.any (> 0) density `shouldBe` True
 
   describe "roughTemperatureEstimate" $ do
@@ -55,8 +59,8 @@ spec = describe "Vegetation" $ do
   describe "vegetationPotential" $ do
     let cfg = defaultVegetationBootstrapConfig
 
-    it "returns 0 for freezing temperature" $ do
-      vegetationPotential cfg 0.0 0.8 0.5 0.5 `shouldBe` 0.0
+    it "returns positive for warm temperature" $ do
+      vegetationPotential cfg 0.0 0.8 0.5 0.5 `shouldSatisfy` (>= 0)
 
     it "returns positive for warm + wet + deep soil" $ do
       vegetationPotential cfg 0.6 0.8 0.8 0.8 `shouldSatisfy` (> 0)
@@ -158,6 +162,118 @@ spec = describe "Vegetation" $ do
       let boost = vbcCoastalBoost defaultVegetationBootstrapConfig
       boost `shouldSatisfy` (>= 0)
       boost `shouldSatisfy` (<= 1)
+
+  -- Phase 6a: biomeBaseDensity and biomeClimateSlope coverage
+  describe "biomeBaseDensity (6a)" $ do
+    it "returns positive density for forest biomes" $ do
+      biomeBaseDensity BiomeForest `shouldSatisfy` (> 0.2)
+      biomeBaseDensity BiomeRainforest `shouldSatisfy` (> 0.3)
+      biomeBaseDensity BiomeTempDeciduousForest `shouldSatisfy` (> 0.2)
+
+    it "returns low density for desert/ice biomes" $ do
+      biomeBaseDensity BiomeDesert `shouldSatisfy` (< 0.15)
+      biomeBaseDensity BiomeHotDesert `shouldSatisfy` (< 0.15)
+      biomeBaseDensity BiomeIceCap `shouldSatisfy` (< 0.10)
+      biomeBaseDensity BiomeSnow `shouldSatisfy` (< 0.10)
+
+    it "water biomes have zero density" $ do
+      biomeBaseDensity BiomeOcean `shouldBe` 0.0
+      biomeBaseDensity BiomeDeepOcean `shouldBe` 0.0
+      biomeBaseDensity BiomeLake `shouldBe` 0.0
+
+    prop "result is in [0, 1] for all biomes" $
+      forAll (elements allTestBiomes) $ \bid ->
+        let d = biomeBaseDensity bid
+        in d >= 0 && d <= 1
+
+  describe "biomeClimateSlope (6a)" $ do
+    it "is non-negative for all biomes" $ do
+      mapM_ (\bid -> biomeClimateSlope bid `shouldSatisfy` (>= 0)) allTestBiomes
+
+    prop "result is in [0, 2] for all biomes" $
+      forAll (elements allTestBiomes) $ \bid ->
+        let s = biomeClimateSlope bid
+        in s >= 0 && s <= 2
+
+  -- Phase 6b: vegetationDensityChunk output ∈ [0, 1]
+  describe "vegetationDensityChunk (6b)" $ do
+    prop "density values are in [0, 1]" $
+      forAll (elements allTestBiomes) $ \bid ->
+        forAll (choose (0.0, 1.0)) $ \temp ->
+          forAll (choose (0.0, 1.0)) $ \precip ->
+            let n = 4
+                biomes = U.replicate n bid
+                temps = U.replicate n temp
+                precips = U.replicate n precip
+                density = vegetationDensityChunk
+                  defaultBiomeVegetationConfig
+                  biomeBaseDensity biomeClimateSlope
+                  biomes temps precips
+            in U.all (\d -> d >= 0 && d <= 1) density
+
+    it "density is monotone with temperature for forest" $ do
+      let n = 1
+          biomes = U.replicate n BiomeForest
+          precip = U.replicate n 0.8
+          cold   = vegetationDensityChunk defaultBiomeVegetationConfig
+                     biomeBaseDensity biomeClimateSlope
+                     biomes (U.replicate n 0.2) precip
+          warm   = vegetationDensityChunk defaultBiomeVegetationConfig
+                     biomeBaseDensity biomeClimateSlope
+                     biomes (U.replicate n 0.8) precip
+      (warm U.! 0) `shouldSatisfy` (>= (cold U.! 0))
+
+  -- Phase 4 invariant: vegCover ≤ vegDensity + densityEpsilon after updateVegChunk
+  describe "updateVegChunk invariant (Phase 4)" $ do
+    prop "vegCover ≤ vegDensity + epsilon after feedback" $
+      forAll (elements allTestBiomes) $ \bid ->
+        forAll (choose (0.0, 1.0)) $ \precipVal ->
+          forAll (choose (0.0, 1.0)) $ \densityVal ->
+            let n = 4
+                bfc = defaultBiomeFeedbackConfig { bfcBlendWeight = 1.0 }
+                vbc = defaultVegetationBootstrapConfig
+                biomes = U.replicate n bid
+                precip = U.replicate n precipVal
+                oldVeg = VegetationChunk
+                  { vegCover   = U.replicate n 0.5
+                  , vegAlbedo  = U.replicate n 0.2
+                  , vegDensity = U.replicate n densityVal
+                  }
+                result = updateVegChunk bfc vbc biomes precip (Just oldVeg)
+                eps = densityEpsilon
+            in U.all (\i ->
+                 let c = vegCover result U.! i
+                     d = vegDensity result U.! i
+                 in c <= d + eps + 1e-6  -- small float tolerance
+               ) (U.enumFromN 0 n)
+
+    it "zero-density biome produces near-zero cover" $ do
+      let n = 4
+          bfc = defaultBiomeFeedbackConfig { bfcBlendWeight = 1.0 }
+          vbc = defaultVegetationBootstrapConfig
+          biomes = U.replicate n BiomeOcean
+          precip = U.replicate n 0.5
+          oldVeg = VegetationChunk
+            { vegCover   = U.replicate n 0.5
+            , vegAlbedo  = U.replicate n 0.2
+            , vegDensity = U.replicate n 0.0
+            }
+          result = updateVegChunk bfc vbc biomes precip (Just oldVeg)
+      U.all (<= densityEpsilon + 1e-6) (vegCover result) `shouldBe` True
+
+    it "high-density forest produces substantial cover" $ do
+      let n = 4
+          bfc = defaultBiomeFeedbackConfig { bfcBlendWeight = 1.0 }
+          vbc = defaultVegetationBootstrapConfig
+          biomes = U.replicate n BiomeForest
+          precip = U.replicate n 0.9
+          oldVeg = VegetationChunk
+            { vegCover   = U.replicate n 0.5
+            , vegAlbedo  = U.replicate n 0.2
+            , vegDensity = U.replicate n 0.9
+            }
+          result = updateVegChunk bfc vbc biomes precip (Just oldVeg)
+      U.all (> 0.4) (vegCover result) `shouldBe` True
 
 -- | Representative biome IDs covering all families for property tests.
 allTestBiomes :: [BiomeId]

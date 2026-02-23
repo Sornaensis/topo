@@ -194,6 +194,7 @@ viewModeLabel mode =
     ViewPlateAge -> "PlateAge"
     ViewPlateHeight -> "PlateHeight"
     ViewPlateVelocity -> "PlateVelocity"
+    ViewVegetation -> "Vegetation"
 
 startGeneration :: UiActionRequest -> IO ()
 startGeneration req = do
@@ -327,8 +328,8 @@ resetConfig req = do
   setUiWeatherTick uiHandle 0.2
   setUiWeatherPhase uiHandle 0
   setUiWeatherAmplitude uiHandle 0.3
-  setUiVegBase uiHandle 0.2
-  setUiVegBoost uiHandle 0.6
+  setUiVegBase uiHandle 0.31
+  setUiVegBoost uiHandle 0.31
   setUiVegTempWeight uiHandle 0.6
   setUiVegPrecipWeight uiHandle 0.4
   setUiPlanetRadius uiHandle 0.3333

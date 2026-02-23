@@ -9,11 +9,11 @@ module UI.TerrainColor
 import Data.Word (Word8, Word16)
 import Linear (V4(..))
 import qualified Data.Vector.Unboxed as U
-import Topo (BiomeId, PlateBoundary, ClimateChunk(..), TerrainChunk(..), WeatherChunk(..), biomeIdToCode, plateBoundaryToCode)
+import Topo (BiomeId, PlateBoundary, ClimateChunk(..), TerrainChunk(..), VegetationChunk(..), WeatherChunk(..), biomeIdToCode, plateBoundaryToCode)
 import Actor.UI (ViewMode(..))
 
-terrainColor :: ViewMode -> Float -> TerrainChunk -> Maybe ClimateChunk -> Maybe WeatherChunk -> Int -> V4 Word8
-terrainColor mode waterLevel chunk climateChunk weatherChunk idx =
+terrainColor :: ViewMode -> Float -> TerrainChunk -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe VegetationChunk -> Int -> V4 Word8
+terrainColor mode waterLevel chunk climateChunk weatherChunk vegChunk idx =
   case mode of
     ViewElevation -> elevationColor waterLevel (tcElevation chunk U.! idx)
     ViewBiome -> paletteById (biomeIdToCode (tcFlags chunk U.! idx))
@@ -31,6 +31,9 @@ terrainColor mode waterLevel chunk climateChunk weatherChunk idx =
     ViewPlateAge -> gradientHeat (tcPlateAge chunk U.! idx)
     ViewPlateHeight -> gradientBlueGreen (tcPlateHeight chunk U.! idx)
     ViewPlateVelocity -> gradientHeat (plateVelocityMag chunk idx)
+    ViewVegetation ->
+      let value = maybe 0 (\v -> vegCover v U.! idx) vegChunk
+      in gradientVegetation value
 
 elevationColor :: Float -> Float -> V4 Word8
 elevationColor waterLevel elev
@@ -66,6 +69,15 @@ gradientMoisture value =
       r = toByte (0.1 + v * 0.2)
       g = toByte (0.3 + v * 0.5)
       b = toByte (0.4 + v * 0.6)
+  in V4 r g b 255
+
+-- | Green gradient for vegetation cover: dark brown (barren) to bright green (full cover).
+gradientVegetation :: Float -> V4 Word8
+gradientVegetation value =
+  let v = clamp01 value
+      r = toByte (0.35 - v * 0.25)
+      g = toByte (0.20 + v * 0.65)
+      b = toByte (0.10 + v * 0.05)
   in V4 r g b 255
 
 paletteById :: Word16 -> V4 Word8

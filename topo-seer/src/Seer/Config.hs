@@ -297,8 +297,8 @@ applyUiConfig ui cfg =
       biome = worldBiome cfg
       veg = bcVegetation biome
       veg' = veg
-        { vcBaseDensity = mapRange 0.02 0.6 (uiVegBase ui)
-        , vcBiomeBoost = mapRange 0.1 1.0 (uiVegBoost ui)
+        { vcDensityScale = mapRange 0.1 3.0 (uiVegBase ui)
+        , vcClimateSlopeScale = mapRange 0.1 3.0 (uiVegBoost ui)
         , vcTempWeight = mapRange 0 1 (uiVegTempWeight ui)
         , vcPrecipWeight = mapRange 0 1 (uiVegPrecipWeight ui)
         }

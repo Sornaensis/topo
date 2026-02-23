@@ -58,6 +58,7 @@ emptyTerrainSnapshot = TerrainSnapshot
   , tsClimateChunks = IntMap.empty
   , tsWeatherChunks = IntMap.empty
   , tsRiverChunks = IntMap.empty
+  , tsVegetationChunks = IntMap.empty
   }
 
 distinctViewModes :: Gen (ViewMode, ViewMode)
@@ -80,6 +81,7 @@ viewModes =
   , ViewPlateAge
   , ViewPlateHeight
   , ViewPlateVelocity
+  , ViewVegetation
   ]
 
 sameTerrainCache :: TerrainCache -> TerrainCache -> Bool

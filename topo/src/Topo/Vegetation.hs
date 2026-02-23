@@ -22,10 +22,15 @@ module Topo.Vegetation
   , updateVegetationFromBiomeStage
   , biomeBaseCover
   , biomeOptimalPrecip
+  -- * Per-biome density lookups (used by vegetationDensityChunk)
+  , biomeBaseDensity
+  , biomeClimateSlope
   -- * Pure per-tile helpers (exported for testing)
   , vegetationPotential
   , vegetationAlbedo
   , roughTemperatureEstimate
+  , updateVegChunk
+  , densityEpsilon
   ) where
 
 import qualified Data.IntMap.Strict as IntMap
@@ -56,6 +61,15 @@ data VegetationBootstrapConfig = VegetationBootstrapConfig
     -- (default 0.50).
   , vbcFertilityBoost :: !Float
     -- ^ Multiplier on fertility in the soil factor (default 0.50).
+  , vbcTempWeight     :: !Float
+    -- ^ Weight of the temperature factor in the bootstrap potential
+    -- blend.  Default: @0.40@.
+  , vbcMoistWeight    :: !Float
+    -- ^ Weight of the moisture factor in the bootstrap potential blend.
+    -- Default: @0.35@.
+  , vbcSoilWeight     :: !Float
+    -- ^ Weight of the soil factor in the bootstrap potential blend.
+    -- Default: @0.25@.
   , vbcAlbedoBase     :: !Float
     -- ^ Base surface albedo term (default 0.15).
   , vbcAlbedoBare     :: !Float
@@ -71,7 +85,7 @@ data VegetationBootstrapConfig = VegetationBootstrapConfig
     -- Interior land tiles far from rivers have near-zero 'tcMoisture'
     -- from flow accumulation; this floor ensures warm lowland tiles
     -- receive some vegetation cover, which in turn enables the climate
-    -- stage's land evapotranspiration to function.  Default: @0.15@.
+    -- stage's land evapotranspiration to function.  Default: @0.25@.
   , vbcCoastalIterations :: !Int
     -- ^ Number of diffusion iterations for the bootstrap coastal
     -- proximity grid.  Higher values spread the influence further
@@ -81,7 +95,7 @@ data VegetationBootstrapConfig = VegetationBootstrapConfig
   , vbcCoastalBoost      :: !Float
     -- ^ Maximum moisture boost from coastal proximity.  Tiles adjacent
     -- to ocean receive the full boost; it decays inland with diffusion.
-    -- Default: @0.20@.
+    -- Default: @0.30@.
   } deriving (Eq, Show, Generic)
 
 instance ToJSON VegetationBootstrapConfig where
@@ -97,15 +111,18 @@ defaultVegetationBootstrapConfig = VegetationBootstrapConfig
   { vbcTempMin        = 0.08
   , vbcTempRange      = 0.50
   , vbcFertilityBoost = 0.50
+  , vbcTempWeight     = 0.40
+  , vbcMoistWeight    = 0.35
+  , vbcSoilWeight     = 0.25
   , vbcAlbedoBase     = 0.15
   , vbcAlbedoBare     = 0.25
   , vbcAlbedoVeg      = 0.10
   , vbcOceanAlbedo    = 0.06
   , vbcIceAlbedo      = 0.80
-  , vbcMinMoisture    = 0.15
+  , vbcMinMoisture    = 0.25
   , vbcCoastalIterations = 30
   , vbcCoastalDiffuse    = 0.6
-  , vbcCoastalBoost      = 0.20
+  , vbcCoastalBoost      = 0.30
   }
 
 ---------------------------------------------------------------------------
@@ -241,7 +258,12 @@ roughTemperatureEstimate insol latDeg tiltExp wl h =
 -- | Vegetation potential from temperature, moisture, soil depth, and
 -- fertility.
 --
--- @V = clamp01 (tempFactor × moistFactor × soilFactor)@
+-- Uses a weighted average of three factors rather than a pure product,
+-- so that a single low factor cannot crush the result to near-zero:
+--
+-- @V = clamp01 (wTemp × tempFactor + wMoist × moistFactor + wSoil × soilFactor)@
+--
+-- The weights are normalised internally so they always sum to 1.
 {-# INLINE vegetationPotential #-}
 vegetationPotential
   :: VegetationBootstrapConfig
@@ -254,7 +276,12 @@ vegetationPotential cfg tEst m sd f =
   let tFac = clamp01 ((tEst - vbcTempMin cfg) / max 0.001 (vbcTempRange cfg))
       mFac = max (vbcMinMoisture cfg) m
       sFac = clamp01 (sd * (1 + vbcFertilityBoost cfg * f))
-  in clamp01 (tFac * mFac * sFac)
+      -- Normalise weights so they sum to 1
+      wt = max 0 (vbcTempWeight cfg)
+      wm = max 0 (vbcMoistWeight cfg)
+      ws = max 0 (vbcSoilWeight cfg)
+      totalW = max 0.001 (wt + wm + ws)
+  in clamp01 ((wt * tFac + wm * mFac + ws * sFac) / totalW)
 
 -- | Surface albedo from vegetation cover.
 --
@@ -346,6 +373,11 @@ updateVegetationFromBiomeStage bfc vbc =
 -- @clamp01(precip / biomeOptimalPrecip(bid))@ so that tiles on the dry
 -- edge of a biome receive proportionally less vegetation cover.
 --
+-- Density-modulated: the resulting cover is further scaled by
+-- @0.5 + 0.5 * vegDensity@ and clamped to @vegDensity + densityEpsilon@,
+-- enforcing the invariant that cover cannot exceed the productivity that
+-- sustains it (see 'VegetationChunk' haddock).
+--
 -- Preserves the existing 'vegDensity' when present; falls back to zero
 -- if no prior vegetation chunk exists.
 updateVegChunk
@@ -358,25 +390,38 @@ updateVegChunk
 updateVegChunk bfc vbc biomeIds precip mbOld =
   let n = U.length biomeIds
       w = clamp01 (bfcBlendWeight bfc)
+      density = case mbOld of
+        Just old | U.length (vegDensity old) == n -> vegDensity old
+        _                                         -> U.replicate n 0
       cover = U.generate n $ \i ->
         let bid = biomeIds U.! i
             p   = if i < U.length precip then precip U.! i else 0.5
             pMod = clamp01 (p / max 0.001 (biomeOptimalPrecip bid))
             biomeCov = biomeBaseCover bid * pMod
+            d = density U.! i
+            -- Scale cover by density: d=0 → 50% of biomeCov, d=1 → 100%
+            densityMod = 0.5 + 0.5 * d
+            modCov = biomeCov * densityMod
+            -- Enforce invariant: cover ≤ density + epsilon
+            cappedCov = min modCov (d + densityEpsilon)
             oldCov   = case mbOld of
               Just old | U.length (vegCover old) > i -> vegCover old U.! i
               _                                      -> 0
-        in clamp01 (w * biomeCov + (1 - w) * oldCov)
+        in clamp01 (w * cappedCov + (1 - w) * oldCov)
       albedo = U.generate n $ \i ->
         vegetationAlbedo vbc (cover U.! i)
-      density = case mbOld of
-        Just old | U.length (vegDensity old) == n -> vegDensity old
-        _                                         -> U.replicate n 0
   in VegetationChunk
       { vegCover   = cover
       , vegAlbedo  = albedo
       , vegDensity = density
       }
+
+-- | Slack for the vegCover ≤ vegDensity + ε invariant.
+--
+-- Allows a small amount of cover beyond density to avoid clipping artefacts
+-- at biome boundaries where density transitions are sharp.
+densityEpsilon :: Float
+densityEpsilon = 0.05
 
 -- | Base vegetation cover expected for each biome family.
 --
@@ -546,6 +591,184 @@ biomeOptimalPrecip bid
   -- Fallback
   | otherwise
   = 0.30
+
+---------------------------------------------------------------------------
+-- Per-biome density lookups (Phase 2)
+---------------------------------------------------------------------------
+
+-- | Intrinsic base vegetation density for each biome family.
+--
+-- This is the density a biome achieves in the absence of any climate
+-- modulation (climate slope contributes on top).  Values are chosen to
+-- match ecological expectations for each biome.
+--
+-- Used by 'Topo.Biome.vegetationDensityChunk'.
+biomeBaseDensity :: BiomeId -> Float
+biomeBaseDensity bid
+  -- Water biomes: no terrestrial vegetation
+  | bid == BiomeOcean || bid == BiomeDeepOcean || bid == BiomeShallowSea
+    || bid == BiomeCoralReef || bid == BiomeLake || bid == BiomeInlandSea
+  = 0.00
+  -- Tropical rainforest: densest terrestrial vegetation
+  | bid == BiomeRainforest || bid == BiomeTropicalRainforest
+  = 0.45
+  -- Temperate / boreal forests
+  | bid == BiomeForest || bid == BiomeTempDeciduousForest
+    || bid == BiomeTempConiferousForest || bid == BiomeMontaneForest
+    || bid == BiomeCloudForest || bid == BiomeTempRainforest
+    || bid == BiomeBorealForest || bid == BiomeFloodplainForest
+  = 0.35
+  -- Tropical seasonal forest
+  | bid == BiomeTropicalSeasonalForest
+  = 0.30
+  -- Tropical dry forest
+  | bid == BiomeTropicalDryForest
+  = 0.25
+  -- Taiga / boreal
+  | bid == BiomeTaiga
+  = 0.25
+  -- Oceanic boreal
+  | bid == BiomeOceanicBoreal
+  = 0.30
+  -- Wetlands
+  | bid == BiomeSwamp || bid == BiomeWetland || bid == BiomeMarsh
+    || bid == BiomeFen || bid == BiomeBog || bid == BiomeBorealBog
+    || bid == BiomeMangrove
+  = 0.28
+  -- Savanna
+  | bid == BiomeSavanna || bid == BiomeWoodlandSavanna
+    || bid == BiomeTropicalSavanna
+  = 0.18
+  -- Grasslands
+  | bid == BiomeGrassland || bid == BiomePrairie
+    || bid == BiomeFloodplainGrassland || bid == BiomeGrasslandSavanna
+  = 0.15
+  -- Coastal vegetated
+  | bid == BiomeCoastal || bid == BiomeCoastalDunes
+    || bid == BiomeSaltMarsh || bid == BiomeEstuary
+    || bid == BiomeRockyShore
+  = 0.10
+  -- Shrubland / Mediterranean
+  | bid == BiomeShrubland || bid == BiomeXericShrubland
+    || bid == BiomeMediterranean || bid == BiomeMoorland
+    || bid == BiomeCoastalScrub
+  = 0.10
+  -- Steppe
+  | bid == BiomeSteppe
+  = 0.06
+  -- Alpine meadow
+  | bid == BiomeAlpine || bid == BiomeAlpineMeadow
+  = 0.05
+  -- Tundra
+  | bid == BiomeTundra || bid == BiomeArcticTundra
+    || bid == BiomeAlpineTundra
+  = 0.03
+  -- Desert
+  | bid == BiomeDesert || bid == BiomeHotDesert || bid == BiomeColdDesert
+    || bid == BiomeRockyDesert || bid == BiomeSandDesert
+    || bid == BiomeSaltFlat || bid == BiomePolarDesert
+  = 0.01
+  -- Fog desert
+  | bid == BiomeFogDesert
+  = 0.02
+  -- Volcanic
+  | bid == BiomeLavaField || bid == BiomeVolcanicAshPlain
+  = 0.01
+  -- Snow / ice
+  | bid == BiomeSnow || bid == BiomeIceCap || bid == BiomeGlacier
+    || bid == BiomeSnowfield || bid == BiomeAlpineScree
+  = 0.00
+  -- Fallback
+  | otherwise
+  = 0.10
+
+-- | Climate slope: how much climate suitability modulates density.
+--
+-- @density = biomeBaseDensity(bid) + biomeClimateSlope(bid) * climate@
+--
+-- High values for climate-sensitive biomes (forests), near-zero for
+-- biomes whose density is dominated by non-climatic factors (deserts,
+-- ice).
+--
+-- Used by 'Topo.Biome.vegetationDensityChunk'.
+biomeClimateSlope :: BiomeId -> Float
+biomeClimateSlope bid
+  -- Water biomes: no modulation
+  | bid == BiomeOcean || bid == BiomeDeepOcean || bid == BiomeShallowSea
+    || bid == BiomeCoralReef || bid == BiomeLake || bid == BiomeInlandSea
+  = 0.00
+  -- Tropical rainforest: highly climate-responsive
+  | bid == BiomeRainforest || bid == BiomeTropicalRainforest
+  = 0.50
+  -- Temperate / boreal forests
+  | bid == BiomeForest || bid == BiomeTempDeciduousForest
+    || bid == BiomeTempConiferousForest || bid == BiomeMontaneForest
+    || bid == BiomeCloudForest || bid == BiomeTempRainforest
+    || bid == BiomeBorealForest || bid == BiomeFloodplainForest
+  = 0.45
+  -- Tropical seasonal forest
+  | bid == BiomeTropicalSeasonalForest
+  = 0.40
+  -- Tropical dry forest
+  | bid == BiomeTropicalDryForest
+  = 0.35
+  -- Taiga / boreal
+  | bid == BiomeTaiga
+  = 0.35
+  -- Oceanic boreal
+  | bid == BiomeOceanicBoreal
+  = 0.40
+  -- Wetlands
+  | bid == BiomeSwamp || bid == BiomeWetland || bid == BiomeMarsh
+    || bid == BiomeFen || bid == BiomeBog || bid == BiomeBorealBog
+    || bid == BiomeMangrove
+  = 0.35
+  -- Savanna
+  | bid == BiomeSavanna || bid == BiomeWoodlandSavanna
+    || bid == BiomeTropicalSavanna
+  = 0.30
+  -- Grasslands
+  | bid == BiomeGrassland || bid == BiomePrairie
+    || bid == BiomeFloodplainGrassland || bid == BiomeGrasslandSavanna
+  = 0.25
+  -- Coastal vegetated
+  | bid == BiomeCoastal || bid == BiomeCoastalDunes
+    || bid == BiomeSaltMarsh || bid == BiomeEstuary
+    || bid == BiomeRockyShore
+  = 0.18
+  -- Shrubland / Mediterranean
+  | bid == BiomeShrubland || bid == BiomeXericShrubland
+    || bid == BiomeMediterranean || bid == BiomeMoorland
+    || bid == BiomeCoastalScrub
+  = 0.20
+  -- Steppe
+  | bid == BiomeSteppe
+  = 0.12
+  -- Alpine meadow
+  | bid == BiomeAlpine || bid == BiomeAlpineMeadow
+  = 0.08
+  -- Tundra
+  | bid == BiomeTundra || bid == BiomeArcticTundra
+    || bid == BiomeAlpineTundra
+  = 0.05
+  -- Desert
+  | bid == BiomeDesert || bid == BiomeHotDesert || bid == BiomeColdDesert
+    || bid == BiomeRockyDesert || bid == BiomeSandDesert
+    || bid == BiomeSaltFlat || bid == BiomePolarDesert
+  = 0.03
+  -- Fog desert
+  | bid == BiomeFogDesert
+  = 0.05
+  -- Volcanic
+  | bid == BiomeLavaField || bid == BiomeVolcanicAshPlain
+  = 0.02
+  -- Snow / ice
+  | bid == BiomeSnow || bid == BiomeIceCap || bid == BiomeGlacier
+    || bid == BiomeSnowfield || bid == BiomeAlpineScree
+  = 0.01
+  -- Fallback
+  | otherwise
+  = 0.15
 
 ---------------------------------------------------------------------------
 -- Bootstrap coastal proximity

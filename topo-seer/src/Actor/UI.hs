@@ -277,6 +277,7 @@ data ViewMode
   | ViewPlateAge
   | ViewPlateHeight
   | ViewPlateVelocity
+  | ViewVegetation
   deriving (Eq, Show)
 
 data ConfigTab

@@ -49,7 +49,7 @@ drawUiOverlay renderer fontCache snapshot terrainSnap layout logFilters (V2 winW
   SDL.fillRect renderer (Just (rectToSDL (logPanelRect layout)))
   SDL.rendererDrawColor renderer SDL.$= V4 45 45 45 235
   SDL.fillRect renderer (Just (rectToSDL (logHeaderRect layout)))
-  drawLogScrollbar renderer logSnap (logBodyRect layout)
+  drawLogScrollbar renderer fontCache logSnap (logBodyRect layout)
   drawLogLines renderer fontCache logSnap (logBodyRect layout)
   drawLogFilters renderer fontCache (lsMinLevel logSnap) logFilters
   drawEscapeMenu renderer fontCache ui layout

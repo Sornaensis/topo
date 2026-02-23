@@ -49,7 +49,7 @@ import qualified SDL
 import Seer.Config (mapIntRange, mapRange)
 import Seer.Config.SliderSpec
 import Seer.World.Persist.Types (WorldSaveManifest(..))
-import Topo (BiomeId, ChunkCoord(..), ChunkId(..), ClimateChunk(..), PlateBoundary(..), TerrainChunk(..), TileCoord(..), TileIndex(..), WeatherChunk(..), WorldConfig(..), biomeDisplayName, chunkCoordFromTile, chunkIdFromCoord, plateBoundaryToCode, tileIndex)
+import Topo (BiomeId, ChunkCoord(..), ChunkId(..), ClimateChunk(..), PlateBoundary(..), TerrainChunk(..), TileCoord(..), TileIndex(..), VegetationChunk(..), WeatherChunk(..), WorldConfig(..), biomeDisplayName, chunkCoordFromTile, chunkIdFromCoord, plateBoundaryToCode, tileIndex)
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), tileLatitude, tileLongitude, formatLatLon)
 import Topo.Units (defaultUnitScales, normToC, normToMetres, normToMmYear, normToRH, normToWindMs, normToSoilM, normSlopeToDeg)
 import UI.Font (FontCache, textSize)
@@ -78,6 +78,7 @@ viewColor mode terrainCount biomeCount =
     ViewPlateAge -> (110, 90 + scale biomeCount, 130)
     ViewPlateHeight -> (90, 120 + scale biomeCount, 150)
     ViewPlateVelocity -> (90, 110 + scale biomeCount, 180)
+    ViewVegetation -> (70, 150 + scale biomeCount, 50)
   where
     scale n = fromIntegral (min 75 (n * 5))
 
@@ -200,7 +201,7 @@ drawLogLines renderer fontCache logSnap (Rect (V2 x y, V2 w h)) = do
       maxOffset = max 0 (total - visibleLines)
       offset = min (lsScroll logSnap) maxOffset
       startIndex = max 0 (total - visibleLines - offset)
-      visible = take visibleLines (drop startIndex entries)
+      visible = reverse (take visibleLines (drop startIndex entries))
       lineWidth = max 0 (contentW - 2 * padding)
   SDL.rendererClipRect renderer SDL.$= Just (rectToSDL (Rect (V2 contentX y, V2 contentW h)))
   sequence_ [ drawLogLine renderer fontCache (contentX + padding) (y + padding + idx * lineHeight) lineWidth (lineHeight - 2) textYOffset entry
@@ -214,10 +215,10 @@ drawLogLine renderer fontCache x y w h textYOffset entry = do
   SDL.fillRect renderer (Just (rectToSDL (Rect (V2 x y, V2 w h))))
   drawTextLine fontCache (V2 (x + 2) (y + textYOffset)) (logTextColor (leLevel entry)) (leMessage entry)
 
-drawLogScrollbar :: SDL.Renderer -> LogSnapshot -> Rect -> IO ()
-drawLogScrollbar renderer logSnap (Rect (V2 x y, V2 w h)) = do
-  let lineHeight = 12
-      padding = 2
+drawLogScrollbar :: SDL.Renderer -> Maybe FontCache -> LogSnapshot -> Rect -> IO ()
+drawLogScrollbar renderer fontCache logSnap (Rect (V2 x y, V2 w h)) = do
+  lineHeight <- logLineHeight fontCache
+  let padding = 2
       totalLines = length (lsEntries logSnap)
       visibleLines = max 1 (h `div` lineHeight)
       maxOffset = max 0 (totalLines - visibleLines)
@@ -2608,7 +2609,9 @@ contextLines ui terrainSnap (q, r) =
       , "Elev   " <> fmtU (normToMetres us (hsElevation s)) "m"
       , "Precip " <> fmtU (normToMmYear us (hsPrecipAvg s)) "mm/yr"
       , "Humid  " <> fmtU (normToRH (hsHumidity s)) "% RH"
-      , "Veg    " <> fmtF (hsFertility s)
+      , "Fert   " <> fmtF (hsFertility s)
+      , "Veg    " <> fmtF (hsVegCover s)
+      , "VDen   " <> fmtF (hsVegDensity s)
       ]
     modeLines ViewClimate      s =
       [ "Temp  " <> fmtU (normToC us (hsTemp s)) "°C"
@@ -2633,6 +2636,12 @@ contextLines ui terrainSnap (q, r) =
       , "Vel Y " <> fmtF (hsPlateVelY s)
       , "Speed " <> fmtF (sqrt (hsPlateVelX s ** 2 + hsPlateVelY s ** 2))
       ]
+    modeLines ViewVegetation     s =
+      [ "VCov  " <> fmtF (hsVegCover s)
+      , "VDen  " <> fmtF (hsVegDensity s)
+      , "Fert  " <> fmtF (hsFertility s)
+      , "Moist " <> fmtU (normToRH (hsMoisture s)) "%"
+      ]
 
     fmtF = Text.pack . formatF
 
@@ -2648,6 +2657,8 @@ data HexSample = HexSample
   , hsTemp           :: !Float
   , hsPrecipAvg      :: !Float
   , hsHumidity       :: !Float
+  , hsVegCover       :: !Float
+  , hsVegDensity     :: !Float
   , hsPlateId        :: !Word16
   , hsPlateBoundary  :: !PlateBoundary
   , hsPlateHardness  :: !Float
@@ -2670,6 +2681,7 @@ sampleAt terrainSnap (q, r)
       tc <- IntMap.lookup key (tsTerrainChunks terrainSnap)
       let climate = IntMap.lookup key (tsClimateChunks terrainSnap)
           weather = IntMap.lookup key (tsWeatherChunks terrainSnap)
+          veg     = IntMap.lookup key (tsVegetationChunks terrainSnap)
       Just HexSample
         { hsChunk          = chunkCoord
         , hsLocal          = local
@@ -2682,6 +2694,8 @@ sampleAt terrainSnap (q, r)
         , hsTemp           = maybe 0 (\c -> ccTempAvg c U.! idx) climate
         , hsPrecipAvg      = maybe 0 (\c -> ccPrecipAvg c U.! idx) climate
         , hsHumidity       = maybe 0 (\w -> wcHumidity w U.! idx) weather
+        , hsVegCover       = maybe 0 (\v -> vegCover v U.! idx) veg
+        , hsVegDensity     = maybe 0 (\v -> vegDensity v U.! idx) veg
         , hsPlateId        = tcPlateId tc U.! idx
         , hsPlateBoundary  = tcPlateBoundary tc U.! idx
         , hsPlateHardness  = tcPlateHardness tc U.! idx

@@ -58,6 +58,7 @@ actor AtlasWorker
         waterLevel = abWaterLevel job
         climateChunks = tsClimateChunks terrainSnap
         weatherChunks = tsWeatherChunks terrainSnap
+        vegChunks = tsVegetationChunks terrainSnap
         chunkPairs = IntMap.toList (tsTerrainChunks terrainSnap)
     -- Build per-chunk geometry in IO, releasing the capability between
     -- each chunk via threadDelay.  Storable vector allocation (pinned
@@ -66,7 +67,7 @@ actor AtlasWorker
     -- removes the green thread entirely, guaranteeing the bound main
     -- thread (render loop) can reclaim its capability.
     geomPairs <- forM chunkPairs $ \(k, chunk) -> do
-      let geom = buildChunkGeometry config mode waterLevel climateChunks weatherChunks k chunk
+      let geom = buildChunkGeometry config mode waterLevel climateChunks weatherChunks vegChunks k chunk
       _ <- evaluate geom
       threadDelay 100  -- 0.1ms, releases capability
       pure (k, geom)

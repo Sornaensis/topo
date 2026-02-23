@@ -1035,16 +1035,41 @@ data GlacierChunk = GlacierChunk
 --
 -- Computed before the climate stage by 'Topo.Vegetation.bootstrapVegetationStage'
 -- so that land evapotranspiration has vegetation cover data to work with.
--- 'vegCover' represents the 0–1 fraction of vegetation coverage; 'vegAlbedo'
--- is the surface albedo (0–1) derived from cover and surface type.
+--
+-- __Semantic contract__:
+--
+-- * @'vegCover'@ — canopy-fraction estimate [0, 1].  Represents the
+--   fraction of ground area concealed by vegetation canopy (0 = barren,
+--   1 = fully closed canopy).  Drives surface albedo and
+--   evapotranspiration.  Initially bootstrapped from temperature,
+--   moisture, and soil depth; updated by biome feedback
+--   ('Topo.Vegetation.updateVegetationFromBiomeStage') which blends
+--   biome-based cover with the previous value and modulates by
+--   @'vegDensity'@.
+--
+-- * @'vegDensity'@ — biomass density / vigour [0, 1].  How productive
+--   the vegetation is — reflects climatic suitability combined with
+--   biome classification.  Computed by
+--   'Topo.BiomeConfig.classifyBiomesStage' via per-biome lookup tables
+--   ('Topo.Vegetation.biomeBaseDensity', 'Topo.Vegetation.biomeClimateSlope').
+--   Will later break into per-strata densities (canopy, shrub, grass,
+--   scrub, moss).
+--
+-- * @'vegAlbedo'@ — surface albedo [0, 1] derived from 'vegCover' and
+--   surface type.  Ocean ≈ 0.06, dense vegetation ≈ 0.12, bare ground
+--   ≈ 0.30, ice ≈ 0.80.
+--
+-- __Invariant__: For any tile, @vegCover ≤ vegDensity + ε@  (coverage
+-- cannot exceed the productivity that sustains it).
 data VegetationChunk = VegetationChunk
   { vegCover   :: !(U.Vector Float)
-    -- ^ 0–1 vegetation cover fraction (0 = barren, 1 = dense canopy).
+    -- ^ 0–1 canopy-fraction estimate (0 = barren, 1 = dense canopy).
+    -- Drives surface albedo via 'vegAlbedo'.
   , vegAlbedo  :: !(U.Vector Float)
     -- ^ 0–1 surface albedo for temperature feedback.
     -- Ocean ≈ 0.06, dense vegetation ≈ 0.12, bare ground ≈ 0.30, ice ≈ 0.80.
   , vegDensity :: !(U.Vector Float)
-    -- ^ 0–1 biome-derived vegetation density.
+    -- ^ 0–1 biome-derived vegetation biomass density / vigour.
     -- Distinct from 'vegCover': density reflects climatic suitability
     -- combined with biome classification, while cover represents the
     -- canopy fraction derived from bootstrap and biome feedback.
@@ -1125,7 +1150,7 @@ data WaterBodyChunk = WaterBodyChunk
   , wbDepth       :: !(U.Vector Float)
     -- ^ Depth below water surface (0 for dry tiles).
   , wbAdjacentType :: !(U.Vector WaterBodyType)
-    -- ^ Highest-priority water body type among this tile's 4-neighbours.
+    -- ^ Highest-priority water body type among this tile's 6 hex-neighbours.
     -- For submerged tiles this equals 'wbType'; for land tiles it is
     -- the most significant adjacent water type with priority:
     -- @WaterOcean > WaterInlandSea > WaterLake > WaterDry@.

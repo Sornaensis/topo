@@ -278,25 +278,28 @@ spec = describe "BiomeRefine" $ do
   -- -----------------------------------------------------------------------
   describe "refineCoastal" $ do
     it "mangrove when hot + wet" $
-      refineCoastal defaultCoastalConfig 0.70 0.60 0.5 0.3 0.5 0.1 `shouldBe` BiomeMangrove
+      refineCoastal defaultCoastalConfig WaterDry 0.70 0.60 0.5 0.3 0.5 0.1 `shouldBe` BiomeMangrove
 
-    it "estuary when high discharge" $
-      refineCoastal defaultCoastalConfig 0.50 0.50 0.5 0.3 0.5 0.40 `shouldBe` BiomeEstuary
+    it "estuary when high discharge + adjacent to ocean" $
+      refineCoastal defaultCoastalConfig WaterOcean 0.50 0.50 0.5 0.3 0.5 0.40 `shouldBe` BiomeEstuary
+
+    it "no estuary when high discharge but NOT adjacent to ocean" $
+      refineCoastal defaultCoastalConfig WaterDry 0.50 0.50 0.5 0.3 0.5 0.40 `shouldNotBe` BiomeEstuary
 
     it "salt marsh when cool + moist" $
-      refineCoastal defaultCoastalConfig 0.45 0.30 0.60 0.3 0.5 0.1 `shouldBe` BiomeSaltMarsh
+      refineCoastal defaultCoastalConfig WaterDry 0.45 0.30 0.60 0.3 0.5 0.1 `shouldBe` BiomeSaltMarsh
 
     it "rocky shore when hard + thin soil" $
-      refineCoastal defaultCoastalConfig 0.50 0.30 0.30 0.70 0.10 0.1 `shouldBe` BiomeRockyShore
+      refineCoastal defaultCoastalConfig WaterDry 0.50 0.30 0.30 0.70 0.10 0.1 `shouldBe` BiomeRockyShore
 
     it "coastal dunes when dry" $
-      refineCoastal defaultCoastalConfig 0.50 0.15 0.20 0.3 0.5 0.1 `shouldBe` BiomeCoastalDunes
+      refineCoastal defaultCoastalConfig WaterDry 0.50 0.15 0.20 0.3 0.5 0.1 `shouldBe` BiomeCoastalDunes
 
     it "coastal scrub when moderate temp + low precip" $
-      refineCoastal defaultCoastalConfig 0.50 0.35 0.30 0.3 0.5 0.1 `shouldBe` BiomeCoastalScrub
+      refineCoastal defaultCoastalConfig WaterDry 0.50 0.35 0.30 0.3 0.5 0.1 `shouldBe` BiomeCoastalScrub
 
     it "fallback to coastal for ambiguous" $
-      refineCoastal defaultCoastalConfig 0.55 0.50 0.40 0.30 0.30 0.1 `shouldBe` BiomeCoastal
+      refineCoastal defaultCoastalConfig WaterDry 0.55 0.50 0.40 0.30 0.30 0.1 `shouldBe` BiomeCoastal
 
   -- -----------------------------------------------------------------------
   -- 3.19.7: refineDesert
