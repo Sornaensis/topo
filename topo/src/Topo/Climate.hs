@@ -20,6 +20,8 @@ module Topo.Climate
   , moistureTransportAccum
   , moistureStepGrid
   , moistureFlowAtGrid
+    -- * Wind internals (for testing)
+  , windDirAtXY
   ) where
 
 import Control.Monad.Reader (asks)
@@ -627,14 +629,73 @@ boundaryTempBiasRaw cfg waterLevel boundary height =
         PlateBoundaryNone       -> 0
   in bias * land
 
+-- | Compute the prevailing wind direction at a global tile.
+--
+-- Uses a three-band Coriolis model that produces realistic:
+--
+-- * __Trade winds__ (0–30° lat): westward + equatorward deflection
+-- * __Westerlies__ (30–60° lat): eastward + poleward deflection
+-- * __Polar easterlies__ (60–90° lat): westward, reduced deflection
+--
+-- The meridional deflection magnitude is controlled by
+-- 'windCoriolisDeflection'.  NH deflects right (positive), SH deflects
+-- left (negative).  Band transitions use a cosine blend over ±5° to
+-- avoid sharp discontinuities.
+--
+-- The final direction is a weighted blend of the Coriolis belt
+-- direction and spatially-coherent noise, controlled by
+-- 'windBeltStrength'.
 windDirAtXY :: Word64 -> LatitudeMapping -> ClimateConfig -> Int -> Int -> Float
 windDirAtXY seed lm cfg gx gy =
   let wnd = ccWind cfg
       noiseDir = noise2D seed (gx + 2000) (gy + 2000) * 6.283185
       latRad = fromIntegral gy * lmRadPerTile lm + lmBiasRad lm
-      belt = sin (latRad * 2 * windBeltHarmonics wnd)
-      beltDir = if belt >= 0 then 0 else pi
+      latDeg = latRad * (180.0 / pi)
+      absLat = abs latDeg
+      hemisphere = if latDeg >= 0 then 1.0 else -1.0
+      deflect = windCoriolisDeflection wnd
+
+      -- Smooth transition weights using cosine blend over ±5°
+      -- tradeFrac: 1.0 at |lat|<25, 0.0 at |lat|>35
+      tradeFrac = smoothBandWeight absLat 25.0 35.0
+      -- westerlyFrac: 1.0 at 35<|lat|<55, blends in/out at edges
+      westerlyFrac = (1.0 - smoothBandWeight absLat 25.0 35.0)
+                   * smoothBandWeight absLat 0.0 55.0
+      -- polarFrac: 1.0 at |lat|>65, 0.0 at |lat|<55
+      polarFrac = 1.0 - smoothBandWeight absLat 55.0 65.0
+
+      -- Trade winds: blow westward (pi) with equatorward deflection
+      tradeDir = pi + hemisphere * deflect
+      -- Westerlies: blow eastward (0) with poleward deflection
+      westerlyDir = 0 + hemisphere * deflect
+      -- Polar easterlies: blow westward (pi) with reduced deflection
+      polarDir = pi + hemisphere * (deflect * 0.7)
+
+      -- Blend the three bands
+      totalW = tradeFrac + westerlyFrac + polarFrac
+      safeW  = max 0.001 totalW
+      beltDir = blendAngle3
+                  tradeDir    (tradeFrac / safeW)
+                  westerlyDir (westerlyFrac / safeW)
+                  polarDir    (polarFrac / safeW)
   in blendAngle noiseDir beltDir (windBeltStrength wnd)
+
+-- | Smooth transition weight for latitude bands.
+-- Returns 1.0 when @absLat < lo@, 0.0 when @absLat > hi@,
+-- and a cosine-smoothed value in between.
+smoothBandWeight :: Float -> Float -> Float -> Float
+smoothBandWeight absLat lo hi
+  | absLat <= lo = 1.0
+  | absLat >= hi = 0.0
+  | otherwise    = let t = (absLat - lo) / (hi - lo)
+                   in 0.5 + 0.5 * cos (t * pi)
+
+-- | Blend three angular directions by weighted vector averaging.
+blendAngle3 :: Float -> Float -> Float -> Float -> Float -> Float -> Float
+blendAngle3 a1 w1 a2 w2 a3 w3 =
+  let !x = w1 * cos a1 + w2 * cos a2 + w3 * cos a3
+      !y = w1 * sin a1 + w2 * sin a2 + w3 * sin a3
+  in atan2 y x
 
 blendAngle :: Float -> Float -> Float -> Float
 blendAngle a b t =
@@ -735,9 +796,12 @@ moistureStepGrid gridW gridH cfg windDir windSpd elev tempGrid
             -- Land ET reinjection (Model E.6): vegetated land tiles inject
             -- moisture from soil/leaf evapotranspiration each iteration,
             -- sustaining the "flying rivers" mechanism.
+            -- Uses moistMinVegFloor to break the cold-start problem:
+            -- even bare land contributes a minimum ET fraction so
+            -- interior moisture can bootstrap vegetation growth.
             landET = if elev U.! i >= waterLevel
                      then moistBaseRecycleRate mst
-                            * (vegCover U.! i)
+                            * max (moistMinVegFloor mst) (vegCover U.! i)
                             * satNormCfg mst (tempGrid U.! i)
                      else 0
             -- ITCZ convergence boost (Model E.5): moisture concentrates

@@ -50,11 +50,11 @@ instance FromJSON TaigaConfig where
 defaultTaigaConfig :: TaigaConfig
 defaultTaigaConfig = TaigaConfig
   { taBorealMinPrecip     = 0.40
-  , taBorealMinTemp       = 0.22
+  , taBorealMinTemp       = 0.354
   , taBogMaxMoisture      = 0.75
-  , taOceanicMaxRange     = 0.15
+  , taOceanicMaxRange     = 0.105
   , taOceanicMinHumidity  = 0.45
-  , taContinentalMinRange = 0.30
+  , taContinentalMinRange = 0.21
   }
 
 -- | Refine a taiga tile into a sub-biome.

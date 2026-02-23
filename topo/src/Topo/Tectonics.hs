@@ -125,8 +125,8 @@ defaultTectonicsConfig = TectonicsConfig
   , tcPlateMergeScale = 0.11
   , tcPlateMergeBias = 0.52
   , tcPlateDetailScale = 0.02
-  , tcPlateDetailStrength = 0.35
-  , tcPlateRidgeStrength = 0.25
+  , tcPlateDetailStrength = 0.20
+  , tcPlateRidgeStrength = 0.15
   , tcPlateBiasStrength = 0.25
   , tcPlateBiasCenter = 0
   , tcPlateBiasEdge = 0
@@ -136,10 +136,18 @@ defaultTectonicsConfig = TectonicsConfig
   , tcBoundaryFadeScale = 1.1
   , tcCenterWeightScale = 1.2
   , tcEdgeWeightScale = 1.2
-  , tcPlateHeightBase = 0.18
-  , tcPlateHeightVariance = 0.85
-  , tcCrustContinentalBias = 0.12
-  , tcCrustOceanicBias = -0.12
+  , tcPlateHeightBase = 0.12
+    -- ^ Base elevation assigned to each plate [0..1].
+    -- Lowered from 0.18 so average continental plates sit closer to sea level.
+  , tcPlateHeightVariance = 0.35
+    -- ^ Random variance range for per-plate elevation.
+    -- Reduced from 0.85 to concentrate land in the lowland band.
+  , tcCrustContinentalBias = 0.18
+    -- ^ Elevation bias for continental crust (positive raises land).
+    -- Widened from 0.12 for clearer continent–ocean transition.
+  , tcCrustOceanicBias = -0.18
+    -- ^ Elevation bias for oceanic crust (negative deepens ocean).
+    -- Widened from -0.12 for clearer continent–ocean transition.
   , tcPlateHardnessBase = 0.45
   , tcPlateHardnessVariance = 0.3
   , tcUplift = 0.15
@@ -181,7 +189,10 @@ applyTectonicsChunk config seed gcfg lm tcfg key chunk =
       plateVelX = U.generate n (plateVelXAt config seed tcfg' origin)
       plateVelY = U.generate n (plateVelYAt config seed tcfg' origin)
       edgeDelta = U.generate n (tectonicDelta config seed tcfg' origin baseHeight)
-      elev' = U.zipWith (+) baseHeight edgeDelta
+      -- Clamp to [0,1] after stacking base height + tectonic delta.
+      -- Raw values routinely exceed this range; downstream stages
+      -- (erosion, hydrology, climate) assume normalised elevation.
+      elev' = U.map clamp01 (U.zipWith (+) baseHeight edgeDelta)
   in chunk
     { tcElevation = elev'
     , tcHardness = U.map clamp01 baseHardness
@@ -440,8 +451,12 @@ plateHeightAt config seed gcfg lm tcfg origin i =
         PlateOceanic -> tcCrustOceanicBias tcfg
       crustBiasScaled = crustBias * (0.5 + 0.5 * centerFade)
       interior = lerp base (base * 0.98) (0.15 * (1 - centerFade) + 0.15 * (1 - boundaryFade))
-      detail = detailRaw * tcPlateDetailStrength tcfg * (0.5 + 0.5 * centerFade)
-      ridge = ridgeRaw * tcPlateRidgeStrength tcfg * (0.4 + 0.6 * boundaryFade)
+      -- Scale detail/ridge noise by distance from sea level:
+      -- coastal/lowland plates get 20% amplitude, mountains get full.
+      -- This keeps plains flat while mountains stay rough.
+      elevAboveSea = clamp01 ((base - 0.5) * 3)
+      detail = detailRaw * tcPlateDetailStrength tcfg * (0.2 + 0.8 * elevAboveSea) * (0.5 + 0.5 * centerFade)
+      ridge = ridgeRaw * tcPlateRidgeStrength tcfg * (0.1 + 0.9 * elevAboveSea) * (0.4 + 0.6 * boundaryFade)
   in interior + detail + ridge + bias + crustBiasScaled
 
 plateHardnessAt :: WorldConfig -> Word64 -> TectonicsConfig -> TileCoord -> Int -> Float

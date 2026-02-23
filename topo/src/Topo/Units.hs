@@ -75,9 +75,9 @@ import GHC.Generics (Generic)
 -- 'defaultUnitScales' for Earth-like defaults.
 data UnitScales = UnitScales
   { usTempScale     :: !Float
-    -- ^ Temperature range in °C.  Default: @70.0@ (maps @[0,1]@ to @[−30,+40]@ °C).
+    -- ^ Temperature range in °C.  Default: @100.0@ (maps @[0,1]@ to @[−50,+50]@ °C).
   , usTempOffset    :: !Float
-    -- ^ Temperature floor in °C.  Default: @−30.0@.
+    -- ^ Temperature floor in °C.  Default: @−50.0@.
   , usElevRange     :: !Float
     -- ^ Full elevation span in metres (norm @0 → 1@).  Default: @12000.0@
     -- (±6 000 m around sea level).
@@ -101,7 +101,7 @@ data UnitScales = UnitScales
 -- | Earth-like default unit scales.
 --
 -- @
--- Temperature:   norm × 70 − 30        → [−30, +40] °C
+-- Temperature:   norm × 100 − 50       → [−50, +50] °C
 -- Elevation:     (norm − 0.5) × 12000  → [−6000, +6000] m
 -- Precipitation: norm × 6000           → [0, 6000] mm\/yr
 -- Humidity:      norm × 100            → [0, 100] % RH
@@ -111,8 +111,8 @@ data UnitScales = UnitScales
 -- @
 defaultUnitScales :: UnitScales
 defaultUnitScales = UnitScales
-  { usTempScale     = 70.0
-  , usTempOffset    = -30.0
+  { usTempScale     = 100.0
+  , usTempOffset    = -50.0
   , usElevRange     = 12000.0
   , usWaterLevel    = 0.5
   , usElevGradient  = 0.574

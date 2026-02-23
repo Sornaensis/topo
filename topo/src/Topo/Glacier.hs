@@ -71,9 +71,9 @@ instance FromJSON GlacierConfig where
 -- | Default glacier configuration.
 defaultGlacierConfig :: GlacierConfig
 defaultGlacierConfig = GlacierConfig
-  { gcSnowTemp = 0.25
-  , gcSnowRange = 0.35
-  , gcMeltTemp = 0.4
+  { gcSnowTemp = 0.375
+  , gcSnowRange = 0.245
+  , gcMeltTemp = 0.48
   , gcMeltRate = 0.2
   , gcAccumScale = 1
   , gcFlowIterations = 3

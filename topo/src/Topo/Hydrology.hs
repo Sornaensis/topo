@@ -39,7 +39,7 @@ import Topo.Hex (hexNeighborIndices)
 import Topo.Pipeline (PipelineStage(..))
 import Control.Monad.Except (throwError)
 import Topo.Plugin (logInfo, getWorldP, putWorldP, PluginError(..))
-import Topo.River (RiverTopologyConfig, defaultRiverTopologyConfig, computeRiverSegments)
+import Topo.River (RiverTopologyConfig(..), defaultRiverTopologyConfig, computeRiverSegments)
 import Topo.TerrainGrid
   ( buildElevationGrid
   , buildHardnessGrid
@@ -99,6 +99,15 @@ data HydroConfig = HydroConfig
     -- ^ Base moisture weight in the moisture blending formula [0..1].
   , hcMoistureFlowWeight :: !Float
     -- ^ Flow-based moisture weight in the moisture blend [0..1].
+  , hcPiedmontSmoothStrength :: !Float
+    -- ^ Blend factor toward neighbor mean in the piedmont zone [0..1].
+    -- Higher values produce wider, smoother foothills aprons.
+  , hcPiedmontSlopeMin :: !Float
+    -- ^ Minimum slope for the piedmont zone (normalised elevation units).
+    -- Tiles with slope below this are flat plains and are not smoothed.
+  , hcPiedmontSlopeMax :: !Float
+    -- ^ Maximum slope for the piedmont zone (normalised elevation units).
+    -- Tiles steeper than this are mountains and are not smoothed.
   , hcMinMoisture :: !Float
     -- ^ Minimum moisture floor for all tiles.
   } deriving (Eq, Show, Generic)
@@ -117,21 +126,24 @@ defaultHydroConfig = HydroConfig
   , hcSinkBreachDepth = 0.02
   , hcBaseAccumulation = 1
   , hcMinAccumulation = 1
-  , hcStreamPowerMaxErosion = 0.05
+  , hcStreamPowerMaxErosion = 0.08
   , hcStreamPowerScale = 0.00005
-  , hcStreamDepositRatio = 0.3
+  , hcStreamDepositRatio = 0.4
   , hcRiverCarveMaxDepth = 0.05
   , hcRiverCarveScale = 0.03
   , hcRiverBankThreshold = 0.35
   , hcRiverBankDepth = 0.01
-  , hcAlluvialMaxSlope = 0.08
-  , hcAlluvialDepositScale = 0.02
+  , hcAlluvialMaxSlope = 0.12
+  , hcAlluvialDepositScale = 0.06
   , hcWetErodeScale = 0.015
-  , hcCoastalErodeStrength = 0.02
-  , hcCoastalRaiseFactor = 0.5
+  , hcCoastalErodeStrength = 0.04
+  , hcCoastalRaiseFactor = 0.6
   , hcHardnessErodeWeight = 0.7
   , hcMoistureBaseWeight = 0.6
   , hcMoistureFlowWeight = 0.7
+  , hcPiedmontSmoothStrength = 0.25
+  , hcPiedmontSlopeMin = 0.03
+  , hcPiedmontSlopeMax = 0.12
   , hcMinMoisture = 1
   }
 
@@ -238,10 +250,22 @@ applyHydrologyStage cfg = PipelineStage "applyHydrology" "applyHydrology" $ do
       elevBanks = riverBankErodeGrid cfg gridW gridH elevCarved acc hardness
       elev2 = applyStreamPowerErosion cfg elevBanks flow acc hardness
       elev3 = coastalErodeGrid cfg gridW gridH elev2 hardness
-      elev4 = alluvialDepositGrid cfg gridW gridH elev3 acc
+      elev3b = piedmontSmoothGrid cfg gridW gridH elev3
+      elev4 = alluvialDepositGrid cfg gridW gridH elev3b acc
       moisture = moistureFromAccumulation cfg elev4 acc
       elev5 = wetErodeGrid cfg gridW gridH elev4 moisture hardness
-      terrain' = IntMap.mapWithKey (updateChunkElevationFromGrid config (ChunkCoord minCx minCy) gridW elev5) terrain
+      -- Floor-clamp: the erosion chain (carve → bank → stream-power →
+      -- coastal → piedmont → alluvial → wet) can push land tiles at or
+      -- below waterLevel, creating inland "puddles".  flowDirectionsLand
+      -- treats these as terminal sinks, so rivers terminate there
+      -- instead of reaching the coast.  Clamp any originally-land tile
+      -- that erosion pushed at-or-below waterLevel back to just above.
+      wl = hcWaterLevel cfg
+      elevFinal = U.imap (\i h ->
+        if elev0 U.! i > wl && h <= wl
+          then wl + 1e-5
+          else h) elev5
+      terrain' = IntMap.mapWithKey (updateChunkElevationFromGrid config (ChunkCoord minCx minCy) gridW elevFinal) terrain
       terrain'' = IntMap.mapWithKey (updateChunkMoistureFromGrid config (ChunkCoord minCx minCy) gridW moisture) terrain'
   putWorldP world { twTerrain = terrain'' }
 
@@ -250,12 +274,16 @@ applyHydrologyStage cfg = PipelineStage "applyHydrology" "applyHydrology" $ do
 -- The water level parameter is the global sea-level threshold used for
 -- flow sinks during river routing.  It is typically sourced from
 -- 'hcWaterLevel' via the pipeline orchestrator.
+--
+-- A 'RiverTopologyConfig' controls segment extraction parameters
+-- (discharge thresholds, network pruning, ocean-reachability, etc.).
 applyRiverStage
   :: RiverConfig
+  -> RiverTopologyConfig
   -> GroundwaterConfig
   -> Float          -- ^ Water level (from 'HydroConfig')
   -> PipelineStage
-applyRiverStage riverCfg gwCfg waterLevel = PipelineStage "applyRivers" "applyRivers" $ do
+applyRiverStage riverCfg topoCfg gwCfg waterLevel = PipelineStage "applyRivers" "applyRivers" $ do
   logInfo "applyRivers: routing rivers + groundwater"
   world <- getWorldP
   let config = twConfig world
@@ -272,18 +300,18 @@ applyRiverStage riverCfg gwCfg waterLevel = PipelineStage "applyRivers" "applyRi
       moisture = buildMoistureGrid config terrain (ChunkCoord minCx minCy) gridW gridH
       wl = waterLevel
       -- Fill depressions for routing so rivers follow connected drainage
-      -- paths to the sea (or large lake).  The filled surface is used
-      -- ONLY for flow direction and accumulation; all other calculations
-      -- (segments, potentials, Strahler order) use the actual terrain
-      -- (elev0) so rivers render consistently with visible topography.
-      elevFilled = fillDepressions wl gridW gridH elev0
+      -- paths to the sea (or large lake).  Pre-breach single-tile sinks
+      -- first (Phase E.2) to reduce the number of epsilon-gradient flat
+      -- zones that fillDepressions would otherwise create.
+      elevBreached = breachSinksLand wl 0.02 gridW gridH elev0
+      elevFilled = fillDepressions wl gridW gridH elevBreached
       flow = flowDirectionsLand wl gridW gridH elevFilled
       acc = flowAccumulationWithBase (rcBaseAccumulation riverCfg) elevFilled flow
       basinIds = basinIdsFromFlow flow
       basinStats = basinRechargeStats basinIds moisture gwCfg
       (basinStorage, basinDischarge, basinSize) = basinStorageStats basinStats gwCfg
       baseflow = basinBaseflow basinIds basinDischarge basinSize (rcBaseflowScale riverCfg)
-      riverOrder = strahlerOrder gridW gridH elev0 flow acc (rcOrderMinAccumulation riverCfg)
+      riverOrder = strahlerOrder gridW gridH elevFilled flow acc (rcOrderMinAccumulation riverCfg)
       discharge = U.zipWith (+) (U.map (* rcDischargeScale riverCfg) acc) baseflow
       depth = riverDepthWithHardness acc hardness riverCfg
       erosionPotential = riverErosionPotential gridW gridH elev0 acc hardness riverCfg
@@ -305,7 +333,7 @@ applyRiverStage riverCfg gwCfg waterLevel = PipelineStage "applyRivers" "applyRi
         , rcSegOrder = segOrd
         }
       (segOffsets, segEntry, segExit, segDisc, segOrd) =
-        computeRiverSegments defaultRiverTopologyConfig gridW gridH flow discharge riverOrder elev0 wl
+        computeRiverSegments topoCfg gridW gridH flow discharge riverOrder elevFilled elev0 wl
       groundwater = GroundwaterChunk
         { gwStorage = basinPerTile basinIds basinStorage basinSize
         , gwRecharge = U.map (* gwRechargeScale gwCfg) (U.map clamp01 moisture)
@@ -314,7 +342,14 @@ applyRiverStage riverCfg gwCfg waterLevel = PipelineStage "applyRivers" "applyRi
         }
       rivers' = IntMap.mapWithKey (sliceRiverChunk config (ChunkCoord minCx minCy) gridW rivers) terrain
       groundwater' = IntMap.mapWithKey (sliceGroundwaterChunk config (ChunkCoord minCx minCy) gridW groundwater) terrain
-  putWorldP world { twRivers = rivers', twGroundwater = groundwater' }
+      -- Create lakes at inland depressions where rivers terminate.
+      -- Uses the river discharge threshold: any land sink receiving at
+      -- least rtMinDischarge worth of flow becomes a lake.
+      elevWithLakes = createRiverLakes wl (rtMinDischarge topoCfg) 4 gridW gridH elev0 flow discharge
+      terrain' = IntMap.mapWithKey (updateChunkElevationFromGrid config (ChunkCoord minCx minCy) gridW elevWithLakes) terrain
+      rivers'' = IntMap.mapWithKey (sliceRiverChunk config (ChunkCoord minCx minCy) gridW rivers) terrain'
+      groundwater'' = IntMap.mapWithKey (sliceGroundwaterChunk config (ChunkCoord minCx minCy) gridW groundwater) terrain'
+  putWorldP world { twTerrain = terrain', twRivers = rivers'', twGroundwater = groundwater'' }
 
 breachSinks :: HydroConfig -> Int -> Int -> U.Vector Float -> U.Vector Float
 breachSinks cfg gridW gridH elev =
@@ -331,6 +366,13 @@ breachSinks cfg gridW gridH elev =
 -- same algorithm as 'breachSinks' but parameterised directly instead of
 -- pulling fields from a 'HydroConfig', so it can be used by the river
 -- stage without constructing a full 'HydroConfig'.
+--
+-- The breached elevation is floor-clamped at @waterLevel + 1e-5@ so that
+-- tiles near sea level (e.g. those placed by the post-erosion clamp at
+-- @waterLevel + 1e-5@) are never pushed below @waterLevel@.  Without this,
+-- 'fillDepressions' would treat the newly-submerged tile as a seed and
+-- 'flowDirectionsLand' would mark it as a terminal sink, causing rivers
+-- to display inland delta fans on tiles that still render as land.
 breachSinksLand
   :: Float          -- ^ waterLevel
   -> Float          -- ^ breachDepth
@@ -342,7 +384,11 @@ breachSinksLand waterLevel breachDepth gridW gridH elev =
     let !h0   = elev U.! i
         !hmin = neighborMin gridW gridH elev i
         isSink = hmin >= h0
-    in if isSink && h0 > waterLevel then h0 - breachDepth else h0
+        -- Floor: never breach below waterLevel.
+        !floor = waterLevel + 1e-5
+    in if isSink && h0 > waterLevel
+       then max floor (h0 - breachDepth)
+       else h0
 
 -- | Fill land depressions using priority-flood so every land tile has a
 -- monotonic flow path to the ocean (or grid boundary).
@@ -369,10 +415,11 @@ fillDepressions
   -> U.Vector Float
 fillDepressions waterLevel gridW gridH elev = runST $ do
   let !n = gridW * gridH
-      -- Tiny elevation increment to maintain strict monotonic gradient
-      -- through filled areas.  Must be small enough not to distort
-      -- terrain but large enough to break ties in flow routing.
-      eps = 1e-5 :: Float
+      -- Elevation increment to maintain strict monotonic gradient
+      -- through filled areas.  Must be larger than rtMinSlope (5e-5) so
+      -- that depression-filled zones produce visible river segments,
+      -- yet small enough not to distort terrain visually.
+      eps = 1e-4 :: Float
   filled  <- U.thaw elev
   visited <- UM.replicate n False
 
@@ -452,6 +499,172 @@ breachRemainingSinks waterLevel gridW gridH elev =
              else h0
     ) elev
 
+-- | Expand inland depressions that receive river discharge into proper
+-- lakes.
+--
+-- After flow routing, submerged tiles (@elev ≤ waterLevel@) that are not
+-- connected to the grid boundary form inland depressions.  When rivers
+-- drain into such depressions but the submerged area is too small to be
+-- classified as a lake by 'Topo.WaterBody' (< @minLakeSize@ tiles), the
+-- river appears to terminate on dry land — an inland delta artifact.
+--
+-- This function:
+--
+--  1. Computes an ocean mask (boundary-connected submerged tiles via BFS).
+--  2. Groups remaining inland submerged tiles into connected components.
+--  3. For each inland component that receives significant river discharge
+--     (any adjacent land tile has @discharge ≥ minDischarge@ flowing
+--     into the component), expands the basin by lowering the cheapest
+--     adjacent land tiles to just below @waterLevel@ until the basin
+--     reaches @minLakeSize@ tiles.
+--
+-- Returns the modified elevation grid.  Only tiles that need lowering
+-- to form lakes are changed; everything else is untouched.
+createRiverLakes
+  :: Float          -- ^ waterLevel
+  -> Float          -- ^ minDischarge — minimum river discharge to trigger lake
+  -> Int            -- ^ minLakeSize — expand basins to at least this many tiles
+  -> Int -> Int     -- ^ gridW, gridH
+  -> U.Vector Float -- ^ elevation grid (post-erosion)
+  -> U.Vector Int   -- ^ flow directions (-1 = sink)
+  -> U.Vector Float -- ^ discharge per tile
+  -> U.Vector Float -- ^ modified elevation with lake beds
+createRiverLakes waterLevel minDischarge minLakeSize gridW gridH elev flow discharge = runST $ do
+  let !n = gridW * gridH
+
+  -- Step 1: Ocean mask — BFS from boundary submerged tiles.
+  oceanMask <- UM.replicate n False
+  do
+    queue <- UM.replicate n (0 :: Int)
+    headR <- UM.replicate 1 (0 :: Int)
+    tailR <- UM.replicate 1 (0 :: Int)
+    let enqueue v = do
+          t <- UM.read tailR 0
+          UM.write queue t v
+          UM.write tailR 0 (t + 1)
+        dequeue = do
+          h <- UM.read headR 0
+          t <- UM.read tailR 0
+          if h >= t then pure Nothing
+          else do
+            v <- UM.read queue h
+            UM.write headR 0 (h + 1)
+            pure (Just v)
+    -- Seed: boundary tiles that are submerged
+    forM_ [0 .. n - 1] $ \i -> do
+      let !x = i `mod` gridW
+          !y = i `div` gridW
+          onBoundary = x == 0 || x == gridW - 1
+                    || y == 0 || y == gridH - 1
+      when (onBoundary && elev U.! i <= waterLevel) $ do
+        UM.write oceanMask i True
+        enqueue i
+    -- Flood through hex-connected submerged tiles
+    let bfsLoop = do
+          mi <- dequeue
+          case mi of
+            Nothing -> pure ()
+            Just cur -> do
+              forM_ (hexNeighborIndices gridW gridH cur) $ \ni -> do
+                vis <- UM.read oceanMask ni
+                when (not vis && elev U.! ni <= waterLevel) $ do
+                  UM.write oceanMask ni True
+                  enqueue ni
+              bfsLoop
+    bfsLoop
+
+  -- Step 2: Find inland submerged components via flood-fill.
+  compId <- UM.replicate n (-1 :: Int)
+  nextLabel <- UM.replicate 1 (0 :: Int)
+  -- Reuse a stack buffer for flood fill
+  stackBuf <- UM.replicate n (0 :: Int)
+
+  forM_ [0 .. n - 1] $ \i -> do
+    isOcean <- UM.read oceanMask i
+    cid <- UM.read compId i
+    when (not isOcean && elev U.! i <= waterLevel && cid < 0) $ do
+      label <- UM.read nextLabel 0
+      UM.write nextLabel 0 (label + 1)
+      -- Flood-fill this inland component
+      UM.write compId i label
+      UM.write stackBuf 0 i
+      let fillLoop !top
+            | top < 0 = pure ()
+            | otherwise = do
+                cur <- UM.read stackBuf top
+                let top' = top - 1
+                foldM (\t ni -> do
+                  isO <- UM.read oceanMask ni
+                  c <- UM.read compId ni
+                  if not isO && elev U.! ni <= waterLevel && c < 0
+                    then do
+                      UM.write compId ni label
+                      let t' = t + 1
+                      UM.write stackBuf t' ni
+                      pure t'
+                    else pure t
+                  ) top' (hexNeighborIndices gridW gridH cur) >>= fillLoop
+      fillLoop 0
+
+  numLabels <- UM.read nextLabel 0
+
+  -- Step 3: Compute per-component stats: size and whether it receives
+  -- river discharge.
+  compSize <- UM.replicate (max 1 numLabels) (0 :: Int)
+  compFed  <- UM.replicate (max 1 numLabels) False
+
+  frozenCompId <- U.freeze compId
+  forM_ [0 .. n - 1] $ \i -> do
+    let cid = frozenCompId U.! i
+    when (cid >= 0) $ do
+      UM.modify compSize (+ 1) cid
+      -- Check if any hex-neighbour is a land tile with significant
+      -- discharge flowing INTO this submerged component.
+      let hasRiverInflow = any (\ni ->
+            elev U.! ni > waterLevel          -- neighbour is land
+            && flow U.! ni == i               -- flows into this tile
+            && discharge U.! ni >= minDischarge  -- significant discharge
+            ) (hexNeighborIndices gridW gridH i)
+      when hasRiverInflow $ UM.write compFed cid True
+
+  -- Step 4: For each river-fed inland component that is too small,
+  -- expand by lowering the cheapest adjacent land tiles.
+  result <- U.thaw elev
+
+  forM_ [0 .. numLabels - 1] $ \cid -> do
+    sz <- UM.read compSize cid
+    fed <- UM.read compFed cid
+    when (fed && sz < minLakeSize) $ do
+      -- Gather the ring of land tiles adjacent to this component,
+      -- sorted by elevation (lowest first).  Lower them to just below
+      -- waterLevel until the component is large enough.
+      let candidates = Set.fromList
+            [ (elev U.! ni, ni)
+            | i <- [0 .. n - 1]
+            , frozenCompId U.! i == cid
+            , ni <- hexNeighborIndices gridW gridH i
+            , elev U.! ni > waterLevel
+            , frozenCompId U.! ni < 0   -- not already in a component
+            ]
+      let expandLoop !curSz !frontier
+            | curSz >= minLakeSize = pure ()
+            | Set.null frontier    = pure ()
+            | otherwise = do
+                let !((_h, idx), frontier') = Set.deleteFindMin frontier
+                UM.write result idx (waterLevel - 1e-4)
+                -- Add this tile's land neighbours to the frontier
+                let newCandidates =
+                      [ (elev U.! ni, ni)
+                      | ni <- hexNeighborIndices gridW gridH idx
+                      , elev U.! ni > waterLevel
+                      , frozenCompId U.! ni < 0
+                      ]
+                expandLoop (curSz + 1)
+                  (foldl (\s p -> Set.insert p s) frontier' newCandidates)
+      expandLoop sz candidates
+
+  U.freeze result
+
 -- | Minimum elevation among a tile's 6 hex neighbours (and itself).
 neighborMin :: Int -> Int -> U.Vector Float -> Int -> Float
 neighborMin gridW gridH elev i =
@@ -475,10 +688,11 @@ flowDirections gridW gridH elev =
     minimumByElevation = foldl1 (\a b -> if snd a <= snd b then a else b)
 
 -- | Like 'flowDirections' but treats submerged tiles (elevation ≤ waterLevel)
--- as terminal sinks.  Flow from a land tile never enters an ocean tile, and
--- submerged tiles themselves receive flow direction @-1@.  This confines
--- flow accumulation to the land surface so that river discharge totals
--- reflect continental drainage rather than ocean-floor topology.
+-- as terminal sinks.  Submerged tiles always receive flow direction @-1@;
+-- land tiles may flow into submerged neighbours as terminal sinks (river
+-- mouths).  This confines flow /accumulation/ to the land surface so that
+-- river discharge totals reflect continental drainage rather than
+-- ocean-floor topology.
 -- Uses all 6 hex neighbours.
 flowDirectionsLand :: Float -> Int -> Int -> U.Vector Float -> U.Vector Int
 flowDirectionsLand waterLevel gridW gridH elev =
@@ -630,6 +844,49 @@ coastalAt cfg gridW gridH waterLevel strength raiseFactor elev hardness i =
       else if h0 < waterLevel && anyLand
         then h0 + max 0 raise
         else h0
+
+-- | Smooth the piedmont (foothills) transition zone.
+--
+-- Identifies land tiles in the moderate-slope band between
+-- @hcPiedmontSlopeMin@ and @hcPiedmontSlopeMax@, then blends their
+-- elevation toward the mean of their hex neighbours.  This creates
+-- natural bajadas and pediments at mountain bases where talus
+-- and alluvial fans smooth the mountain-to-plain transition.
+--
+-- Tiles outside the slope band or below sea level are untouched.
+piedmontSmoothGrid
+  :: HydroConfig
+  -> Int            -- ^ Grid width
+  -> Int            -- ^ Grid height
+  -> U.Vector Float -- ^ Elevation grid
+  -> U.Vector Float -- ^ Smoothed elevation grid
+piedmontSmoothGrid cfg gridW gridH elev =
+  let !slopeMin  = hcPiedmontSlopeMin cfg
+      !slopeMax  = hcPiedmontSlopeMax cfg
+      !strength  = hcPiedmontSmoothStrength cfg
+      !wl        = hcWaterLevel cfg
+  in U.generate (U.length elev) $ \i ->
+       let h0   = elev U.! i
+           nbrs = hexNeighborIndices gridW gridH i
+       in case nbrs of
+            [] -> h0
+            _  ->
+              let slope = maximum [abs (elev U.! j - h0) | j <- nbrs]
+                  -- Determine whether any neighbour is significantly steeper
+                  -- (mountain above this tile).  True piedmont tiles sit at
+                  -- the base of mountain slopes.
+                  hasSteeperNbr = any (\j ->
+                    let nSlope = maximum [abs (elev U.! k - elev U.! j)
+                                        | k <- hexNeighborIndices gridW gridH j]
+                    in nSlope > slopeMax) nbrs
+                  nbrMean = sum (map (elev U.!) nbrs) / fromIntegral (length nbrs)
+                  -- Smoothstep blend factor: 0 at slopeMin, 1 at slopeMax
+                  t = clamp01 ((slope - slopeMin) / max 1e-6 (slopeMax - slopeMin))
+                  -- Stronger smoothing in the middle of the band
+                  blend = strength * t * (1 - t) * 4
+              in if h0 > wl && slope >= slopeMin && slope <= slopeMax && hasSteeperNbr
+                   then h0 + blend * (nbrMean - h0)
+                   else h0
 
 moistureFromAccumulation :: HydroConfig -> U.Vector Float -> U.Vector Float -> U.Vector Float
 moistureFromAccumulation cfg elev acc =

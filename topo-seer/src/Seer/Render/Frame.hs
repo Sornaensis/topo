@@ -128,6 +128,45 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
       configErosionMaxDropMinus = configErosionMaxDropMinusRect layout
       configErosionMaxDropPlus = configErosionMaxDropPlusRect layout
       configErosionMaxDropBar = configErosionMaxDropBarRect layout
+      configErosionHydDepositMinus = configErosionHydDepositMinusRect layout
+      configErosionHydDepositPlus = configErosionHydDepositPlusRect layout
+      configErosionHydDepositBar = configErosionHydDepositBarRect layout
+      configErosionDepositSlopeMinus = configErosionDepositSlopeMinusRect layout
+      configErosionDepositSlopePlus = configErosionDepositSlopePlusRect layout
+      configErosionDepositSlopeBar = configErosionDepositSlopeBarRect layout
+      configErosionThermDepositMinus = configErosionThermDepositMinusRect layout
+      configErosionThermDepositPlus = configErosionThermDepositPlusRect layout
+      configErosionThermDepositBar = configErosionThermDepositBarRect layout
+      configErosionCoastZoneMinus = configErosionCoastZoneMinusRect layout
+      configErosionCoastZonePlus = configErosionCoastZonePlusRect layout
+      configErosionCoastZoneBar = configErosionCoastZoneBarRect layout
+      configErosionCoastStrengthMinus = configErosionCoastStrengthMinusRect layout
+      configErosionCoastStrengthPlus = configErosionCoastStrengthPlusRect layout
+      configErosionCoastStrengthBar = configErosionCoastStrengthBarRect layout
+      configErosionCoastIterMinus = configErosionCoastIterMinusRect layout
+      configErosionCoastIterPlus = configErosionCoastIterPlusRect layout
+      configErosionCoastIterBar = configErosionCoastIterBarRect layout
+      configHypsometryEnabledMinus = configHypsometryEnabledMinusRect layout
+      configHypsometryEnabledPlus = configHypsometryEnabledPlusRect layout
+      configHypsometryEnabledBar = configHypsometryEnabledBarRect layout
+      configHypsometryLowlandExpMinus = configHypsometryLowlandExpMinusRect layout
+      configHypsometryLowlandExpPlus = configHypsometryLowlandExpPlusRect layout
+      configHypsometryLowlandExpBar = configHypsometryLowlandExpBarRect layout
+      configHypsometryHighlandExpMinus = configHypsometryHighlandExpMinusRect layout
+      configHypsometryHighlandExpPlus = configHypsometryHighlandExpPlusRect layout
+      configHypsometryHighlandExpBar = configHypsometryHighlandExpBarRect layout
+      configHypsometryPlateauBreakMinus = configHypsometryPlateauBreakMinusRect layout
+      configHypsometryPlateauBreakPlus = configHypsometryPlateauBreakPlusRect layout
+      configHypsometryPlateauBreakBar = configHypsometryPlateauBreakBarRect layout
+      configHypsometryOceanExpMinus = configHypsometryOceanExpMinusRect layout
+      configHypsometryOceanExpPlus = configHypsometryOceanExpPlusRect layout
+      configHypsometryOceanExpBar = configHypsometryOceanExpBarRect layout
+      configHypsometryCoastalRampWidthMinus = configHypsometryCoastalRampWidthMinusRect layout
+      configHypsometryCoastalRampWidthPlus = configHypsometryCoastalRampWidthPlusRect layout
+      configHypsometryCoastalRampWidthBar = configHypsometryCoastalRampWidthBarRect layout
+      configHypsometryCoastalRampStrMinus = configHypsometryCoastalRampStrMinusRect layout
+      configHypsometryCoastalRampStrPlus = configHypsometryCoastalRampStrPlusRect layout
+      configHypsometryCoastalRampStrBar = configHypsometryCoastalRampStrBarRect layout
       configGlacierSnowTempMinus = configGlacierSnowTempMinusRect layout
       configGlacierSnowTempPlus = configGlacierSnowTempPlusRect layout
       configGlacierSnowTempBar = configGlacierSnowTempBarRect layout
@@ -512,6 +551,21 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
       configBndPrecipTransformMinus = configBndPrecipTransformMinusRect layout
       configBndPrecipTransformPlus = configBndPrecipTransformPlusRect layout
       configBndPrecipTransformBar = configBndPrecipTransformBarRect layout
+      configPiedmontSmoothMinus = configPiedmontSmoothMinusRect layout
+      configPiedmontSmoothPlus = configPiedmontSmoothPlusRect layout
+      configPiedmontSmoothBar = configPiedmontSmoothBarRect layout
+      configPiedmontSlopeMinMinus = configPiedmontSlopeMinMinusRect layout
+      configPiedmontSlopeMinPlus = configPiedmontSlopeMinPlusRect layout
+      configPiedmontSlopeMinBar = configPiedmontSlopeMinBarRect layout
+      configPiedmontSlopeMaxMinus = configPiedmontSlopeMaxMinusRect layout
+      configPiedmontSlopeMaxPlus = configPiedmontSlopeMaxPlusRect layout
+      configPiedmontSlopeMaxBar = configPiedmontSlopeMaxBarRect layout
+      configWindCoriolisDeflectionMinus = configWindCoriolisDeflectionMinusRect layout
+      configWindCoriolisDeflectionPlus = configWindCoriolisDeflectionPlusRect layout
+      configWindCoriolisDeflectionBar = configWindCoriolisDeflectionBarRect layout
+      configMoistMinVegFloorMinus = configMoistMinVegFloorMinusRect layout
+      configMoistMinVegFloorPlus = configMoistMinVegFloorPlusRect layout
+      configMoistMinVegFloorBar = configMoistMinVegFloorBarRect layout
       configGenScaleMinus = configGenScaleMinusRect layout
       configGenScalePlus = configGenScalePlusRect layout
       configGenScaleBar = configGenScaleBarRect layout
@@ -868,6 +922,11 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
         (configBndPrecipConvergentMinus, configBndPrecipConvergentBar, configBndPrecipConvergentPlus)
         (configBndPrecipDivergentMinus, configBndPrecipDivergentBar, configBndPrecipDivergentPlus)
         (configBndPrecipTransformMinus, configBndPrecipTransformBar, configBndPrecipTransformPlus)
+        (configPiedmontSmoothMinus, configPiedmontSmoothBar, configPiedmontSmoothPlus)
+        (configPiedmontSlopeMinMinus, configPiedmontSlopeMinBar, configPiedmontSlopeMinPlus)
+        (configPiedmontSlopeMaxMinus, configPiedmontSlopeMaxBar, configPiedmontSlopeMaxPlus)
+        (configWindCoriolisDeflectionMinus, configWindCoriolisDeflectionBar, configWindCoriolisDeflectionPlus)
+        (configMoistMinVegFloorMinus, configMoistMinVegFloorBar, configMoistMinVegFloorPlus)
         (configGenScaleMinus, configGenScaleBar, configGenScalePlus)
         (configGenCoordScaleMinus, configGenCoordScaleBar, configGenCoordScalePlus)
         (configGenOffsetXMinus, configGenOffsetXBar, configGenOffsetXPlus)
@@ -926,6 +985,19 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
         (configErosionRainRateMinus, configErosionRainRateBar, configErosionRainRatePlus)
         (configErosionTalusMinus, configErosionTalusBar, configErosionTalusPlus)
         (configErosionMaxDropMinus, configErosionMaxDropBar, configErosionMaxDropPlus)
+        (configErosionHydDepositMinus, configErosionHydDepositBar, configErosionHydDepositPlus)
+        (configErosionDepositSlopeMinus, configErosionDepositSlopeBar, configErosionDepositSlopePlus)
+        (configErosionThermDepositMinus, configErosionThermDepositBar, configErosionThermDepositPlus)
+        (configErosionCoastZoneMinus, configErosionCoastZoneBar, configErosionCoastZonePlus)
+        (configErosionCoastStrengthMinus, configErosionCoastStrengthBar, configErosionCoastStrengthPlus)
+        (configErosionCoastIterMinus, configErosionCoastIterBar, configErosionCoastIterPlus)
+        (configHypsometryEnabledMinus, configHypsometryEnabledBar, configHypsometryEnabledPlus)
+        (configHypsometryLowlandExpMinus, configHypsometryLowlandExpBar, configHypsometryLowlandExpPlus)
+        (configHypsometryHighlandExpMinus, configHypsometryHighlandExpBar, configHypsometryHighlandExpPlus)
+        (configHypsometryPlateauBreakMinus, configHypsometryPlateauBreakBar, configHypsometryPlateauBreakPlus)
+        (configHypsometryOceanExpMinus, configHypsometryOceanExpBar, configHypsometryOceanExpPlus)
+        (configHypsometryCoastalRampWidthMinus, configHypsometryCoastalRampWidthBar, configHypsometryCoastalRampWidthPlus)
+        (configHypsometryCoastalRampStrMinus, configHypsometryCoastalRampStrBar, configHypsometryCoastalRampStrPlus)
         (configGlacierSnowTempMinus, configGlacierSnowTempBar, configGlacierSnowTempPlus)
         (configGlacierSnowRangeMinus, configGlacierSnowRangeBar, configGlacierSnowRangePlus)
         (configGlacierMeltTempMinus, configGlacierMeltTempBar, configGlacierMeltTempPlus)

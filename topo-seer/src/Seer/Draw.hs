@@ -32,7 +32,7 @@ module Seer.Draw
 
 import Actor.Data (DataSnapshot(..), TerrainSnapshot(..))
 import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshot(..))
-import Actor.UI (ConfigTab(..), LeftTab(..), UiMenuMode(..), UiState(..), ViewMode(..))
+import Actor.UI (ConfigTab(..), LeftTab(..), UiMenuMode(..), UiState(..), ViewMode(..), configRowCount)
 import Control.Monad (when)
 import Data.Int (Int32)
 import Data.IntMap.Strict (IntMap)
@@ -46,10 +46,11 @@ import Data.Word (Word8, Word16)
 import Foreign.C.Types (CInt)
 import Linear (V2(..), V4(..))
 import qualified SDL
-import Seer.Config (mapIntRange)
+import Seer.Config (mapIntRange, mapRange)
 import Seer.Config.SliderSpec
 import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Topo (BiomeId, ChunkCoord(..), ChunkId(..), ClimateChunk(..), PlateBoundary(..), TerrainChunk(..), TileCoord(..), TileIndex(..), WeatherChunk(..), WorldConfig(..), biomeDisplayName, chunkCoordFromTile, chunkIdFromCoord, plateBoundaryToCode, tileIndex)
+import Topo.Planet (PlanetConfig(..), WorldSlice(..), tileLatitude, tileLongitude, formatLatLon)
 import Topo.Units (defaultUnitScales, normToC, normToMetres, normToMmYear, normToRH, normToWindMs, normToSoilM, normSlopeToDeg)
 import UI.Font (FontCache, textSize)
 import UI.HexPick (axialToScreen)
@@ -540,6 +541,24 @@ drawConfigPanel
   -> (Rect, Rect, Rect)
   -> (Rect, Rect, Rect)
   -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
   -> IO ()
 drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion) presetSaveRect presetLoadRect resetRect revertRect scrollAreaRect scrollBarRect
   (waterMinus, waterBar, waterPlus)
@@ -644,6 +663,11 @@ drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather,
   (bndPrecipConvergentMinus, bndPrecipConvergentBar, bndPrecipConvergentPlus)
   (bndPrecipDivergentMinus, bndPrecipDivergentBar, bndPrecipDivergentPlus)
   (bndPrecipTransformMinus, bndPrecipTransformBar, bndPrecipTransformPlus)
+  (piedmontSmoothMinus, piedmontSmoothBar, piedmontSmoothPlus)
+  (piedmontSlopeMinMinus, piedmontSlopeMinBar, piedmontSlopeMinPlus)
+  (piedmontSlopeMaxMinus, piedmontSlopeMaxBar, piedmontSlopeMaxPlus)
+  (windCoriolisDeflectionMinus, windCoriolisDeflectionBar, windCoriolisDeflectionPlus)
+  (moistMinVegFloorMinus, moistMinVegFloorBar, moistMinVegFloorPlus)
   (genScaleMinus, genScaleBar, genScalePlus)
   (genCoordScaleMinus, genCoordScaleBar, genCoordScalePlus)
   (genOffsetXMinus, genOffsetXBar, genOffsetXPlus)
@@ -702,6 +726,19 @@ drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather,
   (erosionRainRateMinus, erosionRainRateBar, erosionRainRatePlus)
   (erosionTalusMinus, erosionTalusBar, erosionTalusPlus)
   (erosionMaxDropMinus, erosionMaxDropBar, erosionMaxDropPlus)
+  (erosionHydDepositMinus, erosionHydDepositBar, erosionHydDepositPlus)
+  (erosionDepositSlopeMinus, erosionDepositSlopeBar, erosionDepositSlopePlus)
+  (erosionThermDepositMinus, erosionThermDepositBar, erosionThermDepositPlus)
+  (erosionCoastZoneMinus, erosionCoastZoneBar, erosionCoastZonePlus)
+  (erosionCoastStrengthMinus, erosionCoastStrengthBar, erosionCoastStrengthPlus)
+  (erosionCoastIterMinus, erosionCoastIterBar, erosionCoastIterPlus)
+  (hypsometryEnabledMinus, hypsometryEnabledBar, hypsometryEnabledPlus)
+  (hypsometryLowlandExpMinus, hypsometryLowlandExpBar, hypsometryLowlandExpPlus)
+  (hypsometryHighlandExpMinus, hypsometryHighlandExpBar, hypsometryHighlandExpPlus)
+  (hypsometryPlateauBreakMinus, hypsometryPlateauBreakBar, hypsometryPlateauBreakPlus)
+  (hypsometryOceanExpMinus, hypsometryOceanExpBar, hypsometryOceanExpPlus)
+  (hypsometryCoastalRampWidthMinus, hypsometryCoastalRampWidthBar, hypsometryCoastalRampWidthPlus)
+  (hypsometryCoastalRampStrMinus, hypsometryCoastalRampStrBar, hypsometryCoastalRampStrPlus)
   (glacierSnowTempMinus, glacierSnowTempBar, glacierSnowTempPlus)
   (glacierSnowRangeMinus, glacierSnowRangeBar, glacierSnowRangePlus)
   (glacierMeltTempMinus, glacierMeltTempBar, glacierMeltTempPlus)
@@ -743,13 +780,7 @@ drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather,
       SDL.drawRect renderer (Just (rectToSDL scrollAreaRect))
       let rowHeight = 24
           gap = 10
-          rows = case uiConfigTab ui of
-            ConfigTerrain -> 53
-            ConfigPlanet -> 7
-            ConfigClimate -> 48
-            ConfigWeather -> 21
-            ConfigBiome -> 26
-            ConfigErosion -> 35
+          rows = configRowCount (uiConfigTab ui)
           contentHeight = max rowHeight (configRowTopPad + rows * rowHeight + max 0 (rows - 1) * gap)
           Rect (V2 _ _ , V2 _ scrollH) = scrollAreaRect
           maxOffset = max 0 (contentHeight - scrollH)
@@ -860,6 +891,11 @@ drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather,
           drawConfigSlider renderer (uiBndPrecipConvergent ui) (scrollRect bndPrecipConvergentMinus) (scrollRect bndPrecipConvergentBar) (scrollRect bndPrecipConvergentPlus) (V4 100 140 170 255)
           drawConfigSlider renderer (uiBndPrecipDivergent ui) (scrollRect bndPrecipDivergentMinus) (scrollRect bndPrecipDivergentBar) (scrollRect bndPrecipDivergentPlus) (V4 90 130 160 255)
           drawConfigSlider renderer (uiBndPrecipTransform ui) (scrollRect bndPrecipTransformMinus) (scrollRect bndPrecipTransformBar) (scrollRect bndPrecipTransformPlus) (V4 110 140 150 255)
+          drawConfigSlider renderer (uiPiedmontSmooth ui) (scrollRect piedmontSmoothMinus) (scrollRect piedmontSmoothBar) (scrollRect piedmontSmoothPlus) (V4 120 150 130 255)
+          drawConfigSlider renderer (uiPiedmontSlopeMin ui) (scrollRect piedmontSlopeMinMinus) (scrollRect piedmontSlopeMinBar) (scrollRect piedmontSlopeMinPlus) (V4 130 140 120 255)
+          drawConfigSlider renderer (uiPiedmontSlopeMax ui) (scrollRect piedmontSlopeMaxMinus) (scrollRect piedmontSlopeMaxBar) (scrollRect piedmontSlopeMaxPlus) (V4 140 130 120 255)
+          drawConfigSlider renderer (uiWindCoriolisDeflection ui) (scrollRect windCoriolisDeflectionMinus) (scrollRect windCoriolisDeflectionBar) (scrollRect windCoriolisDeflectionPlus) (V4 130 130 170 255)
+          drawConfigSlider renderer (uiMoistMinVegFloor ui) (scrollRect moistMinVegFloorMinus) (scrollRect moistMinVegFloorBar) (scrollRect moistMinVegFloorPlus) (V4 110 150 110 255)
         ConfigPlanet -> do
           drawConfigSlider renderer (uiPlanetRadius ui) (scrollRect planetRadiusMinus) (scrollRect planetRadiusBar) (scrollRect planetRadiusPlus) (V4 150 130 100 255)
           drawConfigSlider renderer (uiAxialTilt ui) (scrollRect axialTiltMinus) (scrollRect axialTiltBar) (scrollRect axialTiltPlus) (V4 140 140 100 255)
@@ -923,6 +959,19 @@ drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather,
           drawConfigSlider renderer (uiRainRate ui) (scrollRect erosionRainRateMinus) (scrollRect erosionRainRateBar) (scrollRect erosionRainRatePlus) (V4 100 110 170 255)
           drawConfigSlider renderer (uiErosionTalus ui) (scrollRect erosionTalusMinus) (scrollRect erosionTalusBar) (scrollRect erosionTalusPlus) (V4 160 120 90 255)
           drawConfigSlider renderer (uiErosionMaxDrop ui) (scrollRect erosionMaxDropMinus) (scrollRect erosionMaxDropBar) (scrollRect erosionMaxDropPlus) (V4 140 120 120 255)
+          drawConfigSlider renderer (uiErosionHydDeposit ui) (scrollRect erosionHydDepositMinus) (scrollRect erosionHydDepositBar) (scrollRect erosionHydDepositPlus) (V4 130 130 110 255)
+          drawConfigSlider renderer (uiErosionDepositSlope ui) (scrollRect erosionDepositSlopeMinus) (scrollRect erosionDepositSlopeBar) (scrollRect erosionDepositSlopePlus) (V4 120 130 120 255)
+          drawConfigSlider renderer (uiErosionThermDeposit ui) (scrollRect erosionThermDepositMinus) (scrollRect erosionThermDepositBar) (scrollRect erosionThermDepositPlus) (V4 150 110 100 255)
+          drawConfigSlider renderer (uiErosionCoastZone ui) (scrollRect erosionCoastZoneMinus) (scrollRect erosionCoastZoneBar) (scrollRect erosionCoastZonePlus) (V4 90 150 180 255)
+          drawConfigSlider renderer (uiErosionCoastStrength ui) (scrollRect erosionCoastStrengthMinus) (scrollRect erosionCoastStrengthBar) (scrollRect erosionCoastStrengthPlus) (V4 80 140 170 255)
+          drawConfigSlider renderer (uiErosionCoastIter ui) (scrollRect erosionCoastIterMinus) (scrollRect erosionCoastIterBar) (scrollRect erosionCoastIterPlus) (V4 70 130 160 255)
+          drawConfigSlider renderer (uiHypsometryEnabled ui) (scrollRect hypsometryEnabledMinus) (scrollRect hypsometryEnabledBar) (scrollRect hypsometryEnabledPlus) (V4 200 180 140 255)
+          drawConfigSlider renderer (uiHypsometryLowlandExp ui) (scrollRect hypsometryLowlandExpMinus) (scrollRect hypsometryLowlandExpBar) (scrollRect hypsometryLowlandExpPlus) (V4 190 175 135 255)
+          drawConfigSlider renderer (uiHypsometryHighlandExp ui) (scrollRect hypsometryHighlandExpMinus) (scrollRect hypsometryHighlandExpBar) (scrollRect hypsometryHighlandExpPlus) (V4 180 170 130 255)
+          drawConfigSlider renderer (uiHypsometryPlateauBreak ui) (scrollRect hypsometryPlateauBreakMinus) (scrollRect hypsometryPlateauBreakBar) (scrollRect hypsometryPlateauBreakPlus) (V4 170 165 125 255)
+          drawConfigSlider renderer (uiHypsometryOceanExp ui) (scrollRect hypsometryOceanExpMinus) (scrollRect hypsometryOceanExpBar) (scrollRect hypsometryOceanExpPlus) (V4 160 160 120 255)
+          drawConfigSlider renderer (uiHypsometryCoastalRampWidth ui) (scrollRect hypsometryCoastalRampWidthMinus) (scrollRect hypsometryCoastalRampWidthBar) (scrollRect hypsometryCoastalRampWidthPlus) (V4 150 155 115 255)
+          drawConfigSlider renderer (uiHypsometryCoastalRampStr ui) (scrollRect hypsometryCoastalRampStrMinus) (scrollRect hypsometryCoastalRampStrBar) (scrollRect hypsometryCoastalRampStrPlus) (V4 140 150 110 255)
           drawConfigSlider renderer (uiGlacierSnowTemp ui) (scrollRect glacierSnowTempMinus) (scrollRect glacierSnowTempBar) (scrollRect glacierSnowTempPlus) (V4 180 210 240 255)
           drawConfigSlider renderer (uiGlacierSnowRange ui) (scrollRect glacierSnowRangeMinus) (scrollRect glacierSnowRangeBar) (scrollRect glacierSnowRangePlus) (V4 170 200 235 255)
           drawConfigSlider renderer (uiGlacierMeltTemp ui) (scrollRect glacierMeltTempMinus) (scrollRect glacierMeltTempBar) (scrollRect glacierMeltTempPlus) (V4 160 195 230 255)
@@ -1328,6 +1377,21 @@ drawUiLabels renderer fontCache ui layout = do
       configBndPrecipTransformMinus = configBndPrecipTransformMinusRect layout
       configBndPrecipTransformPlus = configBndPrecipTransformPlusRect layout
       configBndPrecipTransformBar = configBndPrecipTransformBarRect layout
+      configPiedmontSmoothMinus = configPiedmontSmoothMinusRect layout
+      configPiedmontSmoothPlus = configPiedmontSmoothPlusRect layout
+      configPiedmontSmoothBar = configPiedmontSmoothBarRect layout
+      configPiedmontSlopeMinMinus = configPiedmontSlopeMinMinusRect layout
+      configPiedmontSlopeMinPlus = configPiedmontSlopeMinPlusRect layout
+      configPiedmontSlopeMinBar = configPiedmontSlopeMinBarRect layout
+      configPiedmontSlopeMaxMinus = configPiedmontSlopeMaxMinusRect layout
+      configPiedmontSlopeMaxPlus = configPiedmontSlopeMaxPlusRect layout
+      configPiedmontSlopeMaxBar = configPiedmontSlopeMaxBarRect layout
+      configWindCoriolisDeflectionMinus = configWindCoriolisDeflectionMinusRect layout
+      configWindCoriolisDeflectionPlus = configWindCoriolisDeflectionPlusRect layout
+      configWindCoriolisDeflectionBar = configWindCoriolisDeflectionBarRect layout
+      configMoistMinVegFloorMinus = configMoistMinVegFloorMinusRect layout
+      configMoistMinVegFloorPlus = configMoistMinVegFloorPlusRect layout
+      configMoistMinVegFloorBar = configMoistMinVegFloorBarRect layout
       configErosionHydraulicMinus = configErosionHydraulicMinusRect layout
       configErosionHydraulicPlus = configErosionHydraulicPlusRect layout
       configErosionHydraulicBar = configErosionHydraulicBarRect layout
@@ -1343,6 +1407,45 @@ drawUiLabels renderer fontCache ui layout = do
       configErosionMaxDropMinus = configErosionMaxDropMinusRect layout
       configErosionMaxDropPlus = configErosionMaxDropPlusRect layout
       configErosionMaxDropBar = configErosionMaxDropBarRect layout
+      configErosionHydDepositMinus = configErosionHydDepositMinusRect layout
+      configErosionHydDepositPlus = configErosionHydDepositPlusRect layout
+      configErosionHydDepositBar = configErosionHydDepositBarRect layout
+      configErosionDepositSlopeMinus = configErosionDepositSlopeMinusRect layout
+      configErosionDepositSlopePlus = configErosionDepositSlopePlusRect layout
+      configErosionDepositSlopeBar = configErosionDepositSlopeBarRect layout
+      configErosionThermDepositMinus = configErosionThermDepositMinusRect layout
+      configErosionThermDepositPlus = configErosionThermDepositPlusRect layout
+      configErosionThermDepositBar = configErosionThermDepositBarRect layout
+      configErosionCoastZoneMinus = configErosionCoastZoneMinusRect layout
+      configErosionCoastZonePlus = configErosionCoastZonePlusRect layout
+      configErosionCoastZoneBar = configErosionCoastZoneBarRect layout
+      configErosionCoastStrengthMinus = configErosionCoastStrengthMinusRect layout
+      configErosionCoastStrengthPlus = configErosionCoastStrengthPlusRect layout
+      configErosionCoastStrengthBar = configErosionCoastStrengthBarRect layout
+      configErosionCoastIterMinus = configErosionCoastIterMinusRect layout
+      configErosionCoastIterPlus = configErosionCoastIterPlusRect layout
+      configErosionCoastIterBar = configErosionCoastIterBarRect layout
+      configHypsometryEnabledMinus = configHypsometryEnabledMinusRect layout
+      configHypsometryEnabledPlus = configHypsometryEnabledPlusRect layout
+      configHypsometryEnabledBar = configHypsometryEnabledBarRect layout
+      configHypsometryLowlandExpMinus = configHypsometryLowlandExpMinusRect layout
+      configHypsometryLowlandExpPlus = configHypsometryLowlandExpPlusRect layout
+      configHypsometryLowlandExpBar = configHypsometryLowlandExpBarRect layout
+      configHypsometryHighlandExpMinus = configHypsometryHighlandExpMinusRect layout
+      configHypsometryHighlandExpPlus = configHypsometryHighlandExpPlusRect layout
+      configHypsometryHighlandExpBar = configHypsometryHighlandExpBarRect layout
+      configHypsometryPlateauBreakMinus = configHypsometryPlateauBreakMinusRect layout
+      configHypsometryPlateauBreakPlus = configHypsometryPlateauBreakPlusRect layout
+      configHypsometryPlateauBreakBar = configHypsometryPlateauBreakBarRect layout
+      configHypsometryOceanExpMinus = configHypsometryOceanExpMinusRect layout
+      configHypsometryOceanExpPlus = configHypsometryOceanExpPlusRect layout
+      configHypsometryOceanExpBar = configHypsometryOceanExpBarRect layout
+      configHypsometryCoastalRampWidthMinus = configHypsometryCoastalRampWidthMinusRect layout
+      configHypsometryCoastalRampWidthPlus = configHypsometryCoastalRampWidthPlusRect layout
+      configHypsometryCoastalRampWidthBar = configHypsometryCoastalRampWidthBarRect layout
+      configHypsometryCoastalRampStrMinus = configHypsometryCoastalRampStrMinusRect layout
+      configHypsometryCoastalRampStrPlus = configHypsometryCoastalRampStrPlusRect layout
+      configHypsometryCoastalRampStrBar = configHypsometryCoastalRampStrBarRect layout
       configGlacierSnowTempMinus = configGlacierSnowTempMinusRect layout
       configGlacierSnowTempPlus = configGlacierSnowTempPlusRect layout
       configGlacierSnowTempBar = configGlacierSnowTempBarRect layout
@@ -1604,13 +1707,7 @@ drawUiLabels renderer fontCache ui layout = do
       scrollArea = configScrollAreaRect layout
       rowHeight = 24
       gap = 10
-      rows = case uiConfigTab ui of
-        ConfigTerrain -> 53
-        ConfigPlanet -> 7
-        ConfigClimate -> 48
-        ConfigWeather -> 21
-        ConfigBiome -> 26
-        ConfigErosion -> 35
+      rows = configRowCount (uiConfigTab ui)
       contentHeight = max rowHeight (configRowTopPad + rows * rowHeight + max 0 (rows - 1) * gap)
       Rect (V2 _ _ , V2 _ scrollH) = scrollArea
       maxOffset = max 0 (contentHeight - scrollH)
@@ -1921,6 +2018,16 @@ drawUiLabels renderer fontCache ui layout = do
         drawCentered fontCache labelColor (scrollRect configBndPrecipDivergentPlus) "+"
         drawCentered fontCache labelColor (scrollRect configBndPrecipTransformMinus) "-"
         drawCentered fontCache labelColor (scrollRect configBndPrecipTransformPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configPiedmontSmoothMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configPiedmontSmoothPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configPiedmontSlopeMinMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configPiedmontSlopeMinPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configPiedmontSlopeMaxMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configPiedmontSlopeMaxPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configWindCoriolisDeflectionMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configWindCoriolisDeflectionPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configMoistMinVegFloorMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configMoistMinVegFloorPlus) "+"
         drawLabelAbove fontCache labelColor (scrollRect configWaterBar) (sliderLabel specWaterLevel (uiWaterLevel ui))
         drawLabelAbove fontCache labelColor (scrollRect configOrographicLiftBar) (sliderLabel specOrographicLift (uiOrographicLift ui))
         drawLabelAbove fontCache labelColor (scrollRect configRainShadowLossBar) (sliderLabel specRainShadowLoss (uiRainShadowLoss ui))
@@ -1969,6 +2076,11 @@ drawUiLabels renderer fontCache ui layout = do
         drawLabelAbove fontCache labelColor (scrollRect configBndPrecipConvergentBar) (sliderLabel specBndPrecipConvergent (uiBndPrecipConvergent ui))
         drawLabelAbove fontCache labelColor (scrollRect configBndPrecipDivergentBar) (sliderLabel specBndPrecipDivergent (uiBndPrecipDivergent ui))
         drawLabelAbove fontCache labelColor (scrollRect configBndPrecipTransformBar) (sliderLabel specBndPrecipTransform (uiBndPrecipTransform ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPiedmontSmoothBar) (sliderLabel specPiedmontSmooth (uiPiedmontSmooth ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPiedmontSlopeMinBar) (sliderLabel specPiedmontSlopeMin (uiPiedmontSlopeMin ui))
+        drawLabelAbove fontCache labelColor (scrollRect configPiedmontSlopeMaxBar) (sliderLabel specPiedmontSlopeMax (uiPiedmontSlopeMax ui))
+        drawLabelAbove fontCache labelColor (scrollRect configWindCoriolisDeflectionBar) (sliderLabel specWindCoriolisDeflection (uiWindCoriolisDeflection ui))
+        drawLabelAbove fontCache labelColor (scrollRect configMoistMinVegFloorBar) (sliderLabel specMoistMinVegFloor (uiMoistMinVegFloor ui))
       ConfigPlanet -> do
         drawCentered fontCache labelColor (scrollRect configPlanetRadiusMinus) "-"
         drawCentered fontCache labelColor (scrollRect configPlanetRadiusPlus) "+"
@@ -2145,6 +2257,20 @@ drawUiLabels renderer fontCache ui layout = do
         drawCentered fontCache labelColor (scrollRect configErosionTalusPlus) "+"
         drawCentered fontCache labelColor (scrollRect configErosionMaxDropMinus) "-"
         drawCentered fontCache labelColor (scrollRect configErosionMaxDropPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configHypsometryEnabledMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configHypsometryEnabledPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configHypsometryLowlandExpMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configHypsometryLowlandExpPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configHypsometryHighlandExpMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configHypsometryHighlandExpPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configHypsometryPlateauBreakMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configHypsometryPlateauBreakPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configHypsometryOceanExpMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configHypsometryOceanExpPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configHypsometryCoastalRampWidthMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configHypsometryCoastalRampWidthPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configHypsometryCoastalRampStrMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configHypsometryCoastalRampStrPlus) "+"
         drawCentered fontCache labelColor (scrollRect configGlacierSnowTempMinus) "-"
         drawCentered fontCache labelColor (scrollRect configGlacierSnowTempPlus) "+"
         drawCentered fontCache labelColor (scrollRect configGlacierSnowRangeMinus) "-"
@@ -2210,6 +2336,19 @@ drawUiLabels renderer fontCache ui layout = do
         drawLabelAbove fontCache labelColor (scrollRect configErosionRainRateBar) (sliderLabel specErosionRainRate (uiRainRate ui))
         drawLabelAbove fontCache labelColor (scrollRect configErosionTalusBar) (sliderLabel specErosionTalus (uiErosionTalus ui))
         drawLabelAbove fontCache labelColor (scrollRect configErosionMaxDropBar) (sliderLabel specErosionMaxDrop (uiErosionMaxDrop ui))
+        drawLabelAbove fontCache labelColor (scrollRect configErosionHydDepositBar) (sliderLabel specErosionHydDeposit (uiErosionHydDeposit ui))
+        drawLabelAbove fontCache labelColor (scrollRect configErosionDepositSlopeBar) (sliderLabel specErosionDepositSlope (uiErosionDepositSlope ui))
+        drawLabelAbove fontCache labelColor (scrollRect configErosionThermDepositBar) (sliderLabel specErosionThermDeposit (uiErosionThermDeposit ui))
+        drawLabelAbove fontCache labelColor (scrollRect configErosionCoastZoneBar) (sliderLabel specErosionCoastZone (uiErosionCoastZone ui))
+        drawLabelAbove fontCache labelColor (scrollRect configErosionCoastStrengthBar) (sliderLabel specErosionCoastStrength (uiErosionCoastStrength ui))
+        drawLabelAbove fontCache labelColor (scrollRect configErosionCoastIterBar) (sliderLabel specErosionCoastIter (uiErosionCoastIter ui))
+        drawLabelAbove fontCache labelColor (scrollRect configHypsometryEnabledBar) (sliderLabel specHypsometryEnabled (uiHypsometryEnabled ui))
+        drawLabelAbove fontCache labelColor (scrollRect configHypsometryLowlandExpBar) (sliderLabel specHypsometryLowlandExp (uiHypsometryLowlandExp ui))
+        drawLabelAbove fontCache labelColor (scrollRect configHypsometryHighlandExpBar) (sliderLabel specHypsometryHighlandExp (uiHypsometryHighlandExp ui))
+        drawLabelAbove fontCache labelColor (scrollRect configHypsometryPlateauBreakBar) (sliderLabel specHypsometryPlateauBreak (uiHypsometryPlateauBreak ui))
+        drawLabelAbove fontCache labelColor (scrollRect configHypsometryOceanExpBar) (sliderLabel specHypsometryOceanExp (uiHypsometryOceanExp ui))
+        drawLabelAbove fontCache labelColor (scrollRect configHypsometryCoastalRampWidthBar) (sliderLabel specHypsometryCoastalRampWidth (uiHypsometryCoastalRampWidth ui))
+        drawLabelAbove fontCache labelColor (scrollRect configHypsometryCoastalRampStrBar) (sliderLabel specHypsometryCoastalRampStr (uiHypsometryCoastalRampStr ui))
         drawLabelAbove fontCache labelColor (scrollRect configGlacierSnowTempBar) (sliderLabel specGlacierSnowTemp (uiGlacierSnowTemp ui))
         drawLabelAbove fontCache labelColor (scrollRect configGlacierSnowRangeBar) (sliderLabel specGlacierSnowRange (uiGlacierSnowRange ui))
         drawLabelAbove fontCache labelColor (scrollRect configGlacierMeltTempBar) (sliderLabel specGlacierMeltTemp (uiGlacierMeltTemp ui))
@@ -2389,7 +2528,7 @@ drawHexContext :: SDL.Renderer -> Maybe FontCache -> UiState -> TerrainSnapshot 
 drawHexContext renderer fontCache ui terrainSnap (V2 winW winH) =
   case (uiContextHex ui, uiContextPos ui) of
     (Just (q, r), Just (sx, sy)) -> do
-      let lns = contextLines (uiViewMode ui) terrainSnap (q, r)
+      let lns = contextLines ui terrainSnap (q, r)
           lineH  = 16
           hPad   = 12
           vPad   = 10
@@ -2417,23 +2556,59 @@ drawHexContext renderer fontCache ui terrainSnap (V2 winW winH) =
 
 -- | Produce the info-panel lines for a hex, tailored to the active view mode.
 --
--- Every mode starts with a formatted coordinate header. The remaining
--- lines show the fields most relevant to the current visualisation.
-contextLines :: ViewMode -> TerrainSnapshot -> (Int, Int) -> [Text]
-contextLines mode terrainSnap (q, r) =
+-- Every mode starts with a formatted coordinate header followed by
+-- geographic latitude\/longitude derived from the current planet and
+-- slice settings.  The remaining lines show the fields most relevant
+-- to the current visualisation.
+contextLines :: UiState -> TerrainSnapshot -> (Int, Int) -> [Text]
+contextLines ui terrainSnap (q, r) =
   case sampleAt terrainSnap (q, r) of
     Nothing -> [hexHeader q r, "No data"]
-    Just s  -> hexHeader q r : modeLines mode s
+    Just _s  -> hexHeader q r : latLonLine q r : modeLines mode _s
   where
+    mode = uiViewMode ui
     us = defaultUnitScales
+
+    -- Planet / slice reconstructed from the UI knobs so we can map
+    -- tile coordinates to geographic lat/lon without threading the
+    -- full config through the render path.  The UI fields store
+    -- normalised 0–1 slider values, so we map them through the same
+    -- domain ranges that configFromUi uses.
+    planet :: PlanetConfig
+    planet = PlanetConfig
+      { pcRadius    = mapRange 4778 9557 (uiPlanetRadius ui)
+      , pcAxialTilt = mapRange 0 45      (uiAxialTilt ui)
+      , pcInsolation = mapRange 0.7 1.3  (uiInsolation ui)
+      }
+
+    slice :: WorldSlice
+    slice = WorldSlice
+      { wsLatCenter = mapRange (-90) 90   (uiSliceLatCenter ui)
+      , wsLatExtent = 0  -- unused by tileLatitude/tileLongitude
+      , wsLonCenter = mapRange (-180) 180 (uiSliceLonCenter ui)
+      , wsLonExtent = 0  -- unused by tileLatitude/tileLongitude
+      }
+
+    wc :: WorldConfig
+    wc = WorldConfig { wcChunkSize = tsChunkSize terrainSnap }
+
+    latLonLine :: Int -> Int -> Text
+    latLonLine tq tr =
+      let tile = TileCoord tq tr
+          lat  = tileLatitude planet slice wc tile
+          lon  = tileLongitude planet slice wc tile
+      in formatLatLon lat lon
 
     modeLines ViewElevation    s =
       [ "Elev  " <> fmtU (normToMetres us (hsElevation s)) "m"
       , "Slope " <> fmtU (normSlopeToDeg us (hsSlope s)) "°"
       ]
     modeLines ViewBiome        s =
-      [ "Biome " <> biomeDisplayName (hsBiome s)
-      , "Veg   " <> fmtF (hsFertility s)
+      [ "Biome  " <> biomeDisplayName (hsBiome s)
+      , "Elev   " <> fmtU (normToMetres us (hsElevation s)) "m"
+      , "Precip " <> fmtU (normToMmYear us (hsPrecipAvg s)) "mm/yr"
+      , "Humid  " <> fmtU (normToRH (hsHumidity s)) "% RH"
+      , "Veg    " <> fmtF (hsFertility s)
       ]
     modeLines ViewClimate      s =
       [ "Temp  " <> fmtU (normToC us (hsTemp s)) "°C"

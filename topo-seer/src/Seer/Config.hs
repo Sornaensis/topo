@@ -19,6 +19,7 @@ import Topo.BiomeConfig (BiomeConfig(..))
 import Topo.Climate (ClimateConfig(..), TemperatureConfig(..), WindConfig(..), MoistureConfig(..), PrecipitationConfig(..), BoundaryConfig(..))
 import Topo.Erosion (ErosionConfig(..))
 import Topo.Glacier (GlacierConfig(..))
+import Topo.Hypsometry (HypsometryConfig(..))
 import Topo.Hydrology (HydroConfig(..))
 import Topo.Parameters (ParameterConfig(..), TerrainFormConfig(..))
 import Topo.OceanCurrent (OceanCurrentConfig(..), defaultOceanCurrentConfig)
@@ -72,10 +73,10 @@ applyUiConfig ui cfg =
         , tcPlateMergeScale = mapRange 0.05 0.25 (uiPlateMergeScale ui)
         , tcPlateMergeBias = mapRange 0.3 0.8 (uiPlateMergeBias ui)
         , tcPlateDetailScale = mapRange 0.005 0.05 (uiPlateDetailScale ui)
-        , tcPlateDetailStrength = mapRange 0 1 (uiPlateDetailStrength ui)
-        , tcPlateRidgeStrength = mapRange 0 1 (uiPlateRidgeStrength ui)
-        , tcPlateHeightBase = mapRange (-0.1) 0.35 (uiPlateHeightBase ui)
-        , tcPlateHeightVariance = mapRange 0.2 1.2 (uiPlateHeightVariance ui)
+        , tcPlateDetailStrength = mapRange 0.05 0.5 (uiPlateDetailStrength ui)
+        , tcPlateRidgeStrength = mapRange 0.05 0.4 (uiPlateRidgeStrength ui)
+        , tcPlateHeightBase = mapRange 0.0 0.4 (uiPlateHeightBase ui)
+        , tcPlateHeightVariance = mapRange 0.1 0.8 (uiPlateHeightVariance ui)
         , tcPlateHardnessBase = mapRange 0.2 0.8 (uiPlateHardnessBase ui)
         , tcPlateHardnessVariance = mapRange 0.1 0.6 (uiPlateHardnessVariance ui)
         , tcPlateBiasStrength = mapRange 0 0.6 (uiPlateBiasStrength ui)
@@ -113,6 +114,9 @@ applyUiConfig ui cfg =
         , hcRiverCarveMaxDepth = mapRange 0.0 0.2 (uiRiverCarveMaxDepth ui)
         , hcCoastalErodeStrength = mapRange 0.0 0.1 (uiCoastalErodeStrength ui)
         , hcHardnessErodeWeight = mapRange 0.0 1.0 (uiHydroHardnessWeight ui)
+        , hcPiedmontSmoothStrength = mapRange 0.0 0.6 (uiPiedmontSmooth ui)
+        , hcPiedmontSlopeMin = mapRange 0.01 0.08 (uiPiedmontSlopeMin ui)
+        , hcPiedmontSlopeMax = mapRange 0.05 0.25 (uiPiedmontSlopeMax ui)
         }
       terrain' = terrain
         { terrainGen = gen'
@@ -126,11 +130,28 @@ applyUiConfig ui cfg =
         { ecHydraulicIterations = mapIntRange 1 12 (uiErosionHydraulic ui)
         , ecThermalIterations = mapIntRange 1 12 (uiErosionThermal ui)
         , ecRainRate = mapRange 0.05 0.5 (uiRainRate ui)
-        , ecThermalTalus = mapRange 0.1 1.0 (uiErosionTalus ui)
+        , ecThermalTalus = mapRange 0.01 0.15 (uiErosionTalus ui)
         , ecMaxDrop = mapRange 0.1 1.0 (uiErosionMaxDrop ui)
+        , ecHydraulicDepositRatio = mapRange 0.0 0.8 (uiErosionHydDeposit ui)
+        , ecHydraulicDepositMaxSlope = mapRange 0.01 0.15 (uiErosionDepositSlope ui)
+        , ecThermalDepositRatio = mapRange 0.0 1.0 (uiErosionThermDeposit ui)
+        , ecCoastalSmoothZone = mapRange 0.005 0.12 (uiErosionCoastZone ui)
+        , ecCoastalSmoothStrength = mapRange 0.0 0.8 (uiErosionCoastStrength ui)
+        , ecCoastalSmoothIterations = mapIntRange 1 8 (uiErosionCoastIter ui)
+        }
+      hyps = terrainHypsometry terrain
+      hyps' = hyps
+        { hpEnabled = uiHypsometryEnabled ui >= 0.5
+        , hpLowlandExponent = mapRange 0.5 5.0 (uiHypsometryLowlandExp ui)
+        , hpHighlandExponent = mapRange 0.3 3.0 (uiHypsometryHighlandExp ui)
+        , hpPlateauBreak = mapRange 0.52 0.75 (uiHypsometryPlateauBreak ui)
+        , hpOceanExponent = mapRange 0.2 1.0 (uiHypsometryOceanExp ui)
+        , hpCoastalRampWidth = mapRange 0.005 0.20 (uiHypsometryCoastalRampWidth ui)
+        , hpCoastalRampStrength = mapRange 0.0 1.0 (uiHypsometryCoastalRampStr ui)
         }
       terrain'' = terrain'
         { terrainErosion = erosion'
+        , terrainHypsometry = hyps'
         , terrainVegetation = vegBoot'
         , terrainGlacier = glacier'
         , terrainVolcanism = volcanism'
@@ -211,6 +232,7 @@ applyUiConfig ui cfg =
             , windBeltBase = uiWindBeltBase ui
             , windBeltRange = uiWindBeltRange ui
             , windBeltSpeedScale = uiWindBeltSpeedScale ui
+            , windCoriolisDeflection = mapRange 0 1.57 (uiWindCoriolisDeflection ui)
             }
         , ccMoisture = climateMst
             { moistIterations = mapIntRange 2 72 (uiMoistureIterations ui)
@@ -225,6 +247,7 @@ applyUiConfig ui cfg =
             , moistRecycleRate = uiMoistRecycleRate ui
             , moistITCZStrength = mapRange 0 0.5 (uiMoistITCZStrength ui)
             , moistITCZWidth = mapRange 2 20 (uiMoistITCZWidth ui)
+            , moistMinVegFloor = uiMoistMinVegFloor ui
             }
         , ccPrecipitation = climatePrc
             { precOrographicLift = uiOrographicLift ui

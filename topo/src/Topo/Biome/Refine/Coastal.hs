@@ -15,10 +15,12 @@ import GHC.Generics (Generic)
 import Topo.Config.JSON
   (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
    genericToJSON, genericParseJSON)
-import Topo.Types (BiomeId, pattern BiomeCoastal, pattern BiomeMangrove,
+import Topo.Types (BiomeId, WaterBodyType,
+                   pattern BiomeCoastal, pattern BiomeMangrove,
                    pattern BiomeEstuary, pattern BiomeSaltMarsh,
                    pattern BiomeRockyShore, pattern BiomeCoastalDunes,
-                   pattern BiomeCoastalScrub)
+                   pattern BiomeCoastalScrub,
+                   pattern WaterOcean)
 
 -- | Configuration for coastal sub-biome classification.
 data CoastalConfig = CoastalConfig
@@ -45,9 +47,9 @@ instance FromJSON CoastalConfig where
 -- | Sensible defaults for coastal refinement.
 defaultCoastalConfig :: CoastalConfig
 defaultCoastalConfig = CoastalConfig
-  { cstMangroveMinTemp     = 0.65
+  { cstMangroveMinTemp     = 0.655
   , cstMangroveMinPrecip   = 0.50
-  , cstSaltMarshMaxTemp    = 0.55
+  , cstSaltMarshMaxTemp    = 0.585
   , cstSaltMarshMinMoist   = 0.55
   , cstDunesMaxMoisture    = 0.25
   , cstDunesMaxPrecip      = 0.20
@@ -55,7 +57,7 @@ defaultCoastalConfig = CoastalConfig
   , cstRockyMinHardness    = 0.60
   , cstRockyMaxSoilDepth   = 0.15
   , cstScrubMaxPrecip      = 0.40
-  , cstScrubMinTemp        = 0.40
+  , cstScrubMinTemp        = 0.48
   }
 
 -- | Refine a coastal tile into a sub-biome.
@@ -63,7 +65,7 @@ defaultCoastalConfig = CoastalConfig
 -- Decision cascade:
 --
 -- 1. Mangrove: tropical wet coast
--- 2. Estuary: river mouth (high discharge)
+-- 2. Estuary: river mouth (high discharge) /and/ adjacent to ocean
 -- 3. Salt marsh: cool wet coast
 -- 4. Rocky shore: hard rock, thin soil
 -- 5. Coastal dunes: dry sandy coast
@@ -71,12 +73,14 @@ defaultCoastalConfig = CoastalConfig
 -- 7. Fallback: 'BiomeCoastal'
 refineCoastal
   :: CoastalConfig
+  -> WaterBodyType  -- ^ adjacent water body type (from 'wbAdjacentType')
   -> Float -> Float -> Float -> Float -> Float -> Float
   -> BiomeId
-refineCoastal cfg temp precip moisture hardness soilDepth discharge
+refineCoastal cfg adjWbt temp precip moisture hardness soilDepth discharge
   | temp >= cstMangroveMinTemp cfg
     && precip >= cstMangroveMinPrecip cfg        = BiomeMangrove
-  | discharge >= cstEstuaryMinDischarge cfg      = BiomeEstuary
+  | discharge >= cstEstuaryMinDischarge cfg
+    && adjWbt == WaterOcean                      = BiomeEstuary
   | temp <= cstSaltMarshMaxTemp cfg
     && moisture >= cstSaltMarshMinMoist cfg       = BiomeSaltMarsh
   | hardness >= cstRockyMinHardness cfg

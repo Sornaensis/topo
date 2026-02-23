@@ -23,6 +23,7 @@ library:
     - Topo.Erosion
     - Topo.Glacier
     - Topo.Hydrology
+    - Topo.Hypsometry
     - Topo.River
     - Topo.Volcanism
     - Topo.WaterBody
@@ -63,6 +64,7 @@ library:
     - Topo.Planet
     - Topo.OceanCurrent
     - Topo.Units
+    - Topo.Units.Config
     - Topo.Config.JSON
   dependencies:
     - base >=4.18 && <5

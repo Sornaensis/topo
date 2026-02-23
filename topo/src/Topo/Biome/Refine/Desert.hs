@@ -53,8 +53,8 @@ instance FromJSON DesertConfig where
 -- | Sensible defaults for desert refinement.
 defaultDesertConfig :: DesertConfig
 defaultDesertConfig = DesertConfig
-  { dcHotMinTemp        = 0.70
-  , dcColdMaxTemp       = 0.40
+  { dcHotMinTemp        = 0.69
+  , dcColdMaxTemp       = 0.48
   , dcRockyMinHardness  = 0.55
   , dcRockyMaxSoilDepth = 0.20
   , dcSandMaxHardness   = 0.30

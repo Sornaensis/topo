@@ -34,9 +34,11 @@ import qualified Spec.OceanCurrent
 import qualified Spec.ConfigJSON
 import qualified Spec.ConfigProperty
 import qualified Spec.Units
+import qualified Spec.UnitsConfig
 import qualified Spec.Precipitation
 import qualified Spec.MoistureFixture
 import qualified Spec.ClimateAlignment
+import qualified Spec.TerrainRelief
 import qualified WorldProperty
 import qualified HexProperty
 
@@ -77,8 +79,10 @@ main = do
     Spec.ConfigJSON.spec
     Spec.ConfigProperty.spec
     Spec.Units.spec
+    Spec.UnitsConfig.spec
     Spec.Precipitation.spec
     Spec.MoistureFixture.spec
     Spec.ClimateAlignment.spec
+    Spec.TerrainRelief.spec
     WorldProperty.spec
     HexProperty.spec

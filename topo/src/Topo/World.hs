@@ -60,6 +60,7 @@ import Topo.Metadata (Metadata, MetadataMigration, MetadataStore, emptyMetadataS
 import Data.Aeson (Value)
 import Topo.Planet (LatitudeMapping, PlanetConfig, WorldSlice, defaultPlanetConfig, defaultWorldSlice, mkLatitudeMapping)
 import Topo.Types
+import Topo.Units (UnitScales, defaultUnitScales)
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as UM
 
@@ -102,6 +103,11 @@ data TerrainWorld = TerrainWorld
   -- Consumers that need a typed 'Topo.WorldGen.WorldGenConfig' should
   -- decode this value via @Data.Aeson.fromJSON@.
   , twGenConfig :: !(Maybe Value)
+  -- | Unit scales used for converting normalised internal values to
+  -- real-world physical units (°C, metres, mm/yr, etc.).  Stored in the
+  -- @.topo@ binary (version ≥ 15) so that exported data can be
+  -- interpreted correctly even if the default scale changes.
+  , twUnitScales :: !UnitScales
   }
 
 emptyWorld :: WorldConfig -> HexGridMeta -> TerrainWorld
@@ -127,6 +133,7 @@ emptyWorldWithPlanet config hexMeta planet slice = TerrainWorld
   , twLatMapping = mkLatitudeMapping planet slice config
   , twWorldTime = 0
   , twGenConfig = Nothing
+  , twUnitScales = defaultUnitScales
   }
 
 emptyTerrainChunk :: WorldConfig -> TerrainChunk

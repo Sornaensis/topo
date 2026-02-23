@@ -22,17 +22,17 @@ spec = describe "Units" $ do
   describe "normToC / cToNorm" $ do
     let s = defaultUnitScales
 
-    it "norm 0.0 → −30 °C" $
-      normToC s 0.0 `shouldSatisfy` approxEq epsilon (-30.0)
+    it "norm 0.0 → −50 °C" $
+      normToC s 0.0 `shouldSatisfy` approxEq epsilon (-50.0)
 
-    it "norm ~0.4286 → ≈0 °C" $
-      normToC s (30.0 / 70.0) `shouldSatisfy` approxEq 0.01 0.0
+    it "norm 0.5 → ≈0 °C" $
+      normToC s 0.5 `shouldSatisfy` approxEq 0.01 0.0
 
-    it "norm 1.0 → +40 °C" $
-      normToC s 1.0 `shouldSatisfy` approxEq epsilon 40.0
+    it "norm 1.0 → +50 °C" $
+      normToC s 1.0 `shouldSatisfy` approxEq epsilon 50.0
 
-    it "norm 0.78 → ≈24.6 °C (equator)" $
-      normToC s 0.78 `shouldSatisfy` approxEq 0.1 24.6
+    it "norm 0.746 → ≈24.6 °C (equator)" $
+      normToC s 0.746 `shouldSatisfy` approxEq 0.1 24.6
 
   describe "normToMetres / metresToNorm" $ do
     let s = defaultUnitScales

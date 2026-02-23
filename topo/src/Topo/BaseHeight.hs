@@ -112,8 +112,8 @@ defaultGenConfig = GenConfig
   , gcWorldExtent = defaultWorldExtent
   , gcContinentScale = 0.0008
   , gcLandRatio = 0.45
-  , gcShelfWidth = 0.08
-  , gcCoastSharpness = 1.4
+  , gcShelfWidth = 0.20
+  , gcCoastSharpness = 0.8
   , gcOceanEdgeDepth = defaultOceanEdgeDepth
   }
 
@@ -144,9 +144,17 @@ sampleBaseHeightAt seed cfg gx gy =
       (wx, wy) = domainWarp2D seed (gcWarpScale cfg) (gcWarpStrength cfg) xf yf
       h0 = fbm2D seed (gcOctaves cfg) (gcLacunarity cfg) (gcGain cfg) wx wy
       ridge = ridgedFbm2D (seed + 4242) (max 1 (gcOctaves cfg - 2)) (gcLacunarity cfg) (gcGain cfg * 0.8) (wx * 0.7) (wy * 0.7)
-      mask = 0.15 + contMask * 1.1
+      mask = 0.1 + contMask * 0.9
       h1 = h0 * 0.75 + ridge * 0.6
-  in h1 * gcScale cfg * mask
+      -- Soft-limit to approximately [-1, +1] to prevent outsized noise
+      -- values from overwhelming the plate base height.
+      raw = h1 * gcScale cfg * mask
+  in softLimit raw
+
+-- | Sigmoid soft limiter: maps any real to approximately [-1, +1]
+-- while preserving sign and being approximately identity near zero.
+softLimit :: Float -> Float
+softLimit x = tanh (x * 0.7)
 
 -- | Compute an edge-depth bias for an absolute tile coordinate.
 --   The falloff is expressed in tiles; zero disables the bias.

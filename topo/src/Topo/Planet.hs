@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 -- | Planetary parameters, world slices, and hex-to-geographic coordinate mapping.
 --
@@ -25,6 +26,10 @@ module Topo.Planet
   , tileLatitude
   , tileLongitude
   , tileYToLatDeg
+    -- * Geographic formatting
+  , formatLatitude
+  , formatLongitude
+  , formatLatLon
     -- * Latitude mapping
   , LatitudeMapping(..)
   , mkLatitudeMapping
@@ -32,6 +37,8 @@ module Topo.Planet
   , sliceToWorldExtent
   ) where
 
+import Data.Text (Text)
+import qualified Data.Text as Text
 import GHC.Generics (Generic)
 import Topo.Config.JSON
   (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
@@ -212,7 +219,9 @@ hexesPerDegreeLongitude pc latDeg =
 -- around chunk (0,0), so the center tile Y is @chunkSize \`div\` 2@.
 -- Each tile offset corresponds to @1 / hexesPerDegreeLatitude@ degrees.
 --
--- Latitude increases northward (positive Y offset → higher latitude).
+-- Low tile Y (top of rendered grid) = high latitude (north).
+-- High tile Y (bottom of rendered grid) = low latitude (south).
+-- Positive result = north, negative = south.
 tileLatitude
   :: PlanetConfig
   -> WorldSlice
@@ -224,8 +233,10 @@ tileLatitude planet slice config (TileCoord _tx ty) =
       cs     = wcChunkSize config
       -- Chunks range from -ry to ry; chunk (0,0) origin is tile (0,0).
       -- The center of the grid is at the middle of chunk (0,0).
+      -- Negate the offset so that screen-down (increasing Y) maps to
+      -- decreasing latitude (south), matching cartographic convention.
       centerTileY = cs `div` 2
-      offsetTiles = ty - centerTileY
+      offsetTiles = centerTileY - ty
       offsetDeg   = fromIntegral offsetTiles / hpd
   in wsLatCenter slice + offsetDeg
 
@@ -267,11 +278,15 @@ tileYToLatDeg planet slice config gy =
 -- The mapping converts tile-grid Y coordinates to geographic latitude.
 -- @latDeg(ty) = lmBiasDeg + ty * lmDegPerTile@, and analogously for
 -- radians.
+--
+-- 'lmDegPerTile' is __negative__: each tile-Y step moves __south__
+-- (decreasing latitude), matching the SDL screen convention where
+-- +Y points downward.
 data LatitudeMapping = LatitudeMapping
   { lmDegPerTile  :: !Float
-    -- ^ Degrees of latitude per tile-Y step.
+    -- ^ Degrees of latitude per tile-Y step (__negative__: +Y = south).
   , lmRadPerTile  :: !Float
-    -- ^ Radians of latitude per tile-Y step.
+    -- ^ Radians of latitude per tile-Y step (__negative__: +Y = south).
   , lmBiasDeg     :: !Float
     -- ^ Latitude of tile Y = 0 in degrees.
   , lmBiasRad     :: !Float
@@ -291,7 +306,8 @@ data LatitudeMapping = LatitudeMapping
 mkLatitudeMapping :: PlanetConfig -> WorldSlice -> WorldConfig -> LatitudeMapping
 mkLatitudeMapping planet slice wc =
   let hpd        = hexesPerDegreeLatitude planet
-      degPerTile = 1.0 / max 0.001 hpd
+      -- Negative: each tile-Y step is one step south (screen-down).
+      degPerTile = negate (1.0 / max 0.001 hpd)
       cs         = wcChunkSize wc
       latBiasDeg = wsLatCenter slice
                  - fromIntegral (cs `div` 2) * degPerTile
@@ -306,6 +322,61 @@ mkLatitudeMapping planet slice wc =
       , lmTiltScale  = pcAxialTilt planet / 23.44
       , lmInsolation = pcInsolation planet
       }
+
+-- ---------------------------------------------------------------------------
+-- Internal constants
+-- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- Geographic formatting
+-- ---------------------------------------------------------------------------
+
+-- | Format a latitude value in degrees as human-readable text with a
+-- hemisphere suffix.
+--
+-- Positive values are North, negative values are South.
+-- The result is rounded to one decimal place.
+--
+-- >>> formatLatitude 12.34
+-- "12.3° N"
+-- >>> formatLatitude (-45.67)
+-- "45.7° S"
+-- >>> formatLatitude 0
+-- "0.0° N"
+formatLatitude :: Float -> Text
+formatLatitude v =
+  let suffix = if v >= 0 then " N" else " S"
+  in fmtDeg1 (abs v) <> "°" <> suffix
+
+-- | Format a longitude value in degrees as human-readable text with a
+-- hemisphere suffix.
+--
+-- Positive values are East, negative values are West.
+-- The result is rounded to one decimal place.
+--
+-- >>> formatLongitude 30.5
+-- "30.5° E"
+-- >>> formatLongitude (-120.2)
+-- "120.2° W"
+-- >>> formatLongitude 0
+-- "0.0° E"
+formatLongitude :: Float -> Text
+formatLongitude v =
+  let suffix = if v >= 0 then " E" else " W"
+  in fmtDeg1 (abs v) <> "°" <> suffix
+
+-- | Format a latitude/longitude pair as a single line.
+--
+-- >>> formatLatLon 12.3 (-45.6)
+-- "12.3° N, 45.6° W"
+formatLatLon :: Float -> Float -> Text
+formatLatLon lat lon =
+  formatLatitude lat <> ", " <> formatLongitude lon
+
+-- | Round a non-negative value to 1 decimal place and render as 'Text'.
+fmtDeg1 :: Float -> Text
+fmtDeg1 v =
+  Text.pack (show (fromIntegral (round (v * 10) :: Int) / 10 :: Double))
 
 -- ---------------------------------------------------------------------------
 -- Internal constants

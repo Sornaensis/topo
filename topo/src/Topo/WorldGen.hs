@@ -39,6 +39,7 @@ import Topo.Climate
   )
 import Topo.Erosion (ErosionConfig(..), applyErosionStage, defaultErosionConfig)
 import Topo.Glacier (GlacierConfig(..), applyGlacierStage, defaultGlacierConfig)
+import Topo.Hypsometry (HypsometryConfig(..), applyHypsometryStage, defaultHypsometryConfig)
 import Topo.Gen (generateBaseHeightStage, generatePlateTerrainStage)
 import Topo.Hydrology
   ( GroundwaterConfig(..)
@@ -50,6 +51,7 @@ import Topo.Hydrology
   , defaultHydroConfig
   , defaultRiverConfig
   )
+import Topo.River (RiverTopologyConfig(..), defaultRiverTopologyConfig)
 import Topo.Volcanism (VolcanismConfig(..), applyVolcanismStage, defaultVolcanismConfig)
 import Topo.WaterBody (WaterBodyConfig(..), applyWaterBodyStage, defaultWaterBodyConfig)
 import Topo.Parameters
@@ -95,6 +97,8 @@ data TerrainConfig = TerrainConfig
     -- ^ Flow routing, moisture, and sediment transport.
   , terrainRivers :: !RiverConfig
     -- ^ River channel carving and routing.
+  , terrainRiverTopology :: !RiverTopologyConfig
+    -- ^ River segment extraction and pruning.
   , terrainGroundwater :: !GroundwaterConfig
     -- ^ Groundwater recharge, storage, and discharge.
   , terrainVolcanism :: !VolcanismConfig
@@ -111,6 +115,8 @@ data TerrainConfig = TerrainConfig
     -- ^ Soil fertility and depth derivation.
   , terrainVegetation :: !VegetationBootstrapConfig
     -- ^ Bootstrap vegetation density and albedo.
+  , terrainHypsometry :: !HypsometryConfig
+    -- ^ Hypsometric elevation redistribution.
   } deriving (Eq, Show, Generic)
 
 -- | Serialise with @terrain@ prefix stripped from field names.
@@ -171,6 +177,7 @@ defaultTerrainConfig = TerrainConfig
   , terrainErosion = defaultErosionConfig
   , terrainHydrology = defaultHydroConfig
   , terrainRivers = defaultRiverConfig
+  , terrainRiverTopology = defaultRiverTopologyConfig
   , terrainGroundwater = defaultGroundwaterConfig
   , terrainVolcanism = defaultVolcanismConfig
   , terrainWaterBody = defaultWaterBodyConfig
@@ -179,6 +186,7 @@ defaultTerrainConfig = TerrainConfig
   , terrainFormConfig = defaultTerrainFormConfig
   , terrainSoil = defaultSoilConfig
   , terrainVegetation = defaultVegetationBootstrapConfig
+  , terrainHypsometry = defaultHypsometryConfig
   }
 
 defaultWorldGenConfig :: WorldGenConfig
@@ -310,9 +318,11 @@ buildFullPipelineConfig cfg worldCfg seed =
       , pipelineStages =
           [ generatePlateTerrainStage (terrainGen terrain') (terrainTectonics terrain')
           , applyErosionStage (terrainErosion terrain') wl
+          , applyHypsometryStage (terrainHypsometry terrain')
           , applyVolcanismStage (terrainVolcanism terrain')
           , applyHydrologyStage (terrainHydrology terrain')
           , applyRiverStage (terrainRivers terrain')
+                            (terrainRiverTopology terrain')
                             (terrainGroundwater terrain') wl
           , applyWaterBodyStage (terrainWaterBody terrain') wl
           , applySoilStage (terrainSoil terrain')
@@ -337,7 +347,7 @@ buildFullPipelineConfig cfg worldCfg seed =
 -- If the user has already configured edge depth (any field > 0),
 -- the per-edge values are preserved.
 --
--- Default auto-values: depth = 0.8, falloff = 64 tiles.
+-- Default auto-values: depth = 0.5, falloff = 64 tiles.
 autoOceanEdgeDepth :: PlanetConfig -> WorldSlice -> GenConfig -> GenConfig
 autoOceanEdgeDepth _planet slice gen
   | hasManualEdge = gen
@@ -346,7 +356,7 @@ autoOceanEdgeDepth _planet slice gen
     oed = gcOceanEdgeDepth gen
     hasManualEdge = oedNorth oed > 0 || oedSouth oed > 0
                  || oedEast oed > 0  || oedWest oed > 0
-    autoDepth   = 0.8
+    autoDepth   = 0.5
     autoFalloff = 64.0
     latN = wsLatCenter slice + wsLatExtent slice / 2
     latS = wsLatCenter slice - wsLatExtent slice / 2

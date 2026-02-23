@@ -55,6 +55,7 @@ import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Topo.Hex (defaultHexGridMeta)
 import Topo.Metadata (emptyMetadataStore)
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice, mkLatitudeMapping)
+import Topo.Units (defaultUnitScales)
 import Topo.Storage
   ( WorldProvenance(..)
   , MapProvenance(..)
@@ -203,6 +204,7 @@ snapshotToWorld ts = TerrainWorld
   , twLatMapping  = mkLatitudeMapping defaultPlanetConfig defaultWorldSlice wc
   , twWorldTime   = 0
   , twGenConfig   = Nothing
+  , twUnitScales  = defaultUnitScales
   }
   where
     wc = WorldConfig { wcChunkSize = tsChunkSize ts }

@@ -36,8 +36,8 @@ instance FromJSON RainforestConfig where
 -- | Sensible defaults for rainforest refinement.
 defaultRainforestConfig :: RainforestConfig
 defaultRainforestConfig = RainforestConfig
-  { rfTropicalMinTemp         = 0.74
-  , rfTempRainforestMaxTemp   = 0.76
+  { rfTropicalMinTemp         = 0.718
+  , rfTempRainforestMaxTemp   = 0.732
   , rfTempRainforestMinPrecip = 0.65
   }
 

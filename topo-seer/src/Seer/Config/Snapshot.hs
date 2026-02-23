@@ -56,6 +56,19 @@ import Actor.UI
   , setUiErosionThermal
   , setUiErosionTalus
   , setUiErosionMaxDrop
+  , setUiErosionHydDeposit
+  , setUiErosionDepositSlope
+  , setUiErosionThermDeposit
+  , setUiErosionCoastZone
+  , setUiErosionCoastStrength
+  , setUiErosionCoastIter
+  , setUiHypsometryEnabled
+  , setUiHypsometryLowlandExp
+  , setUiHypsometryHighlandExp
+  , setUiHypsometryPlateauBreak
+  , setUiHypsometryOceanExp
+  , setUiHypsometryCoastalRampWidth
+  , setUiHypsometryCoastalRampStr
   , setUiGlacierSnowTemp
   , setUiGlacierSnowRange
   , setUiGlacierMeltTemp
@@ -83,6 +96,9 @@ import Actor.UI
   , setUiRiverCarveMaxDepth
   , setUiCoastalErodeStrength
   , setUiHydroHardnessWeight
+  , setUiPiedmontSmooth
+  , setUiPiedmontSlopeMin
+  , setUiPiedmontSlopeMax
   , setUiMinLakeSize
   , setUiInlandSeaMinSize
   , setUiRoughnessScale
@@ -164,6 +180,7 @@ import Actor.UI
   , setUiMoistRecycleRate
   , setUiMoistITCZStrength
   , setUiMoistITCZWidth
+  , setUiMoistMinVegFloor
   , setUiOrographicScale
   , setUiOrographicStep
   , setUiCoastalIterations
@@ -174,6 +191,7 @@ import Actor.UI
   , setUiWindBeltBase
   , setUiWindBeltRange
   , setUiWindBeltSpeedScale
+  , setUiWindCoriolisDeflection
   , setUiBndLandRange
   , setUiBndTempConvergent
   , setUiBndTempDivergent
@@ -258,6 +276,7 @@ import Topo.Climate
 import Topo.Erosion (ErosionConfig(..))
 import Topo.Glacier (GlacierConfig(..))
 import Topo.Hydrology (HydroConfig(..))
+import Topo.Hypsometry (HypsometryConfig(..))
 import Topo.OceanCurrent (OceanCurrentConfig(..))
 import Topo.Parameters (ParameterConfig(..), TerrainFormConfig(..))
 import Topo.Planet (PlanetConfig(..), WorldSlice(..))
@@ -310,6 +329,7 @@ applySnapshotToUi cs h = do
       form    = terrainFormConfig terrain
       hydro   = terrainHydrology terrain
       erosion = terrainErosion terrain
+      hyps    = terrainHypsometry terrain
       glacier = terrainGlacier terrain
       volc    = terrainVolcanism terrain
       soil    = terrainSoil terrain
@@ -340,6 +360,9 @@ applySnapshotToUi cs h = do
   setUiRiverCarveMaxDepth h (unmapRange 0.0 0.2 (hcRiverCarveMaxDepth hydro))
   setUiCoastalErodeStrength h (unmapRange 0.0 0.1 (hcCoastalErodeStrength hydro))
   setUiHydroHardnessWeight h (unmapRange 0.0 1.0 (hcHardnessErodeWeight hydro))
+  setUiPiedmontSmooth h (unmapRange 0.0 0.6 (hcPiedmontSmoothStrength hydro))
+  setUiPiedmontSlopeMin h (unmapRange 0.01 0.08 (hcPiedmontSlopeMin hydro))
+  setUiPiedmontSlopeMax h (unmapRange 0.05 0.25 (hcPiedmontSlopeMax hydro))
   -- Water body
   setUiMinLakeSize h (unmapIntRange 1 50 (wbcMinLakeSize water))
   setUiInlandSeaMinSize h (unmapIntRange 50 500 (wbcInlandSeaMinSize water))
@@ -374,10 +397,10 @@ applySnapshotToUi cs h = do
   setUiPlateMergeScale h (unmapRange 0.05 0.25 (tcPlateMergeScale tec))
   setUiPlateMergeBias h (unmapRange 0.3 0.8 (tcPlateMergeBias tec))
   setUiPlateDetailScale h (unmapRange 0.005 0.05 (tcPlateDetailScale tec))
-  setUiPlateDetailStrength h (unmapRange 0 1 (tcPlateDetailStrength tec))
-  setUiPlateRidgeStrength h (unmapRange 0 1 (tcPlateRidgeStrength tec))
-  setUiPlateHeightBase h (unmapRange (-0.1) 0.35 (tcPlateHeightBase tec))
-  setUiPlateHeightVariance h (unmapRange 0.2 1.2 (tcPlateHeightVariance tec))
+  setUiPlateDetailStrength h (unmapRange 0.05 0.5 (tcPlateDetailStrength tec))
+  setUiPlateRidgeStrength h (unmapRange 0.05 0.4 (tcPlateRidgeStrength tec))
+  setUiPlateHeightBase h (unmapRange 0.0 0.4 (tcPlateHeightBase tec))
+  setUiPlateHeightVariance h (unmapRange 0.1 0.8 (tcPlateHeightVariance tec))
   setUiPlateHardnessBase h (unmapRange 0.2 0.8 (tcPlateHardnessBase tec))
   setUiPlateHardnessVariance h (unmapRange 0.1 0.6 (tcPlateHardnessVariance tec))
   setUiPlateBiasStrength h (unmapRange 0 0.6 (tcPlateBiasStrength tec))
@@ -406,8 +429,22 @@ applySnapshotToUi cs h = do
   setUiRainRate h (unmapRange 0.05 0.5 (ecRainRate erosion))
   setUiErosionHydraulic h (unmapIntRange 1 12 (ecHydraulicIterations erosion))
   setUiErosionThermal h (unmapIntRange 1 12 (ecThermalIterations erosion))
-  setUiErosionTalus h (unmapRange 0.1 1.0 (ecThermalTalus erosion))
+  setUiErosionTalus h (unmapRange 0.01 0.15 (ecThermalTalus erosion))
   setUiErosionMaxDrop h (unmapRange 0.1 1.0 (ecMaxDrop erosion))
+  setUiErosionHydDeposit h (unmapRange 0.0 0.8 (ecHydraulicDepositRatio erosion))
+  setUiErosionDepositSlope h (unmapRange 0.01 0.15 (ecHydraulicDepositMaxSlope erosion))
+  setUiErosionThermDeposit h (unmapRange 0.0 1.0 (ecThermalDepositRatio erosion))
+  setUiErosionCoastZone h (unmapRange 0.005 0.12 (ecCoastalSmoothZone erosion))
+  setUiErosionCoastStrength h (unmapRange 0.0 0.8 (ecCoastalSmoothStrength erosion))
+  setUiErosionCoastIter h (unmapIntRange 1 8 (ecCoastalSmoothIterations erosion))
+  -- Hypsometry
+  setUiHypsometryEnabled h (if hpEnabled hyps then 1.0 else 0.0)
+  setUiHypsometryLowlandExp h (unmapRange 0.5 5.0 (hpLowlandExponent hyps))
+  setUiHypsometryHighlandExp h (unmapRange 0.3 3.0 (hpHighlandExponent hyps))
+  setUiHypsometryPlateauBreak h (unmapRange 0.52 0.75 (hpPlateauBreak hyps))
+  setUiHypsometryOceanExp h (unmapRange 0.2 1.0 (hpOceanExponent hyps))
+  setUiHypsometryCoastalRampWidth h (unmapRange 0.005 0.20 (hpCoastalRampWidth hyps))
+  setUiHypsometryCoastalRampStr h (unmapRange 0.0 1.0 (hpCoastalRampStrength hyps))
   -- Glacier
   setUiGlacierSnowTemp h (unmapRange 0.0 0.5 (gcSnowTemp glacier))
   setUiGlacierSnowRange h (unmapRange 0.1 0.7 (gcSnowRange glacier))
@@ -452,6 +489,7 @@ applySnapshotToUi cs h = do
   setUiWindBeltBase h (windBeltBase wind)
   setUiWindBeltRange h (windBeltRange wind)
   setUiWindBeltSpeedScale h (windBeltSpeedScale wind)
+  setUiWindCoriolisDeflection h (unmapRange 0 1.57 (windCoriolisDeflection wind))
   -- Climate: moisture
   setUiMoistureIterations h (unmapIntRange 2 72 (moistIterations moist))
   setUiMoistAdvect h (moistAdvect moist)
@@ -465,6 +503,7 @@ applySnapshotToUi cs h = do
   setUiMoistRecycleRate h (moistRecycleRate moist)
   setUiMoistITCZStrength h (unmapRange 0 0.5 (moistITCZStrength moist))
   setUiMoistITCZWidth h (unmapRange 2 20 (moistITCZWidth moist))
+  setUiMoistMinVegFloor h (moistMinVegFloor moist)
   -- Climate: precipitation
   setUiOrographicLift h (precOrographicLift prec)
   setUiRainShadowLoss h (precRainShadowLoss prec)

@@ -34,6 +34,15 @@ import Topo.Types
 spec :: Spec
 spec = describe "River Topology" $ do
 
+  -- Helper: a test-friendly config that disables the new pruning
+  -- features (coastal zone offset, ocean-reachability, slope filter)
+  -- so that unit tests for edge/direction logic are not affected.
+  let testCfg = defaultRiverTopologyConfig
+        { rtCoastalZoneOffset = 0
+        , rtMaxSinkDistance   = 0
+        , rtMinSlope          = 0
+        }
+
   -- -----------------------------------------------------------------------
   -- 9.4.1: 3-tile linear chain A->B->C produces correct entry/exit edges
   -- -----------------------------------------------------------------------
@@ -50,9 +59,9 @@ spec = describe "River Topology" $ do
           order     = U.fromList [1, 1, 1 :: Word16]
           elev      = U.replicate 3 (0.8 :: Float)
           wl        = 0.5 :: Float
-          cfg       = defaultRiverTopologyConfig { rtMinDischarge = 1.0, rtMinNetworkTiles = 1 }
+          cfg       = testCfg { rtMinDischarge = 1.0, rtMinNetworkTiles = 1 }
           (offsets, entry, exit, segDisc, segOrd) =
-            computeRiverSegments cfg gridW gridH flow discharge order elev wl
+            computeRiverSegments cfg gridW gridH flow discharge order elev elev wl
 
       -- Tile 0 (headwater, flows right to 1):
       -- exit edge = E (right on grid -> edge 0)
@@ -104,9 +113,9 @@ spec = describe "River Topology" $ do
           order     = U.fromList [1, 1, 1, 2 :: Word16]
           elev      = U.replicate 4 (0.8 :: Float)
           wl        = 0.5 :: Float
-          cfg       = defaultRiverTopologyConfig { rtMinDischarge = 1.0, rtMinNetworkTiles = 1 }
+          cfg       = testCfg { rtMinDischarge = 1.0, rtMinNetworkTiles = 1 }
           (offsets, entry, exit, _, _) =
-            computeRiverSegments cfg gridW gridH flow discharge order elev wl
+            computeRiverSegments cfg gridW gridH flow discharge order elev elev wl
 
       -- Tile 3 should have 2 segments (from tile 1 and tile 2)
       let seg3Start = offsets U.! 3
@@ -128,9 +137,9 @@ spec = describe "River Topology" $ do
             order     = U.fromList [1, 1, 1, 1 :: Word16]
             elev      = U.replicate 4 (0.8 :: Float)
             wl        = 0.5 :: Float
-            cfg       = defaultRiverTopologyConfig { rtMinDischarge = 1.0, rtMinNetworkTiles = 1 }
+            cfg       = testCfg { rtMinDischarge = 1.0, rtMinNetworkTiles = 1 }
             (offsets, entryVec, exitVec, _, _) =
-              computeRiverSegments cfg gridW gridH flow discharge order elev wl
+              computeRiverSegments cfg gridW gridH flow discharge order elev elev wl
             -- For tiles 1,2,3 that have upstream: check that
             -- the downstream's entry == opposite(upstream's exit)
             checkTile i =
@@ -156,9 +165,9 @@ spec = describe "River Topology" $ do
             order     = U.fromList [1, 1, 2, 1, 1, 2 :: Word16]
             elev      = U.replicate 6 (0.8 :: Float)
             wl        = 0.5 :: Float
-            cfg       = defaultRiverTopologyConfig { rtMinDischarge = minDisc, rtMinNetworkTiles = 1 }
+            cfg       = testCfg { rtMinDischarge = minDisc, rtMinNetworkTiles = 1 }
             (offsets, _, _, _, _) =
-              computeRiverSegments cfg gridW gridH flow discharge order elev wl
+              computeRiverSegments cfg gridW gridH flow discharge order elev elev wl
             totalSegs  = offsets U.! n
             tilesAbove = U.length (U.filter (>= minDisc) discharge)
         in totalSegs >= tilesAbove
@@ -176,9 +185,9 @@ spec = describe "River Topology" $ do
           order     = U.fromList [1, 1, 1 :: Word16]
           elev      = U.replicate 3 (0.3 :: Float)  -- below waterLevel
           wl        = 0.5 :: Float
-          cfg       = defaultRiverTopologyConfig { rtMinDischarge = 1.0, rtMinNetworkTiles = 1 }
+          cfg       = testCfg { rtMinDischarge = 1.0, rtMinNetworkTiles = 1 }
           (offsets, _, _, _, _) =
-            computeRiverSegments cfg gridW gridH flow discharge order elev wl
+            computeRiverSegments cfg gridW gridH flow discharge order elev elev wl
           totalSegs = offsets U.! 3
       totalSegs `shouldBe` 0
 
@@ -192,9 +201,9 @@ spec = describe "River Topology" $ do
           order     = U.fromList [1, 1, 1, 1 :: Word16]
           elev      = U.fromList [0.8, 0.8, 0.3, 0.3 :: Float]
           wl        = 0.5 :: Float
-          cfg       = defaultRiverTopologyConfig { rtMinDischarge = 1.0, rtMinNetworkTiles = 1 }
+          cfg       = testCfg { rtMinDischarge = 1.0, rtMinNetworkTiles = 1 }
           (offsets, _, _, _, _) =
-            computeRiverSegments cfg gridW gridH flow discharge order elev wl
+            computeRiverSegments cfg gridW gridH flow discharge order elev elev wl
       -- Tiles 0 and 1 should have segments; tiles 2 and 3 should not
       let segs01 = offsets U.! 2  -- total segments for tiles 0-1
           segs23 = (offsets U.! 4) - (offsets U.! 2)
@@ -211,9 +220,9 @@ spec = describe "River Topology" $ do
             order     = U.fromList [1, 1, 2, 1, 1, 2 :: Word16]
             elev      = U.replicate 6 maxElev
             wl        = 0.5 :: Float
-            cfg       = defaultRiverTopologyConfig { rtMinDischarge = 1.0, rtMinNetworkTiles = 1 }
+            cfg       = testCfg { rtMinDischarge = 1.0, rtMinNetworkTiles = 1 }
             (offsets, _, _, _, _) =
-              computeRiverSegments cfg gridW gridH flow discharge order elev wl
+              computeRiverSegments cfg gridW gridH flow discharge order elev elev wl
             totalSegs = offsets U.! n
         in totalSegs == 0
 
@@ -292,10 +301,10 @@ spec = describe "River Topology" $ do
           order     = U.fromList [1, 1, 1 :: Word16]
           elev      = U.replicate 3 (0.8 :: Float)
           wl        = 0.5 :: Float
-          cfg       = defaultRiverTopologyConfig
+          cfg       = testCfg
                         { rtMinDischarge = 1.0, rtMinNetworkTiles = 5 }
           (offsets, _, _, _, _) =
-            computeRiverSegments cfg gridW gridH flow discharge order elev wl
+            computeRiverSegments cfg gridW gridH flow discharge order elev elev wl
       -- Network has 3 tiles < 5, so all segments should be pruned.
       (offsets U.! 3) `shouldBe` 0
 
@@ -308,10 +317,10 @@ spec = describe "River Topology" $ do
           order     = U.fromList [1, 1, 1, 1, 1 :: Word16]
           elev      = U.replicate 5 (0.8 :: Float)
           wl        = 0.5 :: Float
-          cfg       = defaultRiverTopologyConfig
+          cfg       = testCfg
                         { rtMinDischarge = 1.0, rtMinNetworkTiles = 5 }
           (offsets, _, _, _, _) =
-            computeRiverSegments cfg gridW gridH flow discharge order elev wl
+            computeRiverSegments cfg gridW gridH flow discharge order elev elev wl
       -- Network has exactly 5 tiles >= 5, so all segments should be kept.
       (offsets U.! 5) `shouldSatisfy` (> 0)
 
@@ -329,10 +338,10 @@ spec = describe "River Topology" $ do
                                  ,1, 1, 0, 0, 0 :: Word16]
           elev      = U.replicate 10 (0.8 :: Float)
           wl        = 0.5 :: Float
-          cfg       = defaultRiverTopologyConfig
+          cfg       = testCfg
                         { rtMinDischarge = 1.0, rtMinNetworkTiles = 3 }
           (offsets, _, _, _, _) =
-            computeRiverSegments cfg gridW gridH flow discharge order elev wl
+            computeRiverSegments cfg gridW gridH flow discharge order elev elev wl
       -- Row 0 network: 5 tiles >= 3 → retained
       let row0Segs = offsets U.! 5 - offsets U.! 0
       row0Segs `shouldSatisfy` (> 0)
@@ -351,10 +360,10 @@ spec = describe "River Topology" $ do
               order     = U.replicate gridW (1 :: Word16)
               elev      = U.replicate gridW (0.8 :: Float)
               wl        = 0.5 :: Float
-              cfg       = defaultRiverTopologyConfig
+              cfg       = testCfg
                             { rtMinDischarge = 1.0, rtMinNetworkTiles = minNet }
               (offsets, _, _, _, _) =
-                computeRiverSegments cfg gridW gridH flow discharge order elev wl
+                computeRiverSegments cfg gridW gridH flow discharge order elev elev wl
           in offsets U.! gridW == 0
 
     it "pruning disabled when rtMinNetworkTiles = 1" $ do
@@ -365,8 +374,53 @@ spec = describe "River Topology" $ do
           order     = U.fromList [1, 1 :: Word16]
           elev      = U.replicate 2 (0.8 :: Float)
           wl        = 0.5 :: Float
-          cfg       = defaultRiverTopologyConfig
+          cfg       = testCfg
                         { rtMinDischarge = 1.0, rtMinNetworkTiles = 1 }
           (offsets, _, _, _, _) =
-            computeRiverSegments cfg gridW gridH flow discharge order elev wl
+            computeRiverSegments cfg gridW gridH flow discharge order elev elev wl
       (offsets U.! 2) `shouldSatisfy` (> 0)
+
+  -- -----------------------------------------------------------------------
+  -- 3d: Ocean-reachability property — every tile with segments can
+  -- trace its flow downstream to elev ≤ waterLevel (or grid boundary).
+  -- -----------------------------------------------------------------------
+  describe "ocean-reachability property" $ do
+    prop "every tile with segments reaches ocean via flow path" $
+      -- Simple sloped 6x1 grid: tiles flow left→right, last tile is ocean
+      forAll (choose (2.0, 10.0)) $ \baseDisc ->
+        let gridW = 6
+            gridH = 1
+            -- flow: each tile flows right, last tile is sink
+            flow      = U.fromList [1, 2, 3, 4, 5, -1 :: Int]
+            -- discharge increases downstream
+            discharge = U.generate gridW (\i -> baseDisc * fromIntegral (i + 1))
+            order     = U.replicate gridW (1 :: Word16)
+            -- land tiles slope from 0.9 down to 0.55, last tile is ocean (0.3)
+            elev      = U.fromList [0.9, 0.85, 0.8, 0.75, 0.6, 0.3 :: Float]
+            wl        = 0.5 :: Float
+            cfg       = defaultRiverTopologyConfig
+                          { rtMinDischarge    = 1.0
+                          , rtMinNetworkTiles = 1
+                          , rtMaxSinkDistance = 50
+                          , rtMinSlope        = 0
+                          , rtCoastalZoneOffset = 0
+                          }
+            (offsets, _, _, _, _) =
+              computeRiverSegments cfg gridW gridH flow discharge order elev elev wl
+            -- For every tile with segments, trace flow to ocean
+            reachesOcean i =
+              let go cur steps
+                    | steps > gridW = False
+                    | cur < 0 || cur >= gridW = True
+                    | elev U.! cur <= wl = True
+                    | otherwise =
+                        let next = flow U.! cur
+                        in if next < 0 then False else go next (steps + 1)
+              in go i 0
+            allReach = and
+              [ if (offsets U.! (i + 1) - offsets U.! i) > 0
+                then reachesOcean i
+                else True
+              | i <- [0 .. gridW - 1]
+              ]
+        in allReach

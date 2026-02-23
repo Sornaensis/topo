@@ -234,6 +234,16 @@ data WidgetId
   | WidgetConfigBndPrecipDivergentPlus
   | WidgetConfigBndPrecipTransformMinus
   | WidgetConfigBndPrecipTransformPlus
+  | WidgetConfigPiedmontSmoothMinus
+  | WidgetConfigPiedmontSmoothPlus
+  | WidgetConfigPiedmontSlopeMinMinus
+  | WidgetConfigPiedmontSlopeMinPlus
+  | WidgetConfigPiedmontSlopeMaxMinus
+  | WidgetConfigPiedmontSlopeMaxPlus
+  | WidgetConfigWindCoriolisDeflectionMinus
+  | WidgetConfigWindCoriolisDeflectionPlus
+  | WidgetConfigMoistMinVegFloorMinus
+  | WidgetConfigMoistMinVegFloorPlus
   | WidgetConfigErosionHydraulicMinus
   | WidgetConfigErosionHydraulicPlus
   | WidgetConfigErosionThermalMinus
@@ -244,6 +254,32 @@ data WidgetId
   | WidgetConfigErosionTalusPlus
   | WidgetConfigErosionMaxDropMinus
   | WidgetConfigErosionMaxDropPlus
+  | WidgetConfigErosionHydDepositMinus
+  | WidgetConfigErosionHydDepositPlus
+  | WidgetConfigErosionDepositSlopeMinus
+  | WidgetConfigErosionDepositSlopePlus
+  | WidgetConfigErosionThermDepositMinus
+  | WidgetConfigErosionThermDepositPlus
+  | WidgetConfigErosionCoastZoneMinus
+  | WidgetConfigErosionCoastZonePlus
+  | WidgetConfigErosionCoastStrengthMinus
+  | WidgetConfigErosionCoastStrengthPlus
+  | WidgetConfigErosionCoastIterMinus
+  | WidgetConfigErosionCoastIterPlus
+  | WidgetConfigHypsometryEnabledMinus
+  | WidgetConfigHypsometryEnabledPlus
+  | WidgetConfigHypsometryLowlandExpMinus
+  | WidgetConfigHypsometryLowlandExpPlus
+  | WidgetConfigHypsometryHighlandExpMinus
+  | WidgetConfigHypsometryHighlandExpPlus
+  | WidgetConfigHypsometryPlateauBreakMinus
+  | WidgetConfigHypsometryPlateauBreakPlus
+  | WidgetConfigHypsometryOceanExpMinus
+  | WidgetConfigHypsometryOceanExpPlus
+  | WidgetConfigHypsometryCoastalRampWidthMinus
+  | WidgetConfigHypsometryCoastalRampWidthPlus
+  | WidgetConfigHypsometryCoastalRampStrMinus
+  | WidgetConfigHypsometryCoastalRampStrPlus
   | WidgetConfigGlacierSnowTempMinus
   | WidgetConfigGlacierSnowTempPlus
   | WidgetConfigGlacierSnowRangeMinus
@@ -680,6 +716,16 @@ buildWidgets layout =
       , Widget WidgetConfigBndPrecipDivergentPlus (configBndPrecipDivergentPlusRect layout)
       , Widget WidgetConfigBndPrecipTransformMinus (configBndPrecipTransformMinusRect layout)
       , Widget WidgetConfigBndPrecipTransformPlus (configBndPrecipTransformPlusRect layout)
+      , Widget WidgetConfigPiedmontSmoothMinus (configPiedmontSmoothMinusRect layout)
+      , Widget WidgetConfigPiedmontSmoothPlus (configPiedmontSmoothPlusRect layout)
+      , Widget WidgetConfigPiedmontSlopeMinMinus (configPiedmontSlopeMinMinusRect layout)
+      , Widget WidgetConfigPiedmontSlopeMinPlus (configPiedmontSlopeMinPlusRect layout)
+      , Widget WidgetConfigPiedmontSlopeMaxMinus (configPiedmontSlopeMaxMinusRect layout)
+      , Widget WidgetConfigPiedmontSlopeMaxPlus (configPiedmontSlopeMaxPlusRect layout)
+      , Widget WidgetConfigWindCoriolisDeflectionMinus (configWindCoriolisDeflectionMinusRect layout)
+      , Widget WidgetConfigWindCoriolisDeflectionPlus (configWindCoriolisDeflectionPlusRect layout)
+      , Widget WidgetConfigMoistMinVegFloorMinus (configMoistMinVegFloorMinusRect layout)
+      , Widget WidgetConfigMoistMinVegFloorPlus (configMoistMinVegFloorPlusRect layout)
       , Widget WidgetConfigErosionHydraulicMinus (configErosionHydraulicMinusRect layout)
       , Widget WidgetConfigErosionHydraulicPlus (configErosionHydraulicPlusRect layout)
       , Widget WidgetConfigErosionThermalMinus (configErosionThermalMinusRect layout)
@@ -690,6 +736,32 @@ buildWidgets layout =
       , Widget WidgetConfigErosionTalusPlus (configErosionTalusPlusRect layout)
       , Widget WidgetConfigErosionMaxDropMinus (configErosionMaxDropMinusRect layout)
       , Widget WidgetConfigErosionMaxDropPlus (configErosionMaxDropPlusRect layout)
+      , Widget WidgetConfigErosionHydDepositMinus (configErosionHydDepositMinusRect layout)
+      , Widget WidgetConfigErosionHydDepositPlus (configErosionHydDepositPlusRect layout)
+      , Widget WidgetConfigErosionDepositSlopeMinus (configErosionDepositSlopeMinusRect layout)
+      , Widget WidgetConfigErosionDepositSlopePlus (configErosionDepositSlopePlusRect layout)
+      , Widget WidgetConfigErosionThermDepositMinus (configErosionThermDepositMinusRect layout)
+      , Widget WidgetConfigErosionThermDepositPlus (configErosionThermDepositPlusRect layout)
+      , Widget WidgetConfigErosionCoastZoneMinus (configErosionCoastZoneMinusRect layout)
+      , Widget WidgetConfigErosionCoastZonePlus (configErosionCoastZonePlusRect layout)
+      , Widget WidgetConfigErosionCoastStrengthMinus (configErosionCoastStrengthMinusRect layout)
+      , Widget WidgetConfigErosionCoastStrengthPlus (configErosionCoastStrengthPlusRect layout)
+      , Widget WidgetConfigErosionCoastIterMinus (configErosionCoastIterMinusRect layout)
+      , Widget WidgetConfigErosionCoastIterPlus (configErosionCoastIterPlusRect layout)
+      , Widget WidgetConfigHypsometryEnabledMinus (configHypsometryEnabledMinusRect layout)
+      , Widget WidgetConfigHypsometryEnabledPlus (configHypsometryEnabledPlusRect layout)
+      , Widget WidgetConfigHypsometryLowlandExpMinus (configHypsometryLowlandExpMinusRect layout)
+      , Widget WidgetConfigHypsometryLowlandExpPlus (configHypsometryLowlandExpPlusRect layout)
+      , Widget WidgetConfigHypsometryHighlandExpMinus (configHypsometryHighlandExpMinusRect layout)
+      , Widget WidgetConfigHypsometryHighlandExpPlus (configHypsometryHighlandExpPlusRect layout)
+      , Widget WidgetConfigHypsometryPlateauBreakMinus (configHypsometryPlateauBreakMinusRect layout)
+      , Widget WidgetConfigHypsometryPlateauBreakPlus (configHypsometryPlateauBreakPlusRect layout)
+      , Widget WidgetConfigHypsometryOceanExpMinus (configHypsometryOceanExpMinusRect layout)
+      , Widget WidgetConfigHypsometryOceanExpPlus (configHypsometryOceanExpPlusRect layout)
+      , Widget WidgetConfigHypsometryCoastalRampWidthMinus (configHypsometryCoastalRampWidthMinusRect layout)
+      , Widget WidgetConfigHypsometryCoastalRampWidthPlus (configHypsometryCoastalRampWidthPlusRect layout)
+      , Widget WidgetConfigHypsometryCoastalRampStrMinus (configHypsometryCoastalRampStrMinusRect layout)
+      , Widget WidgetConfigHypsometryCoastalRampStrPlus (configHypsometryCoastalRampStrPlusRect layout)
       , Widget WidgetConfigGlacierSnowTempMinus (configGlacierSnowTempMinusRect layout)
       , Widget WidgetConfigGlacierSnowTempPlus (configGlacierSnowTempPlusRect layout)
       , Widget WidgetConfigGlacierSnowRangeMinus (configGlacierSnowRangeMinusRect layout)
@@ -1018,6 +1090,11 @@ buildSliderRowWidgets layout = (terrain, planet, climate, weather, biome, erosio
       , row WidgetConfigBndPrecipConvergentMinus 45
       , row WidgetConfigBndPrecipDivergentMinus 46
       , row WidgetConfigBndPrecipTransformMinus 47
+      , row WidgetConfigPiedmontSmoothMinus 48
+      , row WidgetConfigPiedmontSlopeMinMinus 49
+      , row WidgetConfigPiedmontSlopeMaxMinus 50
+      , row WidgetConfigWindCoriolisDeflectionMinus 51
+      , row WidgetConfigMoistMinVegFloorMinus 52
       ]
 
     weather =
@@ -1079,36 +1156,49 @@ buildSliderRowWidgets layout = (terrain, planet, climate, weather, biome, erosio
       , row WidgetConfigErosionRainRateMinus 2
       , row WidgetConfigErosionTalusMinus 3
       , row WidgetConfigErosionMaxDropMinus 4
-      , row WidgetConfigGlacierSnowTempMinus 5
-      , row WidgetConfigGlacierSnowRangeMinus 6
-      , row WidgetConfigGlacierMeltTempMinus 7
-      , row WidgetConfigGlacierMeltRateMinus 8
-      , row WidgetConfigGlacierAccumScaleMinus 9
-      , row WidgetConfigGlacierFlowItersMinus 10
-      , row WidgetConfigGlacierFlowRateMinus 11
-      , row WidgetConfigGlacierErosionScaleMinus 12
-      , row WidgetConfigGlacierCarveScaleMinus 13
-      , row WidgetConfigGlacierDepositScaleMinus 14
-      , row WidgetConfigVentDensityMinus 15
-      , row WidgetConfigVentThresholdMinus 16
-      , row WidgetConfigHotspotScaleMinus 17
-      , row WidgetConfigHotspotThresholdMinus 18
-      , row WidgetConfigMagmaRechargeMinus 19
-      , row WidgetConfigLavaScaleMinus 20
-      , row WidgetConfigAshScaleMinus 21
-      , row WidgetConfigVolcanicDepositScaleMinus 22
-      , row WidgetConfigSoilMoistureThresholdMinus 23
-      , row WidgetConfigSoilHardnessThresholdMinus 24
-      , row WidgetConfigSoilFertilityMoistWeightMinus 25
-      , row WidgetConfigSoilFertilityDepthWeightMinus 26
-      , row WidgetConfigSinkBreachDepthMinus 27
-      , row WidgetConfigStreamPowerMaxErosionMinus 28
-      , row WidgetConfigRiverCarveMaxDepthMinus 29
-      , row WidgetConfigCoastalErodeStrengthMinus 30
-      , row WidgetConfigHydroHardnessWeightMinus 31
-      , row WidgetConfigMinLakeSizeMinus 32
-      , row WidgetConfigInlandSeaMinSizeMinus 33
-      , row WidgetConfigRoughnessScaleMinus 34
+      , row WidgetConfigErosionHydDepositMinus 5
+      , row WidgetConfigErosionDepositSlopeMinus 6
+      , row WidgetConfigErosionThermDepositMinus 7
+      , row WidgetConfigErosionCoastZoneMinus 8
+      , row WidgetConfigErosionCoastStrengthMinus 9
+      , row WidgetConfigErosionCoastIterMinus 10
+      , row WidgetConfigHypsometryEnabledMinus 11
+      , row WidgetConfigHypsometryLowlandExpMinus 12
+      , row WidgetConfigHypsometryHighlandExpMinus 13
+      , row WidgetConfigHypsometryPlateauBreakMinus 14
+      , row WidgetConfigHypsometryOceanExpMinus 15
+      , row WidgetConfigHypsometryCoastalRampWidthMinus 16
+      , row WidgetConfigHypsometryCoastalRampStrMinus 17
+      , row WidgetConfigGlacierSnowTempMinus 18
+      , row WidgetConfigGlacierSnowRangeMinus 19
+      , row WidgetConfigGlacierMeltTempMinus 20
+      , row WidgetConfigGlacierMeltRateMinus 21
+      , row WidgetConfigGlacierAccumScaleMinus 22
+      , row WidgetConfigGlacierFlowItersMinus 23
+      , row WidgetConfigGlacierFlowRateMinus 24
+      , row WidgetConfigGlacierErosionScaleMinus 25
+      , row WidgetConfigGlacierCarveScaleMinus 26
+      , row WidgetConfigGlacierDepositScaleMinus 27
+      , row WidgetConfigVentDensityMinus 28
+      , row WidgetConfigVentThresholdMinus 29
+      , row WidgetConfigHotspotScaleMinus 30
+      , row WidgetConfigHotspotThresholdMinus 31
+      , row WidgetConfigMagmaRechargeMinus 32
+      , row WidgetConfigLavaScaleMinus 33
+      , row WidgetConfigAshScaleMinus 34
+      , row WidgetConfigVolcanicDepositScaleMinus 35
+      , row WidgetConfigSoilMoistureThresholdMinus 36
+      , row WidgetConfigSoilHardnessThresholdMinus 37
+      , row WidgetConfigSoilFertilityMoistWeightMinus 38
+      , row WidgetConfigSoilFertilityDepthWeightMinus 39
+      , row WidgetConfigSinkBreachDepthMinus 40
+      , row WidgetConfigStreamPowerMaxErosionMinus 41
+      , row WidgetConfigRiverCarveMaxDepthMinus 42
+      , row WidgetConfigCoastalErodeStrengthMinus 43
+      , row WidgetConfigHydroHardnessWeightMinus 44
+      , row WidgetConfigMinLakeSizeMinus 45
+      , row WidgetConfigInlandSeaMinSizeMinus 46
+      , row WidgetConfigRoughnessScaleMinus 47
       ]
 
 hitTest :: [Widget] -> V2 Int -> Maybe WidgetId

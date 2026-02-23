@@ -44,11 +44,11 @@ instance FromJSON ShrublandConfig where
 -- | Sensible defaults for shrubland refinement.
 defaultShrublandConfig :: ShrublandConfig
 defaultShrublandConfig = ShrublandConfig
-  { scMediterraneanMinTemp   = 0.45
+  { scMediterraneanMinTemp   = 0.515
   , scMediterraneanMaxPrecip = 0.35
   , scMediterraneanMinPrecipSeason = 0.35
   , scXericMaxMoisture       = 0.15
-  , scMoorlandMaxTemp        = 0.40
+  , scMoorlandMaxTemp        = 0.48
   , scMoorlandMinMoisture    = 0.50
   , scMoorlandMaxFertility   = 0.25
   }

@@ -2,12 +2,11 @@
 module Seer.Input.ConfigScroll
   ( ScrollSettings(..)
   , defaultScrollSettings
-  , configRowCount
   , computeScrollUpdates
   ) where
 
 import Actor.Log (LogSnapshot(..))
-import Actor.UI (ConfigTab(..), UiState(..))
+import Actor.UI (ConfigTab(..), UiState(..), configRowCount)
 import Linear (V2(..))
 import Seer.Draw (seedMaxDigits)
 import UI.Layout
@@ -32,14 +31,7 @@ defaultScrollSettings = ScrollSettings
   , ssSeedDigitWidth = 10
   }
 
--- | Total number of config rows for each tab.
-configRowCount :: ConfigTab -> Int
-configRowCount ConfigTerrain = 53
-configRowCount ConfigPlanet = 7
-configRowCount ConfigClimate = 48
-configRowCount ConfigWeather = 21
-configRowCount ConfigBiome = 26
-configRowCount ConfigErosion = 35
+
 
 -- | Compute scroll updates for config panel and log view.
 computeScrollUpdates

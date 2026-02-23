@@ -156,6 +156,7 @@ spec = describe "Weather" $ do
         weatherCfg = defaultWeatherConfig
           { wcSeasonPhase = 1.5708  -- pi/2, maximise seasonal term
           , wcJitterAmplitude = 0   -- isolate seasonal signal
+          , wcCloudAlbedoEffect = 0 -- remove cloud cooling noise floor
           }
         env = TopoEnv { teLogger = \_ -> pure () }
         pipeline = PipelineConfig

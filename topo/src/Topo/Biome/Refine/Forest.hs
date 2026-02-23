@@ -70,23 +70,23 @@ instance FromJSON ForestConfig where
 -- at elevation.  These thresholds provide a secondary filter.
 defaultForestConfig :: ForestConfig
 defaultForestConfig = ForestConfig
-  { fcTropicalDryMinTemp      = 0.74
+  { fcTropicalDryMinTemp      = 0.718
   , fcTropicalDryMaxPrecip    = 0.60
-  , fcDeciduousMinTemp        = 0.35
+  , fcDeciduousMinTemp        = 0.445
   , fcDeciduousMinPrecip      = 0.40
-  , fcConiferousMaxTemp       = 0.58
+  , fcConiferousMaxTemp       = 0.606
   , fcConiferousMinHardness   = 0.40
   , fcMontaneMinElev          = 0.56
   , fcMontaneMinSlope         = 0.06
   , fcCloudForestMinElev      = 0.60
   , fcCloudForestMinPrecip    = 0.70
-  , fcCloudForestMinTemp      = 0.55
+  , fcCloudForestMinTemp      = 0.585
   , fcCloudForestMinHumidity  = 0.65
   , fcTempRainforestMinPrecip = 0.80
-  , fcTempRainforestMaxTemp   = 0.55
+  , fcTempRainforestMaxTemp   = 0.585
   , fcTempRainforestMinHumidity = 0.70
   , fcSeasonalForestMinSeason = 0.45
-  , fcSeasonalForestMinTemp   = 0.65
+  , fcSeasonalForestMinTemp   = 0.655
   }
 
 -- | Refine a forest tile into a sub-biome.

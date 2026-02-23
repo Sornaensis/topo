@@ -20,6 +20,7 @@ import Actor.UI
   , UiMenuMode(..)
   , UiState(..)
   , ViewMode(..)
+  , configRowCount
   , setUiChunkSize
   , setUiConfigTab
   , setUiConfigScroll
@@ -27,6 +28,19 @@ import Actor.UI
   , setUiContextPos
   , setUiErosionHydraulic
   , setUiErosionMaxDrop
+  , setUiErosionHydDeposit
+  , setUiErosionDepositSlope
+  , setUiErosionThermDeposit
+  , setUiErosionCoastZone
+  , setUiErosionCoastStrength
+  , setUiErosionCoastIter
+  , setUiHypsometryEnabled
+  , setUiHypsometryLowlandExp
+  , setUiHypsometryHighlandExp
+  , setUiHypsometryPlateauBreak
+  , setUiHypsometryOceanExp
+  , setUiHypsometryCoastalRampWidth
+  , setUiHypsometryCoastalRampStr
   , setUiErosionTalus
   , setUiErosionThermal
   , setUiGlacierSnowTemp
@@ -140,6 +154,7 @@ import Actor.UI
   , setUiMoistRecycleRate
   , setUiMoistITCZStrength
   , setUiMoistITCZWidth
+  , setUiMoistMinVegFloor
   , setUiOrographicScale
   , setUiOrographicStep
   , setUiCoastalIterations
@@ -150,6 +165,7 @@ import Actor.UI
   , setUiWindBeltBase
   , setUiWindBeltRange
   , setUiWindBeltSpeedScale
+  , setUiWindCoriolisDeflection
   , setUiBndLandRange
   , setUiBndTempConvergent
   , setUiBndTempDivergent
@@ -157,6 +173,9 @@ import Actor.UI
   , setUiBndPrecipConvergent
   , setUiBndPrecipDivergent
   , setUiBndPrecipTransform
+  , setUiPiedmontSmooth
+  , setUiPiedmontSlopeMin
+  , setUiPiedmontSlopeMax
   , setUiPlateSize
   , setUiRiftDepth
   , setUiUplift
@@ -254,7 +273,6 @@ import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Seer.Input.ConfigScroll
   ( ScrollSettings
   , computeScrollUpdates
-  , configRowCount
   , defaultScrollSettings
   )
 import Seer.Input.Modal (handleModalTextKey, handleModalTextInput, handleModalListKey)
@@ -796,6 +814,12 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           WidgetConfigBndPrecipDivergentPlus -> True
           WidgetConfigBndPrecipTransformMinus -> True
           WidgetConfigBndPrecipTransformPlus -> True
+          WidgetConfigPiedmontSmoothMinus -> True
+          WidgetConfigPiedmontSmoothPlus -> True
+          WidgetConfigPiedmontSlopeMinMinus -> True
+          WidgetConfigPiedmontSlopeMinPlus -> True
+          WidgetConfigPiedmontSlopeMaxMinus -> True
+          WidgetConfigPiedmontSlopeMaxPlus -> True
           WidgetConfigWeatherTickMinus -> True
           WidgetConfigWeatherTickPlus -> True
           WidgetConfigWeatherPhaseMinus -> True
@@ -1006,6 +1030,32 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           WidgetConfigErosionTalusPlus -> True
           WidgetConfigErosionMaxDropMinus -> True
           WidgetConfigErosionMaxDropPlus -> True
+          WidgetConfigErosionHydDepositMinus -> True
+          WidgetConfigErosionHydDepositPlus -> True
+          WidgetConfigErosionDepositSlopeMinus -> True
+          WidgetConfigErosionDepositSlopePlus -> True
+          WidgetConfigErosionThermDepositMinus -> True
+          WidgetConfigErosionThermDepositPlus -> True
+          WidgetConfigErosionCoastZoneMinus -> True
+          WidgetConfigErosionCoastZonePlus -> True
+          WidgetConfigErosionCoastStrengthMinus -> True
+          WidgetConfigErosionCoastStrengthPlus -> True
+          WidgetConfigErosionCoastIterMinus -> True
+          WidgetConfigErosionCoastIterPlus -> True
+          WidgetConfigHypsometryEnabledMinus -> True
+          WidgetConfigHypsometryEnabledPlus -> True
+          WidgetConfigHypsometryLowlandExpMinus -> True
+          WidgetConfigHypsometryLowlandExpPlus -> True
+          WidgetConfigHypsometryHighlandExpMinus -> True
+          WidgetConfigHypsometryHighlandExpPlus -> True
+          WidgetConfigHypsometryPlateauBreakMinus -> True
+          WidgetConfigHypsometryPlateauBreakPlus -> True
+          WidgetConfigHypsometryOceanExpMinus -> True
+          WidgetConfigHypsometryOceanExpPlus -> True
+          WidgetConfigHypsometryCoastalRampWidthMinus -> True
+          WidgetConfigHypsometryCoastalRampWidthPlus -> True
+          WidgetConfigHypsometryCoastalRampStrMinus -> True
+          WidgetConfigHypsometryCoastalRampStrPlus -> True
           WidgetConfigGlacierSnowTempMinus -> True
           WidgetConfigGlacierSnowTempPlus -> True
           WidgetConfigGlacierSnowRangeMinus -> True
@@ -1186,6 +1236,16 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           WidgetConfigBndPrecipDivergentPlus -> tab == ConfigClimate
           WidgetConfigBndPrecipTransformMinus -> tab == ConfigClimate
           WidgetConfigBndPrecipTransformPlus -> tab == ConfigClimate
+          WidgetConfigPiedmontSmoothMinus -> tab == ConfigClimate
+          WidgetConfigPiedmontSmoothPlus -> tab == ConfigClimate
+          WidgetConfigPiedmontSlopeMinMinus -> tab == ConfigClimate
+          WidgetConfigPiedmontSlopeMinPlus -> tab == ConfigClimate
+          WidgetConfigPiedmontSlopeMaxMinus -> tab == ConfigClimate
+          WidgetConfigPiedmontSlopeMaxPlus -> tab == ConfigClimate
+          WidgetConfigWindCoriolisDeflectionMinus -> tab == ConfigClimate
+          WidgetConfigWindCoriolisDeflectionPlus -> tab == ConfigClimate
+          WidgetConfigMoistMinVegFloorMinus -> tab == ConfigClimate
+          WidgetConfigMoistMinVegFloorPlus -> tab == ConfigClimate
           WidgetConfigWeatherTickMinus -> tab == ConfigWeather
           WidgetConfigWeatherTickPlus -> tab == ConfigWeather
           WidgetConfigWeatherPhaseMinus -> tab == ConfigWeather
@@ -1396,6 +1456,32 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           WidgetConfigErosionTalusPlus -> tab == ConfigErosion
           WidgetConfigErosionMaxDropMinus -> tab == ConfigErosion
           WidgetConfigErosionMaxDropPlus -> tab == ConfigErosion
+          WidgetConfigErosionHydDepositMinus -> tab == ConfigErosion
+          WidgetConfigErosionHydDepositPlus -> tab == ConfigErosion
+          WidgetConfigErosionDepositSlopeMinus -> tab == ConfigErosion
+          WidgetConfigErosionDepositSlopePlus -> tab == ConfigErosion
+          WidgetConfigErosionThermDepositMinus -> tab == ConfigErosion
+          WidgetConfigErosionThermDepositPlus -> tab == ConfigErosion
+          WidgetConfigErosionCoastZoneMinus -> tab == ConfigErosion
+          WidgetConfigErosionCoastZonePlus -> tab == ConfigErosion
+          WidgetConfigErosionCoastStrengthMinus -> tab == ConfigErosion
+          WidgetConfigErosionCoastStrengthPlus -> tab == ConfigErosion
+          WidgetConfigErosionCoastIterMinus -> tab == ConfigErosion
+          WidgetConfigErosionCoastIterPlus -> tab == ConfigErosion
+          WidgetConfigHypsometryEnabledMinus -> tab == ConfigErosion
+          WidgetConfigHypsometryEnabledPlus -> tab == ConfigErosion
+          WidgetConfigHypsometryLowlandExpMinus -> tab == ConfigErosion
+          WidgetConfigHypsometryLowlandExpPlus -> tab == ConfigErosion
+          WidgetConfigHypsometryHighlandExpMinus -> tab == ConfigErosion
+          WidgetConfigHypsometryHighlandExpPlus -> tab == ConfigErosion
+          WidgetConfigHypsometryPlateauBreakMinus -> tab == ConfigErosion
+          WidgetConfigHypsometryPlateauBreakPlus -> tab == ConfigErosion
+          WidgetConfigHypsometryOceanExpMinus -> tab == ConfigErosion
+          WidgetConfigHypsometryOceanExpPlus -> tab == ConfigErosion
+          WidgetConfigHypsometryCoastalRampWidthMinus -> tab == ConfigErosion
+          WidgetConfigHypsometryCoastalRampWidthPlus -> tab == ConfigErosion
+          WidgetConfigHypsometryCoastalRampStrMinus -> tab == ConfigErosion
+          WidgetConfigHypsometryCoastalRampStrPlus -> tab == ConfigErosion
           WidgetConfigGlacierSnowTempMinus -> tab == ConfigErosion
           WidgetConfigGlacierSnowTempPlus -> tab == ConfigErosion
           WidgetConfigGlacierSnowRangeMinus -> tab == ConfigErosion
@@ -1632,6 +1718,32 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           ; Just WidgetConfigErosionTalusPlus -> whenConfigVisible (bumpErosionTalus 0.05)
           ; Just WidgetConfigErosionMaxDropMinus -> whenConfigVisible (bumpErosionMaxDrop (-0.05))
           ; Just WidgetConfigErosionMaxDropPlus -> whenConfigVisible (bumpErosionMaxDrop 0.05)
+          ; Just WidgetConfigErosionHydDepositMinus -> whenConfigVisible (bumpErosionHydDeposit (-0.05))
+          ; Just WidgetConfigErosionHydDepositPlus -> whenConfigVisible (bumpErosionHydDeposit 0.05)
+          ; Just WidgetConfigErosionDepositSlopeMinus -> whenConfigVisible (bumpErosionDepositSlope (-0.05))
+          ; Just WidgetConfigErosionDepositSlopePlus -> whenConfigVisible (bumpErosionDepositSlope 0.05)
+          ; Just WidgetConfigErosionThermDepositMinus -> whenConfigVisible (bumpErosionThermDeposit (-0.05))
+          ; Just WidgetConfigErosionThermDepositPlus -> whenConfigVisible (bumpErosionThermDeposit 0.05)
+          ; Just WidgetConfigErosionCoastZoneMinus -> whenConfigVisible (bumpErosionCoastZone (-0.05))
+          ; Just WidgetConfigErosionCoastZonePlus -> whenConfigVisible (bumpErosionCoastZone 0.05)
+          ; Just WidgetConfigErosionCoastStrengthMinus -> whenConfigVisible (bumpErosionCoastStrength (-0.05))
+          ; Just WidgetConfigErosionCoastStrengthPlus -> whenConfigVisible (bumpErosionCoastStrength 0.05)
+          ; Just WidgetConfigErosionCoastIterMinus -> whenConfigVisible (bumpErosionCoastIter (-0.05))
+          ; Just WidgetConfigErosionCoastIterPlus -> whenConfigVisible (bumpErosionCoastIter 0.05)
+          ; Just WidgetConfigHypsometryEnabledMinus -> whenConfigVisible (bumpHypsometryEnabled (-0.05))
+          ; Just WidgetConfigHypsometryEnabledPlus -> whenConfigVisible (bumpHypsometryEnabled 0.05)
+          ; Just WidgetConfigHypsometryLowlandExpMinus -> whenConfigVisible (bumpHypsometryLowlandExp (-0.05))
+          ; Just WidgetConfigHypsometryLowlandExpPlus -> whenConfigVisible (bumpHypsometryLowlandExp 0.05)
+          ; Just WidgetConfigHypsometryHighlandExpMinus -> whenConfigVisible (bumpHypsometryHighlandExp (-0.05))
+          ; Just WidgetConfigHypsometryHighlandExpPlus -> whenConfigVisible (bumpHypsometryHighlandExp 0.05)
+          ; Just WidgetConfigHypsometryPlateauBreakMinus -> whenConfigVisible (bumpHypsometryPlateauBreak (-0.05))
+          ; Just WidgetConfigHypsometryPlateauBreakPlus -> whenConfigVisible (bumpHypsometryPlateauBreak 0.05)
+          ; Just WidgetConfigHypsometryOceanExpMinus -> whenConfigVisible (bumpHypsometryOceanExp (-0.05))
+          ; Just WidgetConfigHypsometryOceanExpPlus -> whenConfigVisible (bumpHypsometryOceanExp 0.05)
+          ; Just WidgetConfigHypsometryCoastalRampWidthMinus -> whenConfigVisible (bumpHypsometryCoastalRampWidth (-0.05))
+          ; Just WidgetConfigHypsometryCoastalRampWidthPlus -> whenConfigVisible (bumpHypsometryCoastalRampWidth 0.05)
+          ; Just WidgetConfigHypsometryCoastalRampStrMinus -> whenConfigVisible (bumpHypsometryCoastalRampStr (-0.05))
+          ; Just WidgetConfigHypsometryCoastalRampStrPlus -> whenConfigVisible (bumpHypsometryCoastalRampStr 0.05)
           ; Just WidgetConfigGlacierSnowTempMinus -> whenConfigVisible (bumpGlacierSnowTemp (-0.05))
           ; Just WidgetConfigGlacierSnowTempPlus -> whenConfigVisible (bumpGlacierSnowTemp 0.05)
           ; Just WidgetConfigGlacierSnowRangeMinus -> whenConfigVisible (bumpGlacierSnowRange (-0.05))
@@ -1788,6 +1900,16 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           ; Just WidgetConfigBndPrecipDivergentPlus -> whenConfigVisible (bumpBndPrecipDivergent 0.05)
           ; Just WidgetConfigBndPrecipTransformMinus -> whenConfigVisible (bumpBndPrecipTransform (-0.05))
           ; Just WidgetConfigBndPrecipTransformPlus -> whenConfigVisible (bumpBndPrecipTransform 0.05)
+          ; Just WidgetConfigPiedmontSmoothMinus -> whenConfigVisible (bumpPiedmontSmooth (-0.05))
+          ; Just WidgetConfigPiedmontSmoothPlus -> whenConfigVisible (bumpPiedmontSmooth 0.05)
+          ; Just WidgetConfigPiedmontSlopeMinMinus -> whenConfigVisible (bumpPiedmontSlopeMin (-0.05))
+          ; Just WidgetConfigPiedmontSlopeMinPlus -> whenConfigVisible (bumpPiedmontSlopeMin 0.05)
+          ; Just WidgetConfigPiedmontSlopeMaxMinus -> whenConfigVisible (bumpPiedmontSlopeMax (-0.05))
+          ; Just WidgetConfigPiedmontSlopeMaxPlus -> whenConfigVisible (bumpPiedmontSlopeMax 0.05)
+          ; Just WidgetConfigWindCoriolisDeflectionMinus -> whenConfigVisible (bumpWindCoriolisDeflection (-0.05))
+          ; Just WidgetConfigWindCoriolisDeflectionPlus -> whenConfigVisible (bumpWindCoriolisDeflection 0.05)
+          ; Just WidgetConfigMoistMinVegFloorMinus -> whenConfigVisible (bumpMoistMinVegFloor (-0.05))
+          ; Just WidgetConfigMoistMinVegFloorPlus -> whenConfigVisible (bumpMoistMinVegFloor 0.05)
           ; Just WidgetConfigWeatherTickMinus -> whenConfigVisible (bumpWeatherTick (-0.05))
           ; Just WidgetConfigWeatherTickPlus -> whenConfigVisible (bumpWeatherTick 0.05)
           ; Just WidgetConfigWeatherPhaseMinus -> whenConfigVisible (bumpWeatherPhase (-0.05))
@@ -2430,6 +2552,21 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
     bumpBndPrecipTransform delta = do
       uiSnap <- getUiSnapshot uiHandle
       setUiBndPrecipTransform uiHandle (uiBndPrecipTransform uiSnap + delta)
+    bumpPiedmontSmooth delta = do
+      uiSnap <- getUiSnapshot uiHandle
+      setUiPiedmontSmooth uiHandle (uiPiedmontSmooth uiSnap + delta)
+    bumpPiedmontSlopeMin delta = do
+      uiSnap <- getUiSnapshot uiHandle
+      setUiPiedmontSlopeMin uiHandle (uiPiedmontSlopeMin uiSnap + delta)
+    bumpPiedmontSlopeMax delta = do
+      uiSnap <- getUiSnapshot uiHandle
+      setUiPiedmontSlopeMax uiHandle (uiPiedmontSlopeMax uiSnap + delta)
+    bumpWindCoriolisDeflection delta = do
+      uiSnap <- getUiSnapshot uiHandle
+      setUiWindCoriolisDeflection uiHandle (uiWindCoriolisDeflection uiSnap + delta)
+    bumpMoistMinVegFloor delta = do
+      uiSnap <- getUiSnapshot uiHandle
+      setUiMoistMinVegFloor uiHandle (uiMoistMinVegFloor uiSnap + delta)
     bumpWeatherTick delta = do
       uiSnap <- getUiSnapshot uiHandle
       setUiWeatherTick uiHandle (uiWeatherTick uiSnap + delta)
@@ -2583,6 +2720,45 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
     bumpErosionMaxDrop delta = do
       uiSnap <- getUiSnapshot uiHandle
       setUiErosionMaxDrop uiHandle (uiErosionMaxDrop uiSnap + delta)
+    bumpErosionHydDeposit delta = do
+      uiSnap <- getUiSnapshot uiHandle
+      setUiErosionHydDeposit uiHandle (uiErosionHydDeposit uiSnap + delta)
+    bumpErosionDepositSlope delta = do
+      uiSnap <- getUiSnapshot uiHandle
+      setUiErosionDepositSlope uiHandle (uiErosionDepositSlope uiSnap + delta)
+    bumpErosionThermDeposit delta = do
+      uiSnap <- getUiSnapshot uiHandle
+      setUiErosionThermDeposit uiHandle (uiErosionThermDeposit uiSnap + delta)
+    bumpErosionCoastZone delta = do
+      uiSnap <- getUiSnapshot uiHandle
+      setUiErosionCoastZone uiHandle (uiErosionCoastZone uiSnap + delta)
+    bumpErosionCoastStrength delta = do
+      uiSnap <- getUiSnapshot uiHandle
+      setUiErosionCoastStrength uiHandle (uiErosionCoastStrength uiSnap + delta)
+    bumpErosionCoastIter delta = do
+      uiSnap <- getUiSnapshot uiHandle
+      setUiErosionCoastIter uiHandle (uiErosionCoastIter uiSnap + delta)
+    bumpHypsometryEnabled delta = do
+      uiSnap <- getUiSnapshot uiHandle
+      setUiHypsometryEnabled uiHandle (uiHypsometryEnabled uiSnap + delta)
+    bumpHypsometryLowlandExp delta = do
+      uiSnap <- getUiSnapshot uiHandle
+      setUiHypsometryLowlandExp uiHandle (uiHypsometryLowlandExp uiSnap + delta)
+    bumpHypsometryHighlandExp delta = do
+      uiSnap <- getUiSnapshot uiHandle
+      setUiHypsometryHighlandExp uiHandle (uiHypsometryHighlandExp uiSnap + delta)
+    bumpHypsometryPlateauBreak delta = do
+      uiSnap <- getUiSnapshot uiHandle
+      setUiHypsometryPlateauBreak uiHandle (uiHypsometryPlateauBreak uiSnap + delta)
+    bumpHypsometryOceanExp delta = do
+      uiSnap <- getUiSnapshot uiHandle
+      setUiHypsometryOceanExp uiHandle (uiHypsometryOceanExp uiSnap + delta)
+    bumpHypsometryCoastalRampWidth delta = do
+      uiSnap <- getUiSnapshot uiHandle
+      setUiHypsometryCoastalRampWidth uiHandle (uiHypsometryCoastalRampWidth uiSnap + delta)
+    bumpHypsometryCoastalRampStr delta = do
+      uiSnap <- getUiSnapshot uiHandle
+      setUiHypsometryCoastalRampStr uiHandle (uiHypsometryCoastalRampStr uiSnap + delta)
     bumpGlacierSnowTemp delta = do
       uiSnap <- getUiSnapshot uiHandle
       setUiGlacierSnowTemp uiHandle (uiGlacierSnowTemp uiSnap + delta)

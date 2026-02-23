@@ -28,14 +28,14 @@ satNormSpec = describe "satNorm" $ do
   it "satNorm(1) ≈ 1 (equatorial)" $
     satNorm 1.0 `shouldSatisfy` (> 0.99)
 
-  it "satNorm(0.43) ≈ 0.083 (freezing point)" $
-    abs (satNorm 0.43 - 0.083) `shouldSatisfy` (< 0.03)
+  it "satNorm(0.43) ≈ 0.029 (sub-zero, −7°C)" $
+    abs (satNorm 0.43 - 0.029) `shouldSatisfy` (< 0.02)
 
-  it "satNorm(0.50) ≈ 0.112 (cool temperate)" $
-    abs (satNorm 0.50 - 0.112) `shouldSatisfy` (< 0.03)
+  it "satNorm(0.50) ≈ 0.050 (freezing point, 0°C)" $
+    abs (satNorm 0.50 - 0.050) `shouldSatisfy` (< 0.03)
 
-  it "satNorm(0.80) ≈ 0.456 (subtropical)" $
-    abs (satNorm 0.80 - 0.456) `shouldSatisfy` (< 0.03)
+  it "satNorm(0.80) ≈ 0.344 (subtropical, 30°C)" $
+    abs (satNorm 0.80 - 0.344) `shouldSatisfy` (< 0.05)
 
   prop "monotonically increasing" $
     \(a' :: Float) (b' :: Float) ->
@@ -140,13 +140,13 @@ satNormCfgSpec = describe "satNormCfg" $ do
   it "narrower scale → steeper curve at mid-range" $ do
     let narrow = defaultMoistureConfig { ccTempToC_Scale = 40.0
                                        , ccTempToC_Offset = -10.0 }
-    -- At T=0.5: default maps to 5°C, narrow maps to 10°C.
+    -- At T=0.5: default maps to 0°C, narrow maps to 10°C.
     -- Narrower warm band pushes midpoint saturation higher.
     satNormCfg narrow 0.5 `shouldSatisfy` (> satNormCfg defaultMoistureConfig 0.5)
 
   it "colder offset shifts whole curve down" $ do
-    let cold = defaultMoistureConfig { ccTempToC_Offset = -50.0 }
-    -- At T=0.5: default maps to 5°C, cold maps to -15°C.
+    let cold = defaultMoistureConfig { ccTempToC_Offset = -70.0 }
+    -- At T=0.5: default maps to 0°C, cold maps to -20°C.
     satNormCfg cold 0.5 `shouldSatisfy` (< satNormCfg defaultMoistureConfig 0.5)
 
   it "endpoints are 0 and 1 regardless of config" $ do
@@ -211,8 +211,8 @@ configSpec = describe "defaultMoistureConfig" $ do
 
   it "CC scale and offset are Earth-like" $ do
     let cfg = defaultMoistureConfig
-    ccTempToC_Scale cfg `shouldBe` 70.0
-    ccTempToC_Offset cfg `shouldBe` (-30.0)
+    ccTempToC_Scale cfg `shouldBe` 100.0
+    ccTempToC_Offset cfg `shouldBe` (-50.0)
 
 ---------------------------------------------------------------------------
 -- Entry point

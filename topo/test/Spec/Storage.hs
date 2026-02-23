@@ -7,6 +7,7 @@ import Data.Proxy (Proxy(..))
 import Data.Text (Text, pack)
 import Topo
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice)
+import Topo.Units (UnitScales(..), defaultUnitScales)
 import Topo.WorldGen (defaultWorldGenConfig)
 
 newtype Note = Note Text
@@ -86,6 +87,28 @@ spec = describe "Storage" $ do
         case decodeWorld encoded of
           Left err -> expectationFailure (show err)
           Right world1 -> twGenConfig world1 `shouldBe` Just (toJSON defaultWorldGenConfig)
+
+  it "roundtrips default UnitScales" $ do
+    let config = WorldConfig { wcChunkSize = 4 }
+        world0 = emptyWorld config defaultHexGridMeta
+    case encodeWorld world0 of
+      Left err -> expectationFailure (show err)
+      Right encoded ->
+        case decodeWorld encoded of
+          Left err -> expectationFailure (show err)
+          Right world1 -> twUnitScales world1 `shouldBe` defaultUnitScales
+
+  it "roundtrips custom UnitScales" $ do
+    let config = WorldConfig { wcChunkSize = 4 }
+        custom = defaultUnitScales { usTempScale = 120.0, usTempOffset = -60.0 }
+        world0 = (emptyWorld config defaultHexGridMeta)
+          { twUnitScales = custom }
+    case encodeWorld world0 of
+      Left err -> expectationFailure (show err)
+      Right encoded ->
+        case decodeWorld encoded of
+          Left err -> expectationFailure (show err)
+          Right world1 -> twUnitScales world1 `shouldBe` custom
 
 isJust :: Maybe a -> Bool
 isJust Nothing = False

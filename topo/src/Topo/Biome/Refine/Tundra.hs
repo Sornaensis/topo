@@ -37,7 +37,7 @@ instance FromJSON TundraConfig where
 -- | Sensible defaults for tundra refinement.
 defaultTundraConfig :: TundraConfig
 defaultTundraConfig = TundraConfig
-  { tcArcticMaxTemp        = 0.10
+  { tcArcticMaxTemp        = 0.27
   , tcAlpineTundraMinElev  = 0.60
   , tcPolarDesertMaxPrecip = 0.10
   }

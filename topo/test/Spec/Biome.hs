@@ -57,10 +57,11 @@ spec = describe "Biome" $ do
         world0 = emptyWorld config defaultHexGridMeta
         n = chunkTileCount config
         terrain = (emptyTerrainChunk config) { tcElevation = U.fromList [-0.1, 0.02, 0.8, 0.95] }
-        -- Tile 3 (elev=0.95, hASL=0.85) needs temp < btSnowMaxTemp (0.20)
-        -- to trigger the temperature-primary Snow guard.
+        -- Tile 3 (elev=0.95, hASL=0.85) needs temp < btSnowMaxTemp (0.34)
+        -- and > snIceCapMaxTemp (0.235) so refineSnow falls through to
+        -- BiomeSnow rather than BiomeIceCap.
         climate = ClimateChunk
-          { ccTempAvg = U.fromList [0.5, 0.5, 0.5, 0.10]
+          { ccTempAvg = U.fromList [0.5, 0.5, 0.5, 0.27]
           , ccPrecipAvg = U.replicate n 0.5
           , ccWindDirAvg = U.replicate n 0
           , ccWindSpdAvg = U.replicate n 0
@@ -222,8 +223,8 @@ spec = describe "Biome" $ do
       let coldSteppe = classify' 0.50 0.05
       coldSteppe `shouldBe` BiomeGrassland
 
-    it "desert at T=0.58, P=0.05 (above cold steppe band)" $ do
-      let coolDesert = classify' 0.58 0.05
+    it "desert at T=0.62, P=0.05 (in warm-temperate desert band)" $ do
+      let coolDesert = classify' 0.62 0.05
       coolDesert `shouldBe` BiomeDesert
 
     it "not desert at P = 0.12 for warm tile" $ do
@@ -238,15 +239,16 @@ spec = describe "Biome" $ do
       let tropWet = classify' 0.85 0.80
       tropWet `shouldBe` BiomeRainforest
 
-    -- Temperature-primary mountain guards intercept T < 0.35 at
-    -- elevation 0.3 (hASL = 0.3 > btSnowMinASL), so we test the
-    -- Tundra rule-table band at its warm edge where guards don't fire.
-    it "tundra at T=0.35, P=0.20 (warm-edge of tundra band)" $ do
-      let polar = classify' 0.35 0.20
+    -- Temperature-primary mountain guards intercept T < btAlpineMaxTemp
+    -- (0.445) at elevation 0.3 (hASL = 0.3 > btAlpineMinASL), so we
+    -- test the Tundra rule-table band at its warm edge where the Alpine
+    -- guard no longer fires.
+    it "tundra at T=0.45, P=0.20 (warm-edge of tundra band)" $ do
+      let polar = classify' 0.45 0.20
       polar `shouldBe` BiomeTundra
 
-    it "temperate forest at T=0.50, P=0.60" $ do
-      let tempForest = classify' 0.50 0.60
+    it "temperate forest at T=0.58, P=0.60" $ do
+      let tempForest = classify' 0.58 0.60
       tempForest `shouldBe` BiomeForest
 
     prop "every (T,P) at 0.05 increments matches a rule or fallback (never partial)" $

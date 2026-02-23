@@ -7,6 +7,7 @@
 module Actor.UI
   ( Ui
   , ConfigTab(..)
+  , configRowCount
   , LeftTab(..)
   , UiMenuMode(..)
   , ViewMode(..)
@@ -30,6 +31,19 @@ module Actor.UI
   , setUiErosionThermal
   , setUiErosionTalus
   , setUiErosionMaxDrop
+  , setUiErosionHydDeposit
+  , setUiErosionDepositSlope
+  , setUiErosionThermDeposit
+  , setUiErosionCoastZone
+  , setUiErosionCoastStrength
+  , setUiErosionCoastIter
+  , setUiHypsometryEnabled
+  , setUiHypsometryLowlandExp
+  , setUiHypsometryHighlandExp
+  , setUiHypsometryPlateauBreak
+  , setUiHypsometryOceanExp
+  , setUiHypsometryCoastalRampWidth
+  , setUiHypsometryCoastalRampStr
   , setUiGlacierSnowTemp
   , setUiGlacierSnowRange
   , setUiGlacierMeltTemp
@@ -57,6 +71,9 @@ module Actor.UI
   , setUiRiverCarveMaxDepth
   , setUiCoastalErodeStrength
   , setUiHydroHardnessWeight
+  , setUiPiedmontSmooth
+  , setUiPiedmontSlopeMin
+  , setUiPiedmontSlopeMax
   , setUiMinLakeSize
   , setUiInlandSeaMinSize
   , setUiRoughnessScale
@@ -81,6 +98,7 @@ module Actor.UI
   , setUiMoistRecycleRate
   , setUiMoistITCZStrength
   , setUiMoistITCZWidth
+  , setUiMoistMinVegFloor
   , setUiOrographicScale
   , setUiOrographicStep
   , setUiCoastalIterations
@@ -91,6 +109,7 @@ module Actor.UI
   , setUiWindBeltBase
   , setUiWindBeltRange
   , setUiWindBeltSpeedScale
+  , setUiWindCoriolisDeflection
   , setUiBndLandRange
   , setUiBndTempConvergent
   , setUiBndTempDivergent
@@ -269,6 +288,16 @@ data ConfigTab
   | ConfigErosion
   deriving (Eq, Show)
 
+-- | Total number of config widget rows for each tab.
+--   Single source of truth used by both scroll input and rendering.
+configRowCount :: ConfigTab -> Int
+configRowCount ConfigTerrain = 53
+configRowCount ConfigPlanet  = 7
+configRowCount ConfigClimate = 53
+configRowCount ConfigWeather = 21
+configRowCount ConfigBiome   = 26
+configRowCount ConfigErosion  = 48
+
 data LeftTab
   = LeftTopo
   | LeftView
@@ -312,6 +341,19 @@ data UiState = UiState
   , uiErosionThermal :: !Float
   , uiErosionTalus :: !Float
   , uiErosionMaxDrop :: !Float
+  , uiErosionHydDeposit :: !Float
+  , uiErosionDepositSlope :: !Float
+  , uiErosionThermDeposit :: !Float
+  , uiErosionCoastZone :: !Float
+  , uiErosionCoastStrength :: !Float
+  , uiErosionCoastIter :: !Float
+  , uiHypsometryEnabled :: !Float
+  , uiHypsometryLowlandExp :: !Float
+  , uiHypsometryHighlandExp :: !Float
+  , uiHypsometryPlateauBreak :: !Float
+  , uiHypsometryOceanExp :: !Float
+  , uiHypsometryCoastalRampWidth :: !Float
+  , uiHypsometryCoastalRampStr :: !Float
   , uiGlacierSnowTemp :: !Float
   , uiGlacierSnowRange :: !Float
   , uiGlacierMeltTemp :: !Float
@@ -339,6 +381,9 @@ data UiState = UiState
   , uiRiverCarveMaxDepth :: !Float
   , uiCoastalErodeStrength :: !Float
   , uiHydroHardnessWeight :: !Float
+  , uiPiedmontSmooth :: !Float
+  , uiPiedmontSlopeMin :: !Float
+  , uiPiedmontSlopeMax :: !Float
   , uiMinLakeSize :: !Float
   , uiInlandSeaMinSize :: !Float
   , uiRoughnessScale :: !Float
@@ -363,6 +408,7 @@ data UiState = UiState
   , uiMoistRecycleRate :: !Float
   , uiMoistITCZStrength :: !Float
   , uiMoistITCZWidth :: !Float
+  , uiMoistMinVegFloor :: !Float
   , uiOrographicScale :: !Float
   , uiOrographicStep :: !Float
   , uiCoastalIterations :: !Float
@@ -373,6 +419,7 @@ data UiState = UiState
   , uiWindBeltBase :: !Float
   , uiWindBeltRange :: !Float
   , uiWindBeltSpeedScale :: !Float
+  , uiWindCoriolisDeflection :: !Float
   , uiBndLandRange :: !Float
   , uiBndTempConvergent :: !Float
   , uiBndTempDivergent :: !Float
@@ -526,13 +573,26 @@ emptyUiState = UiState
   , uiWaterLevel = 0.5
   , uiRenderWaterLevel = 0.5
   , uiOrographicLift = 0.35
-  , uiRainShadowLoss = 0.15
+  , uiRainShadowLoss = 0.08
   , uiWindDiffuse = 0.5
   , uiRainRate = 0.2
   , uiErosionHydraulic = 0.5
   , uiErosionThermal = 0.4
   , uiErosionTalus = 0.5
   , uiErosionMaxDrop = 0.5
+  , uiErosionHydDeposit = 0.375
+  , uiErosionDepositSlope = 0.357
+  , uiErosionThermDeposit = 0.5
+  , uiErosionCoastZone = 0.286
+  , uiErosionCoastStrength = 0.375
+  , uiErosionCoastIter = 0.429
+  , uiHypsometryEnabled = 1.0
+  , uiHypsometryLowlandExp = 0.200
+  , uiHypsometryHighlandExp = 0.333
+  , uiHypsometryPlateauBreak = 0.348
+  , uiHypsometryOceanExp = 0.500
+  , uiHypsometryCoastalRampWidth = 0.467
+  , uiHypsometryCoastalRampStr = 0.600
   , uiGlacierSnowTemp = 0.5
   , uiGlacierSnowRange = 0.417
   , uiGlacierMeltTemp = 0.429
@@ -560,6 +620,9 @@ emptyUiState = UiState
   , uiRiverCarveMaxDepth = 0.25
   , uiCoastalErodeStrength = 0.2
   , uiHydroHardnessWeight = 0.7
+  , uiPiedmontSmooth = 0.4167
+  , uiPiedmontSlopeMin = 0.2857
+  , uiPiedmontSlopeMax = 0.35
   , uiMinLakeSize = 0.061
   , uiInlandSeaMinSize = 0.333
   , uiRoughnessScale = 0.375
@@ -580,10 +643,11 @@ emptyUiState = UiState
   , uiMoistBareEvapFrac = 0.15
   , uiMoistVegTranspFrac = 0.85
   , uiMoistWindETScale = 0.2
-  , uiMoistCondensationRate = 0.4
+  , uiMoistCondensationRate = 0.2
   , uiMoistRecycleRate = 0.35
   , uiMoistITCZStrength = 0.3
   , uiMoistITCZWidth = 0.333
+  , uiMoistMinVegFloor = 0.15
   , uiOrographicScale = 0.3
   , uiOrographicStep = 0.2
   , uiCoastalIterations = 0.5
@@ -594,6 +658,7 @@ emptyUiState = UiState
   , uiWindBeltBase = 0.4
   , uiWindBeltRange = 0.6
   , uiWindBeltSpeedScale = 0.6
+  , uiWindCoriolisDeflection = 0.287
   , uiBndLandRange = 0.357
   , uiBndTempConvergent = 0.467
   , uiBndTempDivergent = 0.4
@@ -758,6 +823,19 @@ data UiUpdate
   | SetErosionThermal !Float
   | SetErosionTalus !Float
   | SetErosionMaxDrop !Float
+  | SetErosionHydDeposit !Float
+  | SetErosionDepositSlope !Float
+  | SetErosionThermDeposit !Float
+  | SetErosionCoastZone !Float
+  | SetErosionCoastStrength !Float
+  | SetErosionCoastIter !Float
+  | SetHypsometryEnabled !Float
+  | SetHypsometryLowlandExp !Float
+  | SetHypsometryHighlandExp !Float
+  | SetHypsometryPlateauBreak !Float
+  | SetHypsometryOceanExp !Float
+  | SetHypsometryCoastalRampWidth !Float
+  | SetHypsometryCoastalRampStr !Float
   | SetGlacierSnowTemp !Float
   | SetGlacierSnowRange !Float
   | SetGlacierMeltTemp !Float
@@ -785,6 +863,9 @@ data UiUpdate
   | SetRiverCarveMaxDepth !Float
   | SetCoastalErodeStrength !Float
   | SetHydroHardnessWeight !Float
+  | SetPiedmontSmooth !Float
+  | SetPiedmontSlopeMin !Float
+  | SetPiedmontSlopeMax !Float
   | SetMinLakeSize !Float
   | SetInlandSeaMinSize !Float
   | SetRoughnessScale !Float
@@ -809,6 +890,7 @@ data UiUpdate
   | SetMoistRecycleRate !Float
   | SetMoistITCZStrength !Float
   | SetMoistITCZWidth !Float
+  | SetMoistMinVegFloor !Float
   | SetOrographicScale !Float
   | SetOrographicStep !Float
   | SetCoastalIterations !Float
@@ -819,6 +901,7 @@ data UiUpdate
   | SetWindBeltBase !Float
   | SetWindBeltRange !Float
   | SetWindBeltSpeedScale !Float
+  | SetWindCoriolisDeflection !Float
   | SetBndLandRange !Float
   | SetBndTempConvergent !Float
   | SetBndTempDivergent !Float
@@ -979,6 +1062,19 @@ applyUpdate upd st = case upd of
   SetErosionThermal v  -> st { uiErosionThermal = clamp01 v }
   SetErosionTalus v    -> st { uiErosionTalus = clamp01 v }
   SetErosionMaxDrop v  -> st { uiErosionMaxDrop = clamp01 v }
+  SetErosionHydDeposit v -> st { uiErosionHydDeposit = clamp01 v }
+  SetErosionDepositSlope v -> st { uiErosionDepositSlope = clamp01 v }
+  SetErosionThermDeposit v -> st { uiErosionThermDeposit = clamp01 v }
+  SetErosionCoastZone v -> st { uiErosionCoastZone = clamp01 v }
+  SetErosionCoastStrength v -> st { uiErosionCoastStrength = clamp01 v }
+  SetErosionCoastIter v -> st { uiErosionCoastIter = clamp01 v }
+  SetHypsometryEnabled v -> st { uiHypsometryEnabled = clamp01 v }
+  SetHypsometryLowlandExp v -> st { uiHypsometryLowlandExp = clamp01 v }
+  SetHypsometryHighlandExp v -> st { uiHypsometryHighlandExp = clamp01 v }
+  SetHypsometryPlateauBreak v -> st { uiHypsometryPlateauBreak = clamp01 v }
+  SetHypsometryOceanExp v -> st { uiHypsometryOceanExp = clamp01 v }
+  SetHypsometryCoastalRampWidth v -> st { uiHypsometryCoastalRampWidth = clamp01 v }
+  SetHypsometryCoastalRampStr v -> st { uiHypsometryCoastalRampStr = clamp01 v }
   SetGlacierSnowTemp v -> st { uiGlacierSnowTemp = clamp01 v }
   SetGlacierSnowRange v -> st { uiGlacierSnowRange = clamp01 v }
   SetGlacierMeltTemp v -> st { uiGlacierMeltTemp = clamp01 v }
@@ -1006,6 +1102,9 @@ applyUpdate upd st = case upd of
   SetRiverCarveMaxDepth v -> st { uiRiverCarveMaxDepth = clamp01 v }
   SetCoastalErodeStrength v -> st { uiCoastalErodeStrength = clamp01 v }
   SetHydroHardnessWeight v -> st { uiHydroHardnessWeight = clamp01 v }
+  SetPiedmontSmooth v -> st { uiPiedmontSmooth = clamp01 v }
+  SetPiedmontSlopeMin v -> st { uiPiedmontSlopeMin = clamp01 v }
+  SetPiedmontSlopeMax v -> st { uiPiedmontSlopeMax = clamp01 v }
   SetMinLakeSize v -> st { uiMinLakeSize = clamp01 v }
   SetInlandSeaMinSize v -> st { uiInlandSeaMinSize = clamp01 v }
   SetRoughnessScale v -> st { uiRoughnessScale = clamp01 v }
@@ -1030,6 +1129,7 @@ applyUpdate upd st = case upd of
   SetMoistRecycleRate v -> st { uiMoistRecycleRate = clamp01 v }
   SetMoistITCZStrength v -> st { uiMoistITCZStrength = clamp01 v }
   SetMoistITCZWidth v  -> st { uiMoistITCZWidth = clamp01 v }
+  SetMoistMinVegFloor v -> st { uiMoistMinVegFloor = clamp01 v }
   SetOrographicScale v      -> st { uiOrographicScale = clamp01 v }
   SetOrographicStep v       -> st { uiOrographicStep = clamp01 v }
   SetCoastalIterations v    -> st { uiCoastalIterations = clamp01 v }
@@ -1040,6 +1140,7 @@ applyUpdate upd st = case upd of
   SetWindBeltBase v       -> st { uiWindBeltBase = clamp01 v }
   SetWindBeltRange v      -> st { uiWindBeltRange = clamp01 v }
   SetWindBeltSpeedScale v -> st { uiWindBeltSpeedScale = clamp01 v }
+  SetWindCoriolisDeflection v -> st { uiWindCoriolisDeflection = clamp01 v }
   SetBndLandRange v       -> st { uiBndLandRange = clamp01 v }
   SetBndTempConvergent v  -> st { uiBndTempConvergent = clamp01 v }
   SetBndTempDivergent v   -> st { uiBndTempDivergent = clamp01 v }
@@ -1337,6 +1438,58 @@ setUiErosionMaxDrop :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
 setUiErosionMaxDrop handle value =
   cast @"update" handle #update (SetErosionMaxDrop value)
 
+setUiErosionHydDeposit :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiErosionHydDeposit handle value =
+  cast @"update" handle #update (SetErosionHydDeposit value)
+
+setUiErosionDepositSlope :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiErosionDepositSlope handle value =
+  cast @"update" handle #update (SetErosionDepositSlope value)
+
+setUiErosionThermDeposit :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiErosionThermDeposit handle value =
+  cast @"update" handle #update (SetErosionThermDeposit value)
+
+setUiErosionCoastZone :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiErosionCoastZone handle value =
+  cast @"update" handle #update (SetErosionCoastZone value)
+
+setUiErosionCoastStrength :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiErosionCoastStrength handle value =
+  cast @"update" handle #update (SetErosionCoastStrength value)
+
+setUiErosionCoastIter :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiErosionCoastIter handle value =
+  cast @"update" handle #update (SetErosionCoastIter value)
+
+setUiHypsometryEnabled :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiHypsometryEnabled handle value =
+  cast @"update" handle #update (SetHypsometryEnabled value)
+
+setUiHypsometryLowlandExp :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiHypsometryLowlandExp handle value =
+  cast @"update" handle #update (SetHypsometryLowlandExp value)
+
+setUiHypsometryHighlandExp :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiHypsometryHighlandExp handle value =
+  cast @"update" handle #update (SetHypsometryHighlandExp value)
+
+setUiHypsometryPlateauBreak :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiHypsometryPlateauBreak handle value =
+  cast @"update" handle #update (SetHypsometryPlateauBreak value)
+
+setUiHypsometryOceanExp :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiHypsometryOceanExp handle value =
+  cast @"update" handle #update (SetHypsometryOceanExp value)
+
+setUiHypsometryCoastalRampWidth :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiHypsometryCoastalRampWidth handle value =
+  cast @"update" handle #update (SetHypsometryCoastalRampWidth value)
+
+setUiHypsometryCoastalRampStr :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiHypsometryCoastalRampStr handle value =
+  cast @"update" handle #update (SetHypsometryCoastalRampStr value)
+
 setUiGlacierSnowTemp :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
 setUiGlacierSnowTemp handle value =
   cast @"update" handle #update (SetGlacierSnowTemp value)
@@ -1445,6 +1598,21 @@ setUiHydroHardnessWeight :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
 setUiHydroHardnessWeight handle value =
   cast @"update" handle #update (SetHydroHardnessWeight value)
 
+-- | Set the piedmont smooth strength slider (normalised 0–1).
+setUiPiedmontSmooth :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiPiedmontSmooth handle value =
+  cast @"update" handle #update (SetPiedmontSmooth value)
+
+-- | Set the piedmont minimum slope slider (normalised 0–1).
+setUiPiedmontSlopeMin :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiPiedmontSlopeMin handle value =
+  cast @"update" handle #update (SetPiedmontSlopeMin value)
+
+-- | Set the piedmont maximum slope slider (normalised 0–1).
+setUiPiedmontSlopeMax :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiPiedmontSlopeMax handle value =
+  cast @"update" handle #update (SetPiedmontSlopeMax value)
+
 setUiMinLakeSize :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
 setUiMinLakeSize handle value =
   cast @"update" handle #update (SetMinLakeSize value)
@@ -1541,6 +1709,11 @@ setUiMoistITCZWidth :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
 setUiMoistITCZWidth handle value =
   cast @"update" handle #update (SetMoistITCZWidth value)
 
+-- | Set minimum vegetation floor for evapotranspiration (normalised 0\x20131).
+setUiMoistMinVegFloor :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiMoistMinVegFloor handle value =
+  cast @"update" handle #update (SetMoistMinVegFloor value)
+
 setUiOrographicScale :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
 setUiOrographicScale handle value =
   cast @"update" handle #update (SetOrographicScale value)
@@ -1580,6 +1753,11 @@ setUiWindBeltRange handle value =
 setUiWindBeltSpeedScale :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
 setUiWindBeltSpeedScale handle value =
   cast @"update" handle #update (SetWindBeltSpeedScale value)
+
+-- | Set Coriolis wind deflection slider (normalised 0\x20131).
+setUiWindCoriolisDeflection :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiWindCoriolisDeflection handle value =
+  cast @"update" handle #update (SetWindCoriolisDeflection value)
 
 setUiBndLandRange :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
 setUiBndLandRange handle value =

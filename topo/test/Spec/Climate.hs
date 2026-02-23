@@ -6,7 +6,7 @@ import Test.QuickCheck
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Vector.Unboxed as U
 import Topo
-import Topo.Planet (defaultPlanetConfig, defaultWorldSlice, PlanetConfig(..), WorldSlice(..))
+import Topo.Planet (defaultPlanetConfig, defaultWorldSlice, mkLatitudeMapping, PlanetConfig(..), WorldSlice(..))
 import Topo.Weather (defaultWeatherConfig)
 
 avgVector :: U.Vector Float -> Float
@@ -730,6 +730,81 @@ spec = describe "Climate" $ do
         avgVector (ccTempAvg cForest) `shouldSatisfy`
           (> avgVector (ccTempAvg cRef))
       _ -> expectationFailure "missing climate chunks"
+
+  ---------------------------------------------------------------------------
+  -- Phase 4: Wind / moisture model validation
+  ---------------------------------------------------------------------------
+
+  -- 4.4a: Trade wind belt (|lat| < 30°) has a westward component.
+  it "trade wind belt has westward component (cos(dir) < 0)" $ do
+    let config = WorldConfig { wcChunkSize = 8 }
+        lm = mkLatitudeMapping defaultPlanetConfig
+               (defaultWorldSlice { wsLatCenter = 15, wsLatExtent = 10 }) config
+        dirs = [ windDirAtXY 42 lm defaultClimateConfig gx gy
+               | gx <- [0..7], gy <- [0..7] ]
+        meanCos = sum (map cos dirs) / fromIntegral (length dirs)
+    -- Trades blow westward: cos(dir) should be negative on average
+    meanCos `shouldSatisfy` (< 0)
+
+  -- 4.4b: Westerly belt (30° < |lat| < 60°) has an eastward component.
+  it "westerly belt has eastward component (cos(dir) > 0)" $ do
+    let config = WorldConfig { wcChunkSize = 8 }
+        lm = mkLatitudeMapping defaultPlanetConfig
+               (defaultWorldSlice { wsLatCenter = 45, wsLatExtent = 10 }) config
+        dirs = [ windDirAtXY 42 lm defaultClimateConfig gx gy
+               | gx <- [0..7], gy <- [0..7] ]
+        meanCos = sum (map cos dirs) / fromIntegral (length dirs)
+    -- Westerlies blow eastward: cos(dir) should be positive on average
+    meanCos `shouldSatisfy` (> 0)
+
+  -- 4.4c: NH and SH winds are mirror images across the equator.
+  it "NH and SH wind directions are mirror images" $ do
+    let config = WorldConfig { wcChunkSize = 8 }
+        lmNH = mkLatitudeMapping defaultPlanetConfig
+                 (defaultWorldSlice { wsLatCenter = 20, wsLatExtent = 5 }) config
+        lmSH = mkLatitudeMapping defaultPlanetConfig
+                 (defaultWorldSlice { wsLatCenter = -20, wsLatExtent = 5 }) config
+        -- Sample wind at the same grid positions, average the sin component
+        -- (meridional). NH trades should deflect right (+sin), SH left (-sin).
+        sinMeanNH = sum [ sin (windDirAtXY 42 lmNH defaultClimateConfig gx gy)
+                        | gx <- [0..7], gy <- [0..7] ] / 64
+        sinMeanSH = sum [ sin (windDirAtXY 42 lmSH defaultClimateConfig gx gy)
+                        | gx <- [0..7], gy <- [0..7] ] / 64
+    -- The meridional components should have opposite signs
+    (sinMeanNH * sinMeanSH) `shouldSatisfy` (< 0)
+
+  -- 4.3: Continental interior precipitation (larger world).
+  it "continental interior tiles receive precipitation >= 0.05" $ do
+    let config = WorldConfig { wcChunkSize = 8 }
+        -- 5×1 strip: ocean | coast-land | interior | interior | interior
+        ocean    = generateTerrainChunk config (\_ -> 0.2)
+        land     = generateTerrainChunk config (\_ -> 0.55)
+        world0   = emptyWorld config defaultHexGridMeta
+        world1   = setTerrainChunk (chunkIdFromCoord (ChunkCoord 0 0)) ocean
+                 $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 1 0)) land
+                 $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 2 0)) land
+                 $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 3 0)) land
+                 $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 4 0)) land
+                 $ world0
+        pipeline = PipelineConfig
+          { pipelineSeed   = 42
+          , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
+          , pipelineSnapshots = False
+          }
+        env = TopoEnv { teLogger = \_ -> pure () }
+    result <- runPipeline pipeline env world1
+    w <- expectPipeline result
+    -- Check the two deepest-interior chunks (3 and 4)
+    let interiorPrecips = do
+          cx <- [3, 4]
+          case getClimateChunk (chunkIdFromCoord (ChunkCoord cx 0)) w of
+            Nothing -> []
+            Just cc -> U.toList (ccPrecipAvg cc)
+    -- At least 15% of interior tiles should have >= 0.05 precipitation
+    let n = length interiorPrecips
+        wet = length (filter (>= 0.05) interiorPrecips)
+    n `shouldSatisfy` (> 0)
+    (fromIntegral wet / fromIntegral n :: Float) `shouldSatisfy` (>= 0.15)
 
 expectPipeline :: Either PipelineError (TerrainWorld, [PipelineSnapshot]) -> IO TerrainWorld
 expectPipeline result =

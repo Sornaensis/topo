@@ -8,7 +8,7 @@
 --
 --  1. Builds a global elevation grid from loaded terrain chunks.
 --  2. Identifies all submerged tiles (elevation < waterLevel).
---  3. Flood-fills 4-connected components among submerged tiles.
+--  3. Flood-fills 6-hex-connected components among submerged tiles.
 --  4. Classifies each component:
 --       * __Ocean__ – touches the grid edge (within a configurable margin).
 --       * __Inland sea__ – landlocked and larger than a size threshold.
@@ -49,6 +49,7 @@ import Topo.Types
 import Topo.World (TerrainWorld(..))
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as UM
+import Topo.Hex (hexNeighborIndices)
 
 -- ---------------------------------------------------------------------------
 -- Configuration
@@ -174,19 +175,14 @@ classifyWaterBodies cfg waterLevel gridW gridH elev = runST $ do
         when (x < margin || x >= gridW - margin || y < margin || y >= gridH - margin) $
           UM.modify compEdge (+ 1) cid
       else do
-        -- Land tile: check if any 4-neighbor is a submerged component
+        -- Land tile: check if any hex-neighbor is a submerged component
         -- and update pour-point elevation
-        let x = i `mod` gridW
-            y = i `div` gridW
-            h = elev U.! i
+        let h = elev U.! i
             checkNeighbor ni = do
               let ncid = frozenIds U.! ni
               when (ncid >= 0) $
                 UM.modify compPourElev (min h) ncid
-        when (x > 0)             $ checkNeighbor (i - 1)
-        when (x + 1 < gridW)     $ checkNeighbor (i + 1)
-        when (y > 0)             $ checkNeighbor (i - gridW)
-        when (y + 1 < gridH)     $ checkNeighbor (i + gridW)
+        mapM_ checkNeighbor (hexNeighborIndices gridW gridH i)
 
   frozenSize     <- U.freeze compSize
   frozenEdge     <- U.freeze compEdge
@@ -307,17 +303,12 @@ floodFill gridW gridH elev waterLevel componentId label start = do
         case mVal of
           Nothing -> pure ()
           Just cur -> do
-            let x = cur `mod` gridW
-                y = cur `div` gridW
-                tryNeighbor ni = do
+            let tryNeighbor ni = do
                   cid <- UM.read componentId ni
                   when (cid < 0 && submerged ni) $ do
                     UM.write componentId ni label
                     push ni
-            when (x > 0)         $ tryNeighbor (cur - 1)
-            when (x + 1 < gridW) $ tryNeighbor (cur + 1)
-            when (y > 0)         $ tryNeighbor (cur - gridW)
-            when (y + 1 < gridH) $ tryNeighbor (cur + gridW)
+            mapM_ tryNeighbor (hexNeighborIndices gridW gridH cur)
             loop
   loop
 

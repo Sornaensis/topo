@@ -29,6 +29,7 @@ library
       Topo.Erosion
       Topo.Glacier
       Topo.Hydrology
+      Topo.Hypsometry
       Topo.River
       Topo.Volcanism
       Topo.WaterBody
@@ -69,6 +70,7 @@ library
       Topo.Planet
       Topo.OceanCurrent
       Topo.Units
+      Topo.Units.Config
       Topo.Config.JSON
   other-modules:
       Topo.Config
@@ -123,7 +125,9 @@ test-suite topo-test
       Spec.Soil
       Spec.Storage
       Spec.Tectonics
+      Spec.TerrainRelief
       Spec.Units
+      Spec.UnitsConfig
       Spec.Vegetation
       Spec.Volcanism
       Spec.WaterBody

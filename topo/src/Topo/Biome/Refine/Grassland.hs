@@ -48,11 +48,11 @@ instance FromJSON GrasslandConfig where
 defaultGrasslandConfig :: GrasslandConfig
 defaultGrasslandConfig = GrasslandConfig
   { grcSteppeMaxPrecip        = 0.25
-  , grcSteppeMinTempRange     = 0.15
+  , grcSteppeMinTempRange     = 0.105
   , grcPrairieMinSoilDepth    = 0.60
   , grcPrairieMinMoisture     = 0.35
   , grcAlpineMeadowMinElev    = 0.70
-  , grcAlpineMeadowMaxTemp    = 0.40
+  , grcAlpineMeadowMaxTemp    = 0.48
   , grcFloodplainMinDischarge = 0.25
   }
 

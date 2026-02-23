@@ -110,8 +110,8 @@ defaultRefinementConfig = RefinementConfig
 aridRefinementConfig :: RefinementConfig
 aridRefinementConfig = defaultRefinementConfig
   { rcDesert    = (defaultDesertConfig)
-      { dcHotMinTemp       = 0.60   -- easier to classify as hot desert
-      , dcColdMaxTemp      = 0.45   -- wider cold-desert band
+      { dcHotMinTemp       = 0.62   -- easier to classify as hot desert
+      , dcColdMaxTemp      = 0.515  -- wider cold-desert band
       , dcSaltFlatMaxMoist = 0.05   -- more salt flats in mildly moist basins
       , dcFogDesertMinHumidity = 0.25  -- easier fog-desert detection
       }
@@ -141,7 +141,7 @@ aridRefinementConfig = defaultRefinementConfig
       }
   , rcRainforest = (defaultRainforestConfig)
       { rfTempRainforestMinPrecip   = 0.80  -- harder to form temperate rainforest
-      , rfTempRainforestMaxTemp     = 0.68  -- narrower temperate rainforest band
+      , rfTempRainforestMaxTemp     = 0.676  -- narrower temperate rainforest band
       }
   , rcSwamp     = (defaultSwampConfig)
       { swMarshMinMoisture         = 0.80  -- harder to form wetlands
@@ -163,7 +163,7 @@ lushRefinementConfig :: RefinementConfig
 lushRefinementConfig = defaultRefinementConfig
   { rcForest    = (defaultForestConfig)
       { fcDeciduousMinPrecip        = 0.35  -- easier deciduous formation
-      , fcConiferousMaxTemp         = 0.62  -- wider coniferous band
+      , fcConiferousMaxTemp         = 0.634  -- wider coniferous band
       , fcCloudForestMinPrecip      = 0.65  -- easier cloud forest
       , fcCloudForestMinHumidity    = 0.55  -- easier cloud forest
       , fcTempRainforestMinPrecip   = 0.55  -- easier temperate rainforest
@@ -171,7 +171,7 @@ lushRefinementConfig = defaultRefinementConfig
       , fcSeasonalForestMinSeason   = 0.55  -- harder seasonal forest in lush
       }
   , rcRainforest = (defaultRainforestConfig)
-      { rfTropicalMinTemp           = 0.70  -- wider tropical rainforest band
+      { rfTropicalMinTemp           = 0.69  -- wider tropical rainforest band
       , rfTempRainforestMinPrecip   = 0.55  -- easier temperate rainforest
       }
   , rcSwamp     = (defaultSwampConfig)
@@ -186,8 +186,8 @@ lushRefinementConfig = defaultRefinementConfig
       , grcFloodplainMinDischarge = 0.20  -- easier floodplain grassland
       }
   , rcDesert    = (defaultDesertConfig)
-      { dcHotMinTemp       = 0.75   -- harder to classify as hot desert
-      , dcColdMaxTemp      = 0.35   -- narrower cold-desert band
+      { dcHotMinTemp       = 0.725  -- harder to classify as hot desert
+      , dcColdMaxTemp      = 0.445  -- narrower cold-desert band
       , dcSaltFlatMaxMoist = 0.01   -- fewer salt flats
       }
   , rcSavanna   = (defaultSavannaConfig)
@@ -196,7 +196,7 @@ lushRefinementConfig = defaultRefinementConfig
       , saWoodlandMinHumidity  = 0.30  -- easier woodland savanna
       }
   , rcCoastal   = (defaultCoastalConfig)
-      { cstMangroveMinTemp    = 0.60  -- wider mangrove band
+      { cstMangroveMinTemp    = 0.62  -- wider mangrove band
       , cstMangroveMinPrecip  = 0.45
       , cstSaltMarshMinMoist  = 0.50  -- easier salt marsh
       }
@@ -258,7 +258,8 @@ refineBiomesChunk cfg wl primary tc cc _wc mRiver mGw mVolc mGlac mWb =
       ashPot    = fmap vcAshPotential mVolc
       iceThick  = fmap glIceThickness mGlac
       snowpack  = fmap glSnowpack mGlac
-      wbTypes   = fmap wbType mWb
+      wbTypes    = fmap wbType mWb
+      adjTypes   = fmap wbAdjacentType mWb
 
       maybeAt :: Maybe (U.Vector Float) -> Int -> Float
       maybeAt Nothing  _ = 0
@@ -291,6 +292,7 @@ refineBiomesChunk cfg wl primary tc cc _wc mRiver mGw mVolc mGlac mWb =
             ice = maybeAt iceThick i
             snp = maybeAt snowpack i
             wbt = maybeWbt wbTypes i
+            awt = maybeWbt adjTypes i
             hum = atF humAvg i
             tRng = atF tempRng i
             pSeason = atF precipSeason i
@@ -300,7 +302,7 @@ refineBiomesChunk cfg wl primary tc cc _wc mRiver mGw mVolc mGlac mWb =
               | bid == BiomeOcean     = refineOcean     (rcOcean cfg)     wbt wl e t s h
               | bid == BiomeLake      = bid  -- lakes pass through (no sub-biomes)
               | bid == BiomeInlandSea = bid  -- inland seas pass through
-              | bid == BiomeCoastal   = refineCoastal   (rcCoastal cfg)   t p m h sd dis
+              | bid == BiomeCoastal   = refineCoastal   (rcCoastal cfg)   awt t p m h sd dis
               | bid == BiomeDesert    = refineDesert     (rcDesert cfg)    t m h sd tf hum pSeason
               | bid == BiomeGrassland = refineGrassland  (rcGrassland cfg) e p sd m dis tRng t
               | bid == BiomeForest    = refineForest     (rcForest cfg)    e t p h hum s tf pSeason

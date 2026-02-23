@@ -66,23 +66,25 @@ import Topo.Config.JSON
 -- coastal proximity.
 data TemperatureConfig = TemperatureConfig
   { tmpEquatorTemp       :: !Float
-  -- ^ Base temperature at the equator (0–1).  Default: @0.78@.
+  -- ^ Base temperature at the equator (0–1).  Default: @0.746@
+  -- (~24.6 °C with the [−50,+50] °C scale).
   , tmpPoleTemp          :: !Float
-  -- ^ Base temperature at the poles (0–1).  Default: @0.0@.
+  -- ^ Base temperature at the poles (0–1).  Default: @0.0@
+  -- (−50 °C, realistic Antarctic interior).
   , tmpLapseRate         :: !Float
   -- ^ Cooling per unit of normalised height above sea level.
-  -- Earth analogue: ~6.5 °C\/km scaled to a 0–1 elevation range.
-  -- Default: @0.65@.
+  -- Targets ~5.5 °C\/km over the 12 000 m elevation range.
+  -- Default: @0.66@.
   , tmpLatitudeExponent  :: !Float
   -- ^ Exponent applied to @cos(latitude)@ for the latitude–temperature
   -- curve.  An Earth-empirical fit is ≈ 1.0.  Default: @1.0@.
   , tmpPlateHeightCooling :: !Float
   -- ^ Continental-elevation cooling coefficient.  Models the mild
   -- cooling of high plateaus /without/ duplicating the main lapse
-  -- rate.  Default: @0.05@.
+  -- rate.  Default: @0.035@.
   , tmpNoiseScale        :: !Float
   -- ^ Random spatial-noise amplitude added to temperature (0–1).
-  -- Default: @0.1@.
+  -- Default: @0.07@.
   , tmpOceanModeration   :: !Float
   -- ^ Strength of ocean thermal moderation on coastal tiles.
   -- 0 = no moderation, 1 = full pull towards 'tmpOceanModerateTemp'.
@@ -102,10 +104,10 @@ data TemperatureConfig = TemperatureConfig
   -- ^ Normalised equatorial ocean SST ceiling.  Maps to ~28 °C.
   -- The ocean SST profile is:
   -- @lerp(poleSST, equatorSST, cos(lat) ^ oceanLatExponent)@.
-  -- Default: @0.83@.
+  -- Default: @0.781@.
   , tmpOceanPoleSST      :: !Float
   -- ^ Normalised polar ocean SST floor.  Maps to ~0 °C.
-  -- Default: @0.43@.
+  -- Default: @0.501@.
   , tmpOceanLatExponent  :: !Float
   -- ^ Latitude exponent for the ocean SST curve.  Higher than land
   -- because evaporative cooling steepens the tropical→polar gradient.
@@ -123,18 +125,18 @@ instance FromJSON TemperatureConfig where
 -- | Sensible Earth-like defaults for the temperature model.
 defaultTemperatureConfig :: TemperatureConfig
 defaultTemperatureConfig = TemperatureConfig
-  { tmpEquatorTemp       = 0.78
+  { tmpEquatorTemp       = 0.746
   , tmpPoleTemp          = 0
-  , tmpLapseRate         = 0.65
+  , tmpLapseRate         = 0.66
   , tmpLatitudeExponent  = 1.0
-  , tmpPlateHeightCooling = 0.05
-  , tmpNoiseScale        = 0.1
+  , tmpPlateHeightCooling = 0.035
+  , tmpNoiseScale        = 0.07
   , tmpOceanModeration   = 0.3
   , tmpOceanModerateTemp = 0
   , tmpAlbedoSensitivity = 0.20
   , tmpAlbedoReference   = 0.30
-  , tmpOceanEquatorSST   = 0.83
-  , tmpOceanPoleSST      = 0.43
+  , tmpOceanEquatorSST   = 0.781
+  , tmpOceanPoleSST      = 0.501
   , tmpOceanLatExponent  = 2.0
   }
 
@@ -148,9 +150,12 @@ defaultTemperatureConfig = TemperatureConfig
 -- (trade winds, westerlies, polar easterlies) modulated by noise,
 -- then smoothed via iterative diffusion.
 --
--- __Belt model:__ @sin(lat × 2 × 'windBeltHarmonics')@ determines
--- the prevailing wind direction.  'windBeltStrength' controls how
--- strongly the zonal belt dominates over random noise.
+-- __Belt model:__ A three-band Coriolis model computes the prevailing
+-- wind direction based on latitude: trade winds (0–30°), westerlies
+-- (30–60°), and polar easterlies (60–90°), each with realistic
+-- meridional deflection controlled by 'windCoriolisDeflection'.
+-- 'windBeltStrength' controls how strongly the zonal belt dominates
+-- over random noise.
 data WindConfig = WindConfig
   { windIterations      :: !Int
   -- ^ Number of diffusion\/smoothing passes.  Default: @4@.
@@ -167,6 +172,11 @@ data WindConfig = WindConfig
   -- ^ Wind-speed variation range from belts (0–1).  Default: @0.6@.
   , windBeltSpeedScale  :: !Float
   -- ^ Speed multiplier from belt influence (0–1).  Default: @0.6@.
+  , windCoriolisDeflection :: !Float
+  -- ^ Angular deflection from pure zonal flow (radians) due to
+  -- Coriolis effect.  Applied hemisphere-aware: NH deflects right,
+  -- SH deflects left.  Default: @0.45@ (≈26°).
+  -- 0 = purely east\/west winds; π\/2 = purely meridional.
   } deriving (Eq, Show, Generic)
 
 -- | Serialise with @wind@ prefix stripped from field names.
@@ -187,6 +197,9 @@ defaultWindConfig = WindConfig
   , windBeltBase        = 0.4
   , windBeltRange       = 0.6
   , windBeltSpeedScale  = 0.6
+  , windCoriolisDeflection = 0.45
+    -- ^ ~26° deflection from zonal; produces realistic NE trades,
+    -- SW westerlies (NH), and mirror images in SH.
   }
 
 ------------------------------------------------------------------------
@@ -245,10 +258,10 @@ data MoistureConfig = MoistureConfig
   -- ^ ITCZ convergence zone width in degrees latitude.
   -- Default: @8.0@.
   , ccTempToC_Scale         :: !Float
-  -- ^ Normalised-temperature → °C scale factor.  Default: @70.0@
+  -- ^ Normalised-temperature → °C scale factor.  Default: @100.0@
   -- (i.e. @T ∈ [0,1]@ maps to @[offset, offset+scale]@ °C).
   , ccTempToC_Offset        :: !Float
-  -- ^ Normalised-temperature → °C offset.  Default: @−30.0@.
+  -- ^ Normalised-temperature → °C offset.  Default: @−50.0@.
   , moistInternalLandBase   :: !Float
   -- ^ Baseline soil water availability for land evapotranspiration,
   -- independent of hydrology-stage 'tcMoisture'.  Interior land tiles
@@ -276,7 +289,14 @@ data MoistureConfig = MoistureConfig
   , moistConvectiveRate     :: !Float
   -- ^ Convective precipitation rate per unit excess RH (Model E.7).
   -- Scales with temperature (warmer → more CAPE → more convective
-  -- rain) and local saturation capacity.  Default: @0.15@.
+  -- rain) and local saturation capacity.  Default: @0.08@.
+  , moistMinVegFloor        :: !Float
+  -- ^ Minimum vegetation cover assumed for land ET reinjection.
+  -- Breaks the vegetation cold-start problem: even barren land has
+  -- some ground cover, leaf litter, or soil surface evaporation.
+  -- Without this floor, interior land gets zero moisture → zero
+  -- vegetation → zero ET recycling → permanent desert.
+  -- Default: @0.15@.
   } deriving (Eq, Show, Generic)
 
 -- | Serialise with @moist@\/@cc@ prefixes stripped from field names.
@@ -300,17 +320,30 @@ defaultMoistureConfig = MoistureConfig
   , moistBareEvapFrac       = 0.15
   , moistVegTranspFrac      = 0.85
   , moistWindETScale        = 0.20
-  , moistCondensationRate   = 0.40
+  , moistCondensationRate   = 0.20
+    -- ^ Reduced from 0.40; at 0.20, moisture survives ~20 tiles
+    -- inland instead of dying within 3–5 tiles of the coast.
   , moistRecycleRate        = 0.35
   , moistITCZStrength       = 0.15
   , moistITCZWidth          = 8.0
-  , ccTempToC_Scale         = 70.0
-  , ccTempToC_Offset        = -30.0
-  , moistInternalLandBase   = 0.25
-  , moistAdvectSpeed        = 2.0
+  , ccTempToC_Scale         = 100.0
+  , ccTempToC_Offset        = -50.0
+  , moistInternalLandBase   = 0.35
+    -- ^ Raised from 0.25; higher baseline soil moisture gives land
+    -- ET something to work with even before hydrology runs.
+  , moistAdvectSpeed        = 3.0
+    -- ^ Raised from 2.0; each iteration moves moisture 3 tiles
+    -- instead of 2, increasing max inland reach to ~108 tiles.
   , moistBaseRecycleRate    = 0.10
-  , moistConvectiveThreshold = 0.70
-  , moistConvectiveRate     = 0.15
+  , moistConvectiveThreshold = 0.80
+    -- ^ Raised from 0.70; convective rain fires only at RH > 80%,
+    -- giving moisture more room to travel before precipitating.
+  , moistConvectiveRate     = 0.08
+    -- ^ Reduced from 0.15; less aggressive convective precipitation
+    -- reduces the coastal moisture trap.
+  , moistMinVegFloor        = 0.15
+    -- ^ Breaks the vegetation cold-start: assumes at least some
+    -- ground cover for ET recycling.
   }
 
 ------------------------------------------------------------------------
@@ -382,7 +415,10 @@ instance FromJSON PrecipitationConfig where
 defaultPrecipitationConfig :: PrecipitationConfig
 defaultPrecipitationConfig = PrecipitationConfig
   { precOrographicLift   = 0.35
-  , precRainShadowLoss   = 0.15
+  , precRainShadowLoss   = 0.08
+    -- ^ Reduced from 0.15; over 36 iterations the old value drained
+    -- moisture completely over even gentle terrain.  0.08 still
+    -- produces visible rain shadows on real mountains.
   , precOrographicScale  = 0.6
   , precOrographicStep   = 1
   , precCoastalIterations = 8
@@ -419,11 +455,11 @@ data BoundaryConfig = BoundaryConfig
   -- > 0).  Default: @0.6@.
   , bndTempConvergent    :: !Float
   -- ^ Temperature bias at convergent boundaries (typically negative
-  -- = cooling).  Default: @−0.06@.
+  -- = cooling).  Default: @−0.042@.
   , bndTempDivergent     :: !Float
-  -- ^ Temperature bias at divergent boundaries.  Default: @0.02@.
+  -- ^ Temperature bias at divergent boundaries.  Default: @0.014@.
   , bndTempTransform     :: !Float
-  -- ^ Temperature bias at transform boundaries.  Default: @−0.01@.
+  -- ^ Temperature bias at transform boundaries.  Default: @−0.007@.
   , bndPrecipConvergent  :: !Float
   -- ^ Precipitation bias at convergent boundaries.  Default: @0.08@.
   , bndPrecipDivergent   :: !Float
@@ -447,9 +483,9 @@ defaultBoundaryConfig = BoundaryConfig
   { bndMotionTemp        = 0.5
   , bndMotionPrecip      = 0.5
   , bndLandRange         = 0.6
-  , bndTempConvergent    = -0.06
-  , bndTempDivergent     = 0.02
-  , bndTempTransform     = -0.01
+  , bndTempConvergent    = -0.042
+  , bndTempDivergent     = 0.014
+  , bndTempTransform     = -0.007
   , bndPrecipConvergent  = 0.08
   , bndPrecipDivergent   = -0.05
   , bndPrecipTransform   = 0.02

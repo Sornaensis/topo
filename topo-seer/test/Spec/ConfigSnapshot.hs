@@ -4,10 +4,13 @@
 module Spec.ConfigSnapshot (spec) where
 
 import Control.Exception (IOException, bracket, try)
-import Data.Aeson (encode, eitherDecodeStrict')
+import Data.Aeson (Value(..), encode, eitherDecodeStrict')
+import Data.Aeson.Key (fromText)
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Text as Text
+import Data.Text (Text)
 import System.Directory
   ( createDirectoryIfMissing
   , getTemporaryDirectory
@@ -28,8 +31,11 @@ import Seer.Config.Snapshot
   , listSnapshots
   , snapshotDir
   )
+import Topo.Erosion (ErosionConfig(..), defaultErosionConfig)
+import Topo.Hypsometry (HypsometryConfig(..))
 import Topo.WorldGen
   ( WorldGenConfig(..)
+  , TerrainConfig(..)
   , defaultWorldGenConfig
   , aridWorldGenConfig
   , lushWorldGenConfig
@@ -45,6 +51,7 @@ spec = describe "ConfigSnapshot" $ do
   snapshotFromUiSpec
   fileIOSpec
   presetVariantSpec
+  snapshotCompatSpec
 
 -- ---------------------------------------------------------------------------
 -- JSON round-trip
@@ -212,3 +219,126 @@ isSorted :: Ord a => [a] -> Bool
 isSorted [] = True
 isSorted [_] = True
 isSorted (x:y:rest) = x <= y && isSorted (y:rest)
+
+-- ---------------------------------------------------------------------------
+-- Snapshot backward/forward compatibility (Phase 7.5)
+-- ---------------------------------------------------------------------------
+
+snapshotCompatSpec :: Spec
+snapshotCompatSpec = describe "Snapshot compatibility" $ do
+  describe "7.5.1 — new fields get defaults via mergeDefaults" $ do
+    it "ErosionConfig missing coastalSmoothIterations gets default 4" $ do
+      -- Build an ErosionConfig JSON that omits the new field
+      let fullJson = encode defaultErosionConfig
+          -- Decode to Value, strip the new key, re-encode
+          stripped = removeKey "coastalSmoothIterations" fullJson
+      case eitherDecodeStrict' @ErosionConfig (BSL.toStrict stripped) of
+        Left err -> expectationFailure err
+        Right ec -> ecCoastalSmoothIterations ec `shouldBe` 4
+
+    it "ErosionConfig with explicit coastalSmoothIterations preserves it" $ do
+      let ec = defaultErosionConfig { ecCoastalSmoothIterations = 7 }
+          bytes = BSL.toStrict (encode ec)
+      case eitherDecodeStrict' @ErosionConfig bytes of
+        Left err -> expectationFailure err
+        Right ec' -> ecCoastalSmoothIterations ec' `shouldBe` 7
+
+    it "ConfigSnapshot with old erosion config (missing new field) fills defaults" $ do
+      -- Encode defaultSnapshot, mutate the erosion sub-config to remove the key
+      let snap = defaultSnapshot
+          json = encode snap
+      case stripNestedKey ["genConfig", "terrain", "erosion"]
+                          "coastalSmoothIterations" json of
+        Nothing  -> expectationFailure "failed to strip nested key"
+        Just stripped ->
+          case eitherDecodeStrict' @ConfigSnapshot (BSL.toStrict stripped) of
+            Left err -> expectationFailure err
+            Right cs ->
+              let erosion = terrainErosion (worldTerrain (csGenConfig cs))
+              in ecCoastalSmoothIterations erosion `shouldBe` 4
+
+  describe "7.5.2 — old snapshot applies cleanly" $ do
+    it "empty genConfig decodes to defaultWorldGenConfig" $ do
+      let json = "{\"name\":\"old\",\"genConfig\":{}}"
+      case eitherDecodeStrict' @ConfigSnapshot json of
+        Left err -> expectationFailure err
+        Right cs -> csGenConfig cs `shouldBe` defaultWorldGenConfig
+
+    it "completely empty JSON decodes to defaultSnapshot" $ do
+      case eitherDecodeStrict' @ConfigSnapshot "{}" of
+        Left err -> expectationFailure err
+        Right cs -> cs `shouldBe` defaultSnapshot
+
+  describe "7.5.3 — save/reload preserves all fields including new ones" $ do
+    it "round-trips non-default ecCoastalSmoothIterations through file" $
+      withTempDir $ \dir -> do
+        let path = dir </> "compat-test.json"
+            wgc  = defaultWorldGenConfig
+            tc   = worldTerrain wgc
+            ec   = terrainErosion tc
+            ec'  = ec { ecCoastalSmoothIterations = 6 }
+            tc'  = tc { terrainErosion = ec' }
+            wgc' = wgc { worldTerrain = tc' }
+            snap = defaultSnapshot
+              { csName = "compat"
+              , csGenConfig = wgc'
+              }
+        result <- saveSnapshot path snap
+        result `shouldBe` Right ()
+        loaded <- loadSnapshot path
+        case loaded of
+          Left err -> expectationFailure (Text.unpack err)
+          Right cs -> do
+            csName cs `shouldBe` "compat"
+            let erosion = terrainErosion (worldTerrain (csGenConfig cs))
+            ecCoastalSmoothIterations erosion `shouldBe` 6
+
+    it "round-trips updated hypsometry slider ranges through file" $
+      withTempDir $ \dir -> do
+        let path = dir </> "hyps-range-test.json"
+            wgc  = defaultWorldGenConfig
+            tc   = worldTerrain wgc
+            hp   = terrainHypsometry tc
+            -- Use values within the updated slider ranges
+            hp'  = hp { hpCoastalRampWidth = 0.15 }
+            tc'  = tc { terrainHypsometry = hp' }
+            wgc' = wgc { worldTerrain = tc' }
+            snap = defaultSnapshot { csGenConfig = wgc' }
+        result <- saveSnapshot path snap
+        result `shouldBe` Right ()
+        loaded <- loadSnapshot path
+        case loaded of
+          Left err -> expectationFailure (Text.unpack err)
+          Right cs ->
+            let hp'' = terrainHypsometry (worldTerrain (csGenConfig cs))
+            in hpCoastalRampWidth hp'' `shouldBe` 0.15
+
+    it "snapshotFromUi with default UiState round-trips through JSON" $ do
+      let snap  = snapshotFromUi emptyUiState "default-ui"
+          bytes = BSL.toStrict (encode snap)
+      case eitherDecodeStrict' @ConfigSnapshot bytes of
+        Left err -> expectationFailure err
+        Right snap' -> csGenConfig snap' `shouldBe` csGenConfig snap
+
+-- | Remove a top-level key from a JSON object encoded as lazy ByteString.
+removeKey :: Text -> BSL.ByteString -> BSL.ByteString
+removeKey key lbs =
+  case eitherDecodeStrict' @Value (BSL.toStrict lbs) of
+    Left _           -> lbs
+    Right (Object o) -> encode (Object (KM.delete (fromText key) o))
+    Right v          -> encode v
+
+-- | Remove a key nested under a path of object keys.
+-- Returns 'Nothing' if the path doesn't exist.
+stripNestedKey :: [Text] -> Text -> BSL.ByteString -> Maybe BSL.ByteString
+stripNestedKey path key lbs =
+  case eitherDecodeStrict' @Value (BSL.toStrict lbs) of
+    Left _  -> Nothing
+    Right v -> Just (encode (go path v))
+  where
+    go []     (Object o) = Object (KM.delete (fromText key) o)
+    go (p:ps) (Object o) =
+      case KM.lookup (fromText p) o of
+        Just inner -> Object (KM.insert (fromText p) (go ps inner) o)
+        Nothing    -> Object o
+    go _ v = v

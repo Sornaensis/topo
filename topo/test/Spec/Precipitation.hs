@@ -142,24 +142,24 @@ spec = describe "Precipitation model (Phase 1 fixes)" $ do
   -- 1.3b: Reversing wind belt inverts precipitation asymmetry
   -- ------------------------------------------------------------------
   describe "wind-direction precipitation asymmetry" $ do
-    it "flipping wind belt inverts left-right precip balance" $ do
+    it "flipping Coriolis deflection shifts left-right precip balance" $ do
       let waterLevel = 0.5
           -- Left chunk is ocean (moisture source), right is land
           elevL _ = 0.3  -- ocean
           elevR _ = 0.6  -- land
-          -- Normal wind: left → right (positive belt harmonics)
+          -- Normal wind: positive Coriolis deflection (NH-like)
           cfgNormal = defaultClimateConfig
             { ccWind = (ccWind defaultClimateConfig)
                 { windBeltStrength = 0.9
-                , windBeltHarmonics = 3
+                , windCoriolisDeflection = 0.8
                 }
             }
-          -- Flipped wind: negate the harmonics to reverse prevailing
-          -- belt direction in a symmetric way.
+          -- Flipped wind: negate Coriolis deflection to reverse
+          -- the meridional component of prevailing winds.
           cfgFlipped = defaultClimateConfig
             { ccWind = (ccWind defaultClimateConfig)
                 { windBeltStrength = 0.9
-                , windBeltHarmonics = -3
+                , windCoriolisDeflection = -0.8
                 }
             }
       (mnL, mnR) <- runClimate2Chunks cfgNormal  waterLevel elevL elevR
@@ -170,11 +170,11 @@ spec = describe "Precipitation model (Phase 1 fixes)" $ do
                           - avgVec (ccPrecipAvg nL)
               flippedDiff = avgVec (ccPrecipAvg fR)
                           - avgVec (ccPrecipAvg fL)
-          -- Flipping wind direction should change the left-right
-          -- precipitation asymmetry.  At high base evaporation the
-          -- system can saturate, making both diffs positive; we
-          -- therefore check that the asymmetry *shifts* rather than
-          -- demanding a sign flip.
+          -- Flipping Coriolis deflection should change the
+          -- meridional wind component, shifting precipitation
+          -- asymmetry between the ocean (left) and land (right)
+          -- chunks.  We check that the asymmetry *shifts* rather
+          -- than demanding a sign flip.
           abs (normalDiff - flippedDiff) `shouldSatisfy` (> 0.001)
         _ -> expectationFailure "missing climate chunks"
 

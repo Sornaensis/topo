@@ -1,9 +1,12 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 
 module Spec.Planet (spec) where
 
 import Test.Hspec
 import Test.QuickCheck
+import Data.Text (Text)
+import qualified Data.Text as Text
 import Topo.Planet
 import Topo.Types (WorldConfig(..), WorldExtent, TileCoord(..), mkWorldExtent, worldExtentRadii)
 
@@ -92,12 +95,12 @@ spec = describe "Planet" $ do
           lat = tileLatitude planet slice config (TileCoord 0 centerY)
       abs (lat - wsLatCenter slice) `shouldSatisfy` (< 0.01)
 
-    it "north edge is north of center" $ do
+    it "north edge (low tile Y) is north of center" $ do
       let planet = defaultPlanetConfig
           slice  = defaultWorldSlice
           config = WorldConfig { wcChunkSize = 16 }
-          -- For ry=2, max chunk coord = 2, max tile Y = 2*16 + 15 = 47
-          topTileY = 2 * 16 + 15
+          -- Low tile Y = top of screen = north
+          topTileY = 0
           lat = tileLatitude planet slice config (TileCoord 0 topTileY)
       lat `shouldSatisfy` (> wsLatCenter slice)
 
@@ -166,14 +169,53 @@ spec = describe "Planet" $ do
             Left _ -> False
 
   describe "latitude monotonicity" $ do
-    it "property: increasing tile Y increases latitude" $
+    it "property: increasing tile Y decreases latitude (goes south)" $
       property $ \(ValidPlanetParams r t i) (ValidSliceParams lc le _ _) ->
         let Right planet = mkPlanetConfig r t i
             Right slice  = mkWorldSlice lc le 0 60
             config = WorldConfig { wcChunkSize = 16 }
             lat0 = tileYToLatDeg planet slice config 0
             lat1 = tileYToLatDeg planet slice config 100
-        in lat1 > lat0
+        in lat1 < lat0
+
+    it "property: tile Y=0 is north of tile Y=chunkSize-1" $
+      property $ \(ValidPlanetParams r t i) (ValidSliceParams lc le _ _) ->
+        let Right planet = mkPlanetConfig r t i
+            Right slice  = mkWorldSlice lc le 0 60
+            config = WorldConfig { wcChunkSize = 16 }
+            latTop = tileLatitude planet slice config (TileCoord 0 0)
+            latBot = tileLatitude planet slice config (TileCoord 0 15)
+        in latTop > latBot
+
+  describe "geographic formatting" $ do
+    it "positive latitude shows N" $
+      formatLatitude 12.34 `shouldSatisfy` Text.isSuffixOf "N"
+
+    it "negative latitude shows S" $
+      formatLatitude (-45.67) `shouldSatisfy` Text.isSuffixOf "S"
+
+    it "zero latitude shows N" $
+      formatLatitude 0 `shouldSatisfy` Text.isSuffixOf "N"
+
+    it "positive longitude shows E" $
+      formatLongitude 30.5 `shouldSatisfy` Text.isSuffixOf "E"
+
+    it "negative longitude shows W" $
+      formatLongitude (-120.2) `shouldSatisfy` Text.isSuffixOf "W"
+
+    it "zero longitude shows E" $
+      formatLongitude 0 `shouldSatisfy` Text.isSuffixOf "E"
+
+    it "formatLatitude rounds to 1 decimal" $
+      formatLatitude 12.34 `shouldBe` "12.3\176 N"
+
+    it "formatLongitude rounds to 1 decimal" $
+      formatLongitude (-120.27) `shouldBe` "120.3\176 W"
+
+    it "formatLatLon combines both" $ do
+      let result = formatLatLon 12.3 (-45.6)
+      result `shouldSatisfy` Text.isInfixOf "N"
+      result `shouldSatisfy` Text.isInfixOf "W"
 
 -- ---------------------------------------------------------------------------
 -- QuickCheck generators

@@ -69,6 +69,7 @@ import Actor.UI
   , setUiGenerating
   , setUiLapseRate
   , setUiMoistureIterations
+  , setUiMoistMinVegFloor
   , setUiPlateBiasCenter
   , setUiPlateBiasEdge
   , setUiPlateBiasNorth
@@ -112,6 +113,7 @@ import Actor.UI
   , setUiWeatherPhase
   , setUiWeatherTick
   , setUiWindDiffuse
+  , setUiWindCoriolisDeflection
   , setUiWindIterations
   , setUiWorldConfig
   )
@@ -263,7 +265,7 @@ resetConfig req = do
   setUiWaterLevel uiHandle 0.5
   setUiRenderWaterLevel uiHandle 0.5
   setUiOrographicLift uiHandle 0.35
-  setUiRainShadowLoss uiHandle 0.15
+  setUiRainShadowLoss uiHandle 0.08
   setUiWindDiffuse uiHandle 0.5
   setUiRainRate uiHandle 0.2
   setUiErosionHydraulic uiHandle 0.5
@@ -334,3 +336,5 @@ resetConfig req = do
   setUiInsolation uiHandle 0.5
   setUiSliceLatCenter uiHandle 0.5
   setUiSliceLonCenter uiHandle 0.5
+  setUiWindCoriolisDeflection uiHandle 0.287
+  setUiMoistMinVegFloor uiHandle 0.15

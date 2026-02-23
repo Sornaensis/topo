@@ -44,6 +44,7 @@ import Topo.Climate.Config
 import Topo.Erosion           (ErosionConfig)
 import Topo.Glacier           (GlacierConfig)
 import Topo.Hydrology         (GroundwaterConfig, HydroConfig, RiverConfig)
+import Topo.Hypsometry        (HypsometryConfig)
 import Topo.OceanCurrent      (OceanCurrentConfig)
 import Topo.Parameters        (ParameterConfig, TerrainFormConfig)
 import Topo.Planet            (PlanetConfig, WorldSlice)
@@ -131,6 +132,9 @@ instance Arbitrary TectonicsConfig             where arbitrary = genericArbitrar
 
 -- Erosion
 instance Arbitrary ErosionConfig               where arbitrary = genericArbitrary
+
+-- Hypsometry
+instance Arbitrary HypsometryConfig            where arbitrary = genericArbitrary
 
 -- Hydrology
 instance Arbitrary HydroConfig                 where arbitrary = genericArbitrary

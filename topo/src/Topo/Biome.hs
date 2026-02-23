@@ -69,6 +69,16 @@ data BiomeThresholds = BiomeThresholds
   -- ^ Moisture requirement for valley→wetland override (default 0.70).
   , btDepressionMoisture :: !Float
   -- ^ Moisture requirement for depression→wetland override (default 0.60).
+  , btLakeshoreMoisture :: !Float
+  -- ^ Moisture threshold for lakeshore / inland-sea shore tiles to
+  --   classify as wetland.  Lower than 'btDepressionMoisture' because
+  --   proximity to a water body promotes wetland formation, but arid
+  --   lakeshores (salt lakes, desert basins) should fall through
+  --   to the climate rule table.  Default: @0.40@.
+  , btLakeshoreMinTemp  :: !Float
+  -- ^ Minimum temperature for lakeshore wetland classification.
+  --   Cold lakeshores (boreal, arctic) are forest or tundra, not swamp.
+  --   Default: @0.30@ (≈ −4 °C, roughly the boreal–temperate boundary).
   , btPrecipWeight      :: !Float
   -- ^ Weight applied to the precipitation dimension in the nearest-centroid
   --   fallback distance calculation.  Higher values prevent desert from
@@ -182,8 +192,8 @@ defaultBiomeVegetationConfig = BiomeVegetationConfig
 -- | Default Whittaker-style biome rules — 15-rule non-overlapping tiling.
 --
 -- Temperature and precipitation ranges are normalised to [0, 1].
--- The Celsius mapping is @norm * 70 − 30@ (so 0.36 ≈ −5 °C, 0.50 ≈ 5 °C,
--- 0.64 ≈ 15 °C, 0.76 ≈ 23 °C).
+-- The Celsius mapping is @norm * 100 − 50@ (so 0.45 ≈ −5 °C, 0.55 ≈ 5 °C,
+-- 0.65 ≈ 15 °C, 0.73 ≈ 23 °C).
 --
 -- Five temperature bands (polar / boreal / cool-temperate / warm-temperate
 -- / tropical) are each subdivided into precipitation zones that tile the
@@ -198,50 +208,50 @@ defaultBiomeVegetationConfig = BiomeVegetationConfig
 -- from winning at moderate moisture levels for any remaining edge cases.
 defaultBiomeRules :: BiomeRule
 defaultBiomeRules = BiomeRule
-  [ -- ── Polar / Tundra  (T < 0.36, i.e., below −5 °C) ──────────────
+  [ -- ── Polar / Tundra  (T < 0.452, i.e., below −5 °C) ──────────────
     -- Everything below −5 °C is tundra family; refinement picks
     -- polar desert, arctic tundra, or alpine tundra.
-    (BiomeTundra,      (0.00, 0.36), (0.00, 1.01))
+    (BiomeTundra,      (0.00, 0.452), (0.00, 1.01))
 
-    -- ── Boreal  (T 0.36–0.50, i.e., −5 °C to 5 °C) ────────────────
-  , (BiomeGrassland,   (0.36, 0.50), (0.00, 0.15))
+    -- ── Boreal  (T 0.452–0.55, i.e., −5 °C to 5 °C) ────────────────
+  , (BiomeGrassland,   (0.452, 0.55), (0.00, 0.15))
     -- Cold steppe / very dry boreal (refined → Steppe)
-  , (BiomeTaiga,       (0.36, 0.50), (0.15, 1.01))
+  , (BiomeTaiga,       (0.452, 0.55), (0.15, 1.01))
     -- Boreal forest / taiga (wet extreme refined → BorealBog)
 
-    -- ── Cool Temperate  (T 0.50–0.64, i.e., 5 °C to 15 °C) ────────
-  , (BiomeGrassland,   (0.50, 0.57), (0.00, 0.10))
+    -- ── Cool Temperate  (T 0.55–0.648, i.e., 5 °C to 15 °C) ────────
+  , (BiomeGrassland,   (0.55, 0.599), (0.00, 0.10))
     -- Cold steppe: continental interior at 45–55° latitude
     -- (replaces desert at the lower half of cool-temperate band)
-  , (BiomeDesert,      (0.57, 0.64), (0.00, 0.10))
+  , (BiomeDesert,      (0.599, 0.648), (0.00, 0.10))
     -- True cool / continental desert (Gobi fringe, Patagonia steppe)
-  , (BiomeGrassland,   (0.50, 0.64), (0.10, 0.30))
+  , (BiomeGrassland,   (0.55, 0.648), (0.10, 0.30))
     -- Temperate steppe and grassland
-  , (BiomeForest,      (0.50, 0.64), (0.30, 0.75))
+  , (BiomeForest,      (0.55, 0.648), (0.30, 0.75))
     -- Temperate deciduous / coniferous / mixed forest
-  , (BiomeRainforest,  (0.50, 0.64), (0.75, 1.01))
+  , (BiomeRainforest,  (0.55, 0.648), (0.75, 1.01))
     -- Cool temperate rainforest (Valdivian, NZ podocarp)
 
-    -- ── Warm Temperate  (T 0.64–0.76, i.e., 15 °C to 23 °C) ───────
-  , (BiomeDesert,      (0.64, 0.76), (0.00, 0.10))
+    -- ── Warm Temperate  (T 0.648–0.732, i.e., 15 °C to 23 °C) ───────
+  , (BiomeDesert,      (0.648, 0.732), (0.00, 0.10))
     -- Warm subtropical desert
-  , (BiomeShrubland,   (0.64, 0.76), (0.10, 0.30))
+  , (BiomeShrubland,   (0.648, 0.732), (0.10, 0.30))
     -- Mediterranean / chaparral / warm scrub
-  , (BiomeForest,      (0.64, 0.76), (0.30, 0.75))
+  , (BiomeForest,      (0.648, 0.732), (0.30, 0.75))
     -- Warm temperate / subtropical forest
-  , (BiomeRainforest,  (0.64, 0.76), (0.75, 1.01))
+  , (BiomeRainforest,  (0.648, 0.732), (0.75, 1.01))
     -- Warm temperate rainforest (Tasmanian, Atlantic forest fringe)
 
-    -- ── Tropical  (T ≥ 0.76, i.e., above 23 °C) ───────────────────
-  , (BiomeDesert,      (0.76, 1.01), (0.00, 0.10))
+    -- ── Tropical  (T ≥ 0.732, i.e., above 23 °C) ───────────────────
+  , (BiomeDesert,      (0.732, 1.01), (0.00, 0.10))
     -- Hot desert (Sahara, Arabian, Australian interior)
-  , (BiomeSavanna,     (0.76, 1.01), (0.10, 0.40))
+  , (BiomeSavanna,     (0.732, 1.01), (0.10, 0.40))
     -- Tropical savanna (African, Cerrado, Llanos)
-  , (BiomeForest,      (0.76, 1.01), (0.40, 0.60))
+  , (BiomeForest,      (0.732, 1.01), (0.40, 0.60))
     -- Tropical dry / seasonal forest — tiles with high seasonality
     -- are reclassified to Savanna by the post-rule seasonality pass
     -- in 'classifyBiome'.
-  , (BiomeRainforest,  (0.76, 1.01), (0.60, 1.01))
+  , (BiomeRainforest,  (0.732, 1.01), (0.60, 1.01))
     -- Tropical rainforest (Amazon, Congo, SE Asian)
   ]
 
@@ -255,22 +265,24 @@ defaultBiomeThresholds :: BiomeThresholds
 defaultBiomeThresholds = BiomeThresholds
   { btCoastalBand        = 0.03
   , btFallbackBiome      = BiomeGrassland
-  , btIceCapTemp         = 0.05
+  , btIceCapTemp         = 0.235
   , btMontanePrecip      = 0.30
   , btCliffSlope         = 0.40
   , btValleyMoisture     = 0.70
   , btDepressionMoisture = 0.60
+  , btLakeshoreMoisture  = 0.40
+  , btLakeshoreMinTemp   = 0.41
   , btPrecipWeight       = 2.0
   , btSeasonalitySavannaThreshold = 0.40
-  , btTempRangeGrasslandThreshold = 0.15
+  , btTempRangeGrasslandThreshold = 0.105
   , btSnowPolarDesertMaxPrecip = 0.08
   , btReliefSavannaThreshold = 0.25
   -- Temperature-primary mountain biome thresholds
-  , btSnowMaxTemp        = 0.20
+  , btSnowMaxTemp        = 0.34
   , btSnowMinASL         = 0.02
-  , btAlpineMaxTemp      = 0.35
+  , btAlpineMaxTemp      = 0.445
   , btAlpineMinASL       = 0.04
-  , btMontaneMaxTemp     = 0.55
+  , btMontaneMaxTemp     = 0.585
   , btMontaneMinASL      = 0.03
   , btMontaneMinSlope    = 0.06
   , btMontaneMinHumidity = 0.40
@@ -326,9 +338,26 @@ classifyBiome (BiomeRule rules) thr wl wbt adjWbt temp precip elev slope relief 
   = BiomeOcean
   -- 2. Coastal override (land tiles only from here)
   | elev < wl + btCoastalBand thr && elev >= wl
-  = case adjWbt of
-      _ | adjWbt == WaterOcean -> BiomeCoastal  -- true ocean coast
-        | otherwise            -> BiomeSwamp    -- inland shore / basin → wetland family
+    && adjWbt == WaterOcean
+  = BiomeCoastal  -- true ocean coast
+
+  -- 2b. Lakeshore / inland-sea shore → wetland family.
+  -- Requires both sufficient moisture and warmth: arid lakeshores
+  -- (salt flats, desert basins) and cold lakeshores (boreal, arctic)
+  -- fall through to the climate rule table instead.
+  | elev < wl + btCoastalBand thr && elev >= wl
+    && (adjWbt == WaterLake || adjWbt == WaterInlandSea)
+    && moisture >= btLakeshoreMoisture thr
+    && temp >= btLakeshoreMinTemp thr
+  = BiomeSwamp
+
+  -- 2c. Low-lying wet inland → wetland family (refined later).
+  -- Non-water-adjacent tiles in the coastal band need moderate moisture
+  -- to be classified as wetland; dry low-lying tiles fall through to
+  -- the rule table for climate-based classification.
+  | elev < wl + btCoastalBand thr && elev >= wl
+    && moisture >= btDepressionMoisture thr
+  = BiomeSwamp
 
   ---------------------------------------------------------------------------
   -- 3. Temperature-primary mountain biome guards
@@ -421,21 +450,21 @@ classifyBiome (BiomeRule rules) thr wl wbt adjWbt temp precip elev slope relief 
       -- P1.2: Tropical and warm-temperate Forest at moderate precip
       -- with high seasonality → Savanna (monsoonal / seasonal).
       | bid == BiomeForest
-        && temp >= 0.64
+        && temp >= 0.648
         && precip >= 0.30 && precip < 0.60
         && precipSeason >= btSeasonalitySavannaThreshold thr
       = BiomeSavanna
       -- P1.3: Warm-temperate Shrubland with high continentality
       -- (temperature range) → Grassland (continental steppe/prairie).
       | bid == BiomeShrubland
-        && temp >= 0.64 && temp < 0.76
+        && temp >= 0.648 && temp < 0.732
         && tempRange >= btTempRangeGrasslandThreshold thr
       = BiomeGrassland
       -- P3.7: High-relief Grassland tiles in warm bands → Savanna.
       -- Hilly/rolling grassland with significant relief looks and
       -- functions more like savanna than flat steppe or prairie.
       | bid == BiomeGrassland
-        && temp >= 0.50
+        && temp >= 0.55
         && relief >= btReliefSavannaThreshold thr
       = BiomeSavanna
       | otherwise

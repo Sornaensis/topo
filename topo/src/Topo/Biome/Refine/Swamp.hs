@@ -44,15 +44,15 @@ instance FromJSON SwampConfig where
 -- | Sensible defaults for swamp refinement.
 defaultSwampConfig :: SwampConfig
 defaultSwampConfig = SwampConfig
-  { swMarshMaxTemp           = 0.55
+  { swMarshMaxTemp           = 0.585
   , swMarshMinMoisture       = 0.70
-  , swBogMaxTemp             = 0.40
+  , swBogMaxTemp             = 0.48
   , swBogMaxFertility        = 0.20
   , swFenMinGwDischarge      = 0.30
-  , swFenMaxTemp             = 0.50
+  , swFenMaxTemp             = 0.55
   , swFloodplainMinDischarge = 0.40
-  , swFloodplainMinTemp      = 0.50
-  , swWetlandMaxTemp         = 0.55
+  , swFloodplainMinTemp      = 0.55
+  , swWetlandMaxTemp         = 0.585
   }
 
 -- | Refine a swamp tile into a sub-biome.

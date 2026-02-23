@@ -74,6 +74,7 @@ import Topo.Metadata
 import Topo.PlateMetadata (PlateHexMeta)
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), defaultPlanetConfig, defaultWorldSlice, mkLatitudeMapping)
 import Topo.Types
+import Topo.Units (UnitScales(..), defaultUnitScales)
 import Topo.World
 
 -- | Storage-layer failures while encoding or decoding worlds.
@@ -144,6 +145,7 @@ encodeWorldWithProvenance prov world = do
     putWorldSlice (twSlice world)
     putFloatle (twWorldTime world)
     putGenConfig (twGenConfig world)
+    putUnitScales (twUnitScales world)
     putChunkMapBytes terrain
     putChunkMapBytes climate
     putChunkMapBytes weather
@@ -200,8 +202,10 @@ magic = BS.pack [0x54, 0x4f, 0x50, 0x4f]
 --         Files < v13 decode with legacy 4-field climate chunks.
 --   * 14: full WorldGenConfig stored as a length-prefixed JSON blob.
 --         Files < v14 decode with twGenConfig = Nothing.
+--   * 15: UnitScales record stored after genConfig.
+--         Files < v15 decode with 'defaultUnitScales'.
 fileVersion :: Word32
-fileVersion = 14
+fileVersion = 15
 
 defaultMetadataCodecs :: [MetadataCodec]
 defaultMetadataCodecs =
@@ -270,6 +274,9 @@ getWorldWithProvenance codecs = do
   genConfig <- if version >= 14
     then getGenConfig
     else pure Nothing
+  unitScales <- if version >= 15
+    then getUnitScales
+    else pure defaultUnitScales
   let terrainDecoder = if version < 3 then decodeTerrainChunkV2 else decodeTerrainChunk
   terrain <- getChunkMap terrainDecoder config
   climate <- getChunkMap (if version >= 13 then decodeClimateChunk else decodeClimateChunkV1) config
@@ -306,6 +313,7 @@ getWorldWithProvenance codecs = do
         , twLatMapping = mkLatitudeMapping planet slice config
         , twWorldTime = worldTime
         , twGenConfig = genConfig
+        , twUnitScales = unitScales
         }
     )
 
@@ -551,6 +559,46 @@ getGenConfig = do
     else do
       jsonBytes <- getByteString len
       pure (decode (BL.fromStrict jsonBytes))
+
+-- | Encode a 'UnitScales' as 10 little-endian Float32 fields.
+putUnitScales :: UnitScales -> Put
+putUnitScales us = do
+  putFloatle (usTempScale us)
+  putFloatle (usTempOffset us)
+  putFloatle (usElevRange us)
+  putFloatle (usWaterLevel us)
+  putFloatle (usElevGradient us)
+  putFloatle (usPrecipScale us)
+  putFloatle (usWindScale us)
+  putFloatle (usPressureMin us)
+  putFloatle (usPressureRange us)
+  putFloatle (usSoilScale us)
+
+-- | Decode a 'UnitScales' from 10 little-endian Float32 fields.
+getUnitScales :: Get UnitScales
+getUnitScales = do
+  tempScale     <- getFloatle
+  tempOffset    <- getFloatle
+  elevRange     <- getFloatle
+  waterLevel    <- getFloatle
+  elevGradient  <- getFloatle
+  precipScale   <- getFloatle
+  windScale     <- getFloatle
+  pressureMin   <- getFloatle
+  pressureRange <- getFloatle
+  soilScale     <- getFloatle
+  pure UnitScales
+    { usTempScale     = tempScale
+    , usTempOffset    = tempOffset
+    , usElevRange     = elevRange
+    , usWaterLevel    = waterLevel
+    , usElevGradient  = elevGradient
+    , usPrecipScale   = precipScale
+    , usWindScale     = windScale
+    , usPressureMin   = pressureMin
+    , usPressureRange = pressureRange
+    , usSoilScale     = soilScale
+    }
 
 putHexCoord :: HexCoord -> Put
 putHexCoord coord =

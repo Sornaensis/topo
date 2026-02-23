@@ -68,13 +68,13 @@ instance FromJSON SnowConfig where
 -- | Sensible defaults for snow refinement.
 defaultSnowConfig :: SnowConfig
 defaultSnowConfig = SnowConfig
-  { snIceCapMaxTemp        = 0.05
+  { snIceCapMaxTemp        = 0.235
   , snGlacierMinIceThick   = 0.10
-  , snGlacierMaxTemp       = 0.15
+  , snGlacierMaxTemp       = 0.305
   , snSnowfieldMinSnowpack = 0.50
-  , snMarginalMinTemp      = 0.15
+  , snMarginalMinTemp      = 0.305
   , snSteepSlopeThreshold  = 0.30
-  , snWarmEscapeTemp       = 0.25
+  , snWarmEscapeTemp       = 0.375
   }
 
 -- | Refine a snow tile into a sub-biome.

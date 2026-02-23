@@ -165,6 +165,7 @@ module Seer.Config.SliderSpec
   , specWindBeltBase
   , specWindBeltRange
   , specWindBeltSpeedScale
+  , specWindCoriolisDeflection
     -- * Boundary model specs
   , specBndLandRange
   , specBndTempConvergent
@@ -179,6 +180,19 @@ module Seer.Config.SliderSpec
   , specErosionRainRate
   , specErosionTalus
   , specErosionMaxDrop
+  , specErosionHydDeposit
+  , specErosionDepositSlope
+  , specErosionThermDeposit
+  , specErosionCoastZone
+  , specErosionCoastStrength
+  , specErosionCoastIter
+  , specHypsometryEnabled
+  , specHypsometryLowlandExp
+  , specHypsometryHighlandExp
+  , specHypsometryPlateauBreak
+  , specHypsometryOceanExp
+  , specHypsometryCoastalRampWidth
+  , specHypsometryCoastalRampStr
   , specGlacierSnowTemp
   , specGlacierSnowRange
   , specGlacierMeltTemp
@@ -206,6 +220,10 @@ module Seer.Config.SliderSpec
   , specRiverCarveMaxDepth
   , specCoastalErodeStrength
   , specHydroHardnessWeight
+  , specPiedmontSmooth
+  , specPiedmontSlopeMin
+  , specPiedmontSlopeMax
+  , specMoistMinVegFloor
   , specMinLakeSize
   , specInlandSeaMinSize
   , specRoughnessScale
@@ -588,6 +606,32 @@ tooltipForWidget wid = case wid of
   WidgetConfigErosionTalusPlus       -> tip specErosionTalus
   WidgetConfigErosionMaxDropMinus    -> tip specErosionMaxDrop
   WidgetConfigErosionMaxDropPlus     -> tip specErosionMaxDrop
+  WidgetConfigErosionHydDepositMinus -> tip specErosionHydDeposit
+  WidgetConfigErosionHydDepositPlus  -> tip specErosionHydDeposit
+  WidgetConfigErosionDepositSlopeMinus -> tip specErosionDepositSlope
+  WidgetConfigErosionDepositSlopePlus  -> tip specErosionDepositSlope
+  WidgetConfigErosionThermDepositMinus -> tip specErosionThermDeposit
+  WidgetConfigErosionThermDepositPlus  -> tip specErosionThermDeposit
+  WidgetConfigErosionCoastZoneMinus  -> tip specErosionCoastZone
+  WidgetConfigErosionCoastZonePlus   -> tip specErosionCoastZone
+  WidgetConfigErosionCoastStrengthMinus -> tip specErosionCoastStrength
+  WidgetConfigErosionCoastStrengthPlus  -> tip specErosionCoastStrength
+  WidgetConfigErosionCoastIterMinus -> tip specErosionCoastIter
+  WidgetConfigErosionCoastIterPlus  -> tip specErosionCoastIter
+  WidgetConfigHypsometryEnabledMinus -> tip specHypsometryEnabled
+  WidgetConfigHypsometryEnabledPlus  -> tip specHypsometryEnabled
+  WidgetConfigHypsometryLowlandExpMinus -> tip specHypsometryLowlandExp
+  WidgetConfigHypsometryLowlandExpPlus  -> tip specHypsometryLowlandExp
+  WidgetConfigHypsometryHighlandExpMinus -> tip specHypsometryHighlandExp
+  WidgetConfigHypsometryHighlandExpPlus  -> tip specHypsometryHighlandExp
+  WidgetConfigHypsometryPlateauBreakMinus -> tip specHypsometryPlateauBreak
+  WidgetConfigHypsometryPlateauBreakPlus  -> tip specHypsometryPlateauBreak
+  WidgetConfigHypsometryOceanExpMinus -> tip specHypsometryOceanExp
+  WidgetConfigHypsometryOceanExpPlus  -> tip specHypsometryOceanExp
+  WidgetConfigHypsometryCoastalRampWidthMinus -> tip specHypsometryCoastalRampWidth
+  WidgetConfigHypsometryCoastalRampWidthPlus  -> tip specHypsometryCoastalRampWidth
+  WidgetConfigHypsometryCoastalRampStrMinus -> tip specHypsometryCoastalRampStr
+  WidgetConfigHypsometryCoastalRampStrPlus  -> tip specHypsometryCoastalRampStr
   WidgetConfigGlacierSnowTempMinus   -> tip specGlacierSnowTemp
   WidgetConfigGlacierSnowTempPlus    -> tip specGlacierSnowTemp
   WidgetConfigGlacierSnowRangeMinus  -> tip specGlacierSnowRange
@@ -642,6 +686,16 @@ tooltipForWidget wid = case wid of
   WidgetConfigCoastalErodeStrengthPlus  -> tip specCoastalErodeStrength
   WidgetConfigHydroHardnessWeightMinus -> tip specHydroHardnessWeight
   WidgetConfigHydroHardnessWeightPlus  -> tip specHydroHardnessWeight
+  WidgetConfigPiedmontSmoothMinus     -> tip specPiedmontSmooth
+  WidgetConfigPiedmontSmoothPlus      -> tip specPiedmontSmooth
+  WidgetConfigPiedmontSlopeMinMinus   -> tip specPiedmontSlopeMin
+  WidgetConfigPiedmontSlopeMinPlus    -> tip specPiedmontSlopeMin
+  WidgetConfigPiedmontSlopeMaxMinus   -> tip specPiedmontSlopeMax
+  WidgetConfigPiedmontSlopeMaxPlus    -> tip specPiedmontSlopeMax
+  WidgetConfigWindCoriolisDeflectionMinus -> tip specWindCoriolisDeflection
+  WidgetConfigWindCoriolisDeflectionPlus  -> tip specWindCoriolisDeflection
+  WidgetConfigMoistMinVegFloorMinus   -> tip specMoistMinVegFloor
+  WidgetConfigMoistMinVegFloorPlus    -> tip specMoistMinVegFloor
   WidgetConfigMinLakeSizeMinus       -> tip specMinLakeSize
   WidgetConfigMinLakeSizePlus        -> tip specMinLakeSize
   WidgetConfigInlandSeaMinSizeMinus  -> tip specInlandSeaMinSize
@@ -830,19 +884,19 @@ specPlateDetailScale = SliderSpec
 
 specPlateDetailStrength :: SliderSpec
 specPlateDetailStrength = SliderSpec
-  "Plate Detail St" "Strength of per-plate detail noise" 0 1 False
+  "Plate Detail St" "Strength of per-plate detail noise" 0.05 0.5 False
 
 specPlateRidgeStrength :: SliderSpec
 specPlateRidgeStrength = SliderSpec
-  "Plate Ridge St" "Height contribution of convergent ridges" 0 1 False
+  "Plate Ridge St" "Height contribution of convergent ridges" 0.05 0.4 False
 
 specPlateHeightBase :: SliderSpec
 specPlateHeightBase = SliderSpec
-  "Plate Height B" "Base elevation assigned to each plate" (-0.1) 0.35 False
+  "Plate Height B" "Base elevation assigned to each plate" 0.0 0.4 False
 
 specPlateHeightVariance :: SliderSpec
 specPlateHeightVariance = SliderSpec
-  "Plate Height V" "Variance in plate base elevation" 0.2 1.2 False
+  "Plate Height V" "Variance in plate base elevation" 0.1 0.8 False
 
 specPlateHardnessBase :: SliderSpec
 specPlateHardnessBase = SliderSpec
@@ -938,15 +992,15 @@ specWindDiffuse = SliderSpec
 
 specEquatorTemp :: SliderSpec
 specEquatorTemp = SliderSpec
-  "Equator Temp" "Normalised temperature at the equator" 0 1 False
+  "Equator °C" "Temperature at the equator (-50 to 50 °C)" (-50) 50 False
 
 specPoleTemp :: SliderSpec
 specPoleTemp = SliderSpec
-  "Pole Temp" "Normalised temperature at the poles" 0 1 False
+  "Pole °C" "Temperature at the poles (-50 to 50 °C)" (-50) 50 False
 
 specLapseRate :: SliderSpec
 specLapseRate = SliderSpec
-  "Lapse Rate" "Temperature decrease per unit of elevation" 0 1 False
+  "Lapse Rate" "Temperature decrease with altitude (~6-8 °C/km typical)" 0 1 False
 
 specWindIterations :: SliderSpec
 specWindIterations = SliderSpec
@@ -1062,19 +1116,19 @@ specBtCoastalBand = SliderSpec
 
 specBtSnowMaxTemp :: SliderSpec
 specBtSnowMaxTemp = SliderSpec
-  "Snow Max T" "Max temperature for snow biome" 0.0 0.5 False
+  "Snow Max °C" "Max temperature for snow biome (-50 to 50 °C)" (-50) 50 False
 
 specBtAlpineMaxTemp :: SliderSpec
 specBtAlpineMaxTemp = SliderSpec
-  "Alpine Max T" "Max temperature for alpine biome" 0.1 0.7 False
+  "Alpine Max °C" "Max temperature for alpine biome (-50 to 50 °C)" (-50) 50 False
 
 specBtIceCapTemp :: SliderSpec
 specBtIceCapTemp = SliderSpec
-  "IceCap Temp" "Maximum temperature for ice cap biome" 0 0.2 False
+  "IceCap °C" "Maximum temperature for ice cap biome (-50 to 50 °C)" (-50) 50 False
 
 specBtMontaneMaxTemp :: SliderSpec
 specBtMontaneMaxTemp = SliderSpec
-  "Montane Max T" "Max temperature for montane biome" 0.2 0.8 False
+  "Montane °C" "Max temperature for montane biome (-50 to 50 °C)" (-50) 50 False
 
 specBtMontanePrecip :: SliderSpec
 specBtMontanePrecip = SliderSpec
@@ -1098,7 +1152,7 @@ specBtPrecipWeight = SliderSpec
 
 specVbcTempMin :: SliderSpec
 specVbcTempMin = SliderSpec
-  "Veg Temp Min" "Minimum temperature for vegetation growth" 0 0.3 False
+  "Veg Min °C" "Minimum temperature for vegetation growth (-50 to 50 °C)" (-50) 50 False
 
 specVbcTempRange :: SliderSpec
 specVbcTempRange = SliderSpec
@@ -1312,6 +1366,11 @@ specWindBeltSpeedScale :: SliderSpec
 specWindBeltSpeedScale = SliderSpec
   "Belt Speed" "Wind belt speed scaling" 0 1 False
 
+-- | Coriolis deflection angle for wind direction model.
+specWindCoriolisDeflection :: SliderSpec
+specWindCoriolisDeflection = SliderSpec
+  "Coriolis Defl" "Max Coriolis deflection angle (radians)" 0 1.57 False
+
 ------------------------------------------------------------------------
 -- Boundary model specs
 ------------------------------------------------------------------------
@@ -1362,15 +1421,67 @@ specErosionRainRate = SliderSpec
 
 specErosionTalus :: SliderSpec
 specErosionTalus = SliderSpec
-  "Thermal Talus" "Angle of repose for thermal erosion" 0.1 1.0 False
+  "Thermal Talus" "Angle of repose for thermal erosion" 0.01 0.15 False
 
 specErosionMaxDrop :: SliderSpec
 specErosionMaxDrop = SliderSpec
   "Max Drop" "Maximum height drop per erosion step" 0.1 1.0 False
 
+specErosionHydDeposit :: SliderSpec
+specErosionHydDeposit = SliderSpec
+  "Hyd Deposit" "Fraction of hydraulic erosion deposited at lowest neighbor" 0.0 0.8 False
+
+specErosionDepositSlope :: SliderSpec
+specErosionDepositSlope = SliderSpec
+  "Deposit Slope" "Max slope for deposition (steeper = no deposit)" 0.01 0.15 False
+
+specErosionThermDeposit :: SliderSpec
+specErosionThermDeposit = SliderSpec
+  "Therm Deposit" "Fraction of thermal erosion deposited as talus" 0.0 1.0 False
+
+specErosionCoastZone :: SliderSpec
+specErosionCoastZone = SliderSpec
+  "Coast Zone" "Elevation band above sea level for coastal smoothing" 0.005 0.12 False
+
+specErosionCoastStrength :: SliderSpec
+specErosionCoastStrength = SliderSpec
+  "Coast Smooth" "Blend strength for coastal smoothing" 0.0 0.8 False
+
+specErosionCoastIter :: SliderSpec
+specErosionCoastIter = SliderSpec
+  "Coast Iters" "Number of iterative coastal erosion/deposition passes" 1.0 8.0 True
+
+specHypsometryEnabled :: SliderSpec
+specHypsometryEnabled = SliderSpec
+  "Hypsometry" "Enable/disable hypsometric elevation reshaping" 0.0 1.0 True
+
+specHypsometryLowlandExp :: SliderSpec
+specHypsometryLowlandExp = SliderSpec
+  "Lowland Exp" "Power exponent for lowland compression (higher = flatter)" 0.5 5.0 False
+
+specHypsometryHighlandExp :: SliderSpec
+specHypsometryHighlandExp = SliderSpec
+  "Highland Exp" "Power exponent for highland compression (higher = flatter)" 0.3 3.0 False
+
+specHypsometryPlateauBreak :: SliderSpec
+specHypsometryPlateauBreak = SliderSpec
+  "Plateau Break" "Normalized elevation for lowland/highland transition" 0.52 0.75 False
+
+specHypsometryOceanExp :: SliderSpec
+specHypsometryOceanExp = SliderSpec
+  "Ocean Exp" "Power exponent for ocean depth shaping" 0.2 1.0 False
+
+specHypsometryCoastalRampWidth :: SliderSpec
+specHypsometryCoastalRampWidth = SliderSpec
+  "Coast Width" "Elevation band for coastal ramp flattening" 0.005 0.08 False
+
+specHypsometryCoastalRampStr :: SliderSpec
+specHypsometryCoastalRampStr = SliderSpec
+  "Coast Ramp" "Strength of coastal ramp flattening" 0.0 1.0 False
+
 specGlacierSnowTemp :: SliderSpec
 specGlacierSnowTemp = SliderSpec
-  "Snow Temp" "Temperature threshold for snow accumulation" 0.0 0.5 False
+  "Snow °C" "Temperature threshold for snow accumulation (-50 to 50 °C)" (-50) 50 False
 
 specGlacierSnowRange :: SliderSpec
 specGlacierSnowRange = SliderSpec
@@ -1378,7 +1489,7 @@ specGlacierSnowRange = SliderSpec
 
 specGlacierMeltTemp :: SliderSpec
 specGlacierMeltTemp = SliderSpec
-  "Melt Temp" "Temperature onset for glacial melting" 0.1 0.8 False
+  "Melt °C" "Temperature onset for glacial melting (-50 to 50 °C)" (-50) 50 False
 
 specGlacierMeltRate :: SliderSpec
 specGlacierMeltRate = SliderSpec
@@ -1475,6 +1586,26 @@ specCoastalErodeStrength = SliderSpec
 specHydroHardnessWeight :: SliderSpec
 specHydroHardnessWeight = SliderSpec
   "Hardness Weight" "Hardness vs erosion weight" 0.0 1.0 False
+
+-- | Piedmont smooth strength slider.
+specPiedmontSmooth :: SliderSpec
+specPiedmontSmooth = SliderSpec
+  "Piedmont Smooth" "Piedmont smoothing strength" 0.0 0.6 False
+
+-- | Piedmont minimum slope slider.
+specPiedmontSlopeMin :: SliderSpec
+specPiedmontSlopeMin = SliderSpec
+  "Piedmont Slope Min" "Piedmont minimum slope threshold" 0.01 0.08 False
+
+-- | Piedmont maximum slope slider.
+specPiedmontSlopeMax :: SliderSpec
+specPiedmontSlopeMax = SliderSpec
+  "Piedmont Slope Max" "Piedmont maximum slope threshold" 0.05 0.25 False
+
+-- | Minimum vegetation floor for evapotranspiration moisture.
+specMoistMinVegFloor :: SliderSpec
+specMoistMinVegFloor = SliderSpec
+  "Veg Floor" "Minimum vegetation floor for moisture recycling" 0 1 False
 
 specMinLakeSize :: SliderSpec
 specMinLakeSize = SliderSpec

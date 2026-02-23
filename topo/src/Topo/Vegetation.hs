@@ -234,7 +234,7 @@ roughTemperatureEstimate insol latDeg tiltExp wl h =
   let latRad  = latDeg * (pi / 180)
       cosLat  = max 0 (cos latRad)
       latFac  = cosLat ** tiltExp
-      lapseRate = 0.65 :: Float
+      lapseRate = 0.66 :: Float
       lapse   = if h < wl then 0 else (h - wl) * lapseRate
   in clamp01 (latFac * insol - lapse)
 

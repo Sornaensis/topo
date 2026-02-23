@@ -41,6 +41,23 @@ data RiverTopologyConfig = RiverTopologyConfig
     -- segment counts are set to zero).  This removes 1–3 tile stubs
     -- that look like "rivers to nowhere".
   , rtMinNetworkTiles :: !Int
+    -- | Elevation offset below @waterLevel@ used for segment
+    -- eligibility.  Tiles whose elevation exceeds
+    -- @waterLevel - rtCoastalZoneOffset@ are eligible, allowing
+    -- river segments to render through the coastal band that
+    -- coastal smoothing may push slightly below sea level.
+  , rtCoastalZoneOffset :: !Float
+    -- | Maximum flow-path length (in tiles) from a network root to
+    -- an ocean or grid-boundary tile.  Networks whose root is
+    -- farther than this from open water are pruned.  Set to 0 to
+    -- disable the check.
+  , rtMaxSinkDistance :: !Int
+    -- | Minimum slope (elevation difference to the downstream
+    -- neighbour in the /actual/ terrain) for a segment to be
+    -- emitted.  Tiles where the gradient is below this threshold
+    -- are treated as diffuse sheet-flow and suppressed, even if
+    -- discharge is sufficient.  Set to 0 to disable.
+  , rtMinSlope :: !Float
   } deriving (Eq, Show, Generic)
 
 instance ToJSON RiverTopologyConfig where
@@ -51,10 +68,19 @@ instance FromJSON RiverTopologyConfig where
                   (mergeDefaults (toJSON defaultRiverTopologyConfig) v)
 
 -- | Default topology configuration.
+--
+-- The slope and ocean-reachability filters operate on the
+-- /depression-filled/ surface ('elevRouting'), which guarantees
+-- positive downstream gradients along every flow path.  Thresholds
+-- can therefore be set modestly without accidentally pruning rivers
+-- that traverse filled depressions.
 defaultRiverTopologyConfig :: RiverTopologyConfig
 defaultRiverTopologyConfig = RiverTopologyConfig
-  { rtMinDischarge = 2.0
-  , rtMinNetworkTiles = 5
+  { rtMinDischarge     = 2.0
+  , rtMinNetworkTiles  = 5
+  , rtCoastalZoneOffset = 0.06
+  , rtMaxSinkDistance  = 100
+  , rtMinSlope         = 5e-5
   }
 
 -- | Map a grid-space direction (from→to index) to a 'HexEdge'.
@@ -102,8 +128,26 @@ oppositeEdge (HexEdge e)
 --   * discharge per segment
 --   * Strahler order per segment
 --
--- Only tiles whose elevation exceeds the supplied @waterLevel@ produce
--- segments; submerged tiles are skipped entirely.
+-- Only tiles whose /original/ elevation exceeds the /effective/ water
+-- level (@waterLevel - rtCoastalZoneOffset@) produce segments.  This
+-- allows river segments to render through the narrow coastal band that
+-- erosion/hypsometry may push slightly below sea level, preventing
+-- visual "rivers to nowhere" at the coast.
+--
+-- Slope computation and ocean-reachability tracing use the
+-- /depression-filled/ elevation ('elevRouting'), which is consistent
+-- with the surface on which flow directions were computed.  Tile
+-- eligibility (land vs. submerged classification) uses the /original/
+-- elevation ('elevOrig'), reflecting the terrain the player sees.
+--
+-- After network-size pruning, an /ocean-reachability/ check traces
+-- each network root's downstream flow on 'elevRouting'.  Networks
+-- whose root is farther than 'rtMaxSinkDistance' tiles from an ocean
+-- (or grid-boundary) tile are pruned as inland sheet-flow artifacts.
+--
+-- A per-tile /minimum-slope/ filter ('rtMinSlope') suppresses segments
+-- whose gradient to the downstream tile (on the routing surface) is
+-- below the threshold, eliminating epsilon-gradient flat-area segments.
 computeRiverSegments
   :: RiverTopologyConfig
   -> Int              -- ^ gridW
@@ -111,7 +155,10 @@ computeRiverSegments
   -> U.Vector Int     -- ^ flow directions (per-tile downstream index, -1 = sink)
   -> U.Vector Float   -- ^ discharge per tile
   -> U.Vector Word16  -- ^ Strahler order per tile
-  -> U.Vector Float   -- ^ elevation per tile
+  -> U.Vector Float   -- ^ elevRouting — depression-filled elevation used for
+                      --   slope computation and ocean-reachability tracing
+  -> U.Vector Float   -- ^ elevOrig — original (unfilled) elevation used for
+                      --   tile eligibility (land vs. submerged classification)
   -> Float            -- ^ waterLevel — tiles at or below this are ineligible
   -> ( U.Vector Int     -- offsets
      , U.Vector Word8   -- entry edges
@@ -119,10 +166,15 @@ computeRiverSegments
      , U.Vector Float   -- discharge
      , U.Vector Word16  -- order
      )
-computeRiverSegments cfg gridW gridH flow discharge order elev waterLevel = runST $ do
+computeRiverSegments cfg gridW gridH flow discharge order elevRouting elevOrig waterLevel = runST $ do
   let n       = U.length flow
       minDisc = rtMinDischarge cfg
       minNet  = rtMinNetworkTiles cfg
+      -- Effective water level lowered by the coastal zone offset so
+      -- that tiles in the coastal smoothing band remain eligible.
+      effWL   = waterLevel - rtCoastalZoneOffset cfg
+      minSlp  = rtMinSlope cfg
+      maxSink = rtMaxSinkDistance cfg
 
   -- First pass: count segments per tile so we can allocate offsets.
   -- A tile has ≥1 segment if its discharge ≥ minDischarge.
@@ -143,11 +195,17 @@ computeRiverSegments cfg gridW gridH flow discharge order elev waterLevel = runS
 
   -- Build reverse adjacency:  for each tile, which neighbours flow into it?
   -- We'll just iterate and count first, then collect.
-  -- Only land tiles (elevation > waterLevel) are eligible for segments.
+  -- Only land tiles (elevation > effective WL) are eligible for segments.
+  -- Additionally, tiles whose slope to downstream is below rtMinSlope
+  -- are treated as sheet flow and excluded.
   forM_ [0 .. n - 1] $ \i -> do
     let d = discharge U.! i
-        h = elev U.! i
-    when (d >= minDisc && h > waterLevel) $ do
+        hOrig = elevOrig U.! i
+        fDir = flow U.! i
+        slope = if fDir >= 0
+                  then abs (elevRouting U.! i - elevRouting U.! fDir)
+                  else 1.0  -- sinks are always steep enough
+    when (d >= minDisc && hOrig > effWL && slope >= minSlp) $ do
       let upCount = countUpstream flow discharge minDisc gridW gridH n i
       UM.write segCounts i (max 1 upCount)
 
@@ -213,6 +271,69 @@ computeRiverSegments cfg gridW gridH flow discharge order elev waterLevel = runS
         r <- UM.read netRoot i
         sz <- UM.read netSize r
         when (sz < minNet) $ UM.write segCounts i 0
+
+  -- Ocean-reachability pruning: trace each network root's flow
+  -- downstream.  If the path does not reach a tile with
+  -- elev ≤ waterLevel (or a grid boundary) within maxSinkDistance
+  -- tiles, the network is pruned.
+  when (maxSink > 0) $ do
+    -- Recompute network roots (may have changed after size pruning).
+    netRoot2 <- UM.replicate n (-1 :: Int)
+    forM_ [0 .. n - 1] $ \i -> do
+      c <- UM.read segCounts i
+      when (c > 0) $ UM.write netRoot2 i i
+    let resolve2 !i nr = do
+          r <- UM.read nr i
+          if r < 0 then pure i
+          else do
+            let !d = flow U.! i
+            if d < 0 then pure i
+            else do
+              dCnt <- UM.read segCounts d
+              if dCnt <= 0 then pure i
+              else do
+                dRoot <- UM.read nr d
+                if dRoot == d
+                  then do
+                    r' <- resolve2 d nr
+                    UM.write nr i r'
+                    pure r'
+                  else do
+                    UM.write nr i dRoot
+                    pure dRoot
+    forM_ [0 .. n - 1] $ \i -> do
+      c <- UM.read segCounts i
+      when (c > 0) $ do
+        _ <- resolve2 i netRoot2
+        pure ()
+    -- For each network root, trace downstream through the flow graph
+    -- (including ineligible tiles) up to maxSink steps.  If we reach
+    -- a tile with elevRouting ≤ waterLevel or a grid boundary, the
+    -- network is ocean-connected.
+    rootReach <- UM.replicate n False
+    forM_ [0 .. n - 1] $ \i -> do
+      c <- UM.read segCounts i
+      when (c > 0) $ do
+        r <- UM.read netRoot2 i
+        when (r == i) $ do  -- this tile is a root
+          let traceOcean !cur !steps
+                | steps > maxSink = pure False
+                | cur < 0 || cur >= n = pure True   -- boundary exit
+                | elevRouting U.! cur <= waterLevel = pure True  -- reached ocean
+                | otherwise =
+                    let !next = flow U.! cur
+                    in if next < 0
+                       then pure False  -- inland sink
+                       else traceOcean next (steps + 1)
+          reached <- traceOcean i 0
+          UM.write rootReach i reached
+    -- Zero out networks whose root does not reach ocean.
+    forM_ [0 .. n - 1] $ \i -> do
+      c <- UM.read segCounts i
+      when (c > 0) $ do
+        r <- UM.read netRoot2 i
+        ok <- UM.read rootReach r
+        when (not ok) $ UM.write segCounts i 0
 
   -- Build offsets from counts
   counts <- U.freeze segCounts

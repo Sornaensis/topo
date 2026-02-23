@@ -51,10 +51,10 @@ defaultAlpineConfig :: AlpineConfig
 defaultAlpineConfig = AlpineConfig
   { alScreeMinRuggedness = 0.30
   , alScreeMaxSoilDepth  = 0.10
-  , alMeadowMaxTemp      = 0.30
+  , alMeadowMaxTemp      = 0.41
   , alMeadowMinPrecip    = 0.30
   , alMeadowMinHumidity  = 0.30
-  , alTundraMaxTemp      = 0.15
+  , alTundraMaxTemp      = 0.305
   }
 
 -- | Refine an alpine tile into a sub-biome.

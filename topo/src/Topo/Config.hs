@@ -7,6 +7,7 @@ module Topo.Config
   , module Topo.Tectonics
   , module Topo.Erosion
   , module Topo.Hydrology
+  , module Topo.Hypsometry
   , module Topo.Parameters
   , module Topo.Climate
   , module Topo.BiomeConfig
@@ -19,6 +20,7 @@ import Topo.BiomeConfig
 import Topo.Climate
 import Topo.Erosion
 import Topo.Hydrology
+import Topo.Hypsometry
 import Topo.Parameters
 import Topo.Tectonics
 import Topo.Weather

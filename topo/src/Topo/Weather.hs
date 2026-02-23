@@ -110,9 +110,9 @@ defaultWeatherConfig :: WeatherConfig
 defaultWeatherConfig = WeatherConfig
   { wcTickSeconds              = 1
   , wcSeasonPhase              = 0
-  , wcSeasonAmplitude          = 0.30
+  , wcSeasonAmplitude          = 0.21
   , wcSeasonCycleLength        = 365
-  , wcJitterAmplitude          = 0.18
+  , wcJitterAmplitude          = 0.126
   , wcPressureBase             = 0.7
   , wcPressureTempScale        = 0.4
   , wcPressureCoriolisScale    = 0.1
