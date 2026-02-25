@@ -49,7 +49,7 @@ import qualified SDL
 import Seer.Config (mapIntRange, mapRange)
 import Seer.Config.SliderSpec
 import Seer.World.Persist.Types (WorldSaveManifest(..))
-import Topo (BiomeId, ChunkCoord(..), ChunkId(..), ClimateChunk(..), DirectionalSlope(..), PlateBoundary(..), TerrainChunk(..), TerrainForm, TileCoord(..), TileIndex(..), VegetationChunk(..), WeatherChunk(..), WorldConfig(..), biomeDisplayName, chunkCoordFromTile, chunkIdFromCoord, dsAvgSlope, plateBoundaryToCode, terrainFormDisplayName, tileIndex)
+import Topo (BiomeId, ChunkCoord(..), ChunkId(..), ClimateChunk(..), DirectionalSlope(..), PlateBoundary(..), TerrainChunk(..), TerrainForm, TileCoord(..), TileIndex(..), VegetationChunk(..), WeatherChunk(..), WorldConfig(..), biomeDisplayName, chunkCoordFromTile, chunkIdFromCoord, dsAvgSlope, dsMaxSlope, dsMinSlope, plateBoundaryToCode, terrainFormDisplayName, tileIndex)
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), tileLatitude, tileLongitude, formatLatLon)
 import Topo.Units (defaultUnitScales, normToC, normToMetres, normToMmYear, normToRH, normToWindMs, normToSoilM, normSlopeToDeg)
 import UI.Font (FontCache, textSize)
@@ -2602,9 +2602,20 @@ contextLines ui terrainSnap (q, r) =
       in formatLatLon lat lon
 
     modeLines ViewElevation    s =
-      [ "Elev  " <> fmtU (normToMetres us (hsElevation s)) "m"
-      , "Slope " <> fmtU (normSlopeToDeg us (hsSlope s)) "°"
-      ]
+      let ds = hsDirSlope s
+          sd = normSlopeToDeg us
+      in [ "Elev  " <> fmtU (normToMetres us (hsElevation s)) "m"
+         , "Form  " <> Text.pack (terrainFormDisplayName (hsTerrainForm s))
+         , "Slope " <> fmtU (sd (hsSlope s)) "° avg"
+         , "      " <> fmtU (sd (dsMaxSlope ds)) "° max  "
+                    <> fmtU (sd (dsMinSlope ds)) "° min"
+         , "  E   " <> fmtU (sd (dsSlopeE ds)) "°"
+                    <> "   W  " <> fmtU (sd (dsSlopeW ds)) "°"
+         , "  NE  " <> fmtU (sd (dsSlopeNE ds)) "°"
+                    <> "   SW " <> fmtU (sd (dsSlopeSW ds)) "°"
+         , "  NW  " <> fmtU (sd (dsSlopeNW ds)) "°"
+                    <> "   SE " <> fmtU (sd (dsSlopeSE ds)) "°"
+         ]
     modeLines ViewBiome        s =
       [ "Biome  " <> biomeDisplayName (hsBiome s)
       , "Form   " <> Text.pack (terrainFormDisplayName (hsTerrainForm s))
@@ -2658,6 +2669,7 @@ data HexSample = HexSample
   , hsLocal          :: !TileCoord
   , hsElevation      :: !Float
   , hsSlope          :: !Float
+  , hsDirSlope       :: !DirectionalSlope
   , hsMoisture       :: !Float
   , hsSoilDepth      :: !Float
   , hsFertility      :: !Float
@@ -2691,11 +2703,13 @@ sampleAt terrainSnap (q, r)
       let climate = IntMap.lookup key (tsClimateChunks terrainSnap)
           weather = IntMap.lookup key (tsWeatherChunks terrainSnap)
           veg     = IntMap.lookup key (tsVegetationChunks terrainSnap)
+      let ds = tcDirSlope tc U.! idx
       Just HexSample
         { hsChunk          = chunkCoord
         , hsLocal          = local
         , hsElevation      = tcElevation tc U.! idx
-        , hsSlope          = dsAvgSlope (tcDirSlope tc U.! idx)
+        , hsSlope          = dsAvgSlope ds
+        , hsDirSlope       = ds
         , hsMoisture       = tcMoisture tc U.! idx
         , hsSoilDepth      = tcSoilDepth tc U.! idx
         , hsFertility      = tcFertility tc U.! idx

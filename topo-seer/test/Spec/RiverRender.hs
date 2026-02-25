@@ -203,6 +203,28 @@ spec = describe "River render geometry" $ do
       SV.length (rgVertices rgMajor) `shouldSatisfy` (> SV.length (rgVertices rgStream))
       SV.length (rgIndices rgMajor)  `shouldSatisfy` (> SV.length (rgIndices rgStream))
 
+    prop "all delta fan rim vertices lie within apothem of hex centre" $
+      forAll ((,,,) <$> choose (2.0, 20.0)    -- hexR
+                    <*> choose (0.05, 1.0)     -- radius fraction
+                    <*> choose (10.0, 170.0)   -- spread degrees
+                    <*> choose (1, 8))         -- triCount
+        $ \(hexR, frac, spreadDeg, triCount) ->
+          let apothem  = hexR * sqrt 3.0 / 2.0 :: Float
+              radius   = frac * apothem
+              spread   = spreadDeg * pi / 180.0
+              cx       = 50.0 :: Float
+              cy       = 50.0 :: Float
+              dirAngle = 0.0 :: Float
+              color    = Raw.Color 50 95 155 255
+              (vs, _is, _nb) = buildDeltaFan color radius spread triCount cx cy dirAngle (0 :: CInt)
+              -- All vertices (centre + rim) must be within apothem + epsilon
+              epsilon  = 0.01 :: Float
+              withinBound (Raw.Vertex (Raw.FPoint px py) _ _) =
+                let dx = realToFrac px - cx
+                    dy = realToFrac py - cy
+                in sqrt (dx * dx + dy * dy) <= apothem + epsilon
+          in all withinBound vs
+
   -- -----------------------------------------------------------------------
   -- Coastal-exit delta geometry
   -- -----------------------------------------------------------------------
