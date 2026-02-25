@@ -29,6 +29,7 @@ import qualified Spec.Parameters
 import qualified Spec.Soil
 import qualified Spec.Evaporation
 import qualified Spec.WaterBody
+import qualified Spec.WaterTable
 import qualified Spec.Integration
 import qualified Spec.OceanCurrent
 import qualified Spec.ConfigJSON
@@ -74,6 +75,7 @@ main = do
     Spec.Soil.spec
     Spec.Evaporation.spec
     Spec.WaterBody.spec
+    Spec.WaterTable.spec
     Spec.Integration.spec
     Spec.OceanCurrent.spec
     Spec.ConfigJSON.spec

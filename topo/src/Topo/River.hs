@@ -18,6 +18,10 @@ module Topo.River
     -- * Grid-direction to hex-edge mapping
   , gridDirToHexEdge
   , oppositeEdge
+    -- * Coastal exit encoding
+  , coastalExitFlag
+  , isCoastalExit
+  , coastalExitEdge
   ) where
 
 import Data.Word (Word8, Word16)
@@ -117,6 +121,31 @@ oppositeEdge :: HexEdge -> HexEdge
 oppositeEdge (HexEdge e)
   | e <= 5    = HexEdge ((e + 3) `mod` 6)
   | otherwise = EdgeNone
+
+-- ---------------------------------------------------------------------------
+-- Coastal-exit encoding
+-- ---------------------------------------------------------------------------
+
+-- | Bit flag OR-ed with the raw edge (0–5) to mark a segment whose exit
+-- flows into a submerged (water) tile rather than another land tile.
+--
+-- Encoded exit-edge values:
+--
+--   * @0–5@:   normal (land → land) through-flow
+--   * @128–133@: coastal exit (land → water), edge = value − 128
+--   * @255@:   inland sink (flow direction = −1)
+coastalExitFlag :: Word8
+coastalExitFlag = 128
+
+-- | Test whether an exit-edge byte encodes a coastal exit.
+isCoastalExit :: Word8 -> Bool
+isCoastalExit e = e >= coastalExitFlag && e < 255
+
+-- | Extract the underlying hex edge (0–5) from a coastal-exit byte.
+--
+-- __Precondition:__ 'isCoastalExit' must be @True@.
+coastalExitEdge :: Word8 -> Word8
+coastalExitEdge e = e - coastalExitFlag
 
 -- | Compute per-tile river segments from flow-direction and hydrological data.
 --
@@ -356,9 +385,14 @@ computeRiverSegments cfg gridW gridH flow discharge order elevRouting elevOrig w
       let d = discharge U.! i
       off <- UM.read offsets i
       let exitDir  = flow U.! i
+          -- Detect coastal exits: tile flows into a submerged neighbour.
+          exitIsCoastal = exitDir >= 0 && elevOrig U.! exitDir < waterLevel
           exitE    = if exitDir < 0
-                       then 255  -- sink
-                       else let (HexEdge e) = gridDirToHexEdge gridW i exitDir in e
+                       then 255  -- inland sink
+                       else let (HexEdge e) = gridDirToHexEdge gridW i exitDir
+                            in if exitIsCoastal
+                                 then e + coastalExitFlag  -- coastal exit (128–133)
+                                 else e                    -- normal land exit (0–5)
           ups      = upstreamList flow discharge minDisc gridW gridH n i
           myOrder  = order U.! i
       case ups of

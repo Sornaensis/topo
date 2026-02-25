@@ -4,14 +4,22 @@
 
 -- | Vegetation bootstrap and biome feedback.
 --
--- __Bootstrap__ (pre-climate): estimates preliminary vegetation cover and
--- surface albedo so that land evapotranspiration has vegetation data to
--- work with.
+-- __Bootstrap__ (pre-climate, stage 9): estimates preliminary vegetation
+-- cover and surface albedo so that land evapotranspiration has vegetation
+-- data to work with.  At this point 'Topo.WaterTable.applyWaterTableStage'
+-- has not yet run, so root-zone moisture is unavailable and the bootstrap
+-- uses the coarse 'tcFertility' from 'Topo.Soil'.
 --
--- __Biome feedback__ (post-biome-classification): re-derives vegetation
--- cover from the assigned biome type (e.g. forest -> high cover,
--- desert -> low cover) and blends with the bootstrap estimate.  This
--- feeds the next weather tick through albedo.
+-- __Water table__ (stage 13.5): 'Topo.WaterTable.applyWaterTableStage'
+-- overwrites 'tcFertility' with an improved formula incorporating
+-- infiltration, water-table depth, and soil properties.
+--
+-- __Biome feedback__ (post-biome-classification, stage 15): re-derives
+-- vegetation cover from the assigned biome type (e.g. forest -> high
+-- cover, desert -> low cover) and blends with the bootstrap estimate.
+-- The improved fertility from the water table stage feeds through
+-- vegetation density automatically.  This feeds the next weather tick
+-- through albedo.
 module Topo.Vegetation
   ( VegetationBootstrapConfig(..)
   , defaultVegetationBootstrapConfig

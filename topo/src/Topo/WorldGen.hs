@@ -65,6 +65,7 @@ import Topo.Vegetation
   , BiomeFeedbackConfig(..), defaultBiomeFeedbackConfig
   , updateVegetationFromBiomeStage
   )
+import Topo.WaterTable (WaterTableConfig(..), applyWaterTableStage, defaultWaterTableConfig)
 import Topo.OceanCurrent
   ( OceanCurrentConfig(..)
   , applyOceanCurrentsStage
@@ -117,6 +118,8 @@ data TerrainConfig = TerrainConfig
     -- ^ Bootstrap vegetation density and albedo.
   , terrainHypsometry :: !HypsometryConfig
     -- ^ Hypsometric elevation redistribution.
+  , terrainWaterTable :: !WaterTableConfig
+    -- ^ Water table infiltration and root-zone moisture.
   } deriving (Eq, Show, Generic)
 
 -- | Serialise with @terrain@ prefix stripped from field names.
@@ -187,6 +190,7 @@ defaultTerrainConfig = TerrainConfig
   , terrainSoil = defaultSoilConfig
   , terrainVegetation = defaultVegetationBootstrapConfig
   , terrainHypsometry = defaultHypsometryConfig
+  , terrainWaterTable = defaultWaterTableConfig
   }
 
 defaultWorldGenConfig :: WorldGenConfig
@@ -331,6 +335,7 @@ buildFullPipelineConfig cfg worldCfg seed =
           , applyOceanCurrentsStage (worldOceanCurrent cfg) wl
           , applyGlacierStage (terrainGlacier terrain')
           , applyParameterLayersStage (terrainParameters terrain') (terrainFormConfig terrain')
+          , applyWaterTableStage (terrainWaterTable terrain')
           , classifyBiomesStage (worldBiome cfg) wl
           , updateVegetationFromBiomeStage (worldBiomeFeedback cfg) (terrainVegetation terrain')
           ] ++ convergenceStages ++

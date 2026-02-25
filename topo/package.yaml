@@ -27,6 +27,7 @@ library:
     - Topo.River
     - Topo.Volcanism
     - Topo.WaterBody
+    - Topo.WaterTable
     - Topo.Parameters
     - Topo.Soil
     - Topo.Vegetation

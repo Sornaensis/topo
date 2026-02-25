@@ -13,6 +13,9 @@ import Topo.River
   , computeRiverSegments
   , gridDirToHexEdge
   , oppositeEdge
+  , coastalExitFlag
+  , isCoastalExit
+  , coastalExitEdge
   )
 import Topo.Types
   ( HexEdge(..)
@@ -424,3 +427,105 @@ spec = describe "River Topology" $ do
               | i <- [0 .. gridW - 1]
               ]
         in allReach
+
+  -- -----------------------------------------------------------------------
+  -- Coastal-exit encoding helpers
+  -- -----------------------------------------------------------------------
+  describe "coastal exit encoding" $ do
+    it "coastalExitFlag is 128" $
+      coastalExitFlag `shouldBe` 128
+
+    it "isCoastalExit recognizes 128–133" $ do
+      isCoastalExit 128 `shouldBe` True
+      isCoastalExit 133 `shouldBe` True
+      isCoastalExit 130 `shouldBe` True
+
+    it "isCoastalExit rejects normal edges and sinks" $ do
+      isCoastalExit 0   `shouldBe` False
+      isCoastalExit 5   `shouldBe` False
+      isCoastalExit 255 `shouldBe` False
+
+    it "coastalExitEdge extracts the underlying edge" $ do
+      coastalExitEdge 128 `shouldBe` 0
+      coastalExitEdge 133 `shouldBe` 5
+      coastalExitEdge 131 `shouldBe` 3
+
+  -- -----------------------------------------------------------------------
+  -- Coastal-exit segment generation: land tile flowing into water
+  -- -----------------------------------------------------------------------
+  describe "coastal exit segment marking" $ do
+    it "land tile flowing into water gets coastal exit edge" $ do
+      -- 3x1 grid: tile 0 (land, 0.8) -> tile 1 (land, 0.8) -> tile 2 (water, 0.3)
+      -- flow: [1, 2, -1]
+      let gridW = 3
+          gridH = 1
+          flow      = U.fromList [1, 2, -1 :: Int]
+          discharge = U.fromList [5.0, 10.0, 15.0 :: Float]
+          order     = U.fromList [1, 1, 1 :: Word16]
+          elevOrig  = U.fromList [0.8, 0.8, 0.3 :: Float]  -- tile 2 is submerged
+          elevRoute = U.fromList [0.8, 0.8, 0.3 :: Float]
+          wl        = 0.5 :: Float
+          cfg       = testCfg { rtMinDischarge = 1.0, rtMinNetworkTiles = 1 }
+          (offsets, _entry, exitVec, _, _) =
+            computeRiverSegments cfg gridW gridH flow discharge order elevRoute elevOrig wl
+
+      -- Tile 1 flows into tile 2 (submerged) → coastal exit
+      let seg1Start = offsets U.! 1
+      isCoastalExit (exitVec U.! seg1Start) `shouldBe` True
+      coastalExitEdge (exitVec U.! seg1Start) `shouldBe` 0  -- East edge
+
+    it "land tile flowing into another land tile gets normal exit edge" $ do
+      -- 3x1 grid: all tiles are land (0.8)
+      let gridW = 3
+          gridH = 1
+          flow      = U.fromList [1, 2, -1 :: Int]
+          discharge = U.fromList [5.0, 10.0, 15.0 :: Float]
+          order     = U.fromList [1, 1, 1 :: Word16]
+          elev      = U.replicate 3 (0.8 :: Float)
+          wl        = 0.5 :: Float
+          cfg       = testCfg { rtMinDischarge = 1.0, rtMinNetworkTiles = 1 }
+          (_offsets, _entry, exitVec, _, _) =
+            computeRiverSegments cfg gridW gridH flow discharge order elev elev wl
+
+      -- Tile 0 flows into tile 1 (land) → normal exit
+      let seg0Start = _offsets U.! 0
+          exitE0 = exitVec U.! seg0Start
+      isCoastalExit exitE0 `shouldBe` False
+      exitE0 `shouldBe` 0  -- East edge, normal
+
+    it "inland sink still gets exit edge 255" $ do
+      -- 3x1 grid: all land, tile 2 is a sink
+      let gridW = 3
+          gridH = 1
+          flow      = U.fromList [1, 2, -1 :: Int]
+          discharge = U.fromList [5.0, 10.0, 15.0 :: Float]
+          order     = U.fromList [1, 1, 1 :: Word16]
+          elev      = U.replicate 3 (0.8 :: Float)
+          wl        = 0.5 :: Float
+          cfg       = testCfg { rtMinDischarge = 1.0, rtMinNetworkTiles = 1 }
+          (offsets, _entry, exitVec, _, _) =
+            computeRiverSegments cfg gridW gridH flow discharge order elev elev wl
+
+      -- Tile 2 is a sink (flow=-1) → exit=255
+      let seg2Start = offsets U.! 2
+      exitVec U.! seg2Start `shouldBe` 255
+
+    prop "coastal exits always have isCoastalExit true for their exit byte" $
+      -- 4x1 grid: land→land→water→water, flow right
+      forAll (choose (2.0, 20.0)) $ \baseDisc ->
+        let gridW = 4
+            gridH = 1
+            flow      = U.fromList [1, 2, 3, -1 :: Int]
+            discharge = U.fromList [baseDisc, baseDisc * 2, baseDisc * 3, baseDisc * 4 :: Float]
+            order     = U.fromList [1, 1, 1, 1 :: Word16]
+            -- Tiles 0,1 = land (0.8), tiles 2,3 = water (0.3)
+            elevOrig  = U.fromList [0.8, 0.8, 0.3, 0.3 :: Float]
+            elevRoute = U.fromList [0.8, 0.8, 0.3, 0.3 :: Float]
+            wl        = 0.5 :: Float
+            cfg       = testCfg { rtMinDischarge = 1.0, rtMinNetworkTiles = 1 }
+            (offsets, _, exitVec, _, _) =
+              computeRiverSegments cfg gridW gridH flow discharge order elevRoute elevOrig wl
+            -- Tile 1 flows into tile 2 (water) = coastal exit
+            seg1Start = offsets U.! 1
+            seg1Count = offsets U.! 2 - seg1Start
+        in seg1Count > 0 && isCoastalExit (exitVec U.! seg1Start)

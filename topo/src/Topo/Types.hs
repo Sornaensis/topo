@@ -190,6 +190,7 @@ module Topo.Types
   , pattern RiverRiver
   , pattern RiverMajor
   , riverSizeFromOrder
+  , isWaterBiomeId
   , chunkTileCount
   , tileIndex
   , tileCoordFromIndex
@@ -998,11 +999,23 @@ data RiverChunk = RiverChunk
   } deriving (Eq, Show)
 
 -- | Basin-level groundwater estimates, expanded per tile for a chunk.
+--
+-- The first four fields are basin-aggregate values from the river
+-- stage.  The last three are per-tile water-table outputs populated
+-- by 'Topo.WaterTable.applyWaterTableStage'.  They default to empty
+-- vectors until that stage runs.
 data GroundwaterChunk = GroundwaterChunk
   { gwStorage :: !(U.Vector Float)
   , gwRecharge :: !(U.Vector Float)
   , gwDischarge :: !(U.Vector Float)
   , gwBasinId :: !(U.Vector Word32)
+  -- Water-table fields (populated by applyWaterTableStage)
+  , gwInfiltration :: !(U.Vector Float)
+    -- ^ Per-tile infiltration capacity @[0, 1]@.
+  , gwWaterTableDepth :: !(U.Vector Float)
+    -- ^ Per-tile water table depth @[0, 1]@ (0 = surface).
+  , gwRootZoneMoisture :: !(U.Vector Float)
+    -- ^ Per-tile root-zone moisture @[0, 1]@.
   } deriving (Eq, Show)
 
 -- | Per-tile volcanism outputs for a chunk.
@@ -1256,6 +1269,13 @@ riverSizeFromOrder o
   | o == 3    = RiverCreek
   | o <= 5    = RiverRiver
   | otherwise = RiverMajor
+
+-- | Test whether a 'BiomeId' represents a water body (ocean, deep ocean,
+-- shallow sea, coral reef, lake, or inland sea).  Tiles with a water
+-- biome should not have visible river overlay geometry.
+isWaterBiomeId :: BiomeId -> Bool
+isWaterBiomeId (BiomeId c) =
+  c == 10 || (c >= 40 && c <= 42) || c == 61 || c == 62
 
 -- ---------------------------------------------------------------------------
 -- Terrain sample

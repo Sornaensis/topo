@@ -33,6 +33,7 @@ library
       Topo.River
       Topo.Volcanism
       Topo.WaterBody
+      Topo.WaterTable
       Topo.Parameters
       Topo.Soil
       Topo.Vegetation
@@ -131,6 +132,7 @@ test-suite topo-test
       Spec.Vegetation
       Spec.Volcanism
       Spec.WaterBody
+      Spec.WaterTable
       Spec.Weather
       Spec.World
       WorldProperty

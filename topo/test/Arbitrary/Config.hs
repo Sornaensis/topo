@@ -55,6 +55,7 @@ import Topo.Types             (BiomeId, WorldExtent, biomeIdFromCode)
 import Topo.Vegetation        (BiomeFeedbackConfig, VegetationBootstrapConfig)
 import Topo.Volcanism         (VolcanismConfig)
 import Topo.WaterBody         (WaterBodyConfig)
+import Topo.WaterTable        (WaterTableConfig)
 import Topo.Weather           (WeatherConfig)
 import Topo.WorldGen          (TerrainConfig, WorldGenConfig)
 
@@ -140,6 +141,9 @@ instance Arbitrary HypsometryConfig            where arbitrary = genericArbitrar
 instance Arbitrary HydroConfig                 where arbitrary = genericArbitrary
 instance Arbitrary RiverConfig                 where arbitrary = genericArbitrary
 instance Arbitrary GroundwaterConfig           where arbitrary = genericArbitrary
+
+-- Water table
+instance Arbitrary WaterTableConfig            where arbitrary = genericArbitrary
 
 -- River topology
 instance Arbitrary RiverTopologyConfig         where arbitrary = genericArbitrary

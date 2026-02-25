@@ -26,7 +26,7 @@ spec :: Spec
 spec = describe "River render geometry" $ do
   it "returns Nothing for empty river chunks map" $ do
     let config = WorldConfig { wcChunkSize = 4 }
-    buildChunkRiverGeometry defaultRiverRenderConfig config 0 IntMap.empty
+    buildChunkRiverGeometry defaultRiverRenderConfig config 0 IntMap.empty IntMap.empty
       `shouldBe` Nothing
 
   it "returns Nothing when chunk has no segments" $ do
@@ -35,7 +35,7 @@ spec = describe "River render geometry" $ do
         tileCount = size * size
         rc = emptyRiverChunk tileCount
     buildChunkRiverGeometry defaultRiverRenderConfig config 0
-      (IntMap.singleton 0 rc)
+      (IntMap.singleton 0 rc) IntMap.empty
       `shouldBe` Nothing
 
   it "produces non-empty geometry for a chunk with one through-segment" $ do
@@ -44,7 +44,7 @@ spec = describe "River render geometry" $ do
         tileCount = size * size
         rc = singleSegmentRiverChunk tileCount
         result = buildChunkRiverGeometry defaultRiverRenderConfig config 0
-                   (IntMap.singleton 0 rc)
+                   (IntMap.singleton 0 rc) IntMap.empty
     result `shouldSatisfy` (/= Nothing)
     case result of
       Nothing -> pure ()
@@ -59,7 +59,7 @@ spec = describe "River render geometry" $ do
         tileCount = size * size
         rc = singleSegmentRiverChunk tileCount
         Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config 0
-                    (IntMap.singleton 0 rc)
+                    (IntMap.singleton 0 rc) IntMap.empty
     SV.length (rgVertices rg) `shouldBe` 8
     SV.length (rgIndices rg) `shouldBe` 12
 
@@ -69,7 +69,7 @@ spec = describe "River render geometry" $ do
         tileCount = size * size
         rc = sourceSegmentRiverChunk tileCount
         Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config 0
-                    (IntMap.singleton 0 rc)
+                    (IntMap.singleton 0 rc) IntMap.empty
     -- Source: only centre→exit = 1 quad = 4 verts, 6 indices
     SV.length (rgVertices rg) `shouldBe` 4
     SV.length (rgIndices rg) `shouldBe` 6
@@ -83,9 +83,9 @@ spec = describe "River render geometry" $ do
         rc1 = makeRiverChunk tileCount 0 1 3  -- order 1 = stream
         rc2 = makeRiverChunk tileCount 0 3 7  -- order 7 = major
     -- Both should produce geometry (just checking the config propagates)
-    buildChunkRiverGeometry cfg1 config 0 (IntMap.singleton 0 rc1)
+    buildChunkRiverGeometry cfg1 config 0 (IntMap.singleton 0 rc1) IntMap.empty
       `shouldSatisfy` (/= Nothing)
-    buildChunkRiverGeometry cfg2 config 0 (IntMap.singleton 0 rc2)
+    buildChunkRiverGeometry cfg2 config 0 (IntMap.singleton 0 rc2) IntMap.empty
       `shouldSatisfy` (/= Nothing)
 
   it "non-zero bounds for chunk with segments" $ do
@@ -94,7 +94,7 @@ spec = describe "River render geometry" $ do
         tileCount = size * size
         rc = singleSegmentRiverChunk tileCount
         Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config 0
-                    (IntMap.singleton 0 rc)
+                    (IntMap.singleton 0 rc) IntMap.empty
         Rect (V2 _ _, V2 w h) = rgBounds rg
     w `shouldSatisfy` (> 0)
     h `shouldSatisfy` (> 0)
@@ -105,7 +105,7 @@ spec = describe "River render geometry" $ do
         tileCount = size * size
         rc = singleSegmentRiverChunk tileCount
         result = buildChunkRiverGeometry defaultRiverRenderConfig config 0
-                   (IntMap.singleton 0 rc)
+                   (IntMap.singleton 0 rc) IntMap.empty
     case result of
       Nothing -> pure ()
       Just rg -> do
@@ -116,18 +116,18 @@ spec = describe "River render geometry" $ do
   -- 12.4.3: Terminus delta geometry at sink segments
   -- -----------------------------------------------------------------------
   describe "terminus delta geometry" $ do
-    it "sink segment produces entry→centre quad + delta fan = 9 verts, 15 indices" $ do
-      -- A sink segment: entry=0, exit=255 (sink), order=3 (stream).
-      -- Stream delta: triCount=3 → 5 verts (1 centre + 4 rim), 9 indices
-      -- Quad: 4 verts, 6 indices.  Total: 9 verts, 15 indices.
+    it "sink segment produces entry→centre quad + delta fan = 10 verts, 18 indices" $ do
+      -- A sink segment: entry=0, exit=255 (sink), order=3 (creek).
+      -- Creek delta: triCount=4 → 6 verts (1 centre + 5 rim), 12 indices
+      -- Quad: 4 verts, 6 indices.  Total: 10 verts, 18 indices.
       let size = 4
           config = WorldConfig { wcChunkSize = size }
           tileCount = size * size
           rc = sinkSegmentRiverChunk tileCount
           Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config 0
-                      (IntMap.singleton 0 rc)
-      SV.length (rgVertices rg) `shouldBe` 9
-      SV.length (rgIndices rg) `shouldBe` 15
+                      (IntMap.singleton 0 rc) IntMap.empty
+      SV.length (rgVertices rg) `shouldBe` 10
+      SV.length (rgIndices rg) `shouldBe` 18
 
     it "through segment has no delta (8 verts, 12 indices)" $ do
       let size = 4
@@ -135,7 +135,7 @@ spec = describe "River render geometry" $ do
           tileCount = size * size
           rc = singleSegmentRiverChunk tileCount
           Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config 0
-                      (IntMap.singleton 0 rc)
+                      (IntMap.singleton 0 rc) IntMap.empty
       -- A through-segment: 2 quads = 8 verts + 12 indices (no delta)
       SV.length (rgVertices rg) `shouldBe` 8
       SV.length (rgIndices rg) `shouldBe` 12
@@ -147,7 +147,7 @@ spec = describe "River render geometry" $ do
           tileCount = size * size
           rc = makeRiverChunk tileCount 255 255 1
       buildChunkRiverGeometry defaultRiverRenderConfig config 0
-        (IntMap.singleton 0 rc) `shouldBe` Nothing
+        (IntMap.singleton 0 rc) IntMap.empty `shouldBe` Nothing
 
     prop "sink segment indices reference valid vertices" $ \(Positive sz') -> do
       let size = min 8 (max 2 sz')
@@ -155,7 +155,7 @@ spec = describe "River render geometry" $ do
           tileCount = size * size
           rc = sinkSegmentRiverChunk tileCount
           result = buildChunkRiverGeometry defaultRiverRenderConfig config 0
-                     (IntMap.singleton 0 rc)
+                     (IntMap.singleton 0 rc) IntMap.empty
       case result of
         Nothing -> pure ()
         Just rg -> do
@@ -174,15 +174,15 @@ spec = describe "River render geometry" $ do
       nextBase `shouldBe` 8
 
     it "delta fan direction faces away from entry" $ do
-      -- Stream delta: 3 triangles, spread 45°
-      let (radius, spreadDeg, triCount) = deltaParamsForOrder defaultRiverRenderConfig 1
-      radius `shouldBe` 1.5
+      -- Stream delta: 3 triangles, spread 45°, radius = apothem fraction
+      let (radiusFrac, spreadDeg, triCount) = deltaParamsForOrder defaultRiverRenderConfig 1
+      radiusFrac `shouldBe` 0.35
       spreadDeg `shouldBe` 45.0
       triCount `shouldBe` 3
 
     it "major river gets larger delta" $ do
-      let (radius, spreadDeg, triCount) = deltaParamsForOrder defaultRiverRenderConfig 7
-      radius `shouldBe` 6.0
+      let (radiusFrac, spreadDeg, triCount) = deltaParamsForOrder defaultRiverRenderConfig 7
+      radiusFrac `shouldBe` 0.95
       spreadDeg `shouldBe` 120.0
       triCount `shouldBe` 8
 
@@ -190,15 +190,120 @@ spec = describe "River render geometry" $ do
       let size = 4
           config = WorldConfig { wcChunkSize = size }
           tileCount = size * size
-          rcStream = makeRiverChunk tileCount 0 255 1  -- stream (order 1)
-          rcMajor  = makeRiverChunk tileCount 0 255 7  -- major (order 7)
+          rcStream = makeRiverChunk tileCount 0 255 1  -- stream (order 1, below delta threshold)
+          rcMajor  = makeRiverChunk tileCount 0 255 7  -- major (order 7, above threshold)
           Just rgStream = buildChunkRiverGeometry defaultRiverRenderConfig config 0
-                            (IntMap.singleton 0 rcStream)
+                            (IntMap.singleton 0 rcStream) IntMap.empty
           Just rgMajor  = buildChunkRiverGeometry defaultRiverRenderConfig config 0
-                            (IntMap.singleton 0 rcMajor)
-      -- Major has more delta triangles (8 vs 3), so more verts/indices
+                            (IntMap.singleton 0 rcMajor) IntMap.empty
+      -- Stream sink (order 1 < 3): only entry quad, no delta = 4 verts, 6 indices.
+      -- Major sink (order 7 >= 3): entry quad + delta = more.
+      SV.length (rgVertices rgStream) `shouldBe` 4
+      SV.length (rgIndices rgStream) `shouldBe` 6
       SV.length (rgVertices rgMajor) `shouldSatisfy` (> SV.length (rgVertices rgStream))
       SV.length (rgIndices rgMajor)  `shouldSatisfy` (> SV.length (rgIndices rgStream))
+
+  -- -----------------------------------------------------------------------
+  -- Coastal-exit delta geometry
+  -- -----------------------------------------------------------------------
+  describe "coastal exit delta geometry" $ do
+    it "low-order coastal exit falls back to line quad (no delta)" $ do
+      -- Order 1 < rrcMinDeltaOrder (3): coastal exit draws a plain
+      -- line quad from centre→exit instead of a delta fan.
+      -- entry=3(W), exit=128 (coastal E), order=1 (stream).
+      -- Entry quad: 4 verts, 6 indices.  Exit line quad: 4 verts, 6 indices.
+      -- Total: 8 verts, 12 indices.
+      let size = 4
+          config = WorldConfig { wcChunkSize = size }
+          tileCount = size * size
+          rc = makeRiverChunk tileCount 3 128 1
+          Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+                      (IntMap.singleton 0 rc) IntMap.empty
+      SV.length (rgVertices rg) `shouldBe` 8
+      SV.length (rgIndices rg) `shouldBe` 12
+
+    it "high-order coastal exit produces entry quad + delta fan" $ do
+      -- Order 3 >= rrcMinDeltaOrder (3): coastal exit draws delta fan.
+      -- entry=3(W), exit=128 (coastal E), order=3 (creek).
+      -- Entry quad: 4 verts, 6 indices.
+      -- Creek delta fan: triCount=4 → 6 verts, 12 indices.
+      -- Total: 10 verts, 18 indices.
+      let size = 4
+          config = WorldConfig { wcChunkSize = size }
+          tileCount = size * size
+          rc = makeRiverChunk tileCount 3 128 3
+          Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+                      (IntMap.singleton 0 rc) IntMap.empty
+      SV.length (rgVertices rg) `shouldBe` 10
+      SV.length (rgIndices rg) `shouldBe` 18
+
+    it "source + low-order coastal produces line quad only" $ do
+      -- entry=255 (source), exit=128 (coastal E), order=1 (stream).
+      -- Below threshold: exit line quad only = 4 verts, 6 indices.
+      let size = 4
+          config = WorldConfig { wcChunkSize = size }
+          tileCount = size * size
+          rc = makeRiverChunk tileCount 255 128 1
+          Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+                      (IntMap.singleton 0 rc) IntMap.empty
+      SV.length (rgVertices rg) `shouldBe` 4
+      SV.length (rgIndices rg) `shouldBe` 6
+
+    it "source + high-order coastal produces delta fan" $ do
+      -- entry=255 (source), exit=128 (coastal E), order=3 (creek).
+      -- Above threshold: delta fan only = 6 verts, 12 indices.
+      let size = 4
+          config = WorldConfig { wcChunkSize = size }
+          tileCount = size * size
+          rc = makeRiverChunk tileCount 255 128 3
+          Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+                      (IntMap.singleton 0 rc) IntMap.empty
+      SV.length (rgVertices rg) `shouldBe` 6
+      SV.length (rgIndices rg) `shouldBe` 12
+
+    it "low-order coastal has more geometry than low-order sink" $ do
+      -- Order 1 (below threshold):
+      -- Coastal: entry quad + exit line quad = 8v, 12i
+      -- Sink:    entry quad + nothing = 4v, 6i
+      let size = 4
+          config = WorldConfig { wcChunkSize = size }
+          tileCount = size * size
+          rcCoastal = makeRiverChunk tileCount 0 128 1  -- coastal exit E
+          rcSink    = makeRiverChunk tileCount 0 255 1  -- inland sink
+          Just rgCoastal = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+                             (IntMap.singleton 0 rcCoastal) IntMap.empty
+          Just rgSink    = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+                             (IntMap.singleton 0 rcSink) IntMap.empty
+      SV.length (rgVertices rgCoastal) `shouldSatisfy` (> SV.length (rgVertices rgSink))
+      SV.length (rgIndices rgCoastal)  `shouldSatisfy` (> SV.length (rgIndices rgSink))
+
+    it "high-order coastal and sink produce same vert/index counts" $ do
+      -- Order 3 (above threshold): both draw entry quad + delta fan.
+      -- Creek delta: triCount=4, so 6 verts + 4 entry = 10 total.
+      let size = 4
+          config = WorldConfig { wcChunkSize = size }
+          tileCount = size * size
+          rcCoastal = makeRiverChunk tileCount 0 128 3  -- coastal exit E, order 3
+          rcSink    = makeRiverChunk tileCount 0 255 3  -- inland sink, order 3
+          Just rgCoastal = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+                             (IntMap.singleton 0 rcCoastal) IntMap.empty
+          Just rgSink    = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+                             (IntMap.singleton 0 rcSink) IntMap.empty
+      SV.length (rgVertices rgCoastal) `shouldBe` SV.length (rgVertices rgSink)
+      SV.length (rgIndices rgCoastal)  `shouldBe` SV.length (rgIndices rgSink)
+
+    it "rrcMinDeltaOrder = 0 always draws deltas" $ do
+      -- Override threshold to 0: even order-1 streams get deltas.
+      let noDeltaGate = defaultRiverRenderConfig { rrcMinDeltaOrder = 0 }
+          size = 4
+          config = WorldConfig { wcChunkSize = size }
+          tileCount = size * size
+          rc = makeRiverChunk tileCount 3 128 1  -- order 1, coastal
+          Just rg = buildChunkRiverGeometry noDeltaGate config 0
+                      (IntMap.singleton 0 rc) IntMap.empty
+      -- Entry quad (4v/6i) + stream delta fan (5v/9i) = 9v/15i
+      SV.length (rgVertices rg) `shouldBe` 9
+      SV.length (rgIndices rg) `shouldBe` 15
 
 -- ---------------------------------------------------------------------------
 -- Helpers
@@ -239,11 +344,12 @@ sinkSegmentRiverChunk tileCount = makeRiverChunk tileCount 0 255 3
 makeRiverChunk :: Int -> Int -> Int -> Int -> RiverChunk
 makeRiverChunk tileCount entryEdge exitEdge order =
   let offsets = U.generate (tileCount + 1) (\i -> if i > 0 then 1 else 0)
+      tileOrders = U.generate tileCount (\i -> if i == 0 then fromIntegral order else 0)
   in RiverChunk
     { rcFlowAccum = U.replicate tileCount 0
     , rcDischarge = U.replicate tileCount 0
     , rcChannelDepth = U.replicate tileCount 0
-    , rcRiverOrder = U.replicate tileCount 0
+    , rcRiverOrder = tileOrders
     , rcBasinId = U.replicate tileCount 0
     , rcBaseflow = U.replicate tileCount 0
     , rcErosionPotential = U.replicate tileCount 0

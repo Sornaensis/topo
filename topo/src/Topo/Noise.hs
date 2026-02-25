@@ -5,6 +5,7 @@ module Topo.Noise
   , ridgedFbm2D
   , domainWarp2D
   , directionalRidge2D
+  , directionalRidge2DAniso
   ) where
 
 import Data.Bits (xor, shiftR, (.&.))
@@ -74,6 +75,33 @@ directionalRidge2D seed octaves lacunarity gain scale x y dirX dirY =
       rx = x * c - y * s
       ry = x * s + y * c
   in ridgedFbm2D seed octaves lacunarity gain (rx * scale) (ry * scale)
+
+-- | Anisotropic directional ridge noise.
+--
+-- Like 'directionalRidge2D' but applies separate scales along and across
+-- the direction vector.  Use a larger @scaleAcross@ relative to
+-- @scaleAlong@ to compress noise features perpendicular to the direction,
+-- producing elongated ridges that follow the given axis.
+directionalRidge2DAniso
+  :: Word64  -- ^ Noise seed.
+  -> Int     -- ^ FBM octaves.
+  -> Float   -- ^ Lacunarity.
+  -> Float   -- ^ Gain.
+  -> Float   -- ^ Scale along the direction (long axis).
+  -> Float   -- ^ Scale across the direction (short axis).
+  -> Float   -- ^ World X coordinate.
+  -> Float   -- ^ World Y coordinate.
+  -> Float   -- ^ Direction X (unit vector component).
+  -> Float   -- ^ Direction Y (unit vector component).
+  -> Float
+directionalRidge2DAniso seed octaves lacunarity gain scaleAlong scaleAcross x y dirX dirY =
+  let angle = atan2 dirY dirX
+      c = cos angle
+      s = sin angle
+      -- Rotate into the direction frame: rx = along, ry = across
+      rx = x * c - y * s
+      ry = x * s + y * c
+  in ridgedFbm2D seed octaves lacunarity gain (rx * scaleAlong) (ry * scaleAcross)
 
 fade :: Float -> Float
 fade t = t * t * t * (t * (t * 6 - 15) + 10)

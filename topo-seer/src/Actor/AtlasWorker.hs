@@ -75,7 +75,7 @@ actor AtlasWorker
         -- Build river overlay geometry (only in biome view)
         riverGeoMap = case mode of
           ViewBiome -> IntMap.mapMaybeWithKey
-            (\cid _chunk -> buildChunkRiverGeometry defaultRiverRenderConfig config cid (tsRiverChunks terrainSnap))
+            (\cid _chunk -> buildChunkRiverGeometry defaultRiverRenderConfig config cid (tsRiverChunks terrainSnap) (tsTerrainChunks terrainSnap))
             (tsTerrainChunks terrainSnap)
           _ -> IntMap.empty
         baseTiles = composeTilesFromGeometry geometryMap (abScale job)

@@ -181,6 +181,9 @@ mkGroundwaterChunk config base =
       , gwRecharge = recharge
       , gwDischarge = discharge
       , gwBasinId = basin
+      , gwInfiltration = U.empty
+      , gwWaterTableDepth = U.empty
+      , gwRootZoneMoisture = U.empty
       }
 
 mkGlacierChunk :: WorldConfig -> Float -> GlacierChunk

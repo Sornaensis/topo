@@ -14,6 +14,7 @@ module Topo.Export
   , decodeRiverChunkV1
   , encodeGroundwaterChunk
   , decodeGroundwaterChunk
+  , decodeGroundwaterChunkV1
   , encodeVolcanismChunk
   , decodeVolcanismChunk
   , encodeGlacierChunk
@@ -47,8 +48,8 @@ module Topo.Export
   , chunksForRegion
   ) where
 
-import Control.Monad (replicateM)
-import Data.Binary.Get (Get, getFloatle, getInt32le, getWord8, getWord16le, getWord32le, runGetOrFail)
+import Control.Monad (replicateM, when)
+import Data.Binary.Get (Get, getFloatle, getInt32le, getWord8, getWord16le, getWord32le, runGetOrFail, isEmpty)
 import Data.Binary.Put (Put, putFloatle, putInt32le, putWord8, putWord16le, putWord32le, runPut)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
@@ -252,16 +253,27 @@ encodeGroundwaterChunk config chunk = do
   ensureLength n (Text.pack "recharge") (gwRecharge chunk)
   ensureLength n (Text.pack "discharge") (gwDischarge chunk)
   ensureLength n (Text.pack "basinId") (gwBasinId chunk)
+  let hasWT = not (U.null (gwInfiltration chunk))
   pure $ BL.toStrict $ runPut $ do
     putWord32le (fromIntegral n)
     putVectorFloat n (gwStorage chunk)
     putVectorFloat n (gwRecharge chunk)
     putVectorFloat n (gwDischarge chunk)
     putVectorWord32 n (gwBasinId chunk)
+    -- V2 water-table fields: write only when populated
+    when hasWT $ do
+      putVectorFloat n (gwInfiltration chunk)
+      putVectorFloat n (gwWaterTableDepth chunk)
+      putVectorFloat n (gwRootZoneMoisture chunk)
 
 decodeGroundwaterChunk :: WorldConfig -> BS.ByteString -> Either ExportError GroundwaterChunk
 decodeGroundwaterChunk config bytes =
-  decodeWith (getGroundwaterChunk config) bytes
+  decodeWith (getGroundwaterChunkV2 config) bytes
+
+-- | Decode a V1 groundwater chunk (no water-table fields).
+decodeGroundwaterChunkV1 :: WorldConfig -> BS.ByteString -> Either ExportError GroundwaterChunk
+decodeGroundwaterChunkV1 config bytes =
+  decodeWith (getGroundwaterChunkV1 config) bytes
 
 encodeVolcanismChunk :: WorldConfig -> VolcanismChunk -> Either ExportError BS.ByteString
 encodeVolcanismChunk config chunk = do
@@ -781,18 +793,61 @@ getRiverChunkV1 config = do
     , rcSegOrder = U.empty
     }
 
-getGroundwaterChunk :: WorldConfig -> Get GroundwaterChunk
-getGroundwaterChunk config = do
+-- | Decode a V2 groundwater chunk (with optional water-table fields).
+--
+-- Attempts to read the three water-table vectors after the V1 fields.
+-- If the remaining bytestring is too short, falls back to empty vectors.
+getGroundwaterChunkV2 :: WorldConfig -> Get GroundwaterChunk
+getGroundwaterChunkV2 config = do
   n <- getCount config
-  gwStorage <- getVectorFloat n
-  gwRecharge <- getVectorFloat n
-  gwDischarge <- getVectorFloat n
-  gwBasinId <- getVectorWord32 n
+  storage <- getVectorFloat n
+  recharge <- getVectorFloat n
+  discharge <- getVectorFloat n
+  basinId <- getVectorWord32 n
+  -- V2 extension: three water-table float vectors follow the V1 data.
+  -- If the stream is exhausted, we're reading a V1-encoded chunk.
+  done <- isEmpty
+  if done
+    then
+      pure GroundwaterChunk
+        { gwStorage = storage
+        , gwRecharge = recharge
+        , gwDischarge = discharge
+        , gwBasinId = basinId
+        , gwInfiltration = U.empty
+        , gwWaterTableDepth = U.empty
+        , gwRootZoneMoisture = U.empty
+        }
+    else do
+      infilt  <- getVectorFloat n
+      wtDepth <- getVectorFloat n
+      rzMoist <- getVectorFloat n
+      pure GroundwaterChunk
+        { gwStorage = storage
+        , gwRecharge = recharge
+        , gwDischarge = discharge
+        , gwBasinId = basinId
+        , gwInfiltration = infilt
+        , gwWaterTableDepth = wtDepth
+        , gwRootZoneMoisture = rzMoist
+        }
+
+-- | Decode a V1 groundwater chunk (no water-table fields).
+getGroundwaterChunkV1 :: WorldConfig -> Get GroundwaterChunk
+getGroundwaterChunkV1 config = do
+  n <- getCount config
+  storage <- getVectorFloat n
+  recharge <- getVectorFloat n
+  discharge <- getVectorFloat n
+  basinId <- getVectorWord32 n
   pure GroundwaterChunk
-    { gwStorage = gwStorage
-    , gwRecharge = gwRecharge
-    , gwDischarge = gwDischarge
-    , gwBasinId = gwBasinId
+    { gwStorage = storage
+    , gwRecharge = recharge
+    , gwDischarge = discharge
+    , gwBasinId = basinId
+    , gwInfiltration = U.empty
+    , gwWaterTableDepth = U.empty
+    , gwRootZoneMoisture = U.empty
     }
 
 getVolcanismChunk :: WorldConfig -> Get VolcanismChunk

@@ -7,6 +7,12 @@ module Topo.Tectonics
   , defaultTectonicsConfig
   , generateTectonicsStage
   , applyTectonicsChunk
+  -- * Rift helpers
+  , riftProfile
+  , boundaryTangent
+  , boundaryDistanceNormalised
+  -- * Internal types (for testing)
+  , PlateInfo(..)
   ) where
 
 import Control.Monad.Reader (asks)
@@ -21,7 +27,7 @@ import Topo.Config.JSON
   (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
    genericToJSON, genericParseJSON)
 import Topo.Math (clamp01, lerp, smoothstep)
-import Topo.Noise (directionalRidge2D, domainWarp2D, fbm2D, noise2DContinuous, ridgedFbm2D)
+import Topo.Noise (directionalRidge2D, directionalRidge2DAniso, domainWarp2D, fbm2D, noise2DContinuous, ridgedFbm2D)
 import Topo.Pipeline (PipelineStage(..))
 import Topo.Planet (LatitudeMapping(..))
 import Topo.Plugin (logInfo, modifyWorldP, peSeed)
@@ -97,6 +103,23 @@ data TectonicsConfig = TectonicsConfig
     -- ^ Uplift magnitude at convergent plate boundaries.
   , tcRiftDepth :: !Float
     -- ^ Depth magnitude at divergent (rift) plate boundaries.
+  , tcRiftNoiseOctaves :: !Int
+    -- ^ FBM octaves for rift noise (default 3).
+  , tcRiftNoiseLacunarity :: !Float
+    -- ^ Frequency multiplier between rift noise FBM octaves (default 2.0).
+  , tcRiftNoiseGain :: !Float
+    -- ^ Amplitude decay between rift noise FBM octaves (default 0.5).
+  , tcRiftNoiseScale :: !Float
+    -- ^ Base frequency of rift noise (cycles per tile, default 0.006).
+  , tcRiftElongation :: !Float
+    -- ^ Scale ratio between tangent and normal axes (default 4.0).
+    -- Values >1 stretch rift features along the boundary.
+  , tcRiftShoulderHeight :: !Float
+    -- ^ Height of flanking horst uplift (default 0.03).
+  , tcRiftShoulderWidth :: !Float
+    -- ^ Fraction of boundary width where shoulders appear (default 0.35).
+  , tcRiftFloorWidth :: !Float
+    -- ^ Fraction of boundary width that is flat-bottomed (default 0.25).
   , tcTrenchDepth :: !Float
     -- ^ Depth magnitude at subduction-zone trenches.
   , tcRidgeHeight :: !Float
@@ -151,7 +174,15 @@ defaultTectonicsConfig = TectonicsConfig
   , tcPlateHardnessBase = 0.45
   , tcPlateHardnessVariance = 0.3
   , tcUplift = 0.15
-  , tcRiftDepth = 0.2
+  , tcRiftDepth = 0.08
+  , tcRiftNoiseOctaves = 3
+  , tcRiftNoiseLacunarity = 2.0
+  , tcRiftNoiseGain = 0.5
+  , tcRiftNoiseScale = 0.006
+  , tcRiftElongation = 4.0
+  , tcRiftShoulderHeight = 0.03
+  , tcRiftShoulderWidth = 0.35
+  , tcRiftFloorWidth = 0.25
   , tcTrenchDepth = 0.25
   , tcRidgeHeight = 0.08
   }
@@ -241,6 +272,8 @@ tectonicDelta config seed tcfg origin elev i =
       infoX = plateInfoAtXY seed tcfg (gx + 1) gy
       infoY = plateInfoAtXY seed tcfg gx (gy + 1)
       strength = boundaryStrengthAtXY seed tcfg gx gy
+      -- Raw linear distance (before smoothstep) for the rift profile.
+      rawDist = boundaryDistanceNormalised seed tcfg gx gy
       e0 = elev U.! i
       boundaryType = classifyBoundary info infoX infoY
       (dirX, dirY) = boundaryDirection info infoX infoY
@@ -252,16 +285,30 @@ tectonicDelta config seed tcfg origin elev i =
           then 0
           else clamp01 (abs motion / tcPlateSpeed tcfg)
       ridge = directionalRidge2D (seed + 9001) 4 2 0.55 0.004 (fromIntegral gx) (fromIntegral gy) dirX dirY
-      rift = directionalRidge2D (seed + 9103) 3 2 0.6 0.006 (fromIntegral gx) (fromIntegral gy) dirX dirY
+      -- Rift uses boundary tangent (Phase 2) and anisotropic noise (Phase 3)
+      -- to produce elongated features that follow the plate boundary.
+      nearestNeighbour = if abs motionX >= abs motionY then infoX else infoY
+      (tanX, tanY) = boundaryTangent info nearestNeighbour
+      riftScaleAlong = tcRiftNoiseScale tcfg
+      riftScaleAcross = tcRiftNoiseScale tcfg * max 1 (tcRiftElongation tcfg)
+      rift = directionalRidge2DAniso
+               (seed + 9103)
+               (tcRiftNoiseOctaves tcfg)
+               (tcRiftNoiseLacunarity tcfg)
+               (tcRiftNoiseGain tcfg)
+               riftScaleAlong
+               riftScaleAcross
+               (fromIntegral gx) (fromIntegral gy)
+               tanX tanY
   in if strength <= 0 || motionScale <= 0
       then 0
       else
         let s = strength
         in case boundaryType of
           PlateBoundaryConvergent -> applyConvergentEdge tcfg s motionScale ridge e0
-          PlateBoundaryDivergent -> applyRiftEdge tcfg s motionScale rift e0
-          PlateBoundaryTransform -> applyTransformEdge tcfg s motionScale ridge
-          PlateBoundaryNone -> 0
+          PlateBoundaryDivergent  -> applyRiftEdge tcfg rawDist motionScale rift e0
+          PlateBoundaryTransform  -> applyTransformEdge tcfg s motionScale ridge
+          PlateBoundaryNone       -> 0
 
 applyConvergentEdge :: TectonicsConfig -> Float -> Float -> Float -> Float -> Float
 applyConvergentEdge tcfg strength motionScale ridge elevation =
@@ -269,11 +316,70 @@ applyConvergentEdge tcfg strength motionScale ridge elevation =
     then strength * (tcUplift tcfg + ridge * tcUplift tcfg) * motionScale
     else strength * (-tcTrenchDepth tcfg) * motionScale
 
+-- | Apply rift (divergent boundary) effects with a graben+horst profile.
+--
+-- Continental rifts produce a depression modulated by the rift profile;
+-- oceanic divergent boundaries produce a mid-ocean ridge uplift.
+-- The total delta is clamped so that it never exceeds the configured
+-- depth budget (@tcRiftDepth + tcRiftShoulderHeight@).
+--
+-- The first parameter after the config is the *raw normalised distance*
+-- from 'boundaryDistanceNormalised' (linear, before smoothstep), which
+-- feeds into 'riftProfile' for a proper cross-section shape.
 applyRiftEdge :: TectonicsConfig -> Float -> Float -> Float -> Float -> Float
-applyRiftEdge tcfg strength motionScale rift elevation =
+applyRiftEdge tcfg rawDist motionScale rift elevation =
   if elevation >= 0
-    then strength * ((-tcRiftDepth tcfg) - rift * tcRiftDepth tcfg) * motionScale
-    else strength * (tcRidgeHeight tcfg + rift * tcRidgeHeight tcfg) * motionScale
+    then
+      -- Continental rift: graben profile modulated by noise.
+      let profile = riftProfile tcfg rawDist
+          rawDelta = profile * tcRiftDepth tcfg * (0.5 + 0.5 * rift) * motionScale
+          -- Safety clamp: never exceed configured depth budget.
+          maxDepth = tcRiftDepth tcfg + tcRiftShoulderHeight tcfg
+      in max (-maxDepth) (min maxDepth rawDelta)
+    else
+      -- Oceanic divergent: mid-ocean ridge uplift (uses smoothstepped
+      -- strength implicitly via rawDist for a softer falloff).
+      let s = smoothstep 0 1 rawDist
+      in s * (tcRidgeHeight tcfg + rift * tcRidgeHeight tcfg) * motionScale
+
+-- | Pure rift cross-section profile.
+--
+-- Maps a boundary strength value (0 = boundary edge, 1 = boundary centre)
+-- to an elevation-delta multiplier:
+--
+--   * Centre (strength close to 1): flat floor at @-1@.
+--   * Ramp zone: smooth transition from @-1@ up to @0@.
+--   * Shoulder zone (strength near 0): positive hump peaking at
+--     @tcRiftShoulderHeight / tcRiftDepth@ (normalised).
+--   * Outside (strength = 0): @0@.
+--
+-- The profile is symmetric around the boundary centre by construction
+-- since 'boundaryStrengthAtXY' is itself symmetric about the
+-- nearest-plate midpoint.
+riftProfile :: TectonicsConfig -> Float -> Float
+riftProfile tcfg strength
+  | strength <= 0 = 0
+  | otherwise =
+      let floorW = clamp01 (tcRiftFloorWidth tcfg)
+          shoulderW = clamp01 (tcRiftShoulderWidth tcfg)
+          shoulderH = tcRiftShoulderHeight tcfg / max 1e-6 (tcRiftDepth tcfg)
+          -- strength ∈ (0,1]: 1 = boundary centre, 0 = boundary edge.
+          -- Invert to get a distance-from-centre measure: 0 = centre, 1 = edge.
+          d = 1 - strength
+      in if d <= floorW / 2
+           -- Flat bottom zone
+           then -1
+         else if d <= 1 - shoulderW
+           -- Ramp from -1 up to 0
+           then let t = (d - floorW / 2) / max 1e-6 (1 - shoulderW - floorW / 2)
+                in lerp (-1) 0 (smoothstep 0 1 t)
+         else if d < 1
+           -- Shoulder hump (positive)
+           then let t = (d - (1 - shoulderW)) / max 1e-6 shoulderW
+                    -- Bell-shaped shoulder: rises to peak then falls.
+                    bell = sin (t * pi)
+                in shoulderH * bell
+         else 0
 
 applyTransformEdge :: TectonicsConfig -> Float -> Float -> Float -> Float
 applyTransformEdge tcfg strength motionScale ridge =
@@ -285,13 +391,22 @@ dominantMotion motionX motionY =
 
 boundaryStrengthAtXY :: Word64 -> TectonicsConfig -> Int -> Int -> Float
 boundaryStrengthAtXY seed tcfg x y =
+  smoothstep 0 1 (boundaryDistanceNormalised seed tcfg x y)
+
+-- | Raw normalised distance from the boundary centre.
+--
+-- Returns a value in @[0, 1]@ where @1@ = boundary centre (gap ≈ 0)
+-- and @0@ = outside the boundary zone.  Unlike 'boundaryStrengthAtXY'
+-- this is the linear value /before/ the smoothstep ramp, which makes
+-- it suitable for feeding directly into 'riftProfile'.
+boundaryDistanceNormalised :: Word64 -> TectonicsConfig -> Int -> Int -> Float
+boundaryDistanceNormalised seed tcfg x y =
   let size = fromIntegral (max 1 (tcPlateSize tcfg))
       (d0, d1) = plateDistancePair seed tcfg x y
       gap = max 0 (d1 - d0)
       sharp = max 0.2 (tcBoundarySharpness tcfg)
       width = max 1e-3 (size * (0.35 / sharp))
-      t = clamp01 (1 - gap / width)
-  in smoothstep 0 1 t
+  in clamp01 (1 - gap / width)
 
 plateDistancePair :: Word64 -> TectonicsConfig -> Int -> Int -> (Float, Float)
 plateDistancePair seed tcfg x y =
@@ -505,6 +620,8 @@ plateLocalCoord seed tcfg pid gx gy =
       oy = (noise2DContinuous (seed + fromIntegral pid * 131 + 7) 0 0 - 0.5) * size * 1.2
   in (lx + ox, ly + oy)
 
+-- | Per-plate metadata at a grid cell: identity, Voronoi centre,
+-- velocity vector, base height\/hardness, age, and crust type.
 data PlateInfo = PlateInfo
   { plateInfoId :: !Word16
   , plateInfoCenter :: !(Float, Float)
@@ -663,6 +780,27 @@ boundaryDirection info infoX infoY =
       ny = dy + ey
       len = sqrt (nx * nx + ny * ny)
   in if len == 0 then (1, 0) else (nx / len, ny / len)
+
+-- | Compute the tangent direction along the boundary between two plates.
+--
+-- The tangent is perpendicular to the line connecting the two nearest
+-- plate centres.  This gives the direction along which a rift valley or
+-- ridge should be elongated.
+--
+-- Returns a normalised (unit-length) vector.  Falls back to @(0, 1)@
+-- when the two centres coincide.
+boundaryTangent :: PlateInfo -> PlateInfo -> (Float, Float)
+boundaryTangent infoA infoB =
+  let (ax, ay) = plateInfoCenter infoA
+      (bx, by) = plateInfoCenter infoB
+      -- Normal: centre-to-centre direction
+      nx = bx - ax
+      ny = by - ay
+      -- Tangent: rotate 90° counter-clockwise
+      tx = -ny
+      ty = nx
+      len = sqrt (tx * tx + ty * ty)
+  in if len == 0 then (0, 1) else (tx / len, ty / len)
 
 boundaryMotionBetween :: PlateInfo -> PlateInfo -> Float
 boundaryMotionBetween a b =

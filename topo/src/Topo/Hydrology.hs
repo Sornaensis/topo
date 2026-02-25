@@ -339,6 +339,9 @@ applyRiverStage riverCfg topoCfg gwCfg waterLevel = PipelineStage "applyRivers" 
         , gwRecharge = U.map (* gwRechargeScale gwCfg) (U.map clamp01 moisture)
         , gwDischarge = basinPerTile basinIds basinDischarge basinSize
         , gwBasinId = basinIds
+        , gwInfiltration = U.empty
+        , gwWaterTableDepth = U.empty
+        , gwRootZoneMoisture = U.empty
         }
       rivers' = IntMap.mapWithKey (sliceRiverChunk config (ChunkCoord minCx minCy) gridW rivers) terrain
       groundwater' = IntMap.mapWithKey (sliceGroundwaterChunk config (ChunkCoord minCx minCy) gridW groundwater) terrain
@@ -1148,6 +1151,9 @@ sliceGroundwaterChunk config minCoord gridW groundwater _key _chunk =
     , gwRecharge = chunkGridSlice config minCoord gridW (gwRecharge groundwater) _key
     , gwDischarge = chunkGridSlice config minCoord gridW (gwDischarge groundwater) _key
     , gwBasinId = chunkGridSliceGeneric config minCoord gridW (gwBasinId groundwater) _key
+    , gwInfiltration = U.empty
+    , gwWaterTableDepth = U.empty
+    , gwRootZoneMoisture = U.empty
     }
 
 chunkGridSliceGeneric :: U.Unbox a => WorldConfig -> ChunkCoord -> Int -> U.Vector a -> Int -> U.Vector a

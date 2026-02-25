@@ -268,6 +268,9 @@ emptyGroundwaterChunk config =
       , gwRecharge = zeros
       , gwDischarge = zeros
       , gwBasinId = zeros32
+      , gwInfiltration = U.empty
+      , gwWaterTableDepth = U.empty
+      , gwRootZoneMoisture = U.empty
       }
 
 emptyVolcanismChunk :: WorldConfig -> VolcanismChunk

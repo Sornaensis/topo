@@ -9,6 +9,12 @@
 -- These fields feed the vegetation bootstrap stage and, transitively,
 -- the climate stage's evapotranspiration model.
 --
+-- __Note:__ The 'tcFertility' value produced here is a coarse
+-- estimate.  The later 'Topo.WaterTable.applyWaterTableStage'
+-- (stage 13.5) overwrites it with an improved formula that
+-- incorporates infiltration capacity, water-table depth, and
+-- root-zone moisture.
+--
 -- Split out from 'Topo.Parameters' so that soil data is available before
 -- the climate stage runs (Parameters executes post-glacier for
 -- terrain-shape fields that need final elevation).

@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE PatternSynonyms #-}
 
 -- | River geometry generation for hex atlas rendering.
@@ -35,14 +36,17 @@ import Topo
   ( ChunkCoord(..)
   , ChunkId(..)
   , RiverChunk(..)
+  , TerrainChunk(..)
   , TileCoord(..)
   , TileIndex(..)
   , WorldConfig(..)
   , chunkCoordFromId
   , chunkOriginTile
+  , isWaterBiomeId
   , tileCoordFromIndex
   )
-import Topo.Types (pattern RiverStream, pattern RiverCreek, pattern RiverRiver, riverSizeFromOrder)
+import Topo.River (isCoastalExit, coastalExitEdge)
+import Topo.Types (BiomeId, pattern RiverStream, pattern RiverCreek, pattern RiverRiver, riverSizeFromOrder)
 import UI.HexPick (axialToScreen)
 import UI.Widgets (Rect(..))
 import Linear (V2(..))
@@ -65,7 +69,10 @@ data RiverRenderConfig = RiverRenderConfig
   , rrcPoolRadius      :: !Float
     -- | Colour of terminus pool circles (RGBA).
   , rrcPoolColor       :: !(Word8, Word8, Word8, Word8)
-    -- | Delta fan radii per river size (pixels).
+    -- | Delta fan radii per river size, expressed as a fraction of the
+    -- hex apothem (0.0–1.0).  The actual pixel radius is computed as
+    -- @fraction * apothem@ at the call site, keeping deltas contained
+    -- within the hex boundary regardless of hex size.
   , rrcDeltaStreamRadius :: !Float
   , rrcDeltaCreekRadius  :: !Float
   , rrcDeltaRiverRadius  :: !Float
@@ -77,9 +84,19 @@ data RiverRenderConfig = RiverRenderConfig
   , rrcDeltaMajorSpread  :: !Float
     -- | Delta fan colour (RGBA) — slightly darker / muddier blue.
   , rrcDeltaColor        :: !(Word8, Word8, Word8, Word8)
+    -- | Minimum Strahler order required for a terminus tile to render
+    -- a delta fan instead of a plain line quad (coastal exits) or
+    -- nothing (inland sinks).  This prevents small first- and second-
+    -- order streams from each drawing their own fan around a water
+    -- body, which produces the visual impression of duplicated deltas.
+    -- Set to 0 to draw deltas for every terminus regardless of order.
+  , rrcMinDeltaOrder     :: !Word16
   } deriving (Eq, Show)
 
 -- | Sensible defaults for a 6 px hex radius.
+--
+-- Delta radii are expressed as fractions of the hex apothem (0.0–1.0).
+-- At runtime the actual pixel radius is @fraction * apothem@.
 defaultRiverRenderConfig :: RiverRenderConfig
 defaultRiverRenderConfig = RiverRenderConfig
   { rrcStreamHalfWidth    = 0.25
@@ -89,15 +106,16 @@ defaultRiverRenderConfig = RiverRenderConfig
   , rrcColor              = (60, 120, 200, 255)
   , rrcPoolRadius         = 2.0
   , rrcPoolColor          = (40, 100, 180, 255)
-  , rrcDeltaStreamRadius  = 1.5
-  , rrcDeltaCreekRadius   = 2.5
-  , rrcDeltaRiverRadius   = 4.0
-  , rrcDeltaMajorRadius   = 6.0
+  , rrcDeltaStreamRadius  = 0.35
+  , rrcDeltaCreekRadius   = 0.50
+  , rrcDeltaRiverRadius   = 0.70
+  , rrcDeltaMajorRadius   = 0.95
   , rrcDeltaStreamSpread  = 45.0
   , rrcDeltaCreekSpread   = 60.0
   , rrcDeltaRiverSpread   = 90.0
   , rrcDeltaMajorSpread   = 120.0
   , rrcDeltaColor         = (50, 95, 155, 255)
+  , rrcMinDeltaOrder      = 3
   }
 
 -- ---------------------------------------------------------------------------
@@ -129,20 +147,28 @@ hexOverlap = 0.6
 
 -- | Build river overlay geometry for a single chunk.
 --
--- Returns 'Nothing' if the chunk has no visible river segments.
+-- Returns 'Nothing' if the chunk has no visible river segments
+-- (including degenerate segments that produce zero vertices).
+--
+-- When a 'TerrainChunk' is available for the same key, tiles whose
+-- biome is a water body (ocean, lake, inland sea, etc.) are skipped
+-- so that rivers do not render on submerged tiles.
 buildChunkRiverGeometry
   :: RiverRenderConfig
   -> WorldConfig
-  -> Int                -- ^ chunk key
-  -> IntMap RiverChunk  -- ^ all river chunks
+  -> Int                   -- ^ chunk key
+  -> IntMap RiverChunk     -- ^ all river chunks
+  -> IntMap TerrainChunk   -- ^ all terrain chunks (for biome filtering)
   -> Maybe RiverGeometry
-buildChunkRiverGeometry cfg config key riverMap = do
+buildChunkRiverGeometry cfg config key riverMap terrainMap = do
   rc <- IntMap.lookup key riverMap
   let offsets   = rcSegOffsets rc
       totalSegs = if U.null offsets then 0 else offsets U.! (U.length offsets - 1)
+      mbBiomeVec = fmap tcFlags (IntMap.lookup key terrainMap)
   if totalSegs <= 0
     then Nothing
-    else Just (buildGeometry cfg config key rc)
+    else let rg = buildGeometry cfg config key rc mbBiomeVec
+         in if SV.null (rgVertices rg) then Nothing else Just rg
 
 -- | Internal: build geometry for a chunk known to have segments.
 buildGeometry
@@ -150,26 +176,31 @@ buildGeometry
   -> WorldConfig
   -> Int
   -> RiverChunk
+  -> Maybe (U.Vector BiomeId)  -- ^ biome vector for water-tile filtering
   -> RiverGeometry
-buildGeometry cfg config key rc =
+buildGeometry cfg config key rc mbBiomeVec =
   let ChunkCoord cx cy = chunkCoordFromId (ChunkId key)
       TileCoord ox oy  = chunkOriginTile config (ChunkCoord cx cy)
       (minX, minY, maxX, maxY) = chunkBoundsF config hexSize (ChunkCoord cx cy)
       bounds = Rect (V2 (floor minX) (floor minY),
                      V2 (max 1 (ceiling maxX - floor minX))
                         (max 1 (ceiling maxY - floor minY)))
-      offsets   = rcSegOffsets rc
-      entryEdge = rcSegEntryEdge rc
-      exitEdge  = rcSegExitEdge rc
-      segOrder  = rcSegOrder rc
-      n         = wcChunkSize config * wcChunkSize config
+      offsets    = rcSegOffsets rc
+      entryEdge  = rcSegEntryEdge rc
+      exitEdge   = rcSegExitEdge rc
+      segOrder   = rcSegOrder rc
+      riverOrder = rcRiverOrder rc
+      n          = wcChunkSize config * wcChunkSize config
       (rCol_r, rCol_g, rCol_b, rCol_a) = rrcColor cfg
-      rawColor  = Raw.Color rCol_r rCol_g rCol_b rCol_a
-      (pCol_r, pCol_g, pCol_b, pCol_a) = rrcPoolColor cfg
-      poolColor = Raw.Color pCol_r pCol_g pCol_b pCol_a
+      rawColor   = Raw.Color rCol_r rCol_g rCol_b rCol_a
       (dCol_r, dCol_g, dCol_b, dCol_a) = rrcDeltaColor cfg
       deltaColor = Raw.Color dCol_r dCol_g dCol_b dCol_a
-      hexR      = fromIntegral hexSize + hexOverlap :: Float
+      hexR       = fromIntegral hexSize + hexOverlap :: Float
+
+      -- Test whether a tile is classified as a water biome.
+      isTileWater idx = case mbBiomeVec of
+        Nothing -> False
+        Just bv -> isWaterBiomeId (bv U.! idx)
 
       -- Accumulate vertices and indices for all tiles.
       go tileIdx verts idxs baseVert
@@ -178,7 +209,7 @@ buildGeometry cfg config key rc =
             let segStart = offsets U.! tileIdx
                 segEnd   = offsets U.! (tileIdx + 1)
                 segCount = segEnd - segStart
-            in if segCount <= 0
+            in if segCount <= 0 || isTileWater tileIdx
                then go (tileIdx + 1) verts idxs baseVert
                else
                  let TileCoord tx ty = tileCoordFromIndex config (TileIndex tileIdx)
@@ -187,9 +218,10 @@ buildGeometry cfg config key rc =
                      (scrX, scrY) = axialToScreen hexSize q r
                      centerX = fromIntegral scrX - minX
                      centerY = fromIntegral scrY - minY
+                     tileOrder = riverOrder U.! tileIdx
                      (sv, si, newBase) = buildTileRiverSegs
-                       cfg rawColor poolColor deltaColor hexR
-                       entryEdge exitEdge segOrder
+                       cfg rawColor deltaColor hexR
+                       entryEdge exitEdge segOrder tileOrder
                        centerX centerY
                        segStart segCount
                        baseVert
@@ -203,84 +235,125 @@ buildGeometry cfg config key rc =
       }
 
 -- | Build vertices and indices for all river segments of a single tile.
+--
+-- River segments at a tile share a common exit edge (the downstream
+-- direction).  To avoid duplicate delta fans at confluence tiles, the
+-- geometry is built in two phases:
+--
+--   1. __Entry-side__: for each segment whose entry ≠ 255, emit a quad
+--      from the entry edge midpoint to the hex centre, using the
+--      segment's own Strahler order for line width.
+--
+--   2. __Exit-side__ (once per tile): emit a single line quad from
+--      centre to exit edge midpoint (or a delta fan for sinks/coastal
+--      exits), using the tile's own Strahler order for width.
+--
+-- For coastal exits the delta fan is placed at the exit edge midpoint
+-- so that it visually attaches to the hex boundary.
 buildTileRiverSegs
   :: RiverRenderConfig
   -> Raw.Color
-  -> Raw.Color       -- ^ pool colour
   -> Raw.Color       -- ^ delta colour
   -> Float           -- ^ hex radius (with overlap)
   -> U.Vector Word8  -- ^ entry edges (global)
   -> U.Vector Word8  -- ^ exit edges (global)
   -> U.Vector Word16 -- ^ segment orders (global)
+  -> Word16          -- ^ tile Strahler order (for exit-side geometry)
   -> Float -> Float  -- ^ tile centre in local texture coords
   -> Int             -- ^ first segment index (global)
   -> Int             -- ^ segment count for this tile
   -> CInt            -- ^ current base vertex index
   -> ([Raw.Vertex], [CInt], CInt)
-buildTileRiverSegs cfg color poolColor deltaColor hexR entryVec exitVec orderVec cx cy segStart segCount baseVert =
-  let go i verts idxs bv
-        | i >= segCount = (reverse verts, reverse idxs, bv)
-        | otherwise =
-            let gIdx    = segStart + i
-                eEntry  = entryVec U.! gIdx
-                eExit   = exitVec  U.! gIdx
-                order   = orderVec U.! gIdx
-                hw      = halfWidthForOrder cfg order
-                poolR   = max (rrcPoolRadius cfg) hw
-                (sv, si, bv') = buildSegmentGeometry cfg color poolColor deltaColor hexR hw poolR order cx cy eEntry eExit bv
-            in go (i + 1) (sv : verts) (si : idxs) bv'
-  in let (vs, is, finalBase) = go 0 [] [] baseVert
-     in (concat vs, concat is, finalBase)
+buildTileRiverSegs cfg color deltaColor hexR entryVec exitVec orderVec tileOrder cx cy segStart segCount baseVert =
+  let -- All segments share the same exit.
+      exitE     = exitVec U.! segStart
+      -- Degenerate: source + sink on same tile → no geometry.
+      allSourceSink = segCount == 1 && entryVec U.! segStart == 255 && exitE == 255
+  in if allSourceSink
+    then ([], [], baseVert)
+    else
+      let coastal    = isCoastalExit exitE
+          realExitE  = if coastal then coastalExitEdge exitE else exitE
+          exitHw     = halfWidthForOrder cfg tileOrder
+          centre     = (cx, cy)
+          exitPt     = edgeMidpoint hexR cx cy realExitE
 
--- | Build the triangle geometry for a single river segment (entry -> centre -> exit).
---
--- Produces two quads (4 triangles, 8 vertices) for the two line segments:
--- entry point -> hex centre, and hex centre -> exit point.
--- If entry == 255 (source), only the second segment is emitted.
--- If exit == 255 (sink), only the first segment is emitted, followed
--- by a fan-shaped delta whose size and spread scale with the river's
--- Strahler order.
-buildSegmentGeometry
-  :: RiverRenderConfig
-  -> Raw.Color
-  -> Raw.Color  -- ^ pool colour (legacy, unused with delta)
-  -> Raw.Color  -- ^ delta colour
-  -> Float      -- ^ hex radius
-  -> Float      -- ^ half-width
-  -> Float      -- ^ pool radius (legacy minimum)
-  -> Word16     -- ^ Strahler order
-  -> Float      -- ^ tile centre X
-  -> Float      -- ^ tile centre Y
-  -> Word8      -- ^ entry edge (255 = source)
-  -> Word8      -- ^ exit edge (255 = sink)
-  -> CInt       -- ^ base vertex index
-  -> ([Raw.Vertex], [CInt], CInt)
-buildSegmentGeometry cfg color _poolColor deltaColor hexR hw _poolR order cx cy entryE exitE base =
-  let entryPt = edgeMidpoint hexR cx cy entryE
-      exitPt  = edgeMidpoint hexR cx cy exitE
-      centre  = (cx, cy)
-  in case (entryE == 255, exitE == 255) of
-       -- Source + Sink: degenerate, skip
-       (True, True)   -> ([], [], base)
-       -- Source tile: only centre -> exit
-       (True, False)  ->
-         let (v, i, b) = buildLineQuadRaw color hw centre exitPt base
-         in (v, i, b)
-       -- Sink tile: entry -> centre + delta fan
-       (False, True)  ->
-         let (v1, i1, b1) = buildLineQuadRaw color hw entryPt centre base
-             (dRadius, dSpreadDeg, dTriCount) = deltaParamsForOrder cfg order
-             entryMid = edgeMidpoint hexR cx cy entryE
-             -- Delta fans outward from the entry direction (away from where
-             -- water enters, toward the body of water).
-             dirAngle = atan2 (cy - snd entryMid) (cx - fst entryMid)
-             (v2, i2, b2) = buildDeltaFan deltaColor dRadius (dSpreadDeg * pi / 180.0) dTriCount cx cy dirAngle b1
-         in (v1 ++ v2, i1 ++ i2, b2)
-       -- Through tile: entry -> centre, centre -> exit (two quads)
-       (False, False) ->
-         let (v1, i1, b1) = buildLineQuadRaw color hw entryPt centre base
-             (v2, i2, b2) = buildLineQuadRaw color hw centre exitPt b1
-         in (v1 ++ v2, i1 ++ i2, b2)
+          -- Phase 1: entry-side quads (entry_midpt → centre).
+          buildEntries !i !vAcc !iAcc !bv
+            | i >= segCount = (vAcc, iAcc, bv)
+            | otherwise =
+                let gIdx   = segStart + i
+                    eEntry = entryVec U.! gIdx
+                    order  = orderVec U.! gIdx
+                    hw     = halfWidthForOrder cfg order
+                in if eEntry == 255
+                   then buildEntries (i + 1) vAcc iAcc bv
+                   else let entryPt = edgeMidpoint hexR cx cy eEntry
+                            (sv, si, bv') = buildLineQuadRaw color hw entryPt centre bv
+                        in buildEntries (i + 1) (vAcc ++ sv) (iAcc ++ si) bv'
+
+          (entryVerts, entryIdxs, baseAfterEntries) =
+            buildEntries 0 [] [] baseVert
+
+          -- Hex apothem — maximum radius for delta fans.
+          apothem = hexR * sqrt 3.0 / 2.0
+
+          -- Whether the tile meets the minimum order for a delta fan.
+          deltaEligible = tileOrder >= rrcMinDeltaOrder cfg
+
+          -- Phase 2: exit-side geometry (once per tile).
+          (exitVerts, exitIdxs, finalBase)
+            -- Inland sink: delta at centre (if eligible), else nothing.
+            | exitE == 255 =
+                if deltaEligible
+                  then let (dFrac, dSpreadDeg, dTriCount) = deltaParamsForOrder cfg tileOrder
+                           dRadius = dFrac * apothem
+                           dirAngle = findSinkDirection
+                       in buildDeltaFan deltaColor dRadius
+                            (dSpreadDeg * pi / 180.0) dTriCount
+                            cx cy dirAngle baseAfterEntries
+                  else ([], [], baseAfterEntries)
+            -- Coastal exit: delta fan from hex centre (if eligible),
+            -- otherwise a plain line quad to the exit edge.
+            | coastal =
+                if deltaEligible
+                  then let (dFrac, dSpreadDeg, dTriCount) = deltaParamsForOrder cfg tileOrder
+                           dRadius = dFrac * apothem
+                           exitDirAngle = atan2 (snd exitPt - cy) (fst exitPt - cx)
+                       in buildDeltaFan deltaColor dRadius
+                            (dSpreadDeg * pi / 180.0) dTriCount
+                            cx cy exitDirAngle baseAfterEntries
+                  else buildLineQuadRaw color exitHw centre exitPt baseAfterEntries
+            -- Normal exit: line centre→exit.
+            | otherwise =
+                buildLineQuadRaw color exitHw centre exitPt baseAfterEntries
+
+          -- Direction for sink delta: order-weighted average of ALL
+          -- non-source entry directions.  This produces a much better
+          -- direction at confluence sinks than using only the first
+          -- entry edge.
+          findSinkDirection =
+            let accumDir !i !sx !sy !w
+                  | i >= segCount =
+                      if w < 0.001
+                        then 0  -- no entries: arbitrary
+                        else atan2 (sy / w) (sx / w)
+                  | otherwise =
+                      let gIdx = segStart + i
+                          e    = entryVec U.! gIdx
+                      in if e == 255
+                           then accumDir (i + 1) sx sy w
+                           else let ep  = edgeMidpoint hexR cx cy e
+                                    -- direction from entry toward centre
+                                    dx  = cx - fst ep
+                                    dy  = cy - snd ep
+                                    -- weight by segment order
+                                    ord = fromIntegral (orderVec U.! gIdx) :: Float
+                                    ow  = max 1.0 ord
+                                in accumDir (i + 1) (sx + ow * dx) (sy + ow * dy) (w + ow)
+            in accumDir 0 0.0 0.0 0.0
+
+      in (entryVerts ++ exitVerts, entryIdxs ++ exitIdxs, finalBase)
 
 -- | Compute the midpoint of hex edge @e@ relative to center @(cx, cy)@.
 -- If edge code is 255, returns the hex centre.
@@ -403,8 +476,11 @@ buildDeltaFan color radius spread triCount cx cy dirAngle base =
       totalVerts = 1 + rimCount
   in (centerV : rimVerts, fanIndices, base + fromIntegral totalVerts)
 
--- | Look up delta fan parameters (radius, spread in degrees, triangle count)
--- for a given Strahler order based on the render configuration.
+-- | Look up delta fan parameters for a given Strahler order.
+--
+-- Returns @(radiusFraction, spreadDegrees, triangleCount)@ where
+-- @radiusFraction@ is a proportion of the hex apothem (0.0–1.0).
+-- The caller multiplies by the actual apothem to get pixel radius.
 deltaParamsForOrder :: RiverRenderConfig -> Word16 -> (Float, Float, Int)
 deltaParamsForOrder cfg order =
   let sz = riverSizeFromOrder order
