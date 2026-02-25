@@ -4,12 +4,13 @@ module UI.TerrainColor
   , gradientHeat
   , gradientMoisture
   , paletteById
+  , terrainFormColor
   ) where
 
 import Data.Word (Word8, Word16)
 import Linear (V4(..))
 import qualified Data.Vector.Unboxed as U
-import Topo (BiomeId, PlateBoundary, ClimateChunk(..), TerrainChunk(..), VegetationChunk(..), WeatherChunk(..), biomeIdToCode, plateBoundaryToCode)
+import Topo (BiomeId, PlateBoundary, ClimateChunk(..), TerrainChunk(..), VegetationChunk(..), WeatherChunk(..), biomeIdToCode, plateBoundaryToCode, terrainFormToCode)
 import Actor.UI (ViewMode(..))
 
 terrainColor :: ViewMode -> Float -> TerrainChunk -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe VegetationChunk -> Int -> V4 Word8
@@ -34,6 +35,8 @@ terrainColor mode waterLevel chunk climateChunk weatherChunk vegChunk idx =
     ViewVegetation ->
       let value = maybe 0 (\v -> vegCover v U.! idx) vegChunk
       in gradientVegetation value
+    ViewTerrainForm ->
+      terrainFormColor (terrainFormToCode (tcTerrainForm chunk U.! idx))
 
 elevationColor :: Float -> Float -> V4 Word8
 elevationColor waterLevel elev
@@ -173,6 +176,27 @@ paletteById biomeId =
     64 -> V4 200 195 160 255 -- fog desert
     65 -> V4  50 100  90 255 -- oceanic boreal
     _ -> V4 90 140 90 255
+
+-- | Distinct colour for each of the 15 terrain form codes.
+-- The palette is designed to be visually distinguishable on adjacent tiles.
+terrainFormColor :: Word8 -> V4 Word8
+terrainFormColor code = case code of
+  0  -> V4 180 195 160 255  -- Flat: pale sage
+  1  -> V4 165 180 120 255  -- Rolling: olive green
+  2  -> V4 140 155  80 255  -- Hilly: warm green
+  3  -> V4 130 110  90 255  -- Mountainous: brown
+  4  -> V4  80  60  55 255  -- Cliff: dark brown
+  5  -> V4  90 145 125 255  -- Valley: teal
+  6  -> V4  75 115 155 255  -- Depression: steel blue
+  7  -> V4 190 120  70 255  -- Ridge: burnt orange
+  8  -> V4 170  85  95 255  -- Escarpment: rose
+  9  -> V4 200 185 140 255  -- Plateau: sandy tan
+  10 -> V4 195 155 100 255  -- Badlands: ochre
+  11 -> V4 220 200 100 255  -- Pass: gold
+  12 -> V4 110  70  90 255  -- Canyon: plum
+  13 -> V4 210 175 130 255  -- Mesa: warm beige
+  14 -> V4 160 175 110 255  -- Foothill: light olive
+  _  -> V4  50  50  50 255  -- Unknown: dark grey
 
 boundaryColor :: Word16 -> V4 Word8
 boundaryColor boundaryId =

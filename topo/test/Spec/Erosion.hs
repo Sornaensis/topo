@@ -14,7 +14,7 @@ spec = describe "Erosion" $ do
         world1 = setTerrainChunk (ChunkId 0) peak world0
         pipeline = PipelineConfig
           { pipelineSeed = 1
-          , pipelineStages = [applyErosionStage defaultErosionConfig 0.5]
+          , pipelineStages = [applyErosionStage defaultErosionConfig defaultTerrainFormConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -36,7 +36,7 @@ spec = describe "Erosion" $ do
         cfg = defaultErosionConfig { ecHydraulicIterations = 1, ecThermalIterations = 0, ecRainRate = 1, ecMaxDrop = 1 }
         pipeline = PipelineConfig
           { pipelineSeed = 1
-          , pipelineStages = [applyErosionStage cfg 0.5]
+          , pipelineStages = [applyErosionStage cfg defaultTerrainFormConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -70,7 +70,8 @@ spec = describe "Erosion" $ do
             , ecThermalDepositRatio = 0.5
             }
           -- Run 6 thermal iterations
-          eroded = iterate (thermalStepGrid w h 0.5 cfg hardness) elev !! 6
+          ones = U.replicate (w * h) (1.0 :: Float)
+          eroded = iterate (thermalStepGrid w h 0.5 cfg hardness ones ones) elev !! 6
           h0 = eroded U.! center
       -- Peak should be noticeably lowered from 0.6
       h0 `shouldSatisfy` (< 0.6)
@@ -93,7 +94,8 @@ spec = describe "Erosion" $ do
             , ecRainRate = 0.5
             , ecMaxDrop = 0.5
             }
-          eroded = hydraulicStepGrid w h 0.5 cfg hardness elev
+          ones = U.replicate (w * h) (1.0 :: Float)
+          eroded = hydraulicStepGrid w h 0.5 cfg hardness ones ones elev
       -- Peak (tile 0) should be lowered
       eroded U.! 0 `shouldSatisfy` (< 0.8)
       -- Depression (tile 1) should receive deposit and be raised
@@ -111,7 +113,8 @@ spec = describe "Erosion" $ do
             , ecThermalStrength = 0.5
             , ecThermalDepositRatio = 0.5
             }
-          eroded = thermalStepGrid w h 0.5 cfg hardness elev
+          ones = U.replicate (w * h) (1.0 :: Float)
+          eroded = thermalStepGrid w h 0.5 cfg hardness ones ones elev
           -- Index 2 (first 0.5 at cliff base) should be raised
           orig2 = elev U.! 2
           new2  = eroded U.! 2
@@ -133,9 +136,10 @@ spec = describe "Erosion" $ do
             , ecHydraulicDepositRatio = 1.0
             , ecHydraulicDepositMaxSlope = 1.0
             }
+          ones = U.replicate (w * h) (1.0 :: Float)
           -- Run several iterations of both thermal and hydraulic
-          step = thermalStepGrid w h 0.5 cfg hardness
-               . hydraulicStepGrid w h 0.5 cfg hardness
+          step = thermalStepGrid w h 0.5 cfg hardness ones ones
+               . hydraulicStepGrid w h 0.5 cfg hardness ones ones
           eroded = iterate step elev !! 10
           valleyH = eroded U.! 2
           -- Valley should not exceed its lowest neighbor (idx 1 or 3)
@@ -154,7 +158,8 @@ spec = describe "Erosion" $ do
             { ecCoastalSmoothZone = 0.15
             , ecCoastalSmoothStrength = 0.5
             }
-          smoothed = coastalSmoothGrid w h 0.5 cfg elev
+          zeros = U.replicate (w * h) (0.0 :: Float)
+          smoothed = coastalSmoothGrid w h 0.5 cfg zeros elev
           origH = elev U.! 2
           newH  = smoothed U.! 2
       -- Coastal tile should be lowered (blended toward neighbor mean
@@ -196,8 +201,9 @@ spec = describe "Erosion" $ do
             }
 
           applyAll cfg v =
-            let v1 = iterate (hydraulicStepGrid w h 0.5 cfg hardness) v !! 6
-                v2 = iterate (thermalStepGrid w h 0.5 cfg hardness) v1 !! 6
+            let ones = U.replicate (w * h) (1.0 :: Float)
+                v1 = iterate (hydraulicStepGrid w h 0.5 cfg hardness ones ones) v !! 6
+                v2 = iterate (thermalStepGrid w h 0.5 cfg hardness ones ones) v1 !! 6
             in v2
 
           erodedDep   = applyAll cfgDep elev

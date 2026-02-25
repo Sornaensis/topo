@@ -11,6 +11,7 @@ import Data.Either (isRight)
 import Data.List (nub)
 import Data.Word (Word16)
 import qualified Data.Vector.Unboxed as U
+import Topo.Types (DirectionalSlope(..))
 import Topo.Biome
   ( BiomeRule(..)
   , BiomeThresholds(..)
@@ -639,7 +640,7 @@ spec = describe "BiomeRefine" $ do
 emptyTerrainChunkN :: Int -> TerrainChunk
 emptyTerrainChunkN n = TerrainChunk
   { tcElevation     = U.replicate n 0.6
-  , tcSlope         = U.replicate n 0.05
+  , tcDirSlope      = U.replicate n (DirectionalSlope 0.05 0.05 0.05 0.05 0.05 0.05)
   , tcCurvature     = U.replicate n 0
   , tcHardness      = U.replicate n 0.3
   , tcRockType      = U.replicate n 1

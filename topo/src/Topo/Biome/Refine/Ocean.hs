@@ -24,7 +24,8 @@ import Topo.Types (BiomeId, WaterBodyType,
 -- | Configuration for ocean sub-biome classification.
 data OceanConfig = OceanConfig
   { ocDeepThreshold     :: !Float
-    -- ^ How far below waterLevel counts as deep ocean (default 0.10).
+    -- ^ How far below waterLevel counts as deep ocean (default 0.25,
+    -- i.e. −3 000 m with Earth-like scales).
   , ocCoralMinTemp      :: !Float
     -- ^ Minimum temperature for coral reefs (default 0.72).
   , ocCoralMaxDepth     :: !Float
@@ -46,17 +47,16 @@ instance FromJSON OceanConfig where
 
 -- | Sensible defaults for ocean refinement.
 --
--- Shallow-sea zone extends from 0 to 0.10 depth below water level,
--- giving continental shelves visual identity.  Deep ocean begins at
--- depth > 0.10 (with waterLevel = 0.5 this means elev < 0.40),
--- capturing typical ocean-floor tiles as DeepOcean while continental
--- shelves at 0.42–0.48 remain ShallowSea.  Coral reefs require very
--- shallow (≤ 0.05), warm (≥ 0.704), flat (≤ 0.04 slope), hard
--- (≥ 0.35) substrate — making them a strict subset of warm shallow
--- water.
+-- Deep ocean begins at depth > 0.25 (with waterLevel = 0.5 this means
+-- elev < 0.25, i.e. below −3 000 m), capturing abyssal-plain ocean-floor
+-- tiles as DeepOcean while the continental shelf and slope
+-- (elev 0.25–0.50, roughly −3 000 m to sea level) remain ShallowSea.
+-- Coral reefs require very shallow (≤ 0.05 depth, i.e. ≤ 600 m),
+-- warm (≥ 0.704), flat (≤ 0.04 slope), hard (≥ 0.35) substrate —
+-- making them a strict subset of warm shallow water.
 defaultOceanConfig :: OceanConfig
 defaultOceanConfig = OceanConfig
-  { ocDeepThreshold     = 0.10
+  { ocDeepThreshold     = 0.25
   , ocCoralMinTemp      = 0.704
   , ocCoralMaxDepth     = 0.05
   , ocCoralMaxSlope     = 0.04

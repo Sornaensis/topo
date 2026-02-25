@@ -60,6 +60,7 @@ import Topo.TerrainGrid
   , buildMoistureGrid
   , buildClimatePrecipGrid
   , buildSlopeGrid
+  , buildMaxSlopeGrid
   , buildSoilDepthGrid
   , buildSoilGrainGrid
   , buildSoilTypeGrid
@@ -396,7 +397,7 @@ applyWaterTableStage cfg = PipelineStage "applyWaterTable" "applyWaterTable" $ d
 
       -- Build global grids from chunks
       elev      = buildElevationGrid  config terrain minCC gridW gridH
-      slope     = buildSlopeGrid      config terrain minCC gridW gridH
+      slope     = buildMaxSlopeGrid   config terrain minCC gridW gridH
       moisture  = buildMoistureGrid   config terrain minCC gridW gridH
       soilDepth = buildSoilDepthGrid  config terrain minCC gridW gridH
       soilGrain = buildSoilGrainGrid  config terrain minCC gridW gridH

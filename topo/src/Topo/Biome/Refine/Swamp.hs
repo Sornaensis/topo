@@ -15,11 +15,10 @@ import GHC.Generics (Generic)
 import Topo.Config.JSON
   (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
    genericToJSON, genericParseJSON)
-import Topo.Types (BiomeId, TerrainForm,
+import Topo.Types (BiomeId, TerrainForm, isLowReliefForm,
                    pattern BiomeSwamp, pattern BiomeFloodplainForest,
                    pattern BiomeFen, pattern BiomeBog,
-                   pattern BiomeMarsh, pattern BiomeWetland,
-                   pattern FormFlat, pattern FormDepression)
+                   pattern BiomeMarsh, pattern BiomeWetland)
 
 -- | Configuration for swamp sub-biome classification.
 data SwampConfig = SwampConfig
@@ -76,7 +75,7 @@ refineSwamp cfg temp moisture fertility discharge gwDischarge tf
     && temp <= swFenMaxTemp cfg                 = BiomeFen
   | temp <= swBogMaxTemp cfg
     && fertility <= swBogMaxFertility cfg       = BiomeBog
-  | (tf == FormFlat || tf == FormDepression)
+  | isLowReliefForm tf
     && moisture >= swMarshMinMoisture cfg
     && temp <= swMarshMaxTemp cfg               = BiomeMarsh
   | temp <= swWetlandMaxTemp cfg                = BiomeWetland

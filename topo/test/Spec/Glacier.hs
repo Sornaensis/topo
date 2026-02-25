@@ -27,7 +27,7 @@ spec = describe "Glacier" $ do
         world1 = setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) terrain world0)
         pipeline = PipelineConfig
           { pipelineSeed = 11
-          , pipelineStages = [applyGlacierStage defaultGlacierConfig]
+          , pipelineStages = [applyGlacierStage defaultGlacierConfig defaultTerrainFormConfig 0.5]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -54,7 +54,7 @@ spec = describe "Glacier" $ do
             world1 = setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) terrain world0)
             pipeline = PipelineConfig
               { pipelineSeed = 12
-              , pipelineStages = [applyGlacierStage defaultGlacierConfig]
+              , pipelineStages = [applyGlacierStage defaultGlacierConfig defaultTerrainFormConfig 0.5]
               , pipelineSnapshots = False
               }
             env = TopoEnv { teLogger = \_ -> pure () }
@@ -83,7 +83,7 @@ spec = describe "Glacier" $ do
               world1 = setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) terrain world0)
               pipeline = PipelineConfig
                 { pipelineSeed = 13
-                , pipelineStages = [applyGlacierStage defaultGlacierConfig]
+                , pipelineStages = [applyGlacierStage defaultGlacierConfig defaultTerrainFormConfig 0.5]
                 , pipelineSnapshots = False
                 }
               env = TopoEnv { teLogger = \_ -> pure () }
@@ -121,7 +121,7 @@ spec = describe "Glacier" $ do
           { pipelineSeed = 42
           , pipelineStages =
               [ generateClimateStage climateCfg defaultWeatherConfig waterLevel
-              , applyGlacierStage glacierCfg
+              , applyGlacierStage glacierCfg defaultTerrainFormConfig waterLevel
               ]
           , pipelineSnapshots = False
           }

@@ -145,7 +145,7 @@ emptyTerrainChunk config =
       boundaryZeros = U.replicate n PlateBoundaryNone
   in TerrainChunk
       { tcElevation = zeros
-      , tcSlope = zeros
+      , tcDirSlope = U.replicate n zeroDirSlope
       , tcCurvature = zeros
       , tcHardness = zeros
       , tcRockType = zeros16
@@ -181,7 +181,7 @@ generateTerrainChunk config f =
       boundaryZeros = U.replicate n PlateBoundaryNone
   in TerrainChunk
       { tcElevation = elevation
-      , tcSlope = zeros
+      , tcDirSlope = U.replicate n zeroDirSlope
       , tcCurvature = zeros
       , tcHardness = zeros
       , tcRockType = zeros16

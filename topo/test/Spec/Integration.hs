@@ -1,3 +1,5 @@
+{-# LANGUAGE PatternSynonyms #-}
+
 -- | Phase-6 integration validation tests.
 --
 -- These tests run the full 13-stage pipeline with default Earth-like
@@ -20,15 +22,16 @@ import Data.List (foldl')
 
 -- | Denormalised per-tile snapshot used for statistical aggregation.
 data TileSample = TileSample
-  { tsBiome       :: !BiomeId
-  , tsTemp        :: !Float
-  , tsPrec        :: !Float
-  , tsVeg         :: !Float
-  , tsElev        :: !Float
-  , tsLat         :: !Float
-  , tsIsLand      :: !Bool
-  , tsIsCoastal   :: !Bool
-  , tsIsInterior  :: !Bool
+  { tsBiome        :: !BiomeId
+  , tsTemp         :: !Float
+  , tsPrec         :: !Float
+  , tsVeg          :: !Float
+  , tsElev         :: !Float
+  , tsLat          :: !Float
+  , tsTForm        :: !TerrainForm
+  , tsIsLand       :: !Bool
+  , tsIsCoastal    :: !Bool
+  , tsIsInterior   :: !Bool
   }
 
 -- ---------------------------------------------------------------------------
@@ -123,16 +126,18 @@ tileSample wc planet slice tc mcc mvc mwbc ox oy i =
       isLand     = wt == WaterDry
       isCoastal  = isLand && adj == WaterOcean
       isInterior = isLand && adj == WaterDry
+      tform = tcTerrainForm tc U.! i
   in TileSample
-    { tsBiome      = biome
-    , tsTemp       = temp
-    , tsPrec       = prec
-    , tsVeg        = vegC
-    , tsElev       = elev
-    , tsLat        = lat
-    , tsIsLand     = isLand
-    , tsIsCoastal  = isCoastal
-    , tsIsInterior = isInterior
+    { tsBiome       = biome
+    , tsTemp        = temp
+    , tsPrec        = prec
+    , tsVeg         = vegC
+    , tsElev        = elev
+    , tsLat         = lat
+    , tsTForm       = tform
+    , tsIsLand      = isLand
+    , tsIsCoastal   = isCoastal
+    , tsIsInterior  = isInterior
     }
 
 -- ---------------------------------------------------------------------------
@@ -338,3 +343,34 @@ spec = beforeAll generateAndCollect $ describe "Integration (Phase 6)" $ do
       nInt `shouldSatisfy` (> 0)
       -- At least some interior tiles have vegetation
       frac `shouldSatisfy` (> 0.0)
+
+  -- 6.6  Terrain form distribution (Phase 13.4)
+  --
+  -- Verify that default TerrainFormConfig thresholds produce a plausible
+  -- distribution of terrain forms across land tiles.
+  describe "6.6 Terrain form distribution" $ do
+    it "flat + rolling together > 40% of land tiles" $ \samples -> do
+      let land = filter tsIsLand samples
+          nLand = length land
+          nGent = countWhere (\t -> tsTForm t == FormFlat
+                                || tsTForm t == FormRolling) land
+          frac  = fraction nGent nLand
+      nLand `shouldSatisfy` (> 0)
+      frac `shouldSatisfy` (> 0.40)
+
+    it "mountainous + ridge + cliff together < 25% of land tiles" $ \samples -> do
+      let land = filter tsIsLand samples
+          nLand = length land
+          nSteep = countWhere (\t -> tsTForm t == FormMountainous
+                                 || tsTForm t == FormRidge
+                                 || tsTForm t == FormCliff) land
+          frac   = fraction nSteep nLand
+      nLand `shouldSatisfy` (> 0)
+      frac `shouldSatisfy` (< 0.25)
+
+    it "at least 8 distinct terrain forms on land" $ \samples -> do
+      let landForms = map tsTForm (filter tsIsLand samples)
+          distinct  = length (foldl' (\acc f -> if f `elem` acc then acc else f : acc) [] landForms)
+      -- With a 100°×60° slice we expect significant terrain variety.
+      -- Requiring 8 of 15 is conservative; tune upward as thresholds mature.
+      distinct `shouldSatisfy` (>= 8)

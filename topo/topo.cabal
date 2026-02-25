@@ -73,6 +73,7 @@ library
       Topo.Units
       Topo.Units.Config
       Topo.Config.JSON
+      Topo.TerrainForm.Modifiers
   other-modules:
       Topo.Config
       Paths_topo
@@ -105,6 +106,7 @@ test-suite topo-test
       Spec.ConfigJSON
       Spec.ConfigProperty
       Spec.Determinism
+      Spec.DirectionalSlope
       Spec.Erosion
       Spec.Evaporation
       Spec.Export
@@ -126,6 +128,7 @@ test-suite topo-test
       Spec.Soil
       Spec.Storage
       Spec.Tectonics
+      Spec.TerrainFormModifiers
       Spec.TerrainRelief
       Spec.Units
       Spec.UnitsConfig

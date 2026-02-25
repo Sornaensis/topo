@@ -236,7 +236,7 @@ refineBiomesChunk cfg wl primary tc cc _wc mRiver mGw mVolc mGlac mWb =
 
       -- Terrain vectors
       elev       = tcElevation tc
-      slope      = tcSlope tc
+      slope      = U.map dsAvgSlope (tcDirSlope tc)
       moisture   = tcMoisture tc
       hardness   = tcHardness tc
       soilDepth  = tcSoilDepth tc

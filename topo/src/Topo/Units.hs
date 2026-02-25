@@ -54,6 +54,9 @@ module Topo.Units
     -- * Soil Depth
   , normToSoilM
   , soilMToNorm
+    -- * Depth (below sea level)
+  , normDepthToMetres
+  , metresToNormDepth
     -- * Slope
   , normSlopeToDeg
     -- * Generic affine helpers
@@ -156,6 +159,26 @@ normToMetres s n = (n - usWaterLevel s) * usElevRange s
 metresToNorm :: UnitScales -> Float -> Float
 metresToNorm s m = m / usElevRange s + usWaterLevel s
 {-# INLINE metresToNorm #-}
+
+-- ---------------------------------------------------------------------------
+-- Depth  (metres below sea level)
+-- ---------------------------------------------------------------------------
+
+-- | Convert a normalised depth (distance below water level, @>= 0@) to
+-- metres below sea level (a negative elevation value).
+--
+-- @normDepthToMetres defaultUnitScales 0.25 ≈ −3000@.
+normDepthToMetres :: UnitScales -> Float -> Float
+normDepthToMetres s d = negate (d * usElevRange s)
+{-# INLINE normDepthToMetres #-}
+
+-- | Convert metres below sea level (negative) to a normalised depth
+-- (distance below water level, @>= 0@).
+--
+-- @metresToNormDepth defaultUnitScales (−3000) ≈ 0.25@.
+metresToNormDepth :: UnitScales -> Float -> Float
+metresToNormDepth s m = negate m / usElevRange s
+{-# INLINE metresToNormDepth #-}
 
 -- ---------------------------------------------------------------------------
 -- Precipitation  (mm/year)

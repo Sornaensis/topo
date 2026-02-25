@@ -278,6 +278,7 @@ data ViewMode
   | ViewPlateHeight
   | ViewPlateVelocity
   | ViewVegetation
+  | ViewTerrainForm
   deriving (Eq, Show)
 
 data ConfigTab

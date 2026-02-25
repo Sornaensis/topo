@@ -195,6 +195,7 @@ viewModeLabel mode =
     ViewPlateHeight -> "PlateHeight"
     ViewPlateVelocity -> "PlateVelocity"
     ViewVegetation -> "Vegetation"
+    ViewTerrainForm -> "TerrainForm"
 
 startGeneration :: UiActionRequest -> IO ()
 startGeneration req = do

@@ -34,13 +34,19 @@ import Topo.Math (clamp01, iterateN)
 import Topo.Pipeline (PipelineStage(..))
 import Control.Monad.Except (throwError)
 import Topo.Plugin (logInfo, getWorldP, putWorldP, PluginError(..))
+import Topo.TerrainForm.Modifiers
+  ( TerrainFormModifiers(..)
+  , defaultTerrainFormModifiers
+  )
 import Topo.TerrainGrid
   ( buildElevationGrid
   , buildPlateHardnessGrid
+  , classifyTerrainFormGrid
   , updateChunkElevationFromGrid
   , validateTerrainGrid
   )
 import Topo.Types
+import Topo.Parameters (TerrainFormConfig)
 import Topo.World (TerrainWorld(..))
 
 -- | Configuration parameters for erosion.
@@ -133,8 +139,13 @@ defaultErosionConfig = ErosionConfig
 
 -- | Apply hydraulic and thermal erosion (with local deposition) plus
 -- coastal smoothing across the terrain grid.
-applyErosionStage :: ErosionConfig -> Float -> PipelineStage
-applyErosionStage cfg waterLevel = PipelineStage "applyErosion" "applyErosion" $ do
+--
+-- The 'TerrainFormConfig' is used for a lightweight pre-classification
+-- pass that tags each tile with a 'TerrainForm' before erosion runs.
+-- Per-form modifiers ('defaultTerrainFormModifiers') then adjust erosion
+-- intensity, hardness resistance, deposition, and smoothing per tile.
+applyErosionStage :: ErosionConfig -> TerrainFormConfig -> Float -> PipelineStage
+applyErosionStage cfg formCfg waterLevel = PipelineStage "applyErosion" "applyErosion" $ do
   logInfo "applyErosion: hydraulic + thermal + coastal smooth"
   world <- getWorldP
   let config = twConfig world
@@ -147,10 +158,18 @@ applyErosionStage cfg waterLevel = PipelineStage "applyErosion" "applyErosion" $
       gridW = (maxCx - minCx + 1) * size
       gridH = (maxCy - minCy + 1) * size
       elev0 = buildElevationGrid config terrain (ChunkCoord minCx minCy) gridW gridH
-      hardness = buildPlateHardnessGrid config terrain (ChunkCoord minCx minCy) gridW gridH
-      elev1 = iterateN (ecHydraulicIterations cfg) (hydraulicStepGrid gridW gridH waterLevel cfg hardness) elev0
-      elev2 = iterateN (ecThermalIterations cfg) (thermalStepGrid gridW gridH waterLevel cfg hardness) elev1
-      elev3 = iterateN (max 1 (ecCoastalSmoothIterations cfg)) (coastalSmoothGrid gridW gridH waterLevel cfg) elev2
+      plateHardness = buildPlateHardnessGrid config terrain (ChunkCoord minCx minCy) gridW gridH
+      -- Pre-classify terrain forms from current elevation + hardness.
+      formGrid = classifyTerrainFormGrid formCfg waterLevel gridW gridH elev0 plateHardness
+      -- Pre-compute per-tile modifier vectors from the terrain form grid.
+      modLookup = defaultTerrainFormModifiers
+      erosionMult   = U.map (tfmErosionRate . modLookup) formGrid
+      adjHardness   = U.zipWith (\h f -> clamp01 (h + tfmHardnessBonus (modLookup f))) plateHardness formGrid
+      depositFactor = U.map (\f -> 1 - tfmDepositSuppression (modLookup f)) formGrid
+      smoothResist  = U.map (tfmSmoothResistance . modLookup) formGrid
+      elev1 = iterateN (ecHydraulicIterations cfg) (hydraulicStepGrid gridW gridH waterLevel cfg adjHardness erosionMult depositFactor) elev0
+      elev2 = iterateN (ecThermalIterations cfg) (thermalStepGrid gridW gridH waterLevel cfg adjHardness erosionMult depositFactor) elev1
+      elev3 = iterateN (max 1 (ecCoastalSmoothIterations cfg)) (coastalSmoothGrid gridW gridH waterLevel cfg smoothResist) elev2
       -- Safety clamp: ensure all elevations are in [0,1] before
       -- downstream stages (hydrology, climate) process them.
       elevClamped = U.map clamp01 elev3
@@ -174,15 +193,22 @@ erodeChunk config cfg chunk =
 --
 -- Uses mutable ST vectors so that material eroded from a tile can be
 -- deposited at its lowest cardinal neighbor within the same pass.
+--
+-- The @erosionMult@ and @depositFactor@ vectors carry per-tile modifiers
+-- derived from terrain form pre-classification.  @erosionMult@ scales the
+-- drop amount (> 1 accelerates, < 1 suppresses); @depositFactor@ scales
+-- the deposit amount (0 = full suppression, 1 = no suppression).
 hydraulicStepGrid
   :: Int             -- ^ Grid width
   -> Int             -- ^ Grid height
   -> Float           -- ^ Water level
   -> ErosionConfig
-  -> U.Vector Float  -- ^ Hardness per tile
+  -> U.Vector Float  -- ^ Hardness per tile (pre-adjusted with form bonus)
+  -> U.Vector Float  -- ^ Per-tile erosion rate multiplier
+  -> U.Vector Float  -- ^ Per-tile deposit factor (1 − suppression)
   -> U.Vector Float  -- ^ Elevation (input)
   -> U.Vector Float  -- ^ Elevation (output)
-hydraulicStepGrid gridW gridH waterLevel cfg hardness elev = runST $ do
+hydraulicStepGrid gridW gridH waterLevel cfg hardness erosionMult depositFactor elev = runST $ do
   let n = U.length elev
   base <- U.thaw elev
   deposit <- UM.replicate n (0 :: Float)
@@ -199,10 +225,12 @@ hydraulicStepGrid gridW gridH waterLevel cfg hardness elev = runST $ do
             hard = clamp01 (hardness U.! i)
             rain = ecRainRate cfg * (1 - hard * ecHydraulicHardnessFactor cfg)
             dropAmt = min (ecMaxDrop cfg) (dh * rain) * wetFactor
+                    * (erosionMult U.! i)
         UM.write base i (h0 - dropAmt)
         -- Deposit a fraction at the lowest neighbor, but only when
         -- the slope is gentle enough for sediment to settle.
         let depositAmt = dropAmt * ecHydraulicDepositRatio cfg
+                       * (depositFactor U.! i)
         if dh < ecHydraulicDepositMaxSlope cfg && minIdx /= i && depositAmt > 0
           then UM.modify deposit (+ depositAmt) minIdx
           else pure ()
@@ -251,15 +279,20 @@ hydraulicAt size cfg elev i =
 -- Material eroded from slopes exceeding the talus threshold is partially
 -- deposited at the slope base (lowest cardinal neighbor), simulating
 -- scree / talus accumulation.
+--
+-- @erosionMult@ and @depositFactor@ carry per-tile terrain-form modifiers
+-- identical to those used by 'hydraulicStepGrid'.
 thermalStepGrid
   :: Int             -- ^ Grid width
   -> Int             -- ^ Grid height
   -> Float           -- ^ Water level
   -> ErosionConfig
-  -> U.Vector Float  -- ^ Hardness per tile
+  -> U.Vector Float  -- ^ Hardness per tile (pre-adjusted with form bonus)
+  -> U.Vector Float  -- ^ Per-tile erosion rate multiplier
+  -> U.Vector Float  -- ^ Per-tile deposit factor (1 − suppression)
   -> U.Vector Float  -- ^ Elevation (input)
   -> U.Vector Float  -- ^ Elevation (output)
-thermalStepGrid gridW gridH waterLevel cfg hardness elev = runST $ do
+thermalStepGrid gridW gridH waterLevel cfg hardness erosionMult depositFactor elev = runST $ do
   let n = U.length elev
   base <- U.thaw elev
   deposit <- UM.replicate n (0 :: Float)
@@ -277,9 +310,11 @@ thermalStepGrid gridW gridH waterLevel cfg hardness elev = runST $ do
             hard = clamp01 (hardness U.! i)
             strength = ecThermalStrength cfg * (1 - hard * ecThermalHardnessFactor cfg)
             erodeAmt = min (ecMaxDrop cfg) (excess * strength * wetFactor)
+                     * (erosionMult U.! i)
         UM.write base i (h0 - erodeAmt)
         -- Deposit rubble at slope base.
         let depositAmt = erodeAmt * ecThermalDepositRatio cfg
+                       * (depositFactor U.! i)
         if minIdx /= i && depositAmt > 0
           then UM.modify deposit (+ depositAmt) minIdx
           else pure ()
@@ -330,15 +365,20 @@ thermalAt size cfg elev i =
 -- within @[waterLevel - ecCoastalSmoothZone, waterLevel]@ are raised
 -- toward the neighbor mean, building a continental shelf.
 --
+-- The @smoothResist@ vector carries per-tile smoothing resistance derived
+-- from terrain form classification.  Tiles with high resistance (cliffs,
+-- escarpments, canyons) are smoothed less, preserving their morphology.
+--
 -- Designed to be applied iteratively (see 'ecCoastalSmoothIterations').
 coastalSmoothGrid
   :: Int             -- ^ Grid width
   -> Int             -- ^ Grid height
   -> Float           -- ^ Water level
   -> ErosionConfig
+  -> U.Vector Float  -- ^ Per-tile smooth resistance [0..1]
   -> U.Vector Float  -- ^ Elevation (input)
   -> U.Vector Float  -- ^ Elevation (output)
-coastalSmoothGrid gridW gridH waterLevel cfg elev
+coastalSmoothGrid gridW gridH waterLevel cfg smoothResist elev
   | ecCoastalSmoothStrength cfg <= 0 = elev
   | ecCoastalSmoothZone cfg <= 0     = elev
   | otherwise = U.generate n smooth
@@ -364,7 +404,8 @@ coastalSmoothGrid gridW gridH waterLevel cfg elev
              -- Land tile in coastal zone: erode toward neighbor mean
              let t = (h0 - waterLevel) / zone
                  fade = 1 - t  -- strongest right at sea level
-                 blend = str * fade
+                 resist = smoothResist U.! i
+                 blend = str * fade * (1 - resist)
                  -- Floor-clamp: never push a land tile at or below
                  -- waterLevel, otherwise flowDirectionsLand treats it
                  -- as ocean and rivers cannot reach the coast.
@@ -375,9 +416,10 @@ coastalSmoothGrid gridW gridH waterLevel cfg elev
                -- (raise floor to build continental shelf)
                let t = (waterLevel - h0) / zone
                    fade = 1 - t  -- strongest right at sea level
+                   resist = smoothResist U.! i
                    -- Use half strength for deposition to avoid raising
                    -- ocean floor too aggressively
-                   blend = str * 0.5 * fade
+                   blend = str * 0.5 * fade * (1 - resist)
                    target = min waterLevel (h0 + blend * (nbrMean - h0))
                in target
              else h0

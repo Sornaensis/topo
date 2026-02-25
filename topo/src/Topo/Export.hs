@@ -75,12 +75,15 @@ data ExportError
 
 -- | Encode a terrain chunk.
 --
--- Terrain chunk schema (version 4+ in world files):
---   elementCount, elevation, slope, curvature, hardness, rockType,
---   soilType, soilDepth, moisture, fertility, roughness, rockDensity,
---   soilGrain, relief, ruggedness, terrainForm, biomeFlags, plateId,
---   plateBoundary, plateHeight, plateHardness, plateCrust, plateAge,
---   plateVelX, plateVelY.
+-- Terrain chunk schema (version 5+ in world files):
+--   elementCount, elevation, dirSlope (6 × Float per tile: E NE NW W SW SE),
+--   curvature, hardness, rockType, soilType, soilDepth, moisture, fertility,
+--   roughness, rockDensity, soilGrain, relief, ruggedness, terrainForm,
+--   biomeFlags, plateId, plateBoundary, plateHeight, plateHardness,
+--   plateCrust, plateAge, plateVelX, plateVelY.
+--
+-- Version 4 and earlier encoded slope as a single scalar Float per tile;
+-- version 5 replaces this with 'DirectionalSlope' (6 floats, interleaved).
 --
 -- Version 3 lacks relief/ruggedness/terrainForm fields and is handled
 -- by getTerrainChunkV3.
@@ -91,7 +94,7 @@ encodeTerrainChunk :: WorldConfig -> TerrainChunk -> Either ExportError BS.ByteS
 encodeTerrainChunk config chunk = do
   let n = chunkTileCount config
   ensureLength n (Text.pack "elevation") (tcElevation chunk)
-  ensureLength n (Text.pack "slope") (tcSlope chunk)
+  ensureLength n (Text.pack "dirSlope") (tcDirSlope chunk)
   ensureLength n (Text.pack "curvature") (tcCurvature chunk)
   ensureLength n (Text.pack "hardness") (tcHardness chunk)
   ensureLength n (Text.pack "rockType") (tcRockType chunk)
@@ -117,7 +120,7 @@ encodeTerrainChunk config chunk = do
   pure $ BL.toStrict $ runPut $ do
     putWord32le (fromIntegral n)
     putVectorFloat n (tcElevation chunk)
-    putVectorFloat n (tcSlope chunk)
+    putVectorDirSlope n (tcDirSlope chunk)
     putVectorFloat n (tcCurvature chunk)
     putVectorFloat n (tcHardness chunk)
     putVectorWord16 n (tcRockType chunk)
@@ -490,6 +493,15 @@ putVectorFloat :: Int -> U.Vector Float -> Put
 putVectorFloat n vec =
   mapM_ putFloatle (U.toList (U.take n vec))
 
+-- | Serialize a vector of 'DirectionalSlope' as 6 consecutive float vectors
+-- (E, NE, NW, W, SW, SE).
+putVectorDirSlope :: Int -> U.Vector DirectionalSlope -> Put
+putVectorDirSlope n vec = do
+  let xs = U.toList (U.take n vec)
+  mapM_ (\(DirectionalSlope e ne nw w sw se) -> do
+    putFloatle e; putFloatle ne; putFloatle nw
+    putFloatle w; putFloatle sw; putFloatle se) xs
+
 putVectorWord16 :: Int -> U.Vector Word16 -> Put
 putVectorWord16 n vec =
   mapM_ putWord16le (U.toList (U.take n vec))
@@ -540,7 +552,7 @@ getTerrainChunk :: WorldConfig -> Get TerrainChunk
 getTerrainChunk config = do
   n <- getCount config
   tcElevation <- getVectorFloat n
-  tcSlope <- getVectorFloat n
+  tcDirSlope <- getVectorDirSlope n
   tcCurvature <- getVectorFloat n
   tcHardness <- getVectorFloat n
   tcRockType <- getVectorWord16 n
@@ -565,7 +577,7 @@ getTerrainChunk config = do
   tcPlateVelY <- getVectorFloat n
   pure TerrainChunk
     { tcElevation = tcElevation
-    , tcSlope = tcSlope
+    , tcDirSlope = tcDirSlope
     , tcCurvature = tcCurvature
     , tcHardness = tcHardness
     , tcRockType = tcRockType
@@ -594,7 +606,7 @@ getTerrainChunkV2 :: WorldConfig -> Get TerrainChunk
 getTerrainChunkV2 config = do
   n <- getCount config
   tcElevation <- getVectorFloat n
-  tcSlope <- getVectorFloat n
+  _legacySlope <- getVectorFloat n    -- V2 stored scalar slope; discard
   tcCurvature <- getVectorFloat n
   tcHardness <- getVectorFloat n
   tcRockType <- getVectorWord16 n
@@ -613,9 +625,10 @@ getTerrainChunkV2 config = do
   let zeros = U.replicate n 0
       zeros16 = U.replicate n 0
       formZeros = U.replicate n FormFlat
+      dirSlopeZeros = U.replicate n zeroDirSlope
   pure TerrainChunk
     { tcElevation = tcElevation
-    , tcSlope = tcSlope
+    , tcDirSlope = dirSlopeZeros
     , tcCurvature = tcCurvature
     , tcHardness = tcHardness
     , tcRockType = tcRockType
@@ -948,6 +961,15 @@ getCount config = do
 
 getVectorFloat :: Int -> Get (U.Vector Float)
 getVectorFloat n = U.fromList <$> replicateM n getFloatle
+
+-- | Deserialize a vector of 'DirectionalSlope' (6 floats per tile,
+-- interleaved: E NE NW W SW SE per tile).
+getVectorDirSlope :: Int -> Get (U.Vector DirectionalSlope)
+getVectorDirSlope n = U.fromList <$> replicateM n getDirSlope
+  where
+    getDirSlope = DirectionalSlope
+      <$> getFloatle <*> getFloatle <*> getFloatle
+      <*> getFloatle <*> getFloatle <*> getFloatle
 
 getVectorWord16 :: Int -> Get (U.Vector Word16)
 getVectorWord16 n = U.fromList <$> replicateM n getWord16le

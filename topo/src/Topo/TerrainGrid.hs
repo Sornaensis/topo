@@ -1,3 +1,5 @@
+{-# LANGUAGE BangPatterns #-}
+
 -- | Helpers for building and slicing chunk-aligned terrain grids.
 module Topo.TerrainGrid
   ( chunkCoordBounds
@@ -10,6 +12,7 @@ module Topo.TerrainGrid
   , buildPlateHardnessGrid
   , buildPlateBoundaryGrid
   , buildSlopeGrid
+  , buildMaxSlopeGrid
   , buildSoilDepthGrid
   , buildSoilGrainGrid
   , buildSoilTypeGrid
@@ -17,6 +20,10 @@ module Topo.TerrainGrid
   , updateChunkMoistureFromGrid
   , chunkGridSlice
   , clampCoordGrid
+    -- * Grid-level slope helpers
+  , gridSlopeAt
+    -- * Grid-level terrain form classification
+  , classifyTerrainFormGrid
   ) where
 
 import Data.IntMap.Strict (IntMap)
@@ -26,6 +33,8 @@ import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word16)
+import Topo.Hex (hexNeighborIndices)
+import Topo.Parameters (classifyTerrainForm, TerrainFormConfig)
 import Topo.Types
 import qualified Data.Vector.Unboxed as U
 
@@ -82,7 +91,7 @@ chunkError expected (key, chunk) =
           else Just (Text.pack ("terrain chunk " <> show key <> " " <> label <> " length " <> show actual <> ", expected " <> show expected))
       fields =
         [ ("elevation", U.length (tcElevation chunk))
-        , ("slope", U.length (tcSlope chunk))
+        , ("dirSlope", U.length (tcDirSlope chunk))
         , ("curvature", U.length (tcCurvature chunk))
         , ("hardness", U.length (tcHardness chunk))
         , ("rockType", U.length (tcRockType chunk))
@@ -340,7 +349,8 @@ clampCoordGrid size v
 -- Soil and parameter grid builders
 ---------------------------------------------------------------------------
 
--- | Build a full slope grid over a contiguous chunk rectangle.
+-- | Build a full average-slope grid over a contiguous chunk rectangle.
+--   Extracts 'dsAvgSlope' from each tile's 'DirectionalSlope'.
 buildSlopeGrid :: WorldConfig -> IntMap TerrainChunk -> ChunkCoord -> Int -> Int -> U.Vector Float
 buildSlopeGrid config terrain (ChunkCoord minCx minCy) gridW gridH =
   let size = wcChunkSize config
@@ -359,7 +369,33 @@ buildSlopeGrid config terrain (ChunkCoord minCx minCy) gridW gridH =
             Just chunk ->
               case tileIndex config local of
                 Nothing -> 0
-                Just (TileIndex i) -> tcSlope chunk U.! i
+                Just (TileIndex i) -> dsAvgSlope (tcDirSlope chunk U.! i)
+  in U.generate (gridW * gridH) sampleAt
+
+-- | Build a full max-slope grid over a contiguous chunk rectangle.
+--   Extracts 'dsMaxSlope' from each tile's 'DirectionalSlope'.
+--
+--   Useful for infiltration penalties where the steepest direction
+--   determines runoff behaviour.
+buildMaxSlopeGrid :: WorldConfig -> IntMap TerrainChunk -> ChunkCoord -> Int -> Int -> U.Vector Float
+buildMaxSlopeGrid config terrain (ChunkCoord minCx minCy) gridW gridH =
+  let size = wcChunkSize config
+      minTileX = minCx * size
+      minTileY = minCy * size
+      sampleAt idx =
+        let x = idx `mod` gridW
+            y = idx `div` gridW
+            gx = minTileX + x
+            gy = minTileY + y
+            tile = TileCoord gx gy
+            (chunkCoord, local) = chunkCoordFromTile config tile
+            ChunkId key = chunkIdFromCoord chunkCoord
+        in case IntMap.lookup key terrain of
+            Nothing -> 0
+            Just chunk ->
+              case tileIndex config local of
+                Nothing -> 0
+                Just (TileIndex i) -> dsMaxSlope (tcDirSlope chunk U.! i)
   in U.generate (gridW * gridH) sampleAt
 
 -- | Build a full soil-depth grid over a contiguous chunk rectangle.
@@ -427,3 +463,102 @@ buildSoilTypeGrid config terrain (ChunkCoord minCx minCy) gridW gridH =
                 Nothing -> 0
                 Just (TileIndex i) -> tcSoilType chunk U.! i
   in U.generate (gridW * gridH) sampleAt
+
+---------------------------------------------------------------------------
+-- Grid-level slope helpers
+---------------------------------------------------------------------------
+
+-- | Maximum absolute elevation difference to any of the 6 hex neighbours.
+--
+-- Equivalent to 'dsMaxSlope' when computed from the same elevation field,
+-- but works on a flat grid without pre-computed 'DirectionalSlope'.
+-- Shared by 'Topo.Erosion', 'Topo.Glacier', and 'Topo.Hydrology' to
+-- avoid duplicate implementations.
+gridSlopeAt :: Int -> Int -> U.Vector Float -> Int -> Float
+gridSlopeAt gridW gridH elev i =
+  let h0 = elev U.! i
+      nbrs = hexNeighborIndices gridW gridH i
+  in case nbrs of
+       [] -> 0
+       _  -> maximum [abs (elev U.! j - h0) | j <- nbrs]
+
+---------------------------------------------------------------------------
+-- Grid-level terrain form classification
+---------------------------------------------------------------------------
+
+-- | Classify terrain form for every tile on a flat elevation + hardness
+-- grid.
+--
+-- This is a lightweight pre-classification used by erosion, glacier, and
+-- hydrology stages /before/ the definitive per-chunk stencil classification
+-- in 'applyParameterLayersStage'.  The two classifications use identical
+-- logic ('classifyTerrainForm') but differ in boundary handling: this
+-- function clamps out-of-bounds neighbors to the center elevation (slope
+-- = 0), while the per-chunk stencil uses cross-chunk lookups.
+--
+-- Soil depth is unavailable at pre-classification time and is set to a
+-- neutral default (0.5).  Since 'classifyTerrainForm' does not currently
+-- weight soil depth in its cascade, this has no effect on classification
+-- results.
+classifyTerrainFormGrid
+  :: TerrainFormConfig
+  -> Float             -- ^ Water level (for elevation ASL)
+  -> Int               -- ^ Grid width
+  -> Int               -- ^ Grid height
+  -> U.Vector Float    -- ^ Elevation grid
+  -> U.Vector Float    -- ^ Hardness grid
+  -> U.Vector TerrainForm
+classifyTerrainFormGrid formCfg waterLevel gridW gridH elev hardness =
+  U.generate n $ \i ->
+    let !h0 = elev U.! i
+        !x  = i `mod` gridW
+        !y  = i `div` gridW
+
+        -- Safe boundary-clamped neighbor elevation.
+        -- Out-of-bounds neighbors are assumed to be at the same elevation
+        -- as the center tile (slope = 0 in that direction).
+        {-# INLINE nbrElev #-}
+        nbrElev dx dy =
+          let !nx = x + dx
+              !ny = y + dy
+          in if nx >= 0 && nx < gridW && ny >= 0 && ny < gridH
+               then elev U.! (ny * gridW + nx)
+               else h0
+
+        -- 6 hex neighbor elevations (axial offsets: E, NE, NW, W, SW, SE)
+        !eE  = nbrElev   1    0
+        !eNE = nbrElev   1  (-1)
+        !eNW = nbrElev   0  (-1)
+        !eW  = nbrElev (-1)   0
+        !eSW = nbrElev (-1)   1
+        !eSE = nbrElev   0    1
+
+        -- Directional slope (neighbour − center)
+        !ds = DirectionalSlope
+                (eE  - h0)
+                (eNE - h0)
+                (eNW - h0)
+                (eW  - h0)
+                (eSW - h0)
+                (eSE - h0)
+
+        -- Curvature (Laplacian over 6 hex neighbours)
+        !c = (eE + eNE + eNW + eW + eSW + eSE) - 6 * h0
+
+        -- Relief (range over hex neighbours + center)
+        !lo = min h0 $ min eE $ min eNE $ min eNW $ min eW $ min eSW eSE
+        !hi = max h0 $ max eE $ max eNE $ max eNW $ max eW $ max eSW eSE
+        !r  = hi - lo
+
+        -- Local minimum (all 6 hex neighbours ≥ center)
+        !localMin = eE >= h0 && eNE >= h0 && eNW >= h0
+                 && eW >= h0 && eSW >= h0 && eSE >= h0
+
+        -- Substrate
+        !hard    = hardness U.! i
+        !soilDep = 0.5  -- neutral default; unavailable pre-classification
+        !elevASL = h0 - waterLevel
+
+    in classifyTerrainForm formCfg ds r c localMin hard soilDep elevASL
+  where
+    !n = U.length elev

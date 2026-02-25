@@ -6,6 +6,9 @@ module Topo.Glacier
   ( GlacierConfig(..)
   , defaultGlacierConfig
   , applyGlacierStage
+    -- * Internals (exported for testing)
+  , snowAccumGrid
+  , diffuseGrid
   ) where
 
 import Control.Monad.Except (throwError)
@@ -16,17 +19,26 @@ import Topo.Config.JSON
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Topo.Math (clamp01, iterateN)
+import Topo.Parameters (TerrainFormConfig)
 import Topo.Pipeline (PipelineStage(..))
 import Topo.Plugin (PluginError(..), getWorldP, logInfo, putWorldP)
+import Topo.TerrainForm.Modifiers
+  ( TerrainFormModifiers(..)
+  , defaultTerrainFormModifiers
+  )
 import Topo.TerrainGrid
   ( buildClimatePrecipGrid
   , buildClimateTempGrid
   , buildElevationGrid
   , buildHardnessGrid
+  , buildPlateHardnessGrid
   , chunkGridSlice
+  , classifyTerrainFormGrid
+  , gridSlopeAt
   , updateChunkElevationFromGrid
   , validateTerrainGrid
   )
+import Topo.Hex (hexNeighborIndices)
 import Topo.Types
 import Topo.World (TerrainWorld(..))
 import qualified Data.Vector.Unboxed as U
@@ -87,8 +99,13 @@ defaultGlacierConfig = GlacierConfig
   }
 
 -- | Apply glacier accumulation, flow, and erosion potentials.
-applyGlacierStage :: GlacierConfig -> PipelineStage
-applyGlacierStage cfg = PipelineStage "applyGlaciers" "applyGlaciers" $ do
+--
+-- The 'TerrainFormConfig' drives a lightweight pre-classification of
+-- terrain forms from the current elevation + hardness grids.  Per-form
+-- modifiers ('defaultTerrainFormModifiers') then adjust glacial erosion
+-- intensity, deposition, and ice diffusion rates.
+applyGlacierStage :: GlacierConfig -> TerrainFormConfig -> Float -> PipelineStage
+applyGlacierStage cfg formCfg waterLevel = PipelineStage "applyGlaciers" "applyGlaciers" $ do
   logInfo "applyGlaciers: snowpack + ice flow"
   world <- getWorldP
   let config = twConfig world
@@ -104,15 +121,23 @@ applyGlacierStage cfg = PipelineStage "applyGlaciers" "applyGlaciers" $ do
       minCoord = ChunkCoord minCx minCy
       elev0 = buildElevationGrid config terrain minCoord gridW gridH
       hardness = buildHardnessGrid config terrain minCoord gridW gridH
+      plateHardness = buildPlateHardnessGrid config terrain minCoord gridW gridH
       temp = buildClimateTempGrid config climate minCoord gridW gridH
       precip = buildClimatePrecipGrid config climate minCoord gridW gridH
-      snowpack = snowAccumGrid cfg temp precip
+      -- Pre-classify terrain forms from current elevation + plate hardness.
+      formGrid = classifyTerrainFormGrid formCfg waterLevel gridW gridH elev0 plateHardness
+      modLookup = defaultTerrainFormModifiers
+      erosionMult   = U.map (tfmErosionRate . modLookup) formGrid
+      depositFactor = U.map (\f -> 1 - tfmDepositSuppression (modLookup f)) formGrid
+      rateVec       = U.map (\f -> gcFlowRate cfg * (1 + tfmFlowBonus (modLookup f))) formGrid
+      accumBonus    = U.map (tfmSnowAccumBonus . modLookup) formGrid
+      snowpack = snowAccumGrid cfg accumBonus temp precip
       melt = meltGrid cfg temp
       ice0 = U.zipWith (\s m -> max 0 (s - m)) snowpack melt
-      ice1 = diffuseGrid gridW gridH (gcFlowRate cfg) (gcFlowIterations cfg) ice0
+      ice1 = diffuseGrid gridW gridH rateVec (gcFlowIterations cfg) ice0
       flow = U.zipWith (\a b -> abs (a - b)) ice0 ice1
-      erosionPotential = glacierErosionPotential gridW gridH elev0 ice1 hardness cfg
-      depositPotential = glacierDepositPotential gridW gridH elev0 flow cfg
+      erosionPotential = glacierErosionPotential gridW gridH elev0 ice1 hardness erosionMult cfg
+      depositPotential = glacierDepositPotential gridW gridH elev0 flow depositFactor cfg
       elev1 = applyGlacierCarve elev0 erosionPotential depositPotential cfg
       glaciers = GlacierChunk
         { glSnowpack = snowpack
@@ -126,13 +151,20 @@ applyGlacierStage cfg = PipelineStage "applyGlaciers" "applyGlaciers" $ do
       terrain' = IntMap.mapWithKey (updateChunkElevationFromGrid config minCoord gridW elev1) terrain
   putWorldP world { twGlaciers = glaciers', twTerrain = terrain' }
 
-snowAccumGrid :: GlacierConfig -> U.Vector Float -> U.Vector Float -> U.Vector Float
-snowAccumGrid cfg temp precip =
+-- | Per-tile snow accumulation from temperature and precipitation.
+--
+-- The @accumBonus@ vector carries a per-tile additive multiplier from
+-- terrain form modifiers (e.g. plateaus accumulate more snow for
+-- ice-cap formation).  Accumulation = @precip * scale * tempFactor
+-- * (1 + bonus)@.
+snowAccumGrid :: GlacierConfig -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float
+snowAccumGrid cfg accumBonus temp precip =
   let range = max 0.0001 (gcSnowRange cfg)
-  in U.zipWith
-      (\t p ->
+  in U.izipWith
+      (\i t p ->
         let factor = clamp01 ((gcSnowTemp cfg - t) / range)
-        in p * gcAccumScale cfg * factor)
+            bonus  = accumBonus U.! i
+        in p * gcAccumScale cfg * factor * (1 + bonus))
       temp
       precip
 
@@ -159,72 +191,72 @@ sliceGlacierChunk config minCoord gridW glaciers _key _chunk =
     , glDepositPotential = chunkGridSlice config minCoord gridW (glDepositPotential glaciers) _key
     }
 
-diffuseGrid :: Int -> Int -> Float -> Int -> U.Vector Float -> U.Vector Float
-diffuseGrid gridW gridH rate iterations =
-  iterateN iterations (diffuseStep gridW gridH rate)
+diffuseGrid :: Int -> Int -> U.Vector Float -> Int -> U.Vector Float -> U.Vector Float
+diffuseGrid gridW gridH rateVec iterations =
+  iterateN iterations (diffuseStep gridW gridH rateVec)
 
-diffuseStep :: Int -> Int -> Float -> U.Vector Float -> U.Vector Float
-diffuseStep gridW gridH rate values =
-  U.generate (U.length values) (diffuseAt gridW gridH rate values)
+diffuseStep :: Int -> Int -> U.Vector Float -> U.Vector Float -> U.Vector Float
+diffuseStep gridW gridH rateVec values =
+  U.generate (U.length values) (diffuseAt gridW gridH rateVec values)
 
-diffuseAt :: Int -> Int -> Float -> U.Vector Float -> Int -> Float
-diffuseAt gridW gridH rate values i =
-  let x = i `mod` gridW
-      y = i `div` gridW
-      v0 = values U.! i
-      neighbors =
-        [ values U.! (i - 1) | x > 0 ]
-        <> [ values U.! (i + 1) | x + 1 < gridW ]
-        <> [ values U.! (i - gridW) | y > 0 ]
-        <> [ values U.! (i + gridW) | y + 1 < gridH ]
-      total = v0 + sum neighbors
-      count = 1 + length neighbors
+-- | Diffuse a single tile's value toward the hex-neighbour average.
+--
+-- The @rateVec@ carries a per-tile diffusion rate that incorporates the
+-- base flow rate augmented by 'tfmFlowBonus' from terrain form
+-- classification (e.g. passes diffuse faster).
+diffuseAt :: Int -> Int -> U.Vector Float -> U.Vector Float -> Int -> Float
+diffuseAt gridW gridH rateVec values i =
+  let v0 = values U.! i
+      rate = rateVec U.! i
+      nbrs = hexNeighborIndices gridW gridH i
+      nbrVals = [values U.! j | j <- nbrs]
+      total = v0 + sum nbrVals
+      count = 1 + length nbrs
       avg = total / fromIntegral count
       next = v0 + rate * (avg - v0)
   in max 0 next
 
+-- | Per-tile glacial erosion potential.
+--
+-- Scaled by the per-tile @erosionMult@ derived from terrain form
+-- modifiers (e.g. badlands erode faster, mesas resist).
 glacierErosionPotential
   :: Int
   -> Int
   -> U.Vector Float
   -> U.Vector Float
   -> U.Vector Float
+  -> U.Vector Float  -- ^ Per-tile erosion rate multiplier
   -> GlacierConfig
   -> U.Vector Float
-glacierErosionPotential gridW gridH elev ice hardness cfg =
+glacierErosionPotential gridW gridH elev ice hardness erosionMult cfg =
   U.imap
     (\i t ->
       let slope = clamp01 (gridSlopeAt gridW gridH elev i)
           hard = clamp01 (hardness U.! i)
           factor = clamp01 (1 - hard * gcHardnessErosionWeight cfg)
-      in slope * t * gcErosionScale cfg * factor)
+      in slope * t * gcErosionScale cfg * factor * (erosionMult U.! i))
     ice
 
+-- | Per-tile glacial deposition potential.
+--
+-- Scaled by the per-tile @depositFactor@ (1 - suppression) derived
+-- from terrain form modifiers (e.g. canyons suppress deposition).
 glacierDepositPotential
   :: Int
   -> Int
   -> U.Vector Float
   -> U.Vector Float
+  -> U.Vector Float  -- ^ Per-tile deposit factor (1 − suppression)
   -> GlacierConfig
   -> U.Vector Float
-glacierDepositPotential gridW gridH elev flow cfg =
+glacierDepositPotential gridW gridH elev flow depositFactor cfg =
   let maxSlope = max 0.0001 (gcDepositMaxSlope cfg)
   in U.imap
       (\i t ->
         let slope = gridSlopeAt gridW gridH elev i
             slopeFactor = if slope >= maxSlope then 0 else clamp01 (1 - slope / maxSlope)
-        in t * slopeFactor * gcDepositScale cfg)
+        in t * slopeFactor * gcDepositScale cfg * (depositFactor U.! i))
       flow
 
-gridSlopeAt :: Int -> Int -> U.Vector Float -> Int -> Float
-gridSlopeAt gridW gridH elev i =
-  let x = i `mod` gridW
-      y = i `div` gridW
-      h0 = elev U.! i
-      hL = if x > 0 then elev U.! (i - 1) else h0
-      hR = if x + 1 < gridW then elev U.! (i + 1) else h0
-      hU = if y > 0 then elev U.! (i - gridW) else h0
-      hD = if y + 1 < gridH then elev U.! (i + gridW) else h0
-      dx = max (abs (hR - h0)) (abs (hL - h0))
-      dy = max (abs (hD - h0)) (abs (hU - h0))
-  in max dx dy
+

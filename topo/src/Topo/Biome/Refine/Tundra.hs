@@ -15,10 +15,9 @@ import GHC.Generics (Generic)
 import Topo.Config.JSON
   (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
    genericToJSON, genericParseJSON)
-import Topo.Types (BiomeId, TerrainForm,
+import Topo.Types (BiomeId, TerrainForm, isMontaneTerrain,
                    pattern BiomeTundra, pattern BiomePolarDesert,
-                   pattern BiomeAlpineTundra, pattern BiomeArcticTundra,
-                   pattern FormHilly, pattern FormMountainous)
+                   pattern BiomeAlpineTundra, pattern BiomeArcticTundra)
 
 -- | Configuration for tundra sub-biome classification.
 data TundraConfig = TundraConfig
@@ -58,6 +57,6 @@ refineTundra cfg elev temp precip tf
   | temp <= tcArcticMaxTemp cfg
     && precip <= tcPolarDesertMaxPrecip cfg      = BiomePolarDesert
   | elev >= tcAlpineTundraMinElev cfg
-    && (tf == FormHilly || tf == FormMountainous) = BiomeAlpineTundra
+    && isMontaneTerrain tf                       = BiomeAlpineTundra
   | temp <= tcArcticMaxTemp cfg                  = BiomeArcticTundra
   | otherwise                                    = BiomeTundra

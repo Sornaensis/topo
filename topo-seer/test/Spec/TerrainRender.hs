@@ -7,7 +7,7 @@ import qualified Data.Vector.Storable as SV
 import qualified Data.Vector.Unboxed as U
 import Test.Hspec
 import Linear (V2(..))
-import Topo (WorldConfig(..), TerrainChunk(..))
+import Topo (WorldConfig(..), TerrainChunk(..), zeroDirSlope)
 import Topo.Types (pattern BiomeDesert, pattern FormFlat, pattern PlateBoundaryNone)
 import Actor.UI (ViewMode(..))
 import UI.TerrainRender (ChunkGeometry(..), buildChunkGeometry)
@@ -42,7 +42,7 @@ emptyTerrainChunk size =
       boundaryZeros = U.replicate total PlateBoundaryNone
   in TerrainChunk
       { tcElevation = zerosF
-      , tcSlope = zerosF
+      , tcDirSlope = U.replicate total zeroDirSlope
       , tcCurvature = zerosF
       , tcHardness = zerosF
       , tcRockType = zerosW

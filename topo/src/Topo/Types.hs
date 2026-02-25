@@ -161,6 +161,31 @@ module Topo.Types
   , pattern FormCliff
   , pattern FormValley
   , pattern FormDepression
+  , pattern FormRidge
+  , pattern FormEscarpment
+  , pattern FormPlateau
+  , pattern FormBadlands
+  , pattern FormPass
+  , pattern FormCanyon
+  , pattern FormMesa
+  , pattern FormFoothill
+  -- * Terrain form families
+  , isSteepForm
+  , isElevatedFlatForm
+  , isMountainFamily
+  , isMontaneTerrain
+  , isTransitionForm
+  , isCollectionForm
+  , isLowReliefForm
+  -- * Terrain form display
+  , terrainFormDisplayName
+  -- * Directional slope
+  , DirectionalSlope(..)
+  , zeroDirSlope
+  , dsAvgSlope
+  , dsMaxSlope
+  , dsMinSlope
+  , dsAsymmetry
   , TerrainChunk(..)
   , ClimateChunk(..)
   , WeatherChunk(..)
@@ -762,9 +787,37 @@ pattern VentErupting = VentActivity 2
   , VentErupting
   #-}
 
--- | Discrete terrain shape classification derived from slope, relief,
--- and curvature.  Used by biome refinement to distinguish mountain peaks
--- from plateaus, valleys from plains, etc.
+-- | Discrete terrain shape classification derived from directional slope,
+-- relief, curvature, local-minimum status, substrate hardness, soil depth,
+-- and elevation above sea level.
+--
+-- The 15 recognised forms are classified by 'Topo.Parameters.classifyTerrainForm'
+-- in a priority-ordered cascade (first match wins).  Cascade order:
+--
+-- @
+-- Code  Form           Primary driver
+-- ----  -------------- -------------------------------------------
+--   0   Flat           catch-all (gentle, featureless)
+--   1   Rolling        avg slope above rolling threshold
+--   2   Hilly          moderate slope + relief
+--   3   Mountainous    high avg slope or high relief
+--   4   Cliff          max directional slope exceeds cliff threshold
+--   5   Valley         strongly negative curvature
+--   6   Depression     local minimum
+--   7   Ridge          steep opposite pair, flat axis
+--   8   Escarpment     steep one side, gentle opposite
+--   9   Plateau        low slope + high elevation
+--  10   Badlands       steep + soft rock + high asymmetry
+--  11   Pass           ridge profile + local minimum
+--  12   Canyon         deep steep-walled valley in hard rock
+--  13   Mesa           flat top + steep edges + hard cap + elevated
+--  14   Foothill       moderate slope + moderate elevation
+-- @
+--
+-- Seven family predicates group these forms for consumer logic:
+-- 'isSteepForm', 'isElevatedFlatForm', 'isMountainFamily',
+-- 'isMontaneTerrain', 'isTransitionForm', 'isCollectionForm',
+-- 'isLowReliefForm'.
 newtype TerrainForm = TerrainForm Word8
   deriving (Eq, Ord, Show)
 
@@ -780,45 +833,186 @@ data TerrainFormError
 terrainFormFromCode :: Word8 -> Either TerrainFormError TerrainForm
 terrainFormFromCode code =
   case code of
-    0 -> Right FormFlat
-    1 -> Right FormRolling
-    2 -> Right FormHilly
-    3 -> Right FormMountainous
-    4 -> Right FormCliff
-    5 -> Right FormValley
-    6 -> Right FormDepression
-    _ -> Left (TerrainFormUnknownCode code)
+    0  -> Right FormFlat
+    1  -> Right FormRolling
+    2  -> Right FormHilly
+    3  -> Right FormMountainous
+    4  -> Right FormCliff
+    5  -> Right FormValley
+    6  -> Right FormDepression
+    7  -> Right FormRidge
+    8  -> Right FormEscarpment
+    9  -> Right FormPlateau
+    10 -> Right FormBadlands
+    11 -> Right FormPass
+    12 -> Right FormCanyon
+    13 -> Right FormMesa
+    14 -> Right FormFoothill
+    _  -> Left (TerrainFormUnknownCode code)
 
 terrainFormToCode :: TerrainForm -> Word8
 terrainFormToCode (TerrainForm code) = code
 
--- | Flat terrain — slope < 0.02, relief < 0.05
+-- | __Flat terrain__ — plains, floodplains, dry lake beds, and other
+-- featureless lowlands.
+--
+-- __Criteria:__ catch-all when no other guard fires (avg slope ≤ rolling
+-- threshold, no curvature, no local minimum, low elevation).
+--
+-- __Families:__ 'isLowReliefForm'.
 pattern FormFlat :: TerrainForm
 pattern FormFlat = TerrainForm 0
 
--- | Rolling terrain — slope 0.02–0.08, relief < 0.10
+-- | __Rolling terrain__ — gentle undulating hills, downlands, and
+-- agricultural terrain with broad slopes.
+--
+-- __Criteria:__ avg slope > rolling threshold (~0.02) but below hilly
+-- thresholds.
+--
+-- __Families:__ 'isTransitionForm'.
 pattern FormRolling :: TerrainForm
 pattern FormRolling = TerrainForm 1
 
--- | Hilly terrain — slope 0.08–0.20, relief 0.10–0.25
+-- | __Hilly terrain__ — moderate hills with clear slopes and valleys,
+-- typical of piedmont and dissected upland regions.
+--
+-- __Criteria:__ avg slope > hill threshold (~0.08) /and/ relief > hill
+-- relief (~0.10).
+--
+-- __Families:__ 'isMontaneTerrain'.
 pattern FormHilly :: TerrainForm
 pattern FormHilly = TerrainForm 2
 
--- | Mountainous terrain — slope > 0.20 or relief > 0.25
+-- | __Mountainous terrain__ — high peaks, steep massifs, alpine terrain
+-- with significant average slope or large local relief.
+--
+-- __Criteria:__ avg slope > mountain threshold (~0.20) /or/ relief >
+-- mountain relief (~0.25).
+--
+-- __Families:__ 'isMountainFamily', 'isMontaneTerrain'.
 pattern FormMountainous :: TerrainForm
 pattern FormMountainous = TerrainForm 3
 
--- | Cliff — slope > 0.40
+-- | __Cliff__ — sheer vertical or near-vertical rock face, the steepest
+-- terrain the classifier recognises.  Sea cliffs, fault scarps, or
+-- glacially carved headwalls.
+--
+-- __Criteria:__ max directional slope > cliff threshold (~0.40).
+-- First in cascade — overrides all other forms.
+--
+-- __Families:__ 'isSteepForm', 'isMountainFamily'.
 pattern FormCliff :: TerrainForm
 pattern FormCliff = TerrainForm 4
 
--- | Valley — curvature strongly negative (concave)
+-- | __Valley__ — concave terrain with strongly negative curvature,
+-- typically a river valley, glacial trough, or structural graben.
+--
+-- __Criteria:__ curvature < −valley threshold (~0.15), no canyon
+-- conditions (low relief or soft rock).
+--
+-- __Families:__ 'isCollectionForm'.
 pattern FormValley :: TerrainForm
 pattern FormValley = TerrainForm 5
 
--- | Depression — local minimum (all neighbors higher)
+-- | __Depression__ — a closed low point where all hex neighbours are
+-- higher.  Endorheic basins, sink holes, volcanic craters.
+--
+-- __Criteria:__ 'isLocalMinimum' but curvature not valley-negative.
+--
+-- __Families:__ 'isCollectionForm', 'isLowReliefForm'.
 pattern FormDepression :: TerrainForm
 pattern FormDepression = TerrainForm 6
+
+-- | __Ridge__ — a narrow linear crest with steep slopes on two opposite
+-- hex directions and gentle slopes along the axis.  Hogbacks, arêtes,
+-- mountain divides.
+--
+-- __Criteria:__ at least one opposite-direction pair with both slopes ≥
+-- ridge min slope (~0.12), perpendicular axis ≤ ridge max axis slope
+-- (~0.06), and sufficient asymmetry (≥ 0.08).
+--
+-- __Families:__ 'isMountainFamily', 'isMontaneTerrain'.
+pattern FormRidge :: TerrainForm
+pattern FormRidge = TerrainForm 7
+
+-- | __Escarpment__ — an asymmetric one-sided drop: steep face on one hex
+-- direction, gentle slope on the opposite.  Fault scarps, cuestas,
+-- wave-cut terraces.
+--
+-- __Criteria:__ at least one direction with slope ≥ escarpment min slope
+-- (~0.15) /and/ the opposite direction ≤ escarpment max opposite slope
+-- (~0.04).
+--
+-- __Families:__ 'isSteepForm'.
+pattern FormEscarpment :: TerrainForm
+pattern FormEscarpment = TerrainForm 8
+
+-- | __Plateau__ — a broad flat elevated surface.  Tablelands, altiplanos,
+-- high plains that resist down-cutting.
+--
+-- __Criteria:__ max slope ≤ plateau max slope (~0.03) /and/ elevation
+-- above sea level ≥ plateau min elevation (~0.08).
+--
+-- __Families:__ 'isElevatedFlatForm', 'isLowReliefForm'.
+pattern FormPlateau :: TerrainForm
+pattern FormPlateau = TerrainForm 9
+
+-- | __Badlands__ — heavily eroded soft-rock terrain with steep, irregular
+-- slopes and high directional asymmetry.  Typical of arid shale, clay,
+-- and marl regions.
+--
+-- __Criteria:__ max slope ≥ badlands min slope (~0.15), hardness ≤
+-- badlands max hardness (~0.35), and asymmetry ≥ badlands min
+-- asymmetry (~0.06).
+--
+-- __Families:__ (none).
+pattern FormBadlands :: TerrainForm
+pattern FormBadlands = TerrainForm 10
+
+-- | __Pass__ — a low saddle point along a ridge axis with steep
+-- cross-slopes.  Mountain passes, wind gaps, strategic route corridors.
+--
+-- __Criteria:__ local minimum ('isLocalMinimum') /and/ ridge-like
+-- cross-slope profile (cross-axis avg ≥ pass min cross slope, axis
+-- max ≤ pass max axis slope).
+--
+-- __Families:__ 'isMountainFamily', 'isMontaneTerrain'.
+pattern FormPass :: TerrainForm
+pattern FormPass = TerrainForm 11
+
+-- | __Canyon__ — a deep narrow valley carved through hard, resistant
+-- rock.  Slot canyons, gorges, river-cut ravines.
+--
+-- __Criteria:__ negative curvature (< −valley threshold), relief ≥
+-- canyon min relief (~0.20), at least one opposite-pair with both
+-- slopes ≥ canyon min wall slope (~0.18), and hardness ≥ canyon min
+-- hardness (~0.40).
+--
+-- __Families:__ 'isSteepForm', 'isCollectionForm'.
+pattern FormCanyon :: TerrainForm
+pattern FormCanyon = TerrainForm 12
+
+-- | __Mesa__ — a small flat-topped elevation with steep cliff edges and
+-- hard cap rock, standing above the surrounding terrain.  Buttes,
+-- tepuis, table mountains.
+--
+-- __Criteria:__ max slope ≤ mesa max top slope (~0.03), edge relief ≥
+-- mesa min edge relief (~0.12), hardness ≥ mesa min hardness (~0.45),
+-- and elevation ≥ mesa min elevation (~0.05).
+--
+-- __Families:__ 'isElevatedFlatForm'.
+pattern FormMesa :: TerrainForm
+pattern FormMesa = TerrainForm 13
+
+-- | __Foothill__ — transitional terrain between lowlands and mountains,
+-- with moderate slope and moderate elevation.
+--
+-- __Criteria:__ avg slope in foothill range (~0.03–0.10), elevation
+-- above sea level in foothill range (~0.02–0.12).
+--
+-- __Families:__ 'isTransitionForm'.
+pattern FormFoothill :: TerrainForm
+pattern FormFoothill = TerrainForm 14
 
 {-# COMPLETE FormFlat
   , FormRolling
@@ -827,7 +1021,166 @@ pattern FormDepression = TerrainForm 6
   , FormCliff
   , FormValley
   , FormDepression
+  , FormRidge
+  , FormEscarpment
+  , FormPlateau
+  , FormBadlands
+  , FormPass
+  , FormCanyon
+  , FormMesa
+  , FormFoothill
   #-}
+
+-- ---------------------------------------------------------------------------
+-- Terrain form families
+-- ---------------------------------------------------------------------------
+
+-- | Terrain forms indicating steep or vertical faces.
+--
+-- Members: 'FormCliff', 'FormEscarpment', 'FormCanyon'.
+isSteepForm :: TerrainForm -> Bool
+isSteepForm f = f == FormCliff || f == FormEscarpment || f == FormCanyon
+{-# INLINE isSteepForm #-}
+
+-- | Terrain forms indicating elevated flat terrain.
+--
+-- Members: 'FormPlateau', 'FormMesa'.
+isElevatedFlatForm :: TerrainForm -> Bool
+isElevatedFlatForm f = f == FormPlateau || f == FormMesa
+{-# INLINE isElevatedFlatForm #-}
+
+-- | Terrain forms in the mountain family: peaks, ridgelines, passes, and
+-- sheer faces.
+--
+-- Members: 'FormMountainous', 'FormRidge', 'FormPass', 'FormCliff'.
+isMountainFamily :: TerrainForm -> Bool
+isMountainFamily f =
+  f == FormMountainous || f == FormRidge || f == FormPass || f == FormCliff
+{-# INLINE isMountainFamily #-}
+
+-- | Terrain forms that indicate montane character: hilly or mountainous
+-- terrain, plus ridgelines and passes.
+--
+-- This is the set commonly used by biome classifiers to detect whether a
+-- tile should be considered montane (independent of slope magnitude).
+--
+-- Members: 'FormMountainous', 'FormHilly', 'FormRidge', 'FormPass'.
+isMontaneTerrain :: TerrainForm -> Bool
+isMontaneTerrain f =
+  f == FormMountainous || f == FormHilly || f == FormRidge || f == FormPass
+{-# INLINE isMontaneTerrain #-}
+
+-- | Terrain forms indicating transition or moderate terrain.
+--
+-- Members: 'FormFoothill', 'FormRolling'.
+isTransitionForm :: TerrainForm -> Bool
+isTransitionForm f = f == FormFoothill || f == FormRolling
+{-# INLINE isTransitionForm #-}
+
+-- | Terrain forms indicating concave collection zones (valleys, canyons,
+-- depressions).
+--
+-- Members: 'FormValley', 'FormCanyon', 'FormDepression'.
+isCollectionForm :: TerrainForm -> Bool
+isCollectionForm f = f == FormValley || f == FormCanyon || f == FormDepression
+{-# INLINE isCollectionForm #-}
+
+-- | Terrain forms with low local relief — flat, depressed, or elevated
+-- plateaux.  Useful for identifying areas suitable for bogs, marshes,
+-- and other standing-water features.
+--
+-- Members: 'FormFlat', 'FormDepression', 'FormPlateau'.
+isLowReliefForm :: TerrainForm -> Bool
+isLowReliefForm f = f == FormFlat || f == FormDepression || f == FormPlateau
+{-# INLINE isLowReliefForm #-}
+
+-- ---------------------------------------------------------------------------
+-- Terrain form display
+-- ---------------------------------------------------------------------------
+
+-- | Total mapping from 'TerrainForm' to a user-facing display name.
+--
+-- Every known terrain-form code (0–14) maps to a descriptive name.
+-- Unknown codes produce @"Unknown (<n>)"@.
+terrainFormDisplayName :: TerrainForm -> String
+terrainFormDisplayName (TerrainForm code) = case code of
+  0  -> "Flat"
+  1  -> "Rolling"
+  2  -> "Hilly"
+  3  -> "Mountainous"
+  4  -> "Cliff"
+  5  -> "Valley"
+  6  -> "Depression"
+  7  -> "Ridge"
+  8  -> "Escarpment"
+  9  -> "Plateau"
+  10 -> "Badlands"
+  11 -> "Pass"
+  12 -> "Canyon"
+  13 -> "Mesa"
+  14 -> "Foothill"
+  _  -> "Unknown (" ++ show code ++ ")"
+
+-- ---------------------------------------------------------------------------
+-- Directional slope
+-- ---------------------------------------------------------------------------
+
+-- | Per-direction signed slope for a hex tile.
+--
+-- Stores the elevation difference to each of the six hex neighbours:
+--
+-- @slope(d) = neighbourElev(d) − selfElev@
+--
+-- * __Positive__ → neighbour is higher (uphill in that direction).
+-- * __Negative__ → neighbour is lower  (downhill in that direction).
+-- * __Zero__     → flat in that direction.
+--
+-- Stored as 6 contiguous 'Float' values in direction order
+-- (E, NE, NW, W, SW, SE), matching 'Topo.Hex.HexDirection'.
+data DirectionalSlope = DirectionalSlope
+  { dsSlopeE  :: {-# UNPACK #-} !Float
+  , dsSlopeNE :: {-# UNPACK #-} !Float
+  , dsSlopeNW :: {-# UNPACK #-} !Float
+  , dsSlopeW  :: {-# UNPACK #-} !Float
+  , dsSlopeSW :: {-# UNPACK #-} !Float
+  , dsSlopeSE :: {-# UNPACK #-} !Float
+  } deriving (Eq, Show)
+
+derivingUnbox "DirectionalSlope"
+  [t| DirectionalSlope -> (Float, Float, Float, Float, Float, Float) |]
+  [| \(DirectionalSlope e ne nw w sw se) -> (e, ne, nw, w, sw, se) |]
+  [| \(e, ne, nw, w, sw, se) -> DirectionalSlope e ne nw w sw se |]
+
+-- | All-zero directional slope (flat terrain).
+zeroDirSlope :: DirectionalSlope
+zeroDirSlope = DirectionalSlope 0 0 0 0 0 0
+
+-- | Average absolute slope across all 6 directions.
+dsAvgSlope :: DirectionalSlope -> Float
+dsAvgSlope (DirectionalSlope e ne nw w sw se) =
+  (abs e + abs ne + abs nw + abs w + abs sw + abs se) / 6.0
+
+-- | Maximum absolute slope across all 6 directions.
+dsMaxSlope :: DirectionalSlope -> Float
+dsMaxSlope (DirectionalSlope e ne nw w sw se) =
+  max (abs e) $ max (abs ne) $ max (abs nw) $
+  max (abs w) $ max (abs sw) (abs se)
+
+-- | Minimum absolute slope across all 6 directions.
+dsMinSlope :: DirectionalSlope -> Float
+dsMinSlope (DirectionalSlope e ne nw w sw se) =
+  min (abs e) $ min (abs ne) $ min (abs nw) $
+  min (abs w) $ min (abs sw) (abs se)
+
+-- | Slope asymmetry: difference between max and min absolute slope.
+--
+-- High asymmetry indicates one-sided steepness (escarpment, ridge).
+dsAsymmetry :: DirectionalSlope -> Float
+dsAsymmetry ds = dsMaxSlope ds - dsMinSlope ds
+
+-- ---------------------------------------------------------------------------
+-- Terrain chunk
+-- ---------------------------------------------------------------------------
 
 -- | Per-chunk terrain data.  Each field holds one value per tile in a flat
 -- row-major unboxed vector of length @chunkSize × chunkSize@.
@@ -844,8 +1197,10 @@ data TerrainChunk = TerrainChunk
   { tcElevation   :: !(U.Vector Float)
     -- ^ Normalised surface elevation (0–1).  Values below the water
     -- level threshold are ocean/lake tiles.
-  , tcSlope       :: !(U.Vector Float)
-    -- ^ Local slope magnitude (0–1).  Computed from elevation gradients.
+  , tcDirSlope    :: !(U.Vector DirectionalSlope)
+    -- ^ Per-direction signed slopes to each hex neighbour.
+    -- Computed by the parameter-layers stage ('Topo.Parameters').
+    -- Use 'dsAvgSlope', 'dsMaxSlope', etc. for scalar summaries.
   , tcCurvature   :: !(U.Vector Float)
     -- ^ Profile curvature (−1 to +1).  Positive = convex, negative =
     -- concave.  Influences erosion and deposition.
@@ -1292,10 +1647,10 @@ data TerrainSample = TerrainSample
     -- Convert to metres a.s.l. via @normToMetres defaultUnitScales@.
     -- Default scale: 0.0 → −6 000 m, 0.5 → 0 m, 1.0 → +6 000 m.
     -- Source: 'tcElevation'.
-  , tsSlope         :: !Float
-    -- ^ Local slope [0, 1], from 'tcSlope'.
-    -- Convert to degrees via @normSlopeToDeg@.
-    -- 0.0 → 0°, 0.5 → ~16°, 1.0 → ~30°.
+  , tsDirSlope      :: !DirectionalSlope
+    -- ^ Per-direction signed slopes from 'tcDirSlope'.
+    -- Use 'dsAvgSlope' for a scalar summary, or access individual
+    -- direction slopes via the record fields.
   , tsCurvature     :: !Float
     -- ^ Profile curvature [−1, +1], from 'tcCurvature'.
     -- Negative = concave (valley), positive = convex (ridge).

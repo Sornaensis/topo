@@ -40,6 +40,8 @@ import qualified Spec.Precipitation
 import qualified Spec.MoistureFixture
 import qualified Spec.ClimateAlignment
 import qualified Spec.TerrainRelief
+import qualified Spec.DirectionalSlope
+import qualified Spec.TerrainFormModifiers
 import qualified WorldProperty
 import qualified HexProperty
 
@@ -86,5 +88,7 @@ main = do
     Spec.MoistureFixture.spec
     Spec.ClimateAlignment.spec
     Spec.TerrainRelief.spec
+    Spec.DirectionalSlope.spec
+    Spec.TerrainFormModifiers.spec
     WorldProperty.spec
     HexProperty.spec

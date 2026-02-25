@@ -15,10 +15,9 @@ import GHC.Generics (Generic)
 import Topo.Config.JSON
   (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
    genericToJSON, genericParseJSON)
-import Topo.Types (BiomeId, TerrainForm,
+import Topo.Types (BiomeId, TerrainForm, isLowReliefForm,
                    pattern BiomeTaiga, pattern BiomeBorealForest,
-                   pattern BiomeBorealBog, pattern BiomeOceanicBoreal,
-                   pattern FormFlat, pattern FormDepression)
+                   pattern BiomeBorealBog, pattern BiomeOceanicBoreal)
 
 -- | Configuration for taiga sub-biome classification.
 data TaigaConfig = TaigaConfig
@@ -76,7 +75,7 @@ refineTaiga
   -> BiomeId
 refineTaiga cfg temp precip moisture tf tempRange humidity
   | moisture >= taBogMaxMoisture cfg
-    && (tf == FormFlat || tf == FormDepression)  = BiomeBorealBog
+    && isLowReliefForm tf                        = BiomeBorealBog
   | tempRange <= taOceanicMaxRange cfg
     && humidity >= taOceanicMinHumidity cfg
     && precip >= taBorealMinPrecip cfg           = BiomeOceanicBoreal

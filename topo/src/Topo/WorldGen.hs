@@ -321,10 +321,10 @@ buildFullPipelineConfig cfg worldCfg seed =
       { pipelineSeed = seed
       , pipelineStages =
           [ generatePlateTerrainStage (terrainGen terrain') (terrainTectonics terrain')
-          , applyErosionStage (terrainErosion terrain') wl
+          , applyErosionStage (terrainErosion terrain') (terrainFormConfig terrain') wl
           , applyHypsometryStage (terrainHypsometry terrain')
           , applyVolcanismStage (terrainVolcanism terrain')
-          , applyHydrologyStage (terrainHydrology terrain')
+          , applyHydrologyStage (terrainHydrology terrain') (terrainFormConfig terrain')
           , applyRiverStage (terrainRivers terrain')
                             (terrainRiverTopology terrain')
                             (terrainGroundwater terrain') wl
@@ -333,8 +333,8 @@ buildFullPipelineConfig cfg worldCfg seed =
           , bootstrapVegetationStage (terrainVegetation terrain') wl
           , generateClimateStage climate wCfg wl
           , applyOceanCurrentsStage (worldOceanCurrent cfg) wl
-          , applyGlacierStage (terrainGlacier terrain')
-          , applyParameterLayersStage (terrainParameters terrain') (terrainFormConfig terrain')
+          , applyGlacierStage (terrainGlacier terrain') (terrainFormConfig terrain') wl
+          , applyParameterLayersStage (terrainParameters terrain') (terrainFormConfig terrain') wl
           , applyWaterTableStage (terrainWaterTable terrain')
           , classifyBiomesStage (worldBiome cfg) wl
           , updateVegetationFromBiomeStage (worldBiomeFeedback cfg) (terrainVegetation terrain')

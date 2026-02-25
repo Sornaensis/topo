@@ -49,7 +49,7 @@ import qualified SDL
 import Seer.Config (mapIntRange, mapRange)
 import Seer.Config.SliderSpec
 import Seer.World.Persist.Types (WorldSaveManifest(..))
-import Topo (BiomeId, ChunkCoord(..), ChunkId(..), ClimateChunk(..), PlateBoundary(..), TerrainChunk(..), TileCoord(..), TileIndex(..), VegetationChunk(..), WeatherChunk(..), WorldConfig(..), biomeDisplayName, chunkCoordFromTile, chunkIdFromCoord, plateBoundaryToCode, tileIndex)
+import Topo (BiomeId, ChunkCoord(..), ChunkId(..), ClimateChunk(..), DirectionalSlope(..), PlateBoundary(..), TerrainChunk(..), TerrainForm, TileCoord(..), TileIndex(..), VegetationChunk(..), WeatherChunk(..), WorldConfig(..), biomeDisplayName, chunkCoordFromTile, chunkIdFromCoord, dsAvgSlope, plateBoundaryToCode, terrainFormDisplayName, tileIndex)
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), tileLatitude, tileLongitude, formatLatLon)
 import Topo.Units (defaultUnitScales, normToC, normToMetres, normToMmYear, normToRH, normToWindMs, normToSoilM, normSlopeToDeg)
 import UI.Font (FontCache, textSize)
@@ -79,6 +79,7 @@ viewColor mode terrainCount biomeCount =
     ViewPlateHeight -> (90, 120 + scale biomeCount, 150)
     ViewPlateVelocity -> (90, 110 + scale biomeCount, 180)
     ViewVegetation -> (70, 150 + scale biomeCount, 50)
+    ViewTerrainForm -> (150, 130 + scale terrainCount, 90)
   where
     scale n = fromIntegral (min 75 (n * 5))
 
@@ -2606,7 +2607,9 @@ contextLines ui terrainSnap (q, r) =
       ]
     modeLines ViewBiome        s =
       [ "Biome  " <> biomeDisplayName (hsBiome s)
+      , "Form   " <> Text.pack (terrainFormDisplayName (hsTerrainForm s))
       , "Elev   " <> fmtU (normToMetres us (hsElevation s)) "m"
+      , "Slope  " <> fmtU (normSlopeToDeg us (hsSlope s)) "°"
       , "Precip " <> fmtU (normToMmYear us (hsPrecipAvg s)) "mm/yr"
       , "Humid  " <> fmtU (normToRH (hsHumidity s)) "% RH"
       , "Fert   " <> fmtF (hsFertility s)
@@ -2642,6 +2645,11 @@ contextLines ui terrainSnap (q, r) =
       , "Fert  " <> fmtF (hsFertility s)
       , "Moist " <> fmtU (normToRH (hsMoisture s)) "%"
       ]
+    modeLines ViewTerrainForm    s =
+      [ "Form  " <> Text.pack (terrainFormDisplayName (hsTerrainForm s))
+      , "Slope " <> fmtF (hsSlope s)
+      , "Elev  " <> fmtU (normToMetres us (hsElevation s)) "m"
+      ]
 
     fmtF = Text.pack . formatF
 
@@ -2667,6 +2675,7 @@ data HexSample = HexSample
   , hsPlateHeight    :: !Float
   , hsPlateVelX      :: !Float
   , hsPlateVelY      :: !Float
+  , hsTerrainForm    :: !TerrainForm
   }
 
 sampleAt :: TerrainSnapshot -> (Int, Int) -> Maybe HexSample
@@ -2686,7 +2695,7 @@ sampleAt terrainSnap (q, r)
         { hsChunk          = chunkCoord
         , hsLocal          = local
         , hsElevation      = tcElevation tc U.! idx
-        , hsSlope          = tcSlope tc U.! idx
+        , hsSlope          = dsAvgSlope (tcDirSlope tc U.! idx)
         , hsMoisture       = tcMoisture tc U.! idx
         , hsSoilDepth      = tcSoilDepth tc U.! idx
         , hsFertility      = tcFertility tc U.! idx
@@ -2704,6 +2713,7 @@ sampleAt terrainSnap (q, r)
         , hsPlateHeight    = tcPlateHeight tc U.! idx
         , hsPlateVelX      = tcPlateVelX tc U.! idx
         , hsPlateVelY      = tcPlateVelY tc U.! idx
+        , hsTerrainForm    = tcTerrainForm tc U.! idx
         }
 
 formatF :: Float -> String

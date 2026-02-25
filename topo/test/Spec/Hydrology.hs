@@ -22,7 +22,7 @@ spec = describe "Hydrology" $ do
               $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 1 0)) rightChunk world0
         pipeline = PipelineConfig
           { pipelineSeed = 1
-          , pipelineStages = [applyHydrologyStage defaultHydroConfig { hcWaterLevel = 0.2 }]
+          , pipelineStages = [applyHydrologyStage (defaultHydroConfig { hcWaterLevel = 0.2 }) defaultTerrainFormConfig]
           , pipelineSnapshots = False
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -339,15 +339,15 @@ spec = describe "Hydrology" $ do
           -- Erosion only
           pipeErosion = PipelineConfig
             { pipelineSeed = 42
-            , pipelineStages = [applyErosionStage defaultErosionConfig 0.5]
+            , pipelineStages = [applyErosionStage defaultErosionConfig defaultTerrainFormConfig 0.5]
             , pipelineSnapshots = False
             }
           -- Erosion + Hydrology
           pipeErosionHydro = PipelineConfig
             { pipelineSeed = 42
             , pipelineStages =
-                [ applyErosionStage defaultErosionConfig 0.5
-                , applyHydrologyStage defaultHydroConfig
+                [ applyErosionStage defaultErosionConfig defaultTerrainFormConfig 0.5
+                , applyHydrologyStage defaultHydroConfig defaultTerrainFormConfig
                 ]
             , pipelineSnapshots = False
             }
@@ -374,7 +374,7 @@ spec = describe "Hydrology" $ do
           world1 = setTerrainChunk (ChunkId 0) slopeChunk world0
           pipeline = PipelineConfig
             { pipelineSeed = 7
-            , pipelineStages = [applyHydrologyStage defaultHydroConfig]
+            , pipelineStages = [applyHydrologyStage defaultHydroConfig defaultTerrainFormConfig]
             , pipelineSnapshots = False
             }
           env = TopoEnv { teLogger = \_ -> pure () }

@@ -15,10 +15,9 @@ import GHC.Generics (Generic)
 import Topo.Config.JSON
   (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
    genericToJSON, genericParseJSON)
-import Topo.Types (BiomeId, TerrainForm,
+import Topo.Types (BiomeId, TerrainForm, isMontaneTerrain, isTransitionForm,
                    pattern BiomeShrubland, pattern BiomeMediterranean,
-                   pattern BiomeXericShrubland, pattern BiomeMoorland,
-                   pattern FormHilly, pattern FormMountainous)
+                   pattern BiomeXericShrubland, pattern BiomeMoorland)
 
 -- | Configuration for shrubland sub-biome classification.
 data ShrublandConfig = ShrublandConfig
@@ -74,7 +73,8 @@ refineShrubland cfg temp precip moisture fertility tf precipSeason
   | temp <= scMoorlandMaxTemp cfg
     && moisture >= scMoorlandMinMoisture cfg
     && fertility <= scMoorlandMaxFertility cfg
-    && (tf == FormHilly || tf == FormMountainous) = BiomeMoorland
+    && (isMontaneTerrain tf
+        || isTransitionForm tf)                   = BiomeMoorland
   | moisture <= scXericMaxMoisture cfg            = BiomeXericShrubland
   | temp >= scMediterraneanMinTemp cfg
     && precip <= scMediterraneanMaxPrecip cfg

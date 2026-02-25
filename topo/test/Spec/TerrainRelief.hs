@@ -30,6 +30,7 @@ import Topo.Parameters
   ( classifyTerrainForm
   , defaultTerrainFormConfig
   )
+import Topo.Types (DirectionalSlope(..))
 
 -- ---------------------------------------------------------------------------
 -- Constants
@@ -311,7 +312,8 @@ spec = do
                 rl = gridReliefAt x y
                 cv = gridCurvAt x y
                 lm = gridIsMin x y
-                form = classifyTerrainForm formCfg sl rl cv lm
+                ds = DirectionalSlope sl sl sl sl sl sl
+                form = classifyTerrainForm formCfg ds rl cv lm 0.5 0.5 0.0
             in form == FormFlat || form == FormRolling
 
           nFlatRolling = length (filter isFlat landIdxs)

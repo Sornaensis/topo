@@ -89,6 +89,7 @@ import Topo.Units
   , defaultUnitScales
   , normToC, cToNorm
   , normToMetres, metresToNorm
+  , normDepthToMetres, metresToNormDepth
   )
 import Topo.Climate.Config
   ( TemperatureConfig(..)
@@ -651,18 +652,18 @@ defaultRealOceanConfig =
 
 realToOceanConfig :: UnitScales -> RealOceanConfig -> OceanConfig
 realToOceanConfig s r = OceanConfig
-  { ocDeepThreshold    = metresToNorm s (rocDeepThreshold r)
+  { ocDeepThreshold    = metresToNormDepth s (rocDeepThreshold r)
   , ocCoralMinTemp     = cToNorm s (rocCoralMinTemp r)
-  , ocCoralMaxDepth    = metresToNorm s (rocCoralMaxDepth r)
+  , ocCoralMaxDepth    = metresToNormDepth s (rocCoralMaxDepth r)
   , ocCoralMaxSlope    = rocCoralMaxSlope r
   , ocCoralMinHardness = rocCoralMinHardness r
   }
 
 oceanConfigToReal :: UnitScales -> OceanConfig -> RealOceanConfig
 oceanConfigToReal s o = RealOceanConfig
-  { rocDeepThreshold    = normToMetres s (ocDeepThreshold o)
+  { rocDeepThreshold    = normDepthToMetres s (ocDeepThreshold o)
   , rocCoralMinTemp     = normToC s (ocCoralMinTemp o)
-  , rocCoralMaxDepth    = normToMetres s (ocCoralMaxDepth o)
+  , rocCoralMaxDepth    = normDepthToMetres s (ocCoralMaxDepth o)
   , rocCoralMaxSlope    = ocCoralMaxSlope o
   , rocCoralMinHardness = ocCoralMinHardness o
   }

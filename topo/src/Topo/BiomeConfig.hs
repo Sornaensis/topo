@@ -192,7 +192,7 @@ classifyChunk config rules thresholds waterLevel mWb terrain climate =
       adjWbt = maybe (U.replicate n WaterDry) wbAdjacentType mWb
   in classifyBiomesChunk config rules thresholds waterLevel wbt adjWbt
        (ccTempAvg climate) (ccPrecipAvg climate)
-       (tcElevation terrain) (tcSlope terrain) (tcRelief terrain)
+       (tcElevation terrain) (U.map dsAvgSlope (tcDirSlope terrain)) (tcRelief terrain)
        (tcMoisture terrain) (tcTerrainForm terrain)
        (ccHumidityAvg climate) (ccTempRange climate)
        (ccPrecipSeasonality climate)

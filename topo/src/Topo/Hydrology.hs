@@ -20,6 +20,11 @@ module Topo.Hydrology
   , breachRemainingSinks
     -- * Sink breaching (exported for testing, deprecated)
   , breachSinksLand
+    -- * Grid operations (exported for testing)
+  , flowAccumulation
+  , piedmontSmoothGrid
+  , carveRiversGrid
+  , alluvialDepositGrid
   ) where
 
 import Control.Monad (forM_, when, foldM)
@@ -36,14 +41,22 @@ import Topo.Config.JSON
    genericToJSON, genericParseJSON)
 import Topo.Math (clamp01)
 import Topo.Hex (hexNeighborIndices)
+import Topo.Parameters (TerrainFormConfig)
 import Topo.Pipeline (PipelineStage(..))
 import Control.Monad.Except (throwError)
 import Topo.Plugin (logInfo, getWorldP, putWorldP, PluginError(..))
 import Topo.River (RiverTopologyConfig(..), defaultRiverTopologyConfig, computeRiverSegments)
+import Topo.TerrainForm.Modifiers
+  ( TerrainFormModifiers(..)
+  , defaultTerrainFormModifiers
+  )
 import Topo.TerrainGrid
   ( buildElevationGrid
   , buildHardnessGrid
   , buildMoistureGrid
+  , buildPlateHardnessGrid
+  , classifyTerrainFormGrid
+  , gridSlopeAt
   , updateChunkElevationFromGrid
   , updateChunkMoistureFromGrid
   , chunkGridSlice
@@ -224,8 +237,14 @@ defaultGroundwaterConfig = GroundwaterConfig
   }
 
 -- | Apply hydrology routing and moisture derivation.
-applyHydrologyStage :: HydroConfig -> PipelineStage
-applyHydrologyStage cfg = PipelineStage "applyHydrology" "applyHydrology" $ do
+--
+-- The 'TerrainFormConfig' drives a lightweight pre-classification of
+-- terrain forms from the current elevation + plate hardness grids.
+-- Per-form modifiers ('defaultTerrainFormModifiers') then adjust river
+-- carving, bank erosion, stream-power erosion, deposition, coastal
+-- reshaping, piedmont smoothing, and wet-area erosion.
+applyHydrologyStage :: HydroConfig -> TerrainFormConfig -> PipelineStage
+applyHydrologyStage cfg formCfg = PipelineStage "applyHydrology" "applyHydrology" $ do
   logInfo "applyHydrology: routing flow + moisture"
   world <- getWorldP
   let config = twConfig world
@@ -239,28 +258,36 @@ applyHydrologyStage cfg = PipelineStage "applyHydrology" "applyHydrology" $ do
       gridH = (maxCy - minCy + 1) * size
       elev0 = buildElevationGrid config terrain (ChunkCoord minCx minCy) gridW gridH
       hardness = buildHardnessGrid config terrain (ChunkCoord minCx minCy) gridW gridH
+      plateHardness = buildPlateHardnessGrid config terrain (ChunkCoord minCx minCy) gridW gridH
+      -- Pre-classify terrain forms from current elevation + plate hardness.
+      wl = hcWaterLevel cfg
+      formGrid = classifyTerrainFormGrid formCfg wl gridW gridH elev0 plateHardness
+      modLookup = defaultTerrainFormModifiers
+      erosionMult   = U.map (tfmErosionRate . modLookup) formGrid
+      depositFactor = U.map (\f -> 1 - tfmDepositSuppression (modLookup f)) formGrid
+      smoothResist  = U.map (tfmSmoothResistance . modLookup) formGrid
+      flowBonus     = U.map (tfmFlowBonus . modLookup) formGrid
       -- Fill depressions so every land tile drains to the ocean.
       -- The filled surface is used ONLY for flow routing and accumulation;
       -- erosion is applied to the original terrain so the displayed surface
       -- matches the actual flow paths carved by erosion.
-      elev1 = fillDepressions (hcWaterLevel cfg) gridW gridH elev0
+      elev1 = fillDepressions wl gridW gridH elev0
       flow = flowDirections gridW gridH elev1
-      acc = flowAccumulation cfg elev1 flow
-      elevCarved = carveRiversGrid cfg gridW gridH elev0 acc hardness
-      elevBanks = riverBankErodeGrid cfg gridW gridH elevCarved acc hardness
-      elev2 = applyStreamPowerErosion cfg elevBanks flow acc hardness
-      elev3 = coastalErodeGrid cfg gridW gridH elev2 hardness
-      elev3b = piedmontSmoothGrid cfg gridW gridH elev3
-      elev4 = alluvialDepositGrid cfg gridW gridH elev3b acc
+      acc = flowAccumulation cfg flowBonus elev1 flow
+      elevCarved = carveRiversGrid cfg gridW gridH elev0 acc hardness erosionMult
+      elevBanks = riverBankErodeGrid cfg gridW gridH elevCarved acc hardness erosionMult
+      elev2 = applyStreamPowerErosion cfg elevBanks flow acc hardness erosionMult depositFactor
+      elev3 = coastalErodeGrid cfg gridW gridH elev2 hardness erosionMult smoothResist
+      elev3b = piedmontSmoothGrid cfg gridW gridH elev3 formGrid smoothResist
+      elev4 = alluvialDepositGrid cfg gridW gridH elev3b acc depositFactor
       moisture = moistureFromAccumulation cfg elev4 acc
-      elev5 = wetErodeGrid cfg gridW gridH elev4 moisture hardness
+      elev5 = wetErodeGrid cfg gridW gridH elev4 moisture hardness erosionMult
       -- Floor-clamp: the erosion chain (carve → bank → stream-power →
       -- coastal → piedmont → alluvial → wet) can push land tiles at or
       -- below waterLevel, creating inland "puddles".  flowDirectionsLand
       -- treats these as terminal sinks, so rivers terminate there
       -- instead of reaching the coast.  Clamp any originally-land tile
       -- that erosion pushed at-or-below waterLevel back to just above.
-      wl = hcWaterLevel cfg
       elevFinal = U.imap (\i h ->
         if elev0 U.! i > wl && h <= wl
           then wl + 1e-5
@@ -712,8 +739,16 @@ flowDirectionsLand waterLevel gridW gridH elev =
   where
     minimumByElevation = foldl1 (\a b -> if snd a <= snd b then a else b)
 
-flowAccumulation :: HydroConfig -> U.Vector Float -> U.Vector Int -> U.Vector Float
-flowAccumulation cfg elev flow = U.create $ do
+-- | Accumulate flow from high to low elevation.
+--
+-- The @flowBonus@ vector carries a per-tile additive multiplier from
+-- terrain form modifiers.  When a tile sends its accumulated flow
+-- downstream, the amount is scaled by @1 + bonus@.  Badlands (high
+-- runoff), passes (topographic funnelling), and valleys (flow
+-- convergence) all amplify downstream accumulation via positive
+-- bonuses.  Plateaus (negative bonus) reduce it.
+flowAccumulation :: HydroConfig -> U.Vector Float -> U.Vector Float -> U.Vector Int -> U.Vector Float
+flowAccumulation cfg flowBonus elev flow = U.create $ do
   let n = U.length elev
   acc <- UM.replicate n (hcBaseAccumulation cfg)
   let indices = sortBy (comparing (\i -> negate (elev U.! i))) [0 .. n - 1]
@@ -722,12 +757,13 @@ flowAccumulation cfg elev flow = U.create $ do
     if d >= 0
       then do
         v <- UM.read acc i
-        UM.modify acc (+ v) d
+        let bonus = flowBonus U.! i
+        UM.modify acc (+ v * (1 + bonus)) d
       else pure ()
   pure acc
 
-applyStreamPowerErosion :: HydroConfig -> U.Vector Float -> U.Vector Int -> U.Vector Float -> U.Vector Float -> U.Vector Float
-applyStreamPowerErosion cfg elev flow acc hardness = U.create $ do
+applyStreamPowerErosion :: HydroConfig -> U.Vector Float -> U.Vector Int -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float
+applyStreamPowerErosion cfg elev flow acc hardness erosionMult depositFactor = U.create $ do
   let n = U.length elev
   base <- U.thaw elev
   deposit <- UM.replicate n 0
@@ -739,8 +775,11 @@ applyStreamPowerErosion cfg elev flow acc hardness = U.create $ do
             h1 = elev U.! d
             slope = max 0 (h0 - h1)
             power = (acc U.! i) * slope
-            erosion = min (hcStreamPowerMaxErosion cfg) (power * hcStreamPowerScale cfg * hardnessFactor cfg (hardness U.! i))
+            erosion = min (hcStreamPowerMaxErosion cfg)
+                          (power * hcStreamPowerScale cfg * hardnessFactor cfg (hardness U.! i))
+                    * (erosionMult U.! i)
             depositAmt = erosion * hcStreamDepositRatio cfg
+                       * (depositFactor U.! d)
         UM.modify base (\v -> v - erosion) i
         UM.modify deposit (+ depositAmt) d
       else pure ()
@@ -749,8 +788,8 @@ applyStreamPowerErosion cfg elev flow acc hardness = U.create $ do
     UM.modify base (+ d) i
   pure base
 
-carveRiversGrid :: HydroConfig -> Int -> Int -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float
-carveRiversGrid cfg gridW gridH elev acc hardness =
+carveRiversGrid :: HydroConfig -> Int -> Int -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float
+carveRiversGrid cfg gridW gridH elev acc hardness erosionMult =
   let maxAcc = max (hcMinAccumulation cfg) (U.maximum acc)
       waterLevel = hcWaterLevel cfg
   in U.imap (carveAt maxAcc waterLevel) elev
@@ -758,13 +797,15 @@ carveRiversGrid cfg gridW gridH elev acc hardness =
     carveAt maxAcc waterLevel i h0 =
       let a = acc U.! i
           flowNorm = clamp01 (a / maxAcc)
-          depth = min (hcRiverCarveMaxDepth cfg) (flowNorm * hcRiverCarveScale cfg * hardnessFactor cfg (hardness U.! i))
+          depth = min (hcRiverCarveMaxDepth cfg)
+                      (flowNorm * hcRiverCarveScale cfg * hardnessFactor cfg (hardness U.! i))
+                * (erosionMult U.! i)
       in if h0 > waterLevel
           then h0 - depth
           else h0
 
-riverBankErodeGrid :: HydroConfig -> Int -> Int -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float
-riverBankErodeGrid cfg gridW gridH elev acc hardness =
+riverBankErodeGrid :: HydroConfig -> Int -> Int -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float
+riverBankErodeGrid cfg gridW gridH elev acc hardness erosionMult =
   let maxAcc = max (hcMinAccumulation cfg) (U.maximum acc)
       threshold = maxAcc * hcRiverBankThreshold cfg
   in U.generate (U.length elev) (bankAt threshold)
@@ -774,6 +815,7 @@ riverBankErodeGrid cfg gridW gridH elev acc hardness =
           neighborHigh = any (\j -> acc U.! j > threshold)
                              (hexNeighborIndices gridW gridH i)
           bankDepth = hcRiverBankDepth cfg * hardnessFactor cfg (hardness U.! i)
+                    * (erosionMult U.! i)
       in if neighborHigh then h0 - bankDepth else h0
 
 -- | Deposit alluvial sediment where rivers decelerate.
@@ -783,8 +825,12 @@ riverBankErodeGrid cfg gridW gridH elev acc hardness =
 -- A sink-protection guard prevents deposits from creating new local
 -- minima: the deposit is clamped so the tile never rises above the
 -- elevation of its lowest neighbour.
-alluvialDepositGrid :: HydroConfig -> Int -> Int -> U.Vector Float -> U.Vector Float -> U.Vector Float
-alluvialDepositGrid cfg gridW gridH elev acc =
+--
+-- The @depositFactor@ vector (1 \u2212 suppression) scales the raw deposit
+-- per tile, allowing terrain form modifiers to suppress deposition in
+-- e.g. canyons and cliffs.
+alluvialDepositGrid :: HydroConfig -> Int -> Int -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float
+alluvialDepositGrid cfg gridW gridH elev acc depositFactor =
   let maxAcc = max (hcMinAccumulation cfg) (U.maximum acc)
       maxSlope = hcAlluvialMaxSlope cfg
       waterLevel = hcWaterLevel cfg
@@ -799,14 +845,15 @@ alluvialDepositGrid cfg gridW gridH elev acc =
           slopeFactor = if slope >= maxSlope then 0 else clamp01 (1 - slope / maxSlope)
           rawDeposit = if h0 > waterLevel
                          then flowNorm * slopeFactor * hcAlluvialDepositScale cfg
+                              * (depositFactor U.! i)
                          else 0
           -- Sink guard: never raise above the lowest neighbour
           nbrMin = neighborMin gridW gridH elev i
           maxDeposit = if nbrMin > h0 then nbrMin - h0 else 0
       in h0 + min rawDeposit maxDeposit
 
-wetErodeGrid :: HydroConfig -> Int -> Int -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float
-wetErodeGrid cfg gridW gridH elev moisture hardness =
+wetErodeGrid :: HydroConfig -> Int -> Int -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float
+wetErodeGrid cfg gridW gridH elev moisture hardness erosionMult =
   let maxMoist = max (hcMinMoisture cfg) (U.maximum moisture)
       waterLevel = hcWaterLevel cfg
   in U.generate (U.length elev) (wetErodeAt maxMoist waterLevel)
@@ -815,33 +862,34 @@ wetErodeGrid cfg gridW gridH elev moisture hardness =
       let h0 = elev U.! i
           m = moisture U.! i / maxMoist
           depth = clamp01 m * hcWetErodeScale cfg * hardnessFactor cfg (hardness U.! i)
+                * (erosionMult U.! i)
       in if h0 > waterLevel then h0 - depth else h0
 
--- | Maximum absolute elevation difference to any of the 6 hex neighbours.
-gridSlopeAt :: Int -> Int -> U.Vector Float -> Int -> Float
-gridSlopeAt gridW gridH elev i =
-  let h0 = elev U.! i
-      nbrs = hexNeighborIndices gridW gridH i
-  in case nbrs of
-       [] -> 0
-       _  -> maximum [abs (elev U.! j - h0) | j <- nbrs]
 
-coastalErodeGrid :: HydroConfig -> Int -> Int -> U.Vector Float -> U.Vector Float -> U.Vector Float
-coastalErodeGrid cfg gridW gridH elev hardness =
+
+-- | Two-part coastal reshaping: erode land adjacent to water, raise
+-- shallow ocean adjacent to land.
+--
+-- The @erosionMult@ vector scales the land-lowering amount, and
+-- @smoothResist@ scales the ocean-raising amount (inverted: higher
+-- resistance means less shelf building).
+coastalErodeGrid :: HydroConfig -> Int -> Int -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float
+coastalErodeGrid cfg gridW gridH elev hardness erosionMult smoothResist =
   let waterLevel = hcWaterLevel cfg
       strength = hcCoastalErodeStrength cfg
       raiseFactor = hcCoastalRaiseFactor cfg
-  in U.generate (U.length elev) (coastalAt cfg gridW gridH waterLevel strength raiseFactor elev hardness)
+  in U.generate (U.length elev) (coastalAt cfg gridW gridH waterLevel strength raiseFactor elev hardness erosionMult smoothResist)
 
-coastalAt :: HydroConfig -> Int -> Int -> Float -> Float -> Float -> U.Vector Float -> U.Vector Float -> Int -> Float
-coastalAt cfg gridW gridH waterLevel strength raiseFactor elev hardness i =
+coastalAt :: HydroConfig -> Int -> Int -> Float -> Float -> Float -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float -> Int -> Float
+coastalAt cfg gridW gridH waterLevel strength raiseFactor elev hardness erosionMult smoothResist i =
   let h0 = elev U.! i
       localStrength = strength * hardnessFactor cfg (hardness U.! i)
       neighbors = map (elev U.!) (hexNeighborIndices gridW gridH i)
       anyWater = any (< waterLevel) neighbors
       anyLand = any (>= waterLevel) neighbors
-      lower = min localStrength (h0 - waterLevel)
-      raise = min (localStrength * raiseFactor) (waterLevel - h0)
+      lower = min (localStrength * (erosionMult U.! i)) (h0 - waterLevel)
+      resist = smoothResist U.! i
+      raise = min (localStrength * raiseFactor * (1 - resist)) (waterLevel - h0)
   in if h0 >= waterLevel && anyWater
       then h0 - max 0 lower
       else if h0 < waterLevel && anyLand
@@ -856,38 +904,56 @@ coastalAt cfg gridW gridH waterLevel strength raiseFactor elev hardness i =
 -- natural bajadas and pediments at mountain bases where talus
 -- and alluvial fans smooth the mountain-to-plain transition.
 --
--- Tiles outside the slope band or below sea level are untouched.
+-- The primary gate is 'FormFoothill' from the pre-classified terrain
+-- form grid.  Tiles not classified as foothills fall back to the
+-- legacy slope-band heuristic (slope in @[slopeMin, slopeMax]@ with
+-- a steeper neighbour).  This gives the best of both approaches:
+-- the form system captures the transition zone directly, while the
+-- fallback handles edge cases the classification might miss.
+--
+-- The @smoothResist@ vector attenuates the blend per tile, so that
+-- terrain forms with high smooth resistance (cliffs, escarpments)
+-- preserve their morphology even when they fall in the piedmont zone.
+--
+-- Tiles below sea level are untouched.
 piedmontSmoothGrid
   :: HydroConfig
-  -> Int            -- ^ Grid width
-  -> Int            -- ^ Grid height
-  -> U.Vector Float -- ^ Elevation grid
-  -> U.Vector Float -- ^ Smoothed elevation grid
-piedmontSmoothGrid cfg gridW gridH elev =
+  -> Int                   -- ^ Grid width
+  -> Int                   -- ^ Grid height
+  -> U.Vector Float        -- ^ Elevation grid
+  -> U.Vector TerrainForm  -- ^ Pre-classified terrain form grid
+  -> U.Vector Float        -- ^ Per-tile smooth resistance [0..1]
+  -> U.Vector Float        -- ^ Smoothed elevation grid
+piedmontSmoothGrid cfg gridW gridH elev formGrid smoothResist =
   let !slopeMin  = hcPiedmontSlopeMin cfg
       !slopeMax  = hcPiedmontSlopeMax cfg
       !strength  = hcPiedmontSmoothStrength cfg
       !wl        = hcWaterLevel cfg
   in U.generate (U.length elev) $ \i ->
        let h0   = elev U.! i
+           form = formGrid U.! i
            nbrs = hexNeighborIndices gridW gridH i
        in case nbrs of
             [] -> h0
             _  ->
               let slope = maximum [abs (elev U.! j - h0) | j <- nbrs]
-                  -- Determine whether any neighbour is significantly steeper
-                  -- (mountain above this tile).  True piedmont tiles sit at
-                  -- the base of mountain slopes.
+                  -- Primary gate: tile is classified as FormFoothill
+                  isFoothill = form == FormFoothill
+                  -- Fallback gate: slope-band heuristic with steeper
+                  -- neighbour requirement (legacy behaviour)
                   hasSteeperNbr = any (\j ->
                     let nSlope = maximum [abs (elev U.! k - elev U.! j)
                                         | k <- hexNeighborIndices gridW gridH j]
                     in nSlope > slopeMax) nbrs
+                  inSlopeBand = slope >= slopeMin && slope <= slopeMax && hasSteeperNbr
+                  eligible = isFoothill || inSlopeBand
                   nbrMean = sum (map (elev U.!) nbrs) / fromIntegral (length nbrs)
                   -- Smoothstep blend factor: 0 at slopeMin, 1 at slopeMax
                   t = clamp01 ((slope - slopeMin) / max 1e-6 (slopeMax - slopeMin))
+                  resist = smoothResist U.! i
                   -- Stronger smoothing in the middle of the band
-                  blend = strength * t * (1 - t) * 4
-              in if h0 > wl && slope >= slopeMin && slope <= slopeMax && hasSteeperNbr
+                  blend = strength * t * (1 - t) * 4 * (1 - resist)
+              in if h0 > wl && eligible
                    then h0 + blend * (nbrMean - h0)
                    else h0
 

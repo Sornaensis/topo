@@ -88,7 +88,7 @@ sampleAt chunkId coord world =
             w = weather
         in TerrainSample
             { tsElevation    = fieldOr 0 (tcElevation <$> t) i
-            , tsSlope        = fieldOr 0 (tcSlope <$> t) i
+            , tsDirSlope     = discreteOr zeroDirSlope (tcDirSlope <$> t) i
             , tsCurvature    = fieldOr 0 (tcCurvature <$> t) i
             , tsHardness     = fieldOr 0 (tcHardness <$> t) i
             , tsSoilDepth    = fieldOr 0 (tcSoilDepth <$> t) i
@@ -132,7 +132,7 @@ discreteOr fallback vec idx =
 zeroSample :: TerrainSample
 zeroSample = TerrainSample
   { tsElevation     = 0
-  , tsSlope         = 0
+  , tsDirSlope      = zeroDirSlope
   , tsCurvature     = 0
   , tsHardness      = 0
   , tsSoilDepth     = 0
@@ -180,7 +180,7 @@ bilerpSample fx fy s00 s10 s01 s11 =
       b2 a00 a10 a01 a11 = blend (mix a00 a10) (mix a01 a11)
   in TerrainSample
       { tsElevation    = b2 (tsElevation s00) (tsElevation s10) (tsElevation s01) (tsElevation s11)
-      , tsSlope        = b2 (tsSlope s00) (tsSlope s10) (tsSlope s01) (tsSlope s11)
+      , tsDirSlope     = bilerpDirSlope fx fy (tsDirSlope s00) (tsDirSlope s10) (tsDirSlope s01) (tsDirSlope s11)
       , tsCurvature    = b2 (tsCurvature s00) (tsCurvature s10) (tsCurvature s01) (tsCurvature s11)
       , tsHardness     = b2 (tsHardness s00) (tsHardness s10) (tsHardness s01) (tsHardness s11)
       , tsSoilDepth    = b2 (tsSoilDepth s00) (tsSoilDepth s10) (tsSoilDepth s01) (tsSoilDepth s11)
@@ -208,6 +208,23 @@ bilerpSample fx fy s00 s10 s01 s11 =
       , tsWaterBodyType = tsWaterBodyType s00
       }
 
+-- | Bilinear interpolation of 'DirectionalSlope' (component-wise).
+bilerpDirSlope :: Float -> Float -> DirectionalSlope -> DirectionalSlope -> DirectionalSlope -> DirectionalSlope -> DirectionalSlope
+bilerpDirSlope fx fy (DirectionalSlope e00 ne00 nw00 w00 sw00 se00)
+                     (DirectionalSlope e10 ne10 nw10 w10 sw10 se10)
+                     (DirectionalSlope e01 ne01 nw01 w01 sw01 se01)
+                     (DirectionalSlope e11 ne11 nw11 w11 sw11 se11) =
+  let b2 a00 a10 a01 a11 = let mix a b = a + (b - a) * fx
+                            in let top = mix a00 a10
+                                   bot = mix a01 a11
+                               in top + (bot - top) * fy
+  in DirectionalSlope
+       (b2 e00 e10 e01 e11)
+       (b2 ne00 ne10 ne01 ne11)
+       (b2 nw00 nw10 nw01 nw11)
+       (b2 w00 w10 w01 w11)
+       (b2 sw00 sw10 sw01 sw11)
+       (b2 se00 se10 se01 se11)
 -- ---------------------------------------------------------------------------
 -- Real-unit terrain sample
 -- ---------------------------------------------------------------------------
@@ -221,7 +238,7 @@ data TerrainSampleReal = TerrainSampleReal
   { tsrElevation     :: !Float
     -- ^ Elevation in metres above sea level.
   , tsrSlope         :: !Float
-    -- ^ Slope in degrees (0–~30°).
+    -- ^ Average slope in degrees (0–~30°).
   , tsrCurvature     :: !Float
     -- ^ Profile curvature (dimensionless, −1 to +1).
   , tsrHardness      :: !Float
@@ -282,7 +299,7 @@ data TerrainSampleReal = TerrainSampleReal
 convertSample :: UnitScales -> TerrainSample -> TerrainSampleReal
 convertSample us ts = TerrainSampleReal
   { tsrElevation     = normToMetres us (tsElevation ts)
-  , tsrSlope         = normSlopeToDeg us (tsSlope ts)
+  , tsrSlope         = normSlopeToDeg us (dsAvgSlope (tsDirSlope ts))
   , tsrCurvature     = tsCurvature ts
   , tsrHardness      = tsHardness ts
   , tsrSoilDepth     = normToSoilM us (tsSoilDepth ts)

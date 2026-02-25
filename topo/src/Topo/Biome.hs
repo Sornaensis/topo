@@ -382,7 +382,7 @@ classifyBiome (BiomeRule rules) thr wl wbt adjWbt temp precip elev slope relief 
   -- Cool + elevated + hilly/mountainous terrain (or steep slope)
   -- Wet → montane forest; dry → alpine shrub/grassland
   | temp < btMontaneMaxTemp thr && hASL > btMontaneMinASL thr
-    && isMontaneTerrain
+    && isMontaneTerrain_
   = if precip >= btMontanePrecip thr && humidity >= btMontaneMinHumidity thr
     then BiomeForest    -- montane forest (→ cloud forest / montane RF in refinement)
     else BiomeAlpine    -- dry montane → alpine shrub/grassland
@@ -390,10 +390,10 @@ classifyBiome (BiomeRule rules) thr wl wbt adjWbt temp precip elev slope relief 
   -- 4. Terrain-form overrides (non-mountain)
   | slope > btCliffSlope thr
   = BiomeAlpine        -- cliff faces → alpine/rock
-  | tform == FormValley && moisture >= btValleyMoisture thr
-  = BiomeSwamp         -- wet valley → wetland (refined later)
-  | tform == FormDepression && moisture >= btDepressionMoisture thr
-  = BiomeSwamp         -- wet depression → wetland (refined later)
+  | tform == FormEscarpment || tform == FormCanyon
+  = BiomeAlpine        -- steep face / canyon walls → alpine/rock (refined later)
+  | isCollectionForm tform && moisture >= btDepressionMoisture thr
+  = BiomeSwamp         -- wet collection zone → wetland (refined later)
 
   -- 5. Rule-table lookup + seasonality/continentality reclassification
   | otherwise
@@ -406,9 +406,10 @@ classifyBiome (BiomeRule rules) thr wl wbt adjWbt temp precip elev slope relief 
     -- Used as a minimum floor in the temperature-primary mountain guards.
     hASL = elev - wl
 
-    -- Montane terrain: hilly/mountainous form, or slope above threshold.
-    isMontaneTerrain =
-      tform == FormMountainous || tform == FormHilly
+    -- Montane terrain: hilly/mountainous form (or mountain-family forms
+    -- such as ridge/pass), or slope above threshold.
+    isMontaneTerrain_ =
+      isMontaneTerrain tform
       || slope >= btMontaneMinSlope thr
 
     -- Precipitation is weighted more heavily than temperature in the

@@ -16,13 +16,12 @@ import GHC.Generics (Generic)
 import Topo.Config.JSON
   (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
    genericToJSON, genericParseJSON)
-import Topo.Types (BiomeId, TerrainForm,
+import Topo.Types (BiomeId, TerrainForm, isMontaneTerrain,
                    pattern BiomeForest,
                    pattern BiomeTropicalDryForest, pattern BiomeTempDeciduousForest,
                    pattern BiomeTempConiferousForest, pattern BiomeMontaneForest,
                    pattern BiomeCloudForest, pattern BiomeTempRainforest,
-                   pattern BiomeTropicalSeasonalForest,
-                   pattern FormHilly, pattern FormMountainous)
+                   pattern BiomeTropicalSeasonalForest)
 
 -- | Configuration for forest sub-biome classification.
 data ForestConfig = ForestConfig
@@ -118,9 +117,9 @@ refineForest cfg elev temp precip hardness humidity slope tform precipSeason
     && temp >= fcCloudForestMinTemp cfg
     && precip >= fcCloudForestMinPrecip cfg
     && humidity >= fcCloudForestMinHumidity cfg
-    && isMontaneTerrain                        = BiomeCloudForest
+    && isMontaneTerrain_                       = BiomeCloudForest
   | elev >= fcMontaneMinElev cfg
-    && isMontaneTerrain                        = BiomeMontaneForest
+    && isMontaneTerrain_                       = BiomeMontaneForest
   | precip >= fcTempRainforestMinPrecip cfg
     && temp <= fcTempRainforestMaxTemp cfg
     && humidity >= fcTempRainforestMinHumidity cfg = BiomeTempRainforest
@@ -137,7 +136,8 @@ refineForest cfg elev temp precip hardness humidity slope tform precipSeason
     && hardness >= fcConiferousMinHardness cfg  = BiomeTempConiferousForest
   | otherwise                                  = BiomeForest
   where
-    -- Montane terrain: hilly/mountainous form, or slope above threshold.
-    isMontaneTerrain =
-      tform == FormHilly || tform == FormMountainous
+    -- Montane terrain: hilly/mountainous form (or mountain-family forms
+    -- such as ridge/pass), or slope above threshold.
+    isMontaneTerrain_ =
+      isMontaneTerrain tform
       || slope >= fcMontaneMinSlope cfg

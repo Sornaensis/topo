@@ -63,6 +63,7 @@ viewModeForKey key =
     SDL.Keycode7 -> Just ViewPlateBoundary
     SDL.Keycode8 -> Just ViewPlateHardness
     SDL.Keycode9 -> Just ViewVegetation
+    SDL.Keycode0 -> Just ViewTerrainForm
     _ -> Nothing
 
 clamp :: Ord a => a -> a -> a -> a
