@@ -53,6 +53,7 @@ import Topo.Config.JSON
   )
 import Topo.Math (clamp01)
 import Topo.Pipeline (PipelineStage(..))
+import Topo.Pipeline.Stage (StageId(..))
 import Topo.Plugin (logInfo, getWorldP, putWorldP, PluginError(..))
 import Topo.TerrainGrid
   ( validateTerrainGrid
@@ -380,7 +381,7 @@ improvedFertility cfg rzMoist depth grain =
 -- 'gwInfiltration', 'gwWaterTableDepth', and 'gwRootZoneMoisture' on
 -- each 'GroundwaterChunk'.
 applyWaterTableStage :: WaterTableConfig -> PipelineStage
-applyWaterTableStage cfg = PipelineStage "applyWaterTable" "applyWaterTable" $ do
+applyWaterTableStage cfg = PipelineStage StageWaterTable "applyWaterTable" "applyWaterTable" $ do
   logInfo "applyWaterTable: computing infiltration, water table, root-zone moisture"
   world <- getWorldP
   let config  = twConfig world

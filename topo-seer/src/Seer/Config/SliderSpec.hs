@@ -64,6 +64,8 @@ module Seer.Config.SliderSpec
   , specTfcHillSlope
   , specTfcRollingSlope
   , specValleyCurvature
+  , specTfcElevGradient
+  , specTfcPlateauMaxRelief2Ring
   , specRockElevationThreshold
   , specRockHardnessThreshold
   , specRockHardnessSecondary
@@ -380,6 +382,10 @@ tooltipForWidget wid = case wid of
   WidgetConfigTfcRollingSlopePlus    -> tip specTfcRollingSlope
   WidgetConfigValleyCurvatureMinus   -> tip specValleyCurvature
   WidgetConfigValleyCurvaturePlus    -> tip specValleyCurvature
+  WidgetConfigTfcElevGradientMinus   -> tip specTfcElevGradient
+  WidgetConfigTfcElevGradientPlus    -> tip specTfcElevGradient
+  WidgetConfigTfcPlateauMaxRelief2RingMinus -> tip specTfcPlateauMaxRelief2Ring
+  WidgetConfigTfcPlateauMaxRelief2RingPlus  -> tip specTfcPlateauMaxRelief2Ring
   WidgetConfigRockElevationThresholdMinus -> tip specRockElevationThreshold
   WidgetConfigRockElevationThresholdPlus  -> tip specRockElevationThreshold
   WidgetConfigRockHardnessThresholdMinus  -> tip specRockHardnessThreshold
@@ -716,6 +722,7 @@ tooltipForWidget wid = case wid of
   WidgetConfigTabWeather             -> Nothing
   WidgetConfigTabBiome               -> Nothing
   WidgetConfigTabErosion             -> Nothing
+  WidgetConfigTabPipeline            -> Nothing
   WidgetConfigPresetSave             -> Nothing
   WidgetConfigPresetLoad             -> Nothing
   WidgetConfigReset                  -> Nothing
@@ -750,6 +757,9 @@ tooltipForWidget wid = case wid of
   WidgetWorldLoadOk                  -> Nothing
   WidgetWorldLoadCancel              -> Nothing
   WidgetWorldLoadItem                -> Nothing
+  WidgetPipelineToggle _             -> Nothing
+  WidgetSimTick                      -> Nothing
+  WidgetSimAutoTick                  -> Nothing
   where
     tip :: SliderSpec -> Maybe Text
     tip = Just . ssTooltip
@@ -936,27 +946,35 @@ specPlateBiasSouth = SliderSpec
 
 specTfcCliffSlope :: SliderSpec
 specTfcCliffSlope = SliderSpec
-  "Cliff Slope" "Minimum slope threshold for cliff terrain classification" 0.1 0.8 False
+  "Cliff Slope" "Physical slope threshold for cliff classification" 0.05 0.50 False
 
 specTfcMountainSlope :: SliderSpec
 specTfcMountainSlope = SliderSpec
-  "Mountain Slope" "Minimum slope threshold for mountain terrain" 0.05 0.5 False
+  "Mountain Slope" "Physical top-3 slope threshold for mountain terrain" 0.02 0.20 False
 
 specTfcMountainRelief :: SliderSpec
 specTfcMountainRelief = SliderSpec
-  "Mountain Relief" "Minimum local relief for mountain classification" 0.05 0.5 False
+  "Mountain Relief" "3-ring relief threshold for mountain classification" 0.02 0.30 False
 
 specTfcHillSlope :: SliderSpec
 specTfcHillSlope = SliderSpec
-  "Hill Slope" "Minimum slope threshold for hill terrain" 0.02 0.2 False
+  "Hill Slope" "Physical top-3 slope threshold for hill terrain" 0.005 0.10 False
 
 specTfcRollingSlope :: SliderSpec
 specTfcRollingSlope = SliderSpec
-  "Rolling Slope" "Minimum slope threshold for rolling terrain" 0.005 0.1 False
+  "Rolling Slope" "Physical avg slope threshold for rolling terrain" 0.002 0.04 False
 
 specValleyCurvature :: SliderSpec
 specValleyCurvature = SliderSpec
   "Valley Curvature" "Curvature threshold for valley detection" 0.05 0.4 False
+
+specTfcElevGradient :: SliderSpec
+specTfcElevGradient = SliderSpec
+  "Elev Gradient" "Elevation gradient multiplier converting raw slope to physical slope" 0.1 2.0 False
+
+specTfcPlateauMaxRelief2Ring :: SliderSpec
+specTfcPlateauMaxRelief2Ring = SliderSpec
+  "Plateau Relief" "Max 2-ring relief for plateau classification" 0.005 0.10 False
 
 specRockElevationThreshold :: SliderSpec
 specRockElevationThreshold = SliderSpec

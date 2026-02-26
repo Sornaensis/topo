@@ -48,6 +48,7 @@ import Topo.Config.JSON
    genericToJSON, genericParseJSON)
 import Topo.Math (clamp01, iterateN)
 import Topo.Pipeline (PipelineStage(..))
+import Topo.Pipeline.Stage (StageId(..))
 import Topo.Planet (PlanetConfig(..), LatitudeMapping(..))
 import Topo.Plugin (logInfo, modifyWorldP)
 import Topo.TerrainGrid (buildElevationGrid, chunkCoordBounds, chunkGridSlice)
@@ -148,7 +149,7 @@ defaultVegetationBootstrapConfig = VegetationBootstrapConfig
 -- vegetation estimates (see GAP-V1 in plan.md).
 bootstrapVegetationStage :: VegetationBootstrapConfig -> Float -> PipelineStage
 bootstrapVegetationStage cfg waterLevel =
-    PipelineStage "bootstrapVegetation" "bootstrapVegetation" $ do
+    PipelineStage StageVegetation "bootstrapVegetation" "bootstrapVegetation" $ do
   logInfo "bootstrapVegetation: estimating cover + albedo"
   modifyWorldP $ \world ->
     let config = twConfig world
@@ -358,7 +359,7 @@ updateVegetationFromBiomeStage
   -> VegetationBootstrapConfig
   -> PipelineStage
 updateVegetationFromBiomeStage bfc vbc =
-    PipelineStage "updateVegetationFromBiome" "updateVegetationFromBiome" $ do
+    PipelineStage StageVegetationFeedback "updateVegetationFromBiome" "updateVegetationFromBiome" $ do
   logInfo "updateVegetationFromBiome: deriving vegetation from biome type"
   modifyWorldP $ \world ->
     let terrainMap = twTerrain world

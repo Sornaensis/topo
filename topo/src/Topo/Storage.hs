@@ -22,8 +22,8 @@ module Topo.Storage
 
 import Control.Monad (replicateM)
 import Data.Aeson (Value, decode, encode)
-import Data.Binary.Get (Get, getByteString, getFloatle, getInt32le, getWord32le, getWord64le, runGetOrFail)
-import Data.Binary.Put (Put, putByteString, putFloatle, putInt32le, putWord32le, putWord64le, runPut)
+import Data.Binary.Get (Get, getByteString, getDoublele, getFloatle, getInt32le, getWord32le, getWord64le, runGetOrFail)
+import Data.Binary.Put (Put, putByteString, putDoublele, putFloatle, putInt32le, putWord32le, putWord64le, runPut)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.IntMap.Strict (IntMap)
@@ -47,6 +47,7 @@ import Topo.Export
   , decodeRiverChunkV2
   , decodeTerrainChunk
   , decodeTerrainChunkV2
+  , decodeTerrainChunkV3
   , decodeVegetationChunk
   , decodeVegetationChunkV1
   , decodeWaterBodyChunk
@@ -61,7 +62,9 @@ import Topo.Export
   , encodeWaterBodyChunk
   , encodeWeatherChunk
   )
+import Topo.Calendar (WorldTime(..), PlanetAge(..), defaultWorldTime, defaultPlanetAge)
 import Topo.Hex (HexGridMeta(..), defaultHexGridMeta)
+import Topo.Overlay (Overlay(..), OverlayData(..), OverlayStore, emptyOverlayStore, insertOverlay)
 import Topo.Metadata
   ( Metadata(..)
   , MetadataCodec(..)
@@ -75,6 +78,7 @@ import Topo.PlateMetadata (PlateHexMeta)
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), defaultPlanetConfig, defaultWorldSlice, mkLatitudeMapping)
 import Topo.Types
 import Topo.Units (UnitScales(..), defaultUnitScales)
+import Topo.Weather (getWeatherFromOverlay, weatherChunkToOverlay, weatherOverlaySchema)
 import Topo.World
 
 -- | Storage-layer failures while encoding or decoding worlds.
@@ -127,7 +131,7 @@ encodeWorldWithProvenance prov world = do
   let config = twConfig world
   terrain <- encodeChunkMap config encodeTerrainChunk (twTerrain world)
   climate <- encodeChunkMap config encodeClimateChunk (twClimate world)
-  weather <- encodeChunkMap config encodeWeatherChunk (twWeather world)
+  weather <- encodeChunkMap config encodeWeatherChunk (getWeatherFromOverlay world)
   rivers <- encodeChunkMap config encodeRiverChunk (twRivers world)
   groundwater <- encodeChunkMap config encodeGroundwaterChunk (twGroundwater world)
   glaciers <- encodeChunkMap config encodeGlacierChunk (twGlaciers world)
@@ -143,9 +147,11 @@ encodeWorldWithProvenance prov world = do
     putMetadataStore (twMeta world)
     putPlanetConfig (twPlanet world)
     putWorldSlice (twSlice world)
-    putFloatle (twWorldTime world)
+    putWorldTime (twWorldTime world)
+    putPlanetAge (twPlanetAge world)
     putGenConfig (twGenConfig world)
     putUnitScales (twUnitScales world)
+    putOverlayManifest (twOverlayManifest world)
     putChunkMapBytes terrain
     putChunkMapBytes climate
     putChunkMapBytes weather
@@ -204,8 +210,18 @@ magic = BS.pack [0x54, 0x4f, 0x50, 0x4f]
 --         Files < v14 decode with twGenConfig = Nothing.
 --   * 15: UnitScales record stored after genConfig.
 --         Files < v15 decode with 'defaultUnitScales'.
+--   * 16: twWorldTime replaced by WorldTime (tick :: Word64, tickRate :: Float64).
+--         PlanetAge (years :: Float64) added.
+--         Files < v16 decode with 'defaultWorldTime' and 'defaultPlanetAge'.
+--   * 17: twOverlayManifest ([Text]) added after UnitScales.
+--         Lists overlay names that were active when saved.
+--         Files < v17 decode with twOverlayManifest = [].
+--   * 18: (no terrain chunk schema change)
+--   * 19: terrain chunks include tcRelief2Ring and tcRelief3Ring
+--         (2-ring and 3-ring neighbourhood relief, both U.Vector Float).
+--         Files < v19 decode with zero vectors via decodeTerrainChunkV3.
 fileVersion :: Word32
-fileVersion = 15
+fileVersion = 19
 
 defaultMetadataCodecs :: [MetadataCodec]
 defaultMetadataCodecs =
@@ -268,19 +284,47 @@ getWorldWithProvenance codecs = do
   (planet, slice) <- if version >= 9
     then (,) <$> getPlanetConfig <*> getWorldSlice
     else pure (defaultPlanetConfig, defaultWorldSlice)
-  worldTime <- if version >= 10
-    then getFloatle
-    else pure 0
+  worldTime <- if version >= 16
+    then getWorldTime
+    else if version >= 10
+      then do
+        -- Legacy: discard the old Float32 world time value.
+        -- It was only meaningful relative to wcSeasonCycleLength.
+        _ <- getFloatle
+        pure defaultWorldTime
+      else pure defaultWorldTime
+  planetAge <- if version >= 16
+    then getPlanetAge
+    else pure defaultPlanetAge
   genConfig <- if version >= 14
     then getGenConfig
     else pure Nothing
   unitScales <- if version >= 15
     then getUnitScales
     else pure defaultUnitScales
-  let terrainDecoder = if version < 3 then decodeTerrainChunkV2 else decodeTerrainChunk
+  overlayManifest <- if version >= 17
+    then getOverlayManifest
+    else pure []
+  let terrainDecoder
+        | version < 3  = decodeTerrainChunkV2
+        | version < 19 = decodeTerrainChunkV3
+        | otherwise    = decodeTerrainChunk
   terrain <- getChunkMap terrainDecoder config
   climate <- getChunkMap (if version >= 13 then decodeClimateChunk else decodeClimateChunkV1) config
-  weather <- getChunkMap decodeWeatherChunk config
+  -- v18+: weather data lives in the overlay store; the ChunkMap section
+  -- is still read for backward compatibility with older files that wrote
+  -- weather inline.  Non-empty ChunkMaps are migrated into the overlay.
+  weatherLegacy <- getChunkMap decodeWeatherChunk config
+  let -- Populate overlay store from decoded weather ChunkMap when present
+      weatherOverlays
+        | IntMap.null weatherLegacy = emptyOverlayStore
+        | otherwise =
+            let overlayChunks = IntMap.map weatherChunkToOverlay weatherLegacy
+                overlay = Overlay
+                  { ovSchema = weatherOverlaySchema
+                  , ovData   = DenseData overlayChunks
+                  }
+            in insertOverlay overlay emptyOverlayStore
   rivers <- if version >= 5
     then getChunkMap (if version >= 11 then decodeRiverChunk
                       else if version >= 6 then decodeRiverChunkV2
@@ -298,7 +342,6 @@ getWorldWithProvenance codecs = do
     , TerrainWorld
         { twTerrain = terrain
         , twClimate = climate
-        , twWeather = weather
         , twRivers = rivers
         , twGroundwater = groundwater
         , twVolcanism = volcanism
@@ -312,8 +355,11 @@ getWorldWithProvenance codecs = do
         , twSlice = slice
         , twLatMapping = mkLatitudeMapping planet slice config
         , twWorldTime = worldTime
+        , twPlanetAge = planetAge
         , twGenConfig = genConfig
         , twUnitScales = unitScales
+        , twOverlays = weatherOverlays
+        , twOverlayManifest = overlayManifest
         }
     )
 
@@ -599,6 +645,42 @@ getUnitScales = do
     , usPressureRange = pressureRange
     , usSoilScale     = soilScale
     }
+
+-- | Encode a 'WorldTime' as Word64 (tick) + Float64 (tickRate).
+putWorldTime :: WorldTime -> Put
+putWorldTime wt = do
+  putWord64le (wtTick wt)
+  putDoublele (wtTickRate wt)
+
+-- | Decode a 'WorldTime' from Word64 + Float64.
+getWorldTime :: Get WorldTime
+getWorldTime = do
+  tick     <- getWord64le
+  tickRate <- getDoublele
+  pure WorldTime { wtTick = tick, wtTickRate = tickRate }
+
+-- | Encode a 'PlanetAge' as Float64 (years).
+putPlanetAge :: PlanetAge -> Put
+putPlanetAge pa =
+  putDoublele (paYears pa)
+
+-- | Decode a 'PlanetAge' from Float64.
+getPlanetAge :: Get PlanetAge
+getPlanetAge = do
+  years <- getDoublele
+  pure PlanetAge { paYears = years }
+
+-- | Encode the overlay manifest as a counted list of length-prefixed texts.
+putOverlayManifest :: [Text] -> Put
+putOverlayManifest names = do
+  putWord32le (fromIntegral (length names))
+  mapM_ putText names
+
+-- | Decode the overlay manifest: a counted list of overlay names.
+getOverlayManifest :: Get [Text]
+getOverlayManifest = do
+  count <- fromIntegral <$> getWord32le
+  replicateM count getText
 
 putHexCoord :: HexCoord -> Put
 putHexCoord coord =

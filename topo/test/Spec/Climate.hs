@@ -23,7 +23,7 @@ spec = describe "Climate" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 9
           , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world1
@@ -45,7 +45,7 @@ spec = describe "Climate" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 11
           , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world1
@@ -69,7 +69,7 @@ spec = describe "Climate" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 42
           , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world1
@@ -92,7 +92,7 @@ spec = describe "Climate" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 42
           , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world1
@@ -133,7 +133,7 @@ spec = describe "Climate" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 24
           , pipelineStages = [generateClimateStage climateCfg defaultWeatherConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world1
@@ -171,7 +171,7 @@ spec = describe "Climate" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 31
           , pipelineStages = [generateClimateStage climateCfg defaultWeatherConfig waterLevel]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world1
@@ -194,7 +194,7 @@ spec = describe "Climate" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 7
           , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world1
@@ -217,7 +217,7 @@ spec = describe "Climate" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 9
           , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world1
@@ -242,7 +242,7 @@ spec = describe "Climate" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 77
           , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     resultEq <- runPipeline pipeline env (setupWorld worldEq)
@@ -265,7 +265,7 @@ spec = describe "Climate" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 88
           , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     resultD <- runPipeline pipeline env (setTerrainChunk cid terrain worldDefault)
@@ -294,7 +294,7 @@ spec = describe "Climate" $ do
               pipeline = PipelineConfig
                 { pipelineSeed = 99
                 , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
-                , pipelineSnapshots = False
+                , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
                 }
               env = TopoEnv { teLogger = \_ -> pure () }
           resultEq <- runPipeline pipeline env (setTerrainChunk cid terrain worldEq)
@@ -320,7 +320,7 @@ spec = describe "Climate" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 55
           , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result15 <- runPipeline pipeline env (setTerrainChunk cid terrain world15)
@@ -365,7 +365,7 @@ spec = describe "Climate" $ do
               pipeline = PipelineConfig
                 { pipelineSeed   = 99
                 , pipelineStages = [generateClimateStage climateCfg defaultWeatherConfig 0.5]
-                , pipelineSnapshots = False
+                , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
                 }
               env = TopoEnv { teLogger = \_ -> pure () }
           resultEq <- runPipeline pipeline env (setTerrainChunk cid terrain worldEq)
@@ -391,7 +391,7 @@ spec = describe "Climate" $ do
         pipeline = PipelineConfig
           { pipelineSeed   = 42
           , pipelineStages = [generateClimateStage climateCfg defaultWeatherConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     resultD <- runPipeline pipeline env worldD
@@ -425,7 +425,7 @@ spec = describe "Climate" $ do
         pipeline = PipelineConfig
           { pipelineSeed   = 55
           , pipelineStages = [generateClimateStage climateCfg defaultWeatherConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world1
@@ -457,7 +457,7 @@ spec = describe "Climate" $ do
               pipeline = PipelineConfig
                 { pipelineSeed   = 33
                 , pipelineStages = [generateClimateStage climateCfg defaultWeatherConfig 0.5]
-                , pipelineSnapshots = False
+                , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
                 }
               env = TopoEnv { teLogger = \_ -> pure () }
           resultSL <- runPipeline pipeline env worldSL
@@ -486,7 +486,7 @@ spec = describe "Climate" $ do
         pipeline = PipelineConfig
           { pipelineSeed   = 42
           , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world1
@@ -525,7 +525,7 @@ spec = describe "Climate" $ do
         pipeline = PipelineConfig
           { pipelineSeed   = 42
           , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world1
@@ -567,7 +567,7 @@ spec = describe "Climate" $ do
               pipeline = PipelineConfig
                 { pipelineSeed   = 100
                 , pipelineStages = [generateClimateStage climateCfg defaultWeatherConfig 0.5]
-                , pipelineSnapshots = False
+                , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
                 }
           in (pipeline, w2)
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -606,7 +606,7 @@ spec = describe "Climate" $ do
         pipeline = PipelineConfig
           { pipelineSeed   = 77
           , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
         buildWorld baseW = setTerrainChunk oceanId ocean
@@ -632,7 +632,7 @@ spec = describe "Climate" $ do
         pipeline = PipelineConfig
           { pipelineSeed   = 42
           , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world0
@@ -676,7 +676,7 @@ spec = describe "Climate" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 42
           , pipelineStages = [generateClimateStage climateCfg defaultWeatherConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     resultIce <- runPipeline pipeline env (makeWorld iceVeg)
@@ -718,7 +718,7 @@ spec = describe "Climate" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 42
           , pipelineStages = [generateClimateStage climateCfg defaultWeatherConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     resultForest <- runPipeline pipeline env (makeWorld forestVeg)
@@ -789,7 +789,7 @@ spec = describe "Climate" $ do
         pipeline = PipelineConfig
           { pipelineSeed   = 42
           , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world1

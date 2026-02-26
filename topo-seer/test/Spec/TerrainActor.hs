@@ -20,6 +20,7 @@ import Actor.Terrain
   , terrainActorDef
   , startTerrainGen
   )
+import Actor.Simulation (simulationActorDef)
 import Topo (WorldConfig(..))
 import Topo.WorldGen (defaultWorldGenConfig)
 
@@ -68,10 +69,14 @@ spec = describe "TerrainActor" $ do
   it "runs generation and replies with a result" $ withSystem $ \system -> do
     terrainHandle <- getSingleton system terrainActorDef
     replyHandle <- getSingleton system terrainReplyTestActorDef
+    simHandle <- getSingleton system simulationActorDef
     let req = TerrainGenRequest
           { tgrSeed = 123
           , tgrWorldConfig = WorldConfig { wcChunkSize = 8 }
           , tgrGenConfig = defaultWorldGenConfig
+          , tgrDisabledStages = mempty
+          , tgrExtraStages = []
+          , tgrSimHandle = simHandle
           }
     startTerrainGen terrainHandle (replyTo @TerrainReplyOps replyHandle) req
     result <- await 50 (trsResult <$> call @"snapshot" replyHandle #snapshot ())

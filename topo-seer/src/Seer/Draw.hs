@@ -11,6 +11,7 @@ module Seer.Draw
   , drawConfigTabs
   , drawLeftTabs
   , drawViewModeButtons
+  , drawOverlayButtons
   , drawLogFilters
   , drawLogLines
   , drawLogScrollbar
@@ -33,12 +34,13 @@ module Seer.Draw
 import Actor.Data (DataSnapshot(..), TerrainSnapshot(..))
 import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshot(..))
 import Actor.UI (ConfigTab(..), LeftTab(..), UiMenuMode(..), UiState(..), ViewMode(..), configRowCount)
-import Control.Monad (when)
+import Control.Monad (when, forM_)
 import Data.Int (Int32)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (sort)
 import Data.Maybe (mapMaybe)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time.Format (defaultTimeLocale, formatTime)
@@ -50,6 +52,7 @@ import Seer.Config (mapIntRange, mapRange)
 import Seer.Config.SliderSpec
 import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Topo (BiomeId, ChunkCoord(..), ChunkId(..), ClimateChunk(..), DirectionalSlope(..), PlateBoundary(..), TerrainChunk(..), TerrainForm, TileCoord(..), TileIndex(..), VegetationChunk(..), WeatherChunk(..), WorldConfig(..), biomeDisplayName, chunkCoordFromTile, chunkIdFromCoord, dsAvgSlope, dsMaxSlope, dsMinSlope, plateBoundaryToCode, terrainFormDisplayName, tileIndex)
+import Topo.Pipeline.Stage (StageId, allBuiltinStageIds, stageCanonicalName)
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), tileLatitude, tileLongitude, formatLatLon)
 import Topo.Units (defaultUnitScales, normToC, normToMetres, normToMmYear, normToRH, normToWindMs, normToSoilM, normSlopeToDeg)
 import UI.Font (FontCache, textSize)
@@ -80,6 +83,7 @@ viewColor mode terrainCount biomeCount =
     ViewPlateVelocity -> (90, 110 + scale biomeCount, 180)
     ViewVegetation -> (70, 150 + scale biomeCount, 50)
     ViewTerrainForm -> (150, 130 + scale terrainCount, 90)
+    ViewOverlay _ _ -> (180, 120 + scale biomeCount, 200)
   where
     scale n = fromIntegral (min 75 (n * 5))
 
@@ -124,14 +128,15 @@ logTextYOffset (Just cache) lineHeight = do
   V2 _ th <- textSize cache (V4 255 255 255 255) "Ag"
   pure (max 1 ((lineHeight - fromIntegral th) `div` 2))
 
-drawConfigTabs :: SDL.Renderer -> UiState -> (Rect, Rect, Rect, Rect, Rect, Rect) -> IO ()
-drawConfigTabs renderer ui (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion) = do
+drawConfigTabs :: SDL.Renderer -> UiState -> (Rect, Rect, Rect, Rect, Rect, Rect, Rect) -> IO ()
+drawConfigTabs renderer ui (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline) = do
   drawTab tabTerrain (uiConfigTab ui == ConfigTerrain)
   drawTab tabPlanet (uiConfigTab ui == ConfigPlanet)
   drawTab tabClimate (uiConfigTab ui == ConfigClimate)
   drawTab tabWeather (uiConfigTab ui == ConfigWeather)
   drawTab tabBiome (uiConfigTab ui == ConfigBiome)
   drawTab tabErosion (uiConfigTab ui == ConfigErosion)
+  drawTab tabPipeline (uiConfigTab ui == ConfigPipeline)
   where
     drawTab rect isActive = do
       let fill = if isActive then V4 70 90 120 255 else V4 50 60 75 255
@@ -174,6 +179,35 @@ drawViewModeButtons renderer mode (r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11,
   SDL.fillRect renderer (Just (rectToSDL r11))
   SDL.rendererDrawColor renderer SDL.$= V4 90 (modeColor ViewPlateVelocity mode) 140 255
   SDL.fillRect renderer (Just (rectToSDL r12))
+
+-- | Draw overlay/field cycling buttons below the view-mode grid.
+--
+-- Shows two rows:
+--   Row 1: @\"\9664 Ov\"@ / @\"Ov \9654\"@ (cycle overlay name)
+--   Row 2: @\"\9664 Fld\"@ / @\"Fld \9654\"@ (cycle overlay field)
+--
+-- Buttons are highlighted when an overlay view-mode is active.
+drawOverlayButtons :: SDL.Renderer -> Maybe FontCache -> UiState -> (Rect, Rect, Rect, Rect) -> IO ()
+drawOverlayButtons renderer fontCache ui (oPrev, oNext, fPrev, fNext) = do
+  let isOverlay = case uiViewMode ui of
+        ViewOverlay _ _ -> True
+        _               -> False
+      activeColor  = V4 160 100 200 255
+      passiveColor = V4 80 70 100 255
+      labelColor   = V4 230 230 240 255
+      btnColor     = if isOverlay then activeColor else passiveColor
+  -- Overlay prev/next
+  SDL.rendererDrawColor renderer SDL.$= btnColor
+  SDL.fillRect renderer (Just (rectToSDL oPrev))
+  SDL.fillRect renderer (Just (rectToSDL oNext))
+  drawCentered fontCache labelColor oPrev "\9664 Ov"
+  drawCentered fontCache labelColor oNext "Ov \9654"
+  -- Field prev/next
+  SDL.rendererDrawColor renderer SDL.$= btnColor
+  SDL.fillRect renderer (Just (rectToSDL fPrev))
+  SDL.fillRect renderer (Just (rectToSDL fNext))
+  drawCentered fontCache labelColor fPrev "\9664 Fld"
+  drawCentered fontCache labelColor fNext "Fld \9654"
 
 drawLogFilters :: SDL.Renderer -> Maybe FontCache -> LogLevel -> (Rect, Rect, Rect, Rect) -> IO ()
 drawLogFilters renderer fontCache minLevel (r1, r2, r3, r4) = do
@@ -346,13 +380,15 @@ drawConfigPanel
   :: SDL.Renderer
   -> UiState
   -> Rect
-  -> (Rect, Rect, Rect, Rect, Rect, Rect)
+  -> (Rect, Rect, Rect, Rect, Rect, Rect, Rect)
   -> Rect
   -> Rect
   -> Rect
   -> Rect
   -> Rect
   -> Rect
+  -> (Rect, Rect, Rect)
+  -> (Rect, Rect, Rect)
   -> (Rect, Rect, Rect)
   -> (Rect, Rect, Rect)
   -> (Rect, Rect, Rect)
@@ -562,7 +598,7 @@ drawConfigPanel
   -> (Rect, Rect, Rect)
   -> (Rect, Rect, Rect)
   -> IO ()
-drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion) presetSaveRect presetLoadRect resetRect revertRect scrollAreaRect scrollBarRect
+drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline) presetSaveRect presetLoadRect resetRect revertRect scrollAreaRect scrollBarRect
   (waterMinus, waterBar, waterPlus)
   (orographicLiftMinus, orographicLiftBar, orographicLiftPlus)
   (rainShadowLossMinus, rainShadowLossBar, rainShadowLossPlus)
@@ -720,6 +756,8 @@ drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather,
   (tfcHillSlopeMinus, tfcHillSlopeBar, tfcHillSlopePlus)
   (tfcRollingSlopeMinus, tfcRollingSlopeBar, tfcRollingSlopePlus)
   (valleyCurvatureMinus, valleyCurvatureBar, valleyCurvaturePlus)
+  (tfcElevGradientMinus, tfcElevGradientBar, tfcElevGradientPlus)
+  (tfcPlateauMaxRelief2RingMinus, tfcPlateauMaxRelief2RingBar, tfcPlateauMaxRelief2RingPlus)
   (rockElevationThresholdMinus, rockElevationThresholdBar, rockElevationThresholdPlus)
   (rockHardnessThresholdMinus, rockHardnessThresholdBar, rockHardnessThresholdPlus)
   (rockHardnessSecondaryMinus, rockHardnessSecondaryBar, rockHardnessSecondaryPlus)
@@ -775,14 +813,14 @@ drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather,
     then do
       SDL.rendererDrawColor renderer SDL.$= V4 35 45 60 230
       SDL.fillRect renderer (Just (rectToSDL rect))
-      drawConfigTabs renderer ui (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion)
+      drawConfigTabs renderer ui (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline)
       SDL.rendererDrawColor renderer SDL.$= V4 30 38 52 230
       SDL.fillRect renderer (Just (rectToSDL scrollAreaRect))
       SDL.rendererDrawColor renderer SDL.$= V4 60 70 90 255
       SDL.drawRect renderer (Just (rectToSDL scrollAreaRect))
       let rowHeight = 24
           gap = 10
-          rows = configRowCount (uiConfigTab ui)
+          rows = configRowCount (uiConfigTab ui) ui
           contentHeight = max rowHeight (configRowTopPad + rows * rowHeight + max 0 (rows - 1) * gap)
           Rect (V2 _ _ , V2 _ scrollH) = scrollAreaRect
           maxOffset = max 0 (contentHeight - scrollH)
@@ -841,6 +879,8 @@ drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather,
           drawConfigSlider renderer (uiTfcHillSlope ui) (scrollRect tfcHillSlopeMinus) (scrollRect tfcHillSlopeBar) (scrollRect tfcHillSlopePlus) (V4 120 130 110 255)
           drawConfigSlider renderer (uiTfcRollingSlope ui) (scrollRect tfcRollingSlopeMinus) (scrollRect tfcRollingSlopeBar) (scrollRect tfcRollingSlopePlus) (V4 110 140 120 255)
           drawConfigSlider renderer (uiValleyCurvature ui) (scrollRect valleyCurvatureMinus) (scrollRect valleyCurvatureBar) (scrollRect valleyCurvaturePlus) (V4 100 140 140 255)
+          drawConfigSlider renderer (uiTfcElevGradient ui) (scrollRect tfcElevGradientMinus) (scrollRect tfcElevGradientBar) (scrollRect tfcElevGradientPlus) (V4 100 130 150 255)
+          drawConfigSlider renderer (uiTfcPlateauMaxRelief2Ring ui) (scrollRect tfcPlateauMaxRelief2RingMinus) (scrollRect tfcPlateauMaxRelief2RingBar) (scrollRect tfcPlateauMaxRelief2RingPlus) (V4 110 120 150 255)
           drawConfigSlider renderer (uiRockElevationThreshold ui) (scrollRect rockElevationThresholdMinus) (scrollRect rockElevationThresholdBar) (scrollRect rockElevationThresholdPlus) (V4 140 130 120 255)
           drawConfigSlider renderer (uiRockHardnessThreshold ui) (scrollRect rockHardnessThresholdMinus) (scrollRect rockHardnessThresholdBar) (scrollRect rockHardnessThresholdPlus) (V4 130 130 130 255)
           drawConfigSlider renderer (uiRockHardnessSecondary ui) (scrollRect rockHardnessSecondaryMinus) (scrollRect rockHardnessSecondaryBar) (scrollRect rockHardnessSecondaryPlus) (V4 120 130 140 255)
@@ -1004,6 +1044,112 @@ drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather,
           drawConfigSlider renderer (uiMinLakeSize ui) (scrollRect minLakeSizeMinus) (scrollRect minLakeSizeBar) (scrollRect minLakeSizePlus) (V4 60 140 180 255)
           drawConfigSlider renderer (uiInlandSeaMinSize ui) (scrollRect inlandSeaMinSizeMinus) (scrollRect inlandSeaMinSizeBar) (scrollRect inlandSeaMinSizePlus) (V4 50 130 170 255)
           drawConfigSlider renderer (uiRoughnessScale ui) (scrollRect roughnessScaleMinus) (scrollRect roughnessScaleBar) (scrollRect roughnessScalePlus) (V4 110 130 140 255)
+        ConfigPipeline -> do
+          let stages = allBuiltinStageIds
+              disabled = uiDisabledStages ui
+              plugins = uiPluginNames ui
+              checkboxSize = 16
+              Rect (V2 sx sy, V2 sw _sh) = scrollAreaRect
+              pad = 12
+          forM_ (zip [0..] stages) $ \(idx, sid) -> do
+            let baseY = sy + configRowTopPad + idx * (rowHeight + gap)
+                ry = baseY - scrollY
+                isDisabled = Set.member sid disabled
+                checkX = sx + pad
+                checkY = ry + (rowHeight - checkboxSize) `div` 2
+                -- Checkbox fill
+                checkColor = if isDisabled
+                  then V4 60 60 70 200
+                  else V4 70 150 90 255
+                borderColor = if isDisabled
+                  then V4 80 80 90 200
+                  else V4 100 180 120 255
+            -- Checkbox background
+            SDL.rendererDrawColor renderer SDL.$= checkColor
+            SDL.fillRect renderer (Just (rectToSDL (Rect (V2 checkX checkY, V2 checkboxSize checkboxSize))))
+            -- Checkbox border
+            SDL.rendererDrawColor renderer SDL.$= borderColor
+            SDL.drawRect renderer (Just (rectToSDL (Rect (V2 checkX checkY, V2 checkboxSize checkboxSize))))
+          -- Plugin rows after built-in stages
+          let pluginOffset = length stages
+          forM_ (zip [0..] plugins) $ \(idx, _pName) -> do
+            let baseY = sy + configRowTopPad + (pluginOffset + idx) * (rowHeight + gap)
+                ry = baseY - scrollY
+                checkX = sx + pad
+                checkY = ry + (rowHeight - checkboxSize) `div` 2
+                pluginColor = V4 100 90 160 255
+                pluginBorder = V4 130 120 190 255
+            -- Plugin indicator (purple checkbox)
+            SDL.rendererDrawColor renderer SDL.$= pluginColor
+            SDL.fillRect renderer (Just (rectToSDL (Rect (V2 checkX checkY, V2 checkboxSize checkboxSize))))
+            SDL.rendererDrawColor renderer SDL.$= pluginBorder
+            SDL.drawRect renderer (Just (rectToSDL (Rect (V2 checkX checkY, V2 checkboxSize checkboxSize))))
+            -- Move-up / move-down arrow buttons
+            let btnSize = 14
+                rightPad' = 12
+                btnY = ry + (rowHeight - btnSize) `div` 2
+                upX = sx + sw - rightPad' - btnSize * 2 - 4
+                downX = sx + sw - rightPad' - btnSize
+                arrowColor = V4 150 150 170 255
+                arrowBorder = V4 100 100 120 255
+            -- Up arrow button background + border
+            SDL.rendererDrawColor renderer SDL.$= V4 50 50 65 255
+            SDL.fillRect renderer (Just (rectToSDL (Rect (V2 upX btnY, V2 btnSize btnSize))))
+            SDL.rendererDrawColor renderer SDL.$= arrowBorder
+            SDL.drawRect renderer (Just (rectToSDL (Rect (V2 upX btnY, V2 btnSize btnSize))))
+            -- Up arrow triangle (▲)
+            SDL.rendererDrawColor renderer SDL.$= arrowColor
+            let upMidX = upX + btnSize `div` 2
+                upTop = btnY + 3
+                upBot = btnY + btnSize - 3
+            forM_ [upTop .. upBot] $ \row -> do
+              let halfW = (row - upTop) * (btnSize `div` 2 - 2) `div` max 1 (upBot - upTop)
+              SDL.drawLine renderer
+                (SDL.P (V2 (fromIntegral (upMidX - halfW)) (fromIntegral row)))
+                (SDL.P (V2 (fromIntegral (upMidX + halfW)) (fromIntegral row)))
+            -- Down arrow button background + border
+            SDL.rendererDrawColor renderer SDL.$= V4 50 50 65 255
+            SDL.fillRect renderer (Just (rectToSDL (Rect (V2 downX btnY, V2 btnSize btnSize))))
+            SDL.rendererDrawColor renderer SDL.$= arrowBorder
+            SDL.drawRect renderer (Just (rectToSDL (Rect (V2 downX btnY, V2 btnSize btnSize))))
+            -- Down arrow triangle (▼)
+            SDL.rendererDrawColor renderer SDL.$= arrowColor
+            let dnMidX = downX + btnSize `div` 2
+                dnTop = btnY + 3
+                dnBot = btnY + btnSize - 3
+            forM_ [dnTop .. dnBot] $ \row -> do
+              let halfW = (dnBot - row) * (btnSize `div` 2 - 2) `div` max 1 (dnBot - dnTop)
+              SDL.drawLine renderer
+                (SDL.P (V2 (fromIntegral (dnMidX - halfW)) (fromIntegral row)))
+                (SDL.P (V2 (fromIntegral (dnMidX + halfW)) (fromIntegral row)))
+          -- Simulation controls section
+          let simOffset = length stages + length plugins
+              -- Tick button (row 0 of sim controls)
+              tickBtnY = sy + configRowTopPad + simOffset * (rowHeight + gap) - scrollY
+              tickBtnRect = Rect (V2 (sx + pad) tickBtnY, V2 60 rowHeight)
+              tickBtnColor = V4 80 120 160 255
+              -- Auto-tick toggle (row 1)
+              autoTickY = sy + configRowTopPad + (simOffset + 1) * (rowHeight + gap) - scrollY
+              autoTickCheckX = sx + pad
+              autoTickCheckY = autoTickY + (rowHeight - checkboxSize) `div` 2
+              autoTickColor = if uiSimAutoTick ui then V4 70 150 90 255 else V4 60 60 70 200
+              autoTickBorder = if uiSimAutoTick ui then V4 100 180 120 255 else V4 80 80 90 200
+              -- Tick rate slider bar (row 2)
+              tickRateY = sy + configRowTopPad + (simOffset + 2) * (rowHeight + gap) - scrollY
+              tickRateBarW = 120
+              tickRateBarRect = Rect (V2 (sx + pad) (tickRateY + 4), V2 tickRateBarW (rowHeight - 8))
+          -- Draw tick button
+          SDL.rendererDrawColor renderer SDL.$= tickBtnColor
+          SDL.fillRect renderer (Just (rectToSDL tickBtnRect))
+          -- Draw auto-tick checkbox
+          SDL.rendererDrawColor renderer SDL.$= autoTickColor
+          SDL.fillRect renderer (Just (rectToSDL (Rect (V2 autoTickCheckX autoTickCheckY, V2 checkboxSize checkboxSize))))
+          SDL.rendererDrawColor renderer SDL.$= autoTickBorder
+          SDL.drawRect renderer (Just (rectToSDL (Rect (V2 autoTickCheckX autoTickCheckY, V2 checkboxSize checkboxSize))))
+          -- Draw tick rate bar
+          SDL.rendererDrawColor renderer SDL.$= V4 45 55 70 255
+          SDL.fillRect renderer (Just (rectToSDL tickRateBarRect))
+          drawBarFill renderer (uiSimTickRate ui) tickRateBarRect (V4 100 130 180 255)
       SDL.rendererClipRect renderer SDL.$= Nothing
       let
         { Rect (V2 bx by, V2 bw bh) = scrollBarRect
@@ -1072,7 +1218,7 @@ drawUiLabels renderer fontCache ui layout = do
       configPresetLoad = configPresetLoadRect layout
       configReset = configResetRect layout
       configRevert = configRevertRect layout
-      (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion) = configTabRects layout
+      (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline) = configTabRects layout
       configWaterMinus = configWaterMinusRect layout
       configWaterPlus = configWaterPlusRect layout
       configWaterBar = configWaterBarRect layout
@@ -1688,6 +1834,12 @@ drawUiLabels renderer fontCache ui layout = do
       configValleyCurvatureMinus = configValleyCurvatureMinusRect layout
       configValleyCurvaturePlus = configValleyCurvaturePlusRect layout
       configValleyCurvatureBar = configValleyCurvatureBarRect layout
+      configTfcElevGradientMinus = configTfcElevGradientMinusRect layout
+      configTfcElevGradientPlus = configTfcElevGradientPlusRect layout
+      configTfcElevGradientBar = configTfcElevGradientBarRect layout
+      configTfcPlateauMaxRelief2RingMinus = configTfcPlateauMaxRelief2RingMinusRect layout
+      configTfcPlateauMaxRelief2RingPlus = configTfcPlateauMaxRelief2RingPlusRect layout
+      configTfcPlateauMaxRelief2RingBar = configTfcPlateauMaxRelief2RingBarRect layout
       configRockElevationThresholdMinus = configRockElevationThresholdMinusRect layout
       configRockElevationThresholdPlus = configRockElevationThresholdPlusRect layout
       configRockElevationThresholdBar = configRockElevationThresholdBarRect layout
@@ -1709,7 +1861,7 @@ drawUiLabels renderer fontCache ui layout = do
       scrollArea = configScrollAreaRect layout
       rowHeight = 24
       gap = 10
-      rows = configRowCount (uiConfigTab ui)
+      rows = configRowCount (uiConfigTab ui) ui
       contentHeight = max rowHeight (configRowTopPad + rows * rowHeight + max 0 (rows - 1) * gap)
       Rect (V2 _ _ , V2 _ scrollH) = scrollArea
       maxOffset = max 0 (contentHeight - scrollH)
@@ -1754,6 +1906,7 @@ drawUiLabels renderer fontCache ui layout = do
     drawCentered fontCache labelColor tabWeather "Weather"
     drawCentered fontCache labelColor tabBiome "Biome"
     drawCentered fontCache labelColor tabErosion "Erosion"
+    drawCentered fontCache labelColor tabPipeline "Pipe"
     drawCentered fontCache labelColor configPresetSave "Save"
     drawCentered fontCache labelColor configPresetLoad "Load"
     drawCentered fontCache labelColor configReset "Reset"
@@ -1864,6 +2017,10 @@ drawUiLabels renderer fontCache ui layout = do
         drawCentered fontCache labelColor (scrollRect configTfcRollingSlopePlus) "+"
         drawCentered fontCache labelColor (scrollRect configValleyCurvatureMinus) "-"
         drawCentered fontCache labelColor (scrollRect configValleyCurvaturePlus) "+"
+        drawCentered fontCache labelColor (scrollRect configTfcElevGradientMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configTfcElevGradientPlus) "+"
+        drawCentered fontCache labelColor (scrollRect configTfcPlateauMaxRelief2RingMinus) "-"
+        drawCentered fontCache labelColor (scrollRect configTfcPlateauMaxRelief2RingPlus) "+"
         drawCentered fontCache labelColor (scrollRect configRockElevationThresholdMinus) "-"
         drawCentered fontCache labelColor (scrollRect configRockElevationThresholdPlus) "+"
         drawCentered fontCache labelColor (scrollRect configRockHardnessThresholdMinus) "-"
@@ -1920,6 +2077,8 @@ drawUiLabels renderer fontCache ui layout = do
         drawLabelAbove fontCache labelColor (scrollRect configTfcHillSlopeBar) (sliderLabel specTfcHillSlope (uiTfcHillSlope ui))
         drawLabelAbove fontCache labelColor (scrollRect configTfcRollingSlopeBar) (sliderLabel specTfcRollingSlope (uiTfcRollingSlope ui))
         drawLabelAbove fontCache labelColor (scrollRect configValleyCurvatureBar) (sliderLabel specValleyCurvature (uiValleyCurvature ui))
+        drawLabelAbove fontCache labelColor (scrollRect configTfcElevGradientBar) (sliderLabel specTfcElevGradient (uiTfcElevGradient ui))
+        drawLabelAbove fontCache labelColor (scrollRect configTfcPlateauMaxRelief2RingBar) (sliderLabel specTfcPlateauMaxRelief2Ring (uiTfcPlateauMaxRelief2Ring ui))
         drawLabelAbove fontCache labelColor (scrollRect configRockElevationThresholdBar) (sliderLabel specRockElevationThreshold (uiRockElevationThreshold ui))
         drawLabelAbove fontCache labelColor (scrollRect configRockHardnessThresholdBar) (sliderLabel specRockHardnessThreshold (uiRockHardnessThreshold ui))
         drawLabelAbove fontCache labelColor (scrollRect configRockHardnessSecondaryBar) (sliderLabel specRockHardnessSecondary (uiRockHardnessSecondary ui))
@@ -2381,6 +2540,49 @@ drawUiLabels renderer fontCache ui layout = do
         drawLabelAbove fontCache labelColor (scrollRect configMinLakeSizeBar) (sliderLabel specMinLakeSize (uiMinLakeSize ui))
         drawLabelAbove fontCache labelColor (scrollRect configInlandSeaMinSizeBar) (sliderLabel specInlandSeaMinSize (uiInlandSeaMinSize ui))
         drawLabelAbove fontCache labelColor (scrollRect configRoughnessScaleBar) (sliderLabel specRoughnessScale (uiRoughnessScale ui))
+      ConfigPipeline -> do
+        let stages = allBuiltinStageIds
+            disabled = uiDisabledStages ui
+            plugins = uiPluginNames ui
+            checkboxSize = 16
+            Rect (V2 sx sy, V2 _sw _sh) = scrollArea
+            pad = 12
+        forM_ (zip [0..] stages) $ \(idx, sid) -> do
+          let baseY = sy + configRowTopPad + idx * (rowHeight + gap)
+              ry = baseY - scrollY
+              isDisabled = Set.member sid disabled
+              labelX = sx + pad + checkboxSize + 8
+              labelY = ry + 4
+              name = stageCanonicalName sid
+              textColor = if isDisabled
+                then V4 120 120 130 180
+                else V4 220 220 225 255
+          drawTextLine fontCache (V2 labelX labelY) textColor name
+        -- Plugin name labels after built-in stages
+        let pluginOffset = length stages
+        forM_ (zip [0..] plugins) $ \(idx, pName) -> do
+          let baseY = sy + configRowTopPad + (pluginOffset + idx) * (rowHeight + gap)
+              ry = baseY - scrollY
+              labelX = sx + pad + checkboxSize + 8
+              labelY = ry + 4
+              pluginTextColor = V4 190 180 220 255
+          drawTextLine fontCache (V2 labelX labelY) pluginTextColor pName
+        -- Simulation control labels
+        let simOffset = length stages + length plugins
+            simLabelX = sx + pad + 68 -- after tick button width
+            simAutoLabelX = sx + pad + checkboxSize + 8
+            simRateLabelX = sx + pad + 128 -- after tick rate bar
+            simLabelColor = V4 180 200 220 255
+        -- Tick button label
+        let tickLabelY = sy + configRowTopPad + simOffset * (rowHeight + gap) - scrollY + 4
+        drawTextLine fontCache (V2 (sx + pad + 8) tickLabelY) (V4 220 230 240 255) "Tick"
+        -- Auto-tick label
+        let autoTickLabelY = sy + configRowTopPad + (simOffset + 1) * (rowHeight + gap) - scrollY + 4
+        drawTextLine fontCache (V2 simAutoLabelX autoTickLabelY) simLabelColor "Auto-tick"
+        -- Tick rate label
+        let tickRateLabelY = sy + configRowTopPad + (simOffset + 2) * (rowHeight + gap) - scrollY + 4
+            rateText = "Rate: " <> Text.pack (show (round (uiSimTickRate ui * 10) :: Int)) <> "/s"
+        drawTextLine fontCache (V2 simRateLabelX tickRateLabelY) simLabelColor rateText
     SDL.rendererClipRect renderer SDL.$= Nothing
 
 drawStatusBars :: SDL.Renderer -> Maybe FontCache -> UiState -> DataSnapshot -> Layout -> IO ()

@@ -39,10 +39,12 @@ import Topo.Config.JSON
   )
 import Topo.Math (clamp01)
 import Topo.Pipeline (PipelineStage(..))
+import Topo.Pipeline.Stage (StageId(..))
 import Topo.Plugin (logInfo, modifyWorldP)
 import Topo.TerrainGrid (chunkCoordBounds)
 import Topo.Types
 import Topo.Vegetation (biomeBaseDensity, biomeClimateSlope)
+import Topo.Weather (getWeatherFromOverlay)
 import Topo.World (TerrainWorld(..))
 import qualified Data.Vector.Unboxed as U
 
@@ -124,7 +126,7 @@ lushBiomeConfig = BiomeConfig
 -- in 'vegDensity' on 'VegetationChunk'.  Does /not/ overwrite
 -- 'tcFertility', which retains its soil-derived meaning.
 classifyBiomesStage :: BiomeConfig -> Float -> PipelineStage
-classifyBiomesStage cfg waterLevel = PipelineStage "classifyBiomes" "classifyBiomes" $ do
+classifyBiomesStage cfg waterLevel = PipelineStage StageBiomes "classifyBiomes" "classifyBiomes" $ do
   logInfo "classifyBiomes: assigning biome ids"
   modifyWorldP $ \world ->
     let config = twConfig world
@@ -155,7 +157,7 @@ classifyBiomesStage cfg waterLevel = PipelineStage "classifyBiomes" "classifyBio
                     (bcTransitionSmoothingIterations cfg) biomesConstrained
         -- 3. Refinement pass (sub-biome discrimination)
         biomes'' = refineAllChunks (bcRefinement cfg) waterLevel biomes' terrain climate
-                     (twWeather world) (twRivers world) (twGroundwater world)
+                     (getWeatherFromOverlay world) (twRivers world) (twGroundwater world)
                      (twVolcanism world) (twGlaciers world) waterBodies
         -- 4. Store biome ids in terrain flags
         terrain' = IntMap.mergeWithKey

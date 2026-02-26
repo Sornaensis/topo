@@ -52,8 +52,10 @@ import Actor.UI (UiState(..))
 import Seer.Config.Snapshot (snapshotFromUi, saveSnapshot, loadSnapshot)
 import Seer.Config.Snapshot.Types (ConfigSnapshot)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
+import Topo.Calendar (defaultWorldTime, defaultPlanetAge)
 import Topo.Hex (defaultHexGridMeta)
 import Topo.Metadata (emptyMetadataStore)
+import Topo.Overlay (emptyOverlayStore)
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice, mkLatitudeMapping)
 import Topo.Units (defaultUnitScales)
 import Topo.Storage
@@ -189,7 +191,6 @@ snapshotToWorld :: TerrainSnapshot -> TerrainWorld
 snapshotToWorld ts = TerrainWorld
   { twTerrain     = tsTerrainChunks ts
   , twClimate     = tsClimateChunks ts
-  , twWeather     = tsWeatherChunks ts
   , twRivers      = tsRiverChunks ts
   , twGroundwater = IntMap.empty
   , twVolcanism   = IntMap.empty
@@ -202,9 +203,12 @@ snapshotToWorld ts = TerrainWorld
   , twPlanet      = defaultPlanetConfig
   , twSlice       = defaultWorldSlice
   , twLatMapping  = mkLatitudeMapping defaultPlanetConfig defaultWorldSlice wc
-  , twWorldTime   = 0
+  , twWorldTime   = defaultWorldTime
+  , twPlanetAge   = defaultPlanetAge
   , twGenConfig   = Nothing
   , twUnitScales  = defaultUnitScales
+  , twOverlays    = emptyOverlayStore
+  , twOverlayManifest = []
   }
   where
     wc = WorldConfig { wcChunkSize = tsChunkSize ts }

@@ -16,6 +16,7 @@ module Topo.WorldGen
   ) where
 
 import Data.Word (Word64)
+import qualified Data.Set as Set
 import GHC.Generics (Generic)
 import Topo.Config.JSON (configOptions, mergeDefaults, ToJSON(..), FromJSON(..), genericToJSON, genericParseJSON, Value)
 import Topo.BaseHeight (GenConfig(..), OceanEdgeDepth(..), defaultGenConfig)
@@ -265,7 +266,9 @@ buildPipelineConfig cfg seed =
       , pipelineStages =
           [ generatePlateTerrainStage (terrainGen terrain) (terrainTectonics terrain)
           ]
+      , pipelineDisabled = Set.empty
       , pipelineSnapshots = False
+      , pipelineOnProgress = \_ -> pure ()
       }
 
 -- | Build the full terrain/climate/biome/weather pipeline.
@@ -341,7 +344,9 @@ buildFullPipelineConfig cfg worldCfg seed =
           ] ++ convergenceStages ++
           [ tickWeatherStage (worldWeather cfg)
           ]
+      , pipelineDisabled = Set.empty
       , pipelineSnapshots = False
+      , pipelineOnProgress = \_ -> pure ()
       }
 
 -- | Derive ocean edge depth from the slice boundaries.
@@ -379,5 +384,7 @@ buildBaseHeightPipelineConfig gen seed =
   PipelineConfig
     { pipelineSeed = seed
     , pipelineStages = [generateBaseHeightStage gen]
+    , pipelineDisabled = Set.empty
     , pipelineSnapshots = False
+    , pipelineOnProgress = \_ -> pure ()
     }

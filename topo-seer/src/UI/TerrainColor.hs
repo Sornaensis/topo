@@ -1,5 +1,6 @@
 module UI.TerrainColor
   ( terrainColor
+  , overlayFieldColor
   , gradientBlueGreen
   , gradientHeat
   , gradientMoisture
@@ -13,8 +14,12 @@ import qualified Data.Vector.Unboxed as U
 import Topo (BiomeId, PlateBoundary, ClimateChunk(..), TerrainChunk(..), VegetationChunk(..), WeatherChunk(..), biomeIdToCode, plateBoundaryToCode, terrainFormToCode)
 import Actor.UI (ViewMode(..))
 
-terrainColor :: ViewMode -> Float -> TerrainChunk -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe VegetationChunk -> Int -> V4 Word8
-terrainColor mode waterLevel chunk climateChunk weatherChunk vegChunk idx =
+-- | Compute the display color for a single hex tile.
+--
+-- The @Maybe Float@ parameter supplies an overlay field value when
+-- 'ViewOverlay' mode is active.  For all other modes it is ignored.
+terrainColor :: ViewMode -> Float -> TerrainChunk -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe VegetationChunk -> Maybe Float -> Int -> V4 Word8
+terrainColor mode waterLevel chunk climateChunk weatherChunk vegChunk mOverlayVal idx =
   case mode of
     ViewElevation -> elevationColor waterLevel (tcElevation chunk U.! idx)
     ViewBiome -> paletteById (biomeIdToCode (tcFlags chunk U.! idx))
@@ -37,6 +42,10 @@ terrainColor mode waterLevel chunk climateChunk weatherChunk vegChunk idx =
       in gradientVegetation value
     ViewTerrainForm ->
       terrainFormColor (terrainFormToCode (tcTerrainForm chunk U.! idx))
+    ViewOverlay _ _ ->
+      case mOverlayVal of
+        Just v  -> overlayFieldColor v
+        Nothing -> V4 50 50 50 255  -- no data: dark grey
 
 elevationColor :: Float -> Float -> V4 Word8
 elevationColor waterLevel elev
@@ -81,6 +90,18 @@ gradientVegetation value =
       r = toByte (0.35 - v * 0.25)
       g = toByte (0.20 + v * 0.65)
       b = toByte (0.10 + v * 0.05)
+  in V4 r g b 255
+
+-- | Generic overlay field color: blue-to-yellow-to-red viridis-like gradient.
+--
+-- Input is expected in [0, 1]; values outside are clamped.
+overlayFieldColor :: Float -> V4 Word8
+overlayFieldColor value =
+  let v = clamp01 value
+      -- Blue → cyan → green → yellow → red
+      r = toByte (if v < 0.5 then 0.1 + v * 0.4 else 0.3 + (v - 0.5) * 1.4)
+      g = toByte (if v < 0.5 then 0.1 + v * 1.2 else 0.7 - (v - 0.5) * 0.8)
+      b = toByte (if v < 0.5 then 0.6 - v * 0.6 else 0.3 - (v - 0.5) * 0.5)
   in V4 r g b 255
 
 paletteById :: Word16 -> V4 Word8

@@ -171,6 +171,8 @@ module Actor.UI
   , setUiTfcHillSlope
   , setUiTfcRollingSlope
   , setUiValleyCurvature
+  , setUiTfcElevGradient
+  , setUiTfcPlateauMaxRelief2Ring
   , setUiRockElevationThreshold
   , setUiRockHardnessThreshold
   , setUiRockHardnessSecondary
@@ -247,13 +249,26 @@ module Actor.UI
   , setUiWorldSelected
   , setUiContextHex
   , setUiContextPos
+  , setUiDisabledStages
+  , setUiPluginParam
+  , setUiPluginNames
+  , setUiSimAutoTick
+  , setUiSimTickRate
+  , setUiSimTickCount
   , setUiSeedEditing
   , setUiSeedInput
+  , setUiOverlayNames
+  , setUiOverlayFields
   , UiSnapshotReply
   , requestUiSnapshot
   , getUiSnapshot
   ) where
 
+import Data.Aeson (Value)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Word (Word64)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -262,8 +277,11 @@ import Hyperspace.Actor.QQ (hyperspace)
 import Hyperspace.Actor.Spec (OpTag(..))
 import Seer.Config.Snapshot.Types (ConfigSnapshot)
 import Seer.World.Persist.Types (WorldSaveManifest)
+import Topo.Overlay.Schema (OverlayFieldType(..))
+import Topo.Pipeline.Stage (StageId)
 import UI.WidgetTree (WidgetId)
 
+-- | Which data layer to visualize on the hex map.
 data ViewMode
   = ViewElevation
   | ViewBiome
@@ -279,6 +297,8 @@ data ViewMode
   | ViewPlateVelocity
   | ViewVegetation
   | ViewTerrainForm
+  | ViewOverlay !Text !Int
+  -- ^ Overlay field visualization: overlay name and field index.
   deriving (Eq, Show)
 
 data ConfigTab
@@ -288,17 +308,29 @@ data ConfigTab
   | ConfigWeather
   | ConfigBiome
   | ConfigErosion
+  | ConfigPipeline
   deriving (Eq, Show)
 
 -- | Total number of config widget rows for each tab.
 --   Single source of truth used by both scroll input and rendering.
-configRowCount :: ConfigTab -> Int
-configRowCount ConfigTerrain = 53
-configRowCount ConfigPlanet  = 7
-configRowCount ConfigClimate = 53
-configRowCount ConfigWeather = 21
-configRowCount ConfigBiome   = 26
-configRowCount ConfigErosion  = 48
+--   For the Pipeline tab, the count includes discovered plugin rows.
+configRowCount :: ConfigTab -> UiState -> Int
+configRowCount ConfigTerrain  _ = 53
+configRowCount ConfigPlanet   _ = 7
+configRowCount ConfigClimate  _ = 53
+configRowCount ConfigWeather  _ = 21
+configRowCount ConfigBiome    _ = 26
+configRowCount ConfigErosion  _ = 48
+configRowCount ConfigPipeline ui =
+  builtinStageRowCount + length (uiPluginNames ui) + simControlRowCount
+
+-- | Number of rows for built-in pipeline stages (constant).
+builtinStageRowCount :: Int
+builtinStageRowCount = 18
+
+-- | Number of rows for simulation controls (tick button, auto-tick, tick rate).
+simControlRowCount :: Int
+simControlRowCount = 3
 
 data LeftTab
   = LeftTopo
@@ -481,6 +513,8 @@ data UiState = UiState
   , uiTfcHillSlope :: !Float
   , uiTfcRollingSlope :: !Float
   , uiValleyCurvature :: !Float
+  , uiTfcElevGradient :: !Float
+  , uiTfcPlateauMaxRelief2Ring :: !Float
   , uiRockElevationThreshold :: !Float
   , uiRockHardnessThreshold :: !Float
   , uiRockHardnessSecondary :: !Float
@@ -544,6 +578,18 @@ data UiState = UiState
   , uiOccLatWidthDeg :: !Float
   , uiSliceLatCenter :: !Float
   , uiSliceLonCenter :: !Float
+  , uiDisabledStages :: !(Set StageId)
+  , uiPluginParams :: !(Map Text (Map Text Value))
+    -- ^ Per-plugin parameter overrides (plugin name → param name → value).
+    -- Session-only; not persisted in ConfigSnapshot.
+  , uiPluginNames :: ![Text]
+    -- ^ Ordered list of discovered plugin names, pushed by PluginManager.
+  , uiSimAutoTick :: !Bool
+    -- ^ Whether simulation auto-tick is enabled.
+  , uiSimTickRate :: !Float
+    -- ^ Ticks per second for auto-tick (slider value 0..1 mapped externally).
+  , uiSimTickCount :: !Word64
+    -- ^ Current simulation tick count.
   , uiHoverHex :: !(Maybe (Int, Int))
   , uiHoverWidget :: !(Maybe WidgetId)
   , uiWorldConfig :: !(Maybe ConfigSnapshot)
@@ -551,6 +597,10 @@ data UiState = UiState
   , uiWorldSaveInput :: !Text
   , uiWorldList :: ![WorldSaveManifest]
   , uiWorldSelected :: !Int
+  , uiOverlayNames :: ![Text]
+    -- ^ Overlay names available in the current world's overlay store.
+  , uiOverlayFields :: ![(Text, OverlayFieldType)]
+    -- ^ Field names and types for the currently-selected overlay.
   } deriving (Eq, Show)
 
 emptyUiState :: UiState
@@ -714,12 +764,14 @@ emptyUiState = UiState
   , uiPlateBiasEdge = 0.5
   , uiPlateBiasNorth = 0.5
   , uiPlateBiasSouth = 0.5
-  , uiTfcCliffSlope = 0.4286
-  , uiTfcMountainSlope = 0.3333
-  , uiTfcMountainRelief = 0.4444
-  , uiTfcHillSlope = 0.3333
+  , uiTfcCliffSlope = 0.2222
+  , uiTfcMountainSlope = 0.2222
+  , uiTfcMountainRelief = 0.2143
+  , uiTfcHillSlope = 0.2105
   , uiTfcRollingSlope = 0.1579
   , uiValleyCurvature = 0.2857
+  , uiTfcElevGradient = 0.2495
+  , uiTfcPlateauMaxRelief2Ring = 0.2632
   , uiRockElevationThreshold = 0.5714
   , uiRockHardnessThreshold = 0.5714
   , uiRockHardnessSecondary = 0.5
@@ -783,6 +835,12 @@ emptyUiState = UiState
   , uiOccLatWidthDeg = 0.5    -- maps to 25 in [5..45]
   , uiSliceLatCenter = 0.5    -- maps to 0 in [-90..90]
   , uiSliceLonCenter = 0.5    -- maps to 0 in [-180..180]
+  , uiDisabledStages = Set.empty
+  , uiPluginParams = Map.empty
+  , uiPluginNames = []
+  , uiSimAutoTick = False
+  , uiSimTickRate = 0.5
+  , uiSimTickCount = 0
   , uiHoverHex = Nothing
   , uiHoverWidget = Nothing
   , uiWorldConfig = Nothing
@@ -790,6 +848,8 @@ emptyUiState = UiState
   , uiWorldSaveInput = Text.empty
   , uiWorldList = []
   , uiWorldSelected = 0
+  , uiOverlayNames = []
+  , uiOverlayFields = []
   }
 
 -- | Sum type encoding all possible UI state mutations.
@@ -963,6 +1023,8 @@ data UiUpdate
   | SetTfcHillSlope !Float
   | SetTfcRollingSlope !Float
   | SetValleyCurvature !Float
+  | SetTfcElevGradient !Float
+  | SetTfcPlateauMaxRelief2Ring !Float
   | SetRockElevationThreshold !Float
   | SetRockHardnessThreshold !Float
   | SetRockHardnessSecondary !Float
@@ -1028,11 +1090,21 @@ data UiUpdate
   | SetSliceLonCenter !Float
   | SetHoverHex !(Maybe (Int, Int))
   | SetHoverWidget !(Maybe WidgetId)
+  | SetDisabledStages !(Set StageId)
+  | SetPluginParam !Text !Text !Value
+    -- ^ @SetPluginParam pluginName paramName value@
+  | SetPluginNames ![Text]
+    -- ^ Replace the ordered plugin name list.
+  | SetSimAutoTick !Bool
+  | SetSimTickRate !Float
+  | SetSimTickCount !Word64
   | SetWorldConfig !(Maybe ConfigSnapshot)
   | SetWorldName !Text
   | SetWorldSaveInput !Text
   | SetWorldList ![WorldSaveManifest]
   | SetWorldSelected !Int
+  | SetOverlayNames ![Text]
+  | SetOverlayFields ![(Text, OverlayFieldType)]
 
 -- | Apply a 'UiUpdate' to the current 'UiState'.  Total and exhaustive.
 applyUpdate :: UiUpdate -> UiState -> UiState
@@ -1202,6 +1274,8 @@ applyUpdate upd st = case upd of
   SetTfcHillSlope v   -> st { uiTfcHillSlope = clamp01 v }
   SetTfcRollingSlope v -> st { uiTfcRollingSlope = clamp01 v }
   SetValleyCurvature v -> st { uiValleyCurvature = clamp01 v }
+  SetTfcElevGradient v -> st { uiTfcElevGradient = clamp01 v }
+  SetTfcPlateauMaxRelief2Ring v -> st { uiTfcPlateauMaxRelief2Ring = clamp01 v }
   SetRockElevationThreshold v -> st { uiRockElevationThreshold = clamp01 v }
   SetRockHardnessThreshold v -> st { uiRockHardnessThreshold = clamp01 v }
   SetRockHardnessSecondary v -> st { uiRockHardnessSecondary = clamp01 v }
@@ -1267,11 +1341,21 @@ applyUpdate upd st = case upd of
   SetSliceLonCenter v  -> st { uiSliceLonCenter = clamp01 v }
   SetHoverHex v        -> st { uiHoverHex = v }
   SetHoverWidget v     -> st { uiHoverWidget = v }
+  SetDisabledStages v  -> st { uiDisabledStages = v }
+  SetPluginParam pn k v ->
+    let inner = Map.findWithDefault Map.empty pn (uiPluginParams st)
+    in st { uiPluginParams = Map.insert pn (Map.insert k v inner) (uiPluginParams st) }
+  SetPluginNames v     -> st { uiPluginNames = v }
+  SetSimAutoTick v     -> st { uiSimAutoTick = v }
+  SetSimTickRate v     -> st { uiSimTickRate = clamp01 v }
+  SetSimTickCount v    -> st { uiSimTickCount = v }
   SetWorldConfig v     -> st { uiWorldConfig = v }
   SetWorldName v       -> st { uiWorldName = v }
   SetWorldSaveInput v  -> st { uiWorldSaveInput = v }
   SetWorldList v       -> st { uiWorldList = v }
   SetWorldSelected v   -> st { uiWorldSelected = v }
+  SetOverlayNames v    -> st { uiOverlayNames = v }
+  SetOverlayFields v   -> st { uiOverlayFields = v }
 
 uiSnapshotTag :: OpTag "uiSnapshot"
 uiSnapshotTag = OpTag
@@ -1380,6 +1464,46 @@ setUiWorldList handle worlds =
 setUiWorldSelected :: ActorHandle Ui (Protocol Ui) -> Int -> IO ()
 setUiWorldSelected handle idx =
   cast @"update" handle #update (SetWorldSelected idx)
+
+-- | Set available overlay names (populated from OverlayStore after generation/sim tick).
+setUiOverlayNames :: ActorHandle Ui (Protocol Ui) -> [Text] -> IO ()
+setUiOverlayNames handle names =
+  cast @"update" handle #update (SetOverlayNames names)
+
+-- | Set the field names and types for the currently-selected overlay.
+setUiOverlayFields :: ActorHandle Ui (Protocol Ui) -> [(Text, OverlayFieldType)] -> IO ()
+setUiOverlayFields handle fields =
+  cast @"update" handle #update (SetOverlayFields fields)
+
+-- | Set the disabled pipeline stages.
+setUiDisabledStages :: ActorHandle Ui (Protocol Ui) -> Set StageId -> IO ()
+setUiDisabledStages handle stages =
+  cast @"update" handle #update (SetDisabledStages stages)
+
+-- | Set a single plugin parameter value in UI state.
+setUiPluginParam :: ActorHandle Ui (Protocol Ui) -> Text -> Text -> Value -> IO ()
+setUiPluginParam handle pluginName paramName val =
+  cast @"update" handle #update (SetPluginParam pluginName paramName val)
+
+-- | Set the ordered list of discovered plugin names.
+setUiPluginNames :: ActorHandle Ui (Protocol Ui) -> [Text] -> IO ()
+setUiPluginNames handle names =
+  cast @"update" handle #update (SetPluginNames names)
+
+-- | Toggle simulation auto-tick.
+setUiSimAutoTick :: ActorHandle Ui (Protocol Ui) -> Bool -> IO ()
+setUiSimAutoTick handle flag =
+  cast @"update" handle #update (SetSimAutoTick flag)
+
+-- | Set the simulation tick rate slider value (0..1).
+setUiSimTickRate :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiSimTickRate handle rate =
+  cast @"update" handle #update (SetSimTickRate rate)
+
+-- | Set the current simulation tick count.
+setUiSimTickCount :: ActorHandle Ui (Protocol Ui) -> Word64 -> IO ()
+setUiSimTickCount handle count =
+  cast @"update" handle #update (SetSimTickCount count)
 
 setUiContextHex :: ActorHandle Ui (Protocol Ui) -> Maybe (Int, Int) -> IO ()
 setUiContextHex handle hex =
@@ -1996,6 +2120,14 @@ setUiTfcRollingSlope handle value =
 setUiValleyCurvature :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
 setUiValleyCurvature handle value =
   cast @"update" handle #update (SetValleyCurvature value)
+
+setUiTfcElevGradient :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiTfcElevGradient handle value =
+  cast @"update" handle #update (SetTfcElevGradient value)
+
+setUiTfcPlateauMaxRelief2Ring :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
+setUiTfcPlateauMaxRelief2Ring handle value =
+  cast @"update" handle #update (SetTfcPlateauMaxRelief2Ring value)
 
 setUiRockElevationThreshold :: ActorHandle Ui (Protocol Ui) -> Float -> IO ()
 setUiRockElevationThreshold handle value =

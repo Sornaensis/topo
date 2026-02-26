@@ -18,7 +18,9 @@ library
   exposed-modules:
       Actor.Data
       Actor.Log
+      Actor.PluginManager
       Actor.Render
+      Actor.Simulation
       Actor.SnapshotReceiver
       Actor.Terrain
       Actor.TerrainCacheWorker
@@ -62,6 +64,7 @@ library
       UI.Font
       UI.Layout
       UI.HexPick
+      UI.OverlayExtract
       UI.TerrainAtlas
       UI.TerrainCache
       UI.TerrainRender

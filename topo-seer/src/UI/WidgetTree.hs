@@ -2,11 +2,14 @@ module UI.WidgetTree
   ( WidgetId(..)
   , Widget(..)
   , buildWidgets
+  , buildPluginWidgets
   , buildSliderRowWidgets
   , hitTest
   ) where
 
+import Data.Text (Text)
 import Linear (V2(..))
+import Topo.Pipeline.Stage (allBuiltinStageIds, stageCanonicalName)
 import UI.Layout
 import UI.Widgets (Rect(..), containsPoint)
 
@@ -26,6 +29,7 @@ data WidgetId
   | WidgetConfigTabWeather
   | WidgetConfigTabBiome
   | WidgetConfigTabErosion
+  | WidgetConfigTabPipeline
   | WidgetConfigPresetSave
   | WidgetConfigPresetLoad
   | WidgetConfigReset
@@ -440,6 +444,10 @@ data WidgetId
   | WidgetConfigTfcRollingSlopePlus
   | WidgetConfigValleyCurvatureMinus
   | WidgetConfigValleyCurvaturePlus
+  | WidgetConfigTfcElevGradientMinus
+  | WidgetConfigTfcElevGradientPlus
+  | WidgetConfigTfcPlateauMaxRelief2RingMinus
+  | WidgetConfigTfcPlateauMaxRelief2RingPlus
   | WidgetConfigRockElevationThresholdMinus
   | WidgetConfigRockElevationThresholdPlus
   | WidgetConfigRockHardnessThresholdMinus
@@ -458,6 +466,15 @@ data WidgetId
   | WidgetViewPlateAge
   | WidgetViewPlateHeight
   | WidgetViewPlateVelocity
+  -- Overlay visualization
+  | WidgetViewOverlayPrev
+  -- ^ Previous overlay in the overlay store.
+  | WidgetViewOverlayNext
+  -- ^ Next overlay in the overlay store.
+  | WidgetViewFieldPrev
+  -- ^ Previous field within the selected overlay.
+  | WidgetViewFieldNext
+  -- ^ Next field within the selected overlay.
   | WidgetLogDebug
   | WidgetLogInfo
   | WidgetLogWarn
@@ -480,6 +497,14 @@ data WidgetId
   | WidgetWorldLoadOk
   | WidgetWorldLoadCancel
   | WidgetWorldLoadItem
+    -- Pipeline stage toggles
+  | WidgetPipelineToggle !Text
+    -- Plugin ordering buttons
+  | WidgetPluginMoveUp !Text
+  | WidgetPluginMoveDown !Text
+    -- Simulation tick controls
+  | WidgetSimTick
+  | WidgetSimAutoTick
   deriving (Eq, Show)
 
 data Widget = Widget
@@ -490,8 +515,9 @@ data Widget = Widget
 buildWidgets :: Layout -> [Widget]
 buildWidgets layout =
   let (view1, view2, view3, view4, view5, view6, view7, view8, view9, view10, view11, view12) = leftViewRects layout
+      (overlayPrev, overlayNext, fieldPrev, fieldNext) = overlayViewRects layout
       (logDebug, logInfo, logWarn, logError) = logFilterRects layout
-      (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion) = configTabRects layout
+      (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline) = configTabRects layout
       (leftTabTopo, leftTabView) = leftTabRects layout
   in [ Widget WidgetGenerate (leftGenButtonRect layout)
      , Widget WidgetLeftToggle (leftToggleRect layout)
@@ -508,6 +534,7 @@ buildWidgets layout =
      , Widget WidgetConfigTabWeather tabWeather
      , Widget WidgetConfigTabBiome tabBiome
      , Widget WidgetConfigTabErosion tabErosion
+     , Widget WidgetConfigTabPipeline tabPipeline
      , Widget WidgetConfigPresetSave (configPresetSaveRect layout)
      , Widget WidgetConfigPresetLoad (configPresetLoadRect layout)
      , Widget WidgetConfigReset (configResetRect layout)
@@ -922,13 +949,23 @@ buildWidgets layout =
       , Widget WidgetConfigTfcRollingSlopePlus (configTfcRollingSlopePlusRect layout)
       , Widget WidgetConfigValleyCurvatureMinus (configValleyCurvatureMinusRect layout)
       , Widget WidgetConfigValleyCurvaturePlus (configValleyCurvaturePlusRect layout)
+      , Widget WidgetConfigTfcElevGradientMinus (configTfcElevGradientMinusRect layout)
+      , Widget WidgetConfigTfcElevGradientPlus (configTfcElevGradientPlusRect layout)
+      , Widget WidgetConfigTfcPlateauMaxRelief2RingMinus (configTfcPlateauMaxRelief2RingMinusRect layout)
+      , Widget WidgetConfigTfcPlateauMaxRelief2RingPlus (configTfcPlateauMaxRelief2RingPlusRect layout)
       , Widget WidgetConfigRockElevationThresholdMinus (configRockElevationThresholdMinusRect layout)
       , Widget WidgetConfigRockElevationThresholdPlus (configRockElevationThresholdPlusRect layout)
       , Widget WidgetConfigRockHardnessThresholdMinus (configRockHardnessThresholdMinusRect layout)
       , Widget WidgetConfigRockHardnessThresholdPlus (configRockHardnessThresholdPlusRect layout)
       , Widget WidgetConfigRockHardnessSecondaryMinus (configRockHardnessSecondaryMinusRect layout)
       , Widget WidgetConfigRockHardnessSecondaryPlus (configRockHardnessSecondaryPlusRect layout)
-    , Widget WidgetViewElevation view1
+    ] ++
+    -- Pipeline stage toggle checkboxes
+    [ Widget (WidgetPipelineToggle (stageCanonicalName sid))
+             (pipelineCheckboxRect idx layout)
+    | (idx, sid) <- zip [0..] allBuiltinStageIds
+    ] ++
+    [ Widget WidgetViewElevation view1
     , Widget WidgetViewBiome view2
     , Widget WidgetViewClimate view3
     , Widget WidgetViewMoisture view4
@@ -940,6 +977,10 @@ buildWidgets layout =
     , Widget WidgetViewPlateAge view10
     , Widget WidgetViewPlateHeight view11
     , Widget WidgetViewPlateVelocity view12
+    , Widget WidgetViewOverlayPrev overlayPrev
+    , Widget WidgetViewOverlayNext overlayNext
+    , Widget WidgetViewFieldPrev fieldPrev
+    , Widget WidgetViewFieldNext fieldNext
      , Widget WidgetLogDebug logDebug
      , Widget WidgetLogInfo logInfo
      , Widget WidgetLogWarn logWarn
@@ -961,6 +1002,36 @@ buildWidgets layout =
     , Widget WidgetWorldLoadOk (worldLoadOkRect layout)
     , Widget WidgetWorldLoadCancel (worldLoadCancelRect layout)
      ]
+
+-- | Build dynamic widgets for the Pipeline tab that depend on the current
+-- set of discovered plugin names.
+--
+-- Produces:
+--
+-- * Move-up / move-down buttons for each plugin row (for reordering);
+-- * Simulation tick controls positioned after all plugin rows.
+--
+-- These must be merged with the static 'buildWidgets' list before hit
+-- testing.
+buildPluginWidgets :: [Text] -> Layout -> [Widget]
+buildPluginWidgets pluginNames layout =
+  let builtinCount = length allBuiltinStageIds
+      pluginCount  = length pluginNames
+      -- Plugin move buttons
+      pluginMoveWidgets =
+        concatMap (\(idx, name) ->
+          let rowIdx = builtinCount + idx
+          in [ Widget (WidgetPluginMoveUp name)   (pipelineMoveUpRect   rowIdx layout)
+             , Widget (WidgetPluginMoveDown name)  (pipelineMoveDownRect rowIdx layout)
+             ]
+        ) (zip [0..] pluginNames)
+      -- Simulation controls after all plugins
+      simBase = builtinCount + pluginCount
+      simWidgets =
+        [ Widget WidgetSimTick     (pipelineCheckboxRect simBase       layout)
+        , Widget WidgetSimAutoTick (pipelineCheckboxRect (simBase + 1) layout)
+        ]
+  in pluginMoveWidgets ++ simWidgets
 
 -- | Build full-row tooltip hit areas for config sliders, grouped by tab.
 --
@@ -1026,9 +1097,11 @@ buildSliderRowWidgets layout = (terrain, planet, climate, weather, biome, erosio
       , row WidgetConfigTfcHillSlopeMinus 47
       , row WidgetConfigTfcRollingSlopeMinus 48
       , row WidgetConfigValleyCurvatureMinus 49
-      , row WidgetConfigRockElevationThresholdMinus 50
-      , row WidgetConfigRockHardnessThresholdMinus 51
-      , row WidgetConfigRockHardnessSecondaryMinus 52
+      , row WidgetConfigTfcElevGradientMinus 50
+      , row WidgetConfigTfcPlateauMaxRelief2RingMinus 51
+      , row WidgetConfigRockElevationThresholdMinus 52
+      , row WidgetConfigRockHardnessThresholdMinus 53
+      , row WidgetConfigRockHardnessSecondaryMinus 54
       ]
 
     planet =

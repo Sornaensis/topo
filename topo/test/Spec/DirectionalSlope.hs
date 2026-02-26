@@ -91,6 +91,31 @@ spec = describe "DirectionalSlope" $ do
       abs (dsAsymmetry ds - (dsMaxSlope ds - dsMinSlope ds)) < 1e-5
 
   ---------------------------------------------------------------------------
+  -- dsTop3Slope
+  ---------------------------------------------------------------------------
+  describe "dsTop3Slope" $ do
+    it "is 0 for zeroDirSlope" $
+      dsTop3Slope zeroDirSlope `shouldBe` 0
+
+    prop "equals dsAvgSlope for uniform slope" $ \(k :: Float) ->
+      let ds = DirectionalSlope k k k k k k
+      in abs (dsTop3Slope ds - dsAvgSlope ds) < 1e-5
+
+    it "is higher than dsAvgSlope for one-directional slope" $ do
+      let ds = DirectionalSlope 1.0 0 0 0 0 0
+      -- dsAvgSlope = 1/6 ≈ 0.167,  dsTop3Slope = (1+0+0)/3 = 0.333
+      dsTop3Slope ds `shouldSatisfy` (> dsAvgSlope ds)
+
+    prop "is >= dsAvgSlope" $ \(ds :: DirectionalSlope) ->
+      dsTop3Slope ds >= dsAvgSlope ds - 1e-5
+
+    prop "is <= dsMaxSlope" $ \(ds :: DirectionalSlope) ->
+      dsTop3Slope ds <= dsMaxSlope ds + 1e-5
+
+    prop "is non-negative" $ \(ds :: DirectionalSlope) ->
+      dsTop3Slope ds >= -1e-6
+
+  ---------------------------------------------------------------------------
   -- dsSlopeIn round-trip with record fields
   ---------------------------------------------------------------------------
   describe "dsSlopeIn consistency" $ do

@@ -21,6 +21,7 @@ import qualified Data.IntMap.Strict as IntMap
 import Topo.Math (clamp01, iterateN)
 import Topo.Parameters (TerrainFormConfig)
 import Topo.Pipeline (PipelineStage(..))
+import Topo.Pipeline.Stage (StageId(..))
 import Topo.Plugin (PluginError(..), getWorldP, logInfo, putWorldP)
 import Topo.TerrainForm.Modifiers
   ( TerrainFormModifiers(..)
@@ -105,7 +106,7 @@ defaultGlacierConfig = GlacierConfig
 -- modifiers ('defaultTerrainFormModifiers') then adjust glacial erosion
 -- intensity, deposition, and ice diffusion rates.
 applyGlacierStage :: GlacierConfig -> TerrainFormConfig -> Float -> PipelineStage
-applyGlacierStage cfg formCfg waterLevel = PipelineStage "applyGlaciers" "applyGlaciers" $ do
+applyGlacierStage cfg formCfg waterLevel = PipelineStage StageGlacier "applyGlaciers" "applyGlaciers" $ do
   logInfo "applyGlaciers: snowpack + ice flow"
   world <- getWorldP
   let config = twConfig world

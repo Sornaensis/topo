@@ -37,6 +37,7 @@ import qualified Data.IntMap.Strict as IntMap
 import Data.Word (Word16)
 import Topo.Math (clamp01)
 import Topo.Pipeline (PipelineStage(..))
+import Topo.Pipeline.Stage (StageId(..))
 import Topo.Plugin (logInfo, modifyWorldP)
 import Topo.Types
 import Topo.World (TerrainWorld(..))
@@ -89,7 +90,7 @@ defaultSoilConfig = SoilConfig
 -- (which provides 'tcMoisture') and before the vegetation bootstrap.
 applySoilStage :: SoilConfig -> PipelineStage
 applySoilStage cfg =
-    PipelineStage "applySoil" "applySoil" $ do
+    PipelineStage StageSoil "applySoil" "applySoil" $ do
   logInfo "applySoil: deriving soil fields"
   modifyWorldP $ \world ->
     let chunks = twTerrain world

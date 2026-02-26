@@ -46,7 +46,7 @@ spec = describe "Metadata" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 1234
           , pipelineStages = stages
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world0
@@ -65,7 +65,7 @@ spec = describe "Metadata" $ do
           pipeline = PipelineConfig
             { pipelineSeed = 222
             , pipelineStages = [generatePlateTerrainStage defaultGenConfig defaultTectonicsConfig]
-            , pipelineSnapshots = False
+            , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
             }
           env = TopoEnv { teLogger = \_ -> pure () }
           hx = x `mod` wcChunkSize config

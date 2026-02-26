@@ -51,7 +51,7 @@ computeScrollUpdates settings uiSnap logSnap lineHeight (V2 winW winH) (V2 mx my
       scrollArea = configScrollAreaRect layout
       rowHeight = ssRowHeight settings
       gap = ssRowGap settings
-      rows = configRowCount (uiConfigTab uiSnap)
+      rows = configRowCount (uiConfigTab uiSnap) uiSnap
       contentHeight = max rowHeight (configRowTopPad + rows * rowHeight + max 0 (rows - 1) * gap)
       Rect (V2 _ sy, V2 _ sh) = scrollArea
       maxConfigOffset = max 0 (contentHeight - sh)

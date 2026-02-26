@@ -18,6 +18,7 @@ module Actor.Data
   , setWeatherChunkData
   , setRiverChunkData
   , setVegetationChunkData
+  , setOverlayStoreData
   , requestDataSnapshot
   , getTerrainSnapshot
   , replaceTerrainData
@@ -30,7 +31,8 @@ import Data.Word (Word64)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
 import Hyperspace.Actor.Spec (OpTag(..))
-import Topo (ChunkId(..), ClimateChunk, RiverChunk, TerrainChunk, VegetationChunk, WeatherChunk)
+import Topo (ChunkId(..), ClimateChunk, RiverChunk, TerrainChunk, VegetationChunk, WeatherChunk, getWeatherFromOverlay)
+import Topo.Overlay (OverlayStore, emptyOverlayStore)
 import Topo.World (TerrainWorld(..))
 import Topo.Types (WorldConfig(..))
 
@@ -53,6 +55,8 @@ data TerrainSnapshot = TerrainSnapshot
   , tsWeatherChunks :: !(IntMap WeatherChunk)
   , tsRiverChunks :: !(IntMap RiverChunk)
   , tsVegetationChunks :: !(IntMap VegetationChunk)
+  , tsOverlayStore :: !OverlayStore
+  -- ^ Current overlay data for overlay field visualization.
   } deriving (Eq, Show)
 
 data DataState = DataState
@@ -66,6 +70,7 @@ data DataState = DataState
   , stWeatherChunks :: !(IntMap WeatherChunk)
   , stRiverChunks :: !(IntMap RiverChunk)
   , stVegetationChunks :: !(IntMap VegetationChunk)
+  , stOverlayStore :: !OverlayStore
   }
 
 emptyDataState :: DataState
@@ -80,6 +85,7 @@ emptyDataState = DataState
   , stWeatherChunks = IntMap.empty
   , stRiverChunks = IntMap.empty
   , stVegetationChunks = IntMap.empty
+  , stOverlayStore = emptyOverlayStore
   }
 
 snapshotData :: DataState -> DataSnapshot
@@ -98,6 +104,7 @@ snapshotTerrain st = TerrainSnapshot
   , tsWeatherChunks = stWeatherChunks st
   , tsRiverChunks = stRiverChunks st
   , tsVegetationChunks = stVegetationChunks st
+  , tsOverlayStore = stOverlayStore st
   }
 
 chunkKey :: ChunkId -> Int
@@ -130,6 +137,7 @@ actor Data
   cast setWeatherData :: (Int, [(ChunkId, WeatherChunk)])
   cast setRiverData :: (Int, [(ChunkId, RiverChunk)])
   cast setVegetationData :: (Int, [(ChunkId, VegetationChunk)])
+  cast setOverlayStore :: OverlayStore
   cast snapshotAsync :: () reply DataSnapshotReply
   call snapshot :: () -> DataSnapshot
   call terrainSnapshot :: () -> TerrainSnapshot
@@ -169,6 +177,10 @@ actor Data
     pure st { stChunkSize = size
             , stVegetationChunks = m
             }
+  onPure_ setOverlayStore = \store st ->
+    st { stOverlayStore = store
+       , stTerrainVersion = stTerrainVersion st + 1
+       }
   onReply snapshotAsync = \() replyTo st -> do
     replyCast replyTo dataSnapshotTag (snapshotData st)
     replyCast replyTo terrainSnapshotTag (snapshotTerrain st)
@@ -215,6 +227,11 @@ setVegetationChunkData :: ActorHandle Data (Protocol Data) -> Int -> [(ChunkId, 
 setVegetationChunkData handle size chunks =
   cast @"setVegetationData" handle #setVegetationData (size, chunks)
 
+-- | Replace the in-memory overlay store for overlay field visualization.
+setOverlayStoreData :: ActorHandle Data (Protocol Data) -> OverlayStore -> IO ()
+setOverlayStoreData handle store =
+  cast @"setOverlayStore" handle #setOverlayStore store
+
 getTerrainSnapshot :: ActorHandle Data (Protocol Data) -> IO TerrainSnapshot
 getTerrainSnapshot handle =
   call @"terrainSnapshot" handle #terrainSnapshot ()
@@ -236,9 +253,10 @@ replaceTerrainData handle world = do
       toList m = map (\(k, v) -> (ChunkId k, v)) (IntMap.toList m)
   setTerrainChunkData handle size (toList (twTerrain world))
   setClimateChunkData handle size (toList (twClimate world))
-  setWeatherChunkData handle size (toList (twWeather world))
+  setWeatherChunkData handle size (toList (getWeatherFromOverlay world))
   setRiverChunkData   handle size (toList (twRivers world))
   setVegetationChunkData handle size (toList (twVegetation world))
+  setOverlayStoreData handle (twOverlays world)
   -- Update the chunk count so dsTerrainChunks matches the IntMap size
   -- and the render pipeline considers the data ready.
   setTerrainChunkCount handle (IntMap.size (twTerrain world))

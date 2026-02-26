@@ -18,6 +18,7 @@ import Hyperspace.Actor
   )
 import Test.Hspec
 import Actor.Data (TerrainSnapshot(..))
+import Topo.Overlay (emptyOverlayStore)
 import Actor.TerrainCacheBroker
   ( TerrainCacheBroker
   , getLatestTerrainCacheResult
@@ -44,7 +45,7 @@ spec = describe "TerrainCacheWorker" $ do
     workerHandle <- getSingleton system terrainCacheWorkerActorDef
     brokerHandle <- getSingleton system terrainCacheBrokerActorDef
     let uiSnap = emptyUiState
-        terrainSnap = TerrainSnapshot 0 sampleChunkSize sampleTerrainChunks sampleClimateChunks sampleWeatherChunks mempty mempty
+        terrainSnap = TerrainSnapshot 0 sampleChunkSize sampleTerrainChunks sampleClimateChunks sampleWeatherChunks mempty mempty emptyOverlayStore
     case terrainCacheKeyFrom uiSnap terrainSnap of
       Nothing -> expectationFailure "Expected terrain cache key to be available"
       Just key -> do

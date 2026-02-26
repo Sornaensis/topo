@@ -11,6 +11,8 @@ module Actor.UiActions.Command
   ) where
 
 import Actor.AtlasCache (AtlasKey(..))
+import Actor.PluginManager (PluginManager, getPluginStages, refreshManifests)
+import Actor.Simulation (Simulation)
 import Actor.AtlasManager (AtlasJob(..), AtlasManager, enqueueAtlasBuild)
 import Actor.Data
   ( Data
@@ -147,6 +149,10 @@ data UiActionRequest = UiActionRequest
   , uarTerrainReplyTo :: !(ReplyTo TerrainReplyOps)
   , uarSnapshotHandle :: !(ActorHandle SnapshotReceiver (Protocol SnapshotReceiver))
   -- ^ Reply channel for terrain generation progress and result payloads.
+  , uarPluginManagerHandle :: !(ActorHandle PluginManager (Protocol PluginManager))
+  -- ^ Handle for querying plugin stages during generation.
+  , uarSimulationHandle :: !(ActorHandle Simulation (Protocol Simulation))
+  -- ^ Handle for the simulation actor (receives world after generation).
   }
 
 runUiAction :: UiActionRequest -> IO ()
@@ -196,11 +202,13 @@ viewModeLabel mode =
     ViewPlateVelocity -> "PlateVelocity"
     ViewVegetation -> "Vegetation"
     ViewTerrainForm -> "TerrainForm"
+    ViewOverlay name _fieldIdx -> "Overlay:" <> name
 
 startGeneration :: UiActionRequest -> IO ()
 startGeneration req = do
   let uiHandle = uarUiHandle req
       logHandle = uarLogHandle req
+      pluginHandle = uarPluginManagerHandle req
   uiSnap <- getUiSnapshot uiHandle
   setUiGenerating uiHandle True
   -- Commit the pending water level so atlas/terrain caches use the applied value
@@ -210,11 +218,17 @@ startGeneration req = do
   requestUiSnapshot uiHandle (replyTo @UiSnapshotReply (uarSnapshotHandle req))
   appendLog logHandle (LogEntry LogInfo (configSummary uiSnap))
   requestLogSnapshot logHandle (replyTo @LogSnapshotReply (uarSnapshotHandle req))
+  -- Hot-reload plugin manifests and collect plugin pipeline stages
+  refreshManifests pluginHandle
+  pluginStages <- getPluginStages pluginHandle
   let cfg = applyUiConfig uiSnap defaultWorldGenConfig
       request = TerrainGenRequest
         { tgrSeed = uiSeed uiSnap
         , tgrWorldConfig = WorldConfig { wcChunkSize = uiChunkSize uiSnap }
         , tgrGenConfig = cfg
+        , tgrDisabledStages = uiDisabledStages uiSnap
+        , tgrExtraStages = pluginStages
+        , tgrSimHandle = uarSimulationHandle req
         }
   startTerrainGen (uarTerrainHandle req) (uarTerrainReplyTo req) request
 

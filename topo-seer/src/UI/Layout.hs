@@ -14,6 +14,7 @@ module UI.Layout
   , leftChunkMinusRect
   , leftChunkPlusRect
   , leftViewRects
+  , overlayViewRects
   , configToggleRect
   , configPanelRect
   , configTabRects
@@ -24,6 +25,9 @@ module UI.Layout
   , configScrollAreaRect
   , configScrollBarRect
   , configRowTopPad
+  , pipelineCheckboxRect
+  , pipelineMoveUpRect
+  , pipelineMoveDownRect
   , configWaterMinusRect
   , configWaterPlusRect
   , configWaterBarRect
@@ -639,6 +643,12 @@ module UI.Layout
   , configValleyCurvatureMinusRect
   , configValleyCurvaturePlusRect
   , configValleyCurvatureBarRect
+  , configTfcElevGradientMinusRect
+  , configTfcElevGradientPlusRect
+  , configTfcElevGradientBarRect
+  , configTfcPlateauMaxRelief2RingMinusRect
+  , configTfcPlateauMaxRelief2RingPlusRect
+  , configTfcPlateauMaxRelief2RingBarRect
   , configRockElevationThresholdMinusRect
   , configRockElevationThresholdPlusRect
   , configRockElevationThresholdBarRect
@@ -768,15 +778,15 @@ configPanelRect (Layout (V2 w h) logHeight seedWidth) =
       panelX = w - desiredW - 16
   in Rect (V2 panelX (16 + topBarHeight), V2 desiredW (h - logHeight - 32 - topBarHeight))
 
-configTabRects :: Layout -> (Rect, Rect, Rect, Rect, Rect, Rect)
+configTabRects :: Layout -> (Rect, Rect, Rect, Rect, Rect, Rect, Rect)
 configTabRects layout =
   let Rect (V2 x y, V2 w _) = configPanelRect layout
       pad = 12
       tabH = 22
       gap = 4
       toggleH = 22
-      available = w - pad * 2 - gap * 5
-      tabW = available `div` 6
+      available = w - pad * 2 - gap * 6
+      tabW = available `div` 7
       y0 = y + 8 + toggleH + 8
       r1 = Rect (V2 (x + pad) y0, V2 tabW tabH)
       r2 = Rect (V2 (x + pad + (tabW + gap)) y0, V2 tabW tabH)
@@ -784,7 +794,8 @@ configTabRects layout =
       r4 = Rect (V2 (x + pad + (tabW + gap) * 3) y0, V2 tabW tabH)
       r5 = Rect (V2 (x + pad + (tabW + gap) * 4) y0, V2 tabW tabH)
       r6 = Rect (V2 (x + pad + (tabW + gap) * 5) y0, V2 tabW tabH)
-  in (r1, r2, r3, r4, r5, r6)
+      r7 = Rect (V2 (x + pad + (tabW + gap) * 6) y0, V2 tabW tabH)
+  in (r1, r2, r3, r4, r5, r6, r7)
 
 configWaterMinusRect :: Layout -> Rect
 configWaterMinusRect = configParamMinusRect 0
@@ -2503,32 +2514,50 @@ configValleyCurvaturePlusRect = configParamPlusRect 49
 configValleyCurvatureBarRect :: Layout -> Rect
 configValleyCurvatureBarRect = configParamBarRect 49
 
+configTfcElevGradientMinusRect :: Layout -> Rect
+configTfcElevGradientMinusRect = configParamMinusRect 50
+
+configTfcElevGradientPlusRect :: Layout -> Rect
+configTfcElevGradientPlusRect = configParamPlusRect 50
+
+configTfcElevGradientBarRect :: Layout -> Rect
+configTfcElevGradientBarRect = configParamBarRect 50
+
+configTfcPlateauMaxRelief2RingMinusRect :: Layout -> Rect
+configTfcPlateauMaxRelief2RingMinusRect = configParamMinusRect 51
+
+configTfcPlateauMaxRelief2RingPlusRect :: Layout -> Rect
+configTfcPlateauMaxRelief2RingPlusRect = configParamPlusRect 51
+
+configTfcPlateauMaxRelief2RingBarRect :: Layout -> Rect
+configTfcPlateauMaxRelief2RingBarRect = configParamBarRect 51
+
 configRockElevationThresholdMinusRect :: Layout -> Rect
-configRockElevationThresholdMinusRect = configParamMinusRect 50
+configRockElevationThresholdMinusRect = configParamMinusRect 52
 
 configRockElevationThresholdPlusRect :: Layout -> Rect
-configRockElevationThresholdPlusRect = configParamPlusRect 50
+configRockElevationThresholdPlusRect = configParamPlusRect 52
 
 configRockElevationThresholdBarRect :: Layout -> Rect
-configRockElevationThresholdBarRect = configParamBarRect 50
+configRockElevationThresholdBarRect = configParamBarRect 52
 
 configRockHardnessThresholdMinusRect :: Layout -> Rect
-configRockHardnessThresholdMinusRect = configParamMinusRect 51
+configRockHardnessThresholdMinusRect = configParamMinusRect 53
 
 configRockHardnessThresholdPlusRect :: Layout -> Rect
-configRockHardnessThresholdPlusRect = configParamPlusRect 51
+configRockHardnessThresholdPlusRect = configParamPlusRect 53
 
 configRockHardnessThresholdBarRect :: Layout -> Rect
-configRockHardnessThresholdBarRect = configParamBarRect 51
+configRockHardnessThresholdBarRect = configParamBarRect 53
 
 configRockHardnessSecondaryMinusRect :: Layout -> Rect
-configRockHardnessSecondaryMinusRect = configParamMinusRect 52
+configRockHardnessSecondaryMinusRect = configParamMinusRect 54
 
 configRockHardnessSecondaryPlusRect :: Layout -> Rect
-configRockHardnessSecondaryPlusRect = configParamPlusRect 52
+configRockHardnessSecondaryPlusRect = configParamPlusRect 54
 
 configRockHardnessSecondaryBarRect :: Layout -> Rect
-configRockHardnessSecondaryBarRect = configParamBarRect 52
+configRockHardnessSecondaryBarRect = configParamBarRect 54
 
 configChunkMinusRect :: Layout -> Rect
 configChunkMinusRect = leftChunkMinusRect
@@ -2745,6 +2774,27 @@ leftViewRects layout =
       r12 = Rect (V2 (x + pad + buttonW + gap) (top + (buttonH + gap) * 5), V2 buttonW buttonH)
       in (r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12)
 
+-- | Overlay selector button rects in the left View panel.
+--
+-- Returns @(overlayPrev, overlayNext, fieldPrev, fieldNext)@ positioned
+-- below the 12 view mode buttons.
+overlayViewRects :: Layout -> (Rect, Rect, Rect, Rect)
+overlayViewRects layout =
+  let Rect (V2 x _y, V2 w _) = leftPanelRect layout
+      pad = 12
+      gap = 8
+      buttonH = 28
+      buttonW = (w - pad * 2 - gap) `div` 2
+      top = leftControlsTop layout
+      -- Row 6 (after 6 rows of 2 view-mode buttons)
+      row6Y = top + (buttonH + gap) * 6
+      row7Y = top + (buttonH + gap) * 7
+      oPrev = Rect (V2 (x + pad) row6Y, V2 buttonW buttonH)
+      oNext = Rect (V2 (x + pad + buttonW + gap) row6Y, V2 buttonW buttonH)
+      fPrev = Rect (V2 (x + pad) row7Y, V2 buttonW buttonH)
+      fNext = Rect (V2 (x + pad + buttonW + gap) row7Y, V2 buttonW buttonH)
+  in (oPrev, oNext, fPrev, fNext)
+
 logPanelRect :: Layout -> Rect
 logPanelRect (Layout (V2 w h) logHeight _) =
   Rect (V2 0 (h - logHeight), V2 w logHeight)
@@ -2945,3 +2995,48 @@ worldLoadCancelRect layout =
   let Rect (V2 dx dy, V2 dw dh) = worldLoadDialogRect layout
       pad = 16; btnW = 100; btnH = 28
   in Rect (V2 (dx + dw - pad - btnW) (dy + dh - pad - btnH), V2 btnW btnH)
+
+-- | Checkbox rect for a pipeline stage toggle at the given row index.
+--
+-- Returns a 16x16 checkbox rect positioned inside the config scroll area.
+pipelineCheckboxRect :: Int -> Layout -> Rect
+pipelineCheckboxRect index layout =
+  let Rect (V2 x y, V2 _w _h) = configScrollAreaRect layout
+      rowHeight = 24
+      gap = 10
+      pad = 12
+      checkboxSize = 16
+      top = y + configRowTopPad + index * (rowHeight + gap)
+      checkY = top + (rowHeight - checkboxSize) `div` 2
+  in Rect (V2 (x + pad) checkY, V2 checkboxSize checkboxSize)
+
+-- | Move-up arrow button rect for a plugin at the given pipeline row index.
+--
+-- Returns a 14x14 rect positioned to the right of the checkbox area.
+pipelineMoveUpRect :: Int -> Layout -> Rect
+pipelineMoveUpRect index layout =
+  let Rect (V2 x y, V2 w _h) = configScrollAreaRect layout
+      rowHeight = 24
+      gap = 10
+      btnSize = 14
+      -- Position at the right side of the row, leaving room for two buttons
+      rightPad = 12
+      top = y + configRowTopPad + index * (rowHeight + gap)
+      btnY = top + (rowHeight - btnSize) `div` 2
+      btnX = x + w - rightPad - btnSize * 2 - 4
+  in Rect (V2 btnX btnY, V2 btnSize btnSize)
+
+-- | Move-down arrow button rect for a plugin at the given pipeline row index.
+--
+-- Returns a 14x14 rect positioned to the right of the move-up button.
+pipelineMoveDownRect :: Int -> Layout -> Rect
+pipelineMoveDownRect index layout =
+  let Rect (V2 x y, V2 w _h) = configScrollAreaRect layout
+      rowHeight = 24
+      gap = 10
+      btnSize = 14
+      rightPad = 12
+      top = y + configRowTopPad + index * (rowHeight + gap)
+      btnY = top + (rowHeight - btnSize) `div` 2
+      btnX = x + w - rightPad - btnSize
+  in Rect (V2 btnX btnY, V2 btnSize btnSize)

@@ -1,0 +1,18 @@
+{
+  "name": "civilization",
+  "version": "1.0.0",
+  "description": "Civilization state per hex tile — population, culture, infrastructure",
+  "storage": "sparse",
+  "fields": [
+    { "name": "population",      "type": "float", "default": 0.0 },
+    { "name": "culture_id",      "type": "int",   "default": 0   },
+    { "name": "infrastructure",  "type": "float", "default": 0.0 },
+    { "name": "food_supply",     "type": "float", "default": 0.0 },
+    { "name": "trade_value",     "type": "float", "default": 0.0 },
+    { "name": "is_city",         "type": "bool",  "default": false }
+  ],
+  "dependencies": {
+    "terrain": true,
+    "overlays": ["weather"]
+  }
+}

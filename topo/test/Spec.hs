@@ -6,6 +6,9 @@ import qualified Spec.World
 import qualified Spec.Hex
 import qualified Spec.Metadata
 import qualified Spec.Pipeline
+import qualified Spec.Calendar
+import qualified Spec.Overlay
+import qualified Spec.Simulation
 import qualified Spec.Storage
 import qualified Spec.Mesh
 import qualified Spec.Export
@@ -42,6 +45,8 @@ import qualified Spec.ClimateAlignment
 import qualified Spec.TerrainRelief
 import qualified Spec.DirectionalSlope
 import qualified Spec.TerrainFormModifiers
+import qualified Spec.PluginRPC
+import qualified Spec.PluginIntegration
 import qualified WorldProperty
 import qualified HexProperty
 
@@ -54,6 +59,9 @@ main = do
     Spec.Hex.spec
     Spec.Metadata.spec
     Spec.Pipeline.spec
+    Spec.Calendar.spec
+    Spec.Overlay.spec
+    Spec.Simulation.spec
     Spec.Storage.spec
     Spec.Mesh.spec
     Spec.Export.spec
@@ -90,5 +98,7 @@ main = do
     Spec.TerrainRelief.spec
     Spec.DirectionalSlope.spec
     Spec.TerrainFormModifiers.spec
+    Spec.PluginRPC.spec
+    Spec.PluginIntegration.spec
     WorldProperty.spec
     HexProperty.spec

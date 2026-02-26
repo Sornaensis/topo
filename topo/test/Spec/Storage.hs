@@ -1,13 +1,19 @@
+{-# LANGUAGE OverloadedStrings #-}
 module Spec.Storage (spec) where
 
 import Test.Hspec
+import qualified Data.IntMap.Strict as IntMap
+import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import Data.Aeson (toJSON)
 import Data.Proxy (Proxy(..))
 import Data.Text (Text, pack)
 import Topo
+import Topo.Calendar (WorldTime(..), PlanetAge(..), defaultWorldTime, defaultPlanetAge)
+import Topo.Overlay (Overlay(..), OverlayData(..), insertOverlay, lookupOverlay)
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice)
 import Topo.Units (UnitScales(..), defaultUnitScales)
+import Topo.Weather (weatherOverlaySchema, weatherChunkToOverlay, getWeatherChunk)
 import Topo.WorldGen (defaultWorldGenConfig)
 
 newtype Note = Note Text
@@ -35,7 +41,7 @@ spec = describe "Storage" $ do
                   (setGlacierChunk (ChunkId 0) glaciers
                     (setGroundwaterChunk (ChunkId 0) groundwater
                       (setRiverChunk (ChunkId 0) rivers
-                        (setWeatherChunk (ChunkId 0) weather
+                        (insertWeatherChunkOverlay (ChunkId 0) weather
                           (setClimateChunk (ChunkId 0) climate
                             (setTerrainChunk (ChunkId 0) terrain world0))))))
     case encodeWorld world1 of
@@ -109,6 +115,61 @@ spec = describe "Storage" $ do
         case decodeWorld encoded of
           Left err -> expectationFailure (show err)
           Right world1 -> twUnitScales world1 `shouldBe` custom
+
+  it "roundtrips WorldTime" $ do
+    let config = WorldConfig { wcChunkSize = 4 }
+        wt = WorldTime { wtTick = 12345, wtTickRate = 2.5 }
+        world0 = (emptyWorld config defaultHexGridMeta) { twWorldTime = wt }
+    case encodeWorld world0 of
+      Left err -> expectationFailure (show err)
+      Right encoded ->
+        case decodeWorld encoded of
+          Left err -> expectationFailure (show err)
+          Right world1 -> twWorldTime world1 `shouldBe` wt
+
+  it "roundtrips PlanetAge" $ do
+    let config = WorldConfig { wcChunkSize = 4 }
+        pa = PlanetAge { paYears = 4.5e9 }
+        world0 = (emptyWorld config defaultHexGridMeta) { twPlanetAge = pa }
+    case encodeWorld world0 of
+      Left err -> expectationFailure (show err)
+      Right encoded ->
+        case decodeWorld encoded of
+          Left err -> expectationFailure (show err)
+          Right world1 -> twPlanetAge world1 `shouldBe` pa
+
+  it "roundtrips overlay manifest" $ do
+    let config = WorldConfig { wcChunkSize = 4 }
+        manifest = [pack "weather", pack "civilization"]
+        world0 = (emptyWorld config defaultHexGridMeta) { twOverlayManifest = manifest }
+    case encodeWorld world0 of
+      Left err -> expectationFailure (show err)
+      Right encoded ->
+        case decodeWorld encoded of
+          Left err -> expectationFailure (show err)
+          Right world1 -> twOverlayManifest world1 `shouldBe` manifest
+
+  it "empty overlay manifest roundtrips" $ do
+    let config = WorldConfig { wcChunkSize = 4 }
+        world0 = emptyWorld config defaultHexGridMeta
+    case encodeWorld world0 of
+      Left err -> expectationFailure (show err)
+      Right encoded ->
+        case decodeWorld encoded of
+          Left err -> expectationFailure (show err)
+          Right world1 -> twOverlayManifest world1 `shouldBe` []
+
+  it "default world has defaultWorldTime and defaultPlanetAge" $ do
+    let config = WorldConfig { wcChunkSize = 4 }
+        world0 = emptyWorld config defaultHexGridMeta
+    case encodeWorld world0 of
+      Left err -> expectationFailure (show err)
+      Right encoded ->
+        case decodeWorld encoded of
+          Left err -> expectationFailure (show err)
+          Right world1 -> do
+            twWorldTime world1 `shouldBe` defaultWorldTime
+            twPlanetAge world1 `shouldBe` defaultPlanetAge
 
 isJust :: Maybe a -> Bool
 isJust Nothing = False
@@ -225,3 +286,20 @@ mkVolcanismChunk config base =
       , vcAshPotential = ash
       , vcDepositPotential = deposit
       }
+
+-- | Insert a 'WeatherChunk' into the overlay store of a 'TerrainWorld'.
+-- Uses the weather overlay schema to store the chunk as dense SoA data.
+insertWeatherChunkOverlay :: ChunkId -> WeatherChunk -> TerrainWorld -> TerrainWorld
+insertWeatherChunkOverlay (ChunkId cid) wc world =
+  let fields = weatherChunkToOverlay wc
+      existing = case lookupOverlay "weather" (twOverlays world) of
+        Just ov -> case ovData ov of
+          DenseData m -> m
+          _           -> IntMap.empty
+        Nothing -> IntMap.empty
+      updated = IntMap.insert cid fields existing
+      overlay = Overlay
+        { ovSchema = weatherOverlaySchema
+        , ovData   = DenseData updated
+        }
+  in world { twOverlays = insertOverlay overlay (twOverlays world) }

@@ -29,6 +29,7 @@ import Topo.Config.JSON
 import Topo.Math (clamp01, lerp, smoothstep)
 import Topo.Noise (directionalRidge2D, directionalRidge2DAniso, domainWarp2D, fbm2D, noise2DContinuous, ridgedFbm2D)
 import Topo.Pipeline (PipelineStage(..))
+import Topo.Pipeline.Stage (StageId(..))
 import Topo.Planet (LatitudeMapping(..))
 import Topo.Plugin (logInfo, modifyWorldP, peSeed)
 import Topo.Types
@@ -192,7 +193,7 @@ defaultTectonicsConfig = TectonicsConfig
 -- Uses the pre-computed 'LatitudeMapping' from 'TerrainWorld' so that
 -- north/south plate bias is latitude-aware for non-equator slices.
 generateTectonicsStage :: TectonicsConfig -> PipelineStage
-generateTectonicsStage cfg = PipelineStage "generateTectonics" "generateTectonics" $ do
+generateTectonicsStage cfg = PipelineStage StageTectonics "generateTectonics" "generateTectonics" $ do
   logInfo "generateTectonics: generating plate terrain"
   seed <- asks peSeed
   modifyWorldP $ \world ->

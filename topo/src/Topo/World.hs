@@ -6,7 +6,6 @@ module Topo.World
   , emptyTerrainChunk
   , generateTerrainChunk
   , emptyClimateChunk
-  , emptyWeatherChunk
   , emptyRiverChunk
   , emptyGroundwaterChunk
   , emptyVolcanismChunk
@@ -14,7 +13,6 @@ module Topo.World
   , emptyVegetationChunk
   , ensureTerrainChunk
   , ensureClimateChunk
-  , ensureWeatherChunk
   , ensureRiverChunk
   , ensureGroundwaterChunk
   , ensureVolcanismChunk
@@ -35,8 +33,6 @@ module Topo.World
   , updateTerrainChunk
   , getClimateChunk
   , setClimateChunk
-  , getWeatherChunk
-  , setWeatherChunk
   , getRiverChunk
   , setRiverChunk
   , getGroundwaterChunk
@@ -58,6 +54,9 @@ import qualified Data.IntMap.Strict as IntMap
 import Topo.Hex (HexGridMeta)
 import Topo.Metadata (Metadata, MetadataMigration, MetadataStore, emptyMetadataStore, getHexMeta, getRegionMeta, migrateMetadataStore, putHexMeta, putRegionMeta)
 import Data.Aeson (Value)
+import Data.Text (Text)
+import Topo.Calendar (WorldTime, PlanetAge, defaultWorldTime, defaultPlanetAge)
+import Topo.Overlay (OverlayStore, emptyOverlayStore)
 import Topo.Planet (LatitudeMapping, PlanetConfig, WorldSlice, defaultPlanetConfig, defaultWorldSlice, mkLatitudeMapping)
 import Topo.Types
 import Topo.Units (UnitScales, defaultUnitScales)
@@ -69,7 +68,6 @@ type ChunkMap a = IntMap a
 data TerrainWorld = TerrainWorld
   { twTerrain :: !(ChunkMap TerrainChunk)
   , twClimate :: !(ChunkMap ClimateChunk)
-  , twWeather :: !(ChunkMap WeatherChunk)
   , twRivers :: !(ChunkMap RiverChunk)
   , twGroundwater :: !(ChunkMap GroundwaterChunk)
   , twVolcanism :: !(ChunkMap VolcanismChunk)
@@ -91,10 +89,13 @@ data TerrainWorld = TerrainWorld
   -- world configuration.  Computed once at world creation; used by
   -- every pipeline stage that needs tile-Y → latitude conversion.
   , twLatMapping :: !LatitudeMapping
-  -- | Elapsed simulation time in weather ticks.  Incremented by
-  -- 'tickWeatherStage' each call; used for time-varying weather noise
-  -- and seasonal phase computation.
-  , twWorldTime :: !Float
+  -- | Monotonic simulation time.  Advanced by 'tickWeatherStage'
+  -- (and future simulation ticks); used for time-varying weather noise
+  -- and seasonal phase computation via 'Topo.Calendar.yearFraction'.
+  , twWorldTime :: !WorldTime
+  -- | Geological-scale planet age (years since formation).  Carried
+  -- as metadata; not derived from the tick counter.
+  , twPlanetAge :: !PlanetAge
   -- | The generation config used to produce this world, stored as a
   -- raw JSON 'Value'.  Persisted in the @.topo@ binary (version ≥ 14)
   -- as a length-prefixed JSON blob.  'Nothing' for worlds loaded from
@@ -108,6 +109,13 @@ data TerrainWorld = TerrainWorld
   -- @.topo@ binary (version ≥ 15) so that exported data can be
   -- interpreted correctly even if the default scale changes.
   , twUnitScales :: !UnitScales
+  -- | Active overlays: extensible geographic data layers.
+  -- Keyed by overlay name.  See 'Topo.Overlay' for details.
+  , twOverlays :: !OverlayStore
+  -- | Names of overlays that were active when this world was last saved.
+  -- Used by the loader to validate that all required @.topolay/@ files
+  -- are present on disk.  Persisted in @.topo@ version ≥ 17.
+  , twOverlayManifest :: ![Text]
   }
 
 emptyWorld :: WorldConfig -> HexGridMeta -> TerrainWorld
@@ -118,7 +126,6 @@ emptyWorldWithPlanet :: WorldConfig -> HexGridMeta -> PlanetConfig -> WorldSlice
 emptyWorldWithPlanet config hexMeta planet slice = TerrainWorld
   { twTerrain = IntMap.empty
   , twClimate = IntMap.empty
-  , twWeather = IntMap.empty
   , twRivers = IntMap.empty
   , twGroundwater = IntMap.empty
   , twVolcanism = IntMap.empty
@@ -131,9 +138,12 @@ emptyWorldWithPlanet config hexMeta planet slice = TerrainWorld
   , twPlanet = planet
   , twSlice = slice
   , twLatMapping = mkLatitudeMapping planet slice config
-  , twWorldTime = 0
+  , twWorldTime = defaultWorldTime
+  , twPlanetAge = defaultPlanetAge
   , twGenConfig = Nothing
   , twUnitScales = defaultUnitScales
+  , twOverlays = emptyOverlayStore
+  , twOverlayManifest = []
   }
 
 emptyTerrainChunk :: WorldConfig -> TerrainChunk
@@ -157,6 +167,8 @@ emptyTerrainChunk config =
       , tcRockDensity = zeros
       , tcSoilGrain = zeros
       , tcRelief = zeros
+      , tcRelief2Ring = zeros
+      , tcRelief3Ring = zeros
       , tcRuggedness = zeros
       , tcTerrainForm = U.replicate n FormFlat
       , tcFlags = biomeZeros
@@ -193,6 +205,8 @@ generateTerrainChunk config f =
       , tcRockDensity = zeros
       , tcSoilGrain = zeros
       , tcRelief = zeros
+      , tcRelief2Ring = zeros
+      , tcRelief3Ring = zeros
       , tcRuggedness = zeros
       , tcTerrainForm = U.replicate n FormFlat
       , tcFlags = biomeZeros
@@ -218,19 +232,6 @@ emptyClimateChunk config =
       , ccHumidityAvg = zeros
       , ccTempRange = zeros
       , ccPrecipSeasonality = zeros
-      }
-
-emptyWeatherChunk :: WorldConfig -> WeatherChunk
-emptyWeatherChunk config =
-  let n = chunkTileCount config
-      zeros = U.replicate n 0
-  in WeatherChunk
-      { wcTemp = zeros
-      , wcHumidity = zeros
-      , wcWindDir = zeros
-      , wcWindSpd = zeros
-      , wcPressure = zeros
-      , wcPrecip = zeros
       }
 
 emptyRiverChunk :: WorldConfig -> RiverChunk
@@ -366,19 +367,6 @@ ensureClimateChunk cid world =
   case getClimateChunk cid world of
     Just _ -> world
     Nothing -> setClimateChunk cid (emptyClimateChunk (twConfig world)) world
-
-getWeatherChunk :: ChunkId -> TerrainWorld -> Maybe WeatherChunk
-getWeatherChunk cid world = IntMap.lookup (chunkKey cid) (twWeather world)
-
-setWeatherChunk :: ChunkId -> WeatherChunk -> TerrainWorld -> TerrainWorld
-setWeatherChunk cid chunk world =
-  world { twWeather = IntMap.insert (chunkKey cid) chunk (twWeather world) }
-
-ensureWeatherChunk :: ChunkId -> TerrainWorld -> TerrainWorld
-ensureWeatherChunk cid world =
-  case getWeatherChunk cid world of
-    Just _ -> world
-    Nothing -> setWeatherChunk cid (emptyWeatherChunk (twConfig world)) world
 
 getRiverChunk :: ChunkId -> TerrainWorld -> Maybe RiverChunk
 getRiverChunk cid world = IntMap.lookup (chunkKey cid) (twRivers world)

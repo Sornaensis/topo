@@ -1,0 +1,172 @@
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StrictData #-}
+
+-- | Core types for defining topo plugins.
+--
+-- A plugin is defined by a 'PluginDef' which declares:
+--
+-- * Identity ('pdName', 'pdVersion')
+-- * User-facing parameters ('pdParams')
+-- * Optional generator stage ('pdGenerator')
+-- * Optional simulation node ('pdSimulation')
+--
+-- The SDK runtime ('Topo.Plugin.SDK.Runner') uses these definitions
+-- to handle the RPC lifecycle: manifest serving, parameter exchange,
+-- and invocation dispatch.
+module Topo.Plugin.SDK.Types
+  ( -- * Plugin definition
+    PluginDef(..)
+  , ParamDef(..)
+  , ParamType(..)
+    -- * Capabilities
+  , GeneratorDef(..)
+  , SimulationDef(..)
+    -- * Plugin context
+  , PluginContext(..)
+    -- * Defaults
+  , defaultPluginDef
+  ) where
+
+import Data.Aeson (Value(..))
+import Data.Map.Strict (Map)
+import Data.Text (Text)
+import Data.Word (Word64)
+import Topo.World (TerrainWorld)
+
+------------------------------------------------------------------------
+-- Parameters
+------------------------------------------------------------------------
+
+-- | Scalar type for a plugin parameter.
+data ParamType
+  = PFloat
+  -- ^ Floating-point parameter.
+  | PInt
+  -- ^ Integer parameter.
+  | PBool
+  -- ^ Boolean parameter.
+  deriving (Eq, Ord, Show, Read)
+
+-- | A user-facing configuration parameter.
+--
+-- These are rendered as sliders or checkboxes in topo-seer.
+data ParamDef = ParamDef
+  { paramName    :: !Text
+    -- ^ Internal parameter name (used as key in config maps).
+  , paramLabel   :: !Text
+    -- ^ Human-readable label for UI display.
+  , paramType    :: !ParamType
+    -- ^ Parameter scalar type.
+  , paramDefault :: !Value
+    -- ^ Default value (JSON scalar).
+  , paramMin     :: !(Maybe Value)
+    -- ^ Optional minimum value for numeric parameters.
+  , paramMax     :: !(Maybe Value)
+    -- ^ Optional maximum value for numeric parameters.
+  , paramTooltip :: !Text
+    -- ^ Tooltip text shown on hover.
+  } deriving (Eq, Show)
+
+------------------------------------------------------------------------
+-- Generator
+------------------------------------------------------------------------
+
+-- | Generator pipeline participation.
+--
+-- Defines a stage that runs during world generation, inserted after
+-- a specified built-in stage.
+data GeneratorDef = GeneratorDef
+  { gdInsertAfter :: !Text
+    -- ^ Canonical stage name after which this generator runs
+    -- (e.g. @\"biomes\"@, @\"rivers\"@).
+  , gdRequires    :: ![Text]
+    -- ^ Stage names that must have run before this generator.
+  , gdRun         :: PluginContext -> IO (Either Text ())
+    -- ^ Generator implementation. Receives the current world and
+    -- parameters; returns an error message on failure.
+  }
+
+------------------------------------------------------------------------
+-- Simulation
+------------------------------------------------------------------------
+
+-- | Simulation DAG participation.
+--
+-- Defines a simulation node that ticks during the simulation phase,
+-- after the world has been generated.
+data SimulationDef = SimulationDef
+  { sdDependencies :: ![Text]
+    -- ^ Overlay names that must tick before this node.
+  , sdTick         :: PluginContext -> IO (Either Text ())
+    -- ^ Simulation tick implementation.
+  }
+
+------------------------------------------------------------------------
+-- Context
+------------------------------------------------------------------------
+
+-- | Runtime context passed to generator and simulation callbacks.
+--
+-- Provides access to the current terrain, parameters, and seed.
+data PluginContext = PluginContext
+  { pcWorld  :: !TerrainWorld
+    -- ^ Current terrain world state.
+  , pcParams :: !(Map Text Value)
+    -- ^ Current parameter values (user may have changed defaults).
+  , pcSeed   :: !Word64
+    -- ^ World generation seed.
+  , pcLog    :: Text -> IO ()
+    -- ^ Logging callback (messages appear in topo-seer log panel).
+  }
+
+------------------------------------------------------------------------
+-- Plugin definition
+------------------------------------------------------------------------
+
+-- | Complete definition of a topo plugin.
+--
+-- Create a 'PluginDef' and pass it to 'Topo.Plugin.SDK.runPlugin'
+-- to start the plugin process.
+--
+-- === Minimal example
+--
+-- @
+-- myPlugin :: PluginDef
+-- myPlugin = defaultPluginDef
+--   { pdName    = "my-terrain-mod"
+--   , pdVersion = "0.1.0"
+--   , pdGenerator = Just GeneratorDef
+--       { gdInsertAfter = "erosion"
+--       , gdRequires    = ["erosion"]
+--       , gdRun         = \\ctx -> pure (Right ())
+--       }
+--   }
+-- @
+data PluginDef = PluginDef
+  { pdName       :: !Text
+    -- ^ Unique plugin identifier. Must match the directory name
+    -- under @~\/.topo\/plugins\/@.
+  , pdVersion    :: !Text
+    -- ^ Plugin version string (informational).
+  , pdParams     :: ![ParamDef]
+    -- ^ User-facing configuration parameters.
+  , pdSchemaFile :: !(Maybe FilePath)
+    -- ^ Path to an overlay @.toposchema@ file (relative to plugin dir).
+  , pdGenerator  :: !(Maybe GeneratorDef)
+    -- ^ Generator pipeline participation.
+  , pdSimulation :: !(Maybe SimulationDef)
+    -- ^ Simulation DAG participation.
+  }
+
+-- | A minimal plugin definition with no capabilities.
+--
+-- Override fields as needed.
+defaultPluginDef :: PluginDef
+defaultPluginDef = PluginDef
+  { pdName       = "unnamed-plugin"
+  , pdVersion    = "0.0.0"
+  , pdParams     = []
+  , pdSchemaFile = Nothing
+  , pdGenerator  = Nothing
+  , pdSimulation = Nothing
+  }

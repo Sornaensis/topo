@@ -25,6 +25,7 @@ import qualified Data.IntMap.Strict as IntMap
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
 import Topo (WorldConfig(..))
+import UI.OverlayExtract (extractOverlayField)
 import UI.RiverRender (RiverGeometry(..), buildChunkRiverGeometry, defaultRiverRenderConfig)
 import UI.TerrainAtlas (AtlasChunkGeometry(..), AtlasTileGeometry(..), attachRiverOverlay, composeTilesFromGeometry)
 import UI.TerrainRender (ChunkGeometry, buildChunkGeometry)
@@ -60,6 +61,12 @@ actor AtlasWorker
         weatherChunks = tsWeatherChunks terrainSnap
         vegChunks = tsVegetationChunks terrainSnap
         chunkPairs = IntMap.toList (tsTerrainChunks terrainSnap)
+        overlayMap = case mode of
+          ViewOverlay name fieldIdx ->
+            case extractOverlayField name fieldIdx (wcChunkSize config * wcChunkSize config) (tsOverlayStore terrainSnap) of
+              Just m  -> m
+              Nothing -> IntMap.empty
+          _ -> IntMap.empty
     -- Build per-chunk geometry in IO, releasing the capability between
     -- each chunk via threadDelay.  Storable vector allocation (pinned
     -- memory) bypasses GHC's allocation counter, and yield only
@@ -67,7 +74,7 @@ actor AtlasWorker
     -- removes the green thread entirely, guaranteeing the bound main
     -- thread (render loop) can reclaim its capability.
     geomPairs <- forM chunkPairs $ \(k, chunk) -> do
-      let geom = buildChunkGeometry config mode waterLevel climateChunks weatherChunks vegChunks k chunk
+      let geom = buildChunkGeometry config mode waterLevel climateChunks weatherChunks vegChunks (IntMap.lookup k overlayMap) k chunk
       _ <- evaluate geom
       threadDelay 100  -- 0.1ms, releases capability
       pure (k, geom)

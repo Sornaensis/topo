@@ -1,0 +1,35 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.38.1.
+--
+-- see: https://github.com/sol/hpack
+
+name:           topo-plugin-sdk
+version:        0.1.0.0
+synopsis:       SDK for building topo plugins
+category:       Terrain
+author:         You
+maintainer:     you@example.com
+license:        MPL-2.0
+license-file:   LICENSE
+build-type:     Simple
+
+library
+  exposed-modules:
+      Topo.Plugin.SDK
+      Topo.Plugin.SDK.Types
+      Topo.Plugin.SDK.Runner
+  other-modules:
+      Paths_topo_plugin_sdk
+  hs-source-dirs:
+      src
+  build-depends:
+      aeson >=2.1 && <2.3
+    , base >=4.18 && <5
+    , bytestring
+    , containers
+    , directory
+    , filepath
+    , text
+    , topo
+  default-language: Haskell2010

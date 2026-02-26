@@ -13,6 +13,7 @@ import Actor.Data
   , TerrainSnapshot(..)
   , dataActorDef
   )
+import Topo.Overlay (emptyOverlayStore)
 import Actor.Log
   ( Log
   , LogEntry(..)
@@ -41,6 +42,8 @@ import Actor.UI
   )
 import Actor.Terrain (terrainActorDef)
 import Actor.AtlasManager (atlasManagerActorDef)
+import Actor.PluginManager (pluginManagerActorDef, discoverPlugins)
+import Actor.Simulation (simulationActorDef, setSimHandles)
 import Actor.AtlasResultBroker (atlasResultBrokerActorDef, setAtlasResultRef)
 import Actor.AtlasScheduleBroker (atlasScheduleBrokerActorDef, setAtlasScheduleRef)
 import Actor.AtlasScheduler
@@ -125,13 +128,17 @@ runApp = do
   terrainCacheBrokerHandle <- getSingleton system terrainCacheBrokerActorDef
   uiActionsHandle <- getSingleton system uiActionsActorDef
   snapshotReceiverHandle <- getSingleton system snapshotReceiverActorDef
+  pluginManagerHandle <- getSingleton system pluginManagerActorDef
+  simulationHandle <- getSingleton system simulationActorDef
+  discoverPlugins pluginManagerHandle
+  setSimHandles simulationHandle dataHandle logHandle uiHandle
   seed <- randomIO
   setUiSeed uiHandle seed
   setUiSeedInput uiHandle (Text.pack (show seed))
   uiSnap <- getUiSnapshot uiHandle
   let logSnap = LogSnapshot [] False 0 LogDebug
       dataSnap = DataSnapshot 0 0 Nothing
-      terrainSnap = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty
+      terrainSnap = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore
   snapshotRef <- newIORef (SnapshotVersion 0, RenderSnapshot
     { rsUi = uiSnap
     , rsLog = logSnap
@@ -251,7 +258,7 @@ runApp = do
               pure 0
             else do
               handleStart <- getMonotonicTimeNSec
-              forM_ coalescedEvents (handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandle uiActionsHandle snapshotReceiverHandle (rsUi renderSnap) (rsLog renderSnap) (rsData renderSnap) (rsTerrain renderSnap) quitRef lineHeightRef mousePosRef dragRef tooltipHoverRef)
+              forM_ coalescedEvents (handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandle uiActionsHandle snapshotReceiverHandle pluginManagerHandle simulationHandle (rsUi renderSnap) (rsLog renderSnap) (rsData renderSnap) (rsTerrain renderSnap) quitRef lineHeightRef mousePosRef dragRef tooltipHoverRef)
               _ <- tickTooltipHover tooltipHoverRef uiHandle
               afterEvents <- getMonotonicTimeNSec
               requestUiSnapshot uiHandle (replyTo @UiSnapshotReply snapshotReceiverHandle)

@@ -52,7 +52,7 @@ phase3Seed = 42
 
 -- | Chunk size for Phase 3 tests.
 phase3ChunkSize :: Int
-phase3ChunkSize = 8
+phase3ChunkSize = 16
 
 -- | Water level for Phase 3 tests.
 phase3WaterLevel :: Float

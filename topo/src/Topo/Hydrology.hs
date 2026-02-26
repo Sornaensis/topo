@@ -43,6 +43,7 @@ import Topo.Math (clamp01)
 import Topo.Hex (hexNeighborIndices)
 import Topo.Parameters (TerrainFormConfig)
 import Topo.Pipeline (PipelineStage(..))
+import Topo.Pipeline.Stage (StageId(..))
 import Control.Monad.Except (throwError)
 import Topo.Plugin (logInfo, getWorldP, putWorldP, PluginError(..))
 import Topo.River (RiverTopologyConfig(..), defaultRiverTopologyConfig, computeRiverSegments)
@@ -244,7 +245,7 @@ defaultGroundwaterConfig = GroundwaterConfig
 -- carving, bank erosion, stream-power erosion, deposition, coastal
 -- reshaping, piedmont smoothing, and wet-area erosion.
 applyHydrologyStage :: HydroConfig -> TerrainFormConfig -> PipelineStage
-applyHydrologyStage cfg formCfg = PipelineStage "applyHydrology" "applyHydrology" $ do
+applyHydrologyStage cfg formCfg = PipelineStage StageHydrology "applyHydrology" "applyHydrology" $ do
   logInfo "applyHydrology: routing flow + moisture"
   world <- getWorldP
   let config = twConfig world
@@ -310,7 +311,7 @@ applyRiverStage
   -> GroundwaterConfig
   -> Float          -- ^ Water level (from 'HydroConfig')
   -> PipelineStage
-applyRiverStage riverCfg topoCfg gwCfg waterLevel = PipelineStage "applyRivers" "applyRivers" $ do
+applyRiverStage riverCfg topoCfg gwCfg waterLevel = PipelineStage StageRivers "applyRivers" "applyRivers" $ do
   logInfo "applyRivers: routing rivers + groundwater"
   world <- getWorldP
   let config = twConfig world

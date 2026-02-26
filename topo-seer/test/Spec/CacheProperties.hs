@@ -1,6 +1,7 @@
 module Spec.CacheProperties (spec) where
 
 import Actor.Data (TerrainSnapshot(..))
+import Topo.Overlay (emptyOverlayStore)
 import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
@@ -59,6 +60,7 @@ emptyTerrainSnapshot = TerrainSnapshot
   , tsWeatherChunks = IntMap.empty
   , tsRiverChunks = IntMap.empty
   , tsVegetationChunks = IntMap.empty
+  , tsOverlayStore = emptyOverlayStore
   }
 
 distinctViewModes :: Gen (ViewMode, ViewMode)

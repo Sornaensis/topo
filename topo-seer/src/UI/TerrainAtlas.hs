@@ -15,11 +15,14 @@ import qualified Data.IntMap.Strict as IntMap
 import Data.Maybe (mapMaybe)
 import Data.Vector.Storable (Vector)
 import qualified Data.Vector.Storable as SV
+import qualified Data.Vector.Unboxed (Vector)
 import Foreign.C.Types (CFloat, CInt)
 import Linear (V2(..), V4(..))
 import qualified SDL
 import qualified SDL.Raw.Types as Raw
 import Topo (ClimateChunk(..), TerrainChunk(..), VegetationChunk(..), WeatherChunk(..), WorldConfig(..))
+import Topo.Overlay (OverlayStore)
+import UI.OverlayExtract (extractOverlayField)
 import UI.RiverRender (RiverGeometry(..))
 import UI.TerrainRender (ChunkGeometry(..), buildChunkGeometry)
 import UI.Widgets (Rect(..))
@@ -57,11 +60,18 @@ buildAtlasTileGeometry
   -> IntMap ClimateChunk
   -> IntMap WeatherChunk
   -> IntMap VegetationChunk
+  -> OverlayStore
   -> WorldConfig
   -> Int
   -> [AtlasTileGeometry]
-buildAtlasTileGeometry mode waterLevel terrainChunks climateChunks weatherChunks vegChunks config scale =
-  let geometryMap = IntMap.mapWithKey (buildChunkGeometry config mode waterLevel climateChunks weatherChunks vegChunks) terrainChunks
+buildAtlasTileGeometry mode waterLevel terrainChunks climateChunks weatherChunks vegChunks overlayStore config scale =
+  let overlayMap = case mode of
+        ViewOverlay name fieldIdx ->
+          case extractOverlayField name fieldIdx (wcChunkSize config * wcChunkSize config) overlayStore of
+            Just m  -> m
+            Nothing -> IntMap.empty
+        _ -> IntMap.empty
+      geometryMap = IntMap.mapWithKey (\k -> buildChunkGeometry config mode waterLevel climateChunks weatherChunks vegChunks (IntMap.lookup k overlayMap) k) terrainChunks
   in composeTilesFromGeometry geometryMap scale
 
 -- | Compose atlas tiles from a pre-built chunk geometry map.

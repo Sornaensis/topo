@@ -122,9 +122,12 @@ import Actor.UI
   , setUiTfcHillSlope
   , setUiTfcRollingSlope
   , setUiValleyCurvature
+  , setUiTfcElevGradient
+  , setUiTfcPlateauMaxRelief2Ring
   , setUiRockElevationThreshold
   , setUiRockHardnessThreshold
   , setUiRockHardnessSecondary
+  , setUiDisabledStages
   , setUiMoistureIterations
   , setUiBoundaryMotionTemp
   , setUiBoundaryMotionPrecip
@@ -254,11 +257,17 @@ import Actor.UI
   , setUiWaterLevel
   , setUiWindDiffuse
   , setUiZoom
+  , setUiSimAutoTick
+  , setUiSimTickCount
+  , setUiPluginNames
+  , setUiOverlayNames
   )
 import Control.Monad (when)
 import Data.Int (Int32)
 import Data.IORef (IORef, readIORef, writeIORef, modifyIORef')
-import Data.List (partition)
+import Data.List (findIndex, partition)
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.IntMap.Strict as IntMap
@@ -285,13 +294,19 @@ import Seer.Input.ViewControls
   , viewModeForKey
   )
 import Topo (ChunkCoord(..), ChunkId(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
+import Topo.Overlay (overlayNames)
+import Topo.Pipeline.Dep (builtinDependencies, disabledClosure)
+import Topo.Pipeline.Stage (StageId, parseStageId)
+import Topo.World (TerrainWorld(..))
 import UI.HexPick (screenToAxial)
 import UI.Layout
-import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildSliderRowWidgets, hitTest)
+import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets, buildSliderRowWidgets, hitTest)
 import UI.Widgets (Rect(..), containsPoint)
 import System.Random (randomIO)
 import Hyperspace.Actor (ActorHandle, Protocol, replyTo)
 import Actor.AtlasManager (AtlasManager)
+import Actor.PluginManager (PluginManager, setPluginOrder)
+import Actor.Simulation (Simulation, requestSimTick)
 import Actor.SnapshotReceiver (SnapshotReceiver)
 import Actor.UiActions (UiActions, UiAction(..), UiActionRequest(..), submitUiAction)
 
@@ -319,6 +334,8 @@ handleEvent
   -> ActorHandle AtlasManager (Protocol AtlasManager)
   -> ActorHandle UiActions (Protocol UiActions)
   -> ActorHandle SnapshotReceiver (Protocol SnapshotReceiver)
+  -> ActorHandle PluginManager (Protocol PluginManager)
+  -> ActorHandle Simulation (Protocol Simulation)
   -> UiState
   -> LogSnapshot
   -> DataSnapshot
@@ -330,7 +347,7 @@ handleEvent
   -> IORef TooltipHover
   -> SDL.Event
   -> IO ()
-handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandle uiActionsHandle snapshotReceiverHandle uiSnapCached logSnapCached dataSnapCached terrainSnapCached quitRef lineHeightRef mousePosRef dragRef tooltipHoverRef event = do
+handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandle uiActionsHandle snapshotReceiverHandle pluginManagerHandle simulationHandle uiSnapCached logSnapCached dataSnapCached terrainSnapCached quitRef lineHeightRef mousePosRef dragRef tooltipHoverRef event = do
   case SDL.eventPayload event of
     SDL.MouseMotionEvent motionEvent -> do
       let SDL.P (V2 mx my) = SDL.mouseMotionEventPos motionEvent
@@ -382,6 +399,7 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
                    ConfigWeather -> weatherRows
                    ConfigBiome -> biomeRows
                    ConfigErosion -> erosionRows
+                   ConfigPipeline -> []
                  hoverResult
                    | containsPoint scrollArea point = hitTest activeRows scrolledPoint
                    | otherwise = Nothing
@@ -446,7 +464,7 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
                 , dsDragging = False
                 })
             _ ->
-              handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandle uiActionsHandle snapshotReceiverHandle uiSnapCached logSnapCached dataSnapCached terrainSnapCached quitRef (SDL.mouseButtonEventPos btnEvent)
+              handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandle uiActionsHandle snapshotReceiverHandle pluginManagerHandle simulationHandle uiSnapCached logSnapCached dataSnapCached terrainSnapCached quitRef (SDL.mouseButtonEventPos btnEvent)
       | SDL.mouseButtonEventMotion btnEvent == SDL.Released ->
           case SDL.mouseButtonEventButton btnEvent of
             SDL.ButtonRight -> do
@@ -527,6 +545,8 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
       , uarAtlasHandle = atlasManagerHandle
       , uarTerrainReplyTo = replyTo @TerrainReplyOps uiActionsHandle
       , uarSnapshotHandle = snapshotReceiverHandle
+      , uarPluginManagerHandle = pluginManagerHandle
+      , uarSimulationHandle = simulationHandle
       }
     screenToWorld uiSnap (sx, sy) =
       let (ox, oy) = uiPanOffset uiSnap
@@ -631,6 +651,7 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
               case result of
                 Right (_manifest, snapshot, world) -> do
                   replaceTerrainData dataHandle world
+                  setUiOverlayNames uiHandle (overlayNames (twOverlays world))
                   requestDataSnapshot dataHandle (replyTo @DataSnapshotReply snapshotReceiverHandle)
                   applySnapshotToUi snapshot uiHandle
                   setUiWorldName uiHandle name
@@ -674,6 +695,8 @@ handleClick
   -> ActorHandle AtlasManager (Protocol AtlasManager)
   -> ActorHandle UiActions (Protocol UiActions)
   -> ActorHandle SnapshotReceiver (Protocol SnapshotReceiver)
+  -> ActorHandle PluginManager (Protocol PluginManager)
+  -> ActorHandle Simulation (Protocol Simulation)
   -> UiState
   -> LogSnapshot
   -> DataSnapshot
@@ -681,7 +704,7 @@ handleClick
   -> IORef Bool
   -> SDL.Point V2 Int32
   -> IO ()
-handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandle uiActionsHandle snapshotReceiverHandle uiSnapCached logSnapCached dataSnapCached terrainSnapCached quitRef (SDL.P (V2 x y)) = do
+handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandle uiActionsHandle snapshotReceiverHandle pluginManagerHandle simulationHandle uiSnapCached logSnapCached dataSnapCached terrainSnapCached quitRef (SDL.P (V2 x y)) = do
   (V2 winW winH) <- SDL.get (SDL.windowSize window)
   logSnap <- getLogSnapshot logHandle
   uiSnap <- getUiSnapshot uiHandle
@@ -697,7 +720,7 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
       scrollPoint = if inConfigScroll
         then V2 (fromIntegral x) (fromIntegral y + uiConfigScroll uiSnap)
         else point
-      widgetsAll = buildWidgets layout
+      widgetsAll = buildWidgets layout ++ buildPluginWidgets (uiPluginNames uiSnap) layout
       widgets =
         if uiShowConfig uiSnap
           then filter (configWidgetAllowed (uiConfigTab uiSnap)) widgetsAll
@@ -1014,6 +1037,10 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           WidgetConfigTfcRollingSlopePlus -> True
           WidgetConfigValleyCurvatureMinus -> True
           WidgetConfigValleyCurvaturePlus -> True
+          WidgetConfigTfcElevGradientMinus -> True
+          WidgetConfigTfcElevGradientPlus -> True
+          WidgetConfigTfcPlateauMaxRelief2RingMinus -> True
+          WidgetConfigTfcPlateauMaxRelief2RingPlus -> True
           WidgetConfigRockElevationThresholdMinus -> True
           WidgetConfigRockElevationThresholdPlus -> True
           WidgetConfigRockHardnessThresholdMinus -> True
@@ -1440,6 +1467,10 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           WidgetConfigTfcRollingSlopePlus -> tab == ConfigTerrain
           WidgetConfigValleyCurvatureMinus -> tab == ConfigTerrain
           WidgetConfigValleyCurvaturePlus -> tab == ConfigTerrain
+          WidgetConfigTfcElevGradientMinus -> tab == ConfigTerrain
+          WidgetConfigTfcElevGradientPlus -> tab == ConfigTerrain
+          WidgetConfigTfcPlateauMaxRelief2RingMinus -> tab == ConfigTerrain
+          WidgetConfigTfcPlateauMaxRelief2RingPlus -> tab == ConfigTerrain
           WidgetConfigRockElevationThresholdMinus -> tab == ConfigTerrain
           WidgetConfigRockElevationThresholdPlus -> tab == ConfigTerrain
           WidgetConfigRockHardnessThresholdMinus -> tab == ConfigTerrain
@@ -1542,12 +1573,16 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           WidgetConfigInlandSeaMinSizePlus -> tab == ConfigErosion
           WidgetConfigRoughnessScaleMinus -> tab == ConfigErosion
           WidgetConfigRoughnessScalePlus -> tab == ConfigErosion
+          WidgetSimTick -> tab == ConfigPipeline
+          WidgetSimAutoTick -> tab == ConfigPipeline
+          WidgetPluginMoveUp _  -> tab == ConfigPipeline
+          WidgetPluginMoveDown _ -> tab == ConfigPipeline
           _ -> True
   if inScrollBar
     then do
       let rowHeight = 24
           gap = 10
-          rows = configRowCount (uiConfigTab uiSnap)
+          rows = configRowCount (uiConfigTab uiSnap) uiSnap
           contentHeight = max rowHeight (configRowTopPad + rows * rowHeight + max 0 (rows - 1) * gap)
           Rect (V2 _ sy, V2 _ sh) = scrollArea
           maxOffset = max 0 (contentHeight - sh)
@@ -1584,6 +1619,7 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           ; Just WidgetConfigTabWeather -> whenConfigVisible (setUiConfigTab uiHandle ConfigWeather >> setUiConfigScroll uiHandle 0)
           ; Just WidgetConfigTabBiome -> whenConfigVisible (setUiConfigTab uiHandle ConfigBiome >> setUiConfigScroll uiHandle 0)
           ; Just WidgetConfigTabErosion -> whenConfigVisible (setUiConfigTab uiHandle ConfigErosion >> setUiConfigScroll uiHandle 0)
+          ; Just WidgetConfigTabPipeline -> whenConfigVisible (setUiConfigTab uiHandle ConfigPipeline >> setUiConfigScroll uiHandle 0)
           ; Just WidgetConfigPresetSave -> whenConfigVisible (openPresetSaveDialog layout uiSnap)
           ; Just WidgetConfigPresetLoad -> whenConfigVisible openPresetLoadDialog
           ; Just WidgetConfigReset -> whenConfigVisible (SDL.stopTextInput >> submit UiActionReset)
@@ -1702,6 +1738,10 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           ; Just WidgetConfigTfcRollingSlopePlus -> whenConfigVisible (bumpTfcRollingSlope 0.05)
           ; Just WidgetConfigValleyCurvatureMinus -> whenConfigVisible (bumpValleyCurvature (-0.05))
           ; Just WidgetConfigValleyCurvaturePlus -> whenConfigVisible (bumpValleyCurvature 0.05)
+          ; Just WidgetConfigTfcElevGradientMinus -> whenConfigVisible (bumpTfcElevGradient (-0.05))
+          ; Just WidgetConfigTfcElevGradientPlus -> whenConfigVisible (bumpTfcElevGradient 0.05)
+          ; Just WidgetConfigTfcPlateauMaxRelief2RingMinus -> whenConfigVisible (bumpTfcPlateauMaxRelief2Ring (-0.05))
+          ; Just WidgetConfigTfcPlateauMaxRelief2RingPlus -> whenConfigVisible (bumpTfcPlateauMaxRelief2Ring 0.05)
           ; Just WidgetConfigRockElevationThresholdMinus -> whenConfigVisible (bumpRockElevationThreshold (-0.05))
           ; Just WidgetConfigRockElevationThresholdPlus -> whenConfigVisible (bumpRockElevationThreshold 0.05)
           ; Just WidgetConfigRockHardnessThresholdMinus -> whenConfigVisible (bumpRockHardnessThreshold (-0.05))
@@ -2016,11 +2056,43 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           ; Just WidgetViewPlateAge -> whenLeftView (submit (UiActionSetViewMode ViewPlateAge))
           ; Just WidgetViewPlateHeight -> whenLeftView (submit (UiActionSetViewMode ViewPlateHeight))
           ; Just WidgetViewPlateVelocity -> whenLeftView (submit (UiActionSetViewMode ViewPlateVelocity))
+          -- Overlay cycling: prev/next overlay name, prev/next field
+          ; Just WidgetViewOverlayPrev -> whenLeftView $ cycleOverlay uiSnap uiHandle (-1) submit
+          ; Just WidgetViewOverlayNext -> whenLeftView $ cycleOverlay uiSnap uiHandle 1 submit
+          ; Just WidgetViewFieldPrev -> whenLeftView $ cycleOverlayField uiSnap uiHandle (-1) submit
+          ; Just WidgetViewFieldNext -> whenLeftView $ cycleOverlayField uiSnap uiHandle 1 submit
           ; Just WidgetLogDebug -> setLogMinLevel logHandle LogDebug
           ; Just WidgetLogInfo -> setLogMinLevel logHandle LogInfo
           ; Just WidgetLogWarn -> setLogMinLevel logHandle LogWarn
           ; Just WidgetLogError -> setLogMinLevel logHandle LogError
           ; Just WidgetLogHeader -> toggleLog
+          ; Just (WidgetPipelineToggle name) -> whenConfigVisible $ do
+              case parseStageId name of
+                Nothing -> pure ()
+                Just sid -> do
+                  let current = uiDisabledStages uiSnap
+                      toggled :: Set StageId
+                      toggled
+                        | Set.member sid current = Set.delete sid current
+                        | otherwise              = Set.insert sid current
+                      closed = disabledClosure builtinDependencies toggled
+                  setUiDisabledStages uiHandle closed
+          ; Just WidgetSimTick -> whenConfigVisible $ do
+              let count = uiSimTickCount uiSnap
+              setUiSimTickCount uiHandle (count + 1)
+              requestSimTick simulationHandle (count + 1)
+          ; Just WidgetSimAutoTick -> whenConfigVisible $ do
+              setUiSimAutoTick uiHandle (not (uiSimAutoTick uiSnap))
+          ; Just (WidgetPluginMoveUp name) -> whenConfigVisible $ do
+              let names = uiPluginNames uiSnap
+                  swapped = swapWithPrev name names
+              setUiPluginNames uiHandle swapped
+              setPluginOrder pluginManagerHandle swapped
+          ; Just (WidgetPluginMoveDown name) -> whenConfigVisible $ do
+              let names = uiPluginNames uiSnap
+                  swapped = swapWithNext name names
+              setUiPluginNames uiHandle swapped
+              setPluginOrder pluginManagerHandle swapped
           ; Just _ -> pure ()
           ; Nothing -> pure ()
           }
@@ -2173,6 +2245,7 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
         case result of
           Right (_manifest, snapshot, world) -> do
             replaceTerrainData dataHandle world
+            setUiOverlayNames uiHandle (overlayNames (twOverlays world))
             requestDataSnapshot dataHandle (replyTo @DataSnapshotReply snapshotReceiverHandle)
             applySnapshotToUi snapshot uiHandle
             setUiWorldName uiHandle name
@@ -2207,6 +2280,8 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
       , uarAtlasHandle = atlasManagerHandle
       , uarTerrainReplyTo = replyTo @TerrainReplyOps uiActionsHandle
       , uarSnapshotHandle = snapshotReceiverHandle
+      , uarPluginManagerHandle = pluginManagerHandle
+      , uarSimulationHandle = simulationHandle
       }
     submit action =
       submitUiAction uiActionsHandle (actionRequest action)
@@ -2399,6 +2474,12 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
     bumpValleyCurvature delta = do
       uiSnap <- getUiSnapshot uiHandle
       setUiValleyCurvature uiHandle (uiValleyCurvature uiSnap + delta)
+    bumpTfcElevGradient delta = do
+      uiSnap <- getUiSnapshot uiHandle
+      setUiTfcElevGradient uiHandle (uiTfcElevGradient uiSnap + delta)
+    bumpTfcPlateauMaxRelief2Ring delta = do
+      uiSnap <- getUiSnapshot uiHandle
+      setUiTfcPlateauMaxRelief2Ring uiHandle (uiTfcPlateauMaxRelief2Ring uiSnap + delta)
     bumpRockElevationThreshold delta = do
       uiSnap <- getUiSnapshot uiHandle
       setUiRockElevationThreshold uiHandle (uiRockElevationThreshold uiSnap + delta)
@@ -2849,3 +2930,71 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
     bumpRoughnessScale delta = do
       uiSnap <- getUiSnapshot uiHandle
       setUiRoughnessScale uiHandle (uiRoughnessScale uiSnap + delta)
+-- | Cycle through available overlay names by @dir@ (+1 or -1).
+--
+-- When no overlays are available, does nothing.  When cycling past the
+-- end, wraps to ViewElevation (no overlay); from ViewElevation, wraps to
+-- the first overlay.
+cycleOverlay :: UiState -> ActorHandle Ui (Protocol Ui) -> Int -> (UiAction -> IO ()) -> IO ()
+cycleOverlay uiSnap uiHandle dir submit = do
+  let names = uiOverlayNames uiSnap
+  if null names
+    then pure ()
+    else do
+      let currentIdx = case uiViewMode uiSnap of
+            ViewOverlay name _ ->
+              case findIndex (== name) names of
+                Just i  -> i + 1  -- +1 because index 0 = "no overlay"
+                Nothing -> 0
+            _ -> 0
+          total = length names + 1  -- +1 for "no overlay" position
+          newIdx = (currentIdx + dir) `mod` total
+      if newIdx == 0
+        then submit (UiActionSetViewMode ViewElevation)
+        else do
+          let overlayName = names !! (newIdx - 1)
+          -- Reset to first field when switching overlay
+          submit (UiActionSetViewMode (ViewOverlay overlayName 0))
+
+-- | Cycle through fields within the currently-selected overlay.
+--
+-- Only effective when in 'ViewOverlay' mode with fields available.
+cycleOverlayField :: UiState -> ActorHandle Ui (Protocol Ui) -> Int -> (UiAction -> IO ()) -> IO ()
+cycleOverlayField uiSnap _uiHandle dir submit =
+  case uiViewMode uiSnap of
+    ViewOverlay name fieldIdx -> do
+      let fields = uiOverlayFields uiSnap
+          fieldCount = length fields
+      if fieldCount <= 0
+        then pure ()
+        else do
+          let newIdx = (fieldIdx + dir) `mod` fieldCount
+          submit (UiActionSetViewMode (ViewOverlay name newIdx))
+    _ -> pure ()
+
+-- | Swap an element with the one before it in a list.
+--
+-- If the element is at index 0 or not found, the list is returned unchanged.
+swapWithPrev :: Eq a => a -> [a] -> [a]
+swapWithPrev _ [] = []
+swapWithPrev target (x:xs)
+  | x == target = x : xs  -- already first, no swap
+  | otherwise   = go x xs
+  where
+    go prev []     = [prev]  -- target not found, reconstruct
+    go prev (y:ys)
+      | y == target = target : prev : ys
+      | otherwise   = prev : go y ys
+
+-- | Swap an element with the one after it in a list.
+--
+-- If the element is last or not found, the list is returned unchanged.
+swapWithNext :: Eq a => a -> [a] -> [a]
+swapWithNext _ [] = []
+swapWithNext target xs = go xs
+  where
+    go []         = []
+    go [y]        = [y]  -- last element, no swap
+    go (y:z:ys)
+      | y == target = z : y : ys
+      | otherwise   = y : go (z:ys)

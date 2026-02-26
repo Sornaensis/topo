@@ -41,7 +41,7 @@ spec = describe "Biome" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 1
           , pipelineStages = [classifyBiomesStage defaultBiomeConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world1
@@ -74,7 +74,7 @@ spec = describe "Biome" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 1
           , pipelineStages = [classifyBiomesStage defaultBiomeConfig 0.1]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world1
@@ -107,7 +107,7 @@ spec = describe "Biome" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 1
           , pipelineStages = [classifyBiomesStage defaultBiomeConfig 0.05]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world1
@@ -148,7 +148,7 @@ spec = describe "Biome" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 1
           , pipelineStages = [classifyBiomesStage biomeCfg 0.1]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     baseResult <- runPipeline pipeline env worldBase

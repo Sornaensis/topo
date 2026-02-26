@@ -114,7 +114,6 @@ worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
               -- Terrain data (empty world → empty IntMaps)
               IntMap.size (twTerrain loadedWorld) `shouldBe` 0
               IntMap.size (twClimate loadedWorld) `shouldBe` 0
-              IntMap.size (twWeather loadedWorld) `shouldBe` 0
       )
 
 -- ---------------------------------------------------------------------------

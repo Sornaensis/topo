@@ -74,7 +74,7 @@ runFixture1 cfg elevFn = do
       pipe    = PipelineConfig
         { pipelineSeed   = fixtureSeed
         , pipelineStages = [generateClimateStage cfg defaultWeatherConfig waterLevel]
-        , pipelineSnapshots = False
+        , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
         }
   result <- runPipeline pipe fixtureEnv world1
   world2 <- expectPipeline result
@@ -103,7 +103,7 @@ runFixture3 cfg elevL elevC elevR = do
       pipe = PipelineConfig
         { pipelineSeed   = fixtureSeed
         , pipelineStages = [generateClimateStage cfg defaultWeatherConfig waterLevel]
-        , pipelineSnapshots = False
+        , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
         }
   result <- runPipeline pipe fixtureEnv world1
   world2 <- expectPipeline result
@@ -194,7 +194,7 @@ continentalInteriorSpec = describe "Continental interior fixture" $ do
         pipe = PipelineConfig
           { pipelineSeed   = fixtureSeed
           , pipelineStages = [generateClimateStage cfg defaultWeatherConfig waterLevel]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
     result <- runPipeline pipe fixtureEnv world2
     world3 <- expectPipeline result

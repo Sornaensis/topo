@@ -33,6 +33,7 @@ import Topo.Climate.Evaporation
 import Topo.Math (clamp01, clampLat, iterateN, lerp)
 import Topo.Noise (noise2D)
 import Topo.Pipeline (PipelineStage(..))
+import Topo.Pipeline.Stage (StageId(..))
 import Control.Monad.Except (throwError)
 import Topo.Planet (LatitudeMapping(..))
 import Topo.Plugin (logInfo, getWorldP, putWorldP, peSeed, PluginError(..))
@@ -54,7 +55,7 @@ import qualified Data.Vector.Unboxed as U
 -- ('wcSeasonAmplitude', 'wcSeasonalBase', 'wcSeasonalRange') are read
 -- from the 'WeatherConfig' to avoid duplication.
 generateClimateStage :: ClimateConfig -> WeatherConfig -> Float -> PipelineStage
-generateClimateStage cfg wcfg waterLevel = PipelineStage "generateClimate" "generateClimate" $ do
+generateClimateStage cfg wcfg waterLevel = PipelineStage StageClimate "generateClimate" "generateClimate" $ do
   logInfo "generateClimate: generating climate"
   seed <- asks peSeed
   world <- getWorldP

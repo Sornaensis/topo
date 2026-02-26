@@ -14,6 +14,7 @@ import Data.List (foldl')
 import Data.Word (Word64)
 import Topo.BaseHeight (GenConfig(..), defaultGenConfig, oceanEdgeBiasAt, sampleBaseHeightAt)
 import Topo.Pipeline (PipelineStage(..))
+import Topo.Pipeline.Stage (StageId(..))
 import Topo.Plugin (logInfo, modifyWorldP, peSeed)
 import Topo.Tectonics (TectonicsConfig, applyTectonicsChunk)
 import Topo.Types
@@ -22,7 +23,7 @@ import qualified Data.Vector.Unboxed as U
 
 -- | Generate a base-height world using procedural noise.
 generateBaseHeightStage :: GenConfig -> PipelineStage
-generateBaseHeightStage cfg = PipelineStage "generateBaseHeight" "generateBaseHeight" $ do
+generateBaseHeightStage cfg = PipelineStage StageBaseHeight "generateBaseHeight" "generateBaseHeight" $ do
   logInfo "generateBaseHeight: generating base height"
   seed <- asks peSeed
   modifyWorldP $ \world ->
@@ -36,7 +37,7 @@ generateBaseHeightStage cfg = PipelineStage "generateBaseHeight" "generateBaseHe
 
 -- | Generate plate-based terrain as the primary heightmap.
 generatePlateTerrainStage :: GenConfig -> TectonicsConfig -> PipelineStage
-generatePlateTerrainStage cfg tcfg = PipelineStage "generatePlateTerrain" "generatePlateTerrain" $ do
+generatePlateTerrainStage cfg tcfg = PipelineStage StagePlateTerrain "generatePlateTerrain" "generatePlateTerrain" $ do
   logInfo "generatePlateTerrain: generating plate-based terrain"
   seed <- asks peSeed
   modifyWorldP $ \world ->

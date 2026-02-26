@@ -21,6 +21,7 @@ import Actor.Log (LogEntry(..), LogLevel(..))
 import Control.Concurrent (threadDelay)
 import Control.Exception (evaluate)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Data.Set (Set)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time.Clock (UTCTime, diffUTCTime, getCurrentTime)
@@ -41,9 +42,12 @@ import Topo
   , TerrainWorld(..)
   , defaultHexGridMeta
   , emptyWorldWithPlanet
+  , getWeatherFromOverlay
   )
-import Topo.Pipeline (PipelineConfig(..), runPipeline)
+import Topo.Pipeline (PipelineConfig(..), PipelineStage, runPipeline)
+import Topo.Pipeline.Stage (StageId)
 import Topo.WorldGen (WorldGenConfig(..), buildFullPipelineConfig)
+import Actor.Simulation (Simulation, setSimWorld)
 
 progressTag :: OpTag "progress"
 progressTag = OpTag
@@ -59,6 +63,12 @@ data TerrainGenRequest = TerrainGenRequest
   { tgrSeed :: !Word64
   , tgrWorldConfig :: !WorldConfig
   , tgrGenConfig :: !WorldGenConfig
+  , tgrDisabledStages :: !(Set StageId)
+    -- ^ Pipeline stages the user has disabled via the Pipeline tab.
+  , tgrExtraStages :: ![PipelineStage]
+    -- ^ Additional pipeline stages injected by plugins.
+  , tgrSimHandle :: !(ActorHandle Simulation (Protocol Simulation))
+    -- ^ Simulation actor handle for posting the generated world.
   }
 
 -- | Stage progress during terrain generation.
@@ -117,7 +127,11 @@ actor Terrain
         worldCfg = tgrWorldConfig req
         world0 = emptyWorldWithPlanet worldCfg defaultHexGridMeta
                    (worldPlanet cfg) (worldSlice cfg)
-        pipeline = buildFullPipelineConfig cfg worldCfg (tgrSeed req)
+        pipeline0 = buildFullPipelineConfig cfg worldCfg (tgrSeed req)
+        pipeline = pipeline0
+          { pipelineDisabled = tgrDisabledStages req
+          , pipelineStages = pipelineStages pipeline0 ++ tgrExtraStages req
+          }
         stageCount = length (pipelineStages pipeline)
     stageRef <- newIORef 0
     stageStartRef <- newIORef Nothing
@@ -154,7 +168,7 @@ actor Terrain
       Right (world1, _) -> do
         let terrainChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twTerrain world1))
             climateChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twClimate world1))
-            weatherChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twWeather world1))
+            weatherChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (getWeatherFromOverlay world1))
             riverChunks   = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twRivers world1))
             vegetationChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twVegetation world1))
             terrainCount = IntMap.size (twTerrain world1)
@@ -181,6 +195,9 @@ actor Terrain
               , tgrResultBiomeCount = biomeCount
               }
         replyCast replyTo resultTag result
+        -- Send the full world to the Simulation actor so it can
+        -- run tick-based overlay simulation on demand.
+        setSimWorld (tgrSimHandle req) world1
         pure st { tsLastSeed = Just (tgrSeed req), tsRunning = False }
 |]
 

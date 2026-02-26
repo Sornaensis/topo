@@ -23,6 +23,14 @@ library
       Topo.Metadata
       Topo.Plugin
       Topo.Pipeline
+      Topo.Pipeline.Stage
+      Topo.Pipeline.Dep
+      Topo.Calendar
+      Topo.Overlay
+      Topo.Overlay.Schema
+      Topo.Overlay.Index
+      Topo.Overlay.Export
+      Topo.Overlay.Storage
       Topo.BaseHeight
       Topo.Gen
       Topo.Tectonics
@@ -72,6 +80,12 @@ library
       Topo.OceanCurrent
       Topo.Units
       Topo.Units.Config
+      Topo.Simulation
+      Topo.Simulation.DAG
+      Topo.Plugin.RPC
+      Topo.Plugin.RPC.Manifest
+      Topo.Plugin.RPC.Protocol
+      Topo.Plugin.RPC.Transport
       Topo.Config.JSON
       Topo.TerrainForm.Modifiers
   other-modules:
@@ -81,10 +95,13 @@ library
       src
   build-depends:
       aeson >=2.1 && <2.3
+    , async
     , base >=4.18 && <5
     , binary
     , bytestring
     , containers
+    , directory
+    , filepath
     , mtl
     , text
     , transformers
@@ -101,6 +118,7 @@ test-suite topo-test
       Spec.BaseHeight
       Spec.Biome
       Spec.BiomeRefine
+      Spec.Calendar
       Spec.Climate
       Spec.ClimateAlignment
       Spec.ConfigJSON
@@ -119,12 +137,16 @@ test-suite topo-test
       Spec.MoistureFixture
       Spec.Noise
       Spec.OceanCurrent
+      Spec.Overlay
       Spec.Parameters
       Spec.Pipeline
       Spec.Planet
+      Spec.PluginIntegration
+      Spec.PluginRPC
       Spec.Precipitation
       Spec.Provenance
       Spec.River
+      Spec.Simulation
       Spec.Soil
       Spec.Storage
       Spec.Tectonics
@@ -149,6 +171,7 @@ test-suite topo-test
     , bytestring
     , containers
     , hspec
+    , scientific
     , text
     , topo
     , vector

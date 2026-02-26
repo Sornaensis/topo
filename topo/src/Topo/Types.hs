@@ -185,6 +185,7 @@ module Topo.Types
   , dsAvgSlope
   , dsMaxSlope
   , dsMinSlope
+  , dsTop3Slope
   , dsAsymmetry
   , TerrainChunk(..)
   , ClimateChunk(..)
@@ -1178,6 +1179,34 @@ dsMinSlope (DirectionalSlope e ne nw w sw se) =
 dsAsymmetry :: DirectionalSlope -> Float
 dsAsymmetry ds = dsMaxSlope ds - dsMinSlope ds
 
+-- | Average of the 3 largest absolute slopes.
+--
+-- Better captures the dominant slope character of a tile on ridges,
+-- escarpments, or mountain flanks than 'dsAvgSlope' (which dilutes
+-- a steep one-directional slope across all 6 directions) without
+-- being as noisy as 'dsMaxSlope'.
+--
+-- Uses a partial insertion-sort network to find the top 3 in O(1).
+{-# INLINE dsTop3Slope #-}
+dsTop3Slope :: DirectionalSlope -> Float
+dsTop3Slope (DirectionalSlope e ne nw w sw se) =
+  let a = abs e; b = abs ne; c = abs nw
+      d = abs w; f = abs sw; g = abs se
+      -- Sort-3 network to initialise top3 from first 3 values
+      s1 = max a (max b c)
+      s3 = min a (min b c)
+      s2 = a + b + c - s1 - s3
+      -- Insert a value into a descending top-3 accumulator
+      ins3 t1 t2 t3 v
+        | v >= t1   = (v, t1, t2)
+        | v >= t2   = (t1, v, t2)
+        | v >= t3   = (t1, t2, v)
+        | otherwise = (t1, t2, t3)
+      (u1, u2, u3) = ins3 s1 s2 s3 d
+      (v1, v2, v3) = ins3 u1 u2 u3 f
+      (w1, w2, w3) = ins3 v1 v2 v3 g
+  in (w1 + w2 + w3) / 3.0
+
 -- ---------------------------------------------------------------------------
 -- Terrain chunk
 -- ---------------------------------------------------------------------------
@@ -1227,7 +1256,16 @@ data TerrainChunk = TerrainChunk
   , tcSoilGrain   :: !(U.Vector Float)
     -- ^ Soil grain size (0–1).  Fine-grained soils hold more moisture.
   , tcRelief      :: !(U.Vector Float)
-    -- ^ Local relief (0–1): max − min elevation in a neighbourhood.
+    -- ^ Local 1-ring relief (0–1): max − min elevation over the 6 hex
+    -- neighbours plus center.
+  , tcRelief2Ring :: !(U.Vector Float)
+    -- ^ 2-ring relief (0–1): max − min elevation over all hex tiles
+    -- within axial distance 2 (~18 tiles + center, ~40 km diameter).
+    -- Used for hill classification and plateau regional flatness.
+  , tcRelief3Ring :: !(U.Vector Float)
+    -- ^ 3-ring relief (0–1): max − min elevation over all hex tiles
+    -- within axial distance 3 (~36 tiles + center, ~60 km diameter).
+    -- Used for mountain and canyon classification.
   , tcRuggedness  :: !(U.Vector Float)
     -- ^ Terrain ruggedness index (0–1): standard deviation of elevation
     -- differences to neighbours.

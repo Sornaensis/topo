@@ -46,7 +46,7 @@ runClimateChunk cfg waterLevel elevFn = do
         { pipelineSeed = 42
         , pipelineStages =
             [generateClimateStage cfg defaultWeatherConfig waterLevel]
-        , pipelineSnapshots = False
+        , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
         }
       env = TopoEnv { teLogger = \_ -> pure () }
   result <- runPipeline pipeline env world1
@@ -71,7 +71,7 @@ runClimate2Chunks cfg waterLevel elevL elevR = do
         { pipelineSeed = 42
         , pipelineStages =
             [generateClimateStage cfg defaultWeatherConfig waterLevel]
-        , pipelineSnapshots = False
+        , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
         }
       env = TopoEnv { teLogger = \_ -> pure () }
   result <- runPipeline pipeline env world1

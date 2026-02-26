@@ -3,6 +3,7 @@ module Topo.Export
   , encodeTerrainChunk
   , decodeTerrainChunk
   , decodeTerrainChunkV2
+  , decodeTerrainChunkV3
   , encodeClimateChunk
   , decodeClimateChunk
   , decodeClimateChunkV1
@@ -61,6 +62,7 @@ import qualified Data.Text as Text
 import Data.Word (Word8, Word16, Word32)
 import qualified Data.Vector.Unboxed as U
 import Topo.Types
+import Topo.Weather (getWeatherFromOverlay)
 import Topo.World (TerrainWorld(..))
 
 -- | Encoding/decoding failures during chunk export.
@@ -106,6 +108,8 @@ encodeTerrainChunk config chunk = do
   ensureLength n (Text.pack "rockDensity") (tcRockDensity chunk)
   ensureLength n (Text.pack "soilGrain") (tcSoilGrain chunk)
   ensureLength n (Text.pack "relief") (tcRelief chunk)
+  ensureLength n (Text.pack "relief2Ring") (tcRelief2Ring chunk)
+  ensureLength n (Text.pack "relief3Ring") (tcRelief3Ring chunk)
   ensureLength n (Text.pack "ruggedness") (tcRuggedness chunk)
   ensureLength n (Text.pack "terrainForm") (tcTerrainForm chunk)
   ensureLength n (Text.pack "flags") (tcFlags chunk)
@@ -132,6 +136,8 @@ encodeTerrainChunk config chunk = do
     putVectorFloat n (tcRockDensity chunk)
     putVectorFloat n (tcSoilGrain chunk)
     putVectorFloat n (tcRelief chunk)
+    putVectorFloat n (tcRelief2Ring chunk)
+    putVectorFloat n (tcRelief3Ring chunk)
     putVectorFloat n (tcRuggedness chunk)
     putVectorWord8 n (U.map terrainFormToCode (tcTerrainForm chunk))
     putVectorWord16 n (U.map biomeIdToCode (tcFlags chunk))
@@ -152,6 +158,11 @@ decodeTerrainChunk config bytes =
 decodeTerrainChunkV2 :: WorldConfig -> BS.ByteString -> Either ExportError TerrainChunk
 decodeTerrainChunkV2 config bytes =
   decodeWith (getTerrainChunkV2 config) bytes
+
+-- | Decode the v3–v18 terrain chunk schema (no relief2Ring/relief3Ring).
+decodeTerrainChunkV3 :: WorldConfig -> BS.ByteString -> Either ExportError TerrainChunk
+decodeTerrainChunkV3 config bytes =
+  decodeWith (getTerrainChunkV3 config) bytes
 
 encodeClimateChunk :: WorldConfig -> ClimateChunk -> Either ExportError BS.ByteString
 encodeClimateChunk config chunk = do
@@ -392,11 +403,11 @@ exportClimateChunksRegion world region =
 
 exportWeatherChunks :: TerrainWorld -> Either ExportError [(ChunkId, BS.ByteString)]
 exportWeatherChunks world =
-  exportFromMap (twConfig world) encodeWeatherChunk (twWeather world)
+  exportFromMap (twConfig world) encodeWeatherChunk (getWeatherFromOverlay world)
 
 exportWeatherChunksRegion :: TerrainWorld -> Region -> Either ExportError [(ChunkId, BS.ByteString)]
 exportWeatherChunksRegion world region =
-  exportFromMapRegion (twConfig world) encodeWeatherChunk region (twWeather world)
+  exportFromMapRegion (twConfig world) encodeWeatherChunk region (getWeatherFromOverlay world)
 
 exportRiverChunks :: TerrainWorld -> Either ExportError [(ChunkId, BS.ByteString)]
 exportRiverChunks world =
@@ -564,6 +575,8 @@ getTerrainChunk config = do
   tcRockDensity <- getVectorFloat n
   tcSoilGrain <- getVectorFloat n
   tcRelief <- getVectorFloat n
+  tcRelief2Ring <- getVectorFloat n
+  tcRelief3Ring <- getVectorFloat n
   tcRuggedness <- getVectorFloat n
   tcTerrainForm <- getVectorTerrainForm n
   tcFlags <- getVectorBiomeId n
@@ -589,6 +602,8 @@ getTerrainChunk config = do
     , tcRockDensity = tcRockDensity
     , tcSoilGrain = tcSoilGrain
     , tcRelief = tcRelief
+    , tcRelief2Ring = tcRelief2Ring
+    , tcRelief3Ring = tcRelief3Ring
     , tcRuggedness = tcRuggedness
     , tcTerrainForm = tcTerrainForm
     , tcFlags = tcFlags
@@ -640,6 +655,8 @@ getTerrainChunkV2 config = do
     , tcRockDensity = tcRockDensity
     , tcSoilGrain = tcSoilGrain
     , tcRelief = zeros
+    , tcRelief2Ring = zeros
+    , tcRelief3Ring = zeros
     , tcRuggedness = zeros
     , tcTerrainForm = formZeros
     , tcFlags = tcFlags
@@ -651,6 +668,65 @@ getTerrainChunkV2 config = do
     , tcPlateAge = zeros
     , tcPlateVelX = zeros
     , tcPlateVelY = zeros
+    }
+
+-- | Decode the v3–v18 terrain chunk schema (all plate fields, but no
+-- relief2Ring/relief3Ring).  The two ring reliefs are filled with zeros.
+getTerrainChunkV3 :: WorldConfig -> Get TerrainChunk
+getTerrainChunkV3 config = do
+  n <- getCount config
+  tcElevation <- getVectorFloat n
+  tcDirSlope <- getVectorDirSlope n
+  tcCurvature <- getVectorFloat n
+  tcHardness <- getVectorFloat n
+  tcRockType <- getVectorWord16 n
+  tcSoilType <- getVectorWord16 n
+  tcSoilDepth <- getVectorFloat n
+  tcMoisture <- getVectorFloat n
+  tcFertility <- getVectorFloat n
+  tcRoughness <- getVectorFloat n
+  tcRockDensity <- getVectorFloat n
+  tcSoilGrain <- getVectorFloat n
+  tcRelief <- getVectorFloat n
+  tcRuggedness <- getVectorFloat n
+  tcTerrainForm <- getVectorTerrainForm n
+  tcFlags <- getVectorBiomeId n
+  tcPlateId <- getVectorWord16 n
+  tcPlateBoundary <- getVectorPlateBoundary n
+  tcPlateHeight <- getVectorFloat n
+  tcPlateHardness <- getVectorFloat n
+  tcPlateCrust <- getVectorWord16 n
+  tcPlateAge <- getVectorFloat n
+  tcPlateVelX <- getVectorFloat n
+  tcPlateVelY <- getVectorFloat n
+  let zeros = U.replicate n 0
+  pure TerrainChunk
+    { tcElevation = tcElevation
+    , tcDirSlope = tcDirSlope
+    , tcCurvature = tcCurvature
+    , tcHardness = tcHardness
+    , tcRockType = tcRockType
+    , tcSoilType = tcSoilType
+    , tcSoilDepth = tcSoilDepth
+    , tcMoisture = tcMoisture
+    , tcFertility = tcFertility
+    , tcRoughness = tcRoughness
+    , tcRockDensity = tcRockDensity
+    , tcSoilGrain = tcSoilGrain
+    , tcRelief = tcRelief
+    , tcRelief2Ring = zeros
+    , tcRelief3Ring = zeros
+    , tcRuggedness = tcRuggedness
+    , tcTerrainForm = tcTerrainForm
+    , tcFlags = tcFlags
+    , tcPlateId = tcPlateId
+    , tcPlateBoundary = tcPlateBoundary
+    , tcPlateHeight = tcPlateHeight
+    , tcPlateHardness = tcPlateHardness
+    , tcPlateCrust = tcPlateCrust
+    , tcPlateAge = tcPlateAge
+    , tcPlateVelX = tcPlateVelX
+    , tcPlateVelY = tcPlateVelY
     }
 
 getClimateChunk :: WorldConfig -> Get ClimateChunk

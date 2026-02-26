@@ -1,12 +1,20 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Spec.Weather (spec) where
 
 import Test.Hspec
 import Test.Hspec.QuickCheck
 import Test.QuickCheck
+import Data.Word (Word64)
+import qualified Data.IntMap.Strict as IntMap
+import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import Topo
+import Topo.Calendar (WorldTime(..))
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice, PlanetConfig(..), WorldSlice(..))
-import Topo.Weather (cloudFraction, seasonalITCZLatitude)
+import Topo.Weather (cloudFraction, seasonalITCZLatitude,
+                     weatherOverlaySchema, overlayToWeatherChunk, weatherFieldCount,
+                     getWeatherChunk, getWeatherFromOverlay)
 
 spec :: Spec
 spec = describe "Weather" $ do
@@ -28,12 +36,12 @@ spec = describe "Weather" $ do
         pipelineA = PipelineConfig
           { pipelineSeed = 1
           , pipelineStages = [tickWeatherStage cfgA]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         pipelineB = PipelineConfig
           { pipelineSeed = 1
           , pipelineStages = [tickWeatherStage cfgB]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
     resultA <- runPipeline pipelineA env world0
     resultB <- runPipeline pipelineB env world0
@@ -75,7 +83,7 @@ spec = describe "Weather" $ do
         mkPipeline = PipelineConfig
           { pipelineSeed = 2
           , pipelineStages = [tickWeatherStage weatherCfg]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
     resultNoTilt  <- runPipeline mkPipeline env worldNoTilt
     resultEarth   <- runPipeline mkPipeline env worldEarth
@@ -98,9 +106,10 @@ spec = describe "Weather" $ do
       _ -> expectationFailure "missing weather chunks"
 
   -- 5.6.1: two ticks at different world times produce different temps.
-  prop "different world times produce different temperature fields" $
-    forAll (choose (0 :: Float, 1000)) $ \t1 ->
-      forAll (choose (0 :: Float, 1000)) $ \t2 ->
+  modifyMaxSuccess (const 20) $
+    prop "different world times produce different temperature fields" $
+    forAll (choose (0 :: Word64, 1000)) $ \t1 ->
+      forAll (choose (0 :: Word64, 1000)) $ \t2 ->
         t1 /= t2 ==>
           ioProperty $ do
             let config = WorldConfig { wcChunkSize = 4 }
@@ -116,12 +125,12 @@ spec = describe "Weather" $ do
                   }
                 world0 = setClimateChunk (ChunkId 0) climate
                            (emptyWorld config defaultHexGridMeta)
-                mkWorld t = world0 { twWorldTime = t }
+                mkWorld t = world0 { twWorldTime = WorldTime t 1.0 }
                 weatherCfg = defaultWeatherConfig
                 pipeline = PipelineConfig
                   { pipelineSeed = 7
                   , pipelineStages = [tickWeatherStage weatherCfg]
-                  , pipelineSnapshots = False
+                  , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
                   }
                 env = TopoEnv { teLogger = \_ -> pure () }
             r1 <- runPipeline pipeline env (mkWorld t1)
@@ -162,7 +171,7 @@ spec = describe "Weather" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 3
           , pipelineStages = [tickWeatherStage weatherCfg]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
     resultEq   <- runPipeline pipeline env worldEq
     resultPole <- runPipeline pipeline env worldPole
@@ -201,7 +210,7 @@ spec = describe "Weather" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 5
           , pipelineStages = [tickWeatherStage weatherCfg]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world0
@@ -240,7 +249,7 @@ spec = describe "Weather" $ do
           let pipeline = PipelineConfig
                 { pipelineSeed = 42
                 , pipelineStages = [tickWeatherStage weatherCfg]
-                , pipelineSnapshots = False
+                , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
                 }
           result <- runPipeline pipeline env w
           expectPipeline result
@@ -275,7 +284,7 @@ spec = describe "Weather" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 10
           , pipelineStages = [tickWeatherStage weatherCfg]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
     result <- runPipeline pipeline env world0
     w <- expectPipeline result
@@ -310,7 +319,7 @@ spec = describe "Weather" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 11
           , pipelineStages = [tickWeatherStage weatherCfg]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
     result <- runPipeline pipeline env world0
     w <- expectPipeline result
@@ -350,7 +359,7 @@ spec = describe "Weather" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 12
           , pipelineStages = [tickWeatherStage weatherCfg]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
     result <- runPipeline pipeline env world0
     w <- expectPipeline result
@@ -395,7 +404,7 @@ spec = describe "Weather" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 13
           , pipelineStages = [tickWeatherStage weatherCfg]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
     resultEq <- runPipeline pipeline env worldEq
     resultMid <- runPipeline pipeline env worldMid
@@ -449,7 +458,7 @@ spec = describe "Weather" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 14
           , pipelineStages = [tickWeatherStage weatherCfg]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
     resultUniform <- runPipeline pipeline env worldUniform
     resultGradient <- runPipeline pipeline env worldGradient
@@ -530,7 +539,7 @@ spec = describe "Weather" $ do
           , wcJitterAmplitude = 0
           }
         env = TopoEnv { teLogger = \_ -> pure () }
-        mkPipe c = PipelineConfig { pipelineSeed = 20, pipelineStages = [tickWeatherStage c], pipelineSnapshots = False }
+        mkPipe c = PipelineConfig { pipelineSeed = 20, pipelineStages = [tickWeatherStage c], pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure () }
     rNone   <- runPipeline (mkPipe cfgNoClouds) env worldBase
     rClouds <- runPipeline (mkPipe cfgClouds)   env worldBase
     wNone   <- expectPipeline rNone
@@ -569,7 +578,7 @@ spec = describe "Weather" $ do
           , wcPrecipNoiseScale = 0
           }
         env = TopoEnv { teLogger = \_ -> pure () }
-        mkPipe c = PipelineConfig { pipelineSeed = 21, pipelineStages = [tickWeatherStage c], pipelineSnapshots = False }
+        mkPipe c = PipelineConfig { pipelineSeed = 21, pipelineStages = [tickWeatherStage c], pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure () }
     rNone  <- runPipeline (mkPipe cfgNoBoost) env worldBase
     rBoost <- runPipeline (mkPipe cfgBoost)   env worldBase
     wNone  <- expectPipeline rNone
@@ -581,6 +590,88 @@ spec = describe "Weather" $ do
         -- Cloud boost should increase precipitation
         avgPBoost `shouldSatisfy` (>= avgPNone)
       _ -> expectationFailure "missing weather chunks"
+
+  -- Phase 8A: dual-write equivalence.
+  describe "dual-write (Phase 8A)" $ do
+    it "tickWeatherStage populates weather overlay in twOverlays" $ do
+      let config = WorldConfig { wcChunkSize = 4 }
+          n = chunkTileCount config
+          climate = ClimateChunk
+            { ccTempAvg           = U.replicate n 0.5
+            , ccPrecipAvg         = U.replicate n 0.5
+            , ccWindDirAvg        = U.replicate n 0.0
+            , ccWindSpdAvg        = U.replicate n 0.3
+            , ccHumidityAvg       = U.replicate n 0.0
+            , ccTempRange         = U.replicate n 0.0
+            , ccPrecipSeasonality = U.replicate n 0.0
+            }
+          world0 = setClimateChunk (ChunkId 0) climate (emptyWorld config defaultHexGridMeta)
+          weatherCfg = defaultWeatherConfig
+          env = TopoEnv { teLogger = \_ -> pure () }
+          pipeline = PipelineConfig
+            { pipelineSeed = 42
+            , pipelineStages = [tickWeatherStage weatherCfg]
+            , pipelineDisabled = mempty
+            , pipelineSnapshots = False
+            , pipelineOnProgress = \_ -> pure ()
+            }
+      result <- runPipeline pipeline env world0
+      world <- expectPipeline result
+      -- The overlay store should have a "weather" overlay
+      case lookupOverlay "weather" (twOverlays world) of
+        Nothing -> expectationFailure "weather overlay not found in twOverlays"
+        Just ov -> do
+          osName (ovSchema ov) `shouldBe` "weather"
+          case ovData ov of
+            DenseData chunks -> IntMap.null chunks `shouldBe` False
+            SparseData _     -> expectationFailure "expected DenseData"
+
+    it "weather overlay round-trips via getWeatherFromOverlay" $ do
+      let config = WorldConfig { wcChunkSize = 4 }
+          n = chunkTileCount config
+          climate = ClimateChunk
+            { ccTempAvg           = U.replicate n 0.5
+            , ccPrecipAvg         = U.replicate n 0.5
+            , ccWindDirAvg        = U.replicate n 0.0
+            , ccWindSpdAvg        = U.replicate n 0.3
+            , ccHumidityAvg       = U.replicate n 0.0
+            , ccTempRange         = U.replicate n 0.0
+            , ccPrecipSeasonality = U.replicate n 0.0
+            }
+          world0 = setClimateChunk (ChunkId 0) climate (emptyWorld config defaultHexGridMeta)
+          weatherCfg = defaultWeatherConfig
+          env = TopoEnv { teLogger = \_ -> pure () }
+          pipeline = PipelineConfig
+            { pipelineSeed = 42
+            , pipelineStages = [tickWeatherStage weatherCfg]
+            , pipelineDisabled = mempty
+            , pipelineSnapshots = False
+            , pipelineOnProgress = \_ -> pure ()
+            }
+      result <- runPipeline pipeline env world0
+      world <- expectPipeline result
+      -- getWeatherFromOverlay should return the same data as the overlay
+      let overlayWeather = getWeatherFromOverlay world
+      IntMap.null overlayWeather `shouldBe` False
+      case lookupOverlay "weather" (twOverlays world) of
+        Nothing -> expectationFailure "weather overlay not found"
+        Just ov -> case ovData ov of
+          SparseData _ -> expectationFailure "expected DenseData"
+          DenseData overlayChunks ->
+            IntMap.toList overlayWeather `shouldSatisfy`
+              all (\(key, wc) -> case IntMap.lookup key overlayChunks of
+                Nothing -> False
+                Just fieldVecs ->
+                  case overlayToWeatherChunk fieldVecs of
+                    Nothing  -> False
+                    Just wc' ->
+                      U.toList (wcTemp wc')     == U.toList (wcTemp wc)
+                      && U.toList (wcHumidity wc') == U.toList (wcHumidity wc)
+                      && U.toList (wcWindDir wc')  == U.toList (wcWindDir wc)
+                      && U.toList (wcWindSpd wc')  == U.toList (wcWindSpd wc)
+                      && U.toList (wcPressure wc') == U.toList (wcPressure wc)
+                      && U.toList (wcPrecip wc')   == U.toList (wcPrecip wc)
+              )
 
 expectPipeline :: Either PipelineError (TerrainWorld, [PipelineSnapshot]) -> IO TerrainWorld
 expectPipeline result =

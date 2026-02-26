@@ -20,6 +20,7 @@ import Data.Word (Word16, Word64)
 import Topo.Math (clamp01)
 import Topo.Noise (noise2D)
 import Topo.Pipeline (PipelineStage(..))
+import Topo.Pipeline.Stage (StageId(..))
 import Topo.Plugin (PluginEnv(..), PluginError(..), getWorldP, logInfo, putWorldP)
 import Topo.TerrainGrid
   ( buildElevationGrid
@@ -104,7 +105,7 @@ defaultVolcanismConfig = VolcanismConfig
 
 -- | Apply volcanism vents and eruption outputs.
 applyVolcanismStage :: VolcanismConfig -> PipelineStage
-applyVolcanismStage cfg = PipelineStage "applyVolcanism" "applyVolcanism" $ do
+applyVolcanismStage cfg = PipelineStage StageVolcanism "applyVolcanism" "applyVolcanism" $ do
   logInfo "applyVolcanism: vents + magma"
   world <- getWorldP
   env <- ask

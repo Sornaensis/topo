@@ -43,6 +43,7 @@ import Data.Word (Word16)
 import Topo.Hex (HexDirection(..), hexOpposite, allHexDirections, dsSlopeIn)
 import Topo.Math (clamp01)
 import Topo.Pipeline (PipelineStage(..))
+import Topo.Pipeline.Stage (StageId(..))
 import Topo.Plugin (logInfo, modifyWorldP, peSeed)
 import Topo.Types
 import Topo.World (TerrainWorld(..))
@@ -83,88 +84,99 @@ defaultParameterConfig = ParameterConfig
 
 -- | Terrain form classification thresholds.
 --
--- The existing thresholds ('tfcCliffSlope' through 'tfcRollingSlope') control
--- the 7 original terrain forms.  The extended thresholds control the 8 forms
--- added in Phase 9 (ridge, escarpment, plateau, badlands, pass, canyon, mesa,
--- foothill).  All values are in normalised slope/relief/elevation units.
+-- All slope thresholds are in *physical-slope* space: raw normalised
+-- elevation deltas multiplied by 'tfcElevGradient' (default 0.574).
+-- This converts unit-interval deltas to approximate rise/run ratios.
+-- The conversion is applied once inside 'classifyTerrainForm'.
+--
+-- Relief thresholds for hill/mountain/canyon/mesa use multi-ring
+-- neighbourhoods ('tcRelief2Ring', 'tcRelief3Ring') to capture regional
+-- context beyond the 6-tile 1-ring neighbourhood.
 data TerrainFormConfig = TerrainFormConfig
-  { tfcCliffSlope      :: !Float
-  -- ^ Slope above which terrain is classified as 'FormCliff'.
+  { tfcElevGradient  :: !Float
+  -- ^ Elevation gradient scale factor.  Raw normalised slope deltas are
+  --   multiplied by this to produce physical-slope values used by all
+  --   threshold comparisons (default: 0.574, derived from 'usElevGradient').
+  , tfcCliffSlope      :: !Float
+  -- ^ Physical slope above which terrain is classified as 'FormCliff'.
   , tfcMountainSlope   :: !Float
-  -- ^ Slope threshold for 'FormMountainous'.
+  -- ^ Physical top-3 slope threshold for 'FormMountainous'.
   , tfcMountainRelief  :: !Float
-  -- ^ Relief threshold for 'FormMountainous'.
+  -- ^ 3-ring relief threshold for 'FormMountainous'.
   , tfcValleyCurvature :: !Float
   -- ^ Curvature magnitude for 'FormValley' (positive value; compared as
   --   curvature < -this).
   , tfcHillSlope       :: !Float
-  -- ^ Slope threshold for 'FormHilly'.
+  -- ^ Physical top-3 slope threshold for 'FormHilly'.
   , tfcHillRelief      :: !Float
-  -- ^ Relief threshold for 'FormHilly'.
+  -- ^ 2-ring relief threshold for 'FormHilly'.
   , tfcRollingSlope    :: !Float
-  -- ^ Slope threshold for 'FormRolling'.
+  -- ^ Physical average slope threshold for 'FormRolling'.
 
   -- Ridge thresholds
   , tfcRidgeMinSlope     :: !Float
-  -- ^ Min slope on the steep axis for 'FormRidge' (default 0.12).
+  -- ^ Min physical slope on the steep axis for 'FormRidge'.
   , tfcRidgeMaxAxisSlope :: !Float
-  -- ^ Max slope along the ridge axis (default 0.06).
+  -- ^ Max physical slope along the ridge axis.
   , tfcRidgeMinAsymmetry :: !Float
-  -- ^ Min asymmetry between steep and axial slopes (default 0.08).
+  -- ^ Min asymmetry between steep and axial physical slopes.
 
   -- Escarpment thresholds
   , tfcEscarpmentMinSlope    :: !Float
-  -- ^ Min slope on the steep face for 'FormEscarpment' (default 0.15).
+  -- ^ Min physical slope on the steep face for 'FormEscarpment'.
   , tfcEscarpmentMaxOppSlope :: !Float
-  -- ^ Max slope on the opposite (gentle) face (default 0.04).
+  -- ^ Max physical slope on the opposite (gentle) face.
 
   -- Plateau thresholds
-  , tfcPlateauMaxSlope   :: !Float
-  -- ^ Max slope anywhere for 'FormPlateau' (default 0.03).
-  , tfcPlateauMinElevASL :: !Float
-  -- ^ Min elevation above sea level for 'FormPlateau' (default 0.08).
+  , tfcPlateauMaxSlope       :: !Float
+  -- ^ Max physical slope anywhere for 'FormPlateau'.
+  , tfcPlateauMinElevASL     :: !Float
+  -- ^ Min elevation above sea level for 'FormPlateau'.
+  , tfcPlateauMaxRelief2Ring :: !Float
+  -- ^ Max 2-ring relief for 'FormPlateau'.  Prevents gentle mountain
+  --   slopes from being classified as plateau (default: 0.03).
 
   -- Badlands thresholds
   , tfcBadlandsMinMaxSlope  :: !Float
-  -- ^ Min 'dsMaxSlope' for 'FormBadlands' (default 0.15).
+  -- ^ Min physical 'dsMaxSlope' for 'FormBadlands'.
   , tfcBadlandsMaxHardness  :: !Float
-  -- ^ Max substrate hardness — badlands form in soft rock (default 0.35).
+  -- ^ Max substrate hardness — badlands form in soft rock.
   , tfcBadlandsMinAsymmetry :: !Float
-  -- ^ Min slope asymmetry for 'FormBadlands' (default 0.06).
+  -- ^ Min slope asymmetry for 'FormBadlands'.
 
   -- Pass thresholds
   , tfcPassMaxAxisSlope  :: !Float
-  -- ^ Max slope along the pass axis (default 0.04).
+  -- ^ Max physical slope along the pass axis.
   , tfcPassMinCrossSlope :: !Float
-  -- ^ Min slope perpendicular to the axis (default 0.10).
+  -- ^ Min physical slope perpendicular to the axis.
 
   -- Canyon thresholds
   , tfcCanyonMinRelief    :: !Float
-  -- ^ Min relief for 'FormCanyon' (default 0.20).
+  -- ^ Min 3-ring relief for 'FormCanyon'.
   , tfcCanyonMinWallSlope :: !Float
-  -- ^ Min slope on steep walls (default 0.18).
+  -- ^ Min physical slope on steep walls.
   , tfcCanyonMinHardness  :: !Float
-  -- ^ Min hardness — canyons carve through hard rock (default 0.40).
+  -- ^ Min hardness — canyons carve through hard rock.
 
   -- Mesa thresholds
   , tfcMesaMaxTopSlope   :: !Float
-  -- ^ Max slope on the mesa top (default 0.03).
+  -- ^ Max physical slope on the mesa top.
   , tfcMesaMinEdgeRelief :: !Float
-  -- ^ Min relief at mesa edges (default 0.12).
+  -- ^ Min 2-ring relief at mesa edges.
   , tfcMesaMinHardness   :: !Float
-  -- ^ Min hardness — cap rock (default 0.45).
+  -- ^ Min hardness — cap rock.
   , tfcMesaMinElevASL    :: !Float
-  -- ^ Min elevation above sea level (default 0.05).
+  -- ^ Min elevation above sea level.
 
   -- Foothill thresholds
   , tfcFoothillMinSlope  :: !Float
-  -- ^ Min 'dsAvgSlope' for 'FormFoothill' (default 0.03).
+  -- ^ Min physical top-3 slope for 'FormFoothill'.
   , tfcFoothillMaxSlope  :: !Float
-  -- ^ Max 'dsAvgSlope' for 'FormFoothill' (default 0.10).
+  -- ^ Max physical top-3 slope for 'FormFoothill'.
   , tfcFoothillMinElevASL :: !Float
-  -- ^ Min elevation above sea level (default 0.02).
+  -- ^ Min elevation above sea level.
   , tfcFoothillMaxElevASL :: !Float
-  -- ^ Max elevation — above this is mountain, not foothill (default 0.12).
+  -- ^ Max elevation — above this is mountain, not foothill.
   } deriving (Eq, Show, Generic)
 
 instance ToJSON TerrainFormConfig where
@@ -175,44 +187,49 @@ instance FromJSON TerrainFormConfig where
                   (mergeDefaults (toJSON defaultTerrainFormConfig) v)
 
 -- | Default terrain form thresholds.
+--
+-- All slope values are in physical-slope space (raw delta × 0.574).
+-- Relief values are in normalised elevation units [0,1].
 defaultTerrainFormConfig :: TerrainFormConfig
 defaultTerrainFormConfig = TerrainFormConfig
-  { tfcCliffSlope      = 0.40
-  , tfcMountainSlope   = 0.20
-  , tfcMountainRelief  = 0.25
+  { tfcElevGradient    = 0.574
+  , tfcCliffSlope      = 0.15
+  , tfcMountainSlope   = 0.06
+  , tfcMountainRelief  = 0.08
   , tfcValleyCurvature = 0.15
-  , tfcHillSlope       = 0.08
-  , tfcHillRelief      = 0.10
-  , tfcRollingSlope    = 0.02
+  , tfcHillSlope       = 0.025
+  , tfcHillRelief      = 0.04
+  , tfcRollingSlope    = 0.008
   -- Ridge
-  , tfcRidgeMinSlope     = 0.12
-  , tfcRidgeMaxAxisSlope = 0.06
-  , tfcRidgeMinAsymmetry = 0.08
+  , tfcRidgeMinSlope     = 0.07
+  , tfcRidgeMaxAxisSlope = 0.035
+  , tfcRidgeMinAsymmetry = 0.045
   -- Escarpment
-  , tfcEscarpmentMinSlope    = 0.15
-  , tfcEscarpmentMaxOppSlope = 0.04
+  , tfcEscarpmentMinSlope    = 0.085
+  , tfcEscarpmentMaxOppSlope = 0.023
   -- Plateau
-  , tfcPlateauMaxSlope   = 0.03
-  , tfcPlateauMinElevASL = 0.08
+  , tfcPlateauMaxSlope       = 0.015
+  , tfcPlateauMinElevASL     = 0.08
+  , tfcPlateauMaxRelief2Ring = 0.03
   -- Badlands
-  , tfcBadlandsMinMaxSlope  = 0.15
+  , tfcBadlandsMinMaxSlope  = 0.085
   , tfcBadlandsMaxHardness  = 0.35
-  , tfcBadlandsMinAsymmetry = 0.06
+  , tfcBadlandsMinAsymmetry = 0.035
   -- Pass
-  , tfcPassMaxAxisSlope  = 0.04
-  , tfcPassMinCrossSlope = 0.10
+  , tfcPassMaxAxisSlope  = 0.023
+  , tfcPassMinCrossSlope = 0.057
   -- Canyon
-  , tfcCanyonMinRelief    = 0.20
-  , tfcCanyonMinWallSlope = 0.18
+  , tfcCanyonMinRelief    = 0.08
+  , tfcCanyonMinWallSlope = 0.10
   , tfcCanyonMinHardness  = 0.40
   -- Mesa
-  , tfcMesaMaxTopSlope   = 0.03
-  , tfcMesaMinEdgeRelief = 0.12
+  , tfcMesaMaxTopSlope   = 0.015
+  , tfcMesaMinEdgeRelief = 0.05
   , tfcMesaMinHardness   = 0.45
   , tfcMesaMinElevASL    = 0.05
   -- Foothill
-  , tfcFoothillMinSlope   = 0.03
-  , tfcFoothillMaxSlope   = 0.10
+  , tfcFoothillMinSlope   = 0.015
+  , tfcFoothillMaxSlope   = 0.055
   , tfcFoothillMinElevASL = 0.02
   , tfcFoothillMaxElevASL = 0.12
   }
@@ -230,7 +247,7 @@ defaultTerrainFormConfig = TerrainFormConfig
 applyParameterLayersStage
   :: ParameterConfig -> TerrainFormConfig -> Float -> PipelineStage
 applyParameterLayersStage cfg formCfg waterLevel =
-    PipelineStage "applyParameterLayers" "applyParameterLayers" $ do
+    PipelineStage StageParameters "applyParameterLayers" "applyParameterLayers" $ do
   logInfo "applyParameterLayers: deriving fields"
   _seed <- asks peSeed
   modifyWorldP $ \world ->
@@ -255,11 +272,12 @@ deriveChunk config chunks cfg formCfg waterLevel key chunk =
       size    = wcChunkSize config
       elev    = tcElevation chunk
       n       = U.length elev
-      padded  = size + 2
+      padded  = size + 6
 
       -- Phase 7.2: Build padded elevation buffer once per chunk.
-      -- Interior tiles use the fast local-vector path; only the 1-tile
-      -- boundary ring (≤ 4·(size+1) tiles) falls through to IntMap.
+      -- Interior tiles use the fast local-vector path; only the 3-tile
+      -- boundary ring falls through to IntMap lookups.  The wider border
+      -- supports ring-2 and ring-3 relief stencils.
       !paddedBuf = mkPaddedElevation chunks config origin elev
 
       -- Phase 7.1: Fused single-pass stencil derivation.
@@ -270,12 +288,14 @@ deriveChunk config chunks cfg formCfg waterLevel key chunk =
       -- for the enriched terrain form classification.
       !hardnessVec = tcHardness chunk
       !soilVec     = tcSoilDepth chunk
-      !(dirSlope, curvature, relief, rugged, terrForm) = runST $ do
-        dsV     <- UM.new n
-        curvV   <- UM.new n
-        reliefV <- UM.new n
-        ruggedV <- UM.new n
-        formV   <- UM.new n
+      !(dirSlope, curvature, relief, relief2, relief3, rugged, terrForm) = runST $ do
+        dsV       <- UM.new n
+        curvV     <- UM.new n
+        reliefV   <- UM.new n
+        relief2V  <- UM.new n
+        relief3V  <- UM.new n
+        ruggedV   <- UM.new n
+        formV     <- UM.new n
         let {-# INLINE p #-}
             p !row !col = U.unsafeIndex paddedBuf (row * padded + col)
             go !i
@@ -283,21 +303,23 @@ deriveChunk config chunks cfg formCfg waterLevel key chunk =
               | otherwise = do
                   let !lx     = i `mod` size
                       !ly     = i `div` size
-                      -- Padded coords: center at (ly+1, lx+1)
-                      !e0     = p (ly + 1) (lx + 1)
+                      -- Padded coords: center at (ly+3, lx+3)
+                      !cx     = lx + 3
+                      !cy     = ly + 3
+                      !e0     = p cy cx
                       -- 6 hex neighbours (axial offsets mapped to padded grid)
                       -- E:  (dq=+1, dr= 0) → col+1, row+0
-                      !eHexE  = p (ly + 1) (lx + 2)
+                      !eHexE  = p  cy      (cx + 1)
                       -- NE: (dq=+1, dr=−1) → col+1, row−1
-                      !eHexNE = p  ly      (lx + 2)
+                      !eHexNE = p (cy - 1) (cx + 1)
                       -- NW: (dq= 0, dr=−1) → col+0, row−1
-                      !eHexNW = p  ly      (lx + 1)
+                      !eHexNW = p (cy - 1)  cx
                       -- W:  (dq=−1, dr= 0) → col−1, row+0
-                      !eHexW  = p (ly + 1)  lx
+                      !eHexW  = p  cy      (cx - 1)
                       -- SW: (dq=−1, dr=+1) → col−1, row+1
-                      !eHexSW = p (ly + 2)  lx
+                      !eHexSW = p (cy + 1) (cx - 1)
                       -- SE: (dq= 0, dr=+1) → col+0, row+1
-                      !eHexSE = p (ly + 2) (lx + 1)
+                      !eHexSE = p (cy + 1)  cx
 
                       -- Directional slopes (neighbour − center)
                       !ds = DirectionalSlope
@@ -313,19 +335,21 @@ deriveChunk config chunks cfg formCfg waterLevel key chunk =
                            + eHexW + eHexSW + eHexSE)
                           - 6 * e0
 
-                      -- Also read the 4 diagonal corners for relief/ruggedness
-                      -- (these are NOT hex neighbours but complete the 3×3 grid)
-                      !eNW_sq = p  ly       lx
-                      !eNE_sq = p  ly      (lx + 2)
-                      !eSW_sq = p (ly + 2)  lx
-                      !eSE_sq = p (ly + 2) (lx + 2)
-
                       -- Relief (range over hex neighbours + center)
                       !lo     = min e0 $ min eHexE $ min eHexNE $ min eHexNW
                               $ min eHexW $ min eHexSW eHexSE
                       !hi     = max e0 $ max eHexE $ max eHexNE $ max eHexNW
                               $ max eHexW $ max eHexSW eHexSE
                       !r      = hi - lo
+
+                      -- Ring-2 relief: range over all hex tiles within
+                      -- axial distance 2 (6 ring-1 + 12 ring-2 + center).
+                      !r2     = relief2RingP p cy cx e0
+                                  eHexE eHexNE eHexNW eHexW eHexSW eHexSE
+
+                      -- Ring-3 relief: range over all hex tiles within
+                      -- axial distance 3 (ring-1 + ring-2 + 18 ring-3 + center).
+                      !r3     = relief3RingP p cy cx r2
 
                       -- Ruggedness (mean abs diff to 6 hex neighbours)
                       !tri    = ( abs (eHexE  - e0) + abs (eHexNE - e0)
@@ -345,23 +369,24 @@ deriveChunk config chunks cfg formCfg waterLevel key chunk =
                                  then soilVec U.! i else 0.5
                       !elevASL = e0 - waterLevel
 
-                      !tf     = classifyTerrainForm formCfg ds r c localMin
-                                  hard soil elevASL
-
-                      -- Suppress unused diagonal reads at -O2
-                      _ = (eNW_sq, eNE_sq, eSW_sq, eSE_sq)
-                  UM.unsafeWrite dsV     i ds
-                  UM.unsafeWrite curvV   i c
-                  UM.unsafeWrite reliefV i r
-                  UM.unsafeWrite ruggedV i tri
-                  UM.unsafeWrite formV   i tf
+                      !tf     = classifyTerrainForm formCfg ds r r2 r3 c
+                                  localMin hard soil elevASL
+                  UM.unsafeWrite dsV      i ds
+                  UM.unsafeWrite curvV    i c
+                  UM.unsafeWrite reliefV  i r
+                  UM.unsafeWrite relief2V i r2
+                  UM.unsafeWrite relief3V i r3
+                  UM.unsafeWrite ruggedV  i tri
+                  UM.unsafeWrite formV    i tf
                   go (i + 1)
         go 0
-        (,,,,) <$> U.unsafeFreeze dsV
-               <*> U.unsafeFreeze curvV
-               <*> U.unsafeFreeze reliefV
-               <*> U.unsafeFreeze ruggedV
-               <*> U.unsafeFreeze formV
+        (,,,,,,) <$> U.unsafeFreeze dsV
+                 <*> U.unsafeFreeze curvV
+                 <*> U.unsafeFreeze reliefV
+                 <*> U.unsafeFreeze relief2V
+                 <*> U.unsafeFreeze relief3V
+                 <*> U.unsafeFreeze ruggedV
+                 <*> U.unsafeFreeze formV
 
       -- Non-stencil derived fields.
       hardness  = tcHardness chunk
@@ -374,6 +399,8 @@ deriveChunk config chunks cfg formCfg waterLevel key chunk =
       , tcRockType    = rockType
       , tcRoughness   = roughness
       , tcRelief      = relief
+      , tcRelief2Ring = relief2
+      , tcRelief3Ring = relief3
       , tcRuggedness  = rugged
       , tcTerrainForm = terrForm
       }
@@ -382,25 +409,26 @@ deriveChunk config chunks cfg formCfg waterLevel key chunk =
 -- Padded elevation buffer
 ---------------------------------------------------------------------------
 
--- | Build a padded @(size+2) × (size+2)@ elevation buffer that includes
--- a 1-tile boundary ring from neighboring chunks.  Interior tiles use the
--- fast local-vector path; only the boundary ring (≤ @4·(size+1)@ tiles)
--- falls through to @IntMap@ lookups.
+-- | Build a padded @(size+6) × (size+6)@ elevation buffer that includes
+-- a 3-tile boundary ring from neighboring chunks.  Interior tiles use the
+-- fast local-vector path; only the boundary ring falls through to @IntMap@
+-- lookups.  The wider 3-tile border supports ring-2 and ring-3 relief
+-- stencils without additional lookups.
 {-# INLINE mkPaddedElevation #-}
 mkPaddedElevation
   :: IntMap TerrainChunk
   -> WorldConfig
   -> TileCoord          -- ^ chunk origin in global tile space
   -> U.Vector Float     -- ^ local elevation vector
-  -> U.Vector Float     -- ^ padded buffer, row-major, origin at (-1,-1)
+  -> U.Vector Float     -- ^ padded buffer, row-major, origin at (-3,-3)
 mkPaddedElevation chunks config origin@(TileCoord ox oy) localElev =
   let size   = wcChunkSize config
-      padded = size + 2
+      padded = size + 6
       elevAt = mkElevLookup chunks config origin localElev
   in U.generate (padded * padded) $ \i ->
        let !px = i `mod` padded
            !py = i `div` padded
-       in elevAt (ox + px - 1) (oy + py - 1)
+       in elevAt (ox + px - 3) (oy + py - 3)
 
 ---------------------------------------------------------------------------
 -- Elevation lookup
@@ -435,6 +463,143 @@ mkElevLookup chunks config (TileCoord ox oy) localElev = go
       in case IntMap.lookup cid chunks of
            Nothing    -> 0   -- sea-level fallback for world edge
            Just chunk -> tcElevation chunk U.! (ly * size + lx)
+
+---------------------------------------------------------------------------
+-- Multi-ring relief stencils (padded-buffer versions)
+---------------------------------------------------------------------------
+
+-- | Compute 2-ring relief using the padded buffer accessor.
+-- Takes the ring-1 neighbour elevations (already loaded) to avoid redundant
+-- reads.  Returns @max − min@ over all 19 tiles (center + 6 ring-1 + 12 ring-2).
+--
+-- Ring-2 hex offsets (axial, 12 tiles):
+--   (2,0) (2,−1) (2,−2) (1,−2) (0,−2) (−1,−1·fix)
+--   Actually the 12 ring-2 axial offsets are:
+--   (2,0) (2,−1) (2,−2) (1,−2) (0,−2) (−1,−1)
+--   (−2,0) (−2,1) (−2,2) (−1,2) (0,2) (1,1)
+{-# INLINE relief2RingP #-}
+relief2RingP
+  :: (Int -> Int -> Float)  -- ^ padded buffer accessor @p row col@
+  -> Int -> Int             -- ^ center row, col in padded coords
+  -> Float                  -- ^ center elevation
+  -> Float -> Float -> Float -> Float -> Float -> Float
+     -- ^ ring-1 elevations: E, NE, NW, W, SW, SE
+  -> Float                  -- ^ 2-ring relief
+relief2RingP p cy cx e0 eE eNE eNW eW eSW eSE =
+  let -- Start with ring-1 min/max (includes center)
+      !lo1 = min e0 $ min eE $ min eNE $ min eNW $ min eW $ min eSW eSE
+      !hi1 = max e0 $ max eE $ max eNE $ max eNW $ max eW $ max eSW eSE
+      -- Ring-2: 12 tiles at axial distance exactly 2
+      -- Mapped to padded grid offsets (row, col) from center:
+      --   (dq=+2,dr= 0) → (+0,+2)   (dq=+2,dr=−1) → (−1,+2)
+      --   (dq=+2,dr=−2) → (−2,+2)   (dq=+1,dr=−2) → (−2,+1)
+      --   (dq= 0,dr=−2) → (−2, 0)   (dq=−1,dr=−1) → (−1,−1)
+      --   (dq=−2,dr= 0) → ( 0,−2)   (dq=−2,dr=+1) → (+1,−2)
+      --   (dq=−2,dr=+2) → (+2,−2)   (dq=−1,dr=+2) → (+2,−1)
+      --   (dq= 0,dr=+2) → (+2, 0)   (dq=+1,dr=+1) → (+1,+1)
+      !r01 = p  cy      (cx + 2)
+      !r02 = p (cy - 1) (cx + 2)
+      !r03 = p (cy - 2) (cx + 2)
+      !r04 = p (cy - 2) (cx + 1)
+      !r05 = p (cy - 2)  cx
+      !r06 = p (cy - 1) (cx - 1)
+      !r07 = p  cy      (cx - 2)
+      !r08 = p (cy + 1) (cx - 2)
+      !r09 = p (cy + 2) (cx - 2)
+      !r10 = p (cy + 2) (cx - 1)
+      !r11 = p (cy + 2)  cx
+      !r12 = p (cy + 1) (cx + 1)
+      !lo2 = min r01 $ min r02 $ min r03 $ min r04 $ min r05 $ min r06
+           $ min r07 $ min r08 $ min r09 $ min r10 $ min r11 r12
+      !hi2 = max r01 $ max r02 $ max r03 $ max r04 $ max r05 $ max r06
+           $ max r07 $ max r08 $ max r09 $ max r10 $ max r11 r12
+      !lo  = min lo1 lo2
+      !hi  = max hi1 hi2
+  in hi - lo
+
+-- | Compute 3-ring relief using the padded buffer accessor.
+-- Takes the 2-ring relief result (as a packed lo/hi pair is not practical,
+-- so instead we take the already-computed 2-ring relief value and recompute
+-- the ring-3 extension).
+--
+-- Actually, since we need the overall min/max across rings 1+2+3, and
+-- we already have the 2-ring relief, it's more efficient to track min/max
+-- cumulatively.  But for simplicity and correctness, we re-read all
+-- ring-1 and ring-2 tiles.  The compiler will CSE most of them with INLINE.
+--
+-- Ring-3 hex offsets (axial, 18 tiles):
+--   All (dq,dr) with |dq|+|dr|+|dq+dr| = max component = 3
+{-# INLINE relief3RingP #-}
+relief3RingP
+  :: (Int -> Int -> Float)  -- ^ padded buffer accessor
+  -> Int -> Int             -- ^ center row, col in padded coords
+  -> Float                  -- ^ 2-ring relief (used for early-out potential)
+  -> Float                  -- ^ 3-ring relief
+relief3RingP p cy cx _r2 =
+  let -- We need the overall min/max across ALL rings (0+1+2+3).
+      -- Re-read center + ring-1 + ring-2 + ring-3.
+      -- Center
+      !e0  = p cy cx
+      -- Ring-1 (6 tiles)
+      !e1a = p  cy      (cx + 1)
+      !e1b = p (cy - 1) (cx + 1)
+      !e1c = p (cy - 1)  cx
+      !e1d = p  cy      (cx - 1)
+      !e1e = p (cy + 1) (cx - 1)
+      !e1f = p (cy + 1)  cx
+      -- Ring-2 (12 tiles)
+      !e2a = p  cy      (cx + 2)
+      !e2b = p (cy - 1) (cx + 2)
+      !e2c = p (cy - 2) (cx + 2)
+      !e2d = p (cy - 2) (cx + 1)
+      !e2e = p (cy - 2)  cx
+      !e2f = p (cy - 1) (cx - 1)
+      !e2g = p  cy      (cx - 2)
+      !e2h = p (cy + 1) (cx - 2)
+      !e2i = p (cy + 2) (cx - 2)
+      !e2j = p (cy + 2) (cx - 1)
+      !e2k = p (cy + 2)  cx
+      !e2l = p (cy + 1) (cx + 1)
+      -- Ring-3 (18 tiles)
+      -- Axial offsets at distance exactly 3:
+      --   (3,0) (3,−1) (3,−2) (3,−3) (2,−3) (1,−3)
+      --   (0,−3) (−1,−2) (−2,−1) (−3,0) (−3,1) (−3,2)
+      --   (−3,3) (−2,3) (−1,3) (0,3) (1,2) (2,1)
+      -- Mapped to padded grid (row offset = dr, col offset = dq):
+      !e3a  = p  cy      (cx + 3)       -- (3,0)
+      !e3b  = p (cy - 1) (cx + 3)       -- (3,−1)
+      !e3c  = p (cy - 2) (cx + 3)       -- (3,−2)
+      !e3d  = p (cy - 3) (cx + 3)       -- (3,−3)
+      !e3e  = p (cy - 3) (cx + 2)       -- (2,−3)
+      !e3f  = p (cy - 3) (cx + 1)       -- (1,−3)
+      !e3g  = p (cy - 3)  cx            -- (0,−3)
+      !e3h  = p (cy - 2) (cx - 1)       -- (−1,−2)
+      !e3i  = p (cy - 1) (cx - 2)       -- (−2,−1)
+      !e3j  = p  cy      (cx - 3)       -- (−3,0)
+      !e3k  = p (cy + 1) (cx - 3)       -- (−3,1)
+      !e3l  = p (cy + 2) (cx - 3)       -- (−3,2)
+      !e3m  = p (cy + 3) (cx - 3)       -- (−3,3)
+      !e3n  = p (cy + 3) (cx - 2)       -- (−2,3)
+      !e3o  = p (cy + 3) (cx - 1)       -- (−1,3)
+      !e3p  = p (cy + 3)  cx            -- (0,3)
+      !e3q  = p (cy + 2) (cx + 1)       -- (1,2)
+      !e3r  = p (cy + 1) (cx + 2)       -- (2,1)
+      -- Combined min/max across all 37 tiles
+      !lo0  = e0
+      !hi0  = e0
+      !lo1  = min lo0 $ min e1a $ min e1b $ min e1c $ min e1d $ min e1e e1f
+      !hi1  = max hi0 $ max e1a $ max e1b $ max e1c $ max e1d $ max e1e e1f
+      !lo2  = min lo1 $ min e2a $ min e2b $ min e2c $ min e2d $ min e2e $ min e2f
+            $ min e2g $ min e2h $ min e2i $ min e2j $ min e2k e2l
+      !hi2  = max hi1 $ max e2a $ max e2b $ max e2c $ max e2d $ max e2e $ max e2f
+            $ max e2g $ max e2h $ max e2i $ max e2j $ max e2k e2l
+      !lo3  = min lo2 $ min e3a $ min e3b $ min e3c $ min e3d $ min e3e $ min e3f
+            $ min e3g $ min e3h $ min e3i $ min e3j $ min e3k $ min e3l
+            $ min e3m $ min e3n $ min e3o $ min e3p $ min e3q e3r
+      !hi3  = max hi2 $ max e3a $ max e3b $ max e3c $ max e3d $ max e3e $ max e3f
+            $ max e3g $ max e3h $ max e3i $ max e3j $ max e3k $ max e3l
+            $ max e3m $ max e3n $ max e3o $ max e3p $ max e3q e3r
+  in hi3 - lo3
 
 ---------------------------------------------------------------------------
 -- Stencil functions
@@ -496,46 +661,53 @@ isLocalMinimum elevAt gx gy =
   let !e0 = elevAt gx gy
   in all (\(dx, dy) -> elevAt (gx + dx) (gy + dy) >= e0) hexNeighborOffsets
 
--- | Classify terrain form from directional slope, relief, curvature,
---   local-minimum flag, substrate properties, and elevation above sea level.
+-- | Classify terrain form from directional slope, multi-ring relief,
+--   curvature, local-minimum flag, substrate properties, and elevation
+--   above sea level.
+--
+-- All slope comparisons use physical-slope values obtained by scaling the
+-- raw normalised 'DirectionalSlope' by 'tfcElevGradient'.
 --
 -- Decision cascade (first match wins):
 --
---    1. 'FormCliff'       — @dsMaxSlope > cliffThreshold@
---    2. 'FormCanyon'      — valley curvature + high relief + steep opposite
---                           walls + hard rock
---    3. 'FormBadlands'    — high max slope + soft substrate + high asymmetry
---    4. 'FormMountainous' — high avg slope or high relief (and not soft/badlands)
---    5. 'FormRidge'       — steep on an opposite-direction pair, flat along axis
---    6. 'FormPass'        — ridge-like cross-axis profile + local minimum along axis
+--    1. 'FormCliff'       — @physMaxS > cliffThreshold@
+--    2. 'FormCanyon'      — valley curvature + high 3-ring relief + steep
+--                           opposite walls + hard rock
+--    3. 'FormBadlands'    — high max physical slope + soft substrate + high
+--                           asymmetry
+--    4. 'FormMountainous' — high top-3 physical slope OR high 3-ring relief
+--    5. 'FormPass'        — ridge-like cross-axis profile + local minimum
+--    6. 'FormRidge'       — steep on opposite pair, flat along axis
 --    7. 'FormEscarpment'  — steep face on one side, gentle on opposite
---    8. 'FormMesa'        — flat top + steep edges + hard cap rock + elevated
---    9. 'FormPlateau'     — low slope + high elevation ASL
+--    8. 'FormMesa'        — flat top + steep 2-ring relief + hard cap + elevated
+--    9. 'FormPlateau'     — low physical slope + high elevation + low 2-ring relief
 --   10. 'FormValley'      — strongly negative curvature
 --   11. 'FormDepression'  — local minimum
---   12. 'FormFoothill'    — moderate slope + moderate elevation
---   13. 'FormHilly'       — moderate slope + relief above hill thresholds
---   14. 'FormRolling'     — slope above rolling threshold
+--   12. 'FormFoothill'    — moderate top-3 slope + moderate elevation
+--   13. 'FormHilly'       — moderate top-3 slope + 2-ring relief
+--   14. 'FormRolling'     — physical avg slope above rolling threshold
 --   15. 'FormFlat'        — otherwise
 {-# INLINE classifyTerrainForm #-}
 classifyTerrainForm
   :: TerrainFormConfig
-  -> DirectionalSlope   -- ^ per-direction slopes
-  -> Float              -- ^ relief (max − min in neighbourhood)
+  -> DirectionalSlope   -- ^ raw per-direction slopes (normalised)
+  -> Float              -- ^ 1-ring relief (max − min in 6 neighbours + center)
+  -> Float              -- ^ 2-ring relief (NEW)
+  -> Float              -- ^ 3-ring relief (NEW)
   -> Float              -- ^ curvature (Laplacian)
   -> Bool               -- ^ local minimum
   -> Float              -- ^ hardness [0,1]
   -> Float              -- ^ soil depth [0,1]
   -> Float              -- ^ elevation above sea level
   -> TerrainForm
-classifyTerrainForm cfg ds r c localMin hardness _soilDepth elevASL
+classifyTerrainForm cfg ds _r1 relief2 relief3 c localMin hardness _soilDepth elevASL
   -- 1. Cliff — sheer face dominates
   | maxS > tfcCliffSlope cfg
   = FormCliff
 
-  -- 2. Canyon — valley + high relief + steep opposite walls + hard rock
+  -- 2. Canyon — valley + high 3-ring relief + steep opposite walls + hard rock
   | c < negate (tfcValleyCurvature cfg)
-    && r > tfcCanyonMinRelief cfg
+    && relief3 > tfcCanyonMinRelief cfg
     && hassteepOppPair (tfcCanyonMinWallSlope cfg)
     && hardness >= tfcCanyonMinHardness cfg
   = FormCanyon
@@ -546,8 +718,8 @@ classifyTerrainForm cfg ds r c localMin hardness _soilDepth elevASL
     && asym > tfcBadlandsMinAsymmetry cfg
   = FormBadlands
 
-  -- 4. Mountainous — high average slope or high relief
-  | avgS > tfcMountainSlope cfg || r > tfcMountainRelief cfg
+  -- 4. Mountainous — high top-3 slope or high 3-ring relief
+  | top3S > tfcMountainSlope cfg || relief3 > tfcMountainRelief cfg
   = FormMountainous
 
   -- 5. Pass — ridge-like cross-axis + local minimum along the axis
@@ -563,16 +735,17 @@ classifyTerrainForm cfg ds r c localMin hardness _soilDepth elevASL
   | hasEscarpmentProfile
   = FormEscarpment
 
-  -- 8. Mesa — flat top + steep neighbour edges + hard cap rock + elevated
+  -- 8. Mesa — flat top + steep 2-ring relief + hard cap rock + elevated
   | maxS <= tfcMesaMaxTopSlope cfg
-    && r > tfcMesaMinEdgeRelief cfg
+    && relief2 > tfcMesaMinEdgeRelief cfg
     && hardness >= tfcMesaMinHardness cfg
     && elevASL >= tfcMesaMinElevASL cfg
   = FormMesa
 
-  -- 9. Plateau — low slope + high elevation
+  -- 9. Plateau — low slope + high elevation + low regional relief
   | maxS <= tfcPlateauMaxSlope cfg
     && elevASL >= tfcPlateauMinElevASL cfg
+    && relief2 <= tfcPlateauMaxRelief2Ring cfg
   = FormPlateau
 
   -- 10. Valley — strongly negative curvature
@@ -583,17 +756,17 @@ classifyTerrainForm cfg ds r c localMin hardness _soilDepth elevASL
   | localMin
   = FormDepression
 
-  -- 12. Foothill — moderate slope + moderate elevation
-  | avgS >= tfcFoothillMinSlope cfg && avgS <= tfcFoothillMaxSlope cfg
+  -- 12. Foothill — moderate top-3 slope + moderate elevation
+  | top3S >= tfcFoothillMinSlope cfg && top3S <= tfcFoothillMaxSlope cfg
     && elevASL >= tfcFoothillMinElevASL cfg
     && elevASL <= tfcFoothillMaxElevASL cfg
   = FormFoothill
 
-  -- 13. Hilly — moderate slope + relief
-  | avgS > tfcHillSlope cfg && r > tfcHillRelief cfg
+  -- 13. Hilly — moderate top-3 slope + 2-ring relief
+  | top3S > tfcHillSlope cfg && relief2 > tfcHillRelief cfg
   = FormHilly
 
-  -- 14. Rolling — slope above rolling threshold
+  -- 14. Rolling — physical avg slope above rolling threshold
   | avgS > tfcRollingSlope cfg
   = FormRolling
 
@@ -602,17 +775,23 @@ classifyTerrainForm cfg ds r c localMin hardness _soilDepth elevASL
   = FormFlat
 
   where
-    !avgS = dsAvgSlope ds
-    !maxS = dsMaxSlope ds
-    !asym = dsAsymmetry ds
+    -- Physical-slope conversion: scale raw DS by elevGradient once.
+    !grad = tfcElevGradient cfg
+    !physDS = DirectionalSlope
+                (dsSlopeE ds * grad) (dsSlopeNE ds * grad) (dsSlopeNW ds * grad)
+                (dsSlopeW ds * grad) (dsSlopeSW ds * grad) (dsSlopeSE ds * grad)
+    !avgS  = dsAvgSlope physDS
+    !maxS  = dsMaxSlope physDS
+    !top3S = dsTop3Slope physDS
+    !asym  = dsAsymmetry physDS
 
     -- | Check if any opposite-direction pair both exceed a threshold.
     {-# INLINE hassteepOppPair #-}
     hassteepOppPair :: Float -> Bool
     hassteepOppPair thr =
       any (\d -> let opp = hexOpposite d
-                     !sD   = abs (dsSlopeIn d ds)
-                     !sOpp = abs (dsSlopeIn opp ds)
+                     !sD   = abs (dsSlopeIn d physDS)
+                     !sOpp = abs (dsSlopeIn opp physDS)
                  in sD >= thr && sOpp >= thr
           ) [HexE, HexNE, HexNW]  -- only 3 unique pairs
 
@@ -623,8 +802,8 @@ classifyTerrainForm cfg ds r c localMin hardness _soilDepth elevASL
     hasRidgeProfile =
       any (\d ->
         let opp = hexOpposite d
-            !sD   = abs (dsSlopeIn d ds)
-            !sOpp = abs (dsSlopeIn opp ds)
+            !sD   = abs (dsSlopeIn d physDS)
+            !sOpp = abs (dsSlopeIn opp physDS)
             -- Axis directions: the 4 directions that are NOT d or opp
             !axisMax = maxExcludingPair d opp
         in sD >= tfcRidgeMinSlope cfg
@@ -639,8 +818,8 @@ classifyTerrainForm cfg ds r c localMin hardness _soilDepth elevASL
     hasPassProfile =
       any (\d ->
         let opp = hexOpposite d
-            !sD   = abs (dsSlopeIn d ds)
-            !sOpp = abs (dsSlopeIn opp ds)
+            !sD   = abs (dsSlopeIn d physDS)
+            !sOpp = abs (dsSlopeIn opp physDS)
             !crossAvg = (sD + sOpp) / 2
         in crossAvg >= tfcPassMinCrossSlope cfg
            && maxExcludingPair d opp <= tfcPassMaxAxisSlope cfg
@@ -652,8 +831,8 @@ classifyTerrainForm cfg ds r c localMin hardness _soilDepth elevASL
     hasEscarpmentProfile =
       any (\d ->
         let opp = hexOpposite d
-            !sD   = abs (dsSlopeIn d ds)
-            !sOpp = abs (dsSlopeIn opp ds)
+            !sD   = abs (dsSlopeIn d physDS)
+            !sOpp = abs (dsSlopeIn opp physDS)
         in sD >= tfcEscarpmentMinSlope cfg
            && sOpp <= tfcEscarpmentMaxOppSlope cfg
       ) allHexDirections
@@ -664,7 +843,7 @@ classifyTerrainForm cfg ds r c localMin hardness _soilDepth elevASL
     maxExcludingPair d1 d2 =
       foldl' (\acc d ->
         if d == d1 || d == d2 then acc
-        else max acc (abs (dsSlopeIn d ds))
+        else max acc (abs (dsSlopeIn d physDS))
       ) 0.0 allHexDirections
 
 ---------------------------------------------------------------------------

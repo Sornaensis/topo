@@ -7,6 +7,16 @@ module Topo
   , module Topo.Metadata
   , module Topo.Plugin
   , module Topo.Pipeline
+  , module Topo.Pipeline.Stage
+  , module Topo.Pipeline.Dep
+  , module Topo.Calendar
+  , module Topo.Overlay
+  , module Topo.Overlay.Schema
+  , module Topo.Overlay.Index
+  , module Topo.Overlay.Export
+  , module Topo.Overlay.Storage
+  , module Topo.Simulation
+  , module Topo.Simulation.DAG
   , module Topo.BaseHeight
   , module Topo.Gen
   , module Topo.Tectonics
@@ -37,6 +47,16 @@ import Topo.Hex
 import Topo.Metadata
 import Topo.Plugin
 import Topo.Pipeline
+import Topo.Pipeline.Stage
+import Topo.Pipeline.Dep
+import Topo.Calendar
+import Topo.Overlay
+import Topo.Overlay.Schema
+import Topo.Overlay.Index
+import Topo.Overlay.Export
+import Topo.Overlay.Storage
+import Topo.Simulation
+import Topo.Simulation.DAG
 import Topo.BaseHeight
 import Topo.Gen
 import Topo.Tectonics

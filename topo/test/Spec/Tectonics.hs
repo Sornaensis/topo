@@ -18,7 +18,7 @@ spec = describe "Tectonics" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 123
           , pipelineStages = stages
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world0
@@ -37,7 +37,7 @@ spec = describe "Tectonics" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 987
           , pipelineStages = stages
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world0
@@ -57,7 +57,7 @@ spec = describe "Tectonics" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 456
           , pipelineStages = stages
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world0
@@ -76,7 +76,7 @@ spec = describe "Tectonics" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 321
           , pipelineStages = stages
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world0
@@ -98,7 +98,7 @@ spec = describe "Tectonics" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 654
           , pipelineStages = stages
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world0
@@ -119,7 +119,7 @@ spec = describe "Tectonics" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 222
           , pipelineStages = stages
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world0
@@ -140,7 +140,7 @@ spec = describe "Tectonics" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 777
           , pipelineStages = stages
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world0
@@ -161,7 +161,7 @@ spec = describe "Tectonics" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 888
           , pipelineStages = stages
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world0

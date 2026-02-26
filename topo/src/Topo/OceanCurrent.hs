@@ -28,6 +28,7 @@ import Topo.Config.JSON
    genericToJSON, genericParseJSON)
 import Topo.Math (clamp01)
 import Topo.Pipeline (PipelineStage(..))
+import Topo.Pipeline.Stage (StageId(..))
 import Topo.Planet (LatitudeMapping(..))
 import Topo.Plugin (logInfo, modifyWorldP)
 import Topo.Types
@@ -82,7 +83,7 @@ defaultOceanCurrentConfig = OceanCurrentConfig
 -- the modified SST.
 applyOceanCurrentsStage :: OceanCurrentConfig -> Float -> PipelineStage
 applyOceanCurrentsStage cfg waterLevel =
-    PipelineStage "applyOceanCurrents" "applyOceanCurrents" $ do
+    PipelineStage StageOceanCurrents "applyOceanCurrents" "applyOceanCurrents" $ do
   logInfo "applyOceanCurrents: modifying coastal SST"
   modifyWorldP $ \world ->
     let config     = twConfig world

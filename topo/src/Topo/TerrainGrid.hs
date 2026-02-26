@@ -559,6 +559,6 @@ classifyTerrainFormGrid formCfg waterLevel gridW gridH elev hardness =
         !soilDep = 0.5  -- neutral default; unavailable pre-classification
         !elevASL = h0 - waterLevel
 
-    in classifyTerrainForm formCfg ds r c localMin hard soilDep elevASL
+    in classifyTerrainForm formCfg ds r 0 0 c localMin hard soilDep elevASL
   where
     !n = U.length elev

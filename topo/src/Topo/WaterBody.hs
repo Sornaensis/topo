@@ -39,6 +39,7 @@ import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Word (Word32)
 import Topo.Pipeline (PipelineStage(..))
+import Topo.Pipeline.Stage (StageId(..))
 import Topo.Plugin (logInfo, getWorldP, putWorldP, PluginError(..))
 import Topo.TerrainGrid
   ( buildElevationGrid
@@ -316,7 +317,7 @@ floodFill gridW gridH elev waterLevel componentId label start = do
 -- Depends on terrain elevation being finalized (after rivers).
 applyWaterBodyStage :: WaterBodyConfig -> Float -> PipelineStage
 applyWaterBodyStage cfg waterLevel =
-  PipelineStage "applyWaterBodies" "applyWaterBodies" $ do
+  PipelineStage StageWaterBody "applyWaterBodies" "applyWaterBodies" $ do
     logInfo "applyWaterBodies: classifying ocean / lake / inland sea"
     world <- getWorldP
     let config = twConfig world

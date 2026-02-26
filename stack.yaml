@@ -2,6 +2,9 @@ resolver: lts-24.2
 packages:
   - topo
   - topo-seer
+  - topo-plugin-sdk
+  - topo-plugin-example
+  - topo-plugin-civ-example
 extra-deps:
   - git: https://github.com/Sornaensis/hyperspace
     commit: 4303126429a28d3ffd6fe2a67770d37ede3b08a7 # 0.1-testing

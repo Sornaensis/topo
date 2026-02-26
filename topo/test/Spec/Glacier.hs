@@ -8,6 +8,7 @@ import Topo.Math (clamp01)
 import Topo
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice, WorldSlice(..))
 import Topo.Weather (defaultWeatherConfig)
+import Topo.TerrainForm.Modifiers (defaultTerrainFormModifiers, TerrainFormModifiers(..))
 
 spec :: Spec
 spec = describe "Glacier" $ do
@@ -28,7 +29,7 @@ spec = describe "Glacier" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 11
           , pipelineStages = [applyGlacierStage defaultGlacierConfig defaultTerrainFormConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world1
@@ -55,7 +56,7 @@ spec = describe "Glacier" $ do
             pipeline = PipelineConfig
               { pipelineSeed = 12
               , pipelineStages = [applyGlacierStage defaultGlacierConfig defaultTerrainFormConfig 0.5]
-              , pipelineSnapshots = False
+              , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
               }
             env = TopoEnv { teLogger = \_ -> pure () }
         result <- runPipeline pipeline env world1
@@ -84,13 +85,17 @@ spec = describe "Glacier" $ do
               pipeline = PipelineConfig
                 { pipelineSeed = 13
                 , pipelineStages = [applyGlacierStage defaultGlacierConfig defaultTerrainFormConfig 0.5]
-                , pipelineSnapshots = False
+                , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
                 }
               env = TopoEnv { teLogger = \_ -> pure () }
+              -- Uniform elevation 1.0 with waterLevel 0.5 classifies
+              -- as FormPlateau (flat, above sea level).  Its snowAccumBonus
+              -- amplifies accumulation.
+              bonus = tfmSnowAccumBonus (defaultTerrainFormModifiers FormPlateau)
               snowExpected =
                 let range = max 0.0001 (gcSnowRange defaultGlacierConfig)
                     factor = clamp01 ((gcSnowTemp defaultGlacierConfig - temp) / range)
-                in precip * gcAccumScale defaultGlacierConfig * factor
+                in precip * gcAccumScale defaultGlacierConfig * factor * (1 + bonus)
               meltExpected =
                 if temp > gcMeltTemp defaultGlacierConfig
                   then (temp - gcMeltTemp defaultGlacierConfig) * gcMeltRate defaultGlacierConfig
@@ -123,7 +128,7 @@ spec = describe "Glacier" $ do
               [ generateClimateStage climateCfg defaultWeatherConfig waterLevel
               , applyGlacierStage glacierCfg defaultTerrainFormConfig waterLevel
               ]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     resultA <- runPipeline buildPipeline env (setupWorld worldArctic)

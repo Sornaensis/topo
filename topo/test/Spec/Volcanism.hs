@@ -14,7 +14,7 @@ spec = describe "Volcanism" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 21
           , pipelineStages = [applyVolcanismStage defaultVolcanismConfig]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world1
@@ -45,7 +45,7 @@ spec = describe "Volcanism" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 7
           , pipelineStages = [applyVolcanismStage volcCfg]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world1

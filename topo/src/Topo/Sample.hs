@@ -14,6 +14,7 @@ module Topo.Sample
 import Topo.Hex (hexToWorld, worldToHex)
 import Topo.Types
 import Topo.Units
+import Topo.Weather (getWeatherChunk)
 import Topo.World
 import qualified Data.Vector.Unboxed as U
 

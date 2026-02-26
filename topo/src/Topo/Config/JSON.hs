@@ -107,12 +107,16 @@ multiPrefixOptions prefixes = defaultOptions
 mergeDefaults
   :: Value  -- ^ Serialized default config (should be an Object)
   -> Value  -- ^ Incoming JSON value
-  -> Value  -- ^ Merged value
+  -> Value  -- ^ Merged value (deep recursive merge for nested objects)
 mergeDefaults defaultVal incoming =
   case incoming of
     Null -> defaultVal
     Object inObj ->
       case defaultVal of
-        Object defObj -> Object (KM.union inObj defObj)
+        Object defObj ->
+          -- unionWith prefers left for unique keys, calls f for shared keys.
+          -- We need: unique-in-inObj → keep user value, unique-in-defObj → keep
+          -- default, shared → recurse with (default, incoming) argument order.
+          Object (KM.unionWith (\inV defV -> mergeDefaults defV inV) inObj defObj)
         _             -> incoming
     other -> other

@@ -1,0 +1,29 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.38.1.
+--
+-- see: https://github.com/sol/hpack
+
+name:           topo-plugin-civ-example
+version:        0.1.0.0
+synopsis:       Example civilization overlay plugin for topo
+category:       Terrain
+author:         You
+maintainer:     you@example.com
+license:        MPL-2.0
+license-file:   LICENSE
+build-type:     Simple
+
+executable topo-plugin-civ-example
+  main-is: Main.hs
+  other-modules:
+      Paths_topo_plugin_civ_example
+  hs-source-dirs:
+      app
+  build-depends:
+      aeson >=2.1 && <2.3
+    , base >=4.18 && <5
+    , containers
+    , text
+    , topo-plugin-sdk
+  default-language: Haskell2010

@@ -61,12 +61,12 @@ data ReliefGrid = ReliefGrid
 -- extract the flat elevation grid.
 generateRelief :: IO ReliefGrid
 generateRelief = do
-  let wc    = WorldConfig { wcChunkSize = 8 }
+  let wc    = WorldConfig { wcChunkSize = 16 }
       slice = WorldSlice
         { wsLatCenter = 0
-        , wsLatExtent = 60   -- -30° to +30°
+        , wsLatExtent = 40   -- -20° to +20°
         , wsLonCenter = 0
-        , wsLonExtent = 60   -- -30° to +30°
+        , wsLonExtent = 40   -- -20° to +20°
         }
       wgc    = defaultWorldGenConfig { worldSlice = slice }
       full   = buildFullPipelineConfig wgc wc reliefSeed
@@ -313,7 +313,7 @@ spec = do
                 cv = gridCurvAt x y
                 lm = gridIsMin x y
                 ds = DirectionalSlope sl sl sl sl sl sl
-                form = classifyTerrainForm formCfg ds rl cv lm 0.5 0.5 0.0
+                form = classifyTerrainForm formCfg ds rl 0 0 cv lm 0.5 0.5 0.0
             in form == FormFlat || form == FormRolling
 
           nFlatRolling = length (filter isFlat landIdxs)

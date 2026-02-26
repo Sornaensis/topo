@@ -28,6 +28,7 @@ import Seer.Draw
   , drawLeftTabs
   , drawSeedControl
   , drawStatusBars
+  , drawOverlayButtons
   , drawViewModeButtons
   , seedMaxDigits
   , viewColor
@@ -94,7 +95,7 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
       buttonRect = leftGenButtonRect layout
       configToggle = configToggleRect layout
       configPanel = configPanelRect layout
-      (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion) = configTabRects layout
+      (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline) = configTabRects layout
       configPresetSave = configPresetSaveRect layout
       configPresetLoad = configPresetLoadRect layout
       configReset = configResetRect layout
@@ -716,6 +717,12 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
       configValleyCurvatureMinus = configValleyCurvatureMinusRect layout
       configValleyCurvaturePlus = configValleyCurvaturePlusRect layout
       configValleyCurvatureBar = configValleyCurvatureBarRect layout
+      configTfcElevGradientMinus = configTfcElevGradientMinusRect layout
+      configTfcElevGradientPlus = configTfcElevGradientPlusRect layout
+      configTfcElevGradientBar = configTfcElevGradientBarRect layout
+      configTfcPlateauMaxRelief2RingMinus = configTfcPlateauMaxRelief2RingMinusRect layout
+      configTfcPlateauMaxRelief2RingPlus = configTfcPlateauMaxRelief2RingPlusRect layout
+      configTfcPlateauMaxRelief2RingBar = configTfcPlateauMaxRelief2RingBarRect layout
       configRockElevationThresholdMinus = configRockElevationThresholdMinusRect layout
       configRockElevationThresholdPlus = configRockElevationThresholdPlusRect layout
       configRockElevationThresholdBar = configRockElevationThresholdBarRect layout
@@ -817,9 +824,10 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
             SDL.rendererDrawColor renderer SDL.$= buttonLabel
             SDL.fillRect renderer (Just (rectToSDL buttonRect))
             drawStatusBars renderer fontCache (rsUi snapshot) dataSnap layout
-          LeftView ->
+          LeftView -> do
             drawViewModeButtons renderer mode (viewRect1, viewRect2, viewRect3, viewRect4, viewRect5, viewRect6, viewRect7, viewRect8, viewRect9, viewRect10, viewRect11, viewRect12)
-      drawConfigPanel renderer (rsUi snapshot) configPanel (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion) configPresetSave configPresetLoad configReset configRevert configScrollArea configScrollBar
+            drawOverlayButtons renderer fontCache (rsUi snapshot) (overlayViewRects layout)
+      drawConfigPanel renderer (rsUi snapshot) configPanel (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline) configPresetSave configPresetLoad configReset configRevert configScrollArea configScrollBar
         (configWaterMinus, configWaterBar, configWaterPlus)
         (configOrographicLiftMinus, configOrographicLiftBar, configOrographicLiftPlus)
         (configRainShadowLossMinus, configRainShadowLossBar, configRainShadowLossPlus)
@@ -977,6 +985,8 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
         (configTfcHillSlopeMinus, configTfcHillSlopeBar, configTfcHillSlopePlus)
         (configTfcRollingSlopeMinus, configTfcRollingSlopeBar, configTfcRollingSlopePlus)
         (configValleyCurvatureMinus, configValleyCurvatureBar, configValleyCurvaturePlus)
+        (configTfcElevGradientMinus, configTfcElevGradientBar, configTfcElevGradientPlus)
+        (configTfcPlateauMaxRelief2RingMinus, configTfcPlateauMaxRelief2RingBar, configTfcPlateauMaxRelief2RingPlus)
         (configRockElevationThresholdMinus, configRockElevationThresholdBar, configRockElevationThresholdPlus)
         (configRockHardnessThresholdMinus, configRockHardnessThresholdBar, configRockHardnessThresholdPlus)
         (configRockHardnessSecondaryMinus, configRockHardnessSecondaryBar, configRockHardnessSecondaryPlus)

@@ -99,12 +99,14 @@ applyUiConfig ui cfg =
         }
       formCfg = terrainFormConfig terrain
       formCfg' = formCfg
-        { tfcCliffSlope = mapRange 0.1 0.8 (uiTfcCliffSlope ui)
-        , tfcMountainSlope = mapRange 0.05 0.5 (uiTfcMountainSlope ui)
-        , tfcMountainRelief = mapRange 0.05 0.5 (uiTfcMountainRelief ui)
-        , tfcHillSlope = mapRange 0.02 0.2 (uiTfcHillSlope ui)
-        , tfcRollingSlope = mapRange 0.005 0.1 (uiTfcRollingSlope ui)
+        { tfcCliffSlope = mapRange 0.05 0.50 (uiTfcCliffSlope ui)
+        , tfcMountainSlope = mapRange 0.02 0.20 (uiTfcMountainSlope ui)
+        , tfcMountainRelief = mapRange 0.02 0.30 (uiTfcMountainRelief ui)
+        , tfcHillSlope = mapRange 0.005 0.10 (uiTfcHillSlope ui)
+        , tfcRollingSlope = mapRange 0.002 0.04 (uiTfcRollingSlope ui)
         , tfcValleyCurvature = mapRange 0.05 0.4 (uiValleyCurvature ui)
+        , tfcElevGradient = mapRange 0.1 2.0 (uiTfcElevGradient ui)
+        , tfcPlateauMaxRelief2Ring = mapRange 0.005 0.10 (uiTfcPlateauMaxRelief2Ring ui)
         }
       hydro = terrainHydrology terrain
       hydro' = hydro

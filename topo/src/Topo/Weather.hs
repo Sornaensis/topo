@@ -3,48 +3,74 @@
 
 -- | Weather tick configuration and update stage.
 --
--- Each call to 'tickWeatherStage' advances 'twWorldTime' by
--- 'wcTickSeconds' and recomputes per-chunk weather snapshots with
--- time-varying noise, latitude-dependent seasonal amplitude, and
--- temperature-derived pressure.
+-- Each call to 'tickWeatherStage' advances 'twWorldTime' by one tick
+-- and recomputes per-chunk weather snapshots with time-varying noise,
+-- latitude-dependent seasonal amplitude, and temperature-derived
+-- pressure.  Seasonal phase is derived from
+-- 'Topo.Calendar.yearFraction'.
 module Topo.Weather
   ( WeatherConfig(..)
   , defaultWeatherConfig
   , tickWeatherStage
+  -- * Simulation node
+  , weatherSimNode
+  , weatherOverlaySchema
+  -- * Overlay conversion
+  , weatherChunkToOverlay
+  , overlayToWeatherChunk
+  , getWeatherFromOverlay
+  , getWeatherChunk
+  , weatherFieldCount
   -- * Pure helpers (exported for testing)
   , cloudFraction
   , seasonalITCZLatitude
   ) where
 
 import Control.Monad.Reader (asks)
+import Data.Aeson (Value(..))
+import qualified Data.IntMap.Strict as IntMap
+import qualified Data.Map.Strict as Map
+import Data.Text (Text)
+import Data.Vector (Vector)
+import qualified Data.Vector as V
+import qualified Data.Vector.Unboxed as U
+import Data.Word (Word64)
 import GHC.Generics (Generic)
+import Topo.Calendar (WorldTime(..), CalendarConfig, yearFraction, mkCalendarConfig, advanceTicks)
+import Topo.Climate.Evaporation (satNorm)
 import Topo.Config.JSON
   (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
    genericToJSON, genericParseJSON)
-import qualified Data.IntMap.Strict as IntMap
-import Data.Word (Word64)
-import Topo.Climate.Evaporation (satNorm)
 import Topo.Math (clamp01)
 import Topo.Noise (noise2D)
+import Topo.Overlay (Overlay(..), OverlayData(..), insertOverlay, lookupOverlay)
+import Topo.Overlay.Schema
+  ( OverlaySchema(..), OverlayFieldDef(..), OverlayFieldType(..)
+  , OverlayStorage(..), OverlayDeps(..)
+  )
 import Topo.Pipeline (PipelineStage(..))
+import Topo.Pipeline.Stage (StageId(..))
 import Topo.Planet (PlanetConfig(..), LatitudeMapping(..))
 import Topo.Plugin (logInfo, modifyWorldP, peSeed)
+import Topo.Simulation (SimNode(..), SimNodeId(..), SimContext(..))
 import Topo.Types
 import Topo.World (TerrainWorld(..))
-import qualified Data.Vector.Unboxed as U
 
 -- | Weather update configuration.
 data WeatherConfig = WeatherConfig
-  { -- | Simulation seconds per weather tick.
+  { -- | Simulation seconds per weather tick.  Also used as the
+    -- 'wtTickRate' when initialising 'WorldTime'.
     wcTickSeconds :: !Float
     -- | Initial seasonal phase offset (radians).  Combined with the
-    -- dynamic phase from 'twWorldTime' and 'wcSeasonCycleLength'.
+    -- dynamic phase from 'Topo.Calendar.yearFraction'.
   , wcSeasonPhase :: !Float
     -- | Base seasonal temperature amplitude before latitude scaling
     -- and tilt scaling.
   , wcSeasonAmplitude :: !Float
     -- | Number of weather ticks in a full seasonal (year) cycle.
-    -- The dynamic season phase is @twWorldTime * 2π / wcSeasonCycleLength@.
+    -- Used as a fallback when 'CalendarConfig' is not available.
+    -- When the calendar is active, the cycle length is derived from
+    -- 'ccDaysPerYear' instead.
   , wcSeasonCycleLength :: !Float
     -- | Temperature jitter amplitude from time-varying noise.
   , wcJitterAmplitude :: !Float
@@ -138,14 +164,19 @@ defaultWeatherConfig = WeatherConfig
 
 -- | Update per-chunk weather snapshots from climate.
 --
--- 1. Increments 'twWorldTime' by 'wcTickSeconds'.
--- 2. Computes a dynamic season phase from world time.
+-- 1. Advances 'twWorldTime' by one tick.
+-- 2. Computes a dynamic season phase from 'yearFraction'.
 -- 3. Scales seasonal amplitude by latitude (maximal at poles, ~zero at
 --    equator) and by axial tilt.
 -- 4. Uses time-varying noise for jitter so successive ticks differ.
 -- 5. Derives pressure from temperature (warm → low, cold → high).
+--
+-- Weather data is stored exclusively in the weather 'Overlay'
+-- (in 'twOverlays').  The overlay uses 'weatherChunkToOverlay'
+-- to convert each 'WeatherChunk' to a dense SoA layout.
+-- Use 'getWeatherFromOverlay' or 'getWeatherChunk' to read it back.
 tickWeatherStage :: WeatherConfig -> PipelineStage
-tickWeatherStage cfg = PipelineStage "tickWeather" "tickWeather" $ do
+tickWeatherStage cfg = PipelineStage StageWeather "tickWeather" "tickWeather" $ do
   logInfo "tickWeather: updating weather"
   seed <- asks peSeed
   modifyWorldP $ \world ->
@@ -155,14 +186,14 @@ tickWeatherStage cfg = PipelineStage "tickWeather" "tickWeather" $ do
         radPerTile = lmRadPerTile lm
         latBiasRad = lmBiasRad lm
         tiltScale  = lmTiltScale lm
-        -- 5.1.3: advance world time
-        worldTime' = twWorldTime world + wcTickSeconds cfg
-        -- 5.5: dynamic season phase = initial offset + time-derived angle
-        cycleLen   = max 1 (wcSeasonCycleLength cfg)
-        dynamicPhase = wcSeasonPhase cfg
-                     + worldTime' * 2 * pi / cycleLen
-        -- 5.3.1: time hash for noise variation
-        timeHash = floor (worldTime' / max 0.001 (wcTickSeconds cfg)) :: Int
+        -- Advance world time by one tick
+        worldTime' = advanceTicks 1 (twWorldTime world)
+        -- Derive seasonal phase from calendar year fraction
+        calCfg = mkCalendarConfig planet
+        yf     = yearFraction calCfg worldTime'
+        dynamicPhase = wcSeasonPhase cfg + realToFrac yf * 2 * pi
+        -- Time hash for noise variation (tick count)
+        timeHash = fromIntegral (wtTick worldTime') :: Int
         -- 7.3: Seasonal ITCZ migration — move convergence zone with
         -- the sub-solar point.
         dynamicITCZLat = seasonalITCZLatitude
@@ -178,7 +209,16 @@ tickWeatherStage cfg = PipelineStage "tickWeather" "tickWeather" $ do
         weather' = IntMap.mapWithKey
           (buildWeatherChunk config seed cfg' radPerTile latBiasRad timeHash)
           (twClimate world)
-    in world { twWeather = weather', twWorldTime = worldTime' }
+        -- Weather data lives exclusively in the overlay
+        overlayChunks = IntMap.map weatherChunkToOverlay weather'
+        weatherOverlay = Overlay
+          { ovSchema = weatherOverlaySchema
+          , ovData   = DenseData overlayChunks
+          }
+        overlays' = insertOverlay weatherOverlay (twOverlays world)
+    in world { twWorldTime = worldTime'
+             , twOverlays  = overlays'
+             }
 
 -- ---------------------------------------------------------------------------
 -- Per-chunk weather builder
@@ -421,3 +461,183 @@ seasonalITCZLatitude
   -> Float  -- ^ dynamic ITCZ latitude (degrees)
 seasonalITCZLatitude baseLat migScale tilt phase =
   baseLat + migScale * tilt * sin phase
+
+-- ---------------------------------------------------------------------------
+-- Weather overlay schema
+-- ---------------------------------------------------------------------------
+
+-- | Field index constants for the weather overlay (dense SoA layout).
+--
+-- These must match the order of fields in 'weatherOverlaySchema'.
+weatherFieldTemperature, weatherFieldHumidity, weatherFieldWindDir,
+  weatherFieldWindSpeed, weatherFieldPressure, weatherFieldPrecip :: Int
+weatherFieldTemperature = 0
+weatherFieldHumidity    = 1
+weatherFieldWindDir     = 2
+weatherFieldWindSpeed   = 3
+weatherFieldPressure    = 4
+weatherFieldPrecip      = 5
+
+-- | Number of fields in the weather overlay schema.
+weatherFieldCount :: Int
+weatherFieldCount = 6
+
+-- | The canonical schema for the weather overlay.
+--
+-- Six dense float fields matching 'WeatherChunk':
+--
+-- @[temperature, humidity, wind_dir, wind_speed, pressure, precipitation]@
+--
+-- Storage is dense (SoA): every hex in every chunk is populated with
+-- one @U.Vector Float@ per field.
+weatherOverlaySchema :: OverlaySchema
+weatherOverlaySchema = OverlaySchema
+  { osName         = "weather"
+  , osVersion      = "1.0.0"
+  , osDescription  = "Per-tick weather snapshot (temperature, humidity, wind, pressure, precipitation)"
+  , osFields       = fields
+  , osStorage      = StorageDense
+  , osDependencies = OverlayDeps { odTerrain = True, odOverlays = [] }
+  , osFieldIndex   = Map.fromList [(ofdName f, i) | (i, f) <- zip [0..] fields]
+  }
+  where
+    fields =
+      [ OverlayFieldDef "temperature"   OFFloat (Number 0.5)  False Nothing
+      , OverlayFieldDef "humidity"      OFFloat (Number 0.5)  False Nothing
+      , OverlayFieldDef "wind_dir"      OFFloat (Number 0.0)  False Nothing
+      , OverlayFieldDef "wind_speed"    OFFloat (Number 0.0)  False Nothing
+      , OverlayFieldDef "pressure"      OFFloat (Number 0.5)  False Nothing
+      , OverlayFieldDef "precipitation" OFFloat (Number 0.0)  False Nothing
+      ]
+
+-- ---------------------------------------------------------------------------
+-- Weather simulation node
+-- ---------------------------------------------------------------------------
+
+-- | Convert a 'WeatherChunk' to a dense overlay chunk (SoA layout).
+--
+-- The returned 'Vector' has exactly 'weatherFieldCount' elements,
+-- one @U.Vector Float@ per field in schema order.
+weatherChunkToOverlay :: WeatherChunk -> Vector (U.Vector Float)
+weatherChunkToOverlay wc = V.fromList
+  [ wcTemp wc
+  , wcHumidity wc
+  , wcWindDir wc
+  , wcWindSpd wc
+  , wcPressure wc
+  , wcPrecip wc
+  ]
+
+-- | Convert a dense overlay chunk back to a 'WeatherChunk'.
+--
+-- Expects exactly 'weatherFieldCount' field vectors.  Returns
+-- 'Nothing' if the vector has the wrong length.
+overlayToWeatherChunk :: Vector (U.Vector Float) -> Maybe WeatherChunk
+overlayToWeatherChunk v
+  | V.length v /= weatherFieldCount = Nothing
+  | otherwise = Just WeatherChunk
+      { wcTemp     = v V.! weatherFieldTemperature
+      , wcHumidity = v V.! weatherFieldHumidity
+      , wcWindDir  = v V.! weatherFieldWindDir
+      , wcWindSpd  = v V.! weatherFieldWindSpeed
+      , wcPressure = v V.! weatherFieldPressure
+      , wcPrecip   = v V.! weatherFieldPrecip
+      }
+
+-- | Extract the current weather data from the overlay store.
+--
+-- Reads the @\"weather\"@ overlay from 'twOverlays' and converts each
+-- dense chunk back to a 'WeatherChunk'.  Returns 'IntMap.empty' when
+-- no weather overlay exists or the overlay uses a non-dense layout.
+--
+-- This is the canonical way to read weather data after Phase 8B.
+-- All consumers should use this instead of the former @twWeather@ field.
+getWeatherFromOverlay :: TerrainWorld -> IntMap.IntMap WeatherChunk
+getWeatherFromOverlay world =
+  case lookupOverlay "weather" (twOverlays world) of
+    Nothing -> IntMap.empty
+    Just ov -> case ovData ov of
+      DenseData m  -> IntMap.mapMaybe overlayToWeatherChunk m
+      SparseData _ -> IntMap.empty
+
+-- | Look up a single weather chunk by 'ChunkId' from the overlay store.
+--
+-- Convenience wrapper around 'getWeatherFromOverlay'.
+getWeatherChunk :: ChunkId -> TerrainWorld -> Maybe WeatherChunk
+getWeatherChunk (ChunkId cid) world =
+  IntMap.lookup cid (getWeatherFromOverlay world)
+
+-- | Simulation node for the weather overlay.
+--
+-- This is a 'SimNodeReader' — it reads 'TerrainWorld' data (config,
+-- planet, latitude mapping, climate chunks) and produces an updated
+-- weather overlay.  It does not mutate terrain.
+--
+-- The tick function:
+--
+-- 1. Reads the current world time from 'SimContext'.
+-- 2. Derives seasonal phase via 'yearFraction'.
+-- 3. For each climate chunk, runs 'buildWeatherChunk' (the same
+--    per-chunk logic used by 'tickWeatherStage').
+-- 4. Packs results as a dense overlay (@DenseData@).
+--
+-- Unlike 'tickWeatherStage', this node does __not__ advance
+-- 'twWorldTime' — the simulation executor handles time management.
+weatherSimNode :: WeatherConfig -> SimNode
+weatherSimNode cfg = SimNodeReader
+  { snrId           = SimNodeId "weather"
+  , snrOverlayName  = "weather"
+  , snrDependencies = []
+  , snrReadTick     = weatherTick cfg
+  }
+
+-- | The weather tick implementation.
+weatherTick :: WeatherConfig -> SimContext -> Overlay -> IO (Either Text Overlay)
+weatherTick cfg ctx _overlay = do
+  let terrain    = scTerrain ctx
+      wtime      = scWorldTime ctx
+      config     = twConfig terrain
+      planet     = twPlanet terrain
+      lm         = twLatMapping terrain
+      radPerTile = lmRadPerTile lm
+      latBiasRad = lmBiasRad lm
+      tiltScale  = lmTiltScale lm
+
+      -- Use the tick count as a deterministic noise seed.
+      -- In the generator pipeline, the seed comes from peSeed;
+      -- for simulation ticks the tick counter provides equivalent
+      -- per-invocation variation.
+      seed       = wtTick wtime
+
+      -- Derive seasonal phase from calendar year fraction
+      calCfg       = mkCalendarConfig planet
+      yf           = yearFraction calCfg wtime
+      dynamicPhase = wcSeasonPhase cfg + realToFrac yf * 2 * pi
+
+      -- Time hash for noise variation (tick count)
+      timeHash     = fromIntegral (wtTick wtime) :: Int
+
+      -- Seasonal ITCZ migration
+      dynamicITCZLat = seasonalITCZLatitude
+                         (wcITCZLatitude cfg)
+                         (wcITCZMigrationScale cfg)
+                         (pcAxialTilt planet)
+                         dynamicPhase
+      cfg' = cfg
+        { wcSeasonAmplitude = wcSeasonAmplitude cfg * tiltScale
+        , wcSeasonPhase     = dynamicPhase
+        , wcITCZLatitude    = dynamicITCZLat
+        }
+
+      -- Build weather for each climate chunk and pack as dense overlay
+      denseChunks = IntMap.mapWithKey
+        (\key climate ->
+          weatherChunkToOverlay $
+            buildWeatherChunk config seed cfg' radPerTile latBiasRad timeHash key climate
+        )
+        (twClimate terrain)
+
+  pure $ Right Overlay
+    { ovSchema = weatherOverlaySchema
+    , ovData   = DenseData denseChunks
+    }

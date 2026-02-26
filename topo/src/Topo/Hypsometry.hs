@@ -23,8 +23,6 @@ module Topo.Hypsometry
   , applyHypsometryStage
   ) where
 
-import Control.Monad.Except (throwError)
-import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Vector.Unboxed as U
 import GHC.Generics (Generic)
@@ -34,13 +32,9 @@ import Topo.Config.JSON
   )
 import Topo.Math (clamp01)
 import Topo.Pipeline (PipelineStage(..))
-import Topo.Plugin (logInfo, getWorldP, putWorldP, PluginError(..))
-import Topo.TerrainGrid
-  ( buildElevationGrid
-  , updateChunkElevationFromGrid
-  , validateTerrainGrid
-  )
-import Topo.Types (WorldConfig(..), ChunkCoord(..))
+import Topo.Pipeline.Stage (StageId(..))
+import Topo.Plugin (logInfo, getWorldP, putWorldP)
+import Topo.Types (TerrainChunk(..))
 import Topo.World (TerrainWorld(..))
 
 -------------------------------------------------------------------------------
@@ -197,28 +191,19 @@ hypsometricRemap cfg e
 
 -- | Pipeline stage that applies hypsometric remapping to all tiles.
 --
--- Runs across the full stitched terrain grid (cross-chunk).  When
--- 'hpEnabled' is 'False', the stage returns immediately.
+-- The remap is a per-tile operation (no neighbor access), so it maps
+-- directly over each chunk's elevation vector without building an
+-- intermediate cross-chunk grid.  When 'hpEnabled' is 'False', the
+-- stage returns immediately.
 applyHypsometryStage :: HypsometryConfig -> PipelineStage
-applyHypsometryStage cfg = PipelineStage "applyHypsometry" "applyHypsometry" $ do
+applyHypsometryStage cfg = PipelineStage StageHypsometry "applyHypsometry" "applyHypsometry" $ do
   if not (hpEnabled cfg)
     then logInfo "applyHypsometry: disabled, skipping"
     else do
       logInfo "applyHypsometry: remapping elevation distribution"
       world <- getWorldP
-      let config  = twConfig world
-          terrain = twTerrain world
-      (ChunkCoord minCx minCy, ChunkCoord maxCx maxCy) <-
-        case validateTerrainGrid config terrain of
-          Left err -> throwError (PluginInvariantError err)
-          Right bounds -> pure bounds
-      let size  = wcChunkSize config
-          gridW = (maxCx - minCx + 1) * size
-          gridH = (maxCy - minCy + 1) * size
-          elev  = buildElevationGrid config terrain (ChunkCoord minCx minCy) gridW gridH
-          remap = hypsometricRemap cfg
-          elev' = U.map (clamp01 . remap) elev
-          terrain' = IntMap.mapWithKey
-            (updateChunkElevationFromGrid config (ChunkCoord minCx minCy) gridW elev')
-            terrain
+      let remap = clamp01 . hypsometricRemap cfg
+          terrain' = IntMap.map
+            (\chunk -> chunk { tcElevation = U.map remap (tcElevation chunk) })
+            (twTerrain world)
       putWorldP world { twTerrain = terrain' }

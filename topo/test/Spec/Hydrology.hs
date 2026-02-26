@@ -23,7 +23,7 @@ spec = describe "Hydrology" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 1
           , pipelineStages = [applyHydrologyStage (defaultHydroConfig { hcWaterLevel = 0.2 }) defaultTerrainFormConfig]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world1
@@ -46,7 +46,7 @@ spec = describe "Hydrology" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 2
           , pipelineStages = [applyRiverStage defaultRiverConfig defaultRiverTopologyConfig defaultGroundwaterConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world1
@@ -74,7 +74,7 @@ spec = describe "Hydrology" $ do
         pipeline = PipelineConfig
           { pipelineSeed = 4
           , pipelineStages = [applyRiverStage riverCfg defaultRiverTopologyConfig defaultGroundwaterConfig 0.5]
-          , pipelineSnapshots = False
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
     result <- runPipeline pipeline env world1
@@ -101,7 +101,7 @@ spec = describe "Hydrology" $ do
               pipeline = PipelineConfig
                 { pipelineSeed = 3
                 , pipelineStages = [applyRiverStage defaultRiverConfig defaultRiverTopologyConfig gwCfg 0.5]
-                , pipelineSnapshots = False
+                , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
                 }
               env = TopoEnv { teLogger = \_ -> pure () }
           result <- runPipeline pipeline env world1
@@ -340,7 +340,7 @@ spec = describe "Hydrology" $ do
           pipeErosion = PipelineConfig
             { pipelineSeed = 42
             , pipelineStages = [applyErosionStage defaultErosionConfig defaultTerrainFormConfig 0.5]
-            , pipelineSnapshots = False
+            , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
             }
           -- Erosion + Hydrology
           pipeErosionHydro = PipelineConfig
@@ -349,7 +349,7 @@ spec = describe "Hydrology" $ do
                 [ applyErosionStage defaultErosionConfig defaultTerrainFormConfig 0.5
                 , applyHydrologyStage defaultHydroConfig defaultTerrainFormConfig
                 ]
-            , pipelineSnapshots = False
+            , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
             }
 
       rE  <- runPipeline pipeErosion env world1
@@ -375,7 +375,7 @@ spec = describe "Hydrology" $ do
           pipeline = PipelineConfig
             { pipelineSeed = 7
             , pipelineStages = [applyHydrologyStage defaultHydroConfig defaultTerrainFormConfig]
-            , pipelineSnapshots = False
+            , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
             }
           env = TopoEnv { teLogger = \_ -> pure () }
       result <- runPipeline pipeline env world1
@@ -413,7 +413,7 @@ spec = describe "Hydrology" $ do
           pipeline = PipelineConfig
             { pipelineSeed = 42
             , pipelineStages = [applyRiverStage defaultRiverConfig topoCfg defaultGroundwaterConfig wl]
-            , pipelineSnapshots = False
+            , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
             }
           env = TopoEnv { teLogger = \_ -> pure () }
       result <- runPipeline pipeline env world1
