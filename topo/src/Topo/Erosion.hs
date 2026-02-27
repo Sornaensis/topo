@@ -146,7 +146,7 @@ defaultErosionConfig = ErosionConfig
 -- Per-form modifiers ('defaultTerrainFormModifiers') then adjust erosion
 -- intensity, hardness resistance, deposition, and smoothing per tile.
 applyErosionStage :: ErosionConfig -> TerrainFormConfig -> Float -> PipelineStage
-applyErosionStage cfg formCfg waterLevel = PipelineStage StageErosion "applyErosion" "applyErosion" $ do
+applyErosionStage cfg formCfg waterLevel = PipelineStage StageErosion "applyErosion" "applyErosion" Nothing [] Nothing $ do
   logInfo "applyErosion: hydraulic + thermal + coastal smooth"
   world <- getWorldP
   let config = twConfig world

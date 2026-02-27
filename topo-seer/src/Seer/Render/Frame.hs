@@ -749,7 +749,7 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
   SDL.clear renderer
   tAfterClear <- getMonotonicTimeNSec
   let atlasScale = zoomTextureScale (uiZoom (rsUi snapshot))
-      dataReady = dsTerrainChunks dataSnap == IntMap.size (tsTerrainChunks terrainSnap)
+      dataReady = tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
   (loggedSchedule, loggedScheduleDrain, loggedScheduleEnqueue) <-
     if shouldScheduleAtlas
       then do
@@ -795,12 +795,9 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
     Just tiles -> do
       (_, elapsed) <- timedMs (drawAtlas renderer tiles (uiPanOffset (rsUi snapshot)) (uiZoom (rsUi snapshot)) (V2 (fromIntegral winW) (fromIntegral winH)))
       logTiming logHandle timingLogThresholdMs (Text.pack "draw atlas") elapsed Nothing
-    Nothing ->
-      if renderTargetOk
-        then pure False
-        else do
-          (_, elapsed) <- timedMs (drawTerrain renderer terrainSnap terrainCache textureCache' (uiPanOffset (rsUi snapshot)) (uiZoom (rsUi snapshot)) (V2 (fromIntegral winW) (fromIntegral winH)))
-          logTiming logHandle timingLogThresholdMs (Text.pack "draw terrain") elapsed Nothing
+    Nothing -> do
+      (_, elapsed) <- timedMs (drawTerrain renderer terrainSnap terrainCache textureCache' (uiPanOffset (rsUi snapshot)) (uiZoom (rsUi snapshot)) (V2 (fromIntegral winW) (fromIntegral winH)))
+      logTiming logHandle timingLogThresholdMs (Text.pack "draw terrain") elapsed Nothing
   tAfterDraw <- getMonotonicTimeNSec
   loggedHover <- do
     (_, elapsed) <- timedMs (drawHoverHex renderer (rsUi snapshot) atlasScale)
@@ -827,7 +824,7 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
           LeftView -> do
             drawViewModeButtons renderer mode (viewRect1, viewRect2, viewRect3, viewRect4, viewRect5, viewRect6, viewRect7, viewRect8, viewRect9, viewRect10, viewRect11, viewRect12)
             drawOverlayButtons renderer fontCache (rsUi snapshot) (overlayViewRects layout)
-      drawConfigPanel renderer (rsUi snapshot) configPanel (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline) configPresetSave configPresetLoad configReset configRevert configScrollArea configScrollBar
+      drawConfigPanel renderer (rsUi snapshot) dataSnap configPanel (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline) configPresetSave configPresetLoad configReset configRevert configScrollArea configScrollBar
         (configWaterMinus, configWaterBar, configWaterPlus)
         (configOrographicLiftMinus, configOrographicLiftBar, configOrographicLiftPlus)
         (configRainShadowLossMinus, configRainShadowLossBar, configRainShadowLossPlus)

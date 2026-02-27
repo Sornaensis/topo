@@ -105,7 +105,7 @@ defaultVolcanismConfig = VolcanismConfig
 
 -- | Apply volcanism vents and eruption outputs.
 applyVolcanismStage :: VolcanismConfig -> PipelineStage
-applyVolcanismStage cfg = PipelineStage StageVolcanism "applyVolcanism" "applyVolcanism" $ do
+applyVolcanismStage cfg = PipelineStage StageVolcanism "applyVolcanism" "applyVolcanism" Nothing [] Nothing $ do
   logInfo "applyVolcanism: vents + magma"
   world <- getWorldP
   env <- ask

@@ -90,7 +90,7 @@ defaultSoilConfig = SoilConfig
 -- (which provides 'tcMoisture') and before the vegetation bootstrap.
 applySoilStage :: SoilConfig -> PipelineStage
 applySoilStage cfg =
-    PipelineStage StageSoil "applySoil" "applySoil" $ do
+    PipelineStage StageSoil "applySoil" "applySoil" Nothing [] Nothing $ do
   logInfo "applySoil: deriving soil fields"
   modifyWorldP $ \world ->
     let chunks = twTerrain world

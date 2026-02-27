@@ -15,10 +15,13 @@
 -- @~\/.topo\/plugins\/civilization\/@ alongside @civilization.toposchema@.
 module Main (main) where
 
+import Control.Exception (IOException, try)
+import qualified Data.ByteString as BS
 import Data.Aeson (Value(..))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text, pack)
+import Topo.Overlay.Schema (OverlaySchema, parseOverlaySchema)
 import Topo.Plugin.SDK
 
 ------------------------------------------------------------------------
@@ -124,16 +127,22 @@ civPlugin = defaultPluginDef
 -- 2. Identify hexes above the habitability threshold
 -- 3. Seed an initial population scaled by biome richness
 -- 4. Return the seeded overlay data to the host
-runCivGenerator :: PluginContext -> IO (Either Text ())
+runCivGenerator :: PluginContext -> IO (Either Text GeneratorTickResult)
 runCivGenerator ctx = do
   pcLog ctx "civilization: generator — seeding initial population"
   pcLog ctx ("civilization: habitability threshold = "
               <> showParam (pcParams ctx) "habitability_threshold")
   pcLog ctx ("civilization: seed = " <> pack (show (pcSeed ctx)))
-  -- TODO: iterate terrain chunks, evaluate habitability per hex,
-  -- seed population values, return overlay data via RPC.
-  pcLog ctx "civilization: generator complete"
-  pure (Right ())
+  case decodeTerrainPayload (pcTerrain ctx) of
+    Left decodeErr ->
+      pure (Left ("civilization: failed to decode terrain payload: " <> decodeErr))
+    Right terrainWorld ->
+      case generatorResultFromTerrain terrainWorld of
+        Left encodeErr ->
+          pure (Left ("civilization: failed to encode generator terrain payload: " <> encodeErr))
+        Right result -> do
+          pcLog ctx "civilization: generator complete"
+          pure (Right result)
 
 ------------------------------------------------------------------------
 -- Simulation: tick population growth
@@ -151,16 +160,26 @@ runCivGenerator ctx = do
 -- 5. Promote hexes to cities above the threshold
 -- 6. Optionally compute trade value if trade is enabled
 -- 7. Return the updated overlay to the host
-runCivSimTick :: PluginContext -> IO (Either Text ())
+runCivSimTick :: PluginContext -> IO (Either Text SimulationTickResult)
 runCivSimTick ctx = do
   pcLog ctx "civilization: simulation tick"
   let params = pcParams ctx
   pcLog ctx ("civilization: growth rate = " <> showParam params "growth_rate")
   pcLog ctx ("civilization: trade enabled = " <> showParam params "enable_trade")
-  -- TODO: read own overlay, read weather overlay, compute growth,
-  -- update population/infrastructure/cities, return updated overlay.
-  pcLog ctx "civilization: tick complete"
-  pure (Right ())
+  schemaResult <- loadCivilizationSchema
+  case schemaResult of
+    Left schemaErr ->
+      pure (Left ("civilization: failed to load schema: " <> schemaErr))
+    Right schema ->
+      case decodeOwnOverlay schema ctx of
+        Left decodeErr ->
+          pure (Left ("civilization: failed to decode own overlay payload: " <> decodeErr))
+        Right overlay -> do
+          -- TODO: decode dependency overlays (e.g. weather), update
+          -- overlay values, and optionally emit terrain writes.
+          pcLog ctx "civilization: own overlay payload decoded"
+          pcLog ctx "civilization: tick complete"
+          pure (Right (simulationResultFromOverlay overlay))
 
 ------------------------------------------------------------------------
 -- Helpers
@@ -174,6 +193,14 @@ showParam params key = case Map.lookup key params of
   Just (Bool b)   -> pack (show b)
   Just _          -> "<complex>"
   Nothing         -> "<not set>"
+
+-- | Load and parse the civilization overlay schema from disk.
+loadCivilizationSchema :: IO (Either Text OverlaySchema)
+loadCivilizationSchema = do
+  readResult <- (try (BS.readFile "civilization.toposchema") :: IO (Either IOException BS.ByteString))
+  case readResult of
+    Left err -> pure (Left ("could not read civilization.toposchema: " <> pack (show err)))
+    Right schemaBytes -> pure (parseOverlaySchema schemaBytes)
 
 ------------------------------------------------------------------------
 -- Entry point

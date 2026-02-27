@@ -83,7 +83,7 @@ defaultOceanCurrentConfig = OceanCurrentConfig
 -- the modified SST.
 applyOceanCurrentsStage :: OceanCurrentConfig -> Float -> PipelineStage
 applyOceanCurrentsStage cfg waterLevel =
-    PipelineStage StageOceanCurrents "applyOceanCurrents" "applyOceanCurrents" $ do
+    PipelineStage StageOceanCurrents "applyOceanCurrents" "applyOceanCurrents" Nothing [] Nothing $ do
   logInfo "applyOceanCurrents: modifying coastal SST"
   modifyWorldP $ \world ->
     let config     = twConfig world

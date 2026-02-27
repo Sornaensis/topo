@@ -36,7 +36,7 @@ import qualified Data.Text as T
 import Data.Word (Word64)
 
 import Topo.Calendar (CalendarDate)
-import Topo.Overlay (Overlay(..), OverlayStore(..), lookupOverlay, insertOverlay)
+import Topo.Overlay (Overlay(..), OverlayStore(..), emptyOverlayStore, lookupOverlay, insertOverlay)
 import Topo.Simulation
   ( SimNode(..), SimNodeId(..)
   , SimContext(..), SimProgress(..), SimStatus(..)
@@ -44,7 +44,7 @@ import Topo.Simulation
   , simNodeId, simNodeOverlayName, simNodeDependencies
   )
 import Topo.Calendar (WorldTime)
-import Topo.World (TerrainWorld)
+import Topo.World (TerrainWorld(..))
 
 -- ---------------------------------------------------------------------------
 -- DAG type
@@ -253,7 +253,7 @@ runOneReader nodeMap terrain store cal wt dt progress total (nid, node) =
     SimNodeReader{snrOverlayName = name, snrDependencies = deps, snrReadTick = tick} -> do
       let depOverlays = gatherDependencyOverlays store deps nodeMap
           ctx = SimContext
-            { scTerrain    = terrain
+            { scTerrain    = terrain { twOverlays = emptyOverlayStore }
             , scCalendar   = cal
             , scWorldTime  = wt
             , scDeltaTicks = dt
@@ -335,7 +335,7 @@ runWriterPhase nodeMap total progress terrain store cal wt dt (nid:rest) = do
       SimNodeWriter{snwOverlayName = name, snwDependencies = deps, snwWriteTick = tick} -> do
         let depOverlays = gatherDependencyOverlays store deps nodeMap
             ctx = SimContext
-              { scTerrain    = terrain
+              { scTerrain    = terrain { twOverlays = emptyOverlayStore }
               , scCalendar   = cal
               , scWorldTime  = wt
               , scDeltaTicks = dt

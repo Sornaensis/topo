@@ -19,7 +19,7 @@ import qualified Data.Vector.Unboxed as U
 import Topo
 import Topo.Calendar (defaultWorldTime, WorldTime(..), CalendarDate(..))
 import Topo.Overlay
-  ( Overlay(..), OverlayData(..), emptyOverlayStore
+  ( Overlay(..), OverlayData(..), emptyOverlayStore, overlayCount
   , insertOverlay, lookupOverlay, emptyOverlay
   )
 import Topo.Overlay.Schema
@@ -116,6 +116,7 @@ spec = describe "Simulation" $ do
   executionOrderSpec
   terrainWriteSpec
   failureSpec
+  overlayIsolationSpec
   weatherSimNodeSpec
 
 -- =========================================================================
@@ -405,6 +406,60 @@ mkTestTerrainWithClimate config = do
       world = emptyWorldWithPlanet config defaultHexGridMeta
                 defaultPlanetConfig defaultWorldSlice
   pure (setClimateChunk (ChunkId 0) climate world)
+
+-- =========================================================================
+-- SimContext overlay isolation (Phase 2)
+-- =========================================================================
+
+overlayIsolationSpec :: Spec
+overlayIsolationSpec = describe "SimContext overlay isolation" $ do
+
+  it "reader node cannot see overlays via scTerrain.twOverlays" $ do
+    terrain <- mkTestTerrain
+    -- Insert an overlay into the terrain's OverlayStore directly
+    let extraOv = emptyOverlay (testSchema "sneaky")
+        terrainWithOv = terrain { twOverlays = insertOverlay extraOv emptyOverlayStore }
+    -- Create a reader that inspects scTerrain.twOverlays
+    leakRef <- newIORef (0 :: Int)
+    let inspectNode = SimNodeReader
+          { snrId           = SimNodeId "inspector"
+          , snrOverlayName  = "inspector"
+          , snrDependencies = []
+          , snrReadTick     = \ctx ov -> do
+              -- scTerrain should have empty overlays (stripped by DAG)
+              writeIORef leakRef (overlayCount (twOverlays (scTerrain ctx)))
+              pure (Right ov)
+          }
+        store = mkStore ["inspector"]
+        Right dag = buildSimDAG [inspectNode]
+    result <- tickSimulation dag noProgress terrainWithOv store testCalDate defaultWorldTime 1
+    case result of
+      Left err -> expectationFailure (T.unpack err)
+      Right _ -> do
+        leaked <- readIORef leakRef
+        leaked `shouldBe` 0
+
+  it "writer node cannot see overlays via scTerrain.twOverlays" $ do
+    terrain <- mkTestTerrain
+    let extraOv = emptyOverlay (testSchema "sneaky")
+        terrainWithOv = terrain { twOverlays = insertOverlay extraOv emptyOverlayStore }
+    leakRef <- newIORef (0 :: Int)
+    let inspectWriter = SimNodeWriter
+          { snwId           = SimNodeId "w-inspector"
+          , snwOverlayName  = "w-inspector"
+          , snwDependencies = []
+          , snwWriteTick    = \ctx ov -> do
+              writeIORef leakRef (overlayCount (twOverlays (scTerrain ctx)))
+              pure (Right (ov, emptyTerrainWrites))
+          }
+        store = mkStore ["w-inspector"]
+        Right dag = buildSimDAG [inspectWriter]
+    result <- tickSimulation dag noProgress terrainWithOv store testCalDate defaultWorldTime 1
+    case result of
+      Left err -> expectationFailure (T.unpack err)
+      Right _ -> do
+        leaked <- readIORef leakRef
+        leaked `shouldBe` 0
 
 -- =========================================================================
 -- Weather simulation node

@@ -196,7 +196,7 @@ hypsometricRemap cfg e
 -- intermediate cross-chunk grid.  When 'hpEnabled' is 'False', the
 -- stage returns immediately.
 applyHypsometryStage :: HypsometryConfig -> PipelineStage
-applyHypsometryStage cfg = PipelineStage StageHypsometry "applyHypsometry" "applyHypsometry" $ do
+applyHypsometryStage cfg = PipelineStage StageHypsometry "applyHypsometry" "applyHypsometry" Nothing [] Nothing $ do
   if not (hpEnabled cfg)
     then logInfo "applyHypsometry: disabled, skipping"
     else do

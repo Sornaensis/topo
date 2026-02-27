@@ -76,6 +76,7 @@ spec = describe "TerrainActor" $ do
           , tgrGenConfig = defaultWorldGenConfig
           , tgrDisabledStages = mempty
           , tgrExtraStages = []
+          , tgrOverlaySchemas = []
           , tgrSimHandle = simHandle
           }
     startTerrainGen terrainHandle (replyTo @TerrainReplyOps replyHandle) req

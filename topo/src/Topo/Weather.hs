@@ -176,7 +176,7 @@ defaultWeatherConfig = WeatherConfig
 -- to convert each 'WeatherChunk' to a dense SoA layout.
 -- Use 'getWeatherFromOverlay' or 'getWeatherChunk' to read it back.
 tickWeatherStage :: WeatherConfig -> PipelineStage
-tickWeatherStage cfg = PipelineStage StageWeather "tickWeather" "tickWeather" $ do
+tickWeatherStage cfg = PipelineStage StageWeather "tickWeather" "tickWeather" Nothing [] Nothing $ do
   logInfo "tickWeather: updating weather"
   seed <- asks peSeed
   modifyWorldP $ \world ->

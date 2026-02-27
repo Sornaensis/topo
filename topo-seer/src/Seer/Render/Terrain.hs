@@ -98,7 +98,7 @@ buildTerrainCache uiSnap terrainSnap =
 -- | Draw terrain either from cached textures or immediate geometry.
 drawTerrain :: SDL.Renderer -> TerrainSnapshot -> TerrainCache -> ChunkTextureCache -> (Float, Float) -> Float -> V2 Int -> IO ()
 drawTerrain renderer terrainSnap cache textureCache (panX, panY) zoom (V2 winW winH) =
-  if tsChunkSize terrainSnap <= 0
+  if tcChunkSize cache <= 0 || IntMap.null (tcGeometry cache)
     then pure ()
     else do
       let textures = ctcTextures textureCache

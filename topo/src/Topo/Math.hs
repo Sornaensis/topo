@@ -1,3 +1,5 @@
+{-# LANGUAGE BangPatterns #-}
+
 -- | Small numeric helpers shared across terrain generators.
 module Topo.Math
   ( clamp01
@@ -37,8 +39,15 @@ smoothstep edge0 edge1 x =
   let t = clamp01 ((x - edge0) / (edge1 - edge0))
   in t * t * (3 - 2 * t)
 
--- | Apply a function $n$ times to a value.
+-- | Apply a function $n$ times to a value, strict in the accumulator.
+--
+-- Without the bang on @x@, @iterateN 6 f v@ builds a thunk tower
+-- @f(f(f(f(f(f(v))))))@ whose forcing cascades all at once.  For
+-- grid-level erosion passes where each @f@ produces a fully-evaluated
+-- @U.Vector Float@, the lazy version only defers work; it never saves
+-- any.  Making the accumulator strict ensures each iteration is
+-- evaluated before the next begins.
 iterateN :: Int -> (a -> a) -> a -> a
-iterateN n f x
+iterateN n f !x
   | n <= 0 = x
   | otherwise = iterateN (n - 1) f (f x)

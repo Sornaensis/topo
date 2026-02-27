@@ -62,7 +62,9 @@ newtype SimNodeId = SimNodeId { unSimNodeId :: Text }
 -- writer mutations (for writer nodes).
 data SimContext = SimContext
   { scTerrain    :: !TerrainWorld
-    -- ^ Read-only terrain snapshot.
+    -- ^ Read-only terrain snapshot.  'twOverlays' is always empty —
+    -- the DAG executor strips overlays to prevent stale-data access.
+    -- Use 'scOverlays' for dependency overlay data instead.
   , scCalendar   :: !CalendarDate
     -- ^ Current calendar position derived from world time and planet.
   , scWorldTime  :: !WorldTime

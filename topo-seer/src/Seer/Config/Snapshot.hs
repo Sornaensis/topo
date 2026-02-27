@@ -155,6 +155,8 @@ import Actor.UI
   , setUiTfcHillSlope
   , setUiTfcRollingSlope
   , setUiValleyCurvature
+  , setUiTfcElevGradient
+  , setUiTfcPlateauMaxRelief2Ring
   , setUiRockElevationThreshold
   , setUiRockHardnessThreshold
   , setUiRockHardnessSecondary
@@ -419,12 +421,14 @@ applySnapshotToUi cs h = do
   setUiRockHardnessThreshold h (unmapRange 0.2 0.9 (pcRockHardnessThreshold params))
   setUiRockHardnessSecondary h (unmapRange 0.1 0.8 (pcRockHardnessSecondary params))
   -- Terrain form
-  setUiTfcCliffSlope h (unmapRange 0.1 0.8 (tfcCliffSlope form))
-  setUiTfcMountainSlope h (unmapRange 0.05 0.5 (tfcMountainSlope form))
-  setUiTfcMountainRelief h (unmapRange 0.05 0.5 (tfcMountainRelief form))
-  setUiTfcHillSlope h (unmapRange 0.02 0.2 (tfcHillSlope form))
-  setUiTfcRollingSlope h (unmapRange 0.005 0.1 (tfcRollingSlope form))
+  setUiTfcCliffSlope h (unmapRange 0.05 0.50 (tfcCliffSlope form))
+  setUiTfcMountainSlope h (unmapRange 0.02 0.20 (tfcMountainSlope form))
+  setUiTfcMountainRelief h (unmapRange 0.02 0.30 (tfcMountainRelief form))
+  setUiTfcHillSlope h (unmapRange 0.005 0.10 (tfcHillSlope form))
+  setUiTfcRollingSlope h (unmapRange 0.002 0.04 (tfcRollingSlope form))
   setUiValleyCurvature h (unmapRange 0.05 0.4 (tfcValleyCurvature form))
+  setUiTfcElevGradient h (unmapRange 0.1 2.0 (tfcElevGradient form))
+  setUiTfcPlateauMaxRelief2Ring h (unmapRange 0.005 0.10 (tfcPlateauMaxRelief2Ring form))
   -- Erosion
   setUiRainRate h (unmapRange 0.05 0.5 (ecRainRate erosion))
   setUiErosionHydraulic h (unmapIntRange 1 12 (ecHydraulicIterations erosion))

@@ -19,20 +19,33 @@ import Test.Hspec
 
 import Data.Aeson (Value(..), (.=), object)
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as Key
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
+import qualified Data.IntMap.Strict as IntMap
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import qualified Data.Text as Text
+import qualified Data.Vector.Unboxed as U
+import System.IO (stdin, stdout)
 
+import Topo.Calendar (CalendarDate(..))
+import Topo.Overlay (emptyOverlay)
+import Topo.Overlay.Schema (OverlaySchema(..), OverlayStorage(..), OverlayDeps(..))
 import Topo.Pipeline (PipelineStage(..))
 import Topo.Pipeline.Stage (StageId(..))
+import Topo.Export (ExportError, encodeTerrainChunk)
+import Topo.Hex (defaultHexGridMeta)
+import Topo.Planet (defaultPlanetConfig, defaultWorldSlice)
 import Topo.Plugin.RPC
   ( RPCConnection(..)
   , RPCManifest(..)
   , RPCGeneratorDecl(..)
   , RPCSimulationDecl(..)
   , RPCOverlayDecl(..)
-  , RPCCapability(..)
+  , Capability(..)
+  , RPCCapability
   , RPCParamSpec(..)
   , RPCParamType(..)
   , newRPCConnection
@@ -44,9 +57,20 @@ import Topo.Plugin.RPC
   , manifestHasSimulation
   , manifestHasOverlay
   , manifestWritesTerrain
+  , decodeTerrainWritesValue
+  , applyGeneratorTerrainValue
   )
 import Topo.Plugin.RPC.Transport (Transport(..))
-import Topo.Simulation (SimNode(..), SimNodeId(..))
+import Topo.Simulation (SimContext(..), SimNode(..), SimNodeId(..), twrTerrain)
+import Topo.Types (ChunkId(..), TerrainChunk, WorldConfig(..), tcElevation)
+import Topo.World
+  ( TerrainWorld(..)
+  , emptyClimateChunk
+  , emptyWorldWithPlanet
+  , generateTerrainChunk
+  , setClimateChunk
+  , setTerrainChunk
+  )
 
 ------------------------------------------------------------------------
 -- Helpers
@@ -56,11 +80,11 @@ import Topo.Simulation (SimNode(..), SimNodeId(..))
 -- Not suitable for actual message passing.
 mockTransport :: Text -> IO Transport
 mockTransport name = do
-  -- Use stdin/stdout as placeholder handles — we won't actually
-  -- read/write during structural tests.
+  -- Use stdin/stdout placeholders; structural tests don't perform
+  -- transport I/O, but strict fields require defined handles.
   pure Transport
-    { tReadHandle  = undefined  -- not used in structural tests
-    , tWriteHandle = undefined  -- not used in structural tests
+    { tReadHandle  = stdin
+    , tWriteHandle = stdout
     , tPluginName  = name
     }
 
@@ -80,7 +104,7 @@ civManifest = RPCManifest
   , rmOverlay      = Just RPCOverlayDecl
       { rodSchemaFile = "civilization.toposchema"
       }
-  , rmCapabilities = [CapReadTerrain, CapReadOverlay, CapWriteOverlay, CapRPCLog]
+  , rmCapabilities = [CapReadTerrain, CapReadOverlay, CapWriteOverlay, CapLog]
   , rmParameters   =
       [ RPCParamSpec
           { rpsName    = "growth_rate"
@@ -105,7 +129,7 @@ genOnlyManifest = RPCManifest
       }
   , rmSimulation   = Nothing
   , rmOverlay      = Nothing
-  , rmCapabilities = [CapReadTerrain, CapRPCLog]
+  , rmCapabilities = [CapReadTerrain, CapLog]
   , rmParameters   = []
   }
 
@@ -122,7 +146,7 @@ writerManifest = RPCManifest
   , rmOverlay      = Just RPCOverlayDecl
       { rodSchemaFile = "writer.toposchema"
       }
-  , rmCapabilities = [CapWriteTerrain, CapReadTerrain, CapWriteOverlay, CapRPCLog]
+  , rmCapabilities = [CapWriteTerrain, CapReadTerrain, CapWriteOverlay, CapLog]
   , rmParameters   = []
   }
 
@@ -181,6 +205,16 @@ spec = describe "Plugin Integration" $ do
         SimNodeWriter {} -> pure ()
         SimNodeReader {} -> expectationFailure "expected SimNodeWriter"
 
+    it "creates a SimNodeWriter for coarse writeWorld capability" $ do
+      transport <- mockTransport "terrain-writer"
+      let coarseWriter = writerManifest
+            { rmCapabilities = [CapWriteWorld, CapReadWorld, CapWriteOverlay, CapLog] }
+          conn = newRPCConnection coarseWriter transport Map.empty
+          node = rpcSimNode conn
+      case node of
+        SimNodeWriter {} -> pure ()
+        SimNodeReader {} -> expectationFailure "expected SimNodeWriter"
+
     it "sets correct overlay name on sim node" $ do
       transport <- mockTransport "civilization"
       let conn = newRPCConnection civManifest transport Map.empty
@@ -206,6 +240,34 @@ spec = describe "Plugin Integration" $ do
           deps `shouldBe` [SimNodeId "weather"]
         SimNodeWriter { snwDependencies = deps } ->
           deps `shouldBe` [SimNodeId "weather"]
+
+    it "rejects reader simulation tick without writeOverlay capability" $ do
+      transport <- mockTransport "civilization"
+      let manifest = civManifest { rmCapabilities = [CapReadTerrain, CapReadOverlay, CapLog] }
+          conn = newRPCConnection manifest transport Map.empty
+          node = rpcSimNode conn
+          ctx = mkSimContext (mkTestWorld (WorldConfig { wcChunkSize = 8 }))
+          overlay = emptyOverlay testOverlaySchema
+      case node of
+        SimNodeReader { snrReadTick = readTick } -> do
+          result <- readTick ctx overlay
+          result `shouldBe` Left "manifest missing writeOverlay capability"
+        SimNodeWriter {} -> expectationFailure "expected SimNodeReader"
+
+    it "rejects writer simulation tick without writeOverlay capability" $ do
+      transport <- mockTransport "terrain-writer"
+      let manifest = writerManifest { rmCapabilities = [CapWriteTerrain, CapReadTerrain, CapLog] }
+          conn = newRPCConnection manifest transport Map.empty
+          node = rpcSimNode conn
+          ctx = mkSimContext (mkTestWorld (WorldConfig { wcChunkSize = 8 }))
+          overlay = emptyOverlay writerOverlaySchema
+      case node of
+        SimNodeWriter { snwWriteTick = writeTick } -> do
+          result <- writeTick ctx overlay
+          case result of
+            Left err -> err `shouldBe` "manifest missing writeOverlay capability"
+            Right _ -> expectationFailure "expected capability rejection"
+        SimNodeReader {} -> expectationFailure "expected SimNodeWriter"
 
   ------------------------------------
   -- Connection parameter threading
@@ -286,3 +348,86 @@ spec = describe "Plugin Integration" $ do
           manifestWritesTerrain parsed `shouldBe` True
           manifestHasSimulation parsed `shouldBe` True
           validateManifest parsed `shouldBe` []
+
+  ------------------------------------
+  -- Data flow (real transport)
+  ------------------------------------
+  describe "RPC data flow" $ do
+    it "decodes non-empty simulation terrain_writes into TerrainWrites" $ do
+      let config = WorldConfig { wcChunkSize = 8 }
+          updatedChunk = generateTerrainChunk config (const 0.77)
+      terrainWritesPayload <-
+        case encodeTerrainWritesPayload config [(0, updatedChunk)] of
+          Left err -> expectationFailure err >> fail "encode failed"
+          Right payload -> pure payload
+      writes <- case decodeTerrainWritesValue (Just terrainWritesPayload) of
+        Left err -> expectationFailure (show err) >> fail "decode failed"
+        Right decoded -> pure decoded
+      IntMap.size (twrTerrain writes) `shouldBe` 1
+
+    it "applies non-empty generator terrain payload to world" $ do
+      let config = WorldConfig { wcChunkSize = 8 }
+          originalWorld = mkTestWorld config
+          updatedChunk = generateTerrainChunk config (const 0.93)
+      terrainPayload <-
+        case encodeTerrainWritesPayload config [(0, updatedChunk)] of
+          Left err -> expectationFailure err >> fail "encode failed"
+          Right payload -> pure payload
+      mergedWorld <- case applyGeneratorTerrainValue originalWorld terrainPayload of
+        Left err -> expectationFailure (show err) >> fail "apply failed"
+        Right world -> pure world
+      case IntMap.lookup 0 (twTerrain mergedWorld) of
+        Nothing -> expectationFailure "expected merged terrain chunk"
+        Just mergedChunk ->
+          U.head (tcElevation mergedChunk) `shouldBe` 0.93
+
+mkTestWorld :: WorldConfig -> TerrainWorld
+mkTestWorld config =
+  let terrainChunk = generateTerrainChunk config (const 0.21)
+      climateChunk = emptyClimateChunk config
+      baseWorld = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice
+  in setClimateChunk (ChunkId 0) climateChunk (setTerrainChunk (ChunkId 0) terrainChunk baseWorld)
+
+encodeTerrainWritesPayload
+  :: WorldConfig
+  -> [(Int, TerrainChunk)]
+  -> Either String Value
+encodeTerrainWritesPayload config chunks =
+  do
+    encodedPairs <- traverse encodeOne chunks
+    pure $ object
+      [ "chunk_size" .= wcChunkSize config
+      , "terrain" .= object encodedPairs
+      ]
+  where
+    encodeOne (chunkId, chunk) =
+      fmap (Key.fromText (Text.pack (show chunkId)) .=) (encodeChunkBytes (encodeTerrainChunk config chunk))
+
+encodeChunkBytes :: Either ExportError BS.ByteString -> Either String Value
+encodeChunkBytes encoded =
+  case encoded of
+    Left err -> Left (show err)
+    Right bytes -> Right (Aeson.toJSON (BS.unpack bytes))
+
+mkSimContext :: TerrainWorld -> SimContext
+mkSimContext world = SimContext
+  { scTerrain = world
+  , scCalendar = CalendarDate { cdYear = 0, cdDayOfYear = 0, cdHourOfDay = 0 }
+  , scWorldTime = twWorldTime world
+  , scDeltaTicks = 1
+  , scOverlays = Map.empty
+  }
+
+testOverlaySchema :: OverlaySchema
+testOverlaySchema = OverlaySchema
+  { osName = "civilization"
+  , osVersion = "1.0.0"
+  , osDescription = ""
+  , osFields = []
+  , osStorage = StorageSparse
+  , osDependencies = OverlayDeps True []
+  , osFieldIndex = Map.empty
+  }
+
+writerOverlaySchema :: OverlaySchema
+writerOverlaySchema = testOverlaySchema { osName = "terrain-writer" }

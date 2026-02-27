@@ -54,7 +54,7 @@ import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Topo (BiomeId, ChunkCoord(..), ChunkId(..), ClimateChunk(..), DirectionalSlope(..), PlateBoundary(..), TerrainChunk(..), TerrainForm, TileCoord(..), TileIndex(..), VegetationChunk(..), WeatherChunk(..), WorldConfig(..), biomeDisplayName, chunkCoordFromTile, chunkIdFromCoord, dsAvgSlope, dsMaxSlope, dsMinSlope, plateBoundaryToCode, terrainFormDisplayName, tileIndex)
 import Topo.Pipeline.Stage (StageId, allBuiltinStageIds, stageCanonicalName)
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), tileLatitude, tileLongitude, formatLatLon)
-import Topo.Units (defaultUnitScales, normToC, normToMetres, normToMmYear, normToRH, normToWindMs, normToSoilM, normSlopeToDeg)
+import Topo.Units (defaultUnitScales, normToC, normToHPa, normToMetres, normToMmYear, normToRH, normToWindMs, normToSoilM, normSlopeToDeg)
 import UI.Font (FontCache, textSize)
 import UI.HexPick (axialToScreen)
 import UI.Layout
@@ -72,6 +72,7 @@ viewColor mode terrainCount biomeCount =
     ViewElevation -> (40, 80 + scale terrainCount, 160)
     ViewBiome -> (120, 70 + scale biomeCount, 60)
     ViewClimate -> (70, 120, 160 + scale biomeCount)
+    ViewWeather -> (180, 90, 90 + scale biomeCount)
     ViewMoisture -> (60, 140 + scale biomeCount, 120)
     ViewPrecip -> (60, 110 + scale biomeCount, 150)
     ViewPlateId -> (100, 120 + scale biomeCount, 160)
@@ -163,7 +164,7 @@ drawViewModeButtons renderer mode (r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11,
   SDL.fillRect renderer (Just (rectToSDL r3))
   SDL.rendererDrawColor renderer SDL.$= V4 (modeColor ViewMoisture mode) 90 140 255
   SDL.fillRect renderer (Just (rectToSDL r4))
-  SDL.rendererDrawColor renderer SDL.$= V4 90 110 (modeColor ViewPrecip mode) 255
+  SDL.rendererDrawColor renderer SDL.$= V4 170 90 (modeColor ViewWeather mode) 255
   SDL.fillRect renderer (Just (rectToSDL r5))
   SDL.rendererDrawColor renderer SDL.$= V4 90 (modeColor ViewPlateId mode) 170 255
   SDL.fillRect renderer (Just (rectToSDL r6))
@@ -379,6 +380,7 @@ drawTopBar renderer fontCache ui layout = do
 drawConfigPanel
   :: SDL.Renderer
   -> UiState
+  -> DataSnapshot
   -> Rect
   -> (Rect, Rect, Rect, Rect, Rect, Rect, Rect)
   -> Rect
@@ -598,7 +600,7 @@ drawConfigPanel
   -> (Rect, Rect, Rect)
   -> (Rect, Rect, Rect)
   -> IO ()
-drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline) presetSaveRect presetLoadRect resetRect revertRect scrollAreaRect scrollBarRect
+drawConfigPanel renderer ui dataSnap rect (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline) presetSaveRect presetLoadRect resetRect revertRect scrollAreaRect scrollBarRect
   (waterMinus, waterBar, waterPlus)
   (orographicLiftMinus, orographicLiftBar, orographicLiftPlus)
   (rainShadowLossMinus, rainShadowLossBar, rainShadowLossPlus)
@@ -1124,10 +1126,14 @@ drawConfigPanel renderer ui rect (tabTerrain, tabPlanet, tabClimate, tabWeather,
                 (SDL.P (V2 (fromIntegral (dnMidX + halfW)) (fromIntegral row)))
           -- Simulation controls section
           let simOffset = length stages + length plugins
+              simWorldReady = dsTerrainChunks dataSnap > 0
               -- Tick button (row 0 of sim controls)
               tickBtnY = sy + configRowTopPad + simOffset * (rowHeight + gap) - scrollY
               tickBtnRect = Rect (V2 (sx + pad) tickBtnY, V2 60 rowHeight)
-              tickBtnColor = V4 80 120 160 255
+              tickBtnColor =
+                if simWorldReady
+                  then V4 80 120 160 255
+                  else V4 55 65 80 170
               -- Auto-tick toggle (row 1)
               autoTickY = sy + configRowTopPad + (simOffset + 1) * (rowHeight + gap) - scrollY
               autoTickCheckX = sx + pad
@@ -1891,7 +1897,7 @@ drawUiLabels renderer fontCache ui layout = do
           drawCentered fontCache labelColor viewRect2 "Biome"
           drawCentered fontCache labelColor viewRect3 "Climate"
           drawCentered fontCache labelColor viewRect4 "Moist"
-          drawCentered fontCache labelColor viewRect5 "Precip"
+          drawCentered fontCache labelColor viewRect5 "Weather"
           drawCentered fontCache labelColor viewRect6 "Plate"
           drawCentered fontCache labelColor viewRect7 "Bound"
           drawCentered fontCache labelColor viewRect8 "Hard"
@@ -2569,13 +2575,15 @@ drawUiLabels renderer fontCache ui layout = do
           drawTextLine fontCache (V2 labelX labelY) pluginTextColor pName
         -- Simulation control labels
         let simOffset = length stages + length plugins
+            simWorldReady = maybe False (const True) (uiWorldConfig ui)
             simLabelX = sx + pad + 68 -- after tick button width
             simAutoLabelX = sx + pad + checkboxSize + 8
             simRateLabelX = sx + pad + 128 -- after tick rate bar
             simLabelColor = V4 180 200 220 255
         -- Tick button label
         let tickLabelY = sy + configRowTopPad + simOffset * (rowHeight + gap) - scrollY + 4
-        drawTextLine fontCache (V2 (sx + pad + 8) tickLabelY) (V4 220 230 240 255) "Tick"
+            tickLabelColor = if simWorldReady then V4 220 230 240 255 else V4 140 150 165 180
+        drawTextLine fontCache (V2 (sx + pad + 8) tickLabelY) tickLabelColor "Tick"
         -- Auto-tick label
         let autoTickLabelY = sy + configRowTopPad + (simOffset + 1) * (rowHeight + gap) - scrollY + 4
         drawTextLine fontCache (V2 simAutoLabelX autoTickLabelY) simLabelColor "Auto-tick"
@@ -2730,31 +2738,36 @@ drawSpan renderer cx cy (dy, x0, x1) = do
 
 drawHexContext :: SDL.Renderer -> Maybe FontCache -> UiState -> TerrainSnapshot -> V2 Int -> IO ()
 drawHexContext renderer fontCache ui terrainSnap (V2 winW winH) =
-  case (uiContextHex ui, uiContextPos ui) of
-    (Just (q, r), Just (sx, sy)) -> do
-      let lns = contextLines ui terrainSnap (q, r)
-          lineH  = 16
-          hPad   = 12
-          vPad   = 10
-      panelW <- case fontCache of
-        Just fc -> do
-          widths <- mapM (\t -> do { V2 w _ <- textSize fc (V4 230 230 235 255) t; pure w }) lns
-          pure (maximum (220 : map (+ hPad * 2) widths))
-        Nothing ->
-          let approx = maximum (220 : map (\t -> Text.length t * 8 + hPad * 2) lns)
-          in pure approx
-      let panelH = max 40 (vPad * 2 + lineH * length lns)
-          px = clamp 8 (winW - panelW - 8) (sx + 12)
-          py = clamp 8 (winH - panelH - 8) (sy + 12)
-      SDL.rendererDrawColor renderer SDL.$= V4 20 20 25 235
-      SDL.fillRect renderer (Just (SDL.Rectangle (SDL.P (V2 (fromIntegral px) (fromIntegral py))) (V2 (fromIntegral panelW) (fromIntegral panelH))))
-      case fontCache of
-        Nothing -> pure ()
-        Just _cache ->
-          sequence_ [ drawTextLine fontCache (V2 (px + hPad) (py + vPad + idx * lineH)) (V4 230 230 235 255) line
-                    | (idx, line) <- zip [0..] lns
-                    ]
-    _ -> pure ()
+  if not (uiHexTooltipPinned ui)
+    then pure ()
+    else case uiHoverHex ui of
+      Just (q, r) -> do
+        SDL.P (V2 mx my) <- SDL.getAbsoluteMouseLocation
+        let sx = fromIntegral mx
+            sy = fromIntegral my
+        let lns = contextLines ui terrainSnap (q, r)
+            lineH  = 16
+            hPad   = 12
+            vPad   = 10
+        panelW <- case fontCache of
+          Just fc -> do
+            widths <- mapM (\t -> do { V2 w _ <- textSize fc (V4 230 230 235 255) t; pure w }) lns
+            pure (maximum (220 : map (+ hPad * 2) widths))
+          Nothing ->
+            let approx = maximum (220 : map (\t -> Text.length t * 8 + hPad * 2) lns)
+            in pure approx
+        let panelH = max 40 (vPad * 2 + lineH * length lns)
+            px = clamp 8 (winW - panelW - 8) (sx + 12)
+            py = clamp 8 (winH - panelH - 8) (sy + 12)
+        SDL.rendererDrawColor renderer SDL.$= V4 20 20 25 235
+        SDL.fillRect renderer (Just (SDL.Rectangle (SDL.P (V2 (fromIntegral px) (fromIntegral py))) (V2 (fromIntegral panelW) (fromIntegral panelH))))
+        case fontCache of
+          Nothing -> pure ()
+          Just _cache ->
+            sequence_ [ drawTextLine fontCache (V2 (px + hPad) (py + vPad + idx * lineH)) (V4 230 230 235 255) line
+                      | (idx, line) <- zip [0..] lns
+                      ]
+      Nothing -> pure ()
   where
     clamp lo hi v = max lo (min hi v)
 
@@ -2833,6 +2846,17 @@ contextLines ui terrainSnap (q, r) =
       [ "Temp  " <> fmtU (normToC us (hsTemp s)) "°C"
       , "Precip " <> fmtU (normToMmYear us (hsPrecipAvg s)) "mm/yr"
       ]
+    modeLines ViewWeather      s =
+      [ "Biome " <> biomeDisplayName (hsBiome s)
+      , "Elev  " <> fmtU (normToMetres us (hsElevation s)) "m"
+      , "Slope " <> fmtU (normSlopeToDeg us (hsSlope s)) "° avg"
+      , "Temp  " <> fmtU (normToC us (hsWeatherTemp s)) "°C"
+      , "Humid " <> fmtU (normToRH (hsWeatherHumidity s)) "% RH"
+      , "WindD " <> fmtU (hsWeatherWindDir s) "rad"
+      , "WindS " <> fmtU (normToWindMs us (hsWeatherWindSpd s)) "m/s"
+      , "Press " <> fmtU (normToHPa us (hsWeatherPressure s)) "hPa"
+      , "Precp " <> fmtU (normToMmYear us (hsWeatherPrecip s)) "mm/yr"
+      ]
     modeLines ViewMoisture     s =
       [ "Moist " <> fmtU (normToRH (hsMoisture s)) "%"
       , "Soil  " <> fmtU (normToSoilM us (hsSoilDepth s)) "m"
@@ -2879,6 +2903,12 @@ data HexSample = HexSample
   , hsTemp           :: !Float
   , hsPrecipAvg      :: !Float
   , hsHumidity       :: !Float
+  , hsWeatherTemp     :: !Float
+  , hsWeatherHumidity :: !Float
+  , hsWeatherWindDir  :: !Float
+  , hsWeatherWindSpd  :: !Float
+  , hsWeatherPressure :: !Float
+  , hsWeatherPrecip   :: !Float
   , hsVegCover       :: !Float
   , hsVegDensity     :: !Float
   , hsPlateId        :: !Word16
@@ -2919,6 +2949,12 @@ sampleAt terrainSnap (q, r)
         , hsTemp           = maybe 0 (\c -> ccTempAvg c U.! idx) climate
         , hsPrecipAvg      = maybe 0 (\c -> ccPrecipAvg c U.! idx) climate
         , hsHumidity       = maybe 0 (\w -> wcHumidity w U.! idx) weather
+        , hsWeatherTemp     = maybe 0 (\w -> wcTemp w U.! idx) weather
+        , hsWeatherHumidity = maybe 0 (\w -> wcHumidity w U.! idx) weather
+        , hsWeatherWindDir  = maybe 0 (\w -> wcWindDir w U.! idx) weather
+        , hsWeatherWindSpd  = maybe 0 (\w -> wcWindSpd w U.! idx) weather
+        , hsWeatherPressure = maybe 0 (\w -> wcPressure w U.! idx) weather
+        , hsWeatherPrecip   = maybe 0 (\w -> wcPrecip w U.! idx) weather
         , hsVegCover       = maybe 0 (\v -> vegCover v U.! idx) veg
         , hsVegDensity     = maybe 0 (\v -> vegDensity v U.! idx) veg
         , hsPlateId        = tcPlateId tc U.! idx

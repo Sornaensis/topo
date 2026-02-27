@@ -86,6 +86,7 @@ library
     , filepath
     , hyperspace
     , linear
+    , process
     , random
     , sdl2
     , sdl2-ttf
@@ -120,7 +121,9 @@ test-suite topo-seer-test
       Spec.HexPick
       Spec.Layout
       Spec.LogActor
+      Spec.PluginManager
       Spec.RiverRender
+      Spec.Simulation
       Spec.SliderSpec
       Spec.SnapshotReceiver
       Spec.TerrainActor

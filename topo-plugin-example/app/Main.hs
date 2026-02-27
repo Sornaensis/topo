@@ -51,12 +51,20 @@ terrainRoughenPlugin = defaultPluginDef
       , gdRun         = \ctx -> do
           pcLog ctx "terrain-roughen: generator invoked"
           pcLog ctx ("terrain-roughen: roughness = " <> showParam (pcParams ctx) "roughness")
-          -- Actual terrain modification would go here:
-          -- 1. Read pcWorld ctx for current terrain
-          -- 2. Apply roughening based on pcParams
-          -- 3. Return modified world via host protocol
-          pcLog ctx "terrain-roughen: generator complete"
-          pure (Right ())
+                    case decodeTerrainPayload (pcTerrain ctx) of
+                        Left decodeErr ->
+                            pure (Left ("terrain-roughen: failed to decode terrain payload: " <> decodeErr))
+                        Right terrainWorld -> do
+                            pcLog ctx "terrain-roughen: terrain payload decoded"
+                            -- Actual terrain modification would go here:
+                            -- 1. Modify terrainWorld based on pcParams
+                            -- 2. Return modified terrain via typed helper
+                            case generatorResultFromTerrain terrainWorld of
+                                Left encodeErr ->
+                                    pure (Left ("terrain-roughen: failed to encode terrain payload: " <> encodeErr))
+                                Right result -> do
+                                    pcLog ctx "terrain-roughen: generator complete"
+                                    pure (Right result)
       }
   }
 

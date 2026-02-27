@@ -35,9 +35,9 @@ module Topo.Overlay.Export
     -- * Dense
   , encodeDenseChunk
   , decodeDenseChunk
-    -- * Generic dispatch
-  , encodeOverlayChunk
-  , decodeOverlayChunk
+    -- * Typed dispatch
+  , encodeChunkData
+  , decodeChunkData
     -- * Bulk export
   , exportOverlayChunks
   ) where
@@ -192,25 +192,39 @@ getDenseChunk = do
     U.replicateM elemCount getFloatle
 
 ------------------------------------------------------------------------
--- Generic dispatch
+-- Typed dispatch
 ------------------------------------------------------------------------
 
--- | Encode one chunk, dispatching on the schema's storage mode.
-encodeOverlayChunk :: OverlaySchema -> OverlayChunk -> Vector (U.Vector Float) -> BS.ByteString
-encodeOverlayChunk schema sparseChunk denseChunk =
-  case osStorage schema of
-    StorageSparse -> encodeSparseChunk schema sparseChunk
-    StorageDense  -> encodeDenseChunk schema denseChunk
+-- | Encode a chunk of overlay data to bytes, dispatching on the
+-- storage mode embedded in 'OverlayData'.
+--
+-- For a sparse chunk, the @chunkId@ selects which 'OverlayChunk' to
+-- encode.  For a dense chunk, it selects which field-vector set.
+-- Returns 'Nothing' if the chunk ID is not present in the data.
+encodeChunkData :: OverlaySchema -> OverlayData -> Int -> Maybe BS.ByteString
+encodeChunkData schema (SparseData chunks) chunkId =
+  encodeSparseChunk schema <$> IntMap.lookup chunkId chunks
+encodeChunkData schema (DenseData chunks) chunkId =
+  encodeDenseChunk schema <$> IntMap.lookup chunkId chunks
 
--- | Decode one chunk, dispatching on the schema's storage mode.
-decodeOverlayChunk
+-- | Decode a raw chunk payload into the appropriate 'OverlayData'
+-- branch, dispatching on the schema's storage mode.
+--
+-- The result is a single-chunk 'OverlayData' with the given chunk ID
+-- populated.
+decodeChunkData
   :: OverlaySchema
+  -> Int
   -> BS.ByteString
-  -> Either Text (Either OverlayChunk (Vector (U.Vector Float)))
-decodeOverlayChunk schema bytes =
+  -> Either Text OverlayData
+decodeChunkData schema chunkId bytes =
   case osStorage schema of
-    StorageSparse -> Left <$> decodeSparseChunk schema bytes
-    StorageDense  -> Right <$> decodeDenseChunk schema bytes
+    StorageSparse -> do
+      chunk <- decodeSparseChunk schema bytes
+      Right (SparseData (IntMap.singleton chunkId chunk))
+    StorageDense -> do
+      vecs <- decodeDenseChunk schema bytes
+      Right (DenseData (IntMap.singleton chunkId vecs))
 
 ------------------------------------------------------------------------
 -- Bulk export

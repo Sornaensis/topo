@@ -106,7 +106,7 @@ defaultGlacierConfig = GlacierConfig
 -- modifiers ('defaultTerrainFormModifiers') then adjust glacial erosion
 -- intensity, deposition, and ice diffusion rates.
 applyGlacierStage :: GlacierConfig -> TerrainFormConfig -> Float -> PipelineStage
-applyGlacierStage cfg formCfg waterLevel = PipelineStage StageGlacier "applyGlaciers" "applyGlaciers" $ do
+applyGlacierStage cfg formCfg waterLevel = PipelineStage StageGlacier "applyGlaciers" "applyGlaciers" Nothing [] Nothing $ do
   logInfo "applyGlaciers: snowpack + ice flow"
   world <- getWorldP
   let config = twConfig world

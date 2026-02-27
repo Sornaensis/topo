@@ -21,6 +21,10 @@ module Topo.Plugin.SDK.Types
     -- * Capabilities
   , GeneratorDef(..)
   , SimulationDef(..)
+  , GeneratorTickResult(..)
+  , SimulationTickResult(..)
+  , defaultGeneratorTickResult
+  , defaultSimulationTickResult
     -- * Plugin context
   , PluginContext(..)
     -- * Defaults
@@ -81,9 +85,9 @@ data GeneratorDef = GeneratorDef
     -- (e.g. @\"biomes\"@, @\"rivers\"@).
   , gdRequires    :: ![Text]
     -- ^ Stage names that must have run before this generator.
-  , gdRun         :: PluginContext -> IO (Either Text ())
+  , gdRun         :: PluginContext -> IO (Either Text GeneratorTickResult)
     -- ^ Generator implementation. Receives the current world and
-    -- parameters; returns an error message on failure.
+    -- parameters; returns transport payloads for generator result.
   }
 
 ------------------------------------------------------------------------
@@ -97,8 +101,41 @@ data GeneratorDef = GeneratorDef
 data SimulationDef = SimulationDef
   { sdDependencies :: ![Text]
     -- ^ Overlay names that must tick before this node.
-  , sdTick         :: PluginContext -> IO (Either Text ())
+  , sdTick         :: PluginContext -> IO (Either Text SimulationTickResult)
     -- ^ Simulation tick implementation.
+  }
+
+-- | Result payload returned by a generator callback.
+data GeneratorTickResult = GeneratorTickResult
+  { gtrTerrain  :: !Value
+    -- ^ Generator terrain payload for @generator_result.terrain@.
+  , gtrOverlay  :: !(Maybe Value)
+    -- ^ Optional overlay seed payload for @generator_result.overlay@.
+  , gtrMetadata :: !(Maybe Value)
+    -- ^ Optional metadata payload for @generator_result.metadata@.
+  } deriving (Eq, Show)
+
+-- | Result payload returned by a simulation callback.
+data SimulationTickResult = SimulationTickResult
+  { strOverlay       :: !Value
+    -- ^ Updated overlay payload for @simulation_result.overlay@.
+  , strTerrainWrites :: !(Maybe Value)
+    -- ^ Optional terrain writes payload for @simulation_result.terrain_writes@.
+  } deriving (Eq, Show)
+
+-- | Default empty generator payload.
+defaultGeneratorTickResult :: GeneratorTickResult
+defaultGeneratorTickResult = GeneratorTickResult
+  { gtrTerrain = Object mempty
+  , gtrOverlay = Nothing
+  , gtrMetadata = Nothing
+  }
+
+-- | Default empty simulation payload.
+defaultSimulationTickResult :: SimulationTickResult
+defaultSimulationTickResult = SimulationTickResult
+  { strOverlay = Object mempty
+  , strTerrainWrites = Nothing
   }
 
 ------------------------------------------------------------------------
@@ -113,6 +150,12 @@ data PluginContext = PluginContext
     -- ^ Current terrain world state.
   , pcParams :: !(Map Text Value)
     -- ^ Current parameter values (user may have changed defaults).
+  , pcTerrain :: !Value
+    -- ^ Raw terrain payload from host invocation.
+  , pcOwnOverlay :: !(Maybe Value)
+    -- ^ Raw overlay payload owned by this plugin, for simulation ticks.
+  , pcOverlays :: !(Map Text Value)
+    -- ^ Raw dependency overlay payloads keyed by overlay name.
   , pcSeed   :: !Word64
     -- ^ World generation seed.
   , pcLog    :: Text -> IO ()

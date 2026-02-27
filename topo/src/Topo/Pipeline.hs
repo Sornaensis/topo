@@ -33,10 +33,12 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
+import Topo.Overlay (emptyOverlay, insertOverlay, lookupOverlay, overlayNames)
+import Topo.Overlay.Schema (OverlaySchema, osName)
 import Topo.Pipeline.Dep (builtinDependencies, disabledClosure)
 import Topo.Pipeline.Stage (StageId, stageCanonicalName)
 import Topo.Plugin
-import Topo.World (TerrainWorld)
+import Topo.World (TerrainWorld(..))
 
 -- | A single pipeline stage with a typed identity.
 data PipelineStage = PipelineStage
@@ -46,6 +48,12 @@ data PipelineStage = PipelineStage
     -- ^ Human-readable display name.
   , stageSeedTag :: !Text
     -- ^ Seed derivation tag (deterministic sub-seed).
+  , stageOverlayProduces :: !(Maybe Text)
+    -- ^ Optional overlay name this stage produces or seeds.
+  , stageOverlayReads :: ![Text]
+    -- ^ Overlay names this stage expects to be available before execution.
+  , stageOverlaySchema :: !(Maybe OverlaySchema)
+    -- ^ Optional schema used to register an empty overlay before first run.
   , stageRun     :: PluginM ()
     -- ^ Stage action to execute.
   }
@@ -103,6 +111,7 @@ data PipelineSnapshot = PipelineSnapshot
 -- | Pipeline failures surfaced from plugin stages.
 data PipelineError
   = PipelinePluginError !PluginError
+  | PipelineOverlayDependencyError !Text
   deriving (Eq, Show)
 
 -- | Execute a pipeline, skipping disabled stages and their dependents.
@@ -113,23 +122,45 @@ data PipelineError
 -- 'disabledClosure'.
 runPipeline :: PipelineConfig -> TopoEnv -> TerrainWorld -> IO (Either PipelineError (TerrainWorld, [PipelineSnapshot]))
 runPipeline config env world = do
-  let logger = teLogger env
-      pluginEnv = PluginEnv
-        { peLogger = logger
-        , peSeed = pipelineSeed config
-        , peCaps = allowAllCapabilities
-        }
-      allDisabled = disabledClosure builtinDependencies (pipelineDisabled config)
-      stages = pipelineStages config
-      stageCount = length stages
-      onProgress = pipelineOnProgress config
-  (result, world') <- runTopoM env world $
-    foldM (runStage pluginEnv allDisabled stageCount onProgress (pipelineSnapshots config))
-          (Right (0, []))
-          stages
-  pure $ case result of
-    Left err -> Left (PipelinePluginError err)
-    Right (_, snapshots) -> Right (world', snapshots)
+  case validateOverlayDependencies world (pipelineStages config) of
+    Left err -> pure (Left (PipelineOverlayDependencyError err))
+    Right () -> do
+      let logger = teLogger env
+          pluginEnv = PluginEnv
+            { peLogger = logger
+            , peSeed = pipelineSeed config
+            , peCaps = allowAllCapabilities
+            }
+          allDisabled = disabledClosure builtinDependencies (pipelineDisabled config)
+          stages = pipelineStages config
+          stageCount = length stages
+          onProgress = pipelineOnProgress config
+      (result, world') <- runTopoM env world $
+        foldM (runStage pluginEnv allDisabled stageCount onProgress (pipelineSnapshots config))
+              (Right (0, []))
+              stages
+      pure $ case result of
+        Left err -> Left (PipelinePluginError err)
+        Right (_, snapshots) -> Right (world', snapshots)
+
+validateOverlayDependencies :: TerrainWorld -> [PipelineStage] -> Either Text ()
+validateOverlayDependencies world stages = go initialOverlays stages
+  where
+    initialOverlays = Set.fromList (overlayNames (twOverlays world))
+
+    go _ [] = Right ()
+    go available (stage:rest) = do
+      case filter (`Set.notMember` available) (stageOverlayReads stage) of
+        [] -> Right ()
+        (missing:_) ->
+          Left
+            ("stage " <> stageCanonicalName (stageId stage)
+              <> " requires missing overlay " <> missing)
+      let available' =
+            case stageOverlayProduces stage of
+              Nothing -> available
+              Just produced -> Set.insert produced available
+      go available' rest
 
 runStage
   :: PluginEnv
@@ -160,6 +191,7 @@ runStage pluginEnv disabled stageCount onProgress snapshotsEnabled acc stage =
           pure (Right (idx + 1, snapshots))
         else do
           let stageEnv = pluginEnv { peSeed = deriveStageSeed (peSeed pluginEnv) (stageSeedTag stage) }
+          ensureProducedOverlayRegistered stage
           topoLog ("stage:start " <> name)
           liftIO (onProgress (progress StageStarted))
           result <- runPluginM stageEnv (stageRun stage)
@@ -173,6 +205,33 @@ runStage pluginEnv disabled stageCount onProgress snapshotsEnabled acc stage =
                   w <- getWorld
                   pure (Right (idx + 1, snapshots <> [PipelineSnapshot name w]))
                 else pure (Right (idx + 1, snapshots))
+
+ensureProducedOverlayRegistered :: PipelineStage -> TopoM ()
+ensureProducedOverlayRegistered stage = do
+  world <- getWorld
+  case stageOverlayProduces stage of
+    Nothing -> pure ()
+    Just producedName ->
+      case lookupOverlay producedName (twOverlays world) of
+        Just _ -> pure ()
+        Nothing ->
+          case stageOverlaySchema stage of
+            Nothing -> pure ()
+            Just schema
+              | osName schema == producedName ->
+                  putWorld (registerOverlay world producedName schema)
+              | otherwise -> pure ()
+  where
+    registerOverlay world producedName schema =
+      let overlayStore' = insertOverlay (emptyOverlay schema) (twOverlays world)
+          manifest' = dedupeManifest (producedName : twOverlayManifest world)
+      in world
+        { twOverlays = overlayStore'
+        , twOverlayManifest = manifest'
+        }
+
+    dedupeManifest [] = []
+    dedupeManifest (name:rest) = name : filter (/= name) (dedupeManifest rest)
 
 -- | Derive a stage-specific seed from the pipeline master seed.
 deriveStageSeed :: Word64 -> Text -> Word64

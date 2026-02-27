@@ -58,7 +58,7 @@ viewModeForKey key =
     SDL.Keycode2 -> Just ViewBiome
     SDL.Keycode3 -> Just ViewClimate
     SDL.Keycode4 -> Just ViewMoisture
-    SDL.Keycode5 -> Just ViewPrecip
+    SDL.Keycode5 -> Just ViewWeather
     SDL.Keycode6 -> Just ViewPlateId
     SDL.Keycode7 -> Just ViewPlateBoundary
     SDL.Keycode8 -> Just ViewPlateHardness

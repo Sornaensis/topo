@@ -29,7 +29,8 @@ module Topo.Plugin.RPC.Manifest
   , RPCGeneratorDecl(..)
   , RPCSimulationDecl(..)
   , RPCOverlayDecl(..)
-  , RPCCapability(..)
+  , Capability(..)
+    , RPCCapability
   , RPCParamSpec(..)
   , RPCParamType(..)
     -- * Parsing
@@ -62,6 +63,7 @@ import qualified Data.ByteString.Lazy as BL
 import Data.Text (Text)
 import qualified Data.Text as Text
 import GHC.Generics (Generic)
+import Topo.Plugin (Capability(..))
 
 ------------------------------------------------------------------------
 -- Capability
@@ -69,34 +71,7 @@ import GHC.Generics (Generic)
 
 -- | Capabilities a plugin may request.  The host validates these
 -- against the manifest and only provides matching data.
-data RPCCapability
-  = CapReadTerrain
-  -- ^ Read terrain chunk data.
-  | CapReadOverlay
-  -- ^ Read declared overlay dependencies.
-  | CapWriteOverlay
-  -- ^ Write to the owned overlay.
-  | CapWriteTerrain
-  -- ^ Mutate terrain chunks (promotes to 'SimNodeWriter').
-  | CapRPCLog
-  -- ^ Send log messages to the host.
-  deriving (Eq, Ord, Show, Read, Generic)
-
-instance FromJSON RPCCapability where
-  parseJSON = withText "RPCCapability" $ \t -> case t of
-    "readTerrain"  -> pure CapReadTerrain
-    "readOverlay"  -> pure CapReadOverlay
-    "writeOverlay" -> pure CapWriteOverlay
-    "writeTerrain" -> pure CapWriteTerrain
-    "log"          -> pure CapRPCLog
-    _              -> fail ("unknown capability: " <> Text.unpack t)
-
-instance ToJSON RPCCapability where
-  toJSON CapReadTerrain  = "readTerrain"
-  toJSON CapReadOverlay  = "readOverlay"
-  toJSON CapWriteOverlay = "writeOverlay"
-  toJSON CapWriteTerrain = "writeTerrain"
-  toJSON CapRPCLog       = "log"
+type RPCCapability = Capability
 
 ------------------------------------------------------------------------
 -- Parameter specification
@@ -367,7 +342,9 @@ validateManifest rm = concat
 -- | Does this plugin declare @writeTerrain@ capability?
 -- If so, its sim node should be a 'SimNodeWriter'.
 manifestWritesTerrain :: RPCManifest -> Bool
-manifestWritesTerrain = elem CapWriteTerrain . rmCapabilities
+manifestWritesTerrain manifest =
+  elem CapWriteTerrain (rmCapabilities manifest)
+    || elem CapWriteWorld (rmCapabilities manifest)
 
 -- | Does this plugin participate in the generator pipeline?
 manifestHasGenerator :: RPCManifest -> Bool

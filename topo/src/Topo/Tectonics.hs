@@ -193,7 +193,7 @@ defaultTectonicsConfig = TectonicsConfig
 -- Uses the pre-computed 'LatitudeMapping' from 'TerrainWorld' so that
 -- north/south plate bias is latitude-aware for non-equator slices.
 generateTectonicsStage :: TectonicsConfig -> PipelineStage
-generateTectonicsStage cfg = PipelineStage StageTectonics "generateTectonics" "generateTectonics" $ do
+generateTectonicsStage cfg = PipelineStage StageTectonics "generateTectonics" "generateTectonics" Nothing [] Nothing $ do
   logInfo "generateTectonics: generating plate terrain"
   seed <- asks peSeed
   modifyWorldP $ \world ->

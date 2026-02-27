@@ -381,7 +381,7 @@ improvedFertility cfg rzMoist depth grain =
 -- 'gwInfiltration', 'gwWaterTableDepth', and 'gwRootZoneMoisture' on
 -- each 'GroundwaterChunk'.
 applyWaterTableStage :: WaterTableConfig -> PipelineStage
-applyWaterTableStage cfg = PipelineStage StageWaterTable "applyWaterTable" "applyWaterTable" $ do
+applyWaterTableStage cfg = PipelineStage StageWaterTable "applyWaterTable" "applyWaterTable" Nothing [] Nothing $ do
   logInfo "applyWaterTable: computing infiltration, water table, root-zone moisture"
   world <- getWorldP
   let config  = twConfig world

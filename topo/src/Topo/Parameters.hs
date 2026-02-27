@@ -247,7 +247,7 @@ defaultTerrainFormConfig = TerrainFormConfig
 applyParameterLayersStage
   :: ParameterConfig -> TerrainFormConfig -> Float -> PipelineStage
 applyParameterLayersStage cfg formCfg waterLevel =
-    PipelineStage StageParameters "applyParameterLayers" "applyParameterLayers" $ do
+    PipelineStage StageParameters "applyParameterLayers" "applyParameterLayers" Nothing [] Nothing $ do
   logInfo "applyParameterLayers: deriving fields"
   _seed <- asks peSeed
   modifyWorldP $ \world ->

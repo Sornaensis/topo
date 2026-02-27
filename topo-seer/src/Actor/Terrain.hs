@@ -35,14 +35,17 @@ import Topo
   , WorldConfig(..)
   , ChunkId(..)
   , ClimateChunk
+  , OverlaySchema
   , RiverChunk
   , TerrainChunk
   , VegetationChunk
   , WeatherChunk
   , TerrainWorld(..)
   , defaultHexGridMeta
+  , emptyOverlay
   , emptyWorldWithPlanet
   , getWeatherFromOverlay
+  , insertOverlay
   )
 import Topo.Pipeline (PipelineConfig(..), PipelineStage, runPipeline)
 import Topo.Pipeline.Stage (StageId)
@@ -67,6 +70,8 @@ data TerrainGenRequest = TerrainGenRequest
     -- ^ Pipeline stages the user has disabled via the Pipeline tab.
   , tgrExtraStages :: ![PipelineStage]
     -- ^ Additional pipeline stages injected by plugins.
+  , tgrOverlaySchemas :: ![OverlaySchema]
+    -- ^ Plugin overlay schemas pre-registered in generated worlds.
   , tgrSimHandle :: !(ActorHandle Simulation (Protocol Simulation))
     -- ^ Simulation actor handle for posting the generated world.
   }
@@ -125,8 +130,9 @@ actor Terrain
     genStart <- getCurrentTime
     let cfg = tgrGenConfig req
         worldCfg = tgrWorldConfig req
-        world0 = emptyWorldWithPlanet worldCfg defaultHexGridMeta
+        baseWorld = emptyWorldWithPlanet worldCfg defaultHexGridMeta
                    (worldPlanet cfg) (worldSlice cfg)
+        world0 = registerPluginOverlays (tgrOverlaySchemas req) baseWorld
         pipeline0 = buildFullPipelineConfig cfg worldCfg (tgrSeed req)
         pipeline = pipeline0
           { pipelineDisabled = tgrDisabledStages req
@@ -241,3 +247,9 @@ diffToMs now prev =
 -- 1 000 µs ≈ 1 ms; on Windows the actual sleep rounds up to ~ 1–2 ms.
 stageYieldUs :: Int
 stageYieldUs = 1000
+
+registerPluginOverlays :: [OverlaySchema] -> TerrainWorld -> TerrainWorld
+registerPluginOverlays schemas world =
+  world
+    { twOverlays = foldr (insertOverlay . emptyOverlay) (twOverlays world) schemas
+    }

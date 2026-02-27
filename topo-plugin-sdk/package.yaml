@@ -12,6 +12,7 @@ library:
   exposed-modules:
     - Topo.Plugin.SDK
     - Topo.Plugin.SDK.Types
+    - Topo.Plugin.SDK.Payload
     - Topo.Plugin.SDK.Runner
   dependencies:
     - base >=4.18 && <5
@@ -22,3 +23,19 @@ library:
     - filepath
     - text
     - topo
+
+tests:
+  topo-plugin-sdk-test:
+    main: Spec.hs
+    source-dirs: test
+    dependencies:
+      - base
+      - aeson
+      - bytestring
+      - containers
+      - hspec
+      - process
+      - text
+      - time
+      - topo
+      - topo-plugin-sdk

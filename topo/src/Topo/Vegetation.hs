@@ -149,7 +149,7 @@ defaultVegetationBootstrapConfig = VegetationBootstrapConfig
 -- vegetation estimates (see GAP-V1 in plan.md).
 bootstrapVegetationStage :: VegetationBootstrapConfig -> Float -> PipelineStage
 bootstrapVegetationStage cfg waterLevel =
-    PipelineStage StageVegetation "bootstrapVegetation" "bootstrapVegetation" $ do
+    PipelineStage StageVegetation "bootstrapVegetation" "bootstrapVegetation" Nothing [] Nothing $ do
   logInfo "bootstrapVegetation: estimating cover + albedo"
   modifyWorldP $ \world ->
     let config = twConfig world
@@ -359,7 +359,7 @@ updateVegetationFromBiomeStage
   -> VegetationBootstrapConfig
   -> PipelineStage
 updateVegetationFromBiomeStage bfc vbc =
-    PipelineStage StageVegetationFeedback "updateVegetationFromBiome" "updateVegetationFromBiome" $ do
+    PipelineStage StageVegetationFeedback "updateVegetationFromBiome" "updateVegetationFromBiome" Nothing [] Nothing $ do
   logInfo "updateVegetationFromBiome: deriving vegetation from biome type"
   modifyWorldP $ \world ->
     let terrainMap = twTerrain world

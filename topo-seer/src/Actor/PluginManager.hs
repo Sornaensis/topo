@@ -34,6 +34,7 @@ module Actor.PluginManager
   , getLoadedPlugins
   , setPluginParam
   , getPluginStages
+  , getPluginOverlaySchemas
   , refreshManifests
   , shutdownPlugins
   , setPluginOrder
@@ -45,10 +46,12 @@ import Data.Aeson (Value(..))
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.IORef (IORef, newIORef, readIORef, atomicModifyIORef')
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Hyperspace.Actor
@@ -60,10 +63,21 @@ import System.Directory
   , listDirectory
   , createDirectoryIfMissing
   )
-import System.FilePath ((</>))
+import System.FilePath ((</>), (<.>))
+import System.IO (Handle, hClose)
+import System.Info (os)
+import System.Process
+  ( CreateProcess(..)
+  , ProcessHandle
+  , StdStream(..)
+  , createProcess
+  , proc
+  , terminateProcess
+  )
 
 import Topo.Pipeline (PipelineStage(..))
 import Topo.Pipeline.Stage (StageId(..))
+import Topo.Overlay.Schema (OverlaySchema, parseOverlaySchema)
 import Topo.Plugin.RPC
   ( RPCConnection(..)
   , RPCManifest(..)
@@ -75,7 +89,8 @@ import Topo.Plugin.RPC
   , rpcGeneratorStage
   , rpcShutdown
   )
-import Topo.Plugin.RPC.Transport (Transport, closeTransport)
+import qualified Topo.Plugin.RPC.Manifest as RPCManifest
+import Topo.Plugin.RPC.Transport (Transport, closeTransport, connectPlugin)
 
 ------------------------------------------------------------------------
 -- Types
@@ -105,8 +120,12 @@ data LoadedPlugin = LoadedPlugin
     -- ^ Current lifecycle status.
   , lpConnection :: !(Maybe RPCConnection)
     -- ^ Active RPC connection, if connected.
+  , lpProcessHandle :: !(Maybe ProcessHandle)
+    -- ^ Active plugin subprocess handle, if launched.
   , lpDirectory  :: !FilePath
     -- ^ Filesystem path to the plugin directory.
+  , lpOverlaySchema :: !(Maybe OverlaySchema)
+    -- ^ Parsed overlay schema when the plugin declares one.
   }
 
 -- | Plugin manager actor state.
@@ -141,6 +160,7 @@ actor PluginManager
   cast discover :: ()
   call getPlugins :: () -> [LoadedPlugin]
   call getStages :: () -> [PipelineStage]
+  call getOverlaySchemas :: () -> [OverlaySchema]
   call getOrder :: () -> [Text]
   cast setParam :: (Text, Text, Value)
   cast setOrder :: [Text]
@@ -162,6 +182,8 @@ actor PluginManager
     (st, Map.elems (pmsPlugins st))
   onPure getStages = \() st ->
     (st, buildPluginStages st)
+  onPure getOverlaySchemas = \() st ->
+    (st, buildPluginOverlaySchemas st)
   onPure getOrder = \() st ->
     (st, pmsPluginOrder st)
   onPure_ setParam = \(pluginName, paramName, value) st ->
@@ -212,15 +234,32 @@ tryLoadPlugin baseDir entry = do
         Right (Left _parseErr) -> pure []
         Right (Right manifest) -> do
           params <- loadPluginConfig pluginDir (rmParameters manifest)
+          overlaySchema <- loadOverlaySchema pluginDir manifest
           pure [LoadedPlugin
             { lpName       = rmName manifest
             , lpManifest   = manifest
             , lpParams     = params
             , lpStatus     = PluginIdle
             , lpConnection = Nothing
+            , lpProcessHandle = Nothing
             , lpDirectory  = pluginDir
+            , lpOverlaySchema = overlaySchema
             }]
     else pure []
+
+loadOverlaySchema :: FilePath -> RPCManifest -> IO (Maybe OverlaySchema)
+loadOverlaySchema pluginDir manifest =
+  case rmOverlay manifest of
+    Nothing -> pure Nothing
+    Just overlayDecl -> do
+      let schemaPath = pluginDir </> Text.unpack (RPCManifest.rodSchemaFile overlayDecl)
+      schemaResult <- try @SomeException (BS.readFile schemaPath)
+      case schemaResult of
+        Left _ -> pure Nothing
+        Right schemaBytes ->
+          case parseOverlaySchema schemaBytes of
+            Left _ -> pure Nothing
+            Right schema -> pure (Just schema)
 
 ------------------------------------------------------------------------
 -- Configuration persistence
@@ -283,7 +322,11 @@ savePluginOrder baseDir order = do
 -- | Re-read manifests for all known plugins, preserving params.
 refreshAllManifests :: FilePath -> Map Text LoadedPlugin -> IO (Map Text LoadedPlugin)
 refreshAllManifests baseDir plugins = do
-  Map.traverseWithKey (\_ lp -> refreshOneManifest baseDir lp) plugins
+  Map.traverseWithKey
+    (\_ lp -> do
+      refreshed <- refreshOneManifest baseDir lp
+      ensurePluginConnection refreshed)
+    plugins
 
 -- | Re-read a single plugin's manifest, preserving current params.
 refreshOneManifest :: FilePath -> LoadedPlugin -> IO LoadedPlugin
@@ -293,7 +336,118 @@ refreshOneManifest _baseDir lp = do
   case result of
     Left _ -> pure lp { lpStatus = PluginError "manifest read failed" }
     Right (Left err) -> pure lp { lpStatus = PluginError (Text.pack (show err)) }
-    Right (Right manifest) -> pure lp { lpManifest = manifest }
+    Right (Right manifest) -> do
+      overlaySchema <- loadOverlaySchema (lpDirectory lp) manifest
+      pure lp { lpManifest = manifest, lpOverlaySchema = overlaySchema }
+
+requiresRuntimeConnection :: RPCManifest -> Bool
+requiresRuntimeConnection manifest =
+  isJust (rmGenerator manifest) || isJust (rmSimulation manifest)
+
+ensurePluginConnection :: LoadedPlugin -> IO LoadedPlugin
+ensurePluginConnection lp
+  | not (requiresRuntimeConnection (lpManifest lp)) = do
+      shutdownPlugin lp
+      pure lp
+        { lpStatus = PluginIdle
+        , lpConnection = Nothing
+        , lpProcessHandle = Nothing
+        }
+  | otherwise =
+      case lpConnection lp of
+        Just _ -> pure lp
+        Nothing -> connectLoadedPlugin lp
+
+connectLoadedPlugin :: LoadedPlugin -> IO LoadedPlugin
+connectLoadedPlugin lp = do
+  mExecutable <- resolvePluginExecutable (lpDirectory lp) (lpName lp)
+  case mExecutable of
+    Nothing ->
+      pure lp
+        { lpStatus = PluginError "plugin executable not found"
+        , lpConnection = Nothing
+        , lpProcessHandle = Nothing
+        }
+    Just executablePath -> do
+      launchResult <- launchPluginTransport executablePath (lpDirectory lp) (lpName lp)
+      case launchResult of
+        Left err ->
+          pure lp
+            { lpStatus = PluginError err
+            , lpConnection = Nothing
+            , lpProcessHandle = Nothing
+            }
+        Right (transport, processHandle) ->
+          pure lp
+            { lpStatus = PluginConnected
+            , lpConnection = Just (newRPCConnection (lpManifest lp) transport (lpParams lp))
+            , lpProcessHandle = Just processHandle
+            }
+
+resolvePluginExecutable :: FilePath -> Text -> IO (Maybe FilePath)
+resolvePluginExecutable pluginDir pluginName =
+  findFirstExisting candidates
+  where
+    basePath = pluginDir </> Text.unpack pluginName
+    candidates
+      | os == "mingw32" =
+          [ basePath <.> "exe"
+          , basePath <.> "cmd"
+          , basePath <.> "bat"
+          , basePath
+          ]
+      | otherwise = [basePath]
+
+findFirstExisting :: [FilePath] -> IO (Maybe FilePath)
+findFirstExisting [] = pure Nothing
+findFirstExisting (candidate:rest) = do
+  exists <- doesFileExist candidate
+  if exists
+    then pure (Just candidate)
+    else findFirstExisting rest
+
+launchPluginTransport
+  :: FilePath
+  -> FilePath
+  -> Text
+  -> IO (Either Text (Transport, ProcessHandle))
+launchPluginTransport executablePath workingDir pluginName = do
+  processResult <- try @SomeException
+    (createProcess
+      (proc executablePath [])
+        { cwd = Just workingDir
+        , std_in = CreatePipe
+        , std_out = CreatePipe
+        , std_err = Inherit
+        })
+  case processResult of
+    Left err -> pure (Left (Text.pack (show err)))
+    Right (mStdin, mStdout, _, processHandle) ->
+      case (mStdin, mStdout) of
+        (Just childStdin, Just childStdout) -> do
+          connectionResult <- connectPlugin pluginName childStdout childStdin
+          case connectionResult of
+            Left transportErr -> do
+              safeCloseHandle childStdin
+              safeCloseHandle childStdout
+              safeTerminateProcess processHandle
+              pure (Left (Text.pack (show transportErr)))
+            Right transport -> pure (Right (transport, processHandle))
+        _ -> do
+          mapM_ safeCloseHandle mStdin
+          mapM_ safeCloseHandle mStdout
+          safeTerminateProcess processHandle
+          pure (Left "failed to acquire plugin stdio handles")
+
+safeCloseHandle :: Handle -> IO ()
+safeCloseHandle handle = do
+  _ <- try @SomeException (hClose handle)
+  pure ()
+
+safeTerminateProcess :: ProcessHandle -> IO ()
+safeTerminateProcess processHandle = do
+  _ <- try @SomeException (terminateProcess processHandle)
+  pure ()
 
 ------------------------------------------------------------------------
 -- Pipeline integration
@@ -306,6 +460,11 @@ buildPluginStages st =
   let plugins = pmsPlugins st
       ordered = orderPlugins (pmsPluginOrder st) (Map.elems plugins)
   in concatMap pluginToStage ordered
+
+buildPluginOverlaySchemas :: PluginManagerState -> [OverlaySchema]
+buildPluginOverlaySchemas st =
+  let ordered = orderPlugins (pmsPluginOrder st) (Map.elems (pmsPlugins st))
+  in [schema | plugin <- ordered, Just schema <- [lpOverlaySchema plugin]]
 
 -- | Reorder plugins according to the user's saved ordering.
 -- Plugins not in the ordering list appear at the end.
@@ -337,19 +496,23 @@ pluginToStage lp =
 
 -- | Shut down a single plugin's RPC connection.
 shutdownPlugin :: LoadedPlugin -> IO ()
-shutdownPlugin lp =
+shutdownPlugin lp = do
   case lpConnection lp of
     Nothing -> pure ()
     Just conn -> do
       _ <- try @SomeException (rpcShutdown conn)
       _ <- try @SomeException (closeTransport (rpcTransport conn))
       pure ()
+  case lpProcessHandle lp of
+    Nothing -> pure ()
+    Just processHandle -> safeTerminateProcess processHandle
 
 -- | Mark a plugin as disconnected.
 disconnectPlugin :: LoadedPlugin -> LoadedPlugin
 disconnectPlugin lp = lp
   { lpStatus = PluginDisconnected
   , lpConnection = Nothing
+  , lpProcessHandle = Nothing
   }
 
 ------------------------------------------------------------------------
@@ -394,6 +557,13 @@ getPluginStages
   -> IO [PipelineStage]
 getPluginStages handle =
   call @"getStages" handle #getStages ()
+
+-- | Get parsed overlay schemas from loaded plugins in effective order.
+getPluginOverlaySchemas
+  :: ActorHandle PluginManager (Protocol PluginManager)
+  -> IO [OverlaySchema]
+getPluginOverlaySchemas handle =
+  call @"getOverlaySchemas" handle #getOverlaySchemas ()
 
 -- | Re-read manifests for all loaded plugins (hot-reload).
 refreshManifests

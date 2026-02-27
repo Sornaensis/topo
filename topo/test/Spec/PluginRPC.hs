@@ -68,13 +68,13 @@ instance Arbitrary PluginError where
     <$> choose (1, 999)
     <*> arbitrary
 
-instance Arbitrary RPCCapability where
+instance Arbitrary Capability where
   arbitrary = elements
     [ CapReadTerrain
     , CapReadOverlay
     , CapWriteOverlay
     , CapWriteTerrain
-    , CapRPCLog
+    , CapLog
     ]
 
 instance Arbitrary RPCParamType where
@@ -349,11 +349,11 @@ spec = describe "Plugin.RPC" $ do
   ------------------------------------
   describe "Manifest queries" $ do
     it "manifestWritesTerrain detects CapWriteTerrain" $ do
-      let m = baseManifest { rmCapabilities = [CapWriteTerrain, CapRPCLog] }
+      let m = baseManifest { rmCapabilities = [CapWriteTerrain, CapLog] }
       manifestWritesTerrain m `shouldBe` True
 
     it "manifestWritesTerrain returns False without it" $ do
-      let m = baseManifest { rmCapabilities = [CapRPCLog] }
+      let m = baseManifest { rmCapabilities = [CapLog] }
       manifestWritesTerrain m `shouldBe` False
 
     it "manifestHasGenerator detects generator decl" $ do
@@ -385,7 +385,7 @@ spec = describe "Plugin.RPC" $ do
           Right m' -> m' === m
           Left err -> counterexample ("decode failed: " <> err) False
 
-    prop "RPCCapability round-trips" $ \(cap :: RPCCapability) ->
+    prop "RPCCapability round-trips" $ \(cap :: Capability) ->
       Aeson.fromJSON (Aeson.toJSON cap) === Aeson.Success cap
 
     prop "RPCParamType round-trips" $ \(ty :: RPCParamType) ->

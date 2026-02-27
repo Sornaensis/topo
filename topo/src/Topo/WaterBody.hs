@@ -317,7 +317,7 @@ floodFill gridW gridH elev waterLevel componentId label start = do
 -- Depends on terrain elevation being finalized (after rivers).
 applyWaterBodyStage :: WaterBodyConfig -> Float -> PipelineStage
 applyWaterBodyStage cfg waterLevel =
-  PipelineStage StageWaterBody "applyWaterBodies" "applyWaterBodies" $ do
+  PipelineStage StageWaterBody "applyWaterBodies" "applyWaterBodies" Nothing [] Nothing $ do
     logInfo "applyWaterBodies: classifying ocean / lake / inland sea"
     world <- getWorldP
     let config = twConfig world

@@ -21,10 +21,14 @@ module Topo.Overlay
   , overlayValueToFloat
   , floatToOverlayValue
   , defaultValue
+  , matchesFieldType
     -- * Records (sparse)
   , OverlayRecord(..)
+  , mkOverlayRecord
+  , mkOverlayRecordUnchecked
   , recordField
   , setRecordField
+  , setRecordFieldChecked
   , defaultRecord
     -- * Per-chunk data (sparse)
   , OverlayChunk(..)
@@ -50,12 +54,12 @@ module Topo.Overlay
   ) where
 
 import Data.Aeson (Value(..))
-import qualified Data.Aeson.KeyMap as KM
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import qualified Data.Text
 import Data.Vector (Vector)
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
@@ -66,6 +70,7 @@ import Topo.Overlay.Schema
   , OverlayFieldType(..)
   , OverlaySchema(..)
   , OverlayStorage(..)
+  , overlayFieldTypeName
   )
 
 ------------------------------------------------------------------------
@@ -126,6 +131,21 @@ jsonToText :: Value -> Text
 jsonToText (String t) = t
 jsonToText _          = ""
 
+-- | Check whether an 'OverlayValue' matches an 'OverlayFieldType'.
+--
+-- Returns 'True' when the value constructor agrees with the field type:
+--
+-- * 'OVFloat' ↔ 'OFFloat'
+-- * 'OVInt'   ↔ 'OFInt'
+-- * 'OVBool'  ↔ 'OFBool'
+-- * 'OVText'  ↔ 'OFText'
+matchesFieldType :: OverlayFieldType -> OverlayValue -> Bool
+matchesFieldType OFFloat (OVFloat _) = True
+matchesFieldType OFInt   (OVInt   _) = True
+matchesFieldType OFBool  (OVBool  _) = True
+matchesFieldType OFText  (OVText  _) = True
+matchesFieldType _       _           = False
+
 ------------------------------------------------------------------------
 -- Records (sparse)
 ------------------------------------------------------------------------
@@ -146,6 +166,72 @@ setRecordField :: Int -> OverlayValue -> OverlayRecord -> OverlayRecord
 setRecordField i val (OverlayRecord v)
   | i >= 0 && i < V.length v = OverlayRecord (v V.// [(i, val)])
   | otherwise                = OverlayRecord v
+
+-- | Construct an 'OverlayRecord' validated against a schema.
+--
+-- Returns 'Left' with a description if:
+--
+-- * The field count does not match the schema.
+-- * Any value's type does not match the corresponding field type.
+mkOverlayRecord :: OverlaySchema -> [OverlayValue] -> Either Text OverlayRecord
+mkOverlayRecord schema vals
+  | length vals /= length fields =
+      Left $ "field count mismatch: expected "
+          <> showT (length fields)
+          <> " but got "
+          <> showT (length vals)
+  | otherwise =
+      case checkFieldTypes fields vals of
+        Just err -> Left err
+        Nothing  -> Right (OverlayRecord (V.fromList vals))
+  where
+    fields = osFields schema
+    showT = Data.Text.pack . show
+
+-- | Construct an 'OverlayRecord' without validation.
+--
+-- Use this only in trusted internal paths where the values are known
+-- to match the schema (e.g. after binary decode with schema-driven
+-- field parsing).
+mkOverlayRecordUnchecked :: [OverlayValue] -> OverlayRecord
+mkOverlayRecordUnchecked = OverlayRecord . V.fromList
+
+-- | Set a field by positional index with type checking against the schema.
+--
+-- Returns 'Left' if the index is out of range or the value type does
+-- not match the schema's field type at that position.
+setRecordFieldChecked
+  :: OverlaySchema -> Int -> OverlayValue -> OverlayRecord -> Either Text OverlayRecord
+setRecordFieldChecked schema i val (OverlayRecord v)
+  | i < 0 || i >= V.length v =
+      Left $ "field index out of range: " <> showT i
+  | i >= length (osFields schema) =
+      Left $ "field index exceeds schema field count: " <> showT i
+  | not (matchesFieldType expectedType val) =
+      Left $ "type mismatch at field " <> showT i
+          <> ": expected " <> overlayFieldTypeName expectedType
+          <> " but got " <> valueTypeName val
+  | otherwise = Right (OverlayRecord (v V.// [(i, val)]))
+  where
+    expectedType = ofdType (osFields schema !! i)
+    showT = Data.Text.pack . show
+
+-- | Return the type name tag of an 'OverlayValue'.
+valueTypeName :: OverlayValue -> Text
+valueTypeName (OVFloat _) = "float"
+valueTypeName (OVInt   _) = "int"
+valueTypeName (OVBool  _) = "bool"
+valueTypeName (OVText  _) = "text"
+
+-- | Check field types pairwise, returning 'Just' error on the first mismatch.
+checkFieldTypes :: [OverlayFieldDef] -> [OverlayValue] -> Maybe Text
+checkFieldTypes [] [] = Nothing
+checkFieldTypes (fd:fds) (v:vs)
+  | matchesFieldType (ofdType fd) v = checkFieldTypes fds vs
+  | otherwise = Just $ "type mismatch for field '" <> ofdName fd
+      <> "': expected " <> overlayFieldTypeName (ofdType fd)
+      <> " but got " <> valueTypeName v
+checkFieldTypes _ _ = Just "field count mismatch (internal error)"
 
 -- | Build a default record from a schema (all fields at their declared defaults).
 defaultRecord :: OverlaySchema -> OverlayRecord

@@ -131,7 +131,7 @@ runApp = do
   pluginManagerHandle <- getSingleton system pluginManagerActorDef
   simulationHandle <- getSingleton system simulationActorDef
   discoverPlugins pluginManagerHandle
-  setSimHandles simulationHandle dataHandle logHandle uiHandle
+  setSimHandles simulationHandle dataHandle logHandle uiHandle snapshotReceiverHandle atlasManagerHandle
   seed <- randomIO
   setUiSeed uiHandle seed
   setUiSeedInput uiHandle (Text.pack (show seed))
@@ -420,14 +420,16 @@ applyTerrainCacheUpdate
 applyTerrainCacheUpdate renderSnap workerHandle brokerHandle cacheRef cacheState = do
   let uiSnap = rsUi renderSnap
       terrainSnap = rsTerrain renderSnap
-      desiredKey = terrainCacheKeyFrom uiSnap terrainSnap
+      dataReady = tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
+      desiredKey =
+        if dataReady
+          then terrainCacheKeyFrom uiSnap terrainSnap
+          else Nothing
   latest <- readTerrainCacheRef cacheRef
   let stateAfterResult =
         case (desiredKey, latest) of
           (Nothing, _) -> cacheState
-            { rcsTerrainCache = emptyTerrainCache
-            , rcsCacheKey = Nothing
-            , rcsLastRequest = Nothing
+            { rcsLastRequest = Nothing
             }
           (Just key, Just result)
             | tcrResultKey result == key -> cacheState

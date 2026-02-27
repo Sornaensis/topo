@@ -55,7 +55,7 @@ import qualified Data.Vector.Unboxed as U
 -- ('wcSeasonAmplitude', 'wcSeasonalBase', 'wcSeasonalRange') are read
 -- from the 'WeatherConfig' to avoid duplication.
 generateClimateStage :: ClimateConfig -> WeatherConfig -> Float -> PipelineStage
-generateClimateStage cfg wcfg waterLevel = PipelineStage StageClimate "generateClimate" "generateClimate" $ do
+generateClimateStage cfg wcfg waterLevel = PipelineStage StageClimate "generateClimate" "generateClimate" Nothing [] Nothing $ do
   logInfo "generateClimate: generating climate"
   seed <- asks peSeed
   world <- getWorldP

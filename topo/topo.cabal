@@ -29,7 +29,9 @@ library
       Topo.Overlay
       Topo.Overlay.Schema
       Topo.Overlay.Index
+      Topo.Overlay.Indexed
       Topo.Overlay.Export
+      Topo.Overlay.JSON
       Topo.Overlay.Storage
       Topo.BaseHeight
       Topo.Gen

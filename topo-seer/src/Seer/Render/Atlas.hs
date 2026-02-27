@@ -22,7 +22,7 @@ import Actor.AtlasScheduler
   , AtlasScheduler
   , requestAtlasSchedule
   )
-import Actor.Data (DataSnapshot(..), TerrainSnapshot(..))
+import Actor.Data (TerrainSnapshot(..))
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion)
 import Actor.UI (UiState(..))
@@ -151,29 +151,39 @@ resolveAtlasTiles
 resolveAtlasTiles renderTargetOk snapshot atlasCache atlasScale = do
   let terrainSnap = rsTerrain snapshot
       atlasKey = AtlasKey (uiViewMode (rsUi snapshot)) (uiRenderWaterLevel (rsUi snapshot)) (tsVersion terrainSnap)
-      dataReady = dsTerrainChunks (rsData snapshot) == IntMap.size (tsTerrainChunks terrainSnap)
-      cacheWithKey = setAtlasKey atlasKey atlasCache
+      dataReady = tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
       atlasTiles = if renderTargetOk && dataReady
-        then getNearestAtlas atlasKey atlasScale cacheWithKey
+        then getNearestAtlas atlasKey atlasScale atlasCache
         else Nothing
       atlasToDraw = case atlasTiles of
         Just tiles | not (null tiles) -> Just tiles
-        _ -> case atcLast cacheWithKey of
-          Just (key, tiles) | key == atlasKey && not (null tiles) -> Just tiles
+        _ -> case atcLast atlasCache of
+          Just (_key, tiles) | not (null tiles) -> Just tiles
           _ -> Nothing
-      cacheWithLast = case atlasToDraw of
-        Just tiles -> cacheWithKey { atcLast = Just (atlasKey, tiles) }
-        Nothing -> cacheWithKey { atcLast = Nothing }
+      cacheWithLast = case atlasTiles of
+        Just tiles | not (null tiles) ->
+          let retiredTextures = case atcLast atlasCache of
+                Just (oldKey, oldTiles)
+                  | oldKey /= atlasKey -> map tatTexture oldTiles
+                _ -> []
+          in atlasCache
+              { atcLast = Just (atlasKey, tiles)
+              , atcPending = retiredTextures ++ atcPending atlasCache
+              }
+        _ -> atlasCache
       cacheTouched = case atlasToDraw of
         Just (t:_) -> touchAtlasScale (tatScale t) cacheWithLast
         _ -> cacheWithLast
       (pending, cacheDrained) = drainAtlasPending cacheTouched
-      cacheFinal = case atcLast cacheDrained of
-        Just (_key, tiles)
-          | any ((`elem` pending) . tatTexture) tiles -> cacheDrained { atcLast = Nothing }
-        _ -> cacheDrained
-  unless (null pending) $
-    mapM_ SDL.destroyTexture pending
+      (keepAlive, destroyNow) = case atcLast cacheDrained of
+        Just (_key, tiles) ->
+          let alive = map tatTexture tiles
+              shouldKeep texture = texture `elem` alive
+          in (filter shouldKeep pending, filter (not . shouldKeep) pending)
+        _ -> ([], pending)
+      cacheFinal = cacheDrained { atcPending = keepAlive }
+  unless (null destroyNow) $
+    mapM_ SDL.destroyTexture destroyNow
   pure (atlasToDraw, cacheFinal)
 
 zoomTextureScale :: Float -> Int
@@ -194,17 +204,18 @@ setAtlasKey key cache =
       }
 
 storeAtlasTiles :: AtlasKey -> Int -> [TerrainAtlasTile] -> AtlasTextureCache -> AtlasTextureCache
-storeAtlasTiles key scale tiles cache
-  | atcKey cache /= Just key =
-      cache { atcPending = map tatTexture tiles ++ atcPending cache }
-  | otherwise =
-      let (merged, pending) = mergeTiles (IntMap.lookup scale (atcCaches cache)) tiles
-          cache' = cache
-            { atcCaches = IntMap.insert scale merged (atcCaches cache)
-            , atcLru = touch scale (atcLru cache)
-            , atcPending = pending ++ atcPending cache
-            }
-      in evictIfNeeded cache'
+storeAtlasTiles key scale tiles cache =
+  let targetCache =
+        if atcKey cache == Just key
+          then cache
+          else setAtlasKey key cache
+      (merged, pending) = mergeTiles (IntMap.lookup scale (atcCaches targetCache)) tiles
+      cache' = targetCache
+        { atcCaches = IntMap.insert scale merged (atcCaches targetCache)
+        , atcLru = touch scale (atcLru targetCache)
+        , atcPending = pending ++ atcPending targetCache
+        }
+  in evictIfNeeded cache'
 
 getNearestAtlas :: AtlasKey -> Int -> AtlasTextureCache -> Maybe [TerrainAtlasTile]
 getNearestAtlas key target cache =

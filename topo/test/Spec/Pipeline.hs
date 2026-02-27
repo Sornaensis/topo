@@ -1,10 +1,14 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Spec.Pipeline (spec) where
 
 import Test.Hspec
+import Data.Aeson (Value(..))
 import Data.Either (isRight)
 import Data.IORef (newIORef, readIORef, modifyIORef')
 import Data.Text (pack)
 import qualified Data.IntMap.Strict as IntMap
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Vector.Unboxed as U
 import Topo
@@ -199,6 +203,31 @@ spec = describe "Pipeline" $ do
       world1 <- expectPipeline result
       IntMap.size (twTerrain world1) `shouldSatisfy` (> 0)
 
+  -- Phase 1: Overlay stage declarations
+  describe "Overlay stage declarations" $ do
+    it "fails when a stage reads an unavailable overlay" $ do
+      let config = WorldConfig { wcChunkSize = 8 }
+          world0 = emptyWorld config defaultHexGridMeta
+          stage = PipelineStage
+            { stageId = StageBaseHeight
+            , stageName = pack "dummy"
+            , stageSeedTag = pack "dummy"
+            , stageOverlayProduces = Nothing
+            , stageOverlayReads = [pack "missing-overlay"]
+            , stageOverlaySchema = Nothing
+            , stageRun = pure ()
+            }
+          pipeline = defaultPipelineConfig
+            { pipelineSeed = 42
+            , pipelineStages = [stage]
+            }
+          env = TopoEnv { teLogger = \_ -> pure () }
+      result <- runPipeline pipeline env world0
+      case result of
+        Left (PipelineOverlayDependencyError _) -> pure ()
+        Left err -> expectationFailure ("expected overlay dependency error, got: " <> show err)
+        Right _ -> expectationFailure "expected overlay dependency error"
+
   -- Phase 1: Progress callback
   describe "Progress callback" $ do
     it "fires StageStarted and StageCompleted for executed stages" $ do
@@ -262,6 +291,210 @@ spec = describe "Pipeline" $ do
           spStageIndex e2 `shouldBe` 1
           spStageCount e2 `shouldBe` 2
         _ -> expectationFailure "expected 4 progress events"
+
+  describe "Plugin overlay capabilities" $ do
+    it "rejects putOverlayP without CapWriteOverlay" $ do
+      let world0 = emptyWorld (WorldConfig { wcChunkSize = 8 }) defaultHexGridMeta
+          env = TopoEnv { teLogger = \_ -> pure () }
+          pluginEnv = PluginEnv
+            { peLogger = \_ -> pure ()
+            , peSeed = 1
+            , peCaps = PluginCapabilities (Set.fromList [CapReadTerrain])
+            }
+          schema = OverlaySchema
+            { osName = "cap_test"
+            , osVersion = "1.0.0"
+            , osDescription = ""
+            , osStorage = StorageSparse
+            , osFields = []
+            , osDependencies = emptyOverlayDeps
+            , osFieldIndex = Map.empty
+            }
+          overlay = emptyOverlay schema
+      (result, _) <- runTopoM env world0 (runPluginM pluginEnv (putOverlayP overlay))
+      result `shouldBe` Left (PluginMissingCapability CapWriteOverlay)
+
+    it "writes and reads overlay with CapWriteOverlay and CapReadOverlay" $ do
+      let world0 = emptyWorld (WorldConfig { wcChunkSize = 8 }) defaultHexGridMeta
+          env = TopoEnv { teLogger = \_ -> pure () }
+          pluginEnv = PluginEnv
+            { peLogger = \_ -> pure ()
+            , peSeed = 1
+            , peCaps = PluginCapabilities (Set.fromList [CapWriteOverlay, CapReadOverlay])
+            }
+          schema = OverlaySchema
+            { osName = "cap_test"
+            , osVersion = "1.0.0"
+            , osDescription = ""
+            , osStorage = StorageSparse
+            , osFields = []
+            , osDependencies = emptyOverlayDeps
+            , osFieldIndex = Map.empty
+            }
+          overlay = emptyOverlay schema
+          action = do
+            putOverlayP overlay
+            getOverlayP "cap_test"
+      (result, _) <- runTopoM env world0 (runPluginM pluginEnv action)
+      result `shouldSatisfy` isRight
+
+    it "allows overlay access through CapReadWorld/CapWriteWorld aliases" $ do
+      let world0 = emptyWorld (WorldConfig { wcChunkSize = 8 }) defaultHexGridMeta
+          env = TopoEnv { teLogger = \_ -> pure () }
+          pluginEnv = PluginEnv
+            { peLogger = \_ -> pure ()
+            , peSeed = 1
+            , peCaps = PluginCapabilities (Set.fromList [CapReadWorld, CapWriteWorld])
+            }
+          schema = OverlaySchema
+            { osName = "cap_test"
+            , osVersion = "1.0.0"
+            , osDescription = ""
+            , osStorage = StorageSparse
+            , osFields = []
+            , osDependencies = emptyOverlayDeps
+            , osFieldIndex = Map.empty
+            }
+          overlay = emptyOverlay schema
+          action = do
+            putOverlayP overlay
+            getOverlayP "cap_test"
+      (result, _) <- runTopoM env world0 (runPluginM pluginEnv action)
+      result `shouldSatisfy` isRight
+
+  describe "Overlay stage declarations" $ do
+    it "fails when a stage reads an unavailable overlay" $ do
+      let config = WorldConfig { wcChunkSize = 8 }
+          world0 = emptyWorld config defaultHexGridMeta
+          stage = PipelineStage
+            { stageId = StageBaseHeight
+            , stageName = pack "dummy"
+            , stageSeedTag = pack "dummy"
+            , stageOverlayProduces = Nothing
+            , stageOverlayReads = [pack "missing-overlay"]
+            , stageOverlaySchema = Nothing
+            , stageRun = pure ()
+            }
+          pipeline = defaultPipelineConfig
+            { pipelineSeed = 42
+            , pipelineStages = [stage]
+            }
+          env = TopoEnv { teLogger = \_ -> pure () }
+      result <- runPipeline pipeline env world0
+      case result of
+        Left (PipelineOverlayDependencyError _) -> pure ()
+        Left err -> expectationFailure ("expected overlay dependency error, got: " <> show err)
+        Right _ -> expectationFailure "expected overlay dependency error"
+
+    it "registers an empty produced overlay when schema is declared" $ do
+      let config = WorldConfig { wcChunkSize = 8 }
+          world0 = emptyWorld config defaultHexGridMeta
+          schema = OverlaySchema
+            { osName = "stage_overlay"
+            , osVersion = "1.0.0"
+            , osDescription = ""
+            , osStorage = StorageSparse
+            , osFields = []
+            , osDependencies = emptyOverlayDeps
+            , osFieldIndex = Map.empty
+            }
+          stage = PipelineStage
+            { stageId = StageBaseHeight
+            , stageName = pack "seed-overlay"
+            , stageSeedTag = pack "seed-overlay"
+            , stageOverlayProduces = Just "stage_overlay"
+            , stageOverlayReads = []
+            , stageOverlaySchema = Just schema
+            , stageRun = pure ()
+            }
+          pipeline = defaultPipelineConfig
+            { pipelineSeed = 42
+            , pipelineStages = [stage]
+            }
+          env = TopoEnv { teLogger = \_ -> pure () }
+      result <- runPipeline pipeline env world0
+      world1 <- expectPipeline result
+      lookupOverlay "stage_overlay" (twOverlays world1) `shouldSatisfy` \m -> case m of
+        Just _ -> True
+        Nothing -> False
+      twOverlayManifest world1 `shouldSatisfy` elem "stage_overlay"
+
+    it "runs registration -> generation -> simulation -> storage lifecycle round-trip" $ do
+      let config = WorldConfig { wcChunkSize = 8 }
+          world0 = emptyWorld config defaultHexGridMeta
+          schema = OverlaySchema
+            { osName = "lifecycle_overlay"
+            , osVersion = "1.0.0"
+            , osDescription = ""
+            , osStorage = StorageSparse
+            , osFields = [OverlayFieldDef "value" OFFloat (Number 0.0) False Nothing]
+            , osDependencies = emptyOverlayDeps
+            , osFieldIndex = Map.fromList [("value", 0)]
+            }
+          seededOverlay =
+            let chunk = OverlayChunk (IntMap.singleton 0 (mkOverlayRecordUnchecked [OVFloat 1.0]))
+            in Overlay
+                { ovSchema = schema
+                , ovData = SparseData (IntMap.singleton 0 chunk)
+                }
+          stage = PipelineStage
+            { stageId = StageBaseHeight
+            , stageName = pack "lifecycle-stage"
+            , stageSeedTag = pack "lifecycle-stage"
+            , stageOverlayProduces = Just "lifecycle_overlay"
+            , stageOverlayReads = []
+            , stageOverlaySchema = Just schema
+            , stageRun = putOverlayP seededOverlay
+            }
+          pipeline = defaultPipelineConfig
+            { pipelineSeed = 42
+            , pipelineStages = [stage]
+            }
+          env = TopoEnv { teLogger = \_ -> pure () }
+      result <- runPipeline pipeline env world0
+      world1 <- expectPipeline result
+      lookupOverlay "lifecycle_overlay" (twOverlays world1) `shouldSatisfy` \m -> case m of
+        Just _ -> True
+        Nothing -> False
+
+      dag <- case buildSimDAG
+        [ SimNodeReader
+            { snrId = SimNodeId "lifecycle_overlay"
+            , snrOverlayName = "lifecycle_overlay"
+            , snrDependencies = []
+            , snrReadTick = \_ctx ov -> pure (Right ov)
+            }
+        ] of
+          Left err -> expectationFailure (show err) >> fail "failed to build simulation DAG"
+          Right built -> pure built
+
+      simResult <- tickSimulation
+        dag
+        (\_ -> pure ())
+        world1
+        (twOverlays world1)
+        (CalendarDate 0 0 0)
+        (twWorldTime world1)
+        1
+      (storeAfterSim, _) <- case simResult of
+        Left err -> expectationFailure (show err) >> pure (twOverlays world1, emptyTerrainWrites)
+        Right value -> pure value
+      let world2 = world1 { twOverlays = storeAfterSim }
+
+      let dir = ".topo-overlay-lifecycle-roundtrip"
+      case lookupOverlay "lifecycle_overlay" (twOverlays world2) of
+        Nothing -> expectationFailure "missing lifecycle overlay after simulation"
+        Just ov -> do
+          saveResult <- saveOverlay dir ov
+          case saveResult of
+            Left err -> expectationFailure (show err)
+            Right () -> pure ()
+      loaded <- loadOverlayWithLifecycle dir schema
+      case loaded of
+        Left err -> expectationFailure (show err)
+        Right (_, lifecycle, warnings) -> do
+          lifecycle `shouldBe` OverlayActive
+          warnings `shouldBe` []
 
   -- Phase 1: Stage identity on constructed stages
   describe "Stage identity" $ do

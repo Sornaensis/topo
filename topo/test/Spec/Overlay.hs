@@ -16,6 +16,7 @@ import qualified Data.IntMap.Strict as IntMap
 import qualified Data.IntSet as IntSet
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (isNothing)
 import Data.Text (Text)
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
@@ -41,10 +42,14 @@ import Topo.Overlay
   , floatToOverlayValue
   , insertOverlay
   , lookupOverlay
+  , matchesFieldType
+  , mkOverlayRecord
+  , mkOverlayRecordUnchecked
   , overlayCount
   , overlayName
   , overlayNames
   , overlayValueToFloat
+  , setRecordFieldChecked
   )
 import Topo.Overlay.Export
   ( decodeDenseChunk
@@ -52,6 +57,10 @@ import Topo.Overlay.Export
   , encodeDenseChunk
   , encodeSparseChunk
   , exportOverlayChunks
+  )
+import Topo.Overlay.JSON
+  ( overlayFromJSON
+  , overlayToJSON
   )
 import Topo.Overlay.Index
   ( FieldIndex(..)
@@ -74,9 +83,24 @@ import Topo.Overlay.Schema
   , validateSchema
   )
 import Topo.Overlay.Storage
-  ( MigrationResult(..)
+  ( OverlayLifecycle(..)
+  , MigrationResult(..)
   , migrateOverlayData
+  , migrationLifecycle
+  , migrationWarnings
   )
+import Topo.Overlay.Indexed
+  ( IndexedOverlay(..)
+  , mkIndexed
+  , mkIndexedFresh
+  , getOverlay
+  , getData
+  , ensureIndex
+  , invalidateIndex
+  , insertSparseRecord
+  , deleteSparseRecord
+  )
+import qualified Topo.Overlay.Indexed as Indexed
 
 ------------------------------------------------------------------------
 -- Test schema fixtures
@@ -136,8 +160,11 @@ spec :: Spec
 spec = do
   schemaSpec
   overlayDataSpec
+  recordSafetySpec
+  overlayJsonSpec
   exportSpec
   indexSpec
+  indexedSpec
   migrationSpec
   storeSpec
 
@@ -252,6 +279,114 @@ overlayDataSpec = describe "Overlay data operations" $ do
     case ovData ov of
       DenseData m  -> IntMap.size m `shouldBe` 0
       SparseData _ -> expectationFailure "expected DenseData"
+
+------------------------------------------------------------------------
+-- Record type safety (Phase 5)
+------------------------------------------------------------------------
+
+recordSafetySpec :: Spec
+recordSafetySpec = describe "Overlay record type safety" $ do
+
+  it "mkOverlayRecord accepts correctly-typed values" $ do
+    let vals = [OVFloat 1.0, OVInt 2, OVBool True, OVText "x"]
+    case mkOverlayRecord testSparseSchema vals of
+      Right (OverlayRecord v) -> V.length v `shouldBe` 4
+      Left err -> expectationFailure ("unexpected rejection: " <> show err)
+
+  it "mkOverlayRecord rejects wrong field count" $ do
+    let vals = [OVFloat 1.0, OVInt 2]
+    mkOverlayRecord testSparseSchema vals `shouldSatisfy` isLeft
+
+  it "mkOverlayRecord rejects type mismatch" $ do
+    -- Put an Int where a Float is expected
+    let vals = [OVInt 1, OVInt 2, OVBool True, OVText "x"]
+    mkOverlayRecord testSparseSchema vals `shouldSatisfy` isLeft
+
+  it "mkOverlayRecord rejects type mismatch in non-first field" $ do
+    -- Put a Float where an Int is expected (culture_id)
+    let vals = [OVFloat 1.0, OVFloat 2.0, OVBool True, OVText "x"]
+    mkOverlayRecord testSparseSchema vals `shouldSatisfy` isLeft
+
+  it "mkOverlayRecordUnchecked always succeeds" $ do
+    let rec = mkOverlayRecordUnchecked [OVFloat 1.0]
+        (OverlayRecord v) = rec
+    V.length v `shouldBe` 1
+
+  it "matchesFieldType correctly classifies values" $ do
+    matchesFieldType OFFloat (OVFloat 0) `shouldBe` True
+    matchesFieldType OFInt   (OVInt 0)   `shouldBe` True
+    matchesFieldType OFBool  (OVBool True) `shouldBe` True
+    matchesFieldType OFText  (OVText "") `shouldBe` True
+    matchesFieldType OFFloat (OVInt 0)   `shouldBe` False
+    matchesFieldType OFInt   (OVFloat 0) `shouldBe` False
+
+  it "setRecordFieldChecked accepts matching types" $ do
+    let rec = defaultRecord testSparseSchema
+    case setRecordFieldChecked testSparseSchema 0 (OVFloat 99.0) rec of
+      Right (OverlayRecord v) -> v V.! 0 `shouldBe` OVFloat 99.0
+      Left err -> expectationFailure ("unexpected rejection: " <> show err)
+
+  it "setRecordFieldChecked rejects type mismatch" $ do
+    let rec = defaultRecord testSparseSchema
+    setRecordFieldChecked testSparseSchema 0 (OVInt 99) rec `shouldSatisfy` isLeft
+
+  it "setRecordFieldChecked rejects out-of-range index" $ do
+    let rec = defaultRecord testSparseSchema
+    setRecordFieldChecked testSparseSchema 99 (OVFloat 1.0) rec `shouldSatisfy` isLeft
+    setRecordFieldChecked testSparseSchema (-1) (OVFloat 1.0) rec `shouldSatisfy` isLeft
+
+  it "defaultRecord produces values matching schema types" $
+    property $ \(idx :: Int) ->
+      let rec = defaultRecord testSparseSchema
+          (OverlayRecord v) = rec
+          fields = osFields testSparseSchema
+          i = abs idx `mod` length fields
+          fd = fields !! i
+      in matchesFieldType (ofdType fd) (v V.! i)
+
+  where
+    isLeft (Left _) = True
+    isLeft _        = False
+
+------------------------------------------------------------------------
+-- Overlay JSON transport
+------------------------------------------------------------------------
+
+overlayJsonSpec :: Spec
+overlayJsonSpec = describe "Overlay.JSON" $ do
+
+  it "round-trips sparse overlays" $ do
+    let sparseChunk = OverlayChunk (IntMap.fromList [(2, testRecord)])
+        overlay = Overlay
+          { ovSchema = testSparseSchema
+          , ovData = SparseData (IntMap.fromList [(7, sparseChunk)])
+          }
+        encoded = overlayToJSON overlay
+    overlayFromJSON testSparseSchema encoded `shouldBe` Right overlay
+
+  it "round-trips dense overlays" $ do
+    let denseChunk = V.fromList
+          [ U.fromList [0.1, 0.2, 0.3]
+          , U.fromList [0.6, 0.5, 0.4]
+          , U.fromList [0.0, 1.0, 0.0]
+          ]
+        overlay = Overlay
+          { ovSchema = testDenseSchema
+          , ovData = DenseData (IntMap.fromList [(3, denseChunk)])
+          }
+        encoded = overlayToJSON overlay
+    overlayFromJSON testDenseSchema encoded `shouldBe` Right overlay
+
+  it "rejects storage/schema mismatches" $ do
+    let overlay = Overlay
+          { ovSchema = testSparseSchema
+          , ovData = SparseData IntMap.empty
+          }
+        encoded = overlayToJSON overlay
+    overlayFromJSON testDenseSchema encoded `shouldSatisfy` isLeft
+  where
+    isLeft (Left _) = True
+    isLeft _ = False
 
 ------------------------------------------------------------------------
 -- Export round-trip
@@ -472,6 +607,162 @@ migrationSpec = describe "Overlay.Storage migration" $ do
           Nothing -> expectationFailure "record not found"
       DenseData _ -> expectationFailure "expected SparseData"
 
+  -- Dense migration tests (Phase 4)
+
+  it "dense migration preserves data when fields are reordered" $ do
+    let oldSchema = testDenseSchema  -- temperature, humidity, wind_speed
+        newSchema = testDenseSchema
+          { osVersion = "2.0.0"
+          , osFields =
+              [ osFields testDenseSchema !! 2  -- wind_speed first
+              , osFields testDenseSchema !! 0  -- temperature second
+              , osFields testDenseSchema !! 1  -- humidity third
+              ]
+          , osFieldIndex = Map.fromList
+              [("wind_speed", 0), ("temperature", 1), ("humidity", 2)]
+          }
+        -- Old chunk: 3 fields, 4 tiles each
+        oldChunk = V.fromList
+          [ U.fromList [10.0, 20.0, 30.0, 40.0]   -- temperature
+          , U.fromList [0.5, 0.6, 0.7, 0.8]        -- humidity
+          , U.fromList [1.0, 2.0, 3.0, 4.0]        -- wind_speed
+          ]
+        ovData' = DenseData (IntMap.singleton 0 oldChunk)
+        result = migrateOverlayData oldSchema newSchema ovData'
+    mrNeedsRepopulation result `shouldBe` False
+    case mrData result of
+      DenseData chunks -> case IntMap.lookup 0 chunks of
+        Just vecs -> do
+          V.length vecs `shouldBe` 3
+          -- wind_speed should now be first
+          U.toList (vecs V.! 0) `shouldBe` [1.0, 2.0, 3.0, 4.0]
+          -- temperature second
+          U.toList (vecs V.! 1) `shouldBe` [10.0, 20.0, 30.0, 40.0]
+          -- humidity third
+          U.toList (vecs V.! 2) `shouldBe` [0.5, 0.6, 0.7, 0.8]
+        Nothing -> expectationFailure "chunk not found after dense migration"
+      SparseData _ -> expectationFailure "expected DenseData"
+
+  it "dense migration adds new fields with defaults" $ do
+    let oldSchema = testDenseSchema
+        newSchema = testDenseSchema
+          { osVersion = "2.0.0"
+          , osFields = osFields testDenseSchema ++
+              [ OverlayFieldDef "pressure" OFFloat (Number 1.0) False Nothing ]
+          , osFieldIndex = Map.fromList
+              [ ("temperature", 0), ("humidity", 1)
+              , ("wind_speed", 2), ("pressure", 3) ]
+          }
+        oldChunk = V.fromList
+          [ U.fromList [10.0, 20.0]
+          , U.fromList [0.5, 0.6]
+          , U.fromList [1.0, 2.0]
+          ]
+        ovData' = DenseData (IntMap.singleton 0 oldChunk)
+        result = migrateOverlayData oldSchema newSchema ovData'
+    mrAddedFields result `shouldBe` ["pressure"]
+    mrNeedsRepopulation result `shouldBe` False
+    case mrData result of
+      DenseData chunks -> case IntMap.lookup 0 chunks of
+        Just vecs -> do
+          V.length vecs `shouldBe` 4
+          -- Original fields preserved
+          U.toList (vecs V.! 0) `shouldBe` [10.0, 20.0]
+          -- New field filled with default 1.0
+          U.toList (vecs V.! 3) `shouldBe` [1.0, 1.0]
+        Nothing -> expectationFailure "chunk not found"
+      SparseData _ -> expectationFailure "expected DenseData"
+
+  it "dense migration drops removed fields" $ do
+    let oldSchema = testDenseSchema
+        newSchema = testDenseSchema
+          { osVersion = "2.0.0"
+          , osFields = take 2 (osFields testDenseSchema)  -- keep temp + humidity
+          , osFieldIndex = Map.fromList [("temperature", 0), ("humidity", 1)]
+          }
+        oldChunk = V.fromList
+          [ U.fromList [10.0, 20.0]
+          , U.fromList [0.5, 0.6]
+          , U.fromList [1.0, 2.0]
+          ]
+        ovData' = DenseData (IntMap.singleton 0 oldChunk)
+        result = migrateOverlayData oldSchema newSchema ovData'
+    mrDroppedFields result `shouldBe` ["wind_speed"]
+    mrNeedsRepopulation result `shouldBe` False
+    case mrData result of
+      DenseData chunks -> case IntMap.lookup 0 chunks of
+        Just vecs -> do
+          V.length vecs `shouldBe` 2
+          U.toList (vecs V.! 0) `shouldBe` [10.0, 20.0]
+          U.toList (vecs V.! 1) `shouldBe` [0.5, 0.6]
+        Nothing -> expectationFailure "chunk not found"
+      SparseData _ -> expectationFailure "expected DenseData"
+
+  it "dense migration handles renamed fields" $ do
+    let oldSchema = testDenseSchema
+        newSchema = testDenseSchema
+          { osVersion = "2.0.0"
+          , osFields =
+              [ OverlayFieldDef "temp_c" OFFloat (Number 0.5) False (Just "temperature")
+              , osFields testDenseSchema !! 1  -- humidity
+              , osFields testDenseSchema !! 2  -- wind_speed
+              ]
+          , osFieldIndex = Map.fromList
+              [("temp_c", 0), ("humidity", 1), ("wind_speed", 2)]
+          }
+        oldChunk = V.fromList
+          [ U.fromList [10.0, 20.0]
+          , U.fromList [0.5, 0.6]
+          , U.fromList [1.0, 2.0]
+          ]
+        ovData' = DenseData (IntMap.singleton 0 oldChunk)
+        result = migrateOverlayData oldSchema newSchema ovData'
+    mrRenamedFields result `shouldBe` [("temperature", "temp_c")]
+    case mrData result of
+      DenseData chunks -> case IntMap.lookup 0 chunks of
+        Just vecs -> do
+          -- Renamed field should carry old data
+          U.toList (vecs V.! 0) `shouldBe` [10.0, 20.0]
+        Nothing -> expectationFailure "chunk not found"
+      SparseData _ -> expectationFailure "expected DenseData"
+
+  it "dense migration with empty chunks produces empty result" $ do
+    let oldSchema = testDenseSchema
+        newSchema = testDenseSchema { osVersion = "2.0.0" }
+        ovData' = DenseData IntMap.empty
+        result = migrateOverlayData oldSchema newSchema ovData'
+    mrNeedsRepopulation result `shouldBe` False
+    case mrData result of
+      DenseData chunks -> IntMap.size chunks `shouldBe` 0
+      SparseData _ -> expectationFailure "expected DenseData"
+
+  it "reports OverlayNeedsRepopulation for incompatible dense migrations" $ do
+    let oldSchema = testDenseSchema
+        renamedAsText = OverlayFieldDef "temperature" OFText (String "") False Nothing
+        newSchema = testDenseSchema
+          { osVersion = "2.0.0"
+          , osFields = renamedAsText : drop 1 (osFields testDenseSchema)
+          , osFieldIndex = Map.fromList
+              [ ("temperature", 0)
+              , ("humidity", 1)
+              , ("wind_speed", 2)
+              ]
+          }
+        oldChunk = V.fromList
+          [ U.fromList [10.0, 20.0]
+          , U.fromList [0.5, 0.6]
+          , U.fromList [1.0, 2.0]
+          ]
+        result = migrateOverlayData oldSchema newSchema (DenseData (IntMap.singleton 0 oldChunk))
+    mrNeedsRepopulation result `shouldBe` True
+    migrationLifecycle result `shouldBe` OverlayNeedsRepopulation
+    migrationWarnings newSchema result `shouldSatisfy` (not . null)
+
+  it "reports OverlayActive for compatible migrations" $ do
+    let result = migrateOverlayData testDenseSchema testDenseSchema (DenseData IntMap.empty)
+    migrationLifecycle result `shouldBe` OverlayActive
+    migrationWarnings testDenseSchema result `shouldBe` []
+
 ------------------------------------------------------------------------
 -- Overlay store
 ------------------------------------------------------------------------
@@ -495,3 +786,109 @@ storeSpec = describe "OverlayStore" $ do
     -- The overlay manifest in Storage v17 stores [Text]
     -- Verify our test world has empty manifest
     overlayNames emptyOverlayStore `shouldBe` []
+
+------------------------------------------------------------------------
+-- Indexed overlay
+------------------------------------------------------------------------
+
+indexedSpec :: Spec
+indexedSpec = describe "Overlay.Indexed" $ do
+
+  it "mkIndexed starts with dirty index" $ do
+    let io = mkIndexed (emptyOverlay testSparseSchema)
+    ioIndex io `shouldSatisfy` isNothing
+
+  it "mkIndexedFresh starts with built index" $ do
+    let io = mkIndexedFresh (emptyOverlay testSparseSchema)
+    ioIndex io `shouldSatisfy` \case Just _ -> True; Nothing -> False
+
+  it "ensureIndex builds and caches index" $ do
+    let io = mkIndexed (emptyOverlay testSparseSchema)
+        (io', _idx) = ensureIndex io
+    ioIndex io' `shouldSatisfy` \case Just _ -> True; Nothing -> False
+
+  it "invalidateIndex marks index dirty" $ do
+    let io  = mkIndexedFresh (emptyOverlay testSparseSchema)
+        io' = invalidateIndex io
+    ioIndex io' `shouldSatisfy` isNothing
+
+  it "insertSparseRecord invalidates index" $ do
+    let io  = mkIndexedFresh (emptyOverlay testSparseSchema)
+        io' = insertSparseRecord 0 1 testRecord io
+    ioIndex io' `shouldSatisfy` isNothing
+
+  it "deleteSparseRecord invalidates index" $ do
+    let io  = mkIndexedFresh (emptyOverlay testSparseSchema)
+        io' = insertSparseRecord 0 1 testRecord io
+        io'' = deleteSparseRecord 0 1 io'
+    ioIndex io'' `shouldSatisfy` isNothing
+
+  it "insert then query int field returns correct tiles" $ do
+    let rec1 = OverlayRecord $ V.fromList [OVFloat 10, OVInt 5, OVBool True, OVText "A"]
+        rec2 = OverlayRecord $ V.fromList [OVFloat 20, OVInt 5, OVBool False, OVText "B"]
+        rec3 = OverlayRecord $ V.fromList [OVFloat 30, OVInt 9, OVBool True, OVText "C"]
+        io = mkIndexed (emptyOverlay testSparseSchema)
+        io1 = insertSparseRecord 0 10 rec1 io
+        io2 = insertSparseRecord 0 20 rec2 io1
+        io3 = insertSparseRecord 0 30 rec3 io2
+        (io4, hits) = Indexed.queryIntField "culture_id" 5 io3
+    -- Tiles 10 and 20 both have culture_id = 5
+    length hits `shouldBe` 2
+    hits `shouldSatisfy` (10 `elem`)
+    hits `shouldSatisfy` (20 `elem`)
+    -- Index should now be cached
+    ioIndex io4 `shouldSatisfy` \case Just _ -> True; Nothing -> False
+
+  it "insert then query float range returns correct tiles" $ do
+    let rec1 = OverlayRecord $ V.fromList [OVFloat 10, OVInt 1, OVBool True, OVText ""]
+        rec2 = OverlayRecord $ V.fromList [OVFloat 50, OVInt 2, OVBool True, OVText ""]
+        rec3 = OverlayRecord $ V.fromList [OVFloat 90, OVInt 3, OVBool True, OVText ""]
+        io = mkIndexed (emptyOverlay testSparseSchema)
+        io1 = insertSparseRecord 0 1 rec1 io
+        io2 = insertSparseRecord 0 2 rec2 io1
+        io3 = insertSparseRecord 0 3 rec3 io2
+        -- population field is not indexed, so this should return empty
+        (_io4, hits) = Indexed.queryFloatRange "population" 5 55 io3
+    -- population is not indexed (ofdIndexed = False), expect no results
+    hits `shouldBe` []
+
+  it "insert then query bool field returns correct tiles" $ do
+    let rec1 = OverlayRecord $ V.fromList [OVFloat 10, OVInt 1, OVBool True, OVText ""]
+        rec2 = OverlayRecord $ V.fromList [OVFloat 20, OVInt 2, OVBool False, OVText ""]
+        rec3 = OverlayRecord $ V.fromList [OVFloat 30, OVInt 3, OVBool True, OVText ""]
+        io = mkIndexed (emptyOverlay testSparseSchema)
+        io1 = insertSparseRecord 0 10 rec1 io
+        io2 = insertSparseRecord 0 20 rec2 io1
+        io3 = insertSparseRecord 0 30 rec3 io2
+        (_io4, trueSet) = Indexed.queryBoolField "is_capital" True io3
+    IntSet.toList trueSet `shouldSatisfy` (10 `elem`)
+    IntSet.toList trueSet `shouldSatisfy` (30 `elem`)
+    IntSet.size trueSet `shouldBe` 2
+
+  it "delete then query reflects removal" $ do
+    let rec1 = OverlayRecord $ V.fromList [OVFloat 10, OVInt 5, OVBool True, OVText "A"]
+        rec2 = OverlayRecord $ V.fromList [OVFloat 20, OVInt 5, OVBool False, OVText "B"]
+        io = mkIndexed (emptyOverlay testSparseSchema)
+        io1 = insertSparseRecord 0 10 rec1 io
+        io2 = insertSparseRecord 0 20 rec2 io1
+        -- Delete tile 10
+        io3 = deleteSparseRecord 0 10 io2
+        (_io4, hits) = Indexed.queryIntField "culture_id" 5 io3
+    -- Only tile 20 should remain
+    hits `shouldBe` [20]
+
+  it "dense overlay queries return empty (no indexing)" $ do
+    let denseOv = emptyOverlay testDenseSchema
+        io = mkIndexedFresh denseOv
+        (_io', hits) = Indexed.queryIntField "temperature" 0 io
+    hits `shouldBe` []
+
+  it "multiple queries reuse cached index" $ do
+    let rec1 = OverlayRecord $ V.fromList [OVFloat 10, OVInt 5, OVBool True, OVText ""]
+        io = mkIndexed (emptyOverlay testSparseSchema)
+        io1 = insertSparseRecord 0 1 rec1 io
+        (io2, _) = Indexed.queryIntField "culture_id" 5 io1
+        -- Second query should hit the cache (index is Just)
+        (io3, hits) = Indexed.queryIntField "culture_id" 5 io2
+    ioIndex io3 `shouldSatisfy` \case Just _ -> True; Nothing -> False
+    hits `shouldBe` [1]

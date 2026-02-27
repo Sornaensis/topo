@@ -1027,8 +1027,15 @@ buildPluginWidgets pluginNames layout =
         ) (zip [0..] pluginNames)
       -- Simulation controls after all plugins
       simBase = builtinCount + pluginCount
+      tickButtonRect =
+        let Rect (V2 sx sy, V2 _sw _sh) = configScrollAreaRect layout
+            rowHeight = 24
+            gap = 10
+            pad = 12
+            tickBtnY = sy + configRowTopPad + simBase * (rowHeight + gap)
+        in Rect (V2 (sx + pad) tickBtnY, V2 60 rowHeight)
       simWidgets =
-        [ Widget WidgetSimTick     (pipelineCheckboxRect simBase       layout)
+        [ Widget WidgetSimTick     tickButtonRect
         , Widget WidgetSimAutoTick (pipelineCheckboxRect (simBase + 1) layout)
         ]
   in pluginMoveWidgets ++ simWidgets

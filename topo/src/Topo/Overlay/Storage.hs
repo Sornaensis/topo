@@ -33,12 +33,16 @@ module Topo.Overlay.Storage
   ( -- * Single overlay I/O
     saveOverlay
   , loadOverlay
+  , loadOverlayWithLifecycle
     -- * Store-level I/O
   , saveOverlayStore
   , loadOverlayStore
     -- * Schema migration
+  , OverlayLifecycle(..)
   , migrateOverlayData
   , MigrationResult(..)
+  , migrationLifecycle
+  , migrationWarnings
     -- * Errors
   , OverlayStorageError(..)
   , renderOverlayStorageError
@@ -50,6 +54,7 @@ module Topo.Overlay.Storage
 
 import Control.Exception (IOException, try)
 import Control.Monad (forM, forM_, replicateM)
+import Data.Aeson (Value(..))
 import Data.Binary.Get
   ( Get
   , getByteString
@@ -187,6 +192,22 @@ saveOverlay dir ov = do
 -- data is migrated via 'migrateOverlayData'.
 loadOverlay :: FilePath -> OverlaySchema -> IO (Either OverlayStorageError Overlay)
 loadOverlay dir schema = do
+  result <- loadOverlayWithLifecycle dir schema
+  pure (fmap (\(overlay, _, _) -> overlay) result)
+
+-- | Load a single overlay and compute lifecycle state/warnings.
+--
+-- Returned lifecycle semantics:
+--
+-- * 'OverlayActive' when data loaded cleanly (with or without
+--   migration that preserved data compatibility).
+-- * 'OverlayNeedsRepopulation' when migration detected an
+--   incompatible dense field change.
+loadOverlayWithLifecycle
+  :: FilePath
+  -> OverlaySchema
+  -> IO (Either OverlayStorageError (Overlay, OverlayLifecycle, [Text]))
+loadOverlayWithLifecycle dir schema = do
   let name = osName schema
   let schemaFile = overlaySchemaPath dir name
   let datFile    = overlayDataPath dir name
@@ -213,10 +234,20 @@ loadOverlay dir schema = do
                         Left err -> pure (Left (OverlayDecodeError name err))
                         Right ovData' ->
                           if osVersion diskSchema == osVersion schema
-                            then pure (Right (Overlay schema ovData'))
+                            then pure (Right (Overlay schema ovData', OverlayActive, []))
                             else
                               let migrated = migrateOverlayData diskSchema schema ovData'
-                              in  pure (Right (Overlay schema (mrData migrated)))
+                                  lifecycle = migrationLifecycle migrated
+                                  warnings = migrationWarnings schema migrated
+                              in  pure (Right (Overlay schema (mrData migrated), lifecycle, warnings))
+
+-- | Lifecycle state for an overlay across generation/simulation/storage.
+data OverlayLifecycle
+  = OverlayRegistered
+  | OverlaySeeded
+  | OverlayActive
+  | OverlayNeedsRepopulation
+  deriving (Eq, Show)
 
 ------------------------------------------------------------------------
 -- Store-level save/load
@@ -380,15 +411,34 @@ getOverlayData schema = do
 
 -- | Result of a schema migration operation.
 data MigrationResult = MigrationResult
-  { mrData         :: !OverlayData
+  { mrData              :: !OverlayData
   -- ^ The migrated overlay data.
-  , mrAddedFields  :: ![Text]
+  , mrAddedFields       :: ![Text]
   -- ^ Fields that were added with defaults.
-  , mrDroppedFields :: ![Text]
+  , mrDroppedFields     :: ![Text]
   -- ^ Fields from the old schema not present in the new schema.
-  , mrRenamedFields :: ![(Text, Text)]
+  , mrRenamedFields     :: ![(Text, Text)]
   -- ^ @(oldName, newName)@ pairs for renamed fields.
+  , mrNeedsRepopulation :: !Bool
+  -- ^ 'True' when the migration could not preserve dense data
+  -- (e.g. an incompatible type change forced data loss).  The
+  -- caller or first simulation tick should re-populate the overlay.
   } deriving (Show)
+
+-- | Derive lifecycle state from migration outcome.
+migrationLifecycle :: MigrationResult -> OverlayLifecycle
+migrationLifecycle migrationResult
+  | mrNeedsRepopulation migrationResult = OverlayNeedsRepopulation
+  | otherwise = OverlayActive
+
+-- | Human-readable migration warnings for callers that surface logs/UI.
+migrationWarnings :: OverlaySchema -> MigrationResult -> [Text]
+migrationWarnings schema migrationResult
+  | mrNeedsRepopulation migrationResult =
+      [ "overlay " <> osName schema
+          <> " contains incompatible dense field changes and requires repopulation"
+      ]
+  | otherwise = []
 
 -- | Migrate overlay data from an old schema to a new schema.
 --
@@ -442,17 +492,10 @@ migrateOverlayData oldSchema newSchema ovd =
             , mrAddedFields = added
             , mrDroppedFields = dropped
             , mrRenamedFields = renamed
+            , mrNeedsRepopulation = False
             }
-    DenseData _chunks ->
-      -- Dense migration: since field layout changed, we can't simply
-      -- remap vectors.  Return empty dense data; the caller (or first
-      -- sim tick) is responsible for re-populating.
-      MigrationResult
-        { mrData = DenseData IntMap.empty
-        , mrAddedFields = added
-        , mrDroppedFields = dropped
-        , mrRenamedFields = renamed
-        }
+    DenseData chunks ->
+      migrateDenseData oldFieldMap newFields added dropped renamed chunks
 
 -- | Migrate a single sparse chunk to a new field layout.
 migrateChunk
@@ -509,6 +552,124 @@ coerceValue oldT newT val
       (OFBool,  OFFloat, OVBool b)  -> OVFloat (if b then 1.0 else 0.0)
       (OFFloat, OFBool,  OVFloat f) -> OVBool (f >= 0.5)
       _                             -> val  -- incompatible, keep as-is
+
+------------------------------------------------------------------------
+-- Dense migration
+------------------------------------------------------------------------
+
+-- | Migrate dense overlay data by remapping field vectors.
+--
+-- For each field in the new schema:
+--
+-- * If present in old data with a compatible type → copy the vector.
+--   All dense-legal types (float, int, bool) share the same float
+--   representation, so no per-element conversion is needed.
+-- * If absent → create a default-filled vector using the field's
+--   declared default value.
+-- * If the source field used an incompatible type (text ↔ numeric,
+--   which should be prevented by schema validation but we handle
+--   defensively) → fill with defaults and flag 'mrNeedsRepopulation'.
+migrateDenseData
+  :: Map Text (Int, OverlayFieldType)  -- ^ old field map
+  -> [OverlayFieldDef]                 -- ^ new fields
+  -> [Text]                            -- ^ added field names
+  -> [Text]                            -- ^ dropped field names
+  -> [(Text, Text)]                    -- ^ renamed (old, new) pairs
+  -> IntMap (Vector (U.Vector Float))  -- ^ old dense chunks
+  -> MigrationResult
+migrateDenseData oldFieldMap newFields added dropped renamed chunks
+  | IntMap.null chunks =
+      -- No data to migrate — produce empty dense data.
+      MigrationResult
+        { mrData              = DenseData IntMap.empty
+        , mrAddedFields       = added
+        , mrDroppedFields     = dropped
+        , mrRenamedFields     = renamed
+        , mrNeedsRepopulation = False
+        }
+  | otherwise =
+      let -- Build the field mapping: for each new field, either an old
+          -- field index or Nothing (needs default).
+          fieldMapping :: [(OverlayFieldDef, Maybe Int)]
+          fieldMapping = map resolveFieldMapping newFields
+
+          resolveFieldMapping :: OverlayFieldDef -> (OverlayFieldDef, Maybe Int)
+          resolveFieldMapping fd =
+            let directLookup = Map.lookup (ofdName fd) oldFieldMap
+                renameLookup = ofdRenamedFrom fd >>= \old -> Map.lookup old oldFieldMap
+                resolved = case directLookup of
+                  Just x  -> Just x
+                  Nothing -> renameLookup
+            in case resolved of
+              Just (idx, oldType)
+                | isDenseCompatible oldType (ofdType fd) -> (fd, Just idx)
+                | otherwise -> (fd, Nothing)  -- incompatible → default
+              Nothing -> (fd, Nothing)
+
+          -- Any field that was present but had an incompatible type?
+          hasIncompatible = any isIncompatibleMapping newFields
+          isIncompatibleMapping fd =
+            let directLookup = Map.lookup (ofdName fd) oldFieldMap
+                renameLookup = ofdRenamedFrom fd >>= \old -> Map.lookup old oldFieldMap
+                resolved = case directLookup of
+                  Just x  -> Just x
+                  Nothing -> renameLookup
+            in case resolved of
+              Just (_idx, oldType) -> not (isDenseCompatible oldType (ofdType fd))
+              Nothing -> False
+
+          migratedChunks = IntMap.map (migrateDenseChunk fieldMapping) chunks
+      in  MigrationResult
+            { mrData              = DenseData migratedChunks
+            , mrAddedFields       = added
+            , mrDroppedFields     = dropped
+            , mrRenamedFields     = renamed
+            , mrNeedsRepopulation = hasIncompatible
+            }
+
+-- | Check whether two field types are compatible for dense migration.
+--
+-- Dense overlays store all values as 'Float', so any numeric type
+-- (float, int, bool) can be remapped to any other numeric type
+-- without data loss in the float representation.  Only text is
+-- incompatible (and should never appear in dense mode per schema
+-- validation).
+isDenseCompatible :: OverlayFieldType -> OverlayFieldType -> Bool
+isDenseCompatible OFText _ = False
+isDenseCompatible _ OFText = False
+isDenseCompatible _ _      = True
+
+-- | Remap a single dense chunk's field vectors according to the mapping.
+migrateDenseChunk
+  :: [(OverlayFieldDef, Maybe Int)]
+  -> Vector (U.Vector Float)
+  -> Vector (U.Vector Float)
+migrateDenseChunk fieldMapping oldVecs =
+  let -- Determine tile count from the first old vector, or 0 if empty
+      tileCount
+        | V.null oldVecs = 0
+        | otherwise      = U.length (V.head oldVecs)
+  in  V.fromList
+        [ case mOldIdx of
+            Just idx
+              | idx >= 0 && idx < V.length oldVecs -> oldVecs V.! idx
+              | otherwise -> defaultDenseVector tileCount fd
+            Nothing -> defaultDenseVector tileCount fd
+        | (fd, mOldIdx) <- fieldMapping
+        ]
+
+-- | Create a default-filled dense vector for a field.
+defaultDenseVector :: Int -> OverlayFieldDef -> U.Vector Float
+defaultDenseVector tileCount fd =
+  U.replicate tileCount (defaultFloatValue fd)
+
+-- | Extract the default float value for a dense field from its
+-- JSON default declaration.
+defaultFloatValue :: OverlayFieldDef -> Float
+defaultFloatValue fd = case ofdDefault fd of
+  Number n -> realToFrac n
+  Bool   b -> if b then 1.0 else 0.0
+  _        -> 0.0
 
 ------------------------------------------------------------------------
 -- Helpers

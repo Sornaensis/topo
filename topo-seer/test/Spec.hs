@@ -14,7 +14,9 @@ import qualified Spec.TerrainCacheWorker
 import qualified Spec.TerrainRender
 import qualified Spec.RiverRender
 import qualified Spec.TerrainActor
+import qualified Spec.PluginManager
 import qualified Spec.UiActor
+import qualified Spec.Simulation
 import qualified Spec.Widgets
 import qualified Spec.WidgetTree
 import qualified Spec.SliderSpec
@@ -36,7 +38,9 @@ main = hspec $ do
   Spec.TerrainRender.spec
   Spec.RiverRender.spec
   Spec.TerrainActor.spec
+  Spec.PluginManager.spec
   Spec.UiActor.spec
+  Spec.Simulation.spec
   Spec.Widgets.spec
   Spec.WidgetTree.spec
   Spec.WorldPersist.spec

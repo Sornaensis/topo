@@ -29,6 +29,10 @@ module Topo.Plugin.RPC
     -- * Pipeline / DAG integration
   , rpcGeneratorStage
   , rpcSimNode
+    -- * Terrain payload helpers
+  , terrainWorldToPayload
+  , decodeTerrainWritesValue
+  , applyGeneratorTerrainValue
     -- * Errors
   , RPCError(..)
     -- * Re-exports
@@ -39,19 +43,45 @@ module Topo.Plugin.RPC
 
 import Control.Monad.Except (throwError)
 import Control.Monad.IO.Class (liftIO)
+import qualified Data.ByteString as BS
+import qualified Data.IntMap.Strict as IntMap
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Word (Word8)
+import Text.Read (readMaybe)
 
 import qualified Data.Aeson as Aeson
 import Data.Aeson (Value(..), (.=), object)
+import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KM
 
-import Topo.Overlay (Overlay(..))
+import Topo.Overlay (Overlay(..), insertOverlay, lookupOverlay)
+import Topo.Overlay.JSON (overlayFromJSON, overlayToJSON)
+import Topo.Export
+  ( ExportError(..)
+  , decodeClimateChunk
+  , decodeTerrainChunk
+  , decodeVegetationChunk
+  , encodeClimateChunk
+  , encodeTerrainChunk
+  , encodeVegetationChunk
+  )
 import Topo.Pipeline (PipelineStage(..))
 import Topo.Pipeline.Stage (StageId(..))
-import Topo.Plugin (PluginError(..), PluginM, getWorldP, modifyWorldP, logInfo)
-import Topo.Simulation (SimNode(..), SimNodeId(..), SimContext(..), emptyTerrainWrites)
+import Topo.Plugin (Capability(..), PluginError(..), PluginM, getWorldP, logInfo, putWorldP)
+import Topo.Calendar (CalendarDate(..), WorldTime(..))
+import Topo.Simulation
+  ( SimNode(..)
+  , SimNodeId(..)
+  , SimContext(..)
+  , TerrainWrites(..)
+  , applyTerrainWrites
+  , emptyTerrainWrites
+  )
+import qualified Topo.Types
+import qualified Topo.World
 
 import Topo.Plugin.RPC.Manifest
 import Topo.Plugin.RPC.Protocol
@@ -197,28 +227,40 @@ invokeSimulation
   -> (PluginProgress -> IO ())
   -> (PluginLog -> IO ())
   -> IO (Either RPCError SimulationResult)
-invokeSimulation conn _ctx _overlay onProgress onLog = do
+invokeSimulation conn ctx overlay onProgress onLog = do
   let manifest = rpcManifest conn
-      envelope = RPCEnvelope
-        { envType = MsgInvokeSimulation
-        , envPayload = Aeson.toJSON InvokeSimulation
-            { isNodeId     = rmName manifest
-            , isWorldTime  = 0  -- Populated from SimContext at call time
-            , isDeltaTicks = 0
-            , isCalendar   = Null
-            , isConfig     = rpcParams conn
-            , isTerrain    = Null  -- Encoded by caller
-            , isOverlays   = Null  -- Encoded by caller
-            , isOwnOverlay = Null  -- Encoded by caller
+      terrainPayloadResult
+        | canReadTerrain manifest = terrainWorldToPayload (scTerrain ctx)
+        | otherwise = Right Null
+      overlaysPayload
+        | canReadOverlay manifest = overlaysToJSON (scOverlays ctx)
+        | otherwise = Object mempty
+      ownOverlayPayload
+        | canReadOverlay manifest || canWriteOverlay manifest = overlayToJSON overlay
+        | otherwise = Null
+  case terrainPayloadResult of
+    Left err -> pure (Left (RPCProtocolError err))
+    Right terrainPayload -> do
+      let envelope = RPCEnvelope
+            { envType = MsgInvokeSimulation
+            , envPayload = Aeson.toJSON InvokeSimulation
+                { isNodeId     = rmName manifest
+                , isWorldTime  = wtTick (scWorldTime ctx)
+                , isDeltaTicks = scDeltaTicks ctx
+                , isCalendar   = calendarToJSON (scCalendar ctx)
+                , isConfig     = rpcParams conn
+                , isTerrain    = terrainPayload
+                , isOverlays   = overlaysPayload
+                , isOwnOverlay = ownOverlayPayload
+                }
             }
-        }
-  result <- rpcCallWithProgress (rpcTransport conn) envelope onProgress onLog
-  case result of
-    Left err  -> pure (Left err)
-    Right env ->
-      case Aeson.fromJSON (envPayload env) of
-        Aeson.Success sr -> pure (Right sr)
-        Aeson.Error err  -> pure (Left (RPCProtocolError (Text.pack err)))
+      result <- rpcCallWithProgress (rpcTransport conn) envelope onProgress onLog
+      case result of
+        Left err  -> pure (Left err)
+        Right env ->
+          case Aeson.fromJSON (envPayload env) of
+            Aeson.Success sr -> pure (Right sr)
+            Aeson.Error err  -> pure (Left (RPCProtocolError (Text.pack err)))
 
 -- | Send a shutdown message to the plugin.
 rpcShutdown :: RPCConnection -> IO ()
@@ -245,14 +287,26 @@ rpcGeneratorStage conn =
     { stageId   = StagePlugin (rmName manifest)
     , stageName = rmName manifest
     , stageSeedTag = "plugin:" <> rmName manifest
+    , stageOverlayProduces = if manifestHasOverlay manifest then Just (rmName manifest) else Nothing
+    , stageOverlayReads = []
+    , stageOverlaySchema = Nothing
     , stageRun  = do
         logInfo ("plugin:" <> rmName manifest <> ": invoking generator")
-        _world <- getWorldP
-        -- TODO (Phase 7): Encode relevant terrain chunks for the plugin,
-        -- invoke the generator, decode the result, and merge modified
-        -- chunks back into the world.  For now, this is a stub that
-        -- logs the invocation.
-        logInfo ("plugin:" <> rmName manifest <> ": generator complete")
+        world <- getWorldP
+        case terrainWorldToPayload world of
+          Left err ->
+            throwError (PluginInvariantError ("rpc generator encode failed: " <> err))
+          Right terrainPayload -> do
+            result <- liftIO (invokeGenerator conn terrainPayload)
+            case result of
+              Left err -> throwError (PluginInvariantError ("rpc generator failed: " <> rpcErrorText err))
+              Right generatorResult ->
+                case applyGeneratorResult manifest world generatorResult of
+                  Left mergeErr ->
+                    throwError (PluginInvariantError ("rpc generator merge failed: " <> mergeErr))
+                  Right mergedWorld -> do
+                    putWorldP mergedWorld
+                    logInfo ("plugin:" <> rmName manifest <> ": generator complete")
     }
 
 -- | Create a 'SimNode' from an RPC connection.
@@ -272,19 +326,272 @@ rpcSimNode conn =
       { snwId           = nodeId
       , snwOverlayName  = name
       , snwDependencies = deps
-      , snwWriteTick    = \_ctx overlay -> do
-          -- TODO (Phase 7): Encode context, send to plugin, decode
-          -- result including terrain writes.
-          pure (Right (overlay, emptyWrites))
+      , snwWriteTick    = \ctx overlay -> do
+          if not (canWriteOverlay manifest)
+            then pure (Left "manifest missing writeOverlay capability")
+            else do
+              result <- invokeSimulation conn ctx overlay ignoreProgress ignoreLog
+              case result of
+                Left err -> pure (Left (rpcErrorText err))
+                Right sr -> do
+                  let decodedOverlay = overlayFromJSON (ovSchema overlay) (srOverlay sr)
+                      decodedWrites = decodeTerrainWrites (srTerrainWrites sr)
+                  pure $ case (decodedOverlay, decodedWrites) of
+                    (Right nextOverlay, Right writes) -> Right (nextOverlay, writes)
+                    (Left overlayErr, _) -> Left overlayErr
+                    (_, Left writesErr) -> Left writesErr
       }
     else SimNodeReader
       { snrId           = nodeId
       , snrOverlayName  = name
       , snrDependencies = deps
-      , snrReadTick     = \_ctx overlay -> do
-          -- TODO (Phase 7): Encode context, send to plugin, decode
-          -- updated overlay.
-          pure (Right overlay)
+      , snrReadTick     = \ctx overlay -> do
+          if not (canWriteOverlay manifest)
+            then pure (Left "manifest missing writeOverlay capability")
+            else do
+              result <- invokeSimulation conn ctx overlay ignoreProgress ignoreLog
+              pure $ case result of
+                Left err -> Left (rpcErrorText err)
+                Right sr -> overlayFromJSON (ovSchema overlay) (srOverlay sr)
       }
   where
-    emptyWrites = Topo.Simulation.emptyTerrainWrites
+    ignoreProgress _ = pure ()
+    ignoreLog _ = pure ()
+
+hasCapability :: RPCManifest -> Capability -> Bool
+hasCapability manifest capability = capability `elem` rmCapabilities manifest
+
+canReadTerrain :: RPCManifest -> Bool
+canReadTerrain manifest =
+  hasCapability manifest CapReadTerrain || hasCapability manifest CapReadWorld
+
+canReadOverlay :: RPCManifest -> Bool
+canReadOverlay manifest =
+  hasCapability manifest CapReadOverlay || hasCapability manifest CapReadWorld
+
+canWriteOverlay :: RPCManifest -> Bool
+canWriteOverlay manifest =
+  hasCapability manifest CapWriteOverlay || hasCapability manifest CapWriteWorld
+
+calendarToJSON :: CalendarDate -> Value
+calendarToJSON calendarDate = object
+  [ "year" .= cdYear calendarDate
+  , "dayOfYear" .= cdDayOfYear calendarDate
+  , "hourOfDay" .= cdHourOfDay calendarDate
+  ]
+
+overlaysToJSON :: Map Text Overlay -> Value
+overlaysToJSON overlays =
+  object [ Key.fromText name .= overlayToJSON overlay | (name, overlay) <- Map.toList overlays ]
+
+decodeTerrainWrites :: Maybe Value -> Either Text TerrainWrites
+decodeTerrainWrites Nothing = Right emptyTerrainWrites
+decodeTerrainWrites (Just Null) = Right emptyTerrainWrites
+decodeTerrainWrites (Just (Object obj))
+  | KM.null obj = Right emptyTerrainWrites
+  | hasOnlySummaryKeys obj = Right emptyTerrainWrites
+  | otherwise = terrainWritesFromPayload obj
+decodeTerrainWrites (Just _) = Left "terrain_writes payload must be an object"
+
+-- | Decode a simulation @terrain_writes@ payload into structured writes.
+decodeTerrainWritesValue :: Maybe Value -> Either Text TerrainWrites
+decodeTerrainWritesValue = decodeTerrainWrites
+
+rpcErrorText :: RPCError -> Text
+rpcErrorText rpcError =
+  case rpcError of
+    RPCTransportError transportError -> Text.pack (show transportError)
+    RPCProtocolError message -> message
+    RPCPluginError code message -> "plugin error " <> Text.pack (show code) <> ": " <> message
+    RPCTimeout message -> "timeout: " <> message
+
+applyGeneratorResult
+  :: RPCManifest
+  -> Topo.World.TerrainWorld
+  -> GeneratorResult
+  -> Either Text Topo.World.TerrainWorld
+applyGeneratorResult manifest world result = do
+  worldWithTerrain <- applyGeneratorTerrainPayload world (grTerrain result)
+  applyGeneratorOverlayPayload manifest worldWithTerrain (grOverlay result)
+
+applyGeneratorTerrainPayload
+  :: Topo.World.TerrainWorld
+  -> Value
+  -> Either Text Topo.World.TerrainWorld
+applyGeneratorTerrainPayload world Null = Right world
+applyGeneratorTerrainPayload world (Object obj)
+  | KM.null obj = Right world
+  | hasOnlySummaryKeys obj = Right world
+  | otherwise = applyTerrainPayload world obj
+applyGeneratorTerrainPayload _ _ = Left "generator terrain payload must be an object or null"
+
+-- | Apply a generator terrain payload to a world by decoding and merging
+-- chunk updates.
+applyGeneratorTerrainValue :: Topo.World.TerrainWorld -> Value -> Either Text Topo.World.TerrainWorld
+applyGeneratorTerrainValue = applyGeneratorTerrainPayload
+
+applyGeneratorOverlayPayload
+  :: RPCManifest
+  -> Topo.World.TerrainWorld
+  -> Maybe Value
+  -> Either Text Topo.World.TerrainWorld
+applyGeneratorOverlayPayload _ world Nothing = Right world
+applyGeneratorOverlayPayload manifest world (Just overlayValue) =
+  case lookupOverlay (rmName manifest) (Topo.World.twOverlays world) of
+    Nothing -> Left "generator returned overlay data but no host overlay is registered"
+    Just existingOverlay -> do
+      decodedOverlay <- overlayFromJSON (ovSchema existingOverlay) overlayValue
+      let nextOverlays = insertOverlay decodedOverlay (Topo.World.twOverlays world)
+      Right world { Topo.World.twOverlays = nextOverlays }
+
+hasOnlySummaryKeys :: KM.KeyMap Value -> Bool
+hasOnlySummaryKeys keyMap = all (`elem` allowedKeys) (map Key.toText (KM.keys keyMap))
+  where
+    allowedKeys =
+      [ "chunk_count"
+      , "climate_count"
+      , "river_count"
+      , "vegetation_count"
+      , "chunk_size"
+      ]
+
+terrainSummaryToJSON :: Topo.World.TerrainWorld -> Value
+terrainSummaryToJSON world =
+  object
+    [ "chunk_count" .= IntMap.size (Topo.World.twTerrain world)
+    , "climate_count" .= IntMap.size (Topo.World.twClimate world)
+    , "river_count" .= IntMap.size (Topo.World.twRivers world)
+    , "vegetation_count" .= IntMap.size (Topo.World.twVegetation world)
+    , "chunk_size" .= Topo.Types.wcChunkSize (Topo.World.twConfig world)
+    ]
+
+terrainWorldToPayload :: Topo.World.TerrainWorld -> Either Text Value
+terrainWorldToPayload world = do
+  terrainObj <- encodeChunkMap
+    (Topo.World.twTerrain world)
+    (encodeTerrainChunk (Topo.World.twConfig world))
+  climateObj <- encodeChunkMap
+    (Topo.World.twClimate world)
+    (encodeClimateChunk (Topo.World.twConfig world))
+  vegetationObj <- encodeChunkMap
+    (Topo.World.twVegetation world)
+    (encodeVegetationChunk (Topo.World.twConfig world))
+  Right $ object
+    [ "chunk_count" .= IntMap.size (Topo.World.twTerrain world)
+    , "climate_count" .= IntMap.size (Topo.World.twClimate world)
+    , "river_count" .= IntMap.size (Topo.World.twRivers world)
+    , "vegetation_count" .= IntMap.size (Topo.World.twVegetation world)
+    , "chunk_size" .= Topo.Types.wcChunkSize (Topo.World.twConfig world)
+    , "terrain" .= Object terrainObj
+    , "climate" .= Object climateObj
+    , "vegetation" .= Object vegetationObj
+    ]
+
+encodeChunkMap
+  :: IntMap.IntMap a
+  -> (a -> Either ExportError BS.ByteString)
+  -> Either Text (KM.KeyMap Value)
+encodeChunkMap chunks encodeChunk = do
+  pairs <- traverse encodeOne (IntMap.toList chunks)
+  Right (KM.fromList pairs)
+  where
+    encodeOne (chunkId, chunk) = do
+      encoded <- firstExportError (encodeChunk chunk)
+      Right
+        ( Key.fromText (Text.pack (show chunkId))
+        , Aeson.toJSON (BS.unpack encoded)
+        )
+
+firstExportError :: Either ExportError a -> Either Text a
+firstExportError (Right value) = Right value
+firstExportError (Left err) = Left (renderExportError err)
+
+renderExportError :: ExportError -> Text
+renderExportError err =
+  case err of
+    ExportLengthMismatch label expected actual ->
+      "length mismatch for " <> label
+        <> ": expected " <> tshow expected
+        <> ", actual " <> tshow actual
+    ExportDecodeError msg ->
+      "decode error: " <> msg
+
+tshow :: Show a => a -> Text
+tshow = Text.pack . show
+
+terrainWritesFromPayload :: KM.KeyMap Value -> Either Text TerrainWrites
+terrainWritesFromPayload payload = do
+  let chunkSize = lookupChunkSize payload
+  terrain <- decodeChunkSection payload "terrain" decodeTerrainChunk chunkSize
+  climate <- decodeChunkSection payload "climate" decodeClimateChunk chunkSize
+  vegetation <- decodeChunkSection payload "vegetation" decodeVegetationChunk chunkSize
+  Right TerrainWrites
+    { twrTerrain = terrain
+    , twrClimate = climate
+    , twrVegetation = vegetation
+    }
+
+applyTerrainPayload
+  :: Topo.World.TerrainWorld
+  -> KM.KeyMap Value
+  -> Either Text Topo.World.TerrainWorld
+applyTerrainPayload world payload = do
+  writes <- terrainWritesFromPayload payload
+  Right (applyTerrainWrites writes world)
+
+decodeChunkSection
+  :: KM.KeyMap Value
+  -> Text
+  -> (Topo.Types.WorldConfig -> BS.ByteString -> Either ExportError a)
+  -> Topo.Types.WorldConfig
+  -> Either Text (IntMap.IntMap a)
+decodeChunkSection payload fieldName decodeChunk config =
+  case KM.lookup (Key.fromText fieldName) payload of
+    Nothing -> Right IntMap.empty
+    Just Null -> Right IntMap.empty
+    Just (Object chunkMap) ->
+      IntMap.fromList <$> traverse decodeOne (KM.toList chunkMap)
+    Just _ -> Left (fieldName <> " payload must be an object")
+  where
+    decodeOne (chunkKey, rawChunkBytes) = do
+      chunkId <- parseChunkId (Key.toText chunkKey)
+      bytes <- decodeByteArray rawChunkBytes
+      decoded <- firstExportError (decodeChunk config bytes)
+      Right (chunkId, decoded)
+
+parseChunkId :: Text -> Either Text Int
+parseChunkId rawChunkId =
+  case readMaybe (Text.unpack rawChunkId) of
+    Nothing -> Left ("invalid chunk id: " <> rawChunkId)
+    Just chunkId -> Right chunkId
+
+decodeByteArray :: Value -> Either Text BS.ByteString
+decodeByteArray (Aeson.Array values) =
+  BS.pack <$> traverse decodeWord8 (toList values)
+  where
+    toList = foldr (:) []
+decodeByteArray _ = Left "chunk payload must be an array of bytes"
+
+decodeWord8 :: Value -> Either Text Word8
+decodeWord8 (Number n) =
+  let asInteger = floor n :: Integer
+  in if fromInteger asInteger == n && asInteger >= 0 && asInteger <= 255
+      then Right (fromInteger asInteger)
+      else Left "chunk payload byte must be an integer in [0,255]"
+decodeWord8 _ = Left "chunk payload byte must be numeric"
+
+lookupChunkSize :: KM.KeyMap Value -> Topo.Types.WorldConfig
+lookupChunkSize payload =
+  case KM.lookup "chunk_size" payload >>= valueToPositiveInt of
+    Just chunkSize -> Topo.Types.WorldConfig { Topo.Types.wcChunkSize = chunkSize }
+    Nothing -> Topo.Types.WorldConfig { Topo.Types.wcChunkSize = defaultChunkSize }
+  where
+    defaultChunkSize = 64
+
+valueToPositiveInt :: Value -> Maybe Int
+valueToPositiveInt (Number n) =
+  let asInteger = floor n :: Integer
+  in if fromInteger asInteger == n && asInteger > 0 && asInteger <= fromIntegral (maxBound :: Int)
+      then Just (fromInteger asInteger)
+      else Nothing
+valueToPositiveInt _ = Nothing

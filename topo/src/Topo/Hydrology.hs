@@ -245,7 +245,7 @@ defaultGroundwaterConfig = GroundwaterConfig
 -- carving, bank erosion, stream-power erosion, deposition, coastal
 -- reshaping, piedmont smoothing, and wet-area erosion.
 applyHydrologyStage :: HydroConfig -> TerrainFormConfig -> PipelineStage
-applyHydrologyStage cfg formCfg = PipelineStage StageHydrology "applyHydrology" "applyHydrology" $ do
+applyHydrologyStage cfg formCfg = PipelineStage StageHydrology "applyHydrology" "applyHydrology" Nothing [] Nothing $ do
   logInfo "applyHydrology: routing flow + moisture"
   world <- getWorldP
   let config = twConfig world
@@ -311,7 +311,7 @@ applyRiverStage
   -> GroundwaterConfig
   -> Float          -- ^ Water level (from 'HydroConfig')
   -> PipelineStage
-applyRiverStage riverCfg topoCfg gwCfg waterLevel = PipelineStage StageRivers "applyRivers" "applyRivers" $ do
+applyRiverStage riverCfg topoCfg gwCfg waterLevel = PipelineStage StageRivers "applyRivers" "applyRivers" Nothing [] Nothing $ do
   logInfo "applyRivers: routing rivers + groundwater"
   world <- getWorldP
   let config = twConfig world

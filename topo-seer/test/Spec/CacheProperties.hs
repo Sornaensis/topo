@@ -30,6 +30,18 @@ spec = describe "Cache properties" $ do
             updated = updateTerrainCache uiB terrainSnap cacheA
         in not (sameTerrainCache updated cacheA)
 
+  it "invalidates terrain cache when switching to or from weather view" $
+    property $ \(Positive chunkSize) ->
+      let terrainSnap = emptyTerrainSnapshot { tsChunkSize = chunkSize }
+          uiWeather = emptyUiState { uiViewMode = ViewWeather }
+          uiElevation = emptyUiState { uiViewMode = ViewElevation }
+          cacheWeather = buildTerrainCache uiWeather terrainSnap
+          updatedFromWeather = updateTerrainCache uiElevation terrainSnap cacheWeather
+          cacheElevation = buildTerrainCache uiElevation terrainSnap
+          updatedToWeather = updateTerrainCache uiWeather terrainSnap cacheElevation
+      in not (sameTerrainCache updatedFromWeather cacheWeather)
+         && not (sameTerrainCache updatedToWeather cacheElevation)
+
   it "invalidates terrain cache when water level changes" $
     property $ \(Positive chunkSize) (NonNegative levelA) (NonNegative levelB) ->
       levelA /= levelB ==>
@@ -74,6 +86,7 @@ viewModes =
   [ ViewElevation
   , ViewBiome
   , ViewClimate
+  , ViewWeather
   , ViewMoisture
   , ViewPrecip
   , ViewPlateId

@@ -26,6 +26,9 @@ terrainColor mode waterLevel chunk climateChunk weatherChunk vegChunk mOverlayVa
     ViewClimate ->
       let value = maybe 0 (\c -> ccTempAvg c U.! idx) climateChunk
       in gradientHeat value
+    ViewWeather ->
+      let value = maybe 0 (\w -> wcTemp w U.! idx) weatherChunk
+      in gradientHeat value
     ViewMoisture -> gradientMoisture (tcMoisture chunk U.! idx)
     ViewPrecip ->
       let value = maybe 0 (\c -> ccPrecipAvg c U.! idx) climateChunk

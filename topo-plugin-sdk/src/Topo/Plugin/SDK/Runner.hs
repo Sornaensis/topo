@@ -25,6 +25,7 @@
 module Topo.Plugin.SDK.Runner
   ( -- * Entry point
     runPlugin
+  , runPluginSession
     -- * Manifest generation
   , generateManifest
   , writeManifest
@@ -33,6 +34,8 @@ module Topo.Plugin.SDK.Runner
 import Control.Exception (SomeException, catch)
 import Data.Aeson (Value(..), (.=), object)
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.Map.Strict (Map)
@@ -40,13 +43,13 @@ import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
-import Data.Word (Word64)
 import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>))
 import System.IO (hFlush, stderr, stdin, stdout)
 
 import Topo.Plugin.RPC.Manifest
-  ( RPCCapability(..)
+  ( Capability(..)
+  , RPCCapability
   , RPCGeneratorDecl(..)
   , RPCManifest(..)
   , RPCOverlayDecl(..)
@@ -128,7 +131,7 @@ generateManifest pd = RPCManifest
 -- | Infer capabilities from the plugin definition.
 inferCapabilities :: PluginDef -> [RPCCapability]
 inferCapabilities pd = concat
-  [ [CapRPCLog]
+  [ [CapLog]
   , [CapReadTerrain | hasGen || hasSim]
   , [CapWriteTerrain | hasSim]
   , [CapReadOverlay | hasSim]
@@ -186,8 +189,15 @@ runPlugin pd = do
             [ (paramName p, paramDefault p)
             | p <- pdParams pd
             ]
-      messageLoop pd transport defaultParams
+      runPluginSession pd transport defaultParams
       closeTransport transport
+
+-- | Run the SDK dispatch loop on an already-connected transport.
+--
+-- Intended for in-process integration tests and hosts that manage
+-- transport lifecycle externally.
+runPluginSession :: PluginDef -> Transport -> Map Text Value -> IO ()
+runPluginSession = messageLoop
 
 -- | Main message loop.  Reads RPC envelopes and dispatches them.
 messageLoop :: PluginDef -> Transport -> Map Text Value -> IO ()
@@ -214,26 +224,30 @@ messageLoop pd transport params = do
               sendErrorResponse transport 2 "Plugin has no generator"
               messageLoop pd transport params
             Just gd -> do
-              -- Parse the invocation payload
-              let mergedParams = case Aeson.fromJSON (envPayload envelope) of
-                    Aeson.Success (ig :: InvokeGenerator) ->
-                      Map.union (igConfig ig) params
-                    Aeson.Error _ -> params
-                  ctx = PluginContext
-                    { pcWorld  = stubWorld  -- Populated by host payload
-                    , pcParams = mergedParams
-                    , pcSeed   = extractSeed envelope
-                    , pcLog    = sendLogMessage transport
-                    }
-              runResult <- catch
-                (gdRun gd ctx)
-                (\e -> pure (Left (Text.pack (show (e :: SomeException)))))
-              case runResult of
-                Left errMsg ->
-                  sendErrorResponse transport 3 errMsg
-                Right () ->
-                  sendGeneratorResult transport
-              messageLoop pd transport mergedParams
+              case Aeson.fromJSON (envPayload envelope) of
+                Aeson.Error _ -> do
+                  sendErrorResponse transport 6 "Invalid invoke_generator payload"
+                  messageLoop pd transport params
+                Aeson.Success (ig :: InvokeGenerator) -> do
+                  let mergedParams = Map.union (igConfig ig) params
+                      ctx = PluginContext
+                        { pcWorld = stubWorld
+                        , pcParams = mergedParams
+                        , pcTerrain = igTerrain ig
+                        , pcOwnOverlay = Nothing
+                        , pcOverlays = Map.empty
+                        , pcSeed = igSeed ig
+                        , pcLog = sendLogMessage transport
+                        }
+                  runResult <- catch
+                    (gdRun gd ctx)
+                    (\e -> pure (Left (Text.pack (show (e :: SomeException)))))
+                  case runResult of
+                    Left errMsg ->
+                      sendErrorResponse transport 3 errMsg
+                    Right generatorResult ->
+                      sendGeneratorResult transport generatorResult
+                  messageLoop pd transport mergedParams
 
         MsgInvokeSimulation -> do
           case pdSimulation pd of
@@ -241,25 +255,30 @@ messageLoop pd transport params = do
               sendErrorResponse transport 4 "Plugin has no simulation"
               messageLoop pd transport params
             Just sd -> do
-              let mergedParams = case Aeson.fromJSON (envPayload envelope) of
-                    Aeson.Success (is' :: InvokeSimulation) ->
-                      Map.union (isConfig is') params
-                    Aeson.Error _ -> params
-                  ctx = PluginContext
-                    { pcWorld  = stubWorld
-                    , pcParams = mergedParams
-                    , pcSeed   = 0
-                    , pcLog    = sendLogMessage transport
-                    }
-              runResult <- catch
-                (sdTick sd ctx)
-                (\e -> pure (Left (Text.pack (show (e :: SomeException)))))
-              case runResult of
-                Left errMsg ->
-                  sendErrorResponse transport 5 errMsg
-                Right () ->
-                  sendSimulationResult transport
-              messageLoop pd transport mergedParams
+              case Aeson.fromJSON (envPayload envelope) of
+                Aeson.Error _ -> do
+                  sendErrorResponse transport 7 "Invalid invoke_simulation payload"
+                  messageLoop pd transport params
+                Aeson.Success (is' :: InvokeSimulation) -> do
+                  let mergedParams = Map.union (isConfig is') params
+                      ctx = PluginContext
+                        { pcWorld = stubWorld
+                        , pcParams = mergedParams
+                        , pcTerrain = isTerrain is'
+                        , pcOwnOverlay = Just (isOwnOverlay is')
+                        , pcOverlays = valueObjectToMap (isOverlays is')
+                        , pcSeed = 0
+                        , pcLog = sendLogMessage transport
+                        }
+                  runResult <- catch
+                    (sdTick sd ctx)
+                    (\e -> pure (Left (Text.pack (show (e :: SomeException)))))
+                  case runResult of
+                    Left errMsg ->
+                      sendErrorResponse transport 5 errMsg
+                    Right simulationResult ->
+                      sendSimulationResult transport simulationResult
+                  messageLoop pd transport mergedParams
 
         -- Ignore unknown message types
         _ -> messageLoop pd transport params
@@ -267,12 +286,6 @@ messageLoop pd transport params = do
 ------------------------------------------------------------------------
 -- Response helpers
 ------------------------------------------------------------------------
-
--- | Extract seed from an invoke_generator payload.
-extractSeed :: RPCEnvelope -> Word64
-extractSeed env = case Aeson.fromJSON (envPayload env) of
-  Aeson.Success (ig :: InvokeGenerator) -> igSeed ig
-  Aeson.Error _ -> 0
 
 -- | Send an error response.
 sendErrorResponse :: Transport -> Int -> Text -> IO ()
@@ -287,32 +300,40 @@ sendErrorResponse transport code msg = do
   _ <- sendMessage transport (encodeMessage envelope)
   pure ()
 
--- | Send a generator result (stub — empty terrain).
-sendGeneratorResult :: Transport -> IO ()
-sendGeneratorResult transport = do
+-- | Send a generator result payload.
+sendGeneratorResult :: Transport -> GeneratorTickResult -> IO ()
+sendGeneratorResult transport result = do
   let envelope = RPCEnvelope
         { envType = MsgGeneratorResult
         , envPayload = Aeson.toJSON GeneratorResult
-            { grTerrain  = object []
-            , grOverlay  = Nothing
-            , grMetadata = Nothing
+            { grTerrain  = gtrTerrain result
+            , grOverlay  = gtrOverlay result
+            , grMetadata = gtrMetadata result
             }
         }
   _ <- sendMessage transport (encodeMessage envelope)
   pure ()
 
--- | Send a simulation result (stub — empty overlay).
-sendSimulationResult :: Transport -> IO ()
-sendSimulationResult transport = do
+-- | Send a simulation result payload.
+sendSimulationResult :: Transport -> SimulationTickResult -> IO ()
+sendSimulationResult transport result = do
   let envelope = RPCEnvelope
         { envType = MsgSimulationResult
         , envPayload = Aeson.toJSON SimulationResult
-            { srOverlay       = object []
-            , srTerrainWrites = Nothing
+            { srOverlay       = strOverlay result
+            , srTerrainWrites = strTerrainWrites result
             }
         }
   _ <- sendMessage transport (encodeMessage envelope)
   pure ()
+
+valueObjectToMap :: Value -> Map Text Value
+valueObjectToMap (Object keyMap) =
+  Map.fromList
+    [ (Key.toText key, value)
+    | (key, value) <- KM.toList keyMap
+    ]
+valueObjectToMap _ = Map.empty
 
 -- | Send a log message to the host.
 sendLogMessage :: Transport -> Text -> IO ()

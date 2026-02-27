@@ -126,7 +126,7 @@ lushBiomeConfig = BiomeConfig
 -- in 'vegDensity' on 'VegetationChunk'.  Does /not/ overwrite
 -- 'tcFertility', which retains its soil-derived meaning.
 classifyBiomesStage :: BiomeConfig -> Float -> PipelineStage
-classifyBiomesStage cfg waterLevel = PipelineStage StageBiomes "classifyBiomes" "classifyBiomes" $ do
+classifyBiomesStage cfg waterLevel = PipelineStage StageBiomes "classifyBiomes" "classifyBiomes" Nothing [] Nothing $ do
   logInfo "classifyBiomes: assigning biome ids"
   modifyWorldP $ \world ->
     let config = twConfig world

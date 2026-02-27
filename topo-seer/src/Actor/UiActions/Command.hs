@@ -11,7 +11,7 @@ module Actor.UiActions.Command
   ) where
 
 import Actor.AtlasCache (AtlasKey(..))
-import Actor.PluginManager (PluginManager, getPluginStages, refreshManifests)
+import Actor.PluginManager (PluginManager, getPluginOverlaySchemas, getPluginStages, refreshManifests)
 import Actor.Simulation (Simulation)
 import Actor.AtlasManager (AtlasJob(..), AtlasManager, enqueueAtlasBuild)
 import Actor.Data
@@ -191,6 +191,7 @@ viewModeLabel mode =
     ViewElevation -> "Elevation"
     ViewBiome -> "Biome"
     ViewClimate -> "Climate"
+    ViewWeather -> "Weather"
     ViewMoisture -> "Moisture"
     ViewPrecip -> "Precip"
     ViewPlateId -> "PlateId"
@@ -221,6 +222,7 @@ startGeneration req = do
   -- Hot-reload plugin manifests and collect plugin pipeline stages
   refreshManifests pluginHandle
   pluginStages <- getPluginStages pluginHandle
+  overlaySchemas <- getPluginOverlaySchemas pluginHandle
   let cfg = applyUiConfig uiSnap defaultWorldGenConfig
       request = TerrainGenRequest
         { tgrSeed = uiSeed uiSnap
@@ -228,6 +230,7 @@ startGeneration req = do
         , tgrGenConfig = cfg
         , tgrDisabledStages = uiDisabledStages uiSnap
         , tgrExtraStages = pluginStages
+        , tgrOverlaySchemas = overlaySchemas
         , tgrSimHandle = uarSimulationHandle req
         }
   startTerrainGen (uarTerrainHandle req) (uarTerrainReplyTo req) request

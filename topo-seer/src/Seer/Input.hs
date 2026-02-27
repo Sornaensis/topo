@@ -11,7 +11,7 @@ module Seer.Input
   ) where
 
 import Actor.Data (Data, DataSnapshot(..), DataSnapshotReply, TerrainSnapshot(..), replaceTerrainData, requestDataSnapshot)
-import Actor.Log (Log, LogLevel(..), LogSnapshot(..), setLogCollapsed, setLogMinLevel, setLogScroll)
+import Actor.Log (Log, LogEntry(..), LogLevel(..), LogSnapshot(..), appendLog, setLogCollapsed, setLogMinLevel, setLogScroll)
 import Actor.Terrain (Terrain, TerrainReplyOps)
 import Actor.UI
   ( ConfigTab(..)
@@ -26,6 +26,7 @@ import Actor.UI
   , setUiConfigScroll
   , setUiContextHex
   , setUiContextPos
+  , setUiHexTooltipPinned
   , setUiErosionHydraulic
   , setUiErosionMaxDrop
   , setUiErosionHydDeposit
@@ -306,7 +307,7 @@ import System.Random (randomIO)
 import Hyperspace.Actor (ActorHandle, Protocol, replyTo)
 import Actor.AtlasManager (AtlasManager)
 import Actor.PluginManager (PluginManager, setPluginOrder)
-import Actor.Simulation (Simulation, requestSimTick)
+import Actor.Simulation (Simulation, requestSimTick, setSimWorld)
 import Actor.SnapshotReceiver (SnapshotReceiver)
 import Actor.UiActions (UiActions, UiAction(..), UiActionRequest(..), submitUiAction)
 
@@ -468,19 +469,12 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
       | SDL.mouseButtonEventMotion btnEvent == SDL.Released ->
           case SDL.mouseButtonEventButton btnEvent of
             SDL.ButtonRight -> do
-              let SDL.P (V2 mx my) = SDL.mouseButtonEventPos btnEvent
               state <- readIORef dragRef
               writeIORef dragRef Nothing
               case state of
                 Just DragState { dsDragging = False } -> do
                   uiSnap <- getUiSnapshot uiHandle
-                  terrainSnap <- getTerrainSnapshot dataHandle
-                  let (wx, wy) = screenToWorld uiSnap (fromIntegral mx, fromIntegral my)
-                      (q, r) = screenToAxial 6 (round wx) (round wy)
-                  if isTerrainHex terrainSnap (q, r)
-                    then setUiContextHex uiHandle (Just (q, r))
-                    else setUiContextHex uiHandle Nothing
-                  setUiContextPos uiHandle (Just (fromIntegral mx, fromIntegral my))
+                  setUiHexTooltipPinned uiHandle (not (uiHexTooltipPinned uiSnap))
                 _ -> pure ()
             _ -> pure ()
     SDL.TextInputEvent textEvent -> do
@@ -651,6 +645,7 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
               case result of
                 Right (_manifest, snapshot, world) -> do
                   replaceTerrainData dataHandle world
+                  setSimWorld simulationHandle world
                   setUiOverlayNames uiHandle (overlayNames (twOverlays world))
                   requestDataSnapshot dataHandle (replyTo @DataSnapshotReply snapshotReceiverHandle)
                   applySnapshotToUi snapshot uiHandle
@@ -712,6 +707,7 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
       logHeight = if lsCollapsed logSnap then 24 else 160
       seedWidth = max 120 (seedMaxDigits * 10)
       layout = layoutForSeed (V2 (fromIntegral winW) (fromIntegral winH)) logHeight seedWidth
+      simWorldReady = dsTerrainChunks dataSnapCached > 0
       seedValue = configSeedValueRect layout
       scrollArea = configScrollAreaRect layout
       scrollBar = configScrollBarRect layout
@@ -723,7 +719,7 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
       widgetsAll = buildWidgets layout ++ buildPluginWidgets (uiPluginNames uiSnap) layout
       widgets =
         if uiShowConfig uiSnap
-          then filter (configWidgetAllowed (uiConfigTab uiSnap)) widgetsAll
+          then filter (configWidgetAllowed simWorldReady (uiConfigTab uiSnap)) widgetsAll
           else widgetsAll
       isConfigSliderWidget wid =
         case wid of
@@ -1151,7 +1147,7 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
             Just wid -> Just wid
             Nothing -> hitTest otherWidgets point
           else hitTest widgets point
-      configWidgetAllowed tab widget =
+      configWidgetAllowed simReady tab widget =
         case widgetId widget of
           WidgetConfigWaterMinus -> tab == ConfigClimate
           WidgetConfigWaterPlus -> tab == ConfigClimate
@@ -1573,7 +1569,7 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           WidgetConfigInlandSeaMinSizePlus -> tab == ConfigErosion
           WidgetConfigRoughnessScaleMinus -> tab == ConfigErosion
           WidgetConfigRoughnessScalePlus -> tab == ConfigErosion
-          WidgetSimTick -> tab == ConfigPipeline
+          WidgetSimTick -> tab == ConfigPipeline && simReady
           WidgetSimAutoTick -> tab == ConfigPipeline
           WidgetPluginMoveUp _  -> tab == ConfigPipeline
           WidgetPluginMoveDown _ -> tab == ConfigPipeline
@@ -2048,7 +2044,7 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           ; Just WidgetViewBiome -> whenLeftView (submit (UiActionSetViewMode ViewBiome))
           ; Just WidgetViewClimate -> whenLeftView (submit (UiActionSetViewMode ViewClimate))
           ; Just WidgetViewMoisture -> whenLeftView (submit (UiActionSetViewMode ViewMoisture))
-          ; Just WidgetViewPrecip -> whenLeftView (submit (UiActionSetViewMode ViewPrecip))
+          ; Just WidgetViewPrecip -> whenLeftView (submit (UiActionSetViewMode ViewWeather))
           ; Just WidgetViewPlateId -> whenLeftView (submit (UiActionSetViewMode ViewPlateId))
           ; Just WidgetViewPlateBoundary -> whenLeftView (submit (UiActionSetViewMode ViewPlateBoundary))
           ; Just WidgetViewPlateHardness -> whenLeftView (submit (UiActionSetViewMode ViewPlateHardness))
@@ -2079,8 +2075,13 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
                   setUiDisabledStages uiHandle closed
           ; Just WidgetSimTick -> whenConfigVisible $ do
               let count = uiSimTickCount uiSnap
-              setUiSimTickCount uiHandle (count + 1)
-              requestSimTick simulationHandle (count + 1)
+                  hasTerrain = dsTerrainChunks dataSnapCached > 0
+              if hasTerrain
+                then do
+                  appendLog logHandle (LogEntry LogInfo (Text.pack ("ui: tick button pressed -> request tick " <> show (count + 1))))
+                  requestSimTick simulationHandle (count + 1)
+                else
+                  appendLog logHandle (LogEntry LogWarn "ui: tick ignored (no world terrain loaded yet)")
           ; Just WidgetSimAutoTick -> whenConfigVisible $ do
               setUiSimAutoTick uiHandle (not (uiSimAutoTick uiSnap))
           ; Just (WidgetPluginMoveUp name) -> whenConfigVisible $ do
@@ -2245,6 +2246,7 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
         case result of
           Right (_manifest, snapshot, world) -> do
             replaceTerrainData dataHandle world
+            setSimWorld simulationHandle world
             setUiOverlayNames uiHandle (overlayNames (twOverlays world))
             requestDataSnapshot dataHandle (replyTo @DataSnapshotReply snapshotReceiverHandle)
             applySnapshotToUi snapshot uiHandle

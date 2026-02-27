@@ -23,7 +23,7 @@
 --       , gdRequires    = ["erosion"]
 --       , gdRun         = \\ctx -> do
 --           pcLog ctx "Hello from my plugin!"
---           pure (Right ())
+--           pure (Right defaultGeneratorTickResult)
 --       }
 --   }
 -- @
@@ -52,10 +52,26 @@ module Topo.Plugin.SDK
   , ParamType(..)
     -- * Generator
   , GeneratorDef(..)
+  , GeneratorTickResult(..)
+  , defaultGeneratorTickResult
     -- * Simulation
   , SimulationDef(..)
+  , SimulationTickResult(..)
+  , defaultSimulationTickResult
     -- * Context
   , PluginContext(..)
+    -- * Typed payload helpers
+  , decodeOwnOverlay
+  , decodeDependencyOverlay
+  , decodeTerrainPayload
+  , decodeTerrainWritesPayload
+  , encodeOverlayPayload
+  , encodeTerrainPayload
+  , encodeTerrainWritesPayload
+  , simulationResultFromOverlay
+  , simulationResultWithTerrainWrites
+  , generatorResultFromTerrain
+  , generatorResultFromTerrainAndOverlay
     -- * Entry point
   , runPlugin
     -- * Manifest utilities
@@ -64,4 +80,5 @@ module Topo.Plugin.SDK
   ) where
 
 import Topo.Plugin.SDK.Types
+import Topo.Plugin.SDK.Payload
 import Topo.Plugin.SDK.Runner (runPlugin, generateManifest, writeManifest)

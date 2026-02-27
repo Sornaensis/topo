@@ -28,13 +28,25 @@ module Actor.Simulation
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
+import Control.Monad (when)
 import GHC.Clock (getMonotonicTimeNSec)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
+import qualified Data.IntMap.Strict as IntMap
 
+import Actor.AtlasCache (AtlasKey(..))
+import Actor.AtlasManager
+  ( AtlasManager
+  , AtlasJob(..)
+  , enqueueAtlasBuild
+  )
 import Actor.Data
   ( Data
+  , DataSnapshotReply
+  , TerrainSnapshot(..)
+  , getTerrainSnapshot
   , replaceTerrainData
+  , requestDataSnapshot
   )
 import Actor.Log
   ( Log
@@ -42,8 +54,11 @@ import Actor.Log
   , LogLevel(..)
   , appendLog
   )
+import Actor.SnapshotReceiver (SnapshotReceiver)
 import Actor.UI
   ( Ui
+  , UiState(..)
+  , getUiSnapshot
   , setUiSimTickCount
   , setUiOverlayNames
   )
@@ -80,9 +95,11 @@ import Data.Aeson (fromJSON, Result(..), Value)
 
 -- | Handles the simulation actor needs for pushing results.
 data SimHandles = SimHandles
-  { shDataHandle :: !(ActorHandle Data (Protocol Data))
-  , shLogHandle  :: !(ActorHandle Log (Protocol Log))
-  , shUiHandle   :: !(ActorHandle Ui (Protocol Ui))
+  { shDataHandle     :: !(ActorHandle Data (Protocol Data))
+  , shLogHandle      :: !(ActorHandle Log (Protocol Log))
+  , shUiHandle       :: !(ActorHandle Ui (Protocol Ui))
+  , shSnapshotHandle :: !(ActorHandle SnapshotReceiver (Protocol SnapshotReceiver))
+  , shAtlasHandle    :: !(ActorHandle AtlasManager (Protocol AtlasManager))
   }
 
 -- | Internal simulation state.
@@ -97,6 +114,8 @@ data SimState = SimState
     -- ^ Last tick count processed (for delta computation).
   , ssHandles    :: !(Maybe SimHandles)
     -- ^ Actor handles for pushing results.
+  , ssPendingTick :: !(Maybe Word64)
+    -- ^ Latest requested tick queued while simulation is not ready.
   }
 
 emptySimState :: SimState
@@ -106,6 +125,7 @@ emptySimState = SimState
   , ssCalCfg   = Nothing
   , ssLastTick = 0
   , ssHandles  = Nothing
+  , ssPendingTick = Nothing
   }
 
 -- ---------------------------------------------------------------------------
@@ -127,28 +147,34 @@ actor Simulation
 
   initial emptySimState
   on_ setWorld = \world st -> do
-    let calCfg   = mkCalendarConfig (twPlanet world)
-        -- Extract weather config from the stored generation config.
-        weatherCfg = extractWeatherConfig (twGenConfig world)
-        nodes    = builtinSimNodes weatherCfg
+    let calCfg = mkCalendarConfig (twPlanet world)
+    let weatherCfg = extractWeatherConfig (twGenConfig world)
+    let nodes = builtinSimNodes weatherCfg
+    let worldTick = wtTick (twWorldTime world)
+    case ssHandles st of
+      Just handles -> setUiSimTickCount (shUiHandle handles) worldTick
+      Nothing -> pure ()
     case buildSimDAG nodes of
       Left err -> do
         logMsg st ("simulation: failed to build DAG: " <> err)
-        pure st
-          { ssWorld  = Just world
-          , ssDAG    = Nothing
-          , ssCalCfg = Just calCfg
-          , ssLastTick = wtTick (twWorldTime world)
-          }
+        let st' = st { ssWorld = Just world
+                     , ssDAG = Nothing
+                     , ssCalCfg = Just calCfg
+                     , ssLastTick = worldTick
+                     }
+        maybeProcessPendingTick st'
       Right dag -> do
-        logMsg st ("simulation: DAG built, "
-          <> Text.pack (show (length nodes)) <> " nodes")
-        pure st
-          { ssWorld  = Just world
-          , ssDAG    = Just dag
-          , ssCalCfg = Just calCfg
-          , ssLastTick = wtTick (twWorldTime world)
-          }
+        logMsg st ("simulation: setWorld accepted"
+          <> " tick=" <> Text.pack (show worldTick)
+          <> " terrainChunks=" <> Text.pack (show (IntMap.size (twTerrain world)))
+          <> " climateChunks=" <> Text.pack (show (IntMap.size (twClimate world)))
+          <> " nodes=" <> Text.pack (show (length nodes)))
+        let st' = st { ssWorld = Just world
+                     , ssDAG = Just dag
+                     , ssCalCfg = Just calCfg
+                     , ssLastTick = worldTick
+                     }
+        maybeProcessPendingTick st'
   onPure_ clearWorld = \() st -> st
     { ssWorld  = Nothing
     , ssDAG    = Nothing
@@ -156,47 +182,10 @@ actor Simulation
     , ssLastTick = 0
     }
   on_ tick = \requestedTick st ->
-    case (ssWorld st, ssDAG st, ssCalCfg st, ssHandles st) of
-      (Just world, Just dag, Just calCfg, Just handles) -> do
-        let wt      = twWorldTime world
-            dt      = requestedTick - ssLastTick st
-            calDate = tickToDate calCfg wt
-            store   = twOverlays world
-        tStart <- getMonotonicTimeNSec
-        result <- tickSimulation dag
-                    (simProgressCb handles)
-                    world store calDate wt dt
-        tEnd <- getMonotonicTimeNSec
-        let elapsedMs = fromIntegral (tEnd - tStart) / (1e6 :: Double)
-        case result of
-          Left err -> do
-            logMsg st ("simulation: tick failed: " <> err)
-            pure st
-          Right (newStore, terrainWrites) -> do
-            let world'  = applyTerrainWrites terrainWrites world
-                world'' = world'
-                  { twOverlays  = newStore
-                  , twWorldTime = advanceTicks dt wt
-                  }
-            -- Push updated chunks to the Data actor for rendering
-            replaceTerrainData (shDataHandle handles) world''
-            -- Push overlay names to the UI for the overlay selector
-            setUiOverlayNames (shUiHandle handles) (overlayNames (twOverlays world''))
-            -- Update the tick counter in the UI
-            setUiSimTickCount (shUiHandle handles) requestedTick
-            appendLog (shLogHandle handles)
-              (LogEntry LogDebug
-                ("simulation: tick " <> Text.pack (show requestedTick)
-                  <> " completed in " <> Text.pack (show (round elapsedMs :: Int)) <> "ms"))
-            pure st
-              { ssWorld    = Just world''
-              , ssLastTick = requestedTick
-              }
-      _ -> do
-        logMsg st "simulation: tick ignored (no world or DAG)"
-        pure st
-  onPure_ setHandles = \handles _st -> emptySimState
-    { ssHandles = Just handles }
+    processTick requestedTick st
+  on_ setHandles = \handles st -> do
+    let st' = st { ssHandles = Just handles }
+    maybeProcessPendingTick st'
 |]
 
 -- ---------------------------------------------------------------------------
@@ -220,19 +209,23 @@ requestSimTick :: ActorHandle Simulation (Protocol Simulation) -> Word64 -> IO (
 requestSimTick handle tickTarget =
   cast @"tick" handle #tick tickTarget
 
--- | Wire the data, log, and UI handles into the simulation actor.
+-- | Wire the data, log, UI, snapshot, and atlas handles into the simulation actor.
 -- Must be called before any tick requests.
 setSimHandles
   :: ActorHandle Simulation (Protocol Simulation)
   -> ActorHandle Data (Protocol Data)
   -> ActorHandle Log (Protocol Log)
   -> ActorHandle Ui (Protocol Ui)
+  -> ActorHandle SnapshotReceiver (Protocol SnapshotReceiver)
+  -> ActorHandle AtlasManager (Protocol AtlasManager)
   -> IO ()
-setSimHandles simH dataH logH uiH =
+setSimHandles simH dataH logH uiH snapshotH atlasH =
   cast @"setHandles" simH #setHandles SimHandles
     { shDataHandle = dataH
-    , shLogHandle  = logH
-    , shUiHandle   = uiH
+    , shLogHandle = logH
+    , shUiHandle = uiH
+    , shSnapshotHandle = snapshotH
+    , shAtlasHandle = atlasH
     }
 
 -- ---------------------------------------------------------------------------
@@ -272,3 +265,93 @@ simProgressCb handles prog =
         SimFailed e  -> "FAILED: " <> e
       msg = "sim: node " <> nid <> " " <> status
   in appendLog (shLogHandle handles) (LogEntry LogDebug msg)
+
+isReadyForTick :: SimState -> Bool
+isReadyForTick st =
+  case (ssWorld st, ssDAG st, ssCalCfg st, ssHandles st) of
+    (Just _, Just _, Just _, Just _) -> True
+    _ -> False
+
+maybeProcessPendingTick :: SimState -> IO SimState
+maybeProcessPendingTick st =
+  case ssPendingTick st of
+    Nothing -> pure st
+    Just pending
+      | isReadyForTick st ->
+          processTick pending st { ssPendingTick = Nothing }
+      | otherwise -> pure st
+
+processTick :: Word64 -> SimState -> IO SimState
+processTick requestedTick st =
+  case (ssWorld st, ssDAG st, ssCalCfg st, ssHandles st) of
+    (Just world, Just dag, Just calCfg, Just handles) -> do
+      let wt      = twWorldTime world
+          dt
+            | requestedTick > ssLastTick st = requestedTick - ssLastTick st
+            | otherwise = 1
+          appliedTick = ssLastTick st + dt
+          calDate = tickToDate calCfg wt
+          store   = twOverlays world
+      when (requestedTick <= ssLastTick st) $
+        appendLog (shLogHandle handles)
+          (LogEntry LogInfo
+            ("simulation: requested tick " <> Text.pack (show requestedTick)
+              <> " <= last tick " <> Text.pack (show (ssLastTick st))
+              <> "; applying single-step tick to " <> Text.pack (show appliedTick)))
+      tStart <- getMonotonicTimeNSec
+      result <- tickSimulation dag
+                  (simProgressCb handles)
+                  world store calDate wt dt
+      tEnd <- getMonotonicTimeNSec
+      let elapsedMs = fromIntegral (tEnd - tStart) / (1e6 :: Double)
+      case result of
+        Left err -> do
+          logMsg st ("simulation: tick failed: " <> err)
+          pure st
+        Right (newStore, terrainWrites) -> do
+          let world'  = applyTerrainWrites terrainWrites world
+              world'' = world'
+                { twOverlays  = newStore
+                , twWorldTime = advanceTicks dt wt
+                }
+          replaceTerrainData (shDataHandle handles) world''
+          setUiOverlayNames (shUiHandle handles) (overlayNames (twOverlays world''))
+          setUiSimTickCount (shUiHandle handles) appliedTick
+          requestDataSnapshot (shDataHandle handles)
+            (replyTo @DataSnapshotReply (shSnapshotHandle handles))
+          terrainSnap <- getTerrainSnapshot (shDataHandle handles)
+          uiSnap <- getUiSnapshot (shUiHandle handles)
+          let atlasKey = AtlasKey (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
+              mkJob scale = AtlasJob
+                { ajKey = atlasKey
+                , ajViewMode = uiViewMode uiSnap
+                , ajWaterLevel = uiRenderWaterLevel uiSnap
+                , ajTerrain = terrainSnap
+                , ajScale = scale
+                }
+          mapM_ (enqueueAtlasBuild (shAtlasHandle handles) . mkJob) [1 .. 6]
+          appendLog (shLogHandle handles)
+            (LogEntry LogInfo
+              ("simulation: tick " <> Text.pack (show appliedTick)
+                <> " completed in " <> Text.pack (show (round elapsedMs :: Int)) <> "ms"))
+          pure st
+            { ssWorld    = Just world''
+            , ssLastTick = appliedTick
+            }
+    _ -> do
+      let hasWorld  = maybe "False" (const "True") (ssWorld st)
+          hasDag    = maybe "False" (const "True") (ssDAG st)
+          hasCalCfg = maybe "False" (const "True") (ssCalCfg st)
+          hasHandles = maybe "False" (const "True") (ssHandles st)
+          queuedTarget = maybe "none" (Text.pack . show) (ssPendingTick st)
+          queued' = case ssPendingTick st of
+            Nothing -> requestedTick
+            Just prev -> max prev requestedTick
+      logMsg st ("simulation: tick deferred (not ready)"
+        <> " requested=" <> Text.pack (show requestedTick)
+        <> " hasWorld=" <> hasWorld
+        <> " hasDag=" <> hasDag
+        <> " hasCalCfg=" <> hasCalCfg
+        <> " hasHandles=" <> hasHandles
+        <> " pending=" <> queuedTarget)
+      pure st { ssPendingTick = Just queued' }

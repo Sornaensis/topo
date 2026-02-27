@@ -249,6 +249,7 @@ module Actor.UI
   , setUiWorldSelected
   , setUiContextHex
   , setUiContextPos
+  , setUiHexTooltipPinned
   , setUiDisabledStages
   , setUiPluginParam
   , setUiPluginNames
@@ -286,6 +287,7 @@ data ViewMode
   = ViewElevation
   | ViewBiome
   | ViewClimate
+  | ViewWeather
   | ViewMoisture
   | ViewPrecip
   | ViewPlateId
@@ -363,6 +365,7 @@ data UiState = UiState
   , uiPresetSelected :: !Int
   , uiContextHex :: !(Maybe (Int, Int))
   , uiContextPos :: !(Maybe (Int, Int))
+  , uiHexTooltipPinned :: !Bool
   , uiSeedEditing :: !Bool
   , uiSeedInput :: !Text
   , uiWaterLevel :: !Float
@@ -620,6 +623,7 @@ emptyUiState = UiState
   , uiPresetSelected = 0
   , uiContextHex = Nothing
   , uiContextPos = Nothing
+  , uiHexTooltipPinned = False
   , uiSeedEditing = False
   , uiSeedInput = Text.empty
   , uiWaterLevel = 0.5
@@ -873,6 +877,7 @@ data UiUpdate
   | SetPresetSelected !Int
   | SetContextHex !(Maybe (Int, Int))
   | SetContextPos !(Maybe (Int, Int))
+  | SetHexTooltipPinned !Bool
   | SetSeedEditing !Bool
   | SetSeedInput !Text
   | SetWaterLevel !Float
@@ -1124,6 +1129,7 @@ applyUpdate upd st = case upd of
   SetPresetSelected v  -> st { uiPresetSelected = max 0 v }
   SetContextHex v      -> st { uiContextHex = v }
   SetContextPos v      -> st { uiContextPos = v }
+  SetHexTooltipPinned v -> st { uiHexTooltipPinned = v }
   SetSeedEditing v     -> st { uiSeedEditing = v }
   SetSeedInput v       -> st { uiSeedInput = v }
   SetWaterLevel v      -> st { uiWaterLevel = clamp01 v }
@@ -1512,6 +1518,10 @@ setUiContextHex handle hex =
 setUiContextPos :: ActorHandle Ui (Protocol Ui) -> Maybe (Int, Int) -> IO ()
 setUiContextPos handle pos =
   cast @"update" handle #update (SetContextPos pos)
+
+setUiHexTooltipPinned :: ActorHandle Ui (Protocol Ui) -> Bool -> IO ()
+setUiHexTooltipPinned handle pinned =
+  cast @"update" handle #update (SetHexTooltipPinned pinned)
 
 setUiSeedEditing :: ActorHandle Ui (Protocol Ui) -> Bool -> IO ()
 setUiSeedEditing handle flag =

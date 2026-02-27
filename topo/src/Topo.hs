@@ -14,6 +14,7 @@ module Topo
   , module Topo.Overlay.Schema
   , module Topo.Overlay.Index
   , module Topo.Overlay.Export
+  , module Topo.Overlay.JSON
   , module Topo.Overlay.Storage
   , module Topo.Simulation
   , module Topo.Simulation.DAG
@@ -54,6 +55,7 @@ import Topo.Overlay
 import Topo.Overlay.Schema
 import Topo.Overlay.Index
 import Topo.Overlay.Export
+import Topo.Overlay.JSON
 import Topo.Overlay.Storage
 import Topo.Simulation
 import Topo.Simulation.DAG

@@ -23,7 +23,7 @@ import qualified Data.Vector.Unboxed as U
 
 -- | Generate a base-height world using procedural noise.
 generateBaseHeightStage :: GenConfig -> PipelineStage
-generateBaseHeightStage cfg = PipelineStage StageBaseHeight "generateBaseHeight" "generateBaseHeight" $ do
+generateBaseHeightStage cfg = PipelineStage StageBaseHeight "generateBaseHeight" "generateBaseHeight" Nothing [] Nothing $ do
   logInfo "generateBaseHeight: generating base height"
   seed <- asks peSeed
   modifyWorldP $ \world ->
@@ -37,7 +37,7 @@ generateBaseHeightStage cfg = PipelineStage StageBaseHeight "generateBaseHeight"
 
 -- | Generate plate-based terrain as the primary heightmap.
 generatePlateTerrainStage :: GenConfig -> TectonicsConfig -> PipelineStage
-generatePlateTerrainStage cfg tcfg = PipelineStage StagePlateTerrain "generatePlateTerrain" "generatePlateTerrain" $ do
+generatePlateTerrainStage cfg tcfg = PipelineStage StagePlateTerrain "generatePlateTerrain" "generatePlateTerrain" Nothing [] Nothing $ do
   logInfo "generatePlateTerrain: generating plate-based terrain"
   seed <- asks peSeed
   modifyWorldP $ \world ->
