@@ -122,7 +122,8 @@ data PipelineError
 -- 'disabledClosure'.
 runPipeline :: PipelineConfig -> TopoEnv -> TerrainWorld -> IO (Either PipelineError (TerrainWorld, [PipelineSnapshot]))
 runPipeline config env world = do
-  case validateOverlayDependencies world (pipelineStages config) of
+  let seededWorld = world { twSeed = pipelineSeed config }
+  case validateOverlayDependencies seededWorld (pipelineStages config) of
     Left err -> pure (Left (PipelineOverlayDependencyError err))
     Right () -> do
       let logger = teLogger env
@@ -135,7 +136,7 @@ runPipeline config env world = do
           stages = pipelineStages config
           stageCount = length stages
           onProgress = pipelineOnProgress config
-      (result, world') <- runTopoM env world $
+      (result, world') <- runTopoM env seededWorld $
         foldM (runStage pluginEnv allDisabled stageCount onProgress (pipelineSnapshots config))
               (Right (0, []))
               stages

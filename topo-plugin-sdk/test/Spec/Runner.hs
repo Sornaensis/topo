@@ -157,7 +157,8 @@ generatorInvoke :: Word64 -> RPCEnvelope
 generatorInvoke seed = RPCEnvelope
   { envType = MsgInvokeGenerator
   , envPayload = Aeson.toJSON InvokeGenerator
-      { igStageId = "plugin:test"
+      { igPayloadVersion = 1
+      , igStageId = "plugin:test"
       , igSeed = seed
       , igConfig = Map.empty
       , igTerrain = object ["terrain" .= ("summary" :: Text)]
@@ -168,7 +169,8 @@ simulationInvoke :: RPCEnvelope
 simulationInvoke = RPCEnvelope
   { envType = MsgInvokeSimulation
   , envPayload = Aeson.toJSON InvokeSimulation
-      { isNodeId = "simulation"
+      { isPayloadVersion = 1
+      , isNodeId = "simulation"
       , isWorldTime = 5
       , isDeltaTicks = 1
       , isCalendar = object ["year" .= (0 :: Int)]

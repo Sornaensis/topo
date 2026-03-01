@@ -10,10 +10,9 @@ import Data.Proxy (Proxy(..))
 import Data.Text (Text, pack)
 import Topo
 import Topo.Calendar (WorldTime(..), PlanetAge(..), defaultWorldTime, defaultPlanetAge)
-import Topo.Overlay (Overlay(..), OverlayData(..), insertOverlay, lookupOverlay)
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice)
+import Topo.Storage (decodeWorld, decodeWorldWithMetadata, encodeWorld)
 import Topo.Units (UnitScales(..), defaultUnitScales)
-import Topo.Weather (weatherOverlaySchema, weatherChunkToOverlay, getWeatherChunk)
 import Topo.WorldGen (defaultWorldGenConfig)
 
 newtype Note = Note Text
@@ -32,7 +31,6 @@ spec = describe "Storage" $ do
         world0 = emptyWorld config defaultHexGridMeta
         terrain = generateTerrainChunk config (\(TileCoord x y) -> fromIntegral (x + y))
         climate = mkClimateChunk config 0.25
-        weather = mkWeatherChunk config 0.75
         rivers = mkRiverChunk config 0.2
         groundwater = mkGroundwaterChunk config 0.4
         glaciers = mkGlacierChunk config 0.1
@@ -41,9 +39,8 @@ spec = describe "Storage" $ do
                   (setGlacierChunk (ChunkId 0) glaciers
                     (setGroundwaterChunk (ChunkId 0) groundwater
                       (setRiverChunk (ChunkId 0) rivers
-                        (insertWeatherChunkOverlay (ChunkId 0) weather
-                          (setClimateChunk (ChunkId 0) climate
-                            (setTerrainChunk (ChunkId 0) terrain world0))))))
+                        (setClimateChunk (ChunkId 0) climate
+                          (setTerrainChunk (ChunkId 0) terrain world0)))))
     case encodeWorld world1 of
       Left err -> expectationFailure (show err)
       Right encoded ->
@@ -53,7 +50,6 @@ spec = describe "Storage" $ do
             getElevationAt (ChunkId 0) (TileCoord 1 2) world2 `shouldBe` Just 3
             sampleTerrain world2 (WorldPos 1 2) `shouldBe` sampleTerrain world1 (WorldPos 1 2)
             getClimateChunk (ChunkId 0) world2 `shouldSatisfy` isJust
-            getWeatherChunk (ChunkId 0) world2 `shouldSatisfy` isJust
             getRiverChunk (ChunkId 0) world2 `shouldSatisfy` isJust
             getGroundwaterChunk (ChunkId 0) world2 `shouldSatisfy` isJust
             getGlacierChunk (ChunkId 0) world2 `shouldSatisfy` isJust
@@ -189,19 +185,6 @@ mkClimateChunk config base =
       , ccPrecipSeasonality = U.replicate n 0
       }
 
-mkWeatherChunk :: WorldConfig -> Float -> WeatherChunk
-mkWeatherChunk config base =
-  let n = chunkTileCount config
-      temps = U.replicate n base
-  in WeatherChunk
-      { wcTemp = temps
-      , wcHumidity = U.replicate n 0.3
-      , wcWindDir = U.replicate n 0.4
-      , wcWindSpd = U.replicate n 0.5
-      , wcPressure = U.replicate n 0.6
-      , wcPrecip = U.replicate n 0.7
-      }
-
 mkRiverChunk :: WorldConfig -> Float -> RiverChunk
 mkRiverChunk config base =
   let n = chunkTileCount config
@@ -287,19 +270,3 @@ mkVolcanismChunk config base =
       , vcDepositPotential = deposit
       }
 
--- | Insert a 'WeatherChunk' into the overlay store of a 'TerrainWorld'.
--- Uses the weather overlay schema to store the chunk as dense SoA data.
-insertWeatherChunkOverlay :: ChunkId -> WeatherChunk -> TerrainWorld -> TerrainWorld
-insertWeatherChunkOverlay (ChunkId cid) wc world =
-  let fields = weatherChunkToOverlay wc
-      existing = case lookupOverlay "weather" (twOverlays world) of
-        Just ov -> case ovData ov of
-          DenseData m -> m
-          _           -> IntMap.empty
-        Nothing -> IntMap.empty
-      updated = IntMap.insert cid fields existing
-      overlay = Overlay
-        { ovSchema = weatherOverlaySchema
-        , ovData   = DenseData updated
-        }
-  in world { twOverlays = insertOverlay overlay (twOverlays world) }

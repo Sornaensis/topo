@@ -43,7 +43,9 @@ module Topo.Plugin.RPC
 
 import Control.Monad.Except (throwError)
 import Control.Monad.IO.Class (liftIO)
+import Data.Bits ((.&.), (.|.), shiftL, shiftR)
 import qualified Data.ByteString as BS
+import Data.Char (chr, ord)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -201,7 +203,8 @@ invokeGenerator conn terrainData = do
       envelope = RPCEnvelope
         { envType = MsgInvokeGenerator
         , envPayload = Aeson.toJSON InvokeGenerator
-            { igStageId = "plugin:" <> rmName manifest
+          { igPayloadVersion = 1
+          , igStageId = "plugin:" <> rmName manifest
             , igSeed    = 0  -- Seed is set by the pipeline at call time
             , igConfig  = rpcParams conn
             , igTerrain = terrainData
@@ -244,7 +247,8 @@ invokeSimulation conn ctx overlay onProgress onLog = do
       let envelope = RPCEnvelope
             { envType = MsgInvokeSimulation
             , envPayload = Aeson.toJSON InvokeSimulation
-                { isNodeId     = rmName manifest
+              { isPayloadVersion = 1
+              , isNodeId     = rmName manifest
                 , isWorldTime  = wtTick (scWorldTime ctx)
                 , isDeltaTicks = scDeltaTicks ctx
                 , isCalendar   = calendarToJSON (scCalendar ctx)
@@ -453,6 +457,7 @@ hasOnlySummaryKeys keyMap = all (`elem` allowedKeys) (map Key.toText (KM.keys ke
       , "river_count"
       , "vegetation_count"
       , "chunk_size"
+      , "encoding"
       ]
 
 terrainSummaryToJSON :: Topo.World.TerrainWorld -> Value
@@ -463,6 +468,7 @@ terrainSummaryToJSON world =
     , "river_count" .= IntMap.size (Topo.World.twRivers world)
     , "vegetation_count" .= IntMap.size (Topo.World.twVegetation world)
     , "chunk_size" .= Topo.Types.wcChunkSize (Topo.World.twConfig world)
+    , "encoding" .= ("base64" :: Text)
     ]
 
 terrainWorldToPayload :: Topo.World.TerrainWorld -> Either Text Value
@@ -482,6 +488,7 @@ terrainWorldToPayload world = do
     , "river_count" .= IntMap.size (Topo.World.twRivers world)
     , "vegetation_count" .= IntMap.size (Topo.World.twVegetation world)
     , "chunk_size" .= Topo.Types.wcChunkSize (Topo.World.twConfig world)
+    , "encoding" .= ("base64" :: Text)
     , "terrain" .= Object terrainObj
     , "climate" .= Object climateObj
     , "vegetation" .= Object vegetationObj
@@ -499,7 +506,7 @@ encodeChunkMap chunks encodeChunk = do
       encoded <- firstExportError (encodeChunk chunk)
       Right
         ( Key.fromText (Text.pack (show chunkId))
-        , Aeson.toJSON (BS.unpack encoded)
+        , Aeson.String (encodeBase64Text encoded)
         )
 
 firstExportError :: Either ExportError a -> Either Text a
@@ -521,6 +528,7 @@ tshow = Text.pack . show
 
 terrainWritesFromPayload :: KM.KeyMap Value -> Either Text TerrainWrites
 terrainWritesFromPayload payload = do
+  ensureTerrainPayloadEncoding payload
   let chunkSize = lookupChunkSize payload
   terrain <- decodeChunkSection payload "terrain" decodeTerrainChunk chunkSize
   climate <- decodeChunkSection payload "climate" decodeClimateChunk chunkSize
@@ -555,7 +563,7 @@ decodeChunkSection payload fieldName decodeChunk config =
   where
     decodeOne (chunkKey, rawChunkBytes) = do
       chunkId <- parseChunkId (Key.toText chunkKey)
-      bytes <- decodeByteArray rawChunkBytes
+      bytes <- decodeChunkBytes rawChunkBytes
       decoded <- firstExportError (decodeChunk config bytes)
       Right (chunkId, decoded)
 
@@ -565,20 +573,17 @@ parseChunkId rawChunkId =
     Nothing -> Left ("invalid chunk id: " <> rawChunkId)
     Just chunkId -> Right chunkId
 
-decodeByteArray :: Value -> Either Text BS.ByteString
-decodeByteArray (Aeson.Array values) =
-  BS.pack <$> traverse decodeWord8 (toList values)
-  where
-    toList = foldr (:) []
-decodeByteArray _ = Left "chunk payload must be an array of bytes"
+decodeChunkBytes :: Value -> Either Text BS.ByteString
+decodeChunkBytes (Aeson.String raw) = decodeBase64Text raw
+decodeChunkBytes _ = Left "chunk payload must be a base64 string"
 
-decodeWord8 :: Value -> Either Text Word8
-decodeWord8 (Number n) =
-  let asInteger = floor n :: Integer
-  in if fromInteger asInteger == n && asInteger >= 0 && asInteger <= 255
-      then Right (fromInteger asInteger)
-      else Left "chunk payload byte must be an integer in [0,255]"
-decodeWord8 _ = Left "chunk payload byte must be numeric"
+ensureTerrainPayloadEncoding :: KM.KeyMap Value -> Either Text ()
+ensureTerrainPayloadEncoding payload =
+  case KM.lookup "encoding" payload of
+    Just (Aeson.String "base64") -> Right ()
+    Just (Aeson.String value) -> Left ("unsupported terrain payload encoding: " <> value)
+    Just _ -> Left "terrain payload encoding must be a string"
+    Nothing -> Left "terrain payload missing required encoding field"
 
 lookupChunkSize :: KM.KeyMap Value -> Topo.Types.WorldConfig
 lookupChunkSize payload =
@@ -595,3 +600,88 @@ valueToPositiveInt (Number n) =
       then Just (fromInteger asInteger)
       else Nothing
 valueToPositiveInt _ = Nothing
+
+base64Alphabet :: Text
+base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+encodeBase64Text :: BS.ByteString -> Text
+encodeBase64Text bytes = Text.pack (go 0)
+  where
+    len = BS.length bytes
+
+    at :: Int -> Int
+    at index = fromIntegral (BS.index bytes index)
+
+    emit :: Int -> Char
+    emit index = Text.index base64Alphabet index
+
+    go :: Int -> String
+    go index
+      | index >= len = []
+      | index + 2 < len =
+          let b0 = at index
+              b1 = at (index + 1)
+              b2 = at (index + 2)
+              c0 = emit (b0 `shiftR` 2)
+              c1 = emit (((b0 .&. 0x03) `shiftL` 4) .|. (b1 `shiftR` 4))
+              c2 = emit (((b1 .&. 0x0F) `shiftL` 2) .|. (b2 `shiftR` 6))
+              c3 = emit (b2 .&. 0x3F)
+          in c0 : c1 : c2 : c3 : go (index + 3)
+      | index + 1 < len =
+          let b0 = at index
+              b1 = at (index + 1)
+              c0 = emit (b0 `shiftR` 2)
+              c1 = emit (((b0 .&. 0x03) `shiftL` 4) .|. (b1 `shiftR` 4))
+              c2 = emit ((b1 .&. 0x0F) `shiftL` 2)
+          in [c0, c1, c2, '=']
+      | otherwise =
+          let b0 = at index
+              c0 = emit (b0 `shiftR` 2)
+              c1 = emit ((b0 .&. 0x03) `shiftL` 4)
+          in [c0, c1, '=', '=']
+
+decodeBase64Text :: Text -> Either Text BS.ByteString
+decodeBase64Text raw = do
+  sextets <- traverse decodeChar (Text.unpack raw)
+  bytes <- decodeSextets sextets
+  Right (BS.pack bytes)
+  where
+    decodeChar :: Char -> Either Text Int
+    decodeChar '=' = Right (-1)
+    decodeChar ch =
+      case Text.findIndex (== ch) base64Alphabet of
+        Just index -> Right index
+        Nothing -> Left ("invalid base64 character: " <> Text.singleton ch)
+
+    decodeSextets :: [Int] -> Either Text [Word8]
+    decodeSextets values
+      | null values = Right []
+      | (length values `mod` 4) /= 0 = Left "invalid base64 length"
+      | otherwise = go values
+
+    go :: [Int] -> Either Text [Word8]
+    go [] = Right []
+    go (a:b:c:d:rest)
+      | a < 0 || b < 0 = Left "invalid base64 padding"
+      | c == (-1) && d /= (-1) = Left "invalid base64 padding"
+      | otherwise = do
+          let byte0 = fromIntegral (((a `shiftL` 2) .|. (b `shiftR` 4)) .&. 0xFF)
+          suffix <- case (c, d) of
+            (-1, -1) ->
+              if null rest
+                then Right []
+                else Left "invalid base64 padding location"
+            (cVal, -1) | cVal >= 0 ->
+              if null rest
+                then
+                  let byte1 = fromIntegral ((((b .&. 0x0F) `shiftL` 4) .|. (cVal `shiftR` 2)) .&. 0xFF)
+                  in Right [byte1]
+                else Left "invalid base64 padding location"
+            (cVal, dVal) | cVal >= 0 && dVal >= 0 -> do
+              let byte1 = fromIntegral ((((b .&. 0x0F) `shiftL` 4) .|. (cVal `shiftR` 2)) .&. 0xFF)
+                  byte2 = fromIntegral ((((cVal .&. 0x03) `shiftL` 6) .|. dVal) .&. 0xFF)
+              more <- go rest
+              Right (byte1 : byte2 : more)
+            _ -> Left "invalid base64 sextet"
+          Right (byte0 : suffix)
+    go _ = Left "invalid base64 quartet"

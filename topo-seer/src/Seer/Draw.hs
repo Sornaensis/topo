@@ -593,12 +593,6 @@ drawConfigPanel
   -> (Rect, Rect, Rect)
   -> (Rect, Rect, Rect)
   -> (Rect, Rect, Rect)
-  -> (Rect, Rect, Rect)
-  -> (Rect, Rect, Rect)
-  -> (Rect, Rect, Rect)
-  -> (Rect, Rect, Rect)
-  -> (Rect, Rect, Rect)
-  -> (Rect, Rect, Rect)
   -> IO ()
 drawConfigPanel renderer ui dataSnap rect (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline) presetSaveRect presetLoadRect resetRect revertRect scrollAreaRect scrollBarRect
   (waterMinus, waterBar, waterPlus)
@@ -697,12 +691,6 @@ drawConfigPanel renderer ui dataSnap rect (tabTerrain, tabPlanet, tabClimate, ta
   (windBeltRangeMinus, windBeltRangeBar, windBeltRangePlus)
   (windBeltSpeedScaleMinus, windBeltSpeedScaleBar, windBeltSpeedScalePlus)
   (bndLandRangeMinus, bndLandRangeBar, bndLandRangePlus)
-  (bndTempConvergentMinus, bndTempConvergentBar, bndTempConvergentPlus)
-  (bndTempDivergentMinus, bndTempDivergentBar, bndTempDivergentPlus)
-  (bndTempTransformMinus, bndTempTransformBar, bndTempTransformPlus)
-  (bndPrecipConvergentMinus, bndPrecipConvergentBar, bndPrecipConvergentPlus)
-  (bndPrecipDivergentMinus, bndPrecipDivergentBar, bndPrecipDivergentPlus)
-  (bndPrecipTransformMinus, bndPrecipTransformBar, bndPrecipTransformPlus)
   (piedmontSmoothMinus, piedmontSmoothBar, piedmontSmoothPlus)
   (piedmontSlopeMinMinus, piedmontSlopeMinBar, piedmontSlopeMinPlus)
   (piedmontSlopeMaxMinus, piedmontSlopeMaxBar, piedmontSlopeMaxPlus)
@@ -929,12 +917,6 @@ drawConfigPanel renderer ui dataSnap rect (tabTerrain, tabPlanet, tabClimate, ta
           drawConfigSlider renderer (uiWindBeltRange ui) (scrollRect windBeltRangeMinus) (scrollRect windBeltRangeBar) (scrollRect windBeltRangePlus) (V4 100 140 175 255)
           drawConfigSlider renderer (uiWindBeltSpeedScale ui) (scrollRect windBeltSpeedScaleMinus) (scrollRect windBeltSpeedScaleBar) (scrollRect windBeltSpeedScalePlus) (V4 90 135 185 255)
           drawConfigSlider renderer (uiBndLandRange ui) (scrollRect bndLandRangeMinus) (scrollRect bndLandRangeBar) (scrollRect bndLandRangePlus) (V4 140 130 100 255)
-          drawConfigSlider renderer (uiBndTempConvergent ui) (scrollRect bndTempConvergentMinus) (scrollRect bndTempConvergentBar) (scrollRect bndTempConvergentPlus) (V4 130 120 110 255)
-          drawConfigSlider renderer (uiBndTempDivergent ui) (scrollRect bndTempDivergentMinus) (scrollRect bndTempDivergentBar) (scrollRect bndTempDivergentPlus) (V4 150 130 100 255)
-          drawConfigSlider renderer (uiBndTempTransform ui) (scrollRect bndTempTransformMinus) (scrollRect bndTempTransformBar) (scrollRect bndTempTransformPlus) (V4 140 140 110 255)
-          drawConfigSlider renderer (uiBndPrecipConvergent ui) (scrollRect bndPrecipConvergentMinus) (scrollRect bndPrecipConvergentBar) (scrollRect bndPrecipConvergentPlus) (V4 100 140 170 255)
-          drawConfigSlider renderer (uiBndPrecipDivergent ui) (scrollRect bndPrecipDivergentMinus) (scrollRect bndPrecipDivergentBar) (scrollRect bndPrecipDivergentPlus) (V4 90 130 160 255)
-          drawConfigSlider renderer (uiBndPrecipTransform ui) (scrollRect bndPrecipTransformMinus) (scrollRect bndPrecipTransformBar) (scrollRect bndPrecipTransformPlus) (V4 110 140 150 255)
           drawConfigSlider renderer (uiPiedmontSmooth ui) (scrollRect piedmontSmoothMinus) (scrollRect piedmontSmoothBar) (scrollRect piedmontSmoothPlus) (V4 120 150 130 255)
           drawConfigSlider renderer (uiPiedmontSlopeMin ui) (scrollRect piedmontSlopeMinMinus) (scrollRect piedmontSlopeMinBar) (scrollRect piedmontSlopeMinPlus) (V4 130 140 120 255)
           drawConfigSlider renderer (uiPiedmontSlopeMax ui) (scrollRect piedmontSlopeMaxMinus) (scrollRect piedmontSlopeMaxBar) (scrollRect piedmontSlopeMaxPlus) (V4 140 130 120 255)
@@ -1513,24 +1495,6 @@ drawUiLabels renderer fontCache ui layout = do
       configBndLandRangeMinus = configBndLandRangeMinusRect layout
       configBndLandRangePlus = configBndLandRangePlusRect layout
       configBndLandRangeBar = configBndLandRangeBarRect layout
-      configBndTempConvergentMinus = configBndTempConvergentMinusRect layout
-      configBndTempConvergentPlus = configBndTempConvergentPlusRect layout
-      configBndTempConvergentBar = configBndTempConvergentBarRect layout
-      configBndTempDivergentMinus = configBndTempDivergentMinusRect layout
-      configBndTempDivergentPlus = configBndTempDivergentPlusRect layout
-      configBndTempDivergentBar = configBndTempDivergentBarRect layout
-      configBndTempTransformMinus = configBndTempTransformMinusRect layout
-      configBndTempTransformPlus = configBndTempTransformPlusRect layout
-      configBndTempTransformBar = configBndTempTransformBarRect layout
-      configBndPrecipConvergentMinus = configBndPrecipConvergentMinusRect layout
-      configBndPrecipConvergentPlus = configBndPrecipConvergentPlusRect layout
-      configBndPrecipConvergentBar = configBndPrecipConvergentBarRect layout
-      configBndPrecipDivergentMinus = configBndPrecipDivergentMinusRect layout
-      configBndPrecipDivergentPlus = configBndPrecipDivergentPlusRect layout
-      configBndPrecipDivergentBar = configBndPrecipDivergentBarRect layout
-      configBndPrecipTransformMinus = configBndPrecipTransformMinusRect layout
-      configBndPrecipTransformPlus = configBndPrecipTransformPlusRect layout
-      configBndPrecipTransformBar = configBndPrecipTransformBarRect layout
       configPiedmontSmoothMinus = configPiedmontSmoothMinusRect layout
       configPiedmontSmoothPlus = configPiedmontSmoothPlusRect layout
       configPiedmontSmoothBar = configPiedmontSmoothBarRect layout
@@ -2173,18 +2137,6 @@ drawUiLabels renderer fontCache ui layout = do
         drawCentered fontCache labelColor (scrollRect configWindBeltSpeedScalePlus) "+"
         drawCentered fontCache labelColor (scrollRect configBndLandRangeMinus) "-"
         drawCentered fontCache labelColor (scrollRect configBndLandRangePlus) "+"
-        drawCentered fontCache labelColor (scrollRect configBndTempConvergentMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configBndTempConvergentPlus) "+"
-        drawCentered fontCache labelColor (scrollRect configBndTempDivergentMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configBndTempDivergentPlus) "+"
-        drawCentered fontCache labelColor (scrollRect configBndTempTransformMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configBndTempTransformPlus) "+"
-        drawCentered fontCache labelColor (scrollRect configBndPrecipConvergentMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configBndPrecipConvergentPlus) "+"
-        drawCentered fontCache labelColor (scrollRect configBndPrecipDivergentMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configBndPrecipDivergentPlus) "+"
-        drawCentered fontCache labelColor (scrollRect configBndPrecipTransformMinus) "-"
-        drawCentered fontCache labelColor (scrollRect configBndPrecipTransformPlus) "+"
         drawCentered fontCache labelColor (scrollRect configPiedmontSmoothMinus) "-"
         drawCentered fontCache labelColor (scrollRect configPiedmontSmoothPlus) "+"
         drawCentered fontCache labelColor (scrollRect configPiedmontSlopeMinMinus) "-"
@@ -2237,12 +2189,6 @@ drawUiLabels renderer fontCache ui layout = do
         drawLabelAbove fontCache labelColor (scrollRect configWindBeltRangeBar) (sliderLabel specWindBeltRange (uiWindBeltRange ui))
         drawLabelAbove fontCache labelColor (scrollRect configWindBeltSpeedScaleBar) (sliderLabel specWindBeltSpeedScale (uiWindBeltSpeedScale ui))
         drawLabelAbove fontCache labelColor (scrollRect configBndLandRangeBar) (sliderLabel specBndLandRange (uiBndLandRange ui))
-        drawLabelAbove fontCache labelColor (scrollRect configBndTempConvergentBar) (sliderLabel specBndTempConvergent (uiBndTempConvergent ui))
-        drawLabelAbove fontCache labelColor (scrollRect configBndTempDivergentBar) (sliderLabel specBndTempDivergent (uiBndTempDivergent ui))
-        drawLabelAbove fontCache labelColor (scrollRect configBndTempTransformBar) (sliderLabel specBndTempTransform (uiBndTempTransform ui))
-        drawLabelAbove fontCache labelColor (scrollRect configBndPrecipConvergentBar) (sliderLabel specBndPrecipConvergent (uiBndPrecipConvergent ui))
-        drawLabelAbove fontCache labelColor (scrollRect configBndPrecipDivergentBar) (sliderLabel specBndPrecipDivergent (uiBndPrecipDivergent ui))
-        drawLabelAbove fontCache labelColor (scrollRect configBndPrecipTransformBar) (sliderLabel specBndPrecipTransform (uiBndPrecipTransform ui))
         drawLabelAbove fontCache labelColor (scrollRect configPiedmontSmoothBar) (sliderLabel specPiedmontSmooth (uiPiedmontSmooth ui))
         drawLabelAbove fontCache labelColor (scrollRect configPiedmontSlopeMinBar) (sliderLabel specPiedmontSlopeMin (uiPiedmontSlopeMin ui))
         drawLabelAbove fontCache labelColor (scrollRect configPiedmontSlopeMaxBar) (sliderLabel specPiedmontSlopeMax (uiPiedmontSlopeMax ui))

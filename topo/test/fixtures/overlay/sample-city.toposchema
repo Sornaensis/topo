@@ -1,0 +1,1 @@
+{"dependencies":{"overlays":[],"terrain":true},"description":"Sample sparse city overlay fixture","fields":[{"default":0,"name":"population","type":"int"},{"default":"","name":"name","type":"text"},{"default":false,"name":"is_capital","type":"bool"}],"name":"sample-city","storage":"sparse","version":"1.0.0"}

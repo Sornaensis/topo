@@ -316,24 +316,6 @@ module UI.Layout
   , configBndLandRangeMinusRect
   , configBndLandRangePlusRect
   , configBndLandRangeBarRect
-  , configBndTempConvergentMinusRect
-  , configBndTempConvergentPlusRect
-  , configBndTempConvergentBarRect
-  , configBndTempDivergentMinusRect
-  , configBndTempDivergentPlusRect
-  , configBndTempDivergentBarRect
-  , configBndTempTransformMinusRect
-  , configBndTempTransformPlusRect
-  , configBndTempTransformBarRect
-  , configBndPrecipConvergentMinusRect
-  , configBndPrecipConvergentPlusRect
-  , configBndPrecipConvergentBarRect
-  , configBndPrecipDivergentMinusRect
-  , configBndPrecipDivergentPlusRect
-  , configBndPrecipDivergentBarRect
-  , configBndPrecipTransformMinusRect
-  , configBndPrecipTransformPlusRect
-  , configBndPrecipTransformBarRect
   , configPiedmontSmoothMinusRect
   , configPiedmontSmoothPlusRect
   , configPiedmontSmoothBarRect
@@ -1618,60 +1600,6 @@ configBndLandRangePlusRect = configParamPlusRect 41
 
 configBndLandRangeBarRect :: Layout -> Rect
 configBndLandRangeBarRect = configParamBarRect 41
-
-configBndTempConvergentMinusRect :: Layout -> Rect
-configBndTempConvergentMinusRect = configParamMinusRect 42
-
-configBndTempConvergentPlusRect :: Layout -> Rect
-configBndTempConvergentPlusRect = configParamPlusRect 42
-
-configBndTempConvergentBarRect :: Layout -> Rect
-configBndTempConvergentBarRect = configParamBarRect 42
-
-configBndTempDivergentMinusRect :: Layout -> Rect
-configBndTempDivergentMinusRect = configParamMinusRect 43
-
-configBndTempDivergentPlusRect :: Layout -> Rect
-configBndTempDivergentPlusRect = configParamPlusRect 43
-
-configBndTempDivergentBarRect :: Layout -> Rect
-configBndTempDivergentBarRect = configParamBarRect 43
-
-configBndTempTransformMinusRect :: Layout -> Rect
-configBndTempTransformMinusRect = configParamMinusRect 44
-
-configBndTempTransformPlusRect :: Layout -> Rect
-configBndTempTransformPlusRect = configParamPlusRect 44
-
-configBndTempTransformBarRect :: Layout -> Rect
-configBndTempTransformBarRect = configParamBarRect 44
-
-configBndPrecipConvergentMinusRect :: Layout -> Rect
-configBndPrecipConvergentMinusRect = configParamMinusRect 45
-
-configBndPrecipConvergentPlusRect :: Layout -> Rect
-configBndPrecipConvergentPlusRect = configParamPlusRect 45
-
-configBndPrecipConvergentBarRect :: Layout -> Rect
-configBndPrecipConvergentBarRect = configParamBarRect 45
-
-configBndPrecipDivergentMinusRect :: Layout -> Rect
-configBndPrecipDivergentMinusRect = configParamMinusRect 46
-
-configBndPrecipDivergentPlusRect :: Layout -> Rect
-configBndPrecipDivergentPlusRect = configParamPlusRect 46
-
-configBndPrecipDivergentBarRect :: Layout -> Rect
-configBndPrecipDivergentBarRect = configParamBarRect 46
-
-configBndPrecipTransformMinusRect :: Layout -> Rect
-configBndPrecipTransformMinusRect = configParamMinusRect 47
-
-configBndPrecipTransformPlusRect :: Layout -> Rect
-configBndPrecipTransformPlusRect = configParamPlusRect 47
-
-configBndPrecipTransformBarRect :: Layout -> Rect
-configBndPrecipTransformBarRect = configParamBarRect 47
 
 configPiedmontSmoothMinusRect :: Layout -> Rect
 configPiedmontSmoothMinusRect = configParamMinusRect 48

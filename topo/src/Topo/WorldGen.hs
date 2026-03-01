@@ -80,7 +80,7 @@ import Topo.Planet
   , sliceToWorldExtent
   )
 import Topo.Tectonics (TectonicsConfig(..), defaultTectonicsConfig, generateTectonicsStage)
-import Topo.Weather (WeatherConfig(..), defaultWeatherConfig, tickWeatherStage)
+import Topo.Weather (WeatherConfig(..), defaultWeatherConfig, initWeatherStage)
 import Topo.Pipeline (PipelineConfig(..))
 import Topo.Types (WorldConfig(..), defaultWorldExtent)
 
@@ -342,7 +342,7 @@ buildFullPipelineConfig cfg worldCfg seed =
           , classifyBiomesStage (worldBiome cfg) wl
           , updateVegetationFromBiomeStage (worldBiomeFeedback cfg) (terrainVegetation terrain')
           ] ++ convergenceStages ++
-          [ tickWeatherStage (worldWeather cfg)
+          [ initWeatherStage (worldWeather cfg)
           ]
       , pipelineDisabled = Set.empty
       , pipelineSnapshots = False

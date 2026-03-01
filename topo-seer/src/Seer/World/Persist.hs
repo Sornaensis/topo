@@ -6,7 +6,8 @@
 -- Each named world is stored as a directory under @~\/.topo\/worlds\/<name>\/@
 -- containing:
 --
--- * @world.topo@ — binary terrain data (via 'Topo.Storage')
+-- * @world.topo@ — binary terrain data (via unified world-bundle persistence)
+-- * @world.topolay\/@ — overlay sidecar schema/data files
 -- * @config.json@ — 'ConfigSnapshot' snapshot at time of save
 -- * @meta.json@ — 'WorldSaveManifest' with seed, chunk size, etc.
 module Seer.World.Persist
@@ -17,6 +18,7 @@ module Seer.World.Persist
     -- * Save \/ Load
   , saveNamedWorld
   , loadNamedWorld
+  , loadNamedSparseOverlayChunk
     -- * Snapshot conversion
   , snapshotToWorld
     -- * Listing
@@ -26,7 +28,7 @@ module Seer.World.Persist
   ) where
 
 import Control.Exception (IOException, try)
-import Data.Aeson (FromJSON(..), ToJSON(..), eitherDecodeStrict', encode)
+import Data.Aeson (FromJSON(..), eitherDecodeStrict', encode)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.IntMap.Strict as IntMap
@@ -42,28 +44,34 @@ import System.Directory
   , getHomeDirectory
   , listDirectory
   , removeDirectoryRecursive
-  , removeFile
-  , renameFile
   )
 import System.FilePath ((</>))
 
 import Actor.Data (TerrainSnapshot(..))
 import Actor.UI (UiState(..))
-import Seer.Config.Snapshot (snapshotFromUi, saveSnapshot, loadSnapshot)
+import Seer.Config.Snapshot (snapshotFromUi, loadSnapshot)
 import Seer.Config.Snapshot.Types (ConfigSnapshot)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Topo.Calendar (defaultWorldTime, defaultPlanetAge)
 import Topo.Hex (defaultHexGridMeta)
 import Topo.Metadata (emptyMetadataStore)
-import Topo.Overlay (emptyOverlayStore)
+import Topo.Overlay (OverlayChunk, emptyOverlayStore, overlayNames)
+import Topo.Overlay.Storage
+  ( loadOverlayChunk
+  , overlayDirPath
+  , renderOverlayStorageError
+  )
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice, mkLatitudeMapping)
 import Topo.Units (defaultUnitScales)
 import Topo.Storage
   ( WorldProvenance(..)
   , MapProvenance(..)
   , emptyMapProvenance
-  , saveWorldWithProvenance
-  , loadWorldWithProvenance
+  )
+import Topo.Persistence.WorldBundle
+  ( BundleLoadPolicy(..)
+  , saveWorldBundleWithProvenance
+  , loadWorldBundleWithProvenance
   )
 import Topo.Types (WorldConfig(..))
 import Topo.World (TerrainWorld(..))
@@ -99,26 +107,11 @@ saveNamedWorld name uiSnap world = do
   let nameStr   = Text.unpack name
       worldPath = dir </> nameStr
       topoFile  = worldPath </> "world.topo"
-      cfgFile   = worldPath </> "config.json"
-      metaFile  = worldPath </> "meta.json"
   result <- try @IOException $ do
-    createDirectoryIfMissing True worldPath
+    createDirectoryIfMissing True dir
 
-    -- 1. Write terrain binary
     let provenance = makeProvenance uiSnap
-    topoResult <- saveWorldWithProvenance topoFile provenance world
-    case topoResult of
-      Left err -> fail ("Terrain save failed: " <> show err)
-      Right () -> pure ()
-
-    -- 2. Write config snapshot
     let snapshot = snapshotFromUi uiSnap name
-    cfgResult <- saveSnapshot cfgFile snapshot
-    case cfgResult of
-      Left err -> fail ("Config save failed: " <> Text.unpack err)
-      Right () -> pure ()
-
-    -- 3. Write metadata manifest
     now <- getCurrentTime
     let manifest = WorldSaveManifest
           { wsmName       = name
@@ -126,8 +119,16 @@ saveNamedWorld name uiSnap world = do
           , wsmChunkSize  = uiChunkSize uiSnap
           , wsmCreatedAt  = now
           , wsmChunkCount = chunkCount world
+          , wsmOverlayNames = overlayNames (twOverlays world)
           }
-    writeJsonAtomic metaFile manifest
+        extraFiles =
+          [ ("config.json", BSL.toStrict (encode snapshot))
+          , ("meta.json", BSL.toStrict (encode manifest))
+          ]
+    topoResult <- saveWorldBundleWithProvenance topoFile provenance extraFiles world
+    case topoResult of
+      Left err -> fail ("Terrain+overlay save failed: " <> show err)
+      Right () -> pure ()
 
   pure $ case result of
     Left err -> Left (Text.pack (show err))
@@ -168,13 +169,52 @@ loadNamedWorld name = do
             Left err -> pure (Left ("Failed to load config.json: " <> err))
             Right snapshot -> do
               -- 3. Load terrain
-              topoResult <- loadWorldWithProvenance topoFile
+              topoResult <- loadWorldBundleWithProvenance StrictManifest topoFile
               case topoResult of
-                Left err ->
-                  pure (Left ("Failed to load world.topo: "
-                        <> Text.pack (show err)))
+                Left _strictErr -> do
+                  -- Migration-safe fallback for older saves that have
+                  -- no sidecar overlays yet.
+                  fallback <- loadWorldBundleWithProvenance BestEffort topoFile
+                  case fallback of
+                    Left err ->
+                      pure (Left ("Failed to load world bundle: "
+                            <> Text.pack (show err)))
+                    Right (_prov, world) ->
+                      pure (Right (manifest, snapshot, world))
                 Right (_prov, world) ->
                   pure (Right (manifest, snapshot, world))
+
+-- TODO(viewport-overlay-adoption):
+-- 1) Keep world-level discovery/manifest validation in
+--    'loadWorldBundleWithProvenance' inside 'loadNamedWorld'.
+-- 2) For large sparse overlays, prefer chunk-on-demand hydration in Seer
+--    viewports via 'loadNamedSparseOverlayChunk'.
+-- 3) Keep this helper independent from runtime wiring for now so UI/atlas
+--    code can adopt it incrementally without changing save/load semantics.
+
+-- | Load one sparse overlay chunk from a saved world sidecar.
+--
+-- This is an adoption seam for viewport-aware sparse overlay hydration.
+-- It does not change the default runtime path, which still loads overlays
+-- via world-bundle policy during 'loadNamedWorld'.
+loadNamedSparseOverlayChunk
+  :: Text  -- ^ World name
+  -> Text  -- ^ Overlay name
+  -> Int   -- ^ Chunk id
+  -> IO (Either Text OverlayChunk)
+loadNamedSparseOverlayChunk worldName overlayName chunkId = do
+  dir <- worldDir
+  let worldPath = dir </> Text.unpack worldName
+      topoFile = worldPath </> "world.topo"
+      sidecarDir = overlayDirPath topoFile
+  exists <- doesDirectoryExist worldPath
+  if not exists
+    then pure (Left ("World directory not found: " <> worldName))
+    else do
+      chunkResult <- loadOverlayChunk sidecarDir overlayName chunkId
+      pure $ case chunkResult of
+        Left err -> Left (renderOverlayStorageError err)
+        Right chunk -> Right chunk
 
 -------------------------------------------------------------------------------
 -- Snapshot conversion
@@ -204,6 +244,7 @@ snapshotToWorld ts = TerrainWorld
   , twSlice       = defaultWorldSlice
   , twLatMapping  = mkLatitudeMapping defaultPlanetConfig defaultWorldSlice wc
   , twWorldTime   = defaultWorldTime
+  , twSeed        = 0
   , twPlanetAge   = defaultPlanetAge
   , twGenConfig   = Nothing
   , twUnitScales  = defaultUnitScales
@@ -280,16 +321,6 @@ makeProvenance ui = WorldProvenance
 -- | Count terrain chunks in a world.
 chunkCount :: TerrainWorld -> Int
 chunkCount = IntMap.size . twTerrain
-
--- | Write a JSON-serialisable value to a file atomically.
-writeJsonAtomic :: ToJSON a => FilePath -> a -> IO ()
-writeJsonAtomic path val = do
-  let tmpPath = path <> ".tmp"
-  BSL.writeFile tmpPath (encode val)
-  targetExists <- doesFileExist path
-  if targetExists
-    then removeFile path >> renameFile tmpPath path
-    else renameFile tmpPath path
 
 -- | Read and decode a JSON file.
 loadJsonFile :: FromJSON a => FilePath -> IO (Either Text a)

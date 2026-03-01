@@ -31,10 +31,17 @@ import GHC.Generics (Generic)
 -- | Metadata recorded alongside each saved world.
 data WorldSaveManifest = WorldSaveManifest
   { wsmName       :: Text
+    -- ^ Human-readable save name.
   , wsmSeed       :: Word64
+    -- ^ Seed used for world generation/simulation.
   , wsmChunkSize  :: Int
+    -- ^ Chunk width/height in tiles.
   , wsmCreatedAt  :: UTCTime
+    -- ^ Save timestamp.
   , wsmChunkCount :: Int
+    -- ^ Terrain chunk count at save time.
+  , wsmOverlayNames :: [Text]
+    -- ^ Overlay names persisted in the unified world bundle.
   } deriving (Eq, Show, Generic)
 
 -- | JSON field name options: strip @\"wsm\"@ prefix, camelCase to
@@ -57,6 +64,7 @@ instance FromJSON WorldSaveManifest where
       <*> o .:? "chunk_size"  .!= 64
       <*> o .:? "created_at"  .!= defaultManifestTime
       <*> o .:? "chunk_count" .!= 0
+      <*> o .:? "overlay_names" .!= []
 
 -- | Epoch time used as a default when the field is missing.
 defaultManifestTime :: UTCTime

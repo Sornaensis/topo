@@ -17,6 +17,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Word (Word64)
 
 import Topo.Plugin.RPC.Manifest
 import Topo.Plugin.RPC.Protocol
@@ -445,7 +446,8 @@ spec = describe "Plugin.RPC" $ do
 
     it "InvokeGenerator round-trips" $ do
       let ig = InvokeGenerator
-            { igStageId = "plugin:test"
+            { igPayloadVersion = 1
+            , igStageId = "plugin:test"
             , igSeed    = 42
             , igConfig  = Map.fromList [("rate", Aeson.Number 1.5)]
             , igTerrain = object ["chunks" .= ([] :: [Value])]
@@ -454,7 +456,8 @@ spec = describe "Plugin.RPC" $ do
 
     it "InvokeSimulation round-trips" $ do
       let is = InvokeSimulation
-            { isNodeId     = "civ"
+            { isPayloadVersion = 1
+            , isNodeId     = "civ"
             , isWorldTime  = 100
             , isDeltaTicks = 1
             , isCalendar   = Null
@@ -464,6 +467,34 @@ spec = describe "Plugin.RPC" $ do
             , isOwnOverlay = Null
             }
       Aeson.fromJSON (Aeson.toJSON is) `shouldBe` Aeson.Success is
+
+    it "rejects InvokeGenerator with unknown payload_version" $
+      let payload = object
+            [ "payload_version" .= (2 :: Int)
+            , "stage_id" .= ("plugin:test" :: Text)
+            , "seed" .= (42 :: Word64)
+            , "config" .= object []
+            , "terrain" .= object []
+            ]
+      in case Aeson.fromJSON payload :: Aeson.Result InvokeGenerator of
+          Aeson.Error _ -> pure ()
+          Aeson.Success _ -> expectationFailure "expected parse failure for unknown payload_version"
+
+    it "rejects InvokeSimulation with unknown payload_version" $
+      let payload = object
+            [ "payload_version" .= (99 :: Int)
+            , "node_id" .= ("civ" :: Text)
+            , "world_time" .= (100 :: Word64)
+            , "delta_ticks" .= (1 :: Word64)
+            , "calendar" .= Null
+            , "config" .= object []
+            , "terrain" .= Null
+            , "overlays" .= Null
+            , "own_overlay" .= Null
+            ]
+      in case Aeson.fromJSON payload :: Aeson.Result InvokeSimulation of
+          Aeson.Error _ -> pure ()
+          Aeson.Success _ -> expectationFailure "expected parse failure for unknown payload_version"
 
     it "GeneratorResult round-trips" $ do
       let gr = GeneratorResult

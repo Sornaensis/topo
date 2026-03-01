@@ -38,6 +38,7 @@ import Topo.Overlay
   ( Overlay(..)
   , OverlayChunk(..)
   , OverlayData(..)
+  , emptyOverlayProvenance
   , OverlayRecord(..)
   , OverlayValue(..)
   )
@@ -138,6 +139,7 @@ parseOverlayPayload schema = withObject "overlay payload" $ \o -> do
   pure Overlay
     { ovSchema = schema
     , ovData = overlayData
+    , ovProvenance = emptyOverlayProvenance
     }
 
 parseSparseChunks :: OverlaySchema -> Value -> Parser (IntMap OverlayChunk)

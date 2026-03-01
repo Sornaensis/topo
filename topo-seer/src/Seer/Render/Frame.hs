@@ -534,24 +534,6 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
       configBndLandRangeMinus = configBndLandRangeMinusRect layout
       configBndLandRangePlus = configBndLandRangePlusRect layout
       configBndLandRangeBar = configBndLandRangeBarRect layout
-      configBndTempConvergentMinus = configBndTempConvergentMinusRect layout
-      configBndTempConvergentPlus = configBndTempConvergentPlusRect layout
-      configBndTempConvergentBar = configBndTempConvergentBarRect layout
-      configBndTempDivergentMinus = configBndTempDivergentMinusRect layout
-      configBndTempDivergentPlus = configBndTempDivergentPlusRect layout
-      configBndTempDivergentBar = configBndTempDivergentBarRect layout
-      configBndTempTransformMinus = configBndTempTransformMinusRect layout
-      configBndTempTransformPlus = configBndTempTransformPlusRect layout
-      configBndTempTransformBar = configBndTempTransformBarRect layout
-      configBndPrecipConvergentMinus = configBndPrecipConvergentMinusRect layout
-      configBndPrecipConvergentPlus = configBndPrecipConvergentPlusRect layout
-      configBndPrecipConvergentBar = configBndPrecipConvergentBarRect layout
-      configBndPrecipDivergentMinus = configBndPrecipDivergentMinusRect layout
-      configBndPrecipDivergentPlus = configBndPrecipDivergentPlusRect layout
-      configBndPrecipDivergentBar = configBndPrecipDivergentBarRect layout
-      configBndPrecipTransformMinus = configBndPrecipTransformMinusRect layout
-      configBndPrecipTransformPlus = configBndPrecipTransformPlusRect layout
-      configBndPrecipTransformBar = configBndPrecipTransformBarRect layout
       configPiedmontSmoothMinus = configPiedmontSmoothMinusRect layout
       configPiedmontSmoothPlus = configPiedmontSmoothPlusRect layout
       configPiedmontSmoothBar = configPiedmontSmoothBarRect layout
@@ -921,12 +903,6 @@ renderFrame renderer window snapshotVersion snapshot terrainCache textureCache a
         (configWindBeltRangeMinus, configWindBeltRangeBar, configWindBeltRangePlus)
         (configWindBeltSpeedScaleMinus, configWindBeltSpeedScaleBar, configWindBeltSpeedScalePlus)
         (configBndLandRangeMinus, configBndLandRangeBar, configBndLandRangePlus)
-        (configBndTempConvergentMinus, configBndTempConvergentBar, configBndTempConvergentPlus)
-        (configBndTempDivergentMinus, configBndTempDivergentBar, configBndTempDivergentPlus)
-        (configBndTempTransformMinus, configBndTempTransformBar, configBndTempTransformPlus)
-        (configBndPrecipConvergentMinus, configBndPrecipConvergentBar, configBndPrecipConvergentPlus)
-        (configBndPrecipDivergentMinus, configBndPrecipDivergentBar, configBndPrecipDivergentPlus)
-        (configBndPrecipTransformMinus, configBndPrecipTransformBar, configBndPrecipTransformPlus)
         (configPiedmontSmoothMinus, configPiedmontSmoothBar, configPiedmontSmoothPlus)
         (configPiedmontSlopeMinMinus, configPiedmontSlopeMinBar, configPiedmontSlopeMinPlus)
         (configPiedmontSlopeMaxMinus, configPiedmontSlopeMaxBar, configPiedmontSlopeMaxPlus)

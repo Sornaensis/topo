@@ -22,11 +22,14 @@ library:
     - Topo.Calendar
     - Topo.Overlay
     - Topo.Overlay.Schema
+    - Topo.Overlay.Provenance
     - Topo.Overlay.Index
+    - Topo.Overlay.Cache
     - Topo.Overlay.Indexed
     - Topo.Overlay.Export
     - Topo.Overlay.JSON
     - Topo.Overlay.Storage
+    - Topo.Persistence.WorldBundle
     - Topo.BaseHeight
     - Topo.Gen
     - Topo.Tectonics
@@ -47,6 +50,7 @@ library:
     - Topo.BiomeConfig
     - Topo.Weather
     - Topo.Math
+    - Topo.Seed
     - Topo.TerrainGrid
     - Topo.Noise
     - Topo.Sample
@@ -98,6 +102,7 @@ library:
     - transformers
     - vector
     - vector-th-unbox
+    - zstd
 
 tests:
   topo-test:
@@ -107,10 +112,14 @@ tests:
       - base
       - topo
       - aeson
+      - binary
       - bytestring
       - hspec
       - QuickCheck
       - containers
+      - directory
+      - filepath
       - scientific
+      - temporary
       - text
       - vector

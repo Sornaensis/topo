@@ -1339,7 +1339,7 @@ data ClimateChunk = ClimateChunk
   } deriving (Eq, Show)
 
 -- | Per-chunk instantaneous weather snapshot.  Updated by
--- 'Topo.Weather.tickWeatherStage'.
+-- weather simulation ticks.
 data WeatherChunk = WeatherChunk
   { wcTemp     :: !(U.Vector Float)
     -- ^ Instantaneous temperature [0, 1].

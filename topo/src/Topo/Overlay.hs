@@ -41,6 +41,8 @@ module Topo.Overlay
   , OverlayData(..)
     -- * Full overlay
   , Overlay(..)
+  , OverlayProvenance(..)
+  , emptyOverlayProvenance
   , emptyOverlay
   , overlayName
     -- * Overlay store
@@ -65,6 +67,7 @@ import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import GHC.Generics (Generic)
 
+import Topo.Overlay.Provenance (OverlayProvenance(..), emptyOverlayProvenance)
 import Topo.Overlay.Schema
   ( OverlayFieldDef(..)
   , OverlayFieldType(..)
@@ -292,6 +295,8 @@ data Overlay = Overlay
   -- ^ The schema governing this overlay's structure.
   , ovData   :: !OverlayData
   -- ^ The overlay's tile data, in the layout declared by the schema.
+  , ovProvenance :: !OverlayProvenance
+  -- ^ Overlay provenance metadata (seed/version/source).
   } deriving (Eq, Show)
 
 -- | Create an empty overlay from a schema (no populated data).
@@ -306,6 +311,7 @@ emptyOverlay schema = Overlay
   , ovData   = case osStorage schema of
       StorageSparse -> SparseData IntMap.empty
       StorageDense  -> DenseData  IntMap.empty
+  , ovProvenance = emptyOverlayProvenance
   }
 
 -- | Convenience: extract the overlay name from its schema.

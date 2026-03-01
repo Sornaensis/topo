@@ -259,47 +259,46 @@ runOneReader nodeMap terrain store cal wt dt progress total (nid, node) =
             , scDeltaTicks = dt
             , scOverlays   = depOverlays
             }
-          overlay = case lookupOverlay name store of
-            Just ov -> ov
-            -- If overlay doesn't exist yet, this is an error.
-            -- The caller should ensure all sim-node overlays exist.
-            Nothing -> error $ "Simulation node " ++ show nid
-                          ++ " references missing overlay: " ++ show name
+      case lookupOverlay name store of
+        Nothing -> pure (Left (
+          "Simulation node " <> unSimNodeId nid
+            <> " references missing overlay: " <> name))
+        Just overlay -> do
 
-      progress SimProgress
-        { simpNodeIndex = 0  -- approximate; refined if needed
-        , simpNodeCount = total
-        , simpNodeId    = nid
-        , simpStatus    = SimStarted
-        }
+          progress SimProgress
+            { simpNodeIndex = 0  -- approximate; refined if needed
+            , simpNodeCount = total
+            , simpNodeId    = nid
+            , simpStatus    = SimStarted
+            }
 
-      result <- try (tick ctx overlay)
-      case result of
-        Left (ex :: SomeException) -> do
-          let msg = "Exception in node " <> unSimNodeId nid <> ": " <> T.pack (show ex)
-          progress SimProgress
-            { simpNodeIndex = 0
-            , simpNodeCount = total
-            , simpNodeId    = nid
-            , simpStatus    = SimFailed msg
-            }
-          pure (Left msg)
-        Right (Left err) -> do
-          progress SimProgress
-            { simpNodeIndex = 0
-            , simpNodeCount = total
-            , simpNodeId    = nid
-            , simpStatus    = SimFailed err
-            }
-          pure (Left err)
-        Right (Right updatedOverlay) -> do
-          progress SimProgress
-            { simpNodeIndex = 0
-            , simpNodeCount = total
-            , simpNodeId    = nid
-            , simpStatus    = SimCompleted
-            }
-          pure (Right (nid, name, updatedOverlay))
+          result <- try (tick ctx overlay)
+          case result of
+            Left (ex :: SomeException) -> do
+              let msg = "Exception in node " <> unSimNodeId nid <> ": " <> T.pack (show ex)
+              progress SimProgress
+                { simpNodeIndex = 0
+                , simpNodeCount = total
+                , simpNodeId    = nid
+                , simpStatus    = SimFailed msg
+                }
+              pure (Left msg)
+            Right (Left err) -> do
+              progress SimProgress
+                { simpNodeIndex = 0
+                , simpNodeCount = total
+                , simpNodeId    = nid
+                , simpStatus    = SimFailed err
+                }
+              pure (Left err)
+            Right (Right updatedOverlay) -> do
+              progress SimProgress
+                { simpNodeIndex = 0
+                , simpNodeCount = total
+                , simpNodeId    = nid
+                , simpStatus    = SimCompleted
+                }
+              pure (Right (nid, name, updatedOverlay))
 
     -- Writer nodes are skipped in reader phase
     SimNodeWriter{} -> pure (Right (nid, simNodeOverlayName node, error "unreachable"))

@@ -5,7 +5,7 @@
 --
 -- An indexed field builds a lookup structure on load and after each
 -- simulation tick that modifies the overlay.  Indices are /not/
--- persisted to disk — the @.dat@ file stores only raw records.
+-- persisted to disk — the @.topolay@ file stores only raw records.
 --
 -- = Supported index types
 --

@@ -9,6 +9,8 @@ import Data.Aeson (Value(..))
 import Data.IORef
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Scientific (fromFloatDigits)
@@ -19,7 +21,7 @@ import qualified Data.Vector.Unboxed as U
 import Topo
 import Topo.Calendar (defaultWorldTime, WorldTime(..), CalendarDate(..))
 import Topo.Overlay
-  ( Overlay(..), OverlayData(..), emptyOverlayStore, overlayCount
+  ( Overlay(..), OverlayData(..), emptyOverlayProvenance, emptyOverlayStore, overlayCount
   , insertOverlay, lookupOverlay, emptyOverlay
   )
 import Topo.Overlay.Schema
@@ -27,6 +29,11 @@ import Topo.Overlay.Schema
   , OverlayStorage(..), OverlayDeps(..)
   )
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice)
+import Topo.Persistence.WorldBundle
+  ( BundleLoadPolicy(..)
+  , loadWorldBundle
+  , saveWorldBundle
+  )
 import Topo.Simulation
 import Topo.Simulation.DAG
 import Topo.Weather
@@ -560,14 +567,16 @@ tickSpec = describe "weather tick" $ do
       Right (finalStore, _writes) -> do
         case lookupOverlay "weather" finalStore of
           Nothing -> expectationFailure "weather overlay missing from store"
-          Just ov -> case ovData ov of
-            DenseData chunks -> do
-              IntMap.null chunks `shouldBe` False
-              -- Each chunk should have weatherFieldCount field vectors
-              case IntMap.lookup 0 chunks of
-                Nothing -> expectationFailure "chunk 0 missing from dense data"
-                Just fieldVecs -> V.length fieldVecs `shouldBe` weatherFieldCount
-            SparseData _ -> expectationFailure "expected DenseData, got SparseData"
+          Just ov -> do
+            opVersion (ovProvenance ov) `shouldBe` 2
+            case ovData ov of
+              DenseData chunks -> do
+                IntMap.null chunks `shouldBe` False
+                -- Each chunk should have weatherFieldCount field vectors
+                case IntMap.lookup 0 chunks of
+                  Nothing -> expectationFailure "chunk 0 missing from dense data"
+                  Just fieldVecs -> V.length fieldVecs `shouldBe` weatherFieldCount
+              SparseData _ -> expectationFailure "expected DenseData, got SparseData"
 
   it "produces different overlays at different tick times" $ do
     let config = WorldConfig { wcChunkSize = 4 }
@@ -593,6 +602,303 @@ tickSpec = describe "weather tick" $ do
             U.toList tempA `shouldNotBe` U.toList tempB
           _ -> expectationFailure "could not extract temperature field"
       _ -> expectationFailure "weather tick(s) failed"
+
+  it "is deterministic across repeated runs from identical initial state" $ do
+    let config = WorldConfig { wcChunkSize = 4 }
+        node = weatherSimNode defaultWeatherConfig
+        Right dag = buildSimDAG [node]
+        initialStore = insertOverlay (emptyOverlay weatherOverlaySchema) emptyOverlayStore
+        runStep terrain store tickNo =
+          tickSimulation dag noProgress terrain store testCalDate (defaultWorldTime { wtTick = tickNo }) 1
+        runTicks terrain store [] = pure (Right store)
+        runTicks terrain store (t:ts) = do
+          step <- runStep terrain store t
+          case step of
+            Left err -> pure (Left err)
+            Right (store', _writes) -> runTicks terrain store' ts
+        extractTemp store = do
+          ov <- lookupOverlay "weather" store
+          case ovData ov of
+            DenseData chunks -> do
+              fields <- IntMap.lookup 0 chunks
+              pure (fields V.! 0)
+            SparseData _ -> Nothing
+    terrain <- mkTestTerrainWithClimate config
+    resultA <- runTicks terrain initialStore [1 .. 6]
+    resultB <- runTicks terrain initialStore [1 .. 6]
+    case (resultA, resultB) of
+      (Right storeA, Right storeB) ->
+        case (extractTemp storeA, extractTemp storeB) of
+          (Just tempA, Just tempB) -> U.toList tempA `shouldBe` U.toList tempB
+          _ -> expectationFailure "could not extract deterministic weather temperature"
+      (Left err, _) -> expectationFailure (T.unpack err)
+      (_, Left err) -> expectationFailure (T.unpack err)
+
+  it "keeps generation to first simulation temperature change small" $ do
+    let config = WorldConfig { wcChunkSize = 4 }
+        env = TopoEnv { teLogger = \_ -> pure () }
+        pipeline = PipelineConfig
+          { pipelineSeed = 77
+          , pipelineStages = [initWeatherStage defaultWeatherConfig]
+          , pipelineDisabled = mempty
+          , pipelineSnapshots = False
+          , pipelineOnProgress = \_ -> pure ()
+          }
+        node = weatherSimNode defaultWeatherConfig
+        Right dag = buildSimDAG [node]
+        avgAbsDiff a b =
+          let pairs = zip (U.toList a) (U.toList b)
+              diffs = map (\(x, y) -> abs (x - y)) pairs
+          in if null diffs then 0 else sum diffs / fromIntegral (length diffs)
+        getTempFromStore store = do
+          ov <- lookupOverlay "weather" store
+          case ovData ov of
+            DenseData chunks -> do
+              fields <- IntMap.lookup 0 chunks
+              pure (fields V.! 0)
+            SparseData _ -> Nothing
+    baseTerrain <- mkTestTerrainWithClimate config
+    pipelineResult <- runPipeline pipeline env baseTerrain
+    case pipelineResult of
+      Left err -> expectationFailure (show err)
+      Right (generated, _) ->
+        case lookupOverlay "weather" (twOverlays generated) of
+          Nothing -> expectationFailure "generation weather overlay missing"
+          Just initOv -> do
+            let initialStore = insertOverlay initOv emptyOverlayStore
+                firstSimTick = twWorldTime generated
+            simResult <- tickSimulation dag noProgress generated initialStore testCalDate firstSimTick 1
+            case simResult of
+              Left err -> expectationFailure (T.unpack err)
+              Right (storeAfter, _writes) ->
+                case (getWeatherChunk (ChunkId 0) generated, getTempFromStore storeAfter) of
+                  (Just initialChunk, Just tempAfter) ->
+                    avgAbsDiff (wcTemp initialChunk) tempAfter `shouldSatisfy` (< 0.15)
+                  _ -> expectationFailure "could not compare generation and simulation temperatures"
+
+  it "replays weather identically across save/load continuation" $ do
+    let config = WorldConfig { wcChunkSize = 4 }
+        env = TopoEnv { teLogger = \_ -> pure () }
+        initPipeline = PipelineConfig
+          { pipelineSeed = 99
+          , pipelineStages = [initWeatherStage defaultWeatherConfig]
+          , pipelineDisabled = mempty
+          , pipelineSnapshots = False
+          , pipelineOnProgress = \_ -> pure ()
+          }
+        node = weatherSimNode defaultWeatherConfig
+        Right dag = buildSimDAG [node]
+        runTicks terrain store startTick count =
+          foldl
+            (\acc k -> do
+               prev <- acc
+               case prev of
+                 Left err -> pure (Left err)
+                 Right s -> do
+                   let wt = defaultWorldTime { wtTick = startTick + fromIntegral k }
+                   res <- tickSimulation dag noProgress terrain s testCalDate wt 1
+                   pure $ case res of
+                     Left err -> Left err
+                     Right (s', _writes) -> Right s')
+            (pure (Right store))
+            [0 .. count - 1]
+        extractChunk0Temp store = do
+          ov <- lookupOverlay "weather" store
+          case ovData ov of
+            DenseData chunks -> do
+              fields <- IntMap.lookup 0 chunks
+              pure (fields V.! 0)
+            SparseData _ -> Nothing
+        nTicks = 3 :: Int
+        mTicks = 4 :: Int
+    baseTerrain <- mkTestTerrainWithClimate config
+    initResult <- runPipeline initPipeline env baseTerrain
+    case initResult of
+      Left err -> expectationFailure (show err)
+      Right (generated, _) -> do
+        let tick0 = wtTick (twWorldTime generated)
+            store0 = twOverlays generated
+        runN <- runTicks generated store0 tick0 nTicks
+        case runN of
+          Left err -> expectationFailure (T.unpack err)
+          Right storeN -> do
+            let savedWorld = generated { twOverlays = storeN }
+            withSystemTempDirectory "sim-weather-replay" $ \tmp -> do
+              let topoPath = tmp </> "world.topo"
+              saveResult <- saveWorldBundle topoPath savedWorld
+              case saveResult of
+                Left err -> expectationFailure (show err)
+                Right () -> do
+                  loadResult <- loadWorldBundle StrictManifest topoPath
+                  case loadResult of
+                    Left err -> expectationFailure (show err)
+                    Right loaded -> do
+                      afterLoad <- runTicks loaded (twOverlays loaded) (tick0 + fromIntegral nTicks) mTicks
+                      direct <- runTicks generated store0 tick0 (nTicks + mTicks)
+                      case (afterLoad, direct) of
+                        (Right storeA, Right storeB) ->
+                          case (extractChunk0Temp storeA, extractChunk0Temp storeB) of
+                            (Just tA, Just tB) -> U.toList tA `shouldBe` U.toList tB
+                            _ -> expectationFailure "missing chunk-0 temperatures in replayability comparison"
+                        (Left err, _) -> expectationFailure (T.unpack err)
+                        (_, Left err) -> expectationFailure (T.unpack err)
+
+  it "pulls temperature toward climate baseline over repeated ticks" $ do
+    let config = WorldConfig { wcChunkSize = 4 }
+        n = chunkTileCount config
+        env = TopoEnv { teLogger = \_ -> pure () }
+        initPipeline = PipelineConfig
+          { pipelineSeed = 15
+          , pipelineStages = [initWeatherStage defaultWeatherConfig]
+          , pipelineDisabled = mempty
+          , pipelineSnapshots = False
+          , pipelineOnProgress = \_ -> pure ()
+          }
+        cfg = defaultWeatherConfig
+          { wcClimatePullStrength = 0.25
+          , wcSeasonAmplitude = 0
+          , wcWeatherDiffuseFactor = 0
+          }
+        node = weatherSimNode cfg
+        Right dag = buildSimDAG [node]
+        meanAbsError vec target =
+          let diffs = map (\x -> abs (x - target)) (U.toList vec)
+          in if null diffs then 0 else sum diffs / fromIntegral (length diffs)
+        extractTemp store = do
+          ov <- lookupOverlay "weather" store
+          case ovData ov of
+            DenseData chunks -> do
+              fields <- IntMap.lookup 0 chunks
+              pure (fields V.! 0)
+            SparseData _ -> Nothing
+        runStep terrain store tickNo = do
+          let wt = defaultWorldTime { wtTick = tickNo }
+          tickSimulation dag noProgress terrain store testCalDate wt 1
+    baseTerrain <- mkTestTerrainWithClimate config
+    initResult <- runPipeline initPipeline env baseTerrain
+    case initResult of
+      Left err -> expectationFailure (show err)
+      Right (generated, _) -> do
+        let initialTemp = U.replicate n 0.0
+            humidity = U.replicate n 0.0
+            windDir = U.replicate n 0.0
+            windSpd = U.replicate n 0.1
+            pressure = U.replicate n 0.5
+            precip = U.replicate n 0.0
+            injected = Overlay
+              { ovSchema = weatherOverlaySchema
+              , ovData = DenseData (IntMap.singleton 0 (V.fromList [initialTemp, humidity, windDir, windSpd, pressure, precip]))
+              , ovProvenance = emptyOverlayProvenance
+              }
+            store0 = insertOverlay injected emptyOverlayStore
+            tick0 = wtTick (twWorldTime generated)
+        first <- runStep generated store0 tick0
+        after12 <-
+          foldl
+            (\acc k -> do
+               prev <- acc
+               case prev of
+                 Left err -> pure (Left err)
+                 Right (s, _) -> runStep generated s (tick0 + fromIntegral k))
+            (pure first)
+            [1 .. 12]
+        case (first, after12) of
+          (Right (storeFirst, _), Right (storeFinal, _)) ->
+            case (extractTemp storeFirst, extractTemp storeFinal) of
+              (Just tFirst, Just tFinal) -> do
+                let baseline = 0.5
+                meanAbsError tFinal baseline `shouldSatisfy` (< meanAbsError tFirst baseline)
+              _ -> expectationFailure "missing temperatures for climate-pull convergence test"
+          (Left err, _) -> expectationFailure (T.unpack err)
+          (_, Left err) -> expectationFailure (T.unpack err)
+
+  it "advects a warm blob eastward under uniform eastward wind" $ do
+    let config = WorldConfig { wcChunkSize = 4 }
+        n = chunkTileCount config
+        cfg = defaultWeatherConfig
+          { wcClimatePullStrength = 0
+          , wcCondensationRate = 0
+          , wcSeasonAmplitude = 0
+          , wcWeatherDiffuseFactor = 0
+          , wcWindResponseRate = 0
+          , wcPressureGradientWindScale = 0
+          }
+        node = weatherSimNode cfg
+        Right dag = buildSimDAG [node]
+        tempBlob = U.generate n (\i -> if i == 5 then 1 else 0)
+        humidity = U.replicate n 0
+        windDir = U.replicate n 0
+        windSpd = U.replicate n 0.5
+        pressure = U.replicate n 0.5
+        precip = U.replicate n 0
+        startOverlay = Overlay
+          { ovSchema = weatherOverlaySchema
+          , ovData = DenseData (IntMap.singleton 0 (V.fromList [tempBlob, humidity, windDir, windSpd, pressure, precip]))
+          , ovProvenance = emptyOverlayProvenance
+          }
+        comX vec =
+          let xs = [fromIntegral (i `mod` wcChunkSize config) * (vec U.! i) | i <- [0 .. n - 1]]
+              mass = U.sum vec
+          in if mass <= 0 then 0 else sum xs / mass
+        extractTemp store = do
+          ov <- lookupOverlay "weather" store
+          case ovData ov of
+            DenseData chunks -> do
+              fields <- IntMap.lookup 0 chunks
+              pure (fields V.! 0)
+            SparseData _ -> Nothing
+    terrain <- mkTestTerrainWithClimate config
+    let store0 = insertOverlay startOverlay emptyOverlayStore
+        wt = defaultWorldTime { wtTick = 0 }
+    result <- tickSimulation dag noProgress terrain store0 testCalDate wt 1
+    case result of
+      Left err -> expectationFailure (T.unpack err)
+      Right (storeAfter, _) ->
+        case extractTemp storeAfter of
+          Just tAfter -> comX tAfter `shouldSatisfy` (> comX tempBlob)
+          Nothing -> expectationFailure "missing temperature field after advection tick"
+
+  it "keeps all weather fields finite and within [0,1] at default advect dt" $ do
+    let config = WorldConfig { wcChunkSize = 8 }
+        n = chunkTileCount config
+        node = weatherSimNode defaultWeatherConfig
+        Right dag = buildSimDAG [node]
+        extremes = U.generate n (\i -> if even i then 0 else 1)
+        humidity = U.generate n (\i -> if i `mod` 3 == 0 then 1 else 0)
+        windDir = U.generate n (\i -> fromIntegral i * 0.3)
+        windSpd = U.replicate n 1
+        pressure = U.generate n (\i -> if i `mod` 5 == 0 then 1 else 0)
+        precip = U.generate n (\i -> if i `mod` 7 == 0 then 1 else 0)
+        startOverlay = Overlay
+          { ovSchema = weatherOverlaySchema
+          , ovData = DenseData (IntMap.singleton 0 (V.fromList [extremes, humidity, windDir, windSpd, pressure, precip]))
+          , ovProvenance = emptyOverlayProvenance
+          }
+        finite x = not (isNaN x) && not (isInfinite x)
+        inUnit x = x >= 0 && x <= 1 && finite x
+        inAngle x = x >= 0 && x <= (2 * pi) && finite x
+        allWith p vec = all p (U.toList vec)
+    terrain <- mkTestTerrainWithClimate config
+    let store0 = insertOverlay startOverlay emptyOverlayStore
+        wt = defaultWorldTime { wtTick = 42 }
+    result <- tickSimulation dag noProgress terrain store0 testCalDate wt 1
+    case result of
+      Left err -> expectationFailure (T.unpack err)
+      Right (storeAfter, _) ->
+        case lookupOverlay "weather" storeAfter of
+          Nothing -> expectationFailure "missing weather overlay"
+          Just ov -> case ovData ov of
+            SparseData _ -> expectationFailure "expected DenseData"
+            DenseData chunks -> case IntMap.lookup 0 chunks of
+              Nothing -> expectationFailure "missing chunk 0"
+              Just fields -> do
+                V.length fields `shouldBe` weatherFieldCount
+                allWith inUnit (fields V.! 0) `shouldBe` True
+                allWith inUnit (fields V.! 1) `shouldBe` True
+                allWith inAngle (fields V.! 2) `shouldBe` True
+                allWith inUnit (fields V.! 3) `shouldBe` True
+                allWith inUnit (fields V.! 4) `shouldBe` True
+                allWith inUnit (fields V.! 5) `shouldBe` True
 
   it "weatherSimNode is a reader (no terrain writes)" $ do
     let node = weatherSimNode defaultWeatherConfig

@@ -9,6 +9,9 @@
 module Spec.Overlay (spec) where
 
 import Data.Aeson (Value(..), encode, eitherDecodeStrict')
+import Control.Monad (replicateM_)
+import Data.Bits ((.&.), xor)
+import Data.Binary.Get (bytesRead, getByteString, getWord8, getWord32le, getWord64le, runGetOrFail)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.IntMap.Strict (IntMap)
@@ -18,10 +21,13 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing)
 import Data.Text (Text)
+import System.Directory (copyFile, doesFileExist)
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import Test.Hspec
-import Test.QuickCheck
+import Test.QuickCheck hiding ((.&.))
 
 import Topo.Overlay
   ( Overlay(..)
@@ -37,6 +43,7 @@ import Topo.Overlay
   , defaultRecord
   , defaultValue
   , emptyOverlay
+  , emptyOverlayProvenance
   , emptyOverlayChunk
   , emptyOverlayStore
   , floatToOverlayValue
@@ -83,11 +90,20 @@ import Topo.Overlay.Schema
   , validateSchema
   )
 import Topo.Overlay.Storage
-  ( OverlayLifecycle(..)
+  ( OverlayCompression(..)
+  , OverlayLifecycle(..)
   , MigrationResult(..)
+  , OverlayStorageOptions(..)
+  , OverlayStorageError(..)
+  , defaultOverlayStorageOptions
+  , loadOverlay
+  , loadOverlayChunk
   , migrateOverlayData
   , migrationLifecycle
   , migrationWarnings
+  , overlayDataPath
+  , saveOverlay
+  , saveOverlayWithOptions
   )
 import Topo.Overlay.Indexed
   ( IndexedOverlay(..)
@@ -166,6 +182,7 @@ spec = do
   indexSpec
   indexedSpec
   migrationSpec
+  chunkIoSpec
   storeSpec
 
 ------------------------------------------------------------------------
@@ -360,6 +377,7 @@ overlayJsonSpec = describe "Overlay.JSON" $ do
         overlay = Overlay
           { ovSchema = testSparseSchema
           , ovData = SparseData (IntMap.fromList [(7, sparseChunk)])
+          , ovProvenance = emptyOverlayProvenance
           }
         encoded = overlayToJSON overlay
     overlayFromJSON testSparseSchema encoded `shouldBe` Right overlay
@@ -373,6 +391,7 @@ overlayJsonSpec = describe "Overlay.JSON" $ do
         overlay = Overlay
           { ovSchema = testDenseSchema
           , ovData = DenseData (IntMap.fromList [(3, denseChunk)])
+          , ovProvenance = emptyOverlayProvenance
           }
         encoded = overlayToJSON overlay
     overlayFromJSON testDenseSchema encoded `shouldBe` Right overlay
@@ -381,6 +400,7 @@ overlayJsonSpec = describe "Overlay.JSON" $ do
     let overlay = Overlay
           { ovSchema = testSparseSchema
           , ovData = SparseData IntMap.empty
+          , ovProvenance = emptyOverlayProvenance
           }
         encoded = overlayToJSON overlay
     overlayFromJSON testDenseSchema encoded `shouldSatisfy` isLeft
@@ -425,6 +445,7 @@ exportSpec = describe "Overlay.Export" $ do
         ov = Overlay
           { ovSchema = testSparseSchema
           , ovData = SparseData (IntMap.fromList [(0, chunk0), (1, chunk1)])
+          , ovProvenance = emptyOverlayProvenance
           }
     let exported = exportOverlayChunks ov
     length exported `shouldBe` 2
@@ -766,6 +787,330 @@ migrationSpec = describe "Overlay.Storage migration" $ do
 ------------------------------------------------------------------------
 -- Overlay store
 ------------------------------------------------------------------------
+
+chunkIoSpec :: Spec
+chunkIoSpec = describe "Overlay.Storage chunk I/O" $ do
+  let zstdOptions = defaultOverlayStorageOptions
+        { osoCompression = CompressionZstd
+        }
+
+  it "loads full sparse overlay from indexed .topolay format" $
+    withSystemTempDirectory "overlay-indexed-full-load" $ \dir -> do
+      let chunk = OverlayChunk (IntMap.singleton 3 testRecord)
+          overlay = Overlay
+            { ovSchema = testSparseSchema
+            , ovData = SparseData (IntMap.singleton 7 chunk)
+            , ovProvenance = emptyOverlayProvenance
+            }
+      saveResult <- saveOverlay dir overlay
+      case saveResult of
+        Left err -> expectationFailure (show err)
+        Right () -> pure ()
+
+      fullLoad <- loadOverlay dir testSparseSchema
+      case fullLoad of
+        Left err -> expectationFailure (show err)
+        Right loadedOverlay ->
+          case ovData loadedOverlay of
+            DenseData _ -> expectationFailure "expected sparse overlay"
+            SparseData chunks -> IntMap.member 7 chunks `shouldBe` True
+
+  it "loads a sparse chunk by overlay name" $
+    withSystemTempDirectory "overlay-chunk-io" $ \dir -> do
+      let chunk = OverlayChunk (IntMap.singleton 3 testRecord)
+          overlay = Overlay
+            { ovSchema = testSparseSchema
+            , ovData = SparseData (IntMap.singleton 7 chunk)
+            , ovProvenance = emptyOverlayProvenance
+            }
+      saveResult <- saveOverlay dir overlay
+      case saveResult of
+        Left err -> expectationFailure (show err)
+        Right () -> pure ()
+
+      loadResult <- loadOverlayChunk dir "test-sparse" 7
+      case loadResult of
+        Left err -> expectationFailure (show err)
+        Right loadedChunk -> chunkLookup 3 loadedChunk `shouldBe` Just testRecord
+
+  it "returns a structured error for dense overlays" $
+    withSystemTempDirectory "overlay-chunk-io-dense" $ \dir -> do
+      let overlay = Overlay
+            { ovSchema = testDenseSchema
+            , ovData = DenseData IntMap.empty
+            , ovProvenance = emptyOverlayProvenance
+            }
+      saveResult <- saveOverlay dir overlay
+      case saveResult of
+        Left err -> expectationFailure (show err)
+        Right () -> pure ()
+
+      loadResult <- loadOverlayChunk dir "test-dense" 0
+      case loadResult of
+        Left (OverlayDecodeError _ _) -> pure ()
+        Left err -> expectationFailure ("unexpected error: " <> show err)
+        Right _ -> expectationFailure "expected dense chunk API rejection"
+
+  it "round-trips sparse overlay data with zstd compression" $
+    withSystemTempDirectory "overlay-zstd-roundtrip" $ \dir -> do
+      let chunk = OverlayChunk (IntMap.singleton 3 testRecord)
+          overlay = Overlay
+            { ovSchema = testSparseSchema
+            , ovData = SparseData (IntMap.singleton 7 chunk)
+            , ovProvenance = emptyOverlayProvenance
+            }
+      saveResult <- saveOverlayWithOptions zstdOptions dir overlay
+      case saveResult of
+        Left err -> expectationFailure (show err)
+        Right () -> pure ()
+
+      loadResult <- loadOverlay dir testSparseSchema
+      case loadResult of
+        Left err -> expectationFailure (show err)
+        Right loadedOverlay ->
+          case ovData loadedOverlay of
+            DenseData _ -> expectationFailure "expected sparse overlay"
+            SparseData chunks ->
+              let loadedChunk = IntMap.lookup 7 chunks
+              in case loadedChunk of
+                Nothing -> expectationFailure "expected chunk 7"
+                Just chunk7 -> chunkLookup 3 chunk7 `shouldBe` Just testRecord
+
+  it "round-trips dense overlay data with zstd compression" $
+    withSystemTempDirectory "overlay-zstd-dense-roundtrip" $ \dir -> do
+      let denseChunk = V.fromList
+            [ U.fromList [12.5, 13.5]
+            , U.fromList [0.4, 0.6]
+            , U.fromList [5.0, 7.0]
+            ]
+          overlay = Overlay
+            { ovSchema = testDenseSchema
+            , ovData = DenseData (IntMap.singleton 2 denseChunk)
+            , ovProvenance = emptyOverlayProvenance
+            }
+      saveResult <- saveOverlayWithOptions zstdOptions dir overlay
+      case saveResult of
+        Left err -> expectationFailure (show err)
+        Right () -> pure ()
+
+      loadResult <- loadOverlay dir testDenseSchema
+      case loadResult of
+        Left err -> expectationFailure (show err)
+        Right loadedOverlay ->
+          case ovData loadedOverlay of
+            SparseData _ -> expectationFailure "expected dense overlay"
+            DenseData chunks ->
+              case IntMap.lookup 2 chunks of
+                Nothing -> expectationFailure "expected chunk 2"
+                Just loadedChunk -> loadedChunk `shouldBe` denseChunk
+
+  it "loads uncompressed and zstd overlays from the same directory" $
+    withSystemTempDirectory "overlay-mixed-compression" $ \dir -> do
+      let schemaUncompressed = testSparseSchema
+          schemaCompressed = testSparseSchema { osName = "test-sparse-zstd" }
+          chunkA = OverlayChunk (IntMap.singleton 3 testRecord)
+          chunkB = OverlayChunk (IntMap.singleton 4 testRecord)
+          overlayUncompressed = Overlay
+            { ovSchema = schemaUncompressed
+            , ovData = SparseData (IntMap.singleton 7 chunkA)
+            , ovProvenance = emptyOverlayProvenance
+            }
+          overlayCompressed = Overlay
+            { ovSchema = schemaCompressed
+            , ovData = SparseData (IntMap.singleton 8 chunkB)
+            , ovProvenance = emptyOverlayProvenance
+            }
+
+      saveUncompressed <- saveOverlay dir overlayUncompressed
+      case saveUncompressed of
+        Left err -> expectationFailure (show err)
+        Right () -> pure ()
+
+      saveCompressed <- saveOverlayWithOptions zstdOptions dir overlayCompressed
+      case saveCompressed of
+        Left err -> expectationFailure (show err)
+        Right () -> pure ()
+
+      loadUncompressed <- loadOverlay dir schemaUncompressed
+      case loadUncompressed of
+        Left err -> expectationFailure (show err)
+        Right _ -> pure ()
+
+      loadCompressed <- loadOverlay dir schemaCompressed
+      case loadCompressed of
+        Left err -> expectationFailure (show err)
+        Right _ -> pure ()
+
+  it "loads sparse chunk from zstd-compressed overlay" $
+    withSystemTempDirectory "overlay-zstd-chunk" $ \dir -> do
+      let chunk = OverlayChunk (IntMap.singleton 3 testRecord)
+          overlay = Overlay
+            { ovSchema = testSparseSchema
+            , ovData = SparseData (IntMap.singleton 7 chunk)
+            , ovProvenance = emptyOverlayProvenance
+            }
+      saveResult <- saveOverlayWithOptions zstdOptions dir overlay
+      case saveResult of
+        Left err -> expectationFailure (show err)
+        Right () -> pure ()
+
+      loadResult <- loadOverlayChunk dir "test-sparse" 7
+      case loadResult of
+        Left err -> expectationFailure (show err)
+        Right loadedChunk -> chunkLookup 3 loadedChunk `shouldBe` Just testRecord
+
+  it "fails cleanly when compressed payload is corrupted" $
+    withSystemTempDirectory "overlay-zstd-corrupt" $ \dir -> do
+      let chunk = OverlayChunk (IntMap.singleton 3 testRecord)
+          overlay = Overlay
+            { ovSchema = testSparseSchema
+            , ovData = SparseData (IntMap.singleton 7 chunk)
+            , ovProvenance = emptyOverlayProvenance
+            }
+      saveResult <- saveOverlayWithOptions zstdOptions dir overlay
+      case saveResult of
+        Left err -> expectationFailure (show err)
+        Right () -> pure ()
+
+      let dataFile = overlayDataPath dir "test-sparse"
+      bytes <- BS.readFile dataFile
+      let payloadOffsetResult = runGetOrFail firstChunkPayloadOffset (BL.fromStrict bytes)
+      case payloadOffsetResult of
+        Left (_, _, err) -> expectationFailure ("failed to locate payload bytes: " <> err)
+        Right (_, _, (rawLenOffset, _payloadStart, _payloadLen)) -> do
+          if rawLenOffset + 4 > BS.length bytes
+            then expectationFailure "invalid payload range for mutation"
+            else BS.writeFile dataFile (BS.take rawLenOffset bytes <> BS.pack [0, 0, 0, 0] <> BS.drop (rawLenOffset + 4) bytes)
+
+      loadResult <- loadOverlay dir testSparseSchema
+      case loadResult of
+        Left (OverlayDecodeError _ _) -> pure ()
+        Left err -> expectationFailure ("unexpected error: " <> show err)
+        Right _ -> expectationFailure "expected decode failure for corrupted compressed payload"
+
+  it "fails when zstd flag is set but uncompressed length is missing" $
+    withSystemTempDirectory "overlay-zstd-missing-uncompressed-len" $ \dir -> do
+      let chunk = OverlayChunk (IntMap.singleton 3 testRecord)
+          overlay = Overlay
+            { ovSchema = testSparseSchema
+            , ovData = SparseData (IntMap.singleton 7 chunk)
+            , ovProvenance = emptyOverlayProvenance
+            }
+      saveResult <- saveOverlayWithOptions zstdOptions dir overlay
+      case saveResult of
+        Left err -> expectationFailure (show err)
+        Right () -> pure ()
+
+      let dataFile = overlayDataPath dir "test-sparse"
+      bytes <- BS.readFile dataFile
+      let payloadOffsetResult = runGetOrFail firstChunkPayloadOffset (BL.fromStrict bytes)
+      case payloadOffsetResult of
+        Left (_, _, err) -> expectationFailure ("failed to locate payload bytes: " <> err)
+        Right (_, _, (rawLenOffset, _payloadStart, _payloadLen)) ->
+          BS.writeFile dataFile (BS.take rawLenOffset bytes)
+
+      loadResult <- loadOverlay dir testSparseSchema
+      case loadResult of
+        Left (OverlayDecodeError _ _) -> pure ()
+        Left err -> expectationFailure ("unexpected error: " <> show err)
+        Right _ -> expectationFailure "expected decode failure for missing uncompressed length"
+
+  it "fails when stored uncompressed length mismatches decompressed payload" $
+    withSystemTempDirectory "overlay-zstd-uncompressed-len-mismatch" $ \dir -> do
+      let chunk = OverlayChunk (IntMap.singleton 3 testRecord)
+          overlay = Overlay
+            { ovSchema = testSparseSchema
+            , ovData = SparseData (IntMap.singleton 7 chunk)
+            , ovProvenance = emptyOverlayProvenance
+            }
+      saveResult <- saveOverlayWithOptions zstdOptions dir overlay
+      case saveResult of
+        Left err -> expectationFailure (show err)
+        Right () -> pure ()
+
+      let dataFile = overlayDataPath dir "test-sparse"
+      bytes <- BS.readFile dataFile
+      let payloadOffsetResult = runGetOrFail firstChunkPayloadOffset (BL.fromStrict bytes)
+      case payloadOffsetResult of
+        Left (_, _, err) -> expectationFailure ("failed to locate payload bytes: " <> err)
+        Right (_, _, (rawLenOffset, _payloadStart, _payloadLen)) -> do
+          if rawLenOffset + 4 > BS.length bytes
+            then expectationFailure "invalid payload range for mutation"
+            else BS.writeFile dataFile
+              (BS.take rawLenOffset bytes <> BS.pack [1, 0, 0, 0] <> BS.drop (rawLenOffset + 4) bytes)
+
+      loadResult <- loadOverlay dir testSparseSchema
+      case loadResult of
+        Left (OverlayDecodeError _ _) -> pure ()
+        Left err -> expectationFailure ("unexpected error: " <> show err)
+        Right _ -> expectationFailure "expected decode failure for uncompressed-length mismatch"
+
+  it "decodes relocated compressed overlay fixture" $ do
+    let fixtureDir = "test" </> "fixtures" </> "overlay"
+        schemaPath = fixtureDir </> "sample-city.toposchema"
+        zstdPayloadPath = fixtureDir </> "sample-city.zstd.topolay"
+    schemaExists <- doesFileExist schemaPath
+    if not schemaExists
+      then expectationFailure "missing fixture schema: test/fixtures/overlay/sample-city.toposchema"
+      else do
+        payloadExists <- doesFileExist zstdPayloadPath
+        if not payloadExists
+          then expectationFailure "missing fixture payload: test/fixtures/overlay/sample-city.zstd.topolay"
+          else do
+            withSystemTempDirectory "overlay-fixture-decode" $ \tmpDir -> do
+              let tmpSchemaPath = tmpDir </> "sample-city.toposchema"
+                  tmpPayloadPath = tmpDir </> "sample-city.topolay"
+              copyFile schemaPath tmpSchemaPath
+              copyFile zstdPayloadPath tmpPayloadPath
+
+              schemaBytes <- BS.readFile tmpSchemaPath
+              case parseOverlaySchema schemaBytes of
+                Left err -> expectationFailure ("fixture schema parse failed: " <> show err)
+                Right schema -> do
+                  loadResult <- loadOverlayChunk tmpDir (osName schema) 3
+                  case loadResult of
+                    Left err -> expectationFailure ("fixture chunk load failed: " <> show err)
+                    Right loadedChunk ->
+                      case chunkLookup 7 loadedChunk of
+                        Nothing -> expectationFailure "expected tile 7 record in fixture chunk"
+                        Just rec -> do
+                          recordField rec 0 `shouldBe` Just (OVInt 1200)
+                          recordField rec 1 `shouldBe` Just (OVText "Rivermouth")
+                          recordField rec 2 `shouldBe` Just (OVBool True)
+
+  where
+    firstChunkPayloadOffset = do
+      _ <- getWord32le
+      verLen <- fromIntegral <$> getWord32le
+      _ <- getByteString verLen
+      _ <- getWord8
+      fieldCount <- fromIntegral <$> getWord32le
+      replicateM_ fieldCount $ do
+        nameLen <- fromIntegral <$> getWord32le
+        _ <- getByteString nameLen
+        _ <- getWord8
+        pure ()
+      _ <- getWord64le
+      _ <- getWord32le
+      sourceLen <- fromIntegral <$> getWord32le
+      _ <- getByteString sourceLen
+      flags <- getWord8
+      _ <- getWord32le
+      _ <- getWord32le
+      payloadLen <- fromIntegral <$> getWord32le
+      if (flags .&. 0x02) /= 0
+        then do
+          rawLenOffset <- fromIntegral <$> bytesRead
+          _ <- getWord32le
+          payloadStart <- fromIntegral <$> bytesRead
+          pure (rawLenOffset, payloadStart, payloadLen)
+        else fail "expected zstd flag for compressed-payload corruption test"
+
+    recordField r idx =
+      let OverlayRecord vals = r
+      in if idx < 0 || idx >= V.length vals
+         then Nothing
+         else Just (vals V.! idx)
 
 storeSpec :: Spec
 storeSpec = describe "OverlayStore" $ do

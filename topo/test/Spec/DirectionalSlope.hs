@@ -8,6 +8,15 @@ import Test.QuickCheck
 import qualified Data.Vector.Unboxed as U
 import Topo
 
+floatTolerance :: Float
+floatTolerance = 1e-5
+
+approxEqFloat :: Float -> Float -> Bool
+approxEqFloat expected actual =
+  let scale = max 1 (max (abs expected) (abs actual))
+      relTol = floatTolerance * scale
+  in abs (actual - expected) <= relTol
+
 -- | Arbitrary instance for DirectionalSlope.
 instance Arbitrary DirectionalSlope where
   arbitrary = DirectionalSlope
@@ -99,7 +108,7 @@ spec = describe "DirectionalSlope" $ do
 
     prop "equals dsAvgSlope for uniform slope" $ \(k :: Float) ->
       let ds = DirectionalSlope k k k k k k
-      in abs (dsTop3Slope ds - dsAvgSlope ds) < 1e-5
+      in approxEqFloat (dsAvgSlope ds) (dsTop3Slope ds)
 
     it "is higher than dsAvgSlope for one-directional slope" $ do
       let ds = DirectionalSlope 1.0 0 0 0 0 0

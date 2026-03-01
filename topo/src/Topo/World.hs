@@ -51,6 +51,7 @@ module Topo.World
 
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
+import Data.Word (Word64)
 import Topo.Hex (HexGridMeta)
 import Topo.Metadata (Metadata, MetadataMigration, MetadataStore, emptyMetadataStore, getHexMeta, getRegionMeta, migrateMetadataStore, putHexMeta, putRegionMeta)
 import Data.Aeson (Value)
@@ -89,10 +90,15 @@ data TerrainWorld = TerrainWorld
   -- world configuration.  Computed once at world creation; used by
   -- every pipeline stage that needs tile-Y → latitude conversion.
   , twLatMapping :: !LatitudeMapping
-  -- | Monotonic simulation time.  Advanced by 'tickWeatherStage'
-  -- (and future simulation ticks); used for time-varying weather noise
-  -- and seasonal phase computation via 'Topo.Calendar.yearFraction'.
+  -- | Monotonic simulation time.  Advanced by simulation ticks
+  -- (including weather simulation); used for time-varying weather
+  -- noise and seasonal phase computation via
+  -- 'Topo.Calendar.yearFraction'.
   , twWorldTime :: !WorldTime
+  -- | Deterministic world seed used for all time-varying simulation
+  -- noise.  Set from the pipeline master seed and persisted with the
+  -- world so simulation ticks remain stable across save/load cycles.
+  , twSeed :: !Word64
   -- | Geological-scale planet age (years since formation).  Carried
   -- as metadata; not derived from the tick counter.
   , twPlanetAge :: !PlanetAge
@@ -139,6 +145,7 @@ emptyWorldWithPlanet config hexMeta planet slice = TerrainWorld
   , twSlice = slice
   , twLatMapping = mkLatitudeMapping planet slice config
   , twWorldTime = defaultWorldTime
+  , twSeed = 0
   , twPlanetAge = defaultPlanetAge
   , twGenConfig = Nothing
   , twUnitScales = defaultUnitScales

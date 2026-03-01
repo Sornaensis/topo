@@ -171,12 +171,6 @@ import Actor.UI
   , setUiWindBeltSpeedScale
   , setUiWindCoriolisDeflection
   , setUiBndLandRange
-  , setUiBndTempConvergent
-  , setUiBndTempDivergent
-  , setUiBndTempTransform
-  , setUiBndPrecipConvergent
-  , setUiBndPrecipDivergent
-  , setUiBndPrecipTransform
   , setUiPiedmontSmooth
   , setUiPiedmontSlopeMin
   , setUiPiedmontSlopeMax
@@ -821,18 +815,6 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           WidgetConfigWindBeltSpeedScalePlus -> True
           WidgetConfigBndLandRangeMinus -> True
           WidgetConfigBndLandRangePlus -> True
-          WidgetConfigBndTempConvergentMinus -> True
-          WidgetConfigBndTempConvergentPlus -> True
-          WidgetConfigBndTempDivergentMinus -> True
-          WidgetConfigBndTempDivergentPlus -> True
-          WidgetConfigBndTempTransformMinus -> True
-          WidgetConfigBndTempTransformPlus -> True
-          WidgetConfigBndPrecipConvergentMinus -> True
-          WidgetConfigBndPrecipConvergentPlus -> True
-          WidgetConfigBndPrecipDivergentMinus -> True
-          WidgetConfigBndPrecipDivergentPlus -> True
-          WidgetConfigBndPrecipTransformMinus -> True
-          WidgetConfigBndPrecipTransformPlus -> True
           WidgetConfigPiedmontSmoothMinus -> True
           WidgetConfigPiedmontSmoothPlus -> True
           WidgetConfigPiedmontSlopeMinMinus -> True
@@ -1247,18 +1229,6 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           WidgetConfigWindBeltSpeedScalePlus -> tab == ConfigClimate
           WidgetConfigBndLandRangeMinus -> tab == ConfigClimate
           WidgetConfigBndLandRangePlus -> tab == ConfigClimate
-          WidgetConfigBndTempConvergentMinus -> tab == ConfigClimate
-          WidgetConfigBndTempConvergentPlus -> tab == ConfigClimate
-          WidgetConfigBndTempDivergentMinus -> tab == ConfigClimate
-          WidgetConfigBndTempDivergentPlus -> tab == ConfigClimate
-          WidgetConfigBndTempTransformMinus -> tab == ConfigClimate
-          WidgetConfigBndTempTransformPlus -> tab == ConfigClimate
-          WidgetConfigBndPrecipConvergentMinus -> tab == ConfigClimate
-          WidgetConfigBndPrecipConvergentPlus -> tab == ConfigClimate
-          WidgetConfigBndPrecipDivergentMinus -> tab == ConfigClimate
-          WidgetConfigBndPrecipDivergentPlus -> tab == ConfigClimate
-          WidgetConfigBndPrecipTransformMinus -> tab == ConfigClimate
-          WidgetConfigBndPrecipTransformPlus -> tab == ConfigClimate
           WidgetConfigPiedmontSmoothMinus -> tab == ConfigClimate
           WidgetConfigPiedmontSmoothPlus -> tab == ConfigClimate
           WidgetConfigPiedmontSlopeMinMinus -> tab == ConfigClimate
@@ -1924,18 +1894,6 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           ; Just WidgetConfigWindBeltSpeedScalePlus -> whenConfigVisible (bumpWindBeltSpeedScale 0.05)
           ; Just WidgetConfigBndLandRangeMinus -> whenConfigVisible (bumpBndLandRange (-0.05))
           ; Just WidgetConfigBndLandRangePlus -> whenConfigVisible (bumpBndLandRange 0.05)
-          ; Just WidgetConfigBndTempConvergentMinus -> whenConfigVisible (bumpBndTempConvergent (-0.05))
-          ; Just WidgetConfigBndTempConvergentPlus -> whenConfigVisible (bumpBndTempConvergent 0.05)
-          ; Just WidgetConfigBndTempDivergentMinus -> whenConfigVisible (bumpBndTempDivergent (-0.05))
-          ; Just WidgetConfigBndTempDivergentPlus -> whenConfigVisible (bumpBndTempDivergent 0.05)
-          ; Just WidgetConfigBndTempTransformMinus -> whenConfigVisible (bumpBndTempTransform (-0.05))
-          ; Just WidgetConfigBndTempTransformPlus -> whenConfigVisible (bumpBndTempTransform 0.05)
-          ; Just WidgetConfigBndPrecipConvergentMinus -> whenConfigVisible (bumpBndPrecipConvergent (-0.05))
-          ; Just WidgetConfigBndPrecipConvergentPlus -> whenConfigVisible (bumpBndPrecipConvergent 0.05)
-          ; Just WidgetConfigBndPrecipDivergentMinus -> whenConfigVisible (bumpBndPrecipDivergent (-0.05))
-          ; Just WidgetConfigBndPrecipDivergentPlus -> whenConfigVisible (bumpBndPrecipDivergent 0.05)
-          ; Just WidgetConfigBndPrecipTransformMinus -> whenConfigVisible (bumpBndPrecipTransform (-0.05))
-          ; Just WidgetConfigBndPrecipTransformPlus -> whenConfigVisible (bumpBndPrecipTransform 0.05)
           ; Just WidgetConfigPiedmontSmoothMinus -> whenConfigVisible (bumpPiedmontSmooth (-0.05))
           ; Just WidgetConfigPiedmontSmoothPlus -> whenConfigVisible (bumpPiedmontSmooth 0.05)
           ; Just WidgetConfigPiedmontSlopeMinMinus -> whenConfigVisible (bumpPiedmontSlopeMin (-0.05))
@@ -2617,24 +2575,6 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
     bumpBndLandRange delta = do
       uiSnap <- getUiSnapshot uiHandle
       setUiBndLandRange uiHandle (uiBndLandRange uiSnap + delta)
-    bumpBndTempConvergent delta = do
-      uiSnap <- getUiSnapshot uiHandle
-      setUiBndTempConvergent uiHandle (uiBndTempConvergent uiSnap + delta)
-    bumpBndTempDivergent delta = do
-      uiSnap <- getUiSnapshot uiHandle
-      setUiBndTempDivergent uiHandle (uiBndTempDivergent uiSnap + delta)
-    bumpBndTempTransform delta = do
-      uiSnap <- getUiSnapshot uiHandle
-      setUiBndTempTransform uiHandle (uiBndTempTransform uiSnap + delta)
-    bumpBndPrecipConvergent delta = do
-      uiSnap <- getUiSnapshot uiHandle
-      setUiBndPrecipConvergent uiHandle (uiBndPrecipConvergent uiSnap + delta)
-    bumpBndPrecipDivergent delta = do
-      uiSnap <- getUiSnapshot uiHandle
-      setUiBndPrecipDivergent uiHandle (uiBndPrecipDivergent uiSnap + delta)
-    bumpBndPrecipTransform delta = do
-      uiSnap <- getUiSnapshot uiHandle
-      setUiBndPrecipTransform uiHandle (uiBndPrecipTransform uiSnap + delta)
     bumpPiedmontSmooth delta = do
       uiSnap <- getUiSnapshot uiHandle
       setUiPiedmontSmooth uiHandle (uiPiedmontSmooth uiSnap + delta)

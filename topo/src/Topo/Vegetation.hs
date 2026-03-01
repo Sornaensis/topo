@@ -352,7 +352,7 @@ defaultBiomeFeedbackConfig = BiomeFeedbackConfig
 -- (see GAP-V5 in plan.md).
 --
 -- Must run after 'Topo.BiomeConfig.classifyBiomesStage' (biome IDs
--- are stored in 'tcFlags') and before 'Topo.Weather.tickWeatherStage'
+-- are stored in 'tcFlags') and before 'Topo.Weather.initWeatherStage'
 -- so the updated albedo feeds back into the weather snapshot.
 updateVegetationFromBiomeStage
   :: BiomeFeedbackConfig

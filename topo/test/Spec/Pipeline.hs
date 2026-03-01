@@ -7,6 +7,7 @@ import Data.Aeson (Value(..))
 import Data.Either (isRight)
 import Data.IORef (newIORef, readIORef, modifyIORef')
 import Data.Text (pack)
+import System.IO.Temp (withSystemTempDirectory)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -436,6 +437,7 @@ spec = describe "Pipeline" $ do
             in Overlay
                 { ovSchema = schema
                 , ovData = SparseData (IntMap.singleton 0 chunk)
+              , ovProvenance = emptyOverlayProvenance
                 }
           stage = PipelineStage
             { stageId = StageBaseHeight
@@ -481,20 +483,20 @@ spec = describe "Pipeline" $ do
         Right value -> pure value
       let world2 = world1 { twOverlays = storeAfterSim }
 
-      let dir = ".topo-overlay-lifecycle-roundtrip"
-      case lookupOverlay "lifecycle_overlay" (twOverlays world2) of
-        Nothing -> expectationFailure "missing lifecycle overlay after simulation"
-        Just ov -> do
-          saveResult <- saveOverlay dir ov
-          case saveResult of
-            Left err -> expectationFailure (show err)
-            Right () -> pure ()
-      loaded <- loadOverlayWithLifecycle dir schema
-      case loaded of
-        Left err -> expectationFailure (show err)
-        Right (_, lifecycle, warnings) -> do
-          lifecycle `shouldBe` OverlayActive
-          warnings `shouldBe` []
+      withSystemTempDirectory "topo-overlay-lifecycle-roundtrip" $ \dir -> do
+        case lookupOverlay "lifecycle_overlay" (twOverlays world2) of
+          Nothing -> expectationFailure "missing lifecycle overlay after simulation"
+          Just ov -> do
+            saveResult <- saveOverlay dir ov
+            case saveResult of
+              Left err -> expectationFailure (show err)
+              Right () -> pure ()
+        loaded <- loadOverlayWithLifecycle dir schema
+        case loaded of
+          Left err -> expectationFailure (show err)
+          Right (_, lifecycle, warnings) -> do
+            lifecycle `shouldBe` OverlayActive
+            warnings `shouldBe` []
 
   -- Phase 1: Stage identity on constructed stages
   describe "Stage identity" $ do

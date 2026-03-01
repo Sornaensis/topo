@@ -30,8 +30,8 @@ import qualified Data.IntMap.Strict as IntMap
 import Data.Word (Word64)
 import Topo.Climate.Config
 import Topo.Climate.Evaporation
-import Topo.Math (clamp01, clampLat, iterateN, lerp)
-import Topo.Noise (noise2D)
+import Topo.Math (clamp01, clampLat, iterateN, lerp, smoothstep)
+import Topo.Noise (fbm2D, noise2D)
 import Topo.Pipeline (PipelineStage(..))
 import Topo.Pipeline.Stage (StageId(..))
 import Control.Monad.Except (throwError)
@@ -39,7 +39,6 @@ import Topo.Planet (LatitudeMapping(..))
 import Topo.Plugin (logInfo, getWorldP, putWorldP, peSeed, PluginError(..))
 import Topo.TerrainGrid
   ( buildElevationGrid
-  , buildPlateBoundaryGrid
   , chunkGridSlice
   , clampCoordGrid
   , validateTerrainGrid
@@ -74,8 +73,8 @@ generateClimateStage cfg wcfg waterLevel = PipelineStage StageClimate "generateC
       gridW = (maxCx - minCx + 1) * size
       gridH = (maxCy - minCy + 1) * size
       vegMap = twVegetation world
-      (precipGrid, coastalGrid, moistureGrid) = buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx minCy) gridW gridH
-      climate' = IntMap.mapWithKey (buildClimateChunkWithPrecip config seed lm cfg seasonAmp sBase sRange waterLevel vegMap precipGrid coastalGrid moistureGrid (ChunkCoord minCx minCy) gridW) terrain
+      (precipGrid, coastalGrid, moistureGrid, tempGrid) = buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx minCy) gridW gridH
+      climate' = IntMap.mapWithKey (buildClimateChunkWithPrecip config seed lm cfg seasonAmp sBase sRange precipGrid coastalGrid moistureGrid tempGrid (ChunkCoord minCx minCy) gridW) terrain
   putWorldP world { twClimate = climate' }
 
 -- | Build a single chunk's climate data using global precipitation and
@@ -90,31 +89,19 @@ buildClimateChunkWithPrecip
   -> Float              -- ^ tilt-scaled season amplitude
   -> Float              -- ^ seasonal base
   -> Float              -- ^ seasonal range
-  -> Float
-  -> IntMap VegetationChunk -- ^ vegetation data for albedo feedback
   -> U.Vector Float   -- ^ global precipitation grid
   -> U.Vector Float   -- ^ global coastal proximity grid
   -> U.Vector Float   -- ^ global equilibrium moisture grid (from transport)
+  -> U.Vector Float   -- ^ global temperature grid
   -> ChunkCoord       -- ^ min chunk coordinate
   -> Int              -- ^ grid width in tiles
   -> Int              -- ^ chunk key
   -> TerrainChunk
   -> ClimateChunk
-buildClimateChunkWithPrecip config seed lm cfg seasonAmp sBase sRange waterLevel vegMap precipGrid coastalGrid moistureGrid minCoord gridW key terrain =
+buildClimateChunkWithPrecip config seed lm cfg seasonAmp sBase sRange precipGrid coastalGrid moistureGrid tempGrid minCoord gridW key terrain =
   let origin = chunkOriginTile config (chunkCoordFromId (ChunkId key))
-      TileCoord _ox oy = origin
       n = chunkTileCount config
       wnd = ccWind cfg
-      tmp = ccTemperature cfg
-
-      -- Albedo: fall back to reference (no correction) when chunk is absent.
-      albedoRef = tmpAlbedoReference tmp
-      albedoVec = case IntMap.lookup key vegMap of
-        Nothing  -> U.replicate n albedoRef
-        Just veg -> vegAlbedo veg
-
-      -- Base temperature (pre-ocean-moderation)
-      temp0 = U.generate n (tempAt config seed lm cfg waterLevel origin (tcElevation terrain) (tcPlateBoundary terrain) (tcPlateHeight terrain) (tcPlateVelX terrain) (tcPlateVelY terrain) albedoVec)
 
       -- Wind fields
       windDir0 = U.generate n (windDirAt config seed lm cfg origin)
@@ -126,21 +113,7 @@ buildClimateChunkWithPrecip config seed lm cfg seasonAmp sBase sRange waterLevel
       precip   = chunkGridSlice config minCoord gridW precipGrid key
       coastal  = chunkGridSlice config minCoord gridW coastalGrid key
       moisture = chunkGridSlice config minCoord gridW moistureGrid key
-
-      -- Ocean thermal moderation: pull coastal temps toward the
-      -- latitude-dependent SST.
-      moderation = tmpOceanModeration tmp
-      temp = U.generate n $ \i ->
-        let t = temp0 U.! i
-            c = coastal U.! i
-            TileCoord _lx ly = tileCoordFromIndex config (TileIndex i)
-            gy = oy + ly
-            lat = clampLat (fromIntegral gy * lmRadPerTile lm + lmBiasRad lm)
-            latF = clamp01 (abs (cos lat) ** tmpOceanLatExponent tmp)
-            moderateTarget = lerp (tmpOceanPoleSST tmp) (tmpOceanEquatorSST tmp) latF
-                           + tmpOceanModerateTemp tmp
-            pull = c * moderation * (moderateTarget - t)
-        in clamp01 (t + pull)
+      temp     = chunkGridSlice config minCoord gridW tempGrid key
 
       -- Seasonality fields with terrain-aware modulations
       seasonCfg = ccSeasonality cfg
@@ -302,40 +275,39 @@ tempAt
   -> Float
   -> TileCoord
   -> U.Vector Float
-  -> U.Vector PlateBoundary
-  -> U.Vector Float
-  -> U.Vector Float
   -> U.Vector Float
   -> U.Vector Float          -- ^ Per-tile surface albedo (from vegetation)
   -> Int
   -> Float
-tempAt config seed lm cfg waterLevel origin elev boundaries plateHeight velX velY albedoVec i =
+tempAt config seed lm cfg waterLevel origin elev plateHeight albedoVec i =
   let tmp = ccTemperature cfg
-      bnd = ccBoundary cfg
       TileCoord lx ly = tileCoordFromIndex config (TileIndex i)
       TileCoord ox oy = origin
       gy = oy + ly
       lat = clampLat (fromIntegral gy * lmRadPerTile lm + lmBiasRad lm)
       height = elev U.! i
+      blendWidth = max 0.0001 (tmpCoastalBlendWidth tmp)
+      blend = smoothstep (waterLevel - blendWidth) (waterLevel + blendWidth) height
       isOcean = height < waterLevel
       insol = lmInsolation lm
-      -- Ocean tiles: dedicated SST profile (Phase 1 temperature fix).
-      -- Land tiles: original latitude curve with lapse rate.
-      base
-        | isOcean =
-            let latF = clamp01 (abs (cos lat) ** tmpOceanLatExponent tmp)
-            in insol * lerp (tmpOceanPoleSST tmp) (tmpOceanEquatorSST tmp) latF
-        | otherwise =
-            let latF = clamp01 (abs (cos lat) ** tmpLatitudeExponent tmp)
-            in insol * lerp (tmpPoleTemp tmp) (tmpEquatorTemp tmp) latF
-      lapse = if isOcean
-              then 0
-              else (height - waterLevel) * tmpLapseRate tmp
-      n0 = noise2D seed (ox + lx) (oy + ly) * tmpNoiseScale tmp
-      tectonic = boundaryTempBiasAt cfg waterLevel (boundaries U.! i) height
-      motion = clamp01 (plateVelocityMagAt (velX U.! i) (velY U.! i) * bndMotionTemp bnd)
+      -- Coastal blending: smoothly transition between ocean and land
+      -- base curves around sea level.
+      latFOcean = clamp01 (abs (cos lat) ** tmpOceanLatExponent tmp)
+      baseOcean = insol * lerp (tmpOceanPoleSST tmp) (tmpOceanEquatorSST tmp) latFOcean
+      latFLand = clamp01 (abs (cos lat) ** tmpLatitudeExponent tmp)
+      baseLand = insol * lerp (tmpPoleTemp tmp) (tmpEquatorTemp tmp) latFLand
+      base = lerp baseOcean baseLand blend
+      lapseLand = (height - waterLevel) * tmpLapseRate tmp
+      lapse = blend * lapseLand
+      n0 = coherentNoise2D
+             seed
+             (tmpNoiseOctaves tmp)
+             (tmpNoiseFrequency tmp)
+             (ox + lx)
+             (oy + ly)
+           * tmpNoiseScale tmp
       plateBias = plateHeightTempBiasAt cfg waterLevel (plateHeight U.! i)
-      rawTemp = base - lapse + n0 + tectonic * (1 + motion) + plateBias
+      rawTemp = base - lapse + n0 + plateBias
       -- Model H: albedo feedback — land only.
       -- Ocean SST profile already accounts for albedo/evaporative balance.
       albedo = albedoVec U.! i
@@ -344,18 +316,6 @@ tempAt config seed lm cfg waterLevel origin elev boundaries plateHeight velX vel
         | otherwise = 1 - tmpAlbedoSensitivity tmp
                           * (albedo - tmpAlbedoReference tmp)
   in clamp01 (rawTemp * albedoCorr)
-
-boundaryTempBiasAt :: ClimateConfig -> Float -> PlateBoundary -> Float -> Float
-boundaryTempBiasAt cfg waterLevel boundary height =
-  let bnd = ccBoundary cfg
-      landRange = max 0.0001 (bndLandRange bnd)
-      land = clamp01 ((height - waterLevel) / landRange)
-      bias = case boundary of
-        PlateBoundaryConvergent -> bndTempConvergent bnd
-        PlateBoundaryDivergent -> bndTempDivergent bnd
-        PlateBoundaryTransform -> bndTempTransform bnd
-        PlateBoundaryNone -> 0
-  in bias * land
 
 windDirAt :: WorldConfig -> Word64 -> LatitudeMapping -> ClimateConfig -> TileCoord -> Int -> Float
 windDirAt config seed lm cfg origin i =
@@ -387,6 +347,11 @@ moistureTransport config seed lm cfg waterLevel origin windDir windSpd tempVec e
 -- The moisture grid is the equilibrium atmospheric moisture field after
 -- all transport iterations, used downstream to compute transport-model
 -- relative humidity (@moisture / satNorm(T)@).
+--
+-- The returned temperature grid is the /same/ globally-diffused,
+-- ocean-moderated field that is ultimately sliced into @ccTempAvg@,
+-- ensuring moisture transport and stored climate temperature stay
+-- consistent.
 buildClimateGrids
   :: WorldConfig
   -> Word64
@@ -397,21 +362,18 @@ buildClimateGrids
   -> IntMap VegetationChunk  -- ^ Vegetation bootstrap data
   -> ChunkCoord
   -> Int -> Int
-  -> (U.Vector Float, U.Vector Float, U.Vector Float)
+  -> (U.Vector Float, U.Vector Float, U.Vector Float, U.Vector Float)
 buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx minCy) gridW gridH =
   let prc = ccPrecipitation cfg
       wnd = ccWind cfg
       mst = ccMoisture cfg
-      bnd = ccBoundary cfg
       tmp = ccTemperature cfg
       size = wcChunkSize config
       minTileX = minCx * size
       minTileY = minCy * size
       insol = lmInsolation lm
       elev = buildElevationGrid config terrain (ChunkCoord minCx minCy) gridW gridH
-      boundaries = buildPlateBoundaryGrid config terrain (ChunkCoord minCx minCy) gridW gridH
       plateHeight = buildPlateHeightGrid config terrain (ChunkCoord minCx minCy) gridW gridH
-      plateVelocity = buildPlateVelocityGrid config terrain (ChunkCoord minCx minCy) gridW gridH
       oceanMask = U.map (\h -> if h < waterLevel then 1 else 0) elev
       coastal = coastalProximityGrid gridW gridH (precCoastalIterations prc) (precCoastalDiffuse prc) oceanMask
       n = gridW * gridH
@@ -421,18 +383,35 @@ buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx
       vegCoverGrid  = buildVegFieldGrid config vegMap vegCover (ChunkCoord minCx minCy) gridW gridH
       -- Vegetation albedo grid (for temperature feedback, Model H)
       vegAlbedoGrid = buildVegFieldGrid config vegMap vegAlbedo (ChunkCoord minCx minCy) gridW gridH
-      -- Build a global temperature grid for use in moisture computation.
-      -- Includes albedo correction (Model H).
+      -- Build a global detailed temperature grid (same logic used for
+      -- final climate temperature output): coherent noise + albedo,
+      -- then global diffusion and global ocean moderation.
       albedoRef = tmpAlbedoReference tmp
-      tempGrid = U.generate n (\i ->
-        let _x = i `mod` gridW
+      tempRaw = U.generate n (\i ->
+        let x = i `mod` gridW
             y = i `div` gridW
+            gx = minTileX + x
             gy = minTileY + y
             -- Use vegAlbedo if available, else reference (no correction)
             a = let v = vegAlbedoGrid U.! i
                 in if v == 0 then albedoRef else v
-        in tempAtXY lm cfg waterLevel gy (elev U.! i)
-             (boundaries U.! i) (plateHeight U.! i) (plateVelocity U.! i) a)
+        in tempAtGlobal seed lm cfg waterLevel gx gy (elev U.! i) (plateHeight U.! i) a)
+      tempDiffused = diffuseFieldGrid gridW gridH
+                       (tmpDiffuseIterations tmp)
+                       (tmpDiffuseFactor tmp)
+                       tempRaw
+      moderation = tmpOceanModeration tmp
+      tempGrid = U.generate n (\i ->
+        let t = tempDiffused U.! i
+            c = coastal U.! i
+            y = i `div` gridW
+            gy = minTileY + y
+            lat = clampLat (fromIntegral gy * lmRadPerTile lm + lmBiasRad lm)
+            latF = clamp01 (abs (cos lat) ** tmpOceanLatExponent tmp)
+            moderateTarget = lerp (tmpOceanPoleSST tmp) (tmpOceanEquatorSST tmp) latF
+                           + tmpOceanModerateTemp tmp
+            pull = c * moderation * (moderateTarget - t)
+        in clamp01 (t + pull))
       windDir0 = U.generate n (\i ->
         let x = i `mod` gridW
             y = i `div` gridW
@@ -505,10 +484,8 @@ buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx
           initial
       precipGrid = U.generate n (\i ->
         let o = orographicAt gridW gridH cfg windDir elev i
-            motion = clamp01 (plateVelocity U.! i * bndMotionPrecip bnd)
-            tectonic = boundaryOrogenyAt cfg waterLevel elev boundaries motion i
             plateBias = plateHeightPrecipBiasAt cfg waterLevel (plateHeight U.! i)
-            rawPrecip = accumCondensation U.! i + o + tectonic + plateBias
+            rawPrecip = accumCondensation U.! i + o + plateBias
             -- Polar precipitation floor: ramp from 0 at precPolarLatitude
             -- to precPolarFloor at the pole (90°).
             y = i `div` gridW
@@ -519,7 +496,7 @@ buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx
             polarFrac = clamp01 ((latDeg - polarLat) / (90.0 - polarLat))
             polarFloor = precPolarFloor prc * polarFrac
         in clamp01 (max rawPrecip polarFloor))
-    in (precipGrid, coastal, finalMoisture)
+    in (precipGrid, coastal, finalMoisture, tempGrid)
 
 -- | Build a scalar grid from a 'TerrainChunk' field accessor.
 --
@@ -582,53 +559,41 @@ buildVegFieldGrid config vegMap accessor (ChunkCoord minCx minCy) gridW gridH =
                 Just (TileIndex ti) -> accessor chunk U.! ti
   in U.generate (gridW * gridH) sampleAt
 
--- | Simplified temperature at a global Y coordinate, for use in the
--- global moisture grid.  Mirrors 'tempAt' but without per-tile noise
--- (which varies per seed / x-offset) — good enough for moisture/evap
--- interactions where we need the thermal structure, not pixel-level detail.
+-- | Detailed temperature at global tile coordinates.
 --
--- Applies albedo correction (Model H) when albedo is available.
-tempAtXY :: LatitudeMapping -> ClimateConfig -> Float -> Int -> Float -> PlateBoundary -> Float -> Float -> Float -> Float
-tempAtXY lm cfg waterLevel gy height boundary plateHt velocity albedo =
+-- This is the canonical temperature model used to build the global
+-- climate temperature grid: latitude curve, lapse term, coherent noise,
+-- plate-height bias, and albedo correction.
+tempAtGlobal :: Word64 -> LatitudeMapping -> ClimateConfig -> Float -> Int -> Int -> Float -> Float -> Float -> Float
+tempAtGlobal seed lm cfg waterLevel gx gy height plateHt albedo =
   let tmp = ccTemperature cfg
-      bnd = ccBoundary cfg
       lat = clampLat (fromIntegral gy * lmRadPerTile lm + lmBiasRad lm)
+      blendWidth = max 0.0001 (tmpCoastalBlendWidth tmp)
+      blend = smoothstep (waterLevel - blendWidth) (waterLevel + blendWidth) height
       isOcean = height < waterLevel
       insol = lmInsolation lm
-      -- Ocean: dedicated SST profile.  Land: original latitude curve.
-      base
-        | isOcean =
-            let latF = clamp01 (abs (cos lat) ** tmpOceanLatExponent tmp)
-            in insol * lerp (tmpOceanPoleSST tmp) (tmpOceanEquatorSST tmp) latF
-        | otherwise =
-            let latF = clamp01 (abs (cos lat) ** tmpLatitudeExponent tmp)
-            in insol * lerp (tmpPoleTemp tmp) (tmpEquatorTemp tmp) latF
-      lapse = if isOcean
-              then 0
-              else (height - waterLevel) * tmpLapseRate tmp
-      tectonic = boundaryTempBiasRaw cfg waterLevel boundary height
-      motion = clamp01 (velocity * bndMotionTemp bnd)
+      latFOcean = clamp01 (abs (cos lat) ** tmpOceanLatExponent tmp)
+      baseOcean = insol * lerp (tmpOceanPoleSST tmp) (tmpOceanEquatorSST tmp) latFOcean
+      latFLand = clamp01 (abs (cos lat) ** tmpLatitudeExponent tmp)
+      baseLand = insol * lerp (tmpPoleTemp tmp) (tmpEquatorTemp tmp) latFLand
+      base = lerp baseOcean baseLand blend
+      lapseLand = (height - waterLevel) * tmpLapseRate tmp
+      lapse = blend * lapseLand
+      n0 = coherentNoise2D
+             seed
+             (tmpNoiseOctaves tmp)
+             (tmpNoiseFrequency tmp)
+             gx
+             gy
+           * tmpNoiseScale tmp
       plateBias = plateHeightTempBiasAt cfg waterLevel plateHt
-      rawTemp = base - lapse + tectonic * (1 + motion) + plateBias
+      rawTemp = base - lapse + n0 + plateBias
       -- Model H: albedo correction — land only.
       albedoCorr
         | isOcean   = 1
         | otherwise = 1 - tmpAlbedoSensitivity tmp
                           * (albedo - tmpAlbedoReference tmp)
   in clamp01 (rawTemp * albedoCorr)
-
--- | Raw boundary temperature bias (without per-tile noise).
-boundaryTempBiasRaw :: ClimateConfig -> Float -> PlateBoundary -> Float -> Float
-boundaryTempBiasRaw cfg waterLevel boundary height =
-  let bnd = ccBoundary cfg
-      landRange = max 0.0001 (bndLandRange bnd)
-      land = clamp01 ((height - waterLevel) / landRange)
-      bias = case boundary of
-        PlateBoundaryConvergent -> bndTempConvergent bnd
-        PlateBoundaryDivergent  -> bndTempDivergent bnd
-        PlateBoundaryTransform  -> bndTempTransform bnd
-        PlateBoundaryNone       -> 0
-  in bias * land
 
 -- | Compute the prevailing wind direction at a global tile.
 --
@@ -894,21 +859,6 @@ orographicAt gridW gridH cfg windDir elev i =
       rise = max 0 (h0 - h1)
   in clamp01 (rise * precOrographicLift prc * precOrographicScale prc)
 
-boundaryOrogenyAt :: ClimateConfig -> Float -> U.Vector Float -> U.Vector PlateBoundary -> Float -> Int -> Float
-boundaryOrogenyAt cfg waterLevel elev boundaries motion i =
-  let bnd = ccBoundary cfg
-      prc = ccPrecipitation cfg
-      boundary = boundaries U.! i
-      h0 = elev U.! i
-      landRange = max 0.0001 (bndLandRange bnd)
-      land = clamp01 ((h0 - waterLevel) / landRange)
-      strength = case boundary of
-        PlateBoundaryConvergent -> bndPrecipConvergent bnd
-        PlateBoundaryDivergent -> bndPrecipDivergent bnd
-        PlateBoundaryTransform -> bndPrecipTransform bnd
-        PlateBoundaryNone -> 0
-  in strength * land * precOrographicLift prc * (1 + motion)
-
 -- | Continental-elevation temperature effect: high plateaus are slightly
 -- cooler.  Uses 'ccPlateHeightCooling' (not the main lapse rate) to avoid
 -- double-counting altitude cooling.
@@ -942,32 +892,6 @@ buildPlateHeightGrid config terrain (ChunkCoord minCx minCy) gridW gridH =
                 Nothing -> 0
                 Just (TileIndex i) -> tcPlateHeight chunk U.! i
   in U.generate (gridW * gridH) sampleAt
-
-buildPlateVelocityGrid :: WorldConfig -> IntMap TerrainChunk -> ChunkCoord -> Int -> Int -> U.Vector Float
-buildPlateVelocityGrid config terrain (ChunkCoord minCx minCy) gridW gridH =
-  let size = wcChunkSize config
-      minTileX = minCx * size
-      minTileY = minCy * size
-      sampleAt idx =
-        let x = idx `mod` gridW
-            y = idx `div` gridW
-            gx = minTileX + x
-            gy = minTileY + y
-            tile = TileCoord gx gy
-            (chunkCoord, local) = chunkCoordFromTile config tile
-            ChunkId key = chunkIdFromCoord chunkCoord
-        in case IntMap.lookup key terrain of
-            Nothing -> 0
-            Just chunk ->
-              case tileIndex config local of
-                Nothing -> 0
-                Just (TileIndex i) ->
-                  plateVelocityMagAt (tcPlateVelX chunk U.! i) (tcPlateVelY chunk U.! i)
-  in U.generate (gridW * gridH) sampleAt
-
-plateVelocityMagAt :: Float -> Float -> Float
-plateVelocityMagAt vx vy =
-  sqrt (vx * vx + vy * vy)
 
 -- | Per-chunk ocean evaporation using Dalton's Law (Model B).
 evapAt :: WorldConfig -> Word64 -> LatitudeMapping -> ClimateConfig -> Float -> TileCoord -> U.Vector Float -> U.Vector Float -> U.Vector Float -> Int -> Float
@@ -1107,3 +1031,32 @@ diffuseAt n factor field i =
       d = if y + 1 < size then field U.! (i + size) else c
       avg = (c + l + r + u + d) / 5
   in c * (1 - factor) + avg * factor
+
+coherentNoise2D :: Word64 -> Int -> Float -> Int -> Int -> Float
+coherentNoise2D seed octaves freq x y =
+  let fx = fromIntegral x * freq
+      fy = fromIntegral y * freq
+      oct = max 1 octaves
+      raw = fbm2D seed oct coherentNoiseLacunarity coherentNoiseGain fx fy
+      amp = max 0.0001 (fbmAmplitude oct coherentNoiseGain)
+      signed = raw / amp
+  in clampSigned signed
+
+fbmAmplitude :: Int -> Float -> Float
+fbmAmplitude octaves gain =
+  go (max 1 octaves) 1 0
+  where
+    go 0 _ acc = acc
+    go n amp acc = go (n - 1) (amp * gain) (acc + amp)
+
+clampSigned :: Float -> Float
+clampSigned v
+  | v < (-1) = -1
+  | v > 1 = 1
+  | otherwise = v
+
+coherentNoiseLacunarity :: Float
+coherentNoiseLacunarity = 2.0
+
+coherentNoiseGain :: Float
+coherentNoiseGain = 0.5

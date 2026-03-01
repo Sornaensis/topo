@@ -164,6 +164,22 @@ data RealTemperatureConfig = RealTemperatureConfig
   , rtcNoiseScale        :: !Float
     -- ^ Temperature noise amplitude (dimensionless fraction of full
     -- range).  Default: @0.1@.
+  , rtcNoiseOctaves      :: !Int
+    -- ^ Coherent-noise octave count for temperature perturbation.
+    -- Default: @2@.
+  , rtcNoiseFrequency    :: !Float
+    -- ^ Coherent-noise base frequency for temperature perturbation.
+    -- Default: @0.08@.
+  , rtcDiffuseIterations :: !Int
+    -- ^ Number of local diffusion passes for the temperature field.
+    -- Default: @3@.
+  , rtcDiffuseFactor     :: !Float
+    -- ^ Per-pass diffusion strength for temperature smoothing (0–1).
+    -- Default: @0.35@.
+  , rtcCoastalBlendWidth :: !Float
+    -- ^ Elevation half-width around sea level used for smooth ocean\/land
+    -- thermal blending.  Dimensionless (normalised elevation units).
+    -- Default: @0.02@.
   , rtcOceanModeration   :: !Float
     -- ^ Ocean moderation strength (dimensionless 0–1).  Default: @0.3@.
   , rtcOceanModerateTemp :: !Float
@@ -195,6 +211,11 @@ realToTemperatureConfig s r = TemperatureConfig
   , tmpLatitudeExponent  = rtcLatitudeExponent r
   , tmpPlateHeightCooling = rtcPlateHeightCooling r
   , tmpNoiseScale        = rtcNoiseScale r
+  , tmpNoiseOctaves      = rtcNoiseOctaves r
+  , tmpNoiseFrequency    = rtcNoiseFrequency r
+  , tmpDiffuseIterations = rtcDiffuseIterations r
+  , tmpDiffuseFactor     = rtcDiffuseFactor r
+  , tmpCoastalBlendWidth = rtcCoastalBlendWidth r
   , tmpOceanModeration   = rtcOceanModeration r
   , tmpOceanModerateTemp = cToNorm s (rtcOceanModerateTemp r)
   , tmpAlbedoSensitivity = rtcAlbedoSensitivity r
@@ -213,6 +234,11 @@ temperatureConfigToReal s t = RealTemperatureConfig
   , rtcLatitudeExponent  = tmpLatitudeExponent t
   , rtcPlateHeightCooling = tmpPlateHeightCooling t
   , rtcNoiseScale        = tmpNoiseScale t
+  , rtcNoiseOctaves      = tmpNoiseOctaves t
+  , rtcNoiseFrequency    = tmpNoiseFrequency t
+  , rtcDiffuseIterations = tmpDiffuseIterations t
+  , rtcDiffuseFactor     = tmpDiffuseFactor t
+  , rtcCoastalBlendWidth = tmpCoastalBlendWidth t
   , rtcOceanModeration   = tmpOceanModeration t
   , rtcOceanModerateTemp = normToC s (tmpOceanModerateTemp t)
   , rtcAlbedoSensitivity = tmpAlbedoSensitivity t

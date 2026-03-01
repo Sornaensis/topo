@@ -15,6 +15,7 @@ module Topo.Storage
   , decodeWorldWithMetadata
   , WorldProvenance(..)
   , MapProvenance(..)
+  , emptyProvenance
   , emptyMapProvenance
   , encodeProvenance
   , decodeProvenance
@@ -64,7 +65,7 @@ import Topo.Export
   )
 import Topo.Calendar (WorldTime(..), PlanetAge(..), defaultWorldTime, defaultPlanetAge)
 import Topo.Hex (HexGridMeta(..), defaultHexGridMeta)
-import Topo.Overlay (Overlay(..), OverlayData(..), OverlayStore, emptyOverlayStore, insertOverlay)
+import Topo.Overlay (OverlayStore, emptyOverlayStore)
 import Topo.Metadata
   ( Metadata(..)
   , MetadataCodec(..)
@@ -78,7 +79,6 @@ import Topo.PlateMetadata (PlateHexMeta)
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), defaultPlanetConfig, defaultWorldSlice, mkLatitudeMapping)
 import Topo.Types
 import Topo.Units (UnitScales(..), defaultUnitScales)
-import Topo.Weather (getWeatherFromOverlay, weatherChunkToOverlay, weatherOverlaySchema)
 import Topo.World
 
 -- | Storage-layer failures while encoding or decoding worlds.
@@ -93,12 +93,22 @@ initWorld config = pure (emptyWorld config defaultHexGridMeta)
 initWorldWithHex :: WorldConfig -> HexGridMeta -> IO TerrainWorld
 initWorldWithHex config meta = pure (emptyWorld config meta)
 
+-- | Internal raw @.topo@ save helper.
+--
+-- Application-level persistence should use
+-- 'Topo.Persistence.WorldBundle.saveWorldBundle' so terrain and
+-- overlays are saved together atomically.
 saveWorld :: FilePath -> TerrainWorld -> IO (Either StorageError ())
 saveWorld path world =
   case encodeWorld world of
     Left err -> pure (Left err)
     Right bytes -> Right <$> BS.writeFile path bytes
 
+-- | Internal raw @.topo@ load helper.
+--
+-- Application-level persistence should use
+-- 'Topo.Persistence.WorldBundle.loadWorldBundle' so terrain and
+-- overlays are loaded and validated together.
 loadWorld :: FilePath -> IO (Either StorageError TerrainWorld)
 loadWorld path = do
   bytes <- BS.readFile path
@@ -131,7 +141,7 @@ encodeWorldWithProvenance prov world = do
   let config = twConfig world
   terrain <- encodeChunkMap config encodeTerrainChunk (twTerrain world)
   climate <- encodeChunkMap config encodeClimateChunk (twClimate world)
-  weather <- encodeChunkMap config encodeWeatherChunk (getWeatherFromOverlay world)
+  weather <- encodeChunkMap config encodeWeatherChunk IntMap.empty
   rivers <- encodeChunkMap config encodeRiverChunk (twRivers world)
   groundwater <- encodeChunkMap config encodeGroundwaterChunk (twGroundwater world)
   glaciers <- encodeChunkMap config encodeGlacierChunk (twGlaciers world)
@@ -148,6 +158,7 @@ encodeWorldWithProvenance prov world = do
     putPlanetConfig (twPlanet world)
     putWorldSlice (twSlice world)
     putWorldTime (twWorldTime world)
+    putWord64le (twSeed world)
     putPlanetAge (twPlanetAge world)
     putGenConfig (twGenConfig world)
     putUnitScales (twUnitScales world)
@@ -220,8 +231,11 @@ magic = BS.pack [0x54, 0x4f, 0x50, 0x4f]
 --   * 19: terrain chunks include tcRelief2Ring and tcRelief3Ring
 --         (2-ring and 3-ring neighbourhood relief, both U.Vector Float).
 --         Files < v19 decode with zero vectors via decodeTerrainChunkV3.
+--   * 20: world seed field added (twSeed :: Word64) after WorldTime.
+--         Used for deterministic weather simulation across save/load.
+--         Files < v20 decode with twSeed = wpSeed provenance.
 fileVersion :: Word32
-fileVersion = 19
+fileVersion = 20
 
 defaultMetadataCodecs :: [MetadataCodec]
 defaultMetadataCodecs =
@@ -293,6 +307,9 @@ getWorldWithProvenance codecs = do
         _ <- getFloatle
         pure defaultWorldTime
       else pure defaultWorldTime
+  worldSeed <- if version >= 20
+    then getWord64le
+    else pure (wpSeed prov)
   planetAge <- if version >= 16
     then getPlanetAge
     else pure defaultPlanetAge
@@ -311,20 +328,7 @@ getWorldWithProvenance codecs = do
         | otherwise    = decodeTerrainChunk
   terrain <- getChunkMap terrainDecoder config
   climate <- getChunkMap (if version >= 13 then decodeClimateChunk else decodeClimateChunkV1) config
-  -- v18+: weather data lives in the overlay store; the ChunkMap section
-  -- is still read for backward compatibility with older files that wrote
-  -- weather inline.  Non-empty ChunkMaps are migrated into the overlay.
-  weatherLegacy <- getChunkMap decodeWeatherChunk config
-  let -- Populate overlay store from decoded weather ChunkMap when present
-      weatherOverlays
-        | IntMap.null weatherLegacy = emptyOverlayStore
-        | otherwise =
-            let overlayChunks = IntMap.map weatherChunkToOverlay weatherLegacy
-                overlay = Overlay
-                  { ovSchema = weatherOverlaySchema
-                  , ovData   = DenseData overlayChunks
-                  }
-            in insertOverlay overlay emptyOverlayStore
+  _weatherLegacy <- getChunkMap decodeWeatherChunk config
   rivers <- if version >= 5
     then getChunkMap (if version >= 11 then decodeRiverChunk
                       else if version >= 6 then decodeRiverChunkV2
@@ -355,10 +359,11 @@ getWorldWithProvenance codecs = do
         , twSlice = slice
         , twLatMapping = mkLatitudeMapping planet slice config
         , twWorldTime = worldTime
+        , twSeed = worldSeed
         , twPlanetAge = planetAge
         , twGenConfig = genConfig
         , twUnitScales = unitScales
-        , twOverlays = weatherOverlays
+        , twOverlays = emptyOverlayStore
         , twOverlayManifest = overlayManifest
         }
     )

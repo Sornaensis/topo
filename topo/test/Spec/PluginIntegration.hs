@@ -19,8 +19,6 @@ import Test.Hspec
 
 import Data.Aeson (Value(..), (.=), object)
 import qualified Data.Aeson as Aeson
-import qualified Data.Aeson.Key as Key
-import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.IntMap.Strict as IntMap
 import Data.Map.Strict (Map)
@@ -35,7 +33,6 @@ import Topo.Overlay (emptyOverlay)
 import Topo.Overlay.Schema (OverlaySchema(..), OverlayStorage(..), OverlayDeps(..))
 import Topo.Pipeline (PipelineStage(..))
 import Topo.Pipeline.Stage (StageId(..))
-import Topo.Export (ExportError, encodeTerrainChunk)
 import Topo.Hex (defaultHexGridMeta)
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice)
 import Topo.Plugin.RPC
@@ -59,6 +56,7 @@ import Topo.Plugin.RPC
   , manifestWritesTerrain
   , decodeTerrainWritesValue
   , applyGeneratorTerrainValue
+  , terrainWorldToPayload
   )
 import Topo.Plugin.RPC.Transport (Transport(..))
 import Topo.Simulation (SimContext(..), SimNode(..), SimNodeId(..), twrTerrain)
@@ -393,21 +391,15 @@ encodeTerrainWritesPayload
   -> [(Int, TerrainChunk)]
   -> Either String Value
 encodeTerrainWritesPayload config chunks =
-  do
-    encodedPairs <- traverse encodeOne chunks
-    pure $ object
-      [ "chunk_size" .= wcChunkSize config
-      , "terrain" .= object encodedPairs
-      ]
+  case terrainWorldToPayload payloadWorld of
+    Left err -> Left (Text.unpack err)
+    Right payload -> Right payload
   where
-    encodeOne (chunkId, chunk) =
-      fmap (Key.fromText (Text.pack (show chunkId)) .=) (encodeChunkBytes (encodeTerrainChunk config chunk))
-
-encodeChunkBytes :: Either ExportError BS.ByteString -> Either String Value
-encodeChunkBytes encoded =
-  case encoded of
-    Left err -> Left (show err)
-    Right bytes -> Right (Aeson.toJSON (BS.unpack bytes))
+    terrainMap = IntMap.fromList chunks
+    payloadWorld =
+      (emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice)
+        { twTerrain = terrainMap
+        }
 
 mkSimContext :: TerrainWorld -> SimContext
 mkSimContext world = SimContext

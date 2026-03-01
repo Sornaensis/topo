@@ -28,11 +28,14 @@ library
       Topo.Calendar
       Topo.Overlay
       Topo.Overlay.Schema
+      Topo.Overlay.Provenance
       Topo.Overlay.Index
+      Topo.Overlay.Cache
       Topo.Overlay.Indexed
       Topo.Overlay.Export
       Topo.Overlay.JSON
       Topo.Overlay.Storage
+      Topo.Persistence.WorldBundle
       Topo.BaseHeight
       Topo.Gen
       Topo.Tectonics
@@ -53,6 +56,7 @@ library
       Topo.BiomeConfig
       Topo.Weather
       Topo.Math
+      Topo.Seed
       Topo.TerrainGrid
       Topo.Noise
       Topo.Sample
@@ -92,6 +96,13 @@ library
       Topo.TerrainForm.Modifiers
   other-modules:
       Topo.Config
+      Topo.Overlay.Storage.ChunkIndex
+      Topo.Overlay.Storage.Compression
+      Topo.Weather.Config
+      Topo.Weather.Grid
+      Topo.Weather.Init
+      Topo.Weather.Operators
+      Topo.Weather.Tick
       Paths_topo
   hs-source-dirs:
       src
@@ -109,6 +120,7 @@ library
     , transformers
     , vector
     , vector-th-unbox
+    , zstd
   default-language: Haskell2010
 
 test-suite topo-test
@@ -140,6 +152,7 @@ test-suite topo-test
       Spec.Noise
       Spec.OceanCurrent
       Spec.Overlay
+      Spec.OverlayCache
       Spec.Parameters
       Spec.Pipeline
       Spec.Planet
@@ -162,6 +175,7 @@ test-suite topo-test
       Spec.WaterTable
       Spec.Weather
       Spec.World
+      Spec.WorldBundle
       WorldProperty
       Paths_topo
   hs-source-dirs:
@@ -170,10 +184,14 @@ test-suite topo-test
       QuickCheck
     , aeson
     , base
+    , binary
     , bytestring
     , containers
+    , directory
+    , filepath
     , hspec
     , scientific
+    , temporary
     , text
     , topo
     , vector

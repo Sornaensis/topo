@@ -226,18 +226,6 @@ data WidgetId
   | WidgetConfigWindBeltSpeedScalePlus
   | WidgetConfigBndLandRangeMinus
   | WidgetConfigBndLandRangePlus
-  | WidgetConfigBndTempConvergentMinus
-  | WidgetConfigBndTempConvergentPlus
-  | WidgetConfigBndTempDivergentMinus
-  | WidgetConfigBndTempDivergentPlus
-  | WidgetConfigBndTempTransformMinus
-  | WidgetConfigBndTempTransformPlus
-  | WidgetConfigBndPrecipConvergentMinus
-  | WidgetConfigBndPrecipConvergentPlus
-  | WidgetConfigBndPrecipDivergentMinus
-  | WidgetConfigBndPrecipDivergentPlus
-  | WidgetConfigBndPrecipTransformMinus
-  | WidgetConfigBndPrecipTransformPlus
   | WidgetConfigPiedmontSmoothMinus
   | WidgetConfigPiedmontSmoothPlus
   | WidgetConfigPiedmontSlopeMinMinus
@@ -731,18 +719,6 @@ buildWidgets layout =
       , Widget WidgetConfigWindBeltSpeedScalePlus (configWindBeltSpeedScalePlusRect layout)
       , Widget WidgetConfigBndLandRangeMinus (configBndLandRangeMinusRect layout)
       , Widget WidgetConfigBndLandRangePlus (configBndLandRangePlusRect layout)
-      , Widget WidgetConfigBndTempConvergentMinus (configBndTempConvergentMinusRect layout)
-      , Widget WidgetConfigBndTempConvergentPlus (configBndTempConvergentPlusRect layout)
-      , Widget WidgetConfigBndTempDivergentMinus (configBndTempDivergentMinusRect layout)
-      , Widget WidgetConfigBndTempDivergentPlus (configBndTempDivergentPlusRect layout)
-      , Widget WidgetConfigBndTempTransformMinus (configBndTempTransformMinusRect layout)
-      , Widget WidgetConfigBndTempTransformPlus (configBndTempTransformPlusRect layout)
-      , Widget WidgetConfigBndPrecipConvergentMinus (configBndPrecipConvergentMinusRect layout)
-      , Widget WidgetConfigBndPrecipConvergentPlus (configBndPrecipConvergentPlusRect layout)
-      , Widget WidgetConfigBndPrecipDivergentMinus (configBndPrecipDivergentMinusRect layout)
-      , Widget WidgetConfigBndPrecipDivergentPlus (configBndPrecipDivergentPlusRect layout)
-      , Widget WidgetConfigBndPrecipTransformMinus (configBndPrecipTransformMinusRect layout)
-      , Widget WidgetConfigBndPrecipTransformPlus (configBndPrecipTransformPlusRect layout)
       , Widget WidgetConfigPiedmontSmoothMinus (configPiedmontSmoothMinusRect layout)
       , Widget WidgetConfigPiedmontSmoothPlus (configPiedmontSmoothPlusRect layout)
       , Widget WidgetConfigPiedmontSlopeMinMinus (configPiedmontSlopeMinMinusRect layout)
@@ -1164,12 +1140,6 @@ buildSliderRowWidgets layout = (terrain, planet, climate, weather, biome, erosio
       , row WidgetConfigWindBeltRangeMinus 39
       , row WidgetConfigWindBeltSpeedScaleMinus 40
       , row WidgetConfigBndLandRangeMinus 41
-      , row WidgetConfigBndTempConvergentMinus 42
-      , row WidgetConfigBndTempDivergentMinus 43
-      , row WidgetConfigBndTempTransformMinus 44
-      , row WidgetConfigBndPrecipConvergentMinus 45
-      , row WidgetConfigBndPrecipDivergentMinus 46
-      , row WidgetConfigBndPrecipTransformMinus 47
       , row WidgetConfigPiedmontSmoothMinus 48
       , row WidgetConfigPiedmontSlopeMinMinus 49
       , row WidgetConfigPiedmontSlopeMaxMinus 50

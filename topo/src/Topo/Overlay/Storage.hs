@@ -6,9 +6,9 @@
 -- Each overlay type is stored as two files in the @.topolay\/@ directory:
 --
 -- * @\<name\>.toposchema@ — JSON schema file.
--- * @\<name\>.dat@ — binary overlay data.
+-- * @\<name\>.topolay@ — binary overlay data.
 --
--- = Binary @.dat@ format
+-- = Binary @.topolay@ format
 --
 -- @
 -- Bytes 0–3:   overlay name hash (Word32le, FNV-1a)
@@ -19,6 +19,11 @@
 -- Per field:
 --   Word32le(nameLen) + UTF-8 name
 --   Byte     fieldType (0=Float, 1=Int, 2=Bool, 3=Text)
+-- Next Word64le: provenance seed
+-- Next Word32le: provenance version
+-- Next Word32le: provenance source length
+-- Next Bytes:    provenance source (UTF-8)
+-- Next Byte:     flags (0x00 for this format revision)
 -- Next Word32le: chunk count
 -- Per chunk:
 --   Word32le  chunkId
@@ -26,17 +31,25 @@
 --   Bytes     payload (sparse or dense chunk encoding)
 -- @
 --
--- __Note__: zstd compression is planned but not yet implemented.
--- The current format stores uncompressed payloads.  When zstd is
--- added, the header will include a compression flag byte.
+-- __Compression__: optional per-chunk zstd compression is supported.
+-- When enabled at write time, header flags bit 1 is set and each chunk
+-- stores compressed length + uncompressed length before the payload.
+-- Readers continue to support uncompressed files (flags = @0x00@).
 module Topo.Overlay.Storage
   ( -- * Single overlay I/O
     saveOverlay
+  , saveOverlayWithOptions
   , loadOverlay
+  , loadOverlayChunk
   , loadOverlayWithLifecycle
     -- * Store-level I/O
   , saveOverlayStore
+  , saveOverlayStoreWithOptions
   , loadOverlayStore
+    -- * Compression options
+  , OverlayCompression(..)
+  , OverlayStorageOptions(..)
+  , defaultOverlayStorageOptions
     -- * Schema migration
   , OverlayLifecycle(..)
   , migrateOverlayData
@@ -53,13 +66,14 @@ module Topo.Overlay.Storage
   ) where
 
 import Control.Exception (IOException, try)
-import Control.Monad (forM, forM_, replicateM)
+import Control.Monad (forM, forM_, replicateM, replicateM_)
 import Data.Aeson (Value(..))
 import Data.Binary.Get
   ( Get
   , getByteString
   , getFloatle
   , getWord32le
+  , getWord64le
   , getWord8
   , runGetOrFail
   )
@@ -68,6 +82,7 @@ import Data.Binary.Put
   , putByteString
   , putFloatle
   , putWord32le
+  , putWord64le
   , putWord8
   , runPut
   )
@@ -83,8 +98,8 @@ import Data.Text.Encoding (decodeUtf8', encodeUtf8)
 import Data.Vector (Vector)
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
-import Data.Word (Word32, Word8)
-import Data.Bits (xor)
+import Data.Word (Word32, Word64, Word8)
+import Data.Bits (xor, (.&.), (.|.))
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
 import System.FilePath ((</>), dropExtension, takeExtension)
 
@@ -92,6 +107,7 @@ import Topo.Overlay
   ( Overlay(..)
   , OverlayChunk(..)
   , OverlayData(..)
+  , OverlayProvenance(..)
   , OverlayRecord(..)
   , OverlayStore(..)
   , OverlayValue(..)
@@ -111,6 +127,22 @@ import Topo.Overlay.Schema
   , OverlayStorage(..)
   , parseOverlaySchema
   , encodeOverlaySchema
+  )
+import Topo.Overlay.Storage.Compression
+  ( OverlayCompression(..)
+  , OverlayStorageOptions(..)
+  , defaultOverlayStorageOptions
+  )
+import Topo.Overlay.Storage.ChunkIndex
+  ( chunkEntriesForData
+  , chunkIndexEntries
+  , compressChunkPayload
+  , decodeChunkEntryPayload
+  , loadSparseChunkFromTopolayBytes
+  , overlayFlagChunkIndex
+  , overlayFlagZstd
+  , overlayHasChunkIndex
+  , overlaySupportsFlags
   )
 
 ------------------------------------------------------------------------
@@ -165,7 +197,7 @@ overlaySchemaPath dir name = dir </> Text.unpack name <> ".toposchema"
 
 -- | Path to a specific overlay's binary data file.
 overlayDataPath :: FilePath -> Text -> FilePath
-overlayDataPath dir name = dir </> Text.unpack name <> ".dat"
+overlayDataPath dir name = dir </> Text.unpack name <> ".topolay"
 
 ------------------------------------------------------------------------
 -- Single overlay save/load
@@ -173,14 +205,20 @@ overlayDataPath dir name = dir </> Text.unpack name <> ".dat"
 
 -- | Save a single overlay (schema + data) to a directory.
 saveOverlay :: FilePath -> Overlay -> IO (Either OverlayStorageError ())
-saveOverlay dir ov = do
+saveOverlay dir ov = saveOverlayWithOptions defaultOverlayStorageOptions dir ov
+
+-- | Save a single overlay with explicit storage options.
+saveOverlayWithOptions :: OverlayStorageOptions -> FilePath -> Overlay -> IO (Either OverlayStorageError ())
+saveOverlayWithOptions options dir ov = do
   result <- try $ do
     createDirectoryIfMissing True dir
     let name = osName (ovSchema ov)
     -- Write schema
     BS.writeFile (overlaySchemaPath dir name) (encodeOverlaySchema (ovSchema ov))
     -- Write data
-    let datBytes = encodeOverlayData (ovSchema ov) (ovData ov)
+    datBytes <- case encodeOverlayData options ov of
+      Left msg -> ioError (userError (Text.unpack msg))
+      Right bytes -> pure bytes
     BS.writeFile (overlayDataPath dir name) datBytes
   case result of
     Left ex  -> pure (Left (OverlayIOError "saveOverlay" ex))
@@ -194,6 +232,43 @@ loadOverlay :: FilePath -> OverlaySchema -> IO (Either OverlayStorageError Overl
 loadOverlay dir schema = do
   result <- loadOverlayWithLifecycle dir schema
   pure (fmap (\(overlay, _, _) -> overlay) result)
+
+-- | Load one sparse overlay chunk by overlay name and chunk id.
+--
+-- This is an API-surface sketch for viewport-aware loading.  The current
+-- implementation intentionally reuses whole-file decode via 'loadOverlay'
+-- and then extracts one chunk.
+--
+-- Returns an empty chunk when the requested chunk id is not present.
+-- Dense overlays are currently unsupported by this chunk-level API.
+loadOverlayChunk
+  :: FilePath
+  -> Text
+  -> Int
+  -> IO (Either OverlayStorageError OverlayChunk)
+loadOverlayChunk dir overlayName chunkId
+  | chunkId < 0 =
+      pure (Left (OverlayDecodeError overlayName "chunk id must be non-negative"))
+  | otherwise = do
+      let schemaFile = overlaySchemaPath dir overlayName
+      schemaExists <- doesFileExist schemaFile
+      if not schemaExists
+        then pure (Left (OverlayMissingSchema overlayName))
+        else do
+          schemaResult <- try (BS.readFile schemaFile)
+          case schemaResult of
+            Left ex -> pure (Left (OverlayIOError "loadOverlayChunk/schema" ex))
+            Right schemaBytes ->
+              case parseOverlaySchema schemaBytes of
+                Left err -> pure (Left (OverlaySchemaParseError overlayName err))
+                Right schema -> do
+                  datResult <- try (BS.readFile (overlayDataPath dir overlayName))
+                  case datResult of
+                    Left ex -> pure (Left (OverlayIOError "loadOverlayChunk/data" ex))
+                    Right datBytes ->
+                      pure $ case loadSparseChunkFromTopolayBytes schema chunkId datBytes of
+                        Left err -> Left (OverlayDecodeError overlayName err)
+                        Right chunk -> Right chunk
 
 -- | Load a single overlay and compute lifecycle state/warnings.
 --
@@ -232,14 +307,14 @@ loadOverlayWithLifecycle dir schema = do
                     Right datBytes ->
                       case decodeOverlayData diskSchema datBytes of
                         Left err -> pure (Left (OverlayDecodeError name err))
-                        Right ovData' ->
+                        Right (ovData', prov) ->
                           if osVersion diskSchema == osVersion schema
-                            then pure (Right (Overlay schema ovData', OverlayActive, []))
+                            then pure (Right (Overlay schema ovData' prov, OverlayActive, []))
                             else
                               let migrated = migrateOverlayData diskSchema schema ovData'
                                   lifecycle = migrationLifecycle migrated
                                   warnings = migrationWarnings schema migrated
-                              in  pure (Right (Overlay schema (mrData migrated), lifecycle, warnings))
+                              in  pure (Right (Overlay schema (mrData migrated) prov, lifecycle, warnings))
 
 -- | Lifecycle state for an overlay across generation/simulation/storage.
 data OverlayLifecycle
@@ -255,13 +330,17 @@ data OverlayLifecycle
 
 -- | Save all overlays in a store to a @.topolay/@ directory.
 saveOverlayStore :: FilePath -> OverlayStore -> IO (Either OverlayStorageError ())
-saveOverlayStore dir (OverlayStore store) = do
+saveOverlayStore dir store = saveOverlayStoreWithOptions defaultOverlayStorageOptions dir store
+
+-- | Save all overlays in a store to a @.topolay/@ directory with explicit options.
+saveOverlayStoreWithOptions :: OverlayStorageOptions -> FilePath -> OverlayStore -> IO (Either OverlayStorageError ())
+saveOverlayStoreWithOptions options dir (OverlayStore store) = do
   result <- try (createDirectoryIfMissing True dir)
   case result of
     Left ex -> pure (Left (OverlayIOError "saveOverlayStore" ex))
     Right () -> do
       results <- forM (Map.elems store) $ \ov ->
-        saveOverlay dir ov
+        saveOverlayWithOptions options dir ov
       case [ e | Left e <- results ] of
         (e : _) -> pure (Left e)
         []      -> pure (Right ())
@@ -270,7 +349,7 @@ saveOverlayStore dir (OverlayStore store) = do
 -- the provided schemas.
 --
 -- __Strict loading__: all overlay names in the provided list must have
--- both a @.toposchema@ and a @.dat@ file on disk.  Missing files cause
+-- both a @.toposchema@ and a @.topolay@ file on disk.  Missing files cause
 -- an immediate error.
 loadOverlayStore :: FilePath -> [OverlaySchema] -> IO (Either OverlayStorageError OverlayStore)
 loadOverlayStore dir schemas = do
@@ -315,13 +394,18 @@ discoverOverlaySchemas dir = do
       pure [ s | Right s <- schemas ]
 
 ------------------------------------------------------------------------
--- Binary encode/decode (full .dat file)
+-- Binary encode/decode (full .topolay file)
 ------------------------------------------------------------------------
 
 -- | Encode overlay data to binary bytes (header + chunk payloads).
-encodeOverlayData :: OverlaySchema -> OverlayData -> BS.ByteString
-encodeOverlayData schema ovd =
-  BL.toStrict $ runPut $ do
+encodeOverlayData :: OverlayStorageOptions -> Overlay -> Either Text BS.ByteString
+encodeOverlayData options ov = do
+  payloadEntries <- prepareChunkEntries options (ovSchema ov) (ovData ov)
+  pure $ BL.toStrict $ runPut $ do
+    let schema = ovSchema ov
+        prov = ovProvenance ov
+        hasZstd = osoCompression options == CompressionZstd
+        headerFlags = overlayFlagChunkIndex .|. if hasZstd then overlayFlagZstd else 0x00
     -- Header: name hash
     putWord32le (fnvHash (osName schema))
     -- Schema version
@@ -340,31 +424,58 @@ encodeOverlayData schema ovd =
       putWord32le (fromIntegral (BS.length nameBytes))
       putByteString nameBytes
       putWord8 (fieldTypeByte (ofdType fd))
+    -- Provenance block
+    putWord64le (opSeed prov)
+    putWord32le (opVersion prov)
+    let sourceBytes = encodeUtf8 (opSource prov)
+    putWord32le (fromIntegral (BS.length sourceBytes))
+    putByteString sourceBytes
+    -- Header flags (bit 0 = chunk index, bit 1 = zstd)
+    putWord8 headerFlags
     -- Chunks
-    case ovd of
-      SparseData chunks -> do
-        putWord32le (fromIntegral (IntMap.size chunks))
-        forM_ (IntMap.toList chunks) $ \(cid, chunk) -> do
-          putWord32le (fromIntegral cid)
-          let payload = encodeSparseChunk schema chunk
-          putWord32le (fromIntegral (BS.length payload))
-          putByteString payload
-      DenseData chunks -> do
-        putWord32le (fromIntegral (IntMap.size chunks))
-        forM_ (IntMap.toList chunks) $ \(cid, fieldVecs) -> do
-          putWord32le (fromIntegral cid)
-          let payload = encodeDenseChunk schema fieldVecs
-          putWord32le (fromIntegral (BS.length payload))
-          putByteString payload
+    putWord32le (fromIntegral (length payloadEntries))
+    forM_ payloadEntries $ \(cid, payloadLenWord, maybeRawLen, payload) -> do
+      putWord32le (fromIntegral cid)
+      putWord32le payloadLenWord
+      forM_ maybeRawLen putWord32le
+      putByteString payload
+    let fieldDescriptorBytes = sum [4 + BS.length (encodeUtf8 (ofdName fd)) + 1 | fd <- fields]
+        headerBytes = 4 + 4 + BS.length verBytes + 1 + 4 + fieldDescriptorBytes + 8 + 4 + 4 + BS.length sourceBytes + 1 + 4
+        indexEntries = chunkIndexEntries (fromIntegral headerBytes) (map entryToIndex payloadEntries)
+    putWord32le (fromIntegral (length indexEntries))
+    forM_ indexEntries $ \(cid, offset) -> do
+      putWord32le cid
+      putWord64le offset
+  where
+    entryToIndex (cid, payloadLenWord, maybeRawLen, _payload) =
+      let framingBytes = case maybeRawLen of
+            Nothing -> 8
+            Just _  -> 12
+          entryBytes = framingBytes + fromIntegral payloadLenWord
+      in (cid, entryBytes)
+
+prepareChunkEntries
+  :: OverlayStorageOptions
+  -> OverlaySchema
+  -> OverlayData
+  -> Either Text [(Int, Word32, Maybe Word32, BS.ByteString)]
+prepareChunkEntries options schema ovd =
+  traverse oneEntry (chunkEntriesForData schema ovd)
+  where
+    oneEntry (cid, rawPayload) =
+      case compressChunkPayload options rawPayload of
+        Left msg -> Left msg
+        Right (payload, maybeRawLen) ->
+          Right (cid, fromIntegral (BS.length payload), fmap fromIntegral maybeRawLen, payload)
 
 -- | Decode overlay data from binary bytes.
-decodeOverlayData :: OverlaySchema -> BS.ByteString -> Either Text OverlayData
+decodeOverlayData :: OverlaySchema -> BS.ByteString -> Either Text (OverlayData, OverlayProvenance)
 decodeOverlayData schema bytes =
   case runGetOrFail (getOverlayData schema) (BL.fromStrict bytes) of
     Left  (_, _, err) -> Left (Text.pack err)
     Right (_, _, d)   -> Right d
 
-getOverlayData :: OverlaySchema -> Get OverlayData
+getOverlayData :: OverlaySchema -> Get (OverlayData, OverlayProvenance)
 getOverlayData schema = do
   -- Header: skip name hash
   _ <- getWord32le
@@ -380,6 +491,23 @@ getOverlayData schema = do
     _ <- getByteString nameLen
     _ <- getWord8
     pure ()
+  -- Provenance block
+  provSeed <- getWord64le
+  provVersion <- getWord32le
+  sourceLen <- fromIntegral <$> getWord32le
+  sourceBytes <- getByteString sourceLen
+  source <- case decodeUtf8' sourceBytes of
+    Left _ -> fail "overlay: invalid UTF-8 in provenance source"
+    Right txt -> pure txt
+  flags <- getWord8
+  if not (overlaySupportsFlags flags)
+    then fail ("overlay: unsupported flags byte 0x" <> show flags)
+    else pure ()
+  let prov = OverlayProvenance
+        { opSeed = provSeed
+        , opVersion = provVersion
+        , opSource = source
+        }
   -- Chunks
   chunkCount <- fromIntegral <$> getWord32le
   case modeByte of
@@ -387,22 +515,44 @@ getOverlayData schema = do
       -- Sparse
       entries <- replicateM chunkCount $ do
         cid <- fromIntegral <$> getWord32le
-        payloadLen <- fromIntegral <$> getWord32le
-        payload <- getByteString payloadLen
+        compressedLen <- fromIntegral <$> getWord32le
+        maybeRawLen <- if (flags .&. overlayFlagZstd) /= 0
+          then Just . fromIntegral <$> getWord32le
+          else pure Nothing
+        payloadBytes <- getByteString compressedLen
+        payload <- case decodeChunkEntryPayload flags maybeRawLen payloadBytes of
+          Left err -> fail (Text.unpack err)
+          Right p -> pure p
         case decodeSparseChunk schema payload of
           Left err -> fail (Text.unpack err)
           Right chunk -> pure (cid, chunk)
-      pure (SparseData (IntMap.fromList entries))
+      if overlayHasChunkIndex flags
+        then do
+          idxCount <- fromIntegral <$> getWord32le
+          replicateM_ idxCount (getWord32le >> getWord64le >> pure ())
+        else pure ()
+      pure (SparseData (IntMap.fromList entries), prov)
     0x01 -> do
       -- Dense
       entries <- replicateM chunkCount $ do
         cid <- fromIntegral <$> getWord32le
-        payloadLen <- fromIntegral <$> getWord32le
-        payload <- getByteString payloadLen
+        compressedLen <- fromIntegral <$> getWord32le
+        maybeRawLen <- if (flags .&. overlayFlagZstd) /= 0
+          then Just . fromIntegral <$> getWord32le
+          else pure Nothing
+        payloadBytes <- getByteString compressedLen
+        payload <- case decodeChunkEntryPayload flags maybeRawLen payloadBytes of
+          Left err -> fail (Text.unpack err)
+          Right p -> pure p
         case decodeDenseChunk schema payload of
           Left err -> fail (Text.unpack err)
           Right vecs -> pure (cid, vecs)
-      pure (DenseData (IntMap.fromList entries))
+      if overlayHasChunkIndex flags
+        then do
+          idxCount <- fromIntegral <$> getWord32le
+          replicateM_ idxCount (getWord32le >> getWord64le >> pure ())
+        else pure ()
+      pure (DenseData (IntMap.fromList entries), prov)
     other -> fail ("overlay: unknown storage mode byte 0x" <> show other)
 
 ------------------------------------------------------------------------
@@ -675,7 +825,7 @@ defaultFloatValue fd = case ofdDefault fd of
 -- Helpers
 ------------------------------------------------------------------------
 
--- | FNV-1a hash of a text value (for the .dat header name hash).
+-- | FNV-1a hash of a text value (for the .topolay header name hash).
 fnvHash :: Text -> Word32
 fnvHash txt = BS.foldl' step fnvBasis (encodeUtf8 txt)
   where

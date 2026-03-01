@@ -1,6 +1,7 @@
 module Topo.Noise
   ( noise2D
   , noise2DContinuous
+  , hashSeed
   , fbm2D
   , ridgedFbm2D
   , domainWarp2D
@@ -10,6 +11,17 @@ module Topo.Noise
 
 import Data.Bits (xor, shiftR, (.&.))
 import Data.Word (Word32, Word64)
+
+-- | Deterministically mix a world seed and tick hash into a
+-- well-distributed per-tick seed.
+hashSeed :: Word64 -> Word64 -> Word64
+hashSeed worldSeed tickHash =
+  let mixed0 = worldSeed `xor` (tickHash * 0x9e3779b97f4a7c15)
+      mixed1 = mixed0 `xor` (mixed0 `shiftR` 30)
+      mixed2 = mixed1 * 0xbf58476d1ce4e5b9
+      mixed3 = mixed2 `xor` (mixed2 `shiftR` 27)
+      mixed4 = mixed3 * 0x94d049bb133111eb
+  in mixed4 `xor` (mixed4 `shiftR` 31)
 
 noise2D :: Word64 -> Int -> Int -> Float
 noise2D seed x y =

@@ -126,7 +126,9 @@ instance ToJSON RPCEnvelope where
 
 -- | Invoke a plugin's generator stage.
 data InvokeGenerator = InvokeGenerator
-  { igStageId :: !Text
+  { igPayloadVersion :: !Int
+    -- ^ RPC payload contract version. Currently must be @1@.
+  , igStageId :: !Text
     -- ^ Canonical stage ID for this plugin.
   , igSeed    :: !Word64
     -- ^ Generation seed.
@@ -138,15 +140,21 @@ data InvokeGenerator = InvokeGenerator
 
 instance FromJSON InvokeGenerator where
   parseJSON = withObject "InvokeGenerator" $ \o ->
-    InvokeGenerator
-      <$> o .: "stage_id"
-      <*> o .: "seed"
-      <*> o .: "config"
-      <*> o .: "terrain"
+    do
+      payloadVersion <- o .: "payload_version"
+      if payloadVersion /= (1 :: Int)
+        then fail ("unsupported payload_version: " <> show payloadVersion)
+        else InvokeGenerator
+          <$> pure payloadVersion
+          <*> o .: "stage_id"
+          <*> o .: "seed"
+          <*> o .: "config"
+          <*> o .: "terrain"
 
 instance ToJSON InvokeGenerator where
   toJSON ig = object
-    [ "stage_id" .= igStageId ig
+    [ "payload_version" .= igPayloadVersion ig
+    , "stage_id" .= igStageId ig
     , "seed"     .= igSeed ig
     , "config"   .= igConfig ig
     , "terrain"  .= igTerrain ig
@@ -154,7 +162,9 @@ instance ToJSON InvokeGenerator where
 
 -- | Invoke a plugin's simulation tick.
 data InvokeSimulation = InvokeSimulation
-  { isNodeId     :: !Text
+  { isPayloadVersion :: !Int
+    -- ^ RPC payload contract version. Currently must be @1@.
+  , isNodeId     :: !Text
     -- ^ Simulation node ID.
   , isWorldTime  :: !Word64
     -- ^ Current tick counter.
@@ -174,19 +184,25 @@ data InvokeSimulation = InvokeSimulation
 
 instance FromJSON InvokeSimulation where
   parseJSON = withObject "InvokeSimulation" $ \o ->
-    InvokeSimulation
-      <$> o .: "node_id"
-      <*> o .: "world_time"
-      <*> o .: "delta_ticks"
-      <*> o .: "calendar"
-      <*> o .: "config"
-      <*> o .: "terrain"
-      <*> o .: "overlays"
-      <*> o .: "own_overlay"
+    do
+      payloadVersion <- o .: "payload_version"
+      if payloadVersion /= (1 :: Int)
+        then fail ("unsupported payload_version: " <> show payloadVersion)
+        else InvokeSimulation
+          <$> pure payloadVersion
+          <*> o .: "node_id"
+          <*> o .: "world_time"
+          <*> o .: "delta_ticks"
+          <*> o .: "calendar"
+          <*> o .: "config"
+          <*> o .: "terrain"
+          <*> o .: "overlays"
+          <*> o .: "own_overlay"
 
 instance ToJSON InvokeSimulation where
   toJSON is' = object
-    [ "node_id"     .= isNodeId is'
+    [ "payload_version" .= isPayloadVersion is'
+    , "node_id"     .= isNodeId is'
     , "world_time"  .= isWorldTime is'
     , "delta_ticks" .= isDeltaTicks is'
     , "calendar"    .= isCalendar is'

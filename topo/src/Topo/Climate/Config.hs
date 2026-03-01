@@ -10,8 +10,7 @@
 -- * 'MoistureConfig' — evaporation, advection, condensation.
 -- * 'PrecipitationConfig' — orographic uplift, rain shadow, coastal
 --   moisture boost.
--- * 'BoundaryConfig' — plate-boundary influence on temperature and
---   precipitation.
+-- * 'BoundaryConfig' — legacy tectonic-bias knobs (currently no-op).
 --
 -- 'ClimateConfig' bundles the five sub-configs and is the single type
 -- threaded through the climate pipeline.
@@ -85,6 +84,27 @@ data TemperatureConfig = TemperatureConfig
   , tmpNoiseScale        :: !Float
   -- ^ Random spatial-noise amplitude added to temperature (0–1).
   -- Default: @0.07@.
+  , tmpNoiseOctaves      :: !Int
+  -- ^ Number of coherent-noise octaves for terrain temperature
+  -- perturbation.  @1@ uses a single octave; larger values add
+  -- multi-scale detail while preserving spatial continuity.
+  -- Default: @2@.
+  , tmpNoiseFrequency    :: !Float
+  -- ^ Base world-space frequency for coherent temperature noise.
+  -- Lower values produce broader structures; higher values produce
+  -- finer variation.  Default: @0.08@.
+  , tmpDiffuseIterations :: !Int
+  -- ^ Number of local diffusion passes for the temperature field.
+  -- Higher values increase smoothing and reduce tile-to-tile variance.
+  -- Default: @3@.
+  , tmpDiffuseFactor     :: !Float
+  -- ^ Per-pass diffusion strength for temperature smoothing (0–1).
+  -- Default: @0.35@.
+  , tmpCoastalBlendWidth :: !Float
+  -- ^ Elevation half-width around sea level used to smoothly blend
+  -- ocean and land temperature curves (and lapse effect).  Larger
+  -- values broaden the shoreline transition and reduce abrupt thermal
+  -- jumps at the coast.  Default: @0.02@.
   , tmpOceanModeration   :: !Float
   -- ^ Strength of ocean thermal moderation on coastal tiles.
   -- 0 = no moderation, 1 = full pull towards 'tmpOceanModerateTemp'.
@@ -131,6 +151,11 @@ defaultTemperatureConfig = TemperatureConfig
   , tmpLatitudeExponent  = 1.0
   , tmpPlateHeightCooling = 0.035
   , tmpNoiseScale        = 0.07
+  , tmpNoiseOctaves      = 2
+  , tmpNoiseFrequency    = 0.08
+  , tmpDiffuseIterations = 3
+  , tmpDiffuseFactor     = 0.35
+  , tmpCoastalBlendWidth = 0.02
   , tmpOceanModeration   = 0.3
   , tmpOceanModerateTemp = 0
   , tmpAlbedoSensitivity = 0.20
@@ -432,19 +457,13 @@ defaultPrecipitationConfig = PrecipitationConfig
 -- Boundary (tectonic plate-boundary influence)
 ------------------------------------------------------------------------
 
--- | Plate-boundary climate-influence configuration.
+-- | Legacy tectonic-bias configuration.
 --
--- Tectonic plate boundaries affect local temperature and
--- precipitation.  Convergent boundaries cool and moisten (mountain
--- building, orographic effects); divergent boundaries warm and dry
--- (rift valleys); transform boundaries have mild mixed effects.
+-- These fields remain in the public config schema for backward
+-- compatibility, but direct boundary-driven temperature/precipitation
+-- bias is disabled in the climate model.
 --
--- The influence is attenuated by the land fraction @(height −
--- waterLevel) / 'bndLandRange'@ so that ocean tiles receive
--- negligible boundary bias.
---
--- Plate velocity magnifies the effect via the 'bndMotionTemp' and
--- 'bndMotionPrecip' coefficients.
+-- Deprecated: retained only for JSON compatibility with older configs.
 data BoundaryConfig = BoundaryConfig
   { bndMotionTemp        :: !Float
   -- ^ Velocity → temperature-bias scaling.  Default: @0.5@.
@@ -477,18 +496,18 @@ instance ToJSON BoundaryConfig where
 instance FromJSON BoundaryConfig where
   parseJSON v = genericParseJSON (configOptions "bnd") (mergeDefaults (toJSON defaultBoundaryConfig) v)
 
--- | Sensible Earth-like defaults for the boundary model.
+-- | Neutral defaults for legacy boundary-bias fields.
 defaultBoundaryConfig :: BoundaryConfig
 defaultBoundaryConfig = BoundaryConfig
-  { bndMotionTemp        = 0.5
-  , bndMotionPrecip      = 0.5
+  { bndMotionTemp        = 0
+  , bndMotionPrecip      = 0
   , bndLandRange         = 0.6
-  , bndTempConvergent    = -0.042
-  , bndTempDivergent     = 0.014
-  , bndTempTransform     = -0.007
-  , bndPrecipConvergent  = 0.08
-  , bndPrecipDivergent   = -0.05
-  , bndPrecipTransform   = 0.02
+  , bndTempConvergent    = 0
+  , bndTempDivergent     = 0
+  , bndTempTransform     = 0
+  , bndPrecipConvergent  = 0
+  , bndPrecipDivergent   = 0
+  , bndPrecipTransform   = 0
   }
 
 ------------------------------------------------------------------------

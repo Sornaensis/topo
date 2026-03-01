@@ -4,11 +4,13 @@
 module Spec.WorldPersist (spec) where
 
 import Control.Exception (bracket, try, IOException)
-import Data.Aeson (encode, eitherDecodeStrict')
+import Data.Aeson (Value(..), encode, eitherDecodeStrict')
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.IntMap.Strict as IntMap
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import Data.Time.Clock (UTCTime, getCurrentTime, addUTCTime)
+import qualified Data.Vector as V
 import System.Directory
   ( createDirectoryIfMissing
   , removeDirectoryRecursive
@@ -17,6 +19,7 @@ import System.FilePath ((</>))
 import Test.Hspec
 
 import Actor.UI (emptyUiState, UiState(..))
+import Seer.Config.Snapshot (snapshotFromUi)
 import Seer.Config.Snapshot.Types (ConfigSnapshot(..), defaultSnapshot)
 import Seer.World.Persist
   ( WorldSaveManifest(..)
@@ -28,6 +31,26 @@ import Seer.World.Persist
   )
 import Seer.World.Persist.Types (defaultManifestTime)
 import Topo.Hex (defaultHexGridMeta)
+import Topo.Storage (emptyProvenance, saveWorldWithProvenance)
+import Topo.Overlay
+  ( Overlay(..)
+  , OverlayChunk(..)
+  , OverlayData(..)
+  , OverlayRecord(..)
+  , OverlayStore(..)
+  , OverlayValue(..)
+  , emptyOverlayProvenance
+  , emptyOverlayStore
+  , insertOverlay
+  , lookupOverlay
+  )
+import Topo.Overlay.Schema
+  ( OverlaySchema(..)
+  , OverlayFieldDef(..)
+  , OverlayFieldType(..)
+  , OverlayStorage(..)
+  , OverlayDeps(..)
+  )
 import Topo.Types (WorldConfig(..))
 import Topo.World (TerrainWorld(..), emptyWorld)
 
@@ -55,6 +78,7 @@ manifestJsonSpec = describe "WorldSaveManifest JSON round-trip" $ do
           , wsmChunkSize  = 64
           , wsmCreatedAt  = now
           , wsmChunkCount = 16
+          , wsmOverlayNames = ["weather", "persist_sparse_test"]
           }
     let bytes = BSL.toStrict (encode manifest)
     eitherDecodeStrict' bytes `shouldBe` Right manifest
@@ -68,6 +92,7 @@ manifestJsonSpec = describe "WorldSaveManifest JSON round-trip" $ do
         wsmChunkSize m `shouldBe` 64
         wsmCreatedAt m `shouldBe` defaultManifestTime
         wsmChunkCount m `shouldBe` 0
+        wsmOverlayNames m `shouldBe` []
 
 -- ---------------------------------------------------------------------------
 -- saveNamedWorld / loadNamedWorld round-trip
@@ -79,42 +104,123 @@ testWorldName = "__topo_test_world_roundtrip__"
 
 worldRoundTripSpec :: Spec
 worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
-  it "round-trips an empty world preserving config and metadata" $
-    bracket
-      (pure ())
-      (\_ -> do
-          _ <- deleteNamedWorld testWorldName
-          pure ()
-      )
-      (\_ -> do
-          let config = WorldConfig { wcChunkSize = 64 }
-              world  = emptyWorld config defaultHexGridMeta
-              ui     = emptyUiState { uiSeed = 42, uiChunkSize = 64 }
+  do
+    it "round-trips an empty world preserving config and metadata" $
+      bracket
+        (pure ())
+        (\_ -> do
+            _ <- deleteNamedWorld testWorldName
+            pure ()
+        )
+        (\_ -> do
+            let config = WorldConfig { wcChunkSize = 64 }
+                world  = emptyWorld config defaultHexGridMeta
+                ui     = emptyUiState { uiSeed = 42, uiChunkSize = 64 }
 
-          -- Save
-          saveResult <- saveNamedWorld testWorldName ui world
-          saveResult `shouldBe` Right ()
+            saveResult <- saveNamedWorld testWorldName ui world
+            saveResult `shouldBe` Right ()
 
-          -- Load
-          loadResult <- loadNamedWorld testWorldName
-          case loadResult of
-            Left err -> expectationFailure (Text.unpack err)
-            Right (manifest, snapshot, loadedWorld) -> do
-              -- Manifest metadata
-              wsmName manifest `shouldBe` testWorldName
-              wsmSeed manifest `shouldBe` 42
-              wsmChunkSize manifest `shouldBe` 64
-              wsmChunkCount manifest `shouldBe` 0   -- empty world
+            loadResult <- loadNamedWorld testWorldName
+            case loadResult of
+              Left err -> expectationFailure (Text.unpack err)
+              Right (manifest, snapshot, loadedWorld) -> do
+                wsmName manifest `shouldBe` testWorldName
+                wsmSeed manifest `shouldBe` 42
+                wsmChunkSize manifest `shouldBe` 64
+                wsmChunkCount manifest `shouldBe` 0
+                wsmOverlayNames manifest `shouldBe` []
 
-              -- Config snapshot values
-              csSeed snapshot `shouldBe` 42
-              csChunkSize snapshot `shouldBe` 64
-              csName snapshot `shouldBe` testWorldName
+                csSeed snapshot `shouldBe` 42
+                csChunkSize snapshot `shouldBe` 64
+                csName snapshot `shouldBe` testWorldName
 
-              -- Terrain data (empty world → empty IntMaps)
-              IntMap.size (twTerrain loadedWorld) `shouldBe` 0
-              IntMap.size (twClimate loadedWorld) `shouldBe` 0
-      )
+                IntMap.size (twTerrain loadedWorld) `shouldBe` 0
+                IntMap.size (twClimate loadedWorld) `shouldBe` 0
+        )
+
+    it "round-trips sparse overlays through unified world bundle persistence" $
+      bracket
+        (pure ())
+        (\_ -> do
+            _ <- deleteNamedWorld testWorldName
+            pure ()
+        )
+        (\_ -> do
+            let config = WorldConfig { wcChunkSize = 64 }
+                baseWorld = emptyWorld config defaultHexGridMeta
+                ui = emptyUiState { uiSeed = 42, uiChunkSize = 64 }
+
+                schema = OverlaySchema
+                  { osName = "persist_sparse_test"
+                  , osVersion = "1.0.0"
+                  , osDescription = "sparse overlay persistence test"
+                  , osFields = [OverlayFieldDef "value" OFFloat (Number 0) False Nothing]
+                  , osStorage = StorageSparse
+                  , osDependencies = OverlayDeps { odTerrain = True, odOverlays = [] }
+                  , osFieldIndex = Map.fromList [("value", 0)]
+                  }
+                rec = OverlayRecord (V.fromList [OVFloat 0.75])
+                chunk = OverlayChunk (IntMap.singleton 0 rec)
+                overlay = Overlay schema (SparseData (IntMap.singleton 0 chunk)) emptyOverlayProvenance
+                world = baseWorld { twOverlays = insertOverlay overlay emptyOverlayStore }
+
+            saveResult <- saveNamedWorld testWorldName ui world
+            saveResult `shouldBe` Right ()
+
+            loadResult <- loadNamedWorld testWorldName
+            case loadResult of
+              Left err -> expectationFailure (Text.unpack err)
+              Right (manifest, _snapshot, loadedWorld) ->
+                do
+                  case lookupOverlay "persist_sparse_test" (twOverlays loadedWorld) of
+                    Nothing -> expectationFailure "sparse overlay missing after load"
+                    Just loadedOverlay ->
+                      case ovData loadedOverlay of
+                        DenseData _ -> expectationFailure "expected sparse overlay"
+                        SparseData chunks -> do
+                          IntMap.member 0 chunks `shouldBe` True
+                  wsmOverlayNames manifest `shouldBe` ["persist_sparse_test"]
+
+    it "loads old-format world directories without sidecar when manifest is empty" $
+      bracket
+        (pure ())
+        (\_ -> do
+            _ <- deleteNamedWorld testWorldName
+            pure ()
+        )
+        (\_ -> do
+            let config = WorldConfig { wcChunkSize = 64 }
+                world = emptyWorld config defaultHexGridMeta
+                ui = emptyUiState { uiSeed = 101, uiChunkSize = 64 }
+
+            dir <- worldDir
+            let worldPath = dir </> Text.unpack testWorldName
+                topoPath = worldPath </> "world.topo"
+                metaPath = worldPath </> "meta.json"
+                configPath = worldPath </> "config.json"
+                manifest = WorldSaveManifest
+                  { wsmName = testWorldName
+                  , wsmSeed = 101
+                  , wsmChunkSize = 64
+                  , wsmCreatedAt = defaultManifestTime
+                  , wsmChunkCount = 0
+                  , wsmOverlayNames = []
+                  }
+
+            createDirectoryIfMissing True worldPath
+            topoSave <- saveWorldWithProvenance topoPath emptyProvenance world
+            topoSave `shouldBe` Right ()
+            BSL.writeFile metaPath (encode manifest)
+            BSL.writeFile configPath (encode (snapshotFromUi ui testWorldName))
+
+            loadResult <- loadNamedWorld testWorldName
+            case loadResult of
+              Left err -> expectationFailure (Text.unpack err)
+              Right (loadedManifest, _snapshot, loadedWorld) -> do
+                wsmName loadedManifest `shouldBe` testWorldName
+                wsmOverlayNames loadedManifest `shouldBe` []
+                lookupOverlay "weather" (twOverlays loadedWorld) `shouldBe` Nothing
+        )
 
 -- ---------------------------------------------------------------------------
 -- listWorlds

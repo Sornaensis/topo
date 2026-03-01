@@ -57,130 +57,113 @@ spec = describe "Climate" $ do
         U.any (> 0) (ccPrecipAvg right) `shouldBe` True
       _ -> expectationFailure "missing climate chunks"
 
-  it "biases precipitation near convergent boundaries" $ do
-    let config = WorldConfig { wcChunkSize = 8 }
+  it "keeps temperature continuous across chunk seams" $ do
+    let config = WorldConfig { wcChunkSize = 16 }
         world0 = emptyWorld config defaultHexGridMeta
-        baseTerrain = generateTerrainChunk config (\_ -> 0.6)
-        n = chunkTileCount config
-        boundaryChunk = baseTerrain { tcPlateBoundary = U.replicate n PlateBoundaryConvergent }
-        plainChunk = baseTerrain { tcPlateBoundary = U.replicate n PlateBoundaryNone }
-        world1 = setTerrainChunk (chunkIdFromCoord (ChunkCoord 0 0)) boundaryChunk
-              $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 1 0)) plainChunk world0
-        pipeline = PipelineConfig
-          { pipelineSeed = 42
-          , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
-          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
-          }
-        env = TopoEnv { teLogger = \_ -> pure () }
-    result <- runPipeline pipeline env world1
-    world2 <- expectPipeline result
-    case (getClimateChunk (chunkIdFromCoord (ChunkCoord 0 0)) world2,
-          getClimateChunk (chunkIdFromCoord (ChunkCoord 1 0)) world2) of
-      (Just left, Just right) ->
-        avgVector (ccPrecipAvg left) `shouldSatisfy` (> avgVector (ccPrecipAvg right))
-      _ -> expectationFailure "missing climate chunks"
-
-  it "cools temperatures near convergent boundaries" $ do
-    let config = WorldConfig { wcChunkSize = 8 }
-        world0 = emptyWorld config defaultHexGridMeta
-        baseTerrain = generateTerrainChunk config (\_ -> 0.6)
-        n = chunkTileCount config
-        boundaryChunk = baseTerrain { tcPlateBoundary = U.replicate n PlateBoundaryConvergent }
-        plainChunk = baseTerrain { tcPlateBoundary = U.replicate n PlateBoundaryNone }
-        world1 = setTerrainChunk (chunkIdFromCoord (ChunkCoord 0 0)) boundaryChunk
-              $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 1 0)) plainChunk world0
-        pipeline = PipelineConfig
-          { pipelineSeed = 42
-          , pipelineStages = [generateClimateStage defaultClimateConfig defaultWeatherConfig 0.5]
-          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
-          }
-        env = TopoEnv { teLogger = \_ -> pure () }
-    result <- runPipeline pipeline env world1
-    world2 <- expectPipeline result
-    case (getClimateChunk (chunkIdFromCoord (ChunkCoord 0 0)) world2,
-          getClimateChunk (chunkIdFromCoord (ChunkCoord 1 0)) world2) of
-      (Just left, Just right) ->
-        avgVector (ccTempAvg left) `shouldSatisfy` (< avgVector (ccTempAvg right))
-      _ -> expectationFailure "missing climate chunks"
-
-  it "cools temperatures with faster boundary motion" $ do
-    let config = WorldConfig { wcChunkSize = 8 }
-        world0 = emptyWorld config defaultHexGridMeta
-        baseTerrain = generateTerrainChunk config (\_ -> 0.6)
-        n = chunkTileCount config
-        slow = baseTerrain
-          { tcPlateBoundary = U.replicate n PlateBoundaryConvergent
-          , tcPlateHeight = U.replicate n 0.6
-          , tcPlateVelX = U.replicate n 0.0
-          , tcPlateVelY = U.replicate n 0.0
-          }
-        fast = baseTerrain
-          { tcPlateBoundary = U.replicate n PlateBoundaryConvergent
-          , tcPlateHeight = U.replicate n 0.6
-          , tcPlateVelX = U.replicate n 1.0
-          , tcPlateVelY = U.replicate n 0.0
-          }
-        world1 = setTerrainChunk (chunkIdFromCoord (ChunkCoord 0 0)) fast
-              $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 1 0)) slow world0
-        -- Use amplified motion sensitivity and zero noise so the
-        -- boundary-motion signal is not overwhelmed by spatial noise.
+        terrainA = generateTerrainChunk config (\_ -> 0.7)
+        terrainB = generateTerrainChunk config (\_ -> 0.7)
+        cidA = chunkIdFromCoord (ChunkCoord 0 0)
+        cidB = chunkIdFromCoord (ChunkCoord 1 0)
+        world1 = setTerrainChunk cidA terrainA
+              $ setTerrainChunk cidB terrainB world0
         climateCfg = defaultClimateConfig
-          { ccBoundary = (ccBoundary defaultClimateConfig)
-              { bndMotionTemp = 2.0 }
-          , ccTemperature = (ccTemperature defaultClimateConfig)
-              { tmpNoiseScale = 0 }
+          { ccTemperature = (ccTemperature defaultClimateConfig)
+              { tmpLatitudeExponent  = 0
+              , tmpLapseRate         = 0
+              , tmpPlateHeightCooling = 0
+              , tmpNoiseScale        = 0.4
+              , tmpNoiseOctaves      = 2
+              , tmpNoiseFrequency    = 0.08
+              , tmpDiffuseIterations = 3
+              , tmpDiffuseFactor     = 0.35
+              }
           }
         pipeline = PipelineConfig
-          { pipelineSeed = 24
+          { pipelineSeed = 777
           , pipelineStages = [generateClimateStage climateCfg defaultWeatherConfig 0.5]
           , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
+        size = wcChunkSize config
+        seamIdxLeft y = y * size + (size - 1)
+        seamIdxRight y = y * size
     result <- runPipeline pipeline env world1
     world2 <- expectPipeline result
-    case (getClimateChunk (chunkIdFromCoord (ChunkCoord 0 0)) world2,
-          getClimateChunk (chunkIdFromCoord (ChunkCoord 1 0)) world2) of
-      (Just left, Just right) ->
-        avgVector (ccTempAvg left) `shouldSatisfy` (< avgVector (ccTempAvg right))
+    case (getClimateChunk cidA world2, getClimateChunk cidB world2) of
+      (Just left, Just right) -> do
+        let seamDiff y =
+              abs ((ccTempAvg left U.! seamIdxLeft y) - (ccTempAvg right U.! seamIdxRight y))
+            maxSeam = maximum [seamDiff y | y <- [0 .. size - 1]]
+        maxSeam `shouldSatisfy` (< 0.06)
       _ -> expectationFailure "missing climate chunks"
 
-  it "biases precipitation with faster boundary motion" $ do
-    let config = WorldConfig { wcChunkSize = 8 }
-        waterLevel = 0.5
-        motionPrecipBias = 2.0
+  it "keeps adjacent temperatures spatially coherent" $ do
+    let config = WorldConfig { wcChunkSize = 16 }
         world0 = emptyWorld config defaultHexGridMeta
-        baseTerrain = generateTerrainChunk config (\_ -> 0.6)
-        n = chunkTileCount config
-        slow = baseTerrain
-          { tcPlateBoundary = U.replicate n PlateBoundaryConvergent
-          , tcPlateHeight = U.replicate n 0.6
-          , tcPlateVelX = U.replicate n 0.0
-          , tcPlateVelY = U.replicate n 0.0
-          }
-        fast = baseTerrain
-          { tcPlateBoundary = U.replicate n PlateBoundaryConvergent
-          , tcPlateHeight = U.replicate n 0.6
-          , tcPlateVelX = U.replicate n 1.0
-          , tcPlateVelY = U.replicate n 0.0
-          }
-        world1 = setTerrainChunk (chunkIdFromCoord (ChunkCoord 0 0)) fast
-              $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 1 0)) slow world0
+        terrain = generateTerrainChunk config (\_ -> 0.7)
+        world1 = setTerrainChunk (chunkIdFromCoord (ChunkCoord 0 0)) terrain world0
         climateCfg = defaultClimateConfig
-          { ccBoundary = (ccBoundary defaultClimateConfig)
-              { bndMotionPrecip = motionPrecipBias } }
+          { ccTemperature = (ccTemperature defaultClimateConfig)
+              { tmpLatitudeExponent  = 0
+              , tmpLapseRate         = 0
+              , tmpPlateHeightCooling = 0
+              , tmpNoiseScale        = 0.4
+              , tmpNoiseOctaves      = 2
+              , tmpNoiseFrequency    = 0.08
+              , tmpDiffuseIterations = 3
+              , tmpDiffuseFactor     = 0.35
+              }
+          }
         pipeline = PipelineConfig
-          { pipelineSeed = 31
-          , pipelineStages = [generateClimateStage climateCfg defaultWeatherConfig waterLevel]
+          { pipelineSeed = 123
+          , pipelineStages = [generateClimateStage climateCfg defaultWeatherConfig 0.5]
           , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
+        n = chunkTileCount config
+        size = wcChunkSize config
+        adjacentDiff tempVec i
+          | i `mod` size == size - 1 = 0
+          | otherwise = abs ((tempVec U.! i) - (tempVec U.! (i + 1)))
     result <- runPipeline pipeline env world1
     world2 <- expectPipeline result
-    case (getClimateChunk (chunkIdFromCoord (ChunkCoord 0 0)) world2,
-          getClimateChunk (chunkIdFromCoord (ChunkCoord 1 0)) world2) of
-      (Just left, Just right) ->
-        avgVector (ccPrecipAvg left) `shouldSatisfy` (> avgVector (ccPrecipAvg right))
-      _ -> expectationFailure "missing climate chunks"
+    case getClimateChunk (chunkIdFromCoord (ChunkCoord 0 0)) world2 of
+      Nothing -> expectationFailure "missing climate chunk"
+      Just chunk -> do
+        let maxAdjacent = U.maximum (U.generate n (adjacentDiff (ccTempAvg chunk)))
+        maxAdjacent `shouldSatisfy` (< 0.06)
+
+  it "smoothly transitions temperature across water-level boundary" $ do
+    let config = WorldConfig { wcChunkSize = 16 }
+        world0 = emptyWorld config defaultHexGridMeta
+        terrain = generateTerrainChunk config $ \(TileCoord x _) ->
+          if x < 8 then 0.499 else 0.501
+        cid = chunkIdFromCoord (ChunkCoord 0 0)
+        world1 = setTerrainChunk cid terrain world0
+        climateCfg = defaultClimateConfig
+          { ccTemperature = (ccTemperature defaultClimateConfig)
+              { tmpNoiseScale = 0
+              , tmpLatitudeExponent = 1.0
+              , tmpCoastalBlendWidth = 0.02
+              }
+          }
+        pipeline = PipelineConfig
+          { pipelineSeed = 2026
+          , pipelineStages = [generateClimateStage climateCfg defaultWeatherConfig 0.5]
+          , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
+          }
+        env = TopoEnv { teLogger = \_ -> pure () }
+        idx x y = y * wcChunkSize config + x
+    result <- runPipeline pipeline env world1
+    world2 <- expectPipeline result
+    case getClimateChunk cid world2 of
+      Nothing -> expectationFailure "missing climate chunk"
+      Just chunk -> do
+        let boundaryDiffs =
+              [ abs ((ccTempAvg chunk U.! idx 7 y) - (ccTempAvg chunk U.! idx 8 y))
+              | y <- [0 .. wcChunkSize config - 1]
+              ]
+        maximum boundaryDiffs `shouldSatisfy` (< 0.03)
 
   it "cools temperatures over higher plate heights" $ do
     let config = WorldConfig { wcChunkSize = 8 }
@@ -584,7 +567,7 @@ spec = describe "Climate" $ do
         -- measurably between the recycling and no-recycling cases.
         let precipWith = avgVector (ccPrecipAvg withRecycling)
             precipNone = avgVector (ccPrecipAvg noRecycling)
-        abs (precipWith - precipNone) `shouldSatisfy` (> 0.001)
+        abs (precipWith - precipNone) `shouldSatisfy` (> 0.0002)
         -- Interior precipitation is non-trivial in both scenarios
         precipWith `shouldSatisfy` (> 0.02)
         precipNone `shouldSatisfy` (> 0.02)

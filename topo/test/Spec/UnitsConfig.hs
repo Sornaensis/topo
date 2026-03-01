@@ -230,6 +230,11 @@ allFieldsClose tol a b = all id
   , approxEq tol (tmpLatitudeExponent a) (tmpLatitudeExponent b)
   , approxEq tol (tmpPlateHeightCooling a) (tmpPlateHeightCooling b)
   , approxEq tol (tmpNoiseScale a) (tmpNoiseScale b)
+  , tmpNoiseOctaves a == tmpNoiseOctaves b
+  , approxEq tol (tmpNoiseFrequency a) (tmpNoiseFrequency b)
+  , tmpDiffuseIterations a == tmpDiffuseIterations b
+  , approxEq tol (tmpDiffuseFactor a) (tmpDiffuseFactor b)
+  , approxEq tol (tmpCoastalBlendWidth a) (tmpCoastalBlendWidth b)
   , approxEq tol (tmpOceanModeration a) (tmpOceanModeration b)
   , approxEq tol (tmpOceanModerateTemp a) (tmpOceanModerateTemp b)
   , approxEq tol (tmpAlbedoSensitivity a) (tmpAlbedoSensitivity b)

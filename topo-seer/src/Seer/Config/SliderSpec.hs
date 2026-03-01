@@ -589,18 +589,6 @@ tooltipForWidget wid = case wid of
   -- Boundary model
   WidgetConfigBndLandRangeMinus       -> tip specBndLandRange
   WidgetConfigBndLandRangePlus        -> tip specBndLandRange
-  WidgetConfigBndTempConvergentMinus  -> tip specBndTempConvergent
-  WidgetConfigBndTempConvergentPlus   -> tip specBndTempConvergent
-  WidgetConfigBndTempDivergentMinus   -> tip specBndTempDivergent
-  WidgetConfigBndTempDivergentPlus    -> tip specBndTempDivergent
-  WidgetConfigBndTempTransformMinus   -> tip specBndTempTransform
-  WidgetConfigBndTempTransformPlus    -> tip specBndTempTransform
-  WidgetConfigBndPrecipConvergentMinus -> tip specBndPrecipConvergent
-  WidgetConfigBndPrecipConvergentPlus  -> tip specBndPrecipConvergent
-  WidgetConfigBndPrecipDivergentMinus -> tip specBndPrecipDivergent
-  WidgetConfigBndPrecipDivergentPlus  -> tip specBndPrecipDivergent
-  WidgetConfigBndPrecipTransformMinus -> tip specBndPrecipTransform
-  WidgetConfigBndPrecipTransformPlus  -> tip specBndPrecipTransform
   -- Erosion tab
   WidgetConfigErosionHydraulicMinus  -> tip specErosionHydraulic
   WidgetConfigErosionHydraulicPlus   -> tip specErosionHydraulic

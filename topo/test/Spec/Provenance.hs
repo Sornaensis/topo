@@ -3,6 +3,12 @@ module Spec.Provenance (spec) where
 import Test.Hspec
 import qualified Data.Text as Text
 import Topo
+import Topo.Storage
+  ( MapProvenance(..)
+  , WorldProvenance(..)
+  , decodeWorldWithProvenance
+  , encodeWorldWithProvenance
+  )
 
 spec :: Spec
 spec = describe "Provenance" $ do
