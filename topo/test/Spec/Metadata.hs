@@ -2,7 +2,6 @@ module Spec.Metadata (spec) where
 
 import Test.Hspec
 import Test.QuickCheck (ioProperty, property)
-import Data.Proxy (Proxy(..))
 import Data.Text (Text, pack)
 import Topo
 
@@ -25,18 +24,6 @@ spec = describe "Metadata" $ do
     let world = emptyWorld (WorldConfig { wcChunkSize = 8 }) defaultHexGridMeta
         world' = putHexMetaWorld (HexAxial 1 2) (Tag (pack "beta")) world
     getHexMetaWorld (HexAxial 1 2) world' `shouldBe` Just (Tag (pack "beta"))
-
-  it "migrates metadata versions" $ do
-    let store = putHexMetaWithVersion 1 (HexAxial 0 0) (Tag (pack "alpha")) emptyMetadataStore
-        migration = MetadataMigration
-          { mmKey = pack "tag"
-          , mmFrom = 1
-          , mmTo = 2
-          , mmMigrate = \(Tag t) -> Tag (t <> pack "-v2")
-          }
-        store' = migrateMetadataStore [migration] store
-    getHexMeta (HexAxial 0 0) store' `shouldBe` Just (Tag (pack "alpha-v2"))
-    getHexMetaVersion (Proxy :: Proxy Tag) (HexAxial 0 0) store' `shouldBe` Just 2
 
   it "stores plate metadata for a hex" $ do
     let config = WorldConfig { wcChunkSize = 8 }

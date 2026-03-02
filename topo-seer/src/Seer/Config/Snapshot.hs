@@ -597,8 +597,6 @@ applySnapshotToUi cs h = do
 
 -- | Return the config snapshot directory (@~\/.topo\/configs\/@), creating
 -- it if it does not exist.
---
--- The same directory as the legacy preset directory.
 snapshotDir :: IO FilePath
 snapshotDir = do
   home <- getHomeDirectory

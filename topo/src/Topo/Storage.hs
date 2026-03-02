@@ -39,20 +39,13 @@ import Data.Text.Encoding (decodeUtf8', encodeUtf8)
 import Topo.Export
   ( ExportError
   , decodeClimateChunk
-  , decodeClimateChunkV1
   , decodeGroundwaterChunk
   , decodeVolcanismChunk
   , decodeGlacierChunk
   , decodeRiverChunk
-  , decodeRiverChunkV1
-  , decodeRiverChunkV2
   , decodeTerrainChunk
-  , decodeTerrainChunkV2
-  , decodeTerrainChunkV3
   , decodeVegetationChunk
-  , decodeVegetationChunkV1
   , decodeWaterBodyChunk
-  , decodeWeatherChunk
   , encodeClimateChunk
   , encodeGroundwaterChunk
   , encodeVolcanismChunk
@@ -61,9 +54,8 @@ import Topo.Export
   , encodeTerrainChunk
   , encodeVegetationChunk
   , encodeWaterBodyChunk
-  , encodeWeatherChunk
   )
-import Topo.Calendar (WorldTime(..), PlanetAge(..), defaultWorldTime, defaultPlanetAge)
+import Topo.Calendar (WorldTime(..), PlanetAge(..))
 import Topo.Hex (HexGridMeta(..), defaultHexGridMeta)
 import Topo.Overlay (OverlayStore, emptyOverlayStore)
 import Topo.Metadata
@@ -76,9 +68,9 @@ import Topo.Metadata
   , metadataCodec
   )
 import Topo.PlateMetadata (PlateHexMeta)
-import Topo.Planet (PlanetConfig(..), WorldSlice(..), defaultPlanetConfig, defaultWorldSlice, mkLatitudeMapping)
+import Topo.Planet (PlanetConfig(..), WorldSlice(..), mkLatitudeMapping)
 import Topo.Types
-import Topo.Units (UnitScales(..), defaultUnitScales)
+import Topo.Units (UnitScales(..))
 import Topo.World
 
 -- | Storage-layer failures while encoding or decoding worlds.
@@ -134,14 +126,13 @@ encodeWorld world =
 -- Layout (version 14):
 --   magic, version, chunkSize, hexSize, provenance, metadata,
 --   planetConfig, worldSlice, worldTime, genConfig (length-prefixed JSON blob),
---   terrain chunks, climate chunks, weather chunks, river chunks, groundwater chunks,
+--   terrain chunks, climate chunks, river chunks, groundwater chunks,
 --   glacier chunks, volcanism chunks, waterBody chunks, vegetation chunks.
 encodeWorldWithProvenance :: WorldProvenance -> TerrainWorld -> Either StorageError BS.ByteString
 encodeWorldWithProvenance prov world = do
   let config = twConfig world
   terrain <- encodeChunkMap config encodeTerrainChunk (twTerrain world)
   climate <- encodeChunkMap config encodeClimateChunk (twClimate world)
-  weather <- encodeChunkMap config encodeWeatherChunk IntMap.empty
   rivers <- encodeChunkMap config encodeRiverChunk (twRivers world)
   groundwater <- encodeChunkMap config encodeGroundwaterChunk (twGroundwater world)
   glaciers <- encodeChunkMap config encodeGlacierChunk (twGlaciers world)
@@ -165,7 +156,6 @@ encodeWorldWithProvenance prov world = do
     putOverlayManifest (twOverlayManifest world)
     putChunkMapBytes terrain
     putChunkMapBytes climate
-    putChunkMapBytes weather
     putChunkMapBytes rivers
     putChunkMapBytes groundwater
     putChunkMapBytes glaciers
@@ -192,50 +182,8 @@ magic :: BS.ByteString
 magic = BS.pack [0x54, 0x4f, 0x50, 0x4f]
 
 -- | Current world file format version.
---
--- Version history:
---   * 1: base terrain/climate/weather chunks with provenance.
---   * 2: expanded provenance fields for pipeline stages.
---   * 3: terrain chunk schema includes plate height/hardness fields.
---   * 4: metadata store included (twMeta) with typed codecs.
---   * 5: river + groundwater chunk maps added.
---   * 6: river chunks include erosion/deposition potentials.
---   * 7: glacier chunks added.
---   * 8: volcanism chunks added.
---   * 9: planet config + world slice fields added.
---         PlanetConfig: radius (Float32), axialTilt (Float32),
---         insolation (Float32).
---         WorldSlice: latCenter (Float32), latExtent (Float32),
---         lonCenter (Float32), lonExtent (Float32).
---         Files < v9 decode with 'defaultPlanetConfig' / 'defaultWorldSlice'.
---   * 10: world time field (twWorldTime :: Float32) added.
---         Files < v10 decode with twWorldTime = 0.
---   * 11: river chunks include flow-direction and segment topology.
---   * 12: water body chunks and vegetation chunks serialized.
---         Vegetation chunks now include 'vegDensity'.
---         Files < v12 decode with empty waterBodies/vegetation.
---   * 13: climate chunks include humidity average, temperature range,
---         and precipitation seasonality.
---         Files < v13 decode with legacy 4-field climate chunks.
---   * 14: full WorldGenConfig stored as a length-prefixed JSON blob.
---         Files < v14 decode with twGenConfig = Nothing.
---   * 15: UnitScales record stored after genConfig.
---         Files < v15 decode with 'defaultUnitScales'.
---   * 16: twWorldTime replaced by WorldTime (tick :: Word64, tickRate :: Float64).
---         PlanetAge (years :: Float64) added.
---         Files < v16 decode with 'defaultWorldTime' and 'defaultPlanetAge'.
---   * 17: twOverlayManifest ([Text]) added after UnitScales.
---         Lists overlay names that were active when saved.
---         Files < v17 decode with twOverlayManifest = [].
---   * 18: (no terrain chunk schema change)
---   * 19: terrain chunks include tcRelief2Ring and tcRelief3Ring
---         (2-ring and 3-ring neighbourhood relief, both U.Vector Float).
---         Files < v19 decode with zero vectors via decodeTerrainChunkV3.
---   * 20: world seed field added (twSeed :: Word64) after WorldTime.
---         Used for deterministic weather simulation across save/load.
---         Files < v20 decode with twSeed = wpSeed provenance.
 fileVersion :: Word32
-fileVersion = 20
+fileVersion = 22
 
 defaultMetadataCodecs :: [MetadataCodec]
 defaultMetadataCodecs =
@@ -271,10 +219,9 @@ putChunkBytes (key, bytes) = do
   putWord32le (fromIntegral (BS.length bytes))
   putByteString bytes
 
--- | Decode a world file with provenance and optional metadata.
+-- | Decode a world file with provenance and metadata.
 --
--- The decoder is versioned and selects the correct terrain chunk schema
--- (see decodeTerrainChunkV2 for legacy v2 formats).
+-- Only accepts the current file format version ('fileVersion').
 getWorldWithProvenance :: [MetadataCodec] -> Get (WorldProvenance, TerrainWorld)
 getWorldWithProvenance codecs = do
   fileMagic <- getByteString 4
@@ -282,65 +229,33 @@ getWorldWithProvenance codecs = do
     then fail "decode: invalid magic"
     else pure ()
   version <- getWord32le
-  if version < 1 || version > fileVersion
+  if version /= fileVersion
     then fail "decode: unsupported version"
     else pure ()
   size <- fromIntegral <$> getWord32le
   hex <- getFloatle
-  prov <- decodeProvenanceForVersion version
-  metaStore <- if version >= 4
-    then getMetadataStore codecs
-    else pure emptyMetadataStore
+  prov <- decodeProvenance
+  metaStore <- getMetadataStore codecs
   config <- case mkWorldConfig size of
     Left err -> fail ("decode: invalid chunk size (" <> show err <> ")")
     Right cfg -> pure cfg
   let hexMeta = HexGridMeta { hexSize = hex }
-  (planet, slice) <- if version >= 9
-    then (,) <$> getPlanetConfig <*> getWorldSlice
-    else pure (defaultPlanetConfig, defaultWorldSlice)
-  worldTime <- if version >= 16
-    then getWorldTime
-    else if version >= 10
-      then do
-        -- Legacy: discard the old Float32 world time value.
-        -- It was only meaningful relative to wcSeasonCycleLength.
-        _ <- getFloatle
-        pure defaultWorldTime
-      else pure defaultWorldTime
-  worldSeed <- if version >= 20
-    then getWord64le
-    else pure (wpSeed prov)
-  planetAge <- if version >= 16
-    then getPlanetAge
-    else pure defaultPlanetAge
-  genConfig <- if version >= 14
-    then getGenConfig
-    else pure Nothing
-  unitScales <- if version >= 15
-    then getUnitScales
-    else pure defaultUnitScales
-  overlayManifest <- if version >= 17
-    then getOverlayManifest
-    else pure []
-  let terrainDecoder
-        | version < 3  = decodeTerrainChunkV2
-        | version < 19 = decodeTerrainChunkV3
-        | otherwise    = decodeTerrainChunk
-  terrain <- getChunkMap terrainDecoder config
-  climate <- getChunkMap (if version >= 13 then decodeClimateChunk else decodeClimateChunkV1) config
-  _weatherLegacy <- getChunkMap decodeWeatherChunk config
-  rivers <- if version >= 5
-    then getChunkMap (if version >= 11 then decodeRiverChunk
-                      else if version >= 6 then decodeRiverChunkV2
-                      else decodeRiverChunkV1) config
-    else pure IntMap.empty
-  groundwater <- if version >= 5 then getChunkMap decodeGroundwaterChunk config else pure IntMap.empty
-  glaciers <- if version >= 7 then getChunkMap decodeGlacierChunk config else pure IntMap.empty
-  volcanism <- if version >= 8 then getChunkMap decodeVolcanismChunk config else pure IntMap.empty
-  waterBodies <- if version >= 12 then getChunkMap decodeWaterBodyChunk config else pure IntMap.empty
-  vegetation <- if version >= 12
-    then getChunkMap decodeVegetationChunk config
-    else pure IntMap.empty
+  planet <- getPlanetConfig
+  slice <- getWorldSlice
+  worldTime <- getWorldTime
+  worldSeed <- getWord64le
+  planetAge <- getPlanetAge
+  genConfig <- getGenConfig
+  unitScales <- getUnitScales
+  overlayManifest <- getOverlayManifest
+  terrain <- getChunkMap decodeTerrainChunk config
+  climate <- getChunkMap decodeClimateChunk config
+  rivers <- getChunkMap decodeRiverChunk config
+  groundwater <- getChunkMap decodeGroundwaterChunk config
+  glaciers <- getChunkMap decodeGlacierChunk config
+  volcanism <- getChunkMap decodeVolcanismChunk config
+  waterBodies <- getChunkMap decodeWaterBodyChunk config
+  vegetation <- getChunkMap decodeVegetationChunk config
   pure
     ( prov
     , TerrainWorld
@@ -380,7 +295,6 @@ data WorldProvenance = WorldProvenance
   , wpNotes :: !Text
   , wpTerrain :: !MapProvenance
   , wpClimate :: !MapProvenance
-  , wpWeather :: !MapProvenance
   , wpBiome :: !MapProvenance
   } deriving (Eq, Show)
 
@@ -398,7 +312,6 @@ emptyProvenance = WorldProvenance
   , wpNotes = Text.empty
   , wpTerrain = emptyMapProvenance
   , wpClimate = emptyMapProvenance
-  , wpWeather = emptyMapProvenance
   , wpBiome = emptyMapProvenance
   }
 
@@ -409,40 +322,15 @@ encodeProvenance prov = do
   putText (wpNotes prov)
   encodeMapProvenance (wpTerrain prov)
   encodeMapProvenance (wpClimate prov)
-  encodeMapProvenance (wpWeather prov)
   encodeMapProvenance (wpBiome prov)
 
 decodeProvenance :: Get WorldProvenance
-decodeProvenance = decodeProvenanceV2
-
-decodeProvenanceForVersion :: Word32 -> Get WorldProvenance
-decodeProvenanceForVersion version
-  | version == 1 = decodeProvenanceV1
-  | otherwise = decodeProvenanceV2
-
-decodeProvenanceV1 :: Get WorldProvenance
-decodeProvenanceV1 = do
-  seed <- getWord64le
-  ver <- getWord32le
-  notes <- getText
-  pure WorldProvenance
-    { wpSeed = seed
-    , wpVersion = ver
-    , wpNotes = notes
-    , wpTerrain = emptyMapProvenance
-    , wpClimate = emptyMapProvenance
-    , wpWeather = emptyMapProvenance
-    , wpBiome = emptyMapProvenance
-    }
-
-decodeProvenanceV2 :: Get WorldProvenance
-decodeProvenanceV2 = do
+decodeProvenance = do
   seed <- getWord64le
   ver <- getWord32le
   notes <- getText
   terrain <- decodeMapProvenance
   climate <- decodeMapProvenance
-  weather <- decodeMapProvenance
   biome <- decodeMapProvenance
   pure WorldProvenance
     { wpSeed = seed
@@ -450,7 +338,6 @@ decodeProvenanceV2 = do
     , wpNotes = notes
     , wpTerrain = terrain
     , wpClimate = climate
-    , wpWeather = weather
     , wpBiome = biome
     }
 

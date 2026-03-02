@@ -17,7 +17,6 @@ spec = describe "Provenance" $ do
         world = emptyWorld config defaultHexGridMeta
         terrainProv = MapProvenance { mpSeed = 10, mpVersion = 2, mpParams = Text.pack "terrain=default" }
         climateProv = MapProvenance { mpSeed = 20, mpVersion = 3, mpParams = Text.pack "climate=default" }
-        weatherProv = MapProvenance { mpSeed = 30, mpVersion = 1, mpParams = Text.pack "weather=default" }
         biomeProv = MapProvenance { mpSeed = 40, mpVersion = 5, mpParams = Text.pack "biome=default" }
         prov = WorldProvenance
           { wpSeed = 42
@@ -25,7 +24,6 @@ spec = describe "Provenance" $ do
           , wpNotes = Text.pack "test"
           , wpTerrain = terrainProv
           , wpClimate = climateProv
-          , wpWeather = weatherProv
           , wpBiome = biomeProv
           }
     case encodeWorldWithProvenance prov world of

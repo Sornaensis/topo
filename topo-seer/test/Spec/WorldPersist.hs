@@ -170,16 +170,15 @@ worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
             loadResult <- loadNamedWorld testWorldName
             case loadResult of
               Left err -> expectationFailure (Text.unpack err)
-              Right (manifest, _snapshot, loadedWorld) ->
-                do
-                  case lookupOverlay "persist_sparse_test" (twOverlays loadedWorld) of
-                    Nothing -> expectationFailure "sparse overlay missing after load"
-                    Just loadedOverlay ->
-                      case ovData loadedOverlay of
-                        DenseData _ -> expectationFailure "expected sparse overlay"
-                        SparseData chunks -> do
-                          IntMap.member 0 chunks `shouldBe` True
-                  wsmOverlayNames manifest `shouldBe` ["persist_sparse_test"]
+              Right (manifest, _snapshot, loadedWorld) -> do
+                case lookupOverlay "persist_sparse_test" (twOverlays loadedWorld) of
+                  Nothing -> expectationFailure "sparse overlay missing after load"
+                  Just loadedOverlay ->
+                    case ovData loadedOverlay of
+                      DenseData _ -> expectationFailure "expected sparse overlay"
+                      SparseData chunks ->
+                        IntMap.member 0 chunks `shouldBe` True
+                wsmOverlayNames manifest `shouldBe` ["persist_sparse_test"]
 
     it "loads old-format world directories without sidecar when manifest is empty" $
       bracket

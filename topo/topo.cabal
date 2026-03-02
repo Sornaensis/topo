@@ -94,6 +94,7 @@ library
       Topo.Plugin.RPC.Transport
       Topo.Config.JSON
       Topo.TerrainForm.Modifiers
+      Topo.TerrainForm.Metrics
   other-modules:
       Topo.Config
       Topo.Overlay.Storage.ChunkIndex
@@ -165,6 +166,8 @@ test-suite topo-test
       Spec.Soil
       Spec.Storage
       Spec.Tectonics
+      Spec.TerrainFormCalibration
+      Spec.TerrainFormMetrics
       Spec.TerrainFormModifiers
       Spec.TerrainRelief
       Spec.Units

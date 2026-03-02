@@ -221,12 +221,12 @@ isSorted [_] = True
 isSorted (x:y:rest) = x <= y && isSorted (y:rest)
 
 -- ---------------------------------------------------------------------------
--- Snapshot backward/forward compatibility (Phase 7.5)
+-- Snapshot schema evolution
 -- ---------------------------------------------------------------------------
 
 snapshotCompatSpec :: Spec
-snapshotCompatSpec = describe "Snapshot compatibility" $ do
-  describe "7.5.1 — new fields get defaults via mergeDefaults" $ do
+snapshotCompatSpec = describe "Snapshot schema evolution" $ do
+  describe "new fields get defaults via mergeDefaults" $ do
     it "ErosionConfig missing coastalSmoothIterations gets default 4" $ do
       -- Build an ErosionConfig JSON that omits the new field
       let fullJson = encode defaultErosionConfig
@@ -257,7 +257,7 @@ snapshotCompatSpec = describe "Snapshot compatibility" $ do
               let erosion = terrainErosion (worldTerrain (csGenConfig cs))
               in ecCoastalSmoothIterations erosion `shouldBe` 4
 
-  describe "7.5.2 — old snapshot applies cleanly" $ do
+  describe "old snapshot applies cleanly" $ do
     it "empty genConfig decodes to defaultWorldGenConfig" $ do
       let json = "{\"name\":\"old\",\"genConfig\":{}}"
       case eitherDecodeStrict' @ConfigSnapshot json of
@@ -269,7 +269,7 @@ snapshotCompatSpec = describe "Snapshot compatibility" $ do
         Left err -> expectationFailure err
         Right cs -> cs `shouldBe` defaultSnapshot
 
-  describe "7.5.3 — save/reload preserves all fields including new ones" $ do
+  describe "save/reload preserves all fields including new ones" $ do
     it "round-trips non-default ecCoastalSmoothIterations through file" $
       withTempDir $ \dir -> do
         let path = dir </> "compat-test.json"

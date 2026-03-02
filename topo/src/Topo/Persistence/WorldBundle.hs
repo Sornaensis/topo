@@ -180,7 +180,7 @@ loadWorldBundleWithProvenance policy topoPath = do
             Right overlays ->
               pure (Right (prov, world { twOverlays = mergeOverlays world overlays }))
 
--- Keep weather/legacy overlays loaded from .topo unless explicitly
+-- Keep existing overlays loaded from .topo unless explicitly
 -- replaced by sidecar entries.
 mergeOverlays :: TerrainWorld -> OverlayStore -> OverlayStore
 mergeOverlays world (OverlayStore sidecar) =

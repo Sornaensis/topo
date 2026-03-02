@@ -34,7 +34,9 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word16)
 import Topo.Hex (hexNeighborIndices)
-import Topo.Parameters (classifyTerrainForm, TerrainFormConfig)
+import Topo.Math (clamp01)
+import Topo.Parameters (classifyTerrainForm, computeReliefIndex, TerrainFormConfig)
+import qualified Topo.TerrainForm.Metrics as TerrainMetrics
 import Topo.Types
 import qualified Data.Vector.Unboxed as U
 
@@ -103,6 +105,7 @@ chunkError expected (key, chunk) =
         , ("rockDensity", U.length (tcRockDensity chunk))
         , ("soilGrain", U.length (tcSoilGrain chunk))
         , ("relief", U.length (tcRelief chunk))
+        , ("microRelief", U.length (tcMicroRelief chunk))
         , ("ruggedness", U.length (tcRuggedness chunk))
         , ("terrainForm", U.length (tcTerrainForm chunk))
         , ("flags", U.length (tcFlags chunk))
@@ -492,14 +495,18 @@ gridSlopeAt gridW gridH elev i =
 -- This is a lightweight pre-classification used by erosion, glacier, and
 -- hydrology stages /before/ the definitive per-chunk stencil classification
 -- in 'applyParameterLayersStage'.  The two classifications use identical
--- logic ('classifyTerrainForm') but differ in boundary handling: this
--- function clamps out-of-bounds neighbors to the center elevation (slope
--- = 0), while the per-chunk stencil uses cross-chunk lookups.
+-- logic ('classifyTerrainForm').  Boundary reads use nearest-valid sampling
+-- (edge replication), so metrics remain deterministic without injecting
+-- synthetic zero-slope edges.
 --
 -- Soil depth is unavailable at pre-classification time and is set to a
 -- neutral default (0.5).  Since 'classifyTerrainForm' does not currently
 -- weight soil depth in its cascade, this has no effect on classification
 -- results.
+--
+-- Micro-relief uses the shared 'computeReliefIndex' in ring-only fallback
+-- mode.  Post-erosion synthesis can additionally fuse noise and erosion
+-- components, which are unavailable at this stage.
 classifyTerrainFormGrid
   :: TerrainFormConfig
   -> Float             -- ^ Water level (for elevation ASL)
@@ -513,52 +520,25 @@ classifyTerrainFormGrid formCfg waterLevel gridW gridH elev hardness =
     let !h0 = elev U.! i
         !x  = i `mod` gridW
         !y  = i `div` gridW
+        {-# INLINE elevAtClamped #-}
+        elevAtClamped gx gy =
+          let !cx = clampCoordGrid gridW gx
+              !cy = clampCoordGrid gridH gy
+          in elev U.! (cy * gridW + cx)
 
-        -- Safe boundary-clamped neighbor elevation.
-        -- Out-of-bounds neighbors are assumed to be at the same elevation
-        -- as the center tile (slope = 0 in that direction).
-        {-# INLINE nbrElev #-}
-        nbrElev dx dy =
-          let !nx = x + dx
-              !ny = y + dy
-          in if nx >= 0 && nx < gridW && ny >= 0 && ny < gridH
-               then elev U.! (ny * gridW + nx)
-               else h0
-
-        -- 6 hex neighbor elevations (axial offsets: E, NE, NW, W, SW, SE)
-        !eE  = nbrElev   1    0
-        !eNE = nbrElev   1  (-1)
-        !eNW = nbrElev   0  (-1)
-        !eW  = nbrElev (-1)   0
-        !eSW = nbrElev (-1)   1
-        !eSE = nbrElev   0    1
-
-        -- Directional slope (neighbour − center)
-        !ds = DirectionalSlope
-                (eE  - h0)
-                (eNE - h0)
-                (eNW - h0)
-                (eW  - h0)
-                (eSW - h0)
-                (eSE - h0)
-
-        -- Curvature (Laplacian over 6 hex neighbours)
-        !c = (eE + eNE + eNW + eW + eSW + eSE) - 6 * h0
-
-        -- Relief (range over hex neighbours + center)
-        !lo = min h0 $ min eE $ min eNE $ min eNW $ min eW $ min eSW eSE
-        !hi = max h0 $ max eE $ max eNE $ max eNW $ max eW $ max eSW eSE
-        !r  = hi - lo
-
-        -- Local minimum (all 6 hex neighbours ≥ center)
-        !localMin = eE >= h0 && eNE >= h0 && eNW >= h0
-                 && eW >= h0 && eSW >= h0 && eSE >= h0
+        !metrics = TerrainMetrics.terrainNeighborhoodAt elevAtClamped x y
+        !ds = TerrainMetrics.tnDirectionalSlope metrics
+        !c = TerrainMetrics.tnCurvature metrics
+        !r = TerrainMetrics.tnRelief metrics
+        !r2 = TerrainMetrics.tnRelief2Ring metrics
+        !r3 = TerrainMetrics.tnRelief3Ring metrics
+        !localMin = TerrainMetrics.tnIsLocalMinimum metrics
+        !microRelief = computeReliefIndex r r2 r3 Nothing Nothing 0 0
 
         -- Substrate
         !hard    = hardness U.! i
-        !soilDep = 0.5  -- neutral default; unavailable pre-classification
         !elevASL = h0 - waterLevel
 
-    in classifyTerrainForm formCfg ds r 0 0 c localMin hard soilDep elevASL
+    in classifyTerrainForm formCfg ds r r2 r3 c localMin hard microRelief elevASL
   where
     !n = U.length elev

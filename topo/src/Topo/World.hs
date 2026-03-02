@@ -25,7 +25,6 @@ module Topo.World
   , getHexMetaWorld
   , putRegionMetaWorld
   , getRegionMetaWorld
-  , migrateWorldMetadata
   , getElevationAt
   , setElevationAt
   , getTerrainChunk
@@ -53,7 +52,7 @@ import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Word (Word64)
 import Topo.Hex (HexGridMeta)
-import Topo.Metadata (Metadata, MetadataMigration, MetadataStore, emptyMetadataStore, getHexMeta, getRegionMeta, migrateMetadataStore, putHexMeta, putRegionMeta)
+import Topo.Metadata (Metadata, MetadataStore, emptyMetadataStore, getHexMeta, getRegionMeta, putHexMeta, putRegionMeta)
 import Data.Aeson (Value)
 import Data.Text (Text)
 import Topo.Calendar (WorldTime, PlanetAge, defaultWorldTime, defaultPlanetAge)
@@ -176,6 +175,7 @@ emptyTerrainChunk config =
       , tcRelief = zeros
       , tcRelief2Ring = zeros
       , tcRelief3Ring = zeros
+      , tcMicroRelief = zeros
       , tcRuggedness = zeros
       , tcTerrainForm = U.replicate n FormFlat
       , tcFlags = biomeZeros
@@ -214,6 +214,7 @@ generateTerrainChunk config f =
       , tcRelief = zeros
       , tcRelief2Ring = zeros
       , tcRelief3Ring = zeros
+      , tcMicroRelief = zeros
       , tcRuggedness = zeros
       , tcTerrainForm = U.replicate n FormFlat
       , tcFlags = biomeZeros
@@ -351,10 +352,6 @@ putRegionMetaWorld rid val world =
 getRegionMetaWorld :: Metadata a => RegionId -> TerrainWorld -> Maybe a
 getRegionMetaWorld rid world =
   getRegionMeta rid (twMeta world)
-
-migrateWorldMetadata :: [MetadataMigration] -> TerrainWorld -> TerrainWorld
-migrateWorldMetadata migrations world =
-  world { twMeta = migrateMetadataStore migrations (twMeta world) }
 
 ensureTerrainChunk :: ChunkId -> TerrainWorld -> TerrainWorld
 ensureTerrainChunk cid world =

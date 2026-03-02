@@ -44,6 +44,8 @@ import qualified Spec.Precipitation
 import qualified Spec.MoistureFixture
 import qualified Spec.ClimateAlignment
 import qualified Spec.TerrainRelief
+import qualified Spec.TerrainFormMetrics
+import qualified Spec.TerrainFormCalibration
 import qualified Spec.DirectionalSlope
 import qualified Spec.TerrainFormModifiers
 import qualified Spec.PluginRPC
@@ -99,6 +101,8 @@ main = do
     Spec.MoistureFixture.spec
     Spec.ClimateAlignment.spec
     Spec.TerrainRelief.spec
+    Spec.TerrainFormMetrics.spec
+    Spec.TerrainFormCalibration.spec
     Spec.DirectionalSlope.spec
     Spec.TerrainFormModifiers.spec
     Spec.PluginRPC.spec

@@ -1266,6 +1266,10 @@ data TerrainChunk = TerrainChunk
     -- ^ 3-ring relief (0–1): max − min elevation over all hex tiles
     -- within axial distance 3 (~36 tiles + center, ~60 km diameter).
     -- Used for mountain and canyon classification.
+  , tcMicroRelief :: !(U.Vector Float)
+    -- ^ Sub-tile roughness expectation (0–1), blended from high-frequency
+    -- procedural noise amplitude and a local erosion-energy proxy.
+    -- Intended for coarse-tile terrain-form discrimination.
   , tcRuggedness  :: !(U.Vector Float)
     -- ^ Terrain ruggedness index (0–1): standard deviation of elevation
     -- differences to neighbours.

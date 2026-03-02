@@ -237,9 +237,9 @@ spec = describe "Climate" $ do
         avgVector (ccTempAvg cEq) `shouldSatisfy` (> avgVector (ccTempAvg c60))
       _ -> expectationFailure "missing climate chunks"
 
-  it "equator slice with defaults matches legacy climate" $ do
+  it "equator slice with explicit defaults matches emptyWorld climate" $ do
     -- A world at the equator with default planet/slice should produce
-    -- the same climate as a plain `emptyWorld` (backward compatibility).
+    -- the same climate as a plain `emptyWorld`.
     let config = WorldConfig { wcChunkSize = 4 }
         worldDefault = emptyWorld config defaultHexGridMeta
         worldExplicit = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice

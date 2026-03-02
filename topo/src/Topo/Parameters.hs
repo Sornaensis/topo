@@ -19,6 +19,7 @@ module Topo.Parameters
   , defaultParameterConfig
   , TerrainFormConfig(..)
   , defaultTerrainFormConfig
+  , computeReliefIndex
   , applyParameterLayersStage
   -- * Stencil functions (exported for testing)
   , mkElevLookup
@@ -45,6 +46,7 @@ import Topo.Math (clamp01)
 import Topo.Pipeline (PipelineStage(..))
 import Topo.Pipeline.Stage (StageId(..))
 import Topo.Plugin (logInfo, modifyWorldP, peSeed)
+import qualified Topo.TerrainForm.Metrics as TerrainMetrics
 import Topo.Types
 import Topo.World (TerrainWorld(..))
 import qualified Data.Vector.Unboxed as U
@@ -112,6 +114,9 @@ data TerrainFormConfig = TerrainFormConfig
   -- ^ 2-ring relief threshold for 'FormHilly'.
   , tfcRollingSlope    :: !Float
   -- ^ Physical average slope threshold for 'FormRolling'.
+  , tfcRollingNearFactor :: !Float
+  -- ^ Near-threshold factor for micro-relief-assisted rolling
+  -- promotion.  Applied as @tfcRollingSlope * tfcRollingNearFactor@.
 
   -- Ridge thresholds
   , tfcRidgeMinSlope     :: !Float
@@ -135,6 +140,9 @@ data TerrainFormConfig = TerrainFormConfig
   , tfcPlateauMaxRelief2Ring :: !Float
   -- ^ Max 2-ring relief for 'FormPlateau'.  Prevents gentle mountain
   --   slopes from being classified as plateau (default: 0.03).
+  , tfcPlateauMaxMicroRelief :: !Float
+  -- ^ Max micro-relief for 'FormPlateau'.  Inhibits over-classification
+  -- of rough elevated flats as plateau.
 
   -- Badlands thresholds
   , tfcBadlandsMinMaxSlope  :: !Float
@@ -177,6 +185,23 @@ data TerrainFormConfig = TerrainFormConfig
   -- ^ Min elevation above sea level.
   , tfcFoothillMaxElevASL :: !Float
   -- ^ Max elevation — above this is mountain, not foothill.
+  , tfcMicroReliefRollingMin :: !Float
+  -- ^ Minimum micro-relief needed for low-slope tiles near the rolling
+  -- threshold to classify as 'FormRolling'.
+  , tfcMicroReliefHillyMin :: !Float
+  -- ^ Minimum micro-relief needed for micro-relief-assisted hilly
+  -- classification.
+  , tfcMicroReliefHillySlopeScale :: !Float
+  -- ^ Scale applied to the hilly slope threshold when micro-relief is high.
+  , tfcMicroReliefHillyReliefScale :: !Float
+  -- ^ Scale applied to the hilly 2-ring relief threshold when micro-relief
+  -- is high.
+  , tfcMicroReliefSoftHardnessThreshold :: !Float
+  -- ^ If hardness is below this threshold, micro-relief contribution is
+  -- attenuated in near-threshold rolling/hilly promotion.
+  , tfcMicroReliefSoftAttenuation :: !Float
+  -- ^ Multiplicative attenuation applied to micro-relief when hardness is
+  -- below 'tfcMicroReliefSoftHardnessThreshold'.
   } deriving (Eq, Show, Generic)
 
 instance ToJSON TerrainFormConfig where
@@ -200,6 +225,7 @@ defaultTerrainFormConfig = TerrainFormConfig
   , tfcHillSlope       = 0.025
   , tfcHillRelief      = 0.04
   , tfcRollingSlope    = 0.008
+  , tfcRollingNearFactor = 0.85
   -- Ridge
   , tfcRidgeMinSlope     = 0.07
   , tfcRidgeMaxAxisSlope = 0.035
@@ -211,6 +237,7 @@ defaultTerrainFormConfig = TerrainFormConfig
   , tfcPlateauMaxSlope       = 0.015
   , tfcPlateauMinElevASL     = 0.08
   , tfcPlateauMaxRelief2Ring = 0.03
+  , tfcPlateauMaxMicroRelief = 0.5
   -- Badlands
   , tfcBadlandsMinMaxSlope  = 0.085
   , tfcBadlandsMaxHardness  = 0.35
@@ -232,7 +259,44 @@ defaultTerrainFormConfig = TerrainFormConfig
   , tfcFoothillMaxSlope   = 0.055
   , tfcFoothillMinElevASL = 0.02
   , tfcFoothillMaxElevASL = 0.12
+  , tfcMicroReliefRollingMin = 0.62
+  , tfcMicroReliefHillyMin = 0.70
+  , tfcMicroReliefHillySlopeScale = 0.85
+  , tfcMicroReliefHillyReliefScale = 0.85
+  , tfcMicroReliefSoftHardnessThreshold = 0.35
+  , tfcMicroReliefSoftAttenuation = 0.75
   }
+
+-- | Compute the fused sub-tile relief index in @[0,1]@.
+--
+-- The ring-relief term is always available as the base signal.  Optional
+-- noise and erosion terms are fused with explicit non-negative weights.
+--
+-- If both optional weights are zero (or both optional terms are absent),
+-- this function returns the ring-only fallback used by pre-erosion
+-- classification.
+computeReliefIndex
+  :: Float         -- ^ 1-ring relief
+  -> Float         -- ^ 2-ring relief
+  -> Float         -- ^ 3-ring relief
+  -> Maybe Float   -- ^ optional normalized noise term [0,1]
+  -> Maybe Float   -- ^ optional normalized erosion term [0,1]
+  -> Float         -- ^ noise weight (>= 0)
+  -> Float         -- ^ erosion weight (>= 0)
+  -> Float
+computeReliefIndex relief1 relief2 relief3 noiseTerm erosionTerm noiseWeight erosionWeight =
+  let !ringTerm = clamp01 ((relief1 + relief2 + relief3) / 3)
+      !wNoise = max 0 noiseWeight
+      !wErosion = max 0 erosionWeight
+      !weightedSum =
+        maybe 0 (\n -> wNoise * clamp01 n) noiseTerm
+          + maybe 0 (\e -> wErosion * clamp01 e) erosionTerm
+      !weightTotal =
+        maybe 0 (const wNoise) noiseTerm
+          + maybe 0 (const wErosion) erosionTerm
+  in if weightTotal <= 0
+       then ringTerm
+       else clamp01 ((ringTerm + weightedSum) / (1 + weightTotal))
 
 ---------------------------------------------------------------------------
 -- Pipeline stage
@@ -284,10 +348,10 @@ deriveChunk config chunks cfg formCfg waterLevel key chunk =
       -- Reads center + 8 neighbors = 9 array reads per tile (was ~36
       -- closure calls across 5 separate U.generate passes).
       --
-      -- Substrate vectors (hardness, soil depth) are read from the chunk
+      -- Substrate/micro-relief vectors are read from the chunk
       -- for the enriched terrain form classification.
       !hardnessVec = tcHardness chunk
-      !soilVec     = tcSoilDepth chunk
+      !microReliefVec = tcMicroRelief chunk
       !(dirSlope, curvature, relief, relief2, relief3, rugged, terrForm) = runST $ do
         dsV       <- UM.new n
         curvV     <- UM.new n
@@ -300,85 +364,39 @@ deriveChunk config chunks cfg formCfg waterLevel key chunk =
             p !row !col = U.unsafeIndex paddedBuf (row * padded + col)
             go !i
               | i >= n    = pure ()
-              | otherwise = do
+              | otherwise =
                   let !lx     = i `mod` size
                       !ly     = i `div` size
                       -- Padded coords: center at (ly+3, lx+3)
                       !cx     = lx + 3
                       !cy     = ly + 3
-                      !e0     = p cy cx
-                      -- 6 hex neighbours (axial offsets mapped to padded grid)
-                      -- E:  (dq=+1, dr= 0) → col+1, row+0
-                      !eHexE  = p  cy      (cx + 1)
-                      -- NE: (dq=+1, dr=−1) → col+1, row−1
-                      !eHexNE = p (cy - 1) (cx + 1)
-                      -- NW: (dq= 0, dr=−1) → col+0, row−1
-                      !eHexNW = p (cy - 1)  cx
-                      -- W:  (dq=−1, dr= 0) → col−1, row+0
-                      !eHexW  = p  cy      (cx - 1)
-                      -- SW: (dq=−1, dr=+1) → col−1, row+1
-                      !eHexSW = p (cy + 1) (cx - 1)
-                      -- SE: (dq= 0, dr=+1) → col+0, row+1
-                      !eHexSE = p (cy + 1)  cx
-
-                      -- Directional slopes (neighbour − center)
-                      !ds = DirectionalSlope
-                              (eHexE  - e0)
-                              (eHexNE - e0)
-                              (eHexNW - e0)
-                              (eHexW  - e0)
-                              (eHexSW - e0)
-                              (eHexSE - e0)
-
-                      -- Curvature (Laplacian over 6 hex neighbours)
-                      !c  = (eHexE + eHexNE + eHexNW
-                           + eHexW + eHexSW + eHexSE)
-                          - 6 * e0
-
-                      -- Relief (range over hex neighbours + center)
-                      !lo     = min e0 $ min eHexE $ min eHexNE $ min eHexNW
-                              $ min eHexW $ min eHexSW eHexSE
-                      !hi     = max e0 $ max eHexE $ max eHexNE $ max eHexNW
-                              $ max eHexW $ max eHexSW eHexSE
-                      !r      = hi - lo
-
-                      -- Ring-2 relief: range over all hex tiles within
-                      -- axial distance 2 (6 ring-1 + 12 ring-2 + center).
-                      !r2     = relief2RingP p cy cx e0
-                                  eHexE eHexNE eHexNW eHexW eHexSW eHexSE
-
-                      -- Ring-3 relief: range over all hex tiles within
-                      -- axial distance 3 (ring-1 + ring-2 + 18 ring-3 + center).
-                      !r3     = relief3RingP p cy cx r2
-
-                      -- Ruggedness (mean abs diff to 6 hex neighbours)
-                      !tri    = ( abs (eHexE  - e0) + abs (eHexNE - e0)
-                                + abs (eHexNW - e0) + abs (eHexW  - e0)
-                                + abs (eHexSW - e0) + abs (eHexSE - e0)
-                                ) / 6.0
-
-                      -- Local minimum (all 6 hex neighbours ≥ center)
-                      !localMin = eHexE >= e0 && eHexNE >= e0 && eHexNW >= e0
-                               && eHexW >= e0 && eHexSW >= e0 && eHexSE >= e0
-
+                      !metrics = TerrainMetrics.terrainNeighborhoodAt (\x y -> p y x) cx cy
+                      !e0      = TerrainMetrics.tnElevation metrics
+                      !ds      = TerrainMetrics.tnDirectionalSlope metrics
+                      !c       = TerrainMetrics.tnCurvature metrics
+                      !r       = TerrainMetrics.tnRelief metrics
+                      !r2      = TerrainMetrics.tnRelief2Ring metrics
+                      !r3      = TerrainMetrics.tnRelief3Ring metrics
+                      !tri     = TerrainMetrics.tnRuggedness metrics
+                      !localMin = TerrainMetrics.tnIsLocalMinimum metrics
                       -- Substrate and elevation above sea level for
                       -- enriched terrain form classification.
                       !hard    = if i < U.length hardnessVec
                                  then hardnessVec U.! i else 0.5
-                      !soil    = if i < U.length soilVec
-                                 then soilVec U.! i else 0.5
+                      !microRelief = if i < U.length microReliefVec
+                                 then microReliefVec U.! i else 0.5
                       !elevASL = e0 - waterLevel
-
                       !tf     = classifyTerrainForm formCfg ds r r2 r3 c
-                                  localMin hard soil elevASL
-                  UM.unsafeWrite dsV      i ds
-                  UM.unsafeWrite curvV    i c
-                  UM.unsafeWrite reliefV  i r
-                  UM.unsafeWrite relief2V i r2
-                  UM.unsafeWrite relief3V i r3
-                  UM.unsafeWrite ruggedV  i tri
-                  UM.unsafeWrite formV    i tf
-                  go (i + 1)
+                                 localMin hard microRelief elevASL
+                  in do
+                    UM.unsafeWrite dsV      i ds
+                    UM.unsafeWrite curvV    i c
+                    UM.unsafeWrite reliefV  i r
+                    UM.unsafeWrite relief2V i r2
+                    UM.unsafeWrite relief3V i r3
+                    UM.unsafeWrite ruggedV  i tri
+                    UM.unsafeWrite formV    i tf
+                    go (i + 1)
         go 0
         (,,,,,,) <$> U.unsafeFreeze dsV
                  <*> U.unsafeFreeze curvV
@@ -465,201 +483,29 @@ mkElevLookup chunks config (TileCoord ox oy) localElev = go
            Just chunk -> tcElevation chunk U.! (ly * size + lx)
 
 ---------------------------------------------------------------------------
--- Multi-ring relief stencils (padded-buffer versions)
----------------------------------------------------------------------------
-
--- | Compute 2-ring relief using the padded buffer accessor.
--- Takes the ring-1 neighbour elevations (already loaded) to avoid redundant
--- reads.  Returns @max − min@ over all 19 tiles (center + 6 ring-1 + 12 ring-2).
---
--- Ring-2 hex offsets (axial, 12 tiles):
---   (2,0) (2,−1) (2,−2) (1,−2) (0,−2) (−1,−1·fix)
---   Actually the 12 ring-2 axial offsets are:
---   (2,0) (2,−1) (2,−2) (1,−2) (0,−2) (−1,−1)
---   (−2,0) (−2,1) (−2,2) (−1,2) (0,2) (1,1)
-{-# INLINE relief2RingP #-}
-relief2RingP
-  :: (Int -> Int -> Float)  -- ^ padded buffer accessor @p row col@
-  -> Int -> Int             -- ^ center row, col in padded coords
-  -> Float                  -- ^ center elevation
-  -> Float -> Float -> Float -> Float -> Float -> Float
-     -- ^ ring-1 elevations: E, NE, NW, W, SW, SE
-  -> Float                  -- ^ 2-ring relief
-relief2RingP p cy cx e0 eE eNE eNW eW eSW eSE =
-  let -- Start with ring-1 min/max (includes center)
-      !lo1 = min e0 $ min eE $ min eNE $ min eNW $ min eW $ min eSW eSE
-      !hi1 = max e0 $ max eE $ max eNE $ max eNW $ max eW $ max eSW eSE
-      -- Ring-2: 12 tiles at axial distance exactly 2
-      -- Mapped to padded grid offsets (row, col) from center:
-      --   (dq=+2,dr= 0) → (+0,+2)   (dq=+2,dr=−1) → (−1,+2)
-      --   (dq=+2,dr=−2) → (−2,+2)   (dq=+1,dr=−2) → (−2,+1)
-      --   (dq= 0,dr=−2) → (−2, 0)   (dq=−1,dr=−1) → (−1,−1)
-      --   (dq=−2,dr= 0) → ( 0,−2)   (dq=−2,dr=+1) → (+1,−2)
-      --   (dq=−2,dr=+2) → (+2,−2)   (dq=−1,dr=+2) → (+2,−1)
-      --   (dq= 0,dr=+2) → (+2, 0)   (dq=+1,dr=+1) → (+1,+1)
-      !r01 = p  cy      (cx + 2)
-      !r02 = p (cy - 1) (cx + 2)
-      !r03 = p (cy - 2) (cx + 2)
-      !r04 = p (cy - 2) (cx + 1)
-      !r05 = p (cy - 2)  cx
-      !r06 = p (cy - 1) (cx - 1)
-      !r07 = p  cy      (cx - 2)
-      !r08 = p (cy + 1) (cx - 2)
-      !r09 = p (cy + 2) (cx - 2)
-      !r10 = p (cy + 2) (cx - 1)
-      !r11 = p (cy + 2)  cx
-      !r12 = p (cy + 1) (cx + 1)
-      !lo2 = min r01 $ min r02 $ min r03 $ min r04 $ min r05 $ min r06
-           $ min r07 $ min r08 $ min r09 $ min r10 $ min r11 r12
-      !hi2 = max r01 $ max r02 $ max r03 $ max r04 $ max r05 $ max r06
-           $ max r07 $ max r08 $ max r09 $ max r10 $ max r11 r12
-      !lo  = min lo1 lo2
-      !hi  = max hi1 hi2
-  in hi - lo
-
--- | Compute 3-ring relief using the padded buffer accessor.
--- Takes the 2-ring relief result (as a packed lo/hi pair is not practical,
--- so instead we take the already-computed 2-ring relief value and recompute
--- the ring-3 extension).
---
--- Actually, since we need the overall min/max across rings 1+2+3, and
--- we already have the 2-ring relief, it's more efficient to track min/max
--- cumulatively.  But for simplicity and correctness, we re-read all
--- ring-1 and ring-2 tiles.  The compiler will CSE most of them with INLINE.
---
--- Ring-3 hex offsets (axial, 18 tiles):
---   All (dq,dr) with |dq|+|dr|+|dq+dr| = max component = 3
-{-# INLINE relief3RingP #-}
-relief3RingP
-  :: (Int -> Int -> Float)  -- ^ padded buffer accessor
-  -> Int -> Int             -- ^ center row, col in padded coords
-  -> Float                  -- ^ 2-ring relief (used for early-out potential)
-  -> Float                  -- ^ 3-ring relief
-relief3RingP p cy cx _r2 =
-  let -- We need the overall min/max across ALL rings (0+1+2+3).
-      -- Re-read center + ring-1 + ring-2 + ring-3.
-      -- Center
-      !e0  = p cy cx
-      -- Ring-1 (6 tiles)
-      !e1a = p  cy      (cx + 1)
-      !e1b = p (cy - 1) (cx + 1)
-      !e1c = p (cy - 1)  cx
-      !e1d = p  cy      (cx - 1)
-      !e1e = p (cy + 1) (cx - 1)
-      !e1f = p (cy + 1)  cx
-      -- Ring-2 (12 tiles)
-      !e2a = p  cy      (cx + 2)
-      !e2b = p (cy - 1) (cx + 2)
-      !e2c = p (cy - 2) (cx + 2)
-      !e2d = p (cy - 2) (cx + 1)
-      !e2e = p (cy - 2)  cx
-      !e2f = p (cy - 1) (cx - 1)
-      !e2g = p  cy      (cx - 2)
-      !e2h = p (cy + 1) (cx - 2)
-      !e2i = p (cy + 2) (cx - 2)
-      !e2j = p (cy + 2) (cx - 1)
-      !e2k = p (cy + 2)  cx
-      !e2l = p (cy + 1) (cx + 1)
-      -- Ring-3 (18 tiles)
-      -- Axial offsets at distance exactly 3:
-      --   (3,0) (3,−1) (3,−2) (3,−3) (2,−3) (1,−3)
-      --   (0,−3) (−1,−2) (−2,−1) (−3,0) (−3,1) (−3,2)
-      --   (−3,3) (−2,3) (−1,3) (0,3) (1,2) (2,1)
-      -- Mapped to padded grid (row offset = dr, col offset = dq):
-      !e3a  = p  cy      (cx + 3)       -- (3,0)
-      !e3b  = p (cy - 1) (cx + 3)       -- (3,−1)
-      !e3c  = p (cy - 2) (cx + 3)       -- (3,−2)
-      !e3d  = p (cy - 3) (cx + 3)       -- (3,−3)
-      !e3e  = p (cy - 3) (cx + 2)       -- (2,−3)
-      !e3f  = p (cy - 3) (cx + 1)       -- (1,−3)
-      !e3g  = p (cy - 3)  cx            -- (0,−3)
-      !e3h  = p (cy - 2) (cx - 1)       -- (−1,−2)
-      !e3i  = p (cy - 1) (cx - 2)       -- (−2,−1)
-      !e3j  = p  cy      (cx - 3)       -- (−3,0)
-      !e3k  = p (cy + 1) (cx - 3)       -- (−3,1)
-      !e3l  = p (cy + 2) (cx - 3)       -- (−3,2)
-      !e3m  = p (cy + 3) (cx - 3)       -- (−3,3)
-      !e3n  = p (cy + 3) (cx - 2)       -- (−2,3)
-      !e3o  = p (cy + 3) (cx - 1)       -- (−1,3)
-      !e3p  = p (cy + 3)  cx            -- (0,3)
-      !e3q  = p (cy + 2) (cx + 1)       -- (1,2)
-      !e3r  = p (cy + 1) (cx + 2)       -- (2,1)
-      -- Combined min/max across all 37 tiles
-      !lo0  = e0
-      !hi0  = e0
-      !lo1  = min lo0 $ min e1a $ min e1b $ min e1c $ min e1d $ min e1e e1f
-      !hi1  = max hi0 $ max e1a $ max e1b $ max e1c $ max e1d $ max e1e e1f
-      !lo2  = min lo1 $ min e2a $ min e2b $ min e2c $ min e2d $ min e2e $ min e2f
-            $ min e2g $ min e2h $ min e2i $ min e2j $ min e2k e2l
-      !hi2  = max hi1 $ max e2a $ max e2b $ max e2c $ max e2d $ max e2e $ max e2f
-            $ max e2g $ max e2h $ max e2i $ max e2j $ max e2k e2l
-      !lo3  = min lo2 $ min e3a $ min e3b $ min e3c $ min e3d $ min e3e $ min e3f
-            $ min e3g $ min e3h $ min e3i $ min e3j $ min e3k $ min e3l
-            $ min e3m $ min e3n $ min e3o $ min e3p $ min e3q e3r
-      !hi3  = max hi2 $ max e3a $ max e3b $ max e3c $ max e3d $ max e3e $ max e3f
-            $ max e3g $ max e3h $ max e3i $ max e3j $ max e3k $ max e3l
-            $ max e3m $ max e3n $ max e3o $ max e3p $ max e3q e3r
-  in hi3 - lo3
-
----------------------------------------------------------------------------
 -- Stencil functions
 ---------------------------------------------------------------------------
 
--- | 6-direction hex neighbor offsets @(dq, dr)@.
-hexNeighborOffsets :: [(Int, Int)]
-hexNeighborOffsets =
-  [ ( 1,  0), ( 1, -1), ( 0, -1)
-  , (-1,  0), (-1,  1), ( 0,  1)
-  ]
-
 -- | Compute directional slope to all 6 hex neighbours.
 slopeAt :: (Int -> Int -> Float) -> Int -> Int -> DirectionalSlope
-slopeAt elevAt gx gy =
-  let !e0 = elevAt gx gy
-  in DirectionalSlope
-       (elevAt (gx + 1)  gy      - e0)   -- E
-       (elevAt (gx + 1) (gy - 1) - e0)   -- NE
-       (elevAt  gx      (gy - 1) - e0)   -- NW
-       (elevAt (gx - 1)  gy      - e0)   -- W
-       (elevAt (gx - 1) (gy + 1) - e0)   -- SW
-       (elevAt  gx      (gy + 1) - e0)   -- SE
+slopeAt = TerrainMetrics.slopeAt
 
 -- | Laplacian curvature from 6 hex neighbours.
 curvatureAt :: (Int -> Int -> Float) -> Int -> Int -> Float
-curvatureAt elevAt gx gy =
-  let !e0 = elevAt gx gy
-  in elevAt (gx + 1)  gy
-   + elevAt (gx + 1) (gy - 1)
-   + elevAt  gx      (gy - 1)
-   + elevAt (gx - 1)  gy
-   + elevAt (gx - 1) (gy + 1)
-   + elevAt  gx      (gy + 1)
-   - 6 * e0
+curvatureAt = TerrainMetrics.curvatureAt
 
 -- | Local elevation relief: range over 6 hex neighbours plus center.
 reliefAt :: (Int -> Int -> Float) -> Int -> Int -> Float
-reliefAt elevAt gx gy =
-  let !e0 = elevAt gx gy
-      step (!mn, !mx) (dx, dy) =
-        let !e = elevAt (gx + dx) (gy + dy)
-        in (min mn e, max mx e)
-      (!lo, !hi) = foldl' step (e0, e0) hexNeighborOffsets
-  in hi - lo
+reliefAt = TerrainMetrics.reliefAt
 
 -- | Terrain Ruggedness Index: mean absolute elevation difference to
 --   6 hex neighbours.
 ruggednessAt :: (Int -> Int -> Float) -> Int -> Int -> Float
-ruggednessAt elevAt gx gy =
-  let !e0 = elevAt gx gy
-      step !acc (dx, dy) = acc + abs (elevAt (gx + dx) (gy + dy) - e0)
-      !triSum = foldl' step 0 hexNeighborOffsets
-  in triSum / 6.0
+ruggednessAt = TerrainMetrics.ruggednessAt
 
 -- | Whether a tile is a local elevation minimum (all 6 hex neighbours ≥ center).
 isLocalMinimum :: (Int -> Int -> Float) -> Int -> Int -> Bool
-isLocalMinimum elevAt gx gy =
-  let !e0 = elevAt gx gy
-  in all (\(dx, dy) -> elevAt (gx + dx) (gy + dy) >= e0) hexNeighborOffsets
+isLocalMinimum = TerrainMetrics.isLocalMinimum
 
 -- | Classify terrain form from directional slope, multi-ring relief,
 --   curvature, local-minimum flag, substrate properties, and elevation
@@ -697,10 +543,10 @@ classifyTerrainForm
   -> Float              -- ^ curvature (Laplacian)
   -> Bool               -- ^ local minimum
   -> Float              -- ^ hardness [0,1]
-  -> Float              -- ^ soil depth [0,1]
+  -> Float              -- ^ micro-relief [0,1]
   -> Float              -- ^ elevation above sea level
   -> TerrainForm
-classifyTerrainForm cfg ds _r1 relief2 relief3 c localMin hardness _soilDepth elevASL
+classifyTerrainForm cfg ds _r1 relief2 relief3 c localMin hardness microRelief elevASL
   -- 1. Cliff — sheer face dominates
   | maxS > tfcCliffSlope cfg
   = FormCliff
@@ -746,6 +592,7 @@ classifyTerrainForm cfg ds _r1 relief2 relief3 c localMin hardness _soilDepth el
   | maxS <= tfcPlateauMaxSlope cfg
     && elevASL >= tfcPlateauMinElevASL cfg
     && relief2 <= tfcPlateauMaxRelief2Ring cfg
+    && microRelief <= tfcPlateauMaxMicroRelief cfg
   = FormPlateau
 
   -- 10. Valley — strongly negative curvature
@@ -762,12 +609,14 @@ classifyTerrainForm cfg ds _r1 relief2 relief3 c localMin hardness _soilDepth el
     && elevASL <= tfcFoothillMaxElevASL cfg
   = FormFoothill
 
-  -- 13. Hilly — moderate top-3 slope + 2-ring relief
-  | top3S > tfcHillSlope cfg && relief2 > tfcHillRelief cfg
+  -- 13. Hilly — moderate top-3 slope + 2-ring relief (with conservative
+  -- micro-relief assist near threshold)
+  | isHilly
   = FormHilly
 
-  -- 14. Rolling — physical avg slope above rolling threshold
-  | avgS > tfcRollingSlope cfg
+  -- 14. Rolling — physical avg slope above rolling threshold (plus
+  -- micro-relief support near threshold)
+  | isRolling
   = FormRolling
 
   -- 15. Flat — everything else
@@ -784,6 +633,20 @@ classifyTerrainForm cfg ds _r1 relief2 relief3 c localMin hardness _soilDepth el
     !maxS  = dsMaxSlope physDS
     !top3S = dsTop3Slope physDS
     !asym  = dsAsymmetry physDS
+    !microReliefEff =
+      if hardness < tfcMicroReliefSoftHardnessThreshold cfg
+        then clamp01 (microRelief * tfcMicroReliefSoftAttenuation cfg)
+        else microRelief
+    !rollingSlopeNear = tfcRollingSlope cfg * tfcRollingNearFactor cfg
+    !isRolling =
+      avgS > tfcRollingSlope cfg
+      || (avgS > rollingSlopeNear && microReliefEff >= tfcMicroReliefRollingMin cfg)
+    !isHilly =
+      (top3S > tfcHillSlope cfg && relief2 > tfcHillRelief cfg)
+      || ( microReliefEff >= tfcMicroReliefHillyMin cfg
+           && top3S > tfcHillSlope cfg * tfcMicroReliefHillySlopeScale cfg
+           && relief2 > tfcHillRelief cfg * tfcMicroReliefHillyReliefScale cfg
+         )
 
     -- | Check if any opposite-direction pair both exceed a threshold.
     {-# INLINE hassteepOppPair #-}

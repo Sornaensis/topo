@@ -324,7 +324,7 @@ buildFullPipelineConfig cfg worldCfg seed =
       { pipelineSeed = seed
       , pipelineStages =
           [ generatePlateTerrainStage (terrainGen terrain') (terrainTectonics terrain')
-          , applyErosionStage (terrainErosion terrain') (terrainFormConfig terrain') wl
+          , applyErosionStage (terrainGen terrain') (terrainErosion terrain') (terrainFormConfig terrain') wl
           , applyHypsometryStage (terrainHypsometry terrain')
           , applyVolcanismStage (terrainVolcanism terrain')
           , applyHydrologyStage (terrainHydrology terrain') (terrainFormConfig terrain')

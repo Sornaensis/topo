@@ -167,6 +167,23 @@ spec = describe "Storage" $ do
             twWorldTime world1 `shouldBe` defaultWorldTime
             twPlanetAge world1 `shouldBe` defaultPlanetAge
 
+  it "roundtrips tcMicroRelief in terrain chunks" $ do
+    let config = WorldConfig { wcChunkSize = 4 }
+        baseChunk = generateTerrainChunk config (\(TileCoord x y) -> fromIntegral (x + y) / 32)
+        n = chunkTileCount config
+        micro = U.generate n (\i -> fromIntegral (i `mod` 7) / 6)
+        terrain = baseChunk { tcMicroRelief = micro }
+        world0 = setTerrainChunk (ChunkId 0) terrain (emptyWorld config defaultHexGridMeta)
+    case encodeWorld world0 of
+      Left err -> expectationFailure (show err)
+      Right encoded ->
+        case decodeWorld encoded of
+          Left err -> expectationFailure (show err)
+          Right world1 ->
+            case getTerrainChunk (ChunkId 0) world1 of
+              Nothing -> expectationFailure "missing terrain chunk after decode"
+              Just chunk1 -> tcMicroRelief chunk1 `shouldBe` micro
+
 isJust :: Maybe a -> Bool
 isJust Nothing = False
 isJust (Just _) = True

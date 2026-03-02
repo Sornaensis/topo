@@ -318,6 +318,11 @@ spec = describe "Parameters" $ do
       classifyTerrainForm cfg (uniformDS 0.01) 0.01 0 0 0.0 False 0.6 0.5 0.15
         `shouldBe` FormPlateau
 
+    it "plateau roughness cap inhibits plateau on rough elevated flats" $
+      let cfg' = cfg { tfcPlateauMaxMicroRelief = 0.30 }
+      in classifyTerrainForm cfg' (uniformDS 0.01) 0.01 0 0 0.0 False 0.6 0.50 0.15
+         `shouldSatisfy` (/= FormPlateau)
+
     it "classifies badlands (steep + soft + high asymmetry)" $
       let ds = DirectionalSlope 0.25 0.01 0.01 0.01 0.01 0.01
           -- Very asymmetric: phys maxS = 0.144 ≥ 0.085, hardness 0.20 ≤ 0.35
@@ -393,6 +398,30 @@ spec = describe "Parameters" $ do
       -- relief2 = 0.01 ≤ 0.03
       classifyTerrainForm cfg (uniformDS 0.02) 0.01 0.01 0 0.0 False 0.5 0.5 0.15
         `shouldBe` FormPlateau
+
+    it "rolling near-threshold promotion respects tfcRollingNearFactor" $ do
+      let baseCfg = cfg { tfcRollingSlope = 0.008, tfcMicroReliefRollingMin = 0.62 }
+          dsNear = uniformDS 0.0130
+          permissive = baseCfg { tfcRollingNearFactor = 0.85 }
+          strict = baseCfg { tfcRollingNearFactor = 0.95 }
+          permissiveForm = classifyTerrainForm permissive dsNear 0.01 0.01 0.01 0.0 False 0.5 0.70 0.0
+          strictForm = classifyTerrainForm strict dsNear 0.01 0.01 0.01 0.0 False 0.5 0.70 0.0
+      permissiveForm `shouldBe` FormRolling
+      strictForm `shouldSatisfy` (/= FormRolling)
+
+    it "soft-hardness attenuation suppresses micro-relief-assisted rolling" $ do
+      let cfg' = cfg
+            { tfcRollingSlope = 0.008
+            , tfcRollingNearFactor = 0.85
+            , tfcMicroReliefRollingMin = 0.62
+            , tfcMicroReliefSoftHardnessThreshold = 0.35
+            , tfcMicroReliefSoftAttenuation = 0.40
+            }
+          dsNear = uniformDS 0.0135
+          hardRock = classifyTerrainForm cfg' dsNear 0.01 0.01 0.01 0.0 False 0.70 0.70 0.0
+          softRock = classifyTerrainForm cfg' dsNear 0.01 0.01 0.01 0.0 False 0.20 0.70 0.0
+      hardRock `shouldBe` FormRolling
+      softRock `shouldSatisfy` (/= FormRolling)
 
     it "low slope + high elevation + high relief2 → NOT plateau" $
       -- Same as above but relief2 = 0.10 > 0.03, plateau guard fails
@@ -644,3 +673,25 @@ spec = describe "Parameters" $ do
               , FormMesa, FormFoothill
               ]
         in form `elem` allForms'
+
+    ---------------------------------------------------------------------------
+    -- Micro-relief stability (outside threshold regions)
+    ---------------------------------------------------------------------------
+    prop "small micro-relief perturbations keep strong-flat classification stable" $
+      forAll (choose (0.0, 0.05 :: Float)) $ \eps ->
+        let m0 = 0.20
+            m1 = clamp01 (m0 - eps)
+            m2 = clamp01 (m0 + eps)
+            f1 = classifyTerrainForm cfg zeroDirSlope 0 0 0 0 False 0.5 m1 0
+            f2 = classifyTerrainForm cfg zeroDirSlope 0 0 0 0 False 0.5 m2 0
+        in f1 == FormFlat && f2 == FormFlat
+
+    prop "small micro-relief perturbations keep strong-hilly classification stable" $
+      forAll (choose (0.0, 0.05 :: Float)) $ \eps ->
+        let m0 = 0.80
+            m1 = clamp01 (m0 - eps)
+            m2 = clamp01 (m0 + eps)
+            ds = uniformDS 0.10
+            f1 = classifyTerrainForm cfg ds 0.10 0.12 0 0 False 0.5 m1 0
+            f2 = classifyTerrainForm cfg ds 0.10 0.12 0 0 False 0.5 m2 0
+        in f1 == FormHilly && f2 == FormHilly

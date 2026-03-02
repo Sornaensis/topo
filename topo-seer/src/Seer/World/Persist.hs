@@ -141,8 +141,6 @@ saveNamedWorld name uiSnap world = do
 -- | Load a named world from @~\/.topo\/worlds\/<name>\/@.
 --
 -- Returns the manifest, config snapshot, and terrain data on success.
--- Legacy @ConfigPreset@ files are automatically migrated to
--- @ConfigSnapshot@ on load.
 loadNamedWorld
   :: Text
   -> IO (Either Text (WorldSaveManifest, ConfigSnapshot, TerrainWorld))
@@ -163,24 +161,17 @@ loadNamedWorld name = do
       case metaResult of
         Left err -> pure (Left ("Failed to load meta.json: " <> err))
         Right manifest -> do
-          -- 2. Load config (with legacy ConfigPreset fallback)
+          -- 2. Load config snapshot
           cfgResult <- loadSnapshot cfgFile
           case cfgResult of
             Left err -> pure (Left ("Failed to load config.json: " <> err))
             Right snapshot -> do
               -- 3. Load terrain
-              topoResult <- loadWorldBundleWithProvenance StrictManifest topoFile
+              topoResult <- loadWorldBundleWithProvenance BestEffort topoFile
               case topoResult of
-                Left _strictErr -> do
-                  -- Migration-safe fallback for older saves that have
-                  -- no sidecar overlays yet.
-                  fallback <- loadWorldBundleWithProvenance BestEffort topoFile
-                  case fallback of
-                    Left err ->
-                      pure (Left ("Failed to load world bundle: "
-                            <> Text.pack (show err)))
-                    Right (_prov, world) ->
-                      pure (Right (manifest, snapshot, world))
+                Left err ->
+                  pure (Left ("Failed to load world bundle: "
+                        <> Text.pack (show err)))
                 Right (_prov, world) ->
                   pure (Right (manifest, snapshot, world))
 
@@ -314,7 +305,6 @@ makeProvenance ui = WorldProvenance
   , wpNotes   = Text.empty
   , wpTerrain = emptyMapProvenance { mpSeed = uiSeed ui }
   , wpClimate = emptyMapProvenance { mpSeed = uiSeed ui }
-  , wpWeather = emptyMapProvenance { mpSeed = uiSeed ui }
   , wpBiome   = emptyMapProvenance { mpSeed = uiSeed ui }
   }
 

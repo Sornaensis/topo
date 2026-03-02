@@ -654,6 +654,7 @@ emptyTerrainChunkN n = TerrainChunk
   , tcRelief        = U.replicate n 0.05
   , tcRelief2Ring   = U.replicate n 0
   , tcRelief3Ring   = U.replicate n 0
+  , tcMicroRelief   = U.replicate n 0.5
   , tcRuggedness    = U.replicate n 0.05
   , tcTerrainForm   = U.replicate n FormFlat
   , tcFlags         = U.replicate n BiomeForest

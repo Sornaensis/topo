@@ -14,7 +14,7 @@ spec = describe "Erosion" $ do
         world1 = setTerrainChunk (ChunkId 0) peak world0
         pipeline = PipelineConfig
           { pipelineSeed = 1
-          , pipelineStages = [applyErosionStage defaultErosionConfig defaultTerrainFormConfig 0.5]
+          , pipelineStages = [applyErosionStage defaultGenConfig defaultErosionConfig defaultTerrainFormConfig 0.5]
           , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -36,7 +36,7 @@ spec = describe "Erosion" $ do
         cfg = defaultErosionConfig { ecHydraulicIterations = 1, ecThermalIterations = 0, ecRainRate = 1, ecMaxDrop = 1 }
         pipeline = PipelineConfig
           { pipelineSeed = 1
-          , pipelineStages = [applyErosionStage cfg defaultTerrainFormConfig 0.5]
+          , pipelineStages = [applyErosionStage defaultGenConfig cfg defaultTerrainFormConfig 0.5]
           , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }

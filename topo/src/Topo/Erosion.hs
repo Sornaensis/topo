@@ -16,6 +16,7 @@ module Topo.Erosion
   , thermalStepGrid
   , coastalSmoothGrid
   , minimumNeighborGridIdx
+  , computeMicroReliefGrid
   ) where
 
 import Control.Monad (forM_)
@@ -23,14 +24,17 @@ import Control.Monad.ST (runST)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (foldl')
+import Data.Word (Word64)
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as UM
 import GHC.Generics (Generic)
 import Topo.Config.JSON
   (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
    genericToJSON, genericParseJSON)
+import Topo.BaseHeight (GenConfig(..))
 import Topo.Hex (hexNeighborIndices)
 import Topo.Math (clamp01, iterateN)
+import Topo.Noise (fbm2D)
 import Topo.Pipeline (PipelineStage(..))
 import Topo.Pipeline.Stage (StageId(..))
 import Control.Monad.Except (throwError)
@@ -42,12 +46,15 @@ import Topo.TerrainForm.Modifiers
 import Topo.TerrainGrid
   ( buildElevationGrid
   , buildPlateHardnessGrid
+  , clampCoordGrid
+  , chunkGridSlice
   , classifyTerrainFormGrid
   , updateChunkElevationFromGrid
   , validateTerrainGrid
   )
 import Topo.Types
-import Topo.Parameters (TerrainFormConfig)
+import Topo.Parameters (TerrainFormConfig, computeReliefIndex)
+import qualified Topo.TerrainForm.Metrics as TerrainMetrics
 import Topo.World (TerrainWorld(..))
 
 -- | Configuration parameters for erosion.
@@ -97,6 +104,18 @@ data ErosionConfig = ErosionConfig
     -- Each pass erodes land in the coastal zone and deposits material
     -- on shallow ocean tiles, progressively building a coastal plain
     -- and continental shelf.
+  , ecMicroReliefNoiseWeight :: !Float
+    -- ^ Blend weight for high-frequency noise contribution.
+  , ecMicroReliefErosionWeight :: !Float
+    -- ^ Blend weight for erosion-energy contribution.
+  , ecMicroReliefNoiseNorm :: !Float
+    -- ^ Normalization divisor applied to absolute FBM amplitude.
+  , ecMicroReliefErosionNorm :: !Float
+    -- ^ Normalization divisor applied to full erosion delta
+    -- (@abs(elev0 - elev2)@).
+  , ecMicroReliefDetailFrequency :: !Float
+    -- ^ Multiplier for high-frequency noise sampling relative to the
+    -- base generation frequency.
   } deriving (Eq, Show, Generic)
 
 instance ToJSON ErosionConfig where
@@ -136,6 +155,11 @@ defaultErosionConfig = ErosionConfig
   , ecCoastalSmoothIterations = 2
     -- ^ 2 passes of iterative coastal erosion/deposition
     -- (reduced from 4 to limit compounding with hypsometry coastal ramp).
+  , ecMicroReliefNoiseWeight = 0.7
+  , ecMicroReliefErosionWeight = 0.3
+  , ecMicroReliefNoiseNorm = 1.75
+  , ecMicroReliefErosionNorm = 0.03
+  , ecMicroReliefDetailFrequency = 12
   }
 
 -- | Apply hydraulic and thermal erosion (with local deposition) plus
@@ -145,8 +169,8 @@ defaultErosionConfig = ErosionConfig
 -- pass that tags each tile with a 'TerrainForm' before erosion runs.
 -- Per-form modifiers ('defaultTerrainFormModifiers') then adjust erosion
 -- intensity, hardness resistance, deposition, and smoothing per tile.
-applyErosionStage :: ErosionConfig -> TerrainFormConfig -> Float -> PipelineStage
-applyErosionStage cfg formCfg waterLevel = PipelineStage StageErosion "applyErosion" "applyErosion" Nothing [] Nothing $ do
+applyErosionStage :: GenConfig -> ErosionConfig -> TerrainFormConfig -> Float -> PipelineStage
+applyErosionStage genCfg cfg formCfg waterLevel = PipelineStage StageErosion "applyErosion" "applyErosion" Nothing [] Nothing $ do
   logInfo "applyErosion: hydraulic + thermal + coastal smooth"
   world <- getWorldP
   let config = twConfig world
@@ -171,11 +195,77 @@ applyErosionStage cfg formCfg waterLevel = PipelineStage StageErosion "applyEros
       elev1 = iterateN (ecHydraulicIterations cfg) (hydraulicStepGrid gridW gridH waterLevel cfg adjHardness erosionMult depositFactor) elev0
       elev2 = iterateN (ecThermalIterations cfg) (thermalStepGrid gridW gridH waterLevel cfg adjHardness erosionMult depositFactor) elev1
       elev3 = iterateN (max 1 (ecCoastalSmoothIterations cfg)) (coastalSmoothGrid gridW gridH waterLevel cfg smoothResist) elev2
+      erosionProxy = U.zipWith (\a b -> abs (a - b)) elev0 elev2
+      microReliefGrid = computeMicroReliefGrid
+        config
+        genCfg
+        (ChunkCoord minCx minCy)
+        gridW
+        gridH
+        elev3
+        (twSeed world)
+        cfg
+        erosionProxy
       -- Safety clamp: ensure all elevations are in [0,1] before
       -- downstream stages (hydrology, climate) process them.
       elevClamped = U.map clamp01 elev3
-      terrain' = IntMap.mapWithKey (updateChunkElevationFromGrid config (ChunkCoord minCx minCy) gridW elevClamped) terrain
+      terrain' = IntMap.mapWithKey
+        (\key chunk ->
+          let updatedElevation = updateChunkElevationFromGrid config (ChunkCoord minCx minCy) gridW elevClamped key chunk
+              micro = chunkGridSlice config (ChunkCoord minCx minCy) gridW microReliefGrid key
+          in updatedElevation { tcMicroRelief = micro }
+        )
+        terrain
   putWorldP world { twTerrain = terrain' }
+
+computeMicroReliefGrid
+  :: WorldConfig
+  -> GenConfig
+  -> ChunkCoord
+  -> Int
+  -> Int
+  -> U.Vector Float
+  -> Word64
+  -> ErosionConfig
+  -> U.Vector Float
+  -> U.Vector Float
+computeMicroReliefGrid config genCfg (ChunkCoord minCx minCy) gridW gridH elevGrid worldSeed cfg erosionProxy =
+  let size = wcChunkSize config
+      minTileX = minCx * size
+      minTileY = minCy * size
+      baseFrequency = max 0 (gcCoordScale genCfg * gcFrequency genCfg)
+      detailFrequency = baseFrequency * max 0 (ecMicroReliefDetailFrequency cfg)
+      !wNoise = max 0 (ecMicroReliefNoiseWeight cfg)
+      !wErode = max 0 (ecMicroReliefErosionWeight cfg)
+      normalize denom v
+        | denom <= 0 = 0
+        | otherwise = clamp01 (v / denom)
+      elevAtClamped gx gy =
+        let !cx = clampCoordGrid gridW gx
+            !cy = clampCoordGrid gridH gy
+        in elevGrid U.! (cy * gridW + cx)
+      sample idx =
+        let x = idx `mod` gridW
+            y = idx `div` gridW
+            gx = minTileX + x
+            gy = minTileY + y
+            !metrics = TerrainMetrics.terrainNeighborhoodAt elevAtClamped x y
+            !r = TerrainMetrics.tnRelief metrics
+            !r2 = TerrainMetrics.tnRelief2Ring metrics
+            !r3 = TerrainMetrics.tnRelief3Ring metrics
+            fx = (fromIntegral gx + gcOffsetX genCfg) * detailFrequency
+            fy = (fromIntegral gy + gcOffsetY genCfg) * detailFrequency
+            fbmVal = fbm2D
+              (worldSeed + 0x9e3779b97f4a7c15)
+              (max 1 (gcOctaves genCfg))
+              (gcLacunarity genCfg)
+              (gcGain genCfg)
+              fx
+              fy
+            noiseTerm = normalize (ecMicroReliefNoiseNorm cfg) (abs fbmVal)
+            erosionTerm = normalize (ecMicroReliefErosionNorm cfg) (erosionProxy U.! idx)
+        in computeReliefIndex r r2 r3 (Just noiseTerm) (Just erosionTerm) wNoise wErode
+  in U.generate (gridW * gridH) sample
 
 -- | Legacy per-chunk erosion (no deposition, no grid context).
 erodeChunk :: WorldConfig -> ErosionConfig -> TerrainChunk -> TerrainChunk

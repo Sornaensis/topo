@@ -6,7 +6,6 @@
 module Topo.Metadata
   ( Metadata(..)
   , SomeMetadata(..)
-  , MetadataMigration(..)
   , MetadataDecodeError(..)
   , MetadataCodec(..)
   , metadataCodec
@@ -25,7 +24,6 @@ module Topo.Metadata
   , getHexMetaVersion
   , getRegionMeta
   , getRegionMetaVersion
-  , migrateMetadataStore
   ) where
 
 import Data.Char (isDigit, isSpace)
@@ -68,13 +66,6 @@ metadataCodec _ = MetadataCodec
   }
 
 data SomeMetadata = forall a. Metadata a => SomeMetadata !Word32 a
-
-data MetadataMigration = forall a. Metadata a => MetadataMigration
-  { mmKey :: !Text
-  , mmFrom :: !Word32
-  , mmTo :: !Word32
-  , mmMigrate :: a -> a
-  }
 
 data MetadataStore = MetadataStore
   { msHex    :: !(Map HexCoord (Map Text SomeMetadata))
@@ -173,29 +164,6 @@ getRegionMetaVersion _ rid (MetadataStore _ region) = do
   entries <- Map.lookup rid region
   SomeMetadata version _ <- Map.lookup (metadataKey (Proxy :: Proxy a)) entries
   pure version
-
-migrateMetadataStore :: [MetadataMigration] -> MetadataStore -> MetadataStore
-migrateMetadataStore migrations (MetadataStore hex region) =
-  MetadataStore (Map.map (Map.mapWithKey (applyMigrations migrations)) hex)
-    (Map.map (Map.mapWithKey (applyMigrations migrations)) region)
-
-applyMigrations :: [MetadataMigration] -> Text -> SomeMetadata -> SomeMetadata
-applyMigrations migrations key entry =
-  case findMigration key entry migrations of
-    Nothing -> entry
-    Just migrated -> applyMigrations migrations key migrated
-
-findMigration :: Text -> SomeMetadata -> [MetadataMigration] -> Maybe SomeMetadata
-findMigration _ _ [] = Nothing
-findMigration key entry@(SomeMetadata version val) (m:ms) =
-  case m of
-    MetadataMigration mKey mFrom mTo migrate
-      | mKey /= key -> findMigration key entry ms
-      | mFrom /= version -> findMigration key entry ms
-      | otherwise ->
-          case cast val of
-            Nothing -> findMigration key entry ms
-            Just typed -> Just (SomeMetadata mTo (migrate typed))
 
 jsonEscape :: Text -> Text
 jsonEscape = Text.concatMap escapeChar

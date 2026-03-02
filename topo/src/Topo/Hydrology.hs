@@ -18,7 +18,7 @@ module Topo.Hydrology
     -- * Depression filling (exported for testing)
   , fillDepressions
   , breachRemainingSinks
-    -- * Sink breaching (exported for testing, deprecated)
+    -- * Sink breaching (exported for testing)
   , breachSinksLand
     -- * Grid operations (exported for testing)
   , flowAccumulation
@@ -907,7 +907,7 @@ coastalAt cfg gridW gridH waterLevel strength raiseFactor elev hardness erosionM
 --
 -- The primary gate is 'FormFoothill' from the pre-classified terrain
 -- form grid.  Tiles not classified as foothills fall back to the
--- legacy slope-band heuristic (slope in @[slopeMin, slopeMax]@ with
+-- fallback slope-band heuristic (slope in @[slopeMin, slopeMax]@ with
 -- a steeper neighbour).  This gives the best of both approaches:
 -- the form system captures the transition zone directly, while the
 -- fallback handles edge cases the classification might miss.
@@ -941,7 +941,7 @@ piedmontSmoothGrid cfg gridW gridH elev formGrid smoothResist =
                   -- Primary gate: tile is classified as FormFoothill
                   isFoothill = form == FormFoothill
                   -- Fallback gate: slope-band heuristic with steeper
-                  -- neighbour requirement (legacy behaviour)
+                  -- neighbour requirement (fallback behaviour)
                   hasSteeperNbr = any (\j ->
                     let nSlope = maximum [abs (elev U.! k - elev U.! j)
                                         | k <- hexNeighborIndices gridW gridH j]

@@ -339,14 +339,14 @@ spec = describe "Hydrology" $ do
           -- Erosion only
           pipeErosion = PipelineConfig
             { pipelineSeed = 42
-            , pipelineStages = [applyErosionStage defaultErosionConfig defaultTerrainFormConfig 0.5]
+            , pipelineStages = [applyErosionStage defaultGenConfig defaultErosionConfig defaultTerrainFormConfig 0.5]
             , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
             }
           -- Erosion + Hydrology
           pipeErosionHydro = PipelineConfig
             { pipelineSeed = 42
             , pipelineStages =
-                [ applyErosionStage defaultErosionConfig defaultTerrainFormConfig 0.5
+              [ applyErosionStage defaultGenConfig defaultErosionConfig defaultTerrainFormConfig 0.5
                 , applyHydrologyStage defaultHydroConfig defaultTerrainFormConfig
                 ]
             , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()

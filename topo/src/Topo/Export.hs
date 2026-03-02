@@ -2,27 +2,20 @@ module Topo.Export
   ( ExportError(..)
   , encodeTerrainChunk
   , decodeTerrainChunk
-  , decodeTerrainChunkV2
-  , decodeTerrainChunkV3
   , encodeClimateChunk
   , decodeClimateChunk
-  , decodeClimateChunkV1
   , encodeWeatherChunk
   , decodeWeatherChunk
   , encodeRiverChunk
   , decodeRiverChunk
-  , decodeRiverChunkV2
-  , decodeRiverChunkV1
   , encodeGroundwaterChunk
   , decodeGroundwaterChunk
-  , decodeGroundwaterChunkV1
   , encodeVolcanismChunk
   , decodeVolcanismChunk
   , encodeGlacierChunk
   , decodeGlacierChunk
   , encodeVegetationChunk
   , decodeVegetationChunk
-  , decodeVegetationChunkV1
   , encodeWaterBodyChunk
   , decodeWaterBodyChunk
   , exportTerrainChunks
@@ -50,7 +43,7 @@ module Topo.Export
   ) where
 
 import Control.Monad (replicateM, when)
-import Data.Binary.Get (Get, getFloatle, getInt32le, getWord8, getWord16le, getWord32le, runGetOrFail, isEmpty)
+import Data.Binary.Get (Get, getFloatle, getInt32le, getWord8, getWord16le, getWord32le, isEmpty, runGetOrFail)
 import Data.Binary.Put (Put, putFloatle, putInt32le, putWord8, putWord16le, putWord32le, runPut)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
@@ -77,21 +70,12 @@ data ExportError
 
 -- | Encode a terrain chunk.
 --
--- Terrain chunk schema (version 5+ in world files):
+-- Terrain chunk schema:
 --   elementCount, elevation, dirSlope (6 × Float per tile: E NE NW W SW SE),
 --   curvature, hardness, rockType, soilType, soilDepth, moisture, fertility,
---   roughness, rockDensity, soilGrain, relief, ruggedness, terrainForm,
---   biomeFlags, plateId, plateBoundary, plateHeight, plateHardness,
---   plateCrust, plateAge, plateVelX, plateVelY.
---
--- Version 4 and earlier encoded slope as a single scalar Float per tile;
--- version 5 replaces this with 'DirectionalSlope' (6 floats, interleaved).
---
--- Version 3 lacks relief/ruggedness/terrainForm fields and is handled
--- by getTerrainChunkV3.
---
--- Version 2 lacks plate crust/age/velocity fields and is handled by
--- getTerrainChunkV2 when loading legacy files.
+--   roughness, rockDensity, soilGrain, relief, relief2Ring, relief3Ring,
+--   microRelief, ruggedness, terrainForm, biomeFlags, plateId, plateBoundary,
+--   plateHeight, plateHardness, plateCrust, plateAge, plateVelX, plateVelY.
 encodeTerrainChunk :: WorldConfig -> TerrainChunk -> Either ExportError BS.ByteString
 encodeTerrainChunk config chunk = do
   let n = chunkTileCount config
@@ -110,6 +94,7 @@ encodeTerrainChunk config chunk = do
   ensureLength n (Text.pack "relief") (tcRelief chunk)
   ensureLength n (Text.pack "relief2Ring") (tcRelief2Ring chunk)
   ensureLength n (Text.pack "relief3Ring") (tcRelief3Ring chunk)
+  ensureLength n (Text.pack "microRelief") (tcMicroRelief chunk)
   ensureLength n (Text.pack "ruggedness") (tcRuggedness chunk)
   ensureLength n (Text.pack "terrainForm") (tcTerrainForm chunk)
   ensureLength n (Text.pack "flags") (tcFlags chunk)
@@ -138,6 +123,7 @@ encodeTerrainChunk config chunk = do
     putVectorFloat n (tcRelief chunk)
     putVectorFloat n (tcRelief2Ring chunk)
     putVectorFloat n (tcRelief3Ring chunk)
+    putVectorFloat n (tcMicroRelief chunk)
     putVectorFloat n (tcRuggedness chunk)
     putVectorWord8 n (U.map terrainFormToCode (tcTerrainForm chunk))
     putVectorWord16 n (U.map biomeIdToCode (tcFlags chunk))
@@ -153,16 +139,6 @@ encodeTerrainChunk config chunk = do
 decodeTerrainChunk :: WorldConfig -> BS.ByteString -> Either ExportError TerrainChunk
 decodeTerrainChunk config bytes =
   decodeWith (getTerrainChunk config) bytes
-
--- | Decode the legacy v2 terrain chunk schema (no plate crust/age/velocity).
-decodeTerrainChunkV2 :: WorldConfig -> BS.ByteString -> Either ExportError TerrainChunk
-decodeTerrainChunkV2 config bytes =
-  decodeWith (getTerrainChunkV2 config) bytes
-
--- | Decode the v3–v18 terrain chunk schema (no relief2Ring/relief3Ring).
-decodeTerrainChunkV3 :: WorldConfig -> BS.ByteString -> Either ExportError TerrainChunk
-decodeTerrainChunkV3 config bytes =
-  decodeWith (getTerrainChunkV3 config) bytes
 
 encodeClimateChunk :: WorldConfig -> ClimateChunk -> Either ExportError BS.ByteString
 encodeClimateChunk config chunk = do
@@ -187,11 +163,6 @@ encodeClimateChunk config chunk = do
 decodeClimateChunk :: WorldConfig -> BS.ByteString -> Either ExportError ClimateChunk
 decodeClimateChunk config bytes =
   decodeWith (getClimateChunk config) bytes
-
--- | Decode the legacy climate chunk format (v1–v12) without seasonality fields.
-decodeClimateChunkV1 :: WorldConfig -> BS.ByteString -> Either ExportError ClimateChunk
-decodeClimateChunkV1 config bytes =
-  decodeWith (getClimateChunkV1 config) bytes
 
 encodeWeatherChunk :: WorldConfig -> WeatherChunk -> Either ExportError BS.ByteString
 encodeWeatherChunk config chunk = do
@@ -249,16 +220,7 @@ encodeRiverChunk config chunk = do
 
 decodeRiverChunk :: WorldConfig -> BS.ByteString -> Either ExportError RiverChunk
 decodeRiverChunk config bytes =
-  decodeWith (getRiverChunkV3 config) bytes
-
--- | Decode river chunks from format version 6–10 (8 per-tile fields, no topology).
-decodeRiverChunkV2 :: WorldConfig -> BS.ByteString -> Either ExportError RiverChunk
-decodeRiverChunkV2 config bytes =
   decodeWith (getRiverChunk config) bytes
-
-decodeRiverChunkV1 :: WorldConfig -> BS.ByteString -> Either ExportError RiverChunk
-decodeRiverChunkV1 config bytes =
-  decodeWith (getRiverChunkV1 config) bytes
 
 encodeGroundwaterChunk :: WorldConfig -> GroundwaterChunk -> Either ExportError BS.ByteString
 encodeGroundwaterChunk config chunk = do
@@ -282,12 +244,7 @@ encodeGroundwaterChunk config chunk = do
 
 decodeGroundwaterChunk :: WorldConfig -> BS.ByteString -> Either ExportError GroundwaterChunk
 decodeGroundwaterChunk config bytes =
-  decodeWith (getGroundwaterChunkV2 config) bytes
-
--- | Decode a V1 groundwater chunk (no water-table fields).
-decodeGroundwaterChunkV1 :: WorldConfig -> BS.ByteString -> Either ExportError GroundwaterChunk
-decodeGroundwaterChunkV1 config bytes =
-  decodeWith (getGroundwaterChunkV1 config) bytes
+  decodeWith (getGroundwaterChunk config) bytes
 
 encodeVolcanismChunk :: WorldConfig -> VolcanismChunk -> Either ExportError BS.ByteString
 encodeVolcanismChunk config chunk = do
@@ -337,7 +294,7 @@ decodeGlacierChunk :: WorldConfig -> BS.ByteString -> Either ExportError Glacier
 decodeGlacierChunk config bytes =
   decodeWith (getGlacierChunk config) bytes
 
--- | Encode a 'VegetationChunk' to binary (v12+: cover, albedo, density).
+-- | Encode a 'VegetationChunk' to binary (cover, albedo, density).
 encodeVegetationChunk :: WorldConfig -> VegetationChunk -> Either ExportError BS.ByteString
 encodeVegetationChunk config chunk = do
   let n = chunkTileCount config
@@ -350,14 +307,9 @@ encodeVegetationChunk config chunk = do
     putVectorFloat n (vegAlbedo chunk)
     putVectorFloat n (vegDensity chunk)
 
--- | Decode a 'VegetationChunk' from binary (v12+: cover, albedo, density).
+-- | Decode a 'VegetationChunk' from binary (cover, albedo, density).
 decodeVegetationChunk :: WorldConfig -> BS.ByteString -> Either ExportError VegetationChunk
 decodeVegetationChunk config bytes =
-  decodeWith (getVegetationChunkV2 config) bytes
-
--- | Decode the legacy v11 vegetation chunk (cover + albedo only, no density).
-decodeVegetationChunkV1 :: WorldConfig -> BS.ByteString -> Either ExportError VegetationChunk
-decodeVegetationChunkV1 config bytes =
   decodeWith (getVegetationChunk config) bytes
 
 -- | Encode a 'WaterBodyChunk' to binary.
@@ -577,6 +529,7 @@ getTerrainChunk config = do
   tcRelief <- getVectorFloat n
   tcRelief2Ring <- getVectorFloat n
   tcRelief3Ring <- getVectorFloat n
+  tcMicroRelief <- getVectorFloat n
   tcRuggedness <- getVectorFloat n
   tcTerrainForm <- getVectorTerrainForm n
   tcFlags <- getVectorBiomeId n
@@ -604,118 +557,7 @@ getTerrainChunk config = do
     , tcRelief = tcRelief
     , tcRelief2Ring = tcRelief2Ring
     , tcRelief3Ring = tcRelief3Ring
-    , tcRuggedness = tcRuggedness
-    , tcTerrainForm = tcTerrainForm
-    , tcFlags = tcFlags
-    , tcPlateId = tcPlateId
-    , tcPlateBoundary = tcPlateBoundary
-    , tcPlateHeight = tcPlateHeight
-    , tcPlateHardness = tcPlateHardness
-    , tcPlateCrust = tcPlateCrust
-    , tcPlateAge = tcPlateAge
-    , tcPlateVelX = tcPlateVelX
-    , tcPlateVelY = tcPlateVelY
-    }
-
-getTerrainChunkV2 :: WorldConfig -> Get TerrainChunk
-getTerrainChunkV2 config = do
-  n <- getCount config
-  tcElevation <- getVectorFloat n
-  _legacySlope <- getVectorFloat n    -- V2 stored scalar slope; discard
-  tcCurvature <- getVectorFloat n
-  tcHardness <- getVectorFloat n
-  tcRockType <- getVectorWord16 n
-  tcSoilType <- getVectorWord16 n
-  tcSoilDepth <- getVectorFloat n
-  tcMoisture <- getVectorFloat n
-  tcFertility <- getVectorFloat n
-  tcRoughness <- getVectorFloat n
-  tcRockDensity <- getVectorFloat n
-  tcSoilGrain <- getVectorFloat n
-  tcFlags <- getVectorBiomeId n
-  tcPlateId <- getVectorWord16 n
-  tcPlateBoundary <- getVectorPlateBoundary n
-  tcPlateHeight <- getVectorFloat n
-  tcPlateHardness <- getVectorFloat n
-  let zeros = U.replicate n 0
-      zeros16 = U.replicate n 0
-      formZeros = U.replicate n FormFlat
-      dirSlopeZeros = U.replicate n zeroDirSlope
-  pure TerrainChunk
-    { tcElevation = tcElevation
-    , tcDirSlope = dirSlopeZeros
-    , tcCurvature = tcCurvature
-    , tcHardness = tcHardness
-    , tcRockType = tcRockType
-    , tcSoilType = tcSoilType
-    , tcSoilDepth = tcSoilDepth
-    , tcMoisture = tcMoisture
-    , tcFertility = tcFertility
-    , tcRoughness = tcRoughness
-    , tcRockDensity = tcRockDensity
-    , tcSoilGrain = tcSoilGrain
-    , tcRelief = zeros
-    , tcRelief2Ring = zeros
-    , tcRelief3Ring = zeros
-    , tcRuggedness = zeros
-    , tcTerrainForm = formZeros
-    , tcFlags = tcFlags
-    , tcPlateId = tcPlateId
-    , tcPlateBoundary = tcPlateBoundary
-    , tcPlateHeight = tcPlateHeight
-    , tcPlateHardness = tcPlateHardness
-    , tcPlateCrust = zeros16
-    , tcPlateAge = zeros
-    , tcPlateVelX = zeros
-    , tcPlateVelY = zeros
-    }
-
--- | Decode the v3–v18 terrain chunk schema (all plate fields, but no
--- relief2Ring/relief3Ring).  The two ring reliefs are filled with zeros.
-getTerrainChunkV3 :: WorldConfig -> Get TerrainChunk
-getTerrainChunkV3 config = do
-  n <- getCount config
-  tcElevation <- getVectorFloat n
-  tcDirSlope <- getVectorDirSlope n
-  tcCurvature <- getVectorFloat n
-  tcHardness <- getVectorFloat n
-  tcRockType <- getVectorWord16 n
-  tcSoilType <- getVectorWord16 n
-  tcSoilDepth <- getVectorFloat n
-  tcMoisture <- getVectorFloat n
-  tcFertility <- getVectorFloat n
-  tcRoughness <- getVectorFloat n
-  tcRockDensity <- getVectorFloat n
-  tcSoilGrain <- getVectorFloat n
-  tcRelief <- getVectorFloat n
-  tcRuggedness <- getVectorFloat n
-  tcTerrainForm <- getVectorTerrainForm n
-  tcFlags <- getVectorBiomeId n
-  tcPlateId <- getVectorWord16 n
-  tcPlateBoundary <- getVectorPlateBoundary n
-  tcPlateHeight <- getVectorFloat n
-  tcPlateHardness <- getVectorFloat n
-  tcPlateCrust <- getVectorWord16 n
-  tcPlateAge <- getVectorFloat n
-  tcPlateVelX <- getVectorFloat n
-  tcPlateVelY <- getVectorFloat n
-  let zeros = U.replicate n 0
-  pure TerrainChunk
-    { tcElevation = tcElevation
-    , tcDirSlope = tcDirSlope
-    , tcCurvature = tcCurvature
-    , tcHardness = tcHardness
-    , tcRockType = tcRockType
-    , tcSoilType = tcSoilType
-    , tcSoilDepth = tcSoilDepth
-    , tcMoisture = tcMoisture
-    , tcFertility = tcFertility
-    , tcRoughness = tcRoughness
-    , tcRockDensity = tcRockDensity
-    , tcSoilGrain = tcSoilGrain
-    , tcRelief = tcRelief
-    , tcRelief2Ring = zeros
-    , tcRelief3Ring = zeros
+    , tcMicroRelief = tcMicroRelief
     , tcRuggedness = tcRuggedness
     , tcTerrainForm = tcTerrainForm
     , tcFlags = tcFlags
@@ -787,39 +629,9 @@ getWeatherChunk config = do
     , wcPrecip = wcPrecip
     }
 
+-- | Decode river chunk with full topology.
 getRiverChunk :: WorldConfig -> Get RiverChunk
 getRiverChunk config = do
-  n <- getCount config
-  rcFlowAccum <- getVectorFloat n
-  rcDischarge <- getVectorFloat n
-  rcChannelDepth <- getVectorFloat n
-  rcRiverOrder <- getVectorWord16 n
-  rcBasinId <- getVectorWord32 n
-  rcBaseflow <- getVectorFloat n
-  rcErosionPotential <- getVectorFloat n
-  rcDepositPotential <- getVectorFloat n
-  let sinkFlow = U.replicate n (-1 :: Int)
-      emptyOffsets = U.replicate (n + 1) (0 :: Int)
-  pure RiverChunk
-    { rcFlowAccum = rcFlowAccum
-    , rcDischarge = rcDischarge
-    , rcChannelDepth = rcChannelDepth
-    , rcRiverOrder = rcRiverOrder
-    , rcBasinId = rcBasinId
-    , rcBaseflow = rcBaseflow
-    , rcErosionPotential = rcErosionPotential
-    , rcDepositPotential = rcDepositPotential
-    , rcFlowDir = sinkFlow
-    , rcSegOffsets = emptyOffsets
-    , rcSegEntryEdge = U.empty
-    , rcSegExitEdge = U.empty
-    , rcSegDischarge = U.empty
-    , rcSegOrder = U.empty
-    }
-
--- | Decode river chunk from v11+ format with topology.
-getRiverChunkV3 :: WorldConfig -> Get RiverChunk
-getRiverChunkV3 config = do
   n <- getCount config
   rcFlowAccum <- getVectorFloat n
   rcDischarge <- getVectorFloat n
@@ -853,90 +665,31 @@ getRiverChunkV3 config = do
     , rcSegOrder = rcSegOrder
     }
 
-getRiverChunkV1 :: WorldConfig -> Get RiverChunk
-getRiverChunkV1 config = do
-  n <- getCount config
-  rcFlowAccum <- getVectorFloat n
-  rcDischarge <- getVectorFloat n
-  rcChannelDepth <- getVectorFloat n
-  rcRiverOrder <- getVectorWord16 n
-  rcBasinId <- getVectorWord32 n
-  rcBaseflow <- getVectorFloat n
-  let zeros = U.replicate n 0
-      sinkFlow = U.replicate n (-1 :: Int)
-      emptyOffsets = U.replicate (n + 1) (0 :: Int)
-  pure RiverChunk
-    { rcFlowAccum = rcFlowAccum
-    , rcDischarge = rcDischarge
-    , rcChannelDepth = rcChannelDepth
-    , rcRiverOrder = rcRiverOrder
-    , rcBasinId = rcBasinId
-    , rcBaseflow = rcBaseflow
-    , rcErosionPotential = zeros
-    , rcDepositPotential = zeros
-    , rcFlowDir = sinkFlow
-    , rcSegOffsets = emptyOffsets
-    , rcSegEntryEdge = U.empty
-    , rcSegExitEdge = U.empty
-    , rcSegDischarge = U.empty
-    , rcSegOrder = U.empty
-    }
-
--- | Decode a V2 groundwater chunk (with optional water-table fields).
---
--- Attempts to read the three water-table vectors after the V1 fields.
--- If the remaining bytestring is too short, falls back to empty vectors.
-getGroundwaterChunkV2 :: WorldConfig -> Get GroundwaterChunk
-getGroundwaterChunkV2 config = do
+-- | Decode a groundwater chunk with water-table fields.
+getGroundwaterChunk :: WorldConfig -> Get GroundwaterChunk
+getGroundwaterChunk config = do
   n <- getCount config
   storage <- getVectorFloat n
   recharge <- getVectorFloat n
   discharge <- getVectorFloat n
   basinId <- getVectorWord32 n
-  -- V2 extension: three water-table float vectors follow the V1 data.
-  -- If the stream is exhausted, we're reading a V1-encoded chunk.
-  done <- isEmpty
-  if done
-    then
-      pure GroundwaterChunk
-        { gwStorage = storage
-        , gwRecharge = recharge
-        , gwDischarge = discharge
-        , gwBasinId = basinId
-        , gwInfiltration = U.empty
-        , gwWaterTableDepth = U.empty
-        , gwRootZoneMoisture = U.empty
-        }
-    else do
-      infilt  <- getVectorFloat n
-      wtDepth <- getVectorFloat n
-      rzMoist <- getVectorFloat n
-      pure GroundwaterChunk
-        { gwStorage = storage
-        , gwRecharge = recharge
-        , gwDischarge = discharge
-        , gwBasinId = basinId
-        , gwInfiltration = infilt
-        , gwWaterTableDepth = wtDepth
-        , gwRootZoneMoisture = rzMoist
-        }
-
--- | Decode a V1 groundwater chunk (no water-table fields).
-getGroundwaterChunkV1 :: WorldConfig -> Get GroundwaterChunk
-getGroundwaterChunkV1 config = do
-  n <- getCount config
-  storage <- getVectorFloat n
-  recharge <- getVectorFloat n
-  discharge <- getVectorFloat n
-  basinId <- getVectorWord32 n
+  hasWaterTable <- fmap not isEmpty
+  (infilt, wtDepth, rzMoist) <-
+    if hasWaterTable
+      then do
+        inf <- getVectorFloat n
+        wt <- getVectorFloat n
+        rz <- getVectorFloat n
+        pure (inf, wt, rz)
+      else pure (U.empty, U.empty, U.empty)
   pure GroundwaterChunk
     { gwStorage = storage
     , gwRecharge = recharge
     , gwDischarge = discharge
     , gwBasinId = basinId
-    , gwInfiltration = U.empty
-    , gwWaterTableDepth = U.empty
-    , gwRootZoneMoisture = U.empty
+    , gwInfiltration = infilt
+    , gwWaterTableDepth = wtDepth
+    , gwRootZoneMoisture = rzMoist
     }
 
 getVolcanismChunk :: WorldConfig -> Get VolcanismChunk
@@ -979,20 +732,9 @@ getGlacierChunk config = do
     , glDepositPotential = glDepositPotential
     }
 
+-- | Decode a vegetation chunk (cover, albedo, density).
 getVegetationChunk :: WorldConfig -> Get VegetationChunk
 getVegetationChunk config = do
-  n <- getCount config
-  cover <- getVectorFloat n
-  albedo <- getVectorFloat n
-  pure VegetationChunk
-    { vegCover   = cover
-    , vegAlbedo  = albedo
-    , vegDensity = U.replicate n 0
-    }
-
--- | Decode v12+ vegetation chunk (cover, albedo, density).
-getVegetationChunkV2 :: WorldConfig -> Get VegetationChunk
-getVegetationChunkV2 config = do
   n <- getCount config
   cover <- getVectorFloat n
   albedo <- getVectorFloat n
