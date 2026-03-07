@@ -8,7 +8,7 @@ module Topo.Glacier
   , applyGlacierStage
     -- * Internals (exported for testing)
   , snowAccumGrid
-  , diffuseGrid
+  , diffuseHexGrid
   ) where
 
 import Control.Monad.Except (throwError)
@@ -135,7 +135,7 @@ applyGlacierStage cfg formCfg waterLevel = PipelineStage StageGlacier "applyGlac
       snowpack = snowAccumGrid cfg accumBonus temp precip
       melt = meltGrid cfg temp
       ice0 = U.zipWith (\s m -> max 0 (s - m)) snowpack melt
-      ice1 = diffuseGrid gridW gridH rateVec (gcFlowIterations cfg) ice0
+      ice1 = diffuseHexGrid gridW gridH rateVec (gcFlowIterations cfg) ice0
       flow = U.zipWith (\a b -> abs (a - b)) ice0 ice1
       erosionPotential = glacierErosionPotential gridW gridH elev0 ice1 hardness erosionMult cfg
       depositPotential = glacierDepositPotential gridW gridH elev0 flow depositFactor cfg
@@ -192,8 +192,10 @@ sliceGlacierChunk config minCoord gridW glaciers _key _chunk =
     , glDepositPotential = chunkGridSlice config minCoord gridW (glDepositPotential glaciers) _key
     }
 
-diffuseGrid :: Int -> Int -> U.Vector Float -> Int -> U.Vector Float -> U.Vector Float
-diffuseGrid gridW gridH rateVec iterations =
+-- | Diffuse glacier ice over the row-major axial grid using the in-bounds
+-- hex neighbourhood at each tile.
+diffuseHexGrid :: Int -> Int -> U.Vector Float -> Int -> U.Vector Float -> U.Vector Float
+diffuseHexGrid gridW gridH rateVec iterations =
   iterateN iterations (diffuseStep gridW gridH rateVec)
 
 diffuseStep :: Int -> Int -> U.Vector Float -> U.Vector Float -> U.Vector Float

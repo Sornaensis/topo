@@ -33,9 +33,11 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
-import Topo.Overlay (emptyOverlay, insertOverlay, lookupOverlay, overlayNames)
-import Topo.Overlay.Schema (OverlaySchema, osName)
+import Topo.Overlay (overlayNames)
+import Topo.Overlay.Schema (OverlaySchema)
 import Topo.Pipeline.Dep (builtinDependencies, disabledClosure)
+import qualified Topo.Pipeline.OverlayLifecycle as OverlayLifecycle
+import qualified Topo.Pipeline.OverlayValidation as OverlayValidation
 import Topo.Pipeline.Stage (StageId, stageCanonicalName)
 import Topo.Plugin
 import Topo.World (TerrainWorld(..))
@@ -123,7 +125,17 @@ data PipelineError
 runPipeline :: PipelineConfig -> TopoEnv -> TerrainWorld -> IO (Either PipelineError (TerrainWorld, [PipelineSnapshot]))
 runPipeline config env world = do
   let seededWorld = world { twSeed = pipelineSeed config }
-  case validateOverlayDependencies seededWorld (pipelineStages config) of
+      stageDeps =
+        [ OverlayValidation.OverlayStageDeps
+            { OverlayValidation.osdStageId = stageId stage
+            , OverlayValidation.osdReads = stageOverlayReads stage
+            , OverlayValidation.osdProduces = stageOverlayProduces stage
+            }
+        | stage <- pipelineStages config
+        ]
+  case OverlayValidation.validateOverlayDependencies
+    (overlayNames (twOverlays seededWorld))
+    stageDeps of
     Left err -> pure (Left (PipelineOverlayDependencyError err))
     Right () -> do
       let logger = teLogger env
@@ -143,25 +155,6 @@ runPipeline config env world = do
       pure $ case result of
         Left err -> Left (PipelinePluginError err)
         Right (_, snapshots) -> Right (world', snapshots)
-
-validateOverlayDependencies :: TerrainWorld -> [PipelineStage] -> Either Text ()
-validateOverlayDependencies world stages = go initialOverlays stages
-  where
-    initialOverlays = Set.fromList (overlayNames (twOverlays world))
-
-    go _ [] = Right ()
-    go available (stage:rest) = do
-      case filter (`Set.notMember` available) (stageOverlayReads stage) of
-        [] -> Right ()
-        (missing:_) ->
-          Left
-            ("stage " <> stageCanonicalName (stageId stage)
-              <> " requires missing overlay " <> missing)
-      let available' =
-            case stageOverlayProduces stage of
-              Nothing -> available
-              Just produced -> Set.insert produced available
-      go available' rest
 
 runStage
   :: PluginEnv
@@ -210,29 +203,11 @@ runStage pluginEnv disabled stageCount onProgress snapshotsEnabled acc stage =
 ensureProducedOverlayRegistered :: PipelineStage -> TopoM ()
 ensureProducedOverlayRegistered stage = do
   world <- getWorld
-  case stageOverlayProduces stage of
-    Nothing -> pure ()
-    Just producedName ->
-      case lookupOverlay producedName (twOverlays world) of
-        Just _ -> pure ()
-        Nothing ->
-          case stageOverlaySchema stage of
-            Nothing -> pure ()
-            Just schema
-              | osName schema == producedName ->
-                  putWorld (registerOverlay world producedName schema)
-              | otherwise -> pure ()
-  where
-    registerOverlay world producedName schema =
-      let overlayStore' = insertOverlay (emptyOverlay schema) (twOverlays world)
-          manifest' = dedupeManifest (producedName : twOverlayManifest world)
-      in world
-        { twOverlays = overlayStore'
-        , twOverlayManifest = manifest'
-        }
-
-    dedupeManifest [] = []
-    dedupeManifest (name:rest) = name : filter (/= name) (dedupeManifest rest)
+  let world' = OverlayLifecycle.registerProducedOverlay
+        (stageOverlayProduces stage)
+        (stageOverlaySchema stage)
+        world
+  putWorld world'
 
 -- | Derive a stage-specific seed from the pipeline master seed.
 deriveStageSeed :: Word64 -> Text -> Word64

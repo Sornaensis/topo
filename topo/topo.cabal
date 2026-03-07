@@ -42,6 +42,7 @@ library
       Topo.Erosion
       Topo.Glacier
       Topo.Hydrology
+      Topo.Hydrology.StageHydrology
       Topo.Hypsometry
       Topo.River
       Topo.Volcanism
@@ -56,6 +57,8 @@ library
       Topo.BiomeConfig
       Topo.Weather
       Topo.Math
+      Topo.Grid.Diffusion
+      Topo.Grid.HexDirection
       Topo.Seed
       Topo.TerrainGrid
       Topo.Noise
@@ -97,8 +100,21 @@ library
       Topo.TerrainForm.Metrics
   other-modules:
       Topo.Config
+      Topo.Hydrology.ChunkSlice
+      Topo.Hydrology.Config
+      Topo.Hydrology.Depression
+      Topo.Hydrology.Flow
+      Topo.Hydrology.FlowRouting
+      Topo.Hydrology.Groundwater
+      Topo.Hydrology.River
+      Topo.Hydrology.RiverCarve
+      Topo.Hydrology.TerrainModify
       Topo.Overlay.Storage.ChunkIndex
       Topo.Overlay.Storage.Compression
+      Topo.Persistence.AtomicDirectory
+      Topo.Pipeline.OverlayLifecycle
+      Topo.Pipeline.OverlayValidation
+      Topo.Plugin.RPC.Payload
       Topo.Weather.Config
       Topo.Weather.Grid
       Topo.Weather.Init
@@ -139,12 +155,14 @@ test-suite topo-test
       Spec.ConfigJSON
       Spec.ConfigProperty
       Spec.Determinism
+      Spec.Diffusion
       Spec.DirectionalSlope
       Spec.Erosion
       Spec.Evaporation
       Spec.Export
       Spec.Glacier
       Spec.Hex
+      Spec.HexDirection
       Spec.Hydrology
       Spec.Integration
       Spec.Mesh
@@ -165,6 +183,10 @@ test-suite topo-test
       Spec.Simulation
       Spec.Soil
       Spec.Storage
+      Spec.Support.FloatApprox
+      Spec.Support.OverlayFixtures
+      Spec.Support.Storage
+      Spec.Support.TerrainFormFixtures
       Spec.Tectonics
       Spec.TerrainFormCalibration
       Spec.TerrainFormMetrics

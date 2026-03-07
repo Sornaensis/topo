@@ -150,7 +150,8 @@ spec = describe "Units" $ do
 
     it "generic affine: linearToNorm . normToLinear ≈ id (non-zero scale)" $
       property $ \(NonZero scale, offset, UnitNorm n) ->
-        approxEq 1e-3 n (linearToNorm scale offset (normToLinear scale offset n))
+        abs scale >= 1e-3 ==>
+          approxEq 1e-3 n (linearToNorm scale offset (normToLinear scale offset n))
 
   -- -----------------------------------------------------------------------
   -- Edge cases

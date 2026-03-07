@@ -16,27 +16,27 @@ import System.IO.Temp (withSystemTempDirectory)
 import Control.Exception (IOException, throwIO)
 import Test.Hspec
 import Test.QuickCheck (ioProperty, property)
+import Spec.Support.OverlayFixtures
+  ( mkDenseFloatOverlay
+  , mkSparseFloatOverlay
+  , overlayProvenanceFixture
+  , sparseFloatOverlaySchema
+  )
+import Spec.Support.Storage (emptyProvenance, saveWorldWithProvenance)
 
 import Topo.Hex (defaultHexGridMeta)
 import Topo.Overlay
   ( Overlay(..)
   , OverlayChunk(..)
   , OverlayData(..)
-  , OverlayProvenance(..)
   , OverlayRecord(..)
   , OverlayValue(..)
-  , emptyOverlayProvenance
   , emptyOverlayStore
   , insertOverlay
   , lookupOverlay
   )
 import Topo.Overlay.Schema
-  ( OverlayDeps(..)
-  , OverlayFieldDef(..)
-  , OverlayFieldType(..)
-  , OverlaySchema(..)
-  , OverlayStorage(..)
-  )
+  ( OverlaySchema(..) )
 import Topo.Overlay.Storage (saveOverlay)
 import Topo.Persistence.WorldBundle
   ( BundleLoadPolicy(..)
@@ -48,7 +48,6 @@ import Topo.Persistence.WorldBundle
   , saveWorldBundleWithProvenance
   , saveWorldBundleWithProvenanceAndHooks
   )
-import Topo.Storage (emptyProvenance, saveWorldWithProvenance)
 import Topo.Types (ChunkId(..), TileCoord(..), WorldConfig(..))
 import Topo.World (TerrainWorld(..), emptyWorld, generateTerrainChunk, getElevationAt, setTerrainChunk)
 
@@ -77,7 +76,7 @@ spec = describe "WorldBundle" $ do
       let topoPath = tmp </> "world.topo"
           config = WorldConfig { wcChunkSize = 16 }
           base = emptyWorld config defaultHexGridMeta
-          denseOverlay = mkDenseOverlay "weather" 0.5
+          denseOverlay = mkDenseFloatOverlay "weather" "world bundle test dense overlay" 0.5 overlayProvenanceFixture
           world0 = base { twOverlays = insertOverlay denseOverlay emptyOverlayStore }
 
       saveResult <- saveWorldBundle topoPath world0
@@ -101,8 +100,8 @@ spec = describe "WorldBundle" $ do
       let topoPath = tmp </> "world.topo"
           config = WorldConfig { wcChunkSize = 16 }
           base = emptyWorld config defaultHexGridMeta
-          sparseOverlay = mkOverlay "civilization" 0.75 overlayProvenanceFixture
-          weatherOverlay = mkDenseOverlay "weather" 0.35
+          sparseOverlay = mkSparseFloatOverlay "civilization" "world bundle test overlay" 0.75 overlayProvenanceFixture
+          weatherOverlay = mkDenseFloatOverlay "weather" "world bundle test dense overlay" 0.35 overlayProvenanceFixture
           withSparse = insertOverlay sparseOverlay emptyOverlayStore
           world0 = base { twOverlays = insertOverlay weatherOverlay withSparse }
 
@@ -173,7 +172,7 @@ spec = describe "WorldBundle" $ do
           config = WorldConfig { wcChunkSize = 16 }
           terrain = generateTerrainChunk config (\(TileCoord x y) -> fromIntegral (x + y))
           base = emptyWorld config defaultHexGridMeta
-          overlay = mkOverlay "bundle_sparse" 0.75 overlayProvenanceFixture
+          overlay = mkSparseFloatOverlay "bundle_sparse" "world bundle test overlay" 0.75 overlayProvenanceFixture
           world0 = setTerrainChunk (ChunkId 0) terrain
                  $ base { twOverlays = insertOverlay overlay emptyOverlayStore }
 
@@ -215,7 +214,7 @@ spec = describe "WorldBundle" $ do
       let topoPath = tmp </> "world.topo"
           sidecarDir = tmp </> "world.topolay"
           world0 = mkWorldWithSparseOverlay
-          extraOverlay = mkOverlay "extra_sparse" 0.9 emptyOverlayProvenance
+          extraOverlay = mkSparseFloatOverlay "extra_sparse" "world bundle test overlay" 0.9 overlayProvenanceFixture
 
       saveResult <- saveWorldBundle topoPath world0
       case saveResult of
@@ -322,75 +321,22 @@ mkWorldWithSparseOverlay :: TerrainWorld
 mkWorldWithSparseOverlay =
   let config = WorldConfig { wcChunkSize = 16 }
       base = emptyWorld config defaultHexGridMeta
-      overlay = mkOverlay "bundle_sparse" 0.75 overlayProvenanceFixture
+      overlay = mkSparseFloatOverlay "bundle_sparse" "world bundle test overlay" 0.75 overlayProvenanceFixture
   in base { twOverlays = insertOverlay overlay emptyOverlayStore }
 
 mkWorldWithDenseAndSparseOverlays :: TerrainWorld
 mkWorldWithDenseAndSparseOverlays =
   let config = WorldConfig { wcChunkSize = 16 }
       base = emptyWorld config defaultHexGridMeta
-      sparseOverlay = mkOverlay "bundle_sparse" 0.75 overlayProvenanceFixture
-      denseOverlay = mkDenseOverlay "bundle_dense" 0.2
+      sparseOverlay = mkSparseFloatOverlay "bundle_sparse" "world bundle test overlay" 0.75 overlayProvenanceFixture
+      denseOverlay = mkDenseFloatOverlay "bundle_dense" "world bundle test dense overlay" 0.2 overlayProvenanceFixture
       withSparse = insertOverlay sparseOverlay emptyOverlayStore
       withBoth = insertOverlay denseOverlay withSparse
   in base { twOverlays = withBoth }
 
-mkOverlay :: Text.Text -> Float -> OverlayProvenance -> Overlay
-mkOverlay name value provenance =
-  let schema = OverlaySchema
-        { osName = name
-        , osVersion = "1.0.0"
-        , osDescription = "world bundle test overlay"
-        , osFields = [OverlayFieldDef "value" OFFloat (Number 0) False Nothing]
-        , osStorage = StorageSparse
-        , osDependencies = OverlayDeps { odTerrain = True, odOverlays = [] }
-        , osFieldIndex = Map.fromList [("value", 0)]
-        }
-      rec = OverlayRecord (V.fromList [OVFloat value])
-      chunk = OverlayChunk (IntMap.singleton 0 rec)
-  in Overlay
-      { ovSchema = schema
-      , ovData = SparseData (IntMap.singleton 0 chunk)
-      , ovProvenance = provenance
-      }
-
 sparseOverlaySchema :: Text.Text -> OverlaySchema
-sparseOverlaySchema name = OverlaySchema
-  { osName = name
-  , osVersion = "1.0.0"
-  , osDescription = "world bundle test overlay"
-  , osFields = [OverlayFieldDef "value" OFFloat (Number 0) False Nothing]
-  , osStorage = StorageSparse
-  , osDependencies = OverlayDeps { odTerrain = True, odOverlays = [] }
-  , osFieldIndex = Map.fromList [("value", 0)]
-  }
-
-overlayProvenanceFixture :: OverlayProvenance
-overlayProvenanceFixture =
-  emptyOverlayProvenance
-    { opSeed = 42
-    , opVersion = 7
-    , opSource = "bundle-test"
-    }
+sparseOverlaySchema name = sparseFloatOverlaySchema name "world bundle test overlay"
 
 isJust :: Maybe a -> Bool
 isJust Nothing = False
 isJust (Just _) = True
-
-mkDenseOverlay :: Text.Text -> Float -> Overlay
-mkDenseOverlay name value =
-  let schema = OverlaySchema
-        { osName = name
-        , osVersion = "1.0.0"
-        , osDescription = "world bundle test dense overlay"
-        , osFields = [OverlayFieldDef "value" OFFloat (Number 0) False Nothing]
-        , osStorage = StorageDense
-        , osDependencies = OverlayDeps { odTerrain = True, odOverlays = [] }
-        , osFieldIndex = Map.fromList [("value", 0)]
-        }
-      denseValues = V.fromList [U.singleton value]
-  in Overlay
-      { ovSchema = schema
-      , ovData = DenseData (IntMap.singleton 0 denseValues)
-      , ovProvenance = overlayProvenanceFixture
-      }

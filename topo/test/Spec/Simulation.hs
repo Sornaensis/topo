@@ -357,6 +357,29 @@ failureSpec = describe "failure handling" $ do
       Left err -> err `shouldBe` "bad data"
       Right _  -> expectationFailure "Expected failure"
 
+  it "fails when a reader's overlay is missing from the store" $ do
+    let nodes = [ noopReader "weather" [] ]
+        Right dag = buildSimDAG nodes
+        store = emptyOverlayStore
+    terrain <- mkTestTerrain
+    result <- tickSimulation dag noProgress terrain store testCalDate defaultWorldTime 1
+    case result of
+      Left err ->
+        err `shouldBe` "Simulation node weather references missing overlay: weather"
+      Right _ -> expectationFailure "Expected missing-overlay failure"
+
+  it "fails when a writer's overlay is missing from the store" $ do
+    ref <- newIORef ([] :: [Text])
+    let nodes = [ recordingWriter ref "erosion" [] ]
+        Right dag = buildSimDAG nodes
+        store = emptyOverlayStore
+    terrain <- mkTestTerrain
+    result <- tickSimulation dag noProgress terrain store testCalDate defaultWorldTime 1
+    case result of
+      Left err ->
+        err `shouldBe` "Simulation writer node erosion references missing overlay: erosion"
+      Right _ -> expectationFailure "Expected missing-overlay failure"
+
   it "reports progress for completed nodes" $ do
     progressRef <- newIORef ([] :: [SimProgress])
     let progressCb p = modifyIORef' progressRef (++ [p])
@@ -856,6 +879,54 @@ tickSpec = describe "weather tick" $ do
       Right (storeAfter, _) ->
         case extractTemp storeAfter of
           Just tAfter -> comX tAfter `shouldSatisfy` (> comX tempBlob)
+          Nothing -> expectationFailure "missing temperature field after advection tick"
+
+  it "advects a warm blob along a hex-diagonal wind axis" $ do
+    let config = WorldConfig { wcChunkSize = 4 }
+        n = chunkTileCount config
+        cfg = defaultWeatherConfig
+          { wcClimatePullStrength = 0
+          , wcCondensationRate = 0
+          , wcSeasonAmplitude = 0
+          , wcWeatherDiffuseFactor = 0
+          , wcWindResponseRate = 0
+          , wcPressureGradientWindScale = 0
+          }
+        node = weatherSimNode cfg
+        Right dag = buildSimDAG [node]
+        tempBlob = U.generate n (\i -> if i == 5 then 1 else 0)
+        humidity = U.replicate n 0
+        windDir = U.replicate n (5 * pi / 3)
+        windSpd = U.replicate n 0.5
+        pressure = U.replicate n 0.5
+        precip = U.replicate n 0
+        startOverlay = Overlay
+          { ovSchema = weatherOverlaySchema
+          , ovData = DenseData (IntMap.singleton 0 (V.fromList [tempBlob, humidity, windDir, windSpd, pressure, precip]))
+          , ovProvenance = emptyOverlayProvenance
+          }
+        extractTemp store = do
+          ov <- lookupOverlay "weather" store
+          case ovData ov of
+            DenseData chunks -> do
+              fields <- IntMap.lookup 0 chunks
+              pure (fields V.! 0)
+            SparseData _ -> Nothing
+    terrain <- mkTestTerrainWithClimate config
+    let store0 = insertOverlay startOverlay emptyOverlayStore
+        wt = defaultWorldTime { wtTick = 0 }
+    result <- tickSimulation dag noProgress terrain store0 testCalDate wt 1
+    case result of
+      Left err -> expectationFailure (T.unpack err)
+      Right (storeAfter, _) ->
+        case extractTemp storeAfter of
+          Just tAfter -> do
+            let northeastTarget = tAfter U.! 2
+                eastNeighbor = tAfter U.! 6
+                northNeighbor = tAfter U.! 1
+            northeastTarget `shouldSatisfy` (> 0)
+            northeastTarget `shouldSatisfy` (> eastNeighbor)
+            northeastTarget `shouldSatisfy` (> northNeighbor)
           Nothing -> expectationFailure "missing temperature field after advection tick"
 
   it "keeps all weather fields finite and within [0,1] at default advect dt" $ do

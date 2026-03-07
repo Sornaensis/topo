@@ -16,16 +16,21 @@
 module Spec.PluginIntegration (spec) where
 
 import Test.Hspec
+import Test.Hspec.QuickCheck (prop)
+import Test.QuickCheck (NonEmptyList(..))
 
 import Data.Aeson (Value(..), (.=), object)
 import qualified Data.Aeson as Aeson
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.IntMap.Strict as IntMap
+import Data.List (foldl')
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector.Unboxed as U
+import Data.Word (Word8)
 import System.IO (stdin, stdout)
 
 import Topo.Calendar (CalendarDate(..))
@@ -57,17 +62,21 @@ import Topo.Plugin.RPC
   , decodeTerrainWritesValue
   , applyGeneratorTerrainValue
   , terrainWorldToPayload
+  , decodeBase64Text
+  , encodeBase64Text
   )
 import Topo.Plugin.RPC.Transport (Transport(..))
 import Topo.Simulation (SimContext(..), SimNode(..), SimNodeId(..), twrTerrain)
-import Topo.Types (ChunkId(..), TerrainChunk, WorldConfig(..), tcElevation)
+import Topo.Types (ChunkId(..), TerrainChunk, TileCoord(..), WorldConfig(..), tcElevation)
 import Topo.World
   ( TerrainWorld(..)
   , emptyClimateChunk
+  , emptyVegetationChunk
   , emptyWorldWithPlanet
   , generateTerrainChunk
   , setClimateChunk
   , setTerrainChunk
+  , setVegetationChunk
   )
 
 ------------------------------------------------------------------------
@@ -351,6 +360,10 @@ spec = describe "Plugin Integration" $ do
   -- Data flow (real transport)
   ------------------------------------
   describe "RPC data flow" $ do
+    prop "property: decodeBase64Text (encodeBase64Text bs) == Right bs" $ \(ws :: [Word8]) ->
+      let bytes = BS.pack ws
+      in decodeBase64Text (encodeBase64Text bytes) == Right bytes
+
     it "decodes non-empty simulation terrain_writes into TerrainWrites" $ do
       let config = WorldConfig { wcChunkSize = 8 }
           updatedChunk = generateTerrainChunk config (const 0.77)
@@ -378,6 +391,69 @@ spec = describe "Plugin Integration" $ do
         Nothing -> expectationFailure "expected merged terrain chunk"
         Just mergedChunk ->
           U.head (tcElevation mergedChunk) `shouldBe` 0.93
+
+    prop "property: terrain payload round-trips through terrainWorldToPayload/applyGeneratorTerrainValue"
+      $ \(NonEmpty values0 :: NonEmptyList Float) ->
+          let values = take 64 values0
+              config = WorldConfig { wcChunkSize = 8 }
+              originalWorld = mkTestWorld config
+              updatedChunk = generateTerrainChunk config (\tile ->
+                let TileCoord x y = tile
+                    index = (x * 31 + y * 17) `mod` length values
+                in values !! index)
+              payloadResult = encodeTerrainWritesPayload config [(0, updatedChunk)]
+          in case payloadResult of
+              Left _ -> False
+              Right terrainPayload ->
+                case applyGeneratorTerrainValue originalWorld terrainPayload of
+                  Left _ -> False
+                  Right mergedWorld ->
+                    case IntMap.lookup 0 (twTerrain mergedWorld) of
+                      Nothing -> False
+                      Just mergedChunk ->
+                        tcElevation mergedChunk == tcElevation updatedChunk
+
+    prop "property: terrain payload round-trips terrain/climate/vegetation chunk sections"
+      $ \(NonEmpty rawIds0 :: NonEmptyList Int) ->
+          let config = WorldConfig { wcChunkSize = 8 }
+              dedupeInts = foldl' addUnique []
+              addUnique acc n
+                | n `elem` acc = acc
+                | otherwise = acc <> [n]
+              addChunk world cidInt =
+                let cid = ChunkId cidInt
+                    terrain = generateTerrainChunk config (const (fromIntegral cidInt / 100.0))
+                    climate = emptyClimateChunk config
+                    vegetation = emptyVegetationChunk config
+                in setVegetationChunk cid vegetation (setClimateChunk cid climate (setTerrainChunk cid terrain world))
+              rawIds = take 8 rawIds0
+              chunkIds = take 4 (dedupeInts (map (\n -> abs n `mod` 16) rawIds))
+              buildWorld = foldl' addChunk (emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice) chunkIds
+              payloadResult = terrainWorldToPayload buildWorld
+          in case payloadResult of
+              Left _ -> False
+              Right payload ->
+                case applyGeneratorTerrainValue (mkTestWorld config) payload of
+                  Left _ -> False
+                  Right mergedWorld ->
+                    all (\cid -> IntMap.member cid (twTerrain mergedWorld)) chunkIds
+                    && all (\cid -> IntMap.member cid (twClimate mergedWorld)) chunkIds
+                    && all (\cid -> IntMap.member cid (twVegetation mergedWorld)) chunkIds
+
+    prop "property: terrain_writes payload decode preserves terrain chunk count"
+      $ \(NonEmpty chunkValues0 :: NonEmptyList Float) ->
+          let values = take 16 chunkValues0
+              config = WorldConfig { wcChunkSize = 8 }
+              mkChunk v = generateTerrainChunk config (const v)
+              chunks = zip [0 ..] (map mkChunk values)
+              payloadResult = encodeTerrainWritesPayload config chunks
+          in case payloadResult of
+              Left _ -> False
+              Right payload ->
+                case decodeTerrainWritesValue (Just payload) of
+                  Left _ -> False
+                  Right writes ->
+                    IntMap.size (twrTerrain writes) == length chunks
 
 mkTestWorld :: WorldConfig -> TerrainWorld
 mkTestWorld config =

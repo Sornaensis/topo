@@ -17,6 +17,7 @@ import System.Directory
   )
 import System.FilePath ((</>))
 import Test.Hspec
+import Spec.Support.OverlayFixtures (mkSparseFloatOverlay)
 
 import Actor.UI (emptyUiState, UiState(..))
 import Seer.Config.Snapshot (snapshotFromUi)
@@ -33,23 +34,13 @@ import Seer.World.Persist.Types (defaultManifestTime)
 import Topo.Hex (defaultHexGridMeta)
 import Topo.Storage (emptyProvenance, saveWorldWithProvenance)
 import Topo.Overlay
-  ( Overlay(..)
-  , OverlayChunk(..)
-  , OverlayData(..)
-  , OverlayRecord(..)
+  ( OverlayData(..)
   , OverlayStore(..)
-  , OverlayValue(..)
   , emptyOverlayProvenance
   , emptyOverlayStore
   , insertOverlay
   , lookupOverlay
-  )
-import Topo.Overlay.Schema
-  ( OverlaySchema(..)
-  , OverlayFieldDef(..)
-  , OverlayFieldType(..)
-  , OverlayStorage(..)
-  , OverlayDeps(..)
+  , ovData
   )
 import Topo.Types (WorldConfig(..))
 import Topo.World (TerrainWorld(..), emptyWorld)
@@ -150,18 +141,11 @@ worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
                 baseWorld = emptyWorld config defaultHexGridMeta
                 ui = emptyUiState { uiSeed = 42, uiChunkSize = 64 }
 
-                schema = OverlaySchema
-                  { osName = "persist_sparse_test"
-                  , osVersion = "1.0.0"
-                  , osDescription = "sparse overlay persistence test"
-                  , osFields = [OverlayFieldDef "value" OFFloat (Number 0) False Nothing]
-                  , osStorage = StorageSparse
-                  , osDependencies = OverlayDeps { odTerrain = True, odOverlays = [] }
-                  , osFieldIndex = Map.fromList [("value", 0)]
-                  }
-                rec = OverlayRecord (V.fromList [OVFloat 0.75])
-                chunk = OverlayChunk (IntMap.singleton 0 rec)
-                overlay = Overlay schema (SparseData (IntMap.singleton 0 chunk)) emptyOverlayProvenance
+                overlay = mkSparseFloatOverlay
+                  "persist_sparse_test"
+                  "sparse overlay persistence test"
+                  0.75
+                  emptyOverlayProvenance
                 world = baseWorld { twOverlays = insertOverlay overlay emptyOverlayStore }
 
             saveResult <- saveNamedWorld testWorldName ui world
@@ -179,6 +163,37 @@ worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
                       SparseData chunks ->
                         IntMap.member 0 chunks `shouldBe` True
                 wsmOverlayNames manifest `shouldBe` ["persist_sparse_test"]
+        )
+
+    it "normalizes metadata overlay names from world manifest and discovered overlays" $
+      bracket
+        (pure ())
+        (\_ -> do
+            _ <- deleteNamedWorld testWorldName
+            pure ()
+        )
+        (\_ -> do
+            let config = WorldConfig { wcChunkSize = 64 }
+                baseWorld = emptyWorld config defaultHexGridMeta
+                ui = emptyUiState { uiSeed = 42, uiChunkSize = 64 }
+
+                overlay = mkSparseFloatOverlay
+                  "persist_sparse_test"
+                  "sparse overlay persistence test"
+                  0.75
+                  emptyOverlayProvenance
+                world = (baseWorld { twOverlays = insertOverlay overlay emptyOverlayStore })
+                  { twOverlayManifest = ["ghost", "persist_sparse_test"] }
+
+            saveResult <- saveNamedWorld testWorldName ui world
+            saveResult `shouldBe` Right ()
+
+            loadResult <- loadNamedWorld testWorldName
+            case loadResult of
+              Left err -> expectationFailure (Text.unpack err)
+              Right (manifest, _snapshot, _loadedWorld) -> do
+                wsmOverlayNames manifest `shouldBe` ["persist_sparse_test"]
+        )
 
     it "loads old-format world directories without sidecar when manifest is empty" $
       bracket

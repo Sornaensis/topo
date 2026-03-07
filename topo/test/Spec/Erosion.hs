@@ -83,7 +83,7 @@ spec = describe "Erosion" $ do
 
     it "hydraulic deposition raises a neighbor of the eroded peak" $ do
       -- 3×1 grid: peak → depression → plateau.  The depression
-      -- is the lowest cardinal neighbor of the peak and receives
+      -- is the lowest neighbour of the peak and receives
       -- the deposit.  It is strictly below its own right neighbor
       -- (0.6), so the sink guard allows raising it.
       let w = 3
@@ -103,6 +103,25 @@ spec = describe "Erosion" $ do
       eroded U.! 0 `shouldSatisfy` (< 0.8)
       -- Depression (tile 1) should receive deposit and be raised
       eroded U.! 1 `shouldSatisfy` (> 0.3)
+
+    it "hydraulic erosion follows a hex-only downhill neighbor" $ do
+      -- 3×3 grid with the center tile draining only to its NE hex neighbor
+      -- (index 2). A cardinal-only solver would see no downhill path here.
+      let w = 3
+          h = 3
+          elev = U.fromList [0.8, 0.8, 0.2
+                            ,0.8, 0.8, 0.8
+                            ,0.8, 0.8, 0.8 :: Float]
+          hardness = U.replicate (w * h) (0.0 :: Float)
+          cfg = defaultErosionConfig
+            { ecHydraulicIterations = 1
+            , ecHydraulicDepositRatio = 0
+            , ecRainRate = 0.5
+            , ecMaxDrop = 0.5
+            }
+          ones = U.replicate (w * h) (1.0 :: Float)
+          eroded = hydraulicStepGrid w h 0.5 cfg hardness ones ones elev
+      eroded U.! 4 `shouldSatisfy` (< elev U.! 4)
 
     it "thermal deposition raises tiles at cliff base" $ do
       -- 5×1 grid: [0.9, 0.9, 0.5, 0.5, 0.5]

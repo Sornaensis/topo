@@ -1,6 +1,7 @@
+-- | Weather-grid operators defined over the hex-topological dense climate
+-- buffer representation.
 module Topo.Weather.Operators
-  ( sampleGridClamped
-  , advectFieldGrid
+  ( advectFieldGrid
   , diffuseFieldGridWeather
   , normalizeAngle
   , lerpAngle
@@ -13,14 +14,17 @@ module Topo.Weather.Operators
 
 import qualified Data.Vector.Unboxed as U
 import Topo.Climate.Evaporation (satNorm)
-import Topo.TerrainGrid (clampCoordGrid)
+import Topo.Grid.HexDirection
+  ( countHexNeighbors
+  , directionVector
+  , foldHexDirections
+  , foldHexNeighbors
+  , sampleUpwindHex
+  )
+import Topo.Hex (hexNeighborIndexInDirection)
 
-sampleGridClamped :: Int -> Int -> U.Vector Float -> Int -> Int -> Float
-sampleGridClamped gridWidth gridHeight grid x y =
-  let clampedX = clampCoordGrid gridWidth x
-      clampedY = clampCoordGrid gridHeight y
-  in grid U.! (clampedY * gridWidth + clampedX)
-
+-- | Advect a scalar field by following the continuous wind direction over
+-- the six upwind hex neighbours of each tile.
 advectFieldGrid
   :: Int
   -> Int
@@ -33,21 +37,16 @@ advectFieldGrid gridWidth gridHeight dt windDir windSpd field =
   U.generate (gridWidth * gridHeight) step
   where
     step idx =
-      let x = idx `mod` gridWidth
-          y = idx `div` gridWidth
-          center = field U.! idx
+      let center = field U.! idx
           direction = windDir U.! idx
           speed = windSpd U.! idx
-          windX = speed * cos direction
-          windY = speed * sin direction
-          left = sampleGridClamped gridWidth gridHeight field (x - 1) y
-          right = sampleGridClamped gridWidth gridHeight field (x + 1) y
-          up = sampleGridClamped gridWidth gridHeight field x (y - 1)
-          down = sampleGridClamped gridWidth gridHeight field x (y + 1)
-          dFieldDx = if windX >= 0 then center - left else right - center
-          dFieldDy = if windY >= 0 then center - up else down - center
-      in center - dt * (windX * dFieldDx + windY * dFieldDy)
+          upwindValue = sampleUpwindHex gridWidth gridHeight (field U.!) idx direction
+          gradient
+            | dt <= 0 || speed <= 0 = 0
+            | otherwise = center - upwindValue
+      in center - dt * speed * gradient
 
+        -- | Diffuse a weather field over the in-bounds hex neighbours of each tile.
 diffuseFieldGridWeather :: Int -> Int -> Int -> Float -> U.Vector Float -> U.Vector Float
 diffuseFieldGridWeather gridWidth gridHeight iterations factor field =
   iterateN iterations field
@@ -57,14 +56,10 @@ diffuseFieldGridWeather gridWidth gridHeight iterations factor field =
       | otherwise = iterateN (passCount - 1) (diffuseOnce current)
     diffuseOnce vec = U.generate (gridWidth * gridHeight) (diffuseAt vec)
     diffuseAt vec idx =
-      let x = idx `mod` gridWidth
-          y = idx `div` gridWidth
-          center = vec U.! idx
-          left = sampleGridClamped gridWidth gridHeight vec (x - 1) y
-          right = sampleGridClamped gridWidth gridHeight vec (x + 1) y
-          up = sampleGridClamped gridWidth gridHeight vec x (y - 1)
-          down = sampleGridClamped gridWidth gridHeight vec x (y + 1)
-          avg = (center + left + right + up + down) / 5
+      let center = vec U.! idx
+          neighborSum = foldHexNeighbors gridWidth gridHeight idx (\acc j -> acc + vec U.! j) 0
+          neighborCount = countHexNeighbors gridWidth gridHeight idx
+          avg = (center + neighborSum) / fromIntegral (1 + neighborCount)
       in center * (1 - factor) + avg * factor
 
 normalizeAngle :: Float -> Float
@@ -86,24 +81,35 @@ condensation humidity temperature rate =
   let saturation = max 0.001 (satNorm temperature)
   in max 0 (humidity - saturation) * rate
 
+-- | Approximate the local pressure gradient from the in-bounds hex
+-- neighbours of a tile.
 pressureGradientAt :: Int -> Int -> U.Vector Float -> Int -> (Float, Float)
 pressureGradientAt gridWidth gridHeight pressure idx =
-  let x = idx `mod` gridWidth
-      y = idx `div` gridWidth
-      pressureLeft = sampleGridClamped gridWidth gridHeight pressure (x - 1) y
-      pressureRight = sampleGridClamped gridWidth gridHeight pressure (x + 1) y
-      pressureUp = sampleGridClamped gridWidth gridHeight pressure x (y - 1)
-      pressureDown = sampleGridClamped gridWidth gridHeight pressure x (y + 1)
-      dPressureDx = (pressureRight - pressureLeft) * 0.5
-      dPressureDy = (pressureDown - pressureUp) * 0.5
+  let center = pressure U.! idx
+      accumulate (dxAcc, dyAcc) dir =
+        case hexNeighborIndexInDirection gridWidth gridHeight dir idx of
+          Nothing -> (dxAcc, dyAcc)
+          Just neighborIdx ->
+            let neighborPressure = pressure U.! neighborIdx
+                delta = neighborPressure - center
+                (dirX, dirY) = directionVector dir
+            in (dxAcc + delta * dirX, dyAcc + delta * dirY)
+      (sumDx, sumDy) = foldHexDirections accumulate (0, 0)
+      neighborCount = max 1 (countHexNeighbors gridWidth gridHeight idx)
+      dPressureDx = sumDx / fromIntegral neighborCount
+      dPressureDy = sumDy / fromIntegral neighborCount
   in (dPressureDx, dPressureDy)
 
+-- | Turn the local hex-derived pressure gradient into a wind direction by
+-- steering toward lower pressure.
 windDirectionFromPressure :: Int -> Int -> U.Vector Float -> Float -> Float -> Int -> Float
 windDirectionFromPressure gridWidth gridHeight pressure previousDirection response idx =
   let (dPressureDx, dPressureDy) = pressureGradientAt gridWidth gridHeight pressure idx
       gradientDirection = atan2 (negate dPressureDy) (negate dPressureDx)
   in lerpAngle previousDirection gradientDirection response
 
+-- | Scale wind speed by the magnitude of the local hex-derived pressure
+-- gradient.
 windSpeedFromPressure :: Int -> Int -> U.Vector Float -> Float -> Float -> Int -> Float
 windSpeedFromPressure gridWidth gridHeight pressure previousSpeed gradientScale idx =
   let (dPressureDx, dPressureDy) = pressureGradientAt gridWidth gridHeight pressure idx

@@ -63,11 +63,11 @@ data FieldIndex
   -- ^ (true-set, false-set) of tile indices.
   | NoIndex
   -- ^ Field is not indexed (text fields, or not declared indexed).
-  deriving (Show)
+  deriving (Eq, Show)
 
 -- | All field indices for one overlay, keyed by field name.
 newtype OverlayIndex = OverlayIndex (Map Text FieldIndex)
-  deriving (Show)
+  deriving (Eq, Show)
 
 ------------------------------------------------------------------------
 -- Building

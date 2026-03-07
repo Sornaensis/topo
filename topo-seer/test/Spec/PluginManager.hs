@@ -3,6 +3,7 @@
 module Spec.PluginManager (spec) where
 
 import Control.Exception (bracket)
+import Control.Concurrent (threadDelay)
 import qualified Data.ByteString as BS
 import Hyperspace.Actor (getSingleton, newActorSystem, shutdownActorSystem)
 import System.Directory
@@ -30,6 +31,7 @@ import Actor.PluginManager
   , getPluginStages
   , refreshManifests
   , pluginManagerActorDef
+  , shutdownPlugins
   )
 import Topo.Overlay.Schema (OverlaySchema(..))
 
@@ -56,6 +58,8 @@ spec = describe "PluginManager" $ do
           let launchPlugin = filter ((== "copilot-test-plugin-launch") . lpName) loaded
           length stages `shouldSatisfy` (> 0)
           map lpStatus launchPlugin `shouldSatisfy` elem PluginConnected
+          shutdownPlugins pluginManagerHandle
+          threadDelay 200000
 
   it "launches a real topo-plugin-example executable when available" $ do
     if os /= "mingw32"
@@ -74,6 +78,8 @@ spec = describe "PluginManager" $ do
               let launchPlugin = filter ((== "terrain-roughen") . lpName) loaded
               length stages `shouldSatisfy` (> 0)
               map lpStatus launchPlugin `shouldSatisfy` elem PluginConnected
+              shutdownPlugins pluginManagerHandle
+              threadDelay 200000
 
 withTestPluginDir :: String -> BS.ByteString -> BS.ByteString -> IO a -> IO a
 withTestPluginDir pluginName manifestJSON schemaJSON action =

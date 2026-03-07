@@ -1,8 +1,8 @@
 module Spec.Determinism (spec) where
 
 import Test.Hspec
+import Spec.Support.Storage (encodeWorld)
 import Topo
-import Topo.Storage (encodeWorld)
 
 spec :: Spec
 spec = describe "Determinism" $ do

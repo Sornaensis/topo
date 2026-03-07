@@ -6,16 +6,11 @@ import Test.Hspec
 import Test.Hspec.QuickCheck
 import Test.QuickCheck
 import qualified Data.Vector.Unboxed as U
+import Spec.Support.FloatApprox (approxEqRel)
 import Topo
 
-floatTolerance :: Float
-floatTolerance = 1e-5
-
-approxEqFloat :: Float -> Float -> Bool
-approxEqFloat expected actual =
-  let scale = max 1 (max (abs expected) (abs actual))
-      relTol = floatTolerance * scale
-  in abs (actual - expected) <= relTol
+slopeRelTolerance :: Float
+slopeRelTolerance = 1e-5
 
 -- | Arbitrary instance for DirectionalSlope.
 instance Arbitrary DirectionalSlope where
@@ -69,7 +64,7 @@ spec = describe "DirectionalSlope" $ do
 
     prop "equals abs k for uniform slope k" $ \(k :: Float) ->
       let ds = DirectionalSlope k k k k k k
-      in abs (dsAvgSlope ds - abs k) < 1e-5
+      in approxEqRel slopeRelTolerance (abs k) (dsAvgSlope ds)
 
   describe "dsMaxSlope" $ do
     prop "is non-negative" $ \(ds :: DirectionalSlope) ->
@@ -94,10 +89,12 @@ spec = describe "DirectionalSlope" $ do
 
     prop "is 0 for uniform slope" $ \(k :: Float) ->
       let ds = DirectionalSlope k k k k k k
-      in abs (dsAsymmetry ds) < 1e-5
+      in approxEqRel slopeRelTolerance 0 (dsAsymmetry ds)
 
     prop "equals dsMaxSlope - dsMinSlope" $ \(ds :: DirectionalSlope) ->
-      abs (dsAsymmetry ds - (dsMaxSlope ds - dsMinSlope ds)) < 1e-5
+      approxEqRel slopeRelTolerance
+        (dsMaxSlope ds - dsMinSlope ds)
+        (dsAsymmetry ds)
 
   ---------------------------------------------------------------------------
   -- dsTop3Slope
@@ -108,7 +105,7 @@ spec = describe "DirectionalSlope" $ do
 
     prop "equals dsAvgSlope for uniform slope" $ \(k :: Float) ->
       let ds = DirectionalSlope k k k k k k
-      in approxEqFloat (dsAvgSlope ds) (dsTop3Slope ds)
+      in approxEqRel slopeRelTolerance (dsAvgSlope ds) (dsTop3Slope ds)
 
     it "is higher than dsAvgSlope for one-directional slope" $ do
       let ds = DirectionalSlope 1.0 0 0 0 0 0

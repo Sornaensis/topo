@@ -58,26 +58,28 @@ data GenConfig = GenConfig
   , gcCoastSharpness :: !Float
     -- ^ Exponent controlling coast edge sharpness; higher = sharper.
   , gcOceanEdgeDepth :: !OceanEdgeDepth
-    -- ^ Per-edge ocean depth biases at the world boundary.
+    -- ^ Per-axial-boundary ocean depth biases at the world boundary.
     -- /Derived/: auto-computed by 'autoOceanEdgeDepth' when all
     -- fields are zero.
   } deriving (Eq, Show, Generic)
 
--- | Ocean depth bias near world edges.
+-- | Ocean depth bias near the finite axial rectangle used to store the
+-- generated world slice.
 --
 -- Forces ocean depth at map boundaries so that slices that do not span
 -- the full planet produce plausible ocean margins.  All values default
 -- to zero (disabled); the pipeline auto-derives them via
--- 'autoOceanEdgeDepth'.
+-- 'autoOceanEdgeDepth'.  These are boundary-coordinate controls, not
+-- neighbour-topology directions.
 data OceanEdgeDepth = OceanEdgeDepth
-  { oedNorth :: !Float
-    -- ^ Forced ocean depth at the north edge [0..1]; 0 = no bias.
-  , oedSouth :: !Float
-    -- ^ Forced ocean depth at the south edge [0..1]; 0 = no bias.
-  , oedEast :: !Float
-    -- ^ Forced ocean depth at the east edge [0..1]; 0 = no bias.
-  , oedWest :: !Float
-    -- ^ Forced ocean depth at the west edge [0..1]; 0 = no bias.
+  { oedRMin :: !Float
+    -- ^ Forced ocean depth at the @r = min@ boundary [0..1]; 0 = no bias.
+  , oedRMax :: !Float
+    -- ^ Forced ocean depth at the @r = max@ boundary [0..1]; 0 = no bias.
+  , oedQMax :: !Float
+    -- ^ Forced ocean depth at the @q = max@ boundary [0..1]; 0 = no bias.
+  , oedQMin :: !Float
+    -- ^ Forced ocean depth at the @q = min@ boundary [0..1]; 0 = no bias.
   , oedFalloff :: !Float
     -- ^ Falloff distance in tiles; 0 = disabled.
   } deriving (Eq, Show, Generic)
@@ -120,10 +122,10 @@ defaultGenConfig = GenConfig
 -- | Default edge-depth bias configuration (disabled).
 defaultOceanEdgeDepth :: OceanEdgeDepth
 defaultOceanEdgeDepth = OceanEdgeDepth
-  { oedNorth = 0
-  , oedSouth = 0
-  , oedEast = 0
-  , oedWest = 0
+  { oedRMin = 0
+  , oedRMax = 0
+  , oedQMax = 0
+  , oedQMin = 0
   , oedFalloff = 0
   }
 
@@ -156,7 +158,7 @@ sampleBaseHeightAt seed cfg gx gy =
 softLimit :: Float -> Float
 softLimit x = tanh (x * 0.7)
 
--- | Compute an edge-depth bias for an absolute tile coordinate.
+-- | Compute an axial-boundary depth bias for an absolute tile coordinate.
 --   The falloff is expressed in tiles; zero disables the bias.
 oceanEdgeBiasAt :: WorldConfig -> WorldExtent -> OceanEdgeDepth -> TileCoord -> Float
 oceanEdgeBiasAt config extent edgeCfg (TileCoord gx gy) =
@@ -165,15 +167,15 @@ oceanEdgeBiasAt config extent edgeCfg (TileCoord gx gy) =
       edgeMask dist
         | falloff <= 0 = 0
         | otherwise = smoothstep 0 1 (clamp01 (1 - dist / falloff))
-      distN = max 0 (fromIntegral (gy - minY))
-      distS = max 0 (fromIntegral (maxY - gy))
-      distW = max 0 (fromIntegral (gx - minX))
-      distE = max 0 (fromIntegral (maxX - gx))
-      biasN = (-oedNorth edgeCfg) * edgeMask distN
-      biasS = (-oedSouth edgeCfg) * edgeMask distS
-      biasW = (-oedWest edgeCfg) * edgeMask distW
-      biasE = (-oedEast edgeCfg) * edgeMask distE
-  in biasN + biasS + biasW + biasE
+      distRMin = max 0 (fromIntegral (gy - minY))
+      distRMax = max 0 (fromIntegral (maxY - gy))
+      distQMin = max 0 (fromIntegral (gx - minX))
+      distQMax = max 0 (fromIntegral (maxX - gx))
+      biasRMin = (-oedRMin edgeCfg) * edgeMask distRMin
+      biasRMax = (-oedRMax edgeCfg) * edgeMask distRMax
+      biasQMin = (-oedQMin edgeCfg) * edgeMask distQMin
+      biasQMax = (-oedQMax edgeCfg) * edgeMask distQMax
+  in biasRMin + biasRMax + biasQMin + biasQMax
 
 worldTileBounds :: WorldConfig -> WorldExtent -> (Int, Int, Int, Int)
 worldTileBounds config extent =

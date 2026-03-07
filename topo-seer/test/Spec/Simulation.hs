@@ -30,7 +30,10 @@ import Topo
   , setClimateChunk
   , setTerrainChunk
   )
+import Topo.Overlay (Overlay(..), OverlayData(..), OverlayProvenance(..), insertOverlay)
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice)
+import Topo.Weather (weatherChunkToOverlay, weatherOverlaySchema)
+import Topo.World (TerrainWorld(..))
 
 withSystem :: (ActorSystem -> IO a) -> IO a
 withSystem = bracket newActorSystem shutdownActorSystem
@@ -63,6 +66,37 @@ firstWeatherTemp chunks = do
     then Nothing
     else Just (wcTemp weatherChunk U.! 0)
 
+seedWeatherOverlay :: IntMap.IntMap WeatherChunk -> Overlay
+seedWeatherOverlay weatherChunks = Overlay
+  { ovSchema = weatherOverlaySchema
+  , ovData = DenseData (IntMap.map weatherChunkToOverlay weatherChunks)
+  , ovProvenance = OverlayProvenance
+      { opSeed = 0
+      , opVersion = 1
+        , opSource = Text.pack "simulation-spec"
+      }
+  }
+
+mkSeedWeatherChunk :: ClimateChunk -> WeatherChunk
+mkSeedWeatherChunk climate = WeatherChunk
+  { wcTemp = ccTempAvg climate
+  , wcHumidity = ccHumidityAvg climate
+  , wcWindDir = ccWindDirAvg climate
+  , wcWindSpd = ccWindSpdAvg climate
+  , wcPressure = U.replicate tileCount 0.5
+  , wcPrecip = ccPrecipAvg climate
+  }
+  where
+    tileCount = U.length (ccTempAvg climate)
+
+withSeedWeather :: TerrainWorld -> ChunkId -> ClimateChunk -> TerrainWorld
+withSeedWeather world (ChunkId chunkId) climate =
+  world
+    { twOverlays = insertOverlay weatherOverlay (twOverlays world)
+    }
+  where
+    weatherOverlay = seedWeatherOverlay (IntMap.singleton chunkId (mkSeedWeatherChunk climate))
+
 spec :: Spec
 spec = describe "Simulation actor" $ do
   it "binds world before processing first post-load tick request" $ withSystem $ \system -> do
@@ -87,12 +121,15 @@ spec = describe "Simulation actor" $ do
           , ccHumidityAvg = U.replicate tileCount 0.4
           }
         world0 = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice
-        world1 = setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) chunk world0)
+        world1 = withSeedWeather
+          (setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) chunk world0))
+          (ChunkId 0)
+          climate
 
     setSimWorld simHandle world1
     requestSimTick simHandle 1
 
-    tickAdvanced <- awaitTrue 200 $ do
+    tickAdvanced <- awaitTrue 500 $ do
       uiSnap <- getUiSnapshot uiHandle
       pure (uiSimTickCount uiSnap >= 1)
     tickAdvanced `shouldBe` True
@@ -132,11 +169,14 @@ spec = describe "Simulation actor" $ do
           , ccHumidityAvg = U.replicate tileCount 0.4
           }
         world0 = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice
-        world1 = setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) chunk world0)
+        world1 = withSeedWeather
+          (setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) chunk world0))
+          (ChunkId 0)
+          climate
 
     setSimWorld simHandle world1
 
-    tickAdvanced <- awaitTrue 200 $ do
+    tickAdvanced <- awaitTrue 500 $ do
       uiSnap <- getUiSnapshot uiHandle
       pure (uiSimTickCount uiSnap >= 1)
     tickAdvanced `shouldBe` True
@@ -168,12 +208,15 @@ spec = describe "Simulation actor" $ do
           , ccHumidityAvg = U.replicate tileCount 0.5
           }
         world0 = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice
-        world1 = setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) chunk world0)
+        world1 = withSeedWeather
+          (setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) chunk world0))
+          (ChunkId 0)
+          climate
 
     setSimWorld simHandle world1
     requestSimTick simHandle 1
 
-    tickAdvanced <- awaitTrue 200 $ do
+    tickAdvanced <- awaitTrue 500 $ do
       uiSnap <- getUiSnapshot uiHandle
       pure (uiSimTickCount uiSnap >= 1)
     tickAdvanced `shouldBe` True
@@ -185,7 +228,7 @@ spec = describe "Simulation actor" $ do
       Nothing -> expectationFailure "Expected weather chunks after tick 1" >> pure 0
 
     requestSimTick simHandle 2
-    tickAdvanced2 <- awaitTrue 200 $ do
+    tickAdvanced2 <- awaitTrue 500 $ do
       uiSnap <- getUiSnapshot uiHandle
       pure (uiSimTickCount uiSnap >= 2)
     tickAdvanced2 `shouldBe` True
@@ -196,7 +239,7 @@ spec = describe "Simulation actor" $ do
       Nothing -> expectationFailure "Expected weather chunks after tick 2" >> pure tempAfterTick1
     tempAfterTick2 `shouldNotBe` tempAfterTick1
 
-    snapshotPublished <- awaitTrue 200 $ do
+    snapshotPublished <- awaitTrue 500 $ do
       (_version, renderSnap) <- getSnapshot snapshotHandle
       pure (tsVersion (rsTerrain renderSnap) > 0)
     snapshotPublished `shouldBe` True

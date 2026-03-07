@@ -8,10 +8,10 @@ import qualified Data.Vector.Unboxed as U
 import Data.Aeson (toJSON)
 import Data.Proxy (Proxy(..))
 import Data.Text (Text, pack)
+import Spec.Support.Storage (decodeWorld, decodeWorldWithMetadata, encodeWorld)
 import Topo
 import Topo.Calendar (WorldTime(..), PlanetAge(..), defaultWorldTime, defaultPlanetAge)
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice)
-import Topo.Storage (decodeWorld, decodeWorldWithMetadata, encodeWorld)
 import Topo.Units (UnitScales(..), defaultUnitScales)
 import Topo.WorldGen (defaultWorldGenConfig)
 

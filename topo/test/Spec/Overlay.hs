@@ -19,7 +19,6 @@ import qualified Data.IntMap.Strict as IntMap
 import qualified Data.IntSet as IntSet
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (isNothing)
 import Data.Text (Text)
 import System.Directory (copyFile, doesFileExist)
 import System.FilePath ((</>))
@@ -34,7 +33,6 @@ import Topo.Overlay
   , OverlayChunk(..)
   , OverlayData(..)
   , OverlayRecord(..)
-  , OverlayStore(..)
   , OverlayValue(..)
   , chunkDelete
   , chunkInsert
@@ -1141,7 +1139,7 @@ indexedSpec = describe "Overlay.Indexed" $ do
 
   it "mkIndexed starts with dirty index" $ do
     let io = mkIndexed (emptyOverlay testSparseSchema)
-    ioIndex io `shouldSatisfy` isNothing
+    ioIndex io `shouldBe` Nothing
 
   it "mkIndexedFresh starts with built index" $ do
     let io = mkIndexedFresh (emptyOverlay testSparseSchema)
@@ -1155,18 +1153,18 @@ indexedSpec = describe "Overlay.Indexed" $ do
   it "invalidateIndex marks index dirty" $ do
     let io  = mkIndexedFresh (emptyOverlay testSparseSchema)
         io' = invalidateIndex io
-    ioIndex io' `shouldSatisfy` isNothing
+    ioIndex io' `shouldBe` Nothing
 
   it "insertSparseRecord invalidates index" $ do
     let io  = mkIndexedFresh (emptyOverlay testSparseSchema)
         io' = insertSparseRecord 0 1 testRecord io
-    ioIndex io' `shouldSatisfy` isNothing
+    ioIndex io' `shouldBe` Nothing
 
   it "deleteSparseRecord invalidates index" $ do
     let io  = mkIndexedFresh (emptyOverlay testSparseSchema)
         io' = insertSparseRecord 0 1 testRecord io
         io'' = deleteSparseRecord 0 1 io'
-    ioIndex io'' `shouldSatisfy` isNothing
+    ioIndex io'' `shouldBe` Nothing
 
   it "insert then query int field returns correct tiles" $ do
     let rec1 = OverlayRecord $ V.fromList [OVFloat 10, OVInt 5, OVBool True, OVText "A"]
@@ -1193,7 +1191,7 @@ indexedSpec = describe "Overlay.Indexed" $ do
         io2 = insertSparseRecord 0 2 rec2 io1
         io3 = insertSparseRecord 0 3 rec3 io2
         -- population field is not indexed, so this should return empty
-        (_io4, hits) = Indexed.queryFloatRange "population" 5 55 io3
+        (_io4, hits) = Indexed.queryFloatRangeI "population" 5 55 io3
     -- population is not indexed (ofdIndexed = False), expect no results
     hits `shouldBe` []
 

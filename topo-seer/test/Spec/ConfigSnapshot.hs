@@ -227,14 +227,14 @@ isSorted (x:y:rest) = x <= y && isSorted (y:rest)
 snapshotCompatSpec :: Spec
 snapshotCompatSpec = describe "Snapshot schema evolution" $ do
   describe "new fields get defaults via mergeDefaults" $ do
-    it "ErosionConfig missing coastalSmoothIterations gets default 4" $ do
+    it "ErosionConfig missing coastalSmoothIterations gets default 2" $ do
       -- Build an ErosionConfig JSON that omits the new field
       let fullJson = encode defaultErosionConfig
           -- Decode to Value, strip the new key, re-encode
           stripped = removeKey "coastalSmoothIterations" fullJson
       case eitherDecodeStrict' @ErosionConfig (BSL.toStrict stripped) of
         Left err -> expectationFailure err
-        Right ec -> ecCoastalSmoothIterations ec `shouldBe` 4
+        Right ec -> ecCoastalSmoothIterations ec `shouldBe` 2
 
     it "ErosionConfig with explicit coastalSmoothIterations preserves it" $ do
       let ec = defaultErosionConfig { ecCoastalSmoothIterations = 7 }
@@ -255,7 +255,7 @@ snapshotCompatSpec = describe "Snapshot schema evolution" $ do
             Left err -> expectationFailure err
             Right cs ->
               let erosion = terrainErosion (worldTerrain (csGenConfig cs))
-              in ecCoastalSmoothIterations erosion `shouldBe` 4
+              in ecCoastalSmoothIterations erosion `shouldBe` 2
 
   describe "old snapshot applies cleanly" $ do
     it "empty genConfig decodes to defaultWorldGenConfig" $ do

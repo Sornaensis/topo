@@ -16,7 +16,7 @@ import Topo.TerrainForm.Modifiers
   , defaultTerrainFormModifiersConfig
   , configModifierLookup
   )
-import Topo.Glacier (snowAccumGrid, diffuseGrid)
+import Topo.Glacier (snowAccumGrid, diffuseHexGrid)
 import Topo.Hydrology (flowAccumulation, piedmontSmoothGrid, carveRiversGrid, alluvialDepositGrid)
 import Topo.Math (clamp01)
 
@@ -240,8 +240,8 @@ spec = describe "TerrainFormModifiers" $ do
           flatRateVec = U.replicate (w * h) baseRate
           -- Pass: amplified rate (+0.30)
           passRateVec = U.replicate (w * h) (baseRate * (1 + 0.30))
-          iceFlat = diffuseGrid w h flatRateVec iters ice
-          icePass = diffuseGrid w h passRateVec iters ice
+          iceFlat = diffuseHexGrid w h flatRateVec iters ice
+          icePass = diffuseHexGrid w h passRateVec iters ice
           -- Pass ice should spread more (center value lower)
           centerFlat = iceFlat U.! center
           centerPass = icePass U.! center
@@ -259,8 +259,8 @@ spec = describe "TerrainFormModifiers" $ do
           flatRateVec = U.replicate (w * h) baseRate
           -- Plateau: reduced rate (-0.30)
           platRateVec = U.replicate (w * h) (baseRate * (1 - 0.30))
-          iceFlat = diffuseGrid w h flatRateVec iters ice
-          icePlat = diffuseGrid w h platRateVec iters ice
+          iceFlat = diffuseHexGrid w h flatRateVec iters ice
+          icePlat = diffuseHexGrid w h platRateVec iters ice
           -- Plateau ice should spread less (center value higher)
           centerFlat = iceFlat U.! center
           centerPlat = icePlat U.! center

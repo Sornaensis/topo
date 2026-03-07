@@ -5,6 +5,9 @@ import Linear (V2(..))
 import UI.Layout
 import UI.Widgets (Rect(..))
 
+rectCenter :: Rect -> V2 Int
+rectCenter (Rect (V2 x y, V2 w h)) = V2 (x + w `div` 2) (y + h `div` 2)
+
 spec :: Spec
 spec = describe "UI.Layout" $ do
   it "creates a log header rect" $ do
@@ -21,7 +24,7 @@ spec = describe "UI.Layout" $ do
   it "creates config panel rect" $ do
     let layout = layoutFor (V2 800 600) 160
         Rect (V2 x y, V2 w h) = configPanelRect layout
-    (x, y, w, h) `shouldBe` (544, 16, 240, 408)
+    (x, y, w, h) `shouldBe` (484, 44, 300, 380)
 
   it "creates config button rects (4-button stack)" $ do
     let layout = layoutFor (V2 800 600) 160
@@ -44,5 +47,20 @@ spec = describe "UI.Layout" $ do
 
   it "creates config slider rects" $ do
     let layout = layoutFor (V2 800 600) 160
-        Rect (V2 wx wy, V2 ww wh) = configWaterBarRect layout
-    (wx, wy, ww, wh) `shouldBe` (588, 114, 138, 12)
+        Rect (V2 minusX minusY, V2 minusW minusH) = configWaterMinusRect layout
+        Rect (V2 barX barY, V2 barW barH) = configWaterBarRect layout
+        Rect (V2 plusX plusY, V2 plusW plusH) = configWaterPlusRect layout
+        waterRowRect = configParamRowRect 0 layout
+        waterBarCenter = rectCenter (configWaterBarRect layout)
+    (minusW, minusH) `shouldBe` (24, 24)
+    (plusW, plusH) `shouldBe` (24, 24)
+    minusY `shouldBe` plusY
+    barY `shouldBe` (minusY + (minusH - barH) `div` 2)
+    barX `shouldBe` (minusX + minusW + 8)
+    plusX `shouldBe` (barX + barW + 8)
+    plusY `shouldBe` minusY
+    waterBarCenter `shouldSatisfy` (`inside` waterRowRect)
+
+inside :: V2 Int -> Rect -> Bool
+inside (V2 px py) (Rect (V2 x y, V2 w h)) =
+  px >= x && px < x + w && py >= y && py < y + h

@@ -40,10 +40,10 @@ applyUiConfig ui cfg =
       extentX = mapIntRange 0 16 (uiWorldExtentX ui)
       extentY = mapIntRange 0 16 (uiWorldExtentY ui)
       edgeDepth = OceanEdgeDepth
-        { oedNorth = mapRange 0 2 (uiEdgeDepthNorth ui)
-        , oedSouth = mapRange 0 2 (uiEdgeDepthSouth ui)
-        , oedEast = mapRange 0 2 (uiEdgeDepthEast ui)
-        , oedWest = mapRange 0 2 (uiEdgeDepthWest ui)
+        { oedRMin = mapRange 0 2 (uiEdgeDepthNorth ui)
+        , oedRMax = mapRange 0 2 (uiEdgeDepthSouth ui)
+        , oedQMax = mapRange 0 2 (uiEdgeDepthEast ui)
+        , oedQMin = mapRange 0 2 (uiEdgeDepthWest ui)
         , oedFalloff = mapRange 0 512 (uiEdgeDepthFalloff ui)
         }
       gen' = gen

@@ -9,6 +9,7 @@ import Data.Word (Word64)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
+import Spec.Support.FloatApprox (approxEqAbs)
 import Topo
 import Topo.Calendar (WorldTime(..), advanceTicks, mkCalendarConfig, tickToDate)
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice, PlanetConfig(..), WorldSlice(..))
@@ -16,6 +17,9 @@ import Topo.Weather (cloudFraction, seasonalITCZLatitude,
                      weatherOverlaySchema, overlayToWeatherChunk, weatherFieldCount,
                      initWeatherStage, weatherSimNode,
                      getWeatherChunk, getWeatherFromOverlay)
+
+itczLatitudeTolerance :: Float
+itczLatitudeTolerance = 0.001
 
 spec :: Spec
 spec = describe "Weather" $ do
@@ -103,19 +107,20 @@ spec = describe "Weather" $ do
           { wcTempDiffuseIterations = 2
           , wcTempDiffuseFactor = 0.2
           }
-        size = wcChunkSize config
-        avgAdjacentDiff vec =
+        avgHexAdjacentDiff vec =
           let diffs =
-                [ abs ((vec U.! (y * size + x)) - (vec U.! (y * size + x + 1)))
-                | y <- [0 .. size - 1], x <- [0 .. size - 2]
+                [ abs ((vec U.! i) - (vec U.! j))
+                | i <- [0 .. n - 1]
+                , j <- hexNeighborIndices (wcChunkSize config) (wcChunkSize config) i
+                , i < j
                 ]
           in sum diffs / fromIntegral (length diffs)
     wNoDiffuse <- initWeatherAndTick cfgNoDiffuse world0
     wDiffuse <- initWeatherAndTick cfgDiffuse world0
     case (getWeatherChunk (ChunkId 0) wNoDiffuse, getWeatherChunk (ChunkId 0) wDiffuse) of
       (Just chunkNoDiffuse, Just chunkDiffuse) ->
-        avgAdjacentDiff (wcTemp chunkDiffuse) `shouldSatisfy`
-          (<= avgAdjacentDiff (wcTemp chunkNoDiffuse) + 1.0e-6)
+        avgHexAdjacentDiff (wcTemp chunkDiffuse) `shouldSatisfy`
+          (<= avgHexAdjacentDiff (wcTemp chunkNoDiffuse) + 1.0e-6)
       _ -> expectationFailure "missing weather chunk"
 
   it "seasonal amplitude scales with axial tilt" $ do
@@ -492,10 +497,65 @@ spec = describe "Weather" $ do
         avgWindG `shouldSatisfy` (> avgWindU)
       _ -> expectationFailure "missing weather chunks"
 
+  it "drives wind direction from a hex-diagonal pressure source" $ do
+    let config = WorldConfig { wcChunkSize = 3 }
+        n = chunkTileCount config
+        centerIdx = 4
+        climateDiagonal = ClimateChunk
+          { ccTempAvg = U.generate n (\idx -> if idx == 2 then 0 else 1)
+          , ccPrecipAvg = U.replicate n 0
+          , ccWindDirAvg = U.replicate n 0
+          , ccWindSpdAvg = U.replicate n 0
+          , ccHumidityAvg = U.replicate n 0
+          , ccTempRange = U.replicate n 0
+          , ccPrecipSeasonality = U.replicate n 0
+          }
+        world0 = setClimateChunk (ChunkId 0) climateDiagonal
+                   (emptyWorldWithPlanet
+                     config
+                     defaultHexGridMeta
+                     defaultPlanetConfig
+                     defaultWorldSlice
+                       { wsLatCenter = 0
+                       , wsLatExtent = 1
+                       , wsLonCenter = 0
+                       , wsLonExtent = 1
+                       })
+        weatherCfg = defaultWeatherConfig
+          { wcSeasonAmplitude = 0
+          , wcJitterAmplitude = 0
+          , wcPressureCoriolisScale = 0
+          , wcHumidityNoiseScale = 0
+          , wcPrecipNoiseScale = 0
+          , wcWindNoiseScale = 0
+          , wcPressureNoiseFrequency = 0
+          , wcTempDiffuseIterations = 0
+          , wcTempDiffuseFactor = 0
+          , wcAdvectDt = 0
+          , wcClimatePullStrength = 0
+          , wcWindResponseRate = 1
+          , wcWeatherDiffuseFactor = 0
+          , wcCloudAlbedoEffect = 0
+          , wcCloudPrecipBoost = 0
+          , wcSeasonalBase = 1
+          , wcSeasonalRange = 0
+          , wcITCZPrecipBoost = 0
+          }
+    w <- initWeatherAndTick weatherCfg world0
+    case getWeatherChunk (ChunkId 0) w of
+      Just wk ->
+        -- Tile 2 is the center tile's HexNE neighbour. Lower temperature
+        -- there produces higher pressure, so wind points away from that
+        -- source along the opposite canonical hex direction, HexSW.
+        (wcWindDir wk U.! centerIdx)
+          `shouldSatisfy` approxEqAbs 0.05 (2 * pi / 3)
+      Nothing -> expectationFailure "missing weather chunk"
+
   -- Phase 7.3: seasonal ITCZ migration
   describe "seasonalITCZLatitude (7.3)" $ do
     it "returns base latitude when migration scale is 0" $ do
-      seasonalITCZLatitude 5.0 0.0 23.44 1.57 `shouldSatisfy` (\v -> abs (v - 5.0) < 0.001)
+      seasonalITCZLatitude 5.0 0.0 23.44 1.57
+        `shouldSatisfy` approxEqAbs itczLatitudeTolerance 5.0
 
     it "migrates north in boreal summer (phase = pi/2)" $ do
       let lat = seasonalITCZLatitude 0 0.7 23.44 (pi / 2)

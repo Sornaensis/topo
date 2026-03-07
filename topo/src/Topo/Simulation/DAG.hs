@@ -247,7 +247,7 @@ runOneReader
   -> (SimProgress -> IO ())
   -> Int
   -> (SimNodeId, SimNode)
-  -> IO (Either Text (SimNodeId, Text, Overlay))
+  -> IO (Either Text (Maybe (SimNodeId, Text, Overlay)))
 runOneReader nodeMap terrain store cal wt dt progress total (nid, node) =
   case node of
     SimNodeReader{snrOverlayName = name, snrDependencies = deps, snrReadTick = tick} -> do
@@ -298,19 +298,21 @@ runOneReader nodeMap terrain store cal wt dt progress total (nid, node) =
                 , simpNodeId    = nid
                 , simpStatus    = SimCompleted
                 }
-              pure (Right (nid, name, updatedOverlay))
+              pure (Right (Just (nid, name, updatedOverlay)))
 
     -- Writer nodes are skipped in reader phase
-    SimNodeWriter{} -> pure (Right (nid, simNodeOverlayName node, error "unreachable"))
+    SimNodeWriter{} -> pure (Right Nothing)
 
 -- | Collect reader results into the overlay store.
 collectResults
-  :: [Either Text (SimNodeId, Text, Overlay)]
+  :: [Either Text (Maybe (SimNodeId, Text, Overlay))]
   -> OverlayStore
   -> Either Text OverlayStore
 collectResults [] store = Right store
 collectResults (Left err : _) _store = Left err
-collectResults (Right (_nid, _name, ov) : rest) store =
+collectResults (Right Nothing : rest) store =
+  collectResults rest store
+collectResults (Right (Just (_nid, _name, ov)) : rest) store =
   collectResults rest (insertOverlay ov store)
 
 -- | Run writer nodes sequentially, accumulating terrain writes.
@@ -340,51 +342,53 @@ runWriterPhase nodeMap total progress terrain store cal wt dt (nid:rest) = do
               , scDeltaTicks = dt
               , scOverlays   = depOverlays
               }
-            overlay = case lookupOverlay name store of
-              Just ov -> ov
-              Nothing -> error $ "Writer node " ++ show nid
-                            ++ " references missing overlay: " ++ show name
 
-        progress SimProgress
-          { simpNodeIndex = 0
-          , simpNodeCount = total
-          , simpNodeId    = nid
-          , simpStatus    = SimStarted
-          }
+        case lookupOverlay name store of
+          Nothing ->
+            pure (Left (
+              "Simulation writer node " <> unSimNodeId nid
+                <> " references missing overlay: " <> name))
+          Just overlay -> do
+            progress SimProgress
+              { simpNodeIndex = 0
+              , simpNodeCount = total
+              , simpNodeId    = nid
+              , simpStatus    = SimStarted
+              }
 
-        result <- try (tick ctx overlay)
-        case result of
-          Left (ex :: SomeException) -> do
-            let msg = "Exception in writer node " <> unSimNodeId nid <> ": " <> T.pack (show ex)
-            progress SimProgress
-              { simpNodeIndex = 0
-              , simpNodeCount = total
-              , simpNodeId    = nid
-              , simpStatus    = SimFailed msg
-              }
-            pure (Left msg)
-          Right (Left err) -> do
-            progress SimProgress
-              { simpNodeIndex = 0
-              , simpNodeCount = total
-              , simpNodeId    = nid
-              , simpStatus    = SimFailed err
-              }
-            pure (Left err)
-          Right (Right (updatedOverlay, writes)) -> do
-            progress SimProgress
-              { simpNodeIndex = 0
-              , simpNodeCount = total
-              , simpNodeId    = nid
-              , simpStatus    = SimCompleted
-              }
-            let store'   = insertOverlay updatedOverlay store
-                terrain' = applyTerrainWrites writes terrain
-            restResult <- runWriterPhase nodeMap total progress terrain' store' cal wt dt rest
-            case restResult of
-              Left err -> pure (Left err)
-              Right (finalStore, moreWrites) ->
-                pure (Right (finalStore, mergeTerrainWrites writes moreWrites))
+            result <- try (tick ctx overlay)
+            case result of
+              Left (ex :: SomeException) -> do
+                let msg = "Exception in writer node " <> unSimNodeId nid <> ": " <> T.pack (show ex)
+                progress SimProgress
+                  { simpNodeIndex = 0
+                  , simpNodeCount = total
+                  , simpNodeId    = nid
+                  , simpStatus    = SimFailed msg
+                  }
+                pure (Left msg)
+              Right (Left err) -> do
+                progress SimProgress
+                  { simpNodeIndex = 0
+                  , simpNodeCount = total
+                  , simpNodeId    = nid
+                  , simpStatus    = SimFailed err
+                  }
+                pure (Left err)
+              Right (Right (updatedOverlay, writes)) -> do
+                progress SimProgress
+                  { simpNodeIndex = 0
+                  , simpNodeCount = total
+                  , simpNodeId    = nid
+                  , simpStatus    = SimCompleted
+                  }
+                let store'   = insertOverlay updatedOverlay store
+                    terrain' = applyTerrainWrites writes terrain
+                restResult <- runWriterPhase nodeMap total progress terrain' store' cal wt dt rest
+                case restResult of
+                  Left err -> pure (Left err)
+                  Right (finalStore, moreWrites) ->
+                    pure (Right (finalStore, mergeTerrainWrites writes moreWrites))
 
       -- Reader nodes shouldn't appear in writer phase
       SimNodeReader{} -> runWriterPhase nodeMap total progress terrain store cal wt dt rest

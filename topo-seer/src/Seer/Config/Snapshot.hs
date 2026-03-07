@@ -382,10 +382,10 @@ applySnapshotToUi cs h = do
   setUiWorldExtentX h (unmapIntRange 0 16 (worldExtentRadiusX extent))
   setUiWorldExtentY h (unmapIntRange 0 16 (worldExtentRadiusY extent))
   -- Ocean edge depth
-  setUiEdgeDepthNorth h (unmapRange 0 2 (oedNorth edge))
-  setUiEdgeDepthSouth h (unmapRange 0 2 (oedSouth edge))
-  setUiEdgeDepthEast h (unmapRange 0 2 (oedEast edge))
-  setUiEdgeDepthWest h (unmapRange 0 2 (oedWest edge))
+  setUiEdgeDepthNorth h (unmapRange 0 2 (oedRMin edge))
+  setUiEdgeDepthSouth h (unmapRange 0 2 (oedRMax edge))
+  setUiEdgeDepthEast h (unmapRange 0 2 (oedQMax edge))
+  setUiEdgeDepthWest h (unmapRange 0 2 (oedQMin edge))
   setUiEdgeDepthFalloff h (unmapRange 0 512 (oedFalloff edge))
   -- Tectonics
   setUiPlateSize h (unmapIntRange 16 128 (tcPlateSize tec))

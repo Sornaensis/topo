@@ -1,12 +1,17 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Spec.Pipeline (spec) where
 
 import Test.Hspec
+import Test.Hspec.QuickCheck (prop)
+import Test.QuickCheck (NonEmptyList(..), ioProperty)
 import Data.Aeson (Value(..))
+import Data.Char (isAsciiLower, isDigit, toLower)
 import Data.Either (isRight)
 import Data.IORef (newIORef, readIORef, modifyIORef')
-import Data.Text (pack)
+import Data.List (foldl')
+import Data.Text (Text, pack)
 import System.IO.Temp (withSystemTempDirectory)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
@@ -228,6 +233,45 @@ spec = describe "Pipeline" $ do
         Left (PipelineOverlayDependencyError _) -> pure ()
         Left err -> expectationFailure ("expected overlay dependency error, got: " <> show err)
         Right _ -> expectationFailure "expected overlay dependency error"
+
+    prop "property: declaration order controls overlay-read validity" $
+      \(NonEmpty rawName :: NonEmptyList Char) -> ioProperty $ do
+        let overlayName = sanitizeOverlayName rawName
+            config = WorldConfig { wcChunkSize = 8 }
+            world0 = emptyWorld config defaultHexGridMeta
+            producer = mkProducingOverlayStage overlayName
+            consumer = mkReadingOverlayStage overlayName
+            mkPipeline stages = defaultPipelineConfig
+              { pipelineSeed = 42
+              , pipelineStages = stages
+              }
+            env = TopoEnv { teLogger = \_ -> pure () }
+
+        validResult <- runPipeline (mkPipeline [producer, consumer]) env world0
+        invalidResult <- runPipeline (mkPipeline [consumer, producer]) env world0
+        pure $ case (validResult, invalidResult) of
+          (Right _, Left (PipelineOverlayDependencyError _)) -> True
+          _ -> False
+
+    prop "property: produced overlays accumulate in manifest and store" $
+      \(NonEmpty rawNames :: NonEmptyList String) -> ioProperty $ do
+        let names = take 6 (dedupeText (map sanitizeOverlayName rawNames))
+            config = WorldConfig { wcChunkSize = 8 }
+            world0 = emptyWorld config defaultHexGridMeta
+            stages = map mkProducingOverlayStage names
+            pipeline = defaultPipelineConfig
+              { pipelineSeed = 42
+              , pipelineStages = stages
+              }
+            env = TopoEnv { teLogger = \_ -> pure () }
+        result <- runPipeline pipeline env world0
+        pure $ case result of
+          Left _ -> False
+          Right (world1, _) ->
+            all (\name -> case lookupOverlay name (twOverlays world1) of
+                            Nothing -> False
+                            Just _ -> True) names
+            && all (`elem` twOverlayManifest world1) names
 
   -- Phase 1: Progress callback
   describe "Progress callback" $ do
@@ -528,3 +572,52 @@ expectPipeline result =
   case result of
     Left err -> expectationFailure (show err) >> pure (emptyWorld (WorldConfig { wcChunkSize = 1 }) defaultHexGridMeta)
     Right (world, _) -> pure world
+
+sanitizeOverlayName :: String -> Text
+sanitizeOverlayName raw =
+  let keep c
+        | isAsciiLower c || isDigit c = c
+        | otherwise = '_'
+      base = map (keep . toLower) (take 24 raw)
+      normalized = if null base then "overlay" else base
+  in pack ("ov_" <> normalized)
+
+dedupeText :: [Text] -> [Text]
+dedupeText = foldl' addUnique []
+  where
+    addUnique acc name
+      | name `elem` acc = acc
+      | otherwise = acc <> [name]
+
+mkProducingOverlayStage :: Text -> PipelineStage
+mkProducingOverlayStage name =
+  let schema = OverlaySchema
+        { osName = name
+        , osVersion = "1.0.0"
+        , osDescription = ""
+        , osStorage = StorageSparse
+        , osFields = []
+        , osDependencies = emptyOverlayDeps
+        , osFieldIndex = Map.empty
+        }
+  in PipelineStage
+      { stageId = StagePlugin ("seed-" <> name)
+      , stageName = name
+      , stageSeedTag = name
+      , stageOverlayProduces = Just name
+      , stageOverlayReads = []
+      , stageOverlaySchema = Just schema
+      , stageRun = pure ()
+      }
+
+mkReadingOverlayStage :: Text -> PipelineStage
+mkReadingOverlayStage name =
+  PipelineStage
+    { stageId = StagePlugin ("read-" <> name)
+    , stageName = name
+    , stageSeedTag = name
+    , stageOverlayProduces = Nothing
+    , stageOverlayReads = [name]
+    , stageOverlaySchema = Nothing
+    , stageRun = pure ()
+    }

@@ -107,6 +107,24 @@ spec = describe "Glacier" $ do
             Nothing -> pure False
             Just glacier -> pure (U.all (\v -> abs (v - iceExpected) < 1e-5) (glIceThickness glacier))
 
+  it "diffuses glacier ice to a hex-only neighbour in one iteration" $ do
+    let gridW = 3
+        gridH = 3
+        center = 4
+        values = U.generate (gridW * gridH) $ \i -> if i == center then 1 else 0
+        rates = U.replicate (gridW * gridH) 1
+        flowed = diffuseHexGrid gridW gridH rates 1 values
+        centerNeighbors = hexNeighborIndices gridW gridH center
+        positiveAt i = flowed U.! i > 0
+    positiveAt center `shouldBe` True
+    mapM_ (\i -> positiveAt i `shouldBe` True) centerNeighbors
+    mapM_ (\i -> positiveAt i `shouldBe` False)
+      [ i
+      | i <- [0 .. gridW * gridH - 1]
+      , i /= center
+      , i `notElem` centerNeighbors
+      ]
+
   it "produces more ice at high latitude than at equator" $ do
     -- Generate worlds at 85°N and 0° equator using the full climate+glacier
     -- pipeline.  The high-latitude world should accumulate more ice because

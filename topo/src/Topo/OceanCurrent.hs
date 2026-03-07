@@ -26,11 +26,13 @@ import GHC.Generics (Generic)
 import Topo.Config.JSON
   (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
    genericToJSON, genericParseJSON)
+import Topo.Grid.HexDirection (traceIndexInDirection)
 import Topo.Math (clamp01)
 import Topo.Pipeline (PipelineStage(..))
 import Topo.Pipeline.Stage (StageId(..))
 import Topo.Planet (LatitudeMapping(..))
 import Topo.Plugin (logInfo, modifyWorldP)
+import Topo.Hex (HexDirection(..))
 import Topo.Types
 import Topo.World (TerrainWorld(..))
 import qualified Data.Vector.Unboxed as U
@@ -125,31 +127,30 @@ applyCurrentsChunk cfg waterLevel cs degPerTile latBiasDeg tc cc =
            then tempAvg U.! i          -- land: no modification
            else
              let y = i `div` cs
-                 x = i `mod` cs
                  latDeg  = latBiasDeg + fromIntegral y * degPerTile
                  latRad  = latDeg * (pi / 180)
-                 -- Check east/west neighbours for land (up to 2 tiles)
-                 landE   = anyLandInDir cs elev waterLevel x y 1 0
-                 landW   = anyLandInDir cs elev waterLevel x y (-1) 0
+                 -- Check along the hex east/west rays for nearby land.
+                 landE   = anyLandAlongHexDirection cs elev waterLevel i HexE
+                 landW   = anyLandAlongHexDirection cs elev waterLevel i HexW
                  offset  = oceanCurrentOffset cfg latRad landE landW
              in clamp01 (tempAvg U.! i + offset)
   in cc { ccTempAvg = tempAvg' }
 
--- | Check if there is land within 2 tiles in the given direction.
-anyLandInDir
+-- | Check if there is land within two hex steps in the given direction.
+anyLandAlongHexDirection
   :: Int            -- ^ chunkSize
   -> U.Vector Float -- ^ elevation
   -> Float          -- ^ waterLevel
-  -> Int -> Int     -- ^ (x, y)
-  -> Int -> Int     -- ^ (dx, dy)
+  -> Int            -- ^ start index
+  -> HexDirection   -- ^ direction to trace
   -> Bool
-anyLandInDir cs elev waterLevel x y dx dy =
-  let inBounds bx by = bx >= 0 && bx < cs && by >= 0 && by < cs
-      isLand   bx by = elev U.! (by * cs + bx) >= waterLevel
-      x1 = x + dx;     y1 = y + dy
-      x2 = x + 2 * dx; y2 = y + 2 * dy
-  in (inBounds x1 y1 && isLand x1 y1)
-  || (inBounds x2 y2 && isLand x2 y2)
+anyLandAlongHexDirection cs elev waterLevel startIdx dir =
+  let idx1 = traceIndexInDirection cs cs dir 1 startIdx
+      idx2 = traceIndexInDirection cs cs dir 2 startIdx
+      isDistinct idx = idx /= startIdx
+      isLand idx = elev U.! idx >= waterLevel
+  in (isDistinct idx1 && isLand idx1)
+  || (isDistinct idx2 && isLand idx2)
 
 ---------------------------------------------------------------------------
 -- Pure helper
@@ -157,8 +158,8 @@ anyLandInDir cs elev waterLevel x y dx dy =
 
 -- | Temperature offset from ocean boundary currents.
 --
--- Western boundary (land to the east) produces warming; eastern
--- boundary (land to the west) produces cooling.  The magnitude
+-- Western boundary (land along the hex east ray) produces warming;
+-- eastern boundary (land along the hex west ray) produces cooling.  The magnitude
 -- follows a Gaussian in |latitude| centered on 'occLatPeakDeg',
 -- vanishing near the equator and poles.
 --

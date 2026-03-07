@@ -12,6 +12,7 @@ import qualified Data.Vector.Unboxed as U
 import Data.Word (Word64)
 import Topo.Calendar (mkCalendarConfig, yearFraction, WorldTime(..))
 import Topo.Climate.Evaporation (satNorm)
+import Topo.Grid.Diffusion (diffuseFieldGrid)
 import Topo.Math (clamp01)
 import Topo.Noise (noise2D, noise2DContinuous)
 import Topo.Overlay (Overlay(..), OverlayData(..), OverlayProvenance(..))
@@ -59,30 +60,6 @@ coherentNoiseAt :: Word64 -> Float -> Int -> Int -> Float
 coherentNoiseAt seed frequency x y =
   noise2DContinuous seed (fromIntegral x * frequency) (fromIntegral y * frequency)
 
-diffuseFieldChunk :: Int -> Int -> Float -> U.Vector Float -> U.Vector Float
-diffuseFieldChunk chunkSize iterations factor field =
-  iterateNChunk iterations field
-  where
-    iterateNChunk n current
-      | n <= 0 = current
-      | otherwise = iterateNChunk (n - 1) (diffuseOnceChunk chunkSize factor current)
-
-diffuseOnceChunk :: Int -> Float -> U.Vector Float -> U.Vector Float
-diffuseOnceChunk chunkSize factor field =
-  U.generate (U.length field) (diffuseAtChunk chunkSize factor field)
-
-diffuseAtChunk :: Int -> Float -> U.Vector Float -> Int -> Float
-diffuseAtChunk chunkSize factor field i =
-  let x = i `mod` chunkSize
-      y = i `div` chunkSize
-      center = field U.! i
-      left = if x > 0 then field U.! (i - 1) else center
-      right = if x + 1 < chunkSize then field U.! (i + 1) else center
-      up = if y > 0 then field U.! (i - chunkSize) else center
-      down = if y + 1 < chunkSize then field U.! (i + chunkSize) else center
-      avg = (center + left + right + up + down) / 5
-  in clamp01 (center * (1 - factor) + avg * factor)
-
 buildWeatherChunk
   :: WorldConfig -> Word64 -> WeatherConfig
   -> Float -> Float -> Word64
@@ -103,7 +80,7 @@ buildWeatherChunk config seed cfg radPerTile latBiasRad timeHash key climate =
         let t = tempRaw U.! i
             cf = cloudFracV U.! i
         in clamp01 (t * (1 - wcCloudAlbedoEffect cfg * cf)))
-      temp = diffuseFieldChunk chunkSize
+      temp = diffuseFieldGrid chunkSize chunkSize
                (wcTempDiffuseIterations cfg)
                (wcTempDiffuseFactor cfg)
                tempCloud
@@ -111,7 +88,7 @@ buildWeatherChunk config seed cfg radPerTile latBiasRad timeHash key climate =
         (weatherWindDirAt config seed timeHash origin (ccWindDirAvg climate))
       pressureRaw = U.generate n
         (weatherPressureAt config seed cfg radPerTile latBiasRad timeHash origin temp humidity)
-      pressure = diffuseFieldChunk chunkSize
+      pressure = diffuseFieldGrid chunkSize chunkSize
                    weatherPressureDiffuseIterations
                    weatherPressureDiffuseFactor
                    pressureRaw
@@ -182,22 +159,14 @@ weatherWindSpdAt config seed cfg timeHash origin climateWind pressureVec i =
       timeSeed = deriveWeatherSeed seed timeHash
       n0 = noise2D timeSeed (ox + lx + 8000) (oy + ly + 8000)
       cs = wcChunkSize config
-      pAt x y
-        | x < 0 || x >= cs || y < 0 || y >= cs = pressureVec U.! i
-        | otherwise = pressureVec U.! (y * cs + x)
-      pCenter = pressureVec U.! i
-      dPdx
-        | lx <= 0       = pAt (lx + 1) ly - pCenter
-        | lx >= cs - 1  = pCenter - pAt (lx - 1) ly
-        | otherwise     = (pAt (lx + 1) ly - pAt (lx - 1) ly) * 0.5
-      dPdy
-        | ly <= 0       = pAt lx (ly + 1) - pCenter
-        | ly >= cs - 1  = pCenter - pAt lx (ly - 1)
-        | otherwise     = (pAt lx (ly + 1) - pAt lx (ly - 1)) * 0.5
-      gradMag = sqrt (dPdx * dPdx + dPdy * dPdy)
+      baseWind = windSpeedFromPressure
+                   cs
+                   cs
+                   pressureVec
+                   (climateWind U.! i)
+                   (wcPressureGradientWindScale cfg)
+                   i
       noiseMult = 1.0 + (n0 * 2 - 1) * wcWindNoiseScale cfg
-      baseWind = (climateWind U.! i)
-               * (1.0 + wcPressureGradientWindScale cfg * gradMag)
   in clamp01 (baseWind * noiseMult)
 
 weatherPressureAt

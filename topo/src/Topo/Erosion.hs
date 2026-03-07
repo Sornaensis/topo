@@ -85,19 +85,19 @@ data ErosionConfig = ErosionConfig
     -- ^ Wet-area amplification of thermal erosion [0..1].
   , ecHydraulicDepositRatio :: !Float
     -- ^ Fraction of hydraulically eroded material deposited at the
-    -- lowest cardinal neighbor [0..1].  0 = purely subtractive.
+    -- lowest hex neighbour [0..1].  0 = purely subtractive.
   , ecHydraulicDepositMaxSlope :: !Float
     -- ^ Deposition only occurs when the slope to the lowest neighbor
     -- is below this threshold (normalized elevation units).
   , ecThermalDepositRatio :: !Float
     -- ^ Fraction of thermally eroded material deposited at the lowest
-    -- cardinal neighbor [0..1].  Higher than hydraulic because thermal
+    -- hex neighbour [0..1].  Higher than hydraulic because thermal
     -- mass-wasting is a short-range process.
   , ecCoastalSmoothZone :: !Float
     -- ^ Normalized elevation band above sea level where coastal
     -- smoothing applies (e.g. 0.06 ≈ 720 m).
   , ecCoastalSmoothStrength :: !Float
-    -- ^ Blend factor toward cardinal-neighbor mean for coastal
+    -- ^ Blend factor toward hex-neighbour mean for coastal
     -- tiles [0..1].
   , ecCoastalSmoothIterations :: !Int
     -- ^ Number of iterative coastal smoothing passes.
@@ -283,7 +283,7 @@ erodeChunk config cfg chunk =
 -- | One pass of hydraulic erosion with optional neighbor deposition.
 --
 -- Uses mutable ST vectors so that material eroded from a tile can be
--- deposited at its lowest cardinal neighbor within the same pass.
+-- deposited at its lowest hex neighbour within the same pass.
 --
 -- The @erosionMult@ and @depositFactor@ vectors carry per-tile modifiers
 -- derived from terrain form pre-classification.  @erosionMult@ scales the
@@ -333,7 +333,7 @@ hydraulicStepGrid gridW gridH waterLevel cfg hardness erosionMult depositFactor 
         h <- UM.read base i
         let x = i `mod` gridW
             y = i `div` gridW
-            -- Sink guard: never raise above own lowest cardinal
+            -- Sink guard: never raise above own lowest hex
             -- neighbor (from the original elevation grid).  Pass +∞
             -- as the self value so minimumNeighborGridIdx returns
             -- the true neighbor-only minimum.
@@ -356,7 +356,7 @@ hydraulicAt size cfg elev i =
   let x = i `mod` size
       y = i `div` size
       h0 = elev U.! i
-      hmin = minimumNeighbor size elev x y h0
+      (hmin, _) = minimumNeighborGridIdx size size elev x y h0
       dh = h0 - hmin
       dropAmt = min (ecMaxDrop cfg) (dh * ecRainRate cfg)
   in if dh <= 0 then h0 else h0 - dropAmt
@@ -368,7 +368,7 @@ hydraulicAt size cfg elev i =
 -- | One pass of thermal erosion with optional neighbor deposition.
 --
 -- Material eroded from slopes exceeding the talus threshold is partially
--- deposited at the slope base (lowest cardinal neighbor), simulating
+-- deposited at the slope base (lowest hex neighbour), simulating
 -- scree / talus accumulation.
 --
 -- @erosionMult@ and @depositFactor@ carry per-tile terrain-form modifiers
@@ -417,7 +417,7 @@ thermalStepGrid gridW gridH waterLevel cfg hardness erosionMult depositFactor el
         h <- UM.read base i
         let x = i `mod` gridW
             y = i `div` gridW
-            -- Sink guard: never raise above own lowest cardinal
+            -- Sink guard: never raise above own lowest hex
             -- neighbor.  Pass +∞ as self so the minimum excludes
             -- the target tile itself.
             (nbrMin, _) = minimumNeighborGridIdx gridW gridH elev x y (1/0)
@@ -439,7 +439,7 @@ thermalAt size cfg elev i =
   let x = i `mod` size
       y = i `div` size
       h0 = elev U.! i
-      hmin = minimumNeighbor size elev x y h0
+      (hmin, _) = minimumNeighborGridIdx size size elev x y h0
       slope = h0 - hmin
       excess = slope - ecThermalTalus cfg
   in if excess <= 0 then h0 else h0 - min (ecMaxDrop cfg) (excess * ecThermalStrength cfg)
@@ -452,7 +452,7 @@ thermalAt size cfg elev i =
 --
 -- Simulates wave erosion and sediment deposition: land tiles within
 -- @[waterLevel, waterLevel + ecCoastalSmoothZone]@ are blended toward
--- the mean of their 4 cardinal neighbors, and shallow ocean tiles
+-- the mean of their in-bounds hex neighbours, and shallow ocean tiles
 -- within @[waterLevel - ecCoastalSmoothZone, waterLevel]@ are raised
 -- toward the neighbor mean, building a continental shelf.
 --
@@ -535,22 +535,3 @@ minimumNeighborGridIdx gridW gridH elev x y h0 =
   in foldl' (\acc j -> pick acc (elev U.! j, j)) start
        (hexNeighborIndices gridW gridH ix)
 
--- | Minimum elevation among cardinal neighbors (legacy, value only).
-minimumNeighbor :: Int -> U.Vector Float -> Int -> Int -> Float -> Float
-minimumNeighbor size elev x y h0 =
-  let ix = y * size + x
-      hL = if x > 0 then elev U.! (ix - 1) else h0
-      hR = if x + 1 < size then elev U.! (ix + 1) else h0
-      hU = if y > 0 then elev U.! (ix - size) else h0
-      hD = if y + 1 < size then elev U.! (ix + size) else h0
-  in minimum [h0, hL, hR, hU, hD]
-
--- | Minimum elevation among cardinal neighbors on the full grid (value only).
-minimumNeighborGrid :: Int -> Int -> U.Vector Float -> Int -> Int -> Float -> Float
-minimumNeighborGrid gridW gridH elev x y h0 =
-  let ix = y * gridW + x
-      hL = if x > 0 then elev U.! (ix - 1) else h0
-      hR = if x + 1 < gridW then elev U.! (ix + 1) else h0
-      hU = if y > 0 then elev U.! (ix - gridW) else h0
-      hD = if y + 1 < gridH then elev U.! (ix + gridW) else h0
-  in minimum [h0, hL, hR, hU, hD]

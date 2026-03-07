@@ -9,6 +9,7 @@ module Topo.TerrainGrid
   , buildMoistureGrid
   , buildClimateTempGrid
   , buildClimatePrecipGrid
+  , buildPlateHeightGrid
   , buildPlateHardnessGrid
   , buildPlateBoundaryGrid
   , buildSlopeGrid
@@ -19,6 +20,7 @@ module Topo.TerrainGrid
   , updateChunkElevationFromGrid
   , updateChunkMoistureFromGrid
   , chunkGridSlice
+  , chunkGridSliceGeneric
   , clampCoordGrid
     -- * Grid-level slope helpers
   , gridSlopeAt
@@ -123,9 +125,17 @@ chunkError expected (key, chunk) =
 mapMaybe :: (a -> Maybe b) -> [a] -> [b]
 mapMaybe f = foldr (\x acc -> maybe acc (: acc) (f x)) []
 
--- | Build a full elevation grid over a contiguous chunk rectangle.
-buildElevationGrid :: WorldConfig -> IntMap TerrainChunk -> ChunkCoord -> Int -> Int -> U.Vector Float
-buildElevationGrid config terrain (ChunkCoord minCx minCy) gridW gridH =
+buildChunkGrid
+  :: U.Unbox a
+  => WorldConfig
+  -> IntMap chunk
+  -> ChunkCoord
+  -> Int
+  -> Int
+  -> a
+  -> (chunk -> Int -> a)
+  -> U.Vector a
+buildChunkGrid config chunks (ChunkCoord minCx minCy) gridW gridH fallback valueAt =
   let size = wcChunkSize config
       minTileX = minCx * size
       minTileY = minCy * size
@@ -137,145 +147,53 @@ buildElevationGrid config terrain (ChunkCoord minCx minCy) gridW gridH =
             tile = TileCoord gx gy
             (chunkCoord, local) = chunkCoordFromTile config tile
             ChunkId key = chunkIdFromCoord chunkCoord
-        in case IntMap.lookup key terrain of
-            Nothing -> 0
+        in case IntMap.lookup key chunks of
+            Nothing -> fallback
             Just chunk ->
               case tileIndex config local of
-                Nothing -> 0
-                Just (TileIndex i) -> tcElevation chunk U.! i
+                Nothing -> fallback
+                Just (TileIndex i) -> valueAt chunk i
   in U.generate (gridW * gridH) sampleAt
+
+-- | Build a full elevation grid over a contiguous chunk rectangle.
+buildElevationGrid :: WorldConfig -> IntMap TerrainChunk -> ChunkCoord -> Int -> Int -> U.Vector Float
+buildElevationGrid config terrain minCoord gridW gridH =
+  buildChunkGrid config terrain minCoord gridW gridH 0 (\chunk i -> tcElevation chunk U.! i)
 
 -- | Build a full hardness grid over a contiguous chunk rectangle.
 buildHardnessGrid :: WorldConfig -> IntMap TerrainChunk -> ChunkCoord -> Int -> Int -> U.Vector Float
-buildHardnessGrid config terrain (ChunkCoord minCx minCy) gridW gridH =
-  let size = wcChunkSize config
-      minTileX = minCx * size
-      minTileY = minCy * size
-      sampleAt idx =
-        let x = idx `mod` gridW
-            y = idx `div` gridW
-            gx = minTileX + x
-            gy = minTileY + y
-            tile = TileCoord gx gy
-            (chunkCoord, local) = chunkCoordFromTile config tile
-            ChunkId key = chunkIdFromCoord chunkCoord
-        in case IntMap.lookup key terrain of
-            Nothing -> 0
-            Just chunk ->
-              case tileIndex config local of
-                Nothing -> 0
-                Just (TileIndex i) -> tcHardness chunk U.! i
-  in U.generate (gridW * gridH) sampleAt
+buildHardnessGrid config terrain minCoord gridW gridH =
+  buildChunkGrid config terrain minCoord gridW gridH 0 (\chunk i -> tcHardness chunk U.! i)
 
 -- | Build a full moisture grid over a contiguous chunk rectangle.
 buildMoistureGrid :: WorldConfig -> IntMap TerrainChunk -> ChunkCoord -> Int -> Int -> U.Vector Float
-buildMoistureGrid config terrain (ChunkCoord minCx minCy) gridW gridH =
-  let size = wcChunkSize config
-      minTileX = minCx * size
-      minTileY = minCy * size
-      sampleAt idx =
-        let x = idx `mod` gridW
-            y = idx `div` gridW
-            gx = minTileX + x
-            gy = minTileY + y
-            tile = TileCoord gx gy
-            (chunkCoord, local) = chunkCoordFromTile config tile
-            ChunkId key = chunkIdFromCoord chunkCoord
-        in case IntMap.lookup key terrain of
-            Nothing -> 0
-            Just chunk ->
-              case tileIndex config local of
-                Nothing -> 0
-                Just (TileIndex i) -> tcMoisture chunk U.! i
-  in U.generate (gridW * gridH) sampleAt
+buildMoistureGrid config terrain minCoord gridW gridH =
+  buildChunkGrid config terrain minCoord gridW gridH 0 (\chunk i -> tcMoisture chunk U.! i)
 
 -- | Build a full climate temperature grid over a contiguous chunk rectangle.
 buildClimateTempGrid :: WorldConfig -> IntMap ClimateChunk -> ChunkCoord -> Int -> Int -> U.Vector Float
-buildClimateTempGrid config climate (ChunkCoord minCx minCy) gridW gridH =
-  let size = wcChunkSize config
-      minTileX = minCx * size
-      minTileY = minCy * size
-      sampleAt idx =
-        let x = idx `mod` gridW
-            y = idx `div` gridW
-            gx = minTileX + x
-            gy = minTileY + y
-            tile = TileCoord gx gy
-            (chunkCoord, local) = chunkCoordFromTile config tile
-            ChunkId key = chunkIdFromCoord chunkCoord
-        in case IntMap.lookup key climate of
-            Nothing -> 0
-            Just chunk ->
-              case tileIndex config local of
-                Nothing -> 0
-                Just (TileIndex i) -> ccTempAvg chunk U.! i
-  in U.generate (gridW * gridH) sampleAt
+buildClimateTempGrid config climate minCoord gridW gridH =
+  buildChunkGrid config climate minCoord gridW gridH 0 (\chunk i -> ccTempAvg chunk U.! i)
 
 -- | Build a full climate precipitation grid over a contiguous chunk rectangle.
 buildClimatePrecipGrid :: WorldConfig -> IntMap ClimateChunk -> ChunkCoord -> Int -> Int -> U.Vector Float
-buildClimatePrecipGrid config climate (ChunkCoord minCx minCy) gridW gridH =
-  let size = wcChunkSize config
-      minTileX = minCx * size
-      minTileY = minCy * size
-      sampleAt idx =
-        let x = idx `mod` gridW
-            y = idx `div` gridW
-            gx = minTileX + x
-            gy = minTileY + y
-            tile = TileCoord gx gy
-            (chunkCoord, local) = chunkCoordFromTile config tile
-            ChunkId key = chunkIdFromCoord chunkCoord
-        in case IntMap.lookup key climate of
-            Nothing -> 0
-            Just chunk ->
-              case tileIndex config local of
-                Nothing -> 0
-                Just (TileIndex i) -> ccPrecipAvg chunk U.! i
-  in U.generate (gridW * gridH) sampleAt
+buildClimatePrecipGrid config climate minCoord gridW gridH =
+  buildChunkGrid config climate minCoord gridW gridH 0 (\chunk i -> ccPrecipAvg chunk U.! i)
+
+-- | Build a full plate-height grid over a contiguous chunk rectangle.
+buildPlateHeightGrid :: WorldConfig -> IntMap TerrainChunk -> ChunkCoord -> Int -> Int -> U.Vector Float
+buildPlateHeightGrid config terrain minCoord gridW gridH =
+  buildChunkGrid config terrain minCoord gridW gridH 0 (\chunk i -> tcPlateHeight chunk U.! i)
 
 -- | Build a full plate-hardness grid over a contiguous chunk rectangle.
 buildPlateHardnessGrid :: WorldConfig -> IntMap TerrainChunk -> ChunkCoord -> Int -> Int -> U.Vector Float
-buildPlateHardnessGrid config terrain (ChunkCoord minCx minCy) gridW gridH =
-  let size = wcChunkSize config
-      minTileX = minCx * size
-      minTileY = minCy * size
-      sampleAt idx =
-        let x = idx `mod` gridW
-            y = idx `div` gridW
-            gx = minTileX + x
-            gy = minTileY + y
-            tile = TileCoord gx gy
-            (chunkCoord, local) = chunkCoordFromTile config tile
-            ChunkId key = chunkIdFromCoord chunkCoord
-        in case IntMap.lookup key terrain of
-            Nothing -> 0
-            Just chunk ->
-              case tileIndex config local of
-                Nothing -> 0
-                Just (TileIndex i) -> tcPlateHardness chunk U.! i
-  in U.generate (gridW * gridH) sampleAt
+buildPlateHardnessGrid config terrain minCoord gridW gridH =
+  buildChunkGrid config terrain minCoord gridW gridH 0 (\chunk i -> tcPlateHardness chunk U.! i)
 
 -- | Build a full plate-boundary grid over a contiguous chunk rectangle.
 buildPlateBoundaryGrid :: WorldConfig -> IntMap TerrainChunk -> ChunkCoord -> Int -> Int -> U.Vector PlateBoundary
-buildPlateBoundaryGrid config terrain (ChunkCoord minCx minCy) gridW gridH =
-  let size = wcChunkSize config
-      minTileX = minCx * size
-      minTileY = minCy * size
-      sampleAt idx =
-        let x = idx `mod` gridW
-            y = idx `div` gridW
-            gx = minTileX + x
-            gy = minTileY + y
-            tile = TileCoord gx gy
-            (chunkCoord, local) = chunkCoordFromTile config tile
-            ChunkId key = chunkIdFromCoord chunkCoord
-        in case IntMap.lookup key terrain of
-            Nothing -> PlateBoundaryNone
-            Just chunk ->
-              case tileIndex config local of
-                Nothing -> PlateBoundaryNone
-                Just (TileIndex i) -> tcPlateBoundary chunk U.! i
-  in U.generate (gridW * gridH) sampleAt
+buildPlateBoundaryGrid config terrain minCoord gridW gridH =
+  buildChunkGrid config terrain minCoord gridW gridH PlateBoundaryNone (\chunk i -> tcPlateBoundary chunk U.! i)
 
 -- | Update a chunk elevation from a contiguous grid.
 updateChunkElevationFromGrid
@@ -327,7 +245,11 @@ updateChunkMoistureFromGrid config (ChunkCoord minCx minCy) gridW grid key chunk
 
 -- | Slice a chunk-sized vector from a large grid.
 chunkGridSlice :: WorldConfig -> ChunkCoord -> Int -> U.Vector Float -> Int -> U.Vector Float
-chunkGridSlice config (ChunkCoord minCx minCy) gridW grid key =
+chunkGridSlice = chunkGridSliceGeneric
+
+-- | Slice a chunk-sized vector of any unboxed element type from a large grid.
+chunkGridSliceGeneric :: U.Unbox a => WorldConfig -> ChunkCoord -> Int -> U.Vector a -> Int -> U.Vector a
+chunkGridSliceGeneric config (ChunkCoord minCx minCy) gridW grid key =
   let ChunkCoord cx cy = chunkCoordFromId (ChunkId key)
       size = wcChunkSize config
       baseX = (cx - minCx) * size
@@ -355,25 +277,8 @@ clampCoordGrid size v
 -- | Build a full average-slope grid over a contiguous chunk rectangle.
 --   Extracts 'dsAvgSlope' from each tile's 'DirectionalSlope'.
 buildSlopeGrid :: WorldConfig -> IntMap TerrainChunk -> ChunkCoord -> Int -> Int -> U.Vector Float
-buildSlopeGrid config terrain (ChunkCoord minCx minCy) gridW gridH =
-  let size = wcChunkSize config
-      minTileX = minCx * size
-      minTileY = minCy * size
-      sampleAt idx =
-        let x = idx `mod` gridW
-            y = idx `div` gridW
-            gx = minTileX + x
-            gy = minTileY + y
-            tile = TileCoord gx gy
-            (chunkCoord, local) = chunkCoordFromTile config tile
-            ChunkId key = chunkIdFromCoord chunkCoord
-        in case IntMap.lookup key terrain of
-            Nothing -> 0
-            Just chunk ->
-              case tileIndex config local of
-                Nothing -> 0
-                Just (TileIndex i) -> dsAvgSlope (tcDirSlope chunk U.! i)
-  in U.generate (gridW * gridH) sampleAt
+buildSlopeGrid config terrain minCoord gridW gridH =
+  buildChunkGrid config terrain minCoord gridW gridH 0 (\chunk i -> dsAvgSlope (tcDirSlope chunk U.! i))
 
 -- | Build a full max-slope grid over a contiguous chunk rectangle.
 --   Extracts 'dsMaxSlope' from each tile's 'DirectionalSlope'.
@@ -381,91 +286,23 @@ buildSlopeGrid config terrain (ChunkCoord minCx minCy) gridW gridH =
 --   Useful for infiltration penalties where the steepest direction
 --   determines runoff behaviour.
 buildMaxSlopeGrid :: WorldConfig -> IntMap TerrainChunk -> ChunkCoord -> Int -> Int -> U.Vector Float
-buildMaxSlopeGrid config terrain (ChunkCoord minCx minCy) gridW gridH =
-  let size = wcChunkSize config
-      minTileX = minCx * size
-      minTileY = minCy * size
-      sampleAt idx =
-        let x = idx `mod` gridW
-            y = idx `div` gridW
-            gx = minTileX + x
-            gy = minTileY + y
-            tile = TileCoord gx gy
-            (chunkCoord, local) = chunkCoordFromTile config tile
-            ChunkId key = chunkIdFromCoord chunkCoord
-        in case IntMap.lookup key terrain of
-            Nothing -> 0
-            Just chunk ->
-              case tileIndex config local of
-                Nothing -> 0
-                Just (TileIndex i) -> dsMaxSlope (tcDirSlope chunk U.! i)
-  in U.generate (gridW * gridH) sampleAt
+buildMaxSlopeGrid config terrain minCoord gridW gridH =
+  buildChunkGrid config terrain minCoord gridW gridH 0 (\chunk i -> dsMaxSlope (tcDirSlope chunk U.! i))
 
 -- | Build a full soil-depth grid over a contiguous chunk rectangle.
 buildSoilDepthGrid :: WorldConfig -> IntMap TerrainChunk -> ChunkCoord -> Int -> Int -> U.Vector Float
-buildSoilDepthGrid config terrain (ChunkCoord minCx minCy) gridW gridH =
-  let size = wcChunkSize config
-      minTileX = minCx * size
-      minTileY = minCy * size
-      sampleAt idx =
-        let x = idx `mod` gridW
-            y = idx `div` gridW
-            gx = minTileX + x
-            gy = minTileY + y
-            tile = TileCoord gx gy
-            (chunkCoord, local) = chunkCoordFromTile config tile
-            ChunkId key = chunkIdFromCoord chunkCoord
-        in case IntMap.lookup key terrain of
-            Nothing -> 0
-            Just chunk ->
-              case tileIndex config local of
-                Nothing -> 0
-                Just (TileIndex i) -> tcSoilDepth chunk U.! i
-  in U.generate (gridW * gridH) sampleAt
+buildSoilDepthGrid config terrain minCoord gridW gridH =
+  buildChunkGrid config terrain minCoord gridW gridH 0 (\chunk i -> tcSoilDepth chunk U.! i)
 
 -- | Build a full soil-grain grid over a contiguous chunk rectangle.
 buildSoilGrainGrid :: WorldConfig -> IntMap TerrainChunk -> ChunkCoord -> Int -> Int -> U.Vector Float
-buildSoilGrainGrid config terrain (ChunkCoord minCx minCy) gridW gridH =
-  let size = wcChunkSize config
-      minTileX = minCx * size
-      minTileY = minCy * size
-      sampleAt idx =
-        let x = idx `mod` gridW
-            y = idx `div` gridW
-            gx = minTileX + x
-            gy = minTileY + y
-            tile = TileCoord gx gy
-            (chunkCoord, local) = chunkCoordFromTile config tile
-            ChunkId key = chunkIdFromCoord chunkCoord
-        in case IntMap.lookup key terrain of
-            Nothing -> 0
-            Just chunk ->
-              case tileIndex config local of
-                Nothing -> 0
-                Just (TileIndex i) -> tcSoilGrain chunk U.! i
-  in U.generate (gridW * gridH) sampleAt
+buildSoilGrainGrid config terrain minCoord gridW gridH =
+  buildChunkGrid config terrain minCoord gridW gridH 0 (\chunk i -> tcSoilGrain chunk U.! i)
 
 -- | Build a full soil-type grid over a contiguous chunk rectangle.
 buildSoilTypeGrid :: WorldConfig -> IntMap TerrainChunk -> ChunkCoord -> Int -> Int -> U.Vector Word16
-buildSoilTypeGrid config terrain (ChunkCoord minCx minCy) gridW gridH =
-  let size = wcChunkSize config
-      minTileX = minCx * size
-      minTileY = minCy * size
-      sampleAt idx =
-        let x = idx `mod` gridW
-            y = idx `div` gridW
-            gx = minTileX + x
-            gy = minTileY + y
-            tile = TileCoord gx gy
-            (chunkCoord, local) = chunkCoordFromTile config tile
-            ChunkId key = chunkIdFromCoord chunkCoord
-        in case IntMap.lookup key terrain of
-            Nothing -> 0
-            Just chunk ->
-              case tileIndex config local of
-                Nothing -> 0
-                Just (TileIndex i) -> tcSoilType chunk U.! i
-  in U.generate (gridW * gridH) sampleAt
+buildSoilTypeGrid config terrain minCoord gridW gridH =
+  buildChunkGrid config terrain minCoord gridW gridH 0 (\chunk i -> tcSoilType chunk U.! i)
 
 ---------------------------------------------------------------------------
 -- Grid-level slope helpers

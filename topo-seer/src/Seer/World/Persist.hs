@@ -111,21 +111,22 @@ saveNamedWorld name uiSnap world = do
     createDirectoryIfMissing True dir
 
     let provenance = makeProvenance uiSnap
-    let snapshot = snapshotFromUi uiSnap name
+        snapshot = snapshotFromUi uiSnap name
+        worldForSave = normalizeSaveWorldManifest world
     now <- getCurrentTime
     let manifest = WorldSaveManifest
           { wsmName       = name
           , wsmSeed       = uiSeed uiSnap
           , wsmChunkSize  = uiChunkSize uiSnap
           , wsmCreatedAt  = now
-          , wsmChunkCount = chunkCount world
-          , wsmOverlayNames = overlayNames (twOverlays world)
+          , wsmChunkCount = chunkCount worldForSave
+          , wsmOverlayNames = twOverlayManifest worldForSave
           }
         extraFiles =
           [ ("config.json", BSL.toStrict (encode snapshot))
           , ("meta.json", BSL.toStrict (encode manifest))
           ]
-    topoResult <- saveWorldBundleWithProvenance topoFile provenance extraFiles world
+    topoResult <- saveWorldBundleWithProvenance topoFile provenance extraFiles worldForSave
     case topoResult of
       Left err -> fail ("Terrain+overlay save failed: " <> show err)
       Right () -> pure ()
@@ -321,3 +322,24 @@ loadJsonFile path = do
     Right bs -> case eitherDecodeStrict' bs of
       Left parseErr -> Left (Text.pack parseErr)
       Right val     -> Right val
+
+normalizeSaveWorldManifest :: TerrainWorld -> TerrainWorld
+normalizeSaveWorldManifest world =
+  world { twOverlayManifest = normalizedSaveOverlayManifest world }
+
+normalizedSaveOverlayManifest :: TerrainWorld -> [Text]
+normalizedSaveOverlayManifest world =
+  normalizeOverlayManifest (twOverlayManifest world) (overlayNames (twOverlays world))
+
+normalizeOverlayManifest :: [Text] -> [Text] -> [Text]
+normalizeOverlayManifest preferred discovered =
+  let preferredPresent = uniquePreserving [name | name <- preferred, name `elem` discovered]
+      remaining = [name | name <- discovered, name `notElem` preferredPresent]
+  in preferredPresent ++ remaining
+
+uniquePreserving :: [Text] -> [Text]
+uniquePreserving = foldr addUnique []
+  where
+    addUnique name acc
+      | name `elem` acc = acc
+      | otherwise = name : acc

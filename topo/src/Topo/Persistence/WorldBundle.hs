@@ -31,8 +31,6 @@ import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
   , doesFileExist
-  , removePathForcibly
-  , renameDirectory
   )
 import System.FilePath ((</>), takeDirectory, takeFileName)
 
@@ -45,6 +43,7 @@ import Topo.Overlay.Storage
   , loadOverlayStore
   )
 import Topo.Overlay.Schema (OverlaySchema, osName, parseOverlaySchema)
+import qualified Topo.Persistence.AtomicDirectory as AtomicDirectory
 import Topo.Storage
   ( StorageError
   , WorldProvenance
@@ -106,8 +105,8 @@ saveWorldBundleWithProvenanceAndHooks
   -> TerrainWorld
   -> IO (Either WorldBundleError ())
 saveWorldBundleWithProvenanceAndHooks hooks topoPath prov extraFiles world = do
-  let overlays = twOverlays world
-      world' = world { twOverlayManifest = overlayNames overlays }
+  let world' = normalizeSaveWorldManifest world
+      overlays = twOverlays world'
       targetDir = takeDirectory topoPath
       targetName = takeFileName topoPath
       stagingDir = targetDir <> ".saving"
@@ -221,21 +220,8 @@ readManifestSchemas sidecarDir names = do
               | otherwise -> go rest (schema : acc)
 
 cleanupAtomicDirs :: FilePath -> FilePath -> IO (Either WorldBundleError ())
-cleanupAtomicDirs stagingDir backupDir = do
-  clearStaging <- clearOne stagingDir
-  case clearStaging of
-    Left err -> pure (Left err)
-    Right () -> clearOne backupDir
-  where
-    clearOne path = do
-      exists <- doesDirectoryExist path
-      if exists
-        then do
-          cleanup <- safeIO "cleanup stale atomic directory" (removePathForcibly path)
-          case cleanup of
-            Left err -> pure (Left err)
-            Right () -> pure (Right ())
-        else pure (Right ())
+cleanupAtomicDirs stagingDir backupDir =
+  AtomicDirectory.cleanupAtomicDirs safeIO stagingDir backupDir
 
 writeExtraFiles :: FilePath -> [(FilePath, BS.ByteString)] -> IO (Either WorldBundleError ())
 writeExtraFiles _ [] = pure (Right ())
@@ -254,44 +240,34 @@ writeExtraFiles stagingDir files = go files
             Right () -> go rest
 
 commitAtomicBundle :: BundleSaveHooks -> FilePath -> FilePath -> FilePath -> IO (Either WorldBundleError ())
-commitAtomicBundle hooks targetDir stagingDir backupDir = do
-  targetExists <- doesDirectoryExist targetDir
-  if targetExists
-    then do
-      backupOld <- safeIO "rename existing world to backup" (renameDirectory targetDir backupDir)
-      case backupOld of
-        Left err -> pure (Left err)
-        Right () -> do
-          hookResult <- safeIO "post-backup commit hook" (bshAfterBackupRename hooks)
-          case hookResult of
-            Left err -> do
-              _ <- restoreBackupIfNeeded targetDir backupDir
-              pure (Left err)
-            Right () -> finalize
-    else finalize
-  where
-    restoreBackupIfNeeded target backup = do
-      backupExists <- doesDirectoryExist backup
-      targetExists <- doesDirectoryExist target
-      if backupExists && not targetExists
-        then safeIO "restore backup world" (renameDirectory backup target)
-        else pure (Right ())
+commitAtomicBundle hooks targetDir stagingDir backupDir =
+  AtomicDirectory.commitAtomicDirectory
+    safeIO
+    (bshAfterBackupRename hooks)
+    targetDir
+    stagingDir
+    backupDir
 
-    finalize = do
-      moveNew <- safeIO "rename staging world into place" (renameDirectory stagingDir targetDir)
-      case moveNew of
-        Left err -> do
-          _ <- restoreBackupIfNeeded targetDir backupDir
-          pure (Left err)
-        Right () -> do
-          backupExists <- doesDirectoryExist backupDir
-          if backupExists
-            then do
-              clearBackup <- safeIO "remove old world backup" (removePathForcibly backupDir)
-              case clearBackup of
-                Left err -> pure (Left err)
-                Right () -> pure (Right ())
-            else pure (Right ())
+normalizeSaveWorldManifest :: TerrainWorld -> TerrainWorld
+normalizeSaveWorldManifest world =
+  world { twOverlayManifest = normalizedSaveOverlayManifest world }
+
+normalizedSaveOverlayManifest :: TerrainWorld -> [Text]
+normalizedSaveOverlayManifest world =
+  normalizeOverlayManifest (twOverlayManifest world) (overlayNames (twOverlays world))
+
+normalizeOverlayManifest :: [Text] -> [Text] -> [Text]
+normalizeOverlayManifest preferred discovered =
+  let preferredPresent = uniquePreserving [name | name <- preferred, name `elem` discovered]
+      remaining = [name | name <- discovered, name `notElem` preferredPresent]
+  in preferredPresent ++ remaining
+
+uniquePreserving :: [Text] -> [Text]
+uniquePreserving = foldr addUnique []
+  where
+    addUnique name acc
+      | name `elem` acc = acc
+      | otherwise = name : acc
 
 safeRead :: FilePath -> IO (Either WorldBundleError BS.ByteString)
 safeRead path = do

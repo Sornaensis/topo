@@ -355,7 +355,7 @@ buildFullPipelineConfig cfg worldCfg seed =
 -- extent does not span pole-to-pole, or longitude extent < 360°),
 -- a default edge-depth and falloff are injected on the exposed edges.
 -- If the user has already configured edge depth (any field > 0),
--- the per-edge values are preserved.
+-- the per-axial-boundary values are preserved.
 --
 -- Default auto-values: depth = 0.5, falloff = 64 tiles.
 autoOceanEdgeDepth :: PlanetConfig -> WorldSlice -> GenConfig -> GenConfig
@@ -364,17 +364,17 @@ autoOceanEdgeDepth _planet slice gen
   | otherwise     = gen { gcOceanEdgeDepth = computedEdge }
   where
     oed = gcOceanEdgeDepth gen
-    hasManualEdge = oedNorth oed > 0 || oedSouth oed > 0
-                 || oedEast oed > 0  || oedWest oed > 0
+    hasManualEdge = oedRMin oed > 0 || oedRMax oed > 0
+                 || oedQMax oed > 0 || oedQMin oed > 0
     autoDepth   = 0.5
     autoFalloff = 64.0
     latN = wsLatCenter slice + wsLatExtent slice / 2
     latS = wsLatCenter slice - wsLatExtent slice / 2
     computedEdge = OceanEdgeDepth
-      { oedNorth   = if latN < 89  then autoDepth else 0
-      , oedSouth   = if latS > (-89) then autoDepth else 0
-      , oedEast    = if wsLonExtent slice < 359 then autoDepth else 0
-      , oedWest    = if wsLonExtent slice < 359 then autoDepth else 0
+      { oedRMin    = if latN < 89  then autoDepth else 0
+      , oedRMax    = if latS > (-89) then autoDepth else 0
+      , oedQMax    = if wsLonExtent slice < 359 then autoDepth else 0
+      , oedQMin    = if wsLonExtent slice < 359 then autoDepth else 0
       , oedFalloff = autoFalloff
       }
 

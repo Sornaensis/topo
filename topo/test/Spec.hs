@@ -4,6 +4,7 @@ import System.IO (hSetEncoding, stdout, stderr, utf8)
 import Test.Hspec
 import qualified Spec.World
 import qualified Spec.Hex
+import qualified Spec.HexDirection
 import qualified Spec.Metadata
 import qualified Spec.Pipeline
 import qualified Spec.Calendar
@@ -20,6 +21,7 @@ import qualified Spec.Erosion
 import qualified Spec.Glacier
 import qualified Spec.Volcanism
 import qualified Spec.Climate
+import qualified Spec.Diffusion
 import qualified Spec.Biome
 import qualified Spec.BiomeRefine
 import qualified Spec.Vegetation
@@ -61,6 +63,7 @@ main = do
   hspec $ do
     Spec.World.spec
     Spec.Hex.spec
+    Spec.HexDirection.spec
     Spec.Metadata.spec
     Spec.Pipeline.spec
     Spec.Calendar.spec
@@ -77,6 +80,7 @@ main = do
     Spec.Glacier.spec
     Spec.Volcanism.spec
     Spec.Climate.spec
+    Spec.Diffusion.spec
     Spec.Biome.spec
     Spec.BiomeRefine.spec
     Spec.Vegetation.spec

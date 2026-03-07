@@ -38,7 +38,7 @@ module Topo.Overlay.Indexed
   , updateSparseChunk
     -- * Queries (rebuild index on demand)
   , queryIntField
-  , queryFloatRange
+  , queryFloatRangeI
   , queryBoolField
   ) where
 
@@ -219,13 +219,13 @@ queryIntField fieldName val io =
 -- | Query a float field index for tile indices within @[lo, hi]@.
 --
 -- Rebuilds the index if dirty.
-queryFloatRange
+queryFloatRangeI
   :: Text             -- ^ Field name
   -> Float            -- ^ Lower bound (inclusive)
   -> Float            -- ^ Upper bound (inclusive)
   -> IndexedOverlay
   -> (IndexedOverlay, [(Float, Int)])
-queryFloatRange fieldName lo hi io =
+queryFloatRangeI fieldName lo hi io =
   let (io', OverlayIndex m) = ensureIndex io
       hits = case Map.lookup fieldName m of
         Just fi -> Idx.queryFloatRange lo hi fi

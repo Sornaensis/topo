@@ -46,7 +46,8 @@ import GHC.Generics (Generic)
 import Topo.Config.JSON
   (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
    genericToJSON, genericParseJSON)
-import Topo.Math (clamp01, iterateN)
+import Topo.Grid.Diffusion (coastalProximityGrid)
+import Topo.Math (clamp01)
 import Topo.Pipeline (PipelineStage(..))
 import Topo.Pipeline.Stage (StageId(..))
 import Topo.Planet (PlanetConfig(..), LatitudeMapping(..))
@@ -806,31 +807,9 @@ bootstrapCoastalSlices cfg waterLevel config terrain
             gridH = (maxCy - minCy + 1) * size
             elev = buildElevationGrid config terrain (ChunkCoord minCx minCy) gridW gridH
             oceanMask = U.map (\h -> if h < waterLevel then 1 else 0) elev
-            coastal = diffuseGridBootstrap gridW gridH
+            coastal = coastalProximityGrid gridW gridH
                         (vbcCoastalIterations cfg) (vbcCoastalDiffuse cfg)
                         oceanMask
         in IntMap.mapWithKey
              (\k _ -> chunkGridSlice config (ChunkCoord minCx minCy) gridW coastal k)
              terrain
-
--- | Simple 4-connected diffusion for bootstrap coastal proximity.
---
--- Same algorithm as the climate stage's 'coastalProximityGrid' but kept
--- private here to avoid cross-module coupling.  A future refactoring
--- should extract this to a shared module (see refactorings.md).
-diffuseGridBootstrap :: Int -> Int -> Int -> Float -> U.Vector Float -> U.Vector Float
-diffuseGridBootstrap gridW gridH iterations factor field =
-  iterateN iterations (diffuseOnceBootstrap gridW gridH factor) field
-
-diffuseOnceBootstrap :: Int -> Int -> Float -> U.Vector Float -> U.Vector Float
-diffuseOnceBootstrap gridW gridH factor field =
-  U.generate (gridW * gridH) $ \i ->
-    let x = i `mod` gridW
-        y = i `div` gridW
-        c = field U.! i
-        l = if x > 0          then field U.! (i - 1)     else c
-        r = if x + 1 < gridW  then field U.! (i + 1)     else c
-        u = if y > 0          then field U.! (i - gridW)  else c
-        d = if y + 1 < gridH  then field U.! (i + gridW)  else c
-        avg = (l + r + u + d + c) / 5
-    in clamp01 (c * (1 - factor) + avg * factor)

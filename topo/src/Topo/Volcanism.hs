@@ -26,6 +26,7 @@ import Topo.TerrainGrid
   ( buildElevationGrid
   , buildPlateBoundaryGrid
   , chunkGridSlice
+  , chunkGridSliceGeneric
   , updateChunkElevationFromGrid
   , validateTerrainGrid
   )
@@ -284,17 +285,3 @@ sliceVolcanismChunk config minCoord gridW volcanism _key _chunk =
     , vcDepositPotential = chunkGridSlice config minCoord gridW (vcDepositPotential volcanism) _key
     }
 
-chunkGridSliceGeneric :: U.Unbox a => WorldConfig -> ChunkCoord -> Int -> U.Vector a -> Int -> U.Vector a
-chunkGridSliceGeneric config (ChunkCoord minCx minCy) gridW grid key =
-  let ChunkCoord cx cy = chunkCoordFromId (ChunkId key)
-      size = wcChunkSize config
-      baseX = (cx - minCx) * size
-      baseY = (cy - minCy) * size
-      n = size * size
-  in U.generate n (\i ->
-      let x = i `mod` size
-          y = i `div` size
-          gx = baseX + x
-          gy = baseY + y
-          gi = gy * gridW + gx
-      in grid U.! gi)

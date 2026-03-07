@@ -36,6 +36,7 @@ library:
     - Topo.Erosion
     - Topo.Glacier
     - Topo.Hydrology
+    - Topo.Hydrology.StageHydrology
     - Topo.Hypsometry
     - Topo.River
     - Topo.Volcanism
@@ -50,6 +51,8 @@ library:
     - Topo.BiomeConfig
     - Topo.Weather
     - Topo.Math
+    - Topo.Grid.Diffusion
+    - Topo.Grid.HexDirection
     - Topo.Seed
     - Topo.TerrainGrid
     - Topo.Noise

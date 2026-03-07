@@ -6,6 +6,9 @@ import UI.Layout
 import UI.WidgetTree
 import UI.Widgets (Rect(..))
 
+rectHitPoint :: Rect -> V2 Int
+rectHitPoint (Rect (V2 x y, V2 w h)) = V2 (x + w `div` 2) (y + h `div` 2)
+
 spec :: Spec
 spec = describe "UI.WidgetTree" $ do
   it "hit tests generate button in left panel" $ do
@@ -19,23 +22,25 @@ spec = describe "UI.WidgetTree" $ do
   it "hit tests chunk buttons" $ do
     let layout = layoutFor (V2 800 600) 160
         widgets = buildWidgets layout
-    hitTest widgets (V2 30 140) `shouldBe` Just WidgetChunkMinus
-    hitTest widgets (V2 230 140) `shouldBe` Just WidgetChunkPlus
+    hitTest widgets (rectHitPoint (leftChunkMinusRect layout)) `shouldBe` Just WidgetChunkMinus
+    hitTest widgets (rectHitPoint (leftChunkPlusRect layout)) `shouldBe` Just WidgetChunkPlus
 
   it "hit tests moisture view button" $ do
     let layout = layoutFor (V2 800 600) 160
         widgets = buildWidgets layout
-    hitTest widgets (V2 150 176) `shouldBe` Just WidgetViewMoisture
+        (_, _, _, moistureView, _, _, _, _, _, _, _, _) = leftViewRects layout
+    hitTest widgets (rectHitPoint moistureView) `shouldBe` Just WidgetViewMoisture
 
   it "hit tests log filter buttons" $ do
     let layout = layoutFor (V2 800 600) 160
         widgets = buildWidgets layout
-    hitTest widgets (V2 704 447) `shouldBe` Just WidgetLogDebug
+        (debugRect, _, _, _) = logFilterRects layout
+    hitTest widgets (rectHitPoint debugRect) `shouldBe` Just WidgetLogDebug
 
   it "hit tests config toggle" $ do
     let layout = layoutFor (V2 800 600) 160
         widgets = buildWidgets layout
-    hitTest widgets (V2 560 30) `shouldBe` Just WidgetConfigToggle
+    hitTest widgets (rectHitPoint (configToggleRect layout)) `shouldBe` Just WidgetConfigToggle
 
   it "hit tests config preset save/load/reset/revert" $ do
     let layout = layoutFor (V2 800 600) 160
@@ -50,19 +55,19 @@ spec = describe "UI.WidgetTree" $ do
     hitTest widgets (V2 (rvx + 5) (rvy + 5)) `shouldBe` Just WidgetConfigRevert
 
   it "hit tests config slider buttons" $ do
-    let layout = layoutFor (V2 800 600) 160
+    let layout = layoutFor (V2 800 960) 0
         widgets = buildWidgets layout
-    hitTest widgets (V2 560 118) `shouldBe` Just WidgetConfigWaterMinus
-    hitTest widgets (V2 740 118) `shouldBe` Just WidgetConfigWaterPlus
-    hitTest widgets (V2 560 152) `shouldBe` Just WidgetConfigOrographicLiftMinus
-    hitTest widgets (V2 740 152) `shouldBe` Just WidgetConfigOrographicLiftPlus
-    hitTest widgets (V2 560 186) `shouldBe` Just WidgetConfigRainShadowLossMinus
-    hitTest widgets (V2 740 186) `shouldBe` Just WidgetConfigRainShadowLossPlus
-    hitTest widgets (V2 560 220) `shouldBe` Just WidgetConfigWindDiffuseMinus
-    hitTest widgets (V2 740 220) `shouldBe` Just WidgetConfigWindDiffusePlus
-    hitTest widgets (V2 560 254) `shouldBe` Just WidgetConfigEquatorTempMinus
-    hitTest widgets (V2 740 254) `shouldBe` Just WidgetConfigEquatorTempPlus
-    hitTest widgets (V2 560 288) `shouldBe` Just WidgetConfigPoleTempMinus
-    hitTest widgets (V2 740 288) `shouldBe` Just WidgetConfigPoleTempPlus
-    hitTest widgets (V2 560 322) `shouldBe` Just WidgetConfigLapseRateMinus
-    hitTest widgets (V2 740 322) `shouldBe` Just WidgetConfigLapseRatePlus
+    hitTest widgets (rectHitPoint (configWaterMinusRect layout)) `shouldBe` Just WidgetConfigWaterMinus
+    hitTest widgets (rectHitPoint (configWaterPlusRect layout)) `shouldBe` Just WidgetConfigWaterPlus
+    hitTest widgets (rectHitPoint (configOrographicLiftMinusRect layout)) `shouldBe` Just WidgetConfigOrographicLiftMinus
+    hitTest widgets (rectHitPoint (configOrographicLiftPlusRect layout)) `shouldBe` Just WidgetConfigOrographicLiftPlus
+    hitTest widgets (rectHitPoint (configRainShadowLossMinusRect layout)) `shouldBe` Just WidgetConfigRainShadowLossMinus
+    hitTest widgets (rectHitPoint (configRainShadowLossPlusRect layout)) `shouldBe` Just WidgetConfigRainShadowLossPlus
+    hitTest widgets (rectHitPoint (configWindDiffuseMinusRect layout)) `shouldBe` Just WidgetConfigWindDiffuseMinus
+    hitTest widgets (rectHitPoint (configWindDiffusePlusRect layout)) `shouldBe` Just WidgetConfigWindDiffusePlus
+    hitTest widgets (rectHitPoint (configEquatorTempMinusRect layout)) `shouldBe` Just WidgetConfigEquatorTempMinus
+    hitTest widgets (rectHitPoint (configEquatorTempPlusRect layout)) `shouldBe` Just WidgetConfigEquatorTempPlus
+    hitTest widgets (rectHitPoint (configPoleTempMinusRect layout)) `shouldBe` Just WidgetConfigPoleTempMinus
+    hitTest widgets (rectHitPoint (configPoleTempPlusRect layout)) `shouldBe` Just WidgetConfigPoleTempPlus
+    hitTest widgets (rectHitPoint (configLapseRateMinusRect layout)) `shouldBe` Just WidgetConfigLapseRateMinus
+    hitTest widgets (rectHitPoint (configLapseRatePlusRect layout)) `shouldBe` Just WidgetConfigLapseRatePlus

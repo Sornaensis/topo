@@ -5,6 +5,7 @@ import Test.Hspec.QuickCheck
 import Test.QuickCheck
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Vector.Unboxed as U
+import Spec.Support.FloatApprox (approxEqAbs)
 import Topo
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice, mkLatitudeMapping, PlanetConfig(..), WorldSlice(..))
 import Topo.Weather (defaultWeatherConfig)
@@ -12,6 +13,9 @@ import Topo.Weather (defaultWeatherConfig)
 avgVector :: U.Vector Float -> Float
 avgVector vec =
   U.sum vec / max 1 (fromIntegral (U.length vec))
+
+oceanDepthTemperatureTolerance :: Float
+oceanDepthTemperatureTolerance = 0.05
 
 spec :: Spec
 spec = describe "Climate" $ do
@@ -120,17 +124,18 @@ spec = describe "Climate" $ do
           , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
-        n = chunkTileCount config
-        size = wcChunkSize config
-        adjacentDiff tempVec i
-          | i `mod` size == size - 1 = 0
-          | otherwise = abs ((tempVec U.! i) - (tempVec U.! (i + 1)))
     result <- runPipeline pipeline env world1
     world2 <- expectPipeline result
     case getClimateChunk (chunkIdFromCoord (ChunkCoord 0 0)) world2 of
       Nothing -> expectationFailure "missing climate chunk"
       Just chunk -> do
-        let maxAdjacent = U.maximum (U.generate n (adjacentDiff (ccTempAvg chunk)))
+        let diffs =
+              [ abs ((ccTempAvg chunk U.! i) - (ccTempAvg chunk U.! j))
+              | i <- [0 .. chunkTileCount config - 1]
+              , j <- hexNeighborIndices (wcChunkSize config) (wcChunkSize config) i
+              , i < j
+              ]
+            maxAdjacent = maximum diffs
         maxAdjacent `shouldSatisfy` (< 0.06)
 
   it "smoothly transitions temperature across water-level boundary" $ do
@@ -383,8 +388,8 @@ spec = describe "Climate" $ do
     wS <- expectPipeline resultS
     case (getClimateChunk cid wD, getClimateChunk cid wS) of
       (Just cD, Just cS) ->
-        abs (avgVector (ccTempAvg cD) - avgVector (ccTempAvg cS))
-          `shouldSatisfy` (< 0.05)
+        avgVector (ccTempAvg cD)
+          `shouldSatisfy` approxEqAbs oceanDepthTemperatureTolerance (avgVector (ccTempAvg cS))
       _ -> expectationFailure "missing climate chunks"
 
   -- 4.7.3: ocean moderation warms coastal land at high latitudes.
@@ -519,6 +524,37 @@ spec = describe "Climate" $ do
         -- Interior land should receive non-zero precipitation via
         -- wind transport, ITCZ boost, or both.
         avgVector (ccPrecipAvg interior) `shouldSatisfy` (> 0.02)
+
+  it "moistureFlowAtGrid prefers the hex-diagonal upwind source" $ do
+    let climateCfg = defaultClimateConfig
+          { ccMoisture = (ccMoisture defaultClimateConfig)
+              { moistAdvect = 1
+              , moistLocal = 0
+              , moistAdvectSpeed = 1
+              , moistCondensationRate = 0
+              , moistConvectiveRate = 0
+              , moistRecycleRate = 0
+              }
+          }
+        gridW = 3
+        gridH = 3
+        centerIdx = 4
+        windDir = U.replicate 9 (5 * pi / 3)
+        windSpd = U.replicate 9 1
+        elev = U.replicate 9 0.5
+        temp = U.replicate 9 1
+        vegCover = U.replicate 9 0
+        moistureDiagonal = U.generate 9 (\idx -> if idx == 6 then 1 else 0)
+        moistureWest = U.generate 9 (\idx -> if idx == 3 then 1 else 0)
+        moistureSouth = U.generate 9 (\idx -> if idx == 7 then 1 else 0)
+        (diagonalRemaining, _) =
+          moistureFlowAtGrid gridW gridH climateCfg windDir windSpd elev temp vegCover moistureDiagonal centerIdx
+        (westRemaining, _) =
+          moistureFlowAtGrid gridW gridH climateCfg windDir windSpd elev temp vegCover moistureWest centerIdx
+        (southRemaining, _) =
+          moistureFlowAtGrid gridW gridH climateCfg windDir windSpd elev temp vegCover moistureSouth centerIdx
+    diagonalRemaining `shouldSatisfy` (> westRemaining)
+    diagonalRemaining `shouldSatisfy` (> southRemaining)
 
   -- 2.9.2: vegetation recycling materially affects interior precipitation.
   it "vegetation recycling materially affects interior precipitation" $ do

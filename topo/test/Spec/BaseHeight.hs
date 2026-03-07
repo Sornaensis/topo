@@ -10,39 +10,39 @@ spec = describe "BaseHeight" $ do
   it "disables ocean edge bias with zero falloff" $ do
     let config = WorldConfig { wcChunkSize = 8 }
         extent = worldExtentSquareOrDefault 1
-        edgeCfg = defaultOceanEdgeDepth { oedNorth = 1, oedFalloff = 0 }
+        edgeCfg = defaultOceanEdgeDepth { oedRMin = 1, oedFalloff = 0 }
         bias = oceanEdgeBiasAt config extent edgeCfg (TileCoord 0 0)
     bias `shouldBe` 0
 
-  it "applies full edge bias at the boundary" $ do
+  it "applies full axial edge bias at the boundary" $ do
     let config = WorldConfig { wcChunkSize = 8 }
         extent = worldExtentSquareOrDefault 1
         edgeCfg = defaultOceanEdgeDepth
-          { oedNorth = 0.8
-          , oedSouth = 0.6
-          , oedEast = 0.4
-          , oedWest = 0.2
+          { oedRMin = 0.8
+          , oedRMax = 0.6
+          , oedQMax = 0.4
+          , oedQMin = 0.2
           , oedFalloff = 3
           }
         (minX, maxX, minY, maxY) = worldBounds config extent
         midX = (minX + maxX) `div` 2
         midY = (minY + maxY) `div` 2
         eps = 1e-6
-        biasNorth = oceanEdgeBiasAt config extent edgeCfg (TileCoord midX minY)
-        biasSouth = oceanEdgeBiasAt config extent edgeCfg (TileCoord midX maxY)
-        biasWest = oceanEdgeBiasAt config extent edgeCfg (TileCoord minX midY)
-        biasEast = oceanEdgeBiasAt config extent edgeCfg (TileCoord maxX midY)
-    abs (biasNorth + 0.8) `shouldSatisfy` (< eps)
-    abs (biasSouth + 0.6) `shouldSatisfy` (< eps)
-    abs (biasWest + 0.2) `shouldSatisfy` (< eps)
-    abs (biasEast + 0.4) `shouldSatisfy` (< eps)
+        biasRMin = oceanEdgeBiasAt config extent edgeCfg (TileCoord midX minY)
+        biasRMax = oceanEdgeBiasAt config extent edgeCfg (TileCoord midX maxY)
+        biasQMin = oceanEdgeBiasAt config extent edgeCfg (TileCoord minX midY)
+        biasQMax = oceanEdgeBiasAt config extent edgeCfg (TileCoord maxX midY)
+    abs (biasRMin + 0.8) `shouldSatisfy` (< eps)
+    abs (biasRMax + 0.6) `shouldSatisfy` (< eps)
+    abs (biasQMin + 0.2) `shouldSatisfy` (< eps)
+    abs (biasQMax + 0.4) `shouldSatisfy` (< eps)
 
   prop "edge bias is zero beyond falloff" $
     let config = WorldConfig { wcChunkSize = 8 }
         extent = worldExtentSquareOrDefault 1
         falloffTiles = 2
         edgeCfg = defaultOceanEdgeDepth
-          { oedNorth = 1
+          { oedRMin = 1
           , oedFalloff = fromIntegral falloffTiles
           }
         (minX, _maxX, minY, maxY) = worldBounds config extent

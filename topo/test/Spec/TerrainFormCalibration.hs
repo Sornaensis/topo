@@ -8,15 +8,26 @@ import Test.Hspec.QuickCheck
 import Test.QuickCheck
 import Data.Word (Word64)
 import qualified Data.Vector.Unboxed as U
+import Spec.Support.TerrainFormFixtures
+  ( badlandsElev
+  , badlandsHardness
+  , canyonElev
+  , classifyFixture
+  , classifyFixtureWith
+  , coastalEscarpmentElev
+  , glaciatedHighlandElev
+  , midSlopeReliefElev
+  , midSlopeReliefHardness
+  , shieldPlateauElev
+  )
 import Topo.BaseHeight (GenConfig(..), defaultGenConfig)
 import Topo.Erosion
   ( ErosionConfig(..)
   , computeMicroReliefGrid
   , defaultErosionConfig
   )
-import Topo.Parameters (computeReliefIndex, defaultTerrainFormConfig)
+import Topo.Parameters (TerrainFormConfig(..), computeReliefIndex, defaultTerrainFormConfig)
 import qualified Topo.TerrainForm.Metrics as TerrainMetrics
-import Topo.TerrainGrid (classifyTerrainFormGrid)
 import Topo.Types
   ( ChunkCoord(..)
   , TerrainForm
@@ -59,6 +70,28 @@ spec = describe "TerrainForm calibration" $ do
     it "badlands fixture yields badlands presence" $ do
       let forms = classifyFixture badlandsElev badlandsHardness
       frac FormBadlands forms `shouldSatisfy` (> 0.01)
+
+    it "mid-slope boundary fixture responds to micro-relief threshold sweeps" $ do
+      let strictCfg = defaultTerrainFormConfig
+            { tfcMicroReliefRollingMin = 0.95
+            , tfcMicroReliefHillyMin = 0.98
+            , tfcMicroReliefHillySlopeScale = 1.0
+            , tfcMicroReliefHillyReliefScale = 1.0
+            }
+          permissiveCfg = defaultTerrainFormConfig
+            { tfcMicroReliefRollingMin = 0.45
+            , tfcMicroReliefHillyMin = 0.0
+            , tfcMicroReliefHillySlopeScale = 0.25
+            , tfcMicroReliefHillyReliefScale = 0.25
+            }
+          strictForms = classifyFixtureWith strictCfg midSlopeReliefElev midSlopeReliefHardness
+          permissiveForms = classifyFixtureWith permissiveCfg midSlopeReliefElev midSlopeReliefHardness
+          strictFlat = frac FormFlat strictForms
+          strictHilly = frac FormHilly strictForms
+          permissiveFlat = frac FormFlat permissiveForms
+          permissiveHilly = frac FormHilly permissiveForms
+      permissiveHilly `shouldSatisfy` (> strictHilly + 0.02)
+      permissiveFlat `shouldSatisfy` (< strictFlat)
 
   describe "micro-relief properties" $ do
     prop "computeMicroReliefGrid stays in [0,1]" $ \(seed :: Word64) ->
@@ -137,86 +170,12 @@ spec = describe "TerrainForm calibration" $ do
             eps = 1.0e-5
         in U.and (U.zipWith (\a b -> abs (a - b) <= eps) pre post)
 
-gridW, gridH :: Int
-gridW = 48
-gridH = 48
-
-classifyFixture :: (Int -> Int -> Float) -> (Int -> Int -> Float) -> U.Vector TerrainForm
-classifyFixture elevFn hardFn =
-  let n = gridW * gridH
-      elev = U.generate n $ \i ->
-        let x = i `mod` gridW
-            y = i `div` gridW
-        in clamp01 (elevFn x y)
-      hardness = U.generate n $ \i ->
-        let x = i `mod` gridW
-            y = i `div` gridW
-        in clamp01 (hardFn x y)
-  in classifyTerrainFormGrid defaultTerrainFormConfig 0.5 gridW gridH elev hardness
-
 frac :: TerrainForm -> U.Vector TerrainForm -> Double
 frac f v
   | U.null v = 0
   | otherwise =
       let c = U.length (U.filter (== f) v)
       in fromIntegral c / fromIntegral (U.length v)
-
-shieldPlateauElev :: Int -> Int -> Float
-shieldPlateauElev x y =
-  let xf = norm x gridW
-      yf = norm y gridH
-      dx = xf - 0.5
-      dy = yf - 0.5
-      r2 = dx * dx + dy * dy
-      dome = 0.72 - 0.22 * r2
-      gentle = 0.01 * sin (6 * xf) * cos (5 * yf)
-  in dome + gentle
-
-canyonElev :: Int -> Int -> Float
-canyonElev x y =
-  let xf = norm x gridW
-      yf = norm y gridH
-      axis = abs (xf - 0.5)
-      ridge = exp (negate (axis * axis) / 0.0018)
-      longWave = 0.02 * sin (8 * yf)
-  in 0.52 + longWave + 0.22 * ridge
-
-glaciatedHighlandElev :: Int -> Int -> Float
-glaciatedHighlandElev x y =
-  let xf = norm x gridW
-      yf = norm y gridH
-      ridgeA = 0.08 * sin (18 * xf + 3 * yf)
-      ridgeB = 0.07 * cos (16 * yf - 2 * xf)
-      massif = 0.58 + 0.10 * sin (4 * xf) * sin (4 * yf)
-  in massif + ridgeA + ridgeB
-
-coastalEscarpmentElev :: Int -> Int -> Float
-coastalEscarpmentElev x y =
-  let xf = norm x gridW
-      yf = norm y gridH
-      cliff = 0.50 / (1 + exp (-120 * (xf - 0.42)))
-      coastUndulate = 0.03 * sin (12 * yf)
-  in 0.22 + cliff + coastUndulate
-
-badlandsElev :: Int -> Int -> Float
-badlandsElev x y =
-  let xf = norm x gridW
-      yf = norm y gridH
-      stepBand = if xf < 0.5 then 0.0 else 0.18
-      rills  = 0.012 * sin (14 * yf)
-      bands  = 0.008 * sin (22 * xf + 3 * yf)
-  in 0.36 + stepBand + rills + bands
-
-badlandsHardness :: Int -> Int -> Float
-badlandsHardness x y =
-  let xf = norm x gridW
-      yf = norm y gridH
-  in 0.18 + 0.02 * sin (6 * xf + 5 * yf)
-
-norm :: Int -> Int -> Float
-norm idx maxN
-  | maxN <= 1 = 0
-  | otherwise = fromIntegral idx / fromIntegral (maxN - 1)
 
 clampCoord :: Int -> Int -> Int
 clampCoord coord maxSize

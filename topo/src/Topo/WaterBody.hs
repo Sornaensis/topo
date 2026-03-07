@@ -44,6 +44,7 @@ import Topo.Plugin (logInfo, getWorldP, putWorldP, PluginError(..))
 import Topo.TerrainGrid
   ( buildElevationGrid
   , chunkGridSlice
+  , chunkGridSliceGeneric
   , validateTerrainGrid
   )
 import Topo.Types
@@ -361,18 +362,3 @@ sliceWaterBodyChunk config minCoord gridW global key _chunk =
     , wbAdjacentType = chunkGridSliceGeneric config minCoord gridW (wbAdjacentType global) key
     }
 
--- | Slice a chunk-sized vector of any 'U.Unbox' type from a large grid.
-chunkGridSliceGeneric :: U.Unbox a => WorldConfig -> ChunkCoord -> Int -> U.Vector a -> Int -> U.Vector a
-chunkGridSliceGeneric config (ChunkCoord minCx minCy) gridW grid key =
-  let ChunkCoord cx cy = chunkCoordFromId (ChunkId key)
-      size = wcChunkSize config
-      baseX = (cx - minCx) * size
-      baseY = (cy - minCy) * size
-      n = size * size
-  in U.generate n (\i ->
-      let x = i `mod` size
-          y = i `div` size
-          gx = baseX + x
-          gy = baseY + y
-          gi = gy * gridW + gx
-      in grid U.! gi)

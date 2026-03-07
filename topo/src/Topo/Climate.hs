@@ -30,17 +30,24 @@ import qualified Data.IntMap.Strict as IntMap
 import Data.Word (Word64)
 import Topo.Climate.Config
 import Topo.Climate.Evaporation
+import Topo.Grid.HexDirection
+  ( nearestHexDirection
+  , stepIndexInDirection
+  , traceIndexInDirection
+  )
+import Topo.Grid.Diffusion (coastalProximityGrid, diffuseAngleFieldGrid, diffuseFieldGrid)
 import Topo.Math (clamp01, clampLat, iterateN, lerp, smoothstep)
 import Topo.Noise (fbm2D, noise2D)
 import Topo.Pipeline (PipelineStage(..))
 import Topo.Pipeline.Stage (StageId(..))
 import Control.Monad.Except (throwError)
+import Topo.Hex (hexOpposite)
 import Topo.Planet (LatitudeMapping(..))
 import Topo.Plugin (logInfo, getWorldP, putWorldP, peSeed, PluginError(..))
 import Topo.TerrainGrid
   ( buildElevationGrid
+  , buildPlateHeightGrid
   , chunkGridSlice
-  , clampCoordGrid
   , validateTerrainGrid
   )
 import Topo.Types
@@ -101,13 +108,14 @@ buildClimateChunkWithPrecip
 buildClimateChunkWithPrecip config seed lm cfg seasonAmp sBase sRange precipGrid coastalGrid moistureGrid tempGrid minCoord gridW key terrain =
   let origin = chunkOriginTile config (chunkCoordFromId (ChunkId key))
       n = chunkTileCount config
+      chunkSize = wcChunkSize config
       wnd = ccWind cfg
 
       -- Wind fields
       windDir0 = U.generate n (windDirAt config seed lm cfg origin)
       windSpd0 = U.generate n (windSpdAt config seed lm cfg origin)
-      windDir = diffuseField n (windIterations wnd) (windDiffuse wnd) windDir0
-      windSpd = diffuseField n (windIterations wnd) (windDiffuse wnd) windSpd0
+      windDir = diffuseAngleFieldGrid chunkSize chunkSize (windIterations wnd) (windDiffuse wnd) windDir0
+      windSpd = diffuseFieldGrid chunkSize chunkSize (windIterations wnd) (windDiffuse wnd) windSpd0
 
       -- Global-grid slices for this chunk
       precip   = chunkGridSlice config minCoord gridW precipGrid key
@@ -218,7 +226,8 @@ climateTempRange config lm seasonCfg amp origin temp coastal n =
 --   * __Rain-shadow boost__:
 --     @baseSeason += scSeasonalityRainShadowBoost × max 0 (upwindElev - localElev)@
 --     — leeward tiles receive a seasonality boost because orographic rain
---     falls primarily in the wet season.
+--     falls primarily in the wet season.  The upwind elevation sample now
+--     follows the nearest hex direction implied by the local wind field.
 --
 -- Range: 0 (uniform year-round) to ~1 (extreme seasonality).
 climatePrecipSeasonality
@@ -252,15 +261,8 @@ climatePrecipSeasonality config lm seasonCfg sBase sRange origin coastal elev wi
         contModulated = baseSeason * (1 + contFactor * (1 - c))
         -- Rain shadow: sample upwind elevation
         wdir = windDir U.! i
-        -- Upwind sample offset (1 tile distance)
-        udx = round (cos wdir) :: Int
-        udy = round (sin wdir) :: Int
-        -- Compute upwind tile index within the chunk (clamp to bounds)
-        lx0 = i `mod` size
-        ly0 = i `div` size
-        ux = max 0 (min (size - 1) (lx0 - udx))
-        uy = max 0 (min (size - 1) (ly0 - udy))
-        upIdx = uy * size + ux
+        upwindDir = hexOpposite (nearestHexDirection wdir)
+        upIdx = stepIndexInDirection size size upwindDir i
         upElev = elev U.! upIdx
         localElev = elev U.! i
         rsBias = rsFactor * max 0 (upElev - localElev)
@@ -779,7 +781,8 @@ moistureStepGrid gridW gridH cfg windDir windSpd elev tempGrid
 
 -- | Compute the new moisture and net condensation at a single grid
 -- tile from advection, saturation-based condensation, and vegetation
--- recycling.
+-- recycling. Upwind sampling follows the discrete hex path implied by the
+-- local wind direction instead of Cartesian x/y interpolation.
 --
 -- Returns @(remainingMoisture, netPrecipitation)@ where
 -- @netPrecipitation = condensation − recycled@: moisture that actually
@@ -794,18 +797,10 @@ moistureFlowAtGrid
 moistureFlowAtGrid gridW gridH cfg windDir windSpd elev tempGrid vegCover moisture i =
   let prc = ccPrecipitation cfg
       mst = ccMoisture cfg
-      x = i `mod` gridW
-      y = i `div` gridW
       dir = windDir U.! i
       spd = windSpd U.! i * moistAdvectSpeed mst
-      -- Fractional upwind offset: subtract the wind vector to sample
-      -- the location the air came FROM (upwind), not where it is going.
-      (fdx, fdy) = windOffsetFrac dir spd
-      ux = fromIntegral x - fdx
-      uy = fromIntegral y - fdy
-      -- Bilinear-sampled upwind moisture
-      upwindMoisture = bilinearSample gridW gridH moisture ux uy
-      upwindElev     = bilinearSample gridW gridH elev ux uy
+      upwindMoisture = sampleAlongUpwindHexPath gridW gridH moisture i dir spd
+      upwindElev = sampleAlongUpwindHexPath gridW gridH elev i dir spd
       h0 = elev U.! i
       cool = max 0 (upwindElev - h0) * precRainShadowLoss prc
       -- Wind-driven advection + local retention
@@ -844,16 +839,14 @@ moistureFlowAtGrid gridW gridH cfg windDir windSpd elev tempGrid vegCover moistu
       netPrecip = max 0 (condensation - recycled)
   in (clamp01 (totalMoisture - condensation + recycled), netPrecip)
 
+-- | Orographic uplift estimated from the nearest upwind hex direction at a
+-- tile, sampled over the configured number of hex steps.
 orographicAt :: Int -> Int -> ClimateConfig -> U.Vector Float -> U.Vector Float -> Int -> Float
 orographicAt gridW gridH cfg windDir elev i =
   let prc = ccPrecipitation cfg
-      x = i `mod` gridW
-      y = i `div` gridW
       dir = windDir U.! i
-      (dx, dy) = windOffset dir (precOrographicStep prc)
-      nx = clampCoordGrid gridW (x - dx)
-      ny = clampCoordGrid gridH (y - dy)
-      ni = ny * gridW + nx
+      upwindDir = hexOpposite (nearestHexDirection dir)
+      ni = traceIndexInDirection gridW gridH upwindDir (round (precOrographicStep prc)) i
       h0 = elev U.! i
       h1 = elev U.! ni
       rise = max 0 (h0 - h1)
@@ -872,27 +865,6 @@ plateHeightPrecipBiasAt cfg waterLevel plateHeight =
   let land = clamp01 (plateHeight - waterLevel)
   in land * precOrographicLift (ccPrecipitation cfg)
 
-buildPlateHeightGrid :: WorldConfig -> IntMap TerrainChunk -> ChunkCoord -> Int -> Int -> U.Vector Float
-buildPlateHeightGrid config terrain (ChunkCoord minCx minCy) gridW gridH =
-  let size = wcChunkSize config
-      minTileX = minCx * size
-      minTileY = minCy * size
-      sampleAt idx =
-        let x = idx `mod` gridW
-            y = idx `div` gridW
-            gx = minTileX + x
-            gy = minTileY + y
-            tile = TileCoord gx gy
-            (chunkCoord, local) = chunkCoordFromTile config tile
-            ChunkId key = chunkIdFromCoord chunkCoord
-        in case IntMap.lookup key terrain of
-            Nothing -> 0
-            Just chunk ->
-              case tileIndex config local of
-                Nothing -> 0
-                Just (TileIndex i) -> tcPlateHeight chunk U.! i
-  in U.generate (gridW * gridH) sampleAt
-
 -- | Per-chunk ocean evaporation using Dalton's Law (Model B).
 evapAt :: WorldConfig -> Word64 -> LatitudeMapping -> ClimateConfig -> Float -> TileCoord -> U.Vector Float -> U.Vector Float -> U.Vector Float -> Int -> Float
 evapAt config seed lm cfg waterLevel origin elev tempVec windSpdVec i =
@@ -908,129 +880,42 @@ evapAt config seed lm cfg waterLevel origin elev tempVec windSpdVec i =
      then clamp01 (oceanEvaporation mst t w insol + noise)
      else clamp01 noise
 
+-- | Legacy chunk-local moisture step retained for tests; uses the same
+-- nearest-hex upwind sampling as the global transport path.
 moistureStep :: WorldConfig -> ClimateConfig -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float
 moistureStep config cfg windDir windSpd elev moisture =
   U.generate (U.length moisture) (moistureFlowAt config cfg windDir windSpd elev moisture)
 
+-- | Legacy chunk-local moisture transport retained for tests; samples the
+-- upwind moisture and elevation fields along the nearest hex path.
 moistureFlowAt :: WorldConfig -> ClimateConfig -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float -> Int -> Float
 moistureFlowAt config cfg windDir windSpd elev moisture i =
   let prc = ccPrecipitation cfg
       mst = ccMoisture cfg
       size = wcChunkSize config
-      x = i `mod` size
-      y = i `div` size
       dir = windDir U.! i
       spd = windSpd U.! i * moistAdvectSpeed mst
-      -- Subtract wind vector to sample the upwind location.
-      (fdx, fdy) = windOffsetFrac dir spd
-      ux = fromIntegral x - fdx
-      uy = fromIntegral y - fdy
-      upwindMoisture = bilinearSample size size moisture ux uy
-      upwindElev     = bilinearSample size size elev ux uy
+      upwindMoisture = sampleAlongUpwindHexPath size size moisture i dir spd
+      upwindElev = sampleAlongUpwindHexPath size size elev i dir spd
       h0 = elev U.! i
       cool = max 0 (upwindElev - h0) * precRainShadowLoss prc
       adv = upwindMoisture * moistAdvect mst
       local = moisture U.! i * moistLocal mst
   in clamp01 (adv + local - cool)
 
--- | Fractional wind offset without integer rounding.
---
--- Returns @(dx, dy)@ as floating-point tile offsets.  Used by
--- 'bilinearSample' for sub-tile moisture advection.
-windOffsetFrac :: Float -> Float -> (Float, Float)
-windOffsetFrac dir spd =
-  let dx = cos dir * spd
-      dy = sin dir * spd
-  in (dx, dy)
-
--- | Integer-rounded wind offset (retained for orographic sampling and
--- legacy per-chunk path where bilinear is unnecessary).
-windOffset :: Float -> Float -> (Int, Int)
-windOffset dir spd =
-  let dx = round (cos dir * spd)
-      dy = round (sin dir * spd)
-  in (dx, dy)
-
--- | Bilinear interpolation of a grid value at a fractional coordinate.
---
--- Clamps the coordinate to the grid bounds, then interpolates between
--- the four surrounding integer tiles.  This is critical for smooth
--- moisture advection at sub-tile wind speeds (fixing RC-2).
-{-# INLINE bilinearSample #-}
-bilinearSample :: Int -> Int -> U.Vector Float -> Float -> Float -> Float
-bilinearSample gridW gridH field fx fy =
-  let clampX v
-        | v < 0     = 0
-        | v >= gridW - 1 = gridW - 2
-        | otherwise = v
-      clampY v
-        | v < 0     = 0
-        | v >= gridH - 1 = gridH - 2
-        | otherwise = v
-      x0 = clampX (floor fx)
-      y0 = clampY (floor fy)
-      x1 = min (gridW - 1) (x0 + 1)
-      y1 = min (gridH - 1) (y0 + 1)
-      tx = max 0 (min 1 (fx - fromIntegral x0))
-      ty = max 0 (min 1 (fy - fromIntegral y0))
-      v00 = field U.! (y0 * gridW + x0)
-      v10 = field U.! (y0 * gridW + x1)
-      v01 = field U.! (y1 * gridW + x0)
-      v11 = field U.! (y1 * gridW + x1)
-      top    = v00 * (1 - tx) + v10 * tx
-      bottom = v01 * (1 - tx) + v11 * tx
-  in top * (1 - ty) + bottom * ty
-
-clampCoord :: Int -> Int -> Int
-clampCoord size v
-  | v < 0 = 0
-  | v >= size = size - 1
-  | otherwise = v
-
-diffuseField :: Int -> Int -> Float -> U.Vector Float -> U.Vector Float
-diffuseField n iterations factor field =
-  iterateN iterations (diffuseOnce n factor) field
-
-diffuseFieldGrid :: Int -> Int -> Int -> Float -> U.Vector Float -> U.Vector Float
-diffuseFieldGrid gridW gridH iterations factor field =
-  iterateN iterations (diffuseOnceGrid gridW gridH factor) field
-
-coastalProximityGrid :: Int -> Int -> Int -> Float -> U.Vector Float -> U.Vector Float
-coastalProximityGrid gridW gridH iterations factor oceanMask =
-  iterateN iterations (diffuseOnceGrid gridW gridH factor) oceanMask
-
-diffuseOnceGrid :: Int -> Int -> Float -> U.Vector Float -> U.Vector Float
-diffuseOnceGrid gridW gridH factor field =
-  U.generate (gridW * gridH) (diffuseAtGrid gridW gridH factor field)
-
-diffuseAtGrid :: Int -> Int -> Float -> U.Vector Float -> Int -> Float
-diffuseAtGrid gridW gridH factor field i =
-  let x = i `mod` gridW
-      y = i `div` gridW
-      c = field U.! i
-      l = if x > 0 then field U.! (i - 1) else c
-      r = if x + 1 < gridW then field U.! (i + 1) else c
-      u = if y > 0 then field U.! (i - gridW) else c
-      d = if y + 1 < gridH then field U.! (i + gridW) else c
-      avg = (l + r + u + d + c) / 5
-  in clamp01 (c * (1 - factor) + avg * factor)
-
-diffuseOnce :: Int -> Float -> U.Vector Float -> U.Vector Float
-diffuseOnce n factor field =
-  U.generate n (diffuseAt n factor field)
-
-diffuseAt :: Int -> Float -> U.Vector Float -> Int -> Float
-diffuseAt n factor field i =
-  let size = round (sqrt (fromIntegral n))
-      x = i `mod` size
-      y = i `div` size
-      c = field U.! i
-      l = if x > 0 then field U.! (i - 1) else c
-      r = if x + 1 < size then field U.! (i + 1) else c
-      u = if y > 0 then field U.! (i - size) else c
-      d = if y + 1 < size then field U.! (i + size) else c
-      avg = (c + l + r + u + d) / 5
-  in c * (1 - factor) + avg * factor
+-- | Sample a field from the upwind direction by walking along the nearest
+-- hex direction and interpolating between successive hex steps for
+-- sub-tile wind distances.
+sampleAlongUpwindHexPath :: Int -> Int -> U.Vector Float -> Int -> Float -> Float -> Float
+sampleAlongUpwindHexPath gridW gridH field idx dir distance =
+  let fullSteps = max 0 (floor distance)
+      frac = clamp01 (distance - fromIntegral fullSteps)
+      upwindDir = hexOpposite (nearestHexDirection dir)
+      baseIdx = traceIndexInDirection gridW gridH upwindDir fullSteps idx
+      nextIdx = stepIndexInDirection gridW gridH upwindDir baseIdx
+      baseValue = field U.! baseIdx
+      nextValue = field U.! nextIdx
+  in lerp baseValue nextValue frac
 
 coherentNoise2D :: Word64 -> Int -> Float -> Int -> Int -> Float
 coherentNoise2D seed octaves freq x y =

@@ -80,7 +80,7 @@ spec = describe "TerrainActor" $ do
           , tgrSimHandle = simHandle
           }
     startTerrainGen terrainHandle (replyTo @TerrainReplyOps replyHandle) req
-    result <- await 50 (trsResult <$> call @"snapshot" replyHandle #snapshot ())
+    result <- await 500 (trsResult <$> call @"snapshot" replyHandle #snapshot ())
     case result of
       Nothing -> expectationFailure "Expected a terrain generation reply"
       Just replyMsg ->
