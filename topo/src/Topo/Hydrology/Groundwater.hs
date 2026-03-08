@@ -7,13 +7,16 @@ module Topo.Hydrology.Groundwater
   , basinStorageStats
   , basinBaseflow
   , basinPerTile
+  , buildGroundwaterChunk
   ) where
 
 import Control.Monad (forM_)
+import Topo.Hydrology.Config (GroundwaterConfig(..))
 import Topo.Math (clamp01)
 import qualified Data.IntMap.Strict as IntMap
 import Data.IntMap.Strict (IntMap)
 import Data.Word (Word32)
+import Topo.Types (GroundwaterChunk(..))
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as UM
 
@@ -97,3 +100,37 @@ basinPerTile basinIds valueMap sizeMap =
           size = max 1 (IntMap.findWithDefault 1 key sizeMap)
       in value / fromIntegral size)
     basinIds
+
+-- | Build groundwater outputs and baseflow contribution for river routing.
+--
+-- Returns:
+--
+-- 1. basin id per tile,
+-- 2. baseflow per tile,
+-- 3. final groundwater chunk payload.
+buildGroundwaterChunk
+  :: GroundwaterConfig
+  -> Float
+  -> U.Vector Int
+  -> U.Vector Float
+  -> (U.Vector Word32, U.Vector Float, GroundwaterChunk)
+buildGroundwaterChunk gwCfg baseflowScale flow moisture =
+  let basinIds = basinIdsFromFlow flow
+      basinStats = basinRechargeStats (gwRechargeScale gwCfg) basinIds moisture
+      (basinStorage, basinDischarge, basinSize) =
+        basinStorageStats
+          (gwMinBasinSize gwCfg)
+          (gwStorageScale gwCfg)
+          (gwDischargeScale gwCfg * gwPermeability gwCfg)
+          basinStats
+      baseflow = basinBaseflow basinIds basinDischarge basinSize baseflowScale
+      groundwater = GroundwaterChunk
+        { gwStorage = basinPerTile basinIds basinStorage basinSize
+        , gwRecharge = U.map (* gwRechargeScale gwCfg) (U.map clamp01 moisture)
+        , gwDischarge = basinPerTile basinIds basinDischarge basinSize
+        , gwBasinId = basinIds
+        , gwInfiltration = U.empty
+        , gwWaterTableDepth = U.empty
+        , gwRootZoneMoisture = U.empty
+        }
+  in (basinIds, baseflow, groundwater)

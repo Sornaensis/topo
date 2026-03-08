@@ -119,6 +119,12 @@ data RiverConfig = RiverConfig
   { rcBaseAccumulation :: !Float
   , rcMinAccumulation :: !Float
   , rcOrderMinAccumulation :: !Float
+  -- | Maximum depth used when breaching local land sinks before
+  -- priority-flood routing in the river stage.
+  , rcSinkBreachDepth :: !Float
+  -- | Minimum inland lake size (tiles) when expanding river-fed inland
+  -- depressions into explicit lakes.
+  , rcMinLakeSize :: !Int
   , rcDischargeScale :: !Float
   , rcChannelDepthScale :: !Float
   , rcChannelMaxDepth :: !Float
@@ -149,6 +155,8 @@ defaultRiverConfig = RiverConfig
   { rcBaseAccumulation = 1
   , rcMinAccumulation = 4
   , rcOrderMinAccumulation = 6
+  , rcSinkBreachDepth = 0.02
+  , rcMinLakeSize = 4
   , rcDischargeScale = 0.05
   , rcChannelDepthScale = 0.002
   , rcChannelMaxDepth = 0.2

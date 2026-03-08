@@ -44,7 +44,10 @@ library
       Seer.Config.Snapshot
       Seer.Config.Snapshot.Types
       Seer.Draw
+      Seer.Draw.Config
       Seer.Draw.Dialog
+      Seer.Draw.LeftPanel
+      Seer.Draw.Overlay
       Seer.Input
       Seer.System
       Seer.System.ThreadPriority
@@ -73,6 +76,7 @@ library
       UI.WidgetsDraw
       UI.WidgetTree
   other-modules:
+      Seer.Draw.Config.Labels
       UI.TerrainColor
       Paths_topo_seer
   hs-source-dirs:

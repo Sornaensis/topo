@@ -101,6 +101,7 @@ library
   other-modules:
       Topo.Config
       Topo.Hydrology.ChunkSlice
+      Topo.Hydrology.Compat
       Topo.Hydrology.Config
       Topo.Hydrology.Depression
       Topo.Hydrology.Flow
@@ -111,10 +112,14 @@ library
       Topo.Hydrology.TerrainModify
       Topo.Overlay.Storage.ChunkIndex
       Topo.Overlay.Storage.Compression
+      Topo.Parameters.TerrainForm
       Topo.Persistence.AtomicDirectory
       Topo.Pipeline.OverlayLifecycle
       Topo.Pipeline.OverlayValidation
       Topo.Plugin.RPC.Payload
+      Topo.Tectonics.Boundary
+      Topo.Tectonics.Config
+      Topo.Tectonics.PlateVoronoi
       Topo.Weather.Config
       Topo.Weather.Grid
       Topo.Weather.Init

@@ -8,11 +8,28 @@ module Topo.Hydrology.Flow
   ) where
 
 import Control.Monad (forM_)
-import Data.List (sortBy)
-import Data.Ord (comparing)
-import Topo.Math (clamp01)
+import Topo.Math (clamp01, descendingIndicesByValue, maxVectorOr)
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as UM
+
+accumulateFlowGeneric
+  :: Float
+  -> U.Vector Float
+  -> U.Vector Int
+  -> (Int -> Float -> Float)
+  -> U.Vector Float
+accumulateFlowGeneric baseAccum elev flow downstreamContribution = U.create $ do
+  let n = U.length elev
+      indices = descendingIndicesByValue elev
+  acc <- UM.replicate n baseAccum
+  forM_ indices $ \i -> do
+    let d = flow U.! i
+    if d >= 0
+      then do
+        v <- UM.read acc i
+        UM.modify acc (+ downstreamContribution i v) d
+      else pure ()
+  pure acc
 
 -- | Accumulate flow from high to low elevation with per-tile flow bonuses.
 flowAccumulation
@@ -21,34 +38,16 @@ flowAccumulation
   -> U.Vector Float
   -> U.Vector Int
   -> U.Vector Float
-flowAccumulation baseAccum flowBonus elev flow = U.create $ do
-  let n = U.length elev
-  acc <- UM.replicate n baseAccum
-  let indices = sortBy (comparing (\i -> negate (elev U.! i))) [0 .. n - 1]
-  forM_ indices $ \i -> do
-    let d = flow U.! i
-    if d >= 0
-      then do
-        v <- UM.read acc i
-        let bonus = flowBonus U.! i
-        UM.modify acc (+ v * (1 + bonus)) d
-      else pure ()
-  pure acc
+flowAccumulation baseAccum flowBonus elev flow =
+  accumulateFlowGeneric baseAccum elev flow
+    (\i v ->
+      let bonus = flowBonus U.! i
+      in v * (1 + bonus))
 
 -- | Baseline flow accumulation without per-tile bonus terms.
 flowAccumulationWithBase :: Float -> U.Vector Float -> U.Vector Int -> U.Vector Float
-flowAccumulationWithBase baseAccum elev flow = U.create $ do
-  let n = U.length elev
-  acc <- UM.replicate n baseAccum
-  let indices = sortBy (comparing (\i -> negate (elev U.! i))) [0 .. n - 1]
-  forM_ indices $ \i -> do
-    let d = flow U.! i
-    if d >= 0
-      then do
-        v <- UM.read acc i
-        UM.modify acc (+ v) d
-      else pure ()
-  pure acc
+flowAccumulationWithBase baseAccum elev flow =
+  accumulateFlowGeneric baseAccum elev flow (\_ v -> v)
 
 -- | Blend base (water-level relative) and flow-derived moisture terms.
 moistureFromAccumulation
@@ -60,7 +59,7 @@ moistureFromAccumulation
   -> U.Vector Float
   -> U.Vector Float
 moistureFromAccumulation minAccum waterLevel baseWeight flowWeight elev acc =
-  let maxAcc = max minAccum (U.maximum acc)
+  let maxAcc = max minAccum (maxVectorOr minAccum acc)
   in U.imap
       (\i a ->
         let base = clamp01 (waterLevel - elev U.! i)

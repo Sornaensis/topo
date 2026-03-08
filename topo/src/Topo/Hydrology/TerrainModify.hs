@@ -10,12 +10,18 @@ module Topo.Hydrology.TerrainModify
   ) where
 
 import Topo.Hex (hexNeighborIndices)
-import Topo.Math (clamp01)
+import Topo.Math (clamp01, maxVectorOr)
 import Topo.TerrainGrid (gridSlopeAt)
 import Topo.Types
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as UM
 import Control.Monad (forM_)
+
+maximumOr :: Ord a => a -> [a] -> a
+maximumOr fallback xs =
+  case xs of
+    [] -> fallback
+    _ -> maximum xs
 
 hardnessFactor :: Float -> Float -> Float
 hardnessFactor hardnessErodeWeight hard =
@@ -78,7 +84,7 @@ alluvialDepositGrid
   -> U.Vector Float
   -> U.Vector Float
 alluvialDepositGrid minAccum alluvialMaxSlope waterLevel gridW gridH elev acc depositFactor =
-  let maxAcc = max minAccum (U.maximum acc)
+  let maxAcc = max minAccum (maxVectorOr minAccum acc)
   in U.generate (U.length elev) (depositAt maxAcc)
   where
     depositAt maxAcc i =
@@ -106,7 +112,7 @@ wetErodeGrid
   -> U.Vector Float
   -> U.Vector Float
 wetErodeGrid minMoisture waterLevel wetErodeScale hardnessErodeWeight elev moisture hardness erosionMult =
-  let maxMoist = max minMoisture (U.maximum moisture)
+  let maxMoist = max minMoisture (maxVectorOr minMoisture moisture)
   in U.generate (U.length elev) (wetErodeAt maxMoist)
   where
     wetErodeAt maxMoist i =
@@ -168,18 +174,19 @@ piedmontSmoothGrid slopeMin slopeMax strength waterLevel gridW gridH elev formGr
     in case nbrs of
          [] -> h0
          _ ->
-           let slope = maximum [abs (elev U.! j - h0) | j <- nbrs]
+           let slope = maximumOr 0 [abs (elev U.! j - h0) | j <- nbrs]
                isFoothill = form == FormFoothill
                hasSteeperNbr = any
                  (\j ->
-                   let nSlope = maximum [abs (elev U.! k - elev U.! j)
-                                       | k <- hexNeighborIndices gridW gridH j]
+                   let nSlope = maximumOr 0 [abs (elev U.! k - elev U.! j)
+                                           | k <- hexNeighborIndices gridW gridH j]
                    in nSlope > slopeMax)
                  nbrs
                inSlopeBand = slope >= slopeMin && slope <= slopeMax && hasSteeperNbr
                eligible = isFoothill || inSlopeBand
                nbrMean = sum (map (elev U.!) nbrs) / fromIntegral (length nbrs)
-               t = clamp01 ((slope - slopeMin) / max 1e-6 (slopeMax - slopeMin))
+               slopeDenominatorEpsilon = 1e-6
+               t = clamp01 ((slope - slopeMin) / max slopeDenominatorEpsilon (slopeMax - slopeMin))
                resist = smoothResist U.! i
                blend = strength * t * (1 - t) * 4 * (1 - resist)
            in if h0 > waterLevel && eligible

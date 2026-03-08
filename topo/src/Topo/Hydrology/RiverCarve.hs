@@ -14,11 +14,9 @@ module Topo.Hydrology.RiverCarve
 
 import Control.Monad (forM_)
 import Control.Monad.ST (ST)
-import Data.List (sortBy)
-import Data.Ord (comparing)
 import Data.Word (Word16)
 import Topo.Hex (hexNeighborIndices)
-import Topo.Math (clamp01)
+import Topo.Math (clamp01, descendingIndicesByValue, maxVectorOr)
 import Topo.TerrainGrid (gridSlopeAt)
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as UM
@@ -40,7 +38,7 @@ carveRiversGrid
   -> U.Vector Float
   -> U.Vector Float
 carveRiversGrid minAccum waterLevel riverCarveMaxDepth riverCarveScale hardnessErodeWeight elev acc hardness erosionMult =
-  let maxAcc = max minAccum (U.maximum acc)
+  let maxAcc = max minAccum (maxVectorOr minAccum acc)
   in U.imap (carveAt maxAcc) elev
   where
     carveAt maxAcc i h0 =
@@ -67,7 +65,7 @@ riverBankErodeGrid
   -> U.Vector Float
   -> U.Vector Float
 riverBankErodeGrid gridW gridH minAccum riverBankThreshold riverBankDepth hardnessErodeWeight elev acc hardness erosionMult =
-  let maxAcc = max minAccum (U.maximum acc)
+  let maxAcc = max minAccum (maxVectorOr minAccum acc)
       threshold = maxAcc * riverBankThreshold
   in U.generate (U.length elev) (bankAt threshold)
   where
@@ -108,7 +106,7 @@ riverErosionPotential
   -> Float
   -> U.Vector Float
 riverErosionPotential gridW gridH elev acc hardness minAccum erosionScale hardnessErosionWeight =
-  let maxAcc = max minAccum (U.maximum acc)
+  let maxAcc = max minAccum (maxVectorOr minAccum acc)
   in U.imap
       (\i a ->
         if a < minAccum
@@ -131,7 +129,7 @@ riverDepositPotential
   -> Float
   -> U.Vector Float
 riverDepositPotential gridW gridH elev acc minAccum depositMaxSlope depositScale =
-  let maxAcc = max minAccum (U.maximum acc)
+  let maxAcc = max minAccum (maxVectorOr minAccum acc)
       maxSlope = depositMaxSlope
   in U.imap
       (\i a ->
@@ -166,7 +164,7 @@ strahlerOrder
 strahlerOrder gridW gridH elev flow acc minAccum = U.create $ do
   let n = U.length elev
   orders <- UM.replicate n (0 :: Word16)
-  let indices = sortBy (comparing (\i -> negate (elev U.! i))) [0 .. n - 1]
+  let indices = descendingIndicesByValue elev
   forM_ indices $ \i -> do
     let a = acc U.! i
     if a < minAccum

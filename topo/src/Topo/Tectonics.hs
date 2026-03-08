@@ -1,4 +1,3 @@
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Plate tectonics configuration and terrain synthesis.
@@ -16,177 +15,35 @@ module Topo.Tectonics
   ) where
 
 import Control.Monad.Reader (asks)
-import Data.Bits (xor)
-import Data.List (foldl', sortBy)
-import Data.Ord (comparing)
 import Data.Word (Word16, Word64)
-import GHC.Generics (Generic)
 import qualified Data.IntMap.Strict as IntMap
 import Topo.BaseHeight (GenConfig(..), OceanEdgeDepth, defaultGenConfig, oceanEdgeBiasAt, sampleBaseHeightAt)
-import Topo.Config.JSON
-  (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
-   genericToJSON, genericParseJSON)
 import Topo.Math (clamp01, lerp, smoothstep)
 import Topo.Noise (directionalRidge2D, directionalRidge2DAniso, domainWarp2D, fbm2D, noise2DContinuous, ridgedFbm2D)
 import Topo.Pipeline (PipelineStage(..))
 import Topo.Pipeline.Stage (StageId(..))
 import Topo.Planet (LatitudeMapping(..))
 import Topo.Plugin (logInfo, modifyWorldP, peSeed)
+import Topo.Tectonics.Boundary
+  ( boundaryDirection
+  , boundaryDistanceNormalised
+  , boundaryMotionBetween
+  , boundaryStrengthAtXY
+  , boundaryTangent
+  , boundaryTypeAtXY
+  , classifyBoundary
+  )
+import Topo.Tectonics.Config (TectonicsConfig(..), defaultTectonicsConfig)
+import Topo.Tectonics.PlateVoronoi
+  ( PlateInfo(..)
+  , plateInfoAtXY
+  , plateNearestPairAtXY
+  , plateWarpXY
+  , warpOctaves
+  )
 import Topo.Types
 import Topo.World (TerrainWorld(..))
 import qualified Data.Vector.Unboxed as U
-
--- | Configuration parameters for plate tectonics.
---
--- Controls plate generation, boundary shaping, and the interplay between
--- plate motion and terrain elevation.
-data TectonicsConfig = TectonicsConfig
-  { tcPlateSize :: !Int
-    -- ^ Target number of tiles per tectonic plate.
-  , tcPlateCount :: !(Maybe Int)
-    -- ^ Override plate count.  'Nothing' auto-derives from world size
-    -- and 'tcPlateSize'.
-  , tcPlateSpeed :: !Float
-    -- ^ Default plate motion speed (dimensionless, default 0.6).
-  , tcBoundarySharpness :: !Float
-    -- ^ Boundary zone transition sharpness; higher = narrower boundary.
-  , tcBoundaryNoiseScale :: !Float
-    -- ^ Frequency of boundary warp noise (cycles per tile).
-  , tcBoundaryNoiseStrength :: !Float
-    -- ^ Displacement strength of boundary warp noise (tiles).
-  , tcBoundaryWarpOctaves :: !Int
-    -- ^ FBM octaves for boundary warp noise.
-  , tcBoundaryWarpLacunarity :: !Float
-    -- ^ Frequency multiplier between boundary warp FBM octaves.
-  , tcBoundaryWarpGain :: !Float
-    -- ^ Amplitude decay between boundary warp FBM octaves.
-  , tcPlateMergeScale :: !Float
-    -- ^ Noise frequency for plate merge decisions (cycles per tile).
-  , tcPlateMergeBias :: !Float
-    -- ^ Threshold bias for plate merging [0..1]; higher = less merging.
-  , tcPlateDetailScale :: !Float
-    -- ^ Frequency of intra-plate detail noise (cycles per tile).
-  , tcPlateDetailStrength :: !Float
-    -- ^ Amplitude of intra-plate detail noise.
-  , tcPlateRidgeStrength :: !Float
-    -- ^ Amplitude of mid-plate ridge features.
-  , tcPlateBiasStrength :: !Float
-    -- ^ Global elevation bias strength applied via center\/edge\/N\/S fields.
-  , tcPlateBiasCenter :: !Float
-    -- ^ Elevation bias at the map center (signed).
-  , tcPlateBiasEdge :: !Float
-    -- ^ Elevation bias at the map edges (signed).
-  , tcPlateBiasNorth :: !Float
-    -- ^ Elevation bias at the north edge (signed).
-  , tcPlateBiasSouth :: !Float
-    -- ^ Elevation bias at the south edge (signed).
-  , tcCenterFalloffScale :: !Float
-    -- ^ Strength of radial center-distance falloff [0..1].
-  , tcBoundaryFadeScale :: !Float
-    -- ^ Control for fading boundary effects at plate edges.
-  , tcCenterWeightScale :: !Float
-    -- ^ Weight multiplier for center-distance contributions.
-  , tcEdgeWeightScale :: !Float
-    -- ^ Weight multiplier for edge-distance contributions.
-  , tcPlateHeightBase :: !Float
-    -- ^ Base elevation assigned to each plate [0..1].
-  , tcPlateHeightVariance :: !Float
-    -- ^ Random variance range for per-plate elevation.
-  , tcCrustContinentalBias :: !Float
-    -- ^ Elevation bias for continental crust (positive raises land).
-  , tcCrustOceanicBias :: !Float
-    -- ^ Elevation bias for oceanic crust (negative deepens ocean).
-  , tcPlateHardnessBase :: !Float
-    -- ^ Base hardness assigned to each plate [0..1].
-  , tcPlateHardnessVariance :: !Float
-    -- ^ Random variance range for per-plate hardness.
-  , tcUplift :: !Float
-    -- ^ Uplift magnitude at convergent plate boundaries.
-  , tcRiftDepth :: !Float
-    -- ^ Depth magnitude at divergent (rift) plate boundaries.
-  , tcRiftNoiseOctaves :: !Int
-    -- ^ FBM octaves for rift noise (default 3).
-  , tcRiftNoiseLacunarity :: !Float
-    -- ^ Frequency multiplier between rift noise FBM octaves (default 2.0).
-  , tcRiftNoiseGain :: !Float
-    -- ^ Amplitude decay between rift noise FBM octaves (default 0.5).
-  , tcRiftNoiseScale :: !Float
-    -- ^ Base frequency of rift noise (cycles per tile, default 0.006).
-  , tcRiftElongation :: !Float
-    -- ^ Scale ratio between tangent and normal axes (default 4.0).
-    -- Values >1 stretch rift features along the boundary.
-  , tcRiftShoulderHeight :: !Float
-    -- ^ Height of flanking horst uplift (default 0.03).
-  , tcRiftShoulderWidth :: !Float
-    -- ^ Fraction of boundary width where shoulders appear (default 0.35).
-  , tcRiftFloorWidth :: !Float
-    -- ^ Fraction of boundary width that is flat-bottomed (default 0.25).
-  , tcTrenchDepth :: !Float
-    -- ^ Depth magnitude at subduction-zone trenches.
-  , tcRidgeHeight :: !Float
-    -- ^ Height magnitude at mid-ocean ridges.
-  } deriving (Eq, Show, Generic)
-
-instance ToJSON TectonicsConfig where
-  toJSON = genericToJSON (configOptions "tc")
-
-instance FromJSON TectonicsConfig where
-  parseJSON v = genericParseJSON (configOptions "tc")
-                  (mergeDefaults (toJSON defaultTectonicsConfig) v)
-
--- | Default tectonics configuration.
-defaultTectonicsConfig :: TectonicsConfig
-defaultTectonicsConfig = TectonicsConfig
-  { tcPlateSize = 64
-  , tcPlateCount = Nothing
-  , tcPlateSpeed = 0.6
-  , tcBoundarySharpness = 1.2
-  , tcBoundaryNoiseScale = 0.008
-  , tcBoundaryNoiseStrength = 12
-  , tcBoundaryWarpOctaves = 3
-  , tcBoundaryWarpLacunarity = 2
-  , tcBoundaryWarpGain = 0.5
-  , tcPlateMergeScale = 0.11
-  , tcPlateMergeBias = 0.52
-  , tcPlateDetailScale = 0.02
-  , tcPlateDetailStrength = 0.20
-  , tcPlateRidgeStrength = 0.15
-  , tcPlateBiasStrength = 0.25
-  , tcPlateBiasCenter = 0
-  , tcPlateBiasEdge = 0
-  , tcPlateBiasNorth = 0
-  , tcPlateBiasSouth = 0
-  , tcCenterFalloffScale = 0.8
-  , tcBoundaryFadeScale = 1.1
-  , tcCenterWeightScale = 1.2
-  , tcEdgeWeightScale = 1.2
-  , tcPlateHeightBase = 0.12
-    -- ^ Base elevation assigned to each plate [0..1].
-    -- Lowered from 0.18 so average continental plates sit closer to sea level.
-  , tcPlateHeightVariance = 0.35
-    -- ^ Random variance range for per-plate elevation.
-    -- Reduced from 0.85 to concentrate land in the lowland band.
-  , tcCrustContinentalBias = 0.18
-    -- ^ Elevation bias for continental crust (positive raises land).
-    -- Widened from 0.12 for clearer continent–ocean transition.
-  , tcCrustOceanicBias = -0.18
-    -- ^ Elevation bias for oceanic crust (negative deepens ocean).
-    -- Widened from -0.12 for clearer continent–ocean transition.
-  , tcPlateHardnessBase = 0.45
-  , tcPlateHardnessVariance = 0.3
-  , tcUplift = 0.15
-  , tcRiftDepth = 0.08
-  , tcRiftNoiseOctaves = 3
-  , tcRiftNoiseLacunarity = 2.0
-  , tcRiftNoiseGain = 0.5
-  , tcRiftNoiseScale = 0.006
-  , tcRiftElongation = 4.0
-  , tcRiftShoulderHeight = 0.03
-  , tcRiftShoulderWidth = 0.35
-  , tcRiftFloorWidth = 0.25
-  , tcTrenchDepth = 0.25
-  , tcRidgeHeight = 0.08
-  }
 
 -- | Apply tectonic generation to the existing terrain chunks in a world.
 --
@@ -390,69 +247,6 @@ dominantMotion :: Float -> Float -> Float
 dominantMotion motionX motionY =
   if abs motionX >= abs motionY then motionX else motionY
 
-boundaryStrengthAtXY :: Word64 -> TectonicsConfig -> Int -> Int -> Float
-boundaryStrengthAtXY seed tcfg x y =
-  smoothstep 0 1 (boundaryDistanceNormalised seed tcfg x y)
-
--- | Raw normalised distance from the boundary centre.
---
--- Returns a value in @[0, 1]@ where @1@ = boundary centre (gap ≈ 0)
--- and @0@ = outside the boundary zone.  Unlike 'boundaryStrengthAtXY'
--- this is the linear value /before/ the smoothstep ramp, which makes
--- it suitable for feeding directly into 'riftProfile'.
-boundaryDistanceNormalised :: Word64 -> TectonicsConfig -> Int -> Int -> Float
-boundaryDistanceNormalised seed tcfg x y =
-  let size = fromIntegral (max 1 (tcPlateSize tcfg))
-      (d0, d1) = plateDistancePair seed tcfg x y
-      gap = max 0 (d1 - d0)
-      sharp = max 0.2 (tcBoundarySharpness tcfg)
-      width = max 1e-3 (size * (0.35 / sharp))
-  in clamp01 (1 - gap / width)
-
-plateDistancePair :: Word64 -> TectonicsConfig -> Int -> Int -> (Float, Float)
-plateDistancePair seed tcfg x y =
-  let size = max 1 (tcPlateSize tcfg)
-      (wx, wy) = plateWarpXY seed tcfg x y
-      fx = wx / fromIntegral size
-      fy = wy / fromIntegral size
-      cx = floor fx
-      cy = floor fy
-      cells = [ (ix, iy) | iy <- [cy - 1 .. cy + 1], ix <- [cx - 1 .. cx + 1] ]
-      activeCells = filter (uncurry (plateCellActive seed tcfg)) cells
-      cells' = if null activeCells then cells else activeCells
-      dists = map (plateDistSq seed tcfg (wx, wy)) cells'
-      sorted = sortBy (comparing fst) dists
-  in case sorted of
-      (d0, _) : (d1, _) : _ -> (sqrt d0, sqrt d1)
-      (d0, _) : _ -> (sqrt d0, sqrt d0 + fromIntegral size)
-      [] -> (0, fromIntegral size)
-
-plateNearestPairAtXY :: Word64 -> TectonicsConfig -> Int -> Int -> (PlateInfo, PlateInfo, Float, Float)
-plateNearestPairAtXY seed tcfg x y =
-  let size = max 1 (tcPlateSize tcfg)
-      (wx, wy) = plateWarpXY seed tcfg x y
-      fx = wx / fromIntegral size
-      fy = wy / fromIntegral size
-      cx = floor fx
-      cy = floor fy
-      cells = [ (ix, iy) | iy <- [cy - 1 .. cy + 1], ix <- [cx - 1 .. cx + 1] ]
-      activeCells = filter (uncurry (plateCellActive seed tcfg)) cells
-      cells' = if null activeCells then cells else activeCells
-      dists = sortBy (comparing fst) (map (plateDistSq seed tcfg (wx, wy)) cells')
-  in case dists of
-      (d0, info0) : (d1, info1) : _ -> (info0, info1, sqrt d0, sqrt d1)
-      (d0, info0) : _ -> (info0, info0, sqrt d0, sqrt d0 + fromIntegral size)
-      [] ->
-        let info0 = plateInfoForCell seed tcfg cx cy
-        in (info0, info0, 0, fromIntegral size)
-
-plateDistSq :: Word64 -> TectonicsConfig -> (Float, Float) -> (Int, Int) -> (Float, PlateInfo)
-plateDistSq seed tcfg (x, y) (cx, cy) =
-  let info = plateInfoForCell seed tcfg cx cy
-      (px, py) = plateInfoCenter info
-      dx = x - px
-      dy = y - py
-  in (dx * dx + dy * dy, info)
 
 plateIdAt :: WorldConfig -> Word64 -> TectonicsConfig -> TileCoord -> Int -> Word16
 plateIdAt config seed tcfg origin i =
@@ -621,209 +415,8 @@ plateLocalCoord seed tcfg pid gx gy =
       oy = (noise2DContinuous (seed + fromIntegral pid * 131 + 7) 0 0 - 0.5) * size * 1.2
   in (lx + ox, ly + oy)
 
--- | Per-plate metadata at a grid cell: identity, Voronoi centre,
--- velocity vector, base height\/hardness, age, and crust type.
-data PlateInfo = PlateInfo
-  { plateInfoId :: !Word16
-  , plateInfoCenter :: !(Float, Float)
-  , plateInfoVelocity :: !(Float, Float)
-  , plateInfoBaseHeight :: !Float
-  , plateInfoBaseHardness :: !Float
-  , plateInfoAge :: !Float
-  , plateInfoCrust :: !PlateCrust
-  }
-
-boundaryTypeAtXY :: Word64 -> TectonicsConfig -> Int -> Int -> PlateBoundary
-boundaryTypeAtXY seed tcfg gx gy =
-  let info = plateInfoAtXY seed tcfg gx gy
-      infoX = plateInfoAtXY seed tcfg (gx + 1) gy
-      infoY = plateInfoAtXY seed tcfg gx (gy + 1)
-  in classifyBoundary info infoX infoY
-
 plateCrustCode :: PlateCrust -> Word16
 plateCrustCode crust =
   case crust of
     PlateOceanic -> 0
     PlateContinental -> 1
-
-plateInfoAtXY :: Word64 -> TectonicsConfig -> Int -> Int -> PlateInfo
-plateInfoAtXY seed tcfg x y =
-  let (wx, wy) = plateWarpXY seed tcfg x y
-      size = max 1 (tcPlateSize tcfg)
-      fx = wx / fromIntegral size
-      fy = wy / fromIntegral size
-      cx = floor fx
-      cy = floor fy
-      cells = [ (ix, iy) | iy <- [cy - 1 .. cy + 1], ix <- [cx - 1 .. cx + 1] ]
-      activeCells = filter (uncurry (plateCellActive seed tcfg)) cells
-      cells' = if null activeCells then cells else activeCells
-      pickNearest = foldl' (chooseNearest (wx, wy) seed tcfg) Nothing cells'
-  in case pickNearest of
-      Just (_, info) -> info
-      Nothing -> plateInfoForCell seed tcfg cx cy
-
-chooseNearest :: (Float, Float) -> Word64 -> TectonicsConfig -> Maybe (Float, PlateInfo) -> (Int, Int) -> Maybe (Float, PlateInfo)
-chooseNearest (x, y) seed tcfg best (cx, cy) =
-  let info = plateInfoForCell seed tcfg cx cy
-      (px, py) = plateInfoCenter info
-      dx = x - px
-      dy = y - py
-      d2 = dx * dx + dy * dy
-  in case best of
-      Nothing -> Just (d2, info)
-      Just (d2Best, bestInfo) -> if d2 < d2Best then Just (d2, info) else Just (d2Best, bestInfo)
-
-plateInfoForCell :: Word64 -> TectonicsConfig -> Int -> Int -> PlateInfo
-plateInfoForCell seed tcfg cx cy =
-  let size = fromIntegral (max 1 (tcPlateSize tcfg))
-      jx = noise2DContinuous (seed + 1001) (fromIntegral cx * 0.9) (fromIntegral cy * 0.9)
-      jy = noise2DContinuous (seed + 2003) (fromIntegral cx * 0.9 + 11.7) (fromIntegral cy * 0.9 - 3.4)
-      jitterN = noise2DContinuous (seed + 11001) (fromIntegral cx * 0.43) (fromIntegral cy * 0.43)
-      jitter = min 1.1 (0.6 + jitterN * 0.6)
-      (wcx, wcy) = plateWarpXY (seed + 12345) tcfg (round (fromIntegral cx * size)) (round (fromIntegral cy * size))
-      baseCx = wcx / size
-      baseCy = wcy / size
-      center = ((baseCx + (jx - 0.5) * jitter) * size, (baseCy + (jy - 0.5) * jitter) * size)
-      angle = noise2DContinuous (seed + 3001) (fromIntegral cx + 2.3) (fromIntegral cy - 9.1) * 2 * pi
-      speed = tcPlateSpeed tcfg
-      velocity = (cos angle * speed, sin angle * speed)
-      pid = hashPlateId seed cx cy
-      pid' = mergePlateId seed tcfg cx cy pid
-      baseHeight = plateBaseHeight seed tcfg cx cy
-      baseHardness = plateBaseHardness seed tcfg cx cy
-      age = plateAge seed tcfg cx cy
-      crust = plateCrust seed tcfg cx cy baseHeight
-  in PlateInfo
-      { plateInfoId = pid'
-      , plateInfoCenter = center
-      , plateInfoVelocity = velocity
-      , plateInfoBaseHeight = baseHeight
-      , plateInfoBaseHardness = baseHardness
-      , plateInfoAge = age
-      , plateInfoCrust = crust
-      }
-
-plateCellActive :: Word64 -> TectonicsConfig -> Int -> Int -> Bool
-plateCellActive seed tcfg cx cy =
-  let scale = max 0.01 (tcPlateMergeScale tcfg)
-      n0 = noise2DContinuous (seed + 91011) (fromIntegral cx * scale) (fromIntegral cy * scale)
-  in n0 >= tcPlateMergeBias tcfg
-
-plateWarpXY :: Word64 -> TectonicsConfig -> Int -> Int -> (Float, Float)
-plateWarpXY seed tcfg x y =
-  let scale = max 0.0001 (tcBoundaryNoiseScale tcfg)
-      strength = tcBoundaryNoiseStrength tcfg
-      octaves = max 1 (tcBoundaryWarpOctaves tcfg)
-      lac = max 1.2 (tcBoundaryWarpLacunarity tcfg)
-      gain = clamp01 (tcBoundaryWarpGain tcfg)
-  in warpOctaves octaves lac gain (seed + 7777) scale strength (fromIntegral x) (fromIntegral y)
-
-warpOctaves :: Int -> Float -> Float -> Word64 -> Float -> Float -> Float -> Float -> (Float, Float)
-warpOctaves octaves lac gain seed scale strength x y =
-  let step 0 _ _ accX accY = (x + accX * strength, y + accY * strength)
-      step o freq amp accX accY =
-        let (wx, wy) = domainWarp2D (seed + fromIntegral o) (scale * freq) 1 x y
-            dx = (wx - x) * amp
-            dy = (wy - y) * amp
-        in step (o - 1) (freq * lac) (amp * gain) (accX + dx) (accY + dy)
-  in step octaves 1 1 0 0
-
-mergePlateId :: Word64 -> TectonicsConfig -> Int -> Int -> Word16 -> Word16
-mergePlateId seed tcfg cx cy pid =
-  let scale = max 0.01 (tcPlateMergeScale tcfg)
-      bias = clamp01 (tcPlateMergeBias tcfg)
-      n0 = noise2DContinuous (seed + 91011) (fromIntegral cx * scale) (fromIntegral cy * scale)
-      n1 = noise2DContinuous (seed + 92021) (fromIntegral cx * scale + 7.7) (fromIntegral cy * scale - 2.1)
-      bucket = floor (n0 * 8) :: Int
-      salt = fromIntegral ((bucket `mod` 8) * 8191) :: Word16
-  in if n1 > bias then pid else pid `xor` salt
-
-plateBaseHeight :: Word64 -> TectonicsConfig -> Int -> Int -> Float
-plateBaseHeight seed tcfg cx cy =
-  let n0 = noise2DContinuous (seed + 5001) (fromIntegral cx * 0.37) (fromIntegral cy * 0.37) * 2 - 1
-  in tcPlateHeightBase tcfg + n0 * tcPlateHeightVariance tcfg
-
-plateBaseHardness :: Word64 -> TectonicsConfig -> Int -> Int -> Float
-plateBaseHardness seed tcfg cx cy =
-  let n0 = noise2DContinuous (seed + 6001) (fromIntegral cx * 0.29) (fromIntegral cy * 0.29) * 2 - 1
-  in clamp01 (tcPlateHardnessBase tcfg + n0 * tcPlateHardnessVariance tcfg)
-
-plateAge :: Word64 -> TectonicsConfig -> Int -> Int -> Float
-plateAge seed _ cx cy =
-  noise2DContinuous (seed + 7001) (fromIntegral cx * 0.19) (fromIntegral cy * 0.19)
-
-plateCrust :: Word64 -> TectonicsConfig -> Int -> Int -> Float -> PlateCrust
-plateCrust seed _ cx cy baseHeight =
-  let n0 = noise2DContinuous (seed + 8001) (fromIntegral cx * 0.23) (fromIntegral cy * 0.23)
-  in if baseHeight + (n0 - 0.5) * 0.2 >= 0 then PlateContinental else PlateOceanic
-
-hashPlateId :: Word64 -> Int -> Int -> Word16
-hashPlateId seed x y =
-  let n0 = noise2DContinuous (seed + 424242) (fromIntegral x * 0.13) (fromIntegral y * 0.13)
-  in fromIntegral (floor (n0 * 65535))
-
-classifyBoundary :: PlateInfo -> PlateInfo -> PlateInfo -> PlateBoundary
-classifyBoundary info infoX infoY =
-  let typeX = boundaryTypeBetween info infoX
-      typeY = boundaryTypeBetween info infoY
-  in if typeX == typeY then typeX else PlateBoundaryTransform
-
-boundaryDirection :: PlateInfo -> PlateInfo -> PlateInfo -> (Float, Float)
-boundaryDirection info infoX infoY =
-  let (ax, ay) = plateInfoCenter info
-      (bx, by) = plateInfoCenter infoX
-      (cx, cy) = plateInfoCenter infoY
-      dx = bx - ax
-      dy = by - ay
-      ex = cx - ax
-      ey = cy - ay
-      nx = dx + ex
-      ny = dy + ey
-      len = sqrt (nx * nx + ny * ny)
-  in if len == 0 then (1, 0) else (nx / len, ny / len)
-
--- | Compute the tangent direction along the boundary between two plates.
---
--- The tangent is perpendicular to the line connecting the two nearest
--- plate centres.  This gives the direction along which a rift valley or
--- ridge should be elongated.
---
--- Returns a normalised (unit-length) vector.  Falls back to @(0, 1)@
--- when the two centres coincide.
-boundaryTangent :: PlateInfo -> PlateInfo -> (Float, Float)
-boundaryTangent infoA infoB =
-  let (ax, ay) = plateInfoCenter infoA
-      (bx, by) = plateInfoCenter infoB
-      -- Normal: centre-to-centre direction
-      nx = bx - ax
-      ny = by - ay
-      -- Tangent: rotate 90° counter-clockwise
-      tx = -ny
-      ty = nx
-      len = sqrt (tx * tx + ty * ty)
-  in if len == 0 then (0, 1) else (tx / len, ty / len)
-
-boundaryMotionBetween :: PlateInfo -> PlateInfo -> Float
-boundaryMotionBetween a b =
-  let (ax, ay) = plateInfoCenter a
-      (bx, by) = plateInfoCenter b
-      (vax, vay) = plateInfoVelocity a
-      (vbx, vby) = plateInfoVelocity b
-      nx0 = bx - ax
-      ny0 = by - ay
-      len = sqrt (nx0 * nx0 + ny0 * ny0)
-      nx = if len == 0 then 0 else nx0 / len
-      ny = if len == 0 then 0 else ny0 / len
-      rvx = vbx - vax
-      rvy = vby - vay
-  in rvx * nx + rvy * ny
-
-boundaryTypeBetween :: PlateInfo -> PlateInfo -> PlateBoundary
-boundaryTypeBetween a b =
-  let rel = boundaryMotionBetween a b
-      eps = 0.05
-  in if rel < -eps
-      then PlateBoundaryConvergent
-      else if rel > eps
-        then PlateBoundaryDivergent
-        else PlateBoundaryTransform

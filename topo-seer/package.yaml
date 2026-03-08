@@ -38,7 +38,10 @@ library:
     - Seer.Config.Snapshot
     - Seer.Config.Snapshot.Types
     - Seer.Draw
+    - Seer.Draw.Config
     - Seer.Draw.Dialog
+    - Seer.Draw.LeftPanel
+    - Seer.Draw.Overlay
     - Seer.Input
     - Seer.System
     - Seer.System.ThreadPriority

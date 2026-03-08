@@ -7,7 +7,13 @@ module Topo.Math
   , lerp
   , smoothstep
   , iterateN
+  , maxVectorOr
+  , descendingIndicesByValue
   ) where
+
+import Data.List (sortBy)
+import Data.Ord (comparing)
+import qualified Data.Vector.Unboxed as U
 
 -- | Clamp a value into the inclusive $[0,1]$ range.
 clamp01 :: Float -> Float
@@ -51,3 +57,15 @@ iterateN :: Int -> (a -> a) -> a -> a
 iterateN n f !x
   | n <= 0 = x
   | otherwise = iterateN (n - 1) f (f x)
+
+-- | Return vector maximum, or a fallback value when the vector is empty.
+maxVectorOr :: (Ord a, U.Unbox a) => a -> U.Vector a -> a
+maxVectorOr fallback vec
+  | U.null vec = fallback
+  | otherwise = U.maximum vec
+
+-- | Return vector indices sorted by descending element value.
+descendingIndicesByValue :: U.Vector Float -> [Int]
+descendingIndicesByValue vec =
+  let n = U.length vec
+  in sortBy (comparing (\i -> negate (vec U.! i))) [0 .. n - 1]
