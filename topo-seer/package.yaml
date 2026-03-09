@@ -22,6 +22,8 @@ library:
     - Actor.UiActions.Command
     - Actor.UiActions.Terrain
     - Actor.UI
+    - Actor.UI.Setters
+    - Actor.UI.State
     - Actor.AtlasCache
     - Actor.AtlasManager
     - Actor.AtlasResult
@@ -43,6 +45,8 @@ library:
     - Seer.Draw.LeftPanel
     - Seer.Draw.Overlay
     - Seer.Input
+    - Seer.Input.Actions
+    - Seer.Input.Events
     - Seer.System
     - Seer.System.ThreadPriority
     - Seer.Input.ConfigScroll
@@ -50,6 +54,7 @@ library:
     - Seer.Input.Router
     - Seer.Input.Seed
     - Seer.Input.ViewControls
+    - Seer.Input.Widgets
     - Seer.Render
     - Seer.Render.Atlas
     - Seer.Render.Frame
