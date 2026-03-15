@@ -48,6 +48,8 @@ library:
     - Topo.Climate
     - Topo.Climate.Config
     - Topo.Climate.Evaporation
+    - Topo.Climate.MoistureTransport
+    - Topo.Climate.Precipitation
     - Topo.BiomeConfig
     - Topo.Weather
     - Topo.Math
