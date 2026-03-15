@@ -4,9 +4,11 @@ module Seer.Render
   , buildTerrainCache
   , updateChunkTextures
   , drawTerrain
+  , RenderContext(..)
   , renderFrame
   ) where
 
+import Seer.Render.Context (RenderContext(..))
 import Seer.Render.Frame (renderFrame)
 import Seer.Render.Terrain
   ( TerrainCache(..)

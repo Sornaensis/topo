@@ -71,6 +71,7 @@ import Actor.TerrainCacheWorker
   , terrainCacheWorkerActorDef
   )
 import Actor.UiActions (uiActionsActorDef, setUiActionsSnapshotRef)
+import Actor.UiActions.Handles (mkActorHandles)
 import Control.Monad (forM_, unless, when)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import qualified Data.Text as Text
@@ -83,12 +84,15 @@ import Hyperspace.Actor (ActorHandle, Protocol, cast, getSingleton, newActorSyst
 import Seer.Draw (logLineHeight)
 import Seer.Timing (nsToMs)
 import Seer.Input (handleEvent, isQuit, tickTooltipHover)
+import Seer.Input.Actions (mkInputEnv)
+import Seer.Input.Context (mkInputContext)
 import Seer.Render
   ( TerrainCache(..)
   , emptyTerrainCache
   , renderFrame
   )
 import Seer.Render.Atlas (AtlasTextureCache(..), collectAtlasTextures, emptyAtlasTextureCache)
+import Seer.Render.Context (RenderContext(..))
 import UI.TerrainCache (ChunkTextureCache(..), emptyChunkTextureCache)
 import UI.Font (destroyFontCache, initFontCacheMaybe)
 import qualified Data.IntMap.Strict as IntMap
@@ -258,7 +262,10 @@ runApp = do
               pure 0
             else do
               handleStart <- getMonotonicTimeNSec
-              forM_ coalescedEvents (handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandle uiActionsHandle snapshotReceiverHandle pluginManagerHandle simulationHandle (rsUi renderSnap) (rsLog renderSnap) (rsData renderSnap) (rsTerrain renderSnap) quitRef lineHeightRef mousePosRef dragRef tooltipHoverRef)
+              let actorHandles = mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle snapshotReceiverHandle pluginManagerHandle simulationHandle
+                  inputEnv = mkInputEnv actorHandles uiActionsHandle (rsUi renderSnap) (rsLog renderSnap) (rsData renderSnap) (rsTerrain renderSnap)
+                  inputContext = mkInputContext window inputEnv quitRef lineHeightRef mousePosRef dragRef tooltipHoverRef
+              forM_ coalescedEvents (handleEvent inputContext)
               _ <- tickTooltipHover tooltipHoverRef uiHandle
               afterEvents <- getMonotonicTimeNSec
               requestUiSnapshot uiHandle (replyTo @UiSnapshotReply snapshotReceiverHandle)
@@ -328,9 +335,27 @@ runApp = do
             let cache'' = rcsTerrainCache cacheState'
             frameStart <- getMonotonicTimeNSec
             (needsRetry, nextChunkTextures, nextAtlasCache, didLog) <-
-              renderFrame renderer window snapVersion renderSnap cache'' (rcsChunkTextures cacheState') (rcsAtlasCache cacheState')
-                logHandle atlasSchedulerHandle atlasScheduleRef atlasResultRef atlasUploadsPerFrame
-                shouldDrainAtlas shouldScheduleAtlas shouldUpdateChunkTextures timingLogThresholdMs fontCache renderTargetOk traceH
+              renderFrame RenderContext
+                { rcRenderer = renderer
+                , rcWindow = window
+                , rcSnapshotVersion = snapVersion
+                , rcSnapshot = renderSnap
+                , rcTerrainCache = cache''
+                , rcChunkTextureCache = rcsChunkTextures cacheState'
+                , rcAtlasTextureCache = rcsAtlasCache cacheState'
+                , rcLogHandle = logHandle
+                , rcAtlasSchedulerHandle = atlasSchedulerHandle
+                , rcAtlasScheduleRef = atlasScheduleRef
+                , rcAtlasResultRef = atlasResultRef
+                , rcAtlasUploadsPerFrame = atlasUploadsPerFrame
+                , rcShouldDrainAtlas = shouldDrainAtlas
+                , rcShouldScheduleAtlas = shouldScheduleAtlas
+                , rcShouldUpdateChunkTextures = shouldUpdateChunkTextures
+                , rcTimingLogThresholdMs = timingLogThresholdMs
+                , rcFontCache = fontCache
+                , rcRenderTargetOk = renderTargetOk
+                , rcTraceHandle = traceH
+                }
             frameEnd <- getMonotonicTimeNSec
             let frameElapsed = nsToMs frameStart frameEnd
             let cacheState'' = cacheState'

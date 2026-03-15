@@ -12,6 +12,7 @@ module Seer.Input.Actions
   , submitAction
   ) where
 
+import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.AtlasManager (AtlasManager)
 import Actor.Data (Data, DataSnapshot, TerrainSnapshot)
 import Actor.Log (Log, LogSnapshot)
@@ -25,15 +26,8 @@ import Hyperspace.Actor (ActorHandle, Protocol, replyTo)
 
 -- | Cached actor handles and render snapshots used while routing a single input event.
 data InputEnv = InputEnv
-  { ieUiHandle :: !(ActorHandle Ui (Protocol Ui))
-  , ieLogHandle :: !(ActorHandle Log (Protocol Log))
-  , ieDataHandle :: !(ActorHandle Data (Protocol Data))
-  , ieTerrainHandle :: !(ActorHandle Terrain (Protocol Terrain))
-  , ieAtlasManagerHandle :: !(ActorHandle AtlasManager (Protocol AtlasManager))
+  { ieActorHandles :: !ActorHandles
   , ieUiActionsHandle :: !(ActorHandle UiActions (Protocol UiActions))
-  , ieSnapshotReceiverHandle :: !(ActorHandle SnapshotReceiver (Protocol SnapshotReceiver))
-  , iePluginManagerHandle :: !(ActorHandle PluginManager (Protocol PluginManager))
-  , ieSimulationHandle :: !(ActorHandle Simulation (Protocol Simulation))
   , ieUiSnapshot :: !UiState
   , ieLogSnapshot :: !LogSnapshot
   , ieDataSnapshot :: !DataSnapshot
@@ -42,31 +36,17 @@ data InputEnv = InputEnv
 
 -- | Build an 'InputEnv' from the current input actors and cached snapshots.
 mkInputEnv
-  :: ActorHandle Ui (Protocol Ui)
-  -> ActorHandle Log (Protocol Log)
-  -> ActorHandle Data (Protocol Data)
-  -> ActorHandle Terrain (Protocol Terrain)
-  -> ActorHandle AtlasManager (Protocol AtlasManager)
+  :: ActorHandles
   -> ActorHandle UiActions (Protocol UiActions)
-  -> ActorHandle SnapshotReceiver (Protocol SnapshotReceiver)
-  -> ActorHandle PluginManager (Protocol PluginManager)
-  -> ActorHandle Simulation (Protocol Simulation)
   -> UiState
   -> LogSnapshot
   -> DataSnapshot
   -> TerrainSnapshot
   -> InputEnv
-mkInputEnv uiHandle logHandle dataHandle terrainHandle atlasManagerHandle uiActionsHandle snapshotReceiverHandle pluginManagerHandle simulationHandle uiSnapshot logSnapshot dataSnapshot terrainSnapshot =
+mkInputEnv actorHandles uiActionsHandle uiSnapshot logSnapshot dataSnapshot terrainSnapshot =
   InputEnv
-    { ieUiHandle = uiHandle
-    , ieLogHandle = logHandle
-    , ieDataHandle = dataHandle
-    , ieTerrainHandle = terrainHandle
-    , ieAtlasManagerHandle = atlasManagerHandle
+    { ieActorHandles = actorHandles
     , ieUiActionsHandle = uiActionsHandle
-    , ieSnapshotReceiverHandle = snapshotReceiverHandle
-    , iePluginManagerHandle = pluginManagerHandle
-    , ieSimulationHandle = simulationHandle
     , ieUiSnapshot = uiSnapshot
     , ieLogSnapshot = logSnapshot
     , ieDataSnapshot = dataSnapshot
@@ -94,15 +74,8 @@ actionRequest :: InputEnv -> UiAction -> UiActionRequest
 actionRequest env action =
   UiActionRequest
     { uarAction = action
-    , uarUiHandle = ieUiHandle env
-    , uarLogHandle = ieLogHandle env
-    , uarDataHandle = ieDataHandle env
-    , uarTerrainHandle = ieTerrainHandle env
-    , uarAtlasHandle = ieAtlasManagerHandle env
+    , uarActorHandles = ieActorHandles env
     , uarTerrainReplyTo = replyTo @TerrainReplyOps (ieUiActionsHandle env)
-    , uarSnapshotHandle = ieSnapshotReceiverHandle env
-    , uarPluginManagerHandle = iePluginManagerHandle env
-    , uarSimulationHandle = ieSimulationHandle env
     }
 
 -- | Submit a UI action using the cached input actor handles.

@@ -5,9 +5,8 @@ module Seer.Input.Widgets
   ( handleClick
   ) where
 
-import Actor.Data (Data, DataSnapshot(..), DataSnapshotReply, TerrainSnapshot(..), replaceTerrainData, requestDataSnapshot)
-import Actor.Log (Log, LogEntry(..), LogLevel(..), LogSnapshot(..), appendLog, setLogCollapsed, setLogMinLevel, setLogScroll)
-import Actor.Terrain (Terrain)
+import Actor.Data (DataSnapshot(..), DataSnapshotReply, getTerrainSnapshot, replaceTerrainData, requestDataSnapshot)
+import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshot(..), appendLog, getLogSnapshot, setLogCollapsed, setLogMinLevel, setLogScroll)
 import Actor.UI
   ( ConfigTab(..)
   , LeftTab(..)
@@ -16,6 +15,7 @@ import Actor.UI
   , UiState(..)
   , ViewMode(..)
   , configRowCount
+  , getUiSnapshot
   , setUiChunkSize
   , setUiConfigTab
   , setUiConfigScroll
@@ -44,15 +44,12 @@ import Actor.UI
   , setUiOverlayNames
   )
 import Control.Monad (when)
+import Data.IORef (writeIORef)
 import Data.Int (Int32)
-import Data.IORef (IORef, readIORef, writeIORef, modifyIORef')
 import Data.List (findIndex, partition)
 import Data.Maybe (isJust)
-import Data.Set (Set)
 import qualified Data.Set as Set
-import Data.Text (Text)
 import qualified Data.Text as Text
-import qualified Data.IntMap.Strict as IntMap
 import Linear (V2(..))
 import qualified SDL
 import qualified SDL.Raw.Types as Raw
@@ -79,55 +76,44 @@ import Seer.Input.Modal (handleModalTextKey, handleModalTextInput, handleModalLi
 import Seer.Input.Router (isQuit)
 import Seer.Input.Seed (bumpSeed, handleSeedKey, handleSeedTextInput)
 import Seer.Input.ViewControls
-  ( ZoomSettings
-  , applyZoomAtCursor
-  , defaultZoomSettings
-  , viewModeForKey
-  )
-import Topo (ChunkCoord(..), ChunkId(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
+  ()
 import Topo.Overlay (overlayNames)
 import Topo.Pipeline.Dep (builtinDependencies, disabledClosure)
 import Topo.Pipeline.Stage (StageId, parseStageId)
 import Topo.World (TerrainWorld(..))
-import UI.HexPick (screenToAxial)
 import UI.Layout
 import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets, buildSliderRowWidgets, hitTest)
 import UI.Widgets (Rect(..), containsPoint)
 import System.Random (randomIO)
 import Hyperspace.Actor (ActorHandle, Protocol, replyTo)
-import Actor.AtlasManager (AtlasManager)
-import Actor.PluginManager (PluginManager, setPluginOrder)
-import Actor.Simulation (Simulation, requestSimTick, setSimWorld)
-import Actor.SnapshotReceiver (SnapshotReceiver)
-import Actor.UiActions (UiActions, UiAction(..))
-import Seer.Input.Actions (actionRequest, mkInputEnv, submitAction)
+import Actor.PluginManager (setPluginOrder)
+import Actor.Simulation (requestSimTick, setSimWorld)
+import Actor.UiActions (ActorHandles(..), UiAction(..))
+import Seer.Input.Actions (InputEnv(..), submitAction)
+import Seer.Input.Context (InputContext(..))
 handleClick
-  :: SDL.Window
-  -> ActorHandle Ui (Protocol Ui)
-  -> ActorHandle Log (Protocol Log)
-  -> ActorHandle Data (Protocol Data)
-  -> ActorHandle Terrain (Protocol Terrain)
-  -> ActorHandle AtlasManager (Protocol AtlasManager)
-  -> ActorHandle UiActions (Protocol UiActions)
-  -> ActorHandle SnapshotReceiver (Protocol SnapshotReceiver)
-  -> ActorHandle PluginManager (Protocol PluginManager)
-  -> ActorHandle Simulation (Protocol Simulation)
-  -> UiState
-  -> LogSnapshot
-  -> DataSnapshot
-  -> TerrainSnapshot
-  -> IORef Bool
+  :: InputContext
   -> SDL.Point V2 Int32
   -> IO ()
-handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandle uiActionsHandle snapshotReceiverHandle pluginManagerHandle simulationHandle uiSnapCached logSnapCached dataSnapCached terrainSnapCached quitRef (SDL.P (V2 x y)) = do
+handleClick inputContext (SDL.P (V2 x y)) = do
+  let window = icWindow inputContext
+      widgetEnv = icInputEnv inputContext
+      actorHandles = ieActorHandles widgetEnv
+      uiHandle = ahUiHandle actorHandles
+      logHandle = ahLogHandle actorHandles
+      dataHandle = ahDataHandle actorHandles
+      snapshotReceiverHandle = ahSnapshotReceiverHandle actorHandles
+      pluginManagerHandle = ahPluginManagerHandle actorHandles
+      simulationHandle = ahSimulationHandle actorHandles
+      quitRef = icQuitRef inputContext
   (V2 winW winH) <- SDL.get (SDL.windowSize window)
-  logSnap <- getLogSnapshot logHandle
-  uiSnap <- getUiSnapshot uiHandle
-  let point = V2 (fromIntegral x) (fromIntegral y)
+  let logSnap = ieLogSnapshot widgetEnv
+      uiSnap = ieUiSnapshot widgetEnv
+      point = V2 (fromIntegral x) (fromIntegral y)
       logHeight = if lsCollapsed logSnap then 24 else 160
       seedWidth = max 120 (seedMaxDigits * 10)
       layout = layoutForSeed (V2 (fromIntegral winW) (fromIntegral winH)) logHeight seedWidth
-      simWorldReady = dsTerrainChunks dataSnapCached > 0
+      simWorldReady = dsTerrainChunks (ieDataSnapshot widgetEnv) > 0
       seedValue = configSeedValueRect layout
       scrollArea = configScrollAreaRect layout
       scrollBar = configScrollBarRect layout
@@ -231,17 +217,26 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           ; Nothing -> pure ()
           }
   where
-    getUiSnapshot :: ActorHandle Ui (Protocol Ui) -> IO UiState
-    getUiSnapshot _ = pure uiSnapCached
+    widgetEnv :: InputEnv
+    widgetEnv = icInputEnv inputContext
 
-    getLogSnapshot :: ActorHandle Log (Protocol Log) -> IO LogSnapshot
-    getLogSnapshot _ = pure logSnapCached
+    actorHandles :: ActorHandles
+    actorHandles = ieActorHandles widgetEnv
 
-    getDataSnapshot :: ActorHandle Data (Protocol Data) -> IO DataSnapshot
-    getDataSnapshot _ = pure dataSnapCached
+    uiHandle :: ActorHandle Ui (Protocol Ui)
+    uiHandle = ahUiHandle actorHandles
 
-    getTerrainSnapshot :: ActorHandle Data (Protocol Data) -> IO TerrainSnapshot
-    getTerrainSnapshot _ = pure terrainSnapCached
+    logHandle = ahLogHandle actorHandles
+
+    dataHandle = ahDataHandle actorHandles
+
+    snapshotReceiverHandle = ahSnapshotReceiverHandle actorHandles
+
+    pluginManagerHandle = ahPluginManagerHandle actorHandles
+
+    simulationHandle = ahSimulationHandle actorHandles
+
+    quitRef = icQuitRef inputContext
 
     -- Controls like presets, pipeline toggles, and sim/plugin management do
     -- not fit the generic slider model and stay on an explicit bespoke path.
@@ -277,7 +272,7 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
           Nothing -> pure ()
           Just sid -> do
             let current = uiDisabledStages uiState
-                toggled :: Set StageId
+                toggled :: Set.Set StageId
                 toggled
                   | Set.member sid current = Set.delete sid current
                   | otherwise              = Set.insert sid current
@@ -285,7 +280,7 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
             setUiDisabledStages uiHandle closed
       WidgetSimTick -> whenConfigVisible $ do
         let count = uiSimTickCount uiState
-            hasTerrain = dsTerrainChunks dataSnapCached > 0
+            hasTerrain = dsTerrainChunks (ieDataSnapshot widgetEnv) > 0
         if hasTerrain
           then do
             appendLog logHandle (LogEntry LogInfo (Text.pack ("ui: tick button pressed -> request tick " <> show (count + 1))))
@@ -464,18 +459,16 @@ handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
       logSnap <- getLogSnapshot logHandle
       setLogCollapsed logHandle (not (lsCollapsed logSnap))
     whenConfigVisible action = do
-      uiSnap <- getUiSnapshot uiHandle
+      let uiSnap = ieUiSnapshot widgetEnv
       when (uiShowConfig uiSnap) action
     toggleConfig = do
       uiSnap <- getUiSnapshot uiHandle
       setUiShowConfig uiHandle (not (uiShowConfig uiSnap))
     submit action =
       submitAction widgetEnv action
-    widgetEnv =
-      mkInputEnv uiHandle logHandle dataHandle terrainHandle atlasManagerHandle uiActionsHandle snapshotReceiverHandle pluginManagerHandle simulationHandle uiSnapCached logSnapCached dataSnapCached terrainSnapCached
     startSeedEdit rect = do
-      uiSnap <- getUiSnapshot uiHandle
-      let Rect (V2 rx ry, V2 rw rh) = rect
+      let uiSnap = ieUiSnapshot widgetEnv
+          Rect (V2 rx ry, V2 rw rh) = rect
           rawRect = Raw.Rect (fromIntegral rx) (fromIntegral ry) (fromIntegral rw) (fromIntegral rh)
       SDL.startTextInput rawRect
       setUiSeedEditing uiHandle True

@@ -81,6 +81,7 @@ library
       UI.WidgetsDraw
       UI.WidgetTree
   other-modules:
+      Actor.UiActions.Handles
       Seer.Config.SliderAccess
       Seer.Config.Range
       Seer.Config.SliderConversion
@@ -93,6 +94,8 @@ library
       Seer.Config.SliderState
       Seer.Config.SliderUi
       Seer.Config.SliderRegistry
+      Seer.Input.Context
+      Seer.Render.Context
       UI.TerrainColor
       UI.WidgetId
   hs-source-dirs:

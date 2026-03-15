@@ -6,10 +6,12 @@
 -- | Command routing for UI actions.
 module Actor.UiActions.Command
   ( UiAction(..)
+  , ActorHandles(..)
   , UiActionRequest(..)
   , runUiAction
   ) where
 
+import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.AtlasCache (AtlasKey(..))
 import Actor.PluginManager (PluginManager, getPluginOverlaySchemas, getPluginStages, refreshManifests)
 import Actor.Simulation (Simulation)
@@ -32,15 +34,18 @@ import Actor.UI
   , Ui
   , ViewMode(..)
   , UiSnapshotReply
+  , emptyUiState
   , getUiSnapshot
   , requestUiSnapshot
   , uiChunkSize
+  , uiConfigTab
   , uiDisabledStages
   , setUiChunkSize
   , setUiConfigTab
   , setUiGenerating
   , uiRenderWaterLevel
   , setUiSeed
+  , uiSeedEditing
   , setUiSeedEditing
   , setUiSeedInput
   , uiSeed
@@ -74,18 +79,8 @@ data UiAction
 -- | Request payload for running a 'UiAction' on the UI actions actor.
 data UiActionRequest = UiActionRequest
   { uarAction :: !UiAction
-  , uarUiHandle :: !(ActorHandle Ui (Protocol Ui))
-  , uarLogHandle :: !(ActorHandle Log (Protocol Log))
-  , uarDataHandle :: !(ActorHandle Data (Protocol Data))
-  , uarTerrainHandle :: !(ActorHandle Terrain (Protocol Terrain))
-  , uarAtlasHandle :: !(ActorHandle AtlasManager (Protocol AtlasManager))
+  , uarActorHandles :: !ActorHandles
   , uarTerrainReplyTo :: !(ReplyTo TerrainReplyOps)
-  , uarSnapshotHandle :: !(ActorHandle SnapshotReceiver (Protocol SnapshotReceiver))
-  -- ^ Reply channel for terrain generation progress and result payloads.
-  , uarPluginManagerHandle :: !(ActorHandle PluginManager (Protocol PluginManager))
-  -- ^ Handle for querying plugin stages during generation.
-  , uarSimulationHandle :: !(ActorHandle Simulation (Protocol Simulation))
-  -- ^ Handle for the simulation actor (receives world after generation).
   }
 
 runUiAction :: UiActionRequest -> IO ()
@@ -109,8 +104,10 @@ logTimed req label action = do
   end <- getMonotonicTimeNSec
   let elapsedMs = fromIntegral (end - start) / nsPerMs
       message = label <> " took " <> Text.pack (showFFloat (Just timingPrecisionDigits) elapsedMs "ms")
-  appendLog (uarLogHandle req) (LogEntry LogDebug message)
-  requestLogSnapshot (uarLogHandle req) (replyTo @LogSnapshotReply (uarSnapshotHandle req))
+  appendLog (ahLogHandle handles) (LogEntry LogDebug message)
+  requestLogSnapshot (ahLogHandle handles) (replyTo @LogSnapshotReply (ahSnapshotReceiverHandle handles))
+  where
+    handles = uarActorHandles req
 
 nsPerMs :: Double
 nsPerMs = 1e6
@@ -140,18 +137,19 @@ viewModeLabel mode =
 
 startGeneration :: UiActionRequest -> IO ()
 startGeneration req = do
-  let uiHandle = uarUiHandle req
-      logHandle = uarLogHandle req
-      pluginHandle = uarPluginManagerHandle req
+  let handles = uarActorHandles req
+      uiHandle = ahUiHandle handles
+      logHandle = ahLogHandle handles
+      pluginHandle = ahPluginManagerHandle handles
   uiSnap <- getUiSnapshot uiHandle
   setUiGenerating uiHandle True
   -- Commit the pending water level so atlas/terrain caches use the applied value
   setUiRenderWaterLevel uiHandle (uiWaterLevel uiSnap)
   -- Capture config snapshot for revert support
   setUiWorldConfig uiHandle (Just (snapshotFromUi uiSnap "world"))
-  requestUiSnapshot uiHandle (replyTo @UiSnapshotReply (uarSnapshotHandle req))
+  requestUiSnapshot uiHandle (replyTo @UiSnapshotReply (ahSnapshotReceiverHandle handles))
   appendLog logHandle (LogEntry LogInfo (configSummary uiSnap))
-  requestLogSnapshot logHandle (replyTo @LogSnapshotReply (uarSnapshotHandle req))
+  requestLogSnapshot logHandle (replyTo @LogSnapshotReply (ahSnapshotReceiverHandle handles))
   -- Hot-reload plugin manifests and collect plugin pipeline stages
   refreshManifests pluginHandle
   pluginStages <- getPluginStages pluginHandle
@@ -164,19 +162,20 @@ startGeneration req = do
         , tgrDisabledStages = uiDisabledStages uiSnap
         , tgrExtraStages = pluginStages
         , tgrOverlaySchemas = overlaySchemas
-        , tgrSimHandle = uarSimulationHandle req
+        , tgrSimHandle = ahSimulationHandle handles
         }
-  startTerrainGen (uarTerrainHandle req) (uarTerrainReplyTo req) request
+  startTerrainGen (ahTerrainHandle handles) (uarTerrainReplyTo req) request
 
 rebuildAtlas :: UiActionRequest -> IO ()
 rebuildAtlas req = do
-  uiSnap <- getUiSnapshot (uarUiHandle req)
+  uiSnap <- getUiSnapshot (ahUiHandle (uarActorHandles req))
   rebuildAtlasFor req (uiViewMode uiSnap)
 
 rebuildAtlasFor :: UiActionRequest -> ViewMode -> IO ()
 rebuildAtlasFor req mode = do
-  terrainSnap <- getTerrainSnapshot (uarDataHandle req)
-  uiSnap <- getUiSnapshot (uarUiHandle req)
+  let handles = uarActorHandles req
+  terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
+  uiSnap <- getUiSnapshot (ahUiHandle handles)
   let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
       scales = [1 .. 6]
       job scale = AtlasJob
@@ -186,18 +185,19 @@ rebuildAtlasFor req mode = do
         , ajTerrain = terrainSnap
         , ajScale = scale
         }
-  mapM_ (enqueueAtlasBuild (uarAtlasHandle req) . job) scales
+  mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles) . job) scales
 
 setViewMode :: UiActionRequest -> ViewMode -> IO ()
 setViewMode req mode =
-  setUiViewMode (uarUiHandle req) mode
+  setUiViewMode (ahUiHandle (uarActorHandles req)) mode
 
 -- | Revert config sliders to the values captured at the last generation.
 -- No-op if no world has been generated yet.
 revertConfig :: UiActionRequest -> IO ()
 revertConfig req = do
-  let uiHandle = uarUiHandle req
-      logHandle = uarLogHandle req
+  let handles = uarActorHandles req
+      uiHandle = ahUiHandle handles
+      logHandle = ahLogHandle handles
   uiSnap <- getUiSnapshot uiHandle
   case uiWorldConfig uiSnap of
     Just preset -> do
@@ -208,12 +208,13 @@ revertConfig req = do
 
 resetConfig :: UiActionRequest -> IO ()
 resetConfig req = do
-  let uiHandle = uarUiHandle req
-  setUiSeed uiHandle 0
-  setUiSeedInput uiHandle "0"
-  setUiSeedEditing uiHandle False
-  setUiChunkSize uiHandle 64
-  setUiViewMode uiHandle ViewElevation
-  setUiRenderWaterLevel uiHandle 0.5
-  setUiConfigTab uiHandle ConfigTerrain
+  let defaults = emptyUiState
+      uiHandle = ahUiHandle (uarActorHandles req)
+  setUiSeed uiHandle (uiSeed defaults)
+  setUiSeedInput uiHandle (Text.pack (show (uiSeed defaults)))
+  setUiSeedEditing uiHandle (uiSeedEditing defaults)
+  setUiChunkSize uiHandle (uiChunkSize defaults)
+  setUiViewMode uiHandle (uiViewMode defaults)
+  setUiRenderWaterLevel uiHandle (uiRenderWaterLevel defaults)
+  setUiConfigTab uiHandle (uiConfigTab defaults)
   resetSliderDefaults uiHandle

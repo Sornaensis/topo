@@ -8,14 +8,14 @@ module Seer.Input.Events
   , tooltipDelayFrames
   ) where
 
-import Actor.Data (Data, DataSnapshot(..), DataSnapshotReply, TerrainSnapshot(..), replaceTerrainData, requestDataSnapshot)
-import Actor.Log (Log, LogEntry(..), LogLevel(..), LogSnapshot(..), appendLog, setLogCollapsed, setLogMinLevel, setLogScroll)
-import Actor.Terrain (Terrain)
+import Actor.Data (DataSnapshot(..), DataSnapshotReply, TerrainSnapshot(..), getTerrainSnapshot, replaceTerrainData, requestDataSnapshot)
+import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshot(..), appendLog, getLogSnapshot, setLogCollapsed, setLogMinLevel, setLogScroll)
 import Actor.UI
   ( ConfigTab(..)
   , Ui
   , UiMenuMode(..)
   , UiState(..)
+  , getUiSnapshot
   , setUiConfigScroll
   , setUiContextHex
   , setUiContextPos
@@ -35,64 +35,42 @@ import Actor.UI
   , setUiOverlayNames
   )
 import Control.Monad (when)
-import Data.Int (Int32)
-import Data.IORef (IORef, readIORef, writeIORef, modifyIORef')
-import Data.List (findIndex, partition)
-import Data.Set (Set)
-import qualified Data.Set as Set
-import Data.Text (Text)
+import Data.IORef (IORef, modifyIORef', readIORef, writeIORef)
 import qualified Data.Text as Text
 import qualified Data.IntMap.Strict as IntMap
 import Linear (V2(..))
 import qualified SDL
-import qualified SDL.Raw.Types as Raw
+import Hyperspace.Actor (ActorHandle, Protocol, replyTo)
 import System.FilePath ((</>))
 import Seer.Draw (seedMaxDigits)
-import Seer.Config.Snapshot (listSnapshots, loadSnapshot, snapshotDir, snapshotFromUi, saveSnapshot, applySnapshotToUi)
-import Seer.World.Persist (listWorlds, saveNamedWorld, loadNamedWorld, snapshotToWorld)
-import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Seer.Input.ConfigScroll
-  ( ScrollSettings
-  , computeScrollUpdates
+  ( computeScrollUpdates
   , defaultScrollSettings
   )
-import Seer.Input.Modal (handleModalTextKey, handleModalTextInput, handleModalListKey)
-import Seer.Input.Router (isQuit)
+import Seer.Input.Context (DragState(..), InputContext(..), TooltipHover)
+import Seer.Input.Modal (handleModalListKey, handleModalTextKey, handleModalTextInput)
 import Seer.Input.Seed (bumpSeed, handleSeedKey, handleSeedTextInput)
 import Seer.Input.ViewControls
-  ( ZoomSettings
-  , applyZoomAtCursor
+  ( applyZoomAtCursor
   , defaultZoomSettings
   , viewModeForKey
   )
 import Topo (ChunkCoord(..), ChunkId(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
-import Topo.Overlay (overlayNames)
-import Topo.Pipeline.Dep (builtinDependencies, disabledClosure)
-import Topo.Pipeline.Stage (StageId, parseStageId)
-import Topo.World (TerrainWorld(..))
 import UI.HexPick (screenToAxial)
 import UI.Layout
 import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets, buildSliderRowWidgets, hitTest)
 import UI.Widgets (Rect(..), containsPoint)
-import System.Random (randomIO)
-import Hyperspace.Actor (ActorHandle, Protocol, replyTo)
-import Actor.AtlasManager (AtlasManager)
-import Actor.PluginManager (PluginManager, setPluginOrder)
-import Actor.Simulation (Simulation, requestSimTick, setSimWorld)
-import Actor.SnapshotReceiver (SnapshotReceiver)
-import Actor.UiActions (UiActions, UiAction(..))
-import Seer.Input.Actions (actionRequest, mkInputEnv, submitAction)
+import Seer.Input.Actions (InputEnv(..), submitAction)
+import qualified Seer.Input.Actions as InputActions
+import Actor.UiActions (UiAction(..))
+import Actor.UiActions.Handles (ActorHandles(..))
+import Actor.Simulation (setSimWorld)
+import Seer.Config.Snapshot (applySnapshotToUi, loadSnapshot, saveSnapshot, snapshotDir, snapshotFromUi)
 import Seer.Input.Widgets (handleClick)
-
-data DragState = DragState
-  { dsStart :: !(Int, Int)
-  , dsLast :: !(Int, Int)
-  , dsDragging :: !Bool
-  }
-
--- | Pending tooltip hover: which widget is under the cursor and how
--- many frames remain before the tooltip fires.
-type TooltipHover = Maybe (WidgetId, Int)
+import Seer.World.Persist (loadNamedWorld, saveNamedWorld, snapshotToWorld)
+import Seer.World.Persist.Types (WorldSaveManifest(..))
+import Topo.Overlay (overlayNames)
+import Topo.World (TerrainWorld(..))
 
 -- | Number of consecutive frames the cursor must remain still on a
 -- slider row before the tooltip appears.
@@ -100,28 +78,19 @@ tooltipDelayFrames :: Int
 tooltipDelayFrames = 15
 
 handleEvent
-  :: SDL.Window
-  -> ActorHandle Ui (Protocol Ui)
-  -> ActorHandle Log (Protocol Log)
-  -> ActorHandle Data (Protocol Data)
-  -> ActorHandle Terrain (Protocol Terrain)
-  -> ActorHandle AtlasManager (Protocol AtlasManager)
-  -> ActorHandle UiActions (Protocol UiActions)
-  -> ActorHandle SnapshotReceiver (Protocol SnapshotReceiver)
-  -> ActorHandle PluginManager (Protocol PluginManager)
-  -> ActorHandle Simulation (Protocol Simulation)
-  -> UiState
-  -> LogSnapshot
-  -> DataSnapshot
-  -> TerrainSnapshot
-  -> IORef Bool
-  -> IORef Int
-  -> IORef (Int, Int)
-  -> IORef (Maybe DragState)
-  -> IORef TooltipHover
+  :: InputContext
   -> SDL.Event
   -> IO ()
-handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandle uiActionsHandle snapshotReceiverHandle pluginManagerHandle simulationHandle uiSnapCached logSnapCached dataSnapCached terrainSnapCached quitRef lineHeightRef mousePosRef dragRef tooltipHoverRef event = do
+handleEvent inputContext event = do
+  let window = icWindow inputContext
+      inputEnv = icInputEnv inputContext
+      actorHandles = ieActorHandles inputEnv
+      uiHandle = ahUiHandle actorHandles
+      logHandle = ahLogHandle actorHandles
+      dataHandle = ahDataHandle actorHandles
+      mousePosRef = icMousePosRef inputContext
+      dragRef = icDragRef inputContext
+      tooltipHoverRef = icTooltipHoverRef inputContext
   case SDL.eventPayload event of
     SDL.MouseMotionEvent motionEvent -> do
       let SDL.P (V2 mx my) = SDL.mouseMotionEventPos motionEvent
@@ -129,7 +98,7 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
       dragState <- readIORef dragRef
       case dragState of
         Just state -> do
-          uiSnap <- getUiSnapshot uiHandle
+          uiSnap <- InputActions.getUiSnapshot inputEnv
           let DragState { dsStart = (sx, sy), dsLast = (px, py), dsDragging = dragging } = state
               dx0 = fromIntegral mx - fromIntegral sx
               dy0 = fromIntegral my - fromIntegral sy
@@ -205,11 +174,11 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
     SDL.MouseWheelEvent wheelEvent -> do
       let SDL.V2 _ dy = SDL.mouseWheelEventPos wheelEvent
       when (dy /= 0) $ do
-        logSnap <- getLogSnapshot logHandle
-        uiSnap <- getUiSnapshot uiHandle
+        logSnap <- InputActions.getLogSnapshot inputEnv
+        uiSnap <- InputActions.getUiSnapshot inputEnv
         (mx, my) <- readIORef mousePosRef
         (V2 winW winH) <- SDL.get (SDL.windowSize window)
-        lineHeight <- readIORef lineHeightRef
+        lineHeight <- readIORef (icLineHeightRef inputContext)
         let (configUpdate, logUpdate) =
               computeScrollUpdates defaultScrollSettings uiSnap logSnap lineHeight (V2 (fromIntegral winW) (fromIntegral winH)) (V2 mx my) (fromIntegral dy)
         case (configUpdate, logUpdate) of
@@ -221,12 +190,12 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
             let (newZoom, newOffset) = applyZoomAtCursor defaultZoomSettings uiSnap (mx, my) (fromIntegral dy)
             setUiZoom uiHandle newZoom
             setUiPanOffset uiHandle newOffset
-            dataSnap <- getDataSnapshot dataHandle
-            terrainSnap <- getTerrainSnapshot dataHandle
+            dataSnap <- InputActions.getDataSnapshot inputEnv
+            terrainSnap <- InputActions.getTerrainSnapshot inputEnv
             let hasMissing = tsChunkSize terrainSnap > 0
                   && IntMap.size (tsTerrainChunks terrainSnap) < dsTerrainChunks dataSnap
             when hasMissing $
-              submitAction eventEnv (UiActionRebuildAtlas (uiViewMode uiSnap))
+              submitAction inputEnv (UiActionRebuildAtlas (uiViewMode uiSnap))
     SDL.MouseButtonEvent btnEvent
       | SDL.mouseButtonEventMotion btnEvent == SDL.Pressed ->
           case SDL.mouseButtonEventButton btnEvent of
@@ -238,7 +207,7 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
                 , dsDragging = False
                 })
             _ ->
-              handleClick window uiHandle logHandle dataHandle terrainHandle atlasManagerHandle uiActionsHandle snapshotReceiverHandle pluginManagerHandle simulationHandle uiSnapCached logSnapCached dataSnapCached terrainSnapCached quitRef (SDL.mouseButtonEventPos btnEvent)
+              handleClick inputContext (SDL.mouseButtonEventPos btnEvent)
       | SDL.mouseButtonEventMotion btnEvent == SDL.Released ->
           case SDL.mouseButtonEventButton btnEvent of
             SDL.ButtonRight -> do
@@ -251,7 +220,7 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
                 _ -> pure ()
             _ -> pure ()
     SDL.TextInputEvent textEvent -> do
-      uiSnap <- getUiSnapshot uiHandle
+      uiSnap <- InputActions.getUiSnapshot inputEnv
       let txt = SDL.textInputEventText textEvent
       when (uiSeedEditing uiSnap) $
         handleSeedTextInput uiHandle (getUiSnapshot uiHandle) txt
@@ -264,7 +233,7 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
     SDL.KeyboardEvent keyboardEvent
       | SDL.keyboardEventKeyMotion keyboardEvent == SDL.Pressed ->
           do
-            uiSnap <- getUiSnapshot uiHandle
+            uiSnap <- InputActions.getUiSnapshot inputEnv
             let keycode = SDL.keysymKeycode (SDL.keyboardEventKeysym keyboardEvent)
             if uiSeedEditing uiSnap
               then handleSeedKey uiHandle (getUiSnapshot uiHandle) keycode
@@ -276,7 +245,7 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
                 _ ->
                   case keycode of
                     SDL.KeycodeEscape -> closeContextOrMenu
-                    SDL.KeycodeG -> submitAction eventEnv UiActionGenerate
+                    SDL.KeycodeG -> submitAction inputEnv UiActionGenerate
                     SDL.KeycodeC -> toggleConfig
                     SDL.KeycodeUp -> bumpSeed uiHandle (getUiSnapshot uiHandle) 1
                     SDL.KeycodeDown -> bumpSeed uiHandle (getUiSnapshot uiHandle) (-1)
@@ -285,26 +254,29 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
                       setLogCollapsed logHandle (not (lsCollapsed logSnap))
                     _ ->
                       case viewModeForKey keycode of
-                        Just mode -> submitAction eventEnv (UiActionSetViewMode mode)
+                        Just mode -> submitAction inputEnv (UiActionSetViewMode mode)
                         Nothing -> pure ()
     _ -> pure ()
   where
-    getUiSnapshot :: ActorHandle Ui (Protocol Ui) -> IO UiState
-    getUiSnapshot _ = pure uiSnapCached
+    inputEnv :: InputEnv
+    inputEnv = icInputEnv inputContext
 
-    getLogSnapshot :: ActorHandle Log (Protocol Log) -> IO LogSnapshot
-    getLogSnapshot _ = pure logSnapCached
+    actorHandles :: ActorHandles
+    actorHandles = ieActorHandles inputEnv
 
-    getDataSnapshot :: ActorHandle Data (Protocol Data) -> IO DataSnapshot
-    getDataSnapshot _ = pure dataSnapCached
+    uiHandle :: ActorHandle Ui (Protocol Ui)
+    uiHandle = ahUiHandle actorHandles
 
-    getTerrainSnapshot :: ActorHandle Data (Protocol Data) -> IO TerrainSnapshot
-    getTerrainSnapshot _ = pure terrainSnapCached
+    logHandle = ahLogHandle actorHandles
+
+    dataHandle = ahDataHandle actorHandles
+
+    snapshotReceiverHandle = ahSnapshotReceiverHandle actorHandles
+
+    simulationHandle = ahSimulationHandle actorHandles
 
     dragThreshold :: Float
     dragThreshold = 4
-    eventEnv =
-      mkInputEnv uiHandle logHandle dataHandle terrainHandle atlasManagerHandle uiActionsHandle snapshotReceiverHandle pluginManagerHandle simulationHandle uiSnapCached logSnapCached dataSnapCached terrainSnapCached
     screenToWorld uiSnap (sx, sy) =
       let (ox, oy) = uiPanOffset uiSnap
           z = uiZoom uiSnap
@@ -414,7 +386,7 @@ handleEvent window uiHandle logHandle dataHandle terrainHandle atlasManagerHandl
                   applySnapshotToUi snapshot uiHandle
                   setUiWorldName uiHandle name
                   setUiWorldConfig uiHandle (Just snapshot)
-                  submitAction eventEnv (UiActionRebuildAtlas (uiViewMode uiSnap))
+                  submitAction inputEnv (UiActionRebuildAtlas (uiViewMode uiSnap))
                 Left _err -> pure ()
             setUiMenuMode uiHandle MenuNone)
         -- onCancel

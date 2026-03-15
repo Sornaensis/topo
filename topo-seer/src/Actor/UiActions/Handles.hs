@@ -1,0 +1,50 @@
+-- | Shared actor-handle bundle reused across input and UI action plumbing.
+module Actor.UiActions.Handles
+  ( ActorHandles(..)
+  , mkActorHandles
+  ) where
+
+import Actor.AtlasManager (AtlasManager)
+import Actor.Data (Data)
+import Actor.Log (Log)
+import Actor.PluginManager (PluginManager)
+import Actor.Simulation (Simulation)
+import Actor.SnapshotReceiver (SnapshotReceiver)
+import Actor.Terrain (Terrain)
+import Actor.UI (Ui)
+import Hyperspace.Actor (ActorHandle, Protocol)
+
+-- | Shared actor handles needed by UI-triggered commands and input routing.
+data ActorHandles = ActorHandles
+  { ahUiHandle :: !(ActorHandle Ui (Protocol Ui))
+  , ahLogHandle :: !(ActorHandle Log (Protocol Log))
+  , ahDataHandle :: !(ActorHandle Data (Protocol Data))
+  , ahTerrainHandle :: !(ActorHandle Terrain (Protocol Terrain))
+  , ahAtlasManagerHandle :: !(ActorHandle AtlasManager (Protocol AtlasManager))
+  , ahSnapshotReceiverHandle :: !(ActorHandle SnapshotReceiver (Protocol SnapshotReceiver))
+  , ahPluginManagerHandle :: !(ActorHandle PluginManager (Protocol PluginManager))
+  , ahSimulationHandle :: !(ActorHandle Simulation (Protocol Simulation))
+  }
+
+-- | Build a shared actor-handle bundle from the live application actors.
+mkActorHandles
+  :: ActorHandle Ui (Protocol Ui)
+  -> ActorHandle Log (Protocol Log)
+  -> ActorHandle Data (Protocol Data)
+  -> ActorHandle Terrain (Protocol Terrain)
+  -> ActorHandle AtlasManager (Protocol AtlasManager)
+  -> ActorHandle SnapshotReceiver (Protocol SnapshotReceiver)
+  -> ActorHandle PluginManager (Protocol PluginManager)
+  -> ActorHandle Simulation (Protocol Simulation)
+  -> ActorHandles
+mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle snapshotReceiverHandle pluginManagerHandle simulationHandle =
+  ActorHandles
+    { ahUiHandle = uiHandle
+    , ahLogHandle = logHandle
+    , ahDataHandle = dataHandle
+    , ahTerrainHandle = terrainHandle
+    , ahAtlasManagerHandle = atlasManagerHandle
+    , ahSnapshotReceiverHandle = snapshotReceiverHandle
+    , ahPluginManagerHandle = pluginManagerHandle
+    , ahSimulationHandle = simulationHandle
+    }

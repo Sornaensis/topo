@@ -1,5 +1,6 @@
 module Seer.Render.Frame
-  ( renderFrame
+  ( RenderContext(..)
+  , renderFrame
   ) where
 
 import Actor.AtlasResultBroker (AtlasResultRef)
@@ -41,6 +42,7 @@ import Seer.Render.Atlas
   , scheduleAtlasBuilds
   , zoomTextureScale
   )
+import Seer.Render.Context (RenderContext(..))
 import Seer.Render.Terrain
   ( TerrainCache(..)
   , updateChunkTextures
@@ -57,27 +59,28 @@ import UI.WidgetsDraw (rectToSDL)
 
 -- | Render one UI frame and schedule atlas work if needed.
 renderFrame
-  :: SDL.Renderer
-  -> SDL.Window
-  -> SnapshotVersion
-  -> RenderSnapshot
-  -> TerrainCache
-  -> ChunkTextureCache
-  -> AtlasTextureCache
-  -> ActorHandle Log (Protocol Log)
-  -> ActorHandle AtlasScheduler (Protocol AtlasScheduler)
-  -> AtlasScheduleRef
-  -> AtlasResultRef
-  -> Int
-  -> Bool
-  -> Bool
-  -> Bool
-  -> Word32
-  -> Maybe FontCache
-  -> Bool
-  -> Handle
+  :: RenderContext
   -> IO (Bool, ChunkTextureCache, AtlasTextureCache, Bool)
-renderFrame renderer window snapshotVersion snapshot terrainCache textureCache atlasCache logHandle atlasSchedulerHandle scheduleRef resultRef atlasUploadsPerFrame shouldDrainAtlas shouldScheduleAtlas shouldUpdateChunkTextures timingLogThresholdMs fontCache renderTargetOk traceH = do
+renderFrame context = do
+  let renderer = rcRenderer context
+      window = rcWindow context
+      snapshotVersion = rcSnapshotVersion context
+      snapshot = rcSnapshot context
+      terrainCache = rcTerrainCache context
+      textureCache = rcChunkTextureCache context
+      atlasCache = rcAtlasTextureCache context
+      logHandle = rcLogHandle context
+      atlasSchedulerHandle = rcAtlasSchedulerHandle context
+      scheduleRef = rcAtlasScheduleRef context
+      resultRef = rcAtlasResultRef context
+      atlasUploadsPerFrame = rcAtlasUploadsPerFrame context
+      shouldDrainAtlas = rcShouldDrainAtlas context
+      shouldScheduleAtlas = rcShouldScheduleAtlas context
+      shouldUpdateChunkTextures = rcShouldUpdateChunkTextures context
+      timingLogThresholdMs = rcTimingLogThresholdMs context
+      fontCache = rcFontCache context
+      renderTargetOk = rcRenderTargetOk context
+      traceH = rcTraceHandle context
   tStart <- getMonotonicTimeNSec
   SDL.rendererDrawBlendMode renderer SDL.$= SDL.BlendAlphaBlend
   ((V2 winW winH), windowSizeElapsed) <- timedMs (SDL.get (SDL.windowSize window))

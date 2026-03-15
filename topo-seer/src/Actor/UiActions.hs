@@ -9,6 +9,7 @@
 module Actor.UiActions
   ( UiActions
   , UiAction(..)
+  , ActorHandles(..)
   , UiActionRequest(..)
   , uiActionsActorDef
   , submitUiAction
@@ -23,7 +24,8 @@ import Actor.Terrain
   , TerrainReplyOps
   )
 import Actor.UiActions.Command
-  ( UiAction(..)
+  ( ActorHandles(..)
+  , UiAction(..)
   , UiActionRequest(..)
   , runUiAction
   )
@@ -96,14 +98,16 @@ rememberHandles :: UiActionRequest -> UiActionsState -> UiActionsState
 rememberHandles req st =
   st
     { uasHandles = Just UiActionHandles
-        { uahLog = uarLogHandle req
-        , uahData = uarDataHandle req
-        , uahUi = uarUiHandle req
-        , uahAtlas = uarAtlasHandle req
-        , uahSnapshot = uarSnapshotHandle req
+        { uahLog = ahLogHandle handles
+        , uahData = ahDataHandle handles
+        , uahUi = ahUiHandle handles
+        , uahAtlas = ahAtlasManagerHandle handles
+        , uahSnapshot = ahSnapshotReceiverHandle handles
         , uahSnapshotRef = uasSnapshotRef st
         }
     }
+  where
+    handles = uarActorHandles req
 
 withHandles :: UiActionsState -> (UiActionHandles -> IO ()) -> IO ()
 withHandles st action =
