@@ -6,6 +6,7 @@ import Control.Exception (bracket)
 import Hyperspace.Actor (ActorSystem, getSingleton, newActorSystem, shutdownActorSystem)
 import Test.Hspec
 import Actor.UI
+import Seer.Config.SliderSpec (SliderId(..))
 
 withSystem :: (ActorSystem -> IO a) -> IO a
 withSystem = bracket newActorSystem shutdownActorSystem
@@ -61,3 +62,25 @@ spec = describe "UiActor" $ do
     setUiGenerating handle True
     snapshot <- getUiSnapshot handle
     uiGenerating snapshot `shouldBe` True
+
+  it "updates representative sliders through the generic SliderId path" $ withSystem $ \system -> do
+    handle <- getSingleton system uiActorDef
+    setUiSliderValue handle SliderGenScale 0.21
+    setUiSliderValue handle SliderWeatherTick 0.61
+    setUiSliderValue handle SliderVegBase 0.77
+    setUiSliderValue handle SliderErosionRainRate 0.33
+    snapshot <- getUiSnapshot handle
+    uiGenScale snapshot `shouldBe` 0.21
+    uiWeatherTick snapshot `shouldBe` 0.61
+    uiVegBase snapshot `shouldBe` 0.77
+    uiRainRate snapshot `shouldBe` 0.33
+
+  it "clamps generic slider updates through the shared SliderId write path" $ withSystem $ \system -> do
+    handle <- getSingleton system uiActorDef
+    setUiSliderValue handle SliderGenScale (-0.25)
+    setUiSliderValue handle SliderWeatherTick 1.4
+    setUiSliderValue handle SliderVegBase 2.0
+    snapshot <- getUiSnapshot handle
+    uiGenScale snapshot `shouldBe` 0.0
+    uiWeatherTick snapshot `shouldBe` 1.0
+    uiVegBase snapshot `shouldBe` 1.0

@@ -81,9 +81,20 @@ library
       UI.WidgetsDraw
       UI.WidgetTree
   other-modules:
+      Seer.Config.SliderAccess
+      Seer.Config.Range
+      Seer.Config.SliderConversion
+      Seer.Config.SliderConfig
+      Seer.Config.SliderConfig.Data
+      Seer.Config.SliderSnapshot
+      Seer.Config.SliderSpec.Data
+      Seer.Config.SliderStyle
       Seer.Draw.Config.Labels
+      Seer.Config.SliderState
+      Seer.Config.SliderUi
+      Seer.Config.SliderRegistry
       UI.TerrainColor
-      Paths_topo_seer
+      UI.WidgetId
   hs-source-dirs:
       src
   build-depends:

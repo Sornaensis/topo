@@ -11,6 +11,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Text as Text
 import Data.Text (Text)
+import Hyperspace.Actor (ActorSystem, getSingleton, newActorSystem, shutdownActorSystem)
 import System.Directory
   ( createDirectoryIfMissing
   , getTemporaryDirectory
@@ -20,19 +21,26 @@ import System.Directory
 import System.FilePath ((</>))
 import Test.Hspec
 
-import Actor.UI (UiState(..), emptyUiState)
+import Actor.UI (UiState(..), emptyUiState, getUiSnapshot, uiActorDef)
+import Actor.UI.State (sliderValueForId)
+import Seer.Config (configFromUi)
 import Seer.Config.Snapshot
   ( ConfigSnapshot(..)
+  , applySnapshotToUi
   , currentSnapshotVersion
   , defaultSnapshot
-  , snapshotFromUi
-  , saveSnapshot
-  , loadSnapshot
   , listSnapshots
+  , loadSnapshot
+  , saveSnapshot
   , snapshotDir
+  , snapshotFromUi
   )
+import Seer.Config.SliderSpec (SliderId(..), sliderLabelForId)
+import Topo.BaseHeight (GenConfig(..))
 import Topo.Erosion (ErosionConfig(..), defaultErosionConfig)
 import Topo.Hypsometry (HypsometryConfig(..))
+import Topo.Planet (WorldSlice(..), hexesPerDegreeLatitude, hexesPerDegreeLongitude)
+import Topo.Types (worldExtentRadiusX, worldExtentRadiusY)
 import Topo.WorldGen
   ( WorldGenConfig(..)
   , TerrainConfig(..)
@@ -113,6 +121,54 @@ snapshotFromUiSpec = describe "snapshotFromUi" $ do
     -- Just verify the genConfig is a valid WorldGenConfig (has sub-configs)
     csGenConfig snap `shouldSatisfy` const True
 
+  it "keeps derived slice extents aligned with the generated config" $ do
+    let ui = emptyUiState
+          { uiChunkSize = 96
+          , uiWorldExtentX = 0.6
+          , uiWorldExtentY = 0.35
+          , uiSliceLatCenter = 0.65
+          , uiSliceLonCenter = 0.2
+          , uiPlanetRadius = 0.8
+          }
+        snap = snapshotFromUi ui "derived"
+        cfg = csGenConfig snap
+        slice = worldSlice cfg
+        extent = gcWorldExtent (terrainGen (worldTerrain cfg))
+        planet = worldPlanet cfg
+        chunkSize = max 1 (uiChunkSize ui)
+        expectedLatExtent =
+          max 0.1 (fromIntegral (worldExtentRadiusY extent * 2 * chunkSize) / hexesPerDegreeLatitude planet)
+        expectedLonExtent =
+          max 0.1 (fromIntegral (worldExtentRadiusX extent * 2 * chunkSize) / hexesPerDegreeLongitude planet (wsLatCenter slice))
+    cfg `shouldBe` configFromUi ui
+    wsLatExtent slice `shouldBe` expectedLatExtent
+    wsLonExtent slice `shouldBe` expectedLonExtent
+
+  it "round-trips snapshot restore through the UI actor without changing slider semantics" $
+    withSystem $ \system -> do
+      let ui = emptyUiState
+            { uiSeed = 314159
+            , uiChunkSize = 96
+            , uiRenderWaterLevel = 0.65
+            , uiGenScale = 0.21
+            , uiGenOctaves = 0.73
+            , uiWaterLevel = 0.42
+            , uiWeatherTick = 0.61
+            , uiVegBase = 0.77
+            , uiRainRate = 0.33
+            , uiSliceLatCenter = 0.64
+            , uiSliceLonCenter = 0.18
+            }
+          snap = snapshotFromUi ui "round-trip"
+      handle <- getSingleton system uiActorDef
+      applySnapshotToUi snap handle
+      restored <- getUiSnapshot handle
+      let restoredSnapshot = snapshotFromUi restored "restored"
+      csSeed restoredSnapshot `shouldBe` csSeed snap
+      csChunkSize restoredSnapshot `shouldBe` csChunkSize snap
+      csRenderWaterLevel restoredSnapshot `shouldBe` csRenderWaterLevel snap
+      mapM_ (assertSnapshotStable ui restored) allSliderIds
+
 -- ---------------------------------------------------------------------------
 -- File I/O
 -- ---------------------------------------------------------------------------
@@ -130,6 +186,9 @@ withTempDir action =
     teardown dir = do
       _ <- try @IOException (removeDirectoryRecursive dir)
       pure ()
+
+withSystem :: (ActorSystem -> IO a) -> IO a
+withSystem = bracket newActorSystem shutdownActorSystem
 
 fileIOSpec :: Spec
 fileIOSpec = describe "File I/O" $ do
@@ -342,3 +401,11 @@ stripNestedKey path key lbs =
         Just inner -> Object (KM.insert (fromText p) (go ps inner) o)
         Nothing    -> Object o
     go _ v = v
+
+allSliderIds :: [SliderId]
+allSliderIds = [minBound .. maxBound]
+
+assertSnapshotStable :: UiState -> UiState -> SliderId -> Expectation
+assertSnapshotStable original restored sliderIdValue =
+  sliderLabelForId sliderIdValue (sliderValueForId restored sliderIdValue)
+    `shouldBe` sliderLabelForId sliderIdValue (sliderValueForId original sliderIdValue)

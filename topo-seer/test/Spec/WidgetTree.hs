@@ -1,7 +1,10 @@
 module Spec.WidgetTree (spec) where
 
-import Test.Hspec
+import Actor.UI (ConfigTab(..), configRowCount, emptyUiState)
+import qualified Data.Text as Text
 import Linear (V2(..))
+import Test.Hspec
+import Topo.Pipeline.Stage (allBuiltinStageIds)
 import UI.Layout
 import UI.WidgetTree
 import UI.Widgets (Rect(..))
@@ -57,17 +60,91 @@ spec = describe "UI.WidgetTree" $ do
   it "hit tests config slider buttons" $ do
     let layout = layoutFor (V2 800 960) 0
         widgets = buildWidgets layout
-    hitTest widgets (rectHitPoint (configWaterMinusRect layout)) `shouldBe` Just WidgetConfigWaterMinus
-    hitTest widgets (rectHitPoint (configWaterPlusRect layout)) `shouldBe` Just WidgetConfigWaterPlus
-    hitTest widgets (rectHitPoint (configOrographicLiftMinusRect layout)) `shouldBe` Just WidgetConfigOrographicLiftMinus
-    hitTest widgets (rectHitPoint (configOrographicLiftPlusRect layout)) `shouldBe` Just WidgetConfigOrographicLiftPlus
-    hitTest widgets (rectHitPoint (configRainShadowLossMinusRect layout)) `shouldBe` Just WidgetConfigRainShadowLossMinus
-    hitTest widgets (rectHitPoint (configRainShadowLossPlusRect layout)) `shouldBe` Just WidgetConfigRainShadowLossPlus
-    hitTest widgets (rectHitPoint (configWindDiffuseMinusRect layout)) `shouldBe` Just WidgetConfigWindDiffuseMinus
-    hitTest widgets (rectHitPoint (configWindDiffusePlusRect layout)) `shouldBe` Just WidgetConfigWindDiffusePlus
-    hitTest widgets (rectHitPoint (configEquatorTempMinusRect layout)) `shouldBe` Just WidgetConfigEquatorTempMinus
-    hitTest widgets (rectHitPoint (configEquatorTempPlusRect layout)) `shouldBe` Just WidgetConfigEquatorTempPlus
-    hitTest widgets (rectHitPoint (configPoleTempMinusRect layout)) `shouldBe` Just WidgetConfigPoleTempMinus
-    hitTest widgets (rectHitPoint (configPoleTempPlusRect layout)) `shouldBe` Just WidgetConfigPoleTempPlus
-    hitTest widgets (rectHitPoint (configLapseRateMinusRect layout)) `shouldBe` Just WidgetConfigLapseRateMinus
-    hitTest widgets (rectHitPoint (configLapseRatePlusRect layout)) `shouldBe` Just WidgetConfigLapseRatePlus
+    mapM_ (assertSliderButtons widgets layout)
+      [ (0, WidgetConfigWaterMinus, WidgetConfigWaterPlus)
+      , (1, WidgetConfigOrographicLiftMinus, WidgetConfigOrographicLiftPlus)
+      , (2, WidgetConfigRainShadowLossMinus, WidgetConfigRainShadowLossPlus)
+      , (3, WidgetConfigWindDiffuseMinus, WidgetConfigWindDiffusePlus)
+      , (4, WidgetConfigEquatorTempMinus, WidgetConfigEquatorTempPlus)
+      , (5, WidgetConfigPoleTempMinus, WidgetConfigPoleTempPlus)
+      , (6, WidgetConfigLapseRateMinus, WidgetConfigLapseRatePlus)
+      ]
+
+  it "builds slider row widgets from the registry definitions for each tab" $ do
+    let layout = layoutFor (V2 800 960) 0
+        (terrain, planet, climate, weather, biome, erosion) = buildSliderRowWidgets layout
+    length terrain `shouldBe` configRowCount ConfigTerrain emptyUiState
+    length planet `shouldBe` configRowCount ConfigPlanet emptyUiState
+    length climate `shouldBe` configRowCount ConfigClimate emptyUiState
+    length weather `shouldBe` configRowCount ConfigWeather emptyUiState
+    length biome `shouldBe` configRowCount ConfigBiome emptyUiState
+    length erosion `shouldBe` configRowCount ConfigErosion emptyUiState
+
+  it "keeps slider row widgets aligned to dense live row rects within each tab" $ do
+    let layout = layoutFor (V2 800 960) 0
+        (terrain, planet, climate, weather, biome, erosion) = buildSliderRowWidgets layout
+    assertDenseRowRects layout terrain
+    assertDenseRowRects layout planet
+    assertDenseRowRects layout climate
+    assertDenseRowRects layout weather
+    assertDenseRowRects layout biome
+    assertDenseRowRects layout erosion
+
+  it "preserves representative slider row order per tab" $ do
+    let layout = layoutFor (V2 800 960) 0
+        (terrain, planet, climate, weather, biome, erosion) = buildSliderRowWidgets layout
+    map widgetId (take 3 terrain)
+      `shouldBe` [WidgetConfigGenScaleMinus, WidgetConfigGenCoordScaleMinus, WidgetConfigGenOffsetXMinus]
+    map widgetId (take 3 planet)
+      `shouldBe` [WidgetConfigPlanetRadiusMinus, WidgetConfigAxialTiltMinus, WidgetConfigInsolationMinus]
+    map widgetId (take 3 climate)
+      `shouldBe` [WidgetConfigWaterMinus, WidgetConfigOrographicLiftMinus, WidgetConfigRainShadowLossMinus]
+    map widgetId (take 3 weather)
+      `shouldBe` [WidgetConfigWeatherTickMinus, WidgetConfigWeatherPhaseMinus, WidgetConfigWeatherAmplitudeMinus]
+    map widgetId (take 3 biome)
+      `shouldBe` [WidgetConfigVegBaseMinus, WidgetConfigVegBoostMinus, WidgetConfigVegTempWeightMinus]
+    map widgetId (take 3 erosion)
+      `shouldBe` [WidgetConfigErosionHydraulicMinus, WidgetConfigErosionThermalMinus, WidgetConfigErosionRainRateMinus]
+
+  it "anchors slider row hit tests to live row rects for each tab" $ do
+    let layout = layoutFor (V2 800 960) 0
+        (terrain, planet, climate, weather, biome, erosion) = buildSliderRowWidgets layout
+        rowHit = rectHitPoint (configParamRowHitRect (configParamRects 0 layout))
+    hitTest terrain rowHit `shouldBe` Just WidgetConfigGenScaleMinus
+    hitTest planet rowHit `shouldBe` Just WidgetConfigPlanetRadiusMinus
+    hitTest climate rowHit `shouldBe` Just WidgetConfigWaterMinus
+    hitTest weather rowHit `shouldBe` Just WidgetConfigWeatherTickMinus
+    hitTest biome rowHit `shouldBe` Just WidgetConfigVegBaseMinus
+    hitTest erosion rowHit `shouldBe` Just WidgetConfigErosionHydraulicMinus
+
+  it "anchors plugin and simulation widgets to bespoke pipeline row helpers" $ do
+    let layout = layoutFor (V2 800 960) 0
+        pluginNames = map Text.pack ["plugin-a", "plugin-b"]
+        widgets = buildPluginWidgets pluginNames layout
+        builtinCount = length allBuiltinStageIds
+        simBase = builtinCount + length pluginNames
+    hitTest widgets (rectHitPoint (pipelineMoveUpRect builtinCount layout))
+      `shouldBe` Just (WidgetPluginMoveUp (Text.pack "plugin-a"))
+    hitTest widgets (rectHitPoint (pipelineMoveDownRect builtinCount layout))
+      `shouldBe` Just (WidgetPluginMoveDown (Text.pack "plugin-a"))
+    hitTest widgets (rectHitPoint (pipelineMoveUpRect (builtinCount + 1) layout))
+      `shouldBe` Just (WidgetPluginMoveUp (Text.pack "plugin-b"))
+    hitTest widgets (rectHitPoint (pipelineMoveDownRect (builtinCount + 1) layout))
+      `shouldBe` Just (WidgetPluginMoveDown (Text.pack "plugin-b"))
+    hitTest widgets (rectHitPoint (pipelineTickButtonRect simBase layout))
+      `shouldBe` Just WidgetSimTick
+    hitTest widgets (rectHitPoint (pipelineCheckboxRect (simBase + 1) layout))
+      `shouldBe` Just WidgetSimAutoTick
+
+assertSliderButtons :: [Widget] -> Layout -> (Int, WidgetId, WidgetId) -> Expectation
+assertSliderButtons widgets layout (rowIndex, minusWidgetId, plusWidgetId) = do
+  let rects = configParamRects rowIndex layout
+      minusRect = configParamRowMinusRect rects
+      plusRect = configParamRowPlusRect rects
+  hitTest widgets (rectHitPoint minusRect) `shouldBe` Just minusWidgetId
+  hitTest widgets (rectHitPoint plusRect) `shouldBe` Just plusWidgetId
+
+assertDenseRowRects :: Layout -> [Widget] -> Expectation
+assertDenseRowRects layout widgets =
+  map widgetRect widgets `shouldBe`
+    map (configParamRowHitRect . (`configParamRects` layout)) [0 .. length widgets - 1]

@@ -13,246 +13,25 @@ import Actor.Log (Log, LogEntry(..), LogLevel(..), LogSnapshot(..), appendLog, s
 import Actor.Terrain (Terrain)
 import Actor.UI
   ( ConfigTab(..)
-  , LeftTab(..)
   , Ui
   , UiMenuMode(..)
   , UiState(..)
-  , ViewMode(..)
-  , configRowCount
-  , setUiChunkSize
-  , setUiConfigTab
   , setUiConfigScroll
   , setUiContextHex
   , setUiContextPos
   , setUiHexTooltipPinned
-  , setUiErosionHydraulic
-  , setUiErosionMaxDrop
-  , setUiErosionHydDeposit
-  , setUiErosionDepositSlope
-  , setUiErosionThermDeposit
-  , setUiErosionCoastZone
-  , setUiErosionCoastStrength
-  , setUiErosionCoastIter
-  , setUiHypsometryEnabled
-  , setUiHypsometryLowlandExp
-  , setUiHypsometryHighlandExp
-  , setUiHypsometryPlateauBreak
-  , setUiHypsometryOceanExp
-  , setUiHypsometryCoastalRampWidth
-  , setUiHypsometryCoastalRampStr
-  , setUiErosionTalus
-  , setUiErosionThermal
-  , setUiGlacierSnowTemp
-  , setUiGlacierSnowRange
-  , setUiGlacierMeltTemp
-  , setUiGlacierMeltRate
-  , setUiGlacierAccumScale
-  , setUiGlacierFlowIters
-  , setUiGlacierFlowRate
-  , setUiGlacierErosionScale
-  , setUiGlacierCarveScale
-  , setUiGlacierDepositScale
-  , setUiVentDensity
-  , setUiVentThreshold
-  , setUiHotspotScale
-  , setUiHotspotThreshold
-  , setUiMagmaRecharge
-  , setUiLavaScale
-  , setUiAshScale
-  , setUiVolcanicDepositScale
-  , setUiSoilMoistureThreshold
-  , setUiSoilHardnessThreshold
-  , setUiSoilFertilityMoistWeight
-  , setUiSoilFertilityDepthWeight
-  , setUiSinkBreachDepth
-  , setUiStreamPowerMaxErosion
-  , setUiRiverCarveMaxDepth
-  , setUiCoastalErodeStrength
-  , setUiHydroHardnessWeight
-  , setUiMinLakeSize
-  , setUiInlandSeaMinSize
-  , setUiRoughnessScale
-  , setUiEquatorTemp
-  , setUiGenFrequency
-  , setUiGenGain
-  , setUiGenLacunarity
-  , setUiGenOctaves
-  , setUiGenScale
-  , setUiGenCoordScale
-  , setUiGenOffsetX
-  , setUiGenOffsetY
-  , setUiGenWarpScale
-  , setUiGenWarpStrength
   , setUiPanOffset
-  , setUiWorldExtentX
-  , setUiWorldExtentY
-  , setUiEdgeDepthNorth
-  , setUiEdgeDepthSouth
-  , setUiEdgeDepthEast
-  , setUiEdgeDepthWest
-  , setUiEdgeDepthFalloff
-  , setUiDetailScale
-  , setUiPlateSpeed
-  , setUiBoundarySharpness
-  , setUiBoundaryNoiseScale
-  , setUiBoundaryNoiseStrength
-  , setUiBoundaryWarpOctaves
-  , setUiBoundaryWarpLacunarity
-  , setUiBoundaryWarpGain
-  , setUiPlateMergeScale
-  , setUiPlateMergeBias
-  , setUiPlateDetailScale
-  , setUiPlateDetailStrength
-  , setUiPlateRidgeStrength
-  , setUiPlateHeightBase
-  , setUiPlateHeightVariance
-  , setUiPlateHardnessBase
-  , setUiPlateHardnessVariance
-  , setUiTrenchDepth
-  , setUiRidgeHeight
-  , setUiPlateBiasStrength
-  , setUiPlateBiasCenter
-  , setUiPlateBiasEdge
-  , setUiPlateBiasNorth
-  , setUiPlateBiasSouth
-  , setUiTfcCliffSlope
-  , setUiTfcMountainSlope
-  , setUiTfcMountainRelief
-  , setUiTfcHillSlope
-  , setUiTfcRollingSlope
-  , setUiValleyCurvature
-  , setUiTfcElevGradient
-  , setUiTfcPlateauMaxRelief2Ring
-  , setUiRockElevationThreshold
-  , setUiRockHardnessThreshold
-  , setUiRockHardnessSecondary
-  , setUiDisabledStages
-  , setUiMoistureIterations
-  , setUiBoundaryMotionTemp
-  , setUiBoundaryMotionPrecip
-  , setUiPlanetRadius
-  , setUiAxialTilt
-  , setUiInsolation
-  , setUiOccWarmScale
-  , setUiOccColdScale
-  , setUiOccLatPeakDeg
-  , setUiOccLatWidthDeg
-  , setUiSliceLatCenter
-  , setUiSliceLonCenter
-  , setUiAlbedoReference
-  , setUiAlbedoSensitivity
-  , setUiOceanModeration
-  , setUiOceanModerateTemp
-  , setUiPlateHeightCooling
-  , setUiTempNoiseScale
-  , setUiMoistAdvect
-  , setUiMoistLocal
-  , setUiMoistWindEvapScale
-  , setUiMoistEvapNoiseScale
-  , setUiMoistBareEvapFrac
-  , setUiMoistVegTranspFrac
-  , setUiMoistWindETScale
-  , setUiMoistCondensationRate
-  , setUiMoistRecycleRate
-  , setUiMoistITCZStrength
-  , setUiMoistITCZWidth
-  , setUiMoistMinVegFloor
-  , setUiOrographicScale
-  , setUiOrographicStep
-  , setUiCoastalIterations
-  , setUiCoastalDiffuse
-  , setUiCoastalMoistureBoost
-  , setUiWindBeltStrength
-  , setUiWindBeltHarmonics
-  , setUiWindBeltBase
-  , setUiWindBeltRange
-  , setUiWindBeltSpeedScale
-  , setUiWindCoriolisDeflection
-  , setUiBndLandRange
-  , setUiPiedmontSmooth
-  , setUiPiedmontSlopeMin
-  , setUiPiedmontSlopeMax
-  , setUiPlateSize
-  , setUiRiftDepth
-  , setUiUplift
-  , setUiWeatherAmplitude
-  , setUiSeasonCycleLength
-  , setUiJitterAmplitude
-  , setUiPressureBase
-  , setUiPressureTempScale
-  , setUiPressureCoriolisScale
-  , setUiSeasonalBase
-  , setUiSeasonalRange
-  , setUiHumidityNoiseScale
-  , setUiPrecipNoiseScale
-  , setUiWeatherITCZWidth
-  , setUiWeatherITCZPrecipBoost
-  , setUiPressureHumidityScale
-  , setUiPressureGradientWindScale
-  , setUiWindNoiseScale
-  , setUiITCZMigrationScale
-  , setUiCloudRHExponent
-  , setUiCloudAlbedoEffect
-  , setUiCloudPrecipBoost
-  , setUiWeatherPhase
-  , setUiWeatherTick
-  , setUiWindIterations
-  , setUiVegBase
-  , setUiVegBoost
-  , setUiVegTempWeight
-  , setUiVegPrecipWeight
-  , setUiBtCoastalBand
-  , setUiBtSnowMaxTemp
-  , setUiBtAlpineMaxTemp
-  , setUiBtIceCapTemp
-  , setUiBtMontaneMaxTemp
-  , setUiBtMontanePrecip
-  , setUiBtCliffSlope
-  , setUiBtValleyMoisture
-  , setUiBtDepressionMoisture
-  , setUiBtPrecipWeight
-  , setUiVbcTempMin
-  , setUiVbcTempRange
-  , setUiVbcFertilityBoost
-  , setUiVbcAlbedoBase
-  , setUiVbcAlbedoBare
-  , setUiVbcAlbedoVeg
-  , setUiVbcOceanAlbedo
-  , setUiVbcIceAlbedo
-  , setUiBiomeSmoothing
-  , setUiVolcanicAshBoost
-  , setUiVolcanicLavaPenalty
-  , setUiBiomeFeedbackBlend
   , setUiHoverHex
   , setUiHoverWidget
-  , setUiLapseRate
-  , setUiLatitudeExponent
-  , setUiLeftTab
-  , setUiPoleTemp
-  , setUiRainRate
-  , setUiOrographicLift
-  , setUiRainShadowLoss
-  , setUiSeed
-  , setUiSeedEditing
-  , setUiSeedInput
   , setUiShowConfig
-  , setUiShowLeftPanel
   , setUiMenuMode
   , setUiPresetInput
-  , setUiPresetList
   , setUiPresetSelected
   , setUiWorldName
   , setUiWorldConfig
   , setUiWorldSaveInput
-  , setUiWorldList
   , setUiWorldSelected
-  , setUiViewMode
-  , setUiWaterLevel
-  , setUiWindDiffuse
   , setUiZoom
-  , setUiSimAutoTick
-  , setUiSimTickCount
-  , setUiPluginNames
   , setUiOverlayNames
   )
 import Control.Monad (when)

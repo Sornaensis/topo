@@ -10,6 +10,7 @@ module Actor.UI.State
   , ConfigTab(..)
   , configRowCount
   , LeftTab(..)
+  , sliderValueForId
   , UiMenuMode(..)
   , ViewMode(..)
   , UiState(..)
@@ -33,6 +34,7 @@ import Data.Word (Word64)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
 import Hyperspace.Actor.Spec (OpTag(..))
+import Seer.Config.SliderRegistry (SliderId(..), SliderTab(..), sliderDefaultValueForId, sliderRowCountForTab)
 import Seer.Config.Snapshot.Types (ConfigSnapshot)
 import Seer.World.Persist.Types (WorldSaveManifest)
 import Topo.Overlay.Schema (OverlayFieldType(..))
@@ -71,12 +73,12 @@ data ConfigTab
 
 -- | Total number of config widget rows for each tab.
 configRowCount :: ConfigTab -> UiState -> Int
-configRowCount ConfigTerrain _ = 53
-configRowCount ConfigPlanet _ = 7
-configRowCount ConfigClimate _ = 53
-configRowCount ConfigWeather _ = 21
-configRowCount ConfigBiome _ = 26
-configRowCount ConfigErosion _ = 48
+configRowCount ConfigTerrain _ = sliderRowCountForTab SliderTabTerrain
+configRowCount ConfigPlanet _ = sliderRowCountForTab SliderTabPlanet
+configRowCount ConfigClimate _ = sliderRowCountForTab SliderTabClimate
+configRowCount ConfigWeather _ = sliderRowCountForTab SliderTabWeather
+configRowCount ConfigBiome _ = sliderRowCountForTab SliderTabBiome
+configRowCount ConfigErosion _ = sliderRowCountForTab SliderTabErosion
 configRowCount ConfigPipeline ui =
   builtinStageRowCount + length (uiPluginNames ui) + simControlRowCount
 
@@ -370,114 +372,114 @@ emptyUiState = UiState
   , uiHexTooltipPinned = False
   , uiSeedEditing = False
   , uiSeedInput = Text.empty
-  , uiWaterLevel = 0.5
+  , uiWaterLevel = sliderDefault SliderWaterLevel
   , uiRenderWaterLevel = 0.5
-  , uiOrographicLift = 0.35
-  , uiRainShadowLoss = 0.08
-  , uiWindDiffuse = 0.5
-  , uiRainRate = 0.2
-  , uiErosionHydraulic = 0.5
-  , uiErosionThermal = 0.4
-  , uiErosionTalus = 0.5
-  , uiErosionMaxDrop = 0.5
-  , uiErosionHydDeposit = 0.375
-  , uiErosionDepositSlope = 0.357
-  , uiErosionThermDeposit = 0.5
-  , uiErosionCoastZone = 0.286
-  , uiErosionCoastStrength = 0.375
-  , uiErosionCoastIter = 0.429
-  , uiHypsometryEnabled = 1.0
-  , uiHypsometryLowlandExp = 0.200
-  , uiHypsometryHighlandExp = 0.333
-  , uiHypsometryPlateauBreak = 0.348
-  , uiHypsometryOceanExp = 0.500
-  , uiHypsometryCoastalRampWidth = 0.467
-  , uiHypsometryCoastalRampStr = 0.600
-  , uiGlacierSnowTemp = 0.5
-  , uiGlacierSnowRange = 0.417
-  , uiGlacierMeltTemp = 0.429
-  , uiGlacierMeltRate = 0.2
-  , uiGlacierAccumScale = 0.333
-  , uiGlacierFlowIters = 0.3
-  , uiGlacierFlowRate = 0.2
-  , uiGlacierErosionScale = 0.25
-  , uiGlacierCarveScale = 0.1
-  , uiGlacierDepositScale = 0.2
-  , uiVentDensity = 0.25
-  , uiVentThreshold = 0.5
-  , uiHotspotScale = 0.5
-  , uiHotspotThreshold = 0.615
-  , uiMagmaRecharge = 0.333
-  , uiLavaScale = 0.6
-  , uiAshScale = 0.4
-  , uiVolcanicDepositScale = 0.8
-  , uiSoilMoistureThreshold = 0.7
-  , uiSoilHardnessThreshold = 0.45
-  , uiSoilFertilityMoistWeight = 0.6
-  , uiSoilFertilityDepthWeight = 0.4
-  , uiSinkBreachDepth = 0.2
-  , uiStreamPowerMaxErosion = 0.25
-  , uiRiverCarveMaxDepth = 0.25
-  , uiCoastalErodeStrength = 0.2
-  , uiHydroHardnessWeight = 0.7
-  , uiPiedmontSmooth = 0.4167
-  , uiPiedmontSlopeMin = 0.2857
-  , uiPiedmontSlopeMax = 0.35
-  , uiMinLakeSize = 0.061
-  , uiInlandSeaMinSize = 0.333
-  , uiRoughnessScale = 0.375
-  , uiEquatorTemp = 0.78
-  , uiPoleTemp = 0
-  , uiLapseRate = 0.65
-  , uiLatitudeExponent = 0.615
-  , uiPlateHeightCooling = 0.25
-  , uiTempNoiseScale = 0.33
-  , uiOceanModeration = 0.3
-  , uiOceanModerateTemp = 0.5
-  , uiAlbedoSensitivity = 0.2
-  , uiAlbedoReference = 0.6
-  , uiMoistAdvect = 0.85
-  , uiMoistLocal = 0.15
-  , uiMoistWindEvapScale = 0.3
-  , uiMoistEvapNoiseScale = 0.25
-  , uiMoistBareEvapFrac = 0.15
-  , uiMoistVegTranspFrac = 0.85
-  , uiMoistWindETScale = 0.2
-  , uiMoistCondensationRate = 0.2
-  , uiMoistRecycleRate = 0.35
-  , uiMoistITCZStrength = 0.3
-  , uiMoistITCZWidth = 0.333
-  , uiMoistMinVegFloor = 0.15
-  , uiOrographicScale = 0.3
-  , uiOrographicStep = 0.2
-  , uiCoastalIterations = 0.5
-  , uiCoastalDiffuse = 0.5
-  , uiCoastalMoistureBoost = 0.4
-  , uiWindBeltStrength = 0.6
-  , uiWindBeltHarmonics = 0.4
-  , uiWindBeltBase = 0.4
-  , uiWindBeltRange = 0.6
-  , uiWindBeltSpeedScale = 0.6
-  , uiWindCoriolisDeflection = 0.287
-  , uiBndLandRange = 0.357
+  , uiOrographicLift = sliderDefault SliderOrographicLift
+  , uiRainShadowLoss = sliderDefault SliderRainShadowLoss
+  , uiWindDiffuse = sliderDefault SliderWindDiffuse
+  , uiRainRate = sliderDefault SliderErosionRainRate
+  , uiErosionHydraulic = sliderDefault SliderErosionHydraulic
+  , uiErosionThermal = sliderDefault SliderErosionThermal
+  , uiErosionTalus = sliderDefault SliderErosionTalus
+  , uiErosionMaxDrop = sliderDefault SliderErosionMaxDrop
+  , uiErosionHydDeposit = sliderDefault SliderErosionHydDeposit
+  , uiErosionDepositSlope = sliderDefault SliderErosionDepositSlope
+  , uiErosionThermDeposit = sliderDefault SliderErosionThermDeposit
+  , uiErosionCoastZone = sliderDefault SliderErosionCoastZone
+  , uiErosionCoastStrength = sliderDefault SliderErosionCoastStrength
+  , uiErosionCoastIter = sliderDefault SliderErosionCoastIter
+  , uiHypsometryEnabled = sliderDefault SliderHypsometryEnabled
+  , uiHypsometryLowlandExp = sliderDefault SliderHypsometryLowlandExp
+  , uiHypsometryHighlandExp = sliderDefault SliderHypsometryHighlandExp
+  , uiHypsometryPlateauBreak = sliderDefault SliderHypsometryPlateauBreak
+  , uiHypsometryOceanExp = sliderDefault SliderHypsometryOceanExp
+  , uiHypsometryCoastalRampWidth = sliderDefault SliderHypsometryCoastalRampWidth
+  , uiHypsometryCoastalRampStr = sliderDefault SliderHypsometryCoastalRampStr
+  , uiGlacierSnowTemp = sliderDefault SliderGlacierSnowTemp
+  , uiGlacierSnowRange = sliderDefault SliderGlacierSnowRange
+  , uiGlacierMeltTemp = sliderDefault SliderGlacierMeltTemp
+  , uiGlacierMeltRate = sliderDefault SliderGlacierMeltRate
+  , uiGlacierAccumScale = sliderDefault SliderGlacierAccumScale
+  , uiGlacierFlowIters = sliderDefault SliderGlacierFlowIters
+  , uiGlacierFlowRate = sliderDefault SliderGlacierFlowRate
+  , uiGlacierErosionScale = sliderDefault SliderGlacierErosionScale
+  , uiGlacierCarveScale = sliderDefault SliderGlacierCarveScale
+  , uiGlacierDepositScale = sliderDefault SliderGlacierDepositScale
+  , uiVentDensity = sliderDefault SliderVentDensity
+  , uiVentThreshold = sliderDefault SliderVentThreshold
+  , uiHotspotScale = sliderDefault SliderHotspotScale
+  , uiHotspotThreshold = sliderDefault SliderHotspotThreshold
+  , uiMagmaRecharge = sliderDefault SliderMagmaRecharge
+  , uiLavaScale = sliderDefault SliderLavaScale
+  , uiAshScale = sliderDefault SliderAshScale
+  , uiVolcanicDepositScale = sliderDefault SliderVolcanicDepositScale
+  , uiSoilMoistureThreshold = sliderDefault SliderSoilMoistureThreshold
+  , uiSoilHardnessThreshold = sliderDefault SliderSoilHardnessThreshold
+  , uiSoilFertilityMoistWeight = sliderDefault SliderSoilFertilityMoistWeight
+  , uiSoilFertilityDepthWeight = sliderDefault SliderSoilFertilityDepthWeight
+  , uiSinkBreachDepth = sliderDefault SliderSinkBreachDepth
+  , uiStreamPowerMaxErosion = sliderDefault SliderStreamPowerMaxErosion
+  , uiRiverCarveMaxDepth = sliderDefault SliderRiverCarveMaxDepth
+  , uiCoastalErodeStrength = sliderDefault SliderCoastalErodeStrength
+  , uiHydroHardnessWeight = sliderDefault SliderHydroHardnessWeight
+  , uiPiedmontSmooth = sliderDefault SliderPiedmontSmooth
+  , uiPiedmontSlopeMin = sliderDefault SliderPiedmontSlopeMin
+  , uiPiedmontSlopeMax = sliderDefault SliderPiedmontSlopeMax
+  , uiMinLakeSize = sliderDefault SliderMinLakeSize
+  , uiInlandSeaMinSize = sliderDefault SliderInlandSeaMinSize
+  , uiRoughnessScale = sliderDefault SliderRoughnessScale
+  , uiEquatorTemp = sliderDefault SliderEquatorTemp
+  , uiPoleTemp = sliderDefault SliderPoleTemp
+  , uiLapseRate = sliderDefault SliderLapseRate
+  , uiLatitudeExponent = sliderDefault SliderLatitudeExponent
+  , uiPlateHeightCooling = sliderDefault SliderPlateHeightCooling
+  , uiTempNoiseScale = sliderDefault SliderTempNoiseScale
+  , uiOceanModeration = sliderDefault SliderOceanModeration
+  , uiOceanModerateTemp = sliderDefault SliderOceanModerateTemp
+  , uiAlbedoSensitivity = sliderDefault SliderAlbedoSensitivity
+  , uiAlbedoReference = sliderDefault SliderAlbedoReference
+  , uiMoistAdvect = sliderDefault SliderMoistAdvect
+  , uiMoistLocal = sliderDefault SliderMoistLocal
+  , uiMoistWindEvapScale = sliderDefault SliderMoistWindEvapScale
+  , uiMoistEvapNoiseScale = sliderDefault SliderMoistEvapNoiseScale
+  , uiMoistBareEvapFrac = sliderDefault SliderMoistBareEvapFrac
+  , uiMoistVegTranspFrac = sliderDefault SliderMoistVegTranspFrac
+  , uiMoistWindETScale = sliderDefault SliderMoistWindETScale
+  , uiMoistCondensationRate = sliderDefault SliderMoistCondensationRate
+  , uiMoistRecycleRate = sliderDefault SliderMoistRecycleRate
+  , uiMoistITCZStrength = sliderDefault SliderMoistITCZStrength
+  , uiMoistITCZWidth = sliderDefault SliderMoistITCZWidth
+  , uiMoistMinVegFloor = sliderDefault SliderMoistMinVegFloor
+  , uiOrographicScale = sliderDefault SliderOrographicScale
+  , uiOrographicStep = sliderDefault SliderOrographicStep
+  , uiCoastalIterations = sliderDefault SliderCoastalIterations
+  , uiCoastalDiffuse = sliderDefault SliderCoastalDiffuse
+  , uiCoastalMoistureBoost = sliderDefault SliderCoastalMoistureBoost
+  , uiWindBeltStrength = sliderDefault SliderWindBeltStrength
+  , uiWindBeltHarmonics = sliderDefault SliderWindBeltHarmonics
+  , uiWindBeltBase = sliderDefault SliderWindBeltBase
+  , uiWindBeltRange = sliderDefault SliderWindBeltRange
+  , uiWindBeltSpeedScale = sliderDefault SliderWindBeltSpeedScale
+  , uiWindCoriolisDeflection = sliderDefault SliderWindCoriolisDeflection
+  , uiBndLandRange = sliderDefault SliderBndLandRange
   , uiBndTempConvergent = 0.467
   , uiBndTempDivergent = 0.4
   , uiBndTempTransform = 0.45
   , uiBndPrecipConvergent = 0.6
   , uiBndPrecipDivergent = 0.5
   , uiBndPrecipTransform = 0.6
-  , uiGenScale = 0.4444
-  , uiGenCoordScale = 0.3333
-  , uiGenOffsetX = 0.5
-  , uiGenOffsetY = 0.5
-  , uiGenFrequency = 0.1837
-  , uiGenOctaves = 0.5
-  , uiGenLacunarity = 0.25
-  , uiGenGain = 0.4
-  , uiGenWarpScale = 0.3333
-  , uiGenWarpStrength = 0.5556
-  , uiWorldExtentX = 0.125
-  , uiWorldExtentY = 0.125
+  , uiGenScale = sliderDefault SliderGenScale
+  , uiGenCoordScale = sliderDefault SliderGenCoordScale
+  , uiGenOffsetX = sliderDefault SliderGenOffsetX
+  , uiGenOffsetY = sliderDefault SliderGenOffsetY
+  , uiGenFrequency = sliderDefault SliderGenFrequency
+  , uiGenOctaves = sliderDefault SliderGenOctaves
+  , uiGenLacunarity = sliderDefault SliderGenLacunarity
+  , uiGenGain = sliderDefault SliderGenGain
+  , uiGenWarpScale = sliderDefault SliderGenWarpScale
+  , uiGenWarpStrength = sliderDefault SliderGenWarpStrength
+  , uiWorldExtentX = sliderDefault SliderExtentX
+  , uiWorldExtentY = sliderDefault SliderExtentY
   , uiEdgeDepthNorth = 0
   , uiEdgeDepthSouth = 0
   , uiEdgeDepthEast = 0
@@ -485,104 +487,104 @@ emptyUiState = UiState
   , uiEdgeDepthFalloff = 0
   , uiPanOffset = (0, 0)
   , uiZoom = 1
-  , uiPlateSize = 0.45
-  , uiPlateSpeed = 0.38
-  , uiBoundarySharpness = 0.35
-  , uiBoundaryNoiseScale = 0.33
-  , uiBoundaryNoiseStrength = 0.45
-  , uiBoundaryWarpOctaves = 0.5
-  , uiBoundaryWarpLacunarity = 0.25
-  , uiBoundaryWarpGain = 0.4
-  , uiPlateMergeScale = 0.3
-  , uiPlateMergeBias = 0.44
-  , uiPlateDetailScale = 0.33
-  , uiPlateDetailStrength = 0.35
-  , uiPlateRidgeStrength = 0.25
-  , uiPlateHeightBase = 0.62
-  , uiPlateHeightVariance = 0.65
-  , uiPlateHardnessBase = 0.42
-  , uiPlateHardnessVariance = 0.4
-  , uiUplift = 0.3
-  , uiRiftDepth = 0.35
-  , uiTrenchDepth = 0.38
-  , uiRidgeHeight = 0.33
-  , uiDetailScale = 0.5
-  , uiPlateBiasStrength = 0.42
-  , uiPlateBiasCenter = 0.5
-  , uiPlateBiasEdge = 0.5
-  , uiPlateBiasNorth = 0.5
-  , uiPlateBiasSouth = 0.5
-  , uiTfcCliffSlope = 0.2222
-  , uiTfcMountainSlope = 0.2222
-  , uiTfcMountainRelief = 0.2143
-  , uiTfcHillSlope = 0.2105
-  , uiTfcRollingSlope = 0.1579
-  , uiValleyCurvature = 0.2857
-  , uiTfcElevGradient = 0.2495
-  , uiTfcPlateauMaxRelief2Ring = 0.2632
-  , uiRockElevationThreshold = 0.5714
-  , uiRockHardnessThreshold = 0.5714
-  , uiRockHardnessSecondary = 0.5
-  , uiWindIterations = 0.5
-  , uiMoistureIterations = 0.486
-  , uiBoundaryMotionTemp = 0.5
-  , uiBoundaryMotionPrecip = 0.5
-  , uiWeatherTick = 0.2
-  , uiWeatherPhase = 0
-  , uiWeatherAmplitude = 0.3
-  , uiSeasonCycleLength = 0.4786
-  , uiJitterAmplitude = 0.36
-  , uiPressureBase = 0.5714
-  , uiPressureTempScale = 0.4
-  , uiPressureCoriolisScale = 0.2
-  , uiSeasonalBase = 0.4
-  , uiSeasonalRange = 0.6
-  , uiHumidityNoiseScale = 0.3333
-  , uiPrecipNoiseScale = 0.3
-  , uiWeatherITCZWidth = 0.4444
-  , uiWeatherITCZPrecipBoost = 0.3
-  , uiPressureHumidityScale = 0.2
-  , uiPressureGradientWindScale = 0.3
-  , uiWindNoiseScale = 0.3333
-  , uiITCZMigrationScale = 0.4667
-  , uiCloudRHExponent = 0.4
-  , uiCloudAlbedoEffect = 0.2667
-  , uiCloudPrecipBoost = 0.24
-  , uiVegBase = 0.2
-  , uiVegBoost = 0.6
-  , uiVegTempWeight = 0.6
-  , uiVegPrecipWeight = 0.4
-  , uiBtCoastalBand = 0.3
-  , uiBtSnowMaxTemp = 0.4
-  , uiBtAlpineMaxTemp = 0.42
-  , uiBtIceCapTemp = 0.25
-  , uiBtMontaneMaxTemp = 0.58
-  , uiBtMontanePrecip = 0.5
-  , uiBtCliffSlope = 0.3333
-  , uiBtValleyMoisture = 0.5714
-  , uiBtDepressionMoisture = 0.5
-  , uiBtPrecipWeight = 0.3333
-  , uiVbcTempMin = 0.2667
-  , uiVbcTempRange = 0.4444
-  , uiVbcFertilityBoost = 0.5
-  , uiVbcAlbedoBase = 0.5
-  , uiVbcAlbedoBare = 0.375
-  , uiVbcAlbedoVeg = 0.3333
-  , uiVbcOceanAlbedo = 0.3
-  , uiVbcIceAlbedo = 0.7143
-  , uiBiomeSmoothing = 0.2
-  , uiVolcanicAshBoost = 0.4
-  , uiVolcanicLavaPenalty = 0.4375
-  , uiBiomeFeedbackBlend = 0.85
-  , uiPlanetRadius = 0.3333
-  , uiAxialTilt = 0.5209
-  , uiInsolation = 0.5
-  , uiOccWarmScale = 0.3
-  , uiOccColdScale = 0.2
-  , uiOccLatPeakDeg = 0.5833
-  , uiOccLatWidthDeg = 0.5
-  , uiSliceLatCenter = 0.5
-  , uiSliceLonCenter = 0.5
+  , uiPlateSize = sliderDefault SliderPlateSize
+  , uiPlateSpeed = sliderDefault SliderPlateSpeed
+  , uiBoundarySharpness = sliderDefault SliderBoundarySharpness
+  , uiBoundaryNoiseScale = sliderDefault SliderBoundaryNoiseScale
+  , uiBoundaryNoiseStrength = sliderDefault SliderBoundaryNoiseStrength
+  , uiBoundaryWarpOctaves = sliderDefault SliderBoundaryWarpOctaves
+  , uiBoundaryWarpLacunarity = sliderDefault SliderBoundaryWarpLacunarity
+  , uiBoundaryWarpGain = sliderDefault SliderBoundaryWarpGain
+  , uiPlateMergeScale = sliderDefault SliderPlateMergeScale
+  , uiPlateMergeBias = sliderDefault SliderPlateMergeBias
+  , uiPlateDetailScale = sliderDefault SliderPlateDetailScale
+  , uiPlateDetailStrength = sliderDefault SliderPlateDetailStrength
+  , uiPlateRidgeStrength = sliderDefault SliderPlateRidgeStrength
+  , uiPlateHeightBase = sliderDefault SliderPlateHeightBase
+  , uiPlateHeightVariance = sliderDefault SliderPlateHeightVariance
+  , uiPlateHardnessBase = sliderDefault SliderPlateHardnessBase
+  , uiPlateHardnessVariance = sliderDefault SliderPlateHardnessVariance
+  , uiUplift = sliderDefault SliderUplift
+  , uiRiftDepth = sliderDefault SliderRiftDepth
+  , uiTrenchDepth = sliderDefault SliderTrenchDepth
+  , uiRidgeHeight = sliderDefault SliderRidgeHeight
+  , uiDetailScale = sliderDefault SliderDetailScale
+  , uiPlateBiasStrength = sliderDefault SliderPlateBiasStrength
+  , uiPlateBiasCenter = sliderDefault SliderPlateBiasCenter
+  , uiPlateBiasEdge = sliderDefault SliderPlateBiasEdge
+  , uiPlateBiasNorth = sliderDefault SliderPlateBiasNorth
+  , uiPlateBiasSouth = sliderDefault SliderPlateBiasSouth
+  , uiTfcCliffSlope = sliderDefault SliderTfcCliffSlope
+  , uiTfcMountainSlope = sliderDefault SliderTfcMountainSlope
+  , uiTfcMountainRelief = sliderDefault SliderTfcMountainRelief
+  , uiTfcHillSlope = sliderDefault SliderTfcHillSlope
+  , uiTfcRollingSlope = sliderDefault SliderTfcRollingSlope
+  , uiValleyCurvature = sliderDefault SliderValleyCurvature
+  , uiTfcElevGradient = sliderDefault SliderTfcElevGradient
+  , uiTfcPlateauMaxRelief2Ring = sliderDefault SliderTfcPlateauMaxRelief2Ring
+  , uiRockElevationThreshold = sliderDefault SliderRockElevationThreshold
+  , uiRockHardnessThreshold = sliderDefault SliderRockHardnessThreshold
+  , uiRockHardnessSecondary = sliderDefault SliderRockHardnessSecondary
+  , uiWindIterations = sliderDefault SliderWindIterations
+  , uiMoistureIterations = sliderDefault SliderMoistureIterations
+  , uiBoundaryMotionTemp = sliderDefault SliderBoundaryMotionTemp
+  , uiBoundaryMotionPrecip = sliderDefault SliderBoundaryMotionPrecip
+  , uiWeatherTick = sliderDefault SliderWeatherTick
+  , uiWeatherPhase = sliderDefault SliderWeatherPhase
+  , uiWeatherAmplitude = sliderDefault SliderWeatherAmplitude
+  , uiSeasonCycleLength = sliderDefault SliderSeasonCycleLength
+  , uiJitterAmplitude = sliderDefault SliderJitterAmplitude
+  , uiPressureBase = sliderDefault SliderPressureBase
+  , uiPressureTempScale = sliderDefault SliderPressureTempScale
+  , uiPressureCoriolisScale = sliderDefault SliderPressureCoriolisScale
+  , uiSeasonalBase = sliderDefault SliderSeasonalBase
+  , uiSeasonalRange = sliderDefault SliderSeasonalRange
+  , uiHumidityNoiseScale = sliderDefault SliderHumidityNoiseScale
+  , uiPrecipNoiseScale = sliderDefault SliderPrecipNoiseScale
+  , uiWeatherITCZWidth = sliderDefault SliderWeatherITCZWidth
+  , uiWeatherITCZPrecipBoost = sliderDefault SliderWeatherITCZPrecipBoost
+  , uiPressureHumidityScale = sliderDefault SliderPressureHumidityScale
+  , uiPressureGradientWindScale = sliderDefault SliderPressureGradientWindScale
+  , uiWindNoiseScale = sliderDefault SliderWindNoiseScale
+  , uiITCZMigrationScale = sliderDefault SliderITCZMigrationScale
+  , uiCloudRHExponent = sliderDefault SliderCloudRHExponent
+  , uiCloudAlbedoEffect = sliderDefault SliderCloudAlbedoEffect
+  , uiCloudPrecipBoost = sliderDefault SliderCloudPrecipBoost
+  , uiVegBase = sliderDefault SliderVegBase
+  , uiVegBoost = sliderDefault SliderVegBoost
+  , uiVegTempWeight = sliderDefault SliderVegTempWeight
+  , uiVegPrecipWeight = sliderDefault SliderVegPrecipWeight
+  , uiBtCoastalBand = sliderDefault SliderBtCoastalBand
+  , uiBtSnowMaxTemp = sliderDefault SliderBtSnowMaxTemp
+  , uiBtAlpineMaxTemp = sliderDefault SliderBtAlpineMaxTemp
+  , uiBtIceCapTemp = sliderDefault SliderBtIceCapTemp
+  , uiBtMontaneMaxTemp = sliderDefault SliderBtMontaneMaxTemp
+  , uiBtMontanePrecip = sliderDefault SliderBtMontanePrecip
+  , uiBtCliffSlope = sliderDefault SliderBtCliffSlope
+  , uiBtValleyMoisture = sliderDefault SliderBtValleyMoisture
+  , uiBtDepressionMoisture = sliderDefault SliderBtDepressionMoisture
+  , uiBtPrecipWeight = sliderDefault SliderBtPrecipWeight
+  , uiVbcTempMin = sliderDefault SliderVbcTempMin
+  , uiVbcTempRange = sliderDefault SliderVbcTempRange
+  , uiVbcFertilityBoost = sliderDefault SliderVbcFertilityBoost
+  , uiVbcAlbedoBase = sliderDefault SliderVbcAlbedoBase
+  , uiVbcAlbedoBare = sliderDefault SliderVbcAlbedoBare
+  , uiVbcAlbedoVeg = sliderDefault SliderVbcAlbedoVeg
+  , uiVbcOceanAlbedo = sliderDefault SliderVbcOceanAlbedo
+  , uiVbcIceAlbedo = sliderDefault SliderVbcIceAlbedo
+  , uiBiomeSmoothing = sliderDefault SliderBiomeSmoothing
+  , uiVolcanicAshBoost = sliderDefault SliderVolcanicAshBoost
+  , uiVolcanicLavaPenalty = sliderDefault SliderVolcanicLavaPenalty
+  , uiBiomeFeedbackBlend = sliderDefault SliderBiomeFeedbackBlend
+  , uiPlanetRadius = sliderDefault SliderPlanetRadius
+  , uiAxialTilt = sliderDefault SliderAxialTilt
+  , uiInsolation = sliderDefault SliderInsolation
+  , uiOccWarmScale = sliderDefault SliderOccWarmScale
+  , uiOccColdScale = sliderDefault SliderOccColdScale
+  , uiOccLatPeakDeg = sliderDefault SliderOccLatPeakDeg
+  , uiOccLatWidthDeg = sliderDefault SliderOccLatWidthDeg
+  , uiSliceLatCenter = sliderDefault SliderSliceLatCenter
+  , uiSliceLonCenter = sliderDefault SliderSliceLonCenter
   , uiDisabledStages = Set.empty
   , uiPluginParams = Map.empty
   , uiPluginNames = []
@@ -599,6 +601,9 @@ emptyUiState = UiState
   , uiOverlayNames = []
   , uiOverlayFields = []
   }
+
+sliderDefault :: SliderId -> Float
+sliderDefault = sliderDefaultValueForId
 
 data UiUpdate
   = SetSeed !Word64
@@ -619,219 +624,16 @@ data UiUpdate
   | SetHexTooltipPinned !Bool
   | SetSeedEditing !Bool
   | SetSeedInput !Text
-  | SetWaterLevel !Float
+  | SetSliderValue !SliderId !Float
   | SetRenderWaterLevel !Float
-  | SetOrographicLift !Float
-  | SetRainShadowLoss !Float
-  | SetWindDiffuse !Float
-  | SetRainRate !Float
-  | SetErosionHydraulic !Float
-  | SetErosionThermal !Float
-  | SetErosionTalus !Float
-  | SetErosionMaxDrop !Float
-  | SetErosionHydDeposit !Float
-  | SetErosionDepositSlope !Float
-  | SetErosionThermDeposit !Float
-  | SetErosionCoastZone !Float
-  | SetErosionCoastStrength !Float
-  | SetErosionCoastIter !Float
-  | SetHypsometryEnabled !Float
-  | SetHypsometryLowlandExp !Float
-  | SetHypsometryHighlandExp !Float
-  | SetHypsometryPlateauBreak !Float
-  | SetHypsometryOceanExp !Float
-  | SetHypsometryCoastalRampWidth !Float
-  | SetHypsometryCoastalRampStr !Float
-  | SetGlacierSnowTemp !Float
-  | SetGlacierSnowRange !Float
-  | SetGlacierMeltTemp !Float
-  | SetGlacierMeltRate !Float
-  | SetGlacierAccumScale !Float
-  | SetGlacierFlowIters !Float
-  | SetGlacierFlowRate !Float
-  | SetGlacierErosionScale !Float
-  | SetGlacierCarveScale !Float
-  | SetGlacierDepositScale !Float
-  | SetVentDensity !Float
-  | SetVentThreshold !Float
-  | SetHotspotScale !Float
-  | SetHotspotThreshold !Float
-  | SetMagmaRecharge !Float
-  | SetLavaScale !Float
-  | SetAshScale !Float
-  | SetVolcanicDepositScale !Float
-  | SetSoilMoistureThreshold !Float
-  | SetSoilHardnessThreshold !Float
-  | SetSoilFertilityMoistWeight !Float
-  | SetSoilFertilityDepthWeight !Float
-  | SetSinkBreachDepth !Float
-  | SetStreamPowerMaxErosion !Float
-  | SetRiverCarveMaxDepth !Float
-  | SetCoastalErodeStrength !Float
-  | SetHydroHardnessWeight !Float
-  | SetPiedmontSmooth !Float
-  | SetPiedmontSlopeMin !Float
-  | SetPiedmontSlopeMax !Float
-  | SetMinLakeSize !Float
-  | SetInlandSeaMinSize !Float
-  | SetRoughnessScale !Float
-  | SetEquatorTemp !Float
-  | SetPoleTemp !Float
-  | SetLapseRate !Float
-  | SetLatitudeExponent !Float
-  | SetPlateHeightCooling !Float
-  | SetTempNoiseScale !Float
-  | SetOceanModeration !Float
-  | SetOceanModerateTemp !Float
-  | SetAlbedoSensitivity !Float
-  | SetAlbedoReference !Float
-  | SetMoistAdvect !Float
-  | SetMoistLocal !Float
-  | SetMoistWindEvapScale !Float
-  | SetMoistEvapNoiseScale !Float
-  | SetMoistBareEvapFrac !Float
-  | SetMoistVegTranspFrac !Float
-  | SetMoistWindETScale !Float
-  | SetMoistCondensationRate !Float
-  | SetMoistRecycleRate !Float
-  | SetMoistITCZStrength !Float
-  | SetMoistITCZWidth !Float
-  | SetMoistMinVegFloor !Float
-  | SetOrographicScale !Float
-  | SetOrographicStep !Float
-  | SetCoastalIterations !Float
-  | SetCoastalDiffuse !Float
-  | SetCoastalMoistureBoost !Float
-  | SetWindBeltStrength !Float
-  | SetWindBeltHarmonics !Float
-  | SetWindBeltBase !Float
-  | SetWindBeltRange !Float
-  | SetWindBeltSpeedScale !Float
-  | SetWindCoriolisDeflection !Float
-  | SetBndLandRange !Float
   | SetBndTempConvergent !Float
   | SetBndTempDivergent !Float
   | SetBndTempTransform !Float
   | SetBndPrecipConvergent !Float
   | SetBndPrecipDivergent !Float
   | SetBndPrecipTransform !Float
-  | SetGenScale !Float
-  | SetGenCoordScale !Float
-  | SetGenOffsetX !Float
-  | SetGenOffsetY !Float
-  | SetGenFrequency !Float
-  | SetGenOctaves !Float
-  | SetGenLacunarity !Float
-  | SetGenGain !Float
-  | SetGenWarpScale !Float
-  | SetGenWarpStrength !Float
-  | SetWorldExtentX !Float
-  | SetWorldExtentY !Float
-  | SetEdgeDepthNorth !Float
-  | SetEdgeDepthSouth !Float
-  | SetEdgeDepthEast !Float
-  | SetEdgeDepthWest !Float
-  | SetEdgeDepthFalloff !Float
   | SetPanOffset !(Float, Float)
   | SetZoom !Float
-  | SetPlateSize !Float
-  | SetPlateSpeed !Float
-  | SetBoundarySharpness !Float
-  | SetBoundaryNoiseScale !Float
-  | SetBoundaryNoiseStrength !Float
-  | SetBoundaryWarpOctaves !Float
-  | SetBoundaryWarpLacunarity !Float
-  | SetBoundaryWarpGain !Float
-  | SetPlateMergeScale !Float
-  | SetPlateMergeBias !Float
-  | SetPlateDetailScale !Float
-  | SetPlateDetailStrength !Float
-  | SetPlateRidgeStrength !Float
-  | SetPlateHeightBase !Float
-  | SetPlateHeightVariance !Float
-  | SetPlateHardnessBase !Float
-  | SetPlateHardnessVariance !Float
-  | SetUplift !Float
-  | SetRiftDepth !Float
-  | SetTrenchDepth !Float
-  | SetRidgeHeight !Float
-  | SetDetailScale !Float
-  | SetPlateBiasStrength !Float
-  | SetPlateBiasCenter !Float
-  | SetPlateBiasEdge !Float
-  | SetPlateBiasNorth !Float
-  | SetPlateBiasSouth !Float
-  | SetTfcCliffSlope !Float
-  | SetTfcMountainSlope !Float
-  | SetTfcMountainRelief !Float
-  | SetTfcHillSlope !Float
-  | SetTfcRollingSlope !Float
-  | SetValleyCurvature !Float
-  | SetTfcElevGradient !Float
-  | SetTfcPlateauMaxRelief2Ring !Float
-  | SetRockElevationThreshold !Float
-  | SetRockHardnessThreshold !Float
-  | SetRockHardnessSecondary !Float
-  | SetWindIterations !Float
-  | SetMoistureIterations !Float
-  | SetBoundaryMotionTemp !Float
-  | SetBoundaryMotionPrecip !Float
-  | SetWeatherTick !Float
-  | SetWeatherPhase !Float
-  | SetWeatherAmplitude !Float
-  | SetSeasonCycleLength !Float
-  | SetJitterAmplitude !Float
-  | SetPressureBase !Float
-  | SetPressureTempScale !Float
-  | SetPressureCoriolisScale !Float
-  | SetSeasonalBase !Float
-  | SetSeasonalRange !Float
-  | SetHumidityNoiseScale !Float
-  | SetPrecipNoiseScale !Float
-  | SetWeatherITCZWidth !Float
-  | SetWeatherITCZPrecipBoost !Float
-  | SetPressureHumidityScale !Float
-  | SetPressureGradientWindScale !Float
-  | SetWindNoiseScale !Float
-  | SetITCZMigrationScale !Float
-  | SetCloudRHExponent !Float
-  | SetCloudAlbedoEffect !Float
-  | SetCloudPrecipBoost !Float
-  | SetVegBase !Float
-  | SetVegBoost !Float
-  | SetVegTempWeight !Float
-  | SetVegPrecipWeight !Float
-  | SetBtCoastalBand !Float
-  | SetBtSnowMaxTemp !Float
-  | SetBtAlpineMaxTemp !Float
-  | SetBtIceCapTemp !Float
-  | SetBtMontaneMaxTemp !Float
-  | SetBtMontanePrecip !Float
-  | SetBtCliffSlope !Float
-  | SetBtValleyMoisture !Float
-  | SetBtDepressionMoisture !Float
-  | SetBtPrecipWeight !Float
-  | SetVbcTempMin !Float
-  | SetVbcTempRange !Float
-  | SetVbcFertilityBoost !Float
-  | SetVbcAlbedoBase !Float
-  | SetVbcAlbedoBare !Float
-  | SetVbcAlbedoVeg !Float
-  | SetVbcOceanAlbedo !Float
-  | SetVbcIceAlbedo !Float
-  | SetBiomeSmoothing !Float
-  | SetVolcanicAshBoost !Float
-  | SetVolcanicLavaPenalty !Float
-  | SetBiomeFeedbackBlend !Float
-  | SetPlanetRadius !Float
-  | SetAxialTilt !Float
-  | SetInsolation !Float
-  | SetOccWarmScale !Float
-  | SetOccColdScale !Float
-  | SetOccLatPeakDeg !Float
-  | SetOccLatWidthDeg !Float
-  | SetSliceLatCenter !Float
-  | SetSliceLonCenter !Float
   | SetHoverHex !(Maybe (Int, Int))
   | SetHoverWidget !(Maybe WidgetId)
   | SetDisabledStages !(Set StageId)
@@ -868,219 +670,16 @@ applyUpdate upd st = case upd of
   SetHexTooltipPinned v -> st { uiHexTooltipPinned = v }
   SetSeedEditing v -> st { uiSeedEditing = v }
   SetSeedInput v -> st { uiSeedInput = v }
-  SetWaterLevel v -> st { uiWaterLevel = clamp01 v }
+  SetSliderValue sliderIdValue v -> applySliderValue sliderIdValue v st
   SetRenderWaterLevel v -> st { uiRenderWaterLevel = clamp01 v }
-  SetOrographicLift v -> st { uiOrographicLift = clamp01 v }
-  SetRainShadowLoss v -> st { uiRainShadowLoss = clamp01 v }
-  SetWindDiffuse v -> st { uiWindDiffuse = clamp01 v }
-  SetRainRate v -> st { uiRainRate = clamp01 v }
-  SetErosionHydraulic v -> st { uiErosionHydraulic = clamp01 v }
-  SetErosionThermal v -> st { uiErosionThermal = clamp01 v }
-  SetErosionTalus v -> st { uiErosionTalus = clamp01 v }
-  SetErosionMaxDrop v -> st { uiErosionMaxDrop = clamp01 v }
-  SetErosionHydDeposit v -> st { uiErosionHydDeposit = clamp01 v }
-  SetErosionDepositSlope v -> st { uiErosionDepositSlope = clamp01 v }
-  SetErosionThermDeposit v -> st { uiErosionThermDeposit = clamp01 v }
-  SetErosionCoastZone v -> st { uiErosionCoastZone = clamp01 v }
-  SetErosionCoastStrength v -> st { uiErosionCoastStrength = clamp01 v }
-  SetErosionCoastIter v -> st { uiErosionCoastIter = clamp01 v }
-  SetHypsometryEnabled v -> st { uiHypsometryEnabled = clamp01 v }
-  SetHypsometryLowlandExp v -> st { uiHypsometryLowlandExp = clamp01 v }
-  SetHypsometryHighlandExp v -> st { uiHypsometryHighlandExp = clamp01 v }
-  SetHypsometryPlateauBreak v -> st { uiHypsometryPlateauBreak = clamp01 v }
-  SetHypsometryOceanExp v -> st { uiHypsometryOceanExp = clamp01 v }
-  SetHypsometryCoastalRampWidth v -> st { uiHypsometryCoastalRampWidth = clamp01 v }
-  SetHypsometryCoastalRampStr v -> st { uiHypsometryCoastalRampStr = clamp01 v }
-  SetGlacierSnowTemp v -> st { uiGlacierSnowTemp = clamp01 v }
-  SetGlacierSnowRange v -> st { uiGlacierSnowRange = clamp01 v }
-  SetGlacierMeltTemp v -> st { uiGlacierMeltTemp = clamp01 v }
-  SetGlacierMeltRate v -> st { uiGlacierMeltRate = clamp01 v }
-  SetGlacierAccumScale v -> st { uiGlacierAccumScale = clamp01 v }
-  SetGlacierFlowIters v -> st { uiGlacierFlowIters = clamp01 v }
-  SetGlacierFlowRate v -> st { uiGlacierFlowRate = clamp01 v }
-  SetGlacierErosionScale v -> st { uiGlacierErosionScale = clamp01 v }
-  SetGlacierCarveScale v -> st { uiGlacierCarveScale = clamp01 v }
-  SetGlacierDepositScale v -> st { uiGlacierDepositScale = clamp01 v }
-  SetVentDensity v -> st { uiVentDensity = clamp01 v }
-  SetVentThreshold v -> st { uiVentThreshold = clamp01 v }
-  SetHotspotScale v -> st { uiHotspotScale = clamp01 v }
-  SetHotspotThreshold v -> st { uiHotspotThreshold = clamp01 v }
-  SetMagmaRecharge v -> st { uiMagmaRecharge = clamp01 v }
-  SetLavaScale v -> st { uiLavaScale = clamp01 v }
-  SetAshScale v -> st { uiAshScale = clamp01 v }
-  SetVolcanicDepositScale v -> st { uiVolcanicDepositScale = clamp01 v }
-  SetSoilMoistureThreshold v -> st { uiSoilMoistureThreshold = clamp01 v }
-  SetSoilHardnessThreshold v -> st { uiSoilHardnessThreshold = clamp01 v }
-  SetSoilFertilityMoistWeight v -> st { uiSoilFertilityMoistWeight = clamp01 v }
-  SetSoilFertilityDepthWeight v -> st { uiSoilFertilityDepthWeight = clamp01 v }
-  SetSinkBreachDepth v -> st { uiSinkBreachDepth = clamp01 v }
-  SetStreamPowerMaxErosion v -> st { uiStreamPowerMaxErosion = clamp01 v }
-  SetRiverCarveMaxDepth v -> st { uiRiverCarveMaxDepth = clamp01 v }
-  SetCoastalErodeStrength v -> st { uiCoastalErodeStrength = clamp01 v }
-  SetHydroHardnessWeight v -> st { uiHydroHardnessWeight = clamp01 v }
-  SetPiedmontSmooth v -> st { uiPiedmontSmooth = clamp01 v }
-  SetPiedmontSlopeMin v -> st { uiPiedmontSlopeMin = clamp01 v }
-  SetPiedmontSlopeMax v -> st { uiPiedmontSlopeMax = clamp01 v }
-  SetMinLakeSize v -> st { uiMinLakeSize = clamp01 v }
-  SetInlandSeaMinSize v -> st { uiInlandSeaMinSize = clamp01 v }
-  SetRoughnessScale v -> st { uiRoughnessScale = clamp01 v }
-  SetEquatorTemp v -> st { uiEquatorTemp = clamp01 v }
-  SetPoleTemp v -> st { uiPoleTemp = clamp01 v }
-  SetLapseRate v -> st { uiLapseRate = clamp01 v }
-  SetLatitudeExponent v -> st { uiLatitudeExponent = clamp01 v }
-  SetPlateHeightCooling v -> st { uiPlateHeightCooling = clamp01 v }
-  SetTempNoiseScale v -> st { uiTempNoiseScale = clamp01 v }
-  SetOceanModeration v -> st { uiOceanModeration = clamp01 v }
-  SetOceanModerateTemp v -> st { uiOceanModerateTemp = clamp01 v }
-  SetAlbedoSensitivity v -> st { uiAlbedoSensitivity = clamp01 v }
-  SetAlbedoReference v -> st { uiAlbedoReference = clamp01 v }
-  SetMoistAdvect v -> st { uiMoistAdvect = clamp01 v }
-  SetMoistLocal v -> st { uiMoistLocal = clamp01 v }
-  SetMoistWindEvapScale v -> st { uiMoistWindEvapScale = clamp01 v }
-  SetMoistEvapNoiseScale v -> st { uiMoistEvapNoiseScale = clamp01 v }
-  SetMoistBareEvapFrac v -> st { uiMoistBareEvapFrac = clamp01 v }
-  SetMoistVegTranspFrac v -> st { uiMoistVegTranspFrac = clamp01 v }
-  SetMoistWindETScale v -> st { uiMoistWindETScale = clamp01 v }
-  SetMoistCondensationRate v -> st { uiMoistCondensationRate = clamp01 v }
-  SetMoistRecycleRate v -> st { uiMoistRecycleRate = clamp01 v }
-  SetMoistITCZStrength v -> st { uiMoistITCZStrength = clamp01 v }
-  SetMoistITCZWidth v -> st { uiMoistITCZWidth = clamp01 v }
-  SetMoistMinVegFloor v -> st { uiMoistMinVegFloor = clamp01 v }
-  SetOrographicScale v -> st { uiOrographicScale = clamp01 v }
-  SetOrographicStep v -> st { uiOrographicStep = clamp01 v }
-  SetCoastalIterations v -> st { uiCoastalIterations = clamp01 v }
-  SetCoastalDiffuse v -> st { uiCoastalDiffuse = clamp01 v }
-  SetCoastalMoistureBoost v -> st { uiCoastalMoistureBoost = clamp01 v }
-  SetWindBeltStrength v -> st { uiWindBeltStrength = clamp01 v }
-  SetWindBeltHarmonics v -> st { uiWindBeltHarmonics = clamp01 v }
-  SetWindBeltBase v -> st { uiWindBeltBase = clamp01 v }
-  SetWindBeltRange v -> st { uiWindBeltRange = clamp01 v }
-  SetWindBeltSpeedScale v -> st { uiWindBeltSpeedScale = clamp01 v }
-  SetWindCoriolisDeflection v -> st { uiWindCoriolisDeflection = clamp01 v }
-  SetBndLandRange v -> st { uiBndLandRange = clamp01 v }
   SetBndTempConvergent v -> st { uiBndTempConvergent = clamp01 v }
   SetBndTempDivergent v -> st { uiBndTempDivergent = clamp01 v }
   SetBndTempTransform v -> st { uiBndTempTransform = clamp01 v }
   SetBndPrecipConvergent v -> st { uiBndPrecipConvergent = clamp01 v }
   SetBndPrecipDivergent v -> st { uiBndPrecipDivergent = clamp01 v }
   SetBndPrecipTransform v -> st { uiBndPrecipTransform = clamp01 v }
-  SetGenScale v -> st { uiGenScale = clamp01 v }
-  SetGenCoordScale v -> st { uiGenCoordScale = clamp01 v }
-  SetGenOffsetX v -> st { uiGenOffsetX = clamp01 v }
-  SetGenOffsetY v -> st { uiGenOffsetY = clamp01 v }
-  SetGenFrequency v -> st { uiGenFrequency = clamp01 v }
-  SetGenOctaves v -> st { uiGenOctaves = clamp01 v }
-  SetGenLacunarity v -> st { uiGenLacunarity = clamp01 v }
-  SetGenGain v -> st { uiGenGain = clamp01 v }
-  SetGenWarpScale v -> st { uiGenWarpScale = clamp01 v }
-  SetGenWarpStrength v -> st { uiGenWarpStrength = clamp01 v }
-  SetWorldExtentX v -> st { uiWorldExtentX = clamp01 v }
-  SetWorldExtentY v -> st { uiWorldExtentY = clamp01 v }
-  SetEdgeDepthNorth v -> st { uiEdgeDepthNorth = clamp01 v }
-  SetEdgeDepthSouth v -> st { uiEdgeDepthSouth = clamp01 v }
-  SetEdgeDepthEast v -> st { uiEdgeDepthEast = clamp01 v }
-  SetEdgeDepthWest v -> st { uiEdgeDepthWest = clamp01 v }
-  SetEdgeDepthFalloff v -> st { uiEdgeDepthFalloff = clamp01 v }
   SetPanOffset v -> st { uiPanOffset = v }
   SetZoom v -> st { uiZoom = clampZoom v }
-  SetPlateSize v -> st { uiPlateSize = clamp01 v }
-  SetPlateSpeed v -> st { uiPlateSpeed = clamp01 v }
-  SetBoundarySharpness v -> st { uiBoundarySharpness = clamp01 v }
-  SetBoundaryNoiseScale v -> st { uiBoundaryNoiseScale = clamp01 v }
-  SetBoundaryNoiseStrength v -> st { uiBoundaryNoiseStrength = clamp01 v }
-  SetBoundaryWarpOctaves v -> st { uiBoundaryWarpOctaves = clamp01 v }
-  SetBoundaryWarpLacunarity v -> st { uiBoundaryWarpLacunarity = clamp01 v }
-  SetBoundaryWarpGain v -> st { uiBoundaryWarpGain = clamp01 v }
-  SetPlateMergeScale v -> st { uiPlateMergeScale = clamp01 v }
-  SetPlateMergeBias v -> st { uiPlateMergeBias = clamp01 v }
-  SetPlateDetailScale v -> st { uiPlateDetailScale = clamp01 v }
-  SetPlateDetailStrength v -> st { uiPlateDetailStrength = clamp01 v }
-  SetPlateRidgeStrength v -> st { uiPlateRidgeStrength = clamp01 v }
-  SetPlateHeightBase v -> st { uiPlateHeightBase = clamp01 v }
-  SetPlateHeightVariance v -> st { uiPlateHeightVariance = clamp01 v }
-  SetPlateHardnessBase v -> st { uiPlateHardnessBase = clamp01 v }
-  SetPlateHardnessVariance v -> st { uiPlateHardnessVariance = clamp01 v }
-  SetUplift v -> st { uiUplift = clamp01 v }
-  SetRiftDepth v -> st { uiRiftDepth = clamp01 v }
-  SetTrenchDepth v -> st { uiTrenchDepth = clamp01 v }
-  SetRidgeHeight v -> st { uiRidgeHeight = clamp01 v }
-  SetDetailScale v -> st { uiDetailScale = clamp01 v }
-  SetPlateBiasStrength v -> st { uiPlateBiasStrength = clamp01 v }
-  SetPlateBiasCenter v -> st { uiPlateBiasCenter = clamp01 v }
-  SetPlateBiasEdge v -> st { uiPlateBiasEdge = clamp01 v }
-  SetPlateBiasNorth v -> st { uiPlateBiasNorth = clamp01 v }
-  SetPlateBiasSouth v -> st { uiPlateBiasSouth = clamp01 v }
-  SetTfcCliffSlope v -> st { uiTfcCliffSlope = clamp01 v }
-  SetTfcMountainSlope v -> st { uiTfcMountainSlope = clamp01 v }
-  SetTfcMountainRelief v -> st { uiTfcMountainRelief = clamp01 v }
-  SetTfcHillSlope v -> st { uiTfcHillSlope = clamp01 v }
-  SetTfcRollingSlope v -> st { uiTfcRollingSlope = clamp01 v }
-  SetValleyCurvature v -> st { uiValleyCurvature = clamp01 v }
-  SetTfcElevGradient v -> st { uiTfcElevGradient = clamp01 v }
-  SetTfcPlateauMaxRelief2Ring v -> st { uiTfcPlateauMaxRelief2Ring = clamp01 v }
-  SetRockElevationThreshold v -> st { uiRockElevationThreshold = clamp01 v }
-  SetRockHardnessThreshold v -> st { uiRockHardnessThreshold = clamp01 v }
-  SetRockHardnessSecondary v -> st { uiRockHardnessSecondary = clamp01 v }
-  SetWindIterations v -> st { uiWindIterations = clamp01 v }
-  SetMoistureIterations v -> st { uiMoistureIterations = clamp01 v }
-  SetBoundaryMotionTemp v -> st { uiBoundaryMotionTemp = clamp01 v }
-  SetBoundaryMotionPrecip v -> st { uiBoundaryMotionPrecip = clamp01 v }
-  SetWeatherTick v -> st { uiWeatherTick = clamp01 v }
-  SetWeatherPhase v -> st { uiWeatherPhase = clamp01 v }
-  SetWeatherAmplitude v -> st { uiWeatherAmplitude = clamp01 v }
-  SetSeasonCycleLength v -> st { uiSeasonCycleLength = clamp01 v }
-  SetJitterAmplitude v -> st { uiJitterAmplitude = clamp01 v }
-  SetPressureBase v -> st { uiPressureBase = clamp01 v }
-  SetPressureTempScale v -> st { uiPressureTempScale = clamp01 v }
-  SetPressureCoriolisScale v -> st { uiPressureCoriolisScale = clamp01 v }
-  SetSeasonalBase v -> st { uiSeasonalBase = clamp01 v }
-  SetSeasonalRange v -> st { uiSeasonalRange = clamp01 v }
-  SetHumidityNoiseScale v -> st { uiHumidityNoiseScale = clamp01 v }
-  SetPrecipNoiseScale v -> st { uiPrecipNoiseScale = clamp01 v }
-  SetWeatherITCZWidth v -> st { uiWeatherITCZWidth = clamp01 v }
-  SetWeatherITCZPrecipBoost v -> st { uiWeatherITCZPrecipBoost = clamp01 v }
-  SetPressureHumidityScale v -> st { uiPressureHumidityScale = clamp01 v }
-  SetPressureGradientWindScale v -> st { uiPressureGradientWindScale = clamp01 v }
-  SetWindNoiseScale v -> st { uiWindNoiseScale = clamp01 v }
-  SetITCZMigrationScale v -> st { uiITCZMigrationScale = clamp01 v }
-  SetCloudRHExponent v -> st { uiCloudRHExponent = clamp01 v }
-  SetCloudAlbedoEffect v -> st { uiCloudAlbedoEffect = clamp01 v }
-  SetCloudPrecipBoost v -> st { uiCloudPrecipBoost = clamp01 v }
-  SetVegBase v -> st { uiVegBase = clamp01 v }
-  SetVegBoost v -> st { uiVegBoost = clamp01 v }
-  SetVegTempWeight v -> st { uiVegTempWeight = clamp01 v }
-  SetVegPrecipWeight v -> st { uiVegPrecipWeight = clamp01 v }
-  SetBtCoastalBand v -> st { uiBtCoastalBand = clamp01 v }
-  SetBtSnowMaxTemp v -> st { uiBtSnowMaxTemp = clamp01 v }
-  SetBtAlpineMaxTemp v -> st { uiBtAlpineMaxTemp = clamp01 v }
-  SetBtIceCapTemp v -> st { uiBtIceCapTemp = clamp01 v }
-  SetBtMontaneMaxTemp v -> st { uiBtMontaneMaxTemp = clamp01 v }
-  SetBtMontanePrecip v -> st { uiBtMontanePrecip = clamp01 v }
-  SetBtCliffSlope v -> st { uiBtCliffSlope = clamp01 v }
-  SetBtValleyMoisture v -> st { uiBtValleyMoisture = clamp01 v }
-  SetBtDepressionMoisture v -> st { uiBtDepressionMoisture = clamp01 v }
-  SetBtPrecipWeight v -> st { uiBtPrecipWeight = clamp01 v }
-  SetVbcTempMin v -> st { uiVbcTempMin = clamp01 v }
-  SetVbcTempRange v -> st { uiVbcTempRange = clamp01 v }
-  SetVbcFertilityBoost v -> st { uiVbcFertilityBoost = clamp01 v }
-  SetVbcAlbedoBase v -> st { uiVbcAlbedoBase = clamp01 v }
-  SetVbcAlbedoBare v -> st { uiVbcAlbedoBare = clamp01 v }
-  SetVbcAlbedoVeg v -> st { uiVbcAlbedoVeg = clamp01 v }
-  SetVbcOceanAlbedo v -> st { uiVbcOceanAlbedo = clamp01 v }
-  SetVbcIceAlbedo v -> st { uiVbcIceAlbedo = clamp01 v }
-  SetBiomeSmoothing v -> st { uiBiomeSmoothing = clamp01 v }
-  SetVolcanicAshBoost v -> st { uiVolcanicAshBoost = clamp01 v }
-  SetVolcanicLavaPenalty v -> st { uiVolcanicLavaPenalty = clamp01 v }
-  SetBiomeFeedbackBlend v -> st { uiBiomeFeedbackBlend = clamp01 v }
-  SetPlanetRadius v -> st { uiPlanetRadius = clamp01 v }
-  SetAxialTilt v -> st { uiAxialTilt = clamp01 v }
-  SetInsolation v -> st { uiInsolation = clamp01 v }
-  SetOccWarmScale v -> st { uiOccWarmScale = clamp01 v }
-  SetOccColdScale v -> st { uiOccColdScale = clamp01 v }
-  SetOccLatPeakDeg v -> st { uiOccLatPeakDeg = clamp01 v }
-  SetOccLatWidthDeg v -> st { uiOccLatWidthDeg = clamp01 v }
-  SetSliceLatCenter v -> st { uiSliceLatCenter = clamp01 v }
-  SetSliceLonCenter v -> st { uiSliceLonCenter = clamp01 v }
   SetHoverHex v -> st { uiHoverHex = v }
   SetHoverWidget v -> st { uiHoverWidget = v }
   SetDisabledStages v -> st { uiDisabledStages = v }
@@ -1101,6 +700,228 @@ applyUpdate upd st = case upd of
   SetWorldSelected v -> st { uiWorldSelected = v }
   SetOverlayNames v -> st { uiOverlayNames = v }
   SetOverlayFields v -> st { uiOverlayFields = v }
+
+data SliderStateBinding = SliderStateBinding
+  { sliderStateGet :: UiState -> Float
+  , sliderStatePut :: Float -> UiState -> UiState
+  }
+
+sliderStateBindingForId :: SliderId -> SliderStateBinding
+sliderStateBindingForId sliderIdValue = case sliderIdValue of
+  SliderGenScale -> binding uiGenScale (\value st -> st { uiGenScale = clamp01 value })
+  SliderGenCoordScale -> binding uiGenCoordScale (\value st -> st { uiGenCoordScale = clamp01 value })
+  SliderGenOffsetX -> binding uiGenOffsetX (\value st -> st { uiGenOffsetX = clamp01 value })
+  SliderGenOffsetY -> binding uiGenOffsetY (\value st -> st { uiGenOffsetY = clamp01 value })
+  SliderGenFrequency -> binding uiGenFrequency (\value st -> st { uiGenFrequency = clamp01 value })
+  SliderGenOctaves -> binding uiGenOctaves (\value st -> st { uiGenOctaves = clamp01 value })
+  SliderGenLacunarity -> binding uiGenLacunarity (\value st -> st { uiGenLacunarity = clamp01 value })
+  SliderGenGain -> binding uiGenGain (\value st -> st { uiGenGain = clamp01 value })
+  SliderGenWarpScale -> binding uiGenWarpScale (\value st -> st { uiGenWarpScale = clamp01 value })
+  SliderGenWarpStrength -> binding uiGenWarpStrength (\value st -> st { uiGenWarpStrength = clamp01 value })
+  SliderExtentX -> binding uiWorldExtentX (\value st -> st { uiWorldExtentX = clamp01 value })
+  SliderExtentY -> binding uiWorldExtentY (\value st -> st { uiWorldExtentY = clamp01 value })
+  SliderEdgeNorth -> binding uiEdgeDepthNorth (\value st -> st { uiEdgeDepthNorth = clamp01 value })
+  SliderEdgeSouth -> binding uiEdgeDepthSouth (\value st -> st { uiEdgeDepthSouth = clamp01 value })
+  SliderEdgeEast -> binding uiEdgeDepthEast (\value st -> st { uiEdgeDepthEast = clamp01 value })
+  SliderEdgeWest -> binding uiEdgeDepthWest (\value st -> st { uiEdgeDepthWest = clamp01 value })
+  SliderEdgeFalloff -> binding uiEdgeDepthFalloff (\value st -> st { uiEdgeDepthFalloff = clamp01 value })
+  SliderPlateSize -> binding uiPlateSize (\value st -> st { uiPlateSize = clamp01 value })
+  SliderUplift -> binding uiUplift (\value st -> st { uiUplift = clamp01 value })
+  SliderRiftDepth -> binding uiRiftDepth (\value st -> st { uiRiftDepth = clamp01 value })
+  SliderDetailScale -> binding uiDetailScale (\value st -> st { uiDetailScale = clamp01 value })
+  SliderPlateSpeed -> binding uiPlateSpeed (\value st -> st { uiPlateSpeed = clamp01 value })
+  SliderBoundarySharpness -> binding uiBoundarySharpness (\value st -> st { uiBoundarySharpness = clamp01 value })
+  SliderBoundaryNoiseScale -> binding uiBoundaryNoiseScale (\value st -> st { uiBoundaryNoiseScale = clamp01 value })
+  SliderBoundaryNoiseStrength -> binding uiBoundaryNoiseStrength (\value st -> st { uiBoundaryNoiseStrength = clamp01 value })
+  SliderBoundaryWarpOctaves -> binding uiBoundaryWarpOctaves (\value st -> st { uiBoundaryWarpOctaves = clamp01 value })
+  SliderBoundaryWarpLacunarity -> binding uiBoundaryWarpLacunarity (\value st -> st { uiBoundaryWarpLacunarity = clamp01 value })
+  SliderBoundaryWarpGain -> binding uiBoundaryWarpGain (\value st -> st { uiBoundaryWarpGain = clamp01 value })
+  SliderPlateMergeScale -> binding uiPlateMergeScale (\value st -> st { uiPlateMergeScale = clamp01 value })
+  SliderPlateMergeBias -> binding uiPlateMergeBias (\value st -> st { uiPlateMergeBias = clamp01 value })
+  SliderPlateDetailScale -> binding uiPlateDetailScale (\value st -> st { uiPlateDetailScale = clamp01 value })
+  SliderPlateDetailStrength -> binding uiPlateDetailStrength (\value st -> st { uiPlateDetailStrength = clamp01 value })
+  SliderPlateRidgeStrength -> binding uiPlateRidgeStrength (\value st -> st { uiPlateRidgeStrength = clamp01 value })
+  SliderPlateHeightBase -> binding uiPlateHeightBase (\value st -> st { uiPlateHeightBase = clamp01 value })
+  SliderPlateHeightVariance -> binding uiPlateHeightVariance (\value st -> st { uiPlateHeightVariance = clamp01 value })
+  SliderPlateHardnessBase -> binding uiPlateHardnessBase (\value st -> st { uiPlateHardnessBase = clamp01 value })
+  SliderPlateHardnessVariance -> binding uiPlateHardnessVariance (\value st -> st { uiPlateHardnessVariance = clamp01 value })
+  SliderTrenchDepth -> binding uiTrenchDepth (\value st -> st { uiTrenchDepth = clamp01 value })
+  SliderRidgeHeight -> binding uiRidgeHeight (\value st -> st { uiRidgeHeight = clamp01 value })
+  SliderPlateBiasStrength -> binding uiPlateBiasStrength (\value st -> st { uiPlateBiasStrength = clamp01 value })
+  SliderPlateBiasCenter -> binding uiPlateBiasCenter (\value st -> st { uiPlateBiasCenter = clamp01 value })
+  SliderPlateBiasEdge -> binding uiPlateBiasEdge (\value st -> st { uiPlateBiasEdge = clamp01 value })
+  SliderPlateBiasNorth -> binding uiPlateBiasNorth (\value st -> st { uiPlateBiasNorth = clamp01 value })
+  SliderPlateBiasSouth -> binding uiPlateBiasSouth (\value st -> st { uiPlateBiasSouth = clamp01 value })
+  SliderTfcCliffSlope -> binding uiTfcCliffSlope (\value st -> st { uiTfcCliffSlope = clamp01 value })
+  SliderTfcMountainSlope -> binding uiTfcMountainSlope (\value st -> st { uiTfcMountainSlope = clamp01 value })
+  SliderTfcMountainRelief -> binding uiTfcMountainRelief (\value st -> st { uiTfcMountainRelief = clamp01 value })
+  SliderTfcHillSlope -> binding uiTfcHillSlope (\value st -> st { uiTfcHillSlope = clamp01 value })
+  SliderTfcRollingSlope -> binding uiTfcRollingSlope (\value st -> st { uiTfcRollingSlope = clamp01 value })
+  SliderValleyCurvature -> binding uiValleyCurvature (\value st -> st { uiValleyCurvature = clamp01 value })
+  SliderTfcElevGradient -> binding uiTfcElevGradient (\value st -> st { uiTfcElevGradient = clamp01 value })
+  SliderTfcPlateauMaxRelief2Ring -> binding uiTfcPlateauMaxRelief2Ring (\value st -> st { uiTfcPlateauMaxRelief2Ring = clamp01 value })
+  SliderRockElevationThreshold -> binding uiRockElevationThreshold (\value st -> st { uiRockElevationThreshold = clamp01 value })
+  SliderRockHardnessThreshold -> binding uiRockHardnessThreshold (\value st -> st { uiRockHardnessThreshold = clamp01 value })
+  SliderRockHardnessSecondary -> binding uiRockHardnessSecondary (\value st -> st { uiRockHardnessSecondary = clamp01 value })
+  SliderPlanetRadius -> binding uiPlanetRadius (\value st -> st { uiPlanetRadius = clamp01 value })
+  SliderAxialTilt -> binding uiAxialTilt (\value st -> st { uiAxialTilt = clamp01 value })
+  SliderInsolation -> binding uiInsolation (\value st -> st { uiInsolation = clamp01 value })
+  SliderOccWarmScale -> binding uiOccWarmScale (\value st -> st { uiOccWarmScale = clamp01 value })
+  SliderOccColdScale -> binding uiOccColdScale (\value st -> st { uiOccColdScale = clamp01 value })
+  SliderOccLatPeakDeg -> binding uiOccLatPeakDeg (\value st -> st { uiOccLatPeakDeg = clamp01 value })
+  SliderOccLatWidthDeg -> binding uiOccLatWidthDeg (\value st -> st { uiOccLatWidthDeg = clamp01 value })
+  SliderWaterLevel -> binding uiWaterLevel (\value st -> st { uiWaterLevel = clamp01 value })
+  SliderOrographicLift -> binding uiOrographicLift (\value st -> st { uiOrographicLift = clamp01 value })
+  SliderRainShadowLoss -> binding uiRainShadowLoss (\value st -> st { uiRainShadowLoss = clamp01 value })
+  SliderWindDiffuse -> binding uiWindDiffuse (\value st -> st { uiWindDiffuse = clamp01 value })
+  SliderEquatorTemp -> binding uiEquatorTemp (\value st -> st { uiEquatorTemp = clamp01 value })
+  SliderPoleTemp -> binding uiPoleTemp (\value st -> st { uiPoleTemp = clamp01 value })
+  SliderLapseRate -> binding uiLapseRate (\value st -> st { uiLapseRate = clamp01 value })
+  SliderWindIterations -> binding uiWindIterations (\value st -> st { uiWindIterations = clamp01 value })
+  SliderMoistureIterations -> binding uiMoistureIterations (\value st -> st { uiMoistureIterations = clamp01 value })
+  SliderBoundaryMotionTemp -> binding uiBoundaryMotionTemp (\value st -> st { uiBoundaryMotionTemp = clamp01 value })
+  SliderBoundaryMotionPrecip -> binding uiBoundaryMotionPrecip (\value st -> st { uiBoundaryMotionPrecip = clamp01 value })
+  SliderSliceLatCenter -> binding uiSliceLatCenter (\value st -> st { uiSliceLatCenter = clamp01 value })
+  SliderSliceLonCenter -> binding uiSliceLonCenter (\value st -> st { uiSliceLonCenter = clamp01 value })
+  SliderLatitudeExponent -> binding uiLatitudeExponent (\value st -> st { uiLatitudeExponent = clamp01 value })
+  SliderPlateHeightCooling -> binding uiPlateHeightCooling (\value st -> st { uiPlateHeightCooling = clamp01 value })
+  SliderTempNoiseScale -> binding uiTempNoiseScale (\value st -> st { uiTempNoiseScale = clamp01 value })
+  SliderOceanModeration -> binding uiOceanModeration (\value st -> st { uiOceanModeration = clamp01 value })
+  SliderOceanModerateTemp -> binding uiOceanModerateTemp (\value st -> st { uiOceanModerateTemp = clamp01 value })
+  SliderAlbedoSensitivity -> binding uiAlbedoSensitivity (\value st -> st { uiAlbedoSensitivity = clamp01 value })
+  SliderAlbedoReference -> binding uiAlbedoReference (\value st -> st { uiAlbedoReference = clamp01 value })
+  SliderMoistAdvect -> binding uiMoistAdvect (\value st -> st { uiMoistAdvect = clamp01 value })
+  SliderMoistLocal -> binding uiMoistLocal (\value st -> st { uiMoistLocal = clamp01 value })
+  SliderMoistWindEvapScale -> binding uiMoistWindEvapScale (\value st -> st { uiMoistWindEvapScale = clamp01 value })
+  SliderMoistEvapNoiseScale -> binding uiMoistEvapNoiseScale (\value st -> st { uiMoistEvapNoiseScale = clamp01 value })
+  SliderMoistBareEvapFrac -> binding uiMoistBareEvapFrac (\value st -> st { uiMoistBareEvapFrac = clamp01 value })
+  SliderMoistVegTranspFrac -> binding uiMoistVegTranspFrac (\value st -> st { uiMoistVegTranspFrac = clamp01 value })
+  SliderMoistWindETScale -> binding uiMoistWindETScale (\value st -> st { uiMoistWindETScale = clamp01 value })
+  SliderMoistCondensationRate -> binding uiMoistCondensationRate (\value st -> st { uiMoistCondensationRate = clamp01 value })
+  SliderMoistRecycleRate -> binding uiMoistRecycleRate (\value st -> st { uiMoistRecycleRate = clamp01 value })
+  SliderMoistITCZStrength -> binding uiMoistITCZStrength (\value st -> st { uiMoistITCZStrength = clamp01 value })
+  SliderMoistITCZWidth -> binding uiMoistITCZWidth (\value st -> st { uiMoistITCZWidth = clamp01 value })
+  SliderOrographicScale -> binding uiOrographicScale (\value st -> st { uiOrographicScale = clamp01 value })
+  SliderOrographicStep -> binding uiOrographicStep (\value st -> st { uiOrographicStep = clamp01 value })
+  SliderCoastalIterations -> binding uiCoastalIterations (\value st -> st { uiCoastalIterations = clamp01 value })
+  SliderCoastalDiffuse -> binding uiCoastalDiffuse (\value st -> st { uiCoastalDiffuse = clamp01 value })
+  SliderCoastalMoistureBoost -> binding uiCoastalMoistureBoost (\value st -> st { uiCoastalMoistureBoost = clamp01 value })
+  SliderWindBeltStrength -> binding uiWindBeltStrength (\value st -> st { uiWindBeltStrength = clamp01 value })
+  SliderWindBeltHarmonics -> binding uiWindBeltHarmonics (\value st -> st { uiWindBeltHarmonics = clamp01 value })
+  SliderWindBeltBase -> binding uiWindBeltBase (\value st -> st { uiWindBeltBase = clamp01 value })
+  SliderWindBeltRange -> binding uiWindBeltRange (\value st -> st { uiWindBeltRange = clamp01 value })
+  SliderWindBeltSpeedScale -> binding uiWindBeltSpeedScale (\value st -> st { uiWindBeltSpeedScale = clamp01 value })
+  SliderBndLandRange -> binding uiBndLandRange (\value st -> st { uiBndLandRange = clamp01 value })
+  SliderPiedmontSmooth -> binding uiPiedmontSmooth (\value st -> st { uiPiedmontSmooth = clamp01 value })
+  SliderPiedmontSlopeMin -> binding uiPiedmontSlopeMin (\value st -> st { uiPiedmontSlopeMin = clamp01 value })
+  SliderPiedmontSlopeMax -> binding uiPiedmontSlopeMax (\value st -> st { uiPiedmontSlopeMax = clamp01 value })
+  SliderWindCoriolisDeflection -> binding uiWindCoriolisDeflection (\value st -> st { uiWindCoriolisDeflection = clamp01 value })
+  SliderMoistMinVegFloor -> binding uiMoistMinVegFloor (\value st -> st { uiMoistMinVegFloor = clamp01 value })
+  SliderWeatherTick -> binding uiWeatherTick (\value st -> st { uiWeatherTick = clamp01 value })
+  SliderWeatherPhase -> binding uiWeatherPhase (\value st -> st { uiWeatherPhase = clamp01 value })
+  SliderWeatherAmplitude -> binding uiWeatherAmplitude (\value st -> st { uiWeatherAmplitude = clamp01 value })
+  SliderSeasonCycleLength -> binding uiSeasonCycleLength (\value st -> st { uiSeasonCycleLength = clamp01 value })
+  SliderJitterAmplitude -> binding uiJitterAmplitude (\value st -> st { uiJitterAmplitude = clamp01 value })
+  SliderPressureBase -> binding uiPressureBase (\value st -> st { uiPressureBase = clamp01 value })
+  SliderPressureTempScale -> binding uiPressureTempScale (\value st -> st { uiPressureTempScale = clamp01 value })
+  SliderPressureCoriolisScale -> binding uiPressureCoriolisScale (\value st -> st { uiPressureCoriolisScale = clamp01 value })
+  SliderSeasonalBase -> binding uiSeasonalBase (\value st -> st { uiSeasonalBase = clamp01 value })
+  SliderSeasonalRange -> binding uiSeasonalRange (\value st -> st { uiSeasonalRange = clamp01 value })
+  SliderHumidityNoiseScale -> binding uiHumidityNoiseScale (\value st -> st { uiHumidityNoiseScale = clamp01 value })
+  SliderPrecipNoiseScale -> binding uiPrecipNoiseScale (\value st -> st { uiPrecipNoiseScale = clamp01 value })
+  SliderWeatherITCZWidth -> binding uiWeatherITCZWidth (\value st -> st { uiWeatherITCZWidth = clamp01 value })
+  SliderWeatherITCZPrecipBoost -> binding uiWeatherITCZPrecipBoost (\value st -> st { uiWeatherITCZPrecipBoost = clamp01 value })
+  SliderPressureHumidityScale -> binding uiPressureHumidityScale (\value st -> st { uiPressureHumidityScale = clamp01 value })
+  SliderPressureGradientWindScale -> binding uiPressureGradientWindScale (\value st -> st { uiPressureGradientWindScale = clamp01 value })
+  SliderWindNoiseScale -> binding uiWindNoiseScale (\value st -> st { uiWindNoiseScale = clamp01 value })
+  SliderITCZMigrationScale -> binding uiITCZMigrationScale (\value st -> st { uiITCZMigrationScale = clamp01 value })
+  SliderCloudRHExponent -> binding uiCloudRHExponent (\value st -> st { uiCloudRHExponent = clamp01 value })
+  SliderCloudAlbedoEffect -> binding uiCloudAlbedoEffect (\value st -> st { uiCloudAlbedoEffect = clamp01 value })
+  SliderCloudPrecipBoost -> binding uiCloudPrecipBoost (\value st -> st { uiCloudPrecipBoost = clamp01 value })
+  SliderVegBase -> binding uiVegBase (\value st -> st { uiVegBase = clamp01 value })
+  SliderVegBoost -> binding uiVegBoost (\value st -> st { uiVegBoost = clamp01 value })
+  SliderVegTempWeight -> binding uiVegTempWeight (\value st -> st { uiVegTempWeight = clamp01 value })
+  SliderVegPrecipWeight -> binding uiVegPrecipWeight (\value st -> st { uiVegPrecipWeight = clamp01 value })
+  SliderBtCoastalBand -> binding uiBtCoastalBand (\value st -> st { uiBtCoastalBand = clamp01 value })
+  SliderBtSnowMaxTemp -> binding uiBtSnowMaxTemp (\value st -> st { uiBtSnowMaxTemp = clamp01 value })
+  SliderBtAlpineMaxTemp -> binding uiBtAlpineMaxTemp (\value st -> st { uiBtAlpineMaxTemp = clamp01 value })
+  SliderBtIceCapTemp -> binding uiBtIceCapTemp (\value st -> st { uiBtIceCapTemp = clamp01 value })
+  SliderBtMontaneMaxTemp -> binding uiBtMontaneMaxTemp (\value st -> st { uiBtMontaneMaxTemp = clamp01 value })
+  SliderBtMontanePrecip -> binding uiBtMontanePrecip (\value st -> st { uiBtMontanePrecip = clamp01 value })
+  SliderBtCliffSlope -> binding uiBtCliffSlope (\value st -> st { uiBtCliffSlope = clamp01 value })
+  SliderBtValleyMoisture -> binding uiBtValleyMoisture (\value st -> st { uiBtValleyMoisture = clamp01 value })
+  SliderBtDepressionMoisture -> binding uiBtDepressionMoisture (\value st -> st { uiBtDepressionMoisture = clamp01 value })
+  SliderBtPrecipWeight -> binding uiBtPrecipWeight (\value st -> st { uiBtPrecipWeight = clamp01 value })
+  SliderVbcTempMin -> binding uiVbcTempMin (\value st -> st { uiVbcTempMin = clamp01 value })
+  SliderVbcTempRange -> binding uiVbcTempRange (\value st -> st { uiVbcTempRange = clamp01 value })
+  SliderVbcFertilityBoost -> binding uiVbcFertilityBoost (\value st -> st { uiVbcFertilityBoost = clamp01 value })
+  SliderVbcAlbedoBase -> binding uiVbcAlbedoBase (\value st -> st { uiVbcAlbedoBase = clamp01 value })
+  SliderVbcAlbedoBare -> binding uiVbcAlbedoBare (\value st -> st { uiVbcAlbedoBare = clamp01 value })
+  SliderVbcAlbedoVeg -> binding uiVbcAlbedoVeg (\value st -> st { uiVbcAlbedoVeg = clamp01 value })
+  SliderVbcOceanAlbedo -> binding uiVbcOceanAlbedo (\value st -> st { uiVbcOceanAlbedo = clamp01 value })
+  SliderVbcIceAlbedo -> binding uiVbcIceAlbedo (\value st -> st { uiVbcIceAlbedo = clamp01 value })
+  SliderBiomeSmoothing -> binding uiBiomeSmoothing (\value st -> st { uiBiomeSmoothing = clamp01 value })
+  SliderVolcanicAshBoost -> binding uiVolcanicAshBoost (\value st -> st { uiVolcanicAshBoost = clamp01 value })
+  SliderVolcanicLavaPenalty -> binding uiVolcanicLavaPenalty (\value st -> st { uiVolcanicLavaPenalty = clamp01 value })
+  SliderBiomeFeedbackBlend -> binding uiBiomeFeedbackBlend (\value st -> st { uiBiomeFeedbackBlend = clamp01 value })
+  SliderErosionHydraulic -> binding uiErosionHydraulic (\value st -> st { uiErosionHydraulic = clamp01 value })
+  SliderErosionThermal -> binding uiErosionThermal (\value st -> st { uiErosionThermal = clamp01 value })
+  SliderErosionRainRate -> binding uiRainRate (\value st -> st { uiRainRate = clamp01 value })
+  SliderErosionTalus -> binding uiErosionTalus (\value st -> st { uiErosionTalus = clamp01 value })
+  SliderErosionMaxDrop -> binding uiErosionMaxDrop (\value st -> st { uiErosionMaxDrop = clamp01 value })
+  SliderErosionHydDeposit -> binding uiErosionHydDeposit (\value st -> st { uiErosionHydDeposit = clamp01 value })
+  SliderErosionDepositSlope -> binding uiErosionDepositSlope (\value st -> st { uiErosionDepositSlope = clamp01 value })
+  SliderErosionThermDeposit -> binding uiErosionThermDeposit (\value st -> st { uiErosionThermDeposit = clamp01 value })
+  SliderErosionCoastZone -> binding uiErosionCoastZone (\value st -> st { uiErosionCoastZone = clamp01 value })
+  SliderErosionCoastStrength -> binding uiErosionCoastStrength (\value st -> st { uiErosionCoastStrength = clamp01 value })
+  SliderErosionCoastIter -> binding uiErosionCoastIter (\value st -> st { uiErosionCoastIter = clamp01 value })
+  SliderHypsometryEnabled -> binding uiHypsometryEnabled (\value st -> st { uiHypsometryEnabled = clamp01 value })
+  SliderHypsometryLowlandExp -> binding uiHypsometryLowlandExp (\value st -> st { uiHypsometryLowlandExp = clamp01 value })
+  SliderHypsometryHighlandExp -> binding uiHypsometryHighlandExp (\value st -> st { uiHypsometryHighlandExp = clamp01 value })
+  SliderHypsometryPlateauBreak -> binding uiHypsometryPlateauBreak (\value st -> st { uiHypsometryPlateauBreak = clamp01 value })
+  SliderHypsometryOceanExp -> binding uiHypsometryOceanExp (\value st -> st { uiHypsometryOceanExp = clamp01 value })
+  SliderHypsometryCoastalRampWidth -> binding uiHypsometryCoastalRampWidth (\value st -> st { uiHypsometryCoastalRampWidth = clamp01 value })
+  SliderHypsometryCoastalRampStr -> binding uiHypsometryCoastalRampStr (\value st -> st { uiHypsometryCoastalRampStr = clamp01 value })
+  SliderGlacierSnowTemp -> binding uiGlacierSnowTemp (\value st -> st { uiGlacierSnowTemp = clamp01 value })
+  SliderGlacierSnowRange -> binding uiGlacierSnowRange (\value st -> st { uiGlacierSnowRange = clamp01 value })
+  SliderGlacierMeltTemp -> binding uiGlacierMeltTemp (\value st -> st { uiGlacierMeltTemp = clamp01 value })
+  SliderGlacierMeltRate -> binding uiGlacierMeltRate (\value st -> st { uiGlacierMeltRate = clamp01 value })
+  SliderGlacierAccumScale -> binding uiGlacierAccumScale (\value st -> st { uiGlacierAccumScale = clamp01 value })
+  SliderGlacierFlowIters -> binding uiGlacierFlowIters (\value st -> st { uiGlacierFlowIters = clamp01 value })
+  SliderGlacierFlowRate -> binding uiGlacierFlowRate (\value st -> st { uiGlacierFlowRate = clamp01 value })
+  SliderGlacierErosionScale -> binding uiGlacierErosionScale (\value st -> st { uiGlacierErosionScale = clamp01 value })
+  SliderGlacierCarveScale -> binding uiGlacierCarveScale (\value st -> st { uiGlacierCarveScale = clamp01 value })
+  SliderGlacierDepositScale -> binding uiGlacierDepositScale (\value st -> st { uiGlacierDepositScale = clamp01 value })
+  SliderVentDensity -> binding uiVentDensity (\value st -> st { uiVentDensity = clamp01 value })
+  SliderVentThreshold -> binding uiVentThreshold (\value st -> st { uiVentThreshold = clamp01 value })
+  SliderHotspotScale -> binding uiHotspotScale (\value st -> st { uiHotspotScale = clamp01 value })
+  SliderHotspotThreshold -> binding uiHotspotThreshold (\value st -> st { uiHotspotThreshold = clamp01 value })
+  SliderMagmaRecharge -> binding uiMagmaRecharge (\value st -> st { uiMagmaRecharge = clamp01 value })
+  SliderLavaScale -> binding uiLavaScale (\value st -> st { uiLavaScale = clamp01 value })
+  SliderAshScale -> binding uiAshScale (\value st -> st { uiAshScale = clamp01 value })
+  SliderVolcanicDepositScale -> binding uiVolcanicDepositScale (\value st -> st { uiVolcanicDepositScale = clamp01 value })
+  SliderSoilMoistureThreshold -> binding uiSoilMoistureThreshold (\value st -> st { uiSoilMoistureThreshold = clamp01 value })
+  SliderSoilHardnessThreshold -> binding uiSoilHardnessThreshold (\value st -> st { uiSoilHardnessThreshold = clamp01 value })
+  SliderSoilFertilityMoistWeight -> binding uiSoilFertilityMoistWeight (\value st -> st { uiSoilFertilityMoistWeight = clamp01 value })
+  SliderSoilFertilityDepthWeight -> binding uiSoilFertilityDepthWeight (\value st -> st { uiSoilFertilityDepthWeight = clamp01 value })
+  SliderSinkBreachDepth -> binding uiSinkBreachDepth (\value st -> st { uiSinkBreachDepth = clamp01 value })
+  SliderStreamPowerMaxErosion -> binding uiStreamPowerMaxErosion (\value st -> st { uiStreamPowerMaxErosion = clamp01 value })
+  SliderRiverCarveMaxDepth -> binding uiRiverCarveMaxDepth (\value st -> st { uiRiverCarveMaxDepth = clamp01 value })
+  SliderCoastalErodeStrength -> binding uiCoastalErodeStrength (\value st -> st { uiCoastalErodeStrength = clamp01 value })
+  SliderHydroHardnessWeight -> binding uiHydroHardnessWeight (\value st -> st { uiHydroHardnessWeight = clamp01 value })
+  SliderMinLakeSize -> binding uiMinLakeSize (\value st -> st { uiMinLakeSize = clamp01 value })
+  SliderInlandSeaMinSize -> binding uiInlandSeaMinSize (\value st -> st { uiInlandSeaMinSize = clamp01 value })
+  SliderRoughnessScale -> binding uiRoughnessScale (\value st -> st { uiRoughnessScale = clamp01 value })
+
+binding :: (UiState -> Float) -> (Float -> UiState -> UiState) -> SliderStateBinding
+binding = SliderStateBinding
+
+sliderValueForId :: UiState -> SliderId -> Float
+sliderValueForId ui sliderIdValue = sliderStateGet (sliderStateBindingForId sliderIdValue) ui
+
+applySliderValue :: SliderId -> Float -> UiState -> UiState
+applySliderValue sliderIdValue value st =
+  sliderStatePut (sliderStateBindingForId sliderIdValue) value st
 
 uiSnapshotTag :: OpTag "uiSnapshot"
 uiSnapshotTag = OpTag

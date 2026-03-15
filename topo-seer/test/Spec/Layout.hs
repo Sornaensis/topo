@@ -47,11 +47,13 @@ spec = describe "UI.Layout" $ do
 
   it "creates config slider rects" $ do
     let layout = layoutFor (V2 800 600) 160
-        Rect (V2 minusX minusY, V2 minusW minusH) = configWaterMinusRect layout
-        Rect (V2 barX barY, V2 barW barH) = configWaterBarRect layout
-        Rect (V2 plusX plusY, V2 plusW plusH) = configWaterPlusRect layout
-        waterRowRect = configParamRowRect 0 layout
-        waterBarCenter = rectCenter (configWaterBarRect layout)
+        rowIndex = 0
+        rects = configParamRects rowIndex layout
+        Rect (V2 minusX minusY, V2 minusW minusH) = configParamRowMinusRect rects
+        Rect (V2 barX barY, V2 barW barH) = configParamRowBarRect rects
+        Rect (V2 plusX plusY, V2 plusW plusH) = configParamRowPlusRect rects
+        waterRowRect = configParamRowHitRect rects
+        waterBarCenter = rectCenter (configParamRowBarRect rects)
     (minusW, minusH) `shouldBe` (24, 24)
     (plusW, plusH) `shouldBe` (24, 24)
     minusY `shouldBe` plusY
@@ -60,6 +62,37 @@ spec = describe "UI.Layout" $ do
     plusX `shouldBe` (barX + barW + 8)
     plusY `shouldBe` minusY
     waterBarCenter `shouldSatisfy` (`inside` waterRowRect)
+
+  it "keeps legacy config slider rect helpers aligned with shared row geometry" $ do
+    let layout = layoutFor (V2 800 600) 160
+        rowIndex = 3
+        rects = configParamRects rowIndex layout
+    configParamMinusRect rowIndex layout `shouldBe` configParamRowMinusRect rects
+    configParamBarRect rowIndex layout `shouldBe` configParamRowBarRect rects
+    configParamPlusRect rowIndex layout `shouldBe` configParamRowPlusRect rects
+    configParamRowRect rowIndex layout `shouldBe` configParamRowHitRect rects
+
+  it "keeps pipeline controls aligned to shared config scroll rows" $ do
+    let layout = layoutFor (V2 800 600) 160
+        rowIndex = 4
+        Rect (V2 _ rowY, V2 _ rowH) = configScrollRowRect rowIndex layout
+        Rect (V2 _ checkY, V2 checkW checkH) = pipelineCheckboxRect rowIndex layout
+        Rect (V2 _ upY, V2 upW upH) = pipelineMoveUpRect rowIndex layout
+        Rect (V2 _ downY, V2 downW downH) = pipelineMoveDownRect rowIndex layout
+        Rect (V2 _ tickY, V2 tickW tickH) = pipelineTickButtonRect rowIndex layout
+        Rect (V2 _ rateY, V2 rateW rateH) = pipelineTickRateBarRect rowIndex layout
+    (checkW, checkH) `shouldBe` (16, 16)
+    (upW, upH) `shouldBe` (14, 14)
+    (downW, downH) `shouldBe` (14, 14)
+    tickH `shouldBe` rowH
+    tickW `shouldBe` 60
+    rateW `shouldBe` 120
+    rateH `shouldBe` (rowH - 8)
+    checkY `shouldBe` (rowY + (rowH - checkH) `div` 2)
+    upY `shouldBe` (rowY + (rowH - upH) `div` 2)
+    downY `shouldBe` (rowY + (rowH - downH) `div` 2)
+    tickY `shouldBe` rowY
+    rateY `shouldBe` (rowY + 4)
 
 inside :: V2 Int -> Rect -> Bool
 inside (V2 px py) (Rect (V2 x y, V2 w h)) =

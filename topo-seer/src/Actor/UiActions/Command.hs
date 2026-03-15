@@ -30,96 +30,29 @@ import Actor.Terrain
 import Actor.UI
   ( ConfigTab(..)
   , Ui
-  , UiState(..)
   , ViewMode(..)
   , UiSnapshotReply
   , getUiSnapshot
   , requestUiSnapshot
-  , setUiBoundaryMotionPrecip
-  , setUiBoundaryMotionTemp
-  , setUiBoundaryNoiseScale
-  , setUiBoundaryNoiseStrength
-  , setUiBoundarySharpness
-  , setUiBoundaryWarpGain
-  , setUiBoundaryWarpLacunarity
-  , setUiBoundaryWarpOctaves
+  , uiChunkSize
+  , uiDisabledStages
   , setUiChunkSize
   , setUiConfigTab
-  , setUiDetailScale
-  , setUiErosionHydraulic
-  , setUiErosionMaxDrop
-  , setUiErosionTalus
-  , setUiErosionThermal
-  , setUiEquatorTemp
-  , setUiGenCoordScale
-  , setUiGenFrequency
-  , setUiGenGain
-  , setUiGenLacunarity
-  , setUiGenOctaves
-  , setUiGenOffsetX
-  , setUiGenOffsetY
-  , setUiGenScale
-  , setUiGenWarpScale
-  , setUiGenWarpStrength
-  , setUiWorldExtentX
-  , setUiWorldExtentY
-  , setUiEdgeDepthNorth
-  , setUiEdgeDepthSouth
-  , setUiEdgeDepthEast
-  , setUiEdgeDepthWest
-  , setUiEdgeDepthFalloff
   , setUiGenerating
-  , setUiLapseRate
-  , setUiMoistureIterations
-  , setUiMoistMinVegFloor
-  , setUiPlateBiasCenter
-  , setUiPlateBiasEdge
-  , setUiPlateBiasNorth
-  , setUiPlateBiasSouth
-  , setUiPlateBiasStrength
-  , setUiPlateDetailScale
-  , setUiPlateDetailStrength
-  , setUiPlateHardnessBase
-  , setUiPlateHardnessVariance
-  , setUiPlateHeightBase
-  , setUiPlateHeightVariance
-  , setUiPlateMergeBias
-  , setUiPlateMergeScale
-  , setUiPlateRidgeStrength
-  , setUiPlateSize
-  , setUiPlateSpeed
-  , setUiPoleTemp
-  , setUiRainRate
-  , setUiOrographicLift
-  , setUiRainShadowLoss
-  , setUiRidgeHeight
-  , setUiRiftDepth
+  , uiRenderWaterLevel
   , setUiSeed
   , setUiSeedEditing
   , setUiSeedInput
-  , setUiPlanetRadius
-  , setUiAxialTilt
-  , setUiInsolation
-  , setUiSliceLatCenter
-  , setUiSliceLonCenter
-  , setUiTrenchDepth
-  , setUiUplift
-  , setUiVegBase
-  , setUiVegBoost
-  , setUiVegPrecipWeight
-  , setUiVegTempWeight
+  , uiSeed
   , setUiViewMode
-  , setUiWaterLevel
+  , uiViewMode
+  , uiWaterLevel
+  , uiWorldConfig
   , setUiRenderWaterLevel
-  , setUiWeatherAmplitude
-  , setUiWeatherPhase
-  , setUiWeatherTick
-  , setUiWindDiffuse
-  , setUiWindCoriolisDeflection
-  , setUiWindIterations
   , setUiWorldConfig
   )
 import Seer.Config.Snapshot (snapshotFromUi, applySnapshotToUi)
+import Seer.Config.SliderState (resetSliderDefaults)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import GHC.Clock (getMonotonicTimeNSec)
@@ -281,79 +214,6 @@ resetConfig req = do
   setUiSeedEditing uiHandle False
   setUiChunkSize uiHandle 64
   setUiViewMode uiHandle ViewElevation
-  setUiWaterLevel uiHandle 0.5
   setUiRenderWaterLevel uiHandle 0.5
-  setUiOrographicLift uiHandle 0.35
-  setUiRainShadowLoss uiHandle 0.08
-  setUiWindDiffuse uiHandle 0.5
-  setUiRainRate uiHandle 0.2
-  setUiErosionHydraulic uiHandle 0.5
-  setUiErosionThermal uiHandle 0.4
-  setUiErosionTalus uiHandle 0.5
-  setUiErosionMaxDrop uiHandle 0.5
-  setUiEquatorTemp uiHandle 1
-  setUiPoleTemp uiHandle 0
-  setUiLapseRate uiHandle 0.25
   setUiConfigTab uiHandle ConfigTerrain
-  setUiGenScale uiHandle 0.4444
-  setUiGenCoordScale uiHandle 0.3333
-  setUiGenOffsetX uiHandle 0.5
-  setUiGenOffsetY uiHandle 0.5
-  setUiGenFrequency uiHandle 0.1837
-  setUiGenOctaves uiHandle 0.5
-  setUiGenLacunarity uiHandle 0.25
-  setUiGenGain uiHandle 0.4
-  setUiGenWarpScale uiHandle 0.3333
-  setUiGenWarpStrength uiHandle 0.5556
-  setUiWorldExtentX uiHandle 0.125
-  setUiWorldExtentY uiHandle 0.125
-  setUiEdgeDepthNorth uiHandle 0
-  setUiEdgeDepthSouth uiHandle 0
-  setUiEdgeDepthEast uiHandle 0
-  setUiEdgeDepthWest uiHandle 0
-  setUiEdgeDepthFalloff uiHandle 0
-  setUiPlateSize uiHandle 0.45
-  setUiPlateSpeed uiHandle 0.38
-  setUiBoundarySharpness uiHandle 0.35
-  setUiBoundaryNoiseScale uiHandle 0.33
-  setUiBoundaryNoiseStrength uiHandle 0.45
-  setUiBoundaryWarpOctaves uiHandle 0.5
-  setUiBoundaryWarpLacunarity uiHandle 0.25
-  setUiBoundaryWarpGain uiHandle 0.4
-  setUiPlateMergeScale uiHandle 0.3
-  setUiPlateMergeBias uiHandle 0.44
-  setUiPlateDetailScale uiHandle 0.33
-  setUiPlateDetailStrength uiHandle 0.35
-  setUiPlateRidgeStrength uiHandle 0.25
-  setUiPlateHeightBase uiHandle 0.62
-  setUiPlateHeightVariance uiHandle 0.65
-  setUiPlateHardnessBase uiHandle 0.42
-  setUiPlateHardnessVariance uiHandle 0.4
-  setUiUplift uiHandle 0.3
-  setUiRiftDepth uiHandle 0.35
-  setUiTrenchDepth uiHandle 0.38
-  setUiRidgeHeight uiHandle 0.33
-  setUiDetailScale uiHandle 0.5
-  setUiPlateBiasStrength uiHandle 0.42
-  setUiPlateBiasCenter uiHandle 0.5
-  setUiPlateBiasEdge uiHandle 0.5
-  setUiPlateBiasNorth uiHandle 0.5
-  setUiPlateBiasSouth uiHandle 0.5
-  setUiWindIterations uiHandle 0.5
-  setUiMoistureIterations uiHandle 0.5
-  setUiBoundaryMotionTemp uiHandle 0.5
-  setUiBoundaryMotionPrecip uiHandle 0.5
-  setUiWeatherTick uiHandle 0.2
-  setUiWeatherPhase uiHandle 0
-  setUiWeatherAmplitude uiHandle 0.3
-  setUiVegBase uiHandle 0.31
-  setUiVegBoost uiHandle 0.31
-  setUiVegTempWeight uiHandle 0.6
-  setUiVegPrecipWeight uiHandle 0.4
-  setUiPlanetRadius uiHandle 0.3333
-  setUiAxialTilt uiHandle 0.5209
-  setUiInsolation uiHandle 0.5
-  setUiSliceLatCenter uiHandle 0.5
-  setUiSliceLonCenter uiHandle 0.5
-  setUiWindCoriolisDeflection uiHandle 0.287
-  setUiMoistMinVegFloor uiHandle 0.15
+  resetSliderDefaults uiHandle
