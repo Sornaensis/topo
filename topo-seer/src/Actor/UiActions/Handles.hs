@@ -9,7 +9,7 @@ import Actor.Data (Data)
 import Actor.Log (Log)
 import Actor.PluginManager (PluginManager)
 import Actor.Simulation (Simulation)
-import Actor.SnapshotReceiver (SnapshotReceiver)
+import Actor.SnapshotReceiver (DataSnapshotRef, TerrainSnapshotRef, SnapshotVersionRef)
 import Actor.Terrain (Terrain)
 import Actor.UI (Ui)
 import Hyperspace.Actor (ActorHandle, Protocol)
@@ -21,7 +21,9 @@ data ActorHandles = ActorHandles
   , ahDataHandle :: !(ActorHandle Data (Protocol Data))
   , ahTerrainHandle :: !(ActorHandle Terrain (Protocol Terrain))
   , ahAtlasManagerHandle :: !(ActorHandle AtlasManager (Protocol AtlasManager))
-  , ahSnapshotReceiverHandle :: !(ActorHandle SnapshotReceiver (Protocol SnapshotReceiver))
+  , ahDataSnapshotRef :: !DataSnapshotRef
+  , ahTerrainSnapshotRef :: !TerrainSnapshotRef
+  , ahSnapshotVersionRef :: !SnapshotVersionRef
   , ahPluginManagerHandle :: !(ActorHandle PluginManager (Protocol PluginManager))
   , ahSimulationHandle :: !(ActorHandle Simulation (Protocol Simulation))
   }
@@ -33,18 +35,22 @@ mkActorHandles
   -> ActorHandle Data (Protocol Data)
   -> ActorHandle Terrain (Protocol Terrain)
   -> ActorHandle AtlasManager (Protocol AtlasManager)
-  -> ActorHandle SnapshotReceiver (Protocol SnapshotReceiver)
+  -> DataSnapshotRef
+  -> TerrainSnapshotRef
+  -> SnapshotVersionRef
   -> ActorHandle PluginManager (Protocol PluginManager)
   -> ActorHandle Simulation (Protocol Simulation)
   -> ActorHandles
-mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle snapshotReceiverHandle pluginManagerHandle simulationHandle =
+mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapRef terrainSnapRef versionRef pluginManagerHandle simulationHandle =
   ActorHandles
     { ahUiHandle = uiHandle
     , ahLogHandle = logHandle
     , ahDataHandle = dataHandle
     , ahTerrainHandle = terrainHandle
     , ahAtlasManagerHandle = atlasManagerHandle
-    , ahSnapshotReceiverHandle = snapshotReceiverHandle
+    , ahDataSnapshotRef = dataSnapRef
+    , ahTerrainSnapshotRef = terrainSnapRef
+    , ahSnapshotVersionRef = versionRef
     , ahPluginManagerHandle = pluginManagerHandle
     , ahSimulationHandle = simulationHandle
     }

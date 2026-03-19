@@ -12,6 +12,10 @@ module Actor.UI
   , UiSnapshotReply
   , requestUiSnapshot
   , getUiSnapshot
+  , UiSnapshotRef
+  , setUiSnapshotRef
+  , readUiSnapshotRef
+  , newUiSnapshotRef
   ) where
 
 import Actor.UI.Setters
@@ -21,11 +25,15 @@ import Actor.UI.State
   , Ui
   , UiMenuMode(..)
   , UiSnapshotReply
+  , UiSnapshotRef
   , UiState(..)
   , ViewMode(..)
   , configRowCount
   , emptyUiState
   , getUiSnapshot
+  , newUiSnapshotRef
+  , readUiSnapshotRef
   , requestUiSnapshot
+  , setUiSnapshotRef
   , uiActorDef
   )

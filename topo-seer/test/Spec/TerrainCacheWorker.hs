@@ -8,26 +8,22 @@ import Control.Exception (bracket)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Hyperspace.Actor
-  ( ActorHandle
-  , ActorSystem
-  , Protocol
+  ( ActorSystem
   , getSingleton
   , newActorSystem
-  , replyTo
   , shutdownActorSystem
   )
 import Test.Hspec
 import Actor.Data (TerrainSnapshot(..))
 import Topo.Overlay (emptyOverlayStore)
 import Actor.TerrainCacheBroker
-  ( TerrainCacheBroker
-  , getLatestTerrainCacheResult
-  , terrainCacheBrokerActorDef
+  ( TerrainCacheRef
+  , newTerrainCacheRef
+  , readTerrainCacheRef
   )
 import Actor.TerrainCacheWorker
   ( TerrainCacheBuildRequest(..)
   , TerrainCacheBuildResult(..)
-  , TerrainCacheResultReply
   , requestTerrainCacheBuild
   , terrainCacheKeyFrom
   , terrainCacheWorkerActorDef
@@ -41,9 +37,9 @@ withSystem = bracket newActorSystem shutdownActorSystem
 
 spec :: Spec
 spec = describe "TerrainCacheWorker" $ do
-  it "sends cache results to the broker" $ withSystem $ \system -> do
+  it "sends cache results to the IORef" $ withSystem $ \system -> do
     workerHandle <- getSingleton system terrainCacheWorkerActorDef
-    brokerHandle <- getSingleton system terrainCacheBrokerActorDef
+    cacheRef <- newTerrainCacheRef
     let uiSnap = emptyUiState
         terrainSnap = TerrainSnapshot 0 sampleChunkSize sampleTerrainChunks sampleClimateChunks sampleWeatherChunks mempty mempty emptyOverlayStore
     case terrainCacheKeyFrom uiSnap terrainSnap of
@@ -53,9 +49,9 @@ spec = describe "TerrainCacheWorker" $ do
           { tcrKey = key
           , tcrUi = uiSnap
           , tcrTerrain = terrainSnap
-          , tcrReplyTo = replyTo @TerrainCacheResultReply brokerHandle
+          , tcrResultRef = cacheRef
           }
-        latest <- awaitLatestResult brokerHandle
+        latest <- awaitLatestResult cacheRef
         case latest of
           Nothing -> expectationFailure "Expected a terrain cache build result"
           Just result -> do
@@ -85,13 +81,13 @@ pollDelayMicros :: Int
 pollDelayMicros = 1000
 
 awaitLatestResult
-  :: ActorHandle TerrainCacheBroker (Protocol TerrainCacheBroker)
+  :: TerrainCacheRef
   -> IO (Maybe TerrainCacheBuildResult)
-awaitLatestResult brokerHandle = go pollAttempts
+awaitLatestResult cacheRef = go pollAttempts
   where
-    go 0 = getLatestTerrainCacheResult brokerHandle
+    go 0 = readTerrainCacheRef cacheRef
     go retries = do
-      latest <- getLatestTerrainCacheResult brokerHandle
+      latest <- readTerrainCacheRef cacheRef
       case latest of
         Just _ -> pure latest
         Nothing -> do

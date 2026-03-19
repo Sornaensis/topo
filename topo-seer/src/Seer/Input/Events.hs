@@ -8,7 +8,8 @@ module Seer.Input.Events
   , tooltipDelayFrames
   ) where
 
-import Actor.Data (DataSnapshot(..), DataSnapshotReply, TerrainSnapshot(..), getTerrainSnapshot, replaceTerrainData, requestDataSnapshot)
+import Actor.Data (DataSnapshot(..), TerrainSnapshot(..), getDataSnapshot, getTerrainSnapshot, replaceTerrainData)
+import Actor.SnapshotReceiver (writeDataSnapshot, writeTerrainSnapshot, bumpSnapshotVersion)
 import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshot(..), appendLog, getLogSnapshot, setLogCollapsed, setLogMinLevel, setLogScroll)
 import Actor.UI
   ( ConfigTab(..)
@@ -40,7 +41,7 @@ import qualified Data.Text as Text
 import qualified Data.IntMap.Strict as IntMap
 import Linear (V2(..))
 import qualified SDL
-import Hyperspace.Actor (ActorHandle, Protocol, replyTo)
+import Hyperspace.Actor (ActorHandle, Protocol)
 import System.FilePath ((</>))
 import Seer.Draw (seedMaxDigits)
 import Seer.Input.ConfigScroll
@@ -271,8 +272,6 @@ handleEvent inputContext event = do
 
     dataHandle = ahDataHandle actorHandles
 
-    snapshotReceiverHandle = ahSnapshotReceiverHandle actorHandles
-
     simulationHandle = ahSimulationHandle actorHandles
 
     dragThreshold :: Float
@@ -382,7 +381,11 @@ handleEvent inputContext event = do
                   replaceTerrainData dataHandle world
                   setSimWorld simulationHandle world
                   setUiOverlayNames uiHandle (overlayNames (twOverlays world))
-                  requestDataSnapshot dataHandle (replyTo @DataSnapshotReply snapshotReceiverHandle)
+                  dataSnap <- getDataSnapshot dataHandle
+                  terrainSnap' <- getTerrainSnapshot dataHandle
+                  writeDataSnapshot (ahDataSnapshotRef actorHandles) dataSnap
+                  writeTerrainSnapshot (ahTerrainSnapshotRef actorHandles) terrainSnap'
+                  bumpSnapshotVersion (ahSnapshotVersionRef actorHandles)
                   applySnapshotToUi snapshot uiHandle
                   setUiWorldName uiHandle name
                   setUiWorldConfig uiHandle (Just snapshot)

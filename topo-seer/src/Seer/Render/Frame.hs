@@ -12,7 +12,7 @@ import Actor.Log (LogSnapshot(..))
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion)
 import Actor.UI (LeftTab(..), UiState(..), ViewMode(..))
-import Control.Monad (when)
+import Control.Monad (forM_, when)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Maybe (isNothing)
 import Data.Word (Word32, Word64)
@@ -209,8 +209,8 @@ renderFrame context = do
     logTiming logHandle timingLogThresholdMs (Text.pack "present") elapsed Nothing
   tEnd <- getMonotonicTimeNSec
   let totalMs = nsToMs tStart tEnd
-  when (totalMs >= 100) $ do
-    hPutStrLn traceH $ "  FRAME total=" <> show totalMs
+  when (totalMs >= 100) $ forM_ traceH $ \h -> do
+    hPutStrLn h $ "  FRAME total=" <> show totalMs
       <> " winSize=" <> show windowSizeElapsed
       <> " let=" <> show (nsToMs tStart tAfterLet)
       <> " clear=" <> show (nsToMs tAfterLet tAfterClear)
@@ -225,7 +225,7 @@ renderFrame context = do
       <> " rtOk=" <> show renderTargetOk
       <> " dataReady=" <> show dataReady
       <> " atlas=" <> show (isNothing atlasToDraw)
-    hFlush traceH
+    hFlush h
   let didLog = loggedWindowSize || loggedSchedule || loggedScheduleDrain || loggedScheduleEnqueue || loggedUpload || loggedTextureCreate || loggedAtlasResolve || loggedChunkTexture || loggedDraw || loggedHover || loggedChrome || loggedUi || loggedPresent
   pure (renderTargetOk && dataReady && isNothing atlasToDraw, textureCache', atlasCache'', didLog)
 

@@ -16,11 +16,11 @@ module Actor.AtlasScheduler
   ) where
 
 import Actor.AtlasManager (AtlasJob(..), AtlasManager, drainAtlasJobs)
-import Actor.AtlasResultBroker (AtlasResultBroker)
+import Actor.AtlasResultBroker (AtlasResultRef)
 import Actor.AtlasScheduleBroker
-  ( AtlasScheduleBroker
+  ( AtlasScheduleRef
   , AtlasScheduleReport(..)
-  , updateAtlasScheduleReport
+  , writeAtlasScheduleReport
   )
 import Actor.AtlasWorker (AtlasBuild(..), AtlasWorker, enqueueAtlasBuildWork)
 import Actor.Render (RenderSnapshot(..))
@@ -36,8 +36,8 @@ import Seer.Timing (timedMs)
 data AtlasSchedulerHandles = AtlasSchedulerHandles
   { ashManager :: !(ActorHandle AtlasManager (Protocol AtlasManager))
   , ashWorker :: !(ActorHandle AtlasWorker (Protocol AtlasWorker))
-  , ashResultBroker :: !(ActorHandle AtlasResultBroker (Protocol AtlasResultBroker))
-  , ashScheduleBroker :: !(ActorHandle AtlasScheduleBroker (Protocol AtlasScheduleBroker))
+  , ashResultRef :: !AtlasResultRef
+  , ashScheduleRef :: !AtlasScheduleRef
   }
 
 -- | Request to schedule atlas work.
@@ -111,7 +111,7 @@ runSchedule handles req = do
             , abWaterLevel = ajWaterLevel job
             , abTerrain = ajTerrain job
             , abScale = ajScale job
-            , abResultBroker = ashResultBroker handles
+            , abResultRef = ashResultRef handles
             }
       let report = AtlasScheduleReport
             { asrSnapshotVersion = asqSnapshotVersion req
@@ -119,7 +119,7 @@ runSchedule handles req = do
             , asrDrainMs = drainMs
             , asrEnqueueMs = enqueueMs
             }
-      updateAtlasScheduleReport (ashScheduleBroker handles) report
+      writeAtlasScheduleReport (ashScheduleRef handles) report
     else do
       let report = AtlasScheduleReport
             { asrSnapshotVersion = asqSnapshotVersion req
@@ -127,4 +127,4 @@ runSchedule handles req = do
             , asrDrainMs = 0
             , asrEnqueueMs = 0
             }
-      updateAtlasScheduleReport (ashScheduleBroker handles) report
+      writeAtlasScheduleReport (ashScheduleRef handles) report

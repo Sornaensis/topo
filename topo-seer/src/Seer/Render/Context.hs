@@ -38,5 +38,5 @@ data RenderContext = RenderContext
   , rcTimingLogThresholdMs :: !Word32
   , rcFontCache :: !(Maybe FontCache)
   , rcRenderTargetOk :: !Bool
-  , rcTraceHandle :: !Handle
+  , rcTraceHandle :: !(Maybe Handle)
   }

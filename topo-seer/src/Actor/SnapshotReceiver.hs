@@ -1,38 +1,39 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE OverloadedLabels #-}
-{-# LANGUAGE QuasiQuotes #-}
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE TypeFamilies #-}
-
--- | Receives snapshot replies and publishes them via a shared 'IORef' for
--- lock-free reads by the render loop.
+-- | Lock-free snapshot infrastructure for the render loop.
 --
--- Other actors send snapshot updates via fire-and-forget casts.  After each
--- update the receiver bumps a monotonic version counter and, when a
--- 'SnapshotRef' has been registered with 'setSnapshotRef', writes the
--- latest @(SnapshotVersion, RenderSnapshot)@ pair to the shared ref so the
--- render thread can poll without a synchronous actor call.
+-- Each domain (UI, Log, Data, Terrain) publishes to its own 'IORef'.
+-- A shared 'SnapshotVersionRef' is atomically bumped by any writer so
+-- the render thread can detect changes with a single read.
+--
+-- The render loop composes a 'RenderSnapshot' by reading all four
+-- domain refs each frame, eliminating the former SnapshotReceiver actor
+-- and the data-clobbering risk of a single composite IORef.
 module Actor.SnapshotReceiver
-  ( SnapshotReceiver
-  , RenderSnapshot(..)
+  ( RenderSnapshot(..)
   , SnapshotVersion(..)
-  , SnapshotRef
-  , snapshotReceiverActorDef
-  , getSnapshot
-  , setSnapshotRef
+    -- * Data snapshot ref
+  , DataSnapshotRef
+  , newDataSnapshotRef
+  , writeDataSnapshot
+  , readDataSnapshot
+    -- * Terrain snapshot ref
+  , TerrainSnapshotRef
+  , newTerrainSnapshotRef
+  , writeTerrainSnapshot
+  , readTerrainSnapshot
+    -- * Version counter
+  , SnapshotVersionRef
+  , newSnapshotVersionRef
+  , readSnapshotVersion
+  , bumpSnapshotVersion
   ) where
 
-import Actor.Data (DataSnapshot(..), DataSnapshotReply, TerrainSnapshot(..))
-import Topo.Overlay (emptyOverlayStore)
-import Actor.Log (LogLevel(..), LogSnapshot(..), LogSnapshotReply)
-import Actor.UI (UiSnapshotReply, UiState(..), emptyUiState)
-import Control.Exception (evaluate)
-import Data.IORef (IORef, writeIORef)
+import Actor.Data (DataSnapshot(..), TerrainSnapshot(..))
+import Actor.Log (LogSnapshot(..))
+import Actor.UI (UiState(..))
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Word (Word64)
-import Hyperspace.Actor
-import Hyperspace.Actor.QQ (hyperspace)
 
--- | Composite render snapshot published to the render loop.
+-- | Composite render snapshot consumed by the render loop.
 --
 -- Contains one sub-snapshot per domain: UI state, log, data, and terrain.
 data RenderSnapshot = RenderSnapshot
@@ -42,125 +43,72 @@ data RenderSnapshot = RenderSnapshot
   , rsTerrain :: !TerrainSnapshot
   } deriving (Eq, Show)
 
--- | Shared reference for lock-free snapshot reads by the render loop.
-type SnapshotRef = IORef (SnapshotVersion, RenderSnapshot)
-
-data SnapshotReceiverState = SnapshotReceiverState
-  { srsUi :: !UiState
-  , srsLog :: !LogSnapshot
-  , srsData :: !DataSnapshot
-  , srsTerrain :: !TerrainSnapshot
-  , srsVersion :: !Word64
-  , srsRef :: !(Maybe SnapshotRef)
-  }
-
-emptySnapshotReceiverState :: SnapshotReceiverState
-emptySnapshotReceiverState = SnapshotReceiverState
-  { srsUi = emptyUiState
-  , srsLog = LogSnapshot [] False 0 LogDebug
-  , srsData = DataSnapshot 0 0 Nothing
-  , srsTerrain = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore
-  , srsVersion = 0
-  , srsRef = Nothing
-  }
-
 -- | Monotonic version for the latest cached snapshot.
 newtype SnapshotVersion = SnapshotVersion { unSnapshotVersion :: Word64 }
   deriving (Eq, Ord, Show)
 
--- | Build the version/snapshot pair from current actor state.
-buildSnapshotPair :: SnapshotReceiverState -> (SnapshotVersion, RenderSnapshot)
-buildSnapshotPair st =
-  ( SnapshotVersion (srsVersion st)
-  , RenderSnapshot
-      { rsUi = srsUi st
-      , rsLog = srsLog st
-      , rsData = srsData st
-      , rsTerrain = srsTerrain st
-      }
-  )
+-- ---------------------------------------------------------------------------
+-- Data snapshot
+-- ---------------------------------------------------------------------------
 
--- | Publish the current snapshot to the shared 'IORef', if one is registered.
+-- | Lock-free ref for the latest 'DataSnapshot'.
+type DataSnapshotRef = IORef DataSnapshot
+
+-- | Create a new 'DataSnapshotRef' with the given initial value.
+newDataSnapshotRef :: DataSnapshot -> IO DataSnapshotRef
+newDataSnapshotRef = newIORef
+
+-- | Write a new 'DataSnapshot'.  Not atomic with respect to other
+-- sub-snapshot refs — each domain ref is independent.
+writeDataSnapshot :: DataSnapshotRef -> DataSnapshot -> IO ()
+writeDataSnapshot = writeIORef
+
+-- | Read the latest 'DataSnapshot'.
+readDataSnapshot :: DataSnapshotRef -> IO DataSnapshot
+readDataSnapshot = readIORef
+
+-- ---------------------------------------------------------------------------
+-- Terrain snapshot
+-- ---------------------------------------------------------------------------
+
+-- | Lock-free ref for the latest 'TerrainSnapshot'.
+type TerrainSnapshotRef = IORef TerrainSnapshot
+
+-- | Create a new 'TerrainSnapshotRef' with the given initial value.
+newTerrainSnapshotRef :: TerrainSnapshot -> IO TerrainSnapshotRef
+newTerrainSnapshotRef = newIORef
+
+-- | Write a new 'TerrainSnapshot'.
+writeTerrainSnapshot :: TerrainSnapshotRef -> TerrainSnapshot -> IO ()
+writeTerrainSnapshot = writeIORef
+
+-- | Read the latest 'TerrainSnapshot'.
+readTerrainSnapshot :: TerrainSnapshotRef -> IO TerrainSnapshot
+readTerrainSnapshot = readIORef
+
+-- ---------------------------------------------------------------------------
+-- Version counter
+-- ---------------------------------------------------------------------------
+
+-- | Shared monotonic version counter bumped by any snapshot writer.
+-- The render loop uses this for O(1) staleness detection.
+type SnapshotVersionRef = IORef SnapshotVersion
+
+-- | Create a new version counter starting at 0.
+newSnapshotVersionRef :: IO SnapshotVersionRef
+newSnapshotVersionRef = newIORef (SnapshotVersion 0)
+
+-- | Read the current snapshot version.
+readSnapshotVersion :: SnapshotVersionRef -> IO SnapshotVersion
+readSnapshotVersion = readIORef
+
+-- | Atomically bump the version counter.  Safe to call from any thread.
 --
--- The snapshot pair is forced to WHNF before writing to the IORef so the
--- render thread never pays for lazy thunk evaluation when reading.
-publishSnapshot :: SnapshotReceiverState -> IO ()
-publishSnapshot st =
-  case srsRef st of
-    Nothing -> pure ()
-    Just ref -> do
-      let pair = buildSnapshotPair st
-      _ <- evaluate pair
-      writeIORef ref pair
-
-[hyperspace|
-actor SnapshotReceiver
-  state SnapshotReceiverState
-  lifetime Singleton
-  schedule pinned 3
-  noDeps
-
-  reply UiSnapshotReply, LogSnapshotReply, DataSnapshotReply
-
-  mailbox Unbounded
-
-  cast uiSnapshot :: UiState
-  cast logSnapshot :: LogSnapshot
-  cast dataSnapshot :: DataSnapshot
-  cast terrainSnapshot :: TerrainSnapshot
-  cast setRef :: SnapshotRef
-  call snapshot :: () -> (SnapshotVersion, RenderSnapshot)
-
-  initial emptySnapshotReceiverState
-  on_ uiSnapshot = \uiSnap st -> do
-    let st' = bumpVersion st { srsUi = uiSnap }
-    publishSnapshot st'
-    pure st'
-  on_ logSnapshot = \logSnap st -> do
-    let st' = bumpVersion st { srsLog = logSnap }
-    publishSnapshot st'
-    pure st'
-  on_ dataSnapshot = \dataSnap st -> do
-    let st' = bumpVersion st { srsData = dataSnap }
-    publishSnapshot st'
-    pure st'
-  on_ terrainSnapshot = \terrainSnap st -> do
-    let st' = bumpVersion st { srsTerrain = terrainSnap }
-    publishSnapshot st'
-    pure st'
-  on_ setRef = \ref st -> do
-    let st' = st { srsRef = Just ref }
-    publishSnapshot st'
-    pure st'
-  onPure snapshot = \() st ->
-    ( st
-    , buildSnapshotPair st
-    )
-|]
-
--- | Poll the latest render snapshot along with its monotonic version.
---
--- This performs a synchronous actor call and may block if the actor is busy.
--- Prefer reading the 'SnapshotRef' directly via 'Data.IORef.readIORef' on
--- the render thread for lock-free access.
---
--- __Test-only:__ No production callers — kept exported for test coverage.
-getSnapshot :: ActorHandle SnapshotReceiver (Protocol SnapshotReceiver) -> IO (SnapshotVersion, RenderSnapshot)
-getSnapshot handle =
-  call @"snapshot" handle #snapshot ()
-
--- | Register a shared 'IORef' for lock-free snapshot reads.
---
--- Once set, every snapshot update (UI, log, data, terrain) is published to
--- this ref after the actor's internal state is updated.  The render loop can
--- then use 'Data.IORef.readIORef' instead of the blocking 'getSnapshot'.
-setSnapshotRef
-  :: ActorHandle SnapshotReceiver (Protocol SnapshotReceiver)
-  -> SnapshotRef
-  -> IO ()
-setSnapshotRef handle ref =
-  cast @"setRef" handle #setRef ref
-
-bumpVersion :: SnapshotReceiverState -> SnapshotReceiverState
-bumpVersion st =
-  st { srsVersion = srsVersion st + 1 }
+-- __Ordering contract__: when updating domain refs (e.g. 'writeDataSnapshot',
+-- 'writeTerrainSnapshot'), call this /after/ the domain writes so the render
+-- loop never observes a new version with stale domain data.  Bumping without
+-- prior domain writes is fine for UI-only changes (the reader will simply
+-- re-read unchanged refs).
+bumpSnapshotVersion :: SnapshotVersionRef -> IO ()
+bumpSnapshotVersion ref =
+  atomicModifyIORef' ref (\(SnapshotVersion v) -> (SnapshotVersion (v + 1), ()))

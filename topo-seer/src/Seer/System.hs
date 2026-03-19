@@ -29,23 +29,34 @@ import Actor.Log
   , logActorDef
   )
 import Actor.Render (RenderSnapshot(..))
-import Actor.SnapshotReceiver (SnapshotReceiver, SnapshotVersion(..), snapshotReceiverActorDef, setSnapshotRef)
+import Actor.SnapshotReceiver
+  ( SnapshotVersion(..)
+  , newDataSnapshotRef
+  , newTerrainSnapshotRef
+  , newSnapshotVersionRef
+  , readSnapshotVersion
+  , readDataSnapshot
+  , readTerrainSnapshot
+  , bumpSnapshotVersion
+  )
 import Actor.UI
   ( Ui
-  , UiSnapshotReply
+  , UiSnapshotRef
   , UiState(..)
   , getUiSnapshot
-  , requestUiSnapshot
+  , newUiSnapshotRef
+  , readUiSnapshotRef
   , setUiSeed
   , setUiSeedInput
+  , setUiSnapshotRef
   , uiActorDef
   )
 import Actor.Terrain (terrainActorDef)
 import Actor.AtlasManager (atlasManagerActorDef)
 import Actor.PluginManager (pluginManagerActorDef, discoverPlugins)
 import Actor.Simulation (simulationActorDef, setSimHandles)
-import Actor.AtlasResultBroker (atlasResultBrokerActorDef, setAtlasResultRef)
-import Actor.AtlasScheduleBroker (atlasScheduleBrokerActorDef, setAtlasScheduleRef)
+import Actor.AtlasResultBroker (AtlasResultRef, newAtlasResultRef)
+import Actor.AtlasScheduleBroker (AtlasScheduleRef, newAtlasScheduleRef)
 import Actor.AtlasScheduler
   ( AtlasSchedulerHandles(..)
   , atlasSchedulerActorDef
@@ -53,16 +64,13 @@ import Actor.AtlasScheduler
   )
 import Actor.AtlasWorker (atlasWorkerActorDef)
 import Actor.TerrainCacheBroker
-  ( TerrainCacheBroker
-  , TerrainCacheRef
+  ( TerrainCacheRef
+  , newTerrainCacheRef
   , readTerrainCacheRef
-  , setTerrainCacheRef
-  , terrainCacheBrokerActorDef
   )
 import Actor.TerrainCacheWorker
   ( TerrainCacheBuildRequest(..)
   , TerrainCacheKey
-  , TerrainCacheResultReply
   , TerrainCacheWorker
   , requestTerrainCacheBuild
   , tcrResultCache
@@ -70,7 +78,7 @@ import Actor.TerrainCacheWorker
   , terrainCacheKeyFrom
   , terrainCacheWorkerActorDef
   )
-import Actor.UiActions (uiActionsActorDef, setUiActionsSnapshotRef)
+import Actor.UiActions (uiActionsActorDef)
 import Actor.UiActions.Handles (mkActorHandles)
 import Control.Monad (forM_, unless, when)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
@@ -80,7 +88,7 @@ import GHC.Clock (getMonotonicTimeNSec)
 import Linear (V2(..))
 import qualified SDL
 import qualified SDL.Font as Font
-import Hyperspace.Actor (ActorHandle, Protocol, cast, getSingleton, newActorSystem, replyTo, shutdownActorSystem)
+import Hyperspace.Actor (ActorHandle, Protocol, getSingleton, newActorSystem, shutdownActorSystem)
 import Seer.Draw (logLineHeight)
 import Seer.Timing (nsToMs)
 import Seer.Input (handleEvent, isQuit, tickTooltipHover)
@@ -115,56 +123,41 @@ runApp = do
   logSnapshotRef <- newLogSnapshotRef
   setLogSnapshotRef logHandle logSnapshotRef
   uiHandle <- getSingleton system uiActorDef
+  uiSnapshotRef <- newUiSnapshotRef
+  setUiSnapshotRef uiHandle uiSnapshotRef
   dataHandle <- getSingleton system dataActorDef
   terrainHandle <- getSingleton system terrainActorDef
   atlasManagerHandle <- getSingleton system atlasManagerActorDef
   atlasWorkerHandle <- getSingleton system atlasWorkerActorDef
-  atlasResultBrokerHandle <- getSingleton system atlasResultBrokerActorDef
-  atlasScheduleBrokerHandle <- getSingleton system atlasScheduleBrokerActorDef
   atlasSchedulerHandle <- getSingleton system atlasSchedulerActorDef
   terrainCacheWorkerHandle <- getSingleton system terrainCacheWorkerActorDef
+  -- Lock-free IORef channels (replacing former broker actors)
+  atlasResultRef <- newAtlasResultRef
+  atlasScheduleRef <- newAtlasScheduleRef
+  terrainCacheRef <- newTerrainCacheRef
   setAtlasSchedulerHandles atlasSchedulerHandle AtlasSchedulerHandles
     { ashManager = atlasManagerHandle
     , ashWorker = atlasWorkerHandle
-    , ashResultBroker = atlasResultBrokerHandle
-    , ashScheduleBroker = atlasScheduleBrokerHandle
+    , ashResultRef = atlasResultRef
+    , ashScheduleRef = atlasScheduleRef
     }
-  terrainCacheBrokerHandle <- getSingleton system terrainCacheBrokerActorDef
   uiActionsHandle <- getSingleton system uiActionsActorDef
-  snapshotReceiverHandle <- getSingleton system snapshotReceiverActorDef
   pluginManagerHandle <- getSingleton system pluginManagerActorDef
   simulationHandle <- getSingleton system simulationActorDef
   discoverPlugins pluginManagerHandle
-  setSimHandles simulationHandle dataHandle logHandle uiHandle snapshotReceiverHandle atlasManagerHandle
+  -- Lock-free per-domain snapshot refs (replacing former SnapshotReceiver actor)
+  let dataSnap = DataSnapshot 0 0 Nothing
+      terrainSnap = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore
+  dataSnapshotRef <- newDataSnapshotRef dataSnap
+  terrainSnapshotRef <- newTerrainSnapshotRef terrainSnap
+  snapshotVersionRef <- newSnapshotVersionRef
+  setSimHandles simulationHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasManagerHandle
   seed <- randomIO
   setUiSeed uiHandle seed
   setUiSeedInput uiHandle (Text.pack (show seed))
   uiSnap <- getUiSnapshot uiHandle
   let logSnap = LogSnapshot [] False 0 LogDebug
-      dataSnap = DataSnapshot 0 0 Nothing
-      terrainSnap = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore
-  snapshotRef <- newIORef (SnapshotVersion 0, RenderSnapshot
-    { rsUi = uiSnap
-    , rsLog = logSnap
-    , rsData = dataSnap
-    , rsTerrain = terrainSnap
-    })
-  setSnapshotRef snapshotReceiverHandle snapshotRef
-  -- Give UiActions direct write access to the snapshot IORef so terrain
-  -- data propagates to the render thread immediately, even when the
-  -- SnapshotReceiver actor is CPU-starved by atlas workers.
-  setUiActionsSnapshotRef uiActionsHandle snapshotRef
-  -- Lock-free IORef channels for broker results (render thread reads these)
-  terrainCacheRef <- newIORef Nothing
-  setTerrainCacheRef terrainCacheBrokerHandle terrainCacheRef
-  atlasResultRef <- newIORef []
-  setAtlasResultRef atlasResultBrokerHandle atlasResultRef
-  atlasScheduleRef <- newIORef Nothing
-  setAtlasScheduleRef atlasScheduleBrokerHandle atlasScheduleRef
-  cast @"uiSnapshot" snapshotReceiverHandle #uiSnapshot uiSnap
-  cast @"logSnapshot" snapshotReceiverHandle #logSnapshot logSnap
-  cast @"dataSnapshot" snapshotReceiverHandle #dataSnapshot dataSnap
-  cast @"terrainSnapshot" snapshotReceiverHandle #terrainSnapshot terrainSnap
+
   SDL.initialize [SDL.InitVideo]
   Font.initialize
   window <- SDL.createWindow "Topo Seer" SDL.defaultWindow
@@ -195,9 +188,13 @@ runApp = do
   lastSnapshotChangeNs <- getMonotonicTimeNSec >>= newIORef
   staleLoggedRef <- newIORef False
   home <- getHomeDirectory
-  traceH <- openFile (home </> ".topo" </> "RENDER_TRACE.txt") WriteMode
-  hPutStrLn traceH "=== render trace start ==="
-  hFlush traceH
+  traceH <- if renderTraceEnabled
+    then do
+      h <- openFile (home </> ".topo" </> "RENDER_TRACE.txt") WriteMode
+      hPutStrLn h "=== render trace start ==="
+      hFlush h
+      pure (Just h)
+    else pure Nothing
   let initialCacheState = RenderCacheState
         { rcsTerrainCache = emptyTerrainCache
         , rcsCacheKey = Nothing
@@ -231,7 +228,17 @@ runApp = do
               pure (cachedVersion, cachedSnap, cacheState, 0)
             _ -> do
               snapshotStart <- getMonotonicTimeNSec
-              (version, snap) <- readIORef snapshotRef
+              version <- readSnapshotVersion snapshotVersionRef
+              latestDataSnap <- readDataSnapshot dataSnapshotRef
+              latestTerrainSnap <- readTerrainSnapshot terrainSnapshotRef
+              latestLogSnap <- readLogSnapshotRef logSnapshotRef
+              latestUiSnap <- readUiSnapshotRef uiSnapshotRef
+              let snap = RenderSnapshot
+                    { rsUi = latestUiSnap
+                    , rsLog = latestLogSnap
+                    , rsData = latestDataSnap
+                    , rsTerrain = latestTerrainSnap
+                    }
               snapshotEnd <- getMonotonicTimeNSec
               let snapshotElapsed' = nsToMs snapshotStart snapshotEnd
               when (snapshotElapsed' >= timingLogThresholdMs) $
@@ -241,11 +248,7 @@ runApp = do
                 , rcsLastSnapshotData = Just snap
                 , rcsLastSnapshotPoll = Just nowMs
                 }, snapshotElapsed')
-        -- Overlay the log snapshot from the self-publishing IORef so the
-        -- render thread always sees the latest log entries without casting
-        -- to the Log actor.
-        latestLogSnap <- readLogSnapshotRef logSnapshotRef
-        let renderSnap = renderSnap0 { rsLog = latestLogSnap }
+        let renderSnap = renderSnap0
         tSnap <- getMonotonicTimeNSec
         quitFlag <- readIORef quitRef
         let quit = quitFlag || any isQuit events
@@ -254,21 +257,21 @@ runApp = do
           if null events
             then do
               -- Even when idle, tick the tooltip frame counter; if it
-              -- fires we must request a fresh UI snapshot so the render
-              -- thread picks up the hover widget.
+              -- fires we bump the snapshot version so the render loop
+              -- picks up the updated UI state on the next frame.
               fired <- tickTooltipHover tooltipHoverRef uiHandle
               when fired $
-                requestUiSnapshot uiHandle (replyTo @UiSnapshotReply snapshotReceiverHandle)
+                bumpSnapshotVersion snapshotVersionRef
               pure 0
             else do
               handleStart <- getMonotonicTimeNSec
-              let actorHandles = mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle snapshotReceiverHandle pluginManagerHandle simulationHandle
+              let actorHandles = mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef pluginManagerHandle simulationHandle
                   inputEnv = mkInputEnv actorHandles uiActionsHandle (rsUi renderSnap) (rsLog renderSnap) (rsData renderSnap) (rsTerrain renderSnap)
                   inputContext = mkInputContext window inputEnv quitRef lineHeightRef mousePosRef dragRef tooltipHoverRef
               forM_ coalescedEvents (handleEvent inputContext)
               _ <- tickTooltipHover tooltipHoverRef uiHandle
               afterEvents <- getMonotonicTimeNSec
-              requestUiSnapshot uiHandle (replyTo @UiSnapshotReply snapshotReceiverHandle)
+              bumpSnapshotVersion snapshotVersionRef
               handleEnd <- getMonotonicTimeNSec
               let elapsed = nsToMs handleStart handleEnd
                   eventsMs = nsToMs handleStart afterEvents
@@ -299,9 +302,9 @@ runApp = do
               appendLog logHandle (LogEntry LogInfo (Text.pack (renderStepSummary eventsElapsed snapshotElapsed handleElapsed 0 0 delayElapsed True)))
             tEnd <- getMonotonicTimeNSec
             let loopMs = nsToMs loopStart tEnd
-            when (loopMs >= 100) $ do
-              hPutStrLn traceH $ "IDLE loop=" <> show loopMs <> "ms poll=" <> show (nsToMs loopStart tPoll) <> " snap=" <> show (nsToMs tPoll tSnap) <> " handle=" <> show (nsToMs tSnap tHandle) <> " stale=" <> show (nsToMs tHandle tEnd) <> " events=" <> show (length events) <> " v=" <> show (unSnapshotVersion snapVersion)
-              hFlush traceH
+            when (loopMs >= 100) $ forM_ traceH $ \h -> do
+              hPutStrLn h $ "IDLE loop=" <> show loopMs <> "ms poll=" <> show (nsToMs loopStart tPoll) <> " snap=" <> show (nsToMs tPoll tSnap) <> " handle=" <> show (nsToMs tSnap tHandle) <> " stale=" <> show (nsToMs tHandle tEnd) <> " events=" <> show (length events) <> " v=" <> show (unSnapshotVersion snapVersion)
+              hFlush h
             if quit
               then pure cacheState0
               else loop cacheState0
@@ -324,7 +327,7 @@ runApp = do
               if shouldPollTerrain
                 then do
                   cacheStart <- getMonotonicTimeNSec
-                  updated <- applyTerrainCacheUpdate renderSnap terrainCacheWorkerHandle terrainCacheBrokerHandle terrainCacheRef cacheState0
+                  updated <- applyTerrainCacheUpdate renderSnap terrainCacheWorkerHandle terrainCacheRef cacheState0
                   cacheEnd <- getMonotonicTimeNSec
                   let cacheElapsed = nsToMs cacheStart cacheEnd
                   when (cacheElapsed >= timingLogThresholdMs) $
@@ -380,15 +383,16 @@ runApp = do
               appendLog logHandle (LogEntry LogInfo (Text.pack (renderStepSummary eventsElapsed snapshotElapsed handleElapsed terrainElapsed frameElapsed delayElapsed False)))
             tEnd <- getMonotonicTimeNSec
             let loopMs = nsToMs loopStart tEnd
-            when (loopMs >= 100) $ do
-              hPutStrLn traceH $ "RENDER loop=" <> show loopMs <> "ms poll=" <> show (nsToMs loopStart tPoll) <> " snap=" <> show (nsToMs tPoll tSnap) <> " handle=" <> show (nsToMs tSnap tHandle) <> " branch=" <> show (nsToMs tHandle tElseBranch) <> " write=" <> show (nsToMs tElseBranch tAfterWrite) <> " lets=" <> show (nsToMs tAfterWrite tAfterLets) <> " tPoll=" <> show (nsToMs tAfterLets tAfterTerrain) <> " tLet=" <> show (nsToMs tAfterTerrain frameStart) <> " terrain=" <> show terrainElapsed <> " frame=" <> show frameElapsed <> " postFrame=" <> show (nsToMs frameEnd delayStart) <> " delay=" <> show delayElapsed <> " postDelay=" <> show (nsToMs tPostDelay tEnd) <> " events=" <> show (length events) <> " v=" <> show (unSnapshotVersion snapVersion)
-              hFlush traceH
+            when (loopMs >= 100) $ forM_ traceH $ \h -> do
+              hPutStrLn h $ "RENDER loop=" <> show loopMs <> "ms poll=" <> show (nsToMs loopStart tPoll) <> " snap=" <> show (nsToMs tPoll tSnap) <> " handle=" <> show (nsToMs tSnap tHandle) <> " branch=" <> show (nsToMs tHandle tElseBranch) <> " write=" <> show (nsToMs tElseBranch tAfterWrite) <> " lets=" <> show (nsToMs tAfterWrite tAfterLets) <> " tPoll=" <> show (nsToMs tAfterLets tAfterTerrain) <> " tLet=" <> show (nsToMs tAfterTerrain frameStart) <> " terrain=" <> show terrainElapsed <> " frame=" <> show frameElapsed <> " postFrame=" <> show (nsToMs frameEnd delayStart) <> " delay=" <> show delayElapsed <> " postDelay=" <> show (nsToMs tPostDelay tEnd) <> " events=" <> show (length events) <> " v=" <> show (unSnapshotVersion snapVersion)
+              hFlush h
             if quit
               then pure cacheState''
               else loop cacheState''
   finalState <- loop initialCacheState
-  hPutStrLn traceH "=== render trace end ==="
-  hFlush traceH
+  forM_ traceH $ \h -> do
+    hPutStrLn h "=== render trace end ==="
+    hFlush h
   let finalChunkTextures = rcsChunkTextures finalState
       finalAtlasCache = rcsAtlasCache finalState
   mapM_ destroyChunkTexture (IntMap.elems (ctcTextures finalChunkTextures))
@@ -438,11 +442,10 @@ data RenderCacheState = RenderCacheState
 applyTerrainCacheUpdate
   :: RenderSnapshot
   -> ActorHandle TerrainCacheWorker (Protocol TerrainCacheWorker)
-  -> ActorHandle TerrainCacheBroker (Protocol TerrainCacheBroker)
   -> TerrainCacheRef
   -> RenderCacheState
   -> IO RenderCacheState
-applyTerrainCacheUpdate renderSnap workerHandle brokerHandle cacheRef cacheState = do
+applyTerrainCacheUpdate renderSnap workerHandle cacheRef cacheState = do
   let uiSnap = rsUi renderSnap
       terrainSnap = rsTerrain renderSnap
       dataReady = tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
@@ -474,7 +477,7 @@ applyTerrainCacheUpdate renderSnap workerHandle brokerHandle cacheRef cacheState
           { tcrKey = key
           , tcrUi = uiSnap
           , tcrTerrain = terrainSnap
-          , tcrReplyTo = replyTo @TerrainCacheResultReply brokerHandle
+          , tcrResultRef = cacheRef
           }
         pure stateAfterResult { rcsLastRequest = Just key }
     else pure stateAfterResult

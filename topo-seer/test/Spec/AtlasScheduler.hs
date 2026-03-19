@@ -6,12 +6,12 @@ import System.Timeout (timeout)
 import Test.Hspec
 import Actor.AtlasCache (AtlasKey(..))
 import Actor.AtlasManager (AtlasJob(..), atlasManagerActorDef, enqueueAtlasBuild)
-import Actor.AtlasResultBroker (atlasResultBrokerActorDef)
+import Actor.AtlasResultBroker (newAtlasResultRef)
 import Actor.AtlasScheduleBroker
-  ( AtlasScheduleBroker
+  ( AtlasScheduleRef
   , AtlasScheduleReport(..)
-  , atlasScheduleBrokerActorDef
-  , getAtlasScheduleReport
+  , newAtlasScheduleRef
+  , readAtlasScheduleRef
   )
 import Actor.AtlasScheduler
   ( AtlasScheduleRequest(..)
@@ -28,9 +28,7 @@ import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion(..))
 import Actor.UI (ViewMode(..), emptyUiState)
 import Hyperspace.Actor
-  ( ActorHandle
-  , ActorSystem
-  , Protocol
+  ( ActorSystem
   , getSingleton
   , newActorSystem
   , shutdownActorSystem
@@ -44,14 +42,14 @@ spec = describe "AtlasScheduler" $ do
   it "reports drained job counts" $ withSystem $ \system -> do
     managerHandle <- getSingleton system atlasManagerActorDef
     workerHandle <- getSingleton system atlasWorkerActorDef
-    resultBrokerHandle <- getSingleton system atlasResultBrokerActorDef
-    scheduleBrokerHandle <- getSingleton system atlasScheduleBrokerActorDef
+    resultRef <- newAtlasResultRef
+    scheduleRef <- newAtlasScheduleRef
     schedulerHandle <- getSingleton system atlasSchedulerActorDef
     setAtlasSchedulerHandles schedulerHandle AtlasSchedulerHandles
       { ashManager = managerHandle
       , ashWorker = workerHandle
-      , ashResultBroker = resultBrokerHandle
-      , ashScheduleBroker = scheduleBrokerHandle
+      , ashResultRef = resultRef
+      , ashScheduleRef = scheduleRef
       }
     let terrainSnap = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore
         atlasKey = AtlasKey ViewElevation 0.5 (tsVersion terrainSnap)
@@ -76,14 +74,14 @@ spec = describe "AtlasScheduler" $ do
       , asqDataReady = True
       , asqSnapshot = snapshot
       }
-    report <- awaitReport scheduleBrokerHandle version
+    report <- awaitReport scheduleRef version
     asrJobCount report `shouldBe` 1
 
 awaitReport
-  :: ActorHandle AtlasScheduleBroker (Protocol AtlasScheduleBroker)
+  :: AtlasScheduleRef
   -> SnapshotVersion
   -> IO AtlasScheduleReport
-awaitReport brokerHandle version = do
+awaitReport scheduleRef version = do
   let timeoutUs = 500000
   result <- timeout timeoutUs (pollUntil version)
   case result of
@@ -92,7 +90,7 @@ awaitReport brokerHandle version = do
   where
     pollDelayUs = 1000
     pollUntil target = do
-      mbReport <- getAtlasScheduleReport brokerHandle
+      mbReport <- readAtlasScheduleRef scheduleRef
       case mbReport of
         Just report | asrSnapshotVersion report == target -> pure report
         _ -> do

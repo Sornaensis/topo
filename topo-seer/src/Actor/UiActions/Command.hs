@@ -21,8 +21,8 @@ import Actor.Data
   , TerrainSnapshot(..)
   , getTerrainSnapshot
   )
-import Actor.Log (Log, LogEntry(..), LogLevel(..), LogSnapshotReply, appendLog, requestLogSnapshot)
-import Actor.SnapshotReceiver (SnapshotReceiver)
+import Actor.Log (Log, LogEntry(..), LogLevel(..), appendLog)
+import Actor.SnapshotReceiver (bumpSnapshotVersion)
 import Actor.Terrain
   ( Terrain
   , TerrainGenRequest(..)
@@ -33,10 +33,8 @@ import Actor.UI
   ( ConfigTab(..)
   , Ui
   , ViewMode(..)
-  , UiSnapshotReply
   , emptyUiState
   , getUiSnapshot
-  , requestUiSnapshot
   , uiChunkSize
   , uiConfigTab
   , uiDisabledStages
@@ -61,7 +59,7 @@ import Seer.Config.SliderState (resetSliderDefaults)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import GHC.Clock (getMonotonicTimeNSec)
-import Hyperspace.Actor (ActorHandle, Protocol, ReplyTo, replyTo)
+import Hyperspace.Actor (ActorHandle, Protocol, ReplyTo)
 import Numeric (showFFloat)
 import Seer.Config (applyUiConfig, configSummary)
 import Topo (WorldConfig(..))
@@ -105,7 +103,6 @@ logTimed req label action = do
   let elapsedMs = fromIntegral (end - start) / nsPerMs
       message = label <> " took " <> Text.pack (showFFloat (Just timingPrecisionDigits) elapsedMs "ms")
   appendLog (ahLogHandle handles) (LogEntry LogDebug message)
-  requestLogSnapshot (ahLogHandle handles) (replyTo @LogSnapshotReply (ahSnapshotReceiverHandle handles))
   where
     handles = uarActorHandles req
 
@@ -147,9 +144,8 @@ startGeneration req = do
   setUiRenderWaterLevel uiHandle (uiWaterLevel uiSnap)
   -- Capture config snapshot for revert support
   setUiWorldConfig uiHandle (Just (snapshotFromUi uiSnap "world"))
-  requestUiSnapshot uiHandle (replyTo @UiSnapshotReply (ahSnapshotReceiverHandle handles))
+  bumpSnapshotVersion (ahSnapshotVersionRef handles)
   appendLog logHandle (LogEntry LogInfo (configSummary uiSnap))
-  requestLogSnapshot logHandle (replyTo @LogSnapshotReply (ahSnapshotReceiverHandle handles))
   -- Hot-reload plugin manifests and collect plugin pipeline stages
   refreshManifests pluginHandle
   pluginStages <- getPluginStages pluginHandle

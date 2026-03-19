@@ -5,7 +5,8 @@ module Seer.Input.Widgets
   ( handleClick
   ) where
 
-import Actor.Data (DataSnapshot(..), DataSnapshotReply, getTerrainSnapshot, replaceTerrainData, requestDataSnapshot)
+import Actor.Data (DataSnapshot(..), getDataSnapshot, getTerrainSnapshot, replaceTerrainData)
+import Actor.SnapshotReceiver (writeDataSnapshot, writeTerrainSnapshot, bumpSnapshotVersion)
 import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshot(..), appendLog, getLogSnapshot, setLogCollapsed, setLogMinLevel, setLogScroll)
 import Actor.UI
   ( ConfigTab(..)
@@ -85,7 +86,7 @@ import UI.Layout
 import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets, buildSliderRowWidgets, hitTest)
 import UI.Widgets (Rect(..), containsPoint)
 import System.Random (randomIO)
-import Hyperspace.Actor (ActorHandle, Protocol, replyTo)
+import Hyperspace.Actor (ActorHandle, Protocol)
 import Actor.PluginManager (setPluginOrder)
 import Actor.Simulation (requestSimTick, setSimWorld)
 import Actor.UiActions (ActorHandles(..), UiAction(..))
@@ -102,7 +103,6 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       uiHandle = ahUiHandle actorHandles
       logHandle = ahLogHandle actorHandles
       dataHandle = ahDataHandle actorHandles
-      snapshotReceiverHandle = ahSnapshotReceiverHandle actorHandles
       pluginManagerHandle = ahPluginManagerHandle actorHandles
       simulationHandle = ahSimulationHandle actorHandles
       quitRef = icQuitRef inputContext
@@ -229,8 +229,6 @@ handleClick inputContext (SDL.P (V2 x y)) = do
     logHandle = ahLogHandle actorHandles
 
     dataHandle = ahDataHandle actorHandles
-
-    snapshotReceiverHandle = ahSnapshotReceiverHandle actorHandles
 
     pluginManagerHandle = ahPluginManagerHandle actorHandles
 
@@ -439,7 +437,11 @@ handleClick inputContext (SDL.P (V2 x y)) = do
             replaceTerrainData dataHandle world
             setSimWorld simulationHandle world
             setUiOverlayNames uiHandle (overlayNames (twOverlays world))
-            requestDataSnapshot dataHandle (replyTo @DataSnapshotReply snapshotReceiverHandle)
+            dataSnap <- getDataSnapshot dataHandle
+            terrainSnap' <- getTerrainSnapshot dataHandle
+            writeDataSnapshot (ahDataSnapshotRef actorHandles) dataSnap
+            writeTerrainSnapshot (ahTerrainSnapshotRef actorHandles) terrainSnap'
+            bumpSnapshotVersion (ahSnapshotVersionRef actorHandles)
             applySnapshotToUi snapshot uiHandle
             setUiWorldName uiHandle name
             setUiWorldConfig uiHandle (Just snapshot)

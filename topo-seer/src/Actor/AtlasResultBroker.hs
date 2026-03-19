@@ -1,27 +1,16 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE OverloadedLabels #-}
-{-# LANGUAGE QuasiQuotes #-}
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE TypeFamilies #-}
-
--- | Broker for atlas build results, drained by the render loop.
+-- | Lock-free IORef channel for atlas build results.
 --
 -- Results are published to a shared 'AtlasResultRef' so the render thread
--- can drain via lock-free 'atomicModifyIORef'' instead of a synchronous
--- actor call.
+-- can drain via lock-free 'atomicModifyIORef'' without actor indirection.
 module Actor.AtlasResultBroker
-  ( AtlasResultBroker
-  , AtlasResultRef
-  , atlasResultBrokerActorDef
-  , enqueueAtlasResult
+  ( AtlasResultRef
+  , newAtlasResultRef
+  , pushAtlasResult
   , drainAtlasResultsN
-  , setAtlasResultRef
   ) where
 
 import Actor.AtlasResult (AtlasBuildResult)
-import Data.IORef (IORef, atomicModifyIORef', readIORef)
-import Hyperspace.Actor
-import Hyperspace.Actor.QQ (hyperspace)
+import Data.IORef (IORef, atomicModifyIORef', newIORef)
 
 -- | Shared reference for lock-free render-thread drain.
 --
@@ -29,41 +18,16 @@ import Hyperspace.Actor.QQ (hyperspace)
 -- Readers atomically swap it out and reverse to get FIFO order.
 type AtlasResultRef = IORef [AtlasBuildResult]
 
-newtype AtlasResultBrokerState = AtlasResultBrokerState
-  { arbRef :: Maybe AtlasResultRef
-  }
+-- | Create a new empty 'AtlasResultRef'.
+newAtlasResultRef :: IO AtlasResultRef
+newAtlasResultRef = newIORef []
 
-emptyAtlasResultBrokerState :: AtlasResultBrokerState
-emptyAtlasResultBrokerState = AtlasResultBrokerState
-  { arbRef = Nothing
-  }
+-- | Atomically push an atlas build result for the render loop.
+pushAtlasResult :: AtlasResultRef -> AtlasBuildResult -> IO ()
+pushAtlasResult ref result =
+  atomicModifyIORef' ref (\xs -> (result : xs, ()))
 
-[hyperspace|
-actor AtlasResultBroker
-  state AtlasResultBrokerState
-  lifetime Singleton
-  schedule pinned 4
-  noDeps
-  mailbox Unbounded
-
-  cast enqueue :: AtlasBuildResult
-  cast setRef :: AtlasResultRef
-
-  initial emptyAtlasResultBrokerState
-  on_ enqueue = \result st -> do
-    case arbRef st of
-      Nothing  -> pure ()
-      Just ref -> atomicModifyIORef' ref (\xs -> (result : xs, ()))
-    pure st
-  on_ setRef = \ref st -> pure (st { arbRef = Just ref })
-|]
-
--- | Enqueue an atlas build result for the render loop.
-enqueueAtlasResult :: ActorHandle AtlasResultBroker (Protocol AtlasResultBroker) -> AtlasBuildResult -> IO ()
-enqueueAtlasResult handle result =
-  cast @"enqueue" handle #enqueue result
-
--- | Drain up to N pending atlas results in FIFO order via the IORef (lock-free).
+-- | Drain up to N pending atlas results in FIFO order (lock-free).
 drainAtlasResultsN :: AtlasResultRef -> Int -> IO [AtlasBuildResult]
 drainAtlasResultsN ref count = do
   let safeCount = max 0 count
@@ -71,13 +35,5 @@ drainAtlasResultsN ref count = do
     let fifo = reverse xs
         (taken, rest) = splitAt safeCount fifo
     in (reverse rest, taken)
-
--- | Register a shared IORef for lock-free publishing.
-setAtlasResultRef
-  :: ActorHandle AtlasResultBroker (Protocol AtlasResultBroker)
-  -> AtlasResultRef
-  -> IO ()
-setAtlasResultRef handle ref =
-  cast @"setRef" handle #setRef ref
 
 

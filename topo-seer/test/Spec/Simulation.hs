@@ -12,10 +12,15 @@ import Test.Hspec
 import qualified Data.Vector.Unboxed as U
 
 import Actor.AtlasManager (atlasManagerActorDef)
-import Actor.Data (dataActorDef, getTerrainSnapshot, tsVersion, tsWeatherChunks)
+import Actor.Data (DataSnapshot(..), TerrainSnapshot(..), dataActorDef, getTerrainSnapshot, tsVersion, tsWeatherChunks)
 import Actor.Log (getLogSnapshot, leMessage, logActorDef, lsEntries)
 import Actor.Simulation (requestSimTick, setSimHandles, setSimWorld, simulationActorDef)
-import Actor.SnapshotReceiver (RenderSnapshot(..), getSnapshot, snapshotReceiverActorDef)
+import Actor.SnapshotReceiver
+  ( newDataSnapshotRef
+  , newTerrainSnapshotRef
+  , newSnapshotVersionRef
+  , readTerrainSnapshot
+  )
 import Actor.UI (getUiSnapshot, uiActorDef, uiSimTickCount)
 
 import Topo
@@ -30,7 +35,7 @@ import Topo
   , setClimateChunk
   , setTerrainChunk
   )
-import Topo.Overlay (Overlay(..), OverlayData(..), OverlayProvenance(..), insertOverlay)
+import Topo.Overlay (Overlay(..), OverlayData(..), OverlayProvenance(..), emptyOverlayStore, insertOverlay)
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice)
 import Topo.Weather (weatherChunkToOverlay, weatherOverlaySchema)
 import Topo.World (TerrainWorld(..))
@@ -104,10 +109,12 @@ spec = describe "Simulation actor" $ do
     dataHandle <- getSingleton system dataActorDef
     logHandle <- getSingleton system logActorDef
     uiHandle <- getSingleton system uiActorDef
-    snapshotHandle <- getSingleton system snapshotReceiverActorDef
+    dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
+    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore)
+    snapshotVersionRef <- newSnapshotVersionRef
     atlasHandle <- getSingleton system atlasManagerActorDef
 
-    setSimHandles simHandle dataHandle logHandle uiHandle snapshotHandle atlasHandle
+    setSimHandles simHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasHandle
 
     let config = WorldConfig { wcChunkSize = 8 }
         chunk = generateTerrainChunk config (const 0.5)
@@ -150,10 +157,12 @@ spec = describe "Simulation actor" $ do
     dataHandle <- getSingleton system dataActorDef
     logHandle <- getSingleton system logActorDef
     uiHandle <- getSingleton system uiActorDef
-    snapshotHandle <- getSingleton system snapshotReceiverActorDef
+    dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
+    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore)
+    snapshotVersionRef <- newSnapshotVersionRef
     atlasHandle <- getSingleton system atlasManagerActorDef
 
-    setSimHandles simHandle dataHandle logHandle uiHandle snapshotHandle atlasHandle
+    setSimHandles simHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasHandle
 
     requestSimTick simHandle 1
 
@@ -191,10 +200,12 @@ spec = describe "Simulation actor" $ do
     dataHandle <- getSingleton system dataActorDef
     logHandle <- getSingleton system logActorDef
     uiHandle <- getSingleton system uiActorDef
-    snapshotHandle <- getSingleton system snapshotReceiverActorDef
+    dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
+    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore)
+    snapshotVersionRef <- newSnapshotVersionRef
     atlasHandle <- getSingleton system atlasManagerActorDef
 
-    setSimHandles simHandle dataHandle logHandle uiHandle snapshotHandle atlasHandle
+    setSimHandles simHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasHandle
 
     let config = WorldConfig { wcChunkSize = 8 }
         chunk = generateTerrainChunk config (const 0.5)
@@ -240,8 +251,8 @@ spec = describe "Simulation actor" $ do
     tempAfterTick2 `shouldNotBe` tempAfterTick1
 
     snapshotPublished <- awaitTrue 500 $ do
-      (_version, renderSnap) <- getSnapshot snapshotHandle
-      pure (tsVersion (rsTerrain renderSnap) > 0)
+      terrainRef <- readTerrainSnapshot terrainSnapshotRef
+      pure (tsVersion terrainRef > 0)
     snapshotPublished `shouldBe` True
 
     logSnap <- getLogSnapshot logHandle

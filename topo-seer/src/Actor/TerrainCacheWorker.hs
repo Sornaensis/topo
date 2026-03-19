@@ -10,7 +10,6 @@ module Actor.TerrainCacheWorker
   , TerrainCacheKey(..)
   , TerrainCacheBuildRequest(..)
   , TerrainCacheBuildResult(..)
-  , TerrainCacheResultReply
   , terrainCacheWorkerActorDef
   , requestTerrainCacheBuild
   , terrainCacheKeyFrom
@@ -20,10 +19,10 @@ import Actor.Data (TerrainSnapshot(..))
 import Actor.UI (UiState(..), ViewMode(..))
 import Control.Exception (evaluate)
 import qualified Data.IntMap.Strict as IntMap
+import Data.IORef (IORef, writeIORef)
 import Data.Word (Word64)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
-import Hyperspace.Actor.Spec (OpTag(..))
 import Seer.Render (TerrainCache(..), buildTerrainCache, emptyTerrainCache)
 
 -- | Lightweight cache key for O(1) staleness checks.
@@ -42,7 +41,7 @@ data TerrainCacheBuildRequest = TerrainCacheBuildRequest
   { tcrKey :: !TerrainCacheKey
   , tcrUi :: !UiState
   , tcrTerrain :: !TerrainSnapshot
-  , tcrReplyTo :: !(ReplyTo TerrainCacheResultReply)
+  , tcrResultRef :: !(IORef (Maybe TerrainCacheBuildResult))
   }
 
 -- | Terrain cache build result payload.
@@ -51,14 +50,8 @@ data TerrainCacheBuildResult = TerrainCacheBuildResult
   , tcrResultCache :: !TerrainCache
   }
 
-terrainCacheResultTag :: OpTag "terrainCacheResult"
-terrainCacheResultTag = OpTag
-
--- | Reply protocol for terrain cache build results.
+-- | Reply protocol removed: results are written directly to IORef.
 [hyperspace|
-replyprotocol TerrainCacheResultReply =
-  cast terrainCacheResult :: TerrainCacheBuildResult
-
 actor TerrainCacheWorker
   state ()
   lifetime Singleton
@@ -83,7 +76,7 @@ actor TerrainCacheWorker
           { tcrResultKey = tcrKey req
           , tcrResultCache = cache
           }
-    replyCast (tcrReplyTo req) terrainCacheResultTag result
+    writeIORef (tcrResultRef req) (Just result)
     pure st
 |]
 

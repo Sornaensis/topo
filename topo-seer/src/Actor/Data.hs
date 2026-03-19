@@ -8,7 +8,6 @@ module Actor.Data
   ( Data
   , DataSnapshot(..)
   , TerrainSnapshot(..)
-  , DataSnapshotReply
   , dataActorDef
   , setTerrainChunkCount
   , setBiomeChunkCount
@@ -19,7 +18,7 @@ module Actor.Data
   , setRiverChunkData
   , setVegetationChunkData
   , setOverlayStoreData
-  , requestDataSnapshot
+  , getDataSnapshot
   , getTerrainSnapshot
   , replaceTerrainData
   ) where
@@ -30,7 +29,6 @@ import qualified Data.IntMap.Strict as IntMap
 import Data.Word (Word64)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
-import Hyperspace.Actor.Spec (OpTag(..))
 import Topo (ChunkId(..), ClimateChunk, RiverChunk, TerrainChunk, VegetationChunk, WeatherChunk, getWeatherFromOverlay)
 import Topo.Overlay (OverlayStore, emptyOverlayStore)
 import Topo.World (TerrainWorld(..))
@@ -110,18 +108,7 @@ snapshotTerrain st = TerrainSnapshot
 chunkKey :: ChunkId -> Int
 chunkKey (ChunkId key) = key
 
-dataSnapshotTag :: OpTag "dataSnapshot"
-dataSnapshotTag = OpTag
-
-terrainSnapshotTag :: OpTag "terrainSnapshot"
-terrainSnapshotTag = OpTag
-
 [hyperspace|
--- | Reply protocol for emitting data and terrain snapshots.
-replyprotocol DataSnapshotReply =
-  cast dataSnapshot :: DataSnapshot
-  cast terrainSnapshot :: TerrainSnapshot
-
 actor Data
   state DataState
   lifetime Singleton
@@ -138,7 +125,6 @@ actor Data
   cast setRiverData :: (Int, [(ChunkId, RiverChunk)])
   cast setVegetationData :: (Int, [(ChunkId, VegetationChunk)])
   cast setOverlayStore :: OverlayStore
-  cast snapshotAsync :: () reply DataSnapshotReply
   call snapshot :: () -> DataSnapshot
   call terrainSnapshot :: () -> TerrainSnapshot
 
@@ -181,10 +167,6 @@ actor Data
     st { stOverlayStore = store
        , stTerrainVersion = stTerrainVersion st + 1
        }
-  onReply snapshotAsync = \() replyTo st -> do
-    replyCast replyTo dataSnapshotTag (snapshotData st)
-    replyCast replyTo terrainSnapshotTag (snapshotTerrain st)
-    pure st
   onPure snapshot = \() st -> (st, snapshotData st)
   onPure terrainSnapshot = \() st -> (st, snapshotTerrain st)
 |]
@@ -235,11 +217,6 @@ setOverlayStoreData handle store =
 getTerrainSnapshot :: ActorHandle Data (Protocol Data) -> IO TerrainSnapshot
 getTerrainSnapshot handle =
   call @"terrainSnapshot" handle #terrainSnapshot ()
-
--- | Request data and terrain snapshots via a reply-capable cast.
-requestDataSnapshot :: ActorHandle Data (Protocol Data) -> ReplyTo DataSnapshotReply -> IO ()
-requestDataSnapshot handle replyTo =
-  castReply @"snapshotAsync" handle replyTo #snapshotAsync ()
 
 -- | Replace all terrain data from a loaded 'TerrainWorld'.
 --

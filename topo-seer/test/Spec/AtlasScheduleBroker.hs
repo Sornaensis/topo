@@ -1,23 +1,18 @@
 module Spec.AtlasScheduleBroker (spec) where
 
-import Control.Exception (bracket)
 import Test.Hspec
 import Actor.AtlasScheduleBroker
   ( AtlasScheduleReport(..)
-  , atlasScheduleBrokerActorDef
-  , getAtlasScheduleReport
-  , updateAtlasScheduleReport
+  , newAtlasScheduleRef
+  , readAtlasScheduleRef
+  , writeAtlasScheduleReport
   )
 import Actor.SnapshotReceiver (SnapshotVersion(..))
-import Hyperspace.Actor (ActorSystem, getSingleton, newActorSystem, shutdownActorSystem)
-
-withSystem :: (ActorSystem -> IO a) -> IO a
-withSystem = bracket newActorSystem shutdownActorSystem
 
 spec :: Spec
 spec = describe "AtlasScheduleBroker" $ do
-  it "returns the latest report" $ withSystem $ \system -> do
-    brokerHandle <- getSingleton system atlasScheduleBrokerActorDef
+  it "returns the latest report" $ do
+    ref <- newAtlasScheduleRef
     let report1 = AtlasScheduleReport
           { asrSnapshotVersion = SnapshotVersion 1
           , asrJobCount = 1
@@ -30,7 +25,7 @@ spec = describe "AtlasScheduleBroker" $ do
           , asrDrainMs = 7
           , asrEnqueueMs = 11
           }
-    updateAtlasScheduleReport brokerHandle report1
-    updateAtlasScheduleReport brokerHandle report2
-    mbReport <- getAtlasScheduleReport brokerHandle
+    writeAtlasScheduleReport ref report1
+    writeAtlasScheduleReport ref report2
+    mbReport <- readAtlasScheduleRef ref
     mbReport `shouldBe` Just report2

@@ -18,6 +18,7 @@ import Actor.Data
   , DataSnapshot(..)
   , TerrainSnapshot(..)
   , getTerrainSnapshot
+  , getDataSnapshot
   , setBiomeChunkCount
   , setClimateChunkData
   , setLastSeed
@@ -27,17 +28,23 @@ import Actor.Data
   , setVegetationChunkData
   , setWeatherChunkData
   )
-import Actor.Log (Log, LogEntry(..), LogLevel(..), LogSnapshot(..), LogSnapshotReply, appendLog, requestLogSnapshot)
+import Actor.Log (Log, LogEntry(..), LogLevel(..), appendLog)
 import Actor.Render (RenderSnapshot(..))
-import Actor.SnapshotReceiver (SnapshotReceiver, SnapshotRef, SnapshotVersion(..))
+import Actor.SnapshotReceiver
+  ( DataSnapshotRef
+  , TerrainSnapshotRef
+  , SnapshotVersionRef
+  , writeDataSnapshot
+  , writeTerrainSnapshot
+  , bumpSnapshotVersion
+  )
 import Actor.Terrain (TerrainGenProgress(..), TerrainGenResult(..))
-import Actor.UI (Ui, UiState(..), UiSnapshotReply, getUiSnapshot, requestUiSnapshot, setUiGenerating)
-import Data.IORef (atomicModifyIORef')
+import Actor.UI (Ui, UiState(..), getUiSnapshot, setUiGenerating)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Data.Word (Word32, Word64)
+import Data.Word (Word64)
 import GHC.Clock (getMonotonicTimeNSec)
-import Hyperspace.Actor (ActorHandle, Protocol, cast, replyTo)
+import Hyperspace.Actor (ActorHandle, Protocol)
 import Seer.Timing (nsToMs)
 
 -- | Handles cached from the last UI action request.
@@ -46,19 +53,18 @@ data UiActionHandles = UiActionHandles
   , uahData :: !(ActorHandle Data (Protocol Data))
   , uahUi :: !(ActorHandle Ui (Protocol Ui))
   , uahAtlas :: !(ActorHandle AtlasManager (Protocol AtlasManager))
-  , uahSnapshot :: !(ActorHandle SnapshotReceiver (Protocol SnapshotReceiver))
-  , uahSnapshotRef :: !(Maybe SnapshotRef)
+  , uahDataSnapshotRef :: !DataSnapshotRef
+  , uahTerrainSnapshotRef :: !TerrainSnapshotRef
+  , uahSnapshotVersionRef :: !SnapshotVersionRef
   }
 
 handleTerrainProgress :: UiActionHandles -> TerrainGenProgress -> IO ()
 handleTerrainProgress handles progressMsg =
   appendLog (uahLog handles) (LogEntry LogInfo (renderTerrainProgress progressMsg))
-    >> requestLogSnapshot (uahLog handles) (replyTo @LogSnapshotReply (uahSnapshot handles))
 
 handleTerrainLog :: UiActionHandles -> LogEntry -> IO ()
-handleTerrainLog handles entry = do
+handleTerrainLog handles entry =
   appendLog (uahLog handles) entry
-  requestLogSnapshot (uahLog handles) (replyTo @LogSnapshotReply (uahSnapshot handles))
 
 renderTerrainProgress :: TerrainGenProgress -> Text
 renderTerrainProgress progressMsg =
@@ -108,34 +114,27 @@ applyTerrainResult handles resultMsg = do
   -- Fetch the authoritative snapshot from the Data actor so the version
   -- stamp matches what rebuildAtlasFor (view-mode buttons) will see.
   terrainSnap <- getTerrainSnapshot (uahData handles)
+  dataSnap <- getDataSnapshot (uahData handles)
+  -- Write per-domain snapshot refs directly — no actor roundtrip.
   castStart <- getMonotonicTimeNSec
-  castSnapshots handles dataSnap terrainSnap uiSnap
+  writeDataSnapshot (uahDataSnapshotRef handles) dataSnap
+  writeTerrainSnapshot (uahTerrainSnapshotRef handles) terrainSnap
+  bumpSnapshotVersion (uahSnapshotVersionRef handles)
   castEnd <- getMonotonicTimeNSec
-  logStep "terrain: cast snapshots" castStart castEnd
+  logStep "terrain: write snapshot refs" castStart castEnd
   atlasStart <- getMonotonicTimeNSec
   rebuildAtlas handles terrainSnap uiSnap
   atlasEnd <- getMonotonicTimeNSec
   logStep "terrain: enqueue atlas" atlasStart atlasEnd
   setUiGenerating (uahUi handles) False
-  requestUiSnapshot (uahUi handles) (replyTo @UiSnapshotReply (uahSnapshot handles))
-  -- Write directly to the SnapshotReceiver's IORef so the render thread
-  -- sees terrain data immediately, even if the SnapshotReceiver actor is
-  -- CPU-starved by atlas workers.
-  publishSnapshotDirect (uahSnapshotRef handles) uiSnap dataSnap terrainSnap
+  bumpSnapshotVersion (uahSnapshotVersionRef handles)
   completeNs <- getMonotonicTimeNSec
   appendLog (uahLog handles) (LogEntry LogInfo ("terrain: generation complete, awaiting render pipeline, chunks=" <> toText terrainCount <> " t=" <> nsText completeNs))
-  requestLogSnapshot (uahLog handles) (replyTo @LogSnapshotReply (uahSnapshot handles))
   end <- getMonotonicTimeNSec
   let elapsedMs :: Double
       elapsedMs = fromIntegral (end - start) / 1e6
       message = "terrain: apply result took " <> Text.pack (show elapsedMs) <> "ms t=" <> nsText end
   appendLog (uahLog handles) (LogEntry LogDebug message)
-
-castSnapshots :: UiActionHandles -> DataSnapshot -> TerrainSnapshot -> UiState -> IO ()
-castSnapshots handles dataSnap terrainSnap uiSnap = do
-  cast @"dataSnapshot" (uahSnapshot handles) #dataSnapshot dataSnap
-  cast @"terrainSnapshot" (uahSnapshot handles) #terrainSnapshot terrainSnap
-  cast @"uiSnapshot" (uahSnapshot handles) #uiSnapshot uiSnap
 
 rebuildAtlas :: UiActionHandles -> TerrainSnapshot -> UiState -> IO ()
 rebuildAtlas handles terrainSnap uiSnap = do
@@ -162,21 +161,6 @@ logElapsed logHandle label start end =
       elapsedMs = fromIntegral (end - start) / 1e6
       message = label <> " took " <> Text.pack (show elapsedMs) <> "ms"
   in appendLog logHandle (LogEntry LogDebug message)
-
--- | Write the render snapshot directly to the shared IORef, bypassing the
--- SnapshotReceiver actor.  This ensures the render thread sees terrain data
--- immediately even when the SnapshotReceiver is CPU-starved by atlas workers.
-publishSnapshotDirect :: Maybe SnapshotRef -> UiState -> DataSnapshot -> TerrainSnapshot -> IO ()
-publishSnapshotDirect Nothing _ _ _ = pure ()
-publishSnapshotDirect (Just ref) uiSnap dataSnap terrainSnap =
-  atomicModifyIORef' ref $ \(SnapshotVersion v, oldSnap) ->
-    let v' = SnapshotVersion (v + 1)
-        newSnap = oldSnap
-          { rsUi = uiSnap { uiGenerating = False }
-          , rsData = dataSnap
-          , rsTerrain = terrainSnap
-          }
-    in ((v', newSnap), ())
 
 nsText :: Word64 -> Text
 nsText ns = Text.pack (show ns)

@@ -13,11 +13,9 @@ module Actor.UiActions
   , UiActionRequest(..)
   , uiActionsActorDef
   , submitUiAction
-  , setUiActionsSnapshotRef
   ) where
 
 import Actor.Log (LogEntry)
-import Actor.SnapshotReceiver (SnapshotRef)
 import Actor.Terrain
   ( TerrainGenProgress
   , TerrainGenResult
@@ -42,14 +40,12 @@ import Hyperspace.Actor.QQ (hyperspace)
 data UiActionsState = UiActionsState
   { uasRunning :: !Bool
   , uasHandles :: !(Maybe UiActionHandles)
-  , uasSnapshotRef :: !(Maybe SnapshotRef)
   }
 
 emptyUiActionsState :: UiActionsState
 emptyUiActionsState = UiActionsState
   { uasRunning = False
   , uasHandles = Nothing
-  , uasSnapshotRef = Nothing
   }
 
 [hyperspace|
@@ -67,7 +63,6 @@ actor UiActions
   cast progress :: TerrainGenProgress
   cast result :: TerrainGenResult
   cast logMessage :: LogEntry
-  cast setSnapshotRef :: SnapshotRef
 
   initial emptyUiActionsState
   on_ run = \req st -> do
@@ -82,17 +77,11 @@ actor UiActions
   on_ logMessage = \entry st -> do
     withHandles st (\handles -> handleTerrainLog handles entry)
     pure st
-  onPure_ setSnapshotRef = \ref st -> st { uasSnapshotRef = Just ref }
 |]
 
 submitUiAction :: ActorHandle UiActions (Protocol UiActions) -> UiActionRequest -> IO ()
 submitUiAction handle req =
   cast @"run" handle #run req
-
--- | Register the snapshot IORef for direct writes from terrain completion.
-setUiActionsSnapshotRef :: ActorHandle UiActions (Protocol UiActions) -> SnapshotRef -> IO ()
-setUiActionsSnapshotRef handle ref =
-  cast @"setSnapshotRef" handle #setSnapshotRef ref
 
 rememberHandles :: UiActionRequest -> UiActionsState -> UiActionsState
 rememberHandles req st =
@@ -102,8 +91,9 @@ rememberHandles req st =
         , uahData = ahDataHandle handles
         , uahUi = ahUiHandle handles
         , uahAtlas = ahAtlasManagerHandle handles
-        , uahSnapshot = ahSnapshotReceiverHandle handles
-        , uahSnapshotRef = uasSnapshotRef st
+        , uahDataSnapshotRef = ahDataSnapshotRef handles
+        , uahTerrainSnapshotRef = ahTerrainSnapshotRef handles
+        , uahSnapshotVersionRef = ahSnapshotVersionRef handles
         }
     }
   where

@@ -21,9 +21,14 @@ module Actor.UI.State
   , uiActorDef
   , requestUiSnapshot
   , getUiSnapshot
+  , UiSnapshotRef
+  , setUiSnapshotRef
+  , readUiSnapshotRef
+  , newUiSnapshotRef
   ) where
 
 import Data.Aeson (Value)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
@@ -923,6 +928,27 @@ applySliderValue :: SliderId -> Float -> UiState -> UiState
 applySliderValue sliderIdValue value st =
   sliderStatePut (sliderStateBindingForId sliderIdValue) value st
 
+-- | Shared reference for lock-free UI snapshot reads by the render loop.
+type UiSnapshotRef = IORef UiState
+
+-- | Internal actor state wrapping 'UiState' with an optional self-publishing
+-- IORef.  The hyperspace actor uses this as its state type so that every
+-- 'UiUpdate' mutation triggers a write to the shared IORef.
+data UiActorState = UiActorState
+  { uasUi :: !UiState
+  , uasSnapshotRef :: !(Maybe UiSnapshotRef)
+  }
+
+emptyUiActorState :: UiActorState
+emptyUiActorState = UiActorState emptyUiState Nothing
+
+-- | Publish the current UI snapshot to the shared 'IORef', if registered.
+publishUiSnapshot :: UiActorState -> IO ()
+publishUiSnapshot st =
+  case uasSnapshotRef st of
+    Nothing -> pure ()
+    Just ref -> writeIORef ref (uasUi st)
+
 uiSnapshotTag :: OpTag "uiSnapshot"
 uiSnapshotTag = OpTag
 
@@ -931,7 +957,7 @@ replyprotocol UiSnapshotReply =
   cast uiSnapshot :: UiState
 
 actor Ui
-  state UiState
+  state UiActorState
   lifetime Singleton
   schedule pinned 1
   noDeps
@@ -939,14 +965,22 @@ actor Ui
 
   cast update :: UiUpdate
   cast snapshotAsync :: () reply UiSnapshotReply
+  cast setSnapshotRef :: UiSnapshotRef
   call snapshot :: () -> UiState
 
-  initial emptyUiState
-  onPure_ update = \upd st -> applyUpdate upd st
+  initial emptyUiActorState
+  on_ update = \upd st -> do
+    let st' = st { uasUi = applyUpdate upd (uasUi st) }
+    publishUiSnapshot st'
+    pure st'
   onReply snapshotAsync = \() replyTo st -> do
-    replyCast replyTo uiSnapshotTag st
+    replyCast replyTo uiSnapshotTag (uasUi st)
     pure st
-  onPure snapshot = \() st -> (st, st)
+  on_ setSnapshotRef = \ref st -> do
+    let st' = st { uasSnapshotRef = Just ref }
+    publishUiSnapshot st'
+    pure st'
+  onPure snapshot = \() st -> (st, uasUi st)
 |]
 
 getUiSnapshot :: ActorHandle Ui (Protocol Ui) -> IO UiState
@@ -956,6 +990,23 @@ getUiSnapshot handle =
 requestUiSnapshot :: ActorHandle Ui (Protocol Ui) -> ReplyTo UiSnapshotReply -> IO ()
 requestUiSnapshot handle replyTo =
   castReply @"snapshotAsync" handle replyTo #snapshotAsync ()
+
+-- | Register a shared 'IORef' for self-publishing UI snapshots.
+--
+-- Once registered, the Ui actor writes its current 'UiState' to this ref
+-- after every state change, enabling the render thread to read the latest
+-- snapshot without blocking on the actor's mailbox.
+setUiSnapshotRef :: ActorHandle Ui (Protocol Ui) -> UiSnapshotRef -> IO ()
+setUiSnapshotRef handle ref =
+  cast @"setSnapshotRef" handle #setSnapshotRef ref
+
+-- | Read the latest UI snapshot from the shared 'IORef'.
+readUiSnapshotRef :: UiSnapshotRef -> IO UiState
+readUiSnapshotRef = readIORef
+
+-- | Create a new 'UiSnapshotRef' with an empty initial snapshot.
+newUiSnapshotRef :: IO UiSnapshotRef
+newUiSnapshotRef = newIORef emptyUiState
 
 clampChunk :: Int -> Int
 clampChunk size =

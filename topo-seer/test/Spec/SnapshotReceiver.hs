@@ -1,49 +1,43 @@
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE OverloadedLabels #-}
-{-# LANGUAGE TypeApplications #-}
 
 module Spec.SnapshotReceiver (spec) where
 
-import Control.Exception (bracket)
-import Hyperspace.Actor (ActorSystem, cast, getSingleton, newActorSystem, shutdownActorSystem)
 import Test.Hspec
 import Actor.Data (DataSnapshot(..), TerrainSnapshot(..))
 import Topo.Overlay (emptyOverlayStore)
-import Actor.Log (LogLevel(..), LogSnapshot(..))
-import Actor.Render (RenderSnapshot(..))
-import Actor.SnapshotReceiver (SnapshotVersion(..), getSnapshot, snapshotReceiverActorDef)
-import Actor.UI (emptyUiState)
-
-withSystem :: (ActorSystem -> IO a) -> IO a
-withSystem = bracket newActorSystem shutdownActorSystem
+import Actor.SnapshotReceiver
+  ( SnapshotVersion(..)
+  , newDataSnapshotRef
+  , newTerrainSnapshotRef
+  , newSnapshotVersionRef
+  , readDataSnapshot
+  , readTerrainSnapshot
+  , readSnapshotVersion
+  , writeDataSnapshot
+  , writeTerrainSnapshot
+  , bumpSnapshotVersion
+  )
 
 spec :: Spec
-spec = describe "SnapshotReceiver" $ do
-  it "starts with the empty snapshot" $ withSystem $ \system -> do
-    handle <- getSingleton system snapshotReceiverActorDef
-    (version, snapshot) <- getSnapshot handle
-    version `shouldBe` SnapshotVersion 0
-    snapshot `shouldBe` emptyRenderSnapshot
+spec = describe "SnapshotReceiver IORef helpers" $ do
+  it "data ref starts with default and round-trips" $ do
+    let initial = DataSnapshot 0 0 Nothing
+    ref <- newDataSnapshotRef initial
+    readDataSnapshot ref >>= (`shouldBe` initial)
+    let updated = DataSnapshot 2 3 (Just 10)
+    writeDataSnapshot ref updated
+    readDataSnapshot ref >>= (`shouldBe` updated)
 
-  it "increments the version when snapshots update" $ withSystem $ \system -> do
-    handle <- getSingleton system snapshotReceiverActorDef
-    let logSnap = LogSnapshot [] False 1 LogInfo
-    cast @"logSnapshot" handle #logSnapshot logSnap
-    (version1, snapshot1) <- getSnapshot handle
-    version1 `shouldBe` SnapshotVersion 1
-    rsLog snapshot1 `shouldBe` logSnap
+  it "terrain ref starts with default and round-trips" $ do
+    let initial = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore
+    ref <- newTerrainSnapshotRef initial
+    readTerrainSnapshot ref >>= (`shouldBe` initial)
 
-    let dataSnap = DataSnapshot 2 3 (Just 10)
-    cast @"dataSnapshot" handle #dataSnapshot dataSnap
-    (version2, snapshot2) <- getSnapshot handle
-    version2 `shouldBe` SnapshotVersion 2
-    rsData snapshot2 `shouldBe` dataSnap
-    rsLog snapshot2 `shouldBe` logSnap
-
-emptyRenderSnapshot :: RenderSnapshot
-emptyRenderSnapshot = RenderSnapshot
-  { rsUi = emptyUiState
-  , rsLog = LogSnapshot [] False 0 LogDebug
-  , rsData = DataSnapshot 0 0 Nothing
-  , rsTerrain = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore
-  }
+  it "version ref starts at 0 and bumps monotonically" $ do
+    ref <- newSnapshotVersionRef
+    readSnapshotVersion ref >>= (`shouldBe` SnapshotVersion 0)
+    bumpSnapshotVersion ref
+    readSnapshotVersion ref >>= (`shouldBe` SnapshotVersion 1)
+    bumpSnapshotVersion ref
+    bumpSnapshotVersion ref
+    readSnapshotVersion ref >>= (`shouldBe` SnapshotVersion 3)

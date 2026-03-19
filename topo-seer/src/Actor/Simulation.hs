@@ -42,11 +42,10 @@ import Actor.AtlasManager
   )
 import Actor.Data
   ( Data
-  , DataSnapshotReply
   , TerrainSnapshot(..)
+  , getDataSnapshot
   , getTerrainSnapshot
   , replaceTerrainData
-  , requestDataSnapshot
   )
 import Actor.Log
   ( Log
@@ -54,7 +53,7 @@ import Actor.Log
   , LogLevel(..)
   , appendLog
   )
-import Actor.SnapshotReceiver (SnapshotReceiver)
+import Actor.SnapshotReceiver (DataSnapshotRef, TerrainSnapshotRef, SnapshotVersionRef, writeDataSnapshot, writeTerrainSnapshot, bumpSnapshotVersion)
 import Actor.UI
   ( Ui
   , UiState(..)
@@ -98,7 +97,9 @@ data SimHandles = SimHandles
   { shDataHandle     :: !(ActorHandle Data (Protocol Data))
   , shLogHandle      :: !(ActorHandle Log (Protocol Log))
   , shUiHandle       :: !(ActorHandle Ui (Protocol Ui))
-  , shSnapshotHandle :: !(ActorHandle SnapshotReceiver (Protocol SnapshotReceiver))
+  , shDataSnapshotRef :: !DataSnapshotRef
+  , shTerrainSnapshotRef :: !TerrainSnapshotRef
+  , shSnapshotVersionRef :: !SnapshotVersionRef
   , shAtlasHandle    :: !(ActorHandle AtlasManager (Protocol AtlasManager))
   }
 
@@ -209,22 +210,26 @@ requestSimTick :: ActorHandle Simulation (Protocol Simulation) -> Word64 -> IO (
 requestSimTick handle tickTarget =
   cast @"tick" handle #tick tickTarget
 
--- | Wire the data, log, UI, snapshot, and atlas handles into the simulation actor.
+-- | Wire the data, log, UI, snapshot refs, and atlas handles into the simulation actor.
 -- Must be called before any tick requests.
 setSimHandles
   :: ActorHandle Simulation (Protocol Simulation)
   -> ActorHandle Data (Protocol Data)
   -> ActorHandle Log (Protocol Log)
   -> ActorHandle Ui (Protocol Ui)
-  -> ActorHandle SnapshotReceiver (Protocol SnapshotReceiver)
+  -> DataSnapshotRef
+  -> TerrainSnapshotRef
+  -> SnapshotVersionRef
   -> ActorHandle AtlasManager (Protocol AtlasManager)
   -> IO ()
-setSimHandles simH dataH logH uiH snapshotH atlasH =
+setSimHandles simH dataH logH uiH dataSnapRef terrainSnapRef versionRef atlasH =
   cast @"setHandles" simH #setHandles SimHandles
     { shDataHandle = dataH
     , shLogHandle = logH
     , shUiHandle = uiH
-    , shSnapshotHandle = snapshotH
+    , shDataSnapshotRef = dataSnapRef
+    , shTerrainSnapshotRef = terrainSnapRef
+    , shSnapshotVersionRef = versionRef
     , shAtlasHandle = atlasH
     }
 
@@ -317,9 +322,11 @@ processTick requestedTick st =
           replaceTerrainData (shDataHandle handles) world''
           setUiOverlayNames (shUiHandle handles) (overlayNames (twOverlays world''))
           setUiSimTickCount (shUiHandle handles) appliedTick
-          requestDataSnapshot (shDataHandle handles)
-            (replyTo @DataSnapshotReply (shSnapshotHandle handles))
+          dataSnap <- getDataSnapshot (shDataHandle handles)
           terrainSnap <- getTerrainSnapshot (shDataHandle handles)
+          writeDataSnapshot (shDataSnapshotRef handles) dataSnap
+          writeTerrainSnapshot (shTerrainSnapshotRef handles) terrainSnap
+          bumpSnapshotVersion (shSnapshotVersionRef handles)
           uiSnap <- getUiSnapshot (shUiHandle handles)
           let atlasKey = AtlasKey (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
               mkJob scale = AtlasJob

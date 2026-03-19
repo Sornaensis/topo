@@ -15,7 +15,7 @@ module Actor.AtlasWorker
 
 import Actor.AtlasCache (AtlasKey(..))
 import Actor.AtlasResult (AtlasBuildResult(..))
-import Actor.AtlasResultBroker (AtlasResultBroker, enqueueAtlasResult)
+import Actor.AtlasResultBroker (AtlasResultRef, pushAtlasResult)
 import Actor.Data (TerrainSnapshot(..))
 import Actor.UI (ViewMode(..))
 import Control.Concurrent (threadDelay)
@@ -38,7 +38,7 @@ data AtlasBuild = AtlasBuild
   , abWaterLevel :: Float
   , abTerrain :: TerrainSnapshot
   , abScale :: Int
-  , abResultBroker :: ActorHandle AtlasResultBroker (Protocol AtlasResultBroker)
+  , abResultRef :: !AtlasResultRef
   }
 
 [hyperspace|
@@ -111,7 +111,7 @@ actor AtlasWorker
                      pure ()
                    let r = buildResult tile
                    _ <- evaluate r
-                   enqueueAtlasResult (abResultBroker job) r) tiles
+                   pushAtlasResult (abResultRef job) r) tiles
         threadDelay 100
         pure st
 |]
