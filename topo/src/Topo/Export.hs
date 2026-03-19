@@ -591,26 +591,6 @@ getClimateChunk config = do
     , ccPrecipSeasonality = ccPrecipSeasonality
     }
 
--- | Decode the legacy climate chunk format (v1–v12) without seasonality
--- fields.  Missing fields default to zero vectors.
-getClimateChunkV1 :: WorldConfig -> Get ClimateChunk
-getClimateChunkV1 config = do
-  n <- getCount config
-  ccTempAvg <- getVectorFloat n
-  ccPrecipAvg <- getVectorFloat n
-  ccWindDirAvg <- getVectorFloat n
-  ccWindSpdAvg <- getVectorFloat n
-  let zeros = U.replicate n 0
-  pure ClimateChunk
-    { ccTempAvg = ccTempAvg
-    , ccPrecipAvg = ccPrecipAvg
-    , ccWindDirAvg = ccWindDirAvg
-    , ccWindSpdAvg = ccWindSpdAvg
-    , ccHumidityAvg = zeros
-    , ccTempRange = zeros
-    , ccPrecipSeasonality = zeros
-    }
-
 getWeatherChunk :: WorldConfig -> Get WeatherChunk
 getWeatherChunk config = do
   n <- getCount config

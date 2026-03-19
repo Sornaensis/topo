@@ -93,6 +93,7 @@ library
       Topo.Units.Config
       Topo.Simulation
       Topo.Simulation.DAG
+      Topo.Plugin.DataResource
       Topo.Plugin.RPC
       Topo.Plugin.RPC.Manifest
       Topo.Plugin.RPC.Protocol

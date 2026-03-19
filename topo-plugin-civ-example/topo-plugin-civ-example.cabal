@@ -23,7 +23,9 @@ executable topo-plugin-civ-example
   build-depends:
       aeson >=2.1 && <2.3
     , base >=4.18 && <5
+    , bytestring
     , containers
     , text
+    , topo
     , topo-plugin-sdk
   default-language: Haskell2010
