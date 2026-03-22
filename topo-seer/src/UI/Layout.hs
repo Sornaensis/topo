@@ -36,6 +36,13 @@ module UI.Layout
   , pipelineMoveDownRect
   , pipelineTickButtonRect
   , pipelineTickRateBarRect
+  , pipelineExpandRect
+  , pipelineParamBarRect
+  , pipelineParamCheckRect
+    -- Data browser (ConfigData tab)
+  , dataBrowserItemRect
+  , dataBrowserPagePrevRect
+  , dataBrowserPageNextRect
   , configParamRowRect
   , configChunkMinusRect
   , configChunkPlusRect
@@ -164,15 +171,15 @@ configPanelRect (Layout (V2 w h) logHeight seedWidth) =
       panelX = w - desiredW - 16
   in Rect (V2 panelX (16 + topBarHeight), V2 desiredW (h - logHeight - 32 - topBarHeight))
 
-configTabRects :: Layout -> (Rect, Rect, Rect, Rect, Rect, Rect, Rect)
+configTabRects :: Layout -> (Rect, Rect, Rect, Rect, Rect, Rect, Rect, Rect)
 configTabRects layout =
   let Rect (V2 x y, V2 w _) = configPanelRect layout
       pad = 12
       tabH = 22
       gap = 4
       toggleH = 22
-      available = w - pad * 2 - gap * 6
-      tabW = available `div` 7
+      available = w - pad * 2 - gap * 7
+      tabW = available `div` 8
       y0 = y + 8 + toggleH + 8
       r1 = Rect (V2 (x + pad) y0, V2 tabW tabH)
       r2 = Rect (V2 (x + pad + (tabW + gap)) y0, V2 tabW tabH)
@@ -181,7 +188,8 @@ configTabRects layout =
       r5 = Rect (V2 (x + pad + (tabW + gap) * 4) y0, V2 tabW tabH)
       r6 = Rect (V2 (x + pad + (tabW + gap) * 5) y0, V2 tabW tabH)
       r7 = Rect (V2 (x + pad + (tabW + gap) * 6) y0, V2 tabW tabH)
-  in (r1, r2, r3, r4, r5, r6, r7)
+      r8 = Rect (V2 (x + pad + (tabW + gap) * 7) y0, V2 tabW tabH)
+  in (r1, r2, r3, r4, r5, r6, r7, r8)
 
 configChunkMinusRect :: Layout -> Rect
 configChunkMinusRect = leftChunkMinusRect
@@ -679,3 +687,66 @@ pipelineTickRateBarRect index layout =
       pad = 12
       barW = 120
   in Rect (V2 (x + pad) (rowY + 4), V2 barW (rowHeight - 8))
+
+-- | Expand/collapse toggle rect for a plugin at the given pipeline row index.
+--
+-- Returns a 12x12 rect positioned to the left of the move-up button.
+pipelineExpandRect :: Int -> Layout -> Rect
+pipelineExpandRect index layout =
+  let Rect (V2 x rowY, V2 w rowHeight) = configScrollRowRect index layout
+      expandSize = 12
+      -- Position just to the left of the move-up button area
+      rightPad = 12
+      btnSize = 14
+      expandX = x + w - rightPad - btnSize * 2 - 4 - expandSize - 6
+      expandY = rowY + (rowHeight - expandSize) `div` 2
+  in Rect (V2 expandX expandY, V2 expandSize expandSize)
+
+-- | Slider bar rect for a plugin parameter at the given pipeline row index.
+--
+-- Indented to visually nest under the plugin row, spanning most of the row width.
+pipelineParamBarRect :: Int -> Layout -> Rect
+pipelineParamBarRect index layout =
+  let Rect (V2 x rowY, V2 w rowHeight) = configScrollRowRect index layout
+      indent = 36
+      rightPad = 12
+      barW = w - indent - rightPad
+  in Rect (V2 (x + indent) (rowY + 4), V2 barW (rowHeight - 8))
+
+-- | Checkbox rect for a boolean plugin parameter at the given pipeline row index.
+pipelineParamCheckRect :: Int -> Layout -> Rect
+pipelineParamCheckRect index layout =
+  let Rect (V2 x rowY, V2 _w rowHeight) = configScrollRowRect index layout
+      indent = 36
+      checkboxSize = 16
+      checkY = rowY + (rowHeight - checkboxSize) `div` 2
+  in Rect (V2 (x + indent) checkY, V2 checkboxSize checkboxSize)
+
+-- | Clickable item rect for a data browser row at the given row index.
+--
+-- Spans most of the row width with a small left pad.
+dataBrowserItemRect :: Int -> Layout -> Rect
+dataBrowserItemRect index layout =
+  let Rect (V2 x rowY, V2 w rowHeight) = configScrollRowRect index layout
+      pad = 8
+  in Rect (V2 (x + pad) rowY, V2 (w - pad * 2) rowHeight)
+
+-- | Previous-page button rect for the data browser, placed at the given row index.
+dataBrowserPagePrevRect :: Int -> Layout -> Rect
+dataBrowserPagePrevRect index layout =
+  let Rect (V2 x rowY, V2 _w rowHeight) = configScrollRowRect index layout
+      pad = 8
+      btnW = 40
+      btnH = min 20 rowHeight
+      btnY = rowY + (rowHeight - btnH) `div` 2
+  in Rect (V2 (x + pad) btnY, V2 btnW btnH)
+
+-- | Next-page button rect for the data browser, placed at the given row index.
+dataBrowserPageNextRect :: Int -> Layout -> Rect
+dataBrowserPageNextRect index layout =
+  let Rect (V2 x rowY, V2 _w rowHeight) = configScrollRowRect index layout
+      pad = 8
+      btnW = 40
+      btnH = min 20 rowHeight
+      btnY = rowY + (rowHeight - btnH) `div` 2
+  in Rect (V2 (x + pad + btnW + 8) btnY, V2 btnW btnH)

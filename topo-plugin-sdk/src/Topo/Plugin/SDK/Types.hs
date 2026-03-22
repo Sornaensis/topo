@@ -25,6 +25,10 @@ module Topo.Plugin.SDK.Types
   , SimulationTickResult(..)
   , defaultGeneratorTickResult
   , defaultSimulationTickResult
+    -- * Data service
+  , DataResourceDef(..)
+  , DataHandler(..)
+  , noDataHandler
     -- * Plugin context
   , PluginContext(..)
     -- * Defaults
@@ -35,6 +39,11 @@ import Data.Aeson (Value(..))
 import Data.Map.Strict (Map)
 import Data.Text (Text)
 import Data.Word (Word64)
+import Topo.Plugin.DataResource (DataResourceSchema)
+import Topo.Plugin.RPC.DataService
+  ( DataQuery, DataRecord, DataMutation
+  , QueryResult, MutateResult
+  )
 import Topo.World (TerrainWorld)
 
 ------------------------------------------------------------------------
@@ -160,6 +169,51 @@ data PluginContext = PluginContext
     -- ^ World generation seed.
   , pcLog    :: Text -> IO ()
     -- ^ Logging callback (messages appear in topo-seer log panel).
+  , pcWorldPath :: !(Maybe FilePath)
+    -- ^ Path to the current world save directory, if known.
+  }
+
+------------------------------------------------------------------------
+-- Data service
+------------------------------------------------------------------------
+
+-- | A data resource definition pairing a schema with its handler.
+--
+-- Plugins declare data resources via 'pdDataResources' on 'PluginDef'.
+-- The 'drdSchema' describes the resource to the host; the 'drdHandler'
+-- implements the actual query and mutation logic.
+data DataResourceDef = DataResourceDef
+  { drdSchema  :: !DataResourceSchema
+    -- ^ Schema describing fields, operations, and key.
+  , drdHandler :: !DataHandler
+    -- ^ Callbacks that implement the resource's CRUD operations.
+  }
+
+-- | Callbacks for handling data queries and mutations.
+--
+-- Each callback is optional (@Maybe@).  When the host sends a
+-- query or mutation for an operation whose callback is @Nothing@,
+-- the SDK returns a "not supported" error automatically.
+data DataHandler = DataHandler
+  { dhQuery      :: !(Maybe (PluginContext -> DataQuery -> IO (Either Text QueryResult)))
+    -- ^ Handle a data query (list, by-key, by-hex, by-field).
+  , dhMutate     :: !(Maybe (PluginContext -> DataMutation -> IO (Either Text MutateResult)))
+    -- ^ Handle a data mutation (create, update, delete, set-hex).
+  }
+
+-- | A data handler with no capabilities — all callbacks are 'Nothing'.
+--
+-- Use this as a starting point and override individual fields:
+--
+-- @
+-- myHandler = noDataHandler
+--   { dhQuery = Just $ \\ctx query -> ...
+--   }
+-- @
+noDataHandler :: DataHandler
+noDataHandler = DataHandler
+  { dhQuery  = Nothing
+  , dhMutate = Nothing
   }
 
 ------------------------------------------------------------------------
@@ -199,6 +253,10 @@ data PluginDef = PluginDef
     -- ^ Generator pipeline participation.
   , pdSimulation :: !(Maybe SimulationDef)
     -- ^ Simulation DAG participation.
+  , pdDataDirectory :: !(Maybe FilePath)
+    -- ^ Data subdirectory relative to the world save path.
+  , pdDataResources :: ![DataResourceDef]
+    -- ^ Data resource definitions with schemas and handlers.
   }
 
 -- | A minimal plugin definition with no capabilities.
@@ -206,10 +264,12 @@ data PluginDef = PluginDef
 -- Override fields as needed.
 defaultPluginDef :: PluginDef
 defaultPluginDef = PluginDef
-  { pdName       = "unnamed-plugin"
-  , pdVersion    = "0.0.0"
-  , pdParams     = []
-  , pdSchemaFile = Nothing
-  , pdGenerator  = Nothing
-  , pdSimulation = Nothing
+  { pdName          = "unnamed-plugin"
+  , pdVersion       = "0.0.0"
+  , pdParams        = []
+  , pdSchemaFile    = Nothing
+  , pdGenerator     = Nothing
+  , pdSimulation    = Nothing
+  , pdDataDirectory = Nothing
+  , pdDataResources = []
   }

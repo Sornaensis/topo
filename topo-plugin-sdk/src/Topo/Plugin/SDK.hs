@@ -60,6 +60,23 @@ module Topo.Plugin.SDK
   , defaultSimulationTickResult
     -- * Context
   , PluginContext(..)
+    -- * Data resource schemas
+  , DataResourceSchema(..)
+  , DataFieldDef(..)
+  , DataFieldType(..)
+  , DataConstructorDef(..)
+  , DataOperations(..)
+  , noOperations
+  , allOperations
+    -- * Data service handlers
+  , DataResourceDef(..)
+  , DataHandler(..)
+  , noDataHandler
+  , DataQuery(..)
+  , DataRecord(..)
+  , DataMutation(..)
+  , QueryResult(..)
+  , MutateResult(..)
     -- * Typed payload helpers
   , decodeOwnOverlay
   , decodeDependencyOverlay
@@ -72,6 +89,10 @@ module Topo.Plugin.SDK
   , simulationResultWithTerrainWrites
   , generatorResultFromTerrain
   , generatorResultFromTerrainAndOverlay
+    -- * Overlay data access (re-exported from "Topo.Plugin.SDK.Overlay")
+  , module Topo.Plugin.SDK.Overlay
+    -- * Terrain data access (re-exported from "Topo.Plugin.SDK.Terrain")
+  , module Topo.Plugin.SDK.Terrain
     -- * Entry point
   , runPlugin
     -- * Manifest utilities
@@ -80,5 +101,23 @@ module Topo.Plugin.SDK
   ) where
 
 import Topo.Plugin.SDK.Types
+import Topo.Plugin.SDK.Overlay
+import Topo.Plugin.SDK.Terrain
 import Topo.Plugin.SDK.Payload
 import Topo.Plugin.SDK.Runner (runPlugin, generateManifest, writeManifest)
+import Topo.Plugin.DataResource
+  ( DataResourceSchema(..)
+  , DataFieldDef(..)
+  , DataFieldType(..)
+  , DataConstructorDef(..)
+  , DataOperations(..)
+  , noOperations
+  , allOperations
+  )
+import Topo.Plugin.RPC.DataService
+  ( DataQuery(..)
+  , DataRecord(..)
+  , DataMutation(..)
+  , QueryResult(..)
+  , MutateResult(..)
+  )

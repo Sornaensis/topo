@@ -14,6 +14,7 @@ import Hyperspace.Actor (ActorHandle, Protocol)
 import qualified SDL
 import Seer.Render.Atlas (AtlasTextureCache)
 import Seer.Render.Terrain (TerrainCache)
+import Seer.Screenshot (ScreenshotRequestRef)
 import System.IO (Handle)
 import UI.Font (FontCache)
 import UI.TerrainCache (ChunkTextureCache)
@@ -39,4 +40,5 @@ data RenderContext = RenderContext
   , rcFontCache :: !(Maybe FontCache)
   , rcRenderTargetOk :: !Bool
   , rcTraceHandle :: !(Maybe Handle)
+  , rcScreenshotRef :: !ScreenshotRequestRef
   }

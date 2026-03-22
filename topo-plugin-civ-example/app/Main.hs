@@ -18,10 +18,10 @@ module Main (main) where
 import Control.Exception (IOException, try)
 import qualified Data.ByteString as BS
 import Data.Aeson (Value(..))
+import qualified Data.IntMap.Strict as IntMap
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text, pack)
-import Topo.Overlay.Schema (OverlaySchema, parseOverlaySchema)
 import Topo.Plugin.SDK
 
 ------------------------------------------------------------------------
@@ -48,12 +48,13 @@ defaultHabitabilityThreshold = 0.3
 -- Plugin definition
 ------------------------------------------------------------------------
 
--- | Civilization plugin: overlay + generator + simulation.
+-- | Civilization plugin: overlay + generator + simulation + data service.
 civPlugin :: PluginDef
 civPlugin = defaultPluginDef
   { pdName       = "civilization"
   , pdVersion    = "1.0.0"
   , pdSchemaFile = Just "civilization.toposchema"
+  , pdDataResources = [settlementsResource, culturesResource]
   , pdParams     =
       [ ParamDef
           { paramName    = "growth_rate"
@@ -115,6 +116,110 @@ civPlugin = defaultPluginDef
   }
 
 ------------------------------------------------------------------------
+-- Data resources
+------------------------------------------------------------------------
+
+-- | Settlements data resource — read-only listing of city/village hexes.
+settlementsResource :: DataResourceDef
+settlementsResource = DataResourceDef
+  { drdSchema = DataResourceSchema
+      { drsName       = "settlements"
+      , drsLabel      = "Settlements"
+      , drsHexBound   = True
+      , drsFields     =
+          [ DataFieldDef "name"       DFText  "Name"       False Nothing
+          , DataFieldDef "population" DFInt   "Population" False Nothing
+          , DataFieldDef "is_city"    DFBool  "City?"      False Nothing
+          ]
+      , drsOperations = noOperations { doList = True, doGet = True, doQueryByHex = True }
+      , drsKeyField   = "name"
+      , drsOverlay    = Nothing
+      }
+  , drdHandler = noDataHandler
+      { dhQuery = Just querySettlements
+      }
+  }
+
+-- | Cultures data resource — read-only cultural group listing.
+culturesResource :: DataResourceDef
+culturesResource = DataResourceDef
+  { drdSchema = DataResourceSchema
+      { drsName       = "cultures"
+      , drsLabel      = "Cultures"
+      , drsHexBound   = False
+      , drsFields     =
+          [ DataFieldDef "culture_id" DFText  "Culture ID"  False Nothing
+          , DataFieldDef "name"       DFText  "Name"        False Nothing
+          , DataFieldDef "population" DFInt   "Population"  False Nothing
+          ]
+      , drsOperations = noOperations { doList = True, doGet = True }
+      , drsKeyField   = "culture_id"
+      , drsOverlay    = Nothing
+      }
+  , drdHandler = noDataHandler
+      { dhQuery = Just queryCultures
+      }
+  }
+
+-- | Query handler for settlements — returns sample settlement data.
+--
+-- Supports 'QueryAll' (list all) and 'QueryByKey' (by name).
+-- Returns hardcoded sample data representing the initial world state.
+querySettlements :: PluginContext -> DataQuery -> IO (Either Text QueryResult)
+querySettlements _ctx query = do
+  let allSettlements =
+        [ DataRecord (Map.fromList
+            [ ("name", String "Ironhollow")
+            , ("population", Number 2500)
+            , ("is_city", Bool True)
+            ])
+        , DataRecord (Map.fromList
+            [ ("name", String "Millbrook")
+            , ("population", Number 450)
+            , ("is_city", Bool False)
+            ])
+        , DataRecord (Map.fromList
+            [ ("name", String "Stonewatch")
+            , ("population", Number 1200)
+            , ("is_city", Bool True)
+            ])
+        ]
+  case query of
+    QueryAll ->
+      pure (Right (QueryResult "settlements" allSettlements (Just (length allSettlements))))
+    QueryByKey (String keyName) ->
+      let matching = filter (\(DataRecord m) -> Map.lookup "name" m == Just (String keyName)) allSettlements
+      in pure (Right (QueryResult "settlements" matching (Just (length matching))))
+    _ ->
+      pure (Right (QueryResult "settlements" [] (Just 0)))
+
+-- | Query handler for cultures — returns sample cultural group data.
+--
+-- Supports 'QueryAll' (list all) and 'QueryByKey' (by culture_id).
+queryCultures :: PluginContext -> DataQuery -> IO (Either Text QueryResult)
+queryCultures _ctx query = do
+  let allCultures =
+        [ DataRecord (Map.fromList
+            [ ("culture_id", String "dwarven")
+            , ("name", String "Dwarves of Ironhollow")
+            , ("population", Number 3100)
+            ])
+        , DataRecord (Map.fromList
+            [ ("culture_id", String "human")
+            , ("name", String "Millbrook Settlers")
+            , ("population", Number 1650)
+            ])
+        ]
+  case query of
+    QueryAll ->
+      pure (Right (QueryResult "cultures" allCultures (Just (length allCultures))))
+    QueryByKey (String keyId) ->
+      let matching = filter (\(DataRecord m) -> Map.lookup "culture_id" m == Just (String keyId)) allCultures
+      in pure (Right (QueryResult "cultures" matching (Just (length matching))))
+    _ ->
+      pure (Right (QueryResult "cultures" [] (Just 0)))
+
+------------------------------------------------------------------------
 -- Generator: seed initial population
 ------------------------------------------------------------------------
 
@@ -150,22 +255,20 @@ runCivGenerator ctx = do
 
 -- | Tick civilization simulation.
 --
--- Currently a stub that logs the invocation and parameters.
--- A full implementation would:
+-- For each populated hex in the civilization overlay:
 --
--- 1. Read the current civilization overlay
--- 2. Read the weather overlay (dependency) for climate effects
--- 3. Compute population growth based on food supply and climate
--- 4. Accumulate infrastructure based on population
--- 5. Promote hexes to cities above the threshold
--- 6. Optionally compute trade value if trade is enabled
--- 7. Return the updated overlay to the host
+-- 1. Grow population by the configured growth rate
+-- 2. Accumulate infrastructure proportional to population
+-- 3. Promote hexes above the city threshold to cities
+-- 4. Return the updated overlay
 runCivSimTick :: PluginContext -> IO (Either Text SimulationTickResult)
 runCivSimTick ctx = do
   pcLog ctx "civilization: simulation tick"
   let params = pcParams ctx
-  pcLog ctx ("civilization: growth rate = " <> showParam params "growth_rate")
-  pcLog ctx ("civilization: trade enabled = " <> showParam params "enable_trade")
+      growthRate = paramFloat params "growth_rate" defaultGrowthRate
+      infraCost  = paramFloat params "infra_cost"  defaultInfraCost
+      cityThresh = paramFloat params "city_threshold" defaultCityThreshold
+  pcLog ctx ("civilization: growth rate = " <> pack (show growthRate))
   schemaResult <- loadCivilizationSchema
   case schemaResult of
     Left schemaErr ->
@@ -175,15 +278,71 @@ runCivSimTick ctx = do
         Left decodeErr ->
           pure (Left ("civilization: failed to decode own overlay payload: " <> decodeErr))
         Right overlay -> do
-          -- TODO: decode dependency overlays (e.g. weather), update
-          -- overlay values, and optionally emit terrain writes.
-          pcLog ctx "civilization: own overlay payload decoded"
+          let overlay' = tickOverlay growthRate infraCost cityThresh schema overlay
           pcLog ctx "civilization: tick complete"
-          pure (Right (simulationResultFromOverlay overlay))
+          pure (Right (simulationResultFromOverlay overlay'))
+
+-- | Apply one simulation tick to the civilization overlay.
+--
+-- Iterates over all populated tiles in all chunks, updating
+-- population, infrastructure, and city flag.
+tickOverlay :: Double -> Double -> Double -> OverlaySchema -> Overlay -> Overlay
+tickOverlay growthRate infraCost cityThresh schema overlay =
+  case ovData overlay of
+    SparseData sm ->
+      let sm' = IntMap.map (tickChunk growthRate infraCost cityThresh schema) sm
+      in overlay { ovData = SparseData sm' }
+    DenseData _ ->
+      -- Dense storage not used by this overlay; pass through unchanged.
+      overlay
+
+-- | Apply growth to every populated tile in a sparse chunk.
+tickChunk :: Double -> Double -> Double -> OverlaySchema -> OverlayChunk -> OverlayChunk
+tickChunk growthRate infraCost cityThresh schema (OverlayChunk tileMap) =
+  OverlayChunk (IntMap.map (tickRecord growthRate infraCost cityThresh schema) tileMap)
+
+-- | Update a single tile record:
+--
+-- * population += population * growthRate
+-- * infrastructure += population * infraCost (capped at 1.0)
+-- * is_city = population >= cityThreshold
+tickRecord :: Double -> Double -> Double -> OverlaySchema -> OverlayRecord -> OverlayRecord
+tickRecord growthRate infraCost cityThresh schema record =
+  let popIdx   = fieldIndexOr schema "population" 0
+      infraIdx = fieldIndexOr schema "infrastructure" 2
+      cityIdx  = fieldIndexOr schema "is_city" 5
+      pop      = readFloat record popIdx
+      infra    = readFloat record infraIdx
+      pop'     = pop + pop * realToFrac growthRate
+      infra'   = min 1.0 (infra + pop * realToFrac infraCost * 0.001)
+      isCity   = pop' >= realToFrac cityThresh
+      r1 = setRecordField popIdx   (OVFloat pop')  record
+      r2 = setRecordField infraIdx (OVFloat infra') r1
+      r3 = setRecordField cityIdx  (OVBool isCity)  r2
+  in r3
 
 ------------------------------------------------------------------------
 -- Helpers
 ------------------------------------------------------------------------
+
+-- | Extract a numeric parameter with a default fallback.
+paramFloat :: Map Text Value -> Text -> Double -> Double
+paramFloat params key def = case Map.lookup key params of
+  Just (Number n) -> realToFrac n
+  _               -> def
+
+-- | Read a 'Float' from a record at a given field index, defaulting to 0.
+readFloat :: OverlayRecord -> Int -> Float
+readFloat record idx = case recordField idx record of
+  Just (OVFloat f) -> f
+  _                -> 0
+
+-- | Look up a field index by name, returning a fallback when the field
+-- is not declared in the schema.
+fieldIndexOr :: OverlaySchema -> Text -> Int -> Int
+fieldIndexOr schema name def = case fieldIndex schema name of
+  Just i  -> i
+  Nothing -> def
 
 -- | Look up a parameter value and show it, with a fallback.
 showParam :: Map Text Value -> Text -> Text

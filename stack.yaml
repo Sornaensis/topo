@@ -2,6 +2,7 @@ resolver: lts-24.2
 packages:
   - topo
   - topo-seer
+  - topo-mcp
   - topo-plugin-sdk
   - topo-plugin-example
   - topo-plugin-civ-example

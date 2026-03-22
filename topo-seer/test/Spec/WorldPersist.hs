@@ -70,6 +70,7 @@ manifestJsonSpec = describe "WorldSaveManifest JSON round-trip" $ do
           , wsmCreatedAt  = now
           , wsmChunkCount = 16
           , wsmOverlayNames = ["weather", "persist_sparse_test"]
+          , wsmPluginData = []
           }
     let bytes = BSL.toStrict (encode manifest)
     eitherDecodeStrict' bytes `shouldBe` Right manifest
@@ -219,6 +220,7 @@ worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
                   , wsmCreatedAt = defaultManifestTime
                   , wsmChunkCount = 0
                   , wsmOverlayNames = []
+                  , wsmPluginData = []
                   }
 
             createDirectoryIfMissing True worldPath

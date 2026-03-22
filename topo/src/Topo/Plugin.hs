@@ -56,6 +56,8 @@ data Capability
   | CapWriteOverlay
   | CapReadWorld
   | CapWriteWorld
+  | CapDataRead
+  | CapDataWrite
   deriving (Eq, Ord, Show)
 
 instance FromJSON Capability where
@@ -68,6 +70,8 @@ instance FromJSON Capability where
     "writeOverlay" -> pure CapWriteOverlay
     "readWorld" -> pure CapReadWorld
     "writeWorld" -> pure CapWriteWorld
+    "dataRead" -> pure CapDataRead
+    "dataWrite" -> pure CapDataWrite
     _ -> fail ("unknown capability: " <> Text.unpack t)
 
 instance ToJSON Capability where
@@ -80,6 +84,8 @@ instance ToJSON Capability where
     CapWriteOverlay -> "writeOverlay"
     CapReadWorld -> "readWorld"
     CapWriteWorld -> "writeWorld"
+    CapDataRead -> "dataRead"
+    CapDataWrite -> "dataWrite"
 
 newtype PluginCapabilities = PluginCapabilities (Set Capability)
   deriving (Eq, Show)
@@ -95,6 +101,8 @@ allowAllCapabilities = PluginCapabilities
     , CapWriteOverlay
     , CapReadWorld
     , CapWriteWorld
+    , CapDataRead
+    , CapDataWrite
     ])
 
 data PluginEnv = PluginEnv

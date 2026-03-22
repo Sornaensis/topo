@@ -111,8 +111,8 @@ civManifest = RPCManifest
   , rmOverlay      = Just RPCOverlayDecl
       { rodSchemaFile = "civilization.toposchema"
       }
-  , rmCapabilities = [CapReadTerrain, CapReadOverlay, CapWriteOverlay, CapLog]
-  , rmParameters   =
+  , rmCapabilities   = [CapReadTerrain, CapReadOverlay, CapWriteOverlay, CapLog]
+  , rmParameters     =
       [ RPCParamSpec
           { rpsName    = "growth_rate"
           , rpsLabel   = "Growth Rate"
@@ -122,6 +122,8 @@ civManifest = RPCManifest
           , rpsTooltip = "Population growth fraction per tick"
           }
       ]
+  , rmDataResources  = []
+  , rmDataDirectory  = Nothing
   }
 
 -- | A generator-only manifest (no simulation, no overlay).
@@ -136,8 +138,10 @@ genOnlyManifest = RPCManifest
       }
   , rmSimulation   = Nothing
   , rmOverlay      = Nothing
-  , rmCapabilities = [CapReadTerrain, CapLog]
-  , rmParameters   = []
+  , rmCapabilities   = [CapReadTerrain, CapLog]
+  , rmParameters     = []
+  , rmDataResources  = []
+  , rmDataDirectory  = Nothing
   }
 
 -- | A sim-only manifest with writeTerrain capability.
@@ -153,8 +157,10 @@ writerManifest = RPCManifest
   , rmOverlay      = Just RPCOverlayDecl
       { rodSchemaFile = "writer.toposchema"
       }
-  , rmCapabilities = [CapWriteTerrain, CapReadTerrain, CapWriteOverlay, CapLog]
-  , rmParameters   = []
+  , rmCapabilities   = [CapWriteTerrain, CapReadTerrain, CapWriteOverlay, CapLog]
+  , rmParameters     = []
+  , rmDataResources  = []
+  , rmDataDirectory  = Nothing
   }
 
 ------------------------------------------------------------------------

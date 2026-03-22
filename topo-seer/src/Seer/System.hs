@@ -80,6 +80,7 @@ import Actor.TerrainCacheWorker
   )
 import Actor.UiActions (uiActionsActorDef)
 import Actor.UiActions.Handles (mkActorHandles)
+import Control.Concurrent (forkIO)
 import Control.Monad (forM_, unless, when)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import qualified Data.Text as Text
@@ -89,6 +90,7 @@ import Linear (V2(..))
 import qualified SDL
 import qualified SDL.Font as Font
 import Hyperspace.Actor (ActorHandle, Protocol, getSingleton, newActorSystem, shutdownActorSystem)
+import Seer.Command.Channel (CommandChannelEnv(..), runCommandChannel)
 import Seer.Draw (logLineHeight)
 import Seer.Timing (nsToMs)
 import Seer.Input (handleEvent, isQuit, tickTooltipHover)
@@ -109,6 +111,7 @@ import System.Random (randomIO)
 import System.IO (Handle, IOMode(..), hFlush, hPutStrLn, openFile)
 import Seer.System.ThreadPriority (boostMainThreadPriority, pinMainThreadToCore0)
 import Seer.Config.Runtime (TopoSeerConfig(..), loadConfig)
+import Seer.Screenshot (newScreenshotRequestRef)
 import System.Directory (getHomeDirectory)
 import System.FilePath ((</>))
 
@@ -157,6 +160,18 @@ runApp = do
   setUiSeedInput uiHandle (Text.pack (show seed))
   uiSnap <- getUiSnapshot uiHandle
   let logSnap = LogSnapshot [] False 0 LogDebug
+
+  -- Start the IPC command channel in a background thread.
+  -- This allows external tools (topo-mcp) to query and mutate UI state.
+  screenshotRef <- newScreenshotRequestRef
+  let cmdActorHandles = mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef pluginManagerHandle simulationHandle
+      cmdEnv = CommandChannelEnv
+        { cceActorHandles    = cmdActorHandles
+        , cceUiSnapshotRef   = uiSnapshotRef
+        , cceUiActionsHandle = uiActionsHandle
+        , cceScreenshotRef   = screenshotRef
+        }
+  _ <- forkIO (runCommandChannel cmdEnv)
 
   SDL.initialize [SDL.InitVideo]
   Font.initialize
@@ -283,7 +298,8 @@ runApp = do
         tHandle <- getMonotonicTimeNSec
         let isVersionUnchanged = rcsLastSnapshot cacheState0 == Just snapVersion
             generating = uiGenerating (rsUi renderSnap)
-        if isVersionUnchanged && not generating
+        screenshotPending <- maybe False (const True) <$> readIORef screenshotRef
+        if isVersionUnchanged && not generating && not screenshotPending
           then do
             -- Stale-snapshot detection: log once if version unchanged for >1s
             now <- getMonotonicTimeNSec
@@ -358,6 +374,7 @@ runApp = do
                 , rcFontCache = fontCache
                 , rcRenderTargetOk = renderTargetOk
                 , rcTraceHandle = traceH
+                , rcScreenshotRef = screenshotRef
                 }
             frameEnd <- getMonotonicTimeNSec
             let frameElapsed = nsToMs frameStart frameEnd

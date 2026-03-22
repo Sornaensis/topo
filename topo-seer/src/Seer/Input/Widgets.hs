@@ -8,8 +8,11 @@ module Seer.Input.Widgets
 import Actor.Data (DataSnapshot(..), getDataSnapshot, getTerrainSnapshot, replaceTerrainData)
 import Actor.SnapshotReceiver (writeDataSnapshot, writeTerrainSnapshot, bumpSnapshotVersion)
 import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshot(..), appendLog, getLogSnapshot, setLogCollapsed, setLogMinLevel, setLogScroll)
+import Data.Aeson (Value(..))
+import qualified Data.Aeson as Aeson
 import Actor.UI
   ( ConfigTab(..)
+  , DataBrowserState(..)
   , LeftTab(..)
   , Ui
   , UiMenuMode(..)
@@ -22,6 +25,7 @@ import Actor.UI
   , setUiConfigScroll
   , setUiContextHex
   , setUiContextPos
+  , setUiDataBrowser
   , setUiDisabledStages
   , setUiLeftTab
   , setUiSeed
@@ -42,13 +46,17 @@ import Actor.UI
   , setUiSimAutoTick
   , setUiSimTickCount
   , setUiPluginNames
+  , setUiPluginExpanded
+  , setUiPluginParam
   , setUiOverlayNames
+  , setUiDisabledPlugins
   )
 import Control.Monad (when)
 import Data.IORef (writeIORef)
 import Data.Int (Int32)
-import Data.List (findIndex, partition)
+import Data.List (find, findIndex, partition)
 import Data.Maybe (isJust)
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as Text
 import Linear (V2(..))
@@ -66,7 +74,7 @@ import Seer.Config.SliderUi (configTabForSliderTab)
 import System.FilePath ((</>))
 import Seer.Draw (seedMaxDigits)
 import Seer.Config.Snapshot (listSnapshots, loadSnapshot, snapshotDir, snapshotFromUi, saveSnapshot, applySnapshotToUi)
-import Seer.World.Persist (listWorlds, saveNamedWorld, loadNamedWorld, snapshotToWorld)
+import Seer.World.Persist (listWorlds, saveNamedWorld, saveNamedWorldWithPlugins, loadNamedWorld, snapshotToWorld, worldDir)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Seer.Input.ConfigScroll
   ( ScrollSettings
@@ -81,13 +89,16 @@ import Seer.Input.ViewControls
 import Topo.Overlay (overlayNames)
 import Topo.Pipeline.Dep (builtinDependencies, disabledClosure)
 import Topo.Pipeline.Stage (StageId, parseStageId)
+import Topo.Plugin.RPC.DataService (DataQuery(..), QueryResource(..), QueryResult(..))
+import Topo.Plugin.RPC.Manifest (RPCParamSpec(..))
 import Topo.World (TerrainWorld(..))
 import UI.Layout
-import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets, buildSliderRowWidgets, hitTest)
+import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets, buildDataBrowserWidgets, buildSliderRowWidgets, hitTest)
 import UI.Widgets (Rect(..), containsPoint)
 import System.Random (randomIO)
 import Hyperspace.Actor (ActorHandle, Protocol)
-import Actor.PluginManager (setPluginOrder)
+import Actor.PluginManager (getPluginDataDirectories, notifyWorldChanged, queryPluginResource, setDisabledPlugins, setPluginOrder)
+import Control.Concurrent (forkIO)
 import Actor.Simulation (requestSimTick, setSimWorld)
 import Actor.UiActions (ActorHandles(..), UiAction(..))
 import Seer.Input.Actions (InputEnv(..), submitAction)
@@ -122,7 +133,9 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       scrollPoint = if inConfigScroll
         then V2 (fromIntegral x) (fromIntegral y + uiConfigScroll uiSnap)
         else point
-      widgetsAll = buildWidgets layout ++ buildPluginWidgets (uiPluginNames uiSnap) layout
+      widgetsAll = buildWidgets layout
+                ++ buildPluginWidgets (uiPluginNames uiSnap) (uiPluginExpanded uiSnap) (uiPluginParamSpecs uiSnap) layout
+                ++ buildDataBrowserWidgets (uiDataResources uiSnap) (dbsSelectedPlugin (uiDataBrowser uiSnap)) (dbsSelectedResource (uiDataBrowser uiSnap)) (length (dbsRecords (uiDataBrowser uiSnap))) layout
       widgets =
         if uiShowConfig uiSnap
           then filter (configWidgetAllowed simWorldReady (uiConfigTab uiSnap)) widgetsAll
@@ -181,6 +194,7 @@ handleClick inputContext (SDL.P (V2 x y)) = do
           ; Just WidgetConfigTabBiome -> whenConfigVisible (setUiConfigTab uiHandle ConfigBiome >> setUiConfigScroll uiHandle 0)
           ; Just WidgetConfigTabErosion -> whenConfigVisible (setUiConfigTab uiHandle ConfigErosion >> setUiConfigScroll uiHandle 0)
           ; Just WidgetConfigTabPipeline -> whenConfigVisible (setUiConfigTab uiHandle ConfigPipeline >> setUiConfigScroll uiHandle 0)
+          ; Just WidgetConfigTabData -> whenConfigVisible (setUiConfigTab uiHandle ConfigData >> setUiConfigScroll uiHandle 0)
           ; Just wid
           | Just (sliderDef, sliderPart) <- sliderWidgetPart wid
               -> whenConfigVisible
@@ -190,7 +204,7 @@ handleClick inputContext (SDL.P (V2 x y)) = do
                       (signedSliderDelta sliderPart (sliderStyleStep sliderStyle)))
           ; Just wid
           | isBespokeConfigWidget wid ->
-              handleBespokeConfigWidget layout wid whenConfigVisible uiSnap
+              handleBespokeConfigWidget layout wid scrollPoint whenConfigVisible uiSnap
           ; Just WidgetViewElevation -> whenLeftView (submit (UiActionSetViewMode ViewElevation))
           ; Just WidgetViewBiome -> whenLeftView (submit (UiActionSetViewMode ViewBiome))
           ; Just WidgetViewClimate -> whenLeftView (submit (UiActionSetViewMode ViewClimate))
@@ -249,6 +263,13 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       WidgetSimAutoTick -> True
       WidgetPluginMoveUp _ -> True
       WidgetPluginMoveDown _ -> True
+      WidgetPluginExpand _ -> True
+      WidgetPluginParamSlider _ _ -> True
+      WidgetPluginParamCheck _ _ -> True
+      WidgetDataPluginSelect _ -> True
+      WidgetDataResourceSelect _ _ -> True
+      WidgetDataPagePrev _ _ -> True
+      WidgetDataPageNext _ _ -> True
       _ -> False
 
     bespokeConfigWidgetAllowed :: Bool -> ConfigTab -> WidgetId -> Bool
@@ -257,10 +278,17 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       WidgetSimAutoTick -> tab == ConfigPipeline
       WidgetPluginMoveUp _ -> tab == ConfigPipeline
       WidgetPluginMoveDown _ -> tab == ConfigPipeline
+      WidgetPluginExpand _ -> tab == ConfigPipeline
+      WidgetPluginParamSlider _ _ -> tab == ConfigPipeline
+      WidgetPluginParamCheck _ _ -> tab == ConfigPipeline
+      WidgetDataPluginSelect _ -> tab == ConfigData
+      WidgetDataResourceSelect _ _ -> tab == ConfigData
+      WidgetDataPagePrev _ _ -> tab == ConfigData
+      WidgetDataPageNext _ _ -> tab == ConfigData
       _ -> True
 
-    handleBespokeConfigWidget :: Layout -> WidgetId -> (IO () -> IO ()) -> UiState -> IO ()
-    handleBespokeConfigWidget currentLayout wid whenConfigVisible uiState = case wid of
+    handleBespokeConfigWidget :: Layout -> WidgetId -> V2 Int -> (IO () -> IO ()) -> UiState -> IO ()
+    handleBespokeConfigWidget currentLayout wid clickPoint whenConfigVisible uiState = case wid of
       WidgetConfigPresetSave -> whenConfigVisible (openPresetSaveDialog currentLayout uiState)
       WidgetConfigPresetLoad -> whenConfigVisible openPresetLoadDialog
       WidgetConfigReset -> whenConfigVisible (SDL.stopTextInput >> submit UiActionReset)
@@ -297,6 +325,100 @@ handleClick inputContext (SDL.P (V2 x y)) = do
             swapped = swapWithNext name names
         setUiPluginNames uiHandle swapped
         setPluginOrder pluginManagerHandle swapped
+      WidgetPluginToggle name -> whenConfigVisible $ do
+        let current = uiDisabledPlugins uiState
+            toggled
+              | Set.member name current = Set.delete name current
+              | otherwise               = Set.insert name current
+        setUiDisabledPlugins uiHandle toggled
+        setDisabledPlugins pluginManagerHandle toggled
+      WidgetPluginExpand name -> whenConfigVisible $ do
+        let current = Map.findWithDefault False name (uiPluginExpanded uiState)
+        setUiPluginExpanded uiHandle name (not current)
+      WidgetPluginParamSlider pluginName paramName -> whenConfigVisible $ do
+        -- Positional click-to-set: use click X relative to the bar rect
+        let Rect (V2 barX _, V2 barW _) = pipelineParamBarRect 0 currentLayout
+            V2 cx _ = clickPoint
+            normalized = max 0 (min 1 (fromIntegral (cx - barX) / max 1 (fromIntegral barW))) :: Float
+            specs = Map.findWithDefault [] pluginName (uiPluginParamSpecs uiState)
+            mSpec = find (\s -> rpsName s == paramName) specs
+            value = case mSpec >>= rpsRange of
+              Just (Number lo, Number hi)
+                | hi > lo ->
+                    let v = realToFrac lo + realToFrac normalized * (realToFrac hi - realToFrac lo) :: Double
+                    in Number (realToFrac (max (realToFrac lo) (min (realToFrac hi) v)))
+              _ -> Number (realToFrac normalized)
+        setUiPluginParam uiHandle pluginName paramName value
+      WidgetPluginParamCheck pluginName paramName -> whenConfigVisible $ do
+        let params = Map.findWithDefault Map.empty pluginName (uiPluginParams uiState)
+            current = case Map.lookup paramName params of
+                        Just (Bool b) -> b
+                        _ -> False
+        setUiPluginParam uiHandle pluginName paramName (Bool (not current))
+      WidgetDataPluginSelect pluginName -> whenConfigVisible $ do
+        let dbs = uiDataBrowser uiState
+            newDbs = dbs
+              { dbsSelectedPlugin = Just pluginName
+              , dbsSelectedResource = Nothing
+              , dbsRecords = []
+              , dbsPageOffset = 0
+              , dbsTotalCount = Nothing
+              , dbsLoading = False
+              }
+        setUiDataBrowser uiHandle newDbs
+      WidgetDataResourceSelect pluginName resourceName -> whenConfigVisible $ do
+        let dbs = uiDataBrowser uiState
+            newDbs = dbs
+              { dbsSelectedResource = Just resourceName
+              , dbsRecords = []
+              , dbsPageOffset = 0
+              , dbsTotalCount = Nothing
+              , dbsLoading = True
+              }
+        setUiDataBrowser uiHandle newDbs
+        _ <- forkIO $ do
+          let qr = QueryResource resourceName QueryAll (Just 20) (Just 0)
+          result <- queryPluginResource pluginManagerHandle pluginName qr
+          case result of
+            Right qResult -> setUiDataBrowser uiHandle newDbs
+              { dbsRecords = qrsRecords qResult
+              , dbsTotalCount = qrsTotalCount qResult
+              , dbsLoading = False
+              }
+            Left _err -> setUiDataBrowser uiHandle newDbs { dbsLoading = False }
+        pure ()
+      WidgetDataPagePrev pluginName resourceName -> whenConfigVisible $ do
+        let dbs = uiDataBrowser uiState
+            newOffset = max 0 (dbsPageOffset dbs - 20)
+            newDbs = dbs { dbsPageOffset = newOffset, dbsLoading = True, dbsRecords = [] }
+        setUiDataBrowser uiHandle newDbs
+        _ <- forkIO $ do
+          let qr = QueryResource resourceName QueryAll (Just 20) (Just newOffset)
+          result <- queryPluginResource pluginManagerHandle pluginName qr
+          case result of
+            Right qResult -> setUiDataBrowser uiHandle newDbs
+              { dbsRecords = qrsRecords qResult
+              , dbsTotalCount = qrsTotalCount qResult
+              , dbsLoading = False
+              }
+            Left _err -> setUiDataBrowser uiHandle newDbs { dbsLoading = False }
+        pure ()
+      WidgetDataPageNext pluginName resourceName -> whenConfigVisible $ do
+        let dbs = uiDataBrowser uiState
+            newOffset = dbsPageOffset dbs + 20
+            newDbs = dbs { dbsPageOffset = newOffset, dbsLoading = True, dbsRecords = [] }
+        setUiDataBrowser uiHandle newDbs
+        _ <- forkIO $ do
+          let qr = QueryResource resourceName QueryAll (Just 20) (Just newOffset)
+          result <- queryPluginResource pluginManagerHandle pluginName qr
+          case result of
+            Right qResult -> setUiDataBrowser uiHandle newDbs
+              { dbsRecords = qrsRecords qResult
+              , dbsTotalCount = qrsTotalCount qResult
+              , dbsLoading = False
+              }
+            Left _err -> setUiDataBrowser uiHandle newDbs { dbsLoading = False }
+        pure ()
       _ -> pure ()
 
     handleMenuClick ly _widgets point = do
@@ -419,7 +541,11 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       when (not (Text.null name)) $ do
         terrainSnap <- getTerrainSnapshot dataHandle
         let world = snapshotToWorld terrainSnap
-        _result <- saveNamedWorld name uiSnap world
+        pluginDirs <- getPluginDataDirectories pluginManagerHandle
+        _result <- saveNamedWorldWithPlugins name uiSnap world pluginDirs
+        -- Notify plugins of the saved world path
+        wDir <- worldDir
+        notifyWorldChanged pluginManagerHandle (Just (Text.pack (wDir </> Text.unpack name)))
         setUiWorldName uiHandle name
         setUiWorldConfig uiHandle (Just (snapshotFromUi uiSnap name))
       setUiMenuMode uiHandle MenuNone
@@ -445,6 +571,9 @@ handleClick inputContext (SDL.P (V2 x y)) = do
             applySnapshotToUi snapshot uiHandle
             setUiWorldName uiHandle name
             setUiWorldConfig uiHandle (Just snapshot)
+            -- Notify plugins of the loaded world path
+            wDir <- worldDir
+            notifyWorldChanged pluginManagerHandle (Just (Text.pack (wDir </> Text.unpack name)))
             submit (UiActionRebuildAtlas (uiViewMode uiSnap))
           Left _err -> pure ()
       setUiMenuMode uiHandle MenuNone

@@ -11,6 +11,8 @@ library:
   source-dirs: src
   exposed-modules:
     - Topo.Plugin.SDK
+    - Topo.Plugin.SDK.Overlay
+    - Topo.Plugin.SDK.Terrain
     - Topo.Plugin.SDK.Types
     - Topo.Plugin.SDK.Payload
     - Topo.Plugin.SDK.Runner
@@ -23,6 +25,7 @@ library:
     - filepath
     - text
     - topo
+    - vector
 
 tests:
   topo-plugin-sdk-test:

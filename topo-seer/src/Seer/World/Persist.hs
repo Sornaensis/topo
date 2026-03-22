@@ -17,6 +17,7 @@ module Seer.World.Persist
   , worldDir
     -- * Save \/ Load
   , saveNamedWorld
+  , saveNamedWorldWithPlugins
   , loadNamedWorld
   , loadNamedSparseOverlayChunk
     -- * Snapshot conversion
@@ -28,6 +29,7 @@ module Seer.World.Persist
   ) where
 
 import Control.Exception (IOException, try)
+import Control.Monad (when)
 import Data.Aeson (FromJSON(..), eitherDecodeStrict', encode)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
@@ -38,14 +40,15 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time.Clock (getCurrentTime)
 import System.Directory
-  ( createDirectoryIfMissing
+  ( copyFile
+  , createDirectoryIfMissing
   , doesDirectoryExist
   , doesFileExist
   , getHomeDirectory
   , listDirectory
   , removeDirectoryRecursive
   )
-import System.FilePath ((</>))
+import System.FilePath ((</>), takeFileName)
 
 import Actor.Data (TerrainSnapshot(..))
 import Actor.UI (UiState(..))
@@ -102,7 +105,22 @@ saveNamedWorld
   -> UiState        -- ^ Current UI state (config snapshot source)
   -> TerrainWorld   -- ^ Terrain data to persist
   -> IO (Either Text ())
-saveNamedWorld name uiSnap world = do
+saveNamedWorld name uiSnap world =
+  saveNamedWorldWithPlugins name uiSnap world []
+
+-- | Save a named world including plugin data directories.
+--
+-- In addition to the base @world.topo@, @config.json@, and @meta.json@,
+-- copies each plugin's data directory into a @plugins\/\<name\>\/@ subdirectory
+-- of the world save path and records the mapping in the manifest.
+saveNamedWorldWithPlugins
+  :: Text             -- ^ World name
+  -> UiState          -- ^ Current UI state (config snapshot source)
+  -> TerrainWorld     -- ^ Terrain data to persist
+  -> [(Text, FilePath)]
+  -- ^ @(pluginName, absoluteDataDir)@ — plugin data directories to bundle
+  -> IO (Either Text ())
+saveNamedWorldWithPlugins name uiSnap world pluginDirs = do
   dir <- worldDir
   let nameStr   = Text.unpack name
       worldPath = dir </> nameStr
@@ -114,6 +132,12 @@ saveNamedWorld name uiSnap world = do
         snapshot = snapshotFromUi uiSnap name
         worldForSave = normalizeSaveWorldManifest world
     now <- getCurrentTime
+    -- Deduplicate plugin data directories (multiple plugins may share one)
+    let uniqueDirs = deduplicatePluginDirs pluginDirs
+        pluginDataEntries =
+          [ (pName, Text.pack relDir)
+          | (pName, _absDir, relDir) <- uniqueDirs
+          ]
     let manifest = WorldSaveManifest
           { wsmName       = name
           , wsmSeed       = uiSeed uiSnap
@@ -121,6 +145,7 @@ saveNamedWorld name uiSnap world = do
           , wsmCreatedAt  = now
           , wsmChunkCount = chunkCount worldForSave
           , wsmOverlayNames = twOverlayManifest worldForSave
+          , wsmPluginData = pluginDataEntries
           }
         extraFiles =
           [ ("config.json", BSL.toStrict (encode snapshot))
@@ -130,6 +155,8 @@ saveNamedWorld name uiSnap world = do
     case topoResult of
       Left err -> fail ("Terrain+overlay save failed: " <> show err)
       Right () -> pure ()
+    -- Copy plugin data directories into the world save
+    mapM_ (copyPluginDataDir worldPath) uniqueDirs
 
   pure $ case result of
     Left err -> Left (Text.pack (show err))
@@ -343,3 +370,59 @@ uniquePreserving = foldr addUnique []
     addUnique name acc
       | name `elem` acc = acc
       | otherwise = name : acc
+
+-------------------------------------------------------------------------------
+-- Plugin data directory helpers
+-------------------------------------------------------------------------------
+
+-- | Deduplicate plugin data directories.
+--
+-- Multiple plugins may share the same directory. Returns
+-- @(pluginName, absoluteDir, relativeSubdir)@ triples where
+-- @relativeSubdir@ is the last path component used as the
+-- subdirectory name inside the world save.
+deduplicatePluginDirs :: [(Text, FilePath)] -> [(Text, FilePath, String)]
+deduplicatePluginDirs dirs =
+  let withRel = [ (pName, absDir, takeFileName absDir)
+                | (pName, absDir) <- dirs
+                ]
+      -- Keep only the first occurrence of each absolute directory
+      go seen [] = (seen, [])
+      go seen ((pName, absDir, rel):rest)
+        | absDir `elem` map snd3 seen = go seen rest
+        | otherwise = go ((pName, absDir, rel) : seen) rest
+      (unique, _) = go [] withRel
+  in reverse unique
+  where
+    snd3 (_, b, _) = b
+
+-- | Copy a single plugin data directory into the world save.
+--
+-- Creates @worldPath\/plugins\/\<relDir\>\/@ and recursively copies
+-- files from the source directory.
+copyPluginDataDir :: FilePath -> (Text, FilePath, String) -> IO ()
+copyPluginDataDir worldPath (_pluginName, srcDir, relDir) = do
+  exists <- doesDirectoryExist srcDir
+  when exists $ do
+    let destDir = worldPath </> "plugins" </> relDir
+    createDirectoryIfMissing True destDir
+    copyDirectoryRecursive srcDir destDir
+
+-- | Recursively copy the contents of one directory to another.
+--
+-- The destination directory must already exist. Existing files in
+-- the destination are overwritten.
+copyDirectoryRecursive :: FilePath -> FilePath -> IO ()
+copyDirectoryRecursive src dest = do
+  entries <- listDirectory src
+  mapM_ copyEntry entries
+  where
+    copyEntry entry = do
+      let srcPath  = src </> entry
+          destPath = dest </> entry
+      isDir <- doesDirectoryExist srcPath
+      if isDir
+        then do
+          createDirectoryIfMissing True destPath
+          copyDirectoryRecursive srcPath destPath
+        else copyFile srcPath destPath

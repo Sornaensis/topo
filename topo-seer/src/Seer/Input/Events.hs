@@ -65,10 +65,11 @@ import Seer.Input.Actions (InputEnv(..), submitAction)
 import qualified Seer.Input.Actions as InputActions
 import Actor.UiActions (UiAction(..))
 import Actor.UiActions.Handles (ActorHandles(..))
+import Actor.PluginManager (getPluginDataDirectories, notifyWorldChanged)
 import Actor.Simulation (setSimWorld)
 import Seer.Config.Snapshot (applySnapshotToUi, loadSnapshot, saveSnapshot, snapshotDir, snapshotFromUi)
 import Seer.Input.Widgets (handleClick)
-import Seer.World.Persist (loadNamedWorld, saveNamedWorld, snapshotToWorld)
+import Seer.World.Persist (loadNamedWorld, saveNamedWorldWithPlugins, snapshotToWorld, worldDir)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Topo.Overlay (overlayNames)
 import Topo.World (TerrainWorld(..))
@@ -350,10 +351,14 @@ handleEvent inputContext event = do
         -- onConfirm
         (do uiSnap' <- getUiSnapshot uiHandle
             let name = uiWorldSaveInput uiSnap'
+                pmHandle = ahPluginManagerHandle actorHandles
             when (not (Text.null name)) $ do
               terrainSnap <- getTerrainSnapshot dataHandle
               let world = snapshotToWorld terrainSnap
-              _result <- saveNamedWorld name uiSnap' world
+              pluginDirs <- getPluginDataDirectories pmHandle
+              _result <- saveNamedWorldWithPlugins name uiSnap' world pluginDirs
+              wDir <- worldDir
+              notifyWorldChanged pmHandle (Just (Text.pack (wDir </> Text.unpack name)))
               setUiWorldName uiHandle name
               setUiWorldConfig uiHandle (Just (snapshotFromUi uiSnap' name))
             setUiMenuMode uiHandle MenuNone
@@ -389,6 +394,10 @@ handleEvent inputContext event = do
                   applySnapshotToUi snapshot uiHandle
                   setUiWorldName uiHandle name
                   setUiWorldConfig uiHandle (Just snapshot)
+                  -- Notify plugins of the loaded world path
+                  let pmHandle = ahPluginManagerHandle actorHandles
+                  wDir <- worldDir
+                  notifyWorldChanged pmHandle (Just (Text.pack (wDir </> Text.unpack name)))
                   submitAction inputEnv (UiActionRebuildAtlas (uiViewMode uiSnap))
                 Left _err -> pure ()
             setUiMenuMode uiHandle MenuNone)

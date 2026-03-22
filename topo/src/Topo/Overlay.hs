@@ -86,6 +86,8 @@ data OverlayValue
   | OVInt    !Int
   | OVBool   !Bool
   | OVText   !Text
+  | OVList   !(Vector OverlayValue)
+  -- ^ Variable-length list of homogeneously-typed values.
   deriving (Eq, Show, Generic)
 
 -- | Convert an 'OverlayValue' to a 'Float' for dense storage.
@@ -99,13 +101,15 @@ overlayValueToFloat (OVFloat f) = f
 overlayValueToFloat (OVInt   i) = fromIntegral i
 overlayValueToFloat (OVBool  b) = if b then 1.0 else 0.0
 overlayValueToFloat (OVText  _) = 0.0
+overlayValueToFloat (OVList  _) = 0.0
 
 -- | Convert a 'Float' back to an 'OverlayValue' given the target field type.
 floatToOverlayValue :: OverlayFieldType -> Float -> OverlayValue
-floatToOverlayValue OFFloat f = OVFloat f
-floatToOverlayValue OFInt   f = OVInt (round f)
-floatToOverlayValue OFBool  f = OVBool (f >= 0.5)
-floatToOverlayValue OFText  _ = OVText ""
+floatToOverlayValue OFFloat    f = OVFloat f
+floatToOverlayValue OFInt      f = OVInt (round f)
+floatToOverlayValue OFBool     f = OVBool (f >= 0.5)
+floatToOverlayValue OFText     _ = OVText ""
+floatToOverlayValue (OFList _) _ = OVList V.empty
 
 -- | Produce a default 'OverlayValue' from a field definition's JSON default.
 --
@@ -113,10 +117,11 @@ floatToOverlayValue OFText  _ = OVText ""
 -- declared type.
 defaultValue :: OverlayFieldDef -> OverlayValue
 defaultValue fd = case ofdType fd of
-  OFFloat -> OVFloat (jsonToFloat (ofdDefault fd))
-  OFInt   -> OVInt   (jsonToInt   (ofdDefault fd))
-  OFBool  -> OVBool  (jsonToBool  (ofdDefault fd))
-  OFText  -> OVText  (jsonToText  (ofdDefault fd))
+  OFFloat    -> OVFloat (jsonToFloat (ofdDefault fd))
+  OFInt      -> OVInt   (jsonToInt   (ofdDefault fd))
+  OFBool     -> OVBool  (jsonToBool  (ofdDefault fd))
+  OFText     -> OVText  (jsonToText  (ofdDefault fd))
+  OFList _   -> OVList  V.empty
 
 jsonToFloat :: Value -> Float
 jsonToFloat (Number n) = realToFrac n
@@ -143,11 +148,12 @@ jsonToText _          = ""
 -- * 'OVBool'  ↔ 'OFBool'
 -- * 'OVText'  ↔ 'OFText'
 matchesFieldType :: OverlayFieldType -> OverlayValue -> Bool
-matchesFieldType OFFloat (OVFloat _) = True
-matchesFieldType OFInt   (OVInt   _) = True
-matchesFieldType OFBool  (OVBool  _) = True
-matchesFieldType OFText  (OVText  _) = True
-matchesFieldType _       _           = False
+matchesFieldType OFFloat    (OVFloat _) = True
+matchesFieldType OFInt      (OVInt   _) = True
+matchesFieldType OFBool     (OVBool  _) = True
+matchesFieldType OFText     (OVText  _) = True
+matchesFieldType (OFList _) (OVList  _) = True
+matchesFieldType _          _           = False
 
 ------------------------------------------------------------------------
 -- Records (sparse)
@@ -225,6 +231,7 @@ valueTypeName (OVFloat _) = "float"
 valueTypeName (OVInt   _) = "int"
 valueTypeName (OVBool  _) = "bool"
 valueTypeName (OVText  _) = "text"
+valueTypeName (OVList  _) = "list"
 
 -- | Check field types pairwise, returning 'Just' error on the first mismatch.
 checkFieldTypes :: [OverlayFieldDef] -> [OverlayValue] -> Maybe Text

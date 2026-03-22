@@ -424,6 +424,9 @@ encodeOverlayData options ov = do
       putWord32le (fromIntegral (BS.length nameBytes))
       putByteString nameBytes
       putWord8 (fieldTypeByte (ofdType fd))
+      case ofdType fd of
+        OFList elemType -> putWord8 (fieldTypeByte elemType)
+        _               -> pure ()
     -- Provenance block
     putWord64le (opSeed prov)
     putWord32le (opVersion prov)
@@ -439,7 +442,7 @@ encodeOverlayData options ov = do
       putWord32le payloadLenWord
       forM_ maybeRawLen putWord32le
       putByteString payload
-    let fieldDescriptorBytes = sum [4 + BS.length (encodeUtf8 (ofdName fd)) + 1 | fd <- fields]
+    let fieldDescriptorBytes = sum [4 + BS.length (encodeUtf8 (ofdName fd)) + 1 + fieldTypeExtraBytes (ofdType fd) | fd <- fields]
         headerBytes = 4 + 4 + BS.length verBytes + 1 + 4 + fieldDescriptorBytes + 8 + 4 + 4 + BS.length sourceBytes + 1 + 4
         indexEntries = chunkIndexEntries (fromIntegral headerBytes) (map entryToIndex payloadEntries)
     putWord32le (fromIntegral (length indexEntries))
@@ -785,9 +788,11 @@ migrateDenseData oldFieldMap newFields added dropped renamed chunks
 -- incompatible (and should never appear in dense mode per schema
 -- validation).
 isDenseCompatible :: OverlayFieldType -> OverlayFieldType -> Bool
-isDenseCompatible OFText _ = False
-isDenseCompatible _ OFText = False
-isDenseCompatible _ _      = True
+isDenseCompatible OFText    _ = False
+isDenseCompatible _    OFText = False
+isDenseCompatible (OFList _) _ = False
+isDenseCompatible _ (OFList _) = False
+isDenseCompatible _ _          = True
 
 -- | Remap a single dense chunk's field vectors according to the mapping.
 migrateDenseChunk
@@ -836,12 +841,23 @@ fnvHash txt = BS.foldl' step fnvBasis (encodeUtf8 txt)
     step :: Word32 -> Word8 -> Word32
     step h b = (h `xor` fromIntegral b) * fnvPrime
 
--- | Encode a field type as a byte.
+-- | Extra bytes needed after the field type tag byte.
+--
+-- List fields store one additional element-type byte; scalars need none.
+fieldTypeExtraBytes :: OverlayFieldType -> Int
+fieldTypeExtraBytes (OFList _) = 1
+fieldTypeExtraBytes _          = 0
+
+-- | Encode a field type as a byte for the binary header.
+--
+-- List fields use tag byte 4 followed by the element type byte.
+-- The write path calls 'putFieldType' instead for list support.
 fieldTypeByte :: OverlayFieldType -> Word8
-fieldTypeByte OFFloat = 0
-fieldTypeByte OFInt   = 1
-fieldTypeByte OFBool  = 2
-fieldTypeByte OFText  = 3
+fieldTypeByte OFFloat    = 0
+fieldTypeByte OFInt      = 1
+fieldTypeByte OFBool     = 2
+fieldTypeByte OFText     = 3
+fieldTypeByte (OFList _) = 4
 
 -- | Decode a field type from a byte.
 _parseFieldTypeByte :: Word8 -> Maybe OverlayFieldType
@@ -849,4 +865,5 @@ _parseFieldTypeByte 0 = Just OFFloat
 _parseFieldTypeByte 1 = Just OFInt
 _parseFieldTypeByte 2 = Just OFBool
 _parseFieldTypeByte 3 = Just OFText
+_parseFieldTypeByte 4 = Nothing  -- list requires element type byte; use getFieldType
 _parseFieldTypeByte _ = Nothing

@@ -90,10 +90,11 @@ buildIndex :: OverlayFieldDef -> Int -> IntMap OverlayChunk -> FieldIndex
 buildIndex fd fieldPos chunks
   | not (ofdIndexed fd) = NoIndex
   | otherwise = case ofdType fd of
-      OFInt   -> buildIntIndex fieldPos chunks
-      OFFloat -> buildFloatIndex fieldPos chunks
-      OFBool  -> buildBoolIndex fieldPos chunks
-      OFText  -> NoIndex  -- text fields are not indexable
+      OFInt      -> buildIntIndex fieldPos chunks
+      OFFloat    -> buildFloatIndex fieldPos chunks
+      OFBool     -> buildBoolIndex fieldPos chunks
+      OFText     -> NoIndex  -- text fields are not indexable
+      OFList _   -> NoIndex  -- list fields are not indexable
 
 -- | Build an int field index: value → [tileIdx].
 buildIntIndex :: Int -> IntMap OverlayChunk -> FieldIndex

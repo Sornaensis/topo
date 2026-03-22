@@ -21,12 +21,17 @@ module Topo.Plugin.RPC.Protocol
     -- * Host → Plugin messages
   , InvokeGenerator(..)
   , InvokeSimulation(..)
+  , Handshake(..)
+  , WorldChanged(..)
     -- * Plugin → Host messages
   , PluginProgress(..)
   , PluginLog(..)
   , GeneratorResult(..)
   , SimulationResult(..)
   , PluginError(..)
+  , HandshakeAck(..)
+    -- * Protocol version
+  , currentProtocolVersion
     -- * Encoding / decoding
   , encodeMessage
   , decodeMessage
@@ -54,6 +59,8 @@ import qualified Data.Text as Text
 import Data.Word (Word64)
 import GHC.Generics (Generic)
 
+import Topo.Plugin.DataResource (DataResourceSchema)
+
 ------------------------------------------------------------------------
 -- Message type tags
 ------------------------------------------------------------------------
@@ -68,6 +75,13 @@ data RPCMessageType
   | MsgGeneratorResult
   | MsgSimulationResult
   | MsgError
+  | MsgHandshake
+  | MsgHandshakeAck
+  | MsgWorldChanged
+  | MsgQueryResource
+  | MsgQueryResult
+  | MsgMutateResource
+  | MsgMutateResult
   deriving (Eq, Ord, Show, Read, Generic)
 
 instance FromJSON RPCMessageType where
@@ -80,6 +94,13 @@ instance FromJSON RPCMessageType where
     "generator_result"  -> pure MsgGeneratorResult
     "simulation_result" -> pure MsgSimulationResult
     "error"             -> pure MsgError
+    "handshake"         -> pure MsgHandshake
+    "handshake_ack"     -> pure MsgHandshakeAck
+    "world_changed"     -> pure MsgWorldChanged
+    "query_resource"    -> pure MsgQueryResource
+    "query_result"      -> pure MsgQueryResult
+    "mutate_resource"   -> pure MsgMutateResource
+    "mutate_result"     -> pure MsgMutateResult
     _                   -> fail ("unknown message type: " <> Text.unpack t)
 
 instance ToJSON RPCMessageType where
@@ -91,6 +112,13 @@ instance ToJSON RPCMessageType where
   toJSON MsgGeneratorResult  = "generator_result"
   toJSON MsgSimulationResult = "simulation_result"
   toJSON MsgError            = "error"
+  toJSON MsgHandshake        = "handshake"
+  toJSON MsgHandshakeAck     = "handshake_ack"
+  toJSON MsgWorldChanged     = "world_changed"
+  toJSON MsgQueryResource    = "query_resource"
+  toJSON MsgQueryResult      = "query_result"
+  toJSON MsgMutateResource   = "mutate_resource"
+  toJSON MsgMutateResult     = "mutate_result"
 
 ------------------------------------------------------------------------
 -- Envelope
@@ -338,6 +366,95 @@ instance ToJSON PluginError where
   toJSON pe = object
     [ "code"    .= peCode pe
     , "message" .= peMessage pe
+    ]
+
+------------------------------------------------------------------------
+-- Protocol version
+------------------------------------------------------------------------
+
+-- | Current protocol version.
+--
+-- Version 2 introduces the handshake exchange, world-changed
+-- notifications, and data-service CRUD messages.
+currentProtocolVersion :: Int
+currentProtocolVersion = 2
+
+------------------------------------------------------------------------
+-- Handshake messages
+------------------------------------------------------------------------
+
+-- | Handshake message sent by the host when a plugin connects.
+--
+-- Provides the world save path (if a world is loaded) and tells the
+-- plugin which host-side data-service capabilities are available.
+data Handshake = Handshake
+  { hsProtocolVersion  :: !Int
+    -- ^ Protocol version the host speaks.
+  , hsWorldPath        :: !(Maybe Text)
+    -- ^ Absolute path to the current world save directory, or
+    --   'Nothing' if no world is loaded yet.
+  , hsHostCapabilities :: ![Text]
+    -- ^ Host-side capabilities (e.g. @\"query\"@, @\"mutate\"@).
+  } deriving (Eq, Show, Generic)
+
+instance FromJSON Handshake where
+  parseJSON = withObject "Handshake" $ \o ->
+    Handshake
+      <$> o .: "protocol_version"
+      <*> o .:? "world_path"
+      <*> (o .:? "host_capabilities" >>= pure . maybe [] id)
+
+instance ToJSON Handshake where
+  toJSON hs = object
+    [ "protocol_version"  .= hsProtocolVersion hs
+    , "world_path"        .= hsWorldPath hs
+    , "host_capabilities" .= hsHostCapabilities hs
+    ]
+
+-- | Handshake acknowledgement sent by the plugin in response to
+-- 'Handshake'.
+--
+-- Declares the plugin's data directory (relative to the world save)
+-- and any data resource schemas the plugin manages.
+data HandshakeAck = HandshakeAck
+  { haProtocolVersion :: !Int
+    -- ^ Protocol version the plugin speaks.
+  , haDataDirectory   :: !(Maybe Text)
+    -- ^ Data subdirectory relative to world path, or 'Nothing'.
+  , haResources       :: ![DataResourceSchema]
+    -- ^ Data resource schemas the plugin manages.
+  } deriving (Eq, Show, Generic)
+
+instance FromJSON HandshakeAck where
+  parseJSON = withObject "HandshakeAck" $ \o ->
+    HandshakeAck
+      <$> o .: "protocol_version"
+      <*> o .:? "data_directory"
+      <*> (o .:? "resources" >>= pure . maybe [] id)
+
+instance ToJSON HandshakeAck where
+  toJSON ha = object
+    [ "protocol_version" .= haProtocolVersion ha
+    , "data_directory"   .= haDataDirectory ha
+    , "resources"        .= haResources ha
+    ]
+
+-- | Notification from the host that the world save path has changed.
+--
+-- Sent after a world is loaded, saved to a new location, or created.
+-- Plugins that manage data directories should re-resolve their paths.
+data WorldChanged = WorldChanged
+  { wchWorldPath :: !(Maybe Text)
+    -- ^ New world save path, or 'Nothing' if the world was unloaded.
+  } deriving (Eq, Show, Generic)
+
+instance FromJSON WorldChanged where
+  parseJSON = withObject "WorldChanged" $ \o ->
+    WorldChanged <$> o .:? "world_path"
+
+instance ToJSON WorldChanged where
+  toJSON wc = object
+    [ "world_path" .= wchWorldPath wc
     ]
 
 ------------------------------------------------------------------------

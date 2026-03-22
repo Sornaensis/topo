@@ -243,8 +243,11 @@ module Actor.UI.Setters
   , setUiContextPos
   , setUiHexTooltipPinned
   , setUiDisabledStages
+  , setUiDisabledPlugins
   , setUiPluginParam
   , setUiPluginNames
+  , setUiPluginExpanded
+  , setUiPluginParamSpecs
   , setUiSimAutoTick
   , setUiSimTickRate
   , setUiSimTickCount
@@ -252,6 +255,8 @@ module Actor.UI.Setters
   , setUiSeedInput
   , setUiOverlayNames
   , setUiOverlayFields
+  , setUiDataBrowser
+  , setUiDataResources
   ) where
 
 import Data.Aeson (Value)
@@ -264,10 +269,12 @@ import Seer.Config.Snapshot.Types (ConfigSnapshot)
 import Seer.World.Persist.Types (WorldSaveManifest)
 import Topo.Overlay.Schema (OverlayFieldType)
 import Topo.Pipeline.Stage (StageId)
+import Topo.Plugin.DataResource (DataResourceSchema)
 import UI.WidgetTree (WidgetId)
 
 import Actor.UI.State
   ( ConfigTab
+  , DataBrowserState
   , LeftTab
   , Ui
   , UiMenuMode
@@ -530,6 +537,7 @@ setUiContextHex = sendUnary SetContextHex
 setUiContextPos = sendUnary SetContextPos
 setUiHexTooltipPinned = sendUnary SetHexTooltipPinned
 setUiDisabledStages = sendUnary SetDisabledStages
+setUiDisabledPlugins = sendUnary SetDisabledPlugins
 setUiPluginNames = sendUnary SetPluginNames
 setUiSimAutoTick = sendUnary SetSimAutoTick
 setUiSimTickRate = sendUnary SetSimTickRate
@@ -541,3 +549,10 @@ setUiOverlayFields = sendUnary SetOverlayFields
 
 setUiPluginParam handle pluginName paramName value =
   sendUpdate handle (SetPluginParam pluginName paramName value)
+
+setUiPluginExpanded handle pluginName expanded =
+  sendUpdate handle (SetPluginExpanded pluginName expanded)
+
+setUiPluginParamSpecs = sendUnary SetPluginParamSpecs
+setUiDataBrowser = sendUnary SetDataBrowser
+setUiDataResources = sendUnary SetDataResources

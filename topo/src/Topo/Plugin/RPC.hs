@@ -22,10 +22,16 @@ module Topo.Plugin.RPC
   ( -- * Connection
     RPCConnection(..)
   , newRPCConnection
+    -- * Handshake
+  , performHandshake
+  , sendWorldChanged
     -- * Invocation
   , invokeGenerator
   , invokeSimulation
   , rpcShutdown
+    -- * Data service
+  , queryResource
+  , mutateResource
     -- * Pipeline / DAG integration
   , rpcGeneratorStage
   , rpcSimNode
@@ -41,6 +47,7 @@ module Topo.Plugin.RPC
   , module Topo.Plugin.RPC.Manifest
   , module Topo.Plugin.RPC.Transport
   , module Topo.Plugin.RPC.Protocol
+  , module Topo.Plugin.RPC.DataService
   ) where
 
 import Control.Monad.Except (throwError)
@@ -79,6 +86,8 @@ import Topo.Plugin.RPC.Manifest
 import qualified Topo.Plugin.RPC.Payload as Payload
 import Topo.Plugin.RPC.Protocol
 import Topo.Plugin.RPC.Transport
+import Topo.Plugin.RPC.DataService
+import Topo.Plugin.DataResource (DataResourceSchema)
 
 ------------------------------------------------------------------------
 -- Errors
@@ -102,20 +111,33 @@ data RPCError
 
 -- | An active RPC session with a plugin.
 data RPCConnection = RPCConnection
-  { rpcManifest  :: !RPCManifest
+  { rpcManifest         :: !RPCManifest
     -- ^ The plugin's parsed manifest.
-  , rpcTransport :: !Transport
+  , rpcTransport        :: !Transport
     -- ^ The underlying transport handle.
-  , rpcParams    :: !(Map Text Value)
+  , rpcParams           :: !(Map Text Value)
     -- ^ Current parameter values for this plugin.
+  , rpcProtocolVersion  :: !Int
+    -- ^ Negotiated protocol version from handshake.
+  , rpcDataDirectory    :: !(Maybe FilePath)
+    -- ^ Resolved absolute path to the plugin's data directory.
+  , rpcResources        :: ![DataResourceSchema]
+    -- ^ Data resource schemas received from handshake.
   }
 
 -- | Create an 'RPCConnection' from a manifest and transport.
+--
+-- The connection starts with default protocol version and no data
+-- resources.  Call 'performHandshake' after creation to negotiate
+-- capabilities and receive data resource schemas.
 newRPCConnection :: RPCManifest -> Transport -> Map Text Value -> RPCConnection
 newRPCConnection manifest transport params = RPCConnection
-  { rpcManifest  = manifest
-  , rpcTransport = transport
-  , rpcParams    = params
+  { rpcManifest        = manifest
+  , rpcTransport       = transport
+  , rpcParams          = params
+  , rpcProtocolVersion = currentProtocolVersion
+  , rpcDataDirectory   = Nothing
+  , rpcResources       = []
   }
 
 ------------------------------------------------------------------------
@@ -267,6 +289,111 @@ rpcShutdown conn = do
         }
   _ <- sendMessage (rpcTransport conn) (encodeMessage envelope)
   pure ()
+
+------------------------------------------------------------------------
+-- Handshake
+------------------------------------------------------------------------
+
+-- | Perform the protocol handshake with a connected plugin.
+--
+-- Sends 'MsgHandshake' with the current world path and waits for
+-- 'MsgHandshakeAck'.  Returns an updated 'RPCConnection' with the
+-- negotiated protocol version, data directory, and resource schemas.
+performHandshake
+  :: RPCConnection
+  -> Maybe Text
+  -- ^ World save path, or 'Nothing' if no world is loaded.
+  -> IO (Either RPCError RPCConnection)
+performHandshake conn worldPath = do
+  let envelope = RPCEnvelope
+        { envType = MsgHandshake
+        , envPayload = Aeson.toJSON Handshake
+          { hsProtocolVersion  = currentProtocolVersion
+          , hsWorldPath        = worldPath
+          , hsHostCapabilities = ["query", "mutate"]
+          }
+        }
+  result <- rpcCall (rpcTransport conn) envelope
+  case result of
+    Left err -> pure (Left err)
+    Right env -> case envType env of
+      MsgHandshakeAck ->
+        case Aeson.fromJSON (envPayload env) of
+          Aeson.Success ack -> pure (Right conn
+            { rpcProtocolVersion = haProtocolVersion ack
+            , rpcDataDirectory   = fmap Text.unpack (haDataDirectory ack)
+            , rpcResources       = haResources ack
+            })
+          Aeson.Error err -> pure (Left (RPCProtocolError (Text.pack err)))
+      MsgError ->
+        case Aeson.fromJSON (envPayload env) of
+          Aeson.Success (Topo.Plugin.RPC.Protocol.PluginError code msg) ->
+            pure (Left (RPCPluginError code msg))
+          Aeson.Error err -> pure (Left (RPCProtocolError (Text.pack err)))
+      other ->
+        pure (Left (RPCProtocolError
+          ("unexpected response to handshake: " <> Text.pack (show other))))
+
+-- | Notify the plugin that the world save path has changed.
+--
+-- This is a one-way notification; no response is expected.
+sendWorldChanged :: RPCConnection -> Maybe Text -> IO (Either RPCError ())
+sendWorldChanged conn worldPath = do
+  let envelope = RPCEnvelope
+        { envType = MsgWorldChanged
+        , envPayload = Aeson.toJSON WorldChanged
+          { wchWorldPath = worldPath
+          }
+        }
+      encoded = encodeMessage envelope
+  sendResult <- sendMessage (rpcTransport conn) encoded
+  case sendResult of
+    Left err -> pure (Left (RPCTransportError err))
+    Right () -> pure (Right ())
+
+------------------------------------------------------------------------
+-- Data service
+------------------------------------------------------------------------
+
+-- | Query a plugin's data resource.
+--
+-- Sends 'MsgQueryResource' and waits for 'MsgQueryResult', collecting
+-- any progress or log messages in the interim.
+queryResource :: RPCConnection -> QueryResource -> IO (Either RPCError QueryResult)
+queryResource conn qr = do
+  let envelope = RPCEnvelope
+        { envType    = MsgQueryResource
+        , envPayload = Aeson.toJSON qr
+        }
+  result <- rpcCallWithProgress (rpcTransport conn) envelope
+              (\_ -> pure ())
+              (\_ -> pure ())
+  case result of
+    Left err  -> pure (Left err)
+    Right env ->
+      case Aeson.fromJSON (envPayload env) of
+        Aeson.Success r -> pure (Right r)
+        Aeson.Error err -> pure (Left (RPCProtocolError (Text.pack err)))
+
+-- | Mutate a plugin's data resource.
+--
+-- Sends 'MsgMutateResource' and waits for 'MsgMutateResult', collecting
+-- any progress or log messages in the interim.
+mutateResource :: RPCConnection -> MutateResource -> IO (Either RPCError MutateResult)
+mutateResource conn mr = do
+  let envelope = RPCEnvelope
+        { envType    = MsgMutateResource
+        , envPayload = Aeson.toJSON mr
+        }
+  result <- rpcCallWithProgress (rpcTransport conn) envelope
+              (\_ -> pure ())
+              (\_ -> pure ())
+  case result of
+    Left err  -> pure (Left err)
+    Right env ->
+      case Aeson.fromJSON (envPayload env) of
+        Aeson.Success r -> pure (Right r)
+        Aeson.Error err -> pure (Left (RPCProtocolError (Text.pack err)))
 
 ------------------------------------------------------------------------
 -- Pipeline / DAG integration

@@ -26,4 +26,5 @@ executable topo-plugin-example
     , containers
     , text
     , topo-plugin-sdk
+    , vector
   default-language: Haskell2010

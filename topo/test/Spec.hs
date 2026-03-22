@@ -52,7 +52,10 @@ import qualified Spec.DirectionalSlope
 import qualified Spec.TerrainFormModifiers
 import qualified Spec.PluginRPC
 import qualified Spec.PluginIntegration
+import qualified Spec.DataResource
+import qualified Spec.DataService
 import qualified Spec.WorldBundle
+import qualified Spec.CommandTypes
 import qualified WorldProperty
 import qualified HexProperty
 
@@ -111,6 +114,9 @@ main = do
     Spec.TerrainFormModifiers.spec
     Spec.PluginRPC.spec
     Spec.PluginIntegration.spec
+    Spec.DataResource.spec
+    Spec.DataService.spec
     Spec.WorldBundle.spec
+    Spec.CommandTypes.spec
     WorldProperty.spec
     HexProperty.spec

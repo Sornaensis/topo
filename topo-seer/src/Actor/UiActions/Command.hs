@@ -13,7 +13,7 @@ module Actor.UiActions.Command
 
 import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.AtlasCache (AtlasKey(..))
-import Actor.PluginManager (PluginManager, getPluginOverlaySchemas, getPluginStages, refreshManifests)
+import Actor.PluginManager (LoadedPlugin(..), PluginManager, getDisabledPlugins, getLoadedPlugins, getPluginDataResources, getPluginOrder, getPluginOverlaySchemas, getPluginStages, refreshManifests)
 import Actor.Simulation (Simulation)
 import Actor.AtlasManager (AtlasJob(..), AtlasManager, enqueueAtlasBuild)
 import Actor.Data
@@ -40,6 +40,7 @@ import Actor.UI
   , uiDisabledStages
   , setUiChunkSize
   , setUiConfigTab
+  , setUiDataResources
   , setUiGenerating
   , uiRenderWaterLevel
   , setUiSeed
@@ -47,6 +48,10 @@ import Actor.UI
   , setUiSeedEditing
   , setUiSeedInput
   , uiSeed
+  , setUiPluginNames
+  , setUiPluginParamSpecs
+  , setUiDisabledPlugins
+  , setUiOverlayNames
   , setUiViewMode
   , uiViewMode
   , uiWaterLevel
@@ -61,8 +66,11 @@ import qualified Data.Text as Text
 import GHC.Clock (getMonotonicTimeNSec)
 import Hyperspace.Actor (ActorHandle, Protocol, ReplyTo)
 import Numeric (showFFloat)
+import qualified Data.Map.Strict as Map
 import Seer.Config (applyUiConfig, configSummary)
 import Topo (WorldConfig(..))
+import Topo.Overlay.Schema (OverlaySchema(..))
+import Topo.Plugin.RPC.Manifest (rmParameters)
 import Topo.WorldGen (defaultWorldGenConfig)
 
 -- | UI-triggered actions that can be executed asynchronously.
@@ -150,6 +158,22 @@ startGeneration req = do
   refreshManifests pluginHandle
   pluginStages <- getPluginStages pluginHandle
   overlaySchemas <- getPluginOverlaySchemas pluginHandle
+  -- Populate plugin UI state from discovered plugins
+  pluginOrder <- getPluginOrder pluginHandle
+  loadedPlugins <- getLoadedPlugins pluginHandle
+  dataResources <- getPluginDataResources pluginHandle
+  let pluginMap = Map.fromList [(lpName lp, lp) | lp <- loadedPlugins]
+      paramSpecs = Map.fromList
+        [ (name, rmParameters (lpManifest lp))
+        | name <- pluginOrder
+        , Just lp <- [Map.lookup name pluginMap]
+        ]
+  disabledPlugins <- getDisabledPlugins pluginHandle
+  setUiPluginNames uiHandle pluginOrder
+  setUiPluginParamSpecs uiHandle paramSpecs
+  setUiDisabledPlugins uiHandle disabledPlugins
+  setUiDataResources uiHandle dataResources
+  setUiOverlayNames uiHandle (map osName overlaySchemas)
   let cfg = applyUiConfig uiSnap defaultWorldGenConfig
       request = TerrainGenRequest
         { tgrSeed = uiSeed uiSnap

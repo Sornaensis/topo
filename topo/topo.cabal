@@ -95,9 +95,11 @@ library
       Topo.Simulation.DAG
       Topo.Plugin.DataResource
       Topo.Plugin.RPC
+      Topo.Plugin.RPC.DataService
       Topo.Plugin.RPC.Manifest
       Topo.Plugin.RPC.Protocol
       Topo.Plugin.RPC.Transport
+      Topo.Command.Types
       Topo.Config.JSON
       Topo.TerrainForm.Modifiers
       Topo.TerrainForm.Metrics
@@ -160,8 +162,11 @@ test-suite topo-test
       Spec.Calendar
       Spec.Climate
       Spec.ClimateAlignment
+      Spec.CommandTypes
       Spec.ConfigJSON
       Spec.ConfigProperty
+      Spec.DataResource
+      Spec.DataService
       Spec.Determinism
       Spec.Diffusion
       Spec.DirectionalSlope

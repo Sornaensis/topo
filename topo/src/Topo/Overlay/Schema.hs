@@ -65,7 +65,7 @@ import GHC.Generics (Generic)
 -- Field types
 ------------------------------------------------------------------------
 
--- | Scalar types allowed in overlay records.
+-- | Types allowed in overlay records.
 data OverlayFieldType
   = OFFloat
   -- ^ 32-bit IEEE 754 float.
@@ -75,16 +75,27 @@ data OverlayFieldType
   -- ^ Boolean (stored as 0.0\/1.0 in dense mode).
   | OFText
   -- ^ Length-prefixed UTF-8 text.  Not permitted in dense overlays.
+  | OFList !OverlayFieldType
+  -- ^ Variable-length list of a scalar element type.
+  --   Not permitted in dense overlays.  The element type must
+  --   itself be a scalar ('OFFloat', 'OFInt', 'OFBool', or 'OFText');
+  --   nested lists are rejected by 'validateSchema'.
   deriving (Eq, Ord, Show, Read, Generic)
 
 -- | Canonical lowercase name for serialisation.
+--
+-- Scalar types return their tag; list types return @"list"@.
 overlayFieldTypeName :: OverlayFieldType -> Text
-overlayFieldTypeName OFFloat = "float"
-overlayFieldTypeName OFInt   = "int"
-overlayFieldTypeName OFBool  = "bool"
-overlayFieldTypeName OFText  = "text"
+overlayFieldTypeName OFFloat    = "float"
+overlayFieldTypeName OFInt      = "int"
+overlayFieldTypeName OFBool     = "bool"
+overlayFieldTypeName OFText     = "text"
+overlayFieldTypeName (OFList _) = "list"
 
--- | Parse a field type from its canonical name.
+-- | Parse a scalar field type from its canonical name.
+--
+-- Returns 'Nothing' for @"list"@ — use the 'FromJSON' instance for
+-- the full type including list element types.
 parseOverlayFieldType :: Text -> Maybe OverlayFieldType
 parseOverlayFieldType "float" = Just OFFloat
 parseOverlayFieldType "int"   = Just OFInt
@@ -93,13 +104,22 @@ parseOverlayFieldType "text"  = Just OFText
 parseOverlayFieldType _       = Nothing
 
 instance ToJSON OverlayFieldType where
-  toJSON = toJSON . overlayFieldTypeName
+  toJSON OFFloat    = toJSON ("float" :: Text)
+  toJSON OFInt      = toJSON ("int"   :: Text)
+  toJSON OFBool     = toJSON ("bool"  :: Text)
+  toJSON OFText     = toJSON ("text"  :: Text)
+  toJSON (OFList e) = object ["list" .= e]
 
 instance FromJSON OverlayFieldType where
-  parseJSON = withText "OverlayFieldType" $ \t ->
+  parseJSON (String t) =
     case parseOverlayFieldType t of
       Just ft -> pure ft
       Nothing -> fail ("unknown overlay field type: " <> Text.unpack t)
+  parseJSON val = flip (withObject "OverlayFieldType") val $ \o -> do
+    mElem <- o .:? "list"
+    case (mElem :: Maybe OverlayFieldType) of
+      Just elemType -> pure (OFList elemType)
+      Nothing       -> fail "overlay field type object must contain \"list\""
 
 ------------------------------------------------------------------------
 -- Field definitions
@@ -277,6 +297,10 @@ data SchemaError
   -- ^ Two fields share the same name.
   | DenseTextFieldDisallowed !Text
   -- ^ A dense overlay may not contain text fields.
+  | DenseListFieldDisallowed !Text
+  -- ^ A dense overlay may not contain list fields.
+  | NestedListDisallowed !Text
+  -- ^ A list field's element type is itself a list (not permitted).
   | EmptySchemaName
   -- ^ Schema name is empty.
   | EmptySchemaVersion
@@ -289,6 +313,8 @@ data SchemaError
 renderSchemaError :: SchemaError -> Text
 renderSchemaError (DuplicateFieldName n)       = "duplicate field name: " <> n
 renderSchemaError (DenseTextFieldDisallowed n)  = "dense overlay may not have text field: " <> n
+renderSchemaError (DenseListFieldDisallowed n)  = "dense overlay may not have list field: " <> n
+renderSchemaError (NestedListDisallowed n)      = "nested list not allowed for field: " <> n
 renderSchemaError EmptySchemaName               = "schema name is empty"
 renderSchemaError EmptySchemaVersion            = "schema version is empty"
 renderSchemaError NoFields                      = "schema has no fields"
@@ -301,6 +327,8 @@ validateSchema schema = concat
   , [ NoFields           | null (osFields schema) ]
   , duplicateErrors
   , denseTextErrors
+  , denseListErrors
+  , nestedListErrors
   ]
   where
     names = map ofdName (osFields schema)
@@ -314,6 +342,22 @@ validateSchema schema = concat
           , ofdType f == OFText
           ]
       | otherwise = []
+    denseListErrors
+      | osStorage schema == StorageDense =
+          [ DenseListFieldDisallowed (ofdName f)
+          | f <- osFields schema
+          , isListType (ofdType f)
+          ]
+      | otherwise = []
+    nestedListErrors =
+      [ NestedListDisallowed (ofdName f)
+      | f <- osFields schema
+      , isNestedList (ofdType f)
+      ]
+    isListType (OFList _) = True
+    isListType _          = False
+    isNestedList (OFList (OFList _)) = True
+    isNestedList _                   = False
 
 ------------------------------------------------------------------------
 -- Field-index helpers

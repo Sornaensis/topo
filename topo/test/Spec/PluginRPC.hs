@@ -22,6 +22,7 @@ import Data.Word (Word64)
 import Topo.Plugin.RPC.Manifest
 import Topo.Plugin.RPC.Protocol
 import Topo.Plugin.RPC.Transport (pluginPipeName, defaultTransportConfig)
+import Topo.Plugin.DataResource
 
 ------------------------------------------------------------------------
 -- Arbitrary instances for QuickCheck
@@ -41,6 +42,13 @@ instance Arbitrary RPCMessageType where
     , MsgGeneratorResult
     , MsgSimulationResult
     , MsgError
+    , MsgHandshake
+    , MsgHandshakeAck
+    , MsgWorldChanged
+    , MsgQueryResource
+    , MsgQueryResult
+    , MsgMutateResource
+    , MsgMutateResult
     ]
 
 instance Arbitrary RPCEnvelope where
@@ -71,11 +79,16 @@ instance Arbitrary PluginError where
 
 instance Arbitrary Capability where
   arbitrary = elements
-    [ CapReadTerrain
+    [ CapLog
+    , CapNoise
+    , CapReadTerrain
+    , CapWriteTerrain
     , CapReadOverlay
     , CapWriteOverlay
-    , CapWriteTerrain
-    , CapLog
+    , CapReadWorld
+    , CapWriteWorld
+    , CapDataRead
+    , CapDataWrite
     ]
 
 instance Arbitrary RPCParamType where
@@ -107,6 +120,76 @@ instance Arbitrary RPCGeneratorDecl where
     <$> arbitrary
     <*> listOf arbitrary
 
+instance Arbitrary DataFieldType where
+  arbitrary = oneof
+    [ pure DFText
+    , pure DFInt
+    , pure DFFloat
+    , pure DFDouble
+    , pure DFBool
+    , pure DFFixed2
+    , pure DFFixed3
+    , pure DFFixed4
+    , DFEnum <$> listOf1 arbitrary
+    ]
+
+instance Arbitrary DataConstructorDef where
+  arbitrary = DataConstructorDef
+    <$> arbitrary
+    <*> listOf (oneof [pure DFText, pure DFInt, pure DFFloat, pure DFBool])
+
+instance Arbitrary DataFieldDef where
+  arbitrary = DataFieldDef
+    <$> arbitrary
+    <*> arbitrary
+    <*> arbitrary
+    <*> arbitrary
+    <*> pure Nothing
+
+instance Arbitrary DataOperations where
+  arbitrary = DataOperations
+    <$> arbitrary
+    <*> arbitrary
+    <*> arbitrary
+    <*> arbitrary
+    <*> arbitrary
+    <*> arbitrary
+
+instance Arbitrary DataResourceSchema where
+  arbitrary = do
+    name <- arbitrary
+    label <- arbitrary
+    hexBound <- arbitrary
+    keyName <- arbitrary
+    let keyField = DataFieldDef keyName DFText "Key" False Nothing
+    extraFields <- listOf arbitrary
+    ops <- arbitrary
+    ov <- arbitrary
+    pure DataResourceSchema
+      { drsName       = name
+      , drsLabel      = label
+      , drsHexBound   = hexBound
+      , drsFields     = keyField : extraFields
+      , drsOperations = ops
+      , drsKeyField   = keyName
+      , drsOverlay    = ov
+      }
+
+instance Arbitrary Handshake where
+  arbitrary = Handshake
+    <$> pure currentProtocolVersion
+    <*> arbitrary
+    <*> listOf (elements ["query", "mutate", "subscribe"])
+
+instance Arbitrary HandshakeAck where
+  arbitrary = HandshakeAck
+    <$> pure currentProtocolVersion
+    <*> arbitrary
+    <*> listOf arbitrary
+
+instance Arbitrary WorldChanged where
+  arbitrary = WorldChanged <$> arbitrary
+
 instance Arbitrary RPCManifest where
   arbitrary = do
     name <- Text.pack <$> listOf1 (elements ['a'..'z'])
@@ -123,6 +206,8 @@ instance Arbitrary RPCManifest where
             Nothing -> Just (RPCOverlayDecl "test.toposchema")
             x       -> x
           Nothing -> ov
+    dataRes <- listOf arbitrary
+    dataDir <- arbitrary
     pure RPCManifest
       { rmName         = name
       , rmVersion      = ver
@@ -132,6 +217,8 @@ instance Arbitrary RPCManifest where
       , rmOverlay      = ov'
       , rmCapabilities = caps
       , rmParameters   = params
+      , rmDataResources = dataRes
+      , rmDataDirectory = dataDir
       }
 
 ------------------------------------------------------------------------
@@ -393,6 +480,40 @@ spec = describe "Plugin.RPC" $ do
       Aeson.fromJSON (Aeson.toJSON ty) === Aeson.Success ty
 
   ------------------------------------
+  -- Handshake protocol round-trips
+  ------------------------------------
+  describe "Handshake protocol" $ do
+    prop "Handshake round-trips" $ \(hs :: Handshake) ->
+      Aeson.fromJSON (Aeson.toJSON hs) === Aeson.Success hs
+
+    prop "HandshakeAck round-trips" $ \(ha :: HandshakeAck) ->
+      Aeson.fromJSON (Aeson.toJSON ha) === Aeson.Success ha
+
+    prop "WorldChanged round-trips" $ \(wc :: WorldChanged) ->
+      Aeson.fromJSON (Aeson.toJSON wc) === Aeson.Success wc
+
+    it "Handshake with no world path round-trips" $ do
+      let hs = Handshake currentProtocolVersion Nothing ["query"]
+      Aeson.fromJSON (Aeson.toJSON hs) `shouldBe` Aeson.Success hs
+
+    it "HandshakeAck with no data directory round-trips" $ do
+      let ha = HandshakeAck currentProtocolVersion Nothing []
+      Aeson.fromJSON (Aeson.toJSON ha) `shouldBe` Aeson.Success ha
+
+    it "WorldChanged with Nothing round-trips" $ do
+      let wc = WorldChanged Nothing
+      Aeson.fromJSON (Aeson.toJSON wc) `shouldBe` Aeson.Success wc
+
+    it "encodes MsgHandshake as expected string" $
+      Aeson.toJSON MsgHandshake `shouldBe` Aeson.String "handshake"
+
+    it "encodes MsgHandshakeAck as expected string" $
+      Aeson.toJSON MsgHandshakeAck `shouldBe` Aeson.String "handshake_ack"
+
+    it "encodes MsgWorldChanged as expected string" $
+      Aeson.toJSON MsgWorldChanged `shouldBe` Aeson.String "world_changed"
+
+  ------------------------------------
   -- Protocol message types
   ------------------------------------
   describe "Protocol message types" $ do
@@ -558,4 +679,6 @@ baseManifest = RPCManifest
   , rmOverlay      = Nothing
   , rmCapabilities = []
   , rmParameters   = []
+  , rmDataResources = []
+  , rmDataDirectory = Nothing
   }

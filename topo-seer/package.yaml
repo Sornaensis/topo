@@ -47,6 +47,8 @@ library:
     - Seer.Input
     - Seer.Input.Actions
     - Seer.Input.Events
+    - Seer.Command.Channel
+    - Seer.Command.Dispatch
     - Seer.System
     - Seer.System.ThreadPriority
     - Seer.Input.ConfigScroll
@@ -60,6 +62,7 @@ library:
     - Seer.Render.Frame
     - Seer.Render.Terrain
     - Seer.Render.Ui
+    - Seer.Screenshot
     - Seer.Timing
     - Seer.World.Persist
     - Seer.World.Persist.Types
@@ -76,6 +79,16 @@ library:
     - UI.WidgetTree
   other-modules:
     - Actor.UiActions.Handles
+    - Seer.Command.Handlers.Enums
+    - Seer.Command.Handlers.Generate
+    - Seer.Command.Handlers.Presets
+    - Seer.Command.Handlers.Screenshot
+    - Seer.Command.Handlers.Sliders
+    - Seer.Command.Handlers.State
+    - Seer.Command.Handlers.Terrain
+    - Seer.Command.Handlers.View
+    - Seer.Command.Handlers.World
+    - Seer.Command.Context
     - Seer.Config.SliderAccess
     - Seer.Config.Range
     - Seer.Config.SliderConversion

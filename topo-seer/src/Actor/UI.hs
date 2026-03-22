@@ -2,7 +2,12 @@ module Actor.UI
   ( module Actor.UI.Setters
   , Ui
   , ConfigTab(..)
+  , DataBrowserState(..)
+  , emptyDataBrowserState
+  , builtinStageRowCount
   , configRowCount
+  , pluginRowIndex
+  , pluginRowsWithParams
   , LeftTab(..)
   , UiMenuMode(..)
   , ViewMode(..)
@@ -21,6 +26,8 @@ module Actor.UI
 import Actor.UI.Setters
 import Actor.UI.State
   ( ConfigTab(..)
+  , DataBrowserState(..)
+  , emptyDataBrowserState
   , LeftTab(..)
   , Ui
   , UiMenuMode(..)
@@ -28,7 +35,10 @@ import Actor.UI.State
   , UiSnapshotRef
   , UiState(..)
   , ViewMode(..)
+  , builtinStageRowCount
   , configRowCount
+  , pluginRowIndex
+  , pluginRowsWithParams
   , emptyUiState
   , getUiSnapshot
   , newUiSnapshotRef

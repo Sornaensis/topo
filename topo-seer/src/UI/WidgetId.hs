@@ -474,6 +474,16 @@ data WidgetId
   | WidgetPipelineToggle !Text
   | WidgetPluginMoveUp !Text
   | WidgetPluginMoveDown !Text
+  | WidgetPluginToggle !Text
+  | WidgetPluginExpand !Text
+  | WidgetPluginParamSlider !Text !Text
+  | WidgetPluginParamCheck !Text !Text
   | WidgetSimTick
   | WidgetSimAutoTick
+  -- Data browser (ConfigData tab)
+  | WidgetConfigTabData
+  | WidgetDataPluginSelect !Text
+  | WidgetDataResourceSelect !Text !Text
+  | WidgetDataPagePrev !Text !Text
+  | WidgetDataPageNext !Text !Text
   deriving (Eq, Show)

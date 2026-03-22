@@ -27,6 +27,7 @@ sliderDefsForConfigTab configTab = case configTab of
   ConfigBiome -> sliderDefsForTab SliderTabBiome
   ConfigErosion -> sliderDefsForTab SliderTabErosion
   ConfigPipeline -> []
+  ConfigData -> []
 
 defaultSliderValueForId :: SliderId -> Float
 defaultSliderValueForId = sliderDefaultValueForId

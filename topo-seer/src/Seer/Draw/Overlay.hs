@@ -14,6 +14,8 @@ import Data.List (sort)
 import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Vector (Vector)
+import qualified Data.Vector as V
 import Data.Word (Word8, Word16)
 import Linear (V2(..), V4(..))
 import qualified SDL
@@ -41,6 +43,20 @@ import Topo
   , plateBoundaryToCode
   , terrainFormDisplayName
   , tileIndex
+  )
+import Topo.Overlay
+  ( Overlay(..)
+  , OverlayData(..)
+  , OverlayChunk(..)
+  , OverlayRecord(..)
+  , OverlayValue(..)
+  , lookupOverlay
+  , recordField
+  )
+import Topo.Overlay.Schema
+  ( OverlayFieldDef(..)
+  , OverlayFieldType(..)
+  , OverlaySchema(..)
   )
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), formatLatLon, tileLatitude, tileLongitude)
 import Topo.Units
@@ -304,10 +320,18 @@ contextLines ui terrainSnap (q, r) =
       , "Slope " <> fmtF (hsSlope sample)
       , "Elev  " <> fmtU (normToMetres units (hsElevation sample)) "m"
       ]
-    modeLines (ViewOverlay overlayName fieldIndex) _ =
-      [ "Overlay " <> overlayName
-      , "Field  " <> Text.pack (show fieldIndex)
-      ]
+    modeLines (ViewOverlay overlayName fieldIndex) sample =
+      case lookupOverlay overlayName (tsOverlayStore terrainSnap) of
+        Nothing -> ["Overlay " <> overlayName, "(not loaded)"]
+        Just overlay ->
+          let schema = ovSchema overlay
+              fields = osFields schema
+              fieldHeader = case drop fieldIndex fields of
+                (fd:_) -> ofdName fd
+                []     -> "field " <> Text.pack (show fieldIndex)
+              ChunkId key = chunkIdFromCoord (hsChunk sample)
+          in ("Overlay " <> overlayName) : ("Field  " <> fieldHeader) :
+               overlayValuesAt overlay key (tsChunkSize terrainSnap) sample fields
 
 data HexSample = HexSample
   { hsChunk :: !ChunkCoord
@@ -416,3 +440,49 @@ crustDisplayName :: Word16 -> Text
 crustDisplayName 0 = "Oceanic"
 crustDisplayName 1 = "Continental"
 crustDisplayName code = "Unknown (" <> Text.pack (show code) <> ")"
+
+------------------------------------------------------------------------
+-- Overlay hex context
+------------------------------------------------------------------------
+
+-- | Look up all overlay field values at the given hex and format them
+-- as display lines.
+overlayValuesAt :: Overlay -> Int -> Int -> HexSample -> [OverlayFieldDef] -> [Text]
+overlayValuesAt overlay chunkKey chunkSize sample fields =
+  let config = WorldConfig { wcChunkSize = chunkSize }
+  in case tileIndex config (hsLocal sample) of
+       Nothing -> ["(invalid tile)"]
+       Just (TileIndex idx) -> case ovData overlay of
+         DenseData dm ->
+           case IntMap.lookup chunkKey dm of
+             Nothing -> ["(no data)"]
+             Just fieldVecs ->
+               zipWith (denseFieldLine idx fieldVecs) [0..] fields
+         SparseData sm ->
+           case IntMap.lookup chunkKey sm of
+             Nothing -> ["(no data)"]
+             Just (OverlayChunk tileMap) ->
+               case IntMap.lookup idx tileMap of
+                 Nothing -> ["(no record)"]
+                 Just (OverlayRecord vals) ->
+                   zipWith (sparseFieldLine vals) [0..] fields
+  where
+    denseFieldLine idx fieldVecs fi fd
+      | fi < V.length fieldVecs =
+          let vec = fieldVecs V.! fi
+          in if idx < U.length vec
+               then ofdName fd <> "  " <> fmtF (vec U.! idx)
+               else ofdName fd <> "  -"
+      | otherwise = ofdName fd <> "  -"
+    sparseFieldLine vals fi fd
+      | fi < V.length vals = ofdName fd <> "  " <> formatOverlayValue (vals V.! fi)
+      | otherwise          = ofdName fd <> "  -"
+
+-- | Format an 'OverlayValue' for display in the hex context panel.
+formatOverlayValue :: OverlayValue -> Text
+formatOverlayValue (OVFloat f) = fmtF f
+formatOverlayValue (OVInt i)   = Text.pack (show i)
+formatOverlayValue (OVBool b)  = if b then "Yes" else "No"
+formatOverlayValue (OVText t)  = t
+formatOverlayValue (OVList vs) =
+  "[" <> Text.intercalate ", " (map formatOverlayValue (V.toList vs)) <> "]"

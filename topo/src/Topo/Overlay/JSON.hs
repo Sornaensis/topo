@@ -177,6 +177,10 @@ decodeOverlayValue OFFloat value = OVFloat <$> parseJSON value
 decodeOverlayValue OFInt value = OVInt <$> parseJSON value
 decodeOverlayValue OFBool value = OVBool <$> parseJSON value
 decodeOverlayValue OFText value = OVText <$> parseJSON value
+decodeOverlayValue (OFList elemType) value = do
+  arr <- parseJSON value :: Parser [Value]
+  elems <- traverse (decodeOverlayValue elemType) arr
+  pure (OVList (V.fromList elems))
 
 decodeDenseChunk :: DenseChunkPayload -> (Int, V.Vector (U.Vector Float))
 decodeDenseChunk payload =
@@ -210,6 +214,7 @@ encodeOverlayValue (OVFloat f) = toJSON f
 encodeOverlayValue (OVInt i) = toJSON i
 encodeOverlayValue (OVBool b) = toJSON b
 encodeOverlayValue (OVText t) = toJSON t
+encodeOverlayValue (OVList vs) = toJSON (map encodeOverlayValue (V.toList vs))
 
 expectStorage :: OverlayStorage -> Text -> Parser ()
 expectStorage expected actual =

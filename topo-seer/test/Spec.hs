@@ -21,6 +21,7 @@ import qualified Spec.Widgets
 import qualified Spec.WidgetTree
 import qualified Spec.SliderSpec
 import qualified Spec.WorldPersist
+import qualified Spec.CommandDispatch
 
 main :: IO ()
 main = hspec $ do
@@ -44,3 +45,4 @@ main = hspec $ do
   Spec.Widgets.spec
   Spec.WidgetTree.spec
   Spec.WorldPersist.spec
+  Spec.CommandDispatch.spec

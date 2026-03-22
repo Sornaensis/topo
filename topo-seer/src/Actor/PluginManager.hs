@@ -39,6 +39,15 @@ module Actor.PluginManager
   , shutdownPlugins
   , setPluginOrder
   , getPluginOrder
+  , setDisabledPlugins
+  , getDisabledPlugins
+    -- * Data service
+  , getPluginDataResources
+  , queryPluginResource
+  , mutatePluginResource
+    -- * World lifecycle
+  , notifyWorldChanged
+  , getPluginDataDirectories
   ) where
 
 import Control.Exception (SomeException, try)
@@ -52,6 +61,8 @@ import Data.IORef (IORef, newIORef, readIORef, atomicModifyIORef')
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
+import qualified Data.Set as Set
+import Data.Set (Set)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Hyperspace.Actor
@@ -86,10 +97,19 @@ import Topo.Plugin.RPC
   , RPCParamSpec(..)
   , parseManifestFile
   , newRPCConnection
+  , performHandshake
+  , sendWorldChanged
   , rpcGeneratorStage
   , rpcShutdown
+  , queryResource
+  , mutateResource
+  , QueryResource(..)
+  , QueryResult(..)
+  , MutateResource(..)
+  , MutateResult(..)
   )
 import qualified Topo.Plugin.RPC.Manifest as RPCManifest
+import Topo.Plugin.DataResource (DataResourceSchema(..))
 import Topo.Plugin.RPC.Transport (Transport, closeTransport, connectPlugin)
 
 ------------------------------------------------------------------------
@@ -136,6 +156,8 @@ data PluginManagerState = PluginManagerState
     -- ^ User-defined plugin ordering for pipeline insertion.
   , pmsBaseDir    :: !FilePath
     -- ^ Base directory for plugin discovery (@~\/.topo\/plugins\/@).
+  , pmsDisabledPlugins :: !(Set Text)
+    -- ^ Plugins the user has disabled in the pipeline.
   }
 
 emptyPluginManagerState :: PluginManagerState
@@ -143,6 +165,7 @@ emptyPluginManagerState = PluginManagerState
   { pmsPlugins     = Map.empty
   , pmsPluginOrder = []
   , pmsBaseDir     = ""
+  , pmsDisabledPlugins = Set.empty
   }
 
 ------------------------------------------------------------------------
@@ -162,10 +185,17 @@ actor PluginManager
   call getStages :: () -> [PipelineStage]
   call getOverlaySchemas :: () -> [OverlaySchema]
   call getOrder :: () -> [Text]
+  call getDisabled :: () -> Set Text
   cast setParam :: (Text, Text, Value)
   cast setOrder :: [Text]
+  cast setDisabled :: Set Text
   cast refresh :: ()
   cast shutdown :: ()
+  call getDataResources :: () -> Map Text [DataResourceSchema]
+  call queryData :: (Text, QueryResource) -> Either Text QueryResult
+  call mutateData :: (Text, MutateResource) -> Either Text MutateResult
+  cast notifyWorld :: Maybe Text
+  call getDataDirs :: () -> [(Text, FilePath)]
 
   initial emptyPluginManagerState
   on_ discover = \() st -> do
@@ -173,10 +203,12 @@ actor PluginManager
     createDirectoryIfMissing True baseDir
     plugins <- scanPluginDirs baseDir
     orderTxt <- loadPluginOrder baseDir
+    disabled <- loadDisabledPlugins baseDir
     pure st
       { pmsPlugins = Map.fromList [(lpName p, p) | p <- plugins]
       , pmsPluginOrder = orderTxt
       , pmsBaseDir = baseDir
+      , pmsDisabledPlugins = disabled
       }
   onPure getPlugins = \() st ->
     (st, Map.elems (pmsPlugins st))
@@ -186,17 +218,53 @@ actor PluginManager
     (st, buildPluginOverlaySchemas st)
   onPure getOrder = \() st ->
     (st, pmsPluginOrder st)
-  onPure_ setParam = \(pluginName, paramName, value) st ->
-    st { pmsPlugins = Map.adjust (setParamOnPlugin paramName value) pluginName (pmsPlugins st) }
-  onPure_ setOrder = \order st ->
-    st { pmsPluginOrder = order }
+  onPure getDisabled = \() st ->
+    (st, pmsDisabledPlugins st)
+  on_ setParam = \(pluginName, paramName, value) st -> do
+    let st' = st { pmsPlugins = Map.adjust (setParamOnPlugin paramName value) pluginName (pmsPlugins st) }
+    case Map.lookup pluginName (pmsPlugins st') of
+      Just lp -> savePluginConfig (lpDirectory lp) (lpParams lp)
+      Nothing -> pure ()
+    pure st'
+  on_ setOrder = \order st -> do
+    savePluginOrder (pmsBaseDir st) order
+    pure st { pmsPluginOrder = order }
+  on_ setDisabled = \disabled st -> do
+    saveDisabledPlugins (pmsBaseDir st) disabled
+    pure st { pmsDisabledPlugins = disabled }
   on_ refresh = \() st -> do
     plugins' <- refreshAllManifests (pmsBaseDir st) (pmsPlugins st)
     pure st { pmsPlugins = plugins' }
   on_ shutdown = \() st -> do
     mapM_ shutdownPlugin (Map.elems (pmsPlugins st))
     pure st { pmsPlugins = Map.map disconnectPlugin (pmsPlugins st) }
-|]
+  onPure getDataResources = \() st ->
+    (st, buildPluginDataResources st)
+  on queryData = \(pluginName, qr) st ->
+    case Map.lookup pluginName (pmsPlugins st) of
+      Nothing -> pure (st, Left ("unknown plugin: " <> pluginName))
+      Just lp -> case lpConnection lp of
+        Nothing -> pure (st, Left ("plugin not connected: " <> pluginName))
+        Just conn -> do
+          result <- queryResource conn qr
+          case result of
+            Left err -> pure (st, Left (Text.pack (show err)))
+            Right qResult -> pure (st, Right qResult)
+  on mutateData = \(pluginName, mr) st ->
+    case Map.lookup pluginName (pmsPlugins st) of
+      Nothing -> pure (st, Left ("unknown plugin: " <> pluginName))
+      Just lp -> case lpConnection lp of
+        Nothing -> pure (st, Left ("plugin not connected: " <> pluginName))
+        Just conn -> do
+          result <- mutateResource conn mr
+          case result of
+            Left err -> pure (st, Left (Text.pack (show err)))
+            Right mResult -> pure (st, Right mResult)
+  on_ notifyWorld = \mWorldPath st -> do
+    mapM_ (notifyPluginWorldChanged mWorldPath) (Map.elems (pmsPlugins st))
+    pure st
+  onPure getDataDirs = \() st ->
+    (st, collectPluginDataDirs st)|]
 
 ------------------------------------------------------------------------
 -- Discovery
@@ -315,6 +383,28 @@ savePluginOrder baseDir order = do
   createDirectoryIfMissing True baseDir
   BL.writeFile orderPath (Aeson.encode order)
 
+-- | Load the set of disabled plugins from @disabled-plugins.json@.
+loadDisabledPlugins :: FilePath -> IO (Set Text)
+loadDisabledPlugins baseDir = do
+  let path = baseDir </> "disabled-plugins.json"
+  exists <- doesFileExist path
+  if not exists
+    then pure Set.empty
+    else do
+      result <- try @SomeException (BL.readFile path)
+      case result of
+        Left _ -> pure Set.empty
+        Right bs -> case Aeson.decode @[Text] bs of
+          Just names -> pure (Set.fromList names)
+          Nothing -> pure Set.empty
+
+-- | Persist the set of disabled plugins.
+saveDisabledPlugins :: FilePath -> Set Text -> IO ()
+saveDisabledPlugins baseDir disabled = do
+  let path = baseDir </> "disabled-plugins.json"
+  createDirectoryIfMissing True baseDir
+  BL.writeFile path (Aeson.encode (Set.toList disabled))
+
 ------------------------------------------------------------------------
 -- Manifest hot-reload
 ------------------------------------------------------------------------
@@ -342,7 +432,9 @@ refreshOneManifest _baseDir lp = do
 
 requiresRuntimeConnection :: RPCManifest -> Bool
 requiresRuntimeConnection manifest =
-  isJust (rmGenerator manifest) || isJust (rmSimulation manifest)
+  isJust (rmGenerator manifest)
+  || isJust (rmSimulation manifest)
+  || not (null (rmDataResources manifest))
 
 ensurePluginConnection :: LoadedPlugin -> IO LoadedPlugin
 ensurePluginConnection lp
@@ -377,12 +469,23 @@ connectLoadedPlugin lp = do
             , lpConnection = Nothing
             , lpProcessHandle = Nothing
             }
-        Right (transport, processHandle) ->
-          pure lp
-            { lpStatus = PluginConnected
-            , lpConnection = Just (newRPCConnection (lpManifest lp) transport (lpParams lp))
-            , lpProcessHandle = Just processHandle
-            }
+        Right (transport, processHandle) -> do
+          let conn = newRPCConnection (lpManifest lp) transport (lpParams lp)
+          hsResult <- performHandshake conn Nothing
+          case hsResult of
+            Right conn' ->
+              pure lp
+                { lpStatus = PluginConnected
+                , lpConnection = Just conn'
+                , lpProcessHandle = Just processHandle
+                }
+            Left _err ->
+              -- Handshake failed; fall back to unhandshaked connection
+              pure lp
+                { lpStatus = PluginConnected
+                , lpConnection = Just conn
+                , lpProcessHandle = Just processHandle
+                }
 
 resolvePluginExecutable :: FilePath -> Text -> IO (Maybe FilePath)
 resolvePluginExecutable pluginDir pluginName =
@@ -458,13 +561,48 @@ safeTerminateProcess processHandle = do
 buildPluginStages :: PluginManagerState -> [PipelineStage]
 buildPluginStages st =
   let plugins = pmsPlugins st
+      disabled = pmsDisabledPlugins st
       ordered = orderPlugins (pmsPluginOrder st) (Map.elems plugins)
-  in concatMap pluginToStage ordered
+      enabled = filter (\lp -> not (Set.member (lpName lp) disabled)) ordered
+  in concatMap pluginToStage enabled
 
 buildPluginOverlaySchemas :: PluginManagerState -> [OverlaySchema]
 buildPluginOverlaySchemas st =
-  let ordered = orderPlugins (pmsPluginOrder st) (Map.elems (pmsPlugins st))
-  in [schema | plugin <- ordered, Just schema <- [lpOverlaySchema plugin]]
+  let disabled = pmsDisabledPlugins st
+      ordered = orderPlugins (pmsPluginOrder st) (Map.elems (pmsPlugins st))
+      enabled = filter (\lp -> not (Set.member (lpName lp) disabled)) ordered
+  in [schema | plugin <- enabled, Just schema <- [lpOverlaySchema plugin]]
+
+-- | Collect data resource schemas from all loaded plugins.
+-- Returns a map from plugin name to its declared data resources.
+buildPluginDataResources :: PluginManagerState -> Map Text [DataResourceSchema]
+buildPluginDataResources st =
+  Map.mapMaybe extractResources (pmsPlugins st)
+  where
+    extractResources lp =
+      case rmDataResources (lpManifest lp) of
+        [] -> Nothing
+        rs -> Just rs
+
+-- | Collect @(pluginName, dataDir)@ pairs from all plugins that
+-- declared a data directory via the handshake.
+collectPluginDataDirs :: PluginManagerState -> [(Text, FilePath)]
+collectPluginDataDirs st =
+  [ (lpName lp, dir)
+  | lp <- Map.elems (pmsPlugins st)
+  , Just conn <- [lpConnection lp]
+  , Just dir <- [rpcDataDirectory conn]
+  ]
+
+-- | Send a 'MsgWorldChanged' notification to a single plugin.
+-- No-op if the plugin is not connected.
+notifyPluginWorldChanged :: Maybe Text -> LoadedPlugin -> IO ()
+notifyPluginWorldChanged mWorldPath lp =
+  case lpConnection lp of
+    Nothing -> pure ()
+    Just conn -> do
+      _ <- sendWorldChanged conn mWorldPath
+      pure ()
 
 -- | Reorder plugins according to the user's saved ordering.
 -- Plugins not in the ordering list appear at the end.
@@ -484,8 +622,8 @@ pluginToStage lp =
     Just _genDecl ->
       case lpConnection lp of
         Nothing ->
-          -- Not connected yet: produce a no-op stage that logs a warning.
-          -- Phase 7 TODO: auto-connect before generation.
+          -- Not connected: refreshManifests ensures connection before
+          -- generation so this branch is normally unreachable.
           []
         Just conn ->
           [rpcGeneratorStage conn]
@@ -592,3 +730,63 @@ getPluginOrder
   -> IO [Text]
 getPluginOrder handle =
   call @"getOrder" handle #getOrder ()
+
+-- | Get data resource schemas from all plugins that declare them.
+-- Returns a map from plugin name to its declared data resource schemas.
+getPluginDataResources
+  :: ActorHandle PluginManager (Protocol PluginManager)
+  -> IO (Map Text [DataResourceSchema])
+getPluginDataResources handle =
+  call @"getDataResources" handle #getDataResources ()
+
+-- | Forward a data query to the named plugin.
+queryPluginResource
+  :: ActorHandle PluginManager (Protocol PluginManager)
+  -> Text -> QueryResource -> IO (Either Text QueryResult)
+queryPluginResource handle pluginName qr =
+  call @"queryData" handle #queryData (pluginName, qr)
+
+-- | Forward a data mutation to the named plugin.
+mutatePluginResource
+  :: ActorHandle PluginManager (Protocol PluginManager)
+  -> Text -> MutateResource -> IO (Either Text MutateResult)
+mutatePluginResource handle pluginName mr =
+  call @"mutateData" handle #mutateData (pluginName, mr)
+
+-- | Notify all connected plugins that the world path has changed.
+--
+-- Called after world save\/load so plugins can locate their data
+-- directories relative to the new world path.
+notifyWorldChanged
+  :: ActorHandle PluginManager (Protocol PluginManager)
+  -> Maybe Text  -- ^ New world path, or 'Nothing' if no world is loaded.
+  -> IO ()
+notifyWorldChanged handle mWorldPath =
+  cast @"notifyWorld" handle #notifyWorld mWorldPath
+
+-- | Get the data directories declared by connected plugins.
+--
+-- Returns @(pluginName, absoluteDataDirPath)@ pairs for all plugins
+-- whose handshake declared a data directory.
+getPluginDataDirectories
+  :: ActorHandle PluginManager (Protocol PluginManager)
+  -> IO [(Text, FilePath)]
+getPluginDataDirectories handle =
+  call @"getDataDirs" handle #getDataDirs ()
+
+-- | Update the set of disabled plugin names.
+--
+-- Disabled plugins are excluded from 'getPluginStages' and
+-- 'getPluginOverlaySchemas'.
+setDisabledPlugins
+  :: ActorHandle PluginManager (Protocol PluginManager)
+  -> Set Text -> IO ()
+setDisabledPlugins handle disabled =
+  cast @"setDisabled" handle #setDisabled disabled
+
+-- | Query the current set of disabled plugin names.
+getDisabledPlugins
+  :: ActorHandle PluginManager (Protocol PluginManager)
+  -> IO (Set Text)
+getDisabledPlugins handle =
+  call @"getDisabled" handle #getDisabled ()

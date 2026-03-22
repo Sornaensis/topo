@@ -11,28 +11,38 @@
 --
 -- = Field types
 --
--- Beyond the four basic scalars (@text@, @int@, @float@, @bool@), this
--- module exposes fixed-point types (@fixed2@, @fixed3@, @fixed4@) for
--- precise decimal values (e.g. currency, coordinates) and @double@ for
--- 64-bit IEEE 754 quantities that need more range or precision than
--- @float@.
+-- __Scalars:__  @text@, @int@, @float@, @double@, @bool@, @fixed2@,
+-- @fixed3@, @fixed4@.
 --
--- = Serialisation
+-- __Composites:__
 --
--- All types round-trip through JSON via 'ToJSON' \/ 'FromJSON'.
--- Field-type tags are lowercase strings: @\"text\"@, @\"int\"@,
--- @\"float\"@, @\"double\"@, @\"bool\"@, @\"fixed2\"@, @\"fixed3\"@,
--- @\"fixed4\"@.
+-- * @enum@ — a fixed set of string choices (e.g. faction alignment).
+-- * @record@ — a nested product type with named fields (recursive).
+-- * @adt@ — a sum type where each constructor carries positional
+--   arguments (recursive).
+--
+-- Scalar types serialise as plain JSON strings.  Composite types
+-- serialise as JSON objects with a single discriminator key
+-- (@\"enum\"@, @\"record\"@, or @\"adt\"@).
+--
+-- = Overlay-backed resources
+--
+-- A resource may declare @drsOverlay = Just overlayName@ to indicate
+-- that its data is stored in the named overlay.  The host stores the
+-- raw overlay data; all queries and mutations are forwarded to the
+-- plugin, which owns interpretation.
 module Topo.Plugin.DataResource
   ( -- * Resource schema
     DataResourceSchema(..)
     -- * Field definitions
   , DataFieldDef(..)
   , DataFieldType(..)
+  , DataConstructorDef(..)
     -- ** Field-type helpers
   , dataFieldTypeName
-  , parseDataFieldType
+  , parseScalarFieldType
   , fixedDecimalPlaces
+  , isScalarType
     -- * CRUD operation flags
   , DataOperations(..)
   , noOperations
@@ -51,7 +61,6 @@ import Data.Aeson
   , (.=)
   , object
   , withObject
-  , withText
   )
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -61,7 +70,11 @@ import GHC.Generics (Generic)
 -- Field types
 ------------------------------------------------------------------------
 
--- | Scalar types permitted in data-resource fields.
+-- | Types permitted in data-resource fields.
+--
+-- Scalar constructors carry no payload and serialise as a plain JSON
+-- string (@\"text\"@, @\"int\"@, …).  Composite constructors carry
+-- structural information and serialise as a single-key JSON object.
 data DataFieldType
   = DFText
   -- ^ UTF-8 text.
@@ -79,30 +92,84 @@ data DataFieldType
   -- ^ Fixed-point with 3 decimal places (e.g. @12345@ represents @12.345@).
   | DFFixed4
   -- ^ Fixed-point with 4 decimal places (e.g. @12345@ represents @1.2345@).
-  deriving (Eq, Ord, Show, Read, Generic)
+  | DFEnum ![Text]
+  -- ^ One of a fixed set of string choices.
+  | DFRecord ![DataFieldDef]
+  -- ^ A nested product type with named fields (mutually recursive
+  --   with 'DataFieldDef').
+  | DFAdt ![DataConstructorDef]
+  -- ^ A sum type.  Each constructor carries positional arguments
+  --   whose types may themselves be composite (recursive).
+  deriving (Eq, Show, Generic)
 
--- | Canonical lowercase tag used in JSON serialisation.
+-- | A single constructor in a 'DFAdt' sum type.
+--
+-- @
+-- { "constructor": "Circle",  "fields": ["float"] }
+-- { "constructor": "Pair",    "fields": [{"record": [...]}, "int"] }
+-- @
+data DataConstructorDef = DataConstructorDef
+  { dcdName   :: !Text
+  -- ^ Constructor tag (e.g. @\"Circle\"@, @\"Rectangle\"@).
+  , dcdFields :: ![DataFieldType]
+  -- ^ Positional argument types (may be empty for nullary constructors).
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON DataConstructorDef where
+  toJSON dcd = object
+    [ "constructor" .= dcdName dcd
+    , "fields"      .= dcdFields dcd
+    ]
+
+instance FromJSON DataConstructorDef where
+  parseJSON = withObject "DataConstructorDef" $ \o ->
+    DataConstructorDef
+      <$> o .: "constructor"
+      <*> (o .:? "fields" >>= pure . maybe [] id)
+
+------------------------------------------------------------------------
+-- Field-type helpers
+------------------------------------------------------------------------
+
+-- | Human-readable category name for any field type.
+--
+-- Scalar types return their canonical tag (@\"text\"@, @\"int\"@, …).
+-- Composite types return @\"enum\"@, @\"record\"@, or @\"adt\"@.
 dataFieldTypeName :: DataFieldType -> Text
-dataFieldTypeName DFText   = "text"
-dataFieldTypeName DFInt    = "int"
-dataFieldTypeName DFFloat  = "float"
-dataFieldTypeName DFDouble = "double"
-dataFieldTypeName DFBool   = "bool"
-dataFieldTypeName DFFixed2 = "fixed2"
-dataFieldTypeName DFFixed3 = "fixed3"
-dataFieldTypeName DFFixed4 = "fixed4"
+dataFieldTypeName DFText       = "text"
+dataFieldTypeName DFInt        = "int"
+dataFieldTypeName DFFloat      = "float"
+dataFieldTypeName DFDouble     = "double"
+dataFieldTypeName DFBool       = "bool"
+dataFieldTypeName DFFixed2     = "fixed2"
+dataFieldTypeName DFFixed3     = "fixed3"
+dataFieldTypeName DFFixed4     = "fixed4"
+dataFieldTypeName (DFEnum _)   = "enum"
+dataFieldTypeName (DFRecord _) = "record"
+dataFieldTypeName (DFAdt _)    = "adt"
 
--- | Parse a field type from its canonical tag.
-parseDataFieldType :: Text -> Maybe DataFieldType
-parseDataFieldType "text"   = Just DFText
-parseDataFieldType "int"    = Just DFInt
-parseDataFieldType "float"  = Just DFFloat
-parseDataFieldType "double" = Just DFDouble
-parseDataFieldType "bool"   = Just DFBool
-parseDataFieldType "fixed2" = Just DFFixed2
-parseDataFieldType "fixed3" = Just DFFixed3
-parseDataFieldType "fixed4" = Just DFFixed4
-parseDataFieldType _        = Nothing
+-- | Parse a /scalar/ field type from its canonical tag.
+--
+-- Returns 'Nothing' for composite type names (@\"enum\"@, @\"record\"@,
+-- @\"adt\"@) since those require structured JSON — use the 'FromJSON'
+-- instance on 'DataFieldType' instead.
+parseScalarFieldType :: Text -> Maybe DataFieldType
+parseScalarFieldType "text"   = Just DFText
+parseScalarFieldType "int"    = Just DFInt
+parseScalarFieldType "float"  = Just DFFloat
+parseScalarFieldType "double" = Just DFDouble
+parseScalarFieldType "bool"   = Just DFBool
+parseScalarFieldType "fixed2" = Just DFFixed2
+parseScalarFieldType "fixed3" = Just DFFixed3
+parseScalarFieldType "fixed4" = Just DFFixed4
+parseScalarFieldType _        = Nothing
+
+-- | Whether the field type is a scalar (non-composite).
+isScalarType :: DataFieldType -> Bool
+isScalarType (DFEnum _)   = False
+isScalarType (DFRecord _) = False
+isScalarType (DFAdt _)    = False
+isScalarType _            = True
 
 -- | Number of fractional decimal digits for fixed-point types.
 --
@@ -113,14 +180,48 @@ fixedDecimalPlaces DFFixed3 = Just 3
 fixedDecimalPlaces DFFixed4 = Just 4
 fixedDecimalPlaces _        = Nothing
 
+------------------------------------------------------------------------
+-- Field-type JSON instances
+------------------------------------------------------------------------
+
+-- Scalars serialise as plain strings:
+--   "text", "int", "float", "double", "bool", "fixed2", "fixed3", "fixed4"
+--
+-- Composites serialise as single-key objects:
+--   { "enum":   ["a","b","c"] }
+--   { "record": [ {field}, {field}, … ] }
+--   { "adt":    [ {constructor}, {constructor}, … ] }
+
 instance ToJSON DataFieldType where
-  toJSON = toJSON . dataFieldTypeName
+  toJSON DFText   = "text"
+  toJSON DFInt    = "int"
+  toJSON DFFloat  = "float"
+  toJSON DFDouble = "double"
+  toJSON DFBool   = "bool"
+  toJSON DFFixed2 = "fixed2"
+  toJSON DFFixed3 = "fixed3"
+  toJSON DFFixed4 = "fixed4"
+  toJSON (DFEnum choices)  = object ["enum"   .= choices]
+  toJSON (DFRecord fields) = object ["record" .= fields]
+  toJSON (DFAdt ctors)     = object ["adt"    .= ctors]
 
 instance FromJSON DataFieldType where
-  parseJSON = withText "DataFieldType" $ \t ->
-    case parseDataFieldType t of
+  parseJSON (String t) =
+    case parseScalarFieldType t of
       Just ft -> pure ft
-      Nothing -> fail ("unknown data field type: " <> Text.unpack t)
+      Nothing -> fail ("unknown scalar data field type: " <> Text.unpack t)
+  parseJSON val = flip (withObject "DataFieldType") val $ \o -> do
+    mEnum   <- o .:? "enum"
+    mRecord <- o .:? "record"
+    mAdt    <- o .:? "adt"
+    case ( mEnum   :: Maybe [Text]
+         , mRecord :: Maybe [DataFieldDef]
+         , mAdt    :: Maybe [DataConstructorDef]
+         ) of
+      (Just choices, Nothing, Nothing) -> pure (DFEnum choices)
+      (Nothing, Just fields, Nothing)  -> pure (DFRecord fields)
+      (Nothing, Nothing, Just ctors)   -> pure (DFAdt ctors)
+      _ -> fail "data field type object must contain exactly one of: enum, record, adt"
 
 ------------------------------------------------------------------------
 -- Field definitions
@@ -131,7 +232,7 @@ data DataFieldDef = DataFieldDef
   { dfName     :: !Text
   -- ^ Unique field name within the resource.
   , dfType     :: !DataFieldType
-  -- ^ Scalar type of this field.
+  -- ^ Type of this field (scalar or composite).
   , dfLabel    :: !Text
   -- ^ Human-readable display label.
   , dfEditable :: !Bool
@@ -229,6 +330,11 @@ instance FromJSON DataOperations where
 -- Plugins advertise data resources in their manifest and refine them
 -- at runtime via the handshake acknowledgement.  The host uses these
 -- schemas to generate browsing\/editing UI and validate CRUD messages.
+--
+-- When 'drsOverlay' is @Just overlayName@, the resource's data is
+-- stored in the named overlay.  The host persists the raw overlay; all
+-- queries and mutations are forwarded to the plugin, which owns
+-- interpretation.
 data DataResourceSchema = DataResourceSchema
   { drsName       :: !Text
   -- ^ Machine-readable resource name (e.g. @\"cultures\"@, @\"settlements\"@).
@@ -242,17 +348,22 @@ data DataResourceSchema = DataResourceSchema
   -- ^ Which CRUD operations this resource supports.
   , drsKeyField   :: !Text
   -- ^ Name of the primary-key field (must appear in 'drsFields').
+  , drsOverlay    :: !(Maybe Text)
+  -- ^ If @Just name@, data is backed by the named overlay.
+  --   The plugin owns storage and answers all queries; the host only
+  --   persists the raw overlay blob alongside the world save.
   } deriving (Eq, Show, Generic)
 
 instance ToJSON DataResourceSchema where
-  toJSON drs = object
+  toJSON drs = object $
     [ "name"       .= drsName drs
     , "label"      .= drsLabel drs
     , "hexBound"   .= drsHexBound drs
     , "fields"     .= drsFields drs
     , "operations" .= drsOperations drs
     , "keyField"   .= drsKeyField drs
-    ]
+    ] <>
+    [ "overlay" .= ov | Just ov <- [drsOverlay drs] ]
 
 instance FromJSON DataResourceSchema where
   parseJSON = withObject "DataResourceSchema" $ \o ->
@@ -263,6 +374,7 @@ instance FromJSON DataResourceSchema where
       <*> o .: "fields"
       <*> o .: "operations"
       <*> o .: "keyField"
+      <*> o .:? "overlay"
 
 ------------------------------------------------------------------------
 -- Validation
@@ -282,7 +394,18 @@ data DataResourceError
   -- ^ 'doQueryByHex' is enabled but 'drsHexBound' is 'False'.
   | DREDuplicateField !Text
   -- ^ Two fields share the same name.
-  deriving (Eq, Ord, Show, Read)
+  | DREOverlayNotHexBound
+  -- ^ Overlay-backed resource must be hex-bound.
+  | DREEmptyEnum !Text
+  -- ^ An enum field has no choices.  Carries the field name.
+  | DRENullaryAdt !Text
+  -- ^ An ADT field has no constructors.  Carries the field name.
+  | DREEmptyConstructorName !Text
+  -- ^ An ADT constructor has an empty name.  Carries the field name.
+  | DREDuplicateConstructor !Text !Text
+  -- ^ Duplicate constructor name within an ADT.
+  --   Carries (field name, constructor name).
+  deriving (Eq, Show)
 
 -- | Validate a data resource schema, returning all detected errors.
 validateDataResource :: DataResourceSchema -> [DataResourceError]
@@ -297,7 +420,12 @@ validateDataResource drs = concat
     | doQueryByHex (drsOperations drs)
     , not (drsHexBound drs)
     ]
+  , [ DREOverlayNotHexBound
+    | Just _ <- [drsOverlay drs]
+    , not (drsHexBound drs)
+    ]
   , duplicateFieldErrors
+  , concatMap validateFieldType (drsFields drs)
   ]
   where
     fieldNames = map dfName (drsFields drs)
@@ -307,3 +435,29 @@ validateDataResource drs = concat
       ]
     unique [] = []
     unique (x:xs) = x : unique (filter (/= x) xs)
+
+-- | Validate composite field types within a field definition.
+validateFieldType :: DataFieldDef -> [DataResourceError]
+validateFieldType fd = case dfType fd of
+  DFEnum choices
+    | null choices -> [DREEmptyEnum (dfName fd)]
+    | otherwise    -> []
+  DFAdt ctors
+    | null ctors   -> [DRENullaryAdt (dfName fd)]
+    | otherwise    -> concat
+        [ [ DREEmptyConstructorName (dfName fd)
+          | Text.null (dcdName c)
+          ]
+        | c <- ctors
+        ]
+        <>
+        [ DREDuplicateConstructor (dfName fd) n
+        | n <- unique (filter (\n -> length (filter (== n) cnames) > 1) cnames)
+        ]
+    where
+      cnames = map dcdName ctors
+      unique [] = []
+      unique (x:xs) = x : unique (filter (/= x) xs)
+  DFRecord subFields ->
+    concatMap validateFieldType subFields
+  _ -> []

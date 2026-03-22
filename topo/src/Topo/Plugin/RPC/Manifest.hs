@@ -64,6 +64,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import GHC.Generics (Generic)
 import Topo.Plugin (Capability(..))
+import Topo.Plugin.DataResource (DataResourceSchema(..), DataOperations(..))
 
 ------------------------------------------------------------------------
 -- Capability
@@ -223,22 +224,26 @@ instance ToJSON RPCOverlayDecl where
 
 -- | A plugin's complete manifest, parsed from @manifest.json@.
 data RPCManifest = RPCManifest
-  { rmName         :: !Text
+  { rmName          :: !Text
     -- ^ Unique plugin identifier.
-  , rmVersion      :: !Text
+  , rmVersion       :: !Text
     -- ^ Plugin version string (informational).
-  , rmDescription  :: !Text
+  , rmDescription   :: !Text
     -- ^ Human-readable description.
-  , rmGenerator    :: !(Maybe RPCGeneratorDecl)
+  , rmGenerator     :: !(Maybe RPCGeneratorDecl)
     -- ^ Generator pipeline declaration (if the plugin seeds data).
-  , rmSimulation   :: !(Maybe RPCSimulationDecl)
+  , rmSimulation    :: !(Maybe RPCSimulationDecl)
     -- ^ Simulation DAG declaration (if the plugin ticks an overlay).
-  , rmOverlay      :: !(Maybe RPCOverlayDecl)
+  , rmOverlay       :: !(Maybe RPCOverlayDecl)
     -- ^ Overlay schema reference (if the plugin owns an overlay).
-  , rmCapabilities :: ![RPCCapability]
+  , rmCapabilities  :: ![RPCCapability]
     -- ^ Requested capabilities.
-  , rmParameters   :: ![RPCParamSpec]
+  , rmParameters    :: ![RPCParamSpec]
     -- ^ User-facing configuration parameters.
+  , rmDataResources :: ![DataResourceSchema]
+    -- ^ Plugin-declared data resource schemas.
+  , rmDataDirectory :: !(Maybe Text)
+    -- ^ Data subdirectory relative to the world save path.
   } deriving (Eq, Show, Generic)
 
 instance FromJSON RPCManifest where
@@ -254,15 +259,19 @@ instance FromJSON RPCManifest where
     params <- case config of
       Just co -> withObject "config" (\c -> c .:? "parameters") co
       Nothing -> pure Nothing
+    dataRes  <- o .:? "dataResources"
+    dataDir  <- o .:? "dataDirectory"
     pure RPCManifest
-      { rmName         = name
-      , rmVersion      = ver
-      , rmDescription  = maybe "" id desc
-      , rmGenerator    = gen
-      , rmSimulation   = sim
-      , rmOverlay      = ov
-      , rmCapabilities = maybe [] id caps
-      , rmParameters   = maybe [] id params
+      { rmName          = name
+      , rmVersion       = ver
+      , rmDescription   = maybe "" id desc
+      , rmGenerator     = gen
+      , rmSimulation    = sim
+      , rmOverlay       = ov
+      , rmCapabilities  = maybe [] id caps
+      , rmParameters    = maybe [] id params
+      , rmDataResources = maybe [] id dataRes
+      , rmDataDirectory = dataDir
       }
 
 instance ToJSON RPCManifest where
@@ -277,6 +286,12 @@ instance ToJSON RPCManifest where
     [ "capabilities" .= rmCapabilities rm | not (null (rmCapabilities rm)) ] <>
     [ "config" .= object ["parameters" .= rmParameters rm]
     | not (null (rmParameters rm))
+    ] <>
+    [ "dataResources" .= rmDataResources rm
+    | not (null (rmDataResources rm))
+    ] <>
+    [ "dataDirectory" .= dd
+    | Just dd <- [rmDataDirectory rm]
     ]
 
 ------------------------------------------------------------------------
@@ -311,7 +326,12 @@ data ManifestError
   | ManifestWriteTerrainWithoutSim
     -- ^ @writeTerrain@ capability without a simulation declaration.
   | ManifestNoParticipation
-    -- ^ Plugin declares neither generator nor simulation.
+    -- ^ Plugin declares neither generator, simulation, nor data resources.
+  | ManifestDataReadWithoutCapability
+    -- ^ Data resources declared without @dataRead@ capability.
+  | ManifestDataWriteWithoutCapability
+    -- ^ Data resources with write operations declared without
+    --   @dataWrite@ capability.
   deriving (Eq, Ord, Show, Read)
 
 -- | Validate structural invariants of a parsed manifest.
@@ -332,8 +352,21 @@ validateManifest rm = concat
   , [ ManifestNoParticipation
     | Nothing <- [rmGenerator rm]
     , Nothing <- [rmSimulation rm]
+    , null (rmDataResources rm)
+    ]
+  , [ ManifestDataReadWithoutCapability
+    | not (null (rmDataResources rm))
+    , CapDataRead `notElem` rmCapabilities rm
+    ]
+  , [ ManifestDataWriteWithoutCapability
+    | any hasWriteOps (rmDataResources rm)
+    , CapDataWrite `notElem` rmCapabilities rm
     ]
   ]
+  where
+    hasWriteOps drs =
+      let ops = drsOperations drs
+      in doCreate ops || doUpdate ops || doDelete ops
 
 ------------------------------------------------------------------------
 -- Queries

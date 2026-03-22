@@ -49,6 +49,7 @@ import Seer.Render.Terrain
   , drawTerrain
   )
 import Seer.Render.Ui (drawUiOverlay)
+import Seer.Screenshot (serviceScreenshotRequest)
 import Seer.Timing (nsToMs, timedMs)
 import UI.Font (FontCache)
 import UI.Layout
@@ -98,7 +99,7 @@ renderFrame context = do
       buttonRect = leftGenButtonRect layout
       configToggle = configToggleRect layout
       configPanel = configPanelRect layout
-      (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline) = configTabRects layout
+      (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline, tabData) = configTabRects layout
       configPresetSave = configPresetSaveRect layout
       configPresetLoad = configPresetLoadRect layout
       configReset = configResetRect layout
@@ -204,6 +205,9 @@ renderFrame context = do
     (_, elapsed) <- timedMs (drawUiOverlay renderer fontCache snapshot terrainSnap layout logFilters (V2 (fromIntegral winW) (fromIntegral winH)))
     logTiming logHandle timingLogThresholdMs (Text.pack "draw ui") elapsed Nothing
   tAfterUi <- getMonotonicTimeNSec
+  -- Service any pending screenshot request before presenting.
+  -- This reads the back-buffer while all drawing is complete.
+  serviceScreenshotRequest (rcScreenshotRef context) renderer (fromIntegral winW) (fromIntegral winH)
   loggedPresent <- do
     (_, elapsed) <- timedMs (SDL.present renderer)
     logTiming logHandle timingLogThresholdMs (Text.pack "present") elapsed Nothing

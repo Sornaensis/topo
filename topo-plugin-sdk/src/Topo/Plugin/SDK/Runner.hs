@@ -64,6 +64,10 @@ import Topo.Plugin.RPC.Protocol
   , InvokeSimulation(..)
   , GeneratorResult(..)
   , SimulationResult(..)
+  , Handshake(..)
+  , HandshakeAck(..)
+  , WorldChanged(..)
+  , currentProtocolVersion
   , encodeMessage
   , decodeMessage
   )
@@ -76,6 +80,11 @@ import Topo.Plugin.RPC.Transport
   , connectPlugin
   )
 import Topo.Hex (defaultHexGridMeta)
+import Topo.Plugin.DataResource (DataResourceSchema(..), DataOperations(..))
+import Topo.Plugin.RPC.DataService
+  ( QueryResource(..), QueryResult(..), DataRecord(..)
+  , MutateResource(..), MutateResult(..)
+  )
 import Topo.Types (WorldConfig(..))
 import Topo.World (TerrainWorld, emptyWorld)
 
@@ -110,14 +119,16 @@ toRPCParamSpec pd = RPCParamSpec
 -- and simulation definitions.
 generateManifest :: PluginDef -> RPCManifest
 generateManifest pd = RPCManifest
-  { rmName         = pdName pd
-  , rmVersion      = pdVersion pd
-  , rmDescription  = pdName pd <> " v" <> pdVersion pd
-  , rmGenerator    = fmap toGenDecl (pdGenerator pd)
-  , rmSimulation   = fmap toSimDecl (pdSimulation pd)
-  , rmOverlay      = fmap (\f -> RPCOverlayDecl (Text.pack f)) (pdSchemaFile pd)
-  , rmCapabilities = inferCapabilities pd
-  , rmParameters   = map toRPCParamSpec (pdParams pd)
+  { rmName          = pdName pd
+  , rmVersion       = pdVersion pd
+  , rmDescription   = pdName pd <> " v" <> pdVersion pd
+  , rmGenerator     = fmap toGenDecl (pdGenerator pd)
+  , rmSimulation    = fmap toSimDecl (pdSimulation pd)
+  , rmOverlay       = fmap (\f -> RPCOverlayDecl (Text.pack f)) (pdSchemaFile pd)
+  , rmCapabilities  = inferCapabilities pd
+  , rmParameters    = map toRPCParamSpec (pdParams pd)
+  , rmDataResources = map drdSchema (pdDataResources pd)
+  , rmDataDirectory = fmap Text.pack (pdDataDirectory pd)
   }
   where
     toGenDecl gd = RPCGeneratorDecl
@@ -136,10 +147,17 @@ inferCapabilities pd = concat
   , [CapWriteTerrain | hasSim]
   , [CapReadOverlay | hasSim]
   , [CapWriteOverlay | hasSim]
+  , [CapDataRead | hasData]
+  , [CapDataWrite | hasData && hasDataWriteOps]
   ]
   where
     hasGen = case pdGenerator pd of { Just _ -> True; Nothing -> False }
     hasSim = case pdSimulation pd of { Just _ -> True; Nothing -> False }
+    hasData = not (null (pdDataResources pd))
+    hasDataWriteOps = any hasWriteOps (pdDataResources pd)
+    hasWriteOps drd =
+      let ops = drsOperations (drdSchema drd)
+      in doCreate ops || doUpdate ops || doDelete ops
 
 -- | Write the manifest JSON to a file.
 writeManifest :: FilePath -> RPCManifest -> IO ()
@@ -197,11 +215,11 @@ runPlugin pd = do
 -- Intended for in-process integration tests and hosts that manage
 -- transport lifecycle externally.
 runPluginSession :: PluginDef -> Transport -> Map Text Value -> IO ()
-runPluginSession = messageLoop
+runPluginSession pd transport params = messageLoop pd transport params Nothing
 
 -- | Main message loop.  Reads RPC envelopes and dispatches them.
-messageLoop :: PluginDef -> Transport -> Map Text Value -> IO ()
-messageLoop pd transport params = do
+messageLoop :: PluginDef -> Transport -> Map Text Value -> Maybe FilePath -> IO ()
+messageLoop pd transport params worldPath = do
   result <- recvMessage transport
   case result of
     Left _err -> do
@@ -211,23 +229,114 @@ messageLoop pd transport params = do
       Left _decodeErr -> do
         -- Bad message — send error response and continue
         sendErrorResponse transport 1 "Failed to decode RPC message"
-        messageLoop pd transport params
+        messageLoop pd transport params worldPath
       Right envelope -> case envType envelope of
 
         MsgShutdown -> do
           -- Clean exit
           pure ()
 
+        MsgHandshake -> do
+          case Aeson.fromJSON (envPayload envelope) of
+            Aeson.Error _ -> do
+              sendErrorResponse transport 8 "Invalid handshake payload"
+              messageLoop pd transport params worldPath
+            Aeson.Success (hs :: Handshake) -> do
+              let newWorldPath = fmap Text.unpack (hsWorldPath hs)
+                  ack = HandshakeAck
+                    { haProtocolVersion = currentProtocolVersion
+                    , haDataDirectory   = fmap Text.pack (pdDataDirectory pd)
+                    , haResources       = map drdSchema (pdDataResources pd)
+                    }
+                  ackEnvelope = RPCEnvelope
+                    { envType    = MsgHandshakeAck
+                    , envPayload = Aeson.toJSON ack
+                    }
+              _ <- sendMessage transport (encodeMessage ackEnvelope)
+              messageLoop pd transport params newWorldPath
+
+        MsgWorldChanged -> do
+          case Aeson.fromJSON (envPayload envelope) of
+            Aeson.Error _ ->
+              messageLoop pd transport params worldPath
+            Aeson.Success (wc :: WorldChanged) -> do
+              let newWorldPath = fmap Text.unpack (wchWorldPath wc)
+              messageLoop pd transport params newWorldPath
+
+        MsgQueryResource -> do
+          case Aeson.fromJSON (envPayload envelope) of
+            Aeson.Error err -> do
+              sendErrorResponse transport 9 ("Invalid query payload: " <> Text.pack err)
+              messageLoop pd transport params worldPath
+            Aeson.Success (qr :: QueryResource) -> do
+              let resourceName = qrResource qr
+              case findHandler resourceName (pdDataResources pd) of
+                Nothing -> do
+                  sendErrorResponse transport 9 ("Unknown resource: " <> resourceName)
+                  messageLoop pd transport params worldPath
+                Just drd -> case dhQuery (drdHandler drd) of
+                  Nothing -> do
+                    sendErrorResponse transport 9 ("Resource '" <> resourceName <> "' does not support queries")
+                    messageLoop pd transport params worldPath
+                  Just handler -> do
+                    let ctx = makeDataContext params worldPath transport
+                    runResult <- catch
+                      (handler ctx (qrQuery qr))
+                      (\e -> pure (Left (Text.pack (show (e :: SomeException)))))
+                    case runResult of
+                      Left errMsg ->
+                        sendErrorResponse transport 9 errMsg
+                      Right result -> do
+                        let resEnv = RPCEnvelope
+                              { envType    = MsgQueryResult
+                              , envPayload = Aeson.toJSON result
+                              }
+                        _ <- sendMessage transport (encodeMessage resEnv)
+                        pure ()
+                    messageLoop pd transport params worldPath
+
+        MsgMutateResource -> do
+          case Aeson.fromJSON (envPayload envelope) of
+            Aeson.Error err -> do
+              sendErrorResponse transport 10 ("Invalid mutate payload: " <> Text.pack err)
+              messageLoop pd transport params worldPath
+            Aeson.Success (mr :: MutateResource) -> do
+              let resourceName = mrResource mr
+              case findHandler resourceName (pdDataResources pd) of
+                Nothing -> do
+                  sendErrorResponse transport 10 ("Unknown resource: " <> resourceName)
+                  messageLoop pd transport params worldPath
+                Just drd -> case dhMutate (drdHandler drd) of
+                  Nothing -> do
+                    sendErrorResponse transport 10 ("Resource '" <> resourceName <> "' does not support mutations")
+                    messageLoop pd transport params worldPath
+                  Just handler -> do
+                    let ctx = makeDataContext params worldPath transport
+                    runResult <- catch
+                      (handler ctx (mrMutation mr))
+                      (\e -> pure (Left (Text.pack (show (e :: SomeException)))))
+                    case runResult of
+                      Left errMsg ->
+                        sendErrorResponse transport 10 errMsg
+                      Right result -> do
+                        let resEnv = RPCEnvelope
+                              { envType    = MsgMutateResult
+                              , envPayload = Aeson.toJSON result
+                              }
+                        _ <- sendMessage transport (encodeMessage resEnv)
+                        pure ()
+                    messageLoop pd transport params worldPath
+
         MsgInvokeGenerator -> do
           case pdGenerator pd of
             Nothing -> do
               sendErrorResponse transport 2 "Plugin has no generator"
-              messageLoop pd transport params
+              messageLoop pd transport params worldPath
             Just gd -> do
               case Aeson.fromJSON (envPayload envelope) of
                 Aeson.Error _ -> do
                   sendErrorResponse transport 6 "Invalid invoke_generator payload"
-                  messageLoop pd transport params
+                  messageLoop pd transport params worldPath
                 Aeson.Success (ig :: InvokeGenerator) -> do
                   let mergedParams = Map.union (igConfig ig) params
                       ctx = PluginContext
@@ -238,6 +347,7 @@ messageLoop pd transport params = do
                         , pcOverlays = Map.empty
                         , pcSeed = igSeed ig
                         , pcLog = sendLogMessage transport
+                        , pcWorldPath = worldPath
                         }
                   runResult <- catch
                     (gdRun gd ctx)
@@ -247,18 +357,18 @@ messageLoop pd transport params = do
                       sendErrorResponse transport 3 errMsg
                     Right generatorResult ->
                       sendGeneratorResult transport generatorResult
-                  messageLoop pd transport mergedParams
+                  messageLoop pd transport mergedParams worldPath
 
         MsgInvokeSimulation -> do
           case pdSimulation pd of
             Nothing -> do
               sendErrorResponse transport 4 "Plugin has no simulation"
-              messageLoop pd transport params
+              messageLoop pd transport params worldPath
             Just sd -> do
               case Aeson.fromJSON (envPayload envelope) of
                 Aeson.Error _ -> do
                   sendErrorResponse transport 7 "Invalid invoke_simulation payload"
-                  messageLoop pd transport params
+                  messageLoop pd transport params worldPath
                 Aeson.Success (is' :: InvokeSimulation) -> do
                   let mergedParams = Map.union (isConfig is') params
                       ctx = PluginContext
@@ -269,6 +379,7 @@ messageLoop pd transport params = do
                         , pcOverlays = valueObjectToMap (isOverlays is')
                         , pcSeed = 0
                         , pcLog = sendLogMessage transport
+                        , pcWorldPath = worldPath
                         }
                   runResult <- catch
                     (sdTick sd ctx)
@@ -278,10 +389,10 @@ messageLoop pd transport params = do
                       sendErrorResponse transport 5 errMsg
                     Right simulationResult ->
                       sendSimulationResult transport simulationResult
-                  messageLoop pd transport mergedParams
+                  messageLoop pd transport mergedParams worldPath
 
         -- Ignore unknown message types
-        _ -> messageLoop pd transport params
+        _ -> messageLoop pd transport params worldPath
 
 ------------------------------------------------------------------------
 -- Response helpers
@@ -360,6 +471,34 @@ sendProgress transport msg fraction = do
         }
   _ <- sendMessage transport (encodeMessage envelope)
   pure ()
+
+------------------------------------------------------------------------
+-- Data service helpers
+------------------------------------------------------------------------
+
+-- | Find a data resource definition by resource name.
+findHandler :: Text -> [DataResourceDef] -> Maybe DataResourceDef
+findHandler name = foldr go Nothing
+  where
+    go drd acc
+      | drsName (drdSchema drd) == name = Just drd
+      | otherwise = acc
+
+-- | Build a 'PluginContext' for data service callbacks.
+--
+-- Data service handlers don't receive a terrain payload, so the
+-- context uses a stub world and empty terrain.
+makeDataContext :: Map Text Value -> Maybe FilePath -> Transport -> PluginContext
+makeDataContext params worldPath transport = PluginContext
+  { pcWorld      = stubWorld
+  , pcParams     = params
+  , pcTerrain    = Object mempty
+  , pcOwnOverlay = Nothing
+  , pcOverlays   = Map.empty
+  , pcSeed       = 0
+  , pcLog        = sendLogMessage transport
+  , pcWorldPath  = worldPath
+  }
 
 ------------------------------------------------------------------------
 -- Stub world

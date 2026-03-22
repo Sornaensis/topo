@@ -1,6 +1,7 @@
 module Spec.WidgetTree (spec) where
 
 import Actor.UI (ConfigTab(..), configRowCount, emptyUiState)
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import Linear (V2(..))
 import Test.Hspec
@@ -120,7 +121,7 @@ spec = describe "UI.WidgetTree" $ do
   it "anchors plugin and simulation widgets to bespoke pipeline row helpers" $ do
     let layout = layoutFor (V2 800 960) 0
         pluginNames = map Text.pack ["plugin-a", "plugin-b"]
-        widgets = buildPluginWidgets pluginNames layout
+        widgets = buildPluginWidgets pluginNames Map.empty Map.empty layout
         builtinCount = length allBuiltinStageIds
         simBase = builtinCount + length pluginNames
     hitTest widgets (rectHitPoint (pipelineMoveUpRect builtinCount layout))

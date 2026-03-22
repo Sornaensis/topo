@@ -1,16 +1,22 @@
+{-# LANGUAGE BangPatterns #-}
 module UI.WidgetTree
   ( WidgetId(..)
   , Widget(..)
   , buildWidgets
   , buildPluginWidgets
+  , buildDataBrowserWidgets
   , buildSliderRowWidgets
   , hitTest
   ) where
 
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import Linear (V2(..))
 import Seer.Config.SliderRegistry (SliderTab(..), SliderDef(..), allSliderDefs, sliderDefsForTab)
 import Topo.Pipeline.Stage (allBuiltinStageIds, stageCanonicalName)
+import Topo.Plugin.DataResource (DataResourceSchema(..))
+import Topo.Plugin.RPC.Manifest (RPCParamSpec(..), RPCParamType(..))
 import UI.Layout
 import UI.WidgetId (WidgetId(..))
 import UI.Widgets (Rect(..), containsPoint)
@@ -25,7 +31,7 @@ buildWidgets layout =
   let (view1, view2, view3, view4, view5, view6, view7, view8, view9, view10, view11, view12) = leftViewRects layout
       (overlayPrev, overlayNext, fieldPrev, fieldNext) = overlayViewRects layout
       (logDebug, logInfo, logWarn, logError) = logFilterRects layout
-      (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline) = configTabRects layout
+      (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline, tabData) = configTabRects layout
       (leftTabTopo, leftTabView) = leftTabRects layout
       sliderWidgets = concatMap (buildSliderWidgets layout) sliderDefsInWidgetOrder
   in [ Widget WidgetGenerate (leftGenButtonRect layout)
@@ -44,6 +50,7 @@ buildWidgets layout =
      , Widget WidgetConfigTabBiome tabBiome
      , Widget WidgetConfigTabErosion tabErosion
      , Widget WidgetConfigTabPipeline tabPipeline
+     , Widget WidgetConfigTabData tabData
      , Widget WidgetConfigPresetSave (configPresetSaveRect layout)
      , Widget WidgetConfigPresetLoad (configPresetLoadRect layout)
      , Widget WidgetConfigReset (configResetRect layout)
@@ -120,30 +127,94 @@ sliderDefsInWidgetOrder =
 --
 -- Produces:
 --
--- * Move-up / move-down buttons for each plugin row (for reordering);
+-- * Move-up / move-down / expand buttons for each plugin row;
+-- * Parameter slider\/checkbox widgets for expanded plugins;
 -- * Simulation tick controls positioned after all plugin rows.
 --
 -- These must be merged with the static 'buildWidgets' list before hit
 -- testing.
-buildPluginWidgets :: [Text] -> Layout -> [Widget]
-buildPluginWidgets pluginNames layout =
+buildPluginWidgets
+  :: [Text]
+  -> Map Text Bool
+  -> Map Text [RPCParamSpec]
+  -> Layout
+  -> [Widget]
+buildPluginWidgets pluginNames expanded paramSpecs layout =
   let builtinCount = length allBuiltinStageIds
-      pluginCount  = length pluginNames
-      -- Plugin move buttons
-      pluginMoveWidgets =
-        concatMap (\(idx, name) ->
-          let rowIdx = builtinCount + idx
-          in [ Widget (WidgetPluginMoveUp name)   (pipelineMoveUpRect   rowIdx layout)
-             , Widget (WidgetPluginMoveDown name)  (pipelineMoveDownRect rowIdx layout)
-             ]
-        ) (zip [0..] pluginNames)
+      -- Build widgets for each plugin, tracking absolute row index
+      (pluginWidgets, nextRow) = foldl buildOne ([], builtinCount) (zip [0..] pluginNames)
+      buildOne (!accWidgets, !rowIdx) (_idx, name) =
+        let moveWidgets =
+              [ Widget (WidgetPluginMoveUp name)   (pipelineMoveUpRect   rowIdx layout)
+              , Widget (WidgetPluginMoveDown name)  (pipelineMoveDownRect rowIdx layout)
+              , Widget (WidgetPluginToggle name)     (pipelineCheckboxRect rowIdx layout)
+              , Widget (WidgetPluginExpand name)     (pipelineExpandRect   rowIdx layout)
+              ]
+            isExpanded = Map.findWithDefault False name expanded
+            specs = Map.findWithDefault [] name paramSpecs
+            paramWidgets
+              | isExpanded =
+                  concatMap (\(pIdx, spec) ->
+                    let paramRow = rowIdx + 1 + pIdx
+                    in case rpsType spec of
+                         ParamBool ->
+                           [ Widget (WidgetPluginParamCheck name (rpsName spec))
+                                    (pipelineParamCheckRect paramRow layout) ]
+                         _ ->
+                           [ Widget (WidgetPluginParamSlider name (rpsName spec))
+                                    (pipelineParamBarRect paramRow layout) ]
+                  ) (zip [0..] specs)
+              | otherwise = []
+            paramCount = if isExpanded then length specs else 0
+        in (accWidgets ++ moveWidgets ++ paramWidgets, rowIdx + 1 + paramCount)
       -- Simulation controls after all plugins
-      simBase = builtinCount + pluginCount
       simWidgets =
-        [ Widget WidgetSimTick     (pipelineTickButtonRect simBase layout)
-        , Widget WidgetSimAutoTick (pipelineCheckboxRect (simBase + 1) layout)
+        [ Widget WidgetSimTick     (pipelineTickButtonRect nextRow layout)
+        , Widget WidgetSimAutoTick (pipelineCheckboxRect (nextRow + 1) layout)
         ]
-  in pluginMoveWidgets ++ simWidgets
+  in pluginWidgets ++ simWidgets
+
+-- | Build dynamic widgets for the Data Browser tab.
+--
+-- Row layout mirrors 'dataBrowserRowCount' and the draw code:
+--
+-- * Plugin name rows (clickable to select);
+-- * Resource rows for the selected plugin (clickable to select);
+-- * Record rows for the selected resource;
+-- * Page-prev \/ page-next buttons on the last row (when records present).
+buildDataBrowserWidgets
+  :: Map Text [DataResourceSchema]
+  -> Maybe Text      -- ^ Selected plugin
+  -> Maybe Text      -- ^ Selected resource
+  -> Int             -- ^ Number of loaded records
+  -> Layout
+  -> [Widget]
+buildDataBrowserWidgets resources selectedPlugin selectedResource recordCount layout =
+  let pluginNames = Map.keys resources
+      pluginWidgets =
+        [ Widget (WidgetDataPluginSelect pName) (dataBrowserItemRect idx layout)
+        | (idx, pName) <- zip [0..] pluginNames
+        ]
+      resourceOffset = length pluginNames
+      (resourceWidgets, resourceCount) = case selectedPlugin of
+        Nothing -> ([], 0)
+        Just pName ->
+          let schemas = Map.findWithDefault [] pName resources
+              ws = [ Widget (WidgetDataResourceSelect pName (drsName schema))
+                            (dataBrowserItemRect (resourceOffset + rIdx) layout)
+                   | (rIdx, schema) <- zip [0..] schemas
+                   ]
+          in (ws, length schemas)
+      recordOffset = resourceOffset + resourceCount
+      pageRow = recordOffset + recordCount
+      pageWidgets = case (selectedPlugin, selectedResource) of
+        (Just pName, Just rName)
+          | recordCount > 0 ->
+              [ Widget (WidgetDataPagePrev pName rName) (dataBrowserPagePrevRect pageRow layout)
+              , Widget (WidgetDataPageNext pName rName) (dataBrowserPageNextRect pageRow layout)
+              ]
+        _ -> []
+  in pluginWidgets ++ resourceWidgets ++ pageWidgets
 
 -- | Build full-row tooltip hit areas for config sliders, grouped by tab.
 --

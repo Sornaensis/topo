@@ -42,6 +42,9 @@ data WorldSaveManifest = WorldSaveManifest
     -- ^ Terrain chunk count at save time.
   , wsmOverlayNames :: [Text]
     -- ^ Overlay names persisted in the unified world bundle.
+  , wsmPluginData :: [(Text, Text)]
+    -- ^ @(pluginName, relativeDataDir)@ pairs for plugins whose data
+    -- directories were bundled with this world save.
   } deriving (Eq, Show, Generic)
 
 -- | JSON field name options: strip @\"wsm\"@ prefix, camelCase to
@@ -65,6 +68,7 @@ instance FromJSON WorldSaveManifest where
       <*> o .:? "created_at"  .!= defaultManifestTime
       <*> o .:? "chunk_count" .!= 0
       <*> o .:? "overlay_names" .!= []
+      <*> o .:? "plugin_data"   .!= []
 
 -- | Epoch time used as a default when the field is missing.
 defaultManifestTime :: UTCTime

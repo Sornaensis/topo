@@ -130,6 +130,22 @@ putFieldValue (fd, val) = case ofdType fd of
         encoded = encodeUtf8 txt
     putWord32le (fromIntegral (BS.length encoded))
     putByteString encoded
+  OFList elemType -> do
+    let elems = getList val
+    putWord32le (fromIntegral (V.length elems))
+    V.forM_ elems $ \elemVal ->
+      putElementValue elemType elemVal
+
+-- | Encode a single list element value.
+putElementValue :: OverlayFieldType -> OverlayValue -> Put
+putElementValue OFFloat v = putFloatle (getFloat v)
+putElementValue OFInt   v = putWord32le (fromIntegral (getInt v))
+putElementValue OFBool  v = putWord8 (if getBool v then 1 else 0)
+putElementValue OFText  v = do
+  let encoded = encodeUtf8 (getText v)
+  putWord32le (fromIntegral (BS.length encoded))
+  putByteString encoded
+putElementValue (OFList _) _ = pure ()  -- nested lists are rejected by schema validation
 
 getFieldValue :: OverlayFieldType -> Get OverlayValue
 getFieldValue OFFloat = OVFloat <$> getFloatle
@@ -143,6 +159,25 @@ getFieldValue OFText  = do
   case decodeUtf8' bytes of
     Left _    -> fail "overlay: invalid utf8 in text field"
     Right txt -> pure (OVText txt)
+getFieldValue (OFList elemType) = do
+  count <- fromIntegral <$> getWord32le
+  elems <- replicateM count (getElementValue elemType)
+  pure (OVList (V.fromList elems))
+
+-- | Decode a single list element value.
+getElementValue :: OverlayFieldType -> Get OverlayValue
+getElementValue OFFloat = OVFloat <$> getFloatle
+getElementValue OFInt   = OVInt . fromIntegral <$> (getWord32le :: Get Word32)
+getElementValue OFBool  = do
+  b <- getWord8
+  pure (OVBool (b /= 0))
+getElementValue OFText  = do
+  len <- fromIntegral <$> getWord32le
+  bytes <- getByteString len
+  case decodeUtf8' bytes of
+    Left _    -> fail "overlay: invalid utf8 in list text element"
+    Right txt -> pure (OVText txt)
+getElementValue (OFList _) = pure (OVList V.empty)  -- nested lists rejected by schema validation
 
 -- | Extract a 'Float' from an 'OverlayValue', defaulting to 0.
 getFloat :: OverlayValue -> Float
@@ -163,6 +198,11 @@ getBool _          = False
 getText :: OverlayValue -> Text
 getText (OVText t) = t
 getText _          = ""
+
+-- | Extract a list from an 'OverlayValue', defaulting to empty.
+getList :: OverlayValue -> Vector OverlayValue
+getList (OVList vs) = vs
+getList _           = V.empty
 
 ------------------------------------------------------------------------
 -- Dense encode/decode

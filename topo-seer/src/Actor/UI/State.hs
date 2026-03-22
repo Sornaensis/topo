@@ -9,6 +9,12 @@ module Actor.UI.State
   ( Ui
   , ConfigTab(..)
   , configRowCount
+  , DataBrowserState(..)
+  , emptyDataBrowserState
+  , dataBrowserRowCount
+  , pluginRowIndex
+  , pluginRowsWithParams
+  , builtinStageRowCount
   , LeftTab(..)
   , sliderValueForId
   , UiMenuMode(..)
@@ -44,6 +50,9 @@ import Seer.Config.Snapshot.Types (ConfigSnapshot)
 import Seer.World.Persist.Types (WorldSaveManifest)
 import Topo.Overlay.Schema (OverlayFieldType(..))
 import Topo.Pipeline.Stage (StageId)
+import Topo.Plugin.DataResource (DataResourceSchema)
+import Topo.Plugin.RPC.DataService (DataRecord)
+import Topo.Plugin.RPC.Manifest (RPCParamSpec(..), RPCParamType(..))
 import UI.WidgetTree (WidgetId)
 
 -- | Which data layer to visualize on the hex map.
@@ -74,7 +83,41 @@ data ConfigTab
   | ConfigBiome
   | ConfigErosion
   | ConfigPipeline
+  | ConfigData
   deriving (Eq, Show)
+
+-- | State for the data browser panel (ConfigData tab).
+data DataBrowserState = DataBrowserState
+  { dbsSelectedPlugin   :: !(Maybe Text)
+  , dbsSelectedResource :: !(Maybe Text)
+  , dbsRecords          :: ![DataRecord]
+  , dbsPageOffset       :: !Int
+  , dbsTotalCount       :: !(Maybe Int)
+  , dbsLoading          :: !Bool
+  } deriving (Eq, Show)
+
+-- | Empty initial state for the data browser.
+emptyDataBrowserState :: DataBrowserState
+emptyDataBrowserState = DataBrowserState
+  { dbsSelectedPlugin   = Nothing
+  , dbsSelectedResource = Nothing
+  , dbsRecords          = []
+  , dbsPageOffset       = 0
+  , dbsTotalCount       = Nothing
+  , dbsLoading          = False
+  }
+
+-- | Number of rows to display in the data browser tab.
+--   Header row + one row per plugin with data resources,
+--   plus record rows when a resource is selected.
+dataBrowserRowCount :: DataBrowserState -> Map Text [DataResourceSchema] -> Int
+dataBrowserRowCount dbs resources =
+  let pluginCount = Map.size resources
+      resourceCount = case dbsSelectedPlugin dbs of
+        Nothing   -> 0
+        Just pName -> length (Map.findWithDefault [] pName resources)
+      recordCount = length (dbsRecords dbs)
+  in max 1 (pluginCount + resourceCount + recordCount)
 
 -- | Total number of config widget rows for each tab.
 configRowCount :: ConfigTab -> UiState -> Int
@@ -85,13 +128,41 @@ configRowCount ConfigWeather _ = sliderRowCountForTab SliderTabWeather
 configRowCount ConfigBiome _ = sliderRowCountForTab SliderTabBiome
 configRowCount ConfigErosion _ = sliderRowCountForTab SliderTabErosion
 configRowCount ConfigPipeline ui =
-  builtinStageRowCount + length (uiPluginNames ui) + simControlRowCount
+  builtinStageRowCount + pluginRowsWithParams ui + simControlRowCount
+configRowCount ConfigData ui =
+  dataBrowserRowCount (uiDataBrowser ui) (uiDataResources ui)
 
 builtinStageRowCount :: Int
 builtinStageRowCount = 18
 
 simControlRowCount :: Int
 simControlRowCount = 3
+
+-- | Total row count for all plugins in the pipeline tab,
+-- accounting for expanded parameter sub-rows.
+pluginRowsWithParams :: UiState -> Int
+pluginRowsWithParams ui =
+  sum [ 1 + expandedParamCount name | name <- uiPluginNames ui ]
+  where
+    expandedParamCount name
+      | Map.findWithDefault False name (uiPluginExpanded ui) =
+          length (Map.findWithDefault [] name (uiPluginParamSpecs ui))
+      | otherwise = 0
+
+-- | Compute the absolute row index for the i-th plugin in the pipeline tab,
+-- accounting for expanded parameter rows of preceding plugins.
+pluginRowIndex :: UiState -> Int -> Int
+pluginRowIndex ui i =
+  builtinStageRowCount + sum
+    [ 1 + expandedParamCount name
+    | (j, name) <- zip [0..] (uiPluginNames ui)
+    , j < i
+    ]
+  where
+    expandedParamCount name
+      | Map.findWithDefault False name (uiPluginExpanded ui) =
+          length (Map.findWithDefault [] name (uiPluginParamSpecs ui))
+      | otherwise = 0
 
 data LeftTab
   = LeftTopo
@@ -341,8 +412,11 @@ data UiState = UiState
   , uiSliceLatCenter :: !Float
   , uiSliceLonCenter :: !Float
   , uiDisabledStages :: !(Set StageId)
+  , uiDisabledPlugins :: !(Set Text)
   , uiPluginParams :: !(Map Text (Map Text Value))
   , uiPluginNames :: ![Text]
+  , uiPluginExpanded :: !(Map Text Bool)
+  , uiPluginParamSpecs :: !(Map Text [RPCParamSpec])
   , uiSimAutoTick :: !Bool
   , uiSimTickRate :: !Float
   , uiSimTickCount :: !Word64
@@ -355,6 +429,8 @@ data UiState = UiState
   , uiWorldSelected :: !Int
   , uiOverlayNames :: ![Text]
   , uiOverlayFields :: ![(Text, OverlayFieldType)]
+  , uiDataBrowser :: !DataBrowserState
+  , uiDataResources :: !(Map Text [DataResourceSchema])
   } deriving (Eq, Show)
 
 emptyUiState :: UiState
@@ -591,8 +667,11 @@ emptyUiState = UiState
   , uiSliceLatCenter = sliderDefault SliderSliceLatCenter
   , uiSliceLonCenter = sliderDefault SliderSliceLonCenter
   , uiDisabledStages = Set.empty
+  , uiDisabledPlugins = Set.empty
   , uiPluginParams = Map.empty
   , uiPluginNames = []
+  , uiPluginExpanded = Map.empty
+  , uiPluginParamSpecs = Map.empty
   , uiSimAutoTick = False
   , uiSimTickRate = 0.5
   , uiSimTickCount = 0
@@ -605,6 +684,8 @@ emptyUiState = UiState
   , uiWorldSelected = 0
   , uiOverlayNames = []
   , uiOverlayFields = []
+  , uiDataBrowser = emptyDataBrowserState
+  , uiDataResources = Map.empty
   }
 
 sliderDefault :: SliderId -> Float
@@ -642,8 +723,11 @@ data UiUpdate
   | SetHoverHex !(Maybe (Int, Int))
   | SetHoverWidget !(Maybe WidgetId)
   | SetDisabledStages !(Set StageId)
+  | SetDisabledPlugins !(Set Text)
   | SetPluginParam !Text !Text !Value
   | SetPluginNames ![Text]
+  | SetPluginExpanded !Text !Bool
+  | SetPluginParamSpecs !(Map Text [RPCParamSpec])
   | SetSimAutoTick !Bool
   | SetSimTickRate !Float
   | SetSimTickCount !Word64
@@ -654,6 +738,8 @@ data UiUpdate
   | SetWorldSelected !Int
   | SetOverlayNames ![Text]
   | SetOverlayFields ![(Text, OverlayFieldType)]
+  | SetDataBrowser !DataBrowserState
+  | SetDataResources !(Map Text [DataResourceSchema])
 
 applyUpdate :: UiUpdate -> UiState -> UiState
 applyUpdate upd st = case upd of
@@ -688,6 +774,7 @@ applyUpdate upd st = case upd of
   SetHoverHex v -> st { uiHoverHex = v }
   SetHoverWidget v -> st { uiHoverWidget = v }
   SetDisabledStages v -> st { uiDisabledStages = v }
+  SetDisabledPlugins v -> st { uiDisabledPlugins = v }
   SetPluginParam pluginName paramName value ->
     let inner = Map.findWithDefault Map.empty pluginName (uiPluginParams st)
     in st
@@ -695,6 +782,9 @@ applyUpdate upd st = case upd of
              Map.insert pluginName (Map.insert paramName value inner) (uiPluginParams st)
          }
   SetPluginNames v -> st { uiPluginNames = v }
+  SetPluginExpanded name expanded ->
+    st { uiPluginExpanded = Map.insert name expanded (uiPluginExpanded st) }
+  SetPluginParamSpecs v -> st { uiPluginParamSpecs = v }
   SetSimAutoTick v -> st { uiSimAutoTick = v }
   SetSimTickRate v -> st { uiSimTickRate = clamp01 v }
   SetSimTickCount v -> st { uiSimTickCount = v }
@@ -705,6 +795,8 @@ applyUpdate upd st = case upd of
   SetWorldSelected v -> st { uiWorldSelected = v }
   SetOverlayNames v -> st { uiOverlayNames = v }
   SetOverlayFields v -> st { uiOverlayFields = v }
+  SetDataBrowser v -> st { uiDataBrowser = v }
+  SetDataResources v -> st { uiDataResources = v }
 
 data SliderStateBinding = SliderStateBinding
   { sliderStateGet :: UiState -> Float

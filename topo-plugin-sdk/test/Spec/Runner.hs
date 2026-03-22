@@ -5,7 +5,7 @@ module Spec.Runner (spec) where
 
 import Control.Concurrent (MVar, forkFinally, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (finally)
-import Data.Aeson ((.=), object)
+import Data.Aeson (Value(..), (.=), object)
 import qualified Data.Aeson as Aeson
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -17,8 +17,19 @@ import System.Process (createPipe)
 import System.Timeout (timeout)
 import Test.Hspec
 
+import Topo.Plugin.DataResource
+  ( DataFieldDef(..), DataFieldType(..)
+  , DataOperations(..), DataResourceSchema(..)
+  , noOperations, allOperations
+  )
+import Topo.Plugin.RPC.DataService
+  ( DataMutation(..), DataQuery(..), DataRecord(..)
+  , MutateResource(..), MutateResult(..)
+  , QueryResource(..), QueryResult(..)
+  )
 import Topo.Plugin.RPC.Protocol
   ( GeneratorResult(..)
+  , Handshake(..), HandshakeAck(..)
   , InvokeGenerator(..)
   , InvokeSimulation(..)
   , PluginError(..)
@@ -87,6 +98,131 @@ spec = describe "SDK runner pipe integration" $ do
   it "shuts down cleanly on shutdown message" $
     withTransportPair $ \host plugin -> do
       done <- startSession simulationPlugin plugin
+      shutdownAndWait host done
+
+  it "handles handshake and returns handshake_ack with data resources" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession dataPlugin plugin
+      let hs = RPCEnvelope
+            { envType = MsgHandshake
+            , envPayload = Aeson.toJSON Handshake
+                { hsProtocolVersion = 1
+                , hsWorldPath = Just "/world/save"
+                }
+            }
+      sendEnvelope host hs
+      env <- recvEnvelope host
+      envType env `shouldBe` MsgHandshakeAck
+      case Aeson.fromJSON (envPayload env) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success (ack :: HandshakeAck) -> do
+          length (haResources ack) `shouldBe` 1
+          drsName (head (haResources ack)) `shouldBe` "items"
+      shutdownAndWait host done
+
+  it "dispatches query_resource to the correct data handler" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession dataPlugin plugin
+      let qr = RPCEnvelope
+            { envType = MsgQueryResource
+            , envPayload = Aeson.toJSON QueryResource
+                { qrResource = "items"
+                , qrQuery = QueryAll
+                , qrPageSize = Nothing
+                , qrPageOffset = Nothing
+                }
+            }
+      sendEnvelope host qr
+      env <- recvEnvelope host
+      envType env `shouldBe` MsgQueryResult
+      case Aeson.fromJSON (envPayload env) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success (result :: QueryResult) -> do
+          qrsResource result `shouldBe` "items"
+          length (qrsRecords result) `shouldBe` 2
+          qrsTotalCount result `shouldBe` Just 2
+      shutdownAndWait host done
+
+  it "returns error for query on unknown resource" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession dataPlugin plugin
+      let qr = RPCEnvelope
+            { envType = MsgQueryResource
+            , envPayload = Aeson.toJSON QueryResource
+                { qrResource = "nonexistent"
+                , qrQuery = QueryAll
+                , qrPageSize = Nothing
+                , qrPageOffset = Nothing
+                }
+            }
+      sendEnvelope host qr
+      env <- recvEnvelope host
+      envType env `shouldBe` MsgError
+      case Aeson.fromJSON (envPayload env) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success (pluginErr :: PluginError) ->
+          peMessage pluginErr `shouldBe` "Unknown resource: nonexistent"
+      shutdownAndWait host done
+
+  it "dispatches mutate_resource to the correct data handler" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession dataPlugin plugin
+      let newRecord = DataRecord (Map.fromList [("name", String "Sword"), ("count", Number 5)])
+          mr = RPCEnvelope
+            { envType = MsgMutateResource
+            , envPayload = Aeson.toJSON MutateResource
+                { mrResource = "items"
+                , mrMutation = MutCreate newRecord
+                }
+            }
+      sendEnvelope host mr
+      env <- recvEnvelope host
+      envType env `shouldBe` MsgMutateResult
+      case Aeson.fromJSON (envPayload env) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success (result :: MutateResult) -> do
+          mrsSuccess result `shouldBe` True
+          mrsRecord result `shouldBe` Just newRecord
+      shutdownAndWait host done
+
+  it "returns error for mutate on resource with no mutate handler" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession readOnlyDataPlugin plugin
+      let mr = RPCEnvelope
+            { envType = MsgMutateResource
+            , envPayload = Aeson.toJSON MutateResource
+                { mrResource = "readonly"
+                , mrMutation = MutCreate (DataRecord Map.empty)
+                }
+            }
+      sendEnvelope host mr
+      env <- recvEnvelope host
+      envType env `shouldBe` MsgError
+      case Aeson.fromJSON (envPayload env) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success (pluginErr :: PluginError) ->
+          peMessage pluginErr `shouldBe` "Resource 'readonly' does not support mutations"
+      shutdownAndWait host done
+
+  it "returns error when handler returns Left" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession failingDataPlugin plugin
+      let qr = RPCEnvelope
+            { envType = MsgQueryResource
+            , envPayload = Aeson.toJSON QueryResource
+                { qrResource = "broken"
+                , qrQuery = QueryAll
+                , qrPageSize = Nothing
+                , qrPageOffset = Nothing
+                }
+            }
+      sendEnvelope host qr
+      env <- recvEnvelope host
+      envType env `shouldBe` MsgError
+      case Aeson.fromJSON (envPayload env) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success (pluginErr :: PluginError) ->
+          peMessage pluginErr `shouldBe` "database connection failed"
       shutdownAndWait host done
 
 withTransportPair :: (Transport -> Transport -> IO a) -> IO a
@@ -230,4 +366,97 @@ simOnlyPlugin = defaultPluginDef
       { sdDependencies = []
       , sdTick = \_ -> pure (Right defaultSimulationTickResult)
       }
+  }
+
+-- | Plugin with a queryable and mutable data resource.
+dataPlugin :: PluginDef
+dataPlugin = defaultPluginDef
+  { pdName = "data-test"
+  , pdVersion = "1.0"
+  , pdDataResources =
+      [ DataResourceDef
+          { drdSchema = DataResourceSchema
+              { drsName = "items"
+              , drsLabel = "Items"
+              , drsHexBound = False
+              , drsFields =
+                  [ DataFieldDef "name" DFText "Name" False Nothing
+                  , DataFieldDef "count" DFInt "Count" False Nothing
+                  ]
+              , drsOperations = allOperations
+              , drsKeyField = "name"
+              , drsOverlay = Nothing
+              }
+          , drdHandler = DataHandler
+              { dhQuery = Just $ \_ctx _query ->
+                  let records =
+                        [ DataRecord (Map.fromList [("name", String "Shield"), ("count", Number 3)])
+                        , DataRecord (Map.fromList [("name", String "Potion"), ("count", Number 10)])
+                        ]
+                  in pure (Right (QueryResult "items" records (Just 2)))
+              , dhMutate = Just $ \_ctx mutation ->
+                  case mutation of
+                    MutCreate record ->
+                      pure (Right MutateResult
+                        { mrsSuccess = True
+                        , mrsError = Nothing
+                        , mrsRecord = Just record
+                        })
+                    _ ->
+                      pure (Right MutateResult
+                        { mrsSuccess = True
+                        , mrsError = Nothing
+                        , mrsRecord = Nothing
+                        })
+              }
+          }
+      ]
+  }
+
+-- | Plugin with a read-only data resource (no mutate handler).
+readOnlyDataPlugin :: PluginDef
+readOnlyDataPlugin = defaultPluginDef
+  { pdName = "readonly-test"
+  , pdVersion = "1.0"
+  , pdDataResources =
+      [ DataResourceDef
+          { drdSchema = DataResourceSchema
+              { drsName = "readonly"
+              , drsLabel = "Read Only"
+              , drsHexBound = False
+              , drsFields = [DataFieldDef "id" DFInt "ID" False Nothing]
+              , drsOperations = noOperations { doList = True }
+              , drsKeyField = "id"
+              , drsOverlay = Nothing
+              }
+          , drdHandler = noDataHandler
+              { dhQuery = Just $ \_ctx _query ->
+                  pure (Right (QueryResult "readonly" [] Nothing))
+              }
+          }
+      ]
+  }
+
+-- | Plugin whose query handler always returns an error.
+failingDataPlugin :: PluginDef
+failingDataPlugin = defaultPluginDef
+  { pdName = "failing-test"
+  , pdVersion = "1.0"
+  , pdDataResources =
+      [ DataResourceDef
+          { drdSchema = DataResourceSchema
+              { drsName = "broken"
+              , drsLabel = "Broken"
+              , drsHexBound = False
+              , drsFields = [DataFieldDef "x" DFInt "X" False Nothing]
+              , drsOperations = noOperations { doList = True }
+              , drsKeyField = "x"
+              , drsOverlay = Nothing
+              }
+          , drdHandler = noDataHandler
+              { dhQuery = Just $ \_ctx _query ->
+                  pure (Left "database connection failed")
+              }
+          }
+      ]
   }

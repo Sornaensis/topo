@@ -6,8 +6,10 @@ module Seer.Draw.Config
   ) where
 
 import Actor.Data (DataSnapshot(..))
-import Actor.UI (ConfigTab(..), UiState(..), configRowCount)
-import Control.Monad (forM_)
+import Actor.UI (ConfigTab(..), DataBrowserState(..), UiState(..), builtinStageRowCount, configRowCount, pluginRowIndex, pluginRowsWithParams)
+import Control.Monad (forM_, when)
+import Data.Aeson (Value(..))
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Word (Word8)
 import Linear (V2(..), V4(..))
@@ -16,6 +18,8 @@ import Seer.Config.SliderRegistry (SliderDef(..))
 import Seer.Config.SliderStyle (SliderStyle(..), sliderStyleForId)
 import Seer.Config.SliderUi (sliderDefsForConfigTab, sliderValueForId)
 import Topo.Pipeline.Stage (allBuiltinStageIds)
+import Topo.Plugin.DataResource (DataResourceSchema(..))
+import Topo.Plugin.RPC.Manifest (RPCParamSpec(..), RPCParamType(..))
 import UI.Layout
   ( ConfigParamRowRects(..)
   , Layout
@@ -34,12 +38,25 @@ import UI.Layout
   , pipelineMoveUpRect
   , pipelineTickButtonRect
   , pipelineTickRateBarRect
+  , pipelineExpandRect
+  , pipelineParamBarRect
+  , pipelineParamCheckRect
+  , dataBrowserItemRect
   )
 import UI.Widgets (Rect(..))
 import UI.WidgetsDraw (rectToSDL)
 
-drawConfigTabs :: SDL.Renderer -> UiState -> (Rect, Rect, Rect, Rect, Rect, Rect, Rect) -> IO ()
-drawConfigTabs renderer ui (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline) = do
+-- | Normalize a numeric parameter value into [0,1] using the spec's range bounds.
+--   Falls back to 0.5 when range is missing or invalid.
+normalizeParam :: RPCParamSpec -> Double -> Float
+normalizeParam spec val =
+  case rpsRange spec of
+    Just (Number lo, Number hi)
+      | hi > lo   -> max 0 . min 1 $ realToFrac ((val - realToFrac lo) / (realToFrac hi - realToFrac lo))
+    _             -> max 0 (min 1 (realToFrac val))
+
+drawConfigTabs :: SDL.Renderer -> UiState -> (Rect, Rect, Rect, Rect, Rect, Rect, Rect, Rect) -> IO ()
+drawConfigTabs renderer ui (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline, tabData) = do
   drawTab tabTerrain (uiConfigTab ui == ConfigTerrain)
   drawTab tabPlanet (uiConfigTab ui == ConfigPlanet)
   drawTab tabClimate (uiConfigTab ui == ConfigClimate)
@@ -47,6 +64,7 @@ drawConfigTabs renderer ui (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBi
   drawTab tabBiome (uiConfigTab ui == ConfigBiome)
   drawTab tabErosion (uiConfigTab ui == ConfigErosion)
   drawTab tabPipeline (uiConfigTab ui == ConfigPipeline)
+  drawTab tabData (uiConfigTab ui == ConfigData)
   where
     drawTab rect isActive = do
       let fill = if isActive then V4 70 90 120 255 else V4 50 60 75 255
@@ -113,16 +131,21 @@ drawConfigPanel renderer ui dataSnap layout =
             SDL.rendererDrawColor renderer SDL.$= borderColor
             SDL.drawRect renderer (Just (rectToSDL (Rect (V2 checkX checkY, V2 checkboxSize checkboxSize))))
           let pluginOffset = length stages
-          forM_ (zip [0 ..] plugins) $ \(idx, _pName) -> do
-            let rowIndex = pluginOffset + idx
+          forM_ (zip [0 ..] plugins) $ \(idx, pName) -> do
+            let rowIndex = pluginRowIndex ui idx
                 Rect (V2 checkX checkY, V2 _ _) = scrollRect (pipelineCheckboxRect rowIndex layout)
-                pluginColor = V4 100 90 160 255
-                pluginBorder = V4 130 120 190 255
+                isPluginDisabled = Set.member pName (uiDisabledPlugins ui)
+                pluginColor = if isPluginDisabled then V4 60 60 70 200 else V4 100 90 160 255
+                pluginBorder = if isPluginDisabled then V4 80 80 90 200 else V4 130 120 190 255
                 btnSize = 14
                 Rect (V2 upX btnY, V2 _ _) = scrollRect (pipelineMoveUpRect rowIndex layout)
                 Rect (V2 downX _downY, V2 _ _) = scrollRect (pipelineMoveDownRect rowIndex layout)
                 arrowColor = V4 150 150 170 255
                 arrowBorder = V4 100 100 120 255
+                -- Expand toggle
+                isExpanded = Map.findWithDefault False pName (uiPluginExpanded ui)
+                Rect (V2 expX expY, V2 expW expH) = scrollRect (pipelineExpandRect rowIndex layout)
+                expColor = if isExpanded then V4 100 160 100 255 else V4 100 100 120 255
             SDL.rendererDrawColor renderer SDL.$= pluginColor
             SDL.fillRect renderer (Just (rectToSDL (Rect (V2 checkX checkY, V2 checkboxSize checkboxSize))))
             SDL.rendererDrawColor renderer SDL.$= pluginBorder
@@ -153,7 +176,38 @@ drawConfigPanel renderer ui dataSnap layout =
               SDL.drawLine renderer
                 (SDL.P (V2 (fromIntegral (dnMidX - halfW)) (fromIntegral row)))
                 (SDL.P (V2 (fromIntegral (dnMidX + halfW)) (fromIntegral row)))
-          let simOffset = length stages + length plugins
+            -- Expand toggle: small filled square
+            SDL.rendererDrawColor renderer SDL.$= expColor
+            SDL.fillRect renderer (Just (rectToSDL (Rect (V2 expX expY, V2 expW expH))))
+            SDL.rendererDrawColor renderer SDL.$= V4 140 140 160 255
+            SDL.drawRect renderer (Just (rectToSDL (Rect (V2 expX expY, V2 expW expH))))
+            -- Draw parameter sub-rows when expanded
+            when isExpanded $ do
+              let specs = Map.findWithDefault [] pName (uiPluginParamSpecs ui)
+                  params = Map.findWithDefault Map.empty pName (uiPluginParams ui)
+              forM_ (zip [0..] specs) $ \(pIdx, spec) -> do
+                let paramRowIdx = rowIndex + 1 + pIdx
+                case rpsType spec of
+                  ParamBool -> do
+                    let Rect (V2 pcX pcY, V2 pcW pcH) = scrollRect (pipelineParamCheckRect paramRowIdx layout)
+                        isChecked = case Map.lookup (rpsName spec) params of
+                                      Just (Bool b) -> b
+                                      _             -> False
+                        boolColor = if isChecked then V4 70 150 90 255 else V4 60 60 70 200
+                        boolBorder = if isChecked then V4 100 180 120 255 else V4 80 80 90 200
+                    SDL.rendererDrawColor renderer SDL.$= boolColor
+                    SDL.fillRect renderer (Just (rectToSDL (Rect (V2 pcX pcY, V2 pcW pcH))))
+                    SDL.rendererDrawColor renderer SDL.$= boolBorder
+                    SDL.drawRect renderer (Just (rectToSDL (Rect (V2 pcX pcY, V2 pcW pcH))))
+                  _ -> do
+                    let barRect = scrollRect (pipelineParamBarRect paramRowIdx layout)
+                        paramVal = case Map.lookup (rpsName spec) params of
+                                     Just (Number n) -> normalizeParam spec (realToFrac n)
+                                     _               -> 0.5
+                    SDL.rendererDrawColor renderer SDL.$= V4 45 55 70 255
+                    SDL.fillRect renderer (Just (rectToSDL barRect))
+                    drawBarFill renderer paramVal barRect (V4 120 100 180 255)
+          let simOffset = builtinStageRowCount + pluginRowsWithParams ui
               simWorldReady = dsTerrainChunks dataSnap > 0
               tickBtnRect = scrollRect (pipelineTickButtonRect simOffset layout)
               tickBtnColor = if simWorldReady then V4 80 120 160 255 else V4 55 65 80 170
@@ -170,6 +224,55 @@ drawConfigPanel renderer ui dataSnap layout =
           SDL.rendererDrawColor renderer SDL.$= V4 45 55 70 255
           SDL.fillRect renderer (Just (rectToSDL tickRateBarRect))
           drawBarFill renderer (uiSimTickRate ui) tickRateBarRect (V4 100 130 180 255)
+        ConfigData -> do
+          -- Data browser: list plugins with data resources, selected resource's records
+          let dbs = uiDataBrowser ui
+              resources = uiDataResources ui
+              pluginNames = Map.keys resources
+              selectedPlugin = dbsSelectedPlugin dbs
+              selectedResource = dbsSelectedResource dbs
+          -- Draw plugin rows
+          forM_ (zip [0..] pluginNames) $ \(idx, pName) -> do
+            let Rect (V2 rx ry, V2 rw rh) = scrollRect (dataBrowserItemRect idx layout)
+                isSelected = selectedPlugin == Just pName
+                fillColor = if isSelected then V4 70 90 120 255 else V4 50 55 68 220
+                borderColor = if isSelected then V4 100 130 180 255 else V4 70 75 90 200
+            SDL.rendererDrawColor renderer SDL.$= fillColor
+            SDL.fillRect renderer (Just (rectToSDL (Rect (V2 rx ry, V2 rw rh))))
+            SDL.rendererDrawColor renderer SDL.$= borderColor
+            SDL.drawRect renderer (Just (rectToSDL (Rect (V2 rx ry, V2 rw rh))))
+          -- Draw resource rows beneath when a plugin is selected
+          let resourceOffset = length pluginNames
+          case selectedPlugin of
+            Nothing -> pure ()
+            Just pName -> do
+              let schemas = Map.findWithDefault [] pName resources
+              forM_ (zip [0..] schemas) $ \(rIdx, schema) -> do
+                let rowIdx = resourceOffset + rIdx
+                    Rect (V2 rx ry, V2 rw rh) = scrollRect (dataBrowserItemRect rowIdx layout)
+                    isSelected = selectedResource == Just (drsName schema)
+                    fillColor = if isSelected then V4 80 100 130 255 else V4 45 50 62 220
+                    borderColor = if isSelected then V4 110 140 190 255 else V4 65 70 85 200
+                SDL.rendererDrawColor renderer SDL.$= fillColor
+                SDL.fillRect renderer (Just (rectToSDL (Rect (V2 rx ry, V2 rw rh))))
+                SDL.rendererDrawColor renderer SDL.$= borderColor
+                SDL.drawRect renderer (Just (rectToSDL (Rect (V2 rx ry, V2 rw rh))))
+              -- Draw record rows when a resource is selected
+              let recordOffset = resourceOffset + length schemas
+                  records = dbsRecords dbs
+              forM_ (zip [0..] records) $ \(recIdx, _record) -> do
+                let rowIdx = recordOffset + recIdx
+                    Rect (V2 rx ry, V2 rw rh) = scrollRect (dataBrowserItemRect rowIdx layout)
+                SDL.rendererDrawColor renderer SDL.$= V4 40 45 58 200
+                SDL.fillRect renderer (Just (rectToSDL (Rect (V2 rx ry, V2 rw rh))))
+                SDL.rendererDrawColor renderer SDL.$= V4 60 65 78 200
+                SDL.drawRect renderer (Just (rectToSDL (Rect (V2 rx ry, V2 rw rh))))
+              -- Loading indicator
+              when (dbsLoading dbs) $ do
+                let loadRow = recordOffset + length records
+                    Rect (V2 lx ly, V2 _lw lh) = scrollRect (dataBrowserItemRect loadRow layout)
+                SDL.rendererDrawColor renderer SDL.$= V4 100 100 130 180
+                SDL.fillRect renderer (Just (rectToSDL (Rect (V2 lx ly, V2 40 lh))))
         _ -> forM_ activeSliderDefs drawSliderDef
       SDL.rendererClipRect renderer SDL.$= Nothing
       let Rect (V2 bx by, V2 bw bh) = scrollBarRect

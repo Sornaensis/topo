@@ -20,11 +20,18 @@ Code quality expectations:
 
 Development practices:
 
-- **_Always run both `stack build <project>` as well as `stack test <project> --no-run-tests` when done with a set of edits, and immediately fix any problems in either case. Do not run tests unless asked!_**
+- **_NEVER run `stack` commands directly in the terminal._** Always use `run_task` with the pre-defined VS Code tasks instead. The workspace has tasks for every project:
+  - `"Build <project>"` — e.g. `"Build topo"`, `"Build topo-seer"`, etc.
+  - `"Test compile <project>"` — e.g. `"Test compile topo"` (runs `--no-run-tests`)
+  - `"Run <project> tests"` — e.g. `"Run topo tests"`
+  - `"HLint <project>"` — e.g. `"HLint topo"`
+  - `"Clean (pick project)"`, `"Haddock (pick project)"` — interactive pickers
+- **_Always run both the Build and Test compile tasks for the affected project(s) when done with a set of edits, and immediately fix any problems. Do not run tests unless asked!_**
 - **_Always document Public API methods-- anything that is meant for separate modules and especially other projects (lib->executable boundaries too), is paramount to document in a concise and clear way_**
 - **_Whenever editing a documented piece of functionality, assess the documentation afterwards_**
 - **_NEVER_** create source code files more than 800 lines long without stopping and asking for permission
 - **_ALWAYS_** propose refactorings when editing source code files that exceed 1000 lines
+- **_NEVER_** Duplicate code or create competing implementations of anything. Never add backwards compatibility support unless EXPLICITLY asked to do so. Always make plans from the angle of correcting and generalizing.
 
 General _DESIGN_ Principles:
 
