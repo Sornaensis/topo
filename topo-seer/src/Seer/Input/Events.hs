@@ -145,6 +145,7 @@ handleEvent inputContext event = do
                    ConfigBiome -> biomeRows
                    ConfigErosion -> erosionRows
                    ConfigPipeline -> []
+                   ConfigData -> []
                  hoverResult
                    | containsPoint scrollArea point = hitTest activeRows scrolledPoint
                    | otherwise = Nothing

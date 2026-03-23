@@ -1,9 +1,11 @@
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Handler for the @take_screenshot@ IPC command.
 --
 -- Posts a screenshot request to the render loop and blocks until the
 -- result is available (typically within one frame — ~16 ms at 60 FPS).
+-- Times out after 2 seconds if the render loop does not respond.
 module Seer.Command.Handlers.Screenshot
   ( handleTakeScreenshot
   ) where
@@ -11,13 +13,22 @@ module Seer.Command.Handlers.Screenshot
 import Control.Concurrent.MVar (newEmptyMVar, takeMVar)
 import Data.Aeson (Value(..), object, (.=))
 import qualified Data.ByteString as BS
-import Data.Bits ((.&.), (.|.), shiftL, shiftR)
-import Data.IORef (atomicModifyIORef')
+import qualified Data.ByteString.Base64 as Base64
+import Data.IORef (atomicModifyIORef', writeIORef)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as Text
+import System.Timeout (timeout)
+import Actor.Log (LogEntry(..), LogLevel(..), appendLog)
+import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
 import Seer.Screenshot (ScreenshotRequest(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
+
+-- | Timeout for waiting on the render loop to capture a screenshot, in
+-- microseconds (2 seconds).
+screenshotTimeoutUs :: Int
+screenshotTimeoutUs = 2_000_000
 
 -- | Handle @take_screenshot@ — capture the current renderer contents.
 --
@@ -25,11 +36,13 @@ import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 -- 'ScreenshotRequestRef' and then blocks on the result 'MVar'.
 -- The render loop services the request on the next frame.
 --
--- Returns a JSON object with @image_base64@ (BMP, base64-encoded)
--- and @format@ (@\"bmp\"@), or an error if capture failed or another
--- screenshot is already in flight.
+-- Returns a JSON object with @image_base64@ (PNG, base64-encoded)
+-- and @format@ (@"png"@), or an error if capture failed, another
+-- screenshot is already in flight, or the render loop does not
+-- respond within 2 seconds.
 handleTakeScreenshot :: CommandContext -> Int -> Value -> IO SeerResponse
 handleTakeScreenshot ctx reqId _params = do
+  logMsg LogInfo "[mcp] screenshot requested"
   result <- newEmptyMVar
   let req = ScreenshotRequest { ssrResult = result }
   -- Atomically try to set the request.  If one is already pending,
@@ -39,53 +52,30 @@ handleTakeScreenshot ctx reqId _params = do
       Nothing -> (Just req, False)
       Just _  -> (prev, True)
   if alreadyPending
-    then pure $ errResponse reqId
-      "a screenshot is already in progress; please wait and retry"
+    then do
+      logMsg LogWarn "[mcp] screenshot rejected: already in progress"
+      pure $ errResponse reqId
+        "a screenshot is already in progress; please wait and retry"
     else do
-      -- Block until the render loop fills the MVar (next frame).
-      capture <- takeMVar result
-      case capture of
-        Left err -> pure $ errResponse reqId err
-        Right bmpBytes -> pure $ okResponse reqId $ object
-          [ "image_base64" .= encodeBase64Text bmpBytes
-          , "format"       .= ("bmp" :: Text)
-          ]
-
-encodeBase64Text :: BS.ByteString -> Text
-encodeBase64Text bytes = Text.pack (go 0)
+      -- Block until the render loop fills the MVar, with a timeout.
+      mCapture <- timeout screenshotTimeoutUs (takeMVar result)
+      case mCapture of
+        Nothing -> do
+          -- Timed out — clear the request so it doesn't fire later
+          -- into a dead MVar.
+          writeIORef (ccScreenshotRef ctx) Nothing
+          logMsg LogError "[mcp] screenshot timed out (render loop did not respond within 2s)"
+          pure $ errResponse reqId
+            "screenshot timed out: render loop did not respond within 2s"
+        Just (Left err) -> do
+          logMsg LogError ("[mcp] screenshot failed: " <> err)
+          pure $ errResponse reqId err
+        Just (Right pngBytes) -> do
+          logMsg LogInfo ("[mcp] screenshot captured (" <> Text.pack (show (BS.length pngBytes)) <> " bytes)")
+          pure $ okResponse reqId $ object
+            [ "image_base64" .= Text.decodeUtf8 (Base64.encode pngBytes)
+            , "format"       .= ("png" :: Text)
+            ]
   where
-    len = BS.length bytes
-
-    at :: Int -> Int
-    at index = fromIntegral (BS.index bytes index)
-
-    emit :: Int -> Char
-    emit index = Text.index base64Alphabet index
-
-    go :: Int -> String
-    go index
-      | index >= len = []
-      | index + 2 < len =
-          let b0 = at index
-              b1 = at (index + 1)
-              b2 = at (index + 2)
-              c0 = emit (b0 `shiftR` 2)
-              c1 = emit (((b0 .&. 0x03) `shiftL` 4) .|. (b1 `shiftR` 4))
-              c2 = emit (((b1 .&. 0x0F) `shiftL` 2) .|. (b2 `shiftR` 6))
-              c3 = emit (b2 .&. 0x3F)
-          in c0 : c1 : c2 : c3 : go (index + 3)
-      | index + 1 < len =
-          let b0 = at index
-              b1 = at (index + 1)
-              c0 = emit (b0 `shiftR` 2)
-              c1 = emit (((b0 .&. 0x03) `shiftL` 4) .|. (b1 `shiftR` 4))
-              c2 = emit ((b1 .&. 0x0F) `shiftL` 2)
-          in [c0, c1, c2, '=']
-      | otherwise =
-          let b0 = at index
-              c0 = emit (b0 `shiftR` 2)
-              c1 = emit ((b0 .&. 0x03) `shiftL` 4)
-          in [c0, c1, '=', '=']
-
-base64Alphabet :: Text
-base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    logMsg level msg =
+      appendLog (ahLogHandle (ccActorHandles ctx)) (LogEntry level msg)

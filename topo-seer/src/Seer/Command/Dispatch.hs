@@ -9,10 +9,16 @@ module Seer.Command.Dispatch
 
 import Topo.Command.Types (SeerCommand(..), SeerResponse, errResponse)
 import Seer.Command.Context (CommandContext(..))
+import qualified Seer.Command.Handlers.Camera as HCamera
 import qualified Seer.Command.Handlers.Enums as HEnums
 import qualified Seer.Command.Handlers.Generate as HGenerate
+import qualified Seer.Command.Handlers.Log as HLog
+import qualified Seer.Command.Handlers.Pipeline as HPipeline
+import qualified Seer.Command.Handlers.Plugin as HPlugin
 import qualified Seer.Command.Handlers.Presets as HPresets
+import qualified Seer.Command.Handlers.Query as HQuery
 import qualified Seer.Command.Handlers.Screenshot as HScreenshot
+import qualified Seer.Command.Handlers.Simulation as HSimulation
 import qualified Seer.Command.Handlers.State as HState
 import qualified Seer.Command.Handlers.Sliders as HSliders
 import qualified Seer.Command.Handlers.Terrain as HTerrain
@@ -39,6 +45,11 @@ dispatchCommand ctx cmd = case scMethod cmd of
   "set_config_tab"   -> HView.handleSetConfigTab     ctx (scId cmd) (scParams cmd)
   "select_hex"       -> HView.handleSelectHex        ctx (scId cmd) (scParams cmd)
 
+  -- Camera controls
+  "set_camera"       -> HCamera.handleSetCamera      ctx (scId cmd) (scParams cmd)
+  "get_camera"       -> HCamera.handleGetCamera      ctx (scId cmd) (scParams cmd)
+  "zoom_to_chunk"    -> HCamera.handleZoomToChunk    ctx (scId cmd) (scParams cmd)
+
   -- Generation
   "generate"         -> HGenerate.handleGenerate     ctx (scId cmd) (scParams cmd)
 
@@ -58,6 +69,31 @@ dispatchCommand ctx cmd = case scMethod cmd of
   "list_worlds"          -> HWorld.handleListWorlds           ctx (scId cmd) (scParams cmd)
   "save_world"           -> HWorld.handleSaveWorld            ctx (scId cmd) (scParams cmd)
   "load_world"           -> HWorld.handleLoadWorld            ctx (scId cmd) (scParams cmd)
+  "set_world_name"       -> HWorld.handleSetWorldName         ctx (scId cmd) (scParams cmd)
+
+  -- Log access
+  "get_logs"             -> HLog.handleGetLogs                ctx (scId cmd) (scParams cmd)
+
+  -- Pipeline stage control
+  "get_pipeline"         -> HPipeline.handleGetPipeline       ctx (scId cmd) (scParams cmd)
+  "set_stage_enabled"    -> HPipeline.handleSetStageEnabled   ctx (scId cmd) (scParams cmd)
+
+  -- Plugin management
+  "list_plugins"         -> HPlugin.handleListPlugins         ctx (scId cmd) (scParams cmd)
+  "set_plugin_enabled"   -> HPlugin.handleSetPluginEnabled    ctx (scId cmd) (scParams cmd)
+  "set_plugin_param"     -> HPlugin.handleSetPluginParam      ctx (scId cmd) (scParams cmd)
+
+  -- Simulation control
+  "get_sim_state"        -> HSimulation.handleGetSimState     ctx (scId cmd) (scParams cmd)
+  "set_sim_auto_tick"    -> HSimulation.handleSetSimAutoTick  ctx (scId cmd) (scParams cmd)
+  "sim_tick"             -> HSimulation.handleSimTick         ctx (scId cmd) (scParams cmd)
+
+  -- Config summary
+  "get_config_summary"   -> HSliders.handleGetConfigSummary   ctx (scId cmd) (scParams cmd)
+
+  -- Hex search and terrain export
+  "find_hexes"           -> HQuery.handleFindHexes            ctx (scId cmd) (scParams cmd)
+  "export_terrain_data"  -> HQuery.handleExportTerrainData    ctx (scId cmd) (scParams cmd)
 
   -- Preset management
   "list_presets"         -> HPresets.handleListPresets         ctx (scId cmd) (scParams cmd)

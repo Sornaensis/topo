@@ -85,10 +85,16 @@ library
       UI.WidgetTree
   other-modules:
       Actor.UiActions.Handles
+      Seer.Command.Handlers.Camera
       Seer.Command.Handlers.Enums
       Seer.Command.Handlers.Generate
+      Seer.Command.Handlers.Log
+      Seer.Command.Handlers.Pipeline
+      Seer.Command.Handlers.Plugin
       Seer.Command.Handlers.Presets
+      Seer.Command.Handlers.Query
       Seer.Command.Handlers.Screenshot
+      Seer.Command.Handlers.Simulation
       Seer.Command.Handlers.Sliders
       Seer.Command.Handlers.State
       Seer.Command.Handlers.Terrain
@@ -114,8 +120,10 @@ library
   hs-source-dirs:
       src
   build-depends:
-      aeson
+      JuicyPixels
+    , aeson
     , base >=4.18 && <5
+    , base64-bytestring
     , bytestring
     , containers
     , directory

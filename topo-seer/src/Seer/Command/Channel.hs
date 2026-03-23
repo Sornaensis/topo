@@ -23,12 +23,13 @@ import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Text as Text
 import System.IO (Handle, hPutStrLn, stderr, hSetBinaryMode, hSetBuffering, BufferMode(..), hClose)
-import Topo.Command.Types (SeerCommand(..), SeerResponse, errResponse, commandPipeName)
+import Topo.Command.Types (SeerCommand(..), SeerResponse(..), errResponse, commandPipeName)
 import Topo.Plugin.RPC.Transport (Transport(..), sendMessage, recvMessage)
 import Seer.Command.Dispatch (dispatchCommand, CommandContext(..))
 import Seer.Screenshot (ScreenshotRequestRef)
+import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshotRef, appendLog)
 import Actor.UiActions (UiActions)
-import Actor.UiActions.Handles (ActorHandles)
+import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.UI.State (UiSnapshotRef)
 import Hyperspace.Actor (ActorHandle, Protocol)
 
@@ -52,6 +53,7 @@ data CommandChannelEnv = CommandChannelEnv
   , cceUiSnapshotRef   :: !UiSnapshotRef
   , cceUiActionsHandle :: !(ActorHandle UiActions (Protocol UiActions))
   , cceScreenshotRef   :: !ScreenshotRequestRef
+  , cceLogSnapshotRef  :: !(Maybe LogSnapshotRef)
   }
 
 -- | Run the command channel listener.
@@ -197,14 +199,21 @@ listenLoop env = bracket setup cleanup acceptLoop
 --
 -- Reads commands in a loop, dispatches each, and writes the response.
 -- The loop exits when the client disconnects (EOF / transport error).
+-- Mutation and screenshot commands are logged to the seer console.
 handleClient :: CommandChannelEnv -> Transport -> IO ()
-handleClient env transport = loop
+handleClient env transport = do
+  logMsg LogInfo "[mcp] client connected"
+  loop
   where
+    logHandle = ahLogHandle (cceActorHandles env)
+    logMsg level msg = appendLog logHandle (LogEntry level msg)
+
     ctx = CommandContext
       { ccActorHandles    = cceActorHandles env
       , ccUiSnapshotRef   = cceUiSnapshotRef env
       , ccUiActionsHandle = cceUiActionsHandle env
       , ccScreenshotRef   = cceScreenshotRef env
+      , ccLogSnapshotRef  = cceLogSnapshotRef env
       }
 
     loop = do
@@ -213,19 +222,62 @@ handleClient env transport = loop
         Left _err -> do
           -- Client disconnected or transport error; exit the loop.
           hPutStrLn stderr "[cmd-channel] client disconnected"
+          logMsg LogInfo "[mcp] client disconnected"
           pure ()
         Right payload -> do
           case Aeson.eitherDecodeStrict payload of
             Left parseErr -> do
               -- Malformed JSON; send an error response with id -1.
               let rsp = errResponse (-1) (Text.pack ("JSON parse error: " <> parseErr))
+              logMsg LogWarn ("[mcp] JSON parse error: " <> Text.pack parseErr)
               _ <- sendResponse transport rsp
               loop
             Right cmd -> do
+              let method = scMethod cmd
               rsp <- dispatchCommand ctx cmd
-                `catch` \(e :: SomeException) ->
+                `catch` \(e :: SomeException) -> do
+                  logMsg LogError ("[mcp] " <> method <> " internal error: " <> Text.pack (show e))
                   pure (errResponse (scId cmd) (Text.pack ("internal error: " <> show e)))
+              -- Log mutation/input commands to the seer console.
+              case commandCategory method of
+                CatMutation -> logCommandResult method rsp
+                CatQuery    -> pure ()
               _ <- sendResponse transport rsp
               loop
 
+    logCommandResult method rsp
+      | srSuccess rsp = logMsg LogInfo ("[mcp] " <> method <> " ok")
+      | otherwise = case srError rsp of
+          Just err -> logMsg LogWarn ("[mcp] " <> method <> " error: " <> err)
+          Nothing  -> logMsg LogWarn ("[mcp] " <> method <> " failed")
+
     sendResponse t rsp = sendMessage t (BL.toStrict (Aeson.encode rsp))
+
+-- | Command category for logging purposes.
+data CommandCategory = CatQuery | CatMutation
+
+-- | Classify IPC methods: only mutations and screenshots are logged.
+commandCategory :: Text.Text -> CommandCategory
+commandCategory method = case method of
+  "set_slider"       -> CatMutation
+  "set_sliders"      -> CatMutation
+  "reset_sliders"    -> CatMutation
+  "set_seed"         -> CatMutation
+  "set_view_mode"    -> CatMutation
+  "set_config_tab"   -> CatMutation
+  "select_hex"       -> CatMutation
+  "generate"         -> CatMutation
+  "save_world"       -> CatMutation
+  "load_world"       -> CatMutation
+  "save_preset"      -> CatMutation
+  "load_preset"      -> CatMutation
+  "take_screenshot"  -> CatMutation
+  "set_camera"         -> CatMutation
+  "zoom_to_chunk"      -> CatMutation
+  "set_world_name"     -> CatMutation
+  "set_stage_enabled"  -> CatMutation
+  "set_plugin_enabled" -> CatMutation
+  "set_plugin_param"   -> CatMutation
+  "set_sim_auto_tick"  -> CatMutation
+  "sim_tick"           -> CatMutation
+  _                    -> CatQuery

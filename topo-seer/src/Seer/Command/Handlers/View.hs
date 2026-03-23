@@ -18,8 +18,12 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
 
+import Actor.AtlasCache (AtlasKey(..))
+import Actor.AtlasManager (AtlasJob(..), enqueueAtlasBuild)
+import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot)
 import Actor.UiActions.Handles (ActorHandles(..))
-import Actor.UI.State (ViewMode(..), ConfigTab(..))
+import Actor.UI (getUiSnapshot)
+import Actor.UI.State (ViewMode(..), ConfigTab(..), uiRenderWaterLevel)
 import Actor.UI.Setters (setUiSeed, setUiSeedInput, setUiViewMode, setUiConfigScroll, setUiConfigTab, setUiContextHex, setUiHexTooltipPinned)
 import Seer.Command.Context (CommandContext(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
@@ -47,7 +51,12 @@ handleSetViewMode ctx reqId params = do
         Nothing ->
           pure $ errResponse reqId ("unknown view mode: " <> modeName)
         Just vm -> do
-          setUiViewMode (ahUiHandle (ccActorHandles ctx)) vm
+          let handles = ccActorHandles ctx
+          setUiViewMode (ahUiHandle handles) vm
+          -- Trigger atlas rebuild so the renderer picks up the new view
+          -- mode.  Without this the cached atlas tiles from the previous
+          -- mode would continue to be displayed.
+          scheduleAtlasRebuild handles vm
           pure $ okResponse reqId $ object ["view_mode" .= modeName]
 
 -- | Handle @set_config_tab@ — switch the config panel tab.
@@ -100,6 +109,26 @@ handleSelectHex ctx reqId params = do
       setUiContextHex uiH Nothing
       setUiHexTooltipPinned uiH False
       pure $ okResponse reqId $ object ["selected" .= False]
+
+-- --------------------------------------------------------------------------
+-- Atlas rebuild
+-- --------------------------------------------------------------------------
+
+-- | Enqueue atlas rebuild jobs for all zoom scales after a view mode change.
+-- Mirrors the logic in 'Actor.UiActions.Command.rebuildAtlasFor'.
+scheduleAtlasRebuild :: ActorHandles -> ViewMode -> IO ()
+scheduleAtlasRebuild handles mode = do
+  terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
+  uiSnap      <- getUiSnapshot (ahUiHandle handles)
+  let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
+      job scale = AtlasJob
+        { ajKey       = atlasKey
+        , ajViewMode  = mode
+        , ajWaterLevel = uiRenderWaterLevel uiSnap
+        , ajTerrain   = terrainSnap
+        , ajScale     = scale
+        }
+  mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles) . job) [1 .. 6]
 
 -- --------------------------------------------------------------------------
 -- Parsers

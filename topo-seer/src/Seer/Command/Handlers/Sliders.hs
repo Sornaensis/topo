@@ -8,6 +8,7 @@ module Seer.Command.Handlers.Sliders
   , handleSetSlider
   , handleSetSliders
   , handleResetSliders
+  , handleGetConfigSummary
   ) where
 
 import Data.Aeson (Value(..), object, (.=), (.:))
@@ -72,8 +73,9 @@ handleGetSlider ctx reqId params = do
           pure $ errResponse reqId ("unknown slider: " <> name)
         Just sid -> do
           ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
-          let def' = head $ filter ((== sid) . sliderId) allSliderDefs
-          pure $ okResponse reqId $ sliderToJSON ui def'
+          case filter ((== sid) . sliderId) allSliderDefs of
+            (def':_) -> pure $ okResponse reqId $ sliderToJSON ui def'
+            []       -> pure $ errResponse reqId ("slider definition not found: " <> name)
 
 -- | Handle @set_slider@ — set a slider to a normalized [0,1] value.
 handleSetSlider :: CommandContext -> Int -> Value -> IO SeerResponse
@@ -134,6 +136,20 @@ handleResetSliders ctx reqId params = do
     [ "reset_count" .= length defs
     , "tab"         .= fmap sliderTabToText maybeTab
     ]
+
+-- | Handle @get_config_summary@ — return all slider values grouped by tab.
+handleGetConfigSummary :: CommandContext -> Int -> Value -> IO SeerResponse
+handleGetConfigSummary ctx reqId _params = do
+  ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
+  let tabs = [SliderTabTerrain, SliderTabPlanet, SliderTabClimate, SliderTabWeather, SliderTabBiome, SliderTabErosion]
+      tabGroup tab =
+        let defs = filter ((== tab) . sliderTab) allSliderDefs
+        in object
+          [ "tab"     .= sliderTabToText tab
+          , "sliders" .= map (sliderToJSON ui) defs
+          ]
+  pure $ okResponse reqId $ object
+    [ "tabs" .= map tabGroup tabs ]
 
 -- --------------------------------------------------------------------------
 -- Helpers

@@ -170,6 +170,7 @@ runApp = do
         , cceUiSnapshotRef   = uiSnapshotRef
         , cceUiActionsHandle = uiActionsHandle
         , cceScreenshotRef   = screenshotRef
+        , cceLogSnapshotRef  = Just logSnapshotRef
         }
   _ <- forkIO (runCommandChannel cmdEnv)
 

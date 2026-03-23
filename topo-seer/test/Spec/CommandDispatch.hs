@@ -530,6 +530,7 @@ withCtx action = bracket newActorSystem shutdownActorSystem $ \system -> do
         , ccUiSnapshotRef   = uiSnapRef
         , ccUiActionsHandle = uiActionsH
         , ccScreenshotRef   = screenshotRef
+        , ccLogSnapshotRef  = Nothing
         }
   action ctx
 

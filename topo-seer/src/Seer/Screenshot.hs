@@ -9,7 +9,7 @@
 --    'ScreenshotRequestRef' and blocks on the result 'MVar'.
 -- 2. The render loop (main thread, which owns the SDL2 renderer)
 --    checks the ref each frame, captures pixels via
---    @SDL_RenderReadPixels@, encodes them as BMP, and fills the
+--    @SDL_RenderReadPixels@, encodes them as PNG, and fills the
 --    'MVar'.
 --
 -- This ensures that all SDL2 renderer calls happen on the thread
@@ -22,24 +22,27 @@ module Seer.Screenshot
   , serviceScreenshotRequest
   ) where
 
+import Codec.Picture (Image(..), PixelRGBA8(..), encodePng)
 import Control.Concurrent.MVar (MVar, putMVar)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as BL
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Text (Text)
-import Data.Bits ((.&.), shiftR)
-import Data.List (foldl')
-import Data.Word (Word8, Word16, Word32)
+import qualified Data.Text as Text
+import qualified Data.Vector.Storable as VS
+import Foreign.C.String (peekCString)
 import Foreign.C.Types (CInt(..))
 import Foreign.Marshal.Alloc (mallocBytes, free)
 import Foreign.Ptr (nullPtr, castPtr)
 import qualified SDL
 import SDL.Internal.Types (Renderer(..))
 import qualified SDL.Raw.Enum as RawEnum
+import qualified SDL.Raw.Error as RawError
 import qualified SDL.Raw.Video as RawVideo
 
 -- | A pending screenshot request.  The render loop fills the 'MVar'
--- with either a BMP-encoded 'ByteString' or an error message.
+-- with either a PNG-encoded 'ByteString' or an error message.
 data ScreenshotRequest = ScreenshotRequest
   { ssrResult :: !(MVar (Either Text ByteString))
     -- ^ Filled by the render loop with PNG data or an error.
@@ -52,7 +55,7 @@ type ScreenshotRequestRef = IORef (Maybe ScreenshotRequest)
 newScreenshotRequestRef :: IO ScreenshotRequestRef
 newScreenshotRequestRef = newIORef Nothing
 
--- | Capture the current renderer contents as a BMP-encoded 'ByteString'.
+-- | Capture the current renderer contents as a PNG-encoded 'ByteString'.
 --
 -- Must be called on the render thread (the thread that owns the
 -- SDL2 renderer), and should be called /after/ all drawing is done
@@ -72,69 +75,28 @@ captureScreenshot (Renderer rawRenderer) w h = do
   if rc /= 0
     then do
       free buf
-      pure (Left "SDL_RenderReadPixels failed")
+      sdlErr <- RawError.getError >>= peekCString
+      pure (Left ("SDL_RenderReadPixels failed: " <> Text.pack sdlErr))
     else do
-      -- Copy the foreign buffer into a Haskell ByteString, then free
+      -- Copy the foreign buffer into a storable vector, then free
       -- the C allocation immediately.
       rawBytes <- BS.packCStringLen (castPtr buf, bufSize)
       free buf
-      pure (Right (encodeBmp (fromIntegral w) (fromIntegral h) rawBytes))
+      pure (Right (encodeScreenshotPng (fromIntegral w) (fromIntegral h) rawBytes))
 
-encodeBmp :: Int -> Int -> ByteString -> ByteString
-encodeBmp width height rgbaBytes =
-  let pixelBytes = BS.concat
-        [ encodeBmpRow y
-        | y <- [height - 1, height - 2 .. 0]
-        ]
-      header = bmpFileHeader (54 + BS.length pixelBytes)
-      dib = bmpInfoHeader width height
-  in BS.concat [header, dib, pixelBytes]
-  where
-    rowStride = width * 4
-    encodeBmpRow y = BS.pack $ foldl' step [] [0 .. width - 1]
-      where
-        rowOffset = y * rowStride
-        step acc x =
-          let i = rowOffset + (x * 4)
-              r = BS.index rgbaBytes i
-              g = BS.index rgbaBytes (i + 1)
-              b = BS.index rgbaBytes (i + 2)
-              a = BS.index rgbaBytes (i + 3)
-          in acc ++ [b, g, r, a]
-
-bmpFileHeader :: Int -> ByteString
-bmpFileHeader fileSize = BS.pack
-  [ 0x42, 0x4D
-  , fromIntegral (fileSize .&. 0xFF)
-  , fromIntegral ((fileSize `shiftR` 8) .&. 0xFF)
-  , fromIntegral ((fileSize `shiftR` 16) .&. 0xFF)
-  , fromIntegral ((fileSize `shiftR` 24) .&. 0xFF)
-  , 0, 0, 0, 0
-  , 54, 0, 0, 0
-  ]
-
-bmpInfoHeader :: Int -> Int -> ByteString
-bmpInfoHeader width height = BS.pack
-  [ 40, 0, 0, 0
-  , le32 width !! 0, le32 width !! 1, le32 width !! 2, le32 width !! 3
-  , le32 height !! 0, le32 height !! 1, le32 height !! 2, le32 height !! 3
-  , 1, 0
-  , 32, 0
-  , 0, 0, 0, 0
-  , 0, 0, 0, 0
-  , 19, 11, 0, 0
-  , 19, 11, 0, 0
-  , 0, 0, 0, 0
-  , 0, 0, 0, 0
-  ]
-
-le32 :: Int -> [Word8]
-le32 n =
-  [ fromIntegral (n .&. 0xFF)
-  , fromIntegral ((n `shiftR` 8) .&. 0xFF)
-  , fromIntegral ((n `shiftR` 16) .&. 0xFF)
-  , fromIntegral ((n `shiftR` 24) .&. 0xFF)
-  ]
+-- | Encode raw RGBA pixel data as a PNG 'ByteString'.
+--
+-- Pixels are expected in RGBA byte order (as read via
+-- @SDL_PIXELFORMAT_ABGR8888@ on little-endian systems).
+encodeScreenshotPng :: Int -> Int -> ByteString -> ByteString
+encodeScreenshotPng width height rawBytes =
+  let pixelVec = VS.generate (width * height * 4) (BS.index rawBytes)
+      img = Image
+        { imageWidth  = width
+        , imageHeight = height
+        , imageData   = pixelVec
+        } :: Image PixelRGBA8
+  in BL.toStrict (encodePng img)
 
 -- | Check the screenshot ref and, if a request is pending, capture
 -- the current renderer contents and deliver the result.

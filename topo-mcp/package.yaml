@@ -1,0 +1,53 @@
+name: topo-mcp
+version: 0.1.0.0
+license: MPL-2.0
+license-file: LICENSE
+author: You
+maintainer: you@example.com
+category: Terrain
+synopsis: MCP server for topo-seer remote control
+
+library:
+  source-dirs: src
+  exposed-modules:
+    - Topo.MCP.Types
+    - Topo.MCP.IPC
+    - Topo.MCP.Resources
+    - Topo.MCP.Tools
+    - Topo.MCP.Server
+  dependencies:
+    - aeson
+    - base >=4.18 && <5
+    - binary
+    - bytestring
+    - containers
+    - text
+    - topo
+
+executables:
+  topo-mcp:
+    main: Main.hs
+    source-dirs: app
+    ghc-options:
+      - -O2
+      - -Wall
+      - -threaded
+      - -rtsopts
+      - '"-with-rtsopts=-N"'
+    dependencies:
+      - base
+      - text
+      - topo-mcp
+
+tests:
+  topo-mcp-test:
+    main: Spec.hs
+    source-dirs: test
+    dependencies:
+      - aeson
+      - base
+      - containers
+      - hspec
+      - text
+      - topo
+      - topo-mcp

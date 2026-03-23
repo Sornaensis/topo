@@ -12,6 +12,7 @@ module Seer.Command.Handlers.World
   , handleListWorlds
   , handleSaveWorld
   , handleLoadWorld
+  , handleSetWorldName
   ) where
 
 import Data.Aeson (Value(..), object, (.=), (.:))
@@ -194,6 +195,22 @@ handleLoadWorld ctx reqId params = do
                 [ "name" .= name
                 , "loaded" .= True
                 ]
+
+-- | Handle @set_world_name@ — set the display name of the current world.
+--
+-- Params: @{ "name": "my-world" }@
+handleSetWorldName :: CommandContext -> Int -> Value -> IO SeerResponse
+handleSetWorldName ctx reqId params = do
+  case Aeson.parseMaybe parseName params of
+    Nothing ->
+      pure $ errResponse reqId "missing or invalid 'name' parameter"
+    Just name
+      | Text.null name ->
+          pure $ errResponse reqId "world name must not be empty"
+      | otherwise -> do
+          setUiWorldName (ahUiHandle (ccActorHandles ctx)) name
+          pure $ okResponse reqId $ object
+            [ "name" .= name ]
 
 -- --------------------------------------------------------------------------
 -- Helpers

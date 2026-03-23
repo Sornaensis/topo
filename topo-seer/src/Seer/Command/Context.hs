@@ -7,6 +7,7 @@ module Seer.Command.Context
   ( CommandContext(..)
   ) where
 
+import Actor.Log (LogSnapshotRef)
 import Actor.UiActions (UiActions)
 import Actor.UiActions.Handles (ActorHandles)
 import Actor.UI.State (UiSnapshotRef)
@@ -19,4 +20,6 @@ data CommandContext = CommandContext
   , ccUiSnapshotRef   :: !UiSnapshotRef
   , ccUiActionsHandle :: !(ActorHandle UiActions (Protocol UiActions))
   , ccScreenshotRef   :: !ScreenshotRequestRef
+  , ccLogSnapshotRef  :: !(Maybe LogSnapshotRef)
+    -- ^ Log snapshot for @get_logs@.  'Nothing' only in tests.
   }
