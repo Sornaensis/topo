@@ -20,6 +20,8 @@ module Topo.Climate
     module Topo.Climate.Config
     -- * Re-exported evaporation models
   , module Topo.Climate.Evaporation
+    -- * Re-exported ITCZ convergence model
+  , module Topo.Climate.ITCZ
     -- * Re-exported moisture transport
   , module Topo.Climate.MoistureTransport
     -- * Re-exported precipitation assembly
@@ -36,6 +38,7 @@ import qualified Data.IntMap.Strict as IntMap
 import Data.Word (Word64)
 import Topo.Climate.Config
 import Topo.Climate.Evaporation
+import Topo.Climate.ITCZ
 import Topo.Climate.MoistureTransport
 import Topo.Climate.Precipitation
 import Topo.Grid.HexDirection
@@ -462,20 +465,24 @@ buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx
         in if elev U.! i < waterLevel
            then oceanEvaporation mst t w insol
            else 0)
-      -- Precompute ITCZ convergence boost (Model E.5):
-      -- Gaussian enhancement centered on the equator (lat = 0).
-      -- The configured strength is the *total* target enhancement;
-      -- divide by iterations so it accumulates correctly.
-      itczPerIter = moistITCZStrength mst
-                      / max 1 (fromIntegral (moistIterations mst))
-      itczBoostGrid = U.generate n (\i ->
+      -- Compute wind convergence field from diffused wind grids.
+      -- Positive values indicate converging air (uplift).
+      convGrid = convergenceField gridW gridH windDir windSpd
+      -- Build per-tile latitude grid (degrees) for ITCZ band.
+      latDegsGrid = U.generate n (\i ->
         let y = i `div` gridW
             gy = minTileY + y
             lat = clampLat (fromIntegral gy * lmRadPerTile lm + lmBiasRad lm)
-            latDeg = lat * (180.0 / pi)
-            w = max 0.001 (moistITCZWidth mst)
-            d = latDeg / w
-        in itczPerIter * exp (negate (d * d)))
+        in lat * (180.0 / pi))
+      -- ITCZ band: convergence-driven intensity weighted by latitude
+      -- proximity, replacing the former static Gaussian (Model E.5).
+      -- Divide by iterations so it accumulates correctly.
+      iterScale = 1.0 / max 1 (fromIntegral (moistIterations mst))
+      convCfg = defaultConvergenceConfig
+        { convStrengthTotal = moistITCZStrength mst * iterScale
+        , convLatitudeWidth = moistITCZWidth mst
+        }
+      itczBoostGrid = itczBand convCfg convGrid latDegsGrid
       -- Moisture transport with condensation accumulation:
       -- Each iteration yields (newMoisture, netCondensation); the
       -- accumulated condensation across all iterations forms the
@@ -487,7 +494,19 @@ buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx
           initial
       precipGrid = assemblePrecipGrid gridW gridH lm cfg waterLevel minTileY
                      accumCondensation windDir elev plateHeight
-    in (precipGrid, coastal, finalMoisture, tempGrid)
+      -- Convective cooling (Phase 4):
+      -- Strong ITCZ convergence + precipitation cools the surface via
+      -- latent heat transport (evaporation cools surface, condensation
+      -- releases heat aloft).  This prevents equatorial temperature
+      -- saturation at the normalised ceiling of 1.0.
+      convCoolingScale = 0.08
+      cooledTempGrid = U.generate n (\i ->
+        let t = tempGrid U.! i
+            p = precipGrid U.! i
+            conv = max 0 (convGrid U.! i)
+            cooling = convCoolingScale * p * conv
+        in clamp01 (t - cooling))
+    in (precipGrid, coastal, finalMoisture, cooledTempGrid)
 
 -- | Build a scalar grid from a 'TerrainChunk' field accessor.
 --

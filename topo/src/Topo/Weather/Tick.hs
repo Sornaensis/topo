@@ -12,6 +12,7 @@ import qualified Data.Vector.Unboxed as U
 import Data.Word (Word64)
 import Topo.Calendar (mkCalendarConfig, yearFraction, WorldTime(..))
 import Topo.Climate.Evaporation (satNorm)
+import Topo.Climate.ITCZ (convergenceField, itczBand, defaultConvergenceConfig, ConvergenceConfig(..))
 import Topo.Grid.Diffusion (diffuseFieldGrid)
 import Topo.Math (clamp01)
 import Topo.Noise (noise2D, noise2DContinuous)
@@ -203,6 +204,8 @@ weatherPrecipAt config seed cfg radPerTile latBiasRad timeHash origin climate i 
       rawSeasonal = (sin (wcSeasonPhase cfg + latRad) * latScale + 1) * 0.5
       seasonalFactor = wcSeasonalBase cfg
                      + rawSeasonal * wcSeasonalRange cfg
+      -- ITCZ boost: latitude-based Gaussian (per-chunk fallback;
+      -- the grid-level tickWeatherGrid uses convergence-driven ITCZ).
       dLat = latDeg - wcITCZLatitude cfg
       itczW = max 0.1 (wcITCZWidth cfg)
       convergenceFactor = 1.0 + wcITCZPrecipBoost cfg
@@ -271,9 +274,25 @@ tickWeatherGrid config seed cfg radPerTile latBiasRad timeHash minCoord gridW gr
             h = humSource U.! i
             t = tempSource U.! i
             condense = condensation h t condensationRate
-        in pRelaxed + condense)
+            -- ITCZ precipitation boost from wind convergence
+            convBoost = itczIntensity U.! i * wcITCZPrecipBoost cfg
+        in pRelaxed + condense + convBoost)
 
       timeSeed = deriveWeatherSeed seed timeHash
+
+      -- Compute convergence field from current wind state for
+      -- ITCZ-driven pressure trough and precipitation boost.
+      convGrid = convergenceField gridW gridH (wgsWindDir prev) (wgsWindSpd prev)
+      latDegsGrid = U.generate n (\i ->
+        let (_, gy) = globalTileXY config minCoord gridW i
+            latRad = fromIntegral gy * radPerTile + latBiasRad
+        in latRad * (180.0 / pi))
+      itczConvCfg = defaultConvergenceConfig
+        { convStrengthTotal = 1.0
+        , convLatitudeWidth = wcITCZWidth cfg
+        , convCenterLat     = wcITCZLatitude cfg
+        }
+      itczIntensity = itczBand itczConvCfg convGrid latDegsGrid
 
       pressureRaw = U.generate n (\i ->
         let (gx, gy) = globalTileXY config minCoord gridW i
@@ -285,8 +304,10 @@ tickWeatherGrid config seed cfg radPerTile latBiasRad timeHash minCoord gridW gr
                          - t * wcPressureTempScale cfg
                          - h * wcPressureHumidityScale cfg
             coriolis = cos (3 * latRad) * wcPressureCoriolisScale cfg
+            -- ITCZ pressure trough: convergence zones have lower pressure
+            itczDrop = itczIntensity U.! i * wcITCZPrecipBoost cfg * 0.1
             noiseVal = (n0 * 2 - 1) * 0.05
-        in tempPressure + coriolis + noiseVal)
+        in tempPressure + coriolis - itczDrop + noiseVal)
 
       pressure = diffuseFieldGridWeather gridW gridH weatherPressureDiffuseIterations weatherPressureDiffuseFactor pressureRaw
 
@@ -316,7 +337,13 @@ tickWeatherGrid config seed cfg radPerTile latBiasRad timeHash minCoord gridW gr
       tempFinal = U.generate n (\i ->
         let t = tempDiffused U.! i
             target = seasonalTempBaseline U.! i
-        in clamp01 (climatePull t target pull))
+            tPulled = clamp01 (climatePull t target pull)
+            -- Convective cooling: ITCZ convergence + precipitation
+            -- cools the surface via latent heat transport.
+            p = precipDiffused U.! i
+            conv = max 0 (itczIntensity U.! i)
+            cooling = 0.08 * p * conv
+        in clamp01 (tPulled - cooling))
       humidityFinal = U.generate n (\i ->
         let h = humDiffused U.! i
             target = climateHumBase U.! i

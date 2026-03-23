@@ -65,8 +65,8 @@ import Topo.Config.JSON
 -- coastal proximity.
 data TemperatureConfig = TemperatureConfig
   { tmpEquatorTemp       :: !Float
-  -- ^ Base temperature at the equator (0–1).  Default: @0.746@
-  -- (~24.6 °C with the [−50,+50] °C scale).
+  -- ^ Base temperature at the equator (0–1).  Default: @0.78@
+  -- (28 °C with the [−50,+50] °C scale).
   , tmpPoleTemp          :: !Float
   -- ^ Base temperature at the poles (0–1).  Default: @0.0@
   -- (−50 °C, realistic Antarctic interior).
@@ -145,7 +145,7 @@ instance FromJSON TemperatureConfig where
 -- | Sensible Earth-like defaults for the temperature model.
 defaultTemperatureConfig :: TemperatureConfig
 defaultTemperatureConfig = TemperatureConfig
-  { tmpEquatorTemp       = 0.746
+  { tmpEquatorTemp       = 0.78  -- 28 °C (matches slider default & ocean SST)
   , tmpPoleTemp          = 0
   , tmpLapseRate         = 0.66
   , tmpLatitudeExponent  = 1.0
@@ -272,13 +272,15 @@ data MoistureConfig = MoistureConfig
   , moistCondensationRate   :: !Float
   -- ^ Precipitation rate from temperature-drop condensation.
   -- When moist air advects from a warm to a cool tile, excess
-  -- moisture precipitates at this rate.  Default: @0.40@.
+  -- moisture precipitates at this rate.  Default: @0.20@.
   , moistRecycleRate        :: !Float
   -- ^ Per-iteration evapotranspiration recycling efficiency.
   -- Vegetated land reintroduces a fraction of condensed moisture.
   -- Default: @0.35@.
   , moistITCZStrength       :: !Float
-  -- ^ ITCZ convergence zone moisture boost strength.  Default: @0.15@.
+  -- ^ ITCZ convergence zone moisture boost strength.  Divided by the
+  -- iteration count before use; at 36 iterations this gives ~0.007
+  -- per iteration.  Default: @0.25@.
   , moistITCZWidth          :: !Float
   -- ^ ITCZ convergence zone width in degrees latitude.
   -- Default: @8.0@.
@@ -309,12 +311,12 @@ data MoistureConfig = MoistureConfig
   -- ^ Relative-humidity threshold for convective precipitation
   -- (Model E.7).  When @totalMoisture / satNorm(T) > threshold@,
   -- warm moist air undergoes spontaneous convective uplift, producing
-  -- precipitation even on flat terrain.  Earth-like default: @0.70@
-  -- (~70 % RH, realistic cloud-formation threshold).
+  -- precipitation even on flat terrain.  Default: @0.75@
+  -- (~75 % RH, allowing tropical convection to fire over land).
   , moistConvectiveRate     :: !Float
   -- ^ Convective precipitation rate per unit excess RH (Model E.7).
   -- Scales with temperature (warmer → more CAPE → more convective
-  -- rain) and local saturation capacity.  Default: @0.08@.
+  -- rain) and local saturation capacity.  Default: @0.12@.
   , moistMinVegFloor        :: !Float
   -- ^ Minimum vegetation cover assumed for land ET reinjection.
   -- Breaks the vegetation cold-start problem: even barren land has
@@ -346,10 +348,16 @@ defaultMoistureConfig = MoistureConfig
   , moistVegTranspFrac      = 0.85
   , moistWindETScale        = 0.20
   , moistCondensationRate   = 0.20
-    -- ^ Reduced from 0.40; at 0.20, moisture survives ~20 tiles
-    -- inland instead of dying within 3–5 tiles of the coast.
+    -- ^ Controls how much excess moisture condenses per iteration.
+    -- At 0.20, moisture survives ~20 tiles inland before drying out,
+    -- balancing precipitation reach against coastal concentration.
   , moistRecycleRate        = 0.35
-  , moistITCZStrength       = 0.15
+    -- ^ Per-iteration evapotranspiration recycling.  Vegetated land
+    -- reintroduces 35% of condensed moisture, extending inland reach.
+  , moistITCZStrength       = 0.25
+    -- ^ Raised from 0.15; divided by 36 iterations this gives ~0.007
+    -- per iteration — a meaningful equatorial precipitation boost
+    -- via convergence-driven uplift.
   , moistITCZWidth          = 8.0
   , ccTempToC_Scale         = 100.0
   , ccTempToC_Offset        = -50.0
@@ -360,12 +368,15 @@ defaultMoistureConfig = MoistureConfig
     -- ^ Raised from 2.0; each iteration moves moisture 3 tiles
     -- instead of 2, increasing max inland reach to ~108 tiles.
   , moistBaseRecycleRate    = 0.10
-  , moistConvectiveThreshold = 0.80
-    -- ^ Raised from 0.70; convective rain fires only at RH > 80%,
-    -- giving moisture more room to travel before precipitating.
-  , moistConvectiveRate     = 0.08
-    -- ^ Reduced from 0.15; less aggressive convective precipitation
-    -- reduces the coastal moisture trap.
+    -- ^ Land ET reinjection rate per iteration; vegetated tiles inject
+    -- moistBaseRecycleRate * vegCover * satNorm(T) moisture.
+  , moistConvectiveThreshold = 0.75
+    -- ^ Lowered from 0.80; tropical convection begins around
+    -- 75% RH, allowing warm humid coastal and equatorial tiles
+    -- to produce convective rain while keeping interior tiles dry.
+  , moistConvectiveRate     = 0.10
+    -- ^ Raised from 0.08; moderate convective precipitation helps
+    -- fill the upper precipitation bands (Forest/Rainforest).
   , moistMinVegFloor        = 0.15
     -- ^ Breaks the vegetation cold-start: assumes at least some
     -- ground cover for ET recycling.

@@ -9,6 +9,7 @@ module Topo.Weather.Init
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Vector.Unboxed as U
 import Topo.Calendar (yearFraction, mkCalendarConfig)
+import Topo.Climate.ITCZ (seasonalITCZShift)
 import Topo.Math (clamp01)
 import Topo.Overlay (Overlay(..), OverlayData(..), OverlayProvenance(..), insertOverlay)
 import Topo.Pipeline (PipelineStage(..))
@@ -132,11 +133,12 @@ initialWeatherPrecipAt config cfg radPerTile latBiasRad origin climate i =
 
 -- | Dynamic ITCZ latitude from base position, migration scale, axial
 -- tilt, and current season phase.
+--
+-- Delegates to 'Topo.Climate.ITCZ.seasonalITCZShift'.
 seasonalITCZLatitude
   :: Float
   -> Float
   -> Float
   -> Float
   -> Float
-seasonalITCZLatitude baseLat migScale tilt phase =
-  baseLat + migScale * tilt * sin phase
+seasonalITCZLatitude = seasonalITCZShift

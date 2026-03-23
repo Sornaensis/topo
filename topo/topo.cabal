@@ -54,6 +54,7 @@ library
       Topo.Climate
       Topo.Climate.Config
       Topo.Climate.Evaporation
+      Topo.Climate.ITCZ
       Topo.Climate.MoistureTransport
       Topo.Climate.Precipitation
       Topo.BiomeConfig
@@ -178,6 +179,7 @@ test-suite topo-test
       Spec.HexDirection
       Spec.Hydrology
       Spec.Integration
+      Spec.ITCZ
       Spec.Mesh
       Spec.Metadata
       Spec.MoistureFixture

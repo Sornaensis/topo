@@ -203,8 +203,8 @@ sliderBindings =
   , bindConfigAndSnapshot (climatePrecipFloat SliderOrographicLift uiOrographicLift (\value precipitation -> precipitation { precOrographicLift = value })) (snapshotFloat SliderOrographicLift (precOrographicLift . scPrecipitation))
   , bindConfigAndSnapshot (climatePrecipFloat SliderRainShadowLoss uiRainShadowLoss (\value precipitation -> precipitation { precRainShadowLoss = value })) (snapshotFloat SliderRainShadowLoss (precRainShadowLoss . scPrecipitation))
   , bindConfigAndSnapshot (climateWindFloat SliderWindDiffuse uiWindDiffuse (\value wind -> wind { windDiffuse = value })) (snapshotFloat SliderWindDiffuse (windDiffuse . scWind))
-  , bindConfigAndSnapshot (climateTempFloat SliderEquatorTemp uiEquatorTemp (\value temperature -> temperature { tmpEquatorTemp = value })) (snapshotFloat SliderEquatorTemp (tmpEquatorTemp . scTemperature))
-  , bindConfigAndSnapshot (climateTempFloat SliderPoleTemp uiPoleTemp (\value temperature -> temperature { tmpPoleTemp = value })) (snapshotFloat SliderPoleTemp (tmpPoleTemp . scTemperature))
+  , bindConfigAndSnapshot (climateTempFloat SliderEquatorTemp uiEquatorTemp (\value temperature -> temperature { tmpEquatorTemp = tempCelsiusToNorm value })) (snapshotFloat SliderEquatorTemp (tempNormToCelsius . tmpEquatorTemp . scTemperature))
+  , bindConfigAndSnapshot (climateTempFloat SliderPoleTemp uiPoleTemp (\value temperature -> temperature { tmpPoleTemp = tempCelsiusToNorm value })) (snapshotFloat SliderPoleTemp (tempNormToCelsius . tmpPoleTemp . scTemperature))
   , bindConfigAndSnapshot (climateTempFloat SliderLapseRate uiLapseRate (\value temperature -> temperature { tmpLapseRate = value })) (snapshotFloat SliderLapseRate (tmpLapseRate . scTemperature))
   , bindConfigAndSnapshot (climateWindInt SliderWindIterations uiWindIterations (\value wind -> wind { windIterations = value })) (snapshotInt SliderWindIterations (windIterations . scWind))
   , bindConfigAndSnapshot (climateMoistInt SliderMoistureIterations uiMoistureIterations (\value moisture -> moisture { moistIterations = value })) (snapshotInt SliderMoistureIterations (moistIterations . scMoisture))
@@ -685,3 +685,17 @@ snapshotInt sliderIdValue readInt = (sliderIdValue, SnapshotInt readInt)
 
 snapshotBool :: SliderId -> (SnapshotContext -> Bool) -> (SliderId, SnapshotSource)
 snapshotBool sliderIdValue readBool = (sliderIdValue, SnapshotBool readBool)
+
+-- ---------------------------------------------------------------------------
+-- Temperature normalisation helpers
+-- ---------------------------------------------------------------------------
+
+-- | Slider temperature domain \([-50, +50]\) °C to config normalised \([0, 1]\).
+tempCelsiusToNorm :: Float -> Float
+tempCelsiusToNorm c = (c + 50) / 100
+{-# INLINE tempCelsiusToNorm #-}
+
+-- | Config normalised \([0, 1]\) to slider temperature domain \([-50, +50]\) °C.
+tempNormToCelsius :: Float -> Float
+tempNormToCelsius n = n * 100 - 50
+{-# INLINE tempNormToCelsius #-}

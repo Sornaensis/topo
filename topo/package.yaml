@@ -48,6 +48,7 @@ library:
     - Topo.Climate
     - Topo.Climate.Config
     - Topo.Climate.Evaporation
+    - Topo.Climate.ITCZ
     - Topo.Climate.MoistureTransport
     - Topo.Climate.Precipitation
     - Topo.BiomeConfig

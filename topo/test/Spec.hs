@@ -21,6 +21,7 @@ import qualified Spec.Erosion
 import qualified Spec.Glacier
 import qualified Spec.Volcanism
 import qualified Spec.Climate
+import qualified Spec.ITCZ
 import qualified Spec.Diffusion
 import qualified Spec.Biome
 import qualified Spec.BiomeRefine
@@ -83,6 +84,7 @@ main = do
     Spec.Glacier.spec
     Spec.Volcanism.spec
     Spec.Climate.spec
+    Spec.ITCZ.spec
     Spec.Diffusion.spec
     Spec.Biome.spec
     Spec.BiomeRefine.spec
