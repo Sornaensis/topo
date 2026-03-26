@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 -- | Round-trip property tests for JSON serialization of all config types.
 --
@@ -11,7 +12,8 @@
 --    survive serialization.
 module Spec.ConfigJSON (spec) where
 
-import Data.Aeson (FromJSON, ToJSON, decode, encode, Value(..))
+import Data.Aeson (FromJSON, ToJSON, decode, encode, Key, Value(..))
+import qualified Data.Aeson.KeyMap as KM
 import Data.Proxy (Proxy(..))
 import Test.Hspec
 
@@ -85,6 +87,20 @@ emptyDecodes :: forall a. (Eq a, Show a, ToJSON a, FromJSON a) => String -> a ->
 emptyDecodes label defVal =
   it (label ++ " decodes from empty JSON to default") $
     (decode (encode (Object mempty)) :: Maybe a) `shouldBe` Just defVal
+
+-- | Assert that a JSON object with some fields removed still decodes
+-- successfully, with removed fields receiving their default values.
+partialDecodes
+  :: forall a. (Eq a, Show a, ToJSON a, FromJSON a)
+  => String -> a -> [Key] -> Spec
+partialDecodes label defVal keysToRemove =
+  it (label ++ " decodes from partial JSON (missing fields get defaults)") $
+    case encode defVal of
+      bs -> case decode bs of
+        Just (Object fullObj) ->
+          let partial = Object (foldr KM.delete fullObj keysToRemove)
+          in (decode (encode partial) :: Maybe a) `shouldBe` Just defVal
+        _ -> expectationFailure "default config did not encode to a JSON object"
 
 spec :: Spec
 spec = describe "Config JSON serialization" $ do
@@ -180,6 +196,16 @@ spec = describe "Config JSON serialization" $ do
     roundTrip "TerrainFormConfig" defaultTerrainFormConfig
     emptyDecodes "ParameterConfig" defaultParameterConfig
     emptyDecodes "TerrainFormConfig" defaultTerrainFormConfig
+    partialDecodes "TerrainFormConfig (Phase 3 fields missing)" defaultTerrainFormConfig
+      [ "tfcPlateauMaxMicroRelief"
+      , "tfcRollingNearFactor"
+      , "tfcMicroReliefRollingMin"
+      , "tfcMicroReliefHillyMin"
+      , "tfcMicroReliefHillySlopeScale"
+      , "tfcMicroReliefHillyReliefScale"
+      , "tfcMicroReliefSoftHardnessThreshold"
+      , "tfcMicroReliefSoftAttenuation"
+      ]
 
   describe "Biome Classification" $ do
     roundTrip "BiomeConfig" defaultBiomeConfig

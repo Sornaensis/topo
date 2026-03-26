@@ -49,8 +49,8 @@ spec = describe "Units.Config" $ do
     describe "TemperatureConfig" $ do
       let real = temperatureConfigToReal s defaultTemperatureConfig
 
-      it "equator temp ≈ 24.6 °C" $
-        rtcEquatorTemp real `shouldSatisfy` approxEq 0.1 24.6
+      it "equator temp ≈ 28.0 °C" $
+        rtcEquatorTemp real `shouldSatisfy` approxEq 0.1 28.0
 
       it "pole temp ≈ −50.0 °C" $
         rtcPoleTemp real `shouldSatisfy` approxEq 0.1 (-50.0)

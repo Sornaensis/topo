@@ -348,6 +348,8 @@ data UiState = UiState
   , uiValleyCurvature :: !Float
   , uiTfcElevGradient :: !Float
   , uiTfcPlateauMaxRelief2Ring :: !Float
+  , uiTfcPlateauMaxMicroRelief :: !Float
+  , uiTfcRollingNearFactor :: !Float
   , uiRockElevationThreshold :: !Float
   , uiRockHardnessThreshold :: !Float
   , uiRockHardnessSecondary :: !Float
@@ -603,6 +605,8 @@ emptyUiState = UiState
   , uiValleyCurvature = sliderDefault SliderValleyCurvature
   , uiTfcElevGradient = sliderDefault SliderTfcElevGradient
   , uiTfcPlateauMaxRelief2Ring = sliderDefault SliderTfcPlateauMaxRelief2Ring
+  , uiTfcPlateauMaxMicroRelief = sliderDefault SliderTfcPlateauMaxMicroRelief
+  , uiTfcRollingNearFactor = sliderDefault SliderTfcRollingNearFactor
   , uiRockElevationThreshold = sliderDefault SliderRockElevationThreshold
   , uiRockHardnessThreshold = sliderDefault SliderRockHardnessThreshold
   , uiRockHardnessSecondary = sliderDefault SliderRockHardnessSecondary
@@ -857,6 +861,8 @@ sliderStateBindingForId sliderIdValue = case sliderIdValue of
   SliderValleyCurvature -> binding uiValleyCurvature (\value st -> st { uiValleyCurvature = clamp01 value })
   SliderTfcElevGradient -> binding uiTfcElevGradient (\value st -> st { uiTfcElevGradient = clamp01 value })
   SliderTfcPlateauMaxRelief2Ring -> binding uiTfcPlateauMaxRelief2Ring (\value st -> st { uiTfcPlateauMaxRelief2Ring = clamp01 value })
+  SliderTfcPlateauMaxMicroRelief -> binding uiTfcPlateauMaxMicroRelief (\value st -> st { uiTfcPlateauMaxMicroRelief = clamp01 value })
+  SliderTfcRollingNearFactor -> binding uiTfcRollingNearFactor (\value st -> st { uiTfcRollingNearFactor = clamp01 value })
   SliderRockElevationThreshold -> binding uiRockElevationThreshold (\value st -> st { uiRockElevationThreshold = clamp01 value })
   SliderRockHardnessThreshold -> binding uiRockHardnessThreshold (\value st -> st { uiRockHardnessThreshold = clamp01 value })
   SliderRockHardnessSecondary -> binding uiRockHardnessSecondary (\value st -> st { uiRockHardnessSecondary = clamp01 value })

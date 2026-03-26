@@ -104,6 +104,8 @@ sliderFillColorForId sliderIdValue = case sliderIdValue of
   SliderValleyCurvature -> V4 100 140 140 255
   SliderTfcElevGradient -> V4 100 130 150 255
   SliderTfcPlateauMaxRelief2Ring -> V4 110 120 150 255
+  SliderTfcPlateauMaxMicroRelief -> V4 110 115 155 255
+  SliderTfcRollingNearFactor -> V4 115 135 115 255
   SliderRockElevationThreshold -> V4 140 130 120 255
   SliderRockHardnessThreshold -> V4 130 130 130 255
   SliderRockHardnessSecondary -> V4 120 130 140 255

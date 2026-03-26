@@ -165,6 +165,8 @@ module Actor.UI.Setters
   , setUiValleyCurvature
   , setUiTfcElevGradient
   , setUiTfcPlateauMaxRelief2Ring
+  , setUiTfcPlateauMaxMicroRelief
+  , setUiTfcRollingNearFactor
   , setUiRockElevationThreshold
   , setUiRockHardnessThreshold
   , setUiRockHardnessSecondary
@@ -459,6 +461,8 @@ setUiTfcRollingSlope = sendSlider SliderTfcRollingSlope
 setUiValleyCurvature = sendSlider SliderValleyCurvature
 setUiTfcElevGradient = sendSlider SliderTfcElevGradient
 setUiTfcPlateauMaxRelief2Ring = sendSlider SliderTfcPlateauMaxRelief2Ring
+setUiTfcPlateauMaxMicroRelief = sendSlider SliderTfcPlateauMaxMicroRelief
+setUiTfcRollingNearFactor = sendSlider SliderTfcRollingNearFactor
 setUiRockElevationThreshold = sendSlider SliderRockElevationThreshold
 setUiRockHardnessThreshold = sendSlider SliderRockHardnessThreshold
 setUiRockHardnessSecondary = sendSlider SliderRockHardnessSecondary

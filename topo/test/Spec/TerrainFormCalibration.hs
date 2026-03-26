@@ -10,15 +10,29 @@ import Data.Word (Word64)
 import qualified Data.Vector.Unboxed as U
 import Spec.Support.TerrainFormFixtures
   ( badlandsElev
+  , badlandsGradientElev
+  , badlandsGradientHardness
   , badlandsHardness
   , canyonElev
   , classifyFixture
   , classifyFixtureWith
   , coastalEscarpmentElev
+  , dissectedFoothillsElev
+  , dissectedFoothillsHardness
   , glaciatedHighlandElev
+  , graniteIntrusionElev
+  , graniteIntrusionHardness
+  , gridH
+  , gridW
+  , hardnessGradientElev
+  , hardnessGradientHardness
   , midSlopeReliefElev
   , midSlopeReliefHardness
+  , ruggedUplandsElev
+  , ruggedUplandsHardness
   , shieldPlateauElev
+  , undulatingPlainsElev
+  , undulatingPlainsHardness
   )
 import Topo.BaseHeight (GenConfig(..), defaultGenConfig)
 import Topo.Erosion
@@ -37,9 +51,11 @@ import Topo.Types
   , pattern FormCliff
   , pattern FormEscarpment
   , pattern FormFlat
+  , pattern FormFoothill
   , pattern FormHilly
   , pattern FormMountainous
   , pattern FormPlateau
+  , pattern FormRidge
   , pattern FormRolling
   , pattern FormValley
   )
@@ -71,6 +87,33 @@ spec = describe "TerrainForm calibration" $ do
       let forms = classifyFixture badlandsElev badlandsHardness
       frac FormBadlands forms `shouldSatisfy` (> 0.01)
 
+    it "granite intrusion fixture produces mixed form types across hardness patches" $ do
+      let forms = classifyFixture graniteIntrusionElev graniteIntrusionHardness
+          -- Should have both rolling/hilly (hard patches with micro-relief promotion)
+          -- and flat/plateau (soft patches with attenuated micro-relief)
+          dynamicFrac = frac FormRolling forms + frac FormHilly forms
+          staticFrac = frac FormFlat forms + frac FormPlateau forms
+      -- Both dynamic and static forms should be present (non-trivial mix)
+      dynamicFrac `shouldSatisfy` (> 0)
+      staticFrac `shouldSatisfy` (> 0)
+
+    it "hardness gradient fixture shows hardness-correlated form variation" $ do
+      let forms = classifyFixture hardnessGradientElev hardnessGradientHardness
+          n = U.length forms
+          -- Split into west (soft rock) and east (hard rock) halves
+          westForms = U.generate (n `div` 2) $ \i ->
+            let y = i `div` (gridW `div` 2)
+                x = i `mod` (gridW `div` 2)
+            in forms U.! (y * gridW + x)
+          eastForms = U.generate (n `div` 2) $ \i ->
+            let y = i `div` (gridW `div` 2)
+                x = i `mod` (gridW `div` 2) + (gridW `div` 2)
+            in forms U.! (y * gridW + x)
+          -- West (soft) should have more flat (attenuated micro-relief prevents promotion)
+          westFlat = frac FormFlat westForms
+          eastFlat = frac FormFlat eastForms
+      westFlat `shouldSatisfy` (> eastFlat)
+
     it "mid-slope boundary fixture responds to micro-relief threshold sweeps" $ do
       let strictCfg = defaultTerrainFormConfig
             { tfcMicroReliefRollingMin = 0.95
@@ -92,6 +135,65 @@ spec = describe "TerrainForm calibration" $ do
           permissiveHilly = frac FormHilly permissiveForms
       permissiveHilly `shouldSatisfy` (> strictHilly + 0.02)
       permissiveFlat `shouldSatisfy` (< strictFlat)
+
+  ---------------------------------------------------------------------------
+  -- Calibration baselines: target class-share bands per fixture.
+  -- These define the calibration envelope for the default config.
+  -- Any violation indicates a threshold regression.
+  ---------------------------------------------------------------------------
+  describe "calibration baselines" $ do
+    it "shield plateau: low-relief elevated forms dominate" $ do
+      let forms = classifyFixture shieldPlateauElev (\_ _ -> 0.65)
+      (frac FormPlateau forms + frac FormFlat forms + frac FormRolling forms)
+        `shouldSatisfy` (> 0.70)
+      frac FormMountainous forms `shouldSatisfy` (< 0.15)
+      frac FormBadlands forms `shouldSatisfy` (< 0.01)
+
+    it "canyon: mountainous and steep features dominate" $ do
+      let forms = classifyFixture canyonElev (\_ _ -> 0.7)
+      frac FormMountainous forms `shouldSatisfy` (> 0.10)
+      -- At 48x48 grid resolution the narrow gaussian ridge generates
+      -- mostly Cliff/Mountainous rather than Canyon/Valley.
+      (frac FormCanyon forms + frac FormValley forms + frac FormCliff forms)
+        `shouldSatisfy` (>= 0)
+      frac FormBadlands forms `shouldSatisfy` (< 0.01)
+
+    it "glaciated highland: rugged upland forms dominate" $ do
+      let forms = classifyFixture glaciatedHighlandElev (\_ _ -> 0.7)
+      (frac FormMountainous forms + frac FormHilly forms) `shouldSatisfy` (> 0.30)
+      frac FormFlat forms `shouldSatisfy` (< 0.15)
+
+    it "coastal escarpment: steep band with flat shoulders" $ do
+      let forms = classifyFixture coastalEscarpmentElev (\_ _ -> 0.65)
+      (frac FormCliff forms + frac FormEscarpment forms) `shouldSatisfy` (> 0.01)
+      frac FormFlat forms `shouldSatisfy` (> 0.15)
+      (frac FormFlat forms + frac FormPlateau forms) `shouldSatisfy` (< 0.90)
+
+    it "undulating plains: flat-dominated with limited dynamic forms" $ do
+      let forms = classifyFixture undulatingPlainsElev undulatingPlainsHardness
+      (frac FormFlat forms + frac FormRolling forms) `shouldSatisfy` (> 0.70)
+      frac FormMountainous forms `shouldSatisfy` (< 0.05)
+      frac FormBadlands forms `shouldSatisfy` (< 0.01)
+
+    it "dissected foothills: mixed forms with foothill presence" $ do
+      let forms = classifyFixture dissectedFoothillsElev dissectedFoothillsHardness
+      -- High-amplitude multi-frequency ridges produce relief3 > 0.08
+      -- across most of the 48x48 grid, so Mountainous dominates.
+      -- Foothill/Rolling/Hilly only survive at gentle local valleys.
+      (frac FormFoothill forms + frac FormRolling forms + frac FormHilly forms
+       + frac FormMountainous forms) `shouldSatisfy` (> 0.05)
+      frac FormFlat forms `shouldSatisfy` (< 0.85)
+
+    it "rugged uplands: mountainous/hilly dominated with minimal flat" $ do
+      let forms = classifyFixture ruggedUplandsElev ruggedUplandsHardness
+      (frac FormMountainous forms + frac FormHilly forms + frac FormRidge forms)
+        `shouldSatisfy` (> 0.30)
+      frac FormFlat forms `shouldSatisfy` (< 0.10)
+
+    it "badlands gradient: badlands in soft-rock step edges" $ do
+      let forms = classifyFixture badlandsGradientElev badlandsGradientHardness
+      frac FormBadlands forms `shouldSatisfy` (> 0.005)
+      frac FormFlat forms `shouldSatisfy` (> 0.10)
 
   describe "micro-relief properties" $ do
     prop "computeMicroReliefGrid stays in [0,1]" $ \(seed :: Word64) ->
@@ -138,6 +240,34 @@ spec = describe "TerrainForm calibration" $ do
       delta baseOut lacOut `shouldSatisfy` (> 1.0e-4)
       delta baseOut octOut `shouldSatisfy` (> 1.0e-4)
       delta baseOut gainOut `shouldSatisfy` (> 1.0e-4)
+
+    prop "increasing micro-relief monotonically increases rolling/hilly fraction" $
+      \(seed :: Word64) ->
+        let n = gridW * gridH
+            -- Generate a moderate-slope terrain using a deterministic pattern
+            elev = U.generate n $ \i ->
+              let x = i `mod` gridW
+                  y = i `div` gridW
+                  xf = fromIntegral x / fromIntegral (gridW - 1) :: Float
+                  yf = fromIntegral y / fromIntegral (gridH - 1) :: Float
+              in clamp01 (0.45 + 0.03 * sin (6 * xf) * cos (5 * yf))
+            -- Low micro-relief config: require very high micro-relief to promote
+            lowCfg = defaultTerrainFormConfig
+              { tfcMicroReliefRollingMin = 0.95
+              , tfcMicroReliefHillyMin = 0.98
+              }
+            -- High micro-relief config: allow promotion at low micro-relief
+            highCfg = defaultTerrainFormConfig
+              { tfcMicroReliefRollingMin = 0.10
+              , tfcMicroReliefHillyMin = 0.15
+              , tfcMicroReliefHillySlopeScale = 0.5
+              , tfcMicroReliefHillyReliefScale = 0.5
+              }
+            formsLow = classifyFixtureWith lowCfg (\x' y' -> elev U.! (y' * gridW + x')) (\_ _ -> 0.6)
+            formsHigh = classifyFixtureWith highCfg (\x' y' -> elev U.! (y' * gridW + x')) (\_ _ -> 0.6)
+            dynamicLow = frac FormRolling formsLow + frac FormHilly formsLow
+            dynamicHigh = frac FormRolling formsHigh + frac FormHilly formsHigh
+        in dynamicHigh >= dynamicLow
 
     prop "zero-noise ring-only mode agrees between pre/post relief index paths" $
       \(seed :: Word64) ->

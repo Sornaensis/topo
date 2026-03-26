@@ -139,6 +139,8 @@ sliderConversion sliderIdValue = case sliderIdValue of
   SliderValleyCurvature -> SliderFloatRange 0.05 0.4
   SliderTfcElevGradient -> SliderFloatRange 0.1 2.0
   SliderTfcPlateauMaxRelief2Ring -> SliderFloatRange 0.005 0.10
+  SliderTfcPlateauMaxMicroRelief -> SliderFloatRange 0.0 1.0
+  SliderTfcRollingNearFactor -> SliderFloatRange 0.5 1.0
   SliderRockElevationThreshold -> SliderFloatRange 0.2 0.9
   SliderRockHardnessThreshold -> SliderFloatRange 0.2 0.9
   SliderRockHardnessSecondary -> SliderFloatRange 0.1 0.8

@@ -427,6 +427,10 @@ data WidgetId
   | WidgetConfigTfcElevGradientPlus
   | WidgetConfigTfcPlateauMaxRelief2RingMinus
   | WidgetConfigTfcPlateauMaxRelief2RingPlus
+  | WidgetConfigTfcPlateauMaxMicroReliefMinus
+  | WidgetConfigTfcPlateauMaxMicroReliefPlus
+  | WidgetConfigTfcRollingNearFactorMinus
+  | WidgetConfigTfcRollingNearFactorPlus
   | WidgetConfigRockElevationThresholdMinus
   | WidgetConfigRockElevationThresholdPlus
   | WidgetConfigRockHardnessThresholdMinus

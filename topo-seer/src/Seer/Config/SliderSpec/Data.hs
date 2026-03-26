@@ -96,6 +96,8 @@ sliderSpecs =
   , specValleyCurvature
   , specTfcElevGradient
   , specTfcPlateauMaxRelief2Ring
+  , specTfcPlateauMaxMicroRelief
+  , specTfcRollingNearFactor
   , specRockElevationThreshold
   , specRockHardnessThreshold
   , specRockHardnessSecondary
@@ -461,6 +463,14 @@ specTfcElevGradient = SliderSpec
 specTfcPlateauMaxRelief2Ring :: SliderSpec
 specTfcPlateauMaxRelief2Ring = SliderSpec
   "Plateau Relief" "Max 2-ring relief for plateau classification" 0.005 0.10 False
+
+specTfcPlateauMaxMicroRelief :: SliderSpec
+specTfcPlateauMaxMicroRelief = SliderSpec
+  "Plateau Micro-Relief" "Max micro-relief index for plateau classification; inhibits over-classification of rough elevated flats" 0.0 1.0 False
+
+specTfcRollingNearFactor :: SliderSpec
+specTfcRollingNearFactor = SliderSpec
+  "Rolling Near Factor" "Near-threshold multiplier for micro-relief-assisted rolling promotion" 0.5 1.0 False
 
 specRockElevationThreshold :: SliderSpec
 specRockElevationThreshold = SliderSpec

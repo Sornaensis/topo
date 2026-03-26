@@ -76,6 +76,8 @@ data SliderId
   | SliderValleyCurvature
   | SliderTfcElevGradient
   | SliderTfcPlateauMaxRelief2Ring
+  | SliderTfcPlateauMaxMicroRelief
+  | SliderTfcRollingNearFactor
   | SliderRockElevationThreshold
   | SliderRockHardnessThreshold
   | SliderRockHardnessSecondary
@@ -297,9 +299,11 @@ allSliderDefs =
   , def SliderValleyCurvature SliderTabTerrain 49 WidgetConfigValleyCurvatureMinus WidgetConfigValleyCurvaturePlus
   , def SliderTfcElevGradient SliderTabTerrain 50 WidgetConfigTfcElevGradientMinus WidgetConfigTfcElevGradientPlus
   , def SliderTfcPlateauMaxRelief2Ring SliderTabTerrain 51 WidgetConfigTfcPlateauMaxRelief2RingMinus WidgetConfigTfcPlateauMaxRelief2RingPlus
-  , def SliderRockElevationThreshold SliderTabTerrain 52 WidgetConfigRockElevationThresholdMinus WidgetConfigRockElevationThresholdPlus
-  , def SliderRockHardnessThreshold SliderTabTerrain 53 WidgetConfigRockHardnessThresholdMinus WidgetConfigRockHardnessThresholdPlus
-  , def SliderRockHardnessSecondary SliderTabTerrain 54 WidgetConfigRockHardnessSecondaryMinus WidgetConfigRockHardnessSecondaryPlus
+  , def SliderTfcPlateauMaxMicroRelief SliderTabTerrain 52 WidgetConfigTfcPlateauMaxMicroReliefMinus WidgetConfigTfcPlateauMaxMicroReliefPlus
+  , def SliderTfcRollingNearFactor SliderTabTerrain 53 WidgetConfigTfcRollingNearFactorMinus WidgetConfigTfcRollingNearFactorPlus
+  , def SliderRockElevationThreshold SliderTabTerrain 54 WidgetConfigRockElevationThresholdMinus WidgetConfigRockElevationThresholdPlus
+  , def SliderRockHardnessThreshold SliderTabTerrain 55 WidgetConfigRockHardnessThresholdMinus WidgetConfigRockHardnessThresholdPlus
+  , def SliderRockHardnessSecondary SliderTabTerrain 56 WidgetConfigRockHardnessSecondaryMinus WidgetConfigRockHardnessSecondaryPlus
   , def SliderPlanetRadius SliderTabPlanet 0 WidgetConfigPlanetRadiusMinus WidgetConfigPlanetRadiusPlus
   , def SliderAxialTilt SliderTabPlanet 1 WidgetConfigAxialTiltMinus WidgetConfigAxialTiltPlus
   , def SliderInsolation SliderTabPlanet 2 WidgetConfigInsolationMinus WidgetConfigInsolationPlus
@@ -507,11 +511,13 @@ sliderDefaultValueForId sliderIdValue = case sliderIdValue of
   SliderTfcCliffSlope -> 0.2222
   SliderTfcMountainSlope -> 0.2222
   SliderTfcMountainRelief -> 0.2143
-  SliderTfcHillSlope -> 0.2105
-  SliderTfcRollingSlope -> 0.1579
+  SliderTfcHillSlope -> 0.0316
+  SliderTfcRollingSlope -> 0.0526
   SliderValleyCurvature -> 0.2857
   SliderTfcElevGradient -> 0.2495
   SliderTfcPlateauMaxRelief2Ring -> 0.2632
+  SliderTfcPlateauMaxMicroRelief -> 0.5
+  SliderTfcRollingNearFactor -> 0.7
   SliderRockElevationThreshold -> 0.5714
   SliderRockHardnessThreshold -> 0.5714
   SliderRockHardnessSecondary -> 0.5
