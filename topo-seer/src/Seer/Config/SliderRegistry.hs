@@ -230,6 +230,7 @@ data SliderId
   | SliderMinLakeSize
   | SliderInlandSeaMinSize
   | SliderRoughnessScale
+  | SliderHexSizeKm
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 data SliderPart
@@ -311,6 +312,7 @@ allSliderDefs =
   , def SliderOccColdScale SliderTabPlanet 4 WidgetConfigOccColdScaleMinus WidgetConfigOccColdScalePlus
   , def SliderOccLatPeakDeg SliderTabPlanet 5 WidgetConfigOccLatPeakDegMinus WidgetConfigOccLatPeakDegPlus
   , def SliderOccLatWidthDeg SliderTabPlanet 6 WidgetConfigOccLatWidthDegMinus WidgetConfigOccLatWidthDegPlus
+  , def SliderHexSizeKm SliderTabPlanet 7 WidgetConfigHexSizeKmMinus WidgetConfigHexSizeKmPlus
   , def SliderWaterLevel SliderTabClimate 0 WidgetConfigWaterMinus WidgetConfigWaterPlus
   , def SliderOrographicLift SliderTabClimate 1 WidgetConfigOrographicLiftMinus WidgetConfigOrographicLiftPlus
   , def SliderRainShadowLoss SliderTabClimate 2 WidgetConfigRainShadowLossMinus WidgetConfigRainShadowLossPlus
@@ -670,6 +672,7 @@ sliderDefaultValueForId sliderIdValue = case sliderIdValue of
   SliderMinLakeSize -> 0.061
   SliderInlandSeaMinSize -> 0.333
   SliderRoughnessScale -> 0.375
+  SliderHexSizeKm -> 1 / 3
 
 sliderDefForWidget :: WidgetId -> Maybe SliderDef
 sliderDefForWidget widgetId =

@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE DeriveGeneric #-}
 
 -- | Hex grid topology and coordinate utilities.
 --
@@ -11,6 +12,8 @@ module Topo.Hex
   ( HexGridMeta(..)
   , HexLayout(..)
   , defaultHexGridMeta
+  , hexSpacingMetres
+  , hexSizeMiles
   , worldToHex
   , hexToWorld
   , axialToCube
@@ -36,11 +39,35 @@ module Topo.Hex
 
 import Data.List (foldl')
 import Data.Ord (comparing)
+import GHC.Generics (Generic)
+import Topo.Config.JSON
+  ( FromJSON(..)
+  , ToJSON(..)
+  , configOptions
+  , genericParseJSON
+  , genericToJSON
+  , mergeDefaults
+  )
 import Topo.Types (DirectionalSlope(..), HexCoord(..), WorldPos(..))
 
+-- | Hex grid metadata: physical hex size and layout.
+--
+-- 'hexSizeKm' is the flat-to-flat distance of one hex in kilometres.
+-- It governs the geographic scale of the world: larger values produce
+-- coarser (but wider) maps, smaller values give finer detail per tile.
+--
+-- The default is 8 km (see 'defaultHexGridMeta').
 newtype HexGridMeta = HexGridMeta
-  { hexSize :: Float
-  } deriving (Eq, Show)
+  { hexSizeKm :: Float
+    -- ^ Physical hex size in kilometres (flat-to-flat distance).
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON HexGridMeta where
+  toJSON = genericToJSON (configOptions "hex")
+
+instance FromJSON HexGridMeta where
+  parseJSON v = genericParseJSON (configOptions "hex")
+                  (mergeDefaults (toJSON defaultHexGridMeta) v)
 
 data HexLayout = HexPointy | HexFlat
   deriving (Eq, Show)
@@ -100,8 +127,21 @@ hexNeighborInDirection dir coord =
 -- Grid-level helpers
 -- ---------------------------------------------------------------------------
 
+-- | Default hex grid: 8 km flat-to-flat.
 defaultHexGridMeta :: HexGridMeta
-defaultHexGridMeta = HexGridMeta { hexSize = 1 }
+defaultHexGridMeta = HexGridMeta { hexSizeKm = 8.0 }
+
+-- | Hex flat-to-flat distance in metres, derived from 'hexSizeKm'.
+hexSpacingMetres :: HexGridMeta -> Float
+hexSpacingMetres meta = hexSizeKm meta * 1000
+{-# INLINE hexSpacingMetres #-}
+
+-- | Hex flat-to-flat distance in miles, derived from 'hexSizeKm'.
+hexSizeMiles :: HexGridMeta -> Float
+hexSizeMiles meta = hexSizeKm meta * kmToMiles
+  where
+    kmToMiles = 0.621371
+{-# INLINE hexSizeMiles #-}
 
 worldToHex :: HexGridMeta -> WorldPos -> HexCoord
 worldToHex _ (WorldPos x y) = HexAxial (round x) (round y)

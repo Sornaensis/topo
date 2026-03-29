@@ -32,6 +32,7 @@ import Topo.Climate
   )
 import Topo.Erosion (ErosionConfig(..))
 import Topo.Glacier (GlacierConfig(..))
+import Topo.Hex (HexGridMeta(..))
 import Topo.Hydrology (HydroConfig(..))
 import Topo.Hypsometry (HypsometryConfig(..))
 import Topo.OceanCurrent (OceanCurrentConfig(..))
@@ -76,6 +77,7 @@ data SnapshotContext = SnapshotContext
   , scPlanet :: !PlanetConfig
   , scOceanCurrent :: !OceanCurrentConfig
   , scWorldSlice :: !WorldSlice
+  , scHexSizeKm :: !Float
   }
 
 data SnapshotSource
@@ -343,6 +345,7 @@ sliderBindings =
   , bindConfigAndSnapshot (waterBodyInt SliderMinLakeSize uiMinLakeSize (\value waterBody -> waterBody { wbcMinLakeSize = value })) (snapshotInt SliderMinLakeSize (wbcMinLakeSize . scWaterBody))
   , bindConfigAndSnapshot (waterBodyInt SliderInlandSeaMinSize uiInlandSeaMinSize (\value waterBody -> waterBody { wbcInlandSeaMinSize = value })) (snapshotInt SliderInlandSeaMinSize (wbcInlandSeaMinSize . scWaterBody))
   , bindConfigAndSnapshot (parametersFloat SliderRoughnessScale uiRoughnessScale (\value parameters -> parameters { pcRoughnessScale = value })) (snapshotFloat SliderRoughnessScale (pcRoughnessScale . scParameters))
+  , bindConfigAndSnapshot (hexGridFloat SliderHexSizeKm uiHexSizeKm) (snapshotFloat SliderHexSizeKm scHexSizeKm)
   ]
 
 sliderFloat :: SliderId -> (UiState -> Float) -> (Float -> WorldGenConfig -> WorldGenConfig) -> (SliderId, SliderConfigUpdate)
@@ -498,6 +501,10 @@ oceanCurrentFloat sliderIdValue readUi updateField =
 biomeFeedbackFloat :: SliderId -> (UiState -> Float) -> (Float -> BiomeFeedbackConfig -> BiomeFeedbackConfig) -> (SliderId, SliderConfigUpdate)
 biomeFeedbackFloat sliderIdValue readUi updateField =
   sliderFloat sliderIdValue readUi (updateWorldBiomeFeedback . updateField)
+
+hexGridFloat :: SliderId -> (UiState -> Float) -> (SliderId, SliderConfigUpdate)
+hexGridFloat sliderIdValue readUi =
+  sliderFloat sliderIdValue readUi (\value cfg -> cfg { worldHexGrid = HexGridMeta value })
 
 updateTerrainGen :: (GenConfig -> GenConfig) -> WorldGenConfig -> WorldGenConfig
 updateTerrainGen updateField cfg =
@@ -659,6 +666,7 @@ mkSnapshotContext cfg =
       , scPlanet = worldPlanet cfg
       , scOceanCurrent = worldOceanCurrent cfg
       , scWorldSlice = worldSlice cfg
+      , scHexSizeKm = hexSizeKm (worldHexGrid cfg)
       }
 
 bindConfigAndSnapshot :: (SliderId, SliderConfigUpdate) -> (SliderId, SnapshotSource) -> (SliderId, SliderBinding)

@@ -41,7 +41,6 @@ import Topo
   , VegetationChunk
   , WeatherChunk
   , TerrainWorld(..)
-  , defaultHexGridMeta
   , emptyOverlay
   , emptyWorldWithPlanet
   , getWeatherFromOverlay
@@ -130,7 +129,7 @@ actor Terrain
     genStart <- getCurrentTime
     let cfg = tgrGenConfig req
         worldCfg = tgrWorldConfig req
-        baseWorld = emptyWorldWithPlanet worldCfg defaultHexGridMeta
+        baseWorld = emptyWorldWithPlanet worldCfg (worldHexGrid cfg)
                    (worldPlanet cfg) (worldSlice cfg)
         world0 = registerPluginOverlays (tgrOverlaySchemas req) baseWorld
         pipeline0 = buildFullPipelineConfig cfg worldCfg (tgrSeed req)

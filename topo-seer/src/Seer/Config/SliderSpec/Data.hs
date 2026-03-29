@@ -250,6 +250,7 @@ sliderSpecs =
   , specMinLakeSize
   , specInlandSeaMinSize
   , specRoughnessScale
+  , specHexSizeKm
   ]
 
 ------------------------------------------------------------------------
@@ -1103,3 +1104,7 @@ specInlandSeaMinSize = SliderSpec
 specRoughnessScale :: SliderSpec
 specRoughnessScale = SliderSpec
   "Roughness Scale" "Roughness derivation scale" 0.0 2.0 False
+
+specHexSizeKm :: SliderSpec
+specHexSizeKm = SliderSpec
+  "Hex Size" "Flat-to-flat hex size in km; affects geographic scale" 2.0 20.0 False

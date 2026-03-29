@@ -107,6 +107,7 @@ spec = do
       mapM_ (assertDefaultValue ui)
         [ (uiGenScale, 0.4444)
         , (uiPlanetRadius, 0.3333)
+        , (uiHexSizeKm, 1 / 3)
         , (uiWaterLevel, 0.5)
         , (uiBoundaryMotionTemp, 0.5)
         , (uiWeatherTick, 0.2)

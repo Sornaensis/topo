@@ -323,6 +323,8 @@ data WidgetId
   | WidgetConfigInlandSeaMinSizePlus
   | WidgetConfigRoughnessScaleMinus
   | WidgetConfigRoughnessScalePlus
+  | WidgetConfigHexSizeKmMinus
+  | WidgetConfigHexSizeKmPlus
   | WidgetConfigGenScaleMinus
   | WidgetConfigGenScalePlus
   | WidgetConfigGenCoordScaleMinus

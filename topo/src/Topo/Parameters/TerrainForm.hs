@@ -27,7 +27,7 @@ import Topo.Types
 -- | Terrain form classification thresholds.
 --
 -- All slope thresholds are in /physical-slope/ space: raw normalised
--- elevation deltas multiplied by 'tfcElevGradient' (default 0.574).
+-- elevation deltas multiplied by 'tfcElevGradient' (default 1.5).
 -- This converts unit-interval deltas to approximate rise/run ratios.
 -- The conversion is applied once inside 'classifyTerrainForm'.
 --
@@ -38,7 +38,8 @@ data TerrainFormConfig = TerrainFormConfig
   { tfcElevGradient  :: !Float
   -- ^ Elevation gradient scale factor. Raw normalised slope deltas are
   --   multiplied by this to produce physical-slope values used by all
-  --   threshold comparisons (default: 0.574, derived from 'usElevGradient').
+  --   threshold comparisons (default: 1.5, i.e. @elevRange / hexSpacingMetres@
+  --   for an 8 km hex with 12 000 m elevation range).
   , tfcCliffSlope      :: !Float
   -- ^ Physical slope above which terrain is classified as 'FormCliff'.
   , tfcMountainSlope   :: !Float
@@ -153,11 +154,12 @@ instance FromJSON TerrainFormConfig where
 
 -- | Default terrain form thresholds.
 --
--- All slope values are in physical-slope space (raw delta × 0.574).
+-- All slope values are in physical-slope space (raw delta × 1.5 for
+-- an 8 km hex with 12 000 m elevation range).
 -- Relief values are in normalised elevation units @[0,1]@.
 defaultTerrainFormConfig :: TerrainFormConfig
 defaultTerrainFormConfig = TerrainFormConfig
-  { tfcElevGradient    = 0.574
+  { tfcElevGradient    = 1.5
   , tfcCliffSlope      = 0.15
   , tfcMountainSlope   = 0.06
   , tfcMountainRelief  = 0.08

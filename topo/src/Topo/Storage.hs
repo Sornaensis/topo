@@ -143,7 +143,7 @@ encodeWorldWithProvenance prov world = do
     putByteString magic
     putWord32le fileVersion
     putWord32le (fromIntegral (wcChunkSize config))
-    putFloatle (hexSize (twHexGrid world))
+    putFloatle (hexSizeKm (twHexGrid world))
     encodeProvenance prov
     putMetadataStore (twMeta world)
     putPlanetConfig (twPlanet world)
@@ -183,7 +183,7 @@ magic = BS.pack [0x54, 0x4f, 0x50, 0x4f]
 
 -- | Current world file format version.
 fileVersion :: Word32
-fileVersion = 22
+fileVersion = 23
 
 defaultMetadataCodecs :: [MetadataCodec]
 defaultMetadataCodecs =
@@ -239,7 +239,7 @@ getWorldWithProvenance codecs = do
   config <- case mkWorldConfig size of
     Left err -> fail ("decode: invalid chunk size (" <> show err <> ")")
     Right cfg -> pure cfg
-  let hexMeta = HexGridMeta { hexSize = hex }
+  let hexMeta = HexGridMeta { hexSizeKm = hex }
   planet <- getPlanetConfig
   slice <- getWorldSlice
   worldTime <- getWorldTime
@@ -272,7 +272,7 @@ getWorldWithProvenance codecs = do
         , twConfig = config
         , twPlanet = planet
         , twSlice = slice
-        , twLatMapping = mkLatitudeMapping planet slice config
+        , twLatMapping = mkLatitudeMapping planet hexMeta slice config
         , twWorldTime = worldTime
         , twSeed = worldSeed
         , twPlanetAge = planetAge

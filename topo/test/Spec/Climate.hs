@@ -7,6 +7,7 @@ import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Vector.Unboxed as U
 import Spec.Support.FloatApprox (approxEqAbs)
 import Topo
+import Topo.Hex (defaultHexGridMeta)
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice, mkLatitudeMapping, PlanetConfig(..), WorldSlice(..))
 import Topo.Weather (defaultWeatherConfig)
 
@@ -757,7 +758,7 @@ spec = describe "Climate" $ do
   -- 4.4a: Trade wind belt (|lat| < 30°) has a westward component.
   it "trade wind belt has westward component (cos(dir) < 0)" $ do
     let config = WorldConfig { wcChunkSize = 8 }
-        lm = mkLatitudeMapping defaultPlanetConfig
+        lm = mkLatitudeMapping defaultPlanetConfig defaultHexGridMeta
                (defaultWorldSlice { wsLatCenter = 15, wsLatExtent = 10 }) config
         dirs = [ windDirAtXY 42 lm defaultClimateConfig gx gy
                | gx <- [0..7], gy <- [0..7] ]
@@ -768,7 +769,7 @@ spec = describe "Climate" $ do
   -- 4.4b: Westerly belt (30° < |lat| < 60°) has an eastward component.
   it "westerly belt has eastward component (cos(dir) > 0)" $ do
     let config = WorldConfig { wcChunkSize = 8 }
-        lm = mkLatitudeMapping defaultPlanetConfig
+        lm = mkLatitudeMapping defaultPlanetConfig defaultHexGridMeta
                (defaultWorldSlice { wsLatCenter = 45, wsLatExtent = 10 }) config
         dirs = [ windDirAtXY 42 lm defaultClimateConfig gx gy
                | gx <- [0..7], gy <- [0..7] ]
@@ -779,9 +780,9 @@ spec = describe "Climate" $ do
   -- 4.4c: NH and SH winds are mirror images across the equator.
   it "NH and SH wind directions are mirror images" $ do
     let config = WorldConfig { wcChunkSize = 8 }
-        lmNH = mkLatitudeMapping defaultPlanetConfig
+        lmNH = mkLatitudeMapping defaultPlanetConfig defaultHexGridMeta
                  (defaultWorldSlice { wsLatCenter = 20, wsLatExtent = 5 }) config
-        lmSH = mkLatitudeMapping defaultPlanetConfig
+        lmSH = mkLatitudeMapping defaultPlanetConfig defaultHexGridMeta
                  (defaultWorldSlice { wsLatCenter = -20, wsLatExtent = 5 }) config
         -- Sample wind at the same grid positions, average the sin component
         -- (meridional). NH trades should deflect right (+sin), SH left (-sin).

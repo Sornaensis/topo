@@ -7,6 +7,7 @@ import Test.Hspec
 import Test.QuickCheck
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Topo.Hex (defaultHexGridMeta)
 import Topo.Planet
 import Topo.Types (WorldConfig(..), WorldExtent, TileCoord(..), mkWorldExtent, worldExtentRadii)
 
@@ -67,22 +68,22 @@ spec = describe "Planet" $ do
 
   describe "hexesPerDegreeLatitude" $ do
     it "is positive for Earth defaults" $
-      hexesPerDegreeLatitude defaultPlanetConfig `shouldSatisfy` (> 0)
+      hexesPerDegreeLatitude defaultPlanetConfig defaultHexGridMeta `shouldSatisfy` (> 0)
 
     it "scales linearly with planet radius" $ do
       let big = defaultPlanetConfig { pcRadius = 9000 }
           small = defaultPlanetConfig { pcRadius = 5000 }
-      hexesPerDegreeLatitude big `shouldSatisfy` (> hexesPerDegreeLatitude small)
+      hexesPerDegreeLatitude big defaultHexGridMeta `shouldSatisfy` (> hexesPerDegreeLatitude small defaultHexGridMeta)
 
   describe "hexesPerDegreeLongitude" $ do
     it "equals hexesPerDegreeLatitude at equator" $ do
-      let hpdLat = hexesPerDegreeLatitude defaultPlanetConfig
-          hpdLon = hexesPerDegreeLongitude defaultPlanetConfig 0
+      let hpdLat = hexesPerDegreeLatitude defaultPlanetConfig defaultHexGridMeta
+          hpdLon = hexesPerDegreeLongitude defaultPlanetConfig defaultHexGridMeta 0
       abs (hpdLat - hpdLon) `shouldSatisfy` (< 0.01)
 
     it "shrinks toward poles" $ do
-      let lon0  = hexesPerDegreeLongitude defaultPlanetConfig 0
-          lon60 = hexesPerDegreeLongitude defaultPlanetConfig 60
+      let lon0  = hexesPerDegreeLongitude defaultPlanetConfig defaultHexGridMeta 0
+          lon60 = hexesPerDegreeLongitude defaultPlanetConfig defaultHexGridMeta 60
       lon60 `shouldSatisfy` (< lon0)
 
   describe "tileLatitude" $ do
@@ -92,7 +93,7 @@ spec = describe "Planet" $ do
           config = WorldConfig { wcChunkSize = 16 }
           cs = 16
           centerY = cs `div` 2
-          lat = tileLatitude planet slice config (TileCoord 0 centerY)
+          lat = tileLatitude planet defaultHexGridMeta slice config (TileCoord 0 centerY)
       abs (lat - wsLatCenter slice) `shouldSatisfy` (< 0.01)
 
     it "north edge (low tile Y) is north of center" $ do
@@ -101,7 +102,7 @@ spec = describe "Planet" $ do
           config = WorldConfig { wcChunkSize = 16 }
           -- Low tile Y = top of screen = north
           topTileY = 0
-          lat = tileLatitude planet slice config (TileCoord 0 topTileY)
+          lat = tileLatitude planet defaultHexGridMeta slice config (TileCoord 0 topTileY)
       lat `shouldSatisfy` (> wsLatCenter slice)
 
     it "property: tileLatitude at center matches sliceLatCenter for any valid config" $
@@ -110,7 +111,7 @@ spec = describe "Planet" $ do
             Right slice  = mkWorldSlice lc le 0 60
             config = WorldConfig { wcChunkSize = 16 }
             centerY = 16 `div` 2
-            lat = tileLatitude planet slice config (TileCoord 0 centerY)
+            lat = tileLatitude planet defaultHexGridMeta slice config (TileCoord 0 centerY)
         in abs (lat - lc) < 0.01
 
   describe "tileLongitude" $ do
@@ -121,7 +122,7 @@ spec = describe "Planet" $ do
           cs = 16
           centerX = cs `div` 2
           centerY = cs `div` 2
-          lon = tileLongitude planet slice config (TileCoord centerX centerY)
+          lon = tileLongitude planet defaultHexGridMeta slice config (TileCoord centerX centerY)
       abs (lon - wsLonCenter slice) `shouldSatisfy` (< 0.01)
 
   describe "tileYToLatDeg" $ do
@@ -130,8 +131,8 @@ spec = describe "Planet" $ do
           slice  = defaultWorldSlice
           config = WorldConfig { wcChunkSize = 16 }
           gy = 20
-          latA = tileLatitude planet slice config (TileCoord 0 gy)
-          latB = tileYToLatDeg planet slice config gy
+          latA = tileLatitude planet defaultHexGridMeta slice config (TileCoord 0 gy)
+          latB = tileYToLatDeg planet defaultHexGridMeta slice config gy
       abs (latA - latB) `shouldSatisfy` (< 0.001)
 
   describe "round-trip encode/decode" $ do
@@ -143,7 +144,7 @@ spec = describe "Planet" $ do
   describe "sliceToWorldExtent" $ do
     it "produces at least 1x1 radii for defaults" $ do
       let config = WorldConfig { wcChunkSize = 16 }
-          Right extent = sliceToWorldExtent defaultPlanetConfig defaultWorldSlice config
+          Right extent = sliceToWorldExtent defaultPlanetConfig defaultHexGridMeta defaultWorldSlice config
           (rx, ry) = worldExtentRadii extent
       rx `shouldSatisfy` (>= 1)
       ry `shouldSatisfy` (>= 1)
@@ -152,8 +153,8 @@ spec = describe "Planet" $ do
       let config = WorldConfig { wcChunkSize = 16 }
           smallSlice = defaultWorldSlice { wsLatExtent = 10, wsLonExtent = 15 }
           bigSlice   = defaultWorldSlice { wsLatExtent = 80, wsLonExtent = 120 }
-          Right extSmall = sliceToWorldExtent defaultPlanetConfig smallSlice config
-          Right extBig   = sliceToWorldExtent defaultPlanetConfig bigSlice config
+          Right extSmall = sliceToWorldExtent defaultPlanetConfig defaultHexGridMeta smallSlice config
+          Right extBig   = sliceToWorldExtent defaultPlanetConfig defaultHexGridMeta bigSlice config
           (_, rySmall) = worldExtentRadii extSmall
           (_, ryBig)   = worldExtentRadii extBig
       ryBig `shouldSatisfy` (> rySmall)
@@ -163,7 +164,7 @@ spec = describe "Planet" $ do
         let Right planet = mkPlanetConfig r t i
             Right slice  = mkWorldSlice lc le lnc lne
             config = WorldConfig { wcChunkSize = 16 }
-        in case sliceToWorldExtent planet slice config of
+        in case sliceToWorldExtent planet defaultHexGridMeta slice config of
             Right extent -> let (rx, ry) = worldExtentRadii extent
                             in rx >= 1 && ry >= 1
             Left _ -> False
@@ -174,8 +175,8 @@ spec = describe "Planet" $ do
         let Right planet = mkPlanetConfig r t i
             Right slice  = mkWorldSlice lc le 0 60
             config = WorldConfig { wcChunkSize = 16 }
-            lat0 = tileYToLatDeg planet slice config 0
-            lat1 = tileYToLatDeg planet slice config 100
+            lat0 = tileYToLatDeg planet defaultHexGridMeta slice config 0
+            lat1 = tileYToLatDeg planet defaultHexGridMeta slice config 100
         in lat1 < lat0
 
     it "property: tile Y=0 is north of tile Y=chunkSize-1" $
@@ -183,8 +184,8 @@ spec = describe "Planet" $ do
         let Right planet = mkPlanetConfig r t i
             Right slice  = mkWorldSlice lc le 0 60
             config = WorldConfig { wcChunkSize = 16 }
-            latTop = tileLatitude planet slice config (TileCoord 0 0)
-            latBot = tileLatitude planet slice config (TileCoord 0 15)
+            latTop = tileLatitude planet defaultHexGridMeta slice config (TileCoord 0 0)
+            latBot = tileLatitude planet defaultHexGridMeta slice config (TileCoord 0 15)
         in latTop > latBot
 
   describe "geographic formatting" $ do

@@ -85,40 +85,41 @@ collectSamples :: TerrainWorld -> [TileSample]
 collectSamples world =
   let wc      = twConfig world
       planet  = twPlanet world
+      hex     = twHexGrid world
       slice   = twSlice world
       terrain = twTerrain world
       climate = twClimate world
       wb      = twWaterBodies world
-  in concatMap (chunkSamples wc planet slice climate wb)
+  in concatMap (chunkSamples wc planet hex slice climate wb)
                (IntMap.toList terrain)
 
 chunkSamples
-  :: WorldConfig -> PlanetConfig -> WorldSlice
+  :: WorldConfig -> PlanetConfig -> HexGridMeta -> WorldSlice
   -> ChunkMap ClimateChunk
   -> ChunkMap WaterBodyChunk
   -> (Int, TerrainChunk) -> [TileSample]
-chunkSamples wc planet slice climate wb (k, tc) =
+chunkSamples wc planet hex slice climate wb (k, tc) =
   let mcc  = IntMap.lookup k climate
       mwbc = IntMap.lookup k wb
       n    = U.length (tcElevation tc)
       coord = chunkCoordFromId (ChunkId k)
       TileCoord ox oy = chunkOriginTile wc coord
-  in [ tileSample wc planet slice tc mcc mwbc ox oy i
+  in [ tileSample wc planet hex slice tc mcc mwbc ox oy i
      | i <- [0 .. n - 1]
      ]
 
 tileSample
-  :: WorldConfig -> PlanetConfig -> WorldSlice
+  :: WorldConfig -> PlanetConfig -> HexGridMeta -> WorldSlice
   -> TerrainChunk
   -> Maybe ClimateChunk
   -> Maybe WaterBodyChunk
   -> Int -> Int -> Int
   -> TileSample
-tileSample wc planet slice tc mcc mwbc ox oy i =
+tileSample wc planet hex slice tc mcc mwbc ox oy i =
   let TileCoord lx ly = tileCoordFromIndex wc (TileIndex i)
       gx  = ox + lx
       gy  = oy + ly
-      lat = tileLatitude planet slice wc (TileCoord gx gy)
+      lat = tileLatitude planet hex slice wc (TileCoord gx gy)
       elev  = tcElevation tc U.! i
       biome = tcFlags tc U.! i
       temp  = maybe 0.5 (\cc -> ccTempAvg cc U.! i)    mcc

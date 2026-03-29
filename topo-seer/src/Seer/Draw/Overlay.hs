@@ -20,6 +20,8 @@ import Data.Word (Word8, Word16)
 import Linear (V2(..), V4(..))
 import qualified SDL
 import Seer.Config (mapRange)
+import Seer.Config.SliderConversion (sliderToDomainFloat)
+import Seer.Config.SliderRegistry (SliderId(..))
 import Topo
   ( BiomeId
   , ChunkCoord(..)
@@ -58,6 +60,7 @@ import Topo.Overlay.Schema
   , OverlayFieldType(..)
   , OverlaySchema(..)
   )
+import Topo.Hex (HexGridMeta(..))
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), formatLatLon, tileLatitude, tileLongitude)
 import Topo.Units
   ( defaultUnitScales
@@ -245,12 +248,13 @@ contextLines ui terrainSnap (q, r) =
       , wsLonCenter = mapRange (-180) 180 (uiSliceLonCenter ui)
       , wsLonExtent = 0
       }
+    hex = HexGridMeta { hexSizeKm = sliderToDomainFloat SliderHexSizeKm (uiHexSizeKm ui) }
     worldConfig = WorldConfig { wcChunkSize = tsChunkSize terrainSnap }
 
     latLonLine tileQ tileR =
       let tile = TileCoord tileQ tileR
-          lat = tileLatitude planet slice worldConfig tile
-          lon = tileLongitude planet slice worldConfig tile
+          lat = tileLatitude planet hex slice worldConfig tile
+          lon = tileLongitude planet hex slice worldConfig tile
       in formatLatLon lat lon
 
     modeLines ViewElevation sample =

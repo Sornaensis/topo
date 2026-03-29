@@ -88,7 +88,8 @@ data UnitScales = UnitScales
     -- ^ Normalised water level.  Default: @0.5@.
   , usElevGradient  :: !Float
     -- ^ Elevation gradient for slope conversion:
-    -- @elevRange / hexSpacingMetres@.  Default: @0.574@ (12 000 / 20 900).
+    -- @elevRange / hexSpacingMetres@.  Default: @1.5@ (12 000 / 8 000)
+    -- for an 8 km hex.  Adjust when hex size changes.
   , usPrecipScale   :: !Float
     -- ^ Precipitation scale in mm\/year.  Default: @6000.0@.
   , usWindScale     :: !Float
@@ -118,7 +119,7 @@ defaultUnitScales = UnitScales
   , usTempOffset    = -50.0
   , usElevRange     = 12000.0
   , usWaterLevel    = 0.5
-  , usElevGradient  = 0.574
+  , usElevGradient  = 1.5
   , usPrecipScale   = 6000.0
   , usWindScale     = 50.0
   , usPressureMin   = 870.0

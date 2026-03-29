@@ -228,6 +228,7 @@ module Actor.UI.Setters
   , setUiOccColdScale
   , setUiOccLatPeakDeg
   , setUiOccLatWidthDeg
+  , setUiHexSizeKm
   , setUiSliceLatCenter
   , setUiSliceLonCenter
   , setUiHoverHex
@@ -524,6 +525,7 @@ setUiOccWarmScale = sendSlider SliderOccWarmScale
 setUiOccColdScale = sendSlider SliderOccColdScale
 setUiOccLatPeakDeg = sendSlider SliderOccLatPeakDeg
 setUiOccLatWidthDeg = sendSlider SliderOccLatWidthDeg
+setUiHexSizeKm = sendSlider SliderHexSizeKm
 setUiSliceLatCenter = sendSlider SliderSliceLatCenter
 setUiSliceLonCenter = sendSlider SliderSliceLonCenter
 setUiHoverHex = sendUnary SetHoverHex

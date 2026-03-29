@@ -411,6 +411,7 @@ data UiState = UiState
   , uiOccColdScale :: !Float
   , uiOccLatPeakDeg :: !Float
   , uiOccLatWidthDeg :: !Float
+  , uiHexSizeKm :: !Float
   , uiSliceLatCenter :: !Float
   , uiSliceLonCenter :: !Float
   , uiDisabledStages :: !(Set StageId)
@@ -668,6 +669,7 @@ emptyUiState = UiState
   , uiOccColdScale = sliderDefault SliderOccColdScale
   , uiOccLatPeakDeg = sliderDefault SliderOccLatPeakDeg
   , uiOccLatWidthDeg = sliderDefault SliderOccLatWidthDeg
+  , uiHexSizeKm = sliderDefault SliderHexSizeKm
   , uiSliceLatCenter = sliderDefault SliderSliceLatCenter
   , uiSliceLonCenter = sliderDefault SliderSliceLonCenter
   , uiDisabledStages = Set.empty
@@ -1015,6 +1017,7 @@ sliderStateBindingForId sliderIdValue = case sliderIdValue of
   SliderMinLakeSize -> binding uiMinLakeSize (\value st -> st { uiMinLakeSize = clamp01 value })
   SliderInlandSeaMinSize -> binding uiInlandSeaMinSize (\value st -> st { uiInlandSeaMinSize = clamp01 value })
   SliderRoughnessScale -> binding uiRoughnessScale (\value st -> st { uiRoughnessScale = clamp01 value })
+  SliderHexSizeKm -> binding uiHexSizeKm (\value st -> st { uiHexSizeKm = clamp01 value })
 
 binding :: (UiState -> Float) -> (Float -> UiState -> UiState) -> SliderStateBinding
 binding = SliderStateBinding

@@ -23,7 +23,7 @@ import Test.Hspec
 
 import Actor.UI (UiState(..), emptyUiState, getUiSnapshot, uiActorDef)
 import Actor.UI.State (sliderValueForId)
-import Seer.Config (configFromUi)
+import Seer.Config (configFromUi, mapRange)
 import Seer.Config.Snapshot
   ( ConfigSnapshot(..)
   , applySnapshotToUi
@@ -39,6 +39,7 @@ import Seer.Config.SliderSpec (SliderId(..), sliderLabelForId)
 import Topo.BaseHeight (GenConfig(..))
 import Topo.Erosion (ErosionConfig(..), defaultErosionConfig)
 import Topo.Hypsometry (HypsometryConfig(..))
+import Topo.Hex (hexSizeKm)
 import Topo.Planet (WorldSlice(..), hexesPerDegreeLatitude, hexesPerDegreeLongitude)
 import Topo.Types (worldExtentRadiusX, worldExtentRadiusY)
 import Topo.WorldGen
@@ -129,18 +130,22 @@ snapshotFromUiSpec = describe "snapshotFromUi" $ do
           , uiSliceLatCenter = 0.65
           , uiSliceLonCenter = 0.2
           , uiPlanetRadius = 0.8
+          , uiHexSizeKm = 0.75
           }
         snap = snapshotFromUi ui "derived"
         cfg = csGenConfig snap
         slice = worldSlice cfg
         extent = gcWorldExtent (terrainGen (worldTerrain cfg))
         planet = worldPlanet cfg
+        hex = worldHexGrid cfg
         chunkSize = max 1 (uiChunkSize ui)
+        expectedHexSize = mapRange 2.0 20.0 (uiHexSizeKm ui)
         expectedLatExtent =
-          max 0.1 (fromIntegral (worldExtentRadiusY extent * 2 * chunkSize) / hexesPerDegreeLatitude planet)
+          max 0.1 (fromIntegral (worldExtentRadiusY extent * 2 * chunkSize) / hexesPerDegreeLatitude planet hex)
         expectedLonExtent =
-          max 0.1 (fromIntegral (worldExtentRadiusX extent * 2 * chunkSize) / hexesPerDegreeLongitude planet (wsLatCenter slice))
+          max 0.1 (fromIntegral (worldExtentRadiusX extent * 2 * chunkSize) / hexesPerDegreeLongitude planet hex (wsLatCenter slice))
     cfg `shouldBe` configFromUi ui
+    hexSizeKm hex `shouldBe` expectedHexSize
     wsLatExtent slice `shouldBe` expectedLatExtent
     wsLonExtent slice `shouldBe` expectedLonExtent
 

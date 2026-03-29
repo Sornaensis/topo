@@ -3,14 +3,15 @@
 
 -- | Planetary parameters, world slices, and hex-to-geographic coordinate mapping.
 --
--- One hex = 13 miles flat-to-flat. This is the universal physical scale constant.
+-- Hex physical size is configurable via 'Topo.Hex.HexGridMeta' (default: 8 km
+-- flat-to-flat).  All geographic derivation functions accept an explicit
+-- 'Topo.Hex.HexGridMeta' parameter.
+--
 -- Default behavior: the generated region is centered on the equator (@latCenter=0@).
 -- Users never need to generate a whole planet — every world is a "slice" of a planet.
 module Topo.Planet
-  ( -- * Hex scale constant
-    hexScaleMiles
-    -- * Planet configuration
-  , PlanetConfig(..)
+  ( -- * Planet configuration
+    PlanetConfig(..)
   , PlanetConfigError(..)
   , mkPlanetConfig
   , defaultPlanetConfig
@@ -43,15 +44,8 @@ import GHC.Generics (Generic)
 import Topo.Config.JSON
   (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
    genericToJSON, genericParseJSON)
+import Topo.Hex (HexGridMeta, hexSizeMiles)
 import Topo.Types (TileCoord(..), WorldConfig(..), WorldExtent, WorldExtentError, mkWorldExtent)
-
--- ---------------------------------------------------------------------------
--- Hex scale constant
--- ---------------------------------------------------------------------------
-
--- | Universal physical scale: one hex is 13 miles flat-to-flat.
-hexScaleMiles :: Float
-hexScaleMiles = 13.0
 
 -- ---------------------------------------------------------------------------
 -- PlanetConfig
@@ -196,20 +190,20 @@ planetCircumferenceMiles pc =
   let radiusMiles = pcRadius pc * kmToMiles
   in 2 * pi * radiusMiles
 
--- | Number of hexes per degree of latitude (constant for a given planet).
+-- | Number of hexes per degree of latitude, given a planet and hex size.
 --
--- @hexesPerDegLat = circumference / 360 / hexScaleMiles@
-hexesPerDegreeLatitude :: PlanetConfig -> Float
-hexesPerDegreeLatitude pc =
-  planetCircumferenceMiles pc / 360.0 / hexScaleMiles
+-- @hexesPerDegLat = circumference / 360 / hexSizeMiles(hex)@
+hexesPerDegreeLatitude :: PlanetConfig -> HexGridMeta -> Float
+hexesPerDegreeLatitude pc hex =
+  planetCircumferenceMiles pc / 360.0 / hexSizeMiles hex
 
 -- | Number of hexes per degree of longitude at a given latitude.
 --
 -- Longitude degrees shrink toward the poles by @cos(latitude)@.
 -- Returns @max 0.001@ to avoid division by zero at the poles.
-hexesPerDegreeLongitude :: PlanetConfig -> Float -> Float
-hexesPerDegreeLongitude pc latDeg =
-  let baseLon = hexesPerDegreeLatitude pc
+hexesPerDegreeLongitude :: PlanetConfig -> HexGridMeta -> Float -> Float
+hexesPerDegreeLongitude pc hex latDeg =
+  let baseLon = hexesPerDegreeLatitude pc hex
       latRad  = latDeg * degToRad
   in baseLon * max 0.001 (cos latRad)
 
@@ -224,12 +218,13 @@ hexesPerDegreeLongitude pc latDeg =
 -- Positive result = north, negative = south.
 tileLatitude
   :: PlanetConfig
+  -> HexGridMeta
   -> WorldSlice
   -> WorldConfig
   -> TileCoord
   -> Float
-tileLatitude planet slice config (TileCoord _tx ty) =
-  let hpd    = hexesPerDegreeLatitude planet
+tileLatitude planet hex slice config (TileCoord _tx ty) =
+  let hpd    = hexesPerDegreeLatitude planet hex
       cs     = wcChunkSize config
       -- Chunks range from -ry to ry; chunk (0,0) origin is tile (0,0).
       -- The center of the grid is at the middle of chunk (0,0).
@@ -246,13 +241,14 @@ tileLatitude planet slice config (TileCoord _tx ty) =
 -- Longitude is corrected for the latitude at the tile's Y position.
 tileLongitude
   :: PlanetConfig
+  -> HexGridMeta
   -> WorldSlice
   -> WorldConfig
   -> TileCoord
   -> Float
-tileLongitude planet slice config coord@(TileCoord tx _ty) =
-  let lat    = tileLatitude planet slice config coord
-      hpdLon = hexesPerDegreeLongitude planet lat
+tileLongitude planet hex slice config coord@(TileCoord tx _ty) =
+  let lat    = tileLatitude planet hex slice config coord
+      hpdLon = hexesPerDegreeLongitude planet hex lat
       cs     = wcChunkSize config
       centerTileX = cs `div` 2
       offsetTiles = tx - centerTileX
@@ -263,9 +259,9 @@ tileLongitude planet slice config coord@(TileCoord tx _ty) =
 --
 -- Convenience wrapper: @tileYToLatDeg planet slice config gy@
 -- is equivalent to @tileLatitude planet slice config (TileCoord 0 gy)@.
-tileYToLatDeg :: PlanetConfig -> WorldSlice -> WorldConfig -> Int -> Float
-tileYToLatDeg planet slice config gy =
-  tileLatitude planet slice config (TileCoord 0 gy)
+tileYToLatDeg :: PlanetConfig -> HexGridMeta -> WorldSlice -> WorldConfig -> Int -> Float
+tileYToLatDeg planet hex slice config gy =
+  tileLatitude planet hex slice config (TileCoord 0 gy)
 
 -- ---------------------------------------------------------------------------
 -- Latitude mapping
@@ -303,9 +299,9 @@ data LatitudeMapping = LatitudeMapping
 -- configuration.  Consolidates the latitude derivation formula that
 -- was previously duplicated across Tectonics, Climate, Weather,
 -- OceanCurrent, and Vegetation modules.
-mkLatitudeMapping :: PlanetConfig -> WorldSlice -> WorldConfig -> LatitudeMapping
-mkLatitudeMapping planet slice wc =
-  let hpd        = hexesPerDegreeLatitude planet
+mkLatitudeMapping :: PlanetConfig -> HexGridMeta -> WorldSlice -> WorldConfig -> LatitudeMapping
+mkLatitudeMapping planet hex slice wc =
+  let hpd        = hexesPerDegreeLatitude planet hex
       -- Negative: each tile-Y step is one step south (screen-down).
       degPerTile = negate (1.0 / max 0.001 hpd)
       cs         = wcChunkSize wc
@@ -405,12 +401,13 @@ degToRad = pi / 180.0
 -- for valid inputs, but the validated constructor is used for safety).
 sliceToWorldExtent
   :: PlanetConfig
+  -> HexGridMeta
   -> WorldSlice
   -> WorldConfig
   -> Either WorldExtentError WorldExtent
-sliceToWorldExtent planet slice config =
-  let hpdLat = hexesPerDegreeLatitude planet
-      hpdLon = hexesPerDegreeLongitude planet (wsLatCenter slice)
+sliceToWorldExtent planet hex slice config =
+  let hpdLat = hexesPerDegreeLatitude planet hex
+      hpdLon = hexesPerDegreeLongitude planet hex (wsLatCenter slice)
       cs     = max 1 (wcChunkSize config)
       tilesY = wsLatExtent slice * hpdLat
       tilesX = wsLonExtent slice * hpdLon

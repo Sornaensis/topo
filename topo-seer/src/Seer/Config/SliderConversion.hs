@@ -293,3 +293,4 @@ sliderConversion sliderIdValue = case sliderIdValue of
   SliderMinLakeSize -> SliderIntRange 1 50
   SliderInlandSeaMinSize -> SliderIntRange 50 500
   SliderRoughnessScale -> SliderFloatRange 0.0 2.0
+  SliderHexSizeKm -> SliderFloatRange 2.0 20.0

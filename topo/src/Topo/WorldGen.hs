@@ -72,6 +72,7 @@ import Topo.OceanCurrent
   , applyOceanCurrentsStage
   , defaultOceanCurrentConfig
   )
+import Topo.Hex (HexGridMeta, defaultHexGridMeta)
 import Topo.Planet
   ( PlanetConfig(..)
   , WorldSlice(..)
@@ -150,6 +151,8 @@ data WorldGenConfig = WorldGenConfig
     -- ^ Planetary parameters (radius, axial tilt, insolation).
   , worldSlice :: !WorldSlice
     -- ^ Geographic window (lat\/lon center and extent).
+  , worldHexGrid :: !HexGridMeta
+    -- ^ Hex grid physical size (flat-to-flat distance in km).
   , worldOceanCurrent :: !OceanCurrentConfig
     -- ^ Ocean current SST modifications.
   , worldBiomeFeedback :: !BiomeFeedbackConfig
@@ -202,6 +205,7 @@ defaultWorldGenConfig = WorldGenConfig
   , worldWeather = defaultWeatherConfig
   , worldPlanet = defaultPlanetConfig
   , worldSlice = defaultWorldSlice
+  , worldHexGrid = defaultHexGridMeta
   , worldOceanCurrent = defaultOceanCurrentConfig
   , worldBiomeFeedback = defaultBiomeFeedbackConfig
   }
@@ -233,6 +237,7 @@ mkWorldGenConfig terrain climate biome weather planet slice =
     , worldWeather = weather
     , worldPlanet = planet
     , worldSlice = slice
+    , worldHexGrid = defaultHexGridMeta
     , worldOceanCurrent = defaultOceanCurrentConfig
     , worldBiomeFeedback = defaultBiomeFeedbackConfig
     }
@@ -300,10 +305,11 @@ buildFullPipelineConfig cfg worldCfg seed =
   let terrain = worldTerrain cfg
       planet = worldPlanet cfg
       slice = worldSlice cfg
+      hex = worldHexGrid cfg
       -- Auto-derive world extent from slice unless manually overridden
       gen0 = terrainGen terrain
       derivedExtent = either (const defaultWorldExtent) id
-                        (sliceToWorldExtent planet slice worldCfg)
+                        (sliceToWorldExtent planet hex slice worldCfg)
       gen1 = if gcWorldExtent gen0 == defaultWorldExtent
                 then gen0 { gcWorldExtent = derivedExtent }
                 else gen0

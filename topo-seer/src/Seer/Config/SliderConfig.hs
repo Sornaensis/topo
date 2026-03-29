@@ -13,7 +13,7 @@ import Seer.Config.SliderConfig.Data
   , updateTerrainGen
   , updateWorldSlice
   )
-import Seer.Config.SliderRegistry (SliderDef(..), SliderId(..), allSliderDefs)
+import Seer.Config.SliderRegistry (SliderDef(..), SliderId(SliderExtentX, SliderExtentY), allSliderDefs)
 import Seer.Config.SliderConversion (sliderToDomainInt)
 import Topo.BaseHeight (GenConfig(..))
 import Topo.Climate (BoundaryConfig(..))
@@ -53,8 +53,8 @@ applyWorldSliceExtents ui cfg =
   updateWorldSlice
     (\worldSliceConfig ->
       worldSliceConfig
-        { wsLatExtent = max 0.1 (fromIntegral (worldExtentRadiusY extent * 2 * chunkSize) / hexesPerDegreeLatitude planet)
-        , wsLonExtent = max 0.1 (fromIntegral (worldExtentRadiusX extent * 2 * chunkSize) / hexesPerDegreeLongitude planet (wsLatCenter worldSliceConfig))
+        { wsLatExtent = max 0.1 (fromIntegral (worldExtentRadiusY extent * 2 * chunkSize) / hexesPerDegreeLatitude planet hex)
+        , wsLonExtent = max 0.1 (fromIntegral (worldExtentRadiusX extent * 2 * chunkSize) / hexesPerDegreeLongitude planet hex (wsLatCenter worldSliceConfig))
         }
     )
     cfg
@@ -62,6 +62,7 @@ applyWorldSliceExtents ui cfg =
     terrain = worldTerrain cfg
     extent = gcWorldExtent (terrainGen terrain)
     planet = worldPlanet cfg
+    hex = worldHexGrid cfg
     chunkSize = max 1 (uiChunkSize ui)
 
 applyBoundaryBiases :: UiState -> WorldGenConfig -> WorldGenConfig

@@ -43,6 +43,7 @@ import Topo.Climate.Config
   )
 import Topo.Erosion           (ErosionConfig)
 import Topo.Glacier           (GlacierConfig)
+import Topo.Hex               (HexGridMeta)
 import Topo.Hydrology         (GroundwaterConfig, HydroConfig, RiverConfig)
 import Topo.Hypsometry        (HypsometryConfig)
 import Topo.OceanCurrent      (OceanCurrentConfig)
@@ -123,6 +124,9 @@ instance Arbitrary BiomeRule where
 -- Top-level aggregators
 instance Arbitrary WorldGenConfig              where arbitrary = genericArbitrary
 instance Arbitrary TerrainConfig               where arbitrary = genericArbitrary
+
+-- Hex grid
+instance Arbitrary HexGridMeta                 where arbitrary = genericArbitrary
 
 -- Base height / terrain generation
 instance Arbitrary GenConfig                   where arbitrary = genericArbitrary
