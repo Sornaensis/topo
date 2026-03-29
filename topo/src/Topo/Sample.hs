@@ -58,11 +58,11 @@ interpSample world (WorldPos x y) =
   in bilerpSample fx fy s00 s10 s01 s11
 
 hexAt :: TerrainWorld -> WorldPos -> HexCoord
-hexAt world pos = worldToHex (twHexGrid world) pos
+hexAt _world pos = worldToHex pos
 
 hexData :: TerrainWorld -> HexCoord -> TerrainSample
 hexData world coord =
-  let pos = hexToWorld (twHexGrid world) coord
+  let pos = hexToWorld coord
   in sampleTerrain world pos
 
 hexSample :: TerrainWorld -> HexCoord -> TerrainSample

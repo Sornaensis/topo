@@ -19,12 +19,9 @@ import Linear (V2(..), V4(..))
 import qualified SDL
 import qualified SDL.Raw.Types as Raw
 import Topo (ChunkCoord(..), ChunkId(..), ClimateChunk(..), TerrainChunk(..), VegetationChunk(..), WeatherChunk(..), TileCoord(..), TileIndex(..), WorldConfig(..), chunkCoordFromId, chunkOriginTile, tileCoordFromIndex)
-import UI.HexPick (axialToScreen)
+import UI.HexPick (axialToScreen, renderHexRadiusPx)
 import UI.TerrainColor (terrainColor)
 import UI.Widgets (Rect(..))
-
-hexSize :: Int
-hexSize = 6
 
 hexOverlap :: Float
 hexOverlap = 0.6
@@ -55,9 +52,9 @@ buildChunkGeometry config mode waterLevel climateMap weatherMap vegMap mOverlayV
       weatherChunk = IntMap.lookup key weatherMap
       vegChunk = IntMap.lookup key vegMap
       total = U.length (tcElevation chunk)
-      (minX, minY, maxX, maxY) = chunkBounds config hexSize (ChunkCoord cx cy)
+      (minX, minY, maxX, maxY) = chunkBounds config renderHexRadiusPx (ChunkCoord cx cy)
       bounds = Rect (V2 minX minY, V2 (max 1 (maxX - minX)) (max 1 (maxY - minY)))
-      corners = hexCornersF hexSize
+      corners = hexCornersF renderHexRadiusPx
       tileEntries =
         [ buildTileGeometry config mode waterLevel climateChunk weatherChunk vegChunk mOverlayVec chunk corners minX minY ox oy idx
         | idx <- [0 .. total - 1]
@@ -90,7 +87,7 @@ buildTileGeometry config mode waterLevel climateChunk weatherChunk vegChunk mOve
   let TileCoord tx ty = tileCoordFromIndex config (TileIndex idx)
       q = ox + tx
       r = oy + ty
-      (cx, cy) = axialToScreen hexSize q r
+      (cx, cy) = axialToScreen renderHexRadiusPx q r
       centerX = fromIntegral (cx - minX)
       centerY = fromIntegral (cy - minY)
       overlayVal = case mOverlayVec of

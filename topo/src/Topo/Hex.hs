@@ -143,12 +143,21 @@ hexSizeMiles meta = hexSizeKm meta * kmToMiles
     kmToMiles = 0.621371
 {-# INLINE hexSizeMiles #-}
 
-worldToHex :: HexGridMeta -> WorldPos -> HexCoord
-worldToHex _ (WorldPos x y) = HexAxial (round x) (round y)
+-- | Convert a tile-space world position to the nearest axial hex.
+--
+-- 'WorldPos' is expressed in tile-space coordinates, not physical metres,
+-- so this conversion depends only on tile indices and not on
+-- 'HexGridMeta'.
+worldToHex :: WorldPos -> HexCoord
+worldToHex (WorldPos x y) = HexAxial (round x) (round y)
 
-hexToWorld :: HexGridMeta -> HexCoord -> WorldPos
-hexToWorld _ (HexAxial q r) = WorldPos (fromIntegral q) (fromIntegral r)
-hexToWorld _ (HexCube x y _) = WorldPos (fromIntegral x) (fromIntegral y)
+-- | Convert a hex coordinate to tile-space world coordinates.
+--
+-- The result is the tile-space centre used by terrain sampling APIs.
+-- Physical scaling is tracked separately in 'HexGridMeta'.
+hexToWorld :: HexCoord -> WorldPos
+hexToWorld (HexAxial q r) = WorldPos (fromIntegral q) (fromIntegral r)
+hexToWorld (HexCube x y _) = WorldPos (fromIntegral x) (fromIntegral y)
 
 axialToCube :: HexCoord -> HexCoord
 axialToCube (HexAxial q r) = HexCube q (-q - r) r

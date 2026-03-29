@@ -43,7 +43,7 @@ instance Metadata PlateHexMeta where
 -- | Read plate metadata for a hex if the corresponding terrain tile exists.
 plateHexMetaAt :: TerrainWorld -> HexCoord -> Maybe PlateHexMeta
 plateHexMetaAt world hex = do
-  let WorldPos x y = hexToWorld (twHexGrid world) hex
+  let WorldPos x y = hexToWorld hex
       tile = TileCoord (round x) (round y)
       config = twConfig world
       (chunkCoord, local) = chunkCoordFromTile config tile

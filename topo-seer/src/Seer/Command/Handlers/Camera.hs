@@ -23,16 +23,12 @@ import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
 import Topo (ChunkCoord(..), ChunkId(..), TileCoord(..), chunkCoordFromId)
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
-import UI.HexPick (axialToScreen)
+import UI.HexPick (axialToScreen, renderHexRadiusPx)
 
 -- | Zoom range clamping bounds, matching 'Seer.Input.ViewControls'.
 zoomMin, zoomMax :: Float
 zoomMin = 0.4
 zoomMax = 3.0
-
--- | Hex cell radius used throughout the renderer.
-hexSize :: Int
-hexSize = 6
 
 -- | Clamp zoom to the allowed range.
 clampZoom :: Float -> Float
@@ -96,7 +92,7 @@ handleZoomToChunk ctx reqId params = do
                 -- Center tile of the chunk in axial (q, r) coordinates
                 centerQ = cx * chunkSize + chunkSize `div` 2
                 centerR = cy * chunkSize + chunkSize `div` 2
-                (worldX, worldY) = axialToScreen hexSize centerQ centerR
+                (worldX, worldY) = axialToScreen renderHexRadiusPx centerQ centerR
                 -- Set pan so chunk center is at screen origin
                 newZoom = 1.0 :: Float
                 panX = negate (fromIntegral worldX)

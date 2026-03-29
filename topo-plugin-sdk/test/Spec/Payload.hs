@@ -6,14 +6,21 @@ import Data.Aeson (Value(..), (.=), object)
 import qualified Data.Map.Strict as Map
 import Test.Hspec
 
-import Topo.Hex (defaultHexGridMeta)
+import Topo.Hex (HexGridMeta(..), defaultHexGridMeta)
 import Topo.Overlay (Overlay, emptyOverlay, overlayName)
-import Topo.Overlay.Schema (OverlaySchema(..), OverlayStorage(..), OverlayField(..), OverlayFieldType(..))
+import Topo.Overlay.Schema
+  ( OverlaySchema(..)
+  , OverlayStorage(..)
+  , OverlayFieldDef(..)
+  , OverlayFieldType(..)
+  , emptyOverlayDeps
+  )
+import Topo.Planet (PlanetConfig(..), WorldSlice(..), defaultPlanetConfig, defaultWorldSlice)
 import Topo.Plugin.SDK.Payload
 import Topo.Plugin.SDK.Types
 import Topo.Simulation (TerrainWrites, emptyTerrainWrites)
 import Topo.Types (WorldConfig(..))
-import Topo.World (emptyWorld)
+import Topo.World (TerrainWorld(..), emptyWorld, emptyWorldWithPlanet)
 
 spec :: Spec
 spec = describe "SDK payload helpers" $ do
@@ -34,10 +41,18 @@ spec = describe "SDK payload helpers" $ do
       Right decoded -> overlayName decoded `shouldBe` "test_overlay"
 
   it "round-trips terrain payload encode/decode" $ do
-    let world = emptyWorld (WorldConfig { wcChunkSize = 64 }) defaultHexGridMeta
+    let world = emptyWorldWithPlanet
+          (WorldConfig { wcChunkSize = 64 })
+          (HexGridMeta { hexSizeKm = 11.0 })
+          (defaultPlanetConfig { pcRadius = 7000.0, pcAxialTilt = 15.0, pcInsolation = 0.9 })
+          (defaultWorldSlice { wsLatCenter = 12.5, wsLatExtent = 24.0, wsLonCenter = -45.0, wsLonExtent = 80.0 })
     case encodeTerrainPayload world >>= decodeTerrainPayload of
       Left err -> expectationFailure (show err)
-      Right decoded -> wcChunkSize (twConfig decoded) `shouldBe` 64
+      Right decoded -> do
+        twConfig decoded `shouldBe` WorldConfig { wcChunkSize = 64 }
+        twHexGrid decoded `shouldBe` twHexGrid world
+        twPlanet decoded `shouldBe` twPlanet world
+        twSlice decoded `shouldBe` twSlice world
 
   it "builds simulation result with encoded writes" $ do
     let overlay = emptyOverlay testSchema
@@ -63,20 +78,24 @@ testContext = PluginContext
   , pcOverlays = Map.empty
   , pcSeed = 0
   , pcLog = \_ -> pure ()
+  , pcWorldPath = Nothing
   }
 
 testSchema :: OverlaySchema
 testSchema = OverlaySchema
   { osName = "test_overlay"
   , osVersion = "1.0.0"
-  , osStorage = StorageSparse
+  , osDescription = "payload helper test schema"
   , osFields =
-      [ OverlayField
-          { ofName = "value"
-          , ofType = OFFloat
-          , ofDefault = Number 0
-          , ofIndexed = False
+      [ OverlayFieldDef
+          { ofdName = "value"
+          , ofdType = OFFloat
+          , ofdDefault = Number 0
+          , ofdIndexed = False
+          , ofdRenamedFrom = Nothing
           }
       ]
-  , osDependencies = []
+  , osStorage = StorageSparse
+  , osDependencies = emptyOverlayDeps
+  , osFieldIndex = Map.fromList [("value", 0)]
   }

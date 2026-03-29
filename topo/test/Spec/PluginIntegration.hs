@@ -38,8 +38,8 @@ import Topo.Overlay (emptyOverlay)
 import Topo.Overlay.Schema (OverlaySchema(..), OverlayStorage(..), OverlayDeps(..))
 import Topo.Pipeline (PipelineStage(..))
 import Topo.Pipeline.Stage (StageId(..))
-import Topo.Hex (defaultHexGridMeta)
-import Topo.Planet (defaultPlanetConfig, defaultWorldSlice)
+import Topo.Hex (HexGridMeta(..), defaultHexGridMeta)
+import Topo.Planet (PlanetConfig(..), WorldSlice(..), defaultPlanetConfig, defaultWorldSlice)
 import Topo.Plugin.RPC
   ( RPCConnection(..)
   , RPCManifest(..)
@@ -445,6 +445,32 @@ spec = describe "Plugin Integration" $ do
                     all (\cid -> IntMap.member cid (twTerrain mergedWorld)) chunkIds
                     && all (\cid -> IntMap.member cid (twClimate mergedWorld)) chunkIds
                     && all (\cid -> IntMap.member cid (twVegetation mergedWorld)) chunkIds
+
+    it "preserves hex grid and geographic metadata through terrain payload round-trip" $ do
+      let config = WorldConfig { wcChunkSize = 8 }
+          hexMeta = HexGridMeta { hexSizeKm = 11.0 }
+          planet = defaultPlanetConfig
+            { pcRadius = 7000.0
+            , pcAxialTilt = 15.0
+            , pcInsolation = 0.9
+            }
+          slice = defaultWorldSlice
+            { wsLatCenter = 12.5
+            , wsLatExtent = 24.0
+            , wsLonCenter = -45.0
+            , wsLonExtent = 80.0
+            }
+          payloadResult = terrainWorldToPayload (emptyWorldWithPlanet config hexMeta planet slice)
+      payload <- case payloadResult of
+        Left err -> expectationFailure (Text.unpack err) >> fail "encode failed"
+        Right terrainPayload -> pure terrainPayload
+      mergedWorld <- case applyGeneratorTerrainValue (mkTestWorld config) payload of
+        Left err -> expectationFailure (show err) >> fail "apply failed"
+        Right world -> pure world
+      twConfig mergedWorld `shouldBe` config
+      twHexGrid mergedWorld `shouldBe` hexMeta
+      twPlanet mergedWorld `shouldBe` planet
+      twSlice mergedWorld `shouldBe` slice
 
     prop "property: terrain_writes payload decode preserves terrain chunk count"
       $ \(NonEmpty chunkValues0 :: NonEmptyList Float) ->

@@ -126,7 +126,7 @@ handleSaveWorld ctx reqId params = do
           let handles = ccActorHandles ctx
           ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
           terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
-          let world = snapshotToWorld terrainSnap
+          let world = snapshotToWorld ui terrainSnap
           pluginDirs <- getPluginDataDirectories (ahPluginManagerHandle handles)
           result <- saveNamedWorldWithPlugins name ui world pluginDirs
           case result of

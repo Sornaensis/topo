@@ -73,6 +73,7 @@ import Seer.World.Persist (loadNamedWorld, saveNamedWorldWithPlugins, snapshotTo
 import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Topo.Overlay (overlayNames)
 import Topo.World (TerrainWorld(..))
+import UI.HexPick (renderHexRadiusPx, screenToAxial)
 
 -- | Number of consecutive frames the cursor must remain still on a
 -- slider row before the tooltip appears.
@@ -120,7 +121,7 @@ handleEvent inputContext event = do
       uiSnap <- getUiSnapshot uiHandle
       terrainSnap <- getTerrainSnapshot dataHandle
       let (wx, wy) = screenToWorld uiSnap (fromIntegral mx, fromIntegral my)
-          (q, r) = screenToAxial 6 (round wx) (round wy)
+          (q, r) = screenToAxial renderHexRadiusPx (round wx) (round wy)
       if isTerrainHex terrainSnap (q, r)
         then setUiHoverHex uiHandle (Just (q, r))
         else setUiHoverHex uiHandle Nothing
@@ -355,7 +356,7 @@ handleEvent inputContext event = do
                 pmHandle = ahPluginManagerHandle actorHandles
             when (not (Text.null name)) $ do
               terrainSnap <- getTerrainSnapshot dataHandle
-              let world = snapshotToWorld terrainSnap
+              let world = snapshotToWorld uiSnap' terrainSnap
               pluginDirs <- getPluginDataDirectories pmHandle
               _result <- saveNamedWorldWithPlugins name uiSnap' world pluginDirs
               wDir <- worldDir

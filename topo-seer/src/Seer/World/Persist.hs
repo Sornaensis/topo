@@ -30,7 +30,7 @@ module Seer.World.Persist
 
 import Control.Exception (IOException, try)
 import Control.Monad (when)
-import Data.Aeson (FromJSON(..), eitherDecodeStrict', encode)
+import Data.Aeson (FromJSON(..), eitherDecodeStrict', encode, toJSON)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.IntMap.Strict as IntMap
@@ -52,11 +52,11 @@ import System.FilePath ((</>), takeFileName)
 
 import Actor.Data (TerrainSnapshot(..))
 import Actor.UI (UiState(..))
+import Seer.Config (configFromUi)
 import Seer.Config.Snapshot (snapshotFromUi, loadSnapshot)
 import Seer.Config.Snapshot.Types (ConfigSnapshot)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Topo.Calendar (defaultWorldTime, defaultPlanetAge)
-import Topo.Hex (defaultHexGridMeta)
 import Topo.Metadata (emptyMetadataStore)
 import Topo.Overlay (OverlayChunk, emptyOverlayStore, overlayNames)
 import Topo.Overlay.Storage
@@ -64,7 +64,7 @@ import Topo.Overlay.Storage
   , overlayDirPath
   , renderOverlayStorageError
   )
-import Topo.Planet (defaultPlanetConfig, defaultWorldSlice, mkLatitudeMapping)
+import Topo.Planet (mkLatitudeMapping)
 import Topo.Units (defaultUnitScales)
 import Topo.Storage
   ( WorldProvenance(..)
@@ -78,6 +78,7 @@ import Topo.Persistence.WorldBundle
   )
 import Topo.Types (WorldConfig(..))
 import Topo.World (TerrainWorld(..))
+import Topo.WorldGen (WorldGenConfig(..))
 
 -------------------------------------------------------------------------------
 -- Directory helpers
@@ -241,13 +242,14 @@ loadNamedSparseOverlayChunk worldName overlayName chunkId = do
 
 -- | Reconstruct a 'TerrainWorld' from a 'TerrainSnapshot'.
 --
--- Terrain, climate, weather, and river chunks are preserved from the
--- snapshot.  Groundwater, volcanism, and glacier data are stored as
--- empty maps (they are not retained in the Data actor after
--- generation).  Planet and slice defaults are used because the
--- UI-level values are captured separately in the config preset.
-snapshotToWorld :: TerrainSnapshot -> TerrainWorld
-snapshotToWorld ts = TerrainWorld
+-- Terrain, climate, river, vegetation, and overlay chunks are preserved
+-- from the snapshot. Groundwater, volcanism, and glacier data are stored
+-- as empty maps because they are not retained in the Data actor after
+-- generation. World-level hex and planet metadata are reconstructed from
+-- the current UI config so saved worlds preserve the active geographic
+-- scale instead of silently falling back to defaults.
+snapshotToWorld :: UiState -> TerrainSnapshot -> TerrainWorld
+snapshotToWorld uiSnap ts = TerrainWorld
   { twTerrain     = tsTerrainChunks ts
   , twClimate     = tsClimateChunks ts
   , twRivers      = tsRiverChunks ts
@@ -256,22 +258,23 @@ snapshotToWorld ts = TerrainWorld
   , twGlaciers    = IntMap.empty
   , twWaterBodies = IntMap.empty
   , twVegetation  = tsVegetationChunks ts
-  , twHexGrid     = defaultHexGridMeta
+  , twHexGrid     = worldHexGrid genCfg
   , twMeta        = emptyMetadataStore
   , twConfig      = wc
-  , twPlanet      = defaultPlanetConfig
-  , twSlice       = defaultWorldSlice
-  , twLatMapping  = mkLatitudeMapping defaultPlanetConfig defaultHexGridMeta defaultWorldSlice wc
+  , twPlanet      = worldPlanet genCfg
+  , twSlice       = worldSlice genCfg
+  , twLatMapping  = mkLatitudeMapping (worldPlanet genCfg) (worldHexGrid genCfg) (worldSlice genCfg) wc
   , twWorldTime   = defaultWorldTime
-  , twSeed        = 0
+  , twSeed        = uiSeed uiSnap
   , twPlanetAge   = defaultPlanetAge
-  , twGenConfig   = Nothing
+  , twGenConfig   = Just (toJSON genCfg)
   , twUnitScales  = defaultUnitScales
-  , twOverlays    = emptyOverlayStore
-  , twOverlayManifest = []
+  , twOverlays    = tsOverlayStore ts
+  , twOverlayManifest = overlayNames (tsOverlayStore ts)
   }
   where
     wc = WorldConfig { wcChunkSize = tsChunkSize ts }
+    genCfg = configFromUi uiSnap
 
 -------------------------------------------------------------------------------
 -- Listing

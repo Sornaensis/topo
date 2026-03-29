@@ -47,7 +47,7 @@ import Topo
   )
 import Topo.River (isCoastalExit, coastalExitEdge)
 import Topo.Types (BiomeId, pattern RiverStream, pattern RiverCreek, pattern RiverRiver, riverSizeFromOrder)
-import UI.HexPick (axialToScreen)
+import UI.HexPick (axialToScreen, renderHexRadiusPx)
 import UI.Widgets (Rect(..))
 import Linear (V2(..))
 
@@ -133,10 +133,6 @@ data RiverGeometry = RiverGeometry
 -- Constants
 -- ---------------------------------------------------------------------------
 
--- | Hex radius used by the terrain renderer.
-hexSize :: Int
-hexSize = 6
-
 -- | Extra overlap pixels (matching TerrainRender).
 hexOverlap :: Float
 hexOverlap = 0.6
@@ -181,7 +177,7 @@ buildGeometry
 buildGeometry cfg config key rc mbBiomeVec =
   let ChunkCoord cx cy = chunkCoordFromId (ChunkId key)
       TileCoord ox oy  = chunkOriginTile config (ChunkCoord cx cy)
-      (minX, minY, maxX, maxY) = chunkBoundsF config hexSize (ChunkCoord cx cy)
+      (minX, minY, maxX, maxY) = chunkBoundsF config renderHexRadiusPx (ChunkCoord cx cy)
       bounds = Rect (V2 (floor minX) (floor minY),
                      V2 (max 1 (ceiling maxX - floor minX))
                         (max 1 (ceiling maxY - floor minY)))
@@ -195,7 +191,7 @@ buildGeometry cfg config key rc mbBiomeVec =
       rawColor   = Raw.Color rCol_r rCol_g rCol_b rCol_a
       (dCol_r, dCol_g, dCol_b, dCol_a) = rrcDeltaColor cfg
       deltaColor = Raw.Color dCol_r dCol_g dCol_b dCol_a
-      hexR       = fromIntegral hexSize + hexOverlap :: Float
+      hexR       = fromIntegral renderHexRadiusPx + hexOverlap :: Float
 
       -- Test whether a tile is classified as a water biome.
       isTileWater idx = case mbBiomeVec of
@@ -215,7 +211,7 @@ buildGeometry cfg config key rc mbBiomeVec =
                  let TileCoord tx ty = tileCoordFromIndex config (TileIndex tileIdx)
                      q = ox + tx
                      r = oy + ty
-                     (scrX, scrY) = axialToScreen hexSize q r
+                     (scrX, scrY) = axialToScreen renderHexRadiusPx q r
                      centerX = fromIntegral scrX - minX
                      centerY = fromIntegral scrY - minY
                      tileOrder = riverOrder U.! tileIdx

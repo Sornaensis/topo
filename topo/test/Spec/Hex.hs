@@ -14,8 +14,12 @@ instance Arbitrary HexDirection where
 spec :: Spec
 spec = describe "Hex" $ do
   it "converts axial to world positions" $ do
-    let pos = hexToWorld defaultHexGridMeta (HexAxial 3 4)
+    let pos = hexToWorld (HexAxial 3 4)
     pos `shouldBe` WorldPos 3 4
+
+  it "round-trips axial hex coordinates through tile-space world positions" $ do
+    let coord = HexAxial 3 4
+    worldToHex (hexToWorld coord) `shouldBe` coord
 
   it "converts between axial and cube" $ do
     axialToCube (HexAxial 2 (-1)) `shouldBe` HexCube 2 (-1) (-1)

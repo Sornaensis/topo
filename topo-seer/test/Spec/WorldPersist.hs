@@ -4,7 +4,7 @@
 module Spec.WorldPersist (spec) where
 
 import Control.Exception (bracket, try, IOException)
-import Data.Aeson (Value(..), encode, eitherDecodeStrict')
+import Data.Aeson (Value(..), encode, eitherDecodeStrict', toJSON)
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
@@ -19,7 +19,9 @@ import System.FilePath ((</>))
 import Test.Hspec
 import Spec.Support.OverlayFixtures (mkSparseFloatOverlay)
 
+import Actor.Data (TerrainSnapshot(..))
 import Actor.UI (emptyUiState, UiState(..))
+import Seer.Config (configFromUi, unmapRange)
 import Seer.Config.Snapshot (snapshotFromUi)
 import Seer.Config.Snapshot.Types (ConfigSnapshot(..), defaultSnapshot)
 import Seer.World.Persist
@@ -28,6 +30,7 @@ import Seer.World.Persist
   , loadNamedWorld
   , listWorlds
   , deleteNamedWorld
+  , snapshotToWorld
   , worldDir
   )
 import Seer.World.Persist.Types (defaultManifestTime)
@@ -44,6 +47,7 @@ import Topo.Overlay
   )
 import Topo.Types (WorldConfig(..))
 import Topo.World (TerrainWorld(..), emptyWorld)
+import Topo.WorldGen (WorldGenConfig(..))
 
 -- ---------------------------------------------------------------------------
 -- Spec entry point
@@ -53,6 +57,7 @@ spec :: Spec
 spec = describe "WorldPersist" $ do
   manifestJsonSpec
   worldRoundTripSpec
+  snapshotToWorldSpec
   listWorldsSpec
 
 -- ---------------------------------------------------------------------------
@@ -237,6 +242,44 @@ worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
                 wsmOverlayNames loadedManifest `shouldBe` []
                 lookupOverlay "weather" (twOverlays loadedWorld) `shouldBe` Nothing
         )
+
+snapshotToWorldSpec :: Spec
+snapshotToWorldSpec = describe "snapshotToWorld" $
+  it "rebuilds geographic metadata from the UI config and preserves overlays" $ do
+    let overlay = mkSparseFloatOverlay
+          "persist_sparse_test"
+          "snapshot reconstruction test"
+          0.75
+          emptyOverlayProvenance
+        overlayStore = insertOverlay overlay emptyOverlayStore
+        terrainSnap = TerrainSnapshot
+          { tsVersion = 1
+          , tsChunkSize = 32
+          , tsTerrainChunks = IntMap.empty
+          , tsClimateChunks = IntMap.empty
+          , tsWeatherChunks = IntMap.empty
+          , tsRiverChunks = IntMap.empty
+          , tsVegetationChunks = IntMap.empty
+          , tsOverlayStore = overlayStore
+          }
+        ui = emptyUiState
+          { uiSeed = 99
+          , uiHexSizeKm = unmapRange 2.0 20.0 11.0
+          , uiPlanetRadius = unmapRange 4778.0 9557.0 7000.0
+          , uiSliceLatCenter = unmapRange (-90.0) 90.0 12.5
+          , uiSliceLonCenter = unmapRange (-180.0) 180.0 (-45.0)
+          }
+        genCfg = configFromUi ui
+        world = snapshotToWorld ui terrainSnap
+
+    twConfig world `shouldBe` WorldConfig { wcChunkSize = 32 }
+    twHexGrid world `shouldBe` worldHexGrid genCfg
+    twPlanet world `shouldBe` worldPlanet genCfg
+    twSlice world `shouldBe` worldSlice genCfg
+    twSeed world `shouldBe` 99
+    twGenConfig world `shouldBe` Just (toJSON genCfg)
+    twOverlayManifest world `shouldBe` ["persist_sparse_test"]
+    lookupOverlay "persist_sparse_test" (twOverlays world) `shouldSatisfy` (/= Nothing)
 
 -- ---------------------------------------------------------------------------
 -- listWorlds

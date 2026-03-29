@@ -1,8 +1,16 @@
 module UI.HexPick
-  ( axialToScreen
+  ( renderHexRadiusPx
+  , axialToScreen
   , screenToAxial
   , pointInHex
   ) where
+
+-- | Shared on-screen hex radius for topo-seer rendering and picking.
+--
+-- This is a viewer pixel setting, intentionally separate from the physical
+-- world scale carried by 'Topo.Hex.HexGridMeta'.
+renderHexRadiusPx :: Int
+renderHexRadiusPx = 6
 
 axialToScreen :: Int -> Int -> Int -> (Int, Int)
 axialToScreen size q r =

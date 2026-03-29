@@ -39,7 +39,9 @@ import Topo.Simulation
   , applyTerrainWrites
   , emptyTerrainWrites
   )
+import Topo.Planet (mkLatitudeMapping)
 import qualified Topo.Types
+import Topo.World (TerrainWorld(..))
 import qualified Topo.World
 
 -- | Encode a terrain world into the RPC terrain payload object.
@@ -60,6 +62,9 @@ terrainWorldToPayload world = do
     , "river_count" .= IntMap.size (Topo.World.twRivers world)
     , "vegetation_count" .= IntMap.size (Topo.World.twVegetation world)
     , "chunk_size" .= Topo.Types.wcChunkSize (Topo.World.twConfig world)
+    , "hex_grid" .= Topo.World.twHexGrid world
+    , "planet" .= Topo.World.twPlanet world
+    , "slice" .= Topo.World.twSlice world
     , "encoding" .= ("base64" :: Text)
     , "terrain" .= Object terrainObj
     , "climate" .= Object climateObj
@@ -134,12 +139,15 @@ tshow :: Show a => a -> Text
 tshow = Text.pack . show
 
 terrainWritesFromPayload :: KM.KeyMap Value -> Either Text TerrainWrites
-terrainWritesFromPayload payload = do
+terrainWritesFromPayload payload =
+  terrainWritesFromPayloadWithConfig (lookupChunkSize payload) payload
+
+terrainWritesFromPayloadWithConfig :: Topo.Types.WorldConfig -> KM.KeyMap Value -> Either Text TerrainWrites
+terrainWritesFromPayloadWithConfig payloadConfig payload = do
   ensureTerrainPayloadEncoding payload
-  let chunkSize = lookupChunkSize payload
-  terrain <- decodeChunkSection payload "terrain" decodeTerrainChunk chunkSize
-  climate <- decodeChunkSection payload "climate" decodeClimateChunk chunkSize
-  vegetation <- decodeChunkSection payload "vegetation" decodeVegetationChunk chunkSize
+  terrain <- decodeChunkSection payload "terrain" decodeTerrainChunk payloadConfig
+  climate <- decodeChunkSection payload "climate" decodeClimateChunk payloadConfig
+  vegetation <- decodeChunkSection payload "vegetation" decodeVegetationChunk payloadConfig
   Right TerrainWrites
     { twrTerrain = terrain
     , twrClimate = climate
@@ -151,8 +159,37 @@ applyTerrainPayload
   -> KM.KeyMap Value
   -> Either Text Topo.World.TerrainWorld
 applyTerrainPayload world payload = do
-  writes <- terrainWritesFromPayload payload
-  Right (applyTerrainWrites writes world)
+  worldWithHeader <- applyTerrainPayloadHeader world payload
+  writes <- terrainWritesFromPayloadWithConfig (twConfig worldWithHeader) payload
+  Right (applyTerrainWrites writes worldWithHeader)
+
+applyTerrainPayloadHeader :: TerrainWorld -> KM.KeyMap Value -> Either Text TerrainWorld
+applyTerrainPayloadHeader world payload = do
+  let config = lookupChunkSizeOr (twConfig world) payload
+  hexMeta <- lookupPayloadField "hex_grid" (twHexGrid world) payload
+  planet <- lookupPayloadField "planet" (twPlanet world) payload
+  slice <- lookupPayloadField "slice" (twSlice world) payload
+  Right world
+    { twConfig = config
+    , twHexGrid = hexMeta
+    , twPlanet = planet
+    , twSlice = slice
+    , twLatMapping = mkLatitudeMapping planet hexMeta slice config
+    }
+
+lookupPayloadField
+  :: Aeson.FromJSON a
+  => Text
+  -> a
+  -> KM.KeyMap Value
+  -> Either Text a
+lookupPayloadField fieldName fallback payload =
+  case KM.lookup (Key.fromText fieldName) payload of
+    Nothing -> Right fallback
+    Just value ->
+      case Aeson.fromJSON value of
+        Aeson.Error err -> Left ("invalid terrain payload field " <> fieldName <> ": " <> Text.pack err)
+        Aeson.Success decoded -> Right decoded
 
 decodeChunkSection
   :: KM.KeyMap Value
@@ -193,12 +230,15 @@ ensureTerrainPayloadEncoding payload =
     Nothing -> Left "terrain payload missing required encoding field"
 
 lookupChunkSize :: KM.KeyMap Value -> Topo.Types.WorldConfig
-lookupChunkSize payload =
+lookupChunkSize = lookupChunkSizeOr defaultConfig
+  where
+    defaultConfig = Topo.Types.WorldConfig { Topo.Types.wcChunkSize = 64 }
+
+lookupChunkSizeOr :: Topo.Types.WorldConfig -> KM.KeyMap Value -> Topo.Types.WorldConfig
+lookupChunkSizeOr fallback payload =
   case KM.lookup "chunk_size" payload >>= valueToPositiveInt of
     Just chunkSize -> Topo.Types.WorldConfig { Topo.Types.wcChunkSize = chunkSize }
-    Nothing -> Topo.Types.WorldConfig { Topo.Types.wcChunkSize = defaultChunkSize }
-  where
-    defaultChunkSize = 64
+    Nothing -> fallback
 
 valueToPositiveInt :: Value -> Maybe Int
 valueToPositiveInt (Number n) =

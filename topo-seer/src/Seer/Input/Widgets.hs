@@ -540,7 +540,7 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       let name = uiWorldSaveInput uiSnap
       when (not (Text.null name)) $ do
         terrainSnap <- getTerrainSnapshot dataHandle
-        let world = snapshotToWorld terrainSnap
+        let world = snapshotToWorld uiSnap terrainSnap
         pluginDirs <- getPluginDataDirectories pluginManagerHandle
         _result <- saveNamedWorldWithPlugins name uiSnap world pluginDirs
         -- Notify plugins of the saved world path

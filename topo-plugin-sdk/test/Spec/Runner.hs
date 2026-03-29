@@ -27,6 +27,7 @@ import Topo.Plugin.RPC.DataService
   , MutateResource(..), MutateResult(..)
   , QueryResource(..), QueryResult(..)
   )
+import Topo.Plugin.RPC (terrainWorldToPayload)
 import Topo.Plugin.RPC.Protocol
   ( GeneratorResult(..)
   , Handshake(..), HandshakeAck(..)
@@ -48,6 +49,10 @@ import Topo.Plugin.RPC.Transport
   )
 import Topo.Plugin.SDK.Runner (runPluginSession)
 import Topo.Plugin.SDK.Types
+import Topo.Hex (HexGridMeta(..), defaultHexGridMeta)
+import Topo.Planet (PlanetConfig(..), WorldSlice(..), defaultPlanetConfig, defaultWorldSlice)
+import Topo.Types (WorldConfig(..))
+import Topo.World (TerrainWorld(..), emptyWorldWithPlanet)
 
 spec :: Spec
 spec = describe "SDK runner pipe integration" $ do
@@ -82,6 +87,32 @@ spec = describe "SDK runner pipe integration" $ do
           srTerrainWrites result `shouldBe` Just (object [])
       shutdownAndWait host done
 
+  it "hydrates generator pcWorld from terrain payload metadata" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession generatorMetadataPlugin plugin
+      payload <- terrainPayloadFromWorld hydratedWorld
+      sendEnvelope host (generatorInvokeWithTerrain 91 payload)
+      env <- recvEnvelope host
+      envType env `shouldBe` MsgGeneratorResult
+      case Aeson.fromJSON (envPayload env) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success result ->
+          grMetadata result `shouldBe` Just hydratedWorldMetadata
+      shutdownAndWait host done
+
+  it "hydrates simulation pcWorld from terrain payload metadata" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession simulationMetadataPlugin plugin
+      payload <- terrainPayloadFromWorld hydratedWorld
+      sendEnvelope host (simulationInvokeWithTerrain payload)
+      env <- recvEnvelope host
+      envType env `shouldBe` MsgSimulationResult
+      case Aeson.fromJSON (envPayload env) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success result ->
+          srOverlay result `shouldBe` hydratedWorldMetadata
+      shutdownAndWait host done
+
   it "returns plugin error for invoke_generator when generator capability is missing" $
     withTransportPair $ \host plugin -> do
       done <- startSession simOnlyPlugin plugin
@@ -108,6 +139,7 @@ spec = describe "SDK runner pipe integration" $ do
             , envPayload = Aeson.toJSON Handshake
                 { hsProtocolVersion = 1
                 , hsWorldPath = Just "/world/save"
+            , hsHostCapabilities = []
                 }
             }
       sendEnvelope host hs
@@ -117,7 +149,9 @@ spec = describe "SDK runner pipe integration" $ do
         Aeson.Error err -> expectationFailure err
         Aeson.Success (ack :: HandshakeAck) -> do
           length (haResources ack) `shouldBe` 1
-          drsName (head (haResources ack)) `shouldBe` "items"
+          case haResources ack of
+            [resource] -> drsName resource `shouldBe` "items"
+            _ -> expectationFailure "expected exactly one data resource in handshake ack"
       shutdownAndWait host done
 
   it "dispatches query_resource to the correct data handler" $
@@ -290,19 +324,25 @@ decodeLog envelope =
     Aeson.Success (pluginLog :: PluginLog) -> pure (plMessage pluginLog)
 
 generatorInvoke :: Word64 -> RPCEnvelope
-generatorInvoke seed = RPCEnvelope
+generatorInvoke seed = generatorInvokeWithTerrain seed minimalTerrainPayload
+
+generatorInvokeWithTerrain :: Word64 -> Value -> RPCEnvelope
+generatorInvokeWithTerrain seed terrainPayload = RPCEnvelope
   { envType = MsgInvokeGenerator
   , envPayload = Aeson.toJSON InvokeGenerator
       { igPayloadVersion = 1
       , igStageId = "plugin:test"
       , igSeed = seed
       , igConfig = Map.empty
-      , igTerrain = object ["terrain" .= ("summary" :: Text)]
+      , igTerrain = terrainPayload
       }
   }
 
 simulationInvoke :: RPCEnvelope
-simulationInvoke = RPCEnvelope
+simulationInvoke = simulationInvokeWithTerrain minimalTerrainPayload
+
+simulationInvokeWithTerrain :: Value -> RPCEnvelope
+simulationInvokeWithTerrain terrainPayload = RPCEnvelope
   { envType = MsgInvokeSimulation
   , envPayload = Aeson.toJSON InvokeSimulation
       { isPayloadVersion = 1
@@ -311,11 +351,58 @@ simulationInvoke = RPCEnvelope
       , isDeltaTicks = 1
       , isCalendar = object ["year" .= (0 :: Int)]
       , isConfig = Map.empty
-      , isTerrain = object ["terrain" .= ("summary" :: Text)]
+      , isTerrain = terrainPayload
       , isOverlays = object ["weather" .= object ["storage" .= ("sparse" :: Text), "chunks" .= ([] :: [Aeson.Value])]]
       , isOwnOverlay = object ["storage" .= ("sparse" :: Text), "chunks" .= ([] :: [Aeson.Value])]
       }
   }
+
+minimalTerrainPayload :: Value
+minimalTerrainPayload = object
+  [ "chunk_count" .= (0 :: Int)
+  , "climate_count" .= (0 :: Int)
+  , "river_count" .= (0 :: Int)
+  , "vegetation_count" .= (0 :: Int)
+  , "chunk_size" .= (64 :: Int)
+  , "hex_grid" .= defaultHexGridMeta
+  , "planet" .= defaultPlanetConfig
+  , "slice" .= defaultWorldSlice
+  , "encoding" .= ("base64" :: Text)
+  , "terrain" .= object []
+  , "climate" .= object []
+  , "vegetation" .= object []
+  ]
+
+terrainPayloadFromWorld :: TerrainWorld -> IO Value
+terrainPayloadFromWorld world =
+  case terrainWorldToPayload world of
+    Left err -> expectationFailure (Text.unpack err) >> fail "terrain encode"
+    Right payload -> pure payload
+
+hydratedWorld :: TerrainWorld
+hydratedWorld = emptyWorldWithPlanet
+  (WorldConfig { wcChunkSize = 32 })
+  (HexGridMeta { hexSizeKm = 11.0 })
+  (defaultPlanetConfig
+    { pcRadius = 7000.0
+    , pcAxialTilt = 15.0
+    , pcInsolation = 0.9
+    })
+  (defaultWorldSlice
+    { wsLatCenter = 12.5
+    , wsLatExtent = 24.0
+    , wsLonCenter = -45.0
+    , wsLonExtent = 80.0
+    })
+
+hydratedWorldMetadata :: Value
+hydratedWorldMetadata = object
+  [ "chunk_size" .= (32 :: Int)
+  , "hex_size_km" .= (11.0 :: Float)
+  , "planet_radius" .= (7000.0 :: Float)
+  , "slice_lat_center" .= (12.5 :: Float)
+  , "slice_lon_center" .= (-45.0 :: Float)
+  ]
 
 shutdownAndWait :: Transport -> MVar () -> IO ()
 shutdownAndWait host done = do
@@ -356,6 +443,43 @@ simulationPlugin = defaultPluginDef
             })
       }
   }
+
+generatorMetadataPlugin :: PluginDef
+generatorMetadataPlugin = defaultPluginDef
+  { pdName = "generator-world"
+  , pdVersion = "1.0"
+  , pdGenerator = Just GeneratorDef
+      { gdInsertAfter = "erosion"
+      , gdRequires = []
+      , gdRun = \ctx ->
+          pure (Right defaultGeneratorTickResult
+            { gtrMetadata = Just (worldMetadataValue (pcWorld ctx))
+            })
+      }
+  }
+
+simulationMetadataPlugin :: PluginDef
+simulationMetadataPlugin = defaultPluginDef
+  { pdName = "simulation-world"
+  , pdVersion = "1.0"
+  , pdSchemaFile = Just "sim.toposchema"
+  , pdSimulation = Just SimulationDef
+      { sdDependencies = []
+      , sdTick = \ctx ->
+          pure (Right defaultSimulationTickResult
+            { strOverlay = worldMetadataValue (pcWorld ctx)
+            })
+      }
+  }
+
+worldMetadataValue :: TerrainWorld -> Value
+worldMetadataValue world = object
+  [ "chunk_size" .= wcChunkSize (twConfig world)
+  , "hex_size_km" .= hexSizeKm (twHexGrid world)
+  , "planet_radius" .= pcRadius (twPlanet world)
+  , "slice_lat_center" .= wsLatCenter (twSlice world)
+  , "slice_lon_center" .= wsLonCenter (twSlice world)
+  ]
 
 simOnlyPlugin :: PluginDef
 simOnlyPlugin = defaultPluginDef

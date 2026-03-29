@@ -74,7 +74,7 @@ import Topo.Units
   , normToWindMs
   )
 import UI.Font (FontCache, textSize)
-import UI.HexPick (axialToScreen)
+import UI.HexPick (axialToScreen, renderHexRadiusPx)
 import UI.WidgetsDraw (drawTextLine)
 import qualified Data.Vector.Unboxed as U
 
@@ -83,9 +83,8 @@ drawHoverHex renderer uiSnap supersample =
   case uiHoverHex uiSnap of
     Nothing -> pure ()
     Just (q, r) -> do
-      let hexSize = 6
-          spans = hexSpans hexSize
-          (cx, cy) = axialToScreen hexSize q r
+      let spans = hexSpans renderHexRadiusPx
+          (cx, cy) = axialToScreen renderHexRadiusPx q r
           (ox, oy) = uiPanOffset uiSnap
           z = uiZoom uiSnap
           (minX, minY, maxX, maxY) = spanBounds spans

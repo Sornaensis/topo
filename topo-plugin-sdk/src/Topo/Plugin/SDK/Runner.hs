@@ -36,16 +36,16 @@ import Data.Aeson (Value(..), (.=), object)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
-import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
+import Data.Word (Word64)
 import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>))
-import System.IO (hFlush, stderr, stdin, stdout)
+import System.IO (stderr, stdin, stdout)
 
 import Topo.Plugin.RPC.Manifest
   ( Capability(..)
@@ -73,7 +73,6 @@ import Topo.Plugin.RPC.Protocol
   )
 import Topo.Plugin.RPC.Transport
   ( Transport(..)
-  , TransportError
   , sendMessage
   , recvMessage
   , closeTransport
@@ -85,6 +84,7 @@ import Topo.Plugin.RPC.DataService
   ( QueryResource(..), QueryResult(..), DataRecord(..)
   , MutateResource(..), MutateResult(..)
   )
+import Topo.Plugin.SDK.Payload (decodeTerrainPayload)
 import Topo.Types (WorldConfig(..))
 import Topo.World (TerrainWorld, emptyWorld)
 
@@ -339,25 +339,27 @@ messageLoop pd transport params worldPath = do
                   messageLoop pd transport params worldPath
                 Aeson.Success (ig :: InvokeGenerator) -> do
                   let mergedParams = Map.union (igConfig ig) params
-                      ctx = PluginContext
-                        { pcWorld = stubWorld
-                        , pcParams = mergedParams
-                        , pcTerrain = igTerrain ig
-                        , pcOwnOverlay = Nothing
-                        , pcOverlays = Map.empty
-                        , pcSeed = igSeed ig
-                        , pcLog = sendLogMessage transport
-                        , pcWorldPath = worldPath
-                        }
-                  runResult <- catch
-                    (gdRun gd ctx)
-                    (\e -> pure (Left (Text.pack (show (e :: SomeException)))))
-                  case runResult of
-                    Left errMsg ->
-                      sendErrorResponse transport 3 errMsg
-                    Right generatorResult ->
-                      sendGeneratorResult transport generatorResult
-                  messageLoop pd transport mergedParams worldPath
+                  case makeTerrainContext
+                    mergedParams
+                    (igTerrain ig)
+                    Nothing
+                    Map.empty
+                    (igSeed ig)
+                    worldPath
+                    (sendLogMessage transport) of
+                    Left err -> do
+                      sendErrorResponse transport 6 ("Invalid terrain payload: " <> err)
+                      messageLoop pd transport mergedParams worldPath
+                    Right ctx -> do
+                      runResult <- catch
+                        (gdRun gd ctx)
+                        (\e -> pure (Left (Text.pack (show (e :: SomeException)))))
+                      case runResult of
+                        Left errMsg ->
+                          sendErrorResponse transport 3 errMsg
+                        Right generatorResult ->
+                          sendGeneratorResult transport generatorResult
+                      messageLoop pd transport mergedParams worldPath
 
         MsgInvokeSimulation -> do
           case pdSimulation pd of
@@ -371,25 +373,27 @@ messageLoop pd transport params worldPath = do
                   messageLoop pd transport params worldPath
                 Aeson.Success (is' :: InvokeSimulation) -> do
                   let mergedParams = Map.union (isConfig is') params
-                      ctx = PluginContext
-                        { pcWorld = stubWorld
-                        , pcParams = mergedParams
-                        , pcTerrain = isTerrain is'
-                        , pcOwnOverlay = Just (isOwnOverlay is')
-                        , pcOverlays = valueObjectToMap (isOverlays is')
-                        , pcSeed = 0
-                        , pcLog = sendLogMessage transport
-                        , pcWorldPath = worldPath
-                        }
-                  runResult <- catch
-                    (sdTick sd ctx)
-                    (\e -> pure (Left (Text.pack (show (e :: SomeException)))))
-                  case runResult of
-                    Left errMsg ->
-                      sendErrorResponse transport 5 errMsg
-                    Right simulationResult ->
-                      sendSimulationResult transport simulationResult
-                  messageLoop pd transport mergedParams worldPath
+                  case makeTerrainContext
+                    mergedParams
+                    (isTerrain is')
+                    (Just (isOwnOverlay is'))
+                    (valueObjectToMap (isOverlays is'))
+                    0
+                    worldPath
+                    (sendLogMessage transport) of
+                    Left err -> do
+                      sendErrorResponse transport 7 ("Invalid terrain payload: " <> err)
+                      messageLoop pd transport mergedParams worldPath
+                    Right ctx -> do
+                      runResult <- catch
+                        (sdTick sd ctx)
+                        (\e -> pure (Left (Text.pack (show (e :: SomeException)))))
+                      case runResult of
+                        Left errMsg ->
+                          sendErrorResponse transport 5 errMsg
+                        Right simulationResult ->
+                          sendSimulationResult transport simulationResult
+                      messageLoop pd transport mergedParams worldPath
 
         -- Ignore unknown message types
         _ -> messageLoop pd transport params worldPath
@@ -445,6 +449,28 @@ valueObjectToMap (Object keyMap) =
     | (key, value) <- KM.toList keyMap
     ]
 valueObjectToMap _ = Map.empty
+
+makeTerrainContext
+  :: Map Text Value
+  -> Value
+  -> Maybe Value
+  -> Map Text Value
+  -> Word64
+  -> Maybe FilePath
+  -> (Text -> IO ())
+  -> Either Text PluginContext
+makeTerrainContext params terrainPayload ownOverlay overlays seed worldPath logFn = do
+  world <- decodeTerrainPayload terrainPayload
+  Right PluginContext
+    { pcWorld = world
+    , pcParams = params
+    , pcTerrain = terrainPayload
+    , pcOwnOverlay = ownOverlay
+    , pcOverlays = overlays
+    , pcSeed = seed
+    , pcLog = logFn
+    , pcWorldPath = worldPath
+    }
 
 -- | Send a log message to the host.
 sendLogMessage :: Transport -> Text -> IO ()
