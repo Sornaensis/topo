@@ -5,6 +5,7 @@ module Spec.Hex (spec) where
 import Test.Hspec
 import Test.Hspec.QuickCheck
 import Test.QuickCheck
+import Data.List (nub)
 import Topo
 
 -- | Arbitrary instance for HexDirection (useful for property tests).
@@ -112,3 +113,55 @@ spec = describe "Hex" $ do
     it "returns Nothing for off-grid neighbor" $ do
       -- tile at (0,0), going west is off-grid
       hexNeighborIndexInDirection 8 8 HexW 0 `shouldBe` Nothing
+
+  ---------------------------------------------------------------------------
+  -- hexRing / hexDisc
+  ---------------------------------------------------------------------------
+  describe "hexRing" $ do
+    it "ring 0 returns the empty list" $
+      hexRing (HexAxial 3 4) 0 `shouldBe` []
+
+    it "ring 1 returns 6 distinct tiles" $ do
+      let ring = hexRing (HexAxial 0 0) 1
+      length ring `shouldBe` 6
+      length (nub ring) `shouldBe` 6
+
+    it "ring 1 tiles are all distance 1 from center" $ do
+      let ring = hexRing (HexAxial 2 3) 1
+      all (\h -> hexDistance (HexAxial 2 3) h == 1) ring `shouldBe` True
+
+    it "ring 2 returns 12 distinct tiles" $ do
+      let ring = hexRing (HexAxial 0 0) 2
+      length ring `shouldBe` 12
+      length (nub ring) `shouldBe` 12
+
+    it "ring 2 tiles are all distance 2 from center" $ do
+      let ring = hexRing (HexAxial 0 0) 2
+      all (\h -> hexDistance (HexAxial 0 0) h == 2) ring `shouldBe` True
+
+    prop "ring r has exactly max(1, 6*r) elements" $ \(Positive r) ->
+      let n = min r 10  -- keep small for test speed
+      in length (hexRing (HexAxial 0 0) n) === 6 * n
+
+  describe "hexDisc" $ do
+    it "disc 0 is a singleton containing the center" $
+      hexDisc (HexAxial 5 5) 0 `shouldBe` [HexAxial 5 5]
+
+    it "disc 1 returns 7 tiles (center + 6 neighbors)" $ do
+      let d = hexDisc (HexAxial 0 0) 1
+      length d `shouldBe` 7
+      length (nub d) `shouldBe` 7
+
+    it "disc 2 returns 19 tiles (1 + 6 + 12)" $ do
+      let d = hexDisc (HexAxial 0 0) 2
+      length d `shouldBe` 19
+      length (nub d) `shouldBe` 19
+
+    prop "disc r has 3*r^2 + 3*r + 1 elements" $ \(Positive r) ->
+      let n = min r 10
+      in length (hexDisc (HexAxial 0 0) n) === 3 * n * n + 3 * n + 1
+
+    prop "all disc tiles are within distance r of center" $ \(Positive r) ->
+      let n = min r 10
+          center = HexAxial 0 0
+      in all (\h -> hexDistance center h <= n) (hexDisc center n) === True

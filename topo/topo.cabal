@@ -49,6 +49,7 @@ library
       Topo.WaterBody
       Topo.WaterTable
       Topo.Parameters
+      Topo.Parameters.Recompute
       Topo.Soil
       Topo.Vegetation
       Topo.Climate

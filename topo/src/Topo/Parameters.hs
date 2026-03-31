@@ -21,6 +21,8 @@ module Topo.Parameters
   , defaultTerrainFormConfig
   , computeReliefIndex
   , applyParameterLayersStage
+  -- * Chunk derivation
+  , deriveChunk
   -- * Stencil functions (exported for testing)
   , mkElevLookup
   , slopeAt

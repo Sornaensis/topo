@@ -242,9 +242,10 @@ hexRing _center r
 hexRing center r =
   let -- Start at the hex that is r steps in the HexW direction
       start = iterate (hexNeighborInDirection HexW) center !! r
-      -- Walk each of the 6 edge directions for r steps
-      edgeDirs = [HexE, HexNE, HexNW, HexW, HexSW, HexSE]
-      walkEdge dir cur = take r (tail (iterate (hexNeighborInDirection dir) cur))
+      -- Walk each of the 6 edge directions for r steps.
+      -- Starting from the West vertex, trace: NE → E → SE → SW → W → NW
+      edgeDirs = [HexNE, HexE, HexSE, HexSW, HexW, HexNW]
+      walkEdge dir cur = take r (drop 1 (iterate (hexNeighborInDirection dir) cur))
       go [] cur acc      = acc ++ [cur]
       go (d:ds) cur acc  =
         let edge = walkEdge d cur

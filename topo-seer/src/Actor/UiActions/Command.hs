@@ -74,11 +74,13 @@ import Numeric (showFFloat)
 import qualified Data.Map.Strict as Map
 import Seer.Config (applyUiConfig, configSummary)
 import Seer.Editor.Brush (applyBrushStroke)
-import Seer.Editor.Types (EditorState(..))
-import Topo (ChunkId(..), WorldConfig(..))
+import Seer.Editor.Types (EditorState(..), BrushSettings(..))
+import Topo (ChunkId(..), HexCoord(..), WorldConfig(..))
+import Topo.Hex (hexDisc)
 import Topo.Overlay.Schema (OverlaySchema(..))
+import Topo.Parameters.Recompute (recomputeDerivedChunks)
 import Topo.Plugin.RPC.Manifest (rmParameters)
-import Topo.WorldGen (defaultWorldGenConfig)
+import Topo.WorldGen (WorldGenConfig(..), TerrainConfig(..), defaultWorldGenConfig)
 
 -- | UI-triggered actions that can be executed asynchronously.
 data UiAction
@@ -268,7 +270,20 @@ applyBrush req hex = do
       tool = editorTool editor
       brush = editorBrush editor
       oldChunks = tsTerrainChunks terrainSnap
-      newChunks = applyBrushStroke cfg tool brush hex oldChunks
+      brushed = applyBrushStroke cfg tool brush hex oldChunks
+      -- Recompute derived terrain fields (slope, curvature, relief, etc.)
+      -- for chunks affected by the brush stroke.
+      genCfg = applyUiConfig uiSnap defaultWorldGenConfig
+      terrain = worldTerrain genCfg
+      paramCfg = terrainParameters terrain
+      formCfg = terrainFormConfig terrain
+      waterLvl = uiWaterLevel uiSnap
+      affectedTiles = [ (q, r)
+                       | HexAxial q r <- hexDisc (HexAxial (fst hex) (snd hex))
+                                                 (brushRadius brush)
+                       ]
+      newChunks = recomputeDerivedChunks cfg paramCfg formCfg waterLvl
+                    affectedTiles brushed
       -- Convert modified chunks to the (ChunkId, TerrainChunk) list format
       changed = [ (ChunkId k, v)
                  | (k, v) <- IntMap.toList newChunks

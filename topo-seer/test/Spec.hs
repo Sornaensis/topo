@@ -23,6 +23,7 @@ import qualified Spec.WidgetTree
 import qualified Spec.SliderSpec
 import qualified Spec.WorldPersist
 import qualified Spec.CommandDispatch
+import qualified Spec.EditorBrush
 
 main :: IO ()
 main = do
@@ -50,3 +51,4 @@ main = do
     Spec.WidgetTree.spec
     Spec.WorldPersist.spec
     Spec.CommandDispatch.spec
+    Spec.EditorBrush.spec

@@ -64,7 +64,7 @@ import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets
 import UI.Widgets (Rect(..), containsPoint)
 import Seer.Input.Actions (InputEnv(..), submitAction)
 import qualified Seer.Input.Actions as InputActions
-import Seer.Editor.Types (EditorState(..))
+import Seer.Editor.Types (EditorState(..), EditorTool(..), BrushSettings(..))
 import Actor.UiActions (UiAction(..))
 import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.PluginManager (getPluginDataDirectories, notifyWorldChanged)
@@ -127,6 +127,15 @@ handleEvent inputContext event = do
       if isTerrainHex terrainSnap (q, r)
         then setUiHoverHex uiHandle (Just (q, r))
         else setUiHoverHex uiHandle Nothing
+      -- Editor drag-to-paint: apply brush continuously while left button held
+      let buttons = SDL.mouseMotionEventState motionEvent
+      when (SDL.ButtonLeft `elem` buttons) $ do
+        uiSnapDrag <- getUiSnapshot uiHandle
+        let editor = uiEditor uiSnapDrag
+        when (editorActive editor) $
+          case uiHoverHex uiSnapDrag of
+            Just hex -> submitAction inputEnv (UiActionBrushStroke hex)
+            Nothing  -> pure ()
       -- Widget hover detection for tooltips (only for active tab sliders)
       do (V2 winW winH) <- SDL.get (SDL.windowSize window)
          logSnap <- getLogSnapshot logHandle
@@ -254,21 +263,25 @@ handleEvent inputContext event = do
                 MenuPresetLoad -> handlePresetLoadKey uiSnap keycode
                 MenuWorldSave  -> handleWorldSaveKey uiSnap keycode
                 MenuWorldLoad  -> handleWorldLoadKey uiSnap keycode
-                _ ->
-                  case keycode of
-                    SDL.KeycodeEscape -> closeContextOrMenu
-                    SDL.KeycodeG -> submitAction inputEnv UiActionGenerate
-                    SDL.KeycodeC -> toggleConfig
-                    SDL.KeycodeE -> toggleEditor
-                    SDL.KeycodeUp -> bumpSeed uiHandle (getUiSnapshot uiHandle) 1
-                    SDL.KeycodeDown -> bumpSeed uiHandle (getUiSnapshot uiHandle) (-1)
-                    SDL.KeycodeL -> do
-                      logSnap <- getLogSnapshot logHandle
-                      setLogCollapsed logHandle (not (lsCollapsed logSnap))
-                    _ ->
-                      case viewModeForKey keycode of
-                        Just mode -> submitAction inputEnv (UiActionSetViewMode mode)
-                        Nothing -> pure ()
+                _ -> do
+                  uiSnap2 <- getUiSnapshot uiHandle
+                  let editor = uiEditor uiSnap2
+                  if editorActive editor
+                    then handleEditorKey editor keycode
+                    else case keycode of
+                      SDL.KeycodeEscape -> closeContextOrMenu
+                      SDL.KeycodeG -> submitAction inputEnv UiActionGenerate
+                      SDL.KeycodeC -> toggleConfig
+                      SDL.KeycodeE -> toggleEditor
+                      SDL.KeycodeUp -> bumpSeed uiHandle (getUiSnapshot uiHandle) 1
+                      SDL.KeycodeDown -> bumpSeed uiHandle (getUiSnapshot uiHandle) (-1)
+                      SDL.KeycodeL -> do
+                        logSnap <- getLogSnapshot logHandle
+                        setLogCollapsed logHandle (not (lsCollapsed logSnap))
+                      _ ->
+                        case viewModeForKey keycode of
+                          Just mode -> submitAction inputEnv (UiActionSetViewMode mode)
+                          Nothing -> pure ()
     _ -> pure ()
   where
     inputEnv :: InputEnv
@@ -309,6 +322,25 @@ handleEvent inputContext event = do
       uiSnap <- getUiSnapshot uiHandle
       let editor = uiEditor uiSnap
       setUiEditor uiHandle (editor { editorActive = not (editorActive editor) })
+    handleEditorKey :: EditorState -> SDL.Keycode -> IO ()
+    handleEditorKey editor keycode = case keycode of
+      SDL.KeycodeEscape ->
+        setUiEditor uiHandle (editor { editorActive = False })
+      SDL.KeycodeE ->
+        setUiEditor uiHandle (editor { editorActive = False })
+      SDL.Keycode1 ->
+        setUiEditor uiHandle (editor { editorTool = ToolRaise })
+      SDL.Keycode2 ->
+        setUiEditor uiHandle (editor { editorTool = ToolLower })
+      SDL.KeycodeLeftBracket ->
+        let brush = editorBrush editor
+            r = max 0 (brushRadius brush - 1)
+        in setUiEditor uiHandle (editor { editorBrush = brush { brushRadius = r } })
+      SDL.KeycodeRightBracket ->
+        let brush = editorBrush editor
+            r = min 6 (brushRadius brush + 1)
+        in setUiEditor uiHandle (editor { editorBrush = brush { brushRadius = r } })
+      _ -> pure ()
     closeContextOrMenu = do
       uiSnap <- getUiSnapshot uiHandle
       case uiContextHex uiSnap of
