@@ -8,6 +8,7 @@ module Topo.BiomeConfig
   , aridBiomeConfig
   , lushBiomeConfig
   , classifyBiomesStage
+  , classifyChunk
   ) where
 
 import Data.IntMap.Strict (IntMap)

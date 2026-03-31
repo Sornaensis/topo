@@ -11,6 +11,7 @@ import Topo (WorldConfig(..), ChunkId(..), emptyTerrainChunk, chunkIdFromCoord)
 import Topo.Types (ChunkCoord(..), TerrainChunk(..), BiomeId, TerrainForm, pattern BiomeDesert, pattern BiomeGrassland, pattern FormFlat, pattern FormHilly)
 import Seer.Editor.Brush (applyBrushStroke, applyErodeStroke, applySmoothStroke, applyFlattenStroke, applyNoiseStroke, applyPaintBiomeStroke, applyPaintFormStroke, applySetHardnessStroke, brushWeight)
 import Seer.Editor.Types
+import Actor.UiActions.Command (isElevationTool)
 
 spec :: Spec
 spec = describe "Editor.Brush" $ do
@@ -305,3 +306,34 @@ spec = describe "Editor.Brush" $ do
       let after = applyErodeStroke cfg brush 5 defaultErosionConfig defaultTerrainFormConfig 0.0 (1, 1) chunks
           Just chunk = IntMap.lookup chunkKey after
       (tcElevation chunk U.! 0) `shouldBe` 0.2
+
+  ---------------------------------------------------------------------------
+  -- isElevationTool
+  ---------------------------------------------------------------------------
+  describe "isElevationTool" $ do
+    it "returns True for ToolRaise" $
+      isElevationTool ToolRaise `shouldBe` True
+
+    it "returns True for ToolLower" $
+      isElevationTool ToolLower `shouldBe` True
+
+    it "returns True for ToolSmooth" $
+      isElevationTool ToolSmooth `shouldBe` True
+
+    it "returns True for ToolFlatten" $
+      isElevationTool ToolFlatten `shouldBe` True
+
+    it "returns True for ToolNoise" $
+      isElevationTool ToolNoise `shouldBe` True
+
+    it "returns True for ToolErode" $
+      isElevationTool ToolErode `shouldBe` True
+
+    it "returns False for ToolPaintBiome" $
+      isElevationTool ToolPaintBiome `shouldBe` False
+
+    it "returns False for ToolPaintForm" $
+      isElevationTool ToolPaintForm `shouldBe` False
+
+    it "returns False for ToolSetHardness" $
+      isElevationTool ToolSetHardness `shouldBe` False

@@ -10,6 +10,7 @@ module Actor.UiActions.Command
   , ActorHandles(..)
   , UiActionRequest(..)
   , runUiAction
+  , isElevationTool
   ) where
 
 import Actor.UiActions.Handles (ActorHandles(..))
@@ -79,6 +80,7 @@ import Seer.Editor.Brush (applyBrushStroke, applyErodeStroke, applyFlattenStroke
 import Seer.Editor.History (EditAction(..), pushEdit, undoEdit, redoEdit)
 import Seer.Editor.Types (EditorState(..), EditorTool(..), BrushSettings(..))
 import Topo (ChunkId(..), HexCoord(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
+import Topo.BiomeConfig (BiomeConfig(..), classifyChunk)
 import Topo.Hex (hexDisc)
 import Topo.Overlay.Schema (OverlaySchema(..))
 import Topo.Parameters.Recompute (recomputeDerivedChunks)
@@ -367,9 +369,23 @@ applyBrush req hex = do
                        ]
       newChunks = recomputeDerivedChunks cfg paramCfg formCfg waterLvl
                     affectedTiles brushed
+      -- Reclassify biomes for tools that change elevation so the
+      -- biome overlay stays up-to-date with the edited terrain.
+      reclassifiedChunks
+        | isElevationTool tool =
+            let biomeCfg      = worldBiome genCfg
+                climateChunks = tsClimateChunks terrainSnap
+            in IntMap.mapWithKey (\k tc ->
+                 case IntMap.lookup k climateChunks of
+                   Nothing -> tc
+                   Just cc ->
+                     tc { tcFlags = classifyChunk cfg (bcRules biomeCfg)
+                            (bcThresholds biomeCfg) waterLvl Nothing tc cc }
+               ) newChunks
+        | otherwise = newChunks
       -- Convert modified chunks to the (ChunkId, TerrainChunk) list format
       changed = [ (ChunkId k, v)
-                 | (k, v) <- IntMap.toList newChunks
+                 | (k, v) <- IntMap.toList reclassifiedChunks
                  , case IntMap.lookup k oldChunks of
                      Just old -> old /= v
                      Nothing  -> True
@@ -419,6 +435,16 @@ toolLabel ToolPaintBiome  = "Paint Biome"
 toolLabel ToolPaintForm   = "Paint Form"
 toolLabel ToolSetHardness = "Set Hardness"
 toolLabel ToolErode       = "Erode"
+
+-- | Does this tool modify elevation and therefore require biome reclassification?
+isElevationTool :: EditorTool -> Bool
+isElevationTool ToolRaise   = True
+isElevationTool ToolLower   = True
+isElevationTool ToolSmooth  = True
+isElevationTool ToolFlatten = True
+isElevationTool ToolNoise   = True
+isElevationTool ToolErode   = True
+isElevationTool _           = False
 
 clearFlattenRef :: UiActionRequest -> IO ()
 clearFlattenRef req = do
