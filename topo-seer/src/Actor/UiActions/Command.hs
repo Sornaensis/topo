@@ -396,8 +396,10 @@ applyBrush req hex = do
           histRef = ahHistoryRef handles
       hist <- readIORef histRef
       writeIORef histRef (pushEdit action hist)
-      -- Write changed chunks to data actor
-      setTerrainChunkData dataHandle (tsChunkSize terrainSnap) changed
+      -- Merge changed chunks back into the full terrain map before writing.
+      -- The data actor's terrain setter replaces the entire chunk map.
+      writeTerrainChunkMap dataHandle (tsChunkSize terrainSnap)
+        (IntMap.union newChanged oldChunks)
       -- Refresh the snapshot refs so the render pipeline picks up changes
       terrainSnap' <- getTerrainSnapshot dataHandle
       dataSnap' <- getDataSnapshot dataHandle
@@ -458,8 +460,8 @@ applyChunkRestore handles chunks = do
   let dataHandle = ahDataHandle handles
       uiHandle   = ahUiHandle handles
   terrainSnap <- getTerrainSnapshot dataHandle
-  let chunkList = [ (ChunkId k, v) | (k, v) <- IntMap.toList chunks ]
-  setTerrainChunkData dataHandle (tsChunkSize terrainSnap) chunkList
+  writeTerrainChunkMap dataHandle (tsChunkSize terrainSnap)
+    (IntMap.union chunks (tsTerrainChunks terrainSnap))
   terrainSnap' <- getTerrainSnapshot dataHandle
   dataSnap'    <- getDataSnapshot dataHandle
   writeTerrainSnapshot (ahTerrainSnapshotRef handles) terrainSnap'
@@ -467,6 +469,17 @@ applyChunkRestore handles chunks = do
   bumpSnapshotVersion (ahSnapshotVersionRef handles)
   uiSnap <- getUiSnapshot uiHandle
   rebuildAtlasFor' handles (uiViewMode uiSnap)
+
+writeTerrainChunkMap
+  :: ActorHandle Data (Protocol Data)
+  -> Int
+  -> IntMap.IntMap TerrainChunk
+  -> IO ()
+writeTerrainChunkMap dataHandle chunkSize chunks =
+  setTerrainChunkData dataHandle chunkSize
+    [ (ChunkId key, chunk)
+    | (key, chunk) <- IntMap.toList chunks
+    ]
 
 -- | Look up the elevation at a hex tile, returning 0.5 if the tile
 -- is not loaded.

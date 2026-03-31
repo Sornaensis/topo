@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- | Tests for 'Seer.Command.Dispatch.dispatchCommand' and the handler
 -- modules it delegates to.
@@ -15,14 +16,15 @@ import Control.Exception (bracket)
 import Data.Aeson (Value(..), object, (.=), Key)
 import qualified Data.Aeson.KeyMap as KM
 import Data.Foldable (toList)
+import qualified Data.IntMap.Strict as IntMap
 import Data.IORef (writeIORef)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Hyperspace.Actor (ActorSystem, getSingleton, newActorSystem, shutdownActorSystem)
+import Hyperspace.Actor (ActorSystem, getSingleton, newActorSystem, replyTo, shutdownActorSystem)
 import Test.Hspec
 
 import Actor.AtlasManager (atlasManagerActorDef)
-import Actor.Data (DataSnapshot(..), TerrainSnapshot(..), dataActorDef)
+import Actor.Data (DataSnapshot(..), TerrainSnapshot(..), dataActorDef, getTerrainSnapshot, setTerrainChunkData)
 import Actor.Log (logActorDef)
 import Actor.PluginManager (pluginManagerActorDef)
 import Actor.Simulation (simulationActorDef)
@@ -31,20 +33,23 @@ import Actor.SnapshotReceiver
   , newTerrainSnapshotRef
   , newSnapshotVersionRef
   )
-import Actor.Terrain (terrainActorDef)
+import Actor.Terrain (TerrainReplyOps, terrainActorDef)
 import Actor.UI
   ( uiActorDef
   , newUiSnapshotRef
   , setUiSnapshotRef
   )
 import Actor.UiActions (ActorHandles(..), uiActionsActorDef)
+import Actor.UiActions.Command (UiAction(..), UiActionRequest(..), runUiAction)
 
 import Data.IORef (newIORef)
 import Seer.Command.Dispatch (CommandContext(..), dispatchCommand)
 import Seer.Editor.History (emptyHistory)
 import Seer.Screenshot (ScreenshotRequest(..), newScreenshotRequestRef)
+import Topo (WorldConfig(..), chunkIdFromCoord, emptyTerrainChunk)
 import Topo.Command.Types (SeerCommand(..), SeerResponse(..))
 import Topo.Overlay (emptyOverlayStore)
+import Topo.Types (ChunkCoord(..), ChunkId(..))
 
 spec :: Spec
 spec = describe "CommandDispatch" $ do
@@ -285,6 +290,41 @@ spec = describe "CommandDispatch" $ do
       srSuccess rsp `shouldBe` True
       lookupKey "status" (srResult rsp) `shouldBe` Just (String "queued")
       lookupKey "strokes_queued" (srResult rsp) `shouldBe` Just (Number 1)
+
+    it "preserves untouched terrain chunks across brush, undo, and redo" $ withCtx $ \ctx -> do
+      let dataHandle = ahDataHandle (ccActorHandles ctx)
+          cfg = WorldConfig { wcChunkSize = 64 }
+          farChunkId = chunkIdFromCoord (ChunkCoord 4 4)
+          initialChunks =
+            [ (chunkIdFromCoord (ChunkCoord 0 0), emptyTerrainChunk cfg)
+            , (chunkIdFromCoord (ChunkCoord (-1) 0), emptyTerrainChunk cfg)
+            , (chunkIdFromCoord (ChunkCoord 0 (-1)), emptyTerrainChunk cfg)
+            , (farChunkId, emptyTerrainChunk cfg)
+            ]
+          request action = UiActionRequest
+            { uarAction = action
+            , uarActorHandles = ccActorHandles ctx
+            , uarTerrainReplyTo = replyTo @TerrainReplyOps (ccUiActionsHandle ctx)
+            }
+          expectedChunkCount = length initialChunks
+          ChunkId farChunkKey = farChunkId
+
+      setTerrainChunkData dataHandle (wcChunkSize cfg) initialChunks
+
+      runUiAction (request (UiActionBrushStroke (0, 0)))
+      afterBrush <- getTerrainSnapshot dataHandle
+      IntMap.size (tsTerrainChunks afterBrush) `shouldBe` expectedChunkCount
+      IntMap.member farChunkKey (tsTerrainChunks afterBrush) `shouldBe` True
+
+      runUiAction (request UiActionUndo)
+      afterUndo <- getTerrainSnapshot dataHandle
+      IntMap.size (tsTerrainChunks afterUndo) `shouldBe` expectedChunkCount
+      IntMap.member farChunkKey (tsTerrainChunks afterUndo) `shouldBe` True
+
+      runUiAction (request UiActionRedo)
+      afterRedo <- getTerrainSnapshot dataHandle
+      IntMap.size (tsTerrainChunks afterRedo) `shouldBe` expectedChunkCount
+      IntMap.member farChunkKey (tsTerrainChunks afterRedo) `shouldBe` True
 
   describe "editor_brush_line" $ do
     it "queues multiple brush strokes along a line" $ withCtx $ \ctx -> do
