@@ -94,6 +94,51 @@ spec = describe "UI.Layout" $ do
     tickY `shouldBe` rowY
     rateY `shouldBe` (rowY + 4)
 
+  it "positions editor toolbar centered horizontally below top bar" $ do
+    let layout = layoutFor (V2 1200 800) 160
+        Rect (V2 tx ty, V2 tw th) = editorToolbarRect layout
+    -- Centered: left edge + width should be symmetric about midpoint
+    (tx + tw `div` 2) `shouldBe` 600
+    -- Below top bar
+    ty `shouldBe` (4 + topBarHeight)
+    -- Bar height
+    th `shouldBe` 36
+
+  it "places tool buttons inside editor toolbar" $ do
+    let layout = layoutFor (V2 1200 800) 160
+        Rect (V2 barX barY, V2 _barW barH) = editorToolbarRect layout
+        Rect (V2 b0x b0y, V2 b0w b0h) = editorToolButtonRect 0 layout
+        Rect (V2 b1x b1y, V2 b1w _) = editorToolButtonRect 1 layout
+    -- First button inside bar
+    b0x `shouldSatisfy` (>= barX)
+    b0y `shouldSatisfy` (>= barY)
+    (b0y + b0h) `shouldSatisfy` (<= barY + barH)
+    -- Buttons side by side with gap
+    b1x `shouldBe` (b0x + b0w + 4)
+    b1y `shouldBe` b0y
+
+  it "places radius controls after tool buttons" $ do
+    let layout = layoutFor (V2 1200 800) 160
+        Rect (V2 lastBtnX _, V2 lastBtnW _) = editorToolButtonRect (editorToolButtonCount - 1) layout
+        Rect (V2 mx _, V2 mw _) = editorRadiusMinusRect layout
+        Rect (V2 vx _, V2 vw _) = editorRadiusValueRect layout
+        Rect (V2 px _, V2 _ _) = editorRadiusPlusRect layout
+    -- Minus after last tool button
+    mx `shouldSatisfy` (> lastBtnX + lastBtnW)
+    -- Value after minus
+    vx `shouldBe` (mx + mw + 4)
+    -- Plus after value
+    px `shouldBe` (vx + vw + 4)
+
+  it "places close button at right end" $ do
+    let layout = layoutFor (V2 1200 800) 160
+        Rect (V2 px _, V2 pw _) = editorRadiusPlusRect layout
+        Rect (V2 cx _, V2 cw _) = editorCloseRect layout
+        Rect (V2 barX _, V2 barW _) = editorToolbarRect layout
+    cx `shouldBe` (px + pw + 4)
+    -- Close button inside toolbar
+    (cx + cw) `shouldSatisfy` (<= barX + barW)
+
 inside :: V2 Int -> Rect -> Bool
 inside (V2 px py) (Rect (V2 x y, V2 w h)) =
   px >= x && px < x + w && py >= y && py < y + h

@@ -51,6 +51,9 @@ library
       Seer.Draw.LeftPanel
       Seer.Draw.Overlay
       Seer.Editor.Brush
+      Seer.Editor.History
+      Seer.Editor.Preview
+      Seer.Editor.Toolbar
       Seer.Editor.Types
       Seer.Input
       Seer.Input.Actions
@@ -166,6 +169,7 @@ test-suite topo-seer-test
       Spec.CommandDispatch
       Spec.ConfigSnapshot
       Spec.EditorBrush
+      Spec.EditorHistory
       Spec.HexPick
       Spec.Layout
       Spec.LogActor

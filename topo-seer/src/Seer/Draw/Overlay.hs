@@ -4,6 +4,12 @@ module Seer.Draw.Overlay
   ( drawHoverHex
   , drawHexContext
   , drawTooltip
+    -- * Hex drawing primitives (reused by brush preview)
+  , RectInt(..)
+  , hexSpans
+  , spanBounds
+  , drawHexSpansSupersampled
+  , transformRect
   ) where
 
 import Actor.Data (TerrainSnapshot(..))

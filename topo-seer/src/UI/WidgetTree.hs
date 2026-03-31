@@ -3,6 +3,7 @@ module UI.WidgetTree
   ( WidgetId(..)
   , Widget(..)
   , buildWidgets
+  , buildEditorWidgets
   , buildPluginWidgets
   , buildDataBrowserWidgets
   , buildSliderRowWidgets
@@ -251,6 +252,18 @@ buildSliderWidgets layout sliderDef =
   in [ Widget (sliderMinusWidgetId sliderDef) (configParamRowMinusRect rects)
      , Widget (sliderPlusWidgetId sliderDef) (configParamRowPlusRect rects)
      ]
+
+-- | Build widgets for the editor toolbar (tool buttons, radius controls,
+-- close button).  Only included in hit-testing when the editor is active.
+buildEditorWidgets :: Layout -> [Widget]
+buildEditorWidgets layout =
+  [ Widget (WidgetEditorTool idx) (editorToolButtonRect idx layout)
+  | idx <- [0 .. editorToolButtonCount - 1]
+  ] ++
+  [ Widget WidgetEditorRadiusMinus (editorRadiusMinusRect layout)
+  , Widget WidgetEditorRadiusPlus  (editorRadiusPlusRect layout)
+  , Widget WidgetEditorClose       (editorCloseRect layout)
+  ]
 
 hitTest :: [Widget] -> V2 Int -> Maybe WidgetId
 hitTest widgets point =

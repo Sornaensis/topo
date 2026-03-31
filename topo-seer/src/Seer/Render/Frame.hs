@@ -51,6 +51,9 @@ import Seer.Render.Terrain
 import Seer.Render.Ui (drawUiOverlay)
 import Seer.Screenshot (serviceScreenshotRequest)
 import Seer.Timing (nsToMs, timedMs)
+import Seer.Editor.Preview (drawBrushPreview)
+import Seer.Editor.Toolbar (drawEditorToolbar)
+import Seer.Editor.Types (EditorState(..))
 import UI.Font (FontCache)
 import UI.Layout
 import UI.TerrainCache (ChunkTextureCache(..), emptyChunkTextureCache)
@@ -176,6 +179,9 @@ renderFrame context = do
   loggedHover <- do
     (_, elapsed) <- timedMs (drawHoverHex renderer (rsUi snapshot) atlasScale)
     logTiming logHandle timingLogThresholdMs (Text.pack "draw hover") elapsed Nothing
+  -- Brush preview overlay (between terrain and UI chrome)
+  when (editorActive (uiEditor (rsUi snapshot))) $
+    drawBrushPreview renderer (rsUi snapshot) atlasScale
   loggedChrome <- do
     (_, elapsed) <- timedMs $ do
       let configColor = if uiShowConfig (rsUi snapshot) then V4 140 160 200 255 else V4 100 120 160 255
@@ -199,6 +205,9 @@ renderFrame context = do
             drawViewModeButtons renderer mode (viewRect1, viewRect2, viewRect3, viewRect4, viewRect5, viewRect6, viewRect7, viewRect8, viewRect9, viewRect10, viewRect11, viewRect12)
             drawOverlayButtons renderer fontCache (rsUi snapshot) (overlayViewRects layout)
       drawConfigPanel renderer (rsUi snapshot) dataSnap layout
+      -- Editor toolbar (drawn above config panel, on top of chrome)
+      when (editorActive (uiEditor (rsUi snapshot))) $
+        drawEditorToolbar renderer fontCache (rsUi snapshot) layout
     logTiming logHandle timingLogThresholdMs (Text.pack "draw chrome") elapsed Nothing
   tAfterChrome <- getMonotonicTimeNSec
   loggedUi <- do

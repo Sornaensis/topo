@@ -137,6 +137,32 @@ spec = describe "UI.WidgetTree" $ do
     hitTest widgets (rectHitPoint (pipelineCheckboxRect (simBase + 1) layout))
       `shouldBe` Just WidgetSimAutoTick
 
+  it "hit tests editor toolbar tool buttons" $ do
+    let layout = layoutFor (V2 1200 800) 160
+        widgets = buildEditorWidgets layout
+    hitTest widgets (rectHitPoint (editorToolButtonRect 0 layout))
+      `shouldBe` Just (WidgetEditorTool 0)
+    hitTest widgets (rectHitPoint (editorToolButtonRect 3 layout))
+      `shouldBe` Just (WidgetEditorTool 3)
+    hitTest widgets (rectHitPoint (editorToolButtonRect 7 layout))
+      `shouldBe` Just (WidgetEditorTool 7)
+
+  it "hit tests editor radius and close buttons" $ do
+    let layout = layoutFor (V2 1200 800) 160
+        widgets = buildEditorWidgets layout
+    hitTest widgets (rectHitPoint (editorRadiusMinusRect layout))
+      `shouldBe` Just WidgetEditorRadiusMinus
+    hitTest widgets (rectHitPoint (editorRadiusPlusRect layout))
+      `shouldBe` Just WidgetEditorRadiusPlus
+    hitTest widgets (rectHitPoint (editorCloseRect layout))
+      `shouldBe` Just WidgetEditorClose
+
+  it "builds correct number of editor widgets" $ do
+    let layout = layoutFor (V2 1200 800) 160
+        widgets = buildEditorWidgets layout
+    -- 8 tool buttons + radius minus + radius plus + close = 11
+    length widgets `shouldBe` 11
+
 assertSliderButtons :: [Widget] -> Layout -> (Int, WidgetId, WidgetId) -> Expectation
 assertSliderButtons widgets layout (rowIndex, minusWidgetId, plusWidgetId) = do
   let rects = configParamRects rowIndex layout

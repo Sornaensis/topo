@@ -77,6 +77,14 @@ module UI.Layout
   , worldLoadItemRect
   , worldLoadOkRect
   , worldLoadCancelRect
+    -- Editor toolbar
+  , editorToolbarRect
+  , editorToolButtonRect
+  , editorToolButtonCount
+  , editorRadiusMinusRect
+  , editorRadiusPlusRect
+  , editorRadiusValueRect
+  , editorCloseRect
   ) where
 
 import Linear (V2(..))
@@ -750,3 +758,73 @@ dataBrowserPageNextRect index layout =
       btnH = min 20 rowHeight
       btnY = rowY + (rowHeight - btnH) `div` 2
   in Rect (V2 (x + pad + btnW + 8) btnY, V2 btnW btnH)
+
+------------------------------------------------------------------------
+-- Editor toolbar
+------------------------------------------------------------------------
+
+-- | Number of tool buttons in the editor toolbar.
+editorToolButtonCount :: Int
+editorToolButtonCount = 8
+
+-- | Full editor toolbar rect anchored at top-center of window.
+editorToolbarRect :: Layout -> Rect
+editorToolbarRect (Layout (V2 w _) _ _) =
+  let toolBtnW = 64
+      gap = 4
+      pad = 12
+      -- tool buttons + radius controls + close + padding
+      contentW = editorToolButtonCount * toolBtnW
+               + (editorToolButtonCount - 1) * gap
+               + gap + 24 + gap + 40 + gap + 24  -- [−] value [+]
+               + gap + 28                         -- [X] close
+               + pad * 2
+      barH = 36
+      barX = (w - contentW) `div` 2
+      barY = 4 + topBarHeight
+  in Rect (V2 barX barY, V2 contentW barH)
+
+-- | Rect for the n-th tool button (0-indexed) inside the editor toolbar.
+editorToolButtonRect :: Int -> Layout -> Rect
+editorToolButtonRect idx layout =
+  let Rect (V2 x y, V2 _ h) = editorToolbarRect layout
+      pad = 12
+      btnW = 64
+      gap = 4
+      insetY = 4
+      btnH = h - insetY * 2
+      btnX = x + pad + idx * (btnW + gap)
+  in Rect (V2 btnX (y + insetY), V2 btnW btnH)
+
+-- | Minus button for brush radius in the editor toolbar.
+editorRadiusMinusRect :: Layout -> Rect
+editorRadiusMinusRect layout =
+  let Rect (V2 x y, V2 _ h) = editorToolbarRect layout
+      pad = 12
+      btnW = 64
+      gap = 4
+      insetY = 4
+      btnH = h - insetY * 2
+      afterTools = x + pad + editorToolButtonCount * (btnW + gap)
+  in Rect (V2 (afterTools + gap) (y + insetY), V2 24 btnH)
+
+-- | Display rect for the current brush radius value.
+editorRadiusValueRect :: Layout -> Rect
+editorRadiusValueRect layout =
+  let Rect (V2 rx ry, V2 _ rh) = editorRadiusMinusRect layout
+  in Rect (V2 (rx + 24 + 4) ry, V2 40 rh)
+
+-- | Plus button for brush radius in the editor toolbar.
+editorRadiusPlusRect :: Layout -> Rect
+editorRadiusPlusRect layout =
+  let Rect (V2 rx ry, V2 _ rh) = editorRadiusValueRect layout
+  in Rect (V2 (rx + 40 + 4) ry, V2 24 rh)
+
+-- | Close button [X] at the right end of the editor toolbar.
+editorCloseRect :: Layout -> Rect
+editorCloseRect layout =
+  let Rect (V2 _ y, V2 _ h) = editorToolbarRect layout
+      Rect (V2 rx ry, V2 _ rh) = editorRadiusPlusRect layout
+      insetY = 4
+      btnH = h - insetY * 2
+  in Rect (V2 (rx + 24 + 4) (y + insetY), V2 28 btnH)

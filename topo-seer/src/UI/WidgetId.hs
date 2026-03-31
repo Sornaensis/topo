@@ -492,4 +492,10 @@ data WidgetId
   | WidgetDataResourceSelect !Text !Text
   | WidgetDataPagePrev !Text !Text
   | WidgetDataPageNext !Text !Text
+    -- Editor toolbar
+  | WidgetEditorTool !Int
+    -- ^ Tool button (0-indexed corresponding to 'EditorTool' enum order).
+  | WidgetEditorRadiusMinus
+  | WidgetEditorRadiusPlus
+  | WidgetEditorClose
   deriving (Eq, Show)

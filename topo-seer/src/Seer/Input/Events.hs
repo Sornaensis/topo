@@ -60,7 +60,7 @@ import Seer.Input.ViewControls
 import Topo (ChunkCoord(..), ChunkId(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
 import UI.HexPick (screenToAxial)
 import UI.Layout
-import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets, buildSliderRowWidgets, hitTest)
+import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildEditorWidgets, buildPluginWidgets, buildSliderRowWidgets, hitTest)
 import UI.Widgets (Rect(..), containsPoint)
 import Seer.Input.Actions (InputEnv(..), submitAction)
 import qualified Seer.Input.Actions as InputActions
@@ -225,9 +225,23 @@ handleEvent inputContext event = do
               uiSnap' <- getUiSnapshot uiHandle
               let editor = uiEditor uiSnap'
               if editorActive editor
-                then case uiHoverHex uiSnap' of
-                  Just hex -> submitAction inputEnv (UiActionBrushStroke hex)
-                  Nothing  -> handleClick inputContext (SDL.mouseButtonEventPos btnEvent)
+                then do
+                  -- Check editor toolbar widgets first
+                  let SDL.P (V2 bx by) = SDL.mouseButtonEventPos btnEvent
+                      bPoint = V2 (fromIntegral bx) (fromIntegral by)
+                  (V2 winW' winH') <- SDL.get (SDL.windowSize (icWindow inputContext))
+                  logSnap' <- getLogSnapshot logHandle
+                  let logH' = if lsCollapsed logSnap' then 24 else 160
+                      seedW' = max 120 (seedMaxDigits * 10)
+                      btnLayout = layoutForSeed (V2 (fromIntegral winW') (fromIntegral winH')) logH' seedW'
+                      edWidgets = buildEditorWidgets btnLayout
+                      edHit = hitTest edWidgets bPoint
+                  case edHit of
+                    Just wid -> handleEditorWidgetClick editor wid
+                    Nothing  ->
+                      case uiHoverHex uiSnap' of
+                        Just hex -> submitAction inputEnv (UiActionBrushStroke hex)
+                        Nothing  -> handleClick inputContext (SDL.mouseButtonEventPos btnEvent)
                 else handleClick inputContext (SDL.mouseButtonEventPos btnEvent)
       | SDL.mouseButtonEventMotion btnEvent == SDL.Released ->
           case SDL.mouseButtonEventButton btnEvent of
@@ -365,6 +379,24 @@ handleEvent inputContext event = do
         let brush = editorBrush editor
             r = min 6 (brushRadius brush + 1)
         in setUiEditor uiHandle (editor { editorBrush = brush { brushRadius = r } })
+      _ -> pure ()
+    handleEditorWidgetClick :: EditorState -> WidgetId -> IO ()
+    handleEditorWidgetClick editor wid = case wid of
+      WidgetEditorTool idx ->
+        let tools = [minBound .. maxBound] :: [EditorTool]
+        in case drop idx tools of
+          (tool:_) -> setUiEditor uiHandle (editor { editorTool = tool })
+          []       -> pure ()
+      WidgetEditorRadiusMinus ->
+        let brush = editorBrush editor
+            r = max 0 (brushRadius brush - 1)
+        in setUiEditor uiHandle (editor { editorBrush = brush { brushRadius = r } })
+      WidgetEditorRadiusPlus ->
+        let brush = editorBrush editor
+            r = min 6 (brushRadius brush + 1)
+        in setUiEditor uiHandle (editor { editorBrush = brush { brushRadius = r } })
+      WidgetEditorClose ->
+        setUiEditor uiHandle (editor { editorActive = False })
       _ -> pure ()
     closeContextOrMenu = do
       uiSnap <- getUiSnapshot uiHandle
