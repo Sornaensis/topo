@@ -442,8 +442,11 @@ data WidgetId
   | WidgetViewElevation
   | WidgetViewBiome
   | WidgetViewClimate
+  | WidgetViewWeather
   | WidgetViewMoisture
   | WidgetViewPrecip
+  | WidgetViewVegetation
+  | WidgetViewTerrainForm
   | WidgetViewPlateId
   | WidgetViewPlateBoundary
   | WidgetViewPlateHardness

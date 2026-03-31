@@ -15,6 +15,7 @@ module UI.Layout
   , leftChunkMinusRect
   , leftChunkPlusRect
   , leftViewRects
+  , leftViewRowCount
   , overlayViewRects
   , configToggleRect
   , configPanelRect
@@ -401,7 +402,11 @@ leftSeedValueRect layout =
       valueX = x + (w - valueW) `div` 2
   in Rect (V2 valueX top, V2 valueW rowHeight)
 
-leftViewRects :: Layout -> (Rect, Rect, Rect, Rect, Rect, Rect, Rect, Rect, Rect, Rect, Rect, Rect)
+-- | Number of rows used by view-mode buttons (ceil(15/2) = 8).
+leftViewRowCount :: Int
+leftViewRowCount = 8
+
+leftViewRects :: Layout -> [Rect]
 leftViewRects layout =
   let Rect (V2 x _y, V2 w _) = leftPanelRect layout
       pad = 12
@@ -409,24 +414,15 @@ leftViewRects layout =
       buttonH = 28
       buttonW = (w - pad * 2 - gap) `div` 2
       top = leftControlsTop layout
-      r1 = Rect (V2 (x + pad) top, V2 buttonW buttonH)
-      r2 = Rect (V2 (x + pad + buttonW + gap) top, V2 buttonW buttonH)
-      r3 = Rect (V2 (x + pad) (top + buttonH + gap), V2 buttonW buttonH)
-      r4 = Rect (V2 (x + pad + buttonW + gap) (top + buttonH + gap), V2 buttonW buttonH)
-      r5 = Rect (V2 (x + pad) (top + (buttonH + gap) * 2), V2 buttonW buttonH)
-      r6 = Rect (V2 (x + pad + buttonW + gap) (top + (buttonH + gap) * 2), V2 buttonW buttonH)
-      r7 = Rect (V2 (x + pad) (top + (buttonH + gap) * 3), V2 buttonW buttonH)
-      r8 = Rect (V2 (x + pad + buttonW + gap) (top + (buttonH + gap) * 3), V2 buttonW buttonH)
-      r9 = Rect (V2 (x + pad) (top + (buttonH + gap) * 4), V2 buttonW buttonH)
-      r10 = Rect (V2 (x + pad + buttonW + gap) (top + (buttonH + gap) * 4), V2 buttonW buttonH)
-      r11 = Rect (V2 (x + pad) (top + (buttonH + gap) * 5), V2 buttonW buttonH)
-      r12 = Rect (V2 (x + pad + buttonW + gap) (top + (buttonH + gap) * 5), V2 buttonW buttonH)
-      in (r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12)
+      viewCount = 15
+      gridPos i = (i `div` 2, i `mod` 2)
+      rect (row, col) = Rect (V2 (x + pad + col * (buttonW + gap)) (top + row * (buttonH + gap)), V2 buttonW buttonH)
+  in map (rect . gridPos) [0 .. viewCount - 1]
 
 -- | Overlay selector button rects in the left View panel.
 --
 -- Returns @(overlayPrev, overlayNext, fieldPrev, fieldNext)@ positioned
--- below the 12 view mode buttons.
+-- below the view mode buttons.
 overlayViewRects :: Layout -> (Rect, Rect, Rect, Rect)
 overlayViewRects layout =
   let Rect (V2 x _y, V2 w _) = leftPanelRect layout
@@ -435,13 +431,12 @@ overlayViewRects layout =
       buttonH = 28
       buttonW = (w - pad * 2 - gap) `div` 2
       top = leftControlsTop layout
-      -- Row 6 (after 6 rows of 2 view-mode buttons)
-      row6Y = top + (buttonH + gap) * 6
-      row7Y = top + (buttonH + gap) * 7
-      oPrev = Rect (V2 (x + pad) row6Y, V2 buttonW buttonH)
-      oNext = Rect (V2 (x + pad + buttonW + gap) row6Y, V2 buttonW buttonH)
-      fPrev = Rect (V2 (x + pad) row7Y, V2 buttonW buttonH)
-      fNext = Rect (V2 (x + pad + buttonW + gap) row7Y, V2 buttonW buttonH)
+      rowAfterViews = top + (buttonH + gap) * leftViewRowCount
+      row2Y = rowAfterViews + (buttonH + gap)
+      oPrev = Rect (V2 (x + pad) rowAfterViews, V2 buttonW buttonH)
+      oNext = Rect (V2 (x + pad + buttonW + gap) rowAfterViews, V2 buttonW buttonH)
+      fPrev = Rect (V2 (x + pad) row2Y, V2 buttonW buttonH)
+      fNext = Rect (V2 (x + pad + buttonW + gap) row2Y, V2 buttonW buttonH)
   in (oPrev, oNext, fPrev, fNext)
 
 logPanelRect :: Layout -> Rect

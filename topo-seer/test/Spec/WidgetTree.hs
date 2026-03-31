@@ -32,8 +32,31 @@ spec = describe "UI.WidgetTree" $ do
   it "hit tests moisture view button" $ do
     let layout = layoutFor (V2 800 600) 160
         widgets = buildWidgets layout
-        (_, _, _, moistureView, _, _, _, _, _, _, _, _) = leftViewRects layout
-    hitTest widgets (rectHitPoint moistureView) `shouldBe` Just WidgetViewMoisture
+        viewRects = leftViewRects layout
+        moistureRect = viewRects !! 4  -- index 4: Moisture
+    hitTest widgets (rectHitPoint moistureRect) `shouldBe` Just WidgetViewMoisture
+
+  it "hit tests all 15 view mode buttons" $ do
+    let layout = layoutFor (V2 800 800) 160
+        widgets = buildWidgets layout
+        viewRects = leftViewRects layout
+        expectedIds =
+          [ WidgetViewElevation, WidgetViewBiome, WidgetViewClimate
+          , WidgetViewWeather, WidgetViewMoisture, WidgetViewPrecip
+          , WidgetViewVegetation, WidgetViewTerrainForm
+          , WidgetViewPlateId, WidgetViewPlateBoundary
+          , WidgetViewPlateHardness, WidgetViewPlateCrust
+          , WidgetViewPlateAge, WidgetViewPlateHeight
+          , WidgetViewPlateVelocity
+          ]
+    length viewRects `shouldBe` 15
+    -- Rows 5-7 (indices 10-14) are below LeftTopo controls and can be
+    -- hit-tested unambiguously.  Rows 0-4 overlap LeftTopo widgets
+    -- (chunk, seed, generate) which shadow view buttons in the
+    -- unfiltered hit list; the runtime click handler guards by active
+    -- tab so the overlap is harmless.
+    mapM_ (\(rect, wid) -> hitTest widgets (rectHitPoint rect) `shouldBe` Just wid)
+      (drop 10 (zip viewRects expectedIds))
 
   it "hit tests log filter buttons" $ do
     let layout = layoutFor (V2 800 600) 160

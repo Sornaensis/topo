@@ -119,7 +119,7 @@ renderFrame context = do
       chunkPlus = leftChunkPlusRect layout
       chunkValue = configChunkValueRect layout
       logFilters = logFilterRects layout
-      (viewRect1, viewRect2, viewRect3, viewRect4, viewRect5, viewRect6, viewRect7, viewRect8, viewRect9, viewRect10, viewRect11, viewRect12) = leftViewRects layout
+      viewRects = leftViewRects layout
       buttonLabel = if uiGenerating (rsUi snapshot) then V4 120 120 120 255 else V4 80 160 240 255
   tAfterLet <- getMonotonicTimeNSec
   SDL.rendererDrawColor renderer SDL.$= V4 r g b 255
@@ -202,7 +202,7 @@ renderFrame context = do
             SDL.fillRect renderer (Just (rectToSDL buttonRect))
             drawStatusBars renderer fontCache (rsUi snapshot) dataSnap layout
           LeftView -> do
-            drawViewModeButtons renderer mode (viewRect1, viewRect2, viewRect3, viewRect4, viewRect5, viewRect6, viewRect7, viewRect8, viewRect9, viewRect10, viewRect11, viewRect12)
+            drawViewModeButtons renderer mode viewRects
             drawOverlayButtons renderer fontCache (rsUi snapshot) (overlayViewRects layout)
       drawConfigPanel renderer (rsUi snapshot) dataSnap layout
       -- Editor toolbar (drawn above config panel, on top of chrome)

@@ -29,7 +29,16 @@ data Widget = Widget
 
 buildWidgets :: Layout -> [Widget]
 buildWidgets layout =
-  let (view1, view2, view3, view4, view5, view6, view7, view8, view9, view10, view11, view12) = leftViewRects layout
+  let viewRects = leftViewRects layout
+      viewWidgetIds =
+        [ WidgetViewElevation, WidgetViewBiome, WidgetViewClimate
+        , WidgetViewWeather, WidgetViewMoisture, WidgetViewPrecip
+        , WidgetViewVegetation, WidgetViewTerrainForm
+        , WidgetViewPlateId, WidgetViewPlateBoundary
+        , WidgetViewPlateHardness, WidgetViewPlateCrust
+        , WidgetViewPlateAge, WidgetViewPlateHeight
+        , WidgetViewPlateVelocity
+        ]
       (overlayPrev, overlayNext, fieldPrev, fieldNext) = overlayViewRects layout
       (logDebug, logInfo, logWarn, logError) = logFilterRects layout
       (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline, tabData) = configTabRects layout
@@ -63,19 +72,9 @@ buildWidgets layout =
              (pipelineCheckboxRect idx layout)
     | (idx, sid) <- zip [0..] allBuiltinStageIds
     ] ++
-    [ Widget WidgetViewElevation view1
-    , Widget WidgetViewBiome view2
-    , Widget WidgetViewClimate view3
-    , Widget WidgetViewMoisture view4
-    , Widget WidgetViewPrecip view5
-    , Widget WidgetViewPlateId view6
-    , Widget WidgetViewPlateBoundary view7
-    , Widget WidgetViewPlateHardness view8
-    , Widget WidgetViewPlateCrust view9
-    , Widget WidgetViewPlateAge view10
-    , Widget WidgetViewPlateHeight view11
-    , Widget WidgetViewPlateVelocity view12
-    , Widget WidgetViewOverlayPrev overlayPrev
+    -- View mode buttons
+    zipWith Widget viewWidgetIds viewRects ++
+    [ Widget WidgetViewOverlayPrev overlayPrev
     , Widget WidgetViewOverlayNext overlayNext
     , Widget WidgetViewFieldPrev fieldPrev
     , Widget WidgetViewFieldNext fieldNext

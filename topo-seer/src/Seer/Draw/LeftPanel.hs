@@ -36,32 +36,34 @@ drawLeftTabs renderer ui (tabTopo, tabView) = do
       SDL.rendererDrawColor renderer SDL.$= fill
       SDL.fillRect renderer (Just (rectToSDL rect))
 
-drawViewModeButtons :: SDL.Renderer -> ViewMode -> (Rect, Rect, Rect, Rect, Rect, Rect, Rect, Rect, Rect, Rect, Rect, Rect) -> IO ()
-drawViewModeButtons renderer mode (r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12) = do
-  SDL.rendererDrawColor renderer SDL.$= V4 (modeColor ViewElevation mode) 90 90 255
-  SDL.fillRect renderer (Just (rectToSDL r1))
-  SDL.rendererDrawColor renderer SDL.$= V4 90 (modeColor ViewBiome mode) 90 255
-  SDL.fillRect renderer (Just (rectToSDL r2))
-  SDL.rendererDrawColor renderer SDL.$= V4 90 90 (modeColor ViewClimate mode) 255
-  SDL.fillRect renderer (Just (rectToSDL r3))
-  SDL.rendererDrawColor renderer SDL.$= V4 (modeColor ViewMoisture mode) 90 140 255
-  SDL.fillRect renderer (Just (rectToSDL r4))
-  SDL.rendererDrawColor renderer SDL.$= V4 170 90 (modeColor ViewWeather mode) 255
-  SDL.fillRect renderer (Just (rectToSDL r5))
-  SDL.rendererDrawColor renderer SDL.$= V4 90 (modeColor ViewPlateId mode) 170 255
-  SDL.fillRect renderer (Just (rectToSDL r6))
-  SDL.rendererDrawColor renderer SDL.$= V4 90 (modeColor ViewPlateBoundary mode) 140 255
-  SDL.fillRect renderer (Just (rectToSDL r7))
-  SDL.rendererDrawColor renderer SDL.$= V4 90 (modeColor ViewPlateHardness mode) 120 255
-  SDL.fillRect renderer (Just (rectToSDL r8))
-  SDL.rendererDrawColor renderer SDL.$= V4 90 (modeColor ViewPlateCrust mode) 110 255
-  SDL.fillRect renderer (Just (rectToSDL r9))
-  SDL.rendererDrawColor renderer SDL.$= V4 90 (modeColor ViewPlateAge mode) 100 255
-  SDL.fillRect renderer (Just (rectToSDL r10))
-  SDL.rendererDrawColor renderer SDL.$= V4 90 (modeColor ViewPlateHeight mode) 120 255
-  SDL.fillRect renderer (Just (rectToSDL r11))
-  SDL.rendererDrawColor renderer SDL.$= V4 90 (modeColor ViewPlateVelocity mode) 140 255
-  SDL.fillRect renderer (Just (rectToSDL r12))
+drawViewModeButtons :: SDL.Renderer -> ViewMode -> [Rect] -> IO ()
+drawViewModeButtons renderer currentMode rects =
+  mapM_ drawOne (zip viewModeButtonStyles rects)
+  where
+    drawOne ((targetMode, colorFn), rect) = do
+      SDL.rendererDrawColor renderer SDL.$= colorFn (modeColor targetMode currentMode)
+      SDL.fillRect renderer (Just (rectToSDL rect))
+
+-- | (ViewMode, Word8 -> V4 Word8) where the function builds the button
+-- color from the active/inactive brightness.
+viewModeButtonStyles :: [(ViewMode, Word8 -> V4 Word8)]
+viewModeButtonStyles =
+  [ (ViewElevation,     \mc -> V4 mc  90  90  255)
+  , (ViewBiome,         \mc -> V4 90  mc  90  255)
+  , (ViewClimate,       \mc -> V4 90  90  mc  255)
+  , (ViewWeather,       \mc -> V4 170 90  mc  255)
+  , (ViewMoisture,      \mc -> V4 mc  90  140 255)
+  , (ViewPrecip,        \mc -> V4 90  140 mc  255)
+  , (ViewVegetation,    \mc -> V4 90  mc  120 255)
+  , (ViewTerrainForm,   \mc -> V4 mc  120 90  255)
+  , (ViewPlateId,       \mc -> V4 90  mc  170 255)
+  , (ViewPlateBoundary, \mc -> V4 90  mc  140 255)
+  , (ViewPlateHardness, \mc -> V4 90  mc  120 255)
+  , (ViewPlateCrust,    \mc -> V4 90  mc  110 255)
+  , (ViewPlateAge,      \mc -> V4 90  mc  100 255)
+  , (ViewPlateHeight,   \mc -> V4 90  mc  120 255)
+  , (ViewPlateVelocity, \mc -> V4 90  mc  140 255)
+  ]
 
 drawOverlayButtons :: SDL.Renderer -> Maybe FontCache -> UiState -> (Rect, Rect, Rect, Rect) -> IO ()
 drawOverlayButtons renderer fontCache ui (oPrev, oNext, fPrev, fNext) = do

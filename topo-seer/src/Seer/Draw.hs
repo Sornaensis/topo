@@ -300,7 +300,7 @@ drawUiLabels renderer fontCache ui layout = do
       seedLabel = configSeedLabelRect layout
       seedValue = configSeedValueRect layout
       seedRandom = configSeedRandomRect layout
-      (viewRect1, viewRect2, viewRect3, viewRect4, viewRect5, viewRect6, viewRect7, viewRect8, viewRect9, viewRect10, viewRect11, viewRect12) = leftViewRects layout
+      viewRects = leftViewRects layout
       logHeader = logHeaderRect layout
       labelColor = V4 235 235 235 255
   let configLabel = if uiShowConfig ui then ">>" else "<<"
@@ -323,17 +323,7 @@ drawUiLabels renderer fontCache ui layout = do
           drawCentered fontCache labelColor seedValue seedText
           drawCentered fontCache labelColor buttonRect "Generate"
         LeftView -> do
-          drawCentered fontCache labelColor viewRect1 "Elev"
-          drawCentered fontCache labelColor viewRect2 "Biome"
-          drawCentered fontCache labelColor viewRect3 "Climate"
-          drawCentered fontCache labelColor viewRect4 "Moist"
-          drawCentered fontCache labelColor viewRect5 "Weather"
-          drawCentered fontCache labelColor viewRect6 "Plate"
-          drawCentered fontCache labelColor viewRect7 "Bound"
-          drawCentered fontCache labelColor viewRect8 "Hard"
-          drawCentered fontCache labelColor viewRect9 "Crust"
-          drawCentered fontCache labelColor viewRect10 "Age"
-          drawCentered fontCache labelColor viewRect11 "PHeight"
-          drawCentered fontCache labelColor viewRect12 "PVel"
+          let viewLabels = ["Elev", "Biome", "Climate", "Weathr", "Moist", "Precip", "Veg", "TForm", "Plate", "Bound", "Hard", "Crust", "Age", "PHght", "PVel"]
+          mapM_ (\(rect, label) -> drawCentered fontCache labelColor rect label) (zip viewRects viewLabels)
   drawConfigLabels renderer fontCache ui layout
 
