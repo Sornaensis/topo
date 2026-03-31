@@ -8,6 +8,7 @@
 -- button sit at the right end.
 module Seer.Editor.Toolbar
   ( drawEditorToolbar
+  , drawEditorReopenButton
   ) where
 
 import Control.Monad (forM_)
@@ -25,6 +26,7 @@ import UI.Layout
   , editorRadiusMinusRect
   , editorRadiusPlusRect
   , editorRadiusValueRect
+  , editorReopenRect
   , editorToolButtonRect
   , editorToolbarRect
   )
@@ -98,3 +100,11 @@ toolButtonColor ToolErode       = (150, 110, 70)
 -- | Show an 'Int' as 'Text' without OverloadedStrings ambiguity.
 showT :: Int -> Text
 showT = Text.pack . show
+
+-- | Draw a small button to reopen the editor toolbar when it is closed.
+drawEditorReopenButton :: SDL.Renderer -> Maybe FontCache -> Layout -> IO ()
+drawEditorReopenButton renderer fontCache layout = do
+  let rect = editorReopenRect layout
+  SDL.rendererDrawColor renderer SDL.$= V4 50 60 80 220
+  SDL.fillRect renderer (Just (rectToSDL rect))
+  drawCentered fontCache (V4 200 210 230 255) rect "Edit"

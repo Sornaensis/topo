@@ -60,7 +60,7 @@ import Seer.Input.ViewControls
 import Topo (ChunkCoord(..), ChunkId(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
 import UI.HexPick (screenToAxial)
 import UI.Layout
-import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildEditorWidgets, buildPluginWidgets, buildSliderRowWidgets, hitTest)
+import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildEditorWidgets, buildEditorReopenWidget, buildPluginWidgets, buildSliderRowWidgets, hitTest)
 import UI.Widgets (Rect(..), containsPoint)
 import Seer.Input.Actions (InputEnv(..), submitAction)
 import qualified Seer.Input.Actions as InputActions
@@ -242,7 +242,20 @@ handleEvent inputContext event = do
                       case uiHoverHex uiSnap' of
                         Just hex -> submitAction inputEnv (UiActionBrushStroke hex)
                         Nothing  -> handleClick inputContext (SDL.mouseButtonEventPos btnEvent)
-                else handleClick inputContext (SDL.mouseButtonEventPos btnEvent)
+                else do
+                  -- Editor is inactive — check if the reopen button was hit
+                  let SDL.P (V2 rx ry) = SDL.mouseButtonEventPos btnEvent
+                      rPoint = V2 (fromIntegral rx) (fromIntegral ry)
+                  (V2 rwinW rwinH) <- SDL.get (SDL.windowSize (icWindow inputContext))
+                  rLogSnap <- getLogSnapshot logHandle
+                  let rLogH = if lsCollapsed rLogSnap then 24 else 160
+                      rSeedW = max 120 (seedMaxDigits * 10)
+                      rLayout = layoutForSeed (V2 (fromIntegral rwinW) (fromIntegral rwinH)) rLogH rSeedW
+                      reopenWidgets = buildEditorReopenWidget rLayout
+                  case hitTest reopenWidgets rPoint of
+                    Just WidgetEditorReopen ->
+                      setUiEditor uiHandle (editor { editorActive = True })
+                    _ -> handleClick inputContext (SDL.mouseButtonEventPos btnEvent)
       | SDL.mouseButtonEventMotion btnEvent == SDL.Released ->
           case SDL.mouseButtonEventButton btnEvent of
             SDL.ButtonRight -> do

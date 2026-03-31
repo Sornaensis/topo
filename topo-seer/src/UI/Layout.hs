@@ -86,6 +86,7 @@ module UI.Layout
   , editorRadiusPlusRect
   , editorRadiusValueRect
   , editorCloseRect
+  , editorReopenRect
   ) where
 
 import Linear (V2(..))
@@ -824,3 +825,13 @@ editorCloseRect layout =
       insetY = 4
       btnH = h - insetY * 2
   in Rect (V2 (rx + 24 + 4) (y + insetY), V2 28 btnH)
+
+-- | Small reopen button shown when the editor toolbar is closed.
+-- Positioned at the same Y as the toolbar, centered in the window.
+editorReopenRect :: Layout -> Rect
+editorReopenRect (Layout (V2 w _) _ _) =
+  let btnW = 64
+      btnH = 28
+      btnX = (w - btnW) `div` 2
+      btnY = 4 + topBarHeight
+  in Rect (V2 btnX btnY, V2 btnW btnH)

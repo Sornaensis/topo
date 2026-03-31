@@ -52,7 +52,7 @@ import Seer.Render.Ui (drawUiOverlay)
 import Seer.Screenshot (serviceScreenshotRequest)
 import Seer.Timing (nsToMs, timedMs)
 import Seer.Editor.Preview (drawBrushPreview)
-import Seer.Editor.Toolbar (drawEditorToolbar)
+import Seer.Editor.Toolbar (drawEditorToolbar, drawEditorReopenButton)
 import Seer.Editor.Types (EditorState(..))
 import UI.Font (FontCache)
 import UI.Layout
@@ -206,8 +206,9 @@ renderFrame context = do
             drawOverlayButtons renderer fontCache (rsUi snapshot) (overlayViewRects layout)
       drawConfigPanel renderer (rsUi snapshot) dataSnap layout
       -- Editor toolbar (drawn above config panel, on top of chrome)
-      when (editorActive (uiEditor (rsUi snapshot))) $
-        drawEditorToolbar renderer fontCache (rsUi snapshot) layout
+      if editorActive (uiEditor (rsUi snapshot))
+        then drawEditorToolbar renderer fontCache (rsUi snapshot) layout
+        else drawEditorReopenButton renderer fontCache layout
     logTiming logHandle timingLogThresholdMs (Text.pack "draw chrome") elapsed Nothing
   tAfterChrome <- getMonotonicTimeNSec
   loggedUi <- do

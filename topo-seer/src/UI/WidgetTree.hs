@@ -4,6 +4,7 @@ module UI.WidgetTree
   , Widget(..)
   , buildWidgets
   , buildEditorWidgets
+  , buildEditorReopenWidget
   , buildPluginWidgets
   , buildDataBrowserWidgets
   , buildSliderRowWidgets
@@ -263,6 +264,12 @@ buildEditorWidgets layout =
   , Widget WidgetEditorRadiusPlus  (editorRadiusPlusRect layout)
   , Widget WidgetEditorClose       (editorCloseRect layout)
   ]
+
+-- | Single-widget list for the editor reopen button, used when the
+-- toolbar is closed.
+buildEditorReopenWidget :: Layout -> [Widget]
+buildEditorReopenWidget layout =
+  [ Widget WidgetEditorReopen (editorReopenRect layout) ]
 
 hitTest :: [Widget] -> V2 Int -> Maybe WidgetId
 hitTest widgets point =

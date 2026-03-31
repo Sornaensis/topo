@@ -501,4 +501,6 @@ data WidgetId
   | WidgetEditorRadiusMinus
   | WidgetEditorRadiusPlus
   | WidgetEditorClose
+  | WidgetEditorReopen
+    -- ^ Button shown when the editor toolbar is closed, to reopen it.
   deriving (Eq, Show)

@@ -185,6 +185,13 @@ spec = describe "UI.WidgetTree" $ do
         widgets = buildEditorWidgets layout
     length widgets `shouldBe` (editorToolButtonCount + 3)
 
+  it "hit tests editor reopen button" $ do
+    let layout = layoutFor (V2 1200 800) 160
+        widgets = buildEditorReopenWidget layout
+    length widgets `shouldBe` 1
+    hitTest widgets (rectHitPoint (editorReopenRect layout))
+      `shouldBe` Just WidgetEditorReopen
+
 assertSliderButtons :: [Widget] -> Layout -> (Int, WidgetId, WidgetId) -> Expectation
 assertSliderButtons widgets layout (rowIndex, minusWidgetId, plusWidgetId) = do
   let rects = configParamRects rowIndex layout
