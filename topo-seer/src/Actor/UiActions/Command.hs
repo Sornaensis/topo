@@ -69,12 +69,14 @@ import Seer.Config.SliderState (resetSliderDefaults)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.IntMap.Strict as IntMap
+import Data.IORef (readIORef, writeIORef)
 import GHC.Clock (getMonotonicTimeNSec)
 import Hyperspace.Actor (ActorHandle, Protocol, ReplyTo)
 import Numeric (showFFloat)
 import qualified Data.Map.Strict as Map
 import Seer.Config (applyUiConfig, configSummary)
 import Seer.Editor.Brush (applyBrushStroke, applyFlattenStroke, applyNoiseStroke, applyPaintBiomeStroke, applyPaintFormStroke, applySetHardnessStroke, applySmoothStroke)
+import Seer.Editor.History (EditAction(..), pushEdit, undoEdit, redoEdit)
 import Seer.Editor.Types (EditorState(..), EditorTool(..), BrushSettings(..))
 import Topo (ChunkId(..), HexCoord(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
 import Topo.Hex (hexDisc)
@@ -94,6 +96,10 @@ data UiAction
   | UiActionRebuildAtlas !ViewMode
   | UiActionBrushStroke !(Int, Int)
     -- ^ Apply the current editor brush at the given hex @(q, r)@.
+  | UiActionUndo
+    -- ^ Undo the last terrain edit.
+  | UiActionRedo
+    -- ^ Redo the last undone terrain edit.
   deriving (Eq, Show)
 
 -- | Request payload for running a 'UiAction' on the UI actions actor.
@@ -118,6 +124,10 @@ runUiAction req =
       logTimed req ("Rebuild Atlas " <> viewModeLabel mode) (rebuildAtlasFor req mode)
     UiActionBrushStroke hex ->
       logTimed req "Brush Stroke" (applyBrush req hex)
+    UiActionUndo ->
+      logTimed req "Undo" (undoBrush req)
+    UiActionRedo ->
+      logTimed req "Redo" (redoBrush req)
 
 logTimed :: UiActionRequest -> Text -> IO () -> IO ()
 logTimed req label action = do
@@ -210,6 +220,23 @@ rebuildAtlas req = do
 rebuildAtlasFor :: UiActionRequest -> ViewMode -> IO ()
 rebuildAtlasFor req mode = do
   let handles = uarActorHandles req
+  terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
+  uiSnap <- getUiSnapshot (ahUiHandle handles)
+  let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
+      scales = [1 .. 6]
+      job scale = AtlasJob
+        { ajKey = atlasKey
+        , ajViewMode = mode
+        , ajWaterLevel = uiRenderWaterLevel uiSnap
+        , ajTerrain = terrainSnap
+        , ajScale = scale
+        }
+  mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles) . job) scales
+
+-- | 'rebuildAtlasFor' variant that takes 'ActorHandles' directly
+-- (used by undo\/redo which don't carry a 'UiActionRequest').
+rebuildAtlasFor' :: ActorHandles -> ViewMode -> IO ()
+rebuildAtlasFor' handles mode = do
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap <- getUiSnapshot (ahUiHandle handles)
   let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
@@ -340,6 +367,25 @@ applyBrush req hex = do
   case changed of
     [] -> pure ()
     _  -> do
+      -- Record undo action before writing
+      let oldChanged = IntMap.fromList
+            [ (k, old)
+            | (ChunkId k, _) <- changed
+            , Just old <- [IntMap.lookup k oldChunks]
+            ]
+          newChanged = IntMap.fromList
+            [ (k, v)
+            | (ChunkId k, v) <- changed
+            ]
+          action = EditAction
+            { eaDescription = toolLabel tool
+            , eaOldChunks   = oldChanged
+            , eaNewChunks   = newChanged
+            }
+          histRef = ahHistoryRef handles
+      hist <- readIORef histRef
+      writeIORef histRef (pushEdit action hist)
+      -- Write changed chunks to data actor
       setTerrainChunkData dataHandle (tsChunkSize terrainSnap) changed
       -- Refresh the snapshot refs so the render pipeline picks up changes
       terrainSnap' <- getTerrainSnapshot dataHandle
@@ -348,6 +394,58 @@ applyBrush req hex = do
       writeDataSnapshot (ahDataSnapshotRef handles) dataSnap'
       bumpSnapshotVersion (ahSnapshotVersionRef handles)
       rebuildAtlasFor req (uiViewMode uiSnap)
+
+-- | Human-readable label for each editor tool.
+toolLabel :: EditorTool -> Text
+toolLabel ToolRaise       = "Raise"
+toolLabel ToolLower       = "Lower"
+toolLabel ToolSmooth      = "Smooth"
+toolLabel ToolFlatten     = "Flatten"
+toolLabel ToolNoise       = "Noise"
+toolLabel ToolPaintBiome  = "Paint Biome"
+toolLabel ToolPaintForm   = "Paint Form"
+toolLabel ToolSetHardness = "Set Hardness"
+
+-- | Undo the most recent terrain edit by restoring the old chunk state.
+undoBrush :: UiActionRequest -> IO ()
+undoBrush req = do
+  let handles = uarActorHandles req
+      histRef = ahHistoryRef handles
+  hist <- readIORef histRef
+  case undoEdit hist of
+    Nothing -> pure ()
+    Just (action, hist') -> do
+      writeIORef histRef hist'
+      applyChunkRestore handles (eaOldChunks action)
+
+-- | Redo the most recently undone terrain edit.
+redoBrush :: UiActionRequest -> IO ()
+redoBrush req = do
+  let handles = uarActorHandles req
+      histRef = ahHistoryRef handles
+  hist <- readIORef histRef
+  case redoEdit hist of
+    Nothing -> pure ()
+    Just (action, hist') -> do
+      writeIORef histRef hist'
+      applyChunkRestore handles (eaNewChunks action)
+
+-- | Write a set of terrain chunks back to the data actor, refresh
+-- snapshots, and trigger an atlas rebuild.
+applyChunkRestore :: ActorHandles -> IntMap.IntMap TerrainChunk -> IO ()
+applyChunkRestore handles chunks = do
+  let dataHandle = ahDataHandle handles
+      uiHandle   = ahUiHandle handles
+  terrainSnap <- getTerrainSnapshot dataHandle
+  let chunkList = [ (ChunkId k, v) | (k, v) <- IntMap.toList chunks ]
+  setTerrainChunkData dataHandle (tsChunkSize terrainSnap) chunkList
+  terrainSnap' <- getTerrainSnapshot dataHandle
+  dataSnap'    <- getDataSnapshot dataHandle
+  writeTerrainSnapshot (ahTerrainSnapshotRef handles) terrainSnap'
+  writeDataSnapshot (ahDataSnapshotRef handles) dataSnap'
+  bumpSnapshotVersion (ahSnapshotVersionRef handles)
+  uiSnap <- getUiSnapshot uiHandle
+  rebuildAtlasFor' handles (uiViewMode uiSnap)
 
 -- | Look up the elevation at a hex tile, returning 0.5 if the tile
 -- is not loaded.

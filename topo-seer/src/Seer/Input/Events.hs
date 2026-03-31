@@ -272,8 +272,15 @@ handleEvent inputContext event = do
                 _ -> do
                   uiSnap2 <- getUiSnapshot uiHandle
                   let editor = uiEditor uiSnap2
+                      mods = SDL.keysymModifier (SDL.keyboardEventKeysym keyboardEvent)
+                      ctrl = SDL.keyModifierLeftCtrl mods || SDL.keyModifierRightCtrl mods
                   if editorActive editor
-                    then handleEditorKey editor keycode
+                    then if ctrl
+                      then case keycode of
+                        SDL.KeycodeZ -> submitAction inputEnv UiActionUndo
+                        SDL.KeycodeY -> submitAction inputEnv UiActionRedo
+                        _ -> handleEditorKey editor keycode
+                      else handleEditorKey editor keycode
                     else case keycode of
                       SDL.KeycodeEscape -> closeContextOrMenu
                       SDL.KeycodeG -> submitAction inputEnv UiActionGenerate

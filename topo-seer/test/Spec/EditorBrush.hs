@@ -1,6 +1,6 @@
 {-# LANGUAGE PatternSynonyms #-}
 
-module Spec.EditorBrush (spec) where
+module Spec.EditorBrush (spec, emptyTerrainChunk) where
 
 import Test.Hspec
 import qualified Data.IntMap.Strict as IntMap

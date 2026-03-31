@@ -39,7 +39,9 @@ import Actor.UI
   )
 import Actor.UiActions (ActorHandles(..), uiActionsActorDef)
 
+import Data.IORef (newIORef)
 import Seer.Command.Dispatch (CommandContext(..), dispatchCommand)
+import Seer.Editor.History (emptyHistory)
 import Seer.Screenshot (ScreenshotRequest(..), newScreenshotRequestRef)
 import Topo.Command.Types (SeerCommand(..), SeerResponse(..))
 import Topo.Overlay (emptyOverlayStore)
@@ -512,6 +514,7 @@ withCtx action = bracket newActorSystem shutdownActorSystem $ \system -> do
   versionRef     <- newSnapshotVersionRef
   uiSnapRef      <- newUiSnapshotRef
   screenshotRef  <- newScreenshotRequestRef
+  historyRef     <- newIORef (emptyHistory 50)
   setUiSnapshotRef uiH uiSnapRef
   let handles = ActorHandles
         { ahUiHandle              = uiH
@@ -524,6 +527,7 @@ withCtx action = bracket newActorSystem shutdownActorSystem $ \system -> do
         , ahSnapshotVersionRef    = versionRef
         , ahPluginManagerHandle   = pluginH
         , ahSimulationHandle      = simH
+        , ahHistoryRef            = historyRef
         }
       ctx = CommandContext
         { ccActorHandles    = handles

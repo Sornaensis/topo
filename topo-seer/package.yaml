@@ -45,6 +45,7 @@ library:
     - Seer.Draw.LeftPanel
     - Seer.Draw.Overlay
     - Seer.Editor.Brush
+    - Seer.Editor.History
     - Seer.Editor.Types
     - Seer.Input
     - Seer.Input.Actions

@@ -12,7 +12,9 @@ import Actor.Simulation (Simulation)
 import Actor.SnapshotReceiver (DataSnapshotRef, TerrainSnapshotRef, SnapshotVersionRef)
 import Actor.Terrain (Terrain)
 import Actor.UI (Ui)
+import Data.IORef (IORef)
 import Hyperspace.Actor (ActorHandle, Protocol)
+import Seer.Editor.History (EditHistory)
 
 -- | Shared actor handles needed by UI-triggered commands and input routing.
 data ActorHandles = ActorHandles
@@ -26,6 +28,8 @@ data ActorHandles = ActorHandles
   , ahSnapshotVersionRef :: !SnapshotVersionRef
   , ahPluginManagerHandle :: !(ActorHandle PluginManager (Protocol PluginManager))
   , ahSimulationHandle :: !(ActorHandle Simulation (Protocol Simulation))
+  , ahHistoryRef :: !(IORef EditHistory)
+    -- ^ Mutable undo\/redo history for terrain editor edits.
   }
 
 -- | Build a shared actor-handle bundle from the live application actors.
@@ -40,8 +44,9 @@ mkActorHandles
   -> SnapshotVersionRef
   -> ActorHandle PluginManager (Protocol PluginManager)
   -> ActorHandle Simulation (Protocol Simulation)
+  -> IORef EditHistory
   -> ActorHandles
-mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapRef terrainSnapRef versionRef pluginManagerHandle simulationHandle =
+mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapRef terrainSnapRef versionRef pluginManagerHandle simulationHandle historyRef =
   ActorHandles
     { ahUiHandle = uiHandle
     , ahLogHandle = logHandle
@@ -53,4 +58,5 @@ mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle da
     , ahSnapshotVersionRef = versionRef
     , ahPluginManagerHandle = pluginManagerHandle
     , ahSimulationHandle = simulationHandle
+    , ahHistoryRef = historyRef
     }

@@ -24,6 +24,7 @@ import qualified Spec.SliderSpec
 import qualified Spec.WorldPersist
 import qualified Spec.CommandDispatch
 import qualified Spec.EditorBrush
+import qualified Spec.EditorHistory
 
 main :: IO ()
 main = do
@@ -52,3 +53,4 @@ main = do
     Spec.WorldPersist.spec
     Spec.CommandDispatch.spec
     Spec.EditorBrush.spec
+    Spec.EditorHistory.spec

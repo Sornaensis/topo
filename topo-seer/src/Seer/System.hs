@@ -80,6 +80,7 @@ import Actor.TerrainCacheWorker
   )
 import Actor.UiActions (uiActionsActorDef)
 import Actor.UiActions.Handles (mkActorHandles)
+import Seer.Editor.History (emptyHistory)
 import Control.Concurrent (forkIO)
 import Control.Monad (forM_, unless, when)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
@@ -164,7 +165,8 @@ runApp = do
   -- Start the IPC command channel in a background thread.
   -- This allows external tools (topo-mcp) to query and mutate UI state.
   screenshotRef <- newScreenshotRequestRef
-  let cmdActorHandles = mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef pluginManagerHandle simulationHandle
+  historyRef <- newIORef (emptyHistory 50)
+  let cmdActorHandles = mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef pluginManagerHandle simulationHandle historyRef
       cmdEnv = CommandChannelEnv
         { cceActorHandles    = cmdActorHandles
         , cceUiSnapshotRef   = uiSnapshotRef
@@ -281,7 +283,7 @@ runApp = do
               pure 0
             else do
               handleStart <- getMonotonicTimeNSec
-              let actorHandles = mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef pluginManagerHandle simulationHandle
+              let actorHandles = mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef pluginManagerHandle simulationHandle historyRef
                   inputEnv = mkInputEnv actorHandles uiActionsHandle (rsUi renderSnap) (rsLog renderSnap) (rsData renderSnap) (rsTerrain renderSnap)
                   inputContext = mkInputContext window inputEnv quitRef lineHeightRef mousePosRef dragRef tooltipHoverRef
               forM_ coalescedEvents (handleEvent inputContext)
