@@ -17,6 +17,7 @@ module Seer.Editor.Types
   , defaultEditorState
   ) where
 
+import Data.Word (Word64)
 import GHC.Generics (Generic)
 
 -- | Available terrain editor tools.
@@ -25,7 +26,14 @@ data EditorTool
     -- ^ Raise elevation within the brush radius.
   | ToolLower
     -- ^ Lower elevation within the brush radius.
-  deriving (Eq, Ord, Show, Generic)
+  | ToolSmooth
+    -- ^ Smooth elevation toward the weighted average of hex neighbours.
+  | ToolFlatten
+    -- ^ Blend elevation toward a reference height captured at stroke
+    -- start.
+  | ToolNoise
+    -- ^ Apply coherent noise perturbation to elevation.
+  deriving (Eq, Ord, Show, Enum, Bounded, Generic)
 
 -- | Brush weight falloff function from center to edge.
 data Falloff
@@ -57,18 +65,30 @@ defaultBrushSettings = BrushSettings
 
 -- | Full editor state carried on 'UiState'.
 data EditorState = EditorState
-  { editorActive :: !Bool
+  { editorActive         :: !Bool
     -- ^ Whether the editor overlay is currently active.
-  , editorTool   :: !EditorTool
+  , editorTool           :: !EditorTool
     -- ^ Currently selected tool.
-  , editorBrush  :: !BrushSettings
+  , editorBrush          :: !BrushSettings
     -- ^ Active brush configuration.
+  , editorSmoothPasses   :: !Int
+    -- ^ Number of smooth iterations per stroke (1–5).
+  , editorNoiseFrequency :: !Float
+    -- ^ Noise frequency for 'ToolNoise' (0.5–4.0).
+  , editorFlattenRef     :: !(Maybe Float)
+    -- ^ Reference elevation for 'ToolFlatten', captured at stroke start.
+  , editorStrokeId       :: !Word64
+    -- ^ Monotonically increasing stroke counter for noise seeding.
   } deriving (Eq, Show, Generic)
 
 -- | Initial editor state: inactive, raise tool, default brush.
 defaultEditorState :: EditorState
 defaultEditorState = EditorState
-  { editorActive = False
-  , editorTool   = ToolRaise
-  , editorBrush  = defaultBrushSettings
+  { editorActive         = False
+  , editorTool           = ToolRaise
+  , editorBrush          = defaultBrushSettings
+  , editorSmoothPasses   = 1
+  , editorNoiseFrequency = 1.0
+  , editorFlattenRef     = Nothing
+  , editorStrokeId       = 0
   }

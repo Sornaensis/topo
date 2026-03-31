@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedLabels #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -73,14 +74,16 @@ import Hyperspace.Actor (ActorHandle, Protocol, ReplyTo)
 import Numeric (showFFloat)
 import qualified Data.Map.Strict as Map
 import Seer.Config (applyUiConfig, configSummary)
-import Seer.Editor.Brush (applyBrushStroke)
-import Seer.Editor.Types (EditorState(..), BrushSettings(..))
-import Topo (ChunkId(..), HexCoord(..), WorldConfig(..))
+import Seer.Editor.Brush (applyBrushStroke, applyFlattenStroke, applyNoiseStroke, applySmoothStroke)
+import Seer.Editor.Types (EditorState(..), EditorTool(..), BrushSettings(..))
+import Topo (ChunkId(..), HexCoord(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
 import Topo.Hex (hexDisc)
 import Topo.Overlay.Schema (OverlaySchema(..))
 import Topo.Parameters.Recompute (recomputeDerivedChunks)
 import Topo.Plugin.RPC.Manifest (rmParameters)
+import Topo.Types (TerrainChunk(..))
 import Topo.WorldGen (WorldGenConfig(..), TerrainConfig(..), defaultWorldGenConfig)
+import qualified Data.Vector.Unboxed as U
 
 -- | UI-triggered actions that can be executed asynchronously.
 data UiAction
@@ -258,6 +261,11 @@ resetConfig req = do
 -- to the terrain chunks, writes the modified chunks back to the
 -- Data actor, bumps the snapshot version, and triggers an atlas
 -- rebuild.
+--
+-- For 'ToolFlatten', captures the center tile elevation as the
+-- flatten reference on the first stroke (when 'editorFlattenRef' is
+-- 'Nothing').  For 'ToolNoise', increments the stroke counter to
+-- seed each stroke uniquely.
 applyBrush :: UiActionRequest -> (Int, Int) -> IO ()
 applyBrush req hex = do
   let handles = uarActorHandles req
@@ -270,7 +278,38 @@ applyBrush req hex = do
       tool = editorTool editor
       brush = editorBrush editor
       oldChunks = tsTerrainChunks terrainSnap
-      brushed = applyBrushStroke cfg tool brush hex oldChunks
+  -- Capture flatten reference on first stroke
+  editor' <- case tool of
+    ToolFlatten
+      | Nothing <- editorFlattenRef editor -> do
+          let centerElev = lookupCenterElev cfg oldChunks hex
+          let e = editor { editorFlattenRef = Just centerElev }
+          setUiEditor uiHandle e
+          pure e
+    _ -> pure editor
+  -- Bump stroke id for noise tool
+  editor'' <- case tool of
+    ToolNoise -> do
+      let sid = editorStrokeId editor' + 1
+          e = editor' { editorStrokeId = sid }
+      setUiEditor uiHandle e
+      pure e
+    _ -> pure editor'
+  let brushed = case tool of
+        ToolRaise  -> applyBrushStroke cfg tool brush hex oldChunks
+        ToolLower  -> applyBrushStroke cfg tool brush hex oldChunks
+        ToolSmooth -> applySmoothStroke cfg brush
+                        (editorSmoothPasses editor'') hex oldChunks
+        ToolFlatten ->
+          let ref = case editorFlattenRef editor'' of
+                Just r  -> r
+                Nothing -> 0.5  -- fallback; should not happen
+          in applyFlattenStroke cfg brush ref hex oldChunks
+        ToolNoise ->
+          let worldSeed = fromIntegral (uiSeed uiSnap)
+          in applyNoiseStroke cfg brush worldSeed
+               (editorStrokeId editor'') (editorNoiseFrequency editor'')
+               hex oldChunks
       -- Recompute derived terrain fields (slope, curvature, relief, etc.)
       -- for chunks affected by the brush stroke.
       genCfg = applyUiConfig uiSnap defaultWorldGenConfig
@@ -303,3 +342,19 @@ applyBrush req hex = do
       writeDataSnapshot (ahDataSnapshotRef handles) dataSnap'
       bumpSnapshotVersion (ahSnapshotVersionRef handles)
       rebuildAtlasFor req (uiViewMode uiSnap)
+
+-- | Look up the elevation at a hex tile, returning 0.5 if the tile
+-- is not loaded.
+lookupCenterElev :: WorldConfig -> IntMap.IntMap TerrainChunk -> (Int, Int) -> Float
+lookupCenterElev cfg chunks (q, r) =
+  let (chunkCoord, TileCoord lx ly) = chunkCoordFromTile cfg (TileCoord q r)
+      ChunkId !key = chunkIdFromCoord chunkCoord
+  in case IntMap.lookup key chunks of
+       Nothing -> 0.5
+       Just chunk ->
+         let !csize = wcChunkSize cfg
+             !idx = ly * csize + lx
+             elev = tcElevation chunk
+         in if idx < 0 || idx >= U.length elev
+              then 0.5
+              else elev `U.unsafeIndex` idx

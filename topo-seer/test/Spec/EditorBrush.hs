@@ -5,7 +5,7 @@ import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Vector.Unboxed as U
 import Topo (WorldConfig(..), ChunkId(..), emptyTerrainChunk, chunkIdFromCoord)
 import Topo.Types (ChunkCoord(..), TerrainChunk(..))
-import Seer.Editor.Brush (applyBrushStroke, brushWeight)
+import Seer.Editor.Brush (applyBrushStroke, applySmoothStroke, applyFlattenStroke, applyNoiseStroke, brushWeight)
 import Seer.Editor.Types
 
 spec :: Spec
@@ -99,3 +99,104 @@ spec = describe "Editor.Brush" $ do
 
     it "defaultBrushSettings has radius 2" $
       brushRadius defaultBrushSettings `shouldBe` 2
+
+    it "defaultEditorState has 1 smooth pass" $
+      editorSmoothPasses defaultEditorState `shouldBe` 1
+
+    it "defaultEditorState has noise frequency 1.0" $
+      editorNoiseFrequency defaultEditorState `shouldBe` 1.0
+
+    it "defaultEditorState has no flatten reference" $
+      editorFlattenRef defaultEditorState `shouldBe` Nothing
+
+    it "defaultEditorState has stroke id 0" $
+      editorStrokeId defaultEditorState `shouldBe` 0
+
+  ---------------------------------------------------------------------------
+  -- applySmoothStroke
+  ---------------------------------------------------------------------------
+  describe "applySmoothStroke" $ do
+    let cfg = WorldConfig { wcChunkSize = 4 }
+        n = 4 * 4
+        mkChunk elev = (emptyTerrainChunk cfg) { tcElevation = U.replicate n elev }
+        chunkKey = let ChunkId k = chunkIdFromCoord (ChunkCoord 0 0) in k
+
+    it "moves a spike toward neighbours" $ do
+      -- Center at 1.0, all surroundings at 0.0 → should decrease
+      let base = mkChunk 0.0
+          -- Set tile (0,0) = index 0 to 1.0
+          spikeElev = U.imap (\i e -> if i == 0 then 1.0 else e) (tcElevation base)
+          chunks = IntMap.singleton chunkKey (base { tcElevation = spikeElev })
+          brush = BrushSettings { brushRadius = 0, brushStrength = 0.5, brushFalloff = FalloffConstant }
+          after = applySmoothStroke cfg brush 1 (0, 0) chunks
+          Just chunk = IntMap.lookup chunkKey after
+      -- The spike tile should have decreased (moved toward 0)
+      U.head (tcElevation chunk) `shouldSatisfy` (< 1.0)
+
+    it "does not change a flat field" $ do
+      let chunks = IntMap.singleton chunkKey (mkChunk 0.5)
+          brush = BrushSettings { brushRadius = 1, brushStrength = 1.0, brushFalloff = FalloffConstant }
+          after = applySmoothStroke cfg brush 3 (0, 0) chunks
+          Just chunk = IntMap.lookup chunkKey after
+      -- All tiles are at 0.5, so smoothing should keep them near 0.5
+      U.head (tcElevation chunk) `shouldSatisfy` (\e -> abs (e - 0.5) < 0.01)
+
+  ---------------------------------------------------------------------------
+  -- applyFlattenStroke
+  ---------------------------------------------------------------------------
+  describe "applyFlattenStroke" $ do
+    let cfg = WorldConfig { wcChunkSize = 4 }
+        n = 4 * 4
+        mkChunk elev = (emptyTerrainChunk cfg) { tcElevation = U.replicate n elev }
+        chunkKey = let ChunkId k = chunkIdFromCoord (ChunkCoord 0 0) in k
+
+    it "moves elevation toward the reference" $ do
+      let chunks = IntMap.singleton chunkKey (mkChunk 0.2)
+          brush = BrushSettings { brushRadius = 0, brushStrength = 0.5, brushFalloff = FalloffConstant }
+          after = applyFlattenStroke cfg brush 0.8 (0, 0) chunks
+          Just chunk = IntMap.lookup chunkKey after
+      -- Should move from 0.2 toward 0.8
+      U.head (tcElevation chunk) `shouldSatisfy` (> 0.2)
+      U.head (tcElevation chunk) `shouldSatisfy` (< 0.8)
+
+    it "keeps elevation at the reference when already there" $ do
+      let chunks = IntMap.singleton chunkKey (mkChunk 0.5)
+          brush = BrushSettings { brushRadius = 0, brushStrength = 1.0, brushFalloff = FalloffConstant }
+          after = applyFlattenStroke cfg brush 0.5 (0, 0) chunks
+          Just chunk = IntMap.lookup chunkKey after
+      U.head (tcElevation chunk) `shouldSatisfy` (\e -> abs (e - 0.5) < 0.001)
+
+  ---------------------------------------------------------------------------
+  -- applyNoiseStroke
+  ---------------------------------------------------------------------------
+  describe "applyNoiseStroke" $ do
+    let cfg = WorldConfig { wcChunkSize = 4 }
+        n = 4 * 4
+        mkChunk elev = (emptyTerrainChunk cfg) { tcElevation = U.replicate n elev }
+        chunkKey = let ChunkId k = chunkIdFromCoord (ChunkCoord 0 0) in k
+
+    it "modifies elevation" $ do
+      let chunks = IntMap.singleton chunkKey (mkChunk 0.5)
+          brush = BrushSettings { brushRadius = 0, brushStrength = 0.3, brushFalloff = FalloffConstant }
+          -- Use (1,1) instead of (0,0): fbm2D returns 0 at the origin
+          after = applyNoiseStroke cfg brush 42 1 1.0 (1, 1) chunks
+          Just chunk = IntMap.lookup chunkKey after
+          -- Tile (1,1) → local index 1*4 + 1 = 5
+      (tcElevation chunk U.! 5) `shouldSatisfy` (/= 0.5)
+
+    it "produces different results for different stroke IDs" $ do
+      let chunks = IntMap.singleton chunkKey (mkChunk 0.5)
+          brush = BrushSettings { brushRadius = 0, brushStrength = 0.3, brushFalloff = FalloffConstant }
+          after1 = applyNoiseStroke cfg brush 42 1 1.0 (1, 1) chunks
+          after2 = applyNoiseStroke cfg brush 42 2 1.0 (1, 1) chunks
+          Just c1 = IntMap.lookup chunkKey after1
+          Just c2 = IntMap.lookup chunkKey after2
+      (tcElevation c1 U.! 5) `shouldSatisfy` (/= (tcElevation c2 U.! 5))
+
+    it "clamps elevation to [0,1]" $ do
+      let chunks = IntMap.singleton chunkKey (mkChunk 0.99)
+          brush = BrushSettings { brushRadius = 0, brushStrength = 1.0, brushFalloff = FalloffConstant }
+          after = applyNoiseStroke cfg brush 42 1 1.0 (0, 0) chunks
+          Just chunk = IntMap.lookup chunkKey after
+      U.head (tcElevation chunk) `shouldSatisfy` (<= 1.0)
+      U.head (tcElevation chunk) `shouldSatisfy` (>= 0.0)

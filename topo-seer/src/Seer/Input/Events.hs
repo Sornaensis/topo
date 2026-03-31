@@ -239,6 +239,12 @@ handleEvent inputContext event = do
                   uiSnap <- getUiSnapshot uiHandle
                   setUiHexTooltipPinned uiHandle (not (uiHexTooltipPinned uiSnap))
                 _ -> pure ()
+            SDL.ButtonLeft -> do
+              -- Reset flatten reference on stroke end
+              uiSnap <- getUiSnapshot uiHandle
+              let editor = uiEditor uiSnap
+              when (editorActive editor && editorTool editor == ToolFlatten) $
+                setUiEditor uiHandle (editor { editorFlattenRef = Nothing })
             _ -> pure ()
     SDL.TextInputEvent textEvent -> do
       uiSnap <- InputActions.getUiSnapshot inputEnv
@@ -332,6 +338,12 @@ handleEvent inputContext event = do
         setUiEditor uiHandle (editor { editorTool = ToolRaise })
       SDL.Keycode2 ->
         setUiEditor uiHandle (editor { editorTool = ToolLower })
+      SDL.Keycode3 ->
+        setUiEditor uiHandle (editor { editorTool = ToolSmooth })
+      SDL.Keycode4 ->
+        setUiEditor uiHandle (editor { editorTool = ToolFlatten })
+      SDL.Keycode5 ->
+        setUiEditor uiHandle (editor { editorTool = ToolNoise })
       SDL.KeycodeLeftBracket ->
         let brush = editorBrush editor
             r = max 0 (brushRadius brush - 1)
