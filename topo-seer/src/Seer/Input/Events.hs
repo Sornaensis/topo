@@ -13,6 +13,7 @@ import Actor.SnapshotReceiver (writeDataSnapshot, writeTerrainSnapshot, bumpSnap
 import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshot(..), appendLog, getLogSnapshot, setLogCollapsed, setLogMinLevel, setLogScroll)
 import Actor.UI
   ( ConfigTab(..)
+  , LeftTab(..)
   , Ui
   , UiMenuMode(..)
   , UiState(..)
@@ -36,6 +37,7 @@ import Actor.UI
   , setUiZoom
   , setUiOverlayNames
   )
+import Control.Applicative ((<|>))
 import Control.Monad (when)
 import Data.IORef (IORef, modifyIORef', readIORef, writeIORef)
 import qualified Data.Text as Text
@@ -60,7 +62,7 @@ import Seer.Input.ViewControls
 import Topo (ChunkCoord(..), ChunkId(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
 import UI.HexPick (screenToAxial)
 import UI.Layout
-import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildEditorWidgets, buildEditorReopenWidget, buildPluginWidgets, buildSliderRowWidgets, hitTest)
+import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildEditorWidgets, buildEditorReopenWidget, buildViewModeWidgets, buildPluginWidgets, buildSliderRowWidgets, hitTest)
 import UI.Widgets (Rect(..), containsPoint)
 import Seer.Input.Actions (InputEnv(..), submitAction)
 import qualified Seer.Input.Actions as InputActions
@@ -136,56 +138,67 @@ handleEvent inputContext event = do
           case uiHoverHex uiSnapDrag of
             Just hex -> submitAction inputEnv (UiActionBrushStroke hex)
             Nothing  -> pure ()
-      -- Widget hover detection for tooltips (only for active tab sliders)
+      -- Widget hover detection for tooltips
       do (V2 winW winH) <- SDL.get (SDL.windowSize window)
          logSnap <- getLogSnapshot logHandle
          let logHeight = if lsCollapsed logSnap then 24 else 160
              seedWidth = max 120 (seedMaxDigits * 10)
              hoverLayout = layoutForSeed (V2 (fromIntegral winW) (fromIntegral winH)) logHeight seedWidth
              point = V2 (fromIntegral mx) (fromIntegral my)
-         if uiShowConfig uiSnap
-           then do
-             let scrollArea = configScrollAreaRect hoverLayout
-                 scrollOffset = uiConfigScroll uiSnap
-                 scrolledPoint = V2 (fromIntegral mx) (fromIntegral my + scrollOffset)
-                 (terrainRows, planetRows, climateRows, weatherRows, biomeRows, erosionRows) = buildSliderRowWidgets hoverLayout
-                 activeRows = case uiConfigTab uiSnap of
-                   ConfigTerrain -> terrainRows
-                   ConfigPlanet -> planetRows
-                   ConfigClimate -> climateRows
-                   ConfigWeather -> weatherRows
-                   ConfigBiome -> biomeRows
-                   ConfigErosion -> erosionRows
-                   ConfigPipeline -> []
-                   ConfigData -> []
-                 hoverResult
-                   | containsPoint scrollArea point = hitTest activeRows scrolledPoint
-                   | otherwise = Nothing
-             -- Record which widget the cursor is over and reset the
-             -- frame counter.  The actual tooltip is fired by
-             -- 'tickTooltipHover' once the counter reaches 0.
-             pending <- readIORef tooltipHoverRef
-             case hoverResult of
-               Nothing -> do
-                 writeIORef tooltipHoverRef Nothing
-                 setUiHoverWidget uiHandle Nothing
-               Just wid -> do
-                 case pending of
-                   Just (prevWid, _)
-                     | prevWid == wid ->
-                         -- Same widget; reset the frame counter so
-                         -- tooltip only appears after the cursor stops.
-                         writeIORef tooltipHoverRef (Just (wid, tooltipDelayFrames))
-                     | otherwise -> do
-                         -- Different widget; restart counter, hide tooltip
-                         writeIORef tooltipHoverRef (Just (wid, tooltipDelayFrames))
-                         setUiHoverWidget uiHandle Nothing
-                   Nothing -> do
-                     writeIORef tooltipHoverRef (Just (wid, tooltipDelayFrames))
-                     setUiHoverWidget uiHandle Nothing
-           else do
+             editor = uiEditor uiSnap
+             -- Slider rows (scroll-adjusted, only when config panel open)
+             sliderHit
+               | uiShowConfig uiSnap =
+                   let scrollArea = configScrollAreaRect hoverLayout
+                       scrollOffset = uiConfigScroll uiSnap
+                       scrolledPoint = V2 (fromIntegral mx) (fromIntegral my + scrollOffset)
+                       (terrainRows, planetRows, climateRows, weatherRows, biomeRows, erosionRows) = buildSliderRowWidgets hoverLayout
+                       activeRows = case uiConfigTab uiSnap of
+                         ConfigTerrain -> terrainRows
+                         ConfigPlanet -> planetRows
+                         ConfigClimate -> climateRows
+                         ConfigWeather -> weatherRows
+                         ConfigBiome -> biomeRows
+                         ConfigErosion -> erosionRows
+                         ConfigPipeline -> []
+                         ConfigData -> []
+                   in if containsPoint scrollArea point
+                        then hitTest activeRows scrolledPoint
+                        else Nothing
+               | otherwise = Nothing
+             -- Chrome widgets (screen-space): editor toolbar or reopen,
+             -- and view mode buttons when the view tab is active.
+             chromeWidgets =
+               (if editorActive editor
+                  then buildEditorWidgets hoverLayout
+                  else buildEditorReopenWidget hoverLayout)
+               ++ (if uiShowLeftPanel uiSnap && uiLeftTab uiSnap == LeftView
+                     then buildViewModeWidgets hoverLayout
+                     else [])
+             chromeHit = hitTest chromeWidgets point
+             hoverResult = sliderHit <|> chromeHit
+         -- Record which widget the cursor is over and reset the
+         -- frame counter.  The actual tooltip is fired by
+         -- 'tickTooltipHover' once the counter reaches 0.
+         pending <- readIORef tooltipHoverRef
+         case hoverResult of
+           Nothing -> do
              writeIORef tooltipHoverRef Nothing
              setUiHoverWidget uiHandle Nothing
+           Just wid -> do
+             case pending of
+               Just (prevWid, _)
+                 | prevWid == wid ->
+                     -- Same widget; reset the frame counter so
+                     -- tooltip only appears after the cursor stops.
+                     writeIORef tooltipHoverRef (Just (wid, tooltipDelayFrames))
+                 | otherwise -> do
+                     -- Different widget; restart counter, hide tooltip
+                     writeIORef tooltipHoverRef (Just (wid, tooltipDelayFrames))
+                     setUiHoverWidget uiHandle Nothing
+               Nothing -> do
+                 writeIORef tooltipHoverRef (Just (wid, tooltipDelayFrames))
+                 setUiHoverWidget uiHandle Nothing
     SDL.MouseWheelEvent wheelEvent -> do
       let SDL.V2 _ dy = SDL.mouseWheelEventPos wheelEvent
       when (dy /= 0) $ do

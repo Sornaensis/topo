@@ -5,6 +5,7 @@ module UI.WidgetTree
   , buildWidgets
   , buildEditorWidgets
   , buildEditorReopenWidget
+  , buildViewModeWidgets
   , buildPluginWidgets
   , buildDataBrowserWidgets
   , buildSliderRowWidgets
@@ -30,17 +31,7 @@ data Widget = Widget
 
 buildWidgets :: Layout -> [Widget]
 buildWidgets layout =
-  let viewRects = leftViewRects layout
-      viewWidgetIds =
-        [ WidgetViewElevation, WidgetViewBiome, WidgetViewClimate
-        , WidgetViewWeather, WidgetViewMoisture, WidgetViewPrecip
-        , WidgetViewVegetation, WidgetViewTerrainForm
-        , WidgetViewPlateId, WidgetViewPlateBoundary
-        , WidgetViewPlateHardness, WidgetViewPlateCrust
-        , WidgetViewPlateAge, WidgetViewPlateHeight
-        , WidgetViewPlateVelocity
-        ]
-      (overlayPrev, overlayNext, fieldPrev, fieldNext) = overlayViewRects layout
+  let (overlayPrev, overlayNext, fieldPrev, fieldNext) = overlayViewRects layout
       (logDebug, logInfo, logWarn, logError) = logFilterRects layout
       (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline, tabData) = configTabRects layout
       (leftTabTopo, leftTabView) = leftTabRects layout
@@ -74,7 +65,7 @@ buildWidgets layout =
     | (idx, sid) <- zip [0..] allBuiltinStageIds
     ] ++
     -- View mode buttons
-    zipWith Widget viewWidgetIds viewRects ++
+    buildViewModeWidgets layout ++
     [ Widget WidgetViewOverlayPrev overlayPrev
     , Widget WidgetViewOverlayNext overlayNext
     , Widget WidgetViewFieldPrev fieldPrev
@@ -270,6 +261,21 @@ buildEditorWidgets layout =
 buildEditorReopenWidget :: Layout -> [Widget]
 buildEditorReopenWidget layout =
   [ Widget WidgetEditorReopen (editorReopenRect layout) ]
+
+-- | Build widgets for the view mode buttons in the left panel.
+buildViewModeWidgets :: Layout -> [Widget]
+buildViewModeWidgets layout =
+  zipWith Widget viewWidgetIds (leftViewRects layout)
+  where
+    viewWidgetIds =
+      [ WidgetViewElevation, WidgetViewBiome, WidgetViewClimate
+      , WidgetViewWeather, WidgetViewMoisture, WidgetViewPrecip
+      , WidgetViewVegetation, WidgetViewTerrainForm
+      , WidgetViewPlateId, WidgetViewPlateBoundary
+      , WidgetViewPlateHardness, WidgetViewPlateCrust
+      , WidgetViewPlateAge, WidgetViewPlateHeight
+      , WidgetViewPlateVelocity
+      ]
 
 hitTest :: [Widget] -> V2 Int -> Maybe WidgetId
 hitTest widgets point =

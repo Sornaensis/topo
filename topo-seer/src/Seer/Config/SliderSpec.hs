@@ -60,10 +60,43 @@ fmtInt x = Text.pack (show (round x :: Int))
 
 -- | Look up tooltip text for a widget.
 --
--- Returns 'Just' for every config slider widget ID and 'Nothing' for
--- non-slider widgets.
+-- Returns 'Just' for config slider widgets, editor toolbar widgets,
+-- and view mode buttons.  Returns 'Nothing' for all other widgets.
 tooltipForWidget :: WidgetId -> Maybe Text
+tooltipForWidget (WidgetEditorTool idx) = Just (editorToolTooltip idx)
+tooltipForWidget WidgetEditorRadiusMinus = Just "Decrease brush radius"
+tooltipForWidget WidgetEditorRadiusPlus  = Just "Increase brush radius"
+tooltipForWidget WidgetEditorClose       = Just "Close editor toolbar (E)"
+tooltipForWidget WidgetEditorReopen      = Just "Open editor toolbar (E)"
+tooltipForWidget WidgetViewElevation     = Just "Elevation view"
+tooltipForWidget WidgetViewBiome         = Just "Biome classification view"
+tooltipForWidget WidgetViewClimate       = Just "Climate overview"
+tooltipForWidget WidgetViewWeather       = Just "Weather patterns"
+tooltipForWidget WidgetViewMoisture      = Just "Soil moisture"
+tooltipForWidget WidgetViewPrecip        = Just "Precipitation"
+tooltipForWidget WidgetViewVegetation    = Just "Vegetation density"
+tooltipForWidget WidgetViewTerrainForm   = Just "Terrain form classification"
+tooltipForWidget WidgetViewPlateId       = Just "Tectonic plate ID"
+tooltipForWidget WidgetViewPlateBoundary = Just "Plate boundaries"
+tooltipForWidget WidgetViewPlateHardness = Just "Plate rock hardness"
+tooltipForWidget WidgetViewPlateCrust    = Just "Crustal thickness"
+tooltipForWidget WidgetViewPlateAge      = Just "Plate age"
+tooltipForWidget WidgetViewPlateHeight   = Just "Plate-driven height"
+tooltipForWidget WidgetViewPlateVelocity = Just "Plate velocity"
 tooltipForWidget wid = ssTooltip . sliderSpecForId . sliderId <$> sliderDefForWidget wid
+
+-- | Tooltip text for each editor tool index.
+editorToolTooltip :: Int -> Text
+editorToolTooltip 0 = "Raise terrain"
+editorToolTooltip 1 = "Lower terrain"
+editorToolTooltip 2 = "Smooth terrain"
+editorToolTooltip 3 = "Flatten to reference"
+editorToolTooltip 4 = "Add noise"
+editorToolTooltip 5 = "Paint biome"
+editorToolTooltip 6 = "Paint terrain form"
+editorToolTooltip 7 = "Set rock hardness"
+editorToolTooltip 8 = "Erode terrain"
+editorToolTooltip _ = "Editor tool"
 
 -- | Resolve a logical slider identifier to its display specification.
 sliderSpecForId :: SliderId -> SliderSpec

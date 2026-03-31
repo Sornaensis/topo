@@ -77,7 +77,6 @@ spec = do
       tooltipForWidget WidgetConfigPresetSave `shouldBe` Nothing
       tooltipForWidget (WidgetPluginMoveUp "plugin-a") `shouldBe` Nothing
       tooltipForWidget WidgetSimTick `shouldBe` Nothing
-      tooltipForWidget WidgetViewElevation `shouldBe` Nothing
       tooltipForWidget WidgetMenuSave `shouldBe` Nothing
       tooltipForWidget WidgetMenuExit `shouldBe` Nothing
 
@@ -92,6 +91,29 @@ spec = do
         `shouldBe` tooltipForWidget WidgetConfigWaterPlus
       tooltipForWidget WidgetConfigErosionThermalMinus
         `shouldBe` tooltipForWidget WidgetConfigErosionThermalPlus
+
+    it "returns Just for editor tool widgets" $ do
+      for_ [0..8] $ \idx ->
+        tooltipForWidget (WidgetEditorTool idx) `shouldSatisfy` isNonEmptyTip
+
+    it "returns Just for editor radius and close widgets" $ do
+      tooltipForWidget WidgetEditorRadiusMinus `shouldSatisfy` isNonEmptyTip
+      tooltipForWidget WidgetEditorRadiusPlus `shouldSatisfy` isNonEmptyTip
+      tooltipForWidget WidgetEditorClose `shouldSatisfy` isNonEmptyTip
+
+    it "returns Just for editor reopen widget" $
+      tooltipForWidget WidgetEditorReopen `shouldSatisfy` isNonEmptyTip
+
+    it "returns Just for all view mode widgets" $ do
+      for_ [ WidgetViewElevation, WidgetViewBiome, WidgetViewClimate
+           , WidgetViewWeather, WidgetViewMoisture, WidgetViewPrecip
+           , WidgetViewVegetation, WidgetViewTerrainForm
+           , WidgetViewPlateId, WidgetViewPlateBoundary
+           , WidgetViewPlateHardness, WidgetViewPlateCrust
+           , WidgetViewPlateAge, WidgetViewPlateHeight
+           , WidgetViewPlateVelocity
+           ] $ \wid ->
+        tooltipForWidget wid `shouldSatisfy` isNonEmptyTip
 
   describe "water level separation" $ do
     it "changing uiWaterLevel does not affect uiRenderWaterLevel" $
