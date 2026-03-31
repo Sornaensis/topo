@@ -10,6 +10,9 @@ module Seer.Editor.Brush
   , applySmoothStroke
   , applyFlattenStroke
   , applyNoiseStroke
+  , applyPaintBiomeStroke
+  , applyPaintFormStroke
+  , applySetHardnessStroke
   , brushWeight
   ) where
 
@@ -22,7 +25,7 @@ import Topo (ChunkId(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, ch
 import Topo.Hex (hexDisc, hexDistance, hexNeighbors)
 import Topo.Math (clamp01)
 import Topo.Noise (fbm2D, hashSeed)
-import Topo.Types (HexCoord(..), TerrainChunk(..))
+import Topo.Types (HexCoord(..), TerrainChunk(..), BiomeId, TerrainForm)
 import Seer.Editor.Types (BrushSettings(..), EditorTool(..), Falloff(..))
 
 -- | Compute the brush weight for a tile at @dist@ hexes from center,
@@ -318,4 +321,155 @@ noiseTile cfg brush center radius noiseSeed freq chunks tile =
                     !new    = clamp01 (old + delta)
                     !elev'  = U.modify (\mv -> MU.write mv idx new) elev
                     !chunk' = chunk { tcElevation = elev' }
+                in IntMap.insert key chunk' chunks
+
+-- ---------------------------------------------------------------------------
+-- Biome paint tool
+-- ---------------------------------------------------------------------------
+
+-- | Paint a 'BiomeId' onto all tiles in the brush disc.
+--
+-- Unlike elevation tools, biome painting is binary: each tile within
+-- the brush radius gets the target biome weighted by brush falloff —
+-- tiles with weight above 0.5 receive the new biome.
+applyPaintBiomeStroke
+  :: WorldConfig
+  -> BrushSettings
+  -> BiomeId
+     -- ^ Target biome.
+  -> (Int, Int)
+     -- ^ Center hex @(q, r)@.
+  -> IntMap TerrainChunk
+  -> IntMap TerrainChunk
+applyPaintBiomeStroke cfg brush biomeId (cq, cr) chunks =
+  let !center = HexAxial cq cr
+      !radius = brushRadius brush
+      disc = hexDisc center radius
+  in foldl' (paintBiomeTile cfg brush center radius biomeId) chunks disc
+
+paintBiomeTile
+  :: WorldConfig
+  -> BrushSettings
+  -> HexCoord -> Int -> BiomeId
+  -> IntMap TerrainChunk
+  -> HexCoord
+  -> IntMap TerrainChunk
+paintBiomeTile cfg brush center radius biomeId chunks tile =
+  let HexAxial tq tr = tile
+      (chunkCoord, TileCoord lx ly) = chunkCoordFromTile cfg (TileCoord tq tr)
+      ChunkId !key = chunkIdFromCoord chunkCoord
+  in case IntMap.lookup key chunks of
+       Nothing -> chunks
+       Just chunk ->
+         let !csize = wcChunkSize cfg
+             !idx   = ly * csize + lx
+             flags  = tcFlags chunk
+         in if idx < 0 || idx >= U.length flags
+              then chunks
+              else
+                let !dist = hexDistance center tile
+                    !w    = brushWeight (brushFalloff brush) radius dist
+                in if w > 0.5
+                     then let !flags' = U.modify (\mv -> MU.write mv idx biomeId) flags
+                              !chunk' = chunk { tcFlags = flags' }
+                          in IntMap.insert key chunk' chunks
+                     else chunks
+
+-- ---------------------------------------------------------------------------
+-- Terrain form paint tool
+-- ---------------------------------------------------------------------------
+
+-- | Paint a 'TerrainForm' onto all tiles in the brush disc.
+applyPaintFormStroke
+  :: WorldConfig
+  -> BrushSettings
+  -> TerrainForm
+     -- ^ Target terrain form.
+  -> (Int, Int)
+  -> IntMap TerrainChunk
+  -> IntMap TerrainChunk
+applyPaintFormStroke cfg brush form (cq, cr) chunks =
+  let !center = HexAxial cq cr
+      !radius = brushRadius brush
+      disc = hexDisc center radius
+  in foldl' (paintFormTile cfg brush center radius form) chunks disc
+
+paintFormTile
+  :: WorldConfig
+  -> BrushSettings
+  -> HexCoord -> Int -> TerrainForm
+  -> IntMap TerrainChunk
+  -> HexCoord
+  -> IntMap TerrainChunk
+paintFormTile cfg brush center radius form chunks tile =
+  let HexAxial tq tr = tile
+      (chunkCoord, TileCoord lx ly) = chunkCoordFromTile cfg (TileCoord tq tr)
+      ChunkId !key = chunkIdFromCoord chunkCoord
+  in case IntMap.lookup key chunks of
+       Nothing -> chunks
+       Just chunk ->
+         let !csize = wcChunkSize cfg
+             !idx   = ly * csize + lx
+             forms  = tcTerrainForm chunk
+         in if idx < 0 || idx >= U.length forms
+              then chunks
+              else
+                let !dist = hexDistance center tile
+                    !w    = brushWeight (brushFalloff brush) radius dist
+                in if w > 0.5
+                     then let !forms' = U.modify (\mv -> MU.write mv idx form) forms
+                              !chunk' = chunk { tcTerrainForm = forms' }
+                          in IntMap.insert key chunk' chunks
+                     else chunks
+
+-- ---------------------------------------------------------------------------
+-- Hardness tool
+-- ---------------------------------------------------------------------------
+
+-- | Set rock hardness on tiles in the brush disc.
+--
+-- Blends the current hardness toward @targetHardness@ using
+-- @strength × weight@, identically to the flatten tool but on
+-- 'tcHardness'.
+applySetHardnessStroke
+  :: WorldConfig
+  -> BrushSettings
+  -> Float
+     -- ^ Target hardness (0–1).
+  -> (Int, Int)
+  -> IntMap TerrainChunk
+  -> IntMap TerrainChunk
+applySetHardnessStroke cfg brush targetH (cq, cr) chunks =
+  let !center = HexAxial cq cr
+      !radius = brushRadius brush
+      disc = hexDisc center radius
+  in foldl' (hardnessTile cfg brush center radius targetH) chunks disc
+
+hardnessTile
+  :: WorldConfig
+  -> BrushSettings
+  -> HexCoord -> Int -> Float
+  -> IntMap TerrainChunk
+  -> HexCoord
+  -> IntMap TerrainChunk
+hardnessTile cfg brush center radius targetH chunks tile =
+  let HexAxial tq tr = tile
+      (chunkCoord, TileCoord lx ly) = chunkCoordFromTile cfg (TileCoord tq tr)
+      ChunkId !key = chunkIdFromCoord chunkCoord
+  in case IntMap.lookup key chunks of
+       Nothing -> chunks
+       Just chunk ->
+         let !csize = wcChunkSize cfg
+             !idx   = ly * csize + lx
+             hard   = tcHardness chunk
+         in if idx < 0 || idx >= U.length hard
+              then chunks
+              else
+                let !dist  = hexDistance center tile
+                    !w     = brushWeight (brushFalloff brush) radius dist
+                    !str   = brushStrength brush
+                    !old   = hard `U.unsafeIndex` idx
+                    !new   = clamp01 (old + (targetH - old) * str * w)
+                    !hard' = U.modify (\mv -> MU.write mv idx new) hard
+                    !chunk' = chunk { tcHardness = hard' }
                 in IntMap.insert key chunk' chunks

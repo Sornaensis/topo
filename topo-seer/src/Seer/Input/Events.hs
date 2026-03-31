@@ -344,6 +344,12 @@ handleEvent inputContext event = do
         setUiEditor uiHandle (editor { editorTool = ToolFlatten })
       SDL.Keycode5 ->
         setUiEditor uiHandle (editor { editorTool = ToolNoise })
+      SDL.Keycode6 ->
+        setUiEditor uiHandle (editor { editorTool = ToolPaintBiome })
+      SDL.Keycode7 ->
+        setUiEditor uiHandle (editor { editorTool = ToolPaintForm })
+      SDL.Keycode8 ->
+        setUiEditor uiHandle (editor { editorTool = ToolSetHardness })
       SDL.KeycodeLeftBracket ->
         let brush = editorBrush editor
             r = max 0 (brushRadius brush - 1)

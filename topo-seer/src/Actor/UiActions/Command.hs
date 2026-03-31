@@ -74,7 +74,7 @@ import Hyperspace.Actor (ActorHandle, Protocol, ReplyTo)
 import Numeric (showFFloat)
 import qualified Data.Map.Strict as Map
 import Seer.Config (applyUiConfig, configSummary)
-import Seer.Editor.Brush (applyBrushStroke, applyFlattenStroke, applyNoiseStroke, applySmoothStroke)
+import Seer.Editor.Brush (applyBrushStroke, applyFlattenStroke, applyNoiseStroke, applyPaintBiomeStroke, applyPaintFormStroke, applySetHardnessStroke, applySmoothStroke)
 import Seer.Editor.Types (EditorState(..), EditorTool(..), BrushSettings(..))
 import Topo (ChunkId(..), HexCoord(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
 import Topo.Hex (hexDisc)
@@ -310,6 +310,12 @@ applyBrush req hex = do
           in applyNoiseStroke cfg brush worldSeed
                (editorStrokeId editor'') (editorNoiseFrequency editor'')
                hex oldChunks
+        ToolPaintBiome ->
+          applyPaintBiomeStroke cfg brush (editorBiomeId editor'') hex oldChunks
+        ToolPaintForm ->
+          applyPaintFormStroke cfg brush (editorFormOverride editor'') hex oldChunks
+        ToolSetHardness ->
+          applySetHardnessStroke cfg brush (editorHardnessTarget editor'') hex oldChunks
       -- Recompute derived terrain fields (slope, curvature, relief, etc.)
       -- for chunks affected by the brush stroke.
       genCfg = applyUiConfig uiSnap defaultWorldGenConfig

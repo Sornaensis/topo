@@ -1,11 +1,13 @@
+{-# LANGUAGE PatternSynonyms #-}
+
 module Spec.EditorBrush (spec) where
 
 import Test.Hspec
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Vector.Unboxed as U
 import Topo (WorldConfig(..), ChunkId(..), emptyTerrainChunk, chunkIdFromCoord)
-import Topo.Types (ChunkCoord(..), TerrainChunk(..))
-import Seer.Editor.Brush (applyBrushStroke, applySmoothStroke, applyFlattenStroke, applyNoiseStroke, brushWeight)
+import Topo.Types (ChunkCoord(..), TerrainChunk(..), BiomeId, TerrainForm, pattern BiomeDesert, pattern BiomeGrassland, pattern FormFlat, pattern FormHilly)
+import Seer.Editor.Brush (applyBrushStroke, applySmoothStroke, applyFlattenStroke, applyNoiseStroke, applyPaintBiomeStroke, applyPaintFormStroke, applySetHardnessStroke, brushWeight)
 import Seer.Editor.Types
 
 spec :: Spec
@@ -200,3 +202,78 @@ spec = describe "Editor.Brush" $ do
           Just chunk = IntMap.lookup chunkKey after
       U.head (tcElevation chunk) `shouldSatisfy` (<= 1.0)
       U.head (tcElevation chunk) `shouldSatisfy` (>= 0.0)
+
+  ---------------------------------------------------------------------------
+  -- applyPaintBiomeStroke
+  ---------------------------------------------------------------------------
+  describe "applyPaintBiomeStroke" $ do
+    let cfg = WorldConfig { wcChunkSize = 4 }
+        n = 4 * 4
+        mkChunk' = emptyTerrainChunk cfg
+        chunkKey = let ChunkId k = chunkIdFromCoord (ChunkCoord 0 0) in k
+
+    it "paints the target biome onto the center tile" $ do
+      let chunks = IntMap.singleton chunkKey mkChunk'
+          brush = BrushSettings { brushRadius = 0, brushStrength = 1.0, brushFalloff = FalloffConstant }
+          after = applyPaintBiomeStroke cfg brush BiomeGrassland (0, 0) chunks
+          Just chunk = IntMap.lookup chunkKey after
+      U.head (tcFlags chunk) `shouldBe` BiomeGrassland
+
+    it "does not paint tiles below the weight threshold" $ do
+      -- radius 2 with linear falloff: tiles at distance 2 get weight 0 (< 0.5)
+      let chunks = IntMap.singleton chunkKey mkChunk'
+          brush = BrushSettings { brushRadius = 2, brushStrength = 1.0, brushFalloff = FalloffLinear }
+          after = applyPaintBiomeStroke cfg brush BiomeGrassland (0, 0) chunks
+          Just chunk = IntMap.lookup chunkKey after
+      -- Center (dist 0, weight 1.0) should be painted
+      U.head (tcFlags chunk) `shouldBe` BiomeGrassland
+
+  ---------------------------------------------------------------------------
+  -- applyPaintFormStroke
+  ---------------------------------------------------------------------------
+  describe "applyPaintFormStroke" $ do
+    let cfg = WorldConfig { wcChunkSize = 4 }
+        mkChunk' = emptyTerrainChunk cfg
+        chunkKey = let ChunkId k = chunkIdFromCoord (ChunkCoord 0 0) in k
+
+    it "paints the target terrain form" $ do
+      let chunks = IntMap.singleton chunkKey mkChunk'
+          brush = BrushSettings { brushRadius = 0, brushStrength = 1.0, brushFalloff = FalloffConstant }
+          after = applyPaintFormStroke cfg brush FormHilly (0, 0) chunks
+          Just chunk = IntMap.lookup chunkKey after
+      U.head (tcTerrainForm chunk) `shouldBe` FormHilly
+
+    it "overwrites existing terrain form" $ do
+      let base = mkChunk'
+          forms = U.replicate (4*4) FormHilly
+          chunk0 = base { tcTerrainForm = forms }
+          chunks = IntMap.singleton chunkKey chunk0
+          brush = BrushSettings { brushRadius = 0, brushStrength = 1.0, brushFalloff = FalloffConstant }
+          after = applyPaintFormStroke cfg brush FormFlat (0, 0) chunks
+          Just chunk = IntMap.lookup chunkKey after
+      U.head (tcTerrainForm chunk) `shouldBe` FormFlat
+
+  ---------------------------------------------------------------------------
+  -- applySetHardnessStroke
+  ---------------------------------------------------------------------------
+  describe "applySetHardnessStroke" $ do
+    let cfg = WorldConfig { wcChunkSize = 4 }
+        n = 4 * 4
+        mkChunk elev = (emptyTerrainChunk cfg) { tcHardness = U.replicate n elev }
+        chunkKey = let ChunkId k = chunkIdFromCoord (ChunkCoord 0 0) in k
+
+    it "moves hardness toward the target" $ do
+      let chunks = IntMap.singleton chunkKey (mkChunk 0.2)
+          brush = BrushSettings { brushRadius = 0, brushStrength = 0.5, brushFalloff = FalloffConstant }
+          after = applySetHardnessStroke cfg brush 0.8 (0, 0) chunks
+          Just chunk = IntMap.lookup chunkKey after
+      U.head (tcHardness chunk) `shouldSatisfy` (> 0.2)
+      U.head (tcHardness chunk) `shouldSatisfy` (< 0.8)
+
+    it "clamps hardness to [0,1]" $ do
+      let chunks = IntMap.singleton chunkKey (mkChunk 0.5)
+          brush = BrushSettings { brushRadius = 0, brushStrength = 1.0, brushFalloff = FalloffConstant }
+          after = applySetHardnessStroke cfg brush 1.0 (0, 0) chunks
+          Just chunk = IntMap.lookup chunkKey after
+      U.head (tcHardness chunk) `shouldSatisfy` (<= 1.0)
+      U.head (tcHardness chunk) `shouldSatisfy` (>= 0.0)

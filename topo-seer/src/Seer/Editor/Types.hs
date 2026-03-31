@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 -- | Terrain editor types: tool modes, brush settings, and editor state.
 --
@@ -19,6 +20,7 @@ module Seer.Editor.Types
 
 import Data.Word (Word64)
 import GHC.Generics (Generic)
+import Topo.Types (BiomeId, TerrainForm, pattern BiomeDesert, pattern FormFlat)
 
 -- | Available terrain editor tools.
 data EditorTool
@@ -33,6 +35,12 @@ data EditorTool
     -- start.
   | ToolNoise
     -- ^ Apply coherent noise perturbation to elevation.
+  | ToolPaintBiome
+    -- ^ Paint a biome classification onto tiles.
+  | ToolPaintForm
+    -- ^ Override the classified terrain form.
+  | ToolSetHardness
+    -- ^ Set rock hardness on tiles.
   deriving (Eq, Ord, Show, Enum, Bounded, Generic)
 
 -- | Brush weight falloff function from center to edge.
@@ -79,6 +87,12 @@ data EditorState = EditorState
     -- ^ Reference elevation for 'ToolFlatten', captured at stroke start.
   , editorStrokeId       :: !Word64
     -- ^ Monotonically increasing stroke counter for noise seeding.
+  , editorBiomeId        :: !BiomeId
+    -- ^ Target biome for 'ToolPaintBiome'.
+  , editorFormOverride   :: !TerrainForm
+    -- ^ Target terrain form for 'ToolPaintForm'.
+  , editorHardnessTarget :: !Float
+    -- ^ Target hardness for 'ToolSetHardness' (0–1).
   } deriving (Eq, Show, Generic)
 
 -- | Initial editor state: inactive, raise tool, default brush.
@@ -91,4 +105,7 @@ defaultEditorState = EditorState
   , editorNoiseFrequency = 1.0
   , editorFlattenRef     = Nothing
   , editorStrokeId       = 0
+  , editorBiomeId        = BiomeDesert
+  , editorFormOverride   = FormFlat
+  , editorHardnessTarget = 0.5
   }
