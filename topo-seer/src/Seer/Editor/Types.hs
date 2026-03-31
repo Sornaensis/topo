@@ -41,6 +41,8 @@ data EditorTool
     -- ^ Override the classified terrain form.
   | ToolSetHardness
     -- ^ Set rock hardness on tiles.
+  | ToolErode
+    -- ^ Apply local hydraulic + thermal erosion within the brush disc.
   deriving (Eq, Ord, Show, Enum, Bounded, Generic)
 
 -- | Brush weight falloff function from center to edge.
@@ -93,6 +95,8 @@ data EditorState = EditorState
     -- ^ Target terrain form for 'ToolPaintForm'.
   , editorHardnessTarget :: !Float
     -- ^ Target hardness for 'ToolSetHardness' (0–1).
+  , editorErodePasses    :: !Int
+    -- ^ Hydraulic and thermal erosion passes for 'ToolErode' (1–20).
   } deriving (Eq, Show, Generic)
 
 -- | Initial editor state: inactive, raise tool, default brush.
@@ -108,4 +112,5 @@ defaultEditorState = EditorState
   , editorBiomeId        = BiomeDesert
   , editorFormOverride   = FormFlat
   , editorHardnessTarget = 0.5
+  , editorErodePasses    = 5
   }

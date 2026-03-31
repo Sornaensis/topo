@@ -81,6 +81,7 @@ toolShortLabel ToolNoise       = "Noise"
 toolShortLabel ToolPaintBiome  = "Biome"
 toolShortLabel ToolPaintForm   = "Form"
 toolShortLabel ToolSetHardness = "Hard"
+toolShortLabel ToolErode       = "Erode"
 
 -- | Button background colour per tool.
 toolButtonColor :: EditorTool -> (Word8, Word8, Word8)
@@ -92,6 +93,7 @@ toolButtonColor ToolNoise       = (170, 100, 200)
 toolButtonColor ToolPaintBiome  = (100, 170, 170)
 toolButtonColor ToolPaintForm   = (200, 150, 80)
 toolButtonColor ToolSetHardness = (190, 140, 60)
+toolButtonColor ToolErode       = (150, 110, 70)
 
 -- | Show an 'Int' as 'Text' without OverloadedStrings ambiguity.
 showT :: Int -> Text

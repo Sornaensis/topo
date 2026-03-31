@@ -146,6 +146,188 @@ allToolDefs =
           , "properties" .= object []
           ]
       }
+  -- Terrain editor
+  , ToolDef
+      { tdName        = "editor_toggle"
+      , tdDescription = "Toggle the terrain editor overlay, or explicitly set whether it is active"
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "active" .= object
+                  [ "type" .= ("boolean" :: Text)
+                  , "description" .= ("Optional explicit editor active state; omit to toggle" :: Text)
+                  ]
+              ]
+          ]
+      }
+  , ToolDef
+      { tdName        = "editor_set_tool"
+      , tdDescription = "Select the active terrain editor tool"
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "tool" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Tool name: raise, lower, smooth, flatten, noise, paint_biome, paint_form, set_hardness, erode" :: Text)
+                  ]
+              ]
+          , "required" .= (["tool"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "editor_set_brush"
+      , tdDescription = "Update terrain editor brush settings. Any subset of properties may be provided."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "radius" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("Brush radius in hex rings (0-6)" :: Text)
+                  , "minimum" .= (0 :: Int)
+                  , "maximum" .= (6 :: Int)
+                  ]
+              , "strength" .= object
+                  [ "type" .= ("number" :: Text)
+                  , "description" .= ("Brush strength (0.0-1.0)" :: Text)
+                  , "minimum" .= (0.0 :: Double)
+                  , "maximum" .= (1.0 :: Double)
+                  ]
+              , "falloff" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Brush falloff curve" :: Text)
+                  , "enum" .= (["linear", "smooth", "constant"] :: [Text])
+                  ]
+              , "smooth_passes" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("Smoothing iterations for the smooth tool (1-5)" :: Text)
+                  , "minimum" .= (1 :: Int)
+                  , "maximum" .= (5 :: Int)
+                  ]
+              , "noise_frequency" .= object
+                  [ "type" .= ("number" :: Text)
+                  , "description" .= ("Noise frequency for the noise tool (0.5-4.0)" :: Text)
+                  , "minimum" .= (0.5 :: Double)
+                  , "maximum" .= (4.0 :: Double)
+                  ]
+              , "erode_passes" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("Hydraulic and thermal erosion passes for the erode tool (1-20)" :: Text)
+                  , "minimum" .= (1 :: Int)
+                  , "maximum" .= (20 :: Int)
+                  ]
+              ]
+          ]
+      }
+  , ToolDef
+      { tdName        = "editor_brush_stroke"
+      , tdDescription = "Queue a single terrain editor brush stroke at axial hex coordinates"
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "q" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("Axial q coordinate" :: Text)
+                  ]
+              , "r" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("Axial r coordinate" :: Text)
+                  ]
+              ]
+          , "required" .= (["q", "r"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "editor_brush_line"
+      , tdDescription = "Queue terrain editor brush strokes along a hex line between two axial coordinates"
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "from_q" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("Start axial q coordinate" :: Text)
+                  ]
+              , "from_r" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("Start axial r coordinate" :: Text)
+                  ]
+              , "to_q" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("End axial q coordinate" :: Text)
+                  ]
+              , "to_r" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("End axial r coordinate" :: Text)
+                  ]
+              ]
+          , "required" .= (["from_q", "from_r", "to_q", "to_r"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "editor_set_biome"
+      , tdDescription = "Set the target biome used by the paint_biome tool. Accepts a display name or numeric biome code."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "biome" .= object
+                  [ "description" .= ("Biome display name or numeric biome code" :: Text)
+                  ]
+              ]
+          , "required" .= (["biome"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "editor_set_form"
+      , tdDescription = "Set the target terrain form used by the paint_form tool. Accepts a display name or numeric terrain form code."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "form" .= object
+                  [ "description" .= ("Terrain form display name or numeric terrain form code" :: Text)
+                  ]
+              ]
+          , "required" .= (["form"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "editor_set_hardness"
+      , tdDescription = "Set the target hardness used by the set_hardness tool"
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "hardness" .= object
+                  [ "type" .= ("number" :: Text)
+                  , "description" .= ("Hardness target (0.0-1.0)" :: Text)
+                  , "minimum" .= (0.0 :: Double)
+                  , "maximum" .= (1.0 :: Double)
+                  ]
+              ]
+          , "required" .= (["hardness"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "editor_undo"
+      , tdDescription = "Queue undo for the most recent terrain editor change"
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object []
+          ]
+      }
+  , ToolDef
+      { tdName        = "editor_redo"
+      , tdDescription = "Queue redo for the most recently undone terrain editor change"
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object []
+          ]
+      }
+  , ToolDef
+      { tdName        = "editor_get_state"
+      , tdDescription = "Get the current terrain editor state, including brush settings and tool-specific targets"
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object []
+          ]
+      }
   -- Phase 3: Query tools
   , ToolDef
       { tdName        = "get_enums"
@@ -688,6 +870,17 @@ toolToIpc "set_view_mode"          args = Just ("set_view_mode", args)
 toolToIpc "set_config_tab"         args = Just ("set_config_tab", args)
 toolToIpc "get_view_modes"         args = Just ("get_view_modes", args)
 toolToIpc "generate"               args = Just ("generate", args)
+toolToIpc "editor_toggle"          args = Just ("editor_toggle", args)
+toolToIpc "editor_set_tool"        args = Just ("editor_set_tool", args)
+toolToIpc "editor_set_brush"       args = Just ("editor_set_brush", args)
+toolToIpc "editor_brush_stroke"    args = Just ("editor_brush_stroke", args)
+toolToIpc "editor_brush_line"      args = Just ("editor_brush_line", args)
+toolToIpc "editor_set_biome"       args = Just ("editor_set_biome", args)
+toolToIpc "editor_set_form"        args = Just ("editor_set_form", args)
+toolToIpc "editor_set_hardness"    args = Just ("editor_set_hardness", args)
+toolToIpc "editor_undo"            args = Just ("editor_undo", args)
+toolToIpc "editor_redo"            args = Just ("editor_redo", args)
+toolToIpc "editor_get_state"       args = Just ("editor_get_state", args)
 -- Phase 3: Query tools
 toolToIpc "get_enums"              args = Just ("get_enums", args)
 toolToIpc "get_world_meta"         args = Just ("get_world_meta", args)

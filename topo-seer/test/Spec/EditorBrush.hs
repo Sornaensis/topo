@@ -5,9 +5,11 @@ module Spec.EditorBrush (spec, emptyTerrainChunk) where
 import Test.Hspec
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Vector.Unboxed as U
+import Topo.Erosion (defaultErosionConfig)
+import Topo.Parameters (defaultTerrainFormConfig)
 import Topo (WorldConfig(..), ChunkId(..), emptyTerrainChunk, chunkIdFromCoord)
 import Topo.Types (ChunkCoord(..), TerrainChunk(..), BiomeId, TerrainForm, pattern BiomeDesert, pattern BiomeGrassland, pattern FormFlat, pattern FormHilly)
-import Seer.Editor.Brush (applyBrushStroke, applySmoothStroke, applyFlattenStroke, applyNoiseStroke, applyPaintBiomeStroke, applyPaintFormStroke, applySetHardnessStroke, brushWeight)
+import Seer.Editor.Brush (applyBrushStroke, applyErodeStroke, applySmoothStroke, applyFlattenStroke, applyNoiseStroke, applyPaintBiomeStroke, applyPaintFormStroke, applySetHardnessStroke, brushWeight)
 import Seer.Editor.Types
 
 spec :: Spec
@@ -113,6 +115,9 @@ spec = describe "Editor.Brush" $ do
 
     it "defaultEditorState has stroke id 0" $
       editorStrokeId defaultEditorState `shouldBe` 0
+
+    it "defaultEditorState uses 5 erosion passes" $
+      editorErodePasses defaultEditorState `shouldBe` 5
 
   ---------------------------------------------------------------------------
   -- applySmoothStroke
@@ -277,3 +282,26 @@ spec = describe "Editor.Brush" $ do
           Just chunk = IntMap.lookup chunkKey after
       U.head (tcHardness chunk) `shouldSatisfy` (<= 1.0)
       U.head (tcHardness chunk) `shouldSatisfy` (>= 0.0)
+
+  ---------------------------------------------------------------------------
+  -- applyErodeStroke
+  ---------------------------------------------------------------------------
+  describe "applyErodeStroke" $ do
+    let cfg = WorldConfig { wcChunkSize = 4 }
+        n = 4 * 4
+        chunkKey = let ChunkId k = chunkIdFromCoord (ChunkCoord 0 0) in k
+        baseChunk = emptyTerrainChunk cfg
+        spikeElev = U.generate n (\i -> if i == 5 then 1.0 else 0.2)
+        hard = U.replicate n 0.0
+        chunks = IntMap.singleton chunkKey (baseChunk { tcElevation = spikeElev, tcHardness = hard })
+        brush = BrushSettings { brushRadius = 0, brushStrength = 1.0, brushFalloff = FalloffConstant }
+
+    it "erodes a local elevation spike" $ do
+      let after = applyErodeStroke cfg brush 5 defaultErosionConfig defaultTerrainFormConfig 0.0 (1, 1) chunks
+          Just chunk = IntMap.lookup chunkKey after
+      (tcElevation chunk U.! 5) `shouldSatisfy` (< 1.0)
+
+    it "does not modify tiles outside the brush radius" $ do
+      let after = applyErodeStroke cfg brush 5 defaultErosionConfig defaultTerrainFormConfig 0.0 (1, 1) chunks
+          Just chunk = IntMap.lookup chunkKey after
+      (tcElevation chunk U.! 0) `shouldBe` 0.2

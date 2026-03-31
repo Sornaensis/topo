@@ -13,18 +13,24 @@ module Seer.Editor.Brush
   , applyPaintBiomeStroke
   , applyPaintFormStroke
   , applySetHardnessStroke
+  , applyErodeStroke
   , brushWeight
   ) where
 
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
+import Data.List (foldl')
 import Data.Word (Word64)
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as MU
 import Topo (ChunkId(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
+import Topo.Erosion (ErosionConfig(..), hydraulicStepGrid, thermalStepGrid)
 import Topo.Hex (hexDisc, hexDistance, hexNeighbors)
-import Topo.Math (clamp01)
+import Topo.Math (clamp01, iterateN)
 import Topo.Noise (fbm2D, hashSeed)
+import Topo.Parameters (TerrainFormConfig)
+import Topo.TerrainForm.Modifiers (defaultTerrainFormModifiers, tfmDepositSuppression, tfmErosionRate, tfmHardnessBonus)
+import Topo.TerrainGrid (classifyTerrainFormGrid)
 import Topo.Types (HexCoord(..), TerrainChunk(..), BiomeId, TerrainForm)
 import Seer.Editor.Types (BrushSettings(..), EditorTool(..), Falloff(..))
 
@@ -65,15 +71,11 @@ applyBrushStroke cfg tool brush (cq, cr) chunks =
       !radius = brushRadius brush
       !strength = brushStrength brush
       !falloff = brushFalloff brush
-      sign = case tool of
-        ToolRaise -> 1
-        ToolLower -> -1
       disc = hexDisc center radius
-  in foldl' (applyToTile cfg sign strength falloff center radius) chunks disc
-  where
-    foldl' :: (b -> a -> b) -> b -> [a] -> b
-    foldl' f !z []     = z
-    foldl' f !z (x:xs) = let !z' = f z x in foldl' f z' xs
+  in case tool of
+       ToolRaise -> foldl' (applyToTile cfg 1 strength falloff center radius) chunks disc
+       ToolLower -> foldl' (applyToTile cfg (-1) strength falloff center radius) chunks disc
+       _ -> chunks
 
 applyToTile
   :: WorldConfig
@@ -472,4 +474,146 @@ hardnessTile cfg brush center radius targetH chunks tile =
                     !new   = clamp01 (old + (targetH - old) * str * w)
                     !hard' = U.modify (\mv -> MU.write mv idx new) hard
                     !chunk' = chunk { tcHardness = hard' }
+                in IntMap.insert key chunk' chunks
+
+-- ---------------------------------------------------------------------------
+-- Erosion tool
+-- ---------------------------------------------------------------------------
+
+-- | Apply local hydraulic + thermal erosion inside the brush disc.
+--
+-- A small axial sub-grid covering the brush radius plus a one-ring
+-- border is extracted from the current terrain chunks. The existing
+-- erosion kernels run on that local grid, then the eroded elevations
+-- are blended back into the brush disc using the current falloff.
+applyErodeStroke
+  :: WorldConfig
+  -> BrushSettings
+  -> Int
+     -- ^ Hydraulic and thermal pass count.
+  -> ErosionConfig
+  -> TerrainFormConfig
+  -> Float
+     -- ^ Water level.
+  -> (Int, Int)
+     -- ^ Center hex @(q, r)@.
+  -> IntMap TerrainChunk
+  -> IntMap TerrainChunk
+applyErodeStroke cfg brush passes erosionCfg formCfg waterLevel (cq, cr) chunks
+  | IntMap.null chunks = chunks
+  | strength <= 0 = chunks
+  | otherwise =
+      let borderRadius = radius + 1
+          minQ = cq - borderRadius
+          maxQ = cq + borderRadius
+          minR = cr - borderRadius
+          maxR = cr + borderRadius
+          gridW = maxQ - minQ + 1
+          gridH = maxR - minR + 1
+          center = HexAxial cq cr
+          disc = hexDisc center radius
+          elev0 = buildLocalFloatGrid cfg 0 tcElevation chunks minQ minR gridW gridH
+          hard0 = buildLocalFloatGrid cfg 0.5 tcHardness chunks minQ minR gridW gridH
+          formGrid = classifyTerrainFormGrid formCfg waterLevel gridW gridH elev0 hard0
+          modLookup = defaultTerrainFormModifiers
+          erosionMult = U.map ((strength *) . tfmErosionRate . modLookup) formGrid
+          adjHardness = U.zipWith
+            (\hard form -> clamp01 (hard + tfmHardnessBonus (modLookup form)))
+            hard0
+            formGrid
+          depositFactor = U.map (\form -> 1 - tfmDepositSuppression (modLookup form)) formGrid
+          scaledCfg = erosionCfg
+            { ecRainRate = ecRainRate erosionCfg * strength
+            , ecThermalStrength = ecThermalStrength erosionCfg * strength
+            }
+          passCount = clampErodePasses passes
+          elev1 = iterateN passCount
+            (hydraulicStepGrid gridW gridH waterLevel scaledCfg adjHardness erosionMult depositFactor)
+            elev0
+          elev2 = iterateN passCount
+            (thermalStepGrid gridW gridH waterLevel scaledCfg adjHardness erosionMult depositFactor)
+            elev1
+      in foldl' (erodeTile cfg brush center radius minQ minR gridW elev0 elev2) chunks disc
+  where
+    radius = max 0 (brushRadius brush)
+    strength = max 0 (brushStrength brush)
+
+clampErodePasses :: Int -> Int
+clampErodePasses n
+  | n < 1 = 1
+  | n > 20 = 20
+  | otherwise = n
+{-# INLINE clampErodePasses #-}
+
+buildLocalFloatGrid
+  :: WorldConfig
+  -> Float
+  -> (TerrainChunk -> U.Vector Float)
+  -> IntMap TerrainChunk
+  -> Int
+  -> Int
+  -> Int
+  -> Int
+  -> U.Vector Float
+buildLocalFloatGrid cfg fallback field chunks minQ minR gridW gridH =
+  U.generate (gridW * gridH) $ \i ->
+    let q = minQ + (i `mod` gridW)
+        r = minR + (i `div` gridW)
+    in case lookupTileValue cfg field chunks (HexAxial q r) of
+         Just value -> value
+         Nothing -> fallback
+
+lookupTileValue
+  :: U.Unbox a
+  => WorldConfig
+  -> (TerrainChunk -> U.Vector a)
+  -> IntMap TerrainChunk
+  -> HexCoord
+  -> Maybe a
+lookupTileValue cfg field chunks (HexAxial tq tr) =
+  let (chunkCoord, TileCoord lx ly) = chunkCoordFromTile cfg (TileCoord tq tr)
+      ChunkId key = chunkIdFromCoord chunkCoord
+  in case IntMap.lookup key chunks of
+       Nothing -> Nothing
+       Just chunk ->
+         let csize = wcChunkSize cfg
+             idx = ly * csize + lx
+             values = field chunk
+         in if idx < 0 || idx >= U.length values
+              then Nothing
+              else Just (values `U.unsafeIndex` idx)
+
+erodeTile
+  :: WorldConfig
+  -> BrushSettings
+  -> HexCoord
+  -> Int
+  -> Int
+  -> Int
+  -> Int
+  -> U.Vector Float
+  -> U.Vector Float
+  -> IntMap TerrainChunk
+  -> HexCoord
+  -> IntMap TerrainChunk
+erodeTile cfg brush center radius minQ minR gridW source eroded chunks tile@(HexAxial tq tr) =
+  let (chunkCoord, TileCoord lx ly) = chunkCoordFromTile cfg (TileCoord tq tr)
+      ChunkId key = chunkIdFromCoord chunkCoord
+  in case IntMap.lookup key chunks of
+       Nothing -> chunks
+       Just chunk ->
+         let csize = wcChunkSize cfg
+             idx = ly * csize + lx
+             elev = tcElevation chunk
+         in if idx < 0 || idx >= U.length elev
+              then chunks
+              else
+                let localIdx = (tr - minR) * gridW + (tq - minQ)
+                    old = source `U.unsafeIndex` localIdx
+                    erodedVal = eroded `U.unsafeIndex` localIdx
+                    dist = hexDistance center tile
+                    weight = brushWeight (brushFalloff brush) radius dist
+                    new = clamp01 (old + (erodedVal - old) * weight)
+                    elev' = U.modify (\mv -> MU.write mv idx new) elev
+                    chunk' = chunk { tcElevation = elev' }
                 in IntMap.insert key chunk' chunks

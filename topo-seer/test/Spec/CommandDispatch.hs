@@ -208,6 +208,110 @@ spec = describe "CommandDispatch" $ do
       lookupKey "status" (srResult rsp) `shouldBe` Just (String "generating")
 
   -- -------------------------------------------------------------------
+  -- terrain editor
+  -- -------------------------------------------------------------------
+  describe "editor_get_state" $ do
+    it "returns the default editor state" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "editor_get_state" Null
+      srSuccess rsp `shouldBe` True
+      lookupKey "active" (srResult rsp) `shouldBe` Just (Bool False)
+      lookupKey "tool" (srResult rsp) `shouldBe` Just (String "raise")
+
+  describe "editor_toggle" $ do
+    it "toggles editor activity when active is omitted" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "editor_toggle" (object [])
+      srSuccess rsp `shouldBe` True
+      lookupKey "active" (srResult rsp) `shouldBe` Just (Bool True)
+
+    it "sets editor activity explicitly when active is provided" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "editor_toggle" (object ["active" .= True])
+      srSuccess rsp `shouldBe` True
+      lookupKey "active" (srResult rsp) `shouldBe` Just (Bool True)
+
+  describe "editor_set_tool" $ do
+    it "switches to a valid tool" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "editor_set_tool" (object ["tool" .= ("erode" :: String)])
+      srSuccess rsp `shouldBe` True
+      lookupKey "tool" (srResult rsp) `shouldBe` Just (String "erode")
+
+    it "returns error for an unknown tool" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "editor_set_tool" (object ["tool" .= ("bogus" :: String)])
+      srSuccess rsp `shouldBe` False
+
+  describe "editor_set_brush" $ do
+    it "updates brush parameters and clamps tool-specific values" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "editor_set_brush" (object
+        [ "radius" .= (3 :: Int)
+        , "strength" .= (0.4 :: Double)
+        , "falloff" .= ("smooth" :: String)
+        , "smooth_passes" .= (99 :: Int)
+        , "noise_frequency" .= (9.0 :: Double)
+        , "erode_passes" .= (0 :: Int)
+        ])
+      srSuccess rsp `shouldBe` True
+      case lookupKey "brush" (srResult rsp) of
+        Just brushVal -> do
+          lookupKey "radius" brushVal `shouldBe` Just (Number 3)
+          lookupKey "falloff" brushVal `shouldBe` Just (String "smooth")
+        Nothing -> expectationFailure "expected brush object"
+      lookupKey "smooth_passes" (srResult rsp) `shouldBe` Just (Number 5)
+      lookupKey "erode_passes" (srResult rsp) `shouldBe` Just (Number 1)
+
+  describe "editor_set_biome" $ do
+    it "accepts biome display names" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "editor_set_biome" (object ["biome" .= ("Forest" :: String)])
+      srSuccess rsp `shouldBe` True
+      case lookupKey "biome" (srResult rsp) of
+        Just biomeVal -> lookupKey "name" biomeVal `shouldBe` Just (String "Forest")
+        Nothing -> expectationFailure "expected biome object"
+
+  describe "editor_set_form" $ do
+    it "accepts terrain form display names" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "editor_set_form" (object ["form" .= ("Hilly" :: String)])
+      srSuccess rsp `shouldBe` True
+      case lookupKey "terrain_form" (srResult rsp) of
+        Just formVal -> lookupKey "name" formVal `shouldBe` Just (String "Hilly")
+        Nothing -> expectationFailure "expected terrain_form object"
+
+  describe "editor_set_hardness" $ do
+    it "clamps hardness target into range" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "editor_set_hardness" (object ["hardness" .= (9.5 :: Double)])
+      srSuccess rsp `shouldBe` True
+      lookupKey "hardness_target" (srResult rsp) `shouldBe` Just (Number 1)
+
+  describe "editor_brush_stroke" $ do
+    it "queues a single brush stroke" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "editor_brush_stroke" (object ["q" .= (0 :: Int), "r" .= (0 :: Int)])
+      srSuccess rsp `shouldBe` True
+      lookupKey "status" (srResult rsp) `shouldBe` Just (String "queued")
+      lookupKey "strokes_queued" (srResult rsp) `shouldBe` Just (Number 1)
+
+  describe "editor_brush_line" $ do
+    it "queues multiple brush strokes along a line" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "editor_brush_line" (object
+        [ "from_q" .= (0 :: Int)
+        , "from_r" .= (0 :: Int)
+        , "to_q" .= (3 :: Int)
+        , "to_r" .= ((-2) :: Int)
+        ])
+      srSuccess rsp `shouldBe` True
+      case lookupKey "strokes_queued" (srResult rsp) of
+        Just (Number n) -> n `shouldSatisfy` (> 1)
+        _ -> expectationFailure "expected strokes_queued number"
+
+  describe "editor_undo" $ do
+    it "queues undo" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "editor_undo" Null
+      srSuccess rsp `shouldBe` True
+      lookupKey "status" (srResult rsp) `shouldBe` Just (String "queued")
+
+  describe "editor_redo" $ do
+    it "queues redo" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "editor_redo" Null
+      srSuccess rsp `shouldBe` True
+      lookupKey "status" (srResult rsp) `shouldBe` Just (String "queued")
+
+  -- -------------------------------------------------------------------
   -- get_enums
   -- -------------------------------------------------------------------
   describe "get_enums" $ do

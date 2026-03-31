@@ -44,6 +44,12 @@ allResourceDefs =
       , rdDescription = "Available view modes and which is currently active"
       , rdMimeType    = "application/json"
       }
+    , ResourceDef
+      { rdUri         = "topo://editor/state"
+      , rdName        = "Editor State"
+      , rdDescription = "Terrain editor state: active flag, tool, brush settings, targets, and tool-specific parameters"
+      , rdMimeType    = "application/json"
+      }
   -- Phase 3 resources
   , ResourceDef
       { rdUri         = "topo://world"
@@ -165,6 +171,7 @@ parseResourceUri uri
   | uri == "topo://state"             = Just ("get_state", object [])
   | uri == "topo://sliders"           = Just ("get_sliders", object [])
   | uri == "topo://view-modes"        = Just ("get_view_modes", object [])
+  | uri == "topo://editor/state"      = Just ("editor_get_state", object [])
   | uri == "topo://world"             = Just ("get_world_meta", object [])
   | uri == "topo://generation-status" = Just ("get_generation_status", object [])
   | uri == "topo://chunks"            = Just ("get_chunks", object [])

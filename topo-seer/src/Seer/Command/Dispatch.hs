@@ -10,6 +10,7 @@ module Seer.Command.Dispatch
 import Topo.Command.Types (SeerCommand(..), SeerResponse, errResponse)
 import Seer.Command.Context (CommandContext(..))
 import qualified Seer.Command.Handlers.Camera as HCamera
+import qualified Seer.Command.Handlers.Editor as HEditor
 import qualified Seer.Command.Handlers.Enums as HEnums
 import qualified Seer.Command.Handlers.Generate as HGenerate
 import qualified Seer.Command.Handlers.Log as HLog
@@ -52,6 +53,19 @@ dispatchCommand ctx cmd = case scMethod cmd of
 
   -- Generation
   "generate"         -> HGenerate.handleGenerate     ctx (scId cmd) (scParams cmd)
+
+  -- Terrain editor
+  "editor_toggle"       -> HEditor.handleEditorToggle      ctx (scId cmd) (scParams cmd)
+  "editor_set_tool"     -> HEditor.handleEditorSetTool     ctx (scId cmd) (scParams cmd)
+  "editor_set_brush"    -> HEditor.handleEditorSetBrush    ctx (scId cmd) (scParams cmd)
+  "editor_brush_stroke" -> HEditor.handleEditorBrushStroke ctx (scId cmd) (scParams cmd)
+  "editor_brush_line"   -> HEditor.handleEditorBrushLine   ctx (scId cmd) (scParams cmd)
+  "editor_set_biome"    -> HEditor.handleEditorSetBiome    ctx (scId cmd) (scParams cmd)
+  "editor_set_form"     -> HEditor.handleEditorSetForm     ctx (scId cmd) (scParams cmd)
+  "editor_set_hardness" -> HEditor.handleEditorSetHardness ctx (scId cmd) (scParams cmd)
+  "editor_undo"         -> HEditor.handleEditorUndo        ctx (scId cmd) (scParams cmd)
+  "editor_redo"         -> HEditor.handleEditorRedo        ctx (scId cmd) (scParams cmd)
+  "editor_get_state"    -> HEditor.handleEditorGetState    ctx (scId cmd) (scParams cmd)
 
   -- Enum queries
   "get_enums"        -> HEnums.handleGetEnums        ctx (scId cmd) (scParams cmd)

@@ -88,6 +88,7 @@ module UI.Layout
   ) where
 
 import Linear (V2(..))
+import Seer.Editor.Types (EditorTool)
 import UI.Widgets (Rect(..))
 
 -- | Shared geometry for one config slider row.
@@ -765,7 +766,7 @@ dataBrowserPageNextRect index layout =
 
 -- | Number of tool buttons in the editor toolbar.
 editorToolButtonCount :: Int
-editorToolButtonCount = 8
+editorToolButtonCount = length ([minBound .. maxBound] :: [EditorTool])
 
 -- | Full editor toolbar rect anchored at top-center of window.
 editorToolbarRect :: Layout -> Rect

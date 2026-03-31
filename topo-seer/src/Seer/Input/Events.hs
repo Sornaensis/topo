@@ -371,6 +371,8 @@ handleEvent inputContext event = do
         setUiEditor uiHandle (editor { editorTool = ToolPaintForm })
       SDL.Keycode8 ->
         setUiEditor uiHandle (editor { editorTool = ToolSetHardness })
+      SDL.Keycode9 ->
+        setUiEditor uiHandle (editor { editorTool = ToolErode })
       SDL.KeycodeLeftBracket ->
         let brush = editorBrush editor
             r = max 0 (brushRadius brush - 1)

@@ -75,7 +75,7 @@ import Hyperspace.Actor (ActorHandle, Protocol, ReplyTo)
 import Numeric (showFFloat)
 import qualified Data.Map.Strict as Map
 import Seer.Config (applyUiConfig, configSummary)
-import Seer.Editor.Brush (applyBrushStroke, applyFlattenStroke, applyNoiseStroke, applyPaintBiomeStroke, applyPaintFormStroke, applySetHardnessStroke, applySmoothStroke)
+import Seer.Editor.Brush (applyBrushStroke, applyErodeStroke, applyFlattenStroke, applyNoiseStroke, applyPaintBiomeStroke, applyPaintFormStroke, applySetHardnessStroke, applySmoothStroke)
 import Seer.Editor.History (EditAction(..), pushEdit, undoEdit, redoEdit)
 import Seer.Editor.Types (EditorState(..), EditorTool(..), BrushSettings(..))
 import Topo (ChunkId(..), HexCoord(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
@@ -96,6 +96,8 @@ data UiAction
   | UiActionRebuildAtlas !ViewMode
   | UiActionBrushStroke !(Int, Int)
     -- ^ Apply the current editor brush at the given hex @(q, r)@.
+  | UiActionClearFlattenRef
+    -- ^ Clear the cached flatten reference between discrete remote strokes.
   | UiActionUndo
     -- ^ Undo the last terrain edit.
   | UiActionRedo
@@ -124,6 +126,8 @@ runUiAction req =
       logTimed req ("Rebuild Atlas " <> viewModeLabel mode) (rebuildAtlasFor req mode)
     UiActionBrushStroke hex ->
       logTimed req "Brush Stroke" (applyBrush req hex)
+    UiActionClearFlattenRef ->
+      logTimed req "Clear Flatten Ref" (clearFlattenRef req)
     UiActionUndo ->
       logTimed req "Undo" (undoBrush req)
     UiActionRedo ->
@@ -305,6 +309,8 @@ applyBrush req hex = do
       tool = editorTool editor
       brush = editorBrush editor
       oldChunks = tsTerrainChunks terrainSnap
+      genCfg = applyUiConfig uiSnap defaultWorldGenConfig
+      terrain = worldTerrain genCfg
   -- Capture flatten reference on first stroke
   editor' <- case tool of
     ToolFlatten
@@ -343,10 +349,15 @@ applyBrush req hex = do
           applyPaintFormStroke cfg brush (editorFormOverride editor'') hex oldChunks
         ToolSetHardness ->
           applySetHardnessStroke cfg brush (editorHardnessTarget editor'') hex oldChunks
+        ToolErode ->
+          applyErodeStroke cfg brush (editorErodePasses editor'')
+            (terrainErosion terrain)
+            (terrainFormConfig terrain)
+            (uiWaterLevel uiSnap)
+            hex
+            oldChunks
       -- Recompute derived terrain fields (slope, curvature, relief, etc.)
       -- for chunks affected by the brush stroke.
-      genCfg = applyUiConfig uiSnap defaultWorldGenConfig
-      terrain = worldTerrain genCfg
       paramCfg = terrainParameters terrain
       formCfg = terrainFormConfig terrain
       waterLvl = uiWaterLevel uiSnap
@@ -405,6 +416,16 @@ toolLabel ToolNoise       = "Noise"
 toolLabel ToolPaintBiome  = "Paint Biome"
 toolLabel ToolPaintForm   = "Paint Form"
 toolLabel ToolSetHardness = "Set Hardness"
+toolLabel ToolErode       = "Erode"
+
+clearFlattenRef :: UiActionRequest -> IO ()
+clearFlattenRef req = do
+  let uiHandle = ahUiHandle (uarActorHandles req)
+  uiSnap <- getUiSnapshot uiHandle
+  let editor = uiEditor uiSnap
+  if editorFlattenRef editor == Nothing
+    then pure ()
+    else setUiEditor uiHandle (editor { editorFlattenRef = Nothing })
 
 -- | Undo the most recent terrain edit by restoring the old chunk state.
 undoBrush :: UiActionRequest -> IO ()

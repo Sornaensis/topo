@@ -54,6 +54,47 @@ spec = describe "Topo.MCP.Tools" $ do
     it "maps generate to generate" $ do
       toolToIpc "generate" Null `shouldBe` Just ("generate", Null)
 
+    it "maps editor_toggle to editor_toggle" $ do
+      let args = object ["active" .= True]
+      toolToIpc "editor_toggle" args `shouldBe` Just ("editor_toggle", args)
+
+    it "maps editor_set_tool to editor_set_tool" $ do
+      let args = object ["tool" .= ("erode" :: Text)]
+      toolToIpc "editor_set_tool" args `shouldBe` Just ("editor_set_tool", args)
+
+    it "maps editor_set_brush to editor_set_brush" $ do
+      let args = object ["radius" .= (3 :: Int), "falloff" .= ("smooth" :: Text)]
+      toolToIpc "editor_set_brush" args `shouldBe` Just ("editor_set_brush", args)
+
+    it "maps editor_brush_stroke to editor_brush_stroke" $ do
+      let args = object ["q" .= (2 :: Int), "r" .= ((-1) :: Int)]
+      toolToIpc "editor_brush_stroke" args `shouldBe` Just ("editor_brush_stroke", args)
+
+    it "maps editor_brush_line to editor_brush_line" $ do
+      let args = object ["from_q" .= (0 :: Int), "from_r" .= (0 :: Int), "to_q" .= (3 :: Int), "to_r" .= ((-2) :: Int)]
+      toolToIpc "editor_brush_line" args `shouldBe` Just ("editor_brush_line", args)
+
+    it "maps editor_set_biome to editor_set_biome" $ do
+      let args = object ["biome" .= ("Forest" :: Text)]
+      toolToIpc "editor_set_biome" args `shouldBe` Just ("editor_set_biome", args)
+
+    it "maps editor_set_form to editor_set_form" $ do
+      let args = object ["form" .= ("Hilly" :: Text)]
+      toolToIpc "editor_set_form" args `shouldBe` Just ("editor_set_form", args)
+
+    it "maps editor_set_hardness to editor_set_hardness" $ do
+      let args = object ["hardness" .= (0.7 :: Double)]
+      toolToIpc "editor_set_hardness" args `shouldBe` Just ("editor_set_hardness", args)
+
+    it "maps editor_undo to editor_undo" $ do
+      toolToIpc "editor_undo" Null `shouldBe` Just ("editor_undo", Null)
+
+    it "maps editor_redo to editor_redo" $ do
+      toolToIpc "editor_redo" Null `shouldBe` Just ("editor_redo", Null)
+
+    it "maps editor_get_state to editor_get_state" $ do
+      toolToIpc "editor_get_state" Null `shouldBe` Just ("editor_get_state", Null)
+
     -- Phase 3 tools
     it "maps get_enums to get_enums" $ do
       let args = object ["type" .= ("biome" :: Text)]
@@ -142,6 +183,17 @@ spec = describe "Topo.MCP.Tools" $ do
       names `shouldSatisfy` elem "set_config_tab"
       names `shouldSatisfy` elem "get_view_modes"
       names `shouldSatisfy` elem "generate"
+      names `shouldSatisfy` elem "editor_toggle"
+      names `shouldSatisfy` elem "editor_set_tool"
+      names `shouldSatisfy` elem "editor_set_brush"
+      names `shouldSatisfy` elem "editor_brush_stroke"
+      names `shouldSatisfy` elem "editor_brush_line"
+      names `shouldSatisfy` elem "editor_set_biome"
+      names `shouldSatisfy` elem "editor_set_form"
+      names `shouldSatisfy` elem "editor_set_hardness"
+      names `shouldSatisfy` elem "editor_undo"
+      names `shouldSatisfy` elem "editor_redo"
+      names `shouldSatisfy` elem "editor_get_state"
       -- Phase 3 tools
       names `shouldSatisfy` elem "get_enums"
       names `shouldSatisfy` elem "get_world_meta"
@@ -163,8 +215,8 @@ spec = describe "Topo.MCP.Tools" $ do
       names `shouldSatisfy` elem "load_preset"
       names `shouldSatisfy` elem "take_screenshot"
 
-    it "has exactly 43 tools" $
-      length allToolDefs `shouldBe` 43
+    it "has exactly 54 tools" $
+      length allToolDefs `shouldBe` 54
 
     it "all tools have non-empty descriptions" $
       all (not . null . show . tdDescription) allToolDefs `shouldBe` True

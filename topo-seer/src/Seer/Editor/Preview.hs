@@ -93,3 +93,4 @@ toolColor ToolNoise       = (180, 100, 220)   -- purple
 toolColor ToolPaintBiome  = (100, 180, 180)   -- teal
 toolColor ToolPaintForm   = (220, 160, 80)    -- orange
 toolColor ToolSetHardness = (200, 140, 60)    -- amber
+toolColor ToolErode       = (150, 110, 70)    -- earth

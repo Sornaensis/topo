@@ -33,6 +33,10 @@ spec = describe "Topo.MCP.Resources" $ do
       let result = parseResourceUri "topo://view-modes"
       result `shouldBe` Just ("get_view_modes", object [])
 
+    it "parses topo://editor/state" $ do
+      let result = parseResourceUri "topo://editor/state"
+      result `shouldBe` Just ("editor_get_state", object [])
+
     it "parses topo://sliders/{tab}" $ do
       let result = parseResourceUri "topo://sliders/terrain"
       result `shouldBe` Just ("get_sliders", object ["tab" .= ("terrain" :: Text)])
@@ -124,8 +128,8 @@ spec = describe "Topo.MCP.Resources" $ do
     it "is non-empty" $
       allResourceDefs `shouldSatisfy` (not . null)
 
-    it "has exactly 10 resources" $
-      length allResourceDefs `shouldBe` 10
+    it "has exactly 11 resources" $
+      length allResourceDefs `shouldBe` 11
 
     it "contains topo://state" $
       any (\rd -> rdUri rd == "topo://state") allResourceDefs `shouldBe` True
@@ -135,6 +139,9 @@ spec = describe "Topo.MCP.Resources" $ do
 
     it "contains topo://view-modes" $
       any (\rd -> rdUri rd == "topo://view-modes") allResourceDefs `shouldBe` True
+
+    it "contains topo://editor/state" $
+      any (\rd -> rdUri rd == "topo://editor/state") allResourceDefs `shouldBe` True
 
     it "contains topo://world" $
       any (\rd -> rdUri rd == "topo://world") allResourceDefs `shouldBe` True
