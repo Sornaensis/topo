@@ -47,6 +47,7 @@ import Hyperspace.Actor.QQ (hyperspace)
 import Hyperspace.Actor.Spec (OpTag(..))
 import Seer.Config.SliderRegistry (SliderId(..), SliderTab(..), sliderDefaultValueForId, sliderRowCountForTab)
 import Seer.Config.Snapshot.Types (ConfigSnapshot)
+import Seer.Editor.Types (EditorState(..), defaultEditorState)
 import Seer.World.Persist.Types (WorldSaveManifest)
 import Topo.Overlay.Schema (OverlayFieldType(..))
 import Topo.Pipeline.Stage (StageId)
@@ -434,6 +435,7 @@ data UiState = UiState
   , uiOverlayFields :: ![(Text, OverlayFieldType)]
   , uiDataBrowser :: !DataBrowserState
   , uiDataResources :: !(Map Text [DataResourceSchema])
+  , uiEditor :: !EditorState
   } deriving (Eq, Show)
 
 emptyUiState :: UiState
@@ -692,6 +694,7 @@ emptyUiState = UiState
   , uiOverlayFields = []
   , uiDataBrowser = emptyDataBrowserState
   , uiDataResources = Map.empty
+  , uiEditor = defaultEditorState
   }
 
 sliderDefault :: SliderId -> Float
@@ -746,6 +749,7 @@ data UiUpdate
   | SetOverlayFields ![(Text, OverlayFieldType)]
   | SetDataBrowser !DataBrowserState
   | SetDataResources !(Map Text [DataResourceSchema])
+  | SetEditor !EditorState
 
 applyUpdate :: UiUpdate -> UiState -> UiState
 applyUpdate upd st = case upd of
@@ -803,6 +807,7 @@ applyUpdate upd st = case upd of
   SetOverlayFields v -> st { uiOverlayFields = v }
   SetDataBrowser v -> st { uiDataBrowser = v }
   SetDataResources v -> st { uiDataResources = v }
+  SetEditor v -> st { uiEditor = v }
 
 data SliderStateBinding = SliderStateBinding
   { sliderStateGet :: UiState -> Float

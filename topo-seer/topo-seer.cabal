@@ -50,6 +50,8 @@ library
       Seer.Draw.Dialog
       Seer.Draw.LeftPanel
       Seer.Draw.Overlay
+      Seer.Editor.Brush
+      Seer.Editor.Types
       Seer.Input
       Seer.Input.Actions
       Seer.Input.Events

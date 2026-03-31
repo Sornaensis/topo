@@ -32,6 +32,9 @@ module Topo.Hex
   , hexNeighborIndexInDirection
     -- * Low-level offset list
   , hexDirs
+    -- * Hex rings and discs
+  , hexRing
+  , hexDisc
     -- * Directional slope queries
   , dsSlopeIn
   , dsSteepestDescent
@@ -218,6 +221,49 @@ hexNeighborIndexInDirection gridW gridH dir i =
   in if nx >= 0 && nx < gridW && ny >= 0 && ny < gridH
        then Just (nx + ny * gridW)
        else Nothing
+
+---------------------------------------------------------------------------
+-- Hex rings and discs
+---------------------------------------------------------------------------
+
+-- | All hex coordinates exactly @r@ steps from @center@.
+--
+-- The ring is traced by starting at the hex @r@ steps in the 'HexW'
+-- direction and walking each of the six edge directions for @r@ steps.
+-- Returns the empty list when @r <= 0@.
+--
+-- >>> length (hexRing (HexAxial 0 0) 1)
+-- 6
+-- >>> length (hexRing (HexAxial 0 0) 2)
+-- 12
+hexRing :: HexCoord -> Int -> [HexCoord]
+hexRing _center r
+  | r <= 0    = []
+hexRing center r =
+  let -- Start at the hex that is r steps in the HexW direction
+      start = iterate (hexNeighborInDirection HexW) center !! r
+      -- Walk each of the 6 edge directions for r steps
+      edgeDirs = [HexE, HexNE, HexNW, HexW, HexSW, HexSE]
+      walkEdge dir cur = take r (tail (iterate (hexNeighborInDirection dir) cur))
+      go [] cur acc      = acc ++ [cur]
+      go (d:ds) cur acc  =
+        let edge = walkEdge d cur
+            next = if null edge then cur else last edge
+        in go ds next (acc ++ [cur] ++ init edge)
+  in take (6 * r) (go edgeDirs start [])
+
+-- | All hex coordinates within distance @r@ of @center@ (inclusive).
+--
+-- Returns the center tile plus all rings from 1 to @r@.
+--
+-- >>> length (hexDisc (HexAxial 0 0) 0)
+-- 1
+-- >>> length (hexDisc (HexAxial 0 0) 1)
+-- 7
+-- >>> length (hexDisc (HexAxial 0 0) 2)
+-- 19
+hexDisc :: HexCoord -> Int -> [HexCoord]
+hexDisc center r = center : concatMap (hexRing center) [1 .. r]
 
 ---------------------------------------------------------------------------
 -- Directional slope queries

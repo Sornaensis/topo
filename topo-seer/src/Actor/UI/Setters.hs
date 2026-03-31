@@ -260,6 +260,7 @@ module Actor.UI.Setters
   , setUiOverlayFields
   , setUiDataBrowser
   , setUiDataResources
+  , setUiEditor
   ) where
 
 import Data.Aeson (Value)
@@ -269,6 +270,7 @@ import Data.Word (Word64)
 import Hyperspace.Actor
 import Seer.Config.SliderRegistry (SliderId(..))
 import Seer.Config.Snapshot.Types (ConfigSnapshot)
+import Seer.Editor.Types (EditorState)
 import Seer.World.Persist.Types (WorldSaveManifest)
 import Topo.Overlay.Schema (OverlayFieldType)
 import Topo.Pipeline.Stage (StageId)
@@ -562,3 +564,4 @@ setUiPluginExpanded handle pluginName expanded =
 setUiPluginParamSpecs = sendUnary SetPluginParamSpecs
 setUiDataBrowser = sendUnary SetDataBrowser
 setUiDataResources = sendUnary SetDataResources
+setUiEditor = sendUnary SetEditor

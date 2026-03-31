@@ -20,6 +20,7 @@ import Actor.UI
   , setUiConfigScroll
   , setUiContextHex
   , setUiContextPos
+  , setUiEditor
   , setUiHexTooltipPinned
   , setUiPanOffset
   , setUiHoverHex
@@ -63,6 +64,7 @@ import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets
 import UI.Widgets (Rect(..), containsPoint)
 import Seer.Input.Actions (InputEnv(..), submitAction)
 import qualified Seer.Input.Actions as InputActions
+import Seer.Editor.Types (EditorState(..))
 import Actor.UiActions (UiAction(..))
 import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.PluginManager (getPluginDataDirectories, notifyWorldChanged)
@@ -210,8 +212,14 @@ handleEvent inputContext event = do
                 , dsLast = (fromIntegral mx, fromIntegral my)
                 , dsDragging = False
                 })
-            _ ->
-              handleClick inputContext (SDL.mouseButtonEventPos btnEvent)
+            _ -> do
+              uiSnap' <- getUiSnapshot uiHandle
+              let editor = uiEditor uiSnap'
+              if editorActive editor
+                then case uiHoverHex uiSnap' of
+                  Just hex -> submitAction inputEnv (UiActionBrushStroke hex)
+                  Nothing  -> handleClick inputContext (SDL.mouseButtonEventPos btnEvent)
+                else handleClick inputContext (SDL.mouseButtonEventPos btnEvent)
       | SDL.mouseButtonEventMotion btnEvent == SDL.Released ->
           case SDL.mouseButtonEventButton btnEvent of
             SDL.ButtonRight -> do
@@ -251,6 +259,7 @@ handleEvent inputContext event = do
                     SDL.KeycodeEscape -> closeContextOrMenu
                     SDL.KeycodeG -> submitAction inputEnv UiActionGenerate
                     SDL.KeycodeC -> toggleConfig
+                    SDL.KeycodeE -> toggleEditor
                     SDL.KeycodeUp -> bumpSeed uiHandle (getUiSnapshot uiHandle) 1
                     SDL.KeycodeDown -> bumpSeed uiHandle (getUiSnapshot uiHandle) (-1)
                     SDL.KeycodeL -> do
@@ -296,6 +305,10 @@ handleEvent inputContext event = do
     toggleConfig = do
       uiSnap <- getUiSnapshot uiHandle
       setUiShowConfig uiHandle (not (uiShowConfig uiSnap))
+    toggleEditor = do
+      uiSnap <- getUiSnapshot uiHandle
+      let editor = uiEditor uiSnap
+      setUiEditor uiHandle (editor { editorActive = not (editorActive editor) })
     closeContextOrMenu = do
       uiSnap <- getUiSnapshot uiHandle
       case uiContextHex uiSnap of
