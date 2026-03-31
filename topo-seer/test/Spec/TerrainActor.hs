@@ -22,7 +22,8 @@ import Actor.Terrain
   )
 import Actor.Simulation (simulationActorDef)
 import Topo (WorldConfig(..))
-import Topo.WorldGen (defaultWorldGenConfig)
+import Topo.Planet (WorldSlice(..))
+import Topo.WorldGen (WorldGenConfig(..), defaultWorldGenConfig)
 
 newtype TerrainReplyState = TerrainReplyState
   { trsResult :: Maybe TerrainGenResult
@@ -70,10 +71,15 @@ spec = describe "TerrainActor" $ do
     terrainHandle <- getSingleton system terrainActorDef
     replyHandle <- getSingleton system terrainReplyTestActorDef
     simHandle <- getSingleton system simulationActorDef
-    let req = TerrainGenRequest
+    let smallSlice = WorldSlice
+          { wsLatCenter = 0, wsLatExtent = 1
+          , wsLonCenter = 0, wsLonExtent = 1
+          }
+        genConfig = defaultWorldGenConfig { worldSlice = smallSlice }
+        req = TerrainGenRequest
           { tgrSeed = 123
           , tgrWorldConfig = WorldConfig { wcChunkSize = 8 }
-          , tgrGenConfig = defaultWorldGenConfig
+          , tgrGenConfig = genConfig
           , tgrDisabledStages = mempty
           , tgrExtraStages = []
           , tgrOverlaySchemas = []

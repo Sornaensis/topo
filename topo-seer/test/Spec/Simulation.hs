@@ -141,6 +141,13 @@ spec = describe "Simulation actor" $ do
       pure (uiSimTickCount uiSnap >= 1)
     tickAdvanced `shouldBe` True
 
+    -- Poll until the log actor has processed the "tick completed" cast.
+    logReady <- awaitTrue 500 $ do
+      snap <- getLogSnapshot logHandle
+      let msgs = map leMessage (lsEntries snap)
+      pure (containsText (Text.pack "simulation: tick 1 completed") msgs)
+    logReady `shouldBe` True
+
     logSnap <- getLogSnapshot logHandle
     let messages = map leMessage (lsEntries logSnap)
         acceptedIdx = firstMatchIndex (Text.pack "simulation: setWorld accepted") messages
@@ -189,6 +196,13 @@ spec = describe "Simulation actor" $ do
       uiSnap <- getUiSnapshot uiHandle
       pure (uiSimTickCount uiSnap >= 1)
     tickAdvanced `shouldBe` True
+
+    -- Poll until the log actor has processed the "tick completed" cast.
+    logReady <- awaitTrue 500 $ do
+      snap <- getLogSnapshot logHandle
+      let msgs = map leMessage (lsEntries snap)
+      pure (containsText (Text.pack "simulation: tick 1 completed") msgs)
+    logReady `shouldBe` True
 
     logSnap <- getLogSnapshot logHandle
     let messages = map leMessage (lsEntries logSnap)
