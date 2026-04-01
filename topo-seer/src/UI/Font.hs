@@ -13,7 +13,7 @@ import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Data.Word (Word8)
+import Data.Word (Word8, Word32)
 import Foreign.C.Types (CInt)
 import Linear (V2(..), V4(..))
 import qualified SDL
@@ -32,23 +32,33 @@ instance Ord CacheKey where
 
 data CachedText = CachedText
   { ctTexture :: SDL.Texture
-  , ctSize :: V2 CInt
+  , ctSize    :: V2 CInt
+  , ctGen     :: {-# UNPACK #-} !Word32
   }
 
+-- | Maximum number of distinct text+colour entries kept in the cache.
+-- When the cache grows beyond this limit the least-recently-used entry
+-- is evicted and its SDL texture freed.
+fontCacheMaxEntries :: Int
+fontCacheMaxEntries = 512
+
 data FontCache = FontCache
-  { fcFont :: Font.Font
+  { fcFont     :: Font.Font
   , fcRenderer :: SDL.Renderer
-  , fcCache :: IORef (Map.Map CacheKey CachedText)
+  , fcCache    :: IORef (Map.Map CacheKey CachedText)
+  , fcNextGen  :: IORef Word32
   }
 
 initFontCache :: SDL.Renderer -> FilePath -> Int -> IO FontCache
 initFontCache renderer path size = do
   font <- Font.load path size
   cacheRef <- newIORef Map.empty
+  genRef   <- newIORef 0
   pure FontCache
-    { fcFont = font
+    { fcFont     = font
     , fcRenderer = renderer
-    , fcCache = cacheRef
+    , fcCache    = cacheRef
+    , fcNextGen  = genRef
     }
 
 initFontCacheMaybe :: SDL.Renderer -> Int -> [FilePath] -> IO (Maybe FontCache)
@@ -70,14 +80,34 @@ destroyFontCache cache = do
 -- | Render text to a cached texture.  Returns 'Nothing' for empty or
 -- whitespace-only input (SDL's @TTF_RenderUTF8_Blended@ rejects
 -- zero-width text).
+-- | Evict the least-recently-used entry, freeing its SDL texture.
+evictLRU :: Map.Map CacheKey CachedText -> IO (Map.Map CacheKey CachedText)
+evictLRU m
+  | Map.null m = pure m
+  | otherwise  = do
+      let (k0, v0) = Map.findMin m
+          (lruKey, lruVal) = Map.foldlWithKey'
+            (\(bk, bv) k v -> if ctGen v < ctGen bv then (k, v) else (bk, bv))
+            (k0, v0)
+            m
+      SDL.destroyTexture (ctTexture lruVal)
+      pure (Map.delete lruKey m)
+
 getCachedText :: FontCache -> V4 Word8 -> Text -> IO (Maybe CachedText)
 getCachedText _cache _color text
   | Text.null (Text.strip text) = pure Nothing
 getCachedText cache color text = do
   let key = CacheKey (text, color)
   cached <- readIORef (fcCache cache)
+  gen    <- readIORef (fcNextGen cache)
+  let gen' = gen + 1
+  writeIORef (fcNextGen cache) gen'
   case Map.lookup key cached of
-    Just hit -> pure (Just hit)
+    Just hit -> do
+      -- Refresh generation so this entry is not evicted as LRU.
+      let updated = hit { ctGen = gen' }
+      writeIORef (fcCache cache) (Map.insert key updated cached)
+      pure (Just updated)
     Nothing -> do
       surface <- Font.blended (fcFont cache) color text
       texture <- SDL.createTextureFromSurface (fcRenderer cache) surface
@@ -86,8 +116,13 @@ getCachedText cache color text = do
       info <- SDL.queryTexture texture
       let w = fromIntegral (SDL.textureWidth info)
           h = fromIntegral (SDL.textureHeight info)
-          entry = CachedText texture (V2 w h)
-      writeIORef (fcCache cache) (Map.insert key entry cached)
+          entry   = CachedText { ctTexture = texture, ctSize = V2 w h, ctGen = gen' }
+          withNew = Map.insert key entry cached
+      evicted <-
+        if Map.size withNew > fontCacheMaxEntries
+          then evictLRU withNew
+          else pure withNew
+      writeIORef (fcCache cache) evicted
       pure (Just entry)
 
 drawText :: FontCache -> V4 Word8 -> V2 Int -> Text -> IO ()
@@ -95,17 +130,19 @@ drawText cache color (V2 x y) text = do
   result <- getCachedText cache color text
   case result of
     Nothing -> pure ()
-    Just (CachedText texture (V2 w h)) -> do
-      let dst = SDL.Rectangle (SDL.P (V2 (fromIntegral x) (fromIntegral y))) (V2 w h)
-      SDL.copy (fcRenderer cache) texture Nothing (Just dst)
+    Just ct -> do
+      let V2 w h = ctSize ct
+          dst = SDL.Rectangle (SDL.P (V2 (fromIntegral x) (fromIntegral y))) (V2 w h)
+      SDL.copy (fcRenderer cache) (ctTexture ct) Nothing (Just dst)
 
 textSize :: FontCache -> V4 Word8 -> Text -> IO (V2 Int)
 textSize cache color text = do
   result <- getCachedText cache color text
   case result of
     Nothing -> pure (V2 0 0)
-    Just (CachedText _ (V2 w h)) ->
-      pure (V2 (fromIntegral w) (fromIntegral h))
+    Just ct ->
+      let V2 w h = ctSize ct
+      in pure (V2 (fromIntegral w) (fromIntegral h))
 
 drawTextCentered :: FontCache -> V4 Word8 -> SDL.Rectangle CInt -> Text -> IO ()
 drawTextCentered cache color (SDL.Rectangle (SDL.P (V2 x y)) (V2 w h)) text = do
