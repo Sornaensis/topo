@@ -124,8 +124,8 @@ drawStatusBars renderer fontCache ui dataSnap layout =
           barX = px + pad
           terrainBarY = baseY
           biomeBarY = baseY + barH + barGap
-          terrainLabel = "Terrain " <> Text.pack (show terrainCount) <> "/" <> Text.pack (show totalChunks)
-          biomeLabel = "Biomes " <> Text.pack (show biomeCount) <> "/" <> Text.pack (show totalChunks)
+          terrainLabel = "Terrain chunks: " <> Text.pack (show terrainCount) <> "/" <> Text.pack (show totalChunks)
+          biomeLabel = "Biome chunks: " <> Text.pack (show biomeCount) <> "/" <> Text.pack (show totalChunks)
       drawTextLine fontCache (V2 barX (terrainBarY - labelGap)) textStatusBar terrainLabel
       SDL.rendererDrawColor renderer SDL.$= colStatusBarTrack
       SDL.fillRect renderer (Just (rectToSDL (Rect (V2 barX terrainBarY, V2 barW barH))))
