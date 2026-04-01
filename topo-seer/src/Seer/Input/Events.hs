@@ -5,7 +5,7 @@ module Seer.Input.Events
   ( handleEvent
   , TooltipHover
   , tickTooltipHover
-  , tooltipDelayFrames
+  , tooltipDelayMs
   ) where
 
 import Actor.Data (DataSnapshot(..), TerrainSnapshot(..), getDataSnapshot, getTerrainSnapshot, replaceTerrainData)
@@ -40,7 +40,8 @@ import Actor.UI
   )
 import Control.Applicative ((<|>))
 import Control.Monad (when)
-import Data.IORef (IORef, modifyIORef', readIORef, writeIORef)
+import Data.IORef (IORef, readIORef, writeIORef)
+import Data.Word (Word32)
 import qualified Data.Text as Text
 import qualified Data.IntMap.Strict as IntMap
 import Linear (V2(..))
@@ -80,10 +81,10 @@ import Topo.Overlay (overlayNames)
 import Topo.World (TerrainWorld(..))
 import UI.HexPick (renderHexRadiusPx, screenToAxial)
 
--- | Number of consecutive frames the cursor must remain still on a
--- slider row before the tooltip appears.
-tooltipDelayFrames :: Int
-tooltipDelayFrames = 15
+-- | Wall-clock delay (milliseconds) the cursor must remain still on a
+-- widget before the tooltip appears.
+tooltipDelayMs :: Word32
+tooltipDelayMs = 500
 
 handleEvent
   :: InputContext
@@ -179,9 +180,11 @@ handleEvent inputContext event = do
              chromeHit = hitTest chromeWidgets point
              hoverResult = sliderHit <|> chromeHit
          -- Record which widget the cursor is over and reset the
-         -- frame counter.  The actual tooltip is fired by
-         -- 'tickTooltipHover' once the counter reaches 0.
+         -- deadline.  The actual tooltip is fired by
+         -- 'tickTooltipHover' once wall-clock time passes the deadline.
          pending <- readIORef tooltipHoverRef
+         now <- SDL.ticks
+         let deadline = now + tooltipDelayMs
          case hoverResult of
            Nothing -> do
              writeIORef tooltipHoverRef Nothing
@@ -190,15 +193,15 @@ handleEvent inputContext event = do
              case pending of
                Just (prevWid, _)
                  | prevWid == wid ->
-                     -- Same widget; reset the frame counter so
-                     -- tooltip only appears after the cursor stops.
-                     writeIORef tooltipHoverRef (Just (wid, tooltipDelayFrames))
+                     -- Same widget; reset the deadline so tooltip only
+                     -- appears after the cursor stops moving.
+                     writeIORef tooltipHoverRef (Just (wid, deadline))
                  | otherwise -> do
-                     -- Different widget; restart counter, hide tooltip
-                     writeIORef tooltipHoverRef (Just (wid, tooltipDelayFrames))
+                     -- Different widget; restart deadline, hide tooltip.
+                     writeIORef tooltipHoverRef (Just (wid, deadline))
                      setUiHoverWidget uiHandle Nothing
                Nothing -> do
-                 writeIORef tooltipHoverRef (Just (wid, tooltipDelayFrames))
+                 writeIORef tooltipHoverRef (Just (wid, deadline))
                  setUiHoverWidget uiHandle Nothing
     SDL.MouseWheelEvent wheelEvent -> do
       let SDL.V2 _ dy = SDL.mouseWheelEventPos wheelEvent
@@ -541,10 +544,11 @@ handleEvent inputContext event = do
         -- setSelection
         (setUiWorldSelected uiHandle)
 
--- | Per-frame tick for the tooltip hover delay.  Decrements the
--- remaining frame count and promotes the pending hover to a visible
--- tooltip once it reaches zero.  Returns 'True' when it fired so
--- the caller can request a UI snapshot refresh.
+-- | Per-frame tick for the tooltip hover delay.  Compares the stored
+-- wall-clock deadline against the current SDL tick time and promotes
+-- the pending hover to a visible tooltip when it expires.  Returns
+-- 'True' (once) when it fires so the caller can request a UI snapshot
+-- refresh.
 tickTooltipHover
   :: IORef TooltipHover
   -> ActorHandle Ui (Protocol Ui)
@@ -552,14 +556,17 @@ tickTooltipHover
 tickTooltipHover tooltipHoverRef uiHandle = do
   pending <- readIORef tooltipHoverRef
   case pending of
-    Just (wid, n)
-      | n <= 1 -> do
-          -- Counter expired; lock it at 0 and show tooltip
-          writeIORef tooltipHoverRef (Just (wid, 0))
-          setUiHoverWidget uiHandle (Just wid)
-          pure True
+    Just (wid, deadline)
+      -- Already fired (sentinel 0); tooltip is visible, no action needed.
+      | deadline == 0 -> pure False
       | otherwise -> do
-          modifyIORef' tooltipHoverRef (fmap (\(w, c) -> (w, c - 1)))
-          pure False
+          nowMs <- SDL.ticks
+          if nowMs >= deadline
+            then do
+              -- Deadline reached; lock at 0 and show tooltip.
+              writeIORef tooltipHoverRef (Just (wid, 0))
+              setUiHoverWidget uiHandle (Just wid)
+              pure True
+            else pure False
     Nothing -> pure False
 

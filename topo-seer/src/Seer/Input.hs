@@ -6,10 +6,10 @@ module Seer.Input
   , mkInputContext
   , TooltipHover
   , tickTooltipHover
-  , tooltipDelayFrames
+  , tooltipDelayMs
   ) where
 
 import Seer.Input.Context (InputContext(..), TooltipHover, mkInputContext)
-import Seer.Input.Events (handleEvent, tickTooltipHover, tooltipDelayFrames)
+import Seer.Input.Events (handleEvent, tickTooltipHover, tooltipDelayMs)
 import Seer.Input.Router (isQuit)
 import Seer.Input.Widgets (handleClick)
