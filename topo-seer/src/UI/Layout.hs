@@ -497,7 +497,7 @@ logBodyRect layout =
 logFilterRects :: Layout -> (Rect, Rect, Rect, Rect)
 logFilterRects layout =
   let Rect (V2 x y, V2 w h) = logHeaderRect layout
-      buttonSize = 18
+      buttonSize = 22
       gap = 6
       total = buttonSize * 4 + gap * 3
       startX = x + w - total - 12

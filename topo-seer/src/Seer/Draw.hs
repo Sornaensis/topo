@@ -136,7 +136,7 @@ drawLogLines renderer fontCache logSnap (Rect (V2 x y, V2 w h)) = do
   lineHeight <- logLineHeight fontCache
   textYOffset <- logTextYOffset fontCache lineHeight
   let padding = 2
-      gutterW = 8
+      gutterW = 12
       contentX = x + gutterW
       contentW = max 0 (w - gutterW)
       visibleLines = max 0 (h `div` lineHeight)
@@ -169,7 +169,7 @@ drawLogScrollbar renderer fontCache logSnap (Rect (V2 x y, V2 w h)) = do
       offset = min (lsScroll logSnap) maxOffset
       barX = x + padding
       barY = y + padding
-      barW = 4
+      barW = 8
       barH = max 0 (h - padding * 2)
       handleH = max 10 (barH * visibleLines `div` max 1 totalLines)
       handleY =

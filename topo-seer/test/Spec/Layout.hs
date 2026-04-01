@@ -18,8 +18,8 @@ spec = describe "UI.Layout" $ do
   it "creates log filter rects" $ do
     let layout = layoutFor (V2 800 600) 160
         (Rect (V2 x1 y1, V2 w1 h1), _, _, Rect (V2 x4 _y4, V2 w4 h4)) = logFilterRects layout
-    (x1, y1, w1, h1) `shouldBe` (698, 443, 18, 18)
-    (x4, w4, h4) `shouldBe` (770, 18, 18)
+    (x1, y1, w1, h1) `shouldBe` (682, 441, 22, 22)
+    (x4, w4, h4) `shouldBe` (766, 22, 22)
 
   it "creates config panel rect" $ do
     let layout = layoutFor (V2 800 600) 160
