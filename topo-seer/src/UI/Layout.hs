@@ -68,6 +68,7 @@ module UI.Layout
   , presetSaveCancelRect
     -- Preset load dialog
   , presetLoadDialogRect
+  , presetLoadFilterRect
   , presetLoadListRect
   , presetLoadItemRect
   , presetLoadOkRect
@@ -79,6 +80,7 @@ module UI.Layout
   , worldSaveCancelRect
     -- World load dialog
   , worldLoadDialogRect
+  , worldLoadFilterRect
   , worldLoadListRect
   , worldLoadItemRect
   , worldLoadOkRect
@@ -574,17 +576,24 @@ presetSaveCancelRect layout =
 -- | Centered overlay for the preset load dialog (280 × 320).
 presetLoadDialogRect :: Layout -> Rect
 presetLoadDialogRect (Layout (V2 w h) _ _) =
-  let dw = 280; dh = 320
+  let dw = 280; dh = 360
       dx = (w - dw) `div` 2
       dy = (h - dh) `div` 2
   in Rect (V2 dx dy, V2 dw dh)
+
+-- | Search/filter input inside the preset load dialog.
+presetLoadFilterRect :: Layout -> Rect
+presetLoadFilterRect layout =
+  let Rect (V2 dx dy, V2 dw _) = presetLoadDialogRect layout
+      pad = 16
+  in Rect (V2 (dx + pad) (dy + 40), V2 (dw - pad * 2) 24)
 
 -- | Scrollable list area inside the preset load dialog.
 presetLoadListRect :: Layout -> Rect
 presetLoadListRect layout =
   let Rect (V2 dx dy, V2 dw _) = presetLoadDialogRect layout
       pad = 16
-  in Rect (V2 (dx + pad) (dy + 40), V2 (dw - pad * 2) 200)
+  in Rect (V2 (dx + pad) (dy + 72), V2 (dw - pad * 2) 220)
 
 -- | Individual item rect inside the preset load list.
 presetLoadItemRect :: Layout -> Int -> Rect
@@ -644,20 +653,27 @@ worldSaveCancelRect layout =
 -- World load dialog
 -- ---------------------------------------------------------------------------
 
--- | Centered overlay for the world load dialog (320 × 360).
+-- | Centered overlay for the world load dialog (320 × 400).
 worldLoadDialogRect :: Layout -> Rect
 worldLoadDialogRect (Layout (V2 w h) _ _) =
-  let dw = 320; dh = 360
+  let dw = 320; dh = 400
       dx = (w - dw) `div` 2
       dy = (h - dh) `div` 2
   in Rect (V2 dx dy, V2 dw dh)
+
+-- | Search/filter input inside the world load dialog.
+worldLoadFilterRect :: Layout -> Rect
+worldLoadFilterRect layout =
+  let Rect (V2 dx dy, V2 dw _) = worldLoadDialogRect layout
+      pad = 16
+  in Rect (V2 (dx + pad) (dy + 40), V2 (dw - pad * 2) 24)
 
 -- | Scrollable list area inside the world load dialog.
 worldLoadListRect :: Layout -> Rect
 worldLoadListRect layout =
   let Rect (V2 dx dy, V2 dw _) = worldLoadDialogRect layout
       pad = 16
-  in Rect (V2 (dx + pad) (dy + 40), V2 (dw - pad * 2) 240)
+  in Rect (V2 (dx + pad) (dy + 72), V2 (dw - pad * 2) 260)
 
 -- | Individual item rect inside the world load list.
 worldLoadItemRect :: Layout -> Int -> Rect

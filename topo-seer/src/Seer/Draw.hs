@@ -217,17 +217,22 @@ drawPresetLoadDialog :: SDL.Renderer -> Maybe FontCache -> UiState -> Layout -> 
 drawPresetLoadDialog renderer fontCache ui layout =
   case uiMenuMode ui of
     MenuPresetLoad -> do
-      let dialog  = presetLoadDialogRect layout
-          listR   = presetLoadListRect layout
-          okR     = presetLoadOkRect layout
-          cancelR = presetLoadCancelRect layout
-          items   = uiPresetList ui
-          sel     = uiPresetSelected ui
+      let dialog   = presetLoadDialogRect layout
+          filterR  = presetLoadFilterRect layout
+          listR    = presetLoadListRect layout
+          okR      = presetLoadOkRect layout
+          cancelR  = presetLoadCancelRect layout
+          fText    = Text.toLower (uiPresetFilter ui)
+          items    = filter (\n -> Text.isInfixOf fText (Text.toLower n))
+                            (uiPresetList ui)
+          sel      = min (uiPresetSelected ui) (max 0 (length items - 1))
       drawDialogPanel renderer dialog
       drawDialogTitle renderer fontCache dialog "Load Preset"
-      drawListSelection renderer fontCache listR 24 8 sel
+      drawTextInputField renderer fontCache filterR (uiPresetFilter ui)
+      drawListSelection renderer fontCache listR 24 9 sel
         (presetLoadItemRect layout) (\_ name -> name) items
-      drawDialogButton renderer fontCache okR "Load" True
+      let hasItems = not (null items)
+      drawDialogButton renderer fontCache okR "Load" hasItems
       drawDialogButton renderer fontCache cancelR "Cancel" True
     _ -> pure ()
 
@@ -252,15 +257,19 @@ drawWorldLoadDialog :: SDL.Renderer -> Maybe FontCache -> UiState -> Layout -> I
 drawWorldLoadDialog renderer fontCache ui layout =
   case uiMenuMode ui of
     MenuWorldLoad -> do
-      let dialog  = worldLoadDialogRect layout
-          listR   = worldLoadListRect layout
-          okR     = worldLoadOkRect layout
-          cancelR = worldLoadCancelRect layout
-          items   = uiWorldList ui
-          sel     = uiWorldSelected ui
+      let dialog   = worldLoadDialogRect layout
+          filterR  = worldLoadFilterRect layout
+          listR    = worldLoadListRect layout
+          okR      = worldLoadOkRect layout
+          cancelR  = worldLoadCancelRect layout
+          fText    = Text.toLower (uiWorldFilter ui)
+          items    = filter (\m -> Text.isInfixOf fText (Text.toLower (wsmName m)))
+                            (uiWorldList ui)
+          sel      = min (uiWorldSelected ui) (max 0 (length items - 1))
       drawDialogPanel renderer dialog
       drawDialogTitle renderer fontCache dialog "Load World"
-      drawListSelection renderer fontCache listR 28 8 sel
+      drawTextInputField renderer fontCache filterR (uiWorldFilter ui)
+      drawListSelection renderer fontCache listR 28 9 sel
         (worldLoadItemRect layout) worldLoadLabel items
       let hasItems = not (null items)
       drawDialogButton renderer fontCache okR "Load" hasItems

@@ -238,11 +238,13 @@ module Actor.UI.Setters
   , setUiPresetInput
   , setUiPresetList
   , setUiPresetSelected
+  , setUiPresetFilter
   , setUiWorldConfig
   , setUiWorldName
   , setUiWorldSaveInput
   , setUiWorldList
   , setUiWorldSelected
+  , setUiWorldFilter
   , setUiContextHex
   , setUiContextPos
   , setUiHexTooltipPinned
@@ -538,11 +540,13 @@ setUiMenuMode = sendUnary SetMenuMode
 setUiPresetInput = sendUnary SetPresetInput
 setUiPresetList = sendUnary SetPresetList
 setUiPresetSelected = sendUnary SetPresetSelected
+setUiPresetFilter = sendUnary SetPresetFilter
 setUiWorldConfig = sendUnary SetWorldConfig
 setUiWorldName = sendUnary SetWorldName
 setUiWorldSaveInput = sendUnary SetWorldSaveInput
 setUiWorldList = sendUnary SetWorldList
 setUiWorldSelected = sendUnary SetWorldSelected
+setUiWorldFilter = sendUnary SetWorldFilter
 setUiContextHex = sendUnary SetContextHex
 setUiContextPos = sendUnary SetContextPos
 setUiHexTooltipPinned = sendUnary SetHexTooltipPinned

@@ -37,11 +37,13 @@ import Actor.UI
   , setUiPresetInput
   , setUiPresetList
   , setUiPresetSelected
+  , setUiPresetFilter
   , setUiWorldName
   , setUiWorldConfig
   , setUiWorldSaveInput
   , setUiWorldList
   , setUiWorldSelected
+  , setUiWorldFilter
   , setUiZoom
   , setUiSimAutoTick
   , setUiSimTickCount
@@ -302,7 +304,7 @@ handleClick inputContext (SDL.P (V2 x y)) = do
     handleBespokeConfigWidget :: Layout -> WidgetId -> V2 Int -> (IO () -> IO ()) -> UiState -> IO ()
     handleBespokeConfigWidget currentLayout wid clickPoint whenConfigVisible uiState = case wid of
       WidgetConfigPresetSave -> whenConfigVisible (openPresetSaveDialog currentLayout uiState)
-      WidgetConfigPresetLoad -> whenConfigVisible openPresetLoadDialog
+      WidgetConfigPresetLoad -> whenConfigVisible (openPresetLoadDialog currentLayout)
       WidgetConfigReset -> whenConfigVisible (SDL.stopTextInput >> submit UiActionReset)
       WidgetConfigRevert -> whenConfigVisible (submit UiActionRevert)
       WidgetPipelineToggle name -> whenConfigVisible $ do
@@ -451,7 +453,7 @@ handleClick inputContext (SDL.P (V2 x y)) = do
           uiSnap <- getUiSnapshot uiHandle
           openWorldSaveDialog ly uiSnap
       | containsPoint (menuLoadRect ly) point =
-          openWorldLoadDialog
+          openWorldLoadDialog ly
       | otherwise = setUiMenuMode uiHandle MenuNone
 
     handlePresetSaveClick ly point uiSnap
@@ -463,11 +465,12 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       | containsPoint (presetLoadOkRect ly) point = confirmPresetLoad uiSnap
       | containsPoint (presetLoadCancelRect ly) point = cancelPresetDialog
       | containsPoint (presetLoadListRect ly) point = do
-          -- Determine which item was clicked by y position
           let V2 _mx my = point
               Rect (V2 _lx listY, _) = presetLoadListRect ly
-              idx = max 0 (my - listY) `div` 24
-          setUiPresetSelected uiHandle idx
+              fText = Text.toLower (uiPresetFilter uiSnap)
+              filteredCount = length (filter (\n -> Text.isInfixOf fText (Text.toLower n)) (uiPresetList uiSnap))
+              idx = min (max 0 (filteredCount - 1)) ((my - listY) `div` 24)
+          when (filteredCount > 0) $ setUiPresetSelected uiHandle idx
       | otherwise = pure ()
 
     -- Preset dialog helpers
@@ -480,11 +483,15 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       setUiMenuMode uiHandle MenuPresetSave
       SDL.startTextInput rawRect
 
-    openPresetLoadDialog = do
+    openPresetLoadDialog ly = do
       names <- listSnapshots
       setUiPresetList uiHandle names
       setUiPresetSelected uiHandle 0
+      setUiPresetFilter uiHandle Text.empty
       setUiMenuMode uiHandle MenuPresetLoad
+      let Rect (V2 rx ry, V2 rw rh) = presetLoadFilterRect ly
+          rawRect = Raw.Rect (fromIntegral rx) (fromIntegral ry) (fromIntegral rw) (fromIntegral rh)
+      SDL.startTextInput rawRect
 
     cancelPresetDialog = do
       setUiMenuMode uiHandle MenuNone
@@ -499,7 +506,8 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       SDL.stopTextInput
 
     confirmPresetLoad uiSnap = do
-      let names = uiPresetList uiSnap
+      let fText = Text.toLower (uiPresetFilter uiSnap)
+          names = filter (\n -> Text.isInfixOf fText (Text.toLower n)) (uiPresetList uiSnap)
           sel = uiPresetSelected uiSnap
       when (sel >= 0 && sel < length names) $ do
         let name = names !! sel
@@ -524,8 +532,10 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       | containsPoint (worldLoadListRect ly) point = do
           let V2 _mx my = point
               Rect (V2 _lx listY, _) = worldLoadListRect ly
-              idx = max 0 (my - listY) `div` 28
-          setUiWorldSelected uiHandle idx
+              fText = Text.toLower (uiWorldFilter uiSnap)
+              filteredCount = length (filter (\m -> Text.isInfixOf fText (Text.toLower (wsmName m))) (uiWorldList uiSnap))
+              idx = min (max 0 (filteredCount - 1)) ((my - listY) `div` 28)
+          when (filteredCount > 0) $ setUiWorldSelected uiHandle idx
       | otherwise = pure ()
 
     -- World dialog helpers
@@ -538,11 +548,15 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       setUiMenuMode uiHandle MenuWorldSave
       SDL.startTextInput rawRect
 
-    openWorldLoadDialog = do
+    openWorldLoadDialog ly = do
       worlds <- listWorlds
       setUiWorldList uiHandle worlds
       setUiWorldSelected uiHandle 0
+      setUiWorldFilter uiHandle Text.empty
       setUiMenuMode uiHandle MenuWorldLoad
+      let Rect (V2 rx ry, V2 rw rh) = worldLoadFilterRect ly
+          rawRect = Raw.Rect (fromIntegral rx) (fromIntegral ry) (fromIntegral rw) (fromIntegral rh)
+      SDL.startTextInput rawRect
 
     cancelWorldDialog = do
       setUiMenuMode uiHandle MenuNone
@@ -564,7 +578,8 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       SDL.stopTextInput
 
     confirmWorldLoad uiSnap = do
-      let manifests = uiWorldList uiSnap
+      let fText = Text.toLower (uiWorldFilter uiSnap)
+          manifests = filter (\m -> Text.isInfixOf fText (Text.toLower (wsmName m))) (uiWorldList uiSnap)
           sel = uiWorldSelected uiSnap
       when (sel >= 0 && sel < length manifests) $ do
         let manifest = manifests !! sel

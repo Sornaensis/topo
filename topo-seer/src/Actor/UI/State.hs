@@ -195,6 +195,7 @@ data UiState = UiState
   , uiPresetInput :: !Text
   , uiPresetList :: ![Text]
   , uiPresetSelected :: !Int
+  , uiPresetFilter :: !Text
   , uiContextHex :: !(Maybe (Int, Int))
   , uiContextPos :: !(Maybe (Int, Int))
   , uiHexTooltipPinned :: !Bool
@@ -432,6 +433,7 @@ data UiState = UiState
   , uiWorldSaveInput :: !Text
   , uiWorldList :: ![WorldSaveManifest]
   , uiWorldSelected :: !Int
+  , uiWorldFilter :: !Text
   , uiOverlayNames :: ![Text]
   , uiOverlayFields :: ![(Text, OverlayFieldType)]
   , uiDataBrowser :: !DataBrowserState
@@ -455,6 +457,7 @@ emptyUiState = UiState
   , uiPresetInput = Text.empty
   , uiPresetList = []
   , uiPresetSelected = 0
+  , uiPresetFilter = Text.empty
   , uiContextHex = Nothing
   , uiContextPos = Nothing
   , uiHexTooltipPinned = False
@@ -692,6 +695,7 @@ emptyUiState = UiState
   , uiWorldSaveInput = Text.empty
   , uiWorldList = []
   , uiWorldSelected = 0
+  , uiWorldFilter = Text.empty
   , uiOverlayNames = []
   , uiOverlayFields = []
   , uiDataBrowser = emptyDataBrowserState
@@ -717,6 +721,7 @@ data UiUpdate
   | SetPresetInput !Text
   | SetPresetList ![Text]
   | SetPresetSelected !Int
+  | SetPresetFilter !Text
   | SetContextHex !(Maybe (Int, Int))
   | SetContextPos !(Maybe (Int, Int))
   | SetHexTooltipPinned !Bool
@@ -748,6 +753,7 @@ data UiUpdate
   | SetWorldSaveInput !Text
   | SetWorldList ![WorldSaveManifest]
   | SetWorldSelected !Int
+  | SetWorldFilter !Text
   | SetOverlayNames ![Text]
   | SetOverlayFields ![(Text, OverlayFieldType)]
   | SetDataBrowser !DataBrowserState
@@ -770,6 +776,7 @@ applyUpdate upd st = case upd of
   SetPresetInput v -> st { uiPresetInput = v }
   SetPresetList v -> st { uiPresetList = v }
   SetPresetSelected v -> st { uiPresetSelected = max 0 v }
+  SetPresetFilter v -> st { uiPresetFilter = v }
   SetContextHex v -> st { uiContextHex = v }
   SetContextPos v -> st { uiContextPos = v }
   SetHexTooltipPinned v -> st { uiHexTooltipPinned = v }
@@ -807,6 +814,7 @@ applyUpdate upd st = case upd of
   SetWorldSaveInput v -> st { uiWorldSaveInput = v }
   SetWorldList v -> st { uiWorldList = v }
   SetWorldSelected v -> st { uiWorldSelected = v }
+  SetWorldFilter v -> st { uiWorldFilter = v }
   SetOverlayNames v -> st { uiOverlayNames = v }
   SetOverlayFields v -> st { uiOverlayFields = v }
   SetDataBrowser v -> st { uiDataBrowser = v }

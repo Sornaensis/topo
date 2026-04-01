@@ -30,10 +30,12 @@ import Actor.UI
   , setUiMenuMode
   , setUiPresetInput
   , setUiPresetSelected
+  , setUiPresetFilter
   , setUiWorldName
   , setUiWorldConfig
   , setUiWorldSaveInput
   , setUiWorldSelected
+  , setUiWorldFilter
   , setUiZoom
   , setUiOverlayNames
   , setUiLeftViewScroll
@@ -303,6 +305,12 @@ handleEvent inputContext event = do
       when (uiMenuMode uiSnap == MenuWorldSave) $
         handleModalTextInput (uiWorldSaveInput uiSnap) txt
           (setUiWorldSaveInput uiHandle)
+      when (uiMenuMode uiSnap == MenuPresetLoad) $
+        handleModalTextInput (uiPresetFilter uiSnap) txt
+          (\f -> setUiPresetFilter uiHandle f >> setUiPresetSelected uiHandle 0)
+      when (uiMenuMode uiSnap == MenuWorldLoad) $
+        handleModalTextInput (uiWorldFilter uiSnap) txt
+          (\f -> setUiWorldFilter uiHandle f >> setUiWorldSelected uiHandle 0)
     SDL.KeyboardEvent keyboardEvent
       | SDL.keyboardEventKeyMotion keyboardEvent == SDL.Pressed ->
           do
@@ -462,26 +470,32 @@ handleEvent inputContext event = do
             setUiPresetInput uiHandle (Text.dropEnd 1 (uiPresetInput uiSnap')))
 
     handlePresetLoadKey :: UiState -> SDL.Keycode -> IO ()
-    handlePresetLoadKey uiSnap keycode =
-      handleModalListKey keycode
-        (uiPresetSelected uiSnap)
-        (length (uiPresetList uiSnap) - 1)
-        -- onConfirm
-        (do let names = uiPresetList uiSnap
-                sel = uiPresetSelected uiSnap
-            when (sel >= 0 && sel < length names) $ do
-              let name = names !! sel
-              dir <- snapshotDir
-              let path = dir </> Text.unpack name <> ".json"
-              result <- loadSnapshot path
-              case result of
-                Right cp -> applySnapshotToUi cp uiHandle
-                Left _err -> pure ()
-            setUiMenuMode uiHandle MenuNone)
-        -- onCancel
-        (setUiMenuMode uiHandle MenuNone >> SDL.stopTextInput)
-        -- setSelection
-        (setUiPresetSelected uiHandle)
+    handlePresetLoadKey uiSnap keycode = do
+      let fText = Text.toLower (uiPresetFilter uiSnap)
+          filteredItems = filter (\n -> Text.isInfixOf fText (Text.toLower n)) (uiPresetList uiSnap)
+      case keycode of
+        SDL.KeycodeBackspace ->
+          setUiPresetFilter uiHandle (Text.dropEnd 1 (uiPresetFilter uiSnap))
+            >> setUiPresetSelected uiHandle 0
+        _ ->
+          handleModalListKey keycode
+            (uiPresetSelected uiSnap)
+            (length filteredItems - 1)
+            -- onConfirm
+            (do let sel = uiPresetSelected uiSnap
+                when (sel >= 0 && sel < length filteredItems) $ do
+                  let name = filteredItems !! sel
+                  dir <- snapshotDir
+                  let path = dir </> Text.unpack name <> ".json"
+                  result <- loadSnapshot path
+                  case result of
+                    Right cp -> applySnapshotToUi cp uiHandle
+                    Left _err -> pure ()
+                setUiMenuMode uiHandle MenuNone)
+            -- onCancel
+            (setUiMenuMode uiHandle MenuNone >> SDL.stopTextInput)
+            -- setSelection
+            (setUiPresetSelected uiHandle)
 
     handleWorldSaveKey :: UiState -> SDL.Keycode -> IO ()
     handleWorldSaveKey _uiSnap keycode =
@@ -508,41 +522,47 @@ handleEvent inputContext event = do
             setUiWorldSaveInput uiHandle (Text.dropEnd 1 (uiWorldSaveInput uiSnap')))
 
     handleWorldLoadKey :: UiState -> SDL.Keycode -> IO ()
-    handleWorldLoadKey uiSnap keycode =
-      handleModalListKey keycode
-        (uiWorldSelected uiSnap)
-        (length (uiWorldList uiSnap) - 1)
-        -- onConfirm
-        (do let manifests = uiWorldList uiSnap
-                sel = uiWorldSelected uiSnap
-            when (sel >= 0 && sel < length manifests) $ do
-              let manifest = manifests !! sel
-                  name = wsmName manifest
-              result <- loadNamedWorld name
-              case result of
-                Right (_manifest, snapshot, world) -> do
-                  replaceTerrainData dataHandle world
-                  setSimWorld simulationHandle world
-                  setUiOverlayNames uiHandle (overlayNames (twOverlays world))
-                  dataSnap <- getDataSnapshot dataHandle
-                  terrainSnap' <- getTerrainSnapshot dataHandle
-                  writeDataSnapshot (ahDataSnapshotRef actorHandles) dataSnap
-                  writeTerrainSnapshot (ahTerrainSnapshotRef actorHandles) terrainSnap'
-                  bumpSnapshotVersion (ahSnapshotVersionRef actorHandles)
-                  applySnapshotToUi snapshot uiHandle
-                  setUiWorldName uiHandle name
-                  setUiWorldConfig uiHandle (Just snapshot)
-                  -- Notify plugins of the loaded world path
-                  let pmHandle = ahPluginManagerHandle actorHandles
-                  wDir <- worldDir
-                  notifyWorldChanged pmHandle (Just (Text.pack (wDir </> Text.unpack name)))
-                  submitAction inputEnv (UiActionRebuildAtlas (uiViewMode uiSnap))
-                Left _err -> pure ()
-            setUiMenuMode uiHandle MenuNone)
-        -- onCancel
-        (setUiMenuMode uiHandle MenuNone >> SDL.stopTextInput)
-        -- setSelection
-        (setUiWorldSelected uiHandle)
+    handleWorldLoadKey uiSnap keycode = do
+      let fText = Text.toLower (uiWorldFilter uiSnap)
+          filteredItems = filter (\m -> Text.isInfixOf fText (Text.toLower (wsmName m))) (uiWorldList uiSnap)
+      case keycode of
+        SDL.KeycodeBackspace ->
+          setUiWorldFilter uiHandle (Text.dropEnd 1 (uiWorldFilter uiSnap))
+            >> setUiWorldSelected uiHandle 0
+        _ ->
+          handleModalListKey keycode
+            (uiWorldSelected uiSnap)
+            (length filteredItems - 1)
+            -- onConfirm
+            (do let sel = uiWorldSelected uiSnap
+                when (sel >= 0 && sel < length filteredItems) $ do
+                  let manifest = filteredItems !! sel
+                      name = wsmName manifest
+                  result <- loadNamedWorld name
+                  case result of
+                    Right (_manifest, snapshot, world) -> do
+                      replaceTerrainData dataHandle world
+                      setSimWorld simulationHandle world
+                      setUiOverlayNames uiHandle (overlayNames (twOverlays world))
+                      dataSnap <- getDataSnapshot dataHandle
+                      terrainSnap' <- getTerrainSnapshot dataHandle
+                      writeDataSnapshot (ahDataSnapshotRef actorHandles) dataSnap
+                      writeTerrainSnapshot (ahTerrainSnapshotRef actorHandles) terrainSnap'
+                      bumpSnapshotVersion (ahSnapshotVersionRef actorHandles)
+                      applySnapshotToUi snapshot uiHandle
+                      setUiWorldName uiHandle name
+                      setUiWorldConfig uiHandle (Just snapshot)
+                      -- Notify plugins of the loaded world path
+                      let pmHandle = ahPluginManagerHandle actorHandles
+                      wDir <- worldDir
+                      notifyWorldChanged pmHandle (Just (Text.pack (wDir </> Text.unpack name)))
+                      submitAction inputEnv (UiActionRebuildAtlas (uiViewMode uiSnap))
+                    Left _err -> pure ()
+                setUiMenuMode uiHandle MenuNone)
+            -- onCancel
+            (setUiMenuMode uiHandle MenuNone >> SDL.stopTextInput)
+            -- setSelection
+            (setUiWorldSelected uiHandle)
 
 -- | Per-frame tick for the tooltip hover delay.  Compares the stored
 -- wall-clock deadline against the current SDL tick time and promotes
