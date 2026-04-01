@@ -34,6 +34,12 @@ import UI.Widgets (Rect(..))
 import UI.Theme
 import UI.WidgetsDraw (drawCentered, rectToSDL)
 
+editorRadiusMin :: Int
+editorRadiusMin = 0
+
+editorRadiusMax :: Int
+editorRadiusMax = 6
+
 -- | Draw the editor toolbar when the editor is active.
 drawEditorToolbar :: SDL.Renderer -> Maybe FontCache -> UiState -> Layout -> IO ()
 drawEditorToolbar renderer fontCache ui layout = do
@@ -58,13 +64,20 @@ drawEditorToolbar renderer fontCache ui layout = do
       plusRect   = editorRadiusPlusRect layout
       labelColor = textEditorLabel
       radius = brushRadius (editorBrush editor)
-  SDL.rendererDrawColor renderer SDL.$= colEditorRadiusBtn
+      minusDisabled = radius <= editorRadiusMin
+      plusDisabled  = radius >= editorRadiusMax
+      minusBg = if minusDisabled then colEditorRadiusBtnDisabled else colEditorRadiusBtn
+      plusBg  = if plusDisabled  then colEditorRadiusBtnDisabled else colEditorRadiusBtn
+      minusLabel = if minusDisabled then textEditorInactive else labelColor
+      plusLabel  = if plusDisabled  then textEditorInactive else labelColor
+  SDL.rendererDrawColor renderer SDL.$= minusBg
   SDL.fillRect renderer (Just (rectToSDL minusRect))
+  SDL.rendererDrawColor renderer SDL.$= plusBg
   SDL.fillRect renderer (Just (rectToSDL plusRect))
   SDL.rendererDrawColor renderer SDL.$= colCtrlValue
   SDL.fillRect renderer (Just (rectToSDL valueRect))
-  drawCentered fontCache labelColor minusRect "\8722"
-  drawCentered fontCache labelColor plusRect "+"
+  drawCentered fontCache minusLabel minusRect "\8722"
+  drawCentered fontCache plusLabel  plusRect "+"
   let radText = "R:" <> showT radius
   drawCentered fontCache labelColor valueRect radText
   -- Close button

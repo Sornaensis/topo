@@ -104,6 +104,7 @@ module UI.Theme
   , colEscapeMenuBg
     -- * Editor controls
   , colEditorRadiusBtn
+  , colEditorRadiusBtnDisabled
     -- * Overlay navigation
   , colOverlayActive
   , colOverlayInactive
@@ -504,6 +505,10 @@ colEscapeMenuBg = V4 20 25 35 230
 -- | Editor radius +/- button background.
 colEditorRadiusBtn :: V4 Word8
 colEditorRadiusBtn = V4 70 80 100 255
+
+-- | Editor radius +/- button background when at a bound (disabled appearance).
+colEditorRadiusBtnDisabled :: V4 Word8
+colEditorRadiusBtnDisabled = V4 40 45 55 180
 
 -------------------------------------------------------------------------------
 -- Overlay navigation buttons
