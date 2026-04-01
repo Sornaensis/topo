@@ -31,6 +31,7 @@ import UI.Layout
   , editorToolbarRect
   )
 import UI.Widgets (Rect(..))
+import UI.Theme
 import UI.WidgetsDraw (drawCentered, rectToSDL)
 
 -- | Draw the editor toolbar when the editor is active.
@@ -38,7 +39,7 @@ drawEditorToolbar :: SDL.Renderer -> Maybe FontCache -> UiState -> Layout -> IO 
 drawEditorToolbar renderer fontCache ui layout = do
   let editor = uiEditor ui
   -- Background bar
-  SDL.rendererDrawColor renderer SDL.$= V4 30 35 45 230
+  SDL.rendererDrawColor renderer SDL.$= colToolbarBg
   SDL.fillRect renderer (Just (rectToSDL (editorToolbarRect layout)))
   -- Tool buttons
   let tools = [minBound .. maxBound] :: [EditorTool]
@@ -47,21 +48,20 @@ drawEditorToolbar renderer fontCache ui layout = do
         active = editorTool editor == tool
         (cr, cg, cb) = toolButtonColor tool
         bg = if active then V4 cr cg cb 255 else V4 (cr `div` 3) (cg `div` 3) (cb `div` 3) 200
-        fg = if active then V4 0 0 0 255 else V4 200 200 210 255
+        fg = if active then textEditorActive else textEditorInactive
     SDL.rendererDrawColor renderer SDL.$= bg
     SDL.fillRect renderer (Just (rectToSDL rect))
     drawCentered fontCache fg rect (toolShortLabel tool)
   -- Radius controls
-  let minusRect = editorRadiusMinusRect layout
-      valueRect = editorRadiusValueRect layout
-      plusRect  = editorRadiusPlusRect layout
-      btnColor  = V4 70 80 100 255
-      labelColor = V4 220 220 230 255
+  let minusRect  = editorRadiusMinusRect layout
+      valueRect  = editorRadiusValueRect layout
+      plusRect   = editorRadiusPlusRect layout
+      labelColor = textEditorLabel
       radius = brushRadius (editorBrush editor)
-  SDL.rendererDrawColor renderer SDL.$= btnColor
+  SDL.rendererDrawColor renderer SDL.$= colEditorRadiusBtn
   SDL.fillRect renderer (Just (rectToSDL minusRect))
   SDL.fillRect renderer (Just (rectToSDL plusRect))
-  SDL.rendererDrawColor renderer SDL.$= V4 45 55 70 255
+  SDL.rendererDrawColor renderer SDL.$= colCtrlValue
   SDL.fillRect renderer (Just (rectToSDL valueRect))
   drawCentered fontCache labelColor minusRect "\8722"
   drawCentered fontCache labelColor plusRect "+"
@@ -69,9 +69,9 @@ drawEditorToolbar renderer fontCache ui layout = do
   drawCentered fontCache labelColor valueRect radText
   -- Close button
   let closeRect = editorCloseRect layout
-  SDL.rendererDrawColor renderer SDL.$= V4 160 60 60 255
+  SDL.rendererDrawColor renderer SDL.$= colEditorCloseBg
   SDL.fillRect renderer (Just (rectToSDL closeRect))
-  drawCentered fontCache (V4 255 255 255 255) closeRect "X"
+  drawCentered fontCache textEditorClose closeRect "X"
 
 -- | Short button label per tool.
 toolShortLabel :: EditorTool -> Text
@@ -105,6 +105,6 @@ showT = Text.pack . show
 drawEditorReopenButton :: SDL.Renderer -> Maybe FontCache -> Layout -> IO ()
 drawEditorReopenButton renderer fontCache layout = do
   let rect = editorReopenRect layout
-  SDL.rendererDrawColor renderer SDL.$= V4 50 60 80 220
+  SDL.rendererDrawColor renderer SDL.$= colEditorReopenBg
   SDL.fillRect renderer (Just (rectToSDL rect))
-  drawCentered fontCache (V4 200 210 230 255) rect "Edit"
+  drawCentered fontCache textEditorReopen rect "Edit"

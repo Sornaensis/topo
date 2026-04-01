@@ -41,6 +41,7 @@ import Data.Time.Format (defaultTimeLocale, formatTime)
 import Data.Word (Word8)
 import Linear (V2(..), V4(..))
 import qualified SDL
+import UI.Theme
 import Seer.Draw.LeftPanel (drawChunkControl, drawLeftTabs, drawOverlayButtons, drawSeedControl, drawStatusBars, drawViewModeButtons, modeColor)
 import Seer.Draw.Overlay (drawHexContext, drawHoverHex, drawTooltip)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
@@ -80,39 +81,41 @@ viewColor mode terrainCount biomeCount =
 logLineColor :: LogLevel -> V4 Word8
 logLineColor level =
   case level of
-    LogDebug -> V4 70 70 90 255
-    LogInfo -> V4 60 120 170 255
-    LogWarn -> V4 180 120 40 255
-    LogError -> V4 180 60 60 255
+    LogDebug -> colLogDebugLineBg
+    LogInfo  -> colLogInfoLineBg
+    LogWarn  -> colLogWarnLineBg
+    LogError -> colLogErrorLineBg
 
 logTextColor :: LogLevel -> V4 Word8
 logTextColor level =
   case level of
-    LogDebug -> V4 200 200 220 255
-    LogInfo -> V4 210 230 245 255
-    LogWarn -> V4 250 230 170 255
-    LogError -> V4 250 200 200 255
+    LogDebug -> colLogDebugText
+    LogInfo  -> colLogInfoText
+    LogWarn  -> colLogWarnText
+    LogError -> colLogErrorText
 
 logLevelColor :: LogLevel -> Bool -> V4 Word8
 logLevelColor level isActive =
-  let boost = if isActive then 60 else 0
-      clamp x = fromIntegral (min 255 (x + boost))
+  let boost = if isActive then 60 else 0 :: Int
+      boostW8 :: Word8 -> Word8
+      boostW8 x = fromIntegral (min 255 (fromIntegral x + boost))
+      applyBoost (V4 r g b a) = V4 (boostW8 r) (boostW8 g) (boostW8 b) a
   in case level of
-       LogDebug -> V4 (clamp 80) (clamp 80) (clamp 110) 255
-       LogInfo -> V4 (clamp 60) (clamp 140) (clamp 200) 255
-       LogWarn -> V4 (clamp 200) (clamp 140) (clamp 50) 255
-       LogError -> V4 (clamp 200) (clamp 60) (clamp 60) 255
+       LogDebug -> applyBoost colLogDebugFilter
+       LogInfo  -> applyBoost colLogInfoFilter
+       LogWarn  -> applyBoost colLogWarnFilter
+       LogError -> applyBoost colLogErrorFilter
 
 logLineHeight :: Maybe FontCache -> IO Int
 logLineHeight Nothing = pure 12
 logLineHeight (Just cache) = do
-  V2 _ th <- textSize cache (V4 255 255 255 255) "Ag"
+  V2 _ th <- textSize cache textWhite "Ag"
   pure (max 12 (fromIntegral th + 4))
 
 logTextYOffset :: Maybe FontCache -> Int -> IO Int
 logTextYOffset Nothing _ = pure 1
 logTextYOffset (Just cache) lineHeight = do
-  V2 _ th <- textSize cache (V4 255 255 255 255) "Ag"
+  V2 _ th <- textSize cache textWhite "Ag"
   pure (max 1 ((lineHeight - fromIntegral th) `div` 2))
 
 drawLogFilters :: SDL.Renderer -> Maybe FontCache -> LogLevel -> (Rect, Rect, Rect, Rect) -> IO ()
@@ -126,7 +129,7 @@ drawLogFilter :: SDL.Renderer -> Maybe FontCache -> LogLevel -> LogLevel -> Rect
 drawLogFilter renderer fontCache level active rect label = do
   SDL.rendererDrawColor renderer SDL.$= logLevelColor level (level == active)
   SDL.fillRect renderer (Just (rectToSDL rect))
-  drawCentered fontCache (V4 230 230 230 255) rect label
+  drawCentered fontCache textLogFilterLabel rect label
 
 drawLogLines :: SDL.Renderer -> Maybe FontCache -> LogSnapshot -> Rect -> IO ()
 drawLogLines renderer fontCache logSnap (Rect (V2 x y, V2 w h)) = do
@@ -173,9 +176,9 @@ drawLogScrollbar renderer fontCache logSnap (Rect (V2 x y, V2 w h)) = do
         if maxOffset == 0
           then barY
           else barY + (barH - handleH) * offset `div` maxOffset
-  SDL.rendererDrawColor renderer SDL.$= V4 25 25 30 255
+  SDL.rendererDrawColor renderer SDL.$= colScrollbarTrack
   SDL.fillRect renderer (Just (rectToSDL (Rect (V2 barX barY, V2 barW barH))))
-  SDL.rendererDrawColor renderer SDL.$= V4 160 160 170 255
+  SDL.rendererDrawColor renderer SDL.$= colScrollbarHandle
   SDL.fillRect renderer (Just (rectToSDL (Rect (V2 barX handleY, V2 barW handleH))))
 
 drawEscapeMenu :: SDL.Renderer -> Maybe FontCache -> UiState -> Layout -> IO ()
@@ -186,7 +189,7 @@ drawEscapeMenu renderer fontCache ui layout =
           saveRect = menuSaveRect layout
           loadRect = menuLoadRect layout
           exitRect = menuExitRect layout
-      SDL.rendererDrawColor renderer SDL.$= V4 20 25 35 230
+      SDL.rendererDrawColor renderer SDL.$= colEscapeMenuBg
       SDL.fillRect renderer (Just (rectToSDL panel))
       drawDialogButton renderer fontCache saveRect "Save" True
       drawDialogButton renderer fontCache loadRect "Load" True
@@ -278,9 +281,9 @@ drawTopBar renderer fontCache ui layout = do
   let bar = topBarRect layout
       Rect (V2 bx by, V2 bw bh) = bar
       textRect = Rect (V2 (bx + 16) by, V2 (bw - 32) bh)
-  SDL.rendererDrawColor renderer SDL.$= V4 25 30 42 230
+  SDL.rendererDrawColor renderer SDL.$= colTopBar
   SDL.fillRect renderer (Just (rectToSDL bar))
-  drawLeft fontCache (V4 200 210 225 255) textRect (uiWorldName ui)
+  drawLeft fontCache textTopBar textRect (uiWorldName ui)
 
 drawBarFill :: SDL.Renderer -> Float -> Rect -> V4 Word8 -> IO ()
 drawBarFill renderer value (Rect (V2 x y, V2 w h)) color = do
@@ -302,7 +305,7 @@ drawUiLabels renderer fontCache ui layout = do
       seedRandom = configSeedRandomRect layout
       viewRects = leftViewRects layout
       logHeader = logHeaderRect layout
-      labelColor = V4 235 235 235 255
+      labelColor = textPrimary
   let configLabel = if uiShowConfig ui then ">>" else "<<"
   drawCentered fontCache labelColor configToggle configLabel
   let leftLabel = if uiShowLeftPanel ui then "<<" else ">>"
@@ -323,7 +326,16 @@ drawUiLabels renderer fontCache ui layout = do
           drawCentered fontCache labelColor seedValue seedText
           drawCentered fontCache labelColor buttonRect "Generate"
         LeftView -> do
-          let viewLabels = ["Elev", "Biome", "Climate", "Weathr", "Moist", "Precip", "Veg", "TForm", "Plate", "Bound", "Hard", "Crust", "Age", "PHght", "PVel"]
-          mapM_ (\(rect, label) -> drawCentered fontCache labelColor rect label) (zip viewRects viewLabels)
+          let viewLabels = ["Elevation", "Biome", "Climate", "Weather", "Moisture", "Precip", "Vegetation", "Terr. Form", "Plate ID", "Boundary", "Hardness", "Crust", "Age", "Plt. Height", "Plt. Vel."]
+              scrollY = uiLeftViewScroll ui
+              shiftY (Rect (V2 rx ry, V2 rw rh)) = Rect (V2 rx (ry - scrollY), V2 rw rh)
+              scrolledViewRects = map shiftY viewRects
+              Rect (V2 lpx _, V2 lpw _) = leftPanelRect layout
+              Rect (V2 _ lpy, V2 _ lpH) = leftPanelRect layout
+              ctop = leftControlsTop layout
+              clipR = Rect (V2 lpx ctop, V2 lpw (lpy + lpH - ctop))
+          SDL.rendererClipRect renderer SDL.$= Just (rectToSDL clipR)
+          mapM_ (\(rect, label) -> drawCentered fontCache labelColor rect label) (zip scrolledViewRects viewLabels)
+          SDL.rendererClipRect renderer SDL.$= Nothing
   drawConfigLabels renderer fontCache ui layout
 

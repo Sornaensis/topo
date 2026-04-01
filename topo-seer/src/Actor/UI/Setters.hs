@@ -11,6 +11,7 @@ module Actor.UI.Setters
   , setUiChunkSize
   , setUiShowConfig
   , setUiConfigScroll
+  , setUiLeftViewScroll
   , setUiShowLeftPanel
   , setUiSliderValue
   , setUiWaterLevel
@@ -311,6 +312,7 @@ setUiViewMode = sendUnary SetViewMode
 setUiChunkSize = sendUnary SetChunkSize
 setUiShowConfig = sendUnary SetShowConfig
 setUiConfigScroll = sendUnary SetConfigScroll
+setUiLeftViewScroll = sendUnary SetLeftViewScroll
 setUiShowLeftPanel = sendUnary SetShowLeftPanel
 setUiWaterLevel = sendSlider SliderWaterLevel
 setUiRenderWaterLevel = sendUnary SetRenderWaterLevel

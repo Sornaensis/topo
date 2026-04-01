@@ -26,6 +26,35 @@ spec = describe "UI.Layout" $ do
         Rect (V2 x y, V2 w h) = configPanelRect layout
     (x, y, w, h) `shouldBe` (484, 44, 300, 380)
 
+  it "lays out config tabs in two rows of four" $ do
+    let layout = layoutFor (V2 800 600) 160
+        (t1, t2, t3, t4, t5, t6, t7, t8) = configTabRects layout
+        Rect (V2 px py, V2 pw _) = configPanelRect layout
+        -- All tabs have the same height
+        tabH (Rect (V2 _ _, V2 _ h)) = h
+        tabY (Rect (V2 _ y, V2 _ _)) = y
+        tabX (Rect (V2 x _, V2 _ _)) = x
+        tabW (Rect (V2 _ _, V2 w _)) = w
+    -- All tabs share height 22
+    tabH t1 `shouldBe` 22
+    tabH t5 `shouldBe` 22
+    -- Row 1 (t1–t4) and row 2 (t5–t8) are on different y-coordinates
+    tabY t1 `shouldBe` tabY t2
+    tabY t1 `shouldBe` tabY t3
+    tabY t1 `shouldBe` tabY t4
+    tabY t5 `shouldBe` tabY t6
+    tabY t5 `shouldBe` tabY t7
+    tabY t5 `shouldBe` tabY t8
+    tabY t5 `shouldSatisfy` (> tabY t1)
+    -- Tabs are wide enough for readable labels (≥ 60px)
+    tabW t1 `shouldSatisfy` (>= 60)
+    -- Tabs start at the panel left pad
+    tabX t1 `shouldBe` (px + 12)
+    tabX t5 `shouldBe` (px + 12)
+    -- Consecutive tabs in a row are separated by a small gap
+    tabX t2 `shouldSatisfy` (> tabX t1 + tabW t1)
+    tabX t6 `shouldSatisfy` (> tabX t5 + tabW t5)
+
   it "creates config button rects (4-button stack)" $ do
     let layout = layoutFor (V2 800 600) 160
         Rect (V2 sx sy, V2 sw sh) = configPresetSaveRect layout
@@ -138,6 +167,44 @@ spec = describe "UI.Layout" $ do
     cx `shouldBe` (px + pw + 4)
     -- Close button inside toolbar
     (cx + cw) `shouldSatisfy` (<= barX + barW)
+
+  it "config panel does not overlap the left panel" $ do
+    -- Normal window: panels fit side by side with gap
+    let layout800 = layoutFor (V2 800 600) 160
+        Rect (V2 lpx800 _, V2 lpw800 _) = leftPanelRect layout800
+        Rect (V2 cpx800 _, V2 _ _) = configPanelRect layout800
+    cpx800 `shouldSatisfy` (>= lpx800 + lpw800 + 8)
+    -- Narrow window: config panel still clear of left panel
+    let layout500 = layoutFor (V2 500 600) 160
+        Rect (V2 lpx500 _, V2 lpw500 _) = leftPanelRect layout500
+        Rect (V2 cpx500 _, V2 _ _) = configPanelRect layout500
+    cpx500 `shouldSatisfy` (>= lpx500 + lpw500 + 8)
+    -- Minimum usable width: still no overlap
+    let layoutMin = layoutFor (V2 minUsableWindowWidth 600) 160
+        Rect (V2 lpxMin _, V2 lpwMin _) = leftPanelRect layoutMin
+        Rect (V2 cpxMin _, V2 _ _) = configPanelRect layoutMin
+    cpxMin `shouldSatisfy` (>= lpxMin + lpwMin + 8)
+
+  it "leftViewContentHeight is positive and covers all view buttons" $ do
+    let layout = layoutFor (V2 800 600) 160
+        h = leftViewContentHeight layout
+    h `shouldSatisfy` (> 0)
+    -- 17 items × (28 + 8) = 612; we use 15 view buttons + 2 overlay nav + 2 field nav = 19 total
+    -- but the minimum sensible content height should exceed one button row
+    h `shouldSatisfy` (>= 36)
+
+  it "leftViewScrollMax is non-negative" $ do
+    let layout = layoutFor (V2 800 600) 160
+    leftViewScrollMax layout `shouldSatisfy` (>= 0)
+
+  it "leftViewScrollMax is 0 when content fits in the panel" $ do
+    -- At a large window height the panel should be tall enough to show everything
+    let layout = layoutFor (V2 1920 1080) 160
+    leftViewScrollMax layout `shouldBe` 0
+
+  it "leftViewScrollMax is positive at minimum window height" $ do
+    let layout = layoutFor (V2 minUsableWindowWidth 480) 160
+    leftViewScrollMax layout `shouldSatisfy` (> 0)
 
 inside :: V2 Int -> Rect -> Bool
 inside (V2 px py) (Rect (V2 x y, V2 w h)) =

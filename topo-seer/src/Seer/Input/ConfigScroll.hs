@@ -6,7 +6,7 @@ module Seer.Input.ConfigScroll
   ) where
 
 import Actor.Log (LogSnapshot(..))
-import Actor.UI (ConfigTab(..), UiState(..), configRowCount)
+import Actor.UI (ConfigTab(..), LeftTab(..), UiState(..), configRowCount)
 import Linear (V2(..))
 import Seer.Draw (seedMaxDigits)
 import UI.Layout
@@ -33,7 +33,8 @@ defaultScrollSettings = ScrollSettings
 
 
 
--- | Compute scroll updates for config panel and log view.
+-- | Compute scroll updates for config panel, log view, and left view panel.
+-- Returns @(configScroll, logScroll, leftViewScroll)@.
 computeScrollUpdates
   :: ScrollSettings
   -> UiState
@@ -42,7 +43,7 @@ computeScrollUpdates
   -> V2 Int
   -> V2 Int
   -> Int
-  -> (Maybe Int, Maybe Int)
+  -> (Maybe Int, Maybe Int, Maybe Int)
 computeScrollUpdates settings uiSnap logSnap lineHeight (V2 winW winH) (V2 mx my) dy =
   let logHeight = if lsCollapsed logSnap then 24 else 160
       seedWidth = max (ssSeedBaseWidth settings) (seedMaxDigits * ssSeedDigitWidth settings)
@@ -66,4 +67,14 @@ computeScrollUpdates settings uiSnap logSnap lineHeight (V2 winW winH) (V2 mx my
       inConfigScroll = uiShowConfig uiSnap && containsPoint scrollArea (V2 mx my)
       configUpdate = if inConfigScroll then Just newConfigScroll else Nothing
       logUpdate = if inLog then Just newScroll else Nothing
-  in (configUpdate, logUpdate)
+      -- Left view panel scroll
+      leftPanelR = leftPanelRect layout
+      leftViewMax = leftViewScrollMax layout
+      leftViewButtonH = 28
+      leftViewGap = 8
+      leftViewDelta = if dy > 0 then -(leftViewButtonH + leftViewGap) else leftViewButtonH + leftViewGap
+      newLeftViewScroll = max 0 (min leftViewMax (uiLeftViewScroll uiSnap + leftViewDelta))
+      inLeftView = uiShowLeftPanel uiSnap && uiLeftTab uiSnap == LeftView
+                   && containsPoint leftPanelR (V2 mx my)
+      leftViewUpdate = if inLeftView && leftViewMax > 0 then Just newLeftViewScroll else Nothing
+  in (configUpdate, logUpdate, leftViewUpdate)

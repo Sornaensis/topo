@@ -81,6 +81,7 @@ import Topo.Units
   )
 import UI.Font (FontCache, textSize)
 import UI.HexPick (axialToScreen, renderHexRadiusPx)
+import UI.Theme
 import UI.WidgetsDraw (drawTextLine)
 import qualified Data.Vector.Unboxed as U
 
@@ -104,7 +105,7 @@ drawHoverHex renderer uiSnap supersample =
       SDL.rendererDrawBlendMode renderer SDL.$= SDL.BlendAlphaBlend
       SDL.rendererDrawColor renderer SDL.$= V4 0 0 0 0
       SDL.clear renderer
-      SDL.rendererDrawColor renderer SDL.$= V4 220 220 220 160
+      SDL.rendererDrawColor renderer SDL.$= colHoverHex
       drawHexSpansSupersampled renderer spans supersample (minX, minY)
       SDL.rendererRenderTarget renderer SDL.$= Nothing
       let rect = transformRect (ox, oy) z (RectInt (V2 worldX worldY) (V2 (maxX - minX + 1) (maxY - minY + 1)))
@@ -134,29 +135,28 @@ drawHexContext renderer fontCache ui terrainSnap (V2 winW winH) =
             px = clamp 8 (winW - panelW - 8) (sx + 12)
             py = clamp 8 (winH - panelH - 8) (sy + 12)
             panelRect = SDL.Rectangle (SDL.P (V2 (fromIntegral px) (fromIntegral py))) (V2 (fromIntegral panelW) (fromIntegral panelH))
-        SDL.rendererDrawColor renderer SDL.$= V4 20 20 25 235
+        SDL.rendererDrawColor renderer SDL.$= colHexContextBg
         SDL.fillRect renderer (Just panelRect)
         case fontCache of
           Nothing -> pure ()
           Just _ ->
             sequence_
-              [ drawTextLine fontCache (V2 (px + hPad) (py + vPad + idx * lineHeight)) (V4 230 230 235 255) lineText
+              [ drawTextLine fontCache (V2 (px + hPad) (py + vPad + idx * lineHeight)) textHexContext lineText
               | (idx, lineText) <- zip [0 ..] linesToDraw
               ]
       Nothing -> pure ()
   where
     clamp lo hi value = max lo (min hi value)
     lineWidth fc lineText = do
-      V2 width _ <- textSize fc (V4 230 230 235 255) lineText
+      V2 width _ <- textSize fc textHexContext lineText
       pure width
 
 drawTooltip :: SDL.Renderer -> Maybe FontCache -> V2 Int -> V2 Int -> Text -> IO ()
 drawTooltip renderer fontCache (V2 winW winH) (V2 mx my) tipText = do
   let tipPad = 6
       tipOffsetY = 20
-      tipColor = V4 220 220 230 255 :: V4 Word8
   V2 tw th <- case fontCache of
-    Just fc -> textSize fc tipColor tipText
+    Just fc -> textSize fc textTooltip tipText
     Nothing -> pure (V2 (Text.length tipText * 8) 16)
   let boxW = tw + tipPad * 2
       boxH = th + tipPad * 2
@@ -166,11 +166,11 @@ drawTooltip renderer fontCache (V2 winW winH) (V2 mx my) tipText = do
       y = max 0 (min (winH - boxH) rawY)
       bgRect = SDL.Rectangle (SDL.P (V2 (fromIntegral x) (fromIntegral y)))
                  (V2 (fromIntegral boxW) (fromIntegral boxH))
-  SDL.rendererDrawColor renderer SDL.$= V4 20 20 30 240
+  SDL.rendererDrawColor renderer SDL.$= colTooltipBg
   SDL.fillRect renderer (Just bgRect)
-  SDL.rendererDrawColor renderer SDL.$= V4 80 80 100 255
+  SDL.rendererDrawColor renderer SDL.$= colTooltipBorder
   SDL.drawRect renderer (Just bgRect)
-  drawTextLine fontCache (V2 (x + tipPad) (y + tipPad)) tipColor tipText
+  drawTextLine fontCache (V2 (x + tipPad) (y + tipPad)) textTooltip tipText
 
 data RectInt = RectInt !(V2 Int) !(V2 Int)
 

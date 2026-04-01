@@ -44,6 +44,7 @@ import UI.Layout
   , dataBrowserItemRect
   )
 import UI.Widgets (Rect(..))
+import UI.Theme
 import UI.WidgetsDraw (rectToSDL)
 
 -- | Normalize a numeric parameter value into [0,1] using the spec's range bounds.
@@ -67,7 +68,7 @@ drawConfigTabs renderer ui (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBi
   drawTab tabData (uiConfigTab ui == ConfigData)
   where
     drawTab rect isActive = do
-      let fill = if isActive then V4 70 90 120 255 else V4 50 60 75 255
+      let fill = if isActive then colTabActive else colTabInactive
       SDL.rendererDrawColor renderer SDL.$= fill
       SDL.fillRect renderer (Just (rectToSDL rect))
 
@@ -107,12 +108,12 @@ drawConfigPanel renderer ui dataSnap layout =
             (sliderStyleFillColor sliderStyle)
   in if uiShowConfig ui
     then do
-      SDL.rendererDrawColor renderer SDL.$= V4 35 45 60 230
+      SDL.rendererDrawColor renderer SDL.$= colConfigPanel
       SDL.fillRect renderer (Just (rectToSDL rect))
       drawConfigTabs renderer ui tabs
-      SDL.rendererDrawColor renderer SDL.$= V4 30 38 52 230
+      SDL.rendererDrawColor renderer SDL.$= colConfigScrollArea
       SDL.fillRect renderer (Just (rectToSDL scrollAreaRect))
-      SDL.rendererDrawColor renderer SDL.$= V4 60 70 90 255
+      SDL.rendererDrawColor renderer SDL.$= colConfigBorder
       SDL.drawRect renderer (Just (rectToSDL scrollAreaRect))
       SDL.rendererClipRect renderer SDL.$= Just (rectToSDL scrollAreaRect)
       case uiConfigTab ui of
@@ -124,8 +125,8 @@ drawConfigPanel renderer ui dataSnap layout =
           forM_ (zip [0 ..] stages) $ \(idx, sid) -> do
             let isDisabled = Set.member sid disabled
                 Rect (V2 checkX checkY, V2 _ _ ) = scrollRect (pipelineCheckboxRect idx layout)
-                checkColor = if isDisabled then V4 60 60 70 200 else V4 70 150 90 255
-                borderColor = if isDisabled then V4 80 80 90 200 else V4 100 180 120 255
+                checkColor = if isDisabled then colPipelineCheckDisabled else colPipelineCheckEnabled
+                borderColor = if isDisabled then colPipelineCheckDisabledBorder else colPipelineCheckEnabledBorder
             SDL.rendererDrawColor renderer SDL.$= checkColor
             SDL.fillRect renderer (Just (rectToSDL (Rect (V2 checkX checkY, V2 checkboxSize checkboxSize))))
             SDL.rendererDrawColor renderer SDL.$= borderColor
@@ -135,22 +136,22 @@ drawConfigPanel renderer ui dataSnap layout =
             let rowIndex = pluginRowIndex ui idx
                 Rect (V2 checkX checkY, V2 _ _) = scrollRect (pipelineCheckboxRect rowIndex layout)
                 isPluginDisabled = Set.member pName (uiDisabledPlugins ui)
-                pluginColor = if isPluginDisabled then V4 60 60 70 200 else V4 100 90 160 255
-                pluginBorder = if isPluginDisabled then V4 80 80 90 200 else V4 130 120 190 255
+                pluginColor = if isPluginDisabled then colPipelineCheckDisabled else colPipelinePlugin
+                pluginBorder = if isPluginDisabled then colPipelineCheckDisabledBorder else colPipelinePluginBorder
                 btnSize = 14
                 Rect (V2 upX btnY, V2 _ _) = scrollRect (pipelineMoveUpRect rowIndex layout)
                 Rect (V2 downX _downY, V2 _ _) = scrollRect (pipelineMoveDownRect rowIndex layout)
-                arrowColor = V4 150 150 170 255
-                arrowBorder = V4 100 100 120 255
+                arrowColor = colPipelineArrow
+                arrowBorder = colPipelineArrowBorder
                 -- Expand toggle
                 isExpanded = Map.findWithDefault False pName (uiPluginExpanded ui)
                 Rect (V2 expX expY, V2 expW expH) = scrollRect (pipelineExpandRect rowIndex layout)
-                expColor = if isExpanded then V4 100 160 100 255 else V4 100 100 120 255
+                expColor = if isExpanded then colPipelineExpandActive else colPipelineExpandInactive
             SDL.rendererDrawColor renderer SDL.$= pluginColor
             SDL.fillRect renderer (Just (rectToSDL (Rect (V2 checkX checkY, V2 checkboxSize checkboxSize))))
             SDL.rendererDrawColor renderer SDL.$= pluginBorder
             SDL.drawRect renderer (Just (rectToSDL (Rect (V2 checkX checkY, V2 checkboxSize checkboxSize))))
-            SDL.rendererDrawColor renderer SDL.$= V4 50 50 65 255
+            SDL.rendererDrawColor renderer SDL.$= colPipelineArrowBg
             SDL.fillRect renderer (Just (rectToSDL (Rect (V2 upX btnY, V2 btnSize btnSize))))
             SDL.rendererDrawColor renderer SDL.$= arrowBorder
             SDL.drawRect renderer (Just (rectToSDL (Rect (V2 upX btnY, V2 btnSize btnSize))))
@@ -163,7 +164,7 @@ drawConfigPanel renderer ui dataSnap layout =
               SDL.drawLine renderer
                 (SDL.P (V2 (fromIntegral (upMidX - halfW)) (fromIntegral row)))
                 (SDL.P (V2 (fromIntegral (upMidX + halfW)) (fromIntegral row)))
-            SDL.rendererDrawColor renderer SDL.$= V4 50 50 65 255
+            SDL.rendererDrawColor renderer SDL.$= colPipelineArrowBg
             SDL.fillRect renderer (Just (rectToSDL (Rect (V2 downX btnY, V2 btnSize btnSize))))
             SDL.rendererDrawColor renderer SDL.$= arrowBorder
             SDL.drawRect renderer (Just (rectToSDL (Rect (V2 downX btnY, V2 btnSize btnSize))))
@@ -179,7 +180,7 @@ drawConfigPanel renderer ui dataSnap layout =
             -- Expand toggle: small filled square
             SDL.rendererDrawColor renderer SDL.$= expColor
             SDL.fillRect renderer (Just (rectToSDL (Rect (V2 expX expY, V2 expW expH))))
-            SDL.rendererDrawColor renderer SDL.$= V4 140 140 160 255
+            SDL.rendererDrawColor renderer SDL.$= colPipelineExpandBorder
             SDL.drawRect renderer (Just (rectToSDL (Rect (V2 expX expY, V2 expW expH))))
             -- Draw parameter sub-rows when expanded
             when isExpanded $ do
@@ -193,8 +194,8 @@ drawConfigPanel renderer ui dataSnap layout =
                         isChecked = case Map.lookup (rpsName spec) params of
                                       Just (Bool b) -> b
                                       _             -> False
-                        boolColor = if isChecked then V4 70 150 90 255 else V4 60 60 70 200
-                        boolBorder = if isChecked then V4 100 180 120 255 else V4 80 80 90 200
+                        boolColor = if isChecked then colPipelineCheckEnabled else colPipelineCheckDisabled
+                        boolBorder = if isChecked then colPipelineCheckEnabledBorder else colPipelineCheckDisabledBorder
                     SDL.rendererDrawColor renderer SDL.$= boolColor
                     SDL.fillRect renderer (Just (rectToSDL (Rect (V2 pcX pcY, V2 pcW pcH))))
                     SDL.rendererDrawColor renderer SDL.$= boolBorder
@@ -204,16 +205,16 @@ drawConfigPanel renderer ui dataSnap layout =
                         paramVal = case Map.lookup (rpsName spec) params of
                                      Just (Number n) -> normalizeParam spec (realToFrac n)
                                      _               -> 0.5
-                    SDL.rendererDrawColor renderer SDL.$= V4 45 55 70 255
+                    SDL.rendererDrawColor renderer SDL.$= colSliderTrack
                     SDL.fillRect renderer (Just (rectToSDL barRect))
-                    drawBarFill renderer paramVal barRect (V4 120 100 180 255)
+                    drawBarFill renderer paramVal barRect colPipelineParamBarFill
           let simOffset = builtinStageRowCount + pluginRowsWithParams ui
               simWorldReady = dsTerrainChunks dataSnap > 0
               tickBtnRect = scrollRect (pipelineTickButtonRect simOffset layout)
-              tickBtnColor = if simWorldReady then V4 80 120 160 255 else V4 55 65 80 170
+              tickBtnColor = if simWorldReady then colPipelineTickEnabled else colPipelineTickDisabled
               Rect (V2 autoTickCheckX autoTickCheckY, V2 _ _) = scrollRect (pipelineCheckboxRect (simOffset + 1) layout)
-              autoTickColor = if uiSimAutoTick ui then V4 70 150 90 255 else V4 60 60 70 200
-              autoTickBorder = if uiSimAutoTick ui then V4 100 180 120 255 else V4 80 80 90 200
+              autoTickColor = if uiSimAutoTick ui then colPipelineCheckEnabled else colPipelineCheckDisabled
+              autoTickBorder = if uiSimAutoTick ui then colPipelineCheckEnabledBorder else colPipelineCheckDisabledBorder
               tickRateBarRect = scrollRect (pipelineTickRateBarRect (simOffset + 2) layout)
           SDL.rendererDrawColor renderer SDL.$= tickBtnColor
           SDL.fillRect renderer (Just (rectToSDL tickBtnRect))
@@ -221,9 +222,9 @@ drawConfigPanel renderer ui dataSnap layout =
           SDL.fillRect renderer (Just (rectToSDL (Rect (V2 autoTickCheckX autoTickCheckY, V2 checkboxSize checkboxSize))))
           SDL.rendererDrawColor renderer SDL.$= autoTickBorder
           SDL.drawRect renderer (Just (rectToSDL (Rect (V2 autoTickCheckX autoTickCheckY, V2 checkboxSize checkboxSize))))
-          SDL.rendererDrawColor renderer SDL.$= V4 45 55 70 255
+          SDL.rendererDrawColor renderer SDL.$= colSliderTrack
           SDL.fillRect renderer (Just (rectToSDL tickRateBarRect))
-          drawBarFill renderer (uiSimTickRate ui) tickRateBarRect (V4 100 130 180 255)
+          drawBarFill renderer (uiSimTickRate ui) tickRateBarRect colPipelineTickRateBarFill
         ConfigData -> do
           -- Data browser: list plugins with data resources, selected resource's records
           let dbs = uiDataBrowser ui
@@ -235,8 +236,8 @@ drawConfigPanel renderer ui dataSnap layout =
           forM_ (zip [0..] pluginNames) $ \(idx, pName) -> do
             let Rect (V2 rx ry, V2 rw rh) = scrollRect (dataBrowserItemRect idx layout)
                 isSelected = selectedPlugin == Just pName
-                fillColor = if isSelected then V4 70 90 120 255 else V4 50 55 68 220
-                borderColor = if isSelected then V4 100 130 180 255 else V4 70 75 90 200
+                fillColor = if isSelected then colDataListSelActive else colDataListSelInactive
+                borderColor = if isSelected then colDataListSelActiveBorder else colDataListSelInactiveBorder
             SDL.rendererDrawColor renderer SDL.$= fillColor
             SDL.fillRect renderer (Just (rectToSDL (Rect (V2 rx ry, V2 rw rh))))
             SDL.rendererDrawColor renderer SDL.$= borderColor
@@ -251,8 +252,8 @@ drawConfigPanel renderer ui dataSnap layout =
                 let rowIdx = resourceOffset + rIdx
                     Rect (V2 rx ry, V2 rw rh) = scrollRect (dataBrowserItemRect rowIdx layout)
                     isSelected = selectedResource == Just (drsName schema)
-                    fillColor = if isSelected then V4 80 100 130 255 else V4 45 50 62 220
-                    borderColor = if isSelected then V4 110 140 190 255 else V4 65 70 85 200
+                    fillColor = if isSelected then colDataResourceActive else colDataResourceInactive
+                    borderColor = if isSelected then colDataResourceActiveBorder else colDataResourceInactiveBorder
                 SDL.rendererDrawColor renderer SDL.$= fillColor
                 SDL.fillRect renderer (Just (rectToSDL (Rect (V2 rx ry, V2 rw rh))))
                 SDL.rendererDrawColor renderer SDL.$= borderColor
@@ -263,44 +264,44 @@ drawConfigPanel renderer ui dataSnap layout =
               forM_ (zip [0..] records) $ \(recIdx, _record) -> do
                 let rowIdx = recordOffset + recIdx
                     Rect (V2 rx ry, V2 rw rh) = scrollRect (dataBrowserItemRect rowIdx layout)
-                SDL.rendererDrawColor renderer SDL.$= V4 40 45 58 200
+                SDL.rendererDrawColor renderer SDL.$= colDataRecordBg
                 SDL.fillRect renderer (Just (rectToSDL (Rect (V2 rx ry, V2 rw rh))))
-                SDL.rendererDrawColor renderer SDL.$= V4 60 65 78 200
+                SDL.rendererDrawColor renderer SDL.$= colDataRecordBorder
                 SDL.drawRect renderer (Just (rectToSDL (Rect (V2 rx ry, V2 rw rh))))
               -- Loading indicator
               when (dbsLoading dbs) $ do
                 let loadRow = recordOffset + length records
                     Rect (V2 lx ly, V2 _lw lh) = scrollRect (dataBrowserItemRect loadRow layout)
-                SDL.rendererDrawColor renderer SDL.$= V4 100 100 130 180
+                SDL.rendererDrawColor renderer SDL.$= colDataLoadingIndicator
                 SDL.fillRect renderer (Just (rectToSDL (Rect (V2 lx ly, V2 40 lh))))
         _ -> forM_ activeSliderDefs drawSliderDef
       SDL.rendererClipRect renderer SDL.$= Nothing
       let Rect (V2 bx by, V2 bw bh) = scrollBarRect
           handleH = if maxOffset == 0 then bh else max 12 (bh * scrollH `div` max 1 contentHeight)
           handleY = if maxOffset == 0 then by else by + (bh - handleH) * scrollY `div` maxOffset
-      SDL.rendererDrawColor renderer SDL.$= V4 25 25 30 255
+      SDL.rendererDrawColor renderer SDL.$= colScrollbarTrack
       SDL.fillRect renderer (Just (rectToSDL scrollBarRect))
-      SDL.rendererDrawColor renderer SDL.$= V4 160 160 170 255
+      SDL.rendererDrawColor renderer SDL.$= colScrollbarHandle
       SDL.fillRect renderer (Just (rectToSDL (Rect (V2 bx handleY, V2 bw handleH))))
-      SDL.rendererDrawColor renderer SDL.$= V4 60 120 80 255
+      SDL.rendererDrawColor renderer SDL.$= colConfigPresetSave
       SDL.fillRect renderer (Just (rectToSDL presetSaveRect))
-      SDL.rendererDrawColor renderer SDL.$= V4 80 110 160 255
+      SDL.rendererDrawColor renderer SDL.$= colConfigPresetLoad
       SDL.fillRect renderer (Just (rectToSDL presetLoadRect))
-      SDL.rendererDrawColor renderer SDL.$= V4 120 80 80 255
+      SDL.rendererDrawColor renderer SDL.$= colConfigReset
       SDL.fillRect renderer (Just (rectToSDL resetRect))
       let revertColor = case uiWorldConfig ui of
-            Just _ -> V4 140 100 50 255
-            Nothing -> V4 70 60 45 120
+            Just _ -> colConfigRevertActive
+            Nothing -> colConfigRevertDimmed
       SDL.rendererDrawColor renderer SDL.$= revertColor
       SDL.fillRect renderer (Just (rectToSDL revertRect))
     else pure ()
 
 drawConfigSlider :: SDL.Renderer -> Float -> Rect -> Rect -> Rect -> V4 Word8 -> IO ()
 drawConfigSlider renderer value minusRect barRect plusRect fillColor = do
-  SDL.rendererDrawColor renderer SDL.$= V4 90 90 110 255
+  SDL.rendererDrawColor renderer SDL.$= colSliderBtn
   SDL.fillRect renderer (Just (rectToSDL minusRect))
   SDL.fillRect renderer (Just (rectToSDL plusRect))
-  SDL.rendererDrawColor renderer SDL.$= V4 45 55 70 255
+  SDL.rendererDrawColor renderer SDL.$= colSliderTrack
   SDL.fillRect renderer (Just (rectToSDL barRect))
   drawBarFill renderer value barRect fillColor
 

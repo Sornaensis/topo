@@ -49,6 +49,7 @@ import Seer.Render.Terrain
   , drawTerrain
   )
 import Seer.Render.Ui (drawUiOverlay)
+import UI.Theme
 import Seer.Screenshot (serviceScreenshotRequest)
 import Seer.Timing (nsToMs, timedMs)
 import Seer.Editor.Preview (drawBrushPreview)
@@ -191,7 +192,7 @@ renderFrame context = do
       SDL.rendererDrawColor renderer SDL.$= leftColor
       SDL.fillRect renderer (Just (rectToSDL leftToggle))
       when (uiShowLeftPanel (rsUi snapshot)) $ do
-        SDL.rendererDrawColor renderer SDL.$= V4 35 45 60 230
+        SDL.rendererDrawColor renderer SDL.$= colConfigPanel
         SDL.fillRect renderer (Just (rectToSDL leftPanel))
         drawLeftTabs renderer (rsUi snapshot) (leftTabTopo, leftTabView)
         case uiLeftTab (rsUi snapshot) of
@@ -202,8 +203,20 @@ renderFrame context = do
             SDL.fillRect renderer (Just (rectToSDL buttonRect))
             drawStatusBars renderer fontCache (rsUi snapshot) dataSnap layout
           LeftView -> do
-            drawViewModeButtons renderer mode viewRects
-            drawOverlayButtons renderer fontCache (rsUi snapshot) (overlayViewRects layout)
+            let scrollY = uiLeftViewScroll (rsUi snapshot)
+                Rect (V2 lpx _, V2 lpw _) = leftPanel
+                Rect (V2 _ lpy, V2 _ lpH) = leftPanel
+                ctop = leftControlsTop layout
+                clipR = SDL.Rectangle (SDL.P (V2 (fromIntegral lpx) (fromIntegral ctop)))
+                                      (V2 (fromIntegral lpw) (fromIntegral (lpy + lpH - ctop)))
+                shiftY dy (Rect (V2 rx ry, V2 rw rh)) = Rect (V2 rx (ry - dy), V2 rw rh)
+                scrolledViewRects = map (shiftY scrollY) viewRects
+                (op, on, fp, fn) = overlayViewRects layout
+                scrolledOR = (shiftY scrollY op, shiftY scrollY on, shiftY scrollY fp, shiftY scrollY fn)
+            SDL.rendererClipRect renderer SDL.$= Just clipR
+            drawViewModeButtons renderer mode scrolledViewRects
+            drawOverlayButtons renderer fontCache (rsUi snapshot) scrolledOR
+            SDL.rendererClipRect renderer SDL.$= Nothing
       drawConfigPanel renderer (rsUi snapshot) dataSnap layout
       -- Editor toolbar (drawn above config panel, on top of chrome)
       if editorActive (uiEditor (rsUi snapshot))

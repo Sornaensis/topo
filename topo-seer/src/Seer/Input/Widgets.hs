@@ -51,6 +51,7 @@ import Actor.UI
   , setUiOverlayNames
   , setUiDisabledPlugins
   )
+import Control.Applicative ((<|>))
 import Control.Monad (when)
 import Data.IORef (writeIORef)
 import Data.Int (Int32)
@@ -93,7 +94,7 @@ import Topo.Plugin.RPC.DataService (DataQuery(..), QueryResource(..), QueryResul
 import Topo.Plugin.RPC.Manifest (RPCParamSpec(..))
 import Topo.World (TerrainWorld(..))
 import UI.Layout
-import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets, buildDataBrowserWidgets, buildSliderRowWidgets, hitTest)
+import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets, buildDataBrowserWidgets, buildSliderRowWidgets, hitTest, isLeftViewWidget)
 import UI.Widgets (Rect(..), containsPoint)
 import System.Random (randomIO)
 import Hyperspace.Actor (ActorHandle, Protocol)
@@ -141,13 +142,21 @@ handleClick inputContext (SDL.P (V2 x y)) = do
           then filter (configWidgetAllowed simWorldReady (uiConfigTab uiSnap)) widgetsAll
           else widgetsAll
       isConfigSliderWidget = isJust . sliderDefForWidget
-      (configSliderWidgets, otherWidgets) = partition (isConfigSliderWidget . widgetId) widgets
+      (configSliderWidgets, nonSliderWidgets) = partition (isConfigSliderWidget . widgetId) widgets
+      inLeftViewPanel = uiShowLeftPanel uiSnap && uiLeftTab uiSnap == LeftView
+                        && containsPoint (leftPanelRect layout) point
+      leftViewAdjPoint = V2 (fromIntegral x) (fromIntegral y + uiLeftViewScroll uiSnap)
+      (leftViewWidgets, otherWidgets) = partition (isLeftViewWidget . widgetId) nonSliderWidgets
       hitWidget =
         if inConfigScroll
           then case hitTest configSliderWidgets scrollPoint of
             Just wid -> Just wid
-            Nothing -> hitTest otherWidgets point
-          else hitTest widgets point
+            Nothing ->
+              let viewHit = if inLeftViewPanel then hitTest leftViewWidgets leftViewAdjPoint else Nothing
+              in viewHit <|> hitTest otherWidgets point
+          else if inLeftViewPanel
+            then hitTest leftViewWidgets leftViewAdjPoint <|> hitTest otherWidgets point
+            else hitTest widgets point
       configWidgetAllowed simReady tab widget =
         case sliderDefForWidget (widgetId widget) of
           Just sliderDef -> tab == configTabForSliderTab (sliderTab sliderDef)

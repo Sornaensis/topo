@@ -36,6 +36,7 @@ import Actor.UI
   , setUiWorldSelected
   , setUiZoom
   , setUiOverlayNames
+  , setUiLeftViewScroll
   )
 import Control.Applicative ((<|>))
 import Control.Monad (when)
@@ -173,7 +174,7 @@ handleEvent inputContext event = do
                   then buildEditorWidgets hoverLayout
                   else buildEditorReopenWidget hoverLayout)
                ++ (if uiShowLeftPanel uiSnap && uiLeftTab uiSnap == LeftView
-                     then buildViewModeWidgets hoverLayout
+                     then buildViewModeWidgets hoverLayout (uiLeftViewScroll uiSnap)
                      else [])
              chromeHit = hitTest chromeWidgets point
              hoverResult = sliderHit <|> chromeHit
@@ -207,14 +208,16 @@ handleEvent inputContext event = do
         (mx, my) <- readIORef mousePosRef
         (V2 winW winH) <- SDL.get (SDL.windowSize window)
         lineHeight <- readIORef (icLineHeightRef inputContext)
-        let (configUpdate, logUpdate) =
+        let (configUpdate, logUpdate, leftViewUpdate) =
               computeScrollUpdates defaultScrollSettings uiSnap logSnap lineHeight (V2 (fromIntegral winW) (fromIntegral winH)) (V2 mx my) (fromIntegral dy)
-        case (configUpdate, logUpdate) of
-          (Just newConfigScroll, _) ->
+        case (configUpdate, logUpdate, leftViewUpdate) of
+          (Just newConfigScroll, _, _) ->
             setUiConfigScroll uiHandle newConfigScroll
-          (Nothing, Just newScroll) ->
+          (Nothing, Just newScroll, _) ->
             setLogScroll logHandle newScroll
-          (Nothing, Nothing) -> do
+          (Nothing, Nothing, Just newLVScroll) ->
+            setUiLeftViewScroll uiHandle newLVScroll
+          (Nothing, Nothing, Nothing) -> do
             let (newZoom, newOffset) = applyZoomAtCursor defaultZoomSettings uiSnap (mx, my) (fromIntegral dy)
             setUiZoom uiHandle newZoom
             setUiPanOffset uiHandle newOffset

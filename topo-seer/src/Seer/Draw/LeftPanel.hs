@@ -20,6 +20,7 @@ import qualified SDL
 import Seer.Config (mapIntRange)
 import UI.Font (FontCache)
 import UI.Layout (Layout, leftPanelRect)
+import UI.Theme
 import UI.Widgets (Rect(..))
 import UI.WidgetsDraw (drawCentered, drawTextLine, rectToSDL)
 
@@ -32,7 +33,7 @@ drawLeftTabs renderer ui (tabTopo, tabView) = do
   drawTab tabView (uiLeftTab ui == LeftView)
   where
     drawTab rect isActive = do
-      let fill = if isActive then V4 70 90 120 255 else V4 50 60 75 255
+      let fill = if isActive then colTabActive else colTabInactive
       SDL.rendererDrawColor renderer SDL.$= fill
       SDL.fillRect renderer (Just (rectToSDL rect))
 
@@ -70,9 +71,9 @@ drawOverlayButtons renderer fontCache ui (oPrev, oNext, fPrev, fNext) = do
   let isOverlay = case uiViewMode ui of
         ViewOverlay _ _ -> True
         _ -> False
-      activeColor = V4 160 100 200 255
-      passiveColor = V4 80 70 100 255
-      labelColor = V4 230 230 240 255
+      activeColor = colOverlayActive
+      passiveColor = colOverlayInactive
+      labelColor = textOverlayBtn
       buttonColor = if isOverlay then activeColor else passiveColor
   SDL.rendererDrawColor renderer SDL.$= buttonColor
   SDL.fillRect renderer (Just (rectToSDL oPrev))
@@ -87,18 +88,18 @@ drawOverlayButtons renderer fontCache ui (oPrev, oNext, fPrev, fNext) = do
 
 drawChunkControl :: SDL.Renderer -> UiState -> Rect -> Rect -> Rect -> IO ()
 drawChunkControl renderer _ui minusRect valueRect plusRect = do
-  SDL.rendererDrawColor renderer SDL.$= V4 90 90 110 255
+  SDL.rendererDrawColor renderer SDL.$= colCtrlBtn
   SDL.fillRect renderer (Just (rectToSDL minusRect))
   SDL.fillRect renderer (Just (rectToSDL plusRect))
-  SDL.rendererDrawColor renderer SDL.$= V4 45 55 70 255
+  SDL.rendererDrawColor renderer SDL.$= colCtrlValue
   SDL.fillRect renderer (Just (rectToSDL valueRect))
 
 drawSeedControl :: SDL.Renderer -> UiState -> Rect -> Rect -> IO ()
 drawSeedControl renderer ui valueRect randomRect = do
-  let valueColor = if uiSeedEditing ui then V4 70 90 120 255 else V4 45 55 70 255
+  let valueColor = if uiSeedEditing ui then colCtrlValueActive else colCtrlValue
   SDL.rendererDrawColor renderer SDL.$= valueColor
   SDL.fillRect renderer (Just (rectToSDL valueRect))
-  SDL.rendererDrawColor renderer SDL.$= V4 90 90 110 255
+  SDL.rendererDrawColor renderer SDL.$= colCtrlBtn
   SDL.fillRect renderer (Just (rectToSDL randomRect))
 
 drawStatusBars :: SDL.Renderer -> Maybe FontCache -> UiState -> DataSnapshot -> Layout -> IO ()
@@ -125,14 +126,14 @@ drawStatusBars renderer fontCache ui dataSnap layout =
           biomeBarY = baseY + barH + barGap
           terrainLabel = "Terrain " <> Text.pack (show terrainCount) <> "/" <> Text.pack (show totalChunks)
           biomeLabel = "Biomes " <> Text.pack (show biomeCount) <> "/" <> Text.pack (show totalChunks)
-      drawTextLine fontCache (V2 barX (terrainBarY - labelGap)) (V4 230 230 235 255) terrainLabel
-      SDL.rendererDrawColor renderer SDL.$= V4 40 60 70 255
+      drawTextLine fontCache (V2 barX (terrainBarY - labelGap)) textStatusBar terrainLabel
+      SDL.rendererDrawColor renderer SDL.$= colStatusBarTrack
       SDL.fillRect renderer (Just (rectToSDL (Rect (V2 barX terrainBarY, V2 barW barH))))
-      SDL.rendererDrawColor renderer SDL.$= V4 40 180 90 255
+      SDL.rendererDrawColor renderer SDL.$= colStatusTerrainFill
       SDL.fillRect renderer (Just (rectToSDL (Rect (V2 barX terrainBarY, V2 terrainFill barH))))
-      drawTextLine fontCache (V2 barX (biomeBarY - labelGap)) (V4 230 230 235 255) biomeLabel
-      SDL.rendererDrawColor renderer SDL.$= V4 40 60 70 255
+      drawTextLine fontCache (V2 barX (biomeBarY - labelGap)) textStatusBar biomeLabel
+      SDL.rendererDrawColor renderer SDL.$= colStatusBarTrack
       SDL.fillRect renderer (Just (rectToSDL (Rect (V2 barX biomeBarY, V2 barW barH))))
-      SDL.rendererDrawColor renderer SDL.$= V4 180 120 40 255
+      SDL.rendererDrawColor renderer SDL.$= colStatusBiomeFill
       SDL.fillRect renderer (Just (rectToSDL (Rect (V2 barX biomeBarY, V2 biomeFill barH))))
     else pure ()

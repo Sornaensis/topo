@@ -27,6 +27,7 @@ import Seer.Draw
   )
 import UI.Font (FontCache)
 import UI.Layout
+import UI.Theme
 import UI.Widgets (Rect(..))
 import UI.WidgetsDraw (rectToSDL)
 
@@ -45,9 +46,9 @@ drawUiOverlay renderer fontCache snapshot terrainSnap layout logFilters (V2 winW
       ui = rsUi snapshot
   drawUiLabels renderer fontCache ui layout
   drawTopBar renderer fontCache ui layout
-  SDL.rendererDrawColor renderer SDL.$= V4 30 30 30 220
+  SDL.rendererDrawColor renderer SDL.$= colLogPanel
   SDL.fillRect renderer (Just (rectToSDL (logPanelRect layout)))
-  SDL.rendererDrawColor renderer SDL.$= V4 45 45 45 235
+  SDL.rendererDrawColor renderer SDL.$= colLogHeader
   SDL.fillRect renderer (Just (rectToSDL (logHeaderRect layout)))
   drawLogScrollbar renderer fontCache logSnap (logBodyRect layout)
   drawLogLines renderer fontCache logSnap (logBodyRect layout)

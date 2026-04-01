@@ -23,8 +23,9 @@ import Data.Text (Text)
 import Linear (V2(..), V4(..))
 import qualified SDL
 import UI.Font (FontCache)
+import UI.Theme
 import UI.Widgets (Rect(..))
-import UI.WidgetsDraw (drawCentered, drawLeft, rectToSDL)
+import UI.WidgetsDraw (drawCentered, drawLeft, drawLeftTruncated, rectToSDL)
 
 -------------------------------------------------------------------------------
 -- Dialog chrome
@@ -37,7 +38,7 @@ import UI.WidgetsDraw (drawCentered, drawLeft, rectToSDL)
 -- or blocking input to the area underneath.
 drawDialogPanel :: SDL.Renderer -> Rect -> IO ()
 drawDialogPanel renderer rect = do
-  SDL.rendererDrawColor renderer SDL.$= V4 20 25 35 240
+  SDL.rendererDrawColor renderer SDL.$= colDialogBg
   SDL.fillRect renderer (Just (rectToSDL rect))
 
 -- | Draw a centred title at the top of a dialog panel.
@@ -46,7 +47,7 @@ drawDialogPanel renderer rect = do
 -- the given dialog 'Rect'.
 drawDialogTitle :: SDL.Renderer -> Maybe FontCache -> Rect -> Text -> IO ()
 drawDialogTitle _renderer fontCache (Rect (V2 dx dy, V2 dw _)) title =
-  drawCentered fontCache (V4 220 220 230 255) (Rect (V2 dx dy, V2 dw 32)) title
+  drawCentered fontCache textDialogTitle (Rect (V2 dx dy, V2 dw 32)) title
 
 -------------------------------------------------------------------------------
 -- Input elements
@@ -59,13 +60,13 @@ drawDialogTitle _renderer fontCache (Rect (V2 dx dy, V2 dw _)) title =
 drawTextInputField :: SDL.Renderer -> Maybe FontCache -> Rect -> Text -> IO ()
 drawTextInputField renderer fontCache rect content = do
   -- Background
-  SDL.rendererDrawColor renderer SDL.$= V4 40 42 55 255
+  SDL.rendererDrawColor renderer SDL.$= colInputFieldBg
   SDL.fillRect renderer (Just (rectToSDL rect))
   -- Border
-  SDL.rendererDrawColor renderer SDL.$= V4 90 100 120 255
+  SDL.rendererDrawColor renderer SDL.$= textInputFieldBorder
   SDL.drawRect renderer (Just (rectToSDL rect))
   -- Content
-  drawLeft fontCache (V4 220 220 230 255) rect content
+  drawLeftTruncated fontCache textInputField rect content
 
 -- | Draw a selectable list with a highlight on the selected index.
 --
@@ -85,7 +86,7 @@ drawListSelection
   -> IO ()
 drawListSelection renderer fontCache listRect _itemHeight maxVisible sel itemRectFn labelFn items = do
   -- List background
-  SDL.rendererDrawColor renderer SDL.$= V4 30 32 42 255
+  SDL.rendererDrawColor renderer SDL.$= colListBg
   SDL.fillRect renderer (Just (rectToSDL listRect))
   -- Visible items
   let visible = take maxVisible items
@@ -93,10 +94,10 @@ drawListSelection renderer fontCache listRect _itemHeight maxVisible sel itemRec
     let r = itemRectFn i
         isSelected = i == sel
     when isSelected $ do
-      SDL.rendererDrawColor renderer SDL.$= V4 70 90 120 255
+      SDL.rendererDrawColor renderer SDL.$= colDialogButtonActive
       SDL.fillRect renderer (Just (rectToSDL r))
-    let col = if isSelected then V4 240 240 245 255 else V4 180 180 190 255
-    drawLeft fontCache col r (labelFn i item)
+    let col = if isSelected then textDialogContentSel else textDialogContent
+    drawLeftTruncated fontCache col r (labelFn i item)
     ) (zip [0..] visible)
 
 -------------------------------------------------------------------------------
@@ -109,8 +110,8 @@ drawListSelection renderer fontCache listRect _itemHeight maxVisible sel itemRec
 -- to indicate it cannot be activated.
 drawDialogButton :: SDL.Renderer -> Maybe FontCache -> Rect -> Text -> Bool -> IO ()
 drawDialogButton renderer fontCache rect label isEnabled = do
-  let fill = if isEnabled then V4 70 90 120 255 else V4 55 55 65 255
-      textColor = if isEnabled then V4 230 230 235 255 else V4 140 140 150 255
+  let fill = if isEnabled then colDialogButtonActive else colDialogButtonDisabled
+      textColor = if isEnabled then textDialogButtonActive else textDialogButtonDisabled
   SDL.rendererDrawColor renderer SDL.$= fill
   SDL.fillRect renderer (Just (rectToSDL rect))
   drawCentered fontCache textColor rect label

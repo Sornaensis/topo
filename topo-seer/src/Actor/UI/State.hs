@@ -190,6 +190,7 @@ data UiState = UiState
   , uiConfigTab :: !ConfigTab
   , uiConfigScroll :: !Int
   , uiLeftTab :: !LeftTab
+  , uiLeftViewScroll :: !Int
   , uiMenuMode :: !UiMenuMode
   , uiPresetInput :: !Text
   , uiPresetList :: ![Text]
@@ -449,6 +450,7 @@ emptyUiState = UiState
   , uiConfigTab = ConfigTerrain
   , uiConfigScroll = 0
   , uiLeftTab = LeftTopo
+  , uiLeftViewScroll = 0
   , uiMenuMode = MenuNone
   , uiPresetInput = Text.empty
   , uiPresetList = []
@@ -710,6 +712,7 @@ data UiUpdate
   | SetConfigTab !ConfigTab
   | SetConfigScroll !Int
   | SetLeftTab !LeftTab
+  | SetLeftViewScroll !Int
   | SetMenuMode !UiMenuMode
   | SetPresetInput !Text
   | SetPresetList ![Text]
@@ -762,6 +765,7 @@ applyUpdate upd st = case upd of
   SetConfigTab v -> st { uiConfigTab = v }
   SetConfigScroll v -> st { uiConfigScroll = max 0 v }
   SetLeftTab v -> st { uiLeftTab = v }
+  SetLeftViewScroll v -> st { uiLeftViewScroll = max 0 v }
   SetMenuMode v -> st { uiMenuMode = v }
   SetPresetInput v -> st { uiPresetInput = v }
   SetPresetList v -> st { uiPresetList = v }

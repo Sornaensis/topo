@@ -79,6 +79,7 @@ library:
     - UI.TerrainCache
     - UI.TerrainRender
     - UI.RiverRender
+    - UI.Theme
     - UI.Widgets
     - UI.WidgetsDraw
     - UI.WidgetTree

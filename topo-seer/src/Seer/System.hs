@@ -106,6 +106,7 @@ import Seer.Render.Atlas (AtlasTextureCache(..), collectAtlasTextures, emptyAtla
 import Seer.Render.Context (RenderContext(..))
 import UI.TerrainCache (ChunkTextureCache(..), emptyChunkTextureCache)
 import UI.Font (destroyFontCache, initFontCacheMaybe)
+import UI.Layout (minUsableWindowWidth, minUsableWindowHeight)
 import qualified Data.IntMap.Strict as IntMap
 import UI.TerrainRender (destroyChunkTexture)
 import System.Random (randomIO)
@@ -181,6 +182,7 @@ runApp = do
   window <- SDL.createWindow "Topo Seer" SDL.defaultWindow
   renderer <- SDL.createRenderer window (-1) SDL.defaultRenderer
   SDL.setWindowMode window SDL.FullscreenDesktop
+  SDL.windowMinimumSize window SDL.$= V2 (fromIntegral minUsableWindowWidth) (fromIntegral minUsableWindowHeight)
   renderTargetOk <- SDL.renderTargetSupported renderer
   fontCache <- initFontCacheMaybe renderer 14
     [ "C:\\Windows\\Fonts\\segoeui.ttf"

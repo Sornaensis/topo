@@ -10,6 +10,7 @@ module UI.WidgetTree
   , buildDataBrowserWidgets
   , buildSliderRowWidgets
   , hitTest
+  , isLeftViewWidget
   ) where
 
 import Data.Map.Strict (Map)
@@ -64,8 +65,9 @@ buildWidgets layout =
              (pipelineCheckboxRect idx layout)
     | (idx, sid) <- zip [0..] allBuiltinStageIds
     ] ++
-    -- View mode buttons
-    buildViewModeWidgets layout ++
+    -- View mode buttons (unscrolled / content-space; use isLeftViewWidget +
+    -- scroll adjustment in the hit-test layer when left-view scroll is non-zero)
+    buildViewModeWidgets layout 0 ++
     [ Widget WidgetViewOverlayPrev overlayPrev
     , Widget WidgetViewOverlayNext overlayNext
     , Widget WidgetViewFieldPrev fieldPrev
@@ -263,10 +265,13 @@ buildEditorReopenWidget layout =
   [ Widget WidgetEditorReopen (editorReopenRect layout) ]
 
 -- | Build widgets for the view mode buttons in the left panel.
-buildViewModeWidgets :: Layout -> [Widget]
-buildViewModeWidgets layout =
-  zipWith Widget viewWidgetIds (leftViewRects layout)
+-- The @scrollY@ offset is subtracted from each button's y position so
+-- the returned rects are in screen space.
+buildViewModeWidgets :: Layout -> Int -> [Widget]
+buildViewModeWidgets layout scrollY =
+  zipWith Widget viewWidgetIds (map (shiftY (-scrollY)) (leftViewRects layout))
   where
+    shiftY dy (Rect (V2 x y, V2 w h)) = Rect (V2 x (y + dy), V2 w h)
     viewWidgetIds =
       [ WidgetViewElevation, WidgetViewBiome, WidgetViewClimate
       , WidgetViewWeather, WidgetViewMoisture, WidgetViewPrecip
@@ -282,3 +287,29 @@ hitTest widgets point =
   case filter (\w -> containsPoint (widgetRect w) point) widgets of
     (w:_) -> Just (widgetId w)
     [] -> Nothing
+
+-- | Returns 'True' for widgets that live in the left View tab
+-- (view-mode buttons and overlay selector buttons), which are
+-- subject to left-view scroll offset.
+isLeftViewWidget :: WidgetId -> Bool
+isLeftViewWidget wid = case wid of
+  WidgetViewElevation     -> True
+  WidgetViewBiome         -> True
+  WidgetViewClimate       -> True
+  WidgetViewWeather       -> True
+  WidgetViewMoisture      -> True
+  WidgetViewPrecip        -> True
+  WidgetViewVegetation    -> True
+  WidgetViewTerrainForm   -> True
+  WidgetViewPlateId       -> True
+  WidgetViewPlateBoundary -> True
+  WidgetViewPlateHardness -> True
+  WidgetViewPlateCrust    -> True
+  WidgetViewPlateAge      -> True
+  WidgetViewPlateHeight   -> True
+  WidgetViewPlateVelocity -> True
+  WidgetViewOverlayPrev   -> True
+  WidgetViewOverlayNext   -> True
+  WidgetViewFieldPrev     -> True
+  WidgetViewFieldNext     -> True
+  _                       -> False

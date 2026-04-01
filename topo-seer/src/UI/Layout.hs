@@ -2,6 +2,8 @@ module UI.Layout
   ( Layout
   , ConfigParamRowRects(..)
   , topBarHeight
+  , minUsableWindowWidth
+  , minUsableWindowHeight
   , topBarRect
   , layoutFor
   , layoutForSeed
@@ -16,6 +18,9 @@ module UI.Layout
   , leftChunkPlusRect
   , leftViewRects
   , leftViewRowCount
+  , leftViewContentHeight
+  , leftViewScrollMax
+  , leftControlsTop
   , overlayViewRects
   , configToggleRect
   , configPanelRect
@@ -111,6 +116,19 @@ data Layout = Layout
 topBarHeight :: Int
 topBarHeight = 28
 
+-- | Minimum window width at which both side panels fit without overlap.
+--
+-- Below this width the config panel narrows automatically; the left panel
+-- remains at its fixed size.  The value is derived from the two panel widths
+-- and their margins so it stays in sync with 'leftPanelRect' and
+-- 'configPanelRect'.
+minUsableWindowWidth :: Int
+minUsableWindowWidth = 580   -- leftX(16) + leftW(240) + gap(8) + cfgMinW(300) + rightMargin(16)
+
+-- | Minimum window height at which the UI is usable.
+minUsableWindowHeight :: Int
+minUsableWindowHeight = 480
+
 -- | Full-width bar at the top of the window displaying the world name.
 topBarRect :: Layout -> Rect
 topBarRect (Layout (V2 w _) _ _) =
@@ -174,33 +192,36 @@ configToggleRect layout =
   in Rect (V2 (x + pad) (y + 8), V2 buttonW buttonH)
 
 configPanelRect :: Layout -> Rect
-configPanelRect (Layout (V2 w h) logHeight seedWidth) =
-  let pad = 12
+configPanelRect layout =
+  let Layout (V2 w h) logHeight seedWidth = layout
+      pad = 12
       buttonW = 64
       minW = 300
       desiredW = max minW (pad * 2 + seedWidth + buttonW + 20)
-      panelX = w - desiredW - 16
-  in Rect (V2 panelX (16 + topBarHeight), V2 desiredW (h - logHeight - 32 - topBarHeight))
+      -- Clamp the left edge so the config panel never overlaps the left panel.
+      Rect (V2 lpx _, V2 lpw _) = leftPanelRect layout
+      leftBound = lpx + lpw + 8
+      rawPanelX = w - desiredW - 16
+      panelX = max leftBound rawPanelX
+      actualW = max 0 (w - panelX - 16)
+  in Rect (V2 panelX (16 + topBarHeight), V2 actualW (h - logHeight - 32 - topBarHeight))
 
 configTabRects :: Layout -> (Rect, Rect, Rect, Rect, Rect, Rect, Rect, Rect)
 configTabRects layout =
   let Rect (V2 x y, V2 w _) = configPanelRect layout
       pad = 12
       tabH = 22
-      gap = 4
+      gapX = 4
+      gapY = 6
       toggleH = 22
-      available = w - pad * 2 - gap * 7
-      tabW = available `div` 8
+      available = w - pad * 2 - gapX * 3
+      tabW = available `div` 4
       y0 = y + 8 + toggleH + 8
-      r1 = Rect (V2 (x + pad) y0, V2 tabW tabH)
-      r2 = Rect (V2 (x + pad + (tabW + gap)) y0, V2 tabW tabH)
-      r3 = Rect (V2 (x + pad + (tabW + gap) * 2) y0, V2 tabW tabH)
-      r4 = Rect (V2 (x + pad + (tabW + gap) * 3) y0, V2 tabW tabH)
-      r5 = Rect (V2 (x + pad + (tabW + gap) * 4) y0, V2 tabW tabH)
-      r6 = Rect (V2 (x + pad + (tabW + gap) * 5) y0, V2 tabW tabH)
-      r7 = Rect (V2 (x + pad + (tabW + gap) * 6) y0, V2 tabW tabH)
-      r8 = Rect (V2 (x + pad + (tabW + gap) * 7) y0, V2 tabW tabH)
-  in (r1, r2, r3, r4, r5, r6, r7, r8)
+      y1 = y0 + tabH + gapY
+      mk row col = Rect (V2 (x + pad + col * (tabW + gapX)) (if row == (0 :: Int) then y0 else y1), V2 tabW tabH)
+  in ( mk 0 0, mk 0 1, mk 0 2, mk 0 3
+     , mk 1 0, mk 1 1, mk 1 2, mk 1 3
+     )
 
 configChunkMinusRect :: Layout -> Rect
 configChunkMinusRect = leftChunkMinusRect
@@ -249,7 +270,8 @@ configScrollAreaRect layout =
   let Rect (V2 x y, V2 w _) = configPanelRect layout
       Rect (V2 _ applyY, V2 _ _) = configPresetSaveRect layout
       pad = 16
-      tabOffset = 80
+      -- Account for two rows of tabs: toggle(22) + 8 + tabRow1(22) + gapY(6) + tabRow2(22) + 8
+      tabOffset = 96
       barW = 8
       barGap = 6
       top = y + tabOffset
@@ -404,6 +426,23 @@ leftSeedValueRect layout =
   in Rect (V2 valueX top, V2 valueW rowHeight)
 
 -- | Number of rows used by view-mode buttons (ceil(15/2) = 8).
+-- | Total pixel height of the content in the left View tab
+-- (view mode buttons + overlay selector rows).
+leftViewContentHeight :: Layout -> Int
+leftViewContentHeight layout =
+  let buttonH = 28
+      gap = 8
+  in leftViewRowCount * (buttonH + gap) + 2 * (buttonH + gap)
+
+-- | Maximum scroll offset for the left View tab content.
+-- Returns 0 when the content fits within the panel.
+leftViewScrollMax :: Layout -> Int
+leftViewScrollMax layout =
+  let Rect (V2 _ panelY, V2 _ panelH) = leftPanelRect layout
+      controlsTop = leftControlsTop layout
+      usable = panelH - (controlsTop - panelY)
+  in max 0 (leftViewContentHeight layout - usable)
+
 leftViewRowCount :: Int
 leftViewRowCount = 8
 
