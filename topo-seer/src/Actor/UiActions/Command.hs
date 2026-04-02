@@ -367,12 +367,18 @@ applyBrush req hex = do
                        | HexAxial q r <- hexDisc (HexAxial (fst hex) (snd hex))
                                                  (brushRadius brush)
                        ]
-      newChunks = recomputeDerivedChunks cfg paramCfg formCfg waterLvl
-                    affectedTiles brushed
-      -- Reclassify biomes for tools that change elevation so the
-      -- biome overlay stays up-to-date with the edited terrain.
+      -- PaintForm writes tcTerrainForm directly; running recomputeDerivedChunks
+      -- would immediately overwrite it with the elevation-derived form, erasing
+      -- the manual paint.  PaintBiome only writes tcFlags and doesn't change
+      -- elevation, so re-derive is wasteful but harmless; skip it too.
+      newChunks
+        | tool == ToolPaintForm || tool == ToolPaintBiome = brushed
+        | otherwise = recomputeDerivedChunks cfg paramCfg formCfg waterLvl
+                        affectedTiles brushed
+      -- Reclassify biomes for tools that change terrain form (directly or via
+      -- elevation/hardness), so the biome overlay stays up-to-date.
       reclassifiedChunks
-        | isElevationTool tool =
+        | needsBiomeReclassify tool =
             let biomeCfg      = worldBiome genCfg
                 climateChunks = tsClimateChunks terrainSnap
             in IntMap.mapWithKey (\k tc ->
@@ -445,6 +451,19 @@ isElevationTool ToolFlatten = True
 isElevationTool ToolNoise   = True
 isElevationTool ToolErode   = True
 isElevationTool _           = False
+
+-- | Does this tool require biome reclassification after the stroke?
+--
+-- Elevation tools change elevation → terrain form and biome-driving
+-- conditions change.  'ToolSetHardness' changes the hardness input to
+-- 'classifyTerrainForm', which may flip canyon\/mesa\/badlands
+-- assignments, so the newly-derived form requires a biome update.
+-- 'ToolPaintForm' directly sets 'tcTerrainForm' and 'classifyChunk'
+-- reads that field, so biomes must be re-classified after a form paint.
+needsBiomeReclassify :: EditorTool -> Bool
+needsBiomeReclassify ToolSetHardness = True
+needsBiomeReclassify ToolPaintForm   = True
+needsBiomeReclassify tool            = isElevationTool tool
 
 clearFlattenRef :: UiActionRequest -> IO ()
 clearFlattenRef req = do
