@@ -564,8 +564,11 @@ majority xs =
 -- by majority-vote smoothing.
 --
 -- After smoothing, some tiles may have been reassigned to Snow or Alpine
--- despite being too warm.  This pass demotes:
+-- despite being too warm, or to a water biome despite being above water
+-- level.  This pass demotes:
 --
+--   * Water biomes (Ocean, Lake, InlandSea, ocean sub-biomes) on tiles
+--     with @elev >= waterLevel@ → the original pre-smoothing biome.
 --   * Snow tiles with @temp > btSnowMaxTemp@ → Alpine
 --   * Alpine tiles with @temp > btAlpineMaxTemp@ → the original
 --     pre-smoothing biome (passed as the @original@ vector)
@@ -573,20 +576,26 @@ majority xs =
 -- Runs per-chunk; call once per chunk after global smoothing.
 constrainSmoothedBiomes
   :: BiomeThresholds
+  -> Float                      -- ^ water level
+  -> U.Vector Float             -- ^ elevation (per tile)
   -> U.Vector Float             -- ^ temperature (per tile)
   -> U.Vector BiomeId           -- ^ original biomes (pre-smoothing)
   -> U.Vector BiomeId           -- ^ smoothed biomes
   -> U.Vector BiomeId
-constrainSmoothedBiomes thr temp original smoothed =
+constrainSmoothedBiomes thr wl elev temp original smoothed =
   U.generate (U.length smoothed) $ \i ->
     let bid  = smoothed U.! i
+        e    = if i < U.length elev then elev U.! i else 1
         t    = if i < U.length temp then temp U.! i else 0
         orig = if i < U.length original then original U.! i else bid
-    in constrainTile thr t orig bid
+    in constrainTile thr wl e t orig bid
 
 -- | Constrain a single tile's biome after smoothing.
-constrainTile :: BiomeThresholds -> Float -> BiomeId -> BiomeId -> BiomeId
-constrainTile thr t orig bid
+constrainTile :: BiomeThresholds -> Float -> Float -> Float -> BiomeId -> BiomeId -> BiomeId
+constrainTile thr wl elev t orig bid
+  -- Water biome smoothed onto an above-water tile → revert to original
+  | isWaterBiomeId bid && elev >= wl
+  = orig
   -- Snow too warm → demote to Alpine
   | bid == BiomeSnow && t > btSnowMaxTemp thr
   = BiomeAlpine

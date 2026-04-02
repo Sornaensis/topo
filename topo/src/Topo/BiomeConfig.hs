@@ -145,12 +145,17 @@ classifyBiomesStage cfg waterLevel = PipelineStage StageBiomes "classifyBiomes" 
         biomesSmoothed = smoothBiomesGlobal config (bcSmoothingIterations cfg) biomes
         -- 2b. Temperature-constrained correction: demote Snow/Alpine tiles
         --     that smoothing spread into thermally incompatible areas.
+        --     Also revert water biomes (Ocean/Lake/InlandSea) that smoothing
+        --     spread onto above-water land tiles.
         biomesConstrained = IntMap.mapWithKey (\k smoothed ->
           case IntMap.lookup k climate of
             Nothing -> smoothed
             Just cc ->
-              let orig = IntMap.findWithDefault smoothed k biomes
-              in constrainSmoothedBiomes (bcThresholds cfg) (ccTempAvg cc) orig smoothed
+              let orig    = IntMap.findWithDefault smoothed k biomes
+                  elevVec = maybe (U.replicate (U.length smoothed) 1.0)
+                              tcElevation (IntMap.lookup k terrain)
+              in constrainSmoothedBiomes (bcThresholds cfg) waterLevel elevVec
+                   (ccTempAvg cc) orig smoothed
           ) biomesSmoothed
         -- 2c. Mountain transition smoothing: penalise large biome-family
         --     jumps (Forest↔Alpine↔Snow) to produce gradual elevation gradients.
