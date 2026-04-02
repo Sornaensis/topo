@@ -12,6 +12,8 @@ module Seer.Command.Handlers.Screenshot
 
 import Control.Concurrent.MVar (newEmptyMVar, takeMVar)
 import Data.Aeson (Value(..), object, (.=))
+import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64 as Base64
 import Data.IORef (atomicModifyIORef', writeIORef)
@@ -72,6 +74,16 @@ handleTakeScreenshot ctx reqId _params = do
           pure $ errResponse reqId err
         Just (Right pngBytes) -> do
           logMsg LogInfo ("[mcp] screenshot captured (" <> Text.pack (show (BS.length pngBytes)) <> " bytes)")
+          let mSavePath = case _params of
+                Object o -> case KM.lookup "path" o of
+                  Just (Aeson.String p) -> Just (Text.unpack p)
+                  _                     -> Nothing
+                _        -> Nothing
+          case mSavePath of
+            Just savePath -> do
+              BS.writeFile savePath pngBytes
+              logMsg LogInfo ("[mcp] screenshot saved to " <> Text.pack savePath)
+            Nothing -> pure ()
           pure $ okResponse reqId $ object
             [ "image_base64" .= Text.decodeUtf8 (Base64.encode pngBytes)
             , "format"       .= ("png" :: Text)

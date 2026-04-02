@@ -545,7 +545,12 @@ allToolDefs =
       , tdDescription = "Capture a screenshot of the current topo-seer window as a PNG image"
       , tdInputSchema = object
           [ "type" .= ("object" :: Text)
-          , "properties" .= object []
+          , "properties" .= object
+              [ "path" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Optional absolute file path to save the PNG. Parent directory must exist." :: Text)
+                  ]
+              ]
           ]
       }
   -- Camera controls
