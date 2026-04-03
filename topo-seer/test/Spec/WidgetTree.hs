@@ -185,7 +185,10 @@ spec = describe "UI.WidgetTree" $ do
   it "builds correct number of editor widgets" $ do
     let layout = layoutFor (V2 1200 800) 160
         widgets = buildEditorWidgets layout ToolRaise
-    length widgets `shouldBe` (editorToolButtonCount + 3)
+    -- 9 tool buttons + 3 (radius−, radius+, close)
+    -- + 4 param bar widgets (2 numeric slots for ToolRaise)
+    -- + 2 falloff widgets (ToolRaise has falloff)
+    length widgets `shouldBe` 18
 
   it "hit tests editor reopen button" $ do
     let layout = layoutFor (V2 1200 800) 160
