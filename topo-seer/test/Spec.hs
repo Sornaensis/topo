@@ -25,6 +25,7 @@ import qualified Spec.WorldPersist
 import qualified Spec.CommandDispatch
 import qualified Spec.EditorBrush
 import qualified Spec.EditorHistory
+import qualified Spec.ZoomStageProperties
 
 main :: IO ()
 main = do
@@ -54,3 +55,4 @@ main = do
     Spec.CommandDispatch.spec
     Spec.EditorBrush.spec
     Spec.EditorHistory.spec
+    Spec.ZoomStageProperties.spec

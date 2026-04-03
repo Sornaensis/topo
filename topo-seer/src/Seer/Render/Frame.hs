@@ -35,10 +35,11 @@ import Seer.Draw
   , viewColor
   )
 import Seer.Render.Atlas
-  ( AtlasTextureCache
+  ( AtlasTextureCache(..)
   , drawAtlas
   , drainAtlasBuildResults
   , resolveAtlasTiles
+  , resolveEffectiveStage
   , scheduleAtlasBuilds
   , zoomTextureScale
   )
@@ -127,7 +128,8 @@ renderFrame context = do
   SDL.rendererDrawColor renderer SDL.$= V4 r g b 255
   SDL.clear renderer
   tAfterClear <- getMonotonicTimeNSec
-  let stage = stageForZoom (uiZoom (rsUi snapshot))
+  let rawStage = stageForZoom (uiZoom (rsUi snapshot))
+      (stage, atlasCacheWithStage) = resolveEffectiveStage tAfterClear rawStage atlasCache
       dataReady = tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
   (loggedSchedule, loggedScheduleDrain, loggedScheduleEnqueue) <-
     if shouldScheduleAtlas
@@ -143,10 +145,10 @@ renderFrame context = do
   (atlasCache', uploadCount, uploadMs, uploadTextureMs) <- if shouldDrainAtlas
     then do
       ((cache', count, createMs), elapsed) <- timedMs $ do
-        (cacheNext, count, createMs) <- drainAtlasBuildResults renderTargetOk atlasUploadsPerFrame renderer atlasCache resultRef
+        (cacheNext, count, createMs) <- drainAtlasBuildResults renderTargetOk atlasUploadsPerFrame renderer atlasCacheWithStage resultRef
         pure (cacheNext, count, createMs)
       pure (cache', count, elapsed, createMs)
-    else pure (atlasCache, 0, 0, 0)
+    else pure (atlasCacheWithStage, 0, 0, 0)
   loggedUpload <-
     if shouldDrainAtlas && uploadCount > 0
       then logTiming logHandle timingLogThresholdMs (Text.pack "atlas upload") uploadMs (Just uploadCount)

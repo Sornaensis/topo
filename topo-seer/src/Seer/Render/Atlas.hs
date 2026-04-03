@@ -5,6 +5,7 @@ module Seer.Render.Atlas
   , drawAtlas
   , drainAtlasBuildResults
   , resolveAtlasTiles
+  , resolveEffectiveStage
   , scheduleAtlasBuilds
   , zoomTextureScale
   ) where
@@ -49,6 +50,8 @@ data AtlasTextureCache = AtlasTextureCache
   , atcLru :: ![Int]
   , atcPending :: ![SDL.Texture]
   , atcLast :: !(Maybe (AtlasKey, [TerrainAtlasTile]))
+  , atcCommittedStage :: !(Maybe ZoomStage)
+  , atcStageChangeNs :: !Word64
   }
 
 -- | Create an empty atlas texture cache.
@@ -60,7 +63,35 @@ emptyAtlasTextureCache maxEntries = AtlasTextureCache
   , atcLru = []
   , atcPending = []
   , atcLast = Nothing
+  , atcCommittedStage = Nothing
+  , atcStageChangeNs = 0
   }
+
+-- | Hysteresis threshold: do not switch zoom stage until the camera has
+-- been in the new range for at least this many nanoseconds (300 ms).
+stageHysteresisNs :: Word64
+stageHysteresisNs = 300000000
+
+-- | Resolve the effective zoom stage with hysteresis.
+--
+-- If the raw stage (from 'stageForZoom') differs from the previously
+-- committed stage, the switch is delayed until the camera has remained
+-- in the new stage's range for 'stageHysteresisNs'.  Returns the
+-- effective stage and the updated cache with hysteresis bookkeeping.
+resolveEffectiveStage :: Word64 -> ZoomStage -> AtlasTextureCache -> (ZoomStage, AtlasTextureCache)
+resolveEffectiveStage nowNs rawStage cache =
+  case atcCommittedStage cache of
+    Nothing ->
+      (rawStage, cache { atcCommittedStage = Just rawStage, atcStageChangeNs = 0 })
+    Just committed
+      | committed == rawStage ->
+          (committed, cache { atcStageChangeNs = 0 })
+      | atcStageChangeNs cache == 0 ->
+          (committed, cache { atcStageChangeNs = nowNs })
+      | nowNs - atcStageChangeNs cache >= stageHysteresisNs ->
+          (rawStage, cache { atcCommittedStage = Just rawStage, atcStageChangeNs = 0 })
+      | otherwise ->
+          (committed, cache)
 
 -- | Collect all textures currently held by the atlas cache.
 collectAtlasTextures :: AtlasTextureCache -> [SDL.Texture]

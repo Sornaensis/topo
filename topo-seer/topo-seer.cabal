@@ -73,6 +73,7 @@ library
       Seer.Render.Frame
       Seer.Render.Terrain
       Seer.Render.Ui
+      Seer.Render.Viewport
       Seer.Render.ZoomStage
       Seer.Screenshot
       Seer.Timing
@@ -189,6 +190,7 @@ test-suite topo-seer-test
       Spec.Widgets
       Spec.WidgetTree
       Spec.WorldPersist
+      Spec.ZoomStageProperties
       Paths_topo_seer
   hs-source-dirs:
       test

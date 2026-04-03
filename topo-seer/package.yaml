@@ -67,6 +67,7 @@ library:
     - Seer.Render.Frame
     - Seer.Render.Terrain
     - Seer.Render.Ui
+    - Seer.Render.Viewport
     - Seer.Render.ZoomStage
     - Seer.Screenshot
     - Seer.Timing
