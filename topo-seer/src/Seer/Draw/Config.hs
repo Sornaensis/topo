@@ -8,6 +8,7 @@ module Seer.Draw.Config
 
 import Actor.Data (DataSnapshot(..))
 import Actor.UI (ConfigTab(..), DataBrowserState(..), UiState(..), builtinStageRowCount, configRowCount, pluginRowIndex, pluginRowsWithParams)
+import Control.Applicative ((<|>))
 import Control.Monad (forM_, when)
 import Data.Aeson (Value(..))
 import qualified Data.Aeson as Aeson
@@ -26,7 +27,7 @@ import Seer.Config.SliderRegistry (SliderDef(..))
 import Seer.Config.SliderStyle (SliderStyle(..), sliderStyleForId)
 import Seer.Config.SliderUi (sliderDefsForConfigTab, sliderValueForId)
 import Topo.Pipeline.Stage (allBuiltinStageIds)
-import Topo.Plugin.DataResource (DataResourceSchema(..), DataFieldDef(..), DataFieldType(..), DataConstructorDef(..))
+import Topo.Plugin.DataResource (DataResourceSchema(..), DataFieldDef(..), DataFieldType(..), DataConstructorDef(..), DataOperations(..), noOperations)
 import Topo.Plugin.RPC.DataService (DataRecord(..))
 import Topo.Plugin.RPC.Manifest (RPCParamSpec(..), RPCParamType(..))
 import UI.Layout
@@ -51,8 +52,19 @@ import UI.Layout
   , pipelineParamBarRect
   , pipelineParamCheckRect
   , dataBrowserItemRect
+  , dataBrowserCreateButtonRect
   , dataDetailPopoverRect
   , dataDetailFieldRect
+  , dataDetailEditToggleRect
+  , dataDetailSaveRect
+  , dataDetailCancelRect
+  , dataDetailDeleteRect
+  , dataDetailFieldInputRect
+  , dataDetailFieldStepMinusRect
+  , dataDetailFieldStepPlusRect
+  , deleteConfirmDialogRect
+  , deleteConfirmOkRect
+  , deleteConfirmCancelRect
   )
 import UI.Font (FontCache, drawText)
 import UI.Widgets (Rect(..))
@@ -84,8 +96,8 @@ drawConfigTabs renderer ui (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBi
       SDL.rendererDrawColor renderer SDL.$= fill
       SDL.fillRect renderer (Just (rectToSDL rect))
 
-drawConfigPanel :: SDL.Renderer -> UiState -> DataSnapshot -> Layout -> IO ()
-drawConfigPanel renderer ui dataSnap layout =
+drawConfigPanel :: SDL.Renderer -> Maybe FontCache -> UiState -> DataSnapshot -> Layout -> IO ()
+drawConfigPanel renderer mFontCache ui dataSnap layout =
   let rect = configPanelRect layout
       tabs = configTabRects layout
       presetSaveRect = configPresetSaveRect layout
@@ -288,6 +300,25 @@ drawConfigPanel renderer ui dataSnap layout =
                     Rect (V2 lx ly, V2 _lw lh) = scrollRect (dataBrowserItemRect loadRow layout)
                 SDL.rendererDrawColor renderer SDL.$= colDataLoadingIndicator
                 SDL.fillRect renderer (Just (rectToSDL (Rect (V2 lx ly, V2 40 lh))))
+              -- Create button (+ button after records, if resource supports it)
+              case selectedResource of
+                Just rName -> do
+                  let mSchema = find (\s -> drsName s == rName) schemas
+                      canCreate = maybe False (doCreate . drsOperations) mSchema
+                      pageRow = recordOffset + length records
+                      createRow = pageRow + (if null records then 0 else 1)
+                  when canCreate $ do
+                    let createRect = scrollRect (dataBrowserCreateButtonRect createRow layout)
+                    SDL.rendererDrawColor renderer SDL.$= colDataCreateBtn
+                    SDL.fillRect renderer (Just (rectToSDL createRect))
+                    case mFontCache of
+                      Just fc -> do
+                        let Rect (V2 cx cy, V2 _cw ch) = createRect
+                        drawText fc colDataDetailFieldValue (V2 (cx + 8) (cy + (ch - 12) `div` 2)) "+"
+                      Nothing -> pure ()
+                Nothing -> pure ()
+              where
+                find p = foldr (\x acc -> if p x then Just x else acc) Nothing
         _ -> forM_ activeSliderDefs drawSliderDef
       SDL.rendererClipRect renderer SDL.$= Nothing
       let Rect (V2 bx by, V2 bw bh) = scrollBarRect
@@ -332,7 +363,8 @@ drawBarFill renderer value (Rect (V2 x y, V2 w h)) color = do
 -- | Draw the record detail popover when a data browser record is selected.
 --
 -- Shows field names and values; nested DFRecord\/DFAdt fields can be
--- expanded.  Called after the main config panel pass so it floats above.
+-- expanded.  In edit\/create mode, fields become editable controls and
+-- Save\/Cancel buttons appear.
 drawDataDetailPopover :: SDL.Renderer -> FontCache -> UiState -> Layout -> IO ()
 drawDataDetailPopover renderer fontCache ui layout = do
   let dbs = uiDataBrowser ui
@@ -345,9 +377,14 @@ drawDataDetailPopover renderer fontCache ui layout = do
             schemas <- Map.lookup pName resources
             find (\s -> drsName s == rName) schemas
           fields = maybe [] drsFields mSchema
+          ops = maybe noOperations drsOperations mSchema
           expanded = dbsExpandedFields dbs
           visibleFields = enumerateVisibleFields "" fields expanded
           fieldCount = length visibleFields
+          editing = dbsEditMode dbs || dbsCreateMode dbs
+          editValues = dbsEditValues dbs
+          focusedField = dbsFocusedField dbs
+          textCursor = dbsTextCursor dbs
 
           popRect@(Rect (V2 px py, V2 pw _ph)) = dataDetailPopoverRect rowIdx fieldCount layout
           headerH = 28
@@ -363,12 +400,45 @@ drawDataDetailPopover renderer fontCache ui layout = do
       SDL.fillRect renderer (Just (rectToSDL (Rect (V2 px py, V2 pw headerH))))
 
       -- Header text
-      let headerText = case dbsSelectedRecordKey dbs of
-            Just (String t) -> t
-            Just (Number n) -> T.pack (show n)
-            Just v          -> TE.decodeUtf8 (BSL.toStrict (Aeson.encode v))
-            Nothing         -> "Record"
+      let headerText
+            | dbsCreateMode dbs = "New Record"
+            | otherwise = case dbsSelectedRecordKey dbs of
+                Just (String t) -> t
+                Just (Number n) -> T.pack (show n)
+                Just v          -> TE.decodeUtf8 (BSL.toStrict (Aeson.encode v))
+                Nothing         -> "Record"
       drawText fontCache colDataDetailFieldValue (V2 (px + 6) (py + 5)) headerText
+
+      -- Edit toggle button (right side of header)
+      when (doUpdate ops && not (dbsCreateMode dbs)) $ do
+        let editRect = dataDetailEditToggleRect rowIdx fieldCount layout
+            editColor = if dbsEditMode dbs then colDataEditBtnActive else colDataEditBtn
+        SDL.rendererDrawColor renderer SDL.$= editColor
+        SDL.fillRect renderer (Just (rectToSDL editRect))
+        let Rect (V2 ex ey, V2 _ew eh) = editRect
+        drawText fontCache colDataDetailFieldValue (V2 (ex + 4) (ey + (eh - 12) `div` 2)) "✎"
+
+      -- Delete button (left side of header, only in view mode)
+      when (doDelete ops && not editing) $ do
+        let delRect = dataDetailDeleteRect rowIdx fieldCount layout
+        SDL.rendererDrawColor renderer SDL.$= colDataDeleteBtn
+        SDL.fillRect renderer (Just (rectToSDL delRect))
+        let Rect (V2 dx dy, V2 _dw dh) = delRect
+        drawText fontCache colDataDetailFieldValue (V2 (dx + 4) (dy + (dh - 12) `div` 2)) "✕"
+
+      -- Save / Cancel buttons (only in edit/create mode)
+      when editing $ do
+        let saveRect = dataDetailSaveRect rowIdx fieldCount layout
+        SDL.rendererDrawColor renderer SDL.$= colDataSaveBtn
+        SDL.fillRect renderer (Just (rectToSDL saveRect))
+        let Rect (V2 sx sy, V2 _sw sh) = saveRect
+        drawText fontCache colDataDetailFieldValue (V2 (sx + 4) (sy + (sh - 12) `div` 2)) "Save"
+
+        let cancelRect = dataDetailCancelRect rowIdx fieldCount layout
+        SDL.rendererDrawColor renderer SDL.$= colDataCancelBtn
+        SDL.fillRect renderer (Just (rectToSDL cancelRect))
+        let Rect (V2 cx cy, V2 _cw ch) = cancelRect
+        drawText fontCache colDataDetailFieldValue (V2 (cx + 4) (cy + (ch - 12) `div` 2)) "Cancel"
 
       -- Field rows
       forM_ (zip [0..] visibleFields) $ \(fIdx, (path, nestable)) -> do
@@ -376,8 +446,10 @@ drawDataDetailPopover renderer fontCache ui layout = do
             depth = length (T.splitOn "." path) - 1
             indent = depth * 12
             fieldName = lastSegment path
-            val = lookupNestedValue path (unDataRecord record)
-            valText = renderValue val
+            recordVal = lookupNestedValue path (unDataRecord record)
+            editVal = Map.lookup path editValues
+            displayVal = if editing then editVal <|> recordVal else recordVal
+            valText = renderValue displayVal
 
         -- Toggle indicator for nestable fields
         when nestable $ do
@@ -389,16 +461,88 @@ drawDataDetailPopover renderer fontCache ui layout = do
         let nameX = fx + indent + (if nestable then 14 else 0)
         drawText fontCache colDataDetailFieldName (V2 nameX (fy + 2)) (fieldName <> ":")
 
-        -- Value (right-aligned area — just draw it after name with gap)
+        -- Value display area
         when (not nestable || not (Set.member path expanded)) $ do
-          let valX = fx + fw `div` 2
-          drawText fontCache colDataDetailFieldValue (V2 valX (fy + 2)) valText
+          if editing && not nestable
+            then do
+              -- Draw editable field control
+              let inputRect = dataDetailFieldInputRect rowIdx fieldCount fIdx layout
+                  isFocused = focusedField == Just path
+                  borderCol = if isFocused then colDataFieldInputFocused else colDataFieldInputBorder
+              SDL.rendererDrawColor renderer SDL.$= colDataFieldInputBg
+              SDL.fillRect renderer (Just (rectToSDL inputRect))
+              SDL.rendererDrawColor renderer SDL.$= borderCol
+              SDL.drawRect renderer (Just (rectToSDL inputRect))
+              -- Draw the value text inside the input area
+              let Rect (V2 ix iy, V2 _iw _ih) = inputRect
+              drawText fontCache colDataDetailFieldValue (V2 (ix + 3) (iy + 2)) valText
+              -- Draw cursor for focused text fields
+              when isFocused $ do
+                let cursorText = case displayVal of
+                      Just (String t) -> T.take textCursor t
+                      _               -> T.take textCursor valText
+                    cursorX = ix + 3 + T.length cursorText * 7  -- approximate char width
+                SDL.rendererDrawColor renderer SDL.$= colDataFieldInputFocused
+                SDL.drawLine renderer
+                  (SDL.P (V2 (fromIntegral cursorX) (fromIntegral (iy + 2))))
+                  (SDL.P (V2 (fromIntegral cursorX) (fromIntegral (iy + fh - 4))))
+              -- Stepper buttons for numeric types
+              let fType = lookupFieldType path fields
+              case fType of
+                Just DFBool -> pure () -- Toggle on click, no stepper
+                Just (DFEnum _) -> do
+                  -- Draw prev/next arrows
+                  let minusRect = dataDetailFieldStepMinusRect rowIdx fieldCount fIdx layout
+                      plusRect = dataDetailFieldStepPlusRect rowIdx fieldCount fIdx layout
+                  SDL.rendererDrawColor renderer SDL.$= colSliderBtn
+                  SDL.fillRect renderer (Just (rectToSDL minusRect))
+                  SDL.fillRect renderer (Just (rectToSDL plusRect))
+                  let Rect (V2 mx' my', V2 _mw mh) = minusRect
+                      Rect (V2 plx ply, V2 _plw plh) = plusRect
+                  drawText fontCache colDataDetailFieldValue (V2 (mx' + 3) (my' + (mh - 12) `div` 2)) "◀"
+                  drawText fontCache colDataDetailFieldValue (V2 (plx + 3) (ply + (plh - 12) `div` 2)) "▶"
+                Just DFText -> pure () -- Text input, no stepper
+                _ -> do
+                  -- Numeric stepper (DFInt, DFFloat, DFDouble, DFFixed*)
+                  let minusRect = dataDetailFieldStepMinusRect rowIdx fieldCount fIdx layout
+                      plusRect = dataDetailFieldStepPlusRect rowIdx fieldCount fIdx layout
+                  SDL.rendererDrawColor renderer SDL.$= colSliderBtn
+                  SDL.fillRect renderer (Just (rectToSDL minusRect))
+                  SDL.fillRect renderer (Just (rectToSDL plusRect))
+                  let Rect (V2 mx' my', V2 _mw mh) = minusRect
+                      Rect (V2 plx ply, V2 _plw plh) = plusRect
+                  drawText fontCache colDataDetailFieldValue (V2 (mx' + 5) (my' + (mh - 12) `div` 2)) "-"
+                  drawText fontCache colDataDetailFieldValue (V2 (plx + 5) (ply + (plh - 12) `div` 2)) "+"
+            else do
+              let valX = fx + fw `div` 2
+              drawText fontCache colDataDetailFieldValue (V2 valX (fy + 2)) valText
 
         -- Separator line
         SDL.rendererDrawColor renderer SDL.$= colDataDetailBorder
         SDL.drawLine renderer
           (SDL.P (V2 (fromIntegral fx) (fromIntegral (fy + fh - 1))))
           (SDL.P (V2 (fromIntegral (fx + fw)) (fromIntegral (fy + fh - 1))))
+
+      -- Delete confirmation modal
+      when (dbsDeleteConfirm dbs) $ do
+        let dlgRect = deleteConfirmDialogRect layout
+            okRect = deleteConfirmOkRect layout
+            cancelRect = deleteConfirmCancelRect layout
+        SDL.rendererDrawColor renderer SDL.$= colDataDeleteConfirmBg
+        SDL.fillRect renderer (Just (rectToSDL dlgRect))
+        SDL.rendererDrawColor renderer SDL.$= colDataDetailBorder
+        SDL.drawRect renderer (Just (rectToSDL dlgRect))
+        let Rect (V2 dlx dly, V2 dlw _dlh) = dlgRect
+        drawText fontCache colDataDetailFieldValue (V2 (dlx + dlw `div` 2 - 50) (dly + 16)) "Delete record?"
+        SDL.rendererDrawColor renderer SDL.$= colDataDeleteBtn
+        SDL.fillRect renderer (Just (rectToSDL okRect))
+        SDL.rendererDrawColor renderer SDL.$= colDataCancelBtn
+        SDL.fillRect renderer (Just (rectToSDL cancelRect))
+        let Rect (V2 ox oy, V2 _ow oh) = okRect
+            Rect (V2 ccx ccy, V2 _ccw cch) = cancelRect
+        drawText fontCache colDataDetailFieldValue (V2 (ox + 8) (oy + (oh - 12) `div` 2)) "Delete"
+        drawText fontCache colDataDetailFieldValue (V2 (ccx + 8) (ccy + (cch - 12) `div` 2)) "Cancel"
+
     _ -> pure ()
   where
     find p = foldr (\x acc -> if p x then Just x else acc) Nothing
@@ -459,3 +603,18 @@ renderValue (Just (String t)) = t
 renderValue (Just (Number n)) = T.pack (show n)
 renderValue (Just (Array _))  = "[…]"
 renderValue (Just (Object _)) = "{…}"
+
+-- | Look up the 'DataFieldType' for a dot-separated path within field defs.
+lookupFieldType :: Text -> [DataFieldDef] -> Maybe DataFieldType
+lookupFieldType path defs = case T.splitOn "." path of
+  []     -> Nothing
+  (k:ks) -> case filter (\d -> dfName d == k) defs of
+    (d:_) -> resolveRest ks (dfType d)
+    []    -> Nothing
+  where
+    resolveRest [] ft = Just ft
+    resolveRest (s:ss) (DFRecord subDefs) =
+      case filter (\d -> dfName d == s) subDefs of
+        (d:_) -> resolveRest ss (dfType d)
+        []    -> Nothing
+    resolveRest _ _ = Nothing

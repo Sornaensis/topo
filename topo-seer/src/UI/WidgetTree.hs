@@ -187,9 +187,10 @@ buildDataBrowserWidgets
   -> Maybe Text      -- ^ Selected plugin
   -> Maybe Text      -- ^ Selected resource
   -> Int             -- ^ Number of loaded records
+  -> Bool            -- ^ Whether the selected resource supports create
   -> Layout
   -> [Widget]
-buildDataBrowserWidgets resources selectedPlugin selectedResource recordCount layout =
+buildDataBrowserWidgets resources selectedPlugin selectedResource recordCount canCreate layout =
   let pluginNames = Map.keys resources
       pluginWidgets =
         [ Widget (WidgetDataPluginSelect pName) (dataBrowserItemRect idx layout)
@@ -219,19 +220,28 @@ buildDataBrowserWidgets resources selectedPlugin selectedResource recordCount la
               , Widget (WidgetDataPageNext pName rName) (dataBrowserPageNextRect pageRow layout)
               ]
         _ -> []
-  in pluginWidgets ++ resourceWidgets ++ recordWidgets ++ pageWidgets
+      createRow = pageRow + (if null pageWidgets then 0 else 1)
+      createWidget
+        | canCreate =
+            [ Widget WidgetDataCreateNew (dataBrowserCreateButtonRect createRow layout) ]
+        | otherwise = []
+  in pluginWidgets ++ resourceWidgets ++ recordWidgets ++ pageWidgets ++ createWidget
 
 -- | Build clickable widgets for the record detail popover.
 --
 -- Includes a dismiss backdrop, plus expand\/collapse toggles for nested
--- fields.  Only call this when a record is actually selected.
+-- fields, and mutation controls (edit\/save\/cancel\/delete buttons plus
+-- per-field input widgets when in edit mode).
 buildDataDetailWidgets
   :: Int            -- ^ Row index the popover is anchored to
   -> [DataFieldDef] -- ^ Field definitions from the schema
   -> Set Text       -- ^ Currently expanded field paths
+  -> Bool           -- ^ Edit mode active
+  -> Bool           -- ^ Can update
+  -> Bool           -- ^ Can delete
   -> Layout
   -> [Widget]
-buildDataDetailWidgets rowIndex fields expanded layout =
+buildDataDetailWidgets rowIndex fields expanded editMode canUpdate canDelete layout =
   let flatFields = enumerateVisibleFields "" fields expanded
       fieldCount = length flatFields
       toggleWidgets =
@@ -242,7 +252,75 @@ buildDataDetailWidgets rowIndex fields expanded layout =
       dismissWidget =
         Widget WidgetDataDetailDismiss
                (dataDetailPopoverRect rowIndex fieldCount layout)
-  in dismissWidget : toggleWidgets
+      -- Mutation header buttons
+      editToggleWidget
+        | canUpdate =
+            [ Widget WidgetDataEditToggle
+                     (dataDetailEditToggleRect rowIndex fieldCount layout) ]
+        | otherwise = []
+      saveWidget
+        | editMode =
+            [ Widget WidgetDataEditSave
+                     (dataDetailSaveRect rowIndex fieldCount layout) ]
+        | otherwise = []
+      cancelWidget
+        | editMode =
+            [ Widget WidgetDataEditCancel
+                     (dataDetailCancelRect rowIndex fieldCount layout) ]
+        | otherwise = []
+      deleteWidget
+        | canDelete && not editMode =
+            [ Widget WidgetDataDeleteBtn
+                     (dataDetailDeleteRect rowIndex fieldCount layout) ]
+        | otherwise = []
+      -- Per-field input widgets (only in edit mode)
+      fieldInputWidgets
+        | editMode = concatMap (fieldInputsFor flatFields) (zip [0..] flatFields)
+        | otherwise = []
+      fieldInputsFor _allFields (fIdx, (path, nestable))
+        | nestable  = []
+        | otherwise =
+            let fType = lookupFieldType path fields
+            in case fType of
+              Just DFBool ->
+                [ Widget (WidgetDataFieldBoolToggle path)
+                         (dataDetailFieldInputRect rowIndex fieldCount fIdx layout) ]
+              Just (DFEnum _) ->
+                [ Widget (WidgetDataFieldEnumPrev path)
+                         (dataDetailFieldStepMinusRect rowIndex fieldCount fIdx layout)
+                , Widget (WidgetDataFieldEnumNext path)
+                         (dataDetailFieldStepPlusRect rowIndex fieldCount fIdx layout)
+                ]
+              Just DFInt ->
+                [ Widget (WidgetDataFieldStepMinus path)
+                         (dataDetailFieldStepMinusRect rowIndex fieldCount fIdx layout)
+                , Widget (WidgetDataFieldStepPlus path)
+                         (dataDetailFieldStepPlusRect rowIndex fieldCount fIdx layout)
+                ]
+              Just DFFloat ->
+                [ Widget (WidgetDataFieldStepMinus path)
+                         (dataDetailFieldStepMinusRect rowIndex fieldCount fIdx layout)
+                , Widget (WidgetDataFieldStepPlus path)
+                         (dataDetailFieldStepPlusRect rowIndex fieldCount fIdx layout)
+                ]
+              Just DFDouble ->
+                [ Widget (WidgetDataFieldStepMinus path)
+                         (dataDetailFieldStepMinusRect rowIndex fieldCount fIdx layout)
+                , Widget (WidgetDataFieldStepPlus path)
+                         (dataDetailFieldStepPlusRect rowIndex fieldCount fIdx layout)
+                ]
+              Just DFText ->
+                [ Widget (WidgetDataFieldTextClick path)
+                         (dataDetailFieldInputRect rowIndex fieldCount fIdx layout) ]
+              _ ->
+                -- Fixed-point types use stepper
+                [ Widget (WidgetDataFieldStepMinus path)
+                         (dataDetailFieldStepMinusRect rowIndex fieldCount fIdx layout)
+                , Widget (WidgetDataFieldStepPlus path)
+                         (dataDetailFieldStepPlusRect rowIndex fieldCount fIdx layout)
+                ]
+  in dismissWidget : editToggleWidget ++ deleteWidget ++ saveWidget ++ cancelWidget
+       ++ fieldInputWidgets ++ toggleWidgets
 
 -- | Enumerate the visible field rows, returning @(dotPath, isExpandable)@.
 --
@@ -273,6 +351,22 @@ isNestable :: DataFieldType -> Bool
 isNestable (DFRecord _) = True
 isNestable (DFAdt _)    = True
 isNestable _            = False
+
+-- | Look up the 'DataFieldType' for a dot-separated path within a flat
+-- list of top-level field definitions.
+lookupFieldType :: Text -> [DataFieldDef] -> Maybe DataFieldType
+lookupFieldType path defs = case T.splitOn "." path of
+  []    -> Nothing
+  (k:ks) -> case filter (\d -> dfName d == k) defs of
+    (d:_) -> resolveRest ks (dfType d)
+    []    -> Nothing
+  where
+    resolveRest [] ft = Just ft
+    resolveRest (s:ss) (DFRecord subDefs) =
+      case filter (\d -> dfName d == s) subDefs of
+        (d:_) -> resolveRest ss (dfType d)
+        []    -> Nothing
+    resolveRest _ _ = Nothing
 
 -- | Build full-row tooltip hit areas for config sliders, grouped by tab.
 --

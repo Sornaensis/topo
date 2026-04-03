@@ -44,7 +44,9 @@ import Actor.UI
   )
 import Control.Applicative ((<|>))
 import Control.Monad (when)
+import Data.Aeson (Value(..))
 import Data.IORef (IORef, readIORef, writeIORef)
+import qualified Data.Map.Strict as Map
 import Data.Word (Word32)
 import qualified Data.Text as Text
 import qualified Data.IntMap.Strict as IntMap
@@ -315,6 +317,26 @@ handleEvent inputContext event = do
       when (uiMenuMode uiSnap == MenuWorldLoad) $
         handleModalTextInput (uiWorldFilter uiSnap) txt
           (\f -> setUiWorldFilter uiHandle f >> setUiWorldSelected uiHandle 0)
+      -- Data browser text field editing
+      let dbs = uiDataBrowser uiSnap
+      case dbsFocusedField dbs of
+        Just path | dbsEditMode dbs || dbsCreateMode dbs -> do
+          let editVals = dbsEditValues dbs
+              cursor = dbsTextCursor dbs
+              filtered = Text.filter (\c -> c >= ' ') txt
+          when (not (Text.null filtered)) $ do
+            let currentText = case Map.lookup path editVals of
+                  Just (String t) -> t
+                  _ -> ""
+                (before, after) = Text.splitAt cursor currentText
+                newText = before <> filtered <> after
+                newCursor = cursor + Text.length filtered
+                newDbs = dbs
+                  { dbsEditValues = Map.insert path (String newText) editVals
+                  , dbsTextCursor = newCursor
+                  }
+            setUiDataBrowser uiHandle newDbs
+        _ -> pure ()
     SDL.KeyboardEvent keyboardEvent
       | SDL.keyboardEventKeyMotion keyboardEvent == SDL.Pressed ->
           do
@@ -322,37 +344,41 @@ handleEvent inputContext event = do
             let keycode = SDL.keysymKeycode (SDL.keyboardEventKeysym keyboardEvent)
             if uiSeedEditing uiSnap
               then handleSeedKey uiHandle (getUiSnapshot uiHandle) keycode
-              else case uiMenuMode uiSnap of
-                MenuPresetSave -> handlePresetSaveKey uiSnap keycode
-                MenuPresetLoad -> handlePresetLoadKey uiSnap keycode
-                MenuWorldSave  -> handleWorldSaveKey uiSnap keycode
-                MenuWorldLoad  -> handleWorldLoadKey uiSnap keycode
-                _ -> do
-                  uiSnap2 <- getUiSnapshot uiHandle
-                  let editor = uiEditor uiSnap2
-                      mods = SDL.keysymModifier (SDL.keyboardEventKeysym keyboardEvent)
-                      ctrl = SDL.keyModifierLeftCtrl mods || SDL.keyModifierRightCtrl mods
-                  if editorActive editor
-                    then if ctrl
-                      then case keycode of
-                        SDL.KeycodeZ -> submitAction inputEnv UiActionUndo
-                        SDL.KeycodeY -> submitAction inputEnv UiActionRedo
-                        _ -> handleEditorKey editor keycode
-                      else handleEditorKey editor keycode
-                    else case keycode of
-                      SDL.KeycodeEscape -> closeContextOrMenu
-                      SDL.KeycodeG -> submitAction inputEnv UiActionGenerate
-                      SDL.KeycodeC -> toggleConfig
-                      SDL.KeycodeE -> toggleEditor
-                      SDL.KeycodeUp -> bumpSeed uiHandle (getUiSnapshot uiHandle) 1
-                      SDL.KeycodeDown -> bumpSeed uiHandle (getUiSnapshot uiHandle) (-1)
-                      SDL.KeycodeL -> do
-                        logSnap <- getLogSnapshot logHandle
-                        setLogCollapsed logHandle (not (lsCollapsed logSnap))
-                      _ ->
-                        case viewModeForKey keycode of
-                          Just mode -> submitAction inputEnv (UiActionSetViewMode mode)
-                          Nothing -> pure ()
+              else let dbs = uiDataBrowser uiSnap
+                   in case dbsFocusedField dbs of
+                        Just path | dbsEditMode dbs || dbsCreateMode dbs ->
+                          handleDataFieldKey dbs path keycode
+                        _ -> case uiMenuMode uiSnap of
+                              MenuPresetSave -> handlePresetSaveKey uiSnap keycode
+                              MenuPresetLoad -> handlePresetLoadKey uiSnap keycode
+                              MenuWorldSave  -> handleWorldSaveKey uiSnap keycode
+                              MenuWorldLoad  -> handleWorldLoadKey uiSnap keycode
+                              _ -> do
+                                uiSnap2 <- getUiSnapshot uiHandle
+                                let editor = uiEditor uiSnap2
+                                    mods = SDL.keysymModifier (SDL.keyboardEventKeysym keyboardEvent)
+                                    ctrl = SDL.keyModifierLeftCtrl mods || SDL.keyModifierRightCtrl mods
+                                if editorActive editor
+                                  then if ctrl
+                                    then case keycode of
+                                      SDL.KeycodeZ -> submitAction inputEnv UiActionUndo
+                                      SDL.KeycodeY -> submitAction inputEnv UiActionRedo
+                                      _ -> handleEditorKey editor keycode
+                                    else handleEditorKey editor keycode
+                                  else case keycode of
+                                    SDL.KeycodeEscape -> closeContextOrMenu
+                                    SDL.KeycodeG -> submitAction inputEnv UiActionGenerate
+                                    SDL.KeycodeC -> toggleConfig
+                                    SDL.KeycodeE -> toggleEditor
+                                    SDL.KeycodeUp -> bumpSeed uiHandle (getUiSnapshot uiHandle) 1
+                                    SDL.KeycodeDown -> bumpSeed uiHandle (getUiSnapshot uiHandle) (-1)
+                                    SDL.KeycodeL -> do
+                                      logSnap <- getLogSnapshot logHandle
+                                      setLogCollapsed logHandle (not (lsCollapsed logSnap))
+                                    _ ->
+                                      case viewModeForKey keycode of
+                                        Just mode -> submitAction inputEnv (UiActionSetViewMode mode)
+                                        Nothing -> pure ()
     _ -> pure ()
   where
     inputEnv :: InputEnv
@@ -520,29 +546,118 @@ handleEvent inputContext event = do
           idx = maybe 0 id (lookup cur (zip fs [0..]))
           n   = length fs
       in fs !! ((idx + dir + n) `mod` n)
+
+    -- | Handle keyboard events when a data browser text field is focused.
+    handleDataFieldKey :: DataBrowserState -> Text.Text -> SDL.Keycode -> IO ()
+    handleDataFieldKey dbs path keycode = do
+      let editVals = dbsEditValues dbs
+          cursor   = dbsTextCursor dbs
+          currentText = case Map.lookup path editVals of
+            Just (String t) -> t
+            _ -> ""
+      case keycode of
+        SDL.KeycodeEscape -> do
+          -- Unfocus the field
+          let newDbs = dbs { dbsFocusedField = Nothing, dbsTextCursor = 0 }
+          setUiDataBrowser uiHandle newDbs
+          SDL.stopTextInput
+        SDL.KeycodeReturn -> do
+          -- Unfocus the field (confirm)
+          let newDbs = dbs { dbsFocusedField = Nothing, dbsTextCursor = 0 }
+          setUiDataBrowser uiHandle newDbs
+          SDL.stopTextInput
+        SDL.KeycodeTab -> do
+          -- Unfocus the field
+          let newDbs = dbs { dbsFocusedField = Nothing, dbsTextCursor = 0 }
+          setUiDataBrowser uiHandle newDbs
+          SDL.stopTextInput
+        SDL.KeycodeBackspace -> do
+          when (cursor > 0) $ do
+            let (before, after) = Text.splitAt cursor currentText
+                newText = Text.dropEnd 1 before <> after
+                newDbs = dbs
+                  { dbsEditValues = Map.insert path (String newText) editVals
+                  , dbsTextCursor = cursor - 1
+                  }
+            setUiDataBrowser uiHandle newDbs
+        SDL.KeycodeDelete -> do
+          when (cursor < Text.length currentText) $ do
+            let (before, after) = Text.splitAt cursor currentText
+                newText = before <> Text.drop 1 after
+                newDbs = dbs
+                  { dbsEditValues = Map.insert path (String newText) editVals
+                  }
+            setUiDataBrowser uiHandle newDbs
+        SDL.KeycodeLeft -> do
+          when (cursor > 0) $ do
+            let newDbs = dbs { dbsTextCursor = cursor - 1 }
+            setUiDataBrowser uiHandle newDbs
+        SDL.KeycodeRight -> do
+          when (cursor < Text.length currentText) $ do
+            let newDbs = dbs { dbsTextCursor = cursor + 1 }
+            setUiDataBrowser uiHandle newDbs
+        SDL.KeycodeHome -> do
+          let newDbs = dbs { dbsTextCursor = 0 }
+          setUiDataBrowser uiHandle newDbs
+        SDL.KeycodeEnd -> do
+          let newDbs = dbs { dbsTextCursor = Text.length currentText }
+          setUiDataBrowser uiHandle newDbs
+        _ -> pure ()
+
     closeContextOrMenu = do
       uiSnap <- getUiSnapshot uiHandle
       let dbs = uiDataBrowser uiSnap
-      case dbsSelectedRecord dbs of
-        Just _ -> do
-          -- Dismiss the data detail popover on first Escape press.
-          let newDbs = dbs
-                { dbsSelectedRecord    = Nothing
-                , dbsSelectedRecordKey = Nothing
-                , dbsSelectedRowIndex  = Nothing
-                , dbsExpandedFields    = Set.empty
-                }
+      if dbsDeleteConfirm dbs
+        then do
+          -- Cancel delete confirmation first
+          let newDbs = dbs { dbsDeleteConfirm = False }
           setUiDataBrowser uiHandle newDbs
-        Nothing ->
-          case uiContextHex uiSnap of
+        else if dbsEditMode dbs || dbsCreateMode dbs
+          then do
+            -- Cancel edit/create mode, revert to read-only
+            if dbsCreateMode dbs
+              then do
+                let newDbs = dbs
+                      { dbsEditMode         = False
+                      , dbsCreateMode        = False
+                      , dbsEditValues        = Map.empty
+                      , dbsFocusedField      = Nothing
+                      , dbsTextCursor        = 0
+                      , dbsSelectedRecord    = Nothing
+                      , dbsSelectedRecordKey = Nothing
+                      , dbsSelectedRowIndex  = Nothing
+                      }
+                setUiDataBrowser uiHandle newDbs
+                SDL.stopTextInput
+              else do
+                let newDbs = dbs
+                      { dbsEditMode     = False
+                      , dbsEditValues   = Map.empty
+                      , dbsFocusedField = Nothing
+                      , dbsTextCursor   = 0
+                      }
+                setUiDataBrowser uiHandle newDbs
+                SDL.stopTextInput
+          else case dbsSelectedRecord dbs of
             Just _ -> do
-              setUiContextHex uiHandle Nothing
-              setUiContextPos uiHandle Nothing
-              setUiMenuMode uiHandle MenuEscape
+              -- Dismiss the data detail popover on first Escape press.
+              let newDbs = dbs
+                    { dbsSelectedRecord    = Nothing
+                    , dbsSelectedRecordKey = Nothing
+                    , dbsSelectedRowIndex  = Nothing
+                    , dbsExpandedFields    = Set.empty
+                    }
+              setUiDataBrowser uiHandle newDbs
             Nothing ->
-              case uiMenuMode uiSnap of
-                MenuNone -> setUiMenuMode uiHandle MenuEscape
-                _        -> setUiMenuMode uiHandle MenuNone
+              case uiContextHex uiSnap of
+                Just _ -> do
+                  setUiContextHex uiHandle Nothing
+                  setUiContextPos uiHandle Nothing
+                  setUiMenuMode uiHandle MenuEscape
+                Nothing ->
+                  case uiMenuMode uiSnap of
+                    MenuNone -> setUiMenuMode uiHandle MenuEscape
+                    _        -> setUiMenuMode uiHandle MenuNone
 
     handlePresetSaveKey :: UiState -> SDL.Keycode -> IO ()
     handlePresetSaveKey _uiSnap keycode =

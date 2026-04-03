@@ -79,6 +79,16 @@ module UI.Theme
   , colDataDetailFieldValue
   , colDataDetailToggle
   , colDataRecordSelected
+  , colDataEditBtn
+  , colDataEditBtnActive
+  , colDataSaveBtn
+  , colDataCancelBtn
+  , colDataDeleteBtn
+  , colDataDeleteConfirmBg
+  , colDataCreateBtn
+  , colDataFieldInputBg
+  , colDataFieldInputBorder
+  , colDataFieldInputFocused
     -- * Log panel
   , colLogPanel
   , colLogHeader
@@ -420,6 +430,46 @@ colDataDetailToggle = V4 130 150 190 255
 -- | Highlighted record row background.
 colDataRecordSelected :: V4 Word8
 colDataRecordSelected = V4 70 80 110 240
+
+-- | Edit/pencil toggle button (inactive).
+colDataEditBtn :: V4 Word8
+colDataEditBtn = V4 70 80 100 255
+
+-- | Edit/pencil toggle button (active / edit mode on).
+colDataEditBtnActive :: V4 Word8
+colDataEditBtnActive = V4 90 130 180 255
+
+-- | Save button in detail popover.
+colDataSaveBtn :: V4 Word8
+colDataSaveBtn = V4 50 120 80 255
+
+-- | Cancel button in detail popover.
+colDataCancelBtn :: V4 Word8
+colDataCancelBtn = V4 110 80 60 255
+
+-- | Delete button in detail popover.
+colDataDeleteBtn :: V4 Word8
+colDataDeleteBtn = V4 150 50 50 255
+
+-- | Delete confirmation dialog background.
+colDataDeleteConfirmBg :: V4 Word8
+colDataDeleteConfirmBg = V4 45 40 40 250
+
+-- | Create (+) button in the data browser list.
+colDataCreateBtn :: V4 Word8
+colDataCreateBtn = V4 50 110 80 255
+
+-- | Background for an editable field input area.
+colDataFieldInputBg :: V4 Word8
+colDataFieldInputBg = V4 30 33 45 255
+
+-- | Border for an editable field input area.
+colDataFieldInputBorder :: V4 Word8
+colDataFieldInputBorder = V4 70 80 100 255
+
+-- | Border for a focused text input field.
+colDataFieldInputFocused :: V4 Word8
+colDataFieldInputFocused = V4 100 140 200 255
 
 -------------------------------------------------------------------------------
 -- Log panel

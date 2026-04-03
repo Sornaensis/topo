@@ -222,7 +222,7 @@ renderFrame context = do
             drawViewModeButtons renderer mode scrolledViewRects
             drawOverlayButtons renderer fontCache (rsUi snapshot) scrolledOR
             SDL.rendererClipRect renderer SDL.$= Nothing
-      drawConfigPanel renderer (rsUi snapshot) dataSnap layout
+      drawConfigPanel renderer fontCache (rsUi snapshot) dataSnap layout
       -- Record detail popover (floats over config panel).
       case fontCache of
         Just fc -> when (uiShowConfig (rsUi snapshot)) $

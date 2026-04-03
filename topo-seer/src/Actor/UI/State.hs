@@ -41,6 +41,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text as Text
 import Data.Word (Word64)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
@@ -104,6 +105,18 @@ data DataBrowserState = DataBrowserState
   -- ^ Row index of the selected record (for popover anchoring).
   , dbsExpandedFields   :: !(Set Text)
   -- ^ Dot-separated field paths currently expanded in the detail popover.
+  , dbsEditMode         :: !Bool
+  -- ^ Whether the detail popover is in edit mode.
+  , dbsCreateMode       :: !Bool
+  -- ^ Whether the popover is in create-new-record mode.
+  , dbsEditValues       :: !(Map Text Value)
+  -- ^ Working copy of field values being edited (dot-path -> Value).
+  , dbsFocusedField     :: !(Maybe Text)
+  -- ^ Dot-path of the currently focused text field (captures keyboard).
+  , dbsTextCursor       :: !Int
+  -- ^ Cursor position within the focused text field.
+  , dbsDeleteConfirm    :: !Bool
+  -- ^ Whether the delete confirmation modal is shown.
   } deriving (Eq, Show)
 
 -- | Empty initial state for the data browser.
@@ -119,6 +132,12 @@ emptyDataBrowserState = DataBrowserState
   , dbsSelectedRecordKey = Nothing
   , dbsSelectedRowIndex = Nothing
   , dbsExpandedFields   = Set.empty
+  , dbsEditMode         = False
+  , dbsCreateMode       = False
+  , dbsEditValues       = Map.empty
+  , dbsFocusedField     = Nothing
+  , dbsTextCursor       = 0
+  , dbsDeleteConfirm    = False
   }
 
 -- | Number of rows to display in the data browser tab.

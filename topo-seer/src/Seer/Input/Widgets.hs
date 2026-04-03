@@ -10,6 +10,9 @@ import Actor.SnapshotReceiver (writeDataSnapshot, writeTerrainSnapshot, bumpSnap
 import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshot(..), appendLog, getLogSnapshot, setLogCollapsed, setLogMinLevel, setLogScroll)
 import Data.Aeson (Value(..))
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as AesonKey
+import qualified Data.Aeson.KeyMap as AesonKM
+
 import Actor.UI
   ( ConfigTab(..)
   , DataBrowserState(..)
@@ -92,8 +95,8 @@ import Seer.Input.ViewControls
 import Topo.Overlay (overlayNames)
 import Topo.Pipeline.Dep (builtinDependencies, disabledClosure)
 import Topo.Pipeline.Stage (StageId, parseStageId)
-import Topo.Plugin.RPC.DataService (DataQuery(..), DataRecord(..), QueryResource(..), QueryResult(..))
-import Topo.Plugin.DataResource (DataResourceSchema(..), DataFieldDef(..))
+import Topo.Plugin.RPC.DataService (DataMutation(..), DataQuery(..), DataRecord(..), MutateResource(..), MutateResult(..), QueryResource(..), QueryResult(..))
+import Topo.Plugin.DataResource (DataResourceSchema(..), DataFieldDef(..), DataFieldType(..), DataOperations(..), noOperations)
 import Topo.Plugin.RPC.Manifest (RPCParamSpec(..))
 import Topo.World (TerrainWorld(..))
 import UI.Layout
@@ -101,7 +104,7 @@ import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets
 import UI.Widgets (Rect(..), containsPoint)
 import System.Random (randomIO)
 import Hyperspace.Actor (ActorHandle, Protocol)
-import Actor.PluginManager (getPluginDataDirectories, notifyWorldChanged, queryPluginResource, setDisabledPlugins, setPluginOrder)
+import Actor.PluginManager (getPluginDataDirectories, notifyWorldChanged, queryPluginResource, mutatePluginResource, setDisabledPlugins, setPluginOrder)
 import Control.Concurrent (forkIO)
 import Actor.Simulation (requestSimTick, setSimWorld)
 import Actor.UiActions (ActorHandles(..), UiAction(..))
@@ -143,11 +146,19 @@ handleClick inputContext (SDL.P (V2 x y)) = do
           let schemas = Map.findWithDefault [] pName (uiDataResources uiSnap)
               mSchema = find (\s -> drsName s == rName) schemas
               fields = maybe [] drsFields mSchema
-          in buildDataDetailWidgets rowIdx fields (dbsExpandedFields dbs_) layout
+              ops = maybe noOperations drsOperations mSchema
+              isEditing = dbsEditMode dbs_ || dbsCreateMode dbs_
+          in buildDataDetailWidgets rowIdx fields (dbsExpandedFields dbs_) isEditing (doUpdate ops) (doDelete ops) layout
         _ -> []
+      selectedSchema = do
+        pName <- dbsSelectedPlugin (uiDataBrowser uiSnap)
+        rName <- dbsSelectedResource (uiDataBrowser uiSnap)
+        schemas <- Map.lookup pName (uiDataResources uiSnap)
+        find (\s -> drsName s == rName) schemas
+      canCreate = maybe False (doCreate . drsOperations) selectedSchema
       widgetsAll = buildWidgets layout
                 ++ buildPluginWidgets (uiPluginNames uiSnap) (uiPluginExpanded uiSnap) (uiPluginParamSpecs uiSnap) layout
-                ++ buildDataBrowserWidgets (uiDataResources uiSnap) (dbsSelectedPlugin (uiDataBrowser uiSnap)) (dbsSelectedResource (uiDataBrowser uiSnap)) (length (dbsRecords (uiDataBrowser uiSnap))) layout
+                ++ buildDataBrowserWidgets (uiDataResources uiSnap) (dbsSelectedPlugin (uiDataBrowser uiSnap)) (dbsSelectedResource (uiDataBrowser uiSnap)) (length (dbsRecords (uiDataBrowser uiSnap))) canCreate layout
                 ++ detailWidgets
       widgets =
         if uiShowConfig uiSnap
@@ -297,6 +308,19 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       WidgetDataRecordSelect _ -> True
       WidgetDataDetailDismiss -> True
       WidgetDataFieldToggle _ -> True
+      WidgetDataEditToggle -> True
+      WidgetDataEditSave -> True
+      WidgetDataEditCancel -> True
+      WidgetDataCreateNew -> True
+      WidgetDataDeleteBtn -> True
+      WidgetDataDeleteConfirm -> True
+      WidgetDataDeleteCancel -> True
+      WidgetDataFieldTextClick _ -> True
+      WidgetDataFieldStepMinus _ -> True
+      WidgetDataFieldStepPlus _ -> True
+      WidgetDataFieldBoolToggle _ -> True
+      WidgetDataFieldEnumPrev _ -> True
+      WidgetDataFieldEnumNext _ -> True
       _ -> False
 
     bespokeConfigWidgetAllowed :: Bool -> ConfigTab -> WidgetId -> Bool
@@ -315,6 +339,19 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       WidgetDataRecordSelect _ -> tab == ConfigData
       WidgetDataDetailDismiss -> tab == ConfigData
       WidgetDataFieldToggle _ -> tab == ConfigData
+      WidgetDataEditToggle -> tab == ConfigData
+      WidgetDataEditSave -> tab == ConfigData
+      WidgetDataEditCancel -> tab == ConfigData
+      WidgetDataCreateNew -> tab == ConfigData
+      WidgetDataDeleteBtn -> tab == ConfigData
+      WidgetDataDeleteConfirm -> tab == ConfigData
+      WidgetDataDeleteCancel -> tab == ConfigData
+      WidgetDataFieldTextClick _ -> tab == ConfigData
+      WidgetDataFieldStepMinus _ -> tab == ConfigData
+      WidgetDataFieldStepPlus _ -> tab == ConfigData
+      WidgetDataFieldBoolToggle _ -> tab == ConfigData
+      WidgetDataFieldEnumPrev _ -> tab == ConfigData
+      WidgetDataFieldEnumNext _ -> tab == ConfigData
       _ -> True
 
     handleBespokeConfigWidget :: Layout -> WidgetId -> V2 Int -> (IO () -> IO ()) -> UiState -> IO ()
@@ -499,8 +536,15 @@ handleClick inputContext (SDL.P (V2 x y)) = do
               , dbsSelectedRecordKey = Nothing
               , dbsSelectedRowIndex  = Nothing
               , dbsExpandedFields    = Set.empty
+              , dbsEditMode          = False
+              , dbsCreateMode        = False
+              , dbsEditValues        = Map.empty
+              , dbsFocusedField      = Nothing
+              , dbsTextCursor        = 0
+              , dbsDeleteConfirm     = False
               }
         setUiDataBrowser uiHandle newDbs
+        SDL.stopTextInput
       WidgetDataFieldToggle path -> whenConfigVisible $ do
         let dbs = uiDataBrowser uiState
             expanded = dbsExpandedFields dbs
@@ -509,6 +553,186 @@ handleClick inputContext (SDL.P (V2 x y)) = do
               | otherwise                = Set.insert path expanded
             newDbs = dbs { dbsExpandedFields = newExpanded }
         setUiDataBrowser uiHandle newDbs
+      WidgetDataEditToggle -> whenConfigVisible $ do
+        let dbs = uiDataBrowser uiState
+        if dbsEditMode dbs
+          then do
+            -- Exit edit mode, discard changes
+            let newDbs = dbs
+                  { dbsEditMode     = False
+                  , dbsEditValues   = Map.empty
+                  , dbsFocusedField = Nothing
+                  , dbsTextCursor   = 0
+                  }
+            setUiDataBrowser uiHandle newDbs
+            SDL.stopTextInput
+          else do
+            -- Enter edit mode, populate editValues from current record
+            let vals = case dbsSelectedRecord dbs of
+                  Just rec -> unDataRecord rec
+                  Nothing  -> Map.empty
+                newDbs = dbs
+                  { dbsEditMode   = True
+                  , dbsEditValues = vals
+                  }
+            setUiDataBrowser uiHandle newDbs
+      WidgetDataEditSave -> whenConfigVisible $ do
+        let dbs = uiDataBrowser uiState
+        case (dbsSelectedPlugin dbs, dbsSelectedResource dbs) of
+          (Just pName, Just rName) -> do
+            let editVals = dbsEditValues dbs
+                newRecord = DataRecord editVals
+            SDL.stopTextInput
+            if dbsCreateMode dbs
+              then do
+                -- MutCreate
+                let mr = MutateResource rName (MutCreate newRecord)
+                _ <- forkIO $ do
+                  result <- mutatePluginResource pluginManagerHandle pName mr
+                  case result of
+                    Right _mResult -> refreshDataBrowser dbs pName rName
+                    Left _err -> pure ()
+                let newDbs = dbs
+                      { dbsCreateMode   = False
+                      , dbsEditMode     = False
+                      , dbsEditValues   = Map.empty
+                      , dbsFocusedField = Nothing
+                      , dbsTextCursor   = 0
+                      , dbsSelectedRecord = Nothing
+                      , dbsSelectedRecordKey = Nothing
+                      , dbsSelectedRowIndex = Nothing
+                      }
+                setUiDataBrowser uiHandle newDbs
+              else do
+                -- MutUpdate
+                case dbsSelectedRecordKey dbs of
+                  Just keyVal -> do
+                    let mr = MutateResource rName (MutUpdate keyVal newRecord)
+                    _ <- forkIO $ do
+                      result <- mutatePluginResource pluginManagerHandle pName mr
+                      case result of
+                        Right _mResult -> refreshDataBrowser dbs pName rName
+                        Left _err -> pure ()
+                    let newDbs = dbs
+                          { dbsEditMode     = False
+                          , dbsEditValues   = Map.empty
+                          , dbsFocusedField = Nothing
+                          , dbsTextCursor   = 0
+                          }
+                    setUiDataBrowser uiHandle newDbs
+                  Nothing -> pure ()
+          _ -> pure ()
+      WidgetDataEditCancel -> whenConfigVisible $ do
+        let dbs = uiDataBrowser uiState
+        if dbsCreateMode dbs
+          then do
+            -- Cancel create: dismiss the popover entirely
+            let newDbs = dbs
+                  { dbsCreateMode       = False
+                  , dbsEditMode         = False
+                  , dbsEditValues       = Map.empty
+                  , dbsFocusedField     = Nothing
+                  , dbsTextCursor       = 0
+                  , dbsSelectedRecord   = Nothing
+                  , dbsSelectedRecordKey = Nothing
+                  , dbsSelectedRowIndex = Nothing
+                  }
+            setUiDataBrowser uiHandle newDbs
+            SDL.stopTextInput
+          else do
+            -- Cancel edit: revert to read-only
+            let newDbs = dbs
+                  { dbsEditMode     = False
+                  , dbsEditValues   = Map.empty
+                  , dbsFocusedField = Nothing
+                  , dbsTextCursor   = 0
+                  }
+            setUiDataBrowser uiHandle newDbs
+            SDL.stopTextInput
+      WidgetDataCreateNew -> whenConfigVisible $ do
+        let dbs = uiDataBrowser uiState
+            -- Build default values from schema field definitions
+            mSchema = do
+              pName <- dbsSelectedPlugin dbs
+              rName <- dbsSelectedResource dbs
+              schemas <- Map.lookup pName (uiDataResources uiState)
+              find (\s -> drsName s == rName) schemas
+            defaults = case mSchema of
+              Just schema -> Map.fromList
+                [ (dfName f, v)
+                | f <- drsFields schema
+                , Just v <- [dfDefault f]
+                ]
+              Nothing -> Map.empty
+            dummyRecord = DataRecord defaults
+            newDbs = dbs
+              { dbsCreateMode       = True
+              , dbsEditMode         = True
+              , dbsEditValues       = defaults
+              , dbsSelectedRecord   = Just dummyRecord
+              , dbsSelectedRecordKey = Nothing
+              , dbsSelectedRowIndex = Just 0
+              , dbsExpandedFields   = Set.empty
+              , dbsFocusedField     = Nothing
+              , dbsTextCursor       = 0
+              }
+        setUiDataBrowser uiHandle newDbs
+      WidgetDataDeleteBtn -> whenConfigVisible $ do
+        let dbs = uiDataBrowser uiState
+            newDbs = dbs { dbsDeleteConfirm = True }
+        setUiDataBrowser uiHandle newDbs
+      WidgetDataDeleteConfirm -> whenConfigVisible $ do
+        let dbs = uiDataBrowser uiState
+        case (dbsSelectedPlugin dbs, dbsSelectedResource dbs, dbsSelectedRecordKey dbs) of
+          (Just pName, Just rName, Just keyVal) -> do
+            let mr = MutateResource rName (MutDelete keyVal)
+            _ <- forkIO $ do
+              result <- mutatePluginResource pluginManagerHandle pName mr
+              case result of
+                Right _mResult -> refreshDataBrowser dbs pName rName
+                Left _err -> pure ()
+            let newDbs = dbs
+                  { dbsDeleteConfirm    = False
+                  , dbsSelectedRecord   = Nothing
+                  , dbsSelectedRecordKey = Nothing
+                  , dbsSelectedRowIndex = Nothing
+                  , dbsExpandedFields   = Set.empty
+                  }
+            setUiDataBrowser uiHandle newDbs
+          _ -> pure ()
+      WidgetDataDeleteCancel -> whenConfigVisible $ do
+        let dbs = uiDataBrowser uiState
+            newDbs = dbs { dbsDeleteConfirm = False }
+        setUiDataBrowser uiHandle newDbs
+      WidgetDataFieldTextClick path -> whenConfigVisible $ do
+        let dbs = uiDataBrowser uiState
+            currentVal = case Map.lookup path (dbsEditValues dbs) of
+              Just (String t) -> Text.length t
+              _ -> 0
+            newDbs = dbs
+              { dbsFocusedField = Just path
+              , dbsTextCursor   = currentVal
+              }
+        setUiDataBrowser uiHandle newDbs
+        -- Start SDL text input
+        let Rect (V2 rx ry, V2 rw rh) = configPanelRect currentLayout
+            rawRect = Raw.Rect (fromIntegral rx) (fromIntegral ry) (fromIntegral rw) (fromIntegral rh)
+        SDL.startTextInput rawRect
+      WidgetDataFieldStepMinus path -> whenConfigVisible $ do
+        bumpFieldValue uiState path (-1)
+      WidgetDataFieldStepPlus path -> whenConfigVisible $ do
+        bumpFieldValue uiState path 1
+      WidgetDataFieldBoolToggle path -> whenConfigVisible $ do
+        let dbs = uiDataBrowser uiState
+            current = case Map.lookup path (dbsEditValues dbs) of
+              Just (Bool b) -> b
+              _ -> False
+            newDbs = dbs { dbsEditValues = Map.insert path (Bool (not current)) (dbsEditValues dbs) }
+        setUiDataBrowser uiHandle newDbs
+      WidgetDataFieldEnumPrev path -> whenConfigVisible $ do
+        cycleEnumValue uiState path (-1)
+      WidgetDataFieldEnumNext path -> whenConfigVisible $ do
+        cycleEnumValue uiState path 1
       _ -> pure ()
 
     handleMenuClick ly _widgets point = do
@@ -713,6 +937,81 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       setUiSeedInput uiHandle (Text.pack (show seed))
       setUiSeedEditing uiHandle False
       SDL.stopTextInput
+
+    -- | Re-query the current resource and update the data browser records.
+    refreshDataBrowser :: DataBrowserState -> Text.Text -> Text.Text -> IO ()
+    refreshDataBrowser dbs pName rName = do
+      let offset = dbsPageOffset dbs
+          qr = QueryResource rName QueryAll (Just 20) (Just offset)
+      result <- queryPluginResource pluginManagerHandle pName qr
+      uiSnap' <- getUiSnapshot uiHandle
+      let dbs' = uiDataBrowser uiSnap'
+      case result of
+        Right qResult -> setUiDataBrowser uiHandle dbs'
+          { dbsRecords    = qrsRecords qResult
+          , dbsTotalCount = qrsTotalCount qResult
+          , dbsLoading    = False
+          }
+        Left _err -> setUiDataBrowser uiHandle dbs' { dbsLoading = False }
+
+    -- | Bump a numeric field value by a delta direction.
+    bumpFieldValue :: UiState -> Text.Text -> Int -> IO ()
+    bumpFieldValue uiSt path dir = do
+      let dbs = uiDataBrowser uiSt
+          editVals = dbsEditValues dbs
+          currentVal = Map.lookup path editVals
+          delta = fromIntegral dir :: Double
+          newVal = case currentVal of
+            Just (Number n) -> Number (realToFrac (realToFrac n + delta :: Double))
+            Just (String t)
+              | Just d <- readDouble t -> Number (realToFrac (d + delta))
+            _ -> Number (realToFrac delta)
+          newDbs = dbs { dbsEditValues = Map.insert path newVal editVals }
+      setUiDataBrowser uiHandle newDbs
+
+    readDouble :: Text.Text -> Maybe Double
+    readDouble t = case reads (Text.unpack t) of
+      [(d, "")] -> Just d
+      _         -> Nothing
+
+    -- | Cycle a DFEnum field value by a delta direction.
+    cycleEnumValue :: UiState -> Text.Text -> Int -> IO ()
+    cycleEnumValue uiSt path dir = do
+      let dbs = uiDataBrowser uiSt
+          editVals = dbsEditValues dbs
+          mSchema = do
+            pName <- dbsSelectedPlugin dbs
+            rName <- dbsSelectedResource dbs
+            schemas <- Map.lookup pName (uiDataResources uiSt)
+            find (\s -> drsName s == rName) schemas
+          mFieldType = mSchema >>= \schema -> lookupFieldType path (drsFields schema)
+      case mFieldType of
+        Just (DFEnum options) | not (null options) -> do
+          let currentText = case Map.lookup path editVals of
+                Just (String t) -> t
+                _ -> ""
+              currentIdx = maybe 0 id (findIndex (== currentText) options)
+              n = length options
+              newIdx = (currentIdx + dir + n) `mod` n
+              newVal = String (options !! newIdx)
+              newDbs = dbs { dbsEditValues = Map.insert path newVal editVals }
+          setUiDataBrowser uiHandle newDbs
+        _ -> pure ()
+
+    -- | Look up the field type for a dot-path.
+    lookupFieldType :: Text.Text -> [DataFieldDef] -> Maybe DataFieldType
+    lookupFieldType path' defs = case Text.splitOn "." path' of
+      []     -> Nothing
+      (k:ks) -> case filter (\d -> dfName d == k) defs of
+        (d:_) -> resolveRest ks (dfType d)
+        []    -> Nothing
+      where
+        resolveRest [] ft = Just ft
+        resolveRest (s:ss) (DFRecord subDefs') =
+          case filter (\d -> dfName d == s) subDefs' of
+            (d:_) -> resolveRest ss (dfType d)
+            []    -> Nothing
+        resolveRest _ _ = Nothing
 
     signedSliderDelta sliderPart step = case sliderPart of
       SliderPartMinus -> negate step

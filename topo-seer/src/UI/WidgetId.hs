@@ -91,6 +91,33 @@ data WidgetId
     -- ^ Dismiss the detail popover.
   | WidgetDataFieldToggle !Text
     -- ^ Toggle expand/collapse of a nested field path in the detail popover.
+    -- Data browser mutation controls
+  | WidgetDataEditToggle
+    -- ^ Toggle edit mode in the detail popover.
+  | WidgetDataEditSave
+    -- ^ Save changes (MutUpdate or MutCreate).
+  | WidgetDataEditCancel
+    -- ^ Cancel editing / creating, revert to read-only.
+  | WidgetDataCreateNew
+    -- ^ Open the popover in create-new-record mode.
+  | WidgetDataDeleteBtn
+    -- ^ Show the delete confirmation modal.
+  | WidgetDataDeleteConfirm
+    -- ^ Confirm deletion.
+  | WidgetDataDeleteCancel
+    -- ^ Cancel deletion.
+  | WidgetDataFieldTextClick !Text
+    -- ^ Click a DFText field to focus it for keyboard input.
+  | WidgetDataFieldStepMinus !Text
+    -- ^ Minus button for a numeric field stepper.
+  | WidgetDataFieldStepPlus !Text
+    -- ^ Plus button for a numeric field stepper.
+  | WidgetDataFieldBoolToggle !Text
+    -- ^ Toggle a DFBool field.
+  | WidgetDataFieldEnumPrev !Text
+    -- ^ Cycle a DFEnum field to the previous option.
+  | WidgetDataFieldEnumNext !Text
+    -- ^ Cycle a DFEnum field to the next option.
     -- Editor toolbar
   | WidgetEditorTool !Int
     -- ^ Tool button (0-indexed corresponding to 'EditorTool' enum order).

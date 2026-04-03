@@ -49,8 +49,19 @@ module UI.Layout
   , dataBrowserItemRect
   , dataBrowserPagePrevRect
   , dataBrowserPageNextRect
+  , dataBrowserCreateButtonRect
   , dataDetailPopoverRect
   , dataDetailFieldRect
+  , dataDetailEditToggleRect
+  , dataDetailSaveRect
+  , dataDetailCancelRect
+  , dataDetailDeleteRect
+  , dataDetailFieldInputRect
+  , dataDetailFieldStepMinusRect
+  , dataDetailFieldStepPlusRect
+  , deleteConfirmDialogRect
+  , deleteConfirmOkRect
+  , deleteConfirmCancelRect
   , configParamRowRect
   , configChunkMinusRect
   , configChunkPlusRect
@@ -850,6 +861,114 @@ dataDetailFieldRect rowIndex fieldCount fieldIndex layout =
       rowH = 22
       padding = 8
   in Rect (V2 (px + padding) (py + headerH + fieldIndex * rowH), V2 (pw - padding * 2) rowH)
+
+-- | Create-new-record button below the record list in the data browser.
+dataBrowserCreateButtonRect :: Int -> Layout -> Rect
+dataBrowserCreateButtonRect rowIndex layout =
+  let Rect (V2 x rowY, V2 _w rowHeight) = configScrollRowRect rowIndex layout
+      pad = 8
+      btnW = 28
+      btnH = min 20 rowHeight
+      btnY = rowY + (rowHeight - btnH) `div` 2
+  in Rect (V2 (x + pad) btnY, V2 btnW btnH)
+
+-- | Edit/pencil toggle button in the detail popover header (right side).
+dataDetailEditToggleRect :: Int -> Int -> Layout -> Rect
+dataDetailEditToggleRect rowIndex fieldCount layout =
+  let Rect (V2 px py, V2 pw _ph) = dataDetailPopoverRect rowIndex fieldCount layout
+      btnW = 28
+      btnH = 20
+      gap = 4
+  in Rect (V2 (px + pw - btnW - gap) (py + 4), V2 btnW btnH)
+
+-- | Save button in the detail popover header (edit/create mode).
+dataDetailSaveRect :: Int -> Int -> Layout -> Rect
+dataDetailSaveRect rowIndex fieldCount layout =
+  let Rect (V2 px py, V2 pw _ph) = dataDetailPopoverRect rowIndex fieldCount layout
+      btnW = 40
+      btnH = 20
+      gap = 4
+      editRect = dataDetailEditToggleRect rowIndex fieldCount layout
+      Rect (V2 ex _, _) = editRect
+  in Rect (V2 (ex - btnW - gap) (py + 4), V2 btnW btnH)
+
+-- | Cancel button in the detail popover header (edit/create mode).
+dataDetailCancelRect :: Int -> Int -> Layout -> Rect
+dataDetailCancelRect rowIndex fieldCount layout =
+  let Rect (V2 _px py, V2 _pw _ph) = dataDetailPopoverRect rowIndex fieldCount layout
+      btnW = 48
+      btnH = 20
+      gap = 4
+      saveRect = dataDetailSaveRect rowIndex fieldCount layout
+      Rect (V2 sx _, _) = saveRect
+  in Rect (V2 (sx - btnW - gap) (py + 4), V2 btnW btnH)
+
+-- | Delete button in the detail popover header (left of edit toggle).
+dataDetailDeleteRect :: Int -> Int -> Layout -> Rect
+dataDetailDeleteRect rowIndex fieldCount layout =
+  let Rect (V2 px py, V2 _pw _ph) = dataDetailPopoverRect rowIndex fieldCount layout
+      btnW = 28
+      btnH = 20
+      gap = 4
+  in Rect (V2 (px + gap) (py + 4), V2 btnW btnH)
+
+-- | Input area for a field (value editing area — right half of a field row).
+dataDetailFieldInputRect :: Int -> Int -> Int -> Layout -> Rect
+dataDetailFieldInputRect rowIndex fieldCount fieldIndex layout =
+  let Rect (V2 fx fy, V2 fw fh) = dataDetailFieldRect rowIndex fieldCount fieldIndex layout
+      valX = fx + fw `div` 2
+      valW = fw - fw `div` 2
+  in Rect (V2 valX fy, V2 valW fh)
+
+-- | Minus stepper button for a numeric field in edit mode.
+dataDetailFieldStepMinusRect :: Int -> Int -> Int -> Layout -> Rect
+dataDetailFieldStepMinusRect rowIndex fieldCount fieldIndex layout =
+  let Rect (V2 fx fy, V2 fw fh) = dataDetailFieldRect rowIndex fieldCount fieldIndex layout
+      valX = fx + fw `div` 2
+      btnW = 20
+      btnH = min 18 fh
+      btnY = fy + (fh - btnH) `div` 2
+  in Rect (V2 valX btnY, V2 btnW btnH)
+
+-- | Plus stepper button for a numeric field in edit mode.
+dataDetailFieldStepPlusRect :: Int -> Int -> Int -> Layout -> Rect
+dataDetailFieldStepPlusRect rowIndex fieldCount fieldIndex layout =
+  let Rect (V2 fx fy, V2 fw fh) = dataDetailFieldRect rowIndex fieldCount fieldIndex layout
+      btnW = 20
+      btnH = min 18 fh
+      btnY = fy + (fh - btnH) `div` 2
+  in Rect (V2 (fx + fw - btnW) btnY, V2 btnW btnH)
+
+-- | Delete confirmation dialog (centered on screen).
+deleteConfirmDialogRect :: Layout -> Rect
+deleteConfirmDialogRect (Layout (V2 winW winH) _ _) =
+  let dlgW = 260
+      dlgH = 100
+      dx = (winW - dlgW) `div` 2
+      dy = (winH - dlgH) `div` 2
+  in Rect (V2 dx dy, V2 dlgW dlgH)
+
+-- | OK button in the delete confirmation dialog.
+deleteConfirmOkRect :: Layout -> Rect
+deleteConfirmOkRect layout =
+  let Rect (V2 dx dy, V2 dw dh) = deleteConfirmDialogRect layout
+      btnW = 60
+      btnH = 28
+      gap = 12
+      btnY = dy + dh - btnH - gap
+      btnX = dx + dw `div` 2 - btnW - 6
+  in Rect (V2 btnX btnY, V2 btnW btnH)
+
+-- | Cancel button in the delete confirmation dialog.
+deleteConfirmCancelRect :: Layout -> Rect
+deleteConfirmCancelRect layout =
+  let Rect (V2 dx dy, V2 dw dh) = deleteConfirmDialogRect layout
+      btnW = 60
+      btnH = 28
+      gap = 12
+      btnY = dy + dh - btnH - gap
+      btnX = dx + dw `div` 2 + 6
+  in Rect (V2 btnX btnY, V2 btnW btnH)
 
 ------------------------------------------------------------------------
 -- Editor toolbar
