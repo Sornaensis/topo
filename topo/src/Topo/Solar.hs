@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns  #-}
 {-# LANGUAGE DeriveGeneric #-}
 
 -- | Solar geometry for topo worlds.
@@ -19,6 +20,12 @@ module Topo.Solar
   , DayInfo(..)
   , dayInfo
   , tileDayInfo
+    -- * Irradiance
+  , SolarConfig(..)
+  , defaultSolarConfig
+  , solarIrradiance
+  , tileIrradiance
+  , annualMeanInsolation
     -- * Low-level helpers
   , solarDeclination
   , hourAngle
@@ -26,6 +33,9 @@ module Topo.Solar
   ) where
 
 import GHC.Generics (Generic)
+import Topo.Config.JSON
+  (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
+   genericToJSON, genericParseJSON)
 
 -- ---------------------------------------------------------------------------
 -- Types
@@ -196,6 +206,129 @@ dayInfo latRad dec hpd =
            , diDayLength   = sunset - sunrise
            }
 {-# INLINE dayInfo #-}
+
+-- ---------------------------------------------------------------------------
+-- Irradiance
+-- ---------------------------------------------------------------------------
+
+-- | Configuration for the atmospheric irradiance model.
+--
+-- These parameters control how much of the top-of-atmosphere solar flux
+-- reaches the surface through atmospheric attenuation and scattering.
+data SolarConfig = SolarConfig
+  { scAtmosphericK    :: !Float
+    -- ^ Optical depth parameter for Beer–Lambert attenuation.
+    -- Higher values mean a thicker/hazier atmosphere.  Earth-like: 0.2.
+  , scDiffuseFraction :: !Float
+    -- ^ Base diffuse irradiance fraction (scattered skylight).
+    -- Added to direct beam when the sun is above the horizon.  0.12 typical.
+  } deriving (Show, Eq, Generic)
+
+instance ToJSON SolarConfig where
+  toJSON = genericToJSON (configOptions "sc")
+
+instance FromJSON SolarConfig where
+  parseJSON v = genericParseJSON (configOptions "sc")
+                  (mergeDefaults (toJSON defaultSolarConfig) v)
+
+-- | Earth-like defaults for the irradiance model.
+defaultSolarConfig :: SolarConfig
+defaultSolarConfig = SolarConfig
+  { scAtmosphericK    = 0.2
+  , scDiffuseFraction = 0.12
+  }
+
+-- | Surface irradiance as a fraction of top-of-atmosphere insolation.
+--
+-- Uses Beer–Lambert atmospheric attenuation for direct beam, plus a
+-- constant diffuse (scattered) component when the sun is above the
+-- horizon.  Returns 0 at night.
+--
+-- @solarIrradiance atmosphericK diffuseFrac zenith@
+solarIrradiance :: Float  -- ^ Atmospheric optical depth /k/
+                -> Float  -- ^ Diffuse fraction
+                -> Float  -- ^ Zenith angle (radians, from 'SolarPosition')
+                -> Float  -- ^ Irradiance fraction [0, 1]
+solarIrradiance k diffuseFrac zenith
+  | zenith >= pi / 2 = 0   -- sun below horizon
+  | otherwise =
+      let cosZ          = cos zenith
+          -- Air mass ≈ 1/cos(z), clamped to avoid singularity at horizon
+          airMass       = min 38.0 (1.0 / max 0.01 cosZ)
+          transmittance = exp (negate k * airMass)
+          direct        = cosZ * transmittance
+          diffuse       = diffuseFrac
+      in  clampF 0 1 (direct + diffuse)
+{-# INLINE solarIrradiance #-}
+
+-- | Per-tile irradiance combining solar geometry and atmospheric model.
+--
+-- Computes the sun position for the tile and then applies the
+-- Beer–Lambert + diffuse irradiance model.  The result is in [0, 1]
+-- relative to top-of-atmosphere insolation and does /not/ include the
+-- 'pcInsolation' multiplier — multiply the result by 'pcInsolation'
+-- (or 'lmInsolation') at the call site to get absolute irradiance.
+tileIrradiance :: SolarConfig
+               -> Float  -- ^ Axial tilt (degrees)
+               -> Float  -- ^ Year fraction (0–1)
+               -> Float  -- ^ Hours per day
+               -> Float  -- ^ Calendar hour of day
+               -> Float  -- ^ Tile latitude (radians)
+               -> Float  -- ^ Tile longitude (degrees)
+               -> Float  -- ^ Irradiance fraction [0, 1]
+tileIrradiance cfg tiltDeg yearFrac hpd calHour latRad lonDeg =
+  let sp = tileSolarPos tiltDeg yearFrac hpd calHour latRad lonDeg
+  in  solarIrradiance (scAtmosphericK cfg) (scDiffuseFraction cfg) (spZenith sp)
+{-# INLINE tileIrradiance #-}
+
+-- | Annual-mean surface insolation at a given latitude.
+--
+-- Numerically integrates irradiance over 12 months × 8 hour samples
+-- to produce a latitude-dependent annual average fraction of
+-- top-of-atmosphere flux.  The result is in [0, 1] and can replace
+-- the constant 'pcInsolation' scalar in climate models.
+--
+-- This is meant for climate initialisation, not per-tick computation.
+annualMeanInsolation
+  :: SolarConfig
+  -> Float  -- ^ Axial tilt (degrees)
+  -> Float  -- ^ Hours per day
+  -> Float  -- ^ Latitude (radians)
+  -> Float  -- ^ Annual-mean irradiance fraction [0, 1]
+annualMeanInsolation cfg tiltDeg hpd latRad =
+  let k    = scAtmosphericK cfg
+      diff = scDiffuseFraction cfg
+      nMonths = 12 :: Int
+      nHours  = 8  :: Int
+      -- Sum irradiance over monthly samples
+      monthlyTotal = go 0 0.0
+        where
+          go m !acc
+            | m >= nMonths = acc
+            | otherwise =
+                let yf  = fromIntegral m / fromIntegral nMonths
+                    dec = solarDeclination tiltDeg yf
+                    di  = dayInfo latRad dec hpd
+                    dl  = diDayLength di
+                    dayAvg
+                      | dl <= 0   = 0
+                      | otherwise =
+                          let sr  = diSunriseHour di
+                              step = dl / fromIntegral nHours
+                              -- Sample irradiance at nHours points during daylight
+                              hourSum = goH 0 0.0
+                                where
+                                  goH h !hAcc
+                                    | h >= nHours = hAcc
+                                    | otherwise =
+                                        let hr  = sr + (fromIntegral h + 0.5) * step
+                                            ha  = hourAngle hr hpd
+                                            sp  = solarPosition latRad dec ha
+                                            irr = solarIrradiance k diff (spZenith sp)
+                                        in goH (h + 1) (hAcc + irr)
+                          in hourSum / fromIntegral nHours * (dl / hpd)
+                in go (m + 1) (acc + dayAvg)
+  in clampF 0 1 (monthlyTotal / fromIntegral nMonths)
 
 -- ---------------------------------------------------------------------------
 -- Tile-level convenience

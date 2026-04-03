@@ -69,6 +69,24 @@ data WeatherConfig = WeatherConfig
   , wcCloudDissipationRate :: !Float
     -- | Relative humidity threshold above which clouds form.
   , wcCloudSaturationThreshold :: !Float
+    -- | Temperature excess (above seasonal baseline) triggering convective
+    -- cloud formation.  Lower values → more convective clouds.
+  , wcConvectiveThreshold :: !Float
+    -- | High-pressure subsidence cloud suppression strength.
+    -- Controls how much high-pressure systems dissolve clouds.
+  , wcSubsidenceDissipation :: !Float
+    -- | Cloud water threshold for autoconversion to precipitation.
+    -- Precipitation only forms when cloud water exceeds this value.
+  , wcAutoconversionThreshold :: !Float
+    -- | Fraction of excess cloud water above threshold that precipitates
+    -- per tick.  Higher values produce heavier rain from thick clouds.
+  , wcPrecipEfficiency :: !Float
+    -- | Cloud optical depth scale: optical depth = cloudWater × this value.
+    -- Controls how much radiation thick clouds block.  Higher = opaquer.
+  , wcCloudOpticalScale :: !Float
+    -- | Cloud longwave greenhouse coefficient.  Cloudy skies trap outgoing
+    -- longwave radiation, warming the surface at night.  Higher = stronger.
+  , wcCloudGreenhouseCoeff :: !Float
     -- | Temperature diffusion passes in chunk weather builder.
   , wcTempDiffuseIterations :: !Int
     -- | Temperature diffusion factor in chunk weather builder.
@@ -127,6 +145,12 @@ defaultWeatherConfig = WeatherConfig
   , wcCloudFormationRate        = 0.15
   , wcCloudDissipationRate      = 0.08
   , wcCloudSaturationThreshold  = 0.60
+  , wcConvectiveThreshold       = 0.08
+  , wcSubsidenceDissipation     = 0.10
+  , wcAutoconversionThreshold   = 0.30
+  , wcPrecipEfficiency          = 0.40
+  , wcCloudOpticalScale         = 3.0
+  , wcCloudGreenhouseCoeff      = 0.02
   , wcTempDiffuseIterations     = 1
   , wcTempDiffuseFactor         = 0.2
   , wcTempNoiseFrequency        = 0.08

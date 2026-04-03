@@ -54,6 +54,7 @@ import Control.Monad.Except (throwError)
 import Topo.Hex (hexOpposite)
 import Topo.Planet (LatitudeMapping(..))
 import Topo.Plugin (logInfo, getWorldP, putWorldP, peSeed, PluginError(..))
+import Topo.Solar (annualMeanInsolation, defaultSolarConfig)
 import Topo.TerrainGrid
   ( buildElevationGrid
   , buildPlateHeightGrid
@@ -301,7 +302,9 @@ tempAt config seed lm cfg waterLevel origin elev plateHeight albedoVec i =
       blendWidth = max 0.0001 (tmpCoastalBlendWidth tmp)
       blend = smoothstep (waterLevel - blendWidth) (waterLevel + blendWidth) height
       isOcean = height < waterLevel
+      tiltDeg = lmTiltScale lm * 23.44
       insol = lmInsolation lm
+            * annualMeanInsolation defaultSolarConfig tiltDeg 24.0 lat
       -- Coastal blending: smoothly transition between ocean and land
       -- base curves around sea level.
       latFOcean = clamp01 (abs (cos lat) ** tmpOceanLatExponent tmp)
@@ -378,11 +381,16 @@ buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx
       minTileX = minCx * size
       minTileY = minCy * size
       insol = lmInsolation lm
+      -- Per-tile solar insolation: latitude-dependent annual mean
+      tileInsol gy =
+        let lat = clampLat (fromIntegral gy * lmRadPerTile lm + lmBiasRad lm)
+        in insol * annualMeanInsolation defaultSolarConfig tiltDeg 24.0 lat
       elev = buildElevationGrid config terrain (ChunkCoord minCx minCy) gridW gridH
       plateHeight = buildPlateHeightGrid config terrain (ChunkCoord minCx minCy) gridW gridH
       oceanMask = U.map (\h -> if h < waterLevel then 1 else 0) elev
       coastal = coastalProximityGrid gridW gridH (precCoastalIterations prc) (precCoastalDiffuse prc) oceanMask
       n = gridW * gridH
+      tiltDeg = lmTiltScale lm * 23.44
       -- Soil moisture grid (from hydrology-stage tcMoisture)
       soilMoistGrid = buildFieldGrid config terrain tcMoisture (ChunkCoord minCx minCy) gridW gridH
       -- Vegetation cover grid (from bootstrap stage)
@@ -445,7 +453,7 @@ buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx
             noise = n0 * moistEvapNoiseScale mst
         in if h < waterLevel
            then -- Ocean tile: Dalton's Law evaporation (Model B)
-             clamp01 (oceanEvaporation mst t w insol + noise)
+             clamp01 (oceanEvaporation mst t w (tileInsol gy) + noise)
            else -- Land tile: Penman-Monteith ET (Model C) + coastal boost
              -- Use max of hydrology soil moisture and internal land base
              -- to break the circular dependency (RC-1).
@@ -462,8 +470,10 @@ buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx
       oceanEvapGrid = U.generate n (\i ->
         let t = tempGrid U.! i
             w = windSpd U.! i
+            y = i `div` gridW
+            gy = minTileY + y
         in if elev U.! i < waterLevel
-           then oceanEvaporation mst t w insol
+           then oceanEvaporation mst t w (tileInsol gy)
            else 0)
       -- Compute wind convergence field from diffused wind grids.
       -- Positive values indicate converging air (uplift).
@@ -581,7 +591,9 @@ tempAtGlobal seed lm cfg waterLevel gx gy height plateHt albedo =
       blendWidth = max 0.0001 (tmpCoastalBlendWidth tmp)
       blend = smoothstep (waterLevel - blendWidth) (waterLevel + blendWidth) height
       isOcean = height < waterLevel
+      tiltDeg = lmTiltScale lm * 23.44
       insol = lmInsolation lm
+            * annualMeanInsolation defaultSolarConfig tiltDeg 24.0 lat
       latFOcean = clamp01 (abs (cos lat) ** tmpOceanLatExponent tmp)
       baseOcean = insol * lerp (tmpOceanPoleSST tmp) (tmpOceanEquatorSST tmp) latFOcean
       latFLand = clamp01 (abs (cos lat) ** tmpLatitudeExponent tmp)

@@ -135,3 +135,89 @@ spec = describe "Solar" $ do
     it "matches dayInfo at equator equinox" $ do
       let di = tileDayInfo 23.44 0.0 24.0 0.0
       diDayLength di `shouldSatisfy` approxEqAbs 0.1 12.0
+
+  -- -----------------------------------------------------------------------
+  -- solarIrradiance
+  -- -----------------------------------------------------------------------
+  describe "solarIrradiance" $ do
+    let k = 0.2
+        diff = 0.12
+
+    it "is zero when sun is below horizon (zenith ≥ π/2)" $ do
+      solarIrradiance k diff (pi / 2) `shouldBe` 0
+      solarIrradiance k diff (pi * 0.75) `shouldBe` 0
+
+    it "is maximum at zenith 0 (sun directly overhead)" $ do
+      let val = solarIrradiance k diff 0
+      -- direct ≈ 1*exp(-0.2) ≈ 0.818, + 0.12 ≈ 0.938
+      val `shouldSatisfy` approxEqAbs 0.02 0.94
+
+    it "decreases as zenith increases toward horizon" $ do
+      let v0  = solarIrradiance k diff 0.0
+          v30 = solarIrradiance k diff (pi / 6)
+          v60 = solarIrradiance k diff (pi / 3)
+      v0 `shouldSatisfy` (> v30)
+      v30 `shouldSatisfy` (> v60)
+
+    it "is clamped to [0,1]" $ do
+      -- With diffuse = 0, overhead ≈ 0.82, well within bounds
+      -- With diffuse = 0.5, overhead ≈ 1.32, should be clamped
+      solarIrradiance k 0.5 0 `shouldSatisfy` (<= 1.0)
+      solarIrradiance k 0.5 0 `shouldSatisfy` (>= 0.0)
+
+    it "diffuse fraction raises floor for daytime irradiance" $ do
+      let noDiff  = solarIrradiance k 0.0 (pi / 3)
+          withDiff = solarIrradiance k 0.3 (pi / 3)
+      withDiff `shouldSatisfy` (> noDiff)
+
+  -- -----------------------------------------------------------------------
+  -- SolarConfig / tileIrradiance
+  -- -----------------------------------------------------------------------
+  describe "tileIrradiance" $ do
+    it "returns >0 at equator noon" $ do
+      let cfg = defaultSolarConfig
+      tileIrradiance cfg 23.44 0.0 24.0 12.0 0.0 0.0 `shouldSatisfy` (> 0)
+
+    it "returns 0 at equator midnight" $ do
+      let cfg = defaultSolarConfig
+      tileIrradiance cfg 23.44 0.0 24.0 0.0 0.0 0.0 `shouldSatisfy` (== 0)
+
+    it "noon irradiance > morning irradiance at same latitude" $ do
+      let cfg = defaultSolarConfig
+          noon    = tileIrradiance cfg 23.44 0.0 24.0 12.0 0.5 0.0
+          morning = tileIrradiance cfg 23.44 0.0 24.0 8.0  0.5 0.0
+      noon `shouldSatisfy` (> morning)
+
+  -- -----------------------------------------------------------------------
+  -- annualMeanInsolation
+  -- -----------------------------------------------------------------------
+  describe "annualMeanInsolation" $ do
+    let cfg = defaultSolarConfig
+        tilt = 23.44
+        hpd = 24.0
+
+    it "is highest at the equator" $ do
+      let equator = annualMeanInsolation cfg tilt hpd 0.0
+          lat45   = annualMeanInsolation cfg tilt hpd (pi / 4)
+      equator `shouldSatisfy` (> lat45)
+
+    it "decreases toward the poles" $ do
+      let lat30 = annualMeanInsolation cfg tilt hpd (pi / 6)
+          lat60 = annualMeanInsolation cfg tilt hpd (pi / 3)
+          lat85 = annualMeanInsolation cfg tilt hpd (85 * pi / 180)
+      lat30 `shouldSatisfy` (> lat60)
+      lat60 `shouldSatisfy` (> lat85)
+
+    it "is symmetric between hemispheres" $ do
+      let north = annualMeanInsolation cfg tilt hpd (pi / 4)
+          south = annualMeanInsolation cfg tilt hpd (negate (pi / 4))
+      north `shouldSatisfy` approxEqAbs 0.01 south
+
+    it "is in [0,1]" $ do
+      let vals = [annualMeanInsolation cfg tilt hpd (lat * pi / 180)
+                 | lat <- [-85, -60, -30, 0, 30, 60, 85]]
+      mapM_ (\v -> v `shouldSatisfy` (\x -> x >= 0 && x <= 1)) vals
+
+    it "is zero with zero axial tilt at the pole" $ do
+      -- With no tilt, poles get zero annual irradiance (sun always at horizon)
+      annualMeanInsolation cfg 0.0 hpd (pi / 2) `shouldSatisfy` approxEqAbs 0.01 0

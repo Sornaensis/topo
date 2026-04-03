@@ -10,16 +10,17 @@ import qualified Data.IntMap.Strict as IntMap
 import Data.Text (Text)
 import qualified Data.Vector.Unboxed as U
 import Data.Word (Word64)
-import Topo.Calendar (mkCalendarConfig, yearFraction, WorldTime(..))
+import Topo.Calendar (CalendarConfig(..), CalendarDate(..), mkCalendarConfig, tickToDate, yearFraction, WorldTime(..))
 import Topo.Climate.Evaporation (satNorm)
 import Topo.Climate.ITCZ (convergenceField, itczBand, defaultConvergenceConfig, ConvergenceConfig(..))
 import Topo.Grid.Diffusion (diffuseFieldGrid)
 import Topo.Math (clamp01)
 import Topo.Noise (noise2D, noise2DContinuous)
 import Topo.Overlay (Overlay(..), OverlayData(..), OverlayProvenance(..))
-import Topo.Planet (LatitudeMapping(..), PlanetConfig(..))
+import Topo.Planet (LatitudeMapping(..), PlanetConfig(..), WorldSlice(..), hexesPerDegreeLatitude)
 import Topo.Seed (deriveOverlaySeed)
 import Topo.Simulation (SimNode(..), SimNodeId(..), SimContext(..))
+import Topo.Solar (SolarConfig(..), defaultSolarConfig, tileIrradiance)
 import Topo.TerrainGrid (chunkCoordBounds)
 import Topo.Types
 import Topo.Weather.Config (WeatherConfig(..))
@@ -36,7 +37,6 @@ import Topo.Weather.Init (seasonalITCZLatitude)
 import Topo.Weather.Operators
   ( advectFieldGrid
   , climatePull
-  , condensation
   , diffuseFieldGridWeather
   , normalizeAngle
   , windDirectionFromPressure
@@ -80,7 +80,11 @@ buildWeatherChunk config seed cfg radPerTile latBiasRad timeHash key climate =
       tempCloud = U.generate n (\i ->
         let t = tempRaw U.! i
             cf = cloudFracV U.! i
-        in clamp01 (t * (1 - wcCloudAlbedoEffect cfg * cf)))
+            cw = clamp01 (cf * (humidity U.! i))
+            -- Optical-depth albedo: saturates around 0.8 for thick clouds
+            tau = cw * wcCloudOpticalScale cfg
+            cloudAlbedo = 1 - exp (negate tau)
+        in clamp01 (t * (1 - cloudAlbedo * cf)))
       temp = diffuseFieldGrid chunkSize chunkSize
                (wcTempDiffuseIterations cfg)
                (wcTempDiffuseFactor cfg)
@@ -231,13 +235,13 @@ tickWeatherGrid
   -> Int
   -> Int
   -> IntMap.IntMap ClimateChunk
+  -> U.Vector Float   -- ^ Per-tile solar irradiance [0,1]
   -> WeatherGridState
   -> WeatherGridState
-tickWeatherGrid config seed cfg radPerTile latBiasRad timeHash minCoord gridW gridH climate prev =
+tickWeatherGrid config seed cfg radPerTile latBiasRad timeHash minCoord gridW gridH climate solarIrr prev =
   let n = gridW * gridH
       dt = min 0.49 (max 0 (wcAdvectDt cfg))
       pull = clamp01 (wcClimatePullStrength cfg)
-      condensationRate = clamp01 (wcCondensationRate cfg)
       weatherDiffuse = clamp01 (wcWeatherDiffuseFactor cfg)
       windResponse = clamp01 (wcWindResponseRate cfg)
 
@@ -263,6 +267,8 @@ tickWeatherGrid config seed cfg radPerTile latBiasRad timeHash minCoord gridW gr
       tempAdv = advectFieldGrid gridW gridH dt (wgsWindDir prev) (wgsWindSpd prev) (wgsTemp prev)
       humAdv = advectFieldGrid gridW gridH dt (wgsWindDir prev) (wgsWindSpd prev) (wgsHumidity prev)
       precipAdv = advectFieldGrid gridW gridH dt (wgsWindDir prev) (wgsWindSpd prev) (wgsPrecip prev)
+      cloudCoverAdv = advectFieldGrid gridW gridH dt (wgsWindDir prev) (wgsWindSpd prev) (wgsCloudCover prev)
+      cloudWaterAdv = advectFieldGrid gridW gridH dt (wgsWindDir prev) (wgsWindSpd prev) (wgsCloudWater prev)
 
       tempSource = U.generate n (\i ->
         let t = tempAdv U.! i
@@ -277,12 +283,9 @@ tickWeatherGrid config seed cfg radPerTile latBiasRad timeHash minCoord gridW gr
       precipSource = U.generate n (\i ->
         let pAdv = precipAdv U.! i
             pRelaxed = pAdv + pull * ((seasonalPrecipBaseline U.! i) - pAdv)
-            h = humSource U.! i
-            t = tempSource U.! i
-            condense = condensation h t condensationRate
             -- ITCZ precipitation boost from wind convergence
             convBoost = itczIntensity U.! i * wcITCZPrecipBoost cfg
-        in pRelaxed + condense + convBoost)
+        in pRelaxed + convBoost)
 
       timeSeed = deriveWeatherSeed seed timeHash
 
@@ -344,12 +347,26 @@ tickWeatherGrid config seed cfg radPerTile latBiasRad timeHash minCoord gridW gr
         let t = tempDiffused U.! i
             target = seasonalTempBaseline U.! i
             tPulled = clamp01 (climatePull t target pull)
+            -- Cloud-radiation model: optical-depth albedo reduces
+            -- shortwave heating; longwave greenhouse warms at night.
+            irr = solarIrr U.! i
+            cf  = cloudCoverSmooth U.! i
+            cw  = clamp01 (cloudWaterSmooth U.! i)
+            tau = cw * wcCloudOpticalScale cfg
+            cloudAlbedo = 1 - exp (negate tau)
+            effectiveIrr = irr * (1 - cloudAlbedo * cf)
+            -- 0.35 ≈ typical daily-average surface irradiance fraction
+            solarDelta = 0.025 * (effectiveIrr - 0.35)
+            -- Longwave greenhouse: clouds trap outgoing radiation,
+            -- warming the surface.  Strongest at night (low irr).
+            nightFactor = max 0 (1 - irr * 2)  -- 1 at night, 0 at noon
+            greenhouse = wcCloudGreenhouseCoeff cfg * cf * cw * nightFactor
             -- Convective cooling: ITCZ convergence + precipitation
             -- cools the surface via latent heat transport.
             p = precipDiffused U.! i
             conv = max 0 (itczIntensity U.! i)
             cooling = 0.08 * p * conv
-        in clamp01 (tPulled - cooling))
+        in clamp01 (tPulled + solarDelta + greenhouse - cooling))
       humidityFinal = U.generate n (\i ->
         let h = humDiffused U.! i
             target = climateHumBase U.! i
@@ -357,25 +374,64 @@ tickWeatherGrid config seed cfg radPerTile latBiasRad timeHash minCoord gridW gr
       precipFinal = U.generate n (\i ->
         let p = precipDiffused U.! i
             target = seasonalPrecipBaseline U.! i
-        in clamp01 (climatePull p target pull))
+            autoP = autoconversion U.! i
+        in clamp01 (climatePull p target pull + autoP))
       windSpdFinal = U.map clamp01 windSpdRaw
       pressureFinal = U.map clamp01 pressureDiffused
 
-      -- Cloud evolution: formation from humidity excess, dissipation
-      -- when air is drier.  Cloud water tracks cover × humidity.
-      formRate = wcCloudFormationRate cfg
-      dissRate = wcCloudDissipationRate cfg
-      satThresh = wcCloudSaturationThreshold cfg
+      -- Cloud evolution: advect → diffuse → formation/dissipation.
+      -- Cloud fields move with the airmass, then local physics applies.
+      cloudCoverSmooth = diffuseFieldGridWeather gridW gridH 1 weatherDiffuse cloudCoverAdv
+      cloudWaterSmooth = diffuseFieldGridWeather gridW gridH 1 weatherDiffuse cloudWaterAdv
+      formRate      = wcCloudFormationRate cfg
+      dissRate      = wcCloudDissipationRate cfg
+      satThresh     = wcCloudSaturationThreshold cfg
+      convThresh    = wcConvectiveThreshold cfg
+      subsidenceDiss = wcSubsidenceDissipation cfg
       cloudCoverFinal = U.generate n (\i ->
-        let prevCf = wgsCloudCover prev U.! i
-            h = humidityFinal U.! i
-            formation = formRate * max 0 (h - satThresh) * (1 - prevCf)
-            dissipation = dissRate * prevCf * (1 - h)
-        in clamp01 (prevCf + formation - dissipation))
-      cloudWaterFinal = U.generate n (\i ->
+        let prevCf = clamp01 (cloudCoverSmooth U.! i)
+            h      = humidityFinal U.! i
+            t      = tempFinal U.! i
+            p      = pressureFinal U.! i
+            conv   = max 0 (convGrid U.! i)
+            room   = 1 - prevCf  -- headroom for formation
+
+            -- 1. Humidity supersaturation → condensation into cloud
+            humFormation = formRate * max 0 (h - satThresh) * room
+
+            -- 2. Convective uplift: warm surface + humid air → rapid
+            --    cloud growth (cumulus / cumulonimbus).  Triggered when
+            --    temperature exceeds seasonal baseline by convThresh.
+            tExcess = max 0 (t - (seasonalTempBaseline U.! i) - convThresh)
+            convectiveFormation = formRate * tExcess * h * room
+
+            -- 3. Frontal / convergence lift: wind convergence forces
+            --    uplift → cloud formation proportional to moisture.
+            frontalFormation = formRate * conv * h * 0.5 * room
+
+            totalFormation = humFormation + convectiveFormation + frontalFormation
+
+            -- Base dissipation: dry air absorbs cloud water
+            baseDissipation = dissRate * prevCf * (1 - h)
+
+            -- Subsidence: high-pressure (p > 0.5) sinking air suppresses clouds
+            subsidenceFactor = subsidenceDiss * max 0 (p - 0.5) * prevCf
+
+            totalDissipation = baseDissipation + subsidenceFactor
+        in clamp01 (prevCf + totalFormation - totalDissipation))
+      -- Autoconversion: excess cloud water above threshold → precipitation.
+      -- Thick clouds rain, thin clouds produce drizzle or nothing.
+      autoThresh = wcAutoconversionThreshold cfg
+      precipEff  = wcPrecipEfficiency cfg
+      cloudWaterRaw = U.generate n (\i ->
         let cf = cloudCoverFinal U.! i
             h  = humidityFinal U.! i
         in clamp01 (cf * h))
+      autoconversion = U.generate n (\i ->
+        let cw = cloudWaterRaw U.! i
+        in max 0 (cw - autoThresh) * precipEff)
+      cloudWaterFinal = U.generate n (\i ->
+        clamp01 (cloudWaterRaw U.! i - autoconversion U.! i))
 
   in WeatherGridState
       { wgsTemp = tempFinal
@@ -423,6 +479,17 @@ weatherTick cfg ctx overlay = do
         }
       climateMap = twClimate terrain
 
+      -- Solar parameters for diurnal cycle
+      slice = twSlice terrain
+      hex   = twHexGrid terrain
+      calDate = tickToDate calCfg wtime
+      hpd     = realToFrac (ccHoursPerDay calCfg) :: Float
+      calHour = realToFrac (cdHourOfDay calDate) :: Float
+      tiltDeg = pcAxialTilt planet
+      yfF     = realToFrac yf :: Float
+      solarCfg = defaultSolarConfig
+      hpdLat  = hexesPerDegreeLatitude planet hex
+
       denseChunks =
         case chunkCoordBounds climateMap of
           Nothing -> IntMap.empty
@@ -430,6 +497,20 @@ weatherTick cfg ctx overlay = do
             let chunkSize = wcChunkSize config
                 gridW = (maxCx - minCx + 1) * chunkSize
                 gridH = (maxCy - minCy + 1) * chunkSize
+
+                -- Pre-compute per-tile solar irradiance
+                solarIrr = U.generate (gridW * gridH) (\i ->
+                  let (gx, gy) = globalTileXY config minCoord gridW i
+                      latRad = fromIntegral gy * radPerTile + latBiasRad
+                      -- Approximate longitude: use latitude-corrected tiles/degree
+                      hpdLon = hpdLat * max 0.001 (cos latRad)
+                      cs = wcChunkSize config
+                      centerTileX = cs `div` 2
+                      lonDeg = wsLonCenter slice
+                             + fromIntegral (gx - centerTileX) / hpdLon
+                  in tileIrradiance solarCfg tiltDeg yfF hpd calHour latRad lonDeg
+                        * lmInsolation lm)
+
                 fallback key climate = buildWeatherChunk config seed cfg' radPerTile latBiasRad timeHash key climate
                 prevChunkWeather =
                   buildChunkWeatherFromOverlayOrClimate fallback climateMap (ovData overlay)
@@ -445,7 +526,7 @@ weatherTick cfg ctx overlay = do
                   }
                 nextState = tickWeatherGrid
                               config seed cfg' radPerTile latBiasRad timeHash
-                              minCoord gridW gridH climateMap prevState
+                              minCoord gridW gridH climateMap solarIrr prevState
             in weatherGridToDenseOverlay config minCoord gridW climateMap nextState
 
   pure $ Right Overlay
