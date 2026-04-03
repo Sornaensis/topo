@@ -94,6 +94,11 @@ module UI.Layout
   , editorRadiusValueRect
   , editorCloseRect
   , editorReopenRect
+    -- Editor param bar
+  , editorParamBarRect
+  , editorParamNumericRects
+  , editorParamCycleRects
+  , editorParamFalloffRects
   ) where
 
 import Linear (V2(..))
@@ -890,3 +895,73 @@ editorReopenRect (Layout (V2 w _) _ _) =
       btnX = (w - btnW) `div` 2
       btnY = 4 + topBarHeight
   in Rect (V2 btnX btnY, V2 btnW btnH)
+
+------------------------------------------------------------------------
+-- Editor param bar
+------------------------------------------------------------------------
+
+-- | Parameter bar sitting directly below the editor toolbar.
+-- Matches the toolbar's x/width; height is 30px with 2px gap.
+editorParamBarRect :: Layout -> Rect
+editorParamBarRect layout =
+  let Rect (V2 bx by, V2 bw bh) = editorToolbarRect layout
+  in Rect (V2 bx (by + bh + 2), V2 bw 30)
+
+-- | Numeric control (−/value/+) rects for param-bar slot @n@ (0-indexed).
+-- Returns @(minusRect, valueRect, plusRect)@.
+editorParamNumericRects :: Int -> Layout -> (Rect, Rect, Rect)
+editorParamNumericRects slot layout =
+  let Rect (V2 bx by, V2 _ bh) = editorParamBarRect layout
+      pad    = 12
+      btnW   = 24
+      valW   = 56
+      gap    = 4
+      slotW  = btnW + gap + valW + gap + btnW
+      slotGap = 8
+      x0    = bx + pad + slot * (slotW + slotGap)
+      insetY = 4
+      btnH  = bh - insetY * 2
+      y0    = by + insetY
+      minR  = Rect (V2 x0 y0, V2 btnW btnH)
+      valR  = Rect (V2 (x0 + btnW + gap) y0, V2 valW btnH)
+      plusR = Rect (V2 (x0 + btnW + gap + valW + gap) y0, V2 btnW btnH)
+  in (minR, valR, plusR)
+
+-- | Cycle selector (◄/label/►) rects for param-bar slot @n@ (0-indexed).
+-- Returns @(prevRect, labelRect, nextRect)@.
+editorParamCycleRects :: Int -> Layout -> (Rect, Rect, Rect)
+editorParamCycleRects slot layout =
+  let Rect (V2 bx by, V2 _ bh) = editorParamBarRect layout
+      pad    = 12
+      arrW   = 20
+      lblW   = 96
+      gap    = 4
+      cycleW = arrW + gap + lblW + gap + arrW
+      cycleGap = 8
+      x0    = bx + pad + slot * (cycleW + cycleGap)
+      insetY = 4
+      btnH  = bh - insetY * 2
+      y0    = by + insetY
+      prevR = Rect (V2 x0 y0, V2 arrW btnH)
+      lblR  = Rect (V2 (x0 + arrW + gap) y0, V2 lblW btnH)
+      nextR = Rect (V2 (x0 + arrW + gap + lblW + gap) y0, V2 arrW btnH)
+  in (prevR, lblR, nextR)
+
+-- | Falloff cycle selector rects, right-justified in the param bar.
+-- Returns @(prevRect, labelRect, nextRect)@.
+editorParamFalloffRects :: Layout -> (Rect, Rect, Rect)
+editorParamFalloffRects layout =
+  let Rect (V2 bx by, V2 bw bh) = editorParamBarRect layout
+      pad    = 12
+      arrW   = 20
+      lblW   = 72
+      gap    = 4
+      cycleW = arrW + gap + lblW + gap + arrW
+      x0    = bx + bw - pad - cycleW
+      insetY = 4
+      btnH  = bh - insetY * 2
+      y0    = by + insetY
+      prevR = Rect (V2 x0 y0, V2 arrW btnH)
+      lblR  = Rect (V2 (x0 + arrW + gap) y0, V2 lblW btnH)
+      nextR = Rect (V2 (x0 + arrW + gap + lblW + gap) y0, V2 arrW btnH)
+  in (prevR, lblR, nextR)

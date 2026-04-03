@@ -18,6 +18,7 @@ import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import Linear (V2(..))
 import Seer.Config.SliderRegistry (SliderTab(..), SliderDef(..), allSliderDefs, sliderDefsForTab)
+import Seer.Editor.Types (EditorTool(..))
 import Topo.Pipeline.Stage (allBuiltinStageIds, stageCanonicalName)
 import Topo.Plugin.DataResource (DataResourceSchema(..))
 import Topo.Plugin.RPC.Manifest (RPCParamSpec(..), RPCParamType(..))
@@ -247,16 +248,49 @@ buildSliderWidgets layout sliderDef =
      ]
 
 -- | Build widgets for the editor toolbar (tool buttons, radius controls,
--- close button).  Only included in hit-testing when the editor is active.
-buildEditorWidgets :: Layout -> [Widget]
-buildEditorWidgets layout =
+-- close button) and the context-sensitive parameter bar.
+-- Only included in hit-testing when the editor is active.
+buildEditorWidgets :: Layout -> EditorTool -> [Widget]
+buildEditorWidgets layout tool =
   [ Widget (WidgetEditorTool idx) (editorToolButtonRect idx layout)
   | idx <- [0 .. editorToolButtonCount - 1]
   ] ++
   [ Widget WidgetEditorRadiusMinus (editorRadiusMinusRect layout)
   , Widget WidgetEditorRadiusPlus  (editorRadiusPlusRect layout)
   , Widget WidgetEditorClose       (editorCloseRect layout)
-  ]
+  ] ++
+  paramBarWidgets ++
+  falloffWidgets
+  where
+    (falloffPrev, _, falloffNext) = editorParamFalloffRects layout
+    -- Falloff is shown for tools where falloff is meaningful
+    hasFalloff = tool `notElem` [ToolPaintBiome, ToolPaintForm, ToolSetHardness]
+    falloffWidgets
+      | hasFalloff =
+          [ Widget WidgetEditorFalloffPrev falloffPrev
+          , Widget WidgetEditorFalloffNext falloffNext
+          ]
+      | otherwise = []
+    paramBarWidgets = case tool of
+      ToolRaise -> numericSlot 0 ++ numericSlot 1
+      ToolLower -> numericSlot 0 ++ numericSlot 1
+      ToolSmooth -> numericSlot 0
+      ToolFlatten -> numericSlot 0
+      ToolNoise -> numericSlot 0 ++ numericSlot 1
+      ToolPaintBiome -> cycleSlot 0
+      ToolPaintForm -> cycleSlot 0
+      ToolSetHardness -> numericSlot 0
+      ToolErode -> numericSlot 0
+    numericSlot n =
+      let (minR, _, plusR) = editorParamNumericRects n layout
+      in [ Widget (WidgetEditorParamMinus n) minR
+         , Widget (WidgetEditorParamPlus  n) plusR
+         ]
+    cycleSlot n =
+      let (prevR, _, nextR) = editorParamCycleRects n layout
+      in [ Widget (WidgetEditorCyclePrev n) prevR
+         , Widget (WidgetEditorCycleNext n) nextR
+         ]
 
 -- | Single-widget list for the editor reopen button, used when the
 -- toolbar is closed.

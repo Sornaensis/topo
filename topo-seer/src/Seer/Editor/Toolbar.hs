@@ -5,7 +5,8 @@
 -- Draws the horizontal tool bar at the top-center of the window when
 -- the terrain editor is active.  Each tool gets a coloured button;
 -- the active tool is highlighted.  Brush radius controls and a close
--- button sit at the right end.
+-- button sit at the right end.  A context-sensitive parameter bar sits
+-- directly below the toolbar showing the active tool's editable parameters.
 module Seer.Editor.Toolbar
   ( drawEditorToolbar
   , drawEditorReopenButton
@@ -16,13 +17,24 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word8)
 import Linear (V4(..))
+import Numeric (showFFloat)
 import qualified SDL
 import Actor.UI (UiState(..))
-import Seer.Editor.Types (BrushSettings(..), EditorState(..), EditorTool(..))
+import Seer.Editor.Types (BrushSettings(..), EditorState(..), EditorTool(..), Falloff(..))
+import Topo.Biome.Name (biomeDisplayName)
+import Topo.Types
+  ( BiomeId
+  , TerrainForm
+  , terrainFormDisplayName
+  )
 import UI.Font (FontCache)
 import UI.Layout
   ( Layout
   , editorCloseRect
+  , editorParamBarRect
+  , editorParamCycleRects
+  , editorParamFalloffRects
+  , editorParamNumericRects
   , editorRadiusMinusRect
   , editorRadiusPlusRect
   , editorRadiusValueRect
@@ -85,6 +97,123 @@ drawEditorToolbar renderer fontCache ui layout = do
   SDL.rendererDrawColor renderer SDL.$= colEditorCloseBg
   SDL.fillRect renderer (Just (rectToSDL closeRect))
   drawCentered fontCache textEditorClose closeRect "X"
+  -- Parameter bar
+  drawEditorParamBar renderer fontCache editor layout
+
+-- | Draw the context-sensitive parameter bar below the editor toolbar.
+drawEditorParamBar :: SDL.Renderer -> Maybe FontCache -> EditorState -> Layout -> IO ()
+drawEditorParamBar renderer fontCache editor layout = do
+  let barRect = editorParamBarRect layout
+  SDL.rendererDrawColor renderer SDL.$= colToolbarBg
+  SDL.fillRect renderer (Just (rectToSDL barRect))
+  let lc = textEditorLabel
+      bc = colEditorRadiusBtn
+      vc = colCtrlValue
+  -- Tool-specific controls
+  case editorTool editor of
+    ToolRaise -> do
+      drawNumeric renderer fontCache layout lc bc vc 0
+        "Step" (brushStrength (editorBrush editor)) (showStrength (brushStrength (editorBrush editor)))
+      drawFalloff renderer fontCache layout lc bc vc (brushFalloff (editorBrush editor))
+    ToolLower -> do
+      drawNumeric renderer fontCache layout lc bc vc 0
+        "Step" (brushStrength (editorBrush editor)) (showStrength (brushStrength (editorBrush editor)))
+      drawFalloff renderer fontCache layout lc bc vc (brushFalloff (editorBrush editor))
+    ToolSmooth -> do
+      drawNumeric renderer fontCache layout lc bc vc 0
+        "Pass" (fromIntegral (editorSmoothPasses editor)) (showT (editorSmoothPasses editor))
+      drawFalloff renderer fontCache layout lc bc vc (brushFalloff (editorBrush editor))
+    ToolFlatten -> do
+      drawNumeric renderer fontCache layout lc bc vc 0
+        "Rate" (brushStrength (editorBrush editor)) (showStrength (brushStrength (editorBrush editor)))
+      drawFalloff renderer fontCache layout lc bc vc (brushFalloff (editorBrush editor))
+    ToolNoise -> do
+      drawNumeric renderer fontCache layout lc bc vc 0
+        "Freq" (editorNoiseFrequency editor) (showF1 (editorNoiseFrequency editor))
+      drawNumeric renderer fontCache layout lc bc vc 1
+        "Str" (brushStrength (editorBrush editor)) (showStrength (brushStrength (editorBrush editor)))
+      drawFalloff renderer fontCache layout lc bc vc (brushFalloff (editorBrush editor))
+    ToolPaintBiome ->
+      drawCycle renderer fontCache layout lc bc vc 0
+        (biomeShortLabel (editorBiomeId editor))
+    ToolPaintForm ->
+      drawCycle renderer fontCache layout lc bc vc 0
+        (formShortLabel (editorFormOverride editor))
+    ToolSetHardness ->
+      drawNumeric renderer fontCache layout lc bc vc 0
+        "Hard" (editorHardnessTarget editor) (showF2 (editorHardnessTarget editor))
+    ToolErode -> do
+      drawNumeric renderer fontCache layout lc bc vc 0
+        "Pass" (fromIntegral (editorErodePasses editor)) (showT (editorErodePasses editor))
+      drawFalloff renderer fontCache layout lc bc vc (brushFalloff (editorBrush editor))
+
+-- | Draw a labelled \u2212/value/+ numeric control at param-bar slot @n@.
+drawNumeric
+  :: SDL.Renderer -> Maybe FontCache -> Layout
+  -> V4 Word8 -> V4 Word8 -> V4 Word8
+  -> Int -> Text -> Float -> Text -> IO ()
+drawNumeric renderer fontCache layout lc bc vc slot label _val valText = do
+  let (minR, valR, plusR) = editorParamNumericRects slot layout
+  SDL.rendererDrawColor renderer SDL.$= bc
+  SDL.fillRect renderer (Just (rectToSDL minR))
+  SDL.fillRect renderer (Just (rectToSDL plusR))
+  SDL.rendererDrawColor renderer SDL.$= vc
+  SDL.fillRect renderer (Just (rectToSDL valR))
+  drawCentered fontCache lc minR "\8722"
+  drawCentered fontCache lc plusR "+"
+  drawCentered fontCache lc valR (label <> ":" <> valText)
+
+-- | Draw a \u25c4/label/\u25ba cycle selector at param-bar slot @n@.
+drawCycle
+  :: SDL.Renderer -> Maybe FontCache -> Layout
+  -> V4 Word8 -> V4 Word8 -> V4 Word8
+  -> Int -> Text -> IO ()
+drawCycle renderer fontCache layout lc bc vc slot nameText = do
+  let (prevR, lblR, nextR) = editorParamCycleRects slot layout
+  SDL.rendererDrawColor renderer SDL.$= bc
+  SDL.fillRect renderer (Just (rectToSDL prevR))
+  SDL.fillRect renderer (Just (rectToSDL nextR))
+  SDL.rendererDrawColor renderer SDL.$= vc
+  SDL.fillRect renderer (Just (rectToSDL lblR))
+  drawCentered fontCache lc prevR "\9668"
+  drawCentered fontCache lc nextR "\9658"
+  drawCentered fontCache lc lblR nameText
+
+-- | Draw the falloff cycle selector at the right end of the param bar.
+drawFalloff
+  :: SDL.Renderer -> Maybe FontCache -> Layout
+  -> V4 Word8 -> V4 Word8 -> V4 Word8
+  -> Falloff -> IO ()
+drawFalloff renderer fontCache layout lc bc vc falloff = do
+  let (prevR, lblR, nextR) = editorParamFalloffRects layout
+  SDL.rendererDrawColor renderer SDL.$= bc
+  SDL.fillRect renderer (Just (rectToSDL prevR))
+  SDL.fillRect renderer (Just (rectToSDL nextR))
+  SDL.rendererDrawColor renderer SDL.$= vc
+  SDL.fillRect renderer (Just (rectToSDL lblR))
+  drawCentered fontCache lc prevR "\9668"
+  drawCentered fontCache lc nextR "\9658"
+  drawCentered fontCache lc lblR (falloffLabel falloff)
+
+falloffLabel :: Falloff -> Text
+falloffLabel FalloffLinear   = "Linear"
+falloffLabel FalloffSmooth   = "Smooth"
+falloffLabel FalloffConstant = "Const"
+
+biomeShortLabel :: BiomeId -> Text
+biomeShortLabel b = Text.take 10 (biomeDisplayName b)
+
+formShortLabel :: TerrainForm -> Text
+formShortLabel f = Text.take 10 (Text.pack (terrainFormDisplayName f))
+
+showStrength :: Float -> Text
+showStrength v = Text.pack (showFFloat (Just 3) v "")
+
+showF1 :: Float -> Text
+showF1 v = Text.pack (showFFloat (Just 1) v "")
+
+showF2 :: Float -> Text
+showF2 v = Text.pack (showFFloat (Just 2) v "")
 
 -- | Short button label per tool.
 toolShortLabel :: EditorTool -> Text

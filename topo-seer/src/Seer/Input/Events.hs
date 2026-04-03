@@ -64,13 +64,14 @@ import Seer.Input.ViewControls
   , viewModeForKey
   )
 import Topo (ChunkCoord(..), ChunkId(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
+import Topo.Types (BiomeId, TerrainForm)
 import UI.HexPick (screenToAxial)
 import UI.Layout
 import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildEditorWidgets, buildEditorReopenWidget, buildViewModeWidgets, buildPluginWidgets, buildSliderRowWidgets, hitTest)
 import UI.Widgets (Rect(..), containsPoint)
 import Seer.Input.Actions (InputEnv(..), submitAction)
 import qualified Seer.Input.Actions as InputActions
-import Seer.Editor.Types (EditorState(..), EditorTool(..), BrushSettings(..))
+import Seer.Editor.Types (EditorState(..), EditorTool(..), BrushSettings(..), Falloff(..), paintableBiomes, allTerrainForms)
 import Actor.UiActions (UiAction(..))
 import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.PluginManager (getPluginDataDirectories, notifyWorldChanged)
@@ -174,7 +175,7 @@ handleEvent inputContext event = do
              -- and view mode buttons when the view tab is active.
              chromeWidgets =
                (if editorActive editor
-                  then buildEditorWidgets hoverLayout
+                  then buildEditorWidgets hoverLayout (editorTool editor)
                   else buildEditorReopenWidget hoverLayout)
                ++ (if uiShowLeftPanel uiSnap && uiLeftTab uiSnap == LeftView
                      then buildViewModeWidgets hoverLayout (uiLeftViewScroll uiSnap)
@@ -255,7 +256,7 @@ handleEvent inputContext event = do
                   let logH' = if lsCollapsed logSnap' then 24 else 160
                       seedW' = max 120 (seedMaxDigits * 10)
                       btnLayout = layoutForSeed (V2 (fromIntegral winW') (fromIntegral winH')) logH' seedW'
-                      edWidgets = buildEditorWidgets btnLayout
+                      edWidgets = buildEditorWidgets btnLayout (editorTool editor)
                       edHit = hitTest edWidgets bPoint
                   case edHit of
                     Just wid -> handleEditorWidgetClick editor wid
@@ -439,7 +440,83 @@ handleEvent inputContext event = do
         in setUiEditor uiHandle (editor { editorBrush = brush { brushRadius = r } })
       WidgetEditorClose ->
         setUiEditor uiHandle (editor { editorActive = False })
+      -- Param bar: numeric minus/plus
+      WidgetEditorParamMinus slot -> applyNumericDelta editor slot (-1)
+      WidgetEditorParamPlus  slot -> applyNumericDelta editor slot 1
+      -- Param bar: cycle selectors
+      WidgetEditorCyclePrev _slot -> applyCycleStep editor (-1)
+      WidgetEditorCycleNext _slot -> applyCycleStep editor 1
+      -- Falloff cycle
+      WidgetEditorFalloffPrev -> applyFalloffStep editor (-1)
+      WidgetEditorFalloffNext -> applyFalloffStep editor 1
       _ -> pure ()
+
+    applyNumericDelta :: EditorState -> Int -> Int -> IO ()
+    applyNumericDelta editor slot dir =
+      let brush = editorBrush editor
+          sign  = fromIntegral dir :: Float
+      in case editorTool editor of
+        ToolRaise -> setUiEditor uiHandle
+          (editor { editorBrush = brush { brushStrength = clamp 0.005 0.2 (brushStrength brush + sign * 0.005) } })
+        ToolLower -> setUiEditor uiHandle
+          (editor { editorBrush = brush { brushStrength = clamp 0.005 0.2 (brushStrength brush + sign * 0.005) } })
+        ToolSmooth -> setUiEditor uiHandle
+          (editor { editorSmoothPasses = clampI 1 5 (editorSmoothPasses editor + dir) })
+        ToolFlatten -> setUiEditor uiHandle
+          (editor { editorBrush = brush { brushStrength = clamp 0.01 0.5 (brushStrength brush + sign * 0.01) } })
+        ToolNoise
+          | slot == 0 -> setUiEditor uiHandle
+              (editor { editorNoiseFrequency = clamp 0.5 4.0 (editorNoiseFrequency editor + sign * 0.1) })
+          | otherwise -> setUiEditor uiHandle
+              (editor { editorBrush = brush { brushStrength = clamp 0.005 0.2 (brushStrength brush + sign * 0.005) } })
+        ToolSetHardness -> setUiEditor uiHandle
+          (editor { editorHardnessTarget = clamp 0.0 1.0 (editorHardnessTarget editor + sign * 0.05) })
+        ToolErode -> setUiEditor uiHandle
+          (editor { editorErodePasses = clampI 1 20 (editorErodePasses editor + dir) })
+        _ -> pure ()
+
+    applyCycleStep :: EditorState -> Int -> IO ()
+    applyCycleStep editor dir = case editorTool editor of
+      ToolPaintBiome ->
+        let next = cycleBiome (editorBiomeId editor) dir
+        in setUiEditor uiHandle (editor { editorBiomeId = next })
+      ToolPaintForm ->
+        let next = cycleForm (editorFormOverride editor) dir
+        in setUiEditor uiHandle (editor { editorFormOverride = next })
+      _ -> pure ()
+
+    applyFalloffStep :: EditorState -> Int -> IO ()
+    applyFalloffStep editor dir =
+      let brush  = editorBrush editor
+          next   = cycleFalloff (brushFalloff brush) dir
+      in setUiEditor uiHandle (editor { editorBrush = brush { brushFalloff = next } })
+
+    clamp :: Float -> Float -> Float -> Float
+    clamp lo hi v = max lo (min hi v)
+
+    clampI :: Int -> Int -> Int -> Int
+    clampI lo hi v = max lo (min hi v)
+
+    cycleBiome :: BiomeId -> Int -> BiomeId
+    cycleBiome cur dir =
+      let bs  = paintableBiomes
+          idx = maybe 0 id (lookup cur (zip bs [0..]))
+          n   = length bs
+      in bs !! ((idx + dir + n) `mod` n)
+
+    cycleForm :: TerrainForm -> Int -> TerrainForm
+    cycleForm cur dir =
+      let fs  = allTerrainForms
+          idx = maybe 0 id (lookup cur (zip fs [0..]))
+          n   = length fs
+      in fs !! ((idx + dir + n) `mod` n)
+
+    cycleFalloff :: Falloff -> Int -> Falloff
+    cycleFalloff cur dir =
+      let fs  = [FalloffLinear, FalloffSmooth, FalloffConstant]
+          idx = maybe 0 id (lookup cur (zip fs [0..]))
+          n   = length fs
+      in fs !! ((idx + dir + n) `mod` n)
     closeContextOrMenu = do
       uiSnap <- getUiSnapshot uiHandle
       case uiContextHex uiSnap of

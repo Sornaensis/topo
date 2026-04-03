@@ -16,11 +16,25 @@ module Seer.Editor.Types
     -- * Editor state
   , EditorState(..)
   , defaultEditorState
+    -- * Paintable value lists
+  , paintableBiomes
+  , allTerrainForms
   ) where
 
 import Data.Word (Word64)
 import GHC.Generics (Generic)
-import Topo.Types (BiomeId, TerrainForm, pattern BiomeDesert, pattern FormFlat)
+import Topo.Types
+  ( BiomeId, TerrainForm
+  , pattern BiomeDesert, pattern BiomeGrassland, pattern BiomeForest
+  , pattern BiomeTundra, pattern BiomeRainforest, pattern BiomeShrubland
+  , pattern BiomeSavanna, pattern BiomeTaiga, pattern BiomeSwamp
+  , pattern BiomeSnow, pattern BiomeCoastal, pattern BiomeAlpine
+  , pattern FormFlat, pattern FormRolling, pattern FormHilly
+  , pattern FormMountainous, pattern FormCliff, pattern FormValley
+  , pattern FormDepression, pattern FormRidge, pattern FormEscarpment
+  , pattern FormPlateau, pattern FormBadlands, pattern FormPass
+  , pattern FormCanyon, pattern FormMesa, pattern FormFoothill
+  )
 
 -- | Available terrain editor tools.
 data EditorTool
@@ -114,3 +128,20 @@ defaultEditorState = EditorState
   , editorHardnessTarget = 0.5
   , editorErodePasses    = 5
   }
+
+-- | Biomes that can be directly painted with 'ToolPaintBiome'.
+-- Excludes water-body and computed sub-biomes.
+paintableBiomes :: [BiomeId]
+paintableBiomes =
+  [ BiomeDesert, BiomeGrassland, BiomeForest, BiomeTundra
+  , BiomeRainforest, BiomeShrubland, BiomeSavanna, BiomeTaiga
+  , BiomeSwamp, BiomeSnow, BiomeCoastal, BiomeAlpine
+  ]
+
+-- | All recognised terrain forms in display order.
+allTerrainForms :: [TerrainForm]
+allTerrainForms =
+  [ FormFlat, FormRolling, FormHilly, FormMountainous, FormCliff
+  , FormValley, FormDepression, FormRidge, FormEscarpment, FormPlateau
+  , FormBadlands, FormPass, FormCanyon, FormMesa, FormFoothill
+  ]

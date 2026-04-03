@@ -503,4 +503,17 @@ data WidgetId
   | WidgetEditorClose
   | WidgetEditorReopen
     -- ^ Button shown when the editor toolbar is closed, to reopen it.
+    -- Editor param bar
+  | WidgetEditorParamMinus !Int
+    -- ^ Minus button for a numeric parameter in the param bar (0-based slot).
+  | WidgetEditorParamPlus !Int
+    -- ^ Plus button for a numeric parameter in the param bar (0-based slot).
+  | WidgetEditorCyclePrev !Int
+    -- ^ Prev arrow for a cycle selector in the param bar (0-based slot).
+  | WidgetEditorCycleNext !Int
+    -- ^ Next arrow for a cycle selector in the param bar (0-based slot).
+  | WidgetEditorFalloffPrev
+    -- ^ Prev arrow for the always-visible falloff cycle selector.
+  | WidgetEditorFalloffNext
+    -- ^ Next arrow for the always-visible falloff cycle selector.
   deriving (Eq, Show)
