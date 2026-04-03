@@ -17,7 +17,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import Linear (V2(..))
-import Seer.Config.SliderRegistry (SliderTab(..), SliderDef(..), allSliderDefs, sliderDefsForTab)
+import Seer.Config.SliderRegistry (SliderTab(..), SliderDef(..), allSliderDefs, sliderDefsForTab, sliderMinusWidgetId, sliderPlusWidgetId)
 import Seer.Editor.Types (EditorTool(..))
 import Topo.Pipeline.Stage (allBuiltinStageIds, stageCanonicalName)
 import Topo.Plugin.DataResource (DataResourceSchema(..))

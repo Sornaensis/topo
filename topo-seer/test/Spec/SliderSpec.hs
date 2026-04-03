@@ -61,12 +61,12 @@ spec = do
 
   describe "tooltipForWidget" $ do
     it "returns Just for config slider widgets" $ do
-      tooltipForWidget WidgetConfigGenScaleMinus `shouldSatisfy` isJustText
-      tooltipForWidget WidgetConfigGenScalePlus `shouldSatisfy` isJustText
-      tooltipForWidget WidgetConfigWaterMinus `shouldSatisfy` isJustText
-      tooltipForWidget WidgetConfigWaterPlus `shouldSatisfy` isJustText
-      tooltipForWidget WidgetConfigErosionHydraulicMinus `shouldSatisfy` isJustText
-      tooltipForWidget WidgetConfigErosionMaxDropPlus `shouldSatisfy` isJustText
+      tooltipForWidget (WidgetSliderMinus SliderGenScale) `shouldSatisfy` isJustText
+      tooltipForWidget (WidgetSliderPlus SliderGenScale) `shouldSatisfy` isJustText
+      tooltipForWidget (WidgetSliderMinus SliderWaterLevel) `shouldSatisfy` isJustText
+      tooltipForWidget (WidgetSliderPlus SliderWaterLevel) `shouldSatisfy` isJustText
+      tooltipForWidget (WidgetSliderMinus SliderErosionHydraulic) `shouldSatisfy` isJustText
+      tooltipForWidget (WidgetSliderPlus SliderErosionMaxDrop) `shouldSatisfy` isJustText
 
     it "returns Nothing for non-config widgets" $ do
       tooltipForWidget WidgetGenerate `shouldBe` Nothing
@@ -85,12 +85,12 @@ spec = do
       in mapM_ (\wid -> tooltipForWidget wid `shouldSatisfy` isNonEmptyTip) configWidgets
 
     it "paired minus/plus widgets share the same tooltip" $ do
-      tooltipForWidget WidgetConfigGenScaleMinus
-        `shouldBe` tooltipForWidget WidgetConfigGenScalePlus
-      tooltipForWidget WidgetConfigWaterMinus
-        `shouldBe` tooltipForWidget WidgetConfigWaterPlus
-      tooltipForWidget WidgetConfigErosionThermalMinus
-        `shouldBe` tooltipForWidget WidgetConfigErosionThermalPlus
+      tooltipForWidget (WidgetSliderMinus SliderGenScale)
+        `shouldBe` tooltipForWidget (WidgetSliderPlus SliderGenScale)
+      tooltipForWidget (WidgetSliderMinus SliderWaterLevel)
+        `shouldBe` tooltipForWidget (WidgetSliderPlus SliderWaterLevel)
+      tooltipForWidget (WidgetSliderMinus SliderErosionThermal)
+        `shouldBe` tooltipForWidget (WidgetSliderPlus SliderErosionThermal)
 
     it "returns Just for editor tool widgets" $ do
       for_ [0..8] $ \idx ->
@@ -179,82 +179,7 @@ spec = do
 -- | All WidgetIds that correspond to config slider minus/plus buttons.
 allConfigWidgets :: [WidgetId]
 allConfigWidgets =
-  -- Terrain tab
-  [ WidgetConfigGenScaleMinus, WidgetConfigGenScalePlus
-  , WidgetConfigGenCoordScaleMinus, WidgetConfigGenCoordScalePlus
-  , WidgetConfigGenOffsetXMinus, WidgetConfigGenOffsetXPlus
-  , WidgetConfigGenOffsetYMinus, WidgetConfigGenOffsetYPlus
-  , WidgetConfigGenFrequencyMinus, WidgetConfigGenFrequencyPlus
-  , WidgetConfigGenOctavesMinus, WidgetConfigGenOctavesPlus
-  , WidgetConfigGenLacunarityMinus, WidgetConfigGenLacunarityPlus
-  , WidgetConfigGenGainMinus, WidgetConfigGenGainPlus
-  , WidgetConfigGenWarpScaleMinus, WidgetConfigGenWarpScalePlus
-  , WidgetConfigGenWarpStrengthMinus, WidgetConfigGenWarpStrengthPlus
-  , WidgetConfigExtentXMinus, WidgetConfigExtentXPlus
-  , WidgetConfigExtentYMinus, WidgetConfigExtentYPlus
-  , WidgetConfigEdgeNorthMinus, WidgetConfigEdgeNorthPlus
-  , WidgetConfigEdgeSouthMinus, WidgetConfigEdgeSouthPlus
-  , WidgetConfigEdgeEastMinus, WidgetConfigEdgeEastPlus
-  , WidgetConfigEdgeWestMinus, WidgetConfigEdgeWestPlus
-  , WidgetConfigEdgeFalloffMinus, WidgetConfigEdgeFalloffPlus
-  , WidgetConfigPlateSizeMinus, WidgetConfigPlateSizePlus
-  , WidgetConfigUpliftMinus, WidgetConfigUpliftPlus
-  , WidgetConfigRiftDepthMinus, WidgetConfigRiftDepthPlus
-  , WidgetConfigDetailScaleMinus, WidgetConfigDetailScalePlus
-  , WidgetConfigPlateSpeedMinus, WidgetConfigPlateSpeedPlus
-  , WidgetConfigBoundarySharpnessMinus, WidgetConfigBoundarySharpnessPlus
-  , WidgetConfigBoundaryNoiseScaleMinus, WidgetConfigBoundaryNoiseScalePlus
-  , WidgetConfigBoundaryNoiseStrengthMinus, WidgetConfigBoundaryNoiseStrengthPlus
-  , WidgetConfigBoundaryWarpOctavesMinus, WidgetConfigBoundaryWarpOctavesPlus
-  , WidgetConfigBoundaryWarpLacunarityMinus, WidgetConfigBoundaryWarpLacunarityPlus
-  , WidgetConfigBoundaryWarpGainMinus, WidgetConfigBoundaryWarpGainPlus
-  , WidgetConfigPlateMergeScaleMinus, WidgetConfigPlateMergeScalePlus
-  , WidgetConfigPlateMergeBiasMinus, WidgetConfigPlateMergeBiasPlus
-  , WidgetConfigPlateDetailScaleMinus, WidgetConfigPlateDetailScalePlus
-  , WidgetConfigPlateDetailStrengthMinus, WidgetConfigPlateDetailStrengthPlus
-  , WidgetConfigPlateRidgeStrengthMinus, WidgetConfigPlateRidgeStrengthPlus
-  , WidgetConfigPlateHeightBaseMinus, WidgetConfigPlateHeightBasePlus
-  , WidgetConfigPlateHeightVarianceMinus, WidgetConfigPlateHeightVariancePlus
-  , WidgetConfigPlateHardnessBaseMinus, WidgetConfigPlateHardnessBasePlus
-  , WidgetConfigPlateHardnessVarianceMinus, WidgetConfigPlateHardnessVariancePlus
-  , WidgetConfigTrenchDepthMinus, WidgetConfigTrenchDepthPlus
-  , WidgetConfigRidgeHeightMinus, WidgetConfigRidgeHeightPlus
-  , WidgetConfigPlateBiasStrengthMinus, WidgetConfigPlateBiasStrengthPlus
-  , WidgetConfigPlateBiasCenterMinus, WidgetConfigPlateBiasCenterPlus
-  , WidgetConfigPlateBiasEdgeMinus, WidgetConfigPlateBiasEdgePlus
-  , WidgetConfigPlateBiasNorthMinus, WidgetConfigPlateBiasNorthPlus
-  , WidgetConfigPlateBiasSouthMinus, WidgetConfigPlateBiasSouthPlus
-  -- Climate tab
-  , WidgetConfigWaterMinus, WidgetConfigWaterPlus
-  , WidgetConfigOrographicLiftMinus, WidgetConfigOrographicLiftPlus
-  , WidgetConfigRainShadowLossMinus, WidgetConfigRainShadowLossPlus
-  , WidgetConfigWindDiffuseMinus, WidgetConfigWindDiffusePlus
-  , WidgetConfigEquatorTempMinus, WidgetConfigEquatorTempPlus
-  , WidgetConfigPoleTempMinus, WidgetConfigPoleTempPlus
-  , WidgetConfigLapseRateMinus, WidgetConfigLapseRatePlus
-  , WidgetConfigWindIterationsMinus, WidgetConfigWindIterationsPlus
-  , WidgetConfigMoistureIterationsMinus, WidgetConfigMoistureIterationsPlus
-  , WidgetConfigWeatherTickMinus, WidgetConfigWeatherTickPlus
-  , WidgetConfigWeatherPhaseMinus, WidgetConfigWeatherPhasePlus
-  , WidgetConfigWeatherAmplitudeMinus, WidgetConfigWeatherAmplitudePlus
-  , WidgetConfigVegBaseMinus, WidgetConfigVegBasePlus
-  , WidgetConfigVegBoostMinus, WidgetConfigVegBoostPlus
-  , WidgetConfigVegTempWeightMinus, WidgetConfigVegTempWeightPlus
-  , WidgetConfigVegPrecipWeightMinus, WidgetConfigVegPrecipWeightPlus
-  , WidgetConfigBoundaryMotionTempMinus, WidgetConfigBoundaryMotionTempPlus
-  , WidgetConfigBoundaryMotionPrecipMinus, WidgetConfigBoundaryMotionPrecipPlus
-  , WidgetConfigPlanetRadiusMinus, WidgetConfigPlanetRadiusPlus
-  , WidgetConfigAxialTiltMinus, WidgetConfigAxialTiltPlus
-  , WidgetConfigInsolationMinus, WidgetConfigInsolationPlus
-  , WidgetConfigSliceLatCenterMinus, WidgetConfigSliceLatCenterPlus
-  , WidgetConfigSliceLonCenterMinus, WidgetConfigSliceLonCenterPlus
-  -- Erosion tab
-  , WidgetConfigErosionHydraulicMinus, WidgetConfigErosionHydraulicPlus
-  , WidgetConfigErosionThermalMinus, WidgetConfigErosionThermalPlus
-  , WidgetConfigErosionRainRateMinus, WidgetConfigErosionRainRatePlus
-  , WidgetConfigErosionTalusMinus, WidgetConfigErosionTalusPlus
-  , WidgetConfigErosionMaxDropMinus, WidgetConfigErosionMaxDropPlus
-  ]
+  concatMap (\sid -> [WidgetSliderMinus sid, WidgetSliderPlus sid]) [minBound..maxBound]
 
 isJustText :: Maybe Text -> Bool
 isJustText (Just _) = True

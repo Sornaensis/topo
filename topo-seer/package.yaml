@@ -116,6 +116,7 @@ library:
     - Seer.Config.SliderState
     - Seer.Config.SliderUi
     - Seer.Config.SliderRegistry
+    - Seer.Config.SliderId
     - Seer.Input.Context
     - Seer.Render.Context
     - UI.TerrainColor

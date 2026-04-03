@@ -74,6 +74,7 @@ spec = describe "AtlasScheduler" $ do
       , asqRenderTargetOk = True
       , asqDataReady = True
       , asqSnapshot = snapshot
+      , asqWindowSize = (800, 600)
       }
     report <- awaitReport scheduleRef version
     asrJobCount report `shouldBe` 1

@@ -4,6 +4,8 @@ import Actor.UI (ConfigTab(..), configRowCount, emptyUiState)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import Linear (V2(..))
+import Seer.Config.SliderSpec (SliderId(..))
+import Seer.Editor.Types (EditorTool(..))
 import Test.Hspec
 import Topo.Pipeline.Stage (allBuiltinStageIds)
 import UI.Layout
@@ -85,13 +87,13 @@ spec = describe "UI.WidgetTree" $ do
     let layout = layoutFor (V2 800 960) 0
         widgets = buildWidgets layout
     mapM_ (assertSliderButtons widgets layout)
-      [ (0, WidgetConfigWaterMinus, WidgetConfigWaterPlus)
-      , (1, WidgetConfigOrographicLiftMinus, WidgetConfigOrographicLiftPlus)
-      , (2, WidgetConfigRainShadowLossMinus, WidgetConfigRainShadowLossPlus)
-      , (3, WidgetConfigWindDiffuseMinus, WidgetConfigWindDiffusePlus)
-      , (4, WidgetConfigEquatorTempMinus, WidgetConfigEquatorTempPlus)
-      , (5, WidgetConfigPoleTempMinus, WidgetConfigPoleTempPlus)
-      , (6, WidgetConfigLapseRateMinus, WidgetConfigLapseRatePlus)
+      [ (0, WidgetSliderMinus SliderWaterLevel, WidgetSliderPlus SliderWaterLevel)
+      , (1, WidgetSliderMinus SliderOrographicLift, WidgetSliderPlus SliderOrographicLift)
+      , (2, WidgetSliderMinus SliderRainShadowLoss, WidgetSliderPlus SliderRainShadowLoss)
+      , (3, WidgetSliderMinus SliderWindDiffuse, WidgetSliderPlus SliderWindDiffuse)
+      , (4, WidgetSliderMinus SliderEquatorTemp, WidgetSliderPlus SliderEquatorTemp)
+      , (5, WidgetSliderMinus SliderPoleTemp, WidgetSliderPlus SliderPoleTemp)
+      , (6, WidgetSliderMinus SliderLapseRate, WidgetSliderPlus SliderLapseRate)
       ]
 
   it "builds slider row widgets from the registry definitions for each tab" $ do
@@ -118,28 +120,28 @@ spec = describe "UI.WidgetTree" $ do
     let layout = layoutFor (V2 800 960) 0
         (terrain, planet, climate, weather, biome, erosion) = buildSliderRowWidgets layout
     map widgetId (take 3 terrain)
-      `shouldBe` [WidgetConfigGenScaleMinus, WidgetConfigGenCoordScaleMinus, WidgetConfigGenOffsetXMinus]
+      `shouldBe` [WidgetSliderMinus SliderGenScale, WidgetSliderMinus SliderGenCoordScale, WidgetSliderMinus SliderGenOffsetX]
     map widgetId (take 3 planet)
-      `shouldBe` [WidgetConfigPlanetRadiusMinus, WidgetConfigAxialTiltMinus, WidgetConfigInsolationMinus]
+      `shouldBe` [WidgetSliderMinus SliderPlanetRadius, WidgetSliderMinus SliderAxialTilt, WidgetSliderMinus SliderInsolation]
     map widgetId (take 3 climate)
-      `shouldBe` [WidgetConfigWaterMinus, WidgetConfigOrographicLiftMinus, WidgetConfigRainShadowLossMinus]
+      `shouldBe` [WidgetSliderMinus SliderWaterLevel, WidgetSliderMinus SliderOrographicLift, WidgetSliderMinus SliderRainShadowLoss]
     map widgetId (take 3 weather)
-      `shouldBe` [WidgetConfigWeatherTickMinus, WidgetConfigWeatherPhaseMinus, WidgetConfigWeatherAmplitudeMinus]
+      `shouldBe` [WidgetSliderMinus SliderWeatherTick, WidgetSliderMinus SliderWeatherPhase, WidgetSliderMinus SliderWeatherAmplitude]
     map widgetId (take 3 biome)
-      `shouldBe` [WidgetConfigVegBaseMinus, WidgetConfigVegBoostMinus, WidgetConfigVegTempWeightMinus]
+      `shouldBe` [WidgetSliderMinus SliderVegBase, WidgetSliderMinus SliderVegBoost, WidgetSliderMinus SliderVegTempWeight]
     map widgetId (take 3 erosion)
-      `shouldBe` [WidgetConfigErosionHydraulicMinus, WidgetConfigErosionThermalMinus, WidgetConfigErosionRainRateMinus]
+      `shouldBe` [WidgetSliderMinus SliderErosionHydraulic, WidgetSliderMinus SliderErosionThermal, WidgetSliderMinus SliderErosionRainRate]
 
   it "anchors slider row hit tests to live row rects for each tab" $ do
     let layout = layoutFor (V2 800 960) 0
         (terrain, planet, climate, weather, biome, erosion) = buildSliderRowWidgets layout
         rowHit = rectHitPoint (configParamRowHitRect (configParamRects 0 layout))
-    hitTest terrain rowHit `shouldBe` Just WidgetConfigGenScaleMinus
-    hitTest planet rowHit `shouldBe` Just WidgetConfigPlanetRadiusMinus
-    hitTest climate rowHit `shouldBe` Just WidgetConfigWaterMinus
-    hitTest weather rowHit `shouldBe` Just WidgetConfigWeatherTickMinus
-    hitTest biome rowHit `shouldBe` Just WidgetConfigVegBaseMinus
-    hitTest erosion rowHit `shouldBe` Just WidgetConfigErosionHydraulicMinus
+    hitTest terrain rowHit `shouldBe` Just (WidgetSliderMinus SliderGenScale)
+    hitTest planet rowHit `shouldBe` Just (WidgetSliderMinus SliderPlanetRadius)
+    hitTest climate rowHit `shouldBe` Just (WidgetSliderMinus SliderWaterLevel)
+    hitTest weather rowHit `shouldBe` Just (WidgetSliderMinus SliderWeatherTick)
+    hitTest biome rowHit `shouldBe` Just (WidgetSliderMinus SliderVegBase)
+    hitTest erosion rowHit `shouldBe` Just (WidgetSliderMinus SliderErosionHydraulic)
 
   it "anchors plugin and simulation widgets to bespoke pipeline row helpers" $ do
     let layout = layoutFor (V2 800 960) 0
@@ -162,7 +164,7 @@ spec = describe "UI.WidgetTree" $ do
 
   it "hit tests editor toolbar tool buttons" $ do
     let layout = layoutFor (V2 1200 800) 160
-        widgets = buildEditorWidgets layout
+        widgets = buildEditorWidgets layout ToolRaise
     hitTest widgets (rectHitPoint (editorToolButtonRect 0 layout))
       `shouldBe` Just (WidgetEditorTool 0)
     hitTest widgets (rectHitPoint (editorToolButtonRect 3 layout))
@@ -172,7 +174,7 @@ spec = describe "UI.WidgetTree" $ do
 
   it "hit tests editor radius and close buttons" $ do
     let layout = layoutFor (V2 1200 800) 160
-        widgets = buildEditorWidgets layout
+        widgets = buildEditorWidgets layout ToolRaise
     hitTest widgets (rectHitPoint (editorRadiusMinusRect layout))
       `shouldBe` Just WidgetEditorRadiusMinus
     hitTest widgets (rectHitPoint (editorRadiusPlusRect layout))
@@ -182,7 +184,7 @@ spec = describe "UI.WidgetTree" $ do
 
   it "builds correct number of editor widgets" $ do
     let layout = layoutFor (V2 1200 800) 160
-        widgets = buildEditorWidgets layout
+        widgets = buildEditorWidgets layout ToolRaise
     length widgets `shouldBe` (editorToolButtonCount + 3)
 
   it "hit tests editor reopen button" $ do
