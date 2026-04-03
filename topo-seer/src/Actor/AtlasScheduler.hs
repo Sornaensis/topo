@@ -46,6 +46,7 @@ data AtlasScheduleRequest = AtlasScheduleRequest
   , asqRenderTargetOk :: !Bool
   , asqDataReady :: !Bool
   , asqSnapshot :: !RenderSnapshot
+  , asqWindowSize :: !(Int, Int)
   }
 
 newtype AtlasSchedulerState = AtlasSchedulerState
@@ -106,12 +107,16 @@ runSchedule handles req = do
       (_, enqueueMs) <- timedMs $
         forM_ jobs $ \job ->
           enqueueAtlasBuildWork (ashWorker handles) AtlasBuild
-            { abKey = ajKey job
-            , abViewMode = ajViewMode job
+            { abKey        = ajKey job
+            , abViewMode   = ajViewMode job
             , abWaterLevel = ajWaterLevel job
-            , abTerrain = ajTerrain job
-            , abScale = ajScale job
-            , abResultRef = ashResultRef handles
+            , abTerrain    = ajTerrain job
+            , abHexRadius  = ajHexRadius job
+            , abAtlasScale = ajAtlasScale job
+            , abPanOffset  = uiPanOffset (rsUi snapshot)
+            , abZoom       = uiZoom (rsUi snapshot)
+            , abWindowSize = asqWindowSize req
+            , abResultRef  = ashResultRef handles
             }
       let report = AtlasScheduleReport
             { asrSnapshotVersion = asqSnapshotVersion req

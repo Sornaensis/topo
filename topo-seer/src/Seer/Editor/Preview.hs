@@ -27,7 +27,7 @@ import UI.HexPick (axialToScreen, renderHexRadiusPx)
 -- The colour depends on the active tool.  The alpha of each hex is
 -- @brushWeight × previewAlpha@ (default ~77/255 ≈ 0.3).
 drawBrushPreview :: SDL.Renderer -> UiState -> Int -> IO ()
-drawBrushPreview renderer uiSnap supersample = do
+drawBrushPreview renderer uiSnap hexRadius = do
   let editor = uiEditor uiSnap
   when (editorActive editor) $
     case uiHoverHex uiSnap of
@@ -40,10 +40,18 @@ drawBrushPreview renderer uiSnap supersample = do
             center = HexAxial hq hr
             disc   = hexDisc center radius
             (cr, cg, cb) = toolColor tool
-            spans  = hexSpans renderHexRadiusPx
-            (minX, minY, maxX, maxY) = spanBounds spans
-            texW   = fromIntegral (max 1 ((maxX - minX + 1) * supersample))
-            texH   = fromIntegral (max 1 ((maxY - minY + 1) * supersample))
+            -- World-space bounds for tile placement (renderHexRadiusPx=6 frame).
+            -- Derived from actual hex geometry size to match atlas tile extents.
+            hexHalfW = round (sqrt 3 / 2 * fromIntegral renderHexRadiusPx :: Float)
+            wMinX = -hexHalfW :: Int
+            wMinY = -renderHexRadiusPx :: Int
+            hexW = 2 * hexHalfW + 1
+            hexH = 2 * renderHexRadiusPx
+            -- Texture rendered at hexRadius resolution for crisp edges
+            hiResSpans = hexSpans hexRadius
+            (tMinX, tMinY, tMaxX, tMaxY) = spanBounds hiResSpans
+            texW   = fromIntegral (max 1 (tMaxX - tMinX + 1))
+            texH   = fromIntegral (max 1 (tMaxY - tMinY + 1))
         -- Create a single hex-shaped texture with full-opacity tool colour.
         -- Per-tile alpha is applied via textureAlphaMod before each copy.
         hexTex <- SDL.createTexture renderer SDL.RGBA8888
@@ -54,13 +62,11 @@ drawBrushPreview renderer uiSnap supersample = do
         SDL.rendererDrawColor renderer SDL.$= V4 0 0 0 0
         SDL.clear renderer
         SDL.rendererDrawColor renderer SDL.$= V4 cr cg cb 255
-        drawHexSpansSupersampled renderer spans supersample (minX, minY)
+        drawHexSpansSupersampled renderer hiResSpans 1 (tMinX, tMinY)
         SDL.rendererRenderTarget renderer SDL.$= Nothing
         -- Draw one copy per brush-disc tile, varying alpha by weight.
         let (ox, oy) = uiPanOffset uiSnap
             z = uiZoom uiSnap
-            hexW = maxX - minX + 1
-            hexH = maxY - minY + 1
         forM_ disc $ \tile -> do
           let dist  = hexDistance center tile
               w     = brushWeight falloff radius dist
@@ -69,8 +75,8 @@ drawBrushPreview renderer uiSnap supersample = do
             SDL.textureAlphaMod hexTex SDL.$= fromIntegral (min 255 alpha)
             let HexAxial tq tr = tile
                 (cx, cy) = axialToScreen renderHexRadiusPx tq tr
-                worldX = cx + minX
-                worldY = cy + minY
+                worldX = cx + wMinX
+                worldY = cy + wMinY
                 rect = transformRect (ox, oy) z
                          (RectInt (V2 worldX worldY) (V2 hexW hexH))
                 RectInt (V2 tx ty) (V2 tw th) = rect

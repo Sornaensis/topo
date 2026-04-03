@@ -20,6 +20,7 @@ import Data.Word (Word64)
 
 import Actor.AtlasCache (AtlasKey(..))
 import Actor.AtlasManager (AtlasJob(..), enqueueAtlasBuild)
+import Seer.Render.ZoomStage (ZoomStage(..), allZoomStages)
 import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.UI (getUiSnapshot)
@@ -121,14 +122,15 @@ scheduleAtlasRebuild handles mode = do
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap      <- getUiSnapshot (ahUiHandle handles)
   let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
-      job scale = AtlasJob
-        { ajKey       = atlasKey
-        , ajViewMode  = mode
+      job stage = AtlasJob
+        { ajKey        = atlasKey
+        , ajViewMode   = mode
         , ajWaterLevel = uiRenderWaterLevel uiSnap
-        , ajTerrain   = terrainSnap
-        , ajScale     = scale
+        , ajTerrain    = terrainSnap
+        , ajHexRadius  = zsHexRadius stage
+        , ajAtlasScale = zsAtlasScale stage
         }
-  mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles) . job) [1 .. 6]
+  mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles) . job) allZoomStages
 
 -- --------------------------------------------------------------------------
 -- Parsers

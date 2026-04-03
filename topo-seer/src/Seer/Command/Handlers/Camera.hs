@@ -24,11 +24,12 @@ import Seer.Command.Context (CommandContext(..))
 import Topo (ChunkCoord(..), ChunkId(..), TileCoord(..), chunkCoordFromId)
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 import UI.HexPick (axialToScreen, renderHexRadiusPx)
+import Seer.Render.ZoomStage (maxCameraZoom)
 
 -- | Zoom range clamping bounds, matching 'Seer.Input.ViewControls'.
 zoomMin, zoomMax :: Float
 zoomMin = 0.4
-zoomMax = 3.0
+zoomMax = maxCameraZoom
 
 -- | Clamp zoom to the allowed range.
 clampZoom :: Float -> Float

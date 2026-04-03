@@ -4,6 +4,7 @@ module UI.TerrainRender
   , ChunkTexture(..)
   , buildChunkGeometry
   , buildChunkTexture
+  , chunkBounds
   , destroyChunkTexture
   ) where
 
@@ -44,19 +45,19 @@ data ChunkTexture = ChunkTexture
 -- The @Maybe (U.Vector Float)@ parameter carries pre-extracted overlay field
 -- data for this chunk when 'ViewOverlay' mode is active.  For all other
 -- view modes it should be 'Nothing'.
-buildChunkGeometry :: WorldConfig -> ViewMode -> Float -> IntMap ClimateChunk -> IntMap WeatherChunk -> IntMap VegetationChunk -> Maybe (U.Vector Float) -> Int -> TerrainChunk -> ChunkGeometry
-buildChunkGeometry config mode waterLevel climateMap weatherMap vegMap mOverlayVec key chunk =
+buildChunkGeometry :: Int -> WorldConfig -> ViewMode -> Float -> IntMap ClimateChunk -> IntMap WeatherChunk -> IntMap VegetationChunk -> Maybe (U.Vector Float) -> Int -> TerrainChunk -> ChunkGeometry
+buildChunkGeometry hexRadiusPx config mode waterLevel climateMap weatherMap vegMap mOverlayVec key chunk =
   let ChunkCoord cx cy = chunkCoordFromId (ChunkId key)
       TileCoord ox oy = chunkOriginTile config (ChunkCoord cx cy)
       climateChunk = IntMap.lookup key climateMap
       weatherChunk = IntMap.lookup key weatherMap
       vegChunk = IntMap.lookup key vegMap
       total = U.length (tcElevation chunk)
-      (minX, minY, maxX, maxY) = chunkBounds config renderHexRadiusPx (ChunkCoord cx cy)
+      (minX, minY, maxX, maxY) = chunkBounds config hexRadiusPx (ChunkCoord cx cy)
       bounds = Rect (V2 minX minY, V2 (max 1 (maxX - minX)) (max 1 (maxY - minY)))
-      corners = hexCornersF renderHexRadiusPx
+      corners = hexCornersF hexRadiusPx
       tileEntries =
-        [ buildTileGeometry config mode waterLevel climateChunk weatherChunk vegChunk mOverlayVec chunk corners minX minY ox oy idx
+        [ buildTileGeometry hexRadiusPx config mode waterLevel climateChunk weatherChunk vegChunk mOverlayVec chunk corners minX minY ox oy idx
         | idx <- [0 .. total - 1]
         ]
       vertices = concatMap fst tileEntries
@@ -68,7 +69,8 @@ buildChunkGeometry config mode waterLevel climateMap weatherMap vegMap mOverlayV
       }
 
 buildTileGeometry
-  :: WorldConfig
+  :: Int
+  -> WorldConfig
   -> ViewMode
   -> Float
   -> Maybe ClimateChunk
@@ -83,11 +85,11 @@ buildTileGeometry
   -> Int
   -> Int
   -> ([Raw.Vertex], [CInt])
-buildTileGeometry config mode waterLevel climateChunk weatherChunk vegChunk mOverlayVec chunk corners minX minY ox oy idx =
+buildTileGeometry hexRadiusPx config mode waterLevel climateChunk weatherChunk vegChunk mOverlayVec chunk corners minX minY ox oy idx =
   let TileCoord tx ty = tileCoordFromIndex config (TileIndex idx)
       q = ox + tx
       r = oy + ty
-      (cx, cy) = axialToScreen renderHexRadiusPx q r
+      (cx, cy) = axialToScreen hexRadiusPx q r
       centerX = fromIntegral (cx - minX)
       centerY = fromIntegral (cy - minY)
       overlayVal = case mOverlayVec of

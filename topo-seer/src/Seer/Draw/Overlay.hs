@@ -86,19 +86,29 @@ import UI.WidgetsDraw (drawTextLine)
 import qualified Data.Vector.Unboxed as U
 
 drawHoverHex :: SDL.Renderer -> UiState -> Int -> IO ()
-drawHoverHex renderer uiSnap supersample =
+drawHoverHex renderer uiSnap hexRadius =
   case uiHoverHex uiSnap of
     Nothing -> pure ()
     Just (q, r) -> do
-      let spans = hexSpans renderHexRadiusPx
+      let -- World-space placement rect (renderHexRadiusPx=6 coordinate frame).
+          -- Derived from the actual hex geometry half-width so the overlay
+          -- matches the atlas-normalised hex extents rather than the wider
+          -- floor/ceil scanline bounding box of hexSpans.
+          hexHalfW = round (sqrt 3 / 2 * fromIntegral renderHexRadiusPx :: Float)
           (cx, cy) = axialToScreen renderHexRadiusPx q r
           (ox, oy) = uiPanOffset uiSnap
           z = uiZoom uiSnap
-          (minX, minY, maxX, maxY) = spanBounds spans
-          texW = max 1 ((maxX - minX + 1) * supersample)
-          texH = max 1 ((maxY - minY + 1) * supersample)
-          worldX = cx + minX
-          worldY = cy + minY
+          wMinX = -hexHalfW :: Int
+          wMinY = -renderHexRadiusPx
+          worldX = cx + wMinX
+          worldY = cy + wMinY
+          worldW = 2 * hexHalfW + 1
+          worldH = 2 * renderHexRadiusPx
+          -- Texture rendered at hexRadius resolution for crisp edges
+          hiResSpans = hexSpans hexRadius
+          (tMinX, tMinY, tMaxX, tMaxY) = spanBounds hiResSpans
+          texW = max 1 (tMaxX - tMinX + 1)
+          texH = max 1 (tMaxY - tMinY + 1)
       hoverTexture <- SDL.createTexture renderer SDL.RGBA8888 SDL.TextureAccessTarget (V2 (fromIntegral texW) (fromIntegral texH))
       SDL.textureBlendMode hoverTexture SDL.$= SDL.BlendAlphaBlend
       SDL.rendererRenderTarget renderer SDL.$= Just hoverTexture
@@ -106,9 +116,9 @@ drawHoverHex renderer uiSnap supersample =
       SDL.rendererDrawColor renderer SDL.$= V4 0 0 0 0
       SDL.clear renderer
       SDL.rendererDrawColor renderer SDL.$= colHoverHex
-      drawHexSpansSupersampled renderer spans supersample (minX, minY)
+      drawHexSpansSupersampled renderer hiResSpans 1 (tMinX, tMinY)
       SDL.rendererRenderTarget renderer SDL.$= Nothing
-      let rect = transformRect (ox, oy) z (RectInt (V2 worldX worldY) (V2 (maxX - minX + 1) (maxY - minY + 1)))
+      let rect = transformRect (ox, oy) z (RectInt (V2 worldX worldY) (V2 worldW worldH))
           RectInt (V2 tx ty) (V2 tw th) = rect
       SDL.copy renderer hoverTexture Nothing (Just (SDL.Rectangle (SDL.P (V2 (fromIntegral tx) (fromIntegral ty))) (V2 (fromIntegral tw) (fromIntegral th))))
       SDL.destroyTexture hoverTexture

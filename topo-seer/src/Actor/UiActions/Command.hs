@@ -18,6 +18,7 @@ import Actor.AtlasCache (AtlasKey(..))
 import Actor.PluginManager (LoadedPlugin(..), PluginManager, getDisabledPlugins, getLoadedPlugins, getPluginDataResources, getPluginOrder, getPluginOverlaySchemas, getPluginStages, refreshManifests)
 import Actor.Simulation (Simulation)
 import Actor.AtlasManager (AtlasJob(..), AtlasManager, enqueueAtlasBuild)
+import Seer.Render.ZoomStage (ZoomStage(..), allZoomStages)
 import Actor.Data
   ( Data
   , TerrainSnapshot(..)
@@ -229,15 +230,15 @@ rebuildAtlasFor req mode = do
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap <- getUiSnapshot (ahUiHandle handles)
   let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
-      scales = [1 .. 6]
-      job scale = AtlasJob
-        { ajKey = atlasKey
-        , ajViewMode = mode
+      job stage = AtlasJob
+        { ajKey        = atlasKey
+        , ajViewMode   = mode
         , ajWaterLevel = uiRenderWaterLevel uiSnap
-        , ajTerrain = terrainSnap
-        , ajScale = scale
+        , ajTerrain    = terrainSnap
+        , ajHexRadius  = zsHexRadius stage
+        , ajAtlasScale = zsAtlasScale stage
         }
-  mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles) . job) scales
+  mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles) . job) allZoomStages
 
 -- | 'rebuildAtlasFor' variant that takes 'ActorHandles' directly
 -- (used by undo\/redo which don't carry a 'UiActionRequest').
@@ -246,15 +247,15 @@ rebuildAtlasFor' handles mode = do
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap <- getUiSnapshot (ahUiHandle handles)
   let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
-      scales = [1 .. 6]
-      job scale = AtlasJob
-        { ajKey = atlasKey
-        , ajViewMode = mode
+      job stage = AtlasJob
+        { ajKey        = atlasKey
+        , ajViewMode   = mode
         , ajWaterLevel = uiRenderWaterLevel uiSnap
-        , ajTerrain = terrainSnap
-        , ajScale = scale
+        , ajTerrain    = terrainSnap
+        , ajHexRadius  = zsHexRadius stage
+        , ajAtlasScale = zsAtlasScale stage
         }
-  mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles) . job) scales
+  mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles) . job) allZoomStages
 
 setViewMode :: UiActionRequest -> ViewMode -> IO ()
 setViewMode req mode =

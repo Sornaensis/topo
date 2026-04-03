@@ -15,6 +15,7 @@ module UI.RiverRender
   ( -- * Configuration
     RiverRenderConfig(..)
   , defaultRiverRenderConfig
+  , scaleRiverWidths
     -- * Geometry output
   , RiverGeometry(..)
     -- * Building
@@ -118,6 +119,27 @@ defaultRiverRenderConfig = RiverRenderConfig
   , rrcMinDeltaOrder      = 3
   }
 
+-- | Scale river line widths to match a different hex radius.
+--
+-- 'defaultRiverRenderConfig' is calibrated for 'renderHexRadiusPx' (= 6).
+-- At larger hex radii (zoom stages 2 and 3) the coordinate space is bigger,
+-- so a 1-pixel half-width would produce sub-pixel-thin rivers.  Multiply
+-- all half-widths and the pool radius by @hexRadius / renderHexRadiusPx@
+-- before building geometry so rivers stay visually consistent across stages.
+--
+-- Delta fan radii are already expressed as fractions of the hex apothem
+-- and therefore need no adjustment.
+scaleRiverWidths :: Int -> RiverRenderConfig -> RiverRenderConfig
+scaleRiverWidths hexRadius cfg =
+  let factor = fromIntegral hexRadius / fromIntegral renderHexRadiusPx :: Float
+  in cfg
+      { rrcStreamHalfWidth = rrcStreamHalfWidth cfg * factor
+      , rrcCreekHalfWidth  = rrcCreekHalfWidth  cfg * factor
+      , rrcRiverHalfWidth  = rrcRiverHalfWidth  cfg * factor
+      , rrcMajorHalfWidth  = rrcMajorHalfWidth  cfg * factor
+      , rrcPoolRadius      = rrcPoolRadius      cfg * factor
+      }
+
 -- ---------------------------------------------------------------------------
 -- Geometry output
 -- ---------------------------------------------------------------------------
@@ -152,18 +174,19 @@ hexOverlap = 0.6
 buildChunkRiverGeometry
   :: RiverRenderConfig
   -> WorldConfig
+  -> Int                   -- ^ hex radius in pixels
   -> Int                   -- ^ chunk key
   -> IntMap RiverChunk     -- ^ all river chunks
   -> IntMap TerrainChunk   -- ^ all terrain chunks (for biome filtering)
   -> Maybe RiverGeometry
-buildChunkRiverGeometry cfg config key riverMap terrainMap = do
+buildChunkRiverGeometry cfg config hexRadiusPx key riverMap terrainMap = do
   rc <- IntMap.lookup key riverMap
   let offsets   = rcSegOffsets rc
       totalSegs = if U.null offsets then 0 else offsets U.! (U.length offsets - 1)
       mbBiomeVec = fmap tcFlags (IntMap.lookup key terrainMap)
   if totalSegs <= 0
     then Nothing
-    else let rg = buildGeometry cfg config key rc mbBiomeVec
+    else let rg = buildGeometry cfg config hexRadiusPx key rc mbBiomeVec
          in if SV.null (rgVertices rg) then Nothing else Just rg
 
 -- | Internal: build geometry for a chunk known to have segments.
@@ -171,13 +194,14 @@ buildGeometry
   :: RiverRenderConfig
   -> WorldConfig
   -> Int
+  -> Int
   -> RiverChunk
   -> Maybe (U.Vector BiomeId)  -- ^ biome vector for water-tile filtering
   -> RiverGeometry
-buildGeometry cfg config key rc mbBiomeVec =
+buildGeometry cfg config hexRadiusPx key rc mbBiomeVec =
   let ChunkCoord cx cy = chunkCoordFromId (ChunkId key)
       TileCoord ox oy  = chunkOriginTile config (ChunkCoord cx cy)
-      (minX, minY, maxX, maxY) = chunkBoundsF config renderHexRadiusPx (ChunkCoord cx cy)
+      (minX, minY, maxX, maxY) = chunkBoundsF config hexRadiusPx (ChunkCoord cx cy)
       bounds = Rect (V2 (floor minX) (floor minY),
                      V2 (max 1 (ceiling maxX - floor minX))
                         (max 1 (ceiling maxY - floor minY)))
@@ -191,7 +215,7 @@ buildGeometry cfg config key rc mbBiomeVec =
       rawColor   = Raw.Color rCol_r rCol_g rCol_b rCol_a
       (dCol_r, dCol_g, dCol_b, dCol_a) = rrcDeltaColor cfg
       deltaColor = Raw.Color dCol_r dCol_g dCol_b dCol_a
-      hexR       = fromIntegral renderHexRadiusPx + hexOverlap :: Float
+      hexR       = fromIntegral hexRadiusPx + hexOverlap :: Float
 
       -- Test whether a tile is classified as a water biome.
       isTileWater idx = case mbBiomeVec of
@@ -211,7 +235,7 @@ buildGeometry cfg config key rc mbBiomeVec =
                  let TileCoord tx ty = tileCoordFromIndex config (TileIndex tileIdx)
                      q = ox + tx
                      r = oy + ty
-                     (scrX, scrY) = axialToScreen renderHexRadiusPx q r
+                     (scrX, scrY) = axialToScreen hexRadiusPx q r
                      centerX = fromIntegral scrX - minX
                      centerY = fromIntegral scrY - minY
                      tileOrder = riverOrder U.! tileIdx
@@ -309,17 +333,22 @@ buildTileRiverSegs cfg color deltaColor hexR entryVec exitVec orderVec tileOrder
                             (dSpreadDeg * pi / 180.0) dTriCount
                             cx cy dirAngle baseAfterEntries
                   else ([], [], baseAfterEntries)
-            -- Coastal exit: delta fan from hex centre (if eligible),
-            -- otherwise a plain line quad to the exit edge.
+            -- Coastal exit: line quad centre→edge midpoint, then a delta
+            -- fan anchored at the hex centre reaching the edge (if
+            -- eligible).  The line ensures the river visually connects
+            -- to the hex boundary regardless of delta eligibility.
             | coastal =
-                if deltaEligible
-                  then let (dFrac, dSpreadDeg, dTriCount) = deltaParamsForOrder cfg tileOrder
-                           dRadius = dFrac * apothem
+                let (lineVerts, lineIdxs, baseAfterLine) =
+                      buildLineQuadRaw color exitHw centre exitPt baseAfterEntries
+                in if deltaEligible
+                  then let (_, dSpreadDeg, dTriCount) = deltaParamsForOrder cfg tileOrder
                            exitDirAngle = atan2 (snd exitPt - cy) (fst exitPt - cx)
-                       in buildDeltaFan deltaColor dRadius
-                            (dSpreadDeg * pi / 180.0) dTriCount
-                            cx cy exitDirAngle baseAfterEntries
-                  else buildLineQuadRaw color exitHw centre exitPt baseAfterEntries
+                           (dVerts, dIdxs, baseAfterDelta) =
+                             buildDeltaFan deltaColor apothem
+                               (dSpreadDeg * pi / 180.0) dTriCount
+                               cx cy exitDirAngle baseAfterLine
+                       in (lineVerts ++ dVerts, lineIdxs ++ dIdxs, baseAfterDelta)
+                  else (lineVerts, lineIdxs, baseAfterLine)
             -- Normal exit: line centre→exit.
             | otherwise =
                 buildLineQuadRaw color exitHw centre exitPt baseAfterEntries
@@ -349,7 +378,16 @@ buildTileRiverSegs cfg color deltaColor hexR entryVec exitVec orderVec tileOrder
                                 in accumDir (i + 1) (sx + ow * dx) (sy + ow * dy) (w + ow)
             in accumDir 0 0.0 0.0 0.0
 
-      in (entryVerts ++ exitVerts, entryIdxs ++ exitIdxs, finalBase)
+          -- Disc join at centre: fills the triangular gap that appears at
+          -- bends and confluences where two angled quads share only their
+          -- endpoint at (cx, cy).
+          hasEntries = baseAfterEntries > baseVert
+          (jVerts, jIdxs, joinBase) =
+            if hasEntries
+              then buildDeltaFan color exitHw (2 * pi) 12 cx cy 0 finalBase
+              else ([], [], finalBase)
+
+      in (entryVerts ++ exitVerts ++ jVerts, entryIdxs ++ exitIdxs ++ jIdxs, joinBase)
 
 -- | Compute the midpoint of hex edge @e@ relative to center @(cx, cy)@.
 -- If edge code is 255, returns the hex centre.

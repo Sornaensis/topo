@@ -25,14 +25,16 @@ import Topo.Overlay (OverlayStore)
 import UI.OverlayExtract (extractOverlayField)
 import UI.RiverRender (RiverGeometry(..))
 import UI.TerrainRender (ChunkGeometry(..), buildChunkGeometry)
+import UI.HexPick (renderHexRadiusPx, hexOriginX, hexOriginY)
 import UI.Widgets (Rect(..))
 
 
 -- | Render-target texture tile for an atlas slice.
 data TerrainAtlasTile = TerrainAtlasTile
-  { tatTexture :: SDL.Texture
-  , tatBounds :: Rect
-  , tatScale :: Int
+  { tatTexture   :: SDL.Texture
+  , tatBounds    :: Rect
+  , tatScale     :: Int
+  , tatHexRadius :: Int
   }
 
 -- | Pre-transformed chunk geometry ready for per-tile atlas rendering.
@@ -43,9 +45,10 @@ data AtlasChunkGeometry = AtlasChunkGeometry
 
 -- | CPU-built atlas tile geometry with per-tile vertex transforms applied.
 data AtlasTileGeometry = AtlasTileGeometry
-  { atgBounds :: !Rect
-  , atgScale :: !Int
-  , atgChunks :: ![AtlasChunkGeometry]
+  { atgBounds      :: !Rect
+  , atgScale       :: !Int
+  , atgHexRadius   :: !Int
+  , atgChunks      :: ![AtlasChunkGeometry]
   , atgRiverOverlay :: ![AtlasChunkGeometry]
   }
 
@@ -63,16 +66,17 @@ buildAtlasTileGeometry
   -> OverlayStore
   -> WorldConfig
   -> Int
+  -> Int
   -> [AtlasTileGeometry]
-buildAtlasTileGeometry mode waterLevel terrainChunks climateChunks weatherChunks vegChunks overlayStore config scale =
+buildAtlasTileGeometry mode waterLevel terrainChunks climateChunks weatherChunks vegChunks overlayStore config hexRadiusPx atlasScale =
   let overlayMap = case mode of
         ViewOverlay name fieldIdx ->
           case extractOverlayField name fieldIdx (wcChunkSize config * wcChunkSize config) overlayStore of
             Just m  -> m
             Nothing -> IntMap.empty
         _ -> IntMap.empty
-      geometryMap = IntMap.mapWithKey (\k -> buildChunkGeometry config mode waterLevel climateChunks weatherChunks vegChunks (IntMap.lookup k overlayMap) k) terrainChunks
-  in composeTilesFromGeometry geometryMap scale
+      geometryMap = IntMap.mapWithKey (\k -> buildChunkGeometry hexRadiusPx config mode waterLevel climateChunks weatherChunks vegChunks (IntMap.lookup k overlayMap) k) terrainChunks
+  in composeTilesFromGeometry geometryMap hexRadiusPx atlasScale
 
 -- | Compose atlas tiles from a pre-built chunk geometry map.
 --
@@ -81,15 +85,15 @@ buildAtlasTileGeometry mode waterLevel terrainChunks climateChunks weatherChunks
 -- tiles from the pre-built map.  This prevents render thread starvation
 -- caused by long-running pure computations whose pinned storable-vector
 -- allocations bypass GHC's context-switch counter.
-composeTilesFromGeometry :: IntMap ChunkGeometry -> Int -> [AtlasTileGeometry]
-composeTilesFromGeometry geometryMap scale
+composeTilesFromGeometry :: IntMap ChunkGeometry -> Int -> Int -> [AtlasTileGeometry]
+composeTilesFromGeometry geometryMap hexRadius atlasScale
   | IntMap.null geometryMap = []
   | otherwise =
     let boundsList = map cgBounds (IntMap.elems geometryMap)
         Rect (V2 minX minY, V2 maxW maxH) = foldBounds boundsList
         maxScaleW = maxAtlasTextureSize `div` max 1 maxW
         maxScaleH = maxAtlasTextureSize `div` max 1 maxH
-        scale' = min scale (max 1 (min maxScaleW maxScaleH))
+        scale' = min atlasScale (max 1 (min maxScaleW maxScaleH))
         tileW = max 1 (maxAtlasTextureSize `div` scale')
         tileH = max 1 (maxAtlasTextureSize `div` scale')
         tiles = tileRects (Rect (V2 minX minY, V2 maxW maxH)) tileW tileH
@@ -103,9 +107,10 @@ composeTilesFromGeometry geometryMap scale
         else
           let chunks = map (buildChunk tx ty sc) overlaps
           in Just AtlasTileGeometry
-              { atgBounds = tileRect
-              , atgScale = sc
-              , atgChunks = chunks
+              { atgBounds      = tileRect
+              , atgScale       = sc
+              , atgHexRadius   = hexRadius
+              , atgChunks      = chunks
               , atgRiverOverlay = []
               }
 
@@ -158,6 +163,24 @@ attachRiverOverlay riverGeoMap tiles
           , acgIndices = rgIndices rg
           }
 
+-- | Normalise a world-space rect from an arbitrary hexRadius coordinate frame
+-- to the base 'renderHexRadiusPx' (= 6) coordinate frame.
+--
+-- 'axialToScreen' adds fixed offsets ('hexOriginX', 'hexOriginY') that do not
+-- scale with hexRadius.  We subtract those before scaling and re-add them
+-- after, so the result is identical to what 'axialToScreen renderHexRadiusPx'
+-- would produce for the same hex coordinates.
+normalizeHexBounds :: Int -> Rect -> Rect
+normalizeHexBounds hexR rect
+  | hexR == renderHexRadiusPx = rect
+  | otherwise =
+      let s = fromIntegral renderHexRadiusPx / fromIntegral hexR :: Float
+          scaleCoord ox v = round (s * fromIntegral (v - ox)) + ox
+          scaleDim  v     = max 1 (round (s * fromIntegral v))
+          Rect (V2 x y, V2 w h) = rect
+      in Rect (V2 (scaleCoord hexOriginX x) (scaleCoord hexOriginY y)
+              , V2 (scaleDim w) (scaleDim h))
+
 -- | Upload pre-built atlas geometry into render-target textures.
 renderAtlasTileTextures :: SDL.Renderer -> [AtlasTileGeometry] -> IO [TerrainAtlasTile]
 renderAtlasTileTextures renderer tiles =
@@ -178,9 +201,10 @@ renderAtlasTileTextures renderer tiles =
       mapM_ renderChunk (atgRiverOverlay tile)
       SDL.rendererRenderTarget renderer SDL.$= Nothing
       pure [TerrainAtlasTile
-        { tatTexture = texture
-        , tatBounds = atgBounds tile
-        , tatScale = scale'
+        { tatTexture   = texture
+        , tatBounds    = normalizeHexBounds (atgHexRadius tile) (atgBounds tile)
+        , tatScale     = scale'
+        , tatHexRadius = atgHexRadius tile
         }]
 
     renderChunk chunk =

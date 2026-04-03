@@ -570,9 +570,9 @@ allToolDefs =
                   ]
               , "zoom" .= object
                   [ "type" .= ("number" :: Text)
-                  , "description" .= ("Zoom level (0.4 to 3.0, default 1.0)" :: Text)
+                  , "description" .= ("Zoom level (0.4 to 8.0, default 1.0)" :: Text)
                   , "minimum" .= (0.4 :: Double)
-                  , "maximum" .= (3.0 :: Double)
+                  , "maximum" .= (8.0 :: Double)
                   ]
               ]
           , "required" .= (["x", "y"] :: [Text])

@@ -8,6 +8,7 @@ module Seer.Input.ViewControls
 
 import Actor.UI (UiState(..), ViewMode(..))
 import qualified SDL
+import Seer.Render.ZoomStage (maxCameraZoom)
 
 -- | Zoom configuration settings.
 data ZoomSettings = ZoomSettings
@@ -21,7 +22,7 @@ data ZoomSettings = ZoomSettings
 defaultZoomSettings :: ZoomSettings
 defaultZoomSettings = ZoomSettings
   { zsMin = 0.4
-  , zsMax = 3
+  , zsMax = maxCameraZoom
   , zsZoomInFactor = 1.1
   , zsZoomOutFactor = 0.9
   }

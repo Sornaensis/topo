@@ -35,6 +35,7 @@ import Hyperspace.Actor (ActorHandle, Protocol)
 import Linear (V2(..))
 import Data.IORef ()
 import qualified SDL
+import Seer.Render.ZoomStage (ZoomStage(..))
 import Seer.Timing (nsToMs, timedMs)
 import UI.TerrainAtlas (TerrainAtlasTile(..), renderAtlasTileTextures)
 import UI.Widgets (Rect(..))
@@ -113,7 +114,7 @@ drainAtlasBuildResults renderTargetOk perFrame renderer atlasCache resultRef = d
       let elapsedMs = nsToMs start end
           cache' = if null tiles
             then cache
-            else storeAtlasTiles (abrKey result) (abrScale result) tiles cache
+            else storeAtlasTiles (abrKey result) (abrHexRadius result) tiles cache
       pure (cache', totalMs + elapsedMs)
 
 -- | Schedule atlas build work when rendering with atlas tiles.
@@ -127,13 +128,15 @@ scheduleAtlasBuilds
   -> AtlasScheduleRef
   -> SnapshotVersion
   -> RenderSnapshot
+  -> (Int, Int)
   -> IO (Int, Word32, Word32)
-scheduleAtlasBuilds renderTargetOk dataReady atlasSchedulerHandle scheduleRef snapshotVersion snapshot = do
+scheduleAtlasBuilds renderTargetOk dataReady atlasSchedulerHandle scheduleRef snapshotVersion snapshot windowSize = do
   requestAtlasSchedule atlasSchedulerHandle AtlasScheduleRequest
     { asqSnapshotVersion = snapshotVersion
     , asqRenderTargetOk = renderTargetOk
     , asqDataReady = dataReady
     , asqSnapshot = snapshot
+    , asqWindowSize = windowSize
     }
   mbReport <- readAtlasScheduleRef scheduleRef
   case mbReport of
@@ -146,14 +149,14 @@ resolveAtlasTiles
   :: Bool
   -> RenderSnapshot
   -> AtlasTextureCache
-  -> Int
+  -> ZoomStage
   -> IO (Maybe [TerrainAtlasTile], AtlasTextureCache)
-resolveAtlasTiles renderTargetOk snapshot atlasCache atlasScale = do
+resolveAtlasTiles renderTargetOk snapshot atlasCache stage = do
   let terrainSnap = rsTerrain snapshot
       atlasKey = AtlasKey (uiViewMode (rsUi snapshot)) (uiRenderWaterLevel (rsUi snapshot)) (tsVersion terrainSnap)
       dataReady = tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
       atlasTiles = if renderTargetOk && dataReady
-        then getNearestAtlas atlasKey atlasScale atlasCache
+        then getNearestAtlas atlasKey (zsHexRadius stage) atlasCache
         else Nothing
       atlasToDraw = case atlasTiles of
         Just tiles | not (null tiles) -> Just tiles
@@ -172,7 +175,7 @@ resolveAtlasTiles renderTargetOk snapshot atlasCache atlasScale = do
               }
         _ -> atlasCache
       cacheTouched = case atlasToDraw of
-        Just (t:_) -> touchAtlasScale (tatScale t) cacheWithLast
+        Just (t:_) -> touchAtlasScale (tatHexRadius t) cacheWithLast
         _ -> cacheWithLast
       (pending, cacheDrained) = drainAtlasPending cacheTouched
       (keepAlive, destroyNow) = case atcLast cacheDrained of

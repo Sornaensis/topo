@@ -48,6 +48,7 @@ import Hyperspace.Actor.Spec (OpTag(..))
 import Seer.Config.SliderRegistry (SliderId(..), SliderTab(..), sliderDefaultValueForId, sliderRowCountForTab)
 import Seer.Config.Snapshot.Types (ConfigSnapshot)
 import Seer.Editor.Types (EditorState(..), defaultEditorState)
+import Seer.Render.ZoomStage (maxCameraZoom)
 import Seer.World.Persist.Types (WorldSaveManifest)
 import Topo.Overlay.Schema (OverlayFieldType(..))
 import Topo.Pipeline.Stage (StageId)
@@ -1138,4 +1139,4 @@ clamp01 value =
 
 clampZoom :: Float -> Float
 clampZoom value =
-  max 0.4 (min 3 value)
+  max 0.4 (min maxCameraZoom value)

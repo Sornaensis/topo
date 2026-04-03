@@ -61,6 +61,7 @@ import Actor.UI
   , setUiSimTickCount
   , setUiOverlayNames
   )
+import Seer.Render.ZoomStage (ZoomStage(..), allZoomStages)
 
 import Topo.Calendar
   ( CalendarConfig
@@ -329,14 +330,15 @@ processTick requestedTick st =
           bumpSnapshotVersion (shSnapshotVersionRef handles)
           uiSnap <- getUiSnapshot (shUiHandle handles)
           let atlasKey = AtlasKey (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
-              mkJob scale = AtlasJob
-                { ajKey = atlasKey
-                , ajViewMode = uiViewMode uiSnap
+              mkJob stage = AtlasJob
+                { ajKey        = atlasKey
+                , ajViewMode   = uiViewMode uiSnap
                 , ajWaterLevel = uiRenderWaterLevel uiSnap
-                , ajTerrain = terrainSnap
-                , ajScale = scale
+                , ajTerrain    = terrainSnap
+                , ajHexRadius  = zsHexRadius stage
+                , ajAtlasScale = zsAtlasScale stage
                 }
-          mapM_ (enqueueAtlasBuild (shAtlasHandle handles) . mkJob) [1 .. 6]
+          mapM_ (enqueueAtlasBuild (shAtlasHandle handles) . mkJob) allZoomStages
           appendLog (shLogHandle handles)
             (LogEntry LogInfo
               ("simulation: tick " <> Text.pack (show appliedTick)

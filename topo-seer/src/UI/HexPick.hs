@@ -1,5 +1,7 @@
 module UI.HexPick
   ( renderHexRadiusPx
+  , hexOriginX
+  , hexOriginY
   , axialToScreen
   , screenToAxial
   , pointInHex
@@ -12,12 +14,22 @@ module UI.HexPick
 renderHexRadiusPx :: Int
 renderHexRadiusPx = 6
 
+-- | Fixed pixel offset added to all hex world-space X coordinates.
+-- Must match the constant in 'axialToScreen'.
+hexOriginX :: Int
+hexOriginX = 40
+
+-- | Fixed pixel offset added to all hex world-space Y coordinates.
+-- Must match the constant in 'axialToScreen'.
+hexOriginY :: Int
+hexOriginY = 80
+
 axialToScreen :: Int -> Int -> Int -> (Int, Int)
 axialToScreen size q r =
   let s = fromIntegral size :: Float
       xf = s * sqrt 3 * (fromIntegral q + fromIntegral r / 2)
       yf = s * 1.5 * fromIntegral r
-  in (round xf + 40, round yf + 80)
+  in (round xf + hexOriginX, round yf + hexOriginY)
 
 screenToAxial :: Int -> Int -> Int -> (Int, Int)
 screenToAxial size sx sy =
@@ -43,8 +55,8 @@ pointInHex size (sx, sy) (q, r) =
 screenToAxialRaw :: Int -> Int -> Int -> (Int, Int)
 screenToAxialRaw size sx sy =
   let s = fromIntegral size :: Float
-      x = (fromIntegral sx + 0.5 - 40) / s
-      y = (fromIntegral sy + 0.5 - 80) / s
+      x = (fromIntegral sx + 0.5 - fromIntegral hexOriginX) / s
+      y = (fromIntegral sy + 0.5 - fromIntegral hexOriginY) / s
       qf = (sqrt 3 / 3 * x - 1 / 3 * y)
       rf = (2 / 3 * y)
   in cubeRound qf rf

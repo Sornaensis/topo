@@ -42,6 +42,7 @@ import Seer.Render.Atlas
   , scheduleAtlasBuilds
   , zoomTextureScale
   )
+import Seer.Render.ZoomStage (ZoomStage(..), stageForZoom)
 import Seer.Render.Context (RenderContext(..))
 import Seer.Render.Terrain
   ( TerrainCache(..)
@@ -126,12 +127,12 @@ renderFrame context = do
   SDL.rendererDrawColor renderer SDL.$= V4 r g b 255
   SDL.clear renderer
   tAfterClear <- getMonotonicTimeNSec
-  let atlasScale = zoomTextureScale (uiZoom (rsUi snapshot))
+  let stage = stageForZoom (uiZoom (rsUi snapshot))
       dataReady = tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
   (loggedSchedule, loggedScheduleDrain, loggedScheduleEnqueue) <-
     if shouldScheduleAtlas
       then do
-        (jobCount, drainMs, enqueueMs) <- scheduleAtlasBuilds renderTargetOk dataReady atlasSchedulerHandle scheduleRef snapshotVersion snapshot
+        (jobCount, drainMs, enqueueMs) <- scheduleAtlasBuilds renderTargetOk dataReady atlasSchedulerHandle scheduleRef snapshotVersion snapshot (fromIntegral winW, fromIntegral winH)
         let totalMs = drainMs + enqueueMs
         totalLogged <- logTiming logHandle timingLogThresholdMs (Text.pack "atlas schedule") totalMs (Just jobCount)
         drainLogged <- logTiming logHandle timingLogThresholdMs (Text.pack "atlas schedule drain") drainMs (Just jobCount)
@@ -156,7 +157,7 @@ renderFrame context = do
       else pure False
   tAfterDrain <- getMonotonicTimeNSec
   (atlasToDraw, atlasCache'', loggedAtlasResolve) <- do
-    ((resolvedTiles, resolvedCache), elapsed) <- timedMs (resolveAtlasTiles renderTargetOk snapshot atlasCache' atlasScale)
+    ((resolvedTiles, resolvedCache), elapsed) <- timedMs (resolveAtlasTiles renderTargetOk snapshot atlasCache' stage)
     logged <- logTiming logHandle timingLogThresholdMs (Text.pack "atlas resolve") elapsed Nothing
     pure (resolvedTiles, resolvedCache, logged)
   tAfterResolve <- getMonotonicTimeNSec
@@ -165,7 +166,7 @@ renderFrame context = do
       then pure (emptyChunkTextureCache, False)
       else if shouldUpdateChunkTextures
         then do
-          (updatedCache, elapsed) <- timedMs (updateChunkTextures renderer terrainCache atlasScale textureCache)
+          (updatedCache, elapsed) <- timedMs (updateChunkTextures renderer terrainCache (zsAtlasScale stage) textureCache)
           logged <- logTiming logHandle timingLogThresholdMs (Text.pack "chunk texture build") elapsed Nothing
           pure (updatedCache, logged)
         else pure (textureCache, False)
@@ -177,12 +178,13 @@ renderFrame context = do
       (_, elapsed) <- timedMs (drawTerrain renderer terrainSnap terrainCache textureCache' (uiPanOffset (rsUi snapshot)) (uiZoom (rsUi snapshot)) (V2 (fromIntegral winW) (fromIntegral winH)))
       logTiming logHandle timingLogThresholdMs (Text.pack "draw terrain") elapsed Nothing
   tAfterDraw <- getMonotonicTimeNSec
+  let hexHoverRadius = zsHexRadius stage
   loggedHover <- do
-    (_, elapsed) <- timedMs (drawHoverHex renderer (rsUi snapshot) atlasScale)
+    (_, elapsed) <- timedMs (drawHoverHex renderer (rsUi snapshot) hexHoverRadius)
     logTiming logHandle timingLogThresholdMs (Text.pack "draw hover") elapsed Nothing
   -- Brush preview overlay (between terrain and UI chrome)
   when (editorActive (uiEditor (rsUi snapshot))) $
-    drawBrushPreview renderer (rsUi snapshot) atlasScale
+    drawBrushPreview renderer (rsUi snapshot) hexHoverRadius
   loggedChrome <- do
     (_, elapsed) <- timedMs $ do
       let configColor = if uiShowConfig (rsUi snapshot) then V4 140 160 200 255 else V4 100 120 160 255

@@ -58,7 +58,8 @@ spec = describe "AtlasScheduler" $ do
           , ajViewMode = ViewElevation
           , ajWaterLevel = 0.5
           , ajTerrain = terrainSnap
-          , ajScale = 1
+          , ajHexRadius  = 6
+          , ajAtlasScale = 1
           }
     enqueueAtlasBuild managerHandle job
     let snapshot = RenderSnapshot

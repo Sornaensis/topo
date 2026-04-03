@@ -10,6 +10,7 @@ import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
 import Linear (V2(..))
 import Topo (RiverChunk(..), WorldConfig(..))
+import UI.HexPick (renderHexRadiusPx)
 import UI.RiverRender
   ( RiverGeometry(..)
   , RiverRenderConfig(..)
@@ -26,7 +27,7 @@ spec :: Spec
 spec = describe "River render geometry" $ do
   it "returns Nothing for empty river chunks map" $ do
     let config = WorldConfig { wcChunkSize = 4 }
-    buildChunkRiverGeometry defaultRiverRenderConfig config 0 IntMap.empty IntMap.empty
+    buildChunkRiverGeometry defaultRiverRenderConfig config renderHexRadiusPx 0 IntMap.empty IntMap.empty
       `shouldBe` Nothing
 
   it "returns Nothing when chunk has no segments" $ do
@@ -34,7 +35,7 @@ spec = describe "River render geometry" $ do
         config = WorldConfig { wcChunkSize = size }
         tileCount = size * size
         rc = emptyRiverChunk tileCount
-    buildChunkRiverGeometry defaultRiverRenderConfig config 0
+    buildChunkRiverGeometry defaultRiverRenderConfig config renderHexRadiusPx 0
       (IntMap.singleton 0 rc) IntMap.empty
       `shouldBe` Nothing
 
@@ -43,7 +44,7 @@ spec = describe "River render geometry" $ do
         config = WorldConfig { wcChunkSize = size }
         tileCount = size * size
         rc = singleSegmentRiverChunk tileCount
-        result = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+        result = buildChunkRiverGeometry defaultRiverRenderConfig config renderHexRadiusPx 0
                    (IntMap.singleton 0 rc) IntMap.empty
     result `shouldSatisfy` (/= Nothing)
     case result of
@@ -58,7 +59,7 @@ spec = describe "River render geometry" $ do
         config = WorldConfig { wcChunkSize = size }
         tileCount = size * size
         rc = singleSegmentRiverChunk tileCount
-        Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+        Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config renderHexRadiusPx 0
                     (IntMap.singleton 0 rc) IntMap.empty
     SV.length (rgVertices rg) `shouldBe` 8
     SV.length (rgIndices rg) `shouldBe` 12
@@ -68,7 +69,7 @@ spec = describe "River render geometry" $ do
         config = WorldConfig { wcChunkSize = size }
         tileCount = size * size
         rc = sourceSegmentRiverChunk tileCount
-        Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+        Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config renderHexRadiusPx 0
                     (IntMap.singleton 0 rc) IntMap.empty
     -- Source: only centre→exit = 1 quad = 4 verts, 6 indices
     SV.length (rgVertices rg) `shouldBe` 4
@@ -83,9 +84,9 @@ spec = describe "River render geometry" $ do
         rc1 = makeRiverChunk tileCount 0 1 3  -- order 1 = stream
         rc2 = makeRiverChunk tileCount 0 3 7  -- order 7 = major
     -- Both should produce geometry (just checking the config propagates)
-    buildChunkRiverGeometry cfg1 config 0 (IntMap.singleton 0 rc1) IntMap.empty
+    buildChunkRiverGeometry cfg1 config renderHexRadiusPx 0 (IntMap.singleton 0 rc1) IntMap.empty
       `shouldSatisfy` (/= Nothing)
-    buildChunkRiverGeometry cfg2 config 0 (IntMap.singleton 0 rc2) IntMap.empty
+    buildChunkRiverGeometry cfg2 config renderHexRadiusPx 0 (IntMap.singleton 0 rc2) IntMap.empty
       `shouldSatisfy` (/= Nothing)
 
   it "non-zero bounds for chunk with segments" $ do
@@ -93,7 +94,7 @@ spec = describe "River render geometry" $ do
         config = WorldConfig { wcChunkSize = size }
         tileCount = size * size
         rc = singleSegmentRiverChunk tileCount
-        Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+        Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config renderHexRadiusPx 0
                     (IntMap.singleton 0 rc) IntMap.empty
         Rect (V2 _ _, V2 w h) = rgBounds rg
     w `shouldSatisfy` (> 0)
@@ -104,7 +105,7 @@ spec = describe "River render geometry" $ do
         config = WorldConfig { wcChunkSize = size }
         tileCount = size * size
         rc = singleSegmentRiverChunk tileCount
-        result = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+        result = buildChunkRiverGeometry defaultRiverRenderConfig config renderHexRadiusPx 0
                    (IntMap.singleton 0 rc) IntMap.empty
     case result of
       Nothing -> pure ()
@@ -124,7 +125,7 @@ spec = describe "River render geometry" $ do
           config = WorldConfig { wcChunkSize = size }
           tileCount = size * size
           rc = sinkSegmentRiverChunk tileCount
-          Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+          Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config renderHexRadiusPx 0
                       (IntMap.singleton 0 rc) IntMap.empty
       SV.length (rgVertices rg) `shouldBe` 10
       SV.length (rgIndices rg) `shouldBe` 18
@@ -134,7 +135,7 @@ spec = describe "River render geometry" $ do
           config = WorldConfig { wcChunkSize = size }
           tileCount = size * size
           rc = singleSegmentRiverChunk tileCount
-          Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+          Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config renderHexRadiusPx 0
                       (IntMap.singleton 0 rc) IntMap.empty
       -- A through-segment: 2 quads = 8 verts + 12 indices (no delta)
       SV.length (rgVertices rg) `shouldBe` 8
@@ -146,7 +147,7 @@ spec = describe "River render geometry" $ do
           config = WorldConfig { wcChunkSize = size }
           tileCount = size * size
           rc = makeRiverChunk tileCount 255 255 1
-      buildChunkRiverGeometry defaultRiverRenderConfig config 0
+      buildChunkRiverGeometry defaultRiverRenderConfig config renderHexRadiusPx 0
         (IntMap.singleton 0 rc) IntMap.empty `shouldBe` Nothing
 
     prop "sink segment indices reference valid vertices" $ \(Positive sz') -> do
@@ -154,7 +155,7 @@ spec = describe "River render geometry" $ do
           config = WorldConfig { wcChunkSize = size }
           tileCount = size * size
           rc = sinkSegmentRiverChunk tileCount
-          result = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+          result = buildChunkRiverGeometry defaultRiverRenderConfig config renderHexRadiusPx 0
                      (IntMap.singleton 0 rc) IntMap.empty
       case result of
         Nothing -> pure ()
@@ -192,9 +193,9 @@ spec = describe "River render geometry" $ do
           tileCount = size * size
           rcStream = makeRiverChunk tileCount 0 255 1  -- stream (order 1, below delta threshold)
           rcMajor  = makeRiverChunk tileCount 0 255 7  -- major (order 7, above threshold)
-          Just rgStream = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+          Just rgStream = buildChunkRiverGeometry defaultRiverRenderConfig config renderHexRadiusPx 0
                             (IntMap.singleton 0 rcStream) IntMap.empty
-          Just rgMajor  = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+          Just rgMajor  = buildChunkRiverGeometry defaultRiverRenderConfig config renderHexRadiusPx 0
                             (IntMap.singleton 0 rcMajor) IntMap.empty
       -- Stream sink (order 1 < 3): only entry quad, no delta = 4 verts, 6 indices.
       -- Major sink (order 7 >= 3): entry quad + delta = more.
@@ -239,7 +240,7 @@ spec = describe "River render geometry" $ do
           config = WorldConfig { wcChunkSize = size }
           tileCount = size * size
           rc = makeRiverChunk tileCount 3 128 1
-          Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+          Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config renderHexRadiusPx 0
                       (IntMap.singleton 0 rc) IntMap.empty
       SV.length (rgVertices rg) `shouldBe` 8
       SV.length (rgIndices rg) `shouldBe` 12
@@ -254,7 +255,7 @@ spec = describe "River render geometry" $ do
           config = WorldConfig { wcChunkSize = size }
           tileCount = size * size
           rc = makeRiverChunk tileCount 3 128 3
-          Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+          Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config renderHexRadiusPx 0
                       (IntMap.singleton 0 rc) IntMap.empty
       SV.length (rgVertices rg) `shouldBe` 10
       SV.length (rgIndices rg) `shouldBe` 18
@@ -266,7 +267,7 @@ spec = describe "River render geometry" $ do
           config = WorldConfig { wcChunkSize = size }
           tileCount = size * size
           rc = makeRiverChunk tileCount 255 128 1
-          Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+          Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config renderHexRadiusPx 0
                       (IntMap.singleton 0 rc) IntMap.empty
       SV.length (rgVertices rg) `shouldBe` 4
       SV.length (rgIndices rg) `shouldBe` 6
@@ -278,7 +279,7 @@ spec = describe "River render geometry" $ do
           config = WorldConfig { wcChunkSize = size }
           tileCount = size * size
           rc = makeRiverChunk tileCount 255 128 3
-          Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+          Just rg = buildChunkRiverGeometry defaultRiverRenderConfig config renderHexRadiusPx 0
                       (IntMap.singleton 0 rc) IntMap.empty
       SV.length (rgVertices rg) `shouldBe` 6
       SV.length (rgIndices rg) `shouldBe` 12
@@ -292,9 +293,9 @@ spec = describe "River render geometry" $ do
           tileCount = size * size
           rcCoastal = makeRiverChunk tileCount 0 128 1  -- coastal exit E
           rcSink    = makeRiverChunk tileCount 0 255 1  -- inland sink
-          Just rgCoastal = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+          Just rgCoastal = buildChunkRiverGeometry defaultRiverRenderConfig config renderHexRadiusPx 0
                              (IntMap.singleton 0 rcCoastal) IntMap.empty
-          Just rgSink    = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+          Just rgSink    = buildChunkRiverGeometry defaultRiverRenderConfig config renderHexRadiusPx 0
                              (IntMap.singleton 0 rcSink) IntMap.empty
       SV.length (rgVertices rgCoastal) `shouldSatisfy` (> SV.length (rgVertices rgSink))
       SV.length (rgIndices rgCoastal)  `shouldSatisfy` (> SV.length (rgIndices rgSink))
@@ -307,9 +308,9 @@ spec = describe "River render geometry" $ do
           tileCount = size * size
           rcCoastal = makeRiverChunk tileCount 0 128 3  -- coastal exit E, order 3
           rcSink    = makeRiverChunk tileCount 0 255 3  -- inland sink, order 3
-          Just rgCoastal = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+          Just rgCoastal = buildChunkRiverGeometry defaultRiverRenderConfig config renderHexRadiusPx 0
                              (IntMap.singleton 0 rcCoastal) IntMap.empty
-          Just rgSink    = buildChunkRiverGeometry defaultRiverRenderConfig config 0
+          Just rgSink    = buildChunkRiverGeometry defaultRiverRenderConfig config renderHexRadiusPx 0
                              (IntMap.singleton 0 rcSink) IntMap.empty
       SV.length (rgVertices rgCoastal) `shouldBe` SV.length (rgVertices rgSink)
       SV.length (rgIndices rgCoastal)  `shouldBe` SV.length (rgIndices rgSink)
@@ -321,7 +322,7 @@ spec = describe "River render geometry" $ do
           config = WorldConfig { wcChunkSize = size }
           tileCount = size * size
           rc = makeRiverChunk tileCount 3 128 1  -- order 1, coastal
-          Just rg = buildChunkRiverGeometry noDeltaGate config 0
+          Just rg = buildChunkRiverGeometry noDeltaGate config renderHexRadiusPx 0
                       (IntMap.singleton 0 rc) IntMap.empty
       -- Entry quad (4v/6i) + stream delta fan (5v/9i) = 9v/15i
       SV.length (rgVertices rg) `shouldBe` 9

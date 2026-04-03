@@ -73,6 +73,7 @@ library
       Seer.Render.Frame
       Seer.Render.Terrain
       Seer.Render.Ui
+      Seer.Render.ZoomStage
       Seer.Screenshot
       Seer.Timing
       Seer.World.Persist

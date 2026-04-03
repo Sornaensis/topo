@@ -18,6 +18,7 @@ import qualified SDL
 import qualified SDL.Raw.Types as Raw
 import UI.OverlayExtract (extractOverlayField)
 import UI.TerrainCache (ChunkTextureCache(..), emptyChunkTextureCache)
+import UI.HexPick (renderHexRadiusPx)
 import UI.TerrainRender (ChunkGeometry(..), ChunkTexture(..), buildChunkGeometry, buildChunkTexture, destroyChunkTexture)
 import UI.Widgets (Rect(..))
 import UI.WidgetsDraw (rectToSDL)
@@ -77,7 +78,7 @@ buildTerrainCache uiSnap terrainSnap =
             Just m  -> m
             Nothing -> IntMap.empty
         _ -> IntMap.empty
-      mkGeom k chunk = buildChunkGeometry config mode waterLevel
+      mkGeom k chunk = buildChunkGeometry renderHexRadiusPx config mode waterLevel
                          (tsClimateChunks terrainSnap)
                          (tsWeatherChunks terrainSnap)
                          (tsVegetationChunks terrainSnap)

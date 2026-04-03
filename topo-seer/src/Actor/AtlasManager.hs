@@ -22,11 +22,12 @@ import Hyperspace.Actor.QQ (hyperspace)
 
 
 data AtlasJob = AtlasJob
-  { ajKey :: !AtlasKey
-  , ajViewMode :: !ViewMode
+  { ajKey        :: !AtlasKey
+  , ajViewMode   :: !ViewMode
   , ajWaterLevel :: !Float
-  , ajTerrain :: !TerrainSnapshot
-  , ajScale :: !Int
+  , ajTerrain    :: !TerrainSnapshot
+  , ajHexRadius  :: !Int
+  , ajAtlasScale :: !Int
   }
 
 
@@ -69,7 +70,7 @@ actor AtlasManager
           Nothing -> pure ()
         pure st { amKey = Just (ajKey job), amQueue = [] }
       else pure st
-    let pruned = filter ((/= ajScale job) . ajScale) (amQueue st')
+    let pruned = filter ((/= ajHexRadius job) . ajHexRadius) (amQueue st')
     pure st' { amQueue = pruned ++ [job] }
   onPure drainJobs = \() st -> (st { amQueue = [] }, amQueue st)
 |]

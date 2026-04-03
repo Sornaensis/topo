@@ -13,6 +13,7 @@ module Actor.UiActions.Terrain
 
 import Actor.AtlasCache (AtlasKey(..))
 import Actor.AtlasManager (AtlasJob(..), AtlasManager, enqueueAtlasBuild)
+import Seer.Render.ZoomStage (ZoomStage(..), allZoomStages)
 import Actor.Data
   ( Data
   , DataSnapshot(..)
@@ -140,15 +141,15 @@ rebuildAtlas :: UiActionHandles -> TerrainSnapshot -> UiState -> IO ()
 rebuildAtlas handles terrainSnap uiSnap = do
   start <- getMonotonicTimeNSec
   let atlasKey = AtlasKey (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
-      scales = [1 .. 6]
-      job scale = AtlasJob
-        { ajKey = atlasKey
-        , ajViewMode = uiViewMode uiSnap
+      job stage = AtlasJob
+        { ajKey        = atlasKey
+        , ajViewMode   = uiViewMode uiSnap
         , ajWaterLevel = uiRenderWaterLevel uiSnap
-        , ajTerrain = terrainSnap
-        , ajScale = scale
+        , ajTerrain    = terrainSnap
+        , ajHexRadius  = zsHexRadius stage
+        , ajAtlasScale = zsAtlasScale stage
         }
-  mapM_ (enqueueAtlasBuild (uahAtlas handles) . job) scales
+  mapM_ (enqueueAtlasBuild (uahAtlas handles) . job) allZoomStages
   end <- getMonotonicTimeNSec
   logElapsed (uahLog handles) "terrain: enqueue atlas jobs" start end
 
