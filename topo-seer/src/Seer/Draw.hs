@@ -22,6 +22,7 @@ module Seer.Draw
   , drawWorldLoadDialog
   , drawTopBar
   , drawConfigPanel
+  , drawDataDetailPopover
   , drawChunkControl
   , drawSeedControl
   , drawStatusBars
@@ -49,7 +50,7 @@ import UI.Font (FontCache, textSize)
 import UI.Layout
 import UI.Widgets (Rect(..))
 import Seer.Draw.Dialog (drawDialogButton, drawDialogPanel, drawDialogTitle, drawListSelection, drawTextInputField)
-import Seer.Draw.Config (drawConfigPanel, drawConfigTabs)
+import Seer.Draw.Config (drawConfigPanel, drawConfigTabs, drawDataDetailPopover)
 import Seer.Draw.Config.Labels (drawConfigLabels)
 import UI.WidgetsDraw (drawCentered, drawLabelAbove, drawLeft, drawTextLine, rectToSDL)
 

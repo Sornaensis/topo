@@ -49,6 +49,8 @@ module UI.Layout
   , dataBrowserItemRect
   , dataBrowserPagePrevRect
   , dataBrowserPageNextRect
+  , dataDetailPopoverRect
+  , dataDetailFieldRect
   , configParamRowRect
   , configChunkMinusRect
   , configChunkPlusRect
@@ -815,6 +817,39 @@ dataBrowserPageNextRect index layout =
       btnH = min 20 rowHeight
       btnY = rowY + (rowHeight - btnH) `div` 2
   in Rect (V2 (x + pad + btnW + 8) btnY, V2 btnW btnH)
+
+-- | Detail popover rect for a selected data browser record.
+--
+-- Floats to the left of the config panel, vertically anchored to the
+-- selected row.  The @fieldCount@ determines the popover height
+-- (clamped to the available screen space).
+dataDetailPopoverRect :: Int -> Int -> Layout -> Rect
+dataDetailPopoverRect rowIndex fieldCount layout =
+  let Layout (V2 _winW winH) _ _ = layout
+      Rect (V2 cfgX _, V2 _ _) = configPanelRect layout
+      Rect (V2 _ rowY, V2 _ _) = configScrollRowRect rowIndex layout
+      popW = 280
+      rowH = 22
+      headerH = 28
+      padding = 8
+      desiredH = headerH + fieldCount * rowH + padding * 2
+      maxH = winH - topBarHeight - 32
+      popH = max 60 (min desiredH maxH)
+      gap = 8
+      popX = max 0 (cfgX - popW - gap)
+      -- Centre on the anchor row, clamped to screen.
+      rawY = rowY - popH `div` 2 + 12
+      popY = max (topBarHeight + 8) (min rawY (winH - popH - 8))
+  in Rect (V2 popX popY, V2 popW popH)
+
+-- | Individual field row rect inside the detail popover.
+dataDetailFieldRect :: Int -> Int -> Int -> Layout -> Rect
+dataDetailFieldRect rowIndex fieldCount fieldIndex layout =
+  let Rect (V2 px py, V2 pw _ph) = dataDetailPopoverRect rowIndex fieldCount layout
+      headerH = 28
+      rowH = 22
+      padding = 8
+  in Rect (V2 (px + padding) (py + headerH + fieldIndex * rowH), V2 (pw - padding * 2) rowH)
 
 ------------------------------------------------------------------------
 -- Editor toolbar

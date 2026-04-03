@@ -3,14 +3,22 @@
 module Seer.Draw.Config
   ( drawConfigPanel
   , drawConfigTabs
+  , drawDataDetailPopover
   ) where
 
 import Actor.Data (DataSnapshot(..))
 import Actor.UI (ConfigTab(..), DataBrowserState(..), UiState(..), builtinStageRowCount, configRowCount, pluginRowIndex, pluginRowsWithParams)
 import Control.Monad (forM_, when)
 import Data.Aeson (Value(..))
+import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as AesonKey
+import qualified Data.Aeson.KeyMap as AesonKM
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import qualified Data.ByteString.Lazy as BSL
 import Data.Word (Word8)
 import Linear (V2(..), V4(..))
 import qualified SDL
@@ -18,7 +26,8 @@ import Seer.Config.SliderRegistry (SliderDef(..))
 import Seer.Config.SliderStyle (SliderStyle(..), sliderStyleForId)
 import Seer.Config.SliderUi (sliderDefsForConfigTab, sliderValueForId)
 import Topo.Pipeline.Stage (allBuiltinStageIds)
-import Topo.Plugin.DataResource (DataResourceSchema(..))
+import Topo.Plugin.DataResource (DataResourceSchema(..), DataFieldDef(..), DataFieldType(..), DataConstructorDef(..))
+import Topo.Plugin.RPC.DataService (DataRecord(..))
 import Topo.Plugin.RPC.Manifest (RPCParamSpec(..), RPCParamType(..))
 import UI.Layout
   ( ConfigParamRowRects(..)
@@ -42,7 +51,10 @@ import UI.Layout
   , pipelineParamBarRect
   , pipelineParamCheckRect
   , dataBrowserItemRect
+  , dataDetailPopoverRect
+  , dataDetailFieldRect
   )
+import UI.Font (FontCache, drawText)
 import UI.Widgets (Rect(..))
 import UI.Theme
 import UI.WidgetsDraw (rectToSDL)
@@ -264,7 +276,9 @@ drawConfigPanel renderer ui dataSnap layout =
               forM_ (zip [0..] records) $ \(recIdx, _record) -> do
                 let rowIdx = recordOffset + recIdx
                     Rect (V2 rx ry, V2 rw rh) = scrollRect (dataBrowserItemRect rowIdx layout)
-                SDL.rendererDrawColor renderer SDL.$= colDataRecordBg
+                    isSelected = dbsSelectedRowIndex dbs == Just recIdx
+                    fillColor = if isSelected then colDataRecordSelected else colDataRecordBg
+                SDL.rendererDrawColor renderer SDL.$= fillColor
                 SDL.fillRect renderer (Just (rectToSDL (Rect (V2 rx ry, V2 rw rh))))
                 SDL.rendererDrawColor renderer SDL.$= colDataRecordBorder
                 SDL.drawRect renderer (Just (rectToSDL (Rect (V2 rx ry, V2 rw rh))))
@@ -310,3 +324,138 @@ drawBarFill renderer value (Rect (V2 x y, V2 w h)) color = do
   let fillW = max 0 (min w (round (fromIntegral w * value)))
   SDL.rendererDrawColor renderer SDL.$= color
   SDL.fillRect renderer (Just (rectToSDL (Rect (V2 x y, V2 fillW h))))
+
+------------------------------------------------------------------------
+-- Record detail popover
+------------------------------------------------------------------------
+
+-- | Draw the record detail popover when a data browser record is selected.
+--
+-- Shows field names and values; nested DFRecord\/DFAdt fields can be
+-- expanded.  Called after the main config panel pass so it floats above.
+drawDataDetailPopover :: SDL.Renderer -> FontCache -> UiState -> Layout -> IO ()
+drawDataDetailPopover renderer fontCache ui layout = do
+  let dbs = uiDataBrowser ui
+  case (dbsSelectedRecord dbs, dbsSelectedRowIndex dbs) of
+    (Just record, Just rowIdx) -> do
+      let resources = uiDataResources ui
+          mSchema = do
+            pName <- dbsSelectedPlugin dbs
+            rName <- dbsSelectedResource dbs
+            schemas <- Map.lookup pName resources
+            find (\s -> drsName s == rName) schemas
+          fields = maybe [] drsFields mSchema
+          expanded = dbsExpandedFields dbs
+          visibleFields = enumerateVisibleFields "" fields expanded
+          fieldCount = length visibleFields
+
+          popRect@(Rect (V2 px py, V2 pw _ph)) = dataDetailPopoverRect rowIdx fieldCount layout
+          headerH = 28
+
+      -- Background
+      SDL.rendererDrawColor renderer SDL.$= colDataDetailBg
+      SDL.fillRect renderer (Just (rectToSDL popRect))
+      -- Border
+      SDL.rendererDrawColor renderer SDL.$= colDataDetailBorder
+      SDL.drawRect renderer (Just (rectToSDL popRect))
+      -- Header
+      SDL.rendererDrawColor renderer SDL.$= colDataDetailHeader
+      SDL.fillRect renderer (Just (rectToSDL (Rect (V2 px py, V2 pw headerH))))
+
+      -- Header text
+      let headerText = case dbsSelectedRecordKey dbs of
+            Just (String t) -> t
+            Just (Number n) -> T.pack (show n)
+            Just v          -> TE.decodeUtf8 (BSL.toStrict (Aeson.encode v))
+            Nothing         -> "Record"
+      drawText fontCache colDataDetailFieldValue (V2 (px + 6) (py + 5)) headerText
+
+      -- Field rows
+      forM_ (zip [0..] visibleFields) $ \(fIdx, (path, nestable)) -> do
+        let Rect (V2 fx fy, V2 fw fh) = dataDetailFieldRect rowIdx fieldCount fIdx layout
+            depth = length (T.splitOn "." path) - 1
+            indent = depth * 12
+            fieldName = lastSegment path
+            val = lookupNestedValue path (unDataRecord record)
+            valText = renderValue val
+
+        -- Toggle indicator for nestable fields
+        when nestable $ do
+          let isExp = Set.member path expanded
+              indicator = if isExp then "▼" else "▶"
+          drawText fontCache colDataDetailToggle (V2 (fx + indent) (fy + 2)) indicator
+
+        -- Field name
+        let nameX = fx + indent + (if nestable then 14 else 0)
+        drawText fontCache colDataDetailFieldName (V2 nameX (fy + 2)) (fieldName <> ":")
+
+        -- Value (right-aligned area — just draw it after name with gap)
+        when (not nestable || not (Set.member path expanded)) $ do
+          let valX = fx + fw `div` 2
+          drawText fontCache colDataDetailFieldValue (V2 valX (fy + 2)) valText
+
+        -- Separator line
+        SDL.rendererDrawColor renderer SDL.$= colDataDetailBorder
+        SDL.drawLine renderer
+          (SDL.P (V2 (fromIntegral fx) (fromIntegral (fy + fh - 1))))
+          (SDL.P (V2 (fromIntegral (fx + fw)) (fromIntegral (fy + fh - 1))))
+    _ -> pure ()
+  where
+    find p = foldr (\x acc -> if p x then Just x else acc) Nothing
+
+-- | Enumerate the visible field rows, returning @(dotPath, isExpandable)@.
+enumerateVisibleFields :: Text -> [DataFieldDef] -> Set.Set Text -> [(Text, Bool)]
+enumerateVisibleFields prefix defs expanded = concatMap go defs
+  where
+    qualify name
+      | T.null prefix = name
+      | otherwise     = prefix <> "." <> name
+    go fdef =
+      let path = qualify (dfName fdef)
+          expandable = isNestable (dfType fdef)
+          thisRow = [(path, expandable)]
+      in if expandable && Set.member path expanded
+         then thisRow ++ childRows path (dfType fdef)
+         else thisRow
+    childRows path (DFRecord subFields) =
+      enumerateVisibleFields path subFields expanded
+    childRows path (DFAdt ctors) =
+      concatMap (\c -> childRows (path <> "." <> dcdName c) (DFRecord (zipWith (\i t -> DataFieldDef (T.pack (show i)) t (T.pack (show i)) False Nothing) [(0::Int)..] (dcdFields c)))) ctors
+    childRows _ _ = []
+
+-- | Whether a field type can be expanded.
+isNestable :: DataFieldType -> Bool
+isNestable (DFRecord _) = True
+isNestable (DFAdt _)    = True
+isNestable _            = False
+
+-- | Get the last segment of a dot-separated path.
+lastSegment :: Text -> Text
+lastSegment t = case T.splitOn "." t of
+  [] -> t
+  xs -> last xs
+
+-- | Look up a potentially nested value in a flat record map using a dot-path.
+lookupNestedValue :: Text -> Map.Map Text Value -> Maybe Value
+lookupNestedValue path m =
+  case T.splitOn "." path of
+    []     -> Nothing
+    (k:ks) -> case Map.lookup k m of
+      Nothing -> Nothing
+      Just v  -> goNested ks v
+  where
+    goNested [] v = Just v
+    goNested (s:ss) (Object km) = case AesonKM.lookup (AesonKey.fromText s) km of
+      Just v  -> goNested ss v
+      Nothing -> Nothing
+    goNested _ _ = Nothing
+
+-- | Render a JSON 'Value' as a concise 'Text' for display.
+renderValue :: Maybe Value -> Text
+renderValue Nothing          = "—"
+renderValue (Just Null)      = "null"
+renderValue (Just (Bool b))  = if b then "true" else "false"
+renderValue (Just (String t)) = t
+renderValue (Just (Number n)) = T.pack (show n)
+renderValue (Just (Array _))  = "[…]"
+renderValue (Just (Object _)) = "{…}"

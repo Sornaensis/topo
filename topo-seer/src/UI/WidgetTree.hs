@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE OverloadedStrings #-}
 module UI.WidgetTree
   ( WidgetId(..)
   , Widget(..)
@@ -8,6 +9,7 @@ module UI.WidgetTree
   , buildViewModeWidgets
   , buildPluginWidgets
   , buildDataBrowserWidgets
+  , buildDataDetailWidgets
   , buildSliderRowWidgets
   , hitTest
   , isLeftViewWidget
@@ -15,12 +17,15 @@ module UI.WidgetTree
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Text (Text)
+import qualified Data.Text as T
 import Linear (V2(..))
 import Seer.Config.SliderRegistry (SliderTab(..), SliderDef(..), allSliderDefs, sliderDefsForTab, sliderMinusWidgetId, sliderPlusWidgetId)
 import Seer.Editor.Types (EditorTool(..))
 import Topo.Pipeline.Stage (allBuiltinStageIds, stageCanonicalName)
-import Topo.Plugin.DataResource (DataResourceSchema(..))
+import Topo.Plugin.DataResource (DataResourceSchema(..), DataFieldDef(..), DataFieldType(..), DataConstructorDef(..))
 import Topo.Plugin.RPC.Manifest (RPCParamSpec(..), RPCParamType(..))
 import UI.Layout
 import UI.WidgetId (WidgetId(..))
@@ -201,6 +206,11 @@ buildDataBrowserWidgets resources selectedPlugin selectedResource recordCount la
                    ]
           in (ws, length schemas)
       recordOffset = resourceOffset + resourceCount
+      recordWidgets =
+        [ Widget (WidgetDataRecordSelect rIdx)
+                 (dataBrowserItemRect (recordOffset + rIdx) layout)
+        | rIdx <- [0 .. recordCount - 1]
+        ]
       pageRow = recordOffset + recordCount
       pageWidgets = case (selectedPlugin, selectedResource) of
         (Just pName, Just rName)
@@ -209,7 +219,60 @@ buildDataBrowserWidgets resources selectedPlugin selectedResource recordCount la
               , Widget (WidgetDataPageNext pName rName) (dataBrowserPageNextRect pageRow layout)
               ]
         _ -> []
-  in pluginWidgets ++ resourceWidgets ++ pageWidgets
+  in pluginWidgets ++ resourceWidgets ++ recordWidgets ++ pageWidgets
+
+-- | Build clickable widgets for the record detail popover.
+--
+-- Includes a dismiss backdrop, plus expand\/collapse toggles for nested
+-- fields.  Only call this when a record is actually selected.
+buildDataDetailWidgets
+  :: Int            -- ^ Row index the popover is anchored to
+  -> [DataFieldDef] -- ^ Field definitions from the schema
+  -> Set Text       -- ^ Currently expanded field paths
+  -> Layout
+  -> [Widget]
+buildDataDetailWidgets rowIndex fields expanded layout =
+  let flatFields = enumerateVisibleFields "" fields expanded
+      fieldCount = length flatFields
+      toggleWidgets =
+        [ Widget (WidgetDataFieldToggle path)
+                 (dataDetailFieldRect rowIndex fieldCount fIdx layout)
+        | (fIdx, (path, True)) <- zip [0..] flatFields
+        ]
+      dismissWidget =
+        Widget WidgetDataDetailDismiss
+               (dataDetailPopoverRect rowIndex fieldCount layout)
+  in dismissWidget : toggleWidgets
+
+-- | Enumerate the visible field rows, returning @(dotPath, isExpandable)@.
+--
+-- Expanded nested fields recursively add their children immediately after
+-- the parent row.
+enumerateVisibleFields :: Text -> [DataFieldDef] -> Set Text -> [(Text, Bool)]
+enumerateVisibleFields prefix defs expanded = concatMap go defs
+  where
+    qualify name
+      | T.null prefix = name
+      | otherwise     = prefix <> "." <> name
+    go fdef =
+      let path = qualify (dfName fdef)
+          expandable = isNestable (dfType fdef)
+          thisRow = [(path, expandable)]
+      in if expandable && Set.member path expanded
+         then thisRow ++ childRows path (dfType fdef)
+         else thisRow
+    childRows path (DFRecord subFields) =
+      enumerateVisibleFields path subFields expanded
+    childRows path (DFAdt ctors) =
+      concatMap (\c -> childRows (path <> "." <> dcdName c) (DFRecord (zipWith (\i t -> DataFieldDef (T.pack (show i)) t (T.pack (show i)) False Nothing) [(0::Int)..] (dcdFields c)))) ctors
+    -- ADT constructors have positional types, so we synthesise numbered field defs.
+    childRows _ _ = []
+
+-- | Whether a field type can be expanded to show nested fields.
+isNestable :: DataFieldType -> Bool
+isNestable (DFRecord _) = True
+isNestable (DFAdt _)    = True
+isNestable _            = False
 
 -- | Build full-row tooltip hit areas for config sliders, grouped by tab.
 --

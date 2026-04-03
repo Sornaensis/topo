@@ -13,6 +13,7 @@ import Actor.SnapshotReceiver (writeDataSnapshot, writeTerrainSnapshot, bumpSnap
 import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshot(..), appendLog, getLogSnapshot, setLogCollapsed, setLogMinLevel, setLogScroll)
 import Actor.UI
   ( ConfigTab(..)
+  , DataBrowserState(..)
   , LeftTab(..)
   , Ui
   , UiMenuMode(..)
@@ -21,6 +22,7 @@ import Actor.UI
   , setUiConfigScroll
   , setUiContextHex
   , setUiContextPos
+  , setUiDataBrowser
   , setUiEditor
   , setUiHexTooltipPinned
   , setUiPanOffset
@@ -46,6 +48,7 @@ import Data.IORef (IORef, readIORef, writeIORef)
 import Data.Word (Word32)
 import qualified Data.Text as Text
 import qualified Data.IntMap.Strict as IntMap
+import qualified Data.Set as Set
 import Linear (V2(..))
 import qualified SDL
 import Hyperspace.Actor (ActorHandle, Protocol)
@@ -519,15 +522,27 @@ handleEvent inputContext event = do
       in fs !! ((idx + dir + n) `mod` n)
     closeContextOrMenu = do
       uiSnap <- getUiSnapshot uiHandle
-      case uiContextHex uiSnap of
+      let dbs = uiDataBrowser uiSnap
+      case dbsSelectedRecord dbs of
         Just _ -> do
-          setUiContextHex uiHandle Nothing
-          setUiContextPos uiHandle Nothing
-          setUiMenuMode uiHandle MenuEscape
+          -- Dismiss the data detail popover on first Escape press.
+          let newDbs = dbs
+                { dbsSelectedRecord    = Nothing
+                , dbsSelectedRecordKey = Nothing
+                , dbsSelectedRowIndex  = Nothing
+                , dbsExpandedFields    = Set.empty
+                }
+          setUiDataBrowser uiHandle newDbs
         Nothing ->
-          case uiMenuMode uiSnap of
-            MenuNone -> setUiMenuMode uiHandle MenuEscape
-            _        -> setUiMenuMode uiHandle MenuNone
+          case uiContextHex uiSnap of
+            Just _ -> do
+              setUiContextHex uiHandle Nothing
+              setUiContextPos uiHandle Nothing
+              setUiMenuMode uiHandle MenuEscape
+            Nothing ->
+              case uiMenuMode uiSnap of
+                MenuNone -> setUiMenuMode uiHandle MenuEscape
+                _        -> setUiMenuMode uiHandle MenuNone
 
     handlePresetSaveKey :: UiState -> SDL.Keycode -> IO ()
     handlePresetSaveKey _uiSnap keycode =

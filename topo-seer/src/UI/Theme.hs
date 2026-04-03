@@ -72,6 +72,13 @@ module UI.Theme
   , colDataRecordBg
   , colDataRecordBorder
   , colDataLoadingIndicator
+  , colDataDetailBg
+  , colDataDetailBorder
+  , colDataDetailHeader
+  , colDataDetailFieldName
+  , colDataDetailFieldValue
+  , colDataDetailToggle
+  , colDataRecordSelected
     -- * Log panel
   , colLogPanel
   , colLogHeader
@@ -385,6 +392,34 @@ colDataRecordBorder = V4 60 65 78 200
 -- | Loading-in-progress row indicator.
 colDataLoadingIndicator :: V4 Word8
 colDataLoadingIndicator = V4 100 100 130 180
+
+-- | Background for the record detail popover.
+colDataDetailBg :: V4 Word8
+colDataDetailBg = V4 35 38 50 240
+
+-- | Border for the record detail popover.
+colDataDetailBorder :: V4 Word8
+colDataDetailBorder = V4 80 90 120 255
+
+-- | Header background for the detail popover.
+colDataDetailHeader :: V4 Word8
+colDataDetailHeader = V4 55 60 78 255
+
+-- | Text colour for field names in the detail popover.
+colDataDetailFieldName :: V4 Word8
+colDataDetailFieldName = V4 160 180 210 255
+
+-- | Text colour for field values in the detail popover.
+colDataDetailFieldValue :: V4 Word8
+colDataDetailFieldValue = V4 210 215 225 255
+
+-- | Expand/collapse toggle indicator for nested fields.
+colDataDetailToggle :: V4 Word8
+colDataDetailToggle = V4 130 150 190 255
+
+-- | Highlighted record row background.
+colDataRecordSelected :: V4 Word8
+colDataRecordSelected = V4 70 80 110 240
 
 -------------------------------------------------------------------------------
 -- Log panel

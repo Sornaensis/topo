@@ -25,6 +25,7 @@ import qualified Data.Text as Text
 import Seer.Draw
   ( drawChunkControl
   , drawConfigPanel
+  , drawDataDetailPopover
   , drawHoverHex
   , drawLeftTabs
   , drawSeedControl
@@ -222,6 +223,11 @@ renderFrame context = do
             drawOverlayButtons renderer fontCache (rsUi snapshot) scrolledOR
             SDL.rendererClipRect renderer SDL.$= Nothing
       drawConfigPanel renderer (rsUi snapshot) dataSnap layout
+      -- Record detail popover (floats over config panel).
+      case fontCache of
+        Just fc -> when (uiShowConfig (rsUi snapshot)) $
+          drawDataDetailPopover renderer fc (rsUi snapshot) layout
+        Nothing -> pure ()
       -- Editor toolbar (drawn above config panel, on top of chrome)
       if editorActive (uiEditor (rsUi snapshot))
         then drawEditorToolbar renderer fontCache (rsUi snapshot) layout

@@ -85,6 +85,12 @@ data WidgetId
   | WidgetDataResourceSelect !Text !Text
   | WidgetDataPagePrev !Text !Text
   | WidgetDataPageNext !Text !Text
+  | WidgetDataRecordSelect !Int
+    -- ^ Click a record row by index to show the detail popover.
+  | WidgetDataDetailDismiss
+    -- ^ Dismiss the detail popover.
+  | WidgetDataFieldToggle !Text
+    -- ^ Toggle expand/collapse of a nested field path in the detail popover.
     -- Editor toolbar
   | WidgetEditorTool !Int
     -- ^ Tool button (0-indexed corresponding to 'EditorTool' enum order).

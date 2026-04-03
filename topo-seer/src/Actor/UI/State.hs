@@ -96,6 +96,14 @@ data DataBrowserState = DataBrowserState
   , dbsPageOffset       :: !Int
   , dbsTotalCount       :: !(Maybe Int)
   , dbsLoading          :: !Bool
+  , dbsSelectedRecord   :: !(Maybe DataRecord)
+  -- ^ Record shown in the detail popover.
+  , dbsSelectedRecordKey :: !(Maybe Value)
+  -- ^ Primary key of the selected record (for future update/delete).
+  , dbsSelectedRowIndex :: !(Maybe Int)
+  -- ^ Row index of the selected record (for popover anchoring).
+  , dbsExpandedFields   :: !(Set Text)
+  -- ^ Dot-separated field paths currently expanded in the detail popover.
   } deriving (Eq, Show)
 
 -- | Empty initial state for the data browser.
@@ -107,6 +115,10 @@ emptyDataBrowserState = DataBrowserState
   , dbsPageOffset       = 0
   , dbsTotalCount       = Nothing
   , dbsLoading          = False
+  , dbsSelectedRecord   = Nothing
+  , dbsSelectedRecordKey = Nothing
+  , dbsSelectedRowIndex = Nothing
+  , dbsExpandedFields   = Set.empty
   }
 
 -- | Number of rows to display in the data browser tab.

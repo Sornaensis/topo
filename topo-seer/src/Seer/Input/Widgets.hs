@@ -92,11 +92,12 @@ import Seer.Input.ViewControls
 import Topo.Overlay (overlayNames)
 import Topo.Pipeline.Dep (builtinDependencies, disabledClosure)
 import Topo.Pipeline.Stage (StageId, parseStageId)
-import Topo.Plugin.RPC.DataService (DataQuery(..), QueryResource(..), QueryResult(..))
+import Topo.Plugin.RPC.DataService (DataQuery(..), DataRecord(..), QueryResource(..), QueryResult(..))
+import Topo.Plugin.DataResource (DataResourceSchema(..), DataFieldDef(..))
 import Topo.Plugin.RPC.Manifest (RPCParamSpec(..))
 import Topo.World (TerrainWorld(..))
 import UI.Layout
-import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets, buildDataBrowserWidgets, buildSliderRowWidgets, hitTest, isLeftViewWidget)
+import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets, buildDataBrowserWidgets, buildDataDetailWidgets, buildSliderRowWidgets, hitTest, isLeftViewWidget)
 import UI.Widgets (Rect(..), containsPoint)
 import System.Random (randomIO)
 import Hyperspace.Actor (ActorHandle, Protocol)
@@ -136,9 +137,18 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       scrollPoint = if inConfigScroll
         then V2 (fromIntegral x) (fromIntegral y + uiConfigScroll uiSnap)
         else point
+      dbs_ = uiDataBrowser uiSnap
+      detailWidgets = case (dbsSelectedRowIndex dbs_, dbsSelectedPlugin dbs_, dbsSelectedResource dbs_) of
+        (Just rowIdx, Just pName, Just rName) ->
+          let schemas = Map.findWithDefault [] pName (uiDataResources uiSnap)
+              mSchema = find (\s -> drsName s == rName) schemas
+              fields = maybe [] drsFields mSchema
+          in buildDataDetailWidgets rowIdx fields (dbsExpandedFields dbs_) layout
+        _ -> []
       widgetsAll = buildWidgets layout
                 ++ buildPluginWidgets (uiPluginNames uiSnap) (uiPluginExpanded uiSnap) (uiPluginParamSpecs uiSnap) layout
                 ++ buildDataBrowserWidgets (uiDataResources uiSnap) (dbsSelectedPlugin (uiDataBrowser uiSnap)) (dbsSelectedResource (uiDataBrowser uiSnap)) (length (dbsRecords (uiDataBrowser uiSnap))) layout
+                ++ detailWidgets
       widgets =
         if uiShowConfig uiSnap
           then filter (configWidgetAllowed simWorldReady (uiConfigTab uiSnap)) widgetsAll
@@ -284,6 +294,9 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       WidgetDataResourceSelect _ _ -> True
       WidgetDataPagePrev _ _ -> True
       WidgetDataPageNext _ _ -> True
+      WidgetDataRecordSelect _ -> True
+      WidgetDataDetailDismiss -> True
+      WidgetDataFieldToggle _ -> True
       _ -> False
 
     bespokeConfigWidgetAllowed :: Bool -> ConfigTab -> WidgetId -> Bool
@@ -299,6 +312,9 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       WidgetDataResourceSelect _ _ -> tab == ConfigData
       WidgetDataPagePrev _ _ -> tab == ConfigData
       WidgetDataPageNext _ _ -> tab == ConfigData
+      WidgetDataRecordSelect _ -> tab == ConfigData
+      WidgetDataDetailDismiss -> tab == ConfigData
+      WidgetDataFieldToggle _ -> tab == ConfigData
       _ -> True
 
     handleBespokeConfigWidget :: Layout -> WidgetId -> V2 Int -> (IO () -> IO ()) -> UiState -> IO ()
@@ -378,6 +394,10 @@ handleClick inputContext (SDL.P (V2 x y)) = do
               , dbsPageOffset = 0
               , dbsTotalCount = Nothing
               , dbsLoading = False
+              , dbsSelectedRecord = Nothing
+              , dbsSelectedRecordKey = Nothing
+              , dbsSelectedRowIndex = Nothing
+              , dbsExpandedFields = Set.empty
               }
         setUiDataBrowser uiHandle newDbs
       WidgetDataResourceSelect pluginName resourceName -> whenConfigVisible $ do
@@ -388,6 +408,10 @@ handleClick inputContext (SDL.P (V2 x y)) = do
               , dbsPageOffset = 0
               , dbsTotalCount = Nothing
               , dbsLoading = True
+              , dbsSelectedRecord = Nothing
+              , dbsSelectedRecordKey = Nothing
+              , dbsSelectedRowIndex = Nothing
+              , dbsExpandedFields = Set.empty
               }
         setUiDataBrowser uiHandle newDbs
         _ <- forkIO $ do
@@ -404,7 +428,15 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       WidgetDataPagePrev pluginName resourceName -> whenConfigVisible $ do
         let dbs = uiDataBrowser uiState
             newOffset = max 0 (dbsPageOffset dbs - 20)
-            newDbs = dbs { dbsPageOffset = newOffset, dbsLoading = True, dbsRecords = [] }
+            newDbs = dbs
+              { dbsPageOffset = newOffset
+              , dbsLoading = True
+              , dbsRecords = []
+              , dbsSelectedRecord = Nothing
+              , dbsSelectedRecordKey = Nothing
+              , dbsSelectedRowIndex = Nothing
+              , dbsExpandedFields = Set.empty
+              }
         setUiDataBrowser uiHandle newDbs
         _ <- forkIO $ do
           let qr = QueryResource resourceName QueryAll (Just 20) (Just newOffset)
@@ -420,7 +452,15 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       WidgetDataPageNext pluginName resourceName -> whenConfigVisible $ do
         let dbs = uiDataBrowser uiState
             newOffset = dbsPageOffset dbs + 20
-            newDbs = dbs { dbsPageOffset = newOffset, dbsLoading = True, dbsRecords = [] }
+            newDbs = dbs
+              { dbsPageOffset = newOffset
+              , dbsLoading = True
+              , dbsRecords = []
+              , dbsSelectedRecord = Nothing
+              , dbsSelectedRecordKey = Nothing
+              , dbsSelectedRowIndex = Nothing
+              , dbsExpandedFields = Set.empty
+              }
         setUiDataBrowser uiHandle newDbs
         _ <- forkIO $ do
           let qr = QueryResource resourceName QueryAll (Just 20) (Just newOffset)
@@ -433,6 +473,42 @@ handleClick inputContext (SDL.P (V2 x y)) = do
               }
             Left _err -> setUiDataBrowser uiHandle newDbs { dbsLoading = False }
         pure ()
+      WidgetDataRecordSelect idx -> whenConfigVisible $ do
+        let dbs = uiDataBrowser uiState
+            records = dbsRecords dbs
+        case drop idx records of
+          (rec : _) ->
+            let keyField = case dbsSelectedResource dbs >>= \rName ->
+                             dbsSelectedPlugin dbs >>= \pName ->
+                               Map.lookup pName (uiDataResources uiState) >>= find (\s -> drsName s == rName) of
+                             Just schema -> drsKeyField schema
+                             Nothing -> "id"
+                keyVal = Map.lookup keyField (unDataRecord rec)
+                newDbs = dbs
+                  { dbsSelectedRecord   = Just rec
+                  , dbsSelectedRecordKey = keyVal
+                  , dbsSelectedRowIndex  = Just idx
+                  , dbsExpandedFields   = Set.empty
+                  }
+            in setUiDataBrowser uiHandle newDbs
+          [] -> pure ()
+      WidgetDataDetailDismiss -> whenConfigVisible $ do
+        let dbs = uiDataBrowser uiState
+            newDbs = dbs
+              { dbsSelectedRecord    = Nothing
+              , dbsSelectedRecordKey = Nothing
+              , dbsSelectedRowIndex  = Nothing
+              , dbsExpandedFields    = Set.empty
+              }
+        setUiDataBrowser uiHandle newDbs
+      WidgetDataFieldToggle path -> whenConfigVisible $ do
+        let dbs = uiDataBrowser uiState
+            expanded = dbsExpandedFields dbs
+            newExpanded
+              | Set.member path expanded = Set.delete path expanded
+              | otherwise                = Set.insert path expanded
+            newDbs = dbs { dbsExpandedFields = newExpanded }
+        setUiDataBrowser uiHandle newDbs
       _ -> pure ()
 
     handleMenuClick ly _widgets point = do
