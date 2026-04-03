@@ -9,6 +9,7 @@ import qualified Data.Text as Text
 import Data.Word (Word16)
 import qualified Data.Vector.Unboxed as U
 import Topo
+import Topo.WaterBody (applyWaterBodyStage, defaultWaterBodyConfig)
 
 -- | Ocean sub-biome IDs produced by the refinement pass.
 --   Tests must account for the refine stage converting family-level
@@ -73,7 +74,10 @@ spec = describe "Biome" $ do
                   (setTerrainChunk (ChunkId 0) terrain world0)
         pipeline = PipelineConfig
           { pipelineSeed = 1
-          , pipelineStages = [classifyBiomesStage defaultBiomeConfig 0.1]
+          , pipelineStages =
+              [ applyWaterBodyStage defaultWaterBodyConfig 0.1
+              , classifyBiomesStage defaultBiomeConfig 0.1
+              ]
           , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }
@@ -106,7 +110,10 @@ spec = describe "Biome" $ do
                   (setTerrainChunk (ChunkId 0) terrain world0)
         pipeline = PipelineConfig
           { pipelineSeed = 1
-          , pipelineStages = [classifyBiomesStage defaultBiomeConfig 0.05]
+          , pipelineStages =
+              [ applyWaterBodyStage defaultWaterBodyConfig 0.05
+              , classifyBiomesStage defaultBiomeConfig 0.05
+              ]
           , pipelineDisabled = mempty, pipelineSnapshots = False, pipelineOnProgress = \_ -> pure ()
           }
         env = TopoEnv { teLogger = \_ -> pure () }

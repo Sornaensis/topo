@@ -45,6 +45,7 @@ import Topo.TerrainGrid
   ( buildElevationGrid
   , chunkGridSlice
   , chunkGridSliceGeneric
+  , updateChunkElevationFromGrid
   , validateTerrainGrid
   )
 import Topo.Types
@@ -69,6 +70,12 @@ data WaterBodyConfig = WaterBodyConfig
     -- ^ Minimum tile count for a landlocked basin to survive as a lake.
     -- Basins smaller than this are reclassified as 'WaterDry' (absorbed
     -- into surrounding land).  Default: 4.
+  , wbcMaxBasinDepth :: !Float
+    -- ^ Maximum depth (in normalised elevation units) that a landlocked
+    -- basin floor may lie below its pour point.  Deeper tiles are raised
+    -- to @pourElev - wbcMaxBasinDepth@, simulating geological sediment
+    -- infill.  Ocean basins are unaffected.  Default: 0.04 (~500 m at
+    -- Earth-like scales).
   } deriving (Eq, Show, Generic)
 
 instance ToJSON WaterBodyConfig where
@@ -84,6 +91,7 @@ defaultWaterBodyConfig = WaterBodyConfig
   { wbcOceanEdgeMargin  = 2
   , wbcInlandSeaMinSize = 200
   , wbcMinLakeSize      = 4
+  , wbcMaxBasinDepth    = 0.04
   }
 
 -- ---------------------------------------------------------------------------
@@ -103,6 +111,11 @@ data WaterBodyResult = WaterBodyResult
     -- For submerged tiles this matches 'wbrType'; for land tiles it is
     -- the most significant adjacent water type.  Priority:
     -- @WaterOcean > WaterInlandSea > WaterLake > WaterDry@.
+  , wbrInfilledElev :: !(U.Vector Float)
+    -- ^ Elevation grid with landlocked basin floors raised to at most
+    -- @wbcMaxBasinDepth@ below their pour point.  Ocean tiles and land
+    -- tiles are unchanged.  This should be written back to terrain
+    -- chunks so downstream stages see realistic basin geometry.
   } deriving (Show)
 
 -- ---------------------------------------------------------------------------
@@ -209,6 +222,26 @@ classifyWaterBodies cfg waterLevel gridW gridH elev = runST $ do
             then waterLevel
             else frozenPourElev U.! cid
 
+      maxBD = wbcMaxBasinDepth cfg
+
+  -- Step 5b: infill deep landlocked basin floors.
+  -- For each tile in a non-ocean basin, raise elevation so it is at most
+  -- wbcMaxBasinDepth below the pour point.  This simulates geological
+  -- sediment infill of enclosed depressions.
+  let infilledElev = U.generate n $ \i ->
+        let cid = frozenIds U.! i
+            h   = elev U.! i
+        in if cid < 0
+            then h  -- land tile: unchanged
+            else
+              let edge = frozenEdge U.! cid
+              in if edge > 0
+                  then h  -- ocean tile: unchanged
+                  else
+                    let pourE = frozenPourElev U.! cid
+                        floor = pourE - maxBD
+                    in max h floor  -- raise only; never lower
+
   let resultType = U.generate n $ \i ->
         let cid = frozenIds U.! i
         in if cid < 0 then WaterDry else classifyComponent cid
@@ -221,11 +254,13 @@ classifyWaterBodies cfg waterLevel gridW gridH elev = runST $ do
         let cid = frozenIds U.! i
         in if cid < 0 then 0 else fromIntegral cid
 
+      -- Depth computed against the infilled elevation so downstream
+      -- consumers see realistic basin geometry.
       resultDepth = U.generate n $ \i ->
         let cid = frozenIds U.! i
         in if cid < 0
             then 0
-            else max 0 (surfaceElevOf cid - (elev U.! i))
+            else max 0 (surfaceElevOf cid - (infilledElev U.! i))
 
   -- Step 8: compute per-tile adjacent water type.
   -- For each tile, inspect all 6 hex-neighbours and record the highest-priority
@@ -252,6 +287,7 @@ classifyWaterBodies cfg waterLevel gridW gridH elev = runST $ do
     , wbrBasinId      = resultBasin
     , wbrDepth        = resultDepth
     , wbrAdjacentType = adjacentType
+    , wbrInfilledElev = infilledElev
     }
 
 -- | Iterative DFS flood fill for a single connected component.
@@ -330,8 +366,15 @@ applyWaterBodyStage cfg waterLevel =
     let size = wcChunkSize config
         gridW = (maxCx - minCx + 1) * size
         gridH = (maxCy - minCy + 1) * size
-        elev = buildElevationGrid config terrain (ChunkCoord minCx minCy) gridW gridH
+        minCoord = ChunkCoord minCx minCy
+        elev = buildElevationGrid config terrain minCoord gridW gridH
         result = classifyWaterBodies cfg waterLevel gridW gridH elev
+        -- Write infilled elevation back to terrain chunks so downstream
+        -- stages (biome classification, rendering) see realistic basin
+        -- geometry instead of deep abyssal floors.
+        terrain' = IntMap.mapWithKey
+          (updateChunkElevationFromGrid config minCoord gridW (wbrInfilledElev result))
+          terrain
         globalChunk = WaterBodyChunk
           { wbType         = wbrType result
           , wbSurfaceElev  = wbrSurfaceElev result
@@ -340,9 +383,9 @@ applyWaterBodyStage cfg waterLevel =
           , wbAdjacentType = wbrAdjacentType result
           }
         waterBodies = IntMap.mapWithKey
-          (sliceWaterBodyChunk config (ChunkCoord minCx minCy) gridW globalChunk)
-          terrain
-    putWorldP world { twWaterBodies = waterBodies }
+          (sliceWaterBodyChunk config minCoord gridW globalChunk)
+          terrain'
+    putWorldP world { twTerrain = terrain', twWaterBodies = waterBodies }
 
 -- | Slice a per-chunk 'WaterBodyChunk' from the global result.
 sliceWaterBodyChunk

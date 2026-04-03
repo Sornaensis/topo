@@ -207,8 +207,10 @@ spec = describe "WaterBody" $ do
       -- Pour-point = min land neighbor elev = 0.7
       -- Surface elev of the lake should be 0.7
       (wbrSurfaceElev result U.! 12) `shouldSatisfy` (\s -> abs (s - 0.7) < 0.001)
-      -- Depth = 0.7 - 0.3 = 0.4
-      (wbrDepth result U.! 12) `shouldSatisfy` (\d -> abs (d - 0.4) < 0.001)
+      -- Basin infill raises floor to pourElev - maxBasinDepth = 0.7 - 0.04 = 0.66
+      -- Depth = 0.7 - 0.66 = 0.04
+      let maxBD = 0.04  -- defaultWaterBodyConfig wbcMaxBasinDepth
+      (wbrDepth result U.! 12) `shouldSatisfy` (\d -> abs (d - maxBD) < 0.001)
 
   -- -----------------------------------------------------------------------
   -- Property: depth is always >= 0
