@@ -327,10 +327,6 @@ classifyBiome (BiomeRule rules) thr wl wbt adjWbt temp precip elev slope relief 
   = BiomeLake
   | wbt == WaterInlandSea
   = BiomeInlandSea
-  -- 1b. Fallback: tile below water level without water-body classification
-  --     (e.g. when WaterBody stage hasn't run yet). Treat as ocean.
-  | wbt == WaterDry && elev < wl
-  = BiomeOcean
   -- 2. Coastal override (land tiles only from here)
   | elev < wl + btCoastalBand thr && elev >= wl
     && adjWbt == WaterOcean

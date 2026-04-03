@@ -258,3 +258,4 @@ sliderFillColorForId sliderIdValue = case sliderIdValue of
   SliderMinLakeSize -> V4 60 140 180 255
   SliderInlandSeaMinSize -> V4 50 130 170 255
   SliderRoughnessScale -> V4 110 130 140 255
+  SliderHexSizeKm -> V4 140 140 120 255

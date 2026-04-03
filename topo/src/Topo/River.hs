@@ -385,8 +385,13 @@ computeRiverSegments cfg gridW gridH flow discharge order elevRouting elevOrig w
       let d = discharge U.! i
       off <- UM.read offsets i
       let exitDir  = flow U.! i
-          -- Detect coastal exits: tile flows into a submerged neighbour.
-          exitIsCoastal = exitDir >= 0 && elevOrig U.! exitDir < waterLevel
+          -- Detect coastal exits: tile flows into a submerged neighbour
+          -- that is NOT itself an eligible river tile.  Without the
+          -- second check, two consecutive tiles in the coastal zone
+          -- would both draw delta fans ("double delta").
+          exitIsCoastal = exitDir >= 0
+                       && elevOrig U.! exitDir < waterLevel
+                       && counts U.! exitDir == 0
           exitE    = if exitDir < 0
                        then 255  -- inland sink
                        else let (HexEdge e) = gridDirToHexEdge gridW i exitDir
