@@ -173,6 +173,8 @@ encodeWeatherChunk config chunk = do
   ensureLength n (Text.pack "windSpd") (wcWindSpd chunk)
   ensureLength n (Text.pack "pressure") (wcPressure chunk)
   ensureLength n (Text.pack "precip") (wcPrecip chunk)
+  ensureLength n (Text.pack "cloudCover") (wcCloudCover chunk)
+  ensureLength n (Text.pack "cloudWater") (wcCloudWater chunk)
   pure $ BL.toStrict $ runPut $ do
     putWord32le (fromIntegral n)
     putVectorFloat n (wcTemp chunk)
@@ -181,6 +183,8 @@ encodeWeatherChunk config chunk = do
     putVectorFloat n (wcWindSpd chunk)
     putVectorFloat n (wcPressure chunk)
     putVectorFloat n (wcPrecip chunk)
+    putVectorFloat n (wcCloudCover chunk)
+    putVectorFloat n (wcCloudWater chunk)
 
 decodeWeatherChunk :: WorldConfig -> BS.ByteString -> Either ExportError WeatherChunk
 decodeWeatherChunk config bytes =
@@ -600,6 +604,8 @@ getWeatherChunk config = do
   wcWindSpd <- getVectorFloat n
   wcPressure <- getVectorFloat n
   wcPrecip <- getVectorFloat n
+  wcCloudCover <- getVectorFloat n
+  wcCloudWater <- getVectorFloat n
   pure WeatherChunk
     { wcTemp = wcTemp
     , wcHumidity = wcHumidity
@@ -607,6 +613,8 @@ getWeatherChunk config = do
     , wcWindSpd = wcWindSpd
     , wcPressure = wcPressure
     , wcPrecip = wcPrecip
+    , wcCloudCover = wcCloudCover
+    , wcCloudWater = wcCloudWater
     }
 
 -- | Decode river chunk with full topology.

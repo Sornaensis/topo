@@ -63,6 +63,12 @@ data WeatherConfig = WeatherConfig
   , wcCloudAlbedoEffect :: !Float
     -- | Cloud-enhanced precipitation strength.
   , wcCloudPrecipBoost :: !Float
+    -- | Cloud formation rate from humidity exceeding saturation threshold.
+  , wcCloudFormationRate :: !Float
+    -- | Cloud dissipation rate when humidity drops below saturation.
+  , wcCloudDissipationRate :: !Float
+    -- | Relative humidity threshold above which clouds form.
+  , wcCloudSaturationThreshold :: !Float
     -- | Temperature diffusion passes in chunk weather builder.
   , wcTempDiffuseIterations :: !Int
     -- | Temperature diffusion factor in chunk weather builder.
@@ -118,6 +124,9 @@ defaultWeatherConfig = WeatherConfig
   , wcCloudRHExponent           = 1.50
   , wcCloudAlbedoEffect         = 0.08
   , wcCloudPrecipBoost          = 0.12
+  , wcCloudFormationRate        = 0.15
+  , wcCloudDissipationRate      = 0.08
+  , wcCloudSaturationThreshold  = 0.60
   , wcTempDiffuseIterations     = 1
   , wcTempDiffuseFactor         = 0.2
   , wcTempNoiseFrequency        = 0.08

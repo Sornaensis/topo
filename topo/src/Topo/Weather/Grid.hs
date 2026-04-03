@@ -33,17 +33,20 @@ import Topo.Types
 import Topo.World (TerrainWorld(..))
 
 weatherFieldTemperature, weatherFieldHumidity, weatherFieldWindDir,
-  weatherFieldWindSpeed, weatherFieldPressure, weatherFieldPrecip :: Int
+  weatherFieldWindSpeed, weatherFieldPressure, weatherFieldPrecip,
+  weatherFieldCloudCover, weatherFieldCloudWater :: Int
 weatherFieldTemperature = 0
 weatherFieldHumidity    = 1
 weatherFieldWindDir     = 2
 weatherFieldWindSpeed   = 3
 weatherFieldPressure    = 4
 weatherFieldPrecip      = 5
+weatherFieldCloudCover  = 6
+weatherFieldCloudWater  = 7
 
 -- | Number of fields in the weather overlay schema.
 weatherFieldCount :: Int
-weatherFieldCount = 6
+weatherFieldCount = 8
 
 -- | The canonical schema for the weather overlay.
 weatherOverlaySchema :: OverlaySchema
@@ -64,6 +67,8 @@ weatherOverlaySchema = OverlaySchema
       , OverlayFieldDef "wind_speed"    OFFloat (Number 0.0)  False Nothing
       , OverlayFieldDef "pressure"      OFFloat (Number 0.5)  False Nothing
       , OverlayFieldDef "precipitation" OFFloat (Number 0.0)  False Nothing
+      , OverlayFieldDef "cloud_cover"   OFFloat (Number 0.0)  False Nothing
+      , OverlayFieldDef "cloud_water"   OFFloat (Number 0.0)  False Nothing
       ]
 
 -- | Convert a 'WeatherChunk' to a dense overlay chunk (SoA layout).
@@ -75,6 +80,8 @@ weatherChunkToOverlay wc = V.fromList
   , wcWindSpd wc
   , wcPressure wc
   , wcPrecip wc
+  , wcCloudCover wc
+  , wcCloudWater wc
   ]
 
 -- | Convert a dense overlay chunk back to a 'WeatherChunk'.
@@ -82,12 +89,14 @@ overlayToWeatherChunk :: Vector (U.Vector Float) -> Maybe WeatherChunk
 overlayToWeatherChunk v
   | V.length v /= weatherFieldCount = Nothing
   | otherwise = Just WeatherChunk
-      { wcTemp     = v V.! weatherFieldTemperature
-      , wcHumidity = v V.! weatherFieldHumidity
-      , wcWindDir  = v V.! weatherFieldWindDir
-      , wcWindSpd  = v V.! weatherFieldWindSpeed
-      , wcPressure = v V.! weatherFieldPressure
-      , wcPrecip   = v V.! weatherFieldPrecip
+      { wcTemp       = v V.! weatherFieldTemperature
+      , wcHumidity   = v V.! weatherFieldHumidity
+      , wcWindDir    = v V.! weatherFieldWindDir
+      , wcWindSpd    = v V.! weatherFieldWindSpeed
+      , wcPressure   = v V.! weatherFieldPressure
+      , wcPrecip     = v V.! weatherFieldPrecip
+      , wcCloudCover = v V.! weatherFieldCloudCover
+      , wcCloudWater = v V.! weatherFieldCloudWater
       }
 
 -- | Extract all weather chunks from the weather overlay.
@@ -112,6 +121,8 @@ data WeatherGridState = WeatherGridState
   , wgsWindSpd :: !(U.Vector Float)
   , wgsPressure :: !(U.Vector Float)
   , wgsPrecip :: !(U.Vector Float)
+  , wgsCloudCover :: !(U.Vector Float)
+  , wgsCloudWater :: !(U.Vector Float)
   }
 
 -- | Build per-chunk weather from existing overlay values, falling back
@@ -217,4 +228,6 @@ weatherGridToDenseOverlay config minCoord gridW climate state =
       , chunkGridSlice config minCoord gridW (wgsWindSpd state) key
       , chunkGridSlice config minCoord gridW (wgsPressure state) key
       , chunkGridSlice config minCoord gridW (wgsPrecip state) key
+      , chunkGridSlice config minCoord gridW (wgsCloudCover state) key
+      , chunkGridSlice config minCoord gridW (wgsCloudWater state) key
       ]

@@ -80,6 +80,12 @@ buildInitialWeatherChunk config cfg radPerTile latBiasRad key climate =
       windSpd = ccWindSpdAvg climate
       precip = U.generate n
         (initialWeatherPrecipAt config cfg radPerTile latBiasRad origin (ccPrecipAvg climate))
+      cloudCover = U.generate n (\i ->
+        clamp01 (humidity U.! i ** wcCloudRHExponent cfg))
+      cloudWater = U.generate n (\i ->
+        let cf = cloudCover U.! i
+            h  = humidity U.! i
+        in clamp01 (cf * h))
   in WeatherChunk
       { wcTemp = temp
       , wcHumidity = humidity
@@ -87,6 +93,8 @@ buildInitialWeatherChunk config cfg radPerTile latBiasRad key climate =
       , wcWindSpd = windSpd
       , wcPressure = pressure
       , wcPrecip = precip
+      , wcCloudCover = cloudCover
+      , wcCloudWater = cloudWater
       }
 
 initialWeatherTempAt

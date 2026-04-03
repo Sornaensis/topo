@@ -258,6 +258,8 @@ defaultWeatherChunk = WeatherChunk
   , wcWindSpd  = U.empty
   , wcPressure = U.empty
   , wcPrecip   = U.empty
+  , wcCloudCover = U.empty
+  , wcCloudWater = U.empty
   }
 
 ---------------------------------------------------------------------------

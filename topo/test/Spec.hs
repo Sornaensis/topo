@@ -8,6 +8,7 @@ import qualified Spec.HexDirection
 import qualified Spec.Metadata
 import qualified Spec.Pipeline
 import qualified Spec.Calendar
+import qualified Spec.Solar
 import qualified Spec.Overlay
 import qualified Spec.OverlayCache
 import qualified Spec.Simulation
@@ -71,6 +72,7 @@ main = do
     Spec.Metadata.spec
     Spec.Pipeline.spec
     Spec.Calendar.spec
+    Spec.Solar.spec
     Spec.Overlay.spec
     Spec.OverlayCache.spec
     Spec.Simulation.spec

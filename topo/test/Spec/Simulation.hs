@@ -517,6 +517,8 @@ conversionSpec = describe "overlay conversion" $ do
               , wcWindSpd  = U.replicate n 0.2
               , wcPressure = U.replicate n 0.6
               , wcPrecip   = U.replicate n 0.4
+              , wcCloudCover = U.replicate n 0.0
+              , wcCloudWater = U.replicate n 0.0
               }
         ov = weatherChunkToOverlay wc
     V.length ov `shouldBe` weatherFieldCount
@@ -530,6 +532,8 @@ conversionSpec = describe "overlay conversion" $ do
               , wcWindSpd  = U.replicate n 0.20
               , wcPressure = U.replicate n 0.65
               , wcPrecip   = U.replicate n 0.45
+              , wcCloudCover = U.replicate n 0.0
+              , wcCloudWater = U.replicate n 0.0
               }
     case overlayToWeatherChunk (weatherChunkToOverlay wc) of
       Nothing  -> expectationFailure "round-trip returned Nothing"
@@ -540,6 +544,8 @@ conversionSpec = describe "overlay conversion" $ do
         U.toList (wcWindSpd wc')  `shouldBe` U.toList (wcWindSpd wc)
         U.toList (wcPressure wc') `shouldBe` U.toList (wcPressure wc)
         U.toList (wcPrecip wc')   `shouldBe` U.toList (wcPrecip wc)
+        U.toList (wcCloudCover wc') `shouldBe` U.toList (wcCloudCover wc)
+        U.toList (wcCloudWater wc') `shouldBe` U.toList (wcCloudWater wc)
 
   it "overlayToWeatherChunk rejects wrong vector length" $ do
     let bad = V.fromList [U.replicate 4 0.0, U.replicate 4 0.0]

@@ -574,6 +574,8 @@ spec = describe "BiomeRefine" $ do
               , wcWindSpd  = U.replicate n 0
               , wcPressure = U.replicate n 0.9
               , wcPrecip   = U.replicate n precip
+              , wcCloudCover = U.replicate n 0
+              , wcCloudWater = U.replicate n 0
               }
             refined = refineBiomesChunk defaultRefinementConfig 0.5 primary tc cc wc
                         Nothing Nothing Nothing Nothing Nothing

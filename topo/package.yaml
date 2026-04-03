@@ -20,6 +20,7 @@ library:
     - Topo.Pipeline.Stage
     - Topo.Pipeline.Dep
     - Topo.Calendar
+    - Topo.Solar
     - Topo.Overlay
     - Topo.Overlay.Schema
     - Topo.Overlay.Provenance

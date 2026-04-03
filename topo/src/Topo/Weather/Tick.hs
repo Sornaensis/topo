@@ -102,6 +102,10 @@ buildWeatherChunk config seed cfg radPerTile latBiasRad timeHash key climate =
         let p = precipRaw U.! i
             cf = cloudFracV U.! i
         in clamp01 (p * (1 + wcCloudPrecipBoost cfg * cf)))
+      cloudWater = U.generate n (\i ->
+        let cf = cloudFracV U.! i
+            h  = humidity U.! i
+        in clamp01 (cf * h))
   in WeatherChunk
       { wcTemp = temp
       , wcHumidity = humidity
@@ -109,6 +113,8 @@ buildWeatherChunk config seed cfg radPerTile latBiasRad timeHash key climate =
       , wcWindSpd = windSpd
       , wcPressure = pressure
       , wcPrecip = precip
+      , wcCloudCover = cloudFracV
+      , wcCloudWater = cloudWater
       }
 
 weatherTempAt
@@ -355,6 +361,22 @@ tickWeatherGrid config seed cfg radPerTile latBiasRad timeHash minCoord gridW gr
       windSpdFinal = U.map clamp01 windSpdRaw
       pressureFinal = U.map clamp01 pressureDiffused
 
+      -- Cloud evolution: formation from humidity excess, dissipation
+      -- when air is drier.  Cloud water tracks cover × humidity.
+      formRate = wcCloudFormationRate cfg
+      dissRate = wcCloudDissipationRate cfg
+      satThresh = wcCloudSaturationThreshold cfg
+      cloudCoverFinal = U.generate n (\i ->
+        let prevCf = wgsCloudCover prev U.! i
+            h = humidityFinal U.! i
+            formation = formRate * max 0 (h - satThresh) * (1 - prevCf)
+            dissipation = dissRate * prevCf * (1 - h)
+        in clamp01 (prevCf + formation - dissipation))
+      cloudWaterFinal = U.generate n (\i ->
+        let cf = cloudCoverFinal U.! i
+            h  = humidityFinal U.! i
+        in clamp01 (cf * h))
+
   in WeatherGridState
       { wgsTemp = tempFinal
       , wgsHumidity = humidityFinal
@@ -362,6 +384,8 @@ tickWeatherGrid config seed cfg radPerTile latBiasRad timeHash minCoord gridW gr
       , wgsWindSpd = windSpdFinal
       , wgsPressure = pressureFinal
       , wgsPrecip = precipFinal
+      , wgsCloudCover = cloudCoverFinal
+      , wgsCloudWater = cloudWaterFinal
       }
 
 weatherSimNode :: WeatherConfig -> SimNode
@@ -416,6 +440,8 @@ weatherTick cfg ctx overlay = do
                   , wgsWindSpd = buildWeatherFieldGrid config prevChunkWeather minCoord gridW gridH wcWindSpd
                   , wgsPressure = buildWeatherFieldGrid config prevChunkWeather minCoord gridW gridH wcPressure
                   , wgsPrecip = buildWeatherFieldGrid config prevChunkWeather minCoord gridW gridH wcPrecip
+                  , wgsCloudCover = buildWeatherFieldGrid config prevChunkWeather minCoord gridW gridH wcCloudCover
+                  , wgsCloudWater = buildWeatherFieldGrid config prevChunkWeather minCoord gridW gridH wcCloudWater
                   }
                 nextState = tickWeatherGrid
                               config seed cfg' radPerTile latBiasRad timeHash

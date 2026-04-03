@@ -1367,6 +1367,11 @@ data WeatherChunk = WeatherChunk
     -- ^ Instantaneous precipitation rate [0, 1].
     -- Convert to mm/yr via @normToMmYear defaultUnitScales@.
     -- Default scale: 0.0 → 0 mm/yr, 1.0 → 6 000 mm/yr.
+  , wcCloudCover :: !(U.Vector Float)
+    -- ^ Cloud fraction [0, 1].  0 = clear sky, 1 = fully overcast.
+  , wcCloudWater :: !(U.Vector Float)
+    -- ^ Normalised cloud liquid-water content [0, 1].
+    -- Roughly proportional to optical depth.
   } deriving (Eq, Show)
 
 -- | Per-tile river routing outputs for a chunk.
