@@ -1368,10 +1368,28 @@ data WeatherChunk = WeatherChunk
     -- Convert to mm/yr via @normToMmYear defaultUnitScales@.
     -- Default scale: 0.0 → 0 mm/yr, 1.0 → 6 000 mm/yr.
   , wcCloudCover :: !(U.Vector Float)
-    -- ^ Cloud fraction [0, 1].  0 = clear sky, 1 = fully overcast.
+    -- ^ Total cloud fraction [0, 1].  0 = clear sky, 1 = fully overcast.
+    -- Derived from per-layer fractions via random-overlap:
+    -- @1 − (1−low)×(1−mid)×(1−high)@.
   , wcCloudWater :: !(U.Vector Float)
-    -- ^ Normalised cloud liquid-water content [0, 1].
+    -- ^ Total normalised cloud liquid-water content [0, 1].
+    -- Sum of per-layer cloud water, clamped.
     -- Roughly proportional to optical depth.
+  , wcCloudCoverLow  :: !(U.Vector Float)
+    -- ^ Low-cloud fraction [0, 1].  Stratus, stratocumulus, fog.
+    -- High albedo, weak greenhouse effect.
+  , wcCloudCoverMid  :: !(U.Vector Float)
+    -- ^ Mid-level cloud fraction [0, 1].  Altostratus, altocumulus.
+    -- Moderate albedo and greenhouse.
+  , wcCloudCoverHigh :: !(U.Vector Float)
+    -- ^ High-cloud fraction [0, 1].  Cirrus, cirrostratus.
+    -- Low albedo but strong greenhouse (longwave trapping).
+  , wcCloudWaterLow  :: !(U.Vector Float)
+    -- ^ Low-cloud liquid-water content [0, 1].
+  , wcCloudWaterMid  :: !(U.Vector Float)
+    -- ^ Mid-level cloud liquid-water content [0, 1].
+  , wcCloudWaterHigh :: !(U.Vector Float)
+    -- ^ High-cloud ice/water content [0, 1].
   } deriving (Eq, Show)
 
 -- | Per-tile river routing outputs for a chunk.

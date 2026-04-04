@@ -15,6 +15,7 @@ import Topo.Calendar (WorldTime(..), advanceTicks, mkCalendarConfig, tickToDate)
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice, PlanetConfig(..), WorldSlice(..))
 import Topo.Weather (cloudFraction, seasonalITCZLatitude,
                      weatherOverlaySchema, overlayToWeatherChunk, weatherFieldCount,
+                     weatherChunkToOverlay,
                      initWeatherStage, weatherSimNode,
                      getWeatherChunk, getWeatherFromOverlay)
 
@@ -743,6 +744,116 @@ spec = describe "Weather" $ do
                       && U.toList (wcPressure wc') == U.toList (wcPressure wc)
                       && U.toList (wcPrecip wc')   == U.toList (wcPrecip wc)
               )
+
+  -- Phase: Cloud layer separation (low/mid/high)
+  describe "cloud layers" $ do
+    it "initWeatherStage populates per-layer cloud fields" $ do
+      let config = WorldConfig { wcChunkSize = 4 }
+          n = chunkTileCount config
+          climate = ClimateChunk
+            { ccTempAvg           = U.replicate n 0.5
+            , ccPrecipAvg         = U.replicate n 0.5
+            , ccWindDirAvg        = U.replicate n 0.0
+            , ccWindSpdAvg        = U.replicate n 0.3
+            , ccHumidityAvg       = U.replicate n 0.7
+            , ccTempRange         = U.replicate n 0.0
+            , ccPrecipSeasonality = U.replicate n 0.0
+            }
+          world0 = setClimateChunk (ChunkId 0) climate (emptyWorld config defaultHexGridMeta)
+      world <- initWeatherOnly defaultWeatherConfig world0
+      case getWeatherChunk (ChunkId 0) world of
+        Nothing -> expectationFailure "no weather chunk after init"
+        Just wc -> do
+          -- Per-layer fields should be populated (non-empty)
+          U.length (wcCloudCoverLow wc) `shouldBe` n
+          U.length (wcCloudCoverMid wc) `shouldBe` n
+          U.length (wcCloudCoverHigh wc) `shouldBe` n
+          U.length (wcCloudWaterLow wc) `shouldBe` n
+          U.length (wcCloudWaterMid wc) `shouldBe` n
+          U.length (wcCloudWaterHigh wc) `shouldBe` n
+
+    it "layer cloud cover sums to approximately total cover" $ do
+      let config = WorldConfig { wcChunkSize = 4 }
+          n = chunkTileCount config
+          climate = ClimateChunk
+            { ccTempAvg           = U.replicate n 0.5
+            , ccPrecipAvg         = U.replicate n 0.5
+            , ccWindDirAvg        = U.replicate n 0.0
+            , ccWindSpdAvg        = U.replicate n 0.3
+            , ccHumidityAvg       = U.replicate n 0.7
+            , ccTempRange         = U.replicate n 0.0
+            , ccPrecipSeasonality = U.replicate n 0.0
+            }
+          world0 = setClimateChunk (ChunkId 0) climate (emptyWorld config defaultHexGridMeta)
+      world <- initWeatherOnly defaultWeatherConfig world0
+      case getWeatherChunk (ChunkId 0) world of
+        Nothing -> expectationFailure "no weather chunk"
+        Just wc -> do
+          -- For each tile, low+mid+high should be ≤ total cloud cover
+          -- (random overlap means total ≥ max(layers) but ≤ sum)
+          let allOk = U.all id $ U.generate n (\i ->
+                let lo = wcCloudCoverLow wc U.! i
+                    mi = wcCloudCoverMid wc U.! i
+                    hi = wcCloudCoverHigh wc U.! i
+                    total = wcCloudCover wc U.! i
+                -- Each layer fraction should be ≤ total
+                in lo <= total + 0.01 && mi <= total + 0.01 && hi <= total + 0.01)
+          allOk `shouldBe` True
+
+    it "low cloud layer gets largest share of humidity-driven formation" $ do
+      let config = WorldConfig { wcChunkSize = 4 }
+          n = chunkTileCount config
+          climate = ClimateChunk
+            { ccTempAvg           = U.replicate n 0.5
+            , ccPrecipAvg         = U.replicate n 0.5
+            , ccWindDirAvg        = U.replicate n 0.0
+            , ccWindSpdAvg        = U.replicate n 0.3
+            , ccHumidityAvg       = U.replicate n 0.8
+            , ccTempRange         = U.replicate n 0.0
+            , ccPrecipSeasonality = U.replicate n 0.0
+            }
+          world0 = setClimateChunk (ChunkId 0) climate (emptyWorld config defaultHexGridMeta)
+      world <- initWeatherOnly defaultWeatherConfig world0
+      case getWeatherChunk (ChunkId 0) world of
+        Nothing -> expectationFailure "no weather chunk"
+        Just wc -> do
+          let avgLow  = U.sum (wcCloudCoverLow wc) / fromIntegral n
+              avgMid  = U.sum (wcCloudCoverMid wc) / fromIntegral n
+              avgHigh = U.sum (wcCloudCoverHigh wc) / fromIntegral n
+          -- Low > mid > high for humidity-driven initial state
+          avgLow `shouldSatisfy` (> avgMid)
+          avgMid `shouldSatisfy` (> avgHigh)
+
+    it "overlay field count is 14 with cloud layers" $ do
+      weatherFieldCount `shouldBe` 14
+
+    it "overlay round-trips per-layer cloud fields" $ do
+      let n = 16
+          wc = WeatherChunk
+                { wcTemp     = U.replicate n 0.5
+                , wcHumidity = U.replicate n 0.3
+                , wcWindDir  = U.replicate n 0.1
+                , wcWindSpd  = U.replicate n 0.2
+                , wcPressure = U.replicate n 0.6
+                , wcPrecip   = U.replicate n 0.4
+                , wcCloudCover = U.replicate n 0.5
+                , wcCloudWater = U.replicate n 0.3
+                , wcCloudCoverLow  = U.replicate n 0.3
+                , wcCloudCoverMid  = U.replicate n 0.15
+                , wcCloudCoverHigh = U.replicate n 0.05
+                , wcCloudWaterLow  = U.replicate n 0.2
+                , wcCloudWaterMid  = U.replicate n 0.08
+                , wcCloudWaterHigh = U.replicate n 0.02
+                }
+      case overlayToWeatherChunk (weatherChunkToOverlay wc) of
+        Nothing  -> expectationFailure "round-trip returned Nothing"
+        Just wc' -> do
+          U.toList (wcCloudCoverLow wc')  `shouldBe` U.toList (wcCloudCoverLow wc)
+          U.toList (wcCloudCoverMid wc')  `shouldBe` U.toList (wcCloudCoverMid wc)
+          U.toList (wcCloudCoverHigh wc') `shouldBe` U.toList (wcCloudCoverHigh wc)
+          U.toList (wcCloudWaterLow wc')  `shouldBe` U.toList (wcCloudWaterLow wc)
+          U.toList (wcCloudWaterMid wc')  `shouldBe` U.toList (wcCloudWaterMid wc)
+          U.toList (wcCloudWaterHigh wc') `shouldBe` U.toList (wcCloudWaterHigh wc)
 
 expectPipeline :: Either PipelineError (TerrainWorld, [PipelineSnapshot]) -> IO TerrainWorld
 expectPipeline result =

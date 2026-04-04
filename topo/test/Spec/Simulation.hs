@@ -519,6 +519,12 @@ conversionSpec = describe "overlay conversion" $ do
               , wcPrecip   = U.replicate n 0.4
               , wcCloudCover = U.replicate n 0.0
               , wcCloudWater = U.replicate n 0.0
+              , wcCloudCoverLow  = U.replicate n 0.0
+              , wcCloudCoverMid  = U.replicate n 0.0
+              , wcCloudCoverHigh = U.replicate n 0.0
+              , wcCloudWaterLow  = U.replicate n 0.0
+              , wcCloudWaterMid  = U.replicate n 0.0
+              , wcCloudWaterHigh = U.replicate n 0.0
               }
         ov = weatherChunkToOverlay wc
     V.length ov `shouldBe` weatherFieldCount
@@ -534,6 +540,12 @@ conversionSpec = describe "overlay conversion" $ do
               , wcPrecip   = U.replicate n 0.45
               , wcCloudCover = U.replicate n 0.0
               , wcCloudWater = U.replicate n 0.0
+              , wcCloudCoverLow  = U.replicate n 0.0
+              , wcCloudCoverMid  = U.replicate n 0.0
+              , wcCloudCoverHigh = U.replicate n 0.0
+              , wcCloudWaterLow  = U.replicate n 0.0
+              , wcCloudWaterMid  = U.replicate n 0.0
+              , wcCloudWaterHigh = U.replicate n 0.0
               }
     case overlayToWeatherChunk (weatherChunkToOverlay wc) of
       Nothing  -> expectationFailure "round-trip returned Nothing"
@@ -546,6 +558,12 @@ conversionSpec = describe "overlay conversion" $ do
         U.toList (wcPrecip wc')   `shouldBe` U.toList (wcPrecip wc)
         U.toList (wcCloudCover wc') `shouldBe` U.toList (wcCloudCover wc)
         U.toList (wcCloudWater wc') `shouldBe` U.toList (wcCloudWater wc)
+        U.toList (wcCloudCoverLow wc') `shouldBe` U.toList (wcCloudCoverLow wc)
+        U.toList (wcCloudCoverMid wc') `shouldBe` U.toList (wcCloudCoverMid wc)
+        U.toList (wcCloudCoverHigh wc') `shouldBe` U.toList (wcCloudCoverHigh wc)
+        U.toList (wcCloudWaterLow wc') `shouldBe` U.toList (wcCloudWaterLow wc)
+        U.toList (wcCloudWaterMid wc') `shouldBe` U.toList (wcCloudWaterMid wc)
+        U.toList (wcCloudWaterHigh wc') `shouldBe` U.toList (wcCloudWaterHigh wc)
 
   it "overlayToWeatherChunk rejects wrong vector length" $ do
     let bad = V.fromList [U.replicate 4 0.0, U.replicate 4 0.0]

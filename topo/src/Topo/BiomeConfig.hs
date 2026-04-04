@@ -260,6 +260,12 @@ defaultWeatherChunk = WeatherChunk
   , wcPrecip   = U.empty
   , wcCloudCover = U.empty
   , wcCloudWater = U.empty
+  , wcCloudCoverLow  = U.empty
+  , wcCloudCoverMid  = U.empty
+  , wcCloudCoverHigh = U.empty
+  , wcCloudWaterLow  = U.empty
+  , wcCloudWaterMid  = U.empty
+  , wcCloudWaterHigh = U.empty
   }
 
 ---------------------------------------------------------------------------

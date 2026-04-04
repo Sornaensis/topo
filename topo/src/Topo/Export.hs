@@ -175,6 +175,12 @@ encodeWeatherChunk config chunk = do
   ensureLength n (Text.pack "precip") (wcPrecip chunk)
   ensureLength n (Text.pack "cloudCover") (wcCloudCover chunk)
   ensureLength n (Text.pack "cloudWater") (wcCloudWater chunk)
+  ensureLength n (Text.pack "cloudCoverLow") (wcCloudCoverLow chunk)
+  ensureLength n (Text.pack "cloudCoverMid") (wcCloudCoverMid chunk)
+  ensureLength n (Text.pack "cloudCoverHigh") (wcCloudCoverHigh chunk)
+  ensureLength n (Text.pack "cloudWaterLow") (wcCloudWaterLow chunk)
+  ensureLength n (Text.pack "cloudWaterMid") (wcCloudWaterMid chunk)
+  ensureLength n (Text.pack "cloudWaterHigh") (wcCloudWaterHigh chunk)
   pure $ BL.toStrict $ runPut $ do
     putWord32le (fromIntegral n)
     putVectorFloat n (wcTemp chunk)
@@ -185,6 +191,12 @@ encodeWeatherChunk config chunk = do
     putVectorFloat n (wcPrecip chunk)
     putVectorFloat n (wcCloudCover chunk)
     putVectorFloat n (wcCloudWater chunk)
+    putVectorFloat n (wcCloudCoverLow chunk)
+    putVectorFloat n (wcCloudCoverMid chunk)
+    putVectorFloat n (wcCloudCoverHigh chunk)
+    putVectorFloat n (wcCloudWaterLow chunk)
+    putVectorFloat n (wcCloudWaterMid chunk)
+    putVectorFloat n (wcCloudWaterHigh chunk)
 
 decodeWeatherChunk :: WorldConfig -> BS.ByteString -> Either ExportError WeatherChunk
 decodeWeatherChunk config bytes =
@@ -606,6 +618,12 @@ getWeatherChunk config = do
   wcPrecip <- getVectorFloat n
   wcCloudCover <- getVectorFloat n
   wcCloudWater <- getVectorFloat n
+  wcCloudCoverLow <- getVectorFloat n
+  wcCloudCoverMid <- getVectorFloat n
+  wcCloudCoverHigh <- getVectorFloat n
+  wcCloudWaterLow <- getVectorFloat n
+  wcCloudWaterMid <- getVectorFloat n
+  wcCloudWaterHigh <- getVectorFloat n
   pure WeatherChunk
     { wcTemp = wcTemp
     , wcHumidity = wcHumidity
@@ -615,6 +633,12 @@ getWeatherChunk config = do
     , wcPrecip = wcPrecip
     , wcCloudCover = wcCloudCover
     , wcCloudWater = wcCloudWater
+    , wcCloudCoverLow = wcCloudCoverLow
+    , wcCloudCoverMid = wcCloudCoverMid
+    , wcCloudCoverHigh = wcCloudCoverHigh
+    , wcCloudWaterLow = wcCloudWaterLow
+    , wcCloudWaterMid = wcCloudWaterMid
+    , wcCloudWaterHigh = wcCloudWaterHigh
     }
 
 -- | Decode river chunk with full topology.

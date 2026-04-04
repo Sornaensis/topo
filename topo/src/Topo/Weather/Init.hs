@@ -86,6 +86,14 @@ buildInitialWeatherChunk config cfg radPerTile latBiasRad key climate =
         let cf = cloudCover U.! i
             h  = humidity U.! i
         in clamp01 (cf * h))
+      -- Layer distribution: humidity-driven formation → mostly low.
+      -- Low 60%, mid 25%, high 15% of total cover/water.
+      cloudCoverLow = U.map (\cf -> clamp01 (cf * 0.60)) cloudCover
+      cloudCoverMid = U.map (\cf -> clamp01 (cf * 0.25)) cloudCover
+      cloudCoverHigh = U.map (\cf -> clamp01 (cf * 0.15)) cloudCover
+      cloudWaterLow = U.map (\cw -> clamp01 (cw * 0.60)) cloudWater
+      cloudWaterMid = U.map (\cw -> clamp01 (cw * 0.25)) cloudWater
+      cloudWaterHigh = U.map (\cw -> clamp01 (cw * 0.15)) cloudWater
   in WeatherChunk
       { wcTemp = temp
       , wcHumidity = humidity
@@ -95,6 +103,12 @@ buildInitialWeatherChunk config cfg radPerTile latBiasRad key climate =
       , wcPrecip = precip
       , wcCloudCover = cloudCover
       , wcCloudWater = cloudWater
+      , wcCloudCoverLow  = cloudCoverLow
+      , wcCloudCoverMid  = cloudCoverMid
+      , wcCloudCoverHigh = cloudCoverHigh
+      , wcCloudWaterLow  = cloudWaterLow
+      , wcCloudWaterMid  = cloudWaterMid
+      , wcCloudWaterHigh = cloudWaterHigh
       }
 
 initialWeatherTempAt

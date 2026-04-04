@@ -110,6 +110,14 @@ buildWeatherChunk config seed cfg radPerTile latBiasRad timeHash key climate =
         let cf = cloudFracV U.! i
             h  = humidity U.! i
         in clamp01 (cf * h))
+      -- Layer distribution for buildWeatherChunk (noise-driven initial).
+      -- Humidity → mostly low; some mid and high.
+      cloudCoverLow  = U.map (\cf -> clamp01 (cf * 0.60)) cloudFracV
+      cloudCoverMid  = U.map (\cf -> clamp01 (cf * 0.25)) cloudFracV
+      cloudCoverHigh = U.map (\cf -> clamp01 (cf * 0.15)) cloudFracV
+      cloudWaterLow  = U.map (\cw -> clamp01 (cw * 0.60)) cloudWater
+      cloudWaterMid  = U.map (\cw -> clamp01 (cw * 0.25)) cloudWater
+      cloudWaterHigh = U.map (\cw -> clamp01 (cw * 0.15)) cloudWater
   in WeatherChunk
       { wcTemp = temp
       , wcHumidity = humidity
@@ -119,6 +127,12 @@ buildWeatherChunk config seed cfg radPerTile latBiasRad timeHash key climate =
       , wcPrecip = precip
       , wcCloudCover = cloudFracV
       , wcCloudWater = cloudWater
+      , wcCloudCoverLow  = cloudCoverLow
+      , wcCloudCoverMid  = cloudCoverMid
+      , wcCloudCoverHigh = cloudCoverHigh
+      , wcCloudWaterLow  = cloudWaterLow
+      , wcCloudWaterMid  = cloudWaterMid
+      , wcCloudWaterHigh = cloudWaterHigh
       }
 
 weatherTempAt
@@ -270,6 +284,14 @@ tickWeatherGrid config seed cfg radPerTile latBiasRad timeHash minCoord gridW gr
       cloudCoverAdv = advectFieldGrid gridW gridH dt (wgsWindDir prev) (wgsWindSpd prev) (wgsCloudCover prev)
       cloudWaterAdv = advectFieldGrid gridW gridH dt (wgsWindDir prev) (wgsWindSpd prev) (wgsCloudWater prev)
 
+      -- Per-layer advection (independent — mimics wind shear at altitude)
+      ccLowAdv  = advectFieldGrid gridW gridH dt (wgsWindDir prev) (wgsWindSpd prev) (wgsCloudCoverLow prev)
+      ccMidAdv  = advectFieldGrid gridW gridH dt (wgsWindDir prev) (wgsWindSpd prev) (wgsCloudCoverMid prev)
+      ccHighAdv = advectFieldGrid gridW gridH dt (wgsWindDir prev) (wgsWindSpd prev) (wgsCloudCoverHigh prev)
+      cwLowAdv  = advectFieldGrid gridW gridH dt (wgsWindDir prev) (wgsWindSpd prev) (wgsCloudWaterLow prev)
+      cwMidAdv  = advectFieldGrid gridW gridH dt (wgsWindDir prev) (wgsWindSpd prev) (wgsCloudWaterMid prev)
+      cwHighAdv = advectFieldGrid gridW gridH dt (wgsWindDir prev) (wgsWindSpd prev) (wgsCloudWaterHigh prev)
+
       tempSource = U.generate n (\i ->
         let t = tempAdv U.! i
             tgt = seasonalTempBaseline U.! i
@@ -347,22 +369,46 @@ tickWeatherGrid config seed cfg radPerTile latBiasRad timeHash minCoord gridW gr
         let t = tempDiffused U.! i
             target = seasonalTempBaseline U.! i
             tPulled = clamp01 (climatePull t target pull)
-            -- Cloud-radiation model: optical-depth albedo reduces
-            -- shortwave heating; longwave greenhouse warms at night.
+            -- Per-layer cloud-radiation model.
+            -- Low clouds: high albedo (optically thick), weak greenhouse.
+            -- Mid clouds: moderate albedo, moderate greenhouse.
+            -- High clouds: low albedo (optically thin), strong greenhouse.
             irr = solarIrr U.! i
-            cf  = cloudCoverSmooth U.! i
-            cw  = clamp01 (cloudWaterSmooth U.! i)
-            tau = cw * wcCloudOpticalScale cfg
-            cloudAlbedo = 1 - exp (negate tau)
-            effectiveIrr = irr * (1 - cloudAlbedo * cf)
-            -- 0.35 ≈ typical daily-average surface irradiance fraction
+            optScale = wcCloudOpticalScale cfg
+            ghCoeff  = wcCloudGreenhouseCoeff cfg
+
+            -- Low layer: thick, high albedo
+            cfLo = ccLowSmooth U.! i
+            cwLo = clamp01 (cwLowSmooth U.! i)
+            tauLo = cwLo * optScale * 1.5      -- optically thickest
+            albLo = 1 - exp (negate tauLo)
+
+            -- Mid layer: moderate
+            cfMi = ccMidSmooth U.! i
+            cwMi = clamp01 (cwMidSmooth U.! i)
+            tauMi = cwMi * optScale
+            albMi = 1 - exp (negate tauMi)
+
+            -- High layer: thin, low albedo
+            cfHi = ccHighSmooth U.! i
+            cwHi = clamp01 (cwHighSmooth U.! i)
+            tauHi = cwHi * optScale * 0.4       -- optically thinnest
+            albHi = 1 - exp (negate tauHi)
+
+            -- Combined shortwave albedo: product of per-layer transmittances
+            swTransmit = (1 - albLo * cfLo) * (1 - albMi * cfMi) * (1 - albHi * cfHi)
+            effectiveIrr = irr * swTransmit
             solarDelta = 0.025 * (effectiveIrr - 0.35)
-            -- Longwave greenhouse: clouds trap outgoing radiation,
-            -- warming the surface.  Strongest at night (low irr).
-            nightFactor = max 0 (1 - irr * 2)  -- 1 at night, 0 at noon
-            greenhouse = wcCloudGreenhouseCoeff cfg * cf * cw * nightFactor
+
+            -- Longwave greenhouse: high clouds dominate (3× coefficient),
+            -- low clouds have weak greenhouse.  Strongest at night.
+            nightFactor = max 0 (1 - irr * 2)
+            ghLo = ghCoeff * 0.5 * cfLo * cwLo * nightFactor
+            ghMi = ghCoeff * 1.0 * cfMi * cwMi * nightFactor
+            ghHi = ghCoeff * 3.0 * cfHi * cwHi * nightFactor
+            greenhouse = ghLo + ghMi + ghHi
+
             -- Convective cooling: ITCZ convergence + precipitation
-            -- cools the surface via latent heat transport.
             p = precipDiffused U.! i
             conv = max 0 (itczIntensity U.! i)
             cooling = 0.08 * p * conv
@@ -379,59 +425,96 @@ tickWeatherGrid config seed cfg radPerTile latBiasRad timeHash minCoord gridW gr
       windSpdFinal = U.map clamp01 windSpdRaw
       pressureFinal = U.map clamp01 pressureDiffused
 
-      -- Cloud evolution: advect → diffuse → formation/dissipation.
-      -- Cloud fields move with the airmass, then local physics applies.
+      -- Cloud evolution: advect → diffuse → per-layer formation/dissipation.
+      -- Each layer (low/mid/high) evolves independently, then composites
+      -- are derived for the total cloud_cover and cloud_water fields.
       cloudCoverSmooth = diffuseFieldGridWeather gridW gridH 1 weatherDiffuse cloudCoverAdv
       cloudWaterSmooth = diffuseFieldGridWeather gridW gridH 1 weatherDiffuse cloudWaterAdv
+
+      -- Diffuse per-layer fields
+      ccLowSmooth  = diffuseFieldGridWeather gridW gridH 1 weatherDiffuse ccLowAdv
+      ccMidSmooth  = diffuseFieldGridWeather gridW gridH 1 weatherDiffuse ccMidAdv
+      ccHighSmooth = diffuseFieldGridWeather gridW gridH 1 weatherDiffuse ccHighAdv
+      cwLowSmooth  = diffuseFieldGridWeather gridW gridH 1 weatherDiffuse cwLowAdv
+      cwMidSmooth  = diffuseFieldGridWeather gridW gridH 1 weatherDiffuse cwMidAdv
+      cwHighSmooth = diffuseFieldGridWeather gridW gridH 1 weatherDiffuse cwHighAdv
+
       formRate      = wcCloudFormationRate cfg
       dissRate      = wcCloudDissipationRate cfg
       satThresh     = wcCloudSaturationThreshold cfg
       convThresh    = wcConvectiveThreshold cfg
       subsidenceDiss = wcSubsidenceDissipation cfg
-      cloudCoverFinal = U.generate n (\i ->
-        let prevCf = clamp01 (cloudCoverSmooth U.! i)
+
+      -- Per-layer cloud cover evolution.
+      -- Formation sources are routed to layers by physical mechanism:
+      --   humidity supersaturation → 60% low, 30% mid, 10% high
+      --   convective uplift       → 20% low, 30% mid, 50% high (tower)
+      --   frontal convergence     → 20% low, 50% mid, 30% high
+      -- Dissipation applies uniformly to each layer.
+      evolveLayerCover :: Float -> Float -> Float  -- formation fractions
+                       -> U.Vector Float           -- smoothed layer cover
+                       -> U.Vector Float
+      evolveLayerCover humF convF frontF layerSmooth = U.generate n (\i ->
+        let prevCf = clamp01 (layerSmooth U.! i)
             h      = humidityFinal U.! i
             t      = tempFinal U.! i
             p      = pressureFinal U.! i
             conv   = max 0 (convGrid U.! i)
-            room   = 1 - prevCf  -- headroom for formation
+            room   = 1 - prevCf
 
-            -- 1. Humidity supersaturation → condensation into cloud
-            humFormation = formRate * max 0 (h - satThresh) * room
-
-            -- 2. Convective uplift: warm surface + humid air → rapid
-            --    cloud growth (cumulus / cumulonimbus).  Triggered when
-            --    temperature exceeds seasonal baseline by convThresh.
+            humFormation = formRate * max 0 (h - satThresh) * room * humF
             tExcess = max 0 (t - (seasonalTempBaseline U.! i) - convThresh)
-            convectiveFormation = formRate * tExcess * h * room
-
-            -- 3. Frontal / convergence lift: wind convergence forces
-            --    uplift → cloud formation proportional to moisture.
-            frontalFormation = formRate * conv * h * 0.5 * room
-
+            convectiveFormation = formRate * tExcess * h * room * convF
+            frontalFormation = formRate * conv * h * 0.5 * room * frontF
             totalFormation = humFormation + convectiveFormation + frontalFormation
 
-            -- Base dissipation: dry air absorbs cloud water
             baseDissipation = dissRate * prevCf * (1 - h)
-
-            -- Subsidence: high-pressure (p > 0.5) sinking air suppresses clouds
             subsidenceFactor = subsidenceDiss * max 0 (p - 0.5) * prevCf
-
             totalDissipation = baseDissipation + subsidenceFactor
         in clamp01 (prevCf + totalFormation - totalDissipation))
+
+      ccLowFinal  = evolveLayerCover 0.60 0.20 0.20 ccLowSmooth
+      ccMidFinal  = evolveLayerCover 0.30 0.30 0.50 ccMidSmooth
+      ccHighFinal = evolveLayerCover 0.10 0.50 0.30 ccHighSmooth
+
+      -- Total cloud cover: random-overlap assumption.
+      -- total = 1 − (1−low)(1−mid)(1−high)
+      cloudCoverFinal = U.generate n (\i ->
+        let lo = ccLowFinal U.! i
+            mi = ccMidFinal U.! i
+            hi = ccHighFinal U.! i
+        in clamp01 (1 - (1 - lo) * (1 - mi) * (1 - hi)))
+
       -- Autoconversion: excess cloud water above threshold → precipitation.
-      -- Thick clouds rain, thin clouds produce drizzle or nothing.
+      -- Low and mid clouds produce rain efficiently; high clouds (ice) much less.
       autoThresh = wcAutoconversionThreshold cfg
       precipEff  = wcPrecipEfficiency cfg
-      cloudWaterRaw = U.generate n (\i ->
-        let cf = cloudCoverFinal U.! i
-            h  = humidityFinal U.! i
-        in clamp01 (cf * h))
+
+      cwLowRaw = U.generate n (\i ->
+        clamp01 (ccLowFinal U.! i * humidityFinal U.! i))
+      cwMidRaw = U.generate n (\i ->
+        clamp01 (ccMidFinal U.! i * humidityFinal U.! i))
+      cwHighRaw = U.generate n (\i ->
+        clamp01 (ccHighFinal U.! i * humidityFinal U.! i * 0.5))
+
+      autoLow = U.generate n (\i ->
+        max 0 (cwLowRaw U.! i - autoThresh) * precipEff)
+      autoMid = U.generate n (\i ->
+        max 0 (cwMidRaw U.! i - autoThresh) * precipEff)
+      -- High clouds: very low precipitation efficiency (virga/ice)
+      autoHigh = U.generate n (\i ->
+        max 0 (cwHighRaw U.! i - autoThresh) * precipEff * 0.15)
+
       autoconversion = U.generate n (\i ->
-        let cw = cloudWaterRaw U.! i
-        in max 0 (cw - autoThresh) * precipEff)
+        autoLow U.! i + autoMid U.! i + autoHigh U.! i)
+
+      cwLowFinal  = U.generate n (\i -> clamp01 (cwLowRaw U.! i  - autoLow U.! i))
+      cwMidFinal  = U.generate n (\i -> clamp01 (cwMidRaw U.! i  - autoMid U.! i))
+      cwHighFinal = U.generate n (\i -> clamp01 (cwHighRaw U.! i - autoHigh U.! i))
+
+      -- Total cloud water: sum of layers, clamped.
       cloudWaterFinal = U.generate n (\i ->
-        clamp01 (cloudWaterRaw U.! i - autoconversion U.! i))
+        clamp01 (cwLowFinal U.! i + cwMidFinal U.! i + cwHighFinal U.! i))
 
   in WeatherGridState
       { wgsTemp = tempFinal
@@ -442,6 +525,12 @@ tickWeatherGrid config seed cfg radPerTile latBiasRad timeHash minCoord gridW gr
       , wgsPrecip = precipFinal
       , wgsCloudCover = cloudCoverFinal
       , wgsCloudWater = cloudWaterFinal
+      , wgsCloudCoverLow  = ccLowFinal
+      , wgsCloudCoverMid  = ccMidFinal
+      , wgsCloudCoverHigh = ccHighFinal
+      , wgsCloudWaterLow  = cwLowFinal
+      , wgsCloudWaterMid  = cwMidFinal
+      , wgsCloudWaterHigh = cwHighFinal
       }
 
 weatherSimNode :: WeatherConfig -> SimNode
@@ -523,6 +612,12 @@ weatherTick cfg ctx overlay = do
                   , wgsPrecip = buildWeatherFieldGrid config prevChunkWeather minCoord gridW gridH wcPrecip
                   , wgsCloudCover = buildWeatherFieldGrid config prevChunkWeather minCoord gridW gridH wcCloudCover
                   , wgsCloudWater = buildWeatherFieldGrid config prevChunkWeather minCoord gridW gridH wcCloudWater
+                  , wgsCloudCoverLow  = buildWeatherFieldGrid config prevChunkWeather minCoord gridW gridH wcCloudCoverLow
+                  , wgsCloudCoverMid  = buildWeatherFieldGrid config prevChunkWeather minCoord gridW gridH wcCloudCoverMid
+                  , wgsCloudCoverHigh = buildWeatherFieldGrid config prevChunkWeather minCoord gridW gridH wcCloudCoverHigh
+                  , wgsCloudWaterLow  = buildWeatherFieldGrid config prevChunkWeather minCoord gridW gridH wcCloudWaterLow
+                  , wgsCloudWaterMid  = buildWeatherFieldGrid config prevChunkWeather minCoord gridW gridH wcCloudWaterMid
+                  , wgsCloudWaterHigh = buildWeatherFieldGrid config prevChunkWeather minCoord gridW gridH wcCloudWaterHigh
                   }
                 nextState = tickWeatherGrid
                               config seed cfg' radPerTile latBiasRad timeHash

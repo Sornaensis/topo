@@ -90,6 +90,14 @@ mkSeedWeatherChunk climate = WeatherChunk
   , wcWindSpd = ccWindSpdAvg climate
   , wcPressure = U.replicate tileCount 0.5
   , wcPrecip = ccPrecipAvg climate
+  , wcCloudCover = U.replicate tileCount 0.0
+  , wcCloudWater = U.replicate tileCount 0.0
+  , wcCloudCoverLow  = U.replicate tileCount 0.0
+  , wcCloudCoverMid  = U.replicate tileCount 0.0
+  , wcCloudCoverHigh = U.replicate tileCount 0.0
+  , wcCloudWaterLow  = U.replicate tileCount 0.0
+  , wcCloudWaterMid  = U.replicate tileCount 0.0
+  , wcCloudWaterHigh = U.replicate tileCount 0.0
   }
   where
     tileCount = U.length (ccTempAvg climate)
