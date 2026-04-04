@@ -84,19 +84,19 @@ spec = describe "Topo.MCP.Resources" $ do
       parseResourceUri "topo://worlds" `shouldBe` Just ("list_worlds", object [])
 
     -- Phase 3 template URIs
-    it "parses topo://hex/{chunk}/{tile}" $ do
-      parseResourceUri "topo://hex/0/5" `shouldBe` Just ("get_hex", object ["chunk" .= (0 :: Int), "tile" .= (5 :: Int)])
+    it "parses topo://hex/{q}/{r}" $ do
+      parseResourceUri "topo://hex/0/5" `shouldBe` Just ("get_hex", object ["q" .= (0 :: Int), "r" .= (5 :: Int)])
 
-    it "parses topo://hex with negative chunk" $ do
-      parseResourceUri "topo://hex/-3/10" `shouldBe` Just ("get_hex", object ["chunk" .= (-3 :: Int), "tile" .= (10 :: Int)])
+    it "parses topo://hex with negative q" $ do
+      parseResourceUri "topo://hex/-3/10" `shouldBe` Just ("get_hex", object ["q" .= (-3 :: Int), "r" .= (10 :: Int)])
 
-    it "returns Nothing for topo://hex/ with missing tile" $ do
+    it "returns Nothing for topo://hex/ with missing r" $ do
       parseResourceUri "topo://hex/0" `shouldBe` Nothing
 
-    it "returns Nothing for topo://hex/ with empty tile" $ do
+    it "returns Nothing for topo://hex/ with empty r" $ do
       parseResourceUri "topo://hex/0/" `shouldBe` Nothing
 
-    it "returns Nothing for topo://hex/ with non-numeric chunk" $ do
+    it "returns Nothing for topo://hex/ with non-numeric q" $ do
       parseResourceUri "topo://hex/abc/5" `shouldBe` Nothing
 
     it "parses topo://chunk/{id}" $ do
@@ -185,8 +185,8 @@ spec = describe "Topo.MCP.Resources" $ do
       any (\rtd -> rtdUriTemplate rtd == "topo://slider/{name}") allResourceTemplateDefs
         `shouldBe` True
 
-    it "contains topo://hex/{chunk}/{tile} template" $
-      any (\rtd -> rtdUriTemplate rtd == "topo://hex/{chunk}/{tile}") allResourceTemplateDefs
+    it "contains topo://hex/{q}/{r} template" $
+      any (\rtd -> rtdUriTemplate rtd == "topo://hex/{q}/{r}") allResourceTemplateDefs
         `shouldBe` True
 
     it "contains topo://chunk/{id} template" $

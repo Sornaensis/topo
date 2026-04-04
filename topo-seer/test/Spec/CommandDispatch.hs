@@ -469,7 +469,7 @@ spec = describe "CommandDispatch" $ do
   -- -------------------------------------------------------------------
   describe "get_hex" $ do
     it "returns error for non-existent chunk" $ withCtx $ \ctx -> do
-      rsp <- dispatch ctx "get_hex" (object ["chunk" .= (0 :: Int), "tile" .= (0 :: Int)])
+      rsp <- dispatch ctx "get_hex" (object ["q" .= (0 :: Int), "r" .= (0 :: Int)])
       srSuccess rsp `shouldBe` False
 
     it "returns error when params are missing" $ withCtx $ \ctx -> do
@@ -546,12 +546,12 @@ spec = describe "CommandDispatch" $ do
   -- select_hex
   -- -------------------------------------------------------------------
   describe "select_hex" $ do
-    it "selects a hex by chunk and tile" $ withCtx $ \ctx -> do
-      rsp <- dispatch ctx "select_hex" (object ["chunk" .= (0 :: Int), "tile" .= (5 :: Int)])
+    it "selects a hex by q and r" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "select_hex" (object ["q" .= (0 :: Int), "r" .= (5 :: Int)])
       srSuccess rsp `shouldBe` True
       lookupKey "selected" (srResult rsp) `shouldBe` Just (Bool True)
-      lookupKey "chunk" (srResult rsp) `shouldBe` Just (Number 0)
-      lookupKey "tile" (srResult rsp) `shouldBe` Just (Number 5)
+      lookupKey "q" (srResult rsp) `shouldBe` Just (Number 0)
+      lookupKey "r" (srResult rsp) `shouldBe` Just (Number 5)
 
     it "deselects when no chunk/tile given" $ withCtx $ \ctx -> do
       rsp <- dispatch ctx "select_hex" Null

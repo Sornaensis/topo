@@ -113,7 +113,7 @@ allResourceTemplateDefs =
       }
   -- Phase 3 templates
   , ResourceTemplateDef
-      { rtdUriTemplate = "topo://hex/{chunk}/{tile}"
+      { rtdUriTemplate = "topo://hex/{q}/{r}"
       , rtdName        = "Hex Data"
       , rtdDescription = "Full terrain data at a hex coordinate (all layers)"
       , rtdMimeType    = "application/json"
@@ -187,15 +187,15 @@ parseResourceUri uri
   | Just name <- Text.stripPrefix "topo://slider/" uri
   , not (Text.null name)
   = Just ("get_slider", object ["name" .= name])
-  -- Template: topo://hex/{chunk}/{tile}
+  -- Template: topo://hex/{q}/{r}
   | Just rest <- Text.stripPrefix "topo://hex/" uri
-  , (chunkStr, rest') <- Text.breakOn "/" rest
-  , Just tileStr <- Text.stripPrefix "/" rest'
-  , not (Text.null chunkStr)
-  , not (Text.null tileStr)
-  , Just chunkId <- readMaybeInt chunkStr
-  , Just tileIdx <- readMaybeInt tileStr
-  = Just ("get_hex", object ["chunk" .= chunkId, "tile" .= tileIdx])
+  , (qStr, rest') <- Text.breakOn "/" rest
+  , Just rStr <- Text.stripPrefix "/" rest'
+  , not (Text.null qStr)
+  , not (Text.null rStr)
+  , Just q <- readMaybeInt qStr
+  , Just r <- readMaybeInt rStr
+  = Just ("get_hex", object ["q" .= q, "r" .= r])
   -- Template: topo://chunk/{id}
   | Just idStr <- Text.stripPrefix "topo://chunk/" uri
   , not (Text.null idStr)

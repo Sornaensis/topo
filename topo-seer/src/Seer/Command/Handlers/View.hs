@@ -85,30 +85,30 @@ handleSetConfigTab ctx reqId params = do
           setUiConfigScroll uiH 0
           pure $ okResponse reqId $ object ["config_tab" .= tabName]
 
--- | Handle @select_hex@ — select a hex for inspection by chunk ID and tile index.
--- Params: @{ "chunk": int, "tile": int }@.
--- Pass chunk=null/tile=null or omit both to deselect.
+-- | Handle @select_hex@ — select a hex for inspection by axial coordinates.
+-- Params: @{ "q": int, "r": int }@.
+-- Pass null or omit both to deselect.
 handleSelectHex :: CommandContext -> Int -> Value -> IO SeerResponse
 handleSelectHex ctx reqId params = do
   let uiH = ahUiHandle (ccActorHandles ctx)
   case params of
     Object o
-      | Just chunkVal <- KM.lookup "chunk" o
-      , Just tileVal <- KM.lookup "tile" o -> do
-          case (,) <$> Aeson.parseMaybe Aeson.parseJSON chunkVal
-                   <*> Aeson.parseMaybe Aeson.parseJSON tileVal of
-            Just (chunk :: Int, tile :: Int) -> do
-              setUiContextHex uiH (Just (chunk, tile))
+      | Just qVal <- KM.lookup "q" o
+      , Just rVal <- KM.lookup "r" o -> do
+          case (,) <$> Aeson.parseMaybe Aeson.parseJSON qVal
+                   <*> Aeson.parseMaybe Aeson.parseJSON rVal of
+            Just (q :: Int, r :: Int) -> do
+              setUiContextHex uiH (Just (q, r))
               setUiHexTooltipPinned uiH True
               pure $ okResponse reqId $ object
-                [ "chunk" .= chunk
-                , "tile"  .= tile
+                [ "q" .= q
+                , "r"  .= r
                 , "selected" .= True
                 ]
             Nothing ->
-              pure $ errResponse reqId "invalid 'chunk' and/or 'tile' parameters (expected integers)"
+              pure $ errResponse reqId "invalid 'q' and/or 'r' parameters (expected integers)"
       | otherwise -> do
-          -- No chunk/tile params — deselect
+          -- No q/r params — deselect
           setUiContextHex uiH Nothing
           setUiHexTooltipPinned uiH False
           pure $ okResponse reqId $ object ["selected" .= False]

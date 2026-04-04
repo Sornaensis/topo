@@ -28,7 +28,9 @@ import Seer.Command.Context (CommandContext(..))
 import Topo.Biome.Name (biomeDisplayName)
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 import Topo.Types
-  ( TerrainChunk(..)
+  ( WorldConfig(..), ChunkId(..), TileCoord(..), TileIndex(..)
+  , chunkCoordFromTile, chunkIdFromCoord, tileIndex
+  , TerrainChunk(..)
   , ClimateChunk(..)
   , WeatherChunk(..)
   , RiverChunk(..)
@@ -42,106 +44,111 @@ import Topo.Types
   , terrainFormDisplayName
   )
 
--- | Handle @get_hex@ — return full terrain data at a specific chunk/tile.
+-- | Handle @get_hex@ — return full terrain data at an axial hex coordinate.
 --
--- Params: @{ "chunk": <int>, "tile": <int> }@
+-- Params: @{ "q": <int>, "r": <int> }@
 handleGetHex :: CommandContext -> Int -> Value -> IO SeerResponse
 handleGetHex ctx reqId params =
-  case Aeson.parseMaybe parseChunkTile params of
+  case Aeson.parseMaybe parseAxial params of
     Nothing ->
-      pure $ errResponse reqId "missing or invalid 'chunk' and/or 'tile' parameters"
-    Just (chunkId, tileIdx) -> do
+      pure $ errResponse reqId "missing or invalid 'q' and/or 'r' parameters"
+    Just (q, r) -> do
       snap <- readTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx))
       let chunkSize = tsChunkSize snap
-          tileCount = chunkSize * chunkSize
-      if tileIdx < 0 || tileIdx >= tileCount
-        then pure $ errResponse reqId
-          ("tile index out of range: " <> Text.pack (show tileIdx)
-            <> " (chunk has " <> Text.pack (show tileCount) <> " tiles)")
-        else case IntMap.lookup chunkId (tsTerrainChunks snap) of
-          Nothing ->
-            pure $ errResponse reqId ("chunk not found: " <> Text.pack (show chunkId))
-          Just tc -> do
-            let terrainLayer = object
-                  [ "elevation"     .= safeIndex (tcElevation tc) tileIdx
-                  , "curvature"     .= safeIndex (tcCurvature tc) tileIdx
-                  , "hardness"      .= safeIndex (tcHardness tc) tileIdx
-                  , "moisture"      .= safeIndex (tcMoisture tc) tileIdx
-                  , "fertility"     .= safeIndex (tcFertility tc) tileIdx
-                  , "roughness"     .= safeIndex (tcRoughness tc) tileIdx
-                  , "rock_density"  .= safeIndex (tcRockDensity tc) tileIdx
-                  , "soil_depth"    .= safeIndex (tcSoilDepth tc) tileIdx
-                  , "soil_grain"    .= safeIndex (tcSoilGrain tc) tileIdx
-                  , "relief"        .= safeIndex (tcRelief tc) tileIdx
-                  , "relief_2ring"  .= safeIndex (tcRelief2Ring tc) tileIdx
-                  , "relief_3ring"  .= safeIndex (tcRelief3Ring tc) tileIdx
-                  , "micro_relief"  .= safeIndex (tcMicroRelief tc) tileIdx
-                  , "ruggedness"    .= safeIndex (tcRuggedness tc) tileIdx
-                  , "terrain_form"  .= fmap (Text.pack . terrainFormDisplayName)
-                                            (safeIndexTF (tcTerrainForm tc) tileIdx)
-                  , "biome"         .= fmap biomeDisplayName
-                                            (safeIndexBiome (tcFlags tc) tileIdx)
-                  , "rock_type"     .= safeIndexW16 (tcRockType tc) tileIdx
-                  , "soil_type"     .= safeIndexW16 (tcSoilType tc) tileIdx
-                  , "plate_id"      .= safeIndexW16 (tcPlateId tc) tileIdx
-                  , "plate_height"  .= safeIndex (tcPlateHeight tc) tileIdx
-                  , "plate_hardness" .= safeIndex (tcPlateHardness tc) tileIdx
-                  , "plate_age"     .= safeIndex (tcPlateAge tc) tileIdx
-                  ]
+      if chunkSize <= 0
+        then pure $ errResponse reqId "no terrain loaded"
+        else do
+          let cfg = WorldConfig { wcChunkSize = chunkSize }
+              (chunkCoord, localCoord) = chunkCoordFromTile cfg (TileCoord q r)
+              ChunkId chunkId = chunkIdFromCoord chunkCoord
+          case tileIndex cfg localCoord of
+            Nothing ->
+              pure $ errResponse reqId ("invalid axial coordinate: q=" <> Text.pack (show q) <> ", r=" <> Text.pack (show r))
+            Just (TileIndex tileIdx) ->
+              case IntMap.lookup chunkId (tsTerrainChunks snap) of
+                Nothing ->
+                  pure $ errResponse reqId ("no terrain at hex: q=" <> Text.pack (show q) <> ", r=" <> Text.pack (show r))
+                Just tc -> do
+                  let terrainLayer = object
+                        [ "elevation"     .= safeIndex (tcElevation tc) tileIdx
+                        , "curvature"     .= safeIndex (tcCurvature tc) tileIdx
+                        , "hardness"      .= safeIndex (tcHardness tc) tileIdx
+                        , "moisture"      .= safeIndex (tcMoisture tc) tileIdx
+                        , "fertility"     .= safeIndex (tcFertility tc) tileIdx
+                        , "roughness"     .= safeIndex (tcRoughness tc) tileIdx
+                        , "rock_density"  .= safeIndex (tcRockDensity tc) tileIdx
+                        , "soil_depth"    .= safeIndex (tcSoilDepth tc) tileIdx
+                        , "soil_grain"    .= safeIndex (tcSoilGrain tc) tileIdx
+                        , "relief"        .= safeIndex (tcRelief tc) tileIdx
+                        , "relief_2ring"  .= safeIndex (tcRelief2Ring tc) tileIdx
+                        , "relief_3ring"  .= safeIndex (tcRelief3Ring tc) tileIdx
+                        , "micro_relief"  .= safeIndex (tcMicroRelief tc) tileIdx
+                        , "ruggedness"    .= safeIndex (tcRuggedness tc) tileIdx
+                        , "terrain_form"  .= fmap (Text.pack . terrainFormDisplayName)
+                                                  (safeIndexTF (tcTerrainForm tc) tileIdx)
+                        , "biome"         .= fmap biomeDisplayName
+                                                  (safeIndexBiome (tcFlags tc) tileIdx)
+                        , "rock_type"     .= safeIndexW16 (tcRockType tc) tileIdx
+                        , "soil_type"     .= safeIndexW16 (tcSoilType tc) tileIdx
+                        , "plate_id"      .= safeIndexW16 (tcPlateId tc) tileIdx
+                        , "plate_height"  .= safeIndex (tcPlateHeight tc) tileIdx
+                        , "plate_hardness" .= safeIndex (tcPlateHardness tc) tileIdx
+                        , "plate_age"     .= safeIndex (tcPlateAge tc) tileIdx
+                        ]
 
-                climateLayer = case IntMap.lookup chunkId (tsClimateChunks snap) of
-                  Nothing -> Null
-                  Just cc -> object
-                    [ "temp_avg"            .= safeIndex (ccTempAvg cc) tileIdx
-                    , "precip_avg"          .= safeIndex (ccPrecipAvg cc) tileIdx
-                    , "wind_dir_avg"        .= safeIndex (ccWindDirAvg cc) tileIdx
-                    , "wind_spd_avg"        .= safeIndex (ccWindSpdAvg cc) tileIdx
-                    , "humidity_avg"        .= safeIndex (ccHumidityAvg cc) tileIdx
-                    , "temp_range"          .= safeIndex (ccTempRange cc) tileIdx
-                    , "precip_seasonality"  .= safeIndex (ccPrecipSeasonality cc) tileIdx
+                      climateLayer = case IntMap.lookup chunkId (tsClimateChunks snap) of
+                        Nothing -> Null
+                        Just cc -> object
+                          [ "temp_avg"            .= safeIndex (ccTempAvg cc) tileIdx
+                          , "precip_avg"          .= safeIndex (ccPrecipAvg cc) tileIdx
+                          , "wind_dir_avg"        .= safeIndex (ccWindDirAvg cc) tileIdx
+                          , "wind_spd_avg"        .= safeIndex (ccWindSpdAvg cc) tileIdx
+                          , "humidity_avg"        .= safeIndex (ccHumidityAvg cc) tileIdx
+                          , "temp_range"          .= safeIndex (ccTempRange cc) tileIdx
+                          , "precip_seasonality"  .= safeIndex (ccPrecipSeasonality cc) tileIdx
+                          ]
+
+                      weatherLayer = case IntMap.lookup chunkId (tsWeatherChunks snap) of
+                        Nothing -> Null
+                        Just wc -> object
+                          [ "temp"     .= safeIndex (wcTemp wc) tileIdx
+                          , "humidity" .= safeIndex (wcHumidity wc) tileIdx
+                          , "wind_dir" .= safeIndex (wcWindDir wc) tileIdx
+                          , "wind_spd" .= safeIndex (wcWindSpd wc) tileIdx
+                          , "pressure" .= safeIndex (wcPressure wc) tileIdx
+                          , "precip"   .= safeIndex (wcPrecip wc) tileIdx
+                          ]
+
+                      riverLayer = case IntMap.lookup chunkId (tsRiverChunks snap) of
+                        Nothing -> Null
+                        Just rc -> object
+                          [ "flow_accum"        .= safeIndex (rcFlowAccum rc) tileIdx
+                          , "discharge"         .= safeIndex (rcDischarge rc) tileIdx
+                          , "channel_depth"     .= safeIndex (rcChannelDepth rc) tileIdx
+                          , "river_order"       .= safeIndexW16 (rcRiverOrder rc) tileIdx
+                          , "basin_id"          .= safeIndexW32 (rcBasinId rc) tileIdx
+                          , "baseflow"          .= safeIndex (rcBaseflow rc) tileIdx
+                          , "erosion_potential"  .= safeIndex (rcErosionPotential rc) tileIdx
+                          , "deposit_potential"  .= safeIndex (rcDepositPotential rc) tileIdx
+                          ]
+
+                      vegLayer = case IntMap.lookup chunkId (tsVegetationChunks snap) of
+                        Nothing -> Null
+                        Just vc -> object
+                          [ "cover"   .= safeIndex (vegCover vc) tileIdx
+                          , "albedo"  .= safeIndex (vegAlbedo vc) tileIdx
+                          , "density" .= safeIndex (vegDensity vc) tileIdx
+                          ]
+
+                  pure $ okResponse reqId $ object
+                    [ "q"          .= q
+                    , "r"          .= r
+                    , "terrain"    .= terrainLayer
+                    , "climate"    .= climateLayer
+                    , "weather"    .= weatherLayer
+                    , "river"      .= riverLayer
+                    , "vegetation" .= vegLayer
                     ]
-
-                weatherLayer = case IntMap.lookup chunkId (tsWeatherChunks snap) of
-                  Nothing -> Null
-                  Just wc -> object
-                    [ "temp"     .= safeIndex (wcTemp wc) tileIdx
-                    , "humidity" .= safeIndex (wcHumidity wc) tileIdx
-                    , "wind_dir" .= safeIndex (wcWindDir wc) tileIdx
-                    , "wind_spd" .= safeIndex (wcWindSpd wc) tileIdx
-                    , "pressure" .= safeIndex (wcPressure wc) tileIdx
-                    , "precip"   .= safeIndex (wcPrecip wc) tileIdx
-                    ]
-
-                riverLayer = case IntMap.lookup chunkId (tsRiverChunks snap) of
-                  Nothing -> Null
-                  Just rc -> object
-                    [ "flow_accum"        .= safeIndex (rcFlowAccum rc) tileIdx
-                    , "discharge"         .= safeIndex (rcDischarge rc) tileIdx
-                    , "channel_depth"     .= safeIndex (rcChannelDepth rc) tileIdx
-                    , "river_order"       .= safeIndexW16 (rcRiverOrder rc) tileIdx
-                    , "basin_id"          .= safeIndexW32 (rcBasinId rc) tileIdx
-                    , "baseflow"          .= safeIndex (rcBaseflow rc) tileIdx
-                    , "erosion_potential"  .= safeIndex (rcErosionPotential rc) tileIdx
-                    , "deposit_potential"  .= safeIndex (rcDepositPotential rc) tileIdx
-                    ]
-
-                vegLayer = case IntMap.lookup chunkId (tsVegetationChunks snap) of
-                  Nothing -> Null
-                  Just vc -> object
-                    [ "cover"   .= safeIndex (vegCover vc) tileIdx
-                    , "albedo"  .= safeIndex (vegAlbedo vc) tileIdx
-                    , "density" .= safeIndex (vegDensity vc) tileIdx
-                    ]
-
-            pure $ okResponse reqId $ object
-              [ "chunk"      .= chunkId
-              , "tile"       .= tileIdx
-              , "terrain"    .= terrainLayer
-              , "climate"    .= climateLayer
-              , "weather"    .= weatherLayer
-              , "river"      .= riverLayer
-              , "vegetation" .= vegLayer
-              ]
 
 -- | Handle @get_chunks@ — list all chunk IDs with basic stats.
 handleGetChunks :: CommandContext -> Int -> Value -> IO SeerResponse
@@ -312,9 +319,9 @@ handleGetTerrainStats ctx reqId _params = do
 -- Helpers
 -- =====================================================================
 
-parseChunkTile :: Value -> Aeson.Parser (Int, Int)
-parseChunkTile = Aeson.withObject "params" $ \o ->
-  (,) <$> o .: "chunk" <*> o .: "tile"
+parseAxial :: Value -> Aeson.Parser (Int, Int)
+parseAxial = Aeson.withObject "params" $ \o ->
+  (,) <$> o .: "q" <*> o .: "r"
 
 parseChunkId :: Value -> Aeson.Parser Int
 parseChunkId = Aeson.withObject "params" (.: "chunk")

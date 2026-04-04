@@ -40,7 +40,7 @@ handleGetState ctx reqId _params = do
     , "chunk_size"        .= uiChunkSize ui
     , "show_config"       .= uiShowConfig ui
     , "world_name"        .= uiWorldName ui
-    , "context_hex"       .= fmap (\(c, t) -> object ["chunk" .= c, "tile" .= t]) (uiContextHex ui)
+    , "context_hex"       .= fmap (\(q, r) -> object ["q" .= q, "r" .= r]) (uiContextHex ui)
     ]
 
 -- | Handle @get_view_modes@ — return all view mode names and active flag.
@@ -200,9 +200,9 @@ handleGetUiState ctx reqId _params = do
             Nothing -> False
         ]
     , "hex_selection" .= object
-        [ "context_hex" .= fmap (\(c, t) -> object ["chunk" .= c, "tile" .= t]) (uiContextHex ui)
+        [ "context_hex" .= fmap (\(q, r) -> object ["q" .= q, "r" .= r]) (uiContextHex ui)
         , "pinned"      .= uiHexTooltipPinned ui
-        , "hover_hex"   .= fmap (\(c, t) -> object ["chunk" .= c, "tile" .= t]) (uiHoverHex ui)
+        , "hover_hex"   .= fmap (\(q, r) -> object ["q" .= q, "r" .= r]) (uiHoverHex ui)
         ]
     , "simulation" .= object
         [ "auto_tick"  .= uiSimAutoTick ui

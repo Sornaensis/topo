@@ -367,16 +367,16 @@ allToolDefs =
       , tdInputSchema = object
           [ "type" .= ("object" :: Text)
           , "properties" .= object
-              [ "chunk" .= object
+              [ "q" .= object
                   [ "type" .= ("integer" :: Text)
-                  , "description" .= ("Chunk ID" :: Text)
+                  , "description" .= ("Axial q coordinate" :: Text)
                   ]
-              , "tile" .= object
+              , "r" .= object
                   [ "type" .= ("integer" :: Text)
-                  , "description" .= ("Tile index within the chunk" :: Text)
+                  , "description" .= ("Axial r coordinate" :: Text)
                   ]
               ]
-          , "required" .= (["chunk", "tile"] :: [Text])
+          , "required" .= (["q", "r"] :: [Text])
           ]
       }
   , ToolDef
@@ -461,17 +461,17 @@ allToolDefs =
       }
   , ToolDef
       { tdName        = "select_hex"
-      , tdDescription = "Select a hex tile for inspection in the UI, showing its tooltip. Omit chunk/tile to deselect."
+      , tdDescription = "Select a hex tile for inspection in the UI, showing its tooltip. Omit q/r to deselect."
       , tdInputSchema = object
           [ "type" .= ("object" :: Text)
           , "properties" .= object
-              [ "chunk" .= object
+              [ "q" .= object
                   [ "type" .= ("integer" :: Text)
-                  , "description" .= ("Chunk ID" :: Text)
+                  , "description" .= ("Axial q coordinate" :: Text)
                   ]
-              , "tile" .= object
+              , "r" .= object
                   [ "type" .= ("integer" :: Text)
-                  , "description" .= ("Tile index within the chunk" :: Text)
+                  , "description" .= ("Axial r coordinate" :: Text)
                   ]
               ]
           ]
