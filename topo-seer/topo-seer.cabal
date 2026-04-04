@@ -98,6 +98,7 @@ library
       Seer.Command.Handlers.Enums
       Seer.Command.Handlers.Generate
       Seer.Command.Handlers.Log
+      Seer.Command.Handlers.Panels
       Seer.Command.Handlers.Pipeline
       Seer.Command.Handlers.Plugin
       Seer.Command.Handlers.Presets

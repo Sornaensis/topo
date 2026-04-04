@@ -98,18 +98,18 @@ allToolDefs =
       }
   , ToolDef
       { tdName        = "set_view_mode"
-      , tdDescription = "Switch the hex map visualization mode"
+      , tdDescription = "Switch the hex map visualization mode. For overlays, use 'overlay:name' syntax or the dedicated set_overlay tool."
       , tdInputSchema = object
           [ "type" .= ("object" :: Text)
           , "properties" .= object
               [ "mode" .= object
                   [ "type" .= ("string" :: Text)
-                  , "description" .= ("View mode name" :: Text)
-                  , "enum" .= ([ "elevation", "biome", "climate", "weather"
-                               , "moisture", "precipitation", "plate_id"
-                               , "plate_boundary", "plate_hardness", "plate_crust"
-                               , "plate_age", "plate_height", "plate_velocity"
-                               , "vegetation", "terrain_form" ] :: [Text])
+                  , "description" .= ("View mode name. Built-in modes or 'overlay:<name>' for plugin overlays." :: Text)
+                  ]
+              , "field_index" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("Field index for overlay modes (default 0). Ignored for built-in modes." :: Text)
+                  , "minimum" .= (0 :: Int)
                   ]
               ]
           , "required" .= (["mode"] :: [Text])
@@ -825,6 +825,158 @@ allToolDefs =
           , "required" .= (["fields"] :: [Text])
           ]
       }
+  -- Panel visibility & tab controls
+  , ToolDef
+      { tdName        = "set_left_panel"
+      , tdDescription = "Show or hide the left sidebar panel"
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "visible" .= object
+                  [ "type" .= ("boolean" :: Text)
+                  , "description" .= ("true to show, false to hide" :: Text)
+                  ]
+              ]
+          , "required" .= (["visible"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "set_left_tab"
+      , tdDescription = "Switch the left panel tab. The left panel must be visible."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "tab" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Left panel tab" :: Text)
+                  , "enum" .= (["topo", "view"] :: [Text])
+                  ]
+              ]
+          , "required" .= (["tab"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "toggle_config_panel"
+      , tdDescription = "Toggle the config panel visibility, or explicitly set it"
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "visible" .= object
+                  [ "type" .= ("boolean" :: Text)
+                  , "description" .= ("Optional explicit state; omit to toggle" :: Text)
+                  ]
+              ]
+          ]
+      }
+  , ToolDef
+      { tdName        = "set_log_collapsed"
+      , tdDescription = "Collapse or expand the log panel"
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "collapsed" .= object
+                  [ "type" .= ("boolean" :: Text)
+                  , "description" .= ("true to collapse, false to expand" :: Text)
+                  ]
+              ]
+          , "required" .= (["collapsed"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "set_log_level"
+      , tdDescription = "Set the minimum log level filter for the log panel"
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "level" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Minimum log level" :: Text)
+                  , "enum" .= (["debug", "info", "warn", "error"] :: [Text])
+                  ]
+              ]
+          , "required" .= (["level"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "get_ui_panels"
+      , tdDescription = "Get the current visibility and tab state of all UI panels (left panel, config panel, log panel)"
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object []
+          ]
+      }
+  -- Overlay navigation
+  , ToolDef
+      { tdName        = "set_overlay"
+      , tdDescription = "Set the view to a specific overlay by name and optional field index. Use get_overlays to see available overlay names."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "overlay" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Overlay name" :: Text)
+                  ]
+              , "field_index" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("Field index within overlay (default 0)" :: Text)
+                  , "minimum" .= (0 :: Int)
+                  ]
+              ]
+          , "required" .= (["overlay"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "list_overlay_fields"
+      , tdDescription = "List the fields for an overlay. If overlay is omitted, uses the currently active overlay."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "overlay" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Overlay name (optional — defaults to current)" :: Text)
+                  ]
+              ]
+          ]
+      }
+  , ToolDef
+      { tdName        = "cycle_overlay"
+      , tdDescription = "Navigate to the next or previous overlay. Wraps around; position 0 returns to elevation (no overlay)."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "direction" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("+1 for next overlay, -1 for previous" :: Text)
+                  , "enum" .= ([(-1) :: Int, 1] :: [Int])
+                  ]
+              ]
+          , "required" .= (["direction"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "cycle_overlay_field"
+      , tdDescription = "Navigate to the next or previous field within the current overlay. Only works when viewing an overlay."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "direction" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("+1 for next field, -1 for previous" :: Text)
+                  , "enum" .= ([(-1) :: Int, 1] :: [Int])
+                  ]
+              ]
+          , "required" .= (["direction"] :: [Text])
+          ]
+      }
+  -- Comprehensive UI state query
+  , ToolDef
+      { tdName        = "get_ui_state"
+      , tdDescription = "Get a comprehensive snapshot of all UI state: panels, editor, data browser, overlays, hex selection, simulation. Use this to understand the full application state as a human would see it."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object []
+          ]
+      }
   ]
 
 -- | Handle a tools/call request.
@@ -930,4 +1082,18 @@ toolToIpc "get_config_summary"     args = Just ("get_config_summary", args)
 -- Hex search and terrain export
 toolToIpc "find_hexes"             args = Just ("find_hexes", args)
 toolToIpc "export_terrain_data"    args = Just ("export_terrain_data", args)
+-- Panel visibility & tab controls
+toolToIpc "set_left_panel"         args = Just ("set_left_panel", args)
+toolToIpc "set_left_tab"           args = Just ("set_left_tab", args)
+toolToIpc "toggle_config_panel"    args = Just ("toggle_config_panel", args)
+toolToIpc "set_log_collapsed"      args = Just ("set_log_collapsed", args)
+toolToIpc "set_log_level"          args = Just ("set_log_level", args)
+toolToIpc "get_ui_panels"          args = Just ("get_ui_panels", args)
+-- Overlay navigation
+toolToIpc "set_overlay"            args = Just ("set_overlay", args)
+toolToIpc "list_overlay_fields"    args = Just ("list_overlay_fields", args)
+toolToIpc "cycle_overlay"          args = Just ("cycle_overlay", args)
+toolToIpc "cycle_overlay_field"    args = Just ("cycle_overlay_field", args)
+-- Comprehensive UI state query
+toolToIpc "get_ui_state"           args = Just ("get_ui_state", args)
 toolToIpc _                        _    = Nothing

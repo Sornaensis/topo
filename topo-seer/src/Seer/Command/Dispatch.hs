@@ -14,6 +14,7 @@ import qualified Seer.Command.Handlers.Editor as HEditor
 import qualified Seer.Command.Handlers.Enums as HEnums
 import qualified Seer.Command.Handlers.Generate as HGenerate
 import qualified Seer.Command.Handlers.Log as HLog
+import qualified Seer.Command.Handlers.Panels as HPanels
 import qualified Seer.Command.Handlers.Pipeline as HPipeline
 import qualified Seer.Command.Handlers.Plugin as HPlugin
 import qualified Seer.Command.Handlers.Presets as HPresets
@@ -32,6 +33,7 @@ dispatchCommand ctx cmd = case scMethod cmd of
   -- State queries
   "get_state"        -> HState.handleGetState        ctx (scId cmd) (scParams cmd)
   "get_view_modes"   -> HState.handleGetViewModes    ctx (scId cmd) (scParams cmd)
+  "get_ui_state"     -> HState.handleGetUiState      ctx (scId cmd) (scParams cmd)
 
   -- Slider queries and mutations
   "get_sliders"      -> HSliders.handleGetSliders    ctx (scId cmd) (scParams cmd)
@@ -45,6 +47,12 @@ dispatchCommand ctx cmd = case scMethod cmd of
   "set_view_mode"    -> HView.handleSetViewMode      ctx (scId cmd) (scParams cmd)
   "set_config_tab"   -> HView.handleSetConfigTab     ctx (scId cmd) (scParams cmd)
   "select_hex"       -> HView.handleSelectHex        ctx (scId cmd) (scParams cmd)
+
+  -- Overlay navigation
+  "set_overlay"          -> HView.handleSetOverlay          ctx (scId cmd) (scParams cmd)
+  "list_overlay_fields"  -> HView.handleListOverlayFields   ctx (scId cmd) (scParams cmd)
+  "cycle_overlay"        -> HView.handleCycleOverlay        ctx (scId cmd) (scParams cmd)
+  "cycle_overlay_field"  -> HView.handleCycleOverlayField   ctx (scId cmd) (scParams cmd)
 
   -- Camera controls
   "set_camera"       -> HCamera.handleSetCamera      ctx (scId cmd) (scParams cmd)
@@ -116,6 +124,14 @@ dispatchCommand ctx cmd = case scMethod cmd of
 
   -- Screenshot
   "take_screenshot"      -> HScreenshot.handleTakeScreenshot  ctx (scId cmd) (scParams cmd)
+
+  -- Panel visibility & tab controls
+  "set_left_panel"       -> HPanels.handleSetLeftPanel        ctx (scId cmd) (scParams cmd)
+  "set_left_tab"         -> HPanels.handleSetLeftTab          ctx (scId cmd) (scParams cmd)
+  "toggle_config_panel"  -> HPanels.handleToggleConfigPanel   ctx (scId cmd) (scParams cmd)
+  "set_log_collapsed"    -> HPanels.handleSetLogCollapsed     ctx (scId cmd) (scParams cmd)
+  "set_log_level"        -> HPanels.handleSetLogLevel         ctx (scId cmd) (scParams cmd)
+  "get_ui_panels"        -> HPanels.handleGetUiPanels         ctx (scId cmd) (scParams cmd)
 
   -- Unknown command
   other              -> pure (errResponse (scId cmd) ("unknown command: " <> other))
