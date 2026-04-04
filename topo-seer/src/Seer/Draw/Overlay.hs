@@ -68,6 +68,8 @@ import Topo.Overlay.Schema
   )
 import Topo.Hex (HexGridMeta(..))
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), formatLatLon, tileLatitude, tileLongitude)
+import Topo.Calendar (CalendarConfig(..), WorldTime(..), mkCalendarConfig, tickToDate, yearFraction, CalendarDate(..))
+import Topo.Solar (SolarPosition(..), DayInfo(..), tileSolarPos, tileDayInfo, defaultSolarConfig, tileIrradiance)
 import Topo.Units
   ( defaultUnitScales
   , normSlopeToDeg
@@ -272,6 +274,42 @@ contextLines ui terrainSnap (q, r) =
           lon = tileLongitude planet hex slice worldConfig tile
       in formatLatLon lat lon
 
+    -- Solar info helper: computes sun position, day length, irradiance
+    -- for a tile given current simulation time.
+    calCfg = mkCalendarConfig planet
+    worldTime = WorldTime
+      { wtTick     = uiSimTickCount ui
+      , wtTickRate = realToFrac (uiSimTickRate ui)
+      }
+    calDate = tickToDate calCfg worldTime
+    yf      = realToFrac (yearFraction calCfg worldTime) :: Float
+    hpd     = realToFrac (ccHoursPerDay calCfg) :: Float
+    calHour = realToFrac (cdHourOfDay calDate) :: Float
+    tiltDeg = pcAxialTilt planet
+
+    solarLines tileQ tileR =
+      let tile    = TileCoord tileQ tileR
+          latRad  = tileLatitude planet hex slice worldConfig tile
+          lonDeg  = tileLongitude planet hex slice worldConfig tile
+          sp      = tileSolarPos tiltDeg yf hpd calHour latRad lonDeg
+          di      = tileDayInfo tiltDeg yf hpd latRad
+          irr     = tileIrradiance defaultSolarConfig tiltDeg yf hpd calHour latRad lonDeg
+          radToDeg a = a * 180 / pi
+          altDeg  = radToDeg (spAltitude sp)
+          azDeg   = radToDeg (spAzimuth sp)
+          dayH    = diDayLength di
+          riseH   = diSunriseHour di
+          setH    = diSunsetHour di
+          fmtHM h = let hrs = floor h :: Int
+                        mins = round ((h - fromIntegral hrs) * 60) :: Int
+                    in Text.pack (show hrs) <> ":" <> (if mins < 10 then "0" else "") <> Text.pack (show mins)
+      in [ "--- Sun ---"
+         , "Alt   " <> fmtU altDeg "°"  <> "  Az " <> fmtU azDeg "°"
+         , "Day   " <> fmtU dayH "h"
+         , "Rise  " <> fmtHM riseH <> "  Set " <> fmtHM setH
+         , "Irrad " <> fmtF irr
+         ]
+
     modeLines ViewElevation sample =
       let dirSlope = hsDirSlope sample
           slopeDeg = normSlopeToDeg units
@@ -282,7 +320,7 @@ contextLines ui terrainSnap (q, r) =
          , "  E   " <> fmtU (slopeDeg (dsSlopeE dirSlope)) "°" <> "   W  " <> fmtU (slopeDeg (dsSlopeW dirSlope)) "°"
          , "  NE  " <> fmtU (slopeDeg (dsSlopeNE dirSlope)) "°" <> "   SW " <> fmtU (slopeDeg (dsSlopeSW dirSlope)) "°"
          , "  NW  " <> fmtU (slopeDeg (dsSlopeNW dirSlope)) "°" <> "   SE " <> fmtU (slopeDeg (dsSlopeSE dirSlope)) "°"
-         ]
+         ] ++ solarLines q r
     modeLines ViewBiome sample =
       [ "Biome  " <> biomeDisplayName (hsBiome sample)
       , "Form   " <> Text.pack (terrainFormDisplayName (hsTerrainForm sample))
@@ -293,7 +331,7 @@ contextLines ui terrainSnap (q, r) =
       , "Fert   " <> fmtF (hsFertility sample)
       , "Veg    " <> fmtF (hsVegCover sample)
       , "VDen   " <> fmtF (hsVegDensity sample)
-      ]
+      ] ++ solarLines q r
     modeLines ViewClimate sample =
       [ "Temp  " <> fmtU (normToC units (hsTemp sample)) "°C"
       , "Precip " <> fmtU (normToMmYear units (hsPrecipAvg sample)) "mm/yr"
@@ -308,7 +346,7 @@ contextLines ui terrainSnap (q, r) =
       , "WindS " <> fmtU (normToWindMs units (hsWeatherWindSpd sample)) "m/s"
       , "Press " <> fmtU (normToHPa units (hsWeatherPressure sample)) "hPa"
       , "Precp " <> fmtU (normToMmYear units (hsWeatherPrecip sample)) "mm/yr"
-      ]
+      ] ++ solarLines q r
     modeLines ViewMoisture sample =
       [ "Moist " <> fmtU (normToRH (hsMoisture sample)) "%"
       , "Soil  " <> fmtU (normToSoilM units (hsSoilDepth sample)) "m"
