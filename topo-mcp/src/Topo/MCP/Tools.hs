@@ -977,6 +977,154 @@ allToolDefs =
           , "properties" .= object []
           ]
       }
+  -- Data browser
+  , ToolDef
+      { tdName        = "data_list_plugins"
+      , tdDescription = "List all plugins that expose data resources. Returns plugin names and their resource names."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object []
+          ]
+      }
+  , ToolDef
+      { tdName        = "data_list_resources"
+      , tdDescription = "List data resource schemas for a specific plugin. Returns field definitions, supported operations, and key field info."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "plugin" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Plugin name" :: Text)
+                  ]
+              ]
+          , "required" .= (["plugin"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "data_list_records"
+      , tdDescription = "List records from a plugin data resource with optional pagination."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "plugin" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Plugin name" :: Text)
+                  ]
+              , "resource" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Resource name" :: Text)
+                  ]
+              , "page_size" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("Number of records per page" :: Text)
+                  , "minimum" .= (1 :: Int)
+                  ]
+              , "page_offset" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("Page offset (0-based)" :: Text)
+                  , "minimum" .= (0 :: Int)
+                  ]
+              ]
+          , "required" .= (["plugin", "resource"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "data_get_record"
+      , tdDescription = "Get a single data record by its primary key."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "plugin" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Plugin name" :: Text)
+                  ]
+              , "resource" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Resource name" :: Text)
+                  ]
+              , "key" .= object
+                  [ "description" .= ("Primary key value" :: Text)
+                  ]
+              ]
+          , "required" .= (["plugin", "resource", "key"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "data_create_record"
+      , tdDescription = "Create a new record in a plugin data resource."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "plugin" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Plugin name" :: Text)
+                  ]
+              , "resource" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Resource name" :: Text)
+                  ]
+              , "fields" .= object
+                  [ "type" .= ("object" :: Text)
+                  , "description" .= ("Record fields as key-value pairs" :: Text)
+                  ]
+              ]
+          , "required" .= (["plugin", "resource", "fields"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "data_update_record"
+      , tdDescription = "Update an existing record in a plugin data resource."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "plugin" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Plugin name" :: Text)
+                  ]
+              , "resource" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Resource name" :: Text)
+                  ]
+              , "key" .= object
+                  [ "description" .= ("Primary key of the record to update" :: Text)
+                  ]
+              , "fields" .= object
+                  [ "type" .= ("object" :: Text)
+                  , "description" .= ("Updated field values as key-value pairs" :: Text)
+                  ]
+              ]
+          , "required" .= (["plugin", "resource", "key", "fields"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "data_delete_record"
+      , tdDescription = "Delete a record from a plugin data resource by its primary key."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "plugin" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Plugin name" :: Text)
+                  ]
+              , "resource" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Resource name" :: Text)
+                  ]
+              , "key" .= object
+                  [ "description" .= ("Primary key of the record to delete" :: Text)
+                  ]
+              ]
+          , "required" .= (["plugin", "resource", "key"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "data_get_state"
+      , tdDescription = "Get the current data browser UI state: selected plugin/resource, record count, edit/create mode, pagination."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object []
+          ]
+      }
   ]
 
 -- | Handle a tools/call request.
@@ -1096,4 +1244,13 @@ toolToIpc "cycle_overlay"          args = Just ("cycle_overlay", args)
 toolToIpc "cycle_overlay_field"    args = Just ("cycle_overlay_field", args)
 -- Comprehensive UI state query
 toolToIpc "get_ui_state"           args = Just ("get_ui_state", args)
+-- Data browser
+toolToIpc "data_list_plugins"      args = Just ("data_list_plugins", args)
+toolToIpc "data_list_resources"    args = Just ("data_list_resources", args)
+toolToIpc "data_list_records"      args = Just ("data_list_records", args)
+toolToIpc "data_get_record"        args = Just ("data_get_record", args)
+toolToIpc "data_create_record"     args = Just ("data_create_record", args)
+toolToIpc "data_update_record"     args = Just ("data_update_record", args)
+toolToIpc "data_delete_record"     args = Just ("data_delete_record", args)
+toolToIpc "data_get_state"         args = Just ("data_get_state", args)
 toolToIpc _                        _    = Nothing

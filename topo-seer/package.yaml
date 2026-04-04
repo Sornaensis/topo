@@ -88,6 +88,7 @@ library:
   other-modules:
     - Actor.UiActions.Handles
     - Seer.Command.Handlers.Camera
+    - Seer.Command.Handlers.Data
     - Seer.Command.Handlers.Editor
     - Seer.Command.Handlers.Enums
     - Seer.Command.Handlers.Generate

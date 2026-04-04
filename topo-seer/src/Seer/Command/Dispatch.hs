@@ -10,6 +10,7 @@ module Seer.Command.Dispatch
 import Topo.Command.Types (SeerCommand(..), SeerResponse, errResponse)
 import Seer.Command.Context (CommandContext(..))
 import qualified Seer.Command.Handlers.Camera as HCamera
+import qualified Seer.Command.Handlers.Data as HData
 import qualified Seer.Command.Handlers.Editor as HEditor
 import qualified Seer.Command.Handlers.Enums as HEnums
 import qualified Seer.Command.Handlers.Generate as HGenerate
@@ -124,6 +125,16 @@ dispatchCommand ctx cmd = case scMethod cmd of
 
   -- Screenshot
   "take_screenshot"      -> HScreenshot.handleTakeScreenshot  ctx (scId cmd) (scParams cmd)
+
+  -- Data browser
+  "data_list_plugins"    -> HData.handleDataListPlugins     ctx (scId cmd) (scParams cmd)
+  "data_list_resources"  -> HData.handleDataListResources   ctx (scId cmd) (scParams cmd)
+  "data_list_records"    -> HData.handleDataListRecords     ctx (scId cmd) (scParams cmd)
+  "data_get_record"      -> HData.handleDataGetRecord       ctx (scId cmd) (scParams cmd)
+  "data_create_record"   -> HData.handleDataCreateRecord    ctx (scId cmd) (scParams cmd)
+  "data_update_record"   -> HData.handleDataUpdateRecord    ctx (scId cmd) (scParams cmd)
+  "data_delete_record"   -> HData.handleDataDeleteRecord    ctx (scId cmd) (scParams cmd)
+  "data_get_state"       -> HData.handleDataGetState        ctx (scId cmd) (scParams cmd)
 
   -- Panel visibility & tab controls
   "set_left_panel"       -> HPanels.handleSetLeftPanel        ctx (scId cmd) (scParams cmd)

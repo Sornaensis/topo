@@ -215,8 +215,8 @@ spec = describe "Topo.MCP.Tools" $ do
       names `shouldSatisfy` elem "load_preset"
       names `shouldSatisfy` elem "take_screenshot"
 
-    it "has exactly 65 tools" $
-      length allToolDefs `shouldBe` 65
+    it "has exactly 73 tools" $
+      length allToolDefs `shouldBe` 73
 
     it "all tools have non-empty descriptions" $
       all (not . null . show . tdDescription) allToolDefs `shouldBe` True
