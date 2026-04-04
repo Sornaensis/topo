@@ -104,6 +104,7 @@ library:
     - Seer.Command.Handlers.State
     - Seer.Command.Handlers.Terrain
     - Seer.Command.Handlers.View
+    - Seer.Command.Handlers.Viewport
     - Seer.Command.Handlers.Widgets
     - Seer.Command.Handlers.World
     - Seer.Command.Context

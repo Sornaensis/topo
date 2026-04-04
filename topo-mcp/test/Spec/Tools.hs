@@ -172,6 +172,22 @@ spec = describe "Topo.MCP.Tools" $ do
       let args = object ["widget_id" .= ("WidgetConfigToggle" :: Text)]
       toolToIpc "get_widget_state" args `shouldBe` Just ("get_widget_state", args)
 
+    it "maps viewport_scroll to viewport_scroll" $ do
+      let args = object ["delta" .= (1 :: Int)]
+      toolToIpc "viewport_scroll" args `shouldBe` Just ("viewport_scroll", args)
+
+    it "maps viewport_click to viewport_click" $ do
+      let args = object ["x" .= (100 :: Int), "y" .= (200 :: Int)]
+      toolToIpc "viewport_click" args `shouldBe` Just ("viewport_click", args)
+
+    it "maps viewport_drag to viewport_drag" $ do
+      let args = object ["x1" .= (10 :: Int), "y1" .= (20 :: Int), "x2" .= (30 :: Int), "y2" .= (40 :: Int)]
+      toolToIpc "viewport_drag" args `shouldBe` Just ("viewport_drag", args)
+
+    it "maps viewport_hover to viewport_hover" $ do
+      let args = object ["x" .= (100 :: Int), "y" .= (200 :: Int)]
+      toolToIpc "viewport_hover" args `shouldBe` Just ("viewport_hover", args)
+
     it "returns Nothing for unknown tool" $ do
       toolToIpc "nonexistent_tool" Null `shouldBe` Nothing
 
@@ -229,9 +245,13 @@ spec = describe "Topo.MCP.Tools" $ do
       names `shouldSatisfy` elem "click_widget"
       names `shouldSatisfy` elem "list_widgets"
       names `shouldSatisfy` elem "get_widget_state"
+      names `shouldSatisfy` elem "viewport_scroll"
+      names `shouldSatisfy` elem "viewport_click"
+      names `shouldSatisfy` elem "viewport_drag"
+      names `shouldSatisfy` elem "viewport_hover"
 
-    it "has exactly 76 tools" $
-      length allToolDefs `shouldBe` 76
+    it "has exactly 80 tools" $
+      length allToolDefs `shouldBe` 80
 
     it "all tools have non-empty descriptions" $
       all (not . null . show . tdDescription) allToolDefs `shouldBe` True

@@ -26,6 +26,7 @@ import qualified Seer.Command.Handlers.State as HState
 import qualified Seer.Command.Handlers.Sliders as HSliders
 import qualified Seer.Command.Handlers.Terrain as HTerrain
 import qualified Seer.Command.Handlers.View as HView
+import qualified Seer.Command.Handlers.Viewport as HViewport
 import qualified Seer.Command.Handlers.Widgets as HWidgets
 import qualified Seer.Command.Handlers.World as HWorld
 
@@ -144,6 +145,12 @@ dispatchCommand ctx cmd = case scMethod cmd of
   "set_log_collapsed"    -> HPanels.handleSetLogCollapsed     ctx (scId cmd) (scParams cmd)
   "set_log_level"        -> HPanels.handleSetLogLevel         ctx (scId cmd) (scParams cmd)
   "get_ui_panels"        -> HPanels.handleGetUiPanels         ctx (scId cmd) (scParams cmd)
+
+  -- Viewport interaction
+  "viewport_scroll"      -> HViewport.handleViewportScroll    ctx (scId cmd) (scParams cmd)
+  "viewport_click"       -> HViewport.handleViewportClick     ctx (scId cmd) (scParams cmd)
+  "viewport_drag"        -> HViewport.handleViewportDrag      ctx (scId cmd) (scParams cmd)
+  "viewport_hover"       -> HViewport.handleViewportHover     ctx (scId cmd) (scParams cmd)
 
   -- Widget interaction
   "click_widget"         -> HWidgets.handleClickWidget        ctx (scId cmd) (scParams cmd)

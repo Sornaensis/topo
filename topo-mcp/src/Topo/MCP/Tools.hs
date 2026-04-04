@@ -1162,6 +1162,96 @@ allToolDefs =
           , "required" .= (["widget_id"] :: [Text])
           ]
       }
+  -- Viewport interaction
+  , ToolDef
+      { tdName        = "viewport_scroll"
+      , tdDescription = "Simulate mouse-wheel zoom on the terrain viewport. Positive delta zooms in, negative zooms out. Optionally provide pixel coordinates for cursor-centered zoom."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "delta" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("Scroll delta: positive zooms in, negative zooms out. Magnitude controls number of zoom steps." :: Text)
+                  ]
+              , "x" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("Screen X pixel coordinate for zoom center (default 0)" :: Text)
+                  ]
+              , "y" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("Screen Y pixel coordinate for zoom center (default 0)" :: Text)
+                  ]
+              ]
+          , "required" .= (["delta"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "viewport_click"
+      , tdDescription = "Simulate a mouse click at pixel coordinates on the terrain viewport. Left-click selects the hex under the cursor and pins the tooltip. Right-click toggles the tooltip pin. If the editor is active, left-click also applies a brush stroke."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "x" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("Screen X pixel coordinate" :: Text)
+                  ]
+              , "y" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("Screen Y pixel coordinate" :: Text)
+                  ]
+              , "button" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Mouse button: 'left' (default) or 'right'" :: Text)
+                  , "enum" .= (["left", "right"] :: [Text])
+                  ]
+              ]
+          , "required" .= (["x", "y"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "viewport_drag"
+      , tdDescription = "Simulate a right-button drag on the terrain viewport to pan the camera. Provide start and end pixel coordinates."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "x1" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("Start X pixel coordinate" :: Text)
+                  ]
+              , "y1" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("Start Y pixel coordinate" :: Text)
+                  ]
+              , "x2" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("End X pixel coordinate" :: Text)
+                  ]
+              , "y2" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("End Y pixel coordinate" :: Text)
+                  ]
+              ]
+          , "required" .= (["x1", "y1", "x2", "y2"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "viewport_hover"
+      , tdDescription = "Simulate mouse hover at pixel coordinates on the terrain viewport. Sets the hover hex and returns the hex coordinates and whether terrain exists there."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "x" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("Screen X pixel coordinate" :: Text)
+                  ]
+              , "y" .= object
+                  [ "type" .= ("integer" :: Text)
+                  , "description" .= ("Screen Y pixel coordinate" :: Text)
+                  ]
+              ]
+          , "required" .= (["x", "y"] :: [Text])
+          ]
+      }
   ]
 
 -- | Handle a tools/call request.
@@ -1294,4 +1384,9 @@ toolToIpc "data_get_state"         args = Just ("data_get_state", args)
 toolToIpc "click_widget"           args = Just ("click_widget", args)
 toolToIpc "list_widgets"           args = Just ("list_widgets", args)
 toolToIpc "get_widget_state"       args = Just ("get_widget_state", args)
+-- Viewport interaction
+toolToIpc "viewport_scroll"        args = Just ("viewport_scroll", args)
+toolToIpc "viewport_click"         args = Just ("viewport_click", args)
+toolToIpc "viewport_drag"          args = Just ("viewport_drag", args)
+toolToIpc "viewport_hover"         args = Just ("viewport_hover", args)
 toolToIpc _                        _    = Nothing
