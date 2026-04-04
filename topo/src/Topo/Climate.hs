@@ -303,8 +303,8 @@ tempAt config seed lm cfg waterLevel origin elev plateHeight albedoVec i =
       blend = smoothstep (waterLevel - blendWidth) (waterLevel + blendWidth) height
       isOcean = height < waterLevel
       tiltDeg = lmTiltScale lm * 23.44
-      insol = lmInsolation lm
-            * annualMeanInsolation defaultSolarConfig tiltDeg 24.0 lat
+      eqRef = equatorialInsolation tiltDeg
+      insol = lmInsolation lm * normalizedInsolation eqRef tiltDeg lat
       -- Coastal blending: smoothly transition between ocean and land
       -- base curves around sea level.
       latFOcean = clamp01 (abs (cos lat) ** tmpOceanLatExponent tmp)
@@ -381,16 +381,19 @@ buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx
       minTileX = minCx * size
       minTileY = minCy * size
       insol = lmInsolation lm
-      -- Per-tile solar insolation: latitude-dependent annual mean
-      tileInsol gy =
-        let lat = clampLat (fromIntegral gy * lmRadPerTile lm + lmBiasRad lm)
-        in insol * annualMeanInsolation defaultSolarConfig tiltDeg 24.0 lat
+      tiltDeg = lmTiltScale lm * 23.44
+      eqRef = equatorialInsolation tiltDeg
+      -- Pre-computed per-row insolation: depends only on latitude,
+      -- so we compute once per row instead of once per tile.
+      insolRow = U.generate gridH (\y ->
+        let gy = minTileY + y
+            lat = clampLat (fromIntegral gy * lmRadPerTile lm + lmBiasRad lm)
+        in insol * normalizedInsolation eqRef tiltDeg lat)
       elev = buildElevationGrid config terrain (ChunkCoord minCx minCy) gridW gridH
       plateHeight = buildPlateHeightGrid config terrain (ChunkCoord minCx minCy) gridW gridH
       oceanMask = U.map (\h -> if h < waterLevel then 1 else 0) elev
       coastal = coastalProximityGrid gridW gridH (precCoastalIterations prc) (precCoastalDiffuse prc) oceanMask
       n = gridW * gridH
-      tiltDeg = lmTiltScale lm * 23.44
       -- Soil moisture grid (from hydrology-stage tcMoisture)
       soilMoistGrid = buildFieldGrid config terrain tcMoisture (ChunkCoord minCx minCy) gridW gridH
       -- Vegetation cover grid (from bootstrap stage)
@@ -409,7 +412,7 @@ buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx
             -- Use vegAlbedo if available, else reference (no correction)
             a = let v = vegAlbedoGrid U.! i
                 in if v == 0 then albedoRef else v
-        in tempAtGlobal seed lm cfg waterLevel gx gy (elev U.! i) (plateHeight U.! i) a)
+        in tempAtGlobal seed lm cfg waterLevel (insolRow U.! y) gx gy (elev U.! i) (plateHeight U.! i) a)
       tempDiffused = diffuseFieldGrid gridW gridH
                        (tmpDiffuseIterations tmp)
                        (tmpDiffuseFactor tmp)
@@ -453,7 +456,7 @@ buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx
             noise = n0 * moistEvapNoiseScale mst
         in if h < waterLevel
            then -- Ocean tile: Dalton's Law evaporation (Model B)
-             clamp01 (oceanEvaporation mst t w (tileInsol gy) + noise)
+             clamp01 (oceanEvaporation mst t w (insolRow U.! y) + noise)
            else -- Land tile: Penman-Monteith ET (Model C) + coastal boost
              -- Use max of hydrology soil moisture and internal land base
              -- to break the circular dependency (RC-1).
@@ -473,7 +476,7 @@ buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx
             y = i `div` gridW
             gy = minTileY + y
         in if elev U.! i < waterLevel
-           then oceanEvaporation mst t w (tileInsol gy)
+           then oceanEvaporation mst t w (insolRow U.! y)
            else 0)
       -- Compute wind convergence field from diffused wind grids.
       -- Positive values indicate converging air (uplift).
@@ -584,16 +587,14 @@ buildVegFieldGrid config vegMap accessor (ChunkCoord minCx minCy) gridW gridH =
 -- This is the canonical temperature model used to build the global
 -- climate temperature grid: latitude curve, lapse term, coherent noise,
 -- plate-height bias, and albedo correction.
-tempAtGlobal :: Word64 -> LatitudeMapping -> ClimateConfig -> Float -> Int -> Int -> Float -> Float -> Float -> Float
-tempAtGlobal seed lm cfg waterLevel gx gy height plateHt albedo =
+tempAtGlobal :: Word64 -> LatitudeMapping -> ClimateConfig -> Float -> Float -> Int -> Int -> Float -> Float -> Float -> Float
+tempAtGlobal seed lm cfg waterLevel tileInsol gx gy height plateHt albedo =
   let tmp = ccTemperature cfg
       lat = clampLat (fromIntegral gy * lmRadPerTile lm + lmBiasRad lm)
       blendWidth = max 0.0001 (tmpCoastalBlendWidth tmp)
       blend = smoothstep (waterLevel - blendWidth) (waterLevel + blendWidth) height
       isOcean = height < waterLevel
-      tiltDeg = lmTiltScale lm * 23.44
-      insol = lmInsolation lm
-            * annualMeanInsolation defaultSolarConfig tiltDeg 24.0 lat
+      insol = tileInsol
       latFOcean = clamp01 (abs (cos lat) ** tmpOceanLatExponent tmp)
       baseOcean = insol * lerp (tmpOceanPoleSST tmp) (tmpOceanEquatorSST tmp) latFOcean
       latFLand = clamp01 (abs (cos lat) ** tmpLatitudeExponent tmp)
@@ -729,3 +730,23 @@ coherentNoiseLacunarity = 2.0
 
 coherentNoiseGain :: Float
 coherentNoiseGain = 0.5
+
+-- | Latitude-dependent annual-mean insolation, normalised so that the
+-- equator returns 1.0.  This preserves the physically-motivated
+-- latitude distribution from 'annualMeanInsolation' while keeping
+-- temperature magnitudes compatible with configuration defaults
+-- (which were calibrated against insolation = 1.0 at the equator).
+--
+-- Use 'equatorialInsolation' to pre-compute @eqRef@ once per grid
+-- pass rather than redundantly per tile.
+normalizedInsolation :: Float -> Float -> Float -> Float
+normalizedInsolation eqRef tiltDeg latRad =
+  let raw = annualMeanInsolation defaultSolarConfig tiltDeg 24.0 latRad
+  in raw / max 1e-6 eqRef
+
+-- | Pre-compute the equatorial reference insolation for a given axial
+-- tilt (degrees).  Pass the result to 'normalizedInsolation' in inner
+-- loops to avoid re-deriving the constant 96-sample integral per tile.
+equatorialInsolation :: Float -> Float
+equatorialInsolation tiltDeg =
+  annualMeanInsolation defaultSolarConfig tiltDeg 24.0 0.0
