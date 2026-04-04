@@ -92,6 +92,7 @@ library:
     - Seer.Command.Handlers.Editor
     - Seer.Command.Handlers.Enums
     - Seer.Command.Handlers.Generate
+    - Seer.Command.Handlers.Input
     - Seer.Command.Handlers.Log
     - Seer.Command.Handlers.Panels
     - Seer.Command.Handlers.Pipeline

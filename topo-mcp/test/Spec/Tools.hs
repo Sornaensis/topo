@@ -188,6 +188,23 @@ spec = describe "Topo.MCP.Tools" $ do
       let args = object ["x" .= (100 :: Int), "y" .= (200 :: Int)]
       toolToIpc "viewport_hover" args `shouldBe` Just ("viewport_hover", args)
 
+    it "maps get_dialog_state to get_dialog_state" $ do
+      toolToIpc "get_dialog_state" Null `shouldBe` Just ("get_dialog_state", Null)
+
+    it "maps set_dialog_text to set_dialog_text" $ do
+      let args = object ["text" .= ("hello" :: Text)]
+      toolToIpc "set_dialog_text" args `shouldBe` Just ("set_dialog_text", args)
+
+    it "maps dialog_confirm to dialog_confirm" $ do
+      toolToIpc "dialog_confirm" Null `shouldBe` Just ("dialog_confirm", Null)
+
+    it "maps dialog_cancel to dialog_cancel" $ do
+      toolToIpc "dialog_cancel" Null `shouldBe` Just ("dialog_cancel", Null)
+
+    it "maps send_key to send_key" $ do
+      let args = object ["key" .= ("escape" :: Text)]
+      toolToIpc "send_key" args `shouldBe` Just ("send_key", args)
+
     it "returns Nothing for unknown tool" $ do
       toolToIpc "nonexistent_tool" Null `shouldBe` Nothing
 
@@ -249,9 +266,15 @@ spec = describe "Topo.MCP.Tools" $ do
       names `shouldSatisfy` elem "viewport_click"
       names `shouldSatisfy` elem "viewport_drag"
       names `shouldSatisfy` elem "viewport_hover"
+      -- Dialog and text input
+      names `shouldSatisfy` elem "get_dialog_state"
+      names `shouldSatisfy` elem "set_dialog_text"
+      names `shouldSatisfy` elem "dialog_confirm"
+      names `shouldSatisfy` elem "dialog_cancel"
+      names `shouldSatisfy` elem "send_key"
 
-    it "has exactly 80 tools" $
-      length allToolDefs `shouldBe` 80
+    it "has exactly 85 tools" $
+      length allToolDefs `shouldBe` 85
 
     it "all tools have non-empty descriptions" $
       all (not . null . show . tdDescription) allToolDefs `shouldBe` True

@@ -1252,6 +1252,64 @@ allToolDefs =
           , "required" .= (["x", "y"] :: [Text])
           ]
       }
+  -- Dialog and text input tools
+  , ToolDef
+      { tdName        = "get_dialog_state"
+      , tdDescription = "Get the current dialog/text input state. Returns the active menu mode (none, escape_menu, preset_save, preset_load, world_save, world_load), seed editing state, text input values, list selection indices, and data browser field focus state."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object []
+          ]
+      }
+  , ToolDef
+      { tdName        = "set_dialog_text"
+      , tdDescription = "Set the text content of the active dialog input field. If 'target' is omitted, auto-detects based on current dialog state. Targets: preset_input (preset save name), preset_filter (preset load filter), world_input (world save name), world_filter (world load filter), seed (seed input text), data_field (focused data browser field)."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "text" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Text to set in the active input field" :: Text)
+                  ]
+              , "target" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Explicit target: preset_input, preset_filter, world_input, world_filter, seed, data_field. If omitted, auto-detects from dialog state." :: Text)
+                  , "enum" .= (["preset_input", "preset_filter", "world_input", "world_filter", "seed", "data_field"] :: [Text])
+                  ]
+              ]
+          , "required" .= (["text"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "dialog_confirm"
+      , tdDescription = "Confirm/submit the active dialog (equivalent to pressing Enter). Closes preset/world save/load dialogs, unfocuses data browser fields, or confirms seed editing."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object []
+          ]
+      }
+  , ToolDef
+      { tdName        = "dialog_cancel"
+      , tdDescription = "Cancel the active dialog (equivalent to pressing Escape). Follows the UI dismiss cascade: cancel delete confirm → cancel edit/create mode → close menu dialog → toggle escape menu."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object []
+          ]
+      }
+  , ToolDef
+      { tdName        = "send_key"
+      , tdDescription = "Simulate a keyboard key press in the current UI context. Useful for list navigation (up/down), text editing (backspace/delete/left/right/home/end), and dialog actions (escape/return/tab). Single printable characters are typed into the active text field."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "key" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Key name: escape, return, enter, backspace, delete, tab, up, down, left, right, home, end, or a single printable character" :: Text)
+                  ]
+              ]
+          , "required" .= (["key"] :: [Text])
+          ]
+      }
   ]
 
 -- | Handle a tools/call request.
@@ -1389,4 +1447,10 @@ toolToIpc "viewport_scroll"        args = Just ("viewport_scroll", args)
 toolToIpc "viewport_click"         args = Just ("viewport_click", args)
 toolToIpc "viewport_drag"          args = Just ("viewport_drag", args)
 toolToIpc "viewport_hover"         args = Just ("viewport_hover", args)
+-- Dialog and text input
+toolToIpc "get_dialog_state"       args = Just ("get_dialog_state", args)
+toolToIpc "set_dialog_text"        args = Just ("set_dialog_text", args)
+toolToIpc "dialog_confirm"         args = Just ("dialog_confirm", args)
+toolToIpc "dialog_cancel"          args = Just ("dialog_cancel", args)
+toolToIpc "send_key"               args = Just ("send_key", args)
 toolToIpc _                        _    = Nothing

@@ -14,6 +14,7 @@ import qualified Seer.Command.Handlers.Data as HData
 import qualified Seer.Command.Handlers.Editor as HEditor
 import qualified Seer.Command.Handlers.Enums as HEnums
 import qualified Seer.Command.Handlers.Generate as HGenerate
+import qualified Seer.Command.Handlers.Input as HInput
 import qualified Seer.Command.Handlers.Log as HLog
 import qualified Seer.Command.Handlers.Panels as HPanels
 import qualified Seer.Command.Handlers.Pipeline as HPipeline
@@ -156,6 +157,13 @@ dispatchCommand ctx cmd = case scMethod cmd of
   "click_widget"         -> HWidgets.handleClickWidget        ctx (scId cmd) (scParams cmd)
   "list_widgets"         -> HWidgets.handleListWidgets        ctx (scId cmd) (scParams cmd)
   "get_widget_state"     -> HWidgets.handleGetWidgetState     ctx (scId cmd) (scParams cmd)
+
+  -- Dialog and text input
+  "get_dialog_state"     -> HInput.handleGetDialogState       ctx (scId cmd) (scParams cmd)
+  "set_dialog_text"      -> HInput.handleSetDialogText        ctx (scId cmd) (scParams cmd)
+  "dialog_confirm"       -> HInput.handleDialogConfirm        ctx (scId cmd) (scParams cmd)
+  "dialog_cancel"        -> HInput.handleDialogCancel         ctx (scId cmd) (scParams cmd)
+  "send_key"             -> HInput.handleSendKey              ctx (scId cmd) (scParams cmd)
 
   -- Unknown command
   other              -> pure (errResponse (scId cmd) ("unknown command: " <> other))
