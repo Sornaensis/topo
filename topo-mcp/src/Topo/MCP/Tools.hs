@@ -1125,6 +1125,43 @@ allToolDefs =
           , "properties" .= object []
           ]
       }
+  -- Widget interaction
+  , ToolDef
+      { tdName        = "click_widget"
+      , tdDescription = "Simulate clicking any UI widget by its WidgetId string. Use list_widgets to discover available widget IDs. This provides uniform access to all interactive UI elements — buttons, tabs, toggles, sliders, etc."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "widget_id" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Widget ID string (e.g., WidgetGenerate, WidgetSliderMinus:SliderGenScale, WidgetConfigTabClimate)" :: Text)
+                  ]
+              ]
+          , "required" .= (["widget_id"] :: [Text])
+          ]
+      }
+  , ToolDef
+      { tdName        = "list_widgets"
+      , tdDescription = "List all currently active/visible widget IDs grouped by category. Returns widgets that are logically clickable given the current UI state (panel visibility, active tab, etc.)."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object []
+          ]
+      }
+  , ToolDef
+      { tdName        = "get_widget_state"
+      , tdDescription = "Get the current state of a specific widget (active/enabled/expanded, toggle state, etc.)."
+      , tdInputSchema = object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "widget_id" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Widget ID string" :: Text)
+                  ]
+              ]
+          , "required" .= (["widget_id"] :: [Text])
+          ]
+      }
   ]
 
 -- | Handle a tools/call request.
@@ -1253,4 +1290,8 @@ toolToIpc "data_create_record"     args = Just ("data_create_record", args)
 toolToIpc "data_update_record"     args = Just ("data_update_record", args)
 toolToIpc "data_delete_record"     args = Just ("data_delete_record", args)
 toolToIpc "data_get_state"         args = Just ("data_get_state", args)
+-- Widget interaction
+toolToIpc "click_widget"           args = Just ("click_widget", args)
+toolToIpc "list_widgets"           args = Just ("list_widgets", args)
+toolToIpc "get_widget_state"       args = Just ("get_widget_state", args)
 toolToIpc _                        _    = Nothing

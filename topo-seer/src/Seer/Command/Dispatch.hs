@@ -26,6 +26,7 @@ import qualified Seer.Command.Handlers.State as HState
 import qualified Seer.Command.Handlers.Sliders as HSliders
 import qualified Seer.Command.Handlers.Terrain as HTerrain
 import qualified Seer.Command.Handlers.View as HView
+import qualified Seer.Command.Handlers.Widgets as HWidgets
 import qualified Seer.Command.Handlers.World as HWorld
 
 -- | Dispatch a 'SeerCommand' to the appropriate handler based on 'scMethod'.
@@ -143,6 +144,11 @@ dispatchCommand ctx cmd = case scMethod cmd of
   "set_log_collapsed"    -> HPanels.handleSetLogCollapsed     ctx (scId cmd) (scParams cmd)
   "set_log_level"        -> HPanels.handleSetLogLevel         ctx (scId cmd) (scParams cmd)
   "get_ui_panels"        -> HPanels.handleGetUiPanels         ctx (scId cmd) (scParams cmd)
+
+  -- Widget interaction
+  "click_widget"         -> HWidgets.handleClickWidget        ctx (scId cmd) (scParams cmd)
+  "list_widgets"         -> HWidgets.handleListWidgets        ctx (scId cmd) (scParams cmd)
+  "get_widget_state"     -> HWidgets.handleGetWidgetState     ctx (scId cmd) (scParams cmd)
 
   -- Unknown command
   other              -> pure (errResponse (scId cmd) ("unknown command: " <> other))

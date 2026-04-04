@@ -161,6 +161,17 @@ spec = describe "Topo.MCP.Tools" $ do
     it "maps take_screenshot to take_screenshot" $ do
       toolToIpc "take_screenshot" Null `shouldBe` Just ("take_screenshot", Null)
 
+    it "maps click_widget to click_widget" $ do
+      let args = object ["widget_id" .= ("WidgetGenerate" :: Text)]
+      toolToIpc "click_widget" args `shouldBe` Just ("click_widget", args)
+
+    it "maps list_widgets to list_widgets" $ do
+      toolToIpc "list_widgets" Null `shouldBe` Just ("list_widgets", Null)
+
+    it "maps get_widget_state to get_widget_state" $ do
+      let args = object ["widget_id" .= ("WidgetConfigToggle" :: Text)]
+      toolToIpc "get_widget_state" args `shouldBe` Just ("get_widget_state", args)
+
     it "returns Nothing for unknown tool" $ do
       toolToIpc "nonexistent_tool" Null `shouldBe` Nothing
 
@@ -214,9 +225,13 @@ spec = describe "Topo.MCP.Tools" $ do
       names `shouldSatisfy` elem "save_preset"
       names `shouldSatisfy` elem "load_preset"
       names `shouldSatisfy` elem "take_screenshot"
+      -- Widget interaction
+      names `shouldSatisfy` elem "click_widget"
+      names `shouldSatisfy` elem "list_widgets"
+      names `shouldSatisfy` elem "get_widget_state"
 
-    it "has exactly 73 tools" $
-      length allToolDefs `shouldBe` 73
+    it "has exactly 76 tools" $
+      length allToolDefs `shouldBe` 76
 
     it "all tools have non-empty descriptions" $
       all (not . null . show . tdDescription) allToolDefs `shouldBe` True
