@@ -9,17 +9,18 @@
 module Bench.AtlasCache (benchmarks) where
 
 import Control.DeepSeq (NFData(..), rwhnf)
-import Control.Exception (bracket_)
 import qualified Data.IntMap.Strict as IntMap
 import Linear (V2(..))
 import qualified SDL
+import Test.Tasty (withResource)
 import Test.Tasty.Bench
 
 import Actor.UI.State (ViewMode(..))
 import Fixtures
 import Seer.Render.Atlas (drawAtlas)
 import Topo (TerrainChunk)
-import Topo.Overlay (emptyOverlayStore)
+import Topo.Overlay (OverlayStore, emptyOverlayStore)
+import UI.DayNight (mkDayNightFn)
 import UI.RiverRender (RiverGeometry(..))
 import UI.TerrainAtlas
   ( AtlasChunkGeometry(..)
@@ -29,7 +30,7 @@ import UI.TerrainAtlas
   , attachRiverOverlay
   , renderAtlasTileTextures
   )
-import UI.TerrainRender (ChunkGeometry(..), buildChunkGeometry)
+import UI.TerrainRender (ChunkGeometry, buildChunkGeometry)
 
 ------------------------------------------------------------------------
 -- NFData instances (atlas geometry types contain storable vectors)
@@ -43,35 +44,35 @@ instance NFData AtlasTileGeometry where
     rwhnf b `seq` rnf s `seq` rnf h `seq` rnf cs `seq` rnf rs
 
 ------------------------------------------------------------------------
--- SDL bracket
+-- SDL environment (created once per benchmark group)
 ------------------------------------------------------------------------
 
-withSDL :: (SDL.Renderer -> IO a) -> IO a
-withSDL action =
-  bracket_
-    (SDL.initialize [SDL.InitVideo])
-    SDL.quit
-    $ do
-      window   <- SDL.createWindow "bench" SDL.defaultWindow { SDL.windowInitialSize = V2 256 256 }
-      renderer <- SDL.createRenderer window (-1) SDL.defaultRenderer
-      result   <- action renderer
-      SDL.destroyRenderer renderer
-      SDL.destroyWindow window
-      pure result
+data SDLEnv = SDLEnv
+  { sdlRenderer :: !SDL.Renderer
+  , sdlWindow   :: !SDL.Window
+  }
+
+initSDLEnv :: IO SDLEnv
+initSDLEnv = do
+  SDL.initialize [SDL.InitVideo]
+  window   <- SDL.createWindow "bench" SDL.defaultWindow { SDL.windowInitialSize = V2 256 256 }
+  renderer <- SDL.createRenderer window (-1) SDL.defaultRenderer
+  pure SDLEnv { sdlRenderer = renderer, sdlWindow = window }
+
+cleanupSDLEnv :: SDLEnv -> IO ()
+cleanupSDLEnv env = do
+  SDL.destroyRenderer (sdlRenderer env)
+  SDL.destroyWindow (sdlWindow env)
+  SDL.quit
 
 ------------------------------------------------------------------------
 -- Shared fixtures
 ------------------------------------------------------------------------
 
-terrainMap16 :: IntMap.IntMap TerrainChunk
-terrainMap16 = IntMap.fromList [(i, benchTerrainChunk) | i <- [0..15]]
-
 geoMap16 :: IntMap.IntMap ChunkGeometry
 geoMap16 = IntMap.mapWithKey (\k tc ->
   buildChunkGeometry 6 benchWorldConfig ViewElevation 0.3
-    (IntMap.singleton k benchClimateChunk)
-    (IntMap.singleton k benchWeatherChunk)
-    (IntMap.singleton k benchVegetationChunk)
+    climateMap16 weatherMap16 vegMap16
     Nothing Nothing k tc) terrainMap16
 
 riverGeoMap :: IntMap.IntMap RiverGeometry
@@ -80,14 +81,28 @@ riverGeoMap = IntMap.empty
 sampleTileGeometry :: [AtlasTileGeometry]
 sampleTileGeometry =
   buildAtlasTileGeometry ViewElevation 0.3
-    terrainMap16
-    (IntMap.fromList [(i, benchClimateChunk)    | i <- [0..15]])
-    (IntMap.fromList [(i, benchWeatherChunk)     | i <- [0..15]])
-    (IntMap.fromList [(i, benchVegetationChunk)  | i <- [0..15]])
-    emptyOverlayStore
-    benchWorldConfig
+    terrainMap16 climateMap16 weatherMap16 vegMap16
+    emptyOverlayStore benchWorldConfig
     6   -- hexRadiusPx
     1   -- atlasScale
+
+-- | Day/night function for chunkSize=8.
+dayNightFn :: Maybe (Int -> Int -> Float)
+dayNightFn = mkDayNightFn benchUiState 8
+
+sampleTileGeometryDayNight :: [AtlasTileGeometry]
+sampleTileGeometryDayNight =
+  buildAtlasTileGeometry ViewElevation 0.3
+    terrainMap16 climateMap16 weatherMap16 vegMap16
+    emptyOverlayStore benchWorldConfig
+    6 1
+
+sampleTileGeometryOverlay :: [AtlasTileGeometry]
+sampleTileGeometryOverlay =
+  buildAtlasTileGeometry (ViewOverlay "bench_overlay" 0) 0.3
+    terrainMap16 climateMap16 weatherMap16 vegMap16
+    benchOverlayStoreDense benchWorldConfig
+    6 1
 
 ------------------------------------------------------------------------
 -- Benchmarks
@@ -99,6 +114,8 @@ benchmarks = bgroup "AtlasCache"
     [ bench "ViewElevation/16chunks" $ nf (buildAtlasGeo ViewElevation) terrainMap16
     , bench "ViewBiome/16chunks"     $ nf (buildAtlasGeo ViewBiome)     terrainMap16
     , bench "ViewClimate/16chunks"   $ nf (buildAtlasGeo ViewClimate)   terrainMap16
+    , bench "ViewOverlay/dense/16chunks" $
+        nf (buildAtlasGeoOverlay (ViewOverlay "bench_overlay" 0) benchOverlayStoreDense) terrainMap16
     ]
   , bgroup "composeTilesFromGeometry"
     [ bench "16chunks/scale1" $ nf (composeTilesFromGeometry geoMap16 6) 1
@@ -107,25 +124,32 @@ benchmarks = bgroup "AtlasCache"
   , bgroup "attachRiverOverlay"
     [ bench "16chunks" $ nf (attachRiverOverlay riverGeoMap) sampleTileGeometry
     ]
-  , bgroup "renderAtlasTileTextures"
-    [ bench "16chunks" $ whnfIO $ withSDL $ \renderer ->
-        renderAtlasTileTextures renderer sampleTileGeometry
-    ]
-  , bgroup "drawAtlas"
-    [ bench "16chunks/zoom1" $ whnfIO $ withSDL $ \renderer -> do
-        tiles <- renderAtlasTileTextures renderer sampleTileGeometry
-        drawAtlas renderer tiles (0, 0) 1.0 (V2 256 256)
-    ]
+  , withResource initSDLEnv cleanupSDLEnv $ \getEnv ->
+      bgroup "SDL"
+        [ bench "renderAtlasTileTextures/16chunks" $ whnfIO $ do
+            env <- getEnv
+            renderAtlasTileTextures (sdlRenderer env) sampleTileGeometry
+        , bench "renderAtlasTileTextures/overlay" $ whnfIO $ do
+            env <- getEnv
+            renderAtlasTileTextures (sdlRenderer env) sampleTileGeometryOverlay
+        , bench "drawAtlas/16chunks/zoom1" $ whnfIO $ do
+            env <- getEnv
+            tiles <- renderAtlasTileTextures (sdlRenderer env) sampleTileGeometry
+            drawAtlas (sdlRenderer env) tiles (0, 0) 1.0 (V2 256 256)
+        ]
   ]
 
 buildAtlasGeo :: ViewMode -> IntMap.IntMap TerrainChunk -> [AtlasTileGeometry]
 buildAtlasGeo vm tm =
   buildAtlasTileGeometry vm 0.3
-    tm
-    (IntMap.fromList [(i, benchClimateChunk)    | i <- [0..15]])
-    (IntMap.fromList [(i, benchWeatherChunk)     | i <- [0..15]])
-    (IntMap.fromList [(i, benchVegetationChunk)  | i <- [0..15]])
-    emptyOverlayStore
-    benchWorldConfig
+    tm climateMap16 weatherMap16 vegMap16
+    emptyOverlayStore benchWorldConfig
     6   -- hexRadiusPx
     1   -- atlasScale
+
+buildAtlasGeoOverlay :: ViewMode -> OverlayStore -> IntMap.IntMap TerrainChunk -> [AtlasTileGeometry]
+buildAtlasGeoOverlay vm store tm =
+  buildAtlasTileGeometry vm 0.3
+    tm climateMap16 weatherMap16 vegMap16
+    store benchWorldConfig
+    6 1

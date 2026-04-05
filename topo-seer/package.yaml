@@ -85,6 +85,8 @@ library:
     - UI.Widgets
     - UI.WidgetsDraw
     - UI.WidgetTree
+    - UI.DayNight
+    - UI.WidgetId
   other-modules:
     - Actor.UiActions.Handles
     - Seer.Command.Handlers.Camera
@@ -124,9 +126,7 @@ library:
     - Seer.Config.SliderId
     - Seer.Input.Context
     - Seer.Render.Context
-    - UI.DayNight
     - UI.TerrainColor
-    - UI.WidgetId
   dependencies:
     - aeson
     - base >=4.18 && <5
@@ -173,6 +173,7 @@ benchmarks:
       - -rtsopts
       - "-with-rtsopts=-N"
     dependencies:
+      - aeson
       - base
       - containers
       - deepseq

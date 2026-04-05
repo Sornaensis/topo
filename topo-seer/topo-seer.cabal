@@ -91,6 +91,8 @@ library
       UI.Widgets
       UI.WidgetsDraw
       UI.WidgetTree
+      UI.DayNight
+      UI.WidgetId
   other-modules:
       Actor.UiActions.Handles
       Seer.Command.Handlers.Camera
@@ -130,9 +132,7 @@ library
       Seer.Config.SliderId
       Seer.Input.Context
       Seer.Render.Context
-      UI.DayNight
       UI.TerrainColor
-      UI.WidgetId
   hs-source-dirs:
       src
   build-depends:
@@ -215,6 +215,41 @@ test-suite topo-seer-test
     , sdl2
     , text
     , time
+    , topo
+    , topo-seer
+    , vector
+  default-language: Haskell2010
+
+benchmark topo-seer-bench
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  other-modules:
+      Bench.AtlasCache
+      Bench.DayNight
+      Bench.HoverHex
+      Bench.OverlayExtract
+      Bench.Pipeline
+      Bench.RiverGeometry
+      Bench.Simulation
+      Bench.TerrainCache
+      Bench.TerrainGeometry
+      Bench.Viewport
+      Bench.Widgets
+      Fixtures
+      Paths_topo_seer
+  hs-source-dirs:
+      bench
+  ghc-options: -O2 -Wall -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      aeson
+    , base
+    , containers
+    , deepseq
+    , linear
+    , sdl2
+    , tasty
+    , tasty-bench
+    , text
     , topo
     , topo-seer
     , vector
