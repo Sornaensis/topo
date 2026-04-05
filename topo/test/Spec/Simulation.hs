@@ -878,9 +878,10 @@ tickSpec = describe "weather tick" $ do
         windSpd = U.replicate n 0.5
         pressure = U.replicate n 0.5
         precip = U.replicate n 0
+        zeros = U.replicate n 0
         startOverlay = Overlay
           { ovSchema = weatherOverlaySchema
-          , ovData = DenseData (IntMap.singleton 0 (V.fromList [tempBlob, humidity, windDir, windSpd, pressure, precip]))
+          , ovData = DenseData (IntMap.singleton 0 (V.fromList [tempBlob, humidity, windDir, windSpd, pressure, precip, zeros, zeros, zeros, zeros, zeros, zeros, zeros, zeros]))
           , ovProvenance = emptyOverlayProvenance
           }
         comX vec =
@@ -924,9 +925,10 @@ tickSpec = describe "weather tick" $ do
         windSpd = U.replicate n 0.5
         pressure = U.replicate n 0.5
         precip = U.replicate n 0
+        zeros = U.replicate n 0
         startOverlay = Overlay
           { ovSchema = weatherOverlaySchema
-          , ovData = DenseData (IntMap.singleton 0 (V.fromList [tempBlob, humidity, windDir, windSpd, pressure, precip]))
+          , ovData = DenseData (IntMap.singleton 0 (V.fromList [tempBlob, humidity, windDir, windSpd, pressure, precip, zeros, zeros, zeros, zeros, zeros, zeros, zeros, zeros]))
           , ovProvenance = emptyOverlayProvenance
           }
         extractTemp store = do

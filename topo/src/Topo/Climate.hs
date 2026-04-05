@@ -456,7 +456,7 @@ buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx
             noise = n0 * moistEvapNoiseScale mst
         in if h < waterLevel
            then -- Ocean tile: Dalton's Law evaporation (Model B)
-             clamp01 (oceanEvaporation mst t w (insolRow U.! y) + noise)
+             clamp01 (oceanEvaporation mst t w insol + noise)
            else -- Land tile: Penman-Monteith ET (Model C) + coastal boost
              -- Use max of hydrology soil moisture and internal land base
              -- to break the circular dependency (RC-1).
@@ -476,7 +476,7 @@ buildClimateGrids config seed lm cfg waterLevel terrain vegMap (ChunkCoord minCx
             y = i `div` gridW
             gy = minTileY + y
         in if elev U.! i < waterLevel
-           then oceanEvaporation mst t w (insolRow U.! y)
+           then oceanEvaporation mst t w insol
            else 0)
       -- Compute wind convergence field from diffused wind grids.
       -- Positive values indicate converging air (uplift).

@@ -55,7 +55,6 @@ import Topo.Hex (hexOpposite)
 import Topo.Math (clamp01, iterateN, lerp)
 import Topo.Noise (noise2D)
 import Topo.Planet (LatitudeMapping(..))
-import Topo.Solar (annualMeanInsolation, defaultSolarConfig)
 import Topo.Types
 import Data.Word (Word64)
 import qualified Data.Vector.Unboxed as U
@@ -285,9 +284,7 @@ sampleAlongUpwindHexPath gridW gridH field idx dir distance =
 evapAtXY :: Word64 -> LatitudeMapping -> ClimateConfig -> Float -> Int -> Int -> Float -> Float -> Float -> Float
 evapAtXY seed lm cfg waterLevel _gx _gy elevation temp windSpdVal =
   let mst = ccMoisture cfg
-      latRad = fromIntegral _gy * lmRadPerTile lm + lmBiasRad lm
-      tiltDeg = lmTiltScale lm * 23.44
-      insol = lmInsolation lm * normalizedInsol tiltDeg latRad
+      insol = lmInsolation lm
       n0 = noise2D seed (_gx + 4000) (_gy + 4000)
       noise = n0 * moistEvapNoiseScale mst
   in if elevation < waterLevel
@@ -301,9 +298,7 @@ evapAt config seed lm cfg waterLevel origin elev tempVec windSpdVec i =
       TileCoord lx ly = tileCoordFromIndex config (TileIndex i)
       TileCoord ox oy = origin
       gy = oy + ly
-      latRad = fromIntegral gy * lmRadPerTile lm + lmBiasRad lm
-      tiltDeg = lmTiltScale lm * 23.44
-      insol = lmInsolation lm * normalizedInsol tiltDeg latRad
+      insol = lmInsolation lm
       n0 = noise2D seed (ox + lx + 4000) (oy + ly + 4000)
       noise = n0 * moistEvapNoiseScale mst
       t = tempVec U.! i
@@ -345,12 +340,3 @@ moistureFlowAt config cfg windDir windSpd elev moisture i =
       adv = upwindMoisture * moistAdvect mst
       local = moisture U.! i * moistLocal mst
   in clamp01 (adv + local - cool)
-
--- | Equator-normalised annual-mean insolation.
--- Pre-computes equatorial reference once per call; prefer hoisting
--- the 'eqRef' value in tight loops.
-normalizedInsol :: Float -> Float -> Float
-normalizedInsol tiltDeg latRad =
-  let eqRef = annualMeanInsolation defaultSolarConfig tiltDeg 24.0 0.0
-      raw   = annualMeanInsolation defaultSolarConfig tiltDeg 24.0 latRad
-  in raw / max 1e-6 eqRef
