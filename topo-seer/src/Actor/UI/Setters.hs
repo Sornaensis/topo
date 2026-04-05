@@ -254,6 +254,7 @@ module Actor.UI.Setters
   , setUiPluginNames
   , setUiPluginExpanded
   , setUiPluginParamSpecs
+  , setUiDayNightEnabled
   , setUiSimAutoTick
   , setUiSimTickRate
   , setUiSimTickCount
@@ -553,6 +554,7 @@ setUiHexTooltipPinned = sendUnary SetHexTooltipPinned
 setUiDisabledStages = sendUnary SetDisabledStages
 setUiDisabledPlugins = sendUnary SetDisabledPlugins
 setUiPluginNames = sendUnary SetPluginNames
+setUiDayNightEnabled = sendUnary SetDayNightEnabled
 setUiSimAutoTick = sendUnary SetSimAutoTick
 setUiSimTickRate = sendUnary SetSimTickRate
 setUiSimTickCount = sendUnary SetSimTickCount

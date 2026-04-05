@@ -23,7 +23,8 @@ mkDayNightFn ui chunkSize
   | chunkSize <= 0 = Nothing
   | otherwise = Just $ \q r ->
       let tile = TileCoord q r
-          latRad = tileLatitude planet hex slice config tile
+          latDeg = tileLatitude planet hex slice config tile
+          latRad = latDeg * pi / 180
           lonDeg = tileLongitude planet hex slice config tile
           sp = tileSolarPos tiltDeg yf hpd calHour latRad lonDeg
           altDeg = spAltitude sp * 180 / pi

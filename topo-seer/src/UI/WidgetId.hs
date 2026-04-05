@@ -45,6 +45,7 @@ data WidgetId
   | WidgetViewPlateHeight
   | WidgetViewPlateVelocity
   | WidgetViewCloud
+  | WidgetDayNightToggle
   | WidgetViewOverlayPrev
   -- ^ Previous overlay in the overlay store.
   | WidgetViewOverlayNext

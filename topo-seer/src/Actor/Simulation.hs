@@ -329,7 +329,7 @@ processTick requestedTick st =
           writeTerrainSnapshot (shTerrainSnapshotRef handles) terrainSnap
           bumpSnapshotVersion (shSnapshotVersionRef handles)
           uiSnap <- getUiSnapshot (shUiHandle handles)
-          let atlasKey = AtlasKey (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
+          let atlasKey = AtlasKey (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) (uiDayNightEnabled uiSnap) (tsVersion terrainSnap)
               mkJob stage = AtlasJob
                 { ajKey        = atlasKey
                 , ajViewMode   = uiViewMode uiSnap

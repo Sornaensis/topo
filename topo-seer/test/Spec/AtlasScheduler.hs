@@ -52,7 +52,7 @@ spec = describe "AtlasScheduler" $ do
       , ashScheduleRef = scheduleRef
       }
     let terrainSnap = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore
-        atlasKey = AtlasKey ViewElevation 0.5 (tsVersion terrainSnap)
+        atlasKey = AtlasKey ViewElevation 0.5 True (tsVersion terrainSnap)
         job = AtlasJob
           { ajKey = atlasKey
           , ajViewMode = ViewElevation

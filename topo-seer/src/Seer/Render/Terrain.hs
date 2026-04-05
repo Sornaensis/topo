@@ -34,6 +34,7 @@ data TerrainCache = TerrainCache
   { tcVersion :: !Word64
   , tcViewMode :: !ViewMode
   , tcWaterLevel :: !Float
+  , tcDayNightEnabled :: !Bool
   , tcChunkSize :: !Int
   , tcTerrainChunks :: !(IntMap TerrainChunk)
   , tcClimateChunks :: !(IntMap ClimateChunk)
@@ -47,6 +48,7 @@ emptyTerrainCache = TerrainCache
   { tcVersion = 0
   , tcViewMode = ViewElevation
   , tcWaterLevel = 0
+  , tcDayNightEnabled = True
   , tcChunkSize = 0
   , tcTerrainChunks = IntMap.empty
   , tcClimateChunks = IntMap.empty
@@ -63,6 +65,7 @@ updateTerrainCache uiSnap terrainSnap cache
   | tsChunkSize terrainSnap <= 0 = emptyTerrainCache
   | tcViewMode cache /= uiViewMode uiSnap = buildTerrainCache uiSnap terrainSnap
   | tcWaterLevel cache /= uiRenderWaterLevel uiSnap = buildTerrainCache uiSnap terrainSnap
+  | tcDayNightEnabled cache /= uiDayNightEnabled uiSnap = buildTerrainCache uiSnap terrainSnap
   | tcChunkSize cache /= tsChunkSize terrainSnap = buildTerrainCache uiSnap terrainSnap
   | tcVersion cache /= tsVersion terrainSnap = buildTerrainCache uiSnap terrainSnap
   | otherwise = cache
@@ -73,7 +76,9 @@ buildTerrainCache uiSnap terrainSnap =
   let config = WorldConfig { wcChunkSize = tsChunkSize terrainSnap }
       mode = uiViewMode uiSnap
       waterLevel = uiRenderWaterLevel uiSnap
-      dayNightFn = mkDayNightFn uiSnap (tsChunkSize terrainSnap)
+      dayNightFn = if uiDayNightEnabled uiSnap
+                      then mkDayNightFn uiSnap (tsChunkSize terrainSnap)
+                      else Nothing
       overlayMap = case mode of
         ViewOverlay name fieldIdx ->
           case extractOverlayField name fieldIdx (wcChunkSize config * wcChunkSize config) (tsOverlayStore terrainSnap) of
@@ -92,6 +97,7 @@ buildTerrainCache uiSnap terrainSnap =
       { tcVersion = tsVersion terrainSnap
       , tcViewMode = mode
       , tcWaterLevel = waterLevel
+      , tcDayNightEnabled = uiDayNightEnabled uiSnap
       , tcChunkSize = tsChunkSize terrainSnap
       , tcTerrainChunks = tsTerrainChunks terrainSnap
       , tcClimateChunks = tsClimateChunks terrainSnap

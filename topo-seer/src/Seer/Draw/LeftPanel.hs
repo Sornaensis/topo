@@ -4,6 +4,7 @@ module Seer.Draw.LeftPanel
   ( modeColor
   , drawLeftTabs
   , drawViewModeButtons
+  , drawDayNightToggle
   , drawOverlayButtons
   , drawChunkControl
   , drawSeedControl
@@ -66,6 +67,12 @@ viewModeButtonStyles =
   , (ViewPlateVelocity, \mc -> V4 90  mc  140 255)
   , (ViewCloud,         \mc -> V4 mc  mc  mc  255)
   ]
+
+drawDayNightToggle :: SDL.Renderer -> Bool -> Rect -> IO ()
+drawDayNightToggle renderer enabled rect = do
+  let fill = if enabled then V4 90 130 180 255 else V4 70 80 100 255
+  SDL.rendererDrawColor renderer SDL.$= fill
+  SDL.fillRect renderer (Just (rectToSDL rect))
 
 drawOverlayButtons :: SDL.Renderer -> Maybe FontCache -> UiState -> (Rect, Rect, Rect, Rect) -> IO ()
 drawOverlayButtons renderer fontCache ui (oPrev, oNext, fPrev, fNext) = do

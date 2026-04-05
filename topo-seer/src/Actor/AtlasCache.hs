@@ -31,7 +31,7 @@ import qualified SDL
 --
 -- Stores the terrain version stamp rather than the full snapshot, avoiding
 -- deep structural equality on every frame.
-data AtlasKey = AtlasKey !ViewMode !Float !Word64
+data AtlasKey = AtlasKey !ViewMode !Float !Bool !Word64
   deriving (Eq, Show)
 
 

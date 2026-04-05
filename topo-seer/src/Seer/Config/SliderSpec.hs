@@ -90,6 +90,7 @@ tooltipForWidget WidgetViewPlateAge      = Just "Plate age"
 tooltipForWidget WidgetViewPlateHeight   = Just "Plate-driven height"
 tooltipForWidget WidgetViewPlateVelocity = Just "Plate velocity"
 tooltipForWidget WidgetViewCloud         = Just "Cloud cover & storm cells"
+tooltipForWidget WidgetDayNightToggle    = Just "Toggle day/night shading"
 tooltipForWidget wid = ssTooltip . sliderSpecForId . sliderId <$> sliderDefForWidget wid
 
 -- | Tooltip text for each editor tool index.

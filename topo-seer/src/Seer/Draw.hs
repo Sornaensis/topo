@@ -11,6 +11,7 @@ module Seer.Draw
   , drawConfigTabs
   , drawLeftTabs
   , drawViewModeButtons
+  , drawDayNightToggle
   , drawOverlayButtons
   , drawLogFilters
   , drawLogLines
@@ -44,7 +45,7 @@ import Linear (V2(..), V4(..))
 import qualified SDL
 import Seer.Config (mapRange)
 import UI.Theme
-import Seer.Draw.LeftPanel (drawChunkControl, drawLeftTabs, drawOverlayButtons, drawSeedControl, drawStatusBars, drawViewModeButtons, modeColor)
+import Seer.Draw.LeftPanel (drawChunkControl, drawDayNightToggle, drawLeftTabs, drawOverlayButtons, drawSeedControl, drawStatusBars, drawViewModeButtons, modeColor)
 import Seer.Draw.Overlay (drawHexContext, drawHoverHex, drawTooltip)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Topo.Calendar (CalendarDate(..), WorldTime(..), mkCalendarConfig, tickToDate)
@@ -377,6 +378,8 @@ drawUiLabels renderer fontCache ui layout = do
               clipR = Rect (V2 lpx ctop, V2 lpw (lpy + lpH - ctop))
           SDL.rendererClipRect renderer SDL.$= Just (rectToSDL clipR)
           mapM_ (\(rect, label) -> drawCentered fontCache labelColor rect label) (zip scrolledViewRects viewLabels)
+          let dnLabel = if uiDayNightEnabled ui then "Day/Night ON" else "Day/Night OFF"
+          drawCentered fontCache labelColor (shiftY (dayNightToggleRect layout)) dnLabel
           SDL.rendererClipRect renderer SDL.$= Nothing
   drawConfigLabels renderer fontCache ui layout
 

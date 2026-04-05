@@ -119,7 +119,9 @@ runSchedule handles req = do
             , abZoom       = uiZoom (rsUi snapshot)
             , abWindowSize = asqWindowSize req
             , abResultRef  = ashResultRef handles
-            , abDayNightFn = mkDayNightFn (rsUi snapshot) (tsChunkSize (ajTerrain job))
+            , abDayNightFn = if uiDayNightEnabled (rsUi snapshot)
+                              then mkDayNightFn (rsUi snapshot) (tsChunkSize (ajTerrain job))
+                              else Nothing
             }
       let report = AtlasScheduleReport
             { asrSnapshotVersion = asqSnapshotVersion req

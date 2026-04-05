@@ -74,7 +74,8 @@ buildWidgets layout =
     -- View mode buttons (unscrolled / content-space; use isLeftViewWidget +
     -- scroll adjustment in the hit-test layer when left-view scroll is non-zero)
     buildViewModeWidgets layout 0 ++
-    [ Widget WidgetViewOverlayPrev overlayPrev
+    [ Widget WidgetDayNightToggle (dayNightToggleRect layout)
+    , Widget WidgetViewOverlayPrev overlayPrev
     , Widget WidgetViewOverlayNext overlayNext
     , Widget WidgetViewFieldPrev fieldPrev
     , Widget WidgetViewFieldNext fieldNext
@@ -500,6 +501,7 @@ isLeftViewWidget wid = case wid of
   WidgetViewPlateHeight   -> True
   WidgetViewPlateVelocity -> True
   WidgetViewCloud         -> True
+  WidgetDayNightToggle    -> True
   WidgetViewOverlayPrev   -> True
   WidgetViewOverlayNext   -> True
   WidgetViewFieldPrev     -> True

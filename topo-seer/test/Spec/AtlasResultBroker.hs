@@ -16,7 +16,7 @@ spec :: Spec
 spec = describe "AtlasResultBroker" $ do
   it "drains results in FIFO order" $ do
     ref <- newIORef []
-    let key = AtlasKey ViewElevation 0 (tsVersion sampleTerrainSnapshot)
+    let key = AtlasKey ViewElevation 0 True (tsVersion sampleTerrainSnapshot)
         tile1 = AtlasTileGeometry { atgBounds = Rect (V2 0 0, V2 1 1), atgScale = 1, atgHexRadius = 6, atgChunks = [], atgRiverOverlay = [] }
         tile2 = AtlasTileGeometry { atgBounds = Rect (V2 1 1, V2 1 1), atgScale = 1, atgHexRadius = 25, atgChunks = [], atgRiverOverlay = [] }
         result1 = AtlasBuildResult

@@ -289,7 +289,8 @@ contextLines ui terrainSnap (q, r) =
 
     solarLines tileQ tileR =
       let tile    = TileCoord tileQ tileR
-          latRad  = tileLatitude planet hex slice worldConfig tile
+          latDeg  = tileLatitude planet hex slice worldConfig tile
+          latRad  = latDeg * pi / 180
           lonDeg  = tileLongitude planet hex slice worldConfig tile
           sp      = tileSolarPos tiltDeg yf hpd calHour latRad lonDeg
           di      = tileDayInfo tiltDeg yf hpd latRad

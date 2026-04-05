@@ -112,6 +112,7 @@ module UI.Layout
   , editorParamNumericRects
   , editorParamCycleRects
   , editorParamFalloffRects
+  , dayNightToggleRect
   ) where
 
 import Linear (V2(..))
@@ -452,7 +453,7 @@ leftViewContentHeight :: Layout -> Int
 leftViewContentHeight layout =
   let buttonH = 28
       gap = 8
-  in leftViewRowCount * (buttonH + gap) + 2 * (buttonH + gap)
+  in leftViewRowCount * (buttonH + gap) + 2 * (buttonH + gap) + 1 * (buttonH + gap)
 
 -- | Maximum scroll offset for the left View tab content.
 -- Returns 0 when the content fits within the panel.
@@ -498,6 +499,19 @@ overlayViewRects layout =
       fPrev = Rect (V2 (x + pad) row2Y, V2 buttonW buttonH)
       fNext = Rect (V2 (x + pad + buttonW + gap) row2Y, V2 buttonW buttonH)
   in (oPrev, oNext, fPrev, fNext)
+
+-- | Day/night toggle button rect, positioned after the overlay selector rows
+-- in the left View tab.
+dayNightToggleRect :: Layout -> Rect
+dayNightToggleRect layout =
+  let Rect (V2 x _y, V2 w _) = leftPanelRect layout
+      pad = 12
+      gap = 8
+      buttonH = 28
+      buttonW = w - pad * 2
+      top = leftControlsTop layout
+      rowY = top + (buttonH + gap) * (leftViewRowCount + 2)
+  in Rect (V2 (x + pad) rowY, V2 buttonW buttonH)
 
 logPanelRect :: Layout -> Rect
 logPanelRect (Layout (V2 w h) logHeight _) =

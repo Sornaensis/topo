@@ -450,6 +450,7 @@ data UiState = UiState
   , uiHexSizeKm :: !Float
   , uiSliceLatCenter :: !Float
   , uiSliceLonCenter :: !Float
+  , uiDayNightEnabled :: !Bool
   , uiDisabledStages :: !(Set StageId)
   , uiDisabledPlugins :: !(Set Text)
   , uiPluginParams :: !(Map Text (Map Text Value))
@@ -712,6 +713,7 @@ emptyUiState = UiState
   , uiHexSizeKm = sliderDefault SliderHexSizeKm
   , uiSliceLatCenter = sliderDefault SliderSliceLatCenter
   , uiSliceLonCenter = sliderDefault SliderSliceLonCenter
+  , uiDayNightEnabled = True
   , uiDisabledStages = Set.empty
   , uiDisabledPlugins = Set.empty
   , uiPluginParams = Map.empty
@@ -778,6 +780,7 @@ data UiUpdate
   | SetPluginNames ![Text]
   | SetPluginExpanded !Text !Bool
   | SetPluginParamSpecs !(Map Text [RPCParamSpec])
+  | SetDayNightEnabled !Bool
   | SetSimAutoTick !Bool
   | SetSimTickRate !Float
   | SetSimTickCount !Word64
@@ -839,6 +842,7 @@ applyUpdate upd st = case upd of
   SetPluginExpanded name expanded ->
     st { uiPluginExpanded = Map.insert name expanded (uiPluginExpanded st) }
   SetPluginParamSpecs v -> st { uiPluginParamSpecs = v }
+  SetDayNightEnabled v -> st { uiDayNightEnabled = v }
   SetSimAutoTick v -> st { uiSimAutoTick = v }
   SetSimTickRate v -> st { uiSimTickRate = clamp01 v }
   SetSimTickCount v -> st { uiSimTickCount = v }

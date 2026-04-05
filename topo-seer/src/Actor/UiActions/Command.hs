@@ -65,6 +65,7 @@ import Actor.UI
   , uiWorldConfig
   , setUiRenderWaterLevel
   , setUiWorldConfig
+  , uiDayNightEnabled
   )
 import Seer.Config.Snapshot (snapshotFromUi, applySnapshotToUi)
 import Seer.Config.SliderState (resetSliderDefaults)
@@ -230,7 +231,7 @@ rebuildAtlasFor req mode = do
   let handles = uarActorHandles req
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap <- getUiSnapshot (ahUiHandle handles)
-  let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
+  let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (uiDayNightEnabled uiSnap) (tsVersion terrainSnap)
       job stage = AtlasJob
         { ajKey        = atlasKey
         , ajViewMode   = mode
@@ -247,7 +248,7 @@ rebuildAtlasFor' :: ActorHandles -> ViewMode -> IO ()
 rebuildAtlasFor' handles mode = do
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap <- getUiSnapshot (ahUiHandle handles)
-  let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
+  let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (uiDayNightEnabled uiSnap) (tsVersion terrainSnap)
       job stage = AtlasJob
         { ajKey        = atlasKey
         , ajViewMode   = mode

@@ -140,7 +140,7 @@ applyTerrainResult handles resultMsg = do
 rebuildAtlas :: UiActionHandles -> TerrainSnapshot -> UiState -> IO ()
 rebuildAtlas handles terrainSnap uiSnap = do
   start <- getMonotonicTimeNSec
-  let atlasKey = AtlasKey (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
+  let atlasKey = AtlasKey (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) (uiDayNightEnabled uiSnap) (tsVersion terrainSnap)
       job stage = AtlasJob
         { ajKey        = atlasKey
         , ajViewMode   = uiViewMode uiSnap
