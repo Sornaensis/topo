@@ -42,10 +42,13 @@ import Data.Time.Format (defaultTimeLocale, formatTime)
 import Data.Word (Word8)
 import Linear (V2(..), V4(..))
 import qualified SDL
+import Seer.Config (mapRange)
 import UI.Theme
 import Seer.Draw.LeftPanel (drawChunkControl, drawLeftTabs, drawOverlayButtons, drawSeedControl, drawStatusBars, drawViewModeButtons, modeColor)
 import Seer.Draw.Overlay (drawHexContext, drawHoverHex, drawTooltip)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
+import Topo.Calendar (CalendarDate(..), WorldTime(..), mkCalendarConfig, tickToDate)
+import Topo.Planet (PlanetConfig(..))
 import UI.Font (FontCache, textSize)
 import UI.Layout
 import UI.Widgets (Rect(..))
@@ -285,7 +288,7 @@ worldLoadLabel _i manifest =
     <> ", " <> Text.pack (formatTime defaultTimeLocale "%Y-%m-%d" (wsmCreatedAt manifest))
     <> ")"
 
--- | Draw the top bar showing the current world name.
+-- | Draw the top bar showing the current world name and calendar date/time.
 drawTopBar :: SDL.Renderer -> Maybe FontCache -> UiState -> Layout -> IO ()
 drawTopBar renderer fontCache ui layout = do
   let bar = topBarRect layout
@@ -294,6 +297,33 @@ drawTopBar renderer fontCache ui layout = do
   SDL.rendererDrawColor renderer SDL.$= colTopBar
   SDL.fillRect renderer (Just (rectToSDL bar))
   drawLeft fontCache textTopBar textRect (uiWorldName ui)
+  -- Render world date/time right-aligned in the top bar
+  let planet = PlanetConfig
+        { pcRadius = mapRange 4778 9557 (uiPlanetRadius ui)
+        , pcAxialTilt = mapRange 0 45 (uiAxialTilt ui)
+        , pcInsolation = mapRange 0.7 1.3 (uiInsolation ui)
+        }
+      calCfg = mkCalendarConfig planet
+      worldTime = WorldTime
+        { wtTick     = uiSimTickCount ui
+        , wtTickRate = realToFrac (uiSimTickRate ui)
+        }
+      calDate = tickToDate calCfg worldTime
+      yr   = cdYear calDate
+      doy  = cdDayOfYear calDate + 1  -- 1-based for display
+      hour = cdHourOfDay calDate
+      hrs  = floor hour :: Int
+      mins = round ((hour - fromIntegral hrs) * 60) :: Int
+      timeTxt = "Year " <> Text.pack (show yr)
+             <> ", Day " <> Text.pack (show doy)
+             <> "  " <> Text.pack (show hrs) <> ":" <> (if mins < 10 then "0" else "") <> Text.pack (show mins)
+  case fontCache of
+    Nothing -> pure ()
+    Just cache -> do
+      V2 tw th <- textSize cache textTopBar timeTxt
+      let tx = bx + bw - 16 - tw
+          ty = by + (bh - th) `div` 2
+      drawTextLine fontCache (V2 tx ty) textTopBar timeTxt
 
 drawBarFill :: SDL.Renderer -> Float -> Rect -> V4 Word8 -> IO ()
 drawBarFill renderer value (Rect (V2 x y, V2 w h)) color = do
