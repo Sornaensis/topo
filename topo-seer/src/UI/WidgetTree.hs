@@ -499,6 +499,7 @@ isLeftViewWidget wid = case wid of
   WidgetViewPlateAge      -> True
   WidgetViewPlateHeight   -> True
   WidgetViewPlateVelocity -> True
+  WidgetViewCloud         -> True
   WidgetViewOverlayPrev   -> True
   WidgetViewOverlayNext   -> True
   WidgetViewFieldPrev     -> True

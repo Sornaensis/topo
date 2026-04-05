@@ -72,6 +72,7 @@ allViewModes =
   , ViewPlateVelocity
   , ViewVegetation
   , ViewTerrainForm
+  , ViewCloud
   ]
 
 viewModeToText :: ViewMode -> Text.Text
@@ -90,6 +91,7 @@ viewModeToText ViewPlateHeight   = "plate_height"
 viewModeToText ViewPlateVelocity = "plate_velocity"
 viewModeToText ViewVegetation    = "vegetation"
 viewModeToText ViewTerrainForm   = "terrain_form"
+viewModeToText ViewCloud         = "cloud"
 viewModeToText (ViewOverlay name _idx) = "overlay:" <> name
 
 textToViewMode :: Text.Text -> Maybe ViewMode
@@ -108,6 +110,7 @@ textToViewMode "plate_height"   = Just ViewPlateHeight
 textToViewMode "plate_velocity" = Just ViewPlateVelocity
 textToViewMode "vegetation"     = Just ViewVegetation
 textToViewMode "terrain_form"   = Just ViewTerrainForm
+textToViewMode "cloud"          = Just ViewCloud
 textToViewMode _                = Nothing
 
 configTabToText :: ConfigTab -> Text.Text

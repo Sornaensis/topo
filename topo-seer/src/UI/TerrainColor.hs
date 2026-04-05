@@ -45,6 +45,8 @@ terrainColor mode waterLevel chunk climateChunk weatherChunk vegChunk mOverlayVa
       in gradientVegetation value
     ViewTerrainForm ->
       terrainFormColor (terrainFormToCode (tcTerrainForm chunk U.! idx))
+    ViewCloud ->
+      cloudColor chunk weatherChunk idx
     ViewOverlay _ _ ->
       case mOverlayVal of
         Just v  -> overlayFieldColor v
@@ -249,3 +251,44 @@ clamp01 value =
 toByte :: Float -> Word8
 toByte value =
   fromIntegral (round (clamp01 value * 255))
+
+-- | Cloud/storm visualization color.
+--
+-- Base: dim terrain elevation. Overlay: white-to-grey cloud cover.
+-- Storm cells (high cloud water + high precipitation) get blue-purple tint.
+cloudColor :: TerrainChunk -> Maybe WeatherChunk -> Int -> V4 Word8
+cloudColor terrain mWeather idx =
+  case mWeather of
+    Nothing ->
+      -- No weather data: show dim terrain
+      let elev = tcElevation terrain U.! idx
+          grey = toByte (0.15 + elev * 0.15)
+      in V4 grey grey grey 255
+    Just wc ->
+      let -- Cloud cover (0–1): higher = more opaque white
+          cover = clamp01 (wcCloudCover wc U.! idx)
+          -- Cloud water (0–1): higher = denser/darker clouds
+          water = clamp01 (wcCloudWater wc U.! idx)
+          -- Precipitation (0–1 normalized)
+          prec  = clamp01 (wcPrecip wc U.! idx)
+          -- Storm intensity: high cloud water AND high precipitation
+          storm = clamp01 (water * 2) * clamp01 (prec * 3)
+          -- Base terrain (dim): dark grey proportional to elevation
+          elev  = tcElevation terrain U.! idx
+          baseR = 0.12 + elev * 0.12
+          baseG = 0.12 + elev * 0.12
+          baseB = 0.14 + elev * 0.12
+          -- Cloud layer: white scaled by cover, darkened by water content
+          cloudBright = 1.0 - water * 0.5
+          cloudR = cloudBright
+          cloudG = cloudBright
+          cloudB = cloudBright
+          -- Storm tint: blue-purple for active storm cells
+          stormR = 0.3
+          stormG = 0.25
+          stormB = 0.55
+          -- Blend: base → cloud → storm
+          r = baseR * (1 - cover) + cover * (cloudR * (1 - storm) + stormR * storm)
+          g = baseG * (1 - cover) + cover * (cloudG * (1 - storm) + stormG * storm)
+          b = baseB * (1 - cover) + cover * (cloudB * (1 - storm) + stormB * storm)
+      in V4 (toByte r) (toByte g) (toByte b) 255

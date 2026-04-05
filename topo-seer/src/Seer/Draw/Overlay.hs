@@ -379,6 +379,18 @@ contextLines ui terrainSnap (q, r) =
       , "Slope " <> fmtF (hsSlope sample)
       , "Elev  " <> fmtU (normToMetres units (hsElevation sample)) "m"
       ]
+    modeLines ViewCloud sample =
+      let pct v = fmtU (v * 100) "%"
+          stormI = hsCloudWater sample * min 1 (hsWeatherPrecip sample * 3)
+      in [ "Cloud " <> pct (hsCloudCover sample) <> "  Water " <> fmtF (hsCloudWater sample)
+         , "  Low  " <> pct (hsCloudCoverLow sample) <> "  " <> fmtF (hsCloudWaterLow sample)
+         , "  Mid  " <> pct (hsCloudCoverMid sample) <> "  " <> fmtF (hsCloudWaterMid sample)
+         , "  High " <> pct (hsCloudCoverHigh sample) <> "  " <> fmtF (hsCloudWaterHigh sample)
+         , "Precp " <> fmtU (normToMmYear units (hsWeatherPrecip sample)) "mm/yr"
+         , "WindD " <> fmtU (hsWeatherWindDir sample) "rad"
+         , "WindS " <> fmtU (normToWindMs units (hsWeatherWindSpd sample)) "m/s"
+         , "Storm " <> fmtF stormI
+         ] ++ solarLines q r
     modeLines (ViewOverlay overlayName fieldIndex) sample =
       case lookupOverlay overlayName (tsOverlayStore terrainSnap) of
         Nothing -> ["Overlay " <> overlayName, "(not loaded)"]
@@ -411,6 +423,14 @@ data HexSample = HexSample
   , hsWeatherWindSpd :: !Float
   , hsWeatherPressure :: !Float
   , hsWeatherPrecip :: !Float
+  , hsCloudCover :: !Float
+  , hsCloudWater :: !Float
+  , hsCloudCoverLow :: !Float
+  , hsCloudCoverMid :: !Float
+  , hsCloudCoverHigh :: !Float
+  , hsCloudWaterLow :: !Float
+  , hsCloudWaterMid :: !Float
+  , hsCloudWaterHigh :: !Float
   , hsVegCover :: !Float
   , hsVegDensity :: !Float
   , hsPlateId :: !Word16
@@ -457,6 +477,14 @@ sampleAt terrainSnap (q, r)
         , hsWeatherWindSpd = maybe 0 (\chunk -> wcWindSpd chunk U.! idx) weatherChunk
         , hsWeatherPressure = maybe 0 (\chunk -> wcPressure chunk U.! idx) weatherChunk
         , hsWeatherPrecip = maybe 0 (\chunk -> wcPrecip chunk U.! idx) weatherChunk
+        , hsCloudCover = maybe 0 (\chunk -> wcCloudCover chunk U.! idx) weatherChunk
+        , hsCloudWater = maybe 0 (\chunk -> wcCloudWater chunk U.! idx) weatherChunk
+        , hsCloudCoverLow = maybe 0 (\chunk -> wcCloudCoverLow chunk U.! idx) weatherChunk
+        , hsCloudCoverMid = maybe 0 (\chunk -> wcCloudCoverMid chunk U.! idx) weatherChunk
+        , hsCloudCoverHigh = maybe 0 (\chunk -> wcCloudCoverHigh chunk U.! idx) weatherChunk
+        , hsCloudWaterLow = maybe 0 (\chunk -> wcCloudWaterLow chunk U.! idx) weatherChunk
+        , hsCloudWaterMid = maybe 0 (\chunk -> wcCloudWaterMid chunk U.! idx) weatherChunk
+        , hsCloudWaterHigh = maybe 0 (\chunk -> wcCloudWaterHigh chunk U.! idx) weatherChunk
         , hsVegCover = maybe 0 (\chunk -> vegCover chunk U.! idx) vegetationChunk
         , hsVegDensity = maybe 0 (\chunk -> vegDensity chunk U.! idx) vegetationChunk
         , hsPlateId = tcPlateId terrainChunk U.! idx

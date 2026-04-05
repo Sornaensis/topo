@@ -64,6 +64,7 @@ viewModeButtonStyles =
   , (ViewPlateAge,      \mc -> V4 90  mc  100 255)
   , (ViewPlateHeight,   \mc -> V4 90  mc  120 255)
   , (ViewPlateVelocity, \mc -> V4 90  mc  140 255)
+  , (ViewCloud,         \mc -> V4 mc  mc  mc  255)
   ]
 
 drawOverlayButtons :: SDL.Renderer -> Maybe FontCache -> UiState -> (Rect, Rect, Rect, Rect) -> IO ()

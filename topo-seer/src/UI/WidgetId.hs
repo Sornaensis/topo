@@ -44,6 +44,7 @@ data WidgetId
   | WidgetViewPlateAge
   | WidgetViewPlateHeight
   | WidgetViewPlateVelocity
+  | WidgetViewCloud
   | WidgetViewOverlayPrev
   -- ^ Previous overlay in the overlay store.
   | WidgetViewOverlayNext

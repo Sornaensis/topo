@@ -75,6 +75,7 @@ data ViewMode
   | ViewPlateVelocity
   | ViewVegetation
   | ViewTerrainForm
+  | ViewCloud
   | ViewOverlay !Text !Int
   deriving (Eq, Show)
 

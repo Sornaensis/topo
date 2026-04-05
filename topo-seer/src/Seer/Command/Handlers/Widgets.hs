@@ -108,6 +108,7 @@ widgetIdToText wid = case wid of
   WidgetViewPlateAge           -> "WidgetViewPlateAge"
   WidgetViewPlateHeight        -> "WidgetViewPlateHeight"
   WidgetViewPlateVelocity      -> "WidgetViewPlateVelocity"
+  WidgetViewCloud               -> "WidgetViewCloud"
   WidgetViewOverlayPrev        -> "WidgetViewOverlayPrev"
   WidgetViewOverlayNext        -> "WidgetViewOverlayNext"
   WidgetViewFieldPrev          -> "WidgetViewFieldPrev"
@@ -274,6 +275,7 @@ nullaryWidgetMap = Map.fromList
   , ("WidgetViewPlateAge",      WidgetViewPlateAge)
   , ("WidgetViewPlateHeight",   WidgetViewPlateHeight)
   , ("WidgetViewPlateVelocity", WidgetViewPlateVelocity)
+  , ("WidgetViewCloud",         WidgetViewCloud)
   , ("WidgetViewOverlayPrev",   WidgetViewOverlayPrev)
   , ("WidgetViewOverlayNext",   WidgetViewOverlayNext)
   , ("WidgetViewFieldPrev",     WidgetViewFieldPrev)
@@ -432,6 +434,7 @@ executeWidgetClick ctx wid = do
     WidgetViewPlateAge      -> setView ctx ViewPlateAge
     WidgetViewPlateHeight   -> setView ctx ViewPlateHeight
     WidgetViewPlateVelocity -> setView ctx ViewPlateVelocity
+    WidgetViewCloud          -> setView ctx ViewCloud
 
     -- ----- Overlay cycling -----
     WidgetViewOverlayPrev -> pure $ Right "use 'cycle_overlay' IPC with direction -1"
@@ -900,6 +903,7 @@ handleListWidgets ctx reqId _params = do
         , ("WidgetViewPlateAge",      leftView)
         , ("WidgetViewPlateHeight",   leftView)
         , ("WidgetViewPlateVelocity", leftView)
+        , ("WidgetViewCloud",         leftView)
         , ("WidgetViewOverlayPrev",   leftView)
         , ("WidgetViewOverlayNext",   leftView)
         , ("WidgetViewFieldPrev",     leftView)

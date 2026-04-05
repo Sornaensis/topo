@@ -175,6 +175,7 @@ textToViewMode "plate_height"   _ = Just ViewPlateHeight
 textToViewMode "plate_velocity" _ = Just ViewPlateVelocity
 textToViewMode "vegetation"     _ = Just ViewVegetation
 textToViewMode "terrain_form"   _ = Just ViewTerrainForm
+textToViewMode "cloud"          _ = Just ViewCloud
 textToViewMode name             mIdx
   | Just rest <- Text.stripPrefix "overlay:" name
   , not (Text.null rest) = Just (ViewOverlay rest (maybe 0 id mIdx))
@@ -196,6 +197,7 @@ viewModeToText ViewPlateHeight   = "plate_height"
 viewModeToText ViewPlateVelocity = "plate_velocity"
 viewModeToText ViewVegetation    = "vegetation"
 viewModeToText ViewTerrainForm   = "terrain_form"
+viewModeToText ViewCloud         = "cloud"
 viewModeToText (ViewOverlay name _idx) = "overlay:" <> name
 
 textToConfigTab :: Text -> Maybe ConfigTab

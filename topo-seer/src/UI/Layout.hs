@@ -474,7 +474,7 @@ leftViewRects layout =
       buttonH = 28
       buttonW = (w - pad * 2 - gap) `div` 2
       top = leftControlsTop layout
-      viewCount = 15
+      viewCount = 16
       gridPos i = (i `div` 2, i `mod` 2)
       rect (row, col) = Rect (V2 (x + pad + col * (buttonW + gap)) (top + row * (buttonH + gap)), V2 buttonW buttonH)
   in map (rect . gridPos) [0 .. viewCount - 1]

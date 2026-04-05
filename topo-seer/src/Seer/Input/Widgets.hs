@@ -252,6 +252,7 @@ handleClick inputContext (SDL.P (V2 x y)) = do
           ; Just WidgetViewPlateAge -> whenLeftView (submit (UiActionSetViewMode ViewPlateAge))
           ; Just WidgetViewPlateHeight -> whenLeftView (submit (UiActionSetViewMode ViewPlateHeight))
           ; Just WidgetViewPlateVelocity -> whenLeftView (submit (UiActionSetViewMode ViewPlateVelocity))
+          ; Just WidgetViewCloud -> whenLeftView (submit (UiActionSetViewMode ViewCloud))
           -- Overlay cycling: prev/next overlay name, prev/next field
           ; Just WidgetViewOverlayPrev -> whenLeftView $ cycleOverlay uiSnap uiHandle (-1) submit
           ; Just WidgetViewOverlayNext -> whenLeftView $ cycleOverlay uiSnap uiHandle 1 submit
