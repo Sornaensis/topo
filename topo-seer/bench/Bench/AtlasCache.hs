@@ -25,13 +25,14 @@ import UI.RiverRender (RiverGeometry(..))
 import UI.TerrainAtlas
   ( AtlasChunkGeometry(..)
   , AtlasTileGeometry(..)
+  , TerrainAtlasTile(..)
   , buildAtlasTileGeometry
   , composeTilesFromGeometry
   , attachRiverOverlay
   , renderAtlasTileTextures
   )
 import UI.TerrainRender (ChunkGeometry, buildChunkGeometry)
-import UI.TexturePool (TexturePool, newTexturePool)
+import UI.TexturePool (TexturePool, newTexturePool, releaseTexture)
 
 ------------------------------------------------------------------------
 -- NFData instances (atlas geometry types contain storable vectors)
@@ -131,14 +132,17 @@ benchmarks = bgroup "AtlasCache"
       bgroup "SDL"
         [ bench "renderAtlasTileTextures/16chunks" $ whnfIO $ do
             env <- getEnv
-            renderAtlasTileTextures (sdlTexturePool env) (sdlRenderer env) sampleTileGeometry
+            tiles <- renderAtlasTileTextures (sdlTexturePool env) (sdlRenderer env) sampleTileGeometry
+            mapM_ (releaseTexture (sdlTexturePool env) . tatTexture) tiles
         , bench "renderAtlasTileTextures/overlay" $ whnfIO $ do
             env <- getEnv
-            renderAtlasTileTextures (sdlTexturePool env) (sdlRenderer env) sampleTileGeometryOverlay
+            tiles <- renderAtlasTileTextures (sdlTexturePool env) (sdlRenderer env) sampleTileGeometryOverlay
+            mapM_ (releaseTexture (sdlTexturePool env) . tatTexture) tiles
         , bench "drawAtlas/16chunks/zoom1" $ whnfIO $ do
             env <- getEnv
             tiles <- renderAtlasTileTextures (sdlTexturePool env) (sdlRenderer env) sampleTileGeometry
             drawAtlas (sdlRenderer env) tiles (0, 0) 1.0 (V2 256 256)
+            mapM_ (releaseTexture (sdlTexturePool env) . tatTexture) tiles
         ]
   ]
 
