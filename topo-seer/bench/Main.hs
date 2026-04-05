@@ -2,6 +2,7 @@ module Main (main) where
 
 import Test.Tasty.Bench
 
+import qualified Bench.AtlasCache
 import qualified Bench.TerrainGeometry
 import qualified Bench.RiverGeometry
 import qualified Bench.Viewport
@@ -15,4 +16,5 @@ main = defaultMain
   , Bench.Viewport.benchmarks
   , Bench.Pipeline.benchmarks
   , Bench.Simulation.benchmarks
+  , Bench.AtlasCache.benchmarks
   ]
