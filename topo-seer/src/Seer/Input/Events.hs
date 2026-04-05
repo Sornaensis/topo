@@ -232,12 +232,7 @@ handleEvent inputContext event = do
             let (newZoom, newOffset) = applyZoomAtCursor defaultZoomSettings uiSnap (mx, my) (fromIntegral dy)
             setUiZoom uiHandle newZoom
             setUiPanOffset uiHandle newOffset
-            dataSnap <- InputActions.getDataSnapshot inputEnv
-            terrainSnap <- InputActions.getTerrainSnapshot inputEnv
-            let hasMissing = tsChunkSize terrainSnap > 0
-                  && IntMap.size (tsTerrainChunks terrainSnap) < dsTerrainChunks dataSnap
-            when hasMissing $
-              submitAction inputEnv (UiActionRebuildAtlas (uiViewMode uiSnap))
+            submitAction inputEnv (UiActionRebuildAtlas (uiViewMode uiSnap))
     SDL.MouseButtonEvent btnEvent
       | SDL.mouseButtonEventMotion btnEvent == SDL.Pressed ->
           case SDL.mouseButtonEventButton btnEvent of
@@ -292,6 +287,9 @@ handleEvent inputContext event = do
                 Just DragState { dsDragging = False } -> do
                   uiSnap <- getUiSnapshot uiHandle
                   setUiHexTooltipPinned uiHandle (not (uiHexTooltipPinned uiSnap))
+                Just DragState { dsDragging = True } -> do
+                  uiSnap <- getUiSnapshot uiHandle
+                  submitAction inputEnv (UiActionRebuildAtlas (uiViewMode uiSnap))
                 _ -> pure ()
             SDL.ButtonLeft -> do
               -- Reset flatten reference on stroke end

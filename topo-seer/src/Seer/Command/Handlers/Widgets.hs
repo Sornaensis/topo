@@ -43,6 +43,7 @@ import Actor.UI.Setters
   , setUiConfigTab
   , setUiConfigScroll
   , setUiChunkSize
+  , setUiDayNightEnabled
   , setUiDisabledStages
   , setUiDisabledPlugins
   , setUiPluginNames
@@ -109,6 +110,7 @@ widgetIdToText wid = case wid of
   WidgetViewPlateHeight        -> "WidgetViewPlateHeight"
   WidgetViewPlateVelocity      -> "WidgetViewPlateVelocity"
   WidgetViewCloud               -> "WidgetViewCloud"
+  WidgetDayNightToggle           -> "WidgetDayNightToggle"
   WidgetViewOverlayPrev        -> "WidgetViewOverlayPrev"
   WidgetViewOverlayNext        -> "WidgetViewOverlayNext"
   WidgetViewFieldPrev          -> "WidgetViewFieldPrev"
@@ -276,6 +278,7 @@ nullaryWidgetMap = Map.fromList
   , ("WidgetViewPlateHeight",   WidgetViewPlateHeight)
   , ("WidgetViewPlateVelocity", WidgetViewPlateVelocity)
   , ("WidgetViewCloud",         WidgetViewCloud)
+  , ("WidgetDayNightToggle",    WidgetDayNightToggle)
   , ("WidgetViewOverlayPrev",   WidgetViewOverlayPrev)
   , ("WidgetViewOverlayNext",   WidgetViewOverlayNext)
   , ("WidgetViewFieldPrev",     WidgetViewFieldPrev)
@@ -435,6 +438,12 @@ executeWidgetClick ctx wid = do
     WidgetViewPlateHeight   -> setView ctx ViewPlateHeight
     WidgetViewPlateVelocity -> setView ctx ViewPlateVelocity
     WidgetViewCloud          -> setView ctx ViewCloud
+
+    -- ----- Day/night toggle -----
+    WidgetDayNightToggle -> do
+      setUiDayNightEnabled uiH (not (uiDayNightEnabled uiSnap))
+      submitAction ctx (UiActionRebuildAtlas (uiViewMode uiSnap))
+      pure $ Right ("day/night " <> if uiDayNightEnabled uiSnap then "off" else "on")
 
     -- ----- Overlay cycling -----
     WidgetViewOverlayPrev -> pure $ Right "use 'cycle_overlay' IPC with direction -1"
@@ -904,6 +913,7 @@ handleListWidgets ctx reqId _params = do
         , ("WidgetViewPlateHeight",   leftView)
         , ("WidgetViewPlateVelocity", leftView)
         , ("WidgetViewCloud",         leftView)
+        , ("WidgetDayNightToggle",    leftView)
         , ("WidgetViewOverlayPrev",   leftView)
         , ("WidgetViewOverlayNext",   leftView)
         , ("WidgetViewFieldPrev",     leftView)
@@ -1052,6 +1062,8 @@ widgetState uiSnap wid = object $ base ++ specific
       WidgetConfigTabData    -> [ "active" .= (uiConfigTab uiSnap == ConfigData) ]
       WidgetSimAutoTick ->
         [ "active" .= uiSimAutoTick uiSnap ]
+      WidgetDayNightToggle ->
+        [ "active" .= uiDayNightEnabled uiSnap ]
       WidgetPipelineToggle name ->
         case parseStageId name of
           Just sid -> [ "enabled" .= not (Set.member sid (uiDisabledStages uiSnap)) ]
