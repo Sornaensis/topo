@@ -21,7 +21,7 @@ import qualified SDL
 import qualified SDL.Raw.Types as Raw
 import Topo (ChunkCoord(..), ChunkId(..), ClimateChunk(..), TerrainChunk(..), VegetationChunk(..), WeatherChunk(..), TileCoord(..), TileIndex(..), WorldConfig(..), chunkCoordFromId, chunkOriginTile, tileCoordFromIndex)
 import UI.HexPick (axialToScreen, renderHexRadiusPx)
-import UI.TerrainColor (terrainColor)
+import UI.TerrainColor (terrainColor, applyDayNight)
 import UI.Widgets (Rect(..))
 
 hexOverlap :: Float
@@ -45,8 +45,8 @@ data ChunkTexture = ChunkTexture
 -- The @Maybe (U.Vector Float)@ parameter carries pre-extracted overlay field
 -- data for this chunk when 'ViewOverlay' mode is active.  For all other
 -- view modes it should be 'Nothing'.
-buildChunkGeometry :: Int -> WorldConfig -> ViewMode -> Float -> IntMap ClimateChunk -> IntMap WeatherChunk -> IntMap VegetationChunk -> Maybe (U.Vector Float) -> Int -> TerrainChunk -> ChunkGeometry
-buildChunkGeometry hexRadiusPx config mode waterLevel climateMap weatherMap vegMap mOverlayVec key chunk =
+buildChunkGeometry :: Int -> WorldConfig -> ViewMode -> Float -> IntMap ClimateChunk -> IntMap WeatherChunk -> IntMap VegetationChunk -> Maybe (U.Vector Float) -> Maybe (Int -> Int -> Float) -> Int -> TerrainChunk -> ChunkGeometry
+buildChunkGeometry hexRadiusPx config mode waterLevel climateMap weatherMap vegMap mOverlayVec mDayNightFn key chunk =
   let ChunkCoord cx cy = chunkCoordFromId (ChunkId key)
       TileCoord ox oy = chunkOriginTile config (ChunkCoord cx cy)
       climateChunk = IntMap.lookup key climateMap
@@ -57,7 +57,7 @@ buildChunkGeometry hexRadiusPx config mode waterLevel climateMap weatherMap vegM
       bounds = Rect (V2 minX minY, V2 (max 1 (maxX - minX)) (max 1 (maxY - minY)))
       corners = hexCornersF hexRadiusPx
       tileEntries =
-        [ buildTileGeometry hexRadiusPx config mode waterLevel climateChunk weatherChunk vegChunk mOverlayVec chunk corners minX minY ox oy idx
+        [ buildTileGeometry hexRadiusPx config mode waterLevel climateChunk weatherChunk vegChunk mOverlayVec mDayNightFn chunk corners minX minY ox oy idx
         | idx <- [0 .. total - 1]
         ]
       vertices = concatMap fst tileEntries
@@ -77,6 +77,7 @@ buildTileGeometry
   -> Maybe WeatherChunk
   -> Maybe VegetationChunk
   -> Maybe (U.Vector Float)
+  -> Maybe (Int -> Int -> Float)
   -> TerrainChunk
   -> [Raw.FPoint]
   -> Int
@@ -85,7 +86,7 @@ buildTileGeometry
   -> Int
   -> Int
   -> ([Raw.Vertex], [CInt])
-buildTileGeometry hexRadiusPx config mode waterLevel climateChunk weatherChunk vegChunk mOverlayVec chunk corners minX minY ox oy idx =
+buildTileGeometry hexRadiusPx config mode waterLevel climateChunk weatherChunk vegChunk mOverlayVec mDayNightFn chunk corners minX minY ox oy idx =
   let TileCoord tx ty = tileCoordFromIndex config (TileIndex idx)
       q = ox + tx
       r = oy + ty
@@ -95,7 +96,10 @@ buildTileGeometry hexRadiusPx config mode waterLevel climateChunk weatherChunk v
       overlayVal = case mOverlayVec of
         Just vec | idx >= 0 && idx < U.length vec -> Just (vec U.! idx)
         _ -> Nothing
-      color = terrainColor mode waterLevel chunk climateChunk weatherChunk vegChunk overlayVal idx
+      baseColor = terrainColor mode waterLevel chunk climateChunk weatherChunk vegChunk overlayVal idx
+      color = case mDayNightFn of
+        Nothing -> baseColor
+        Just f  -> applyDayNight (f q r) baseColor
       rawColor = toRawColor color
       center = Raw.FPoint (realToFrac centerX) (realToFrac centerY)
       baseIndex = fromIntegral (idx * 7)

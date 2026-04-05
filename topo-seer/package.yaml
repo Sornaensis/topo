@@ -124,6 +124,7 @@ library:
     - Seer.Config.SliderId
     - Seer.Input.Context
     - Seer.Render.Context
+    - UI.DayNight
     - UI.TerrainColor
     - UI.WidgetId
   dependencies:

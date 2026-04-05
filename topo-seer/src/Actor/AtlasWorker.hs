@@ -44,6 +44,7 @@ data AtlasBuild = AtlasBuild
   , abZoom       :: !Float
   , abWindowSize :: !(Int, Int)
   , abResultRef  :: !AtlasResultRef
+  , abDayNightFn :: !(Maybe (Int -> Int -> Float))
   }
 
 [hyperspace|
@@ -85,7 +86,7 @@ actor AtlasWorker
     -- removes the green thread entirely, guaranteeing the bound main
     -- thread (render loop) can reclaim its capability.
     geomPairs <- forM chunkPairs $ \(k, chunk) -> do
-      let geom = buildChunkGeometry (abHexRadius job) config mode waterLevel climateChunks weatherChunks vegChunks (IntMap.lookup k overlayMap) k chunk
+      let geom = buildChunkGeometry (abHexRadius job) config mode waterLevel climateChunks weatherChunks vegChunks (IntMap.lookup k overlayMap) (abDayNightFn job) k chunk
       _ <- evaluate geom
       threadDelay 100  -- 0.1ms, releases capability
       pure (k, geom)

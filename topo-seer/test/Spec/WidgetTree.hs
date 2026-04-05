@@ -38,8 +38,8 @@ spec = describe "UI.WidgetTree" $ do
         moistureRect = viewRects !! 4  -- index 4: Moisture
     hitTest widgets (rectHitPoint moistureRect) `shouldBe` Just WidgetViewMoisture
 
-  it "hit tests all 15 view mode buttons" $ do
-    let layout = layoutFor (V2 800 800) 160
+  it "hit tests all 16 view mode buttons" $ do
+    let layout = layoutFor (V2 800 1200) 160
         widgets = buildWidgets layout
         viewRects = leftViewRects layout
         expectedIds =
@@ -49,9 +49,9 @@ spec = describe "UI.WidgetTree" $ do
           , WidgetViewPlateId, WidgetViewPlateBoundary
           , WidgetViewPlateHardness, WidgetViewPlateCrust
           , WidgetViewPlateAge, WidgetViewPlateHeight
-          , WidgetViewPlateVelocity
+          , WidgetViewPlateVelocity, WidgetViewCloud
           ]
-    length viewRects `shouldBe` 15
+    length viewRects `shouldBe` 16
     -- Rows 5-7 (indices 10-14) are below LeftTopo controls and can be
     -- hit-tested unambiguously.  Rows 0-4 overlap LeftTopo widgets
     -- (chunk, seed, generate) which shadow view buttons in the

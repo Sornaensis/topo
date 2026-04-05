@@ -470,7 +470,7 @@ buildViewModeWidgets layout scrollY =
       , WidgetViewPlateId, WidgetViewPlateBoundary
       , WidgetViewPlateHardness, WidgetViewPlateCrust
       , WidgetViewPlateAge, WidgetViewPlateHeight
-      , WidgetViewPlateVelocity
+      , WidgetViewPlateVelocity, WidgetViewCloud
       ]
 
 hitTest :: [Widget] -> V2 Int -> Maybe WidgetId

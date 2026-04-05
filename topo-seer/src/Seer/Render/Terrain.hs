@@ -16,6 +16,7 @@ import Linear (V2(..), V4(..))
 import qualified Data.Vector.Storable as SV
 import qualified SDL
 import qualified SDL.Raw.Types as Raw
+import UI.DayNight (mkDayNightFn)
 import UI.OverlayExtract (extractOverlayField)
 import UI.TerrainCache (ChunkTextureCache(..), emptyChunkTextureCache)
 import UI.HexPick (renderHexRadiusPx)
@@ -72,6 +73,7 @@ buildTerrainCache uiSnap terrainSnap =
   let config = WorldConfig { wcChunkSize = tsChunkSize terrainSnap }
       mode = uiViewMode uiSnap
       waterLevel = uiRenderWaterLevel uiSnap
+      dayNightFn = mkDayNightFn uiSnap (tsChunkSize terrainSnap)
       overlayMap = case mode of
         ViewOverlay name fieldIdx ->
           case extractOverlayField name fieldIdx (wcChunkSize config * wcChunkSize config) (tsOverlayStore terrainSnap) of
@@ -83,6 +85,7 @@ buildTerrainCache uiSnap terrainSnap =
                          (tsWeatherChunks terrainSnap)
                          (tsVegetationChunks terrainSnap)
                          (IntMap.lookup k overlayMap)
+                         dayNightFn
                          k chunk
       cacheChunks = IntMap.mapWithKey mkGeom (tsTerrainChunks terrainSnap)
   in TerrainCache

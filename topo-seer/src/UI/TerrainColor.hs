@@ -1,5 +1,6 @@
 module UI.TerrainColor
   ( terrainColor
+  , applyDayNight
   , overlayFieldColor
   , gradientBlueGreen
   , gradientHeat
@@ -292,3 +293,13 @@ cloudColor terrain mWeather idx =
           g = baseG * (1 - cover) + cover * (cloudG * (1 - storm) + stormG * storm)
           b = baseB * (1 - cover) + cover * (cloudB * (1 - storm) + stormB * storm)
       in V4 (toByte r) (toByte g) (toByte b) 255
+
+-- | Apply day/night brightness dimming to a hex color.
+--
+-- The brightness factor is expected in [0, 1]: 1.0 = full daylight,
+-- 0.15 = deep night.  RGB channels are scaled; alpha is preserved.
+applyDayNight :: Float -> V4 Word8 -> V4 Word8
+applyDayNight brightness (V4 r g b a) =
+  let f = clamp01 brightness
+      scale c = fromIntegral (round (fromIntegral c * f :: Float) :: Int)
+  in V4 (scale r) (scale g) (scale b) a

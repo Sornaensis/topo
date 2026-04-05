@@ -20,7 +20,7 @@ spec = describe "Terrain render geometry" $ do
     let size = 2
         config = WorldConfig { wcChunkSize = size }
         chunk = emptyTerrainChunk size
-        geometry = buildChunkGeometry renderHexRadiusPx config ViewElevation 0 IntMap.empty IntMap.empty IntMap.empty Nothing 0 chunk
+        geometry = buildChunkGeometry renderHexRadiusPx config ViewElevation 0 IntMap.empty IntMap.empty IntMap.empty Nothing Nothing 0 chunk
         tileCount = size * size
     SV.length (cgVertices geometry) `shouldBe` tileCount * 7
     SV.length (cgIndices geometry) `shouldBe` tileCount * 18
@@ -29,7 +29,7 @@ spec = describe "Terrain render geometry" $ do
     let size = 3
         config = WorldConfig { wcChunkSize = size }
         chunk = emptyTerrainChunk size
-        geometry = buildChunkGeometry renderHexRadiusPx config ViewElevation 0 IntMap.empty IntMap.empty IntMap.empty Nothing 0 chunk
+        geometry = buildChunkGeometry renderHexRadiusPx config ViewElevation 0 IntMap.empty IntMap.empty IntMap.empty Nothing Nothing 0 chunk
         Rect (V2 _ _ , V2 w h) = cgBounds geometry
     w `shouldSatisfy` (> 0)
     h `shouldSatisfy` (> 0)

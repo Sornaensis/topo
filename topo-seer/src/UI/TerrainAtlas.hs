@@ -75,7 +75,7 @@ buildAtlasTileGeometry mode waterLevel terrainChunks climateChunks weatherChunks
             Just m  -> m
             Nothing -> IntMap.empty
         _ -> IntMap.empty
-      geometryMap = IntMap.mapWithKey (\k -> buildChunkGeometry hexRadiusPx config mode waterLevel climateChunks weatherChunks vegChunks (IntMap.lookup k overlayMap) k) terrainChunks
+      geometryMap = IntMap.mapWithKey (\k -> buildChunkGeometry hexRadiusPx config mode waterLevel climateChunks weatherChunks vegChunks (IntMap.lookup k overlayMap) Nothing k) terrainChunks
   in composeTilesFromGeometry geometryMap hexRadiusPx atlasScale
 
 -- | Compose atlas tiles from a pre-built chunk geometry map.

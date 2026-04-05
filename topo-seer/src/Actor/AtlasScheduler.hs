@@ -23,11 +23,13 @@ import Actor.AtlasScheduleBroker
   , writeAtlasScheduleReport
   )
 import Actor.AtlasWorker (AtlasBuild(..), AtlasWorker, enqueueAtlasBuildWork)
+import Actor.Data (TerrainSnapshot(..))
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion)
 import Actor.UI (UiState(..))
 import Control.Monad (forM_)
 import Data.Word (Word32)
+import UI.DayNight (mkDayNightFn)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
 import Seer.Timing (timedMs)
@@ -117,6 +119,7 @@ runSchedule handles req = do
             , abZoom       = uiZoom (rsUi snapshot)
             , abWindowSize = asqWindowSize req
             , abResultRef  = ashResultRef handles
+            , abDayNightFn = mkDayNightFn (rsUi snapshot) (tsChunkSize (ajTerrain job))
             }
       let report = AtlasScheduleReport
             { asrSnapshotVersion = asqSnapshotVersion req
