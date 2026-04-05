@@ -69,7 +69,7 @@ import Topo.Overlay.Schema
 import Topo.Hex (HexGridMeta(..))
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), formatLatLon, tileLatitude, tileLongitude)
 import Topo.Calendar (CalendarConfig(..), WorldTime(..), mkCalendarConfig, tickToDate, yearFraction, CalendarDate(..))
-import Topo.Solar (SolarPosition(..), DayInfo(..), tileSolarPos, tileDayInfo, defaultSolarConfig, tileIrradiance)
+import Topo.Solar (SolarPosition(..), DayInfo(..), tileSolarPos, tileDayInfo, defaultSolarConfig, tileIrradiance, localSolarHour)
 import Topo.Units
   ( defaultUnitScales
   , normSlopeToDeg
@@ -300,10 +300,12 @@ contextLines ui terrainSnap (q, r) =
           dayH    = diDayLength di
           riseH   = diSunriseHour di
           setH    = diSunsetHour di
+          lsh     = localSolarHour hpd calHour lonDeg
           fmtHM h = let hrs = floor h :: Int
                         mins = round ((h - fromIntegral hrs) * 60) :: Int
                     in Text.pack (show hrs) <> ":" <> (if mins < 10 then "0" else "") <> Text.pack (show mins)
       in [ "--- Sun ---"
+         , "Local " <> fmtHM lsh
          , "Alt   " <> fmtU altDeg "°"  <> "  Az " <> fmtU azDeg "°"
          , "Day   " <> fmtU dayH "h"
          , "Rise  " <> fmtHM riseH <> "  Set " <> fmtHM setH
@@ -335,7 +337,7 @@ contextLines ui terrainSnap (q, r) =
     modeLines ViewClimate sample =
       [ "Temp  " <> fmtU (normToC units (hsTemp sample)) "°C"
       , "Precip " <> fmtU (normToMmYear units (hsPrecipAvg sample)) "mm/yr"
-      ]
+      ] ++ solarLines q r
     modeLines ViewWeather sample =
       [ "Biome " <> biomeDisplayName (hsBiome sample)
       , "Elev  " <> fmtU (normToMetres units (hsElevation sample)) "m"
