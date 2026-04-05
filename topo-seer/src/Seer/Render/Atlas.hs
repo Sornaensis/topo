@@ -39,6 +39,7 @@ import qualified SDL
 import Seer.Render.ZoomStage (ZoomStage(..))
 import Seer.Timing (nsToMs, timedMs)
 import UI.TerrainAtlas (TerrainAtlasTile(..), renderAtlasTileTextures)
+import UI.TexturePool (TexturePool, releaseTexture)
 import UI.Widgets (Rect(..))
 import UI.WidgetsDraw (rectToSDL)
 
@@ -121,15 +122,17 @@ drawAtlas renderer tiles (panX, panY) zoom (V2 winW winH) =
 -- | Drain atlas build results and upload textures.
 --
 -- Reads from a shared 'AtlasResultRef' (lock-free) instead of a
--- synchronous actor call.
+-- synchronous actor call.  Textures are acquired from the given
+-- 'TexturePool'.
 drainAtlasBuildResults
   :: Bool
   -> Int
+  -> TexturePool
   -> SDL.Renderer
   -> AtlasTextureCache
   -> AtlasResultRef
   -> IO (AtlasTextureCache, Int, Word32)
-drainAtlasBuildResults renderTargetOk perFrame renderer atlasCache resultRef = do
+drainAtlasBuildResults renderTargetOk perFrame pool renderer atlasCache resultRef = do
   results <- drainAtlasResultsN resultRef perFrame
   let resultCount = length results
   if renderTargetOk
@@ -140,7 +143,7 @@ drainAtlasBuildResults renderTargetOk perFrame renderer atlasCache resultRef = d
   where
     cacheStep (cache, totalMs) result = do
       start <- getMonotonicTimeNSec
-      tiles <- renderAtlasTileTextures renderer [abrTile result]
+      tiles <- renderAtlasTileTextures pool renderer [abrTile result]
       end <- getMonotonicTimeNSec
       let elapsedMs = nsToMs start end
           cache' = if null tiles
@@ -176,15 +179,18 @@ scheduleAtlasBuilds renderTargetOk dataReady atlasSchedulerHandle scheduleRef sn
     _ -> pure (0, 0, 0)
 
 -- | Resolve which atlas tiles to draw and clean up pending textures.
+--
+-- Evicted textures are returned to the given 'TexturePool' for reuse.
 resolveAtlasTiles
   :: Bool
+  -> TexturePool
   -> RenderSnapshot
   -> AtlasTextureCache
   -> ZoomStage
   -> IO (Maybe [TerrainAtlasTile], AtlasTextureCache)
-resolveAtlasTiles renderTargetOk snapshot atlasCache stage = do
+resolveAtlasTiles renderTargetOk pool snapshot atlasCache stage = do
   let terrainSnap = rsTerrain snapshot
-      atlasKey = AtlasKey (uiViewMode (rsUi snapshot)) (uiRenderWaterLevel (rsUi snapshot)) (tsVersion terrainSnap)
+      atlasKey = AtlasKey (uiViewMode (rsUi snapshot)) (uiRenderWaterLevel (rsUi snapshot)) (uiDayNightEnabled (rsUi snapshot)) (tsVersion terrainSnap)
       dataReady = tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
       atlasTiles = if renderTargetOk && dataReady
         then getNearestAtlas atlasKey (zsHexRadius stage) atlasCache
@@ -217,7 +223,7 @@ resolveAtlasTiles renderTargetOk snapshot atlasCache stage = do
         _ -> ([], pending)
       cacheFinal = cacheDrained { atcPending = keepAlive }
   unless (null destroyNow) $
-    mapM_ SDL.destroyTexture destroyNow
+    mapM_ (releaseTexture pool) destroyNow
   pure (atlasToDraw, cacheFinal)
 
 zoomTextureScale :: Float -> Int

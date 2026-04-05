@@ -9,13 +9,15 @@ module UI.TerrainRender
   ) where
 
 import Actor.UI (ViewMode(..))
+import Control.Monad.ST (ST)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Vector.Storable (Vector)
 import qualified Data.Vector.Storable as SV
+import qualified Data.Vector.Storable.Mutable as SM
 import qualified Data.Vector.Unboxed as U
 import Data.Word (Word8)
-import Foreign.C.Types (CInt)
+import Foreign.C.Types (CFloat, CInt)
 import Linear (V2(..), V4(..))
 import qualified SDL
 import qualified SDL.Raw.Types as Raw
@@ -45,6 +47,9 @@ data ChunkTexture = ChunkTexture
 -- The @Maybe (U.Vector Float)@ parameter carries pre-extracted overlay field
 -- data for this chunk when 'ViewOverlay' mode is active.  For all other
 -- view modes it should be 'Nothing'.
+--
+-- Uses pre-allocated storable vectors and direct writes to avoid the
+-- overhead of building intermediate lists and calling @SV.fromList@.
 buildChunkGeometry :: Int -> WorldConfig -> ViewMode -> Float -> IntMap ClimateChunk -> IntMap WeatherChunk -> IntMap VegetationChunk -> Maybe (U.Vector Float) -> Maybe (Int -> Int -> Float) -> Int -> TerrainChunk -> ChunkGeometry
 buildChunkGeometry hexRadiusPx config mode waterLevel climateMap weatherMap vegMap mOverlayVec mDayNightFn key chunk =
   let ChunkCoord cx cy = chunkCoordFromId (ChunkId key)
@@ -56,73 +61,84 @@ buildChunkGeometry hexRadiusPx config mode waterLevel climateMap weatherMap vegM
       (minX, minY, maxX, maxY) = chunkBounds config hexRadiusPx (ChunkCoord cx cy)
       bounds = Rect (V2 minX minY, V2 (max 1 (maxX - minX)) (max 1 (maxY - minY)))
       corners = hexCornersF hexRadiusPx
-      tileEntries =
-        [ buildTileGeometry hexRadiusPx config mode waterLevel climateChunk weatherChunk vegChunk mOverlayVec mDayNightFn chunk corners minX minY ox oy idx
-        | idx <- [0 .. total - 1]
-        ]
-      vertices = concatMap fst tileEntries
-      indices = concatMap snd tileEntries
+      zeroTex = Raw.FPoint 0 0
+
+      -- Pre-allocated vertex buffer: 7 vertices per hex (1 center + 6 corners)
+      vertices = SV.create $ do
+        mv <- SM.new (total * 7)
+        let go idx
+              | idx >= total = pure ()
+              | otherwise = do
+                  let TileCoord tx ty = tileCoordFromIndex config (TileIndex idx)
+                      q = ox + tx
+                      r = oy + ty
+                      (scx, scy) = axialToScreen hexRadiusPx q r
+                      centerX = fromIntegral (scx - minX) :: CFloat
+                      centerY = fromIntegral (scy - minY) :: CFloat
+                      overlayVal = case mOverlayVec of
+                        Just vec | idx < U.length vec -> Just (vec U.! idx)
+                        _ -> Nothing
+                      baseColor = terrainColor mode waterLevel chunk climateChunk weatherChunk vegChunk overlayVal idx
+                      rawColor = toRawColor $ case mDayNightFn of
+                        Nothing -> baseColor
+                        Just f  -> applyDayNight (f q r) baseColor
+                      base = idx * 7
+                  SM.unsafeWrite mv base (Raw.Vertex (Raw.FPoint centerX centerY) rawColor zeroTex)
+                  writeHexCorners mv base centerX centerY rawColor zeroTex corners
+                  go (idx + 1)
+        go 0
+        pure mv
+
+      -- Pre-allocated index buffer: 18 indices per hex (6 triangles × 3)
+      indices = SV.create $ do
+        mi <- SM.new (total * 18)
+        let go idx
+              | idx >= total = pure ()
+              | otherwise = do
+                  let base = fromIntegral (idx * 7) :: CInt
+                      iOff = idx * 18
+                  writeHexIndices mi iOff base
+                  go (idx + 1)
+        go 0
+        pure mi
   in ChunkGeometry
       { cgBounds = bounds
-      , cgVertices = SV.fromList vertices
-      , cgIndices = SV.fromList indices
+      , cgVertices = vertices
+      , cgIndices = indices
       }
 
-buildTileGeometry
-  :: Int
-  -> WorldConfig
-  -> ViewMode
-  -> Float
-  -> Maybe ClimateChunk
-  -> Maybe WeatherChunk
-  -> Maybe VegetationChunk
-  -> Maybe (U.Vector Float)
-  -> Maybe (Int -> Int -> Float)
-  -> TerrainChunk
-  -> [Raw.FPoint]
-  -> Int
-  -> Int
-  -> Int
-  -> Int
-  -> Int
-  -> ([Raw.Vertex], [CInt])
-buildTileGeometry hexRadiusPx config mode waterLevel climateChunk weatherChunk vegChunk mOverlayVec mDayNightFn chunk corners minX minY ox oy idx =
-  let TileCoord tx ty = tileCoordFromIndex config (TileIndex idx)
-      q = ox + tx
-      r = oy + ty
-      (cx, cy) = axialToScreen hexRadiusPx q r
-      centerX = fromIntegral (cx - minX)
-      centerY = fromIntegral (cy - minY)
-      overlayVal = case mOverlayVec of
-        Just vec | idx >= 0 && idx < U.length vec -> Just (vec U.! idx)
-        _ -> Nothing
-      baseColor = terrainColor mode waterLevel chunk climateChunk weatherChunk vegChunk overlayVal idx
-      color = case mDayNightFn of
-        Nothing -> baseColor
-        Just f  -> applyDayNight (f q r) baseColor
-      rawColor = toRawColor color
-      center = Raw.FPoint (realToFrac centerX) (realToFrac centerY)
-      baseIndex = fromIntegral (idx * 7)
-  in buildHexTriangles center rawColor corners baseIndex
+-- | Write 6 corner vertices for a hex at the given base offset.
+writeHexCorners :: SM.MVector s Raw.Vertex -> Int -> CFloat -> CFloat -> Raw.Color -> Raw.FPoint -> [Raw.FPoint] -> ST s ()
+writeHexCorners mv base cx cy color tex corners = go 1 corners
+  where
+    go _ [] = pure ()
+    go i (Raw.FPoint dx dy : rest) = do
+      SM.unsafeWrite mv (base + i) (Raw.Vertex (Raw.FPoint (cx + dx) (cy + dy)) color tex)
+      go (i + 1) rest
+{-# INLINE writeHexCorners #-}
 
-buildHexTriangles :: Raw.FPoint -> Raw.Color -> [Raw.FPoint] -> CInt -> ([Raw.Vertex], [CInt])
-buildHexTriangles center color corners base =
-  let centerVertex = Raw.Vertex center color (Raw.FPoint 0 0)
-      cornerVertices =
-        [ Raw.Vertex (offsetPoint center corner) color (Raw.FPoint 0 0)
-        | corner <- corners
-        ]
-      vertices = centerVertex : cornerVertices
-      indices =
-        concat
-          [ [base, base + fromIntegral i + 1, base + fromIntegral ((i + 1) `mod` 6) + 1]
-          | i <- [0 .. 5]
-          ]
-  in (vertices, indices)
-
-offsetPoint :: Raw.FPoint -> Raw.FPoint -> Raw.FPoint
-offsetPoint (Raw.FPoint x y) (Raw.FPoint dx dy) =
-  Raw.FPoint (x + dx) (y + dy)
+-- | Write 18 indices (6 triangles) for a hex at the given index offset.
+writeHexIndices :: SM.MVector s CInt -> Int -> CInt -> ST s ()
+writeHexIndices mi iOff base = do
+  SM.unsafeWrite mi iOff       base
+  SM.unsafeWrite mi (iOff + 1) (base + 1)
+  SM.unsafeWrite mi (iOff + 2) (base + 2)
+  SM.unsafeWrite mi (iOff + 3) base
+  SM.unsafeWrite mi (iOff + 4) (base + 2)
+  SM.unsafeWrite mi (iOff + 5) (base + 3)
+  SM.unsafeWrite mi (iOff + 6) base
+  SM.unsafeWrite mi (iOff + 7) (base + 3)
+  SM.unsafeWrite mi (iOff + 8) (base + 4)
+  SM.unsafeWrite mi (iOff + 9)  base
+  SM.unsafeWrite mi (iOff + 10) (base + 4)
+  SM.unsafeWrite mi (iOff + 11) (base + 5)
+  SM.unsafeWrite mi (iOff + 12) base
+  SM.unsafeWrite mi (iOff + 13) (base + 5)
+  SM.unsafeWrite mi (iOff + 14) (base + 6)
+  SM.unsafeWrite mi (iOff + 15) base
+  SM.unsafeWrite mi (iOff + 16) (base + 6)
+  SM.unsafeWrite mi (iOff + 17) (base + 1)
+{-# INLINE writeHexIndices #-}
 
 hexCornersF :: Int -> [Raw.FPoint]
 hexCornersF size =

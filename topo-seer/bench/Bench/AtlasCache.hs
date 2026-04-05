@@ -31,6 +31,7 @@ import UI.TerrainAtlas
   , renderAtlasTileTextures
   )
 import UI.TerrainRender (ChunkGeometry, buildChunkGeometry)
+import UI.TexturePool (TexturePool, newTexturePool)
 
 ------------------------------------------------------------------------
 -- NFData instances (atlas geometry types contain storable vectors)
@@ -48,8 +49,9 @@ instance NFData AtlasTileGeometry where
 ------------------------------------------------------------------------
 
 data SDLEnv = SDLEnv
-  { sdlRenderer :: !SDL.Renderer
-  , sdlWindow   :: !SDL.Window
+  { sdlRenderer    :: !SDL.Renderer
+  , sdlWindow      :: !SDL.Window
+  , sdlTexturePool :: !TexturePool
   }
 
 initSDLEnv :: IO SDLEnv
@@ -57,7 +59,8 @@ initSDLEnv = do
   SDL.initialize [SDL.InitVideo]
   window   <- SDL.createWindow "bench" SDL.defaultWindow { SDL.windowInitialSize = V2 256 256 }
   renderer <- SDL.createRenderer window (-1) SDL.defaultRenderer
-  pure SDLEnv { sdlRenderer = renderer, sdlWindow = window }
+  pool     <- newTexturePool renderer 32
+  pure SDLEnv { sdlRenderer = renderer, sdlWindow = window, sdlTexturePool = pool }
 
 cleanupSDLEnv :: SDLEnv -> IO ()
 cleanupSDLEnv env = do
@@ -128,13 +131,13 @@ benchmarks = bgroup "AtlasCache"
       bgroup "SDL"
         [ bench "renderAtlasTileTextures/16chunks" $ whnfIO $ do
             env <- getEnv
-            renderAtlasTileTextures (sdlRenderer env) sampleTileGeometry
+            renderAtlasTileTextures (sdlTexturePool env) (sdlRenderer env) sampleTileGeometry
         , bench "renderAtlasTileTextures/overlay" $ whnfIO $ do
             env <- getEnv
-            renderAtlasTileTextures (sdlRenderer env) sampleTileGeometryOverlay
+            renderAtlasTileTextures (sdlTexturePool env) (sdlRenderer env) sampleTileGeometryOverlay
         , bench "drawAtlas/16chunks/zoom1" $ whnfIO $ do
             env <- getEnv
-            tiles <- renderAtlasTileTextures (sdlRenderer env) sampleTileGeometry
+            tiles <- renderAtlasTileTextures (sdlTexturePool env) (sdlRenderer env) sampleTileGeometry
             drawAtlas (sdlRenderer env) tiles (0, 0) 1.0 (V2 256 256)
         ]
   ]

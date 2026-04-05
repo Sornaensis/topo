@@ -105,6 +105,7 @@ import Seer.Render
 import Seer.Render.Atlas (AtlasTextureCache(..), collectAtlasTextures, emptyAtlasTextureCache)
 import Seer.Render.Context (RenderContext(..))
 import UI.TerrainCache (ChunkTextureCache(..), emptyChunkTextureCache)
+import UI.TexturePool (TexturePool, newTexturePool, releaseTexture, destroyTexturePool)
 import UI.Font (destroyFontCache, initFontCacheMaybe)
 import UI.Layout (minUsableWindowWidth, minUsableWindowHeight)
 import qualified Data.IntMap.Strict as IntMap
@@ -189,6 +190,7 @@ runApp = do
     , "C:\\Windows\\Fonts\\consola.ttf"
     , "C:\\Windows\\Fonts\\arial.ttf"
     ]
+  texturePool <- newTexturePool renderer 32
   quitRef <- newIORef False
   lineHeightRef <- logLineHeight fontCache >>= newIORef
   mousePosRef <- newIORef (0, 0)
@@ -380,6 +382,7 @@ runApp = do
                 , rcRenderTargetOk = renderTargetOk
                 , rcTraceHandle = traceH
                 , rcScreenshotRef = screenshotRef
+                , rcTexturePool = texturePool
                 }
             frameEnd <- getMonotonicTimeNSec
             let frameElapsed = nsToMs frameStart frameEnd
@@ -418,7 +421,8 @@ runApp = do
   let finalChunkTextures = rcsChunkTextures finalState
       finalAtlasCache = rcsAtlasCache finalState
   mapM_ destroyChunkTexture (IntMap.elems (ctcTextures finalChunkTextures))
-  mapM_ SDL.destroyTexture (collectAtlasTextures finalAtlasCache)
+  mapM_ (releaseTexture texturePool) (collectAtlasTextures finalAtlasCache)
+  destroyTexturePool texturePool
   maybe (pure ()) destroyFontCache fontCache
   Font.quit
   SDL.destroyWindow window

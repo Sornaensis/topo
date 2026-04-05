@@ -9,15 +9,16 @@ module Seer.Render.Viewport
   ) where
 
 import qualified Data.IntMap.Strict as IntMap
-import Topo (ChunkCoord(..), ChunkId(..), WorldConfig(..), chunkCoordFromId)
-import UI.HexPick (renderHexRadiusPx)
-import UI.TerrainRender (chunkBounds)
+import Topo (ChunkCoord(..), ChunkId(..), WorldConfig(..), chunkIdFromCoord)
+import UI.HexPick (renderHexRadiusPx, hexOriginX, hexOriginY)
 
--- | Return the 'IntMap' keys of chunks whose bounding boxes overlap the
--- camera viewport (plus a one-chunk padding ring).
+-- | Return the 'IntMap' keys of chunks whose coordinates place them in or
+-- near the camera viewport.
 --
--- The viewport is defined by the camera pan offset, zoom level, and window
--- size.  Chunk bounds are computed in the @renderHexRadiusPx@ frame.
+-- Instead of testing every chunk in the map (O(n)), this function inverts
+-- the 'axialToScreen' mapping to compute the range of chunk coordinates
+-- that could overlap the viewport, then probes the IntMap for each
+-- candidate (O(k log n) where k = visible area in chunk units).
 visibleChunkKeys
   :: WorldConfig
   -> (Float, Float)   -- ^ Camera pan offset @(panX, panY)@
@@ -27,15 +28,35 @@ visibleChunkKeys
   -> [Int]
 visibleChunkKeys config (panX, panY) zoom (winW, winH) chunks =
   let zoom'    = max 0.001 zoom
-      chunkPad = fromIntegral (wcChunkSize config)
+      -- Viewport bounds in world space with generous padding
+      pad      = fromIntegral (wcChunkSize config)
                * (fromIntegral renderHexRadiusPx :: Float) * 2.0
-      wLeft    = -panX - chunkPad
-      wRight   = fromIntegral winW / zoom' - panX + chunkPad
-      wTop     = -panY - chunkPad
-      wBot     = fromIntegral winH / zoom' - panY + chunkPad
-      isVisible k =
-        let (bx, by, bx2, by2) = chunkBounds config renderHexRadiusPx
-                                    (chunkCoordFromId (ChunkId k))
-        in  fromIntegral bx2 > wLeft && fromIntegral bx < wRight
-         && fromIntegral by2 > wTop  && fromIntegral by < wBot
-  in filter isVisible (IntMap.keys chunks)
+      wLeft    = -panX - pad
+      wRight   = fromIntegral winW / zoom' - panX + pad
+      wTop     = -panY - pad
+      wBot     = fromIntegral winH / zoom' - panY + pad
+      -- Invert axialToScreen to get tile coordinate bounds
+      -- axialToScreen: x = s*sqrt(3)*(q + r/2) + oxF
+      --                y = s*1.5*r + oyF
+      s        = fromIntegral renderHexRadiusPx :: Float
+      cs       = fromIntegral (wcChunkSize config) :: Float
+      oxF      = fromIntegral hexOriginX :: Float
+      oyF      = fromIntegral hexOriginY :: Float
+      -- r range from y bounds
+      rMin     = (wTop - oyF) / (s * 1.5)
+      rMax     = (wBot - oyF) / (s * 1.5)
+      -- q range from x bounds (accounting for r/2 offset)
+      sq3s     = s * sqrt 3
+      qMin     = (wLeft - oxF) / sq3s - rMax / 2
+      qMax     = (wRight - oxF) / sq3s - rMin / 2
+      -- Convert tile ranges to chunk coordinate ranges (extra ±1 for safety)
+      cxMin    = floor (qMin / cs) - 1 :: Int
+      cxMax    = ceiling (qMax / cs) + 1 :: Int
+      cyMin    = floor (rMin / cs) - 1 :: Int
+      cyMax    = ceiling (rMax / cs) + 1 :: Int
+  in [ k
+     | cy <- [cyMin .. cyMax]
+     , cx <- [cxMin .. cxMax]
+     , let ChunkId k = chunkIdFromCoord (ChunkCoord cx cy)
+     , IntMap.member k chunks
+     ]

@@ -9,6 +9,8 @@ module UI.TerrainAtlas
   , maxAtlasTextureSize
   ) where
 
+import UI.TexturePool (TexturePool, acquireTexture)
+
 import Actor.UI (ViewMode(..))
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
@@ -53,7 +55,7 @@ data AtlasTileGeometry = AtlasTileGeometry
   }
 
 maxAtlasTextureSize :: Int
-maxAtlasTextureSize = 16384
+maxAtlasTextureSize = 4096
 
 -- | Build per-tile geometry on the CPU (no SDL renderer required).
 buildAtlasTileGeometry
@@ -182,8 +184,12 @@ normalizeHexBounds hexR rect
               , V2 (scaleDim w) (scaleDim h))
 
 -- | Upload pre-built atlas geometry into render-target textures.
-renderAtlasTileTextures :: SDL.Renderer -> [AtlasTileGeometry] -> IO [TerrainAtlasTile]
-renderAtlasTileTextures renderer tiles =
+--
+-- Textures are acquired from the given 'TexturePool' rather than
+-- allocated fresh, eliminating per-tile GPU allocation overhead.
+-- All chunks within a tile are merged into a single draw call.
+renderAtlasTileTextures :: TexturePool -> SDL.Renderer -> [AtlasTileGeometry] -> IO [TerrainAtlasTile]
+renderAtlasTileTextures pool renderer tiles =
   concat <$> mapM renderTile tiles
   where
     renderTile tile = do
@@ -191,14 +197,13 @@ renderAtlasTileTextures renderer tiles =
           scale' = atgScale tile
           sw = max 1 (tw * scale')
           sh = max 1 (th * scale')
-      texture <- SDL.createTexture renderer SDL.RGBA8888 SDL.TextureAccessTarget (V2 (fromIntegral sw) (fromIntegral sh))
-      SDL.textureBlendMode texture SDL.$= SDL.BlendAlphaBlend
+          allChunks = atgChunks tile ++ atgRiverOverlay tile
+      texture <- acquireTexture pool sw sh
       SDL.rendererRenderTarget renderer SDL.$= Just texture
       SDL.rendererDrawBlendMode renderer SDL.$= SDL.BlendAlphaBlend
       SDL.rendererDrawColor renderer SDL.$= V4 0 0 0 0
       SDL.clear renderer
-      mapM_ renderChunk (atgChunks tile)
-      mapM_ renderChunk (atgRiverOverlay tile)
+      renderBatched renderer allChunks
       SDL.rendererRenderTarget renderer SDL.$= Nothing
       pure [TerrainAtlasTile
         { tatTexture   = texture
@@ -207,8 +212,17 @@ renderAtlasTileTextures renderer tiles =
         , tatHexRadius = atgHexRadius tile
         }]
 
-    renderChunk chunk =
-      SDL.renderGeometry renderer Nothing (acgVertices chunk) (acgIndices chunk)
+-- | Render a list of chunk geometries in a single batched draw call.
+-- Vertices are concatenated and indices are rebased to account for
+-- the per-chunk vertex offsets.
+renderBatched :: SDL.Renderer -> [AtlasChunkGeometry] -> IO ()
+renderBatched _ [] = pure ()
+renderBatched renderer chunks =
+  let mergedVerts = SV.concat (map acgVertices chunks)
+      vertOffsets = scanl (+) 0 (map (SV.length . acgVertices) chunks)
+      rebase off chunk = SV.map (+ fromIntegral off) (acgIndices chunk)
+      mergedIndices = SV.concat (zipWith rebase vertOffsets chunks)
+  in  SDL.renderGeometry renderer Nothing mergedVerts mergedIndices
 
 rectsOverlap :: Rect -> Rect -> Bool
 rectsOverlap (Rect (V2 ax ay, V2 aw ah)) (Rect (V2 bx by, V2 bw bh)) =

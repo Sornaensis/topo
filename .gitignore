@@ -45,3 +45,7 @@ Desktop.ini
 .tmp/
 .cache/
 .etc/
+
+# Benchmark results
+bench-baseline.csv
+bench-results.csv

@@ -18,6 +18,7 @@ import Seer.Screenshot (ScreenshotRequestRef)
 import System.IO (Handle)
 import UI.Font (FontCache)
 import UI.TerrainCache (ChunkTextureCache)
+import UI.TexturePool (TexturePool)
 
 -- | Immutable inputs required to render a single frame.
 data RenderContext = RenderContext
@@ -41,4 +42,5 @@ data RenderContext = RenderContext
   , rcRenderTargetOk :: !Bool
   , rcTraceHandle :: !(Maybe Handle)
   , rcScreenshotRef :: !ScreenshotRequestRef
+  , rcTexturePool :: !TexturePool
   }

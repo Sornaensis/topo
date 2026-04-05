@@ -30,6 +30,7 @@ import Seer.Draw
   , drawLeftTabs
   , drawSeedControl
   , drawStatusBars
+  , drawDayNightToggle
   , drawOverlayButtons
   , drawViewModeButtons
   , seedMaxDigits
@@ -89,6 +90,7 @@ renderFrame context = do
       fontCache = rcFontCache context
       renderTargetOk = rcRenderTargetOk context
       traceH = rcTraceHandle context
+      pool = rcTexturePool context
   tStart <- getMonotonicTimeNSec
   SDL.rendererDrawBlendMode renderer SDL.$= SDL.BlendAlphaBlend
   ((V2 winW winH), windowSizeElapsed) <- timedMs (SDL.get (SDL.windowSize window))
@@ -146,7 +148,7 @@ renderFrame context = do
   (atlasCache', uploadCount, uploadMs, uploadTextureMs) <- if shouldDrainAtlas
     then do
       ((cache', count, createMs), elapsed) <- timedMs $ do
-        (cacheNext, count, createMs) <- drainAtlasBuildResults renderTargetOk atlasUploadsPerFrame renderer atlasCacheWithStage resultRef
+        (cacheNext, count, createMs) <- drainAtlasBuildResults renderTargetOk atlasUploadsPerFrame pool renderer atlasCacheWithStage resultRef
         pure (cacheNext, count, createMs)
       pure (cache', count, elapsed, createMs)
     else pure (atlasCacheWithStage, 0, 0, 0)
@@ -160,7 +162,7 @@ renderFrame context = do
       else pure False
   tAfterDrain <- getMonotonicTimeNSec
   (atlasToDraw, atlasCache'', loggedAtlasResolve) <- do
-    ((resolvedTiles, resolvedCache), elapsed) <- timedMs (resolveAtlasTiles renderTargetOk snapshot atlasCache' stage)
+    ((resolvedTiles, resolvedCache), elapsed) <- timedMs (resolveAtlasTiles renderTargetOk pool snapshot atlasCache' stage)
     logged <- logTiming logHandle timingLogThresholdMs (Text.pack "atlas resolve") elapsed Nothing
     pure (resolvedTiles, resolvedCache, logged)
   tAfterResolve <- getMonotonicTimeNSec
@@ -220,6 +222,7 @@ renderFrame context = do
                 scrolledOR = (shiftY scrollY op, shiftY scrollY on, shiftY scrollY fp, shiftY scrollY fn)
             SDL.rendererClipRect renderer SDL.$= Just clipR
             drawViewModeButtons renderer mode scrolledViewRects
+            drawDayNightToggle renderer (uiDayNightEnabled (rsUi snapshot)) (shiftY scrollY (dayNightToggleRect layout))
             drawOverlayButtons renderer fontCache (rsUi snapshot) scrolledOR
             SDL.rendererClipRect renderer SDL.$= Nothing
       drawConfigPanel renderer fontCache (rsUi snapshot) dataSnap layout

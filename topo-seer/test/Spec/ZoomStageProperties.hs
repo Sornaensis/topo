@@ -62,7 +62,9 @@ spec = describe "ZoomStage properties" $ do
           window = (1920, 1080)
           visible = visibleChunkKeys config pan zoom window bigMap
       -- Should be a bounded subset, not all 10000.
-      length visible `shouldSatisfy` (< 500)
+      -- The analytical coordinate-range approach returns a superset of
+      -- the geometrically visible set, but still a small fraction.
+      length visible `shouldSatisfy` (< 1000)
       length visible `shouldSatisfy` (> 0)
 
     it "returns all chunks when they fit in the viewport" $ do

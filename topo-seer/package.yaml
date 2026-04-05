@@ -80,6 +80,7 @@ library:
     - UI.TerrainAtlas
     - UI.TerrainCache
     - UI.TerrainRender
+    - UI.TexturePool
     - UI.RiverRender
     - UI.Theme
     - UI.Widgets
