@@ -21,6 +21,7 @@ import Actor.UI (ViewMode(..))
 import Control.Concurrent (threadDelay)
 import Control.Exception (evaluate)
 import Control.Monad (forM)
+import Data.List (partition)
 import qualified Data.IntMap.Strict as IntMap
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
@@ -66,13 +67,14 @@ actor AtlasWorker
         climateChunks = tsClimateChunks terrainSnap
         weatherChunks = tsWeatherChunks terrainSnap
         vegChunks = tsVegetationChunks terrainSnap
-        -- Viewport culling: only build geometry for visible chunks (+ one-chunk
-        -- padding ring) to bound atlas tile sizes and avoid unnecessary work.
-        -- Active at all zoom stages, including stage 0, to support huge extents.
+        -- Build geometry for ALL chunks so that panning never reveals blank
+        -- tiles. Visible-viewport chunks are processed first for display
+        -- priority; remaining chunks fill in during the same build pass.
         visibleKeys = visibleChunkKeys config (abPanOffset job) (abZoom job) (abWindowSize job) (tsTerrainChunks terrainSnap)
         visibleSet  = IntMap.fromList [(k, ()) | k <- visibleKeys]
-        chunkPairs  = filter (\(k, _) -> IntMap.member k visibleSet)
-                             (IntMap.toList (tsTerrainChunks terrainSnap))
+        allPairs    = IntMap.toList (tsTerrainChunks terrainSnap)
+        (visPairs, offPairs) = partition (\(k, _) -> IntMap.member k visibleSet) allPairs
+        chunkPairs  = visPairs ++ offPairs
         overlayMap = case mode of
           ViewOverlay name fieldIdx ->
             case extractOverlayField name fieldIdx (wcChunkSize config * wcChunkSize config) (tsOverlayStore terrainSnap) of
@@ -91,14 +93,12 @@ actor AtlasWorker
       threadDelay 100  -- 0.1ms, releases capability
       pure (k, geom)
     let geometryMap = IntMap.fromList geomPairs
-        -- Visible terrain chunks as a map (already culled via chunkPairs).
-        -- River geometry iterates only visible chunks but still receives the
-        -- full tsTerrainChunks for cross-chunk neighbour lookups.
-        visibleTerrainChunks = IntMap.fromList chunkPairs
+        -- Build river geometry for all chunks (matching the full build).
+        -- Cross-chunk neighbour lookups use the full tsTerrainChunks map.
         riverGeoMap = case mode of
           ViewBiome -> IntMap.mapMaybeWithKey
             (\ cid _chunk -> buildChunkRiverGeometry (scaleRiverWidths (abHexRadius job) defaultRiverRenderConfig) config (abHexRadius job) cid (tsRiverChunks terrainSnap) (tsTerrainChunks terrainSnap))
-            visibleTerrainChunks
+            (tsTerrainChunks terrainSnap)
           _ -> IntMap.empty
         baseTiles = composeTilesFromGeometry geometryMap (abHexRadius job) (abAtlasScale job)
         tiles = attachRiverOverlay riverGeoMap baseTiles
