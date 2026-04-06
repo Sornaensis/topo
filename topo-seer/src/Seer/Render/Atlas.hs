@@ -8,6 +8,11 @@ module Seer.Render.Atlas
   , resolveEffectiveStage
   , scheduleAtlasBuilds
   , setAtlasKey
+  , storeAtlasTiles
+  , getNearestAtlas
+  , touchAtlasScale
+  , drainAtlasPending
+  , evictIfNeeded
   , zoomTextureScale
   ) where
 
@@ -224,12 +229,16 @@ resolveAtlasTiles renderTargetOk pool snapshot atlasCache stage = do
         Just (t:_) -> touchAtlasScale (tatHexRadius t) cacheWithLast
         _ -> cacheWithLast
       (pending, cacheDrained) = drainAtlasPending cacheTouched
-      (keepAlive, destroyNow) = case atcLast cacheDrained of
-        Just (_key, tiles) ->
-          let alive = map tatTexture tiles
-              shouldKeep texture = texture `elem` alive
-          in (filter shouldKeep pending, filter (not . shouldKeep) pending)
-        _ -> ([], pending)
+      -- Protect textures that atcLast still references from being
+      -- released.  Only truly orphaned textures may be destroyed.
+      aliveTextures = case atcLast cacheDrained of
+        Just (_key, tiles) -> map tatTexture tiles
+        _                  -> []
+      (keepAlive, destroyNow) =
+        if null aliveTextures
+          then ([], pending)
+          else (filter (`elem` aliveTextures) pending,
+                filter (`notElem` aliveTextures) pending)
       cacheFinal = cacheDrained { atcPending = keepAlive }
   unless (null destroyNow) $
     mapM_ (releaseTexture pool) destroyNow
@@ -244,12 +253,24 @@ setAtlasKey :: AtlasKey -> AtlasTextureCache -> AtlasTextureCache
 setAtlasKey key cache =
   if atcKey cache == Just key
     then cache
-    else cache
-      { atcKey = Just key
-      , atcCaches = IntMap.empty
-      , atcLru = []
-      , atcPending = collectTextures (atcCaches cache) ++ atcPending cache
-      }
+    else
+      -- Textures held by atcLast must NOT be moved to atcPending here;
+      -- they are the fallback display tiles and will be retired explicitly
+      -- by resolveAtlasTiles when genuinely replaced.  Without this
+      -- exclusion the same SDL.Texture pointer ends up both in atcPending
+      -- (queued for release) and atcLast (still drawn), causing a
+      -- use-after-free crash.
+      let lastTextures = case atcLast cache of
+            Just (_, tiles) -> map tatTexture tiles
+            Nothing         -> []
+          fromCaches = collectTextures (atcCaches cache)
+          safePending = filter (`notElem` lastTextures) fromCaches
+      in cache
+        { atcKey = Just key
+        , atcCaches = IntMap.empty
+        , atcLru = []
+        , atcPending = safePending ++ atcPending cache
+        }
 
 storeAtlasTiles :: AtlasKey -> Int -> [TerrainAtlasTile] -> AtlasTextureCache -> AtlasTextureCache
 storeAtlasTiles key scale tiles cache =
