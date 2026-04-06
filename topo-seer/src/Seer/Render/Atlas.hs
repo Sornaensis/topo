@@ -7,6 +7,7 @@ module Seer.Render.Atlas
   , resolveAtlasTiles
   , resolveEffectiveStage
   , scheduleAtlasBuilds
+  , setAtlasKey
   , zoomTextureScale
   ) where
 
@@ -244,17 +245,22 @@ setAtlasKey key cache =
 
 storeAtlasTiles :: AtlasKey -> Int -> [TerrainAtlasTile] -> AtlasTextureCache -> AtlasTextureCache
 storeAtlasTiles key scale tiles cache =
-  let targetCache =
-        if atcKey cache == Just key
-          then cache
-          else setAtlasKey key cache
-      (merged, pending) = mergeTiles (IntMap.lookup scale (atcCaches targetCache)) tiles
-      cache' = targetCache
-        { atcCaches = IntMap.insert scale merged (atcCaches targetCache)
-        , atcLru = touch scale (atcLru targetCache)
-        , atcPending = pending ++ atcPending targetCache
-        }
-  in evictIfNeeded cache'
+  case atcKey cache of
+    -- Stale result from a superseded build: discard the textures.
+    Just currentKey | currentKey /= key ->
+      cache { atcPending = map tatTexture tiles ++ atcPending cache }
+    -- Key matches (or no key set yet): store tiles.
+    _ ->
+      let targetCache = case atcKey cache of
+            Nothing -> cache { atcKey = Just key }
+            _       -> cache
+          (merged, pending) = mergeTiles (IntMap.lookup scale (atcCaches targetCache)) tiles
+          cache' = targetCache
+            { atcCaches = IntMap.insert scale merged (atcCaches targetCache)
+            , atcLru = touch scale (atcLru targetCache)
+            , atcPending = pending ++ atcPending targetCache
+            }
+      in evictIfNeeded cache'
 
 getNearestAtlas :: AtlasKey -> Int -> AtlasTextureCache -> Maybe [TerrainAtlasTile]
 getNearestAtlas key target cache =

@@ -36,6 +36,7 @@ import Seer.Draw
   , seedMaxDigits
   , viewColor
   )
+import Actor.AtlasCache (AtlasKey(..))
 import Seer.Render.Atlas
   ( AtlasTextureCache(..)
   , drawAtlas
@@ -43,6 +44,7 @@ import Seer.Render.Atlas
   , resolveAtlasTiles
   , resolveEffectiveStage
   , scheduleAtlasBuilds
+  , setAtlasKey
   , zoomTextureScale
   )
 import Seer.Render.ZoomStage (ZoomStage(..), stageForZoom)
@@ -133,6 +135,11 @@ renderFrame context = do
   tAfterClear <- getMonotonicTimeNSec
   let rawStage = stageForZoom (uiZoom (rsUi snapshot))
       (stage, atlasCacheWithStage) = resolveEffectiveStage tAfterClear rawStage atlasCache
+      -- Synchronise the render-thread cache key with the current UI state
+      -- BEFORE draining results.  This ensures stale worker results (from a
+      -- superseded view mode) are discarded rather than thrashing the key.
+      expectedAtlasKey = AtlasKey mode (uiRenderWaterLevel (rsUi snapshot)) (uiDayNightEnabled (rsUi snapshot)) (tsVersion terrainSnap)
+      atlasCacheKeyed = setAtlasKey expectedAtlasKey atlasCacheWithStage
       dataReady = tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
   (loggedSchedule, loggedScheduleDrain, loggedScheduleEnqueue) <-
     if shouldScheduleAtlas
@@ -148,10 +155,10 @@ renderFrame context = do
   (atlasCache', uploadCount, uploadMs, uploadTextureMs) <- if shouldDrainAtlas
     then do
       ((cache', count, createMs), elapsed) <- timedMs $ do
-        (cacheNext, count, createMs) <- drainAtlasBuildResults renderTargetOk atlasUploadsPerFrame pool renderer atlasCacheWithStage resultRef
+        (cacheNext, count, createMs) <- drainAtlasBuildResults renderTargetOk atlasUploadsPerFrame pool renderer atlasCacheKeyed resultRef
         pure (cacheNext, count, createMs)
       pure (cache', count, elapsed, createMs)
-    else pure (atlasCacheWithStage, 0, 0, 0)
+    else pure (atlasCacheKeyed, 0, 0, 0)
   loggedUpload <-
     if shouldDrainAtlas && uploadCount > 0
       then logTiming logHandle timingLogThresholdMs (Text.pack "atlas upload") uploadMs (Just uploadCount)
