@@ -13,7 +13,7 @@ module Seer.Render.Atlas
 
 import Actor.AtlasCache (AtlasKey(..))
 import Actor.AtlasResult (AtlasBuildResult(..))
-import Actor.AtlasResultBroker (AtlasResultRef, drainAtlasResultsN)
+import Actor.AtlasResultBroker (AtlasResultRef, drainAtlasResultsN, drainFreshResultsN)
 import Actor.AtlasScheduleBroker
   ( AtlasScheduleReport(..)
   , AtlasScheduleRef
@@ -125,6 +125,10 @@ drawAtlas renderer tiles (panX, panY) zoom (V2 winW winH) =
 -- Reads from a shared 'AtlasResultRef' (lock-free) instead of a
 -- synchronous actor call.  Textures are acquired from the given
 -- 'TexturePool'.
+--
+-- Stale results (key mismatch) are discarded without creating GPU
+-- textures so that view mode switches are not blocked by a long queue
+-- of superseded results.
 drainAtlasBuildResults
   :: Bool
   -> Int
@@ -133,14 +137,18 @@ drainAtlasBuildResults
   -> AtlasTextureCache
   -> AtlasResultRef
   -> IO (AtlasTextureCache, Int, Word32)
-drainAtlasBuildResults renderTargetOk perFrame pool renderer atlasCache resultRef = do
-  results <- drainAtlasResultsN resultRef perFrame
-  let resultCount = length results
+drainAtlasBuildResults renderTargetOk perFrame pool renderer atlasCache resultRef =
   if renderTargetOk
     then do
+      let isFresh r = case atcKey atlasCache of
+            Just k  -> abrKey r == k
+            Nothing -> True
+      (results, _staleCount) <- drainFreshResultsN resultRef isFresh perFrame
       (cache', totalMs) <- foldM cacheStep (atlasCache, 0) results
-      pure (cache', resultCount, totalMs)
-    else pure (atlasCache, resultCount, 0)
+      pure (cache', length results, totalMs)
+    else do
+      results <- drainAtlasResultsN resultRef perFrame
+      pure (atlasCache, length results, 0)
   where
     cacheStep (cache, totalMs) result = do
       start <- getMonotonicTimeNSec
