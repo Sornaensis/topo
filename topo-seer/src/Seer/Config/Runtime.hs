@@ -99,7 +99,7 @@ defaultConfig :: TopoSeerConfig
 defaultConfig = TopoSeerConfig
   { cfgFrameDelayMs          = 16
   , cfgAtlasUploadsPerFrame  = 1
-  , cfgAtlasCacheEntries     = 4
+  , cfgAtlasCacheEntries     = 30
   , cfgTerrainCachePollMs    = 30
   , cfgAtlasDrainPollMs      = 30
   , cfgAtlasSchedulePollMs   = 30

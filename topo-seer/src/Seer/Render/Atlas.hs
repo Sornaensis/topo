@@ -35,7 +35,7 @@ import Actor.SnapshotReceiver (SnapshotVersion)
 import Actor.UI (UiState(..))
 import Control.Monad (foldM, unless, when)
 import qualified Data.IntMap.Strict as IntMap
-import qualified Data.IntSet as IntSet
+import qualified Data.Map.Strict as Map
 import Data.Word (Word32, Word64)
 import GHC.Clock (getMonotonicTimeNSec)
 import Hyperspace.Actor (ActorHandle, Protocol)
@@ -49,12 +49,17 @@ import UI.TexturePool (TexturePool, releaseTexture)
 import UI.Widgets (Rect(..))
 import UI.WidgetsDraw (rectToSDL)
 
--- | Render-thread-owned cache of atlas textures keyed by scale.
+-- | Render-thread-owned cache of atlas textures keyed by (AtlasKey, scale).
+--
+-- Tiles for different view modes, water levels, and day\/night states
+-- coexist in a 'Map.Map AtlasKey (IntMap [TerrainAtlasTile])'.
+-- Switching the active key ('atcKey') is an O(1) pointer update —
+-- no textures are flushed.
 data AtlasTextureCache = AtlasTextureCache
   { atcKey :: !(Maybe AtlasKey)
-  , atcCaches :: !(IntMap.IntMap [TerrainAtlasTile])
+  , atcCaches :: !(Map.Map AtlasKey (IntMap.IntMap [TerrainAtlasTile]))
   , atcMaxEntries :: !Int
-  , atcLru :: ![Int]
+  , atcLru :: ![(AtlasKey, Int)]
   , atcPending :: ![SDL.Texture]
   , atcLast :: !(Maybe (AtlasKey, [TerrainAtlasTile]))
   , atcCommittedStage :: !(Maybe ZoomStage)
@@ -65,7 +70,7 @@ data AtlasTextureCache = AtlasTextureCache
 emptyAtlasTextureCache :: Int -> AtlasTextureCache
 emptyAtlasTextureCache maxEntries = AtlasTextureCache
   { atcKey = Nothing
-  , atcCaches = IntMap.empty
+  , atcCaches = Map.empty
   , atcMaxEntries = maxEntries
   , atcLru = []
   , atcPending = []
@@ -103,7 +108,7 @@ resolveEffectiveStage nowNs rawStage cache =
 -- | Collect all textures currently held by the atlas cache.
 collectAtlasTextures :: AtlasTextureCache -> [SDL.Texture]
 collectAtlasTextures cache =
-  atcPending cache ++ collectTextures (atcCaches cache)
+  atcPending cache ++ concatMap collectTextures (Map.elems (atcCaches cache))
 
 -- | Draw atlas tiles to the renderer.
 drawAtlas :: SDL.Renderer -> [TerrainAtlasTile] -> (Float, Float) -> Float -> V2 Int -> IO ()
@@ -145,8 +150,12 @@ drainAtlasBuildResults
 drainAtlasBuildResults renderTargetOk perFrame pool renderer atlasCache resultRef =
   if renderTargetOk
     then do
+      -- With multi-key caching, results for any view mode are valuable
+      -- as long as the terrain version matches.  Only discard results
+      -- from an outdated generation pass.
       let isFresh r = case atcKey atlasCache of
-            Just k  -> abrKey r == k
+            Just (AtlasKey _ _ _ currentV) ->
+              let AtlasKey _ _ _ resultV = abrKey r in resultV == currentV
             Nothing -> True
       (results, _staleCount) <- drainFreshResultsN resultRef isFresh perFrame
       (cache', totalMs) <- foldM cacheStep (atlasCache, 0) results
@@ -214,16 +223,14 @@ resolveAtlasTiles renderTargetOk pool snapshot atlasCache stage = do
         _ -> case atcLast atlasCache of
           Just (_key, tiles) | not (null tiles) -> Just tiles
           _ -> Nothing
+      -- With multi-key caching, old atcLast tiles are NOT explicitly
+      -- retired here because they may still live in atcCaches under
+      -- their original key.  Eviction handles texture lifecycle;
+      -- the keepAlive filter below protects atcLast textures that
+      -- were evicted but not yet replaced.
       cacheWithLast = case atlasTiles of
         Just tiles | not (null tiles) ->
-          let retiredTextures = case atcLast atlasCache of
-                Just (oldKey, oldTiles)
-                  | oldKey /= atlasKey -> map tatTexture oldTiles
-                _ -> []
-          in atlasCache
-              { atcLast = Just (atlasKey, tiles)
-              , atcPending = retiredTextures ++ atcPending atlasCache
-              }
+          atlasCache { atcLast = Just (atlasKey, tiles) }
         _ -> atlasCache
       cacheTouched = case atlasToDraw of
         Just (t:_) -> touchAtlasScale (tatHexRadius t) cacheWithLast
@@ -249,57 +256,60 @@ zoomTextureScale zoom =
   let target = ceiling (zoom * 2)
   in max 1 (min 6 target)
 
+-- | Select the active atlas key.
+--
+-- With multi-key caching this is an O(1) pointer update — no textures
+-- are flushed.  Tiles for the previous key remain in the cache and can
+-- be looked up again if the user switches back.
 setAtlasKey :: AtlasKey -> AtlasTextureCache -> AtlasTextureCache
-setAtlasKey key cache =
-  if atcKey cache == Just key
-    then cache
-    else
-      -- Textures held by atcLast must NOT be moved to atcPending here;
-      -- they are the fallback display tiles and will be retired explicitly
-      -- by resolveAtlasTiles when genuinely replaced.  Without this
-      -- exclusion the same SDL.Texture pointer ends up both in atcPending
-      -- (queued for release) and atcLast (still drawn), causing a
-      -- use-after-free crash.
-      let lastTextures = case atcLast cache of
-            Just (_, tiles) -> map tatTexture tiles
-            Nothing         -> []
-          fromCaches = collectTextures (atcCaches cache)
-          safePending = filter (`notElem` lastTextures) fromCaches
-      in cache
-        { atcKey = Just key
-        , atcCaches = IntMap.empty
-        , atcLru = []
-        , atcPending = safePending ++ atcPending cache
-        }
+setAtlasKey key cache = cache { atcKey = Just key }
 
+-- | Store freshly-built atlas tiles.
+--
+-- Tiles are indexed by ('AtlasKey', scale) in the nested map.  Results
+-- for any key are accepted as long as the terrain version matches the
+-- active key.  Results from an outdated terrain generation are
+-- discarded to 'atcPending'.
 storeAtlasTiles :: AtlasKey -> Int -> [TerrainAtlasTile] -> AtlasTextureCache -> AtlasTextureCache
 storeAtlasTiles key scale tiles cache =
-  case atcKey cache of
-    -- Stale result from a superseded build: discard the textures.
-    Just currentKey | currentKey /= key ->
-      cache { atcPending = map tatTexture tiles ++ atcPending cache }
-    -- Key matches (or no key set yet): store tiles.
-    _ ->
+  let isStale = case atcKey cache of
+        Just (AtlasKey _ _ _ currentV) ->
+          let AtlasKey _ _ _ resultV = key in resultV /= currentV
+        Nothing -> False
+  in if isStale
+    then cache { atcPending = map tatTexture tiles ++ atcPending cache }
+    else
       let targetCache = case atcKey cache of
             Nothing -> cache { atcKey = Just key }
             _       -> cache
-          (merged, pending) = mergeTiles (IntMap.lookup scale (atcCaches targetCache)) tiles
+          bucket = maybe IntMap.empty id (Map.lookup key (atcCaches targetCache))
+          (merged, pending) = mergeTiles (IntMap.lookup scale bucket) tiles
+          bucket' = IntMap.insert scale merged bucket
           cache' = targetCache
-            { atcCaches = IntMap.insert scale merged (atcCaches targetCache)
-            , atcLru = touch scale (atcLru targetCache)
+            { atcCaches = Map.insert key bucket' (atcCaches targetCache)
+            , atcLru = touch (key, scale) (atcLru targetCache)
             , atcPending = pending ++ atcPending targetCache
             }
       in evictIfNeeded cache'
 
+-- | Look up the nearest-scale tiles for a given key.
+--
+-- Any key can be looked up, not just the active one.
 getNearestAtlas :: AtlasKey -> Int -> AtlasTextureCache -> Maybe [TerrainAtlasTile]
 getNearestAtlas key target cache =
-  if atcKey cache == Just key
-    then nearestAtlas target (atcCaches cache)
-    else Nothing
+  case Map.lookup key (atcCaches cache) of
+    Just bucket -> nearestAtlas target bucket
+    Nothing     -> Nothing
 
+-- | Touch an atlas entry in the LRU, moving it to the front.
+--
+-- The active key is used.  Call sites that know the exact key should
+-- use the key directly by updating 'atcLru'.
 touchAtlasScale :: Int -> AtlasTextureCache -> AtlasTextureCache
 touchAtlasScale scale cache =
-  cache { atcLru = touch scale (atcLru cache) }
+  case atcKey cache of
+    Just key -> cache { atcLru = touch (key, scale) (atcLru cache) }
+    Nothing  -> cache
 
 drainAtlasPending :: AtlasTextureCache -> ([SDL.Texture], AtlasTextureCache)
 drainAtlasPending cache =
@@ -319,25 +329,31 @@ pickBest target current scale atlas =
       | abs (scale - target) < abs (bestScale - target) -> Just (scale, atlas)
       | otherwise -> current
 
-cleanLru :: Int -> [Int] -> [Int]
-cleanLru scale = filter (/= scale)
-
-touch :: Int -> [Int] -> [Int]
-touch scale lru = scale : cleanLru scale lru
+touch :: Eq a => a -> [a] -> [a]
+touch entry lru = entry : filter (/= entry) lru
 
 evictIfNeeded :: AtlasTextureCache -> AtlasTextureCache
 evictIfNeeded cache
   | length (atcLru cache) <= atcMaxEntries cache = cache
   | otherwise =
-      let (toKeep, toDrop) = splitAt (atcMaxEntries cache) (atcLru cache)
-          dropSet = IntSet.fromList toDrop
-          (evicted, remaining) = IntMap.partitionWithKey (\k _ -> IntSet.member k dropSet) (atcCaches cache)
-          pending = collectTextures evicted
+      let (toKeep, toEvict) = splitAt (atcMaxEntries cache) (atcLru cache)
+          (caches', pending) = foldl evictOne (atcCaches cache, []) toEvict
       in cache
-        { atcCaches = remaining
+        { atcCaches = caches'
         , atcLru = toKeep
         , atcPending = pending ++ atcPending cache
         }
+  where
+    evictOne (caches, pending) (key, scale) =
+      case Map.lookup key caches of
+        Nothing -> (caches, pending)
+        Just bucket ->
+          let tiles = maybe [] id (IntMap.lookup scale bucket)
+              bucket' = IntMap.delete scale bucket
+              caches' = if IntMap.null bucket'
+                then Map.delete key caches
+                else Map.insert key bucket' caches
+          in (caches', map tatTexture tiles ++ pending)
 
 collectTextures :: IntMap.IntMap [TerrainAtlasTile] -> [SDL.Texture]
 collectTextures caches =

@@ -77,7 +77,7 @@ data ViewMode
   | ViewTerrainForm
   | ViewCloud
   | ViewOverlay !Text !Int
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 data ConfigTab
   = ConfigTerrain

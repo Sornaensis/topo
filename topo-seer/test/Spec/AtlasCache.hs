@@ -1,8 +1,9 @@
 module Spec.AtlasCache (spec) where
 
 import Test.Hspec
-import Data.Maybe (isNothing)
+import Data.Maybe (isNothing, isJust)
 import qualified Data.IntMap.Strict as IntMap
+import qualified Data.Map.Strict as Map
 import Foreign.Ptr (Ptr, intPtrToPtr)
 import Linear (V2(..))
 import qualified SDL
@@ -47,148 +48,167 @@ testRect = Rect (V2 0 0, V2 64 64)
 testRect2 :: Rect
 testRect2 = Rect (V2 64 0, V2 64 64)
 
--- | Two keys that differ only in view mode.
+-- | Two keys that differ only in view mode (same terrain version).
 keyA, keyB :: AtlasKey
 keyA = AtlasKey ViewElevation 0 False 1
 keyB = AtlasKey ViewBiome     0 False 1
 
--- | Key that differs in day/night flag.
-keyDayNight :: AtlasKey
-keyDayNight = AtlasKey ViewElevation 0 True 1
+-- | Key with a different terrain version (stale).
+keyStale :: AtlasKey
+keyStale = AtlasKey ViewElevation 0 False 999
+
+-- | Helper to count total scales across all keys in the nested Map.
+totalScales :: Map.Map AtlasKey (IntMap.IntMap [TerrainAtlasTile]) -> Int
+totalScales = sum . map IntMap.size . Map.elems
 
 spec :: Spec
 spec = describe "AtlasTextureCache" $ do
 
   -- -------------------------------------------------------------------
-  -- setAtlasKey
+  -- setAtlasKey (multi-key: O(1) pointer update, no flushing)
   -- -------------------------------------------------------------------
   describe "setAtlasKey" $ do
     it "is idempotent for the same key" $ do
-      let cache0 = (emptyAtlasTextureCache 4) { atcKey = Just keyA }
+      let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
           cache1 = setAtlasKey keyA cache0
       atcKey cache1 `shouldBe` atcKey cache0
-      IntMap.size (atcCaches cache1) `shouldBe` IntMap.size (atcCaches cache0)
+      totalScales (atcCaches cache1) `shouldBe` totalScales (atcCaches cache0)
       length (atcPending cache1) `shouldBe` length (atcPending cache0)
 
-    it "clears atcCaches on key change" $ do
+    it "preserves atcCaches on key change (multi-key)" $ do
       let tiles  = [mkTile 1 6 testRect]
-          cache0 = (emptyAtlasTextureCache 4) { atcKey = Just keyA, atcCaches = IntMap.singleton 6 tiles }
+          cache0 = storeAtlasTiles keyA 6 tiles
+                     ((emptyAtlasTextureCache 30) { atcKey = Just keyA })
           cache1 = setAtlasKey keyB cache0
       atcKey cache1 `shouldBe` Just keyB
-      IntMap.null (atcCaches cache1) `shouldBe` True
+      -- Tiles for keyA must still be in the cache
+      isJust (Map.lookup keyA (atcCaches cache1)) `shouldBe` True
 
-    it "moves cache textures to atcPending on key change" $ do
+    it "does not add anything to atcPending on key change" $ do
       let tiles  = [mkTile 1 6 testRect, mkTile 2 6 testRect2]
-          cache0 = (emptyAtlasTextureCache 4) { atcKey = Just keyA, atcCaches = IntMap.singleton 6 tiles }
+          cache0 = storeAtlasTiles keyA 6 tiles
+                     ((emptyAtlasTextureCache 30) { atcKey = Just keyA })
           cache1 = setAtlasKey keyB cache0
-      length (atcPending cache1) `shouldBe` 2
+      null (atcPending cache1) `shouldBe` True
 
     it "preserves atcLast on key change" $ do
       let lastTiles = [mkTile 10 6 testRect]
-          cache0 = (emptyAtlasTextureCache 4)
+          cache0 = (emptyAtlasTextureCache 30)
             { atcKey  = Just keyA
-            , atcCaches = IntMap.empty
+            , atcCaches = Map.empty
             , atcLast = Just (keyA, lastTiles)
             }
           cache1 = setAtlasKey keyB cache0
       fmap fst (atcLast cache1) `shouldBe` Just keyA
       fmap (length . snd) (atcLast cache1) `shouldBe` Just 1
 
-    -- Regression: use-after-free when atcLast tiles are aliased with atcCaches
-    it "does NOT move atcLast textures to atcPending (no aliasing)" $ do
-      let sharedTiles = [mkTile 100 6 testRect, mkTile 101 6 testRect2]
-          cache0 = (emptyAtlasTextureCache 4)
-            { atcKey  = Just keyA
-            , atcCaches = IntMap.singleton 6 sharedTiles
-            , atcLast = Just (keyA, sharedTiles)  -- aliased!
-            }
-          cache1 = setAtlasKey keyB cache0
-      -- The textures from atcLast (100, 101) must NOT appear in atcPending
-      -- because atcLast still references them for fallback display.
-      null (atcPending cache1) `shouldBe` True
-
-    it "moves only non-aliased cache textures to pending" $ do
-      let lastTile  = mkTile 100 6 testRect
-          cacheTile = mkTile 200 10 testRect2
-          cache0 = (emptyAtlasTextureCache 4)
-            { atcKey  = Just keyA
-            , atcCaches = IntMap.fromList [(6, [lastTile]), (10, [cacheTile])]
-            , atcLast = Just (keyA, [lastTile])
-            }
-          cache1 = setAtlasKey keyB cache0
-      -- Only cacheTile (200) should be pending; lastTile (100) is protected
-      map (\t -> t == mockTexture 200) (atcPending cache1) `shouldBe` [True]
-
   -- -------------------------------------------------------------------
-  -- storeAtlasTiles
+  -- storeAtlasTiles (multi-key nested Map)
   -- -------------------------------------------------------------------
   describe "storeAtlasTiles" $ do
-    it "stores tiles when key matches" $ do
-      let cache0 = (emptyAtlasTextureCache 4) { atcKey = Just keyA }
+    it "stores tiles for the active key" $ do
+      let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
           tiles  = [mkTile 1 6 testRect]
           cache1 = storeAtlasTiles keyA 6 tiles cache0
-      IntMap.member 6 (atcCaches cache1) `shouldBe` True
+      isJust (Map.lookup keyA (atcCaches cache1)) `shouldBe` True
+      case Map.lookup keyA (atcCaches cache1) of
+        Just bucket -> IntMap.member 6 bucket `shouldBe` True
+        Nothing     -> expectationFailure "keyA bucket missing"
 
-    it "discards tiles to pending when key mismatches" $ do
-      let cache0 = (emptyAtlasTextureCache 4) { atcKey = Just keyA }
+    it "stores tiles for a non-active key with matching terrain version" $ do
+      let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
           tiles  = [mkTile 50 10 testRect]
           cache1 = storeAtlasTiles keyB 10 tiles cache0
-      IntMap.null (atcCaches cache1) `shouldBe` True
+      -- keyB has same terrain version (1) as keyA, so stored
+      isJust (Map.lookup keyB (atcCaches cache1)) `shouldBe` True
+      null (atcPending cache1) `shouldBe` True
+
+    it "discards tiles with stale terrain version to pending" $ do
+      let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          tiles  = [mkTile 50 10 testRect]
+          cache1 = storeAtlasTiles keyStale 10 tiles cache0
+      Map.null (atcCaches cache1) `shouldBe` True
       length (atcPending cache1) `shouldBe` 1
 
     it "sets atcKey when storing into empty cache" $ do
-      let cache0 = emptyAtlasTextureCache 4
+      let cache0 = emptyAtlasTextureCache 30
           tiles  = [mkTile 1 6 testRect]
           cache1 = storeAtlasTiles keyA 6 tiles cache0
       atcKey cache1 `shouldBe` Just keyA
 
+    it "replaces tiles at the same (key, scale) and pending old" $ do
+      let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          tiles1 = [mkTile 1 6 testRect]
+          tiles2 = [mkTile 2 6 testRect]  -- same bounds replaces tile 1
+          cache1 = storeAtlasTiles keyA 6 tiles1 cache0
+          cache2 = storeAtlasTiles keyA 6 tiles2 cache1
+      -- Old tile 1 should be in pending
+      length (atcPending cache2) `shouldBe` 1
+
+    it "coexists tiles for different keys" $ do
+      let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          cache1 = storeAtlasTiles keyA 6 [mkTile 1 6 testRect] cache0
+          cache2 = storeAtlasTiles keyB 6 [mkTile 2 6 testRect] cache1
+      Map.size (atcCaches cache2) `shouldBe` 2
+
   -- -------------------------------------------------------------------
-  -- getNearestAtlas
+  -- getNearestAtlas (looks up by any key)
   -- -------------------------------------------------------------------
   describe "getNearestAtlas" $ do
-    it "returns exact scale match" $ do
-      let tiles6  = [mkTile 1 6 testRect]
-          tiles10 = [mkTile 2 10 testRect]
-          cache   = (emptyAtlasTextureCache 4)
-            { atcKey = Just keyA
-            , atcCaches = IntMap.fromList [(6, tiles6), (10, tiles10)]
-            }
-          result = getNearestAtlas keyA 6 cache
+    it "returns exact scale match for specified key" $ do
+      let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          cache1 = storeAtlasTiles keyA 6 [mkTile 1 6 testRect]
+                 $ storeAtlasTiles keyA 10 [mkTile 2 10 testRect] cache0
+          result = getNearestAtlas keyA 6 cache1
       fmap length result `shouldBe` Just 1
       fmap (tatHexRadius . head) result `shouldBe` Just 6
 
     it "returns nearest scale when exact is missing" $ do
-      let tiles8  = [mkTile 1 8 testRect]
-          tiles20 = [mkTile 2 20 testRect]
-          cache   = (emptyAtlasTextureCache 4)
-            { atcKey = Just keyA
-            , atcCaches = IntMap.fromList [(8, tiles8), (20, tiles20)]
-            }
-          result = getNearestAtlas keyA 10 cache
+      let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          cache1 = storeAtlasTiles keyA 8 [mkTile 1 8 testRect]
+                 $ storeAtlasTiles keyA 20 [mkTile 2 20 testRect] cache0
+          result = getNearestAtlas keyA 10 cache1
       fmap length result `shouldBe` Just 1
       fmap (tatHexRadius . head) result `shouldBe` Just 8
 
-    it "returns Nothing on key mismatch" $ do
-      let tiles = [mkTile 1 6 testRect]
-          cache = (emptyAtlasTextureCache 4)
-            { atcKey = Just keyA
-            , atcCaches = IntMap.singleton 6 tiles
-            }
-      isNothing (getNearestAtlas keyB 6 cache) `shouldBe` True
+    it "returns Nothing when key is not in cache" $ do
+      let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          cache1 = storeAtlasTiles keyA 6 [mkTile 1 6 testRect] cache0
+      isNothing (getNearestAtlas keyStale 6 cache1) `shouldBe` True
+
+    it "looks up non-active key that is present in cache" $ do
+      let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          cache1 = storeAtlasTiles keyA 6 [mkTile 1 6 testRect]
+                 $ storeAtlasTiles keyB 6 [mkTile 2 6 testRect] cache0
+          -- Switch active key to keyB, but look up keyA
+          cache2 = setAtlasKey keyB cache1
+          result = getNearestAtlas keyA 6 cache2
+      isJust result `shouldBe` True
 
   -- -------------------------------------------------------------------
-  -- touchAtlasScale
+  -- touchAtlasScale (uses active key in LRU)
   -- -------------------------------------------------------------------
   describe "touchAtlasScale" $ do
-    it "moves scale to front of LRU" $ do
-      let cache0 = (emptyAtlasTextureCache 4) { atcLru = [6, 10, 18] }
+    it "moves (key, scale) to front of LRU" $ do
+      let cache0 = (emptyAtlasTextureCache 30)
+            { atcKey = Just keyA
+            , atcLru = [(keyA, 6), (keyA, 10), (keyA, 18)]
+            }
           cache1 = touchAtlasScale 10 cache0
-      atcLru cache1 `shouldBe` [10, 6, 18]
+      atcLru cache1 `shouldBe` [(keyA, 10), (keyA, 6), (keyA, 18)]
 
-    it "adds new scale to LRU" $ do
-      let cache0 = (emptyAtlasTextureCache 4) { atcLru = [6] }
+    it "adds new (key, scale) to LRU" $ do
+      let cache0 = (emptyAtlasTextureCache 30)
+            { atcKey = Just keyA
+            , atcLru = [(keyA, 6)]
+            }
           cache1 = touchAtlasScale 10 cache0
-      atcLru cache1 `shouldBe` [10, 6]
+      atcLru cache1 `shouldBe` [(keyA, 10), (keyA, 6)]
+
+    it "is a no-op when no active key" $ do
+      let cache0 = (emptyAtlasTextureCache 30) { atcLru = [] }
+          cache1 = touchAtlasScale 10 cache0
+      null (atcLru cache1) `shouldBe` True
 
   -- -------------------------------------------------------------------
   -- drainAtlasPending
@@ -196,43 +216,45 @@ spec = describe "AtlasTextureCache" $ do
   describe "drainAtlasPending" $ do
     it "returns pending textures and empties the list" $ do
       let texs   = [mockTexture 1, mockTexture 2]
-          cache0 = (emptyAtlasTextureCache 4) { atcPending = texs }
+          cache0 = (emptyAtlasTextureCache 30) { atcPending = texs }
           (drained, cache1) = drainAtlasPending cache0
       length drained `shouldBe` 2
       all (`elem` texs) drained `shouldBe` True
       null (atcPending cache1) `shouldBe` True
 
     it "returns empty list when no textures are pending" $ do
-      let (drained, _) = drainAtlasPending (emptyAtlasTextureCache 4)
+      let (drained, _) = drainAtlasPending (emptyAtlasTextureCache 30)
       null drained `shouldBe` True
 
   -- -------------------------------------------------------------------
-  -- evictIfNeeded
+  -- evictIfNeeded (global eviction across all keys)
   -- -------------------------------------------------------------------
   describe "evictIfNeeded" $ do
     it "does not evict when within capacity" $ do
-      let cache0 = (emptyAtlasTextureCache 4)
-            { atcCaches = IntMap.fromList [(6, [mkTile 1 6 testRect]), (10, [mkTile 2 10 testRect])]
-            , atcLru = [6, 10]
-            }
-          cache1 = evictIfNeeded cache0
-      IntMap.size (atcCaches cache1) `shouldBe` 2
+      let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          cache1 = storeAtlasTiles keyA 6 [mkTile 1 6 testRect]
+                 $ storeAtlasTiles keyA 10 [mkTile 2 10 testRect] cache0
+      -- storeAtlasTiles calls evictIfNeeded internally; check nothing evicted
+      totalScales (atcCaches cache1) `shouldBe` 2
       null (atcPending cache1) `shouldBe` True
 
     it "evicts LRU entries beyond maxEntries" $ do
-      let cache0 = (emptyAtlasTextureCache 2)
-            { atcCaches = IntMap.fromList
-                [ (6,  [mkTile 1 6 testRect])
-                , (10, [mkTile 2 10 testRect])
-                , (18, [mkTile 3 18 testRect])
-                ]
-            , atcLru = [18, 10, 6]  -- 18 most recent, 6 least recent
-            }
-          cache1 = evictIfNeeded cache0
-      IntMap.size (atcCaches cache1) `shouldBe` 2
-      IntMap.member 18 (atcCaches cache1) `shouldBe` True
-      IntMap.member 10 (atcCaches cache1) `shouldBe` True
-      IntMap.member 6  (atcCaches cache1) `shouldBe` False
+      let cache0 = (emptyAtlasTextureCache 2) { atcKey = Just keyA }
+          -- Store 3 scales but max is 2
+          cache1 = storeAtlasTiles keyA 18 [mkTile 3 18 testRect]
+                 $ storeAtlasTiles keyA 10 [mkTile 2 10 testRect]
+                 $ storeAtlasTiles keyA 6 [mkTile 1 6 testRect] cache0
+      -- scale 6 (first stored) should be evicted as LRU
+      totalScales (atcCaches cache1) `shouldBe` 2
+      length (atcPending cache1) `shouldBe` 1
+
+    it "evicts across different keys" $ do
+      let cache0 = (emptyAtlasTextureCache 2) { atcKey = Just keyA }
+          cache1 = storeAtlasTiles keyB 6 [mkTile 3 6 testRect]
+                 $ storeAtlasTiles keyA 10 [mkTile 2 10 testRect]
+                 $ storeAtlasTiles keyA 6 [mkTile 1 6 testRect] cache0
+      -- 3 entries stored, max 2 → oldest (keyA, 6) evicted
+      totalScales (atcCaches cache1) `shouldBe` 2
       length (atcPending cache1) `shouldBe` 1
 
   -- -------------------------------------------------------------------
@@ -243,13 +265,13 @@ spec = describe "AtlasTextureCache" $ do
         stage1 = ZoomStage { zsHexRadius = 10, zsAtlasScale = 2, zsZoomMin = 1.0, zsZoomMax = 2.2 }
 
     it "commits on first call" $ do
-      let cache0 = emptyAtlasTextureCache 4
+      let cache0 = emptyAtlasTextureCache 30
           (stage, cache1) = resolveEffectiveStage 1000 stage0 cache0
       stage `shouldBe` stage0
       atcCommittedStage cache1 `shouldBe` Just stage0
 
     it "delays switch within hysteresis window" $ do
-      let cache0 = (emptyAtlasTextureCache 4) { atcCommittedStage = Just stage0, atcStageChangeNs = 0 }
+      let cache0 = (emptyAtlasTextureCache 30) { atcCommittedStage = Just stage0, atcStageChangeNs = 0 }
           -- First call at t=1000 with different stage starts timer
           (stage1a, cache1) = resolveEffectiveStage 1000 stage1 cache0
           -- Second call at t=1001 (1ns later, still within 300ms)
@@ -258,7 +280,7 @@ spec = describe "AtlasTextureCache" $ do
       stage1b `shouldBe` stage0  -- still within hysteresis
 
     it "commits after hysteresis expires" $ do
-      let cache0 = (emptyAtlasTextureCache 4) { atcCommittedStage = Just stage0, atcStageChangeNs = 0 }
+      let cache0 = (emptyAtlasTextureCache 30) { atcCommittedStage = Just stage0, atcStageChangeNs = 0 }
           (_stageA, cache1) = resolveEffectiveStage 1000 stage1 cache0
           -- Now advance past 300ms (300_000_000 ns)
           (stageB, cache2) = resolveEffectiveStage (1000 + 300000001) stage1 cache1
@@ -266,7 +288,7 @@ spec = describe "AtlasTextureCache" $ do
       atcCommittedStage cache2 `shouldBe` Just stage1
 
     it "resets timer when stage returns to committed" $ do
-      let cache0 = (emptyAtlasTextureCache 4) { atcCommittedStage = Just stage0, atcStageChangeNs = 0 }
+      let cache0 = (emptyAtlasTextureCache 30) { atcCommittedStage = Just stage0, atcStageChangeNs = 0 }
           -- Start hysteresis for stage1
           (_stageA, cache1) = resolveEffectiveStage 1000 stage1 cache0
           -- Return to committed stage
@@ -275,12 +297,12 @@ spec = describe "AtlasTextureCache" $ do
       atcStageChangeNs cache2 `shouldBe` 0
 
   -- -------------------------------------------------------------------
-  -- collectAtlasTextures
+  -- collectAtlasTextures (gathers from all keys)
   -- -------------------------------------------------------------------
   describe "collectAtlasTextures" $ do
-    it "gathers textures from caches and pending" $ do
-      let cache = (emptyAtlasTextureCache 4)
-            { atcCaches = IntMap.singleton 6 [mkTile 1 6 testRect]
-            , atcPending = [mockTexture 99]
-            }
-      length (collectAtlasTextures cache) `shouldBe` 2
+    it "gathers textures from all keys and pending" $ do
+      let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          cache1 = storeAtlasTiles keyB 6 [mkTile 2 6 testRect]
+                 $ storeAtlasTiles keyA 6 [mkTile 1 6 testRect] cache0
+          cache2 = cache1 { atcPending = [mockTexture 99] }
+      length (collectAtlasTextures cache2) `shouldBe` 3

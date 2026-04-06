@@ -109,6 +109,7 @@ import UI.TexturePool (TexturePool, newTexturePool, releaseTexture, destroyTextu
 import UI.Font (destroyFontCache, initFontCacheMaybe)
 import UI.Layout (minUsableWindowWidth, minUsableWindowHeight)
 import qualified Data.IntMap.Strict as IntMap
+import qualified Data.Map.Strict as Map
 import UI.TerrainRender (destroyChunkTexture)
 import System.Random (randomIO)
 import System.IO (Handle, IOMode(..), hFlush, hPutStrLn, openFile)
@@ -515,7 +516,7 @@ renderMetrics frameMs _snap cacheState =
   let terrainCount = IntMap.size (tcTerrainChunks (rcsTerrainCache cacheState))
       chunkTextures = IntMap.size (ctcTextures (rcsChunkTextures cacheState))
       atlasScales = length (atcLru (rcsAtlasCache cacheState))
-      atlasTiles = sum (map length (IntMap.elems (atcCaches (rcsAtlasCache cacheState))))
+      atlasTiles = sum (map length (concatMap IntMap.elems (Map.elems (atcCaches (rcsAtlasCache cacheState)))))
       snapshotVer = case rcsLastSnapshot cacheState of
         Nothing -> "none"
         Just (SnapshotVersion v) -> show v
