@@ -5,6 +5,7 @@ module UI.TerrainAtlas
   , buildAtlasTileGeometry
   , composeTilesFromGeometry
   , attachRiverOverlay
+  , mergeChunkGeometry
   , renderAtlasTileTextures
   , maxAtlasTextureSize
   ) where
@@ -211,6 +212,19 @@ renderAtlasTileTextures pool renderer tiles =
         , tatScale     = scale'
         , tatHexRadius = atgHexRadius tile
         }]
+
+-- | Pre-merge multiple chunk geometries into a single chunk with rebased
+-- indices.  Call on the worker thread to move the 'SV.concat' and index
+-- rebasing allocations off the render thread.
+mergeChunkGeometry :: [AtlasChunkGeometry] -> AtlasChunkGeometry
+mergeChunkGeometry [] = AtlasChunkGeometry SV.empty SV.empty
+mergeChunkGeometry [single] = single
+mergeChunkGeometry chunks =
+  let mergedVerts = SV.concat (map acgVertices chunks)
+      vertOffsets = scanl (+) 0 (map (SV.length . acgVertices) chunks)
+      rebase off chunk = SV.map (+ fromIntegral off) (acgIndices chunk)
+      mergedIndices = SV.concat (zipWith rebase vertOffsets chunks)
+  in AtlasChunkGeometry mergedVerts mergedIndices
 
 -- | Render a list of chunk geometries in a single batched draw call.
 -- Vertices are concatenated and indices are rebased to account for

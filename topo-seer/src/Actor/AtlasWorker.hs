@@ -20,7 +20,7 @@ import Actor.Data (TerrainSnapshot(..))
 import Actor.UI (ViewMode(..))
 import Control.Concurrent (threadDelay)
 import Control.Exception (evaluate)
-import Control.Monad (forM, forM_)
+import Control.Monad (forM)
 import qualified Data.IntMap.Strict as IntMap
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
@@ -28,7 +28,7 @@ import Topo (WorldConfig(..))
 import Seer.Render.Viewport (visibleChunkKeys)
 import UI.OverlayExtract (extractOverlayField)
 import UI.RiverRender (RiverGeometry(..), buildChunkRiverGeometry, defaultRiverRenderConfig, scaleRiverWidths)
-import UI.TerrainAtlas (AtlasChunkGeometry(..), AtlasTileGeometry(..), attachRiverOverlay, composeTilesFromGeometry)
+import UI.TerrainAtlas (AtlasChunkGeometry(..), AtlasTileGeometry(..), attachRiverOverlay, composeTilesFromGeometry, mergeChunkGeometry)
 import UI.TerrainRender (ChunkGeometry, buildChunkGeometry)
 
 
@@ -111,20 +111,15 @@ actor AtlasWorker
       then threadDelay 100 >> pure st
       else do
         mapM_ (\tile -> do
-                   -- Force each chunk's SV.map vertex-transform thunks on
-                   -- the worker thread.  Without this, composeTilesFromGeometry
-                   -- produces lazy AtlasChunkGeometry values whose storable
-                   -- vector allocations are deferred to the render thread,
-                   -- causing ~250ms drain stalls during texture upload.
-                   forM_ (atgChunks tile) $ \chunk -> do
-                     _ <- evaluate (acgVertices chunk)
-                     _ <- evaluate (acgIndices chunk)
-                     pure ()
-                   forM_ (atgRiverOverlay tile) $ \chunk -> do
-                     _ <- evaluate (acgVertices chunk)
-                     _ <- evaluate (acgIndices chunk)
-                     pure ()
-                   let r = buildResult tile
+                   -- Pre-merge terrain + river chunks into a single geometry
+                   -- so the render thread avoids SV.concat and index-rebasing
+                   -- allocations during texture upload.
+                   let merged = mergeChunkGeometry (atgChunks tile ++ atgRiverOverlay tile)
+                       tile' = tile { atgChunks = [merged], atgRiverOverlay = [] }
+                   -- Force the merged storable vectors on the worker thread.
+                   _ <- evaluate (acgVertices merged)
+                   _ <- evaluate (acgIndices merged)
+                   let r = buildResult tile'
                    _ <- evaluate r
                    pushAtlasResult (abResultRef job) r) tiles
         threadDelay 100
