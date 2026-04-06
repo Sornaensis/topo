@@ -63,15 +63,11 @@ actor AtlasManager
       Nothing -> pure ()
     pure st { amCache = Just cache }
   on_ enqueue = \job st -> do
-    st' <- if amKey st /= Just (ajKey job)
-      then do
-        case amCache st of
-          Just cache -> setAtlasKey cache (ajKey job)
-          Nothing -> pure ()
-        pure st { amKey = Just (ajKey job), amQueue = [] }
-      else pure st
-    let pruned = filter ((/= ajHexRadius job) . ajHexRadius) (amQueue st')
-    pure st' { amQueue = pruned ++ [job] }
+    -- With multi-key caching, different keys coexist in the cache.
+    -- Do not clear the queue or notify the actor-side cache on key change.
+    -- Prune by (key, hexRadius) to deduplicate within the same view mode.
+    let pruned = filter (\j -> not (ajKey j == ajKey job && ajHexRadius j == ajHexRadius job)) (amQueue st)
+    pure st { amKey = Just (ajKey job), amQueue = pruned ++ [job] }
   onPure drainJobs = \() st -> (st { amQueue = [] }, amQueue st)
 |]
 

@@ -19,6 +19,7 @@ module Actor.UI.State
   , sliderValueForId
   , UiMenuMode(..)
   , ViewMode(..)
+  , allStandardViewModes
   , UiState(..)
   , emptyUiState
   , UiUpdate(..)
@@ -78,6 +79,27 @@ data ViewMode
   | ViewCloud
   | ViewOverlay !Text !Int
   deriving (Eq, Ord, Show)
+
+-- | All non-overlay view modes (fixed set, excludes 'ViewOverlay').
+allStandardViewModes :: [ViewMode]
+allStandardViewModes =
+  [ ViewElevation
+  , ViewBiome
+  , ViewClimate
+  , ViewWeather
+  , ViewMoisture
+  , ViewPrecip
+  , ViewPlateId
+  , ViewPlateBoundary
+  , ViewPlateHardness
+  , ViewPlateCrust
+  , ViewPlateAge
+  , ViewPlateHeight
+  , ViewPlateVelocity
+  , ViewVegetation
+  , ViewTerrainForm
+  , ViewCloud
+  ]
 
 data ConfigTab
   = ConfigTerrain

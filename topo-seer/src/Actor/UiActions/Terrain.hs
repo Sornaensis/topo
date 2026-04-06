@@ -40,7 +40,7 @@ import Actor.SnapshotReceiver
   , bumpSnapshotVersion
   )
 import Actor.Terrain (TerrainGenProgress(..), TerrainGenResult(..))
-import Actor.UI (Ui, UiState(..), getUiSnapshot, setUiGenerating)
+import Actor.UI (Ui, UiState(..), allStandardViewModes, getUiSnapshot, setUiGenerating)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
@@ -140,16 +140,22 @@ applyTerrainResult handles resultMsg = do
 rebuildAtlas :: UiActionHandles -> TerrainSnapshot -> UiState -> IO ()
 rebuildAtlas handles terrainSnap uiSnap = do
   start <- getMonotonicTimeNSec
-  let atlasKey = AtlasKey (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) (uiDayNightEnabled uiSnap) (tsVersion terrainSnap)
-      job stage = AtlasJob
-        { ajKey        = atlasKey
-        , ajViewMode   = uiViewMode uiSnap
-        , ajWaterLevel = uiRenderWaterLevel uiSnap
-        , ajTerrain    = terrainSnap
-        , ajHexRadius  = zsHexRadius stage
-        , ajAtlasScale = zsAtlasScale stage
-        }
-  mapM_ (enqueueAtlasBuild (uahAtlas handles) . job) allZoomStages
+  let currentMode = uiViewMode uiSnap
+      otherModes  = filter (/= currentMode) allStandardViewModes
+      mkJob mode stage =
+        let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (uiDayNightEnabled uiSnap) (tsVersion terrainSnap)
+        in AtlasJob
+          { ajKey        = atlasKey
+          , ajViewMode   = mode
+          , ajWaterLevel = uiRenderWaterLevel uiSnap
+          , ajTerrain    = terrainSnap
+          , ajHexRadius  = zsHexRadius stage
+          , ajAtlasScale = zsAtlasScale stage
+          }
+  -- Current mode first for immediate display
+  mapM_ (enqueueAtlasBuild (uahAtlas handles) . mkJob currentMode) allZoomStages
+  -- Then all other standard view modes in the background
+  mapM_ (\m -> mapM_ (enqueueAtlasBuild (uahAtlas handles) . mkJob m) allZoomStages) otherModes
   end <- getMonotonicTimeNSec
   logElapsed (uahLog handles) "terrain: enqueue atlas jobs" start end
 

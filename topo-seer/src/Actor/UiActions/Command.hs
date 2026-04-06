@@ -38,6 +38,7 @@ import Actor.UI
   ( ConfigTab(..)
   , Ui
   , ViewMode(..)
+  , allStandardViewModes
   , emptyUiState
   , getUiSnapshot
   , uiChunkSize
@@ -119,15 +120,15 @@ runUiAction :: UiActionRequest -> IO ()
 runUiAction req =
   case uarAction req of
     UiActionGenerate ->
-      logTimed req "Generate" (startGeneration req >> rebuildAtlas req)
+      logTimed req "Generate" (startGeneration req >> rebuildAtlasForAll req)
     UiActionReset ->
       logTimed req "Config Reset" (resetConfig req)
     UiActionRevert ->
       logTimed req "Config Revert" (revertConfig req)
     UiActionSetViewMode mode ->
-      logTimed req ("View " <> viewModeLabel mode) (setViewMode req mode >> rebuildAtlasFor req mode)
+      logTimed req ("View " <> viewModeLabel mode) (setViewMode req mode >> rebuildAtlasForAll req)
     UiActionRebuildAtlas mode ->
-      logTimed req ("Rebuild Atlas " <> viewModeLabel mode) (rebuildAtlasFor req mode)
+      logTimed req ("Rebuild Atlas " <> viewModeLabel mode) (rebuildAtlasForAll req)
     UiActionBrushStroke hex ->
       logTimed req "Brush Stroke" (applyBrush req hex)
     UiActionClearFlattenRef ->
@@ -258,6 +259,25 @@ rebuildAtlasFor' handles mode = do
         , ajAtlasScale = zsAtlasScale stage
         }
   mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles) . job) allZoomStages
+
+-- | Enqueue atlas builds for all standard view modes.
+-- The current view mode is enqueued first so it gets higher priority.
+rebuildAtlasForAll :: UiActionRequest -> IO ()
+rebuildAtlasForAll req = do
+  uiSnap <- getUiSnapshot (ahUiHandle (uarActorHandles req))
+  let current = uiViewMode uiSnap
+      others  = filter (/= current) allStandardViewModes
+  rebuildAtlasFor req current
+  mapM_ (rebuildAtlasFor req) others
+
+-- | 'rebuildAtlasForAll' variant that takes 'ActorHandles' directly.
+rebuildAtlasForAll' :: ActorHandles -> IO ()
+rebuildAtlasForAll' handles = do
+  uiSnap <- getUiSnapshot (ahUiHandle handles)
+  let current = uiViewMode uiSnap
+      others  = filter (/= current) allStandardViewModes
+  rebuildAtlasFor' handles current
+  mapM_ (rebuildAtlasFor' handles) others
 
 setViewMode :: UiActionRequest -> ViewMode -> IO ()
 setViewMode req mode =

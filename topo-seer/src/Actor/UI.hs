@@ -11,6 +11,7 @@ module Actor.UI
   , LeftTab(..)
   , UiMenuMode(..)
   , ViewMode(..)
+  , allStandardViewModes
   , UiState(..)
   , emptyUiState
   , uiActorDef
@@ -35,6 +36,7 @@ import Actor.UI.State
   , UiSnapshotRef
   , UiState(..)
   , ViewMode(..)
+  , allStandardViewModes
   , builtinStageRowCount
   , configRowCount
   , pluginRowIndex
