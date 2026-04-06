@@ -43,6 +43,7 @@ import Seer.Render.Atlas
   , drawAtlasAlpha
   , drainAtlasBuildResults
   , getNearestAtlas
+  , getNearestDayNight
   , resolveAtlasTiles
   , resolveEffectiveStage
   , scheduleAtlasBuilds
@@ -140,7 +141,7 @@ renderFrame context = do
       -- Synchronise the render-thread cache key with the current UI state
       -- BEFORE draining results.  This ensures stale worker results (from a
       -- superseded view mode) are discarded rather than thrashing the key.
-      expectedAtlasKey = AtlasKey mode (uiRenderWaterLevel (rsUi snapshot)) (uiDayNightEnabled (rsUi snapshot)) (tsVersion terrainSnap)
+      expectedAtlasKey = AtlasKey mode (uiRenderWaterLevel (rsUi snapshot)) (tsVersion terrainSnap)
       atlasCacheKeyed = setAtlasKey expectedAtlasKey atlasCacheWithStage
       dataReady = tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
   (loggedSchedule, loggedScheduleDrain, loggedScheduleEnqueue) <-
@@ -206,6 +207,17 @@ renderFrame context = do
       (_, elapsed) <- timedMs (drawTerrain renderer terrainSnap terrainCache textureCache' (uiPanOffset (rsUi snapshot)) (uiZoom (rsUi snapshot)) (V2 (fromIntegral winW) (fromIntegral winH)))
       logTiming logHandle timingLogThresholdMs (Text.pack "draw terrain") elapsed Nothing
   tAfterDraw <- getMonotonicTimeNSec
+  -- Draw day/night overlay on top of base atlas when enabled.
+  when (uiDayNightEnabled (rsUi snapshot)) $ do
+    let dnTiles = getNearestDayNight (zsHexRadius stage) atlasCache''
+    case dnTiles of
+      Just dt | not (null dt) -> do
+        -- Set alpha blending on each day/night texture so black+alpha
+        -- composites correctly over the base atlas.
+        forM_ dt $ \tile ->
+          SDL.textureBlendMode (tatTexture tile) SDL.$= SDL.BlendAlphaBlend
+        drawAtlas renderer dt (uiPanOffset (rsUi snapshot)) (uiZoom (rsUi snapshot)) (V2 (fromIntegral winW) (fromIntegral winH))
+      _ -> pure ()
   let hexHoverRadius = zsHexRadius stage
   loggedHover <- do
     (_, elapsed) <- timedMs (drawHoverHex renderer (rsUi snapshot) hexHoverRadius)

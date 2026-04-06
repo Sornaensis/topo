@@ -11,13 +11,15 @@ module Seer.Render.Atlas
   , scheduleAtlasBuilds
   , setAtlasKey
   , storeAtlasTiles
+  , storeDayNightTiles
+  , getNearestDayNight
   , touchAtlasScale
   , drainAtlasPending
   , evictIfNeeded
   , zoomTextureScale
   ) where
 
-import Actor.AtlasCache (AtlasKey(..))
+import Actor.AtlasCache (AtlasKey(..), atlasKeyVersion)
 import Actor.AtlasResult (AtlasBuildResult(..))
 import Actor.AtlasResultBroker (AtlasResultRef, drainAtlasResultsN, drainFreshResultsN)
 import Actor.AtlasScheduleBroker
@@ -52,10 +54,14 @@ import UI.WidgetsDraw (rectToSDL)
 
 -- | Render-thread-owned cache of atlas textures keyed by (AtlasKey, scale).
 --
--- Tiles for different view modes, water levels, and day\/night states
--- coexist in a 'Map.Map AtlasKey (IntMap [TerrainAtlasTile])'.
+-- Tiles for different view modes and water levels coexist in a
+-- 'Map.Map AtlasKey (IntMap [TerrainAtlasTile])'.
 -- Switching the active key ('atcKey') is an O(1) pointer update —
 -- no textures are flushed.
+--
+-- Day\/night overlay tiles are stored separately in 'atcDayNight',
+-- keyed only by scale (hex radius).  The overlay is independent of
+-- view mode, so switching modes does not invalidate it.
 data AtlasTextureCache = AtlasTextureCache
   { atcKey :: !(Maybe AtlasKey)
   , atcCaches :: !(Map.Map AtlasKey (IntMap.IntMap [TerrainAtlasTile]))
@@ -65,6 +71,9 @@ data AtlasTextureCache = AtlasTextureCache
   , atcLast :: !(Maybe (AtlasKey, [TerrainAtlasTile]))
   , atcCommittedStage :: !(Maybe ZoomStage)
   , atcStageChangeNs :: !Word64
+  , atcDayNight :: !(IntMap.IntMap [TerrainAtlasTile])
+    -- ^ Day\/night overlay tiles keyed by scale (hex radius).
+    -- View-mode-independent; shared across all base atlas keys.
   }
 
 -- | Create an empty atlas texture cache.
@@ -78,6 +87,7 @@ emptyAtlasTextureCache maxEntries = AtlasTextureCache
   , atcLast = Nothing
   , atcCommittedStage = Nothing
   , atcStageChangeNs = 0
+  , atcDayNight = IntMap.empty
   }
 
 -- | Hysteresis threshold: do not switch zoom stage until the camera has
@@ -117,7 +127,9 @@ resolveEffectiveStage nowNs rawStage cache =
 -- | Collect all textures currently held by the atlas cache.
 collectAtlasTextures :: AtlasTextureCache -> [SDL.Texture]
 collectAtlasTextures cache =
-  atcPending cache ++ concatMap collectTextures (Map.elems (atcCaches cache))
+  atcPending cache
+  ++ concatMap collectTextures (Map.elems (atcCaches cache))
+  ++ concatMap (map tatTexture) (IntMap.elems (atcDayNight cache))
 
 -- | Draw atlas tiles to the renderer.
 drawAtlas :: SDL.Renderer -> [TerrainAtlasTile] -> (Float, Float) -> Float -> V2 Int -> IO ()
@@ -177,8 +189,8 @@ drainAtlasBuildResults renderTargetOk perFrame pool renderer atlasCache resultRe
       -- as long as the terrain version matches.  Only discard results
       -- from an outdated generation pass.
       let isFresh r = case atcKey atlasCache of
-            Just (AtlasKey _ _ _ currentV) ->
-              let AtlasKey _ _ _ resultV = abrKey r in resultV == currentV
+            Just currentKey ->
+              atlasKeyVersion (abrKey r) == atlasKeyVersion currentKey
             Nothing -> True
       (results, _staleCount) <- drainFreshResultsN resultRef isFresh perFrame
       (cache', totalMs) <- foldM cacheStep (atlasCache, 0) results
@@ -190,12 +202,20 @@ drainAtlasBuildResults renderTargetOk perFrame pool renderer atlasCache resultRe
     cacheStep (cache, totalMs) result = do
       start <- getMonotonicTimeNSec
       tiles <- renderAtlasTileTextures pool renderer [abrTile result]
+      -- Render day/night overlay tile if present.
+      dnTiles <- case abrDayNightTile result of
+        Just dnTileGeom -> renderAtlasTileTextures pool renderer [dnTileGeom]
+        Nothing         -> pure []
       end <- getMonotonicTimeNSec
       let elapsedMs = nsToMs start end
           cache' = if null tiles
             then cache
             else storeAtlasTiles (abrKey result) (abrHexRadius result) tiles cache
-      pure (cache', totalMs + elapsedMs)
+          -- Store day/night overlay tiles keyed by scale only.
+          cache'' = if null dnTiles
+            then cache'
+            else storeDayNightTiles (abrHexRadius result) dnTiles cache'
+      pure (cache'', totalMs + elapsedMs)
 
 -- | Schedule atlas build work when rendering with atlas tiles.
 --
@@ -236,7 +256,7 @@ resolveAtlasTiles
   -> IO (Maybe [TerrainAtlasTile], AtlasTextureCache)
 resolveAtlasTiles renderTargetOk pool snapshot atlasCache stage = do
   let terrainSnap = rsTerrain snapshot
-      atlasKey = AtlasKey (uiViewMode (rsUi snapshot)) (uiRenderWaterLevel (rsUi snapshot)) (uiDayNightEnabled (rsUi snapshot)) (tsVersion terrainSnap)
+      atlasKey = AtlasKey (uiViewMode (rsUi snapshot)) (uiRenderWaterLevel (rsUi snapshot)) (tsVersion terrainSnap)
       dataReady = tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
       atlasTiles = if renderTargetOk && dataReady
         then getNearestAtlas atlasKey (zsHexRadius stage) atlasCache
@@ -296,8 +316,7 @@ setAtlasKey key cache = cache { atcKey = Just key }
 storeAtlasTiles :: AtlasKey -> Int -> [TerrainAtlasTile] -> AtlasTextureCache -> AtlasTextureCache
 storeAtlasTiles key scale tiles cache =
   let isStale = case atcKey cache of
-        Just (AtlasKey _ _ _ currentV) ->
-          let AtlasKey _ _ _ resultV = key in resultV /= currentV
+        Just currentKey -> atlasKeyVersion key /= atlasKeyVersion currentKey
         Nothing -> False
   in if isStale
     then cache { atcPending = map tatTexture tiles ++ atcPending cache }
@@ -314,6 +333,24 @@ storeAtlasTiles key scale tiles cache =
             , atcPending = pending ++ atcPending targetCache
             }
       in evictIfNeeded cache'
+
+-- | Store day\/night overlay tiles keyed only by scale (hex radius).
+--
+-- Day\/night tiles are view-mode-independent: they live in 'atcDayNight'
+-- outside the per-key LRU cache.  Old tiles at the same scale are moved
+-- to 'atcPending' for texture release.
+storeDayNightTiles :: Int -> [TerrainAtlasTile] -> AtlasTextureCache -> AtlasTextureCache
+storeDayNightTiles scale tiles cache =
+  let old = maybe [] id (IntMap.lookup scale (atcDayNight cache))
+      pending = map tatTexture old
+  in cache
+    { atcDayNight = IntMap.insert scale tiles (atcDayNight cache)
+    , atcPending  = pending ++ atcPending cache
+    }
+
+-- | Look up the nearest-scale day\/night overlay tiles.
+getNearestDayNight :: Int -> AtlasTextureCache -> Maybe [TerrainAtlasTile]
+getNearestDayNight target cache = nearestAtlas target (atcDayNight cache)
 
 -- | Look up the nearest-scale tiles for a given key.
 --

@@ -5,7 +5,7 @@ import Control.Exception (bracket)
 import System.Timeout (timeout)
 import Test.Hspec
 import Actor.AtlasCache (AtlasKey(..))
-import Actor.AtlasManager (AtlasJob(..), atlasManagerActorDef, enqueueAtlasBuild)
+import Actor.AtlasManager (AtlasJob(..), atlasManagerActorDef, enqueueAtlasBuild, drainAtlasJobs)
 import Actor.AtlasResultBroker (newAtlasResultRef)
 import Actor.AtlasScheduleBroker
   ( AtlasScheduleRef
@@ -27,6 +27,7 @@ import Actor.Log (LogLevel(..), LogSnapshot(..))
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion(..))
 import Actor.UI (ViewMode(..), emptyUiState)
+import Seer.Render.ZoomStage (allZoomStages, ZoomStage(..))
 import Hyperspace.Actor
   ( ActorSystem
   , getSingleton
@@ -52,7 +53,7 @@ spec = describe "AtlasScheduler" $ do
       , ashScheduleRef = scheduleRef
       }
     let terrainSnap = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore
-        atlasKey = AtlasKey ViewElevation 0.5 True (tsVersion terrainSnap)
+        atlasKey = AtlasKey ViewElevation 0.5 (tsVersion terrainSnap)
         job = AtlasJob
           { ajKey = atlasKey
           , ajViewMode = ViewElevation
@@ -78,6 +79,48 @@ spec = describe "AtlasScheduler" $ do
       }
     report <- awaitReport scheduleRef version
     asrJobCount report `shouldBe` 1
+
+  it "single-mode rebuild enqueues exactly one job per zoom stage" $ withSystem $ \system -> do
+    managerHandle <- getSingleton system atlasManagerActorDef
+    let terrainSnap = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore
+        mkJob stage =
+          let atlasKey = AtlasKey ViewElevation 0.5 (tsVersion terrainSnap)
+          in AtlasJob
+            { ajKey = atlasKey
+            , ajViewMode = ViewElevation
+            , ajWaterLevel = 0.5
+            , ajTerrain = terrainSnap
+            , ajHexRadius  = zsHexRadius stage
+            , ajAtlasScale = zsAtlasScale stage
+            }
+    -- Enqueue one job per zoom stage (single-mode rebuild)
+    mapM_ (enqueueAtlasBuild managerHandle . mkJob) allZoomStages
+    -- Small delay for the actor to process all messages
+    threadDelay 10000
+    jobs <- drainAtlasJobs managerHandle
+    length jobs `shouldBe` length allZoomStages
+
+  it "does not multiply jobs across view modes for single-mode rebuild" $ withSystem $ \system -> do
+    managerHandle <- getSingleton system atlasManagerActorDef
+    let terrainSnap = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore
+        mkJobFor mode stage =
+          let atlasKey = AtlasKey mode 0.5 (tsVersion terrainSnap)
+          in AtlasJob
+            { ajKey = atlasKey
+            , ajViewMode = mode
+            , ajWaterLevel = 0.5
+            , ajTerrain = terrainSnap
+            , ajHexRadius  = zsHexRadius stage
+            , ajAtlasScale = zsAtlasScale stage
+            }
+    -- Enqueue elevation only (simulating single-mode rebuild)
+    mapM_ (enqueueAtlasBuild managerHandle . mkJobFor ViewElevation) allZoomStages
+    threadDelay 10000
+    jobs <- drainAtlasJobs managerHandle
+    -- Should be exactly 5 (one per stage), NOT 80
+    length jobs `shouldBe` length allZoomStages
+    -- All jobs should be for the same view mode
+    all (\j -> ajViewMode j == ViewElevation) jobs `shouldBe` True
 
 awaitReport
   :: AtlasScheduleRef

@@ -50,12 +50,12 @@ testRect2 = Rect (V2 64 0, V2 64 64)
 
 -- | Two keys that differ only in view mode (same terrain version).
 keyA, keyB :: AtlasKey
-keyA = AtlasKey ViewElevation 0 False 1
-keyB = AtlasKey ViewBiome     0 False 1
+keyA = AtlasKey ViewElevation 0 1
+keyB = AtlasKey ViewBiome     0 1
 
 -- | Key with a different terrain version (stale).
 keyStale :: AtlasKey
-keyStale = AtlasKey ViewElevation 0 False 999
+keyStale = AtlasKey ViewElevation 0 999
 
 -- | Helper to count total scales across all keys in the nested Map.
 totalScales :: Map.Map AtlasKey (IntMap.IntMap [TerrainAtlasTile]) -> Int

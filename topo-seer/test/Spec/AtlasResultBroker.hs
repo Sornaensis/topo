@@ -16,18 +16,20 @@ spec :: Spec
 spec = describe "AtlasResultBroker" $ do
   it "drains results in FIFO order" $ do
     ref <- newIORef []
-    let key = AtlasKey ViewElevation 0 True (tsVersion sampleTerrainSnapshot)
+    let key = AtlasKey ViewElevation 0 (tsVersion sampleTerrainSnapshot)
         tile1 = AtlasTileGeometry { atgBounds = Rect (V2 0 0, V2 1 1), atgScale = 1, atgHexRadius = 6, atgChunks = [], atgRiverOverlay = [] }
         tile2 = AtlasTileGeometry { atgBounds = Rect (V2 1 1, V2 1 1), atgScale = 1, atgHexRadius = 25, atgChunks = [], atgRiverOverlay = [] }
         result1 = AtlasBuildResult
           { abrKey = key
           , abrHexRadius = 6
           , abrTile = tile1
+          , abrDayNightTile = Nothing
           }
         result2 = AtlasBuildResult
           { abrKey = key
           , abrHexRadius = 25
           , abrTile = tile2
+          , abrDayNightTile = Nothing
           }
     pushAtlasResult ref result1
     pushAtlasResult ref result2
@@ -38,11 +40,11 @@ spec = describe "AtlasResultBroker" $ do
 
   it "drainFreshResultsN drops stale results without returning them" $ do
     ref <- newIORef []
-    let freshKey = AtlasKey ViewElevation 0 True 1
-        staleKey = AtlasKey ViewBiome 0 True 1
+    let freshKey = AtlasKey ViewElevation 0 1
+        staleKey = AtlasKey ViewBiome 0 1
         tile = AtlasTileGeometry { atgBounds = Rect (V2 0 0, V2 1 1), atgScale = 1, atgHexRadius = 6, atgChunks = [], atgRiverOverlay = [] }
-        freshResult = AtlasBuildResult { abrKey = freshKey, abrHexRadius = 6, abrTile = tile }
-        staleResult = AtlasBuildResult { abrKey = staleKey, abrHexRadius = 10, abrTile = tile }
+        freshResult = AtlasBuildResult { abrKey = freshKey, abrHexRadius = 6, abrTile = tile, abrDayNightTile = Nothing }
+        staleResult = AtlasBuildResult { abrKey = staleKey, abrHexRadius = 10, abrTile = tile, abrDayNightTile = Nothing }
     pushAtlasResult ref staleResult
     pushAtlasResult ref freshResult
     (results, staleCount) <- drainFreshResultsN ref (\r -> abrKey r == freshKey) 10
@@ -54,10 +56,10 @@ spec = describe "AtlasResultBroker" $ do
 
   it "drainFreshResultsN preserves excess fresh results for next drain" $ do
     ref <- newIORef []
-    let key = AtlasKey ViewElevation 0 True 1
+    let key = AtlasKey ViewElevation 0 1
         tile = AtlasTileGeometry { atgBounds = Rect (V2 0 0, V2 1 1), atgScale = 1, atgHexRadius = 6, atgChunks = [], atgRiverOverlay = [] }
-        r1 = AtlasBuildResult { abrKey = key, abrHexRadius = 6, abrTile = tile }
-        r2 = AtlasBuildResult { abrKey = key, abrHexRadius = 10, abrTile = tile }
+        r1 = AtlasBuildResult { abrKey = key, abrHexRadius = 6, abrTile = tile, abrDayNightTile = Nothing }
+        r2 = AtlasBuildResult { abrKey = key, abrHexRadius = 10, abrTile = tile, abrDayNightTile = Nothing }
     pushAtlasResult ref r1
     pushAtlasResult ref r2
     (results1, _) <- drainFreshResultsN ref (const True) 1

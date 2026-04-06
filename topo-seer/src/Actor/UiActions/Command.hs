@@ -66,7 +66,6 @@ import Actor.UI
   , uiWorldConfig
   , setUiRenderWaterLevel
   , setUiWorldConfig
-  , uiDayNightEnabled
   )
 import Seer.Config.Snapshot (snapshotFromUi, applySnapshotToUi)
 import Seer.Config.SliderState (resetSliderDefaults)
@@ -120,15 +119,15 @@ runUiAction :: UiActionRequest -> IO ()
 runUiAction req =
   case uarAction req of
     UiActionGenerate ->
-      logTimed req "Generate" (startGeneration req >> rebuildAtlasForAll req)
+      logTimed req "Generate" (startGeneration req >> rebuildAtlas req)
     UiActionReset ->
       logTimed req "Config Reset" (resetConfig req)
     UiActionRevert ->
       logTimed req "Config Revert" (revertConfig req)
     UiActionSetViewMode mode ->
-      logTimed req ("View " <> viewModeLabel mode) (setViewMode req mode >> rebuildAtlasForAll req)
+      logTimed req ("View " <> viewModeLabel mode) (setViewMode req mode >> rebuildAtlas req)
     UiActionRebuildAtlas mode ->
-      logTimed req ("Rebuild Atlas " <> viewModeLabel mode) (rebuildAtlasForAll req)
+      logTimed req ("Rebuild Atlas " <> viewModeLabel mode) (rebuildAtlas req)
     UiActionBrushStroke hex ->
       logTimed req "Brush Stroke" (applyBrush req hex)
     UiActionClearFlattenRef ->
@@ -232,7 +231,7 @@ rebuildAtlasFor req mode = do
   let handles = uarActorHandles req
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap <- getUiSnapshot (ahUiHandle handles)
-  let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (uiDayNightEnabled uiSnap) (tsVersion terrainSnap)
+  let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
       job stage = AtlasJob
         { ajKey        = atlasKey
         , ajViewMode   = mode
@@ -249,7 +248,7 @@ rebuildAtlasFor' :: ActorHandles -> ViewMode -> IO ()
 rebuildAtlasFor' handles mode = do
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap <- getUiSnapshot (ahUiHandle handles)
-  let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (uiDayNightEnabled uiSnap) (tsVersion terrainSnap)
+  let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
       job stage = AtlasJob
         { ajKey        = atlasKey
         , ajViewMode   = mode

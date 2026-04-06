@@ -77,7 +77,7 @@ geoMap16 :: IntMap.IntMap ChunkGeometry
 geoMap16 = IntMap.mapWithKey (\k tc ->
   buildChunkGeometry 6 benchWorldConfig ViewElevation 0.3
     climateMap16 weatherMap16 vegMap16
-    Nothing Nothing k tc) terrainMap16
+    Nothing k tc) terrainMap16
 
 riverGeoMap :: IntMap.IntMap RiverGeometry
 riverGeoMap = IntMap.empty

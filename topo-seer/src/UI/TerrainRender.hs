@@ -3,6 +3,7 @@ module UI.TerrainRender
   ( ChunkGeometry(..)
   , ChunkTexture(..)
   , buildChunkGeometry
+  , buildDayNightGeometry
   , buildChunkTexture
   , chunkBounds
   , destroyChunkTexture
@@ -23,7 +24,7 @@ import qualified SDL
 import qualified SDL.Raw.Types as Raw
 import Topo (ChunkCoord(..), ChunkId(..), ClimateChunk(..), TerrainChunk(..), VegetationChunk(..), WeatherChunk(..), TileCoord(..), TileIndex(..), WorldConfig(..), chunkCoordFromId, chunkOriginTile, tileCoordFromIndex)
 import UI.HexPick (axialToScreen, renderHexRadiusPx)
-import UI.TerrainColor (terrainColor, applyDayNight)
+import UI.TerrainColor (terrainColor)
 import UI.Widgets (Rect(..))
 
 hexOverlap :: Float
@@ -48,10 +49,13 @@ data ChunkTexture = ChunkTexture
 -- data for this chunk when 'ViewOverlay' mode is active.  For all other
 -- view modes it should be 'Nothing'.
 --
+-- Day\/night brightness is no longer baked into the base geometry; it is
+-- rendered as a separate overlay layer (see 'buildDayNightGeometry').
+--
 -- Uses pre-allocated storable vectors and direct writes to avoid the
 -- overhead of building intermediate lists and calling @SV.fromList@.
-buildChunkGeometry :: Int -> WorldConfig -> ViewMode -> Float -> IntMap ClimateChunk -> IntMap WeatherChunk -> IntMap VegetationChunk -> Maybe (U.Vector Float) -> Maybe (Int -> Int -> Float) -> Int -> TerrainChunk -> ChunkGeometry
-buildChunkGeometry hexRadiusPx config mode waterLevel climateMap weatherMap vegMap mOverlayVec mDayNightFn key chunk =
+buildChunkGeometry :: Int -> WorldConfig -> ViewMode -> Float -> IntMap ClimateChunk -> IntMap WeatherChunk -> IntMap VegetationChunk -> Maybe (U.Vector Float) -> Int -> TerrainChunk -> ChunkGeometry
+buildChunkGeometry hexRadiusPx config mode waterLevel climateMap weatherMap vegMap mOverlayVec key chunk =
   let ChunkCoord cx cy = chunkCoordFromId (ChunkId key)
       TileCoord ox oy = chunkOriginTile config (ChunkCoord cx cy)
       climateChunk = IntMap.lookup key climateMap
@@ -79,9 +83,7 @@ buildChunkGeometry hexRadiusPx config mode waterLevel climateMap weatherMap vegM
                         Just vec | idx < U.length vec -> Just (vec U.! idx)
                         _ -> Nothing
                       baseColor = terrainColor mode waterLevel chunk climateChunk weatherChunk vegChunk overlayVal idx
-                      rawColor = toRawColor $ case mDayNightFn of
-                        Nothing -> baseColor
-                        Just f  -> applyDayNight (f q r) baseColor
+                      rawColor = toRawColor baseColor
                       base = idx * 7
                   SM.unsafeWrite mv base (Raw.Vertex (Raw.FPoint centerX centerY) rawColor zeroTex)
                   writeHexCorners mv base centerX centerY rawColor zeroTex corners
@@ -90,6 +92,65 @@ buildChunkGeometry hexRadiusPx config mode waterLevel climateMap weatherMap vegM
         pure mv
 
       -- Pre-allocated index buffer: 18 indices per hex (6 triangles × 3)
+      indices = SV.create $ do
+        mi <- SM.new (total * 18)
+        let go idx
+              | idx >= total = pure ()
+              | otherwise = do
+                  let base = fromIntegral (idx * 7) :: CInt
+                      iOff = idx * 18
+                  writeHexIndices mi iOff base
+                  go (idx + 1)
+        go 0
+        pure mi
+  in ChunkGeometry
+      { cgBounds = bounds
+      , cgVertices = vertices
+      , cgIndices = indices
+      }
+
+-- | Build a day\/night overlay mesh for a terrain chunk.
+--
+-- The overlay uses the same hex mesh layout as 'buildChunkGeometry'
+-- but every vertex is black (@RGB = 0,0,0@) with alpha proportional
+-- to shadow darkness: @alpha = round ((1 - brightness) * 255)@.
+-- Fully-lit hexes (@brightness = 1.0@) are fully transparent;
+-- night-side hexes (@brightness = 0.15@) are almost opaque black.
+--
+-- Drawn on top of the base atlas tiles using alpha blending, this
+-- produces the day\/night dimming effect without baking brightness
+-- into the base tile colours.
+buildDayNightGeometry :: Int -> WorldConfig -> (Int -> Int -> Float) -> Int -> TerrainChunk -> ChunkGeometry
+buildDayNightGeometry hexRadiusPx config dayNightFn key chunk =
+  let ChunkCoord cx cy = chunkCoordFromId (ChunkId key)
+      TileCoord ox oy = chunkOriginTile config (ChunkCoord cx cy)
+      total = U.length (tcElevation chunk)
+      (minX, minY, maxX, maxY) = chunkBounds config hexRadiusPx (ChunkCoord cx cy)
+      bounds = Rect (V2 minX minY, V2 (max 1 (maxX - minX)) (max 1 (maxY - minY)))
+      corners = hexCornersF hexRadiusPx
+      zeroTex = Raw.FPoint 0 0
+
+      vertices = SV.create $ do
+        mv <- SM.new (total * 7)
+        let go idx
+              | idx >= total = pure ()
+              | otherwise = do
+                  let TileCoord tx ty = tileCoordFromIndex config (TileIndex idx)
+                      q = ox + tx
+                      r = oy + ty
+                      (scx, scy) = axialToScreen hexRadiusPx q r
+                      centerX = fromIntegral (scx - minX) :: CFloat
+                      centerY = fromIntegral (scy - minY) :: CFloat
+                      brightness = dayNightFn q r
+                      alpha = fromIntegral (round ((1 - max 0 (min 1 brightness)) * 255) :: Int) :: Word8
+                      rawColor = Raw.Color 0 0 0 alpha
+                      base = idx * 7
+                  SM.unsafeWrite mv base (Raw.Vertex (Raw.FPoint centerX centerY) rawColor zeroTex)
+                  writeHexCorners mv base centerX centerY rawColor zeroTex corners
+                  go (idx + 1)
+        go 0
+        pure mv
+
       indices = SV.create $ do
         mi <- SM.new (total * 18)
         let go idx

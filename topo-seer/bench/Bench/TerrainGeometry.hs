@@ -10,7 +10,6 @@ import Test.Tasty.Bench
 import Actor.UI.State (ViewMode(..))
 import Fixtures
 import Topo (TerrainChunk)
-import UI.DayNight (mkDayNightFn)
 import UI.OverlayExtract (extractOverlayField)
 import UI.TerrainRender (ChunkGeometry, buildChunkGeometry)
 
@@ -45,12 +44,7 @@ buildGeo vm = buildChunkGeometry
   (IntMap.singleton 0 benchWeatherChunk)
   (IntMap.singleton 0 benchVegetationChunk)
   Nothing                        -- no overlay data
-  Nothing                        -- no day/night fn
   0                              -- chunk id
-
--- | Day/night function for chunkSize=8.
-dayNightFn :: Maybe (Int -> Int -> Float)
-dayNightFn = mkDayNightFn benchUiState 8
 
 buildGeoDayNight :: ViewMode -> TerrainChunk -> ChunkGeometry
 buildGeoDayNight vm = buildChunkGeometry
@@ -62,7 +56,6 @@ buildGeoDayNight vm = buildChunkGeometry
   (IntMap.singleton 0 benchWeatherChunk)
   (IntMap.singleton 0 benchVegetationChunk)
   Nothing
-  dayNightFn
   0
 
 -- | Pre-extracted overlay vectors for ViewOverlay benchmark.
@@ -88,5 +81,4 @@ buildGeoOverlay mOvl = buildChunkGeometry
   (IntMap.singleton 0 benchWeatherChunk)
   (IntMap.singleton 0 benchVegetationChunk)
   mOvl
-  Nothing
   0

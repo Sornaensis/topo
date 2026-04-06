@@ -128,7 +128,7 @@ scheduleAtlasRebuild :: ActorHandles -> ViewMode -> IO ()
 scheduleAtlasRebuild handles mode = do
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap      <- getUiSnapshot (ahUiHandle handles)
-  let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (uiDayNightEnabled uiSnap) (tsVersion terrainSnap)
+  let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
       job stage = AtlasJob
         { ajKey        = atlasKey
         , ajViewMode   = mode

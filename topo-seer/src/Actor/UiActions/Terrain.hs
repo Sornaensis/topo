@@ -40,7 +40,7 @@ import Actor.SnapshotReceiver
   , bumpSnapshotVersion
   )
 import Actor.Terrain (TerrainGenProgress(..), TerrainGenResult(..))
-import Actor.UI (Ui, UiState(..), allStandardViewModes, getUiSnapshot, setUiGenerating)
+import Actor.UI (Ui, UiState(..), getUiSnapshot, setUiGenerating)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
@@ -141,21 +141,19 @@ rebuildAtlas :: UiActionHandles -> TerrainSnapshot -> UiState -> IO ()
 rebuildAtlas handles terrainSnap uiSnap = do
   start <- getMonotonicTimeNSec
   let currentMode = uiViewMode uiSnap
-      otherModes  = filter (/= currentMode) allStandardViewModes
-      mkJob mode stage =
-        let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (uiDayNightEnabled uiSnap) (tsVersion terrainSnap)
+      mkJob stage =
+        let atlasKey = AtlasKey currentMode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
         in AtlasJob
           { ajKey        = atlasKey
-          , ajViewMode   = mode
+          , ajViewMode   = currentMode
           , ajWaterLevel = uiRenderWaterLevel uiSnap
           , ajTerrain    = terrainSnap
           , ajHexRadius  = zsHexRadius stage
           , ajAtlasScale = zsAtlasScale stage
           }
-  -- Current mode first for immediate display
-  mapM_ (enqueueAtlasBuild (uahAtlas handles) . mkJob currentMode) allZoomStages
-  -- Then all other standard view modes in the background
-  mapM_ (\m -> mapM_ (enqueueAtlasBuild (uahAtlas handles) . mkJob m) allZoomStages) otherModes
+  -- Build only the current view mode (5 jobs for 5 zoom stages).
+  -- Other modes build on-demand when the user switches to them.
+  mapM_ (enqueueAtlasBuild (uahAtlas handles) . mkJob) allZoomStages
   end <- getMonotonicTimeNSec
   logElapsed (uahLog handles) "terrain: enqueue atlas jobs" start end
 

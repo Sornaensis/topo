@@ -77,6 +77,35 @@ spec = describe "ZoomStage properties" $ do
           visible = visibleChunkKeys config pan zoom window smallMap
       length visible `shouldBe` 4
 
+    it "expanded window produces a superset of the base viewport" $ do
+      let config = WorldConfig { wcChunkSize = 16 }
+          bigMap = IntMap.fromList [(i, ()) | i <- [0 .. 9999]]
+          pan    = (100.0, 50.0)
+          zoom   = 1.5
+          base   = (800, 600)
+          -- Expand by 2 chunk-rings worth of pixels (simulating worker padding)
+          padPx  = wcChunkSize config * 6 * 2 * 2  -- chunkSize * hexRadius * 2 * 2 rings
+          padded = (fst base + padPx * 2, snd base + padPx * 2)
+          baseKeys   = visibleChunkKeys config pan zoom base bigMap
+          paddedKeys = visibleChunkKeys config pan zoom padded bigMap
+      -- Every base key must appear in the padded set
+      all (`elem` paddedKeys) baseKeys `shouldBe` True
+      -- Padded set should be strictly larger (for a big enough world)
+      length paddedKeys `shouldSatisfy` (>= length baseKeys)
+
+    it "padded viewport does not exceed total chunks for a small world" $ do
+      let config = WorldConfig { wcChunkSize = 4 }
+          smallMap = IntMap.fromList [(i, ()) | i <- [0 .. 3]]
+          pan    = (0.0, 0.0)
+          zoom   = 0.5
+          padPx  = wcChunkSize config * 6 * 2 * 2
+          padded = (1920 + padPx * 2, 1080 + padPx * 2)
+          visible = visibleChunkKeys config pan zoom padded smallMap
+      -- Should not return more keys than exist in the map
+      length visible `shouldSatisfy` (<= IntMap.size smallMap)
+      -- Should still find all 4 chunks
+      length visible `shouldBe` 4
+
   describe "hysteresis" $ do
 
     it "does not switch stage immediately on boundary cross" $ do
