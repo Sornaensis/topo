@@ -240,7 +240,6 @@ setAtlasKey key cache =
       , atcCaches = IntMap.empty
       , atcLru = []
       , atcPending = collectTextures (atcCaches cache) ++ atcPending cache
-      , atcLast = Nothing
       }
 
 storeAtlasTiles :: AtlasKey -> Int -> [TerrainAtlasTile] -> AtlasTextureCache -> AtlasTextureCache
