@@ -3,13 +3,14 @@ module Seer.Render.Atlas
   , emptyAtlasTextureCache
   , collectAtlasTextures
   , drawAtlas
+  , drawAtlasAlpha
   , drainAtlasBuildResults
+  , getNearestAtlas
   , resolveAtlasTiles
   , resolveEffectiveStage
   , scheduleAtlasBuilds
   , setAtlasKey
   , storeAtlasTiles
-  , getNearestAtlas
   , touchAtlasScale
   , drainAtlasPending
   , evictIfNeeded
@@ -36,7 +37,7 @@ import Actor.UI (UiState(..))
 import Control.Monad (foldM, unless, when)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
-import Data.Word (Word32, Word64)
+import Data.Word (Word8, Word32, Word64)
 import GHC.Clock (getMonotonicTimeNSec)
 import Hyperspace.Actor (ActorHandle, Protocol)
 import Linear (V2(..))
@@ -89,21 +90,29 @@ stageHysteresisNs = 300000000
 -- If the raw stage (from 'stageForZoom') differs from the previously
 -- committed stage, the switch is delayed until the camera has remained
 -- in the new stage's range for 'stageHysteresisNs'.  Returns the
--- effective stage and the updated cache with hysteresis bookkeeping.
-resolveEffectiveStage :: Word64 -> ZoomStage -> AtlasTextureCache -> (ZoomStage, AtlasTextureCache)
+-- effective stage, an optional transition target @(targetStage, blendFactor)@
+-- during the cross-fade window, and the updated cache.
+--
+-- The blend factor uses smoothstep interpolation: 0 at the start of
+-- the transition, 1 when the hysteresis expires and the new stage commits.
+resolveEffectiveStage :: Word64 -> ZoomStage -> AtlasTextureCache -> (ZoomStage, Maybe (ZoomStage, Float), AtlasTextureCache)
 resolveEffectiveStage nowNs rawStage cache =
   case atcCommittedStage cache of
     Nothing ->
-      (rawStage, cache { atcCommittedStage = Just rawStage, atcStageChangeNs = 0 })
+      (rawStage, Nothing, cache { atcCommittedStage = Just rawStage, atcStageChangeNs = 0 })
     Just committed
       | committed == rawStage ->
-          (committed, cache { atcStageChangeNs = 0 })
+          (committed, Nothing, cache { atcStageChangeNs = 0 })
       | atcStageChangeNs cache == 0 ->
-          (committed, cache { atcStageChangeNs = nowNs })
+          (committed, Just (rawStage, 0), cache { atcStageChangeNs = nowNs })
       | nowNs - atcStageChangeNs cache >= stageHysteresisNs ->
-          (rawStage, cache { atcCommittedStage = Just rawStage, atcStageChangeNs = 0 })
+          (rawStage, Nothing, cache { atcCommittedStage = Just rawStage, atcStageChangeNs = 0 })
       | otherwise ->
-          (committed, cache)
+          let elapsed = fromIntegral (nowNs - atcStageChangeNs cache) :: Float
+              duration = fromIntegral stageHysteresisNs :: Float
+              t = min 1.0 (max 0.0 (elapsed / duration))
+              blend = t * t * (3 - 2 * t)  -- smoothstep
+          in (committed, Just (rawStage, blend), cache)
 
 -- | Collect all textures currently held by the atlas cache.
 collectAtlasTextures :: AtlasTextureCache -> [SDL.Texture]
@@ -112,8 +121,16 @@ collectAtlasTextures cache =
 
 -- | Draw atlas tiles to the renderer.
 drawAtlas :: SDL.Renderer -> [TerrainAtlasTile] -> (Float, Float) -> Float -> V2 Int -> IO ()
-drawAtlas renderer tiles (panX, panY) zoom (V2 winW winH) =
+drawAtlas renderer tiles pan zoom winSize = drawAtlasAlpha renderer tiles pan zoom winSize 255
+
+-- | Draw atlas tiles with a global alpha multiplier for cross-fade blending.
+drawAtlasAlpha :: SDL.Renderer -> [TerrainAtlasTile] -> (Float, Float) -> Float -> V2 Int -> Word8 -> IO ()
+drawAtlasAlpha renderer tiles (panX, panY) zoom (V2 winW winH) alpha = do
+  when (alpha < 255) $
+    mapM_ (\tile -> SDL.textureAlphaMod (tatTexture tile) SDL.$= alpha) tiles
   mapM_ drawTile tiles
+  when (alpha < 255) $
+    mapM_ (\tile -> SDL.textureAlphaMod (tatTexture tile) SDL.$= 255) tiles
   where
     drawTile tile = do
       let Rect (V2 x y, V2 w h) = tatBounds tile
@@ -123,12 +140,18 @@ drawAtlas renderer tiles (panX, panY) zoom (V2 winW winH) =
         then pure ()
         else SDL.copy renderer (tatTexture tile) Nothing (Just (rectToSDL (Rect (V2 tx ty, V2 tw th))))
 
+    -- Compute screen rect from tile bounds + pan + zoom.
+    -- Uses floor/ceiling to guarantee adjacent tiles touch without gaps.
     transformRect px py z (Rect (V2 rx ry, V2 rw rh)) =
-      let fx = (fromIntegral rx + px) * z
-          fy = (fromIntegral ry + py) * z
-          fw = fromIntegral rw * z
-          fh = fromIntegral rh * z
-      in Rect (V2 (round fx) (round fy), V2 (max 1 (round fw)) (max 1 (round fh)))
+      let fx  = (fromIntegral rx + px) * z
+          fy  = (fromIntegral ry + py) * z
+          fx2 = (fromIntegral (rx + rw) + px) * z
+          fy2 = (fromIntegral (ry + rh) + py) * z
+          ix  = floor fx  :: Int
+          iy  = floor fy  :: Int
+          ix2 = ceiling fx2 :: Int
+          iy2 = ceiling fy2 :: Int
+      in Rect (V2 ix iy, V2 (max 1 (ix2 - ix)) (max 1 (iy2 - iy)))
 
 -- | Drain atlas build results and upload textures.
 --

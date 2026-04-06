@@ -84,12 +84,12 @@ spec = describe "ZoomStage properties" $ do
           t0 = 1000000000 :: Word64
           -- First call establishes committed stage at zoom 1.5 (stage 1, hexRadius=10)
           stage1 = stageForZoom 1.5
-          (eff1, cache1) = resolveEffectiveStage t0 stage1 cache0
+          (eff1, _, cache1) = resolveEffectiveStage t0 stage1 cache0
       zsHexRadius eff1 `shouldBe` zsHexRadius stage1
       -- Cross into stage 2 (zoom 2.5, hexRadius=18) only 50ms later
       let stage2 = stageForZoom 2.5
           t1 = t0 + 50000000  -- 50ms
-          (eff2, _cache2) = resolveEffectiveStage t1 stage2 cache1
+          (eff2, _, _cache2) = resolveEffectiveStage t1 stage2 cache1
       -- Should still be on stage 1 (hysteresis)
       zsHexRadius eff2 `shouldBe` zsHexRadius stage1
 
@@ -97,28 +97,28 @@ spec = describe "ZoomStage properties" $ do
       let cache0 = emptyAtlasTextureCache 3
           t0 = 1000000000 :: Word64
           stage1 = stageForZoom 1.5
-          (_, cache1) = resolveEffectiveStage t0 stage1 cache0
+          (_, _, cache1) = resolveEffectiveStage t0 stage1 cache0
           -- Cross into stage 2
           stage2 = stageForZoom 2.5
           t1 = t0 + 50000000
-          (_, cache2) = resolveEffectiveStage t1 stage2 cache1
+          (_, _, cache2) = resolveEffectiveStage t1 stage2 cache1
           -- Wait 350ms (total 400ms > 300ms threshold)
           t2 = t1 + 350000000
-          (eff3, _cache3) = resolveEffectiveStage t2 stage2 cache2
+          (eff3, _, _cache3) = resolveEffectiveStage t2 stage2 cache2
       zsHexRadius eff3 `shouldBe` zsHexRadius stage2
 
     it "resets hysteresis timer when zoom returns to committed stage" $ do
       let cache0 = emptyAtlasTextureCache 3
           t0 = 1000000000 :: Word64
           stage1 = stageForZoom 1.5
-          (_, cache1) = resolveEffectiveStage t0 stage1 cache0
+          (_, _, cache1) = resolveEffectiveStage t0 stage1 cache0
           -- Cross into stage 2 briefly
           stage2 = stageForZoom 2.5
           t1 = t0 + 50000000
-          (_, cache2) = resolveEffectiveStage t1 stage2 cache1
+          (_, _, cache2) = resolveEffectiveStage t1 stage2 cache1
           -- Return to stage 1
           t2 = t1 + 100000000
-          (eff3, cache3) = resolveEffectiveStage t2 stage1 cache2
+          (eff3, _, cache3) = resolveEffectiveStage t2 stage1 cache2
       zsHexRadius eff3 `shouldBe` zsHexRadius stage1
       -- Timer should be reset
       atcStageChangeNs cache3 `shouldBe` 0

@@ -266,35 +266,61 @@ spec = describe "AtlasTextureCache" $ do
 
     it "commits on first call" $ do
       let cache0 = emptyAtlasTextureCache 30
-          (stage, cache1) = resolveEffectiveStage 1000 stage0 cache0
+          (stage, _blend, cache1) = resolveEffectiveStage 1000 stage0 cache0
       stage `shouldBe` stage0
       atcCommittedStage cache1 `shouldBe` Just stage0
 
     it "delays switch within hysteresis window" $ do
       let cache0 = (emptyAtlasTextureCache 30) { atcCommittedStage = Just stage0, atcStageChangeNs = 0 }
           -- First call at t=1000 with different stage starts timer
-          (stage1a, cache1) = resolveEffectiveStage 1000 stage1 cache0
+          (stage1a, blend1a, cache1) = resolveEffectiveStage 1000 stage1 cache0
           -- Second call at t=1001 (1ns later, still within 300ms)
-          (stage1b, _cache2) = resolveEffectiveStage 1001 stage1 cache1
+          (stage1b, _blend1b, _cache2) = resolveEffectiveStage 1001 stage1 cache1
       stage1a `shouldBe` stage0  -- returns old committed stage
       stage1b `shouldBe` stage0  -- still within hysteresis
+      fmap fst blend1a `shouldBe` Just stage1  -- blend target is the new stage
 
     it "commits after hysteresis expires" $ do
       let cache0 = (emptyAtlasTextureCache 30) { atcCommittedStage = Just stage0, atcStageChangeNs = 0 }
-          (_stageA, cache1) = resolveEffectiveStage 1000 stage1 cache0
+          (_stageA, _blendA, cache1) = resolveEffectiveStage 1000 stage1 cache0
           -- Now advance past 300ms (300_000_000 ns)
-          (stageB, cache2) = resolveEffectiveStage (1000 + 300000001) stage1 cache1
+          (stageB, blendB, cache2) = resolveEffectiveStage (1000 + 300000001) stage1 cache1
       stageB `shouldBe` stage1
+      blendB `shouldBe` Nothing
       atcCommittedStage cache2 `shouldBe` Just stage1
 
     it "resets timer when stage returns to committed" $ do
       let cache0 = (emptyAtlasTextureCache 30) { atcCommittedStage = Just stage0, atcStageChangeNs = 0 }
           -- Start hysteresis for stage1
-          (_stageA, cache1) = resolveEffectiveStage 1000 stage1 cache0
+          (_stageA, _blendA, cache1) = resolveEffectiveStage 1000 stage1 cache0
           -- Return to committed stage
-          (_stageB, cache2) = resolveEffectiveStage 2000 stage0 cache1
+          (_stageB, blendB, cache2) = resolveEffectiveStage 2000 stage0 cache1
       atcStageChangeNs cache1 `shouldSatisfy` (> 0)
       atcStageChangeNs cache2 `shouldBe` 0
+      blendB `shouldBe` Nothing
+
+    it "returns blend factor of 0 at the start of transition" $ do
+      let cache0 = (emptyAtlasTextureCache 30) { atcCommittedStage = Just stage0, atcStageChangeNs = 0 }
+          (_stage, blend, _cache1) = resolveEffectiveStage 1000 stage1 cache0
+      fmap snd blend `shouldBe` Just 0
+
+    it "returns blend factor near 1 just before hysteresis expires" $ do
+      let cache0 = (emptyAtlasTextureCache 30) { atcCommittedStage = Just stage0, atcStageChangeNs = 0 }
+          (_stageA, _blendA, cache1) = resolveEffectiveStage 1000 stage1 cache0
+          -- 299ms later (just before 300ms threshold)
+          (_stageB, blendB, _cache2) = resolveEffectiveStage (1000 + 299000000) stage1 cache1
+      case blendB of
+        Just (_, b) -> b `shouldSatisfy` (> 0.9)
+        Nothing     -> expectationFailure "expected blend target during transition"
+
+    it "returns smoothstep blend at midpoint" $ do
+      let cache0 = (emptyAtlasTextureCache 30) { atcCommittedStage = Just stage0, atcStageChangeNs = 0 }
+          (_stageA, _blendA, cache1) = resolveEffectiveStage 1000 stage1 cache0
+          -- Half-way through hysteresis (150ms)
+          (_stageB, blendB, _cache2) = resolveEffectiveStage (1000 + 150000000) stage1 cache1
+      case blendB of
+        Just (_, b) -> b `shouldSatisfy` (\v -> v > 0.4 && v < 0.6)
+        Nothing     -> expectationFailure "expected blend target during transition"
 
   -- -------------------------------------------------------------------
   -- collectAtlasTextures (gathers from all keys)

@@ -15,7 +15,7 @@ import Actor.UI (LeftTab(..), UiState(..), ViewMode(..))
 import Control.Monad (forM_, when)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Maybe (isNothing)
-import Data.Word (Word32, Word64)
+import Data.Word (Word32, Word64, Word8)
 import GHC.Clock (getMonotonicTimeNSec)
 import System.IO (Handle, hPutStrLn, hFlush)
 import Hyperspace.Actor (ActorHandle, Protocol)
@@ -40,7 +40,9 @@ import Actor.AtlasCache (AtlasKey(..))
 import Seer.Render.Atlas
   ( AtlasTextureCache(..)
   , drawAtlas
+  , drawAtlasAlpha
   , drainAtlasBuildResults
+  , getNearestAtlas
   , resolveAtlasTiles
   , resolveEffectiveStage
   , scheduleAtlasBuilds
@@ -134,7 +136,7 @@ renderFrame context = do
   SDL.clear renderer
   tAfterClear <- getMonotonicTimeNSec
   let rawStage = stageForZoom (uiZoom (rsUi snapshot))
-      (stage, atlasCacheWithStage) = resolveEffectiveStage tAfterClear rawStage atlasCache
+      (stage, mbBlend, atlasCacheWithStage) = resolveEffectiveStage tAfterClear rawStage atlasCache
       -- Synchronise the render-thread cache key with the current UI state
       -- BEFORE draining results.  This ensures stale worker results (from a
       -- superseded view mode) are discarded rather than thrashing the key.
@@ -184,7 +186,21 @@ renderFrame context = do
         else pure (textureCache, False)
   loggedDraw <- case atlasToDraw of
     Just tiles -> do
-      (_, elapsed) <- timedMs (drawAtlas renderer tiles (uiPanOffset (rsUi snapshot)) (uiZoom (rsUi snapshot)) (V2 (fromIntegral winW) (fromIntegral winH)))
+      (_, elapsed) <- timedMs $ case mbBlend of
+        Just (targetStage, blend) | blend > 0 -> do
+          -- Cross-fade: draw committed tiles at reduced alpha, target tiles on top
+          let oldAlpha = round ((1.0 - blend) * 255) :: Word8
+              newAlpha = round (blend * 255) :: Word8
+              targetTiles = getNearestAtlas expectedAtlasKey (zsHexRadius targetStage) atlasCache''
+              pan = uiPanOffset (rsUi snapshot)
+              z = uiZoom (rsUi snapshot)
+              win = V2 (fromIntegral winW) (fromIntegral winH)
+          drawAtlasAlpha renderer tiles pan z win oldAlpha
+          case targetTiles of
+            Just tt | not (null tt) -> drawAtlasAlpha renderer tt pan z win newAlpha
+            _ -> pure ()  -- target not yet cached; committed tiles still visible
+        _ ->
+          drawAtlas renderer tiles (uiPanOffset (rsUi snapshot)) (uiZoom (rsUi snapshot)) (V2 (fromIntegral winW) (fromIntegral winH))
       logTiming logHandle timingLogThresholdMs (Text.pack "draw atlas") elapsed Nothing
     Nothing -> do
       (_, elapsed) <- timedMs (drawTerrain renderer terrainSnap terrainCache textureCache' (uiPanOffset (rsUi snapshot)) (uiZoom (rsUi snapshot)) (V2 (fromIntegral winW) (fromIntegral winH)))
