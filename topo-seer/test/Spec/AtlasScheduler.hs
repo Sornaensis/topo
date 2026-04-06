@@ -2,6 +2,7 @@ module Spec.AtlasScheduler (spec) where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (bracket)
+import Data.IORef (newIORef)
 import System.Timeout (timeout)
 import Test.Hspec
 import Actor.AtlasCache (AtlasKey(..))
@@ -33,6 +34,7 @@ import Hyperspace.Actor
   , getSingleton
   , newActorSystem
   , shutdownActorSystem
+  , spawnActor
   )
 
 withSystem :: (ActorSystem -> IO a) -> IO a
@@ -42,13 +44,15 @@ spec :: Spec
 spec = describe "AtlasScheduler" $ do
   it "reports drained job counts" $ withSystem $ \system -> do
     managerHandle <- getSingleton system atlasManagerActorDef
-    workerHandle <- getSingleton system atlasWorkerActorDef
+    workerHandle <- spawnActor atlasWorkerActorDef
+    workerNextRef <- newIORef (0 :: Int)
     resultRef <- newAtlasResultRef
     scheduleRef <- newAtlasScheduleRef
     schedulerHandle <- getSingleton system atlasSchedulerActorDef
     setAtlasSchedulerHandles schedulerHandle AtlasSchedulerHandles
       { ashManager = managerHandle
-      , ashWorker = workerHandle
+      , ashWorkers = [workerHandle]
+      , ashWorkerNext = workerNextRef
       , ashResultRef = resultRef
       , ashScheduleRef = scheduleRef
       }
@@ -121,6 +125,53 @@ spec = describe "AtlasScheduler" $ do
     length jobs `shouldBe` length allZoomStages
     -- All jobs should be for the same view mode
     all (\j -> ajViewMode j == ViewElevation) jobs `shouldBe` True
+
+  it "dispatches jobs to multiple workers via round-robin" $ withSystem $ \system -> do
+    managerHandle <- getSingleton system atlasManagerActorDef
+    w1 <- spawnActor atlasWorkerActorDef
+    w2 <- spawnActor atlasWorkerActorDef
+    w3 <- spawnActor atlasWorkerActorDef
+    workerNextRef <- newIORef (0 :: Int)
+    resultRef <- newAtlasResultRef
+    scheduleRef <- newAtlasScheduleRef
+    schedulerHandle <- getSingleton system atlasSchedulerActorDef
+    setAtlasSchedulerHandles schedulerHandle AtlasSchedulerHandles
+      { ashManager = managerHandle
+      , ashWorkers = [w1, w2, w3]
+      , ashWorkerNext = workerNextRef
+      , ashResultRef = resultRef
+      , ashScheduleRef = scheduleRef
+      }
+    let terrainSnap = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore
+        mkJob i =
+          let atlasKey = AtlasKey ViewElevation 0.5 (tsVersion terrainSnap)
+          in AtlasJob
+            { ajKey = atlasKey
+            , ajViewMode = ViewElevation
+            , ajWaterLevel = 0.5
+            , ajTerrain = terrainSnap
+            , ajHexRadius  = 6 + i
+            , ajAtlasScale = 1
+            }
+    -- Enqueue 3 jobs so each worker gets one
+    mapM_ (enqueueAtlasBuild managerHandle . mkJob) [0, 1, 2 :: Int]
+    let snapshot = RenderSnapshot
+          { rsUi = emptyUiState
+          , rsLog = LogSnapshot [] False 0 LogDebug
+          , rsData = DataSnapshot 0 0 Nothing
+          , rsTerrain = terrainSnap
+          }
+        version = SnapshotVersion 1
+    requestAtlasSchedule schedulerHandle AtlasScheduleRequest
+      { asqSnapshotVersion = version
+      , asqRenderTargetOk = True
+      , asqDataReady = True
+      , asqSnapshot = snapshot
+      , asqWindowSize = (800, 600)
+      }
+    report <- awaitReport scheduleRef version
+    -- All 3 jobs should have been dispatched
+    asrJobCount report `shouldBe` 3
 
 awaitReport
   :: AtlasScheduleRef

@@ -82,7 +82,7 @@ import Actor.UiActions (uiActionsActorDef)
 import Actor.UiActions.Handles (mkActorHandles)
 import Seer.Editor.History (emptyHistory)
 import Control.Concurrent (forkIO)
-import Control.Monad (forM_, unless, when)
+import Control.Monad (forM_, replicateM, unless, when)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import qualified Data.Text as Text
 import Data.Word (Word32, Word64)
@@ -90,7 +90,7 @@ import GHC.Clock (getMonotonicTimeNSec)
 import Linear (V2(..))
 import qualified SDL
 import qualified SDL.Font as Font
-import Hyperspace.Actor (ActorHandle, Protocol, getSingleton, newActorSystem, shutdownActorSystem)
+import Hyperspace.Actor (ActorHandle, Protocol, getSingleton, newActorSystem, shutdownActorSystem, spawnActor)
 import Seer.Command.Channel (CommandChannelEnv(..), runCommandChannel)
 import Seer.Draw (logLineHeight)
 import Seer.Timing (nsToMs)
@@ -123,6 +123,7 @@ runApp :: IO ()
 runApp = do
   boostMainThreadPriority
   pinMainThreadToCore0
+  runtimeCfg <- loadConfig
   system <- newActorSystem
   logHandle <- getSingleton system logActorDef
   logFileH <- resetLogFile
@@ -135,7 +136,8 @@ runApp = do
   dataHandle <- getSingleton system dataActorDef
   terrainHandle <- getSingleton system terrainActorDef
   atlasManagerHandle <- getSingleton system atlasManagerActorDef
-  atlasWorkerHandle <- getSingleton system atlasWorkerActorDef
+  atlasWorkerHandles <- replicateM (cfgAtlasWorkerCount runtimeCfg) (spawnActor atlasWorkerActorDef)
+  atlasWorkerNextRef <- newIORef (0 :: Int)
   atlasSchedulerHandle <- getSingleton system atlasSchedulerActorDef
   terrainCacheWorkerHandle <- getSingleton system terrainCacheWorkerActorDef
   -- Lock-free IORef channels (replacing former broker actors)
@@ -144,7 +146,8 @@ runApp = do
   terrainCacheRef <- newTerrainCacheRef
   setAtlasSchedulerHandles atlasSchedulerHandle AtlasSchedulerHandles
     { ashManager = atlasManagerHandle
-    , ashWorker = atlasWorkerHandle
+    , ashWorkers = atlasWorkerHandles
+    , ashWorkerNext = atlasWorkerNextRef
     , ashResultRef = atlasResultRef
     , ashScheduleRef = atlasScheduleRef
     }
@@ -197,7 +200,6 @@ runApp = do
   mousePosRef <- newIORef (0, 0)
   dragRef <- newIORef Nothing
   tooltipHoverRef <- newIORef Nothing
-  runtimeCfg <- loadConfig
   let frameDelayMs         = cfgFrameDelayMs runtimeCfg
       atlasUploadsPerFrame = cfgAtlasUploadsPerFrame runtimeCfg
       atlasCacheEntries    = cfgAtlasCacheEntries runtimeCfg

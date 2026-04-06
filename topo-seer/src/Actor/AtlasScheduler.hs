@@ -28,6 +28,7 @@ import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion)
 import Actor.UI (UiState(..))
 import Control.Monad (forM_)
+import Data.IORef (IORef, atomicModifyIORef')
 import Data.Word (Word32)
 import UI.DayNight (mkDayNightFn)
 import Hyperspace.Actor
@@ -37,7 +38,8 @@ import Seer.Timing (timedMs)
 -- | Handles required by the atlas scheduler.
 data AtlasSchedulerHandles = AtlasSchedulerHandles
   { ashManager :: !(ActorHandle AtlasManager (Protocol AtlasManager))
-  , ashWorker :: !(ActorHandle AtlasWorker (Protocol AtlasWorker))
+  , ashWorkers :: ![ActorHandle AtlasWorker (Protocol AtlasWorker)]
+  , ashWorkerNext :: !(IORef Int)
   , ashResultRef :: !AtlasResultRef
   , ashScheduleRef :: !AtlasScheduleRef
   }
@@ -103,12 +105,16 @@ runSchedule handles req = do
       shouldSchedule = asqRenderTargetOk req
         && asqDataReady req
         && not (uiGenerating (rsUi snapshot))
-  if shouldSchedule
+      workers = ashWorkers handles
+      workerCount = length workers
+  if shouldSchedule && workerCount > 0
     then do
       (jobs, drainMs) <- timedMs (drainAtlasJobs (ashManager handles))
       (_, enqueueMs) <- timedMs $
-        forM_ jobs $ \job ->
-          enqueueAtlasBuildWork (ashWorker handles) AtlasBuild
+        forM_ jobs $ \job -> do
+          idx <- atomicModifyIORef' (ashWorkerNext handles) (\i -> (i + 1, i))
+          let worker = workers !! (idx `mod` workerCount)
+          enqueueAtlasBuildWork worker AtlasBuild
             { abKey        = ajKey job
             , abViewMode   = ajViewMode job
             , abWaterLevel = ajWaterLevel job

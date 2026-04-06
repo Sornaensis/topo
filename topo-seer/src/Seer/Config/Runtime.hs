@@ -44,6 +44,8 @@ data TopoSeerConfig = TopoSeerConfig
     cfgFrameDelayMs          :: Int
     -- | Number of atlas texture uploads allowed per frame.  Clamped to >= 1.
   , cfgAtlasUploadsPerFrame  :: Int
+    -- | Number of atlas worker actors.  Clamped to >= 1.
+  , cfgAtlasWorkerCount      :: Int
     -- | Maximum number of atlas cache entries.  Clamped to >= 1.
   , cfgAtlasCacheEntries     :: Int
     -- | Terrain cache poll interval in milliseconds.  Clamped to >= 5.
@@ -85,6 +87,7 @@ instance FromJSON TopoSeerConfig where
     TopoSeerConfig
       <$> o .:? "frameDelayMs"         .!= cfgFrameDelayMs d
       <*> o .:? "atlasUploadsPerFrame"  .!= cfgAtlasUploadsPerFrame d
+      <*> o .:? "atlasWorkerCount"      .!= cfgAtlasWorkerCount d
       <*> o .:? "atlasCacheEntries"     .!= cfgAtlasCacheEntries d
       <*> o .:? "terrainCachePollMs"    .!= cfgTerrainCachePollMs d
       <*> o .:? "atlasDrainPollMs"      .!= cfgAtlasDrainPollMs d
@@ -98,7 +101,8 @@ instance FromJSON TopoSeerConfig where
 defaultConfig :: TopoSeerConfig
 defaultConfig = TopoSeerConfig
   { cfgFrameDelayMs          = 16
-  , cfgAtlasUploadsPerFrame  = 1
+  , cfgAtlasUploadsPerFrame  = 4
+  , cfgAtlasWorkerCount      = 3
   , cfgAtlasCacheEntries     = 30
   , cfgTerrainCachePollMs    = 30
   , cfgAtlasDrainPollMs      = 30
@@ -114,6 +118,7 @@ clampConfig :: TopoSeerConfig -> TopoSeerConfig
 clampConfig c = c
   { cfgFrameDelayMs          = max 1 (cfgFrameDelayMs c)
   , cfgAtlasUploadsPerFrame  = max 1 (cfgAtlasUploadsPerFrame c)
+  , cfgAtlasWorkerCount      = max 1 (cfgAtlasWorkerCount c)
   , cfgAtlasCacheEntries     = max 1 (cfgAtlasCacheEntries c)
   , cfgTerrainCachePollMs    = max 5 (cfgTerrainCachePollMs c)
   , cfgAtlasDrainPollMs      = max 5 (cfgAtlasDrainPollMs c)
@@ -182,10 +187,14 @@ configReadme = unlines
   , "  Controls the upper-bound frame rate (e.g. 16 ms ~ 60 fps)."
   , "  Minimum: 1."
   , ""
-  , "atlasUploadsPerFrame  (Int, default 1)"
+  , "atlasUploadsPerFrame  (Int, default 4)"
   , "  Maximum number of atlas texture tiles uploaded to the GPU each"
   , "  frame.  Higher values speed up atlas population but can cause"
   , "  frame drops on slower GPUs.  Minimum: 1."
+  , ""
+  , "atlasWorkerCount      (Int, default 3)"
+  , "  Number of parallel atlas-build worker actors.  More workers"
+  , "  increase geometry throughput at the cost of CPU usage.  Minimum: 1."
   , ""
   , "atlasCacheEntries     (Int, default 4)"
   , "  Number of atlas scale levels kept in the LRU cache.  Raising"

@@ -38,7 +38,6 @@ import Actor.UI
   ( ConfigTab(..)
   , Ui
   , ViewMode(..)
-  , allStandardViewModes
   , emptyUiState
   , getUiSnapshot
   , uiChunkSize
@@ -258,25 +257,6 @@ rebuildAtlasFor' handles mode = do
         , ajAtlasScale = zsAtlasScale stage
         }
   mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles) . job) allZoomStages
-
--- | Enqueue atlas builds for all standard view modes.
--- The current view mode is enqueued first so it gets higher priority.
-rebuildAtlasForAll :: UiActionRequest -> IO ()
-rebuildAtlasForAll req = do
-  uiSnap <- getUiSnapshot (ahUiHandle (uarActorHandles req))
-  let current = uiViewMode uiSnap
-      others  = filter (/= current) allStandardViewModes
-  rebuildAtlasFor req current
-  mapM_ (rebuildAtlasFor req) others
-
--- | 'rebuildAtlasForAll' variant that takes 'ActorHandles' directly.
-rebuildAtlasForAll' :: ActorHandles -> IO ()
-rebuildAtlasForAll' handles = do
-  uiSnap <- getUiSnapshot (ahUiHandle handles)
-  let current = uiViewMode uiSnap
-      others  = filter (/= current) allStandardViewModes
-  rebuildAtlasFor' handles current
-  mapM_ (rebuildAtlasFor' handles) others
 
 setViewMode :: UiActionRequest -> ViewMode -> IO ()
 setViewMode req mode =

@@ -1,5 +1,8 @@
 module Spec.AtlasResultBroker (spec) where
 
+import Control.Concurrent (forkIO)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Monad (forM_, replicateM_)
 import Data.IORef (newIORef)
 import Test.Hspec
 import Actor.AtlasCache (AtlasKey(..))
@@ -66,6 +69,20 @@ spec = describe "AtlasResultBroker" $ do
     map abrHexRadius results1 `shouldBe` [6]
     (results2, _) <- drainFreshResultsN ref (const True) 1
     map abrHexRadius results2 `shouldBe` [10]
+
+  it "handles concurrent pushes from multiple threads" $ do
+    ref <- newIORef []
+    let key = AtlasKey ViewElevation 0 1
+        tile = AtlasTileGeometry { atgBounds = Rect (V2 0 0, V2 1 1), atgScale = 1, atgHexRadius = 6, atgChunks = [], atgRiverOverlay = [] }
+        mkResult hr = AtlasBuildResult { abrKey = key, abrHexRadius = hr, abrTile = tile, abrDayNightTile = Nothing }
+        pushN n hr = replicateM_ n (pushAtlasResult ref (mkResult hr))
+    -- Spawn 3 threads each pushing 100 results concurrently
+    barriers <- sequence [newEmptyMVar | _ <- [1 :: Int, 2, 3]]
+    forM_ (zip barriers [6, 10, 25 :: Int]) $ \(done, hr) ->
+      forkIO (pushN 100 hr >> putMVar done ())
+    mapM_ takeMVar barriers
+    results <- drainAtlasResultsN ref 300
+    length results `shouldBe` 300
 
 sampleTerrainSnapshot :: TerrainSnapshot
 sampleTerrainSnapshot = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore
