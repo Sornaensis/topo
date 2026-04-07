@@ -171,10 +171,10 @@ renderFrame context = do
       then logTiming logHandle timingLogThresholdMs (Text.pack "atlas texture create") uploadTextureMs (Just uploadCount)
       else pure False
   tAfterDrain <- getMonotonicTimeNSec
-  (atlasToDraw, atlasCache'', loggedAtlasResolve) <- do
-    ((resolvedTiles, resolvedCache), elapsed) <- timedMs (resolveAtlasTiles renderTargetOk pool snapshot atlasCache' stage)
+  (atlasToDraw, atlasKeyMismatch, atlasCache'', loggedAtlasResolve) <- do
+    ((resolvedTiles, mismatch, resolvedCache), elapsed) <- timedMs (resolveAtlasTiles renderTargetOk pool snapshot atlasCache' stage)
     logged <- logTiming logHandle timingLogThresholdMs (Text.pack "atlas resolve") elapsed Nothing
-    pure (resolvedTiles, resolvedCache, logged)
+    pure (resolvedTiles, mismatch, resolvedCache, logged)
   tAfterResolve <- getMonotonicTimeNSec
   (textureCache', loggedChunkTexture) <-
     if renderTargetOk
@@ -302,7 +302,7 @@ renderFrame context = do
       <> " atlas=" <> show (isNothing atlasToDraw)
     hFlush h
   let didLog = loggedWindowSize || loggedSchedule || loggedScheduleDrain || loggedScheduleEnqueue || loggedUpload || loggedTextureCreate || loggedAtlasResolve || loggedChunkTexture || loggedDraw || loggedHover || loggedChrome || loggedUi || loggedPresent
-  pure (renderTargetOk && dataReady && isNothing atlasToDraw, textureCache', atlasCache'', didLog)
+  pure (renderTargetOk && dataReady && (isNothing atlasToDraw || atlasKeyMismatch), textureCache', atlasCache'', didLog)
 
 logTiming :: ActorHandle Log (Protocol Log) -> Word32 -> Text.Text -> Word32 -> Maybe Int -> IO Bool
 logTiming handle thresholdMs label elapsed maybeCount =

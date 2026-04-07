@@ -7,6 +7,7 @@ module Seer.Render.Atlas
   , drainAtlasBuildResults
   , getNearestAtlas
   , resolveAtlasTiles
+  , resolveAtlasFallback
   , resolveEffectiveStage
   , scheduleAtlasBuilds
   , setAtlasKey
@@ -253,7 +254,7 @@ resolveAtlasTiles
   -> RenderSnapshot
   -> AtlasTextureCache
   -> ZoomStage
-  -> IO (Maybe [TerrainAtlasTile], AtlasTextureCache)
+  -> IO (Maybe [TerrainAtlasTile], Bool, AtlasTextureCache)
 resolveAtlasTiles renderTargetOk pool snapshot atlasCache stage = do
   let terrainSnap = rsTerrain snapshot
       atlasKey = AtlasKey (uiViewMode (rsUi snapshot)) (uiRenderWaterLevel (rsUi snapshot)) (tsVersion terrainSnap)
@@ -261,11 +262,7 @@ resolveAtlasTiles renderTargetOk pool snapshot atlasCache stage = do
       atlasTiles = if renderTargetOk && dataReady
         then getNearestAtlas atlasKey (zsHexRadius stage) atlasCache
         else Nothing
-      atlasToDraw = case atlasTiles of
-        Just tiles | not (null tiles) -> Just tiles
-        _ -> case atcLast atlasCache of
-          Just (_key, tiles) | not (null tiles) -> Just tiles
-          _ -> Nothing
+      (atlasToDraw, keyMismatch) = resolveAtlasFallback atlasKey atlasTiles atlasCache
       -- With multi-key caching, old atcLast tiles are NOT explicitly
       -- retired here because they may still live in atcCaches under
       -- their original key.  Eviction handles texture lifecycle;
@@ -292,12 +289,35 @@ resolveAtlasTiles renderTargetOk pool snapshot atlasCache stage = do
       cacheFinal = cacheDrained { atcPending = keepAlive }
   unless (null destroyNow) $
     mapM_ (releaseTexture pool) destroyNow
-  pure (atlasToDraw, cacheFinal)
+  pure (atlasToDraw, keyMismatch, cacheFinal)
 
 zoomTextureScale :: Float -> Int
 zoomTextureScale zoom =
   let target = ceiling (zoom * 2)
   in max 1 (min 6 target)
+
+-- | Pure fallback logic for atlas tile resolution.
+--
+-- Given the expected 'AtlasKey', the result of looking up exact-match tiles,
+-- and the current cache, determines which tiles to draw and whether the
+-- result is a key-mismatch fallback (stale 'atcLast' tiles from a different
+-- view mode or water level).
+--
+-- Returns @(tiles to draw, key mismatch flag)@.  The mismatch flag is
+-- 'True' only when the rendered tiles come from 'atcLast' and the last
+-- key differs from the expected key — signalling that the render loop
+-- should stay active until correct-mode tiles are built.
+resolveAtlasFallback
+  :: AtlasKey
+  -> Maybe [TerrainAtlasTile]
+  -> AtlasTextureCache
+  -> (Maybe [TerrainAtlasTile], Bool)
+resolveAtlasFallback expectedKey atlasTiles cache =
+  case atlasTiles of
+    Just tiles | not (null tiles) -> (Just tiles, False)
+    _ -> case atcLast cache of
+      Just (lastKey, tiles) | not (null tiles) -> (Just tiles, lastKey /= expectedKey)
+      _ -> (Nothing, False)
 
 -- | Select the active atlas key.
 --

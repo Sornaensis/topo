@@ -19,6 +19,7 @@ import Seer.Render.Atlas
   , touchAtlasScale
   , drainAtlasPending
   , evictIfNeeded
+  , resolveAtlasFallback
   , resolveEffectiveStage
   , collectAtlasTextures
   )
@@ -332,3 +333,151 @@ spec = describe "AtlasTextureCache" $ do
                  $ storeAtlasTiles keyA 6 [mkTile 1 6 testRect] cache0
           cache2 = cache1 { atcPending = [mockTexture 99] }
       length (collectAtlasTextures cache2) `shouldBe` 3
+
+  -- -------------------------------------------------------------------
+  -- resolveAtlasFallback (key-mismatch detection)
+  -- -------------------------------------------------------------------
+  describe "resolveAtlasFallback" $ do
+    it "returns no mismatch when exact tiles are found" $ do
+      let tiles = [mkTile 1 6 testRect]
+          (result, mismatch) = resolveAtlasFallback keyA (Just tiles) (emptyAtlasTextureCache 30)
+      fmap length result `shouldBe` Just 1
+      mismatch `shouldBe` False
+
+    it "returns no mismatch when atcLast key matches" $ do
+      let lastTiles = [mkTile 10 6 testRect]
+          cache = (emptyAtlasTextureCache 30) { atcLast = Just (keyA, lastTiles) }
+          (result, mismatch) = resolveAtlasFallback keyA Nothing cache
+      fmap length result `shouldBe` Just 1
+      mismatch `shouldBe` False
+
+    it "returns mismatch when atcLast key differs (view mode switch)" $ do
+      let lastTiles = [mkTile 10 6 testRect]
+          cache = (emptyAtlasTextureCache 30) { atcLast = Just (keyA, lastTiles) }
+          -- Expected key is keyB (different view mode) but atcLast has keyA
+          (result, mismatch) = resolveAtlasFallback keyB Nothing cache
+      isJust result `shouldBe` True
+      mismatch `shouldBe` True
+
+    it "returns mismatch when atcLast differs in water level" $ do
+      let keyWet = AtlasKey ViewElevation 0.5 1
+          keyDry = AtlasKey ViewElevation 0.0 1
+          lastTiles = [mkTile 10 6 testRect]
+          cache = (emptyAtlasTextureCache 30) { atcLast = Just (keyWet, lastTiles) }
+          (result, mismatch) = resolveAtlasFallback keyDry Nothing cache
+      isJust result `shouldBe` True
+      mismatch `shouldBe` True
+
+    it "returns no mismatch and Nothing when atcLast is empty" $ do
+      let (result, mismatch) = resolveAtlasFallback keyA Nothing (emptyAtlasTextureCache 30)
+      isNothing result `shouldBe` True
+      mismatch `shouldBe` False
+
+    it "returns no mismatch and Nothing when atcLast has empty tiles" $ do
+      let cache = (emptyAtlasTextureCache 30) { atcLast = Just (keyA, []) }
+          (result, mismatch) = resolveAtlasFallback keyB Nothing cache
+      isNothing result `shouldBe` True
+      mismatch `shouldBe` False
+
+    it "prefers exact tiles over atcLast even when atcLast mismatches" $ do
+      let exactTiles = [mkTile 1 6 testRect]
+          lastTiles = [mkTile 10 6 testRect]
+          cache = (emptyAtlasTextureCache 30) { atcLast = Just (keyA, lastTiles) }
+          (result, mismatch) = resolveAtlasFallback keyB (Just exactTiles) cache
+      fmap length result `shouldBe` Just 1
+      mismatch `shouldBe` False
+
+    it "falls back to atcLast when exact tiles list is empty" $ do
+      let lastTiles = [mkTile 10 6 testRect]
+          cache = (emptyAtlasTextureCache 30) { atcLast = Just (keyA, lastTiles) }
+          (result, mismatch) = resolveAtlasFallback keyB (Just []) cache
+      isJust result `shouldBe` True
+      mismatch `shouldBe` True
+
+  -- -------------------------------------------------------------------
+  -- View mode switch sequence (multi-frame simulation)
+  --
+  -- These tests model the real render-loop state machine by threading
+  -- cache state through the same pure operations that resolveAtlasTiles
+  -- and renderFrame use, verifying the mismatch flag and cache updates
+  -- across multiple simulated frames.
+  -- -------------------------------------------------------------------
+  describe "view mode switch sequence" $ do
+    it "mismatch persists until correct-mode tiles are stored" $ do
+      -- Frame 0: Elevation tiles are displayed and cached.
+      let elevTiles = [mkTile 1 6 testRect]
+          cache0 = storeAtlasTiles keyA 6 elevTiles
+                     ((emptyAtlasTextureCache 30) { atcKey = Just keyA })
+          -- Simulate resolveAtlasTiles setting atcLast after a successful lookup
+          cache0' = cache0 { atcLast = Just (keyA, elevTiles) }
+
+      -- Frame 1: User switches to Biome (keyB).
+      -- renderFrame calls setAtlasKey, then resolveAtlasTiles does
+      -- getNearestAtlas for the new key and falls back to atcLast.
+      let cache1 = setAtlasKey keyB cache0'
+          lookupB1 = getNearestAtlas keyB 6 cache1  -- no biome tiles yet
+          (tiles1, mismatch1) = resolveAtlasFallback keyB lookupB1 cache1
+      isNothing lookupB1 `shouldBe` True
+      isJust tiles1 `shouldBe` True         -- falls back to elevation tiles
+      mismatch1 `shouldBe` True             -- KEY: triggers retry
+
+      -- Cache unchanged because atcLast is NOT updated on fallback
+      -- (cacheWithLast only updates when atlasTiles is Just non-empty)
+      fmap fst (atcLast cache1) `shouldBe` Just keyA  -- still elevation key
+
+      -- Frame 2: Still no biome tiles yet, mismatch must persist.
+      let lookupB2 = getNearestAtlas keyB 6 cache1
+          (_tiles2, mismatch2) = resolveAtlasFallback keyB lookupB2 cache1
+      mismatch2 `shouldBe` True             -- still mismatched
+
+      -- Frame 3: Worker delivers biome tiles (stored via storeAtlasTiles).
+      let biomeTiles = [mkTile 50 6 testRect]
+          cache3 = storeAtlasTiles keyB 6 biomeTiles cache1
+          lookupB3 = getNearestAtlas keyB 6 cache3
+          (tiles3, mismatch3) = resolveAtlasFallback keyB lookupB3 cache3
+      isJust lookupB3 `shouldBe` True       -- biome tiles now in cache
+      isJust tiles3 `shouldBe` True
+      mismatch3 `shouldBe` False            -- KEY: mismatch clears
+
+    it "switching back to a cached mode has no mismatch" $ do
+      -- Both modes pre-cached
+      let elevTiles = [mkTile 1 6 testRect]
+          biomeTiles = [mkTile 2 6 testRect]
+          cache0 = storeAtlasTiles keyB 6 biomeTiles
+                 $ storeAtlasTiles keyA 6 elevTiles
+                     ((emptyAtlasTextureCache 30) { atcKey = Just keyA })
+          cache0' = cache0 { atcLast = Just (keyA, elevTiles) }
+
+      -- Switch to biome: tiles already cached → no mismatch
+      let cache1 = setAtlasKey keyB cache0'
+          lookupB = getNearestAtlas keyB 6 cache1
+          (_tilesB, mismatchB) = resolveAtlasFallback keyB lookupB cache1
+      isJust lookupB `shouldBe` True
+      mismatchB `shouldBe` False
+
+      -- Switch back to elevation: still cached → no mismatch
+      let cache2 = setAtlasKey keyA cache1
+          lookupA = getNearestAtlas keyA 6 cache2
+          (_tilesA, mismatchA) = resolveAtlasFallback keyA lookupA cache2
+      isJust lookupA `shouldBe` True
+      mismatchA `shouldBe` False
+
+    it "needsRetry is True during mismatch and False after resolution" $ do
+      -- Simulate the renderFrame return value formula:
+      -- needsRetry = renderTargetOk && dataReady && (isNothing atlasToDraw || keyMismatch)
+      let renderTargetOk = True
+          dataReady = True
+          needsRetry mTiles km = renderTargetOk && dataReady && (isNothing mTiles || km)
+
+      -- No tiles at all → retry (pre-existing behavior)
+      needsRetry Nothing False `shouldBe` True
+
+      -- Correct tiles displayed → no retry
+      needsRetry (Just [mkTile 1 6 testRect]) False `shouldBe` False
+
+      -- Stale tiles from atcLast → retry (the fix)
+      needsRetry (Just [mkTile 1 6 testRect]) True `shouldBe` True
+
+      -- Not data-ready → no retry regardless of mismatch
+      let needsRetryNoData mTiles km = renderTargetOk && False && (isNothing mTiles || km)
+      needsRetryNoData (Just [mkTile 1 6 testRect]) True `shouldBe` False
