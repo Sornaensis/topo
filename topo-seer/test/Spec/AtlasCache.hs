@@ -20,6 +20,7 @@ import Seer.Render.Atlas
   , drainAtlasPending
   , evictIfNeeded
   , resolveAtlasFallback
+  , resolveAtlasPure
   , resolveEffectiveStage
   , collectAtlasTextures
   )
@@ -726,66 +727,55 @@ spec = describe "AtlasTextureCache" $ do
       mmWet `shouldBe` False  -- wet tiles still cached
 
   -- -------------------------------------------------------------------
-  -- Full render-loop state machine simulation
+  -- Full render-loop state machine via resolveAtlasPure
   --
-  -- Simulates multiple render frames with the actual pure operations
-  -- composed the same way as resolveAtlasTiles + renderFrame:
-  --   1. setAtlasKey
-  --   2. getNearestAtlas → resolveAtlasFallback → (atlasToDraw, mismatch)
-  --   3. cacheWithLast update
-  --   4. needsRetry formula
-  --   5. storeAtlasTiles when worker delivers
+  -- These tests call the actual extracted pure function that
+  -- resolveAtlasTiles delegates to, so the composition of
+  -- getNearestAtlas + resolveAtlasFallback + cacheWithLast + touchLRU
+  -- is tested through production code — not reimplemented in a test
+  -- helper.
   -- -------------------------------------------------------------------
-  describe "full render-loop state machine" $ do
-    -- Reusable frame stepper that mirrors resolveAtlasTiles + renderFrame
+  describe "full render-loop state machine (resolveAtlasPure)" $ do
+    -- Reusable frame stepper using the REAL resolveAtlasPure.
+    -- Simulates: optional worker delivery → resolveAtlasPure → needsRetry.
     let stepFrame :: AtlasKey -> Maybe [TerrainAtlasTile] -> AtlasTextureCache
                   -> (Bool, Maybe [TerrainAtlasTile], AtlasTextureCache)
         stepFrame expectedKey workerTiles cache0 =
           let cache1 = setAtlasKey expectedKey cache0
-              -- Store any worker-delivered tiles
+              -- Store any worker-delivered tiles (same as drainAtlasBuildResults)
               cache2 = case workerTiles of
                 Just ts | not (null ts) -> storeAtlasTiles expectedKey 6 ts cache1
                 _                       -> cache1
-              -- Resolve
-              exactLookup = getNearestAtlas expectedKey 6 cache2
-              (atlasToDraw, keyMismatch) = resolveAtlasFallback expectedKey exactLookup cache2
-              -- cacheWithLast update (mirrors resolveAtlasTiles)
-              cache3 = case exactLookup of
-                Just ts | not (null ts) -> cache2 { atcLast = Just (expectedKey, ts) }
-                _                       -> cache2
+              -- Call the REAL pure core
+              (atlasToDraw, keyMismatch, cache3) =
+                resolveAtlasPure True True expectedKey 6 cache2
               -- needsRetry formula (mirrors renderFrame)
               needsRetry = isNothing atlasToDraw || keyMismatch
           in (needsRetry, atlasToDraw, cache3)
 
     it "fresh cache needs retry until first tiles arrive" $ do
       let cache0 = emptyAtlasTextureCache 30
-          -- Frame 1: no tiles anywhere
           (retry1, tiles1, cache1) = stepFrame keyA Nothing cache0
       retry1 `shouldBe` True
       isNothing tiles1 `shouldBe` True
 
-      -- Frame 2: worker delivers elevation tiles
       let (retry2, tiles2, _cache2) = stepFrame keyA (Just [mkTile 1 6 testRect]) cache1
       retry2 `shouldBe` False
       isJust tiles2 `shouldBe` True
 
     it "view mode switch: retry persists across frames until tiles arrive" $ do
-      -- Build initial cache with elevation tiles
       let elevTiles = [mkTile 1 6 testRect]
           cache0 = storeAtlasTiles keyA 6 elevTiles
                      ((emptyAtlasTextureCache 30) { atcKey = Just keyA })
           cache0' = cache0 { atcLast = Just (keyA, elevTiles) }
 
-      -- Frame 1: switch to biome, no worker tiles yet
       let (retry1, tiles1, cache1) = stepFrame keyB Nothing cache0'
       retry1 `shouldBe` True
-      isJust tiles1 `shouldBe` True   -- fallback tiles from atcLast
+      isJust tiles1 `shouldBe` True   -- fallback from atcLast
 
-      -- Frame 2: still no biome tiles
       let (retry2, _tiles2, cache2) = stepFrame keyB Nothing cache1
       retry2 `shouldBe` True
 
-      -- Frame 3: worker delivers biome tiles
       let (retry3, tiles3, _cache3) = stepFrame keyB (Just [mkTile 50 6 testRect]) cache2
       retry3 `shouldBe` False
       isJust tiles3 `shouldBe` True
@@ -796,17 +786,15 @@ spec = describe "AtlasTextureCache" $ do
                      ((emptyAtlasTextureCache 30) { atcKey = Just keyA })
           cache0' = cache0 { atcLast = Just (keyA, elevTiles) }
 
-      -- Frame 1: switch to biome, fallback used
-      let (_retry1, _tiles1, cache1) = stepFrame keyB Nothing cache0'
-      -- atcLast must still be keyA because no exact match for keyB
+      -- Fallback frame: atcLast must stay keyA
+      let (_ret1, _til1, cache1) = stepFrame keyB Nothing cache0'
       fmap fst (atcLast cache1) `shouldBe` Just keyA
 
-      -- Frame 2: still fallback
-      let (_retry2, _tiles2, cache2) = stepFrame keyB Nothing cache1
+      let (_ret2, _til2, cache2) = stepFrame keyB Nothing cache1
       fmap fst (atcLast cache2) `shouldBe` Just keyA
 
-      -- Frame 3: biome tiles arrive → atcLast updated to keyB
-      let (_retry3, _tiles3, cache3) = stepFrame keyB (Just [mkTile 50 6 testRect]) cache2
+      -- Tiles arrive: atcLast updates to keyB
+      let (_ret3, _til3, cache3) = stepFrame keyB (Just [mkTile 50 6 testRect]) cache2
       fmap fst (atcLast cache3) `shouldBe` Just keyB
 
     it "five-mode round-trip: each switch resolves correctly" $ do
@@ -814,19 +802,15 @@ spec = describe "AtlasTextureCache" $ do
           keyD = AtlasKey ViewMoisture   0 1
           keyE = AtlasKey ViewPrecip     0 1
           allKeys = [keyA, keyB, keyC, keyD, keyE]
-          -- Pre-populate tiles for all five modes
           seed cache (k, tag) = storeAtlasTiles k 6 [mkTile tag 6 testRect] cache
           cache0 = foldl seed ((emptyAtlasTextureCache 30) { atcKey = Just keyA })
                      (zip allKeys [1..])
           cache0' = cache0 { atcLast = Just (keyA, [mkTile 1 6 testRect]) }
 
-      -- Cycle through all five modes; none should trigger mismatch
       let checkMode cache key = do
-            let cache' = setAtlasKey key cache
-                lookup' = getNearestAtlas key 6 cache'
-                (_, mm) = resolveAtlasFallback key lookup' cache'
-            isJust lookup' `shouldBe` True
-            mm `shouldBe` False
+            let (tiles, mismatch, cache') = resolveAtlasPure True True key 6 (setAtlasKey key cache)
+            isJust tiles `shouldBe` True
+            mismatch `shouldBe` False
             pure cache'
       cache1 <- checkMode cache0' keyB
       cache2 <- checkMode cache1 keyC
@@ -834,3 +818,42 @@ spec = describe "AtlasTextureCache" $ do
       cache4 <- checkMode cache3 keyE
       _      <- checkMode cache4 keyA  -- full cycle back
       pure ()
+
+    it "resolveAtlasPure returns no tiles when not renderTargetOk" $ do
+      let elevTiles = [mkTile 1 6 testRect]
+          cache0 = storeAtlasTiles keyA 6 elevTiles
+                     ((emptyAtlasTextureCache 30) { atcKey = Just keyA })
+      let (tiles, mismatch, _) = resolveAtlasPure False True keyA 6 cache0
+      isNothing tiles `shouldBe` True
+      mismatch `shouldBe` False
+
+    it "resolveAtlasPure returns no tiles when not dataReady" $ do
+      let elevTiles = [mkTile 1 6 testRect]
+          cache0 = storeAtlasTiles keyA 6 elevTiles
+                     ((emptyAtlasTextureCache 30) { atcKey = Just keyA })
+      let (tiles, mismatch, _) = resolveAtlasPure True False keyA 6 cache0
+      isNothing tiles `shouldBe` True
+      mismatch `shouldBe` False
+
+    it "resolveAtlasPure falls back with mismatch when not dataReady but atcLast exists" $ do
+      let elevTiles = [mkTile 1 6 testRect]
+          cache0 = (emptyAtlasTextureCache 30)
+            { atcKey  = Just keyB
+            , atcLast = Just (keyA, elevTiles)
+            }
+      let (tiles, mismatch, _) = resolveAtlasPure True False keyB 6 cache0
+      -- dataReady=False → getNearestAtlas skipped → falls back to atcLast
+      isJust tiles `shouldBe` True
+      mismatch `shouldBe` True
+
+    it "resolveAtlasPure touches LRU for resolved tiles" $ do
+      let tiles6  = [mkTile 1 6 testRect]
+          tiles10 = [mkTile 2 10 testRect]
+          cache0 = storeAtlasTiles keyA 10 tiles10
+                 $ storeAtlasTiles keyA 6 tiles6
+                     ((emptyAtlasTextureCache 30) { atcKey = Just keyA })
+      -- Resolve at hexRadius 6 → should touch (keyA, 6) in LRU
+      let (_, _, cache1) = resolveAtlasPure True True keyA 6 cache0
+      case atcLru cache1 of
+        ((k, s):_) -> do k `shouldBe` keyA; s `shouldBe` 6
+        []         -> expectationFailure "LRU should not be empty"

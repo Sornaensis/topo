@@ -7,6 +7,7 @@ module Seer.Render.Atlas
   , drainAtlasBuildResults
   , getNearestAtlas
   , resolveAtlasTiles
+  , resolveAtlasPure
   , resolveAtlasFallback
   , resolveEffectiveStage
   , scheduleAtlasBuilds
@@ -259,23 +260,9 @@ resolveAtlasTiles renderTargetOk pool snapshot atlasCache stage = do
   let terrainSnap = rsTerrain snapshot
       atlasKey = AtlasKey (uiViewMode (rsUi snapshot)) (uiRenderWaterLevel (rsUi snapshot)) (tsVersion terrainSnap)
       dataReady = tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
-      atlasTiles = if renderTargetOk && dataReady
-        then getNearestAtlas atlasKey (zsHexRadius stage) atlasCache
-        else Nothing
-      (atlasToDraw, keyMismatch) = resolveAtlasFallback atlasKey atlasTiles atlasCache
-      -- With multi-key caching, old atcLast tiles are NOT explicitly
-      -- retired here because they may still live in atcCaches under
-      -- their original key.  Eviction handles texture lifecycle;
-      -- the keepAlive filter below protects atcLast textures that
-      -- were evicted but not yet replaced.
-      cacheWithLast = case atlasTiles of
-        Just tiles | not (null tiles) ->
-          atlasCache { atcLast = Just (atlasKey, tiles) }
-        _ -> atlasCache
-      cacheTouched = case atlasToDraw of
-        Just (t:_) -> touchAtlasScale (tatHexRadius t) cacheWithLast
-        _ -> cacheWithLast
-      (pending, cacheDrained) = drainAtlasPending cacheTouched
+      (atlasToDraw, keyMismatch, cacheResolved) =
+        resolveAtlasPure renderTargetOk dataReady atlasKey (zsHexRadius stage) atlasCache
+      (pending, cacheDrained) = drainAtlasPending cacheResolved
       -- Protect textures that atcLast still references from being
       -- released.  Only truly orphaned textures may be destroyed.
       aliveTextures = case atcLast cacheDrained of
@@ -290,6 +277,40 @@ resolveAtlasTiles renderTargetOk pool snapshot atlasCache stage = do
   unless (null destroyNow) $
     mapM_ (releaseTexture pool) destroyNow
   pure (atlasToDraw, keyMismatch, cacheFinal)
+
+-- | Pure core of 'resolveAtlasTiles'.
+--
+-- Determines which tiles to draw, whether a key-mismatch fallback
+-- occurred, and the updated cache (with 'atcLast' and LRU touch
+-- applied).  The IO wrapper handles texture release and pending
+-- drain.
+--
+-- This is exported so that tests can exercise the exact same code
+-- path that the render loop uses, rather than reimplementing the
+-- logic in test helpers.
+resolveAtlasPure
+  :: Bool            -- ^ renderTargetOk
+  -> Bool            -- ^ dataReady
+  -> AtlasKey        -- ^ expected atlas key
+  -> Int             -- ^ target hex radius (from ZoomStage)
+  -> AtlasTextureCache
+  -> (Maybe [TerrainAtlasTile], Bool, AtlasTextureCache)
+resolveAtlasPure renderTargetOk dataReady atlasKey hexRadius atlasCache =
+  let atlasTiles = if renderTargetOk && dataReady
+        then getNearestAtlas atlasKey hexRadius atlasCache
+        else Nothing
+      (atlasToDraw, keyMismatch) = resolveAtlasFallback atlasKey atlasTiles atlasCache
+      -- With multi-key caching, old atcLast tiles are NOT explicitly
+      -- retired here because they may still live in atcCaches under
+      -- their original key.  Eviction handles texture lifecycle.
+      cacheWithLast = case atlasTiles of
+        Just tiles | not (null tiles) ->
+          atlasCache { atcLast = Just (atlasKey, tiles) }
+        _ -> atlasCache
+      cacheTouched = case atlasToDraw of
+        Just (t:_) -> touchAtlasScale (tatHexRadius t) cacheWithLast
+        _ -> cacheWithLast
+  in (atlasToDraw, keyMismatch, cacheTouched)
 
 zoomTextureScale :: Float -> Int
 zoomTextureScale zoom =
