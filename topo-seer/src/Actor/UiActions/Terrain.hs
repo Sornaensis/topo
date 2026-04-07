@@ -13,7 +13,7 @@ module Actor.UiActions.Terrain
 
 import Actor.AtlasCache (AtlasKey(..))
 import Actor.AtlasManager (AtlasJob(..), AtlasManager, enqueueAtlasBuild)
-import Seer.Render.ZoomStage (ZoomStage(..), allZoomStages)
+import Seer.Render.ZoomStage (ZoomStage(..), allZoomStages, stageForZoom)
 import Actor.Data
   ( Data
   , DataSnapshot(..)
@@ -141,6 +141,10 @@ rebuildAtlas :: UiActionHandles -> TerrainSnapshot -> UiState -> IO ()
 rebuildAtlas handles terrainSnap uiSnap = do
   start <- getMonotonicTimeNSec
   let currentMode = uiViewMode uiSnap
+      currentStage = stageForZoom (uiZoom uiSnap)
+      -- Enqueue the current zoom stage first so the visible tiles are
+      -- prioritised by the scheduler's round-robin dispatch.
+      orderedStages = currentStage : filter (/= currentStage) allZoomStages
       mkJob stage =
         let atlasKey = AtlasKey currentMode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
         in AtlasJob
@@ -153,7 +157,7 @@ rebuildAtlas handles terrainSnap uiSnap = do
           }
   -- Build only the current view mode (5 jobs for 5 zoom stages).
   -- Other modes build on-demand when the user switches to them.
-  mapM_ (enqueueAtlasBuild (uahAtlas handles) . mkJob) allZoomStages
+  mapM_ (enqueueAtlasBuild (uahAtlas handles) . mkJob) orderedStages
   end <- getMonotonicTimeNSec
   logElapsed (uahLog handles) "terrain: enqueue atlas jobs" start end
 

@@ -18,7 +18,7 @@ import Actor.AtlasCache (AtlasKey(..))
 import Actor.PluginManager (LoadedPlugin(..), PluginManager, getDisabledPlugins, getLoadedPlugins, getPluginDataResources, getPluginOrder, getPluginOverlaySchemas, getPluginStages, refreshManifests)
 import Actor.Simulation (Simulation)
 import Actor.AtlasManager (AtlasJob(..), AtlasManager, enqueueAtlasBuild)
-import Seer.Render.ZoomStage (ZoomStage(..), allZoomStages)
+import Seer.Render.ZoomStage (ZoomStage(..), allZoomStages, stageForZoom)
 import Actor.Data
   ( Data
   , TerrainSnapshot(..)
@@ -63,6 +63,7 @@ import Actor.UI
   , uiViewMode
   , uiWaterLevel
   , uiWorldConfig
+  , uiZoom
   , setUiRenderWaterLevel
   , setUiWorldConfig
   )
@@ -97,6 +98,7 @@ data UiAction
   | UiActionRevert
   | UiActionSetViewMode !ViewMode
   | UiActionRebuildAtlas !ViewMode
+  | UiActionRefreshViewport !ViewMode
   | UiActionBrushStroke !(Int, Int)
     -- ^ Apply the current editor brush at the given hex @(q, r)@.
   | UiActionClearFlattenRef
@@ -127,6 +129,8 @@ runUiAction req =
       logTimed req ("View " <> viewModeLabel mode) (setViewMode req mode >> rebuildAtlas req)
     UiActionRebuildAtlas mode ->
       logTimed req ("Rebuild Atlas " <> viewModeLabel mode) (rebuildAtlas req)
+    UiActionRefreshViewport mode ->
+      logTimed req ("Refresh Viewport " <> viewModeLabel mode) (refreshViewport req)
     UiActionBrushStroke hex ->
       logTimed req "Brush Stroke" (applyBrush req hex)
     UiActionClearFlattenRef ->
@@ -231,6 +235,10 @@ rebuildAtlasFor req mode = do
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap <- getUiSnapshot (ahUiHandle handles)
   let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
+      currentStage = stageForZoom (uiZoom uiSnap)
+      -- Enqueue the current zoom stage first so the visible tiles are
+      -- prioritised by the scheduler's round-robin dispatch.
+      orderedStages = currentStage : filter (/= currentStage) allZoomStages
       job stage = AtlasJob
         { ajKey        = atlasKey
         , ajViewMode   = mode
@@ -239,7 +247,7 @@ rebuildAtlasFor req mode = do
         , ajHexRadius  = zsHexRadius stage
         , ajAtlasScale = zsAtlasScale stage
         }
-  mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles) . job) allZoomStages
+  mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles) . job) orderedStages
 
 -- | 'rebuildAtlasFor' variant that takes 'ActorHandles' directly
 -- (used by undo\/redo which don't carry a 'UiActionRequest').
@@ -248,6 +256,8 @@ rebuildAtlasFor' handles mode = do
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap <- getUiSnapshot (ahUiHandle handles)
   let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
+      currentStage = stageForZoom (uiZoom uiSnap)
+      orderedStages = currentStage : filter (/= currentStage) allZoomStages
       job stage = AtlasJob
         { ajKey        = atlasKey
         , ajViewMode   = mode
@@ -256,7 +266,30 @@ rebuildAtlasFor' handles mode = do
         , ajHexRadius  = zsHexRadius stage
         , ajAtlasScale = zsAtlasScale stage
         }
-  mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles) . job) allZoomStages
+  mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles) . job) orderedStages
+
+-- | Viewport-only atlas refresh: only rebuild the current zoom stage.
+--
+-- Used for zoom scroll and pan drag-release where the atlas key has not
+-- changed — only the viewport moved.  This avoids enqueueing work for
+-- all 5 zoom stages when only the visible one needs new tiles.
+refreshViewport :: UiActionRequest -> IO ()
+refreshViewport req = do
+  let handles = uarActorHandles req
+  terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
+  uiSnap <- getUiSnapshot (ahUiHandle handles)
+  let mode = uiViewMode uiSnap
+      atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
+      currentStage = stageForZoom (uiZoom uiSnap)
+      job stage = AtlasJob
+        { ajKey        = atlasKey
+        , ajViewMode   = mode
+        , ajWaterLevel = uiRenderWaterLevel uiSnap
+        , ajTerrain    = terrainSnap
+        , ajHexRadius  = zsHexRadius stage
+        , ajAtlasScale = zsAtlasScale stage
+        }
+  enqueueAtlasBuild (ahAtlasManagerHandle handles) (job currentStage)
 
 setViewMode :: UiActionRequest -> ViewMode -> IO ()
 setViewMode req mode =
