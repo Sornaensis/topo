@@ -227,6 +227,7 @@ benchmark topo-seer-bench
   main-is: Main.hs
   other-modules:
       Bench.AtlasCache
+      Bench.AtlasOps
       Bench.DayNight
       Bench.HoverHex
       Bench.OverlayExtract
