@@ -18,6 +18,7 @@ module Fixtures
   , benchOverlayStoreDense
   , benchOverlayStoreSparse
   , benchOverlaySchema
+  , populatedRiverChunk
   , terrainMap16
   , climateMap16
   , weatherMap16
@@ -30,6 +31,7 @@ import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
+import Data.Word (Word8, Word16, Word32)
 import Topo
 
 import Actor.Data (TerrainSnapshot(..))
@@ -78,6 +80,29 @@ benchVegetationChunk = emptyVegetationChunk benchWorldConfig
 -- | Empty river chunk.
 benchRiverChunk :: RiverChunk
 benchRiverChunk = emptyRiverChunk benchWorldConfig
+
+-- | A river chunk with ~21 river segments spread across ~21 tiles.
+-- Entry edge 2, exit edge 5 (opposite edges, inland flow).
+populatedRiverChunk :: RiverChunk
+populatedRiverChunk =
+  let n = 64
+      nSegs = 22
+  in RiverChunk
+    { rcFlowAccum        = U.generate n (\i -> fromIntegral i * 10)
+    , rcDischarge         = U.generate n (\i -> fromIntegral i * 5)
+    , rcChannelDepth      = U.replicate n 0.5
+    , rcRiverOrder        = U.replicate n (2 :: Word16)
+    , rcBasinId           = U.replicate n (1 :: Word32)
+    , rcBaseflow          = U.replicate n 0
+    , rcErosionPotential  = U.replicate n 0
+    , rcDepositPotential  = U.replicate n 0
+    , rcFlowDir           = U.generate n (\i -> if i < n-1 then i+1 else -1)
+    , rcSegOffsets        = U.generate (n+1) (\i -> min nSegs (i `div` 3))
+    , rcSegEntryEdge      = U.replicate nSegs (2 :: Word8)
+    , rcSegExitEdge       = U.replicate nSegs (5 :: Word8)
+    , rcSegDischarge      = U.generate nSegs (\i -> fromIntegral i * 5)
+    , rcSegOrder          = U.replicate nSegs (2 :: Word16)
+    }
 
 -- | A small world with a handful of terrain chunks.
 benchWorld :: TerrainWorld

@@ -21,7 +21,7 @@ import Seer.Render.Atlas (drawAtlas)
 import Topo (TerrainChunk)
 import Topo.Overlay (OverlayStore, emptyOverlayStore)
 import UI.DayNight (mkDayNightFn)
-import UI.RiverRender (RiverGeometry(..))
+import UI.RiverRender (RiverGeometry(..), buildChunkRiverGeometry, defaultRiverRenderConfig)
 import UI.TerrainAtlas
   ( AtlasChunkGeometry(..)
   , AtlasTileGeometry(..)
@@ -80,7 +80,10 @@ geoMap16 = IntMap.mapWithKey (\k tc ->
     Nothing k tc) terrainMap16
 
 riverGeoMap :: IntMap.IntMap RiverGeometry
-riverGeoMap = IntMap.empty
+riverGeoMap = IntMap.mapMaybeWithKey (\k _ ->
+  buildChunkRiverGeometry defaultRiverRenderConfig benchWorldConfig 6 k
+    (IntMap.singleton k populatedRiverChunk) IntMap.empty
+  ) terrainMap16
 
 sampleTileGeometry :: [AtlasTileGeometry]
 sampleTileGeometry =
@@ -126,7 +129,9 @@ benchmarks = bgroup "AtlasCache"
     , bench "16chunks/scale2" $ nf (composeTilesFromGeometry geoMap16 6) 2
     ]
   , bgroup "attachRiverOverlay"
-    [ bench "16chunks" $ nf (attachRiverOverlay riverGeoMap) sampleTileGeometry
+    -- Pass the river map as the nf argument so GHC cannot constant-fold
+    -- the application, and ensure non-empty geometry is overlaid.
+    [ bench "16chunks" $ nf (\rg -> attachRiverOverlay rg sampleTileGeometry) riverGeoMap
     ]
   , withResource initSDLEnv cleanupSDLEnv $ \getEnv ->
       bgroup "SDL"

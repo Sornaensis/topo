@@ -228,16 +228,11 @@ benchmark topo-seer-bench
   other-modules:
       Bench.AtlasCache
       Bench.AtlasOps
-      Bench.DayNight
-      Bench.HoverHex
-      Bench.OverlayExtract
       Bench.Pipeline
       Bench.RiverGeometry
-      Bench.Simulation
       Bench.TerrainCache
       Bench.TerrainGeometry
       Bench.Viewport
-      Bench.Widgets
       Fixtures
       Paths_topo_seer
   hs-source-dirs:

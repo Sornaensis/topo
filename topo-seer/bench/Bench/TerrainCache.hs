@@ -3,8 +3,6 @@
 -- | Benchmarks for full terrain cache rebuild.
 module Bench.TerrainCache (benchmarks) where
 
-import Control.DeepSeq (rnf)
-import qualified Data.IntMap.Strict as IntMap
 import Test.Tasty.Bench
 
 import Fixtures
@@ -13,10 +11,9 @@ import Seer.Render.Terrain (TerrainCache(..), buildTerrainCache)
 benchmarks :: Benchmark
 benchmarks = bgroup "TerrainCache"
   [ bgroup "buildTerrainCache"
-    [ bench "16chunks" $ whnfIO $ do
-        let cache = buildTerrainCache benchUiState benchTerrainSnapshot
-        -- Force all chunk geometry (the expensive work)
-        _ <- pure $! IntMap.foldl' (\acc cg -> rnf cg `seq` acc) () (tcGeometry cache)
-        pure ()
+    -- Pass the snapshot as the nf argument so GHC cannot float the
+    -- pure application to a CAF (the old whnfIO+let was optimised
+    -- to a single evaluation across all iterations → 216 ps).
+    [ bench "16chunks" $ nf (tcGeometry . buildTerrainCache benchUiState) benchTerrainSnapshot
     ]
   ]
