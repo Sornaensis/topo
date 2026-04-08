@@ -21,6 +21,11 @@ import UI.RiverRender
 instance NFData RiverGeometry where
   rnf (RiverGeometry b v i) = rwhnf b `seq` rnf v `seq` rnf i
 
+-- SDL raw types are strict C structs — rwhnf is sufficient.
+instance NFData Raw.Vertex where rnf = rwhnf
+instance NFData Raw.FPoint where rnf = rwhnf
+instance NFData Raw.Color  where rnf = rwhnf
+
 benchmarks :: Benchmark
 benchmarks = bgroup "RiverGeometry"
   [ bgroup "buildChunkRiverGeometry"
@@ -31,9 +36,10 @@ benchmarks = bgroup "RiverGeometry"
     , bench "populated chunk" $ nf (buildGeo 0) (IntMap.singleton 0 populatedRiverChunk)
     ]
   , bgroup "buildDeltaFan"
-    [ bench "small fan (4 tris)"  $ whnf (fanBench 4)  ()
-    , bench "medium fan (8 tris)" $ whnf (fanBench 8)  ()
-    , bench "large fan (16 tris)" $ whnf (fanBench 16) ()
+    -- Pass triCount as the nf argument to prevent CAF sharing.
+    [ bench "small fan (4 tris)"  $ nf fanBench 4
+    , bench "medium fan (8 tris)" $ nf fanBench 8
+    , bench "large fan (16 tris)" $ nf fanBench 16
     ]
   ]
 
@@ -49,8 +55,8 @@ buildGeo key rm = buildChunkRiverGeometry
   rm
   IntMap.empty
 
-fanBench :: Int -> () -> ([Raw.Vertex], [CInt], CInt)
-fanBench triCount _ = buildDeltaFan
+fanBench :: Int -> ([Raw.Vertex], [CInt], CInt)
+fanBench triCount = buildDeltaFan
   (Raw.Color 60 120 200 255)  -- color
   3.0                          -- fan radius (pixels)
   1.5                          -- spread angle (radians)
