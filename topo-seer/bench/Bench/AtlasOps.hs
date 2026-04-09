@@ -44,9 +44,6 @@ instance NFData TerrainAtlasTile where
 instance NFData ZoomStage where
   rnf (ZoomStage hr as zmin zmax) = rnf hr `seq` rnf as `seq` rnf zmin `seq` rnf zmax
 
-instance NFData AtlasKey where
-  rnf (AtlasKey vm wl v) = rwhnf vm `seq` rnf wl `seq` rnf v
-
 instance NFData AtlasTextureCache where
   rnf c = rwhnf (atcKey c) `seq` rwhnf (atcCaches c) `seq` rnf (atcMaxEntries c)
     `seq` rwhnf (atcLru c) `seq` rwhnf (atcPending c) `seq` rwhnf (atcLast c)

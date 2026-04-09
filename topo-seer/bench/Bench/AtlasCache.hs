@@ -111,6 +111,21 @@ sampleTileGeometryOverlay =
     benchOverlayStoreDense benchWorldConfig
     6 1
 
+-- | 64-chunk tile geometry for high-tile-count benchmarks.
+sampleTileGeometry64 :: [AtlasTileGeometry]
+sampleTileGeometry64 =
+  buildAtlasTileGeometry ViewElevation 0.3
+    terrainMap64 climateMap64 weatherMap64 vegMap64
+    emptyOverlayStore benchWorldConfig
+    6 1
+
+-- | 64-chunk geometry map for composeTilesFromGeometry.
+geoMap64 :: IntMap.IntMap ChunkGeometry
+geoMap64 = IntMap.mapWithKey (\k tc ->
+  buildChunkGeometry 6 benchWorldConfig ViewElevation 0.3
+    climateMap64 weatherMap64 vegMap64
+    Nothing k tc) terrainMap64
+
 ------------------------------------------------------------------------
 -- Benchmarks
 ------------------------------------------------------------------------
@@ -127,6 +142,7 @@ benchmarks = bgroup "AtlasCache"
   , bgroup "composeTilesFromGeometry"
     [ bench "16chunks/scale1" $ nf (composeTilesFromGeometry geoMap16 6) 1
     , bench "16chunks/scale2" $ nf (composeTilesFromGeometry geoMap16 6) 2
+    , bench "64chunks/scale1" $ nf (composeTilesFromGeometry geoMap64 6) 1
     ]
   , bgroup "attachRiverOverlay"
     -- Pass the river map as the nf argument so GHC cannot constant-fold
@@ -147,6 +163,16 @@ benchmarks = bgroup "AtlasCache"
             env <- getEnv
             tiles <- renderAtlasTileTextures (sdlTexturePool env) (sdlRenderer env) sampleTileGeometry
             drawAtlas (sdlRenderer env) tiles (0, 0) 1.0 (V2 256 256)
+            mapM_ (releaseTexture (sdlTexturePool env) . tatTexture) tiles
+        , bench "drawAtlas/64chunks/zoom1" $ whnfIO $ do
+            env <- getEnv
+            tiles <- renderAtlasTileTextures (sdlTexturePool env) (sdlRenderer env) sampleTileGeometry64
+            drawAtlas (sdlRenderer env) tiles (0, 0) 1.0 (V2 800 600)
+            mapM_ (releaseTexture (sdlTexturePool env) . tatTexture) tiles
+        , bench "drawAtlas/64chunks/zoom0.5" $ whnfIO $ do
+            env <- getEnv
+            tiles <- renderAtlasTileTextures (sdlTexturePool env) (sdlRenderer env) sampleTileGeometry64
+            drawAtlas (sdlRenderer env) tiles (0, 0) 0.5 (V2 800 600)
             mapM_ (releaseTexture (sdlTexturePool env) . tatTexture) tiles
         ]
   ]

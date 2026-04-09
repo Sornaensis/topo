@@ -21,6 +21,16 @@ benchmarks = bgroup "Viewport"
       , bench "zoom 1.0 offset" $ nf (cull largeChunkMap 1.0 (200, 200)) (800, 600)
       , bench "zoom 8.0 center" $ nf (cull largeChunkMap 8.0 (0, 0)) (1920, 1080)
       ]
+    , bgroup "1024 chunks"
+      [ bench "zoom 1.0 center" $ nf (cull chunkMap1024 1.0 (0, 0)) (800, 600)
+      , bench "zoom 4.0 center" $ nf (cull chunkMap1024 4.0 (0, 0)) (800, 600)
+      , bench "zoom 0.5 center" $ nf (cull chunkMap1024 0.5 (0, 0)) (1920, 1080)
+      ]
+    , bgroup "4096 chunks"
+      [ bench "zoom 1.0 center" $ nf (cull chunkMap4096 1.0 (0, 0)) (800, 600)
+      , bench "zoom 4.0 center" $ nf (cull chunkMap4096 4.0 (0, 0)) (800, 600)
+      , bench "zoom 0.5 center" $ nf (cull chunkMap4096 0.5 (0, 0)) (1920, 1080)
+      ]
     ]
   ]
 

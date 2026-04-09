@@ -23,6 +23,12 @@ module Fixtures
   , climateMap16
   , weatherMap16
   , vegMap16
+  , terrainMap64
+  , climateMap64
+  , weatherMap64
+  , vegMap64
+  , chunkMap1024
+  , chunkMap4096
   ) where
 
 import Control.DeepSeq (NFData(..), rwhnf)
@@ -34,6 +40,7 @@ import qualified Data.Vector.Unboxed as U
 import Data.Word (Word8, Word16, Word32)
 import Topo
 
+import Actor.AtlasCache (AtlasKey(..))
 import Actor.Data (TerrainSnapshot(..))
 import Actor.UI.State (UiState, emptyUiState)
 import UI.TerrainRender (ChunkGeometry(..))
@@ -44,6 +51,9 @@ import UI.TerrainRender (ChunkGeometry(..))
 
 instance NFData ChunkGeometry where
   rnf (ChunkGeometry b v i) = rwhnf b `seq` rnf v `seq` rnf i
+
+instance NFData AtlasKey where
+  rnf (AtlasKey vm wl v) = rwhnf vm `seq` rnf wl `seq` rnf v
 
 -- | World config with chunk size 8 (64 tiles per chunk).
 benchWorldConfig :: WorldConfig
@@ -208,3 +218,44 @@ benchOverlayStoreSparse =
                   ) | i <- [0..15] ]
               }
   in insertOverlay ovl emptyOverlayStore
+
+------------------------------------------------------------------------
+-- 64-chunk data maps (8×8 grid of chunks)
+------------------------------------------------------------------------
+
+-- | Generate chunk IDs for an n×n grid of chunks centred at origin.
+gridChunkIds :: Int -> [Int]
+gridChunkIds side =
+  let half = side `div` 2
+  in [ let ChunkId k = chunkIdFromCoord (ChunkCoord cx cy) in k
+     | cy <- [-half .. half - 1]
+     , cx <- [-half .. half - 1]
+     ]
+
+-- | 64 terrain chunks (8×8 grid).
+terrainMap64 :: IntMap.IntMap TerrainChunk
+terrainMap64 = IntMap.fromList [(k, benchTerrainChunk) | k <- gridChunkIds 8]
+
+-- | 64 climate chunks.
+climateMap64 :: IntMap.IntMap ClimateChunk
+climateMap64 = IntMap.fromList [(k, benchClimateChunk) | k <- gridChunkIds 8]
+
+-- | 64 weather chunks.
+weatherMap64 :: IntMap.IntMap WeatherChunk
+weatherMap64 = IntMap.fromList [(k, benchWeatherChunk) | k <- gridChunkIds 8]
+
+-- | 64 vegetation chunks.
+vegMap64 :: IntMap.IntMap VegetationChunk
+vegMap64 = IntMap.fromList [(k, benchVegetationChunk) | k <- gridChunkIds 8]
+
+------------------------------------------------------------------------
+-- Large-world chunk maps (keys only, for viewport culling)
+------------------------------------------------------------------------
+
+-- | 1024-chunk world (32×32 grid).
+chunkMap1024 :: IntMap.IntMap ()
+chunkMap1024 = IntMap.fromList [(k, ()) | k <- gridChunkIds 32]
+
+-- | 4096-chunk world (64×64 grid).
+chunkMap4096 :: IntMap.IntMap ()
+chunkMap4096 = IntMap.fromList [(k, ()) | k <- gridChunkIds 64]

@@ -4,7 +4,9 @@ import Test.Tasty.Bench
 
 import qualified Bench.AtlasCache
 import qualified Bench.AtlasOps
+import qualified Bench.FrameAlloc
 import qualified Bench.Pipeline
+import qualified Bench.QueueDedup
 import qualified Bench.RiverGeometry
 import qualified Bench.TerrainCache
 import qualified Bench.TerrainGeometry
@@ -19,4 +21,6 @@ main = defaultMain
   , Bench.TerrainCache.benchmarks
   , Bench.AtlasCache.benchmarks
   , Bench.AtlasOps.benchmarks
+  , Bench.QueueDedup.benchmarks
+  , Bench.FrameAlloc.benchmarks
   ]

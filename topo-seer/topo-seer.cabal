@@ -228,7 +228,9 @@ benchmark topo-seer-bench
   other-modules:
       Bench.AtlasCache
       Bench.AtlasOps
+      Bench.FrameAlloc
       Bench.Pipeline
+      Bench.QueueDedup
       Bench.RiverGeometry
       Bench.TerrainCache
       Bench.TerrainGeometry
