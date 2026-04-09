@@ -234,7 +234,7 @@ tileDrainGroup = bgroup "tileDrain"
           cache = storeAtlasTiles (AtlasKey ViewPlateAge 0.3 1) 50 tiles pressureCache
       in nf evictIfNeeded cache
 
-  , bench "store under eviction pressure (10 modes × 5 scales)" $
+  , bench "store under eviction pressure (10 modes x 5 scales)" $
       let tiles = [mkTile (9000 + i) 6 (tileRect i) | i <- [0..7]]
           newKey = AtlasKey ViewPlateAge 0.3 1
       in nf (storeAtlasTiles newKey 6 tiles) pressureCache
