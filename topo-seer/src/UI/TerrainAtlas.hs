@@ -173,16 +173,22 @@ attachRiverOverlay riverGeoMap tiles
 -- scale with hexRadius.  We subtract those before scaling and re-add them
 -- after, so the result is identical to what 'axialToScreen renderHexRadiusPx'
 -- would produce for the same hex coordinates.
+--
+-- Both edges are computed explicitly so that adjacent tiles with matching
+-- source-frame edges (@r1.x + r1.w == r2.x@) produce matching normalised
+-- edges, eliminating ±1 px rounding gaps.
 normalizeHexBounds :: Int -> Rect -> Rect
 normalizeHexBounds hexR rect
   | hexR == renderHexRadiusPx = rect
   | otherwise =
       let s = fromIntegral renderHexRadiusPx / fromIntegral hexR :: Float
-          scaleCoord ox v = round (s * fromIntegral (v - ox)) + ox
-          scaleDim  v     = max 1 (round (s * fromIntegral v))
+          scaleEdge ox v = round (s * fromIntegral (v - ox)) + ox
           Rect (V2 x y, V2 w h) = rect
-      in Rect (V2 (scaleCoord hexOriginX x) (scaleCoord hexOriginY y)
-              , V2 (scaleDim w) (scaleDim h))
+          x1 = scaleEdge hexOriginX x
+          y1 = scaleEdge hexOriginY y
+          x2 = scaleEdge hexOriginX (x + w)
+          y2 = scaleEdge hexOriginY (y + h)
+      in Rect (V2 x1 y1, V2 (max 1 (x2 - x1)) (max 1 (y2 - y1)))
 
 -- | Upload pre-built atlas geometry into render-target textures.
 --

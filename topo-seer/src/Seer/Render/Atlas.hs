@@ -38,7 +38,7 @@ import Actor.Data (TerrainSnapshot(..))
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion)
 import Actor.UI (UiState(..))
-import Control.Monad (foldM, unless, when)
+import Control.Monad (foldM, forM_, unless, when)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Word (Word8, Word32, Word64)
@@ -138,13 +138,28 @@ drawAtlas :: SDL.Renderer -> [TerrainAtlasTile] -> (Float, Float) -> Float -> V2
 drawAtlas renderer tiles pan zoom winSize = drawAtlasAlpha renderer tiles pan zoom winSize 255
 
 -- | Draw atlas tiles with a global alpha multiplier for cross-fade blending.
+--
+-- When @alpha == 255@ (the common non-transition path), tiles are drawn
+-- with 'SDL.BlendNone' so that transparent margin pixels overwrite the
+-- framebuffer as opaque black rather than letting the background bleed
+-- through seams between adjacent tiles.  During cross-fade (@alpha < 255@)
+-- 'SDL.BlendAlphaBlend' is used so the two tile sets composite correctly.
 drawAtlasAlpha :: SDL.Renderer -> [TerrainAtlasTile] -> (Float, Float) -> Float -> V2 Int -> Word8 -> IO ()
 drawAtlasAlpha renderer tiles (panX, panY) zoom (V2 winW winH) alpha = do
-  when (alpha < 255) $
+  let useAlpha = alpha < 255
+  -- BlendNone for full-opacity draws eliminates transparent-margin seams;
+  -- BlendAlphaBlend for cross-fade so both layers composite correctly.
+  forM_ tiles $ \tile ->
+    SDL.textureBlendMode (tatTexture tile) SDL.$=
+      if useAlpha then SDL.BlendAlphaBlend else SDL.BlendNone
+  when useAlpha $
     mapM_ (\tile -> SDL.textureAlphaMod (tatTexture tile) SDL.$= alpha) tiles
   mapM_ drawTile tiles
-  when (alpha < 255) $
+  -- Restore blend mode and alpha for other consumers (day/night overlay etc.)
+  when useAlpha $ do
     mapM_ (\tile -> SDL.textureAlphaMod (tatTexture tile) SDL.$= 255) tiles
+    forM_ tiles $ \tile ->
+      SDL.textureBlendMode (tatTexture tile) SDL.$= SDL.BlendAlphaBlend
   where
     drawTile tile = do
       let Rect (V2 x y, V2 w h) = tatBounds tile

@@ -189,17 +189,21 @@ renderFrame context = do
     Just tiles -> do
       (_, elapsed) <- timedMs $ case mbBlend of
         Just (targetStage, blend) | blend > 0 -> do
-          -- Cross-fade: draw committed tiles at reduced alpha, target tiles on top
-          let oldAlpha = round ((1.0 - blend) * 255) :: Word8
-              newAlpha = round (blend * 255) :: Word8
-              targetTiles = getNearestAtlas expectedAtlasKey (zsHexRadius targetStage) atlasCache''
+          -- Cross-fade: only reduce committed alpha when target tiles exist.
+          -- Without target tiles, draw committed at full opacity to prevent
+          -- the viewColor background bleeding through during the hysteresis
+          -- window.
+          let targetTiles = getNearestAtlas expectedAtlasKey (zsHexRadius targetStage) atlasCache''
               pan = uiPanOffset (rsUi snapshot)
               z = uiZoom (rsUi snapshot)
               win = V2 (fromIntegral winW) (fromIntegral winH)
-          drawAtlasAlpha renderer tiles pan z win oldAlpha
           case targetTiles of
-            Just tt | not (null tt) -> drawAtlasAlpha renderer tt pan z win newAlpha
-            _ -> pure ()  -- target not yet cached; committed tiles still visible
+            Just tt | not (null tt) -> do
+              let oldAlpha = round ((1.0 - blend) * 255) :: Word8
+                  newAlpha = round (blend * 255) :: Word8
+              drawAtlasAlpha renderer tiles pan z win oldAlpha
+              drawAtlasAlpha renderer tt pan z win newAlpha
+            _ -> drawAtlas renderer tiles pan z win
         _ ->
           drawAtlas renderer tiles (uiPanOffset (rsUi snapshot)) (uiZoom (rsUi snapshot)) (V2 (fromIntegral winW) (fromIntegral winH))
       logTiming logHandle timingLogThresholdMs (Text.pack "draw atlas") elapsed Nothing
