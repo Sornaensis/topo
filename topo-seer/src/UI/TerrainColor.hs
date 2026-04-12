@@ -45,7 +45,11 @@ terrainColor mode waterLevel chunk climateChunk weatherChunk vegChunk mOverlayVa
       let value = maybe 0 (\v -> vegCover v U.! idx) vegChunk
       in gradientVegetation value
     ViewTerrainForm ->
-      terrainFormColor (terrainFormToCode (tcTerrainForm chunk U.! idx))
+      let formCol = terrainFormColor (terrainFormToCode (tcTerrainForm chunk U.! idx))
+          elev = tcElevation chunk U.! idx
+      in if elev < waterLevel
+        then submergedTint (clamp01 ((waterLevel - elev) / 0.15)) formCol
+        else formCol
     ViewCloud ->
       cloudColor chunk weatherChunk idx
     ViewOverlay _ _ ->
@@ -224,6 +228,16 @@ terrainFormColor code = case code of
   13 -> V4 210 175 130 255  -- Mesa: warm beige
   14 -> V4 160 175 110 255  -- Foothill: light olive
   _  -> V4  50  50  50 255  -- Unknown: dark grey
+
+-- | Tint a color to indicate submersion: desaturate toward blue-grey,
+-- darken proportionally to depth.  @t@ ranges from 0 (at water surface)
+-- to 1 (deep).  The terrain form hue remains faintly visible so the
+-- underlying classification is still readable.
+submergedTint :: Float -> V4 Word8 -> V4 Word8
+submergedTint t (V4 r g b a) =
+  let t' = clamp01 t
+      mix x target = round (fromIntegral x * (1 - t' * 0.7) + target * t' * 0.7)
+  in V4 (mix r 40) (mix g 70) (mix b 140) a
 
 boundaryColor :: Word16 -> V4 Word8
 boundaryColor boundaryId =
