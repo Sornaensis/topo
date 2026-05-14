@@ -205,6 +205,12 @@ runtime, protocol support, capabilities, parameters, generator/simulation
 integration, overlays, resources, backend-neutral external data-source
 relationships, and UI hints.
 
+The versioning strategy is recorded in
+[ADR 0002: Plugin Protocol and Manifest Versioning Strategy](decisions/0002-plugin-protocol-versioning.md):
+manifest v3 and plugin RPC protocol v3 are the production-supported 1.0 plugin
+contract; older manifests/protocols and stdio transport are migration or
+test/development compatibility only.
+
 The dependency resolver should treat dependencies as one graph:
 
 - built-in pipeline stage dependencies;

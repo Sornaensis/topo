@@ -36,6 +36,7 @@ Machine-readable and human-readable specs for the on-disk formats:
 | Current architecture baseline | [architecture/current.md](architecture/current.md) |
 | Target architecture for 1.0 | [architecture/target.md](architecture/target.md) |
 | HTTP framework/API package decision | [architecture/decisions/0001-http-framework-and-api-package.md](architecture/decisions/0001-http-framework-and-api-package.md) |
+| Plugin protocol versioning decision | [architecture/decisions/0002-plugin-protocol-versioning.md](architecture/decisions/0002-plugin-protocol-versioning.md) |
 | Pipeline stages reference | [internal/pipeline/stages.md](internal/pipeline/stages.md) |
 | Core types reference | [internal/core/types.md](internal/core/types.md) |
 | World generation presets | [internal/pipeline/world-gen.md](internal/pipeline/world-gen.md) |
