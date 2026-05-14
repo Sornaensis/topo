@@ -1,0 +1,505 @@
+{
+  "schemaVersion": 1,
+  "title": "Topo public module and feature inventory",
+  "planningSource": "The active hmem Topo 1.0 project tree and the package.yaml exposed-modules lists are the sources of truth for this inventory.",
+  "checkCommand": "python tools/check-public-surface.py",
+  "packages": [
+    {
+      "name": "topo",
+      "packageYaml": "topo/package.yaml",
+      "role": "Stable terrain, simulation, persistence, overlay, plugin-contract, and command DTO library."
+    },
+    {
+      "name": "topo-seer",
+      "packageYaml": "topo-seer/package.yaml",
+      "role": "SDL application host that will own AppService, UI, HTTP/OpenAPI, and plugin supervision."
+    },
+    {
+      "name": "topo-plugin-sdk",
+      "packageYaml": "topo-plugin-sdk/package.yaml",
+      "role": "Canonical Haskell SDK for plugin manifests, payload helpers, and runtime connection behavior."
+    },
+    {
+      "name": "topo-mcp",
+      "packageYaml": "topo-mcp/package.yaml",
+      "role": "Compatibility bridge over command IPC until direct HTTP/OpenAPI reaches parity."
+    }
+  ],
+  "featureGroups": [
+    {
+      "id": "topo-core-model",
+      "title": "Core model, coordinates, metadata, configuration, units, and deterministic helpers",
+      "owner": "topo core maintainers",
+      "status": "present",
+      "uiSurface": "Topo-seer state, terrain inspector, config panels, and unit display; M9 expands field-level inspector coverage.",
+      "serviceSurface": "Planned AppService state/config/terrain services in M2; existing command DTOs are compatibility inputs.",
+      "httpSurface": "Planned M3 routes for state, config, version, terrain hex/chunk queries, units/metadata, and OpenAPI schemas.",
+      "tests": [
+        "topo:test:Spec.World",
+        "topo:test:Spec.Hex",
+        "topo:test:Spec.Metadata",
+        "topo:test:Spec.Calendar",
+        "topo:test:Spec.Solar",
+        "topo:test:Spec.Units",
+        "topo:test:Spec.ConfigJSON",
+        "topo:test:Spec.Noise"
+      ],
+      "waiver": null,
+      "planRefs": ["M2 AppService boundary", "M3 HTTP/OpenAPI", "M9 terrain inspector and feature matrix"],
+      "modules": {
+        "topo": [
+          "Topo",
+          "Topo.Types",
+          "Topo.World",
+          "Topo.Hex",
+          "Topo.Metadata",
+          "Topo.Calendar",
+          "Topo.Solar",
+          "Topo.Math",
+          "Topo.Grid.HexDirection",
+          "Topo.Seed",
+          "Topo.TerrainGrid",
+          "Topo.Noise",
+          "Topo.Sample",
+          "Topo.Planet",
+          "Topo.Units",
+          "Topo.Units.Config",
+          "Topo.Config.JSON"
+        ]
+      }
+    },
+    {
+      "id": "topo-pipeline-terrain",
+      "title": "Pipeline, world generation, tectonics, terrain forms, erosion, and volcanism",
+      "owner": "topo generation maintainers",
+      "status": "partial",
+      "uiSurface": "Topo-seer generation controls and existing view modes; M9 adds pipeline diagnostics and inspector sections for terrain, tectonics, erosion, hypsometry, terrain forms, and volcanism.",
+      "serviceSurface": "Planned AppService generation, terrain, pipeline-stage, dependency-closure, and diagnostics services.",
+      "httpSurface": "Planned M3 routes for generation/status, terrain queries, pipeline stages, parameters, diagnostics, and export metadata.",
+      "tests": [
+        "topo:test:Spec.Pipeline",
+        "topo:test:Spec.BaseHeight",
+        "topo:test:Spec.Tectonics",
+        "topo:test:Spec.Erosion",
+        "topo:test:Spec.Volcanism",
+        "topo:test:Spec.Parameters",
+        "topo:test:Spec.TerrainFormMetrics",
+        "topo:test:Spec.TerrainFormModifiers"
+      ],
+      "waiver": null,
+      "planRefs": ["M2 service extraction", "M3 route groups", "M9 pipeline/stage parity diagnostics"],
+      "modules": {
+        "topo": [
+          "Topo.Pipeline",
+          "Topo.Pipeline.Stage",
+          "Topo.Pipeline.Dep",
+          "Topo.BaseHeight",
+          "Topo.Gen",
+          "Topo.Tectonics",
+          "Topo.Erosion",
+          "Topo.Hypsometry",
+          "Topo.Volcanism",
+          "Topo.Parameters",
+          "Topo.Parameters.Recompute",
+          "Topo.Grid.Diffusion",
+          "Topo.WorldGen",
+          "Topo.PlateMetadata",
+          "Topo.TerrainForm.Modifiers",
+          "Topo.TerrainForm.Metrics"
+        ]
+      }
+    },
+    {
+      "id": "topo-hydrology-water",
+      "title": "Hydrology, rivers, water bodies, water table, glaciers, and ocean currents",
+      "owner": "topo domain maintainers",
+      "status": "partial",
+      "uiSurface": "Existing river/water-related rendering and overlays; M9 adds terrain inspector sections and view-mode metadata for water, ice, and currents.",
+      "serviceSurface": "Planned AppService terrain inspector and hydrology query services.",
+      "httpSurface": "Planned terrain hex/chunk and feature metadata routes covering rivers, water bodies, water table, glaciers, and currents.",
+      "tests": [
+        "topo:test:Spec.Hydrology",
+        "topo:test:Spec.River",
+        "topo:test:Spec.WaterBody",
+        "topo:test:Spec.WaterTable",
+        "topo:test:Spec.Glacier",
+        "topo:test:Spec.OceanCurrent"
+      ],
+      "waiver": null,
+      "planRefs": ["M9 missing domain UI/API surfaces", "M9 canonical terrain inspector"],
+      "modules": {
+        "topo": [
+          "Topo.Glacier",
+          "Topo.Hydrology",
+          "Topo.Hydrology.StageHydrology",
+          "Topo.River",
+          "Topo.WaterBody",
+          "Topo.WaterTable",
+          "Topo.OceanCurrent"
+        ]
+      }
+    },
+    {
+      "id": "topo-climate-ecology-biome",
+      "title": "Climate, weather, biome refinement, soil, and vegetation",
+      "owner": "topo domain maintainers",
+      "status": "partial",
+      "uiSurface": "Existing climate/weather/biome view modes and config tabs; M9 adds inspector sections, legends, units, and weather timeline/status coverage.",
+      "serviceSurface": "Planned AppService climate/weather/biome/soil/vegetation query and metadata services.",
+      "httpSurface": "Planned terrain hex/chunk routes and feature metadata for climate, weather, biomes, soil, and vegetation.",
+      "tests": [
+        "topo:test:Spec.Climate",
+        "topo:test:Spec.Weather",
+        "topo:test:Spec.Biome",
+        "topo:test:Spec.BiomeRefine",
+        "topo:test:Spec.Soil",
+        "topo:test:Spec.Vegetation"
+      ],
+      "waiver": null,
+      "planRefs": ["M9 canonical terrain inspector", "M9 view mode registry, legends, and export mappings"],
+      "modules": {
+        "topo": [
+          "Topo.Soil",
+          "Topo.Vegetation",
+          "Topo.Climate",
+          "Topo.Climate.Config",
+          "Topo.Climate.Evaporation",
+          "Topo.Climate.ITCZ",
+          "Topo.Climate.MoistureTransport",
+          "Topo.Climate.Precipitation",
+          "Topo.BiomeConfig",
+          "Topo.Weather",
+          "Topo.Biome",
+          "Topo.Biome.Name",
+          "Topo.Biome.Refine",
+          "Topo.Biome.Refine.Alpine",
+          "Topo.Biome.Refine.Coastal",
+          "Topo.Biome.Refine.Desert",
+          "Topo.Biome.Refine.Forest",
+          "Topo.Biome.Refine.Grassland",
+          "Topo.Biome.Refine.Ocean",
+          "Topo.Biome.Refine.Rainforest",
+          "Topo.Biome.Refine.Savanna",
+          "Topo.Biome.Refine.Shrubland",
+          "Topo.Biome.Refine.Snow",
+          "Topo.Biome.Refine.Swamp",
+          "Topo.Biome.Refine.Taiga",
+          "Topo.Biome.Refine.Tundra",
+          "Topo.Biome.Refine.Volcanic"
+        ]
+      }
+    },
+    {
+      "id": "topo-overlay-persistence-export",
+      "title": "Overlays, schema/provenance/indexing, storage, world bundles, mesh, and export",
+      "owner": "topo persistence and overlay maintainers",
+      "status": "partial",
+      "uiSurface": "Existing overlay selection/rendering and persistence actions; M9 adds overlay manager, schema/provenance inspector, import/export dialogs, and copy-as-JSON affordances.",
+      "serviceSurface": "Planned AppService overlay/schema/provenance, persistence, import/export, mesh/sample, and diagnostics services.",
+      "httpSurface": "Planned overlay, schema, provenance, world save/load/list, export, and terrain sample routes.",
+      "tests": [
+        "topo:test:Spec.Overlay",
+        "topo:test:Spec.OverlayCache",
+        "topo:test:Spec.Provenance",
+        "topo:test:Spec.Storage",
+        "topo:test:Spec.WorldBundle",
+        "topo:test:Spec.Export",
+        "topo:test:Spec.Mesh"
+      ],
+      "waiver": null,
+      "planRefs": ["M2 AppService boundary", "M3 HTTP/OpenAPI", "M9 overlay manager and export/import dialogs"],
+      "modules": {
+        "topo": [
+          "Topo.Overlay",
+          "Topo.Overlay.Schema",
+          "Topo.Overlay.Provenance",
+          "Topo.Overlay.Index",
+          "Topo.Overlay.Cache",
+          "Topo.Overlay.Indexed",
+          "Topo.Overlay.Export",
+          "Topo.Overlay.JSON",
+          "Topo.Overlay.Storage",
+          "Topo.Persistence.WorldBundle",
+          "Topo.Export",
+          "Topo.Storage",
+          "Topo.Mesh"
+        ]
+      }
+    },
+    {
+      "id": "topo-simulation",
+      "title": "Simulation and simulation DAG",
+      "owner": "topo simulation maintainers",
+      "status": "partial",
+      "uiSurface": "Existing topo-seer simulation controls; M9 adds DAG/status/tick logs and plugin simulation-node visibility.",
+      "serviceSurface": "Planned AppService simulation tick, state, DAG status, and diagnostics services.",
+      "httpSurface": "Planned simulation state, tick, DAG, and event routes.",
+      "tests": ["topo:test:Spec.Simulation", "topo-seer:test:Spec.Simulation"],
+      "waiver": null,
+      "planRefs": ["M2 service extraction", "M3 simulation routes", "M9 simulation DAG and plugin data-source/resource feature surfaces"],
+      "modules": {
+        "topo": ["Topo.Simulation", "Topo.Simulation.DAG"]
+      }
+    },
+    {
+      "id": "topo-plugin-contract",
+      "title": "Plugin capability, manifest, RPC, transport, payload, and data-resource contracts",
+      "owner": "topo plugin maintainers",
+      "status": "planned",
+      "uiSurface": "Existing plugin manager status surfaces are partial; M5-M7 and M9 add lifecycle, resource, dependency, and backend-neutral external data-source status UI.",
+      "serviceSurface": "Planned AppService plugin status, dependency, resource, CRUD, lifecycle, and external data-source declaration/status services.",
+      "httpSurface": "Planned plugin status, params, dependencies, resources, external data-source status, schema, and CRUD routes.",
+      "tests": [
+        "topo:test:Spec.PluginRPC",
+        "topo:test:Spec.DataResource",
+        "topo:test:Spec.DataService",
+        "topo:test:Spec.PluginIntegration",
+        "topo-seer:test:Spec.PluginManager"
+      ],
+      "waiver": null,
+      "planRefs": ["ADR 0002", "M5 plugin supervisor and production transport", "M6 manifest v3 and CRUD hardening", "M7 backend-neutral external data sources", "M9 plugin resource/status parity"],
+      "modules": {
+        "topo": [
+          "Topo.Plugin",
+          "Topo.Plugin.DataResource",
+          "Topo.Plugin.RPC",
+          "Topo.Plugin.RPC.DataService",
+          "Topo.Plugin.RPC.Manifest",
+          "Topo.Plugin.RPC.Protocol",
+          "Topo.Plugin.RPC.Transport"
+        ]
+      }
+    },
+    {
+      "id": "topo-command-dto-compatibility",
+      "title": "Command DTO compatibility types",
+      "owner": "topo-seer service maintainers",
+      "status": "compatibility",
+      "uiSurface": "Indirectly used by topo-seer command compatibility paths; not a standalone user-facing UI surface.",
+      "serviceSurface": "M2 converts command handling into typed AppService operations while preserving command DTO compatibility where needed.",
+      "httpSurface": "No direct 1.0 HTTP surface; DTOs should be replaced by or mapped to topo-api route DTOs.",
+      "tests": ["topo:test:Spec.CommandTypes", "topo-seer:test:Spec.CommandDispatch"],
+      "waiver": null,
+      "planRefs": ["M2 service layer extraction", "M4 MCP migration and removal", "M0 command method inventory"],
+      "modules": {
+        "topo": ["Topo.Command.Types"]
+      }
+    },
+    {
+      "id": "seer-runtime-actors",
+      "title": "Topo-seer actor runtime, terrain/cache workers, plugin manager, logging, snapshots, and UI state actor",
+      "owner": "topo-seer runtime maintainers",
+      "status": "partial",
+      "uiSurface": "Runtime-backed status appears in the SDL UI; M2 and M8 reduce direct UI coupling by routing mutations through AppService and testable reducers.",
+      "serviceSurface": "Planned AppService adapters over actors for app state, terrain/cache work, logs, plugins, simulation, snapshots, and async status.",
+      "httpSurface": "Planned state, events, logs, plugin status, simulation status, and generation/terrain status routes.",
+      "tests": [
+        "topo-seer:test:Spec.AtlasCache",
+        "topo-seer:test:Spec.AtlasScheduler",
+        "topo-seer:test:Spec.AtlasResultBroker",
+        "topo-seer:test:Spec.LogActor",
+        "topo-seer:test:Spec.PluginManager",
+        "topo-seer:test:Spec.SnapshotReceiver",
+        "topo-seer:test:Spec.TerrainActor",
+        "topo-seer:test:Spec.UiActor"
+      ],
+      "waiver": null,
+      "planRefs": ["M2 service extraction", "M3 HTTP/OpenAPI", "M8 UI componentization"],
+      "modules": {
+        "topo-seer": [
+          "Actor.Data",
+          "Actor.Log",
+          "Actor.PluginManager",
+          "Actor.Render",
+          "Actor.Simulation",
+          "Actor.SnapshotReceiver",
+          "Actor.Terrain",
+          "Actor.TerrainCacheWorker",
+          "Actor.UI",
+          "Actor.UI.Setters",
+          "Actor.UI.State",
+          "Actor.AtlasCache",
+          "Actor.AtlasManager",
+          "Actor.AtlasResult",
+          "Actor.AtlasResultBroker",
+          "Actor.AtlasScheduleBroker",
+          "Actor.AtlasScheduler",
+          "Actor.AtlasWorker",
+          "Actor.TerrainCacheBroker"
+        ]
+      }
+    },
+    {
+      "id": "seer-command-control-compatibility",
+      "title": "Command channel, dispatch, and UI action compatibility adapters",
+      "owner": "topo-seer service maintainers",
+      "status": "compatibility",
+      "uiSurface": "Current UI and automation paths use command/UI-action adapters; M2 moves behavior behind AppService.",
+      "serviceSurface": "Compatibility adapter over AppService after M2; current command dispatch is the seed inventory for service operations.",
+      "httpSurface": "No direct public 1.0 surface; M3 maps public operations to HTTP routes and M4 removes MCP dependence.",
+      "tests": ["topo-seer:test:Spec.CommandDispatch", "topo-mcp:test:Spec.Tools"],
+      "waiver": null,
+      "planRefs": ["M0 command method inventory", "M2 service layer extraction", "M4 MCP migration and removal"],
+      "modules": {
+        "topo-seer": [
+          "Actor.UiActions",
+          "Actor.UiActions.Command",
+          "Actor.UiActions.Terrain",
+          "Seer.Command.Channel",
+          "Seer.Command.Dispatch"
+        ]
+      }
+    },
+    {
+      "id": "seer-app-config-persistence",
+      "title": "Application boot, runtime config, snapshots, persistence, screenshots, system wiring, and timing",
+      "owner": "topo-seer runtime maintainers",
+      "status": "partial",
+      "uiSurface": "Existing app shell, config state, screenshot, save/load, and runtime actions; M8 splits Seer.System and M9 adds persistence/export/import diagnostics.",
+      "serviceSurface": "Planned AppService app/config/world persistence, screenshot, runtime status, and diagnostics services.",
+      "httpSurface": "Planned health/version/state/config/world save-load-list/screenshot/log/event routes.",
+      "tests": [
+        "topo-seer:test:Spec.ConfigSnapshot",
+        "topo-seer:test:Spec.SliderSpec",
+        "topo-seer:test:Spec.WorldPersist"
+      ],
+      "waiver": null,
+      "planRefs": ["M2 AppService boundary", "M3 HTTP/OpenAPI", "M8 split Seer.System", "M9 export/import dialogs"],
+      "modules": {
+        "topo-seer": [
+          "Seer",
+          "Seer.App",
+          "Seer.Config",
+          "Seer.Config.Runtime",
+          "Seer.Config.SliderSpec",
+          "Seer.Config.Snapshot",
+          "Seer.Config.Snapshot.Types",
+          "Seer.System",
+          "Seer.System.ThreadPriority",
+          "Seer.Screenshot",
+          "Seer.Timing",
+          "Seer.World.Persist",
+          "Seer.World.Persist.Types"
+        ]
+      }
+    },
+    {
+      "id": "seer-ui-render-input-editor",
+      "title": "SDL UI drawing, input routing, editor, renderer, widgets, layout, theme, terrain atlas/cache, and view rendering",
+      "owner": "topo-seer UI maintainers",
+      "status": "partial",
+      "uiSurface": "Primary SDL UI surface; M8 componentizes panels/reducers/layout/draw commands and M9 closes feature-surface gaps.",
+      "serviceSurface": "M2/M8 route mutating UI actions through AppService; read models become testable view models where practical.",
+      "httpSurface": "Public HTTP should expose state/metadata/actions rather than SDL rendering internals; routes are planned for UI state, panels, view modes, terrain inspector, editor, overlays, and screenshots.",
+      "tests": [
+        "topo-seer:test:Spec.EditorBrush",
+        "topo-seer:test:Spec.EditorHistory",
+        "topo-seer:test:Spec.HexPick",
+        "topo-seer:test:Spec.Layout",
+        "topo-seer:test:Spec.RiverRender",
+        "topo-seer:test:Spec.TerrainRender",
+        "topo-seer:test:Spec.WidgetTree",
+        "topo-seer:test:Spec.Widgets",
+        "topo-seer:test:Spec.ZoomStageProperties"
+      ],
+      "waiver": null,
+      "planRefs": ["M8 UI componentization", "M9 feature completion matrix"],
+      "modules": {
+        "topo-seer": [
+          "Seer.Draw",
+          "Seer.Draw.Config",
+          "Seer.Draw.Dialog",
+          "Seer.Draw.LeftPanel",
+          "Seer.Draw.Overlay",
+          "Seer.Editor.Brush",
+          "Seer.Editor.History",
+          "Seer.Editor.Preview",
+          "Seer.Editor.Toolbar",
+          "Seer.Editor.Types",
+          "Seer.Input",
+          "Seer.Input.Actions",
+          "Seer.Input.Events",
+          "Seer.Input.ConfigScroll",
+          "Seer.Input.Modal",
+          "Seer.Input.Router",
+          "Seer.Input.Seed",
+          "Seer.Input.ViewControls",
+          "Seer.Input.Widgets",
+          "Seer.Render",
+          "Seer.Render.Atlas",
+          "Seer.Render.Frame",
+          "Seer.Render.Terrain",
+          "Seer.Render.Ui",
+          "Seer.Render.Viewport",
+          "Seer.Render.ZoomStage",
+          "UI.Font",
+          "UI.Layout",
+          "UI.HexPick",
+          "UI.OverlayExtract",
+          "UI.TerrainAtlas",
+          "UI.TerrainCache",
+          "UI.TerrainRender",
+          "UI.TexturePool",
+          "UI.RiverRender",
+          "UI.Theme",
+          "UI.Widgets",
+          "UI.WidgetsDraw",
+          "UI.WidgetTree",
+          "UI.DayNight",
+          "UI.WidgetId"
+        ]
+      }
+    },
+    {
+      "id": "plugin-sdk",
+      "title": "Plugin SDK declarations, payload helpers, terrain/overlay helpers, and runner",
+      "owner": "topo plugin maintainers",
+      "status": "planned",
+      "uiSurface": "Developer-facing SDK, not a runtime UI surface; plugin-generated declarations must surface through plugin status/resource UI after M5-M9.",
+      "serviceSurface": "SDK declarations feed host manifest/protocol/resource services; M6 makes SDK-generated manifest v3 canonical.",
+      "httpSurface": "No direct HTTP endpoints for SDK modules; generated plugin declarations appear through plugin/status/resource/data routes.",
+      "tests": [
+        "topo-plugin-sdk:test:Spec.Payload",
+        "topo-plugin-sdk:test:Spec.Runner"
+      ],
+      "waiver": null,
+      "planRefs": ["ADR 0002", "M5 production transport", "M6 manifest v3", "M7 external data-source contract"],
+      "modules": {
+        "topo-plugin-sdk": [
+          "Topo.Plugin.SDK",
+          "Topo.Plugin.SDK.Overlay",
+          "Topo.Plugin.SDK.Terrain",
+          "Topo.Plugin.SDK.Types",
+          "Topo.Plugin.SDK.Payload",
+          "Topo.Plugin.SDK.Runner"
+        ]
+      }
+    },
+    {
+      "id": "mcp-compatibility-bridge",
+      "title": "Transitional MCP bridge over topo-seer command IPC",
+      "owner": "topo-seer automation maintainers",
+      "status": "compatibility",
+      "uiSurface": "No direct UI surface; it automates existing topo-seer state through command IPC.",
+      "serviceSurface": "Compatibility bridge only; M4 migrates tools/resources to HTTP after AppService and route parity exist.",
+      "httpSurface": "No 1.0 public HTTP surface in this package; every public capability must map to topo-api/topo-seer HTTP or receive an internal-only waiver before removal.",
+      "tests": [
+        "topo-mcp:test:Spec.Server",
+        "topo-mcp:test:Spec.Tools",
+        "topo-mcp:test:Spec.Resources",
+        "topo-mcp:test:Spec.Types"
+      ],
+      "waiver": null,
+      "planRefs": ["M3 HTTP/OpenAPI", "M4 MCP migration and removal", "M0 command method inventory"],
+      "modules": {
+        "topo-mcp": [
+          "Topo.MCP.Types",
+          "Topo.MCP.IPC",
+          "Topo.MCP.Resources",
+          "Topo.MCP.Tools",
+          "Topo.MCP.Server"
+        ]
+      }
+    }
+  ]
+}
