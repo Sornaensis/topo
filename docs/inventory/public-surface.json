@@ -360,6 +360,7 @@
       "httpSurface": "Planned health/version/state/config/world save-load-list/screenshot/log/event routes.",
       "tests": [
         "topo-seer:test:Spec.ConfigSnapshot",
+        "topo-seer:test:Spec.Headless",
         "topo-seer:test:Spec.SliderSpec",
         "topo-seer:test:Spec.WorldPersist"
       ],
@@ -374,6 +375,7 @@
           "Seer.Config.SliderSpec",
           "Seer.Config.Snapshot",
           "Seer.Config.Snapshot.Types",
+          "Seer.Headless",
           "Seer.System",
           "Seer.System.ThreadPriority",
           "Seer.Screenshot",

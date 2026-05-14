@@ -12,7 +12,7 @@ import Actor.UiActions (UiActions)
 import Actor.UiActions.Handles (ActorHandles)
 import Actor.UI.State (UiSnapshotRef)
 import Hyperspace.Actor (ActorHandle, Protocol)
-import Seer.Screenshot (ScreenshotRequestRef)
+import Seer.Screenshot.Request (ScreenshotRequestRef)
 
 -- | Context shared by all command handlers.
 data CommandContext = CommandContext

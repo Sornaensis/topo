@@ -26,7 +26,7 @@ import System.IO (Handle, hPutStrLn, stderr, hSetBinaryMode, hSetBuffering, Buff
 import Topo.Command.Types (SeerCommand(..), SeerResponse(..), errResponse, commandPipeName)
 import Topo.Plugin.RPC.Transport (Transport(..), sendMessage, recvMessage)
 import Seer.Command.Dispatch (dispatchCommand, CommandContext(..))
-import Seer.Screenshot (ScreenshotRequestRef)
+import Seer.Screenshot.Request (ScreenshotRequestRef)
 import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshotRef, appendLog)
 import Actor.UiActions (UiActions)
 import Actor.UiActions.Handles (ActorHandles(..))

@@ -44,6 +44,7 @@ library:
     - Seer.Draw.Dialog
     - Seer.Draw.LeftPanel
     - Seer.Draw.Overlay
+    - Seer.Headless
     - Seer.Editor.Brush
     - Seer.Editor.History
     - Seer.Editor.Preview
@@ -127,6 +128,7 @@ library:
     - Seer.Config.SliderId
     - Seer.Input.Context
     - Seer.Render.Context
+    - Seer.Screenshot.Request
     - UI.TerrainColor
   dependencies:
     - aeson

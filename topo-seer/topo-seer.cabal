@@ -50,6 +50,7 @@ library
       Seer.Draw.Dialog
       Seer.Draw.LeftPanel
       Seer.Draw.Overlay
+      Seer.Headless
       Seer.Editor.Brush
       Seer.Editor.History
       Seer.Editor.Preview
@@ -133,6 +134,7 @@ library
       Seer.Config.SliderId
       Seer.Input.Context
       Seer.Render.Context
+      Seer.Screenshot.Request
       UI.TerrainColor
   hs-source-dirs:
       src
@@ -183,6 +185,7 @@ test-suite topo-seer-test
       Spec.ConfigSnapshot
       Spec.EditorBrush
       Spec.EditorHistory
+      Spec.Headless
       Spec.HexPick
       Spec.Layout
       Spec.LogActor

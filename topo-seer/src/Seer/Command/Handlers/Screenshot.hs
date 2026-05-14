@@ -24,7 +24,7 @@ import System.Timeout (timeout)
 import Actor.Log (LogEntry(..), LogLevel(..), appendLog)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
-import Seer.Screenshot (ScreenshotRequest(..))
+import Seer.Screenshot.Request (ScreenshotRequest(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 
 -- | Timeout for waiting on the render loop to capture a screenshot, in

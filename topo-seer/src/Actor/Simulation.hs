@@ -23,6 +23,7 @@ module Actor.Simulation
   , requestSimTick
     -- * Handles setup
   , setSimHandles
+  , simulationHandlesConfigured
   ) where
 
 import Data.Text (Text)
@@ -146,6 +147,7 @@ actor Simulation
   cast clearWorld :: ()
   cast tick       :: Word64
   cast setHandles :: SimHandles
+  call handlesConfigured :: () -> Bool
 
   initial emptySimState
   on_ setWorld = \world st -> do
@@ -188,6 +190,8 @@ actor Simulation
   on_ setHandles = \handles st -> do
     let st' = st { ssHandles = Just handles }
     maybeProcessPendingTick st'
+  onPure handlesConfigured = \() st ->
+    (st, maybe False (const True) (ssHandles st))
 |]
 
 -- ---------------------------------------------------------------------------
@@ -233,6 +237,13 @@ setSimHandles simH dataH logH uiH dataSnapRef terrainSnapRef versionRef atlasH =
     , shSnapshotVersionRef = versionRef
     , shAtlasHandle = atlasH
     }
+
+-- | Return 'True' once simulation handles have been processed. Because this is
+-- an actor call, issuing it after 'setSimHandles' also acts as a startup
+-- mailbox barrier for headless/test setup.
+simulationHandlesConfigured :: ActorHandle Simulation (Protocol Simulation) -> IO Bool
+simulationHandlesConfigured handle =
+  call @"handlesConfigured" handle #handlesConfigured ()
 
 -- ---------------------------------------------------------------------------
 -- Helpers

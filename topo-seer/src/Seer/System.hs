@@ -115,7 +115,7 @@ import System.Random (randomIO)
 import System.IO (Handle, IOMode(..), hFlush, hPutStrLn, openFile)
 import Seer.System.ThreadPriority (boostMainThreadPriority, pinMainThreadToCore0)
 import Seer.Config.Runtime (TopoSeerConfig(..), loadConfig)
-import Seer.Screenshot (newScreenshotRequestRef)
+import Seer.Screenshot.Request (newScreenshotRequestRef)
 import System.Directory (getHomeDirectory)
 import System.FilePath ((</>))
 

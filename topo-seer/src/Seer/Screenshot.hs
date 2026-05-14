@@ -23,11 +23,11 @@ module Seer.Screenshot
   ) where
 
 import Codec.Picture (Image(..), PixelRGBA8(..), encodePng)
-import Control.Concurrent.MVar (MVar, putMVar)
+import Control.Concurrent.MVar (putMVar)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.IORef (readIORef, writeIORef)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector.Storable as VS
@@ -40,20 +40,11 @@ import SDL.Internal.Types (Renderer(..))
 import qualified SDL.Raw.Enum as RawEnum
 import qualified SDL.Raw.Error as RawError
 import qualified SDL.Raw.Video as RawVideo
-
--- | A pending screenshot request.  The render loop fills the 'MVar'
--- with either a PNG-encoded 'ByteString' or an error message.
-data ScreenshotRequest = ScreenshotRequest
-  { ssrResult :: !(MVar (Either Text ByteString))
-    -- ^ Filled by the render loop with PNG data or an error.
-  }
-
--- | Mutable ref checked by the render loop each frame.
-type ScreenshotRequestRef = IORef (Maybe ScreenshotRequest)
-
--- | Create a new (empty) screenshot request ref.
-newScreenshotRequestRef :: IO ScreenshotRequestRef
-newScreenshotRequestRef = newIORef Nothing
+import Seer.Screenshot.Request
+  ( ScreenshotRequest(..)
+  , ScreenshotRequestRef
+  , newScreenshotRequestRef
+  )
 
 -- | Capture the current renderer contents as a PNG-encoded 'ByteString'.
 --

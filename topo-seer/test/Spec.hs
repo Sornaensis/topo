@@ -24,6 +24,7 @@ import qualified Spec.WidgetTree
 import qualified Spec.SliderSpec
 import qualified Spec.WorldPersist
 import qualified Spec.CommandDispatch
+import qualified Spec.Headless
 import qualified Spec.EditorBrush
 import qualified Spec.EditorHistory
 import qualified Spec.ZoomStageProperties
@@ -55,6 +56,7 @@ main = do
     Spec.WidgetTree.spec
     Spec.WorldPersist.spec
     Spec.CommandDispatch.spec
+    Spec.Headless.spec
     Spec.EditorBrush.spec
     Spec.EditorHistory.spec
     Spec.ZoomStageProperties.spec

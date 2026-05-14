@@ -12,6 +12,7 @@ module Actor.AtlasScheduler
   , AtlasScheduleRequest(..)
   , atlasSchedulerActorDef
   , setAtlasSchedulerHandles
+  , atlasSchedulerConfigured
   , requestAtlasSchedule
   ) where
 
@@ -71,10 +72,12 @@ actor AtlasScheduler
   mailbox Unbounded
 
   cast setHandles :: AtlasSchedulerHandles
+  call configured :: () -> Bool
   cast schedule :: AtlasScheduleRequest
 
   initial emptyAtlasSchedulerState
   onPure_ setHandles = \handles _st -> AtlasSchedulerState { assHandles = Just handles }
+  onPure configured = \() st -> (st, maybe False (const True) (assHandles st))
   on_ schedule = \req st -> do
     case assHandles st of
       Nothing -> pure st
@@ -90,6 +93,13 @@ setAtlasSchedulerHandles
   -> IO ()
 setAtlasSchedulerHandles handle handles =
   cast @"setHandles" handle #setHandles handles
+
+-- | Return 'True' once scheduler handles have been processed. Because this is
+-- an actor call, issuing it after 'setAtlasSchedulerHandles' also acts as a
+-- startup mailbox barrier for headless/test setup.
+atlasSchedulerConfigured :: ActorHandle AtlasScheduler (Protocol AtlasScheduler) -> IO Bool
+atlasSchedulerConfigured handle =
+  call @"configured" handle #configured ()
 
 -- | Request an atlas scheduling pass.
 requestAtlasSchedule
