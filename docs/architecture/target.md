@@ -86,6 +86,12 @@ through UI or HTTP plumbing.
 
 `topo-seer` should expose direct HTTP over AppService.
 
+The accepted framework/package decision is recorded in
+[ADR 0001: HTTP Framework and API Package Structure](decisions/0001-http-framework-and-api-package.md):
+use Servant for typed routes, WAI/Warp for serving, servant-openapi3/openapi3
+for generated OpenAPI, and a sibling `topo-api` package for route types, DTOs,
+public errors, events, and OpenAPI generation.
+
 Runtime defaults:
 
 - bind to `127.0.0.1` by default;
