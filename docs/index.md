@@ -31,7 +31,10 @@ Machine-readable and human-readable specs for the on-disk formats:
 
 | Topic | Link |
 |-------|------|
+| 1.0 readiness roadmap | [roadmap/1.0.md](roadmap/1.0.md) |
 | Architecture overview | [internal/architecture.md](internal/architecture.md) |
+| Current architecture baseline | [architecture/current.md](architecture/current.md) |
+| Target architecture for 1.0 | [architecture/target.md](architecture/target.md) |
 | Pipeline stages reference | [internal/pipeline/stages.md](internal/pipeline/stages.md) |
 | Core types reference | [internal/core/types.md](internal/core/types.md) |
 | World generation presets | [internal/pipeline/world-gen.md](internal/pipeline/world-gen.md) |
@@ -44,6 +47,7 @@ Machine-readable and human-readable specs for the on-disk formats:
 ```
 topo/               Core terrain generation library (this documentation)
 topo-seer/          SDL2 graphical application
+topo-mcp/           Transitional MCP bridge for current remote control
 topo-plugin-sdk/    Plugin development SDK
 topo-plugin-example/    Minimal plugin example
 topo-plugin-civ-example/  Civilization overlay plugin example
