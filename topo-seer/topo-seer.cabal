@@ -92,6 +92,7 @@ library
       Seer.Service.Terrain
       Seer.Service.Types
       Seer.Service.UI
+      Seer.Service.Validation
       Seer.Service.World
       Seer.Timing
       Seer.World.Persist

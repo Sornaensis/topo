@@ -18,6 +18,7 @@ module Seer.Command.AppServiceAdapter
 import Data.Aeson (Value(..))
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
+import qualified Data.Text as Text
 
 import Topo.Command.Types (SeerCommand(..), SeerResponse(..), errResponse, okResponse)
 
@@ -49,6 +50,7 @@ import qualified Seer.Command.Handlers.Widgets as HWidgets
 import qualified Seer.Command.Handlers.World as HWorld
 import Seer.Service.AppService
 import Seer.Service.Types
+import Seer.Service.Validation
 
 type RawCommandHandler = CommandContext -> Int -> Value -> IO SeerResponse
 
@@ -56,113 +58,113 @@ type RawCommandHandler = CommandContext -> Int -> Value -> IO SeerResponse
 commandAppService :: AppService
 commandAppService = AppService
   { appState = StateService
-      { stateGetState = commandServiceHandler HState.handleGetState
-      , stateGetViewModes = commandServiceHandler HState.handleGetViewModes
-      , stateGetUiState = commandServiceHandler HState.handleGetUiState
+      { stateGetState = commandServiceHandler "get_state" HState.handleGetState
+      , stateGetViewModes = commandServiceHandler "get_view_modes" HState.handleGetViewModes
+      , stateGetUiState = commandServiceHandler "get_ui_state" HState.handleGetUiState
       }
   , appConfig = ConfigService
-      { configGetSliders = commandServiceHandler HSliders.handleGetSliders
-      , configGetSlider = commandServiceHandler HSliders.handleGetSlider
-      , configSetSlider = commandServiceHandler HSliders.handleSetSlider
-      , configSetSliders = commandServiceHandler HSliders.handleSetSliders
-      , configResetSliders = commandServiceHandler HSliders.handleResetSliders
-      , configGetSummary = commandServiceHandler HSliders.handleGetConfigSummary
-      , configGetEnums = commandServiceHandler HEnums.handleGetEnums
-      , configListPresets = commandServiceHandler HPresets.handleListPresets
-      , configSavePreset = commandServiceHandler HPresets.handleSavePreset
-      , configLoadPreset = commandServiceHandler HPresets.handleLoadPreset
+      { configGetSliders = commandServiceHandler "get_sliders" HSliders.handleGetSliders
+      , configGetSlider = commandServiceHandler "get_slider" HSliders.handleGetSlider
+      , configSetSlider = commandServiceHandler "set_slider" HSliders.handleSetSlider
+      , configSetSliders = commandServiceHandler "set_sliders" HSliders.handleSetSliders
+      , configResetSliders = commandServiceHandler "reset_sliders" HSliders.handleResetSliders
+      , configGetSummary = commandServiceHandler "get_config_summary" HSliders.handleGetConfigSummary
+      , configGetEnums = commandServiceHandler "get_enums" HEnums.handleGetEnums
+      , configListPresets = commandServiceHandler "list_presets" HPresets.handleListPresets
+      , configSavePreset = commandServiceHandler "save_preset" HPresets.handleSavePreset
+      , configLoadPreset = commandServiceHandler "load_preset" HPresets.handleLoadPreset
       }
   , appWorld = WorldService
-      { worldGenerate = commandServiceHandler HGenerate.handleGenerate
-      , worldGetMeta = commandServiceHandler HWorld.handleGetWorldMeta
-      , worldGetGenerationStatus = commandServiceHandler HWorld.handleGetGenerationStatus
-      , worldList = commandServiceHandler HWorld.handleListWorlds
-      , worldSave = commandServiceHandler HWorld.handleSaveWorld
-      , worldLoad = commandServiceHandler HWorld.handleLoadWorld
-      , worldSetName = commandServiceHandler HWorld.handleSetWorldName
+      { worldGenerate = commandServiceHandler "generate" HGenerate.handleGenerate
+      , worldGetMeta = commandServiceHandler "get_world_meta" HWorld.handleGetWorldMeta
+      , worldGetGenerationStatus = commandServiceHandler "get_generation_status" HWorld.handleGetGenerationStatus
+      , worldList = commandServiceHandler "list_worlds" HWorld.handleListWorlds
+      , worldSave = commandServiceHandler "save_world" HWorld.handleSaveWorld
+      , worldLoad = commandServiceHandler "load_world" HWorld.handleLoadWorld
+      , worldSetName = commandServiceHandler "set_world_name" HWorld.handleSetWorldName
       }
   , appTerrain = TerrainService
-      { terrainGetHex = commandServiceHandler HTerrain.handleGetHex
-      , terrainGetChunks = commandServiceHandler HTerrain.handleGetChunks
-      , terrainGetChunkSummary = commandServiceHandler HTerrain.handleGetChunkSummary
-      , terrainGetStats = commandServiceHandler HTerrain.handleGetTerrainStats
-      , terrainGetOverlays = commandServiceHandler HWorld.handleGetOverlays
-      , terrainFindHexes = commandServiceHandler HQuery.handleFindHexes
-      , terrainExportData = commandServiceHandler HQuery.handleExportTerrainData
+      { terrainGetHex = commandServiceHandler "get_hex" HTerrain.handleGetHex
+      , terrainGetChunks = commandServiceHandler "get_chunks" HTerrain.handleGetChunks
+      , terrainGetChunkSummary = commandServiceHandler "get_chunk_summary" HTerrain.handleGetChunkSummary
+      , terrainGetStats = commandServiceHandler "get_terrain_stats" HTerrain.handleGetTerrainStats
+      , terrainGetOverlays = commandServiceHandler "get_overlays" HWorld.handleGetOverlays
+      , terrainFindHexes = commandServiceHandler "find_hexes" HQuery.handleFindHexes
+      , terrainExportData = commandServiceHandler "export_terrain_data" HQuery.handleExportTerrainData
       }
   , appEditor = EditorService
-      { editorToggle = commandServiceHandler HEditor.handleEditorToggle
-      , editorSetTool = commandServiceHandler HEditor.handleEditorSetTool
-      , editorSetBrush = commandServiceHandler HEditor.handleEditorSetBrush
-      , editorBrushStroke = commandServiceHandler HEditor.handleEditorBrushStroke
-      , editorBrushLine = commandServiceHandler HEditor.handleEditorBrushLine
-      , editorSetBiome = commandServiceHandler HEditor.handleEditorSetBiome
-      , editorSetForm = commandServiceHandler HEditor.handleEditorSetForm
-      , editorSetHardness = commandServiceHandler HEditor.handleEditorSetHardness
-      , editorUndo = commandServiceHandler HEditor.handleEditorUndo
-      , editorRedo = commandServiceHandler HEditor.handleEditorRedo
-      , editorGetState = commandServiceHandler HEditor.handleEditorGetState
+      { editorToggle = commandServiceHandler "editor_toggle" HEditor.handleEditorToggle
+      , editorSetTool = commandServiceHandler "editor_set_tool" HEditor.handleEditorSetTool
+      , editorSetBrush = commandServiceHandler "editor_set_brush" HEditor.handleEditorSetBrush
+      , editorBrushStroke = commandServiceHandler "editor_brush_stroke" HEditor.handleEditorBrushStroke
+      , editorBrushLine = commandServiceHandler "editor_brush_line" HEditor.handleEditorBrushLine
+      , editorSetBiome = commandServiceHandler "editor_set_biome" HEditor.handleEditorSetBiome
+      , editorSetForm = commandServiceHandler "editor_set_form" HEditor.handleEditorSetForm
+      , editorSetHardness = commandServiceHandler "editor_set_hardness" HEditor.handleEditorSetHardness
+      , editorUndo = commandServiceHandler "editor_undo" HEditor.handleEditorUndo
+      , editorRedo = commandServiceHandler "editor_redo" HEditor.handleEditorRedo
+      , editorGetState = commandServiceHandler "editor_get_state" HEditor.handleEditorGetState
       }
   , appPipeline = PipelineService
-      { pipelineGet = commandServiceHandler HPipeline.handleGetPipeline
-      , pipelineSetStageEnabled = commandServiceHandler HPipeline.handleSetStageEnabled
+      { pipelineGet = commandServiceHandler "get_pipeline" HPipeline.handleGetPipeline
+      , pipelineSetStageEnabled = commandServiceHandler "set_stage_enabled" HPipeline.handleSetStageEnabled
       }
   , appPlugins = PluginService
-      { pluginList = commandServiceHandler HPlugin.handleListPlugins
-      , pluginSetEnabled = commandServiceHandler HPlugin.handleSetPluginEnabled
-      , pluginSetParam = commandServiceHandler HPlugin.handleSetPluginParam
+      { pluginList = commandServiceHandler "list_plugins" HPlugin.handleListPlugins
+      , pluginSetEnabled = commandServiceHandler "set_plugin_enabled" HPlugin.handleSetPluginEnabled
+      , pluginSetParam = commandServiceHandler "set_plugin_param" HPlugin.handleSetPluginParam
       }
   , appDataResources = DataResourceService
-      { dataListPlugins = commandServiceHandler HData.handleDataListPlugins
-      , dataListResources = commandServiceHandler HData.handleDataListResources
-      , dataListRecords = commandServiceHandler HData.handleDataListRecords
-      , dataGetRecord = commandServiceHandler HData.handleDataGetRecord
-      , dataCreateRecord = commandServiceHandler HData.handleDataCreateRecord
-      , dataUpdateRecord = commandServiceHandler HData.handleDataUpdateRecord
-      , dataDeleteRecord = commandServiceHandler HData.handleDataDeleteRecord
-      , dataGetState = commandServiceHandler HData.handleDataGetState
+      { dataListPlugins = commandServiceHandler "data_list_plugins" HData.handleDataListPlugins
+      , dataListResources = commandServiceHandler "data_list_resources" HData.handleDataListResources
+      , dataListRecords = commandServiceHandler "data_list_records" HData.handleDataListRecords
+      , dataGetRecord = commandServiceHandler "data_get_record" HData.handleDataGetRecord
+      , dataCreateRecord = commandServiceHandler "data_create_record" HData.handleDataCreateRecord
+      , dataUpdateRecord = commandServiceHandler "data_update_record" HData.handleDataUpdateRecord
+      , dataDeleteRecord = commandServiceHandler "data_delete_record" HData.handleDataDeleteRecord
+      , dataGetState = commandServiceHandler "data_get_state" HData.handleDataGetState
       }
   , appSimulation = SimulationService
-      { simulationGetState = commandServiceHandler HSimulation.handleGetSimState
-      , simulationSetAutoTick = commandServiceHandler HSimulation.handleSetSimAutoTick
-      , simulationTick = commandServiceHandler HSimulation.handleSimTick
+      { simulationGetState = commandServiceHandler "get_sim_state" HSimulation.handleGetSimState
+      , simulationSetAutoTick = commandServiceHandler "set_sim_auto_tick" HSimulation.handleSetSimAutoTick
+      , simulationTick = commandServiceHandler "sim_tick" HSimulation.handleSimTick
       }
   , appLogs = LogService
-      { logGet = commandServiceHandler HLog.handleGetLogs
+      { logGet = commandServiceHandler "get_logs" HLog.handleGetLogs
       }
   , appScreenshots = ScreenshotService
-      { screenshotTake = commandServiceHandler HScreenshot.handleTakeScreenshot
+      { screenshotTake = commandServiceHandler "take_screenshot" HScreenshot.handleTakeScreenshot
       }
   , appUi = UiService
-      { uiSetSeed = commandServiceHandler HView.handleSetSeed
-      , uiSetViewMode = commandServiceHandler HView.handleSetViewMode
-      , uiSetConfigTab = commandServiceHandler HView.handleSetConfigTab
-      , uiSelectHex = commandServiceHandler HView.handleSelectHex
-      , uiSetOverlay = commandServiceHandler HView.handleSetOverlay
-      , uiListOverlayFields = commandServiceHandler HView.handleListOverlayFields
-      , uiCycleOverlay = commandServiceHandler HView.handleCycleOverlay
-      , uiCycleOverlayField = commandServiceHandler HView.handleCycleOverlayField
-      , uiSetCamera = commandServiceHandler HCamera.handleSetCamera
-      , uiGetCamera = commandServiceHandler HCamera.handleGetCamera
-      , uiZoomToChunk = commandServiceHandler HCamera.handleZoomToChunk
-      , uiSetLeftPanel = commandServiceHandler HPanels.handleSetLeftPanel
-      , uiSetLeftTab = commandServiceHandler HPanels.handleSetLeftTab
-      , uiToggleConfigPanel = commandServiceHandler HPanels.handleToggleConfigPanel
-      , uiSetLogCollapsed = commandServiceHandler HPanels.handleSetLogCollapsed
-      , uiSetLogLevel = commandServiceHandler HPanels.handleSetLogLevel
-      , uiGetPanels = commandServiceHandler HPanels.handleGetUiPanels
-      , uiViewportScroll = commandServiceHandler HViewport.handleViewportScroll
-      , uiViewportClick = commandServiceHandler HViewport.handleViewportClick
-      , uiViewportDrag = commandServiceHandler HViewport.handleViewportDrag
-      , uiViewportHover = commandServiceHandler HViewport.handleViewportHover
-      , uiClickWidget = commandServiceHandler HWidgets.handleClickWidget
-      , uiListWidgets = commandServiceHandler HWidgets.handleListWidgets
-      , uiGetWidgetState = commandServiceHandler HWidgets.handleGetWidgetState
-      , uiGetDialogState = commandServiceHandler HInput.handleGetDialogState
-      , uiSetDialogText = commandServiceHandler HInput.handleSetDialogText
-      , uiDialogConfirm = commandServiceHandler HInput.handleDialogConfirm
-      , uiDialogCancel = commandServiceHandler HInput.handleDialogCancel
-      , uiSendKey = commandServiceHandler HInput.handleSendKey
+      { uiSetSeed = commandServiceHandler "set_seed" HView.handleSetSeed
+      , uiSetViewMode = commandServiceHandler "set_view_mode" HView.handleSetViewMode
+      , uiSetConfigTab = commandServiceHandler "set_config_tab" HView.handleSetConfigTab
+      , uiSelectHex = commandServiceHandler "select_hex" HView.handleSelectHex
+      , uiSetOverlay = commandServiceHandler "set_overlay" HView.handleSetOverlay
+      , uiListOverlayFields = commandServiceHandler "list_overlay_fields" HView.handleListOverlayFields
+      , uiCycleOverlay = commandServiceHandler "cycle_overlay" HView.handleCycleOverlay
+      , uiCycleOverlayField = commandServiceHandler "cycle_overlay_field" HView.handleCycleOverlayField
+      , uiSetCamera = commandServiceHandler "set_camera" HCamera.handleSetCamera
+      , uiGetCamera = commandServiceHandler "get_camera" HCamera.handleGetCamera
+      , uiZoomToChunk = commandServiceHandler "zoom_to_chunk" HCamera.handleZoomToChunk
+      , uiSetLeftPanel = commandServiceHandler "set_left_panel" HPanels.handleSetLeftPanel
+      , uiSetLeftTab = commandServiceHandler "set_left_tab" HPanels.handleSetLeftTab
+      , uiToggleConfigPanel = commandServiceHandler "toggle_config_panel" HPanels.handleToggleConfigPanel
+      , uiSetLogCollapsed = commandServiceHandler "set_log_collapsed" HPanels.handleSetLogCollapsed
+      , uiSetLogLevel = commandServiceHandler "set_log_level" HPanels.handleSetLogLevel
+      , uiGetPanels = commandServiceHandler "get_ui_panels" HPanels.handleGetUiPanels
+      , uiViewportScroll = commandServiceHandler "viewport_scroll" HViewport.handleViewportScroll
+      , uiViewportClick = commandServiceHandler "viewport_click" HViewport.handleViewportClick
+      , uiViewportDrag = commandServiceHandler "viewport_drag" HViewport.handleViewportDrag
+      , uiViewportHover = commandServiceHandler "viewport_hover" HViewport.handleViewportHover
+      , uiClickWidget = commandServiceHandler "click_widget" HWidgets.handleClickWidget
+      , uiListWidgets = commandServiceHandler "list_widgets" HWidgets.handleListWidgets
+      , uiGetWidgetState = commandServiceHandler "get_widget_state" HWidgets.handleGetWidgetState
+      , uiGetDialogState = commandServiceHandler "get_dialog_state" HInput.handleGetDialogState
+      , uiSetDialogText = commandServiceHandler "set_dialog_text" HInput.handleSetDialogText
+      , uiDialogConfirm = commandServiceHandler "dialog_confirm" HInput.handleDialogConfirm
+      , uiDialogCancel = commandServiceHandler "dialog_cancel" HInput.handleDialogCancel
+      , uiSendKey = commandServiceHandler "send_key" HInput.handleSendKey
       }
   }
 
@@ -176,31 +178,40 @@ dispatchAppServiceCommand app ctx cmd = do
 runAppServiceOperation :: AppService -> CommandContext -> Text -> Value -> IO ServiceResult
 runAppServiceOperation app ctx method params =
   case lookup method (appServiceHandlersByMethod app) of
-    Just handler -> handler (commandServiceContext ctx) (ServiceRequest (Just params))
+    Just handler ->
+      case validateAppServiceRequest method params of
+        Left err -> pure (Left err)
+        Right () -> handler (commandServiceContext ctx) (ServiceRequest (Just params))
     Nothing -> pure (Left (ServiceNotFound ("unknown command: " <> method)))
 
 appServiceCommandMethods :: AppService -> [Text]
 appServiceCommandMethods = map fst . appServiceHandlersByMethod
 
-commandServiceHandler :: RawCommandHandler -> ServiceHandler
-commandServiceHandler handler ctx request = do
-  response <- handler (serviceCommandContext ctx) 0 (fromMaybe Null (serviceRequestBody request))
-  pure (commandResponseToServiceResult response)
+commandServiceHandler :: Text -> RawCommandHandler -> ServiceHandler
+commandServiceHandler method handler ctx request = do
+  let params = fromMaybe Null (serviceRequestBody request)
+  case validateAppServiceRequest method params of
+    Left err -> pure (Left err)
+    Right () -> do
+      response <- handler (serviceCommandContext ctx) 0 params
+      pure (commandResponseToServiceResult response)
 
 commandResponseToServiceResult :: SeerResponse -> ServiceResult
 commandResponseToServiceResult response
   | srSuccess response = Right (ServiceResponse (srResult response))
-  | otherwise = Left (ServiceInvalidRequest (fromMaybe "command failed" (srError response)))
+  | otherwise = Left (commandErrorToServiceError (fromMaybe "command failed" (srError response)))
+
+commandErrorToServiceError :: Text -> ServiceError
+commandErrorToServiceError msg
+  | matches ["not found", "unknown ", "chunk not found", "record not found"] = ServiceNotFound msg
+  | matches ["not visible", "not available", "no terrain loaded", "no terrain generated"] = ServiceUnavailable msg
+  | matches ["failed", "rejected"] = ServiceRejected msg
+  | otherwise = ServiceInvalidRequest msg
+  where
+    lowered = Text.toLower msg
+    matches needles = any (`Text.isInfixOf` lowered) needles
 
 serviceResultToCommandResponse :: Int -> ServiceResult -> SeerResponse
 serviceResultToCommandResponse reqId = \case
   Right response -> okResponse reqId (serviceResponseBody response)
   Left err -> errResponse reqId (serviceErrorText err)
-
-serviceErrorText :: ServiceError -> Text
-serviceErrorText = \case
-  ServiceInvalidRequest msg -> msg
-  ServiceNotFound msg -> msg
-  ServiceUnavailable msg -> msg
-  ServiceRejected msg -> msg
-  ServiceInternalError msg -> msg

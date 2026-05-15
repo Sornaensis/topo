@@ -48,8 +48,19 @@ import Seer.Command.AppServiceAdapter (commandAppService, runAppServiceOperation
 import Seer.Command.Dispatch (CommandContext(..), dispatchCommand)
 import Seer.Editor.History (emptyHistory)
 import Seer.Screenshot (ScreenshotRequest(..), newScreenshotRequestRef)
-import Seer.Service.AppService (appServiceOperationMethods)
-import Seer.Service.Types (ServiceError(..), ServiceResponse(..), ServiceResult)
+import Seer.Service.AppService (appServiceOperationMethods, appUi, uiSetSeed)
+import Seer.Service.Context (ServiceContext(..))
+import Seer.Service.Types
+  ( ServiceError(..)
+  , ServiceErrorDetail(..)
+  , ServiceErrorKind(..)
+  , ServiceRequest(..)
+  , ServiceResponse(..)
+  , ServiceResult
+  , serviceErrorCode
+  , serviceErrorDetails
+  , serviceErrorKind
+  )
 import Topo (WorldConfig(..), chunkIdFromCoord, emptyTerrainChunk)
 import Topo.Command.Types (SeerCommand(..), SeerResponse(..))
 import Topo.Overlay (emptyOverlayStore)
@@ -85,11 +96,51 @@ spec = describe "CommandDispatch" $ do
         Right (ServiceResponse body) -> lookupKey "seed" body `shouldBe` Just (Number 987)
         Left err -> expectationFailure ("expected set_seed service success, got: " <> show err)
 
-    it "preserves command validation failures as service errors" $ withCtx $ \ctx -> do
+    it "classifies handler-originated domain failures as service errors" $ withCtx $ \ctx -> do
       result <- runService ctx "get_slider" (object ["name" .= ("NoSuchSlider" :: String)])
       case result of
-        Left (ServiceInvalidRequest msg) -> msg `shouldSatisfy` (not . Text.null)
-        other -> expectationFailure ("expected ServiceInvalidRequest, got: " <> show other)
+        Left (ServiceNotFound msg) -> msg `shouldSatisfy` (not . Text.null)
+        other -> expectationFailure ("expected ServiceNotFound, got: " <> show other)
+
+      chunkResult <- runService ctx "get_chunk_summary" (object ["chunk" .= (999 :: Int)])
+      case chunkResult of
+        Left (ServiceNotFound msg) -> msg `shouldSatisfy` Text.isInfixOf "chunk"
+        other -> expectationFailure ("expected chunk ServiceNotFound, got: " <> show other)
+
+    it "returns structured service validation errors before handler envelopes" $ withCtx $ \ctx -> do
+      result <- runService ctx "set_seed" Null
+      case result of
+        Left err -> do
+          serviceErrorKind err `shouldBe` ServiceErrorInvalidRequest
+          serviceErrorCode err `shouldBe` "validation_failed"
+          case serviceErrorDetails err of
+            [detail] -> do
+              serviceErrorDetailPath detail `shouldBe` ["seed"]
+              serviceErrorDetailCode detail `shouldBe` "missing_field"
+              serviceErrorDetailMessage detail `shouldSatisfy` Text.isInfixOf "seed"
+            details -> expectationFailure ("expected one validation detail, got: " <> show details)
+        other -> expectationFailure ("expected structured validation error, got: " <> show other)
+
+    it "returns structured validation details for invalid fields and required object bodies" $ withCtx $ \ctx -> do
+      negativeSeed <- runService ctx "set_seed" (object ["seed" .= ((-1) :: Int)])
+      assertSingleValidationDetail negativeSeed ["seed"] "invalid_field"
+
+      missingEnumType <- runService ctx "get_enums" Null
+      assertSingleValidationDetail missingEnumType ["type"] "missing_field"
+
+      brushWithoutObject <- runService ctx "editor_set_brush" Null
+      assertSingleValidationDetail brushWithoutObject [] "invalid_body"
+
+    it "validates commandAppService handlers at the service-record boundary" $ withCtx $ \ctx -> do
+      result <- uiSetSeed (appUi commandAppService) (serviceContextFromCommand ctx) (ServiceRequest (Just Null))
+      assertSingleValidationDetail result ["seed"] "missing_field"
+
+    it "translates structured service validation errors back to command errors" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "set_seed" Null
+      srSuccess rsp `shouldBe` False
+      case srError rsp of
+        Just msg -> msg `shouldSatisfy` Text.isInfixOf "seed"
+        Nothing -> expectationFailure "expected command error text"
 
     it "has a direct service-level case or explicit waiver for every public operation" $ do
       let coveredMethods = map serviceCaseMethod serviceOperationCases
@@ -754,6 +805,15 @@ dispatchWithId ctx reqId method params = dispatchCommand ctx SeerCommand
 runService :: CommandContext -> Text -> Value -> IO ServiceResult
 runService ctx = runAppServiceOperation commandAppService ctx
 
+serviceContextFromCommand :: CommandContext -> ServiceContext
+serviceContextFromCommand ctx = ServiceContext
+  { svcActorHandles = ccActorHandles ctx
+  , svcUiSnapshotRef = ccUiSnapshotRef ctx
+  , svcUiActionsHandle = ccUiActionsHandle ctx
+  , svcScreenshotRef = ccScreenshotRef ctx
+  , svcLogSnapshotRef = ccLogSnapshotRef ctx
+  }
+
 data ExpectedServiceOutcome
   = ExpectServiceSuccess
   | ExpectServiceFailure
@@ -782,6 +842,19 @@ assertServiceOutcome testCase result =
       Text.unpack (serviceCaseMethod testCase) <> " expected service success, got: " <> show err
     (ExpectServiceFailure, Right (ServiceResponse body)) -> expectationFailure $
       Text.unpack (serviceCaseMethod testCase) <> " expected service failure, got: " <> show body
+
+assertSingleValidationDetail :: ServiceResult -> [Text] -> Text -> Expectation
+assertSingleValidationDetail result expectedPath expectedCode =
+  case result of
+    Left err -> do
+      serviceErrorKind err `shouldBe` ServiceErrorInvalidRequest
+      serviceErrorCode err `shouldBe` "validation_failed"
+      case serviceErrorDetails err of
+        [detail] -> do
+          serviceErrorDetailPath detail `shouldBe` expectedPath
+          serviceErrorDetailCode detail `shouldBe` expectedCode
+        details -> expectationFailure ("expected one validation detail, got: " <> show details)
+    other -> expectationFailure ("expected structured validation error, got: " <> show other)
 
 serviceOperationCases :: [ServiceOperationCase]
 serviceOperationCases =

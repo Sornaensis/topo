@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StrictData #-}
 
 -- | Shared service-layer interface types.
@@ -12,6 +13,16 @@ module Seer.Service.Types
   , ServiceResponse(..)
   , ServiceResult
   , ServiceError(..)
+  , ServiceErrorKind(..)
+  , ServiceErrorDetail(..)
+  , serviceErrorKind
+  , serviceErrorCode
+  , serviceErrorMessage
+  , serviceErrorDetails
+  , serviceErrorText
+  , validationError
+  , missingField
+  , invalidField
   , TypedServiceOperation(..)
   , ServiceOperationSpec(..)
   , ServiceGroupSpec(..)
@@ -23,6 +34,7 @@ module Seer.Service.Types
 
 import Data.Aeson (Value)
 import Data.Text (Text)
+import qualified Data.Text as Text
 
 import Seer.Service.Context (ServiceContext)
 
@@ -50,14 +62,79 @@ newtype ServiceResponse = ServiceResponse
 
 type ServiceResult = Either ServiceError ServiceResponse
 
+data ServiceErrorKind
+  = ServiceErrorInvalidRequest
+  | ServiceErrorNotFound
+  | ServiceErrorUnavailable
+  | ServiceErrorRejected
+  | ServiceErrorInternal
+  deriving (Eq, Show)
+
+data ServiceErrorDetail = ServiceErrorDetail
+  { serviceErrorDetailPath :: ![Text]
+  , serviceErrorDetailCode :: !Text
+  , serviceErrorDetailMessage :: !Text
+  } deriving (Eq, Show)
+
 -- | Reusable service errors that are not tied to command IPC envelopes.
 data ServiceError
   = ServiceInvalidRequest !Text
+  | ServiceValidationError !Text ![ServiceErrorDetail]
   | ServiceNotFound !Text
   | ServiceUnavailable !Text
   | ServiceRejected !Text
   | ServiceInternalError !Text
   deriving (Eq, Show)
+
+serviceErrorKind :: ServiceError -> ServiceErrorKind
+serviceErrorKind (ServiceInvalidRequest _) = ServiceErrorInvalidRequest
+serviceErrorKind (ServiceValidationError _ _) = ServiceErrorInvalidRequest
+serviceErrorKind (ServiceNotFound _) = ServiceErrorNotFound
+serviceErrorKind (ServiceUnavailable _) = ServiceErrorUnavailable
+serviceErrorKind (ServiceRejected _) = ServiceErrorRejected
+serviceErrorKind (ServiceInternalError _) = ServiceErrorInternal
+
+serviceErrorCode :: ServiceError -> Text
+serviceErrorCode (ServiceInvalidRequest _) = "invalid_request"
+serviceErrorCode (ServiceValidationError _ _) = "validation_failed"
+serviceErrorCode (ServiceNotFound _) = "not_found"
+serviceErrorCode (ServiceUnavailable _) = "unavailable"
+serviceErrorCode (ServiceRejected _) = "rejected"
+serviceErrorCode (ServiceInternalError _) = "internal_error"
+
+serviceErrorMessage :: ServiceError -> Text
+serviceErrorMessage (ServiceInvalidRequest msg) = msg
+serviceErrorMessage (ServiceValidationError msg _) = msg
+serviceErrorMessage (ServiceNotFound msg) = msg
+serviceErrorMessage (ServiceUnavailable msg) = msg
+serviceErrorMessage (ServiceRejected msg) = msg
+serviceErrorMessage (ServiceInternalError msg) = msg
+
+serviceErrorDetails :: ServiceError -> [ServiceErrorDetail]
+serviceErrorDetails (ServiceValidationError _ details) = details
+serviceErrorDetails _ = []
+
+serviceErrorText :: ServiceError -> Text
+serviceErrorText err = case serviceErrorDetails err of
+  [] -> serviceErrorMessage err
+  details -> serviceErrorMessage err <> ": " <> Text.intercalate "; " (map serviceErrorDetailMessage details)
+
+validationError :: [ServiceErrorDetail] -> ServiceError
+validationError = ServiceValidationError "validation failed"
+
+missingField :: Text -> ServiceErrorDetail
+missingField field = ServiceErrorDetail
+  { serviceErrorDetailPath = [field]
+  , serviceErrorDetailCode = "missing_field"
+  , serviceErrorDetailMessage = "missing required field '" <> field <> "'"
+  }
+
+invalidField :: Text -> Text -> ServiceErrorDetail
+invalidField field expected = ServiceErrorDetail
+  { serviceErrorDetailPath = [field]
+  , serviceErrorDetailCode = "invalid_field"
+  , serviceErrorDetailMessage = "invalid field '" <> field <> "' (expected " <> expected <> ")"
+  }
 
 -- | Type-level association between an operation and its request/response pair.
 --
