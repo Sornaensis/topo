@@ -13,11 +13,13 @@ module Spec.CommandDispatch (spec) where
 
 import Control.Concurrent.MVar (newEmptyMVar)
 import Control.Exception (bracket)
+import Control.Monad (forM_)
 import Data.Aeson (Value(..), object, (.=), Key)
 import qualified Data.Aeson.KeyMap as KM
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import Data.IORef (newIORef, writeIORef)
+import Data.List (nub, sort)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Hyperspace.Actor (ActorSystem, getSingleton, newActorSystem, replyTo, shutdownActorSystem)
@@ -46,6 +48,7 @@ import Seer.Command.AppServiceAdapter (commandAppService, runAppServiceOperation
 import Seer.Command.Dispatch (CommandContext(..), dispatchCommand)
 import Seer.Editor.History (emptyHistory)
 import Seer.Screenshot (ScreenshotRequest(..), newScreenshotRequestRef)
+import Seer.Service.AppService (appServiceOperationMethods)
 import Seer.Service.Types (ServiceError(..), ServiceResponse(..), ServiceResult)
 import Topo (WorldConfig(..), chunkIdFromCoord, emptyTerrainChunk)
 import Topo.Command.Types (SeerCommand(..), SeerResponse(..))
@@ -87,6 +90,22 @@ spec = describe "CommandDispatch" $ do
       case result of
         Left (ServiceInvalidRequest msg) -> msg `shouldSatisfy` (not . Text.null)
         other -> expectationFailure ("expected ServiceInvalidRequest, got: " <> show other)
+
+    it "has a direct service-level case or explicit waiver for every public operation" $ do
+      let coveredMethods = map serviceCaseMethod serviceOperationCases
+          waivedMethods = map serviceWaiverMethod serviceOperationWaivers
+          allMethods = coveredMethods ++ waivedMethods
+      sort allMethods `shouldBe` sort appServiceOperationMethods
+      allMethods `shouldBe` nub allMethods
+
+    it "documents why any service-level operation is waived" $
+      map serviceWaiverReason serviceOperationWaivers `shouldSatisfy` all (not . Text.null)
+
+    it "executes every public operation through the AppService handler surface" $ withCtx $ \ctx ->
+      forM_ serviceOperationCases $ \testCase -> do
+        serviceCaseSetup testCase ctx
+        result <- runService ctx (serviceCaseMethod testCase) (serviceCaseParams testCase)
+        assertServiceOutcome testCase result
 
   -- -------------------------------------------------------------------
   -- get_state
@@ -734,6 +753,150 @@ dispatchWithId ctx reqId method params = dispatchCommand ctx SeerCommand
 
 runService :: CommandContext -> Text -> Value -> IO ServiceResult
 runService ctx = runAppServiceOperation commandAppService ctx
+
+data ExpectedServiceOutcome
+  = ExpectServiceSuccess
+  | ExpectServiceFailure
+
+data ServiceOperationCase = ServiceOperationCase
+  { serviceCaseMethod :: !Text
+  , serviceCaseParams :: !Value
+  , serviceCaseExpected :: !ExpectedServiceOutcome
+  , serviceCaseSetup :: CommandContext -> IO ()
+  }
+
+data ServiceOperationWaiver = ServiceOperationWaiver
+  { serviceWaiverMethod :: !Text
+  , serviceWaiverReason :: !Text
+  }
+
+serviceCase :: Text -> Value -> ExpectedServiceOutcome -> ServiceOperationCase
+serviceCase method params expected = ServiceOperationCase method params expected (\_ -> pure ())
+
+assertServiceOutcome :: ServiceOperationCase -> ServiceResult -> Expectation
+assertServiceOutcome testCase result =
+  case (serviceCaseExpected testCase, result) of
+    (ExpectServiceSuccess, Right _) -> pure ()
+    (ExpectServiceFailure, Left _) -> pure ()
+    (ExpectServiceSuccess, Left err) -> expectationFailure $
+      Text.unpack (serviceCaseMethod testCase) <> " expected service success, got: " <> show err
+    (ExpectServiceFailure, Right (ServiceResponse body)) -> expectationFailure $
+      Text.unpack (serviceCaseMethod testCase) <> " expected service failure, got: " <> show body
+
+serviceOperationCases :: [ServiceOperationCase]
+serviceOperationCases =
+  [ serviceCase "get_state" Null ExpectServiceSuccess
+  , serviceCase "get_view_modes" Null ExpectServiceSuccess
+  , serviceCase "get_ui_state" Null ExpectServiceSuccess
+  , serviceCase "get_sliders" Null ExpectServiceSuccess
+  , serviceCase "get_slider" (object ["name" .= ("SliderGenScale" :: String)]) ExpectServiceSuccess
+  , serviceCase "set_slider" (object ["name" .= ("SliderGenScale" :: String), "value" .= (0.42 :: Double)]) ExpectServiceSuccess
+  , serviceCase "set_sliders" (object ["values" .= object ["SliderGenScale" .= (0.3 :: Double)]]) ExpectServiceSuccess
+  , serviceCase "reset_sliders" Null ExpectServiceSuccess
+  , serviceCase "get_config_summary" Null ExpectServiceSuccess
+  , serviceCase "get_enums" (object ["type" .= ("biome" :: String)]) ExpectServiceSuccess
+  , serviceCase "save_preset" Null ExpectServiceFailure
+  , serviceCase "load_preset" Null ExpectServiceFailure
+  , serviceCase "get_world_meta" Null ExpectServiceSuccess
+  , serviceCase "get_generation_status" Null ExpectServiceSuccess
+  , serviceCase "save_world" Null ExpectServiceFailure
+  , serviceCase "load_world" Null ExpectServiceFailure
+  , serviceCase "set_world_name" (object ["name" .= ("Service Test World" :: String)]) ExpectServiceSuccess
+  , serviceCase "get_hex" (object ["q" .= (0 :: Int), "r" .= (0 :: Int)]) ExpectServiceFailure
+  , serviceCase "get_chunks" Null ExpectServiceSuccess
+  , serviceCase "get_chunk_summary" (object ["chunk" .= (999 :: Int)]) ExpectServiceFailure
+  , serviceCase "get_terrain_stats" Null ExpectServiceSuccess
+  , serviceCase "get_overlays" Null ExpectServiceSuccess
+  , serviceCase "find_hexes" (object ["filters" .= ([] :: [Value])]) ExpectServiceSuccess
+  , serviceCase "export_terrain_data" Null ExpectServiceFailure
+  , serviceCase "editor_toggle" (object []) ExpectServiceSuccess
+  , serviceCase "editor_set_tool" (object ["tool" .= ("erode" :: String)]) ExpectServiceSuccess
+  , serviceCase "editor_set_brush" (object
+      [ "radius" .= (3 :: Int)
+      , "strength" .= (0.4 :: Double)
+      , "falloff" .= ("smooth" :: String)
+      ]) ExpectServiceSuccess
+  , serviceCase "editor_brush_stroke" (object ["q" .= (0 :: Int), "r" .= (0 :: Int)]) ExpectServiceSuccess
+  , serviceCase "editor_brush_line" (object
+      [ "from_q" .= (0 :: Int)
+      , "from_r" .= (0 :: Int)
+      , "to_q" .= (1 :: Int)
+      , "to_r" .= (0 :: Int)
+      ]) ExpectServiceSuccess
+  , serviceCase "editor_set_biome" (object ["biome" .= ("Forest" :: String)]) ExpectServiceSuccess
+  , serviceCase "editor_set_form" (object ["form" .= ("Hilly" :: String)]) ExpectServiceSuccess
+  , serviceCase "editor_set_hardness" (object ["hardness" .= (0.7 :: Double)]) ExpectServiceSuccess
+  , serviceCase "editor_undo" Null ExpectServiceSuccess
+  , serviceCase "editor_redo" Null ExpectServiceSuccess
+  , serviceCase "editor_get_state" Null ExpectServiceSuccess
+  , serviceCase "get_pipeline" Null ExpectServiceSuccess
+  , serviceCase "set_stage_enabled" (object ["stage" .= ("__missing_stage__" :: String), "enabled" .= True]) ExpectServiceFailure
+  , serviceCase "list_plugins" Null ExpectServiceSuccess
+  , serviceCase "set_plugin_enabled" Null ExpectServiceFailure
+  , serviceCase "set_plugin_param" Null ExpectServiceFailure
+  , serviceCase "data_list_plugins" Null ExpectServiceSuccess
+  , serviceCase "data_list_resources" (object ["plugin" .= ("__missing_plugin__" :: String)]) ExpectServiceFailure
+  , serviceCase "data_list_records" Null ExpectServiceFailure
+  , serviceCase "data_get_record" Null ExpectServiceFailure
+  , serviceCase "data_create_record" Null ExpectServiceFailure
+  , serviceCase "data_update_record" Null ExpectServiceFailure
+  , serviceCase "data_delete_record" Null ExpectServiceFailure
+  , serviceCase "data_get_state" Null ExpectServiceSuccess
+  , serviceCase "get_sim_state" Null ExpectServiceSuccess
+  , serviceCase "set_sim_auto_tick" (object ["enabled" .= False, "rate" .= (2.0 :: Double)]) ExpectServiceSuccess
+  , serviceCase "sim_tick" Null ExpectServiceSuccess
+  , serviceCase "get_logs" Null ExpectServiceFailure
+  , ServiceOperationCase "take_screenshot" Null ExpectServiceFailure $ \ctx -> do
+      busy <- newEmptyMVar
+      writeIORef (ccScreenshotRef ctx) (Just (ScreenshotRequest busy))
+  , serviceCase "set_seed" (object ["seed" .= (2468 :: Int)]) ExpectServiceSuccess
+  , serviceCase "set_view_mode" (object ["mode" .= ("biome" :: String)]) ExpectServiceSuccess
+  , serviceCase "set_config_tab" (object ["tab" .= ("climate" :: String)]) ExpectServiceSuccess
+  , serviceCase "select_hex" (object ["q" .= (0 :: Int), "r" .= (5 :: Int)]) ExpectServiceSuccess
+  , serviceCase "set_overlay" (object ["overlay" .= ("__missing_overlay__" :: String)]) ExpectServiceFailure
+  , serviceCase "list_overlay_fields" Null ExpectServiceFailure
+  , serviceCase "cycle_overlay" (object ["direction" .= (1 :: Int)]) ExpectServiceFailure
+  , serviceCase "cycle_overlay_field" (object ["direction" .= (1 :: Int)]) ExpectServiceFailure
+  , serviceCase "set_camera" (object ["x" .= (1.0 :: Double), "y" .= (2.0 :: Double), "zoom" .= (1.5 :: Double)]) ExpectServiceSuccess
+  , serviceCase "get_camera" Null ExpectServiceSuccess
+  , serviceCase "zoom_to_chunk" (object ["chunk" .= (999 :: Int)]) ExpectServiceFailure
+  , serviceCase "set_left_panel" (object ["visible" .= True]) ExpectServiceSuccess
+  , serviceCase "set_left_tab" (object ["tab" .= ("topo" :: String)]) ExpectServiceSuccess
+  , serviceCase "toggle_config_panel" Null ExpectServiceSuccess
+  , serviceCase "set_log_collapsed" (object ["collapsed" .= True]) ExpectServiceSuccess
+  , serviceCase "set_log_level" (object ["level" .= ("debug" :: String)]) ExpectServiceSuccess
+  , serviceCase "get_ui_panels" Null ExpectServiceSuccess
+  , serviceCase "viewport_scroll" (object ["delta" .= (1 :: Int)]) ExpectServiceSuccess
+  , serviceCase "viewport_click" (object ["x" .= (0 :: Int), "y" .= (0 :: Int)]) ExpectServiceSuccess
+  , serviceCase "viewport_drag" (object
+      [ "x1" .= (0 :: Int)
+      , "y1" .= (0 :: Int)
+      , "x2" .= (10 :: Int)
+      , "y2" .= (10 :: Int)
+      ]) ExpectServiceSuccess
+  , serviceCase "viewport_hover" (object ["x" .= (0 :: Int), "y" .= (0 :: Int)]) ExpectServiceSuccess
+  , serviceCase "click_widget" Null ExpectServiceFailure
+  , serviceCase "list_widgets" Null ExpectServiceSuccess
+  , serviceCase "get_widget_state" Null ExpectServiceFailure
+  , serviceCase "get_dialog_state" Null ExpectServiceSuccess
+  , serviceCase "set_dialog_text" (object ["target" .= ("seed" :: String), "text" .= ("123" :: String)]) ExpectServiceSuccess
+  , serviceCase "dialog_confirm" Null ExpectServiceSuccess
+  , serviceCase "dialog_cancel" Null ExpectServiceSuccess
+  , serviceCase "send_key" (object ["key" .= ("escape" :: String)]) ExpectServiceSuccess
+  ]
+
+serviceOperationWaivers :: [ServiceOperationWaiver]
+serviceOperationWaivers =
+  [ ServiceOperationWaiver
+      "generate"
+      "starts asynchronous terrain generation; command-dispatch behavior is covered separately while direct async service tests are extracted"
+  , ServiceOperationWaiver
+      "list_presets"
+      "current handler creates the user-local preset directory while listing; direct side-effect-free coverage is deferred until file IO is injectable"
+  , ServiceOperationWaiver
+      "list_worlds"
+      "current handler creates the user-local worlds directory while listing; direct side-effect-free coverage is deferred until file IO is injectable"
+  ]
 
 -- | Look up a key in a JSON object.
 lookupKey :: Key -> Value -> Maybe Value
