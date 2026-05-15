@@ -12,9 +12,11 @@ module Seer.Service.Types
   , ServiceResponse(..)
   , ServiceResult
   , ServiceError(..)
+  , TypedServiceOperation(..)
   , ServiceOperationSpec(..)
   , ServiceGroupSpec(..)
   , operationSpec
+  , typedOperation
   , groupOperationMethods
   , serviceOperationMethods
   ) where
@@ -57,6 +59,14 @@ data ServiceError
   | ServiceInternalError !Text
   deriving (Eq, Show)
 
+-- | Type-level association between an operation and its request/response pair.
+--
+-- This lets focused service modules publish typed contracts while the
+-- transitional AppService adapter still carries JSON through 'ServiceHandler'.
+newtype TypedServiceOperation request response = TypedServiceOperation
+  { typedServiceOperationSpec :: ServiceOperationSpec
+  } deriving (Eq, Show)
+
 -- | Stable metadata for one public service operation.
 data ServiceOperationSpec = ServiceOperationSpec
   { serviceOperationName :: !Text
@@ -75,6 +85,9 @@ data ServiceGroupSpec = ServiceGroupSpec
 
 operationSpec :: Text -> Text -> Text -> ServiceOperationSpec
 operationSpec = ServiceOperationSpec
+
+typedOperation :: ServiceOperationSpec -> TypedServiceOperation request response
+typedOperation = TypedServiceOperation
 
 groupOperationMethods :: ServiceGroupSpec -> [Text]
 groupOperationMethods = map serviceOperationMethod . serviceGroupOperations
