@@ -71,6 +71,21 @@ library:
     - Seer.Render.Viewport
     - Seer.Render.ZoomStage
     - Seer.Screenshot
+    - Seer.Service.AppService
+    - Seer.Service.Config
+    - Seer.Service.Context
+    - Seer.Service.DataResource
+    - Seer.Service.Editor
+    - Seer.Service.Log
+    - Seer.Service.Pipeline
+    - Seer.Service.Plugin
+    - Seer.Service.Screenshot
+    - Seer.Service.Simulation
+    - Seer.Service.State
+    - Seer.Service.Terrain
+    - Seer.Service.Types
+    - Seer.Service.UI
+    - Seer.Service.World
     - Seer.Timing
     - Seer.World.Persist
     - Seer.World.Persist.Types

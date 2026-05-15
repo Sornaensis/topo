@@ -1,6 +1,6 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.38.1.
+-- This file has been generated from package.yaml by hpack version 0.39.1.
 --
 -- see: https://github.com/sol/hpack
 
@@ -77,6 +77,21 @@ library
       Seer.Render.Viewport
       Seer.Render.ZoomStage
       Seer.Screenshot
+      Seer.Service.AppService
+      Seer.Service.Config
+      Seer.Service.Context
+      Seer.Service.DataResource
+      Seer.Service.Editor
+      Seer.Service.Log
+      Seer.Service.Pipeline
+      Seer.Service.Plugin
+      Seer.Service.Screenshot
+      Seer.Service.Simulation
+      Seer.Service.State
+      Seer.Service.Terrain
+      Seer.Service.Types
+      Seer.Service.UI
+      Seer.Service.World
       Seer.Timing
       Seer.World.Persist
       Seer.World.Persist.Types
@@ -176,6 +191,7 @@ test-suite topo-seer-test
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
+      Spec.AppService
       Spec.AtlasCache
       Spec.AtlasResultBroker
       Spec.AtlasScheduleBroker

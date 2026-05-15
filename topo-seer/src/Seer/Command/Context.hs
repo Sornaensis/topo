@@ -5,6 +5,7 @@
 -- modules (which need the 'CommandContext' type).
 module Seer.Command.Context
   ( CommandContext(..)
+  , commandServiceContext
   ) where
 
 import Actor.Log (LogSnapshotRef)
@@ -12,6 +13,7 @@ import Actor.UiActions (UiActions)
 import Actor.UiActions.Handles (ActorHandles)
 import Actor.UI.State (UiSnapshotRef)
 import Hyperspace.Actor (ActorHandle, Protocol)
+import Seer.Service.Context (ServiceContext(..))
 import Seer.Screenshot.Request (ScreenshotRequestRef)
 
 -- | Context shared by all command handlers.
@@ -22,4 +24,17 @@ data CommandContext = CommandContext
   , ccScreenshotRef   :: !ScreenshotRequestRef
   , ccLogSnapshotRef  :: !(Maybe LogSnapshotRef)
     -- ^ Log snapshot for @get_logs@.  'Nothing' only in tests.
+  }
+
+-- | Adapt the existing command IPC context into the service-layer context.
+--
+-- Future command adapters should perform command-envelope parsing and then call
+-- AppService operations with this transport-neutral context.
+commandServiceContext :: CommandContext -> ServiceContext
+commandServiceContext ctx = ServiceContext
+  { svcActorHandles = ccActorHandles ctx
+  , svcUiSnapshotRef = ccUiSnapshotRef ctx
+  , svcUiActionsHandle = ccUiActionsHandle ctx
+  , svcScreenshotRef = ccScreenshotRef ctx
+  , svcLogSnapshotRef = ccLogSnapshotRef ctx
   }

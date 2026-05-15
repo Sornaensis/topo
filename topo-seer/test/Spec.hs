@@ -6,6 +6,7 @@ import Test.Hspec
 import qualified Spec.HexPick
 import qualified Spec.Layout
 import qualified Spec.LogActor
+import qualified Spec.AppService
 import qualified Spec.CacheProperties
 import qualified Spec.ConfigSnapshot
 import qualified Spec.AtlasResultBroker
@@ -39,6 +40,7 @@ main = do
       hSetEncoding stdout utf8
       hSetEncoding stderr utf8
       hspec $ do
+        Spec.AppService.spec
         Spec.LogActor.spec
         Spec.CacheProperties.spec
         Spec.ConfigSnapshot.spec

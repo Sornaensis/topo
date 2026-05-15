@@ -5,9 +5,13 @@
 module Seer.Command.Dispatch
   ( CommandContext(..)
   , dispatchCommand
+  , dispatchCommandMethods
   ) where
 
 import Topo.Command.Types (SeerCommand(..), SeerResponse, errResponse)
+import Data.Aeson (Value)
+import Data.Text (Text)
+
 import Seer.Command.Context (CommandContext(..))
 import qualified Seer.Command.Handlers.Camera as HCamera
 import qualified Seer.Command.Handlers.Data as HData
@@ -31,139 +35,157 @@ import qualified Seer.Command.Handlers.Viewport as HViewport
 import qualified Seer.Command.Handlers.Widgets as HWidgets
 import qualified Seer.Command.Handlers.World as HWorld
 
+type RawCommandHandler = CommandContext -> Int -> Value -> IO SeerResponse
+
+type CommandHandler = CommandContext -> SeerCommand -> IO SeerResponse
+
 -- | Dispatch a 'SeerCommand' to the appropriate handler based on 'scMethod'.
+--
+-- The supported method catalog is derived from the same table used by dispatch,
+-- so AppService coverage tests compare against the real command adapter surface
+-- rather than AppService metadata echoing itself.
 dispatchCommand :: CommandContext -> SeerCommand -> IO SeerResponse
-dispatchCommand ctx cmd = case scMethod cmd of
-  -- State queries
-  "get_state"        -> HState.handleGetState        ctx (scId cmd) (scParams cmd)
-  "get_view_modes"   -> HState.handleGetViewModes    ctx (scId cmd) (scParams cmd)
-  "get_ui_state"     -> HState.handleGetUiState      ctx (scId cmd) (scParams cmd)
+dispatchCommand ctx cmd = case lookup (scMethod cmd) dispatchCommandHandlers of
+  Just handler -> handler ctx cmd
+  Nothing -> pure (errResponse (scId cmd) ("unknown command: " <> scMethod cmd))
 
-  -- Slider queries and mutations
-  "get_sliders"      -> HSliders.handleGetSliders    ctx (scId cmd) (scParams cmd)
-  "get_slider"       -> HSliders.handleGetSlider     ctx (scId cmd) (scParams cmd)
-  "set_slider"       -> HSliders.handleSetSlider     ctx (scId cmd) (scParams cmd)
-  "set_sliders"      -> HSliders.handleSetSliders    ctx (scId cmd) (scParams cmd)
-  "reset_sliders"    -> HSliders.handleResetSliders   ctx (scId cmd) (scParams cmd)
+commandHandler :: RawCommandHandler -> CommandHandler
+commandHandler handler ctx cmd = handler ctx (scId cmd) (scParams cmd)
 
-  -- View, seed, and hex mutations
-  "set_seed"         -> HView.handleSetSeed          ctx (scId cmd) (scParams cmd)
-  "set_view_mode"    -> HView.handleSetViewMode      ctx (scId cmd) (scParams cmd)
-  "set_config_tab"   -> HView.handleSetConfigTab     ctx (scId cmd) (scParams cmd)
-  "select_hex"       -> HView.handleSelectHex        ctx (scId cmd) (scParams cmd)
+dispatchCommandHandlers :: [(Text, CommandHandler)]
+dispatchCommandHandlers =
+  [ -- State queries
+    ("get_state", commandHandler HState.handleGetState)
+  , ("get_view_modes", commandHandler HState.handleGetViewModes)
+  , ("get_ui_state", commandHandler HState.handleGetUiState)
 
-  -- Overlay navigation
-  "set_overlay"          -> HView.handleSetOverlay          ctx (scId cmd) (scParams cmd)
-  "list_overlay_fields"  -> HView.handleListOverlayFields   ctx (scId cmd) (scParams cmd)
-  "cycle_overlay"        -> HView.handleCycleOverlay        ctx (scId cmd) (scParams cmd)
-  "cycle_overlay_field"  -> HView.handleCycleOverlayField   ctx (scId cmd) (scParams cmd)
+    -- Slider queries and mutations
+  , ("get_sliders", commandHandler HSliders.handleGetSliders)
+  , ("get_slider", commandHandler HSliders.handleGetSlider)
+  , ("set_slider", commandHandler HSliders.handleSetSlider)
+  , ("set_sliders", commandHandler HSliders.handleSetSliders)
+  , ("reset_sliders", commandHandler HSliders.handleResetSliders)
 
-  -- Camera controls
-  "set_camera"       -> HCamera.handleSetCamera      ctx (scId cmd) (scParams cmd)
-  "get_camera"       -> HCamera.handleGetCamera      ctx (scId cmd) (scParams cmd)
-  "zoom_to_chunk"    -> HCamera.handleZoomToChunk    ctx (scId cmd) (scParams cmd)
+    -- View, seed, and hex mutations
+  , ("set_seed", commandHandler HView.handleSetSeed)
+  , ("set_view_mode", commandHandler HView.handleSetViewMode)
+  , ("set_config_tab", commandHandler HView.handleSetConfigTab)
+  , ("select_hex", commandHandler HView.handleSelectHex)
 
-  -- Generation
-  "generate"         -> HGenerate.handleGenerate     ctx (scId cmd) (scParams cmd)
+    -- Overlay navigation
+  , ("set_overlay", commandHandler HView.handleSetOverlay)
+  , ("list_overlay_fields", commandHandler HView.handleListOverlayFields)
+  , ("cycle_overlay", commandHandler HView.handleCycleOverlay)
+  , ("cycle_overlay_field", commandHandler HView.handleCycleOverlayField)
 
-  -- Terrain editor
-  "editor_toggle"       -> HEditor.handleEditorToggle      ctx (scId cmd) (scParams cmd)
-  "editor_set_tool"     -> HEditor.handleEditorSetTool     ctx (scId cmd) (scParams cmd)
-  "editor_set_brush"    -> HEditor.handleEditorSetBrush    ctx (scId cmd) (scParams cmd)
-  "editor_brush_stroke" -> HEditor.handleEditorBrushStroke ctx (scId cmd) (scParams cmd)
-  "editor_brush_line"   -> HEditor.handleEditorBrushLine   ctx (scId cmd) (scParams cmd)
-  "editor_set_biome"    -> HEditor.handleEditorSetBiome    ctx (scId cmd) (scParams cmd)
-  "editor_set_form"     -> HEditor.handleEditorSetForm     ctx (scId cmd) (scParams cmd)
-  "editor_set_hardness" -> HEditor.handleEditorSetHardness ctx (scId cmd) (scParams cmd)
-  "editor_undo"         -> HEditor.handleEditorUndo        ctx (scId cmd) (scParams cmd)
-  "editor_redo"         -> HEditor.handleEditorRedo        ctx (scId cmd) (scParams cmd)
-  "editor_get_state"    -> HEditor.handleEditorGetState    ctx (scId cmd) (scParams cmd)
+    -- Camera controls
+  , ("set_camera", commandHandler HCamera.handleSetCamera)
+  , ("get_camera", commandHandler HCamera.handleGetCamera)
+  , ("zoom_to_chunk", commandHandler HCamera.handleZoomToChunk)
 
-  -- Enum queries
-  "get_enums"        -> HEnums.handleGetEnums        ctx (scId cmd) (scParams cmd)
+    -- Generation
+  , ("generate", commandHandler HGenerate.handleGenerate)
 
-  -- Terrain data queries
-  "get_hex"              -> HTerrain.handleGetHex          ctx (scId cmd) (scParams cmd)
-  "get_chunks"           -> HTerrain.handleGetChunks       ctx (scId cmd) (scParams cmd)
-  "get_chunk_summary"    -> HTerrain.handleGetChunkSummary ctx (scId cmd) (scParams cmd)
-  "get_terrain_stats"    -> HTerrain.handleGetTerrainStats ctx (scId cmd) (scParams cmd)
+    -- Terrain editor
+  , ("editor_toggle", commandHandler HEditor.handleEditorToggle)
+  , ("editor_set_tool", commandHandler HEditor.handleEditorSetTool)
+  , ("editor_set_brush", commandHandler HEditor.handleEditorSetBrush)
+  , ("editor_brush_stroke", commandHandler HEditor.handleEditorBrushStroke)
+  , ("editor_brush_line", commandHandler HEditor.handleEditorBrushLine)
+  , ("editor_set_biome", commandHandler HEditor.handleEditorSetBiome)
+  , ("editor_set_form", commandHandler HEditor.handleEditorSetForm)
+  , ("editor_set_hardness", commandHandler HEditor.handleEditorSetHardness)
+  , ("editor_undo", commandHandler HEditor.handleEditorUndo)
+  , ("editor_redo", commandHandler HEditor.handleEditorRedo)
+  , ("editor_get_state", commandHandler HEditor.handleEditorGetState)
 
-  -- World / meta queries and mutations
-  "get_world_meta"       -> HWorld.handleGetWorldMeta         ctx (scId cmd) (scParams cmd)
-  "get_generation_status" -> HWorld.handleGetGenerationStatus ctx (scId cmd) (scParams cmd)
-  "get_overlays"         -> HWorld.handleGetOverlays          ctx (scId cmd) (scParams cmd)
-  "list_worlds"          -> HWorld.handleListWorlds           ctx (scId cmd) (scParams cmd)
-  "save_world"           -> HWorld.handleSaveWorld            ctx (scId cmd) (scParams cmd)
-  "load_world"           -> HWorld.handleLoadWorld            ctx (scId cmd) (scParams cmd)
-  "set_world_name"       -> HWorld.handleSetWorldName         ctx (scId cmd) (scParams cmd)
+    -- Enum queries
+  , ("get_enums", commandHandler HEnums.handleGetEnums)
 
-  -- Log access
-  "get_logs"             -> HLog.handleGetLogs                ctx (scId cmd) (scParams cmd)
+    -- Terrain data queries
+  , ("get_hex", commandHandler HTerrain.handleGetHex)
+  , ("get_chunks", commandHandler HTerrain.handleGetChunks)
+  , ("get_chunk_summary", commandHandler HTerrain.handleGetChunkSummary)
+  , ("get_terrain_stats", commandHandler HTerrain.handleGetTerrainStats)
 
-  -- Pipeline stage control
-  "get_pipeline"         -> HPipeline.handleGetPipeline       ctx (scId cmd) (scParams cmd)
-  "set_stage_enabled"    -> HPipeline.handleSetStageEnabled   ctx (scId cmd) (scParams cmd)
+    -- World / meta queries and mutations
+  , ("get_world_meta", commandHandler HWorld.handleGetWorldMeta)
+  , ("get_generation_status", commandHandler HWorld.handleGetGenerationStatus)
+  , ("get_overlays", commandHandler HWorld.handleGetOverlays)
+  , ("list_worlds", commandHandler HWorld.handleListWorlds)
+  , ("save_world", commandHandler HWorld.handleSaveWorld)
+  , ("load_world", commandHandler HWorld.handleLoadWorld)
+  , ("set_world_name", commandHandler HWorld.handleSetWorldName)
 
-  -- Plugin management
-  "list_plugins"         -> HPlugin.handleListPlugins         ctx (scId cmd) (scParams cmd)
-  "set_plugin_enabled"   -> HPlugin.handleSetPluginEnabled    ctx (scId cmd) (scParams cmd)
-  "set_plugin_param"     -> HPlugin.handleSetPluginParam      ctx (scId cmd) (scParams cmd)
+    -- Log access
+  , ("get_logs", commandHandler HLog.handleGetLogs)
 
-  -- Simulation control
-  "get_sim_state"        -> HSimulation.handleGetSimState     ctx (scId cmd) (scParams cmd)
-  "set_sim_auto_tick"    -> HSimulation.handleSetSimAutoTick  ctx (scId cmd) (scParams cmd)
-  "sim_tick"             -> HSimulation.handleSimTick         ctx (scId cmd) (scParams cmd)
+    -- Pipeline stage control
+  , ("get_pipeline", commandHandler HPipeline.handleGetPipeline)
+  , ("set_stage_enabled", commandHandler HPipeline.handleSetStageEnabled)
 
-  -- Config summary
-  "get_config_summary"   -> HSliders.handleGetConfigSummary   ctx (scId cmd) (scParams cmd)
+    -- Plugin management
+  , ("list_plugins", commandHandler HPlugin.handleListPlugins)
+  , ("set_plugin_enabled", commandHandler HPlugin.handleSetPluginEnabled)
+  , ("set_plugin_param", commandHandler HPlugin.handleSetPluginParam)
 
-  -- Hex search and terrain export
-  "find_hexes"           -> HQuery.handleFindHexes            ctx (scId cmd) (scParams cmd)
-  "export_terrain_data"  -> HQuery.handleExportTerrainData    ctx (scId cmd) (scParams cmd)
+    -- Simulation control
+  , ("get_sim_state", commandHandler HSimulation.handleGetSimState)
+  , ("set_sim_auto_tick", commandHandler HSimulation.handleSetSimAutoTick)
+  , ("sim_tick", commandHandler HSimulation.handleSimTick)
 
-  -- Preset management
-  "list_presets"         -> HPresets.handleListPresets         ctx (scId cmd) (scParams cmd)
-  "save_preset"          -> HPresets.handleSavePreset         ctx (scId cmd) (scParams cmd)
-  "load_preset"          -> HPresets.handleLoadPreset         ctx (scId cmd) (scParams cmd)
+    -- Config summary
+  , ("get_config_summary", commandHandler HSliders.handleGetConfigSummary)
 
-  -- Screenshot
-  "take_screenshot"      -> HScreenshot.handleTakeScreenshot  ctx (scId cmd) (scParams cmd)
+    -- Hex search and terrain export
+  , ("find_hexes", commandHandler HQuery.handleFindHexes)
+  , ("export_terrain_data", commandHandler HQuery.handleExportTerrainData)
 
-  -- Data browser
-  "data_list_plugins"    -> HData.handleDataListPlugins     ctx (scId cmd) (scParams cmd)
-  "data_list_resources"  -> HData.handleDataListResources   ctx (scId cmd) (scParams cmd)
-  "data_list_records"    -> HData.handleDataListRecords     ctx (scId cmd) (scParams cmd)
-  "data_get_record"      -> HData.handleDataGetRecord       ctx (scId cmd) (scParams cmd)
-  "data_create_record"   -> HData.handleDataCreateRecord    ctx (scId cmd) (scParams cmd)
-  "data_update_record"   -> HData.handleDataUpdateRecord    ctx (scId cmd) (scParams cmd)
-  "data_delete_record"   -> HData.handleDataDeleteRecord    ctx (scId cmd) (scParams cmd)
-  "data_get_state"       -> HData.handleDataGetState        ctx (scId cmd) (scParams cmd)
+    -- Preset management
+  , ("list_presets", commandHandler HPresets.handleListPresets)
+  , ("save_preset", commandHandler HPresets.handleSavePreset)
+  , ("load_preset", commandHandler HPresets.handleLoadPreset)
 
-  -- Panel visibility & tab controls
-  "set_left_panel"       -> HPanels.handleSetLeftPanel        ctx (scId cmd) (scParams cmd)
-  "set_left_tab"         -> HPanels.handleSetLeftTab          ctx (scId cmd) (scParams cmd)
-  "toggle_config_panel"  -> HPanels.handleToggleConfigPanel   ctx (scId cmd) (scParams cmd)
-  "set_log_collapsed"    -> HPanels.handleSetLogCollapsed     ctx (scId cmd) (scParams cmd)
-  "set_log_level"        -> HPanels.handleSetLogLevel         ctx (scId cmd) (scParams cmd)
-  "get_ui_panels"        -> HPanels.handleGetUiPanels         ctx (scId cmd) (scParams cmd)
+    -- Screenshot
+  , ("take_screenshot", commandHandler HScreenshot.handleTakeScreenshot)
 
-  -- Viewport interaction
-  "viewport_scroll"      -> HViewport.handleViewportScroll    ctx (scId cmd) (scParams cmd)
-  "viewport_click"       -> HViewport.handleViewportClick     ctx (scId cmd) (scParams cmd)
-  "viewport_drag"        -> HViewport.handleViewportDrag      ctx (scId cmd) (scParams cmd)
-  "viewport_hover"       -> HViewport.handleViewportHover     ctx (scId cmd) (scParams cmd)
+    -- Data browser
+  , ("data_list_plugins", commandHandler HData.handleDataListPlugins)
+  , ("data_list_resources", commandHandler HData.handleDataListResources)
+  , ("data_list_records", commandHandler HData.handleDataListRecords)
+  , ("data_get_record", commandHandler HData.handleDataGetRecord)
+  , ("data_create_record", commandHandler HData.handleDataCreateRecord)
+  , ("data_update_record", commandHandler HData.handleDataUpdateRecord)
+  , ("data_delete_record", commandHandler HData.handleDataDeleteRecord)
+  , ("data_get_state", commandHandler HData.handleDataGetState)
 
-  -- Widget interaction
-  "click_widget"         -> HWidgets.handleClickWidget        ctx (scId cmd) (scParams cmd)
-  "list_widgets"         -> HWidgets.handleListWidgets        ctx (scId cmd) (scParams cmd)
-  "get_widget_state"     -> HWidgets.handleGetWidgetState     ctx (scId cmd) (scParams cmd)
+    -- Panel visibility & tab controls
+  , ("set_left_panel", commandHandler HPanels.handleSetLeftPanel)
+  , ("set_left_tab", commandHandler HPanels.handleSetLeftTab)
+  , ("toggle_config_panel", commandHandler HPanels.handleToggleConfigPanel)
+  , ("set_log_collapsed", commandHandler HPanels.handleSetLogCollapsed)
+  , ("set_log_level", commandHandler HPanels.handleSetLogLevel)
+  , ("get_ui_panels", commandHandler HPanels.handleGetUiPanels)
 
-  -- Dialog and text input
-  "get_dialog_state"     -> HInput.handleGetDialogState       ctx (scId cmd) (scParams cmd)
-  "set_dialog_text"      -> HInput.handleSetDialogText        ctx (scId cmd) (scParams cmd)
-  "dialog_confirm"       -> HInput.handleDialogConfirm        ctx (scId cmd) (scParams cmd)
-  "dialog_cancel"        -> HInput.handleDialogCancel         ctx (scId cmd) (scParams cmd)
-  "send_key"             -> HInput.handleSendKey              ctx (scId cmd) (scParams cmd)
+    -- Viewport interaction
+  , ("viewport_scroll", commandHandler HViewport.handleViewportScroll)
+  , ("viewport_click", commandHandler HViewport.handleViewportClick)
+  , ("viewport_drag", commandHandler HViewport.handleViewportDrag)
+  , ("viewport_hover", commandHandler HViewport.handleViewportHover)
 
-  -- Unknown command
-  other              -> pure (errResponse (scId cmd) ("unknown command: " <> other))
+    -- Widget interaction
+  , ("click_widget", commandHandler HWidgets.handleClickWidget)
+  , ("list_widgets", commandHandler HWidgets.handleListWidgets)
+  , ("get_widget_state", commandHandler HWidgets.handleGetWidgetState)
+
+    -- Dialog and text input
+  , ("get_dialog_state", commandHandler HInput.handleGetDialogState)
+  , ("set_dialog_text", commandHandler HInput.handleSetDialogText)
+  , ("dialog_confirm", commandHandler HInput.handleDialogConfirm)
+  , ("dialog_cancel", commandHandler HInput.handleDialogCancel)
+  , ("send_key", commandHandler HInput.handleSendKey)
+  ]
+
+-- | Command methods supported by the dispatch table.
+dispatchCommandMethods :: [Text]
+dispatchCommandMethods = map fst dispatchCommandHandlers
