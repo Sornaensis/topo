@@ -9,7 +9,10 @@
 -- HTTP call through the same behaviour boundary.
 module Seer.Service.AppService
   ( AppService(..)
+  , AppServiceOperation(..)
   , appServiceGroups
+  , appServiceOperations
+  , appServiceHandlersByMethod
   , appServiceOperationSpecs
   , appServiceOperationMethods
     -- * Focused services
@@ -62,6 +65,12 @@ data AppService = AppService
   , appUi :: !UiService
   }
 
+-- | A concrete AppService operation paired with its stable metadata.
+data AppServiceOperation = AppServiceOperation
+  { appServiceOperationSpec :: !ServiceOperationSpec
+  , appServiceOperationHandler :: !ServiceHandler
+  }
+
 -- | Focused service groups in the order used by diagnostics/docs/tests.
 appServiceGroups :: [ServiceGroupSpec]
 appServiceGroups =
@@ -84,3 +93,143 @@ appServiceOperationSpecs = concatMap serviceGroupOperations appServiceGroups
 
 appServiceOperationMethods :: [Text]
 appServiceOperationMethods = serviceOperationMethods appServiceOperationSpecs
+
+-- | Concrete operations in the same order as 'appServiceOperationSpecs'.
+appServiceOperations :: AppService -> [AppServiceOperation]
+appServiceOperations app = concat
+  [ zipOperations stateServiceOperationSpecs
+      [ stateGetState stateSvc
+      , stateGetViewModes stateSvc
+      , stateGetUiState stateSvc
+      ]
+  , zipOperations configServiceOperationSpecs
+      [ configGetSliders configSvc
+      , configGetSlider configSvc
+      , configSetSlider configSvc
+      , configSetSliders configSvc
+      , configResetSliders configSvc
+      , configGetSummary configSvc
+      , configGetEnums configSvc
+      , configListPresets configSvc
+      , configSavePreset configSvc
+      , configLoadPreset configSvc
+      ]
+  , zipOperations worldServiceOperationSpecs
+      [ worldGenerate worldSvc
+      , worldGetMeta worldSvc
+      , worldGetGenerationStatus worldSvc
+      , worldList worldSvc
+      , worldSave worldSvc
+      , worldLoad worldSvc
+      , worldSetName worldSvc
+      ]
+  , zipOperations terrainServiceOperationSpecs
+      [ terrainGetHex terrainSvc
+      , terrainGetChunks terrainSvc
+      , terrainGetChunkSummary terrainSvc
+      , terrainGetStats terrainSvc
+      , terrainGetOverlays terrainSvc
+      , terrainFindHexes terrainSvc
+      , terrainExportData terrainSvc
+      ]
+  , zipOperations editorServiceOperationSpecs
+      [ editorToggle editorSvc
+      , editorSetTool editorSvc
+      , editorSetBrush editorSvc
+      , editorBrushStroke editorSvc
+      , editorBrushLine editorSvc
+      , editorSetBiome editorSvc
+      , editorSetForm editorSvc
+      , editorSetHardness editorSvc
+      , editorUndo editorSvc
+      , editorRedo editorSvc
+      , editorGetState editorSvc
+      ]
+  , zipOperations pipelineServiceOperationSpecs
+      [ pipelineGet pipelineSvc
+      , pipelineSetStageEnabled pipelineSvc
+      ]
+  , zipOperations pluginServiceOperationSpecs
+      [ pluginList pluginSvc
+      , pluginSetEnabled pluginSvc
+      , pluginSetParam pluginSvc
+      ]
+  , zipOperations dataResourceServiceOperationSpecs
+      [ dataListPlugins dataSvc
+      , dataListResources dataSvc
+      , dataListRecords dataSvc
+      , dataGetRecord dataSvc
+      , dataCreateRecord dataSvc
+      , dataUpdateRecord dataSvc
+      , dataDeleteRecord dataSvc
+      , dataGetState dataSvc
+      ]
+  , zipOperations simulationServiceOperationSpecs
+      [ simulationGetState simulationSvc
+      , simulationSetAutoTick simulationSvc
+      , simulationTick simulationSvc
+      ]
+  , zipOperations logServiceOperationSpecs
+      [ logGet logSvc
+      ]
+  , zipOperations screenshotServiceOperationSpecs
+      [ screenshotTake screenshotSvc
+      ]
+  , zipOperations uiServiceOperationSpecs
+      [ uiSetSeed uiSvc
+      , uiSetViewMode uiSvc
+      , uiSetConfigTab uiSvc
+      , uiSelectHex uiSvc
+      , uiSetOverlay uiSvc
+      , uiListOverlayFields uiSvc
+      , uiCycleOverlay uiSvc
+      , uiCycleOverlayField uiSvc
+      , uiSetCamera uiSvc
+      , uiGetCamera uiSvc
+      , uiZoomToChunk uiSvc
+      , uiSetLeftPanel uiSvc
+      , uiSetLeftTab uiSvc
+      , uiToggleConfigPanel uiSvc
+      , uiSetLogCollapsed uiSvc
+      , uiSetLogLevel uiSvc
+      , uiGetPanels uiSvc
+      , uiViewportScroll uiSvc
+      , uiViewportClick uiSvc
+      , uiViewportDrag uiSvc
+      , uiViewportHover uiSvc
+      , uiClickWidget uiSvc
+      , uiListWidgets uiSvc
+      , uiGetWidgetState uiSvc
+      , uiGetDialogState uiSvc
+      , uiSetDialogText uiSvc
+      , uiDialogConfirm uiSvc
+      , uiDialogCancel uiSvc
+      , uiSendKey uiSvc
+      ]
+  ]
+  where
+    stateSvc = appState app
+    configSvc = appConfig app
+    worldSvc = appWorld app
+    terrainSvc = appTerrain app
+    editorSvc = appEditor app
+    pipelineSvc = appPipeline app
+    pluginSvc = appPlugins app
+    dataSvc = appDataResources app
+    simulationSvc = appSimulation app
+    logSvc = appLogs app
+    screenshotSvc = appScreenshots app
+    uiSvc = appUi app
+
+appServiceHandlersByMethod :: AppService -> [(Text, ServiceHandler)]
+appServiceHandlersByMethod =
+  map (\op -> ( serviceOperationMethod (appServiceOperationSpec op)
+              , appServiceOperationHandler op
+              )
+      )
+    . appServiceOperations
+
+zipOperations :: [ServiceOperationSpec] -> [ServiceHandler] -> [AppServiceOperation]
+zipOperations specs handlers
+  | length specs == length handlers = zipWith AppServiceOperation specs handlers
+  | otherwise = error "AppService operation metadata/handler count mismatch"

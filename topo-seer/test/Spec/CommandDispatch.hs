@@ -17,7 +17,7 @@ import Data.Aeson (Value(..), object, (.=), Key)
 import qualified Data.Aeson.KeyMap as KM
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
-import Data.IORef (writeIORef)
+import Data.IORef (newIORef, writeIORef)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Hyperspace.Actor (ActorSystem, getSingleton, newActorSystem, replyTo, shutdownActorSystem)
@@ -42,10 +42,11 @@ import Actor.UI
 import Actor.UiActions (ActorHandles(..), uiActionsActorDef)
 import Actor.UiActions.Command (UiAction(..), UiActionRequest(..), runUiAction)
 
-import Data.IORef (newIORef)
+import Seer.Command.AppServiceAdapter (commandAppService, runAppServiceOperation)
 import Seer.Command.Dispatch (CommandContext(..), dispatchCommand)
 import Seer.Editor.History (emptyHistory)
 import Seer.Screenshot (ScreenshotRequest(..), newScreenshotRequestRef)
+import Seer.Service.Types (ServiceError(..), ServiceResponse(..), ServiceResult)
 import Topo (WorldConfig(..), chunkIdFromCoord, emptyTerrainChunk)
 import Topo.Command.Types (SeerCommand(..), SeerResponse(..))
 import Topo.Overlay (emptyOverlayStore)
@@ -53,6 +54,39 @@ import Topo.Types (ChunkCoord(..), ChunkId(..))
 
 spec :: Spec
 spec = describe "CommandDispatch" $ do
+
+  describe "AppService adapter envelope" $ do
+    it "preserves request ids for success, handler errors, and unknown commands" $ withCtx $ \ctx -> do
+      ok <- dispatchWithId ctx 42 "get_state" Null
+      srId ok `shouldBe` 42
+      srSuccess ok `shouldBe` True
+
+      handlerErr <- dispatchWithId ctx 43 "get_slider" (object ["name" .= ("NoSuchSlider" :: String)])
+      srId handlerErr `shouldBe` 43
+      srSuccess handlerErr `shouldBe` False
+
+      unknown <- dispatchWithId ctx 44 "no_such_command" Null
+      srId unknown `shouldBe` 44
+      srSuccess unknown `shouldBe` False
+
+    it "exposes representative successful operations as direct service handlers" $ withCtx $ \ctx -> do
+      stateResult <- runService ctx "get_state" Null
+      case stateResult of
+        Right (ServiceResponse body) -> do
+          lookupKey "seed" body `shouldSatisfy` (/= Nothing)
+          lookupKey "view_mode" body `shouldSatisfy` (/= Nothing)
+        Left err -> expectationFailure ("expected get_state service success, got: " <> show err)
+
+      seedResult <- runService ctx "set_seed" (object ["seed" .= (987 :: Int)])
+      case seedResult of
+        Right (ServiceResponse body) -> lookupKey "seed" body `shouldBe` Just (Number 987)
+        Left err -> expectationFailure ("expected set_seed service success, got: " <> show err)
+
+    it "preserves command validation failures as service errors" $ withCtx $ \ctx -> do
+      result <- runService ctx "get_slider" (object ["name" .= ("NoSuchSlider" :: String)])
+      case result of
+        Left (ServiceInvalidRequest msg) -> msg `shouldSatisfy` (not . Text.null)
+        other -> expectationFailure ("expected ServiceInvalidRequest, got: " <> show other)
 
   -- -------------------------------------------------------------------
   -- get_state
@@ -690,6 +724,16 @@ dispatch ctx method params = dispatchCommand ctx SeerCommand
   , scMethod = method
   , scParams = params
   }
+
+dispatchWithId :: CommandContext -> Int -> Text -> Value -> IO SeerResponse
+dispatchWithId ctx reqId method params = dispatchCommand ctx SeerCommand
+  { scId     = reqId
+  , scMethod = method
+  , scParams = params
+  }
+
+runService :: CommandContext -> Text -> Value -> IO ServiceResult
+runService ctx = runAppServiceOperation commandAppService ctx
 
 -- | Look up a key in a JSON object.
 lookupKey :: Key -> Value -> Maybe Value

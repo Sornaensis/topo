@@ -6,6 +6,7 @@
 module Seer.Command.Context
   ( CommandContext(..)
   , commandServiceContext
+  , serviceCommandContext
   ) where
 
 import Actor.Log (LogSnapshotRef)
@@ -37,4 +38,17 @@ commandServiceContext ctx = ServiceContext
   , svcUiActionsHandle = ccUiActionsHandle ctx
   , svcScreenshotRef = ccScreenshotRef ctx
   , svcLogSnapshotRef = ccLogSnapshotRef ctx
+  }
+
+-- | Adapt service-layer context back into the legacy command-handler context.
+--
+-- This keeps the temporary command-backed AppService implementation isolated
+-- while focused service implementations are extracted from command handlers.
+serviceCommandContext :: ServiceContext -> CommandContext
+serviceCommandContext ctx = CommandContext
+  { ccActorHandles = svcActorHandles ctx
+  , ccUiSnapshotRef = svcUiSnapshotRef ctx
+  , ccUiActionsHandle = svcUiActionsHandle ctx
+  , ccScreenshotRef = svcScreenshotRef ctx
+  , ccLogSnapshotRef = svcLogSnapshotRef ctx
   }

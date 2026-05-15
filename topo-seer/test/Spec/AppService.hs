@@ -6,6 +6,7 @@ import Data.List (nub, sort)
 import Data.Text (Text)
 import Test.Hspec
 
+import Seer.Command.AppServiceAdapter (appServiceCommandMethods, commandAppService)
 import Seer.Command.Dispatch (dispatchCommandMethods)
 import Seer.Service.AppService
   ( appServiceGroups
@@ -26,6 +27,9 @@ spec = describe "AppService surface" $ do
 
   it "is the method catalog exposed by command dispatch" $
     sort dispatchCommandMethods `shouldBe` sort appServiceOperationMethods
+
+  it "has command-backed handlers for every AppService operation" $
+    appServiceCommandMethods commandAppService `shouldBe` appServiceOperationMethods
 
   it "defines stable operation names exactly once" $ do
     let operationNames = map serviceOperationName appServiceOperationSpecs

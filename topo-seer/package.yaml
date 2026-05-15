@@ -53,6 +53,7 @@ library:
     - Seer.Input
     - Seer.Input.Actions
     - Seer.Input.Events
+    - Seer.Command.AppServiceAdapter
     - Seer.Command.Channel
     - Seer.Command.Dispatch
     - Seer.System
