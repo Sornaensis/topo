@@ -3,11 +3,27 @@
 
 module Seer.Service.UI
   ( UiService(..)
+  , UiSetOverlayRequest(..)
+  , UiSetOverlayResponse(..)
+  , UiListOverlayFieldsRequest(..)
+  , UiListOverlayFieldsResponse(..)
+  , UiOverlayFieldSummary(..)
+  , UiCycleOverlayRequest(..)
+  , UiCycleOverlayResponse(..)
+  , UiCycleOverlayFieldRequest(..)
+  , UiCycleOverlayFieldResponse(..)
+  , uiSetOverlayOperation
+  , uiListOverlayFieldsOperation
+  , uiCycleOverlayOperation
+  , uiCycleOverlayFieldOperation
   , uiServiceGroup
   , uiServiceOperationSpecs
   ) where
 
+import Data.Text (Text)
+
 import Seer.Service.Types
+import Topo.Overlay.Schema (OverlayFieldType)
 
 data UiService = UiService
   { uiSetSeed :: !ServiceHandler
@@ -41,6 +57,52 @@ data UiService = UiService
   , uiSendKey :: !ServiceHandler
   }
 
+data UiSetOverlayRequest = UiSetOverlayRequest
+  { uiSetOverlayName :: !Text
+  , uiSetOverlayFieldIndex :: !(Maybe Int)
+  } deriving (Eq, Show)
+
+data UiSetOverlayResponse = UiSetOverlayResponse
+  { uiSelectedOverlayName :: !Text
+  , uiSelectedOverlayFieldIndex :: !Int
+  , uiSelectedOverlayViewMode :: !Text
+  } deriving (Eq, Show)
+
+newtype UiListOverlayFieldsRequest = UiListOverlayFieldsRequest
+  { uiListOverlayFieldsName :: Maybe Text
+  } deriving (Eq, Show)
+
+data UiOverlayFieldSummary = UiOverlayFieldSummary
+  { uiOverlayFieldIndex :: !Int
+  , uiOverlayFieldName :: !Text
+  , uiOverlayFieldType :: !OverlayFieldType
+  } deriving (Eq, Show)
+
+data UiListOverlayFieldsResponse = UiListOverlayFieldsResponse
+  { uiOverlayFieldCount :: !Int
+  , uiOverlayFields :: ![UiOverlayFieldSummary]
+  } deriving (Eq, Show)
+
+newtype UiCycleOverlayRequest = UiCycleOverlayRequest
+  { uiCycleOverlayDirection :: Int
+  } deriving (Eq, Show)
+
+data UiCycleOverlayResponse = UiCycleOverlayResponse
+  { uiCycleOverlaySelectedName :: !(Maybe Text)
+  , uiCycleOverlayViewMode :: !Text
+  } deriving (Eq, Show)
+
+newtype UiCycleOverlayFieldRequest = UiCycleOverlayFieldRequest
+  { uiCycleOverlayFieldDirection :: Int
+  } deriving (Eq, Show)
+
+data UiCycleOverlayFieldResponse = UiCycleOverlayFieldResponse
+  { uiCycleOverlayFieldOverlay :: !Text
+  , uiCycleOverlayFieldIndex :: !Int
+  , uiCycleOverlayFieldName :: !Text
+  , uiCycleOverlayFieldType :: !OverlayFieldType
+  } deriving (Eq, Show)
+
 uiServiceGroup :: ServiceGroupSpec
 uiServiceGroup = ServiceGroupSpec "ui" uiServiceOperationSpecs
 
@@ -50,10 +112,10 @@ uiServiceOperationSpecs =
   , operationSpec "ui.viewMode.set" "set_view_mode" "Set active terrain view mode."
   , operationSpec "ui.configTab.set" "set_config_tab" "Set active config tab."
   , operationSpec "ui.hex.select" "select_hex" "Select one hex in the viewport."
-  , operationSpec "ui.overlay.set" "set_overlay" "Select active overlay."
-  , operationSpec "ui.overlay.fields" "list_overlay_fields" "List fields for the active overlay."
-  , operationSpec "ui.overlay.cycle" "cycle_overlay" "Cycle active overlay."
-  , operationSpec "ui.overlay.field.cycle" "cycle_overlay_field" "Cycle active overlay field."
+  , typedServiceOperationSpec uiSetOverlayOperation
+  , typedServiceOperationSpec uiListOverlayFieldsOperation
+  , typedServiceOperationSpec uiCycleOverlayOperation
+  , typedServiceOperationSpec uiCycleOverlayFieldOperation
   , operationSpec "ui.camera.set" "set_camera" "Set viewport camera."
   , operationSpec "ui.camera.get" "get_camera" "Read viewport camera."
   , operationSpec "ui.camera.zoomToChunk" "zoom_to_chunk" "Move camera to a chunk."
@@ -76,3 +138,19 @@ uiServiceOperationSpecs =
   , operationSpec "ui.dialog.cancel" "dialog_cancel" "Cancel active dialog."
   , operationSpec "ui.keyboard.send" "send_key" "Send a keyboard event to UI input handling."
   ]
+
+uiSetOverlayOperation :: TypedServiceOperation UiSetOverlayRequest UiSetOverlayResponse
+uiSetOverlayOperation = typedOperation $
+  operationSpec "ui.overlay.set" "set_overlay" "Select active overlay."
+
+uiListOverlayFieldsOperation :: TypedServiceOperation UiListOverlayFieldsRequest UiListOverlayFieldsResponse
+uiListOverlayFieldsOperation = typedOperation $
+  operationSpec "ui.overlay.fields" "list_overlay_fields" "List fields for the active overlay."
+
+uiCycleOverlayOperation :: TypedServiceOperation UiCycleOverlayRequest UiCycleOverlayResponse
+uiCycleOverlayOperation = typedOperation $
+  operationSpec "ui.overlay.cycle" "cycle_overlay" "Cycle active overlay."
+
+uiCycleOverlayFieldOperation :: TypedServiceOperation UiCycleOverlayFieldRequest UiCycleOverlayFieldResponse
+uiCycleOverlayFieldOperation = typedOperation $
+  operationSpec "ui.overlay.field.cycle" "cycle_overlay_field" "Cycle active overlay field."

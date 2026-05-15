@@ -2,11 +2,14 @@
 
 module Spec.AppService (spec) where
 
+import Data.Aeson (Value(..))
 import Data.List (nub, sort)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import Test.Hspec
+import Topo.Overlay.Schema (OverlayFieldType(..))
 import Topo.Simulation (SimNodeId(..))
+import Topo.Types (ChunkId(..))
 
 import Seer.Command.AppServiceAdapter (appServiceCommandMethods, commandAppService)
 import Seer.Command.Dispatch (dispatchCommandMethods)
@@ -15,9 +18,19 @@ import Seer.Service.AppService
   , appServiceOperationMethods
   , appServiceOperationSpecs
   , DataResourceStateResponse(..)
+  , EditorActionQueuedResponse(..)
+  , EditorSetBrushRequest(..)
+  , EditorStrokeQueuedResponse(..)
   , PluginSummary(..)
   , SimulationDagNodeSummary(..)
   , SimulationDagResponse(..)
+  , TerrainExportResponse(..)
+  , TerrainFilterOp(..)
+  , TerrainFindFilter(..)
+  , TerrainFindHexesRequest(..)
+  , UiListOverlayFieldsResponse(..)
+  , UiOverlayFieldSummary(..)
+  , WorldMetaResponse(..)
   , dataResourceCreateRecordOperation
   , dataResourceDeleteRecordOperation
   , dataResourceGetRecordOperation
@@ -26,6 +39,17 @@ import Seer.Service.AppService
   , dataResourceListResourcesOperation
   , dataResourceStateOperation
   , dataResourceUpdateRecordOperation
+  , editorBrushLineOperation
+  , editorBrushStrokeOperation
+  , editorGetStateOperation
+  , editorRedoOperation
+  , editorSetBiomeOperation
+  , editorSetBrushOperation
+  , editorSetFormOperation
+  , editorSetHardnessOperation
+  , editorSetToolOperation
+  , editorToggleOperation
+  , editorUndoOperation
   , pipelineGetOperation
   , pipelineSetStageEnabledOperation
   , pluginListOperation
@@ -35,6 +59,24 @@ import Seer.Service.AppService
   , simulationSetAutoTickOperation
   , simulationStateOperation
   , simulationTickOperation
+  , terrainExportDataOperation
+  , terrainFindHexesOperation
+  , terrainGetChunkSummaryOperation
+  , terrainGetChunksOperation
+  , terrainGetHexOperation
+  , terrainGetOverlaysOperation
+  , terrainGetStatsOperation
+  , uiCycleOverlayFieldOperation
+  , uiCycleOverlayOperation
+  , uiListOverlayFieldsOperation
+  , uiSetOverlayOperation
+  , worldGenerateOperation
+  , worldGetGenerationStatusOperation
+  , worldGetMetaOperation
+  , worldListOperation
+  , worldLoadOperation
+  , worldSaveOperation
+  , worldSetNameOperation
   )
 import Seer.Service.Types
   ( ServiceGroupSpec(..)
@@ -63,9 +105,34 @@ spec = describe "AppService surface" $ do
     map (\group -> (serviceGroupName group, groupOperationMethods group)) appServiceGroups
       `shouldBe` expectedServiceGroups
 
-  it "defines typed operation contracts for pipeline/plugin/data/simulation services" $
+  it "defines typed operation contracts for M2 service groups" $
     typedOperationMethods `shouldBe`
-      [ "get_pipeline"
+      [ "generate"
+      , "get_world_meta"
+      , "get_generation_status"
+      , "list_worlds"
+      , "save_world"
+      , "load_world"
+      , "set_world_name"
+      , "get_hex"
+      , "get_chunks"
+      , "get_chunk_summary"
+      , "get_terrain_stats"
+      , "get_overlays"
+      , "find_hexes"
+      , "export_terrain_data"
+      , "editor_toggle"
+      , "editor_set_tool"
+      , "editor_set_brush"
+      , "editor_brush_stroke"
+      , "editor_brush_line"
+      , "editor_set_biome"
+      , "editor_set_form"
+      , "editor_set_hardness"
+      , "editor_undo"
+      , "editor_redo"
+      , "editor_get_state"
+      , "get_pipeline"
       , "set_stage_enabled"
       , "list_plugins"
       , "set_plugin_enabled"
@@ -82,7 +149,21 @@ spec = describe "AppService surface" $ do
       , "set_sim_auto_tick"
       , "sim_tick"
       , "get_sim_dag"
+      , "set_overlay"
+      , "list_overlay_fields"
+      , "cycle_overlay"
+      , "cycle_overlay_field"
       ]
+
+  it "keeps world, terrain, editor, and overlay contracts typed" $ do
+    worldMetaChunkIds worldMetaContract `shouldBe` [ChunkId 0]
+    map terrainFindFilterOp (terrainFindFilters terrainFindContract) `shouldBe` [TerrainOpEq]
+    terrainFindLimit terrainFindContract `shouldBe` Just 25
+    editorSetBrushStrength editorBrushContract `shouldBe` Just 0.4
+    editorStrokeQueuedCount editorStrokeQueuedContract `shouldBe` 3
+    editorActionQueuedStatus editorUndoQueuedContract `shouldBe` "queued"
+    terrainExportedFields terrainExportContract `shouldBe` ["elevation", "moisture"]
+    map uiOverlayFieldType (uiOverlayFields uiOverlayFieldsContract) `shouldBe` [OFFloat]
 
   it "keeps command-visible typed contract fields complete" $ do
     pluginSummaryStatus pluginSummaryContract `shouldBe` "connected"
@@ -100,7 +181,32 @@ spec = describe "AppService surface" $ do
 
 typedOperationMethods :: [Text]
 typedOperationMethods =
-  [ typedOperationMethod pipelineGetOperation
+  [ typedOperationMethod worldGenerateOperation
+  , typedOperationMethod worldGetMetaOperation
+  , typedOperationMethod worldGetGenerationStatusOperation
+  , typedOperationMethod worldListOperation
+  , typedOperationMethod worldSaveOperation
+  , typedOperationMethod worldLoadOperation
+  , typedOperationMethod worldSetNameOperation
+  , typedOperationMethod terrainGetHexOperation
+  , typedOperationMethod terrainGetChunksOperation
+  , typedOperationMethod terrainGetChunkSummaryOperation
+  , typedOperationMethod terrainGetStatsOperation
+  , typedOperationMethod terrainGetOverlaysOperation
+  , typedOperationMethod terrainFindHexesOperation
+  , typedOperationMethod terrainExportDataOperation
+  , typedOperationMethod editorToggleOperation
+  , typedOperationMethod editorSetToolOperation
+  , typedOperationMethod editorSetBrushOperation
+  , typedOperationMethod editorBrushStrokeOperation
+  , typedOperationMethod editorBrushLineOperation
+  , typedOperationMethod editorSetBiomeOperation
+  , typedOperationMethod editorSetFormOperation
+  , typedOperationMethod editorSetHardnessOperation
+  , typedOperationMethod editorUndoOperation
+  , typedOperationMethod editorRedoOperation
+  , typedOperationMethod editorGetStateOperation
+  , typedOperationMethod pipelineGetOperation
   , typedOperationMethod pipelineSetStageEnabledOperation
   , typedOperationMethod pluginListOperation
   , typedOperationMethod pluginSetEnabledOperation
@@ -117,10 +223,79 @@ typedOperationMethods =
   , typedOperationMethod simulationSetAutoTickOperation
   , typedOperationMethod simulationTickOperation
   , typedOperationMethod simulationDagOperation
+  , typedOperationMethod uiSetOverlayOperation
+  , typedOperationMethod uiListOverlayFieldsOperation
+  , typedOperationMethod uiCycleOverlayOperation
+  , typedOperationMethod uiCycleOverlayFieldOperation
   ]
 
 typedOperationMethod :: TypedServiceOperation request response -> Text
 typedOperationMethod = serviceOperationMethod . typedServiceOperationSpec
+
+worldMetaContract :: WorldMetaResponse
+worldMetaContract = WorldMetaResponse
+  { worldMetaSeed = 42
+  , worldMetaChunkSize = 64
+  , worldMetaTilesPerChunk = 4096
+  , worldMetaChunkCount = 1
+  , worldMetaTotalTiles = 4096
+  , worldMetaChunkIds = [ChunkId 0]
+  , worldMetaOverlayNames = ["weather"]
+  , worldMetaName = "demo"
+  , worldMetaGenerating = False
+  }
+
+terrainFindContract :: TerrainFindHexesRequest
+terrainFindContract = TerrainFindHexesRequest
+  { terrainFindFilters =
+      [ TerrainFindFilter
+          { terrainFindFilterField = "biome"
+          , terrainFindFilterOp = TerrainOpEq
+          , terrainFindFilterValue = String "forest"
+          }
+      ]
+  , terrainFindLimit = Just 25
+  }
+
+editorBrushContract :: EditorSetBrushRequest
+editorBrushContract = EditorSetBrushRequest
+  { editorSetBrushRadius = Just 3
+  , editorSetBrushStrength = Just 0.4
+  , editorSetBrushFalloff = Nothing
+  , editorSetBrushSmoothPasses = Just 2
+  , editorSetBrushNoiseFrequency = Nothing
+  , editorSetBrushErodePasses = Just 4
+  }
+
+editorStrokeQueuedContract :: EditorStrokeQueuedResponse
+editorStrokeQueuedContract = EditorStrokeQueuedResponse
+  { editorStrokeQueuedStatus = "queued"
+  , editorStrokeQueuedCount = 3
+  }
+
+editorUndoQueuedContract :: EditorActionQueuedResponse
+editorUndoQueuedContract = EditorActionQueuedResponse
+  { editorActionQueuedStatus = "queued"
+  }
+
+terrainExportContract :: TerrainExportResponse
+terrainExportContract = TerrainExportResponse
+  { terrainExportChunkCount = 0
+  , terrainExportedFields = ["elevation", "moisture"]
+  , terrainExportChunkData = Map.empty
+  }
+
+uiOverlayFieldsContract :: UiListOverlayFieldsResponse
+uiOverlayFieldsContract = UiListOverlayFieldsResponse
+  { uiOverlayFieldCount = 1
+  , uiOverlayFields =
+      [ UiOverlayFieldSummary
+          { uiOverlayFieldIndex = 0
+          , uiOverlayFieldName = "rainfall"
+          , uiOverlayFieldType = OFFloat
+          }
+      ]
+  }
 
 pluginSummaryContract :: PluginSummary
 pluginSummaryContract = PluginSummary
