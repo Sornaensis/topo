@@ -319,11 +319,18 @@ performHandshake conn worldPath = do
     Right env -> case envType env of
       MsgHandshakeAck ->
         case Aeson.fromJSON (envPayload env) of
-          Aeson.Success ack -> pure (Right conn
-            { rpcProtocolVersion = haProtocolVersion ack
-            , rpcDataDirectory   = fmap Text.unpack (haDataDirectory ack)
-            , rpcResources       = haResources ack
-            })
+          Aeson.Success ack
+            | haProtocolVersion ack /= currentProtocolVersion ->
+                pure (Left (RPCProtocolError
+                  ("plugin protocol version mismatch: host="
+                   <> Text.pack (show currentProtocolVersion)
+                   <> ", plugin="
+                   <> Text.pack (show (haProtocolVersion ack)))))
+            | otherwise -> pure (Right conn
+                { rpcProtocolVersion = haProtocolVersion ack
+                , rpcDataDirectory   = fmap Text.unpack (haDataDirectory ack)
+                , rpcResources       = haResources ack
+                })
           Aeson.Error err -> pure (Left (RPCProtocolError (Text.pack err)))
       MsgError ->
         case Aeson.fromJSON (envPayload env) of

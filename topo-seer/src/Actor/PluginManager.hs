@@ -50,6 +50,7 @@ module Actor.PluginManager
   , getPluginDataDirectories
   ) where
 
+import Control.Concurrent (forkFinally, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (SomeException, try)
 import Data.Aeson (Value(..))
 import qualified Data.Aeson as Aeson
@@ -85,6 +86,7 @@ import System.Process
   , proc
   , terminateProcess
   )
+import System.Timeout (timeout)
 
 import Topo.Pipeline (PipelineStage(..))
 import Topo.Pipeline.Stage (StageId(..))
@@ -471,21 +473,43 @@ connectLoadedPlugin lp = do
             }
         Right (transport, processHandle) -> do
           let conn = newRPCConnection (lpManifest lp) transport (lpParams lp)
-          hsResult <- performHandshake conn Nothing
+          hsResult <- performPluginHandshakeWithTimeout conn
           case hsResult of
-            Right conn' ->
+            Nothing -> do
+              closeTransport transport
+              safeTerminateProcess processHandle
+              pure lp
+                { lpStatus = PluginError "plugin handshake timed out"
+                , lpConnection = Nothing
+                , lpProcessHandle = Nothing
+                }
+            Just (Right conn') ->
               pure lp
                 { lpStatus = PluginConnected
                 , lpConnection = Just conn'
                 , lpProcessHandle = Just processHandle
                 }
-            Left _err ->
-              -- Handshake failed; fall back to unhandshaked connection
+            Just (Left err) -> do
+              closeTransport transport
+              safeTerminateProcess processHandle
               pure lp
-                { lpStatus = PluginConnected
-                , lpConnection = Just conn
-                , lpProcessHandle = Just processHandle
+                { lpStatus = PluginError err
+                , lpConnection = Nothing
+                , lpProcessHandle = Nothing
                 }
+
+pluginHandshakeTimeoutMicros :: Int
+pluginHandshakeTimeoutMicros = 1000000
+
+performPluginHandshakeWithTimeout :: RPCConnection -> IO (Maybe (Either Text RPCConnection))
+performPluginHandshakeWithTimeout conn = do
+  done <- newEmptyMVar
+  _ <- forkFinally (performHandshake conn Nothing) $ \result ->
+    putMVar done $ case result of
+      Left err -> Left (Text.pack (show (err :: SomeException)))
+      Right (Left rpcErr) -> Left (Text.pack (show rpcErr))
+      Right (Right conn') -> Right conn'
+  timeout pluginHandshakeTimeoutMicros (takeMVar done)
 
 resolvePluginExecutable :: FilePath -> Text -> IO (Maybe FilePath)
 resolvePluginExecutable pluginDir pluginName =

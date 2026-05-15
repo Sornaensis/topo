@@ -1,25 +1,30 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
-module Spec.PluginManager (spec) where
+module Spec.PluginManager (spec, runFixtureCli) where
 
-import Control.Exception (bracket)
 import Control.Concurrent (threadDelay)
+import Control.Exception (bracket)
+import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BSC
+import Data.Text (Text)
+import qualified Data.Text as Text
 import Hyperspace.Actor (getSingleton, newActorSystem, shutdownActorSystem)
 import System.Directory
-  ( copyFile
+  ( Permissions(..)
   , createDirectoryIfMissing
-  , doesDirectoryExist
-  , doesFileExist
-  , findExecutable
-  , getCurrentDirectory
   , getHomeDirectory
-  , listDirectory
+  , getPermissions
   , removePathForcibly
+  , setPermissions
   )
+import System.Environment (getArgs, getExecutablePath)
+import System.Exit (die, exitFailure)
 import System.FilePath ((</>))
 import System.Info (os)
-import System.Environment (lookupEnv)
+import System.IO (stdin, stdout)
 import Test.Hspec
 
 import Actor.PluginManager
@@ -34,6 +39,21 @@ import Actor.PluginManager
   , shutdownPlugins
   )
 import Topo.Overlay.Schema (OverlaySchema(..))
+import Topo.Pipeline (PipelineStage(..))
+import Topo.Plugin.RPC.Protocol
+  ( HandshakeAck(..)
+  , RPCEnvelope(..)
+  , RPCMessageType(..)
+  , currentProtocolVersion
+  , decodeMessage
+  , encodeMessage
+  )
+import Topo.Plugin.RPC.Transport
+  ( closeTransport
+  , connectPlugin
+  , recvMessage
+  , sendMessage
+  )
 
 spec :: Spec
 spec = describe "PluginManager" $ do
@@ -45,41 +65,73 @@ spec = describe "PluginManager" $ do
         schemas <- getPluginOverlaySchemas pluginManagerHandle
         map osName schemas `shouldSatisfy` elem "copilot_test_overlay"
 
-  it "launches plugin subprocesses and exposes generator stages after refresh" $ do
-    if os /= "mingw32"
-      then pendingWith "Windows-only subprocess fixture"
-      else withTestExecutablePluginDir testLaunchPluginName testLaunchManifestJSON testLaunchCmd $ do
-        bracket newActorSystem shutdownActorSystem $ \system -> do
-          pluginManagerHandle <- getSingleton system pluginManagerActorDef
-          discoverPlugins pluginManagerHandle
-          refreshManifests pluginManagerHandle
-          stages <- getPluginStages pluginManagerHandle
-          loaded <- getLoadedPlugins pluginManagerHandle
-          let launchPlugin = filter ((== "copilot-test-plugin-launch") . lpName) loaded
-          length stages `shouldSatisfy` (> 0)
-          map lpStatus launchPlugin `shouldSatisfy` elem PluginConnected
-          shutdownPlugins pluginManagerHandle
-          threadDelay 200000
+  it "launches plugin subprocesses and exposes generator stages cross-platform" $ do
+    withExecutablePluginDir testLaunchPluginName testLaunchManifestJSON "ok" $ do
+      bracket newActorSystem shutdownActorSystem $ \system -> do
+        pluginManagerHandle <- getSingleton system pluginManagerActorDef
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        stages <- getPluginStages pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        map stageName stages `shouldSatisfy` elem (Text.pack testLaunchPluginName)
+        pluginStatuses testLaunchPluginName loaded `shouldSatisfy` elem PluginConnected
+        shutdownPlugins pluginManagerHandle
+        threadDelay 200000
+        loadedAfterShutdown <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses testLaunchPluginName loadedAfterShutdown `shouldSatisfy` elem PluginDisconnected
 
-  it "launches a real topo-plugin-example executable when available" $ do
-    if os /= "mingw32"
-      then pendingWith "Windows-only subprocess fixture"
-      else do
-        mExampleExe <- findTopoPluginExampleExecutable
-        case mExampleExe of
-          Nothing -> pendingWith "topo-plugin-example executable not found (set TOPO_PLUGIN_EXAMPLE_EXE to enable)"
-          Just exampleExe -> withRealExecutablePluginDir realPluginName realPluginManifestJSON exampleExe $ do
-            bracket newActorSystem shutdownActorSystem $ \system -> do
-              pluginManagerHandle <- getSingleton system pluginManagerActorDef
-              discoverPlugins pluginManagerHandle
-              refreshManifests pluginManagerHandle
-              stages <- getPluginStages pluginManagerHandle
-              loaded <- getLoadedPlugins pluginManagerHandle
-              let launchPlugin = filter ((== "terrain-roughen") . lpName) loaded
-              length stages `shouldSatisfy` (> 0)
-              map lpStatus launchPlugin `shouldSatisfy` elem PluginConnected
-              shutdownPlugins pluginManagerHandle
-              threadDelay 200000
+  it "reports a protocol-version mismatch as a plugin error" $ do
+    withExecutablePluginDir mismatchPluginName mismatchManifestJSON "protocol-mismatch" $ do
+      bracket newActorSystem shutdownActorSystem $ \system -> do
+        pluginManagerHandle <- getSingleton system pluginManagerActorDef
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses mismatchPluginName loaded `shouldSatisfy` anyPluginErrorContaining "protocol version mismatch"
+
+  it "reports malformed handshake JSON as a plugin error" $ do
+    withExecutablePluginDir malformedPluginName malformedManifestJSON "malformed-json" $ do
+      bracket newActorSystem shutdownActorSystem $ \system -> do
+        pluginManagerHandle <- getSingleton system pluginManagerActorDef
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses malformedPluginName loaded `shouldSatisfy` anyPluginErrorContaining "RPCProtocolError"
+
+  it "reports early plugin exit during startup as a plugin error" $ do
+    withExecutablePluginDir crashPluginName crashManifestJSON "early-exit" $ do
+      bracket newActorSystem shutdownActorSystem $ \system -> do
+        pluginManagerHandle <- getSingleton system pluginManagerActorDef
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses crashPluginName loaded `shouldSatisfy` anyPluginError
+
+  it "reports handshake timeouts as plugin errors" $ do
+    withExecutablePluginDir slowPluginName slowManifestJSON "slow" $ do
+      bracket newActorSystem shutdownActorSystem $ \system -> do
+        pluginManagerHandle <- getSingleton system pluginManagerActorDef
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses slowPluginName loaded `shouldSatisfy` anyPluginErrorContaining "timed out"
+
+pluginStatuses :: String -> [LoadedPlugin] -> [PluginStatus]
+pluginStatuses name loaded =
+  [ lpStatus plugin
+  | plugin <- loaded
+  , lpName plugin == Text.pack name
+  ]
+
+anyPluginError :: [PluginStatus] -> Bool
+anyPluginError = any $ \case
+  PluginError _ -> True
+  _ -> False
+
+anyPluginErrorContaining :: Text -> [PluginStatus] -> Bool
+anyPluginErrorContaining needle = any $ \case
+  PluginError msg -> needle `Text.isInfixOf` msg
+  _ -> False
 
 withTestPluginDir :: String -> BS.ByteString -> BS.ByteString -> IO a -> IO a
 withTestPluginDir pluginName manifestJSON schemaJSON action =
@@ -95,8 +147,8 @@ withTestPluginDir pluginName manifestJSON schemaJSON action =
 
     teardown = removePathForcibly
 
-withTestExecutablePluginDir :: String -> BS.ByteString -> BS.ByteString -> IO a -> IO a
-withTestExecutablePluginDir pluginName manifestJSON executableScript action =
+withExecutablePluginDir :: String -> BS.ByteString -> String -> IO a -> IO a
+withExecutablePluginDir pluginName manifestJSON fixtureMode action =
   bracket setup teardown (const action)
   where
     setup = do
@@ -104,71 +156,98 @@ withTestExecutablePluginDir pluginName manifestJSON executableScript action =
       let pluginDir = home </> ".topo" </> "plugins" </> pluginName
       createDirectoryIfMissing True pluginDir
       BS.writeFile (pluginDir </> "manifest.json") manifestJSON
-      BS.writeFile (pluginDir </> (pluginName <> ".cmd")) executableScript
+      writePluginWrapper pluginDir pluginName fixtureMode
       pure pluginDir
 
     teardown = removePathForcibly
 
-withRealExecutablePluginDir :: String -> BS.ByteString -> FilePath -> IO a -> IO a
-withRealExecutablePluginDir pluginName manifestJSON executablePath action =
-  bracket setup teardown (const action)
+writePluginWrapper :: FilePath -> String -> String -> IO ()
+writePluginWrapper pluginDir pluginName fixtureMode = do
+  testExe <- getExecutablePath
+  if os == "mingw32"
+    then do
+      let wrapperPath = pluginDir </> (pluginName <> ".cmd")
+      writeFile wrapperPath $ unlines
+        [ "@echo off"
+        , "\"" <> testExe <> "\" --plugin-manager-fixture " <> fixtureMode
+        ]
+    else do
+      let wrapperPath = pluginDir </> pluginName
+      writeFile wrapperPath $ unlines
+        [ "#!/bin/sh"
+        , "exec " <> shellQuote testExe <> " --plugin-manager-fixture " <> shellQuote fixtureMode
+        ]
+      permissions <- getPermissions wrapperPath
+      setPermissions wrapperPath permissions { executable = True }
+
+shellQuote :: String -> String
+shellQuote value = "'" <> concatMap quoteChar value <> "'"
   where
-    setup = do
-      home <- getHomeDirectory
-      let pluginDir = home </> ".topo" </> "plugins" </> pluginName
-          targetExe = pluginDir </> pluginName <> ".exe"
-      createDirectoryIfMissing True pluginDir
-      BS.writeFile (pluginDir </> "manifest.json") manifestJSON
-      copyFile executablePath targetExe
-      pure pluginDir
+    quoteChar '\'' = "'\\''"
+    quoteChar c = [c]
 
-    teardown = removePathForcibly
+runFixtureCli :: IO ()
+runFixtureCli = do
+  args <- getArgs
+  case args of
+    ["--plugin-manager-fixture", mode] -> runFixtureMode mode
+    _ -> die "usage: topo-seer-test --plugin-manager-fixture <ok|protocol-mismatch|malformed-json|early-exit|slow>"
 
-findTopoPluginExampleExecutable :: IO (Maybe FilePath)
-findTopoPluginExampleExecutable = do
-  fromEnv <- lookupEnv "TOPO_PLUGIN_EXAMPLE_EXE"
-  case fromEnv of
-    Just path -> do
-      exists <- doesFileExist path
-      if exists then pure (Just path) else pure Nothing
-    Nothing -> do
-      fromPath <- findExecutable "topo-plugin-example.exe"
-      case fromPath of
-        Just path -> pure (Just path)
-        Nothing -> do
-          cwd <- getCurrentDirectory
-          let candidateRoots = [cwd, cwd </> ".."]
-          findFirstJustM findUnderStackInstall candidateRoots
+runFixtureMode :: String -> IO ()
+runFixtureMode = \case
+  "ok" -> runOkFixture
+  "protocol-mismatch" -> runOneShotAckFixture (currentProtocolVersion + 1)
+  "malformed-json" -> runMalformedJsonFixture
+  "early-exit" -> exitFailure
+  "slow" -> threadDelay 2000000 >> runOkFixture
+  unknown -> die ("unknown plugin-manager fixture: " <> unknown)
 
-findUnderStackInstall :: FilePath -> IO (Maybe FilePath)
-findUnderStackInstall root = do
-  let installDir = root </> ".stack-work" </> "install"
-  exists <- doesDirectoryExist installDir
-  if not exists
-    then pure Nothing
-    else findExecutableRecursively installDir "topo-plugin-example.exe"
-
-findExecutableRecursively :: FilePath -> FilePath -> IO (Maybe FilePath)
-findExecutableRecursively dir executableName = do
-  entries <- listDirectory dir
-  findFirstJustM checkEntry entries
+runOkFixture :: IO ()
+runOkFixture = do
+  connectPlugin "plugin-manager-test-fixture" stdin stdout >>= \case
+    Left _ -> exitFailure
+    Right transport -> loop transport
   where
-    checkEntry entry = do
-      let path = dir </> entry
-      isDir <- doesDirectoryExist path
-      if isDir
-        then findExecutableRecursively path executableName
-        else if entry == executableName
-          then pure (Just path)
-          else pure Nothing
+    loop transport = do
+      recvMessage transport >>= \case
+        Left _ -> closeTransport transport
+        Right bytes ->
+          case decodeMessage bytes of
+            Left _ -> loop transport
+            Right envelope -> case envType envelope of
+              MsgHandshake -> do
+                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope currentProtocolVersion))
+                loop transport
+              MsgShutdown -> closeTransport transport
+              _ -> loop transport
 
-findFirstJustM :: (a -> IO (Maybe b)) -> [a] -> IO (Maybe b)
-findFirstJustM _ [] = pure Nothing
-findFirstJustM f (x:xs) = do
-  result <- f x
-  case result of
-    Just value -> pure (Just value)
-    Nothing -> findFirstJustM f xs
+runOneShotAckFixture :: Int -> IO ()
+runOneShotAckFixture protocolVersion = do
+  connectPlugin "plugin-manager-protocol-mismatch-fixture" stdin stdout >>= \case
+    Left _ -> exitFailure
+    Right transport -> do
+      _ <- recvMessage transport
+      _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope protocolVersion))
+      closeTransport transport
+
+runMalformedJsonFixture :: IO ()
+runMalformedJsonFixture = do
+  connectPlugin "plugin-manager-malformed-json-fixture" stdin stdout >>= \case
+    Left _ -> exitFailure
+    Right transport -> do
+      _ <- recvMessage transport
+      _ <- sendMessage transport (BSC.pack "{not valid json")
+      closeTransport transport
+
+handshakeAckEnvelope :: Int -> RPCEnvelope
+handshakeAckEnvelope protocolVersion = RPCEnvelope
+  { envType = MsgHandshakeAck
+  , envPayload = Aeson.toJSON HandshakeAck
+      { haProtocolVersion = protocolVersion
+      , haDataDirectory = Nothing
+      , haResources = []
+      }
+  }
 
 testPluginName :: String
 testPluginName = "copilot-test-plugin-manager-schema"
@@ -202,25 +281,36 @@ testLaunchPluginName :: String
 testLaunchPluginName = "copilot-test-plugin-launch"
 
 testLaunchManifestJSON :: BS.ByteString
-testLaunchManifestJSON =
+testLaunchManifestJSON = manifestFor testLaunchPluginName
+
+mismatchPluginName :: String
+mismatchPluginName = "copilot-test-plugin-protocol-mismatch"
+
+mismatchManifestJSON :: BS.ByteString
+mismatchManifestJSON = manifestFor mismatchPluginName
+
+malformedPluginName :: String
+malformedPluginName = "copilot-test-plugin-malformed-json"
+
+malformedManifestJSON :: BS.ByteString
+malformedManifestJSON = manifestFor malformedPluginName
+
+crashPluginName :: String
+crashPluginName = "copilot-test-plugin-crashy"
+
+crashManifestJSON :: BS.ByteString
+crashManifestJSON = manifestFor crashPluginName
+
+slowPluginName :: String
+slowPluginName = "copilot-test-plugin-slow"
+
+slowManifestJSON :: BS.ByteString
+slowManifestJSON = manifestFor slowPluginName
+
+manifestFor :: String -> BS.ByteString
+manifestFor name = BSC.pack $
   "{\n"
-    <> "  \"name\": \"copilot-test-plugin-launch\",\n"
-    <> "  \"version\": \"0.1.0\",\n"
-    <> "  \"generator\": { \"insertAfter\": \"erosion\" }\n"
-    <> "}\n"
-
-testLaunchCmd :: BS.ByteString
-testLaunchCmd =
-  "@echo off\r\n"
-    <> "exit /b 0\r\n"
-
-realPluginName :: String
-realPluginName = "terrain-roughen"
-
-realPluginManifestJSON :: BS.ByteString
-realPluginManifestJSON =
-  "{\n"
-    <> "  \"name\": \"terrain-roughen\",\n"
+    <> "  \"name\": \"" <> name <> "\",\n"
     <> "  \"version\": \"0.1.0\",\n"
     <> "  \"generator\": { \"insertAfter\": \"erosion\" }\n"
     <> "}\n"

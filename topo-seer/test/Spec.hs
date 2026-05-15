@@ -1,6 +1,7 @@
 module Main (main) where
 
 import System.IO (hSetEncoding, stdout, stderr, utf8)
+import System.Environment (getArgs)
 import Test.Hspec
 import qualified Spec.HexPick
 import qualified Spec.Layout
@@ -31,32 +32,36 @@ import qualified Spec.ZoomStageProperties
 
 main :: IO ()
 main = do
-  hSetEncoding stdout utf8
-  hSetEncoding stderr utf8
-  hspec $ do
-    Spec.LogActor.spec
-    Spec.CacheProperties.spec
-    Spec.ConfigSnapshot.spec
-    Spec.SliderSpec.spec
-    Spec.AtlasResultBroker.spec
-    Spec.AtlasScheduleBroker.spec
-    Spec.AtlasScheduler.spec
-    Spec.AtlasCache.spec
-    Spec.HexPick.spec
-    Spec.Layout.spec
-    Spec.SnapshotReceiver.spec
-    Spec.TerrainCacheWorker.spec
-    Spec.TerrainRender.spec
-    Spec.RiverRender.spec
-    Spec.TerrainActor.spec
-    Spec.PluginManager.spec
-    Spec.UiActor.spec
-    Spec.Simulation.spec
-    Spec.Widgets.spec
-    Spec.WidgetTree.spec
-    Spec.WorldPersist.spec
-    Spec.CommandDispatch.spec
-    Spec.Headless.spec
-    Spec.EditorBrush.spec
-    Spec.EditorHistory.spec
-    Spec.ZoomStageProperties.spec
+  args <- getArgs
+  case args of
+    "--plugin-manager-fixture":_ -> Spec.PluginManager.runFixtureCli
+    _ -> do
+      hSetEncoding stdout utf8
+      hSetEncoding stderr utf8
+      hspec $ do
+        Spec.LogActor.spec
+        Spec.CacheProperties.spec
+        Spec.ConfigSnapshot.spec
+        Spec.SliderSpec.spec
+        Spec.AtlasResultBroker.spec
+        Spec.AtlasScheduleBroker.spec
+        Spec.AtlasScheduler.spec
+        Spec.AtlasCache.spec
+        Spec.HexPick.spec
+        Spec.Layout.spec
+        Spec.SnapshotReceiver.spec
+        Spec.TerrainCacheWorker.spec
+        Spec.TerrainRender.spec
+        Spec.RiverRender.spec
+        Spec.TerrainActor.spec
+        Spec.PluginManager.spec
+        Spec.UiActor.spec
+        Spec.Simulation.spec
+        Spec.Widgets.spec
+        Spec.WidgetTree.spec
+        Spec.WorldPersist.spec
+        Spec.CommandDispatch.spec
+        Spec.Headless.spec
+        Spec.EditorBrush.spec
+        Spec.EditorHistory.spec
+        Spec.ZoomStageProperties.spec
