@@ -1,6 +1,6 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.38.1.
+-- This file has been generated from package.yaml by hpack version 0.39.1.
 --
 -- see: https://github.com/sol/hpack
 
@@ -38,20 +38,43 @@ library
     , vector
   default-language: Haskell2010
 
+executable topo-plugin-fixture
+  main-is: Main.hs
+  other-modules:
+      Topo.Plugin.SDK.Test.Fixtures
+      Paths_topo_plugin_sdk
+  hs-source-dirs:
+      test/fixture-exe
+      test/fixtures
+  build-depends:
+      aeson >=2.1 && <2.3
+    , base >=4.18 && <5
+    , bytestring
+    , containers
+    , text
+    , topo
+    , topo-plugin-sdk
+  default-language: Haskell2010
+
 test-suite topo-plugin-sdk-test
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
+      Spec.FixtureHarness
       Spec.Payload
       Spec.Runner
+      Topo.Plugin.SDK.Test.Fixtures
       Paths_topo_plugin_sdk
   hs-source-dirs:
       test
+      test/fixtures
   build-depends:
       aeson
     , base
     , bytestring
     , containers
+    , directory
+    , filepath
     , hspec
     , process
     , text
