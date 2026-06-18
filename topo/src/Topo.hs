@@ -5,6 +5,7 @@ module Topo
   , module Topo.World
   , module Topo.Hex
   , module Topo.Metadata
+  , module Topo.Config
   , module Topo.Plugin
   , module Topo.Pipeline
   , module Topo.Pipeline.Stage
@@ -28,7 +29,11 @@ module Topo
   , module Topo.Hydrology
   , module Topo.River
   , module Topo.Volcanism
+  , module Topo.WaterBody
+  , module Topo.WaterTable
   , module Topo.Parameters
+  , module Topo.Soil
+  , module Topo.Vegetation
   , module Topo.Climate
   , module Topo.BiomeConfig
   , module Topo.Weather
@@ -48,6 +53,7 @@ import Topo.Types
 import Topo.World
 import Topo.Hex
 import Topo.Metadata
+import Topo.Config
 import Topo.Plugin
 import Topo.Pipeline
 import Topo.Pipeline.Stage
@@ -71,6 +77,8 @@ import Topo.Glacier
 import Topo.Hydrology
 import Topo.River
 import Topo.Volcanism
+import Topo.WaterBody
+import Topo.WaterTable
 import Topo.Parameters
 import Topo.Soil
 import Topo.Vegetation

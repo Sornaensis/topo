@@ -204,13 +204,10 @@ loadNamedWorld name = do
                 Right (_prov, world) ->
                   pure (Right (manifest, snapshot, world))
 
--- TODO(viewport-overlay-adoption):
--- 1) Keep world-level discovery/manifest validation in
---    'loadWorldBundleWithProvenance' inside 'loadNamedWorld'.
--- 2) For large sparse overlays, prefer chunk-on-demand hydration in Seer
---    viewports via 'loadNamedSparseOverlayChunk'.
--- 3) Keep this helper independent from runtime wiring for now so UI/atlas
---    code can adopt it incrementally without changing save/load semantics.
+-- Viewport overlay adoption seam: keep world-level discovery/manifest
+-- validation in 'loadWorldBundleWithProvenance' inside 'loadNamedWorld'.
+-- Large sparse overlays can be hydrated on demand through
+-- 'loadNamedSparseOverlayChunk' without changing save/load semantics.
 
 -- | Load one sparse overlay chunk from a saved world sidecar.
 --

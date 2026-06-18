@@ -17,7 +17,9 @@ From the repo root:
 
 ## Architecture overview
 
-topo-seer is built around a render-thread-owned SDL loop and an actor system (Hyperspace) for async work.
+topo-seer is built around a render-thread-owned SDL loop and a Hyperspace actor
+system for async work. Shared runtime snapshots and render work queues use
+IORef-backed channels so the SDL thread never shares SDL handles with workers.
 
 ### Actor graph (high level)
 
@@ -27,20 +29,21 @@ UI input (SDL events)
 		 -> Terrain actor (world generation)
 		 -> Data actor (terrain/climate/weather snapshots)
 		 -> Log actor (log entries)
+		 -> Simulation actor (ticks and world updates)
 
-SnapshotReceiver (cached composite snapshot)
-	<- Ui/Log/Data replies
-	-> Render loop pulls RenderSnapshot per frame
+Snapshot refs (IORef-backed)
+	<- Ui/Log/Data/Simulation writes
+	-> Render loop assembles RenderSnapshot per frame
 
 Atlas pipeline
-	Render loop -> AtlasManager (jobs)
-						 -> AtlasWorker (CPU build)
-						 -> AtlasResultBroker (results)
+	Render loop -> AtlasScheduler / AtlasManager (jobs)
+						 -> AtlasWorker actors (CPU build)
+						 -> Atlas result ref
 						 -> AtlasCache (GPU textures)
 
 Terrain cache pipeline
 	Render loop -> TerrainCacheWorker (CPU build)
-						 -> TerrainCacheBroker (latest result)
+						 -> Terrain cache ref
 ```
 
 ### Thread ownership and boundaries
@@ -55,11 +58,11 @@ Terrain cache pipeline
 - Terrain cache builds (`TerrainCacheWorker`)
 - World generation (`Terrain` actor)
 
-**Actor messaging only (no shared mutable state across threads):**
-- Snapshot updates flow into `SnapshotReceiver` via reply casts.
-- Render loop pulls `RenderSnapshot` per frame (no polling threads).
-- Atlas results go through `AtlasResultBroker`.
-- Terrain cache results go through `TerrainCacheBroker`.
+**Actor messaging and IORef-backed data channels only:**
+- Snapshot updates are published to per-domain snapshot refs.
+- Render loop assembles `RenderSnapshot` per frame from the latest refs.
+- Atlas scheduling/results use `AtlasScheduleRef` and `AtlasResultRef`.
+- Terrain cache results use `TerrainCacheRef`.
 
 ## Data boundaries and message types
 

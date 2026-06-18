@@ -2,6 +2,9 @@
 
 - `topo`: library for large terrain data generation and manipulation
 - `topo-seer`: SDL application for interacting with the generator
+- `topo-mcp`: local MCP server for tool-driven access to topo-seer
+- `topo-plugin-sdk`: helpers for external topo plugins
+- `topo-plugin-example` / `topo-plugin-civ-example`: fixture plugins
 
 ## Quick start
 
@@ -9,11 +12,15 @@
 - Run tests: `stack test`
 - Run the app: `stack exec topo-seer`
 
-## SDL2 dependency
+## Runtime dependencies
 
-The `topo-seer` package depends on SDL2 and requires SDL2 development libraries
-and `pkg-config` to be available on your system.
+`topo-seer` is the only SDL executable. It depends on SDL2, SDL2_ttf, and
+Hyperspace through the Git extra-deps pinned in `stack.yaml`; the native SDL
+runtime libraries still need to be available on systems that launch the app.
+The core `topo` library, MCP server, plugin SDK, and plugin examples can be
+built and tested without starting the SDL UI.
 
 ## Hyperspace
 
-topo-seer is implemented with [Hyperspace](https://github.com/Sornaensis/hyperspace), an Actor library; you can [read the documentation here](https://github.com/Sornaensis/hyperspace/blob/master/docs/contents.md).
+topo-seer uses [Hyperspace](https://github.com/Sornaensis/hyperspace) for its
+actor runtime.
