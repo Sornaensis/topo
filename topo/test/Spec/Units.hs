@@ -37,17 +37,17 @@ spec = describe "Units" $ do
   describe "normToMetres / metresToNorm" $ do
     let s = defaultUnitScales
 
-    it "norm 0.5 → 0 m (sea level)" $
-      normToMetres s 0.5 `shouldSatisfy` approxEq epsilon 0.0
+    it "norm 0.43 → 0 m (sea level)" $
+      normToMetres s 0.43 `shouldSatisfy` approxEq epsilon 0.0
 
-    it "norm 1.0 → +6000 m" $
-      normToMetres s 1.0 `shouldSatisfy` approxEq epsilon 6000.0
+    it "norm 1.0 → +6840 m" $
+      normToMetres s 1.0 `shouldSatisfy` approxEq epsilon 6840.0
 
-    it "norm 0.0 → −6000 m" $
-      normToMetres s 0.0 `shouldSatisfy` approxEq epsilon (-6000.0)
+    it "norm 0.0 → −5160 m" $
+      normToMetres s 0.0 `shouldSatisfy` approxEq epsilon (-5160.0)
 
-    it "norm 0.85 → +4200 m (mountains)" $
-      normToMetres s 0.85 `shouldSatisfy` approxEq epsilon 4200.0
+    it "norm 0.85 → +5040 m (mountains)" $
+      normToMetres s 0.85 `shouldSatisfy` approxEq epsilon 5040.0
 
   describe "normToMmYear / mmYearToNorm" $ do
     let s = defaultUnitScales

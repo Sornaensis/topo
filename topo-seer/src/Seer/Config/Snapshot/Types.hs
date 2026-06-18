@@ -83,7 +83,7 @@ data ConfigSnapshot = ConfigSnapshot
 --   "version": 1,
 --   "seed": 42,
 --   "chunkSize": 64,
---   "renderWaterLevel": 0.3,
+--   "renderWaterLevel": 0.43,
 --   "genConfig": { ... WorldGenConfig fields ... }
 -- }
 -- @
@@ -121,6 +121,6 @@ defaultSnapshot = ConfigSnapshot
   , csVersion          = currentSnapshotVersion
   , csSeed             = 42
   , csChunkSize        = 64
-  , csRenderWaterLevel = 0.3
+  , csRenderWaterLevel = 0.43
   , csGenConfig        = defaultWorldGenConfig
   }

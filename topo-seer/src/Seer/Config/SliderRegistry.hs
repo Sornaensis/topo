@@ -331,7 +331,7 @@ sliderDefaultValueForId sliderIdValue = case sliderIdValue of
   SliderOccColdScale -> 0.2
   SliderOccLatPeakDeg -> 0.5833
   SliderOccLatWidthDeg -> 0.5
-  SliderWaterLevel -> 0.5
+  SliderWaterLevel -> 0.43
   SliderOrographicLift -> 0.35
   SliderRainShadowLoss -> 0.08
   SliderWindDiffuse -> 0.5
@@ -342,7 +342,7 @@ sliderDefaultValueForId sliderIdValue = case sliderIdValue of
   SliderMoistureIterations -> 0.486
   SliderBoundaryMotionTemp -> 0.5
   SliderBoundaryMotionPrecip -> 0.5
-  SliderSliceLatCenter -> 0.5
+  SliderSliceLatCenter -> 0.6944444444444444
   SliderSliceLonCenter -> 0.5
   SliderLatitudeExponent -> 0.615
   SliderPlateHeightCooling -> 0.25

@@ -203,7 +203,7 @@ sliderBindings =
   , bindConfigAndSnapshot (oceanCurrentFloat SliderOccColdScale uiOccColdScale (\value oceanCurrent -> oceanCurrent { occColdScale = value })) (snapshotFloat SliderOccColdScale (occColdScale . scOceanCurrent))
   , bindConfigAndSnapshot (oceanCurrentFloat SliderOccLatPeakDeg uiOccLatPeakDeg (\value oceanCurrent -> oceanCurrent { occLatPeakDeg = value })) (snapshotFloat SliderOccLatPeakDeg (occLatPeakDeg . scOceanCurrent))
   , bindConfigAndSnapshot (oceanCurrentFloat SliderOccLatWidthDeg uiOccLatWidthDeg (\value oceanCurrent -> oceanCurrent { occLatWidthDeg = value })) (snapshotFloat SliderOccLatWidthDeg (occLatWidthDeg . scOceanCurrent))
-  , bindConfigAndSnapshot (hydroFloat SliderWaterLevel uiWaterLevel (\value hydro -> hydro { hcWaterLevel = value })) (snapshotFloat SliderWaterLevel (hcWaterLevel . scHydrology))
+  , bindConfigAndSnapshot (waterLevelFloat SliderWaterLevel uiWaterLevel) (snapshotFloat SliderWaterLevel (hcWaterLevel . scHydrology))
   , bindConfigAndSnapshot (climatePrecipFloat SliderOrographicLift uiOrographicLift (\value precipitation -> precipitation { precOrographicLift = value })) (snapshotFloat SliderOrographicLift (precOrographicLift . scPrecipitation))
   , bindConfigAndSnapshot (climatePrecipFloat SliderRainShadowLoss uiRainShadowLoss (\value precipitation -> precipitation { precRainShadowLoss = value })) (snapshotFloat SliderRainShadowLoss (precRainShadowLoss . scPrecipitation))
   , bindConfigAndSnapshot (climateWindFloat SliderWindDiffuse uiWindDiffuse (\value wind -> wind { windDiffuse = value })) (snapshotFloat SliderWindDiffuse (windDiffuse . scWind))
@@ -393,6 +393,12 @@ terrainFormFloat sliderIdValue readUi updateField =
 hydroFloat :: SliderId -> (UiState -> Float) -> (Float -> HydroConfig -> HydroConfig) -> (SliderId, SliderConfigUpdate)
 hydroFloat sliderIdValue readUi updateField =
   sliderFloat sliderIdValue readUi (updateTerrainHydrology . updateField)
+
+waterLevelFloat :: SliderId -> (UiState -> Float) -> (SliderId, SliderConfigUpdate)
+waterLevelFloat sliderIdValue readUi =
+  sliderFloat sliderIdValue readUi $ \value ->
+    updateTerrainHypsometry (\hypsometry -> hypsometry { hpWaterLevel = value })
+    . updateTerrainHydrology (\hydrology -> hydrology { hcWaterLevel = value })
 
 erosionFloat :: SliderId -> (UiState -> Float) -> (Float -> ErosionConfig -> ErosionConfig) -> (SliderId, SliderConfigUpdate)
 erosionFloat sliderIdValue readUi updateField =

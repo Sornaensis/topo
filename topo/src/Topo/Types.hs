@@ -1708,9 +1708,10 @@ isWaterBiomeId (BiomeId c) =
 -- ('tsBiomeId', 'tsTerrainForm', 'tsWaterBodyType') use nearest-neighbour.
 data TerrainSample = TerrainSample
   { tsElevation     :: !Float
-    -- ^ Normalised surface elevation [0, 1]. Sea level ≈ 0.5.
+    -- ^ Normalised surface elevation [0, 1]. Sea level is the active
+    -- water level (0.43 for the default unit scales).
     -- Convert to metres a.s.l. via @normToMetres defaultUnitScales@.
-    -- Default scale: 0.0 → −6 000 m, 0.5 → 0 m, 1.0 → +6 000 m.
+    -- Default scale: 0.0 → −5 160 m, 0.43 → 0 m, 1.0 → +6 840 m.
     -- Source: 'tcElevation'.
   , tsDirSlope      :: !DirectionalSlope
     -- ^ Per-direction signed slopes from 'tcDirSlope'.

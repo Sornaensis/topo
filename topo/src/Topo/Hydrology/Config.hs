@@ -89,7 +89,7 @@ instance FromJSON HydroConfig where
 -- | Default hydrology configuration.
 defaultHydroConfig :: HydroConfig
 defaultHydroConfig = HydroConfig
-  { hcWaterLevel = 0.5
+  { hcWaterLevel = 0.43
   , hcSinkBreachDepth = 0.02
   , hcBaseAccumulation = 1
   , hcMinAccumulation = 1

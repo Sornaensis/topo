@@ -82,10 +82,10 @@ data UnitScales = UnitScales
   , usTempOffset    :: !Float
     -- ^ Temperature floor in °C.  Default: @−50.0@.
   , usElevRange     :: !Float
-    -- ^ Full elevation span in metres (norm @0 → 1@).  Default: @12000.0@
-    -- (±6 000 m around sea level).
+    -- ^ Full elevation span in metres (norm @0 → 1@).  Default: @12000.0@,
+    -- applied around 'usWaterLevel' as the sea-level zero point.
   , usWaterLevel    :: !Float
-    -- ^ Normalised water level.  Default: @0.5@.
+    -- ^ Normalised water level.  Default: @0.43@.
   , usElevGradient  :: !Float
     -- ^ Elevation gradient for slope conversion:
     -- @elevRange / hexSpacingMetres@.  Default: @1.5@ (12 000 / 8 000)
@@ -106,7 +106,7 @@ data UnitScales = UnitScales
 --
 -- @
 -- Temperature:   norm × 100 − 50       → [−50, +50] °C
--- Elevation:     (norm − 0.5) × 12000  → [−6000, +6000] m
+-- Elevation:     (norm − 0.43) × 12000 → sea level at 0.43
 -- Precipitation: norm × 6000           → [0, 6000] mm\/yr
 -- Humidity:      norm × 100            → [0, 100] % RH
 -- Wind Speed:    norm × 50             → [0, 50] m\/s
@@ -118,7 +118,7 @@ defaultUnitScales = UnitScales
   { usTempScale     = 100.0
   , usTempOffset    = -50.0
   , usElevRange     = 12000.0
-  , usWaterLevel    = 0.5
+  , usWaterLevel    = 0.43
   , usElevGradient  = 0.574
   , usPrecipScale   = 6000.0
   , usWindScale     = 50.0
@@ -133,7 +133,7 @@ defaultUnitScales = UnitScales
 
 -- | Convert a normalised temperature to degrees Celsius.
 --
--- @normToC defaultUnitScales 0.0 ≈ −30@, @normToC defaultUnitScales 1.0 ≈ 40@.
+-- @normToC defaultUnitScales 0.0 ≈ −50@, @normToC defaultUnitScales 1.0 ≈ 50@.
 normToC :: UnitScales -> Float -> Float
 normToC s n = n * usTempScale s + usTempOffset s
 {-# INLINE normToC #-}
@@ -149,9 +149,9 @@ cToNorm s c = (c - usTempOffset s) / usTempScale s
 
 -- | Convert a normalised elevation to metres above sea level.
 --
--- Sea level is at 'usWaterLevel' (default @0.5@).
+-- Sea level is at 'usWaterLevel' (default @0.43@).
 --
--- @normToMetres defaultUnitScales 0.5 ≈ 0@, @normToMetres defaultUnitScales 1.0 ≈ 6000@.
+-- @normToMetres defaultUnitScales 0.43 ≈ 0@, @normToMetres defaultUnitScales 1.0 ≈ 6840@.
 normToMetres :: UnitScales -> Float -> Float
 normToMetres s n = (n - usWaterLevel s) * usElevRange s
 {-# INLINE normToMetres #-}

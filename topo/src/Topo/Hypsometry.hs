@@ -74,7 +74,7 @@ data HypsometryConfig = HypsometryConfig
     -- Default: 0.6.
   , hpWaterLevel :: !Float
     -- ^ Mirror of the hydro water level; used as the fixed point for
-    -- the remap.  Default: 0.5.
+    -- the remap.  Default: 0.43.
   , hpCoastalRampWidth :: !Float
     -- ^ Normalized elevation band above sea level where extra
     -- flattening occurs.  Default: 0.04 (≈480 m).
@@ -100,7 +100,7 @@ defaultHypsometryConfig = HypsometryConfig
   , hpHighlandExponent    = 1.2
   , hpPlateauBreak        = 0.6
   , hpOceanExponent       = 0.6
-  , hpWaterLevel          = 0.5
+  , hpWaterLevel          = 0.43
   , hpCoastalRampWidth    = 0.08
   , hpCoastalRampStrength = 0.5
     -- ^ Reduced from 0.8 to limit compounding with erosion's coastal

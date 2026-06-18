@@ -124,8 +124,8 @@ spec = describe "Units.Config" $ do
       it "arctic max temp ≈ −23.0 °C" $
         rtcArcticMaxTemp real `shouldSatisfy` approxEq 0.1 (-23.0)
 
-      it "alpine tundra min elev ≈ 1200 m" $
-        rtcAlpineTundraMinElev real `shouldSatisfy` approxEq 1.0 1200.0
+      it "alpine tundra min elev ≈ 2040 m" $
+        rtcAlpineTundraMinElev real `shouldSatisfy` approxEq 1.0 2040.0
 
     describe "SnowConfig" $ do
       let real = snowConfigToReal s defaultSnowConfig

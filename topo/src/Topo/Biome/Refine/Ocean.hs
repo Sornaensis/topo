@@ -47,10 +47,10 @@ instance FromJSON OceanConfig where
 
 -- | Sensible defaults for ocean refinement.
 --
--- Deep ocean begins at depth > 0.25 (with waterLevel = 0.5 this means
--- elev < 0.25, i.e. below −3 000 m), capturing abyssal-plain ocean-floor
+-- Deep ocean begins at depth > 0.25 (with the default waterLevel = 0.43 this
+-- means elev < 0.18, i.e. below −3 000 m), capturing abyssal-plain ocean-floor
 -- tiles as DeepOcean while the continental shelf and slope
--- (elev 0.25–0.50, roughly −3 000 m to sea level) remain ShallowSea.
+-- (elev 0.18–0.43, roughly −3 000 m to sea level) remain ShallowSea.
 -- Coral reefs require very shallow (≤ 0.05 depth, i.e. ≤ 600 m),
 -- warm (≥ 0.704), flat (≤ 0.04 slope), hard (≥ 0.35) substrate —
 -- making them a strict subset of warm shallow water.

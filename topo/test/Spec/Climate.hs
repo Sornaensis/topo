@@ -243,9 +243,9 @@ spec = describe "Climate" $ do
         avgVector (ccTempAvg cEq) `shouldSatisfy` (> avgVector (ccTempAvg c60))
       _ -> expectationFailure "missing climate chunks"
 
-  it "equator slice with explicit defaults matches emptyWorld climate" $ do
-    -- A world at the equator with default planet/slice should produce
-    -- the same climate as a plain `emptyWorld`.
+  it "explicit default slice matches emptyWorld climate" $ do
+    -- A world with the explicit default planet/slice should produce the
+    -- same climate as a plain `emptyWorld`.
     let config = WorldConfig { wcChunkSize = 4 }
         worldDefault = emptyWorld config defaultHexGridMeta
         worldExplicit = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice
@@ -575,7 +575,8 @@ spec = describe "Climate" $ do
                 { ccMoisture = (ccMoisture defaultClimateConfig)
                     { moistRecycleRate = recycleRate }
                 }
-              w0 = emptyWorld config defaultHexGridMeta
+              w0 = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig
+                     (defaultWorldSlice { wsLatCenter = 0, wsLatExtent = 10 })
               w1 = setTerrainChunk (chunkIdFromCoord (ChunkCoord 0 0)) ocean
                  $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 1 0)) landWithMoist
                  $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 2 0)) landWithMoist
@@ -799,7 +800,8 @@ spec = describe "Climate" $ do
         -- 5×1 strip: ocean | coast-land | interior | interior | interior
         ocean    = generateTerrainChunk config (\_ -> 0.2)
         land     = generateTerrainChunk config (\_ -> 0.55)
-        world0   = emptyWorld config defaultHexGridMeta
+        world0   = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig
+                     (defaultWorldSlice { wsLatCenter = 0, wsLatExtent = 10 })
         world1   = setTerrainChunk (chunkIdFromCoord (ChunkCoord 0 0)) ocean
                  $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 1 0)) land
                  $ setTerrainChunk (chunkIdFromCoord (ChunkCoord 2 0)) land

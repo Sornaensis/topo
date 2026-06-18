@@ -30,6 +30,7 @@ spec = describe "Writ worldbuilding smoke workflow" $ do
 
       smokeFingerprint worldA `shouldBe` smokeFingerprint worldB
       inspectWritFields worldA
+      assertEarthlikeBalance worldA
       assertWritPayload worldA
 
       let topoPath = tmp </> "writ-smoke.topo"
@@ -44,33 +45,23 @@ spec = describe "Writ worldbuilding smoke workflow" $ do
       twGenConfig loaded `shouldBe` Just (toJSON writSmokeConfig)
       smokeFingerprint loaded `shouldBe` smokeFingerprint worldA
       inspectWritFields loaded
+      assertEarthlikeBalance loaded
       assertWritPayload loaded
 
 writSmokeSeed :: Word64
 writSmokeSeed = 0x57524954
 
 writWorldConfig :: WorldConfig
-writWorldConfig = WorldConfig { wcChunkSize = 8 }
+writWorldConfig = WorldConfig { wcChunkSize = 32 }
 
 writExpectedChunkCount :: Int
-writExpectedChunkCount = 9
-
-writSmokeSlice :: WorldSlice
-writSmokeSlice = WorldSlice
-  { wsLatCenter = 35
-  , wsLatExtent = 6
-  , wsLonCenter = 0
-  , wsLonExtent = 6
-  }
+writExpectedChunkCount = 81
 
 writSmokeConfig :: WorldGenConfig
 writSmokeConfig = defaultWorldGenConfig
-  { worldSlice = writSmokeSlice
-  , worldTerrain = (worldTerrain defaultWorldGenConfig)
-      { terrainGen = (terrainGen (worldTerrain defaultWorldGenConfig))
-          { gcWorldExtent = worldExtentSquareOrDefault 1 }
-      }
-  }
+
+writSmokeSlice :: WorldSlice
+writSmokeSlice = worldSlice writSmokeConfig
 
 generateWritSmokeWorld :: IO TerrainWorld
 generateWritSmokeWorld = do
@@ -140,6 +131,21 @@ inspectWritFields world = do
   assertFiniteVector "weather temperature" (wcTemp weather)
   assertFiniteVector "weather precipitation" (wcPrecip weather)
 
+assertEarthlikeBalance :: TerrainWorld -> IO ()
+assertEarthlikeBalance world = do
+  let waterTypes = concatMap (U.toList . wbType) (IntMap.elems (twWaterBodies world))
+      totalTiles = length waterTypes
+      waterTiles = length (filter (/= WaterDry) waterTypes)
+      landTiles = totalTiles - waterTiles
+      fraction n = fromIntegral n / fromIntegral (max 1 totalTiles) :: Double
+      temps = concatMap (U.toList . ccTempAvg) (IntMap.elems (twClimate world))
+      precips = concatMap (U.toList . ccPrecipAvg) (IntMap.elems (twClimate world))
+  totalTiles `shouldSatisfy` (> 0)
+  fraction landTiles `shouldSatisfy` (> 0.25)
+  fraction waterTiles `shouldSatisfy` (> 0.25)
+  valueSpan temps `shouldSatisfy` (> 0.30)
+  valueSpan precips `shouldSatisfy` (> 0.40)
+
 assertWritPayload :: TerrainWorld -> IO ()
 assertWritPayload world = do
   payload <- expectRight "complete terrain payload export failed" (terrainWorldToCompletePayload world)
@@ -161,7 +167,7 @@ assertWritPayload world = do
       KM.lookup "encoding" obj `shouldBe` Just (String "base64")
       assertObjectField "world_time" obj
       assertObjectField "planet_age" obj
-      assertObjectField "unit_scales" obj
+      assertUnitScales obj
       assertObjectField "gen_config" obj
       assertObjectField "metadata" obj
       assertOverlaySection obj
@@ -213,6 +219,10 @@ expectJust :: String -> Maybe a -> IO a
 expectJust _ (Just value) = pure value
 expectJust label Nothing = fail label
 
+valueSpan :: [Float] -> Float
+valueSpan [] = 0
+valueSpan values = maximum values - minimum values
+
 assertFiniteVector :: String -> U.Vector Float -> IO ()
 assertFiniteVector label values =
   if U.all isFinite values
@@ -226,6 +236,15 @@ assertObjectField key obj =
   case KM.lookup key obj of
     Just (Object _) -> pure ()
     _ -> expectationFailure ("expected payload object field: " <> show key)
+
+assertUnitScales :: KM.KeyMap Value -> IO ()
+assertUnitScales obj =
+  case KM.lookup "unit_scales" obj of
+    Just (Object scales) ->
+      KM.lookup "water_level" scales `shouldBe`
+        Just (toJSON (hcWaterLevel (terrainHydrology (worldTerrain writSmokeConfig))))
+    Just _ -> expectationFailure "expected unit_scales object"
+    Nothing -> expectationFailure "missing unit_scales"
 
 assertOverlaySection :: KM.KeyMap Value -> IO ()
 assertOverlaySection obj =

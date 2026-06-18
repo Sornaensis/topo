@@ -7,8 +7,9 @@
 -- flat-to-flat).  All geographic derivation functions accept an explicit
 -- 'Topo.Hex.HexGridMeta' parameter.
 --
--- Default behavior: the generated region is centered on the equator (@latCenter=0@).
--- Users never need to generate a whole planet — every world is a "slice" of a planet.
+-- Default behavior: the generated region is an earthlike mid-latitude
+-- surface slice. Users never need to generate a whole planet — every world
+-- is a "slice" of a planet.
 module Topo.Planet
   ( -- * Planet configuration
     PlanetConfig(..)
@@ -145,13 +146,17 @@ data WorldSliceError
     -- ^ Longitude extent must be > 0.
   deriving (Eq, Show)
 
--- | Default world slice: 40° latitude × 60° longitude centered on the equator.
+-- | Default world slice: roughly 2,000 km × 2,000 km on an Earth-sized planet.
+--
+-- The slice is centered in the mid-latitudes for a temperate, earthlike
+-- climate gradient; at 35° latitude, 18° latitude and 22° longitude are
+-- each approximately 2,000 km.
 defaultWorldSlice :: WorldSlice
 defaultWorldSlice = WorldSlice
-  { wsLatCenter = 0
-  , wsLatExtent = 40
+  { wsLatCenter = 35
+  , wsLatExtent = 18
   , wsLonCenter = 0
-  , wsLonExtent = 60
+  , wsLonExtent = 22
   }
 
 -- | Construct a validated 'WorldSlice'.

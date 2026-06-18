@@ -363,7 +363,7 @@ buildFullPipelineConfig cfg worldCfg seed =
 -- If the user has already configured edge depth (any field > 0),
 -- the per-axial-boundary values are preserved.
 --
--- Default auto-values: depth = 0.5, falloff = 64 tiles.
+-- Default auto-values: depth = 0.5, falloff = 16 tiles.
 autoOceanEdgeDepth :: PlanetConfig -> WorldSlice -> GenConfig -> GenConfig
 autoOceanEdgeDepth _planet slice gen
   | hasManualEdge = gen
@@ -373,7 +373,7 @@ autoOceanEdgeDepth _planet slice gen
     hasManualEdge = oedRMin oed > 0 || oedRMax oed > 0
                  || oedQMax oed > 0 || oedQMin oed > 0
     autoDepth   = 0.5
-    autoFalloff = 64.0
+    autoFalloff = 16.0
     latN = wsLatCenter slice + wsLatExtent slice / 2
     latS = wsLatCenter slice - wsLatExtent slice / 2
     computedEdge = OceanEdgeDepth

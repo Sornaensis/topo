@@ -42,8 +42,16 @@ spec = describe "Planet" $ do
           Left _  -> False
 
   describe "WorldSlice" $ do
-    it "accepts equator defaults" $
-      mkWorldSlice 0 40 0 60 `shouldBe` Right defaultWorldSlice
+    it "accepts temperate earthlike defaults" $
+      mkWorldSlice 35 18 0 22 `shouldBe` Right defaultWorldSlice
+
+    it "defaults to roughly a 2000 km square" $ do
+      let kmPerDegree = 2 * pi * pcRadius defaultPlanetConfig / 360
+          centerLatRad = wsLatCenter defaultWorldSlice * pi / 180
+          latKm = wsLatExtent defaultWorldSlice * kmPerDegree
+          lonKm = wsLonExtent defaultWorldSlice * kmPerDegree * cos centerLatRad
+      latKm `shouldSatisfy` inWritDefaultRange
+      lonKm `shouldSatisfy` inWritDefaultRange
 
     it "rejects latCenter below -90" $
       mkWorldSlice (-91) 40 0 60 `shouldSatisfy` isLeft
@@ -245,7 +253,10 @@ instance Arbitrary ValidSliceParams where
     lne <- choose (0.1, 360)
     pure (ValidSliceParams lc le lnc lne)
 
--- | Helper
+-- | Helpers
+inWritDefaultRange :: Float -> Bool
+inWritDefaultRange km = km >= 1900 && km <= 2100
+
 isLeft :: Either a b -> Bool
 isLeft (Left _) = True
 isLeft _        = False

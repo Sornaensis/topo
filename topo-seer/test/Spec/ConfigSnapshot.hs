@@ -40,6 +40,7 @@ import Topo.BaseHeight (GenConfig(..))
 import Topo.Erosion (ErosionConfig(..), defaultErosionConfig)
 import Topo.Hypsometry (HypsometryConfig(..))
 import Topo.Hex (hexSizeKm)
+import Topo.Hydrology (HydroConfig(..))
 import Topo.Planet (WorldSlice(..), hexesPerDegreeLatitude, hexesPerDegreeLongitude)
 import Topo.Types (worldExtentRadiusX, worldExtentRadiusY)
 import Topo.WorldGen
@@ -121,6 +122,21 @@ snapshotFromUiSpec = describe "snapshotFromUi" $ do
     let snap = snapshotFromUi emptyUiState "gen"
     -- Just verify the genConfig is a valid WorldGenConfig (has sub-configs)
     csGenConfig snap `shouldSatisfy` const True
+
+  it "keeps empty UI defaults aligned with earthlike generation defaults" $ do
+    let cfg = configFromUi emptyUiState
+        terrain = worldTerrain cfg
+        hydro = terrainHydrology terrain
+        hypsometry = terrainHypsometry terrain
+        defaultSlice = worldSlice defaultWorldGenConfig
+        uiSlice = worldSlice cfg
+    hcWaterLevel hydro `shouldBe` hcWaterLevel (terrainHydrology (worldTerrain defaultWorldGenConfig))
+    hpWaterLevel hypsometry `shouldBe` hcWaterLevel hydro
+    uiRenderWaterLevel emptyUiState `shouldBe` uiWaterLevel emptyUiState
+    csRenderWaterLevel defaultSnapshot `shouldBe` hcWaterLevel hydro
+    abs (wsLatCenter uiSlice - wsLatCenter defaultSlice) `shouldSatisfy` (< 1.0e-4)
+    abs (wsLatExtent uiSlice - wsLatExtent defaultSlice) `shouldSatisfy` (< 0.5)
+    abs (wsLonExtent uiSlice - wsLonExtent defaultSlice) `shouldSatisfy` (< 0.5)
 
   it "keeps derived slice extents aligned with the generated config" $ do
     let ui = emptyUiState
