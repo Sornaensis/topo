@@ -11,6 +11,8 @@
 - Build all packages: `stack build`
 - Run tests: `stack test`
 - Run the app: `stack exec topo-seer`
+- Run the Writ worldbuilding smoke workflow:
+  `stack test topo:test:topo-test --test-arguments "--match Writ"`
 
 ## Runtime dependencies
 

@@ -58,6 +58,7 @@ import qualified Spec.DataResource
 import qualified Spec.DataService
 import qualified Spec.WorldBundle
 import qualified Spec.CommandTypes
+import qualified Spec.WritSmoke
 import qualified WorldProperty
 import qualified HexProperty
 
@@ -122,5 +123,6 @@ main = do
     Spec.DataService.spec
     Spec.WorldBundle.spec
     Spec.CommandTypes.spec
+    Spec.WritSmoke.spec
     WorldProperty.spec
     HexProperty.spec

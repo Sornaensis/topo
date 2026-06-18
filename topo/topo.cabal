@@ -219,6 +219,7 @@ test-suite topo-test
       Spec.Weather
       Spec.World
       Spec.WorldBundle
+      Spec.WritSmoke
       WorldProperty
       Paths_topo
   hs-source-dirs:
