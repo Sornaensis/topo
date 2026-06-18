@@ -19,7 +19,7 @@ import Topo.Persistence.WorldBundle
   , loadWorldBundle
   , saveWorldBundle
   )
-import Topo.Plugin.RPC (terrainWorldToPayload)
+import Topo.Plugin.RPC (terrainWorldToCompletePayload)
 
 spec :: Spec
 spec = describe "Writ worldbuilding smoke workflow" $ do
@@ -142,17 +142,39 @@ inspectWritFields world = do
 
 assertWritPayload :: TerrainWorld -> IO ()
 assertWritPayload world = do
-  payload <- expectRight "terrain payload export failed" (terrainWorldToPayload world)
+  payload <- expectRight "complete terrain payload export failed" (terrainWorldToCompletePayload world)
   case payload of
     Object obj -> do
       KM.lookup "chunk_count" obj `shouldBe` Just (toJSON (IntMap.size (twTerrain world)))
       KM.lookup "climate_count" obj `shouldBe` Just (toJSON (IntMap.size (twClimate world)))
+      KM.lookup "river_count" obj `shouldBe` Just (toJSON (IntMap.size (twRivers world)))
+      KM.lookup "groundwater_count" obj `shouldBe` Just (toJSON (IntMap.size (twGroundwater world)))
+      KM.lookup "volcanism_count" obj `shouldBe` Just (toJSON (IntMap.size (twVolcanism world)))
+      KM.lookup "glacier_count" obj `shouldBe` Just (toJSON (IntMap.size (twGlaciers world)))
+      KM.lookup "water_body_count" obj `shouldBe` Just (toJSON (IntMap.size (twWaterBodies world)))
       KM.lookup "vegetation_count" obj `shouldBe` Just (toJSON (IntMap.size (twVegetation world)))
+      KM.lookup "biome_count" obj `shouldBe` Just (toJSON (IntMap.size (twTerrain world)))
+      KM.lookup "weather_count" obj `shouldBe` Just (toJSON (IntMap.size (getWeatherFromOverlay world)))
+      KM.lookup "overlay_count" obj `shouldBe` Just (toJSON (length (overlayNames (twOverlays world))))
       KM.lookup "chunk_size" obj `shouldBe` Just (toJSON (wcChunkSize (twConfig world)))
+      KM.lookup "seed" obj `shouldBe` Just (toJSON (twSeed world))
       KM.lookup "encoding" obj `shouldBe` Just (String "base64")
+      assertObjectField "world_time" obj
+      assertObjectField "planet_age" obj
+      assertObjectField "unit_scales" obj
+      assertObjectField "gen_config" obj
+      assertObjectField "metadata" obj
+      assertOverlaySection obj
       assertEncodedChunkSection "terrain" obj
       assertEncodedChunkSection "climate" obj
+      assertEncodedChunkSection "rivers" obj
+      assertEncodedChunkSection "groundwater" obj
+      assertEncodedChunkSection "volcanism" obj
+      assertEncodedChunkSection "glaciers" obj
+      assertEncodedChunkSection "water_bodies" obj
       assertEncodedChunkSection "vegetation" obj
+      assertEncodedChunkSection "biomes" obj
+      assertEncodedChunkSection "weather" obj
     _ -> expectationFailure "expected terrain payload object"
 
 smokeFingerprint
@@ -198,6 +220,25 @@ assertFiniteVector label values =
     else expectationFailure ("expected finite values for " <> label)
   where
     isFinite x = not (isNaN x || isInfinite x)
+
+assertObjectField :: Key -> KM.KeyMap Value -> IO ()
+assertObjectField key obj =
+  case KM.lookup key obj of
+    Just (Object _) -> pure ()
+    _ -> expectationFailure ("expected payload object field: " <> show key)
+
+assertOverlaySection :: KM.KeyMap Value -> IO ()
+assertOverlaySection obj =
+  case KM.lookup "overlays" obj of
+    Just (Object overlays) -> do
+      KM.member "weather" overlays `shouldBe` True
+      case KM.lookup "weather" overlays of
+        Just (Object weatherOverlay) -> do
+          assertObjectField "schema" weatherOverlay
+          assertObjectField "payload" weatherOverlay
+          assertObjectField "provenance" weatherOverlay
+        _ -> expectationFailure "expected weather overlay payload"
+    _ -> expectationFailure "expected overlays payload object"
 
 assertEncodedChunkSection :: Key -> KM.KeyMap Value -> IO ()
 assertEncodedChunkSection key obj =

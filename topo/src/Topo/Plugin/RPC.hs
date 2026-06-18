@@ -37,6 +37,7 @@ module Topo.Plugin.RPC
   , rpcSimNode
     -- * Terrain payload helpers
   , terrainWorldToPayload
+  , terrainWorldToCompletePayload
   , decodeTerrainWritesValue
   , applyGeneratorTerrainValue
   , encodeBase64Text
@@ -550,6 +551,9 @@ applyGeneratorResult manifest world result = do
 
 terrainWorldToPayload :: Topo.World.TerrainWorld -> Either Text Value
 terrainWorldToPayload = Payload.terrainWorldToPayload
+
+terrainWorldToCompletePayload :: Topo.World.TerrainWorld -> Either Text Value
+terrainWorldToCompletePayload = Payload.terrainWorldToCompletePayload
 
 decodeTerrainWritesValue :: Maybe Value -> Either Text TerrainWrites
 decodeTerrainWritesValue = Payload.decodeTerrainWritesValue

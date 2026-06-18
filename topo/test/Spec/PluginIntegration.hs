@@ -21,6 +21,7 @@ import Test.QuickCheck (NonEmptyList(..))
 
 import Data.Aeson (Value(..), (.=), object)
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.IntMap.Strict as IntMap
@@ -34,7 +35,7 @@ import Data.Word (Word8)
 import System.IO (stdin, stdout)
 
 import Topo.Calendar (CalendarDate(..))
-import Topo.Overlay (emptyOverlay)
+import Topo.Overlay (emptyOverlay, insertOverlay)
 import Topo.Overlay.Schema (OverlaySchema(..), OverlayStorage(..), OverlayDeps(..))
 import Topo.Pipeline (PipelineStage(..))
 import Topo.Pipeline.Stage (StageId(..))
@@ -68,6 +69,7 @@ import Topo.Plugin.RPC
 import Topo.Plugin.RPC.Transport (Transport(..))
 import Topo.Simulation (SimContext(..), SimNode(..), SimNodeId(..), twrTerrain)
 import Topo.Types (ChunkId(..), TerrainChunk, TileCoord(..), WorldConfig(..), tcElevation)
+import Topo.Weather (weatherOverlaySchema)
 import Topo.World
   ( TerrainWorld(..)
   , emptyClimateChunk
@@ -418,6 +420,19 @@ spec = describe "Plugin Integration" $ do
                       Nothing -> False
                       Just mergedChunk ->
                         tcElevation mergedChunk == tcElevation updatedChunk
+
+    it "keeps capability-scoped terrain payload separate from overlays and weather" $ do
+      let config = WorldConfig { wcChunkSize = 8 }
+          world = (mkTestWorld config)
+            { twOverlays = insertOverlay (emptyOverlay weatherOverlaySchema) (twOverlays (mkTestWorld config)) }
+      payload <- case terrainWorldToPayload world of
+        Left err -> expectationFailure (show err) >> fail "payload failed"
+        Right value -> pure value
+      case payload of
+        Object obj -> do
+          KM.lookup "overlays" obj `shouldBe` Nothing
+          KM.lookup "weather" obj `shouldBe` Nothing
+        _ -> expectationFailure "expected terrain payload object"
 
     prop "property: terrain payload round-trips terrain/climate/vegetation chunk sections"
       $ \(NonEmpty rawIds0 :: NonEmptyList Int) ->

@@ -6,6 +6,7 @@
 -- including base64 chunk encoding and decode/apply helpers.
 module Topo.Plugin.RPC.Payload
   ( terrainWorldToPayload
+  , terrainWorldToCompletePayload
   , decodeTerrainWritesValue
   , applyGeneratorTerrainValue
   , encodeBase64Text
@@ -15,6 +16,7 @@ module Topo.Plugin.RPC.Payload
 import Data.Bits ((.&.), (.|.), shiftL, shiftR)
 import qualified Data.ByteString as BS
 import qualified Data.IntMap.Strict as IntMap
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word8)
@@ -25,15 +27,26 @@ import Data.Aeson (Value(..), (.=), object)
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 
+import Topo.Calendar (PlanetAge(..), WorldTime(..))
 import Topo.Export
   ( ExportError(..)
   , decodeClimateChunk
   , decodeTerrainChunk
   , decodeVegetationChunk
+  , encodeBiomeChunk
   , encodeClimateChunk
+  , encodeGlacierChunk
+  , encodeGroundwaterChunk
+  , encodeRiverChunk
   , encodeTerrainChunk
   , encodeVegetationChunk
+  , encodeVolcanismChunk
+  , encodeWaterBodyChunk
+  , encodeWeatherChunk
   )
+import Topo.Metadata (MetadataStore(..), SomeMetadata(..), metadataEncode)
+import Topo.Overlay (Overlay(..), OverlayProvenance(..), OverlayStore(..), overlayCount, overlayNames)
+import Topo.Overlay.JSON (overlayToJSON)
 import Topo.Simulation
   ( TerrainWrites(..)
   , applyTerrainWrites
@@ -41,27 +54,27 @@ import Topo.Simulation
   )
 import Topo.Planet (mkLatitudeMapping)
 import qualified Topo.Types
+import Topo.Units (UnitScales(..))
+import Topo.Weather (getWeatherFromOverlay)
 import Topo.World (TerrainWorld(..))
 import qualified Topo.World
 
--- | Encode a terrain world into the RPC terrain payload object.
+-- | Encode the capability-scoped terrain RPC payload.
+--
+-- This is used for plugin @readTerrain@ delivery and intentionally excludes
+-- overlays/weather, which are delivered through separate capability gates.
 terrainWorldToPayload :: Topo.World.TerrainWorld -> Either Text Value
 terrainWorldToPayload world = do
-  terrainObj <- encodeChunkMap
-    (Topo.World.twTerrain world)
-    (encodeTerrainChunk (Topo.World.twConfig world))
-  climateObj <- encodeChunkMap
-    (Topo.World.twClimate world)
-    (encodeClimateChunk (Topo.World.twConfig world))
-  vegetationObj <- encodeChunkMap
-    (Topo.World.twVegetation world)
-    (encodeVegetationChunk (Topo.World.twConfig world))
+  let config = Topo.World.twConfig world
+  terrainObj <- encodeChunkMap (Topo.World.twTerrain world) (encodeTerrainChunk config)
+  climateObj <- encodeChunkMap (Topo.World.twClimate world) (encodeClimateChunk config)
+  vegetationObj <- encodeChunkMap (Topo.World.twVegetation world) (encodeVegetationChunk config)
   Right $ object
     [ "chunk_count" .= IntMap.size (Topo.World.twTerrain world)
     , "climate_count" .= IntMap.size (Topo.World.twClimate world)
     , "river_count" .= IntMap.size (Topo.World.twRivers world)
     , "vegetation_count" .= IntMap.size (Topo.World.twVegetation world)
-    , "chunk_size" .= Topo.Types.wcChunkSize (Topo.World.twConfig world)
+    , "chunk_size" .= Topo.Types.wcChunkSize config
     , "hex_grid" .= Topo.World.twHexGrid world
     , "planet" .= Topo.World.twPlanet world
     , "slice" .= Topo.World.twSlice world
@@ -70,6 +83,133 @@ terrainWorldToPayload world = do
     , "climate" .= Object climateObj
     , "vegetation" .= Object vegetationObj
     ]
+
+-- | Encode the complete Writ/full-world export payload.
+--
+-- This is not used for capability-scoped plugin terrain reads; callers that
+-- need every generated/persisted layer must opt in explicitly.
+terrainWorldToCompletePayload :: Topo.World.TerrainWorld -> Either Text Value
+terrainWorldToCompletePayload world = do
+  let config = Topo.World.twConfig world
+      weather = getWeatherFromOverlay world
+  terrainObj <- encodeChunkMap (Topo.World.twTerrain world) (encodeTerrainChunk config)
+  climateObj <- encodeChunkMap (Topo.World.twClimate world) (encodeClimateChunk config)
+  riverObj <- encodeChunkMap (Topo.World.twRivers world) (encodeRiverChunk config)
+  groundwaterObj <- encodeChunkMap (Topo.World.twGroundwater world) (encodeGroundwaterChunk config)
+  volcanismObj <- encodeChunkMap (Topo.World.twVolcanism world) (encodeVolcanismChunk config)
+  glacierObj <- encodeChunkMap (Topo.World.twGlaciers world) (encodeGlacierChunk config)
+  waterBodyObj <- encodeChunkMap (Topo.World.twWaterBodies world) (encodeWaterBodyChunk config)
+  vegetationObj <- encodeChunkMap (Topo.World.twVegetation world) (encodeVegetationChunk config)
+  biomeObj <- encodeChunkMap (Topo.World.twTerrain world) (encodeBiomeChunk config)
+  weatherObj <- encodeChunkMap weather (encodeWeatherChunk config)
+  Right $ object
+    [ "chunk_count" .= IntMap.size (Topo.World.twTerrain world)
+    , "climate_count" .= IntMap.size (Topo.World.twClimate world)
+    , "river_count" .= IntMap.size (Topo.World.twRivers world)
+    , "groundwater_count" .= IntMap.size (Topo.World.twGroundwater world)
+    , "volcanism_count" .= IntMap.size (Topo.World.twVolcanism world)
+    , "glacier_count" .= IntMap.size (Topo.World.twGlaciers world)
+    , "water_body_count" .= IntMap.size (Topo.World.twWaterBodies world)
+    , "vegetation_count" .= IntMap.size (Topo.World.twVegetation world)
+    , "biome_count" .= IntMap.size (Topo.World.twTerrain world)
+    , "weather_count" .= IntMap.size weather
+    , "overlay_count" .= overlayCount (Topo.World.twOverlays world)
+    , "chunk_size" .= Topo.Types.wcChunkSize config
+    , "seed" .= Topo.World.twSeed world
+    , "world_time" .= worldTimeToJSON (Topo.World.twWorldTime world)
+    , "planet_age" .= planetAgeToJSON (Topo.World.twPlanetAge world)
+    , "hex_grid" .= Topo.World.twHexGrid world
+    , "planet" .= Topo.World.twPlanet world
+    , "slice" .= Topo.World.twSlice world
+    , "unit_scales" .= unitScalesToJSON (Topo.World.twUnitScales world)
+    , "gen_config" .= Topo.World.twGenConfig world
+    , "overlay_manifest" .= Topo.World.twOverlayManifest world
+    , "overlay_names" .= overlayNames (Topo.World.twOverlays world)
+    , "encoding" .= ("base64" :: Text)
+    , "terrain" .= Object terrainObj
+    , "climate" .= Object climateObj
+    , "rivers" .= Object riverObj
+    , "groundwater" .= Object groundwaterObj
+    , "volcanism" .= Object volcanismObj
+    , "glaciers" .= Object glacierObj
+    , "water_bodies" .= Object waterBodyObj
+    , "vegetation" .= Object vegetationObj
+    , "biomes" .= Object biomeObj
+    , "weather" .= Object weatherObj
+    , "overlays" .= overlaysToJSON (Topo.World.twOverlays world)
+    , "metadata" .= metadataStoreToJSON (Topo.World.twMeta world)
+    ]
+
+worldTimeToJSON :: WorldTime -> Value
+worldTimeToJSON time = object
+  [ "tick" .= wtTick time
+  , "tick_rate" .= wtTickRate time
+  ]
+
+planetAgeToJSON :: PlanetAge -> Value
+planetAgeToJSON age = object
+  [ "years" .= paYears age
+  ]
+
+unitScalesToJSON :: UnitScales -> Value
+unitScalesToJSON scales = object
+  [ "temp_scale" .= usTempScale scales
+  , "temp_offset" .= usTempOffset scales
+  , "elev_range" .= usElevRange scales
+  , "water_level" .= usWaterLevel scales
+  , "elev_gradient" .= usElevGradient scales
+  , "precip_scale" .= usPrecipScale scales
+  , "wind_scale" .= usWindScale scales
+  , "pressure_min" .= usPressureMin scales
+  , "pressure_range" .= usPressureRange scales
+  , "soil_scale" .= usSoilScale scales
+  ]
+
+overlaysToJSON :: OverlayStore -> Value
+overlaysToJSON (OverlayStore overlays) =
+  Object (KM.fromList (map overlayEntryToJSON (Map.toList overlays)))
+
+overlayEntryToJSON :: (Text, Overlay) -> (Key.Key, Value)
+overlayEntryToJSON (name, overlay) =
+  ( Key.fromText name
+  , object
+      [ "schema" .= ovSchema overlay
+      , "payload" .= overlayToJSON overlay
+      , "provenance" .= overlayProvenanceToJSON (ovProvenance overlay)
+      ]
+  )
+
+overlayProvenanceToJSON :: OverlayProvenance -> Value
+overlayProvenanceToJSON provenance = object
+  [ "seed" .= opSeed provenance
+  , "version" .= opVersion provenance
+  , "source" .= opSource provenance
+  ]
+
+metadataStoreToJSON :: MetadataStore -> Value
+metadataStoreToJSON (MetadataStore hexMeta regionMeta) = object
+  [ "hex" .= map hexMetadataToJSON (Map.toList hexMeta)
+  , "region" .= map regionMetadataToJSON (Map.toList regionMeta)
+  ]
+
+hexMetadataToJSON :: (Topo.Types.HexCoord, Map.Map Text SomeMetadata) -> Value
+hexMetadataToJSON (coord, entries) = object
+  [ "coord" .= show coord
+  , "entries" .= map metadataEntryToJSON (Map.toList entries)
+  ]
+
+regionMetadataToJSON :: (Topo.Types.RegionId, Map.Map Text SomeMetadata) -> Value
+regionMetadataToJSON (regionId, entries) = object
+  [ "region_id" .= show regionId
+  , "entries" .= map metadataEntryToJSON (Map.toList entries)
+  ]
+
+metadataEntryToJSON :: (Text, SomeMetadata) -> Value
+metadataEntryToJSON (name, SomeMetadata version value) = object
+  [ "key" .= name
+  , "version" .= version
+  , "payload" .= metadataEncode value
+  ]
 
 -- | Decode a simulation @terrain_writes@ payload into structured writes.
 decodeTerrainWritesValue :: Maybe Value -> Either Text TerrainWrites
@@ -101,9 +241,24 @@ hasOnlySummaryKeys keyMap = all (`elem` allowedKeys) (map Key.toText (KM.keys ke
       [ "chunk_count"
       , "climate_count"
       , "river_count"
+      , "groundwater_count"
+      , "volcanism_count"
+      , "glacier_count"
+      , "water_body_count"
       , "vegetation_count"
+      , "biome_count"
+      , "weather_count"
+      , "overlay_count"
       , "chunk_size"
+      , "seed"
+      , "world_time"
+      , "planet_age"
+      , "unit_scales"
+      , "gen_config"
+      , "overlay_manifest"
+      , "overlay_names"
       , "encoding"
+      , "metadata"
       ]
 
 encodeChunkMap
