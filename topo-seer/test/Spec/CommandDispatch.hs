@@ -918,6 +918,7 @@ serviceOperationCases =
   , serviceCase "get_sim_state" Null ExpectServiceSuccess
   , serviceCase "set_sim_auto_tick" (object ["enabled" .= False, "rate" .= (2.0 :: Double)]) ExpectServiceSuccess
   , serviceCase "sim_tick" Null ExpectServiceSuccess
+  , serviceCase "get_sim_dag" Null ExpectServiceSuccess
   , serviceCase "get_logs" Null ExpectServiceFailure
   , ServiceOperationCase "take_screenshot" Null ExpectServiceFailure $ \ctx -> do
       busy <- newEmptyMVar

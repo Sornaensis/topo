@@ -49,11 +49,10 @@ The check fails when any of these conditions is true:
 | Plugin capability, manifest, RPC, transport, payload, and data-resource contracts | Planned | topo plugin maintainers | Plugin status/resource/dependency/external data-source UI planned through M5-M9. | M2 plugin services; M3 plugin/resource routes; M5-M7 protocol, manifest, CRUD, and backend-neutral external data-source contracts. | Existing plugin/data-resource specs; v3 transport/manifest/CRUD tests planned. |
 | Command DTO compatibility types | Compatibility | topo-seer service maintainers | Used indirectly by current command paths. | M2 maps commands to AppService; M3 uses topo-api DTOs; M4 removes MCP dependence. | Existing command specs. |
 | Topo-seer actor runtime, workers, plugin manager, logging, snapshots, and UI state actor | Partial | topo-seer runtime maintainers | Runtime-backed SDL status; M8 reduces direct coupling through AppService/reducers. | M2 actor adapters; M3 status/events/logs/plugin/generation routes. | Existing actor/runtime specs; service/API parity tests planned. |
-| Command channel, dispatch, and UI action compatibility adapters | Compatibility | topo-seer service maintainers | Current UI/automation compatibility path. | M2 makes this an AppService adapter; M3/M4 replace public automation with HTTP. | Existing command and MCP tool tests. |
+| Command channel, dispatch, and UI action compatibility adapters | Compatibility | topo-seer service maintainers | Current UI/automation compatibility path. | M2 makes this an AppService adapter; M3/M4 replace public automation with HTTP. | Existing command and HTTP route parity tests. |
 | Application boot, runtime config, snapshots, persistence, screenshots, system wiring, and timing | Partial | topo-seer runtime maintainers | Existing app/config/save-load/screenshot paths; M8 splits `Seer.System`. | M2 runtime/config/persistence services; M3 health/state/config/world/screenshot routes. | Existing config/persistence specs; API tests planned. |
 | SDL UI drawing, input routing, editor, renderer, widgets, layout, theme, terrain atlas/cache, and view rendering | Partial | topo-seer UI maintainers | Primary SDL UI; M8 componentizes panels/reducers/layout/draw commands and M9 closes feature gaps. | M2/M8 route mutating actions through AppService; M3 exposes state/actions/metadata rather than SDL internals. | Existing UI/editor/render specs; component and API parity tests planned. |
 | Plugin SDK declarations, payload helpers, terrain/overlay helpers, and runner | Planned | topo plugin maintainers | Developer-facing SDK; runtime declarations surface through plugin UI after M5-M9. | SDK feeds manifest/protocol/resource services; M6 makes manifest v3 generation canonical. | Existing SDK payload/runner specs; manifest v3 golden tests planned. |
-| Transitional MCP bridge over topo-seer command IPC | Compatibility | topo-seer automation maintainers | No direct UI surface. | M4 migrates public capabilities to HTTP and removes the bridge after parity. | Existing MCP server/tool/resource specs. |
 
 ## Package coverage summary
 
@@ -62,7 +61,6 @@ The inventory currently covers exposed library modules from these packages:
 - `topo`
 - `topo-seer`
 - `topo-plugin-sdk`
-- `topo-mcp`
 
 Executable-only example plugin packages are intentionally absent because they do
 not expose library modules. Their behavior is tracked through plugin SDK and

@@ -45,6 +45,9 @@ library:
     - Seer.Draw.LeftPanel
     - Seer.Draw.Overlay
     - Seer.Headless
+    - Seer.HTTP.Auth
+    - Seer.HTTP.OpenAPI
+    - Seer.HTTP.Server
     - Seer.Editor.Brush
     - Seer.Editor.History
     - Seer.Editor.Preview
@@ -161,11 +164,15 @@ library:
     - vector
     - topo
     - hyperspace
+    - http-types
     - text
     - time
     - random
     - process
     - sdl2
+    - scientific
+    - wai
+    - warp
     - sdl2-ttf
 
 executables:
@@ -224,6 +231,8 @@ tests:
       - topo
       - topo-seer
       - hspec
+      - http-client
+      - http-types
       - hyperspace
       - text
       - vector

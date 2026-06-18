@@ -156,11 +156,12 @@ actor AtlasWorker
                    _ <- evaluate (acgVertices merged)
                    _ <- evaluate (acgIndices merged)
                    case mbDnTile' of
-                     Just dt -> do
-                       let dnM = head (atgChunks dt)
-                       _ <- evaluate (acgVertices dnM)
-                       _ <- evaluate (acgIndices dnM)
-                       pure ()
+                     Just dt -> case atgChunks dt of
+                       dnM:_ -> do
+                         _ <- evaluate (acgVertices dnM)
+                         _ <- evaluate (acgIndices dnM)
+                         pure ()
+                       [] -> pure ()
                      Nothing -> pure ()
                    let r = buildResult tile' mbDnTile'
                    _ <- evaluate r

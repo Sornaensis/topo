@@ -12,8 +12,7 @@ packages:
 | Package | Current role | 1.0 implication |
 |---|---|---|
 | `topo` | Core terrain generation, terrain/world types, overlays, persistence, simulation, plugin protocol/data-resource types, and command types. | Treat as the stable library/API core. |
-| `topo-seer` | SDL2 application, render-thread-owned UI loop, actor system, command dispatch, plugin manager, rendering, persistence, simulation, and tests. | Becomes the authoritative runtime host: UI, AppService, HTTP/OpenAPI, and plugin supervision. |
-| `topo-mcp` | MCP JSON-RPC server for remote control of topo-seer through command IPC. | Transitional bridge only; remove after direct HTTP parity. |
+| `topo-seer` | SDL2 application, render-thread-owned UI loop, actor system, AppService-backed HTTP/OpenAPI server, command dispatch compatibility, plugin manager, rendering, persistence, simulation, and tests. | Becomes the authoritative runtime host: UI, AppService, HTTP/OpenAPI, and plugin supervision. |
 | `topo-plugin-sdk` | Haskell SDK for plugin authors, including SDK types, payload helpers, and runner. | Becomes canonical SDK for manifest/protocol/transport behavior. |
 | `topo-plugin-example` | Minimal terrain plugin example. | Keep as small fixture/example. |
 | `topo-plugin-civ-example` | Richer civilization-style plugin example. | Upgrade toward full-stack plugin fixture coverage. |
@@ -62,20 +61,20 @@ HTTP, UI, and compatibility command paths.
 
 ## Current external control path
 
-The current external automation path is layered through MCP and command IPC:
+The current public automation path is direct topo-seer HTTP/OpenAPI over the
+AppService boundary:
 
 ```text
 external client
-  -> topo-mcp JSON-RPC over stdio
-  -> topo-mcp tools/resources
-  -> topo-seer command IPC
-  -> Seer.Command.Dispatch
+  -> topo-seer HTTP/OpenAPI
+  -> Seer.HTTP.Server
+  -> AppService
   -> actors / UI / runtime state
 ```
 
-This means MCP is not the system of record. It is a bridge over topo-seer's
-existing command surface. For 1.0, direct HTTP/OpenAPI should replace this as
-the public automation path.
+The legacy command IPC remains an internal compatibility adapter for existing
+runtime handlers while service extraction continues, but it is no longer exposed
+through a separate MCP package in the Stack workspace.
 
 ## Current plugin foundation
 
@@ -142,8 +141,8 @@ generation before 1.0:
 ## Current 1.0 risks
 
 - CI coverage and cross-platform test gates are not yet the release gate.
-- HTTP/OpenAPI does not yet appear in the `topo-seer` package dependencies.
-- MCP remains in the workspace and remains the current external bridge.
+- HTTP/OpenAPI now appears in the `topo-seer` package dependencies, but the
+  standalone `topo-api` split from ADR 0001 is still future work.
 - Plugin transport needs real platform transport tests.
 - Backend-neutral external data-source integration needs a clear contract so
   topo does not own or privilege any plugin ecosystem data backend.

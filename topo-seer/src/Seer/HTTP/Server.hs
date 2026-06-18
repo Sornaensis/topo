@@ -1,0 +1,486 @@
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE StrictData #-}
+
+-- | WAI/Warp HTTP server over AppService.
+module Seer.HTTP.Server
+  ( HttpServerConfig(..)
+  , defaultHttpServerConfig
+  , parseHttpBind
+  , runHttpServer
+  , forkHttpServer
+  , httpApplication
+  , handleHttpRequest
+  , HttpRequest(..)
+  , HttpResponse(..)
+  , httpRouteSpecs
+  , friendlyHttpRouteSpecs
+  , commandHttpRouteSpecs
+  , headlessHttpAppService
+  ) where
+
+import Codec.Picture (Image(..), PixelRGBA8(..), encodePng)
+import Control.Concurrent (ThreadId, forkIO)
+import Control.Exception (SomeException, try)
+import Data.Aeson (Value(..), eitherDecode, object, (.=))
+import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KM
+import qualified Data.ByteString.Lazy as BL
+import qualified Data.ByteString.Base64 as Base64
+import qualified Data.ByteString as BS
+import Data.Foldable (asum)
+import Data.Maybe (fromMaybe)
+import Data.Scientific (fromFloatDigits, scientific)
+import Data.String (fromString)
+import Data.Text (Text)
+import qualified Data.Text as Text
+import qualified Data.Text.Encoding as Text
+import qualified Data.Vector.Storable as VS
+import Text.Read (readMaybe)
+import qualified Network.HTTP.Types as HTTP
+import qualified Network.Wai as Wai
+import qualified Network.Wai.Handler.Warp as Warp
+import qualified Data.ByteString.Lazy as LBS
+
+import Seer.Command.AppServiceAdapter (commandAppService)
+import Seer.HTTP.Auth
+import Seer.HTTP.OpenAPI
+import Seer.Service.AppService
+import Seer.Service.Context (ServiceContext)
+import Seer.Service.Types
+import Seer.Service.Validation (validateAppServiceRequest)
+
+-- | HTTP runtime configuration. The default is intentionally loopback-only.
+data HttpServerConfig = HttpServerConfig
+  { hscBindHost :: !String
+  , hscBindPort :: !Int
+  , hscBearerToken :: !(Maybe Text)
+  } deriving (Eq, Show)
+
+defaultHttpServerConfig :: HttpServerConfig
+defaultHttpServerConfig = HttpServerConfig
+  { hscBindHost = "127.0.0.1"
+  , hscBindPort = 7373
+  , hscBearerToken = Nothing
+  }
+
+-- | Parse @HOST:PORT@ bindings used by @topo-seer --http@.
+parseHttpBind :: String -> Maybe (String, Int)
+parseHttpBind input =
+  case breakOnLast ':' input of
+    Nothing -> Nothing
+    Just (host, portText)
+      | null host -> Nothing
+      | [(port, "")] <- reads portText
+      , port > 0
+      , port <= (65535 :: Int) -> Just (host, port)
+      | otherwise -> Nothing
+
+breakOnLast :: Char -> String -> Maybe (String, String)
+breakOnLast needle input = go input Nothing
+  where
+    go [] found = found
+    go (c:cs) found
+      | c == needle = go cs (Just (take (length input - length cs - 1) input, cs))
+      | otherwise = go cs found
+
+runHttpServer :: HttpServerConfig -> AppService -> ServiceContext -> IO ()
+runHttpServer cfg app ctx = do
+  case validateHttpAuthConfig (HttpAuthConfig (hscBindHost cfg) (hscBearerToken cfg)) of
+    Left err -> fail (Text.unpack err)
+    Right () -> pure ()
+  Warp.runSettings settings (httpApplication cfg app ctx)
+  where
+    settings = Warp.setHost (fromStringHost (hscBindHost cfg))
+      $ Warp.setPort (hscBindPort cfg) Warp.defaultSettings
+
+forkHttpServer :: HttpServerConfig -> AppService -> ServiceContext -> IO ThreadId
+forkHttpServer cfg app ctx = do
+  case validateHttpAuthConfig (HttpAuthConfig (hscBindHost cfg) (hscBearerToken cfg)) of
+    Left err -> fail (Text.unpack err)
+    Right () -> pure ()
+  forkIO (runHttpServer cfg app ctx)
+
+fromStringHost :: String -> Warp.HostPreference
+fromStringHost = fromString
+
+-- | WAI application used by both the real server and future integration tests.
+httpApplication :: HttpServerConfig -> AppService -> ServiceContext -> Wai.Application
+httpApplication cfg app ctx request respond = do
+  let method = Text.decodeUtf8 (Wai.requestMethod request)
+      path = Wai.pathInfo request
+      headers = decodeHeaders (Wai.requestHeaders request)
+      unauthorized = jsonResponse 401 (errorEnvelope "unauthorized" "missing or invalid bearer token" [])
+  case lookupRoute method path of
+    Nothing -> respond (waiResponse (jsonResponse 404 (errorEnvelope "not_found" "route not found" [])))
+    Just spec
+      | not (isPublicRoute spec)
+      , not (isAuthorized (hscBearerToken cfg) headers) -> respond (waiResponse unauthorized)
+      | otherwise -> do
+          body <- Wai.strictRequestBody request
+          case decodeRequestBody body of
+            Left err -> respond (waiResponse (jsonResponse 400 (errorEnvelope "invalid_json" err [])))
+            Right mBody -> do
+              let httpReq = HttpRequest
+                    { hreqMethod = method
+                    , hreqPath = path
+                    , hreqQuery = map decodeQueryParam (Wai.queryString request)
+                    , hreqHeaders = headers
+                    , hreqBody = mBody
+                    }
+              rsp <- handleHttpRequest cfg app ctx httpReq
+              respond (waiResponse rsp)
+
+-- | Pure request shape for route tests without opening a socket.
+data HttpRequest = HttpRequest
+  { hreqMethod :: !Text
+  , hreqPath :: ![Text]
+  , hreqQuery :: ![(Text, Maybe Text)]
+  , hreqHeaders :: ![(Text, Text)]
+  , hreqBody :: !(Maybe Value)
+  } deriving (Eq, Show)
+
+data HttpResponse = HttpResponse
+  { hresStatusCode :: !Int
+  , hresHeaders :: ![(Text, Text)]
+  , hresBody :: !Value
+  } deriving (Eq, Show)
+
+handleHttpRequest :: HttpServerConfig -> AppService -> ServiceContext -> HttpRequest -> IO HttpResponse
+handleHttpRequest cfg app ctx req =
+  case lookupRoute (hreqMethod req) (hreqPath req) of
+    Nothing -> pure (jsonResponse 404 (errorEnvelope "not_found" "route not found" []))
+    Just spec
+      | not (isPublicRoute spec)
+      , not (isAuthorized (hscBearerToken cfg) (hreqHeaders req)) ->
+          pure (jsonResponse 401 (errorEnvelope "unauthorized" "missing or invalid bearer token" []))
+      | otherwise -> handleRoute spec
+  where
+    handleRoute spec = case hrsOperationId spec of
+      "meta.health" -> pure (jsonResponse 200 (object ["status" .= ("ok" :: Text)]))
+      "meta.version" -> pure (jsonResponse 200 (object
+        [ "name" .= ("topo-seer" :: Text)
+        , "version" .= ("0.1.0.0" :: Text)
+        , "api_version" .= ("1" :: Text)
+        ]))
+      "meta.openapi" -> pure (jsonResponse 200 (openApiDocument httpRouteSpecs))
+      "events.list" -> pure (jsonResponse 200 (object
+        [ "events" .= ([] :: [Value])
+        , "mode" .= ("polling" :: Text)
+        ]))
+      _ -> case hrsServiceMethod spec of
+        Nothing -> pure (jsonResponse 500 (errorEnvelope "internal_error" "route has no handler" []))
+        Just method -> invokeService app ctx method (requestParams spec req)
+
+isPublicRoute :: HttpRouteSpec -> Bool
+isPublicRoute spec = hrsOperationId spec == "meta.health"
+
+requestParams :: HttpRouteSpec -> HttpRequest -> Value
+requestParams spec req =
+  case hreqBody req of
+    Just value -> value
+    Nothing
+      | hrsMethod spec == "GET" -> queryObject (hreqQuery req)
+      | otherwise -> Null
+
+queryObject :: [(Text, Maybe Text)] -> Value
+queryObject query = object
+  [ Key.fromText key .= maybe Null queryValue value
+  | (key, value) <- query
+  ]
+
+queryValue :: Text -> Value
+queryValue value =
+  case (readMaybe (Text.unpack value) :: Maybe Integer) of
+    Just integer -> Number (scientific integer 0)
+    Nothing -> case (readMaybe (Text.unpack value) :: Maybe Double) of
+      Just number -> Number (fromFloatDigits number)
+      Nothing -> String value
+
+invokeService :: AppService -> ServiceContext -> Text -> Value -> IO HttpResponse
+invokeService app ctx method params =
+  case lookup method (appServiceHandlersByMethod app) of
+    Nothing -> pure (jsonResponse 404 (errorEnvelope "not_found" ("unknown service method: " <> method) []))
+    Just handler -> case validateAppServiceRequest method params of
+      Left err -> pure (serviceErrorResponse err)
+      Right () -> do
+        result <- try (handler ctx (ServiceRequest (Just params))) :: IO (Either SomeException ServiceResult)
+        case result of
+          Left _ -> pure (jsonResponse 500 (errorEnvelope "internal_error" "service handler exception" []))
+          Right (Right response) -> pure (jsonResponse 200 (serviceResponseBody response))
+          Right (Left err) -> pure (serviceErrorResponse err)
+
+serviceErrorResponse :: ServiceError -> HttpResponse
+serviceErrorResponse err = jsonResponse (serviceErrorStatus err) (errorEnvelope
+  (serviceErrorCode err)
+  (serviceErrorMessage err)
+  [ object
+      [ "path" .= serviceErrorDetailPath detail
+      , "code" .= serviceErrorDetailCode detail
+      , "message" .= serviceErrorDetailMessage detail
+      ]
+  | detail <- serviceErrorDetails err
+  ])
+
+serviceErrorStatus :: ServiceError -> Int
+serviceErrorStatus err = case serviceErrorKind err of
+  ServiceErrorInvalidRequest -> 400
+  ServiceErrorNotFound -> 404
+  ServiceErrorUnavailable -> 503
+  ServiceErrorRejected -> 409
+  ServiceErrorInternal -> 500
+
+errorEnvelope :: Text -> Text -> [Value] -> Value
+errorEnvelope code message details = object
+  [ "error" .= object
+      [ "code" .= code
+      , "message" .= message
+      , "details" .= details
+      ]
+  ]
+
+jsonResponse :: Int -> Value -> HttpResponse
+jsonResponse status body = HttpResponse
+  { hresStatusCode = status
+  , hresHeaders = [("content-type", "application/json")]
+  , hresBody = body
+  }
+
+waiResponse :: HttpResponse -> Wai.Response
+waiResponse HttpResponse{..} = Wai.responseLBS
+  (HTTP.mkStatus hresStatusCode "")
+  [ (HTTP.hContentType, "application/json") ]
+  (Aeson.encode hresBody)
+
+decodeRequestBody :: LBS.ByteString -> Either Text (Maybe Value)
+decodeRequestBody body
+  | LBS.null body = Right Nothing
+  | otherwise = case eitherDecode body of
+      Left err -> Left (Text.pack err)
+      Right value -> Right (Just value)
+
+decodeQueryParam :: (BS.ByteString, Maybe BS.ByteString) -> (Text, Maybe Text)
+decodeQueryParam (key, value) = (Text.decodeUtf8 key, fmap Text.decodeUtf8 value)
+
+decodeHeaders :: [HTTP.Header] -> [(Text, Text)]
+decodeHeaders headers =
+  case lookup HTTP.hAuthorization headers of
+    Nothing -> []
+    Just value -> [("authorization", Text.decodeUtf8 value)]
+
+lookupRoute :: Text -> [Text] -> Maybe HttpRouteSpec
+lookupRoute method path = asum
+  [ if hrsMethod spec == method && hrsPath spec == path then Just spec else Nothing
+  | spec <- httpRouteSpecs
+  ]
+
+httpRouteSpecs :: [HttpRouteSpec]
+httpRouteSpecs = friendlyHttpRouteSpecs <> commandHttpRouteSpecs
+
+friendlyHttpRouteSpecs :: [HttpRouteSpec]
+friendlyHttpRouteSpecs =
+  [ special "GET" ["health"] "meta.health" "meta" "Check server health."
+  , special "GET" ["version"] "meta.version" "meta" "Read topo-seer and API version metadata."
+  , special "GET" ["openapi.json"] "meta.openapi" "meta" "Read the OpenAPI contract."
+  , special "GET" ["events"] "events.list" "events" "Read currently buffered events."
+
+  , service "GET" ["state"] "state.get" "state" "get_state" "Read current application state." NoRequestBody
+  , service "GET" ["state", "view-modes"] "state.viewModes" "state" "get_view_modes" "List view modes." NoRequestBody
+  , service "GET" ["ui", "state"] "ui.state" "ui" "get_ui_state" "Read UI state." NoRequestBody
+
+  , service "GET" ["config", "sliders"] "config.sliders.list" "config" "get_sliders" "List sliders." NoRequestBody
+  , service "POST" ["config", "sliders", "get"] "config.sliders.get" "config" "get_slider" "Read one slider." RequiredJsonRequestBody
+  , service "POST" ["config", "sliders"] "config.sliders.set" "config" "set_slider" "Set one slider." RequiredJsonRequestBody
+  , service "PATCH" ["config", "sliders"] "config.sliders.setMany" "config" "set_sliders" "Set multiple sliders." RequiredJsonRequestBody
+  , service "POST" ["config", "sliders", "reset"] "config.sliders.reset" "config" "reset_sliders" "Reset sliders." OptionalJsonRequestBody
+  , service "GET" ["config", "summary"] "config.summary" "config" "get_config_summary" "Read config summary." NoRequestBody
+  , serviceWithQuery "GET" ["config", "enums"] "config.enums" "config" "get_enums" "Read enum values." NoRequestBody
+      [requiredQuery "type" "Enum type to read."]
+  , service "GET" ["presets"] "presets.list" "presets" "list_presets" "List presets." NoRequestBody
+  , service "POST" ["presets"] "presets.save" "presets" "save_preset" "Save a preset." RequiredJsonRequestBody
+  , service "POST" ["presets", "load"] "presets.load" "presets" "load_preset" "Load a preset." RequiredJsonRequestBody
+
+  , service "POST" ["world", "generate"] "world.generate" "world" "generate" "Generate a world." OptionalJsonRequestBody
+  , service "GET" ["world"] "world.meta" "world" "get_world_meta" "Read world metadata." NoRequestBody
+  , service "GET" ["world", "generation-status"] "world.generationStatus" "world" "get_generation_status" "Read generation status." NoRequestBody
+  , service "GET" ["worlds"] "worlds.list" "world" "list_worlds" "List saved worlds." NoRequestBody
+  , service "POST" ["worlds", "save"] "worlds.save" "world" "save_world" "Save a world." RequiredJsonRequestBody
+  , service "POST" ["worlds", "load"] "worlds.load" "world" "load_world" "Load a world." RequiredJsonRequestBody
+  , service "PATCH" ["world", "name"] "world.name.set" "world" "set_world_name" "Set world name." RequiredJsonRequestBody
+
+  , serviceWithQuery "GET" ["terrain", "hex"] "terrain.hex" "terrain" "get_hex" "Read one hex." NoRequestBody
+      [requiredQuery "q" "Axial q coordinate.", requiredQuery "r" "Axial r coordinate."]
+  , service "GET" ["terrain", "chunks"] "terrain.chunks" "terrain" "get_chunks" "List chunks." NoRequestBody
+  , serviceWithQuery "GET" ["terrain", "chunk-summary"] "terrain.chunkSummary" "terrain" "get_chunk_summary" "Read chunk summary." NoRequestBody
+      [requiredQuery "chunk" "Chunk id."]
+  , service "GET" ["terrain", "stats"] "terrain.stats" "terrain" "get_terrain_stats" "Read terrain stats." NoRequestBody
+  , service "GET" ["terrain", "overlays"] "terrain.overlays" "terrain" "get_overlays" "List overlays." NoRequestBody
+  , service "POST" ["terrain", "search"] "terrain.search" "terrain" "find_hexes" "Find hexes." RequiredJsonRequestBody
+  , service "POST" ["terrain", "export"] "terrain.export" "terrain" "export_terrain_data" "Export terrain data." OptionalJsonRequestBody
+
+  , service "GET" ["editor"] "editor.state" "editor" "editor_get_state" "Read editor state." NoRequestBody
+  , service "POST" ["editor", "toggle"] "editor.toggle" "editor" "editor_toggle" "Toggle editor." OptionalJsonRequestBody
+  , service "POST" ["editor", "tool"] "editor.tool.set" "editor" "editor_set_tool" "Set editor tool." RequiredJsonRequestBody
+  , service "PATCH" ["editor", "brush"] "editor.brush.set" "editor" "editor_set_brush" "Set editor brush." OptionalJsonRequestBody
+  , service "POST" ["editor", "brush-stroke"] "editor.brushStroke" "editor" "editor_brush_stroke" "Queue a brush stroke." RequiredJsonRequestBody
+  , service "POST" ["editor", "brush-line"] "editor.brushLine" "editor" "editor_brush_line" "Queue a brush line." RequiredJsonRequestBody
+  , service "POST" ["editor", "biome"] "editor.biome.set" "editor" "editor_set_biome" "Set editor biome." RequiredJsonRequestBody
+  , service "POST" ["editor", "form"] "editor.form.set" "editor" "editor_set_form" "Set editor form." RequiredJsonRequestBody
+  , service "POST" ["editor", "hardness"] "editor.hardness.set" "editor" "editor_set_hardness" "Set editor hardness." RequiredJsonRequestBody
+  , service "POST" ["editor", "undo"] "editor.undo" "editor" "editor_undo" "Undo editor action." NoRequestBody
+  , service "POST" ["editor", "redo"] "editor.redo" "editor" "editor_redo" "Redo editor action." NoRequestBody
+
+  , service "GET" ["pipeline"] "pipeline.get" "pipeline" "get_pipeline" "Read pipeline stages." NoRequestBody
+  , service "PATCH" ["pipeline", "stages"] "pipeline.stage.setEnabled" "pipeline" "set_stage_enabled" "Enable or disable a stage." RequiredJsonRequestBody
+
+  , service "GET" ["plugins"] "plugins.list" "plugins" "list_plugins" "List plugins."
+      NoRequestBody
+  , service "GET" ["plugins", "status"] "plugins.status" "plugins" "list_plugins" "Read plugin status."
+      NoRequestBody
+  , service "GET" ["plugins", "state"] "plugins.state" "plugins" "list_plugins" "Read plugin state."
+      NoRequestBody
+  , service "GET" ["plugins", "dependencies"] "plugins.dependencies" "plugins" "list_plugins" "Read plugin dependency declarations."
+      NoRequestBody
+  , service "PATCH" ["plugins", "enabled"] "plugins.setEnabled" "plugins" "set_plugin_enabled" "Enable or disable a plugin."
+      RequiredJsonRequestBody
+  , service "PATCH" ["plugins", "params"] "plugins.params.set" "plugins" "set_plugin_param" "Set a plugin parameter."
+      RequiredJsonRequestBody
+
+  , service "GET" ["data", "plugins"] "data.plugins.list" "data" "data_list_plugins" "List plugins with data resources." NoRequestBody
+  , serviceWithQuery "GET" ["data", "resources"] "data.resources.list" "data" "data_list_resources" "List plugin data resources." NoRequestBody
+      [requiredQuery "plugin" "Plugin name."]
+  , serviceWithQuery "GET" ["data", "records"] "data.records.list" "data" "data_list_records" "List records." NoRequestBody
+      [ requiredQuery "plugin" "Plugin name."
+      , requiredQuery "resource" "Resource name."
+      , optionalQuery "page_size" "Maximum records to return."
+      , optionalQuery "page_offset" "Record offset."
+      ]
+  , service "POST" ["data", "records", "get"] "data.records.get" "data" "data_get_record" "Read one record." RequiredJsonRequestBody
+  , service "POST" ["data", "records"] "data.records.create" "data" "data_create_record" "Create a record." RequiredJsonRequestBody
+  , service "PUT" ["data", "records"] "data.records.update" "data" "data_update_record" "Update a record." RequiredJsonRequestBody
+  , service "DELETE" ["data", "records"] "data.records.delete" "data" "data_delete_record" "Delete a record." RequiredJsonRequestBody
+  , service "GET" ["data", "state"] "data.state" "data" "data_get_state" "Read data browser state." NoRequestBody
+
+  , service "GET" ["simulation"] "simulation.state" "simulation" "get_sim_state" "Read simulation state." NoRequestBody
+  , service "GET" ["simulation", "dag"] "simulation.dag" "simulation" "get_sim_dag" "Read simulation DAG." NoRequestBody
+  , service "POST" ["simulation", "auto-tick"] "simulation.autoTick.set" "simulation" "set_sim_auto_tick" "Set auto-tick." RequiredJsonRequestBody
+  , service "POST" ["simulation", "tick"] "simulation.tick" "simulation" "sim_tick" "Run simulation ticks." OptionalJsonRequestBody
+
+  , service "GET" ["logs"] "logs.get" "logs" "get_logs" "Read logs." NoRequestBody
+  , service "POST" ["screenshots"] "screenshots.take" "screenshots" "take_screenshot" "Capture a screenshot." OptionalJsonRequestBody
+
+  , service "POST" ["ui", "seed"] "ui.seed.set" "ui" "set_seed" "Set seed." RequiredJsonRequestBody
+  , service "POST" ["ui", "view-mode"] "ui.viewMode.set" "ui" "set_view_mode" "Set view mode." RequiredJsonRequestBody
+  , service "POST" ["ui", "config-tab"] "ui.configTab.set" "ui" "set_config_tab" "Set config tab." RequiredJsonRequestBody
+  , service "POST" ["ui", "select-hex"] "ui.hex.select" "ui" "select_hex" "Select a hex." OptionalJsonRequestBody
+  , service "POST" ["ui", "overlay"] "ui.overlay.set" "ui" "set_overlay" "Set overlay." RequiredJsonRequestBody
+  , serviceWithQuery "GET" ["ui", "overlay-fields"] "ui.overlayFields.list" "ui" "list_overlay_fields" "List overlay fields." NoRequestBody
+      [optionalQuery "overlay" "Overlay name."]
+  , service "POST" ["ui", "overlay", "cycle"] "ui.overlay.cycle" "ui" "cycle_overlay" "Cycle overlay." RequiredJsonRequestBody
+  , service "POST" ["ui", "overlay-field", "cycle"] "ui.overlayField.cycle" "ui" "cycle_overlay_field" "Cycle overlay field." RequiredJsonRequestBody
+  , service "PUT" ["ui", "camera"] "ui.camera.set" "ui" "set_camera" "Set camera." RequiredJsonRequestBody
+  , service "GET" ["ui", "camera"] "ui.camera.get" "ui" "get_camera" "Read camera." NoRequestBody
+  , service "POST" ["ui", "camera", "zoom-to-chunk"] "ui.camera.zoomToChunk" "ui" "zoom_to_chunk" "Zoom to chunk." RequiredJsonRequestBody
+  , service "PUT" ["ui", "left-panel"] "ui.leftPanel.set" "ui" "set_left_panel" "Set left panel visibility." RequiredJsonRequestBody
+  , service "PUT" ["ui", "left-tab"] "ui.leftTab.set" "ui" "set_left_tab" "Set left tab." RequiredJsonRequestBody
+  , service "POST" ["ui", "config-panel", "toggle"] "ui.configPanel.toggle" "ui" "toggle_config_panel" "Toggle config panel." OptionalJsonRequestBody
+  , service "PUT" ["ui", "log", "collapsed"] "ui.logCollapsed.set" "ui" "set_log_collapsed" "Set log collapsed state." RequiredJsonRequestBody
+  , service "PUT" ["ui", "log", "level"] "ui.logLevel.set" "ui" "set_log_level" "Set log level." RequiredJsonRequestBody
+  , service "GET" ["ui", "panels"] "ui.panels.get" "ui" "get_ui_panels" "Read panel state." NoRequestBody
+  , service "POST" ["ui", "viewport", "scroll"] "ui.viewport.scroll" "ui" "viewport_scroll" "Scroll viewport." RequiredJsonRequestBody
+  , service "POST" ["ui", "viewport", "click"] "ui.viewport.click" "ui" "viewport_click" "Click viewport." RequiredJsonRequestBody
+  , service "POST" ["ui", "viewport", "drag"] "ui.viewport.drag" "ui" "viewport_drag" "Drag viewport." RequiredJsonRequestBody
+  , service "POST" ["ui", "viewport", "hover"] "ui.viewport.hover" "ui" "viewport_hover" "Hover viewport." RequiredJsonRequestBody
+  , service "POST" ["ui", "widgets", "click"] "ui.widgets.click" "ui" "click_widget" "Click widget." RequiredJsonRequestBody
+  , service "GET" ["ui", "widgets"] "ui.widgets.list" "ui" "list_widgets" "List widgets." NoRequestBody
+  , serviceWithQuery "GET" ["ui", "widget-state"] "ui.widgetState.get" "ui" "get_widget_state" "Read widget state." NoRequestBody
+      [requiredQuery "widget_id" "Widget identifier."]
+  , service "GET" ["ui", "dialog"] "ui.dialog.get" "ui" "get_dialog_state" "Read dialog state." NoRequestBody
+  , service "PUT" ["ui", "dialog", "text"] "ui.dialogText.set" "ui" "set_dialog_text" "Set dialog text." RequiredJsonRequestBody
+  , service "POST" ["ui", "dialog", "confirm"] "ui.dialog.confirm" "ui" "dialog_confirm" "Confirm dialog." NoRequestBody
+  , service "POST" ["ui", "dialog", "cancel"] "ui.dialog.cancel" "ui" "dialog_cancel" "Cancel dialog." NoRequestBody
+  , service "POST" ["ui", "key"] "ui.key.send" "ui" "send_key" "Send key." RequiredJsonRequestBody
+  ]
+
+commandHttpRouteSpecs :: [HttpRouteSpec]
+commandHttpRouteSpecs =
+  [ service "POST" ["commands", serviceOperationMethod spec]
+      ("command." <> serviceOperationMethod spec)
+      "commands"
+      (serviceOperationMethod spec)
+      ("Dispatch AppService command method " <> serviceOperationMethod spec <> ".")
+      OptionalJsonRequestBody
+  | spec <- appServiceOperationSpecs
+  ]
+
+special :: Text -> [Text] -> Text -> Text -> Text -> HttpRouteSpec
+special method path operationId tag summary = HttpRouteSpec
+  { hrsMethod = method
+  , hrsPath = path
+  , hrsOperationId = operationId
+  , hrsSummary = summary
+  , hrsTag = tag
+  , hrsServiceMethod = Nothing
+  , hrsRequestBody = NoRequestBody
+  , hrsQueryParams = []
+  }
+
+service :: Text -> [Text] -> Text -> Text -> Text -> Text -> RouteBody -> HttpRouteSpec
+service method path operationId tag serviceMethod summary body =
+  serviceWithQuery method path operationId tag serviceMethod summary body []
+
+serviceWithQuery :: Text -> [Text] -> Text -> Text -> Text -> Text -> RouteBody -> [QueryParamSpec] -> HttpRouteSpec
+serviceWithQuery method path operationId tag serviceMethod summary body queryParams = HttpRouteSpec
+  { hrsMethod = method
+  , hrsPath = path
+  , hrsOperationId = operationId
+  , hrsSummary = summary
+  , hrsTag = tag
+  , hrsServiceMethod = Just serviceMethod
+  , hrsRequestBody = body
+  , hrsQueryParams = queryParams
+  }
+
+requiredQuery :: Text -> Text -> QueryParamSpec
+requiredQuery name description = QueryParamSpec name True description
+
+optionalQuery :: Text -> Text -> QueryParamSpec
+optionalQuery name description = QueryParamSpec name False description
+
+-- | Command-backed AppService with a deterministic headless screenshot handler.
+-- The SDL render-loop screenshot path is still used by normal GUI runs; this
+-- override makes headless HTTP smoke tests return a valid PNG instead of timing
+-- out waiting for a renderer that was intentionally not started.
+headlessHttpAppService :: AppService
+headlessHttpAppService = commandAppService
+  { appScreenshots = ScreenshotService
+      { screenshotTake = headlessScreenshotHandler
+      }
+  }
+
+headlessScreenshotHandler :: ServiceHandler
+headlessScreenshotHandler _ request = do
+  let pngBytes = blankPng
+      body = fromMaybe Null (serviceRequestBody request)
+      mSavePath = case body of
+        Object obj -> case KM.lookup "path" obj of
+          Just (String path) -> Just (Text.unpack path)
+          _ -> Nothing
+        _ -> Nothing
+  mapM_ (BS.writeFile `flip` pngBytes) mSavePath
+  pure $ Right $ ServiceResponse $ object
+    [ "image_base64" .= Text.decodeUtf8 (Base64.encode pngBytes)
+    , "format" .= ("png" :: Text)
+    , "source" .= ("headless" :: Text)
+    ]
+
+blankPng :: BS.ByteString
+blankPng = BL.toStrict $ encodePng image
+  where
+    image = Image
+      { imageWidth = 1
+      , imageHeight = 1
+      , imageData = VS.fromList [0, 0, 0, 255]
+      } :: Image PixelRGBA8

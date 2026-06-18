@@ -86,11 +86,11 @@ through UI or HTTP plumbing.
 
 `topo-seer` should expose direct HTTP over AppService.
 
-The accepted framework/package decision is recorded in
+The amended framework/package decision is recorded in
 [ADR 0001: HTTP Framework and API Package Structure](decisions/0001-http-framework-and-api-package.md):
-use Servant for typed routes, WAI/Warp for serving, servant-openapi3/openapi3
-for generated OpenAPI, and a sibling `topo-api` package for route types, DTOs,
-public errors, events, and OpenAPI generation.
+the HTTP MVP uses WAI/Warp and a route metadata table inside `topo-seer`; a
+future hardening pass may split stable route types, DTOs, public errors, events,
+and OpenAPI generation into a sibling `topo-api` package.
 
 Runtime defaults:
 
@@ -117,23 +117,23 @@ Initial route groups:
 - simulation: state, tick, DAG;
 - logs, presets, and screenshots.
 
-OpenAPI must be generated from typed routes. Drift between implementation,
-handlers, route schemas, examples, and golden artifacts should fail tests.
+OpenAPI must be generated from the same route metadata or typed routes used by
+dispatch. Drift between implementation, handlers, route schemas, examples, and
+golden artifacts should fail tests as the contract hardens.
 
-## MCP removal path
+## HTTP automation path and command compatibility
 
-Current MCP support is a bridge over topo-seer command IPC. The target public
-automation path is direct HTTP/OpenAPI.
+The target public automation path is direct HTTP/OpenAPI. The former MCP bridge
+has been removed from the workspace; remaining command IPC is internal/test
+compatibility while service extraction continues.
 
-Migration steps:
+Ongoing cleanup steps:
 
-1. Inventory every MCP tool/resource and map it to an HTTP route or explicit
-   internal/UI-only waiver.
-2. Add equivalent service/HTTP/OpenAPI tests.
-3. Update docs and examples to HTTP.
-4. Remove `topo-mcp` from the workspace after parity.
-5. Rename any remaining command-channel log terminology so it does not imply
-   MCP is the public client path.
+1. Keep service/HTTP/OpenAPI tests equivalent to the command compatibility
+   surface where that surface still exists.
+2. Keep docs and examples focused on HTTP/OpenAPI as the public automation path.
+3. Avoid command-channel log terminology that implies MCP is the public client
+   path.
 
 Command IPC may remain temporarily as internal/test compatibility if needed,
 but it should not be the documented 1.0 automation surface.

@@ -202,7 +202,7 @@ listenLoop env = bracket setup cleanup acceptLoop
 -- Mutation and screenshot commands are logged to the seer console.
 handleClient :: CommandChannelEnv -> Transport -> IO ()
 handleClient env transport = do
-  logMsg LogInfo "[mcp] client connected"
+  logMsg LogInfo "[command] client connected"
   loop
   where
     logHandle = ahLogHandle (cceActorHandles env)
@@ -222,21 +222,21 @@ handleClient env transport = do
         Left _err -> do
           -- Client disconnected or transport error; exit the loop.
           hPutStrLn stderr "[cmd-channel] client disconnected"
-          logMsg LogInfo "[mcp] client disconnected"
+          logMsg LogInfo "[command] client disconnected"
           pure ()
         Right payload -> do
           case Aeson.eitherDecodeStrict payload of
             Left parseErr -> do
               -- Malformed JSON; send an error response with id -1.
               let rsp = errResponse (-1) (Text.pack ("JSON parse error: " <> parseErr))
-              logMsg LogWarn ("[mcp] JSON parse error: " <> Text.pack parseErr)
+              logMsg LogWarn ("[command] JSON parse error: " <> Text.pack parseErr)
               _ <- sendResponse transport rsp
               loop
             Right cmd -> do
               let method = scMethod cmd
               rsp <- dispatchCommand ctx cmd
                 `catch` \(e :: SomeException) -> do
-                  logMsg LogError ("[mcp] " <> method <> " internal error: " <> Text.pack (show e))
+                  logMsg LogError ("[command] " <> method <> " internal error: " <> Text.pack (show e))
                   pure (errResponse (scId cmd) (Text.pack ("internal error: " <> show e)))
               -- Log mutation/input commands to the seer console.
               case commandCategory method of
@@ -246,10 +246,10 @@ handleClient env transport = do
               loop
 
     logCommandResult method rsp
-      | srSuccess rsp = logMsg LogInfo ("[mcp] " <> method <> " ok")
+      | srSuccess rsp = logMsg LogInfo ("[command] " <> method <> " ok")
       | otherwise = case srError rsp of
-          Just err -> logMsg LogWarn ("[mcp] " <> method <> " error: " <> err)
-          Nothing  -> logMsg LogWarn ("[mcp] " <> method <> " failed")
+          Just err -> logMsg LogWarn ("[command] " <> method <> " error: " <> err)
+          Nothing  -> logMsg LogWarn ("[command] " <> method <> " failed")
 
     sendResponse t rsp = sendMessage t (BL.toStrict (Aeson.encode rsp))
 

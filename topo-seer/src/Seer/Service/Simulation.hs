@@ -30,6 +30,7 @@ data SimulationService = SimulationService
   { simulationGetState :: !ServiceHandler
   , simulationSetAutoTick :: !ServiceHandler
   , simulationTick :: !ServiceHandler
+  , simulationGetDag :: !ServiceHandler
   }
 
 data SimulationStateRequest = SimulationStateRequest
@@ -79,14 +80,12 @@ data SimulationDagResponse = SimulationDagResponse
 simulationServiceGroup :: ServiceGroupSpec
 simulationServiceGroup = ServiceGroupSpec "simulation" simulationServiceOperationSpecs
 
--- | Current command-backed simulation operations.  The DAG operation below is a
--- typed public contract for the M2/M3 surface, but it is intentionally not in
--- this command-backed group until a concrete command/API handler exists.
 simulationServiceOperationSpecs :: [ServiceOperationSpec]
 simulationServiceOperationSpecs =
   [ typedServiceOperationSpec simulationStateOperation
   , typedServiceOperationSpec simulationSetAutoTickOperation
   , typedServiceOperationSpec simulationTickOperation
+  , typedServiceOperationSpec simulationDagOperation
   ]
 
 simulationStateOperation :: TypedServiceOperation SimulationStateRequest SimulationStateResponse
@@ -101,8 +100,6 @@ simulationTickOperation :: TypedServiceOperation SimulationTickRequest Simulatio
 simulationTickOperation = typedOperation $
   operationSpec "simulation.tick" "sim_tick" "Run one simulation tick."
 
--- | Typed public DAG contract reserved for the API/service surface until a
--- concrete command/API handler is introduced.
 simulationDagOperation :: TypedServiceOperation SimulationDagRequest SimulationDagResponse
 simulationDagOperation = typedOperation $
   operationSpec "simulation.dag" "get_sim_dag" "Read simulation DAG status and topology."

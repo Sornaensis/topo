@@ -174,9 +174,9 @@ spec = describe "AppService surface" $ do
     dataResourceLoading dataResourceStateContract `shouldBe` False
     dataResourceHasSelection dataResourceStateContract `shouldBe` True
 
-  it "keeps the simulation DAG contract typed but not command-backed yet" $ do
+  it "keeps the simulation DAG contract typed and command-backed" $ do
     typedOperationMethod simulationDagOperation `shouldBe` "get_sim_dag"
-    typedOperationMethod simulationDagOperation `shouldNotSatisfy` (`elem` appServiceOperationMethods)
+    typedOperationMethod simulationDagOperation `shouldSatisfy` (`elem` appServiceOperationMethods)
     simulationDagTerrainWriters simulationDagContract `shouldBe` [SimNodeId "weather"]
 
 typedOperationMethods :: [Text]
@@ -423,6 +423,7 @@ expectedServiceGroups =
     , [ "get_sim_state"
       , "set_sim_auto_tick"
       , "sim_tick"
+      , "get_sim_dag"
       ]
     )
   , ( "logs"

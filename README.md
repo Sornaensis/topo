@@ -1,8 +1,7 @@
 # topo world generator library
 
 - `topo`: library for large terrain data generation and manipulation
-- `topo-seer`: SDL application for interacting with the generator
-- `topo-mcp`: local MCP server for tool-driven access to topo-seer
+- `topo-seer`: SDL application and direct HTTP/OpenAPI host for interacting with the generator
 - `topo-plugin-sdk`: helpers for external topo plugins
 - `topo-plugin-example` / `topo-plugin-civ-example`: fixture plugins
 
@@ -19,8 +18,8 @@
 `topo-seer` is the only SDL executable. It depends on SDL2, SDL2_ttf, and
 Hyperspace through the Git extra-deps pinned in `stack.yaml`; the native SDL
 runtime libraries still need to be available on systems that launch the app.
-The core `topo` library, MCP server, plugin SDK, and plugin examples can be
-built and tested without starting the SDL UI.
+The core `topo` library, HTTP headless mode, plugin SDK, and plugin examples can
+be built and tested without starting the SDL UI.
 
 ## Hyperspace
 

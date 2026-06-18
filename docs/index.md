@@ -49,9 +49,8 @@ Machine-readable and human-readable specs for the on-disk formats:
 
 ```
 topo/               Core terrain generation library (this documentation)
-topo-seer/          SDL2 graphical application
-topo-mcp/           Transitional MCP bridge for current remote control
-topo-api/           Planned HTTP/OpenAPI contract package for 1.0
+topo-seer/          SDL2 graphical application and HTTP/OpenAPI host
+topo-api/           Planned standalone HTTP/OpenAPI contract package for 1.0
 topo-plugin-sdk/    Plugin development SDK
 topo-plugin-example/    Minimal plugin example
 topo-plugin-civ-example/  Civilization overlay plugin example

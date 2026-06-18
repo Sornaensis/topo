@@ -21,6 +21,10 @@ module Actor.Simulation
   , clearSimWorld
     -- * Tick control
   , requestSimTick
+    -- * DAG status
+  , SimulationDagSnapshot(..)
+  , SimulationDagNodeSnapshot(..)
+  , getSimDagSnapshot
     -- * Handles setup
   , setSimHandles
   , simulationHandlesConfigured
@@ -73,15 +77,18 @@ import Topo.Calendar
   )
 import Topo.Weather (WeatherConfig, defaultWeatherConfig, weatherSimNode)
 import Topo.Simulation
-  ( SimNode
+  ( SimNode(..)
   , SimProgress(..)
   , SimStatus(..)
   , SimNodeId(..)
   , TerrainWrites
   , applyTerrainWrites
+  , simNodeDependencies
+  , simNodeId
+  , simNodeOverlayName
   )
 import Topo.Simulation.DAG
-  ( SimDAG
+  ( SimDAG(..)
   , buildSimDAG
   , tickSimulation
   )
@@ -104,6 +111,20 @@ data SimHandles = SimHandles
   , shSnapshotVersionRef :: !SnapshotVersionRef
   , shAtlasHandle    :: !(ActorHandle AtlasManager (Protocol AtlasManager))
   }
+
+data SimulationDagNodeSnapshot = SimulationDagNodeSnapshot
+  { sdnsNodeId :: !Text
+  , sdnsOverlay :: !Text
+  , sdnsDependencies :: ![Text]
+  , sdnsWritesTerrain :: !Bool
+  } deriving (Eq, Show)
+
+data SimulationDagSnapshot = SimulationDagSnapshot
+  { sdsAvailable :: !Bool
+  , sdsNodes :: ![SimulationDagNodeSnapshot]
+  , sdsLevels :: ![[Text]]
+  , sdsTerrainWriters :: ![Text]
+  } deriving (Eq, Show)
 
 -- | Internal simulation state.
 data SimState = SimState
@@ -148,6 +169,7 @@ actor Simulation
   cast tick       :: Word64
   cast setHandles :: SimHandles
   call handlesConfigured :: () -> Bool
+  call dagSnapshot :: () -> SimulationDagSnapshot
 
   initial emptySimState
   on_ setWorld = \world st -> do
@@ -192,6 +214,8 @@ actor Simulation
     maybeProcessPendingTick st'
   onPure handlesConfigured = \() st ->
     (st, maybe False (const True) (ssHandles st))
+  onPure dagSnapshot = \() st ->
+    (st, simulationDagSnapshotFromState st)
 |]
 
 -- ---------------------------------------------------------------------------
@@ -214,6 +238,38 @@ clearSimWorld handle () =
 requestSimTick :: ActorHandle Simulation (Protocol Simulation) -> Word64 -> IO ()
 requestSimTick handle tickTarget =
   cast @"tick" handle #tick tickTarget
+
+getSimDagSnapshot :: ActorHandle Simulation (Protocol Simulation) -> IO SimulationDagSnapshot
+getSimDagSnapshot handle =
+  call @"dagSnapshot" handle #dagSnapshot ()
+
+simulationDagSnapshotFromState :: SimState -> SimulationDagSnapshot
+simulationDagSnapshotFromState st = case ssDAG st of
+  Nothing -> SimulationDagSnapshot
+    { sdsAvailable = False
+    , sdsNodes = []
+    , sdsLevels = []
+    , sdsTerrainWriters = []
+    }
+  Just dag -> SimulationDagSnapshot
+    { sdsAvailable = True
+    , sdsNodes = map nodeSnapshot (sdNodes dag)
+    , sdsLevels = map (map simNodeIdText) (sdLevels dag)
+    , sdsTerrainWriters = map simNodeIdText (sdTerrainWriters dag)
+    }
+
+nodeSnapshot :: SimNode -> SimulationDagNodeSnapshot
+nodeSnapshot node = SimulationDagNodeSnapshot
+  { sdnsNodeId = simNodeIdText (simNodeId node)
+  , sdnsOverlay = simNodeOverlayName node
+  , sdnsDependencies = map simNodeIdText (simNodeDependencies node)
+  , sdnsWritesTerrain = case node of
+      SimNodeWriter{} -> True
+      SimNodeReader{} -> False
+  }
+
+simNodeIdText :: SimNodeId -> Text
+simNodeIdText (SimNodeId value) = value
 
 -- | Wire the data, log, UI, snapshot refs, and atlas handles into the simulation actor.
 -- Must be called before any tick requests.

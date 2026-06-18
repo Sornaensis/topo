@@ -128,6 +128,7 @@ commandAppService = AppService
       { simulationGetState = commandServiceHandler "get_sim_state" HSimulation.handleGetSimState
       , simulationSetAutoTick = commandServiceHandler "set_sim_auto_tick" HSimulation.handleSetSimAutoTick
       , simulationTick = commandServiceHandler "sim_tick" HSimulation.handleSimTick
+      , simulationGetDag = commandServiceHandler "get_sim_dag" HSimulation.handleGetSimDag
       }
   , appLogs = LogService
       { logGet = commandServiceHandler "get_logs" HLog.handleGetLogs

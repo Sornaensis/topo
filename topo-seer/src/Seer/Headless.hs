@@ -14,6 +14,7 @@ module Seer.Headless
   , defaultHeadlessConfig
   , HeadlessApp
   , headlessCommandContext
+  , headlessServiceContext
   , headlessRuntimeConfig
   , startHeadlessApp
   , stopHeadlessApp
@@ -87,8 +88,9 @@ import Hyperspace.Actor
   , spawnActor
   )
 import Seer.Command.Channel (CommandChannelEnv(..), runCommandChannel)
-import Seer.Command.Context (CommandContext(..))
+import Seer.Command.Context (CommandContext(..), commandServiceContext)
 import Seer.Config.Runtime (TopoSeerConfig(..), defaultConfig)
+import Seer.Service.Context (ServiceContext)
 import Seer.Editor.History (EditHistory, emptyHistory)
 import Seer.Screenshot.Request (ScreenshotRequestRef, newScreenshotRequestRef)
 import System.IO (Handle, hClose)
@@ -159,6 +161,10 @@ data HeadlessApp = HeadlessApp
 -- is still in progress.
 headlessCommandContext :: HeadlessApp -> CommandContext
 headlessCommandContext = haCommandContext
+
+-- | Service context wired to the headless actor graph.
+headlessServiceContext :: HeadlessApp -> ServiceContext
+headlessServiceContext = commandServiceContext . haCommandContext
 
 -- | Runtime configuration used to construct this headless runtime.
 headlessRuntimeConfig :: HeadlessApp -> TopoSeerConfig

@@ -80,6 +80,7 @@ import Seer.Editor.History (emptyHistory)
 import Control.Concurrent (forkIO)
 import Control.Monad (forM_, replicateM, unless, when)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.Maybe (fromMaybe)
 import qualified Data.Text as Text
 import Data.Word (Word32, Word64)
 import GHC.Clock (getMonotonicTimeNSec)
@@ -87,7 +88,9 @@ import Linear (V2(..))
 import qualified SDL
 import qualified SDL.Font as Font
 import Hyperspace.Actor (ActorHandle, Protocol, get, newActorSystem, shutdownActorSystem, spawnActor)
+import Seer.Command.AppServiceAdapter (commandAppService)
 import Seer.Command.Channel (CommandChannelEnv(..), runCommandChannel)
+import Seer.Command.Context (CommandContext(..), commandServiceContext)
 import Seer.Draw (logLineHeight)
 import Seer.Timing (nsToMs)
 import Seer.Input (handleEvent, isQuit, tickTooltipHover)
@@ -111,12 +114,93 @@ import System.Random (randomIO)
 import System.IO (Handle, IOMode(..), hFlush, hPutStrLn, openFile)
 import Seer.System.ThreadPriority (boostMainThreadPriority, pinMainThreadToCore0)
 import Seer.Config.Runtime (TopoSeerConfig(..), loadConfig)
+import Seer.Headless (defaultHeadlessConfig, headlessServiceContext, withHeadlessApp)
+import Seer.HTTP.Server
+  ( HttpServerConfig(..)
+  , defaultHttpServerConfig
+  , forkHttpServer
+  , headlessHttpAppService
+  , parseHttpBind
+  , runHttpServer
+  )
 import Seer.Screenshot.Request (newScreenshotRequestRef)
 import System.Directory (getHomeDirectory)
+import System.Environment (getArgs)
 import System.FilePath ((</>))
+
+-- | Minimal CLI runtime options needed for the HTTP milestone.
+data RuntimeOptions = RuntimeOptions
+  { roHeadless :: !Bool
+  , roHttp :: !(Maybe HttpServerConfig)
+  , roTestMode :: !Bool
+  } deriving (Eq, Show)
+
+defaultRuntimeOptions :: RuntimeOptions
+defaultRuntimeOptions = RuntimeOptions
+  { roHeadless = False
+  , roHttp = Nothing
+  , roTestMode = False
+  }
+
+parseRuntimeOptions :: [String] -> Either String RuntimeOptions
+parseRuntimeOptions = go defaultRuntimeOptions
+  where
+    go opts [] = Right opts
+    go opts ("--headless":rest) = go opts { roHeadless = True } rest
+    go opts ("--test-mode":rest) = go opts { roTestMode = True } rest
+    go opts ("--http":binding:rest) = parseHttpOption opts binding rest
+    go opts (arg:rest)
+      | Just binding <- stripPrefixArg "--http=" arg = parseHttpOption opts binding rest
+      | Just token <- stripPrefixArg "--http-token=" arg = go (setToken opts token) rest
+      | arg == "--http-token" = case rest of
+          token:rest' -> go (setToken opts token) rest'
+          [] -> Left "--http-token requires a token"
+      | otherwise = Left ("unknown topo-seer option: " <> arg)
+
+    parseHttpOption opts binding rest =
+      case parseHttpBind binding of
+        Nothing -> Left ("invalid --http binding, expected HOST:PORT: " <> binding)
+        Just (host, port) -> go opts
+          { roHttp = Just (httpConfigWithExistingToken opts host port)
+          } rest
+
+    httpConfigWithExistingToken opts host port =
+      defaultHttpServerConfig
+        { hscBindHost = host
+        , hscBindPort = port
+        , hscBearerToken = roHttp opts >>= hscBearerToken
+        }
+
+    setToken opts token = opts
+      { roHttp = Just (fromMaybe defaultHttpServerConfig (roHttp opts))
+          { hscBearerToken = Just (Text.pack token)
+          }
+      }
+
+stripPrefixArg :: String -> String -> Maybe String
+stripPrefixArg prefix value =
+  case splitAt (length prefix) value of
+    (candidate, rest) | candidate == prefix -> Just rest
+    _ -> Nothing
 
 runApp :: IO ()
 runApp = do
+  args <- getArgs
+  case parseRuntimeOptions args of
+    Left err -> fail err
+    Right opts
+      | roHeadless opts -> runHeadlessHttp opts
+      | otherwise -> runSdlApp opts
+
+runHeadlessHttp :: RuntimeOptions -> IO ()
+runHeadlessHttp opts =
+  case roHttp opts of
+    Nothing -> fail "--headless requires --http HOST:PORT"
+    Just httpCfg -> withHeadlessApp defaultHeadlessConfig $ \app ->
+      runHttpServer httpCfg headlessHttpAppService (headlessServiceContext app)
+
+runSdlApp :: RuntimeOptions -> IO ()
+runSdlApp opts = do
   boostMainThreadPriority
   pinMainThreadToCore0
   runtimeCfg <- loadConfig
@@ -164,11 +248,18 @@ runApp = do
   uiSnap <- getUiSnapshot uiHandle
   let logSnap = LogSnapshot [] False 0 LogDebug
 
-  -- Start the IPC command channel in a background thread.
-  -- This allows external tools (topo-mcp) to query and mutate UI state.
+  -- Start the compatibility command channel in a background thread while the
+  -- supported public automation path moves to HTTP/OpenAPI.
   screenshotRef <- newScreenshotRequestRef
   historyRef <- newIORef (emptyHistory 50)
   let cmdActorHandles = mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef pluginManagerHandle simulationHandle historyRef
+      cmdContext = CommandContext
+        { ccActorHandles = cmdActorHandles
+        , ccUiSnapshotRef = uiSnapshotRef
+        , ccUiActionsHandle = uiActionsHandle
+        , ccScreenshotRef = screenshotRef
+        , ccLogSnapshotRef = Just logSnapshotRef
+        }
       cmdEnv = CommandChannelEnv
         { cceActorHandles    = cmdActorHandles
         , cceUiSnapshotRef   = uiSnapshotRef
@@ -177,6 +268,11 @@ runApp = do
         , cceLogSnapshotRef  = Just logSnapshotRef
         }
   _ <- forkIO (runCommandChannel cmdEnv)
+  case roHttp opts of
+    Nothing -> pure ()
+    Just httpCfg -> do
+      _ <- forkHttpServer httpCfg commandAppService (commandServiceContext cmdContext)
+      pure ()
 
   SDL.initialize [SDL.InitVideo]
   Font.initialize

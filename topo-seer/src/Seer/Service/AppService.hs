@@ -168,6 +168,7 @@ appServiceOperations app = concat
       [ simulationGetState simulationSvc
       , simulationSetAutoTick simulationSvc
       , simulationTick simulationSvc
+      , simulationGetDag simulationSvc
       ]
   , zipOperations logServiceOperationSpecs
       [ logGet logSvc

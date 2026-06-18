@@ -1,14 +1,14 @@
 # ADR 0001: HTTP Framework and API Package Structure
 
-- **Status:** Accepted for 1.0 planning
+- **Status:** Amended by HTTP MVP implementation
 - **Date:** 2026-05-14
 - **Decision owners:** Topo maintainers
 
 ## Context
 
 Topo 1.0 needs direct `topo-seer` HTTP access with generated OpenAPI. The
-current public automation path goes through `topo-mcp` and topo-seer command
-IPC. That bridge should be retired after HTTP reaches feature parity.
+previous public automation path went through a retired MCP bridge and topo-seer
+command IPC. Direct HTTP/OpenAPI replaces that bridge for 1.0.
 
 The HTTP implementation must support:
 
@@ -21,21 +21,23 @@ The HTTP implementation must support:
 - isolation from SDL dependencies where possible, so API contracts and client
   schemas can be compiled/tested without pulling in the graphical application.
 
-`topo-seer` currently depends on SDL2, SDL2_ttf, Hyperspace, rendering, process,
-and runtime packages. It does not currently list WAI, Warp, Servant, or OpenAPI
-dependencies.
+`topo-seer` depends on SDL2, SDL2_ttf, Hyperspace, rendering, process,
+runtime packages, and the WAI/Warp/http-types dependencies used by the HTTP MVP.
 
 ## Decision
 
-Use **Servant** for typed routes, **WAI/Warp** for the HTTP server, and
-**servant-openapi3/openapi3** for generated OpenAPI.
+The HTTP MVP uses **WAI/Warp** in `topo-seer` with a typed route metadata table
+as the single source for request dispatch, handler coverage tests, and the
+served OpenAPI document. This keeps the Writ/HTTP gate small enough to remove
+the retired bridge while still routing behavior through AppService.
 
-Introduce a small sibling package named **`topo-api`** during the HTTP milestone.
-The package should own public API route types, DTOs, error envelopes, OpenAPI
-generation, and API-version metadata. `topo-seer` will depend on `topo-api` and
-provide the server implementation by mapping route handlers to AppService.
+A future hardening pass may still introduce a small sibling package named
+**`topo-api`** for Servant route types, DTOs, schemas, OpenAPI generation, and
+API-version metadata once the MVP surface is stable. In that target split,
+`topo-seer` will depend on `topo-api` and provide the server implementation by
+mapping route handlers to AppService.
 
-Target package split:
+Potential package split:
 
 ```text
 topo-api/
@@ -59,65 +61,52 @@ SDL2_ttf, Hyperspace, renderer modules, or UI internals.
 
 ### Testing
 
-- Contract tests can compile against `topo-api` without initializing SDL or the
-  topo-seer runtime.
-- OpenAPI generation and golden drift tests can run in a light-weight package.
-- `topo-seer` integration tests still verify that every typed route has a
-  handler and that handlers call AppService correctly.
-- API and service tests can be separated: `topo-api` tests cover schemas/routes;
-  `topo-seer` tests cover runtime behavior.
+- MVP tests compile in `topo-seer` and verify route metadata, OpenAPI path/query
+  coverage, auth policy, AppService dispatch, error envelopes, and headless CLI
+  HTTP smoke behavior.
+- A future `topo-api` split can move schema/route contract tests out of the SDL
+  application package without changing the AppService server mapping.
 
 ### SDL dependency isolation
 
-- API DTOs and OpenAPI generation stay outside the SDL application package.
-- Client generation and docs tooling do not need to pull in SDL2/SDL2_ttf.
-- Headless HTTP tests can still exercise `topo-seer`, but route/schema tests do
-  not require the render-thread environment.
+- The MVP keeps API route metadata inside `topo-seer`, so client generation and
+  docs tooling still compile the application package.
+- The future `topo-api` split remains the path for isolating DTO/OpenAPI
+  compilation from SDL2/SDL2_ttf.
+- Headless HTTP tests exercise `topo-seer` without creating a renderer.
 
 ### Client generation and public contract stability
 
-- The OpenAPI document is generated from the Servant route type rather than
-  maintained by hand.
-- API version metadata lives with the route/schema package.
-- Future clients can be generated from the committed/published OpenAPI artifact.
-- Breaking API changes should be visible as OpenAPI golden diffs.
+- The MVP OpenAPI document is generated from the same route metadata table used
+  by dispatch tests.
+- Future clients can be generated from the served or committed OpenAPI artifact.
+- A future `topo-api`/Servant pass can strengthen schema generation and golden
+  diffs once the MVP route set has settled.
 
 ### OpenAPI drift prevention
 
 The HTTP milestone must add tests that fail when:
 
-- generated OpenAPI differs from the committed golden artifact;
-- an implemented handler is missing from the route type;
-- a route in the route type has no topo-seer handler;
-- enum values in OpenAPI diverge from runtime codecs;
+- an implemented route is missing from OpenAPI;
+- a route in the metadata table has no topo-seer handler;
 - public error shapes diverge from the documented error envelope.
+
+Future contract hardening should add committed OpenAPI golden diffs and schema
+checks for enum/runtime codec drift.
 
 ### Dependency management
 
-The HTTP milestone should add packages such as:
-
-- `servant`
-- `servant-server`
-- `servant-openapi3`
-- `wai`
-- `warp`
-- `openapi3`
-- `http-types`
-- `http-media`
-- optional middleware packages only when needed, such as `wai-cors` or
-  `wai-extra`
-
-If any chosen package is unavailable in the active Stack snapshot, add the
-minimal required `extra-deps` in the same implementation PR that introduces
-`topo-api`.
+The HTTP MVP adds `wai`, `warp`, `http-types`, `scientific`, and HTTP smoke-test
+client dependencies. A future Servant/topo-api pass should add only the minimal
+additional route/schema/OpenAPI packages it needs.
 
 ## Rejected alternatives
 
-### Hand-written WAI/Warp router plus manual OpenAPI
+### Hand-written WAI/Warp router plus manual OpenAPI as final architecture
 
-This keeps dependencies small but makes route/schema drift more likely. Every
-route would need separate hand-maintained OpenAPI definitions and parity tests.
-That works against the 1.0 requirement for generated public contracts.
+The MVP accepts a WAI/Warp route metadata table to keep the Writ gate small. It
+should not become the final architecture if schema/golden drift protection needs
+a stronger generated-contract package.
 
 ### Scotty or another lightweight routing DSL
 
@@ -139,7 +128,6 @@ package keeps the boundary explicit without polluting `topo`.
 
 ## Implementation notes
 
-- Add `topo-api` to `stack.yaml` during the HTTP milestone.
 - Keep AppService in `topo-seer`; do not move runtime actor dependencies into
   `topo-api`.
 - Start with `/health`, `/version`, `/openapi.json`, and `/state` before adding

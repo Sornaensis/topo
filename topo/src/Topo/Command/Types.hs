@@ -4,8 +4,8 @@
 
 -- | Shared command/response types for the topo-seer IPC command channel.
 --
--- These types are used by both topo-seer (server) and topo-mcp (client)
--- for communication over a named pipe (Windows) or Unix domain socket.
+-- These types are used by topo-seer command-channel compatibility clients
+-- over a named pipe (Windows) or Unix domain socket.
 -- They use the same length-prefixed JSON framing as
 -- 'Topo.Plugin.RPC.Transport'.
 module Topo.Command.Types

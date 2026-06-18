@@ -44,7 +44,7 @@ screenshotTimeoutUs = 2_000_000
 -- respond within 2 seconds.
 handleTakeScreenshot :: CommandContext -> Int -> Value -> IO SeerResponse
 handleTakeScreenshot ctx reqId _params = do
-  logMsg LogInfo "[mcp] screenshot requested"
+  logMsg LogInfo "[command] screenshot requested"
   result <- newEmptyMVar
   let req = ScreenshotRequest { ssrResult = result }
   -- Atomically try to set the request.  If one is already pending,
@@ -55,7 +55,7 @@ handleTakeScreenshot ctx reqId _params = do
       Just _  -> (prev, True)
   if alreadyPending
     then do
-      logMsg LogWarn "[mcp] screenshot rejected: already in progress"
+      logMsg LogWarn "[command] screenshot rejected: already in progress"
       pure $ errResponse reqId
         "a screenshot is already in progress; please wait and retry"
     else do
@@ -66,14 +66,14 @@ handleTakeScreenshot ctx reqId _params = do
           -- Timed out — clear the request so it doesn't fire later
           -- into a dead MVar.
           writeIORef (ccScreenshotRef ctx) Nothing
-          logMsg LogError "[mcp] screenshot timed out (render loop did not respond within 2s)"
+          logMsg LogError "[command] screenshot timed out (render loop did not respond within 2s)"
           pure $ errResponse reqId
             "screenshot timed out: render loop did not respond within 2s"
         Just (Left err) -> do
-          logMsg LogError ("[mcp] screenshot failed: " <> err)
+          logMsg LogError ("[command] screenshot failed: " <> err)
           pure $ errResponse reqId err
         Just (Right pngBytes) -> do
-          logMsg LogInfo ("[mcp] screenshot captured (" <> Text.pack (show (BS.length pngBytes)) <> " bytes)")
+          logMsg LogInfo ("[command] screenshot captured (" <> Text.pack (show (BS.length pngBytes)) <> " bytes)")
           let mSavePath = case _params of
                 Object o -> case KM.lookup "path" o of
                   Just (Aeson.String p) -> Just (Text.unpack p)
@@ -82,7 +82,7 @@ handleTakeScreenshot ctx reqId _params = do
           case mSavePath of
             Just savePath -> do
               BS.writeFile savePath pngBytes
-              logMsg LogInfo ("[mcp] screenshot saved to " <> Text.pack savePath)
+              logMsg LogInfo ("[command] screenshot saved to " <> Text.pack savePath)
             Nothing -> pure ()
           pure $ okResponse reqId $ object
             [ "image_base64" .= Text.decodeUtf8 (Base64.encode pngBytes)

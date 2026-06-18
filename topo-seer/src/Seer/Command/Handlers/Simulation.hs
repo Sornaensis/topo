@@ -1,17 +1,23 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | IPC handlers for simulation control: @get_sim_state@,
--- @set_sim_auto_tick@, @sim_tick@.
+-- @set_sim_auto_tick@, @sim_tick@, and @get_sim_dag@.
 module Seer.Command.Handlers.Simulation
   ( handleGetSimState
   , handleSetSimAutoTick
   , handleSimTick
+  , handleGetSimDag
   ) where
 
 import Data.Aeson (Value(..), object, (.=), (.:), (.:?))
 import qualified Data.Aeson.Types as Aeson
 
-import Actor.Simulation (requestSimTick)
+import Actor.Simulation
+  ( SimulationDagNodeSnapshot(..)
+  , SimulationDagSnapshot(..)
+  , getSimDagSnapshot
+  , requestSimTick
+  )
 import Actor.UI.Setters (setUiSimAutoTick, setUiSimTickRate)
 import Actor.UI.State (UiState(..), readUiSnapshotRef)
 import Actor.UiActions.Handles (ActorHandles(..))
@@ -64,6 +70,17 @@ handleSimTick ctx reqId params = do
     , "target_tick"     .= targetTick
     ]
 
+-- | Handle @get_sim_dag@ — return current simulation DAG topology.
+handleGetSimDag :: CommandContext -> Int -> Value -> IO SeerResponse
+handleGetSimDag ctx reqId _params = do
+  snapshot <- getSimDagSnapshot (ahSimulationHandle (ccActorHandles ctx))
+  pure $ okResponse reqId $ object
+    [ "available" .= sdsAvailable snapshot
+    , "nodes" .= map dagNodeToJSON (sdsNodes snapshot)
+    , "levels" .= sdsLevels snapshot
+    , "terrain_writers" .= sdsTerrainWriters snapshot
+    ]
+
 -- --------------------------------------------------------------------------
 -- Helpers
 -- --------------------------------------------------------------------------
@@ -75,3 +92,11 @@ parseAutoTick = Aeson.withObject "set_sim_auto_tick" $ \o ->
 parseTickCount :: Value -> Aeson.Parser Int
 parseTickCount = Aeson.withObject "sim_tick" $ \o ->
   maybe 1 id <$> o .:? "count"
+
+dagNodeToJSON :: SimulationDagNodeSnapshot -> Value
+dagNodeToJSON node = object
+  [ "id" .= sdnsNodeId node
+  , "overlay" .= sdnsOverlay node
+  , "dependencies" .= sdnsDependencies node
+  , "writes_terrain" .= sdnsWritesTerrain node
+  ]

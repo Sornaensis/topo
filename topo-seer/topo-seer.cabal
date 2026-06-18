@@ -51,6 +51,9 @@ library
       Seer.Draw.LeftPanel
       Seer.Draw.Overlay
       Seer.Headless
+      Seer.HTTP.Auth
+      Seer.HTTP.OpenAPI
+      Seer.HTTP.Server
       Seer.Editor.Brush
       Seer.Editor.History
       Seer.Editor.Preview
@@ -164,10 +167,12 @@ library
     , containers
     , directory
     , filepath
+    , http-types
     , hyperspace
     , linear
     , process
     , random
+    , scientific
     , sdl2
     , sdl2-ttf
     , stm
@@ -175,6 +180,8 @@ library
     , time
     , topo
     , vector
+    , wai
+    , warp
   default-language: Haskell2010
 
 executable topo-seer
@@ -205,6 +212,7 @@ test-suite topo-seer-test
       Spec.EditorHistory
       Spec.Headless
       Spec.HexPick
+      Spec.HTTP
       Spec.Layout
       Spec.LogActor
       Spec.PluginManager
@@ -233,6 +241,8 @@ test-suite topo-seer-test
     , directory
     , filepath
     , hspec
+    , http-client
+    , http-types
     , hyperspace
     , linear
     , sdl2
