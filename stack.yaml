@@ -8,7 +8,7 @@ packages:
   - topo-plugin-civ-example
 extra-deps:
   - git: https://github.com/Sornaensis/hyperspace
-    commit: 4303126429a28d3ffd6fe2a67770d37ede3b08a7 # 0.1-testing
+    commit: 82de98fb1313427dd8a6adc9afd049f7974e6d9d
   - git: https://github.com/Sornaensis/sdl2
     commit: 74938f9f3bfe2d1e2767ce8166b6d543960250ce
   - git: https://github.com/Sornaensis/sdl2-ttf

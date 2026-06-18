@@ -11,7 +11,6 @@ import Actor.Data
   ( Data
   , DataSnapshot(..)
   , TerrainSnapshot(..)
-  , dataActorDef
   )
 import Topo.Overlay (emptyOverlayStore)
 import Actor.Log
@@ -26,7 +25,6 @@ import Actor.Log
   , setLogSnapshotRef
   , newLogSnapshotRef
   , readLogSnapshotRef
-  , logActorDef
   )
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver
@@ -49,20 +47,19 @@ import Actor.UI
   , setUiSeed
   , setUiSeedInput
   , setUiSnapshotRef
-  , uiActorDef
   )
-import Actor.Terrain (terrainActorDef)
-import Actor.AtlasManager (atlasManagerActorDef)
-import Actor.PluginManager (pluginManagerActorDef, discoverPlugins)
-import Actor.Simulation (simulationActorDef, setSimHandles)
+import Actor.Terrain (Terrain)
+import Actor.AtlasManager (AtlasManager)
+import Actor.PluginManager (PluginManager, discoverPlugins)
+import Actor.Simulation (Simulation, setSimHandles)
 import Actor.AtlasResultBroker (AtlasResultRef, newAtlasResultRef)
 import Actor.AtlasScheduleBroker (AtlasScheduleRef, newAtlasScheduleRef)
 import Actor.AtlasScheduler
-  ( AtlasSchedulerHandles(..)
-  , atlasSchedulerActorDef
+  ( AtlasScheduler
+  , AtlasSchedulerHandles(..)
   , setAtlasSchedulerHandles
   )
-import Actor.AtlasWorker (atlasWorkerActorDef)
+import Actor.AtlasWorker (AtlasWorker, atlasWorkerActorDef)
 import Actor.TerrainCacheBroker
   ( TerrainCacheRef
   , newTerrainCacheRef
@@ -76,9 +73,8 @@ import Actor.TerrainCacheWorker
   , tcrResultCache
   , tcrResultKey
   , terrainCacheKeyFrom
-  , terrainCacheWorkerActorDef
   )
-import Actor.UiActions (uiActionsActorDef)
+import Actor.UiActions (UiActions)
 import Actor.UiActions.Handles (mkActorHandles)
 import Seer.Editor.History (emptyHistory)
 import Control.Concurrent (forkIO)
@@ -90,7 +86,7 @@ import GHC.Clock (getMonotonicTimeNSec)
 import Linear (V2(..))
 import qualified SDL
 import qualified SDL.Font as Font
-import Hyperspace.Actor (ActorHandle, Protocol, getSingleton, newActorSystem, shutdownActorSystem, spawnActor)
+import Hyperspace.Actor (ActorHandle, Protocol, get, newActorSystem, shutdownActorSystem, spawnActor)
 import Seer.Command.Channel (CommandChannelEnv(..), runCommandChannel)
 import Seer.Draw (logLineHeight)
 import Seer.Timing (nsToMs)
@@ -125,21 +121,21 @@ runApp = do
   pinMainThreadToCore0
   runtimeCfg <- loadConfig
   system <- newActorSystem
-  logHandle <- getSingleton system logActorDef
+  logHandle <- get @Log system
   logFileH <- resetLogFile
   setLogFileHandle logHandle logFileH
   logSnapshotRef <- newLogSnapshotRef
   setLogSnapshotRef logHandle logSnapshotRef
-  uiHandle <- getSingleton system uiActorDef
+  uiHandle <- get @Ui system
   uiSnapshotRef <- newUiSnapshotRef
   setUiSnapshotRef uiHandle uiSnapshotRef
-  dataHandle <- getSingleton system dataActorDef
-  terrainHandle <- getSingleton system terrainActorDef
-  atlasManagerHandle <- getSingleton system atlasManagerActorDef
+  dataHandle <- get @Data system
+  terrainHandle <- get @Terrain system
+  atlasManagerHandle <- get @AtlasManager system
   atlasWorkerHandles <- replicateM (cfgAtlasWorkerCount runtimeCfg) (spawnActor atlasWorkerActorDef)
   atlasWorkerNextRef <- newIORef (0 :: Int)
-  atlasSchedulerHandle <- getSingleton system atlasSchedulerActorDef
-  terrainCacheWorkerHandle <- getSingleton system terrainCacheWorkerActorDef
+  atlasSchedulerHandle <- get @AtlasScheduler system
+  terrainCacheWorkerHandle <- get @TerrainCacheWorker system
   -- Lock-free IORef channels (replacing former broker actors)
   atlasResultRef <- newAtlasResultRef
   atlasScheduleRef <- newAtlasScheduleRef
@@ -151,9 +147,9 @@ runApp = do
     , ashResultRef = atlasResultRef
     , ashScheduleRef = atlasScheduleRef
     }
-  uiActionsHandle <- getSingleton system uiActionsActorDef
-  pluginManagerHandle <- getSingleton system pluginManagerActorDef
-  simulationHandle <- getSingleton system simulationActorDef
+  uiActionsHandle <- get @UiActions system
+  pluginManagerHandle <- get @PluginManager system
+  simulationHandle <- get @Simulation system
   discoverPlugins pluginManagerHandle
   -- Lock-free per-domain snapshot refs (replacing former SnapshotReceiver actor)
   let dataSnap = DataSnapshot 0 0 Nothing

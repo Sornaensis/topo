@@ -1,6 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Spec.PluginManager (spec, runFixtureCli) where
 
@@ -11,7 +12,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Hyperspace.Actor (getSingleton, newActorSystem, shutdownActorSystem)
+import Hyperspace.Actor (ActorHandle, ActorSystem, Protocol, get, newActorSystem, shutdownActorSystem)
 import System.Directory
   ( Permissions(..)
   , createDirectoryIfMissing
@@ -29,13 +30,13 @@ import Test.Hspec
 
 import Actor.PluginManager
   ( LoadedPlugin(..)
+  , PluginManager
   , PluginStatus(..)
   , discoverPlugins
   , getLoadedPlugins
   , getPluginOverlaySchemas
   , getPluginStages
   , refreshManifests
-  , pluginManagerActorDef
   , shutdownPlugins
   )
 import Topo.Overlay.Schema (OverlaySchema(..))
@@ -55,12 +56,15 @@ import Topo.Plugin.RPC.Transport
   , sendMessage
   )
 
+getPluginManager :: ActorSystem -> IO (ActorHandle PluginManager (Protocol PluginManager))
+getPluginManager system = get @PluginManager system
+
 spec :: Spec
 spec = describe "PluginManager" $ do
   it "loads declared .toposchema files during discovery" $ do
     withTestPluginDir testPluginName testManifestJSON testSchemaJSON $ do
       bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getSingleton system pluginManagerActorDef
+        pluginManagerHandle <- getPluginManager system
         discoverPlugins pluginManagerHandle
         schemas <- getPluginOverlaySchemas pluginManagerHandle
         map osName schemas `shouldSatisfy` elem "copilot_test_overlay"
@@ -68,7 +72,7 @@ spec = describe "PluginManager" $ do
   it "launches plugin subprocesses and exposes generator stages cross-platform" $ do
     withExecutablePluginDir testLaunchPluginName testLaunchManifestJSON "ok" $ do
       bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getSingleton system pluginManagerActorDef
+        pluginManagerHandle <- getPluginManager system
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         stages <- getPluginStages pluginManagerHandle
@@ -83,7 +87,7 @@ spec = describe "PluginManager" $ do
   it "reports a protocol-version mismatch as a plugin error" $ do
     withExecutablePluginDir mismatchPluginName mismatchManifestJSON "protocol-mismatch" $ do
       bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getSingleton system pluginManagerActorDef
+        pluginManagerHandle <- getPluginManager system
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
@@ -92,7 +96,7 @@ spec = describe "PluginManager" $ do
   it "reports malformed handshake JSON as a plugin error" $ do
     withExecutablePluginDir malformedPluginName malformedManifestJSON "malformed-json" $ do
       bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getSingleton system pluginManagerActorDef
+        pluginManagerHandle <- getPluginManager system
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
@@ -101,7 +105,7 @@ spec = describe "PluginManager" $ do
   it "reports early plugin exit during startup as a plugin error" $ do
     withExecutablePluginDir crashPluginName crashManifestJSON "early-exit" $ do
       bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getSingleton system pluginManagerActorDef
+        pluginManagerHandle <- getPluginManager system
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
@@ -110,7 +114,7 @@ spec = describe "PluginManager" $ do
   it "reports handshake timeouts as plugin errors" $ do
     withExecutablePluginDir slowPluginName slowManifestJSON "slow" $ do
       bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getSingleton system pluginManagerActorDef
+        pluginManagerHandle <- getPluginManager system
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle

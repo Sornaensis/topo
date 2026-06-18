@@ -9,7 +9,7 @@ import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Hyperspace.Actor
   ( ActorSystem
-  , getSingleton
+  , get
   , newActorSystem
   , shutdownActorSystem
   )
@@ -24,9 +24,9 @@ import Actor.TerrainCacheBroker
 import Actor.TerrainCacheWorker
   ( TerrainCacheBuildRequest(..)
   , TerrainCacheBuildResult(..)
+  , TerrainCacheWorker
   , requestTerrainCacheBuild
   , terrainCacheKeyFrom
-  , terrainCacheWorkerActorDef
   )
 import Actor.UI (emptyUiState)
 import Seer.Render.Terrain (TerrainCache(..))
@@ -38,7 +38,7 @@ withSystem = bracket newActorSystem shutdownActorSystem
 spec :: Spec
 spec = describe "TerrainCacheWorker" $ do
   it "sends cache results to the IORef" $ withSystem $ \system -> do
-    workerHandle <- getSingleton system terrainCacheWorkerActorDef
+    workerHandle <- get @TerrainCacheWorker system
     cacheRef <- newTerrainCacheRef
     let uiSnap = emptyUiState
         terrainSnap = TerrainSnapshot 0 sampleChunkSize sampleTerrainChunks sampleClimateChunks sampleWeatherChunks mempty mempty emptyOverlayStore

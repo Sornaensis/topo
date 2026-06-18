@@ -22,26 +22,26 @@ import Data.IORef (newIORef, writeIORef)
 import Data.List (nub, sort)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Hyperspace.Actor (ActorSystem, getSingleton, newActorSystem, replyTo, shutdownActorSystem)
+import Hyperspace.Actor (ActorSystem, get, newActorSystem, replyTo, shutdownActorSystem)
 import Test.Hspec
 
-import Actor.AtlasManager (atlasManagerActorDef)
-import Actor.Data (DataSnapshot(..), TerrainSnapshot(..), dataActorDef, getTerrainSnapshot, setTerrainChunkData)
-import Actor.Log (logActorDef)
-import Actor.PluginManager (pluginManagerActorDef)
-import Actor.Simulation (simulationActorDef)
+import Actor.AtlasManager (AtlasManager)
+import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..), getTerrainSnapshot, setTerrainChunkData)
+import Actor.Log (Log)
+import Actor.PluginManager (PluginManager)
+import Actor.Simulation (Simulation)
 import Actor.SnapshotReceiver
   ( newDataSnapshotRef
   , newTerrainSnapshotRef
   , newSnapshotVersionRef
   )
-import Actor.Terrain (TerrainReplyOps, terrainActorDef)
+import Actor.Terrain (Terrain, TerrainReplyOps)
 import Actor.UI
-  ( uiActorDef
+  ( Ui
   , newUiSnapshotRef
   , setUiSnapshotRef
   )
-import Actor.UiActions (ActorHandles(..), uiActionsActorDef)
+import Actor.UiActions (ActorHandles(..), UiActions)
 import Actor.UiActions.Command (UiAction(..), UiActionRequest(..), runUiAction)
 
 import Seer.Command.AppServiceAdapter (commandAppService, runAppServiceOperation)
@@ -749,14 +749,14 @@ spec = describe "CommandDispatch" $ do
 -- for a 'CommandContext'.
 withCtx :: (CommandContext -> IO a) -> IO a
 withCtx action = bracket newActorSystem shutdownActorSystem $ \system -> do
-  uiH        <- getSingleton system uiActorDef
-  logH       <- getSingleton system logActorDef
-  dataH      <- getSingleton system dataActorDef
-  terrainH   <- getSingleton system terrainActorDef
-  atlasH     <- getSingleton system atlasManagerActorDef
-  pluginH    <- getSingleton system pluginManagerActorDef
-  simH       <- getSingleton system simulationActorDef
-  uiActionsH <- getSingleton system uiActionsActorDef
+  uiH        <- get @Ui system
+  logH       <- get @Log system
+  dataH      <- get @Data system
+  terrainH   <- get @Terrain system
+  atlasH     <- get @AtlasManager system
+  pluginH    <- get @PluginManager system
+  simH       <- get @Simulation system
+  uiActionsH <- get @UiActions system
   dataSnapRef    <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
   terrainSnapRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore)
   versionRef     <- newSnapshotVersionRef

@@ -1,3 +1,5 @@
+{-# LANGUAGE TypeApplications #-}
+
 module Spec.AtlasScheduler (spec) where
 
 import Control.Concurrent (threadDelay)
@@ -6,7 +8,7 @@ import Data.IORef (newIORef)
 import System.Timeout (timeout)
 import Test.Hspec
 import Actor.AtlasCache (AtlasKey(..))
-import Actor.AtlasManager (AtlasJob(..), atlasManagerActorDef, enqueueAtlasBuild, drainAtlasJobs)
+import Actor.AtlasManager (AtlasManager, AtlasJob(..), enqueueAtlasBuild, drainAtlasJobs)
 import Actor.AtlasResultBroker (newAtlasResultRef)
 import Actor.AtlasScheduleBroker
   ( AtlasScheduleRef
@@ -16,8 +18,8 @@ import Actor.AtlasScheduleBroker
   )
 import Actor.AtlasScheduler
   ( AtlasScheduleRequest(..)
+  , AtlasScheduler
   , AtlasSchedulerHandles(..)
-  , atlasSchedulerActorDef
   , requestAtlasSchedule
   , setAtlasSchedulerHandles
   )
@@ -31,7 +33,7 @@ import Actor.UI (ViewMode(..), emptyUiState)
 import Seer.Render.ZoomStage (allZoomStages, ZoomStage(..))
 import Hyperspace.Actor
   ( ActorSystem
-  , getSingleton
+  , get
   , newActorSystem
   , shutdownActorSystem
   , spawnActor
@@ -43,12 +45,12 @@ withSystem = bracket newActorSystem shutdownActorSystem
 spec :: Spec
 spec = describe "AtlasScheduler" $ do
   it "reports drained job counts" $ withSystem $ \system -> do
-    managerHandle <- getSingleton system atlasManagerActorDef
+    managerHandle <- get @AtlasManager system
     workerHandle <- spawnActor atlasWorkerActorDef
     workerNextRef <- newIORef (0 :: Int)
     resultRef <- newAtlasResultRef
     scheduleRef <- newAtlasScheduleRef
-    schedulerHandle <- getSingleton system atlasSchedulerActorDef
+    schedulerHandle <- get @AtlasScheduler system
     setAtlasSchedulerHandles schedulerHandle AtlasSchedulerHandles
       { ashManager = managerHandle
       , ashWorkers = [workerHandle]
@@ -85,7 +87,7 @@ spec = describe "AtlasScheduler" $ do
     asrJobCount report `shouldBe` 1
 
   it "single-mode rebuild enqueues exactly one job per zoom stage" $ withSystem $ \system -> do
-    managerHandle <- getSingleton system atlasManagerActorDef
+    managerHandle <- get @AtlasManager system
     let terrainSnap = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore
         mkJob stage =
           let atlasKey = AtlasKey ViewElevation 0.5 (tsVersion terrainSnap)
@@ -105,7 +107,7 @@ spec = describe "AtlasScheduler" $ do
     length jobs `shouldBe` length allZoomStages
 
   it "does not multiply jobs across view modes for single-mode rebuild" $ withSystem $ \system -> do
-    managerHandle <- getSingleton system atlasManagerActorDef
+    managerHandle <- get @AtlasManager system
     let terrainSnap = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore
         mkJobFor mode stage =
           let atlasKey = AtlasKey mode 0.5 (tsVersion terrainSnap)
@@ -127,14 +129,14 @@ spec = describe "AtlasScheduler" $ do
     all (\j -> ajViewMode j == ViewElevation) jobs `shouldBe` True
 
   it "dispatches jobs to multiple workers via round-robin" $ withSystem $ \system -> do
-    managerHandle <- getSingleton system atlasManagerActorDef
+    managerHandle <- get @AtlasManager system
     w1 <- spawnActor atlasWorkerActorDef
     w2 <- spawnActor atlasWorkerActorDef
     w3 <- spawnActor atlasWorkerActorDef
     workerNextRef <- newIORef (0 :: Int)
     resultRef <- newAtlasResultRef
     scheduleRef <- newAtlasScheduleRef
-    schedulerHandle <- getSingleton system atlasSchedulerActorDef
+    schedulerHandle <- get @AtlasScheduler system
     setAtlasSchedulerHandles schedulerHandle AtlasSchedulerHandles
       { ashManager = managerHandle
       , ashWorkers = [w1, w2, w3]

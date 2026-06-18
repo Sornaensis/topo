@@ -20,22 +20,20 @@ module Seer.Headless
   , withHeadlessApp
   ) where
 
-import Actor.AtlasManager (AtlasManager, atlasManagerActorDef)
+import Actor.AtlasManager (AtlasManager)
 import Actor.AtlasResultBroker (AtlasResultRef, newAtlasResultRef)
 import Actor.AtlasScheduleBroker (AtlasScheduleRef, newAtlasScheduleRef)
 import Actor.AtlasScheduler
   ( AtlasScheduler
   , AtlasSchedulerHandles(..)
   , atlasSchedulerConfigured
-  , atlasSchedulerActorDef
   , setAtlasSchedulerHandles
   )
 import Actor.AtlasWorker (AtlasWorker, atlasWorkerActorDef)
-import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..), dataActorDef)
+import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..))
 import Actor.Log
   ( Log
   , LogSnapshotRef
-  , logActorDef
   , newLogSnapshotRef
   , resetLogFile
   , setLogFileHandle
@@ -44,13 +42,11 @@ import Actor.Log
 import Actor.PluginManager
   ( PluginManager
   , discoverPlugins
-  , pluginManagerActorDef
   , shutdownPlugins
   )
 import Actor.Simulation
   ( Simulation
   , setSimHandles
-  , simulationActorDef
   , simulationHandlesConfigured
   )
 import Actor.SnapshotReceiver
@@ -61,9 +57,9 @@ import Actor.SnapshotReceiver
   , newSnapshotVersionRef
   , newTerrainSnapshotRef
   )
-import Actor.Terrain (Terrain, terrainActorDef)
+import Actor.Terrain (Terrain)
 import Actor.TerrainCacheBroker (TerrainCacheRef, newTerrainCacheRef)
-import Actor.TerrainCacheWorker (TerrainCacheWorker, terrainCacheWorkerActorDef)
+import Actor.TerrainCacheWorker (TerrainCacheWorker)
 import Actor.UI
   ( Ui
   , UiSnapshotRef
@@ -72,9 +68,8 @@ import Actor.UI
   , setUiSeed
   , setUiSeedInput
   , setUiSnapshotRef
-  , uiActorDef
   )
-import Actor.UiActions (UiActions, uiActionsActorDef)
+import Actor.UiActions (UiActions)
 import Actor.UiActions.Handles (ActorHandles, mkActorHandles)
 import Control.Concurrent (ThreadId, forkIO, killThread)
 import Control.Exception (bracket, onException)
@@ -86,7 +81,7 @@ import Hyperspace.Actor
   ( ActorHandle
   , ActorSystem
   , Protocol
-  , getSingleton
+  , get
   , newActorSystem
   , shutdownActorSystem
   , spawnActor
@@ -179,7 +174,7 @@ startHeadlessApp cfg = do
 startHeadlessAppWithSystem :: HeadlessConfig -> ActorSystem -> IO HeadlessApp
 startHeadlessAppWithSystem cfg system = do
   let runtimeCfg = hcRuntimeConfig cfg
-  logHandle <- getSingleton system logActorDef
+  logHandle <- get @Log system
   logFileH <- if hcUseLogFile cfg
     then do
       h <- resetLogFile
@@ -189,19 +184,19 @@ startHeadlessAppWithSystem cfg system = do
   logSnapshotRef <- newLogSnapshotRef
   setLogSnapshotRef logHandle logSnapshotRef
 
-  uiHandle <- getSingleton system uiActorDef
+  uiHandle <- get @Ui system
   uiSnapshotRef <- newUiSnapshotRef
   setUiSnapshotRef uiHandle uiSnapshotRef
   setUiSeed uiHandle (hcSeed cfg)
   setUiSeedInput uiHandle (Text.pack (show (hcSeed cfg)))
   _ <- getUiSnapshot uiHandle
 
-  dataHandle <- getSingleton system dataActorDef
-  terrainHandle <- getSingleton system terrainActorDef
-  atlasManagerHandle <- getSingleton system atlasManagerActorDef
+  dataHandle <- get @Data system
+  terrainHandle <- get @Terrain system
+  atlasManagerHandle <- get @AtlasManager system
   atlasWorkerHandles <- replicateM (cfgAtlasWorkerCount runtimeCfg) (spawnActor atlasWorkerActorDef)
   atlasWorkerNextRef <- newIORef (0 :: Int)
-  atlasSchedulerHandle <- getSingleton system atlasSchedulerActorDef
+  atlasSchedulerHandle <- get @AtlasScheduler system
   atlasResultRef <- newAtlasResultRef
   atlasScheduleRef <- newAtlasScheduleRef
   setAtlasSchedulerHandles atlasSchedulerHandle AtlasSchedulerHandles
@@ -213,12 +208,12 @@ startHeadlessAppWithSystem cfg system = do
     }
   schedulerReady <- atlasSchedulerConfigured atlasSchedulerHandle
   unless schedulerReady (fail "topo-seer headless startup: atlas scheduler handles were not configured")
-  terrainCacheWorkerHandle <- getSingleton system terrainCacheWorkerActorDef
+  terrainCacheWorkerHandle <- get @TerrainCacheWorker system
   terrainCacheRef <- newTerrainCacheRef
-  uiActionsHandle <- getSingleton system uiActionsActorDef
-  pluginManagerHandle <- getSingleton system pluginManagerActorDef
+  uiActionsHandle <- get @UiActions system
+  pluginManagerHandle <- get @PluginManager system
   when (hcDiscoverPlugins cfg) (discoverPlugins pluginManagerHandle)
-  simulationHandle <- getSingleton system simulationActorDef
+  simulationHandle <- get @Simulation system
 
   dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
   terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore)

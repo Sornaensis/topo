@@ -5,15 +5,15 @@
 
 packages:
 - completed:
-    commit: 4303126429a28d3ffd6fe2a67770d37ede3b08a7
+    commit: 82de98fb1313427dd8a6adc9afd049f7974e6d9d
     git: https://github.com/Sornaensis/hyperspace
     name: hyperspace
     pantry-tree:
-      sha256: 594fd1990cc18adef12b821adc4c34328d433da4eddc2ed09a79a21c13123cb1
-      size: 3715
+      sha256: 08f128b49854033f7346590987ee86f3d0cd2297cb7e2eda633def8903b388d7
+      size: 7179
     version: 0.1.0.0
   original:
-    commit: 4303126429a28d3ffd6fe2a67770d37ede3b08a7
+    commit: 82de98fb1313427dd8a6adc9afd049f7974e6d9d
     git: https://github.com/Sornaensis/hyperspace
 - completed:
     commit: 74938f9f3bfe2d1e2767ce8166b6d543960250ce

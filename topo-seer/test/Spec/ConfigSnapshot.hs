@@ -11,7 +11,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Text as Text
 import Data.Text (Text)
-import Hyperspace.Actor (ActorSystem, getSingleton, newActorSystem, shutdownActorSystem)
+import Hyperspace.Actor (ActorSystem, get, newActorSystem, shutdownActorSystem)
 import System.Directory
   ( createDirectoryIfMissing
   , getTemporaryDirectory
@@ -21,7 +21,7 @@ import System.Directory
 import System.FilePath ((</>))
 import Test.Hspec
 
-import Actor.UI (UiState(..), emptyUiState, getUiSnapshot, uiActorDef)
+import Actor.UI (Ui, UiState(..), emptyUiState, getUiSnapshot)
 import Actor.UI.State (sliderValueForId)
 import Seer.Config (configFromUi, mapRange)
 import Seer.Config.Snapshot
@@ -165,7 +165,7 @@ snapshotFromUiSpec = describe "snapshotFromUi" $ do
             , uiSliceLonCenter = 0.18
             }
           snap = snapshotFromUi ui "round-trip"
-      handle <- getSingleton system uiActorDef
+      handle <- get @Ui system
       applySnapshotToUi snap handle
       restored <- getUiSnapshot handle
       let restoredSnapshot = snapshotFromUi restored "restored"

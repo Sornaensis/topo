@@ -8,19 +8,19 @@ module Spec.TerrainActor (spec) where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (bracket)
-import Hyperspace.Actor (ActorSystem, call, getSingleton, newActorSystem, replyTo, shutdownActorSystem)
+import Hyperspace.Actor (ActorSystem, call, get, newActorSystem, replyTo, shutdownActorSystem)
 import Hyperspace.Actor.QQ (hyperspace)
 import Test.Hspec
 import Actor.Log (LogEntry)
 import Actor.Terrain
-  ( TerrainGenProgress(..)
+  ( Terrain
+  , TerrainGenProgress(..)
   , TerrainGenRequest(..)
   , TerrainGenResult(..)
   , TerrainReplyOps
-  , terrainActorDef
   , startTerrainGen
   )
-import Actor.Simulation (simulationActorDef)
+import Actor.Simulation (Simulation)
 import Topo (WorldConfig(..))
 import Topo.Planet (WorldSlice(..))
 import Topo.WorldGen (WorldGenConfig(..), defaultWorldGenConfig)
@@ -68,9 +68,9 @@ await n action = do
 spec :: Spec
 spec = describe "TerrainActor" $ do
   it "runs generation and replies with a result" $ withSystem $ \system -> do
-    terrainHandle <- getSingleton system terrainActorDef
-    replyHandle <- getSingleton system terrainReplyTestActorDef
-    simHandle <- getSingleton system simulationActorDef
+    terrainHandle <- get @Terrain system
+    replyHandle <- get @TerrainReplyTest system
+    simHandle <- get @Simulation system
     let smallSlice = WorldSlice
           { wsLatCenter = 0, wsLatExtent = 1
           , wsLonCenter = 0, wsLonExtent = 1

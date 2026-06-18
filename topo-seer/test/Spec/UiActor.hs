@@ -1,9 +1,10 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Spec.UiActor (spec) where
 
 import Control.Exception (bracket)
-import Hyperspace.Actor (ActorSystem, getSingleton, newActorSystem, shutdownActorSystem)
+import Hyperspace.Actor (ActorSystem, get, newActorSystem, shutdownActorSystem)
 import Test.Hspec
 import Actor.UI
 import Seer.Config.SliderSpec (SliderId(..))
@@ -14,7 +15,7 @@ withSystem = bracket newActorSystem shutdownActorSystem
 spec :: Spec
 spec = describe "UiActor" $ do
   it "updates seed and view mode" $ withSystem $ \system -> do
-    handle <- getSingleton system uiActorDef
+    handle <- get @Ui system
     setUiSeed handle 99
     setUiViewMode handle ViewBiome
     setUiChunkSize handle 96
@@ -58,13 +59,13 @@ spec = describe "UiActor" $ do
     uiHoverHex snapshot `shouldBe` Just (3, -2)
 
   it "updates generation flag" $ withSystem $ \system -> do
-    handle <- getSingleton system uiActorDef
+    handle <- get @Ui system
     setUiGenerating handle True
     snapshot <- getUiSnapshot handle
     uiGenerating snapshot `shouldBe` True
 
   it "updates representative sliders through the generic SliderId path" $ withSystem $ \system -> do
-    handle <- getSingleton system uiActorDef
+    handle <- get @Ui system
     setUiSliderValue handle SliderGenScale 0.21
     setUiSliderValue handle SliderWeatherTick 0.61
     setUiSliderValue handle SliderVegBase 0.77
@@ -76,7 +77,7 @@ spec = describe "UiActor" $ do
     uiRainRate snapshot `shouldBe` 0.33
 
   it "clamps generic slider updates through the shared SliderId write path" $ withSystem $ \system -> do
-    handle <- getSingleton system uiActorDef
+    handle <- get @Ui system
     setUiSliderValue handle SliderGenScale (-0.25)
     setUiSliderValue handle SliderWeatherTick 1.4
     setUiSliderValue handle SliderVegBase 2.0

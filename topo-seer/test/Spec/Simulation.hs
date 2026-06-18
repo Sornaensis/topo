@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Spec.Simulation (spec) where
 
@@ -7,21 +8,21 @@ import Control.Exception (bracket)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Hyperspace.Actor (ActorSystem, getSingleton, newActorSystem, shutdownActorSystem)
+import Hyperspace.Actor (ActorSystem, get, newActorSystem, shutdownActorSystem)
 import Test.Hspec
 import qualified Data.Vector.Unboxed as U
 
-import Actor.AtlasManager (atlasManagerActorDef)
-import Actor.Data (DataSnapshot(..), TerrainSnapshot(..), dataActorDef, getTerrainSnapshot, tsVersion, tsWeatherChunks)
-import Actor.Log (getLogSnapshot, leMessage, logActorDef, lsEntries)
-import Actor.Simulation (requestSimTick, setSimHandles, setSimWorld, simulationActorDef)
+import Actor.AtlasManager (AtlasManager)
+import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..), getTerrainSnapshot, tsVersion, tsWeatherChunks)
+import Actor.Log (Log, getLogSnapshot, leMessage, lsEntries)
+import Actor.Simulation (Simulation, requestSimTick, setSimHandles, setSimWorld)
 import Actor.SnapshotReceiver
   ( newDataSnapshotRef
   , newTerrainSnapshotRef
   , newSnapshotVersionRef
   , readTerrainSnapshot
   )
-import Actor.UI (getUiSnapshot, uiActorDef, uiSimTickCount)
+import Actor.UI (Ui, getUiSnapshot, uiSimTickCount)
 
 import Topo
   ( ChunkId(..)
@@ -113,14 +114,14 @@ withSeedWeather world (ChunkId chunkId) climate =
 spec :: Spec
 spec = describe "Simulation actor" $ do
   it "binds world before processing first post-load tick request" $ withSystem $ \system -> do
-    simHandle <- getSingleton system simulationActorDef
-    dataHandle <- getSingleton system dataActorDef
-    logHandle <- getSingleton system logActorDef
-    uiHandle <- getSingleton system uiActorDef
+    simHandle <- get @Simulation system
+    dataHandle <- get @Data system
+    logHandle <- get @Log system
+    uiHandle <- get @Ui system
     dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
     terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore)
     snapshotVersionRef <- newSnapshotVersionRef
-    atlasHandle <- getSingleton system atlasManagerActorDef
+    atlasHandle <- get @AtlasManager system
 
     setSimHandles simHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasHandle
 
@@ -168,14 +169,14 @@ spec = describe "Simulation actor" $ do
       _ -> expectationFailure "Expected setWorld acceptance and tick completion log entries"
 
   it "applies a queued tick requested before world binding" $ withSystem $ \system -> do
-    simHandle <- getSingleton system simulationActorDef
-    dataHandle <- getSingleton system dataActorDef
-    logHandle <- getSingleton system logActorDef
-    uiHandle <- getSingleton system uiActorDef
+    simHandle <- get @Simulation system
+    dataHandle <- get @Data system
+    logHandle <- get @Log system
+    uiHandle <- get @Ui system
     dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
     terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore)
     snapshotVersionRef <- newSnapshotVersionRef
-    atlasHandle <- getSingleton system atlasManagerActorDef
+    atlasHandle <- get @AtlasManager system
 
     setSimHandles simHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasHandle
 
@@ -218,14 +219,14 @@ spec = describe "Simulation actor" $ do
     containsText (Text.pack "simulation: tick 1 completed") messages `shouldBe` True
 
   it "processes tick requests and publishes updated state" $ withSystem $ \system -> do
-    simHandle <- getSingleton system simulationActorDef
-    dataHandle <- getSingleton system dataActorDef
-    logHandle <- getSingleton system logActorDef
-    uiHandle <- getSingleton system uiActorDef
+    simHandle <- get @Simulation system
+    dataHandle <- get @Data system
+    logHandle <- get @Log system
+    uiHandle <- get @Ui system
     dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
     terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore)
     snapshotVersionRef <- newSnapshotVersionRef
-    atlasHandle <- getSingleton system atlasManagerActorDef
+    atlasHandle <- get @AtlasManager system
 
     setSimHandles simHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasHandle
 
