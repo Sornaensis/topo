@@ -13,6 +13,7 @@ module Seer.Service.AppService
   , appServiceGroups
   , appServiceOperations
   , appServiceHandlersByMethod
+  , runServiceOperation
   , appServiceOperationSpecs
   , appServiceOperationMethods
     -- * Focused services
@@ -32,6 +33,7 @@ module Seer.Service.AppService
   , module Seer.Service.Types
   ) where
 
+import Data.Aeson (Value)
 import Data.Text (Text)
 
 import Seer.Service.Config
@@ -94,119 +96,114 @@ appServiceOperationSpecs = concatMap serviceGroupOperations appServiceGroups
 appServiceOperationMethods :: [Text]
 appServiceOperationMethods = serviceOperationMethods appServiceOperationSpecs
 
+-- | Invoke one AppService operation by its stable method name.
+runServiceOperation :: AppService -> ServiceContext -> Text -> Value -> IO ServiceResult
+runServiceOperation app ctx method params =
+  case lookup method (appServiceHandlersByMethod app) of
+    Just handler -> handler ctx (ServiceRequest (Just params))
+    Nothing -> pure (Left (ServiceNotFound ("unknown service method: " <> method)))
+
 -- | Concrete operations in the same order as 'appServiceOperationSpecs'.
 appServiceOperations :: AppService -> [AppServiceOperation]
 appServiceOperations app = concat
-  [ zipOperations stateServiceOperationSpecs
-      [ stateGetState stateSvc
-      , stateGetViewModes stateSvc
-      , stateGetUiState stateSvc
-      ]
-  , zipOperations configServiceOperationSpecs
-      [ configGetSliders configSvc
-      , configGetSlider configSvc
-      , configSetSlider configSvc
-      , configSetSliders configSvc
-      , configResetSliders configSvc
-      , configGetSummary configSvc
-      , configGetEnums configSvc
-      , configListPresets configSvc
-      , configSavePreset configSvc
-      , configLoadPreset configSvc
-      ]
-  , zipOperations worldServiceOperationSpecs
-      [ worldGenerate worldSvc
-      , worldGetMeta worldSvc
-      , worldGetGenerationStatus worldSvc
-      , worldList worldSvc
-      , worldSave worldSvc
-      , worldLoad worldSvc
-      , worldSetName worldSvc
-      ]
-  , zipOperations terrainServiceOperationSpecs
-      [ terrainGetHex terrainSvc
-      , terrainGetChunks terrainSvc
-      , terrainGetChunkSummary terrainSvc
-      , terrainGetStats terrainSvc
-      , terrainGetOverlays terrainSvc
-      , terrainFindHexes terrainSvc
-      , terrainExportData terrainSvc
-      ]
-  , zipOperations editorServiceOperationSpecs
-      [ editorToggle editorSvc
-      , editorSetTool editorSvc
-      , editorSetBrush editorSvc
-      , editorBrushStroke editorSvc
-      , editorBrushLine editorSvc
-      , editorSetBiome editorSvc
-      , editorSetForm editorSvc
-      , editorSetHardness editorSvc
-      , editorUndo editorSvc
-      , editorRedo editorSvc
-      , editorGetState editorSvc
-      ]
-  , zipOperations pipelineServiceOperationSpecs
-      [ pipelineGet pipelineSvc
-      , pipelineSetStageEnabled pipelineSvc
-      ]
-  , zipOperations pluginServiceOperationSpecs
-      [ pluginList pluginSvc
-      , pluginSetEnabled pluginSvc
-      , pluginSetParam pluginSvc
-      ]
-  , zipOperations dataResourceServiceOperationSpecs
-      [ dataListPlugins dataSvc
-      , dataListResources dataSvc
-      , dataListRecords dataSvc
-      , dataGetRecord dataSvc
-      , dataCreateRecord dataSvc
-      , dataUpdateRecord dataSvc
-      , dataDeleteRecord dataSvc
-      , dataGetState dataSvc
-      ]
-  , zipOperations simulationServiceOperationSpecs
-      [ simulationGetState simulationSvc
-      , simulationSetAutoTick simulationSvc
-      , simulationTick simulationSvc
-      , simulationGetDag simulationSvc
-      ]
-  , zipOperations logServiceOperationSpecs
-      [ logGet logSvc
-      ]
-  , zipOperations screenshotServiceOperationSpecs
-      [ screenshotTake screenshotSvc
-      ]
-  , zipOperations uiServiceOperationSpecs
-      [ uiSetSeed uiSvc
-      , uiSetViewMode uiSvc
-      , uiSetConfigTab uiSvc
-      , uiSelectHex uiSvc
-      , uiSetOverlay uiSvc
-      , uiListOverlayFields uiSvc
-      , uiCycleOverlay uiSvc
-      , uiCycleOverlayField uiSvc
-      , uiSetCamera uiSvc
-      , uiGetCamera uiSvc
-      , uiZoomToChunk uiSvc
-      , uiSetLeftPanel uiSvc
-      , uiSetLeftTab uiSvc
-      , uiToggleConfigPanel uiSvc
-      , uiSetLogCollapsed uiSvc
-      , uiSetLogLevel uiSvc
-      , uiGetPanels uiSvc
-      , uiViewportScroll uiSvc
-      , uiViewportClick uiSvc
-      , uiViewportDrag uiSvc
-      , uiViewportHover uiSvc
-      , uiClickWidget uiSvc
-      , uiListWidgets uiSvc
-      , uiGetWidgetState uiSvc
-      , uiGetDialogState uiSvc
-      , uiSetDialogText uiSvc
-      , uiDialogConfirm uiSvc
-      , uiDialogCancel uiSvc
-      , uiSendKey uiSvc
-      ]
+  [ [ appOperation stateGetStateOperation (stateGetState stateSvc)
+    , appOperation stateGetViewModesOperation (stateGetViewModes stateSvc)
+    , appOperation stateGetUiStateOperation (stateGetUiState stateSvc)
+    ]
+  , [ appOperation configGetSlidersOperation (configGetSliders configSvc)
+    , appOperation configGetSliderOperation (configGetSlider configSvc)
+    , appOperation configSetSliderOperation (configSetSlider configSvc)
+    , appOperation configSetSlidersOperation (configSetSliders configSvc)
+    , appOperation configResetSlidersOperation (configResetSliders configSvc)
+    , appOperation configGetSummaryOperation (configGetSummary configSvc)
+    , appOperation configGetEnumsOperation (configGetEnums configSvc)
+    , appOperation configListPresetsOperation (configListPresets configSvc)
+    , appOperation configSavePresetOperation (configSavePreset configSvc)
+    , appOperation configLoadPresetOperation (configLoadPreset configSvc)
+    ]
+  , [ appOperation worldGenerateOperation (worldGenerate worldSvc)
+    , appOperation worldGetMetaOperation (worldGetMeta worldSvc)
+    , appOperation worldGetGenerationStatusOperation (worldGetGenerationStatus worldSvc)
+    , appOperation worldListOperation (worldList worldSvc)
+    , appOperation worldSaveOperation (worldSave worldSvc)
+    , appOperation worldLoadOperation (worldLoad worldSvc)
+    , appOperation worldSetNameOperation (worldSetName worldSvc)
+    ]
+  , [ appOperation terrainGetHexOperation (terrainGetHex terrainSvc)
+    , appOperation terrainGetChunksOperation (terrainGetChunks terrainSvc)
+    , appOperation terrainGetChunkSummaryOperation (terrainGetChunkSummary terrainSvc)
+    , appOperation terrainGetStatsOperation (terrainGetStats terrainSvc)
+    , appOperation terrainGetOverlaysOperation (terrainGetOverlays terrainSvc)
+    , appOperation terrainFindHexesOperation (terrainFindHexes terrainSvc)
+    , appOperation terrainExportDataOperation (terrainExportData terrainSvc)
+    ]
+  , [ appOperation editorToggleOperation (editorToggle editorSvc)
+    , appOperation editorSetToolOperation (editorSetTool editorSvc)
+    , appOperation editorSetBrushOperation (editorSetBrush editorSvc)
+    , appOperation editorBrushStrokeOperation (editorBrushStroke editorSvc)
+    , appOperation editorBrushLineOperation (editorBrushLine editorSvc)
+    , appOperation editorSetBiomeOperation (editorSetBiome editorSvc)
+    , appOperation editorSetFormOperation (editorSetForm editorSvc)
+    , appOperation editorSetHardnessOperation (editorSetHardness editorSvc)
+    , appOperation editorUndoOperation (editorUndo editorSvc)
+    , appOperation editorRedoOperation (editorRedo editorSvc)
+    , appOperation editorGetStateOperation (editorGetState editorSvc)
+    ]
+  , [ appOperation pipelineGetOperation (pipelineGet pipelineSvc)
+    , appOperation pipelineSetStageEnabledOperation (pipelineSetStageEnabled pipelineSvc)
+    ]
+  , [ appOperation pluginListOperation (pluginList pluginSvc)
+    , appOperation pluginSetEnabledOperation (pluginSetEnabled pluginSvc)
+    , appOperation pluginSetParamOperation (pluginSetParam pluginSvc)
+    ]
+  , [ appOperation dataResourceListPluginsOperation (dataListPlugins dataSvc)
+    , appOperation dataResourceListResourcesOperation (dataListResources dataSvc)
+    , appOperation dataResourceListRecordsOperation (dataListRecords dataSvc)
+    , appOperation dataResourceGetRecordOperation (dataGetRecord dataSvc)
+    , appOperation dataResourceCreateRecordOperation (dataCreateRecord dataSvc)
+    , appOperation dataResourceUpdateRecordOperation (dataUpdateRecord dataSvc)
+    , appOperation dataResourceDeleteRecordOperation (dataDeleteRecord dataSvc)
+    , appOperation dataResourceStateOperation (dataGetState dataSvc)
+    ]
+  , [ appOperation simulationStateOperation (simulationGetState simulationSvc)
+    , appOperation simulationSetAutoTickOperation (simulationSetAutoTick simulationSvc)
+    , appOperation simulationTickOperation (simulationTick simulationSvc)
+    , appOperation simulationDagOperation (simulationGetDag simulationSvc)
+    ]
+  , [ appOperation logGetOperation (logGet logSvc)
+    ]
+  , [ appOperation screenshotTakeOperation (screenshotTake screenshotSvc)
+    ]
+  , [ appOperation uiSetSeedOperation (uiSetSeed uiSvc)
+    , appOperation uiSetViewModeOperation (uiSetViewMode uiSvc)
+    , appOperation uiSetConfigTabOperation (uiSetConfigTab uiSvc)
+    , appOperation uiSelectHexOperation (uiSelectHex uiSvc)
+    , appOperation uiSetOverlayOperation (uiSetOverlay uiSvc)
+    , appOperation uiListOverlayFieldsOperation (uiListOverlayFields uiSvc)
+    , appOperation uiCycleOverlayOperation (uiCycleOverlay uiSvc)
+    , appOperation uiCycleOverlayFieldOperation (uiCycleOverlayField uiSvc)
+    , appOperation uiSetCameraOperation (uiSetCamera uiSvc)
+    , appOperation uiGetCameraOperation (uiGetCamera uiSvc)
+    , appOperation uiZoomToChunkOperation (uiZoomToChunk uiSvc)
+    , appOperation uiSetLeftPanelOperation (uiSetLeftPanel uiSvc)
+    , appOperation uiSetLeftTabOperation (uiSetLeftTab uiSvc)
+    , appOperation uiToggleConfigPanelOperation (uiToggleConfigPanel uiSvc)
+    , appOperation uiSetLogCollapsedOperation (uiSetLogCollapsed uiSvc)
+    , appOperation uiSetLogLevelOperation (uiSetLogLevel uiSvc)
+    , appOperation uiGetPanelsOperation (uiGetPanels uiSvc)
+    , appOperation uiViewportScrollOperation (uiViewportScroll uiSvc)
+    , appOperation uiViewportClickOperation (uiViewportClick uiSvc)
+    , appOperation uiViewportDragOperation (uiViewportDrag uiSvc)
+    , appOperation uiViewportHoverOperation (uiViewportHover uiSvc)
+    , appOperation uiClickWidgetOperation (uiClickWidget uiSvc)
+    , appOperation uiListWidgetsOperation (uiListWidgets uiSvc)
+    , appOperation uiGetWidgetStateOperation (uiGetWidgetState uiSvc)
+    , appOperation uiGetDialogStateOperation (uiGetDialogState uiSvc)
+    , appOperation uiSetDialogTextOperation (uiSetDialogText uiSvc)
+    , appOperation uiDialogConfirmOperation (uiDialogConfirm uiSvc)
+    , appOperation uiDialogCancelOperation (uiDialogCancel uiSvc)
+    , appOperation uiSendKeyOperation (uiSendKey uiSvc)
+    ]
   ]
   where
     stateSvc = appState app
@@ -230,7 +227,5 @@ appServiceHandlersByMethod =
       )
     . appServiceOperations
 
-zipOperations :: [ServiceOperationSpec] -> [ServiceHandler] -> [AppServiceOperation]
-zipOperations specs handlers
-  | length specs == length handlers = zipWith AppServiceOperation specs handlers
-  | otherwise = error "AppService operation metadata/handler count mismatch"
+appOperation :: TypedServiceOperation request response -> ServiceHandler -> AppServiceOperation
+appOperation operation handler = AppServiceOperation (typedServiceOperationSpec operation) handler

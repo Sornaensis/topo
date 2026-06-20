@@ -15,9 +15,11 @@ import Topo.Types (ChunkId(..))
 import Seer.Command.AppServiceAdapter (appServiceCommandMethods, commandAppService)
 import Seer.Command.Dispatch (dispatchCommandMethods)
 import Seer.Service.AppService
-  ( appServiceGroups
+  ( AppServiceOperation(..)
+  , appServiceGroups
   , appServiceOperationMethods
   , appServiceOperationSpecs
+  , appServiceOperations
   , ConfigListPresetsResponse(..)
   , ConfigSliderSummary(..)
   , ConfigSlidersResponse(..)
@@ -165,6 +167,9 @@ spec = describe "AppService surface" $ do
 
   it "has command-backed handlers for every AppService operation" $
     appServiceCommandMethods commandAppService `shouldBe` appServiceOperationMethods
+
+  it "pairs concrete handlers with their typed operation metadata" $
+    map appServiceOperationSpec (appServiceOperations commandAppService) `shouldBe` appServiceOperationSpecs
 
   it "defines stable operation names exactly once" $ do
     let operationNames = map serviceOperationName appServiceOperationSpecs

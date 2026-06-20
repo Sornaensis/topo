@@ -52,7 +52,23 @@ import Seer.Command.AppServiceAdapter (commandAppService, runAppServiceOperation
 import Seer.Command.Dispatch (CommandContext(..), dispatchCommand)
 import Seer.Editor.History (emptyHistory)
 import Seer.Screenshot (ScreenshotRequest(..), newScreenshotRequestRef)
-import Seer.Service.AppService (appServiceOperationMethods, appUi, uiSetSeed)
+import Seer.Service.AppService
+  ( AppService(..)
+  , ConfigListPresetsRequest(..)
+  , ConfigListPresetsResponse(..)
+  , ConfigService(..)
+  , WorldGenerateRequest(..)
+  , WorldGenerateResponse(..)
+  , WorldListRequest(..)
+  , WorldListResponse(..)
+  , WorldService(..)
+  , appServiceOperationMethods
+  , appUi
+  , configListPresetsOperation
+  , uiSetSeed
+  , worldGenerateOperation
+  , worldListOperation
+  )
 import Seer.Service.Context (ServiceContext(..))
 import Seer.Service.Types
   ( ServiceError(..)
@@ -61,6 +77,7 @@ import Seer.Service.Types
   , ServiceRequest(..)
   , ServiceResponse(..)
   , ServiceResult
+  , adaptTypedServiceHandler
   , serviceErrorCode
   , serviceErrorDetails
   , serviceErrorKind
@@ -147,15 +164,10 @@ spec = describe "CommandDispatch" $ do
         Just msg -> msg `shouldSatisfy` Text.isInfixOf "seed"
         Nothing -> expectationFailure "expected command error text"
 
-    it "has a direct service-level case or explicit waiver for every public operation" $ do
+    it "has a direct service-level case for every public operation" $ do
       let coveredMethods = map serviceCaseMethod serviceOperationCases
-          waivedMethods = map serviceWaiverMethod serviceOperationWaivers
-          allMethods = coveredMethods ++ waivedMethods
-      sort allMethods `shouldBe` sort appServiceOperationMethods
-      allMethods `shouldBe` nub allMethods
-
-    it "documents why any service-level operation is waived" $
-      map serviceWaiverReason serviceOperationWaivers `shouldSatisfy` all (not . Text.null)
+      sort coveredMethods `shouldBe` sort appServiceOperationMethods
+      coveredMethods `shouldBe` nub coveredMethods
 
     it "executes every public operation through the AppService handler surface" $ withCtx $ \ctx ->
       forM_ serviceOperationCases $ \testCase -> do
@@ -842,7 +854,48 @@ dispatchWithId ctx reqId method params = dispatchCommand ctx SeerCommand
   }
 
 runService :: CommandContext -> Text -> Value -> IO ServiceResult
-runService ctx = runAppServiceOperation commandAppService ctx
+runService ctx = runAppServiceOperation serviceHarnessApp ctx
+
+serviceHarnessApp :: AppService
+serviceHarnessApp = commandAppService
+  { appConfig = (appConfig commandAppService)
+      { configListPresets = adaptTypedServiceHandler
+          configListPresetsOperation
+          (const (Right ConfigListPresetsRequest))
+          (\response -> object
+              [ "preset_count" .= configPresetCount response
+              , "presets" .= configPresetNames response
+              ])
+          (\_ ConfigListPresetsRequest -> pure $ Right ConfigListPresetsResponse
+            { configPresetCount = 0
+            , configPresetNames = []
+            })
+      }
+  , appWorld = (appWorld commandAppService)
+      { worldGenerate = adaptTypedServiceHandler
+          worldGenerateOperation
+          (const (Right (WorldGenerateRequest Nothing)))
+          (\response -> object
+              [ "accepted" .= worldGenerateAccepted response
+              , "status" .= worldGenerateStatus response
+              ])
+          (\_ _ -> pure $ Right WorldGenerateResponse
+            { worldGenerateAccepted = True
+            , worldGenerateStatus = "generating"
+            })
+      , worldList = adaptTypedServiceHandler
+          worldListOperation
+          (const (Right WorldListRequest))
+          (\response -> object
+              [ "world_count" .= worldListCount response
+              , "worlds" .= ([] :: [Value])
+              ])
+          (\_ WorldListRequest -> pure $ Right WorldListResponse
+            { worldListCount = 0
+            , worldListWorlds = []
+            })
+      }
+  }
 
 serviceContextFromCommand :: CommandContext -> ServiceContext
 serviceContextFromCommand ctx = ServiceContext
@@ -862,11 +915,6 @@ data ServiceOperationCase = ServiceOperationCase
   , serviceCaseParams :: !Value
   , serviceCaseExpected :: !ExpectedServiceOutcome
   , serviceCaseSetup :: CommandContext -> IO ()
-  }
-
-data ServiceOperationWaiver = ServiceOperationWaiver
-  { serviceWaiverMethod :: !Text
-  , serviceWaiverReason :: !Text
   }
 
 serviceCase :: Text -> Value -> ExpectedServiceOutcome -> ServiceOperationCase
@@ -907,10 +955,13 @@ serviceOperationCases =
   , serviceCase "reset_sliders" Null ExpectServiceSuccess
   , serviceCase "get_config_summary" Null ExpectServiceSuccess
   , serviceCase "get_enums" (object ["type" .= ("biome" :: String)]) ExpectServiceSuccess
+  , serviceCase "list_presets" Null ExpectServiceSuccess
   , serviceCase "save_preset" Null ExpectServiceFailure
   , serviceCase "load_preset" Null ExpectServiceFailure
+  , serviceCase "generate" Null ExpectServiceSuccess
   , serviceCase "get_world_meta" Null ExpectServiceSuccess
   , serviceCase "get_generation_status" Null ExpectServiceSuccess
+  , serviceCase "list_worlds" Null ExpectServiceSuccess
   , serviceCase "save_world" Null ExpectServiceFailure
   , serviceCase "load_world" Null ExpectServiceFailure
   , serviceCase "set_world_name" (object ["name" .= ("Service Test World" :: String)]) ExpectServiceSuccess
@@ -996,19 +1047,6 @@ serviceOperationCases =
   , serviceCase "dialog_confirm" Null ExpectServiceSuccess
   , serviceCase "dialog_cancel" Null ExpectServiceSuccess
   , serviceCase "send_key" (object ["key" .= ("escape" :: String)]) ExpectServiceSuccess
-  ]
-
-serviceOperationWaivers :: [ServiceOperationWaiver]
-serviceOperationWaivers =
-  [ ServiceOperationWaiver
-      "generate"
-      "starts asynchronous terrain generation; command-dispatch behavior is covered separately while direct async service tests are extracted"
-  , ServiceOperationWaiver
-      "list_presets"
-      "current handler creates the user-local preset directory while listing; direct side-effect-free coverage is deferred until file IO is injectable"
-  , ServiceOperationWaiver
-      "list_worlds"
-      "current handler creates the user-local worlds directory while listing; direct side-effect-free coverage is deferred until file IO is injectable"
   ]
 
 -- | Look up a key in a JSON object.

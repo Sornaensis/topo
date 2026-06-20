@@ -9,6 +9,7 @@
 -- translate structured service errors into command, HTTP, or UI responses.
 module Seer.Service.Types
   ( ServiceHandler
+  , TypedServiceHandler
   , ServiceRequest(..)
   , ServiceResponse(..)
   , ServiceResult
@@ -37,11 +38,13 @@ module Seer.Service.Types
   , ServiceGroupSpec(..)
   , operationSpec
   , typedOperation
+  , adaptTypedServiceHandler
   , groupOperationMethods
   , serviceOperationMethods
   ) where
 
-import Data.Aeson (Value)
+import Data.Aeson (Value(..))
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
@@ -53,6 +56,12 @@ import Seer.Service.Context (ServiceContext)
 -- Focused services expose named operations using this shape while later M2
 -- tasks can refine individual requests/responses into domain-specific types.
 type ServiceHandler = ServiceContext -> ServiceRequest -> IO ServiceResult
+
+-- | Native service handler shape for operations that have typed contracts.
+--
+-- Transitional handlers can still be adapted back to 'ServiceHandler' while
+-- concrete services move away from raw JSON request/response envelopes.
+type TypedServiceHandler request response = ServiceContext -> request -> IO (Either ServiceError response)
 
 -- | Transport-neutral request envelope for an operation.
 --
@@ -234,6 +243,20 @@ operationSpec = ServiceOperationSpec
 
 typedOperation :: ServiceOperationSpec -> TypedServiceOperation request response
 typedOperation = TypedServiceOperation
+
+adaptTypedServiceHandler
+  :: TypedServiceOperation request response
+  -> (Value -> Either ServiceError request)
+  -> (response -> Value)
+  -> TypedServiceHandler request response
+  -> ServiceHandler
+adaptTypedServiceHandler operation decodeRequest encodeResponse handler ctx request =
+  typedServiceOperationSpec operation `seq`
+    case decodeRequest (fromMaybe Null (serviceRequestBody request)) of
+      Left err -> pure (Left err)
+      Right typedRequest -> do
+        result <- handler ctx typedRequest
+        pure (ServiceResponse . encodeResponse <$> result)
 
 groupOperationMethods :: ServiceGroupSpec -> [Text]
 groupOperationMethods = map serviceOperationMethod . serviceGroupOperations

@@ -50,7 +50,6 @@ import Seer.HTTP.OpenAPI
 import Seer.Service.AppService
 import Seer.Service.Context (ServiceContext)
 import Seer.Service.Types
-import Seer.Service.Validation (validateAppServiceRequest)
 
 -- | HTTP runtime configuration. The default is intentionally loopback-only.
 data HttpServerConfig = HttpServerConfig
@@ -200,17 +199,12 @@ queryValue value =
       Nothing -> String value
 
 invokeService :: AppService -> ServiceContext -> Text -> Value -> IO HttpResponse
-invokeService app ctx method params =
-  case lookup method (appServiceHandlersByMethod app) of
-    Nothing -> pure (jsonResponse 404 (errorEnvelope "not_found" ("unknown service method: " <> method) []))
-    Just handler -> case validateAppServiceRequest method params of
-      Left err -> pure (serviceErrorResponse err)
-      Right () -> do
-        result <- try (handler ctx (ServiceRequest (Just params))) :: IO (Either SomeException ServiceResult)
-        case result of
-          Left _ -> pure (jsonResponse 500 (errorEnvelope "internal_error" "service handler exception" []))
-          Right (Right response) -> pure (jsonResponse 200 (serviceResponseBody response))
-          Right (Left err) -> pure (serviceErrorResponse err)
+invokeService app ctx method params = do
+  result <- try (runServiceOperation app ctx method params) :: IO (Either SomeException ServiceResult)
+  case result of
+    Left _ -> pure (jsonResponse 500 (errorEnvelope "internal_error" "service handler exception" []))
+    Right (Right response) -> pure (jsonResponse 200 (serviceResponseBody response))
+    Right (Left err) -> pure (serviceErrorResponse err)
 
 serviceErrorResponse :: ServiceError -> HttpResponse
 serviceErrorResponse err = jsonResponse (serviceErrorStatus err) (errorEnvelope

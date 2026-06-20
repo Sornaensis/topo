@@ -7,7 +7,9 @@ module Seer.Service.Validation
   , FieldSpec
   , FieldValueKind(..)
   , appServiceRequestValidators
+  , serviceRequestBodyValue
   , validateAppServiceRequest
+  , validateServiceHandler
   , validateFields
   , validateObjectFields
   , requiredText
@@ -32,7 +34,7 @@ import Data.Aeson (Value(..))
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Aeson.Types as Aeson
-import Data.Maybe (isJust)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import Data.Word (Word64)
 
@@ -147,9 +149,20 @@ optionalObject name = optional name FieldObject
 optionalArray name = optional name FieldArray
 optionalAny name = optional name FieldAny
 
+serviceRequestBodyValue :: ServiceRequest -> Value
+serviceRequestBodyValue = fromMaybe Null . serviceRequestBody
+
 validateAppServiceRequest :: Text -> Value -> Either ServiceError ()
 validateAppServiceRequest method params =
   maybe (Right ()) ($ params) (lookup method appServiceRequestValidators)
+
+validateServiceHandler :: Text -> ServiceHandler -> ServiceHandler
+validateServiceHandler method handler ctx request = do
+  let params = serviceRequestBodyValue request
+      normalizedRequest = ServiceRequest (Just params)
+  case validateAppServiceRequest method params of
+    Left err -> pure (Left err)
+    Right () -> handler ctx normalizedRequest
 
 appServiceRequestValidators :: [(Text, RequestValidator)]
 appServiceRequestValidators =
