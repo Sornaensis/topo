@@ -114,6 +114,8 @@ import System.Random (randomIO)
 import System.IO (Handle, IOMode(..), hFlush, hPutStrLn, openFile)
 import Seer.System.ThreadPriority (boostMainThreadPriority, pinMainThreadToCore0)
 import Seer.Config.Runtime (TopoSeerConfig(..), loadConfig)
+import Seer.Service.Context (ServiceContext(..))
+import Seer.Service.Events (newDefaultServiceEventBus)
 import Seer.Headless (defaultHeadlessConfig, headlessServiceContext, withHeadlessApp)
 import Seer.HTTP.Server
   ( HttpServerConfig(..)
@@ -268,10 +270,12 @@ runSdlApp opts = do
         , cceLogSnapshotRef  = Just logSnapshotRef
         }
   _ <- forkIO (runCommandChannel cmdEnv)
+  eventBus <- newDefaultServiceEventBus
+  let httpServiceContext = (commandServiceContext cmdContext) { svcEventBus = Just eventBus }
   case roHttp opts of
     Nothing -> pure ()
     Just httpCfg -> do
-      _ <- forkHttpServer httpCfg commandAppService (commandServiceContext cmdContext)
+      _ <- forkHttpServer httpCfg commandAppService httpServiceContext
       pure ()
 
   SDL.initialize [SDL.InitVideo]

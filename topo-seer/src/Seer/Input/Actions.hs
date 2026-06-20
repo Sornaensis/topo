@@ -106,6 +106,7 @@ inputServiceContext env = ServiceContext
   , svcUiActionsHandle = ieUiActionsHandle env
   , svcScreenshotRef = ieScreenshotRef env
   , svcLogSnapshotRef = ieLogSnapshotRef env
+  , svcEventBus = Nothing
   }
 
 -- | Invoke the app service from the UI/input path without constructing a

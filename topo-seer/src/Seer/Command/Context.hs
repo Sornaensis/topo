@@ -38,6 +38,7 @@ commandServiceContext ctx = ServiceContext
   , svcUiActionsHandle = ccUiActionsHandle ctx
   , svcScreenshotRef = ccScreenshotRef ctx
   , svcLogSnapshotRef = ccLogSnapshotRef ctx
+  , svcEventBus = Nothing
   }
 
 -- | Adapt service-layer context back into the legacy command-handler context.

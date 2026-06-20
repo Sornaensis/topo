@@ -104,7 +104,7 @@ operationObject spec = object $ baseFields <> securityFields <> queryFields <> b
       , "summary" .= hrsSummary spec
       , "tags" .= [hrsTag spec]
       , "responses" .= object
-          [ "200" .= responseObject "OK" (hrsResponseSchema spec)
+          [ "200" .= okResponseObject spec
           , "400" .= responseObject "Invalid request" (Just errorEnvelopeSchema)
           , "401" .= responseObject "Unauthorized" (Just errorEnvelopeSchema)
           , "404" .= responseObject "Not found" (Just errorEnvelopeSchema)
@@ -139,12 +139,21 @@ jsonRequestBody required schema = object
   , "content" .= jsonContent (maybe genericObjectSchema schemaRef schema)
   ]
 
+okResponseObject :: HttpRouteSpec -> Value
+okResponseObject spec
+  | hrsOperationId spec == "events.list" = responseObjectWithContent "OK" (eventStreamContent <$> hrsResponseSchema spec)
+  | otherwise = responseObject "OK" (hrsResponseSchema spec)
+
 responseObject :: Text -> Maybe JsonSchema -> Value
-responseObject description schema = object $
+responseObject description schema =
+  responseObjectWithContent description (jsonContent . schemaRef <$> schema)
+
+responseObjectWithContent :: Text -> Maybe Value -> Value
+responseObjectWithContent description content = object $
   [ "description" .= description
   , "headers" .= requestIdResponseHeaders
   ]
-  <> maybe [] (\s -> ["content" .= jsonContent (schemaRef s)]) schema
+  <> maybe [] (\c -> ["content" .= c]) content
 
 requestIdResponseHeaders :: Value
 requestIdResponseHeaders = object
@@ -158,6 +167,19 @@ jsonContent :: Value -> Value
 jsonContent schema = object
   [ "application/json" .= object
       [ "schema" .= schema
+      ]
+  ]
+
+eventStreamContent :: JsonSchema -> Value
+eventStreamContent schema = object
+  [ "application/json" .= object
+      [ "schema" .= schemaRef schema
+      ]
+  , "text/event-stream" .= object
+      [ "schema" .= object
+          [ "type" .= ("string" :: Text)
+          , "description" .= ("Server-Sent Events stream; each data line contains a ServiceEventEnvelope JSON object." :: Text)
+          ]
       ]
   ]
 

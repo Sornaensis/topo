@@ -904,6 +904,7 @@ serviceContextFromCommand ctx = ServiceContext
   , svcUiActionsHandle = ccUiActionsHandle ctx
   , svcScreenshotRef = ccScreenshotRef ctx
   , svcLogSnapshotRef = ccLogSnapshotRef ctx
+  , svcEventBus = Nothing
   }
 
 data ExpectedServiceOutcome

@@ -6,12 +6,14 @@ import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Exception (SomeException, finally, throwIO, try)
 import Control.Monad (forM_)
 import Data.Aeson (Value(..), object, (.=))
+import qualified Data.ByteString.Lazy as LBS
 import Data.Foldable (toList)
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import Data.List (find, sort)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
 import Network.HTTP.Client
   ( Manager
@@ -22,6 +24,9 @@ import Network.HTTP.Client
   , newManager
   , parseRequest
   , requestBody
+  , requestHeaders
+  , responseBody
+  , responseHeaders
   , responseStatus
   )
 import qualified Network.HTTP.Types.Status as HTTP
@@ -100,6 +105,35 @@ spec = describe "Seer.HTTP.Server" $ do
       lookupText "format" (hresBody screenshot) `shouldBe` Just "png"
       lookupText "source" (hresBody screenshot) `shouldBe` Just "headless"
       lookupText "image_base64" (hresBody screenshot) `shouldSatisfy` maybe False (not . Text.null)
+
+  it "buffers HTTP service events and serves them as SSE" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      seedSet <- request app (mkRequest "POST" ["ui", "seed"])
+        { hreqBody = Just (object ["seed" .= (123 :: Int)]) }
+      hresStatusCode seedSet `shouldBe` 200
+
+      generationStatus <- request app (mkRequest "GET" ["world", "generation-status"])
+      hresStatusCode generationStatus `shouldBe` 200
+
+      simState <- request app (mkRequest "GET" ["simulation"])
+      hresStatusCode simState `shouldBe` 200
+
+      events <- request app (mkRequest "GET" ["events"])
+      hresStatusCode events `shouldBe` 200
+      lookupText "mode" (hresBody events) `shouldBe` Just "polling"
+      eventsContainTopic "ui.state.changed" (hresBody events) `shouldBe` True
+      eventsContainTopic "world.generation.status" (hresBody events) `shouldBe` True
+      eventsContainTopic "simulation.status" (hresBody events) `shouldBe` True
+      eventPayloadHasKey "ui.state.changed" "result" (hresBody events) `shouldBe` True
+      eventPayloadHasKey "ui.state.changed" "body" (hresBody events) `shouldBe` False
+
+      let cfg = defaultHttpServerConfig { hscBindPort = 7375 }
+      tid <- forkHttpServer cfg headlessHttpAppService (headlessServiceContext app)
+      manager <- newManager defaultManagerSettings
+      eventually_ (assertEventStream manager "ui.state.changed")
+        `finally` (do
+          killThread tid
+          threadDelay 100000)
 
   it "coerces signed numeric query parameters before service validation" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
@@ -264,12 +298,16 @@ spec = describe "Seer.HTTP.Server" $ do
       `shouldBe` Just [("type", True)]
     queryParameterInfo doc "/logs" "get"
       `shouldBe` Just [("level", False), ("limit", False), ("offset", False)]
+    queryParameterInfo doc "/events" "get"
+      `shouldBe` Just [("stream", False), ("limit", False)]
     queryParameterSchemaType doc "/data/records" "get" "page_size" `shouldBe` Just "integer"
     queryParameterSchemaType doc "/data/records" "get" "page_offset" `shouldBe` Just "integer"
     queryParameterSchemaType doc "/logs" "get" "limit" `shouldBe` Just "integer"
     queryParameterSchemaType doc "/logs" "get" "offset" `shouldBe` Just "integer"
     queryParameterSchemaEnum doc "/logs" "get" "level"
       `shouldBe` Just ["debug", "info", "warn", "error"]
+    operationResponseContentTypes doc "/events" "get" "200"
+      `shouldSatisfy` maybe False ("text/event-stream" `elem`)
     operationHasSecurity doc "/state" "get" "bearerAuth" `shouldBe` True
     operationHasSecurity doc "/health" "get" "bearerAuth" `shouldBe` False
 
@@ -332,6 +370,27 @@ lookupValue _ _ = Nothing
 objectHasKey :: Text -> Value -> Bool
 objectHasKey key (Object obj) = KM.member (Key.fromText key) obj
 objectHasKey _ _ = False
+
+eventsContainTopic :: Text -> Value -> Bool
+eventsContainTopic expectedTopic (Object obj) = case KM.lookup "events" obj of
+  Just (Array events) -> any (eventHasTopic expectedTopic) (toList events)
+  _ -> False
+eventsContainTopic _ _ = False
+
+eventHasTopic :: Text -> Value -> Bool
+eventHasTopic expectedTopic (Object event) =
+  KM.lookup "topic" event == Just (String expectedTopic)
+eventHasTopic _ _ = False
+
+eventPayloadHasKey :: Text -> Text -> Value -> Bool
+eventPayloadHasKey expectedTopic key (Object obj) = case KM.lookup "events" obj of
+  Just (Array events) -> case find (eventHasTopic expectedTopic) (toList events) of
+    Just (Object event) -> case KM.lookup "payload" event of
+      Just (Object payload) -> KM.member (Key.fromText key) payload
+      _ -> False
+    _ -> False
+  _ -> False
+eventPayloadHasKey _ _ _ = False
 
 pathMethods :: Value -> Text -> Maybe [Text]
 pathMethods doc path = do
@@ -441,6 +500,14 @@ operationResponseSchemaRef doc path routeMethod status = do
   Object responses <- KM.lookup "responses" operation
   response <- KM.lookup (Key.fromText status) responses
   schemaRefFromContent response
+
+operationResponseContentTypes :: Value -> Text -> Text -> Text -> Maybe [Text]
+operationResponseContentTypes doc path routeMethod status = do
+  Object operation <- pathOperation doc path routeMethod
+  Object responses <- KM.lookup "responses" operation
+  Object response <- KM.lookup (Key.fromText status) responses
+  Object content <- KM.lookup "content" response
+  pure (map Key.toText (KM.keys content))
 
 schemaRefFromContent :: Value -> Maybe Text
 schemaRefFromContent (Object container) = do
@@ -570,6 +637,17 @@ assertEndpoint manager path = do
   req <- parseRequest ("http://127.0.0.1:7373" <> path)
   rsp <- httpLbs req manager
   HTTP.statusCode (responseStatus rsp) `shouldBe` 200
+
+assertEventStream :: Manager -> Text -> IO ()
+assertEventStream manager expectedTopic = do
+  req0 <- parseRequest "http://127.0.0.1:7375/events?stream=true&limit=1"
+  let req = req0 { requestHeaders = [("Accept", "text/event-stream"), ("X-Request-Id", "evt-123")] }
+  rsp <- httpLbs req manager
+  HTTP.statusCode (responseStatus rsp) `shouldBe` 200
+  lookup "X-Request-Id" (responseHeaders rsp) `shouldBe` Just "evt-123"
+  let body = TextEncoding.decodeUtf8 (LBS.toStrict (responseBody rsp))
+  body `shouldSatisfy` Text.isInfixOf ("event: " <> expectedTopic)
+  body `shouldSatisfy` Text.isInfixOf "data:"
 
 assertUnauthorizedInvalidJson :: Manager -> IO ()
 assertUnauthorizedInvalidJson manager = do

@@ -22,15 +22,20 @@ module Seer.HTTP.Server
 
 import Codec.Picture (Image(..), PixelRGBA8(..), encodePng)
 import Control.Concurrent (ThreadId, forkIO)
+import Control.Concurrent.STM (TChan, atomically, readTChan)
 import Control.Exception (SomeException, try)
+import Control.Monad (forever)
 import Data.Aeson (Value(..), eitherDecode, object, (.=))
+import Data.Char (toLower)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString as BS
-import Data.Foldable (asum)
+import qualified Data.ByteString.Char8 as BSC
+import Data.ByteString.Builder (Builder, byteString, lazyByteString, stringUtf8)
+import Data.Foldable (asum, toList)
 import Data.Maybe (fromMaybe)
 import Data.Scientific (fromFloatDigits, scientific)
 import Data.String (fromString)
@@ -49,7 +54,8 @@ import Seer.HTTP.Auth
 import Seer.HTTP.API
 import Seer.HTTP.OpenAPI
 import Seer.Service.AppService
-import Seer.Service.Context (ServiceContext)
+import Seer.Service.Context (ServiceContext(..))
+import Seer.Service.Events
 import Seer.Service.Types
 
 -- | HTTP runtime configuration. The default is intentionally loopback-only.
@@ -119,6 +125,10 @@ httpApplication cfg app ctx request respond = do
     Just spec
       | not (isPublicRoute spec)
       , not (isAuthorized (hscBearerToken cfg) headers) -> respond (waiResponse (withReqId unauthorized))
+      | hrsOperationId spec == "events.list"
+      , eventStreamRequested request -> do
+          response <- eventStreamWaiResponse ctx (requestIdFromHeaders headers) (Wai.queryString request)
+          respond response
       | otherwise -> do
           body <- Wai.strictRequestBody request
           case decodeRequestBody body of
@@ -168,13 +178,15 @@ handleHttpRequest cfg app ctx req =
         , "api_version" .= ("1" :: Text)
         ]))
       "meta.openapi" -> pure (jsonResponse 200 (openApiDocument httpRouteSpecs))
-      "events.list" -> pure (jsonResponse 200 (object
-        [ "events" .= ([] :: [Value])
-        , "mode" .= ("polling" :: Text)
-        ]))
+      "events.list" -> do
+        events <- maybe (pure []) readBufferedServiceEvents (svcEventBus ctx)
+        pure (jsonResponse 200 (object
+          [ "events" .= map serviceEventEnvelopeJson events
+          , "mode" .= ("polling" :: Text)
+          ]))
       _ -> case hrsServiceMethod spec of
         Nothing -> pure (jsonResponse 500 (errorEnvelope "internal_error" "route has no handler" []))
-        Just method -> invokeService app ctx method (requestParams spec req)
+        Just _method -> invokeService app ctx spec req (requestParams spec req)
 
 isPublicRoute :: HttpRouteSpec -> Bool
 isPublicRoute spec = hrsOperationId spec == "meta.health"
@@ -201,13 +213,113 @@ queryValue value =
       Just number -> Number (fromFloatDigits number)
       Nothing -> String value
 
-invokeService :: AppService -> ServiceContext -> Text -> Value -> IO HttpResponse
-invokeService app ctx method params = do
+invokeService :: AppService -> ServiceContext -> HttpRouteSpec -> HttpRequest -> Value -> IO HttpResponse
+invokeService app ctx spec req params = do
   result <- try (runServiceOperation app ctx method params) :: IO (Either SomeException ServiceResult)
   case result of
-    Left _ -> pure (jsonResponse 500 (errorEnvelope "internal_error" "service handler exception" []))
-    Right (Right response) -> pure (jsonResponse 200 (serviceResponseBody response))
-    Right (Left err) -> pure (serviceErrorResponse err)
+    Left _ -> do
+      let body = errorEnvelope "internal_error" "service handler exception" []
+      publishHttpEvent ctx spec req ServiceEventError "error" body
+      pure (jsonResponse 500 body)
+    Right (Right response) -> do
+      publishHttpEvent ctx spec req ServiceEventInfo "ok" (serviceResponseBody response)
+      pure (jsonResponse 200 (serviceResponseBody response))
+    Right (Left err) -> do
+      let errorResponse = serviceErrorResponse err
+      publishHttpEvent ctx spec req ServiceEventWarn "error" (hresBody errorResponse)
+      pure errorResponse
+  where
+    method = fromMaybe "" (hrsServiceMethod spec)
+
+publishHttpEvent :: ServiceContext -> HttpRouteSpec -> HttpRequest -> ServiceEventSeverity -> Text -> Value -> IO ()
+publishHttpEvent ctx spec req severity status body =
+  case svcEventBus ctx of
+    Nothing -> pure ()
+    Just bus -> do
+      _ <- publishServiceEvent bus ServiceEventEnvelope
+        { serviceEventTopic = eventTopic spec status
+        , serviceEventSource = ServiceEventFromHttp
+        , serviceEventSeverity = severity
+        , serviceEventSequence = Nothing
+        , serviceEventCorrelationId = requestIdFromHeaders (hreqHeaders req)
+        , serviceEventPayload = object
+            [ "status" .= status
+            , "operation_id" .= hrsOperationId spec
+            , "http_method" .= hrsMethod spec
+            , "path" .= routePathText spec
+            , "service_method" .= hrsServiceMethod spec
+            , "result" .= eventBodySummary body
+            ]
+        }
+      pure ()
+
+eventTopic :: HttpRouteSpec -> Text -> Text
+eventTopic spec status
+  | status == "error" = base <> ".failed"
+  | otherwise = base
+  where
+    op = hrsOperationId spec
+    base
+      | op == "world.generate" = "world.generation.requested"
+      | op == "world.generationStatus" = "world.generation.status"
+      | op == "plugins.list" || op == "plugins.status" || op == "plugins.state" || op == "plugins.dependencies" = "plugins.status"
+      | op == "plugins.setEnabled" || op == "plugins.params.set" = "plugins.changed"
+      | op == "logs.get" = "logs.read"
+      | op == "data.records.create" || op == "data.records.update" || op == "data.records.delete" = "data.resources.changed"
+      | "data." `Text.isPrefixOf` op = "data.resources.status"
+      | op == "simulation.tick" = "simulation.tick"
+      | op == "simulation.autoTick.set" = "simulation.auto_tick.changed"
+      | "simulation." `Text.isPrefixOf` op = "simulation.status"
+      | "ui." `Text.isPrefixOf` op || "camera." `Text.isPrefixOf` op || "overlays." `Text.isPrefixOf` op = "ui.state.changed"
+      | otherwise = "http." <> op
+
+eventBodySummary :: Value -> Value
+eventBodySummary (Object obj) =
+  case KM.lookup "error" obj of
+    Just (Object err) -> object
+      [ "type" .= ("error" :: Text)
+      , "code" .= lookupStringField err "code"
+      , "message" .= lookupStringField err "message"
+      ]
+    _ -> object $ baseFields <> keptFields
+  where
+    baseFields =
+      [ "type" .= ("object" :: Text)
+      , "keys" .= map Key.toText (KM.keys obj)
+      ]
+    keptFields =
+      [ Key.fromText key .= value
+      | key <- eventSummaryFieldNames
+      , Just value <- [KM.lookup (Key.fromText key) obj]
+      ]
+eventBodySummary (Array values) = object
+  [ "type" .= ("array" :: Text)
+  , "count" .= length (toList values)
+  ]
+eventBodySummary (String _) = object ["type" .= ("string" :: Text)]
+eventBodySummary (Number _) = object ["type" .= ("number" :: Text)]
+eventBodySummary (Bool _) = object ["type" .= ("boolean" :: Text)]
+eventBodySummary Null = object ["type" .= ("null" :: Text)]
+
+eventSummaryFieldNames :: [Text]
+eventSummaryFieldNames =
+  [ "status"
+  , "generating"
+  , "chunk_count"
+  , "seed"
+  , "auto_tick"
+  , "tick_count"
+  , "plugin_count"
+  , "record_count"
+  , "total_count"
+  , "count"
+  , "total"
+  ]
+
+lookupStringField :: KM.KeyMap Value -> Text -> Maybe Text
+lookupStringField obj field = case KM.lookup (Key.fromText field) obj of
+  Just (String value) -> Just value
+  _ -> Nothing
 
 serviceErrorResponse :: ServiceError -> HttpResponse
 serviceErrorResponse err = jsonResponse (serviceErrorStatus err) (errorEnvelope
@@ -302,6 +414,73 @@ decodeHeaders headers =
   maybe [] (\value -> [("authorization", Text.decodeUtf8 value)]) (lookup HTTP.hAuthorization headers)
     <> maybe [] (\value -> [(requestIdHeader, Text.decodeUtf8 value)]) (lookup "X-Request-Id" headers)
 
+eventStreamRequested :: Wai.Request -> Bool
+eventStreamRequested request =
+  acceptsEventStream (lookup HTTP.hAccept (Wai.requestHeaders request))
+    || queryFlag "stream" (Wai.queryString request)
+
+acceptsEventStream :: Maybe BS.ByteString -> Bool
+acceptsEventStream = maybe False (BSC.isInfixOf "text/event-stream" . BSC.map toLower)
+
+queryFlag :: Text -> HTTP.Query -> Bool
+queryFlag name query = case lookup (Text.encodeUtf8 name) query of
+  Just Nothing -> True
+  Just (Just value) -> Text.toLower (Text.decodeUtf8 value) `elem` ["1", "true", "yes", "sse"]
+  Nothing -> False
+
+eventStreamWaiResponse :: ServiceContext -> Maybe Text -> HTTP.Query -> IO Wai.Response
+eventStreamWaiResponse ctx requestId query =
+  case svcEventBus ctx of
+    Nothing -> pure $ Wai.responseStream (HTTP.mkStatus 200 "OK") (eventStreamHeaders requestId) $ \write flush -> do
+      write (byteString ": event bus unavailable\n\n")
+      flush
+    Just bus -> do
+      (snapshot, live) <- serviceEventSnapshotAndSubscribe bus
+      pure $ Wai.responseStream (HTTP.mkStatus 200 "OK") (eventStreamHeaders requestId) $ \write flush ->
+        streamEvents snapshot live (eventStreamLimit query) write flush
+
+eventStreamHeaders :: Maybe Text -> HTTP.ResponseHeaders
+eventStreamHeaders requestId =
+  [ (HTTP.hContentType, "text/event-stream; charset=utf-8")
+  , ("Cache-Control", "no-cache")
+  , ("X-Accel-Buffering", "no")
+  ] <> maybe [] (\rid -> [("X-Request-Id", Text.encodeUtf8 rid)]) requestId
+
+eventStreamLimit :: HTTP.Query -> Maybe Int
+eventStreamLimit query = do
+  raw <- lookup (Text.encodeUtf8 "limit") query >>= id
+  n <- readMaybe (Text.unpack (Text.decodeUtf8 raw))
+  Just (max 0 n)
+
+streamEvents
+  :: [ServiceEventEnvelope]
+  -> TChan ServiceEventEnvelope
+  -> Maybe Int
+  -> (Builder -> IO ())
+  -> IO ()
+  -> IO ()
+streamEvents snapshot live limitEvents write flush =
+  case limitEvents of
+    Just limitCount ->
+      mapM_ send (take limitCount snapshot)
+    Nothing -> do
+      mapM_ send snapshot
+      forever (atomically (readTChan live) >>= send)
+  where
+    send event = do
+      write (sseEventBuilder event)
+      flush
+
+sseEventBuilder :: ServiceEventEnvelope -> Builder
+sseEventBuilder event =
+  maybe mempty (\seqNo -> stringUtf8 ("id: " <> show seqNo <> "\n")) (serviceEventSequence event)
+    <> byteString "event: "
+    <> byteString (Text.encodeUtf8 (serviceEventTopic event))
+    <> byteString "\n"
+    <> byteString "data: "
+    <> lazyByteString (Aeson.encode (serviceEventEnvelopeJson event))
+    <> byteString "\n\n"
+
 lookupRoute :: Text -> [Text] -> Maybe HttpRouteSpec
 lookupRoute method path = asum
   [ if hrsMethod spec == method && hrsPath spec == path then Just spec else Nothing
@@ -316,7 +495,10 @@ friendlyHttpRouteSpecs = map annotateHttpRouteSpec
   [ special "GET" ["health"] "meta.health" "meta" "Check server health."
   , special "GET" ["version"] "meta.version" "meta" "Read topo-seer and API version metadata."
   , special "GET" ["openapi.json"] "meta.openapi" "meta" "Read the OpenAPI contract."
-  , special "GET" ["events"] "events.list" "events" "Read currently buffered events."
+  , specialWithQuery "GET" ["events"] "events.list" "events" "Read buffered events or stream them as Server-Sent Events."
+      [ optionalQueryWithSchema "stream" "When true, return text/event-stream instead of JSON." queryBooleanSchema
+      , optionalQueryWithSchema "limit" "Maximum SSE events to stream before closing." queryIntegerSchema
+      ]
 
   , service "GET" ["state"] "state.get" "state" "get_state" "Read current application state." NoRequestBody
   , service "GET" ["state", "view-modes"] "state.viewModes" "state" "get_view_modes" "List view modes." NoRequestBody
@@ -503,6 +685,10 @@ special method path operationId tag summary = HttpRouteSpec
   , hrsResponseSchema = Nothing
   }
 
+specialWithQuery :: Text -> [Text] -> Text -> Text -> Text -> [QueryParamSpec] -> HttpRouteSpec
+specialWithQuery method path operationId tag summary queryParams =
+  (special method path operationId tag summary) { hrsQueryParams = queryParams }
+
 service :: Text -> [Text] -> Text -> Text -> Text -> Text -> RouteBody -> HttpRouteSpec
 service method path operationId tag serviceMethod summary body =
   serviceWithQuery method path operationId tag serviceMethod summary body []
@@ -535,6 +721,9 @@ queryStringSchema = object ["type" .= ("string" :: Text)]
 
 queryIntegerSchema :: Value
 queryIntegerSchema = object ["type" .= ("integer" :: Text)]
+
+queryBooleanSchema :: Value
+queryBooleanSchema = object ["type" .= ("boolean" :: Text)]
 
 queryEnumSchema :: [Text] -> Value
 queryEnumSchema values = object

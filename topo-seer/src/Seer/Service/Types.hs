@@ -47,9 +47,9 @@ import Data.Aeson (Value(..))
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Data.Word (Word64)
 
 import Seer.Service.Context (ServiceContext)
+import Seer.Service.EventTypes
 
 -- | Generic service handler shape used by the initial AppService surface.
 --
@@ -113,43 +113,6 @@ data AsyncStatusSnapshot = AsyncStatusSnapshot
   , asyncStatusCurrent :: !(Maybe Int)
   , asyncStatusTotal :: !(Maybe Int)
   , asyncStatusMessage :: !(Maybe Text)
-  } deriving (Eq, Show)
-
--- | Transport-neutral event metadata shared by future HTTP event streams and UI
--- publication hooks.  These types deliberately carry 'Value' payloads so each
--- event topic can evolve independently while retaining typed origin/severity
--- metadata at the service boundary.
-data ServiceEventSource
-  = ServiceEventFromHttp
-  | ServiceEventFromUi
-  | ServiceEventFromCommand
-  | ServiceEventFromService
-  | ServiceEventFromSystem
-  deriving (Eq, Show)
-
-data ServiceEventSeverity
-  = ServiceEventDebug
-  | ServiceEventInfo
-  | ServiceEventWarn
-  | ServiceEventError
-  deriving (Eq, Show)
-
-data ServiceEventEnvelope = ServiceEventEnvelope
-  { serviceEventTopic :: !Text
-  , serviceEventSource :: !ServiceEventSource
-  , serviceEventSeverity :: !ServiceEventSeverity
-  , serviceEventSequence :: !(Maybe Word64)
-  , serviceEventCorrelationId :: !(Maybe Text)
-  , serviceEventPayload :: !Value
-  } deriving (Eq, Show)
-
-newtype ServiceEventPublishRequest = ServiceEventPublishRequest
-  { serviceEventPublishEnvelope :: ServiceEventEnvelope
-  } deriving (Eq, Show)
-
-data ServiceEventPublishResponse = ServiceEventPublishResponse
-  { serviceEventPublishAccepted :: !Bool
-  , serviceEventPublishTopic :: !Text
   } deriving (Eq, Show)
 
 type ServiceEventPublishHook = ServiceEventPublishRequest -> IO (Either ServiceError ServiceEventPublishResponse)

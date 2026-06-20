@@ -16,6 +16,7 @@ import Actor.UiActions.Handles (ActorHandles)
 import Actor.UI.State (UiSnapshotRef)
 import Hyperspace.Actor (ActorHandle, Protocol)
 import Seer.Screenshot.Request (ScreenshotRequestRef)
+import Seer.Service.Events (ServiceEventBus)
 
 -- | Application host handles needed by concrete service implementations.
 data ServiceContext = ServiceContext
@@ -25,4 +26,6 @@ data ServiceContext = ServiceContext
   , svcScreenshotRef :: !ScreenshotRequestRef
   , svcLogSnapshotRef :: !(Maybe LogSnapshotRef)
     -- ^ Log snapshot for log reads. 'Nothing' is allowed for focused tests.
+  , svcEventBus :: !(Maybe ServiceEventBus)
+    -- ^ Optional HTTP/event-stream buffer. 'Nothing' keeps focused tests lightweight.
   }

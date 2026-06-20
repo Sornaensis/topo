@@ -90,7 +90,8 @@ import Hyperspace.Actor
 import Seer.Command.Channel (CommandChannelEnv(..), runCommandChannel)
 import Seer.Command.Context (CommandContext(..), commandServiceContext)
 import Seer.Config.Runtime (TopoSeerConfig(..), defaultConfig)
-import Seer.Service.Context (ServiceContext)
+import Seer.Service.Context (ServiceContext(..))
+import Seer.Service.Events (ServiceEventBus, newDefaultServiceEventBus)
 import Seer.Editor.History (EditHistory, emptyHistory)
 import Seer.Screenshot.Request (ScreenshotRequestRef, newScreenshotRequestRef)
 import System.IO (Handle, hClose)
@@ -151,6 +152,7 @@ data HeadlessApp = HeadlessApp
   , haSnapshotVersionRef :: !SnapshotVersionRef
   , haScreenshotRef :: !ScreenshotRequestRef
   , haHistoryRef :: !(IORef EditHistory)
+  , haEventBus :: !ServiceEventBus
   , haActorHandles :: !ActorHandles
   , haCommandContext :: !CommandContext
   , haCommandChannelThread :: !(Maybe ThreadId)
@@ -164,7 +166,9 @@ headlessCommandContext = haCommandContext
 
 -- | Service context wired to the headless actor graph.
 headlessServiceContext :: HeadlessApp -> ServiceContext
-headlessServiceContext = commandServiceContext . haCommandContext
+headlessServiceContext app = (commandServiceContext (haCommandContext app))
+  { svcEventBus = Just (haEventBus app)
+  }
 
 -- | Runtime configuration used to construct this headless runtime.
 headlessRuntimeConfig :: HeadlessApp -> TopoSeerConfig
@@ -230,6 +234,7 @@ startHeadlessAppWithSystem cfg system = do
 
   screenshotRef <- newScreenshotRequestRef
   historyRef <- newIORef (emptyHistory 50)
+  eventBus <- newDefaultServiceEventBus
   let actorHandles = mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef pluginManagerHandle simulationHandle historyRef
       commandContext = CommandContext
         { ccActorHandles = actorHandles
@@ -274,6 +279,7 @@ startHeadlessAppWithSystem cfg system = do
     , haSnapshotVersionRef = snapshotVersionRef
     , haScreenshotRef = screenshotRef
     , haHistoryRef = historyRef
+    , haEventBus = eventBus
     , haActorHandles = actorHandles
     , haCommandContext = commandContext
     , haCommandChannelThread = commandThread

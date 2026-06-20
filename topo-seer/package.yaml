@@ -83,6 +83,8 @@ library:
     - Seer.Service.Context
     - Seer.Service.DataResource
     - Seer.Service.Editor
+    - Seer.Service.EventTypes
+    - Seer.Service.Events
     - Seer.Service.Log
     - Seer.Service.Pipeline
     - Seer.Service.Plugin
