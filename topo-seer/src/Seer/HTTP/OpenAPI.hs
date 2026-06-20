@@ -141,8 +141,18 @@ jsonRequestBody required schema = object
 
 responseObject :: Text -> Maybe JsonSchema -> Value
 responseObject description schema = object $
-  [ "description" .= description ]
+  [ "description" .= description
+  , "headers" .= requestIdResponseHeaders
+  ]
   <> maybe [] (\s -> ["content" .= jsonContent (schemaRef s)]) schema
+
+requestIdResponseHeaders :: Value
+requestIdResponseHeaders = object
+  [ "X-Request-Id" .= object
+      [ "description" .= ("Echoes the optional X-Request-Id request header when supplied." :: Text)
+      , "schema" .= object ["type" .= ("string" :: Text)]
+      ]
+  ]
 
 jsonContent :: Value -> Value
 jsonContent schema = object
@@ -196,8 +206,17 @@ errorEnvelopeSchema = JsonSchema "ErrorEnvelope" $ object
           [ "type" .= ("object" :: Text)
           , "required" .= (["code", "message", "details"] :: [Text])
           , "properties" .= object
-              [ "code" .= object ["type" .= ("string" :: Text)]
+              [ "code" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "enum" .= ([ "invalid_json", "invalid_request", "validation_failed", "unauthorized"
+                                , "not_found", "rejected", "internal_error", "unavailable"
+                                ] :: [Text])
+                  ]
               , "message" .= object ["type" .= ("string" :: Text)]
+              , "request_id" .= object
+                  [ "type" .= ("string" :: Text)
+                  , "description" .= ("Request correlation id copied from X-Request-Id when present." :: Text)
+                  ]
               , "details" .= object
                   [ "type" .= ("array" :: Text)
                   , "items" .= object
@@ -211,6 +230,20 @@ errorEnvelopeSchema = JsonSchema "ErrorEnvelope" $ object
                           , "message" .= object ["type" .= ("string" :: Text)]
                           ]
                       ]
+                  ]
+              ]
+          ]
+      ]
+  , "example" .= object
+      [ "error" .= object
+          [ "code" .= ("validation_failed" :: Text)
+          , "message" .= ("validation failed" :: Text)
+          , "request_id" .= ("req-123" :: Text)
+          , "details" .=
+              [ object
+                  [ "path" .= (["name"] :: [Text])
+                  , "code" .= ("missing_field" :: Text)
+                  , "message" .= ("missing required field 'name'" :: Text)
                   ]
               ]
           ]

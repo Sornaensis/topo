@@ -112,16 +112,17 @@ httpApplication cfg app ctx request respond = do
   let method = Text.decodeUtf8 (Wai.requestMethod request)
       path = Wai.pathInfo request
       headers = decodeHeaders (Wai.requestHeaders request)
+      withReqId = withRequestId (requestIdFromHeaders headers)
       unauthorized = jsonResponse 401 (errorEnvelope "unauthorized" "missing or invalid bearer token" [])
   case lookupRoute method path of
-    Nothing -> respond (waiResponse (jsonResponse 404 (errorEnvelope "not_found" "route not found" [])))
+    Nothing -> respond (waiResponse (withReqId (jsonResponse 404 (errorEnvelope "not_found" "route not found" []))))
     Just spec
       | not (isPublicRoute spec)
-      , not (isAuthorized (hscBearerToken cfg) headers) -> respond (waiResponse unauthorized)
+      , not (isAuthorized (hscBearerToken cfg) headers) -> respond (waiResponse (withReqId unauthorized))
       | otherwise -> do
           body <- Wai.strictRequestBody request
           case decodeRequestBody body of
-            Left err -> respond (waiResponse (jsonResponse 400 (errorEnvelope "invalid_json" err [])))
+            Left err -> respond (waiResponse (withReqId (jsonResponse 400 (errorEnvelope "invalid_json" err []))))
             Right mBody -> do
               let httpReq = HttpRequest
                     { hreqMethod = method
@@ -150,6 +151,7 @@ data HttpResponse = HttpResponse
 
 handleHttpRequest :: HttpServerConfig -> AppService -> ServiceContext -> HttpRequest -> IO HttpResponse
 handleHttpRequest cfg app ctx req =
+  fmap (withRequestId (requestIdFromHeaders (hreqHeaders req))) $
   case lookupRoute (hreqMethod req) (hreqPath req) of
     Nothing -> pure (jsonResponse 404 (errorEnvelope "not_found" "route not found" []))
     Just spec
@@ -236,6 +238,34 @@ errorEnvelope code message details = object
       ]
   ]
 
+requestIdHeader :: Text
+requestIdHeader = "x-request-id"
+
+requestIdFromHeaders :: [(Text, Text)] -> Maybe Text
+requestIdFromHeaders headers = lookup requestIdHeader
+  [ (Text.toLower name, value)
+  | (name, value) <- headers
+  ]
+
+withRequestId :: Maybe Text -> HttpResponse -> HttpResponse
+withRequestId Nothing response = response
+withRequestId (Just requestId) response = response
+  { hresHeaders = setHeader requestIdHeader requestId (hresHeaders response)
+  , hresBody = addRequestIdToError requestId (hresBody response)
+  }
+
+setHeader :: Text -> Text -> [(Text, Text)] -> [(Text, Text)]
+setHeader name value headers =
+  (name, value) : filter ((/= Text.toLower name) . Text.toLower . fst) headers
+
+addRequestIdToError :: Text -> Value -> Value
+addRequestIdToError requestId (Object body) = case KM.lookup (Key.fromText "error") body of
+  Just (Object err) -> Object $ KM.insert (Key.fromText "error")
+    (Object (KM.insert (Key.fromText "request_id") (String requestId) err))
+    body
+  _ -> Object body
+addRequestIdToError _ body = body
+
 jsonResponse :: Int -> Value -> HttpResponse
 jsonResponse status body = HttpResponse
   { hresStatusCode = status
@@ -246,8 +276,16 @@ jsonResponse status body = HttpResponse
 waiResponse :: HttpResponse -> Wai.Response
 waiResponse HttpResponse{..} = Wai.responseLBS
   (HTTP.mkStatus hresStatusCode "")
-  [ (HTTP.hContentType, "application/json") ]
+  (waiResponseHeaders hresHeaders)
   (Aeson.encode hresBody)
+
+waiResponseHeaders :: [(Text, Text)] -> HTTP.ResponseHeaders
+waiResponseHeaders headers =
+  (HTTP.hContentType, "application/json") :
+    [ ("X-Request-Id", Text.encodeUtf8 requestId)
+    | (name, requestId) <- headers
+    , Text.toLower name == requestIdHeader
+    ]
 
 decodeRequestBody :: LBS.ByteString -> Either Text (Maybe Value)
 decodeRequestBody body
@@ -261,9 +299,8 @@ decodeQueryParam (key, value) = (Text.decodeUtf8 key, fmap Text.decodeUtf8 value
 
 decodeHeaders :: [HTTP.Header] -> [(Text, Text)]
 decodeHeaders headers =
-  case lookup HTTP.hAuthorization headers of
-    Nothing -> []
-    Just value -> [("authorization", Text.decodeUtf8 value)]
+  maybe [] (\value -> [("authorization", Text.decodeUtf8 value)]) (lookup HTTP.hAuthorization headers)
+    <> maybe [] (\value -> [(requestIdHeader, Text.decodeUtf8 value)]) (lookup "X-Request-Id" headers)
 
 lookupRoute :: Text -> [Text] -> Maybe HttpRouteSpec
 lookupRoute method path = asum
@@ -275,7 +312,7 @@ httpRouteSpecs :: [HttpRouteSpec]
 httpRouteSpecs = friendlyHttpRouteSpecs <> commandHttpRouteSpecs
 
 friendlyHttpRouteSpecs :: [HttpRouteSpec]
-friendlyHttpRouteSpecs =
+friendlyHttpRouteSpecs = map annotateHttpRouteSpec
   [ special "GET" ["health"] "meta.health" "meta" "Check server health."
   , special "GET" ["version"] "meta.version" "meta" "Read topo-seer and API version metadata."
   , special "GET" ["openapi.json"] "meta.openapi" "meta" "Read the OpenAPI contract."
@@ -315,6 +352,14 @@ friendlyHttpRouteSpecs =
       [requiredQuery "chunk" "Chunk id."]
   , service "GET" ["terrain", "stats"] "terrain.stats" "terrain" "get_terrain_stats" "Read terrain stats." NoRequestBody
   , service "GET" ["terrain", "overlays"] "terrain.overlays" "terrain" "get_overlays" "List overlays." NoRequestBody
+
+  , service "GET" ["overlays"] "overlays.list" "overlays" "get_overlays" "List overlays." NoRequestBody
+  , serviceWithQuery "GET" ["overlays", "fields"] "overlays.fields.list" "overlays" "list_overlay_fields" "List overlay fields." NoRequestBody
+      [optionalQuery "overlay" "Overlay name."]
+  , service "PUT" ["overlays", "current"] "overlays.current.set" "overlays" "set_overlay" "Set current overlay." RequiredJsonRequestBody
+  , service "POST" ["overlays", "cycle"] "overlays.cycle" "overlays" "cycle_overlay" "Cycle overlay." RequiredJsonRequestBody
+  , service "POST" ["overlays", "fields", "cycle"] "overlays.field.cycle" "overlays" "cycle_overlay_field" "Cycle overlay field." RequiredJsonRequestBody
+
   , service "POST" ["terrain", "search"] "terrain.search" "terrain" "find_hexes" "Find hexes." RequiredJsonRequestBody
   , service "POST" ["terrain", "export"] "terrain.export" "terrain" "export_terrain_data" "Export terrain data." OptionalJsonRequestBody
 
@@ -405,6 +450,10 @@ friendlyHttpRouteSpecs =
       [optionalQuery "overlay" "Overlay name."]
   , service "POST" ["ui", "overlay", "cycle"] "ui.overlay.cycle" "ui" "cycle_overlay" "Cycle overlay." RequiredJsonRequestBody
   , service "POST" ["ui", "overlay-field", "cycle"] "ui.overlayField.cycle" "ui" "cycle_overlay_field" "Cycle overlay field." RequiredJsonRequestBody
+
+  , service "PUT" ["camera"] "camera.set" "camera" "set_camera" "Set camera." RequiredJsonRequestBody
+  , service "GET" ["camera"] "camera.get" "camera" "get_camera" "Read camera." NoRequestBody
+  , service "POST" ["camera", "zoom-to-chunk"] "camera.zoomToChunk" "camera" "zoom_to_chunk" "Zoom to chunk." RequiredJsonRequestBody
   , service "PUT" ["ui", "camera"] "ui.camera.set" "ui" "set_camera" "Set camera." RequiredJsonRequestBody
   , service "GET" ["ui", "camera"] "ui.camera.get" "ui" "get_camera" "Read camera." NoRequestBody
   , service "POST" ["ui", "camera", "zoom-to-chunk"] "ui.camera.zoomToChunk" "ui" "zoom_to_chunk" "Zoom to chunk." RequiredJsonRequestBody

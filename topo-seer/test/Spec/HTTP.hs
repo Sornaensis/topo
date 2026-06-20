@@ -36,6 +36,7 @@ import Seer.Headless
 import Seer.HTTP.Auth (HttpAuthConfig(..), isLoopbackHost, validateHttpAuthConfig)
 import Seer.HTTP.OpenAPI
   ( HttpRouteSpec(..)
+  , JsonSchema(..)
   , QueryParamSpec(..)
   , RouteBody(..)
   , openApiDocument
@@ -48,6 +49,7 @@ import Seer.HTTP.Server
   , commandHttpRouteSpecs
   , defaultHttpServerConfig
   , forkHttpServer
+  , friendlyHttpRouteSpecs
   , handleHttpRequest
   , headlessHttpAppService
   , httpRouteSpecs
@@ -123,6 +125,16 @@ spec = describe "Seer.HTTP.Server" $ do
         (mkRequest "GET" ["state"]) { hreqHeaders = [("authorization", "Bearer secret")] }
       hresStatusCode allowed `shouldBe` 200
 
+  it "echoes request ids in protected-route error responses" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      let cfg = defaultHttpServerConfig { hscBearerToken = Just "secret" }
+          ctx = headlessServiceContext app
+      denied <- handleHttpRequest cfg headlessHttpAppService ctx
+        (mkRequest "GET" ["state"]) { hreqHeaders = [("x-request-id", "req-123")] }
+      hresStatusCode denied `shouldBe` 401
+      lookupHeaderText "x-request-id" (hresHeaders denied) `shouldBe` Just "req-123"
+      lookupNestedText ["error", "request_id"] (hresBody denied) `shouldBe` Just "req-123"
+
   it "lists every implemented route in OpenAPI" $ do
     let doc = openApiDocument httpRouteSpecs
     forM_ httpRouteSpecs $ \route -> do
@@ -145,6 +157,34 @@ spec = describe "Seer.HTTP.Server" $ do
       operationQueryParameterInfo doc path routeMethod `shouldBe` Just (routeQueryParameterInfo route)
       operationRequestBodyRequired doc path routeMethod `shouldBe` Just (routeRequestBodyRequired route)
       operationHasSecurity doc path routeMethod "bearerAuth" `shouldBe` (hrsOperationId route /= "meta.health")
+
+  it "publishes named schemas for every friendly resource route" $ do
+    let doc = openApiDocument httpRouteSpecs
+        missingResponses =
+          [ routeSignature route
+          | route <- friendlyHttpRouteSpecs
+          , hrsResponseSchema route == Nothing
+          ]
+        missingRequests =
+          [ routeSignature route
+          | route <- friendlyHttpRouteSpecs
+          , routeRequestBodyRequired route /= Nothing
+          , hrsRequestSchema route == Nothing
+          ]
+    missingResponses `shouldBe` []
+    missingRequests `shouldBe` []
+    forM_ friendlyHttpRouteSpecs $ \route -> do
+      let path = routePathText route
+          routeMethod = Text.toLower (hrsMethod route)
+      case hrsResponseSchema route of
+        Nothing -> expectationFailure ("missing response schema for " <> Text.unpack (routeSignature route))
+        Just schema ->
+          operationResponseSchemaRef doc path routeMethod "200" `shouldBe` Just (jsonSchemaName schema)
+      case (routeRequestBodyRequired route, hrsRequestSchema route) of
+        (Nothing, _) -> pure ()
+        (Just _, Nothing) -> expectationFailure ("missing request schema for " <> Text.unpack (routeSignature route))
+        (Just _, Just schema) ->
+          operationRequestSchemaRef doc path routeMethod `shouldBe` Just (jsonSchemaName schema)
 
   it "publishes component schemas for resource route groups" $ do
     let doc = openApiDocument httpRouteSpecs
@@ -273,6 +313,12 @@ lookupText :: Text -> Value -> Maybe Text
 lookupText key value = case lookupValue key value of
   Just (String text) -> Just text
   _ -> Nothing
+
+lookupHeaderText :: Text -> [(Text, Text)] -> Maybe Text
+lookupHeaderText name headers = lookup (Text.toLower name)
+  [ (Text.toLower key, value)
+  | (key, value) <- headers
+  ]
 
 lookupNestedText :: [Text] -> Value -> Maybe Text
 lookupNestedText [] _ = Nothing

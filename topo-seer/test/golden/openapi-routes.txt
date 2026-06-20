@@ -27,6 +27,11 @@ GET /terrain/chunks terrain.chunks
 GET /terrain/chunk-summary terrain.chunkSummary
 GET /terrain/stats terrain.stats
 GET /terrain/overlays terrain.overlays
+GET /overlays overlays.list
+GET /overlays/fields overlays.fields.list
+PUT /overlays/current overlays.current.set
+POST /overlays/cycle overlays.cycle
+POST /overlays/fields/cycle overlays.field.cycle
 POST /terrain/search terrain.search
 POST /terrain/export terrain.export
 GET /editor editor.state
@@ -70,6 +75,9 @@ POST /ui/overlay ui.overlay.set
 GET /ui/overlay-fields ui.overlayFields.list
 POST /ui/overlay/cycle ui.overlay.cycle
 POST /ui/overlay-field/cycle ui.overlayField.cycle
+PUT /camera camera.set
+GET /camera camera.get
+POST /camera/zoom-to-chunk camera.zoomToChunk
 PUT /ui/camera ui.camera.set
 GET /ui/camera ui.camera.get
 POST /ui/camera/zoom-to-chunk ui.camera.zoomToChunk
