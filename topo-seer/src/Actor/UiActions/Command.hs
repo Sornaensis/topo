@@ -57,6 +57,7 @@ import Actor.UI
   , uiSeed
   , setUiPluginNames
   , setUiPluginParamSpecs
+  , setUiPluginLifecycles
   , setUiDisabledPlugins
   , setUiOverlayNames
   , setUiViewMode
@@ -206,9 +207,11 @@ startGeneration req = do
         | name <- pluginOrder
         , Just lp <- [Map.lookup name pluginMap]
         ]
+      lifecycles = Map.fromList [(lpName lp, lpLifecycle lp) | lp <- loadedPlugins]
   disabledPlugins <- getDisabledPlugins pluginHandle
   setUiPluginNames uiHandle pluginOrder
   setUiPluginParamSpecs uiHandle paramSpecs
+  setUiPluginLifecycles uiHandle lifecycles
   setUiDisabledPlugins uiHandle disabledPlugins
   setUiDataResources uiHandle dataResources
   setUiOverlayNames uiHandle (map osName overlaySchemas)

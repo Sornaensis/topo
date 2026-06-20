@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
 -- | Plugin directory scanning and manifest loading.
@@ -19,9 +20,16 @@ import System.Directory
   , listDirectory
   )
 import System.FilePath ((</>))
+import Data.Time (getCurrentTime)
 
 import Actor.PluginManager.Config (loadPluginConfig)
-import Actor.PluginManager.Types (LoadedPlugin(..), PluginStatus(..))
+import Actor.PluginManager.Types
+  ( LoadedPlugin(..)
+  , PluginLifecycleState(..)
+  , PluginStatus(..)
+  , manifestLifecycleResources
+  , pluginLifecycleSnapshot
+  )
 import Topo.Overlay.Schema (OverlaySchema, parseOverlaySchema)
 import Topo.Plugin.RPC
   ( RPCManifest(..)
@@ -62,11 +70,15 @@ tryLoadPlugin baseDir entry = do
         Right (Right manifest) -> do
           params <- loadPluginConfig pluginDir (rmParameters manifest)
           overlaySchema <- loadOverlaySchema pluginDir manifest
+          now <- getCurrentTime
           pure [LoadedPlugin
             { lpName       = rmName manifest
             , lpManifest   = manifest
             , lpParams     = params
             , lpStatus     = PluginIdle
+            , lpLifecycle  = pluginLifecycleSnapshot now LifecycleDiscovered
+                (Just "manifest discovered") Nothing Nothing Nothing Nothing Nothing
+                (manifestLifecycleResources manifest)
             , lpConnection = Nothing
             , lpProcessHandle = Nothing
             , lpDirectory  = pluginDir

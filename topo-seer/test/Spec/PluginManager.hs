@@ -5,7 +5,7 @@
 
 module Spec.PluginManager (spec, runFixtureCli) where
 
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
 import Control.Exception (bracket)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
@@ -30,6 +30,8 @@ import Test.Hspec
 
 import Actor.PluginManager
   ( LoadedPlugin(..)
+  , PluginLifecycleSnapshot(..)
+  , PluginLifecycleState(..)
   , PluginManager
   , PluginStatus(..)
   , discoverPlugins
@@ -79,10 +81,44 @@ spec = describe "PluginManager" $ do
         loaded <- getLoadedPlugins pluginManagerHandle
         map stageName stages `shouldSatisfy` elem (Text.pack testLaunchPluginName)
         pluginStatuses testLaunchPluginName loaded `shouldSatisfy` elem PluginConnected
+        pluginLifecycleStates testLaunchPluginName loaded `shouldSatisfy` elem LifecycleReady
+        pluginLifecycleProtocols testLaunchPluginName loaded `shouldSatisfy` elem (Just currentProtocolVersion)
         shutdownPlugins pluginManagerHandle
         threadDelay 200000
         loadedAfterShutdown <- getLoadedPlugins pluginManagerHandle
         pluginStatuses testLaunchPluginName loadedAfterShutdown `shouldSatisfy` elem PluginDisconnected
+        pluginLifecycleStates testLaunchPluginName loadedAfterShutdown `shouldSatisfy` elem LifecycleStopped
+
+  it "exposes Starting while public refreshManifests performs supervisor work" $ do
+    withExecutablePluginDir refreshTransientPluginName refreshTransientManifestJSON "slow" $ do
+      bracket newActorSystem shutdownActorSystem $ \system -> do
+        pluginManagerHandle <- getPluginManager system
+        discoverPlugins pluginManagerHandle
+        done <- newEmptyMVar
+        _ <- forkIO (refreshManifests pluginManagerHandle >> putMVar done ())
+        threadDelay 50000
+        starting <- getLoadedPlugins pluginManagerHandle
+        pluginLifecycleStates refreshTransientPluginName starting `shouldSatisfy` elem LifecycleStarting
+        takeMVar done
+        failed <- getLoadedPlugins pluginManagerHandle
+        pluginLifecycleStates refreshTransientPluginName failed `shouldSatisfy` elem LifecycleFailed
+
+  it "exposes Stopping while public shutdownPlugins performs supervisor work" $ do
+    withExecutablePluginDir shutdownTransientPluginName shutdownTransientManifestJSON "slow-shutdown" $ do
+      bracket newActorSystem shutdownActorSystem $ \system -> do
+        pluginManagerHandle <- getPluginManager system
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        ready <- getLoadedPlugins pluginManagerHandle
+        pluginLifecycleStates shutdownTransientPluginName ready `shouldSatisfy` elem LifecycleReady
+        done <- newEmptyMVar
+        _ <- forkIO (shutdownPlugins pluginManagerHandle >> putMVar done ())
+        threadDelay 50000
+        stopping <- getLoadedPlugins pluginManagerHandle
+        pluginLifecycleStates shutdownTransientPluginName stopping `shouldSatisfy` elem LifecycleStopping
+        takeMVar done
+        stopped <- getLoadedPlugins pluginManagerHandle
+        pluginLifecycleStates shutdownTransientPluginName stopped `shouldSatisfy` elem LifecycleStopped
 
   it "reports a protocol-version mismatch as a plugin error" $ do
     withExecutablePluginDir mismatchPluginName mismatchManifestJSON "protocol-mismatch" $ do
@@ -92,6 +128,7 @@ spec = describe "PluginManager" $ do
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
         pluginStatuses mismatchPluginName loaded `shouldSatisfy` anyPluginErrorContaining "protocol version mismatch"
+        pluginLifecycleStates mismatchPluginName loaded `shouldSatisfy` elem LifecycleFailed
 
   it "reports malformed handshake JSON as a plugin error" $ do
     withExecutablePluginDir malformedPluginName malformedManifestJSON "malformed-json" $ do
@@ -126,6 +163,19 @@ pluginStatuses name loaded =
   | plugin <- loaded
   , lpName plugin == Text.pack name
   ]
+
+pluginLifecycles :: String -> [LoadedPlugin] -> [PluginLifecycleSnapshot]
+pluginLifecycles name loaded =
+  [ lpLifecycle plugin
+  | plugin <- loaded
+  , lpName plugin == Text.pack name
+  ]
+
+pluginLifecycleStates :: String -> [LoadedPlugin] -> [PluginLifecycleState]
+pluginLifecycleStates name = map plsState . pluginLifecycles name
+
+pluginLifecycleProtocols :: String -> [LoadedPlugin] -> [Maybe Int]
+pluginLifecycleProtocols name = map plsProtocolVersion . pluginLifecycles name
 
 anyPluginError :: [PluginStatus] -> Bool
 anyPluginError = any $ \case
@@ -195,7 +245,7 @@ runFixtureCli = do
   args <- getArgs
   case args of
     ["--plugin-manager-fixture", mode] -> runFixtureMode mode
-    _ -> die "usage: topo-seer-test --plugin-manager-fixture <ok|protocol-mismatch|malformed-json|early-exit|slow>"
+    _ -> die "usage: topo-seer-test --plugin-manager-fixture <ok|protocol-mismatch|malformed-json|early-exit|slow|slow-shutdown>"
 
 runFixtureMode :: String -> IO ()
 runFixtureMode = \case
@@ -204,6 +254,7 @@ runFixtureMode = \case
   "malformed-json" -> runMalformedJsonFixture
   "early-exit" -> exitFailure
   "slow" -> threadDelay 2000000 >> runOkFixture
+  "slow-shutdown" -> runSlowShutdownFixture
   unknown -> die ("unknown plugin-manager fixture: " <> unknown)
 
 runOkFixture :: IO ()
@@ -223,6 +274,25 @@ runOkFixture = do
                 _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope currentProtocolVersion))
                 loop transport
               MsgShutdown -> closeTransport transport
+              _ -> loop transport
+
+runSlowShutdownFixture :: IO ()
+runSlowShutdownFixture = do
+  connectPlugin "plugin-manager-slow-shutdown-fixture" stdin stdout >>= \case
+    Left _ -> exitFailure
+    Right transport -> loop transport
+  where
+    loop transport = do
+      recvMessage transport >>= \case
+        Left _ -> closeTransport transport
+        Right bytes ->
+          case decodeMessage bytes of
+            Left _ -> loop transport
+            Right envelope -> case envType envelope of
+              MsgHandshake -> do
+                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope currentProtocolVersion))
+                loop transport
+              MsgShutdown -> threadDelay 1000000 >> closeTransport transport
               _ -> loop transport
 
 runOneShotAckFixture :: Int -> IO ()
@@ -304,6 +374,18 @@ crashPluginName = "copilot-test-plugin-crashy"
 
 crashManifestJSON :: BS.ByteString
 crashManifestJSON = manifestFor crashPluginName
+
+refreshTransientPluginName :: String
+refreshTransientPluginName = "copilot-test-plugin-refresh-transient"
+
+refreshTransientManifestJSON :: BS.ByteString
+refreshTransientManifestJSON = manifestFor refreshTransientPluginName
+
+shutdownTransientPluginName :: String
+shutdownTransientPluginName = "copilot-test-plugin-shutdown-transient"
+
+shutdownTransientManifestJSON :: BS.ByteString
+shutdownTransientManifestJSON = manifestFor shutdownTransientPluginName
 
 slowPluginName :: String
 slowPluginName = "copilot-test-plugin-slow"

@@ -94,6 +94,7 @@ pluginToJSON disabled paramSpecs lp =
   in object
     [ "name"        .= name
     , "status"      .= statusToText (lpStatus lp)
+    , "lifecycle"   .= lpLifecycle lp
     , "enabled"     .= not (Set.member name disabled)
     , "params"      .= lpParams lp
     , "param_specs" .= map paramSpecToJSON (maybe [] id (Map.lookup name paramSpecs))

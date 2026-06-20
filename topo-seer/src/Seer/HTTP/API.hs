@@ -852,9 +852,10 @@ pluginSetParamResponseSchema = objectSchema "PluginSetParamResponse"
 
 pluginSummarySchema :: Value
 pluginSummarySchema = inlineObjectSchema
-  [ "name", "status", "enabled", "params", "param_specs" ]
+  [ "name", "status", "lifecycle", "enabled", "params", "param_specs" ]
   [ ("name", stringSchema)
   , ("status", stringSchema)
+  , ("lifecycle", pluginLifecycleSchema)
   , ("enabled", booleanSchema)
   , ("params", freeObjectSchema)
   , ("param_specs", arraySchema pluginParamSpecSchema)
@@ -868,6 +869,56 @@ pluginParamSpecSchema = inlineObjectSchema
   , ("type", stringSchema)
   , ("default", anySchema)
   , ("tooltip", nullableSchema stringSchema)
+  ]
+
+pluginLifecycleSchema :: Value
+pluginLifecycleSchema = inlineObjectSchema
+  [ "state"
+  , "updated_at"
+  , "reason"
+  , "error_code"
+  , "error_message"
+  , "blocking_dependency"
+  , "process_id"
+  , "protocol_version"
+  , "resources"
+  , "state_leases"
+  ]
+  [ ("state", enumStringSchema
+      [ "discovered"
+      , "starting"
+      , "ready"
+      , "degraded"
+      , "stopping"
+      , "stopped"
+      , "failed"
+      ])
+  , ("updated_at", stringSchema)
+  , ("reason", nullableSchema stringSchema)
+  , ("error_code", nullableSchema stringSchema)
+  , ("error_message", nullableSchema stringSchema)
+  , ("blocking_dependency", nullableSchema stringSchema)
+  , ("process_id", nullableSchema stringSchema)
+  , ("protocol_version", nullableSchema integerSchema)
+  , ("resources", arraySchema stringSchema)
+  , ("state_leases", arraySchema pluginStateLeaseSchema)
+  ]
+
+pluginStateLeaseSchema :: Value
+pluginStateLeaseSchema = inlineObjectSchema
+  [ "holder", "state", "acquired_at", "expires_at" ]
+  [ ("holder", stringSchema)
+  , ("state", enumStringSchema
+      [ "discovered"
+      , "starting"
+      , "ready"
+      , "degraded"
+      , "stopping"
+      , "stopped"
+      , "failed"
+      ])
+  , ("acquired_at", stringSchema)
+  , ("expires_at", nullableSchema stringSchema)
   ]
 
 -- Data resources -------------------------------------------------------------

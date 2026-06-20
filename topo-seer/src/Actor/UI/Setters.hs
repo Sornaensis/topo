@@ -254,6 +254,7 @@ module Actor.UI.Setters
   , setUiPluginNames
   , setUiPluginExpanded
   , setUiPluginParamSpecs
+  , setUiPluginLifecycles
   , setUiDayNightEnabled
   , setUiSimAutoTick
   , setUiSimTickRate
@@ -570,6 +571,7 @@ setUiPluginExpanded handle pluginName expanded =
   sendUpdate handle (SetPluginExpanded pluginName expanded)
 
 setUiPluginParamSpecs = sendUnary SetPluginParamSpecs
+setUiPluginLifecycles = sendUnary SetPluginLifecycles
 setUiDataBrowser = sendUnary SetDataBrowser
 setUiDataResources = sendUnary SetDataResources
 setUiEditor = sendUnary SetEditor

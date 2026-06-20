@@ -14,7 +14,12 @@ module Actor.PluginManager
   , pluginManagerActorDef
     -- * Loaded plugin info
   , LoadedPlugin(..)
+  , PluginLifecycleSnapshot(..)
+  , PluginLifecycleState(..)
+  , PluginStateLease(..)
   , PluginStatus(..)
+  , pluginLifecycleSnapshot
+  , pluginLifecycleStateText
     -- * Commands
   , discoverPlugins
   , getLoadedPlugins
@@ -36,14 +41,25 @@ module Actor.PluginManager
   , getPluginDataDirectories
   ) where
 
+import Control.Concurrent (threadDelay)
 import Data.Aeson (Value)
 import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import Data.Text (Text)
 import Hyperspace.Actor
 
+import Actor.PluginManager.PluginSupervisor (refreshAllManifests, shutdownPlugin)
 import Actor.PluginManager.RootSupervisor (PluginManager, pluginManagerActorDef)
-import Actor.PluginManager.Types (LoadedPlugin(..), PluginStatus(..))
+import Actor.PluginManager.Types
+  ( LoadedPlugin(..)
+  , PluginLifecycleSnapshot(..)
+  , PluginLifecycleState(..)
+  , PluginStateLease(..)
+  , PluginStatus(..)
+  , pluginLifecycleSnapshot
+  , pluginLifecycleStateText
+  )
 import Topo.Overlay.Schema (OverlaySchema)
 import Topo.Pipeline (PipelineStage)
 import Topo.Plugin.DataResource (DataResourceSchema)
@@ -53,6 +69,15 @@ import Topo.Plugin.RPC
   , QueryResource
   , QueryResult
   )
+
+lifecycleObservationLeaseMicros :: Int
+lifecycleObservationLeaseMicros = 100000
+
+waitForLifecycleObservationLease :: [LoadedPlugin] -> IO ()
+waitForLifecycleObservationLease plugins =
+  if null plugins
+    then pure ()
+    else threadDelay lifecycleObservationLeaseMicros
 
 -- | Discover all plugins in the standard directory.
 -- This is asynchronous — use 'getLoadedPlugins' afterwards to
@@ -95,15 +120,23 @@ getPluginOverlaySchemas handle =
 refreshManifests
   :: ActorHandle PluginManager (Protocol PluginManager)
   -> IO ()
-refreshManifests handle =
+refreshManifests handle = do
   cast @"refresh" handle #refresh ()
+  (baseDir, plugins) <- call @"getRefreshSnapshot" handle #getRefreshSnapshot ()
+  waitForLifecycleObservationLease plugins
+  refreshed <- refreshAllManifests baseDir (Map.fromList [(lpName p, p) | p <- plugins])
+  cast @"finishRefresh" handle #finishRefresh (Map.elems refreshed)
 
 -- | Shut down all connected plugins.
 shutdownPlugins
   :: ActorHandle PluginManager (Protocol PluginManager)
   -> IO ()
-shutdownPlugins handle =
+shutdownPlugins handle = do
   cast @"shutdown" handle #shutdown ()
+  plugins <- call @"getPlugins" handle #getPlugins ()
+  waitForLifecycleObservationLease plugins
+  mapM_ shutdownPlugin plugins
+  cast @"finishShutdown" handle #finishShutdown ()
 
 -- | Set the user-defined plugin order.
 setPluginOrder

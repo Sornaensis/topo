@@ -33,6 +33,7 @@ module Actor.UI.State
   , newUiSnapshotRef
   ) where
 
+import Actor.PluginManager.Types (PluginLifecycleSnapshot)
 import Data.Aeson (Value)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Map.Strict (Map)
@@ -457,6 +458,7 @@ data UiState = UiState
   , uiPluginNames :: ![Text]
   , uiPluginExpanded :: !(Map Text Bool)
   , uiPluginParamSpecs :: !(Map Text [RPCParamSpec])
+  , uiPluginLifecycles :: !(Map Text PluginLifecycleSnapshot)
   , uiSimAutoTick :: !Bool
   , uiSimTickRate :: !Float
   , uiSimTickCount :: !Word64
@@ -720,6 +722,7 @@ emptyUiState = UiState
   , uiPluginNames = []
   , uiPluginExpanded = Map.empty
   , uiPluginParamSpecs = Map.empty
+  , uiPluginLifecycles = Map.empty
   , uiSimAutoTick = False
   , uiSimTickRate = 0.5
   , uiSimTickCount = 0
@@ -780,6 +783,7 @@ data UiUpdate
   | SetPluginNames ![Text]
   | SetPluginExpanded !Text !Bool
   | SetPluginParamSpecs !(Map Text [RPCParamSpec])
+  | SetPluginLifecycles !(Map Text PluginLifecycleSnapshot)
   | SetDayNightEnabled !Bool
   | SetSimAutoTick !Bool
   | SetSimTickRate !Float
@@ -842,6 +846,7 @@ applyUpdate upd st = case upd of
   SetPluginExpanded name expanded ->
     st { uiPluginExpanded = Map.insert name expanded (uiPluginExpanded st) }
   SetPluginParamSpecs v -> st { uiPluginParamSpecs = v }
+  SetPluginLifecycles v -> st { uiPluginLifecycles = v }
   SetDayNightEnabled v -> st { uiDayNightEnabled = v }
   SetSimAutoTick v -> st { uiSimAutoTick = v }
   SetSimTickRate v -> st { uiSimTickRate = clamp01 v }

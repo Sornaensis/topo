@@ -3,10 +3,12 @@
 module Spec.AppService (spec) where
 
 import Actor.Log (LogLevel(..))
+import Actor.PluginManager (PluginLifecycleSnapshot(..), PluginLifecycleState(..), pluginLifecycleSnapshot)
 import Data.Aeson (Value(..))
 import Data.List (nub, sort)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import Data.Time (UTCTime(..), fromGregorian, secondsToDiffTime)
 import Test.Hspec
 import Topo.Overlay.Schema (OverlayFieldType(..))
 import Topo.Simulation (SimNodeId(..))
@@ -281,6 +283,7 @@ spec = describe "AppService surface" $ do
 
   it "keeps command-visible typed contract fields complete" $ do
     pluginSummaryStatus pluginSummaryContract `shouldBe` "connected"
+    plsState (pluginSummaryLifecycle pluginSummaryContract) `shouldBe` LifecycleReady
     asyncStatusPhase (pluginSummaryAsyncStatus pluginSummaryContract) `shouldBe` AsyncStatusRunning
     pluginSummaryEnabled pluginSummaryContract `shouldBe` True
     dataResourceRecordCount dataResourceStateContract `shouldBe` 2
@@ -649,6 +652,8 @@ pluginSummaryContract :: PluginSummary
 pluginSummaryContract = PluginSummary
   { pluginSummaryName = "weather"
   , pluginSummaryStatus = "connected"
+  , pluginSummaryLifecycle = pluginLifecycleSnapshot appServiceTestTime LifecycleReady
+      (Just "connected") Nothing Nothing Nothing (Just "1234") (Just 1) []
   , pluginSummaryAsyncStatus = AsyncStatusSnapshot
       { asyncStatusName = "plugin.weather"
       , asyncStatusPhase = AsyncStatusRunning
@@ -666,6 +671,9 @@ pluginSummaryContract = PluginSummary
   , pluginSummaryHasGenerator = False
   , pluginSummaryHasSimulation = True
   }
+
+appServiceTestTime :: UTCTime
+appServiceTestTime = UTCTime (fromGregorian 2026 1 1) (secondsToDiffTime 0)
 
 dataResourceStateContract :: DataResourceStateResponse
 dataResourceStateContract = DataResourceStateResponse

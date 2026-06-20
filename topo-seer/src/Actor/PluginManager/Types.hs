@@ -1,26 +1,35 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StrictData #-}
 
 -- | Shared runtime types for the plugin manager actor and its helper
 -- components.
 module Actor.PluginManager.Types
   ( PluginStatus(..)
+  , PluginLifecycleState(..)
+  , PluginStateLease(..)
+  , PluginLifecycleSnapshot(..)
   , LoadedPlugin(..)
   , PluginManagerState(..)
   , emptyPluginManagerState
+  , pluginLifecycleStateText
+  , pluginLifecycleSnapshot
+  , manifestLifecycleResources
   , requiresRuntimeConnection
   , setParamOnPlugin
   ) where
 
-import Data.Aeson (Value)
+import Data.Aeson (ToJSON(..), Value, object, (.=))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
+import Data.Time (UTCTime)
 import System.Process (ProcessHandle)
 
 import Topo.Overlay.Schema (OverlaySchema)
+import Topo.Plugin.DataResource (DataResourceSchema(..))
 import Topo.Plugin.RPC (RPCConnection, RPCManifest(..))
 
 -- | Runtime status of a plugin.
@@ -35,6 +44,108 @@ data PluginStatus
     -- ^ Was connected but transport closed.
   deriving (Eq, Show)
 
+-- | Observable lifecycle state for plugin supervision diagnostics.
+data PluginLifecycleState
+  = LifecycleDiscovered
+  | LifecycleStarting
+  | LifecycleReady
+  | LifecycleDegraded
+  | LifecycleStopping
+  | LifecycleStopped
+  | LifecycleFailed
+  deriving (Eq, Ord, Show)
+
+pluginLifecycleStateText :: PluginLifecycleState -> Text
+pluginLifecycleStateText LifecycleDiscovered = "discovered"
+pluginLifecycleStateText LifecycleStarting = "starting"
+pluginLifecycleStateText LifecycleReady = "ready"
+pluginLifecycleStateText LifecycleDegraded = "degraded"
+pluginLifecycleStateText LifecycleStopping = "stopping"
+pluginLifecycleStateText LifecycleStopped = "stopped"
+pluginLifecycleStateText LifecycleFailed = "failed"
+
+instance ToJSON PluginLifecycleState where
+  toJSON = toJSON . pluginLifecycleStateText
+
+-- | Lease held by the supervisor for a plugin's current lifecycle state.
+data PluginStateLease = PluginStateLease
+  { pslHolder    :: !Text
+  , pslState     :: !PluginLifecycleState
+  , pslAcquiredAt :: !UTCTime
+  , pslExpiresAt :: !(Maybe UTCTime)
+  } deriving (Eq, Show)
+
+instance ToJSON PluginStateLease where
+  toJSON lease = object
+    [ "holder"      .= pslHolder lease
+    , "state"       .= pslState lease
+    , "acquired_at" .= pslAcquiredAt lease
+    , "expires_at"  .= pslExpiresAt lease
+    ]
+
+-- | Diagnostic snapshot for the plugin lifecycle state machine.
+data PluginLifecycleSnapshot = PluginLifecycleSnapshot
+  { plsState              :: !PluginLifecycleState
+  , plsUpdatedAt          :: !UTCTime
+  , plsReason             :: !(Maybe Text)
+  , plsErrorCode          :: !(Maybe Text)
+  , plsErrorMessage       :: !(Maybe Text)
+  , plsBlockingDependency :: !(Maybe Text)
+  , plsProcessId          :: !(Maybe Text)
+  , plsProtocolVersion    :: !(Maybe Int)
+  , plsResources          :: ![Text]
+  , plsStateLeases        :: ![PluginStateLease]
+  } deriving (Eq, Show)
+
+instance ToJSON PluginLifecycleSnapshot where
+  toJSON snapshot = object
+    [ "state"               .= plsState snapshot
+    , "updated_at"          .= plsUpdatedAt snapshot
+    , "reason"              .= plsReason snapshot
+    , "error_code"          .= plsErrorCode snapshot
+    , "error_message"       .= plsErrorMessage snapshot
+    , "blocking_dependency" .= plsBlockingDependency snapshot
+    , "process_id"          .= plsProcessId snapshot
+    , "protocol_version"    .= plsProtocolVersion snapshot
+    , "resources"           .= plsResources snapshot
+    , "state_leases"        .= plsStateLeases snapshot
+    ]
+
+pluginLifecycleSnapshot
+  :: UTCTime
+  -> PluginLifecycleState
+  -> Maybe Text
+  -> Maybe Text
+  -> Maybe Text
+  -> Maybe Text
+  -> Maybe Text
+  -> Maybe Int
+  -> [Text]
+  -> PluginLifecycleSnapshot
+pluginLifecycleSnapshot now lifecycleState reason errorCode errorMessage blockingDependency processId protocolVersion resources =
+  PluginLifecycleSnapshot
+    { plsState = lifecycleState
+    , plsUpdatedAt = now
+    , plsReason = reason
+    , plsErrorCode = errorCode
+    , plsErrorMessage = errorMessage
+    , plsBlockingDependency = blockingDependency
+    , plsProcessId = processId
+    , plsProtocolVersion = protocolVersion
+    , plsResources = resources
+    , plsStateLeases =
+        [ PluginStateLease
+            { pslHolder = "plugin-supervisor"
+            , pslState = lifecycleState
+            , pslAcquiredAt = now
+            , pslExpiresAt = Nothing
+            }
+        ]
+    }
+
+manifestLifecycleResources :: RPCManifest -> [Text]
+manifestLifecycleResources manifest = map drsName (rmDataResources manifest)
+
 -- | A discovered plugin with its manifest and current state.
 data LoadedPlugin = LoadedPlugin
   { lpName       :: !Text
@@ -45,6 +156,8 @@ data LoadedPlugin = LoadedPlugin
     -- ^ Current parameter values (user-modified or defaults).
   , lpStatus     :: !PluginStatus
     -- ^ Current lifecycle status.
+  , lpLifecycle  :: !PluginLifecycleSnapshot
+    -- ^ Observable lifecycle diagnostics.
   , lpConnection :: !(Maybe RPCConnection)
     -- ^ Active RPC connection, if connected.
   , lpProcessHandle :: !(Maybe ProcessHandle)

@@ -6,6 +6,7 @@ module Seer.Draw.Config.Labels
   ( drawConfigLabels
   ) where
 
+import Actor.PluginManager.Types (PluginLifecycleSnapshot(..), pluginLifecycleStateText)
 import Actor.UI (ConfigTab(..), DataBrowserState(..), UiState(..), configRowCount)
 import Control.Monad (forM_, when)
 import qualified Data.Map.Strict as Map
@@ -100,7 +101,10 @@ drawConfigLabels renderer fontCache ui layout = when (uiShowConfig ui) $ do
             labelX = sx + pad + checkboxSize + 8
             labelY = ry + 4
             pluginTextColor = textPipelinePluginName
-        drawTextLineTruncated fontCache (V2 labelX labelY) pluginTextColor labelMaxW pName
+            lifecycleSuffix = case Map.lookup pName (uiPluginLifecycles ui) of
+              Nothing -> ""
+              Just snapshot -> " [" <> pluginLifecycleStateText (plsState snapshot) <> "]"
+        drawTextLineTruncated fontCache (V2 labelX labelY) pluginTextColor labelMaxW (pName <> lifecycleSuffix)
       -- Simulation control labels
       let simOffset = length stages + length plugins
           simWorldReady = maybe False (const True) (uiWorldConfig ui)

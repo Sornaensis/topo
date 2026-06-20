@@ -18,6 +18,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import Data.Text (Text)
+import Data.Time (getCurrentTime)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
 import System.Directory (createDirectoryIfMissing)
@@ -39,8 +40,8 @@ import Actor.PluginManager.PipelineIntegrator
   )
 import Actor.PluginManager.PluginSupervisor
   ( disconnectPlugin
-  , refreshAllManifests
-  , shutdownPlugin
+  , markPluginStarting
+  , markPluginStopping
   )
 import Actor.PluginManager.ResourceRegistry
   ( buildPluginDataResources
@@ -85,7 +86,10 @@ actor PluginManager
   cast setOrder :: [Text]
   cast setDisabled :: Set Text
   cast refresh :: ()
+  call getRefreshSnapshot :: () -> (FilePath, [LoadedPlugin])
+  cast finishRefresh :: [LoadedPlugin]
   cast shutdown :: ()
+  cast finishShutdown :: ()
   call getDataResources :: () -> Map Text [DataResourceSchema]
   call queryData :: (Text, QueryResource) -> Either Text QueryResult
   call mutateData :: (Text, MutateResource) -> Either Text MutateResult
@@ -128,11 +132,18 @@ actor PluginManager
     saveDisabledPlugins (pmsBaseDir st) disabled
     pure st { pmsDisabledPlugins = disabled }
   on_ refresh = \() st -> do
-    plugins' <- refreshAllManifests (pmsBaseDir st) (pmsPlugins st)
-    pure st { pmsPlugins = plugins' }
+    startingAt <- getCurrentTime
+    pure st { pmsPlugins = Map.map (markPluginStarting startingAt) (pmsPlugins st) }
+  onPure getRefreshSnapshot = \() st ->
+    (st, (pmsBaseDir st, Map.elems (pmsPlugins st)))
+  on_ finishRefresh = \plugins st ->
+    pure st { pmsPlugins = Map.fromList [(lpName p, p) | p <- plugins] }
   on_ shutdown = \() st -> do
-    mapM_ shutdownPlugin (Map.elems (pmsPlugins st))
-    pure st { pmsPlugins = Map.map disconnectPlugin (pmsPlugins st) }
+    stoppingAt <- getCurrentTime
+    pure st { pmsPlugins = Map.map (markPluginStopping stoppingAt) (pmsPlugins st) }
+  on_ finishShutdown = \() st -> do
+    stoppedAt <- getCurrentTime
+    pure st { pmsPlugins = Map.map (disconnectPlugin stoppedAt) (pmsPlugins st) }
   onPure getDataResources = \() st ->
     (st, buildPluginDataResources st)
   on queryData = \(pluginName, qr) st -> do

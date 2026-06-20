@@ -17,6 +17,7 @@ module Seer.Service.Plugin
   , pluginServiceOperationSpecs
   ) where
 
+import Actor.PluginManager.Types (PluginLifecycleSnapshot)
 import Data.Aeson (Value)
 import Data.Map.Strict (Map)
 import Data.Text (Text)
@@ -37,6 +38,7 @@ data PluginListRequest = PluginListRequest
 data PluginSummary = PluginSummary
   { pluginSummaryName :: !Text
   , pluginSummaryStatus :: !Text
+  , pluginSummaryLifecycle :: !PluginLifecycleSnapshot
   , pluginSummaryAsyncStatus :: !AsyncStatusSnapshot
   , pluginSummaryVersion :: !Text
   , pluginSummaryDescription :: !Text
