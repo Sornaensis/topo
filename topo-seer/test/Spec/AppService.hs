@@ -2,6 +2,7 @@
 
 module Spec.AppService (spec) where
 
+import Actor.Log (LogLevel(..))
 import Data.Aeson (Value(..))
 import Data.List (nub, sort)
 import qualified Data.Map.Strict as Map
@@ -24,9 +25,15 @@ import Seer.Service.AppService
   , EditorActionQueuedResponse(..)
   , EditorSetBrushRequest(..)
   , EditorStrokeQueuedResponse(..)
+  , LogEntrySummary(..)
+  , LogGetRequest(..)
+  , LogGetResponse(..)
   , PluginSummary(..)
+  , ScreenshotTakeRequest(..)
+  , ScreenshotTakeResponse(..)
   , SimulationDagNodeSummary(..)
   , SimulationDagResponse(..)
+  , SimulationStateResponse(..)
   , StateHexCoord(..)
   , StateSummaryResponse(..)
   , StateViewModeSummary(..)
@@ -36,11 +43,14 @@ import Seer.Service.AppService
   , TerrainFindFilter(..)
   , TerrainFindHexesRequest(..)
   , UiCameraSnapshot(..)
+  , UiHexCoord(..)
   , UiListOverlayFieldsResponse(..)
   , UiLogPanelState(..)
   , UiPanelTabState(..)
   , UiPanelsResponse(..)
   , UiOverlayFieldSummary(..)
+  , UiViewportClickResponse(..)
+  , WorldGenerationStatusResponse(..)
   , WorldMetaResponse(..)
   , dataResourceCreateRecordOperation
   , dataResourceDeleteRecordOperation
@@ -71,11 +81,13 @@ import Seer.Service.AppService
   , editorSetToolOperation
   , editorToggleOperation
   , editorUndoOperation
+  , logGetOperation
   , pipelineGetOperation
   , pipelineSetStageEnabledOperation
   , pluginListOperation
   , pluginSetEnabledOperation
   , pluginSetParamOperation
+  , screenshotTakeOperation
   , simulationDagOperation
   , simulationSetAutoTickOperation
   , simulationStateOperation
@@ -106,6 +118,18 @@ import Seer.Service.AppService
   , uiSetSeedOperation
   , uiSetViewModeOperation
   , uiToggleConfigPanelOperation
+  , uiViewportClickOperation
+  , uiViewportDragOperation
+  , uiViewportHoverOperation
+  , uiViewportScrollOperation
+  , uiClickWidgetOperation
+  , uiListWidgetsOperation
+  , uiGetWidgetStateOperation
+  , uiGetDialogStateOperation
+  , uiSetDialogTextOperation
+  , uiDialogConfirmOperation
+  , uiDialogCancelOperation
+  , uiSendKeyOperation
   , uiZoomToChunkOperation
   , worldGenerateOperation
   , worldGetGenerationStatusOperation
@@ -116,10 +140,18 @@ import Seer.Service.AppService
   , worldSetNameOperation
   )
 import Seer.Service.Types
-  ( ServiceGroupSpec(..)
+  ( AsyncStatusPhase(..)
+  , AsyncStatusSnapshot(..)
+  , ServiceEventEnvelope(..)
+  , ServiceEventPublishRequest(..)
+  , ServiceEventPublishResponse(..)
+  , ServiceEventSeverity(..)
+  , ServiceEventSource(..)
+  , ServiceGroupSpec(..)
   , ServiceOperationSpec(..)
   , TypedServiceOperation(..)
   , groupOperationMethods
+  , serviceEventPublishOperation
   )
 
 spec :: Spec
@@ -199,6 +231,8 @@ spec = describe "AppService surface" $ do
       , "set_sim_auto_tick"
       , "sim_tick"
       , "get_sim_dag"
+      , "get_logs"
+      , "take_screenshot"
       , "set_seed"
       , "set_view_mode"
       , "set_config_tab"
@@ -216,6 +250,18 @@ spec = describe "AppService surface" $ do
       , "set_log_collapsed"
       , "set_log_level"
       , "get_ui_panels"
+      , "viewport_scroll"
+      , "viewport_click"
+      , "viewport_drag"
+      , "viewport_hover"
+      , "click_widget"
+      , "list_widgets"
+      , "get_widget_state"
+      , "get_dialog_state"
+      , "set_dialog_text"
+      , "dialog_confirm"
+      , "dialog_cancel"
+      , "send_key"
       ]
 
   it "keeps world, terrain, editor, and overlay contracts typed" $ do
@@ -230,12 +276,30 @@ spec = describe "AppService surface" $ do
 
   it "keeps command-visible typed contract fields complete" $ do
     pluginSummaryStatus pluginSummaryContract `shouldBe` "connected"
+    asyncStatusPhase (pluginSummaryAsyncStatus pluginSummaryContract) `shouldBe` AsyncStatusRunning
     pluginSummaryEnabled pluginSummaryContract `shouldBe` True
     dataResourceRecordCount dataResourceStateContract `shouldBe` 2
     dataResourceTotalCount dataResourceStateContract `shouldBe` 5
     dataResourcePageOffset dataResourceStateContract `shouldBe` 3
     dataResourceLoading dataResourceStateContract `shouldBe` False
+    asyncStatusPhase (dataResourceAsyncStatus dataResourceStateContract) `shouldBe` AsyncStatusIdle
     dataResourceHasSelection dataResourceStateContract `shouldBe` True
+
+  it "keeps logs, screenshots, async status, and event hooks typed" $ do
+    logGetMinLevel logRequestContract `shouldBe` Just LogWarn
+    logGetResponseTotal logResponseContract `shouldBe` 2
+    map logEntrySummaryMessage (logGetResponseEntries logResponseContract) `shouldBe` ["queued"]
+    screenshotTakeSavePath screenshotRequestContract `shouldBe` Just "capture.png"
+    screenshotTakeFormat screenshotResponseContract `shouldBe` "png"
+    worldGenerationInProgress worldGenerationStatusContract `shouldBe` True
+    asyncStatusCurrent (worldGenerationAsyncStatus worldGenerationStatusContract) `shouldBe` Just 3
+    simulationTickCount simulationStateContract `shouldBe` 9
+    asyncStatusPhase (simulationAsyncStatus simulationStateContract) `shouldBe` AsyncStatusRunning
+    uiViewportClickSelected uiViewportClickContract `shouldBe` Just True
+    uiViewportClickHex uiViewportClickContract `shouldBe` Just (UiHexCoord 1 2)
+    typedOperationMethod serviceEventPublishOperation `shouldBe` "publish_event"
+    typedOperationMethod serviceEventPublishOperation `shouldNotSatisfy` (`elem` appServiceOperationMethods)
+    serviceEventPublishAccepted eventPublishResponseContract `shouldBe` True
 
   it "keeps state, config, panel, and camera contracts typed" $ do
     stateSummaryViewMode stateSummaryContract `shouldBe` "elevation"
@@ -312,6 +376,8 @@ typedOperationMethods =
   , typedOperationMethod simulationSetAutoTickOperation
   , typedOperationMethod simulationTickOperation
   , typedOperationMethod simulationDagOperation
+  , typedOperationMethod logGetOperation
+  , typedOperationMethod screenshotTakeOperation
   , typedOperationMethod uiSetSeedOperation
   , typedOperationMethod uiSetViewModeOperation
   , typedOperationMethod uiSetConfigTabOperation
@@ -329,6 +395,18 @@ typedOperationMethods =
   , typedOperationMethod uiSetLogCollapsedOperation
   , typedOperationMethod uiSetLogLevelOperation
   , typedOperationMethod uiGetPanelsOperation
+  , typedOperationMethod uiViewportScrollOperation
+  , typedOperationMethod uiViewportClickOperation
+  , typedOperationMethod uiViewportDragOperation
+  , typedOperationMethod uiViewportHoverOperation
+  , typedOperationMethod uiClickWidgetOperation
+  , typedOperationMethod uiListWidgetsOperation
+  , typedOperationMethod uiGetWidgetStateOperation
+  , typedOperationMethod uiGetDialogStateOperation
+  , typedOperationMethod uiSetDialogTextOperation
+  , typedOperationMethod uiDialogConfirmOperation
+  , typedOperationMethod uiDialogCancelOperation
+  , typedOperationMethod uiSendKeyOperation
   ]
 
 typedOperationMethod :: TypedServiceOperation request response -> Text
@@ -397,6 +475,96 @@ uiOverlayFieldsContract = UiListOverlayFieldsResponse
           , uiOverlayFieldType = OFFloat
           }
       ]
+  }
+
+logRequestContract :: LogGetRequest
+logRequestContract = LogGetRequest
+  { logGetMinLevel = Just LogWarn
+  , logGetLimit = Just 10
+  , logGetOffset = Just 1
+  }
+
+logResponseContract :: LogGetResponse
+logResponseContract = LogGetResponse
+  { logGetResponseCount = 1
+  , logGetResponseTotal = 2
+  , logGetResponseEntries =
+      [ LogEntrySummary
+          { logEntrySummaryLevel = LogWarn
+          , logEntrySummaryMessage = "queued"
+          }
+      ]
+  }
+
+screenshotRequestContract :: ScreenshotTakeRequest
+screenshotRequestContract = ScreenshotTakeRequest
+  { screenshotTakeSavePath = Just "capture.png"
+  }
+
+screenshotResponseContract :: ScreenshotTakeResponse
+screenshotResponseContract = ScreenshotTakeResponse
+  { screenshotTakeImageBase64 = "iVBORw0KGgo="
+  , screenshotTakeFormat = "png"
+  , screenshotTakeSavedPath = Just "capture.png"
+  , screenshotTakeSource = Just "headless"
+  }
+
+worldGenerationStatusContract :: WorldGenerationStatusResponse
+worldGenerationStatusContract = WorldGenerationStatusResponse
+  { worldGenerationInProgress = True
+  , worldGenerationChunkCount = 3
+  , worldGenerationSeed = 42
+  , worldGenerationAsyncStatus = AsyncStatusSnapshot
+      { asyncStatusName = "world.generation"
+      , asyncStatusPhase = AsyncStatusRunning
+      , asyncStatusActive = True
+      , asyncStatusCurrent = Just 3
+      , asyncStatusTotal = Just 8
+      , asyncStatusMessage = Just "generating"
+      }
+  }
+
+simulationStateContract :: SimulationStateResponse
+simulationStateContract = SimulationStateResponse
+  { simulationAutoTick = True
+  , simulationTickRate = 1.0
+  , simulationTickCount = 9
+  , simulationAsyncStatus = AsyncStatusSnapshot
+      { asyncStatusName = "simulation.tick"
+      , asyncStatusPhase = AsyncStatusRunning
+      , asyncStatusActive = True
+      , asyncStatusCurrent = Just 9
+      , asyncStatusTotal = Nothing
+      , asyncStatusMessage = Just "auto tick enabled"
+      }
+  }
+
+uiViewportClickContract :: UiViewportClickResponse
+uiViewportClickContract = UiViewportClickResponse
+  { uiViewportClickButtonName = "left"
+  , uiViewportClickHex = Just (UiHexCoord 1 2)
+  , uiViewportClickSelected = Just True
+  , uiViewportClickEditorStroke = Just False
+  , uiViewportClickTooltipPinned = Just True
+  , uiViewportClickReason = Nothing
+  }
+
+eventPublishRequestContract :: ServiceEventPublishRequest
+eventPublishRequestContract = ServiceEventPublishRequest
+  { serviceEventPublishEnvelope = ServiceEventEnvelope
+      { serviceEventTopic = "world.generated"
+      , serviceEventSource = ServiceEventFromService
+      , serviceEventSeverity = ServiceEventInfo
+      , serviceEventSequence = Just 1
+      , serviceEventCorrelationId = Just "generation-1"
+      , serviceEventPayload = String "ready"
+      }
+  }
+
+eventPublishResponseContract :: ServiceEventPublishResponse
+eventPublishResponseContract = ServiceEventPublishResponse
+  { serviceEventPublishAccepted = True
+  , serviceEventPublishTopic = serviceEventTopic (serviceEventPublishEnvelope eventPublishRequestContract)
   }
 
 stateSummaryContract :: StateSummaryResponse
@@ -476,6 +644,14 @@ pluginSummaryContract :: PluginSummary
 pluginSummaryContract = PluginSummary
   { pluginSummaryName = "weather"
   , pluginSummaryStatus = "connected"
+  , pluginSummaryAsyncStatus = AsyncStatusSnapshot
+      { asyncStatusName = "plugin.weather"
+      , asyncStatusPhase = AsyncStatusRunning
+      , asyncStatusActive = True
+      , asyncStatusCurrent = Nothing
+      , asyncStatusTotal = Nothing
+      , asyncStatusMessage = Just "connected"
+      }
   , pluginSummaryVersion = "1.0.0"
   , pluginSummaryDescription = "Weather plugin"
   , pluginSummaryEnabled = True
@@ -494,6 +670,14 @@ dataResourceStateContract = DataResourceStateResponse
   , dataResourceTotalCount = 5
   , dataResourcePageOffset = 3
   , dataResourceLoading = False
+  , dataResourceAsyncStatus = AsyncStatusSnapshot
+      { asyncStatusName = "data.weather.stations"
+      , asyncStatusPhase = AsyncStatusIdle
+      , asyncStatusActive = False
+      , asyncStatusCurrent = Just 2
+      , asyncStatusTotal = Just 5
+      , asyncStatusMessage = Nothing
+      }
   , dataResourceSelectedRecordKey = Just "station-1"
   , dataResourceEditMode = True
   , dataResourceCreateMode = False

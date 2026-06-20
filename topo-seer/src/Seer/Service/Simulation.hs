@@ -40,6 +40,7 @@ data SimulationStateResponse = SimulationStateResponse
   { simulationAutoTick :: !Bool
   , simulationTickRate :: !Float
   , simulationTickCount :: !Word64
+  , simulationAsyncStatus :: !AsyncStatusSnapshot
   } deriving (Eq, Show)
 
 data SimulationSetAutoTickRequest = SimulationSetAutoTickRequest

@@ -76,6 +76,7 @@ data WorldGenerationStatusResponse = WorldGenerationStatusResponse
   { worldGenerationInProgress :: !Bool
   , worldGenerationChunkCount :: !Int
   , worldGenerationSeed :: !Word64
+  , worldGenerationAsyncStatus :: !AsyncStatusSnapshot
   } deriving (Eq, Show)
 
 data WorldListRequest = WorldListRequest

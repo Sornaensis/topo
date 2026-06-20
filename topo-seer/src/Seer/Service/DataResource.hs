@@ -141,6 +141,7 @@ data DataResourceStateResponse = DataResourceStateResponse
   , dataResourceTotalCount :: !Int
   , dataResourcePageOffset :: !Int
   , dataResourceLoading :: !Bool
+  , dataResourceAsyncStatus :: !AsyncStatusSnapshot
   , dataResourceSelectedRecordKey :: !(Maybe Value)
   , dataResourceEditMode :: !Bool
   , dataResourceCreateMode :: !Bool

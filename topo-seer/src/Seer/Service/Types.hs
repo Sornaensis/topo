@@ -15,6 +15,15 @@ module Seer.Service.Types
   , ServiceError(..)
   , ServiceErrorKind(..)
   , ServiceErrorDetail(..)
+  , AsyncStatusPhase(..)
+  , AsyncStatusSnapshot(..)
+  , ServiceEventSource(..)
+  , ServiceEventSeverity(..)
+  , ServiceEventEnvelope(..)
+  , ServiceEventPublishRequest(..)
+  , ServiceEventPublishResponse(..)
+  , ServiceEventPublishHook
+  , serviceEventPublishOperation
   , serviceErrorKind
   , serviceErrorCode
   , serviceErrorMessage
@@ -35,6 +44,7 @@ module Seer.Service.Types
 import Data.Aeson (Value)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Word (Word64)
 
 import Seer.Service.Context (ServiceContext)
 
@@ -75,6 +85,65 @@ data ServiceErrorDetail = ServiceErrorDetail
   , serviceErrorDetailCode :: !Text
   , serviceErrorDetailMessage :: !Text
   } deriving (Eq, Show)
+
+-- | Shared async lifecycle vocabulary for generation, plugin, data, and
+-- simulation status surfaces.
+data AsyncStatusPhase
+  = AsyncStatusIdle
+  | AsyncStatusQueued
+  | AsyncStatusRunning
+  | AsyncStatusSucceeded
+  | AsyncStatusFailed
+  | AsyncStatusUnavailable
+  deriving (Eq, Show)
+
+data AsyncStatusSnapshot = AsyncStatusSnapshot
+  { asyncStatusName :: !Text
+  , asyncStatusPhase :: !AsyncStatusPhase
+  , asyncStatusActive :: !Bool
+  , asyncStatusCurrent :: !(Maybe Int)
+  , asyncStatusTotal :: !(Maybe Int)
+  , asyncStatusMessage :: !(Maybe Text)
+  } deriving (Eq, Show)
+
+-- | Transport-neutral event metadata shared by future HTTP event streams and UI
+-- publication hooks.  These types deliberately carry 'Value' payloads so each
+-- event topic can evolve independently while retaining typed origin/severity
+-- metadata at the service boundary.
+data ServiceEventSource
+  = ServiceEventFromHttp
+  | ServiceEventFromUi
+  | ServiceEventFromCommand
+  | ServiceEventFromService
+  | ServiceEventFromSystem
+  deriving (Eq, Show)
+
+data ServiceEventSeverity
+  = ServiceEventDebug
+  | ServiceEventInfo
+  | ServiceEventWarn
+  | ServiceEventError
+  deriving (Eq, Show)
+
+data ServiceEventEnvelope = ServiceEventEnvelope
+  { serviceEventTopic :: !Text
+  , serviceEventSource :: !ServiceEventSource
+  , serviceEventSeverity :: !ServiceEventSeverity
+  , serviceEventSequence :: !(Maybe Word64)
+  , serviceEventCorrelationId :: !(Maybe Text)
+  , serviceEventPayload :: !Value
+  } deriving (Eq, Show)
+
+newtype ServiceEventPublishRequest = ServiceEventPublishRequest
+  { serviceEventPublishEnvelope :: ServiceEventEnvelope
+  } deriving (Eq, Show)
+
+data ServiceEventPublishResponse = ServiceEventPublishResponse
+  { serviceEventPublishAccepted :: !Bool
+  , serviceEventPublishTopic :: !Text
+  } deriving (Eq, Show)
+
+type ServiceEventPublishHook = ServiceEventPublishRequest -> IO (Either ServiceError ServiceEventPublishResponse)
 
 -- | Reusable service errors that are not tied to command IPC envelopes.
 data ServiceError
@@ -149,7 +218,7 @@ data ServiceOperationSpec = ServiceOperationSpec
   { serviceOperationName :: !Text
     -- ^ Stable typed operation name used in service tests and diagnostics.
   , serviceOperationMethod :: !Text
-    -- ^ Current command/IPC method bridged by this operation.
+    -- ^ Current command/IPC method or internal hook name bridged by this operation.
   , serviceOperationDescription :: !Text
     -- ^ Short human-readable summary.
   } deriving (Eq, Show)
@@ -171,3 +240,7 @@ groupOperationMethods = map serviceOperationMethod . serviceGroupOperations
 
 serviceOperationMethods :: [ServiceOperationSpec] -> [Text]
 serviceOperationMethods = map serviceOperationMethod
+
+serviceEventPublishOperation :: TypedServiceOperation ServiceEventPublishRequest ServiceEventPublishResponse
+serviceEventPublishOperation = typedOperation $
+  operationSpec "events.publish" "publish_event" "Publish an application event to HTTP/event and UI observers."

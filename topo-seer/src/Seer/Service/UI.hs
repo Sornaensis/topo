@@ -4,6 +4,7 @@
 module Seer.Service.UI
   ( UiService(..)
   , UiHexCoord(..)
+  , UiScreenPoint(..)
   , UiSetSeedRequest(..)
   , UiSetSeedResponse(..)
   , UiSetViewModeRequest(..)
@@ -41,6 +42,30 @@ module Seer.Service.UI
   , UiPanelTabState(..)
   , UiLogPanelState(..)
   , UiPanelsResponse(..)
+  , UiViewportScrollRequest(..)
+  , UiViewportScrollResponse(..)
+  , UiViewportClickRequest(..)
+  , UiViewportClickResponse(..)
+  , UiViewportDragRequest(..)
+  , UiViewportDragResponse(..)
+  , UiViewportHoverRequest(..)
+  , UiViewportHoverResponse(..)
+  , UiClickWidgetRequest(..)
+  , UiClickWidgetResponse(..)
+  , UiListWidgetsRequest(..)
+  , UiWidgetGroup(..)
+  , UiListWidgetsResponse(..)
+  , UiGetWidgetStateRequest(..)
+  , UiWidgetStateResponse(..)
+  , UiGetDialogStateRequest(..)
+  , UiDialogStateResponse(..)
+  , UiSetDialogTextRequest(..)
+  , UiSetDialogTextResponse(..)
+  , UiDialogConfirmRequest(..)
+  , UiDialogCancelRequest(..)
+  , UiDialogActionResponse(..)
+  , UiSendKeyRequest(..)
+  , UiSendKeyResponse(..)
   , uiSetSeedOperation
   , uiSetViewModeOperation
   , uiSetConfigTabOperation
@@ -58,10 +83,23 @@ module Seer.Service.UI
   , uiSetLogCollapsedOperation
   , uiSetLogLevelOperation
   , uiGetPanelsOperation
+  , uiViewportScrollOperation
+  , uiViewportClickOperation
+  , uiViewportDragOperation
+  , uiViewportHoverOperation
+  , uiClickWidgetOperation
+  , uiListWidgetsOperation
+  , uiGetWidgetStateOperation
+  , uiGetDialogStateOperation
+  , uiSetDialogTextOperation
+  , uiDialogConfirmOperation
+  , uiDialogCancelOperation
+  , uiSendKeyOperation
   , uiServiceGroup
   , uiServiceOperationSpecs
   ) where
 
+import Data.Aeson (Value)
 import Data.Text (Text)
 import Data.Word (Word64)
 
@@ -104,6 +142,11 @@ data UiService = UiService
 data UiHexCoord = UiHexCoord
   { uiHexCoordQ :: !Int
   , uiHexCoordR :: !Int
+  } deriving (Eq, Show)
+
+data UiScreenPoint = UiScreenPoint
+  { uiScreenPointX :: !Int
+  , uiScreenPointY :: !Int
   } deriving (Eq, Show)
 
 newtype UiSetSeedRequest = UiSetSeedRequest
@@ -275,6 +318,151 @@ data UiPanelsResponse = UiPanelsResponse
   , uiPanelsLogPanel :: !UiLogPanelState
   } deriving (Eq, Show)
 
+data UiViewportScrollRequest = UiViewportScrollRequest
+  { uiViewportScrollDelta :: !Int
+  , uiViewportScrollPoint :: !(Maybe UiScreenPoint)
+  } deriving (Eq, Show)
+
+data UiViewportScrollResponse = UiViewportScrollResponse
+  { uiViewportScrollZoom :: !Float
+  , uiViewportScrollPanX :: !Float
+  , uiViewportScrollPanY :: !Float
+  , uiViewportScrollSteps :: !Int
+  } deriving (Eq, Show)
+
+data UiViewportClickRequest = UiViewportClickRequest
+  { uiViewportClickPoint :: !UiScreenPoint
+  , uiViewportClickButton :: !(Maybe Text)
+  } deriving (Eq, Show)
+
+data UiViewportClickResponse = UiViewportClickResponse
+  { uiViewportClickButtonName :: !Text
+  , uiViewportClickHex :: !(Maybe UiHexCoord)
+  , uiViewportClickSelected :: !(Maybe Bool)
+  , uiViewportClickEditorStroke :: !(Maybe Bool)
+  , uiViewportClickTooltipPinned :: !(Maybe Bool)
+  , uiViewportClickReason :: !(Maybe Text)
+  } deriving (Eq, Show)
+
+data UiViewportDragRequest = UiViewportDragRequest
+  { uiViewportDragFrom :: !UiScreenPoint
+  , uiViewportDragTo :: !UiScreenPoint
+  } deriving (Eq, Show)
+
+data UiViewportDragResponse = UiViewportDragResponse
+  { uiViewportDragPanX :: !Float
+  , uiViewportDragPanY :: !Float
+  , uiViewportDragDeltaX :: !Int
+  , uiViewportDragDeltaY :: !Int
+  } deriving (Eq, Show)
+
+newtype UiViewportHoverRequest = UiViewportHoverRequest
+  { uiViewportHoverPoint :: UiScreenPoint
+  } deriving (Eq, Show)
+
+data UiViewportHoverResponse = UiViewportHoverResponse
+  { uiViewportHoverHex :: !UiHexCoord
+  , uiViewportHoverValid :: !Bool
+  } deriving (Eq, Show)
+
+newtype UiClickWidgetRequest = UiClickWidgetRequest
+  { uiClickWidgetRequestId :: Text
+  } deriving (Eq, Show)
+
+data UiClickWidgetResponse = UiClickWidgetResponse
+  { uiClickWidgetResponseId :: !Text
+  , uiClickWidgetStatus :: !Text
+  , uiClickWidgetInfo :: !Text
+  } deriving (Eq, Show)
+
+data UiListWidgetsRequest = UiListWidgetsRequest
+  deriving (Eq, Show)
+
+data UiWidgetGroup = UiWidgetGroup
+  { uiWidgetGroupName :: !Text
+  , uiWidgetGroupIds :: ![Text]
+  } deriving (Eq, Show)
+
+data UiListWidgetsResponse = UiListWidgetsResponse
+  { uiWidgetIds :: ![Text]
+  , uiWidgetCount :: !Int
+  , uiWidgetGroups :: ![UiWidgetGroup]
+  } deriving (Eq, Show)
+
+newtype UiGetWidgetStateRequest = UiGetWidgetStateRequest
+  { uiGetWidgetStateRequestId :: Text
+  } deriving (Eq, Show)
+
+data UiWidgetStateResponse = UiWidgetStateResponse
+  { uiWidgetStateId :: !Text
+  , uiWidgetStateActive :: !(Maybe Bool)
+  , uiWidgetStateEnabled :: !(Maybe Bool)
+  , uiWidgetStateExpanded :: !(Maybe Bool)
+  , uiWidgetStateEditMode :: !(Maybe Bool)
+  , uiWidgetStateConfirmShown :: !(Maybe Bool)
+  , uiWidgetStateExtra :: !(Maybe Value)
+  } deriving (Eq, Show)
+
+data UiGetDialogStateRequest = UiGetDialogStateRequest
+  deriving (Eq, Show)
+
+data UiDialogStateResponse = UiDialogStateResponse
+  { uiDialogMenuMode :: !Text
+  , uiDialogSeedEditing :: !Bool
+  , uiDialogPresetInput :: !Text
+  , uiDialogPresetFilter :: !Text
+  , uiDialogPresetSelected :: !Int
+  , uiDialogPresetCount :: !Int
+  , uiDialogWorldSaveInput :: !Text
+  , uiDialogWorldFilter :: !Text
+  , uiDialogWorldSelected :: !Int
+  , uiDialogWorldCount :: !Int
+  , uiDialogDataFocusedField :: !(Maybe Text)
+  , uiDialogDataEditMode :: !Bool
+  , uiDialogDataCreateMode :: !Bool
+  , uiDialogDataTextCursor :: !Int
+  } deriving (Eq, Show)
+
+data UiSetDialogTextRequest = UiSetDialogTextRequest
+  { uiSetDialogTextValue :: !Text
+  , uiSetDialogTextTarget :: !(Maybe Text)
+  } deriving (Eq, Show)
+
+data UiSetDialogTextResponse = UiSetDialogTextResponse
+  { uiSetDialogTextResponseTarget :: !Text
+  , uiSetDialogTextResponseText :: !Text
+  , uiSetDialogTextResponseField :: !(Maybe Text)
+  } deriving (Eq, Show)
+
+data UiDialogConfirmRequest = UiDialogConfirmRequest
+  deriving (Eq, Show)
+
+data UiDialogCancelRequest = UiDialogCancelRequest
+  deriving (Eq, Show)
+
+data UiDialogActionResponse = UiDialogActionResponse
+  { uiDialogActionName :: !Text
+  , uiDialogActionMenuMode :: !(Maybe Text)
+  , uiDialogActionNameValue :: !(Maybe Text)
+  , uiDialogActionSelectedIndex :: !(Maybe Int)
+  } deriving (Eq, Show)
+
+newtype UiSendKeyRequest = UiSendKeyRequest
+  { uiSendKeyName :: Text
+  } deriving (Eq, Show)
+
+data UiSendKeyResponse = UiSendKeyResponse
+  { uiSendKeyResponseKey :: !(Maybe Text)
+  , uiSendKeyResponseSelected :: !(Maybe Int)
+  , uiSendKeyResponseText :: !(Maybe Text)
+  , uiSendKeyResponseFilter :: !(Maybe Text)
+  , uiSendKeyResponseCursor :: !(Maybe Int)
+  , uiSendKeyResponseField :: !(Maybe Text)
+  , uiSendKeyResponseAction :: !(Maybe Text)
+  , uiSendKeyResponseMenuMode :: !(Maybe Text)
+  , uiSendKeyResponseName :: !(Maybe Text)
+  } deriving (Eq, Show)
+
 uiServiceGroup :: ServiceGroupSpec
 uiServiceGroup = ServiceGroupSpec "ui" uiServiceOperationSpecs
 
@@ -297,18 +485,18 @@ uiServiceOperationSpecs =
   , typedServiceOperationSpec uiSetLogCollapsedOperation
   , typedServiceOperationSpec uiSetLogLevelOperation
   , typedServiceOperationSpec uiGetPanelsOperation
-  , operationSpec "ui.viewport.scroll" "viewport_scroll" "Apply viewport scroll input."
-  , operationSpec "ui.viewport.click" "viewport_click" "Apply viewport click input."
-  , operationSpec "ui.viewport.drag" "viewport_drag" "Apply viewport drag input."
-  , operationSpec "ui.viewport.hover" "viewport_hover" "Apply viewport hover input."
-  , operationSpec "ui.widgets.click" "click_widget" "Click a widget by ID."
-  , operationSpec "ui.widgets.list" "list_widgets" "List active widgets."
-  , operationSpec "ui.widgets.state" "get_widget_state" "Read widget state."
-  , operationSpec "ui.dialog.state" "get_dialog_state" "Read modal/dialog input state."
-  , operationSpec "ui.dialog.text.set" "set_dialog_text" "Set dialog text input."
-  , operationSpec "ui.dialog.confirm" "dialog_confirm" "Confirm active dialog."
-  , operationSpec "ui.dialog.cancel" "dialog_cancel" "Cancel active dialog."
-  , operationSpec "ui.keyboard.send" "send_key" "Send a keyboard event to UI input handling."
+  , typedServiceOperationSpec uiViewportScrollOperation
+  , typedServiceOperationSpec uiViewportClickOperation
+  , typedServiceOperationSpec uiViewportDragOperation
+  , typedServiceOperationSpec uiViewportHoverOperation
+  , typedServiceOperationSpec uiClickWidgetOperation
+  , typedServiceOperationSpec uiListWidgetsOperation
+  , typedServiceOperationSpec uiGetWidgetStateOperation
+  , typedServiceOperationSpec uiGetDialogStateOperation
+  , typedServiceOperationSpec uiSetDialogTextOperation
+  , typedServiceOperationSpec uiDialogConfirmOperation
+  , typedServiceOperationSpec uiDialogCancelOperation
+  , typedServiceOperationSpec uiSendKeyOperation
   ]
 
 uiSetSeedOperation :: TypedServiceOperation UiSetSeedRequest UiSetSeedResponse
@@ -378,3 +566,51 @@ uiSetLogLevelOperation = typedOperation $
 uiGetPanelsOperation :: TypedServiceOperation UiGetPanelsRequest UiPanelsResponse
 uiGetPanelsOperation = typedOperation $
   operationSpec "ui.panels.get" "get_ui_panels" "Read panel and tab state."
+
+uiViewportScrollOperation :: TypedServiceOperation UiViewportScrollRequest UiViewportScrollResponse
+uiViewportScrollOperation = typedOperation $
+  operationSpec "ui.viewport.scroll" "viewport_scroll" "Apply viewport scroll input."
+
+uiViewportClickOperation :: TypedServiceOperation UiViewportClickRequest UiViewportClickResponse
+uiViewportClickOperation = typedOperation $
+  operationSpec "ui.viewport.click" "viewport_click" "Apply viewport click input."
+
+uiViewportDragOperation :: TypedServiceOperation UiViewportDragRequest UiViewportDragResponse
+uiViewportDragOperation = typedOperation $
+  operationSpec "ui.viewport.drag" "viewport_drag" "Apply viewport drag input."
+
+uiViewportHoverOperation :: TypedServiceOperation UiViewportHoverRequest UiViewportHoverResponse
+uiViewportHoverOperation = typedOperation $
+  operationSpec "ui.viewport.hover" "viewport_hover" "Apply viewport hover input."
+
+uiClickWidgetOperation :: TypedServiceOperation UiClickWidgetRequest UiClickWidgetResponse
+uiClickWidgetOperation = typedOperation $
+  operationSpec "ui.widgets.click" "click_widget" "Click a widget by ID."
+
+uiListWidgetsOperation :: TypedServiceOperation UiListWidgetsRequest UiListWidgetsResponse
+uiListWidgetsOperation = typedOperation $
+  operationSpec "ui.widgets.list" "list_widgets" "List active widgets."
+
+uiGetWidgetStateOperation :: TypedServiceOperation UiGetWidgetStateRequest UiWidgetStateResponse
+uiGetWidgetStateOperation = typedOperation $
+  operationSpec "ui.widgets.state" "get_widget_state" "Read widget state."
+
+uiGetDialogStateOperation :: TypedServiceOperation UiGetDialogStateRequest UiDialogStateResponse
+uiGetDialogStateOperation = typedOperation $
+  operationSpec "ui.dialog.state" "get_dialog_state" "Read modal/dialog input state."
+
+uiSetDialogTextOperation :: TypedServiceOperation UiSetDialogTextRequest UiSetDialogTextResponse
+uiSetDialogTextOperation = typedOperation $
+  operationSpec "ui.dialog.text.set" "set_dialog_text" "Set dialog text input."
+
+uiDialogConfirmOperation :: TypedServiceOperation UiDialogConfirmRequest UiDialogActionResponse
+uiDialogConfirmOperation = typedOperation $
+  operationSpec "ui.dialog.confirm" "dialog_confirm" "Confirm active dialog."
+
+uiDialogCancelOperation :: TypedServiceOperation UiDialogCancelRequest UiDialogActionResponse
+uiDialogCancelOperation = typedOperation $
+  operationSpec "ui.dialog.cancel" "dialog_cancel" "Cancel active dialog."
+
+uiSendKeyOperation :: TypedServiceOperation UiSendKeyRequest UiSendKeyResponse
+uiSendKeyOperation = typedOperation $
+  operationSpec "ui.keyboard.send" "send_key" "Send a keyboard event to UI input handling."

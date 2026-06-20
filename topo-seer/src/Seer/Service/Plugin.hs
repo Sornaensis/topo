@@ -37,6 +37,7 @@ data PluginListRequest = PluginListRequest
 data PluginSummary = PluginSummary
   { pluginSummaryName :: !Text
   , pluginSummaryStatus :: !Text
+  , pluginSummaryAsyncStatus :: !AsyncStatusSnapshot
   , pluginSummaryVersion :: !Text
   , pluginSummaryDescription :: !Text
   , pluginSummaryEnabled :: !Bool
