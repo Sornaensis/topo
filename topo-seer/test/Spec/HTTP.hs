@@ -9,7 +9,7 @@ import Data.Aeson (Value(..), object, (.=))
 import Data.Foldable (toList)
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
-import Data.List (sort)
+import Data.List (find, sort)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
@@ -146,6 +146,62 @@ spec = describe "Seer.HTTP.Server" $ do
       operationRequestBodyRequired doc path routeMethod `shouldBe` Just (routeRequestBodyRequired route)
       operationHasSecurity doc path routeMethod "bearerAuth" `shouldBe` (hrsOperationId route /= "meta.health")
 
+  it "publishes component schemas for resource route groups" $ do
+    let doc = openApiDocument httpRouteSpecs
+        responseRefs =
+          [ ("/presets", "get", "PresetsListResponse")
+          , ("/presets", "post", "PresetsSaveResponse")
+          , ("/presets/load", "post", "PresetsLoadResponse")
+          , ("/pipeline", "get", "PipelineGetResponse")
+          , ("/pipeline/stages", "patch", "PipelineSetStageEnabledResponse")
+          , ("/plugins", "get", "PluginListResponse")
+          , ("/plugins/status", "get", "PluginListResponse")
+          , ("/plugins/state", "get", "PluginListResponse")
+          , ("/plugins/dependencies", "get", "PluginListResponse")
+          , ("/plugins/enabled", "patch", "PluginSetEnabledResponse")
+          , ("/plugins/params", "patch", "PluginSetParamResponse")
+          , ("/data/plugins", "get", "DataPluginsListResponse")
+          , ("/data/resources", "get", "DataResourcesListResponse")
+          , ("/data/records", "get", "DataRecordsListResponse")
+          , ("/data/records/get", "post", "DataRecordGetResponse")
+          , ("/data/records", "post", "DataRecordCreateResponse")
+          , ("/data/records", "put", "DataRecordUpdateResponse")
+          , ("/data/records", "delete", "DataRecordDeleteResponse")
+          , ("/data/state", "get", "DataStateResponse")
+          , ("/simulation", "get", "SimulationStateResponse")
+          , ("/simulation/dag", "get", "SimulationDagResponse")
+          , ("/simulation/auto-tick", "post", "SimulationAutoTickResponse")
+          , ("/simulation/tick", "post", "SimulationTickResponse")
+          , ("/logs", "get", "LogGetResponse")
+          , ("/screenshots", "post", "ScreenshotTakeResponse")
+          ] :: [(Text, Text, Text)]
+        requestRefs =
+          [ ("/presets", "post", "PresetsSaveRequest")
+          , ("/presets/load", "post", "PresetsLoadRequest")
+          , ("/pipeline/stages", "patch", "PipelineSetStageEnabledRequest")
+          , ("/plugins/enabled", "patch", "PluginSetEnabledRequest")
+          , ("/plugins/params", "patch", "PluginSetParamRequest")
+          , ("/data/records/get", "post", "DataRecordGetRequest")
+          , ("/data/records", "post", "DataRecordCreateRequest")
+          , ("/data/records", "put", "DataRecordUpdateRequest")
+          , ("/data/records", "delete", "DataRecordDeleteRequest")
+          , ("/simulation/auto-tick", "post", "SimulationAutoTickRequest")
+          , ("/simulation/tick", "post", "SimulationTickRequest")
+          , ("/screenshots", "post", "ScreenshotTakeRequest")
+          ] :: [(Text, Text, Text)]
+    forM_ responseRefs $ \(path, routeMethod, schemaName) -> do
+      operationResponseSchemaRef doc path routeMethod "200" `shouldBe` Just schemaName
+      schemaComponentNames doc `shouldSatisfy` elem schemaName
+    forM_ requestRefs $ \(path, routeMethod, schemaName) -> do
+      operationRequestSchemaRef doc path routeMethod `shouldBe` Just schemaName
+      schemaComponentNames doc `shouldSatisfy` elem schemaName
+    componentRequiredFields doc "PipelineSetStageEnabledRequest" `shouldBe` Just ["stage", "enabled"]
+    componentRequiredFields doc "DataRecordUpdateRequest" `shouldBe` Just ["plugin", "resource", "key", "fields"]
+    componentPropertyNullable doc "DataRecordsListResponse" "total_count" `shouldBe` Just True
+    sort <$> componentPropertyNames doc "ScreenshotTakeResponse"
+      `shouldBe` Just ["format", "image_base64", "saved_path", "source"]
+    schemaComponentNames doc `shouldSatisfy` elem "ErrorEnvelope"
+
   it "has a handler for every route spec" $ do
     let missingHandlers =
           [ routeSignature route
@@ -166,6 +222,14 @@ spec = describe "Seer.HTTP.Server" $ do
       `shouldBe` Just [("q", True), ("r", True)]
     queryParameterInfo doc "/config/enums" "get"
       `shouldBe` Just [("type", True)]
+    queryParameterInfo doc "/logs" "get"
+      `shouldBe` Just [("level", False), ("limit", False), ("offset", False)]
+    queryParameterSchemaType doc "/data/records" "get" "page_size" `shouldBe` Just "integer"
+    queryParameterSchemaType doc "/data/records" "get" "page_offset" `shouldBe` Just "integer"
+    queryParameterSchemaType doc "/logs" "get" "limit" `shouldBe` Just "integer"
+    queryParameterSchemaType doc "/logs" "get" "offset" `shouldBe` Just "integer"
+    queryParameterSchemaEnum doc "/logs" "get" "level"
+      `shouldBe` Just ["debug", "info", "warn", "error"]
     operationHasSecurity doc "/state" "get" "bearerAuth" `shouldBe` True
     operationHasSecurity doc "/health" "get" "bearerAuth" `shouldBe` False
 
@@ -249,6 +313,32 @@ queryParameterInfo doc path routeMethod = do
       pure (name, required)
     queryInfo _ = Nothing
 
+queryParameterSchemaType :: Value -> Text -> Text -> Text -> Maybe Text
+queryParameterSchemaType doc path routeMethod name = do
+  Object schema <- queryParameterSchema doc path routeMethod name
+  String schemaType <- KM.lookup "type" schema
+  pure schemaType
+
+queryParameterSchemaEnum :: Value -> Text -> Text -> Text -> Maybe [Text]
+queryParameterSchemaEnum doc path routeMethod name = do
+  Object schema <- queryParameterSchema doc path routeMethod name
+  Array values <- KM.lookup "enum" schema
+  traverse enumText (toList values)
+  where
+    enumText (String value) = Just value
+    enumText _ = Nothing
+
+queryParameterSchema :: Value -> Text -> Text -> Text -> Maybe Value
+queryParameterSchema doc path routeMethod name = do
+  Object operation <- pathOperation doc path routeMethod
+  Array params <- KM.lookup "parameters" operation
+  Object param <- find (queryParamNamed name) (toList params)
+  KM.lookup "schema" param
+
+queryParamNamed :: Text -> Value -> Bool
+queryParamNamed name (Object param) = KM.lookup "name" param == Just (String name)
+queryParamNamed _ _ = False
+
 operationHasSecurity :: Value -> Text -> Text -> Text -> Bool
 operationHasSecurity doc path routeMethod scheme =
   case pathOperation doc path routeMethod of
@@ -292,6 +382,74 @@ operationRequestBodyRequired doc path routeMethod = do
       Bool required <- KM.lookup "required" body
       pure (Just required)
     Just _ -> Nothing
+
+operationRequestSchemaRef :: Value -> Text -> Text -> Maybe Text
+operationRequestSchemaRef doc path routeMethod = do
+  Object operation <- pathOperation doc path routeMethod
+  body <- KM.lookup "requestBody" operation
+  schemaRefFromContent body
+
+operationResponseSchemaRef :: Value -> Text -> Text -> Text -> Maybe Text
+operationResponseSchemaRef doc path routeMethod status = do
+  Object operation <- pathOperation doc path routeMethod
+  Object responses <- KM.lookup "responses" operation
+  response <- KM.lookup (Key.fromText status) responses
+  schemaRefFromContent response
+
+schemaRefFromContent :: Value -> Maybe Text
+schemaRefFromContent (Object container) = do
+  Object content <- KM.lookup "content" container
+  Object json <- KM.lookup "application/json" content
+  schema <- KM.lookup "schema" json
+  schemaRefName schema
+schemaRefFromContent _ = Nothing
+
+schemaRefName :: Value -> Maybe Text
+schemaRefName (Object schema) = do
+  String ref <- KM.lookup "$ref" schema
+  Text.stripPrefix "#/components/schemas/" ref
+schemaRefName _ = Nothing
+
+schemaComponentNames :: Value -> [Text]
+schemaComponentNames doc =
+  case lookupValue "components" doc of
+    Just (Object components) -> case KM.lookup "schemas" components of
+      Just (Object schemas) -> map Key.toText (KM.keys schemas)
+      _ -> []
+    _ -> []
+
+componentRequiredFields :: Value -> Text -> Maybe [Text]
+componentRequiredFields doc name = do
+  Object schema <- schemaComponent doc name
+  Array required <- KM.lookup "required" schema
+  traverse requiredText (toList required)
+  where
+    requiredText (String field) = Just field
+    requiredText _ = Nothing
+
+componentPropertyNames :: Value -> Text -> Maybe [Text]
+componentPropertyNames doc name = do
+  Object schema <- schemaComponent doc name
+  Object properties <- KM.lookup "properties" schema
+  pure (map Key.toText (KM.keys properties))
+
+componentPropertyNullable :: Value -> Text -> Text -> Maybe Bool
+componentPropertyNullable doc name property = do
+  Object propertySchema <- componentProperty doc name property
+  Bool nullable <- KM.lookup "nullable" propertySchema
+  pure nullable
+
+componentProperty :: Value -> Text -> Text -> Maybe Value
+componentProperty doc name property = do
+  Object schema <- schemaComponent doc name
+  Object properties <- KM.lookup "properties" schema
+  KM.lookup (Key.fromText property) properties
+
+schemaComponent :: Value -> Text -> Maybe Value
+schemaComponent doc name = do
+  Object components <- lookupValue "components" doc
+  Object schemas <- KM.lookup "schemas" components
+  KM.lookup (Key.fromText name) schemas
 
 routeQueryParameterInfo :: HttpRouteSpec -> [(Text, Bool)]
 routeQueryParameterInfo route =

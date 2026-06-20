@@ -46,6 +46,7 @@ import qualified Data.ByteString.Lazy as LBS
 
 import Seer.Command.AppServiceAdapter (commandAppService)
 import Seer.HTTP.Auth
+import Seer.HTTP.API
 import Seer.HTTP.OpenAPI
 import Seer.Service.AppService
 import Seer.Service.Context (ServiceContext)
@@ -292,9 +293,12 @@ friendlyHttpRouteSpecs =
   , service "GET" ["config", "summary"] "config.summary" "config" "get_config_summary" "Read config summary." NoRequestBody
   , serviceWithQuery "GET" ["config", "enums"] "config.enums" "config" "get_enums" "Read enum values." NoRequestBody
       [requiredQuery "type" "Enum type to read."]
-  , service "GET" ["presets"] "presets.list" "presets" "list_presets" "List presets." NoRequestBody
-  , service "POST" ["presets"] "presets.save" "presets" "save_preset" "Save a preset." RequiredJsonRequestBody
-  , service "POST" ["presets", "load"] "presets.load" "presets" "load_preset" "Load a preset." RequiredJsonRequestBody
+  , withResponseSchema presetsListResponseSchema $
+      service "GET" ["presets"] "presets.list" "presets" "list_presets" "List presets." NoRequestBody
+  , withSchemas presetsSaveRequestSchema presetsSaveResponseSchema $
+      service "POST" ["presets"] "presets.save" "presets" "save_preset" "Save a preset." RequiredJsonRequestBody
+  , withSchemas presetsLoadRequestSchema presetsLoadResponseSchema $
+      service "POST" ["presets", "load"] "presets.load" "presets" "load_preset" "Load a preset." RequiredJsonRequestBody
 
   , service "POST" ["world", "generate"] "world.generate" "world" "generate" "Generate a world." OptionalJsonRequestBody
   , service "GET" ["world"] "world.meta" "world" "get_world_meta" "Read world metadata." NoRequestBody
@@ -326,44 +330,71 @@ friendlyHttpRouteSpecs =
   , service "POST" ["editor", "undo"] "editor.undo" "editor" "editor_undo" "Undo editor action." NoRequestBody
   , service "POST" ["editor", "redo"] "editor.redo" "editor" "editor_redo" "Redo editor action." NoRequestBody
 
-  , service "GET" ["pipeline"] "pipeline.get" "pipeline" "get_pipeline" "Read pipeline stages." NoRequestBody
-  , service "PATCH" ["pipeline", "stages"] "pipeline.stage.setEnabled" "pipeline" "set_stage_enabled" "Enable or disable a stage." RequiredJsonRequestBody
+  , withResponseSchema pipelineGetResponseSchema $
+      service "GET" ["pipeline"] "pipeline.get" "pipeline" "get_pipeline" "Read pipeline stages." NoRequestBody
+  , withSchemas pipelineSetStageEnabledRequestSchema pipelineSetStageEnabledResponseSchema $
+      service "PATCH" ["pipeline", "stages"] "pipeline.stage.setEnabled" "pipeline" "set_stage_enabled" "Enable or disable a stage." RequiredJsonRequestBody
 
-  , service "GET" ["plugins"] "plugins.list" "plugins" "list_plugins" "List plugins."
-      NoRequestBody
-  , service "GET" ["plugins", "status"] "plugins.status" "plugins" "list_plugins" "Read plugin status."
-      NoRequestBody
-  , service "GET" ["plugins", "state"] "plugins.state" "plugins" "list_plugins" "Read plugin state."
-      NoRequestBody
-  , service "GET" ["plugins", "dependencies"] "plugins.dependencies" "plugins" "list_plugins" "Read plugin dependency declarations."
-      NoRequestBody
-  , service "PATCH" ["plugins", "enabled"] "plugins.setEnabled" "plugins" "set_plugin_enabled" "Enable or disable a plugin."
-      RequiredJsonRequestBody
-  , service "PATCH" ["plugins", "params"] "plugins.params.set" "plugins" "set_plugin_param" "Set a plugin parameter."
-      RequiredJsonRequestBody
+  , withResponseSchema pluginListResponseSchema $
+      service "GET" ["plugins"] "plugins.list" "plugins" "list_plugins" "List plugins."
+        NoRequestBody
+  , withResponseSchema pluginListResponseSchema $
+      service "GET" ["plugins", "status"] "plugins.status" "plugins" "list_plugins" "Read plugin status."
+        NoRequestBody
+  , withResponseSchema pluginListResponseSchema $
+      service "GET" ["plugins", "state"] "plugins.state" "plugins" "list_plugins" "Read plugin state."
+        NoRequestBody
+  , withResponseSchema pluginListResponseSchema $
+      service "GET" ["plugins", "dependencies"] "plugins.dependencies" "plugins" "list_plugins" "Read plugin dependency declarations."
+        NoRequestBody
+  , withSchemas pluginSetEnabledRequestSchema pluginSetEnabledResponseSchema $
+      service "PATCH" ["plugins", "enabled"] "plugins.setEnabled" "plugins" "set_plugin_enabled" "Enable or disable a plugin."
+        RequiredJsonRequestBody
+  , withSchemas pluginSetParamRequestSchema pluginSetParamResponseSchema $
+      service "PATCH" ["plugins", "params"] "plugins.params.set" "plugins" "set_plugin_param" "Set a plugin parameter."
+        RequiredJsonRequestBody
 
-  , service "GET" ["data", "plugins"] "data.plugins.list" "data" "data_list_plugins" "List plugins with data resources." NoRequestBody
-  , serviceWithQuery "GET" ["data", "resources"] "data.resources.list" "data" "data_list_resources" "List plugin data resources." NoRequestBody
-      [requiredQuery "plugin" "Plugin name."]
-  , serviceWithQuery "GET" ["data", "records"] "data.records.list" "data" "data_list_records" "List records." NoRequestBody
-      [ requiredQuery "plugin" "Plugin name."
-      , requiredQuery "resource" "Resource name."
-      , optionalQuery "page_size" "Maximum records to return."
-      , optionalQuery "page_offset" "Record offset."
-      ]
-  , service "POST" ["data", "records", "get"] "data.records.get" "data" "data_get_record" "Read one record." RequiredJsonRequestBody
-  , service "POST" ["data", "records"] "data.records.create" "data" "data_create_record" "Create a record." RequiredJsonRequestBody
-  , service "PUT" ["data", "records"] "data.records.update" "data" "data_update_record" "Update a record." RequiredJsonRequestBody
-  , service "DELETE" ["data", "records"] "data.records.delete" "data" "data_delete_record" "Delete a record." RequiredJsonRequestBody
-  , service "GET" ["data", "state"] "data.state" "data" "data_get_state" "Read data browser state." NoRequestBody
+  , withResponseSchema dataPluginsListResponseSchema $
+      service "GET" ["data", "plugins"] "data.plugins.list" "data" "data_list_plugins" "List plugins with data resources." NoRequestBody
+  , withResponseSchema dataResourcesListResponseSchema $
+      serviceWithQuery "GET" ["data", "resources"] "data.resources.list" "data" "data_list_resources" "List plugin data resources." NoRequestBody
+        [requiredQuery "plugin" "Plugin name."]
+  , withResponseSchema dataRecordsListResponseSchema $
+      serviceWithQuery "GET" ["data", "records"] "data.records.list" "data" "data_list_records" "List records." NoRequestBody
+        [ requiredQuery "plugin" "Plugin name."
+        , requiredQuery "resource" "Resource name."
+        , optionalQueryWithSchema "page_size" "Maximum records to return." queryIntegerSchema
+        , optionalQueryWithSchema "page_offset" "Record offset." queryIntegerSchema
+        ]
+  , withSchemas dataRecordGetRequestSchema dataRecordGetResponseSchema $
+      service "POST" ["data", "records", "get"] "data.records.get" "data" "data_get_record" "Read one record." RequiredJsonRequestBody
+  , withSchemas dataRecordCreateRequestSchema dataRecordCreateResponseSchema $
+      service "POST" ["data", "records"] "data.records.create" "data" "data_create_record" "Create a record." RequiredJsonRequestBody
+  , withSchemas dataRecordUpdateRequestSchema dataRecordUpdateResponseSchema $
+      service "PUT" ["data", "records"] "data.records.update" "data" "data_update_record" "Update a record." RequiredJsonRequestBody
+  , withSchemas dataRecordDeleteRequestSchema dataRecordDeleteResponseSchema $
+      service "DELETE" ["data", "records"] "data.records.delete" "data" "data_delete_record" "Delete a record." RequiredJsonRequestBody
+  , withResponseSchema dataStateResponseSchema $
+      service "GET" ["data", "state"] "data.state" "data" "data_get_state" "Read data browser state." NoRequestBody
 
-  , service "GET" ["simulation"] "simulation.state" "simulation" "get_sim_state" "Read simulation state." NoRequestBody
-  , service "GET" ["simulation", "dag"] "simulation.dag" "simulation" "get_sim_dag" "Read simulation DAG." NoRequestBody
-  , service "POST" ["simulation", "auto-tick"] "simulation.autoTick.set" "simulation" "set_sim_auto_tick" "Set auto-tick." RequiredJsonRequestBody
-  , service "POST" ["simulation", "tick"] "simulation.tick" "simulation" "sim_tick" "Run simulation ticks." OptionalJsonRequestBody
+  , withResponseSchema simulationStateResponseSchema $
+      service "GET" ["simulation"] "simulation.state" "simulation" "get_sim_state" "Read simulation state." NoRequestBody
+  , withResponseSchema simulationDagResponseSchema $
+      service "GET" ["simulation", "dag"] "simulation.dag" "simulation" "get_sim_dag" "Read simulation DAG." NoRequestBody
+  , withSchemas simulationAutoTickRequestSchema simulationAutoTickResponseSchema $
+      service "POST" ["simulation", "auto-tick"] "simulation.autoTick.set" "simulation" "set_sim_auto_tick" "Set auto-tick." RequiredJsonRequestBody
+  , withSchemas simulationTickRequestSchema simulationTickResponseSchema $
+      service "POST" ["simulation", "tick"] "simulation.tick" "simulation" "sim_tick" "Run simulation ticks." OptionalJsonRequestBody
 
-  , service "GET" ["logs"] "logs.get" "logs" "get_logs" "Read logs." NoRequestBody
-  , service "POST" ["screenshots"] "screenshots.take" "screenshots" "take_screenshot" "Capture a screenshot." OptionalJsonRequestBody
+  , withResponseSchema logGetResponseSchema $
+      serviceWithQuery "GET" ["logs"] "logs.get" "logs" "get_logs" "Read logs." NoRequestBody
+        [ optionalQueryWithSchema "level" "Minimum log level (debug, info, warn, or error)."
+            (queryEnumSchema ["debug", "info", "warn", "error"])
+        , optionalQueryWithSchema "limit" "Maximum entries to return." queryIntegerSchema
+        , optionalQueryWithSchema "offset" "Entries to skip after filtering." queryIntegerSchema
+        ]
+  , withSchemas screenshotTakeRequestSchema screenshotTakeResponseSchema $
+      service "POST" ["screenshots"] "screenshots.take" "screenshots" "take_screenshot" "Capture a screenshot." OptionalJsonRequestBody
 
   , service "POST" ["ui", "seed"] "ui.seed.set" "ui" "set_seed" "Set seed." RequiredJsonRequestBody
   , service "POST" ["ui", "view-mode"] "ui.viewMode.set" "ui" "set_view_mode" "Set view mode." RequiredJsonRequestBody
@@ -419,6 +450,8 @@ special method path operationId tag summary = HttpRouteSpec
   , hrsServiceMethod = Nothing
   , hrsRequestBody = NoRequestBody
   , hrsQueryParams = []
+  , hrsRequestSchema = Nothing
+  , hrsResponseSchema = Nothing
   }
 
 service :: Text -> [Text] -> Text -> Text -> Text -> Text -> RouteBody -> HttpRouteSpec
@@ -435,13 +468,30 @@ serviceWithQuery method path operationId tag serviceMethod summary body queryPar
   , hrsServiceMethod = Just serviceMethod
   , hrsRequestBody = body
   , hrsQueryParams = queryParams
+  , hrsRequestSchema = Nothing
+  , hrsResponseSchema = Nothing
   }
 
 requiredQuery :: Text -> Text -> QueryParamSpec
-requiredQuery name description = QueryParamSpec name True description
+requiredQuery name description = QueryParamSpec name True description queryStringSchema
 
 optionalQuery :: Text -> Text -> QueryParamSpec
-optionalQuery name description = QueryParamSpec name False description
+optionalQuery name description = QueryParamSpec name False description queryStringSchema
+
+optionalQueryWithSchema :: Text -> Text -> Value -> QueryParamSpec
+optionalQueryWithSchema name description schema = QueryParamSpec name False description schema
+
+queryStringSchema :: Value
+queryStringSchema = object ["type" .= ("string" :: Text)]
+
+queryIntegerSchema :: Value
+queryIntegerSchema = object ["type" .= ("integer" :: Text)]
+
+queryEnumSchema :: [Text] -> Value
+queryEnumSchema values = object
+  [ "type" .= ("string" :: Text)
+  , "enum" .= values
+  ]
 
 -- | Command-backed AppService with a deterministic headless screenshot handler.
 -- The SDL render-loop screenshot path is still used by normal GUI runs; this

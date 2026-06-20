@@ -48,6 +48,7 @@ library:
     - Seer.Draw.Overlay
     - Seer.Headless
     - Seer.HTTP.Auth
+    - Seer.HTTP.API
     - Seer.HTTP.OpenAPI
     - Seer.HTTP.Server
     - Seer.Editor.Brush
