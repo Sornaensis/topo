@@ -13,6 +13,8 @@ maintainer:     you@example.com
 license:        MPL-2.0
 license-file:   LICENSE
 build-type:     Simple
+data-files:
+    test/golden/openapi-routes.txt
 
 library
   exposed-modules:

@@ -12,6 +12,7 @@ import qualified Data.Aeson.KeyMap as KM
 import Data.List (sort)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.IO as TextIO
 import Network.HTTP.Client
   ( Manager
   , RequestBody(..)
@@ -33,7 +34,13 @@ import Seer.Headless
   , withHeadlessApp
   )
 import Seer.HTTP.Auth (HttpAuthConfig(..), isLoopbackHost, validateHttpAuthConfig)
-import Seer.HTTP.OpenAPI (HttpRouteSpec(..), openApiDocument, routePathText)
+import Seer.HTTP.OpenAPI
+  ( HttpRouteSpec(..)
+  , QueryParamSpec(..)
+  , RouteBody(..)
+  , openApiDocument
+  , routePathText
+  )
 import Seer.HTTP.Server
   ( HttpRequest(..)
   , HttpResponse(..)
@@ -49,6 +56,7 @@ import Seer.HTTP.Server
 import Seer.Service.AppService (appServiceOperationMethods)
 import Seer.System (runApp)
 import System.Environment (withArgs)
+import Paths_topo_seer (getDataFileName)
 
 spec :: Spec
 spec = describe "Seer.HTTP.Server" $ do
@@ -122,10 +130,42 @@ spec = describe "Seer.HTTP.Server" $ do
           routeMethod = Text.toLower (hrsMethod route)
       pathMethods doc path `shouldSatisfy` maybe False (routeMethod `elem`)
 
+  it "keeps OpenAPI paths and route metadata in lockstep" $ do
+    let doc = openApiDocument httpRouteSpecs
+    openApiSignatureProblems doc `shouldBe` []
+    sort (openApiSignatureLines doc) `shouldBe` sort (map routeSignature httpRouteSpecs)
+
+  it "publishes route metadata from the route table into OpenAPI" $ do
+    let doc = openApiDocument httpRouteSpecs
+    forM_ httpRouteSpecs $ \route -> do
+      let path = routePathText route
+          routeMethod = Text.toLower (hrsMethod route)
+      pathOperation doc path routeMethod `shouldSatisfy` maybe False (const True)
+      operationTags doc path routeMethod `shouldBe` Just [hrsTag route]
+      operationQueryParameterInfo doc path routeMethod `shouldBe` Just (routeQueryParameterInfo route)
+      operationRequestBodyRequired doc path routeMethod `shouldBe` Just (routeRequestBodyRequired route)
+      operationHasSecurity doc path routeMethod "bearerAuth" `shouldBe` (hrsOperationId route /= "meta.health")
+
+  it "has a handler for every route spec" $ do
+    let missingHandlers =
+          [ routeSignature route
+          | route <- httpRouteSpecs
+          , not (routeHasHandler route)
+          ]
+    missingHandlers `shouldBe` []
+
+  it "matches the committed served OpenAPI route golden" $ do
+    golden <- readOpenApiRouteGolden
+    let doc = openApiDocument httpRouteSpecs
+    openApiSignatureProblems doc `shouldBe` []
+    sort (openApiSignatureLines doc) `shouldBe` sort golden
+
   it "publishes query and auth metadata in OpenAPI" $ do
     let doc = openApiDocument httpRouteSpecs
     queryParameterInfo doc "/terrain/hex" "get"
       `shouldBe` Just [("q", True), ("r", True)]
+    queryParameterInfo doc "/config/enums" "get"
+      `shouldBe` Just [("type", True)]
     operationHasSecurity doc "/state" "get" "bearerAuth" `shouldBe` True
     operationHasSecurity doc "/health" "get" "bearerAuth" `shouldBe` False
 
@@ -219,6 +259,107 @@ operationHasSecurity doc path routeMethod scheme =
   where
     entryHasScheme expected (Object entry) = KM.member (Key.fromText expected) entry
     entryHasScheme _ _ = False
+
+operationTags :: Value -> Text -> Text -> Maybe [Text]
+operationTags doc path routeMethod = do
+  Object operation <- pathOperation doc path routeMethod
+  Array tags <- KM.lookup "tags" operation
+  traverse tagText (toList tags)
+  where
+    tagText (String tag) = Just tag
+    tagText _ = Nothing
+
+operationQueryParameterInfo :: Value -> Text -> Text -> Maybe [(Text, Bool)]
+operationQueryParameterInfo doc path routeMethod = do
+  Object operation <- pathOperation doc path routeMethod
+  case KM.lookup "parameters" operation of
+    Nothing -> Just []
+    Just (Array params) -> traverse queryInfo (toList params)
+    Just _ -> Nothing
+  where
+    queryInfo (Object param) = do
+      String name <- KM.lookup "name" param
+      Bool required <- KM.lookup "required" param
+      pure (name, required)
+    queryInfo _ = Nothing
+
+operationRequestBodyRequired :: Value -> Text -> Text -> Maybe (Maybe Bool)
+operationRequestBodyRequired doc path routeMethod = do
+  Object operation <- pathOperation doc path routeMethod
+  case KM.lookup "requestBody" operation of
+    Nothing -> Just Nothing
+    Just (Object body) -> do
+      Bool required <- KM.lookup "required" body
+      pure (Just required)
+    Just _ -> Nothing
+
+routeQueryParameterInfo :: HttpRouteSpec -> [(Text, Bool)]
+routeQueryParameterInfo route =
+  [ (qpsName param, qpsRequired param)
+  | param <- hrsQueryParams route
+  ]
+
+routeRequestBodyRequired :: HttpRouteSpec -> Maybe Bool
+routeRequestBodyRequired route = case hrsRequestBody route of
+  NoRequestBody -> Nothing
+  OptionalJsonRequestBody -> Just False
+  RequiredJsonRequestBody -> Just True
+
+routeSignature :: HttpRouteSpec -> Text
+routeSignature route =
+  Text.unwords [hrsMethod route, routePathText route, hrsOperationId route]
+
+openApiSignatureLines :: Value -> [Text]
+openApiSignatureLines doc =
+  case lookupValue "paths" doc of
+    Just (Object paths) ->
+      [ Text.unwords [Text.toUpper (Key.toText methodKey), Key.toText pathKey, operationId]
+      | (pathKey, Object methods) <- KM.toList paths
+      , (methodKey, Object operation) <- KM.toList methods
+      , Just (String operationId) <- [KM.lookup "operationId" operation]
+      ]
+    _ -> []
+
+openApiSignatureProblems :: Value -> [Text]
+openApiSignatureProblems doc =
+  case lookupValue "paths" doc of
+    Just (Object paths) -> concat
+      [ methodProblems pathKey methodKey operation
+      | (pathKey, Object methods) <- KM.toList paths
+      , (methodKey, operation) <- KM.toList methods
+      ]
+    Just _ -> ["OpenAPI paths is not an object"]
+    Nothing -> ["OpenAPI paths is missing"]
+  where
+    methodProblems pathKey methodKey (Object operation) =
+      case KM.lookup "operationId" operation of
+        Just (String _) -> []
+        Just _ -> [signaturePrefix pathKey methodKey <> " has non-string operationId"]
+        Nothing -> [signaturePrefix pathKey methodKey <> " is missing operationId"]
+    methodProblems pathKey methodKey _ =
+      [signaturePrefix pathKey methodKey <> " operation is not an object"]
+
+    signaturePrefix pathKey methodKey =
+      Text.unwords [Text.toUpper (Key.toText methodKey), Key.toText pathKey]
+
+routeHasHandler :: HttpRouteSpec -> Bool
+routeHasHandler route = case hrsServiceMethod route of
+  Just methodName -> methodName `elem` appServiceOperationMethods
+  Nothing -> hrsOperationId route `elem` specialOperationIds
+
+specialOperationIds :: [Text]
+specialOperationIds =
+  [ "meta.health"
+  , "meta.version"
+  , "meta.openapi"
+  , "events.list"
+  ]
+
+readOpenApiRouteGolden :: IO [Text]
+readOpenApiRouteGolden = do
+  path <- getDataFileName "test/golden/openapi-routes.txt"
+  filter (not . Text.null) . map Text.strip . Text.lines
+    <$> TextIO.readFile path
 
 assertEndpoint :: Manager -> String -> IO ()
 assertEndpoint manager path = do
