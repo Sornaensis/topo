@@ -12,6 +12,8 @@ module Seer.Command.Handlers.Simulation
 import Data.Aeson (Value(..), object, (.=), (.:), (.:?))
 import qualified Data.Aeson.Types as Aeson
 
+import Actor.Data (DataSnapshot(..), getDataSnapshot)
+import Actor.Log (LogEntry(..), LogLevel(..), appendLog)
 import Actor.Simulation
   ( SimulationDagNodeSnapshot(..)
   , SimulationDagSnapshot(..)
@@ -60,15 +62,21 @@ handleSetSimAutoTick ctx reqId params = do
 handleSimTick :: CommandContext -> Int -> Value -> IO SeerResponse
 handleSimTick ctx reqId params = do
   let count = maybe 1 id (Aeson.parseMaybe parseTickCount params)
-  ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
-  let handles = ccActorHandles ctx
-      currentTick = uiSimTickCount ui
-      targetTick  = currentTick + fromIntegral (max 1 (min 100 count :: Int))
-  requestSimTick (ahSimulationHandle handles) targetTick
-  pure $ okResponse reqId $ object
-    [ "requested_ticks" .= count
-    , "target_tick"     .= targetTick
-    ]
+      handles = ccActorHandles ctx
+  dataSnap <- getDataSnapshot (ahDataHandle handles)
+  if dsTerrainChunks dataSnap <= 0
+    then do
+      appendLog (ahLogHandle handles) (LogEntry LogWarn "sim tick ignored (no world terrain loaded yet)")
+      pure $ errResponse reqId "no world terrain loaded yet"
+    else do
+      ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
+      let currentTick = uiSimTickCount ui
+          targetTick  = currentTick + fromIntegral (max 1 (min 100 count :: Int))
+      requestSimTick (ahSimulationHandle handles) targetTick
+      pure $ okResponse reqId $ object
+        [ "requested_ticks" .= count
+        , "target_tick"     .= targetTick
+        ]
 
 -- | Handle @get_sim_dag@ — return current simulation DAG topology.
 handleGetSimDag :: CommandContext -> Int -> Value -> IO SeerResponse

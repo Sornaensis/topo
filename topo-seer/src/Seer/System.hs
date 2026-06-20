@@ -383,7 +383,7 @@ runSdlApp opts = do
             else do
               handleStart <- getMonotonicTimeNSec
               let actorHandles = mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef pluginManagerHandle simulationHandle historyRef
-                  inputEnv = mkInputEnv actorHandles uiActionsHandle (rsUi renderSnap) (rsLog renderSnap) (rsData renderSnap) (rsTerrain renderSnap)
+                  inputEnv = mkInputEnv actorHandles uiActionsHandle uiSnapshotRef screenshotRef (Just logSnapshotRef) (rsUi renderSnap) (rsLog renderSnap) (rsData renderSnap) (rsTerrain renderSnap)
                   inputContext = mkInputContext window inputEnv quitRef lineHeightRef mousePosRef dragRef tooltipHoverRef
               forM_ coalescedEvents (handleEvent inputContext)
               _ <- tickTooltipHover tooltipHoverRef uiHandle

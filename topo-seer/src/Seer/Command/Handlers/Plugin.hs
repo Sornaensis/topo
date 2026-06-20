@@ -23,7 +23,7 @@ import Actor.PluginManager
   , getDisabledPlugins
   , setPluginParam
   )
-import Actor.UI.Setters (setUiDisabledPlugins)
+import Actor.UI.Setters (setUiDisabledPlugins, setUiPluginParam)
 import Actor.UI.State (UiState(..), readUiSnapshotRef)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
@@ -77,6 +77,7 @@ handleSetPluginParam ctx reqId params = do
     Just (pluginName, paramName, value) -> do
       let handles = ccActorHandles ctx
       setPluginParam (ahPluginManagerHandle handles) pluginName paramName value
+      setUiPluginParam (ahUiHandle handles) pluginName paramName value
       pure $ okResponse reqId $ object
         [ "plugin" .= pluginName
         , "param"  .= paramName

@@ -10,23 +10,34 @@ module Seer.Input.Actions
   , getTerrainSnapshot
   , actionRequest
   , submitAction
+  , inputServiceContext
+  , runInputService
   ) where
 
 import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.AtlasManager (AtlasManager)
 import Actor.Data (Data, DataSnapshot, TerrainSnapshot)
-import Actor.Log (Log, LogSnapshot)
+import Actor.Log (Log, LogSnapshot, LogSnapshotRef)
 import Actor.PluginManager (PluginManager)
 import Actor.Simulation (Simulation)
 import Actor.Terrain (Terrain, TerrainReplyOps)
-import Actor.UI (Ui, UiState)
+import Actor.UI (Ui, UiSnapshotRef, UiState)
 import Actor.UiActions (UiAction, UiActionRequest(..), UiActions, submitUiAction)
+import Data.Aeson (Value)
+import Data.Text (Text)
 import Hyperspace.Actor (ActorHandle, Protocol, replyTo)
+import Seer.Command.AppServiceAdapter (commandAppService, runServiceOperation)
+import Seer.Screenshot.Request (ScreenshotRequestRef)
+import Seer.Service.Context (ServiceContext(..))
+import Seer.Service.Types (ServiceResult)
 
 -- | Cached actor handles and render snapshots used while routing a single input event.
 data InputEnv = InputEnv
   { ieActorHandles :: !ActorHandles
   , ieUiActionsHandle :: !(ActorHandle UiActions (Protocol UiActions))
+  , ieUiSnapshotRef :: !UiSnapshotRef
+  , ieScreenshotRef :: !ScreenshotRequestRef
+  , ieLogSnapshotRef :: !(Maybe LogSnapshotRef)
   , ieUiSnapshot :: !UiState
   , ieLogSnapshot :: !LogSnapshot
   , ieDataSnapshot :: !DataSnapshot
@@ -37,15 +48,21 @@ data InputEnv = InputEnv
 mkInputEnv
   :: ActorHandles
   -> ActorHandle UiActions (Protocol UiActions)
+  -> UiSnapshotRef
+  -> ScreenshotRequestRef
+  -> Maybe LogSnapshotRef
   -> UiState
   -> LogSnapshot
   -> DataSnapshot
   -> TerrainSnapshot
   -> InputEnv
-mkInputEnv actorHandles uiActionsHandle uiSnapshot logSnapshot dataSnapshot terrainSnapshot =
+mkInputEnv actorHandles uiActionsHandle uiSnapshotRef screenshotRef logSnapshotRef uiSnapshot logSnapshot dataSnapshot terrainSnapshot =
   InputEnv
     { ieActorHandles = actorHandles
     , ieUiActionsHandle = uiActionsHandle
+    , ieUiSnapshotRef = uiSnapshotRef
+    , ieScreenshotRef = screenshotRef
+    , ieLogSnapshotRef = logSnapshotRef
     , ieUiSnapshot = uiSnapshot
     , ieLogSnapshot = logSnapshot
     , ieDataSnapshot = dataSnapshot
@@ -81,3 +98,18 @@ actionRequest env action =
 submitAction :: InputEnv -> UiAction -> IO ()
 submitAction env action =
   submitUiAction (ieUiActionsHandle env) (actionRequest env action)
+
+inputServiceContext :: InputEnv -> ServiceContext
+inputServiceContext env = ServiceContext
+  { svcActorHandles = ieActorHandles env
+  , svcUiSnapshotRef = ieUiSnapshotRef env
+  , svcUiActionsHandle = ieUiActionsHandle env
+  , svcScreenshotRef = ieScreenshotRef env
+  , svcLogSnapshotRef = ieLogSnapshotRef env
+  }
+
+-- | Invoke the app service from the UI/input path without constructing a
+-- command envelope.
+runInputService :: InputEnv -> Text -> Value -> IO ServiceResult
+runInputService env =
+  runServiceOperation commandAppService (inputServiceContext env)

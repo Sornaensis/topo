@@ -12,6 +12,7 @@ module Seer.Command.AppServiceAdapter
   ( commandAppService
   , dispatchAppServiceCommand
   , runAppServiceOperation
+  , runServiceOperation
   , appServiceCommandMethods
   ) where
 
@@ -177,12 +178,17 @@ dispatchAppServiceCommand app ctx cmd = do
 
 -- | Invoke one AppService operation from the command adapter context.
 runAppServiceOperation :: AppService -> CommandContext -> Text -> Value -> IO ServiceResult
-runAppServiceOperation app ctx method params =
+runAppServiceOperation app ctx =
+  runServiceOperation app (commandServiceContext ctx)
+
+-- | Invoke one AppService operation from an already transport-neutral context.
+runServiceOperation :: AppService -> ServiceContext -> Text -> Value -> IO ServiceResult
+runServiceOperation app ctx method params =
   case lookup method (appServiceHandlersByMethod app) of
     Just handler ->
       case validateAppServiceRequest method params of
         Left err -> pure (Left err)
-        Right () -> handler (commandServiceContext ctx) (ServiceRequest (Just params))
+        Right () -> handler ctx (ServiceRequest (Just params))
     Nothing -> pure (Left (ServiceNotFound ("unknown command: " <> method)))
 
 appServiceCommandMethods :: AppService -> [Text]

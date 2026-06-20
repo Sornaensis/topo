@@ -23,6 +23,7 @@ import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 import Topo.Pipeline (PipelineStage(..))
+import Topo.Pipeline.Dep (builtinDependencies, disabledClosure)
 import Topo.Pipeline.Stage
   ( StageId(..)
   , allBuiltinStageIds
@@ -59,13 +60,14 @@ handleSetStageEnabled ctx reqId params = do
               uiH = ahUiHandle handles
           ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
           let disabled = uiDisabledStages ui
-              disabled'
+              toggled
                 | enabled   = Set.delete sid disabled
                 | otherwise = Set.insert sid disabled
+              disabled' = disabledClosure builtinDependencies toggled
           setUiDisabledStages uiH disabled'
           pure $ okResponse reqId $ object
             [ "stage"   .= stageName
-            , "enabled" .= enabled
+            , "enabled" .= not (Set.member sid disabled')
             ]
 
 -- --------------------------------------------------------------------------

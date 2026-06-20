@@ -5,13 +5,8 @@ module Seer.Input.Widgets
   ( handleClick
   ) where
 
-import Actor.Data (DataSnapshot(..), getDataSnapshot, getTerrainSnapshot, replaceTerrainData)
-import Actor.SnapshotReceiver (writeDataSnapshot, writeTerrainSnapshot, bumpSnapshotVersion)
-import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshot(..), appendLog, getLogSnapshot, setLogCollapsed, setLogMinLevel, setLogScroll)
-import Data.Aeson (Value(..))
-import qualified Data.Aeson as Aeson
-import qualified Data.Aeson.Key as AesonKey
-import qualified Data.Aeson.KeyMap as AesonKM
+import Actor.Log (LogLevel(..), LogSnapshot(..), getLogSnapshot, setLogCollapsed, setLogMinLevel, setLogScroll)
+import Data.Aeson (Value(..), object, (.=))
 
 import Actor.UI
   ( ConfigTab(..)
@@ -29,7 +24,6 @@ import Actor.UI
   , setUiContextHex
   , setUiContextPos
   , setUiDataBrowser
-  , setUiDisabledStages
   , setUiLeftTab
   , setUiSeed
   , setUiSeedEditing
@@ -41,20 +35,14 @@ import Actor.UI
   , setUiPresetList
   , setUiPresetSelected
   , setUiPresetFilter
-  , setUiWorldName
-  , setUiWorldConfig
   , setUiWorldSaveInput
   , setUiWorldList
   , setUiWorldSelected
   , setUiWorldFilter
   , setUiZoom
-  , setUiSimAutoTick
-  , setUiSimTickCount
   , setUiDayNightEnabled
   , setUiPluginNames
   , setUiPluginExpanded
-  , setUiPluginParam
-  , setUiOverlayNames
   , setUiDisabledPlugins
   )
 import Control.Applicative ((<|>))
@@ -75,41 +63,27 @@ import Seer.Config.SliderRegistry
   , sliderDefForWidget
   , sliderWidgetPart
   )
-import Seer.Config.SliderState (bumpSliderValue)
 import Seer.Config.SliderStyle (SliderStyle(..), sliderStyleForId)
-import Seer.Config.SliderUi (configTabForSliderTab)
-import System.FilePath ((</>))
+import Seer.Config.SliderUi (configTabForSliderTab, sliderValueForId)
 import Seer.Draw (seedMaxDigits)
-import Seer.Config.Snapshot (listSnapshots, loadSnapshot, snapshotDir, snapshotFromUi, saveSnapshot, applySnapshotToUi)
-import Seer.World.Persist (listWorlds, saveNamedWorld, saveNamedWorldWithPlugins, loadNamedWorld, snapshotToWorld, worldDir)
+import Seer.Config.Snapshot (listSnapshots)
+import Seer.World.Persist (listWorlds)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
-import Seer.Input.ConfigScroll
-  ( ScrollSettings
-  , computeScrollUpdates
-  , defaultScrollSettings
-  )
-import Seer.Input.Modal (handleModalTextKey, handleModalTextInput, handleModalListKey)
-import Seer.Input.Router (isQuit)
-import Seer.Input.Seed (bumpSeed, handleSeedKey, handleSeedTextInput)
 import Seer.Input.ViewControls
   ()
-import Topo.Overlay (overlayNames)
-import Topo.Pipeline.Dep (builtinDependencies, disabledClosure)
-import Topo.Pipeline.Stage (StageId, parseStageId)
-import Topo.Plugin.RPC.DataService (DataMutation(..), DataQuery(..), DataRecord(..), MutateResource(..), MutateResult(..), QueryResource(..), QueryResult(..))
+import Topo.Pipeline.Stage (parseStageId)
+import Topo.Plugin.RPC.DataService (DataQuery(..), DataRecord(..), QueryResource(..), QueryResult(..))
 import Topo.Plugin.DataResource (DataResourceSchema(..), DataFieldDef(..), DataFieldType(..), DataOperations(..), noOperations)
 import Topo.Plugin.RPC.Manifest (RPCParamSpec(..))
-import Topo.World (TerrainWorld(..))
 import UI.Layout
 import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets, buildDataBrowserWidgets, buildDataDetailWidgets, buildSliderRowWidgets, hitTest, isLeftViewWidget)
 import UI.Widgets (Rect(..), containsPoint)
 import System.Random (randomIO)
 import Hyperspace.Actor (ActorHandle, Protocol)
-import Actor.PluginManager (getPluginDataDirectories, notifyWorldChanged, queryPluginResource, mutatePluginResource, setDisabledPlugins, setPluginOrder)
+import Actor.PluginManager (queryPluginResource, setDisabledPlugins, setPluginOrder)
 import Control.Concurrent (forkIO)
-import Actor.Simulation (requestSimTick, setSimWorld)
 import Actor.UiActions (ActorHandles(..), UiAction(..))
-import Seer.Input.Actions (InputEnv(..), submitAction)
+import Seer.Input.Actions (InputEnv(..), runInputService, submitAction)
 import Seer.Input.Context (InputContext(..))
 handleClick
   :: InputContext
@@ -121,9 +95,7 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       actorHandles = ieActorHandles widgetEnv
       uiHandle = ahUiHandle actorHandles
       logHandle = ahLogHandle actorHandles
-      dataHandle = ahDataHandle actorHandles
       pluginManagerHandle = ahPluginManagerHandle actorHandles
-      simulationHandle = ahSimulationHandle actorHandles
       quitRef = icQuitRef inputContext
   (V2 winW winH) <- SDL.get (SDL.windowSize window)
   let logSnap = ieLogSnapshot widgetEnv
@@ -132,7 +104,6 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       logHeight = if lsCollapsed logSnap then 24 else 160
       seedWidth = max 120 (seedMaxDigits * 10)
       layout = layoutForSeed (V2 (fromIntegral winW) (fromIntegral winH)) logHeight seedWidth
-      simWorldReady = dsTerrainChunks (ieDataSnapshot widgetEnv) > 0
       seedValue = configSeedValueRect layout
       scrollArea = configScrollAreaRect layout
       scrollBar = configScrollBarRect layout
@@ -163,7 +134,7 @@ handleClick inputContext (SDL.P (V2 x y)) = do
                 ++ detailWidgets
       widgets =
         if uiShowConfig uiSnap
-          then filter (configWidgetAllowed simWorldReady (uiConfigTab uiSnap)) widgetsAll
+          then filter (configWidgetAllowed (uiConfigTab uiSnap)) widgetsAll
           else widgetsAll
       isConfigSliderWidget = isJust . sliderDefForWidget
       (configSliderWidgets, nonSliderWidgets) = partition (isConfigSliderWidget . widgetId) widgets
@@ -181,10 +152,10 @@ handleClick inputContext (SDL.P (V2 x y)) = do
           else if inLeftViewPanel
             then hitTest leftViewWidgets leftViewAdjPoint <|> hitTest otherWidgets point
             else hitTest widgets point
-      configWidgetAllowed simReady tab widget =
+      configWidgetAllowed tab widget =
         case sliderDefForWidget (widgetId widget) of
           Just sliderDef -> tab == configTabForSliderTab (sliderTab sliderDef)
-          Nothing -> bespokeConfigWidgetAllowed simReady tab (widgetId widget)
+          Nothing -> bespokeConfigWidgetAllowed tab (widgetId widget)
   if inScrollBar
     then do
       let rowHeight = 24
@@ -211,7 +182,7 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       if uiMenuMode uiSnap /= MenuNone
         then handleMenuClick layout widgets point
         else case hitWidget of
-          { Just WidgetGenerate -> whenLeftTopo (submit UiActionGenerate)
+          { Just WidgetGenerate -> whenLeftTopo (runService "generate" Null)
           ; Just WidgetLeftToggle -> setUiShowLeftPanel uiHandle (not (uiShowLeftPanel uiSnap))
           ; Just WidgetLeftTabTopo -> whenLeftPanel (setUiLeftTab uiHandle LeftTopo)
           ; Just WidgetLeftTabView -> whenLeftPanel (setUiLeftTab uiHandle LeftView)
@@ -230,11 +201,7 @@ handleClick inputContext (SDL.P (V2 x y)) = do
           ; Just WidgetConfigTabData -> whenConfigVisible (setUiConfigTab uiHandle ConfigData >> setUiConfigScroll uiHandle 0)
           ; Just wid
           | Just (sliderDef, sliderPart) <- sliderWidgetPart wid
-              -> whenConfigVisible
-                (let sliderStyle = sliderStyleForId (sliderId sliderDef)
-                 in bumpSliderValue uiHandle
-                      (sliderId sliderDef)
-                      (signedSliderDelta sliderPart (sliderStyleStep sliderStyle)))
+              -> whenConfigVisible (setConfigSlider sliderDef sliderPart)
           ; Just wid
           | isBespokeConfigWidget wid ->
               handleBespokeConfigWidget layout wid scrollPoint whenConfigVisible uiSnap
@@ -280,11 +247,7 @@ handleClick inputContext (SDL.P (V2 x y)) = do
 
     logHandle = ahLogHandle actorHandles
 
-    dataHandle = ahDataHandle actorHandles
-
     pluginManagerHandle = ahPluginManagerHandle actorHandles
-
-    simulationHandle = ahSimulationHandle actorHandles
 
     quitRef = icQuitRef inputContext
 
@@ -326,9 +289,9 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       WidgetDataFieldEnumNext _ -> True
       _ -> False
 
-    bespokeConfigWidgetAllowed :: Bool -> ConfigTab -> WidgetId -> Bool
-    bespokeConfigWidgetAllowed simReady tab wid = case wid of
-      WidgetSimTick -> tab == ConfigPipeline && simReady
+    bespokeConfigWidgetAllowed :: ConfigTab -> WidgetId -> Bool
+    bespokeConfigWidgetAllowed tab wid = case wid of
+      WidgetSimTick -> tab == ConfigPipeline
       WidgetSimAutoTick -> tab == ConfigPipeline
       WidgetPluginMoveUp _ -> tab == ConfigPipeline
       WidgetPluginMoveDown _ -> tab == ConfigPipeline
@@ -363,28 +326,16 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       WidgetConfigPresetLoad -> whenConfigVisible (openPresetLoadDialog currentLayout)
       WidgetConfigReset -> whenConfigVisible (SDL.stopTextInput >> submit UiActionReset)
       WidgetConfigRevert -> whenConfigVisible (submit UiActionRevert)
-      WidgetPipelineToggle name -> whenConfigVisible $ do
+      WidgetPipelineToggle name -> whenConfigVisible $
         case parseStageId name of
           Nothing -> pure ()
           Just sid -> do
-            let current = uiDisabledStages uiState
-                toggled :: Set.Set StageId
-                toggled
-                  | Set.member sid current = Set.delete sid current
-                  | otherwise              = Set.insert sid current
-                closed = disabledClosure builtinDependencies toggled
-            setUiDisabledStages uiHandle closed
-      WidgetSimTick -> whenConfigVisible $ do
-        let count = uiSimTickCount uiState
-            hasTerrain = dsTerrainChunks (ieDataSnapshot widgetEnv) > 0
-        if hasTerrain
-          then do
-            appendLog logHandle (LogEntry LogInfo (Text.pack ("ui: tick button pressed -> request tick " <> show (count + 1))))
-            requestSimTick simulationHandle (count + 1)
-          else
-            appendLog logHandle (LogEntry LogWarn "ui: tick ignored (no world terrain loaded yet)")
-      WidgetSimAutoTick -> whenConfigVisible $ do
-        setUiSimAutoTick uiHandle (not (uiSimAutoTick uiState))
+            let enabled = Set.member sid (uiDisabledStages uiState)
+            runService "set_stage_enabled" (object ["stage" .= name, "enabled" .= enabled])
+      WidgetSimTick -> whenConfigVisible $
+        runService "sim_tick" (object ["count" .= (1 :: Int)])
+      WidgetSimAutoTick -> whenConfigVisible $
+        runService "set_sim_auto_tick" (object ["enabled" .= not (uiSimAutoTick uiState)])
       WidgetPluginMoveUp name -> whenConfigVisible $ do
         let names = uiPluginNames uiState
             swapped = swapWithPrev name names
@@ -418,13 +369,13 @@ handleClick inputContext (SDL.P (V2 x y)) = do
                     let v = realToFrac lo + realToFrac normalized * (realToFrac hi - realToFrac lo) :: Double
                     in Number (realToFrac (max (realToFrac lo) (min (realToFrac hi) v)))
               _ -> Number (realToFrac normalized)
-        setUiPluginParam uiHandle pluginName paramName value
+        runService "set_plugin_param" (object ["plugin" .= pluginName, "param" .= paramName, "value" .= value])
       WidgetPluginParamCheck pluginName paramName -> whenConfigVisible $ do
         let params = Map.findWithDefault Map.empty pluginName (uiPluginParams uiState)
             current = case Map.lookup paramName params of
                         Just (Bool b) -> b
                         _ -> False
-        setUiPluginParam uiHandle pluginName paramName (Bool (not current))
+        runService "set_plugin_param" (object ["plugin" .= pluginName, "param" .= paramName, "value" .= Bool (not current)])
       WidgetDataPluginSelect pluginName -> whenConfigVisible $ do
         let dbs = uiDataBrowser uiState
             newDbs = dbs
@@ -584,16 +535,14 @@ handleClick inputContext (SDL.P (V2 x y)) = do
         case (dbsSelectedPlugin dbs, dbsSelectedResource dbs) of
           (Just pName, Just rName) -> do
             let editVals = dbsEditValues dbs
-                newRecord = DataRecord editVals
             SDL.stopTextInput
             if dbsCreateMode dbs
               then do
-                -- MutCreate
-                let mr = MutateResource rName (MutCreate newRecord)
                 _ <- forkIO $ do
-                  result <- mutatePluginResource pluginManagerHandle pName mr
+                  result <- runInputService widgetEnv "data_create_record" $
+                    object ["plugin" .= pName, "resource" .= rName, "fields" .= editVals]
                   case result of
-                    Right _mResult -> refreshDataBrowser dbs pName rName
+                    Right _ -> refreshDataBrowser dbs pName rName
                     Left _err -> pure ()
                 let newDbs = dbs
                       { dbsCreateMode   = False
@@ -607,14 +556,13 @@ handleClick inputContext (SDL.P (V2 x y)) = do
                       }
                 setUiDataBrowser uiHandle newDbs
               else do
-                -- MutUpdate
                 case dbsSelectedRecordKey dbs of
                   Just keyVal -> do
-                    let mr = MutateResource rName (MutUpdate keyVal newRecord)
                     _ <- forkIO $ do
-                      result <- mutatePluginResource pluginManagerHandle pName mr
+                      result <- runInputService widgetEnv "data_update_record" $
+                        object ["plugin" .= pName, "resource" .= rName, "key" .= keyVal, "fields" .= editVals]
                       case result of
-                        Right _mResult -> refreshDataBrowser dbs pName rName
+                        Right _ -> refreshDataBrowser dbs pName rName
                         Left _err -> pure ()
                     let newDbs = dbs
                           { dbsEditMode     = False
@@ -688,11 +636,11 @@ handleClick inputContext (SDL.P (V2 x y)) = do
         let dbs = uiDataBrowser uiState
         case (dbsSelectedPlugin dbs, dbsSelectedResource dbs, dbsSelectedRecordKey dbs) of
           (Just pName, Just rName, Just keyVal) -> do
-            let mr = MutateResource rName (MutDelete keyVal)
             _ <- forkIO $ do
-              result <- mutatePluginResource pluginManagerHandle pName mr
+              result <- runInputService widgetEnv "data_delete_record" $
+                object ["plugin" .= pName, "resource" .= rName, "key" .= keyVal]
               case result of
-                Right _mResult -> refreshDataBrowser dbs pName rName
+                Right _ -> refreshDataBrowser dbs pName rName
                 Left _err -> pure ()
             let newDbs = dbs
                   { dbsDeleteConfirm    = False
@@ -802,9 +750,7 @@ handleClick inputContext (SDL.P (V2 x y)) = do
 
     confirmPresetSave uiSnap = do
       let name = uiPresetInput uiSnap
-      dir <- snapshotDir
-      let path = dir </> Text.unpack name <> ".json"
-      _result <- saveSnapshot path (snapshotFromUi uiSnap name)
+      _ <- runInputService widgetEnv "save_preset" (object ["name" .= name])
       setUiMenuMode uiHandle MenuNone
       SDL.stopTextInput
 
@@ -814,12 +760,8 @@ handleClick inputContext (SDL.P (V2 x y)) = do
           sel = uiPresetSelected uiSnap
       when (sel >= 0 && sel < length names) $ do
         let name = names !! sel
-        dir <- snapshotDir
-        let path = dir </> Text.unpack name <> ".json"
-        result <- loadSnapshot path
-        case result of
-          Right cp -> applySnapshotToUi cp uiHandle
-          Left _err -> pure ()
+        _ <- runInputService widgetEnv "load_preset" (object ["name" .= name])
+        pure ()
       setUiMenuMode uiHandle MenuNone
 
     -- World save/load click handlers
@@ -868,15 +810,8 @@ handleClick inputContext (SDL.P (V2 x y)) = do
     confirmWorldSave uiSnap = do
       let name = uiWorldSaveInput uiSnap
       when (not (Text.null name)) $ do
-        terrainSnap <- getTerrainSnapshot dataHandle
-        let world = snapshotToWorld uiSnap terrainSnap
-        pluginDirs <- getPluginDataDirectories pluginManagerHandle
-        _result <- saveNamedWorldWithPlugins name uiSnap world pluginDirs
-        -- Notify plugins of the saved world path
-        wDir <- worldDir
-        notifyWorldChanged pluginManagerHandle (Just (Text.pack (wDir </> Text.unpack name)))
-        setUiWorldName uiHandle name
-        setUiWorldConfig uiHandle (Just (snapshotFromUi uiSnap name))
+        _ <- runInputService widgetEnv "save_world" (object ["name" .= name])
+        pure ()
       setUiMenuMode uiHandle MenuNone
       SDL.stopTextInput
 
@@ -887,25 +822,8 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       when (sel >= 0 && sel < length manifests) $ do
         let manifest = manifests !! sel
             name = wsmName manifest
-        result <- loadNamedWorld name
-        case result of
-          Right (_manifest, snapshot, world) -> do
-            replaceTerrainData dataHandle world
-            setSimWorld simulationHandle world
-            setUiOverlayNames uiHandle (overlayNames (twOverlays world))
-            dataSnap <- getDataSnapshot dataHandle
-            terrainSnap' <- getTerrainSnapshot dataHandle
-            writeDataSnapshot (ahDataSnapshotRef actorHandles) dataSnap
-            writeTerrainSnapshot (ahTerrainSnapshotRef actorHandles) terrainSnap'
-            bumpSnapshotVersion (ahSnapshotVersionRef actorHandles)
-            applySnapshotToUi snapshot uiHandle
-            setUiWorldName uiHandle name
-            setUiWorldConfig uiHandle (Just snapshot)
-            -- Notify plugins of the loaded world path
-            wDir <- worldDir
-            notifyWorldChanged pluginManagerHandle (Just (Text.pack (wDir </> Text.unpack name)))
-            submit (UiActionRebuildAtlas (uiViewMode uiSnap))
-          Left _err -> pure ()
+        _ <- runInputService widgetEnv "load_world" (object ["name" .= name])
+        pure ()
       setUiMenuMode uiHandle MenuNone
 
     bumpSeed delta = do
@@ -927,6 +845,14 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       setUiShowConfig uiHandle (not (uiShowConfig uiSnap))
     submit action =
       submitAction widgetEnv action
+    runService method params =
+      runInputService widgetEnv method params >> pure ()
+    setConfigSlider sliderDef sliderPart = do
+      uiSnap <- getUiSnapshot uiHandle
+      let sid = sliderId sliderDef
+          sliderStyle = sliderStyleForId sid
+          newValue = sliderValueForId uiSnap sid + signedSliderDelta sliderPart (sliderStyleStep sliderStyle)
+      runService "set_slider" (object ["name" .= Text.pack (show sid), "value" .= newValue])
     startSeedEdit rect = do
       let uiSnap = ieUiSnapshot widgetEnv
           Rect (V2 rx ry, V2 rw rh) = rect

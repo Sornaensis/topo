@@ -19,14 +19,16 @@ import qualified Data.Aeson.KeyMap as KM
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import Data.IORef (newIORef, writeIORef)
+import qualified Data.Map.Strict as Map
 import Data.List (nub, sort)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Hyperspace.Actor (ActorSystem, get, newActorSystem, replyTo, shutdownActorSystem)
 import Test.Hspec
 
 import Actor.AtlasManager (AtlasManager)
-import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..), getTerrainSnapshot, setTerrainChunkData)
+import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..), getTerrainSnapshot, setTerrainChunkCount, setTerrainChunkData)
 import Actor.Log (Log)
 import Actor.PluginManager (PluginManager)
 import Actor.Simulation (Simulation)
@@ -38,6 +40,8 @@ import Actor.SnapshotReceiver
 import Actor.Terrain (Terrain, TerrainReplyOps)
 import Actor.UI
   ( Ui
+  , UiState(..)
+  , getUiSnapshot
   , newUiSnapshotRef
   , setUiSnapshotRef
   )
@@ -64,6 +68,7 @@ import Seer.Service.Types
 import Topo (WorldConfig(..), chunkIdFromCoord, emptyTerrainChunk)
 import Topo.Command.Types (SeerCommand(..), SeerResponse(..))
 import Topo.Overlay (emptyOverlayStore)
+import Topo.Pipeline.Stage (StageId(..))
 import Topo.Types (ChunkCoord(..), ChunkId(..))
 
 spec :: Spec
@@ -647,6 +652,40 @@ spec = describe "CommandDispatch" $ do
       lookupKey "tab" (srResult rsp) `shouldBe` Just (String "terrain")
 
   -- -------------------------------------------------------------------
+  -- pipeline and plugin mutations
+  -- -------------------------------------------------------------------
+  describe "set_stage_enabled" $ do
+    it "applies the built-in dependency closure used by UI stage toggles" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "set_stage_enabled" (object ["stage" .= ("climate" :: String), "enabled" .= False])
+      srSuccess rsp `shouldBe` True
+      ui <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
+      Set.member StageClimate (uiDisabledStages ui) `shouldBe` True
+      Set.member StageOceanCurrents (uiDisabledStages ui) `shouldBe` True
+      Set.member StageWeather (uiDisabledStages ui) `shouldBe` True
+
+  describe "set_plugin_param" $ do
+    it "updates the UI plugin parameter snapshot as well as the plugin manager" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "set_plugin_param" (object
+        [ "plugin" .= ("example" :: String)
+        , "param" .= ("enabled" :: String)
+        , "value" .= Bool True
+        ])
+      srSuccess rsp `shouldBe` True
+      ui <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
+      (Map.lookup "example" (uiPluginParams ui) >>= Map.lookup "enabled") `shouldBe` Just (Bool True)
+
+  describe "sim_tick" $ do
+    it "rejects ticks when no world terrain is loaded" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "sim_tick" Null
+      srSuccess rsp `shouldBe` False
+
+    it "requests a tick when world terrain is loaded" $ withCtx $ \ctx -> do
+      setTerrainChunkCount (ahDataHandle (ccActorHandles ctx)) 1
+      rsp <- dispatch ctx "sim_tick" (object ["count" .= (1 :: Int)])
+      srSuccess rsp `shouldBe` True
+      lookupKey "target_tick" (srResult rsp) `shouldBe` Just (Number 1)
+
+  -- -------------------------------------------------------------------
   -- select_hex
   -- -------------------------------------------------------------------
   describe "select_hex" $ do
@@ -917,7 +956,7 @@ serviceOperationCases =
   , serviceCase "data_get_state" Null ExpectServiceSuccess
   , serviceCase "get_sim_state" Null ExpectServiceSuccess
   , serviceCase "set_sim_auto_tick" (object ["enabled" .= False, "rate" .= (2.0 :: Double)]) ExpectServiceSuccess
-  , serviceCase "sim_tick" Null ExpectServiceSuccess
+  , serviceCase "sim_tick" Null ExpectServiceFailure
   , serviceCase "get_sim_dag" Null ExpectServiceSuccess
   , serviceCase "get_logs" Null ExpectServiceFailure
   , ServiceOperationCase "take_screenshot" Null ExpectServiceFailure $ \ctx -> do

@@ -8,9 +8,8 @@ module Seer.Input.Events
   , tooltipDelayMs
   ) where
 
-import Actor.Data (DataSnapshot(..), TerrainSnapshot(..), getDataSnapshot, getTerrainSnapshot, replaceTerrainData)
-import Actor.SnapshotReceiver (writeDataSnapshot, writeTerrainSnapshot, bumpSnapshotVersion)
-import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshot(..), appendLog, getLogSnapshot, setLogCollapsed, setLogMinLevel, setLogScroll)
+import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot)
+import Actor.Log (LogSnapshot(..), getLogSnapshot, setLogCollapsed, setLogScroll)
 import Actor.UI
   ( ConfigTab(..)
   , DataBrowserState(..)
@@ -33,18 +32,15 @@ import Actor.UI
   , setUiPresetInput
   , setUiPresetSelected
   , setUiPresetFilter
-  , setUiWorldName
-  , setUiWorldConfig
   , setUiWorldSaveInput
   , setUiWorldSelected
   , setUiWorldFilter
   , setUiZoom
-  , setUiOverlayNames
   , setUiLeftViewScroll
   )
 import Control.Applicative ((<|>))
 import Control.Monad (when)
-import Data.Aeson (Value(..))
+import Data.Aeson (Value(..), object, (.=))
 import Data.IORef (IORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import Data.Word (Word32)
@@ -54,7 +50,6 @@ import qualified Data.Set as Set
 import Linear (V2(..))
 import qualified SDL
 import Hyperspace.Actor (ActorHandle, Protocol)
-import System.FilePath ((</>))
 import Seer.Draw (seedMaxDigits)
 import Seer.Input.ConfigScroll
   ( computeScrollUpdates
@@ -70,23 +65,16 @@ import Seer.Input.ViewControls
   )
 import Topo (ChunkCoord(..), ChunkId(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
 import Topo.Types (BiomeId, TerrainForm)
-import UI.HexPick (screenToAxial)
 import UI.Layout
-import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildEditorWidgets, buildEditorReopenWidget, buildViewModeWidgets, buildPluginWidgets, buildSliderRowWidgets, hitTest)
+import UI.WidgetTree (Widget(..), WidgetId(..), buildEditorWidgets, buildEditorReopenWidget, buildViewModeWidgets, buildSliderRowWidgets, hitTest)
 import UI.Widgets (Rect(..), containsPoint)
-import Seer.Input.Actions (InputEnv(..), submitAction)
+import Seer.Input.Actions (InputEnv(..), runInputService, submitAction)
 import qualified Seer.Input.Actions as InputActions
 import Seer.Editor.Types (EditorState(..), EditorTool(..), BrushSettings(..), Falloff(..), paintableBiomes, allTerrainForms)
 import Actor.UiActions (UiAction(..))
 import Actor.UiActions.Handles (ActorHandles(..))
-import Actor.PluginManager (getPluginDataDirectories, notifyWorldChanged)
-import Actor.Simulation (setSimWorld)
-import Seer.Config.Snapshot (applySnapshotToUi, loadSnapshot, saveSnapshot, snapshotDir, snapshotFromUi)
 import Seer.Input.Widgets (handleClick)
-import Seer.World.Persist (loadNamedWorld, saveNamedWorldWithPlugins, snapshotToWorld, worldDir)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
-import Topo.Overlay (overlayNames)
-import Topo.World (TerrainWorld(..))
 import UI.HexPick (renderHexRadiusPx, screenToAxial)
 
 -- | Wall-clock delay (milliseconds) the cursor must remain still on a
@@ -365,7 +353,7 @@ handleEvent inputContext event = do
                                     else handleEditorKey editor keycode
                                   else case keycode of
                                     SDL.KeycodeEscape -> closeContextOrMenu
-                                    SDL.KeycodeG -> submitAction inputEnv UiActionGenerate
+                                    SDL.KeycodeG -> runInputService inputEnv "generate" Null >> pure ()
                                     SDL.KeycodeC -> toggleConfig
                                     SDL.KeycodeE -> toggleEditor
                                     SDL.KeycodeUp -> bumpSeed uiHandle (getUiSnapshot uiHandle) 1
@@ -391,8 +379,6 @@ handleEvent inputContext event = do
     logHandle = ahLogHandle actorHandles
 
     dataHandle = ahDataHandle actorHandles
-
-    simulationHandle = ahSimulationHandle actorHandles
 
     dragThreshold :: Float
     dragThreshold = 4
@@ -663,9 +649,7 @@ handleEvent inputContext event = do
         -- onConfirm
         (do uiSnap' <- getUiSnapshot uiHandle
             let name = uiPresetInput uiSnap'
-            dir <- snapshotDir
-            let path = dir </> Text.unpack name <> ".json"
-            _result <- saveSnapshot path (snapshotFromUi uiSnap' name)
+            _ <- runInputService inputEnv "save_preset" (object ["name" .= name])
             setUiMenuMode uiHandle MenuNone
             SDL.stopTextInput)
         -- onCancel
@@ -690,12 +674,8 @@ handleEvent inputContext event = do
             (do let sel = uiPresetSelected uiSnap
                 when (sel >= 0 && sel < length filteredItems) $ do
                   let name = filteredItems !! sel
-                  dir <- snapshotDir
-                  let path = dir </> Text.unpack name <> ".json"
-                  result <- loadSnapshot path
-                  case result of
-                    Right cp -> applySnapshotToUi cp uiHandle
-                    Left _err -> pure ()
+                  _ <- runInputService inputEnv "load_preset" (object ["name" .= name])
+                  pure ()
                 setUiMenuMode uiHandle MenuNone)
             -- onCancel
             (setUiMenuMode uiHandle MenuNone >> SDL.stopTextInput)
@@ -708,16 +688,9 @@ handleEvent inputContext event = do
         -- onConfirm
         (do uiSnap' <- getUiSnapshot uiHandle
             let name = uiWorldSaveInput uiSnap'
-                pmHandle = ahPluginManagerHandle actorHandles
             when (not (Text.null name)) $ do
-              terrainSnap <- getTerrainSnapshot dataHandle
-              let world = snapshotToWorld uiSnap' terrainSnap
-              pluginDirs <- getPluginDataDirectories pmHandle
-              _result <- saveNamedWorldWithPlugins name uiSnap' world pluginDirs
-              wDir <- worldDir
-              notifyWorldChanged pmHandle (Just (Text.pack (wDir </> Text.unpack name)))
-              setUiWorldName uiHandle name
-              setUiWorldConfig uiHandle (Just (snapshotFromUi uiSnap' name))
+              _ <- runInputService inputEnv "save_world" (object ["name" .= name])
+              pure ()
             setUiMenuMode uiHandle MenuNone
             SDL.stopTextInput)
         -- onCancel
@@ -743,26 +716,8 @@ handleEvent inputContext event = do
                 when (sel >= 0 && sel < length filteredItems) $ do
                   let manifest = filteredItems !! sel
                       name = wsmName manifest
-                  result <- loadNamedWorld name
-                  case result of
-                    Right (_manifest, snapshot, world) -> do
-                      replaceTerrainData dataHandle world
-                      setSimWorld simulationHandle world
-                      setUiOverlayNames uiHandle (overlayNames (twOverlays world))
-                      dataSnap <- getDataSnapshot dataHandle
-                      terrainSnap' <- getTerrainSnapshot dataHandle
-                      writeDataSnapshot (ahDataSnapshotRef actorHandles) dataSnap
-                      writeTerrainSnapshot (ahTerrainSnapshotRef actorHandles) terrainSnap'
-                      bumpSnapshotVersion (ahSnapshotVersionRef actorHandles)
-                      applySnapshotToUi snapshot uiHandle
-                      setUiWorldName uiHandle name
-                      setUiWorldConfig uiHandle (Just snapshot)
-                      -- Notify plugins of the loaded world path
-                      let pmHandle = ahPluginManagerHandle actorHandles
-                      wDir <- worldDir
-                      notifyWorldChanged pmHandle (Just (Text.pack (wDir </> Text.unpack name)))
-                      submitAction inputEnv (UiActionRebuildAtlas (uiViewMode uiSnap))
-                    Left _err -> pure ()
+                  _ <- runInputService inputEnv "load_world" (object ["name" .= name])
+                  pure ()
                 setUiMenuMode uiHandle MenuNone)
             -- onCancel
             (setUiMenuMode uiHandle MenuNone >> SDL.stopTextInput)

@@ -16,15 +16,13 @@ import qualified Data.Aeson.Types as Aeson
 import Data.List (find)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Read as Text
 
 import Actor.Log (LogLevel(..), setLogMinLevel)
-import Actor.PluginManager (setPluginOrder, setDisabledPlugins, queryPluginResource, mutatePluginResource)
-import Actor.Simulation (requestSimTick)
+import Actor.PluginManager (setPluginOrder, setDisabledPlugins, queryPluginResource)
 import Actor.Terrain (TerrainReplyOps)
 import Actor.UiActions (UiAction(..), UiActionRequest(..), submitUiAction)
 import Actor.UiActions.Handles (ActorHandles(..))
@@ -44,25 +42,26 @@ import Actor.UI.Setters
   , setUiConfigScroll
   , setUiChunkSize
   , setUiDayNightEnabled
-  , setUiDisabledStages
   , setUiDisabledPlugins
   , setUiPluginNames
   , setUiPluginExpanded
-  , setUiPluginParam
   , setUiDataBrowser
-  , setUiSimAutoTick
   )
 import Hyperspace.Actor (replyTo)
 import Seer.Command.Context (CommandContext(..))
+import qualified Seer.Command.Handlers.Data as HData
+import qualified Seer.Command.Handlers.Pipeline as HPipeline
+import qualified Seer.Command.Handlers.Plugin as HPlugin
+import qualified Seer.Command.Handlers.Simulation as HSimulation
+import qualified Seer.Command.Handlers.Sliders as HSliders
 import Seer.Config.SliderId (SliderId(..))
-import Seer.Config.SliderRegistry (SliderDef(..), sliderWidgetPart, SliderPart(..), sliderDefsForTab, SliderTab(..))
-import Seer.Config.SliderState (bumpSliderValue)
+import Seer.Config.SliderRegistry (SliderDef(..), SliderPart(..), sliderDefsForTab, SliderTab(..))
 import Seer.Config.SliderStyle (SliderStyle(..), sliderStyleForId)
-import Topo.Command.Types (SeerResponse, okResponse, errResponse)
-import Topo.Pipeline.Dep (builtinDependencies, disabledClosure)
-import Topo.Pipeline.Stage (StageId, parseStageId, stageCanonicalName, allBuiltinStageIds)
-import Topo.Plugin.DataResource (DataResourceSchema(..), DataFieldDef(..), DataOperations(..))
-import Topo.Plugin.RPC.DataService (DataRecord(..), QueryResult(..), QueryResource(..), DataQuery(..), MutateResource(..), DataMutation(..))
+import Seer.Config.SliderUi (sliderValueForId)
+import Topo.Command.Types (SeerResponse(..), okResponse, errResponse)
+import Topo.Pipeline.Stage (parseStageId, stageCanonicalName, allBuiltinStageIds)
+import Topo.Plugin.DataResource (DataResourceSchema(..), DataFieldDef(..))
+import Topo.Plugin.RPC.DataService (DataRecord(..), QueryResult(..), QueryResource(..), DataQuery(..))
 import Seer.Editor.Types (EditorState(..))
 import UI.WidgetTree (WidgetId(..))
 
@@ -363,7 +362,6 @@ executeWidgetClick ctx wid = do
       uiH = ahUiHandle handles
       logH = ahLogHandle handles
       pluginH = ahPluginManagerHandle handles
-      simH = ahSimulationHandle handles
   uiSnap <- readUiSnapshotRef (ccUiSnapshotRef ctx)
   case wid of
     -- ----- Left panel & tabs -----
@@ -452,8 +450,8 @@ executeWidgetClick ctx wid = do
     WidgetViewFieldNext   -> pure $ Right "use 'cycle_overlay_field' IPC with direction 1"
 
     -- ----- Slider +/- buttons -----
-    WidgetSliderMinus sid -> bumpSlider uiH sid SliderPartMinus
-    WidgetSliderPlus sid  -> bumpSlider uiH sid SliderPartPlus
+    WidgetSliderMinus sid -> bumpSlider ctx uiSnap sid SliderPartMinus
+    WidgetSliderPlus sid  -> bumpSlider ctx uiSnap sid SliderPartPlus
 
     -- ----- Log controls -----
     WidgetLogDebug  -> setLogMinLevel logH LogDebug  >> pure (Right "log level: debug")
@@ -488,24 +486,17 @@ executeWidgetClick ctx wid = do
       case parseStageId name of
         Nothing -> pure $ Left ("unknown pipeline stage: " <> name)
         Just sid -> do
-          let current = uiDisabledStages uiSnap
-              toggled :: Set StageId
-              toggled
-                | Set.member sid current = Set.delete sid current
-                | otherwise              = Set.insert sid current
-              closed = disabledClosure builtinDependencies toggled
-          setUiDisabledStages uiH closed
-          let enabled = not (Set.member sid closed)
-          pure $ Right ("stage " <> name <> if enabled then " enabled" else " disabled")
+          let enabled = Set.member sid (uiDisabledStages uiSnap)
+          commandResult ("stage " <> name <> if enabled then " enabled" else " disabled") $
+            HPipeline.handleSetStageEnabled ctx 0 (object ["stage" .= name, "enabled" .= enabled])
 
     -- ----- Simulation -----
-    WidgetSimTick -> do
-      let count = uiSimTickCount uiSnap
-      requestSimTick simH (count + 1)
-      pure $ Right ("sim tick " <> Text.pack (show (count + 1)))
-    WidgetSimAutoTick -> do
-      setUiSimAutoTick uiH (not (uiSimAutoTick uiSnap))
-      pure $ Right ("auto tick " <> if uiSimAutoTick uiSnap then "off" else "on")
+    WidgetSimTick ->
+      commandResult "sim tick requested" $
+        HSimulation.handleSimTick ctx 0 (object ["count" .= (1 :: Int)])
+    WidgetSimAutoTick ->
+      commandResult ("auto tick " <> if uiSimAutoTick uiSnap then "off" else "on") $
+        HSimulation.handleSetSimAutoTick ctx 0 (object ["enabled" .= not (uiSimAutoTick uiSnap)])
 
     -- ----- Plugin management -----
     WidgetPluginMoveUp name -> do
@@ -540,8 +531,12 @@ executeWidgetClick ctx wid = do
           current = case Map.lookup paramName params' of
                       Just (Bool b) -> b
                       _ -> False
-      setUiPluginParam uiH pluginName paramName (Bool (not current))
-      pure $ Right ("plugin param " <> paramName <> " toggled")
+      commandResult ("plugin param " <> paramName <> " toggled") $
+        HPlugin.handleSetPluginParam ctx 0 (object
+          [ "plugin" .= pluginName
+          , "param" .= paramName
+          , "value" .= Bool (not current)
+          ])
 
     -- ----- Data browser -----
     WidgetDataPluginSelect pluginName -> do
@@ -698,16 +693,16 @@ executeWidgetClick ctx wid = do
       let dbs = uiDataBrowser uiSnap
       case (dbsSelectedPlugin dbs, dbsSelectedResource dbs, dbsSelectedRecordKey dbs) of
         (Just pName, Just rName, Just keyVal) -> do
-          let mr = MutateResource rName (MutDelete keyVal)
-          result <- mutatePluginResource pluginH pName mr
-          case result of
-            Right _mResult -> do
+          response <- HData.handleDataDeleteRecord ctx 0 $
+            object ["plugin" .= pName, "resource" .= rName, "key" .= keyVal]
+          if srSuccess response
+            then do
               setUiDataBrowser uiH dbs
                 { dbsDeleteConfirm = False, dbsSelectedRecord = Nothing
                 , dbsSelectedRecordKey = Nothing, dbsSelectedRowIndex = Nothing
                 , dbsExpandedFields = Set.empty }
               pure $ Right "record deleted"
-            Left err -> pure $ Left ("delete failed: " <> Text.pack (show err))
+            else pure $ Left (maybe "delete failed" id (srError response))
         _ -> pure $ Left "no record selected for deletion"
     WidgetDataDeleteCancel -> do
       let dbs = uiDataBrowser uiSnap
@@ -795,13 +790,21 @@ submitAction ctx action = do
         }
   submitUiAction uiActionsH request
 
-bumpSlider uiH sid part = do
+commandResult :: Text -> IO SeerResponse -> IO (Either Text Text)
+commandResult successInfo action = do
+  response <- action
+  if srSuccess response
+    then pure (Right successInfo)
+    else pure (Left (maybe "command failed" id (srError response)))
+
+bumpSlider ctx uiSnap sid part = do
   let style = sliderStyleForId sid
       delta = case part of
         SliderPartMinus -> negate (sliderStyleStep style)
         SliderPartPlus  -> sliderStyleStep style
-  bumpSliderValue uiH sid delta
-  pure $ Right ("slider " <> Text.pack (show sid) <> (if delta < 0 then " -" else " +"))
+      newValue = sliderValueForId uiSnap sid + delta
+  commandResult ("slider " <> Text.pack (show sid) <> (if delta < 0 then " -" else " +")) $
+    HSliders.handleSetSlider ctx 0 (object ["name" .= Text.pack (show sid), "value" .= newValue])
 
 paginate uiH pluginH dbs pluginName resourceName newOffset = do
   let newDbs = dbs
