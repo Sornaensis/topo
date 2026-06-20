@@ -17,6 +17,9 @@ import Seer.Service.AppService
   ( appServiceGroups
   , appServiceOperationMethods
   , appServiceOperationSpecs
+  , ConfigListPresetsResponse(..)
+  , ConfigSliderSummary(..)
+  , ConfigSlidersResponse(..)
   , DataResourceStateResponse(..)
   , EditorActionQueuedResponse(..)
   , EditorSetBrushRequest(..)
@@ -24,11 +27,19 @@ import Seer.Service.AppService
   , PluginSummary(..)
   , SimulationDagNodeSummary(..)
   , SimulationDagResponse(..)
+  , StateHexCoord(..)
+  , StateSummaryResponse(..)
+  , StateViewModeSummary(..)
+  , StateViewModesResponse(..)
   , TerrainExportResponse(..)
   , TerrainFilterOp(..)
   , TerrainFindFilter(..)
   , TerrainFindHexesRequest(..)
+  , UiCameraSnapshot(..)
   , UiListOverlayFieldsResponse(..)
+  , UiLogPanelState(..)
+  , UiPanelTabState(..)
+  , UiPanelsResponse(..)
   , UiOverlayFieldSummary(..)
   , WorldMetaResponse(..)
   , dataResourceCreateRecordOperation
@@ -39,6 +50,16 @@ import Seer.Service.AppService
   , dataResourceListResourcesOperation
   , dataResourceStateOperation
   , dataResourceUpdateRecordOperation
+  , configGetEnumsOperation
+  , configGetSliderOperation
+  , configGetSlidersOperation
+  , configGetSummaryOperation
+  , configListPresetsOperation
+  , configLoadPresetOperation
+  , configResetSlidersOperation
+  , configSavePresetOperation
+  , configSetSliderOperation
+  , configSetSlidersOperation
   , editorBrushLineOperation
   , editorBrushStrokeOperation
   , editorGetStateOperation
@@ -59,6 +80,9 @@ import Seer.Service.AppService
   , simulationSetAutoTickOperation
   , simulationStateOperation
   , simulationTickOperation
+  , stateGetStateOperation
+  , stateGetUiStateOperation
+  , stateGetViewModesOperation
   , terrainExportDataOperation
   , terrainFindHexesOperation
   , terrainGetChunkSummaryOperation
@@ -68,8 +92,21 @@ import Seer.Service.AppService
   , terrainGetStatsOperation
   , uiCycleOverlayFieldOperation
   , uiCycleOverlayOperation
+  , uiGetCameraOperation
+  , uiGetPanelsOperation
   , uiListOverlayFieldsOperation
+  , uiSelectHexOperation
+  , uiSetCameraOperation
+  , uiSetConfigTabOperation
+  , uiSetLeftPanelOperation
+  , uiSetLeftTabOperation
+  , uiSetLogCollapsedOperation
+  , uiSetLogLevelOperation
   , uiSetOverlayOperation
+  , uiSetSeedOperation
+  , uiSetViewModeOperation
+  , uiToggleConfigPanelOperation
+  , uiZoomToChunkOperation
   , worldGenerateOperation
   , worldGetGenerationStatusOperation
   , worldGetMetaOperation
@@ -107,7 +144,20 @@ spec = describe "AppService surface" $ do
 
   it "defines typed operation contracts for M2 service groups" $
     typedOperationMethods `shouldBe`
-      [ "generate"
+      [ "get_state"
+      , "get_view_modes"
+      , "get_ui_state"
+      , "get_sliders"
+      , "get_slider"
+      , "set_slider"
+      , "set_sliders"
+      , "reset_sliders"
+      , "get_config_summary"
+      , "get_enums"
+      , "list_presets"
+      , "save_preset"
+      , "load_preset"
+      , "generate"
       , "get_world_meta"
       , "get_generation_status"
       , "list_worlds"
@@ -149,10 +199,23 @@ spec = describe "AppService surface" $ do
       , "set_sim_auto_tick"
       , "sim_tick"
       , "get_sim_dag"
+      , "set_seed"
+      , "set_view_mode"
+      , "set_config_tab"
+      , "select_hex"
       , "set_overlay"
       , "list_overlay_fields"
       , "cycle_overlay"
       , "cycle_overlay_field"
+      , "set_camera"
+      , "get_camera"
+      , "zoom_to_chunk"
+      , "set_left_panel"
+      , "set_left_tab"
+      , "toggle_config_panel"
+      , "set_log_collapsed"
+      , "set_log_level"
+      , "get_ui_panels"
       ]
 
   it "keeps world, terrain, editor, and overlay contracts typed" $ do
@@ -174,6 +237,19 @@ spec = describe "AppService surface" $ do
     dataResourceLoading dataResourceStateContract `shouldBe` False
     dataResourceHasSelection dataResourceStateContract `shouldBe` True
 
+  it "keeps state, config, panel, and camera contracts typed" $ do
+    stateSummaryViewMode stateSummaryContract `shouldBe` "elevation"
+    stateSummaryContextHex stateSummaryContract `shouldBe` Just (StateHexCoord 1 2)
+    map stateViewModeName (stateViewModes stateViewModesContract) `shouldBe` ["elevation", "biome"]
+    configSliderSummaryId configSliderContract `shouldBe` "SliderWaterLevel"
+    configSliderSummaryTab configSliderContract `shouldBe` "climate"
+    configSliderSummaryValueKind configSliderContract `shouldBe` "float"
+    map configSliderSummaryId (configSlidersResponseSliders configSlidersContract) `shouldBe` ["SliderWaterLevel"]
+    configPresetNames configPresetsContract `shouldBe` ["default"]
+    uiCameraSnapshotZoom uiCameraContract `shouldBe` 1.25
+    uiPanelTabName (uiPanelsLeftPanel uiPanelsContract) `shouldBe` "topo"
+    uiLogPanelLevel (uiPanelsLogPanel uiPanelsContract) `shouldBe` "info"
+
   it "keeps the simulation DAG contract typed and command-backed" $ do
     typedOperationMethod simulationDagOperation `shouldBe` "get_sim_dag"
     typedOperationMethod simulationDagOperation `shouldSatisfy` (`elem` appServiceOperationMethods)
@@ -181,7 +257,20 @@ spec = describe "AppService surface" $ do
 
 typedOperationMethods :: [Text]
 typedOperationMethods =
-  [ typedOperationMethod worldGenerateOperation
+  [ typedOperationMethod stateGetStateOperation
+  , typedOperationMethod stateGetViewModesOperation
+  , typedOperationMethod stateGetUiStateOperation
+  , typedOperationMethod configGetSlidersOperation
+  , typedOperationMethod configGetSliderOperation
+  , typedOperationMethod configSetSliderOperation
+  , typedOperationMethod configSetSlidersOperation
+  , typedOperationMethod configResetSlidersOperation
+  , typedOperationMethod configGetSummaryOperation
+  , typedOperationMethod configGetEnumsOperation
+  , typedOperationMethod configListPresetsOperation
+  , typedOperationMethod configSavePresetOperation
+  , typedOperationMethod configLoadPresetOperation
+  , typedOperationMethod worldGenerateOperation
   , typedOperationMethod worldGetMetaOperation
   , typedOperationMethod worldGetGenerationStatusOperation
   , typedOperationMethod worldListOperation
@@ -223,10 +312,23 @@ typedOperationMethods =
   , typedOperationMethod simulationSetAutoTickOperation
   , typedOperationMethod simulationTickOperation
   , typedOperationMethod simulationDagOperation
+  , typedOperationMethod uiSetSeedOperation
+  , typedOperationMethod uiSetViewModeOperation
+  , typedOperationMethod uiSetConfigTabOperation
+  , typedOperationMethod uiSelectHexOperation
   , typedOperationMethod uiSetOverlayOperation
   , typedOperationMethod uiListOverlayFieldsOperation
   , typedOperationMethod uiCycleOverlayOperation
   , typedOperationMethod uiCycleOverlayFieldOperation
+  , typedOperationMethod uiSetCameraOperation
+  , typedOperationMethod uiGetCameraOperation
+  , typedOperationMethod uiZoomToChunkOperation
+  , typedOperationMethod uiSetLeftPanelOperation
+  , typedOperationMethod uiSetLeftTabOperation
+  , typedOperationMethod uiToggleConfigPanelOperation
+  , typedOperationMethod uiSetLogCollapsedOperation
+  , typedOperationMethod uiSetLogLevelOperation
+  , typedOperationMethod uiGetPanelsOperation
   ]
 
 typedOperationMethod :: TypedServiceOperation request response -> Text
@@ -295,6 +397,79 @@ uiOverlayFieldsContract = UiListOverlayFieldsResponse
           , uiOverlayFieldType = OFFloat
           }
       ]
+  }
+
+stateSummaryContract :: StateSummaryResponse
+stateSummaryContract = StateSummaryResponse
+  { stateSummarySeed = 42
+  , stateSummaryViewMode = "elevation"
+  , stateSummaryConfigTab = "terrain"
+  , stateSummaryGenerating = False
+  , stateSummaryChunkSize = 64
+  , stateSummaryShowConfig = True
+  , stateSummaryWorldName = "demo"
+  , stateSummaryContextHex = Just (StateHexCoord 1 2)
+  }
+
+stateViewModesContract :: StateViewModesResponse
+stateViewModesContract = StateViewModesResponse
+  { stateViewModes =
+      [ StateViewModeSummary
+          { stateViewModeName = "elevation"
+          , stateViewModeActive = True
+          }
+      , StateViewModeSummary
+          { stateViewModeName = "biome"
+          , stateViewModeActive = False
+          }
+      ]
+  }
+
+configSliderContract :: ConfigSliderSummary
+configSliderContract = ConfigSliderSummary
+  { configSliderSummaryId = "SliderWaterLevel"
+  , configSliderSummaryTab = "climate"
+  , configSliderSummaryValue = 0.43
+  , configSliderSummaryDomainValue = 0.43
+  , configSliderSummaryDomainMin = 0.0
+  , configSliderSummaryDomainMax = 1.0
+  , configSliderSummaryValueKind = "float"
+  , configSliderSummaryDefault = 0.43
+  , configSliderSummaryDefaultDomain = 0.43
+  }
+
+configSlidersContract :: ConfigSlidersResponse
+configSlidersContract = ConfigSlidersResponse
+  { configSlidersResponseSliders = [configSliderContract]
+  }
+
+configPresetsContract :: ConfigListPresetsResponse
+configPresetsContract = ConfigListPresetsResponse
+  { configPresetCount = 1
+  , configPresetNames = ["default"]
+  }
+
+uiCameraContract :: UiCameraSnapshot
+uiCameraContract = UiCameraSnapshot
+  { uiCameraSnapshotX = 10.0
+  , uiCameraSnapshotY = 20.0
+  , uiCameraSnapshotZoom = 1.25
+  }
+
+uiPanelsContract :: UiPanelsResponse
+uiPanelsContract = UiPanelsResponse
+  { uiPanelsLeftPanel = UiPanelTabState
+      { uiPanelTabVisible = True
+      , uiPanelTabName = "topo"
+      }
+  , uiPanelsConfigPanel = UiPanelTabState
+      { uiPanelTabVisible = False
+      , uiPanelTabName = "terrain"
+      }
+  , uiPanelsLogPanel = UiLogPanelState
+      { uiLogPanelCollapsed = False
+      , uiLogPanelLevel = "info"
+      }
   }
 
 pluginSummaryContract :: PluginSummary
