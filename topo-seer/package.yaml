@@ -115,6 +115,17 @@ library:
     - UI.DayNight
     - UI.WidgetId
   other-modules:
+    - Actor.PluginManager.Config
+    - Actor.PluginManager.DataResourceRouter
+    - Actor.PluginManager.HandshakeSession
+    - Actor.PluginManager.PipelineIntegrator
+    - Actor.PluginManager.PluginSupervisor
+    - Actor.PluginManager.ProcessLauncher
+    - Actor.PluginManager.ResourceRegistry
+    - Actor.PluginManager.RootSupervisor
+    - Actor.PluginManager.Scanner
+    - Actor.PluginManager.SimulationIntegrator
+    - Actor.PluginManager.Types
     - Actor.UiActions.Handles
     - Seer.Command.Handlers.Camera
     - Seer.Command.Handlers.Data
