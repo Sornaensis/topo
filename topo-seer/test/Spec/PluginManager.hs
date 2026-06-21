@@ -23,7 +23,7 @@ import System.Directory
   , removePathForcibly
   , setPermissions
   )
-import System.Environment (getArgs, getExecutablePath, lookupEnv)
+import System.Environment (getArgs, getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.Exit (die, exitFailure)
 import System.FilePath ((</>))
 import System.Info (os)
@@ -63,6 +63,7 @@ import Topo.Plugin.RPC.Transport
   , pluginIdEnv
   , pluginProtocolEnv
   , pluginSessionEnv
+  , pluginStdioCompatibilityEnv
   , pluginWorldIdEnv
   , recvMessage
   , sendMessage
@@ -100,16 +101,17 @@ spec = describe "PluginManager" $ do
         pluginLifecycleStates testLaunchPluginName loadedAfterShutdown `shouldSatisfy` elem LifecycleStopped
 
   it "launches plugins with the complete TOPO_PLUGIN environment over endpoint transport" $ do
-    withExecutablePluginDir envContractPluginName envContractManifestJSON "env-contract" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
-        discoverPlugins pluginManagerHandle
-        refreshManifests pluginManagerHandle
-        loaded <- getLoadedPlugins pluginManagerHandle
-        pluginStatuses envContractPluginName loaded `shouldSatisfy` elem PluginConnected
-        pluginLifecycleStates envContractPluginName loaded `shouldSatisfy` elem LifecycleReady
-        pluginLifecycleProtocols envContractPluginName loaded `shouldSatisfy` elem (Just currentProtocolVersion)
-        shutdownPlugins pluginManagerHandle
+    withParentStdioCompatibilityFlag $ do
+      withExecutablePluginDir envContractPluginName envContractManifestJSON "env-contract" $ do
+        bracket newActorSystem shutdownActorSystem $ \system -> do
+          pluginManagerHandle <- getPluginManager system
+          discoverPlugins pluginManagerHandle
+          refreshManifests pluginManagerHandle
+          loaded <- getLoadedPlugins pluginManagerHandle
+          pluginStatuses envContractPluginName loaded `shouldSatisfy` elem PluginConnected
+          pluginLifecycleStates envContractPluginName loaded `shouldSatisfy` elem LifecycleReady
+          pluginLifecycleProtocols envContractPluginName loaded `shouldSatisfy` elem (Just currentProtocolVersion)
+          shutdownPlugins pluginManagerHandle
 
   it "exposes Starting while public refreshManifests performs supervisor work" $ do
     withExecutablePluginDir refreshTransientPluginName refreshTransientManifestJSON "slow" $ do
@@ -222,6 +224,15 @@ withTestPluginDir pluginName manifestJSON schemaJSON action =
       pure pluginDir
 
     teardown = removePathForcibly
+
+withParentStdioCompatibilityFlag :: IO a -> IO a
+withParentStdioCompatibilityFlag = bracket setup restore . const
+  where
+    setup = do
+      old <- lookupEnv pluginStdioCompatibilityEnv
+      setEnv pluginStdioCompatibilityEnv "1"
+      pure old
+    restore = maybe (unsetEnv pluginStdioCompatibilityEnv) (setEnv pluginStdioCompatibilityEnv)
 
 withExecutablePluginDir :: String -> BS.ByteString -> String -> IO a -> IO a
 withExecutablePluginDir pluginName manifestJSON fixtureMode action =
@@ -342,6 +353,7 @@ verifyLaunchEnvironment = do
   authToken <- requireEnv pluginAuthTokenEnv
   worldId <- requireEnv pluginWorldIdEnv
   dataRoot <- requireEnv pluginDataRootEnv
+  stdioCompat <- lookupEnv pluginStdioCompatibilityEnv
   pluginId `shouldEqualOrDie` envContractPluginName
   protocol `shouldEqualOrDie` show currentProtocolVersion
   endpoint `shouldNotBeEmptyOrDie` pluginEndpointEnv
@@ -350,6 +362,7 @@ verifyLaunchEnvironment = do
   authToken `shouldNotBeEmptyOrDie` pluginAuthTokenEnv
   worldId `shouldEqualOrDie` "unsaved"
   dataRoot `shouldNotBeEmptyOrDie` pluginDataRootEnv
+  stdioCompat `shouldBeUnsetOrDie` pluginStdioCompatibilityEnv
   dataRootExists <- doesDirectoryExist dataRoot
   unless dataRootExists (die (pluginDataRootEnv <> " does not name an existing directory"))
 
@@ -363,6 +376,12 @@ shouldEqualOrDie actual expected =
 shouldNotBeEmptyOrDie :: String -> String -> IO ()
 shouldNotBeEmptyOrDie value label =
   unless (not (null value)) (die (label <> " must not be empty"))
+
+shouldBeUnsetOrDie :: Maybe String -> String -> IO ()
+shouldBeUnsetOrDie value label =
+  case value of
+    Nothing -> pure ()
+    Just _ -> die (label <> " must not be set for production plugin launches")
 
 expectedEndpointKind :: String
 expectedEndpointKind =

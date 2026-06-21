@@ -24,6 +24,7 @@ import System.Directory (doesPathExist)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Info (os)
 import System.IO (stdin, stdout)
+import System.IO.Temp (withSystemTempFile)
 import System.Timeout (timeout)
 
 import Topo.Plugin.RPC.Manifest
@@ -32,6 +33,7 @@ import Topo.Plugin.RPC.Transport
   ( Transport
   , TransportConfig(..)
   , TransportEndpoint(..)
+  , TransportError(..)
   , TransportServer(..)
   , closeTransport
   , connectPluginEndpoint
@@ -42,6 +44,7 @@ import Topo.Plugin.RPC.Transport
   , pluginEndpointEnv
   , pluginEndpointKindEnv
   , pluginPipeName
+  , pluginStdioCompatibilityEnv
   , recvMessage
   , sendMessage
   )
@@ -687,6 +690,26 @@ spec = describe "Plugin.RPC" $ do
           pn2 = pluginPipeName defaultTransportConfig "beta"
       pn1 `shouldNotBe` pn2
 
+    it "rejects implicit stdio fallback without the test/development flag" $
+      withCleanPluginTransportEnvironment $ do
+        connection <- connectPluginFromEnvironment "stdio-disabled" stdin stdout
+        case connection of
+          Left (TransportConnectionFailed msg) -> do
+            msg `shouldSatisfy` Text.isInfixOf (Text.pack pluginEndpointEnv)
+            msg `shouldSatisfy` Text.isInfixOf (Text.pack pluginStdioCompatibilityEnv)
+          Left err -> expectationFailure ("unexpected transport error: " <> show err)
+          Right _ -> expectationFailure "expected missing endpoint environment to reject implicit stdio fallback"
+
+    it "allows stdio fallback only when explicitly enabled for tests" $
+      withCleanPluginTransportEnvironment $ do
+        setEnv pluginStdioCompatibilityEnv "1"
+        withSystemTempFile "topo-plugin-stdio-read" $ \_ readH ->
+          withSystemTempFile "topo-plugin-stdio-write" $ \_ writeH -> do
+            connection <- connectPluginFromEnvironment "stdio-enabled" readH writeH
+            case connection of
+              Left err -> expectationFailure ("expected stdio compatibility transport, got: " <> show err)
+              Right _ -> pure ()
+
     it "connects over a host-created Unix socket endpoint" $
       onUnix $ withTransportServer "socket-smoke" $ \server -> do
         pathExists <- doesPathExist (teAddress (tsEndpoint server))
@@ -858,6 +881,23 @@ withEndpointEnvironment endpoint = bracket setup restore . const
     restore (oldEndpoint, oldKind) = do
       restoreEnv pluginEndpointEnv oldEndpoint
       restoreEnv pluginEndpointKindEnv oldKind
+    restoreEnv key = maybe (unsetEnv key) (setEnv key)
+
+withCleanPluginTransportEnvironment :: IO a -> IO a
+withCleanPluginTransportEnvironment = bracket setup restore . const
+  where
+    setup = do
+      oldEndpoint <- lookupEnv pluginEndpointEnv
+      oldKind <- lookupEnv pluginEndpointKindEnv
+      oldStdioCompatibility <- lookupEnv pluginStdioCompatibilityEnv
+      unsetEnv pluginEndpointEnv
+      unsetEnv pluginEndpointKindEnv
+      unsetEnv pluginStdioCompatibilityEnv
+      pure (oldEndpoint, oldKind, oldStdioCompatibility)
+    restore (oldEndpoint, oldKind, oldStdioCompatibility) = do
+      restoreEnv pluginEndpointEnv oldEndpoint
+      restoreEnv pluginEndpointKindEnv oldKind
+      restoreEnv pluginStdioCompatibilityEnv oldStdioCompatibility
     restoreEnv key = maybe (unsetEnv key) (setEnv key)
 
 shouldReturnWithin :: (Eq a, Show a) => String -> IO a -> a -> IO ()

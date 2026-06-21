@@ -12,6 +12,7 @@ module Actor.PluginManager.ProcessLauncher
 import Control.Exception (SomeException, try)
 import qualified Data.ByteString as BS
 import Crypto.Random (getRandomBytes)
+import Data.Char (toLower)
 import Data.Text (Text)
 import Data.Word (Word8)
 import Numeric (showHex)
@@ -46,6 +47,7 @@ import Topo.Plugin.RPC.Transport
   , pluginIdEnv
   , pluginProtocolEnv
   , pluginSessionEnv
+  , pluginStdioCompatibilityEnv
   , pluginWorldIdEnv
   )
 
@@ -134,10 +136,20 @@ endpointEnvironment endpoint pluginName workingDir = do
         , (pluginWorldIdEnv, unsavedWorldId)
         , (pluginDataRootEnv, dataRoot)
         ]
-      overridden = map fst launchVars
-      preserved = filter (\(key, _) -> key `notElem` overridden) inherited
+      -- Production launches always use the endpoint variables above; do not
+      -- leak a developer shell's stdio compatibility flag into plugin processes.
+      overridden = pluginStdioCompatibilityEnv : map fst launchVars
+      preserved = filter (not . isOverriddenEnvKey overridden . fst) inherited
   createDirectoryIfMissing True dataRoot
   pure (launchVars <> preserved)
+
+isOverriddenEnvKey :: [String] -> String -> Bool
+isOverriddenEnvKey overridden key = any (envKeyEquals key) overridden
+
+envKeyEquals :: String -> String -> Bool
+envKeyEquals left right
+  | os == "mingw32" = map toLower left == map toLower right
+  | otherwise = left == right
 
 freshLaunchSecret :: String -> IO String
 freshLaunchSecret label = do

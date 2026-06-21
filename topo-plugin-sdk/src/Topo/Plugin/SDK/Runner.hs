@@ -174,7 +174,9 @@ writeManifest path manifest =
 -- It generates and writes a manifest, connects to the host-created
 -- production endpoint advertised in the TOPO_PLUGIN_* environment,
 -- then enters the length-prefixed RPC message loop. If no endpoint
--- environment is present, it falls back to stdin/stdout for tests.
+-- environment is present, stdin/stdout compatibility is available only
+-- when @TOPO_PLUGIN_STDIO_COMPAT=1@ is explicitly set for a test or
+-- development harness.
 --
 -- The message loop dispatches:
 --
@@ -196,7 +198,8 @@ runPlugin pd = do
       manifestPath = cwd </> "manifest.json"
   writeManifest manifestPath manifest
 
-  -- Connect via the host-created endpoint, or stdio in test harnesses.
+  -- Connect via the host-created endpoint; stdio requires explicit
+  -- test/development compatibility opt-in.
   transportResult <- connectPluginFromEnvironment (pdName pd) stdin stdout
   case transportResult of
     Left err -> do

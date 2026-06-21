@@ -41,6 +41,7 @@ module Topo.Plugin.RPC.Transport
   , pluginProtocolEnv
   , pluginEndpointEnv
   , pluginEndpointKindEnv
+  , pluginStdioCompatibilityEnv
   , pluginSessionEnv
   , pluginAuthTokenEnv
   , pluginWorldIdEnv
@@ -200,6 +201,11 @@ pluginEndpointEnv = "TOPO_PLUGIN_ENDPOINT"
 pluginEndpointKindEnv :: String
 pluginEndpointKindEnv = "TOPO_PLUGIN_ENDPOINT_KIND"
 
+-- | Explicit opt-in for test/development stdio compatibility when no
+-- production endpoint variables are present.
+pluginStdioCompatibilityEnv :: String
+pluginStdioCompatibilityEnv = "TOPO_PLUGIN_STDIO_COMPAT"
+
 -- | Environment variable containing the opaque host launch session id.
 pluginSessionEnv :: String
 pluginSessionEnv = "TOPO_PLUGIN_SESSION"
@@ -307,8 +313,10 @@ connectPluginEndpoint name endpoint = case teKind endpoint of
     pure (Left (TransportUnsupported "Windows named pipes are not supported on this platform"))
 #endif
 
--- | Connect using the production endpoint variables when present;
--- otherwise fall back to the supplied stdio handles for tests.
+-- | Connect using the production endpoint variables when present.
+-- If no endpoint variables are present, the supplied stdio handles are used
+-- only when 'pluginStdioCompatibilityEnv' explicitly enables
+-- test/development compatibility.
 connectPluginFromEnvironment
   :: Text
   -> Handle
@@ -317,8 +325,17 @@ connectPluginFromEnvironment
 connectPluginFromEnvironment name fallbackRead fallbackWrite = do
   mEndpoint <- lookupEnv pluginEndpointEnv
   mKind <- lookupEnv pluginEndpointKindEnv
+  mStdioCompatibility <- lookupEnv pluginStdioCompatibilityEnv
   case (mEndpoint, mKind) of
-    (Nothing, Nothing) -> connectPlugin name fallbackRead fallbackWrite
+    (Nothing, Nothing)
+      | stdioCompatibilityEnabled mStdioCompatibility ->
+          connectPlugin name fallbackRead fallbackWrite
+      | otherwise -> pure (Left (TransportConnectionFailed
+          ( Text.pack pluginEndpointEnv <> " and " <> Text.pack pluginEndpointKindEnv
+         <> " are missing; production plugins must be launched with endpoint environment variables; set "
+         <> Text.pack pluginStdioCompatibilityEnv
+         <> "=1 only for test/development stdio compatibility"
+          )))
     (Just endpoint, Just kindText) -> case parseEndpointKind (Text.pack kindText) of
       Nothing -> pure (Left (TransportConnectionFailed
         ("unknown " <> Text.pack pluginEndpointKindEnv <> ": " <> Text.pack kindText)))
@@ -331,12 +348,18 @@ connectPluginFromEnvironment name fallbackRead fallbackWrite = do
     (Nothing, Just _) -> pure (Left (TransportConnectionFailed
       (Text.pack pluginEndpointKindEnv <> " is set but " <> Text.pack pluginEndpointEnv <> " is missing")))
 
+stdioCompatibilityEnabled :: Maybe String -> Bool
+stdioCompatibilityEnabled Nothing = False
+stdioCompatibilityEnabled (Just raw) =
+  let normalized = Text.toLower (Text.strip (Text.pack raw))
+  in normalized `elem` ["1", "true", "yes", "on", "test", "dev", "development"]
+
 -- | Connect to a plugin using pre-opened handles.
 --
 -- This compatibility path is intended for in-process tests and the
 -- legacy stdio fixture harness. Production launches should use
 -- 'openPluginServer' on the host side and 'connectPluginFromEnvironment'
--- on the plugin side.
+-- with endpoint environment variables on the plugin side.
 connectPlugin :: Text -> Handle -> Handle -> IO (Either TransportError Transport)
 connectPlugin name readH writeH = do
   result <- catch

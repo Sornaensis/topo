@@ -3,10 +3,11 @@
 
 -- | Executable plugin fixtures used by SDK and host integration tests.
 --
--- The fixtures are intentionally backend-neutral and communicate only through
--- the public plugin RPC protocol over stdio.  Tests can run this module through
--- the dedicated @topo-plugin-fixture@ executable, or by re-entering the test
--- executable with @--topo-plugin-fixture NAME@.
+-- The fixtures are intentionally backend-neutral and communicate through the
+-- public plugin RPC protocol over stdio only when the test harness explicitly
+-- enables compatibility mode. Tests can run this module through the dedicated
+-- @topo-plugin-fixture@ executable, or by re-entering the test executable with
+-- @--topo-plugin-fixture NAME@.
 module Topo.Plugin.SDK.Test.Fixtures
   ( fixtureNames
   , runFixtureCli

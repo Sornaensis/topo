@@ -10,8 +10,15 @@ directly.
 
 ## Transport
 
-- **Windows:** Named pipes at `\\.\pipe\topo-plugin-<name>`
-- **Linux/macOS:** Unix domain sockets at `/tmp/topo-plugin-<name>.sock`
+Production launches use a host-created endpoint advertised through environment
+variables:
+
+- `TOPO_PLUGIN_ENDPOINT` — endpoint address created by topo-seer.
+- `TOPO_PLUGIN_ENDPOINT_KIND` — `named-pipe` on Windows, `unix` on Linux/macOS.
+
+Do not assume a fixed endpoint name; the host may include unique suffixes for
+concurrent plugin startup. Stdio is reserved for explicit test/development
+compatibility harnesses, not production launch.
 
 ## Message Framing
 

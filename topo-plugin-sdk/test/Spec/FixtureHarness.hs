@@ -8,13 +8,14 @@ import Control.Exception (SomeException, bracket, catch, try)
 import qualified Data.Aeson as Aeson
 import Data.Aeson (Value(..), (.=), object)
 import qualified Data.ByteString as BS
+import Data.Char (toLower)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import System.Directory (createDirectoryIfMissing, getTemporaryDirectory, removePathForcibly)
 import System.Directory (doesDirectoryExist, findExecutable, getCurrentDirectory, listDirectory)
-import System.Environment (getExecutablePath, lookupEnv)
+import System.Environment (getEnvironment, getExecutablePath, lookupEnv)
 import System.Exit (ExitCode(..))
 import System.FilePath ((</>))
 import System.IO (Handle, hClose)
@@ -60,6 +61,9 @@ import Topo.Plugin.RPC.Transport
   ( Transport
   , closeTransport
   , connectPlugin
+  , pluginEndpointEnv
+  , pluginEndpointKindEnv
+  , pluginStdioCompatibilityEnv
   , recvMessage
   , sendMessage
   )
@@ -67,7 +71,7 @@ import Topo.Plugin.SDK.Test.Fixtures (fixtureNames)
 
 spec :: Spec
 spec = describe "plugin fixture harness" $ do
-  it "spawns addressable stdio plugin fixtures and handshakes with normal fixtures" $
+  it "spawns addressable stdio plugin fixtures with explicit compatibility enabled" $
     mapM_ expectHandshake ["echo", "generator", "simulation", "crud", "external-provider", "external-consumer"]
 
   it "spawns the dedicated topo-plugin-fixture executable when built" $ do
@@ -212,8 +216,18 @@ dedicatedExecutableLauncher fixtureExe = FixtureLauncher
 spawnFixture :: FixtureLauncher -> String -> FilePath -> IO FixtureProcess
 spawnFixture launcher name workDir = do
   exe <- flExecutable launcher
-  let cp = (proc exe (flArgs launcher name))
+  inherited <- getEnvironment
+  let fixtureOverrides =
+        [ pluginEndpointEnv
+        , pluginEndpointKindEnv
+        , pluginStdioCompatibilityEnv
+        ]
+      fixtureEnv =
+        (pluginStdioCompatibilityEnv, "1")
+          : filter (not . isFixtureOverride fixtureOverrides . fst) inherited
+      cp = (proc exe (flArgs launcher name))
         { cwd = Just workDir
+        , env = Just fixtureEnv
         , std_in = CreatePipe
         , std_out = CreatePipe
         , std_err = Inherit
@@ -242,6 +256,14 @@ spawnFixture launcher name workDir = do
       _ <- waitForProcess processHandle
       expectationFailure "fixture stdio handles were not created"
       fail "fixture stdio handles were not created"
+
+isFixtureOverride :: [String] -> String -> Bool
+isFixtureOverride overrides key = any (envKeyEquals key) overrides
+
+envKeyEquals :: String -> String -> Bool
+envKeyEquals left right
+  | os == "mingw32" = map toLower left == map toLower right
+  | otherwise = left == right
 
 cleanupFixture :: FixtureProcess -> IO ()
 cleanupFixture fixture = do

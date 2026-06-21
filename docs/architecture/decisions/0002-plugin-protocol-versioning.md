@@ -16,8 +16,8 @@ introduced handshake exchange, world-changed notifications, and data-service
 CRUD messages. Some message payloads also carry a separate `payload_version`
 currently fixed at `1`.
 
-Today the SDK `runPlugin` path generates `manifest.json` from `PluginDef` and
-connects over stdin/stdout. Protocol v3 replaces production launch with
+Earlier SDK launch paths generated `manifest.json` from `PluginDef` and
+connected over stdin/stdout. Protocol v3 replaces production launch with
 environment-provided named-pipe/Unix-domain-socket endpoints, leaving stdio only
 as explicit test/development compatibility.
 

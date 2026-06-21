@@ -92,11 +92,11 @@ The plugin system already has many concepts needed for 1.0:
   handshakes, integrates generator/simulation definitions, and forwards data
   queries/mutations.
 
-The main 1.0 gap is consistency between the intended production transport and
-current practical launch paths. Docs and transport abstractions point toward
-Windows named pipes and Unix domain sockets, while current SDK/manager paths
-still rely on stdio-like subprocess handles in places. The production contract
-must be explicit and tested.
+The production transport contract is explicit: topo-seer creates a platform
+endpoint, passes `TOPO_PLUGIN_ENDPOINT` and `TOPO_PLUGIN_ENDPOINT_KIND` to the
+plugin process, and the SDK connects to that endpoint. Stdio compatibility is
+restricted to explicit test/development harnesses and is not part of production
+plugin launch.
 
 ## Current UI shape
 

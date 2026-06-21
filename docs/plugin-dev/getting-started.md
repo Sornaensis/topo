@@ -5,7 +5,8 @@
 ## Overview
 
 A topo plugin is a standalone Haskell executable that communicates with
-topo-seer over named pipes (Windows) or Unix domain sockets. The
+topo-seer over a host-created named pipe (Windows) or Unix domain socket
+(Linux/macOS) advertised through launch environment variables. The
 `topo-plugin-sdk` package handles all transport and protocol details —
 you only define your plugin logic.
 

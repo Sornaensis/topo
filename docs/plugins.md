@@ -131,8 +131,10 @@ run, so no manual manifest setup is required.
    first run. The manifest declares the plugin's identity, capabilities,
    pipeline position, and parameters.
 
-3. **Connection** — topo-seer launches your plugin executable and connects
-   via named pipes.
+3. **Connection** — topo-seer launches your plugin executable with
+   `TOPO_PLUGIN_ENDPOINT` and `TOPO_PLUGIN_ENDPOINT_KIND` set, then the SDK
+   connects to that host-created named pipe (Windows) or Unix domain socket
+   (Linux/macOS).
 
 4. **Invocation** — the host sends `invoke_generator` or `invoke_simulation`
    messages. Your callbacks receive a `PluginContext` with the current world
