@@ -11,8 +11,8 @@
 -- = Message flow
 --
 -- @
--- Host → Plugin:  invoke_generator, invoke_simulation, shutdown
--- Plugin → Host:  progress, log, generator_result, simulation_result, error
+-- Host → Plugin:  invoke_generator, invoke_simulation, shutdown, heartbeat, health_check
+-- Plugin → Host:  progress, log, generator_result, simulation_result, error, heartbeat, health_status
 -- @
 module Topo.Plugin.RPC.Protocol
   ( -- * Message envelope
@@ -23,6 +23,7 @@ module Topo.Plugin.RPC.Protocol
   , InvokeSimulation(..)
   , Handshake(..)
   , WorldChanged(..)
+  , Heartbeat(..)
     -- * Plugin → Host messages
   , PluginProgress(..)
   , PluginLog(..)
@@ -30,6 +31,7 @@ module Topo.Plugin.RPC.Protocol
   , SimulationResult(..)
   , PluginError(..)
   , HandshakeAck(..)
+  , HealthStatus(..)
     -- * Protocol version
   , currentProtocolVersion
     -- * Encoding / decoding
@@ -82,6 +84,9 @@ data RPCMessageType
   | MsgQueryResult
   | MsgMutateResource
   | MsgMutateResult
+  | MsgHeartbeat
+  | MsgHealthCheck
+  | MsgHealthStatus
   deriving (Eq, Ord, Show, Read, Generic)
 
 instance FromJSON RPCMessageType where
@@ -101,6 +106,9 @@ instance FromJSON RPCMessageType where
     "query_result"      -> pure MsgQueryResult
     "mutate_resource"   -> pure MsgMutateResource
     "mutate_result"     -> pure MsgMutateResult
+    "heartbeat"         -> pure MsgHeartbeat
+    "health_check"      -> pure MsgHealthCheck
+    "health_status"     -> pure MsgHealthStatus
     _                   -> fail ("unknown message type: " <> Text.unpack t)
 
 instance ToJSON RPCMessageType where
@@ -119,6 +127,9 @@ instance ToJSON RPCMessageType where
   toJSON MsgQueryResult      = "query_result"
   toJSON MsgMutateResource   = "mutate_resource"
   toJSON MsgMutateResult     = "mutate_result"
+  toJSON MsgHeartbeat        = "heartbeat"
+  toJSON MsgHealthCheck      = "health_check"
+  toJSON MsgHealthStatus     = "health_status"
 
 ------------------------------------------------------------------------
 -- Envelope
@@ -127,13 +138,19 @@ instance ToJSON RPCMessageType where
 -- | JSON envelope wrapping every RPC message.
 --
 -- @
--- { "type": "invoke_generator", "payload": { ... } }
+-- { "id": 42, "type": "invoke_generator", "payload": { ... } }
 -- @
+--
+-- The optional @id@ is a host-assigned correlation identifier. Plugins echo it
+-- on every response, progress, log, heartbeat, and health-status message that
+-- belongs to the request.
 data RPCEnvelope = RPCEnvelope
-  { envType    :: !RPCMessageType
+  { envType      :: !RPCMessageType
     -- ^ Message discriminator.
-  , envPayload :: !Value
+  , envPayload   :: !Value
     -- ^ Message-specific payload (JSON object).
+  , envRequestId :: !(Maybe Word64)
+    -- ^ Optional request/response correlation id.
   } deriving (Eq, Show, Generic)
 
 instance FromJSON RPCEnvelope where
@@ -141,12 +158,14 @@ instance FromJSON RPCEnvelope where
     RPCEnvelope
       <$> o .: "type"
       <*> o .: "payload"
+      <*> o .:? "id"
 
 instance ToJSON RPCEnvelope where
-  toJSON env = object
+  toJSON env = object $
     [ "type"    .= envType env
     , "payload" .= envPayload env
-    ]
+    ] <>
+    [ "id" .= requestId | Just requestId <- [envRequestId env] ]
 
 ------------------------------------------------------------------------
 -- Host → Plugin messages
@@ -374,10 +393,10 @@ instance ToJSON PluginError where
 
 -- | Current protocol version.
 --
--- Version 2 introduces the handshake exchange, world-changed
--- notifications, and data-service CRUD messages.
+-- Version 3 introduces envelope correlation IDs, heartbeat/health messages,
+-- and bounded frame handling in the session layer.
 currentProtocolVersion :: Int
-currentProtocolVersion = 2
+currentProtocolVersion = 3
 
 ------------------------------------------------------------------------
 -- Handshake messages
@@ -455,6 +474,41 @@ instance FromJSON WorldChanged where
 instance ToJSON WorldChanged where
   toJSON wc = object
     [ "world_path" .= wchWorldPath wc
+    ]
+
+-- | Liveness heartbeat exchanged between host and plugin.
+data Heartbeat = Heartbeat
+  { hbStatus :: !Text
+    -- ^ Short liveness status, usually @"ok"@.
+  } deriving (Eq, Show, Generic)
+
+instance FromJSON Heartbeat where
+  parseJSON = withObject "Heartbeat" $ \o ->
+    Heartbeat <$> o .: "status"
+
+instance ToJSON Heartbeat where
+  toJSON hb = object
+    [ "status" .= hbStatus hb
+    ]
+
+-- | Health response returned by a plugin when probed by the host.
+data HealthStatus = HealthStatus
+  { hstHealthy :: !Bool
+    -- ^ Whether the plugin considers itself healthy.
+  , hstMessage :: !Text
+    -- ^ Human-readable health summary.
+  } deriving (Eq, Show, Generic)
+
+instance FromJSON HealthStatus where
+  parseJSON = withObject "HealthStatus" $ \o ->
+    HealthStatus
+      <$> o .: "healthy"
+      <*> o .: "message"
+
+instance ToJSON HealthStatus where
+  toJSON hs = object
+    [ "healthy" .= hstHealthy hs
+    , "message" .= hstMessage hs
     ]
 
 ------------------------------------------------------------------------

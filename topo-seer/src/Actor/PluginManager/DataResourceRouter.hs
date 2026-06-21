@@ -9,7 +9,6 @@ module Actor.PluginManager.DataResourceRouter
 import Data.Maybe (fromMaybe)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
-import qualified Data.Text as Text
 
 import Actor.PluginManager.Types
   ( LoadedPlugin(..)
@@ -24,6 +23,7 @@ import Topo.Plugin.RPC
   , QueryResult(..)
   , mutateResource
   , queryResource
+  , rpcErrorText
   )
 
 -- | Forward a data query to the named plugin without taking ownership of
@@ -41,7 +41,7 @@ queryPluginDataResource pluginName qr st =
       Just conn -> do
         result <- queryResource conn qr
         case result of
-          Left err -> pure (Left (Text.pack (show err)))
+          Left err -> pure (Left (rpcErrorText err))
           Right qResult -> pure (Right qResult)
 
 -- | Forward a data mutation to the named plugin without taking ownership
@@ -59,7 +59,7 @@ mutatePluginDataResource pluginName mr st =
       Just conn -> do
         result <- mutateResource conn mr
         case result of
-          Left err -> pure (Left (Text.pack (show err)))
+          Left err -> pure (Left (rpcErrorText err))
           Right mResult -> pure (Right mResult)
 
 pluginUnavailableMessage :: LoadedPlugin -> Text

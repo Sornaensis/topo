@@ -281,7 +281,7 @@ restartCrashedPlugin lp = do
 
 observePluginRuntime :: LoadedPlugin -> IO LoadedPlugin
 observePluginRuntime lp
-  | plsState (lpLifecycle lp) == LifecycleDegraded = pure lp
+  | plsState (lpLifecycle lp) `elem` [LifecycleDegraded, LifecycleStopping] = pure lp
   | otherwise = case lpConnection lp of
       Nothing -> pure lp
       Just conn -> do

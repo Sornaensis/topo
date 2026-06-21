@@ -86,7 +86,7 @@ spec = describe "plugin fixture harness" $ do
   it "addresses the generator fixture through framed RPC" $
     withFixtureProcess "generator" $ \fixture -> do
       _ <- handshakeFixture fixture
-      sendEnvelope fixture (RPCEnvelope MsgInvokeGenerator (Aeson.toJSON generatorInvoke))
+      sendEnvelope fixture (RPCEnvelope MsgInvokeGenerator (Aeson.toJSON generatorInvoke) (Just 101))
       env <- recvEnvelopeOfType fixture MsgGeneratorResult
       case Aeson.fromJSON (envPayload env) of
         Aeson.Error err -> expectationFailure err
@@ -98,7 +98,7 @@ spec = describe "plugin fixture harness" $ do
   it "addresses the simulation fixture through framed RPC" $
     withFixtureProcess "simulation" $ \fixture -> do
       _ <- handshakeFixture fixture
-      sendEnvelope fixture (RPCEnvelope MsgInvokeSimulation (Aeson.toJSON simulationInvoke))
+      sendEnvelope fixture (RPCEnvelope MsgInvokeSimulation (Aeson.toJSON simulationInvoke) (Just 102))
       env <- recvEnvelopeOfType fixture MsgSimulationResult
       case Aeson.fromJSON (envPayload env) of
         Aeson.Error err -> expectationFailure err
@@ -330,15 +330,15 @@ handshakeFixture fixture = do
     Aeson.Success ack -> pure ack
 
 handshakeEnvelope :: RPCEnvelope
-handshakeEnvelope = RPCEnvelope MsgHandshake (Aeson.toJSON Handshake
+handshakeEnvelope = RPCEnvelope MsgHandshake (Aeson.toJSON (Handshake
   { hsProtocolVersion = currentProtocolVersion
   , hsWorldPath = Just "/tmp/topo-fixture-world"
   , hsHostCapabilities = ["query", "mutate"]
-  })
+  })) (Just 100)
 
 shutdownFixture :: FixtureProcess -> IO ()
 shutdownFixture fixture = do
-  sendEnvelope fixture (RPCEnvelope MsgShutdown (object []))
+  sendEnvelope fixture (RPCEnvelope MsgShutdown (object []) Nothing)
   result <- timeout 2000000 (waitForProcess (fpProcessHandle fixture))
   case result of
     Nothing -> expectationFailure (fpName fixture <> " did not exit after shutdown")
@@ -421,12 +421,12 @@ queryByField fixture resource field value = queryRecords fixture resource (Query
 
 queryRecords :: FixtureProcess -> Text -> DataQuery -> IO [DataRecord]
 queryRecords fixture resource query = do
-  sendEnvelope fixture (RPCEnvelope MsgQueryResource (Aeson.toJSON QueryResource
+  sendEnvelope fixture (RPCEnvelope MsgQueryResource (Aeson.toJSON (QueryResource
     { qrResource = resource
     , qrQuery = query
     , qrPageSize = Nothing
     , qrPageOffset = Nothing
-    }))
+    })) (Just 201))
   env <- recvEnvelopeOfType fixture MsgQueryResult
   case Aeson.fromJSON (envPayload env) of
     Aeson.Error err -> expectationFailure err >> fail "query result decode failed"
@@ -434,10 +434,10 @@ queryRecords fixture resource query = do
 
 mutate :: FixtureProcess -> Text -> DataMutation -> IO MutateResult
 mutate fixture resource mutation = do
-  sendEnvelope fixture (RPCEnvelope MsgMutateResource (Aeson.toJSON MutateResource
+  sendEnvelope fixture (RPCEnvelope MsgMutateResource (Aeson.toJSON (MutateResource
     { mrResource = resource
     , mrMutation = mutation
-    }))
+    })) (Just 202))
   env <- recvEnvelopeOfType fixture MsgMutateResult
   case Aeson.fromJSON (envPayload env) of
     Aeson.Error err -> expectationFailure err >> fail "mutate result decode failed"

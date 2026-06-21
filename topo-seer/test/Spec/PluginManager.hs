@@ -13,6 +13,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Word (Word64)
 import Hyperspace.Actor (ActorHandle, ActorSystem, Protocol, get, newActorSystem, shutdownActorSystem)
 import System.Directory
   ( Permissions(..)
@@ -475,7 +476,7 @@ runOkFixture = do
             Left _ -> loop transport
             Right envelope -> case envType envelope of
               MsgHandshake -> do
-                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope currentProtocolVersion))
+                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope (envRequestId envelope) currentProtocolVersion))
                 loop transport
               MsgShutdown -> closeTransport transport
               _ -> loop transport
@@ -494,7 +495,7 @@ runSlowShutdownFixture = do
             Left _ -> loop transport
             Right envelope -> case envType envelope of
               MsgHandshake -> do
-                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope currentProtocolVersion))
+                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope (envRequestId envelope) currentProtocolVersion))
                 loop transport
               MsgShutdown -> threadDelay 1000000 >> closeTransport transport
               _ -> loop transport
@@ -520,7 +521,7 @@ runHangQueryFixture = do
             Left _ -> loop transport
             Right envelope -> case envType envelope of
               MsgHandshake -> do
-                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope currentProtocolVersion))
+                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope (envRequestId envelope) currentProtocolVersion))
                 loop transport
               MsgQueryResource -> threadDelay 2000000 >> closeTransport transport
               MsgShutdown -> closeTransport transport
@@ -540,7 +541,7 @@ runExitOnGeneratorFixture = do
             Left _ -> loop transport
             Right envelope -> case envType envelope of
               MsgHandshake -> do
-                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope currentProtocolVersion))
+                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope (envRequestId envelope) currentProtocolVersion))
                 loop transport
               MsgInvokeGenerator -> exitFailure
               MsgShutdown -> closeTransport transport
@@ -560,7 +561,7 @@ runExitOnSimulationFixture = do
             Left _ -> loop transport
             Right envelope -> case envType envelope of
               MsgHandshake -> do
-                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope currentProtocolVersion))
+                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope (envRequestId envelope) currentProtocolVersion))
                 loop transport
               MsgInvokeSimulation -> exitFailure
               MsgShutdown -> closeTransport transport
@@ -571,9 +572,12 @@ runOneShotAckFixture protocolVersion = do
   connectPluginFromEnvironment "plugin-manager-protocol-mismatch-fixture" stdin stdout >>= \case
     Left _ -> exitFailure
     Right transport -> do
-      _ <- recvMessage transport
-      _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope protocolVersion))
-      closeTransport transport
+      recvMessage transport >>= \case
+        Left _ -> closeTransport transport
+        Right bytes -> do
+          let requestId = either (const Nothing) envRequestId (decodeMessage bytes)
+          _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope requestId protocolVersion))
+          closeTransport transport
 
 verifyLaunchEnvironment :: IO ()
 verifyLaunchEnvironment = do
@@ -630,14 +634,15 @@ runMalformedJsonFixture = do
       _ <- sendMessage transport (BSC.pack "{not valid json")
       closeTransport transport
 
-handshakeAckEnvelope :: Int -> RPCEnvelope
-handshakeAckEnvelope protocolVersion = RPCEnvelope
+handshakeAckEnvelope :: Maybe Word64 -> Int -> RPCEnvelope
+handshakeAckEnvelope requestId protocolVersion = RPCEnvelope
   { envType = MsgHandshakeAck
-  , envPayload = Aeson.toJSON HandshakeAck
+  , envPayload = Aeson.toJSON (HandshakeAck
       { haProtocolVersion = protocolVersion
       , haDataDirectory = Nothing
       , haResources = []
-      }
+      })
+  , envRequestId = requestId
   }
 
 testPluginName :: String

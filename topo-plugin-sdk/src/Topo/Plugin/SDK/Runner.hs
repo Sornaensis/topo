@@ -68,6 +68,8 @@ import Topo.Plugin.RPC.Protocol
   , Handshake(..)
   , HandshakeAck(..)
   , WorldChanged(..)
+  , Heartbeat(..)
+  , HealthStatus(..)
   , currentProtocolVersion
   , encodeMessage
   , decodeMessage
@@ -234,7 +236,7 @@ messageLoop pd transport params worldPath = do
     Right bs -> case decodeMessage bs of
       Left _decodeErr -> do
         -- Bad message — send error response and continue
-        sendErrorResponse transport 1 "Failed to decode RPC message"
+        sendErrorResponse transport Nothing 1 "Failed to decode RPC message"
         messageLoop pd transport params worldPath
       Right envelope -> case envType envelope of
 
@@ -245,7 +247,7 @@ messageLoop pd transport params worldPath = do
         MsgHandshake -> do
           case Aeson.fromJSON (envPayload envelope) of
             Aeson.Error _ -> do
-              sendErrorResponse transport 8 "Invalid handshake payload"
+              sendErrorResponse transport (envRequestId envelope) 8 "Invalid handshake payload"
               messageLoop pd transport params worldPath
             Aeson.Success (hs :: Handshake) -> do
               let newWorldPath = fmap Text.unpack (hsWorldPath hs)
@@ -257,6 +259,7 @@ messageLoop pd transport params worldPath = do
                   ackEnvelope = RPCEnvelope
                     { envType    = MsgHandshakeAck
                     , envPayload = Aeson.toJSON ack
+                    , envRequestId = envRequestId envelope
                     }
               _ <- sendMessage transport (encodeMessage ackEnvelope)
               messageLoop pd transport params newWorldPath
@@ -272,30 +275,31 @@ messageLoop pd transport params worldPath = do
         MsgQueryResource -> do
           case Aeson.fromJSON (envPayload envelope) of
             Aeson.Error err -> do
-              sendErrorResponse transport 9 ("Invalid query payload: " <> Text.pack err)
+              sendErrorResponse transport (envRequestId envelope) 9 ("Invalid query payload: " <> Text.pack err)
               messageLoop pd transport params worldPath
             Aeson.Success (qr :: QueryResource) -> do
               let resourceName = qrResource qr
               case findHandler resourceName (pdDataResources pd) of
                 Nothing -> do
-                  sendErrorResponse transport 9 ("Unknown resource: " <> resourceName)
+                  sendErrorResponse transport (envRequestId envelope) 9 ("Unknown resource: " <> resourceName)
                   messageLoop pd transport params worldPath
                 Just drd -> case dhQuery (drdHandler drd) of
                   Nothing -> do
-                    sendErrorResponse transport 9 ("Resource '" <> resourceName <> "' does not support queries")
+                    sendErrorResponse transport (envRequestId envelope) 9 ("Resource '" <> resourceName <> "' does not support queries")
                     messageLoop pd transport params worldPath
                   Just handler -> do
-                    let ctx = makeDataContext params worldPath transport
+                    let ctx = makeDataContext params worldPath transport (envRequestId envelope)
                     runResult <- catch
                       (handler ctx (qrQuery qr))
                       (\e -> pure (Left (Text.pack (show (e :: SomeException)))))
                     case runResult of
                       Left errMsg ->
-                        sendErrorResponse transport 9 errMsg
+                        sendErrorResponse transport (envRequestId envelope) 9 errMsg
                       Right result -> do
                         let resEnv = RPCEnvelope
                               { envType    = MsgQueryResult
                               , envPayload = Aeson.toJSON result
+                              , envRequestId = envRequestId envelope
                               }
                         _ <- sendMessage transport (encodeMessage resEnv)
                         pure ()
@@ -304,30 +308,31 @@ messageLoop pd transport params worldPath = do
         MsgMutateResource -> do
           case Aeson.fromJSON (envPayload envelope) of
             Aeson.Error err -> do
-              sendErrorResponse transport 10 ("Invalid mutate payload: " <> Text.pack err)
+              sendErrorResponse transport (envRequestId envelope) 10 ("Invalid mutate payload: " <> Text.pack err)
               messageLoop pd transport params worldPath
             Aeson.Success (mr :: MutateResource) -> do
               let resourceName = mrResource mr
               case findHandler resourceName (pdDataResources pd) of
                 Nothing -> do
-                  sendErrorResponse transport 10 ("Unknown resource: " <> resourceName)
+                  sendErrorResponse transport (envRequestId envelope) 10 ("Unknown resource: " <> resourceName)
                   messageLoop pd transport params worldPath
                 Just drd -> case dhMutate (drdHandler drd) of
                   Nothing -> do
-                    sendErrorResponse transport 10 ("Resource '" <> resourceName <> "' does not support mutations")
+                    sendErrorResponse transport (envRequestId envelope) 10 ("Resource '" <> resourceName <> "' does not support mutations")
                     messageLoop pd transport params worldPath
                   Just handler -> do
-                    let ctx = makeDataContext params worldPath transport
+                    let ctx = makeDataContext params worldPath transport (envRequestId envelope)
                     runResult <- catch
                       (handler ctx (mrMutation mr))
                       (\e -> pure (Left (Text.pack (show (e :: SomeException)))))
                     case runResult of
                       Left errMsg ->
-                        sendErrorResponse transport 10 errMsg
+                        sendErrorResponse transport (envRequestId envelope) 10 errMsg
                       Right result -> do
                         let resEnv = RPCEnvelope
                               { envType    = MsgMutateResult
                               , envPayload = Aeson.toJSON result
+                              , envRequestId = envRequestId envelope
                               }
                         _ <- sendMessage transport (encodeMessage resEnv)
                         pure ()
@@ -336,12 +341,12 @@ messageLoop pd transport params worldPath = do
         MsgInvokeGenerator -> do
           case pdGenerator pd of
             Nothing -> do
-              sendErrorResponse transport 2 "Plugin has no generator"
+              sendErrorResponse transport (envRequestId envelope) 2 "Plugin has no generator"
               messageLoop pd transport params worldPath
             Just gd -> do
               case Aeson.fromJSON (envPayload envelope) of
                 Aeson.Error _ -> do
-                  sendErrorResponse transport 6 "Invalid invoke_generator payload"
+                  sendErrorResponse transport (envRequestId envelope) 6 "Invalid invoke_generator payload"
                   messageLoop pd transport params worldPath
                 Aeson.Success (ig :: InvokeGenerator) -> do
                   let mergedParams = Map.union (igConfig ig) params
@@ -352,9 +357,9 @@ messageLoop pd transport params worldPath = do
                     Map.empty
                     (igSeed ig)
                     worldPath
-                    (sendLogMessage transport) of
+                    (sendLogMessage transport (envRequestId envelope)) of
                     Left err -> do
-                      sendErrorResponse transport 6 ("Invalid terrain payload: " <> err)
+                      sendErrorResponse transport (envRequestId envelope) 6 ("Invalid terrain payload: " <> err)
                       messageLoop pd transport mergedParams worldPath
                     Right ctx -> do
                       runResult <- catch
@@ -362,20 +367,20 @@ messageLoop pd transport params worldPath = do
                         (\e -> pure (Left (Text.pack (show (e :: SomeException)))))
                       case runResult of
                         Left errMsg ->
-                          sendErrorResponse transport 3 errMsg
+                          sendErrorResponse transport (envRequestId envelope) 3 errMsg
                         Right generatorResult ->
-                          sendGeneratorResult transport generatorResult
+                          sendGeneratorResult transport (envRequestId envelope) generatorResult
                       messageLoop pd transport mergedParams worldPath
 
         MsgInvokeSimulation -> do
           case pdSimulation pd of
             Nothing -> do
-              sendErrorResponse transport 4 "Plugin has no simulation"
+              sendErrorResponse transport (envRequestId envelope) 4 "Plugin has no simulation"
               messageLoop pd transport params worldPath
             Just sd -> do
               case Aeson.fromJSON (envPayload envelope) of
                 Aeson.Error _ -> do
-                  sendErrorResponse transport 7 "Invalid invoke_simulation payload"
+                  sendErrorResponse transport (envRequestId envelope) 7 "Invalid invoke_simulation payload"
                   messageLoop pd transport params worldPath
                 Aeson.Success (is' :: InvokeSimulation) -> do
                   let mergedParams = Map.union (isConfig is') params
@@ -386,9 +391,9 @@ messageLoop pd transport params worldPath = do
                     (valueObjectToMap (isOverlays is'))
                     0
                     worldPath
-                    (sendLogMessage transport) of
+                    (sendLogMessage transport (envRequestId envelope)) of
                     Left err -> do
-                      sendErrorResponse transport 7 ("Invalid terrain payload: " <> err)
+                      sendErrorResponse transport (envRequestId envelope) 7 ("Invalid terrain payload: " <> err)
                       messageLoop pd transport mergedParams worldPath
                     Right ctx -> do
                       runResult <- catch
@@ -396,10 +401,31 @@ messageLoop pd transport params worldPath = do
                         (\e -> pure (Left (Text.pack (show (e :: SomeException)))))
                       case runResult of
                         Left errMsg ->
-                          sendErrorResponse transport 5 errMsg
+                          sendErrorResponse transport (envRequestId envelope) 5 errMsg
                         Right simulationResult ->
-                          sendSimulationResult transport simulationResult
+                          sendSimulationResult transport (envRequestId envelope) simulationResult
                       messageLoop pd transport mergedParams worldPath
+
+        MsgHeartbeat -> do
+          let hbEnvelope = RPCEnvelope
+                { envType = MsgHeartbeat
+                , envPayload = Aeson.toJSON (Heartbeat { hbStatus = "ok" })
+                , envRequestId = envRequestId envelope
+                }
+          _ <- sendMessage transport (encodeMessage hbEnvelope)
+          messageLoop pd transport params worldPath
+
+        MsgHealthCheck -> do
+          let healthEnvelope = RPCEnvelope
+                { envType = MsgHealthStatus
+                , envPayload = Aeson.toJSON (HealthStatus
+                    { hstHealthy = True
+                    , hstMessage = "ok"
+                    })
+                , envRequestId = envRequestId envelope
+                }
+          _ <- sendMessage transport (encodeMessage healthEnvelope)
+          messageLoop pd transport params worldPath
 
         -- Ignore unknown message types
         _ -> messageLoop pd transport params worldPath
@@ -409,21 +435,22 @@ messageLoop pd transport params worldPath = do
 ------------------------------------------------------------------------
 
 -- | Send an error response.
-sendErrorResponse :: Transport -> Int -> Text -> IO ()
-sendErrorResponse transport code msg = do
+sendErrorResponse :: Transport -> Maybe Word64 -> Int -> Text -> IO ()
+sendErrorResponse transport requestId code msg = do
   let envelope = RPCEnvelope
         { envType = MsgError
         , envPayload = object
             [ "code"    .= code
             , "message" .= msg
             ]
+        , envRequestId = requestId
         }
   _ <- sendMessage transport (encodeMessage envelope)
   pure ()
 
 -- | Send a generator result payload.
-sendGeneratorResult :: Transport -> GeneratorTickResult -> IO ()
-sendGeneratorResult transport result = do
+sendGeneratorResult :: Transport -> Maybe Word64 -> GeneratorTickResult -> IO ()
+sendGeneratorResult transport requestId result = do
   let envelope = RPCEnvelope
         { envType = MsgGeneratorResult
         , envPayload = Aeson.toJSON GeneratorResult
@@ -431,19 +458,21 @@ sendGeneratorResult transport result = do
             , grOverlay  = gtrOverlay result
             , grMetadata = gtrMetadata result
             }
+        , envRequestId = requestId
         }
   _ <- sendMessage transport (encodeMessage envelope)
   pure ()
 
 -- | Send a simulation result payload.
-sendSimulationResult :: Transport -> SimulationTickResult -> IO ()
-sendSimulationResult transport result = do
+sendSimulationResult :: Transport -> Maybe Word64 -> SimulationTickResult -> IO ()
+sendSimulationResult transport requestId result = do
   let envelope = RPCEnvelope
         { envType = MsgSimulationResult
         , envPayload = Aeson.toJSON SimulationResult
             { srOverlay       = strOverlay result
             , srTerrainWrites = strTerrainWrites result
             }
+        , envRequestId = requestId
         }
   _ <- sendMessage transport (encodeMessage envelope)
   pure ()
@@ -479,27 +508,29 @@ makeTerrainContext params terrainPayload ownOverlay overlays seed worldPath logF
     }
 
 -- | Send a log message to the host.
-sendLogMessage :: Transport -> Text -> IO ()
-sendLogMessage transport msg = do
+sendLogMessage :: Transport -> Maybe Word64 -> Text -> IO ()
+sendLogMessage transport requestId msg = do
   let envelope = RPCEnvelope
         { envType = MsgLog
         , envPayload = object
             [ "level"   .= ("info" :: Text)
             , "message" .= msg
             ]
+        , envRequestId = requestId
         }
   _ <- sendMessage transport (encodeMessage envelope)
   pure ()
 
 -- | Send progress to the host.
-sendProgress :: Transport -> Text -> Double -> IO ()
-sendProgress transport msg fraction = do
+sendProgress :: Transport -> Maybe Word64 -> Text -> Double -> IO ()
+sendProgress transport requestId msg fraction = do
   let envelope = RPCEnvelope
         { envType = MsgProgress
         , envPayload = object
             [ "message"  .= msg
             , "fraction" .= fraction
             ]
+        , envRequestId = requestId
         }
   _ <- sendMessage transport (encodeMessage envelope)
   pure ()
@@ -520,15 +551,15 @@ findHandler name = foldr go Nothing
 --
 -- Data service handlers don't receive a terrain payload, so the
 -- context uses a stub world and empty terrain.
-makeDataContext :: Map Text Value -> Maybe FilePath -> Transport -> PluginContext
-makeDataContext params worldPath transport = PluginContext
+makeDataContext :: Map Text Value -> Maybe FilePath -> Transport -> Maybe Word64 -> PluginContext
+makeDataContext params worldPath transport requestId = PluginContext
   { pcWorld      = stubWorld
   , pcParams     = params
   , pcTerrain    = Object mempty
   , pcOwnOverlay = Nothing
   , pcOverlays   = Map.empty
   , pcSeed       = 0
-  , pcLog        = sendLogMessage transport
+  , pcLog        = sendLogMessage transport requestId
   , pcWorldPath  = worldPath
   }
 

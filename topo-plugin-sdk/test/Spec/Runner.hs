@@ -31,6 +31,7 @@ import Topo.Plugin.RPC (terrainWorldToPayload)
 import Topo.Plugin.RPC.Protocol
   ( GeneratorResult(..)
   , Handshake(..), HandshakeAck(..)
+  , Heartbeat(..), HealthStatus(..)
   , InvokeGenerator(..)
   , InvokeSimulation(..)
   , PluginError(..)
@@ -139,12 +140,14 @@ spec = describe "SDK runner pipe integration" $ do
             , envPayload = Aeson.toJSON Handshake
                 { hsProtocolVersion = 1
                 , hsWorldPath = Just "/world/save"
-            , hsHostCapabilities = []
+                , hsHostCapabilities = []
                 }
+            , envRequestId = Just 41
             }
       sendEnvelope host hs
       env <- recvEnvelope host
       envType env `shouldBe` MsgHandshakeAck
+      envRequestId env `shouldBe` Just 41
       case Aeson.fromJSON (envPayload env) of
         Aeson.Error err -> expectationFailure err
         Aeson.Success (ack :: HandshakeAck) -> do
@@ -152,6 +155,35 @@ spec = describe "SDK runner pipe integration" $ do
           case haResources ack of
             [resource] -> drsName resource `shouldBe` "items"
             _ -> expectationFailure "expected exactly one data resource in handshake ack"
+      shutdownAndWait host done
+
+  it "echoes request ids on heartbeat and health responses" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession dataPlugin plugin
+      sendEnvelope host (RPCEnvelope
+        { envType = MsgHeartbeat
+        , envPayload = Aeson.toJSON (Heartbeat { hbStatus = "ping" })
+        , envRequestId = Just 501
+        })
+      heartbeat <- recvEnvelope host
+      envType heartbeat `shouldBe` MsgHeartbeat
+      envRequestId heartbeat `shouldBe` Just 501
+      case Aeson.fromJSON (envPayload heartbeat) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success (hb :: Heartbeat) -> hbStatus hb `shouldBe` "ok"
+      sendEnvelope host (RPCEnvelope
+        { envType = MsgHealthCheck
+        , envPayload = object []
+        , envRequestId = Just 502
+        })
+      health <- recvEnvelope host
+      envType health `shouldBe` MsgHealthStatus
+      envRequestId health `shouldBe` Just 502
+      case Aeson.fromJSON (envPayload health) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success (status :: HealthStatus) -> do
+          hstHealthy status `shouldBe` True
+          hstMessage status `shouldBe` "ok"
       shutdownAndWait host done
 
   it "dispatches query_resource to the correct data handler" $
@@ -165,6 +197,7 @@ spec = describe "SDK runner pipe integration" $ do
                 , qrPageSize = Nothing
                 , qrPageOffset = Nothing
                 }
+            , envRequestId = Just 42
             }
       sendEnvelope host qr
       env <- recvEnvelope host
@@ -188,6 +221,7 @@ spec = describe "SDK runner pipe integration" $ do
                 , qrPageSize = Nothing
                 , qrPageOffset = Nothing
                 }
+            , envRequestId = Just 43
             }
       sendEnvelope host qr
       env <- recvEnvelope host
@@ -208,6 +242,7 @@ spec = describe "SDK runner pipe integration" $ do
                 { mrResource = "items"
                 , mrMutation = MutCreate newRecord
                 }
+            , envRequestId = Just 44
             }
       sendEnvelope host mr
       env <- recvEnvelope host
@@ -228,6 +263,7 @@ spec = describe "SDK runner pipe integration" $ do
                 { mrResource = "readonly"
                 , mrMutation = MutCreate (DataRecord Map.empty)
                 }
+            , envRequestId = Just 45
             }
       sendEnvelope host mr
       env <- recvEnvelope host
@@ -249,6 +285,7 @@ spec = describe "SDK runner pipe integration" $ do
                 , qrPageSize = Nothing
                 , qrPageOffset = Nothing
                 }
+            , envRequestId = Just 46
             }
       sendEnvelope host qr
       env <- recvEnvelope host
@@ -336,6 +373,7 @@ generatorInvokeWithTerrain seed terrainPayload = RPCEnvelope
       , igConfig = Map.empty
       , igTerrain = terrainPayload
       }
+  , envRequestId = Just seed
   }
 
 simulationInvoke :: RPCEnvelope
@@ -355,6 +393,7 @@ simulationInvokeWithTerrain terrainPayload = RPCEnvelope
       , isOverlays = object ["weather" .= object ["storage" .= ("sparse" :: Text), "chunks" .= ([] :: [Aeson.Value])]]
       , isOwnOverlay = object ["storage" .= ("sparse" :: Text), "chunks" .= ([] :: [Aeson.Value])]
       }
+  , envRequestId = Just 100
   }
 
 minimalTerrainPayload :: Value
@@ -406,7 +445,7 @@ hydratedWorldMetadata = object
 
 shutdownAndWait :: Transport -> MVar () -> IO ()
 shutdownAndWait host done = do
-  sendEnvelope host (RPCEnvelope MsgShutdown (object []))
+  sendEnvelope host (RPCEnvelope MsgShutdown (object []) Nothing)
   waitResult <- timeout 2000000 (takeMVar done)
   case waitResult of
     Nothing -> expectationFailure "plugin session did not shut down in time"

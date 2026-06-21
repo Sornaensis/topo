@@ -52,8 +52,11 @@ module Topo.Plugin.RPC.Transport
   , connectPlugin
   , closeTransport
     -- * Message I/O
+  , defaultMaxFrameSizeBytes
   , sendMessage
+  , sendMessageWithLimit
   , recvMessage
+  , recvMessageWithLimit
     -- * Errors
   , TransportError(..)
     -- * Pipe name generation
@@ -780,12 +783,25 @@ removeDirectoryIfExists path =
 -- Message I/O
 ------------------------------------------------------------------------
 
+-- | Default maximum payload size for a framed message (64 MiB).
+--
+-- The frame header is always 4 bytes; this limit applies to the JSON payload.
+defaultMaxFrameSizeBytes :: Int
+defaultMaxFrameSizeBytes = 64 * 1024 * 1024
+
 -- | Send a length-prefixed message over the transport.
 --
 -- Encodes the payload length as a 4-byte little-endian 'Word32',
 -- followed by the raw payload bytes.
 sendMessage :: Transport -> BS.ByteString -> IO (Either TransportError ())
-sendMessage t payload = catch go handler
+sendMessage = sendMessageWithLimit defaultMaxFrameSizeBytes
+
+-- | Send a length-prefixed message with an explicit payload size limit.
+sendMessageWithLimit :: Int -> Transport -> BS.ByteString -> IO (Either TransportError ())
+sendMessageWithLimit maxFrameBytes t payload
+  | maxFrameBytes <= 0 = pure (Left (TransportFramingError "max frame size must be positive"))
+  | BS.length payload > maxFrameBytes = pure (Left (frameTooLargeError (BS.length payload) maxFrameBytes))
+  | otherwise = catch go handler
   where
     go = do
       let len = fromIntegral (BS.length payload) :: Word32
@@ -802,7 +818,13 @@ sendMessage t payload = catch go handler
 -- Reads a 4-byte little-endian length, then reads that many bytes
 -- of payload.  Returns 'TransportRecvFailed' on EOF or short read.
 recvMessage :: Transport -> IO (Either TransportError BS.ByteString)
-recvMessage t = catch go handler
+recvMessage = recvMessageWithLimit defaultMaxFrameSizeBytes
+
+-- | Receive a length-prefixed message with an explicit payload size limit.
+recvMessageWithLimit :: Int -> Transport -> IO (Either TransportError BS.ByteString)
+recvMessageWithLimit maxFrameBytes t
+  | maxFrameBytes <= 0 = pure (Left (TransportFramingError "max frame size must be positive"))
+  | otherwise = catch go handler
   where
     go = do
       headerBs <- BS.hGet (tReadHandle t) 4
@@ -813,13 +835,21 @@ recvMessage t = catch go handler
             pure (Left (TransportFramingError (Text.pack err)))
           Right (_, _, len) -> do
             let payloadLen = fromIntegral len :: Int
-            payload <- BS.hGet (tReadHandle t) payloadLen
-            if BS.length payload < payloadLen
-              then pure (Left (TransportRecvFailed
-                    ("short read: expected " <> Text.pack (show payloadLen)
-                     <> " bytes, got " <> Text.pack (show (BS.length payload)))))
+            if payloadLen > maxFrameBytes
+              then pure (Left (frameTooLargeError payloadLen maxFrameBytes))
               else do
-                _ <- evaluate payload
-                pure (Right payload)
+                payload <- BS.hGet (tReadHandle t) payloadLen
+                if BS.length payload < payloadLen
+                  then pure (Left (TransportRecvFailed
+                        ("short read: expected " <> Text.pack (show payloadLen)
+                         <> " bytes, got " <> Text.pack (show (BS.length payload)))))
+                  else do
+                    _ <- evaluate payload
+                    pure (Right payload)
     handler :: IOException -> IO (Either TransportError BS.ByteString)
     handler e = pure (Left (TransportRecvFailed (Text.pack (show e))))
+
+frameTooLargeError :: Int -> Int -> TransportError
+frameTooLargeError actual maxFrameBytes = TransportFramingError
+  ("frame exceeds max size: " <> Text.pack (show actual)
+   <> " bytes > " <> Text.pack (show maxFrameBytes) <> " bytes")

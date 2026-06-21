@@ -27,6 +27,7 @@ import System.IO (stdin, stdout)
 import System.IO.Temp (withSystemTempFile)
 import System.Timeout (timeout)
 
+import Topo.Plugin.RPC (RPCError(..), checkHealth, newRPCConnection, rpcErrorText, sendHeartbeat)
 import Topo.Plugin.RPC.Manifest
 import Topo.Plugin.RPC.Protocol
 import Topo.Plugin.RPC.Transport
@@ -46,7 +47,9 @@ import Topo.Plugin.RPC.Transport
   , pluginPipeName
   , pluginStdioCompatibilityEnv
   , recvMessage
+  , recvMessageWithLimit
   , sendMessage
+  , sendMessageWithLimit
   )
 import Topo.Plugin.DataResource
 
@@ -75,10 +78,13 @@ instance Arbitrary RPCMessageType where
     , MsgQueryResult
     , MsgMutateResource
     , MsgMutateResult
+    , MsgHeartbeat
+    , MsgHealthCheck
+    , MsgHealthStatus
     ]
 
 instance Arbitrary RPCEnvelope where
-  arbitrary = RPCEnvelope <$> arbitrary <*> pure (object [])
+  arbitrary = RPCEnvelope <$> arbitrary <*> pure (object []) <*> arbitrary
 
 instance Arbitrary PluginLogLevel where
   arbitrary = elements
@@ -215,6 +221,12 @@ instance Arbitrary HandshakeAck where
 
 instance Arbitrary WorldChanged where
   arbitrary = WorldChanged <$> arbitrary
+
+instance Arbitrary Heartbeat where
+  arbitrary = Heartbeat <$> arbitrary
+
+instance Arbitrary HealthStatus where
+  arbitrary = HealthStatus <$> arbitrary <*> arbitrary
 
 instance Arbitrary RPCManifest where
   arbitrary = do
@@ -519,6 +531,12 @@ spec = describe "Plugin.RPC" $ do
     prop "WorldChanged round-trips" $ \(wc :: WorldChanged) ->
       Aeson.fromJSON (Aeson.toJSON wc) === Aeson.Success wc
 
+    prop "Heartbeat round-trips" $ \(hb :: Heartbeat) ->
+      Aeson.fromJSON (Aeson.toJSON hb) === Aeson.Success hb
+
+    prop "HealthStatus round-trips" $ \(health :: HealthStatus) ->
+      Aeson.fromJSON (Aeson.toJSON health) === Aeson.Success health
+
     it "Handshake with no world path round-trips" $ do
       let hs = Handshake currentProtocolVersion Nothing ["query"]
       Aeson.fromJSON (Aeson.toJSON hs) `shouldBe` Aeson.Success hs
@@ -554,6 +572,11 @@ spec = describe "Plugin.RPC" $ do
       it "encodes MsgShutdown as expected string" $
         Aeson.toJSON MsgShutdown `shouldBe` Aeson.String "shutdown"
 
+      it "encodes heartbeat and health message tags" $ do
+        Aeson.toJSON MsgHeartbeat `shouldBe` Aeson.String "heartbeat"
+        Aeson.toJSON MsgHealthCheck `shouldBe` Aeson.String "health_check"
+        Aeson.toJSON MsgHealthStatus `shouldBe` Aeson.String "health_status"
+
     describe "PluginLogLevel JSON codec" $ do
       prop "round-trips through JSON" $ \(ll :: PluginLogLevel) ->
         Aeson.fromJSON (Aeson.toJSON ll) === Aeson.Success ll
@@ -572,12 +595,70 @@ spec = describe "Plugin.RPC" $ do
       decodeMessage (encodeMessage env) === Right env
 
     it "decodes a hand-crafted envelope" $ do
-      let env = RPCEnvelope MsgProgress (Aeson.toJSON (PluginProgress "working" 0.5))
+      let env = RPCEnvelope MsgProgress (Aeson.toJSON (PluginProgress "working" 0.5)) (Just 99)
           bs  = encodeMessage env
       decodeMessage bs `shouldBe` Right env
 
+    it "preserves request ids and accepts legacy envelopes without ids" $ do
+      let correlated = RPCEnvelope MsgHealthCheck (object []) (Just 1234)
+          legacyBytes = "{\"type\":\"health_check\",\"payload\":{}}"
+      decodeMessage (encodeMessage correlated) `shouldBe` Right correlated
+      decodeMessage legacyBytes `shouldBe` Right (RPCEnvelope MsgHealthCheck (object []) Nothing)
+
     it "rejects invalid bytes" $
       decodeMessage "not json" `shouldSatisfy` isLeft
+
+  ------------------------------------
+  -- RPC session correlation and timeouts
+  ------------------------------------
+  describe "RPC session" $ do
+    it "correlates concurrent in-flight health checks by request id" $
+      withConnectedTransports "rpc-concurrent-health" $ \host plugin -> do
+        let conn = newRPCConnection baseManifest host Map.empty
+        firstDone <- newEmptyMVar
+        _ <- forkIO (checkHealth conn >>= putMVar firstDone)
+        firstReq <- recvEnvelopeFrom plugin
+        envType firstReq `shouldBe` MsgHealthCheck
+        secondDone <- newEmptyMVar
+        _ <- forkIO (checkHealth conn >>= putMVar secondDone)
+        secondReq <- recvEnvelopeFrom plugin
+        envType secondReq `shouldBe` MsgHealthCheck
+        envRequestId firstReq `shouldNotBe` envRequestId secondReq
+        sendEnvelopeTo plugin (healthResponse secondReq "second")
+        secondResult <- takeHealthResult secondDone
+        hstMessage secondResult `shouldBe` "second"
+        sendEnvelopeTo plugin (healthResponse firstReq "first")
+        firstResult <- takeHealthResult firstDone
+        hstMessage firstResult `shouldBe` "first"
+
+    it "returns clear per-request timeout errors" $
+      withConnectedTransports "rpc-timeout-health" $ \host _plugin -> do
+        let manifest = baseManifest
+              { rmStartPolicy = defaultRPCStartPolicy { rspRequestTimeoutMs = 50 }
+              }
+            conn = newRPCConnection manifest host Map.empty
+        result <- timeout 500000 (checkHealth conn)
+        case result of
+          Nothing -> expectationFailure "health check hung past timeout"
+          Just (Left err@(RPCTimeout msg)) -> do
+            msg `shouldSatisfy` Text.isInfixOf "health check"
+            rpcErrorText err `shouldSatisfy` Text.isInfixOf "timeout"
+          Just other -> expectationFailure ("expected timeout, got " <> show other)
+
+    it "round-trips heartbeat responses with correlation ids" $
+      withConnectedTransports "rpc-heartbeat" $ \host plugin -> do
+        let conn = newRPCConnection baseManifest host Map.empty
+        done <- newEmptyMVar
+        _ <- forkIO (sendHeartbeat conn >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgHeartbeat
+        sendEnvelopeTo plugin (RPCEnvelope
+          { envType = MsgHeartbeat
+          , envPayload = Aeson.toJSON (Heartbeat "ok")
+          , envRequestId = envRequestId request
+          })
+        heartbeat <- takeHeartbeatResult done
+        hbStatus heartbeat `shouldBe` "ok"
 
   ------------------------------------
   -- Protocol message round-trips
@@ -691,6 +772,21 @@ spec = describe "Plugin.RPC" $ do
           pn2 = pluginPipeName defaultTransportConfig "beta"
       pn1 `shouldNotBe` pn2
 
+    it "rejects oversized outgoing frames with a clear framing error" $
+      withConnectedTransports "frame-send-limit" $ \host _plugin -> do
+        result <- sendMessageWithLimit 4 host "12345"
+        case result of
+          Left (TransportFramingError msg) -> msg `shouldSatisfy` Text.isInfixOf "max size"
+          other -> expectationFailure ("expected frame size error, got " <> show other)
+
+    it "rejects oversized incoming frames before reading the payload" $
+      withConnectedTransports "frame-recv-limit" $ \host plugin -> do
+        shouldReturnWithin "plugin send oversized payload" (sendMessage plugin "12345") (Right ())
+        result <- recvMessageWithLimit 4 host
+        case result of
+          Left (TransportFramingError msg) -> msg `shouldSatisfy` Text.isInfixOf "max size"
+          other -> expectationFailure ("expected frame size error, got " <> show other)
+
     it "rejects implicit stdio fallback without the test/development flag" $
       withCleanPluginTransportEnvironment $ do
         connection <- connectPluginFromEnvironment "stdio-disabled" stdin stdout
@@ -801,6 +897,70 @@ onWindows action =
   if os == "mingw32"
     then action
     else pendingWith "Windows named-pipe transport is not available on this host"
+
+withConnectedTransports :: Text -> (Transport -> Transport -> IO a) -> IO a
+withConnectedTransports name action =
+  withTransportServer name $ \server ->
+    bracket (acquire server) cleanup (uncurry action)
+  where
+    acquire server = do
+      pluginResultVar <- newEmptyMVar
+      _ <- forkIO $ connectPluginEndpoint (name <> "-plugin") (tsEndpoint server) >>= putMVar pluginResultVar
+      host <- requireAccept server
+      pluginResult <- takeMVar pluginResultVar
+      case pluginResult of
+        Left err -> do
+          closeTransport host
+          expectationFailure ("client connect failed: " <> show err)
+          fail "client connect"
+        Right plugin -> pure (host, plugin)
+
+    cleanup (host, plugin) = do
+      closeTransport host
+      closeTransport plugin
+
+recvEnvelopeFrom :: Transport -> IO RPCEnvelope
+recvEnvelopeFrom transport = do
+  result <- timeout transportTestTimeoutMicros (recvMessage transport)
+  case result of
+    Nothing -> expectationFailure "timed out waiting for RPC envelope" >> fail "recv timeout"
+    Just (Left err) -> expectationFailure ("recv failed: " <> show err) >> fail "recv failed"
+    Just (Right bytes) -> case decodeMessage bytes of
+      Left err -> expectationFailure ("decode failed: " <> Text.unpack err) >> fail "decode failed"
+      Right envelope -> pure envelope
+
+sendEnvelopeTo :: Transport -> RPCEnvelope -> IO ()
+sendEnvelopeTo transport envelope = do
+  result <- sendMessage transport (encodeMessage envelope)
+  case result of
+    Left err -> expectationFailure ("send failed: " <> show err)
+    Right () -> pure ()
+
+healthResponse :: RPCEnvelope -> Text -> RPCEnvelope
+healthResponse request message = RPCEnvelope
+  { envType = MsgHealthStatus
+  , envPayload = Aeson.toJSON (HealthStatus
+      { hstHealthy = True
+      , hstMessage = message
+      })
+  , envRequestId = envRequestId request
+  }
+
+takeHealthResult :: MVar (Either RPCError HealthStatus) -> IO HealthStatus
+takeHealthResult done = do
+  result <- timeout transportTestTimeoutMicros (takeMVar done)
+  case result of
+    Nothing -> expectationFailure "timed out waiting for health result" >> fail "health result timeout"
+    Just (Left err) -> expectationFailure ("health check failed: " <> show err) >> fail "health failed"
+    Just (Right health) -> pure health
+
+takeHeartbeatResult :: MVar (Either RPCError Heartbeat) -> IO Heartbeat
+takeHeartbeatResult done = do
+  result <- timeout transportTestTimeoutMicros (takeMVar done)
+  case result of
+    Nothing -> expectationFailure "timed out waiting for heartbeat result" >> fail "heartbeat timeout"
+    Just (Left err) -> expectationFailure ("heartbeat failed: " <> show err) >> fail "heartbeat failed"
+    Just (Right heartbeat) -> pure heartbeat
 
 withTransportServer :: Text -> (TransportServer -> IO a) -> IO a
 withTransportServer pluginName = bracket acquire tsClose
