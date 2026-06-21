@@ -172,6 +172,7 @@ library:
     - base64-bytestring
     - bytestring
     - containers
+    - crypton
     - directory
     - filepath
     - stm

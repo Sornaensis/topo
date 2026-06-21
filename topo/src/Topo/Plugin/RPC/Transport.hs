@@ -37,8 +37,14 @@ module Topo.Plugin.RPC.Transport
   , TransportServer(..)
   , endpointKindText
   , parseEndpointKind
+  , pluginIdEnv
+  , pluginProtocolEnv
   , pluginEndpointEnv
   , pluginEndpointKindEnv
+  , pluginSessionEnv
+  , pluginAuthTokenEnv
+  , pluginWorldIdEnv
+  , pluginDataRootEnv
   , openPluginServer
   , connectPluginEndpoint
   , connectPluginFromEnvironment
@@ -178,6 +184,14 @@ data TransportServer = TransportServer
   , tsClose    :: IO ()
   }
 
+-- | Environment variable containing the plugin identifier assigned by the host.
+pluginIdEnv :: String
+pluginIdEnv = "TOPO_PLUGIN_ID"
+
+-- | Environment variable containing the RPC protocol version expected by the host.
+pluginProtocolEnv :: String
+pluginProtocolEnv = "TOPO_PLUGIN_PROTOCOL"
+
 -- | Environment variable containing the host-created endpoint address.
 pluginEndpointEnv :: String
 pluginEndpointEnv = "TOPO_PLUGIN_ENDPOINT"
@@ -185,6 +199,22 @@ pluginEndpointEnv = "TOPO_PLUGIN_ENDPOINT"
 -- | Environment variable containing the host-created endpoint kind.
 pluginEndpointKindEnv :: String
 pluginEndpointKindEnv = "TOPO_PLUGIN_ENDPOINT_KIND"
+
+-- | Environment variable containing the opaque host launch session id.
+pluginSessionEnv :: String
+pluginSessionEnv = "TOPO_PLUGIN_SESSION"
+
+-- | Environment variable containing the opaque host launch auth token.
+pluginAuthTokenEnv :: String
+pluginAuthTokenEnv = "TOPO_PLUGIN_AUTH_TOKEN"
+
+-- | Environment variable containing the active world id, or a host sentinel.
+pluginWorldIdEnv :: String
+pluginWorldIdEnv = "TOPO_PLUGIN_WORLD_ID"
+
+-- | Environment variable containing the plugin's writable data root.
+pluginDataRootEnv :: String
+pluginDataRootEnv = "TOPO_PLUGIN_DATA_ROOT"
 
 endpointKindText :: TransportEndpointKind -> Text
 endpointKindText TransportEndpointUnixSocket = "unix"

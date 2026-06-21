@@ -10,9 +10,13 @@ module Actor.PluginManager.ProcessLauncher
   ) where
 
 import Control.Exception (SomeException, try)
+import qualified Data.ByteString as BS
+import Crypto.Random (getRandomBytes)
 import Data.Text (Text)
+import Data.Word (Word8)
+import Numeric (showHex)
 import qualified Data.Text as Text
-import System.Directory (doesFileExist)
+import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.Environment (getEnvironment)
 import System.FilePath ((</>), (<.>))
 import System.IO (Handle, hClose)
@@ -26,6 +30,7 @@ import System.Process
   , terminateProcess
   )
 
+import Topo.Plugin.RPC.Protocol (currentProtocolVersion)
 import Topo.Plugin.RPC.Transport
   ( Transport
   , TransportConfig(..)
@@ -34,8 +39,14 @@ import Topo.Plugin.RPC.Transport
   , defaultTransportConfig
   , endpointKindText
   , openPluginServer
+  , pluginAuthTokenEnv
+  , pluginDataRootEnv
   , pluginEndpointEnv
   , pluginEndpointKindEnv
+  , pluginIdEnv
+  , pluginProtocolEnv
+  , pluginSessionEnv
+  , pluginWorldIdEnv
   )
 
 resolvePluginExecutable :: FilePath -> Text -> IO (Maybe FilePath)
@@ -85,7 +96,7 @@ launchPluginTransportViaEndpoint executablePath workingDir pluginName = do
     Left err -> pure (Left (Text.pack (show err)))
     Right server -> do
       processResult <- try @SomeException $ do
-        environment <- endpointEnvironment (tsEndpoint server)
+        environment <- endpointEnvironment (tsEndpoint server) pluginName workingDir
         createProcess
           (proc executablePath [])
             { cwd = Just workingDir
@@ -107,16 +118,42 @@ launchPluginTransportViaEndpoint executablePath workingDir pluginName = do
               pure (Left (Text.pack (show transportErr)))
             Right transport -> pure (Right (transport, processHandle))
 
-endpointEnvironment :: TransportEndpoint -> IO [(String, String)]
-endpointEnvironment endpoint = do
+endpointEnvironment :: TransportEndpoint -> Text -> FilePath -> IO [(String, String)]
+endpointEnvironment endpoint pluginName workingDir = do
   inherited <- getEnvironment
-  let endpointVars =
-        [ (pluginEndpointEnv, teAddress endpoint)
+  launchSession <- freshLaunchSecret "session"
+  authToken <- freshLaunchSecret "auth"
+  let dataRoot = workingDir </> "data"
+      launchVars =
+        [ (pluginIdEnv, Text.unpack pluginName)
+        , (pluginProtocolEnv, show currentProtocolVersion)
+        , (pluginEndpointEnv, teAddress endpoint)
         , (pluginEndpointKindEnv, Text.unpack (endpointKindText (teKind endpoint)))
+        , (pluginSessionEnv, launchSession)
+        , (pluginAuthTokenEnv, authToken)
+        , (pluginWorldIdEnv, unsavedWorldId)
+        , (pluginDataRootEnv, dataRoot)
         ]
-      overridden = map fst endpointVars
+      overridden = map fst launchVars
       preserved = filter (\(key, _) -> key `notElem` overridden) inherited
-  pure (endpointVars <> preserved)
+  createDirectoryIfMissing True dataRoot
+  pure (launchVars <> preserved)
+
+freshLaunchSecret :: String -> IO String
+freshLaunchSecret label = do
+  bytes <- getRandomBytes 32 :: IO BS.ByteString
+  pure (label <> "-" <> bytesToHex bytes)
+
+bytesToHex :: BS.ByteString -> String
+bytesToHex = concatMap byteToHex . BS.unpack
+
+byteToHex :: Word8 -> String
+byteToHex byte = case showHex byte "" of
+  [digit] -> ['0', digit]
+  digits  -> digits
+
+unsavedWorldId :: String
+unsavedWorldId = "unsaved"
 
 safeCloseHandle :: Handle -> IO ()
 safeCloseHandle handle = do

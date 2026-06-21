@@ -7,6 +7,7 @@ module Spec.PluginManager (spec, runFixtureCli) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
 import Control.Exception (bracket)
+import Control.Monad (unless)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
@@ -16,12 +17,13 @@ import Hyperspace.Actor (ActorHandle, ActorSystem, Protocol, get, newActorSystem
 import System.Directory
   ( Permissions(..)
   , createDirectoryIfMissing
+  , doesDirectoryExist
   , getHomeDirectory
   , getPermissions
   , removePathForcibly
   , setPermissions
   )
-import System.Environment (getArgs, getExecutablePath)
+import System.Environment (getArgs, getExecutablePath, lookupEnv)
 import System.Exit (die, exitFailure)
 import System.FilePath ((</>))
 import System.Info (os)
@@ -54,6 +56,14 @@ import Topo.Plugin.RPC.Protocol
 import Topo.Plugin.RPC.Transport
   ( closeTransport
   , connectPluginFromEnvironment
+  , pluginAuthTokenEnv
+  , pluginDataRootEnv
+  , pluginEndpointEnv
+  , pluginEndpointKindEnv
+  , pluginIdEnv
+  , pluginProtocolEnv
+  , pluginSessionEnv
+  , pluginWorldIdEnv
   , recvMessage
   , sendMessage
   )
@@ -88,6 +98,18 @@ spec = describe "PluginManager" $ do
         loadedAfterShutdown <- getLoadedPlugins pluginManagerHandle
         pluginStatuses testLaunchPluginName loadedAfterShutdown `shouldSatisfy` elem PluginDisconnected
         pluginLifecycleStates testLaunchPluginName loadedAfterShutdown `shouldSatisfy` elem LifecycleStopped
+
+  it "launches plugins with the complete TOPO_PLUGIN environment over endpoint transport" $ do
+    withExecutablePluginDir envContractPluginName envContractManifestJSON "env-contract" $ do
+      bracket newActorSystem shutdownActorSystem $ \system -> do
+        pluginManagerHandle <- getPluginManager system
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses envContractPluginName loaded `shouldSatisfy` elem PluginConnected
+        pluginLifecycleStates envContractPluginName loaded `shouldSatisfy` elem LifecycleReady
+        pluginLifecycleProtocols envContractPluginName loaded `shouldSatisfy` elem (Just currentProtocolVersion)
+        shutdownPlugins pluginManagerHandle
 
   it "exposes Starting while public refreshManifests performs supervisor work" $ do
     withExecutablePluginDir refreshTransientPluginName refreshTransientManifestJSON "slow" $ do
@@ -245,17 +267,23 @@ runFixtureCli = do
   args <- getArgs
   case args of
     ["--plugin-manager-fixture", mode] -> runFixtureMode mode
-    _ -> die "usage: topo-seer-test --plugin-manager-fixture <ok|protocol-mismatch|malformed-json|early-exit|slow|slow-shutdown>"
+    _ -> die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|malformed-json|early-exit|slow|slow-shutdown>"
 
 runFixtureMode :: String -> IO ()
 runFixtureMode = \case
   "ok" -> runOkFixture
+  "env-contract" -> runEnvContractFixture
   "protocol-mismatch" -> runOneShotAckFixture (currentProtocolVersion + 1)
   "malformed-json" -> runMalformedJsonFixture
   "early-exit" -> exitFailure
   "slow" -> threadDelay 2000000 >> runOkFixture
   "slow-shutdown" -> runSlowShutdownFixture
   unknown -> die ("unknown plugin-manager fixture: " <> unknown)
+
+runEnvContractFixture :: IO ()
+runEnvContractFixture = do
+  verifyLaunchEnvironment
+  runOkFixture
 
 runOkFixture :: IO ()
 runOkFixture = do
@@ -303,6 +331,44 @@ runOneShotAckFixture protocolVersion = do
       _ <- recvMessage transport
       _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope protocolVersion))
       closeTransport transport
+
+verifyLaunchEnvironment :: IO ()
+verifyLaunchEnvironment = do
+  pluginId <- requireEnv pluginIdEnv
+  protocol <- requireEnv pluginProtocolEnv
+  endpoint <- requireEnv pluginEndpointEnv
+  endpointKind <- requireEnv pluginEndpointKindEnv
+  session <- requireEnv pluginSessionEnv
+  authToken <- requireEnv pluginAuthTokenEnv
+  worldId <- requireEnv pluginWorldIdEnv
+  dataRoot <- requireEnv pluginDataRootEnv
+  pluginId `shouldEqualOrDie` envContractPluginName
+  protocol `shouldEqualOrDie` show currentProtocolVersion
+  endpoint `shouldNotBeEmptyOrDie` pluginEndpointEnv
+  endpointKind `shouldEqualOrDie` expectedEndpointKind
+  session `shouldNotBeEmptyOrDie` pluginSessionEnv
+  authToken `shouldNotBeEmptyOrDie` pluginAuthTokenEnv
+  worldId `shouldEqualOrDie` "unsaved"
+  dataRoot `shouldNotBeEmptyOrDie` pluginDataRootEnv
+  dataRootExists <- doesDirectoryExist dataRoot
+  unless dataRootExists (die (pluginDataRootEnv <> " does not name an existing directory"))
+
+requireEnv :: String -> IO String
+requireEnv key = lookupEnv key >>= maybe (die ("missing " <> key)) pure
+
+shouldEqualOrDie :: (Eq a, Show a) => a -> a -> IO ()
+shouldEqualOrDie actual expected =
+  unless (actual == expected) (die ("expected " <> show expected <> ", got " <> show actual))
+
+shouldNotBeEmptyOrDie :: String -> String -> IO ()
+shouldNotBeEmptyOrDie value label =
+  unless (not (null value)) (die (label <> " must not be empty"))
+
+expectedEndpointKind :: String
+expectedEndpointKind =
+  if os == "mingw32"
+    then "named-pipe"
+    else "unix"
 
 runMalformedJsonFixture :: IO ()
 runMalformedJsonFixture = do
@@ -356,6 +422,12 @@ testLaunchPluginName = "copilot-test-plugin-launch"
 
 testLaunchManifestJSON :: BS.ByteString
 testLaunchManifestJSON = manifestFor testLaunchPluginName
+
+envContractPluginName :: String
+envContractPluginName = "copilot-test-plugin-env-contract"
+
+envContractManifestJSON :: BS.ByteString
+envContractManifestJSON = manifestFor envContractPluginName
 
 mismatchPluginName :: String
 mismatchPluginName = "copilot-test-plugin-protocol-mismatch"
