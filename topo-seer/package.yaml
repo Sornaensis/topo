@@ -185,6 +185,7 @@ library:
     - time
     - random
     - process
+    - network
     - sdl2
     - scientific
     - wai

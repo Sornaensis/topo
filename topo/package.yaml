@@ -111,11 +111,16 @@ library:
     - directory
     - filepath
     - mtl
+    - network
     - text
     - transformers
     - vector
     - vector-th-unbox
     - zstd
+  when:
+    - condition: os(linux) || os(darwin)
+      dependencies:
+        - unix
 
 tests:
   topo-test:

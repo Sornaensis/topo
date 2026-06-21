@@ -146,12 +146,16 @@ library
     , directory
     , filepath
     , mtl
+    , network
     , text
     , transformers
     , vector
     , vector-th-unbox
     , zstd
   default-language: Haskell2010
+  if os(linux) || os(darwin)
+    build-depends:
+        unix
 
 test-suite topo-test
   type: exitcode-stdio-1.0

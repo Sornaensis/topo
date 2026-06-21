@@ -13,8 +13,8 @@
 -- = Lifecycle
 --
 -- 1. Parse the plugin manifest ('parseManifestFile')
--- 2. Launch the plugin process (Phase 7 — plugin manager)
--- 3. Connect via 'connectPlugin' to get a 'Transport'
+-- 2. Launch the plugin process with a host-created transport endpoint
+-- 3. Accept the plugin connection to get a 'Transport'
 -- 4. Create an 'RPCConnection' with 'newRPCConnection'
 -- 5. Use 'rpcGeneratorStage' and\/or 'rpcSimNode' to integrate
 -- 6. On shutdown, call 'rpcShutdown' then 'closeTransport'

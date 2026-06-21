@@ -186,6 +186,7 @@ library
     , http-types
     , hyperspace
     , linear
+    , network
     , process
     , random
     , scientific

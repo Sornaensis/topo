@@ -76,7 +76,7 @@ import Topo.Plugin.RPC.Transport
   , sendMessage
   , recvMessage
   , closeTransport
-  , connectPlugin
+  , connectPluginFromEnvironment
   )
 import Topo.Hex (defaultHexGridMeta)
 import Topo.Plugin.DataResource (DataResourceSchema(..), DataOperations(..))
@@ -171,9 +171,10 @@ writeManifest path manifest =
 -- | Run a plugin.
 --
 -- This is the standard entry point for a plugin executable.
--- It generates and writes a manifest, then enters a message loop
--- reading from stdin and writing to stdout using the length-prefixed
--- RPC protocol.
+-- It generates and writes a manifest, connects to the host-created
+-- production endpoint advertised in the TOPO_PLUGIN_* environment,
+-- then enters the length-prefixed RPC message loop. If no endpoint
+-- environment is present, it falls back to stdin/stdout for tests.
 --
 -- The message loop dispatches:
 --
@@ -195,8 +196,8 @@ runPlugin pd = do
       manifestPath = cwd </> "manifest.json"
   writeManifest manifestPath manifest
 
-  -- Connect via stdin/stdout (host launches plugin and connects pipes)
-  transportResult <- connectPlugin (pdName pd) stdin stdout
+  -- Connect via the host-created endpoint, or stdio in test harnesses.
+  transportResult <- connectPluginFromEnvironment (pdName pd) stdin stdout
   case transportResult of
     Left err -> do
       TextIO.hPutStrLn stderr ("SDK: transport error: " <> Text.pack (show err))

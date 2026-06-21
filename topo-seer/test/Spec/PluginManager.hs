@@ -53,7 +53,7 @@ import Topo.Plugin.RPC.Protocol
   )
 import Topo.Plugin.RPC.Transport
   ( closeTransport
-  , connectPlugin
+  , connectPluginFromEnvironment
   , recvMessage
   , sendMessage
   )
@@ -259,7 +259,7 @@ runFixtureMode = \case
 
 runOkFixture :: IO ()
 runOkFixture = do
-  connectPlugin "plugin-manager-test-fixture" stdin stdout >>= \case
+  connectPluginFromEnvironment "plugin-manager-test-fixture" stdin stdout >>= \case
     Left _ -> exitFailure
     Right transport -> loop transport
   where
@@ -278,7 +278,7 @@ runOkFixture = do
 
 runSlowShutdownFixture :: IO ()
 runSlowShutdownFixture = do
-  connectPlugin "plugin-manager-slow-shutdown-fixture" stdin stdout >>= \case
+  connectPluginFromEnvironment "plugin-manager-slow-shutdown-fixture" stdin stdout >>= \case
     Left _ -> exitFailure
     Right transport -> loop transport
   where
@@ -297,7 +297,7 @@ runSlowShutdownFixture = do
 
 runOneShotAckFixture :: Int -> IO ()
 runOneShotAckFixture protocolVersion = do
-  connectPlugin "plugin-manager-protocol-mismatch-fixture" stdin stdout >>= \case
+  connectPluginFromEnvironment "plugin-manager-protocol-mismatch-fixture" stdin stdout >>= \case
     Left _ -> exitFailure
     Right transport -> do
       _ <- recvMessage transport
@@ -306,7 +306,7 @@ runOneShotAckFixture protocolVersion = do
 
 runMalformedJsonFixture :: IO ()
 runMalformedJsonFixture = do
-  connectPlugin "plugin-manager-malformed-json-fixture" stdin stdout >>= \case
+  connectPluginFromEnvironment "plugin-manager-malformed-json-fixture" stdin stdout >>= \case
     Left _ -> exitFailure
     Right transport -> do
       _ <- recvMessage transport

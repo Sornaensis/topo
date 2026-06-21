@@ -7,6 +7,8 @@ import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
 
+import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (SomeException, bracket, try)
 import Data.Aeson (Value(..), (.=), object, encode, eitherDecode)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
@@ -18,10 +20,25 @@ import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
+import System.Directory (doesPathExist)
+import System.Info (os)
+import System.Timeout (timeout)
 
 import Topo.Plugin.RPC.Manifest
 import Topo.Plugin.RPC.Protocol
-import Topo.Plugin.RPC.Transport (pluginPipeName, defaultTransportConfig)
+import Topo.Plugin.RPC.Transport
+  ( Transport
+  , TransportConfig(..)
+  , TransportEndpoint(..)
+  , TransportServer(..)
+  , closeTransport
+  , connectPluginEndpoint
+  , defaultTransportConfig
+  , openPluginServer
+  , pluginPipeName
+  , recvMessage
+  , sendMessage
+  )
 import Topo.Plugin.DataResource
 
 ------------------------------------------------------------------------
@@ -663,6 +680,95 @@ spec = describe "Plugin.RPC" $ do
       let pn1 = pluginPipeName defaultTransportConfig "alpha"
           pn2 = pluginPipeName defaultTransportConfig "beta"
       pn1 `shouldNotBe` pn2
+
+    it "connects over a host-created Unix socket endpoint" $
+      onUnix $ withTransportServer "socket-smoke" $ \server -> do
+        pathExists <- doesPathExist (teAddress (tsEndpoint server))
+        pathExists `shouldBe` True
+        done <- newEmptyMVar
+        _ <- forkIO (clientEcho "socket-smoke-client" (tsEndpoint server) "ping" "pong" done)
+        host <- requireAccept server
+        sendMessage host "ping" `shouldReturn` Right ()
+        recvMessage host `shouldReturn` Right "pong"
+        closeTransport host
+        takeClientResult done `shouldReturn` Right ()
+        doesPathExist (teAddress (tsEndpoint server)) `shouldReturn` False
+
+    it "allocates distinct Unix socket endpoints for concurrent plugin startup" $
+      onUnix $ withTransportServer "same-plugin" $ \serverA ->
+        withTransportServer "same-plugin" $ \serverB -> do
+          teAddress (tsEndpoint serverA) `shouldNotBe` teAddress (tsEndpoint serverB)
+          doneA <- newEmptyMVar
+          doneB <- newEmptyMVar
+          _ <- forkIO (clientEcho "same-plugin-a" (tsEndpoint serverA) "alpha" "ack-alpha" doneA)
+          _ <- forkIO (clientEcho "same-plugin-b" (tsEndpoint serverB) "beta" "ack-beta" doneB)
+          hostA <- requireAccept serverA
+          hostB <- requireAccept serverB
+          sendMessage hostA "alpha" `shouldReturn` Right ()
+          sendMessage hostB "beta" `shouldReturn` Right ()
+          recvMessage hostA `shouldReturn` Right "ack-alpha"
+          recvMessage hostB `shouldReturn` Right "ack-beta"
+          closeTransport hostA
+          closeTransport hostB
+          takeClientResult doneA `shouldReturn` Right ()
+          takeClientResult doneB `shouldReturn` Right ()
+
+onUnix :: IO () -> IO ()
+onUnix action =
+  if os == "mingw32"
+    then pendingWith "Unix domain socket transport is not available on Windows"
+    else action
+
+withTransportServer :: Text -> (TransportServer -> IO a) -> IO a
+withTransportServer pluginName = bracket acquire tsClose
+  where
+    acquire = do
+      serverResult <- openPluginServer defaultTransportConfig { tcTimeout = 1000 } pluginName
+      case serverResult of
+        Left err -> expectationFailure ("openPluginServer failed: " <> show err) >> fail "openPluginServer"
+        Right server -> pure server
+
+requireAccept :: TransportServer -> IO Transport
+requireAccept server = do
+  acceptResult <- tsAccept server
+  case acceptResult of
+    Left err -> expectationFailure ("accept failed: " <> show err) >> fail "accept"
+    Right transport -> pure transport
+
+clientEcho :: Text -> TransportEndpoint -> BS.ByteString -> BS.ByteString -> MVarResult -> IO ()
+clientEcho name endpoint expected reply done = do
+  result <- try $ do
+    connection <- connectPluginEndpoint name endpoint
+    case connection of
+      Left err -> pure (Left ("connect failed: " <> show err))
+      Right transport -> do
+        received <- recvMessage transport
+        case received of
+          Left err -> do
+            closeTransport transport
+            pure (Left ("recv failed: " <> show err))
+          Right payload
+            | payload /= expected -> do
+                closeTransport transport
+                pure (Left ("unexpected payload: " <> show payload))
+            | otherwise -> do
+                sent <- sendMessage transport reply
+                closeTransport transport
+                case sent of
+                  Left err -> pure (Left ("send failed: " <> show err))
+                  Right () -> pure (Right ())
+  case result of
+    Left (err :: SomeException) -> putMVar done (Left (show err))
+    Right outcome -> putMVar done outcome
+
+type MVarResult = MVar (Either String ())
+
+takeClientResult :: MVarResult -> IO (Either String ())
+takeClientResult done = do
+  result <- timeout 2000000 (takeMVar done)
+  case result of
+    Nothing -> pure (Left "client timed out")
+    Just outcome -> pure outcome
 
 ------------------------------------------------------------------------
 -- Test fixtures
