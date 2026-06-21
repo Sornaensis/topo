@@ -21,12 +21,12 @@ data PluginHandshakeError
 pluginHandshakeTimeoutMicros :: Int
 pluginHandshakeTimeoutMicros = 1000000
 
-performPluginHandshakeWithTimeout :: RPCConnection -> IO (Maybe (Either PluginHandshakeError RPCConnection))
-performPluginHandshakeWithTimeout conn = do
+performPluginHandshakeWithTimeout :: Int -> RPCConnection -> IO (Maybe (Either PluginHandshakeError RPCConnection))
+performPluginHandshakeWithTimeout timeoutMicros conn = do
   done <- newEmptyMVar
   _ <- forkFinally (performHandshake conn Nothing) $ \result ->
     putMVar done $ case result of
       Left err -> Left (PluginHandshakeException (Text.pack (show (err :: SomeException))))
       Right (Left rpcErr) -> Left (PluginHandshakeRPC rpcErr)
       Right (Right conn') -> Right conn'
-  timeout pluginHandshakeTimeoutMicros (takeMVar done)
+  timeout (max 1 timeoutMicros) (takeMVar done)

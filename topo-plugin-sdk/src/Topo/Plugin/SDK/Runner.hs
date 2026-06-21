@@ -56,6 +56,7 @@ import Topo.Plugin.RPC.Manifest
   , RPCParamSpec(..)
   , RPCParamType(..)
   , RPCSimulationDecl(..)
+  , defaultRPCStartPolicy
   )
 import Topo.Plugin.RPC.Protocol
   ( RPCEnvelope(..)
@@ -129,6 +130,7 @@ generateManifest pd = RPCManifest
   , rmParameters    = map toRPCParamSpec (pdParams pd)
   , rmDataResources = map drdSchema (pdDataResources pd)
   , rmDataDirectory = fmap Text.pack (pdDataDirectory pd)
+  , rmStartPolicy   = defaultRPCStartPolicy
   }
   where
     toGenDecl gd = RPCGeneratorDecl

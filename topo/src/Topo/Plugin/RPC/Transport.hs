@@ -60,7 +60,7 @@ module Topo.Plugin.RPC.Transport
   , pluginPipeName
   ) where
 
-import Control.Exception (SomeException, catch, evaluate, try)
+import Control.Exception (IOException, SomeException, catch, evaluate, try)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.Binary.Get (getWord32le, runGetOrFail)
@@ -794,7 +794,7 @@ sendMessage t payload = catch go handler
       BS.hPut (tWriteHandle t) payload
       hFlush (tWriteHandle t)
       pure (Right ())
-    handler :: SomeException -> IO (Either TransportError ())
+    handler :: IOException -> IO (Either TransportError ())
     handler e = pure (Left (TransportSendFailed (Text.pack (show e))))
 
 -- | Receive a length-prefixed message from the transport.
@@ -821,5 +821,5 @@ recvMessage t = catch go handler
               else do
                 _ <- evaluate payload
                 pure (Right payload)
-    handler :: SomeException -> IO (Either TransportError BS.ByteString)
+    handler :: IOException -> IO (Either TransportError BS.ByteString)
     handler e = pure (Left (TransportRecvFailed (Text.pack (show e))))

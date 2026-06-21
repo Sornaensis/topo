@@ -51,6 +51,7 @@ import Topo.Plugin.RPC
   , RPCCapability
   , RPCParamSpec(..)
   , RPCParamType(..)
+  , defaultRPCStartPolicy
   , newRPCConnection
   , rpcGeneratorStage
   , rpcSimNode
@@ -126,6 +127,7 @@ civManifest = RPCManifest
       ]
   , rmDataResources  = []
   , rmDataDirectory  = Nothing
+  , rmStartPolicy    = defaultRPCStartPolicy
   }
 
 -- | A generator-only manifest (no simulation, no overlay).
@@ -144,6 +146,7 @@ genOnlyManifest = RPCManifest
   , rmParameters     = []
   , rmDataResources  = []
   , rmDataDirectory  = Nothing
+  , rmStartPolicy    = defaultRPCStartPolicy
   }
 
 -- | A sim-only manifest with writeTerrain capability.
@@ -163,6 +166,7 @@ writerManifest = RPCManifest
   , rmParameters     = []
   , rmDataResources  = []
   , rmDataDirectory  = Nothing
+  , rmStartPolicy    = defaultRPCStartPolicy
   }
 
 ------------------------------------------------------------------------

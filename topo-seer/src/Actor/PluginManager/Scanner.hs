@@ -81,6 +81,8 @@ tryLoadPlugin baseDir entry = do
                 (manifestLifecycleResources manifest)
             , lpConnection = Nothing
             , lpProcessHandle = Nothing
+            , lpStartPolicy = rmStartPolicy manifest
+            , lpRestartHistory = []
             , lpDirectory  = pluginDir
             , lpOverlaySchema = overlaySchema
             }]

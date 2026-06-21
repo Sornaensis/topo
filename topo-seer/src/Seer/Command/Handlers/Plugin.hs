@@ -92,12 +92,14 @@ pluginToJSON :: Set.Set Text -> Map.Map Text [RPCParamSpec] -> LoadedPlugin -> V
 pluginToJSON disabled paramSpecs lp =
   let name = lpName lp
   in object
-    [ "name"        .= name
-    , "status"      .= statusToText (lpStatus lp)
-    , "lifecycle"   .= lpLifecycle lp
-    , "enabled"     .= not (Set.member name disabled)
-    , "params"      .= lpParams lp
-    , "param_specs" .= map paramSpecToJSON (maybe [] id (Map.lookup name paramSpecs))
+    [ "name"             .= name
+    , "status"           .= statusToText (lpStatus lp)
+    , "lifecycle"        .= lpLifecycle lp
+    , "start_policy"     .= lpStartPolicy lp
+    , "restart_attempts" .= length (lpRestartHistory lp)
+    , "enabled"          .= not (Set.member name disabled)
+    , "params"           .= lpParams lp
+    , "param_specs"      .= map paramSpecToJSON (maybe [] id (Map.lookup name paramSpecs))
     ]
 
 statusToText :: PluginStatus -> Text

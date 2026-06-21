@@ -245,6 +245,7 @@ instance Arbitrary RPCManifest where
       , rmParameters   = params
       , rmDataResources = dataRes
       , rmDataDirectory = dataDir
+      , rmStartPolicy   = defaultRPCStartPolicy
       }
 
 ------------------------------------------------------------------------
@@ -936,4 +937,5 @@ baseManifest = RPCManifest
   , rmParameters   = []
   , rmDataResources = []
   , rmDataDirectory = Nothing
+  , rmStartPolicy   = defaultRPCStartPolicy
   }

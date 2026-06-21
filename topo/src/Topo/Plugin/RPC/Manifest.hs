@@ -29,6 +29,9 @@ module Topo.Plugin.RPC.Manifest
   , RPCGeneratorDecl(..)
   , RPCSimulationDecl(..)
   , RPCOverlayDecl(..)
+  , RPCStartPolicy(..)
+  , RPCRestartMode(..)
+  , defaultRPCStartPolicy
   , Capability(..)
     , RPCCapability
   , RPCParamSpec(..)
@@ -58,8 +61,12 @@ import Data.Aeson
   , withText
   )
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KM
+import Data.Aeson.Types (Parser)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
+import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import GHC.Generics (Generic)
@@ -219,6 +226,109 @@ instance ToJSON RPCOverlayDecl where
   toJSON rod = object [ "schemaFile" .= rodSchemaFile rod ]
 
 ------------------------------------------------------------------------
+-- Start/restart policy
+------------------------------------------------------------------------
+
+-- | How the host should restart a plugin subprocess after startup or
+-- runtime failure.
+data RPCRestartMode
+  = RestartNever
+  | RestartOnFailure
+  | RestartAlways
+  deriving (Eq, Ord, Show, Generic)
+
+instance FromJSON RPCRestartMode where
+  parseJSON = withText "RPCRestartMode" $ \raw ->
+    case normalizeRestartMode raw of
+      "never"      -> pure RestartNever
+      "on_failure" -> pure RestartOnFailure
+      "always"     -> pure RestartAlways
+      _            -> fail ("unknown restart mode: " <> Text.unpack raw)
+
+instance ToJSON RPCRestartMode where
+  toJSON RestartNever     = "never"
+  toJSON RestartOnFailure = "on_failure"
+  toJSON RestartAlways    = "always"
+
+normalizeRestartMode :: Text -> Text
+normalizeRestartMode = Text.replace "-" "_" . Text.toLower
+
+-- | Host-side process policy for a plugin.  Timeouts and backoff values are
+-- milliseconds; a positive default is used so plugin failures cannot block the
+-- host indefinitely.
+data RPCStartPolicy = RPCStartPolicy
+  { rspAutoStart         :: !Bool
+  , rspRestartMode       :: !RPCRestartMode
+  , rspMaxRestarts       :: !Int
+  , rspRestartWindowMs   :: !Int
+  , rspStartupTimeoutMs  :: !Int
+  , rspRequestTimeoutMs  :: !Int
+  , rspShutdownTimeoutMs :: !Int
+  , rspBackoffMs         :: !Int
+  } deriving (Eq, Show, Generic)
+
+defaultRPCStartPolicy :: RPCStartPolicy
+defaultRPCStartPolicy = RPCStartPolicy
+  { rspAutoStart = True
+  , rspRestartMode = RestartOnFailure
+  , rspMaxRestarts = 3
+  , rspRestartWindowMs = 60000
+  , rspStartupTimeoutMs = 1000
+  , rspRequestTimeoutMs = 5000
+  , rspShutdownTimeoutMs = 1000
+  , rspBackoffMs = 100
+  }
+
+instance FromJSON RPCStartPolicy where
+  parseJSON = withObject "RPCStartPolicy" $ \o -> do
+    autoStart <- optionalPolicyField o ["auto_start", "autoStart"] (rspAutoStart defaultRPCStartPolicy)
+    restartMode <- optionalPolicyField o ["restart", "restart_mode", "restartMode"] (rspRestartMode defaultRPCStartPolicy)
+    maxRestarts <- optionalPolicyField o ["max_restarts", "maxRestarts"] (rspMaxRestarts defaultRPCStartPolicy) >>= nonNegative "max_restarts"
+    restartWindowMs <- optionalPolicyField o ["restart_window_ms", "restartWindowMs"] (rspRestartWindowMs defaultRPCStartPolicy) >>= positive "restart_window_ms"
+    startupTimeoutMs <- optionalPolicyField o ["startup_timeout_ms", "startupTimeoutMs"] (rspStartupTimeoutMs defaultRPCStartPolicy) >>= positive "startup_timeout_ms"
+    requestTimeoutMs <- optionalPolicyField o ["request_timeout_ms", "requestTimeoutMs"] (rspRequestTimeoutMs defaultRPCStartPolicy) >>= positive "request_timeout_ms"
+    shutdownTimeoutMs <- optionalPolicyField o ["shutdown_timeout_ms", "shutdownTimeoutMs"] (rspShutdownTimeoutMs defaultRPCStartPolicy) >>= positive "shutdown_timeout_ms"
+    backoffMs <- optionalPolicyField o ["backoff_ms", "backoffMs"] (rspBackoffMs defaultRPCStartPolicy) >>= nonNegative "backoff_ms"
+    pure RPCStartPolicy
+      { rspAutoStart = autoStart
+      , rspRestartMode = restartMode
+      , rspMaxRestarts = maxRestarts
+      , rspRestartWindowMs = restartWindowMs
+      , rspStartupTimeoutMs = startupTimeoutMs
+      , rspRequestTimeoutMs = requestTimeoutMs
+      , rspShutdownTimeoutMs = shutdownTimeoutMs
+      , rspBackoffMs = backoffMs
+      }
+
+instance ToJSON RPCStartPolicy where
+  toJSON policy = object
+    [ "auto_start"          .= rspAutoStart policy
+    , "restart_mode"        .= rspRestartMode policy
+    , "max_restarts"        .= rspMaxRestarts policy
+    , "restart_window_ms"   .= rspRestartWindowMs policy
+    , "startup_timeout_ms"  .= rspStartupTimeoutMs policy
+    , "request_timeout_ms"  .= rspRequestTimeoutMs policy
+    , "shutdown_timeout_ms" .= rspShutdownTimeoutMs policy
+    , "backoff_ms"          .= rspBackoffMs policy
+    ]
+
+optionalPolicyField :: FromJSON a => Aeson.Object -> [Text] -> a -> Parser a
+optionalPolicyField o aliases fallback =
+  case listToMaybe [v | alias <- aliases, Just v <- [KM.lookup (Key.fromText alias) o]] of
+    Nothing -> pure fallback
+    Just value -> parseJSON value
+
+nonNegative :: String -> Int -> Parser Int
+nonNegative field value
+  | value >= 0 = pure value
+  | otherwise = fail (field <> " must be non-negative")
+
+positive :: String -> Int -> Parser Int
+positive field value
+  | value > 0 = pure value
+  | otherwise = fail (field <> " must be positive")
+
+------------------------------------------------------------------------
 -- Full manifest
 ------------------------------------------------------------------------
 
@@ -244,6 +354,8 @@ data RPCManifest = RPCManifest
     -- ^ Plugin-declared data resource schemas.
   , rmDataDirectory :: !(Maybe Text)
     -- ^ Data subdirectory relative to the world save path.
+  , rmStartPolicy   :: !RPCStartPolicy
+    -- ^ Host-side process supervision policy.
   } deriving (Eq, Show, Generic)
 
 instance FromJSON RPCManifest where
@@ -261,6 +373,7 @@ instance FromJSON RPCManifest where
       Nothing -> pure Nothing
     dataRes  <- o .:? "dataResources"
     dataDir  <- o .:? "dataDirectory"
+    startPolicy <- optionalPolicyField o ["startPolicy", "start_policy"] defaultRPCStartPolicy
     pure RPCManifest
       { rmName          = name
       , rmVersion       = ver
@@ -272,6 +385,7 @@ instance FromJSON RPCManifest where
       , rmParameters    = maybe [] id params
       , rmDataResources = maybe [] id dataRes
       , rmDataDirectory = dataDir
+      , rmStartPolicy   = startPolicy
       }
 
 instance ToJSON RPCManifest where
@@ -292,6 +406,10 @@ instance ToJSON RPCManifest where
     ] <>
     [ "dataDirectory" .= dd
     | Just dd <- [rmDataDirectory rm]
+    ] <>
+    [ "startPolicy" .= sp
+    | let sp = rmStartPolicy rm
+    , sp /= defaultRPCStartPolicy
     ]
 
 ------------------------------------------------------------------------

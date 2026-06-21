@@ -51,7 +51,11 @@ module Topo.Plugin.RPC
   , module Topo.Plugin.RPC.DataService
   ) where
 
+import Control.Concurrent (forkFinally, forkIO, newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (SomeException)
 import Control.Monad.Except (throwError)
+import Data.IORef (IORef, newIORef, writeIORef)
+import System.IO.Unsafe (unsafePerformIO)
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.ByteString as BS
 import Data.Char (chr, ord)
@@ -65,6 +69,7 @@ import qualified Data.Aeson as Aeson
 import Data.Aeson (Value(..), (.=), object)
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
+import System.Timeout (timeout)
 
 import Topo.Overlay (Overlay(..), insertOverlay, lookupOverlay)
 import Topo.Overlay.JSON (overlayFromJSON, overlayToJSON)
@@ -124,6 +129,10 @@ data RPCConnection = RPCConnection
     -- ^ Resolved absolute path to the plugin's data directory.
   , rpcResources        :: ![DataResourceSchema]
     -- ^ Data resource schemas received from handshake.
+  , rpcRequestTimeoutMicros :: !(Maybe Int)
+    -- ^ Per-request timeout budget. Nothing means no request timeout.
+  , rpcRuntimeFailure :: !(IORef (Maybe RPCError))
+    -- ^ Last transport/protocol timeout failure observed by an invocation.
   }
 
 -- | Create an 'RPCConnection' from a manifest and transport.
@@ -132,48 +141,58 @@ data RPCConnection = RPCConnection
 -- resources.  Call 'performHandshake' after creation to negotiate
 -- capabilities and receive data resource schemas.
 newRPCConnection :: RPCManifest -> Transport -> Map Text Value -> RPCConnection
-newRPCConnection manifest transport params = RPCConnection
-  { rpcManifest        = manifest
-  , rpcTransport       = transport
-  , rpcParams          = params
-  , rpcProtocolVersion = currentProtocolVersion
-  , rpcDataDirectory   = Nothing
-  , rpcResources       = []
-  }
+newRPCConnection manifest transport params = unsafePerformIO $ do
+  failureRef <- newIORef Nothing
+  pure RPCConnection
+    { rpcManifest        = manifest
+    , rpcTransport       = transport
+    , rpcParams          = params
+    , rpcProtocolVersion = currentProtocolVersion
+    , rpcDataDirectory   = Nothing
+    , rpcResources       = []
+    , rpcRequestTimeoutMicros = timeoutMicrosFromMs (rspRequestTimeoutMs (rmStartPolicy manifest))
+    , rpcRuntimeFailure = failureRef
+    }
+{-# NOINLINE newRPCConnection #-}
 
 ------------------------------------------------------------------------
 -- Internal helpers
 ------------------------------------------------------------------------
 
 -- | Send an envelope and wait for a response envelope.
-rpcCall :: Transport -> RPCEnvelope -> IO (Either RPCError RPCEnvelope)
-rpcCall transport envelope = do
-  let encoded = encodeMessage envelope
-  sendResult <- sendMessage transport encoded
-  case sendResult of
-    Left err -> pure (Left (RPCTransportError err))
-    Right () -> do
-      recvResult <- recvMessage transport
-      case recvResult of
-        Left err -> pure (Left (RPCTransportError err))
-        Right bs -> case decodeMessage bs of
-          Left err  -> pure (Left (RPCProtocolError err))
-          Right env -> pure (Right env)
+rpcCall :: Maybe (IORef (Maybe RPCError)) -> Maybe Int -> Text -> Transport -> RPCEnvelope -> IO (Either RPCError RPCEnvelope)
+rpcCall failureRef mTimeout timeoutMessage transport envelope =
+  withRPCRequestTimeout failureRef mTimeout timeoutMessage transport $ do
+    let encoded = encodeMessage envelope
+    sendResult <- sendMessage transport encoded
+    case sendResult of
+      Left err -> pure (Left (RPCTransportError err))
+      Right () -> do
+        recvResult <- recvMessage transport
+        case recvResult of
+          Left err -> pure (Left (RPCTransportError err))
+          Right bs -> case decodeMessage bs of
+            Left err  -> pure (Left (RPCProtocolError err))
+            Right env -> pure (Right env)
 
 -- | Send an envelope, collecting progress\/log messages until a
 -- final result envelope arrives.  Returns the final envelope.
 rpcCallWithProgress
-  :: Transport
+  :: Maybe (IORef (Maybe RPCError))
+  -> Maybe Int
+  -> Text
+  -> Transport
   -> RPCEnvelope
   -> (PluginProgress -> IO ())
   -> (PluginLog -> IO ())
   -> IO (Either RPCError RPCEnvelope)
-rpcCallWithProgress transport envelope onProgress onLog = do
-  let encoded = encodeMessage envelope
-  sendResult <- sendMessage transport encoded
-  case sendResult of
-    Left err -> pure (Left (RPCTransportError err))
-    Right () -> recvLoop
+rpcCallWithProgress failureRef mTimeout timeoutMessage transport envelope onProgress onLog =
+  withRPCRequestTimeout failureRef mTimeout timeoutMessage transport $ do
+    let encoded = encodeMessage envelope
+    sendResult <- sendMessage transport encoded
+    case sendResult of
+      Left err -> pure (Left (RPCTransportError err))
+      Right () -> recvLoop
   where
     recvLoop = do
       recvResult <- recvMessage transport
@@ -198,6 +217,47 @@ rpcCallWithProgress transport envelope onProgress onLog = do
                   pure (Left (RPCPluginError code msg))
                 Aeson.Error err -> pure (Left (RPCProtocolError (Text.pack err)))
             _ -> pure (Right env)
+
+withRPCRequestTimeout :: Maybe (IORef (Maybe RPCError)) -> Maybe Int -> Text -> Transport -> IO (Either RPCError a) -> IO (Either RPCError a)
+withRPCRequestTimeout _ Nothing _ _ action = action
+withRPCRequestTimeout failureRef (Just micros) timeoutMessage transport action = do
+  done <- newEmptyMVar
+  _ <- forkFinally action $ \result ->
+    putMVar done $ case result of
+      Left err -> Left (RPCProtocolError (Text.pack (show (err :: SomeException))))
+      Right value -> value
+  result <- timeout micros (takeMVar done)
+  case result of
+    Nothing -> do
+      let err = RPCTimeout timeoutMessage
+      recordRuntimeFailure failureRef err
+      _ <- forkIO (closeTransport transport)
+      pure (Left err)
+    Just value -> do
+      recordResultFailure failureRef value
+      pure value
+
+recordResultFailure :: Maybe (IORef (Maybe RPCError)) -> Either RPCError a -> IO ()
+recordResultFailure failureRef result =
+  case result of
+    Left err | isRuntimeConnectionFailure err -> recordRuntimeFailure failureRef err
+    _ -> pure ()
+
+recordRuntimeFailure :: Maybe (IORef (Maybe RPCError)) -> RPCError -> IO ()
+recordRuntimeFailure Nothing _ = pure ()
+recordRuntimeFailure (Just failureRef) err = writeIORef failureRef (Just err)
+
+isRuntimeConnectionFailure :: RPCError -> Bool
+isRuntimeConnectionFailure rpcError = case rpcError of
+  RPCTransportError _ -> True
+  RPCProtocolError _ -> True
+  RPCTimeout _ -> True
+  RPCPluginError _ _ -> False
+
+timeoutMicrosFromMs :: Int -> Maybe Int
+timeoutMicrosFromMs millis
+  | millis <= 0 = Nothing
+  | otherwise = Just (millis * 1000)
 
 ------------------------------------------------------------------------
 -- Invocation
@@ -224,7 +284,7 @@ invokeGenerator conn terrainData = do
             , igTerrain = terrainData
             }
         }
-  result <- rpcCallWithProgress (rpcTransport conn) envelope
+  result <- rpcCallWithProgress (Just (rpcRuntimeFailure conn)) (rpcRequestTimeoutMicros conn) "plugin generator request timed out" (rpcTransport conn) envelope
               (\_ -> pure ())
               (\_ -> pure ())
   case result of
@@ -273,7 +333,7 @@ invokeSimulation conn ctx overlay onProgress onLog = do
                 , isOwnOverlay = ownOverlayPayload
                 }
             }
-      result <- rpcCallWithProgress (rpcTransport conn) envelope onProgress onLog
+      result <- rpcCallWithProgress (Just (rpcRuntimeFailure conn)) (rpcRequestTimeoutMicros conn) "plugin simulation request timed out" (rpcTransport conn) envelope onProgress onLog
       case result of
         Left err  -> pure (Left err)
         Right env ->
@@ -314,7 +374,7 @@ performHandshake conn worldPath = do
           , hsHostCapabilities = ["query", "mutate"]
           }
         }
-  result <- rpcCall (rpcTransport conn) envelope
+  result <- rpcCall Nothing Nothing "plugin handshake timed out" (rpcTransport conn) envelope
   case result of
     Left err -> pure (Left err)
     Right env -> case envType env of
@@ -373,7 +433,7 @@ queryResource conn qr = do
         { envType    = MsgQueryResource
         , envPayload = Aeson.toJSON qr
         }
-  result <- rpcCallWithProgress (rpcTransport conn) envelope
+  result <- rpcCallWithProgress (Just (rpcRuntimeFailure conn)) (rpcRequestTimeoutMicros conn) "plugin data query timed out" (rpcTransport conn) envelope
               (\_ -> pure ())
               (\_ -> pure ())
   case result of
@@ -393,7 +453,7 @@ mutateResource conn mr = do
         { envType    = MsgMutateResource
         , envPayload = Aeson.toJSON mr
         }
-  result <- rpcCallWithProgress (rpcTransport conn) envelope
+  result <- rpcCallWithProgress (Just (rpcRuntimeFailure conn)) (rpcRequestTimeoutMicros conn) "plugin data mutation timed out" (rpcTransport conn) envelope
               (\_ -> pure ())
               (\_ -> pure ())
   case result of

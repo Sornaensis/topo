@@ -15,6 +15,11 @@ module Actor.PluginManager.Types
   , pluginLifecycleSnapshot
   , manifestLifecycleResources
   , requiresRuntimeConnection
+  , restartModeAllowsFailure
+  , pruneRestartHistory
+  , canRestartPlugin
+  , recordPluginRestart
+  , policyTimeoutMicros
   , setParamOnPlugin
   ) where
 
@@ -25,12 +30,12 @@ import Data.Maybe (isJust)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
-import Data.Time (UTCTime)
+import Data.Time (NominalDiffTime, UTCTime, diffUTCTime)
 import System.Process (ProcessHandle)
 
 import Topo.Overlay.Schema (OverlaySchema)
 import Topo.Plugin.DataResource (DataResourceSchema(..))
-import Topo.Plugin.RPC (RPCConnection, RPCManifest(..))
+import Topo.Plugin.RPC (RPCConnection, RPCManifest(..), RPCStartPolicy(..), RPCRestartMode(..))
 
 -- | Runtime status of a plugin.
 data PluginStatus
@@ -162,6 +167,10 @@ data LoadedPlugin = LoadedPlugin
     -- ^ Active RPC connection, if connected.
   , lpProcessHandle :: !(Maybe ProcessHandle)
     -- ^ Active plugin subprocess handle, if launched.
+  , lpStartPolicy :: !RPCStartPolicy
+    -- ^ Host-side startup, restart, and timeout policy.
+  , lpRestartHistory :: ![UTCTime]
+    -- ^ Restart attempt timestamps kept within the policy window.
   , lpDirectory  :: !FilePath
     -- ^ Filesystem path to the plugin directory.
   , lpOverlaySchema :: !(Maybe OverlaySchema)
@@ -195,6 +204,35 @@ requiresRuntimeConnection manifest =
   isJust (rmGenerator manifest)
   || isJust (rmSimulation manifest)
   || not (null (rmDataResources manifest))
+
+restartModeAllowsFailure :: RPCRestartMode -> Bool
+restartModeAllowsFailure RestartNever = False
+restartModeAllowsFailure RestartOnFailure = True
+restartModeAllowsFailure RestartAlways = True
+
+pruneRestartHistory :: RPCStartPolicy -> UTCTime -> [UTCTime] -> [UTCTime]
+pruneRestartHistory policy now =
+  filter (withinRestartWindow now (restartWindowSeconds policy))
+
+canRestartPlugin :: RPCStartPolicy -> UTCTime -> [UTCTime] -> Bool
+canRestartPlugin policy now history =
+  rspAutoStart policy
+  && restartModeAllowsFailure (rspRestartMode policy)
+  && length (pruneRestartHistory policy now history) < rspMaxRestarts policy
+
+recordPluginRestart :: RPCStartPolicy -> UTCTime -> [UTCTime] -> [UTCTime]
+recordPluginRestart policy now history =
+  pruneRestartHistory policy now history <> [now]
+
+policyTimeoutMicros :: Int -> Int
+policyTimeoutMicros millis = max 1 (millis * 1000)
+
+restartWindowSeconds :: RPCStartPolicy -> NominalDiffTime
+restartWindowSeconds policy = realToFrac (rspRestartWindowMs policy) / 1000
+
+withinRestartWindow :: UTCTime -> NominalDiffTime -> UTCTime -> Bool
+withinRestartWindow now window startedAt =
+  diffUTCTime now startedAt <= window
 
 -- | Update a single parameter in a loaded plugin.
 setParamOnPlugin :: Text -> Value -> LoadedPlugin -> LoadedPlugin

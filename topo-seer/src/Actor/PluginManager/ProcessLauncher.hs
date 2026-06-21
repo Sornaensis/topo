@@ -29,7 +29,10 @@ import System.Process
   , createProcess
   , proc
   , terminateProcess
+  , waitForProcess
   )
+
+import System.Timeout (timeout)
 
 import Topo.Plugin.RPC.Protocol (currentProtocolVersion)
 import Topo.Plugin.RPC.Transport
@@ -77,22 +80,21 @@ launchPluginTransport
   :: FilePath
   -> FilePath
   -> Text
+  -> Int
   -> IO (Either Text (Transport, ProcessHandle))
 launchPluginTransport = launchPluginTransportViaEndpoint
 
--- Keep the endpoint accept budget aligned with the handshake timeout so
--- slow or crashed plugins fail startup instead of blocking discovery.
-transportAcceptTimeoutMillis :: Int
-transportAcceptTimeoutMillis = 1000
-
+-- Keep the endpoint accept budget aligned with the startup/handshake timeout
+-- so slow or crashed plugins fail startup instead of blocking discovery.
 launchPluginTransportViaEndpoint
   :: FilePath
   -> FilePath
   -> Text
+  -> Int
   -> IO (Either Text (Transport, ProcessHandle))
-launchPluginTransportViaEndpoint executablePath workingDir pluginName = do
+launchPluginTransportViaEndpoint executablePath workingDir pluginName startupTimeoutMillis = do
   serverResult <- openPluginServer
-    defaultTransportConfig { tcTimeout = transportAcceptTimeoutMillis }
+    defaultTransportConfig { tcTimeout = max 1 startupTimeoutMillis }
     pluginName
   case serverResult of
     Left err -> pure (Left (Text.pack (show err)))
@@ -175,4 +177,8 @@ safeCloseHandle handle = do
 safeTerminateProcess :: ProcessHandle -> IO ()
 safeTerminateProcess processHandle = do
   _ <- try @SomeException (terminateProcess processHandle)
+  _ <- timeout processTerminationWaitMicros (try @SomeException (waitForProcess processHandle))
   pure ()
+
+processTerminationWaitMicros :: Int
+processTerminationWaitMicros = 100000

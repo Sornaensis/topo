@@ -852,13 +852,36 @@ pluginSetParamResponseSchema = objectSchema "PluginSetParamResponse"
 
 pluginSummarySchema :: Value
 pluginSummarySchema = inlineObjectSchema
-  [ "name", "status", "lifecycle", "enabled", "params", "param_specs" ]
+  [ "name", "status", "lifecycle", "start_policy", "restart_attempts", "enabled", "params", "param_specs" ]
   [ ("name", stringSchema)
   , ("status", stringSchema)
   , ("lifecycle", pluginLifecycleSchema)
+  , ("start_policy", pluginStartPolicySchema)
+  , ("restart_attempts", integerSchema)
   , ("enabled", booleanSchema)
   , ("params", freeObjectSchema)
   , ("param_specs", arraySchema pluginParamSpecSchema)
+  ]
+
+pluginStartPolicySchema :: Value
+pluginStartPolicySchema = inlineObjectSchema
+  [ "auto_start"
+  , "restart_mode"
+  , "max_restarts"
+  , "restart_window_ms"
+  , "startup_timeout_ms"
+  , "request_timeout_ms"
+  , "shutdown_timeout_ms"
+  , "backoff_ms"
+  ]
+  [ ("auto_start", booleanSchema)
+  , ("restart_mode", enumStringSchema ["never", "on_failure", "always"])
+  , ("max_restarts", integerSchema)
+  , ("restart_window_ms", integerSchema)
+  , ("startup_timeout_ms", integerSchema)
+  , ("request_timeout_ms", integerSchema)
+  , ("shutdown_timeout_ms", integerSchema)
+  , ("backoff_ms", integerSchema)
   ]
 
 pluginParamSpecSchema :: Value

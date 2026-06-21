@@ -40,8 +40,10 @@ import Actor.PluginManager.PipelineIntegrator
   )
 import Actor.PluginManager.PluginSupervisor
   ( disconnectPlugin
+  , handlePluginRuntimeFailure
   , markPluginStarting
   , markPluginStopping
+  , observePluginRuntime
   )
 import Actor.PluginManager.ResourceRegistry
   ( buildPluginDataResources
@@ -109,10 +111,12 @@ actor PluginManager
       , pmsBaseDir = baseDir
       , pmsDisabledPlugins = disabled
       }
-  onPure getPlugins = \() st ->
-    (st, Map.elems (pmsPlugins st))
-  onPure getStages = \() st ->
-    (st, buildPluginStages st)
+  on getPlugins = \() st -> do
+    st' <- observePluginRuntimes st
+    pure (st', Map.elems (pmsPlugins st'))
+  on getStages = \() st -> do
+    st' <- observePluginRuntimes st
+    pure (st', buildPluginStages st')
   onPure getOverlaySchemas = \() st ->
     (st, buildPluginOverlaySchemas st)
   onPure getOrder = \() st ->
@@ -148,12 +152,32 @@ actor PluginManager
     (st, buildPluginDataResources st)
   on queryData = \(pluginName, qr) st -> do
     result <- queryPluginDataResource pluginName qr st
-    pure (st, result)
+    st' <- markRuntimeFailureOnConnectedError pluginName "data_query_failed" result st
+    pure (st', result)
   on mutateData = \(pluginName, mr) st -> do
     result <- mutatePluginDataResource pluginName mr st
-    pure (st, result)
+    st' <- markRuntimeFailureOnConnectedError pluginName "data_mutation_failed" result st
+    pure (st', result)
   on_ notifyWorld = \mWorldPath st -> do
     notifyPluginsWorldChanged mWorldPath (Map.elems (pmsPlugins st))
     pure st
   onPure getDataDirs = \() st ->
     (st, collectPluginDataDirs st)|]
+
+observePluginRuntimes :: PluginManagerState -> IO PluginManagerState
+observePluginRuntimes st = do
+  plugins' <- traverse observePluginRuntime (pmsPlugins st)
+  pure st { pmsPlugins = plugins' }
+
+markRuntimeFailureOnConnectedError
+  :: Text
+  -> Text
+  -> Either Text a
+  -> PluginManagerState
+  -> IO PluginManagerState
+markRuntimeFailureOnConnectedError pluginName errorCode result st =
+  case (result, Map.lookup pluginName (pmsPlugins st)) of
+    (Left err, Just lp@LoadedPlugin { lpConnection = Just _ }) -> do
+      lp' <- handlePluginRuntimeFailure errorCode err lp
+      pure st { pmsPlugins = Map.insert pluginName lp' (pmsPlugins st) }
+    _ -> pure st
