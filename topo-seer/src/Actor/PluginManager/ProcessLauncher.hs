@@ -1,8 +1,7 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
--- | Plugin subprocess startup and test transport attachment.
+-- | Plugin subprocess startup and production transport attachment.
 module Actor.PluginManager.ProcessLauncher
   ( resolvePluginExecutable
   , launchPluginTransport
@@ -32,7 +31,6 @@ import Topo.Plugin.RPC.Transport
   , TransportConfig(..)
   , TransportEndpoint(..)
   , TransportServer(..)
-  , connectPlugin
   , defaultTransportConfig
   , endpointKindText
   , openPluginServer
@@ -67,14 +65,8 @@ launchPluginTransport
   -> FilePath
   -> Text
   -> IO (Either Text (Transport, ProcessHandle))
-launchPluginTransport executablePath workingDir pluginName =
-#if defined(mingw32_HOST_OS)
-  launchPluginTransportViaStdio executablePath workingDir pluginName
-#else
-  launchPluginTransportViaEndpoint executablePath workingDir pluginName
-#endif
+launchPluginTransport = launchPluginTransportViaEndpoint
 
-#if !defined(mingw32_HOST_OS)
 -- Keep the endpoint accept budget aligned with the handshake timeout so
 -- slow or crashed plugins fail startup instead of blocking discovery.
 transportAcceptTimeoutMillis :: Int
@@ -125,42 +117,6 @@ endpointEnvironment endpoint = do
       overridden = map fst endpointVars
       preserved = filter (\(key, _) -> key `notElem` overridden) inherited
   pure (endpointVars <> preserved)
-#endif
-
-#if defined(mingw32_HOST_OS)
-launchPluginTransportViaStdio
-  :: FilePath
-  -> FilePath
-  -> Text
-  -> IO (Either Text (Transport, ProcessHandle))
-launchPluginTransportViaStdio executablePath workingDir pluginName = do
-  processResult <- try @SomeException
-    (createProcess
-      (proc executablePath [])
-        { cwd = Just workingDir
-        , std_in = CreatePipe
-        , std_out = CreatePipe
-        , std_err = Inherit
-        })
-  case processResult of
-    Left err -> pure (Left (Text.pack (show err)))
-    Right (mStdin, mStdout, _, processHandle) ->
-      case (mStdin, mStdout) of
-        (Just childStdin, Just childStdout) -> do
-          connectionResult <- connectPlugin pluginName childStdout childStdin
-          case connectionResult of
-            Left transportErr -> do
-              safeCloseHandle childStdin
-              safeCloseHandle childStdout
-              safeTerminateProcess processHandle
-              pure (Left (Text.pack (show transportErr)))
-            Right transport -> pure (Right (transport, processHandle))
-        _ -> do
-          mapM_ safeCloseHandle mStdin
-          mapM_ safeCloseHandle mStdout
-          safeTerminateProcess processHandle
-          pure (Left "failed to acquire plugin stdio handles")
-#endif
 
 safeCloseHandle :: Handle -> IO ()
 safeCloseHandle handle = do

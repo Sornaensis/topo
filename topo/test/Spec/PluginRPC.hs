@@ -14,14 +14,16 @@ import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.Either (isLeft, isRight)
-import Data.List (isInfixOf)
+import Data.List (isInfixOf, isPrefixOf)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
 import System.Directory (doesPathExist)
+import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Info (os)
+import System.IO (stdin, stdout)
 import System.Timeout (timeout)
 
 import Topo.Plugin.RPC.Manifest
@@ -33,8 +35,12 @@ import Topo.Plugin.RPC.Transport
   , TransportServer(..)
   , closeTransport
   , connectPluginEndpoint
+  , connectPluginFromEnvironment
   , defaultTransportConfig
+  , endpointKindText
   , openPluginServer
+  , pluginEndpointEnv
+  , pluginEndpointKindEnv
   , pluginPipeName
   , recvMessage
   , sendMessage
@@ -688,8 +694,8 @@ spec = describe "Plugin.RPC" $ do
         done <- newEmptyMVar
         _ <- forkIO (clientEcho "socket-smoke-client" (tsEndpoint server) "ping" "pong" done)
         host <- requireAccept server
-        sendMessage host "ping" `shouldReturn` Right ()
-        recvMessage host `shouldReturn` Right "pong"
+        shouldReturnWithin "host send ping" (sendMessage host "ping") (Right ())
+        shouldReturnWithin "host receive pong" (recvMessage host) (Right "pong")
         closeTransport host
         takeClientResult done `shouldReturn` Right ()
         doesPathExist (teAddress (tsEndpoint server)) `shouldReturn` False
@@ -704,10 +710,57 @@ spec = describe "Plugin.RPC" $ do
           _ <- forkIO (clientEcho "same-plugin-b" (tsEndpoint serverB) "beta" "ack-beta" doneB)
           hostA <- requireAccept serverA
           hostB <- requireAccept serverB
-          sendMessage hostA "alpha" `shouldReturn` Right ()
-          sendMessage hostB "beta" `shouldReturn` Right ()
-          recvMessage hostA `shouldReturn` Right "ack-alpha"
-          recvMessage hostB `shouldReturn` Right "ack-beta"
+          shouldReturnWithin "host A send alpha" (sendMessage hostA "alpha") (Right ())
+          shouldReturnWithin "host B send beta" (sendMessage hostB "beta") (Right ())
+          shouldReturnWithin "host A receive ack" (recvMessage hostA) (Right "ack-alpha")
+          shouldReturnWithin "host B receive ack" (recvMessage hostB) (Right "ack-beta")
+          closeTransport hostA
+          closeTransport hostB
+          takeClientResult doneA `shouldReturn` Right ()
+          takeClientResult doneB `shouldReturn` Right ()
+
+    it "escapes unsafe Windows named-pipe endpoint names" $
+      onWindows $ withTransportServer "bad/name\\with:chars" $ \server -> do
+        let address = teAddress (tsEndpoint server)
+            prefix = "\\\\.\\pipe\\"
+            pipeName = drop (length prefix) address
+        address `shouldSatisfy` (prefix `isPrefixOf`)
+        pipeName `shouldSatisfy` \suffix -> not (any (`elem` ['\\', '/', ':']) suffix)
+
+    it "connects over a host-created Windows named pipe endpoint" $
+      onWindows $ withTransportServer "pipe-smoke" $ \server -> do
+        done <- newEmptyMVar
+        _ <- forkIO (clientEcho "pipe-smoke-client" (tsEndpoint server) "ping" "pong" done)
+        host <- requireAccept server
+        shouldReturnWithin "host send pipe ping" (sendMessage host "ping") (Right ())
+        shouldReturnWithin "host receive pipe pong" (recvMessage host) (Right "pong")
+        closeTransport host
+        takeClientResult done `shouldReturn` Right ()
+
+    it "connects from TOPO_PLUGIN_* endpoint environment to a Windows named pipe" $
+      onWindows $ withTransportServer "pipe-env" $ \server -> do
+        done <- newEmptyMVar
+        _ <- forkIO (clientEchoFromEnvironment "pipe-env-client" (tsEndpoint server) "env-ping" "env-pong" done)
+        host <- requireAccept server
+        shouldReturnWithin "host send env ping" (sendMessage host "env-ping") (Right ())
+        shouldReturnWithin "host receive env pong" (recvMessage host) (Right "env-pong")
+        closeTransport host
+        takeClientResult done `shouldReturn` Right ()
+
+    it "allocates distinct Windows named-pipe endpoints for concurrent plugin startup" $
+      onWindows $ withTransportServer "same-plugin" $ \serverA ->
+        withTransportServer "same-plugin" $ \serverB -> do
+          teAddress (tsEndpoint serverA) `shouldNotBe` teAddress (tsEndpoint serverB)
+          doneA <- newEmptyMVar
+          doneB <- newEmptyMVar
+          _ <- forkIO (clientEcho "same-plugin-pipe-a" (tsEndpoint serverA) "alpha" "ack-alpha" doneA)
+          _ <- forkIO (clientEcho "same-plugin-pipe-b" (tsEndpoint serverB) "beta" "ack-beta" doneB)
+          hostA <- requireAccept serverA
+          hostB <- requireAccept serverB
+          shouldReturnWithin "host A send pipe alpha" (sendMessage hostA "alpha") (Right ())
+          shouldReturnWithin "host B send pipe beta" (sendMessage hostB "beta") (Right ())
+          shouldReturnWithin "host A receive pipe ack" (recvMessage hostA) (Right "ack-alpha")
+          shouldReturnWithin "host B receive pipe ack" (recvMessage hostB) (Right "ack-beta")
           closeTransport hostA
           closeTransport hostB
           takeClientResult doneA `shouldReturn` Right ()
@@ -718,6 +771,12 @@ onUnix action =
   if os == "mingw32"
     then pendingWith "Unix domain socket transport is not available on Windows"
     else action
+
+onWindows :: IO () -> IO ()
+onWindows action =
+  if os == "mingw32"
+    then action
+    else pendingWith "Windows named-pipe transport is not available on this host"
 
 withTransportServer :: Text -> (TransportServer -> IO a) -> IO a
 withTransportServer pluginName = bracket acquire tsClose
@@ -761,14 +820,64 @@ clientEcho name endpoint expected reply done = do
     Left (err :: SomeException) -> putMVar done (Left (show err))
     Right outcome -> putMVar done outcome
 
+clientEchoFromEnvironment :: Text -> TransportEndpoint -> BS.ByteString -> BS.ByteString -> MVarResult -> IO ()
+clientEchoFromEnvironment name endpoint expected reply done = do
+  result <- try $ withEndpointEnvironment endpoint $ do
+    connection <- connectPluginFromEnvironment name stdin stdout
+    case connection of
+      Left err -> pure (Left ("connect failed: " <> show err))
+      Right transport -> do
+        received <- recvMessage transport
+        case received of
+          Left err -> do
+            closeTransport transport
+            pure (Left ("recv failed: " <> show err))
+          Right payload
+            | payload /= expected -> do
+                closeTransport transport
+                pure (Left ("unexpected payload: " <> show payload))
+            | otherwise -> do
+                sent <- sendMessage transport reply
+                closeTransport transport
+                case sent of
+                  Left err -> pure (Left ("send failed: " <> show err))
+                  Right () -> pure (Right ())
+  case result of
+    Left (err :: SomeException) -> putMVar done (Left (show err))
+    Right outcome -> putMVar done outcome
+
+withEndpointEnvironment :: TransportEndpoint -> IO a -> IO a
+withEndpointEnvironment endpoint = bracket setup restore . const
+  where
+    setup = do
+      oldEndpoint <- lookupEnv pluginEndpointEnv
+      oldKind <- lookupEnv pluginEndpointKindEnv
+      setEnv pluginEndpointEnv (teAddress endpoint)
+      setEnv pluginEndpointKindEnv (Text.unpack (endpointKindText (teKind endpoint)))
+      pure (oldEndpoint, oldKind)
+    restore (oldEndpoint, oldKind) = do
+      restoreEnv pluginEndpointEnv oldEndpoint
+      restoreEnv pluginEndpointKindEnv oldKind
+    restoreEnv key = maybe (unsetEnv key) (setEnv key)
+
+shouldReturnWithin :: (Eq a, Show a) => String -> IO a -> a -> IO ()
+shouldReturnWithin label action expected = do
+  result <- timeout transportTestTimeoutMicros action
+  case result of
+    Nothing -> expectationFailure (label <> " timed out")
+    Just actual -> actual `shouldBe` expected
+
 type MVarResult = MVar (Either String ())
 
 takeClientResult :: MVarResult -> IO (Either String ())
 takeClientResult done = do
-  result <- timeout 2000000 (takeMVar done)
+  result <- timeout transportTestTimeoutMicros (takeMVar done)
   case result of
     Nothing -> pure (Left "client timed out")
     Just outcome -> pure outcome
+
+transportTestTimeoutMicros :: Int
+transportTestTimeoutMicros = 2000000
 
 ------------------------------------------------------------------------
 -- Test fixtures

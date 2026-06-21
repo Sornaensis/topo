@@ -1,4 +1,5 @@
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
@@ -57,9 +58,11 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.Binary.Get (getWord32le, runGetOrFail)
 import Data.Binary.Put (putWord32le, runPut)
+import Data.Char (ord)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word32)
+import Numeric (showHex)
 import System.Directory
   ( createDirectory
   , createDirectoryIfMissing
@@ -80,7 +83,17 @@ import System.IO
   )
 import System.Timeout (timeout)
 
-#if !defined(mingw32_HOST_OS)
+#if defined(mingw32_HOST_OS)
+import Control.Concurrent (threadDelay)
+import Data.Bits ((.|.))
+import Data.IORef (IORef, atomicModifyIORef', newIORef, writeIORef)
+import Data.Unique (hashUnique, newUnique)
+import Foreign.C.String (withCString)
+import Foreign.C.Types (CChar, CInt(..))
+import Foreign.Marshal.Utils (with)
+import Foreign.Ptr (Ptr, nullPtr, plusPtr)
+import GHC.IO.Handle.FD (fdToHandle)
+#else
 import qualified Network.Socket as Socket
 import System.Posix.Files (ownerModes, setFileMode)
 #endif
@@ -193,18 +206,47 @@ parseEndpointKind raw = case Text.toLower raw of
 
 -- | Generate a platform-appropriate pipe\/socket name for a plugin.
 --
--- On Windows: @\\\\.\\pipe\\topo-plugin-\<name\>@
--- On Unix: @\<pipeDir\>\/topo-plugin-\<name\>.sock@
+-- The plugin name component is escaped before it is embedded in an
+-- endpoint address, so path separators or shell metacharacters in a
+-- manifest name cannot escape the endpoint namespace.  Host-created
+-- production servers append their own unique suffixes when allocating
+-- endpoints.
 pluginPipeName :: TransportConfig -> Text -> FilePath
-pluginPipeName _cfg pluginName =
+pluginPipeName cfg pluginName =
 #if defined(mingw32_HOST_OS)
-  "\\\\.\\pipe\\topo-plugin-" <> Text.unpack pluginName
+  windowsNamedPipePrefix <> escapedPluginPipeBase pluginName
 #else
-  let dir = if null (tcPipeDir _cfg)
+  let dir = if null (tcPipeDir cfg)
               then "/tmp"
-              else tcPipeDir _cfg
-  in dir <> "/topo-plugin-" <> Text.unpack pluginName <> ".sock"
+              else tcPipeDir cfg
+  in dir </> escapedPluginPipeBase pluginName <> ".sock"
 #endif
+
+escapedPluginPipeBase :: Text -> FilePath
+escapedPluginPipeBase pluginName = "topo-plugin-" <> escapeEndpointSegment pluginName
+
+escapeEndpointSegment :: Text -> String
+escapeEndpointSegment raw
+  | Text.null raw = "unnamed"
+  | otherwise = concatMap escapeChar (Text.unpack raw)
+  where
+    escapeChar c
+      | isSafeEndpointChar c = [c]
+      | otherwise = '~' : paddedHex (ord c)
+
+isSafeEndpointChar :: Char -> Bool
+isSafeEndpointChar c =
+     ('a' <= c && c <= 'z')
+  || ('A' <= c && c <= 'Z')
+  || ('0' <= c && c <= '9')
+  || c == '-'
+  || c == '_'
+  || c == '.'
+
+paddedHex :: Int -> String
+paddedHex n = replicate (max 0 (4 - length raw)) '0' <> raw
+  where
+    raw = showHex n ""
 
 ------------------------------------------------------------------------
 -- Connection lifecycle
@@ -214,7 +256,7 @@ pluginPipeName _cfg pluginName =
 openPluginServer :: TransportConfig -> Text -> IO (Either TransportError TransportServer)
 openPluginServer cfg pluginName =
 #if defined(mingw32_HOST_OS)
-  pure (Left (TransportUnsupported "Windows named-pipe server transport is not implemented yet"))
+  openNamedPipeServer cfg pluginName
 #else
   openUnixSocketServer cfg pluginName
 #endif
@@ -229,7 +271,11 @@ connectPluginEndpoint name endpoint = case teKind endpoint of
     connectUnixSocketEndpoint name (teAddress endpoint)
 #endif
   TransportEndpointNamedPipe ->
-    pure (Left (TransportUnsupported "Windows named-pipe client transport is not implemented yet"))
+#if defined(mingw32_HOST_OS)
+    connectNamedPipeEndpoint name (teAddress endpoint)
+#else
+    pure (Left (TransportUnsupported "Windows named pipes are not supported on this platform"))
+#endif
 
 -- | Connect using the production endpoint variables when present;
 -- otherwise fall back to the supplied stdio handles for tests.
@@ -285,6 +331,281 @@ closeTransport :: Transport -> IO ()
 closeTransport t = do
   catch (hClose (tReadHandle t)) (\(_ :: SomeException) -> pure ())
   catch (hClose (tWriteHandle t)) (\(_ :: SomeException) -> pure ())
+
+#if defined(mingw32_HOST_OS)
+------------------------------------------------------------------------
+-- Windows named-pipe transport
+------------------------------------------------------------------------
+
+type HANDLE = Ptr ()
+
+foreign import ccall safe "windows.h CreateNamedPipeA"
+  c_CreateNamedPipe
+    :: Ptr CChar    -- lpName
+    -> Word32       -- dwOpenMode
+    -> Word32       -- dwPipeMode
+    -> Word32       -- nMaxInstances
+    -> Word32       -- nOutBufferSize
+    -> Word32       -- nInBufferSize
+    -> Word32       -- nDefaultTimeOut
+    -> Ptr ()       -- lpSecurityAttributes
+    -> IO HANDLE
+
+foreign import ccall safe "windows.h ConnectNamedPipe"
+  c_ConnectNamedPipe :: HANDLE -> Ptr () -> IO CInt
+
+foreign import ccall unsafe "windows.h SetNamedPipeHandleState"
+  c_SetNamedPipeHandleState
+    :: HANDLE     -- hNamedPipe
+    -> Ptr Word32 -- lpMode
+    -> Ptr Word32 -- lpMaxCollectionCount
+    -> Ptr Word32 -- lpCollectDataTimeout
+    -> IO CInt
+
+foreign import ccall safe "windows.h CreateFileA"
+  c_CreateFile
+    :: Ptr CChar    -- lpFileName
+    -> Word32       -- dwDesiredAccess
+    -> Word32       -- dwShareMode
+    -> Ptr ()       -- lpSecurityAttributes
+    -> Word32       -- dwCreationDisposition
+    -> Word32       -- dwFlagsAndAttributes
+    -> HANDLE       -- hTemplateFile
+    -> IO HANDLE
+
+foreign import ccall unsafe "windows.h CloseHandle"
+  c_CloseHandle :: HANDLE -> IO CInt
+
+foreign import ccall unsafe "windows.h GetLastError"
+  c_GetLastError :: IO Word32
+
+foreign import ccall unsafe "windows.h GetCurrentProcessId"
+  c_GetCurrentProcessId :: IO Word32
+
+-- | Convert a Win32 HANDLE to a C file descriptor.
+foreign import ccall unsafe "_open_osfhandle"
+  c_open_osfhandle :: HANDLE -> CInt -> IO CInt
+
+foreign import ccall unsafe "_close"
+  c_close :: CInt -> IO CInt
+
+windowsNamedPipePrefix :: FilePath
+windowsNamedPipePrefix = "\\\\.\\pipe\\"
+
+errorPipeConnected :: Word32
+errorPipeConnected = 535
+
+errorPipeListening :: Word32
+errorPipeListening = 536
+
+invalidHandleValue :: HANDLE
+invalidHandleValue = nullPtr `plusPtr` (-1)
+
+openNamedPipeServer :: TransportConfig -> Text -> IO (Either TransportError TransportServer)
+openNamedPipeServer cfg pluginName = catch go handler
+  where
+    go = do
+      pipeName <- allocateNamedPipeName pluginName
+      pipeH <- withCString pipeName $ \namePtr ->
+        c_CreateNamedPipe
+          namePtr
+          pipeAccessDuplex
+          pipeByteModeNonblocking
+          1       -- one client per host-created endpoint
+          65536   -- output buffer size
+          65536   -- input buffer size
+          0       -- default timeout
+          nullPtr -- default security attributes
+      if pipeH == invalidHandleValue
+        then do
+          err <- c_GetLastError
+          pure (Left (TransportConnectionFailed
+            ("CreateNamedPipe failed for " <> Text.pack pipeName <> " (GetLastError=" <> Text.pack (show err) <> ")")))
+        else do
+          owned <- newIORef True
+          pure (Right TransportServer
+            { tsEndpoint = TransportEndpoint
+                { teKind = TransportEndpointNamedPipe
+                , teAddress = pipeName
+                }
+            , tsAccept = acceptNamedPipeTransport cfg pluginName owned pipeH pipeName
+            , tsClose = closeOwnedNamedPipe owned pipeH
+            })
+    handler (err :: SomeException) =
+      pure (Left (TransportConnectionFailed (Text.pack (show err))))
+
+pipeAccessDuplex :: Word32
+pipeAccessDuplex = 0x00000003
+
+pipeByteMode :: Word32
+pipeByteMode = 0x00000000
+
+pipeByteModeNonblocking :: Word32
+pipeByteModeNonblocking = 0x00000001 -- PIPE_NOWAIT
+
+genericReadWrite :: Word32
+genericReadWrite = 0x80000000 .|. 0x40000000
+
+openExisting :: Word32
+openExisting = 3
+
+fileAttributeNormal :: Word32
+fileAttributeNormal = 0x00000080
+
+openOsfHandleFlags :: CInt
+openOsfHandleFlags = 0x0002 .|. 0x8000 -- _O_RDWR | _O_BINARY
+
+allocateNamedPipeName :: Text -> IO FilePath
+allocateNamedPipeName pluginName = do
+  processId <- c_GetCurrentProcessId
+  unique <- newUnique
+  let uniqueSuffix = "-" <> showHex processId "-" <> showHex (hashUnique unique) ""
+  pure (windowsNamedPipePrefix <> escapedPluginPipeBase pluginName <> uniqueSuffix)
+
+acceptNamedPipeTransport
+  :: TransportConfig
+  -> Text
+  -> IORef Bool
+  -> HANDLE
+  -> FilePath
+  -> IO (Either TransportError Transport)
+acceptNamedPipeTransport cfg pluginName owned pipeH pipeName = do
+  connectResult <- waitForNamedPipeConnection cfg owned pipeH pipeName
+  case connectResult of
+    Left err -> pure (Left err)
+    Right () -> convertNamedPipeHandle owned pipeH pluginName pipeName
+
+waitForNamedPipeConnection
+  :: TransportConfig
+  -> IORef Bool
+  -> HANDLE
+  -> FilePath
+  -> IO (Either TransportError ())
+waitForNamedPipeConnection cfg owned pipeH pipeName = loop 0
+  where
+    timeoutMicros = tcTimeout cfg * 1000
+    pollDelayMicros = 10000
+
+    loop elapsedMicros = do
+      connectState <- pollNamedPipeConnection pipeH
+      case connectState of
+        NamedPipeConnected -> setNamedPipeBlocking owned pipeH pipeName
+        NamedPipeWaiting
+          | timeoutMicros > 0 && elapsedMicros >= timeoutMicros -> do
+              closeOwnedNamedPipe owned pipeH
+              pure (Left (TransportConnectionFailed
+                ("timed out waiting for plugin connection on " <> Text.pack pipeName)))
+          | otherwise -> do
+              let delayMicros = case timeoutMicros > 0 of
+                    True -> min pollDelayMicros (max 1 (timeoutMicros - elapsedMicros))
+                    False -> pollDelayMicros
+              threadDelay delayMicros
+              loop (elapsedMicros + delayMicros)
+        NamedPipeFailed errCode -> do
+          closeOwnedNamedPipe owned pipeH
+          pure (Left (TransportConnectionFailed
+            ("ConnectNamedPipe failed for " <> Text.pack pipeName <> " (GetLastError=" <> Text.pack (show errCode) <> ")")))
+
+data NamedPipeConnectState
+  = NamedPipeConnected
+  | NamedPipeWaiting
+  | NamedPipeFailed !Word32
+
+pollNamedPipeConnection :: HANDLE -> IO NamedPipeConnectState
+pollNamedPipeConnection pipeH = do
+  ok <- c_ConnectNamedPipe pipeH nullPtr
+  if ok /= 0
+    then pure NamedPipeConnected
+    else do
+      err <- c_GetLastError
+      if err == errorPipeConnected
+        then pure NamedPipeConnected
+        else if err == errorPipeListening
+          then pure NamedPipeWaiting
+          else pure (NamedPipeFailed err)
+
+setNamedPipeBlocking :: IORef Bool -> HANDLE -> FilePath -> IO (Either TransportError ())
+setNamedPipeBlocking owned pipeH pipeName = do
+  ok <- with pipeByteMode $ \modePtr ->
+    c_SetNamedPipeHandleState pipeH modePtr nullPtr nullPtr
+  if ok /= 0
+    then pure (Right ())
+    else do
+      err <- c_GetLastError
+      closeOwnedNamedPipe owned pipeH
+      pure (Left (TransportConnectionFailed
+        ("SetNamedPipeHandleState failed for " <> Text.pack pipeName <> " (GetLastError=" <> Text.pack (show err) <> ")")))
+
+convertNamedPipeHandle :: IORef Bool -> HANDLE -> Text -> FilePath -> IO (Either TransportError Transport)
+convertNamedPipeHandle owned pipeH pluginName pipeName = do
+  fd <- c_open_osfhandle pipeH openOsfHandleFlags
+  if fd == (-1)
+    then do
+      err <- c_GetLastError
+      closeOwnedNamedPipe owned pipeH
+      pure (Left (TransportConnectionFailed
+        ("_open_osfhandle failed for " <> Text.pack pipeName <> " (GetLastError=" <> Text.pack (show err) <> ")")))
+    else do
+      -- _open_osfhandle transfers HANDLE ownership to the C file descriptor.
+      writeIORef owned False
+      handleResult <- try (fdToHandle (fromIntegral fd))
+        :: IO (Either SomeException Handle)
+      case handleResult of
+        Left err -> do
+          closeFileDescriptor fd
+          pure (Left (TransportConnectionFailed (Text.pack (show err))))
+        Right handle -> do
+          transportResult <- try (mkTransport pluginName handle handle)
+            :: IO (Either SomeException Transport)
+          case transportResult of
+            Left err -> do
+              safeCloseHandle handle
+              pure (Left (TransportConnectionFailed (Text.pack (show err))))
+            Right transport -> pure (Right transport)
+
+closeOwnedNamedPipe :: IORef Bool -> HANDLE -> IO ()
+closeOwnedNamedPipe owned pipeH = do
+  shouldClose <- atomicModifyIORef' owned (\isOwned -> (False, isOwned))
+  if shouldClose
+    then do
+      _ <- try (c_CloseHandle pipeH) :: IO (Either SomeException CInt)
+      pure ()
+    else pure ()
+
+closeFileDescriptor :: CInt -> IO ()
+closeFileDescriptor fd = do
+  _ <- try (c_close fd) :: IO (Either SomeException CInt)
+  pure ()
+
+safeCloseHandle :: Handle -> IO ()
+safeCloseHandle handle = do
+  _ <- try (hClose handle) :: IO (Either SomeException ())
+  pure ()
+
+connectNamedPipeEndpoint :: Text -> FilePath -> IO (Either TransportError Transport)
+connectNamedPipeEndpoint name pipeName = catch go handler
+  where
+    go = do
+      pipeH <- withCString pipeName $ \namePtr ->
+        c_CreateFile
+          namePtr
+          genericReadWrite
+          0                   -- exclusive access to this client endpoint
+          nullPtr             -- default security attributes
+          openExisting
+          fileAttributeNormal
+          nullPtr
+      if pipeH == invalidHandleValue
+        then do
+          err <- c_GetLastError
+          pure (Left (TransportConnectionFailed
+            ("CreateFile failed for " <> Text.pack pipeName <> " (GetLastError=" <> Text.pack (show err) <> ")")))
+        else do
+          owned <- newIORef True
+          convertNamedPipeHandle owned pipeH name pipeName
+    handler (err :: SomeException) =
+      pure (Left (TransportConnectionFailed (Text.pack (show err))))
+#endif
 
 #if !defined(mingw32_HOST_OS)
 openUnixSocketServer :: TransportConfig -> Text -> IO (Either TransportError TransportServer)

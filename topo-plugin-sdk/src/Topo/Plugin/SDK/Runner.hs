@@ -9,7 +9,7 @@
 --
 -- 1. Generates a manifest from the 'PluginDef'
 -- 2. Writes it to @manifest.json@ in the plugin's working directory
--- 3. Listens on a named pipe (Windows) or Unix socket
+-- 3. Connects to the host-created named pipe (Windows) or Unix socket
 -- 4. Enters a message loop that dispatches incoming RPC messages
 --    to the appropriate callback
 -- 5. Shuts down cleanly when the host sends a @shutdown@ message
