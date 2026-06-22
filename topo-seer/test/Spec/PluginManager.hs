@@ -6,13 +6,16 @@
 module Spec.PluginManager (spec, runFixtureCli) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
-import Control.Exception (bracket)
+import Control.Exception (SomeException, bracket, catch, throwIO)
 import Control.Monad (unless)
 import qualified Data.Aeson as Aeson
+import Data.Aeson ((.=), object)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Word (Word64)
 import Hyperspace.Actor (ActorHandle, ActorSystem, Protocol, get, newActorSystem, shutdownActorSystem)
 import System.Directory
@@ -22,6 +25,7 @@ import System.Directory
   , doesFileExist
   , getHomeDirectory
   , getPermissions
+  , getTemporaryDirectory
   , removePathForcibly
   , setPermissions
   )
@@ -30,6 +34,7 @@ import System.Exit (die, exitFailure)
 import System.FilePath ((</>))
 import System.Info (os)
 import System.IO (stdin, stdout)
+import System.Process (ProcessHandle, getProcessExitCode)
 import System.Timeout (timeout)
 import Test.Hspec
 
@@ -40,11 +45,13 @@ import Actor.PluginManager
   , PluginManager
   , PluginStatus(..)
   , discoverPlugins
+  , getDisabledPlugins
   , getLoadedPlugins
   , getPluginOverlaySchemas
   , getPluginStages
   , queryPluginResource
   , refreshManifests
+  , setDisabledPlugins
   , shutdownPlugins
   )
 import Topo.Calendar (CalendarDate(..), defaultWorldTime)
@@ -109,11 +116,14 @@ spec = describe "PluginManager" $ do
         pluginStatuses testLaunchPluginName loaded `shouldSatisfy` elem PluginConnected
         pluginLifecycleStates testLaunchPluginName loaded `shouldSatisfy` elem LifecycleReady
         pluginLifecycleProtocols testLaunchPluginName loaded `shouldSatisfy` elem (Just currentProtocolVersion)
+        let handles = pluginProcessHandles testLaunchPluginName loaded
+        null handles `shouldBe` False
         shutdownPlugins pluginManagerHandle
         threadDelay 200000
         loadedAfterShutdown <- getLoadedPlugins pluginManagerHandle
         pluginStatuses testLaunchPluginName loadedAfterShutdown `shouldSatisfy` elem PluginDisconnected
         pluginLifecycleStates testLaunchPluginName loadedAfterShutdown `shouldSatisfy` elem LifecycleStopped
+        mapM_ (assertProcessExited testLaunchPluginName) handles
 
   it "launches plugins with the complete TOPO_PLUGIN environment over endpoint transport" $ do
     withParentStdioCompatibilityFlag $ do
@@ -127,6 +137,7 @@ spec = describe "PluginManager" $ do
           pluginLifecycleStates envContractPluginName loaded `shouldSatisfy` elem LifecycleReady
           pluginLifecycleProtocols envContractPluginName loaded `shouldSatisfy` elem (Just currentProtocolVersion)
           shutdownPlugins pluginManagerHandle
+          threadDelay 200000
 
   it "exposes Starting while public refreshManifests performs supervisor work" $ do
     withExecutablePluginDir refreshTransientPluginName refreshTransientManifestJSON "slow" $ do
@@ -178,6 +189,16 @@ spec = describe "PluginManager" $ do
         loaded <- getLoadedPlugins pluginManagerHandle
         pluginStatuses malformedPluginName loaded `shouldSatisfy` anyPluginErrorContaining "RPCProtocolError"
 
+  it "reports unexpected handshake responses as plugin errors" $ do
+    withExecutablePluginDir badHandshakePluginName badHandshakeManifestJSON "bad-handshake" $ do
+      bracket newActorSystem shutdownActorSystem $ \system -> do
+        pluginManagerHandle <- getPluginManager system
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses badHandshakePluginName loaded `shouldSatisfy` anyPluginErrorContaining "unexpected response to handshake"
+        pluginLifecycleStates badHandshakePluginName loaded `shouldSatisfy` elem LifecycleFailed
+
   it "reports early plugin exit during startup as a plugin error" $ do
     withExecutablePluginDir crashPluginName crashManifestJSON "early-exit" $ do
       bracket newActorSystem shutdownActorSystem $ \system -> do
@@ -212,6 +233,43 @@ spec = describe "PluginManager" $ do
           Nothing -> expectationFailure "unavailable data query hung"
           Just (Left err) -> err `shouldSatisfy` Text.isInfixOf "plugin unavailable"
           Just (Right _) -> expectationFailure "unavailable data query unexpectedly succeeded"
+
+  it "omits disabled plugin dependencies from pipeline views" $ do
+    withExecutablePluginDir disabledDependencyPluginName disabledDependencyManifestJSON "ok" $ do
+      bracket newActorSystem shutdownActorSystem $ \system -> do
+        pluginManagerHandle <- getPluginManager system
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses disabledDependencyPluginName loaded `shouldSatisfy` elem PluginConnected
+        let disabledName = Text.pack disabledDependencyPluginName
+        setDisabledPlugins pluginManagerHandle (Set.singleton disabledName)
+        disabled <- getDisabledPlugins pluginManagerHandle
+        disabled `shouldSatisfy` Set.member disabledName
+        stages <- getPluginStages pluginManagerHandle
+        map stageName stages `shouldNotSatisfy` elem disabledName
+        setDisabledPlugins pluginManagerHandle Set.empty
+        shutdownPlugins pluginManagerHandle
+
+  it "surfaces external data-source provider failures without backend-specific storage assumptions" $ do
+    withExecutablePluginDir providerFailedPluginName providerFailedManifestJSON "provider-failed" $ do
+      bracket newActorSystem shutdownActorSystem $ \system -> do
+        pluginManagerHandle <- getPluginManager system
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses providerFailedPluginName loaded `shouldSatisfy` elem PluginConnected
+        timed <- timeout 1000000 $ queryPluginResource pluginManagerHandle (Text.pack providerFailedPluginName) testQuery
+        case timed of
+          Nothing -> expectationFailure "provider failure query hung"
+          Just (Left err) -> do
+            err `shouldSatisfy` Text.isInfixOf "external data-source provider failed"
+            err `shouldNotSatisfy` Text.isInfixOf "SQLite"
+          Just (Right _) -> expectationFailure "provider failure query unexpectedly succeeded"
+        observed <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses providerFailedPluginName observed `shouldSatisfy` anyPluginErrorContaining "external data-source provider failed"
+        pluginLifecycleErrorCodes providerFailedPluginName observed `shouldSatisfy` elem (Just "data_query_failed")
+        shutdownPlugins pluginManagerHandle
 
   it "restarts startup failures with policy backoff and then connects" $ do
     withExecutablePluginDir flakyStartPluginName flakyStartManifestJSON "flaky-start" $ do
@@ -327,6 +385,27 @@ pluginConnections name (plugin:rest)
       Nothing -> Nothing
   | otherwise = pluginConnections name rest
 
+pluginProcessHandles :: String -> [LoadedPlugin] -> [ProcessHandle]
+pluginProcessHandles name loaded =
+  [ processHandle
+  | plugin <- loaded
+  , lpName plugin == Text.pack name
+  , Just processHandle <- [lpProcessHandle plugin]
+  ]
+
+assertProcessExited :: String -> ProcessHandle -> IO ()
+assertProcessExited label processHandle = do
+  result <- timeout 1000000 waitForExitCode
+  case result of
+    Nothing -> expectationFailure (label <> " fixture process did not exit after shutdown")
+    Just _ -> pure ()
+  where
+    waitForExitCode = do
+      mExitCode <- getProcessExitCode processHandle
+      case mExitCode of
+        Just exitCode -> pure exitCode
+        Nothing -> threadDelay 10000 >> waitForExitCode
+
 anyPluginError :: [PluginStatus] -> Bool
 anyPluginError = any $ \case
   PluginError _ -> True
@@ -339,17 +418,18 @@ anyPluginErrorContaining needle = any $ \case
 
 withTestPluginDir :: String -> BS.ByteString -> BS.ByteString -> IO a -> IO a
 withTestPluginDir pluginName manifestJSON schemaJSON action =
-  bracket setup teardown (const action)
+  withIsolatedPluginHome pluginName $
+    bracket setup teardown (const action)
   where
     setup = do
-      home <- getHomeDirectory
-      let pluginDir = home </> ".topo" </> "plugins" </> pluginName
+      baseDir <- currentPluginBaseDir
+      let pluginDir = baseDir </> pluginName
       resetPluginDir pluginDir
       BS.writeFile (pluginDir </> "manifest.json") manifestJSON
       BS.writeFile (pluginDir </> "test.toposchema") schemaJSON
       pure pluginDir
 
-    teardown = removePathForcibly
+    teardown = removePathForciblyEventually
 
 withParentStdioCompatibilityFlag :: IO a -> IO a
 withParentStdioCompatibilityFlag = bracket setup restore . const
@@ -362,17 +442,61 @@ withParentStdioCompatibilityFlag = bracket setup restore . const
 
 withExecutablePluginDir :: String -> BS.ByteString -> String -> IO a -> IO a
 withExecutablePluginDir pluginName manifestJSON fixtureMode action =
-  bracket setup teardown (const action)
+  withIsolatedPluginHome pluginName $
+    bracket setup teardown (const action)
   where
     setup = do
-      home <- getHomeDirectory
-      let pluginDir = home </> ".topo" </> "plugins" </> pluginName
+      baseDir <- currentPluginBaseDir
+      let pluginDir = baseDir </> pluginName
       resetPluginDir pluginDir
       BS.writeFile (pluginDir </> "manifest.json") manifestJSON
       writePluginWrapper pluginDir pluginName fixtureMode
       pure pluginDir
 
-    teardown = removePathForcibly
+    teardown = removePathForciblyEventually
+
+withIsolatedPluginHome :: String -> IO a -> IO a
+withIsolatedPluginHome label action =
+  bracket setup teardown (const action)
+  where
+    setup = do
+      oldPluginDir <- lookupEnv testPluginDirEnv
+      tmp <- getTemporaryDirectory
+      now <- getPOSIXTime
+      let uniqueSuffix = show (round (now * 1000000) :: Integer)
+          root = tmp </> ("topo-plugin-manager-" <> label <> "-" <> uniqueSuffix)
+          pluginBase = root </> "plugins"
+      removePathForciblyEventually root
+      createDirectoryIfMissing True pluginBase
+      setEnv testPluginDirEnv pluginBase
+      pure (root, oldPluginDir)
+
+    teardown (root, oldPluginDir) = do
+      restoreEnv testPluginDirEnv oldPluginDir
+      removePathForciblyEventually root
+
+    restoreEnv key = maybe (unsetEnv key) (setEnv key)
+
+removePathForciblyEventually :: FilePath -> IO ()
+removePathForciblyEventually path = go (20 :: Int)
+  where
+    go attemptsLeft =
+      removePathForcibly path `catch` \(err :: SomeException) ->
+        if attemptsLeft <= 0
+          then throwIO err
+          else threadDelay 50000 >> go (attemptsLeft - 1)
+
+currentPluginBaseDir :: IO FilePath
+currentPluginBaseDir = do
+  mOverride <- lookupEnv testPluginDirEnv
+  case mOverride of
+    Just dir | not (null dir) -> pure dir
+    _ -> do
+      home <- getHomeDirectory
+      pure (home </> ".topo" </> "plugins")
+
+testPluginDirEnv :: String
+testPluginDirEnv = "TOPO_PLUGIN_DIR"
 
 resetPluginDir :: FilePath -> IO ()
 resetPluginDir pluginDir = do
@@ -384,8 +508,8 @@ resetPluginDir pluginDir = do
 
 readFixtureCount :: String -> String -> IO Int
 readFixtureCount pluginName label = do
-  home <- getHomeDirectory
-  let path = home </> ".topo" </> "plugins" </> pluginName </> "data" </> (label <> ".count")
+  baseDir <- currentPluginBaseDir
+  let path = baseDir </> pluginName </> "data" </> (label <> ".count")
   readCountFile path
 
 incrementFixtureCount :: String -> IO Int
@@ -439,7 +563,7 @@ runFixtureCli = do
   args <- getArgs
   case args of
     ["--plugin-manager-fixture", mode] -> runFixtureMode mode
-    _ -> die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|malformed-json|early-exit|slow|slow-shutdown|flaky-start|counted-early-exit|hang-query|exit-on-generator|exit-on-simulation>"
+    _ -> die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|malformed-json|bad-handshake|early-exit|slow|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|exit-on-generator|exit-on-simulation>"
 
 runFixtureMode :: String -> IO ()
 runFixtureMode = \case
@@ -447,12 +571,14 @@ runFixtureMode = \case
   "env-contract" -> runEnvContractFixture
   "protocol-mismatch" -> runOneShotAckFixture (currentProtocolVersion + 1)
   "malformed-json" -> runMalformedJsonFixture
+  "bad-handshake" -> runBadHandshakeFixture
   "early-exit" -> exitFailure
   "slow" -> threadDelay 2000000 >> runOkFixture
   "slow-shutdown" -> runSlowShutdownFixture
   "flaky-start" -> runFlakyStartFixture
   "counted-early-exit" -> incrementFixtureCount "counted-early-exit" >> exitFailure
   "hang-query" -> runHangQueryFixture
+  "provider-failed" -> runProviderFailedFixture
   "exit-on-generator" -> runExitOnGeneratorFixture
   "exit-on-simulation" -> runExitOnSimulationFixture
   unknown -> die ("unknown plugin-manager fixture: " <> unknown)
@@ -524,6 +650,31 @@ runHangQueryFixture = do
                 _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope (envRequestId envelope) currentProtocolVersion))
                 loop transport
               MsgQueryResource -> threadDelay 2000000 >> closeTransport transport
+              MsgShutdown -> closeTransport transport
+              _ -> loop transport
+
+runProviderFailedFixture :: IO ()
+runProviderFailedFixture = do
+  connectPluginFromEnvironment "plugin-manager-provider-failed-fixture" stdin stdout >>= \case
+    Left _ -> exitFailure
+    Right transport -> loop transport
+  where
+    loop transport = do
+      recvMessage transport >>= \case
+        Left _ -> closeTransport transport
+        Right bytes ->
+          case decodeMessage bytes of
+            Left _ -> loop transport
+            Right envelope -> case envType envelope of
+              MsgHandshake -> do
+                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope (envRequestId envelope) currentProtocolVersion))
+                loop transport
+              MsgQueryResource -> do
+                _ <- sendMessage transport (encodeMessage (pluginErrorEnvelope
+                  (envRequestId envelope)
+                  503
+                  "external data-source provider failed: status unavailable"))
+                loop transport
               MsgShutdown -> closeTransport transport
               _ -> loop transport
 
@@ -634,6 +785,25 @@ runMalformedJsonFixture = do
       _ <- sendMessage transport (BSC.pack "{not valid json")
       closeTransport transport
 
+runBadHandshakeFixture :: IO ()
+runBadHandshakeFixture = do
+  connectPluginFromEnvironment "plugin-manager-bad-handshake-fixture" stdin stdout >>= \case
+    Left _ -> exitFailure
+    Right transport -> do
+      handshakeRequest <- recvMessage transport
+      let requestId = case handshakeRequest of
+            Left _ -> Nothing
+            Right bytes -> either (const Nothing) envRequestId (decodeMessage bytes)
+      _ <- sendMessage transport (encodeMessage (RPCEnvelope
+        { envType = MsgHealthStatus
+        , envPayload = object
+            [ "healthy" .= True
+            , "message" .= ("not a handshake acknowledgement" :: Text)
+            ]
+        , envRequestId = requestId
+        }))
+      closeTransport transport
+
 handshakeAckEnvelope :: Maybe Word64 -> Int -> RPCEnvelope
 handshakeAckEnvelope requestId protocolVersion = RPCEnvelope
   { envType = MsgHandshakeAck
@@ -642,6 +812,16 @@ handshakeAckEnvelope requestId protocolVersion = RPCEnvelope
       , haDataDirectory = Nothing
       , haResources = []
       })
+  , envRequestId = requestId
+  }
+
+pluginErrorEnvelope :: Maybe Word64 -> Int -> Text -> RPCEnvelope
+pluginErrorEnvelope requestId code message = RPCEnvelope
+  { envType = MsgError
+  , envPayload = object
+      [ "code" .= code
+      , "message" .= message
+      ]
   , envRequestId = requestId
   }
 
@@ -697,6 +877,12 @@ malformedPluginName = "copilot-test-plugin-malformed-json"
 malformedManifestJSON :: BS.ByteString
 malformedManifestJSON = manifestFor malformedPluginName
 
+badHandshakePluginName :: String
+badHandshakePluginName = "copilot-test-plugin-bad-handshake"
+
+badHandshakeManifestJSON :: BS.ByteString
+badHandshakeManifestJSON = manifestFor badHandshakePluginName
+
 crashPluginName :: String
 crashPluginName = "copilot-test-plugin-crashy"
 
@@ -733,6 +919,25 @@ autoStartDisabledManifestJSON = dataResourceManifestFor autoStartDisabledPluginN
   , "    \"shutdown_timeout_ms\": 100"
   ]
 
+disabledDependencyPluginName :: String
+disabledDependencyPluginName = "copilot-test-plugin-disabled-dependency"
+
+disabledDependencyManifestJSON :: BS.ByteString
+disabledDependencyManifestJSON = manifestFor disabledDependencyPluginName
+
+providerFailedPluginName :: String
+providerFailedPluginName = "copilot-test-plugin-provider-failed"
+
+providerFailedManifestJSON :: BS.ByteString
+providerFailedManifestJSON = dataResourceManifestFor providerFailedPluginName
+  [ "    \"restart_mode\": \"never\","
+  , "    \"max_restarts\": 0,"
+  , "    \"startup_timeout_ms\": 1000,"
+  , "    \"request_timeout_ms\": 300,"
+  , "    \"shutdown_timeout_ms\": 300,"
+  , "    \"backoff_ms\": 1"
+  ]
+
 flakyStartPluginName :: String
 flakyStartPluginName = "copilot-test-plugin-flaky-start-policy"
 
@@ -741,9 +946,9 @@ flakyStartManifestJSON = manifestWithStartPolicyFor flakyStartPluginName
   [ "    \"restart_mode\": \"on_failure\","
   , "    \"max_restarts\": 2,"
   , "    \"restart_window_ms\": 10000,"
-  , "    \"startup_timeout_ms\": 200,"
-  , "    \"request_timeout_ms\": 200,"
-  , "    \"shutdown_timeout_ms\": 100,"
+  , "    \"startup_timeout_ms\": 1000,"
+  , "    \"request_timeout_ms\": 300,"
+  , "    \"shutdown_timeout_ms\": 300,"
   , "    \"backoff_ms\": 5"
   ]
 
@@ -768,9 +973,9 @@ hangQueryManifestJSON :: BS.ByteString
 hangQueryManifestJSON = dataResourceManifestFor hangQueryPluginName
   [ "    \"restart_mode\": \"on_failure\","
   , "    \"max_restarts\": 0,"
-  , "    \"startup_timeout_ms\": 200,"
+  , "    \"startup_timeout_ms\": 1000,"
   , "    \"request_timeout_ms\": 100,"
-  , "    \"shutdown_timeout_ms\": 100,"
+  , "    \"shutdown_timeout_ms\": 300,"
   , "    \"backoff_ms\": 1"
   ]
 
@@ -781,9 +986,9 @@ generatorCrashManifestJSON :: BS.ByteString
 generatorCrashManifestJSON = manifestWithStartPolicyFor generatorCrashPluginName
   [ "    \"restart_mode\": \"on_failure\","
   , "    \"max_restarts\": 0,"
-  , "    \"startup_timeout_ms\": 200,"
+  , "    \"startup_timeout_ms\": 1000,"
   , "    \"request_timeout_ms\": 100,"
-  , "    \"shutdown_timeout_ms\": 100,"
+  , "    \"shutdown_timeout_ms\": 300,"
   , "    \"backoff_ms\": 1"
   ]
 
@@ -794,9 +999,9 @@ simulationCrashManifestJSON :: BS.ByteString
 simulationCrashManifestJSON = simulationManifestWithStartPolicyFor simulationCrashPluginName
   [ "    \"restart_mode\": \"on_failure\","
   , "    \"max_restarts\": 0,"
-  , "    \"startup_timeout_ms\": 200,"
+  , "    \"startup_timeout_ms\": 1000,"
   , "    \"request_timeout_ms\": 100,"
-  , "    \"shutdown_timeout_ms\": 100,"
+  , "    \"shutdown_timeout_ms\": 300,"
   , "    \"backoff_ms\": 1"
   ]
 

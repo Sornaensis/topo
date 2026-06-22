@@ -263,6 +263,7 @@ test-suite topo-seer-test
     , http-types
     , hyperspace
     , linear
+    , process
     , sdl2
     , text
     , time

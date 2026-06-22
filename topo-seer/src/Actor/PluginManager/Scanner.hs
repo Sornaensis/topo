@@ -19,6 +19,7 @@ import System.Directory
   , getHomeDirectory
   , listDirectory
   )
+import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 import Data.Time (getCurrentTime)
 
@@ -40,8 +41,12 @@ import qualified Topo.Plugin.RPC.Manifest as RPCManifest
 -- | The standard plugin directory.
 pluginsBaseDir :: IO FilePath
 pluginsBaseDir = do
-  home <- getHomeDirectory
-  pure (home </> ".topo" </> "plugins")
+  mOverride <- lookupEnv "TOPO_PLUGIN_DIR"
+  case mOverride of
+    Just dir | not (null dir) -> pure dir
+    _ -> do
+      home <- getHomeDirectory
+      pure (home </> ".topo" </> "plugins")
 
 -- | Scan the plugins directory for subdirectories with manifest.json.
 scanPluginDirs :: FilePath -> IO [LoadedPlugin]

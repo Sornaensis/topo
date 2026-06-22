@@ -244,6 +244,7 @@ tests:
       - filepath
       - QuickCheck
       - linear
+      - process
       - sdl2
       - time
       - topo

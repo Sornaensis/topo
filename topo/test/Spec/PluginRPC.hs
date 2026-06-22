@@ -820,6 +820,17 @@ spec = describe "Plugin.RPC" $ do
         takeClientResult done `shouldReturn` Right ()
         doesPathExist (teAddress (tsEndpoint server)) `shouldReturn` False
 
+    it "removes stale Unix socket endpoints when accept times out" $
+      onUnix $ bracket acquireTimingOutServer tsClose $ \server -> do
+        let socketPath = teAddress (tsEndpoint server)
+        doesPathExist socketPath `shouldReturn` True
+        acceptResult <- tsAccept server
+        case acceptResult of
+          Left (TransportConnectionFailed msg) -> msg `shouldSatisfy` Text.isInfixOf "timed out"
+          Left err -> expectationFailure ("expected accept timeout, got " <> show err)
+          Right transport -> closeTransport transport >> expectationFailure "accept unexpectedly succeeded"
+        doesPathExist socketPath `shouldReturn` False
+
     it "allocates distinct Unix socket endpoints for concurrent plugin startup" $
       onUnix $ withTransportServer "same-plugin" $ \serverA ->
         withTransportServer "same-plugin" $ \serverB -> do
@@ -970,6 +981,13 @@ withTransportServer pluginName = bracket acquire tsClose
       case serverResult of
         Left err -> expectationFailure ("openPluginServer failed: " <> show err) >> fail "openPluginServer"
         Right server -> pure server
+
+acquireTimingOutServer :: IO TransportServer
+acquireTimingOutServer = do
+  serverResult <- openPluginServer defaultTransportConfig { tcTimeout = 10 } "socket-stale"
+  case serverResult of
+    Left err -> expectationFailure ("openPluginServer failed: " <> show err) >> fail "openPluginServer"
+    Right server -> pure server
 
 requireAccept :: TransportServer -> IO Transport
 requireAccept server = do
