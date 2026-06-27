@@ -191,6 +191,130 @@ spec = describe "PluginDependency" $ do
         dgdMessage firstDiagnostic `shouldSatisfy` Text.isInfixOf "a -> b -> c -> a"
       [] -> expectationFailure "expected cycle diagnostics"
 
+  it "produces deterministic startup order and omits transitive blockers" $ do
+    let root = provider "c-root" []
+        middle = provider "b-provider" [required (DependencyPlugin (PluginDependency "c-root" VersionAny))]
+        consumer = provider "a-consumer" [required (DependencyPlugin (PluginDependency "b-provider" VersionAny))]
+        independent = provider "z-independent" []
+        startupInput = defaultDependencyResolverInput [consumer, independent, middle, root]
+
+    dependencyStartupOrder startupInput `shouldBe`
+      ["c-root", "b-provider", "a-consumer", "z-independent"]
+
+    let blockedProvider = provider "blocked-provider" [required (DependencyPlugin (PluginDependency "missing-provider" VersionAny))]
+        blockedConsumer = provider "blocked-consumer" [required (DependencyPlugin (PluginDependency "blocked-provider" VersionAny))]
+        order = resolveDependencyOrder (defaultDependencyResolverInput [independent, blockedConsumer, blockedProvider])
+
+    droStartupOrder order `shouldBe` ["z-independent"]
+    droBlockedPlugins order `shouldBe` ["blocked-consumer", "blocked-provider"]
+
+  it "uses an unblocked unqualified external data-source provider when another match is blocked" $ do
+    let blockedLedger = (provider "a-ledger" [required (DependencyPlugin (PluginDependency "missing-provider" VersionAny))])
+          { dpExternalDataSources = [DependencyExternalDataSourceProvider "settlement-ledger" ["settlements"]]
+          }
+        healthyLedger = (provider "z-ledger" [])
+          { dpExternalDataSources = [DependencyExternalDataSourceProvider "settlement-ledger" ["settlements"]]
+          }
+        consumer = provider "consumer"
+          [ required (DependencyExternalDataSource (ExternalDataSourceDependency Nothing "consumer" "settlement-ledger" [ExternalAccessRead] ["settlements"]))
+          ]
+        order = resolveDependencyOrder (defaultDependencyResolverInput [consumer, healthyLedger, blockedLedger])
+
+    droBlockedPlugins order `shouldBe` ["a-ledger"]
+    droStartupOrder order `shouldBe` ["z-ledger", "consumer"]
+    droSimulationOrder order `shouldBe` ["z-ledger", "consumer"]
+
+  it "uses an acyclic unqualified overlay provider when an earlier match would cycle" $ do
+    let consumer = provider "a-consumer"
+          [ required (DependencyOverlay (OverlayDependency "shared" Nothing))
+          ]
+        cyclicProvider = (provider "b-cycle" [required (DependencyPlugin (PluginDependency "a-consumer" VersionAny))])
+          { dpOverlays = ["shared"]
+          }
+        healthyProvider = (provider "z-provider" [])
+          { dpOverlays = ["shared"]
+          }
+        order = resolveDependencyOrder (defaultDependencyResolverInput [consumer, healthyProvider, cyclicProvider])
+
+    map dgdStatus (droDiagnostics order) `shouldBe` [DependencyAvailable, DependencyAvailable]
+    droBlockedPlugins order `shouldBe` []
+    droStartupOrder order `shouldBe` ["z-provider", "a-consumer", "b-cycle"]
+
+  it "blocks unqualified provider cycles that remain after an acyclic alternative is blocked" $ do
+    let consumer = provider "a-consumer"
+          [ required (DependencyOverlay (OverlayDependency "shared" Nothing))
+          ]
+        cyclicProvider = (provider "b-cycle" [required (DependencyPlugin (PluginDependency "a-consumer" VersionAny))])
+          { dpOverlays = ["shared"]
+          }
+        blockedProvider = (provider "z-provider" [required (DependencyPlugin (PluginDependency "missing-provider" VersionAny))])
+          { dpOverlays = ["shared"]
+          }
+        order = resolveDependencyOrder (defaultDependencyResolverInput [consumer, blockedProvider, cyclicProvider])
+
+    droBlockedPlugins order `shouldBe` ["a-consumer", "b-cycle", "z-provider"]
+    droStartupOrder order `shouldBe` []
+
+  it "produces deterministic pipeline insertion anchors from built-in and plugin prerequisites" $ do
+    let erosion = provider "erosion-ext" [required (DependencyBuiltInStage StageErosion)]
+        biome = provider "biome-ext" [required (DependencyBuiltInStage StageBiomes)]
+        hydrologyConsumer = provider "hydrology-consumer"
+          [ required (DependencyBuiltInStage StageHydrology)
+          , required (DependencyPlugin (PluginDependency "biome-ext" VersionAny))
+          ]
+        lateConsumer = provider "late-consumer"
+          [ required (DependencyBuiltInStage StageWeather)
+          , required (DependencyPlugin (PluginDependency "biome-ext" VersionAny))
+          ]
+        input = defaultDependencyResolverInput [lateConsumer, hydrologyConsumer, biome, erosion]
+
+    dependencyPipelineOrder input `shouldBe`
+      [ DependencyPipelineInsertion "erosion-ext" (Just StageErosion)
+      , DependencyPipelineInsertion "biome-ext" (Just StageBiomes)
+      , DependencyPipelineInsertion "hydrology-consumer" (Just (StagePlugin "biome-ext"))
+      , DependencyPipelineInsertion "late-consumer" (Just StageWeather)
+      ]
+
+  it "keeps optional and soft provider edges non-blocking when preferences cycle" $ do
+    let pluginA = provider "a"
+          [ DependencyDecl (DependencyPlugin (PluginDependency "b" VersionAny)) DependencySoft Nothing
+          ]
+        pluginB = provider "b"
+          [ DependencyDecl (DependencyPlugin (PluginDependency "a" VersionAny)) DependencyOptional Nothing
+          ]
+        order = resolveDependencyOrder (defaultDependencyResolverInput [pluginB, pluginA])
+
+    droStartupOrder order `shouldBe` ["a", "b"]
+    droBlockedPlugins order `shouldBe` []
+
+  it "does not anchor pipeline insertions to providers without concrete pipeline anchors" $ do
+    let registry = provider "registry" []
+        generator = provider "generator"
+          [ required (DependencyBuiltInStage StageErosion)
+          , required (DependencyPlugin (PluginDependency "registry" VersionAny))
+          ]
+        input = defaultDependencyResolverInput [generator, registry]
+
+    dependencyPipelineOrder input `shouldBe`
+      [ DependencyPipelineInsertion "registry" Nothing
+      , DependencyPipelineInsertion "generator" (Just StageErosion)
+      ]
+
+  it "produces simulation insertion order from overlay and external data-source provider edges" $ do
+    let civilization = (provider "civilization" [])
+          { dpOverlays = ["settlements"]
+          }
+        ledger = (provider "ledger" [])
+          { dpExternalDataSources = [DependencyExternalDataSourceProvider "settlement-ledger" ["settlements"]]
+          }
+        tradeRoutes = provider "trade-routes"
+          [ required (DependencyOverlay (OverlayDependency "settlements" (Just "civilization")))
+          , required (DependencyExternalDataSource (ExternalDataSourceDependency (Just "ledger") "trade-routes" "settlement-ledger" [ExternalAccessRead] ["settlements"]))
+          ]
+        input = defaultDependencyResolverInput [tradeRoutes, ledger, civilization]
+
+    dependencySimulationOrder input `shouldBe` ["civilization", "ledger", "trade-routes"]
+
   it "rejects plugin stages in built-in stage dependencies" $ do
     let badTarget = object
           [ "type" .= ("builtInStage" :: Text)

@@ -4,10 +4,10 @@
 
 -- | Typed dependency declarations for plugin resolver inputs.
 --
--- This module models dependency edges only.  It intentionally does not decide
--- whether a graph is valid, acyclic, or executable; resolver validation and
--- ordering are layered on top of these types.  Derived 'Ord' instances are for
--- @Map@/@Set@ keys, not resolver execution order.
+-- This module models dependency edges and derives resolver diagnostics plus
+-- deterministic startup, pipeline-insertion, and simulation-insertion orders.
+-- Derived 'Ord' instances are for @Map@/@Set@ keys, not resolver execution
+-- order.
 module Topo.Plugin.Dependency
   ( DependencyMode(..)
   , dependencyModeBlocks
@@ -30,6 +30,12 @@ module Topo.Plugin.Dependency
   , DependencyDiagnosticStatus(..)
   , dependencyDiagnosticStatusText
   , DependencyDiagnostic(..)
+  , DependencyPipelineInsertion(..)
+  , DependencyResolvedOrder(..)
+  , resolveDependencyOrder
+  , dependencyStartupOrder
+  , dependencyPipelineOrder
+  , dependencySimulationOrder
   , validateDependencies
   , blockingDependencyDiagnostics
   , manifestDependencyDecls
@@ -48,6 +54,7 @@ import Data.Aeson
   , withText
   )
 import Data.Aeson.Types (Parser)
+import Data.List (foldl', sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe)
@@ -454,6 +461,65 @@ instance ToJSON DependencyDiagnostic where
     , "message" .= dgdMessage diag
     ]
 
+-- | A plugin generator insertion point selected by the dependency resolver.
+--
+-- The anchor is either a built-in stage, a previously inserted plugin stage, or
+-- 'Nothing' when the provider has no pipeline-stage dependency.  Callers may
+-- filter these entries to plugins that actually declare generator stages.
+data DependencyPipelineInsertion = DependencyPipelineInsertion
+  { dpiPlugin :: !Text
+  , dpiInsertAfter :: !(Maybe StageId)
+  } deriving (Eq, Ord, Show, Read, Generic)
+
+-- | Deterministic dependency-derived orderings for host integration points.
+--
+-- Disabled plugins and plugins blocked by required dependency diagnostics are
+-- omitted from the orders.  The blocked set includes transitive consumers of a
+-- blocked provider so startup, pipeline insertion, and simulation DAG insertion
+-- cannot run a plugin before a required provider is ready.
+data DependencyResolvedOrder = DependencyResolvedOrder
+  { droStartupOrder :: ![Text]
+  , droPipelineOrder :: ![DependencyPipelineInsertion]
+  , droSimulationOrder :: ![Text]
+  , droBlockedPlugins :: ![Text]
+  , droDiagnostics :: ![DependencyDiagnostic]
+  } deriving (Eq, Show, Generic)
+
+-- | Resolve dependency diagnostics and deterministic integration orders.
+resolveDependencyOrder :: DependencyResolverInput -> DependencyResolvedOrder
+resolveDependencyOrder input = DependencyResolvedOrder
+  { droStartupOrder = startupOrder
+  , droPipelineOrder = pipelineInsertions
+  , droSimulationOrder = simulationOrder
+  , droBlockedPlugins = Set.toList blockedPlugins
+  , droDiagnostics = diagnostics
+  }
+  where
+    diagnostics = validateDependencies input
+    providerNames = Set.fromList (map dpName (driProviders input))
+    disabledProviders = Set.intersection providerNames (driDisabledPlugins input)
+    providerEdges = dependencyProviderEdges input
+    blockedPlugins = dependencyBlockedPlugins providerNames disabledProviders diagnostics providerEdges
+    eligibleProviders = Set.difference providerNames blockedPlugins
+    orderEdges = dependencyOrderEdges eligibleProviders providerEdges
+    startupOrder = deterministicPluginOrder eligibleProviders (const 0) orderEdges
+    simulationOrder = deterministicPluginOrder eligibleProviders (const 0) orderEdges
+    pipelineOrder = deterministicPluginOrder eligibleProviders pipelineRank orderEdges
+    pipelineInsertions = dependencyPipelineInsertions input pipelineOrder orderEdges
+    pipelineRank name = maybe (length allBuiltinStageIds) stageRank (providerStageAnchor input name)
+
+-- | Startup order only, derived from 'resolveDependencyOrder'.
+dependencyStartupOrder :: DependencyResolverInput -> [Text]
+dependencyStartupOrder = droStartupOrder . resolveDependencyOrder
+
+-- | Pipeline generator insertion order only, derived from 'resolveDependencyOrder'.
+dependencyPipelineOrder :: DependencyResolverInput -> [DependencyPipelineInsertion]
+dependencyPipelineOrder = droPipelineOrder . resolveDependencyOrder
+
+-- | Simulation DAG insertion order only, derived from 'resolveDependencyOrder'.
+dependencySimulationOrder :: DependencyResolverInput -> [Text]
+dependencySimulationOrder = droSimulationOrder . resolveDependencyOrder
+
 -- | Return diagnostics for every dependency declaration, including available
 -- dependencies.  Missing, disabled, and required-cycle diagnostics have
 -- 'dgdBlocking' set when their declaration mode blocks readiness.
@@ -462,33 +528,32 @@ validateDependencies input = map markCycle baseDiagnostics
   where
     providerMap = dependencyProviderMap input
     baseDiagnostics = concatMap (diagnosticsForProvider input) (driProviders input)
-    requiredAvailableEdges =
-      [ (dgdConsumer diag, provider)
-      | diag <- baseDiagnostics
-      , dgdStatus diag == DependencyAvailable
-      , dependencyDeclBlocks (dgdDependency diag)
-      , Just provider <- [dgdProvider diag]
-      , Map.member provider providerMap
-      ]
+    selectedProviders = selectRequiredProviders (dependencyProviderEdges input)
     adjacency = Map.fromListWith (<>)
       [ (consumer, [provider])
-      | (consumer, provider) <- requiredAvailableEdges
+      | ((consumer, _dep), provider) <- Map.toList selectedProviders
       ]
-    markCycle diag = case dgdProvider diag of
+    markCycle diag = case selectedProviderFor diag of
       Just provider
         | dgdStatus diag == DependencyAvailable
         , dependencyDeclBlocks (dgdDependency diag)
         , Map.member provider providerMap
         , Just path <- dependencyCyclePath adjacency (dgdConsumer diag) provider ->
             diag
-              { dgdStatus = DependencyCycle
+              { dgdProvider = Just provider
+              , dgdStatus = DependencyCycle
               , dgdBlocking = True
               , dgdCycle = path
               , dgdMessage =
                   "Dependency cycle blocks plugin '" <> dgdConsumer diag <> "': "
                     <> Text.intercalate " -> " path
               }
+        | dgdStatus diag == DependencyAvailable
+        , dependencyDeclBlocks (dgdDependency diag) ->
+            diag { dgdProvider = Just provider }
       _ -> diag
+    selectedProviderFor diag =
+      Map.lookup (dependencyEdgeKey (dgdConsumer diag) (dgdDependency diag)) selectedProviders
 
 -- | Blocking diagnostics only, for readiness checks.
 blockingDependencyDiagnostics :: [DependencyDiagnostic] -> [DependencyDiagnostic]
@@ -549,6 +614,340 @@ stageOrPluginDependency raw reason = DependencyDecl
   , ddMode = DependencyRequired
   , ddReason = reason
   }
+
+data DependencyProviderEdge = DependencyProviderEdge
+  { dpeConsumer :: !Text
+  , dpeProviders :: ![Text]
+  , dpeDependency :: !DependencyDecl
+  , dpeMode :: !DependencyMode
+  , dpeStatus :: !DependencyDiagnosticStatus
+  } deriving (Eq, Ord, Show)
+
+dependencyProviderEdges :: DependencyResolverInput -> [DependencyProviderEdge]
+dependencyProviderEdges input =
+  [ DependencyProviderEdge
+      { dpeConsumer = dpName consumer
+      , dpeProviders = loadedProviders providerMap (drProviders resolution)
+      , dpeDependency = dep
+      , dpeMode = ddMode dep
+      , dpeStatus = drStatus resolution
+      }
+  | consumer <- driProviders input
+  , dep <- dpDependencies consumer
+  , let resolution = resolveDependency input consumer dep
+  , not (null (loadedProviders providerMap (drProviders resolution)))
+  ]
+  where
+    providerMap = dependencyProviderMap input
+
+loadedProviders :: Map Text DependencyProvider -> [Text] -> [Text]
+loadedProviders providerMap providers =
+  [ name
+  | name <- Set.toList (Set.fromList providers)
+  , Map.member name providerMap
+  ]
+
+dependencyEdgeKey :: Text -> DependencyDecl -> (Text, DependencyDecl)
+dependencyEdgeKey consumer dep = (consumer, dep)
+
+selectRequiredProviders :: [DependencyProviderEdge] -> Map (Text, DependencyDecl) Text
+selectRequiredProviders providerEdges = case selectRequiredProvidersAcyclic providerEdges of
+  Just selectedProviders -> selectedProviders
+  Nothing -> selectRequiredProvidersGreedy providerEdges
+
+selectRequiredProvidersAcyclic :: [DependencyProviderEdge] -> Maybe (Map (Text, DependencyDecl) Text)
+selectRequiredProvidersAcyclic providerEdges = chooseAcyclic Map.empty Map.empty (requiredProviderEdges providerEdges)
+  where
+    chooseAcyclic _adjacency selected [] = Just selected
+    chooseAcyclic adjacency selected (edge:edges) = listToMaybe
+      [ selected'
+      | providerName <- dpeProviders edge
+      , not (pathExists adjacency providerName (dpeConsumer edge))
+      , let key = dependencyEdgeKey (dpeConsumer edge) (dpeDependency edge)
+            adjacency' = insertAdjacency (dpeConsumer edge, providerName) adjacency
+            selectedWithEdge = Map.insert key providerName selected
+      , Just selected' <- [chooseAcyclic adjacency' selectedWithEdge edges]
+      ]
+
+selectRequiredProvidersGreedy :: [DependencyProviderEdge] -> Map (Text, DependencyDecl) Text
+selectRequiredProvidersGreedy providerEdges = snd (foldl' selectProvider (Map.empty, Map.empty) (requiredProviderEdges providerEdges))
+  where
+    selectProvider (adjacency, selected) edge =
+      case preferredProvider adjacency edge of
+        Nothing -> (adjacency, selected)
+        Just providerName ->
+          let key = dependencyEdgeKey (dpeConsumer edge) (dpeDependency edge)
+              adjacency' = insertAdjacency (dpeConsumer edge, providerName) adjacency
+          in (adjacency', Map.insert key providerName selected)
+    preferredProvider adjacency edge = case nonCyclingProviders of
+      providerName:_ -> Just providerName
+      [] -> listToMaybe (dpeProviders edge)
+      where
+        nonCyclingProviders =
+          [ providerName
+          | providerName <- dpeProviders edge
+          , not (pathExists adjacency providerName (dpeConsumer edge))
+          ]
+
+requiredProviderEdges :: [DependencyProviderEdge] -> [DependencyProviderEdge]
+requiredProviderEdges providerEdges = sortOn edgePriority
+  [ edge
+  | edge <- providerEdges
+  , dpeStatus edge == DependencyAvailable
+  , dependencyModeBlocks (dpeMode edge)
+  ]
+  where
+    edgePriority edge =
+      ( dpeConsumer edge
+      , dependencyTargetLabel (ddTarget (dpeDependency edge))
+      , dpeProviders edge
+      )
+
+dependencyBlockedPlugins
+  :: Set Text
+  -> Set Text
+  -> [DependencyDiagnostic]
+  -> [DependencyProviderEdge]
+  -> Set Text
+dependencyBlockedPlugins providerNames disabledProviders diagnostics providerEdges = go initialBlocked
+  where
+    initialBlocked = Set.unions
+      [ disabledProviders
+      , Set.fromList
+          [ dgdConsumer diag
+          | diag <- diagnostics
+          , dgdBlocking diag
+          , Set.member (dgdConsumer diag) providerNames
+          ]
+      , Set.fromList
+          [ pluginName
+          | diag <- diagnostics
+          , dgdBlocking diag
+          , pluginName <- dgdCycle diag
+          , Set.member pluginName providerNames
+          ]
+      ]
+    requiredEdges =
+      [ edge
+      | edge <- providerEdges
+      , dependencyModeBlocks (dpeMode edge)
+      ]
+    go blocked =
+      let providerBlocked = Set.fromList
+            [ dpeConsumer edge
+            | edge <- requiredEdges
+            , all (`Set.member` blocked) (dpeProviders edge)
+            , Set.member (dpeConsumer edge) providerNames
+            , not (Set.member (dpeConsumer edge) blocked)
+            ]
+          blockedAfterProviders = Set.union blocked providerBlocked
+          eligible = Set.difference providerNames blockedAfterProviders
+          cycleBlocked = dependencyRequiredCyclePlugins eligible providerEdges
+          newlyBlocked = Set.union providerBlocked (Set.difference cycleBlocked blockedAfterProviders)
+      in if Set.null newlyBlocked
+           then blockedAfterProviders
+           else go (Set.unions [blocked, providerBlocked, cycleBlocked])
+
+dependencyRequiredCyclePlugins :: Set Text -> [DependencyProviderEdge] -> Set Text
+dependencyRequiredCyclePlugins eligible providerEdges = case selectRequiredProvidersAcyclic eligibleEdges of
+  Just _ -> Set.empty
+  Nothing -> selectedProviderCyclePlugins (selectRequiredProvidersGreedy eligibleEdges)
+  where
+    eligibleEdges =
+      [ edge { dpeProviders = filter (`Set.member` eligible) (dpeProviders edge) }
+      | edge <- providerEdges
+      , dpeStatus edge == DependencyAvailable
+      , Set.member (dpeConsumer edge) eligible
+      , any (`Set.member` eligible) (dpeProviders edge)
+      ]
+
+selectedProviderCyclePlugins :: Map (Text, DependencyDecl) Text -> Set Text
+selectedProviderCyclePlugins selectedProviders = Set.fromList
+  [ pluginName
+  | (consumer, providerName) <- selectedEdges
+  , Just path <- [dependencyCyclePath adjacency consumer providerName]
+  , pluginName <- path
+  ]
+  where
+    selectedEdges =
+      [ (consumer, providerName)
+      | ((consumer, _dep), providerName) <- Map.toList selectedProviders
+      ]
+    adjacency = Map.fromListWith (<>)
+      [ (consumer, [providerName])
+      | (consumer, providerName) <- selectedEdges
+      ]
+
+dependencyOrderEdges :: Set Text -> [DependencyProviderEdge] -> Set (Text, Text)
+dependencyOrderEdges eligible providerEdges = safePreferenceEdges eligible hardEdges preferredEdges
+  where
+    eligibleEdges =
+      [ edge { dpeProviders = filter (`Set.member` eligible) (dpeProviders edge) }
+      | edge <- providerEdges
+      , dpeStatus edge == DependencyAvailable
+      , Set.member (dpeConsumer edge) eligible
+      , any (`Set.member` eligible) (dpeProviders edge)
+      ]
+    selectedRequired = selectRequiredProviders eligibleEdges
+    availableEdges =
+      [ (providerName, dpeConsumer edge, dpeMode edge)
+      | edge <- eligibleEdges
+      , Just providerName <- [providerForOrderEdge selectedRequired edge]
+      , providerName /= dpeConsumer edge
+      ]
+    hardEdges = Set.fromList
+      [ (providerName, consumerName)
+      | (providerName, consumerName, mode) <- availableEdges
+      , dependencyModeBlocks mode
+      ]
+    preferredEdges =
+      [ (providerName, consumerName)
+      | (providerName, consumerName, mode) <- availableEdges
+      , not (dependencyModeBlocks mode)
+      ]
+
+providerForOrderEdge :: Map (Text, DependencyDecl) Text -> DependencyProviderEdge -> Maybe Text
+providerForOrderEdge selectedRequired edge
+  | dependencyModeBlocks (dpeMode edge) =
+      Map.lookup (dependencyEdgeKey (dpeConsumer edge) (dpeDependency edge)) selectedRequired
+  | otherwise = listToMaybe (dpeProviders edge)
+
+safePreferenceEdges :: Set Text -> Set (Text, Text) -> [(Text, Text)] -> Set (Text, Text)
+safePreferenceEdges eligible hardEdges preferredEdges = finalEdges
+  where
+    (_, finalEdges) = foldl' addPreference (adjacencyFromEdges hardEdges, hardEdges) sortedPreferences
+    sortedPreferences = sortOn (\(providerName, consumerName) -> (providerName, consumerName)) preferredEdges
+    addPreference (adjacency, edges) edge@(providerName, consumerName)
+      | not (Set.member providerName eligible && Set.member consumerName eligible) = (adjacency, edges)
+      | providerName == consumerName = (adjacency, edges)
+      | pathExists adjacency consumerName providerName = (adjacency, edges)
+      | otherwise = (insertAdjacency edge adjacency, Set.insert edge edges)
+
+deterministicPluginOrder :: Set Text -> (Text -> Int) -> Set (Text, Text) -> [Text]
+deterministicPluginOrder nodes rank edges = go nodes indegree0 []
+  where
+    filteredEdges = Set.filter
+      (\(providerName, consumerName) -> Set.member providerName nodes && Set.member consumerName nodes)
+      edges
+    adjacency = adjacencyFromEdges filteredEdges
+    indegree0 = foldl'
+      (\m (_, consumerName) -> Map.adjust (+ 1) consumerName m)
+      (Map.fromList [(name, 0 :: Int) | name <- Set.toList nodes])
+      (Set.toList filteredEdges)
+    priority name = (rank name, name)
+    go remaining indegree acc
+      | Set.null remaining = acc
+      | otherwise = case ready of
+          [] -> acc <> sortOn priority (Set.toList remaining)
+          name:_ ->
+            let remaining' = Set.delete name remaining
+                dependents = Map.findWithDefault Set.empty name adjacency
+                indegree' = Set.foldl' (\m dependent -> Map.adjust (subtract 1) dependent m) indegree dependents
+            in go remaining' indegree' (acc <> [name])
+      where
+        ready = sortOn priority
+          [ name
+          | name <- Set.toList remaining
+          , Map.findWithDefault 0 name indegree <= 0
+          ]
+
+adjacencyFromEdges :: Set (Text, Text) -> Map Text (Set Text)
+adjacencyFromEdges = Set.foldl' (flip insertAdjacency) Map.empty
+
+insertAdjacency :: (Text, Text) -> Map Text (Set Text) -> Map Text (Set Text)
+insertAdjacency (providerName, consumerName) =
+  Map.insertWith Set.union providerName (Set.singleton consumerName)
+
+pathExists :: Map Text (Set Text) -> Text -> Text -> Bool
+pathExists adjacency start target = go Set.empty start
+  where
+    go seen current
+      | current == target = True
+      | Set.member current seen = False
+      | otherwise = any
+          (go (Set.insert current seen))
+          (Set.toList (Map.findWithDefault Set.empty current adjacency))
+
+dependencyPipelineInsertions
+  :: DependencyResolverInput
+  -> [Text]
+  -> Set (Text, Text)
+  -> [DependencyPipelineInsertion]
+dependencyPipelineInsertions input orderedPlugins orderEdges = reverse insertions
+  where
+    providerEdgesByConsumer = Map.fromListWith (<>)
+      [ (consumerName, [providerName])
+      | (providerName, consumerName) <- Set.toList orderEdges
+      ]
+    (_, _, insertions) = foldl' addInsertion (Map.empty, 0 :: Int, []) orderedPlugins
+    addInsertion (positions, ordinal, acc) pluginName =
+      let stageAnchor = providerStageAnchor input pluginName
+          stageCandidate = fmap (\stage -> (PipelineBuiltIn stage, (stageRank stage, 0 :: Int))) stageAnchor
+          providerCandidates =
+            [ (PipelinePlugin providerName, position)
+            | providerName <- Map.findWithDefault [] pluginName providerEdgesByConsumer
+            , Just (position, True) <- [Map.lookup providerName positions]
+            ]
+          selectedAnchor = latestPipelineAnchor (maybe [] (:[]) stageCandidate <> providerCandidates)
+          selectedStageRank = case selectedAnchor of
+            Nothing -> maybe (length allBuiltinStageIds) stageRank stageAnchor
+            Just (PipelineBuiltIn stage, _) -> stageRank stage
+            Just (PipelinePlugin _providerName, (providerStageRank, _)) -> providerStageRank
+          anchorStageId = case selectedAnchor of
+            Nothing -> stageAnchor
+            Just (PipelineBuiltIn stage, _) -> Just stage
+            Just (PipelinePlugin providerName, _) -> Just (StagePlugin providerName)
+          position = (selectedStageRank, ordinal + 1)
+          insertion = DependencyPipelineInsertion
+            { dpiPlugin = pluginName
+            , dpiInsertAfter = anchorStageId
+            }
+      in
+        ( Map.insert pluginName (position, maybe False (const True) anchorStageId) positions
+        , ordinal + 1
+        , insertion : acc
+        )
+
+data PipelineAnchor
+  = PipelineBuiltIn !StageId
+  | PipelinePlugin !Text
+  deriving (Eq, Ord, Show)
+
+latestPipelineAnchor :: [(PipelineAnchor, (Int, Int))] -> Maybe (PipelineAnchor, (Int, Int))
+latestPipelineAnchor [] = Nothing
+latestPipelineAnchor (candidate:candidates) = Just (foldl' pick candidate candidates)
+  where
+    pick current@(_, currentPosition) next@(_, nextPosition)
+      | currentPosition <= nextPosition = next
+      | otherwise = current
+
+providerStageAnchor :: DependencyResolverInput -> Text -> Maybe StageId
+providerStageAnchor input providerName = do
+  provider <- Map.lookup providerName (dependencyProviderMap input)
+  latestStage
+    [ stage
+    | dep <- dpDependencies provider
+    , DependencyBuiltInStage stage <- [ddTarget dep]
+    , isBuiltInStage stage
+    , drStatus (resolveDependency input provider dep) == DependencyAvailable
+    ]
+
+latestStage :: [StageId] -> Maybe StageId
+latestStage [] = Nothing
+latestStage (stage:stages) = Just (foldl' pick stage stages)
+  where
+    pick current candidate
+      | stageOrderKey current <= stageOrderKey candidate = candidate
+      | otherwise = current
+
+stageRank :: StageId -> Int
+stageRank stage = Map.findWithDefault (length allBuiltinStageIds) stage stageRankMap
+
+stageOrderKey :: StageId -> (Int, Text)
+stageOrderKey stage = (stageRank stage, stageCanonicalName stage)
+
+stageRankMap :: Map StageId Int
+stageRankMap = Map.fromList (zip allBuiltinStageIds [0..])
 
 data DependencyResolution = DependencyResolution
   { drStatus :: !DependencyDiagnosticStatus
@@ -700,7 +1099,7 @@ resolveUnqualifiedProvider input consumer predicate kind name =
     _ -> missing [] $
       consumerName <> " depends on missing " <> kind <> " '" <> name <> "'."
   where
-    providers = driProviders input
+    providers = sortOn dpName (driProviders input)
     disabledNames = driDisabledPlugins input
     matches = filter predicate providers
     enabledMatches = filter (not . (`Set.member` disabledNames) . dpName) matches
