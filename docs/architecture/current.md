@@ -72,9 +72,17 @@ external client
   -> actors / UI / runtime state
 ```
 
+Run the host in headless mode with
+`stack exec topo-seer -- --headless --http 127.0.0.1:7373`. The live OpenAPI
+contract is served at `GET /openapi.json`; basic smoke checks use
+`GET /health`, `GET /state`, and resource routes such as
+`GET /terrain/hex?q=0&r=0`.
+
 The legacy command IPC remains an internal compatibility adapter for existing
 runtime handlers while service extraction continues, but it is no longer exposed
-through a separate MCP package in the Stack workspace.
+through a separate MCP package in the Stack workspace. The retired MCP bridge is
+only documented in migration notes and should not be used as the 1.0 automation
+path.
 
 ## Current plugin foundation
 
@@ -135,7 +143,7 @@ generation before 1.0:
 - plugin manifest reference;
 - plugin RPC protocol reference;
 - pipeline stages reference;
-- generated HTTP/OpenAPI docs once HTTP exists;
+- served HTTP/OpenAPI docs, README curl examples, and contract/golden checks;
 - backend-neutral external data-source declarations/grants/status docs.
 
 ## Current 1.0 risks

@@ -1,6 +1,7 @@
 # topo-seer
 
-topo-seer is an SDL-based editor and UI for working with topo terrains.
+topo-seer is an SDL-based editor, UI, and direct HTTP/OpenAPI host for working
+with topo terrains.
 
 ## Status
 - **Stability:** active development, APIs may change.
@@ -10,10 +11,46 @@ topo-seer is an SDL-based editor and UI for working with topo terrains.
 
 From the repo root:
 
-- Build and run:
+- Build and run the SDL UI:
 	- `stack run topo-seer`
+- Run the direct headless HTTP/OpenAPI host:
+	- `stack exec topo-seer -- --headless --http 127.0.0.1:7373`
+- Run the SDL UI with HTTP enabled:
+	- `stack exec topo-seer -- --http 127.0.0.1:7373`
 - Build tests (no execution):
 	- `stack test topo-seer --no-run-tests`
+
+## HTTP/OpenAPI automation
+
+The supported automation path is direct HTTP to `topo-seer`; generated OpenAPI
+is served at `GET /openapi.json` from the same route metadata used by dispatch
+and tests. Loopback (`127.0.0.1`) is the default safe binding. Non-loopback
+bindings require `--http-token TOKEN`, and protected requests must include
+`Authorization: Bearer TOKEN`.
+
+```sh
+# Discover the live contract and basic server metadata.
+curl http://127.0.0.1:7373/openapi.json
+curl http://127.0.0.1:7373/version
+
+# Read state and query terrain through resource-oriented routes.
+curl http://127.0.0.1:7373/state
+curl 'http://127.0.0.1:7373/terrain/hex?q=0&r=0'
+
+# Mutate UI/service state through JSON requests.
+curl -X POST http://127.0.0.1:7373/ui/seed \
+	-H 'Content-Type: application/json' \
+	-d '{"seed":123}'
+
+# Authenticated request when a token is configured.
+curl http://127.0.0.1:7373/state \
+	-H 'Authorization: Bearer TOKEN'
+```
+
+MCP was a transition bridge and is retired for 1.0. Use the parity matrix at
+`../docs/inventory/mcp-http-parity.md` only to migrate old MCP tool/resource
+names to HTTP/OpenAPI routes; do not build new automation against MCP or command
+IPC.
 
 ## Architecture overview
 

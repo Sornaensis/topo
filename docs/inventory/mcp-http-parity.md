@@ -23,6 +23,40 @@ Checklist conventions:
 - **Waived** means the behavior was MCP session, stdio transport, or
   bridge-internal behavior and is intentionally not part of the public HTTP API.
 
+## Migration notes for old clients
+
+Start `topo-seer` directly and discover the current route catalog from OpenAPI:
+
+```sh
+stack exec topo-seer -- --headless --http 127.0.0.1:7373
+curl http://127.0.0.1:7373/openapi.json
+curl http://127.0.0.1:7373/health
+```
+
+Translate old MCP calls to resource-oriented HTTP routes first. Command fallback
+routes exist for compatibility and tests, but they are not the recommended 1.0
+automation surface.
+
+| Old MCP usage | Preferred HTTP/OpenAPI usage |
+|---|---|
+| `ping` | `GET /health` |
+| `initialize` or `tools/list` | `GET /version` and `GET /openapi.json` |
+| `resources/read` `topo://state` | `GET /state` |
+| `resources/read` `topo://hex/{q}/{r}` | `GET /terrain/hex?q={q}&r={r}` |
+| `tools/call` `set_seed` | `POST /ui/seed` with JSON body `{ "seed": 123 }` |
+| `tools/call` `take_screenshot` | `POST /screenshots` |
+
+Example translated calls:
+
+```sh
+curl http://127.0.0.1:7373/state
+curl 'http://127.0.0.1:7373/terrain/hex?q=0&r=0'
+curl -X POST http://127.0.0.1:7373/ui/seed \
+  -H 'Content-Type: application/json' \
+  -d '{"seed":123}'
+curl -X POST http://127.0.0.1:7373/screenshots
+```
+
 ## MCP protocol and bridge behavior
 
 | MCP / bridge behavior | Old behavior | HTTP/OpenAPI target or waiver | Status |

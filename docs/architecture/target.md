@@ -102,11 +102,21 @@ Runtime defaults:
 - headless/test mode for CI and contract tests;
 - generated `GET /openapi.json`.
 
+Concrete client documentation should start from the direct host and served
+contract:
+
+```sh
+stack exec topo-seer -- --headless --http 127.0.0.1:7373
+curl http://127.0.0.1:7373/openapi.json
+curl http://127.0.0.1:7373/state
+curl 'http://127.0.0.1:7373/terrain/hex?q=0&r=0'
+```
+
 Initial route groups:
 
 - meta: `/health`, `/version`, `/openapi.json`, `/events`;
-- app/UI state: `/state`, `/ui/state`, `/ui/view-modes`, `/ui/panels`;
-- config: `/config/summary`, `/config/sliders`, `/config/enums/{type}`;
+- app/UI state: `/state`, `/state/view-modes`, `/ui/state`, `/ui/panels`;
+- config: `/config/summary`, `/config/sliders`, `/config/enums?type={type}`;
 - view/camera/overlays: `/camera`, `/overlays`, overlay field routes;
 - worlds/generation: current world generation/status/meta/save/load/list;
 - terrain: hex, chunk, stats, search, export;

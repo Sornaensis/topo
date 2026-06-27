@@ -25,6 +25,26 @@ Machine-readable and human-readable specs for the on-disk formats:
 `.topo` binary world files, `.topolay` overlay payloads,
 `.toposchema` overlay schemas, and the unified world-bundle layout.
 
+### HTTP/OpenAPI automation
+
+For 1.0-facing automation, run `topo-seer` with direct HTTP enabled and use the
+served OpenAPI document as the operation catalog:
+
+```sh
+stack exec topo-seer -- --headless --http 127.0.0.1:7373
+curl http://127.0.0.1:7373/health
+curl http://127.0.0.1:7373/openapi.json
+curl http://127.0.0.1:7373/state
+curl -X POST http://127.0.0.1:7373/ui/seed \
+  -H 'Content-Type: application/json' \
+  -d '{"seed":123}'
+```
+
+The retired MCP bridge appears only in migration/deprecation notes. New clients
+should use the resource-oriented HTTP routes in OpenAPI; see the
+[MCP-to-HTTP parity matrix](inventory/mcp-http-parity.md) when translating old
+MCP tool or resource names.
+
 ---
 
 ## Quick Links
@@ -36,6 +56,7 @@ Machine-readable and human-readable specs for the on-disk formats:
 | Current architecture baseline | [architecture/current.md](architecture/current.md) |
 | Target architecture for 1.0 | [architecture/target.md](architecture/target.md) |
 | HTTP framework/API package decision | [architecture/decisions/0001-http-framework-and-api-package.md](architecture/decisions/0001-http-framework-and-api-package.md) |
+| HTTP/OpenAPI migration matrix | [inventory/mcp-http-parity.md](inventory/mcp-http-parity.md) |
 | Plugin protocol versioning decision | [architecture/decisions/0002-plugin-protocol-versioning.md](architecture/decisions/0002-plugin-protocol-versioning.md) |
 | Public module and feature inventory | [inventory/public-surface.md](inventory/public-surface.md) |
 | Pipeline stages reference | [internal/pipeline/stages.md](internal/pipeline/stages.md) |
