@@ -97,6 +97,7 @@ library
       Topo.Simulation
       Topo.Simulation.DAG
       Topo.Plugin.DataResource
+      Topo.Plugin.Dependency
       Topo.Plugin.RPC
       Topo.Plugin.RPC.DataService
       Topo.Plugin.RPC.Manifest
@@ -196,6 +197,7 @@ test-suite topo-test
       Spec.Parameters
       Spec.Pipeline
       Spec.Planet
+      Spec.PluginDependency
       Spec.PluginIntegration
       Spec.PluginRPC
       Spec.Precipitation

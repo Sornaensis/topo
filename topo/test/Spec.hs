@@ -52,6 +52,7 @@ import qualified Spec.TerrainFormMetrics
 import qualified Spec.TerrainFormCalibration
 import qualified Spec.DirectionalSlope
 import qualified Spec.TerrainFormModifiers
+import qualified Spec.PluginDependency
 import qualified Spec.PluginRPC
 import qualified Spec.PluginIntegration
 import qualified Spec.DataResource
@@ -117,6 +118,7 @@ main = do
     Spec.TerrainFormCalibration.spec
     Spec.DirectionalSlope.spec
     Spec.TerrainFormModifiers.spec
+    Spec.PluginDependency.spec
     Spec.PluginRPC.spec
     Spec.PluginIntegration.spec
     Spec.DataResource.spec
