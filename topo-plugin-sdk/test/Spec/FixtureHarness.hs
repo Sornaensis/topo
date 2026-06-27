@@ -44,6 +44,8 @@ import Topo.Plugin.RPC.DataService
   , QueryResource(..)
   , QueryResult(..)
   )
+import Topo.Plugin.RPC.Manifest
+  ( RPCManifest(..), manifestV3, parseManifestFile, validateManifest )
 import Topo.Plugin.RPC.Protocol
   ( GeneratorResult(..)
   , Handshake(..)
@@ -73,6 +75,9 @@ spec :: Spec
 spec = describe "plugin fixture harness" $ do
   it "spawns addressable stdio plugin fixtures with explicit compatibility enabled" $
     mapM_ expectHandshake ["echo", "generator", "simulation", "crud", "external-provider", "external-consumer"]
+
+  it "writes valid manifest v3 files for SDK fixture examples" $
+    mapM_ expectGeneratedManifest ["generator", "simulation", "crud", "external-provider", "external-consumer"]
 
   it "spawns the dedicated topo-plugin-fixture executable when built" $ do
     mFixtureExe <- findDedicatedFixtureExecutable
@@ -167,6 +172,7 @@ spec = describe "plugin fixture harness" $ do
 
 data FixtureProcess = FixtureProcess
   { fpName :: !String
+  , fpWorkDir :: !FilePath
   , fpTransport :: !Transport
   , fpProcessHandle :: !ProcessHandle
   }
@@ -176,6 +182,23 @@ expectHandshake name = withFixtureProcess name $ \fixture -> do
   ack <- handshakeFixture fixture
   haProtocolVersion ack `shouldBe` currentProtocolVersion
   shutdownFixture fixture
+
+expectGeneratedManifest :: String -> IO ()
+expectGeneratedManifest name = withFixtureProcess name $ \fixture -> do
+  _ <- handshakeFixture fixture
+  manifest <- readFixtureManifest fixture
+  rmManifestVersion manifest `shouldBe` manifestV3
+  validateManifest manifest `shouldBe` []
+  shutdownFixture fixture
+
+readFixtureManifest :: FixtureProcess -> IO RPCManifest
+readFixtureManifest fixture = do
+  result <- parseManifestFile (fpWorkDir fixture </> "manifest.json")
+  case result of
+    Left err -> do
+      expectationFailure (fpName fixture <> " manifest parse failed: " <> Text.unpack err)
+      fail "manifest parse failed"
+    Right manifest -> pure manifest
 
 withFixtureProcess :: String -> (FixtureProcess -> IO a) -> IO a
 withFixtureProcess name action = withFixtureWorkDir name $ \workDir ->
@@ -246,6 +269,7 @@ spawnFixture launcher name workDir = do
           fail "fixture transport failed"
         Right transport -> pure FixtureProcess
           { fpName = name
+          , fpWorkDir = workDir
           , fpTransport = transport
           , fpProcessHandle = processHandle
           }

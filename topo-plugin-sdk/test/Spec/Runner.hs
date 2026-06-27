@@ -44,7 +44,12 @@ import Topo.Plugin.RPC.Protocol
   , encodeMessage
   )
 import Topo.Plugin.RPC.Manifest
-  ( RPCManifest(..), RPCManifestRuntime(..), RPCUIHints(..), manifestV3 )
+  ( Capability(..)
+  , RPCManifest(..), RPCManifestRuntime(..)
+  , RPCRestartMode(..), RPCStartPolicy(..), RPCUIHints(..)
+  , defaultRPCStartPolicy, defaultRPCUIHints
+  , manifestV3, validateManifest
+  )
 import Topo.Plugin.RPC.Transport
   ( Transport(..)
   , closeTransport
@@ -68,6 +73,46 @@ spec = describe "SDK runner pipe integration" $ do
     ruiDisplayName (rmUiHints manifest) `shouldBe` Just (pdName generatorPlugin)
     rmExternalDataSources manifest `shouldBe` []
     rmExternalDataSourceRefs manifest `shouldBe` []
+    validateManifest manifest `shouldBe` []
+
+  it "maps PluginDef v3 manifest fields without hand-edited compatibility JSON" $ do
+    let customPolicy = defaultRPCStartPolicy
+          { rspAutoStart = False
+          , rspRestartMode = RestartNever
+          }
+        manifest = generateManifest (generatorPlugin
+          { pdDescription = Just "SDK generated generator manifest"
+          , pdRuntimeTopoMin = Just "1.0"
+          , pdRuntimeTopoMax = Just "1.x"
+          , pdUiHints = defaultRPCUIHints
+              { ruiDisplayName = Just "Generator Fixture"
+              , ruiCategory = Just "Generation"
+              }
+          , pdStartPolicy = customPolicy
+          })
+    rmDescription manifest `shouldBe` "SDK generated generator manifest"
+    rmrTopoMin (rmRuntime manifest) `shouldBe` Just "1.0"
+    rmrTopoMax (rmRuntime manifest) `shouldBe` Just "1.x"
+    ruiDisplayName (rmUiHints manifest) `shouldBe` Just "Generator Fixture"
+    ruiCategory (rmUiHints manifest) `shouldBe` Just "Generation"
+    rmStartPolicy manifest `shouldBe` customPolicy
+    validateManifest manifest `shouldBe` []
+
+  it "infers overlay simulation capabilities without implicit terrain writes" $ do
+    let manifest = generateManifest simulationPlugin
+    rmCapabilities manifest `shouldSatisfy` elem CapReadTerrain
+    rmCapabilities manifest `shouldSatisfy` elem CapReadOverlay
+    rmCapabilities manifest `shouldSatisfy` elem CapWriteOverlay
+    rmCapabilities manifest `shouldSatisfy` notElem CapWriteTerrain
+    validateManifest manifest `shouldBe` []
+
+  it "emits explicit terrain write capability when a simulation requests it" $ do
+    let manifest = generateManifest (simulationPlugin
+          { pdName = "terrain-writer"
+          , pdCapabilities = [CapWriteTerrain]
+          })
+    rmCapabilities manifest `shouldSatisfy` elem CapWriteTerrain
+    validateManifest manifest `shouldBe` []
 
   it "handles invoke_generator and returns generator_result payload" $
     withTransportPair $ \host plugin -> do
@@ -97,7 +142,7 @@ spec = describe "SDK runner pipe integration" $ do
         Aeson.Error err -> expectationFailure err
         Aeson.Success result -> do
           srOverlay result `shouldBe` object ["population" .= (42 :: Int)]
-          srTerrainWrites result `shouldBe` Just (object [])
+          srTerrainWrites result `shouldBe` Nothing
       shutdownAndWait host done
 
   it "hydrates generator pcWorld from terrain payload metadata" $
@@ -490,7 +535,7 @@ simulationPlugin = defaultPluginDef
           pcLog ctx "sim:end"
           pure (Right SimulationTickResult
             { strOverlay = object ["population" .= (42 :: Int)]
-            , strTerrainWrites = Just (object [])
+            , strTerrainWrites = Nothing
             })
       }
   }

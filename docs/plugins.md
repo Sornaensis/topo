@@ -93,7 +93,7 @@ myPlugin = defaultPluginDef
       , gdRun         = \ctx -> do
           pcLog ctx "my-plugin: running generator"
           -- Your terrain modification logic here
-          pure (Right ())
+          pure (Right defaultGeneratorTickResult)
       }
   }
 
@@ -169,14 +169,23 @@ Message types:
 
 The top-level plugin definition. Use `defaultPluginDef` as a starting point.
 
-| Field          | Type                   | Description                          |
-|----------------|------------------------|--------------------------------------|
-| `pdName`       | `Text`                 | Unique plugin identifier             |
-| `pdVersion`    | `Text`                 | Version string (informational)       |
-| `pdParams`     | `[ParamDef]`           | User-facing configuration parameters |
-| `pdSchemaFile` | `Maybe FilePath`       | Overlay schema file path             |
-| `pdGenerator`  | `Maybe GeneratorDef`   | Generator pipeline participation     |
-| `pdSimulation` | `Maybe SimulationDef`  | Simulation DAG participation         |
+| Field | Type | Description |
+|-------|------|-------------|
+| `pdName` | `Text` | Unique plugin identifier |
+| `pdVersion` | `Text` | Version string (informational) |
+| `pdDescription` | `Maybe Text` | Manifest v3 description (`Nothing` uses a default) |
+| `pdRuntimeTopoMin` / `pdRuntimeTopoMax` | `Maybe Text` | Optional Topo host version bounds |
+| `pdParams` | `[ParamDef]` | User-facing configuration parameters |
+| `pdSchemaFile` | `Maybe FilePath` | Overlay schema file path |
+| `pdGenerator` | `Maybe GeneratorDef` | Generator pipeline participation |
+| `pdSimulation` | `Maybe SimulationDef` | Simulation DAG participation |
+| `pdCapabilities` | `[RPCCapability]` | Explicit extra capabilities, such as `CapWriteTerrain` |
+| `pdDataDirectory` | `Maybe FilePath` | Plugin data directory under the world save |
+| `pdDataResources` | `[DataResourceDef]` | Data-service resource schemas and handlers |
+| `pdUiHints` | `RPCUIHints` | Manifest v3 UI presentation hints |
+| `pdExternalDataSources` | `[RPCExternalDataSourceDecl]` | Provider-owned external data sources |
+| `pdExternalDataSourceRefs` | `[RPCExternalDataSourceRef]` | Consumed external data sources |
+| `pdStartPolicy` | `RPCStartPolicy` | Host-side process supervision policy |
 
 ### ParamDef
 
@@ -198,14 +207,14 @@ A user-facing parameter shown as a slider or checkbox in topo-seer.
 |-----------------|-----------------------------------------|------------------------------------|
 | `gdInsertAfter` | `Text`                                  | Stage to insert after              |
 | `gdRequires`    | `[Text]`                                | Required preceding stages          |
-| `gdRun`         | `PluginContext -> IO (Either Text ())`   | Generator implementation           |
+| `gdRun`         | `PluginContext -> IO (Either Text GeneratorTickResult)` | Generator implementation |
 
 ### SimulationDef
 
 | Field            | Type                                    | Description                        |
 |------------------|-----------------------------------------|------------------------------------|
 | `sdDependencies` | `[Text]`                                | Overlay dependencies               |
-| `sdTick`         | `PluginContext -> IO (Either Text ())`   | Simulation tick implementation     |
+| `sdTick`         | `PluginContext -> IO (Either Text SimulationTickResult)` | Simulation tick implementation |
 
 ### PluginContext
 
@@ -228,7 +237,7 @@ editing is possible for non-Haskell plugins:
   "manifestVersion": 3,
   "name": "my-plugin",
   "version": "0.1.0",
-  "runtime": { "protocol": { "min": 1, "max": 1 } },
+  "runtime": { "protocol": { "min": 3, "max": 3 } },
   "description": "My terrain plugin",
   "ui": { "displayName": "My Plugin", "category": "Generation" },
   "generator": {
@@ -268,7 +277,9 @@ Full field reference, JSON Schema, and provider/consumer examples are in
 
 Capabilities are inferred from your `PluginDef` — generators get
 `readTerrain` + `log`, simulation nodes additionally get overlay access, and
-data-resource plugins get data capabilities matching their operations.
+data-resource plugins get data capabilities matching their operations. Terrain
+writes are not inferred from every simulation; add `CapWriteTerrain` to
+`pdCapabilities` only for simulation plugins that return terrain writes.
 
 Manifest v3 also supports backend-neutral `externalDataSources` and
 `externalDataSourceRefs` for provider-owned data shared between plugins. These

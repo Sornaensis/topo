@@ -16,7 +16,7 @@
 --   "manifestVersion": 3,
 --   "name": "civilization",
 --   "version": "1.0.0",
---   "runtime": { "protocol": { "min": 1, "max": 1 } },
+--   "runtime": { "protocol": { "min": 3, "max": 3 } },
 --   "description": "Civilization simulation overlay",
 --   "generator": { "insertAfter": "biomes", "requires": ["biomes","rivers"] },
 --   "simulation": { "dependencies": ["weather"] },
@@ -91,6 +91,7 @@ import qualified Data.Text as Text
 import GHC.Generics (Generic)
 import Topo.Plugin (Capability(..))
 import Topo.Plugin.DataResource (DataResourceSchema(..), DataOperations(..))
+import Topo.Plugin.RPC.Protocol (currentProtocolVersion)
 
 ------------------------------------------------------------------------
 -- Capability
@@ -369,8 +370,8 @@ data RPCManifestRuntime = RPCManifestRuntime
 
 defaultRPCManifestRuntime :: RPCManifestRuntime
 defaultRPCManifestRuntime = RPCManifestRuntime
-  { rmrProtocolMin = 1
-  , rmrProtocolMax = 1
+  { rmrProtocolMin = currentProtocolVersion
+  , rmrProtocolMax = currentProtocolVersion
   , rmrTopoMin = Nothing
   , rmrTopoMax = Nothing
   }
@@ -940,7 +941,7 @@ manifestV3ProviderExample = object
   , "name" .= ("civilization" :: Text)
   , "version" .= ("1.0.0" :: Text)
   , "runtime" .= object
-      [ "protocol" .= object ["min" .= (1 :: Int), "max" .= (1 :: Int)]
+      [ "protocol" .= object ["min" .= (3 :: Int), "max" .= (3 :: Int)]
       , "topo" .= object ["min" .= ("1.0" :: Text)]
       ]
   , "description" .= ("Civilization simulation overlay and settlement catalogue" :: Text)
@@ -1026,7 +1027,7 @@ manifestV3ConsumerExample = object
   , "name" .= ("trade-routes" :: Text)
   , "version" .= ("0.3.0" :: Text)
   , "runtime" .= object
-      [ "protocol" .= object ["min" .= (1 :: Int), "max" .= (1 :: Int)]
+      [ "protocol" .= object ["min" .= (3 :: Int), "max" .= (3 :: Int)]
       ]
   , "description" .= ("Trade route simulation that consumes settlement data" :: Text)
   , "ui" .= object

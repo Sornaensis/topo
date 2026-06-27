@@ -10,10 +10,19 @@ Top-level plugin definition. Use `defaultPluginDef` as a starting point.
 |-------|------|-------------|
 | `pdName` | `Text` | Unique plugin identifier |
 | `pdVersion` | `Text` | Version string |
+| `pdDescription` | `Maybe Text` | Manifest v3 description (`Nothing` uses a default) |
+| `pdRuntimeTopoMin` / `pdRuntimeTopoMax` | `Maybe Text` | Optional Topo host version bounds |
 | `pdParams` | `[ParamDef]` | User-facing parameters |
 | `pdSchemaFile` | `Maybe FilePath` | Overlay schema file |
 | `pdGenerator` | `Maybe GeneratorDef` | Generator participation |
 | `pdSimulation` | `Maybe SimulationDef` | Simulation participation |
+| `pdCapabilities` | `[RPCCapability]` | Explicit extra capabilities, for example `CapWriteTerrain` |
+| `pdDataDirectory` | `Maybe FilePath` | Plugin data directory under the world save |
+| `pdDataResources` | `[DataResourceDef]` | Data-service resource schemas and handlers |
+| `pdUiHints` | `RPCUIHints` | Manifest v3 UI presentation hints |
+| `pdExternalDataSources` | `[RPCExternalDataSourceDecl]` | Provider-owned external data sources |
+| `pdExternalDataSourceRefs` | `[RPCExternalDataSourceRef]` | Consumed external data sources |
+| `pdStartPolicy` | `RPCStartPolicy` | Host-side process supervision policy |
 
 ## ParamDef
 
@@ -21,11 +30,24 @@ Top-level plugin definition. Use `defaultPluginDef` as a starting point.
 
 ## GeneratorDef
 
-<!-- TODO: Full reference -->
+| Field | Type | Description |
+|-------|------|-------------|
+| `gdInsertAfter` | `Text` | Generation stage to run after |
+| `gdRequires` | `[Text]` | Required earlier generation stages |
+| `gdRun` | `PluginContext -> IO (Either Text GeneratorTickResult)` | Generator callback |
+
+`defaultGeneratorTickResult` returns an empty terrain payload with no overlay or metadata.
+Use `generatorResultFromTerrain` or related payload helpers when returning modified terrain.
 
 ## SimulationDef
 
-<!-- TODO: Full reference -->
+| Field | Type | Description |
+|-------|------|-------------|
+| `sdDependencies` | `[Text]` | Overlay/node dependencies that tick before this node |
+| `sdTick` | `PluginContext -> IO (Either Text SimulationTickResult)` | Simulation callback |
+
+`defaultSimulationTickResult` returns an empty overlay payload with no terrain writes.
+Simulation plugins that return terrain writes should add `CapWriteTerrain` to `pdCapabilities`.
 
 ## PluginContext
 

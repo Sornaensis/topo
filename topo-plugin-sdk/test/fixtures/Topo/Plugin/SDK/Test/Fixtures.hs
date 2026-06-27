@@ -111,6 +111,7 @@ simulationPlugin = defaultPluginDef
   { pdName = "fixture-simulation"
   , pdVersion = "1.0.0"
   , pdSchemaFile = Just "fixture-simulation.toposchema"
+  , pdCapabilities = [CapWriteTerrain]
   , pdSimulation = Just SimulationDef
       { sdDependencies = ["weather"]
       , sdTick = \ctx -> do

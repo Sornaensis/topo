@@ -33,6 +33,7 @@ module Topo.Plugin.SDK.Runner
 
 import Control.Exception (SomeException, catch)
 import Data.Aeson (Value(..), (.=), object)
+import Data.List (nub)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
@@ -58,7 +59,6 @@ import Topo.Plugin.RPC.Manifest
   , RPCParamType(..)
   , RPCSimulationDecl(..)
   , RPCUIHints(..)
-  , defaultRPCStartPolicy
   , manifestV3
   )
 import Topo.Plugin.RPC.Protocol
@@ -121,8 +121,9 @@ toRPCParamSpec pd = RPCParamSpec
 
 -- | Generate an 'RPCManifest' from a 'PluginDef'.
 --
--- Capabilities are inferred from the plugin's declared generator
--- and simulation definitions.
+-- Capabilities are safely inferred from the plugin's declared generator,
+-- simulation, and data resources, then merged with explicit capabilities from
+-- 'pdCapabilities'.
 generateManifest :: PluginDef -> RPCManifest
 generateManifest pd = RPCManifest
   { rmManifestVersion = manifestV3
@@ -131,21 +132,21 @@ generateManifest pd = RPCManifest
   , rmRuntime       = RPCManifestRuntime
       { rmrProtocolMin = currentProtocolVersion
       , rmrProtocolMax = currentProtocolVersion
-      , rmrTopoMin = Nothing
-      , rmrTopoMax = Nothing
+      , rmrTopoMin = pdRuntimeTopoMin pd
+      , rmrTopoMax = pdRuntimeTopoMax pd
       }
-  , rmDescription   = pdName pd <> " v" <> pdVersion pd
+  , rmDescription   = sdkDescription pd
   , rmUiHints       = sdkUiHints pd
   , rmGenerator     = fmap toGenDecl (pdGenerator pd)
   , rmSimulation    = fmap toSimDecl (pdSimulation pd)
   , rmOverlay       = fmap (\f -> RPCOverlayDecl (Text.pack f)) (pdSchemaFile pd)
-  , rmCapabilities  = inferCapabilities pd
+  , rmCapabilities  = sdkCapabilities pd
   , rmParameters    = map toRPCParamSpec (pdParams pd)
   , rmDataResources = map drdSchema (pdDataResources pd)
   , rmDataDirectory = fmap Text.pack (pdDataDirectory pd)
   , rmExternalDataSources = pdExternalDataSources pd
   , rmExternalDataSourceRefs = pdExternalDataSourceRefs pd
-  , rmStartPolicy   = defaultRPCStartPolicy
+  , rmStartPolicy   = pdStartPolicy pd
   }
   where
     toGenDecl gd = RPCGeneratorDecl
@@ -156,6 +157,11 @@ generateManifest pd = RPCManifest
       { rsdDependencies = sdDependencies sd
       }
 
+sdkDescription :: PluginDef -> Text
+sdkDescription pd = case pdDescription pd of
+  Just description -> description
+  Nothing -> pdName pd <> " v" <> pdVersion pd
+
 sdkUiHints :: PluginDef -> RPCUIHints
 sdkUiHints pd =
   let hints = pdUiHints pd
@@ -163,12 +169,19 @@ sdkUiHints pd =
       Nothing -> hints { ruiDisplayName = Just (pdName pd) }
       Just _  -> hints
 
--- | Infer capabilities from the plugin definition.
+sdkCapabilities :: PluginDef -> [RPCCapability]
+sdkCapabilities pd = nub (inferCapabilities pd <> pdCapabilities pd)
+
+-- | Infer safe capabilities from the plugin definition.
+--
+-- Terrain writes are intentionally not inferred from the mere presence of a
+-- simulation callback: ordinary simulation plugins usually update only their
+-- owned overlay. Plugins that return terrain writes should request
+-- 'CapWriteTerrain' explicitly via 'pdCapabilities'.
 inferCapabilities :: PluginDef -> [RPCCapability]
 inferCapabilities pd = concat
   [ [CapLog]
   , [CapReadTerrain | hasGen || hasSim]
-  , [CapWriteTerrain | hasSim]
   , [CapReadOverlay | hasSim]
   , [CapWriteOverlay | hasSim]
   , [CapDataRead | hasData]

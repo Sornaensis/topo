@@ -5,10 +5,11 @@
 --
 -- A plugin is defined by a 'PluginDef' which declares:
 --
--- * Identity ('pdName', 'pdVersion')
+-- * Identity and manifest metadata ('pdName', 'pdVersion', 'pdDescription')
 -- * User-facing parameters ('pdParams')
 -- * Optional generator stage ('pdGenerator')
 -- * Optional simulation node ('pdSimulation')
+-- * Inferred plus explicit manifest capabilities ('pdCapabilities')
 -- * Optional external data-source provider and consumer declarations
 --
 -- The SDK runtime ('Topo.Plugin.SDK.Runner') uses these definitions
@@ -42,8 +43,10 @@ import Data.Text (Text)
 import Data.Word (Word64)
 import Topo.Plugin.DataResource (DataResourceSchema)
 import Topo.Plugin.RPC.Manifest
-  ( RPCExternalDataSourceDecl, RPCExternalDataSourceRef, RPCUIHints
-  , defaultRPCUIHints
+  ( RPCCapability
+  , RPCExternalDataSourceDecl, RPCExternalDataSourceRef
+  , RPCStartPolicy, RPCUIHints
+  , defaultRPCStartPolicy, defaultRPCUIHints
   )
 import Topo.Plugin.RPC.DataService
   ( DataQuery, DataRecord, DataMutation
@@ -227,6 +230,12 @@ noDataHandler = DataHandler
 
 -- | Complete definition of a topo plugin.
 --
+-- The SDK treats this value as the source of truth for manifest v3
+-- generation. Runtime protocol bounds are supplied by the SDK; plugin authors
+-- can fill in optional Topo host bounds, supervision policy, UI metadata,
+-- explicit capabilities, and backend-neutral external data-source declarations
+-- here instead of hand-editing @manifest.json@.
+--
 -- Create a 'PluginDef' and pass it to 'Topo.Plugin.SDK.runPlugin'
 -- to start the plugin process.
 --
@@ -240,7 +249,7 @@ noDataHandler = DataHandler
 --   , pdGenerator = Just GeneratorDef
 --       { gdInsertAfter = "erosion"
 --       , gdRequires    = ["erosion"]
---       , gdRun         = \\ctx -> pure (Right ())
+--       , gdRun         = \\ctx -> pure (Right defaultGeneratorTickResult)
 --       }
 --   }
 -- @
@@ -250,6 +259,15 @@ data PluginDef = PluginDef
     -- under @~\/.topo\/plugins\/@.
   , pdVersion    :: !Text
     -- ^ Plugin version string (informational).
+  , pdDescription :: !(Maybe Text)
+    -- ^ Optional human-readable manifest description. When 'Nothing', the SDK
+    -- emits a concise @name vversion@ description for transition continuity.
+  , pdRuntimeTopoMin :: !(Maybe Text)
+    -- ^ Optional minimum compatible Topo host version for manifest v3
+    -- @runtime.topo.min@. The RPC protocol range is set by the SDK.
+  , pdRuntimeTopoMax :: !(Maybe Text)
+    -- ^ Optional maximum compatible Topo host version for manifest v3
+    -- @runtime.topo.max@. The RPC protocol range is set by the SDK.
   , pdParams     :: ![ParamDef]
     -- ^ User-facing configuration parameters.
   , pdSchemaFile :: !(Maybe FilePath)
@@ -258,6 +276,10 @@ data PluginDef = PluginDef
     -- ^ Generator pipeline participation.
   , pdSimulation :: !(Maybe SimulationDef)
     -- ^ Simulation DAG participation.
+  , pdCapabilities :: ![RPCCapability]
+    -- ^ Explicit additional manifest capabilities. The SDK adds these to its
+    -- safe inferred capabilities. Use this for capabilities that cannot be
+    -- inferred statically, such as @writeTerrain@ for simulation terrain writes.
   , pdDataDirectory :: !(Maybe FilePath)
     -- ^ Data subdirectory relative to the world save path.
   , pdDataResources :: ![DataResourceDef]
@@ -268,6 +290,9 @@ data PluginDef = PluginDef
     -- ^ Provider-owned external data sources advertised in manifest v3.
   , pdExternalDataSourceRefs :: ![RPCExternalDataSourceRef]
     -- ^ External data sources consumed by this plugin.
+  , pdStartPolicy :: !RPCStartPolicy
+    -- ^ Host-side process supervision policy emitted into manifest v3 when it
+    -- differs from the default policy.
   }
 
 -- | A minimal plugin definition with no capabilities.
@@ -277,13 +302,18 @@ defaultPluginDef :: PluginDef
 defaultPluginDef = PluginDef
   { pdName          = "unnamed-plugin"
   , pdVersion       = "0.0.0"
+  , pdDescription   = Nothing
+  , pdRuntimeTopoMin = Nothing
+  , pdRuntimeTopoMax = Nothing
   , pdParams        = []
   , pdSchemaFile    = Nothing
   , pdGenerator     = Nothing
   , pdSimulation    = Nothing
+  , pdCapabilities  = []
   , pdDataDirectory = Nothing
   , pdDataResources = []
   , pdUiHints = defaultRPCUIHints
   , pdExternalDataSources = []
   , pdExternalDataSourceRefs = []
+  , pdStartPolicy = defaultRPCStartPolicy
   }

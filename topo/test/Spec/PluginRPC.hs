@@ -492,7 +492,8 @@ spec = describe "Plugin.RPC" $ do
       case Aeson.fromJSON manifestV3ProviderExample of
         Aeson.Success m -> do
           rmManifestVersion m `shouldBe` manifestV3
-          rmrProtocolMin (rmRuntime m) `shouldBe` 1
+          rmrProtocolMin (rmRuntime m) `shouldBe` currentProtocolVersion
+          rmrProtocolMax (rmRuntime m) `shouldBe` currentProtocolVersion
           ruiDisplayName (rmUiHints m) `shouldBe` Just "Civilization"
           length (rmExternalDataSources m) `shouldBe` 1
           validateManifest m `shouldBe` []

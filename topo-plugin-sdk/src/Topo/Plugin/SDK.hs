@@ -96,6 +96,10 @@ module Topo.Plugin.SDK
     -- * Entry point
   , runPlugin
     -- * Manifest utilities
+  , Capability(..)
+  , RPCCapability
+  , RPCStartPolicy(..)
+  , RPCRestartMode(..)
   , RPCUIHints(..)
   , RPCExternalDataSourceCapability(..)
   , RPCExternalDataSourceAccess(..)
@@ -103,6 +107,7 @@ module Topo.Plugin.SDK
   , RPCExternalDataSourceStatus(..)
   , RPCExternalDataSourceDecl(..)
   , RPCExternalDataSourceRef(..)
+  , defaultRPCStartPolicy
   , defaultRPCUIHints
   , defaultRPCExternalDataSourceStatus
   , generateManifest
@@ -131,13 +136,18 @@ import Topo.Plugin.RPC.DataService
   , MutateResult(..)
   )
 import Topo.Plugin.RPC.Manifest
-  ( RPCUIHints(..)
+  ( Capability(..)
+  , RPCCapability
+  , RPCStartPolicy(..)
+  , RPCRestartMode(..)
+  , RPCUIHints(..)
   , RPCExternalDataSourceCapability(..)
   , RPCExternalDataSourceAccess(..)
   , RPCExternalDataSourceStatusState(..)
   , RPCExternalDataSourceStatus(..)
   , RPCExternalDataSourceDecl(..)
   , RPCExternalDataSourceRef(..)
+  , defaultRPCStartPolicy
   , defaultRPCUIHints
   , defaultRPCExternalDataSourceStatus
   )

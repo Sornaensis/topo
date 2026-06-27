@@ -1,6 +1,6 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.38.1.
+-- This file has been generated from package.yaml by hpack version 0.39.1.
 --
 -- see: https://github.com/sol/hpack
 
@@ -14,12 +14,13 @@ license:        MPL-2.0
 license-file:   LICENSE
 build-type:     Simple
 
-executable topo-plugin-example
-  main-is: Main.hs
+library
+  exposed-modules:
+      Topo.Plugin.Example
   other-modules:
       Paths_topo_plugin_example
   hs-source-dirs:
-      app
+      src
   build-depends:
       aeson >=2.1 && <2.3
     , base >=4.18 && <5
@@ -27,4 +28,31 @@ executable topo-plugin-example
     , text
     , topo-plugin-sdk
     , vector
+  default-language: Haskell2010
+
+executable topo-plugin-example
+  main-is: Main.hs
+  other-modules:
+      Paths_topo_plugin_example
+  hs-source-dirs:
+      app
+  build-depends:
+      base >=4.18 && <5
+    , topo-plugin-example
+  default-language: Haskell2010
+
+test-suite topo-plugin-example-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Paths_topo_plugin_example
+  hs-source-dirs:
+      test
+  build-depends:
+      aeson
+    , base
+    , hspec
+    , topo
+    , topo-plugin-example
+    , topo-plugin-sdk
   default-language: Haskell2010

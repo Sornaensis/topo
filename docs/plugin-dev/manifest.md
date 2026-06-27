@@ -23,7 +23,7 @@ Canonical machine-readable files:
   "name": "terrain-roughen",
   "version": "0.1.0",
   "runtime": {
-    "protocol": { "min": 1, "max": 1 }
+    "protocol": { "min": 3, "max": 3 }
   },
   "generator": {
     "insertAfter": "erosion",
@@ -166,9 +166,13 @@ can be refined by plugin handshakes and diagnostics.
 The SDK converts `PluginDef` to manifest v3 with:
 
 - `manifestVersion = 3`
-- protocol bounds set to the current RPC protocol version
-- `ui.displayName` defaulting to `pdName`
-- capabilities inferred from generator, simulation, and data-resource fields
+- protocol bounds set to the current RPC protocol version, plus optional
+  `pdRuntimeTopoMin` / `pdRuntimeTopoMax` host bounds
+- `pdDescription`, `pdUiHints`, and `pdStartPolicy` as manifest v3 metadata
+  (with `ui.displayName` defaulting to `pdName`)
+- safe capabilities inferred from generator, simulation, and data-resource
+  fields, plus explicit `pdCapabilities` for non-inferable permissions such as
+  simulation terrain writes
 - `pdExternalDataSources` and `pdExternalDataSourceRefs` copied into the
   manifest unchanged
 
