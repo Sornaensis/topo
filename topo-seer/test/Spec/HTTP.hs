@@ -10,11 +10,14 @@ import qualified Data.ByteString.Lazy as LBS
 import Data.Foldable (toList)
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
-import Data.List (find, sort)
+import Data.List (find, nub, sort)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
+import Actor.Data (getTerrainSnapshot, setTerrainChunkData)
+import Actor.SnapshotReceiver (writeTerrainSnapshot)
+import Actor.UiActions (ActorHandles(..))
 import Network.HTTP.Client
   ( Manager
   , RequestBody(..)
@@ -35,6 +38,7 @@ import Test.Hspec
 import Seer.Headless
   ( HeadlessApp
   , defaultHeadlessConfig
+  , headlessCommandContext
   , headlessServiceContext
   , withHeadlessApp
   )
@@ -60,9 +64,12 @@ import Seer.HTTP.Server
   , httpRouteSpecs
   , parseHttpBind
   )
+import Seer.Command.Dispatch (CommandContext(..))
 import Seer.Service.AppService (appServiceOperationMethods)
 import Seer.System (runApp)
 import System.Environment (withArgs)
+import Topo (WorldConfig(..), chunkIdFromCoord, emptyTerrainChunk)
+import Topo.Types (ChunkCoord(..))
 import Paths_topo_seer (getDataFileName)
 
 spec :: Spec
@@ -294,8 +301,14 @@ spec = describe "Seer.HTTP.Server" $ do
     let doc = openApiDocument httpRouteSpecs
     queryParameterInfo doc "/terrain/hex" "get"
       `shouldBe` Just [("q", True), ("r", True)]
+    queryParameterInfo doc "/terrain/chunk-summary" "get"
+      `shouldBe` Just [("chunk", True)]
     queryParameterInfo doc "/config/enums" "get"
       `shouldBe` Just [("type", True)]
+    queryParameterInfo doc "/config/sliders" "get"
+      `shouldBe` Just [("tab", False)]
+    operationRequestBodyRequired doc "/config/sliders/get" "post" `shouldBe` Just (Just True)
+    operationRequestSchemaRef doc "/config/sliders/get" "post" `shouldBe` Just "SliderGetRequest"
     queryParameterInfo doc "/logs" "get"
       `shouldBe` Just [("level", False), ("limit", False), ("offset", False)]
     queryParameterInfo doc "/events" "get"
@@ -306,6 +319,8 @@ spec = describe "Seer.HTTP.Server" $ do
     queryParameterSchemaType doc "/logs" "get" "offset" `shouldBe` Just "integer"
     queryParameterSchemaEnum doc "/logs" "get" "level"
       `shouldBe` Just ["debug", "info", "warn", "error"]
+    queryParameterSchemaEnum doc "/config/sliders" "get" "tab"
+      `shouldBe` Just ["terrain", "planet", "climate", "weather", "biome", "erosion"]
     operationResponseContentTypes doc "/events" "get" "200"
       `shouldSatisfy` maybe False ("text/event-stream" `elem`)
     operationHasSecurity doc "/state" "get" "bearerAuth" `shouldBe` True
@@ -324,6 +339,85 @@ spec = describe "Seer.HTTP.Server" $ do
   it "publishes a command HTTP route for every AppService operation" $
     sort (map (last . hrsPath) commandHttpRouteSpecs)
       `shouldBe` sort appServiceOperationMethods
+
+  it "maps retired MCP tools/list and tools/call coverage to HTTP, service, and OpenAPI routes" $ do
+    let doc = openApiDocument httpRouteSpecs
+        toolNames = map ptLegacyName retiredMcpToolTargets
+    length retiredMcpToolTargets `shouldBe` 85
+    toolNames `shouldBe` nub toolNames
+    forM_ retiredMcpToolTargets $ \target -> do
+      assertFriendlyRouteTarget target
+      assertOpenApiTarget doc target
+      assertCommandFallbackTarget target
+
+  it "dispatches representative retired MCP tools/call primary HTTP routes" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      installTerrainFixture app
+
+      sliders <- request app (mkRequest "GET" ["config", "sliders"])
+        { hreqQuery = [("tab", Just "terrain")] }
+      hresStatusCode sliders `shouldBe` 200
+      slidersHaveTab "terrain" (hresBody sliders) `shouldBe` True
+
+      setSeed <- request app (mkRequest "POST" ["ui", "seed"])
+        { hreqBody = Just (object ["seed" .= (456 :: Int)]) }
+      hresStatusCode setSeed `shouldBe` 200
+      lookupValue "seed" (hresBody setSeed) `shouldBe` Just (Number 456)
+
+      setSliders <- request app (mkRequest "PATCH" ["config", "sliders"])
+        { hreqBody = Just (object ["values" .= object ["SliderGenScale" .= (0.3 :: Double)]]) }
+      hresStatusCode setSliders `shouldBe` 200
+      objectHasKey "updated" (hresBody setSliders) `shouldBe` True
+
+      setCamera <- request app (mkRequest "PUT" ["camera"])
+        { hreqBody = Just (object ["x" .= (1.0 :: Double), "y" .= (2.0 :: Double), "zoom" .= (1.5 :: Double)]) }
+      hresStatusCode setCamera `shouldBe` 200
+      lookupValue "zoom" (hresBody setCamera) `shouldBe` Just (Number 1.5)
+
+      deleteRecord <- request app (mkRequest "DELETE" ["data", "records"])
+        { hreqBody = Just (object ["plugin" .= ("missing" :: Text), "resource" .= ("missing" :: Text), "key" .= ("missing" :: Text)]) }
+      lookupNestedText ["error", "code"] (hresBody deleteRecord) `shouldNotBe` Just "validation_failed"
+      isRouteMiss deleteRecord `shouldBe` False
+
+      hexRsp <- request app (mkRequest "GET" ["terrain", "hex"])
+        { hreqQuery = [("q", Just "0"), ("r", Just "0")] }
+      hresStatusCode hexRsp `shouldBe` 200
+      lookupValue "q" (hresBody hexRsp) `shouldBe` Just (Number 0)
+      lookupValue "r" (hresBody hexRsp) `shouldBe` Just (Number 0)
+
+  it "maps retired MCP resources/list coverage to OpenAPI resource routes" $ do
+    let doc = openApiDocument httpRouteSpecs
+        resourceNames = map ptLegacyName retiredMcpResourceTargets
+        templateResources = filter (Text.isInfixOf "{" . ptLegacyName) retiredMcpResourceTargets
+        staticResources = filter (not . Text.isInfixOf "{" . ptLegacyName) retiredMcpResourceTargets
+    length retiredMcpResourceTargets `shouldBe` 16
+    length staticResources `shouldBe` 11
+    length templateResources `shouldBe` 5
+    resourceNames `shouldBe` nub resourceNames
+    forM_ retiredMcpResourceTargets $ \target -> do
+      assertFriendlyRouteTarget target
+      assertOpenApiTarget doc target
+
+  it "serves retired MCP resources/read targets through HTTP JSON routes" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      installTerrainFixture app
+      forM_ retiredMcpResourceReadCases $ \resourceCase -> do
+        rsp <- request app (resourceReadRequest resourceCase)
+        hresStatusCode rsp `shouldBe` 200
+        lookupHeaderText "content-type" (hresHeaders rsp) `shouldBe` Just "application/json"
+        isRouteMiss rsp `shouldBe` False
+      assertTemplateResourceBodies app
+
+  it "replaces the MCP-to-seer IPC bridge with direct HTTP AppService dispatch" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      stateViaCommand <- request app (mkRequest "POST" ["commands", "get_state"])
+      hresStatusCode stateViaCommand `shouldBe` 200
+      objectHasKey "seed" (hresBody stateViaCommand) `shouldBe` True
+
+      setSeed <- request app (mkRequest "POST" ["commands", "set_seed"])
+        { hreqBody = Just (object ["seed" .= (321 :: Int)]) }
+      hresStatusCode setSeed `shouldBe` 200
+      lookupValue "seed" (hresBody setSeed) `shouldBe` Just (Number 321)
 
   it "starts topo-seer headless HTTP endpoints through the CLI" $ do
     tid <- forkIO $
@@ -346,6 +440,246 @@ mkRequest method path = HttpRequest
   , hreqHeaders = []
   , hreqBody = Nothing
   }
+
+data ParityTarget = ParityTarget
+  { ptLegacyName :: !Text
+  , ptMethod :: !Text
+  , ptPath :: ![Text]
+  , ptOperationId :: !Text
+  , ptServiceMethod :: !Text
+  } deriving (Eq, Show)
+
+target :: Text -> Text -> [Text] -> Text -> Text -> ParityTarget
+target = ParityTarget
+
+targetPathText :: ParityTarget -> Text
+targetPathText t = "/" <> Text.intercalate "/" (ptPath t)
+
+assertFriendlyRouteTarget :: ParityTarget -> Expectation
+assertFriendlyRouteTarget t = case find matching friendlyHttpRouteSpecs of
+  Nothing -> expectationFailure ("missing primary HTTP route for " <> Text.unpack (ptLegacyName t) <> ": " <> Text.unpack (routeLabel t))
+  Just route -> do
+    hrsOperationId route `shouldBe` ptOperationId t
+    hrsServiceMethod route `shouldBe` Just (ptServiceMethod t)
+  where
+    matching route = hrsMethod route == ptMethod t && hrsPath route == ptPath t
+
+assertOpenApiTarget :: Value -> ParityTarget -> Expectation
+assertOpenApiTarget doc t =
+  operationIdAt doc (targetPathText t) (Text.toLower (ptMethod t)) `shouldBe` Just (ptOperationId t)
+
+assertCommandFallbackTarget :: ParityTarget -> Expectation
+assertCommandFallbackTarget t = case find matching commandHttpRouteSpecs of
+  Nothing -> expectationFailure ("missing command-compatible HTTP fallback for " <> Text.unpack (ptLegacyName t) <> " via " <> Text.unpack (ptServiceMethod t))
+  Just route -> do
+    hrsOperationId route `shouldBe` ("command." <> ptServiceMethod t)
+    hrsServiceMethod route `shouldBe` Just (ptServiceMethod t)
+  where
+    matching route = hrsMethod route == "POST" && hrsPath route == ["commands", ptServiceMethod t]
+
+operationIdAt :: Value -> Text -> Text -> Maybe Text
+operationIdAt doc path routeMethod = do
+  Object operation <- pathOperation doc path routeMethod
+  String op <- KM.lookup "operationId" operation
+  pure op
+
+routeLabel :: ParityTarget -> Text
+routeLabel t = Text.unwords [ptMethod t, targetPathText t, ptOperationId t]
+
+data ResourceReadCase = ResourceReadCase
+  { rrcTarget :: !ParityTarget
+  , rrcQuery :: ![(Text, Maybe Text)]
+  , rrcBody :: !(Maybe Value)
+  } deriving (Eq, Show)
+
+resourceReadCase :: ParityTarget -> [(Text, Maybe Text)] -> Maybe Value -> ResourceReadCase
+resourceReadCase = ResourceReadCase
+
+resourceReadRequest :: ResourceReadCase -> HttpRequest
+resourceReadRequest c = (mkRequest (ptMethod targetSpec) (ptPath targetSpec))
+  { hreqQuery = rrcQuery c
+  , hreqBody = rrcBody c
+  }
+  where
+    targetSpec = rrcTarget c
+
+isRouteMiss :: HttpResponse -> Bool
+isRouteMiss rsp =
+  hresStatusCode rsp == 404
+    && lookupNestedText ["error", "message"] (hresBody rsp) == Just "route not found"
+
+installTerrainFixture :: HeadlessApp -> IO ()
+installTerrainFixture app = do
+  let handles = ccActorHandles (headlessCommandContext app)
+      cfg = WorldConfig { wcChunkSize = 64 }
+      chunkId = chunkIdFromCoord (ChunkCoord 0 0)
+  setTerrainChunkData (ahDataHandle handles) (wcChunkSize cfg) [(chunkId, emptyTerrainChunk cfg)]
+  terrainSnapshot <- getTerrainSnapshot (ahDataHandle handles)
+  writeTerrainSnapshot (ahTerrainSnapshotRef handles) terrainSnapshot
+
+slidersHaveTab :: Text -> Value -> Bool
+slidersHaveTab expectedTab (Object obj) = case KM.lookup "sliders" obj of
+  Just (Array sliders) ->
+    let sliderValues = toList sliders
+    in not (null sliderValues) && all (sliderHasTab expectedTab) sliderValues
+  _ -> False
+slidersHaveTab _ _ = False
+
+sliderHasTab :: Text -> Value -> Bool
+sliderHasTab expectedTab (Object slider) = KM.lookup "tab" slider == Just (String expectedTab)
+sliderHasTab _ _ = False
+
+assertTemplateResourceBodies :: HeadlessApp -> Expectation
+assertTemplateResourceBodies app = do
+  slidersByTab <- request app (mkRequest "GET" ["config", "sliders"])
+    { hreqQuery = [("tab", Just "terrain")] }
+  slidersHaveTab "terrain" (hresBody slidersByTab) `shouldBe` True
+
+  sliderByName <- request app (mkRequest "POST" ["config", "sliders", "get"])
+    { hreqBody = Just (object ["name" .= ("SliderGenScale" :: Text)]) }
+  lookupText "name" (hresBody sliderByName) `shouldBe` Just "SliderGenScale"
+
+  hexByCoords <- request app (mkRequest "GET" ["terrain", "hex"])
+    { hreqQuery = [("q", Just "0"), ("r", Just "0")] }
+  lookupValue "q" (hresBody hexByCoords) `shouldBe` Just (Number 0)
+  lookupValue "r" (hresBody hexByCoords) `shouldBe` Just (Number 0)
+
+  chunkById <- request app (mkRequest "GET" ["terrain", "chunk-summary"])
+    { hreqQuery = [("chunk", Just "0")] }
+  lookupValue "chunk" (hresBody chunkById) `shouldBe` Just (Number 0)
+
+  enumsByType <- request app (mkRequest "GET" ["config", "enums"])
+    { hreqQuery = [("type", Just "biome")] }
+  objectHasKey "values" (hresBody enumsByType) `shouldBe` True
+
+retiredMcpToolTargets :: [ParityTarget]
+retiredMcpToolTargets =
+  [ target "get_state" "GET" ["state"] "state.get" "get_state"
+  , target "list_sliders" "GET" ["config", "sliders"] "config.sliders.list" "get_sliders"
+  , target "get_slider" "POST" ["config", "sliders", "get"] "config.sliders.get" "get_slider"
+  , target "set_slider" "POST" ["config", "sliders"] "config.sliders.set" "set_slider"
+  , target "set_seed" "POST" ["ui", "seed"] "ui.seed.set" "set_seed"
+  , target "set_view_mode" "POST" ["ui", "view-mode"] "ui.viewMode.set" "set_view_mode"
+  , target "set_config_tab" "POST" ["ui", "config-tab"] "ui.configTab.set" "set_config_tab"
+  , target "get_view_modes" "GET" ["state", "view-modes"] "state.viewModes" "get_view_modes"
+  , target "generate" "POST" ["world", "generate"] "world.generate" "generate"
+  , target "editor_toggle" "POST" ["editor", "toggle"] "editor.toggle" "editor_toggle"
+  , target "editor_set_tool" "POST" ["editor", "tool"] "editor.tool.set" "editor_set_tool"
+  , target "editor_set_brush" "PATCH" ["editor", "brush"] "editor.brush.set" "editor_set_brush"
+  , target "editor_brush_stroke" "POST" ["editor", "brush-stroke"] "editor.brushStroke" "editor_brush_stroke"
+  , target "editor_brush_line" "POST" ["editor", "brush-line"] "editor.brushLine" "editor_brush_line"
+  , target "editor_set_biome" "POST" ["editor", "biome"] "editor.biome.set" "editor_set_biome"
+  , target "editor_set_form" "POST" ["editor", "form"] "editor.form.set" "editor_set_form"
+  , target "editor_set_hardness" "POST" ["editor", "hardness"] "editor.hardness.set" "editor_set_hardness"
+  , target "editor_undo" "POST" ["editor", "undo"] "editor.undo" "editor_undo"
+  , target "editor_redo" "POST" ["editor", "redo"] "editor.redo" "editor_redo"
+  , target "editor_get_state" "GET" ["editor"] "editor.state" "editor_get_state"
+  , target "get_enums" "GET" ["config", "enums"] "config.enums" "get_enums"
+  , target "get_world_meta" "GET" ["world"] "world.meta" "get_world_meta"
+  , target "get_generation_status" "GET" ["world", "generation-status"] "world.generationStatus" "get_generation_status"
+  , target "inspect_hex" "GET" ["terrain", "hex"] "terrain.hex" "get_hex"
+  , target "get_chunks" "GET" ["terrain", "chunks"] "terrain.chunks" "get_chunks"
+  , target "get_chunk_summary" "GET" ["terrain", "chunk-summary"] "terrain.chunkSummary" "get_chunk_summary"
+  , target "get_terrain_stats" "GET" ["terrain", "stats"] "terrain.stats" "get_terrain_stats"
+  , target "get_overlays" "GET" ["overlays"] "overlays.list" "get_overlays"
+  , target "list_worlds" "GET" ["worlds"] "worlds.list" "list_worlds"
+  , target "set_sliders" "PATCH" ["config", "sliders"] "config.sliders.setMany" "set_sliders"
+  , target "reset_sliders" "POST" ["config", "sliders", "reset"] "config.sliders.reset" "reset_sliders"
+  , target "select_hex" "POST" ["ui", "select-hex"] "ui.hex.select" "select_hex"
+  , target "save_world" "POST" ["worlds", "save"] "worlds.save" "save_world"
+  , target "load_world" "POST" ["worlds", "load"] "worlds.load" "load_world"
+  , target "list_presets" "GET" ["presets"] "presets.list" "list_presets"
+  , target "save_preset" "POST" ["presets"] "presets.save" "save_preset"
+  , target "load_preset" "POST" ["presets", "load"] "presets.load" "load_preset"
+  , target "take_screenshot" "POST" ["screenshots"] "screenshots.take" "take_screenshot"
+  , target "set_camera" "PUT" ["camera"] "camera.set" "set_camera"
+  , target "get_camera" "GET" ["camera"] "camera.get" "get_camera"
+  , target "zoom_to_chunk" "POST" ["camera", "zoom-to-chunk"] "camera.zoomToChunk" "zoom_to_chunk"
+  , target "get_logs" "GET" ["logs"] "logs.get" "get_logs"
+  , target "set_world_name" "PATCH" ["world", "name"] "world.name.set" "set_world_name"
+  , target "get_pipeline" "GET" ["pipeline"] "pipeline.get" "get_pipeline"
+  , target "set_stage_enabled" "PATCH" ["pipeline", "stages"] "pipeline.stage.setEnabled" "set_stage_enabled"
+  , target "list_plugins" "GET" ["plugins"] "plugins.list" "list_plugins"
+  , target "set_plugin_enabled" "PATCH" ["plugins", "enabled"] "plugins.setEnabled" "set_plugin_enabled"
+  , target "set_plugin_param" "PATCH" ["plugins", "params"] "plugins.params.set" "set_plugin_param"
+  , target "get_sim_state" "GET" ["simulation"] "simulation.state" "get_sim_state"
+  , target "set_sim_auto_tick" "POST" ["simulation", "auto-tick"] "simulation.autoTick.set" "set_sim_auto_tick"
+  , target "sim_tick" "POST" ["simulation", "tick"] "simulation.tick" "sim_tick"
+  , target "get_config_summary" "GET" ["config", "summary"] "config.summary" "get_config_summary"
+  , target "find_hexes" "POST" ["terrain", "search"] "terrain.search" "find_hexes"
+  , target "export_terrain_data" "POST" ["terrain", "export"] "terrain.export" "export_terrain_data"
+  , target "set_left_panel" "PUT" ["ui", "left-panel"] "ui.leftPanel.set" "set_left_panel"
+  , target "set_left_tab" "PUT" ["ui", "left-tab"] "ui.leftTab.set" "set_left_tab"
+  , target "toggle_config_panel" "POST" ["ui", "config-panel", "toggle"] "ui.configPanel.toggle" "toggle_config_panel"
+  , target "set_log_collapsed" "PUT" ["ui", "log", "collapsed"] "ui.logCollapsed.set" "set_log_collapsed"
+  , target "set_log_level" "PUT" ["ui", "log", "level"] "ui.logLevel.set" "set_log_level"
+  , target "get_ui_panels" "GET" ["ui", "panels"] "ui.panels.get" "get_ui_panels"
+  , target "set_overlay" "PUT" ["overlays", "current"] "overlays.current.set" "set_overlay"
+  , target "list_overlay_fields" "GET" ["overlays", "fields"] "overlays.fields.list" "list_overlay_fields"
+  , target "cycle_overlay" "POST" ["overlays", "cycle"] "overlays.cycle" "cycle_overlay"
+  , target "cycle_overlay_field" "POST" ["overlays", "fields", "cycle"] "overlays.field.cycle" "cycle_overlay_field"
+  , target "get_ui_state" "GET" ["ui", "state"] "ui.state" "get_ui_state"
+  , target "data_list_plugins" "GET" ["data", "plugins"] "data.plugins.list" "data_list_plugins"
+  , target "data_list_resources" "GET" ["data", "resources"] "data.resources.list" "data_list_resources"
+  , target "data_list_records" "GET" ["data", "records"] "data.records.list" "data_list_records"
+  , target "data_get_record" "POST" ["data", "records", "get"] "data.records.get" "data_get_record"
+  , target "data_create_record" "POST" ["data", "records"] "data.records.create" "data_create_record"
+  , target "data_update_record" "PUT" ["data", "records"] "data.records.update" "data_update_record"
+  , target "data_delete_record" "DELETE" ["data", "records"] "data.records.delete" "data_delete_record"
+  , target "data_get_state" "GET" ["data", "state"] "data.state" "data_get_state"
+  , target "click_widget" "POST" ["ui", "widgets", "click"] "ui.widgets.click" "click_widget"
+  , target "list_widgets" "GET" ["ui", "widgets"] "ui.widgets.list" "list_widgets"
+  , target "get_widget_state" "GET" ["ui", "widget-state"] "ui.widgetState.get" "get_widget_state"
+  , target "viewport_scroll" "POST" ["ui", "viewport", "scroll"] "ui.viewport.scroll" "viewport_scroll"
+  , target "viewport_click" "POST" ["ui", "viewport", "click"] "ui.viewport.click" "viewport_click"
+  , target "viewport_drag" "POST" ["ui", "viewport", "drag"] "ui.viewport.drag" "viewport_drag"
+  , target "viewport_hover" "POST" ["ui", "viewport", "hover"] "ui.viewport.hover" "viewport_hover"
+  , target "get_dialog_state" "GET" ["ui", "dialog"] "ui.dialog.get" "get_dialog_state"
+  , target "set_dialog_text" "PUT" ["ui", "dialog", "text"] "ui.dialogText.set" "set_dialog_text"
+  , target "dialog_confirm" "POST" ["ui", "dialog", "confirm"] "ui.dialog.confirm" "dialog_confirm"
+  , target "dialog_cancel" "POST" ["ui", "dialog", "cancel"] "ui.dialog.cancel" "dialog_cancel"
+  , target "send_key" "POST" ["ui", "key"] "ui.key.send" "send_key"
+  ]
+
+retiredMcpResourceTargets :: [ParityTarget]
+retiredMcpResourceTargets =
+  [ target "topo://state" "GET" ["state"] "state.get" "get_state"
+  , target "topo://sliders" "GET" ["config", "sliders"] "config.sliders.list" "get_sliders"
+  , target "topo://view-modes" "GET" ["state", "view-modes"] "state.viewModes" "get_view_modes"
+  , target "topo://editor/state" "GET" ["editor"] "editor.state" "editor_get_state"
+  , target "topo://world" "GET" ["world"] "world.meta" "get_world_meta"
+  , target "topo://generation-status" "GET" ["world", "generation-status"] "world.generationStatus" "get_generation_status"
+  , target "topo://chunks" "GET" ["terrain", "chunks"] "terrain.chunks" "get_chunks"
+  , target "topo://terrain-stats" "GET" ["terrain", "stats"] "terrain.stats" "get_terrain_stats"
+  , target "topo://overlays" "GET" ["overlays"] "overlays.list" "get_overlays"
+  , target "topo://worlds" "GET" ["worlds"] "worlds.list" "list_worlds"
+  , target "topo://presets" "GET" ["presets"] "presets.list" "list_presets"
+  , target "topo://sliders/{tab}" "GET" ["config", "sliders"] "config.sliders.list" "get_sliders"
+  , target "topo://slider/{name}" "POST" ["config", "sliders", "get"] "config.sliders.get" "get_slider"
+  , target "topo://hex/{q}/{r}" "GET" ["terrain", "hex"] "terrain.hex" "get_hex"
+  , target "topo://chunk/{id}" "GET" ["terrain", "chunk-summary"] "terrain.chunkSummary" "get_chunk_summary"
+  , target "topo://enums/{type}" "GET" ["config", "enums"] "config.enums" "get_enums"
+  ]
+
+retiredMcpResourceReadCases :: [ResourceReadCase]
+retiredMcpResourceReadCases =
+  [ resourceReadCase (retiredMcpResourceTargets !! 0) [] Nothing
+  , resourceReadCase (retiredMcpResourceTargets !! 1) [] Nothing
+  , resourceReadCase (retiredMcpResourceTargets !! 2) [] Nothing
+  , resourceReadCase (retiredMcpResourceTargets !! 3) [] Nothing
+  , resourceReadCase (retiredMcpResourceTargets !! 4) [] Nothing
+  , resourceReadCase (retiredMcpResourceTargets !! 5) [] Nothing
+  , resourceReadCase (retiredMcpResourceTargets !! 6) [] Nothing
+  , resourceReadCase (retiredMcpResourceTargets !! 7) [] Nothing
+  , resourceReadCase (retiredMcpResourceTargets !! 8) [] Nothing
+  , resourceReadCase (retiredMcpResourceTargets !! 9) [] Nothing
+  , resourceReadCase (retiredMcpResourceTargets !! 10) [] Nothing
+  , resourceReadCase (retiredMcpResourceTargets !! 11) [("tab", Just "terrain")] Nothing
+  , resourceReadCase (retiredMcpResourceTargets !! 12) [] (Just (object ["name" .= ("SliderGenScale" :: Text)]))
+  , resourceReadCase (retiredMcpResourceTargets !! 13) [("q", Just "0"), ("r", Just "0")] Nothing
+  , resourceReadCase (retiredMcpResourceTargets !! 14) [("chunk", Just "0")] Nothing
+  , resourceReadCase (retiredMcpResourceTargets !! 15) [("type", Just "biome")] Nothing
+  ]
 
 lookupText :: Text -> Value -> Maybe Text
 lookupText key value = case lookupValue key value of

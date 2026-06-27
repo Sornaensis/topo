@@ -504,7 +504,9 @@ friendlyHttpRouteSpecs = map annotateHttpRouteSpec
   , service "GET" ["state", "view-modes"] "state.viewModes" "state" "get_view_modes" "List view modes." NoRequestBody
   , service "GET" ["ui", "state"] "ui.state" "ui" "get_ui_state" "Read UI state." NoRequestBody
 
-  , service "GET" ["config", "sliders"] "config.sliders.list" "config" "get_sliders" "List sliders." NoRequestBody
+  , serviceWithQuery "GET" ["config", "sliders"] "config.sliders.list" "config" "get_sliders" "List sliders." NoRequestBody
+      [ optionalQueryWithSchema "tab" "Filter by config tab." (queryEnumSchema ["terrain", "planet", "climate", "weather", "biome", "erosion"])
+      ]
   , service "POST" ["config", "sliders", "get"] "config.sliders.get" "config" "get_slider" "Read one slider." RequiredJsonRequestBody
   , service "POST" ["config", "sliders"] "config.sliders.set" "config" "set_slider" "Set one slider." RequiredJsonRequestBody
   , service "PATCH" ["config", "sliders"] "config.sliders.setMany" "config" "set_sliders" "Set multiple sliders." RequiredJsonRequestBody
