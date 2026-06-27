@@ -603,7 +603,7 @@ executeWidgetClick ctx wid = do
           pure $ Right ("selected resource: " <> resourceName)
         Left err -> do
           setUiDataBrowser uiH newDbs { dbsLoading = False }
-          pure $ Left ("query failed: " <> Text.pack (show err))
+          pure $ Left err
     WidgetDataPagePrev pluginName resourceName -> do
       let dbs = uiDataBrowser uiSnap
           pageStep = pageStepFor uiSnap pluginName resourceName
@@ -875,7 +875,7 @@ paginate uiH pluginH dbs pluginName resourceName pageSize newOffset = do
       pure $ Right ("page offset " <> Text.pack (show newOffset))
     Left err -> do
       setUiDataBrowser uiH newDbs { dbsLoading = False }
-      pure $ Left ("page query failed: " <> Text.pack (show err))
+      pure $ Left err
 
 bumpFieldNum :: CommandContext -> Text -> Int -> IO (Either Text Text)
 bumpFieldNum ctx path dir = do

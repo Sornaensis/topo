@@ -87,8 +87,10 @@ import Topo.Plugin.RPC.Transport
 import Topo.Hex (defaultHexGridMeta)
 import Topo.Plugin.DataResource (DataResourceSchema(..), DataOperations(..))
 import Topo.Plugin.RPC.DataService
-  ( QueryResource(..), QueryResult(..), DataRecord(..)
+  ( DataMutation(..), DataQuery(..), DataResourceErrorCode(..)
+  , DataResourceFailure(..), QueryResource(..), QueryResult(..), DataRecord(..)
   , MutateResource(..), MutateResult(..)
+  , dataResourceErrorCodeText, dataResourceErrorRPCCode, dataResourceFailureFromText
   )
 import Topo.Plugin.SDK.Payload (decodeTerrainPayload)
 import Topo.Types (WorldConfig(..))
@@ -308,68 +310,76 @@ messageLoop pd transport params worldPath = do
         MsgQueryResource -> do
           case Aeson.fromJSON (envPayload envelope) of
             Aeson.Error err -> do
-              sendErrorResponse transport (envRequestId envelope) 9 ("Invalid query payload: " <> Text.pack err)
+              sendDataResourceErrorResponse transport (envRequestId envelope) SchemaValidationFailed ("Invalid query payload: " <> Text.pack err)
               messageLoop pd transport params worldPath
             Aeson.Success (qr :: QueryResource) -> do
               let resourceName = qrResource qr
               case findHandler resourceName (pdDataResources pd) of
                 Nothing -> do
-                  sendErrorResponse transport (envRequestId envelope) 9 ("Unknown resource: " <> resourceName)
+                  sendDataResourceErrorResponse transport (envRequestId envelope) ResourceNotFound ("Unknown resource: " <> resourceName)
                   messageLoop pd transport params worldPath
-                Just drd -> case dhQuery (drdHandler drd) of
-                  Nothing -> do
-                    sendErrorResponse transport (envRequestId envelope) 9 ("Resource '" <> resourceName <> "' does not support queries")
+                Just drd -> case querySupportError (drdSchema drd) qr of
+                  Just errMsg -> do
+                    sendDataResourceErrorResponse transport (envRequestId envelope) QueryUnsupported errMsg
                     messageLoop pd transport params worldPath
-                  Just handler -> do
-                    let ctx = makeDataContext params worldPath transport (envRequestId envelope)
-                    runResult <- catch
-                      (handler ctx (qrQuery qr))
-                      (\e -> pure (Left (Text.pack (show (e :: SomeException)))))
-                    case runResult of
-                      Left errMsg ->
-                        sendErrorResponse transport (envRequestId envelope) 9 errMsg
-                      Right result -> do
-                        let resEnv = RPCEnvelope
-                              { envType    = MsgQueryResult
-                              , envPayload = Aeson.toJSON result
-                              , envRequestId = envRequestId envelope
-                              }
-                        _ <- sendMessage transport (encodeMessage resEnv)
-                        pure ()
-                    messageLoop pd transport params worldPath
+                  Nothing -> case dhQuery (drdHandler drd) of
+                    Nothing -> do
+                      sendDataResourceErrorResponse transport (envRequestId envelope) OperationNotSupported ("Resource '" <> resourceName <> "' does not support queries")
+                      messageLoop pd transport params worldPath
+                    Just handler -> do
+                      let ctx = makeDataContext params worldPath transport (envRequestId envelope)
+                      runResult <- catch
+                        (handler ctx (qrQuery qr))
+                        (\e -> pure (Left (Text.pack (show (e :: SomeException)))))
+                      case runResult of
+                        Left errMsg ->
+                          sendDataResourceFailureResponse transport (envRequestId envelope) (dataResourceFailureFromText errMsg)
+                        Right result -> do
+                          let resEnv = RPCEnvelope
+                                { envType    = MsgQueryResult
+                                , envPayload = Aeson.toJSON result
+                                , envRequestId = envRequestId envelope
+                                }
+                          _ <- sendMessage transport (encodeMessage resEnv)
+                          pure ()
+                      messageLoop pd transport params worldPath
 
         MsgMutateResource -> do
           case Aeson.fromJSON (envPayload envelope) of
             Aeson.Error err -> do
-              sendErrorResponse transport (envRequestId envelope) 10 ("Invalid mutate payload: " <> Text.pack err)
+              sendDataResourceErrorResponse transport (envRequestId envelope) SchemaValidationFailed ("Invalid mutate payload: " <> Text.pack err)
               messageLoop pd transport params worldPath
             Aeson.Success (mr :: MutateResource) -> do
               let resourceName = mrResource mr
               case findHandler resourceName (pdDataResources pd) of
                 Nothing -> do
-                  sendErrorResponse transport (envRequestId envelope) 10 ("Unknown resource: " <> resourceName)
+                  sendDataResourceErrorResponse transport (envRequestId envelope) ResourceNotFound ("Unknown resource: " <> resourceName)
                   messageLoop pd transport params worldPath
-                Just drd -> case dhMutate (drdHandler drd) of
-                  Nothing -> do
-                    sendErrorResponse transport (envRequestId envelope) 10 ("Resource '" <> resourceName <> "' does not support mutations")
+                Just drd -> case mutationSupportError (drdSchema drd) (mrMutation mr) of
+                  Just errMsg -> do
+                    sendDataResourceErrorResponse transport (envRequestId envelope) OperationNotSupported errMsg
                     messageLoop pd transport params worldPath
-                  Just handler -> do
-                    let ctx = makeDataContext params worldPath transport (envRequestId envelope)
-                    runResult <- catch
-                      (handler ctx (mrMutation mr))
-                      (\e -> pure (Left (Text.pack (show (e :: SomeException)))))
-                    case runResult of
-                      Left errMsg ->
-                        sendErrorResponse transport (envRequestId envelope) 10 errMsg
-                      Right result -> do
-                        let resEnv = RPCEnvelope
-                              { envType    = MsgMutateResult
-                              , envPayload = Aeson.toJSON result
-                              , envRequestId = envRequestId envelope
-                              }
-                        _ <- sendMessage transport (encodeMessage resEnv)
-                        pure ()
-                    messageLoop pd transport params worldPath
+                  Nothing -> case dhMutate (drdHandler drd) of
+                    Nothing -> do
+                      sendDataResourceErrorResponse transport (envRequestId envelope) OperationNotSupported ("Resource '" <> resourceName <> "' does not support mutations")
+                      messageLoop pd transport params worldPath
+                    Just handler -> do
+                      let ctx = makeDataContext params worldPath transport (envRequestId envelope)
+                      runResult <- catch
+                        (handler ctx (mrMutation mr))
+                        (\e -> pure (Left (Text.pack (show (e :: SomeException)))))
+                      case runResult of
+                        Left errMsg ->
+                          sendDataResourceFailureResponse transport (envRequestId envelope) (dataResourceFailureFromText errMsg)
+                        Right result -> do
+                          let resEnv = RPCEnvelope
+                                { envType    = MsgMutateResult
+                                , envPayload = Aeson.toJSON result
+                                , envRequestId = envRequestId envelope
+                                }
+                          _ <- sendMessage transport (encodeMessage resEnv)
+                          pure ()
+                      messageLoop pd transport params worldPath
 
         MsgInvokeGenerator -> do
           case pdGenerator pd of
@@ -469,12 +479,32 @@ messageLoop pd transport params worldPath = do
 
 -- | Send an error response.
 sendErrorResponse :: Transport -> Maybe Word64 -> Int -> Text -> IO ()
-sendErrorResponse transport requestId code msg = do
+sendErrorResponse transport requestId code msg =
+  sendErrorResponseWithDataResourceCode transport requestId code msg Nothing
+
+sendDataResourceErrorResponse :: Transport -> Maybe Word64 -> DataResourceErrorCode -> Text -> IO ()
+sendDataResourceErrorResponse transport requestId code msg =
+  sendDataResourceFailureResponse transport requestId (DataResourceFailure code msg)
+
+sendDataResourceFailureResponse :: Transport -> Maybe Word64 -> DataResourceFailure -> IO ()
+sendDataResourceFailureResponse transport requestId failure =
+  sendErrorResponseWithDataResourceCode
+    transport
+    requestId
+    (dataResourceErrorRPCCode (drfCode failure))
+    (drfMessage failure)
+    (Just (drfCode failure))
+
+sendErrorResponseWithDataResourceCode :: Transport -> Maybe Word64 -> Int -> Text -> Maybe DataResourceErrorCode -> IO ()
+sendErrorResponseWithDataResourceCode transport requestId code msg mDataResourceCode = do
   let envelope = RPCEnvelope
         { envType = MsgError
-        , envPayload = object
+        , envPayload = object $
             [ "code"    .= code
             , "message" .= msg
+            ] <>
+            [ "data_resource_error" .= dataResourceErrorCodeText dataCode
+            | Just dataCode <- [mDataResourceCode]
             ]
         , envRequestId = requestId
         }
@@ -579,6 +609,47 @@ findHandler name = foldr go Nothing
     go drd acc
       | drsName (drdSchema drd) == name = Just drd
       | otherwise = acc
+
+querySupportError :: DataResourceSchema -> QueryResource -> Maybe Text
+querySupportError schema qr
+  | hasPageRequest qr && not (doPage ops) =
+      Just ("Resource '" <> name <> "' does not support paged queries")
+  | otherwise = case qrQuery qr of
+      QueryAll
+        | doList ops -> Nothing
+        | otherwise -> Just ("Resource '" <> name <> "' does not support list queries")
+      QueryByKey _
+        | doGet ops -> Nothing
+        | otherwise -> Just ("Resource '" <> name <> "' does not support get queries")
+      QueryByHex _ _
+        | doQueryByHex ops -> Nothing
+        | otherwise -> Just ("Resource '" <> name <> "' does not support hex queries")
+      QueryByField _ _
+        | doQueryByField ops -> Nothing
+        | otherwise -> Just ("Resource '" <> name <> "' does not support field queries")
+  where
+    ops = drsOperations schema
+    name = drsName schema
+    hasPageRequest request = qrPageSize request /= Nothing || qrPageOffset request /= Nothing
+
+mutationSupportError :: DataResourceSchema -> DataMutation -> Maybe Text
+mutationSupportError schema mutation = case mutation of
+  MutCreate _
+    | doCreate ops -> Nothing
+    | otherwise -> unsupported "create"
+  MutUpdate _ _
+    | doUpdate ops -> Nothing
+    | otherwise -> unsupported "update"
+  MutDelete _
+    | doDelete ops -> Nothing
+    | otherwise -> unsupported "delete"
+  MutSetHex _ _ _
+    | drsHexBound schema && (doCreate ops || doUpdate ops) -> Nothing
+    | otherwise -> unsupported "set_hex"
+  where
+    ops = drsOperations schema
+    name = drsName schema
+    unsupported op = Just ("Resource '" <> name <> "' does not support " <> op <> " mutations")
 
 -- | Build a 'PluginContext' for data service callbacks.
 --

@@ -31,6 +31,7 @@ module Seer.Service.Types
   , serviceErrorMessage
   , serviceErrorDetails
   , serviceErrorText
+  , serviceErrorHTTPStatus
   , validationError
   , missingField
   , invalidField
@@ -51,6 +52,11 @@ import qualified Data.Text as Text
 
 import Seer.Service.Context (ServiceContext)
 import Seer.Service.EventTypes
+import Topo.Plugin.RPC.DataService
+  ( DataResourceErrorCode(..)
+  , dataResourceErrorCodeText
+  , dataResourceErrorHTTPStatus
+  )
 
 -- | Generic service handler shape used by the initial AppService surface.
 --
@@ -126,6 +132,7 @@ data ServiceError
   | ServiceUnavailable !Text
   | ServiceRejected !Text
   | ServiceInternalError !Text
+  | ServiceDataResourceError !DataResourceErrorCode !Text ![ServiceErrorDetail]
   deriving (Eq, Show)
 
 serviceErrorKind :: ServiceError -> ServiceErrorKind
@@ -135,6 +142,21 @@ serviceErrorKind (ServiceNotFound _) = ServiceErrorNotFound
 serviceErrorKind (ServiceUnavailable _) = ServiceErrorUnavailable
 serviceErrorKind (ServiceRejected _) = ServiceErrorRejected
 serviceErrorKind (ServiceInternalError _) = ServiceErrorInternal
+serviceErrorKind (ServiceDataResourceError code _ _) = dataResourceServiceErrorKind code
+
+dataResourceServiceErrorKind :: DataResourceErrorCode -> ServiceErrorKind
+dataResourceServiceErrorKind ResourceNotFound = ServiceErrorNotFound
+dataResourceServiceErrorKind RecordNotFound = ServiceErrorNotFound
+dataResourceServiceErrorKind PluginUnavailable = ServiceErrorUnavailable
+dataResourceServiceErrorKind ExternalDataSourceUnavailable = ServiceErrorUnavailable
+dataResourceServiceErrorKind DuplicateKey = ServiceErrorRejected
+dataResourceServiceErrorKind Conflict = ServiceErrorRejected
+dataResourceServiceErrorKind DataResourceTimeout = ServiceErrorUnavailable
+dataResourceServiceErrorKind DataResourceInternalError = ServiceErrorInternal
+dataResourceServiceErrorKind OperationNotSupported = ServiceErrorInvalidRequest
+dataResourceServiceErrorKind SchemaValidationFailed = ServiceErrorInvalidRequest
+dataResourceServiceErrorKind PermissionDenied = ServiceErrorRejected
+dataResourceServiceErrorKind QueryUnsupported = ServiceErrorInvalidRequest
 
 serviceErrorCode :: ServiceError -> Text
 serviceErrorCode (ServiceInvalidRequest _) = "invalid_request"
@@ -143,6 +165,7 @@ serviceErrorCode (ServiceNotFound _) = "not_found"
 serviceErrorCode (ServiceUnavailable _) = "unavailable"
 serviceErrorCode (ServiceRejected _) = "rejected"
 serviceErrorCode (ServiceInternalError _) = "internal_error"
+serviceErrorCode (ServiceDataResourceError code _ _) = dataResourceErrorCodeText code
 
 serviceErrorMessage :: ServiceError -> Text
 serviceErrorMessage (ServiceInvalidRequest msg) = msg
@@ -151,15 +174,29 @@ serviceErrorMessage (ServiceNotFound msg) = msg
 serviceErrorMessage (ServiceUnavailable msg) = msg
 serviceErrorMessage (ServiceRejected msg) = msg
 serviceErrorMessage (ServiceInternalError msg) = msg
+serviceErrorMessage (ServiceDataResourceError _ msg _) = msg
 
 serviceErrorDetails :: ServiceError -> [ServiceErrorDetail]
 serviceErrorDetails (ServiceValidationError _ details) = details
+serviceErrorDetails (ServiceDataResourceError _ _ details) = details
 serviceErrorDetails _ = []
 
 serviceErrorText :: ServiceError -> Text
 serviceErrorText err = case serviceErrorDetails err of
   [] -> serviceErrorMessage err
   details -> serviceErrorMessage err <> ": " <> Text.intercalate "; " (map serviceErrorDetailMessage details)
+
+-- | HTTP status code for a service error.  Data-resource errors have a
+-- standardized domain-specific mapping shared with plugin RPC codes.
+serviceErrorHTTPStatus :: ServiceError -> Int
+serviceErrorHTTPStatus err = case err of
+  ServiceDataResourceError code _ _ -> dataResourceErrorHTTPStatus code
+  _ -> case serviceErrorKind err of
+    ServiceErrorInvalidRequest -> 400
+    ServiceErrorNotFound -> 404
+    ServiceErrorUnavailable -> 503
+    ServiceErrorRejected -> 409
+    ServiceErrorInternal -> 500
 
 validationError :: [ServiceErrorDetail] -> ServiceError
 validationError = ServiceValidationError "validation failed"

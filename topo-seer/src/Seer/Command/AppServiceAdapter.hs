@@ -51,6 +51,7 @@ import qualified Seer.Command.Handlers.Widgets as HWidgets
 import qualified Seer.Command.Handlers.World as HWorld
 import Seer.Service.AppService
 import Seer.Service.Types
+import Topo.Plugin.RPC.DataService (DataResourceFailure(..), dataResourceFailureText, parseDataResourceFailureText)
 import Seer.Service.Validation
   ( serviceRequestBodyValue
   , validateServiceHandler
@@ -202,6 +203,8 @@ commandResponseToServiceResult response
 
 commandErrorToServiceError :: Text -> ServiceError
 commandErrorToServiceError msg
+  | Just failure <- parseDataResourceFailureText msg =
+      ServiceDataResourceError (drfCode failure) (drfMessage failure) []
   | matches ["not found", "unknown ", "chunk not found", "record not found"] = ServiceNotFound msg
   | matches ["not visible", "not available", "no terrain loaded", "no terrain generated"] = ServiceUnavailable msg
   | matches ["failed", "rejected"] = ServiceRejected msg
@@ -216,4 +219,6 @@ serviceResultToCommandResponse reqId = \case
   Left (ServiceNotFound msg)
     | Just method <- Text.stripPrefix "unknown service method: " msg ->
         errResponse reqId ("unknown command: " <> method)
+  Left (ServiceDataResourceError code msg _) ->
+    errResponse reqId (dataResourceFailureText (DataResourceFailure code msg))
   Left err -> errResponse reqId (serviceErrorText err)

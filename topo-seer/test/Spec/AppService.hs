@@ -25,6 +25,7 @@ import Test.Hspec
 import Topo.Overlay.Schema (OverlayFieldType(..))
 import Topo.Plugin (Capability(..))
 import Topo.Plugin.DataResource (DataFieldDef(..), DataFieldType(..), DataOperations(..), DataResourceSchema(..), currentDataResourceSchemaVersion, defaultDataResourceVersion, defaultDataPagination, noOperations)
+import Topo.Plugin.RPC.DataService (DataResourceErrorCode(..))
 import Topo.Plugin.RPC.Manifest
   ( RPCManifest(..), RPCGeneratorDecl(..), defaultRPCManifestRuntime
   , defaultRPCStartPolicy, defaultRPCUIHints, manifestV3
@@ -170,9 +171,12 @@ import Seer.Service.Types
   , ServiceEventSeverity(..)
   , ServiceEventSource(..)
   , ServiceGroupSpec(..)
+  , ServiceError(..)
   , ServiceOperationSpec(..)
   , TypedServiceOperation(..)
   , groupOperationMethods
+  , serviceErrorCode
+  , serviceErrorHTTPStatus
   , serviceEventPublishOperation
   )
 
@@ -198,6 +202,25 @@ spec = describe "AppService surface" $ do
   it "defines focused service groups for the M2 behaviour boundary" $
     map (\group -> (serviceGroupName group, groupOperationMethods group)) appServiceGroups
       `shouldBe` expectedServiceGroups
+
+  it "maps standardized data-resource service errors to codes and HTTP statuses" $ do
+    let cases =
+          [ (ResourceNotFound, "resource_not_found", 404)
+          , (OperationNotSupported, "operation_not_supported", 405)
+          , (RecordNotFound, "record_not_found", 404)
+          , (DuplicateKey, "duplicate_key", 409)
+          , (SchemaValidationFailed, "schema_validation_failed", 422)
+          , (PermissionDenied, "permission_denied", 403)
+          , (Conflict, "conflict", 409)
+          , (PluginUnavailable, "plugin_unavailable", 503)
+          , (ExternalDataSourceUnavailable, "external_data_source_unavailable", 503)
+          , (QueryUnsupported, "query_unsupported", 400)
+          , (DataResourceTimeout, "timeout", 504)
+          ]
+    map (\(code, _, _) -> serviceErrorCode (ServiceDataResourceError code "failed" [])) cases
+      `shouldBe` map (\(_, textCode, _) -> textCode) cases
+    map (\(code, _, _) -> serviceErrorHTTPStatus (ServiceDataResourceError code "failed" [])) cases
+      `shouldBe` map (\(_, _, status) -> status) cases
 
   it "defines typed operation contracts for M2 service groups" $
     typedOperationMethods `shouldBe`

@@ -48,6 +48,7 @@ module Topo.Plugin.RPC
     -- * Errors
   , RPCError(..)
   , rpcErrorText
+  , rpcErrorDataResourceFailure
     -- * Re-exports
   , module Topo.Plugin.RPC.Manifest
   , module Topo.Plugin.RPC.Transport
@@ -81,7 +82,8 @@ import qualified Data.Text as Text
 import Data.Word (Word64)
 
 import qualified Data.Aeson as Aeson
-import Data.Aeson (Value(..), (.=), object)
+import Data.Aeson (Value(..), (.:), (.:?), (.=), object)
+import qualified Data.Aeson.Types as AesonTypes (Parser, parseMaybe)
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import System.Timeout (timeout)
@@ -122,6 +124,8 @@ data RPCError
     -- ^ Invalid message format or unexpected message type.
   | RPCPluginError !Int !Text
     -- ^ Plugin-reported error with code and message.
+  | RPCDataResourceError !DataResourceErrorCode !Text
+    -- ^ Standardized data-resource error reported by a plugin.
   | RPCTimeout !Text
     -- ^ Plugin did not respond in time.
   deriving (Eq, Show)
@@ -397,10 +401,7 @@ handleFinalEnvelope :: RPCPending -> RPCEnvelope -> IO ()
 handleFinalEnvelope pending envelope =
   case envType envelope of
     MsgError ->
-      case Aeson.fromJSON (envPayload envelope) of
-        Aeson.Success (Topo.Plugin.RPC.Protocol.PluginError code msg) ->
-          putMVar (rpResult pending) (Left (RPCPluginError code msg))
-        Aeson.Error err -> putMVar (rpResult pending) (Left (RPCProtocolError (Text.pack err)))
+      putMVar (rpResult pending) (Left (decodePluginErrorPayload (envPayload envelope)))
     _ -> putMVar (rpResult pending) (Right envelope)
 
 ignoreCallbackException :: IO () -> IO ()
@@ -432,6 +433,44 @@ isRuntimeConnectionFailure rpcError = case rpcError of
   RPCProtocolError _ -> True
   RPCTimeout _ -> True
   RPCPluginError _ _ -> False
+  RPCDataResourceError _ _ -> False
+
+-- | Decode a plugin @error@ envelope, preserving standardized data-resource
+-- codes when a plugin or SDK supplies one.
+decodePluginErrorPayload :: Value -> RPCError
+decodePluginErrorPayload payload =
+  case AesonTypes.parseMaybe parseStandardPluginError payload of
+    Just (code, message, Just dataCode) -> RPCDataResourceError dataCode message
+    Just (code, message, Nothing) -> RPCPluginError code message
+    Nothing -> RPCProtocolError "invalid plugin error payload"
+
+parseStandardPluginError :: Value -> AesonTypes.Parser (Int, Text, Maybe DataResourceErrorCode)
+parseStandardPluginError = Aeson.withObject "PluginError" $ \o -> do
+  code <- o .: "code"
+  message <- o .: "message"
+  mDataResourceCodeValue <- o .:? "data_resource_error"
+  mErrorCodeValue <- o .:? "error_code"
+  let mStandardCode = firstJust
+        [ mDataResourceCodeValue >>= dataResourceErrorCodeFromValue
+        , mErrorCodeValue >>= dataResourceErrorCodeFromValue
+        , dataResourceErrorFromRPCCode code
+        ]
+  pure (code, message, mStandardCode)
+
+firstJust :: [Maybe a] -> Maybe a
+firstJust [] = Nothing
+firstJust (Nothing:xs) = firstJust xs
+firstJust (Just x:_) = Just x
+
+-- | Interpret an RPC failure as a data-resource failure at data-service call
+-- sites.  General plugin errors are classified from legacy free text.
+rpcErrorDataResourceFailure :: RPCError -> DataResourceFailure
+rpcErrorDataResourceFailure rpcError = case rpcError of
+  RPCDataResourceError code message -> DataResourceFailure code message
+  RPCTimeout message -> DataResourceFailure DataResourceTimeout message
+  RPCTransportError transportError -> DataResourceFailure PluginUnavailable (Text.pack (show transportError))
+  RPCProtocolError message -> DataResourceFailure DataResourceInternalError message
+  RPCPluginError _ message -> dataResourceFailureFromText message
 
 timeoutMicrosFromMs :: Int -> Maybe Int
 timeoutMicrosFromMs millis
@@ -582,10 +621,7 @@ performHandshake conn worldPath = do
                 })
           Aeson.Error err -> pure (Left (RPCProtocolError (Text.pack err)))
       MsgError ->
-        case Aeson.fromJSON (envPayload env) of
-          Aeson.Success (Topo.Plugin.RPC.Protocol.PluginError code msg) ->
-            pure (Left (RPCPluginError code msg))
-          Aeson.Error err -> pure (Left (RPCProtocolError (Text.pack err)))
+        pure (Left (decodePluginErrorPayload (envPayload env)))
       other ->
         pure (Left (RPCProtocolError
           ("unexpected response to handshake: " <> Text.pack (show other))))
@@ -821,6 +857,7 @@ rpcErrorText rpcError =
     RPCTransportError transportError -> Text.pack (show transportError)
     RPCProtocolError message -> message
     RPCPluginError code message -> "plugin error " <> Text.pack (show code) <> ": " <> message
+    RPCDataResourceError code message -> dataResourceFailureText (DataResourceFailure code message)
     RPCTimeout message -> "timeout: " <> message
 
 applyGeneratorResult

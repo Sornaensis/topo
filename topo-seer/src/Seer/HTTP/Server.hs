@@ -323,7 +323,7 @@ lookupStringField obj field = case KM.lookup (Key.fromText field) obj of
   _ -> Nothing
 
 serviceErrorResponse :: ServiceError -> HttpResponse
-serviceErrorResponse err = jsonResponse (serviceErrorStatus err) (errorEnvelope
+serviceErrorResponse err = jsonResponse (serviceErrorHTTPStatus err) (errorEnvelope
   (serviceErrorCode err)
   (serviceErrorMessage err)
   [ object
@@ -333,14 +333,6 @@ serviceErrorResponse err = jsonResponse (serviceErrorStatus err) (errorEnvelope
       ]
   | detail <- serviceErrorDetails err
   ])
-
-serviceErrorStatus :: ServiceError -> Int
-serviceErrorStatus err = case serviceErrorKind err of
-  ServiceErrorInvalidRequest -> 400
-  ServiceErrorNotFound -> 404
-  ServiceErrorUnavailable -> 503
-  ServiceErrorRejected -> 409
-  ServiceErrorInternal -> 500
 
 errorEnvelope :: Text -> Text -> [Value] -> Value
 errorEnvelope code message details = object

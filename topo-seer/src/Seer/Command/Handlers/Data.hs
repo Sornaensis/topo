@@ -45,10 +45,14 @@ import Topo.Plugin.RPC.DataService
   ( DataMutation(..)
   , DataQuery(..)
   , DataRecord(..)
+  , DataResourceErrorCode(..)
+  , DataResourceFailure(..)
   , MutateResource(..)
   , MutateResult(..)
   , QueryResource(..)
   , QueryResult(..)
+  , dataResourceFailureFromText
+  , dataResourceFailureText
   )
 
 -- | Handle @data_list_plugins@ — return all plugins that have data resources.
@@ -73,13 +77,13 @@ handleDataListResources :: CommandContext -> Int -> Value -> IO SeerResponse
 handleDataListResources ctx reqId params = do
   case Aeson.parseMaybe parsePlugin params of
     Nothing ->
-      pure $ errResponse reqId "missing or invalid 'plugin' parameter"
+      pure $ dataResourceErrorResponse reqId SchemaValidationFailed "missing or invalid 'plugin' parameter"
     Just pluginName -> do
       let pmH = ahPluginManagerHandle (ccActorHandles ctx)
       resources <- getPluginDataResources pmH
       case Map.lookup pluginName resources of
         Nothing ->
-          pure $ errResponse reqId ("unknown plugin: " <> pluginName)
+          pure $ dataResourceErrorResponse reqId PluginUnavailable ("unknown plugin: " <> pluginName)
         Just schemas ->
           pure $ okResponse reqId $ object
             [ "plugin"    .= pluginName
@@ -95,7 +99,7 @@ handleDataListRecords :: CommandContext -> Int -> Value -> IO SeerResponse
 handleDataListRecords ctx reqId params = do
   case Aeson.parseMaybe parsePluginResource params of
     Nothing ->
-      pure $ errResponse reqId "missing or invalid 'plugin' and/or 'resource' parameters"
+      pure $ dataResourceErrorResponse reqId SchemaValidationFailed "missing or invalid 'plugin' and/or 'resource' parameters"
     Just (pluginName, resourceName) -> do
       let pmH = ahPluginManagerHandle (ccActorHandles ctx)
           requestedPageSize   = Aeson.parseMaybe parsePageSize params
@@ -111,7 +115,7 @@ handleDataListRecords ctx reqId params = do
       result <- queryPluginResource pmH pluginName qr
       case result of
         Left err ->
-          pure $ errResponse reqId ("query failed: " <> err)
+          pure $ dataResourceFailureResponse reqId err
         Right qrs ->
           pure $ okResponse reqId $ object
             [ "plugin"      .= pluginName
@@ -128,7 +132,7 @@ handleDataGetRecord :: CommandContext -> Int -> Value -> IO SeerResponse
 handleDataGetRecord ctx reqId params = do
   case Aeson.parseMaybe parsePluginResourceKey params of
     Nothing ->
-      pure $ errResponse reqId "missing or invalid 'plugin', 'resource', and/or 'key' parameters"
+      pure $ dataResourceErrorResponse reqId SchemaValidationFailed "missing or invalid 'plugin', 'resource', and/or 'key' parameters"
     Just (pluginName, resourceName, keyVal) -> do
       let pmH = ahPluginManagerHandle (ccActorHandles ctx)
           qr = QueryResource
@@ -140,7 +144,7 @@ handleDataGetRecord ctx reqId params = do
       result <- queryPluginResource pmH pluginName qr
       case result of
         Left err ->
-          pure $ errResponse reqId ("query failed: " <> err)
+          pure $ dataResourceFailureResponse reqId err
         Right qrs ->
           case qrsRecords qrs of
             [r] -> pure $ okResponse reqId $ object
@@ -148,7 +152,7 @@ handleDataGetRecord ctx reqId params = do
               , "resource" .= resourceName
               , "record"   .= recordToJSON r
               ]
-            [] -> pure $ errResponse reqId "record not found"
+            [] -> pure $ dataResourceErrorResponse reqId RecordNotFound "record not found"
             rs -> pure $ okResponse reqId $ object
               [ "plugin"   .= pluginName
               , "resource" .= resourceName
@@ -163,7 +167,7 @@ handleDataCreateRecord :: CommandContext -> Int -> Value -> IO SeerResponse
 handleDataCreateRecord ctx reqId params = do
   case Aeson.parseMaybe parsePluginResourceFields params of
     Nothing ->
-      pure $ errResponse reqId "missing or invalid 'plugin', 'resource', and/or 'fields' parameters"
+      pure $ dataResourceErrorResponse reqId SchemaValidationFailed "missing or invalid 'plugin', 'resource', and/or 'fields' parameters"
     Just (pluginName, resourceName, fields) -> do
       let pmH = ahPluginManagerHandle (ccActorHandles ctx)
           record = DataRecord fields
@@ -174,7 +178,7 @@ handleDataCreateRecord ctx reqId params = do
       result <- mutatePluginResource pmH pluginName mr
       case result of
         Left err ->
-          pure $ errResponse reqId ("create failed: " <> err)
+          pure $ dataResourceFailureResponse reqId err
         Right mrs
           | mrsSuccess mrs ->
               pure $ okResponse reqId $ object
@@ -184,7 +188,7 @@ handleDataCreateRecord ctx reqId params = do
                 , "record"   .= fmap recordToJSON (mrsRecord mrs)
                 ]
           | otherwise ->
-              pure $ errResponse reqId (maybe "create failed" id (mrsError mrs))
+              pure $ mutateResultFailureResponse reqId "create failed" mrs
 
 -- | Handle @data_update_record@ — update an existing record.
 --
@@ -194,7 +198,7 @@ handleDataUpdateRecord :: CommandContext -> Int -> Value -> IO SeerResponse
 handleDataUpdateRecord ctx reqId params = do
   case Aeson.parseMaybe parseUpdateParams params of
     Nothing ->
-      pure $ errResponse reqId "missing or invalid 'plugin', 'resource', 'key', and/or 'fields' parameters"
+      pure $ dataResourceErrorResponse reqId SchemaValidationFailed "missing or invalid 'plugin', 'resource', 'key', and/or 'fields' parameters"
     Just (pluginName, resourceName, keyVal, fields) -> do
       let pmH = ahPluginManagerHandle (ccActorHandles ctx)
           record = DataRecord fields
@@ -205,7 +209,7 @@ handleDataUpdateRecord ctx reqId params = do
       result <- mutatePluginResource pmH pluginName mr
       case result of
         Left err ->
-          pure $ errResponse reqId ("update failed: " <> err)
+          pure $ dataResourceFailureResponse reqId err
         Right mrs
           | mrsSuccess mrs ->
               pure $ okResponse reqId $ object
@@ -215,7 +219,7 @@ handleDataUpdateRecord ctx reqId params = do
                 , "record"   .= fmap recordToJSON (mrsRecord mrs)
                 ]
           | otherwise ->
-              pure $ errResponse reqId (maybe "update failed" id (mrsError mrs))
+              pure $ mutateResultFailureResponse reqId "update failed" mrs
 
 -- | Handle @data_delete_record@ — delete a record by primary key.
 --
@@ -224,7 +228,7 @@ handleDataDeleteRecord :: CommandContext -> Int -> Value -> IO SeerResponse
 handleDataDeleteRecord ctx reqId params = do
   case Aeson.parseMaybe parsePluginResourceKey params of
     Nothing ->
-      pure $ errResponse reqId "missing or invalid 'plugin', 'resource', and/or 'key' parameters"
+      pure $ dataResourceErrorResponse reqId SchemaValidationFailed "missing or invalid 'plugin', 'resource', and/or 'key' parameters"
     Just (pluginName, resourceName, keyVal) -> do
       let pmH = ahPluginManagerHandle (ccActorHandles ctx)
           mr = MutateResource
@@ -234,7 +238,7 @@ handleDataDeleteRecord ctx reqId params = do
       result <- mutatePluginResource pmH pluginName mr
       case result of
         Left err ->
-          pure $ errResponse reqId ("delete failed: " <> err)
+          pure $ dataResourceFailureResponse reqId err
         Right mrs
           | mrsSuccess mrs ->
               pure $ okResponse reqId $ object
@@ -243,7 +247,7 @@ handleDataDeleteRecord ctx reqId params = do
                 , "deleted"  .= True
                 ]
           | otherwise ->
-              pure $ errResponse reqId (maybe "delete failed" id (mrsError mrs))
+              pure $ mutateResultFailureResponse reqId "delete failed" mrs
 
 -- | Handle @data_get_state@ — return the current data browser UI state.
 handleDataGetState :: CommandContext -> Int -> Value -> IO SeerResponse
@@ -264,6 +268,22 @@ handleDataGetState ctx reqId _params = do
         Nothing -> False
     , "selected_key"      .= dbsSelectedRecordKey dbs
     ]
+
+dataResourceErrorResponse :: Int -> DataResourceErrorCode -> Text -> SeerResponse
+dataResourceErrorResponse reqId code msg =
+  errResponse reqId (dataResourceFailureText (DataResourceFailure code msg))
+
+dataResourceFailureResponse :: Int -> Text -> SeerResponse
+dataResourceFailureResponse reqId msg =
+  errResponse reqId (dataResourceFailureText (dataResourceFailureFromText msg))
+
+mutateResultFailureResponse :: Int -> Text -> MutateResult -> SeerResponse
+mutateResultFailureResponse reqId fallback mrs =
+  errResponse reqId $ dataResourceFailureText $ case mrsErrorCode mrs of
+    Just code -> DataResourceFailure code message
+    Nothing -> dataResourceFailureFromText message
+  where
+    message = maybe fallback id (mrsError mrs)
 
 -- --------------------------------------------------------------------------
 -- Parsers

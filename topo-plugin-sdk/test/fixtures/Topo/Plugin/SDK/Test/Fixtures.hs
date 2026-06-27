@@ -303,7 +303,7 @@ mutateRecords recordsRef mutation = do
         in (records', ok (Just stamped))
   pure (Right result)
   where
-    ok = MutateResult True Nothing
+    ok record = MutateResult True Nothing record Nothing
 
 replaceByKey :: Value -> DataRecord -> [DataRecord] -> [DataRecord]
 replaceByKey key newRecord records =

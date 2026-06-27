@@ -81,6 +81,10 @@ module Topo.Plugin.SDK
   , DataMutation(..)
   , QueryResult(..)
   , MutateResult(..)
+  , DataResourceErrorCode(..)
+  , DataResourceFailure(..)
+  , dataResourceErrorCodeText
+  , dataResourceFailureText
     -- * Typed payload helpers
   , decodeOwnOverlay
   , decodeDependencyOverlay
@@ -142,6 +146,10 @@ import Topo.Plugin.RPC.DataService
   , DataMutation(..)
   , QueryResult(..)
   , MutateResult(..)
+  , DataResourceErrorCode(..)
+  , DataResourceFailure(..)
+  , dataResourceErrorCodeText
+  , dataResourceFailureText
   )
 import Topo.Plugin.RPC.Manifest
   ( Capability(..)

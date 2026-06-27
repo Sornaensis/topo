@@ -5,8 +5,9 @@ module Spec.Runner (spec) where
 
 import Control.Concurrent (MVar, forkFinally, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (finally)
-import Data.Aeson (Value(..), (.=), object)
+import Data.Aeson (Value(..), (.:), (.=), object)
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Types as AesonTypes (parseMaybe)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -24,9 +25,10 @@ import Topo.Plugin.DataResource
   , noOperations, allOperations
   )
 import Topo.Plugin.RPC.DataService
-  ( DataMutation(..), DataQuery(..), DataRecord(..)
+  ( DataMutation(..), DataQuery(..), DataRecord(..), DataResourceErrorCode(..)
   , MutateResource(..), MutateResult(..)
   , QueryResource(..), QueryResult(..)
+  , dataResourceErrorCodeText
   )
 import Topo.Plugin.RPC (terrainWorldToPayload)
 import Topo.Plugin.RPC.Protocol
@@ -286,8 +288,10 @@ spec = describe "SDK runner pipe integration" $ do
       envType env `shouldBe` MsgError
       case Aeson.fromJSON (envPayload env) of
         Aeson.Error err -> expectationFailure err
-        Aeson.Success (pluginErr :: PluginError) ->
+        Aeson.Success (pluginErr :: PluginError) -> do
+          peCode pluginErr `shouldBe` 1001
           peMessage pluginErr `shouldBe` "Unknown resource: nonexistent"
+          expectDataResourceError env ResourceNotFound
       shutdownAndWait host done
 
   it "dispatches mutate_resource to the correct data handler" $
@@ -328,8 +332,10 @@ spec = describe "SDK runner pipe integration" $ do
       envType env `shouldBe` MsgError
       case Aeson.fromJSON (envPayload env) of
         Aeson.Error err -> expectationFailure err
-        Aeson.Success (pluginErr :: PluginError) ->
-          peMessage pluginErr `shouldBe` "Resource 'readonly' does not support mutations"
+        Aeson.Success (pluginErr :: PluginError) -> do
+          peCode pluginErr `shouldBe` 1002
+          peMessage pluginErr `shouldBe` "Resource 'readonly' does not support create mutations"
+          expectDataResourceError env OperationNotSupported
       shutdownAndWait host done
 
   it "returns error when handler returns Left" $
@@ -350,8 +356,34 @@ spec = describe "SDK runner pipe integration" $ do
       envType env `shouldBe` MsgError
       case Aeson.fromJSON (envPayload env) of
         Aeson.Error err -> expectationFailure err
-        Aeson.Success (pluginErr :: PluginError) ->
+        Aeson.Success (pluginErr :: PluginError) -> do
+          peCode pluginErr `shouldBe` 1099
           peMessage pluginErr `shouldBe` "database connection failed"
+          expectDataResourceError env DataResourceInternalError
+      shutdownAndWait host done
+
+  it "preserves standardized data-resource failures returned by handlers" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession standardizedFailingDataPlugin plugin
+      let qr = RPCEnvelope
+            { envType = MsgQueryResource
+            , envPayload = Aeson.toJSON QueryResource
+                { qrResource = "missing"
+                , qrQuery = QueryAll
+                , qrPageSize = Nothing
+                , qrPageOffset = Nothing
+                }
+            , envRequestId = Just 47
+            }
+      sendEnvelope host qr
+      env <- recvEnvelope host
+      envType env `shouldBe` MsgError
+      case Aeson.fromJSON (envPayload env) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success (pluginErr :: PluginError) -> do
+          peCode pluginErr `shouldBe` 1003
+          peMessage pluginErr `shouldBe` "missing"
+          expectDataResourceError env RecordNotFound
       shutdownAndWait host done
 
 withTransportPair :: (Transport -> Transport -> IO a) -> IO a
@@ -411,6 +443,11 @@ recvEnvelope transport = do
       case decodeMessage bytes of
         Left err -> expectationFailure ("decode failed: " <> Text.unpack err) >> fail "decode"
         Right env -> pure env
+
+expectDataResourceError :: RPCEnvelope -> DataResourceErrorCode -> IO ()
+expectDataResourceError envelope expected =
+  AesonTypes.parseMaybe (Aeson.withObject "PluginError" (.: "data_resource_error")) (envPayload envelope)
+    `shouldBe` Just (dataResourceErrorCodeText expected)
 
 decodeLog :: RPCEnvelope -> IO Text
 decodeLog envelope =
@@ -625,12 +662,14 @@ dataPlugin = defaultPluginDef
                         { mrsSuccess = True
                         , mrsError = Nothing
                         , mrsRecord = Just record
+                        , mrsErrorCode = Nothing
                         })
                     _ ->
                       pure (Right MutateResult
                         { mrsSuccess = True
                         , mrsError = Nothing
                         , mrsRecord = Nothing
+                        , mrsErrorCode = Nothing
                         })
               }
           }
@@ -686,6 +725,32 @@ failingDataPlugin = defaultPluginDef
           , drdHandler = noDataHandler
               { dhQuery = Just $ \_ctx _query ->
                   pure (Left "database connection failed")
+              }
+          }
+      ]
+  }
+
+standardizedFailingDataPlugin :: PluginDef
+standardizedFailingDataPlugin = defaultPluginDef
+  { pdName = "standardized-failing-test"
+  , pdVersion = "1.0"
+  , pdDataResources =
+      [ DataResourceDef
+          { drdSchema = DataResourceSchema
+              { drsSchemaVersion = currentDataResourceSchemaVersion
+              , drsResourceVersion = defaultDataResourceVersion
+              , drsName = "missing"
+              , drsLabel = "Missing"
+              , drsHexBound = False
+              , drsFields = [DataFieldDef "id" DFInt "ID" False Nothing]
+              , drsOperations = noOperations { doList = True }
+              , drsKeyField = "id"
+              , drsOverlay = Nothing
+              , drsPagination = defaultDataPagination
+              }
+          , drdHandler = noDataHandler
+              { dhQuery = Just $ \_ctx _query ->
+                  pure (Left "record_not_found: missing")
               }
           }
       ]

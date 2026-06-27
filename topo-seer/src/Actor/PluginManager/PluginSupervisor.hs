@@ -60,6 +60,7 @@ import Topo.Plugin.RPC
   , RPCError(..)
   , RPCManifest(..)
   , RPCStartPolicy(..)
+  , dataResourceErrorCodeText
   , newRPCConnection
   , rpcShutdown
   )
@@ -459,6 +460,7 @@ rpcErrorCode rpcErr = case rpcErr of
   RPCTransportError _ -> "transport_error"
   RPCProtocolError _ -> "protocol_error"
   RPCPluginError code _ -> "plugin_error_" <> Text.pack (show code)
+  RPCDataResourceError code _ -> dataResourceErrorCodeText code
   RPCTimeout _ -> "timeout"
 
 rpcErrorMessage :: RPCError -> Text
@@ -466,4 +468,5 @@ rpcErrorMessage rpcErr = case rpcErr of
   RPCTransportError err -> Text.pack (show err)
   RPCProtocolError msg -> "RPCProtocolError " <> msg
   RPCPluginError _ msg -> msg
+  RPCDataResourceError _ msg -> msg
   RPCTimeout msg -> msg

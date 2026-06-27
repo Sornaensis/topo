@@ -7,7 +7,7 @@ import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
 
-import Data.Aeson (Value(..), encode, eitherDecode)
+import Data.Aeson (Value(..), encode, eitherDecode, object, (.=))
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as BL
 import Data.Map.Strict (Map)
@@ -74,9 +74,13 @@ instance Arbitrary MutateResource where
     <$> arbitrary
     <*> arbitrary
 
+instance Arbitrary DataResourceErrorCode where
+  arbitrary = elements [minBound .. maxBound]
+
 instance Arbitrary MutateResult where
   arbitrary = MutateResult
     <$> arbitrary
+    <*> oneof [pure Nothing, Just <$> arbitrary]
     <*> oneof [pure Nothing, Just <$> arbitrary]
     <*> oneof [pure Nothing, Just <$> arbitrary]
 
@@ -148,12 +152,46 @@ spec = describe "Topo.Plugin.RPC.DataService" $ do
 
   describe "MutateResult JSON" $ do
     it "round-trips success" $ do
-      let r = MutateResult True Nothing (Just (DataRecord (Map.fromList [("id", Number 1)])))
+      let r = MutateResult True Nothing (Just (DataRecord (Map.fromList [("id", Number 1)]))) Nothing
       eitherDecode (encode r) `shouldBe` Right r
 
-    it "round-trips failure" $ do
-      let r = MutateResult False (Just "not found") Nothing
+    it "round-trips failure with a standardized error code" $ do
+      let r = MutateResult False (Just "already exists") Nothing (Just DuplicateKey)
       eitherDecode (encode r) `shouldBe` Right r
+
+    it "ignores unknown optional error_code values" $ do
+      let raw = object
+            [ "success" .= False
+            , "error" .= ("vendor-specific" :: Text)
+            , "error_code" .= ("vendor_custom" :: Text)
+            ]
+      eitherDecode (encode raw) `shouldBe` Right (MutateResult False (Just "vendor-specific") Nothing Nothing)
+
+    it "accepts standardized numeric RPC error_code values" $ do
+      let raw = object
+            [ "success" .= False
+            , "error" .= ("conflict" :: Text)
+            , "error_code" .= dataResourceErrorRPCCode Conflict
+            ]
+      eitherDecode (encode raw) `shouldBe` Right (MutateResult False (Just "conflict") Nothing (Just Conflict))
 
     prop "arbitrary MutateResult round-trips" $ \(mr :: MutateResult) ->
       eitherDecode (encode mr) === Right mr
+
+  describe "DataResourceErrorCode" $ do
+    it "round-trips JSON code strings" $ do
+      eitherDecode (encode DuplicateKey) `shouldBe` Right DuplicateKey
+      dataResourceErrorCodeText DuplicateKey `shouldBe` "duplicate_key"
+
+    it "maps standard errors to HTTP status codes" $ do
+      dataResourceErrorHTTPStatus ResourceNotFound `shouldBe` 404
+      dataResourceErrorHTTPStatus OperationNotSupported `shouldBe` 405
+      dataResourceErrorHTTPStatus SchemaValidationFailed `shouldBe` 422
+      dataResourceErrorHTTPStatus PermissionDenied `shouldBe` 403
+      dataResourceErrorHTTPStatus Conflict `shouldBe` 409
+      dataResourceErrorHTTPStatus PluginUnavailable `shouldBe` 503
+      dataResourceErrorHTTPStatus DataResourceTimeout `shouldBe` 504
+
+    it "parses legacy rendered failures" $ do
+      parseDataResourceFailureText (dataResourceFailureText (DataResourceFailure Conflict "etag mismatch"))
+        `shouldBe` Just (DataResourceFailure Conflict "etag mismatch")

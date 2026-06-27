@@ -17,13 +17,17 @@ import Actor.PluginManager.Types
   , pluginLifecycleStateText
   )
 import Topo.Plugin.RPC
-  ( MutateResource(..)
+  ( DataResourceErrorCode(..)
+  , DataResourceFailure(..)
+  , MutateResource(..)
   , MutateResult(..)
   , QueryResource(..)
   , QueryResult(..)
+  , RPCError
+  , dataResourceFailureText
   , mutateResource
   , queryResource
-  , rpcErrorText
+  , rpcErrorDataResourceFailure
   )
 
 -- | Forward a data query to the named plugin without taking ownership of
@@ -35,13 +39,13 @@ queryPluginDataResource
   -> IO (Either Text QueryResult)
 queryPluginDataResource pluginName qr st =
   case Map.lookup pluginName (pmsPlugins st) of
-    Nothing -> pure (Left ("unknown plugin: " <> pluginName))
+    Nothing -> pure (Left (dataResourceFailureText (DataResourceFailure PluginUnavailable ("unknown plugin: " <> pluginName))))
     Just lp -> case lpConnection lp of
-      Nothing -> pure (Left (pluginUnavailableMessage lp))
+      Nothing -> pure (Left (dataResourceFailureText (DataResourceFailure PluginUnavailable (pluginUnavailableMessage lp))))
       Just conn -> do
         result <- queryResource conn qr
         case result of
-          Left err -> pure (Left (rpcErrorText err))
+          Left err -> pure (Left (renderRPCDataResourceError err))
           Right qResult -> pure (Right qResult)
 
 -- | Forward a data mutation to the named plugin without taking ownership
@@ -53,14 +57,18 @@ mutatePluginDataResource
   -> IO (Either Text MutateResult)
 mutatePluginDataResource pluginName mr st =
   case Map.lookup pluginName (pmsPlugins st) of
-    Nothing -> pure (Left ("unknown plugin: " <> pluginName))
+    Nothing -> pure (Left (dataResourceFailureText (DataResourceFailure PluginUnavailable ("unknown plugin: " <> pluginName))))
     Just lp -> case lpConnection lp of
-      Nothing -> pure (Left (pluginUnavailableMessage lp))
+      Nothing -> pure (Left (dataResourceFailureText (DataResourceFailure PluginUnavailable (pluginUnavailableMessage lp))))
       Just conn -> do
         result <- mutateResource conn mr
         case result of
-          Left err -> pure (Left (rpcErrorText err))
+          Left err -> pure (Left (renderRPCDataResourceError err))
           Right mResult -> pure (Right mResult)
+
+renderRPCDataResourceError :: RPCError -> Text
+renderRPCDataResourceError err =
+  dataResourceFailureText (rpcErrorDataResourceFailure err)
 
 pluginUnavailableMessage :: LoadedPlugin -> Text
 pluginUnavailableMessage lp =
