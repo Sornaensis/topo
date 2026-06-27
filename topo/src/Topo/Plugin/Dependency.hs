@@ -20,7 +20,19 @@ module Topo.Plugin.Dependency
   , DependencyTarget(..)
   , DependencyDecl(..)
   , dependencyTargetKind
+  , dependencyTargetLabel
   , dependencyDeclBlocks
+  , DependencyProvider(..)
+  , DependencyResourceProvider(..)
+  , DependencyExternalDataSourceProvider(..)
+  , DependencyResolverInput(..)
+  , defaultDependencyResolverInput
+  , DependencyDiagnosticStatus(..)
+  , dependencyDiagnosticStatusText
+  , DependencyDiagnostic(..)
+  , validateDependencies
+  , blockingDependencyDiagnostics
+  , manifestDependencyDecls
   , RPCExternalDataSourceAccess(..)
   ) where
 
@@ -36,13 +48,24 @@ import Data.Aeson
   , withText
   )
 import Data.Aeson.Types (Parser)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
+import Data.Maybe (listToMaybe)
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import GHC.Generics (Generic)
 
-import Topo.Pipeline.Stage (StageId(..), parseStageId, stageCanonicalName)
+import Topo.Pipeline.Stage (StageId(..), allBuiltinStageIds, parseStageId, stageCanonicalName)
 import Topo.Plugin (Capability(..))
-import Topo.Plugin.RPC.Manifest (RPCExternalDataSourceAccess(..))
+import Topo.Plugin.RPC.Manifest
+  ( RPCExternalDataSourceAccess(..)
+  , RPCExternalDataSourceRef(..)
+  , RPCGeneratorDecl(..)
+  , RPCManifest(..)
+  , RPCSimulationDecl(..)
+  )
 
 -- | Resolver treatment for a dependency edge.
 data DependencyMode
@@ -302,6 +325,23 @@ dependencyTargetKind target = case target of
   DependencyExternalDataSource _ -> "externalDataSource"
   DependencyCapability _ -> "capability"
 
+-- | Stable human-readable label used in resolver diagnostics.
+dependencyTargetLabel :: DependencyTarget -> Text
+dependencyTargetLabel target = case target of
+  DependencyBuiltInStage stage -> "stage:" <> stageCanonicalName stage
+  DependencyPlugin dep -> "plugin:" <> pdepName dep
+  DependencyOverlay dep ->
+    maybe "" ((<> "/") . ("plugin:" <>)) (odepProducer dep)
+      <> "overlay:" <> odepName dep
+  DependencyResource dep ->
+    maybe "" ((<> "/") . ("plugin:" <>)) (rdepProvider dep)
+      <> "resource:" <> rdepName dep
+  DependencyExternalDataSource dep ->
+    maybe "" ((<> "/") . ("plugin:" <>)) (edsdProvider dep)
+      <> "externalDataSource:" <> edsdSource dep
+      <> ":consumer:" <> edsdConsumer dep
+  DependencyCapability capability -> "capability:" <> capabilityName capability
+
 -- | A resolver input dependency edge.
 data DependencyDecl = DependencyDecl
   { ddTarget :: !DependencyTarget
@@ -326,6 +366,403 @@ instance ToJSON DependencyDecl where
 -- | Whether a dependency declaration blocks readiness if unresolved.
 dependencyDeclBlocks :: DependencyDecl -> Bool
 dependencyDeclBlocks = dependencyModeBlocks . ddMode
+
+-- | A data resource advertised by a dependency provider.
+data DependencyResourceProvider = DependencyResourceProvider
+  { drpName :: !Text
+  , drpOperations :: ![ResourceOperation]
+  , drpOverlay :: !(Maybe Text)
+  } deriving (Eq, Ord, Show, Read, Generic)
+
+-- | An external data source advertised by a dependency provider.
+data DependencyExternalDataSourceProvider = DependencyExternalDataSourceProvider
+  { despName :: !Text
+  , despResources :: ![Text]
+  } deriving (Eq, Ord, Show, Read, Generic)
+
+-- | Resolver-facing view of one loaded or declared plugin.
+data DependencyProvider = DependencyProvider
+  { dpName :: !Text
+  , dpVersion :: !Text
+  , dpDependencies :: ![DependencyDecl]
+  , dpCapabilities :: ![Capability]
+  , dpOverlays :: ![Text]
+  , dpResources :: ![DependencyResourceProvider]
+  , dpExternalDataSources :: ![DependencyExternalDataSourceProvider]
+  } deriving (Eq, Show, Generic)
+
+-- | Inputs needed for dependency validation without imposing execution order.
+data DependencyResolverInput = DependencyResolverInput
+  { driProviders :: ![DependencyProvider]
+  , driAvailableStages :: !(Set StageId)
+  , driDisabledStages :: !(Set StageId)
+  , driAvailableCapabilities :: !(Set Capability)
+  , driDisabledCapabilities :: !(Set Capability)
+  , driDisabledPlugins :: !(Set Text)
+  } deriving (Eq, Show, Generic)
+
+-- | Resolver defaults: built-in stages are present and no plugins are
+-- disabled. Host capabilities must be supplied explicitly by the caller.
+defaultDependencyResolverInput :: [DependencyProvider] -> DependencyResolverInput
+defaultDependencyResolverInput providers = DependencyResolverInput
+  { driProviders = providers
+  , driAvailableStages = Set.fromList allBuiltinStageIds
+  , driDisabledStages = Set.empty
+  , driAvailableCapabilities = Set.empty
+  , driDisabledCapabilities = Set.empty
+  , driDisabledPlugins = Set.empty
+  }
+
+-- | Availability state for one dependency declaration.
+data DependencyDiagnosticStatus
+  = DependencyAvailable
+  | DependencyMissing
+  | DependencyDisabled
+  | DependencyCycle
+  deriving (Eq, Ord, Show, Read, Generic)
+
+dependencyDiagnosticStatusText :: DependencyDiagnosticStatus -> Text
+dependencyDiagnosticStatusText status = case status of
+  DependencyAvailable -> "available"
+  DependencyMissing -> "missing"
+  DependencyDisabled -> "disabled"
+  DependencyCycle -> "cycle"
+
+instance ToJSON DependencyDiagnosticStatus where
+  toJSON = String . dependencyDiagnosticStatusText
+
+-- | Actionable resolver diagnostic for one declared dependency.
+data DependencyDiagnostic = DependencyDiagnostic
+  { dgdConsumer :: !Text
+  , dgdDependency :: !DependencyDecl
+  , dgdStatus :: !DependencyDiagnosticStatus
+  , dgdBlocking :: !Bool
+  , dgdProvider :: !(Maybe Text)
+  , dgdCycle :: ![Text]
+  , dgdMessage :: !Text
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON DependencyDiagnostic where
+  toJSON diag = object
+    [ "consumer" .= dgdConsumer diag
+    , "dependency" .= dgdDependency diag
+    , "target" .= dependencyTargetLabel (ddTarget (dgdDependency diag))
+    , "status" .= dgdStatus diag
+    , "blocking" .= dgdBlocking diag
+    , "provider" .= dgdProvider diag
+    , "cycle" .= dgdCycle diag
+    , "message" .= dgdMessage diag
+    ]
+
+-- | Return diagnostics for every dependency declaration, including available
+-- dependencies.  Missing, disabled, and required-cycle diagnostics have
+-- 'dgdBlocking' set when their declaration mode blocks readiness.
+validateDependencies :: DependencyResolverInput -> [DependencyDiagnostic]
+validateDependencies input = map markCycle baseDiagnostics
+  where
+    providerMap = dependencyProviderMap input
+    baseDiagnostics = concatMap (diagnosticsForProvider input) (driProviders input)
+    requiredAvailableEdges =
+      [ (dgdConsumer diag, provider)
+      | diag <- baseDiagnostics
+      , dgdStatus diag == DependencyAvailable
+      , dependencyDeclBlocks (dgdDependency diag)
+      , Just provider <- [dgdProvider diag]
+      , Map.member provider providerMap
+      ]
+    adjacency = Map.fromListWith (<>)
+      [ (consumer, [provider])
+      | (consumer, provider) <- requiredAvailableEdges
+      ]
+    markCycle diag = case dgdProvider diag of
+      Just provider
+        | dgdStatus diag == DependencyAvailable
+        , dependencyDeclBlocks (dgdDependency diag)
+        , Map.member provider providerMap
+        , Just path <- dependencyCyclePath adjacency (dgdConsumer diag) provider ->
+            diag
+              { dgdStatus = DependencyCycle
+              , dgdBlocking = True
+              , dgdCycle = path
+              , dgdMessage =
+                  "Dependency cycle blocks plugin '" <> dgdConsumer diag <> "': "
+                    <> Text.intercalate " -> " path
+              }
+      _ -> diag
+
+-- | Blocking diagnostics only, for readiness checks.
+blockingDependencyDiagnostics :: [DependencyDiagnostic] -> [DependencyDiagnostic]
+blockingDependencyDiagnostics = filter dgdBlocking
+
+-- | Translate legacy manifest declarations into typed dependency declarations.
+-- Generator stage names are parsed as built-in stages when possible; unknown
+-- names are treated as plugin dependencies.  Simulation dependencies remain
+-- overlay dependencies because simulation declarations name overlay inputs.
+manifestDependencyDecls :: RPCManifest -> [DependencyDecl]
+manifestDependencyDecls manifest = generatorDeps <> simulationDeps <> externalDeps <> capabilityDeps
+  where
+    generatorDeps = case rmGenerator manifest of
+      Nothing -> []
+      Just gen ->
+        [ stageOrPluginDependency (rgdInsertAfter gen) (Just "generator insertAfter") ]
+        <> map (\name -> stageOrPluginDependency name (Just "generator requires")) (rgdRequires gen)
+    simulationDeps = case rmSimulation manifest of
+      Nothing -> []
+      Just sim ->
+        [ DependencyDecl
+            { ddTarget = DependencyOverlay (OverlayDependency name Nothing)
+            , ddMode = DependencyRequired
+            , ddReason = Just "simulation dependency"
+            }
+        | name <- rsdDependencies sim
+        ]
+    externalDeps =
+      [ DependencyDecl
+          { ddTarget = DependencyExternalDataSource ExternalDataSourceDependency
+              { edsdProvider = redsrProvider ref
+              , edsdConsumer = rmName manifest
+              , edsdSource = redsrSource ref
+              , edsdAccess = redsrAccess ref
+              , edsdResources = redsrResources ref
+              }
+          , ddMode = if redsrRequired ref then DependencyRequired else DependencyOptional
+          , ddReason = Just ("external data source ref:" <> redsrName ref)
+          }
+      | ref <- rmExternalDataSourceRefs manifest
+      ]
+    capabilityDeps =
+      [ DependencyDecl
+          { ddTarget = DependencyCapability capability
+          , ddMode = DependencyRequired
+          , ddReason = Just "manifest capability"
+          }
+      | capability <- rmCapabilities manifest
+      ]
+
+stageOrPluginDependency :: Text -> Maybe Text -> DependencyDecl
+stageOrPluginDependency raw reason = DependencyDecl
+  { ddTarget = case parseStageId raw of
+      Just stage | isBuiltInStage stage -> DependencyBuiltInStage stage
+      Just (StagePlugin name) -> DependencyPlugin (PluginDependency name VersionAny)
+      Just stage -> DependencyPlugin (PluginDependency (stageCanonicalName stage) VersionAny)
+      Nothing -> DependencyPlugin (PluginDependency raw VersionAny)
+  , ddMode = DependencyRequired
+  , ddReason = reason
+  }
+
+data DependencyResolution = DependencyResolution
+  { drStatus :: !DependencyDiagnosticStatus
+  , drProviders :: ![Text]
+  , drMessage :: !Text
+  }
+
+diagnosticsForProvider :: DependencyResolverInput -> DependencyProvider -> [DependencyDiagnostic]
+diagnosticsForProvider input provider =
+  [ let resolution = resolveDependency input provider dep
+        status = drStatus resolution
+    in DependencyDiagnostic
+        { dgdConsumer = dpName provider
+        , dgdDependency = dep
+        , dgdStatus = status
+        , dgdBlocking = status /= DependencyAvailable && dependencyDeclBlocks dep
+        , dgdProvider = listToMaybe (drProviders resolution)
+        , dgdCycle = []
+        , dgdMessage = drMessage resolution
+        }
+  | dep <- dpDependencies provider
+  ]
+
+resolveDependency :: DependencyResolverInput -> DependencyProvider -> DependencyDecl -> DependencyResolution
+resolveDependency input consumer decl = case ddTarget decl of
+  DependencyBuiltInStage stage -> resolveStage input consumer stage
+  DependencyPlugin dep -> resolvePlugin input consumer (pdepName dep)
+  DependencyOverlay dep -> resolveOverlay input consumer dep
+  DependencyResource dep -> resolveResource input consumer dep
+  DependencyExternalDataSource dep -> resolveExternalDataSource input consumer dep
+  DependencyCapability capability -> resolveCapability input consumer capability
+
+resolveStage :: DependencyResolverInput -> DependencyProvider -> StageId -> DependencyResolution
+resolveStage input consumer stage
+  | Set.member stage (driDisabledStages input) = disabled [] $ consumerName <> " depends on disabled stage '" <> stageName <> "'."
+  | Set.member stage (driAvailableStages input) = available [] $ consumerName <> " dependency stage '" <> stageName <> "' is available."
+  | otherwise = missing [] $ consumerName <> " depends on missing stage '" <> stageName <> "'."
+  where
+    stageName = stageCanonicalName stage
+    consumerName = pluginPhrase (dpName consumer)
+
+resolvePlugin :: DependencyResolverInput -> DependencyProvider -> Text -> DependencyResolution
+resolvePlugin input consumer pluginName
+  | Set.member pluginName (driDisabledPlugins input) = disabled [pluginName] $
+      consumerName <> " depends on disabled plugin '" <> pluginName <> "'."
+  | Map.member pluginName providerMap = available [pluginName] $
+      consumerName <> " dependency plugin '" <> pluginName <> "' is available."
+  | otherwise = missing [] $
+      consumerName <> " depends on missing plugin '" <> pluginName <> "'."
+  where
+    providerMap = dependencyProviderMap input
+    consumerName = pluginPhrase (dpName consumer)
+
+resolveOverlay :: DependencyResolverInput -> DependencyProvider -> OverlayDependency -> DependencyResolution
+resolveOverlay input consumer dep = case odepProducer dep of
+  Just producer -> resolveProviderOwned
+    input
+    consumer
+    producer
+    (\provider -> odepName dep `elem` dpOverlays provider)
+    "overlay"
+    (odepName dep)
+  Nothing -> resolveUnqualifiedProvider
+    input
+    consumer
+    (\provider -> odepName dep `elem` dpOverlays provider)
+    "overlay"
+    (odepName dep)
+
+resolveResource :: DependencyResolverInput -> DependencyProvider -> ResourceDependency -> DependencyResolution
+resolveResource input consumer dep = case rdepProvider dep of
+  Just providerName -> resolveProviderOwned
+    input
+    consumer
+    providerName
+    (providerHasResource dep)
+    "resource"
+    (rdepName dep)
+  Nothing -> resolveUnqualifiedProvider
+    input
+    consumer
+    (providerHasResource dep)
+    "resource"
+    (rdepName dep)
+
+resolveExternalDataSource :: DependencyResolverInput -> DependencyProvider -> ExternalDataSourceDependency -> DependencyResolution
+resolveExternalDataSource input consumer dep = case edsdProvider dep of
+  Just providerName -> resolveProviderOwned
+    input
+    consumer
+    providerName
+    (providerHasExternalDataSource dep)
+    "external data-source"
+    (edsdSource dep)
+  Nothing -> resolveUnqualifiedProvider
+    input
+    consumer
+    (providerHasExternalDataSource dep)
+    "external data-source"
+    (edsdSource dep)
+
+resolveCapability :: DependencyResolverInput -> DependencyProvider -> Capability -> DependencyResolution
+resolveCapability input consumer capability
+  | Set.member capability (driDisabledCapabilities input) = disabled [] $
+      consumerName <> " depends on disabled capability '" <> capName <> "'."
+  | Set.member capability (driAvailableCapabilities input) = available [] $
+      consumerName <> " dependency capability '" <> capName <> "' is available."
+  | otherwise = missing [] $
+      consumerName <> " depends on missing capability '" <> capName <> "'."
+  where
+    capName = capabilityName capability
+    consumerName = pluginPhrase (dpName consumer)
+
+resolveProviderOwned
+  :: DependencyResolverInput
+  -> DependencyProvider
+  -> Text
+  -> (DependencyProvider -> Bool)
+  -> Text
+  -> Text
+  -> DependencyResolution
+resolveProviderOwned input consumer providerName predicate kind name
+  | Set.member providerName (driDisabledPlugins input) = disabled [providerName] $
+      consumerName <> " depends on " <> kind <> " '" <> name <> "' from disabled provider plugin '" <> providerName <> "'."
+  | Just provider <- Map.lookup providerName providerMap
+  , predicate provider = available [providerName] $
+      consumerName <> " dependency " <> kind <> " '" <> name <> "' is available from plugin '" <> providerName <> "'."
+  | Just _ <- Map.lookup providerName providerMap = missing [] $
+      consumerName <> " depends on missing " <> kind <> " '" <> name <> "' from provider plugin '" <> providerName <> "'."
+  | otherwise = missing [] $
+      consumerName <> " depends on missing provider plugin '" <> providerName <> "' for " <> kind <> " '" <> name <> "'."
+  where
+    providerMap = dependencyProviderMap input
+    consumerName = pluginPhrase (dpName consumer)
+
+resolveUnqualifiedProvider
+  :: DependencyResolverInput
+  -> DependencyProvider
+  -> (DependencyProvider -> Bool)
+  -> Text
+  -> Text
+  -> DependencyResolution
+resolveUnqualifiedProvider input consumer predicate kind name =
+  case (enabledMatches, disabledMatches) of
+    (firstEnabled:_, _) -> available (map dpName enabledMatches) $
+      consumerName <> " dependency " <> kind <> " '" <> name <> "' is available from plugin '" <> dpName firstEnabled <> "'."
+    ([], firstDisabled:_) -> disabled (map dpName disabledMatches) $
+      consumerName <> " depends on " <> kind <> " '" <> name <> "' that is only provided by disabled plugin '" <> dpName firstDisabled <> "'."
+    _ -> missing [] $
+      consumerName <> " depends on missing " <> kind <> " '" <> name <> "'."
+  where
+    providers = driProviders input
+    disabledNames = driDisabledPlugins input
+    matches = filter predicate providers
+    enabledMatches = filter (not . (`Set.member` disabledNames) . dpName) matches
+    disabledMatches = filter ((`Set.member` disabledNames) . dpName) matches
+    consumerName = pluginPhrase (dpName consumer)
+
+providerHasResource :: ResourceDependency -> DependencyProvider -> Bool
+providerHasResource dep provider = any matches (dpResources provider)
+  where
+    matches resource =
+      drpName resource == rdepName dep
+        && maybe True (\overlay -> drpOverlay resource == Just overlay) (rdepOverlay dep)
+        && all (`elem` drpOperations resource) (rdepOperations dep)
+
+providerHasExternalDataSource :: ExternalDataSourceDependency -> DependencyProvider -> Bool
+providerHasExternalDataSource dep provider = any matches (dpExternalDataSources provider)
+  where
+    matches source =
+      despName source == edsdSource dep
+        && all (`elem` despResources source) (edsdResources dep)
+
+available :: [Text] -> Text -> DependencyResolution
+available providers message = DependencyResolution DependencyAvailable providers message
+
+missing :: [Text] -> Text -> DependencyResolution
+missing providers message = DependencyResolution DependencyMissing providers message
+
+disabled :: [Text] -> Text -> DependencyResolution
+disabled providers message = DependencyResolution DependencyDisabled providers message
+
+dependencyProviderMap :: DependencyResolverInput -> Map Text DependencyProvider
+dependencyProviderMap input = Map.fromList [(dpName provider, provider) | provider <- driProviders input]
+
+dependencyCyclePath :: Map Text [Text] -> Text -> Text -> Maybe [Text]
+dependencyCyclePath adjacency consumer provider = do
+  pathFromProvider <- findPath Set.empty provider consumer
+  pure (consumer : pathFromProvider)
+  where
+    findPath seen current target
+      | current == target = Just [current]
+      | Set.member current seen = Nothing
+      | otherwise = listToMaybe
+          [ current : path
+          | next <- Map.findWithDefault [] current adjacency
+          , Just path <- [findPath (Set.insert current seen) next target]
+          ]
+
+pluginPhrase :: Text -> Text
+pluginPhrase name = "plugin '" <> name <> "'"
+
+capabilityName :: Capability -> Text
+capabilityName capability = case capability of
+  CapLog -> "log"
+  CapNoise -> "noise"
+  CapReadTerrain -> "readTerrain"
+  CapWriteTerrain -> "writeTerrain"
+  CapReadOverlay -> "readOverlay"
+  CapWriteOverlay -> "writeOverlay"
+  CapReadWorld -> "readWorld"
+  CapWriteWorld -> "writeWorld"
+  CapDataRead -> "dataRead"
+  CapDataWrite -> "dataWrite"
 
 isBuiltInStage :: StageId -> Bool
 isBuiltInStage (StagePlugin _) = False
