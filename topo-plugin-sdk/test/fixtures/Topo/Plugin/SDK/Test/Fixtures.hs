@@ -175,6 +175,18 @@ mkExternalProviderPlugin = do
     , pdVersion = "1.0.0"
     , pdDataDirectory = Just "external-provider-data"
     , pdDataResources = [externalProviderResource sourcesRef]
+    , pdExternalDataSources =
+        [ RPCExternalDataSourceDecl
+            { redsdName = "terrain.catalog"
+            , redsdLabel = "Terrain Catalog"
+            , redsdDescription = "Provider-owned terrain catalogue fixture"
+            , redsdKind = "catalog"
+            , redsdCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
+            , redsdResources = ["shared_sources"]
+            , redsdStatus = RPCExternalDataSourceStatus ExternalStatusReady (Just "fixture ready")
+            , redsdUiHints = defaultRPCUIHints { ruiDisplayName = Just "Terrain Catalog" }
+            }
+        ]
     }
 
 externalProviderResource :: IORef [DataRecord] -> DataResourceDef
@@ -213,6 +225,18 @@ mkExternalConsumerPlugin = do
     , pdVersion = "1.0.0"
     , pdDataDirectory = Just "external-consumer-data"
     , pdDataResources = [externalConsumerResource bindingsRef]
+    , pdExternalDataSourceRefs =
+        [ RPCExternalDataSourceRef
+            { redsrName = "terrain.catalog"
+            , redsrProvider = Just "fixture-external-provider"
+            , redsrSource = "terrain.catalog"
+            , redsrRequired = True
+            , redsrAccess = [ExternalAccessRead]
+            , redsrResources = ["shared_sources"]
+            , redsrStatus = RPCExternalDataSourceStatus ExternalStatusUnknown (Just "resolved by fixture startup")
+            , redsrUiHints = defaultRPCUIHints { ruiDisplayName = Just "Terrain Catalog" }
+            }
+        ]
     }
 
 externalConsumerResource :: IORef [DataRecord] -> DataResourceDef

@@ -39,16 +39,19 @@ import Topo.Plugin.RPC.Protocol
   , RPCEnvelope(..)
   , RPCMessageType(..)
   , SimulationResult(..)
+  , currentProtocolVersion
   , decodeMessage
   , encodeMessage
   )
+import Topo.Plugin.RPC.Manifest
+  ( RPCManifest(..), RPCManifestRuntime(..), RPCUIHints(..), manifestV3 )
 import Topo.Plugin.RPC.Transport
   ( Transport(..)
   , closeTransport
   , recvMessage
   , sendMessage
   )
-import Topo.Plugin.SDK.Runner (runPluginSession)
+import Topo.Plugin.SDK.Runner (generateManifest, runPluginSession)
 import Topo.Plugin.SDK.Types
 import Topo.Hex (HexGridMeta(..), defaultHexGridMeta)
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), defaultPlanetConfig, defaultWorldSlice)
@@ -57,6 +60,15 @@ import Topo.World (TerrainWorld(..), emptyWorldWithPlanet)
 
 spec :: Spec
 spec = describe "SDK runner pipe integration" $ do
+  it "generates manifest v3 metadata, runtime bounds, and UI hints" $ do
+    let manifest = generateManifest generatorPlugin
+    rmManifestVersion manifest `shouldBe` manifestV3
+    rmrProtocolMin (rmRuntime manifest) `shouldBe` currentProtocolVersion
+    rmrProtocolMax (rmRuntime manifest) `shouldBe` currentProtocolVersion
+    ruiDisplayName (rmUiHints manifest) `shouldBe` Just (pdName generatorPlugin)
+    rmExternalDataSources manifest `shouldBe` []
+    rmExternalDataSourceRefs manifest `shouldBe` []
+
   it "handles invoke_generator and returns generator_result payload" $
     withTransportPair $ \host plugin -> do
       done <- startSession generatorPlugin plugin

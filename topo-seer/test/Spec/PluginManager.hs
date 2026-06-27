@@ -831,8 +831,10 @@ testPluginName = "copilot-test-plugin-manager-schema"
 testManifestJSON :: BS.ByteString
 testManifestJSON =
   "{\n"
+    <> "  \"manifestVersion\": 3,\n"
     <> "  \"name\": \"copilot-test-plugin-manager-schema\",\n"
     <> "  \"version\": \"0.1.0\",\n"
+    <> "  \"runtime\": { \"protocol\": { \"min\": 1, \"max\": 1 } },\n"
     <> "  \"generator\": { \"insertAfter\": \"erosion\" },\n"
     <> "  \"overlay\": { \"schemaFile\": \"test.toposchema\" }\n"
     <> "}\n"
@@ -1019,8 +1021,10 @@ manifestFor name = manifestWithStartPolicyFor name []
 manifestWithStartPolicyFor :: String -> [String] -> BS.ByteString
 manifestWithStartPolicyFor name policyLines = BSC.pack $
   "{\n"
+    <> "  \"manifestVersion\": 3,\n"
     <> "  \"name\": \"" <> name <> "\",\n"
     <> "  \"version\": \"0.1.0\",\n"
+    <> "  \"runtime\": { \"protocol\": { \"min\": 1, \"max\": 1 } },\n"
     <> "  \"generator\": { \"insertAfter\": \"erosion\" }"
     <> renderStartPolicy policyLines
     <> "\n}\n"
@@ -1028,8 +1032,10 @@ manifestWithStartPolicyFor name policyLines = BSC.pack $
 simulationManifestWithStartPolicyFor :: String -> [String] -> BS.ByteString
 simulationManifestWithStartPolicyFor name policyLines = BSC.pack $
   "{\n"
+    <> "  \"manifestVersion\": 3,\n"
     <> "  \"name\": \"" <> name <> "\",\n"
     <> "  \"version\": \"0.1.0\",\n"
+    <> "  \"runtime\": { \"protocol\": { \"min\": 1, \"max\": 1 } },\n"
     <> "  \"simulation\": { \"dependencies\": [] }"
     <> renderStartPolicy policyLines
     <> "\n}\n"
@@ -1037,8 +1043,10 @@ simulationManifestWithStartPolicyFor name policyLines = BSC.pack $
 dataResourceManifestFor :: String -> [String] -> BS.ByteString
 dataResourceManifestFor name policyLines = BSC.pack $
   "{\n"
+    <> "  \"manifestVersion\": 3,\n"
     <> "  \"name\": \"" <> name <> "\",\n"
     <> "  \"version\": \"0.1.0\",\n"
+    <> "  \"runtime\": { \"protocol\": { \"min\": 1, \"max\": 1 } },\n"
     <> "  \"generator\": { \"insertAfter\": \"erosion\" },\n"
     <> "  \"dataResources\": [\n"
     <> "    {\n"

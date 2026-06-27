@@ -1,0 +1,76 @@
+{
+  "manifestVersion": 3,
+  "name": "civilization",
+  "version": "1.0.0",
+  "runtime": {
+    "protocol": { "min": 1, "max": 1 },
+    "topo": { "min": "1.0" }
+  },
+  "description": "Civilization simulation overlay and settlement catalogue",
+  "ui": {
+    "displayName": "Civilization",
+    "category": "Simulation",
+    "tags": ["settlements", "culture"]
+  },
+  "generator": {
+    "insertAfter": "biomes",
+    "requires": ["biomes", "rivers"]
+  },
+  "simulation": {
+    "dependencies": ["weather"]
+  },
+  "overlay": {
+    "schemaFile": "civilization.toposchema"
+  },
+  "capabilities": ["readTerrain", "readOverlay", "writeOverlay", "dataRead", "log"],
+  "config": {
+    "parameters": [
+      {
+        "name": "growth_rate",
+        "label": "Growth Rate",
+        "type": "float",
+        "default": 0.02,
+        "range": [0.0, 0.5],
+        "tooltip": "Population growth fraction per tick"
+      }
+    ]
+  },
+  "dataResources": [
+    {
+      "name": "settlements",
+      "label": "Settlements",
+      "hexBound": true,
+      "fields": [
+        { "name": "id", "type": "text", "label": "Settlement ID" },
+        { "name": "population", "type": "int", "label": "Population" }
+      ],
+      "operations": {
+        "list": true,
+        "get": true,
+        "create": false,
+        "update": false,
+        "delete": false,
+        "queryByHex": true
+      },
+      "keyField": "id"
+    }
+  ],
+  "externalDataSources": [
+    {
+      "name": "settlement-ledger",
+      "label": "Settlement Ledger",
+      "description": "Provider-owned settlement records shared with dependent plugins",
+      "kind": "catalog",
+      "capabilities": ["query", "health"],
+      "resources": ["settlements"],
+      "status": {
+        "state": "ready",
+        "message": "Records are available through the provider plugin"
+      },
+      "ui": {
+        "displayName": "Settlement Ledger",
+        "category": "External data"
+      }
+    }
+  ]
+}

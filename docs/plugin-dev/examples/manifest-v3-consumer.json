@@ -1,0 +1,33 @@
+{
+  "manifestVersion": 3,
+  "name": "trade-routes",
+  "version": "0.3.0",
+  "runtime": {
+    "protocol": { "min": 1, "max": 1 }
+  },
+  "description": "Trade route simulation that consumes settlement data",
+  "ui": {
+    "displayName": "Trade Routes",
+    "category": "Simulation",
+    "tags": ["trade", "settlements"]
+  },
+  "generator": {
+    "insertAfter": "civilization",
+    "requires": ["civilization"]
+  },
+  "capabilities": ["readTerrain", "dataRead", "log"],
+  "externalDataSourceRefs": [
+    {
+      "name": "settlements",
+      "provider": "civilization",
+      "source": "settlement-ledger",
+      "required": true,
+      "access": ["read"],
+      "resources": ["settlements"],
+      "status": {
+        "state": "unknown",
+        "message": "Resolved during plugin dependency startup"
+      }
+    }
+  ]
+}

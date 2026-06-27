@@ -51,7 +51,10 @@ import Topo.Plugin.RPC
   , RPCCapability
   , RPCParamSpec(..)
   , RPCParamType(..)
+  , defaultRPCManifestRuntime
   , defaultRPCStartPolicy
+  , defaultRPCUIHints
+  , manifestV3
   , newRPCConnection
   , rpcGeneratorStage
   , rpcSimNode
@@ -101,9 +104,12 @@ mockTransport name = do
 -- | A civilization-style manifest for integration tests.
 civManifest :: RPCManifest
 civManifest = RPCManifest
-  { rmName         = "civilization"
+  { rmManifestVersion = manifestV3
+  , rmName         = "civilization"
   , rmVersion      = "1.0.0"
+  , rmRuntime      = defaultRPCManifestRuntime
   , rmDescription  = "Civilization simulation overlay"
+  , rmUiHints      = defaultRPCUIHints
   , rmGenerator    = Just RPCGeneratorDecl
       { rgdInsertAfter = "biomes"
       , rgdRequires    = ["biomes", "rivers"]
@@ -127,15 +133,20 @@ civManifest = RPCManifest
       ]
   , rmDataResources  = []
   , rmDataDirectory  = Nothing
+  , rmExternalDataSources = []
+  , rmExternalDataSourceRefs = []
   , rmStartPolicy    = defaultRPCStartPolicy
   }
 
 -- | A generator-only manifest (no simulation, no overlay).
 genOnlyManifest :: RPCManifest
 genOnlyManifest = RPCManifest
-  { rmName         = "terrain-roughen"
+  { rmManifestVersion = manifestV3
+  , rmName         = "terrain-roughen"
   , rmVersion      = "0.1.0"
+  , rmRuntime      = defaultRPCManifestRuntime
   , rmDescription  = "Roughen terrain elevation"
+  , rmUiHints      = defaultRPCUIHints
   , rmGenerator    = Just RPCGeneratorDecl
       { rgdInsertAfter = "erosion"
       , rgdRequires    = ["erosion"]
@@ -146,15 +157,20 @@ genOnlyManifest = RPCManifest
   , rmParameters     = []
   , rmDataResources  = []
   , rmDataDirectory  = Nothing
+  , rmExternalDataSources = []
+  , rmExternalDataSourceRefs = []
   , rmStartPolicy    = defaultRPCStartPolicy
   }
 
 -- | A sim-only manifest with writeTerrain capability.
 writerManifest :: RPCManifest
 writerManifest = RPCManifest
-  { rmName         = "terrain-writer"
+  { rmManifestVersion = manifestV3
+  , rmName         = "terrain-writer"
   , rmVersion      = "0.1.0"
+  , rmRuntime      = defaultRPCManifestRuntime
   , rmDescription  = "Writes terrain during simulation"
+  , rmUiHints      = defaultRPCUIHints
   , rmGenerator    = Nothing
   , rmSimulation   = Just RPCSimulationDecl
       { rsdDependencies = []
@@ -166,6 +182,8 @@ writerManifest = RPCManifest
   , rmParameters     = []
   , rmDataResources  = []
   , rmDataDirectory  = Nothing
+  , rmExternalDataSources = []
+  , rmExternalDataSourceRefs = []
   , rmStartPolicy    = defaultRPCStartPolicy
   }
 

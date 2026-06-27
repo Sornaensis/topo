@@ -1,0 +1,203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://topo.dev/schemas/plugin-manifest-v3.schema.json",
+  "title": "Topo plugin manifest v3",
+  "type": "object",
+  "required": ["manifestVersion", "name", "version", "runtime"],
+  "properties": {
+    "manifestVersion": { "const": 3 },
+    "name": { "type": "string" },
+    "version": { "type": "string" },
+    "runtime": { "$ref": "#/$defs/runtime" },
+    "description": { "type": "string" },
+    "ui": { "$ref": "#/$defs/uiHints" },
+    "generator": { "$ref": "#/$defs/generator" },
+    "simulation": { "$ref": "#/$defs/simulation" },
+    "overlay": { "$ref": "#/$defs/overlay" },
+    "capabilities": { "type": "array", "items": { "type": "string", "enum": ["log", "noise", "readTerrain", "writeTerrain", "readOverlay", "writeOverlay", "readWorld", "writeWorld", "dataRead", "dataWrite"] } },
+    "config": { "$ref": "#/$defs/config" },
+    "dataResources": { "type": "array", "items": { "$ref": "#/$defs/dataResource" } },
+    "dataDirectory": { "type": "string" },
+    "externalDataSources": { "type": "array", "items": { "$ref": "#/$defs/externalDataSource" } },
+    "externalDataSourceRefs": { "type": "array", "items": { "$ref": "#/$defs/externalDataSourceRef" } },
+    "startPolicy": { "$ref": "#/$defs/startPolicy" }
+  },
+  "$defs": {
+    "runtime": {
+      "type": "object",
+      "required": ["protocol"],
+      "properties": {
+        "protocol": {
+          "type": "object",
+          "required": ["min", "max"],
+          "properties": {
+            "min": { "type": "integer" },
+            "max": { "type": "integer" }
+          }
+        },
+        "topo": {
+          "type": "object",
+          "properties": {
+            "min": { "type": "string" },
+            "max": { "type": "string" }
+          }
+        }
+      }
+    },
+    "uiHints": {
+      "type": "object",
+      "properties": {
+        "displayName": { "type": "string" },
+        "category": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "icon": { "type": "string" },
+        "docsUrl": { "type": "string" },
+        "order": { "type": "integer" }
+      }
+    },
+    "generator": {
+      "type": "object",
+      "required": ["insertAfter"],
+      "properties": {
+        "insertAfter": { "type": "string" },
+        "requires": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "simulation": {
+      "type": "object",
+      "properties": {
+        "dependencies": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "overlay": {
+      "type": "object",
+      "required": ["schemaFile"],
+      "properties": {
+        "schemaFile": { "type": "string" }
+      }
+    },
+    "config": {
+      "type": "object",
+      "properties": {
+        "parameters": { "type": "array", "items": { "$ref": "#/$defs/parameter" } }
+      }
+    },
+    "parameter": {
+      "type": "object",
+      "required": ["name", "label", "type", "default"],
+      "properties": {
+        "name": { "type": "string" },
+        "label": { "type": "string" },
+        "type": { "type": "string", "enum": ["float", "int", "bool"] },
+        "default": {},
+        "range": { "type": "array", "minItems": 2, "maxItems": 2, "items": {} },
+        "tooltip": { "type": "string" }
+      }
+    },
+    "dataResource": {
+      "type": "object",
+      "required": ["name", "label", "fields", "operations", "keyField"],
+      "properties": {
+        "name": { "type": "string" },
+        "label": { "type": "string" },
+        "hexBound": { "type": "boolean" },
+        "fields": { "type": "array", "items": { "$ref": "#/$defs/dataField" } },
+        "operations": { "$ref": "#/$defs/dataOperations" },
+        "keyField": { "type": "string" },
+        "overlay": { "type": "string" }
+      }
+    },
+    "dataField": {
+      "type": "object",
+      "required": ["name", "type", "label"],
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "$ref": "#/$defs/dataFieldType" },
+        "label": { "type": "string" },
+        "editable": { "type": "boolean" },
+        "default": {}
+      }
+    },
+    "dataConstructor": {
+      "type": "object",
+      "required": ["constructor"],
+      "properties": {
+        "constructor": { "type": "string" },
+        "fields": { "type": "array", "items": { "$ref": "#/$defs/dataFieldType" } }
+      }
+    },
+    "dataOperations": {
+      "type": "object",
+      "properties": {
+        "list": { "type": "boolean" },
+        "get": { "type": "boolean" },
+        "create": { "type": "boolean" },
+        "update": { "type": "boolean" },
+        "delete": { "type": "boolean" },
+        "queryByHex": { "type": "boolean" }
+      }
+    },
+    "startPolicy": {
+      "type": "object",
+      "properties": {
+        "auto_start": { "type": "boolean" },
+        "restart_mode": { "type": "string", "enum": ["never", "on_failure", "always"] },
+        "max_restarts": { "type": "integer" },
+        "restart_window_ms": { "type": "integer" },
+        "startup_timeout_ms": { "type": "integer" },
+        "request_timeout_ms": { "type": "integer" },
+        "shutdown_timeout_ms": { "type": "integer" },
+        "backoff_ms": { "type": "integer" }
+      }
+    },
+    "externalDataSource": {
+      "type": "object",
+      "required": ["name", "kind", "capabilities", "status"],
+      "properties": {
+        "name": { "type": "string" },
+        "label": { "type": "string" },
+        "description": { "type": "string" },
+        "kind": { "type": "string" },
+        "capabilities": { "type": "array", "items": { "type": "string", "enum": ["query", "mutate", "subscribe", "migrate", "health"] } },
+        "resources": { "type": "array", "items": { "type": "string" } },
+        "status": { "$ref": "#/$defs/externalStatus" },
+        "ui": { "$ref": "#/$defs/uiHints" }
+      }
+    },
+    "externalDataSourceRef": {
+      "type": "object",
+      "required": ["name", "source", "required", "access", "status"],
+      "properties": {
+        "name": { "type": "string" },
+        "provider": { "type": "string" },
+        "source": { "type": "string" },
+        "required": { "type": "boolean" },
+        "access": { "type": "array", "items": { "type": "string", "enum": ["read", "write", "admin"] } },
+        "resources": { "type": "array", "items": { "type": "string" } },
+        "status": { "$ref": "#/$defs/externalStatus" },
+        "ui": { "$ref": "#/$defs/uiHints" }
+      }
+    },
+    "externalStatus": {
+      "type": "object",
+      "required": ["state"],
+      "properties": {
+        "state": { "type": "string", "enum": ["unknown", "unconfigured", "ready", "degraded", "unavailable"] },
+        "message": { "type": "string" }
+      }
+    },
+    "dataFieldType": {
+      "oneOf": [
+        { "type": "string", "enum": ["text", "int", "float", "double", "bool", "fixed2", "fixed3", "fixed4"] },
+        {
+          "type": "object",
+          "properties": {
+            "enum": { "type": "array", "items": { "type": "string" } },
+            "record": { "type": "array", "items": { "$ref": "#/$defs/dataField" } },
+            "adt": { "type": "array", "items": { "$ref": "#/$defs/dataConstructor" } }
+          }
+        }
+      ]
+    }
+  }
+}

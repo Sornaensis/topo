@@ -13,19 +13,27 @@
 --
 -- @
 -- {
+--   "manifestVersion": 3,
 --   "name": "civilization",
 --   "version": "1.0.0",
+--   "runtime": { "protocol": { "min": 1, "max": 1 } },
 --   "description": "Civilization simulation overlay",
 --   "generator": { "insertAfter": "biomes", "requires": ["biomes","rivers"] },
 --   "simulation": { "dependencies": ["weather"] },
 --   "overlay": { "schemaFile": "civilization.toposchema" },
 --   "capabilities": ["readTerrain","readOverlay","writeOverlay","log"],
---   "config": { "parameters": [...] }
+--   "config": { "parameters": [...] },
+--   "externalDataSources": [...]
 -- }
 -- @
 module Topo.Plugin.RPC.Manifest
   ( -- * Manifest types
     RPCManifest(..)
+  , manifestV3
+  , RPCManifestRuntime(..)
+  , defaultRPCManifestRuntime
+  , RPCUIHints(..)
+  , defaultRPCUIHints
   , RPCGeneratorDecl(..)
   , RPCSimulationDecl(..)
   , RPCOverlayDecl(..)
@@ -33,9 +41,20 @@ module Topo.Plugin.RPC.Manifest
   , RPCRestartMode(..)
   , defaultRPCStartPolicy
   , Capability(..)
-    , RPCCapability
+  , RPCCapability
   , RPCParamSpec(..)
   , RPCParamType(..)
+  , RPCExternalDataSourceCapability(..)
+  , RPCExternalDataSourceAccess(..)
+  , RPCExternalDataSourceStatusState(..)
+  , RPCExternalDataSourceStatus(..)
+  , defaultRPCExternalDataSourceStatus
+  , RPCExternalDataSourceDecl(..)
+  , RPCExternalDataSourceRef(..)
+    -- * Schema and examples
+  , manifestV3Schema
+  , manifestV3ProviderExample
+  , manifestV3ConsumerExample
     -- * Parsing
   , parseManifest
   , parseManifestFile
@@ -329,17 +348,294 @@ positive field value
   | otherwise = fail (field <> " must be positive")
 
 ------------------------------------------------------------------------
+-- Manifest v3 metadata, UI hints, and external data sources
+------------------------------------------------------------------------
+
+-- | Current plugin manifest contract version.
+manifestV3 :: Int
+manifestV3 = 3
+
+-- | Runtime and RPC protocol bounds declared by a plugin manifest.
+--
+-- Protocol bounds are integer message-contract versions.  Topo version bounds
+-- are opaque version strings so the manifest stays independent of a package or
+-- release-version parser.
+data RPCManifestRuntime = RPCManifestRuntime
+  { rmrProtocolMin :: !Int
+  , rmrProtocolMax :: !Int
+  , rmrTopoMin     :: !(Maybe Text)
+  , rmrTopoMax     :: !(Maybe Text)
+  } deriving (Eq, Show, Generic)
+
+defaultRPCManifestRuntime :: RPCManifestRuntime
+defaultRPCManifestRuntime = RPCManifestRuntime
+  { rmrProtocolMin = 1
+  , rmrProtocolMax = 1
+  , rmrTopoMin = Nothing
+  , rmrTopoMax = Nothing
+  }
+
+instance FromJSON RPCManifestRuntime where
+  parseJSON = withObject "RPCManifestRuntime" $ \o -> do
+    protocol <- o .: "protocol"
+    (pmin, pmax) <- withObject "runtime.protocol" (\p -> do
+        pmin <- p .: "min"
+        pmax <- p .: "max"
+        pure (pmin, pmax)
+      ) protocol
+    topo <- o .:? "topo"
+    (tmin, tmax) <- case topo of
+      Nothing -> pure (Nothing, Nothing)
+      Just value -> withObject "runtime.topo" (\t -> do
+          tmin <- t .:? "min"
+          tmax <- t .:? "max"
+          pure (tmin, tmax)
+        ) value
+    pure RPCManifestRuntime
+      { rmrProtocolMin = pmin
+      , rmrProtocolMax = pmax
+      , rmrTopoMin = tmin
+      , rmrTopoMax = tmax
+      }
+
+instance ToJSON RPCManifestRuntime where
+  toJSON runtime = object $
+    [ "protocol" .= object
+        [ "min" .= rmrProtocolMin runtime
+        , "max" .= rmrProtocolMax runtime
+        ]
+    ] <>
+    [ "topo" .= object (topoMin <> topoMax)
+    | not (null (topoMin <> topoMax))
+    ]
+    where
+      topoMin = ["min" .= v | Just v <- [rmrTopoMin runtime]]
+      topoMax = ["max" .= v | Just v <- [rmrTopoMax runtime]]
+
+-- | Optional user-interface hints for manifests and manifest sub-declarations.
+data RPCUIHints = RPCUIHints
+  { ruiDisplayName :: !(Maybe Text)
+  , ruiCategory    :: !(Maybe Text)
+  , ruiTags        :: ![Text]
+  , ruiIcon        :: !(Maybe Text)
+  , ruiDocsUrl     :: !(Maybe Text)
+  , ruiOrder       :: !(Maybe Int)
+  } deriving (Eq, Show, Generic)
+
+defaultRPCUIHints :: RPCUIHints
+defaultRPCUIHints = RPCUIHints
+  { ruiDisplayName = Nothing
+  , ruiCategory = Nothing
+  , ruiTags = []
+  , ruiIcon = Nothing
+  , ruiDocsUrl = Nothing
+  , ruiOrder = Nothing
+  }
+
+instance FromJSON RPCUIHints where
+  parseJSON = withObject "RPCUIHints" $ \o ->
+    RPCUIHints
+      <$> o .:? "displayName"
+      <*> o .:? "category"
+      <*> (o .:? "tags" >>= pure . maybe [] id)
+      <*> o .:? "icon"
+      <*> o .:? "docsUrl"
+      <*> o .:? "order"
+
+instance ToJSON RPCUIHints where
+  toJSON ui = object $
+    [ "displayName" .= v | Just v <- [ruiDisplayName ui] ] <>
+    [ "category" .= v | Just v <- [ruiCategory ui] ] <>
+    [ "tags" .= ruiTags ui | not (null (ruiTags ui)) ] <>
+    [ "icon" .= v | Just v <- [ruiIcon ui] ] <>
+    [ "docsUrl" .= v | Just v <- [ruiDocsUrl ui] ] <>
+    [ "order" .= v | Just v <- [ruiOrder ui] ]
+
+-- | Backend-neutral capabilities offered by a provider-owned external data
+-- source.  These describe host/plugin coordination only, not storage engines.
+data RPCExternalDataSourceCapability
+  = ExternalSourceQuery
+  | ExternalSourceMutate
+  | ExternalSourceSubscribe
+  | ExternalSourceMigrate
+  | ExternalSourceHealth
+  deriving (Eq, Ord, Show, Read, Generic)
+
+instance FromJSON RPCExternalDataSourceCapability where
+  parseJSON = withText "RPCExternalDataSourceCapability" $ \t -> case t of
+    "query"     -> pure ExternalSourceQuery
+    "mutate"    -> pure ExternalSourceMutate
+    "subscribe" -> pure ExternalSourceSubscribe
+    "migrate"   -> pure ExternalSourceMigrate
+    "health"    -> pure ExternalSourceHealth
+    _            -> fail ("unknown external data source capability: " <> Text.unpack t)
+
+instance ToJSON RPCExternalDataSourceCapability where
+  toJSON ExternalSourceQuery     = "query"
+  toJSON ExternalSourceMutate    = "mutate"
+  toJSON ExternalSourceSubscribe = "subscribe"
+  toJSON ExternalSourceMigrate   = "migrate"
+  toJSON ExternalSourceHealth    = "health"
+
+-- | Access requested by a consumer reference to an external data source.
+data RPCExternalDataSourceAccess
+  = ExternalAccessRead
+  | ExternalAccessWrite
+  | ExternalAccessAdmin
+  deriving (Eq, Ord, Show, Read, Generic)
+
+instance FromJSON RPCExternalDataSourceAccess where
+  parseJSON = withText "RPCExternalDataSourceAccess" $ \t -> case t of
+    "read"  -> pure ExternalAccessRead
+    "write" -> pure ExternalAccessWrite
+    "admin" -> pure ExternalAccessAdmin
+    _       -> fail ("unknown external data source access: " <> Text.unpack t)
+
+instance ToJSON RPCExternalDataSourceAccess where
+  toJSON ExternalAccessRead  = "read"
+  toJSON ExternalAccessWrite = "write"
+  toJSON ExternalAccessAdmin = "admin"
+
+-- | Declarative status for an external data source or a consumer reference.
+data RPCExternalDataSourceStatusState
+  = ExternalStatusUnknown
+  | ExternalStatusUnconfigured
+  | ExternalStatusReady
+  | ExternalStatusDegraded
+  | ExternalStatusUnavailable
+  deriving (Eq, Ord, Show, Read, Generic)
+
+instance FromJSON RPCExternalDataSourceStatusState where
+  parseJSON = withText "RPCExternalDataSourceStatusState" $ \t -> case t of
+    "unknown"      -> pure ExternalStatusUnknown
+    "unconfigured" -> pure ExternalStatusUnconfigured
+    "ready"        -> pure ExternalStatusReady
+    "degraded"     -> pure ExternalStatusDegraded
+    "unavailable"  -> pure ExternalStatusUnavailable
+    _              -> fail ("unknown external data source status: " <> Text.unpack t)
+
+instance ToJSON RPCExternalDataSourceStatusState where
+  toJSON ExternalStatusUnknown      = "unknown"
+  toJSON ExternalStatusUnconfigured = "unconfigured"
+  toJSON ExternalStatusReady        = "ready"
+  toJSON ExternalStatusDegraded     = "degraded"
+  toJSON ExternalStatusUnavailable  = "unavailable"
+
+data RPCExternalDataSourceStatus = RPCExternalDataSourceStatus
+  { redssState   :: !RPCExternalDataSourceStatusState
+  , redssMessage :: !(Maybe Text)
+  } deriving (Eq, Show, Generic)
+
+defaultRPCExternalDataSourceStatus :: RPCExternalDataSourceStatus
+defaultRPCExternalDataSourceStatus = RPCExternalDataSourceStatus
+  { redssState = ExternalStatusUnknown
+  , redssMessage = Nothing
+  }
+
+instance FromJSON RPCExternalDataSourceStatus where
+  parseJSON = withObject "RPCExternalDataSourceStatus" $ \o ->
+    RPCExternalDataSourceStatus
+      <$> o .: "state"
+      <*> o .:? "message"
+
+instance ToJSON RPCExternalDataSourceStatus where
+  toJSON status = object $
+    [ "state" .= redssState status ] <>
+    [ "message" .= msg | Just msg <- [redssMessage status] ]
+
+-- | Provider declaration for a named external data source.
+data RPCExternalDataSourceDecl = RPCExternalDataSourceDecl
+  { redsdName         :: !Text
+  , redsdLabel        :: !Text
+  , redsdDescription  :: !Text
+  , redsdKind         :: !Text
+  , redsdCapabilities :: ![RPCExternalDataSourceCapability]
+  , redsdResources    :: ![Text]
+  , redsdStatus       :: !RPCExternalDataSourceStatus
+  , redsdUiHints      :: !RPCUIHints
+  } deriving (Eq, Show, Generic)
+
+instance FromJSON RPCExternalDataSourceDecl where
+  parseJSON = withObject "RPCExternalDataSourceDecl" $ \o -> do
+    name <- o .: "name"
+    label <- o .:? "label"
+    desc <- o .:? "description"
+    RPCExternalDataSourceDecl
+      <$> pure name
+      <*> pure (maybe name id label)
+      <*> pure (maybe "" id desc)
+      <*> o .: "kind"
+      <*> o .: "capabilities"
+      <*> (o .:? "resources" >>= pure . maybe [] id)
+      <*> o .: "status"
+      <*> optionalPolicyField o ["ui"] defaultRPCUIHints
+
+instance ToJSON RPCExternalDataSourceDecl where
+  toJSON source = object $
+    [ "name" .= redsdName source
+    , "label" .= redsdLabel source
+    , "kind" .= redsdKind source
+    , "capabilities" .= redsdCapabilities source
+    , "status" .= redsdStatus source
+    ] <>
+    [ "description" .= redsdDescription source | redsdDescription source /= "" ] <>
+    [ "resources" .= redsdResources source | not (null (redsdResources source)) ] <>
+    [ "ui" .= redsdUiHints source | redsdUiHints source /= defaultRPCUIHints ]
+
+-- | Consumer reference to a provider-owned external data source.
+data RPCExternalDataSourceRef = RPCExternalDataSourceRef
+  { redsrName      :: !Text
+  , redsrProvider  :: !(Maybe Text)
+  , redsrSource    :: !Text
+  , redsrRequired  :: !Bool
+  , redsrAccess    :: ![RPCExternalDataSourceAccess]
+  , redsrResources :: ![Text]
+  , redsrStatus    :: !RPCExternalDataSourceStatus
+  , redsrUiHints   :: !RPCUIHints
+  } deriving (Eq, Show, Generic)
+
+instance FromJSON RPCExternalDataSourceRef where
+  parseJSON = withObject "RPCExternalDataSourceRef" $ \o ->
+    RPCExternalDataSourceRef
+      <$> o .: "name"
+      <*> o .:? "provider"
+      <*> o .: "source"
+      <*> o .: "required"
+      <*> o .: "access"
+      <*> (o .:? "resources" >>= pure . maybe [] id)
+      <*> o .: "status"
+      <*> optionalPolicyField o ["ui"] defaultRPCUIHints
+
+instance ToJSON RPCExternalDataSourceRef where
+  toJSON ref = object $
+    [ "name" .= redsrName ref
+    , "source" .= redsrSource ref
+    , "required" .= redsrRequired ref
+    , "access" .= redsrAccess ref
+    , "status" .= redsrStatus ref
+    ] <>
+    [ "provider" .= p | Just p <- [redsrProvider ref] ] <>
+    [ "resources" .= redsrResources ref | not (null (redsrResources ref)) ] <>
+    [ "ui" .= redsrUiHints ref | redsrUiHints ref /= defaultRPCUIHints ]
+
+------------------------------------------------------------------------
 -- Full manifest
 ------------------------------------------------------------------------
 
 -- | A plugin's complete manifest, parsed from @manifest.json@.
 data RPCManifest = RPCManifest
-  { rmName          :: !Text
+  { rmManifestVersion :: !Int
+    -- ^ Manifest contract version. Version 3 is the current contract.
+  , rmName          :: !Text
     -- ^ Unique plugin identifier.
   , rmVersion       :: !Text
     -- ^ Plugin version string (informational).
+  , rmRuntime       :: !RPCManifestRuntime
+    -- ^ Runtime and protocol compatibility bounds.
   , rmDescription   :: !Text
     -- ^ Human-readable description.
+  , rmUiHints       :: !RPCUIHints
+    -- ^ Optional UI presentation hints.
   , rmGenerator     :: !(Maybe RPCGeneratorDecl)
     -- ^ Generator pipeline declaration (if the plugin seeds data).
   , rmSimulation    :: !(Maybe RPCSimulationDecl)
@@ -354,15 +650,22 @@ data RPCManifest = RPCManifest
     -- ^ Plugin-declared data resource schemas.
   , rmDataDirectory :: !(Maybe Text)
     -- ^ Data subdirectory relative to the world save path.
+  , rmExternalDataSources :: ![RPCExternalDataSourceDecl]
+    -- ^ Provider-owned external data sources advertised by this plugin.
+  , rmExternalDataSourceRefs :: ![RPCExternalDataSourceRef]
+    -- ^ External data sources consumed by this plugin.
   , rmStartPolicy   :: !RPCStartPolicy
     -- ^ Host-side process supervision policy.
   } deriving (Eq, Show, Generic)
 
 instance FromJSON RPCManifest where
   parseJSON = withObject "RPCManifest" $ \o -> do
+    manifestVersion <- o .: "manifestVersion"
     name   <- o .:  "name"
     ver    <- o .:  "version"
+    runtime <- o .: "runtime"
     desc   <- o .:? "description"
+    ui     <- optionalPolicyField o ["ui"] defaultRPCUIHints
     gen    <- o .:? "generator"
     sim    <- o .:? "simulation"
     ov     <- o .:? "overlay"
@@ -373,11 +676,16 @@ instance FromJSON RPCManifest where
       Nothing -> pure Nothing
     dataRes  <- o .:? "dataResources"
     dataDir  <- o .:? "dataDirectory"
+    externalSources <- o .:? "externalDataSources"
+    externalRefs <- optionalPolicyField o ["externalDataSourceRefs", "externalDataSourceReferences"] ([] :: [RPCExternalDataSourceRef])
     startPolicy <- optionalPolicyField o ["startPolicy", "start_policy"] defaultRPCStartPolicy
     pure RPCManifest
-      { rmName          = name
+      { rmManifestVersion = manifestVersion
+      , rmName          = name
       , rmVersion       = ver
+      , rmRuntime       = runtime
       , rmDescription   = maybe "" id desc
+      , rmUiHints       = ui
       , rmGenerator     = gen
       , rmSimulation    = sim
       , rmOverlay       = ov
@@ -385,15 +693,20 @@ instance FromJSON RPCManifest where
       , rmParameters    = maybe [] id params
       , rmDataResources = maybe [] id dataRes
       , rmDataDirectory = dataDir
+      , rmExternalDataSources = maybe [] id externalSources
+      , rmExternalDataSourceRefs = externalRefs
       , rmStartPolicy   = startPolicy
       }
 
 instance ToJSON RPCManifest where
   toJSON rm = object $
-    [ "name"    .= rmName rm
+    [ "manifestVersion" .= rmManifestVersion rm
+    , "name"    .= rmName rm
     , "version" .= rmVersion rm
+    , "runtime" .= rmRuntime rm
     ] <>
     [ "description" .= rmDescription rm | rmDescription rm /= "" ] <>
+    [ "ui" .= rmUiHints rm | rmUiHints rm /= defaultRPCUIHints ] <>
     [ "generator"   .= g  | Just g  <- [rmGenerator rm] ] <>
     [ "simulation"  .= s  | Just s  <- [rmSimulation rm] ] <>
     [ "overlay"     .= ov | Just ov <- [rmOverlay rm] ] <>
@@ -407,10 +720,402 @@ instance ToJSON RPCManifest where
     [ "dataDirectory" .= dd
     | Just dd <- [rmDataDirectory rm]
     ] <>
+    [ "externalDataSources" .= rmExternalDataSources rm
+    | not (null (rmExternalDataSources rm))
+    ] <>
+    [ "externalDataSourceRefs" .= rmExternalDataSourceRefs rm
+    | not (null (rmExternalDataSourceRefs rm))
+    ] <>
     [ "startPolicy" .= sp
     | let sp = rmStartPolicy rm
     , sp /= defaultRPCStartPolicy
     ]
+
+------------------------------------------------------------------------
+-- Manifest v3 JSON Schema and golden examples
+------------------------------------------------------------------------
+
+-- | JSON Schema for the manifest v3 contract.
+manifestV3Schema :: Value
+manifestV3Schema = object
+  [ "$schema" .= ("https://json-schema.org/draft/2020-12/schema" :: Text)
+  , "$id" .= ("https://topo.dev/schemas/plugin-manifest-v3.schema.json" :: Text)
+  , "title" .= ("Topo plugin manifest v3" :: Text)
+  , "type" .= ("object" :: Text)
+  , "required" .= (["manifestVersion", "name", "version", "runtime"] :: [Text])
+  , "properties" .= object
+      [ "manifestVersion" .= object ["const" .= manifestV3]
+      , "name" .= stringSchema
+      , "version" .= stringSchema
+      , "runtime" .= schemaRef "runtime"
+      , "description" .= stringSchema
+      , "ui" .= schemaRef "uiHints"
+      , "generator" .= schemaRef "generator"
+      , "simulation" .= schemaRef "simulation"
+      , "overlay" .= schemaRef "overlay"
+      , "capabilities" .= arrayOf (enumSchema capabilityNames)
+      , "config" .= schemaRef "config"
+      , "dataResources" .= arrayOf (schemaRef "dataResource")
+      , "dataDirectory" .= stringSchema
+      , "externalDataSources" .= arrayOf (schemaRef "externalDataSource")
+      , "externalDataSourceRefs" .= arrayOf (schemaRef "externalDataSourceRef")
+      , "startPolicy" .= schemaRef "startPolicy"
+      ]
+  , "$defs" .= object
+      [ "runtime" .= object
+          [ "type" .= ("object" :: Text)
+          , "required" .= (["protocol"] :: [Text])
+          , "properties" .= object
+              [ "protocol" .= object
+                  [ "type" .= ("object" :: Text)
+                  , "required" .= (["min", "max"] :: [Text])
+                  , "properties" .= object
+                      [ "min" .= integerSchema
+                      , "max" .= integerSchema
+                      ]
+                  ]
+              , "topo" .= object
+                  [ "type" .= ("object" :: Text)
+                  , "properties" .= object
+                      [ "min" .= stringSchema
+                      , "max" .= stringSchema
+                      ]
+                  ]
+              ]
+          ]
+      , "uiHints" .= object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "displayName" .= stringSchema
+              , "category" .= stringSchema
+              , "tags" .= arrayOf stringSchema
+              , "icon" .= stringSchema
+              , "docsUrl" .= stringSchema
+              , "order" .= integerSchema
+              ]
+          ]
+      , "generator" .= object
+          [ "type" .= ("object" :: Text)
+          , "required" .= (["insertAfter"] :: [Text])
+          , "properties" .= object
+              [ "insertAfter" .= stringSchema
+              , "requires" .= arrayOf stringSchema
+              ]
+          ]
+      , "simulation" .= object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "dependencies" .= arrayOf stringSchema
+              ]
+          ]
+      , "overlay" .= object
+          [ "type" .= ("object" :: Text)
+          , "required" .= (["schemaFile"] :: [Text])
+          , "properties" .= object
+              [ "schemaFile" .= stringSchema
+              ]
+          ]
+      , "config" .= object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "parameters" .= arrayOf (schemaRef "parameter")
+              ]
+          ]
+      , "parameter" .= object
+          [ "type" .= ("object" :: Text)
+          , "required" .= (["name", "label", "type", "default"] :: [Text])
+          , "properties" .= object
+              [ "name" .= stringSchema
+              , "label" .= stringSchema
+              , "type" .= enumSchema ["float", "int", "bool"]
+              , "default" .= object []
+              , "range" .= object
+                  [ "type" .= ("array" :: Text)
+                  , "minItems" .= (2 :: Int)
+                  , "maxItems" .= (2 :: Int)
+                  , "items" .= object []
+                  ]
+              , "tooltip" .= stringSchema
+              ]
+          ]
+      , "dataResource" .= object
+          [ "type" .= ("object" :: Text)
+          , "required" .= (["name", "label", "fields", "operations", "keyField"] :: [Text])
+          , "properties" .= object
+              [ "name" .= stringSchema
+              , "label" .= stringSchema
+              , "hexBound" .= booleanSchema
+              , "fields" .= arrayOf (schemaRef "dataField")
+              , "operations" .= schemaRef "dataOperations"
+              , "keyField" .= stringSchema
+              , "overlay" .= stringSchema
+              ]
+          ]
+      , "dataField" .= object
+          [ "type" .= ("object" :: Text)
+          , "required" .= (["name", "type", "label"] :: [Text])
+          , "properties" .= object
+              [ "name" .= stringSchema
+              , "type" .= schemaRef "dataFieldType"
+              , "label" .= stringSchema
+              , "editable" .= booleanSchema
+              , "default" .= object []
+              ]
+          ]
+      , "dataConstructor" .= object
+          [ "type" .= ("object" :: Text)
+          , "required" .= (["constructor"] :: [Text])
+          , "properties" .= object
+              [ "constructor" .= stringSchema
+              , "fields" .= arrayOf (schemaRef "dataFieldType")
+              ]
+          ]
+      , "dataOperations" .= object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "list" .= booleanSchema
+              , "get" .= booleanSchema
+              , "create" .= booleanSchema
+              , "update" .= booleanSchema
+              , "delete" .= booleanSchema
+              , "queryByHex" .= booleanSchema
+              ]
+          ]
+      , "startPolicy" .= object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "auto_start" .= booleanSchema
+              , "restart_mode" .= enumSchema ["never", "on_failure", "always"]
+              , "max_restarts" .= integerSchema
+              , "restart_window_ms" .= integerSchema
+              , "startup_timeout_ms" .= integerSchema
+              , "request_timeout_ms" .= integerSchema
+              , "shutdown_timeout_ms" .= integerSchema
+              , "backoff_ms" .= integerSchema
+              ]
+          ]
+      , "externalDataSource" .= object
+          [ "type" .= ("object" :: Text)
+          , "required" .= (["name", "kind", "capabilities", "status"] :: [Text])
+          , "properties" .= object
+              [ "name" .= stringSchema
+              , "label" .= stringSchema
+              , "description" .= stringSchema
+              , "kind" .= stringSchema
+              , "capabilities" .= arrayOf (enumSchema externalCapabilityNames)
+              , "resources" .= arrayOf stringSchema
+              , "status" .= schemaRef "externalStatus"
+              , "ui" .= schemaRef "uiHints"
+              ]
+          ]
+      , "externalDataSourceRef" .= object
+          [ "type" .= ("object" :: Text)
+          , "required" .= (["name", "source", "required", "access", "status"] :: [Text])
+          , "properties" .= object
+              [ "name" .= stringSchema
+              , "provider" .= stringSchema
+              , "source" .= stringSchema
+              , "required" .= booleanSchema
+              , "access" .= arrayOf (enumSchema externalAccessNames)
+              , "resources" .= arrayOf stringSchema
+              , "status" .= schemaRef "externalStatus"
+              , "ui" .= schemaRef "uiHints"
+              ]
+          ]
+      , "externalStatus" .= object
+          [ "type" .= ("object" :: Text)
+          , "required" .= (["state"] :: [Text])
+          , "properties" .= object
+              [ "state" .= enumSchema externalStatusNames
+              , "message" .= stringSchema
+              ]
+          ]
+      , "dataFieldType" .= dataFieldTypeSchema
+      ]
+  ]
+
+manifestV3ProviderExample :: Value
+manifestV3ProviderExample = object
+  [ "manifestVersion" .= manifestV3
+  , "name" .= ("civilization" :: Text)
+  , "version" .= ("1.0.0" :: Text)
+  , "runtime" .= object
+      [ "protocol" .= object ["min" .= (1 :: Int), "max" .= (1 :: Int)]
+      , "topo" .= object ["min" .= ("1.0" :: Text)]
+      ]
+  , "description" .= ("Civilization simulation overlay and settlement catalogue" :: Text)
+  , "ui" .= object
+      [ "displayName" .= ("Civilization" :: Text)
+      , "category" .= ("Simulation" :: Text)
+      , "tags" .= (["settlements", "culture"] :: [Text])
+      ]
+  , "generator" .= object
+      [ "insertAfter" .= ("biomes" :: Text)
+      , "requires" .= (["biomes", "rivers"] :: [Text])
+      ]
+  , "simulation" .= object
+      [ "dependencies" .= (["weather"] :: [Text])
+      ]
+  , "overlay" .= object
+      [ "schemaFile" .= ("civilization.toposchema" :: Text)
+      ]
+  , "capabilities" .= (["readTerrain", "readOverlay", "writeOverlay", "dataRead", "log"] :: [Text])
+  , "config" .= object
+      [ "parameters" .=
+          [ object
+              [ "name" .= ("growth_rate" :: Text)
+              , "label" .= ("Growth Rate" :: Text)
+              , "type" .= ("float" :: Text)
+              , "default" .= (0.02 :: Double)
+              , "range" .= ([0.0, 0.5] :: [Double])
+              , "tooltip" .= ("Population growth fraction per tick" :: Text)
+              ]
+          ]
+      ]
+  , "dataResources" .=
+      [ object
+          [ "name" .= ("settlements" :: Text)
+          , "label" .= ("Settlements" :: Text)
+          , "hexBound" .= True
+          , "fields" .=
+              [ object
+                  [ "name" .= ("id" :: Text)
+                  , "type" .= ("text" :: Text)
+                  , "label" .= ("Settlement ID" :: Text)
+                  ]
+              , object
+                  [ "name" .= ("population" :: Text)
+                  , "type" .= ("int" :: Text)
+                  , "label" .= ("Population" :: Text)
+                  ]
+              ]
+          , "operations" .= object
+              [ "list" .= True
+              , "get" .= True
+              , "create" .= False
+              , "update" .= False
+              , "delete" .= False
+              , "queryByHex" .= True
+              ]
+          , "keyField" .= ("id" :: Text)
+          ]
+      ]
+  , "externalDataSources" .=
+      [ object
+          [ "name" .= ("settlement-ledger" :: Text)
+          , "label" .= ("Settlement Ledger" :: Text)
+          , "description" .= ("Provider-owned settlement records shared with dependent plugins" :: Text)
+          , "kind" .= ("catalog" :: Text)
+          , "capabilities" .= (["query", "health"] :: [Text])
+          , "resources" .= (["settlements"] :: [Text])
+          , "status" .= object
+              [ "state" .= ("ready" :: Text)
+              , "message" .= ("Records are available through the provider plugin" :: Text)
+              ]
+          , "ui" .= object
+              [ "displayName" .= ("Settlement Ledger" :: Text)
+              , "category" .= ("External data" :: Text)
+              ]
+          ]
+      ]
+  ]
+
+manifestV3ConsumerExample :: Value
+manifestV3ConsumerExample = object
+  [ "manifestVersion" .= manifestV3
+  , "name" .= ("trade-routes" :: Text)
+  , "version" .= ("0.3.0" :: Text)
+  , "runtime" .= object
+      [ "protocol" .= object ["min" .= (1 :: Int), "max" .= (1 :: Int)]
+      ]
+  , "description" .= ("Trade route simulation that consumes settlement data" :: Text)
+  , "ui" .= object
+      [ "displayName" .= ("Trade Routes" :: Text)
+      , "category" .= ("Simulation" :: Text)
+      , "tags" .= (["trade", "settlements"] :: [Text])
+      ]
+  , "generator" .= object
+      [ "insertAfter" .= ("civilization" :: Text)
+      , "requires" .= (["civilization"] :: [Text])
+      ]
+  , "capabilities" .= (["readTerrain", "dataRead", "log"] :: [Text])
+  , "externalDataSourceRefs" .=
+      [ object
+          [ "name" .= ("settlements" :: Text)
+          , "provider" .= ("civilization" :: Text)
+          , "source" .= ("settlement-ledger" :: Text)
+          , "required" .= True
+          , "access" .= (["read"] :: [Text])
+          , "resources" .= (["settlements"] :: [Text])
+          , "status" .= object
+              [ "state" .= ("unknown" :: Text)
+              , "message" .= ("Resolved during plugin dependency startup" :: Text)
+              ]
+          ]
+      ]
+  ]
+
+stringSchema :: Value
+stringSchema = object ["type" .= ("string" :: Text)]
+
+integerSchema :: Value
+integerSchema = object ["type" .= ("integer" :: Text)]
+
+booleanSchema :: Value
+booleanSchema = object ["type" .= ("boolean" :: Text)]
+
+arrayOf :: Value -> Value
+arrayOf itemSchema = object
+  [ "type" .= ("array" :: Text)
+  , "items" .= itemSchema
+  ]
+
+schemaRef :: Text -> Value
+schemaRef name = object ["$ref" .= ("#/$defs/" <> name)]
+
+enumSchema :: [Text] -> Value
+enumSchema names = object
+  [ "type" .= ("string" :: Text)
+  , "enum" .= names
+  ]
+
+dataFieldTypeSchema :: Value
+dataFieldTypeSchema = object
+  [ "oneOf" .=
+      [ enumSchema ["text", "int", "float", "double", "bool", "fixed2", "fixed3", "fixed4"]
+      , object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "enum" .= arrayOf stringSchema
+              , "record" .= arrayOf (schemaRef "dataField")
+              , "adt" .= arrayOf (schemaRef "dataConstructor")
+              ]
+          ]
+      ]
+  ]
+
+capabilityNames :: [Text]
+capabilityNames =
+  [ "log"
+  , "noise"
+  , "readTerrain"
+  , "writeTerrain"
+  , "readOverlay"
+  , "writeOverlay"
+  , "readWorld"
+  , "writeWorld"
+  , "dataRead"
+  , "dataWrite"
+  ]
+
+externalCapabilityNames :: [Text]
+externalCapabilityNames = ["query", "mutate", "subscribe", "migrate", "health"]
+
+externalAccessNames :: [Text]
+externalAccessNames = ["read", "write", "admin"]
+
+externalStatusNames :: [Text]
+externalStatusNames = ["unknown", "unconfigured", "ready", "degraded", "unavailable"]
 
 ------------------------------------------------------------------------
 -- Parsing
@@ -435,7 +1140,9 @@ parseManifestFile path = do
 
 -- | Errors found during manifest validation.
 data ManifestError
-  = ManifestEmptyName
+  = ManifestUnsupportedVersion !Int
+    -- ^ Manifest version is not supported by this host contract.
+  | ManifestEmptyName
     -- ^ Plugin name is empty.
   | ManifestEmptyVersion
     -- ^ Plugin version is empty.
@@ -457,7 +1164,10 @@ data ManifestError
 -- Returns a list of errors (empty means valid).
 validateManifest :: RPCManifest -> [ManifestError]
 validateManifest rm = concat
-  [ [ ManifestEmptyName | Text.null (rmName rm) ]
+  [ [ ManifestUnsupportedVersion (rmManifestVersion rm)
+    | rmManifestVersion rm /= manifestV3
+    ]
+  , [ ManifestEmptyName | Text.null (rmName rm) ]
   , [ ManifestEmptyVersion | Text.null (rmVersion rm) ]
   , [ ManifestSimWithoutOverlay
     | Just _ <- [rmSimulation rm]
@@ -471,6 +1181,8 @@ validateManifest rm = concat
     | Nothing <- [rmGenerator rm]
     , Nothing <- [rmSimulation rm]
     , null (rmDataResources rm)
+    , null (rmExternalDataSources rm)
+    , null (rmExternalDataSourceRefs rm)
     ]
   , [ ManifestDataReadWithoutCapability
     | not (null (rmDataResources rm))

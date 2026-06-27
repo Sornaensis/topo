@@ -9,6 +9,7 @@
 -- * User-facing parameters ('pdParams')
 -- * Optional generator stage ('pdGenerator')
 -- * Optional simulation node ('pdSimulation')
+-- * Optional external data-source provider and consumer declarations
 --
 -- The SDK runtime ('Topo.Plugin.SDK.Runner') uses these definitions
 -- to handle the RPC lifecycle: manifest serving, parameter exchange,
@@ -40,6 +41,10 @@ import Data.Map.Strict (Map)
 import Data.Text (Text)
 import Data.Word (Word64)
 import Topo.Plugin.DataResource (DataResourceSchema)
+import Topo.Plugin.RPC.Manifest
+  ( RPCExternalDataSourceDecl, RPCExternalDataSourceRef, RPCUIHints
+  , defaultRPCUIHints
+  )
 import Topo.Plugin.RPC.DataService
   ( DataQuery, DataRecord, DataMutation
   , QueryResult, MutateResult
@@ -257,6 +262,12 @@ data PluginDef = PluginDef
     -- ^ Data subdirectory relative to the world save path.
   , pdDataResources :: ![DataResourceDef]
     -- ^ Data resource definitions with schemas and handlers.
+  , pdUiHints :: !RPCUIHints
+    -- ^ Optional UI presentation hints emitted into manifest v3.
+  , pdExternalDataSources :: ![RPCExternalDataSourceDecl]
+    -- ^ Provider-owned external data sources advertised in manifest v3.
+  , pdExternalDataSourceRefs :: ![RPCExternalDataSourceRef]
+    -- ^ External data sources consumed by this plugin.
   }
 
 -- | A minimal plugin definition with no capabilities.
@@ -272,4 +283,7 @@ defaultPluginDef = PluginDef
   , pdSimulation    = Nothing
   , pdDataDirectory = Nothing
   , pdDataResources = []
+  , pdUiHints = defaultRPCUIHints
+  , pdExternalDataSources = []
+  , pdExternalDataSourceRefs = []
   }

@@ -220,13 +220,17 @@ Runtime context provided to callbacks.
 
 ## Manifest Format
 
-The SDK auto-generates `manifest.json`. Manual editing is possible:
+The SDK auto-generates manifest v3 `manifest.json` from `PluginDef`. Manual
+editing is possible for non-Haskell plugins:
 
 ```json
 {
+  "manifestVersion": 3,
   "name": "my-plugin",
   "version": "0.1.0",
+  "runtime": { "protocol": { "min": 1, "max": 1 } },
   "description": "My terrain plugin",
+  "ui": { "displayName": "My Plugin", "category": "Generation" },
   "generator": {
     "insertAfter": "erosion",
     "requires": ["erosion"]
@@ -247,6 +251,9 @@ The SDK auto-generates `manifest.json`. Manual editing is possible:
 }
 ```
 
+Full field reference, JSON Schema, and provider/consumer examples are in
+[Plugin Dev: Manifest Format](plugin-dev/manifest.md).
+
 ### Capabilities
 
 | Capability       | Description                           |
@@ -255,10 +262,18 @@ The SDK auto-generates `manifest.json`. Manual editing is possible:
 | `readOverlay`    | Read declared overlay dependencies    |
 | `writeOverlay`   | Write to the owned overlay            |
 | `writeTerrain`   | Mutate terrain (sim writer node only) |
+| `dataRead`       | Read or expose plugin data resources  |
+| `dataWrite`      | Mutate plugin data resources          |
 | `log`            | Send log messages to host             |
 
 Capabilities are inferred from your `PluginDef` — generators get
-`readTerrain` + `log`, simulation nodes additionally get overlay access.
+`readTerrain` + `log`, simulation nodes additionally get overlay access, and
+data-resource plugins get data capabilities matching their operations.
+
+Manifest v3 also supports backend-neutral `externalDataSources` and
+`externalDataSourceRefs` for provider-owned data shared between plugins. These
+fields name providers, sources, capabilities, access grants, resources, and
+status; they do not make the host own the external data.
 
 ## Plugin Configuration Persistence
 

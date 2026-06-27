@@ -96,6 +96,15 @@ module Topo.Plugin.SDK
     -- * Entry point
   , runPlugin
     -- * Manifest utilities
+  , RPCUIHints(..)
+  , RPCExternalDataSourceCapability(..)
+  , RPCExternalDataSourceAccess(..)
+  , RPCExternalDataSourceStatusState(..)
+  , RPCExternalDataSourceStatus(..)
+  , RPCExternalDataSourceDecl(..)
+  , RPCExternalDataSourceRef(..)
+  , defaultRPCUIHints
+  , defaultRPCExternalDataSourceStatus
   , generateManifest
   , writeManifest
   ) where
@@ -120,4 +129,15 @@ import Topo.Plugin.RPC.DataService
   , DataMutation(..)
   , QueryResult(..)
   , MutateResult(..)
+  )
+import Topo.Plugin.RPC.Manifest
+  ( RPCUIHints(..)
+  , RPCExternalDataSourceCapability(..)
+  , RPCExternalDataSourceAccess(..)
+  , RPCExternalDataSourceStatusState(..)
+  , RPCExternalDataSourceStatus(..)
+  , RPCExternalDataSourceDecl(..)
+  , RPCExternalDataSourceRef(..)
+  , defaultRPCUIHints
+  , defaultRPCExternalDataSourceStatus
   )

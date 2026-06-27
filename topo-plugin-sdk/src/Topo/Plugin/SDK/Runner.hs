@@ -52,11 +52,14 @@ import Topo.Plugin.RPC.Manifest
   , RPCCapability
   , RPCGeneratorDecl(..)
   , RPCManifest(..)
+  , RPCManifestRuntime(..)
   , RPCOverlayDecl(..)
   , RPCParamSpec(..)
   , RPCParamType(..)
   , RPCSimulationDecl(..)
+  , RPCUIHints(..)
   , defaultRPCStartPolicy
+  , manifestV3
   )
 import Topo.Plugin.RPC.Protocol
   ( RPCEnvelope(..)
@@ -122,9 +125,17 @@ toRPCParamSpec pd = RPCParamSpec
 -- and simulation definitions.
 generateManifest :: PluginDef -> RPCManifest
 generateManifest pd = RPCManifest
-  { rmName          = pdName pd
+  { rmManifestVersion = manifestV3
+  , rmName          = pdName pd
   , rmVersion       = pdVersion pd
+  , rmRuntime       = RPCManifestRuntime
+      { rmrProtocolMin = currentProtocolVersion
+      , rmrProtocolMax = currentProtocolVersion
+      , rmrTopoMin = Nothing
+      , rmrTopoMax = Nothing
+      }
   , rmDescription   = pdName pd <> " v" <> pdVersion pd
+  , rmUiHints       = sdkUiHints pd
   , rmGenerator     = fmap toGenDecl (pdGenerator pd)
   , rmSimulation    = fmap toSimDecl (pdSimulation pd)
   , rmOverlay       = fmap (\f -> RPCOverlayDecl (Text.pack f)) (pdSchemaFile pd)
@@ -132,6 +143,8 @@ generateManifest pd = RPCManifest
   , rmParameters    = map toRPCParamSpec (pdParams pd)
   , rmDataResources = map drdSchema (pdDataResources pd)
   , rmDataDirectory = fmap Text.pack (pdDataDirectory pd)
+  , rmExternalDataSources = pdExternalDataSources pd
+  , rmExternalDataSourceRefs = pdExternalDataSourceRefs pd
   , rmStartPolicy   = defaultRPCStartPolicy
   }
   where
@@ -142,6 +155,13 @@ generateManifest pd = RPCManifest
     toSimDecl sd = RPCSimulationDecl
       { rsdDependencies = sdDependencies sd
       }
+
+sdkUiHints :: PluginDef -> RPCUIHints
+sdkUiHints pd =
+  let hints = pdUiHints pd
+  in case ruiDisplayName hints of
+      Nothing -> hints { ruiDisplayName = Just (pdName pd) }
+      Just _  -> hints
 
 -- | Infer capabilities from the plugin definition.
 inferCapabilities :: PluginDef -> [RPCCapability]

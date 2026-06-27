@@ -25,7 +25,10 @@ import Test.Hspec
 import Topo.Overlay.Schema (OverlayFieldType(..))
 import Topo.Plugin (Capability(..))
 import Topo.Plugin.DataResource (DataFieldDef(..), DataFieldType(..), DataOperations(..), DataResourceSchema(..), noOperations)
-import Topo.Plugin.RPC.Manifest (RPCManifest(..), RPCGeneratorDecl(..), defaultRPCStartPolicy)
+import Topo.Plugin.RPC.Manifest
+  ( RPCManifest(..), RPCGeneratorDecl(..), defaultRPCManifestRuntime
+  , defaultRPCStartPolicy, defaultRPCUIHints, manifestV3
+  )
 import Topo.Simulation (SimNodeId(..))
 import Topo.Types (ChunkId(..))
 
@@ -770,9 +773,12 @@ diagnosticConsumerManifest = diagnosticBaseManifest
 
 diagnosticBaseManifest :: RPCManifest
 diagnosticBaseManifest = RPCManifest
-  { rmName = "weather"
+  { rmManifestVersion = manifestV3
+  , rmName = "weather"
   , rmVersion = "1.0.0"
+  , rmRuntime = defaultRPCManifestRuntime
   , rmDescription = "Weather plugin"
+  , rmUiHints = defaultRPCUIHints
   , rmGenerator = Nothing
   , rmSimulation = Nothing
   , rmOverlay = Nothing
@@ -780,6 +786,8 @@ diagnosticBaseManifest = RPCManifest
   , rmParameters = []
   , rmDataResources = []
   , rmDataDirectory = Nothing
+  , rmExternalDataSources = []
+  , rmExternalDataSourceRefs = []
   , rmStartPolicy = defaultRPCStartPolicy
   }
 

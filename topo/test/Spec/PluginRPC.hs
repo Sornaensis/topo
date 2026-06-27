@@ -9,10 +9,12 @@ import Test.QuickCheck
 
 import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (SomeException, bracket, try)
+import Data.Char (toLower)
 import Data.Aeson (Value(..), (.=), object, encode, eitherDecode)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
+import qualified Data.ByteString.Lazy.Char8 as BLC
 import Data.Either (isLeft, isRight)
 import Data.List (isInfixOf, isPrefixOf)
 import Data.Map.Strict (Map)
@@ -20,9 +22,10 @@ import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
-import System.Directory (doesPathExist)
+import System.Directory (doesFileExist, doesPathExist, getCurrentDirectory)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Info (os)
+import System.FilePath ((</>))
 import System.IO (stdin, stdout)
 import System.IO.Temp (withSystemTempFile)
 import System.Timeout (timeout)
@@ -247,9 +250,12 @@ instance Arbitrary RPCManifest where
     dataRes <- listOf arbitrary
     dataDir <- arbitrary
     pure RPCManifest
-      { rmName         = name
+      { rmManifestVersion = manifestV3
+      , rmName         = name
       , rmVersion      = ver
+      , rmRuntime      = defaultRPCManifestRuntime
       , rmDescription  = desc
+      , rmUiHints      = defaultRPCUIHints
       , rmGenerator    = gen
       , rmSimulation   = sim
       , rmOverlay      = ov'
@@ -257,6 +263,8 @@ instance Arbitrary RPCManifest where
       , rmParameters   = params
       , rmDataResources = dataRes
       , rmDataDirectory = dataDir
+      , rmExternalDataSources = []
+      , rmExternalDataSourceRefs = []
       , rmStartPolicy   = defaultRPCStartPolicy
       }
 
@@ -268,20 +276,55 @@ instance Arbitrary RPCManifest where
 jsonBS :: Aeson.ToJSON a => a -> BS.ByteString
 jsonBS = BL.toStrict . Aeson.encode
 
+manifestRuntimeJSON :: Value
+manifestRuntimeJSON = object
+  [ "protocol" .= object
+      [ "min" .= (1 :: Int)
+      , "max" .= (1 :: Int)
+      ]
+  ]
+
 -- | A minimal valid manifest as a JSON bytestring.
 minimalManifestBS :: BS.ByteString
 minimalManifestBS = jsonBS $ object
-  [ "name"      .= ("test-plugin" :: Text)
+  [ "manifestVersion" .= manifestV3
+  , "name"      .= ("test-plugin" :: Text)
   , "version"   .= ("0.1.0" :: Text)
+  , "runtime"   .= manifestRuntimeJSON
   , "generator" .= object
       [ "insertAfter" .= ("biomes" :: Text) ]
   ]
 
+readGoldenJSON :: FilePath -> IO Value
+readGoldenJSON relPath = do
+  bytes <- readGoldenBytes relPath
+  case Aeson.eitherDecode bytes of
+    Left err -> expectationFailure ("failed to decode golden JSON " <> relPath <> ": " <> err) >> pure Null
+    Right value -> pure value
+
+readGoldenBytes :: FilePath -> IO BL.ByteString
+readGoldenBytes relPath = do
+  path <- findGoldenPath relPath
+  BL.readFile path
+
+findGoldenPath :: FilePath -> IO FilePath
+findGoldenPath relPath = do
+  cwd <- getCurrentDirectory
+  let candidates = [cwd </> relPath, cwd </> ".." </> relPath]
+  go candidates
+  where
+    go [] = expectationFailure ("missing golden file: " <> relPath) >> pure relPath
+    go (candidate:rest) = do
+      exists <- doesFileExist candidate
+      if exists then pure candidate else go rest
+
 -- | A full manifest with all fields populated.
 fullManifestBS :: BS.ByteString
 fullManifestBS = jsonBS $ object
-  [ "name"         .= ("civilization" :: Text)
+  [ "manifestVersion" .= manifestV3
+  , "name"         .= ("civilization" :: Text)
   , "version"      .= ("1.0.0" :: Text)
+  , "runtime"      .= manifestRuntimeJSON
   , "description"  .= ("Civilization sim overlay" :: Text)
   , "generator"    .= object
       [ "insertAfter" .= ("biomes" :: Text)
@@ -375,11 +418,35 @@ spec = describe "Plugin.RPC" $ do
       result `shouldSatisfy` isLeft
 
     it "rejects JSON missing required name field" $ do
-      let bs = jsonBS $ object [ "version" .= ("1.0" :: Text) ]
+      let bs = jsonBS $ object
+            [ "manifestVersion" .= manifestV3
+            , "version" .= ("1.0" :: Text)
+            , "runtime" .= manifestRuntimeJSON
+            ]
       parseManifest bs `shouldSatisfy` isLeft
 
     it "rejects JSON missing required version field" $ do
-      let bs = jsonBS $ object [ "name" .= ("x" :: Text) ]
+      let bs = jsonBS $ object
+            [ "manifestVersion" .= manifestV3
+            , "name" .= ("x" :: Text)
+            , "runtime" .= manifestRuntimeJSON
+            ]
+      parseManifest bs `shouldSatisfy` isLeft
+
+    it "rejects JSON missing required manifestVersion field" $ do
+      let bs = jsonBS $ object
+            [ "name" .= ("x" :: Text)
+            , "version" .= ("1.0" :: Text)
+            , "runtime" .= manifestRuntimeJSON
+            ]
+      parseManifest bs `shouldSatisfy` isLeft
+
+    it "rejects JSON missing required runtime field" $ do
+      let bs = jsonBS $ object
+            [ "manifestVersion" .= manifestV3
+            , "name" .= ("x" :: Text)
+            , "version" .= ("1.0" :: Text)
+            ]
       parseManifest bs `shouldSatisfy` isLeft
 
     it "defaults missing description to empty" $ do
@@ -394,8 +461,10 @@ spec = describe "Plugin.RPC" $ do
 
     it "defaults missing generator requires to empty list" $ do
       let bs = jsonBS $ object
-            [ "name"      .= ("p" :: Text)
+            [ "manifestVersion" .= manifestV3
+            , "name"      .= ("p" :: Text)
             , "version"   .= ("1" :: Text)
+            , "runtime"   .= manifestRuntimeJSON
             , "generator" .= object [ "insertAfter" .= ("base" :: Text) ]
             ]
       case parseManifest bs of
@@ -406,8 +475,10 @@ spec = describe "Plugin.RPC" $ do
 
     it "defaults missing simulation dependencies to empty list" $ do
       let bs = jsonBS $ object
-            [ "name"       .= ("p" :: Text)
+            [ "manifestVersion" .= manifestV3
+            , "name"       .= ("p" :: Text)
             , "version"    .= ("1" :: Text)
+            , "runtime"    .= manifestRuntimeJSON
             , "simulation" .= object []
             , "overlay"    .= object [ "schemaFile" .= ("x" :: Text) ]
             ]
@@ -416,6 +487,59 @@ spec = describe "Plugin.RPC" $ do
           Just s  -> rsdDependencies s `shouldBe` []
           Nothing -> expectationFailure "expected simulation"
         Left _ -> expectationFailure "parse failed"
+
+    it "parses manifest v3 runtime, UI hints, and external data source declarations" $ do
+      case Aeson.fromJSON manifestV3ProviderExample of
+        Aeson.Success m -> do
+          rmManifestVersion m `shouldBe` manifestV3
+          rmrProtocolMin (rmRuntime m) `shouldBe` 1
+          ruiDisplayName (rmUiHints m) `shouldBe` Just "Civilization"
+          length (rmExternalDataSources m) `shouldBe` 1
+          validateManifest m `shouldBe` []
+        Aeson.Error err -> expectationFailure err
+
+    it "parses manifest v3 external data source references" $ do
+      case Aeson.fromJSON manifestV3ConsumerExample of
+        Aeson.Success m -> do
+          rmManifestVersion m `shouldBe` manifestV3
+          length (rmExternalDataSourceRefs m) `shouldBe` 1
+          case rmExternalDataSourceRefs m of
+            [ref] -> do
+              redsrProvider ref `shouldBe` Just "civilization"
+              redsrAccess ref `shouldBe` [ExternalAccessRead]
+            _ -> expectationFailure "expected exactly one external data source reference"
+          validateManifest m `shouldBe` []
+        Aeson.Error err -> expectationFailure err
+
+    it "rejects external data source status without required state" $ do
+      case Aeson.fromJSON (object []) :: Aeson.Result RPCExternalDataSourceStatus of
+        Aeson.Error _ -> pure ()
+        Aeson.Success status -> expectationFailure ("unexpected status: " <> show status)
+
+  ------------------------------------
+  -- Manifest v3 schema and golden docs
+  ------------------------------------
+  describe "Manifest v3 schema and golden docs" $ do
+    it "matches the committed JSON Schema golden" $ do
+      golden <- readGoldenJSON "docs/plugin-dev/manifest-v3.schema.json"
+      golden `shouldBe` manifestV3Schema
+
+    it "matches the provider example golden" $ do
+      golden <- readGoldenJSON "docs/plugin-dev/examples/manifest-v3-provider.json"
+      golden `shouldBe` manifestV3ProviderExample
+
+    it "matches the consumer example golden" $ do
+      golden <- readGoldenJSON "docs/plugin-dev/examples/manifest-v3-consumer.json"
+      golden `shouldBe` manifestV3ConsumerExample
+
+    it "keeps schema and examples backend-neutral" $ do
+      bytes <- mconcat <$> traverse readGoldenBytes
+        [ "docs/plugin-dev/manifest-v3.schema.json"
+        , "docs/plugin-dev/examples/manifest-v3-provider.json"
+        , "docs/plugin-dev/examples/manifest-v3-consumer.json"
+        ]
+      let lowered = map toLower (BLC.unpack bytes)
+      lowered `shouldNotSatisfy` isInfixOf "sqlite"
 
   ------------------------------------
   -- Manifest validation
@@ -1105,9 +1229,12 @@ transportTestTimeoutMicros = 2000000
 -- | A base valid manifest for constructing validation test cases.
 baseManifest :: RPCManifest
 baseManifest = RPCManifest
-  { rmName         = "test-plugin"
+  { rmManifestVersion = manifestV3
+  , rmName         = "test-plugin"
   , rmVersion      = "0.1.0"
+  , rmRuntime      = defaultRPCManifestRuntime
   , rmDescription  = ""
+  , rmUiHints      = defaultRPCUIHints
   , rmGenerator    = Just (RPCGeneratorDecl "biomes" [])
   , rmSimulation   = Nothing
   , rmOverlay      = Nothing
@@ -1115,5 +1242,7 @@ baseManifest = RPCManifest
   , rmParameters   = []
   , rmDataResources = []
   , rmDataDirectory = Nothing
+  , rmExternalDataSources = []
+  , rmExternalDataSourceRefs = []
   , rmStartPolicy   = defaultRPCStartPolicy
   }
