@@ -3,14 +3,29 @@
 module Spec.AppService (spec) where
 
 import Actor.Log (LogLevel(..))
-import Actor.PluginManager (PluginLifecycleSnapshot(..), PluginLifecycleState(..), pluginLifecycleSnapshot)
+import Actor.PluginManager
+  ( LoadedPlugin(..)
+  , PluginDiagnosticState(..)
+  , PluginExternalDataSourceDiagnostic(..)
+  , PluginLifecycleSnapshot(..)
+  , PluginLifecycleState(..)
+  , PluginStatus(..)
+  , pluginAvailableDependencyKeys
+  , pluginDiagnosticState
+  , pluginExternalDataSourceDiagnostics
+  , pluginLifecycleSnapshot
+  )
 import Data.Aeson (Value(..))
 import Data.List (nub, sort)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Data.Text (Text)
 import Data.Time (UTCTime(..), fromGregorian, secondsToDiffTime)
 import Test.Hspec
 import Topo.Overlay.Schema (OverlayFieldType(..))
+import Topo.Plugin (Capability(..))
+import Topo.Plugin.DataResource (DataFieldDef(..), DataFieldType(..), DataOperations(..), DataResourceSchema(..), noOperations)
+import Topo.Plugin.RPC.Manifest (RPCManifest(..), RPCGeneratorDecl(..), defaultRPCStartPolicy)
 import Topo.Simulation (SimNodeId(..))
 import Topo.Types (ChunkId(..))
 
@@ -283,6 +298,9 @@ spec = describe "AppService surface" $ do
 
   it "keeps command-visible typed contract fields complete" $ do
     pluginSummaryStatus pluginSummaryContract `shouldBe` "connected"
+    pluginSummaryDiagnosticStatus pluginSummaryContract `shouldBe` "Ready"
+    pluginSummaryEndpointKind pluginSummaryContract `shouldBe` Just "unix"
+    pluginSummaryRestartCount pluginSummaryContract `shouldBe` 0
     plsState (pluginSummaryLifecycle pluginSummaryContract) `shouldBe` LifecycleReady
     asyncStatusPhase (pluginSummaryAsyncStatus pluginSummaryContract) `shouldBe` AsyncStatusRunning
     pluginSummaryEnabled pluginSummaryContract `shouldBe` True
@@ -292,6 +310,20 @@ spec = describe "AppService surface" $ do
     dataResourceLoading dataResourceStateContract `shouldBe` False
     asyncStatusPhase (dataResourceAsyncStatus dataResourceStateContract) `shouldBe` AsyncStatusIdle
     dataResourceHasSelection dataResourceStateContract `shouldBe` True
+
+  it "classifies plugin diagnostics and preserves backend-neutral data-source ownership" $ do
+    let availableDeps = pluginAvailableDependencyKeys Set.empty [diagnosticReadyPlugin]
+        sources = pluginExternalDataSourceDiagnostics diagnosticReadyPlugin
+    pluginDiagnosticState Set.empty availableDeps diagnosticReadyPlugin `shouldBe` DiagnosticReady
+    pluginDiagnosticState Set.empty Set.empty diagnosticWaitingPlugin `shouldBe` DiagnosticWaitingForDependencies
+    pluginDiagnosticState (Set.singleton "provider-x")
+      (pluginAvailableDependencyKeys (Set.singleton "provider-x") [diagnosticProviderPlugin, diagnosticConsumerPlugin])
+      diagnosticConsumerPlugin `shouldBe` DiagnosticWaitingForDependencies
+    map pedsOwnership sources `shouldBe` ["plugin-owned"]
+    map pedsHostRole sources `shouldBe` ["consumer-router"]
+    map pedsLifecycleBoundary sources `shouldBe` ["external-provider-managed"]
+    map pedsDataReadGrant sources `shouldBe` [True]
+    map pedsDataWriteGrant sources `shouldBe` [True]
 
   it "keeps logs, screenshots, async status, and event hooks typed" $ do
     logGetMinLevel logRequestContract `shouldBe` Just LogWarn
@@ -652,6 +684,8 @@ pluginSummaryContract :: PluginSummary
 pluginSummaryContract = PluginSummary
   { pluginSummaryName = "weather"
   , pluginSummaryStatus = "connected"
+  , pluginSummaryDiagnosticStatus = "Ready"
+  , pluginSummaryStatusDetail = "Ready; RPC connection is active."
   , pluginSummaryLifecycle = pluginLifecycleSnapshot appServiceTestTime LifecycleReady
       (Just "connected") Nothing Nothing Nothing (Just "1234") (Just 1) []
   , pluginSummaryAsyncStatus = AsyncStatusSnapshot
@@ -662,6 +696,16 @@ pluginSummaryContract = PluginSummary
       , asyncStatusTotal = Nothing
       , asyncStatusMessage = Just "connected"
       }
+  , pluginSummaryPid = Just "1234"
+  , pluginSummaryEndpointKind = Just "unix"
+  , pluginSummaryProtocolVersion = Just 1
+  , pluginSummaryUptimeSeconds = Just 0
+  , pluginSummaryLastError = Nothing
+  , pluginSummaryRestartCount = 0
+  , pluginSummaryDependencies = []
+  , pluginSummaryResources = []
+  , pluginSummaryExternalDataSources = []
+  , pluginSummaryCapabilities = []
   , pluginSummaryVersion = "1.0.0"
   , pluginSummaryDescription = "Weather plugin"
   , pluginSummaryEnabled = True
@@ -670,6 +714,84 @@ pluginSummaryContract = PluginSummary
   , pluginSummaryDataResources = []
   , pluginSummaryHasGenerator = False
   , pluginSummaryHasSimulation = True
+  }
+
+diagnosticReadyPlugin :: LoadedPlugin
+diagnosticReadyPlugin = diagnosticPlugin diagnosticReadyManifest
+
+diagnosticWaitingPlugin :: LoadedPlugin
+diagnosticWaitingPlugin = diagnosticPlugin diagnosticWaitingManifest
+
+diagnosticProviderPlugin :: LoadedPlugin
+diagnosticProviderPlugin = diagnosticPlugin diagnosticProviderManifest
+
+diagnosticConsumerPlugin :: LoadedPlugin
+diagnosticConsumerPlugin = diagnosticPlugin diagnosticConsumerManifest
+
+diagnosticPlugin :: RPCManifest -> LoadedPlugin
+diagnosticPlugin manifest = LoadedPlugin
+  { lpName = rmName manifest
+  , lpManifest = manifest
+  , lpParams = Map.empty
+  , lpStatus = PluginConnected
+  , lpLifecycle = pluginLifecycleSnapshot appServiceTestTime LifecycleReady
+      (Just "handshake complete") Nothing Nothing Nothing (Just "1234") (Just 1) (map drsName (rmDataResources manifest))
+  , lpConnection = Nothing
+  , lpProcessHandle = Nothing
+  , lpStartPolicy = defaultRPCStartPolicy
+  , lpRestartHistory = []
+  , lpDirectory = ""
+  , lpOverlaySchema = Nothing
+  }
+
+diagnosticReadyManifest :: RPCManifest
+diagnosticReadyManifest = diagnosticBaseManifest
+  { rmGenerator = Just (RPCGeneratorDecl "biomes" ["climate"])
+  , rmCapabilities = [CapDataRead, CapDataWrite]
+  , rmDataResources = [diagnosticResource]
+  }
+
+diagnosticWaitingManifest :: RPCManifest
+diagnosticWaitingManifest = diagnosticBaseManifest
+  { rmGenerator = Just (RPCGeneratorDecl "missing-stage" ["missing-stage"])
+  }
+
+diagnosticProviderManifest :: RPCManifest
+diagnosticProviderManifest = diagnosticReadyManifest
+  { rmName = "provider-x"
+  , rmDataResources = []
+  }
+
+diagnosticConsumerManifest :: RPCManifest
+diagnosticConsumerManifest = diagnosticBaseManifest
+  { rmName = "consumer"
+  , rmGenerator = Just (RPCGeneratorDecl "provider-x" ["provider-x"])
+  }
+
+diagnosticBaseManifest :: RPCManifest
+diagnosticBaseManifest = RPCManifest
+  { rmName = "weather"
+  , rmVersion = "1.0.0"
+  , rmDescription = "Weather plugin"
+  , rmGenerator = Nothing
+  , rmSimulation = Nothing
+  , rmOverlay = Nothing
+  , rmCapabilities = []
+  , rmParameters = []
+  , rmDataResources = []
+  , rmDataDirectory = Nothing
+  , rmStartPolicy = defaultRPCStartPolicy
+  }
+
+diagnosticResource :: DataResourceSchema
+diagnosticResource = DataResourceSchema
+  { drsName = "stations"
+  , drsLabel = "Stations"
+  , drsHexBound = False
+  , drsFields = [DataFieldDef "id" DFText "Id" False Nothing]
+  , drsOperations = noOperations { doList = True, doCreate = True }
+  , drsKeyField = "id"
+  , drsOverlay = Nothing
   }
 
 appServiceTestTime :: UTCTime

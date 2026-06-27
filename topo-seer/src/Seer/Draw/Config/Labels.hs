@@ -6,12 +6,13 @@ module Seer.Draw.Config.Labels
   ( drawConfigLabels
   ) where
 
-import Actor.PluginManager.Types (PluginLifecycleSnapshot(..), pluginLifecycleStateText)
-import Actor.UI (ConfigTab(..), DataBrowserState(..), UiState(..), configRowCount)
+import Actor.PluginManager.Types (PluginLifecycleSnapshot(..), PluginLifecycleState(..), pluginLifecycleStateText)
+import Actor.UI (ConfigTab(..), DataBrowserState(..), UiState(..), builtinStageRowCount, configRowCount, pluginRowIndex, pluginRowsWithParams)
 import Control.Monad (forM_, when)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as Text
+import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
 import Linear (V2(..))
 import qualified SDL
 import Seer.Config.SliderRegistry (SliderDef(..))
@@ -20,6 +21,7 @@ import Seer.Config.SliderStyle (SliderLabelMode(..), SliderStyle(..), sliderStyl
 import Seer.Config.SliderUi (sliderDefsForConfigTab, sliderValueForId)
 import Topo.Pipeline.Stage (allBuiltinStageIds, stageCanonicalName)
 import Topo.Plugin.DataResource (DataResourceSchema(..))
+import Topo.Plugin.RPC.Manifest (RPCParamSpec(..))
 import UI.Font (FontCache)
 import UI.Layout
 import UI.Theme
@@ -77,6 +79,7 @@ drawConfigLabels renderer fontCache ui layout = when (uiShowConfig ui) $ do
 
   case uiConfigTab ui of
     ConfigPipeline -> do
+      now <- getCurrentTime
       let stages = allBuiltinStageIds
           disabled = uiDisabledStages ui
           plugins = uiPluginNames ui
@@ -95,18 +98,33 @@ drawConfigLabels renderer fontCache ui layout = when (uiShowConfig ui) $ do
               else textPipelineStageName
         drawTextLine fontCache (V2 labelX labelY) textColor name
       -- Plugin name labels after built-in stages
-      let pluginOffset = length stages
       forM_ (zip [0..] plugins) $ \(idx, pName) -> do
-        let Rect (V2 _ ry, V2 _ _rowH) = sr (configScrollRowRect (pluginOffset + idx) layout)
+        let rowIndex = pluginRowIndex ui idx
+            Rect (V2 _ ry, V2 _ _rowH) = sr (configScrollRowRect rowIndex layout)
             labelX = sx + pad + checkboxSize + 8
             labelY = ry + 4
             pluginTextColor = textPipelinePluginName
-            lifecycleSuffix = case Map.lookup pName (uiPluginLifecycles ui) of
-              Nothing -> ""
-              Just snapshot -> " [" <> pluginLifecycleStateText (plsState snapshot) <> "]"
+            lifecycle = Map.lookup pName (uiPluginLifecycles ui)
+            isDisabled = Set.member pName (uiDisabledPlugins ui)
+            diagnosticStatus = Map.lookup pName (uiPluginDiagnosticStatuses ui)
+            lifecycleSuffix = " [" <> diagnosticStatusLabel diagnosticStatus isDisabled lifecycle <> uptimeSuffix now lifecycle <> "]"
         drawTextLineTruncated fontCache (V2 labelX labelY) pluginTextColor labelMaxW (pName <> lifecycleSuffix)
+        when (Map.findWithDefault False pName (uiPluginExpanded ui)) $ do
+          let detailLines = Map.findWithDefault [] pName (uiPluginDiagnosticLines ui)
+              detailX = sx + pad + 24
+              detailMaxW = sw - (pad + 24) - 8
+          forM_ (zip [0..] detailLines) $ \(dIdx, lineText) -> do
+            let Rect (V2 _ dy, V2 _ _detailRowH) = sr (configScrollRowRect (rowIndex + 1 + dIdx) layout)
+            drawTextLineTruncated fontCache (V2 detailX (dy + 4)) textMuted detailMaxW lineText
+          let specs = Map.findWithDefault [] pName (uiPluginParamSpecs ui)
+              paramStart = rowIndex + 1 + length detailLines
+              paramLabelX = sx + pad + 40
+              paramLabelMaxW = sw - (pad + 40) - 8
+          forM_ (zip [0..] specs) $ \(pIdx, spec) -> do
+            let Rect (V2 _ py, V2 _ _paramRowH) = sr (configScrollRowRect (paramStart + pIdx) layout)
+            drawTextLineTruncated fontCache (V2 paramLabelX (py + 4)) textPipelineStageName paramLabelMaxW (rpsLabel spec)
       -- Simulation control labels
-      let simOffset = length stages + length plugins
+      let simOffset = builtinStageRowCount + pluginRowsWithParams ui
           simWorldReady = maybe False (const True) (uiWorldConfig ui)
           simLabelX = sx + pad + 68
           simAutoLabelX = sx + pad + checkboxSize + 8
@@ -170,3 +188,21 @@ drawConfigLabels renderer fontCache ui layout = when (uiShowConfig ui) $ do
     _ -> forM_ activeSliderDefs drawSliderLabels
 
   SDL.rendererClipRect renderer SDL.$= Nothing
+
+diagnosticStatusLabel :: Maybe Text.Text -> Bool -> Maybe PluginLifecycleSnapshot -> Text.Text
+diagnosticStatusLabel (Just status) _ _ = status
+diagnosticStatusLabel Nothing True _ = "Disabled"
+diagnosticStatusLabel Nothing False Nothing = "WaitingForDependencies"
+diagnosticStatusLabel Nothing False (Just snapshot) = case plsState snapshot of
+  LifecycleReady -> "Ready"
+  LifecycleDegraded -> "Degraded"
+  LifecycleFailed -> "Failed"
+  _ -> "WaitingForDependencies:" <> pluginLifecycleStateText (plsState snapshot)
+
+uptimeSuffix :: UTCTime -> Maybe PluginLifecycleSnapshot -> Text.Text
+uptimeSuffix now (Just snapshot)
+  | plsState snapshot == LifecycleReady = " uptime=" <> formatUptime (diffUTCTime now (plsUpdatedAt snapshot))
+uptimeSuffix _ _ = ""
+
+formatUptime :: RealFrac a => a -> Text.Text
+formatUptime seconds = Text.pack (show (max (0 :: Int) (floor seconds :: Int))) <> "s"

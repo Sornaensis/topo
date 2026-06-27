@@ -17,9 +17,25 @@ module Actor.PluginManager
   , PluginLifecycleSnapshot(..)
   , PluginLifecycleState(..)
   , PluginStateLease(..)
+  , PluginDiagnosticState(..)
+  , PluginDependencyDiagnostic(..)
+  , PluginExternalDataSourceDiagnostic(..)
   , PluginStatus(..)
   , pluginLifecycleSnapshot
   , pluginLifecycleStateText
+  , pluginStatusText
+  , pluginDiagnosticState
+  , pluginDiagnosticStateText
+  , pluginDiagnosticDetail
+  , pluginAvailableDependencyKeys
+  , pluginDependencyDiagnostics
+  , pluginExternalDataSourceDiagnostics
+  , pluginPanelDiagnosticLines
+  , pluginResourceNames
+  , pluginCapabilitiesText
+  , pluginEndpointKind
+  , pluginLastError
+  , pluginUptimeSeconds
     -- * Commands
   , discoverPlugins
   , getLoadedPlugins
@@ -56,9 +72,25 @@ import Actor.PluginManager.Types
   , PluginLifecycleSnapshot(..)
   , PluginLifecycleState(..)
   , PluginStateLease(..)
+  , PluginDiagnosticState(..)
+  , PluginDependencyDiagnostic(..)
+  , PluginExternalDataSourceDiagnostic(..)
   , PluginStatus(..)
   , pluginLifecycleSnapshot
   , pluginLifecycleStateText
+  , pluginStatusText
+  , pluginDiagnosticState
+  , pluginDiagnosticStateText
+  , pluginDiagnosticDetail
+  , pluginAvailableDependencyKeys
+  , pluginDependencyDiagnostics
+  , pluginExternalDataSourceDiagnostics
+  , pluginPanelDiagnosticLines
+  , pluginResourceNames
+  , pluginCapabilitiesText
+  , pluginEndpointKind
+  , pluginLastError
+  , pluginUptimeSeconds
   )
 import Topo.Overlay.Schema (OverlaySchema)
 import Topo.Pipeline (PipelineStage)

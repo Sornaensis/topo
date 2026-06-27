@@ -852,15 +852,97 @@ pluginSetParamResponseSchema = objectSchema "PluginSetParamResponse"
 
 pluginSummarySchema :: Value
 pluginSummarySchema = inlineObjectSchema
-  [ "name", "status", "lifecycle", "start_policy", "restart_attempts", "enabled", "params", "param_specs" ]
+  [ "name"
+  , "status"
+  , "diagnostic_status"
+  , "status_detail"
+  , "lifecycle"
+  , "start_policy"
+  , "restart_attempts"
+  , "restart_count"
+  , "enabled"
+  , "params"
+  , "param_specs"
+  , "pid"
+  , "endpoint_kind"
+  , "protocol_version"
+  , "uptime_seconds"
+  , "last_error"
+  , "dependencies"
+  , "resources"
+  , "data_resources"
+  , "external_data_sources"
+  , "capabilities"
+  ]
   [ ("name", stringSchema)
   , ("status", stringSchema)
+  , ("diagnostic_status", pluginDiagnosticStatusSchema)
+  , ("status_detail", stringSchema)
   , ("lifecycle", pluginLifecycleSchema)
   , ("start_policy", pluginStartPolicySchema)
   , ("restart_attempts", integerSchema)
+  , ("restart_count", integerSchema)
   , ("enabled", booleanSchema)
   , ("params", freeObjectSchema)
   , ("param_specs", arraySchema pluginParamSpecSchema)
+  , ("pid", nullableSchema stringSchema)
+  , ("endpoint_kind", nullableSchema (enumStringSchema ["unix", "named-pipe"]))
+  , ("protocol_version", nullableSchema integerSchema)
+  , ("uptime_seconds", nullableSchema numberSchema)
+  , ("last_error", nullableSchema stringSchema)
+  , ("dependencies", arraySchema pluginDependencySchema)
+  , ("resources", arraySchema stringSchema)
+  , ("data_resources", arraySchema dataResourceSchema)
+  , ("external_data_sources", arraySchema pluginExternalDataSourceSchema)
+  , ("capabilities", arraySchema stringSchema)
+  ]
+
+pluginDiagnosticStatusSchema :: Value
+pluginDiagnosticStatusSchema = enumStringSchema
+  [ "Ready"
+  , "WaitingForDependencies"
+  , "Degraded"
+  , "Disabled"
+  , "Failed"
+  ]
+
+pluginDependencySchema :: Value
+pluginDependencySchema = inlineObjectSchema
+  [ "kind", "name", "status", "required", "detail" ]
+  [ ("kind", stringSchema)
+  , ("name", stringSchema)
+  , ("status", enumStringSchema ["available", "waiting"])
+  , ("required", booleanSchema)
+  , ("detail", nullableSchema stringSchema)
+  ]
+
+pluginExternalDataSourceSchema :: Value
+pluginExternalDataSourceSchema = inlineObjectSchema
+  [ "provider"
+  , "consumer"
+  , "resource"
+  , "label"
+  , "status"
+  , "ownership"
+  , "host_role"
+  , "lifecycle_boundary"
+  , "operations"
+  , "grants"
+  ]
+  [ ("provider", stringSchema)
+  , ("consumer", stringSchema)
+  , ("resource", stringSchema)
+  , ("label", stringSchema)
+  , ("status", stringSchema)
+  , ("ownership", enumStringSchema ["plugin-owned"])
+  , ("host_role", enumStringSchema ["consumer-router"])
+  , ("lifecycle_boundary", enumStringSchema ["external-provider-managed"])
+  , ("operations", dataOperationsSchema)
+  , ("overlay", nullableSchema stringSchema)
+  , ("grants", inlineObjectSchema ["data_read", "data_write"]
+      [ ("data_read", booleanSchema)
+      , ("data_write", booleanSchema)
+      ])
   ]
 
 pluginStartPolicySchema :: Value

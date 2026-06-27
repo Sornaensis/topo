@@ -15,7 +15,21 @@ module Actor.UiActions.Command
 
 import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.AtlasCache (AtlasKey(..))
-import Actor.PluginManager (LoadedPlugin(..), PluginManager, getDisabledPlugins, getLoadedPlugins, getPluginDataResources, getPluginOrder, getPluginOverlaySchemas, getPluginStages, refreshManifests)
+import Actor.PluginManager
+  ( LoadedPlugin(..)
+  , PluginManager
+  , getDisabledPlugins
+  , getLoadedPlugins
+  , getPluginDataResources
+  , getPluginOrder
+  , getPluginOverlaySchemas
+  , getPluginStages
+  , pluginAvailableDependencyKeys
+  , pluginDiagnosticState
+  , pluginDiagnosticStateText
+  , pluginPanelDiagnosticLines
+  , refreshManifests
+  )
 import Actor.Simulation (Simulation)
 import Actor.AtlasManager (AtlasJob(..), AtlasManager, enqueueAtlasBuild)
 import Seer.Render.ZoomStage (ZoomStage(..), allZoomStages, stageForZoom)
@@ -58,6 +72,8 @@ import Actor.UI
   , setUiPluginNames
   , setUiPluginParamSpecs
   , setUiPluginLifecycles
+  , setUiPluginDiagnosticLines
+  , setUiPluginDiagnosticStatuses
   , setUiDisabledPlugins
   , setUiOverlayNames
   , setUiViewMode
@@ -209,9 +225,17 @@ startGeneration req = do
         ]
       lifecycles = Map.fromList [(lpName lp, lpLifecycle lp) | lp <- loadedPlugins]
   disabledPlugins <- getDisabledPlugins pluginHandle
+  let availableDeps = pluginAvailableDependencyKeys disabledPlugins loadedPlugins
+      diagnosticLines = Map.fromList [(lpName lp, pluginPanelDiagnosticLines availableDeps lp) | lp <- loadedPlugins]
+      diagnosticStatuses = Map.fromList
+        [ (lpName lp, pluginDiagnosticStateText (pluginDiagnosticState disabledPlugins availableDeps lp))
+        | lp <- loadedPlugins
+        ]
   setUiPluginNames uiHandle pluginOrder
   setUiPluginParamSpecs uiHandle paramSpecs
   setUiPluginLifecycles uiHandle lifecycles
+  setUiPluginDiagnosticLines uiHandle diagnosticLines
+  setUiPluginDiagnosticStatuses uiHandle diagnosticStatuses
   setUiDisabledPlugins uiHandle disabledPlugins
   setUiDataResources uiHandle dataResources
   setUiOverlayNames uiHandle (map osName overlaySchemas)

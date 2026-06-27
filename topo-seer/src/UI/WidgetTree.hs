@@ -129,7 +129,8 @@ sliderDefsInWidgetOrder =
 -- Produces:
 --
 -- * Move-up / move-down / expand buttons for each plugin row;
--- * Parameter slider\/checkbox widgets for expanded plugins;
+-- * Parameter slider\/checkbox widgets for expanded plugins (after
+--   diagnostic text rows);
 -- * Simulation tick controls positioned after all plugin rows.
 --
 -- These must be merged with the static 'buildWidgets' list before hit
@@ -138,9 +139,10 @@ buildPluginWidgets
   :: [Text]
   -> Map Text Bool
   -> Map Text [RPCParamSpec]
+  -> Map Text [Text]
   -> Layout
   -> [Widget]
-buildPluginWidgets pluginNames expanded paramSpecs layout =
+buildPluginWidgets pluginNames expanded paramSpecs diagnosticLines layout =
   let builtinCount = length allBuiltinStageIds
       -- Build widgets for each plugin, tracking absolute row index
       (pluginWidgets, nextRow) = foldl buildOne ([], builtinCount) (zip [0..] pluginNames)
@@ -153,10 +155,11 @@ buildPluginWidgets pluginNames expanded paramSpecs layout =
               ]
             isExpanded = Map.findWithDefault False name expanded
             specs = Map.findWithDefault [] name paramSpecs
+            detailCount = if isExpanded then length (Map.findWithDefault [] name diagnosticLines) else 0
             paramWidgets
               | isExpanded =
                   concatMap (\(pIdx, spec) ->
-                    let paramRow = rowIdx + 1 + pIdx
+                    let paramRow = rowIdx + 1 + detailCount + pIdx
                     in case rpsType spec of
                          ParamBool ->
                            [ Widget (WidgetPluginParamCheck name (rpsName spec))
@@ -167,7 +170,7 @@ buildPluginWidgets pluginNames expanded paramSpecs layout =
                   ) (zip [0..] specs)
               | otherwise = []
             paramCount = if isExpanded then length specs else 0
-        in (accWidgets ++ moveWidgets ++ paramWidgets, rowIdx + 1 + paramCount)
+        in (accWidgets ++ moveWidgets ++ paramWidgets, rowIdx + 1 + detailCount + paramCount)
       -- Simulation controls after all plugins
       simWidgets =
         [ Widget WidgetSimTick     (pipelineTickButtonRect nextRow layout)

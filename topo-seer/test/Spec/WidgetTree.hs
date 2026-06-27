@@ -146,7 +146,7 @@ spec = describe "UI.WidgetTree" $ do
   it "anchors plugin and simulation widgets to bespoke pipeline row helpers" $ do
     let layout = layoutFor (V2 800 960) 0
         pluginNames = map Text.pack ["plugin-a", "plugin-b"]
-        widgets = buildPluginWidgets pluginNames Map.empty Map.empty layout
+        widgets = buildPluginWidgets pluginNames Map.empty Map.empty Map.empty layout
         builtinCount = length allBuiltinStageIds
         simBase = builtinCount + length pluginNames
     hitTest widgets (rectHitPoint (pipelineMoveUpRect builtinCount layout))

@@ -14,21 +14,36 @@ import qualified Data.Aeson.Types as Aeson
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
+import Data.Time (UTCTime, getCurrentTime)
 
 import Actor.PluginManager
   ( LoadedPlugin(..)
-  , PluginStatus(..)
+  , PluginLifecycleSnapshot(..)
   , getLoadedPlugins
   , setDisabledPlugins
   , getDisabledPlugins
   , setPluginParam
+  , pluginAvailableDependencyKeys
+  , pluginCapabilitiesText
+  , pluginDependencyDiagnostics
+  , pluginDiagnosticDetail
+  , pluginDiagnosticState
+  , pluginDiagnosticStateText
+  , pluginEndpointKind
+  , pluginExternalDataSourceDiagnostics
+  , pluginLastError
+  , pluginPanelDiagnosticLines
+  , pluginResourceNames
+  , pluginStatusText
+  , pluginUptimeSeconds
   )
-import Actor.UI.Setters (setUiDisabledPlugins, setUiPluginParam)
+import Actor.UI.Setters (setUiDisabledPlugins, setUiPluginDiagnosticLines, setUiPluginDiagnosticStatuses, setUiPluginParam)
 import Actor.UI.State (UiState(..), readUiSnapshotRef)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
-import Topo.Plugin.RPC.Manifest (RPCParamSpec(..))
+import Topo.Plugin.DataResource (DataFieldDef(..), DataOperations(..), DataResourceSchema(..))
+import Topo.Plugin.RPC.Manifest (RPCManifest(..), RPCParamSpec(..))
 
 -- | Handle @list_plugins@ — return loaded plugins with status and params.
 handleListPlugins :: CommandContext -> Int -> Value -> IO SeerResponse
@@ -37,7 +52,9 @@ handleListPlugins ctx reqId _params = do
   ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
   plugins <- getLoadedPlugins (ahPluginManagerHandle handles)
   disabled <- getDisabledPlugins (ahPluginManagerHandle handles)
-  let entries = map (pluginToJSON disabled (uiPluginParamSpecs ui)) plugins
+  now <- getCurrentTime
+  let availableDeps = pluginAvailableDependencyKeys disabled plugins
+      entries = map (pluginToJSON now disabled availableDeps (uiPluginParamSpecs ui)) plugins
   pure $ okResponse reqId $ object
     [ "plugin_count" .= length entries
     , "plugins"      .= entries
@@ -61,6 +78,15 @@ handleSetPluginEnabled ctx reqId params = do
             | otherwise = Set.insert name disabled
       setDisabledPlugins pmH disabled'
       setUiDisabledPlugins uiH disabled'
+      loaded <- getLoadedPlugins pmH
+      let availableDeps = pluginAvailableDependencyKeys disabled' loaded
+          diagnosticLines = Map.fromList [(lpName lp, pluginPanelDiagnosticLines availableDeps lp) | lp <- loaded]
+          diagnosticStatuses = Map.fromList
+            [ (lpName lp, pluginDiagnosticStateText (pluginDiagnosticState disabled' availableDeps lp))
+            | lp <- loaded
+            ]
+      setUiPluginDiagnosticLines uiH diagnosticLines
+      setUiPluginDiagnosticStatuses uiH diagnosticStatuses
       pure $ okResponse reqId $ object
         [ "name"    .= name
         , "enabled" .= enabled
@@ -88,25 +114,64 @@ handleSetPluginParam ctx reqId params = do
 -- Helpers
 -- --------------------------------------------------------------------------
 
-pluginToJSON :: Set.Set Text -> Map.Map Text [RPCParamSpec] -> LoadedPlugin -> Value
-pluginToJSON disabled paramSpecs lp =
+pluginToJSON :: UTCTime -> Set.Set Text -> Set.Set Text -> Map.Map Text [RPCParamSpec] -> LoadedPlugin -> Value
+pluginToJSON now disabled availableDeps paramSpecs lp =
   let name = lpName lp
+      manifest = lpManifest lp
+      restartCount = length (lpRestartHistory lp)
   in object
-    [ "name"             .= name
-    , "status"           .= statusToText (lpStatus lp)
-    , "lifecycle"        .= lpLifecycle lp
-    , "start_policy"     .= lpStartPolicy lp
-    , "restart_attempts" .= length (lpRestartHistory lp)
-    , "enabled"          .= not (Set.member name disabled)
-    , "params"           .= lpParams lp
-    , "param_specs"      .= map paramSpecToJSON (maybe [] id (Map.lookup name paramSpecs))
+    [ "name"                  .= name
+    , "status"                .= pluginStatusText (lpStatus lp)
+    , "diagnostic_status"     .= pluginDiagnosticState disabled availableDeps lp
+    , "status_detail"         .= pluginDiagnosticDetail disabled availableDeps lp
+    , "lifecycle"             .= lpLifecycle lp
+    , "pid"                   .= plsProcessId (lpLifecycle lp)
+    , "endpoint_kind"         .= pluginEndpointKind lp
+    , "protocol_version"      .= plsProtocolVersion (lpLifecycle lp)
+    , "uptime_seconds"        .= pluginUptimeSeconds now lp
+    , "last_error"            .= pluginLastError lp
+    , "start_policy"          .= lpStartPolicy lp
+    , "restart_attempts"      .= restartCount
+    , "restart_count"         .= restartCount
+    , "dependencies"          .= pluginDependencyDiagnostics availableDeps lp
+    , "resources"             .= pluginResourceNames lp
+    , "data_resources"        .= map dataResourceToJSON (rmDataResources manifest)
+    , "external_data_sources" .= pluginExternalDataSourceDiagnostics lp
+    , "capabilities"          .= pluginCapabilitiesText manifest
+    , "enabled"               .= not (Set.member name disabled)
+    , "params"                .= lpParams lp
+    , "param_specs"           .= map paramSpecToJSON (maybe [] id (Map.lookup name paramSpecs))
     ]
 
-statusToText :: PluginStatus -> Text
-statusToText PluginIdle         = "idle"
-statusToText PluginConnected    = "connected"
-statusToText (PluginError err)  = "error: " <> err
-statusToText PluginDisconnected = "disconnected"
+dataResourceToJSON :: DataResourceSchema -> Value
+dataResourceToJSON drs = object
+  [ "name"       .= drsName drs
+  , "label"      .= drsLabel drs
+  , "hex_bound"  .= drsHexBound drs
+  , "key_field"  .= drsKeyField drs
+  , "overlay"    .= drsOverlay drs
+  , "fields"     .= map dataFieldToJSON (drsFields drs)
+  , "operations" .= dataOperationsToJSON (drsOperations drs)
+  ]
+
+dataFieldToJSON :: DataFieldDef -> Value
+dataFieldToJSON field = object
+  [ "name"     .= dfName field
+  , "type"     .= dfType field
+  , "label"    .= dfLabel field
+  , "editable" .= dfEditable field
+  , "default"  .= dfDefault field
+  ]
+
+dataOperationsToJSON :: DataOperations -> Value
+dataOperationsToJSON ops = object
+  [ "list"         .= doList ops
+  , "get"          .= doGet ops
+  , "create"       .= doCreate ops
+  , "update"       .= doUpdate ops
+  , "delete"       .= doDelete ops
+  , "query_by_hex" .= doQueryByHex ops
+  ]
 
 paramSpecToJSON :: RPCParamSpec -> Value
 paramSpecToJSON spec = object

@@ -17,7 +17,11 @@ module Seer.Service.Plugin
   , pluginServiceOperationSpecs
   ) where
 
-import Actor.PluginManager.Types (PluginLifecycleSnapshot)
+import Actor.PluginManager.Types
+  ( PluginDependencyDiagnostic
+  , PluginExternalDataSourceDiagnostic
+  , PluginLifecycleSnapshot
+  )
 import Data.Aeson (Value)
 import Data.Map.Strict (Map)
 import Data.Text (Text)
@@ -38,8 +42,20 @@ data PluginListRequest = PluginListRequest
 data PluginSummary = PluginSummary
   { pluginSummaryName :: !Text
   , pluginSummaryStatus :: !Text
+  , pluginSummaryDiagnosticStatus :: !Text
+  , pluginSummaryStatusDetail :: !Text
   , pluginSummaryLifecycle :: !PluginLifecycleSnapshot
   , pluginSummaryAsyncStatus :: !AsyncStatusSnapshot
+  , pluginSummaryPid :: !(Maybe Text)
+  , pluginSummaryEndpointKind :: !(Maybe Text)
+  , pluginSummaryProtocolVersion :: !(Maybe Int)
+  , pluginSummaryUptimeSeconds :: !(Maybe Double)
+  , pluginSummaryLastError :: !(Maybe Text)
+  , pluginSummaryRestartCount :: !Int
+  , pluginSummaryDependencies :: ![PluginDependencyDiagnostic]
+  , pluginSummaryResources :: ![Text]
+  , pluginSummaryExternalDataSources :: ![PluginExternalDataSourceDiagnostic]
+  , pluginSummaryCapabilities :: ![Text]
   , pluginSummaryVersion :: !Text
   , pluginSummaryDescription :: !Text
   , pluginSummaryEnabled :: !Bool

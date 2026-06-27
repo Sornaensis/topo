@@ -22,7 +22,17 @@ import qualified Data.Text as Text
 import qualified Data.Text.Read as Text
 
 import Actor.Log (LogLevel(..), setLogMinLevel)
-import Actor.PluginManager (setPluginOrder, setDisabledPlugins, queryPluginResource)
+import Actor.PluginManager
+  ( LoadedPlugin(..)
+  , getLoadedPlugins
+  , pluginAvailableDependencyKeys
+  , pluginDiagnosticState
+  , pluginDiagnosticStateText
+  , pluginPanelDiagnosticLines
+  , queryPluginResource
+  , setDisabledPlugins
+  , setPluginOrder
+  )
 import Actor.Terrain (TerrainReplyOps)
 import Actor.UiActions (UiAction(..), UiActionRequest(..), submitUiAction)
 import Actor.UiActions.Handles (ActorHandles(..))
@@ -45,6 +55,8 @@ import Actor.UI.Setters
   , setUiDisabledPlugins
   , setUiPluginNames
   , setUiPluginExpanded
+  , setUiPluginDiagnosticLines
+  , setUiPluginDiagnosticStatuses
   , setUiDataBrowser
   )
 import Hyperspace.Actor (replyTo)
@@ -518,7 +530,16 @@ executeWidgetClick ctx wid = do
             | otherwise               = Set.insert name current
       setUiDisabledPlugins uiH toggled
       setDisabledPlugins pluginH toggled
-      let enabled = not (Set.member name toggled)
+      loaded <- getLoadedPlugins pluginH
+      let availableDeps = pluginAvailableDependencyKeys toggled loaded
+          diagnosticLines = Map.fromList [(lpName lp, pluginPanelDiagnosticLines availableDeps lp) | lp <- loaded]
+          diagnosticStatuses = Map.fromList
+            [ (lpName lp, pluginDiagnosticStateText (pluginDiagnosticState toggled availableDeps lp))
+            | lp <- loaded
+            ]
+          enabled = not (Set.member name toggled)
+      setUiPluginDiagnosticLines uiH diagnosticLines
+      setUiPluginDiagnosticStatuses uiH diagnosticStatuses
       pure $ Right ("plugin " <> name <> if enabled then " enabled" else " disabled")
     WidgetPluginExpand name -> do
       let current = Map.findWithDefault False name (uiPluginExpanded uiSnap)

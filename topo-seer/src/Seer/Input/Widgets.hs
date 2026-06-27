@@ -44,6 +44,8 @@ import Actor.UI
   , setUiPluginNames
   , setUiPluginExpanded
   , setUiDisabledPlugins
+  , setUiPluginDiagnosticLines
+  , setUiPluginDiagnosticStatuses
   )
 import Control.Applicative ((<|>))
 import Control.Monad (when)
@@ -80,7 +82,17 @@ import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets
 import UI.Widgets (Rect(..), containsPoint)
 import System.Random (randomIO)
 import Hyperspace.Actor (ActorHandle, Protocol)
-import Actor.PluginManager (queryPluginResource, setDisabledPlugins, setPluginOrder)
+import Actor.PluginManager
+  ( LoadedPlugin(..)
+  , getLoadedPlugins
+  , pluginAvailableDependencyKeys
+  , pluginDiagnosticState
+  , pluginDiagnosticStateText
+  , pluginPanelDiagnosticLines
+  , queryPluginResource
+  , setDisabledPlugins
+  , setPluginOrder
+  )
 import Control.Concurrent (forkIO)
 import Actor.UiActions (ActorHandles(..), UiAction(..))
 import Seer.Input.Actions (InputEnv(..), runInputService, submitAction)
@@ -129,7 +141,7 @@ handleClick inputContext (SDL.P (V2 x y)) = do
         find (\s -> drsName s == rName) schemas
       canCreate = maybe False (doCreate . drsOperations) selectedSchema
       widgetsAll = buildWidgets layout
-                ++ buildPluginWidgets (uiPluginNames uiSnap) (uiPluginExpanded uiSnap) (uiPluginParamSpecs uiSnap) layout
+                ++ buildPluginWidgets (uiPluginNames uiSnap) (uiPluginExpanded uiSnap) (uiPluginParamSpecs uiSnap) (uiPluginDiagnosticLines uiSnap) layout
                 ++ buildDataBrowserWidgets (uiDataResources uiSnap) (dbsSelectedPlugin (uiDataBrowser uiSnap)) (dbsSelectedResource (uiDataBrowser uiSnap)) (length (dbsRecords (uiDataBrowser uiSnap))) canCreate layout
                 ++ detailWidgets
       widgets =
@@ -353,6 +365,15 @@ handleClick inputContext (SDL.P (V2 x y)) = do
               | otherwise               = Set.insert name current
         setUiDisabledPlugins uiHandle toggled
         setDisabledPlugins pluginManagerHandle toggled
+        loaded <- getLoadedPlugins pluginManagerHandle
+        let availableDeps = pluginAvailableDependencyKeys toggled loaded
+            diagnosticLines = Map.fromList [(lpName lp, pluginPanelDiagnosticLines availableDeps lp) | lp <- loaded]
+            diagnosticStatuses = Map.fromList
+              [ (lpName lp, pluginDiagnosticStateText (pluginDiagnosticState toggled availableDeps lp))
+              | lp <- loaded
+              ]
+        setUiPluginDiagnosticLines uiHandle diagnosticLines
+        setUiPluginDiagnosticStatuses uiHandle diagnosticStatuses
       WidgetPluginExpand name -> whenConfigVisible $ do
         let current = Map.findWithDefault False name (uiPluginExpanded uiState)
         setUiPluginExpanded uiHandle name (not current)

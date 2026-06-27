@@ -210,8 +210,9 @@ drawConfigPanel renderer mFontCache ui dataSnap layout =
             when isExpanded $ do
               let specs = Map.findWithDefault [] pName (uiPluginParamSpecs ui)
                   params = Map.findWithDefault Map.empty pName (uiPluginParams ui)
+                  detailCount = length (Map.findWithDefault [] pName (uiPluginDiagnosticLines ui))
               forM_ (zip [0..] specs) $ \(pIdx, spec) -> do
-                let paramRowIdx = rowIndex + 1 + pIdx
+                let paramRowIdx = rowIndex + 1 + detailCount + pIdx
                 case rpsType spec of
                   ParamBool -> do
                     let Rect (V2 pcX pcY, V2 pcW pcH) = scrollRect (pipelineParamCheckRect paramRowIdx layout)

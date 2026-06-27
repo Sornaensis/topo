@@ -177,11 +177,12 @@ simControlRowCount = 3
 -- accounting for expanded parameter sub-rows.
 pluginRowsWithParams :: UiState -> Int
 pluginRowsWithParams ui =
-  sum [ 1 + expandedParamCount name | name <- uiPluginNames ui ]
+  sum [ 1 + expandedDetailCount name | name <- uiPluginNames ui ]
   where
-    expandedParamCount name
+    expandedDetailCount name
       | Map.findWithDefault False name (uiPluginExpanded ui) =
-          length (Map.findWithDefault [] name (uiPluginParamSpecs ui))
+          length (Map.findWithDefault [] name (uiPluginDiagnosticLines ui))
+          + length (Map.findWithDefault [] name (uiPluginParamSpecs ui))
       | otherwise = 0
 
 -- | Compute the absolute row index for the i-th plugin in the pipeline tab,
@@ -189,14 +190,15 @@ pluginRowsWithParams ui =
 pluginRowIndex :: UiState -> Int -> Int
 pluginRowIndex ui i =
   builtinStageRowCount + sum
-    [ 1 + expandedParamCount name
+    [ 1 + expandedDetailCount name
     | (j, name) <- zip [0..] (uiPluginNames ui)
     , j < i
     ]
   where
-    expandedParamCount name
+    expandedDetailCount name
       | Map.findWithDefault False name (uiPluginExpanded ui) =
-          length (Map.findWithDefault [] name (uiPluginParamSpecs ui))
+          length (Map.findWithDefault [] name (uiPluginDiagnosticLines ui))
+          + length (Map.findWithDefault [] name (uiPluginParamSpecs ui))
       | otherwise = 0
 
 data LeftTab
@@ -459,6 +461,8 @@ data UiState = UiState
   , uiPluginExpanded :: !(Map Text Bool)
   , uiPluginParamSpecs :: !(Map Text [RPCParamSpec])
   , uiPluginLifecycles :: !(Map Text PluginLifecycleSnapshot)
+  , uiPluginDiagnosticLines :: !(Map Text [Text])
+  , uiPluginDiagnosticStatuses :: !(Map Text Text)
   , uiSimAutoTick :: !Bool
   , uiSimTickRate :: !Float
   , uiSimTickCount :: !Word64
@@ -723,6 +727,8 @@ emptyUiState = UiState
   , uiPluginExpanded = Map.empty
   , uiPluginParamSpecs = Map.empty
   , uiPluginLifecycles = Map.empty
+  , uiPluginDiagnosticLines = Map.empty
+  , uiPluginDiagnosticStatuses = Map.empty
   , uiSimAutoTick = False
   , uiSimTickRate = 0.5
   , uiSimTickCount = 0
@@ -784,6 +790,8 @@ data UiUpdate
   | SetPluginExpanded !Text !Bool
   | SetPluginParamSpecs !(Map Text [RPCParamSpec])
   | SetPluginLifecycles !(Map Text PluginLifecycleSnapshot)
+  | SetPluginDiagnosticLines !(Map Text [Text])
+  | SetPluginDiagnosticStatuses !(Map Text Text)
   | SetDayNightEnabled !Bool
   | SetSimAutoTick !Bool
   | SetSimTickRate !Float
@@ -847,6 +855,8 @@ applyUpdate upd st = case upd of
     st { uiPluginExpanded = Map.insert name expanded (uiPluginExpanded st) }
   SetPluginParamSpecs v -> st { uiPluginParamSpecs = v }
   SetPluginLifecycles v -> st { uiPluginLifecycles = v }
+  SetPluginDiagnosticLines v -> st { uiPluginDiagnosticLines = v }
+  SetPluginDiagnosticStatuses v -> st { uiPluginDiagnosticStatuses = v }
   SetDayNightEnabled v -> st { uiDayNightEnabled = v }
   SetSimAutoTick v -> st { uiSimAutoTick = v }
   SetSimTickRate v -> st { uiSimTickRate = clamp01 v }
