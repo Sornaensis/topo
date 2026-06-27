@@ -75,7 +75,7 @@ import Seer.Input.ViewControls
   ()
 import Topo.Pipeline.Stage (parseStageId)
 import Topo.Plugin.RPC.DataService (DataQuery(..), DataRecord(..), QueryResource(..), QueryResult(..))
-import Topo.Plugin.DataResource (DataResourceSchema(..), DataFieldDef(..), DataFieldType(..), DataOperations(..), noOperations)
+import Topo.Plugin.DataResource (DataResourceSchema(..), DataPagination(..), DataFieldDef(..), DataFieldType(..), DataOperations(..), noOperations)
 import Topo.Plugin.RPC.Manifest (RPCParamSpec(..))
 import UI.Layout
 import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets, buildDataBrowserWidgets, buildDataDetailWidgets, buildSliderRowWidgets, hitTest, isLeftViewWidget)
@@ -140,9 +140,10 @@ handleClick inputContext (SDL.P (V2 x y)) = do
         schemas <- Map.lookup pName (uiDataResources uiSnap)
         find (\s -> drsName s == rName) schemas
       canCreate = maybe False (doCreate . drsOperations) selectedSchema
+      canPage = maybe False (doPage . drsOperations) selectedSchema
       widgetsAll = buildWidgets layout
                 ++ buildPluginWidgets (uiPluginNames uiSnap) (uiPluginExpanded uiSnap) (uiPluginParamSpecs uiSnap) (uiPluginDiagnosticLines uiSnap) layout
-                ++ buildDataBrowserWidgets (uiDataResources uiSnap) (dbsSelectedPlugin (uiDataBrowser uiSnap)) (dbsSelectedResource (uiDataBrowser uiSnap)) (length (dbsRecords (uiDataBrowser uiSnap))) canCreate layout
+                ++ buildDataBrowserWidgets (uiDataResources uiSnap) (dbsSelectedPlugin (uiDataBrowser uiSnap)) (dbsSelectedResource (uiDataBrowser uiSnap)) (length (dbsRecords (uiDataBrowser uiSnap))) canCreate canPage layout
                 ++ detailWidgets
       widgets =
         if uiShowConfig uiSnap
@@ -414,10 +415,11 @@ handleClick inputContext (SDL.P (V2 x y)) = do
         setUiDataBrowser uiHandle newDbs
       WidgetDataResourceSelect pluginName resourceName -> whenConfigVisible $ do
         let dbs = uiDataBrowser uiState
+            (_, initialPageOffset) = paginationRequestFor uiState pluginName resourceName
             newDbs = dbs
               { dbsSelectedResource = Just resourceName
               , dbsRecords = []
-              , dbsPageOffset = 0
+              , dbsPageOffset = maybe 0 id initialPageOffset
               , dbsTotalCount = Nothing
               , dbsLoading = True
               , dbsSelectedRecord = Nothing
@@ -427,7 +429,8 @@ handleClick inputContext (SDL.P (V2 x y)) = do
               }
         setUiDataBrowser uiHandle newDbs
         _ <- forkIO $ do
-          let qr = QueryResource resourceName QueryAll (Just 20) (Just 0)
+          let (pageSize, pageOffset) = paginationRequestFor uiState pluginName resourceName
+              qr = QueryResource resourceName QueryAll pageSize pageOffset
           result <- queryPluginResource pluginManagerHandle pluginName qr
           case result of
             Right qResult -> setUiDataBrowser uiHandle newDbs
@@ -439,7 +442,8 @@ handleClick inputContext (SDL.P (V2 x y)) = do
         pure ()
       WidgetDataPagePrev pluginName resourceName -> whenConfigVisible $ do
         let dbs = uiDataBrowser uiState
-            newOffset = max 0 (dbsPageOffset dbs - 20)
+            pageStep = pageStepFor uiState pluginName resourceName
+            newOffset = max 0 (dbsPageOffset dbs - pageStep)
             newDbs = dbs
               { dbsPageOffset = newOffset
               , dbsLoading = True
@@ -451,7 +455,8 @@ handleClick inputContext (SDL.P (V2 x y)) = do
               }
         setUiDataBrowser uiHandle newDbs
         _ <- forkIO $ do
-          let qr = QueryResource resourceName QueryAll (Just 20) (Just newOffset)
+          let (pageSize, _) = paginationRequestFor uiState pluginName resourceName
+              qr = QueryResource resourceName QueryAll pageSize (fmap (const newOffset) pageSize)
           result <- queryPluginResource pluginManagerHandle pluginName qr
           case result of
             Right qResult -> setUiDataBrowser uiHandle newDbs
@@ -463,7 +468,8 @@ handleClick inputContext (SDL.P (V2 x y)) = do
         pure ()
       WidgetDataPageNext pluginName resourceName -> whenConfigVisible $ do
         let dbs = uiDataBrowser uiState
-            newOffset = dbsPageOffset dbs + 20
+            pageStep = pageStepFor uiState pluginName resourceName
+            newOffset = dbsPageOffset dbs + pageStep
             newDbs = dbs
               { dbsPageOffset = newOffset
               , dbsLoading = True
@@ -475,7 +481,8 @@ handleClick inputContext (SDL.P (V2 x y)) = do
               }
         setUiDataBrowser uiHandle newDbs
         _ <- forkIO $ do
-          let qr = QueryResource resourceName QueryAll (Just 20) (Just newOffset)
+          let (pageSize, _) = paginationRequestFor uiState pluginName resourceName
+              qr = QueryResource resourceName QueryAll pageSize (fmap (const newOffset) pageSize)
           result <- queryPluginResource pluginManagerHandle pluginName qr
           case result of
             Right qResult -> setUiDataBrowser uiHandle newDbs
@@ -891,8 +898,10 @@ handleClick inputContext (SDL.P (V2 x y)) = do
     -- | Re-query the current resource and update the data browser records.
     refreshDataBrowser :: DataBrowserState -> Text.Text -> Text.Text -> IO ()
     refreshDataBrowser dbs pName rName = do
+      uiSnapForPagination <- getUiSnapshot uiHandle
       let offset = dbsPageOffset dbs
-          qr = QueryResource rName QueryAll (Just 20) (Just offset)
+          (pageSize, _) = paginationRequestFor uiSnapForPagination pName rName
+          qr = QueryResource rName QueryAll pageSize (fmap (const offset) pageSize)
       result <- queryPluginResource pluginManagerHandle pName qr
       uiSnap' <- getUiSnapshot uiHandle
       let dbs' = uiDataBrowser uiSnap'
@@ -966,6 +975,33 @@ handleClick inputContext (SDL.P (V2 x y)) = do
     signedSliderDelta sliderPart step = case sliderPart of
       SliderPartMinus -> negate step
       SliderPartPlus -> step
+
+paginationRequestFor :: UiState -> Text.Text -> Text.Text -> (Maybe Int, Maybe Int)
+paginationRequestFor uiState pluginName resourceName =
+  case resourceSchemaFor uiState pluginName resourceName of
+    Just schema
+      | doPage (drsOperations schema) ->
+          let pagination = drsPagination schema
+          in ( Just (pageSizeFrom pagination)
+             , Just (max 0 (dpDefaultPageOffset pagination))
+             )
+    _ -> (Nothing, Nothing)
+
+pageStepFor :: UiState -> Text.Text -> Text.Text -> Int
+pageStepFor uiState pluginName resourceName =
+  case resourceSchemaFor uiState pluginName resourceName of
+    Just schema -> pageSizeFrom (drsPagination schema)
+    Nothing -> 20
+
+resourceSchemaFor :: UiState -> Text.Text -> Text.Text -> Maybe DataResourceSchema
+resourceSchemaFor uiState pluginName resourceName = do
+  schemas <- Map.lookup pluginName (uiDataResources uiState)
+  find (\schema -> drsName schema == resourceName) schemas
+
+pageSizeFrom :: DataPagination -> Int
+pageSizeFrom pagination =
+  max 1 (min (max 1 (dpMaxPageSize pagination)) (dpDefaultPageSize pagination))
+
 -- | Cycle through available overlay names by @dir@ (+1 or -1).
 --
 -- When no overlays are available, does nothing.  When cycling past the

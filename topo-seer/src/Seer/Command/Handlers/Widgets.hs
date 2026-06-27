@@ -72,7 +72,7 @@ import Seer.Config.SliderStyle (SliderStyle(..), sliderStyleForId)
 import Seer.Config.SliderUi (sliderValueForId)
 import Topo.Command.Types (SeerResponse(..), okResponse, errResponse)
 import Topo.Pipeline.Stage (parseStageId, stageCanonicalName, allBuiltinStageIds)
-import Topo.Plugin.DataResource (DataResourceSchema(..), DataFieldDef(..))
+import Topo.Plugin.DataResource (DataResourceSchema(..), DataPagination(..), DataOperations(..), DataFieldDef(..))
 import Topo.Plugin.RPC.DataService (DataRecord(..), QueryResult(..), QueryResource(..), DataQuery(..))
 import Seer.Editor.Types (EditorState(..))
 import UI.WidgetTree (WidgetId(..))
@@ -578,10 +578,11 @@ executeWidgetClick ctx wid = do
       pure $ Right ("selected plugin: " <> pluginName)
     WidgetDataResourceSelect pluginName resourceName -> do
       let dbs = uiDataBrowser uiSnap
+          (pageSize, initialPageOffset) = paginationRequestFor uiSnap pluginName resourceName
           newDbs = dbs
             { dbsSelectedResource = Just resourceName
             , dbsRecords = []
-            , dbsPageOffset = 0
+            , dbsPageOffset = maybe 0 id initialPageOffset
             , dbsTotalCount = Nothing
             , dbsLoading = True
             , dbsSelectedRecord = Nothing
@@ -590,7 +591,7 @@ executeWidgetClick ctx wid = do
             , dbsExpandedFields = Set.empty
             }
       setUiDataBrowser uiH newDbs
-      let qr = QueryResource resourceName QueryAll (Just 20) (Just 0)
+      let qr = QueryResource resourceName QueryAll pageSize initialPageOffset
       result <- queryPluginResource pluginH pluginName qr
       case result of
         Right qResult -> do
@@ -605,12 +606,16 @@ executeWidgetClick ctx wid = do
           pure $ Left ("query failed: " <> Text.pack (show err))
     WidgetDataPagePrev pluginName resourceName -> do
       let dbs = uiDataBrowser uiSnap
-          newOffset = max 0 (dbsPageOffset dbs - 20)
-      paginate uiH pluginH dbs pluginName resourceName newOffset
+          pageStep = pageStepFor uiSnap pluginName resourceName
+          (pageSize, _) = paginationRequestFor uiSnap pluginName resourceName
+          newOffset = max 0 (dbsPageOffset dbs - pageStep)
+      paginate uiH pluginH dbs pluginName resourceName pageSize newOffset
     WidgetDataPageNext pluginName resourceName -> do
       let dbs = uiDataBrowser uiSnap
-          newOffset = dbsPageOffset dbs + 20
-      paginate uiH pluginH dbs pluginName resourceName newOffset
+          pageStep = pageStepFor uiSnap pluginName resourceName
+          (pageSize, _) = paginationRequestFor uiSnap pluginName resourceName
+          newOffset = dbsPageOffset dbs + pageStep
+      paginate uiH pluginH dbs pluginName resourceName pageSize newOffset
     WidgetDataRecordSelect idx -> do
       let dbs = uiDataBrowser uiSnap
           records = dbsRecords dbs
@@ -827,13 +832,39 @@ bumpSlider ctx uiSnap sid part = do
   commandResult ("slider " <> Text.pack (show sid) <> (if delta < 0 then " -" else " +")) $
     HSliders.handleSetSlider ctx 0 (object ["name" .= Text.pack (show sid), "value" .= newValue])
 
-paginate uiH pluginH dbs pluginName resourceName newOffset = do
+paginationRequestFor :: UiState -> Text -> Text -> (Maybe Int, Maybe Int)
+paginationRequestFor uiSnap pluginName resourceName =
+  case resourceSchemaFor uiSnap pluginName resourceName of
+    Just schema
+      | doPage (drsOperations schema) ->
+          let pagination = drsPagination schema
+          in ( Just (pageSizeFrom pagination)
+             , Just (max 0 (dpDefaultPageOffset pagination))
+             )
+    _ -> (Nothing, Nothing)
+
+pageStepFor :: UiState -> Text -> Text -> Int
+pageStepFor uiSnap pluginName resourceName =
+  case resourceSchemaFor uiSnap pluginName resourceName of
+    Just schema -> pageSizeFrom (drsPagination schema)
+    Nothing -> 20
+
+resourceSchemaFor :: UiState -> Text -> Text -> Maybe DataResourceSchema
+resourceSchemaFor uiSnap pluginName resourceName = do
+  schemas <- Map.lookup pluginName (uiDataResources uiSnap)
+  find (\schema -> drsName schema == resourceName) schemas
+
+pageSizeFrom :: DataPagination -> Int
+pageSizeFrom pagination =
+  max 1 (min (max 1 (dpMaxPageSize pagination)) (dpDefaultPageSize pagination))
+
+paginate uiH pluginH dbs pluginName resourceName pageSize newOffset = do
   let newDbs = dbs
         { dbsPageOffset = newOffset, dbsLoading = True, dbsRecords = []
         , dbsSelectedRecord = Nothing, dbsSelectedRecordKey = Nothing
         , dbsSelectedRowIndex = Nothing, dbsExpandedFields = Set.empty }
   setUiDataBrowser uiH newDbs
-  let qr = QueryResource resourceName QueryAll (Just 20) (Just newOffset)
+  let qr = QueryResource resourceName QueryAll pageSize (fmap (const newOffset) pageSize)
   result <- queryPluginResource pluginH pluginName qr
   case result of
     Right qResult -> do
@@ -996,6 +1027,21 @@ handleListWidgets ctx reqId _params = do
                     let schemas = Map.findWithDefault [] pName (uiDataResources uiSnap)
                     in map (\s -> widgetIdToText (WidgetDataResourceSelect pName (drsName s))) schemas
                   Nothing -> []
+                selectedSchema = do
+                  pName <- dbsSelectedPlugin dbs
+                  rName <- dbsSelectedResource dbs
+                  resourceSchemaFor uiSnap pName rName
+                recordWids =
+                  [ widgetIdToText (WidgetDataRecordSelect idx)
+                  | idx <- [0 .. length (dbsRecords dbs) - 1]
+                  ]
+                pageWids = case (dbsSelectedPlugin dbs, dbsSelectedResource dbs, selectedSchema) of
+                  (Just pName, Just rName, Just schema)
+                    | doPage (drsOperations schema) && not (null (dbsRecords dbs)) ->
+                        [ widgetIdToText (WidgetDataPagePrev pName rName)
+                        , widgetIdToText (WidgetDataPageNext pName rName)
+                        ]
+                  _ -> []
                 detailWids
                   | dbsSelectedRowIndex dbs /= Nothing =
                       [ "WidgetDataDetailDismiss", "WidgetDataEditToggle"
@@ -1003,7 +1049,7 @@ handleListWidgets ctx reqId _params = do
                       , "WidgetDataCreateNew", "WidgetDataDeleteBtn"
                       , "WidgetDataDeleteConfirm", "WidgetDataDeleteCancel" ]
                   | otherwise = []
-            in pluginSelectWids ++ resourceWids ++ detailWids
+            in pluginSelectWids ++ resourceWids ++ recordWids ++ pageWids ++ detailWids
         | otherwise = []
       -- Dynamic: editor
       editorWids

@@ -98,13 +98,16 @@
       "type": "object",
       "required": ["name", "label", "fields", "operations", "keyField"],
       "properties": {
+        "schemaVersion": { "type": "integer" },
+        "resourceVersion": { "type": "integer" },
         "name": { "type": "string" },
         "label": { "type": "string" },
         "hexBound": { "type": "boolean" },
         "fields": { "type": "array", "items": { "$ref": "#/$defs/dataField" } },
         "operations": { "$ref": "#/$defs/dataOperations" },
         "keyField": { "type": "string" },
-        "overlay": { "type": "string" }
+        "overlay": { "type": "string" },
+        "pagination": { "$ref": "#/$defs/dataPagination" }
       }
     },
     "dataField": {
@@ -134,7 +137,19 @@
         "create": { "type": "boolean" },
         "update": { "type": "boolean" },
         "delete": { "type": "boolean" },
-        "queryByHex": { "type": "boolean" }
+        "queryByHex": { "type": "boolean" },
+        "queryByField": { "type": "boolean" },
+        "sort": { "type": "boolean" },
+        "filter": { "type": "boolean" },
+        "page": { "type": "boolean" }
+      }
+    },
+    "dataPagination": {
+      "type": "object",
+      "properties": {
+        "defaultPageSize": { "type": "integer" },
+        "maxPageSize": { "type": "integer" },
+        "defaultPageOffset": { "type": "integer" }
       }
     },
     "startPolicy": {

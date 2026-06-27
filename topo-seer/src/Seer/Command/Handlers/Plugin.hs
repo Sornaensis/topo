@@ -42,7 +42,7 @@ import Actor.UI.State (UiState(..), readUiSnapshotRef)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
-import Topo.Plugin.DataResource (DataFieldDef(..), DataOperations(..), DataResourceSchema(..))
+import Topo.Plugin.DataResource (DataFieldDef(..), DataOperations(..), DataPagination(..), DataResourceSchema(..))
 import Topo.Plugin.RPC.Manifest (RPCManifest(..), RPCParamSpec(..))
 
 -- | Handle @list_plugins@ — return loaded plugins with status and params.
@@ -145,13 +145,16 @@ pluginToJSON now disabled availableDeps paramSpecs lp =
 
 dataResourceToJSON :: DataResourceSchema -> Value
 dataResourceToJSON drs = object
-  [ "name"       .= drsName drs
-  , "label"      .= drsLabel drs
-  , "hex_bound"  .= drsHexBound drs
-  , "key_field"  .= drsKeyField drs
-  , "overlay"    .= drsOverlay drs
-  , "fields"     .= map dataFieldToJSON (drsFields drs)
-  , "operations" .= dataOperationsToJSON (drsOperations drs)
+  [ "schema_version"   .= drsSchemaVersion drs
+  , "resource_version" .= drsResourceVersion drs
+  , "name"             .= drsName drs
+  , "label"            .= drsLabel drs
+  , "hex_bound"        .= drsHexBound drs
+  , "key_field"        .= drsKeyField drs
+  , "overlay"          .= drsOverlay drs
+  , "fields"           .= map dataFieldToJSON (drsFields drs)
+  , "operations"       .= dataOperationsToJSON (drsOperations drs)
+  , "pagination"       .= dataPaginationToJSON (drsPagination drs)
   ]
 
 dataFieldToJSON :: DataFieldDef -> Value
@@ -165,12 +168,23 @@ dataFieldToJSON field = object
 
 dataOperationsToJSON :: DataOperations -> Value
 dataOperationsToJSON ops = object
-  [ "list"         .= doList ops
-  , "get"          .= doGet ops
-  , "create"       .= doCreate ops
-  , "update"       .= doUpdate ops
-  , "delete"       .= doDelete ops
-  , "query_by_hex" .= doQueryByHex ops
+  [ "list"           .= doList ops
+  , "get"            .= doGet ops
+  , "create"         .= doCreate ops
+  , "update"         .= doUpdate ops
+  , "delete"         .= doDelete ops
+  , "query_by_hex"   .= doQueryByHex ops
+  , "query_by_field" .= doQueryByField ops
+  , "sort"           .= doSort ops
+  , "filter"         .= doFilter ops
+  , "page"           .= doPage ops
+  ]
+
+dataPaginationToJSON :: DataPagination -> Value
+dataPaginationToJSON pagination = object
+  [ "default_page_size" .= dpDefaultPageSize pagination
+  , "max_page_size" .= dpMaxPageSize pagination
+  , "default_page_offset" .= dpDefaultPageOffset pagination
   ]
 
 paramSpecToJSON :: RPCParamSpec -> Value

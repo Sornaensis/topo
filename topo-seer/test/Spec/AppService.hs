@@ -24,7 +24,7 @@ import Data.Time (UTCTime(..), fromGregorian, secondsToDiffTime)
 import Test.Hspec
 import Topo.Overlay.Schema (OverlayFieldType(..))
 import Topo.Plugin (Capability(..))
-import Topo.Plugin.DataResource (DataFieldDef(..), DataFieldType(..), DataOperations(..), DataResourceSchema(..), noOperations)
+import Topo.Plugin.DataResource (DataFieldDef(..), DataFieldType(..), DataOperations(..), DataResourceSchema(..), currentDataResourceSchemaVersion, defaultDataResourceVersion, defaultDataPagination, noOperations)
 import Topo.Plugin.RPC.Manifest
   ( RPCManifest(..), RPCGeneratorDecl(..), defaultRPCManifestRuntime
   , defaultRPCStartPolicy, defaultRPCUIHints, manifestV3
@@ -793,13 +793,16 @@ diagnosticBaseManifest = RPCManifest
 
 diagnosticResource :: DataResourceSchema
 diagnosticResource = DataResourceSchema
-  { drsName = "stations"
+  { drsSchemaVersion = currentDataResourceSchemaVersion
+  , drsResourceVersion = defaultDataResourceVersion
+  , drsName = "stations"
   , drsLabel = "Stations"
   , drsHexBound = False
   , drsFields = [DataFieldDef "id" DFText "Id" False Nothing]
   , drsOperations = noOperations { doList = True, doCreate = True }
   , drsKeyField = "id"
   , drsOverlay = Nothing
+  , drsPagination = defaultDataPagination
   }
 
 appServiceTestTime :: UTCTime

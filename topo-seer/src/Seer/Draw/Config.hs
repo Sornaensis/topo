@@ -306,8 +306,9 @@ drawConfigPanel renderer mFontCache ui dataSnap layout =
                 Just rName -> do
                   let mSchema = find (\s -> drsName s == rName) schemas
                       canCreate = maybe False (doCreate . drsOperations) mSchema
+                      canPage = maybe False (doPage . drsOperations) mSchema
                       pageRow = recordOffset + length records
-                      createRow = pageRow + (if null records then 0 else 1)
+                      createRow = pageRow + (if null records || not canPage then 0 else 1)
                   when canCreate $ do
                     let createRect = scrollRect (dataBrowserCreateButtonRect createRow layout)
                     SDL.rendererDrawColor renderer SDL.$= colDataCreateBtn

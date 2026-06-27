@@ -37,6 +37,8 @@
   },
   "dataResources": [
     {
+      "schemaVersion": 1,
+      "resourceVersion": 1,
       "name": "settlements",
       "label": "Settlements",
       "hexBound": true,
@@ -50,9 +52,18 @@
         "create": false,
         "update": false,
         "delete": false,
-        "queryByHex": true
+        "queryByHex": true,
+        "queryByField": false,
+        "sort": false,
+        "filter": false,
+        "page": false
       },
-      "keyField": "id"
+      "keyField": "id",
+      "pagination": {
+        "defaultPageSize": 20,
+        "maxPageSize": 500,
+        "defaultPageOffset": 0
+      }
     }
   ],
   "externalDataSources": [

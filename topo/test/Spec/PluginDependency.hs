@@ -30,7 +30,7 @@ spec = describe "PluginDependency" $ do
           [ DependencyBuiltInStage StageBiomes
           , DependencyPlugin (PluginDependency "climate-plus" (VersionBetween "1.2.0" "2.0.0"))
           , DependencyOverlay (OverlayDependency "weather" (Just "climate-plus"))
-          , DependencyResource (ResourceDependency (Just "civilization") "settlements" [ResourceList, ResourceQueryByHex] (Just "civilization"))
+          , DependencyResource (ResourceDependency (Just "civilization") "settlements" [ResourceList, ResourceQueryByHex, ResourceQueryByField, ResourceSort, ResourceFilter, ResourcePage] (Just "civilization"))
           , DependencyExternalDataSource (ExternalDataSourceDependency (Just "civilization") "trade-routes" "settlement-ledger" [ExternalAccessRead] ["settlements"])
           , DependencyCapability CapDataRead
           ]

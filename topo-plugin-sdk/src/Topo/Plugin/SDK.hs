@@ -62,6 +62,10 @@ module Topo.Plugin.SDK
   , PluginContext(..)
     -- * Data resource schemas
   , DataResourceSchema(..)
+  , DataPagination(..)
+  , currentDataResourceSchemaVersion
+  , defaultDataResourceVersion
+  , defaultDataPagination
   , DataFieldDef(..)
   , DataFieldType(..)
   , DataConstructorDef(..)
@@ -121,6 +125,10 @@ import Topo.Plugin.SDK.Payload
 import Topo.Plugin.SDK.Runner (runPlugin, generateManifest, writeManifest)
 import Topo.Plugin.DataResource
   ( DataResourceSchema(..)
+  , DataPagination(..)
+  , currentDataResourceSchemaVersion
+  , defaultDataResourceVersion
+  , defaultDataPagination
   , DataFieldDef(..)
   , DataFieldType(..)
   , DataConstructorDef(..)

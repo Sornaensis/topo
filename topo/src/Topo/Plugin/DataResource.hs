@@ -34,6 +34,10 @@
 module Topo.Plugin.DataResource
   ( -- * Resource schema
     DataResourceSchema(..)
+  , DataPagination(..)
+  , currentDataResourceSchemaVersion
+  , defaultDataResourceVersion
+  , defaultDataPagination
     -- * Field definitions
   , DataFieldDef(..)
   , DataFieldType(..)
@@ -263,67 +267,157 @@ instance FromJSON DataFieldDef where
 -- CRUD operation flags
 ------------------------------------------------------------------------
 
--- | Which CRUD operations a data resource supports.
+-- | Which CRUD and query operations a data resource supports.
 data DataOperations = DataOperations
-  { doList       :: !Bool
+  { doList         :: !Bool
   -- ^ List / query all records.
-  , doGet        :: !Bool
+  , doGet          :: !Bool
   -- ^ Get a single record by primary key.
-  , doCreate     :: !Bool
+  , doCreate       :: !Bool
   -- ^ Create a new record.
-  , doUpdate     :: !Bool
+  , doUpdate       :: !Bool
   -- ^ Update an existing record.
-  , doDelete     :: !Bool
+  , doDelete       :: !Bool
   -- ^ Delete a record by primary key.
-  , doQueryByHex :: !Bool
+  , doQueryByHex   :: !Bool
   -- ^ Query records associated with a hex coordinate.
+  , doQueryByField :: !Bool
+  -- ^ Query records by an arbitrary field equality match.
+  , doSort         :: !Bool
+  -- ^ Sort query results.
+  , doFilter       :: !Bool
+  -- ^ Filter query results.
+  , doPage         :: !Bool
+  -- ^ Page query results with size/offset bounds.
   } deriving (Eq, Show, Generic)
 
 -- | No operations enabled.
 noOperations :: DataOperations
 noOperations = DataOperations
-  { doList       = False
-  , doGet        = False
-  , doCreate     = False
-  , doUpdate     = False
-  , doDelete     = False
-  , doQueryByHex = False
+  { doList         = False
+  , doGet          = False
+  , doCreate       = False
+  , doUpdate       = False
+  , doDelete       = False
+  , doQueryByHex   = False
+  , doQueryByField = False
+  , doSort         = False
+  , doFilter       = False
+  , doPage         = False
   }
 
 -- | All operations enabled.
 allOperations :: DataOperations
 allOperations = DataOperations
-  { doList       = True
-  , doGet        = True
-  , doCreate     = True
-  , doUpdate     = True
-  , doDelete     = True
-  , doQueryByHex = True
+  { doList         = True
+  , doGet          = True
+  , doCreate       = True
+  , doUpdate       = True
+  , doDelete       = True
+  , doQueryByHex   = True
+  , doQueryByField = True
+  , doSort         = True
+  , doFilter       = True
+  , doPage         = True
   }
 
 instance ToJSON DataOperations where
   toJSON ops = object
-    [ "list"        .= doList ops
-    , "get"         .= doGet ops
-    , "create"      .= doCreate ops
-    , "update"      .= doUpdate ops
-    , "delete"      .= doDelete ops
-    , "queryByHex"  .= doQueryByHex ops
+    [ "list"         .= doList ops
+    , "get"          .= doGet ops
+    , "create"       .= doCreate ops
+    , "update"       .= doUpdate ops
+    , "delete"       .= doDelete ops
+    , "queryByHex"   .= doQueryByHex ops
+    , "queryByField" .= doQueryByField ops
+    , "sort"         .= doSort ops
+    , "filter"       .= doFilter ops
+    , "page"         .= doPage ops
     ]
 
 instance FromJSON DataOperations where
-  parseJSON = withObject "DataOperations" $ \o ->
+  parseJSON = withObject "DataOperations" $ \o -> do
+    queryByHex <- do
+      mCamel <- o .:? "queryByHex"
+      case mCamel of
+        Just v  -> pure v
+        Nothing -> o .:? "query_by_hex" >>= pure . maybe False id
+    queryByField <- do
+      mCamel <- o .:? "queryByField"
+      case mCamel of
+        Just v  -> pure v
+        Nothing -> o .:? "query_by_field" >>= pure . maybe False id
     DataOperations
-      <$> (o .:? "list"       >>= pure . maybe False id)
-      <*> (o .:? "get"        >>= pure . maybe False id)
-      <*> (o .:? "create"     >>= pure . maybe False id)
-      <*> (o .:? "update"     >>= pure . maybe False id)
-      <*> (o .:? "delete"     >>= pure . maybe False id)
-      <*> (o .:? "queryByHex" >>= pure . maybe False id)
+      <$> (o .:? "list"   >>= pure . maybe False id)
+      <*> (o .:? "get"    >>= pure . maybe False id)
+      <*> (o .:? "create" >>= pure . maybe False id)
+      <*> (o .:? "update" >>= pure . maybe False id)
+      <*> (o .:? "delete" >>= pure . maybe False id)
+      <*> pure queryByHex
+      <*> pure queryByField
+      <*> (o .:? "sort"   >>= pure . maybe False id)
+      <*> (o .:? "filter" >>= pure . maybe False id)
+      <*> (o .:? "page"   >>= pure . maybe False id)
 
 ------------------------------------------------------------------------
 -- Resource schema
 ------------------------------------------------------------------------
+
+-- | Current wire schema version for data-resource declarations.
+currentDataResourceSchemaVersion :: Int
+currentDataResourceSchemaVersion = 1
+
+-- | Default plugin-owned resource schema/data version.
+defaultDataResourceVersion :: Int
+defaultDataResourceVersion = 1
+
+-- | Pagination defaults and limits advertised by a data resource.
+data DataPagination = DataPagination
+  { dpDefaultPageSize   :: !Int
+  -- ^ Page size the host should request when the user has not specified one.
+  , dpMaxPageSize       :: !Int
+  -- ^ Largest page size the resource is prepared to serve.
+  , dpDefaultPageOffset :: !Int
+  -- ^ Initial page offset for list queries.
+  } deriving (Eq, Show, Generic)
+
+-- | Default pagination metadata used when a manifest omits pagination.
+defaultDataPagination :: DataPagination
+defaultDataPagination = DataPagination
+  { dpDefaultPageSize = 20
+  , dpMaxPageSize = 500
+  , dpDefaultPageOffset = 0
+  }
+
+instance ToJSON DataPagination where
+  toJSON pg = object
+    [ "defaultPageSize"   .= dpDefaultPageSize pg
+    , "maxPageSize"       .= dpMaxPageSize pg
+    , "defaultPageOffset" .= dpDefaultPageOffset pg
+    ]
+
+instance FromJSON DataPagination where
+  parseJSON = withObject "DataPagination" $ \o -> do
+    defaultPageSize <- do
+      mCamel <- o .:? "defaultPageSize"
+      case mCamel of
+        Just v  -> pure v
+        Nothing -> o .:? "default_page_size" >>= pure . maybe (dpDefaultPageSize defaultDataPagination) id
+    maxPageSize <- do
+      mCamel <- o .:? "maxPageSize"
+      case mCamel of
+        Just v  -> pure v
+        Nothing -> o .:? "max_page_size" >>= pure . maybe (dpMaxPageSize defaultDataPagination) id
+    defaultPageOffset <- do
+      mCamel <- o .:? "defaultPageOffset"
+      case mCamel of
+        Just v  -> pure v
+        Nothing -> o .:? "default_page_offset" >>= pure . maybe (dpDefaultPageOffset defaultDataPagination) id
+    pure DataPagination
+      { dpDefaultPageSize = defaultPageSize
+      , dpMaxPageSize = maxPageSize
+      , dpDefaultPageOffset = defaultPageOffset
+      }
 
 -- | Schema for a plugin-declared data resource.
 --
@@ -336,7 +430,11 @@ instance FromJSON DataOperations where
 -- queries and mutations are forwarded to the plugin, which owns
 -- interpretation.
 data DataResourceSchema = DataResourceSchema
-  { drsName       :: !Text
+  { drsSchemaVersion :: !Int
+  -- ^ Version of the data-resource schema contract.
+  , drsResourceVersion :: !Int
+  -- ^ Plugin-owned version for this resource's shape/semantics.
+  , drsName       :: !Text
   -- ^ Machine-readable resource name (e.g. @\"cultures\"@, @\"settlements\"@).
   , drsLabel      :: !Text
   -- ^ Human-readable display name.
@@ -352,29 +450,47 @@ data DataResourceSchema = DataResourceSchema
   -- ^ If @Just name@, data is backed by the named overlay.
   --   The plugin owns storage and answers all queries; the host only
   --   persists the raw overlay blob alongside the world save.
+  , drsPagination :: !DataPagination
+  -- ^ Page defaults and limits for resources with 'doPage' enabled.
   } deriving (Eq, Show, Generic)
 
 instance ToJSON DataResourceSchema where
   toJSON drs = object $
-    [ "name"       .= drsName drs
-    , "label"      .= drsLabel drs
-    , "hexBound"   .= drsHexBound drs
-    , "fields"     .= drsFields drs
-    , "operations" .= drsOperations drs
-    , "keyField"   .= drsKeyField drs
+    [ "schemaVersion"   .= drsSchemaVersion drs
+    , "resourceVersion" .= drsResourceVersion drs
+    , "name"            .= drsName drs
+    , "label"           .= drsLabel drs
+    , "hexBound"        .= drsHexBound drs
+    , "fields"          .= drsFields drs
+    , "operations"      .= drsOperations drs
+    , "keyField"        .= drsKeyField drs
+    , "pagination"      .= drsPagination drs
     ] <>
     [ "overlay" .= ov | Just ov <- [drsOverlay drs] ]
 
 instance FromJSON DataResourceSchema where
-  parseJSON = withObject "DataResourceSchema" $ \o ->
+  parseJSON = withObject "DataResourceSchema" $ \o -> do
+    schemaVersion <- do
+      mCamel <- o .:? "schemaVersion"
+      case mCamel of
+        Just v  -> pure v
+        Nothing -> o .:? "schema_version" >>= pure . maybe currentDataResourceSchemaVersion id
+    resourceVersion <- do
+      mCamel <- o .:? "resourceVersion"
+      case mCamel of
+        Just v  -> pure v
+        Nothing -> o .:? "resource_version" >>= pure . maybe defaultDataResourceVersion id
     DataResourceSchema
-      <$> o .: "name"
+      <$> pure schemaVersion
+      <*> pure resourceVersion
+      <*> o .: "name"
       <*> o .: "label"
       <*> (o .:? "hexBound" >>= pure . maybe False id)
       <*> o .: "fields"
       <*> o .: "operations"
       <*> o .: "keyField"
       <*> o .:? "overlay"
+      <*> (o .:? "pagination" >>= pure . maybe defaultDataPagination id)
 
 ------------------------------------------------------------------------
 -- Validation

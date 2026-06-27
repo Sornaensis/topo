@@ -370,6 +370,10 @@ dataOperationsDiagnosticJSON ops = object
   , "update" .= doUpdate ops
   , "delete" .= doDelete ops
   , "query_by_hex" .= doQueryByHex ops
+  , "query_by_field" .= doQueryByField ops
+  , "sort" .= doSort ops
+  , "filter" .= doFilter ops
+  , "page" .= doPage ops
   ]
 
 requiresDataWriteGrant :: DataOperations -> Bool

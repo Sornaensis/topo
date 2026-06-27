@@ -189,6 +189,21 @@ instance Arbitrary DataOperations where
     <*> arbitrary
     <*> arbitrary
     <*> arbitrary
+    <*> arbitrary
+    <*> arbitrary
+    <*> arbitrary
+    <*> arbitrary
+
+instance Arbitrary DataPagination where
+  arbitrary = do
+    Positive defaultSize <- arbitrary
+    Positive maxSize <- arbitrary
+    NonNegative defaultOffset <- arbitrary
+    pure DataPagination
+      { dpDefaultPageSize = defaultSize
+      , dpMaxPageSize = max defaultSize maxSize
+      , dpDefaultPageOffset = defaultOffset
+      }
 
 instance Arbitrary DataResourceSchema where
   arbitrary = do
@@ -200,14 +215,20 @@ instance Arbitrary DataResourceSchema where
     extraFields <- listOf arbitrary
     ops <- arbitrary
     ov <- arbitrary
+    pagination <- arbitrary
+    Positive schemaVersion <- arbitrary
+    Positive resourceVersion <- arbitrary
     pure DataResourceSchema
-      { drsName       = name
+      { drsSchemaVersion = schemaVersion
+      , drsResourceVersion = resourceVersion
+      , drsName       = name
       , drsLabel      = label
       , drsHexBound   = hexBound
       , drsFields     = keyField : extraFields
       , drsOperations = ops
       , drsKeyField   = keyName
       , drsOverlay    = ov
+      , drsPagination = pagination
       }
 
 instance Arbitrary Handshake where

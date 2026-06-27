@@ -185,16 +185,17 @@ buildPluginWidgets pluginNames expanded paramSpecs diagnosticLines layout =
 -- * Plugin name rows (clickable to select);
 -- * Resource rows for the selected plugin (clickable to select);
 -- * Record rows for the selected resource;
--- * Page-prev \/ page-next buttons on the last row (when records present).
+-- * Page-prev \/ page-next buttons on the last row (when records present and supported).
 buildDataBrowserWidgets
   :: Map Text [DataResourceSchema]
   -> Maybe Text      -- ^ Selected plugin
   -> Maybe Text      -- ^ Selected resource
   -> Int             -- ^ Number of loaded records
   -> Bool            -- ^ Whether the selected resource supports create
+  -> Bool            -- ^ Whether the selected resource supports pagination
   -> Layout
   -> [Widget]
-buildDataBrowserWidgets resources selectedPlugin selectedResource recordCount canCreate layout =
+buildDataBrowserWidgets resources selectedPlugin selectedResource recordCount canCreate canPage layout =
   let pluginNames = Map.keys resources
       pluginWidgets =
         [ Widget (WidgetDataPluginSelect pName) (dataBrowserItemRect idx layout)
@@ -219,7 +220,7 @@ buildDataBrowserWidgets resources selectedPlugin selectedResource recordCount ca
       pageRow = recordOffset + recordCount
       pageWidgets = case (selectedPlugin, selectedResource) of
         (Just pName, Just rName)
-          | recordCount > 0 ->
+          | canPage && recordCount > 0 ->
               [ Widget (WidgetDataPagePrev pName rName) (dataBrowserPagePrevRect pageRow layout)
               , Widget (WidgetDataPageNext pName rName) (dataBrowserPageNextRect pageRow layout)
               ]

@@ -1124,14 +1124,17 @@ dataPluginSummarySchema = inlineObjectSchema
 
 dataResourceSchema :: Value
 dataResourceSchema = inlineObjectSchema
-  [ "name", "label", "hex_bound", "key_field", "fields", "operations" ]
-  [ ("name", stringSchema)
+  [ "schema_version", "resource_version", "name", "label", "hex_bound", "key_field", "fields", "operations", "pagination" ]
+  [ ("schema_version", integerSchema)
+  , ("resource_version", integerSchema)
+  , ("name", stringSchema)
   , ("label", stringSchema)
   , ("hex_bound", booleanSchema)
   , ("key_field", stringSchema)
   , ("overlay", nullableSchema stringSchema)
   , ("fields", arraySchema dataFieldSchema)
   , ("operations", dataOperationsSchema)
+  , ("pagination", dataPaginationSchema)
   ]
 
 dataFieldSchema :: Value
@@ -1155,13 +1158,25 @@ dataFieldTypeSchema = object
 
 dataOperationsSchema :: Value
 dataOperationsSchema = inlineObjectSchema
-  [ "list", "get", "create", "update", "delete", "query_by_hex" ]
+  [ "list", "get", "create", "update", "delete", "query_by_hex", "query_by_field", "sort", "filter", "page" ]
   [ ("list", booleanSchema)
   , ("get", booleanSchema)
   , ("create", booleanSchema)
   , ("update", booleanSchema)
   , ("delete", booleanSchema)
   , ("query_by_hex", booleanSchema)
+  , ("query_by_field", booleanSchema)
+  , ("sort", booleanSchema)
+  , ("filter", booleanSchema)
+  , ("page", booleanSchema)
+  ]
+
+dataPaginationSchema :: Value
+dataPaginationSchema = inlineObjectSchema
+  [ "default_page_size", "max_page_size", "default_page_offset" ]
+  [ ("default_page_size", integerSchema)
+  , ("max_page_size", integerSchema)
+  , ("default_page_offset", integerSchema)
   ]
 
 dataRecordKeyRequestSchema :: Text -> JsonSchema

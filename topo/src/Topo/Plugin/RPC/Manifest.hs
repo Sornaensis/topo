@@ -851,13 +851,16 @@ manifestV3Schema = object
           [ "type" .= ("object" :: Text)
           , "required" .= (["name", "label", "fields", "operations", "keyField"] :: [Text])
           , "properties" .= object
-              [ "name" .= stringSchema
+              [ "schemaVersion" .= integerSchema
+              , "resourceVersion" .= integerSchema
+              , "name" .= stringSchema
               , "label" .= stringSchema
               , "hexBound" .= booleanSchema
               , "fields" .= arrayOf (schemaRef "dataField")
               , "operations" .= schemaRef "dataOperations"
               , "keyField" .= stringSchema
               , "overlay" .= stringSchema
+              , "pagination" .= schemaRef "dataPagination"
               ]
           ]
       , "dataField" .= object
@@ -888,6 +891,18 @@ manifestV3Schema = object
               , "update" .= booleanSchema
               , "delete" .= booleanSchema
               , "queryByHex" .= booleanSchema
+              , "queryByField" .= booleanSchema
+              , "sort" .= booleanSchema
+              , "filter" .= booleanSchema
+              , "page" .= booleanSchema
+              ]
+          ]
+      , "dataPagination" .= object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object
+              [ "defaultPageSize" .= integerSchema
+              , "maxPageSize" .= integerSchema
+              , "defaultPageOffset" .= integerSchema
               ]
           ]
       , "startPolicy" .= object
@@ -983,7 +998,9 @@ manifestV3ProviderExample = object
       ]
   , "dataResources" .=
       [ object
-          [ "name" .= ("settlements" :: Text)
+          [ "schemaVersion" .= (1 :: Int)
+          , "resourceVersion" .= (1 :: Int)
+          , "name" .= ("settlements" :: Text)
           , "label" .= ("Settlements" :: Text)
           , "hexBound" .= True
           , "fields" .=
@@ -1005,8 +1022,17 @@ manifestV3ProviderExample = object
               , "update" .= False
               , "delete" .= False
               , "queryByHex" .= True
+              , "queryByField" .= False
+              , "sort" .= False
+              , "filter" .= False
+              , "page" .= False
               ]
           , "keyField" .= ("id" :: Text)
+          , "pagination" .= object
+              [ "defaultPageSize" .= (20 :: Int)
+              , "maxPageSize" .= (500 :: Int)
+              , "defaultPageOffset" .= (0 :: Int)
+              ]
           ]
       ]
   , "externalDataSources" .=

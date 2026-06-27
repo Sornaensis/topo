@@ -182,6 +182,10 @@ data ResourceOperation
   | ResourceUpdate
   | ResourceDelete
   | ResourceQueryByHex
+  | ResourceQueryByField
+  | ResourceSort
+  | ResourceFilter
+  | ResourcePage
   deriving (Eq, Ord, Show, Read, Generic)
 
 instance FromJSON ResourceOperation where
@@ -192,6 +196,12 @@ instance FromJSON ResourceOperation where
     "update" -> pure ResourceUpdate
     "delete" -> pure ResourceDelete
     "queryByHex" -> pure ResourceQueryByHex
+    "query_by_hex" -> pure ResourceQueryByHex
+    "queryByField" -> pure ResourceQueryByField
+    "query_by_field" -> pure ResourceQueryByField
+    "sort" -> pure ResourceSort
+    "filter" -> pure ResourceFilter
+    "page" -> pure ResourcePage
     _ -> fail ("unknown resource operation: " <> Text.unpack t)
 
 instance ToJSON ResourceOperation where
@@ -201,6 +211,10 @@ instance ToJSON ResourceOperation where
   toJSON ResourceUpdate = "update"
   toJSON ResourceDelete = "delete"
   toJSON ResourceQueryByHex = "queryByHex"
+  toJSON ResourceQueryByField = "queryByField"
+  toJSON ResourceSort = "sort"
+  toJSON ResourceFilter = "filter"
+  toJSON ResourcePage = "page"
 
 -- | Dependency on a plugin-owned data resource.
 data ResourceDependency = ResourceDependency

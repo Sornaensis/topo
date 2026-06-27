@@ -20,6 +20,7 @@ import Test.Hspec
 import Topo.Plugin.DataResource
   ( DataFieldDef(..), DataFieldType(..)
   , DataOperations(..), DataResourceSchema(..)
+  , currentDataResourceSchemaVersion, defaultDataResourceVersion, defaultDataPagination
   , noOperations, allOperations
   )
 import Topo.Plugin.RPC.DataService
@@ -596,7 +597,9 @@ dataPlugin = defaultPluginDef
   , pdDataResources =
       [ DataResourceDef
           { drdSchema = DataResourceSchema
-              { drsName = "items"
+              { drsSchemaVersion = currentDataResourceSchemaVersion
+              , drsResourceVersion = defaultDataResourceVersion
+              , drsName = "items"
               , drsLabel = "Items"
               , drsHexBound = False
               , drsFields =
@@ -606,6 +609,7 @@ dataPlugin = defaultPluginDef
               , drsOperations = allOperations
               , drsKeyField = "name"
               , drsOverlay = Nothing
+              , drsPagination = defaultDataPagination
               }
           , drdHandler = DataHandler
               { dhQuery = Just $ \_ctx _query ->
@@ -641,13 +645,16 @@ readOnlyDataPlugin = defaultPluginDef
   , pdDataResources =
       [ DataResourceDef
           { drdSchema = DataResourceSchema
-              { drsName = "readonly"
+              { drsSchemaVersion = currentDataResourceSchemaVersion
+              , drsResourceVersion = defaultDataResourceVersion
+              , drsName = "readonly"
               , drsLabel = "Read Only"
               , drsHexBound = False
               , drsFields = [DataFieldDef "id" DFInt "ID" False Nothing]
               , drsOperations = noOperations { doList = True }
               , drsKeyField = "id"
               , drsOverlay = Nothing
+              , drsPagination = defaultDataPagination
               }
           , drdHandler = noDataHandler
               { dhQuery = Just $ \_ctx _query ->
@@ -665,13 +672,16 @@ failingDataPlugin = defaultPluginDef
   , pdDataResources =
       [ DataResourceDef
           { drdSchema = DataResourceSchema
-              { drsName = "broken"
+              { drsSchemaVersion = currentDataResourceSchemaVersion
+              , drsResourceVersion = defaultDataResourceVersion
+              , drsName = "broken"
               , drsLabel = "Broken"
               , drsHexBound = False
               , drsFields = [DataFieldDef "x" DFInt "X" False Nothing]
               , drsOperations = noOperations { doList = True }
               , drsKeyField = "x"
               , drsOverlay = Nothing
+              , drsPagination = defaultDataPagination
               }
           , drdHandler = noDataHandler
               { dhQuery = Just $ \_ctx _query ->

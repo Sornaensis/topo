@@ -39,6 +39,7 @@ import Topo.Plugin.DataResource
   ( DataResourceSchema(..)
   , DataFieldDef(..)
   , DataOperations(..)
+  , DataPagination(..)
   )
 import Topo.Plugin.RPC.DataService
   ( DataMutation(..)
@@ -97,13 +98,15 @@ handleDataListRecords ctx reqId params = do
       pure $ errResponse reqId "missing or invalid 'plugin' and/or 'resource' parameters"
     Just (pluginName, resourceName) -> do
       let pmH = ahPluginManagerHandle (ccActorHandles ctx)
-          mPageSize   = Aeson.parseMaybe parsePageSize params
-          mPageOffset = Aeson.parseMaybe parsePageOffset params
+          requestedPageSize   = Aeson.parseMaybe parsePageSize params
+          requestedPageOffset = Aeson.parseMaybe parsePageOffset params
+      resources <- getPluginDataResources pmH
+      let mSchema = Map.lookup pluginName resources >>= findResourceSchema resourceName
           qr = QueryResource
             { qrResource   = resourceName
             , qrQuery      = QueryAll
-            , qrPageSize   = mPageSize
-            , qrPageOffset = mPageOffset
+            , qrPageSize   = effectivePageSize mSchema requestedPageSize
+            , qrPageOffset = effectivePageOffset mSchema requestedPageOffset
             }
       result <- queryPluginResource pmH pluginName qr
       case result of
@@ -301,13 +304,16 @@ recordToJSON (DataRecord m) =
 
 schemaToJSON :: DataResourceSchema -> Value
 schemaToJSON drs = object
-  [ "name"       .= drsName drs
-  , "label"      .= drsLabel drs
-  , "hex_bound"  .= drsHexBound drs
-  , "key_field"  .= drsKeyField drs
-  , "overlay"    .= drsOverlay drs
-  , "fields"     .= map fieldToJSON (drsFields drs)
-  , "operations" .= opsToJSON (drsOperations drs)
+  [ "schema_version"   .= drsSchemaVersion drs
+  , "resource_version" .= drsResourceVersion drs
+  , "name"             .= drsName drs
+  , "label"            .= drsLabel drs
+  , "hex_bound"        .= drsHexBound drs
+  , "key_field"        .= drsKeyField drs
+  , "overlay"          .= drsOverlay drs
+  , "fields"           .= map fieldToJSON (drsFields drs)
+  , "operations"       .= opsToJSON (drsOperations drs)
+  , "pagination"       .= paginationToJSON (drsPagination drs)
   ]
 
 fieldToJSON :: DataFieldDef -> Value
@@ -321,10 +327,48 @@ fieldToJSON fd = object
 
 opsToJSON :: DataOperations -> Value
 opsToJSON ops = object
-  [ "list"         .= doList ops
-  , "get"          .= doGet ops
-  , "create"       .= doCreate ops
-  , "update"       .= doUpdate ops
-  , "delete"       .= doDelete ops
-  , "query_by_hex" .= doQueryByHex ops
+  [ "list"           .= doList ops
+  , "get"            .= doGet ops
+  , "create"         .= doCreate ops
+  , "update"         .= doUpdate ops
+  , "delete"         .= doDelete ops
+  , "query_by_hex"   .= doQueryByHex ops
+  , "query_by_field" .= doQueryByField ops
+  , "sort"           .= doSort ops
+  , "filter"         .= doFilter ops
+  , "page"           .= doPage ops
   ]
+
+paginationToJSON :: DataPagination -> Value
+paginationToJSON pagination = object
+  [ "default_page_size" .= dpDefaultPageSize pagination
+  , "max_page_size" .= dpMaxPageSize pagination
+  , "default_page_offset" .= dpDefaultPageOffset pagination
+  ]
+
+findResourceSchema :: Text -> [DataResourceSchema] -> Maybe DataResourceSchema
+findResourceSchema resourceName = go
+  where
+    go [] = Nothing
+    go (schema:rest)
+      | drsName schema == resourceName = Just schema
+      | otherwise = go rest
+
+effectivePageSize :: Maybe DataResourceSchema -> Maybe Int -> Maybe Int
+effectivePageSize mSchema requested = case mSchema of
+  Just schema
+    | doPage (drsOperations schema) ->
+        let pagination = drsPagination schema
+        in Just (clamp 1 (dpMaxPageSize pagination) (maybe (dpDefaultPageSize pagination) id requested))
+  _ -> requested
+
+effectivePageOffset :: Maybe DataResourceSchema -> Maybe Int -> Maybe Int
+effectivePageOffset mSchema requested = case mSchema of
+  Just schema
+    | doPage (drsOperations schema) ->
+        let pagination = drsPagination schema
+        in Just (max 0 (maybe (dpDefaultPageOffset pagination) id requested))
+  _ -> requested
+
+clamp :: Ord a => a -> a -> a -> a
+clamp lo hi = max lo . min hi

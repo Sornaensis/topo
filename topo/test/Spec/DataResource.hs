@@ -7,7 +7,7 @@ import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
 
-import Data.Aeson (encode, eitherDecode)
+import Data.Aeson (encode, eitherDecode, object, (.=))
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as BL
 import Data.Either (isLeft, isRight)
@@ -58,6 +58,21 @@ instance Arbitrary DataOperations where
     <*> arbitrary
     <*> arbitrary
     <*> arbitrary
+    <*> arbitrary
+    <*> arbitrary
+    <*> arbitrary
+    <*> arbitrary
+
+instance Arbitrary DataPagination where
+  arbitrary = do
+    Positive defaultSize <- arbitrary
+    Positive maxSize <- arbitrary
+    NonNegative defaultOffset <- arbitrary
+    pure DataPagination
+      { dpDefaultPageSize = defaultSize
+      , dpMaxPageSize = max defaultSize maxSize
+      , dpDefaultPageOffset = defaultOffset
+      }
 
 instance Arbitrary DataResourceSchema where
   arbitrary = do
@@ -69,14 +84,20 @@ instance Arbitrary DataResourceSchema where
     extraFields <- listOf arbitrary
     ops <- arbitrary
     ov <- arbitrary
+    pagination <- arbitrary
+    Positive schemaVersion <- arbitrary
+    Positive resourceVersion <- arbitrary
     pure DataResourceSchema
-      { drsName       = name
+      { drsSchemaVersion = schemaVersion
+      , drsResourceVersion = resourceVersion
+      , drsName       = name
       , drsLabel      = label
       , drsHexBound   = hexBound
       , drsFields     = keyField : extraFields
       , drsOperations = ops
       , drsKeyField   = keyName
       , drsOverlay    = ov
+      , drsPagination = pagination
       }
 
 ------------------------------------------------------------------------
@@ -121,16 +142,68 @@ spec = describe "Topo.Plugin.DataResource" $ do
     it "round-trips allOperations" $ do
       eitherDecode (encode allOperations) `shouldBe` Right allOperations
 
+    it "accepts snake_case query operation aliases" $ do
+      let raw = object
+            [ "query_by_hex" .= True
+            , "query_by_field" .= True
+            , "sort" .= True
+            , "filter" .= True
+            , "page" .= True
+            ]
+      eitherDecode (encode raw) `shouldBe` Right (noOperations
+        { doQueryByHex = True
+        , doQueryByField = True
+        , doSort = True
+        , doFilter = True
+        , doPage = True
+        })
+
     prop "arbitrary DataOperations round-trips" $ \(ops :: DataOperations) ->
       eitherDecode (encode ops) === Right ops
+
+  describe "DataPagination JSON" $ do
+    it "round-trips defaultDataPagination" $ do
+      eitherDecode (encode defaultDataPagination) `shouldBe` Right defaultDataPagination
+
+    it "accepts snake_case pagination aliases" $ do
+      let raw = object
+            [ "default_page_size" .= (25 :: Int)
+            , "max_page_size" .= (100 :: Int)
+            , "default_page_offset" .= (5 :: Int)
+            ]
+      eitherDecode (encode raw) `shouldBe` Right (DataPagination
+        { dpDefaultPageSize = 25
+        , dpMaxPageSize = 100
+        , dpDefaultPageOffset = 5
+        })
+
+    prop "arbitrary DataPagination round-trips" $ \(pagination :: DataPagination) ->
+      eitherDecode (encode pagination) === Right pagination
 
   describe "DataResourceSchema JSON" $ do
     prop "arbitrary DataResourceSchema round-trips" $ \(drs :: DataResourceSchema) ->
       eitherDecode (encode drs) === Right drs
 
+    it "defaults versioning and pagination metadata for legacy schemas" $ do
+      let raw = object
+            [ "name" .= ("legacy" :: Text)
+            , "label" .= ("Legacy" :: Text)
+            , "fields" .= [DataFieldDef "id" DFText "ID" False Nothing]
+            , "operations" .= noOperations { doList = True }
+            , "keyField" .= ("id" :: Text)
+            ]
+      case eitherDecode (encode raw) of
+        Right drs -> do
+          drsSchemaVersion drs `shouldBe` currentDataResourceSchemaVersion
+          drsResourceVersion drs `shouldBe` defaultDataResourceVersion
+          drsPagination drs `shouldBe` defaultDataPagination
+        Left err -> expectationFailure err
+
   describe "Validation" $ do
     let validSchema = DataResourceSchema
-          { drsName       = "cultures"
+          { drsSchemaVersion = currentDataResourceSchemaVersion
+          , drsResourceVersion = defaultDataResourceVersion
+          , drsName       = "cultures"
           , drsLabel      = "Cultures"
           , drsHexBound   = False
           , drsFields     = [DataFieldDef "id" DFInt "ID" False Nothing
@@ -138,6 +211,7 @@ spec = describe "Topo.Plugin.DataResource" $ do
           , drsOperations = allOperations { doQueryByHex = False }
           , drsKeyField   = "id"
           , drsOverlay    = Nothing
+          , drsPagination = defaultDataPagination
           }
 
     it "accepts a valid schema" $ do

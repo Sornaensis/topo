@@ -31,7 +31,9 @@ import Topo.Plugin.DataResource
   , DataFieldType(..)
   , DataOperations(..)
   , DataResourceSchema(..)
-  , allOperations
+  , currentDataResourceSchemaVersion
+  , defaultDataResourceVersion
+  , defaultDataPagination
   , noOperations
   )
 import Topo.Plugin.RPC.DataService
@@ -142,7 +144,9 @@ mkCrudPlugin = do
 crudResource :: IORef [DataRecord] -> DataResourceDef
 crudResource recordsRef = DataResourceDef
   { drdSchema = DataResourceSchema
-      { drsName = "items"
+      { drsSchemaVersion = currentDataResourceSchemaVersion
+      , drsResourceVersion = defaultDataResourceVersion
+      , drsName = "items"
       , drsLabel = "Fixture Items"
       , drsHexBound = True
       , drsFields =
@@ -151,9 +155,18 @@ crudResource recordsRef = DataResourceDef
           , DataFieldDef "chunk" DFInt "Chunk" False Nothing
           , DataFieldDef "tile" DFInt "Tile" False Nothing
           ]
-      , drsOperations = allOperations
+      , drsOperations = noOperations
+          { doList = True
+          , doGet = True
+          , doCreate = True
+          , doUpdate = True
+          , doDelete = True
+          , doQueryByHex = True
+          , doQueryByField = True
+          }
       , drsKeyField = "id"
       , drsOverlay = Nothing
+      , drsPagination = defaultDataPagination
       }
   , drdHandler = DataHandler
       { dhQuery = Just (\_ query -> Right <$> queryRecords recordsRef "items" query)
@@ -193,7 +206,9 @@ mkExternalProviderPlugin = do
 externalProviderResource :: IORef [DataRecord] -> DataResourceDef
 externalProviderResource sourcesRef = DataResourceDef
   { drdSchema = DataResourceSchema
-      { drsName = "shared_sources"
+      { drsSchemaVersion = currentDataResourceSchemaVersion
+      , drsResourceVersion = defaultDataResourceVersion
+      , drsName = "shared_sources"
       , drsLabel = "Shared External Sources"
       , drsHexBound = False
       , drsFields =
@@ -202,9 +217,10 @@ externalProviderResource sourcesRef = DataResourceDef
           , DataFieldDef "capability" DFText "Capability" False Nothing
           , DataFieldDef "status" DFText "Status" False Nothing
           ]
-      , drsOperations = noOperations { doList = True, doGet = True }
+      , drsOperations = noOperations { doList = True, doGet = True, doQueryByField = True }
       , drsKeyField = "source_id"
       , drsOverlay = Nothing
+      , drsPagination = defaultDataPagination
       }
   , drdHandler = noDataHandler
       { dhQuery = Just (\_ query -> Right <$> queryRecords sourcesRef "shared_sources" query)
@@ -243,7 +259,9 @@ mkExternalConsumerPlugin = do
 externalConsumerResource :: IORef [DataRecord] -> DataResourceDef
 externalConsumerResource bindingsRef = DataResourceDef
   { drdSchema = DataResourceSchema
-      { drsName = "source_bindings"
+      { drsSchemaVersion = currentDataResourceSchemaVersion
+      , drsResourceVersion = defaultDataResourceVersion
+      , drsName = "source_bindings"
       , drsLabel = "External Source Bindings"
       , drsHexBound = False
       , drsFields =
@@ -252,9 +270,10 @@ externalConsumerResource bindingsRef = DataResourceDef
           , DataFieldDef "grant" DFText "Grant" False Nothing
           , DataFieldDef "status" DFText "Status" False Nothing
           ]
-      , drsOperations = noOperations { doList = True, doGet = True }
+      , drsOperations = noOperations { doList = True, doGet = True, doQueryByField = True }
       , drsKeyField = "binding_id"
       , drsOverlay = Nothing
+      , drsPagination = defaultDataPagination
       }
   , drdHandler = noDataHandler
       { dhQuery = Just (\_ query -> Right <$> queryRecords bindingsRef "source_bindings" query)

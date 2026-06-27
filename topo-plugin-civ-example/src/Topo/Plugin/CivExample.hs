@@ -132,7 +132,9 @@ civPlugin = defaultPluginDef
 settlementsResource :: DataResourceDef
 settlementsResource = DataResourceDef
   { drdSchema = DataResourceSchema
-      { drsName       = "settlements"
+      { drsSchemaVersion = currentDataResourceSchemaVersion
+      , drsResourceVersion = defaultDataResourceVersion
+      , drsName       = "settlements"
       , drsLabel      = "Settlements"
       , drsHexBound   = True
       , drsFields     =
@@ -143,6 +145,7 @@ settlementsResource = DataResourceDef
       , drsOperations = noOperations { doList = True, doGet = True, doQueryByHex = True }
       , drsKeyField   = "name"
       , drsOverlay    = Nothing
+      , drsPagination = defaultDataPagination
       }
   , drdHandler = noDataHandler
       { dhQuery = Just querySettlements
@@ -153,7 +156,9 @@ settlementsResource = DataResourceDef
 culturesResource :: DataResourceDef
 culturesResource = DataResourceDef
   { drdSchema = DataResourceSchema
-      { drsName       = "cultures"
+      { drsSchemaVersion = currentDataResourceSchemaVersion
+      , drsResourceVersion = defaultDataResourceVersion
+      , drsName       = "cultures"
       , drsLabel      = "Cultures"
       , drsHexBound   = False
       , drsFields     =
@@ -164,6 +169,7 @@ culturesResource = DataResourceDef
       , drsOperations = noOperations { doList = True, doGet = True }
       , drsKeyField   = "culture_id"
       , drsOverlay    = Nothing
+      , drsPagination = defaultDataPagination
       }
   , drdHandler = noDataHandler
       { dhQuery = Just queryCultures
