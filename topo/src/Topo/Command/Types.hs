@@ -2,9 +2,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StrictData #-}
 
--- | Shared command/response types for the legacy topo-seer IPC command channel.
+-- | Shared command/response types for legacy topo-seer command IPC.
 --
--- These types are retained for topo-seer internal/test command-channel
+-- These types are retained for topo-seer internal/test command IPC
 -- compatibility over a named pipe (Windows) or Unix domain socket. They are not
 -- a public 1.0 automation contract; external automation should use the
 -- topo-seer HTTP/OpenAPI surface.
@@ -98,7 +98,7 @@ errResponse reqId msg = SeerResponse
   , srError   = Just msg
   }
 
--- | The default pipe/socket name for the topo-seer command channel.
+-- | The default pipe/socket name for the topo-seer command IPC listener.
 --
 -- On Windows: @\\\\.\\pipe\\topo-seer-cmd@
 -- On Unix: @\/tmp\/topo-seer-cmd.sock@

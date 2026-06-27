@@ -142,7 +142,7 @@ Ongoing cleanup steps:
 1. Keep service/HTTP/OpenAPI tests equivalent to the command compatibility
    surface where that surface still exists.
 2. Keep docs and examples focused on HTTP/OpenAPI as the public automation path.
-3. Avoid command-channel log terminology that implies MCP is the public client
+3. Avoid command IPC log terminology that implies MCP is the public client
    path.
 
 Command IPC may remain temporarily as internal/test compatibility if needed,

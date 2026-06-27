@@ -216,7 +216,7 @@ configGetSummaryOperation = typedOperation $
 
 configGetEnumsOperation :: TypedServiceOperation ConfigEnumsRequest ConfigEnumsResponse
 configGetEnumsOperation = typedOperation $
-  operationSpec "config.enums" "get_enums" "List command/API enum values."
+  operationSpec "config.enums" "get_enums" "List enum values for HTTP and internal command compatibility."
 
 configListPresetsOperation :: TypedServiceOperation ConfigListPresetsRequest ConfigListPresetsResponse
 configListPresetsOperation = typedOperation $

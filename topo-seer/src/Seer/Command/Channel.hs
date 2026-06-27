@@ -3,9 +3,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | Internal/test compatibility IPC command channel listener for topo-seer.
+-- | Internal/test compatibility command IPC listener for topo-seer.
 --
--- External 1.0 automation uses direct HTTP/OpenAPI. This legacy channel remains
+-- External 1.0 automation uses direct HTTP/OpenAPI. This legacy IPC path remains
 -- only for in-repo compatibility while service extraction and command-dispatch
 -- tests still need command-shaped dispatch.
 --
@@ -14,8 +14,8 @@
 --
 -- Each accepted client connection gets its own lightweight Haskell thread
 -- that reads 'SeerCommand' messages, dispatches them, and writes
--- 'SeerResponse' messages back.  The channel is always-on in the SDL runtime;
--- if nothing connects, the listener thread just sleeps in an accept loop.
+-- 'SeerResponse' messages back.  The listener is always-on in the SDL runtime;
+-- if nothing connects, it just sleeps in an accept loop.
 module Seer.Command.Channel
   ( CommandChannelEnv(..)
   , runCommandChannel
@@ -51,7 +51,7 @@ import System.Directory (removeFile, doesFileExist)
 import System.IO (IOMode(..))
 #endif
 
--- | Environment for the command channel.
+-- | Environment for the command IPC listener.
 data CommandChannelEnv = CommandChannelEnv
   { cceActorHandles    :: !ActorHandles
   , cceUiSnapshotRef   :: !UiSnapshotRef
@@ -60,14 +60,14 @@ data CommandChannelEnv = CommandChannelEnv
   , cceLogSnapshotRef  :: !(Maybe LogSnapshotRef)
   }
 
--- | Run the command channel listener.
+-- | Run the command IPC listener.
 --
 -- This function blocks forever, accepting client connections and
 -- spawning a handler thread for each.  It should be run in its own
 -- 'forkIO' or 'async' thread.
 runCommandChannel :: CommandChannelEnv -> IO ()
 runCommandChannel env = do
-  hPutStrLn stderr ("[cmd-channel] listening on " ++ commandPipeName)
+  hPutStrLn stderr ("[ipc] command listener on " ++ commandPipeName)
   listenLoop env
 
 -- --------------------------------------------------------------------------
@@ -134,7 +134,7 @@ listenLoop env = go
           nullPtr -- default security attributes
       let badHandle = nullPtr `plusPtr` (-1)  -- INVALID_HANDLE_VALUE
       if pipeH == badHandle
-        then hPutStrLn stderr "[cmd-channel] CreateNamedPipe failed"
+        then hPutStrLn stderr "[ipc] CreateNamedPipe failed"
         else do
           -- Block until a client connects to this pipe instance.
           _ <- c_ConnectNamedPipe pipeH nullPtr
@@ -142,7 +142,7 @@ listenLoop env = go
           fd <- c_open_osfhandle pipeH 0  -- 0 = binary mode
           if fd == (-1)
             then do
-              hPutStrLn stderr "[cmd-channel] _open_osfhandle failed"
+              hPutStrLn stderr "[ipc] _open_osfhandle failed"
               _ <- c_CloseHandle pipeH
               pure ()
             else do
@@ -225,7 +225,7 @@ handleClient env transport = do
       case result of
         Left _err -> do
           -- Client disconnected or transport error; exit the loop.
-          hPutStrLn stderr "[cmd-channel] client disconnected"
+          hPutStrLn stderr "[ipc] client disconnected"
           logMsg LogInfo "[command] client disconnected"
           pure ()
         Right payload -> do

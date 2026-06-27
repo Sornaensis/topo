@@ -250,8 +250,8 @@ runSdlApp opts = do
   uiSnap <- getUiSnapshot uiHandle
   let logSnap = LogSnapshot [] False 0 LogDebug
 
-  -- Start the internal/test compatibility command channel in a background
-  -- thread. The supported 1.0 automation path is HTTP/OpenAPI.
+  -- Start the internal/test command IPC listener in a background thread. The
+  -- supported 1.0 automation path is HTTP/OpenAPI.
   screenshotRef <- newScreenshotRequestRef
   historyRef <- newIORef (emptyHistory 50)
   let cmdActorHandles = mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef pluginManagerHandle simulationHandle historyRef

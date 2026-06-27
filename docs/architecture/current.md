@@ -121,8 +121,8 @@ The UI already has substantial feature surface:
 
 The main problem is concentration of responsibilities:
 
-- `Seer.System` combines boot, actor wiring, command-channel startup, SDL loop,
-  events, snapshots, cache scheduling, screenshots, tracing, and cleanup.
+- `Seer.System` combines boot, actor wiring, command IPC listener startup, SDL
+  loop, events, snapshots, cache scheduling, screenshots, tracing, and cleanup.
 - `Seer.Draw.Config` combines panel rendering, pipeline UI, plugin params,
   simulation controls, data browser, popovers, nested record/ADT editing,
   validation-adjacent behavior, and low-level drawing.

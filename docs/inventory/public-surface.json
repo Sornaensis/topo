@@ -326,10 +326,10 @@
     },
     {
       "id": "seer-command-control-compatibility",
-      "title": "Command channel, dispatch, and UI action compatibility adapters",
+      "title": "Command IPC, dispatch, and UI action compatibility adapters",
       "owner": "topo-seer service maintainers",
       "status": "compatibility",
-      "uiSurface": "Current UI and internal/test compatibility paths use command/UI-action adapters; M2 moves behavior behind AppService.",
+      "uiSurface": "Current UI and internal/test command IPC compatibility paths use command/UI-action adapters; M2 moves behavior behind AppService.",
       "serviceSurface": "Compatibility adapter over AppService after M2; current command dispatch is the seed inventory for service operations.",
       "httpSurface": "No direct public 1.0 automation surface; M3 maps public operations to HTTP/OpenAPI routes and M4 removes MCP dependence. Legacy command IPC has no public 1.0 exception.",
       "tests": ["topo-seer:test:Spec.CommandDispatch", "topo-seer:test:Spec.HTTP"],
