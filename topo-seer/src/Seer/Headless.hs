@@ -107,9 +107,9 @@ data HeadlessConfig = HeadlessConfig
     -- ^ Whether to scan the user's plugin directory on startup. Disabled by
     -- default so CI tests do not depend on local plugin state.
   , hcStartCommandChannel :: !Bool
-    -- ^ Whether to start the compatibility command IPC channel. Most tests can
-    -- dispatch directly through 'headlessCommandContext' and should leave this
-    -- off.
+    -- ^ Whether to start the internal/test compatibility command IPC channel.
+    -- Most tests can dispatch directly through 'headlessCommandContext' and
+    -- should leave this off.
   , hcUseLogFile :: !Bool
     -- ^ Whether to create @~/.topo/LOG.txt@ and attach it to the log actor.
     -- Disabled by default to keep headless tests filesystem-light.

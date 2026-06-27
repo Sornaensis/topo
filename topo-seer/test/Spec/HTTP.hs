@@ -62,6 +62,7 @@ import Seer.HTTP.Server
   , handleHttpRequest
   , headlessHttpAppService
   , httpRouteSpecs
+  , publicHttpRouteSpecs
   , parseHttpBind
   )
 import Seer.Command.Dispatch (CommandContext(..))
@@ -94,6 +95,7 @@ spec = describe "Seer.HTTP.Server" $ do
       openapi <- request app (mkRequest "GET" ["openapi.json"])
       hresStatusCode openapi `shouldBe` 200
       lookupText "openapi" (hresBody openapi) `shouldBe` Just "3.0.3"
+      pathMethods (hresBody openapi) "/commands/get_state" `shouldBe` Nothing
 
       state <- request app (mkRequest "GET" ["state"])
       hresStatusCode state `shouldBe` 200
@@ -176,21 +178,26 @@ spec = describe "Seer.HTTP.Server" $ do
       lookupHeaderText "x-request-id" (hresHeaders denied) `shouldBe` Just "req-123"
       lookupNestedText ["error", "request_id"] (hresBody denied) `shouldBe` Just "req-123"
 
-  it "lists every implemented route in OpenAPI" $ do
-    let doc = openApiDocument httpRouteSpecs
-    forM_ httpRouteSpecs $ \route -> do
+  it "lists every public route in OpenAPI" $ do
+    let doc = openApiDocument publicHttpRouteSpecs
+    forM_ publicHttpRouteSpecs $ \route -> do
       let path = routePathText route
           routeMethod = Text.toLower (hrsMethod route)
       pathMethods doc path `shouldSatisfy` maybe False (routeMethod `elem`)
 
-  it "keeps OpenAPI paths and route metadata in lockstep" $ do
-    let doc = openApiDocument httpRouteSpecs
-    openApiSignatureProblems doc `shouldBe` []
-    sort (openApiSignatureLines doc) `shouldBe` sort (map routeSignature httpRouteSpecs)
+  it "omits internal command routes from public OpenAPI" $ do
+    let doc = openApiDocument publicHttpRouteSpecs
+    pathMethods doc "/commands/get_state" `shouldBe` Nothing
+    openApiSignatureLines doc `shouldSatisfy` all (not . Text.isInfixOf "/commands/")
 
-  it "publishes route metadata from the route table into OpenAPI" $ do
-    let doc = openApiDocument httpRouteSpecs
-    forM_ httpRouteSpecs $ \route -> do
+  it "keeps OpenAPI paths and public route metadata in lockstep" $ do
+    let doc = openApiDocument publicHttpRouteSpecs
+    openApiSignatureProblems doc `shouldBe` []
+    sort (openApiSignatureLines doc) `shouldBe` sort (map routeSignature publicHttpRouteSpecs)
+
+  it "publishes public route metadata from the route table into OpenAPI" $ do
+    let doc = openApiDocument publicHttpRouteSpecs
+    forM_ publicHttpRouteSpecs $ \route -> do
       let path = routePathText route
           routeMethod = Text.toLower (hrsMethod route)
       pathOperation doc path routeMethod `shouldSatisfy` maybe False (const True)
@@ -200,7 +207,7 @@ spec = describe "Seer.HTTP.Server" $ do
       operationHasSecurity doc path routeMethod "bearerAuth" `shouldBe` (hrsOperationId route /= "meta.health")
 
   it "publishes named schemas for every friendly resource route" $ do
-    let doc = openApiDocument httpRouteSpecs
+    let doc = openApiDocument publicHttpRouteSpecs
         missingResponses =
           [ routeSignature route
           | route <- friendlyHttpRouteSpecs
@@ -228,7 +235,7 @@ spec = describe "Seer.HTTP.Server" $ do
           operationRequestSchemaRef doc path routeMethod `shouldBe` Just (jsonSchemaName schema)
 
   it "publishes component schemas for resource route groups" $ do
-    let doc = openApiDocument httpRouteSpecs
+    let doc = openApiDocument publicHttpRouteSpecs
         responseRefs =
           [ ("/presets", "get", "PresetsListResponse")
           , ("/presets", "post", "PresetsSaveResponse")
@@ -293,12 +300,12 @@ spec = describe "Seer.HTTP.Server" $ do
 
   it "matches the committed served OpenAPI route golden" $ do
     golden <- readOpenApiRouteGolden
-    let doc = openApiDocument httpRouteSpecs
+    let doc = openApiDocument publicHttpRouteSpecs
     openApiSignatureProblems doc `shouldBe` []
     sort (openApiSignatureLines doc) `shouldBe` sort golden
 
   it "publishes query and auth metadata in OpenAPI" $ do
-    let doc = openApiDocument httpRouteSpecs
+    let doc = openApiDocument publicHttpRouteSpecs
     queryParameterInfo doc "/terrain/hex" "get"
       `shouldBe` Just [("q", True), ("r", True)]
     queryParameterInfo doc "/terrain/chunk-summary" "get"
@@ -341,14 +348,14 @@ spec = describe "Seer.HTTP.Server" $ do
       `shouldBe` sort appServiceOperationMethods
 
   it "maps retired MCP tools/list and tools/call coverage to HTTP, service, and OpenAPI routes" $ do
-    let doc = openApiDocument httpRouteSpecs
+    let doc = openApiDocument publicHttpRouteSpecs
         toolNames = map ptLegacyName retiredMcpToolTargets
     length retiredMcpToolTargets `shouldBe` 85
     toolNames `shouldBe` nub toolNames
     forM_ retiredMcpToolTargets $ \target -> do
       assertFriendlyRouteTarget target
       assertOpenApiTarget doc target
-      assertCommandFallbackTarget target
+      assertInternalCommandRouteTarget target
 
   it "dispatches representative retired MCP tools/call primary HTTP routes" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
@@ -386,7 +393,7 @@ spec = describe "Seer.HTTP.Server" $ do
       lookupValue "r" (hresBody hexRsp) `shouldBe` Just (Number 0)
 
   it "maps retired MCP resources/list coverage to OpenAPI resource routes" $ do
-    let doc = openApiDocument httpRouteSpecs
+    let doc = openApiDocument publicHttpRouteSpecs
         resourceNames = map ptLegacyName retiredMcpResourceTargets
         templateResources = filter (Text.isInfixOf "{" . ptLegacyName) retiredMcpResourceTargets
         staticResources = filter (not . Text.isInfixOf "{" . ptLegacyName) retiredMcpResourceTargets
@@ -468,9 +475,9 @@ assertOpenApiTarget :: Value -> ParityTarget -> Expectation
 assertOpenApiTarget doc t =
   operationIdAt doc (targetPathText t) (Text.toLower (ptMethod t)) `shouldBe` Just (ptOperationId t)
 
-assertCommandFallbackTarget :: ParityTarget -> Expectation
-assertCommandFallbackTarget t = case find matching commandHttpRouteSpecs of
-  Nothing -> expectationFailure ("missing command-compatible HTTP fallback for " <> Text.unpack (ptLegacyName t) <> " via " <> Text.unpack (ptServiceMethod t))
+assertInternalCommandRouteTarget :: ParityTarget -> Expectation
+assertInternalCommandRouteTarget t = case find matching commandHttpRouteSpecs of
+  Nothing -> expectationFailure ("missing internal command-compatible HTTP route for " <> Text.unpack (ptLegacyName t) <> " via " <> Text.unpack (ptServiceMethod t))
   Just route -> do
     hrsOperationId route `shouldBe` ("command." <> ptServiceMethod t)
     hrsServiceMethod route `shouldBe` Just (ptServiceMethod t)

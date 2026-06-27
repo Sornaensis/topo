@@ -31,10 +31,11 @@ curl -X POST http://127.0.0.1:7373/ui/seed \
   -d '{"seed":123}'
 ```
 
-The retired MCP bridge is not a 1.0 automation path. Migration notes and the
-old-tool/resource mapping live in `docs/inventory/mcp-http-parity.md`; new
-clients should prefer resource-oriented HTTP routes over compatibility command
-fallbacks.
+The retired MCP bridge and legacy command IPC are not 1.0 automation paths.
+Migration notes and the old-tool/resource mapping live in
+`docs/inventory/mcp-http-parity.md`; new clients should use resource-oriented
+HTTP/OpenAPI routes only. Command IPC remains internal/test compatibility while
+service extraction continues, with no public 1.0 exception.
 
 ## Runtime dependencies
 

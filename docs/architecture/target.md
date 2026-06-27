@@ -146,7 +146,8 @@ Ongoing cleanup steps:
    path.
 
 Command IPC may remain temporarily as internal/test compatibility if needed,
-but it should not be the documented 1.0 automation surface.
+but it is not the documented 1.0 automation surface and has no public 1.0
+exception.
 
 ## Plugin supervisor architecture
 

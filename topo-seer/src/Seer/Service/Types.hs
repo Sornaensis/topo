@@ -3,10 +3,11 @@
 
 -- | Shared service-layer interface types.
 --
--- The service layer is the stable behaviour boundary used by command IPC,
--- future HTTP routes, UI mutations, and direct service tests.  This module is
--- intentionally independent of the old command response envelope so callers can
--- translate structured service errors into command, HTTP, or UI responses.
+-- The service layer is the stable behaviour boundary used by internal command
+-- IPC compatibility, HTTP routes, UI mutations, and direct service tests. This
+-- module is intentionally independent of the old command response envelope so
+-- callers can translate structured service errors into command, HTTP, or UI
+-- responses.
 module Seer.Service.Types
   ( ServiceHandler
   , TypedServiceHandler

@@ -2,10 +2,13 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StrictData #-}
 
--- | Shared command/response types for the topo-seer IPC command channel.
+-- | Shared command/response types for the legacy topo-seer IPC command channel.
 --
--- These types are used by topo-seer command-channel compatibility clients
--- over a named pipe (Windows) or Unix domain socket.
+-- These types are retained for topo-seer internal/test command-channel
+-- compatibility over a named pipe (Windows) or Unix domain socket. They are not
+-- a public 1.0 automation contract; external automation should use the
+-- topo-seer HTTP/OpenAPI surface.
+--
 -- They use the same length-prefixed JSON framing as
 -- 'Topo.Plugin.RPC.Transport'.
 module Topo.Command.Types
@@ -32,7 +35,7 @@ import Data.Aeson
   )
 import Data.Text (Text)
 
--- | A command sent from an external client to topo-seer.
+-- | A command sent by an internal/test compatibility client to topo-seer.
 data SeerCommand = SeerCommand
   { scId     :: !Int     -- ^ Request ID for correlating responses.
   , scMethod :: !Text    -- ^ Command name (e.g., @\"get_state\"@, @\"set_slider\"@).
@@ -53,7 +56,7 @@ instance ToJSON SeerCommand where
     , "params" .= scParams cmd
     ]
 
--- | A response from topo-seer to an external client.
+-- | A response from topo-seer to an internal/test compatibility client.
 data SeerResponse = SeerResponse
   { srId      :: !Int          -- ^ Matches the request 'scId'.
   , srSuccess :: !Bool         -- ^ Whether the command succeeded.

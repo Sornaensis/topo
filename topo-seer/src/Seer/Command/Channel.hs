@@ -3,15 +3,19 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | IPC command channel listener for topo-seer.
+-- | Internal/test compatibility IPC command channel listener for topo-seer.
+--
+-- External 1.0 automation uses direct HTTP/OpenAPI. This legacy channel remains
+-- only for in-repo compatibility while service extraction and command-dispatch
+-- tests still need command-shaped dispatch.
 --
 -- On Windows, listens on a named pipe (@\\\\.\\pipe\\topo-seer-cmd@).
 -- On Unix, listens on a Unix domain socket (@\/tmp\/topo-seer-cmd.sock@).
 --
 -- Each accepted client connection gets its own lightweight Haskell thread
 -- that reads 'SeerCommand' messages, dispatches them, and writes
--- 'SeerResponse' messages back.  The channel is always-on; if nothing
--- connects, the listener thread just sleeps in an accept loop.
+-- 'SeerResponse' messages back.  The channel is always-on in the SDL runtime;
+-- if nothing connects, the listener thread just sleeps in an accept loop.
 module Seer.Command.Channel
   ( CommandChannelEnv(..)
   , runCommandChannel

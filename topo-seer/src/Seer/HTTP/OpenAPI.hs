@@ -42,8 +42,9 @@ data QueryParamSpec = QueryParamSpec
   , qpsSchema :: !Value
   } deriving (Eq, Show)
 
--- | Runtime route metadata. The HTTP server and OpenAPI response are generated
--- from this table so handler coverage and public contract paths cannot drift.
+-- | Runtime route metadata. The HTTP server and public OpenAPI response use
+-- route-spec tables from the same shape so handler coverage and contract paths
+-- cannot drift.
 data HttpRouteSpec = HttpRouteSpec
   { hrsMethod :: !Text
   , hrsPath :: ![Text]

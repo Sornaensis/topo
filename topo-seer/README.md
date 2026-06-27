@@ -47,10 +47,11 @@ curl http://127.0.0.1:7373/state \
 	-H 'Authorization: Bearer TOKEN'
 ```
 
-MCP was a transition bridge and is retired for 1.0. Use the parity matrix at
-`../docs/inventory/mcp-http-parity.md` only to migrate old MCP tool/resource
-names to HTTP/OpenAPI routes; do not build new automation against MCP or command
-IPC.
+MCP was a transition bridge and is retired for 1.0. Legacy command IPC is
+internal/test compatibility only while service extraction continues. Use the
+parity matrix at `../docs/inventory/mcp-http-parity.md` only to migrate old MCP
+tool/resource names to HTTP/OpenAPI routes; do not build new automation against
+MCP, command IPC, or command-shaped compatibility routes.
 
 ## Architecture overview
 

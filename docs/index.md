@@ -40,8 +40,9 @@ curl -X POST http://127.0.0.1:7373/ui/seed \
   -d '{"seed":123}'
 ```
 
-The retired MCP bridge appears only in migration/deprecation notes. New clients
-should use the resource-oriented HTTP routes in OpenAPI; see the
+The retired MCP bridge and legacy command IPC appear only in migration/internal
+compatibility notes. New clients should use the resource-oriented HTTP routes in
+OpenAPI only; there is no public 1.0 command IPC exception. See the
 [MCP-to-HTTP parity matrix](inventory/mcp-http-parity.md) when translating old
 MCP tool or resource names.
 

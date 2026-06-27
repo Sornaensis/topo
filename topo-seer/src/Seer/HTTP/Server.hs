@@ -15,6 +15,7 @@ module Seer.HTTP.Server
   , HttpRequest(..)
   , HttpResponse(..)
   , httpRouteSpecs
+  , publicHttpRouteSpecs
   , friendlyHttpRouteSpecs
   , commandHttpRouteSpecs
   , headlessHttpAppService
@@ -177,7 +178,7 @@ handleHttpRequest cfg app ctx req =
         , "version" .= ("0.1.0.0" :: Text)
         , "api_version" .= ("1" :: Text)
         ]))
-      "meta.openapi" -> pure (jsonResponse 200 (openApiDocument httpRouteSpecs))
+      "meta.openapi" -> pure (jsonResponse 200 (openApiDocument publicHttpRouteSpecs))
       "events.list" -> do
         events <- maybe (pure []) readBufferedServiceEvents (svcEventBus ctx)
         pure (jsonResponse 200 (object
@@ -489,6 +490,11 @@ lookupRoute method path = asum
 
 httpRouteSpecs :: [HttpRouteSpec]
 httpRouteSpecs = friendlyHttpRouteSpecs <> commandHttpRouteSpecs
+
+-- | Routes published in the public OpenAPI contract. Internal command-shaped
+-- compatibility routes remain dispatchable but are intentionally omitted.
+publicHttpRouteSpecs :: [HttpRouteSpec]
+publicHttpRouteSpecs = friendlyHttpRouteSpecs
 
 friendlyHttpRouteSpecs :: [HttpRouteSpec]
 friendlyHttpRouteSpecs = map annotateHttpRouteSpec

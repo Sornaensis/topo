@@ -1,4 +1,4 @@
--- | Command context shared by all IPC command handlers.
+-- | Command context shared by internal/test compatibility IPC handlers.
 --
 -- Extracted into its own module to avoid circular dependencies between
 -- 'Seer.Command.Dispatch' (which imports handlers) and the handler
@@ -27,7 +27,7 @@ data CommandContext = CommandContext
     -- ^ Log snapshot for @get_logs@.  'Nothing' only in tests.
   }
 
--- | Adapt the existing command IPC context into the service-layer context.
+-- | Adapt the existing internal command IPC context into the service-layer context.
 --
 -- Future command adapters should perform command-envelope parsing and then call
 -- AppService operations with this transport-neutral context.
