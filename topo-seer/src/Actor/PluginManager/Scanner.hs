@@ -3,14 +3,17 @@
 
 -- | Plugin directory scanning and manifest loading.
 module Actor.PluginManager.Scanner
-  ( pluginsBaseDir
+  ( ManifestLoadFailure(..)
+  , pluginsBaseDir
   , scanPluginDirs
   , tryLoadPlugin
+  , loadManifestForHost
   , loadOverlaySchema
   ) where
 
 import Control.Exception (SomeException, try)
 import qualified Data.ByteString as BS
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 import System.Directory
@@ -21,7 +24,7 @@ import System.Directory
   )
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
-import Data.Time (getCurrentTime)
+import Data.Time (UTCTime, getCurrentTime)
 
 import Actor.PluginManager.Config (loadPluginConfig)
 import Actor.PluginManager.Types
@@ -34,9 +37,23 @@ import Actor.PluginManager.Types
 import Topo.Overlay.Schema (OverlaySchema, parseOverlaySchema)
 import Topo.Plugin.RPC
   ( RPCManifest(..)
+  , defaultRPCManifestRuntime
+  , defaultRPCStartPolicy
+  , defaultRPCUIHints
+  , manifestV3
   , parseManifestFile
   )
 import qualified Topo.Plugin.RPC.Manifest as RPCManifest
+
+-- | Actionable diagnostics produced while loading a plugin manifest for the
+-- host.  A diagnostic manifest is always provided so existing UI/API plugin
+-- status surfaces can display the failure instead of silently omitting the
+-- plugin directory.
+data ManifestLoadFailure = ManifestLoadFailure
+  { mlfErrorCode :: !Text
+  , mlfErrorMessage :: !Text
+  , mlfDiagnosticManifest :: !RPCManifest
+  } deriving (Eq, Show)
 
 -- | The standard plugin directory.
 pluginsBaseDir :: IO FilePath
@@ -64,18 +81,17 @@ tryLoadPlugin :: FilePath -> String -> IO [LoadedPlugin]
 tryLoadPlugin baseDir entry = do
   let pluginDir = baseDir </> entry
       manifestPath = pluginDir </> "manifest.json"
+      fallbackName = Text.pack entry
   isDir <- doesDirectoryExist pluginDir
   hasManifest <- doesFileExist manifestPath
   if isDir && hasManifest
     then do
-      result <- try @SomeException (parseManifestFile manifestPath)
-      case result of
-        Left _err -> pure []
-        Right (Left _parseErr) -> pure []
-        Right (Right manifest) -> do
+      loadResult <- loadManifestForHost pluginDir fallbackName
+      now <- getCurrentTime
+      case loadResult of
+        Left failure -> pure [loadedPluginFromFailure now pluginDir failure]
+        Right (manifest, overlaySchema) -> do
           params <- loadPluginConfig pluginDir (rmParameters manifest)
-          overlaySchema <- loadOverlaySchema pluginDir manifest
-          now <- getCurrentTime
           pure [LoadedPlugin
             { lpName       = rmName manifest
             , lpManifest   = manifest
@@ -93,16 +109,109 @@ tryLoadPlugin baseDir entry = do
             }]
     else pure []
 
+-- | Parse, validate, and load schema files for a plugin manifest before the
+-- supervisor is allowed to launch the runtime process.
+loadManifestForHost :: FilePath -> Text -> IO (Either ManifestLoadFailure (RPCManifest, Maybe OverlaySchema))
+loadManifestForHost pluginDir fallbackName = do
+  let manifestPath = pluginDir </> "manifest.json"
+  result <- try @SomeException (parseManifestFile manifestPath)
+  case result of
+    Left err -> pure $ Left $ manifestFailure fallbackName Nothing
+      "manifest_read_failed"
+      ("manifest.json could not be read: " <> Text.pack (show err))
+    Right (Left parseErr) -> pure $ Left $ manifestFailure fallbackName Nothing
+      "manifest_parse_failed"
+      ("manifest.json could not be parsed as manifest v3: " <> parseErr
+        <> ". Check required fields manifestVersion, name, version, runtime.protocol.min, and runtime.protocol.max.")
+    Right (Right manifest) -> do
+      let validationErrors = RPCManifest.validateManifest manifest
+      if not (null validationErrors)
+        then pure $ Left $ manifestFailure fallbackName (Just manifest)
+          "manifest_validation_failed"
+          ("manifest v3 validation failed: " <> RPCManifest.renderManifestErrors validationErrors)
+        else do
+          schemaResult <- loadOverlaySchemaStrict pluginDir manifest
+          case schemaResult of
+            Left schemaErr -> pure $ Left $ manifestFailure fallbackName (Just manifest)
+              "manifest_schema_failed"
+              schemaErr
+            Right overlaySchema -> pure (Right (manifest, overlaySchema))
+
 loadOverlaySchema :: FilePath -> RPCManifest -> IO (Maybe OverlaySchema)
-loadOverlaySchema pluginDir manifest =
+loadOverlaySchema pluginDir manifest = do
+  result <- loadOverlaySchemaStrict pluginDir manifest
+  case result of
+    Left _ -> pure Nothing
+    Right overlaySchema -> pure overlaySchema
+
+loadOverlaySchemaStrict :: FilePath -> RPCManifest -> IO (Either Text (Maybe OverlaySchema))
+loadOverlaySchemaStrict pluginDir manifest =
   case rmOverlay manifest of
-    Nothing -> pure Nothing
+    Nothing -> pure (Right Nothing)
     Just overlayDecl -> do
-      let schemaPath = pluginDir </> Text.unpack (RPCManifest.rodSchemaFile overlayDecl)
+      let schemaFile = RPCManifest.rodSchemaFile overlayDecl
+          schemaPath = pluginDir </> Text.unpack schemaFile
       schemaResult <- try @SomeException (BS.readFile schemaPath)
       case schemaResult of
-        Left _ -> pure Nothing
+        Left err -> pure $ Left $
+          "overlay.schemaFile " <> quote schemaFile <> " could not be read relative to the plugin directory: " <> Text.pack (show err)
         Right schemaBytes ->
           case parseOverlaySchema schemaBytes of
-            Left _ -> pure Nothing
-            Right schema -> pure (Just schema)
+            Left parseErr -> pure $ Left $
+              "overlay.schemaFile " <> quote schemaFile <> " could not be parsed as a .toposchema file: " <> parseErr
+            Right schema -> pure (Right (Just schema))
+
+loadedPluginFromFailure :: UTCTime -> FilePath -> ManifestLoadFailure -> LoadedPlugin
+loadedPluginFromFailure now pluginDir failure =
+  let manifest = mlfDiagnosticManifest failure
+  in LoadedPlugin
+    { lpName       = rmName manifest
+    , lpManifest   = manifest
+    , lpParams     = Map.empty
+    , lpStatus     = PluginError (mlfErrorMessage failure)
+    , lpLifecycle  = pluginLifecycleSnapshot now LifecycleDegraded
+        (Just "manifest load failed") (Just (mlfErrorCode failure)) (Just (mlfErrorMessage failure))
+        Nothing Nothing Nothing (manifestLifecycleResources manifest)
+    , lpConnection = Nothing
+    , lpProcessHandle = Nothing
+    , lpStartPolicy = rmStartPolicy manifest
+    , lpRestartHistory = []
+    , lpDirectory  = pluginDir
+    , lpOverlaySchema = Nothing
+    }
+
+manifestFailure :: Text -> Maybe RPCManifest -> Text -> Text -> ManifestLoadFailure
+manifestFailure fallbackName mManifest code message = ManifestLoadFailure
+  { mlfErrorCode = code
+  , mlfErrorMessage = message
+  , mlfDiagnosticManifest = diagnosticManifest fallbackName mManifest
+  }
+
+diagnosticManifest :: Text -> Maybe RPCManifest -> RPCManifest
+diagnosticManifest fallbackName Nothing = emptyDiagnosticManifest fallbackName
+diagnosticManifest fallbackName (Just manifest)
+  | Text.null (rmName manifest) = manifest { rmName = fallbackName }
+  | otherwise = manifest
+
+emptyDiagnosticManifest :: Text -> RPCManifest
+emptyDiagnosticManifest fallbackName = RPCManifest
+  { rmManifestVersion = manifestV3
+  , rmName = fallbackName
+  , rmVersion = ""
+  , rmRuntime = defaultRPCManifestRuntime
+  , rmDescription = ""
+  , rmUiHints = defaultRPCUIHints
+  , rmGenerator = Nothing
+  , rmSimulation = Nothing
+  , rmOverlay = Nothing
+  , rmCapabilities = []
+  , rmParameters = []
+  , rmDataResources = []
+  , rmDataDirectory = Nothing
+  , rmExternalDataSources = []
+  , rmExternalDataSourceRefs = []
+  , rmStartPolicy = defaultRPCStartPolicy
+  }
+
+quote :: Text -> Text
+quote value = "'" <> value <> "'"

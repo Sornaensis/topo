@@ -26,7 +26,7 @@ import Data.Maybe (isNothing)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time (UTCTime, getCurrentTime)
-import System.FilePath ((</>))
+import System.Info (os)
 import System.Process (ProcessHandle, getPid, getProcessExitCode, waitForProcess)
 import System.Timeout (timeout)
 
@@ -39,7 +39,7 @@ import Actor.PluginManager.ProcessLauncher
   , resolvePluginExecutable
   , safeTerminateProcess
   )
-import Actor.PluginManager.Scanner (loadOverlaySchema)
+import Actor.PluginManager.Scanner (ManifestLoadFailure(..), loadManifestForHost)
 import Actor.PluginManager.Types
   ( LoadedPlugin(..)
   , PluginLifecycleSnapshot(..)
@@ -61,7 +61,6 @@ import Topo.Plugin.RPC
   , RPCManifest(..)
   , RPCStartPolicy(..)
   , newRPCConnection
-  , parseManifestFile
   , rpcShutdown
   )
 import Topo.Plugin.RPC.Transport (closeTransport)
@@ -78,16 +77,16 @@ refreshAllManifests baseDir plugins = do
 -- | Re-read a single plugin's manifest, preserving current params.
 refreshOneManifest :: FilePath -> LoadedPlugin -> IO LoadedPlugin
 refreshOneManifest _baseDir lp = do
-  let manifestPath = lpDirectory lp </> "manifest.json"
-  result <- try @SomeException (parseManifestFile manifestPath)
+  result <- loadManifestForHost (lpDirectory lp) (lpName lp)
   now <- getCurrentTime
   case result of
-    Left _ -> pure $ markPluginDegraded now "manifest_read_failed" "manifest read failed" lp
-    Right (Left err) -> pure $ markPluginDegraded now "manifest_parse_failed" (Text.pack (show err)) lp
-    Right (Right manifest) -> do
-      overlaySchema <- loadOverlaySchema (lpDirectory lp) manifest
+    Left failure -> do
+      shutdownPlugin lp
+      pure $ markPluginManifestLoadFailure now failure lp
+    Right (manifest, overlaySchema) -> do
       pure lp
-        { lpManifest = manifest
+        { lpName = rmName manifest
+        , lpManifest = manifest
         , lpStartPolicy = rmStartPolicy manifest
         , lpOverlaySchema = overlaySchema
         , lpRestartHistory = pruneRestartHistory (rmStartPolicy manifest) now (lpRestartHistory lp)
@@ -138,9 +137,12 @@ connectLoadedPlugin lp
       case mExecutable of
         Nothing -> do
           now <- getCurrentTime
+          let message = "plugin executable not found; expected an executable named "
+                <> quoteText (lpName lp) <> " in " <> Text.pack (lpDirectory lp)
+                <> executableHint
           pure lp
-            { lpStatus = PluginError "plugin executable not found"
-            , lpLifecycle = failedLifecycle now "executable_not_found" "plugin executable not found"
+            { lpStatus = PluginError message
+            , lpLifecycle = failedLifecycle now "executable_not_found" message
                 (Just (lpName lp)) Nothing Nothing (manifestLifecycleResources (lpManifest lp))
             , lpConnection = Nothing
             , lpProcessHandle = Nothing
@@ -387,15 +389,23 @@ disconnectPlugin now lp = lp
   , lpProcessHandle = Nothing
   }
 
-markPluginDegraded :: UTCTime -> Text -> Text -> LoadedPlugin -> LoadedPlugin
-markPluginDegraded now errorCode message lp = lp
-  { lpStatus = PluginError message
-  , lpLifecycle = pluginLifecycleSnapshot now LifecycleDegraded
-      (Just "manifest refresh failed") (Just errorCode) (Just message) Nothing
-      (plsProcessId (lpLifecycle lp))
-      (plsProtocolVersion (lpLifecycle lp))
-      (manifestLifecycleResources (lpManifest lp))
-  }
+markPluginManifestLoadFailure :: UTCTime -> ManifestLoadFailure -> LoadedPlugin -> LoadedPlugin
+markPluginManifestLoadFailure now failure lp =
+  let manifest = mlfDiagnosticManifest failure
+      message = mlfErrorMessage failure
+  in lp
+    { lpName = rmName manifest
+    , lpManifest = manifest
+    , lpStatus = PluginError message
+    , lpLifecycle = pluginLifecycleSnapshot now LifecycleDegraded
+        (Just "manifest refresh failed") (Just (mlfErrorCode failure)) (Just message) Nothing
+        Nothing Nothing (manifestLifecycleResources manifest)
+    , lpConnection = Nothing
+    , lpProcessHandle = Nothing
+    , lpStartPolicy = rmStartPolicy manifest
+    , lpRestartHistory = pruneRestartHistory (rmStartPolicy manifest) now (lpRestartHistory lp)
+    , lpOverlaySchema = Nothing
+    }
 
 readyLifecycle :: UTCTime -> Maybe Text -> Maybe Text -> RPCConnection -> PluginLifecycleSnapshot
 readyLifecycle now reason mPid conn =
@@ -425,6 +435,14 @@ connectionLifecycleResources conn =
 
 processHandleIdText :: ProcessHandle -> IO (Maybe Text)
 processHandleIdText processHandle = fmap (Text.pack . show) <$> getPid processHandle
+
+quoteText :: Text -> Text
+quoteText value = "'" <> value <> "'"
+
+executableHint :: Text
+executableHint
+  | os == "mingw32" = " (.exe, .cmd, and .bat wrappers are accepted on Windows)."
+  | otherwise = " and mark it executable."
 
 handshakeErrorCode :: PluginHandshakeError -> Text
 handshakeErrorCode err = case err of

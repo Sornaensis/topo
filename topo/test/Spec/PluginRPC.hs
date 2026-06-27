@@ -276,11 +276,19 @@ instance Arbitrary RPCManifest where
 jsonBS :: Aeson.ToJSON a => a -> BS.ByteString
 jsonBS = BL.toStrict . Aeson.encode
 
+isInvalidNameField :: ManifestError -> Bool
+isInvalidNameField (ManifestInvalidField "name" _) = True
+isInvalidNameField _ = False
+
+isInvalidOverlaySchemaField :: ManifestError -> Bool
+isInvalidOverlaySchemaField (ManifestInvalidField "overlay.schemaFile" _) = True
+isInvalidOverlaySchemaField _ = False
+
 manifestRuntimeJSON :: Value
 manifestRuntimeJSON = object
   [ "protocol" .= object
-      [ "min" .= (1 :: Int)
-      , "max" .= (1 :: Int)
+      [ "min" .= currentProtocolVersion
+      , "max" .= currentProtocolVersion
       ]
   ]
 
@@ -488,6 +496,27 @@ spec = describe "Plugin.RPC" $ do
           Nothing -> expectationFailure "expected simulation"
         Left _ -> expectationFailure "parse failed"
 
+    it "rejects malformed parameter ranges with an actionable parse error" $ do
+      let bs = jsonBS $ object
+            [ "manifestVersion" .= manifestV3
+            , "name"      .= ("p" :: Text)
+            , "version"   .= ("1" :: Text)
+            , "runtime"   .= manifestRuntimeJSON
+            , "generator" .= object [ "insertAfter" .= ("base" :: Text) ]
+            , "config"    .= object
+                [ "parameters" .=
+                    [ object
+                        [ "name" .= ("bad_range" :: Text)
+                        , "label" .= ("Bad range" :: Text)
+                        , "type" .= ("float" :: Text)
+                        , "default" .= (0.0 :: Double)
+                        , "range" .= ([0.0 :: Double])
+                        ]
+                    ]
+                ]
+            ]
+      parseManifest bs `shouldSatisfy` isLeft
+
     it "parses manifest v3 runtime, UI hints, and external data source declarations" $ do
       case Aeson.fromJSON manifestV3ProviderExample of
         Aeson.Success m -> do
@@ -554,6 +583,14 @@ spec = describe "Plugin.RPC" $ do
     it "detects empty name" $ do
       let m = baseManifest { rmName = "" }
       validateManifest m `shouldSatisfy` elem ManifestEmptyName
+
+    it "detects path-like plugin names before executable resolution" $ do
+      let m = baseManifest { rmName = "../escape" }
+      validateManifest m `shouldSatisfy` any isInvalidNameField
+
+    it "detects overlay schema paths that escape the plugin directory" $ do
+      let m = baseManifest { rmOverlay = Just (RPCOverlayDecl "../escape.toposchema") }
+      validateManifest m `shouldSatisfy` any isInvalidOverlaySchemaField
 
     it "detects empty version" $ do
       let m = baseManifest { rmVersion = "" }

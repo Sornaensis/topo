@@ -180,6 +180,55 @@ spec = describe "PluginManager" $ do
         pluginStatuses mismatchPluginName loaded `shouldSatisfy` anyPluginErrorContaining "protocol version mismatch"
         pluginLifecycleStates mismatchPluginName loaded `shouldSatisfy` elem LifecycleFailed
 
+  it "surfaces manifest parse diagnostics for missing required fields" $ do
+    let pluginName = "copilot-test-plugin-missing-runtime"
+    withExecutablePluginDir pluginName (missingRuntimeManifestFor pluginName) "ok" $ do
+      bracket newActorSystem shutdownActorSystem $ \system -> do
+        pluginManagerHandle <- getPluginManager system
+        discoverPlugins pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses pluginName loaded `shouldSatisfy` anyPluginErrorContaining "runtime"
+        pluginLifecycleStates pluginName loaded `shouldSatisfy` elem LifecycleDegraded
+        pluginLifecycleErrorCodes pluginName loaded `shouldSatisfy` elem (Just "manifest_parse_failed")
+
+  it "blocks startup when manifest runtime protocol bounds exclude the host" $ do
+    let pluginName = "copilot-test-plugin-invalid-protocol"
+    withExecutablePluginDir pluginName (invalidProtocolManifestFor pluginName) "ok" $ do
+      bracket newActorSystem shutdownActorSystem $ \system -> do
+        pluginManagerHandle <- getPluginManager system
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses pluginName loaded `shouldSatisfy` anyPluginErrorContaining "runtime.protocol"
+        pluginLifecycleStates pluginName loaded `shouldSatisfy` elem LifecycleDegraded
+        pluginLifecycleErrorCodes pluginName loaded `shouldSatisfy` elem (Just "manifest_validation_failed")
+        length (pluginProcessHandles pluginName loaded) `shouldBe` 0
+
+  it "blocks startup when a declared overlay schema cannot be loaded" $ do
+    let pluginName = "copilot-test-plugin-missing-overlay-schema"
+    withExecutablePluginDir pluginName (missingOverlaySchemaManifestFor pluginName) "ok" $ do
+      bracket newActorSystem shutdownActorSystem $ \system -> do
+        pluginManagerHandle <- getPluginManager system
+        discoverPlugins pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses pluginName loaded `shouldSatisfy` anyPluginErrorContaining "overlay.schemaFile"
+        pluginLifecycleStates pluginName loaded `shouldSatisfy` elem LifecycleDegraded
+        pluginLifecycleErrorCodes pluginName loaded `shouldSatisfy` elem (Just "manifest_schema_failed")
+        length (pluginProcessHandles pluginName loaded) `shouldBe` 0
+
+  it "validates backend-neutral external data-source declarations with actionable diagnostics" $ do
+    let pluginName = "copilot-test-plugin-invalid-external-source"
+    withExecutablePluginDir pluginName (invalidExternalSourceManifestFor pluginName) "ok" $ do
+      bracket newActorSystem shutdownActorSystem $ \system -> do
+        pluginManagerHandle <- getPluginManager system
+        discoverPlugins pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses pluginName loaded `shouldSatisfy` anyPluginErrorContaining "externalDataSources"
+        pluginStatuses pluginName loaded `shouldSatisfy` anyPluginErrorContaining "backend-neutral"
+        pluginStatuses pluginName loaded `shouldSatisfy` (not . anyPluginErrorContaining "SQLite")
+        pluginLifecycleStates pluginName loaded `shouldSatisfy` elem LifecycleDegraded
+        pluginLifecycleErrorCodes pluginName loaded `shouldSatisfy` elem (Just "manifest_validation_failed")
+
   it "reports malformed handshake JSON as a plugin error" $ do
     withExecutablePluginDir malformedPluginName malformedManifestJSON "malformed-json" $ do
       bracket newActorSystem shutdownActorSystem $ \system -> do
@@ -450,6 +499,7 @@ withExecutablePluginDir pluginName manifestJSON fixtureMode action =
       let pluginDir = baseDir </> pluginName
       resetPluginDir pluginDir
       BS.writeFile (pluginDir </> "manifest.json") manifestJSON
+      BS.writeFile (pluginDir </> "test.toposchema") testSchemaJSON
       writePluginWrapper pluginDir pluginName fixtureMode
       pure pluginDir
 
@@ -834,7 +884,7 @@ testManifestJSON =
     <> "  \"manifestVersion\": 3,\n"
     <> "  \"name\": \"copilot-test-plugin-manager-schema\",\n"
     <> "  \"version\": \"0.1.0\",\n"
-    <> "  \"runtime\": { \"protocol\": { \"min\": 1, \"max\": 1 } },\n"
+    <> "  \"runtime\": { \"protocol\": { \"min\": 3, \"max\": 3 } },\n"
     <> "  \"generator\": { \"insertAfter\": \"erosion\" },\n"
     <> "  \"overlay\": { \"schemaFile\": \"test.toposchema\" }\n"
     <> "}\n"
@@ -1018,13 +1068,62 @@ testQuery = QueryResource
 manifestFor :: String -> BS.ByteString
 manifestFor name = manifestWithStartPolicyFor name []
 
+missingRuntimeManifestFor :: String -> BS.ByteString
+missingRuntimeManifestFor name = BSC.pack $
+  "{\n"
+    <> "  \"manifestVersion\": 3,\n"
+    <> "  \"name\": \"" <> name <> "\",\n"
+    <> "  \"version\": \"0.1.0\",\n"
+    <> "  \"generator\": { \"insertAfter\": \"erosion\" }\n"
+    <> "}\n"
+
+invalidProtocolManifestFor :: String -> BS.ByteString
+invalidProtocolManifestFor name = BSC.pack $
+  let unsupported = show (currentProtocolVersion + 1)
+  in "{\n"
+    <> "  \"manifestVersion\": 3,\n"
+    <> "  \"name\": \"" <> name <> "\",\n"
+    <> "  \"version\": \"0.1.0\",\n"
+    <> "  \"runtime\": { \"protocol\": { \"min\": " <> unsupported <> ", \"max\": " <> unsupported <> " } },\n"
+    <> "  \"generator\": { \"insertAfter\": \"erosion\" }\n"
+    <> "}\n"
+
+missingOverlaySchemaManifestFor :: String -> BS.ByteString
+missingOverlaySchemaManifestFor name = BSC.pack $
+  "{\n"
+    <> "  \"manifestVersion\": 3,\n"
+    <> "  \"name\": \"" <> name <> "\",\n"
+    <> "  \"version\": \"0.1.0\",\n"
+    <> "  \"runtime\": { \"protocol\": { \"min\": 3, \"max\": 3 } },\n"
+    <> "  \"generator\": { \"insertAfter\": \"erosion\" },\n"
+    <> "  \"overlay\": { \"schemaFile\": \"missing.toposchema\" }\n"
+    <> "}\n"
+
+invalidExternalSourceManifestFor :: String -> BS.ByteString
+invalidExternalSourceManifestFor name = BSC.pack $
+  "{\n"
+    <> "  \"manifestVersion\": 3,\n"
+    <> "  \"name\": \"" <> name <> "\",\n"
+    <> "  \"version\": \"0.1.0\",\n"
+    <> "  \"runtime\": { \"protocol\": { \"min\": 3, \"max\": 3 } },\n"
+    <> "  \"externalDataSources\": [\n"
+    <> "    {\n"
+    <> "      \"name\": \"records\",\n"
+    <> "      \"label\": \"Records\",\n"
+    <> "      \"kind\": \"\",\n"
+    <> "      \"capabilities\": [],\n"
+    <> "      \"status\": { \"state\": \"ready\" }\n"
+    <> "    }\n"
+    <> "  ]\n"
+    <> "}\n"
+
 manifestWithStartPolicyFor :: String -> [String] -> BS.ByteString
 manifestWithStartPolicyFor name policyLines = BSC.pack $
   "{\n"
     <> "  \"manifestVersion\": 3,\n"
     <> "  \"name\": \"" <> name <> "\",\n"
     <> "  \"version\": \"0.1.0\",\n"
-    <> "  \"runtime\": { \"protocol\": { \"min\": 1, \"max\": 1 } },\n"
+    <> "  \"runtime\": { \"protocol\": { \"min\": 3, \"max\": 3 } },\n"
     <> "  \"generator\": { \"insertAfter\": \"erosion\" }"
     <> renderStartPolicy policyLines
     <> "\n}\n"
@@ -1035,8 +1134,9 @@ simulationManifestWithStartPolicyFor name policyLines = BSC.pack $
     <> "  \"manifestVersion\": 3,\n"
     <> "  \"name\": \"" <> name <> "\",\n"
     <> "  \"version\": \"0.1.0\",\n"
-    <> "  \"runtime\": { \"protocol\": { \"min\": 1, \"max\": 1 } },\n"
-    <> "  \"simulation\": { \"dependencies\": [] }"
+    <> "  \"runtime\": { \"protocol\": { \"min\": 3, \"max\": 3 } },\n"
+    <> "  \"simulation\": { \"dependencies\": [] },\n"
+    <> "  \"overlay\": { \"schemaFile\": \"test.toposchema\" }"
     <> renderStartPolicy policyLines
     <> "\n}\n"
 
@@ -1046,8 +1146,9 @@ dataResourceManifestFor name policyLines = BSC.pack $
     <> "  \"manifestVersion\": 3,\n"
     <> "  \"name\": \"" <> name <> "\",\n"
     <> "  \"version\": \"0.1.0\",\n"
-    <> "  \"runtime\": { \"protocol\": { \"min\": 1, \"max\": 1 } },\n"
+    <> "  \"runtime\": { \"protocol\": { \"min\": 3, \"max\": 3 } },\n"
     <> "  \"generator\": { \"insertAfter\": \"erosion\" },\n"
+    <> "  \"capabilities\": [\"dataRead\"],\n"
     <> "  \"dataResources\": [\n"
     <> "    {\n"
     <> "      \"name\": \"records\",\n"

@@ -60,6 +60,8 @@ module Topo.Plugin.RPC.Manifest
   , parseManifestFile
     -- * Validation
   , ManifestError(..)
+  , manifestErrorMessage
+  , renderManifestErrors
   , validateManifest
     -- * Queries
   , manifestWritesTerrain
@@ -90,7 +92,12 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import GHC.Generics (Generic)
 import Topo.Plugin (Capability(..))
-import Topo.Plugin.DataResource (DataResourceSchema(..), DataOperations(..))
+import Topo.Plugin.DataResource
+  ( DataOperations(..)
+  , DataResourceError(..)
+  , DataResourceSchema(..)
+  , validateDataResource
+  )
 import Topo.Plugin.RPC.Protocol (currentProtocolVersion)
 
 ------------------------------------------------------------------------
@@ -146,13 +153,14 @@ instance FromJSON RPCParamSpec where
     name    <- o .:  "name"
     label   <- o .:  "label"
     ty      <- o .:  "type"
-    range   <- o .:? "range"
+    rangeValue <- o .:? "range"
     def     <- o .:  "default"
     tooltip <- o .:? "tooltip"
-    let parsedRange = case range of
-          Just (Aeson.Array arr)
-            | [lo, hi] <- toList arr -> Just (lo, hi)
-          _                          -> Nothing
+    parsedRange <- case rangeValue of
+      Nothing -> pure Nothing
+      Just (Aeson.Array arr)
+        | [lo, hi] <- toList arr -> pure (Just (lo, hi))
+      Just _ -> fail "range must be an array with exactly two values"
     pure RPCParamSpec
       { rpsName    = name
       , rpsLabel   = label
@@ -1143,6 +1151,10 @@ parseManifestFile path = do
 data ManifestError
   = ManifestUnsupportedVersion !Int
     -- ^ Manifest version is not supported by this host contract.
+  | ManifestProtocolRangeInvalid !Int !Int
+    -- ^ Runtime protocol minimum is greater than the maximum.
+  | ManifestProtocolUnsupported !Int !Int !Int
+    -- ^ Current host protocol is outside the manifest's supported range.
   | ManifestEmptyName
     -- ^ Plugin name is empty.
   | ManifestEmptyVersion
@@ -1158,7 +1170,47 @@ data ManifestError
   | ManifestDataWriteWithoutCapability
     -- ^ Data resources with write operations declared without
     --   @dataWrite@ capability.
+  | ManifestInvalidField !Text !Text
+    -- ^ A manifest field is present but structurally invalid.
+  | ManifestDuplicateFieldValue !Text !Text
+    -- ^ A list-like manifest field contains a duplicate value.
+  | ManifestInvalidDataResource !Text !Text
+    -- ^ A data resource schema failed validation.
   deriving (Eq, Ord, Show, Read)
+
+-- | Render a manifest validation error as an actionable host/UI diagnostic.
+manifestErrorMessage :: ManifestError -> Text
+manifestErrorMessage (ManifestUnsupportedVersion version) =
+  "manifestVersion must be 3; found " <> showText version <> ". Update the plugin manifest to v3 or use a compatible Topo host."
+manifestErrorMessage (ManifestProtocolRangeInvalid pmin pmax) =
+  "runtime.protocol.min must be less than or equal to runtime.protocol.max; found min=" <> showText pmin <> ", max=" <> showText pmax <> "."
+manifestErrorMessage (ManifestProtocolUnsupported current pmin pmax) =
+  "runtime.protocol range " <> showText pmin <> ".." <> showText pmax
+    <> " does not include this host protocol " <> showText current <> ". Rebuild the plugin SDK or adjust the manifest runtime bounds."
+manifestErrorMessage ManifestEmptyName =
+  "name must be a non-empty plugin identifier."
+manifestErrorMessage ManifestEmptyVersion =
+  "version must be a non-empty plugin version string."
+manifestErrorMessage ManifestSimWithoutOverlay =
+  "simulation requires an overlay.schemaFile declaration so the host can load the plugin-owned overlay schema."
+manifestErrorMessage ManifestWriteTerrainWithoutSim =
+  "writeTerrain/writeWorld capabilities require a simulation declaration; remove the write capability or add simulation and overlay sections."
+manifestErrorMessage ManifestNoParticipation =
+  "manifest must declare generator, simulation, dataResources, externalDataSources, or externalDataSourceRefs so the host knows how the plugin participates."
+manifestErrorMessage ManifestDataReadWithoutCapability =
+  "dataResources require the dataRead capability so the host can expose resource browsing safely."
+manifestErrorMessage ManifestDataWriteWithoutCapability =
+  "dataResources with create/update/delete operations require the dataWrite capability."
+manifestErrorMessage (ManifestInvalidField field detail) =
+  field <> " is invalid: " <> detail
+manifestErrorMessage (ManifestDuplicateFieldValue field value) =
+  field <> " contains duplicate value " <> quote value <> "; remove the duplicate or rename one declaration."
+manifestErrorMessage (ManifestInvalidDataResource resource detail) =
+  "dataResources." <> resource <> " is invalid: " <> detail
+
+-- | Render multiple manifest errors for display in a single lifecycle message.
+renderManifestErrors :: [ManifestError] -> Text
+renderManifestErrors = Text.intercalate "; " . map manifestErrorMessage
 
 -- | Validate structural invariants of a parsed manifest.
 --
@@ -1168,14 +1220,20 @@ validateManifest rm = concat
   [ [ ManifestUnsupportedVersion (rmManifestVersion rm)
     | rmManifestVersion rm /= manifestV3
     ]
+  , validateRuntime (rmRuntime rm)
   , [ ManifestEmptyName | Text.null (rmName rm) ]
+  , validatePluginName (rmName rm)
   , [ ManifestEmptyVersion | Text.null (rmVersion rm) ]
+  , validateUIHints "ui" (rmUiHints rm)
+  , validateGenerator (rmGenerator rm)
+  , validateSimulation (rmSimulation rm)
+  , validateOverlay (rmOverlay rm)
   , [ ManifestSimWithoutOverlay
     | Just _ <- [rmSimulation rm]
     , Nothing <- [rmOverlay rm]
     ]
   , [ ManifestWriteTerrainWithoutSim
-    | CapWriteTerrain `elem` rmCapabilities rm
+    | any (`elem` rmCapabilities rm) [CapWriteTerrain, CapWriteWorld]
     , Nothing <- [rmSimulation rm]
     ]
   , [ ManifestNoParticipation
@@ -1185,6 +1243,8 @@ validateManifest rm = concat
     , null (rmExternalDataSources rm)
     , null (rmExternalDataSourceRefs rm)
     ]
+  , duplicateErrors "capabilities" (map capabilityText (rmCapabilities rm))
+  , validateParameters (rmParameters rm)
   , [ ManifestDataReadWithoutCapability
     | not (null (rmDataResources rm))
     , CapDataRead `notElem` rmCapabilities rm
@@ -1193,11 +1253,289 @@ validateManifest rm = concat
     | any hasWriteOps (rmDataResources rm)
     , CapDataWrite `notElem` rmCapabilities rm
     ]
+  , validateDataResources (rmDataResources rm)
+  , validateDataDirectory (rmDataDirectory rm)
+  , validateExternalDataSources (rmExternalDataSources rm)
+  , validateExternalDataSourceRefs (rmExternalDataSourceRefs rm)
   ]
   where
     hasWriteOps drs =
       let ops = drsOperations drs
       in doCreate ops || doUpdate ops || doDelete ops
+
+validatePluginName :: Text -> [ManifestError]
+validatePluginName name =
+  [ ManifestInvalidField "name" "name must be a plugin identifier, not a path; do not include '/', '\\', ':', or the special names '.' and '..'."
+  | not (Text.null name)
+  , not (safePluginIdentifier name)
+  ]
+
+validateRuntime :: RPCManifestRuntime -> [ManifestError]
+validateRuntime runtime = concat
+  [ [ ManifestProtocolRangeInvalid pmin pmax | pmin > pmax ]
+  , [ ManifestProtocolUnsupported currentProtocolVersion pmin pmax
+    | currentProtocolVersion < pmin || currentProtocolVersion > pmax
+    ]
+  , [ ManifestInvalidField "runtime.topo.min" "topo minimum version must be non-empty when present."
+    | Just value <- [rmrTopoMin runtime]
+    , Text.null value
+    ]
+  , [ ManifestInvalidField "runtime.topo.max" "topo maximum version must be non-empty when present."
+    | Just value <- [rmrTopoMax runtime]
+    , Text.null value
+    ]
+  ]
+  where
+    pmin = rmrProtocolMin runtime
+    pmax = rmrProtocolMax runtime
+
+validateGenerator :: Maybe RPCGeneratorDecl -> [ManifestError]
+validateGenerator Nothing = []
+validateGenerator (Just gen) = concat
+  [ [ ManifestInvalidField "generator.insertAfter" "insertAfter must be a non-empty built-in stage, plugin, or overlay name."
+    | Text.null (rgdInsertAfter gen)
+    ]
+  , [ ManifestInvalidField "generator.requires" "requires entries must be non-empty."
+    | any Text.null (rgdRequires gen)
+    ]
+  , duplicateErrors "generator.requires" (rgdRequires gen)
+  ]
+
+validateSimulation :: Maybe RPCSimulationDecl -> [ManifestError]
+validateSimulation Nothing = []
+validateSimulation (Just sim) = concat
+  [ [ ManifestInvalidField "simulation.dependencies" "dependency entries must be non-empty."
+    | any Text.null (rsdDependencies sim)
+    ]
+  , duplicateErrors "simulation.dependencies" (rsdDependencies sim)
+  ]
+
+validateOverlay :: Maybe RPCOverlayDecl -> [ManifestError]
+validateOverlay Nothing = []
+validateOverlay (Just overlayDecl) = concat
+  [ [ ManifestInvalidField "overlay.schemaFile" "schemaFile must be a non-empty path relative to the plugin directory."
+    | Text.null schemaFile
+    ]
+  , [ ManifestInvalidField "overlay.schemaFile" "schemaFile must stay inside the plugin directory; do not use absolute paths, drive prefixes, '.', or '..' segments."
+    | not (Text.null schemaFile)
+    , not (safeRelativePath schemaFile)
+    ]
+  ]
+  where
+    schemaFile = rodSchemaFile overlayDecl
+
+validateUIHints :: Text -> RPCUIHints -> [ManifestError]
+validateUIHints base ui = concat
+  [ validateOptionalNonEmpty (base <> ".displayName") (ruiDisplayName ui)
+  , validateOptionalNonEmpty (base <> ".category") (ruiCategory ui)
+  , validateOptionalNonEmpty (base <> ".icon") (ruiIcon ui)
+  , validateOptionalNonEmpty (base <> ".docsUrl") (ruiDocsUrl ui)
+  , [ ManifestInvalidField (base <> ".tags") "tags must not contain empty strings."
+    | any Text.null (ruiTags ui)
+    ]
+  , duplicateErrors (base <> ".tags") (ruiTags ui)
+  , [ ManifestInvalidField (base <> ".order") "order must be zero or greater."
+    | Just order <- [ruiOrder ui]
+    , order < 0
+    ]
+  ]
+
+validateOptionalNonEmpty :: Text -> Maybe Text -> [ManifestError]
+validateOptionalNonEmpty field value =
+  [ ManifestInvalidField field "field must be non-empty when present."
+  | Just text <- [value]
+  , Text.null text
+  ]
+
+validateParameters :: [RPCParamSpec] -> [ManifestError]
+validateParameters params = concat
+  [ [ ManifestInvalidField (paramPath param "name") "parameter name must be non-empty."
+    | param <- params
+    , Text.null (rpsName param)
+    ]
+  , [ ManifestInvalidField (paramPath param "label") "parameter label must be non-empty."
+    | param <- params
+    , Text.null (rpsLabel param)
+    ]
+  , [ ManifestInvalidField (paramPath param "range") "bool parameters must not declare numeric ranges."
+    | param <- params
+    , rpsType param == ParamBool
+    , Just _ <- [rpsRange param]
+    ]
+  , duplicateErrors "config.parameters.name" (map rpsName params)
+  ]
+  where
+    paramPath param field = "config.parameters." <> nameOrPlaceholder (rpsName param) <> "." <> field
+
+validateDataResources :: [DataResourceSchema] -> [ManifestError]
+validateDataResources resources =
+  duplicateErrors "dataResources.name" (map drsName resources) <>
+  [ ManifestInvalidDataResource (nameOrPlaceholder (drsName resource)) (dataResourceErrorMessage err)
+  | resource <- resources
+  , err <- validateDataResource resource
+  ]
+
+validateDataDirectory :: Maybe Text -> [ManifestError]
+validateDataDirectory dataDirectory = concat
+  [ [ ManifestInvalidField "dataDirectory" "dataDirectory must be non-empty when present."
+    | Just dir <- [dataDirectory]
+    , Text.null dir
+    ]
+  , [ ManifestInvalidField "dataDirectory" "dataDirectory must stay inside the plugin/world data boundary; do not use absolute paths, drive prefixes, '.', or '..' segments."
+    | Just dir <- [dataDirectory]
+    , not (Text.null dir)
+    , not (safeRelativePath dir)
+    ]
+  ]
+
+validateExternalDataSources :: [RPCExternalDataSourceDecl] -> [ManifestError]
+validateExternalDataSources sources =
+  duplicateErrors "externalDataSources.name" (map redsdName sources) <>
+  concatMap validateSource sources
+  where
+    validateSource source = concat
+      [ [ ManifestInvalidField (sourcePath source "name") "external data-source name must be non-empty."
+        | Text.null (redsdName source)
+        ]
+      , [ ManifestInvalidField (sourcePath source "label") "external data-source label must be non-empty."
+        | Text.null (redsdLabel source)
+        ]
+      , [ ManifestInvalidField (sourcePath source "kind") "kind must be a backend-neutral, non-empty source category."
+        | Text.null (redsdKind source)
+        ]
+      , [ ManifestInvalidField (sourcePath source "capabilities") "capabilities must include at least one of query, mutate, subscribe, migrate, or health."
+        | null (redsdCapabilities source)
+        ]
+      , duplicateErrors (sourcePath source "capabilities") (map externalCapabilityText (redsdCapabilities source))
+      , [ ManifestInvalidField (sourcePath source "resources") "resource names must be non-empty."
+        | any Text.null (redsdResources source)
+        ]
+      , duplicateErrors (sourcePath source "resources") (redsdResources source)
+      , validateStatus (sourcePath source "status") (redsdStatus source)
+      , validateUIHints (sourcePath source "ui") (redsdUiHints source)
+      ]
+    sourcePath source field = "externalDataSources." <> nameOrPlaceholder (redsdName source) <> "." <> field
+
+validateExternalDataSourceRefs :: [RPCExternalDataSourceRef] -> [ManifestError]
+validateExternalDataSourceRefs refs =
+  duplicateErrors "externalDataSourceRefs.name" (map redsrName refs) <>
+  concatMap validateRef refs
+  where
+    validateRef ref = concat
+      [ [ ManifestInvalidField (refPath ref "name") "external data-source reference name must be non-empty."
+        | Text.null (redsrName ref)
+        ]
+      , validateOptionalNonEmpty (refPath ref "provider") (redsrProvider ref)
+      , [ ManifestInvalidField (refPath ref "source") "source must name the provider-owned external data source."
+        | Text.null (redsrSource ref)
+        ]
+      , [ ManifestInvalidField (refPath ref "access") "access must include at least one of read, write, or admin."
+        | null (redsrAccess ref)
+        ]
+      , duplicateErrors (refPath ref "access") (map externalAccessText (redsrAccess ref))
+      , [ ManifestInvalidField (refPath ref "resources") "resource names must be non-empty."
+        | any Text.null (redsrResources ref)
+        ]
+      , duplicateErrors (refPath ref "resources") (redsrResources ref)
+      , validateStatus (refPath ref "status") (redsrStatus ref)
+      , validateUIHints (refPath ref "ui") (redsrUiHints ref)
+      ]
+    refPath ref field = "externalDataSourceRefs." <> nameOrPlaceholder (redsrName ref) <> "." <> field
+
+validateStatus :: Text -> RPCExternalDataSourceStatus -> [ManifestError]
+validateStatus base status =
+  [ ManifestInvalidField (base <> ".message") "message must be non-empty when present."
+  | Just message <- [redssMessage status]
+  , Text.null message
+  ]
+
+dataResourceErrorMessage :: DataResourceError -> Text
+dataResourceErrorMessage DREEmptyName = "resource name must be non-empty."
+dataResourceErrorMessage DREEmptyLabel = "resource label must be non-empty."
+dataResourceErrorMessage DRENoFields = "resource must declare at least one field."
+dataResourceErrorMessage (DREKeyFieldMissing keyField) = "keyField " <> quote keyField <> " must name one of the resource fields."
+dataResourceErrorMessage DREQueryByHexNotHexBound = "queryByHex requires hexBound=true."
+dataResourceErrorMessage (DREDuplicateField fieldName) = "duplicate field name " <> quote fieldName <> "."
+dataResourceErrorMessage DREOverlayNotHexBound = "overlay-backed resources must set hexBound=true."
+dataResourceErrorMessage (DREEmptyEnum fieldName) = "enum field " <> quote fieldName <> " must declare at least one choice."
+dataResourceErrorMessage (DRENullaryAdt fieldName) = "ADT field " <> quote fieldName <> " must declare at least one constructor."
+dataResourceErrorMessage (DREEmptyConstructorName fieldName) = "ADT field " <> quote fieldName <> " has an empty constructor name."
+dataResourceErrorMessage (DREDuplicateConstructor fieldName constructorName) =
+  "ADT field " <> quote fieldName <> " has duplicate constructor " <> quote constructorName <> "."
+
+duplicateErrors :: Text -> [Text] -> [ManifestError]
+duplicateErrors field values =
+  [ ManifestDuplicateFieldValue field value
+  | value <- duplicates values
+  , not (Text.null value)
+  ]
+
+duplicates :: Eq a => [a] -> [a]
+duplicates [] = []
+duplicates (x:xs)
+  | x `elem` xs = x : duplicates (filter (/= x) xs)
+  | otherwise = duplicates xs
+
+nameOrPlaceholder :: Text -> Text
+nameOrPlaceholder value
+  | Text.null value = "<empty>"
+  | otherwise = value
+
+quote :: Text -> Text
+quote value = "'" <> value <> "'"
+
+safePluginIdentifier :: Text -> Bool
+safePluginIdentifier value =
+  value /= "."
+    && value /= ".."
+    && not (Text.any (`elem` pathDelimiterChars) value)
+
+safeRelativePath :: Text -> Bool
+safeRelativePath value =
+  not (Text.null value)
+    && not (Text.isPrefixOf "/" value)
+    && not (Text.isPrefixOf "\\" value)
+    && not (Text.any (== ':') value)
+    && all safePathSegment (pathSegments value)
+
+pathSegments :: Text -> [Text]
+pathSegments = Text.splitOn "/" . Text.replace "\\" "/"
+
+safePathSegment :: Text -> Bool
+safePathSegment segment =
+  not (Text.null segment)
+    && segment /= "."
+    && segment /= ".."
+
+pathDelimiterChars :: [Char]
+pathDelimiterChars = ['/', '\\', ':']
+
+showText :: Show a => a -> Text
+showText = Text.pack . show
+
+capabilityText :: Capability -> Text
+capabilityText CapLog = "log"
+capabilityText CapNoise = "noise"
+capabilityText CapReadTerrain = "readTerrain"
+capabilityText CapWriteTerrain = "writeTerrain"
+capabilityText CapReadOverlay = "readOverlay"
+capabilityText CapWriteOverlay = "writeOverlay"
+capabilityText CapReadWorld = "readWorld"
+capabilityText CapWriteWorld = "writeWorld"
+capabilityText CapDataRead = "dataRead"
+capabilityText CapDataWrite = "dataWrite"
+
+externalCapabilityText :: RPCExternalDataSourceCapability -> Text
+externalCapabilityText ExternalSourceQuery = "query"
+externalCapabilityText ExternalSourceMutate = "mutate"
+externalCapabilityText ExternalSourceSubscribe = "subscribe"
+externalCapabilityText ExternalSourceMigrate = "migrate"
+externalCapabilityText ExternalSourceHealth = "health"
+
+externalAccessText :: RPCExternalDataSourceAccess -> Text
+externalAccessText ExternalAccessRead = "read"
+externalAccessText ExternalAccessWrite = "write"
+externalAccessText ExternalAccessAdmin = "admin"
 
 ------------------------------------------------------------------------
 -- Queries
