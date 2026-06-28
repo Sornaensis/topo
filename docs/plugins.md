@@ -183,9 +183,14 @@ The top-level plugin definition. Use `defaultPluginDef` as a starting point.
 | `pdDataDirectory` | `Maybe FilePath` | Plugin data directory under the world save |
 | `pdDataResources` | `[DataResourceDef]` | Data-service resource schemas and handlers |
 | `pdUiHints` | `RPCUIHints` | Manifest v3 UI presentation hints |
-| `pdExternalDataSources` | `[RPCExternalDataSourceDecl]` | Provider-owned external data sources |
-| `pdExternalDataSourceRefs` | `[RPCExternalDataSourceRef]` | Consumed external data sources |
+| `pdExternalDataSources` | `[RPCExternalDataSourceDecl]` | Provider-owned external data sources, grants, status, and opaque connection metadata |
+| `pdExternalDataSourceRefs` | `[RPCExternalDataSourceRef]` | Consumed external data sources, requested grants, status, and opaque reference metadata |
 | `pdStartPolicy` | `RPCStartPolicy` | Host-side process supervision policy |
+
+External data-source declarations keep migrations, backing schemas, connection
+details, and consistency rules provider-owned (or external-system-owned). Topo
+may surface status/errors and broker opaque metadata, but it must not prescribe
+backend-specific migration tables or schema rules.
 
 ### ParamDef
 

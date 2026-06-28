@@ -10,7 +10,9 @@
 -- * Optional generator stage ('pdGenerator')
 -- * Optional simulation node ('pdSimulation')
 -- * Inferred plus explicit manifest capabilities ('pdCapabilities')
--- * Optional external data-source provider and consumer declarations
+-- * Optional external data-source provider and consumer declarations whose
+--   migrations, schemas, connection details, and consistency rules stay owned
+--   by provider plugins, adapters, or external systems.
 --
 -- The SDK runtime ('Topo.Plugin.SDK.Runner') uses these definitions
 -- to handle the RPC lifecycle: manifest serving, parameter exchange,
@@ -287,9 +289,14 @@ data PluginDef = PluginDef
   , pdUiHints :: !RPCUIHints
     -- ^ Optional UI presentation hints emitted into manifest v3.
   , pdExternalDataSources :: ![RPCExternalDataSourceDecl]
-    -- ^ Provider-owned external data sources advertised in manifest v3.
+    -- ^ Provider-owned external data sources advertised in manifest v3.  The SDK
+    -- serializes backend-neutral declarations, grants, status, and opaque
+    -- metadata only; providers/adapters/external systems own migrations,
+    -- schemas, connection details, and consistency rules.
   , pdExternalDataSourceRefs :: ![RPCExternalDataSourceRef]
-    -- ^ External data sources consumed by this plugin.
+    -- ^ External data sources consumed by this plugin.  References bind to
+    -- provider-owned contracts without making topo prescribe backend-specific
+    -- migration tables or schema rules.
   , pdStartPolicy :: !RPCStartPolicy
     -- ^ Host-side process supervision policy emitted into manifest v3 when it
     -- differs from the default policy.

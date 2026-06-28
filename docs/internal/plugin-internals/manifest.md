@@ -79,10 +79,12 @@ External data-source fields are intentionally provider-owned and backend-neutral
   as available; other states remain declared but unavailable until runtime or
   diagnostics report readiness.
 
-No host-owned storage details belong in the manifest. If a provider includes
-connection or binding details, those JSON objects are opaque provider metadata:
-topo may preserve, broker, or report them, but does not parse them into a
-host-owned storage backend or migration plan.
+No host-owned storage details belong in the manifest. Migrations, backing
+schemas, connection details, and consistency rules are owned by the provider
+plugin, adapter, or external system. If a provider includes connection or
+binding details, those JSON objects are opaque provider metadata: topo may
+preserve, broker, or report them, but does not parse them into a host-owned
+storage backend, migration table, schema rule, or consistency coordinator.
 
 ## Golden docs/tests
 

@@ -7,7 +7,9 @@
 -- A plugin manifest is a JSON file (@manifest.json@) that declares
 -- the plugin's identity, capabilities, pipeline participation
 -- (generator and\/or simulation), overlay schema location, user-facing
--- configuration parameters, and backend-neutral external data-source grants.
+-- configuration parameters, and backend-neutral external data-source
+-- declarations/grants whose backing migrations, schemas, connection details,
+-- and consistency rules stay owned by providers or external systems.
 --
 -- = Example manifest
 --
@@ -462,7 +464,10 @@ instance ToJSON RPCUIHints where
     [ "order" .= v | Just v <- [ruiOrder ui] ]
 
 -- | Backend-neutral capabilities offered by a provider-owned external data
--- source.  These describe host/plugin coordination only, not storage engines.
+-- source.  These describe host/plugin coordination only.  Even @migrate@ is a
+-- provider-advertised capability/status boundary; topo core does not define
+-- backend migration tables, schema evolution rules, connection details, or
+-- consistency policy.
 data RPCExternalDataSourceCapability
   = ExternalSourceQuery
   | ExternalSourceMutate
@@ -507,6 +512,10 @@ instance ToJSON RPCExternalDataSourceAccess where
   toJSON ExternalAccessAdmin = "admin"
 
 -- | Declarative status for an external data source or a consumer reference.
+--
+-- Topo may surface these states and messages in diagnostics, but the owning
+-- provider, adapter, or external system remains responsible for the concrete
+-- migration, schema, connection, and consistency details behind them.
 data RPCExternalDataSourceStatusState
   = ExternalStatusUnknown
   | ExternalStatusUnconfigured
@@ -558,7 +567,8 @@ instance ToJSON RPCExternalDataSourceStatus where
 -- A grant names the access modes and source capabilities the provider is
 -- prepared to broker.  'redsgReference' is opaque provider metadata: topo may
 -- preserve and report it, but must not interpret it as a storage backend it
--- owns.
+-- owns.  Grant resources and capabilities do not define backend schemas,
+-- migration tables, or consistency rules.
 data RPCExternalDataSourceGrant = RPCExternalDataSourceGrant
   { redsgName         :: !Text
   , redsgAccess       :: ![RPCExternalDataSourceAccess]
@@ -589,6 +599,12 @@ instance ToJSON RPCExternalDataSourceGrant where
     [ "reference" .= ref | Just ref <- [redsgReference grant] ]
 
 -- | Provider declaration for a named external data source.
+--
+-- The provider plugin, adapter, or external system owns the backing migrations,
+-- schemas, connection details, and consistency semantics.  Topo stores and
+-- validates only backend-neutral names, capabilities, grants, resource labels,
+-- statuses, and opaque metadata; it may surface status/errors but must not
+-- prescribe backend-specific migration tables or schema rules.
 data RPCExternalDataSourceDecl = RPCExternalDataSourceDecl
   { redsdName         :: !Text
   , redsdLabel        :: !Text
@@ -634,6 +650,9 @@ instance ToJSON RPCExternalDataSourceDecl where
     [ "ui" .= redsdUiHints source | redsdUiHints source /= defaultRPCUIHints ]
 
 -- | Consumer reference to a provider-owned external data source.
+--
+-- References bind a plugin to provider-owned sources and grants without exposing
+-- migration, schema, connection, or consistency internals to topo core.
 data RPCExternalDataSourceRef = RPCExternalDataSourceRef
   { redsrName      :: !Text
   , redsrProvider  :: !(Maybe Text)
@@ -968,6 +987,7 @@ manifestV3Schema = object
           ]
       , "externalDataSource" .= object
           [ "type" .= ("object" :: Text)
+          , "description" .= ("Provider-owned external source declaration. Migrations, schemas, connection details, and consistency rules are owned by the provider plugin, adapter, or external system; topo may surface status/errors but must not prescribe backend-specific migration tables or schema rules." :: Text)
           , "required" .= (["name", "kind", "capabilities", "status"] :: [Text])
           , "properties" .= object
               [ "name" .= stringSchema
@@ -984,6 +1004,7 @@ manifestV3Schema = object
           ]
       , "externalDataSourceRef" .= object
           [ "type" .= ("object" :: Text)
+          , "description" .= ("Consumer binding to a provider-owned external source. It names desired access and resources without making topo own backend schemas, migrations, connection details, or consistency rules." :: Text)
           , "required" .= (["name", "source", "required", "access", "status"] :: [Text])
           , "properties" .= object
               [ "name" .= stringSchema
@@ -1000,6 +1021,7 @@ manifestV3Schema = object
           ]
       , "externalGrant" .= object
           [ "type" .= ("object" :: Text)
+          , "description" .= ("Provider-defined backend-neutral grant. Capabilities and resources scope brokered access but do not prescribe backend migration tables, schemas, or consistency rules." :: Text)
           , "required" .= (["name", "access", "capabilities", "status"] :: [Text])
           , "properties" .= object
               [ "name" .= stringSchema
@@ -1012,6 +1034,7 @@ manifestV3Schema = object
           ]
       , "externalStatus" .= object
           [ "type" .= ("object" :: Text)
+          , "description" .= ("Provider-declared status that topo may surface in diagnostics while leaving backend repair, migration, schema, connection, and consistency details to the provider or external system." :: Text)
           , "required" .= (["state"] :: [Text])
           , "properties" .= object
               [ "state" .= enumSchema externalStatusNames
@@ -1020,7 +1043,7 @@ manifestV3Schema = object
           ]
       , "opaqueMetadata" .= object
           [ "type" .= ("object" :: Text)
-          , "description" .= ("Opaque provider-owned metadata; topo stores, brokers, and reports it without interpreting a backend." :: Text)
+          , "description" .= ("Opaque provider-owned metadata for handles, bindings, or connection details; topo stores, brokers, and reports it without interpreting a backend, schema, migration table, or consistency rule." :: Text)
           , "additionalProperties" .= True
           ]
       , "dataFieldType" .= dataFieldTypeSchema

@@ -668,7 +668,10 @@ spec = describe "Plugin.RPC" $ do
         , "docs/plugin-dev/examples/manifest-v3-consumer.json"
         ]
       let lowered = map toLower (BLC.unpack bytes)
+          schemaText = map toLower (BLC.unpack (encode manifestV3Schema))
       lowered `shouldNotSatisfy` isInfixOf "sqlite"
+      schemaText `shouldSatisfy` isInfixOf "migrations, schemas, connection details, and consistency rules"
+      schemaText `shouldSatisfy` isInfixOf "must not prescribe backend-specific migration tables or schema rules"
 
   ------------------------------------
   -- Manifest validation

@@ -120,11 +120,18 @@ interpretation and validation beyond the advertised schema.
 
 ## Backend-neutral external data sources
 
-Manifest v3 can describe data that remains owned by a provider plugin. The
-contract intentionally uses opaque source names, provider plugin IDs, generic
-capabilities, access grants, resource names, lifecycle/status metadata, and
-opaque connection/reference metadata. It does not require or expose a storage
-engine, connection string, file layout, or host-owned migration plan.
+Manifest v3 can describe data that remains owned by a provider plugin, adapter,
+or external system. The contract intentionally uses opaque source names,
+provider plugin IDs, generic capabilities, access grants, resource names,
+lifecycle/status metadata, and opaque connection/reference metadata. It does
+not require or expose a storage engine, connection string, file layout, or
+host-owned migration plan.
+
+Migrations, backing schemas, connection details, and consistency rules are
+owned by the provider plugin, adapter, or external system. Topo may surface
+status and error messages from those owners, but core manifest validation must
+not prescribe backend-specific migration tables, table/schema naming rules, or
+consistency policies.
 
 Providers advertise sources with `externalDataSources`:
 
@@ -173,7 +180,10 @@ Consumers declare dependencies with `externalDataSourceRefs`:
 Grant names are provider-defined and backend-neutral. `connection` and
 `reference` are opaque JSON objects for provider-owned handles or binding
 metadata; topo may broker and display them, but does not interpret them as a
-host-owned backing store. Status states are `unknown`, `unconfigured`, `ready`,
+host-owned backing store, migration runner, schema authority, or consistency
+coordinator. Even when a source advertises the `migrate` capability, it is a
+provider operation/status capability rather than a topo-owned migration table
+or schema rule. Status states are `unknown`, `unconfigured`, `ready`,
 `degraded`, and `unavailable`; provider/grant summaries are brokerable only
 when status is `ready`. Manifest status is declarative startup metadata; runtime
 health can be refined by plugin handshakes and diagnostics.

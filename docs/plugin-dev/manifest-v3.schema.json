@@ -167,6 +167,7 @@
     },
     "externalDataSource": {
       "type": "object",
+      "description": "Provider-owned external source declaration. Migrations, schemas, connection details, and consistency rules are owned by the provider plugin, adapter, or external system; topo may surface status/errors but must not prescribe backend-specific migration tables or schema rules.",
       "required": ["name", "kind", "capabilities", "status"],
       "properties": {
         "name": { "type": "string" },
@@ -183,6 +184,7 @@
     },
     "externalDataSourceRef": {
       "type": "object",
+      "description": "Consumer binding to a provider-owned external source. It names desired access and resources without making topo own backend schemas, migrations, connection details, or consistency rules.",
       "required": ["name", "source", "required", "access", "status"],
       "properties": {
         "name": { "type": "string" },
@@ -199,6 +201,7 @@
     },
     "externalGrant": {
       "type": "object",
+      "description": "Provider-defined backend-neutral grant. Capabilities and resources scope brokered access but do not prescribe backend migration tables, schemas, or consistency rules.",
       "required": ["name", "access", "capabilities", "status"],
       "properties": {
         "name": { "type": "string" },
@@ -211,6 +214,7 @@
     },
     "externalStatus": {
       "type": "object",
+      "description": "Provider-declared status that topo may surface in diagnostics while leaving backend repair, migration, schema, connection, and consistency details to the provider or external system.",
       "required": ["state"],
       "properties": {
         "state": { "type": "string", "enum": ["unknown", "unconfigured", "ready", "degraded", "unavailable"] },
@@ -219,7 +223,7 @@
     },
     "opaqueMetadata": {
       "type": "object",
-      "description": "Opaque provider-owned metadata; topo stores, brokers, and reports it without interpreting a backend.",
+      "description": "Opaque provider-owned metadata for handles, bindings, or connection details; topo stores, brokers, and reports it without interpreting a backend, schema, migration table, or consistency rule.",
       "additionalProperties": true
     },
     "dataFieldType": {

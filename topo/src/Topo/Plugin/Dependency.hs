@@ -249,7 +249,8 @@ instance ToJSON ResourceDependency where
 -- The provider is a plugin boundary, not a storage backend.  The optional
 -- provider field supports late binding by source name, an optional grant names
 -- the provider-declared access contract, and the consumer field records which
--- plugin requested the source.
+-- plugin requested the source.  Resolver edges do not prescribe provider-owned
+-- migrations, schemas, connection details, or consistency rules.
 data ExternalDataSourceDependency = ExternalDataSourceDependency
   { edsdProvider :: !(Maybe Text)
   , edsdConsumer :: !Text
@@ -416,6 +417,10 @@ data DependencyExternalDataSourceGrant = DependencyExternalDataSourceGrant
   } deriving (Eq, Ord, Show, Read, Generic)
 
 -- | An external data source advertised by a dependency provider.
+--
+-- This resolver-facing summary carries only backend-neutral availability,
+-- resource, and grant information.  Concrete migration/schema management,
+-- connection details, and consistency semantics remain provider-owned.
 data DependencyExternalDataSourceProvider = DependencyExternalDataSourceProvider
   { despName :: !Text
   , despCapabilities :: ![RPCExternalDataSourceCapability]

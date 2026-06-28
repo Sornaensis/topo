@@ -20,12 +20,15 @@ Top-level plugin definition. Use `defaultPluginDef` as a starting point.
 | `pdDataDirectory` | `Maybe FilePath` | Plugin data directory under the world save |
 | `pdDataResources` | `[DataResourceDef]` | Data-service resource schemas and handlers |
 | `pdUiHints` | `RPCUIHints` | Manifest v3 UI presentation hints |
-| `pdExternalDataSources` | `[RPCExternalDataSourceDecl]` | Provider-owned external data sources, grants, and opaque connection metadata |
-| `pdExternalDataSourceRefs` | `[RPCExternalDataSourceRef]` | Consumed external data sources, requested grants, and opaque reference metadata |
+| `pdExternalDataSources` | `[RPCExternalDataSourceDecl]` | Provider-owned external data sources, grants, status, and opaque connection metadata |
+| `pdExternalDataSourceRefs` | `[RPCExternalDataSourceRef]` | Consumed external data sources, requested grants, status, and opaque reference metadata |
 | `pdStartPolicy` | `RPCStartPolicy` | Host-side process supervision policy |
 
 External data-source grants use `RPCExternalDataSourceGrant`; topo treats all
-`connection`/`reference` values as opaque provider-owned metadata.
+`connection`/`reference` values as opaque provider-owned metadata. Migrations,
+backing schemas, connection details, and consistency rules remain with provider
+plugins, adapters, or external systems; the SDK only serializes backend-neutral
+declarations, grants, status/errors, and opaque metadata.
 
 ## ParamDef
 

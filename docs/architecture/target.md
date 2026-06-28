@@ -247,22 +247,24 @@ Topo may track:
 - provider identity;
 - access mode and capability scope;
 - opaque reference/configuration metadata;
-- health/status and diagnostics;
+- health/status, provider error messages, and diagnostics;
 - grants and revocations;
 - dependency blocking/degraded state;
 - references/metadata needed for world/plugin compatibility.
 
 Topo must not require:
 
-- backend-specific migration tables;
-- database locking policy;
+- backend-specific migration tables or migration runners;
+- connection strings, credentials, or other concrete connection details;
+- database locking policy or cross-provider consistency rules;
 - filesystem layouts;
-- schema/table naming rules;
+- backend schema evolution or table/schema naming rules;
 - a particular database or service implementation.
 
-Backend-specific work belongs to provider plugins, adapters, user
-configuration, or external systems. SQLite is acceptable as a fixture or adapter
-example, but not as a privileged shared-state specification.
+Backend-specific migrations, schemas, connection details, consistency rules, and
+repair procedures belong to provider plugins, adapters, user configuration, or
+external systems. SQLite is acceptable as a fixture or adapter example, but not
+as a privileged shared-state specification.
 
 ## UI architecture
 
