@@ -23,6 +23,7 @@ import Data.IORef (readIORef, writeIORef)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time (UTCTime, getCurrentTime)
@@ -54,11 +55,27 @@ import Actor.PluginManager.Types
   , requiresRuntimeConnection
   , restartModeAllowsFailure
   )
-import Topo.Plugin.DataResource (DataResourceSchema(..))
+import Topo.Overlay.Schema (OverlaySchema(..))
+import Topo.Plugin (Capability(..))
+import Topo.Plugin.DataResource (DataOperations(..), DataResourceSchema(..))
+import Topo.Plugin.Dependency
+  ( DependencyExternalDataSourceGrant(..)
+  , DependencyExternalDataSourceProvider(..)
+  , DependencyProvider(..)
+  , DependencyResourceProvider(..)
+  , ResourceOperation(..)
+  , defaultDependencyResolverInput
+  , dependencyStartupOrder
+  , driAvailableCapabilities
+  , manifestDependencyDecls
+  )
 import Topo.Plugin.RPC
   ( RPCConnection(..)
   , RPCError(..)
+  , RPCExternalDataSourceDecl(..)
+  , RPCExternalDataSourceGrant(..)
   , RPCExternalDataSourceStartupDecision(..)
+  , RPCExternalDataSourceStatus(..)
   , RPCManifest(..)
   , RPCStartPolicy(..)
   , dataResourceErrorCodeText
@@ -71,11 +88,88 @@ import Topo.Plugin.RPC.Transport (closeTransport)
 -- | Re-read manifests for all known plugins, preserving params.
 refreshAllManifests :: FilePath -> Map Text LoadedPlugin -> IO (Map Text LoadedPlugin)
 refreshAllManifests baseDir plugins = do
-  Map.traverseWithKey
-    (\_ lp -> do
-      refreshed <- refreshOneManifest baseDir lp
-      ensurePluginConnection refreshed)
-    plugins
+  refreshed <- Map.traverseWithKey (\_ lp -> refreshOneManifest baseDir lp) plugins
+  connected <- traverse ensurePluginConnection (orderLoadedPluginsByDependencies refreshed)
+  pure (Map.fromList [(lpName p, p) | p <- connected])
+
+orderLoadedPluginsByDependencies :: Map Text LoadedPlugin -> [LoadedPlugin]
+orderLoadedPluginsByDependencies plugins =
+  let loaded = Map.elems plugins
+      byName = Map.fromList [(lpName p, p) | p <- loaded]
+      providers = map loadedPluginDependencyProvider loaded
+      resolverInput = (defaultDependencyResolverInput providers)
+        { driAvailableCapabilities = Set.fromList allHostCapabilities
+        }
+      dependencyOrder = dependencyStartupOrder resolverInput
+      ordered = [p | name <- dependencyOrder, Just p <- [Map.lookup name byName]]
+      remaining = [p | p <- loaded, lpName p `notElem` dependencyOrder]
+  in ordered <> remaining
+
+loadedPluginDependencyProvider :: LoadedPlugin -> DependencyProvider
+loadedPluginDependencyProvider lp = DependencyProvider
+  { dpName = rmName manifest
+  , dpVersion = rmVersion manifest
+  , dpDependencies = manifestDependencyDecls manifest
+  , dpCapabilities = rmCapabilities manifest
+  , dpOverlays = maybe [] ((:[]) . osName) (lpOverlaySchema lp)
+  , dpResources = map dependencyResourceProvider (rmDataResources manifest)
+  , dpExternalDataSources = map dependencyExternalDataSourceProvider (rmExternalDataSources manifest)
+  }
+  where
+    manifest = lpManifest lp
+
+allHostCapabilities :: [Capability]
+allHostCapabilities =
+  [ CapLog
+  , CapNoise
+  , CapReadTerrain
+  , CapWriteTerrain
+  , CapReadOverlay
+  , CapWriteOverlay
+  , CapReadWorld
+  , CapWriteWorld
+  , CapDataRead
+  , CapDataWrite
+  ]
+
+dependencyResourceProvider :: DataResourceSchema -> DependencyResourceProvider
+dependencyResourceProvider resource = DependencyResourceProvider
+  { drpName = drsName resource
+  , drpOperations = dependencyResourceOperations (drsOperations resource)
+  , drpOverlay = drsOverlay resource
+  }
+
+dependencyResourceOperations :: DataOperations -> [ResourceOperation]
+dependencyResourceOperations ops = concat
+  [ [ResourceList | doList ops]
+  , [ResourceGet | doGet ops]
+  , [ResourceCreate | doCreate ops]
+  , [ResourceUpdate | doUpdate ops]
+  , [ResourceDelete | doDelete ops]
+  , [ResourceQueryByHex | doQueryByHex ops]
+  , [ResourceQueryByField | doQueryByField ops]
+  , [ResourceSort | doSort ops]
+  , [ResourceFilter | doFilter ops]
+  , [ResourcePage | doPage ops]
+  ]
+
+dependencyExternalDataSourceProvider :: RPCExternalDataSourceDecl -> DependencyExternalDataSourceProvider
+dependencyExternalDataSourceProvider source = DependencyExternalDataSourceProvider
+  { despName = redsdName source
+  , despCapabilities = redsdCapabilities source
+  , despResources = redsdResources source
+  , despStatus = redssState (redsdStatus source)
+  , despGrants = map dependencyExternalDataSourceGrant (redsdGrants source)
+  }
+
+dependencyExternalDataSourceGrant :: RPCExternalDataSourceGrant -> DependencyExternalDataSourceGrant
+dependencyExternalDataSourceGrant grant = DependencyExternalDataSourceGrant
+  { desgName = redsgName grant
+  , desgAccess = redsgAccess grant
+  , desgCapabilities = redsgCapabilities grant
+  , desgResources = redsgResources grant
+  , desgStatus = redssState (redsgStatus grant)
+  }
 
 -- | Re-read a single plugin's manifest, preserving current params.
 refreshOneManifest :: FilePath -> LoadedPlugin -> IO LoadedPlugin

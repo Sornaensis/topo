@@ -8,6 +8,7 @@ module Spec.PluginManager (spec, runFixtureCli) where
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
 import Control.Exception (SomeException, bracket, catch, finally, throwIO)
 import Control.Monad (unless)
+import Data.List (elemIndex)
 import qualified Data.Aeson as Aeson
 import Data.Aeson (Value(..), (.=), object)
 import qualified Data.ByteString as BS
@@ -39,6 +40,7 @@ import System.Process (ProcessHandle, getProcessExitCode)
 import System.Timeout (timeout)
 import Test.Hspec
 
+import Actor.UI (UiState(..), emptyUiState)
 import Actor.PluginManager
   ( LoadedPlugin(..)
   , PluginLifecycleSnapshot(..)
@@ -48,6 +50,7 @@ import Actor.PluginManager
   , discoverPlugins
   , getDisabledPlugins
   , getLoadedPlugins
+  , getPluginExternalDataSources
   , getPluginOverlaySchemas
   , getPluginStages
   , mutatePluginResource
@@ -71,7 +74,39 @@ import Topo.Plugin.DataResource
   , defaultDataResourceVersion
   , noOperations
   )
-import Topo.Plugin.RPC (RPCConnection, invokeGenerator, invokeSimulation)
+import Seer.World.Persist
+  ( WorldExternalDataSourceSnapshot(..)
+  , WorldSaveManifest(..)
+  , deleteNamedWorld
+  , loadNamedWorld
+  , saveNamedWorldWithPluginsAndExternalData
+  )
+import Topo.Plugin.RPC
+  ( RPCConnection
+  , RPCExternalDataSourceAccess(..)
+  , RPCExternalDataSourceAccessMode(..)
+  , RPCExternalDataSourceAvailability(..)
+  , RPCExternalDataSourceCapability(..)
+  , RPCExternalDataSourceConfigOrigin(..)
+  , RPCExternalDataSourceConfigRef(..)
+  , RPCExternalDataSourceDecl(..)
+  , RPCExternalDataSourceGrant(..)
+  , RPCExternalDataSourceGrantMessage(..)
+  , RPCExternalDataSourceGrantRevocation(..)
+  , RPCExternalDataSourceHealth(..)
+  , RPCExternalDataSourceRef(..)
+  , RPCExternalDataSourceStatus(..)
+  , RPCExternalDataSourceStatusEntry(..)
+  , RPCExternalDataSourceStatusReport(..)
+  , RPCExternalDataSourceStatusRequest(..)
+  , RPCExternalDataSourceStatusState(..)
+  , defaultRPCExternalDataSourceStatus
+  , invokeGenerator
+  , invokeSimulation
+  , requestExternalDataSourceStatus
+  , sendExternalDataSourceGrant
+  , sendExternalDataSourceGrantRevocation
+  )
 import Topo.Plugin.RPC.DataService
   ( DataMutation(..)
   , DataQuery(..)
@@ -272,6 +307,67 @@ spec = describe "PluginManager" $ do
         pluginLifecycleStates pluginName loaded `shouldSatisfy` elem LifecycleReady
         length (pluginProcessHandles pluginName loaded) `shouldSatisfy` (> 0)
         shutdownPlugins pluginManagerHandle
+
+  it "integrates shared external data-source provider and consumer fixtures without backend assumptions" $
+    withExecutablePluginDirs
+      [ (externalConsumerPluginName, externalConsumerManifestJSON, "external-consumer")
+      , (externalProviderPluginName, externalProviderManifestJSON, "external-provider")
+      ] $ do
+        bracket
+          (deleteNamedWorld externalIntegrationWorldName >> pure ())
+          (\_ -> deleteNamedWorld externalIntegrationWorldName >> pure ())
+          (\_ -> bracket newActorSystem shutdownActorSystem $ \system -> do
+              pluginManagerHandle <- getPluginManager system
+              discoverPlugins pluginManagerHandle
+              refreshManifests pluginManagerHandle
+              (do
+                loaded <- getLoadedPlugins pluginManagerHandle
+                pluginStatuses externalProviderPluginName loaded `shouldSatisfy` elem PluginConnected
+                pluginStatuses externalConsumerPluginName loaded `shouldSatisfy` elem PluginConnected
+                pluginLifecycleStates externalProviderPluginName loaded `shouldSatisfy` elem LifecycleReady
+                pluginLifecycleStates externalConsumerPluginName loaded `shouldSatisfy` elem LifecycleReady
+                startupOrder <- readExternalStartupOrder
+                assertStartedBefore externalProviderPluginName externalConsumerPluginName startupOrder
+
+                providerConn <- expectPluginConnection externalProviderPluginName loaded
+                consumerConn <- expectPluginConnection externalConsumerPluginName loaded
+                providerStatus <- expectRight "provider external status" =<<
+                  expectWithin "provider external status request" (requestExternalDataSourceStatus providerConn externalProviderStatusRequest)
+                expectProviderStatusReport providerStatus
+                consumerStatus <- expectRight "consumer external status" =<<
+                  expectWithin "consumer external status request" (requestExternalDataSourceStatus consumerConn externalConsumerStatusRequest)
+                expectConsumerStatusReport consumerStatus
+
+                initialBinding <- expectRight "initial consumer binding query" =<<
+                  expectWithin "initial consumer binding query" (queryPluginResource pluginManagerHandle externalConsumerPluginNameText externalBindingQuery)
+                expectBindingStatus "declared" initialBinding
+                shouldNotMentionSQLite initialBinding
+                expectRight "send external grant" =<< expectWithin "send external grant" (sendExternalDataSourceGrant consumerConn externalGrantMessage)
+                grantedBinding <- expectRight "granted consumer binding query" =<<
+                  expectWithin "granted consumer binding query" (queryPluginResource pluginManagerHandle externalConsumerPluginNameText externalBindingQuery)
+                expectBindingStatus "granted" grantedBinding
+                expectRight "send external grant revocation" =<< expectWithin "send external grant revocation" (sendExternalDataSourceGrantRevocation consumerConn externalGrantRevocation)
+                revokedBinding <- expectRight "revoked consumer binding query" =<<
+                  expectWithin "revoked consumer binding query" (queryPluginResource pluginManagerHandle externalConsumerPluginNameText externalBindingQuery)
+                expectBindingStatus "revoked" revokedBinding
+
+                snapshots <- getPluginExternalDataSources pluginManagerHandle
+                expectExternalSnapshots snapshots
+                let world = emptyWorld (WorldConfig 8) defaultHexGridMeta
+                    ui = emptyUiState { uiSeed = 77, uiChunkSize = 8 }
+                saveResult <- expectWithin "save external integration world" (saveNamedWorldWithPluginsAndExternalData externalIntegrationWorldName ui world [] snapshots)
+                saveResult `shouldBe` Right ()
+                loadResult <- expectWithin "load external integration world" (loadNamedWorld externalIntegrationWorldName)
+                case loadResult of
+                  Left err -> expectationFailure (Text.unpack err)
+                  Right (manifest, _snapshot, _loadedWorld) -> do
+                    wsmExternalDataSources manifest `shouldBe` snapshots
+                    shouldNotMentionSQLite (wsmExternalDataSources manifest)
+
+                setDisabledPlugins pluginManagerHandle (Set.singleton externalProviderPluginNameText)
+                unavailableSnapshots <- getPluginExternalDataSources pluginManagerHandle
+                expectProviderUnavailableSnapshots unavailableSnapshots)
+                `finally` shutdownPlugins pluginManagerHandle)
 
   it "reports malformed handshake JSON as a plugin error" $ do
     withExecutablePluginDir malformedPluginName malformedManifestJSON "malformed-json" $ do
@@ -575,6 +671,163 @@ assertProcessExited label processHandle = do
         Just exitCode -> pure exitCode
         Nothing -> threadDelay 10000 >> waitForExitCode
 
+expectPluginConnection :: String -> [LoadedPlugin] -> IO RPCConnection
+expectPluginConnection name loaded =
+  case pluginConnections name loaded of
+    Just conn -> pure conn
+    Nothing -> expectationFailure (name <> " did not expose an RPC connection") >> fail "missing plugin connection"
+
+expectRight :: Show e => String -> Either e a -> IO a
+expectRight label result = case result of
+  Left err -> expectationFailure (label <> " failed: " <> show err) >> fail label
+  Right value -> pure value
+
+expectWithin :: String -> IO a -> IO a
+expectWithin label action = do
+  result <- timeout 10000000 action
+  case result of
+    Nothing -> expectationFailure (label <> " timed out") >> fail label
+    Just value -> pure value
+
+assertStartedBefore :: String -> String -> [String] -> Expectation
+assertStartedBefore first second order =
+  case (elemIndex first order, elemIndex second order) of
+    (Just firstIndex, Just secondIndex) -> firstIndex `shouldSatisfy` (< secondIndex)
+    _ -> expectationFailure ("startup order did not contain expected plugins: " <> show order)
+
+expectProviderStatusReport :: RPCExternalDataSourceStatusReport -> Expectation
+expectProviderStatusReport report =
+  case redssReportStatuses report of
+    [entry] -> do
+      redsstProviderId entry `shouldBe` externalProviderPluginNameText
+      redsstConsumerId entry `shouldBe` Nothing
+      redsstSource entry `shouldBe` externalSourceName
+      redsstGrant entry `shouldBe` Just externalGrantName
+      redsstAccess entry `shouldBe` externalReadAccess
+      redsstResources entry `shouldBe` externalSharedResources
+      redsstCapabilityScope entry `shouldBe` externalCapabilities
+      redssState (redsstStatus entry) `shouldBe` ExternalStatusReady
+      redssAvailability (redsstStatus entry) `shouldBe` Just ExternalAvailabilityAvailable
+      redssHealth (redsstStatus entry) `shouldBe` Just ExternalHealthHealthy
+      redssAccessMode (redsstStatus entry) `shouldBe` Just ExternalAccessModeReadOnly
+      redsstDiagnostics entry `shouldBe` Just externalDiagnostics
+      shouldNotMentionSQLite entry
+    other -> expectationFailure ("expected one provider status entry, got " <> show other)
+
+expectConsumerStatusReport :: RPCExternalDataSourceStatusReport -> Expectation
+expectConsumerStatusReport report =
+  case redssReportStatuses report of
+    [entry] -> do
+      redsstProviderId entry `shouldBe` externalProviderPluginNameText
+      redsstConsumerId entry `shouldBe` Just externalSourceName
+      redsstSource entry `shouldBe` externalSourceName
+      redsstGrant entry `shouldBe` Just externalGrantName
+      redsstAccess entry `shouldBe` externalReadAccess
+      redsstResources entry `shouldBe` externalSharedResources
+      redsstCapabilityScope entry `shouldBe` externalCapabilities
+      redssState (redsstStatus entry) `shouldBe` ExternalStatusReady
+      redssAvailability (redsstStatus entry) `shouldBe` Just ExternalAvailabilityAvailable
+      redssHealth (redsstStatus entry) `shouldBe` Just ExternalHealthHealthy
+      redssAccessMode (redsstStatus entry) `shouldBe` Just ExternalAccessModeReadOnly
+      redsstDiagnostics entry `shouldBe` Just externalDiagnostics
+      shouldNotMentionSQLite entry
+    other -> expectationFailure ("expected one consumer status entry, got " <> show other)
+
+expectBindingStatus :: Text -> QueryResult -> Expectation
+expectBindingStatus expected result = do
+  qrsResource result `shouldBe` externalBindingResource
+  case qrsRecords result of
+    [binding] -> do
+      recordField "source_id" binding `shouldBe` Just (String externalSourceName)
+      recordField "provider" binding `shouldBe` Just (String externalProviderPluginNameText)
+      recordField "grant" binding `shouldBe` Just (String externalGrantName)
+      recordField "status" binding `shouldBe` Just (String expected)
+    other -> expectationFailure ("expected one binding row, got " <> show other)
+
+recordField :: Text -> DataRecord -> Maybe Value
+recordField key (DataRecord fields) = Map.lookup key fields
+
+expectExternalSnapshots :: [WorldExternalDataSourceSnapshot] -> Expectation
+expectExternalSnapshots snapshots = do
+  case findExternalSnapshot externalProviderPluginNameText snapshots of
+    Nothing -> expectationFailure "missing provider external data-source snapshot"
+    Just snapshot -> case wedssProvidedSources snapshot of
+      [source] -> do
+        redsdName source `shouldBe` externalSourceName
+        redsdKind source `shouldBe` "catalog"
+        redsdCapabilities source `shouldBe` externalCapabilities
+        redsdResources source `shouldBe` externalSharedResources
+        redsdConnection source `shouldBe` Just externalSourceReference
+        redsdConfigRefs source `shouldBe` [externalProviderConfigRef]
+        redssState (redsdStatus source) `shouldBe` ExternalStatusReady
+        case redsdGrants source of
+          [grant] -> do
+            redsgName grant `shouldBe` externalGrantName
+            redsgAccess grant `shouldBe` externalReadAccess
+            redsgCapabilities grant `shouldBe` externalCapabilities
+            redsgReference grant `shouldBe` Just externalGrantReference
+            redsgConfigRefs grant `shouldBe` [externalGrantConfigRef]
+          other -> expectationFailure ("expected one provider grant, got " <> show other)
+      other -> expectationFailure ("expected one provided source, got " <> show other)
+  case findExternalSnapshot externalConsumerPluginNameText snapshots of
+    Nothing -> expectationFailure "missing consumer external data-source snapshot"
+    Just snapshot -> case wedssConsumedRefs snapshot of
+      [ref] -> do
+        redsrName ref `shouldBe` externalSourceName
+        redsrProvider ref `shouldBe` Just externalProviderPluginNameText
+        redsrSource ref `shouldBe` externalSourceName
+        redsrRequired ref `shouldBe` True
+        redsrAccess ref `shouldBe` externalReadAccess
+        redsrResources ref `shouldBe` externalSharedResources
+        redsrGrant ref `shouldBe` Just externalGrantName
+        redsrReference ref `shouldBe` Just externalConsumerReference
+        redsrConfigRefs ref `shouldBe` [externalConsumerConfigRef]
+        redssState (redsrStatus ref) `shouldBe` ExternalStatusReady
+      other -> expectationFailure ("expected one consumed ref, got " <> show other)
+  shouldNotMentionSQLite snapshots
+
+expectProviderUnavailableSnapshots :: [WorldExternalDataSourceSnapshot] -> Expectation
+expectProviderUnavailableSnapshots snapshots = do
+  case findExternalSnapshot externalProviderPluginNameText snapshots of
+    Nothing -> expectationFailure "missing unavailable provider snapshot"
+    Just snapshot -> case wedssProvidedSources snapshot of
+      [source] -> do
+        expectUnavailableStatus externalProviderPluginNameText (redsdStatus source)
+        mapM_ (expectUnavailableStatus externalProviderPluginNameText . redsgStatus) (redsdGrants source)
+      other -> expectationFailure ("expected one unavailable source, got " <> show other)
+  case findExternalSnapshot externalConsumerPluginNameText snapshots of
+    Nothing -> expectationFailure "missing consumer snapshot after provider disable"
+    Just snapshot -> case wedssConsumedRefs snapshot of
+      [ref] -> expectUnavailableStatus externalProviderPluginNameText (redsrStatus ref)
+      other -> expectationFailure ("expected one unavailable consumed ref, got " <> show other)
+  shouldNotMentionSQLite snapshots
+
+expectUnavailableStatus :: Text -> RPCExternalDataSourceStatus -> Expectation
+expectUnavailableStatus providerName status = do
+  redssState status `shouldBe` ExternalStatusUnavailable
+  redssProviderId status `shouldBe` Just providerName
+  redssAvailability status `shouldBe` Just ExternalAvailabilityUnavailable
+  redssHealth status `shouldBe` Just ExternalHealthUnhealthy
+  redssAccessMode status `shouldBe` Just ExternalAccessModeDisabled
+  redssMessage status `shouldBe` Just "provider plugin is unavailable"
+  shouldNotMentionSQLite status
+
+findExternalSnapshot :: Text -> [WorldExternalDataSourceSnapshot] -> Maybe WorldExternalDataSourceSnapshot
+findExternalSnapshot pluginName snapshots = case filter ((== pluginName) . wedssPlugin) snapshots of
+  snapshot:_ -> Just snapshot
+  [] -> Nothing
+
+shouldNotMentionSQLite :: Show a => a -> Expectation
+shouldNotMentionSQLite value = do
+  let rendered = show value
+  rendered `shouldNotSatisfy` contains "SQLite"
+  rendered `shouldNotSatisfy` contains "sqlite"
+  where
+    contains needle haystack = needle `isInfixOfString` haystack
+
+isInfixOfString :: String -> String -> Bool
+isInfixOfString needle haystack = Text.pack needle `Text.isInfixOf` Text.pack haystack
+
 anyPluginError :: [PluginStatus] -> Bool
 anyPluginError = any $ \case
   PluginError _ -> True
@@ -624,6 +877,23 @@ withExecutablePluginDir pluginName manifestJSON fixtureMode action =
       pure pluginDir
 
     teardown = removePathForciblyEventually
+
+withExecutablePluginDirs :: [(String, BS.ByteString, String)] -> IO a -> IO a
+withExecutablePluginDirs pluginSpecs action =
+  withIsolatedPluginHome "external-provider-consumer" $
+    bracket setup teardown (const action)
+  where
+    setup = do
+      baseDir <- currentPluginBaseDir
+      traverse (writeSpec baseDir) pluginSpecs
+    teardown = mapM_ removePathForciblyEventually
+    writeSpec baseDir (pluginName, manifestJSON, fixtureMode) = do
+      let pluginDir = baseDir </> pluginName
+      resetPluginDir pluginDir
+      BS.writeFile (pluginDir </> "manifest.json") manifestJSON
+      BS.writeFile (pluginDir </> "test.toposchema") testSchemaJSON
+      writePluginWrapper pluginDir pluginName fixtureMode
+      pure pluginDir
 
 withIsolatedPluginHome :: String -> IO a -> IO a
 withIsolatedPluginHome label action =
@@ -733,7 +1003,7 @@ runFixtureCli = do
   args <- getArgs
   case args of
     ["--plugin-manager-fixture", mode] -> runFixtureMode mode
-    _ -> die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|malformed-json|bad-handshake|early-exit|slow|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|exit-on-generator|exit-on-simulation>"
+    _ -> die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|malformed-json|bad-handshake|early-exit|slow|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|exit-on-generator|exit-on-simulation|external-provider|external-consumer>"
 
 runFixtureMode :: String -> IO ()
 runFixtureMode = \case
@@ -754,6 +1024,8 @@ runFixtureMode = \case
   "negotiated-validation" -> runNegotiatedValidationFixture
   "exit-on-generator" -> runExitOnGeneratorFixture
   "exit-on-simulation" -> runExitOnSimulationFixture
+  "external-provider" -> runExternalProviderFixture
+  "external-consumer" -> runExternalConsumerFixture
   unknown -> die ("unknown plugin-manager fixture: " <> unknown)
 
 runEnvContractFixture :: IO ()
@@ -850,6 +1122,151 @@ runProviderFailedFixture = do
                 loop transport
               MsgShutdown -> closeTransport transport
               _ -> loop transport
+
+runExternalProviderFixture :: IO ()
+runExternalProviderFixture = do
+  recordExternalStartup externalProviderPluginName
+  connectPluginFromEnvironment "plugin-manager-external-provider-fixture" stdin stdout >>= \case
+    Left _ -> exitFailure
+    Right transport -> loop transport
+  where
+    loop transport = do
+      recvMessage transport >>= \case
+        Left _ -> closeTransport transport
+        Right bytes ->
+          case decodeMessage bytes of
+            Left _ -> loop transport
+            Right envelope -> case envType envelope of
+              MsgHandshake -> do
+                _ <- sendMessage transport (encodeMessage
+                  (handshakeAckWithDataDirectoryEnvelope (envRequestId envelope) currentProtocolVersion (Just "external-provider-data") []))
+                loop transport
+              MsgExternalDataSourceStatusRequest -> do
+                let includeDiagnostics = requestIncludesDiagnostics envelope
+                _ <- sendMessage transport (encodeMessage (externalStatusEnvelope
+                  (envRequestId envelope)
+                  (externalProviderStatusReport includeDiagnostics)))
+                loop transport
+              MsgQueryResource -> do
+                _ <- sendMessage transport (encodeMessage (queryResultEnvelope
+                  (envRequestId envelope)
+                  (QueryResult externalProviderResource [externalProviderRecord] (Just 1))))
+                loop transport
+              MsgShutdown -> closeTransport transport
+              _ -> loop transport
+
+runExternalConsumerFixture :: IO ()
+runExternalConsumerFixture = do
+  recordExternalStartup externalConsumerPluginName
+  connectPluginFromEnvironment "plugin-manager-external-consumer-fixture" stdin stdout >>= \case
+    Left _ -> exitFailure
+    Right transport -> loop transport "declared"
+  where
+    loop transport bindingStatus = do
+      recvMessage transport >>= \case
+        Left _ -> closeTransport transport
+        Right bytes ->
+          case decodeMessage bytes of
+            Left _ -> loop transport bindingStatus
+            Right envelope -> case envType envelope of
+              MsgHandshake -> do
+                _ <- sendMessage transport (encodeMessage
+                  (handshakeAckWithDataDirectoryEnvelope (envRequestId envelope) currentProtocolVersion (Just "external-consumer-data") []))
+                loop transport bindingStatus
+              MsgExternalDataSourceStatusRequest -> do
+                let includeDiagnostics = requestIncludesDiagnostics envelope
+                _ <- sendMessage transport (encodeMessage (externalStatusEnvelope
+                  (envRequestId envelope)
+                  (externalConsumerStatusReport includeDiagnostics)))
+                loop transport bindingStatus
+              MsgExternalDataSourceGrant -> loop transport "granted"
+              MsgExternalDataSourceRevoke -> loop transport "revoked"
+              MsgQueryResource -> do
+                _ <- sendMessage transport (encodeMessage (queryResultEnvelope
+                  (envRequestId envelope)
+                  (QueryResult externalBindingResource [externalBindingRecord bindingStatus] (Just 1))))
+                loop transport bindingStatus
+              MsgShutdown -> closeTransport transport
+              _ -> loop transport bindingStatus
+
+requestIncludesDiagnostics :: RPCEnvelope -> Bool
+requestIncludesDiagnostics envelope = case Aeson.fromJSON (envPayload envelope) of
+  Aeson.Success (request :: RPCExternalDataSourceStatusRequest) -> redssrIncludeDiagnostics request
+  Aeson.Error _ -> False
+
+externalStatusEnvelope :: Maybe Word64 -> RPCExternalDataSourceStatusReport -> RPCEnvelope
+externalStatusEnvelope requestId report = RPCEnvelope
+  { envType = MsgExternalDataSourceStatus
+  , envPayload = Aeson.toJSON report
+  , envRequestId = requestId
+  }
+
+externalProviderStatusReport :: Bool -> RPCExternalDataSourceStatusReport
+externalProviderStatusReport includeDiagnostics = RPCExternalDataSourceStatusReport
+  { redssReportStatuses = [externalProviderStatusEntry includeDiagnostics]
+  , redssReportDiagnostics = if includeDiagnostics then Just externalDiagnostics else Nothing
+  }
+
+externalConsumerStatusReport :: Bool -> RPCExternalDataSourceStatusReport
+externalConsumerStatusReport includeDiagnostics = RPCExternalDataSourceStatusReport
+  { redssReportStatuses = [externalConsumerStatusEntry includeDiagnostics]
+  , redssReportDiagnostics = if includeDiagnostics then Just externalDiagnostics else Nothing
+  }
+
+externalProviderStatusEntry :: Bool -> RPCExternalDataSourceStatusEntry
+externalProviderStatusEntry includeDiagnostics = RPCExternalDataSourceStatusEntry
+  { redsstProviderId = externalProviderPluginNameText
+  , redsstConsumerId = Nothing
+  , redsstSource = externalSourceName
+  , redsstGrant = Just externalGrantName
+  , redsstAccess = externalReadAccess
+  , redsstResources = externalSharedResources
+  , redsstCapabilityScope = externalCapabilities
+  , redsstStatus = statusWithOptionalDiagnostics includeDiagnostics
+  , redsstReference = Just externalGrantReference
+  , redsstConfigRefs = [externalGrantConfigRef]
+  , redsstDiagnostics = if includeDiagnostics then Just externalDiagnostics else Nothing
+  }
+
+externalConsumerStatusEntry :: Bool -> RPCExternalDataSourceStatusEntry
+externalConsumerStatusEntry includeDiagnostics = (externalProviderStatusEntry includeDiagnostics)
+  { redsstConsumerId = Just externalSourceName
+  , redsstReference = Just externalConsumerReference
+  , redsstConfigRefs = [externalConsumerConfigRef]
+  }
+
+statusWithOptionalDiagnostics :: Bool -> RPCExternalDataSourceStatus
+statusWithOptionalDiagnostics includeDiagnostics
+  | includeDiagnostics = externalReadyStatus
+  | otherwise = externalReadyStatus { redssDiagnostics = Nothing }
+
+externalProviderRecord :: DataRecord
+externalProviderRecord = record
+  [ ("source_id", String externalSourceName)
+  , ("endpoint", String "fixture://provider/terrain.catalog")
+  ]
+
+externalBindingRecord :: Text -> DataRecord
+externalBindingRecord bindingStatus = record
+  [ ("source_id", String externalSourceName)
+  , ("provider", String externalProviderPluginNameText)
+  , ("grant", String externalGrantName)
+  , ("status", String bindingStatus)
+  ]
+
+recordExternalStartup :: String -> IO ()
+recordExternalStartup pluginName = do
+  baseDir <- requireEnv testPluginDirEnv
+  appendFile (baseDir </> "external-startup.log") (pluginName <> "\n")
+
+readExternalStartupOrder :: IO [String]
+readExternalStartupOrder = do
+  baseDir <- currentPluginBaseDir
+  let path = baseDir </> "external-startup.log"
+  exists <- doesFileExist path
+  if exists
+    then lines <$> readFile path
+    else pure []
 
 runValidationOkFixture :: IO ()
 runValidationOkFixture = do
@@ -1062,11 +1479,15 @@ handshakeAckEnvelope requestId protocolVersion =
   handshakeAckWithResourcesEnvelope requestId protocolVersion []
 
 handshakeAckWithResourcesEnvelope :: Maybe Word64 -> Int -> [DataResourceSchema] -> RPCEnvelope
-handshakeAckWithResourcesEnvelope requestId protocolVersion resources = RPCEnvelope
+handshakeAckWithResourcesEnvelope requestId protocolVersion =
+  handshakeAckWithDataDirectoryEnvelope requestId protocolVersion Nothing
+
+handshakeAckWithDataDirectoryEnvelope :: Maybe Word64 -> Int -> Maybe Text -> [DataResourceSchema] -> RPCEnvelope
+handshakeAckWithDataDirectoryEnvelope requestId protocolVersion dataDirectory resources = RPCEnvelope
   { envType = MsgHandshakeAck
   , envPayload = Aeson.toJSON (HandshakeAck
       { haProtocolVersion = protocolVersion
-      , haDataDirectory = Nothing
+      , haDataDirectory = dataDirectory
       , haResources = resources
       })
   , envRequestId = requestId
@@ -1469,6 +1890,270 @@ externalOnlyProviderManifestFor name = BSC.pack $
     <> "    \"shutdown_timeout_ms\": 100\n"
     <> "  }\n"
     <> "}\n"
+
+externalProviderPluginName :: String
+externalProviderPluginName = "z-copilot-test-plugin-external-provider"
+
+externalConsumerPluginName :: String
+externalConsumerPluginName = "a-copilot-test-plugin-external-consumer"
+
+externalProviderPluginNameText :: Text
+externalProviderPluginNameText = Text.pack externalProviderPluginName
+
+externalConsumerPluginNameText :: Text
+externalConsumerPluginNameText = Text.pack externalConsumerPluginName
+
+externalSourceName :: Text
+externalSourceName = "terrain.catalog"
+
+externalGrantName :: Text
+externalGrantName = "terrain-catalog-read"
+
+externalBindingResource :: Text
+externalBindingResource = "source_bindings"
+
+externalProviderResource :: Text
+externalProviderResource = "shared_sources"
+
+externalSharedResources :: [Text]
+externalSharedResources = [externalProviderResource]
+
+externalCapabilities :: [RPCExternalDataSourceCapability]
+externalCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
+
+externalReadAccess :: [RPCExternalDataSourceAccess]
+externalReadAccess = [ExternalAccessRead]
+
+externalIntegrationWorldName :: Text
+externalIntegrationWorldName = "__topo_test_external_provider_consumer__"
+
+externalDiagnostics :: Value
+externalDiagnostics = object
+  [ "backend" .= ("fixture-service" :: Text)
+  , "owner" .= ("provider-managed" :: Text)
+  ]
+
+externalSourceReference :: Value
+externalSourceReference = object ["handle" .= ("fixture://provider/terrain.catalog" :: Text)]
+
+externalGrantReference :: Value
+externalGrantReference = object ["grant" .= externalGrantName]
+
+externalConsumerReference :: Value
+externalConsumerReference = object ["binding" .= ("fixture://consumer/terrain.catalog" :: Text)]
+
+externalProviderConfigRef :: RPCExternalDataSourceConfigRef
+externalProviderConfigRef = RPCExternalDataSourceConfigRef
+  { redscrName = "terrain-catalog-binding"
+  , redscrOrigin = ExternalConfigProvider
+  , redscrKey = "fixture.provider.terrain.catalog"
+  , redscrRequired = True
+  , redscrCompatibility = Just "manifest-v3"
+  , redscrMetadata = Just externalSourceReference
+  }
+
+externalGrantConfigRef :: RPCExternalDataSourceConfigRef
+externalGrantConfigRef = RPCExternalDataSourceConfigRef
+  { redscrName = "terrain-catalog-read-binding"
+  , redscrOrigin = ExternalConfigProvider
+  , redscrKey = "fixture.provider.terrain.catalog.read"
+  , redscrRequired = True
+  , redscrCompatibility = Just "manifest-v3"
+  , redscrMetadata = Just externalGrantReference
+  }
+
+externalConsumerConfigRef :: RPCExternalDataSourceConfigRef
+externalConsumerConfigRef = RPCExternalDataSourceConfigRef
+  { redscrName = "terrain-catalog-consumer-binding"
+  , redscrOrigin = ExternalConfigDeployment
+  , redscrKey = "fixture.consumer.terrain.catalog"
+  , redscrRequired = True
+  , redscrCompatibility = Just "manifest-v3"
+  , redscrMetadata = Just externalConsumerReference
+  }
+
+externalReadyStatus :: RPCExternalDataSourceStatus
+externalReadyStatus = defaultRPCExternalDataSourceStatus
+  { redssState = ExternalStatusReady
+  , redssProviderId = Just externalProviderPluginNameText
+  , redssAvailability = Just ExternalAvailabilityAvailable
+  , redssHealth = Just ExternalHealthHealthy
+  , redssAccessMode = Just ExternalAccessModeReadOnly
+  , redssCapabilityScope = externalCapabilities
+  , redssCompatibility = Just "manifest-v3"
+  , redssDiagnostics = Just externalDiagnostics
+  }
+
+externalProviderStatusRequest :: RPCExternalDataSourceStatusRequest
+externalProviderStatusRequest = RPCExternalDataSourceStatusRequest
+  { redssrProviderId = Just externalProviderPluginNameText
+  , redssrConsumerId = Nothing
+  , redssrSources = [externalSourceName]
+  , redssrGrants = [externalGrantName]
+  , redssrIncludeDiagnostics = True
+  , redssrReference = Nothing
+  }
+
+externalConsumerStatusRequest :: RPCExternalDataSourceStatusRequest
+externalConsumerStatusRequest = externalProviderStatusRequest
+  { redssrConsumerId = Just externalSourceName
+  }
+
+externalBindingQuery :: QueryResource
+externalBindingQuery = QueryResource
+  { qrResource = externalBindingResource
+  , qrQuery = QueryAll
+  , qrPageSize = Just 20
+  , qrPageOffset = Just 0
+  }
+
+externalGrantMessage :: RPCExternalDataSourceGrantMessage
+externalGrantMessage = RPCExternalDataSourceGrantMessage
+  { redsgmProviderId = externalProviderPluginNameText
+  , redsgmConsumerId = Just externalConsumerPluginNameText
+  , redsgmSource = externalSourceName
+  , redsgmGrant = externalGrantName
+  , redsgmAccess = externalReadAccess
+  , redsgmResources = externalSharedResources
+  , redsgmCapabilityScope = externalCapabilities
+  , redsgmStatus = externalReadyStatus
+  , redsgmReference = Just externalGrantReference
+  , redsgmConfigRefs = [externalGrantConfigRef]
+  , redsgmDiagnostics = Just externalDiagnostics
+  }
+
+externalGrantRevocation :: RPCExternalDataSourceGrantRevocation
+externalGrantRevocation = RPCExternalDataSourceGrantRevocation
+  { redsrvProviderId = externalProviderPluginNameText
+  , redsrvConsumerId = Just externalConsumerPluginNameText
+  , redsrvSource = externalSourceName
+  , redsrvGrant = externalGrantName
+  , redsrvReason = Just "provider disabled for integration test"
+  , redsrvStatus = defaultRPCExternalDataSourceStatus
+      { redssState = ExternalStatusUnavailable
+      , redssMessage = Just "provider disabled for integration test"
+      , redssProviderId = Just externalProviderPluginNameText
+      , redssAvailability = Just ExternalAvailabilityUnavailable
+      , redssHealth = Just ExternalHealthUnhealthy
+      , redssAccessMode = Just ExternalAccessModeDisabled
+      , redssCompatibility = Just "manifest-v3"
+      }
+  , redsrvReference = Just externalGrantReference
+  , redsrvDiagnostics = Just externalDiagnostics
+  }
+
+externalProviderManifestJSON :: BS.ByteString
+externalProviderManifestJSON = externalProviderManifestFor externalProviderPluginName
+
+externalConsumerManifestJSON :: BS.ByteString
+externalConsumerManifestJSON = externalConsumerManifestFor externalConsumerPluginName externalProviderPluginName
+
+externalProviderManifestFor :: String -> BS.ByteString
+externalProviderManifestFor name = BSC.pack $
+  "{\n"
+    <> "  \"manifestVersion\": 3,\n"
+    <> "  \"name\": \"" <> name <> "\",\n"
+    <> "  \"version\": \"0.1.0\",\n"
+    <> "  \"runtime\": { \"protocol\": { \"min\": " <> show currentProtocolVersion <> ", \"max\": " <> show currentProtocolVersion <> " } },\n"
+    <> "  \"capabilities\": [\"dataRead\"],\n"
+    <> "  \"dataResources\": [\n"
+    <> "    {\n"
+    <> "      \"name\": \"shared_sources\",\n"
+    <> "      \"label\": \"Shared Sources\",\n"
+    <> "      \"hexBound\": false,\n"
+    <> "      \"fields\": [\n"
+    <> "        { \"name\": \"source_id\", \"type\": \"text\", \"label\": \"Source ID\" },\n"
+    <> "        { \"name\": \"endpoint\", \"type\": \"text\", \"label\": \"Endpoint\" }\n"
+    <> "      ],\n"
+    <> "      \"operations\": { \"list\": true, \"queryByField\": true, \"page\": true },\n"
+    <> "      \"keyField\": \"source_id\"\n"
+    <> "    }\n"
+    <> "  ],\n"
+    <> "  \"externalDataSources\": [\n"
+    <> "    {\n"
+    <> "      \"name\": \"terrain.catalog\",\n"
+    <> "      \"label\": \"Terrain Catalog\",\n"
+    <> "      \"description\": \"Provider-owned terrain catalog fixture\",\n"
+    <> "      \"kind\": \"catalog\",\n"
+    <> "      \"capabilities\": [\"query\", \"health\"],\n"
+    <> "      \"resources\": [\"shared_sources\"],\n"
+    <> "      \"status\": " <> externalReadyStatusJSON name <> ",\n"
+    <> "      \"connection\": { \"handle\": \"fixture://provider/terrain.catalog\" },\n"
+    <> "      \"configRefs\": [\n"
+    <> "        { \"name\": \"terrain-catalog-binding\", \"origin\": \"provider\", \"key\": \"fixture.provider.terrain.catalog\", \"required\": true, \"compatibility\": \"manifest-v3\", \"metadata\": { \"handle\": \"fixture://provider/terrain.catalog\" } }\n"
+    <> "      ],\n"
+    <> "      \"grants\": [\n"
+    <> "        {\n"
+    <> "          \"name\": \"terrain-catalog-read\",\n"
+    <> "          \"access\": [\"read\"],\n"
+    <> "          \"capabilities\": [\"query\", \"health\"],\n"
+    <> "          \"resources\": [\"shared_sources\"],\n"
+    <> "          \"status\": " <> externalReadyStatusJSON name <> ",\n"
+    <> "          \"reference\": { \"grant\": \"terrain-catalog-read\" },\n"
+    <> "          \"configRefs\": [\n"
+    <> "            { \"name\": \"terrain-catalog-read-binding\", \"origin\": \"provider\", \"key\": \"fixture.provider.terrain.catalog.read\", \"required\": true, \"compatibility\": \"manifest-v3\", \"metadata\": { \"grant\": \"terrain-catalog-read\" } }\n"
+    <> "          ]\n"
+    <> "        }\n"
+    <> "      ]\n"
+    <> "    }\n"
+    <> "  ]"
+    <> externalIntegrationStartPolicy
+    <> "\n}\n"
+
+externalConsumerManifestFor :: String -> String -> BS.ByteString
+externalConsumerManifestFor name providerName = BSC.pack $
+  "{\n"
+    <> "  \"manifestVersion\": 3,\n"
+    <> "  \"name\": \"" <> name <> "\",\n"
+    <> "  \"version\": \"0.1.0\",\n"
+    <> "  \"runtime\": { \"protocol\": { \"min\": " <> show currentProtocolVersion <> ", \"max\": " <> show currentProtocolVersion <> " } },\n"
+    <> "  \"capabilities\": [\"dataRead\"],\n"
+    <> "  \"dataResources\": [\n"
+    <> "    {\n"
+    <> "      \"name\": \"source_bindings\",\n"
+    <> "      \"label\": \"Source Bindings\",\n"
+    <> "      \"hexBound\": false,\n"
+    <> "      \"fields\": [\n"
+    <> "        { \"name\": \"source_id\", \"type\": \"text\", \"label\": \"Source ID\" },\n"
+    <> "        { \"name\": \"provider\", \"type\": \"text\", \"label\": \"Provider\" },\n"
+    <> "        { \"name\": \"grant\", \"type\": \"text\", \"label\": \"Grant\" },\n"
+    <> "        { \"name\": \"status\", \"type\": \"text\", \"label\": \"Status\" }\n"
+    <> "      ],\n"
+    <> "      \"operations\": { \"list\": true, \"queryByField\": true, \"page\": true },\n"
+    <> "      \"keyField\": \"source_id\"\n"
+    <> "    }\n"
+    <> "  ],\n"
+    <> "  \"externalDataSourceRefs\": [\n"
+    <> "    {\n"
+    <> "      \"name\": \"terrain.catalog\",\n"
+    <> "      \"provider\": \"" <> providerName <> "\",\n"
+    <> "      \"source\": \"terrain.catalog\",\n"
+    <> "      \"required\": true,\n"
+    <> "      \"access\": [\"read\"],\n"
+    <> "      \"resources\": [\"shared_sources\"],\n"
+    <> "      \"grant\": \"terrain-catalog-read\",\n"
+    <> "      \"status\": " <> externalReadyStatusJSON providerName <> ",\n"
+    <> "      \"reference\": { \"binding\": \"fixture://consumer/terrain.catalog\" },\n"
+    <> "      \"configRefs\": [\n"
+    <> "        { \"name\": \"terrain-catalog-consumer-binding\", \"origin\": \"deployment\", \"key\": \"fixture.consumer.terrain.catalog\", \"required\": true, \"compatibility\": \"manifest-v3\", \"metadata\": { \"binding\": \"fixture://consumer/terrain.catalog\" } }\n"
+    <> "      ]\n"
+    <> "    }\n"
+    <> "  ]"
+    <> externalIntegrationStartPolicy
+    <> "\n}\n"
+
+externalReadyStatusJSON :: String -> String
+externalReadyStatusJSON providerName =
+  "{ \"state\": \"ready\", \"providerId\": \"" <> providerName <> "\", \"availability\": \"available\", \"health\": \"healthy\", \"accessMode\": \"read_only\", \"capabilityScope\": [\"query\", \"health\"], \"compatibility\": \"manifest-v3\", \"diagnostics\": { \"backend\": \"fixture-service\", \"owner\": \"provider-managed\" } }"
+
+externalIntegrationStartPolicy :: String
+externalIntegrationStartPolicy =
+  ",\n  \"startPolicy\": {\n"
+    <> "    \"restart_mode\": \"never\",\n"
+    <> "    \"startup_timeout_ms\": 1000,\n"
+    <> "    \"request_timeout_ms\": 500,\n"
+    <> "    \"shutdown_timeout_ms\": 300\n"
+    <> "  }"
 
 manifestWithStartPolicyFor :: String -> [String] -> BS.ByteString
 manifestWithStartPolicyFor name policyLines = BSC.pack $
