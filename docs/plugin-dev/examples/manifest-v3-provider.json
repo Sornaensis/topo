@@ -76,7 +76,17 @@
       "resources": ["settlements"],
       "status": {
         "state": "ready",
-        "message": "Records are available through the provider plugin"
+        "message": "Records are available through the provider plugin",
+        "providerId": "civilization",
+        "availability": "available",
+        "health": "healthy",
+        "accessMode": "read_only",
+        "capabilityScope": ["query", "health"],
+        "version": "settlement-ledger.v1",
+        "compatibility": "manifest-v3",
+        "diagnostics": {
+          "reportedBy": "civilization"
+        }
       },
       "connection": {
         "handle": "provider-owned:settlement-ledger"
@@ -89,7 +99,17 @@
           "resources": ["settlements"],
           "status": {
             "state": "ready",
-            "message": "Read grant can be brokered to dependent plugins"
+            "message": "Read grant can be brokered to dependent plugins",
+            "providerId": "civilization",
+            "availability": "available",
+            "health": "healthy",
+            "accessMode": "read_only",
+            "capabilityScope": ["query", "health"],
+            "version": "settlement-read.v1",
+            "compatibility": "manifest-v3",
+            "diagnostics": {
+              "grant": "settlement-read"
+            }
           },
           "reference": {
             "handle": "grant:settlement-read"

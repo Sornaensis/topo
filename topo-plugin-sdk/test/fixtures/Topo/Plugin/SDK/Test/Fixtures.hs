@@ -197,7 +197,18 @@ mkExternalProviderPlugin = do
             , redsdKind = "catalog"
             , redsdCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
             , redsdResources = ["shared_sources"]
-            , redsdStatus = RPCExternalDataSourceStatus ExternalStatusReady (Just "fixture ready")
+            , redsdStatus = defaultRPCExternalDataSourceStatus
+                { redssState = ExternalStatusReady
+                , redssMessage = Just "fixture ready"
+                , redssProviderId = Just "fixture-external-provider"
+                , redssAvailability = Just ExternalAvailabilityAvailable
+                , redssHealth = Just ExternalHealthHealthy
+                , redssAccessMode = Just ExternalAccessModeReadOnly
+                , redssCapabilityScope = [ExternalSourceQuery, ExternalSourceHealth]
+                , redssVersion = Just "terrain.catalog.v1"
+                , redssCompatibility = Just "manifest-v3"
+                , redssDiagnostics = Just (object ["fixture" .= ("provider" :: Text)])
+                }
             , redsdConnection = Nothing
             , redsdGrants =
                 [ RPCExternalDataSourceGrant
@@ -205,7 +216,18 @@ mkExternalProviderPlugin = do
                     , redsgAccess = [ExternalAccessRead]
                     , redsgCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
                     , redsgResources = ["shared_sources"]
-                    , redsgStatus = RPCExternalDataSourceStatus ExternalStatusReady (Just "fixture read grant")
+                    , redsgStatus = defaultRPCExternalDataSourceStatus
+                        { redssState = ExternalStatusReady
+                        , redssMessage = Just "fixture read grant"
+                        , redssProviderId = Just "fixture-external-provider"
+                        , redssAvailability = Just ExternalAvailabilityAvailable
+                        , redssHealth = Just ExternalHealthHealthy
+                        , redssAccessMode = Just ExternalAccessModeReadOnly
+                        , redssCapabilityScope = [ExternalSourceQuery, ExternalSourceHealth]
+                        , redssVersion = Just "terrain-catalog-read.v1"
+                        , redssCompatibility = Just "manifest-v3"
+                        , redssDiagnostics = Just (object ["fixture" .= ("grant" :: Text)])
+                        }
                     , redsgReference = Nothing
                     }
                 ]
@@ -262,7 +284,18 @@ mkExternalConsumerPlugin = do
             , redsrAccess = [ExternalAccessRead]
             , redsrResources = ["shared_sources"]
             , redsrGrant = Just "terrain-catalog-read"
-            , redsrStatus = RPCExternalDataSourceStatus ExternalStatusUnknown (Just "resolved by fixture startup")
+            , redsrStatus = defaultRPCExternalDataSourceStatus
+                { redssState = ExternalStatusUnknown
+                , redssMessage = Just "resolved by fixture startup"
+                , redssProviderId = Just "fixture-external-provider"
+                , redssAvailability = Just ExternalAvailabilityUnknown
+                , redssHealth = Just ExternalHealthUnknown
+                , redssAccessMode = Just ExternalAccessModeReadOnly
+                , redssCapabilityScope = [ExternalSourceQuery]
+                , redssVersion = Just "terrain.catalog.v1"
+                , redssCompatibility = Just "manifest-v3"
+                , redssDiagnostics = Just (object ["fixture" .= ("consumer" :: Text)])
+                }
             , redsrReference = Nothing
             , redsrUiHints = defaultRPCUIHints { ruiDisplayName = Just "Terrain Catalog" }
             }

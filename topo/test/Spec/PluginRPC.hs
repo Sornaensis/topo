@@ -12,6 +12,7 @@ import Control.Exception (SomeException, bracket, try)
 import Data.Char (toLower)
 import Data.Aeson (Value(..), (.=), object, encode, eitherDecode)
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as AesonKey
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BLC
@@ -560,12 +561,31 @@ spec = describe "Plugin.RPC" $ do
           case rmExternalDataSources m of
             [source] -> do
               redsdConnection source `shouldBe` Just (object ["handle" .= ("provider-owned:settlement-ledger" :: Text)])
+              redssProviderId (redsdStatus source) `shouldBe` Just "civilization"
+              redssAvailability (redsdStatus source) `shouldBe` Just ExternalAvailabilityAvailable
+              redssHealth (redsdStatus source) `shouldBe` Just ExternalHealthHealthy
+              redssAccessMode (redsdStatus source) `shouldBe` Just ExternalAccessModeReadOnly
+              redssCapabilityScope (redsdStatus source) `shouldBe` [ExternalSourceQuery, ExternalSourceHealth]
+              redssVersion (redsdStatus source) `shouldBe` Just "settlement-ledger.v1"
+              redssCompatibility (redsdStatus source) `shouldBe` Just "manifest-v3"
+              redssDiagnostics (redsdStatus source) `shouldBe` Just (object ["reportedBy" .= ("civilization" :: Text)])
               map redsgName (redsdGrants source) `shouldBe` ["settlement-read"]
               case redsdGrants source of
                 [grant] -> do
                   redsgAccess grant `shouldBe` [ExternalAccessRead]
                   redsgCapabilities grant `shouldBe` [ExternalSourceQuery, ExternalSourceHealth]
-                  redsgStatus grant `shouldBe` RPCExternalDataSourceStatus ExternalStatusReady (Just "Read grant can be brokered to dependent plugins")
+                  redsgStatus grant `shouldBe` defaultRPCExternalDataSourceStatus
+                    { redssState = ExternalStatusReady
+                    , redssMessage = Just "Read grant can be brokered to dependent plugins"
+                    , redssProviderId = Just "civilization"
+                    , redssAvailability = Just ExternalAvailabilityAvailable
+                    , redssHealth = Just ExternalHealthHealthy
+                    , redssAccessMode = Just ExternalAccessModeReadOnly
+                    , redssCapabilityScope = [ExternalSourceQuery, ExternalSourceHealth]
+                    , redssVersion = Just "settlement-read.v1"
+                    , redssCompatibility = Just "manifest-v3"
+                    , redssDiagnostics = Just (object ["grant" .= ("settlement-read" :: Text)])
+                    }
                 _ -> expectationFailure "expected exactly one external data-source grant"
             _ -> expectationFailure "expected exactly one external data source"
           validateManifest m `shouldBe` []
@@ -582,6 +602,14 @@ spec = describe "Plugin.RPC" $ do
               redsrAccess ref `shouldBe` [ExternalAccessRead]
               redsrGrant ref `shouldBe` Just "settlement-read"
               redsrReference ref `shouldBe` Just (object ["binding" .= ("trade-routes:settlements" :: Text)])
+              redssProviderId (redsrStatus ref) `shouldBe` Just "civilization"
+              redssAvailability (redsrStatus ref) `shouldBe` Just ExternalAvailabilityUnknown
+              redssHealth (redsrStatus ref) `shouldBe` Just ExternalHealthUnknown
+              redssAccessMode (redsrStatus ref) `shouldBe` Just ExternalAccessModeReadOnly
+              redssCapabilityScope (redsrStatus ref) `shouldBe` [ExternalSourceQuery]
+              redssVersion (redsrStatus ref) `shouldBe` Just "settlement-ledger.v1"
+              redssCompatibility (redsrStatus ref) `shouldBe` Just "manifest-v3"
+              redssDiagnostics (redsrStatus ref) `shouldBe` Just (object ["resolution" .= ("dependency-startup" :: Text)])
             _ -> expectationFailure "expected exactly one external data source reference"
           validateManifest m `shouldBe` []
         Aeson.Error err -> expectationFailure err
@@ -594,7 +622,7 @@ spec = describe "Plugin.RPC" $ do
             , redsdKind = "catalog"
             , redsdCapabilities = [ExternalSourceQuery]
             , redsdResources = ["items"]
-            , redsdStatus = RPCExternalDataSourceStatus ExternalStatusReady Nothing
+            , redsdStatus = defaultRPCExternalDataSourceStatus { redssState = ExternalStatusReady }
             , redsdConnection = Nothing
             , redsdGrants =
                 [ RPCExternalDataSourceGrant
@@ -602,7 +630,7 @@ spec = describe "Plugin.RPC" $ do
                     , redsgAccess = [ExternalAccessWrite]
                     , redsgCapabilities = [ExternalSourceMutate]
                     , redsgResources = ["items"]
-                    , redsgStatus = RPCExternalDataSourceStatus ExternalStatusReady Nothing
+                    , redsgStatus = defaultRPCExternalDataSourceStatus { redssState = ExternalStatusReady }
                     , redsgReference = Nothing
                     }
                 ]
@@ -621,7 +649,7 @@ spec = describe "Plugin.RPC" $ do
             , redsdKind = "catalog"
             , redsdCapabilities = [ExternalSourceQuery]
             , redsdResources = []
-            , redsdStatus = RPCExternalDataSourceStatus ExternalStatusReady Nothing
+            , redsdStatus = defaultRPCExternalDataSourceStatus { redssState = ExternalStatusReady }
             , redsdConnection = Nothing
             , redsdGrants =
                 [ RPCExternalDataSourceGrant
@@ -629,7 +657,7 @@ spec = describe "Plugin.RPC" $ do
                     , redsgAccess = [ExternalAccessRead]
                     , redsgCapabilities = [ExternalSourceQuery]
                     , redsgResources = ["items"]
-                    , redsgStatus = RPCExternalDataSourceStatus ExternalStatusReady Nothing
+                    , redsgStatus = defaultRPCExternalDataSourceStatus { redssState = ExternalStatusReady }
                     , redsgReference = Nothing
                     }
                 ]
@@ -644,6 +672,46 @@ spec = describe "Plugin.RPC" $ do
       case Aeson.fromJSON (object []) :: Aeson.Result RPCExternalDataSourceStatus of
         Aeson.Error _ -> pure ()
         Aeson.Success status -> expectationFailure ("unexpected status: " <> show status)
+
+    it "rejects null external data-source status metadata fields" $ do
+      let rejectNull :: Text -> Expectation
+          rejectNull field =
+            case Aeson.fromJSON (object ["state" .= ("ready" :: Text), AesonKey.fromText field .= Null]) :: Aeson.Result RPCExternalDataSourceStatus of
+              Aeson.Error _ -> pure ()
+              Aeson.Success status -> expectationFailure ("unexpected status: " <> show status)
+      rejectNull "providerId"
+      rejectNull "provider_id"
+      rejectNull "availability"
+      rejectNull "health"
+      rejectNull "accessMode"
+      rejectNull "access_mode"
+      rejectNull "capabilityScope"
+      rejectNull "capability_scope"
+      rejectNull "version"
+      rejectNull "compatibility"
+      rejectNull "diagnostics"
+
+    it "validates backend-neutral external data-source status metadata" $ do
+      let source = RPCExternalDataSourceDecl
+            { redsdName = "ledger"
+            , redsdLabel = "Ledger"
+            , redsdDescription = ""
+            , redsdKind = "catalog"
+            , redsdCapabilities = [ExternalSourceQuery]
+            , redsdResources = []
+            , redsdStatus = defaultRPCExternalDataSourceStatus
+                { redssState = ExternalStatusReady
+                , redssCapabilityScope = [ExternalSourceMutate]
+                , redssDiagnostics = Just (String "not-object")
+                }
+            , redsdConnection = Nothing
+            , redsdGrants = []
+            , redsdUiHints = defaultRPCUIHints
+            }
+          manifest = baseManifest { rmExternalDataSources = [source] }
+          messages = map manifestErrorMessage (validateManifest manifest)
+      messages `shouldSatisfy` any (Text.isInfixOf "status.capabilityScope")
+      messages `shouldSatisfy` any (Text.isInfixOf "diagnostics")
 
   ------------------------------------
   -- Manifest v3 schema and golden docs

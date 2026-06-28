@@ -185,8 +185,17 @@ settlementLedgerSource = RPCExternalDataSourceDecl
   , redsdKind = "catalog"
   , redsdCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
   , redsdResources = ["settlements", "cultures"]
-  , redsdStatus = RPCExternalDataSourceStatus ExternalStatusReady
-      (Just "Records are available through the civilization plugin")
+  , redsdStatus = defaultRPCExternalDataSourceStatus
+      { redssState = ExternalStatusReady
+      , redssMessage = Just "Records are available through the civilization plugin"
+      , redssProviderId = Just "civilization"
+      , redssAvailability = Just ExternalAvailabilityAvailable
+      , redssHealth = Just ExternalHealthHealthy
+      , redssAccessMode = Just ExternalAccessModeReadOnly
+      , redssCapabilityScope = [ExternalSourceQuery, ExternalSourceHealth]
+      , redssVersion = Just "settlement-ledger.v1"
+      , redssCompatibility = Just "manifest-v3"
+      }
   , redsdConnection = Nothing
   , redsdGrants =
       [ RPCExternalDataSourceGrant
@@ -194,8 +203,17 @@ settlementLedgerSource = RPCExternalDataSourceDecl
           , redsgAccess = [ExternalAccessRead]
           , redsgCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
           , redsgResources = ["settlements", "cultures"]
-          , redsgStatus = RPCExternalDataSourceStatus ExternalStatusReady
-              (Just "Read grant is brokered by topo without owning the source")
+          , redsgStatus = defaultRPCExternalDataSourceStatus
+              { redssState = ExternalStatusReady
+              , redssMessage = Just "Read grant is brokered by topo without owning the source"
+              , redssProviderId = Just "civilization"
+              , redssAvailability = Just ExternalAvailabilityAvailable
+              , redssHealth = Just ExternalHealthHealthy
+              , redssAccessMode = Just ExternalAccessModeReadOnly
+              , redssCapabilityScope = [ExternalSourceQuery, ExternalSourceHealth]
+              , redssVersion = Just "settlement-read.v1"
+              , redssCompatibility = Just "manifest-v3"
+              }
           , redsgReference = Nothing
           }
       ]

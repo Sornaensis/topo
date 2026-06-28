@@ -75,9 +75,11 @@ External data-source fields are intentionally provider-owned and backend-neutral
   resource names, UI hints, declarative status, and optional opaque `reference`
   metadata.
 - Status states are `unknown`, `unconfigured`, `ready`, `degraded`, and
-  `unavailable`. Resolver-facing provider/grant summaries treat only `ready`
-  as available; other states remain declared but unavailable until runtime or
-  diagnostics report readiness.
+  `unavailable`. Optional status metadata can carry provider ID, availability,
+  health, access-mode, capability-scope, version, compatibility, and opaque
+  diagnostics fields. Resolver-facing provider/grant summaries treat only
+  `ready` as available; other states remain declared but unavailable until
+  runtime or diagnostics report readiness.
 
 No host-owned storage details belong in the manifest. Migrations, backing
 schemas, connection details, and consistency rules are owned by the provider

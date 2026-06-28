@@ -214,11 +214,19 @@
     },
     "externalStatus": {
       "type": "object",
-      "description": "Provider-declared status that topo may surface in diagnostics while leaving backend repair, migration, schema, connection, and consistency details to the provider or external system.",
+      "description": "Provider-declared, backend-neutral status that topo may surface in diagnostics while leaving backend repair, migration, schema, connection, and consistency details to the provider or external system. Optional metadata can identify the provider, availability, health, access mode, capability scope, version/compatibility marker, and opaque diagnostics without requiring backend-specific settings.",
       "required": ["state"],
       "properties": {
         "state": { "type": "string", "enum": ["unknown", "unconfigured", "ready", "degraded", "unavailable"] },
-        "message": { "type": "string" }
+        "message": { "type": "string" },
+        "providerId": { "type": "string" },
+        "availability": { "type": "string", "enum": ["unknown", "available", "degraded", "unavailable", "unconfigured"] },
+        "health": { "type": "string", "enum": ["unknown", "healthy", "degraded", "unhealthy"] },
+        "accessMode": { "type": "string", "enum": ["read_only", "read_write", "admin", "disabled", "provider_managed"] },
+        "capabilityScope": { "type": "array", "items": { "type": "string", "enum": ["query", "mutate", "subscribe", "migrate", "health"] } },
+        "version": { "type": "string" },
+        "compatibility": { "type": "string" },
+        "diagnostics": { "$ref": "#/$defs/opaqueMetadata" }
       }
     },
     "opaqueMetadata": {

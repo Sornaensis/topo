@@ -25,10 +25,13 @@ Top-level plugin definition. Use `defaultPluginDef` as a starting point.
 | `pdStartPolicy` | `RPCStartPolicy` | Host-side process supervision policy |
 
 External data-source grants use `RPCExternalDataSourceGrant`; topo treats all
-`connection`/`reference` values as opaque provider-owned metadata. Migrations,
-backing schemas, connection details, and consistency rules remain with provider
-plugins, adapters, or external systems; the SDK only serializes backend-neutral
-declarations, grants, status/errors, and opaque metadata.
+`connection`/`reference` values and status `diagnostics` as opaque
+provider-owned metadata. Status can carry backend-neutral provider ID,
+availability, health, access-mode, capability-scope, version, and compatibility
+markers. Migrations, backing schemas, connection details, and consistency rules
+remain with provider plugins, adapters, or external systems; the SDK only
+serializes backend-neutral declarations, grants, status/errors, and opaque
+metadata.
 
 ## ParamDef
 

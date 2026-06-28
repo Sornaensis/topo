@@ -123,9 +123,9 @@ interpretation and validation beyond the advertised schema.
 Manifest v3 can describe data that remains owned by a provider plugin, adapter,
 or external system. The contract intentionally uses opaque source names,
 provider plugin IDs, generic capabilities, access grants, resource names,
-lifecycle/status metadata, and opaque connection/reference metadata. It does
-not require or expose a storage engine, connection string, file layout, or
-host-owned migration plan.
+lifecycle/status metadata, backend-neutral health/policy fields, and opaque
+connection/reference metadata. It does not require or expose a storage engine,
+connection string, file layout, or host-owned migration plan.
 
 Migrations, backing schemas, connection details, and consistency rules are
 owned by the provider plugin, adapter, or external system. Topo may surface
@@ -143,7 +143,17 @@ Providers advertise sources with `externalDataSources`:
     "kind": "catalog",
     "capabilities": ["query", "health"],
     "resources": ["settlements"],
-    "status": { "state": "ready" },
+    "status": {
+      "state": "ready",
+      "providerId": "civilization",
+      "availability": "available",
+      "health": "healthy",
+      "accessMode": "read_only",
+      "capabilityScope": ["query", "health"],
+      "version": "settlement-ledger.v1",
+      "compatibility": "manifest-v3",
+      "diagnostics": { "reportedBy": "civilization" }
+    },
     "connection": { "handle": "provider-owned:settlement-ledger" },
     "grants": [
       {
@@ -151,7 +161,17 @@ Providers advertise sources with `externalDataSources`:
         "access": ["read"],
         "capabilities": ["query", "health"],
         "resources": ["settlements"],
-        "status": { "state": "ready" },
+        "status": {
+          "state": "ready",
+          "providerId": "civilization",
+          "availability": "available",
+          "health": "healthy",
+          "accessMode": "read_only",
+          "capabilityScope": ["query", "health"],
+          "version": "settlement-read.v1",
+          "compatibility": "manifest-v3",
+          "diagnostics": { "grant": "settlement-read" }
+        },
         "reference": { "handle": "grant:settlement-read" }
       }
     ]
@@ -171,7 +191,17 @@ Consumers declare dependencies with `externalDataSourceRefs`:
     "access": ["read"],
     "resources": ["settlements"],
     "grant": "settlement-read",
-    "status": { "state": "unknown" },
+    "status": {
+      "state": "unknown",
+      "providerId": "civilization",
+      "availability": "unknown",
+      "health": "unknown",
+      "accessMode": "read_only",
+      "capabilityScope": ["query"],
+      "version": "settlement-ledger.v1",
+      "compatibility": "manifest-v3",
+      "diagnostics": { "resolution": "dependency-startup" }
+    },
     "reference": { "binding": "trade-routes:settlements" }
   }
 ]
@@ -185,8 +215,11 @@ coordinator. Even when a source advertises the `migrate` capability, it is a
 provider operation/status capability rather than a topo-owned migration table
 or schema rule. Status states are `unknown`, `unconfigured`, `ready`,
 `degraded`, and `unavailable`; provider/grant summaries are brokerable only
-when status is `ready`. Manifest status is declarative startup metadata; runtime
-health can be refined by plugin handshakes and diagnostics.
+when status is `ready`. Optional status metadata can carry a backend-neutral
+`providerId`, `availability`, `health`, `accessMode`, `capabilityScope`,
+`version`, `compatibility`, and opaque `diagnostics` object. Manifest status is
+declarative startup metadata; runtime health can be refined by plugin
+handshakes and diagnostics.
 
 ## SDK generation
 

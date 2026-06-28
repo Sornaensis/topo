@@ -27,7 +27,17 @@
       "grant": "settlement-read",
       "status": {
         "state": "unknown",
-        "message": "Resolved during plugin dependency startup"
+        "message": "Resolved during plugin dependency startup",
+        "providerId": "civilization",
+        "availability": "unknown",
+        "health": "unknown",
+        "accessMode": "read_only",
+        "capabilityScope": ["query"],
+        "version": "settlement-ledger.v1",
+        "compatibility": "manifest-v3",
+        "diagnostics": {
+          "resolution": "dependency-startup"
+        }
       },
       "reference": {
         "binding": "trade-routes:settlements"

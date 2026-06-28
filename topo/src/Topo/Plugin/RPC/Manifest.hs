@@ -49,6 +49,9 @@ module Topo.Plugin.RPC.Manifest
   , RPCExternalDataSourceCapability(..)
   , RPCExternalDataSourceAccess(..)
   , RPCExternalDataSourceStatusState(..)
+  , RPCExternalDataSourceAvailability(..)
+  , RPCExternalDataSourceHealth(..)
+  , RPCExternalDataSourceAccessMode(..)
   , RPCExternalDataSourceStatus(..)
   , defaultRPCExternalDataSourceStatus
   , RPCExternalDataSourceGrant(..)
@@ -345,9 +348,27 @@ instance ToJSON RPCStartPolicy where
 
 optionalPolicyField :: FromJSON a => Aeson.Object -> [Text] -> a -> Parser a
 optionalPolicyField o aliases fallback =
-  case listToMaybe [v | alias <- aliases, Just v <- [KM.lookup (Key.fromText alias) o]] of
+  case lookupAliasedField o aliases of
     Nothing -> pure fallback
-    Just value -> parseJSON value
+    Just (_, value) -> parseJSON value
+
+optionalNonNullField :: FromJSON a => Aeson.Object -> [Text] -> Parser (Maybe a)
+optionalNonNullField o aliases =
+  case lookupAliasedField o aliases of
+    Nothing -> pure Nothing
+    Just (alias, Null) -> fail (Text.unpack alias <> " must not be null")
+    Just (_, value) -> Just <$> parseJSON value
+
+optionalNonNullListField :: FromJSON a => Aeson.Object -> [Text] -> Parser [a]
+optionalNonNullListField o aliases =
+  case lookupAliasedField o aliases of
+    Nothing -> pure []
+    Just (alias, Null) -> fail (Text.unpack alias <> " must not be null")
+    Just (_, value) -> parseJSON value
+
+lookupAliasedField :: Aeson.Object -> [Text] -> Maybe (Text, Value)
+lookupAliasedField o aliases =
+  listToMaybe [(alias, value) | alias <- aliases, Just value <- [KM.lookup (Key.fromText alias) o]]
 
 nonNegative :: String -> Int -> Parser Int
 nonNegative field value
@@ -540,15 +561,103 @@ instance ToJSON RPCExternalDataSourceStatusState where
   toJSON ExternalStatusDegraded     = "degraded"
   toJSON ExternalStatusUnavailable  = "unavailable"
 
+-- | Backend-neutral availability metadata for an external data source status.
+data RPCExternalDataSourceAvailability
+  = ExternalAvailabilityUnknown
+  | ExternalAvailabilityAvailable
+  | ExternalAvailabilityDegraded
+  | ExternalAvailabilityUnavailable
+  | ExternalAvailabilityUnconfigured
+  deriving (Eq, Ord, Show, Read, Generic)
+
+instance FromJSON RPCExternalDataSourceAvailability where
+  parseJSON = withText "RPCExternalDataSourceAvailability" $ \t -> case t of
+    "unknown"      -> pure ExternalAvailabilityUnknown
+    "available"    -> pure ExternalAvailabilityAvailable
+    "degraded"     -> pure ExternalAvailabilityDegraded
+    "unavailable"  -> pure ExternalAvailabilityUnavailable
+    "unconfigured" -> pure ExternalAvailabilityUnconfigured
+    _              -> fail ("unknown external data source availability: " <> Text.unpack t)
+
+instance ToJSON RPCExternalDataSourceAvailability where
+  toJSON ExternalAvailabilityUnknown      = "unknown"
+  toJSON ExternalAvailabilityAvailable    = "available"
+  toJSON ExternalAvailabilityDegraded     = "degraded"
+  toJSON ExternalAvailabilityUnavailable  = "unavailable"
+  toJSON ExternalAvailabilityUnconfigured = "unconfigured"
+
+-- | Backend-neutral health metadata reported by the provider or adapter.
+data RPCExternalDataSourceHealth
+  = ExternalHealthUnknown
+  | ExternalHealthHealthy
+  | ExternalHealthDegraded
+  | ExternalHealthUnhealthy
+  deriving (Eq, Ord, Show, Read, Generic)
+
+instance FromJSON RPCExternalDataSourceHealth where
+  parseJSON = withText "RPCExternalDataSourceHealth" $ \t -> case t of
+    "unknown"   -> pure ExternalHealthUnknown
+    "healthy"   -> pure ExternalHealthHealthy
+    "degraded"  -> pure ExternalHealthDegraded
+    "unhealthy" -> pure ExternalHealthUnhealthy
+    _           -> fail ("unknown external data source health: " <> Text.unpack t)
+
+instance ToJSON RPCExternalDataSourceHealth where
+  toJSON ExternalHealthUnknown   = "unknown"
+  toJSON ExternalHealthHealthy   = "healthy"
+  toJSON ExternalHealthDegraded  = "degraded"
+  toJSON ExternalHealthUnhealthy = "unhealthy"
+
+-- | Backend-neutral access policy summary for the current status snapshot.
+data RPCExternalDataSourceAccessMode
+  = ExternalAccessModeReadOnly
+  | ExternalAccessModeReadWrite
+  | ExternalAccessModeAdmin
+  | ExternalAccessModeDisabled
+  | ExternalAccessModeProviderManaged
+  deriving (Eq, Ord, Show, Read, Generic)
+
+instance FromJSON RPCExternalDataSourceAccessMode where
+  parseJSON = withText "RPCExternalDataSourceAccessMode" $ \t -> case t of
+    "read_only"        -> pure ExternalAccessModeReadOnly
+    "read_write"       -> pure ExternalAccessModeReadWrite
+    "admin"            -> pure ExternalAccessModeAdmin
+    "disabled"         -> pure ExternalAccessModeDisabled
+    "provider_managed" -> pure ExternalAccessModeProviderManaged
+    _                  -> fail ("unknown external data source access mode: " <> Text.unpack t)
+
+instance ToJSON RPCExternalDataSourceAccessMode where
+  toJSON ExternalAccessModeReadOnly        = "read_only"
+  toJSON ExternalAccessModeReadWrite       = "read_write"
+  toJSON ExternalAccessModeAdmin           = "admin"
+  toJSON ExternalAccessModeDisabled        = "disabled"
+  toJSON ExternalAccessModeProviderManaged = "provider_managed"
+
 data RPCExternalDataSourceStatus = RPCExternalDataSourceStatus
-  { redssState   :: !RPCExternalDataSourceStatusState
-  , redssMessage :: !(Maybe Text)
+  { redssState           :: !RPCExternalDataSourceStatusState
+  , redssMessage         :: !(Maybe Text)
+  , redssProviderId      :: !(Maybe Text)
+  , redssAvailability    :: !(Maybe RPCExternalDataSourceAvailability)
+  , redssHealth          :: !(Maybe RPCExternalDataSourceHealth)
+  , redssAccessMode      :: !(Maybe RPCExternalDataSourceAccessMode)
+  , redssCapabilityScope :: ![RPCExternalDataSourceCapability]
+  , redssVersion         :: !(Maybe Text)
+  , redssCompatibility   :: !(Maybe Text)
+  , redssDiagnostics     :: !(Maybe Value)
   } deriving (Eq, Show, Generic)
 
 defaultRPCExternalDataSourceStatus :: RPCExternalDataSourceStatus
 defaultRPCExternalDataSourceStatus = RPCExternalDataSourceStatus
   { redssState = ExternalStatusUnknown
   , redssMessage = Nothing
+  , redssProviderId = Nothing
+  , redssAvailability = Nothing
+  , redssHealth = Nothing
+  , redssAccessMode = Nothing
+  , redssCapabilityScope = []
+  , redssVersion = Nothing
+  , redssCompatibility = Nothing
+  , redssDiagnostics = Nothing
   }
 
 instance FromJSON RPCExternalDataSourceStatus where
@@ -556,11 +665,27 @@ instance FromJSON RPCExternalDataSourceStatus where
     RPCExternalDataSourceStatus
       <$> o .: "state"
       <*> o .:? "message"
+      <*> optionalNonNullField o ["providerId", "provider_id"]
+      <*> optionalNonNullField o ["availability"]
+      <*> optionalNonNullField o ["health"]
+      <*> optionalNonNullField o ["accessMode", "access_mode"]
+      <*> optionalNonNullListField o ["capabilityScope", "capability_scope"]
+      <*> optionalNonNullField o ["version"]
+      <*> optionalNonNullField o ["compatibility"]
+      <*> optionalNonNullField o ["diagnostics"]
 
 instance ToJSON RPCExternalDataSourceStatus where
   toJSON status = object $
     [ "state" .= redssState status ] <>
-    [ "message" .= msg | Just msg <- [redssMessage status] ]
+    [ "message" .= msg | Just msg <- [redssMessage status] ] <>
+    [ "providerId" .= providerId | Just providerId <- [redssProviderId status] ] <>
+    [ "availability" .= availability | Just availability <- [redssAvailability status] ] <>
+    [ "health" .= health | Just health <- [redssHealth status] ] <>
+    [ "accessMode" .= accessMode | Just accessMode <- [redssAccessMode status] ] <>
+    [ "capabilityScope" .= redssCapabilityScope status | not (null (redssCapabilityScope status)) ] <>
+    [ "version" .= version | Just version <- [redssVersion status] ] <>
+    [ "compatibility" .= compatibility | Just compatibility <- [redssCompatibility status] ] <>
+    [ "diagnostics" .= diagnostics | Just diagnostics <- [redssDiagnostics status] ]
 
 -- | Backend-neutral grant offered for a provider-owned external data source.
 --
@@ -1034,11 +1159,19 @@ manifestV3Schema = object
           ]
       , "externalStatus" .= object
           [ "type" .= ("object" :: Text)
-          , "description" .= ("Provider-declared status that topo may surface in diagnostics while leaving backend repair, migration, schema, connection, and consistency details to the provider or external system." :: Text)
+          , "description" .= ("Provider-declared, backend-neutral status that topo may surface in diagnostics while leaving backend repair, migration, schema, connection, and consistency details to the provider or external system. Optional metadata can identify the provider, availability, health, access mode, capability scope, version/compatibility marker, and opaque diagnostics without requiring backend-specific settings." :: Text)
           , "required" .= (["state"] :: [Text])
           , "properties" .= object
               [ "state" .= enumSchema externalStatusNames
               , "message" .= stringSchema
+              , "providerId" .= stringSchema
+              , "availability" .= enumSchema externalAvailabilityNames
+              , "health" .= enumSchema externalHealthNames
+              , "accessMode" .= enumSchema externalAccessModeNames
+              , "capabilityScope" .= arrayOf (enumSchema externalCapabilityNames)
+              , "version" .= stringSchema
+              , "compatibility" .= stringSchema
+              , "diagnostics" .= schemaRef "opaqueMetadata"
               ]
           ]
       , "opaqueMetadata" .= object
@@ -1138,6 +1271,16 @@ manifestV3ProviderExample = object
           , "status" .= object
               [ "state" .= ("ready" :: Text)
               , "message" .= ("Records are available through the provider plugin" :: Text)
+              , "providerId" .= ("civilization" :: Text)
+              , "availability" .= ("available" :: Text)
+              , "health" .= ("healthy" :: Text)
+              , "accessMode" .= ("read_only" :: Text)
+              , "capabilityScope" .= (["query", "health"] :: [Text])
+              , "version" .= ("settlement-ledger.v1" :: Text)
+              , "compatibility" .= ("manifest-v3" :: Text)
+              , "diagnostics" .= object
+                  [ "reportedBy" .= ("civilization" :: Text)
+                  ]
               ]
           , "connection" .= object
               [ "handle" .= ("provider-owned:settlement-ledger" :: Text)
@@ -1151,6 +1294,16 @@ manifestV3ProviderExample = object
                   , "status" .= object
                       [ "state" .= ("ready" :: Text)
                       , "message" .= ("Read grant can be brokered to dependent plugins" :: Text)
+                      , "providerId" .= ("civilization" :: Text)
+                      , "availability" .= ("available" :: Text)
+                      , "health" .= ("healthy" :: Text)
+                      , "accessMode" .= ("read_only" :: Text)
+                      , "capabilityScope" .= (["query", "health"] :: [Text])
+                      , "version" .= ("settlement-read.v1" :: Text)
+                      , "compatibility" .= ("manifest-v3" :: Text)
+                      , "diagnostics" .= object
+                          [ "grant" .= ("settlement-read" :: Text)
+                          ]
                       ]
                   , "reference" .= object
                       [ "handle" .= ("grant:settlement-read" :: Text)
@@ -1196,6 +1349,16 @@ manifestV3ConsumerExample = object
           , "status" .= object
               [ "state" .= ("unknown" :: Text)
               , "message" .= ("Resolved during plugin dependency startup" :: Text)
+              , "providerId" .= ("civilization" :: Text)
+              , "availability" .= ("unknown" :: Text)
+              , "health" .= ("unknown" :: Text)
+              , "accessMode" .= ("read_only" :: Text)
+              , "capabilityScope" .= (["query"] :: [Text])
+              , "version" .= ("settlement-ledger.v1" :: Text)
+              , "compatibility" .= ("manifest-v3" :: Text)
+              , "diagnostics" .= object
+                  [ "resolution" .= ("dependency-startup" :: Text)
+                  ]
               ]
           , "reference" .= object
               [ "binding" .= ("trade-routes:settlements" :: Text)
@@ -1265,6 +1428,15 @@ externalAccessNames = ["read", "write", "admin"]
 
 externalStatusNames :: [Text]
 externalStatusNames = ["unknown", "unconfigured", "ready", "degraded", "unavailable"]
+
+externalAvailabilityNames :: [Text]
+externalAvailabilityNames = ["unknown", "available", "degraded", "unavailable", "unconfigured"]
+
+externalHealthNames :: [Text]
+externalHealthNames = ["unknown", "healthy", "degraded", "unhealthy"]
+
+externalAccessModeNames :: [Text]
+externalAccessModeNames = ["read_only", "read_write", "admin", "disabled", "provider_managed"]
 
 ------------------------------------------------------------------------
 -- Parsing
@@ -1552,6 +1724,10 @@ validateExternalDataSources sources =
         ]
       , duplicateErrors (sourcePath source "resources") (redsdResources source)
       , validateStatus (sourcePath source "status") (redsdStatus source)
+      , [ ManifestInvalidField (sourcePath source "status.capabilityScope") "status capabilityScope entries must be declared by the external data source."
+        | capability <- redssCapabilityScope (redsdStatus source)
+        , capability `notElem` redsdCapabilities source
+        ]
       , validateOpaqueMetadata (sourcePath source "connection") (redsdConnection source)
       , duplicateErrors (sourcePath source "grants.name") (map redsgName (redsdGrants source))
       , concatMap (validateGrant source) (redsdGrants source)
@@ -1587,6 +1763,10 @@ validateExternalDataSources sources =
         , resource `notElem` redsdResources source
         ]
       , validateStatus (grantPath source grant "status") (redsgStatus grant)
+      , [ ManifestInvalidField (grantPath source grant "status.capabilityScope") "status capabilityScope entries must be declared by the external data-source grant."
+        | capability <- redssCapabilityScope (redsgStatus grant)
+        , capability `notElem` redsgCapabilities grant
+        ]
       , validateOpaqueMetadata (grantPath source grant "reference") (redsgReference grant)
       ]
     sourcePath source field = "externalDataSources." <> nameOrPlaceholder (redsdName source) <> "." <> field
@@ -1631,10 +1811,16 @@ validateOpaqueMetadata base metadata =
     isObject _ = False
 
 validateStatus :: Text -> RPCExternalDataSourceStatus -> [ManifestError]
-validateStatus base status =
-  [ ManifestInvalidField (base <> ".message") "message must be non-empty when present."
-  | Just message <- [redssMessage status]
-  , Text.null message
+validateStatus base status = concat
+  [ [ ManifestInvalidField (base <> ".message") "message must be non-empty when present."
+    | Just message <- [redssMessage status]
+    , Text.null message
+    ]
+  , validateOptionalNonEmpty (base <> ".providerId") (redssProviderId status)
+  , duplicateErrors (base <> ".capabilityScope") (map externalCapabilityText (redssCapabilityScope status))
+  , validateOptionalNonEmpty (base <> ".version") (redssVersion status)
+  , validateOptionalNonEmpty (base <> ".compatibility") (redssCompatibility status)
+  , validateOpaqueMetadata (base <> ".diagnostics") (redssDiagnostics status)
   ]
 
 dataResourceErrorMessage :: DataResourceError -> Text

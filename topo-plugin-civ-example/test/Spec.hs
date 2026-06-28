@@ -10,6 +10,10 @@ import Topo.Plugin.CivExample (civPlugin)
 import Topo.Plugin.RPC.Manifest
   ( Capability(..)
   , RPCExternalDataSourceCapability(..)
+  , RPCExternalDataSourceAvailability(..)
+  , RPCExternalDataSourceHealth(..)
+  , RPCExternalDataSourceAccessMode(..)
+  , RPCExternalDataSourceStatus(..)
   , RPCExternalDataSourceDecl(..)
   , RPCExternalDataSourceGrant(..)
   , RPCManifest(..), RPCManifestRuntime(..), RPCUIHints(..)
@@ -51,6 +55,11 @@ main = hspec $ do
           redsdKind source `shouldBe` "catalog"
           redsdCapabilities source `shouldBe` [ExternalSourceQuery, ExternalSourceHealth]
           redsdResources source `shouldBe` ["settlements", "cultures"]
+          redssProviderId (redsdStatus source) `shouldBe` Just "civilization"
+          redssAvailability (redsdStatus source) `shouldBe` Just ExternalAvailabilityAvailable
+          redssHealth (redsdStatus source) `shouldBe` Just ExternalHealthHealthy
+          redssAccessMode (redsdStatus source) `shouldBe` Just ExternalAccessModeReadOnly
+          redssCapabilityScope (redsdStatus source) `shouldBe` [ExternalSourceQuery, ExternalSourceHealth]
           map redsgName (redsdGrants source) `shouldBe` ["settlement-read"]
         _ -> expectationFailure "expected exactly one external data source"
 

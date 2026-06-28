@@ -189,7 +189,8 @@ The top-level plugin definition. Use `defaultPluginDef` as a starting point.
 
 External data-source declarations keep migrations, backing schemas, connection
 details, and consistency rules provider-owned (or external-system-owned). Topo
-may surface status/errors and broker opaque metadata, but it must not prescribe
+may surface status/errors, backend-neutral provider/availability/health/access
+policy metadata, and opaque diagnostics, but it must not prescribe
 backend-specific migration tables or schema rules.
 
 ### ParamDef
@@ -288,8 +289,9 @@ writes are not inferred from every simulation; add `CapWriteTerrain` to
 
 Manifest v3 also supports backend-neutral `externalDataSources` and
 `externalDataSourceRefs` for provider-owned data shared between plugins. These
-fields name providers, sources, capabilities, access grants, resources, and
-status; they do not make the host own the external data.
+fields name providers, sources, capabilities, access grants, resources, status,
+health/policy metadata, version/compatibility markers, and opaque diagnostics;
+they do not make the host own the external data.
 
 ## Plugin Configuration Persistence
 
