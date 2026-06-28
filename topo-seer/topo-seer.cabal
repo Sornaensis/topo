@@ -68,6 +68,7 @@ library
       Seer.Command.AppServiceAdapter
       Seer.Command.Channel
       Seer.Command.Dispatch
+      Seer.DataBrowser.AppService
       Seer.DataBrowser.Model
       Seer.System
       Seer.System.ThreadPriority
@@ -228,6 +229,7 @@ test-suite topo-seer-test
       Spec.CommandDispatch
       Spec.ConfigSnapshot
       Spec.DataBrowser
+      Spec.DataBrowserAppService
       Spec.DataResourceE2E
       Spec.EditorBrush
       Spec.EditorHistory

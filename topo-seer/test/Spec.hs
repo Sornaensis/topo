@@ -27,6 +27,7 @@ import qualified Spec.SliderSpec
 import qualified Spec.WorldPersist
 import qualified Spec.CommandDispatch
 import qualified Spec.DataBrowser
+import qualified Spec.DataBrowserAppService
 import qualified Spec.DataResourceE2E
 import qualified Spec.Headless
 import qualified Spec.HTTP
@@ -67,6 +68,7 @@ main = do
         Spec.WorldPersist.spec
         Spec.CommandDispatch.spec
         Spec.DataBrowser.spec
+        Spec.DataBrowserAppService.spec
         Spec.DataResourceE2E.spec
         Spec.Headless.spec
         Spec.HTTP.spec

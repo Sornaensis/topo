@@ -24,6 +24,7 @@ import Actor.UI
   , setUiContextHex
   , setUiContextPos
   , setUiDataBrowser
+  , setUiDataResources
   , setUiLeftTab
   , setUiSeed
   , setUiSeedEditing
@@ -74,8 +75,9 @@ import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Seer.Input.ViewControls
   ()
 import Topo.Pipeline.Stage (parseStageId)
-import Topo.Plugin.RPC.DataService (DataQuery(..), DataRecord(..), QueryResource(..), QueryResult(..))
-import Topo.Plugin.DataResource (DataResourceSchema(..), DataPagination(..), DataFieldDef(..), DataFieldType(..), DataOperations(..), noOperations)
+import qualified Seer.DataBrowser.AppService as DataBrowser
+import Seer.DataBrowser.Model (DataBrowserPageAction(..))
+import Topo.Plugin.DataResource (DataResourceSchema(..), DataOperations(..), noOperations)
 import Topo.Plugin.RPC.Manifest (RPCParamSpec(..))
 import UI.Layout
 import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets, buildDataBrowserWidgets, buildDataDetailWidgets, buildSliderRowWidgets, hitTest, isLeftViewWidget)
@@ -89,11 +91,9 @@ import Actor.PluginManager
   , pluginDiagnosticState
   , pluginDiagnosticStateText
   , pluginPanelDiagnosticLines
-  , queryPluginResource
   , setDisabledPlugins
   , setPluginOrder
   )
-import Control.Concurrent (forkIO)
 import Actor.UiActions (ActorHandles(..), UiAction(..))
 import Seer.Input.Actions (InputEnv(..), runInputService, submitAction)
 import Seer.Input.Context (InputContext(..))
@@ -211,7 +211,10 @@ handleClick inputContext (SDL.P (V2 x y)) = do
           ; Just WidgetConfigTabBiome -> whenConfigVisible (setUiConfigTab uiHandle ConfigBiome >> setUiConfigScroll uiHandle 0)
           ; Just WidgetConfigTabErosion -> whenConfigVisible (setUiConfigTab uiHandle ConfigErosion >> setUiConfigScroll uiHandle 0)
           ; Just WidgetConfigTabPipeline -> whenConfigVisible (setUiConfigTab uiHandle ConfigPipeline >> setUiConfigScroll uiHandle 0)
-          ; Just WidgetConfigTabData -> whenConfigVisible (setUiConfigTab uiHandle ConfigData >> setUiConfigScroll uiHandle 0)
+          ; Just WidgetConfigTabData -> whenConfigVisible $ do
+              setUiConfigTab uiHandle ConfigData
+              setUiConfigScroll uiHandle 0
+              applyDataBrowserAction uiSnap DataBrowser.DataBrowserLoadPlugins
           ; Just wid
           | Just (sliderDef, sliderPart) <- sliderWidgetPart wid
               -> whenConfigVisible (setConfigSlider sliderDef sliderPart)
@@ -398,321 +401,69 @@ handleClick inputContext (SDL.P (V2 x y)) = do
                         Just (Bool b) -> b
                         _ -> False
         runService "set_plugin_param" (object ["plugin" .= pluginName, "param" .= paramName, "value" .= Bool (not current)])
-      WidgetDataPluginSelect pluginName -> whenConfigVisible $ do
-        let dbs = uiDataBrowser uiState
-            newDbs = dbs
-              { dbsSelectedPlugin = Just pluginName
-              , dbsSelectedResource = Nothing
-              , dbsRecords = []
-              , dbsPageOffset = 0
-              , dbsTotalCount = Nothing
-              , dbsLoading = False
-              , dbsSelectedRecord = Nothing
-              , dbsSelectedRecordKey = Nothing
-              , dbsSelectedRowIndex = Nothing
-              , dbsExpandedFields = Set.empty
-              }
-        setUiDataBrowser uiHandle newDbs
-      WidgetDataResourceSelect pluginName resourceName -> whenConfigVisible $ do
-        let dbs = uiDataBrowser uiState
-            (_, initialPageOffset) = paginationRequestFor uiState pluginName resourceName
-            newDbs = dbs
-              { dbsSelectedResource = Just resourceName
-              , dbsRecords = []
-              , dbsPageOffset = maybe 0 id initialPageOffset
-              , dbsTotalCount = Nothing
-              , dbsLoading = True
-              , dbsSelectedRecord = Nothing
-              , dbsSelectedRecordKey = Nothing
-              , dbsSelectedRowIndex = Nothing
-              , dbsExpandedFields = Set.empty
-              }
-        setUiDataBrowser uiHandle newDbs
-        _ <- forkIO $ do
-          let (pageSize, pageOffset) = paginationRequestFor uiState pluginName resourceName
-              qr = QueryResource resourceName QueryAll pageSize pageOffset
-          result <- queryPluginResource pluginManagerHandle pluginName qr
-          case result of
-            Right qResult -> setUiDataBrowser uiHandle newDbs
-              { dbsRecords = qrsRecords qResult
-              , dbsTotalCount = qrsTotalCount qResult
-              , dbsLoading = False
-              }
-            Left _err -> setUiDataBrowser uiHandle newDbs { dbsLoading = False }
-        pure ()
-      WidgetDataPagePrev pluginName resourceName -> whenConfigVisible $ do
-        let dbs = uiDataBrowser uiState
-            pageStep = pageStepFor uiState pluginName resourceName
-            newOffset = max 0 (dbsPageOffset dbs - pageStep)
-            newDbs = dbs
-              { dbsPageOffset = newOffset
-              , dbsLoading = True
-              , dbsRecords = []
-              , dbsSelectedRecord = Nothing
-              , dbsSelectedRecordKey = Nothing
-              , dbsSelectedRowIndex = Nothing
-              , dbsExpandedFields = Set.empty
-              }
-        setUiDataBrowser uiHandle newDbs
-        _ <- forkIO $ do
-          let (pageSize, _) = paginationRequestFor uiState pluginName resourceName
-              qr = QueryResource resourceName QueryAll pageSize (fmap (const newOffset) pageSize)
-          result <- queryPluginResource pluginManagerHandle pluginName qr
-          case result of
-            Right qResult -> setUiDataBrowser uiHandle newDbs
-              { dbsRecords = qrsRecords qResult
-              , dbsTotalCount = qrsTotalCount qResult
-              , dbsLoading = False
-              }
-            Left _err -> setUiDataBrowser uiHandle newDbs { dbsLoading = False }
-        pure ()
-      WidgetDataPageNext pluginName resourceName -> whenConfigVisible $ do
-        let dbs = uiDataBrowser uiState
-            pageStep = pageStepFor uiState pluginName resourceName
-            newOffset = dbsPageOffset dbs + pageStep
-            newDbs = dbs
-              { dbsPageOffset = newOffset
-              , dbsLoading = True
-              , dbsRecords = []
-              , dbsSelectedRecord = Nothing
-              , dbsSelectedRecordKey = Nothing
-              , dbsSelectedRowIndex = Nothing
-              , dbsExpandedFields = Set.empty
-              }
-        setUiDataBrowser uiHandle newDbs
-        _ <- forkIO $ do
-          let (pageSize, _) = paginationRequestFor uiState pluginName resourceName
-              qr = QueryResource resourceName QueryAll pageSize (fmap (const newOffset) pageSize)
-          result <- queryPluginResource pluginManagerHandle pluginName qr
-          case result of
-            Right qResult -> setUiDataBrowser uiHandle newDbs
-              { dbsRecords = qrsRecords qResult
-              , dbsTotalCount = qrsTotalCount qResult
-              , dbsLoading = False
-              }
-            Left _err -> setUiDataBrowser uiHandle newDbs { dbsLoading = False }
-        pure ()
-      WidgetDataRecordSelect idx -> whenConfigVisible $ do
-        let dbs = uiDataBrowser uiState
-            records = dbsRecords dbs
-        case drop idx records of
-          (rec : _) ->
-            let keyField = case dbsSelectedResource dbs >>= \rName ->
-                             dbsSelectedPlugin dbs >>= \pName ->
-                               Map.lookup pName (uiDataResources uiState) >>= find (\s -> drsName s == rName) of
-                             Just schema -> drsKeyField schema
-                             Nothing -> "id"
-                keyVal = Map.lookup keyField (unDataRecord rec)
-                newDbs = dbs
-                  { dbsSelectedRecord   = Just rec
-                  , dbsSelectedRecordKey = keyVal
-                  , dbsSelectedRowIndex  = Just idx
-                  , dbsExpandedFields   = Set.empty
-                  }
-            in setUiDataBrowser uiHandle newDbs
-          [] -> pure ()
+      WidgetDataPluginSelect pluginName -> whenConfigVisible $
+        applyDataBrowserAction uiState (DataBrowser.DataBrowserSelectPlugin pluginName)
+      WidgetDataResourceSelect pluginName resourceName -> whenConfigVisible $
+        applyDataBrowserAction uiState (DataBrowser.DataBrowserSelectResource pluginName resourceName)
+      WidgetDataPagePrev _pluginName _resourceName -> whenConfigVisible $
+        applyDataBrowserAction uiState (DataBrowser.DataBrowserQueryRecords DataBrowserPagePrevious)
+      WidgetDataPageNext _pluginName _resourceName -> whenConfigVisible $
+        applyDataBrowserAction uiState (DataBrowser.DataBrowserQueryRecords DataBrowserPageNext)
+      WidgetDataRecordSelect idx -> whenConfigVisible $
+        applyDataBrowserAction uiState (DataBrowser.DataBrowserSelectRecord idx)
       WidgetDataDetailDismiss -> whenConfigVisible $ do
-        let dbs = uiDataBrowser uiState
-            newDbs = dbs
-              { dbsSelectedRecord    = Nothing
-              , dbsSelectedRecordKey = Nothing
-              , dbsSelectedRowIndex  = Nothing
-              , dbsExpandedFields    = Set.empty
-              , dbsEditMode          = False
-              , dbsCreateMode        = False
-              , dbsEditValues        = Map.empty
-              , dbsFocusedField      = Nothing
-              , dbsTextCursor        = 0
-              , dbsDeleteConfirm     = False
-              }
-        setUiDataBrowser uiHandle newDbs
+        applyDataBrowserAction uiState DataBrowser.DataBrowserDismissRecord
         SDL.stopTextInput
-      WidgetDataFieldToggle path -> whenConfigVisible $ do
-        let dbs = uiDataBrowser uiState
-            expanded = dbsExpandedFields dbs
-            newExpanded
-              | Set.member path expanded = Set.delete path expanded
-              | otherwise                = Set.insert path expanded
-            newDbs = dbs { dbsExpandedFields = newExpanded }
-        setUiDataBrowser uiHandle newDbs
+      WidgetDataFieldToggle path -> whenConfigVisible $
+        applyDataBrowserAction uiState (DataBrowser.DataBrowserToggleField path)
       WidgetDataEditToggle -> whenConfigVisible $ do
-        let dbs = uiDataBrowser uiState
-        if dbsEditMode dbs
-          then do
-            -- Exit edit mode, discard changes
-            let newDbs = dbs
-                  { dbsEditMode     = False
-                  , dbsEditValues   = Map.empty
-                  , dbsFocusedField = Nothing
-                  , dbsTextCursor   = 0
-                  }
-            setUiDataBrowser uiHandle newDbs
-            SDL.stopTextInput
-          else do
-            -- Enter edit mode, populate editValues from current record
-            let vals = case dbsSelectedRecord dbs of
-                  Just rec -> unDataRecord rec
-                  Nothing  -> Map.empty
-                newDbs = dbs
-                  { dbsEditMode   = True
-                  , dbsEditValues = vals
-                  }
-            setUiDataBrowser uiHandle newDbs
+        let action = if dbsEditMode (uiDataBrowser uiState)
+              then DataBrowser.DataBrowserCancelEdit
+              else DataBrowser.DataBrowserStartEdit
+        applyDataBrowserAction uiState action
+        when (action == DataBrowser.DataBrowserCancelEdit) SDL.stopTextInput
       WidgetDataEditSave -> whenConfigVisible $ do
-        let dbs = uiDataBrowser uiState
-        case (dbsSelectedPlugin dbs, dbsSelectedResource dbs) of
-          (Just pName, Just rName) -> do
-            let editVals = dbsEditValues dbs
-            SDL.stopTextInput
-            if dbsCreateMode dbs
-              then do
-                _ <- forkIO $ do
-                  result <- runInputService widgetEnv "data_create_record" $
-                    object ["plugin" .= pName, "resource" .= rName, "fields" .= editVals]
-                  case result of
-                    Right _ -> refreshDataBrowser dbs pName rName
-                    Left _err -> pure ()
-                let newDbs = dbs
-                      { dbsCreateMode   = False
-                      , dbsEditMode     = False
-                      , dbsEditValues   = Map.empty
-                      , dbsFocusedField = Nothing
-                      , dbsTextCursor   = 0
-                      , dbsSelectedRecord = Nothing
-                      , dbsSelectedRecordKey = Nothing
-                      , dbsSelectedRowIndex = Nothing
-                      }
-                setUiDataBrowser uiHandle newDbs
-              else do
-                case dbsSelectedRecordKey dbs of
-                  Just keyVal -> do
-                    _ <- forkIO $ do
-                      result <- runInputService widgetEnv "data_update_record" $
-                        object ["plugin" .= pName, "resource" .= rName, "key" .= keyVal, "fields" .= editVals]
-                      case result of
-                        Right _ -> refreshDataBrowser dbs pName rName
-                        Left _err -> pure ()
-                    let newDbs = dbs
-                          { dbsEditMode     = False
-                          , dbsEditValues   = Map.empty
-                          , dbsFocusedField = Nothing
-                          , dbsTextCursor   = 0
-                          }
-                    setUiDataBrowser uiHandle newDbs
-                  Nothing -> pure ()
-          _ -> pure ()
+        let action = if dbsCreateMode (uiDataBrowser uiState)
+              then DataBrowser.DataBrowserCreateRecord
+              else DataBrowser.DataBrowserUpdateRecord
+        applyDataBrowserAction uiState action
+        SDL.stopTextInput
       WidgetDataEditCancel -> whenConfigVisible $ do
-        let dbs = uiDataBrowser uiState
-        if dbsCreateMode dbs
-          then do
-            -- Cancel create: dismiss the popover entirely
-            let newDbs = dbs
-                  { dbsCreateMode       = False
-                  , dbsEditMode         = False
-                  , dbsEditValues       = Map.empty
-                  , dbsFocusedField     = Nothing
-                  , dbsTextCursor       = 0
-                  , dbsSelectedRecord   = Nothing
-                  , dbsSelectedRecordKey = Nothing
-                  , dbsSelectedRowIndex = Nothing
-                  }
-            setUiDataBrowser uiHandle newDbs
-            SDL.stopTextInput
-          else do
-            -- Cancel edit: revert to read-only
-            let newDbs = dbs
-                  { dbsEditMode     = False
-                  , dbsEditValues   = Map.empty
-                  , dbsFocusedField = Nothing
-                  , dbsTextCursor   = 0
-                  }
-            setUiDataBrowser uiHandle newDbs
-            SDL.stopTextInput
-      WidgetDataCreateNew -> whenConfigVisible $ do
-        let dbs = uiDataBrowser uiState
-            -- Build default values from schema field definitions
-            mSchema = do
-              pName <- dbsSelectedPlugin dbs
-              rName <- dbsSelectedResource dbs
-              schemas <- Map.lookup pName (uiDataResources uiState)
-              find (\s -> drsName s == rName) schemas
-            defaults = case mSchema of
-              Just schema -> Map.fromList
-                [ (dfName f, v)
-                | f <- drsFields schema
-                , Just v <- [dfDefault f]
-                ]
-              Nothing -> Map.empty
-            dummyRecord = DataRecord defaults
-            newDbs = dbs
-              { dbsCreateMode       = True
-              , dbsEditMode         = True
-              , dbsEditValues       = defaults
-              , dbsSelectedRecord   = Just dummyRecord
-              , dbsSelectedRecordKey = Nothing
-              , dbsSelectedRowIndex = Just 0
-              , dbsExpandedFields   = Set.empty
-              , dbsFocusedField     = Nothing
-              , dbsTextCursor       = 0
-              }
-        setUiDataBrowser uiHandle newDbs
-      WidgetDataDeleteBtn -> whenConfigVisible $ do
-        let dbs = uiDataBrowser uiState
-            newDbs = dbs { dbsDeleteConfirm = True }
-        setUiDataBrowser uiHandle newDbs
-      WidgetDataDeleteConfirm -> whenConfigVisible $ do
-        let dbs = uiDataBrowser uiState
-        case (dbsSelectedPlugin dbs, dbsSelectedResource dbs, dbsSelectedRecordKey dbs) of
-          (Just pName, Just rName, Just keyVal) -> do
-            _ <- forkIO $ do
-              result <- runInputService widgetEnv "data_delete_record" $
-                object ["plugin" .= pName, "resource" .= rName, "key" .= keyVal]
-              case result of
-                Right _ -> refreshDataBrowser dbs pName rName
-                Left _err -> pure ()
-            let newDbs = dbs
-                  { dbsDeleteConfirm    = False
-                  , dbsSelectedRecord   = Nothing
-                  , dbsSelectedRecordKey = Nothing
-                  , dbsSelectedRowIndex = Nothing
-                  , dbsExpandedFields   = Set.empty
-                  }
-            setUiDataBrowser uiHandle newDbs
-          _ -> pure ()
-      WidgetDataDeleteCancel -> whenConfigVisible $ do
-        let dbs = uiDataBrowser uiState
-            newDbs = dbs { dbsDeleteConfirm = False }
-        setUiDataBrowser uiHandle newDbs
+        applyDataBrowserAction uiState DataBrowser.DataBrowserCancelEdit
+        SDL.stopTextInput
+      WidgetDataCreateNew -> whenConfigVisible $
+        applyDataBrowserAction uiState DataBrowser.DataBrowserStartCreate
+      WidgetDataDeleteBtn -> whenConfigVisible $
+        applyDataBrowserAction uiState DataBrowser.DataBrowserRequestDelete
+      WidgetDataDeleteConfirm -> whenConfigVisible $
+        applyDataBrowserAction uiState DataBrowser.DataBrowserDeleteRecord
+      WidgetDataDeleteCancel -> whenConfigVisible $
+        applyDataBrowserAction uiState DataBrowser.DataBrowserCancelDelete
       WidgetDataFieldTextClick path -> whenConfigVisible $ do
-        let dbs = uiDataBrowser uiState
-            currentVal = case Map.lookup path (dbsEditValues dbs) of
-              Just (String t) -> Text.length t
-              _ -> 0
-            newDbs = dbs
-              { dbsFocusedField = Just path
-              , dbsTextCursor   = currentVal
-              }
-        setUiDataBrowser uiHandle newDbs
-        -- Start SDL text input
+        applyDataBrowserAction uiState (DataBrowser.DataBrowserFocusField path)
         let Rect (V2 rx ry, V2 rw rh) = configPanelRect currentLayout
             rawRect = Raw.Rect (fromIntegral rx) (fromIntegral ry) (fromIntegral rw) (fromIntegral rh)
         SDL.startTextInput rawRect
-      WidgetDataFieldStepMinus path -> whenConfigVisible $ do
-        bumpFieldValue uiState path (-1)
-      WidgetDataFieldStepPlus path -> whenConfigVisible $ do
-        bumpFieldValue uiState path 1
-      WidgetDataFieldBoolToggle path -> whenConfigVisible $ do
-        let dbs = uiDataBrowser uiState
-            current = case Map.lookup path (dbsEditValues dbs) of
-              Just (Bool b) -> b
-              _ -> False
-            newDbs = dbs { dbsEditValues = Map.insert path (Bool (not current)) (dbsEditValues dbs) }
-        setUiDataBrowser uiHandle newDbs
-      WidgetDataFieldEnumPrev path -> whenConfigVisible $ do
-        cycleEnumValue uiState path (-1)
-      WidgetDataFieldEnumNext path -> whenConfigVisible $ do
-        cycleEnumValue uiState path 1
+      WidgetDataFieldStepMinus path -> whenConfigVisible $
+        applyDataBrowserAction uiState (DataBrowser.DataBrowserStepNumberField path (-1))
+      WidgetDataFieldStepPlus path -> whenConfigVisible $
+        applyDataBrowserAction uiState (DataBrowser.DataBrowserStepNumberField path 1)
+      WidgetDataFieldBoolToggle path -> whenConfigVisible $
+        applyDataBrowserAction uiState (DataBrowser.DataBrowserToggleBoolField path)
+      WidgetDataFieldEnumPrev path -> whenConfigVisible $
+        applyDataBrowserAction uiState (DataBrowser.DataBrowserCycleEnumField path (-1))
+      WidgetDataFieldEnumNext path -> whenConfigVisible $
+        applyDataBrowserAction uiState (DataBrowser.DataBrowserCycleEnumField path 1)
       _ -> pure ()
+
+    applyDataBrowserAction uiState action = do
+      result <- DataBrowser.runDataBrowserAppAction
+        (runInputService widgetEnv)
+        (DataBrowser.dataBrowserUiFromState (uiDataResources uiState) (uiDataBrowser uiState))
+        action
+      let (resources, dbs) = DataBrowser.dataBrowserUiToState (DataBrowser.dbarUi result)
+      setUiDataResources uiHandle resources
+      setUiDataBrowser uiHandle dbs
 
     handleMenuClick ly _widgets point = do
       uiSnap <- getUiSnapshot uiHandle
@@ -895,112 +646,9 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       setUiSeedEditing uiHandle False
       SDL.stopTextInput
 
-    -- | Re-query the current resource and update the data browser records.
-    refreshDataBrowser :: DataBrowserState -> Text.Text -> Text.Text -> IO ()
-    refreshDataBrowser dbs pName rName = do
-      uiSnapForPagination <- getUiSnapshot uiHandle
-      let offset = dbsPageOffset dbs
-          (pageSize, _) = paginationRequestFor uiSnapForPagination pName rName
-          qr = QueryResource rName QueryAll pageSize (fmap (const offset) pageSize)
-      result <- queryPluginResource pluginManagerHandle pName qr
-      uiSnap' <- getUiSnapshot uiHandle
-      let dbs' = uiDataBrowser uiSnap'
-      case result of
-        Right qResult -> setUiDataBrowser uiHandle dbs'
-          { dbsRecords    = qrsRecords qResult
-          , dbsTotalCount = qrsTotalCount qResult
-          , dbsLoading    = False
-          }
-        Left _err -> setUiDataBrowser uiHandle dbs' { dbsLoading = False }
-
-    -- | Bump a numeric field value by a delta direction.
-    bumpFieldValue :: UiState -> Text.Text -> Int -> IO ()
-    bumpFieldValue uiSt path dir = do
-      let dbs = uiDataBrowser uiSt
-          editVals = dbsEditValues dbs
-          currentVal = Map.lookup path editVals
-          delta = fromIntegral dir :: Double
-          newVal = case currentVal of
-            Just (Number n) -> Number (realToFrac (realToFrac n + delta :: Double))
-            Just (String t)
-              | Just d <- readDouble t -> Number (realToFrac (d + delta))
-            _ -> Number (realToFrac delta)
-          newDbs = dbs { dbsEditValues = Map.insert path newVal editVals }
-      setUiDataBrowser uiHandle newDbs
-
-    readDouble :: Text.Text -> Maybe Double
-    readDouble t = case reads (Text.unpack t) of
-      [(d, "")] -> Just d
-      _         -> Nothing
-
-    -- | Cycle a DFEnum field value by a delta direction.
-    cycleEnumValue :: UiState -> Text.Text -> Int -> IO ()
-    cycleEnumValue uiSt path dir = do
-      let dbs = uiDataBrowser uiSt
-          editVals = dbsEditValues dbs
-          mSchema = do
-            pName <- dbsSelectedPlugin dbs
-            rName <- dbsSelectedResource dbs
-            schemas <- Map.lookup pName (uiDataResources uiSt)
-            find (\s -> drsName s == rName) schemas
-          mFieldType = mSchema >>= \schema -> lookupFieldType path (drsFields schema)
-      case mFieldType of
-        Just (DFEnum options) | not (null options) -> do
-          let currentText = case Map.lookup path editVals of
-                Just (String t) -> t
-                _ -> ""
-              currentIdx = maybe 0 id (findIndex (== currentText) options)
-              n = length options
-              newIdx = (currentIdx + dir + n) `mod` n
-              newVal = String (options !! newIdx)
-              newDbs = dbs { dbsEditValues = Map.insert path newVal editVals }
-          setUiDataBrowser uiHandle newDbs
-        _ -> pure ()
-
-    -- | Look up the field type for a dot-path.
-    lookupFieldType :: Text.Text -> [DataFieldDef] -> Maybe DataFieldType
-    lookupFieldType path' defs = case Text.splitOn "." path' of
-      []     -> Nothing
-      (k:ks) -> case filter (\d -> dfName d == k) defs of
-        (d:_) -> resolveRest ks (dfType d)
-        []    -> Nothing
-      where
-        resolveRest [] ft = Just ft
-        resolveRest (s:ss) (DFRecord subDefs') =
-          case filter (\d -> dfName d == s) subDefs' of
-            (d:_) -> resolveRest ss (dfType d)
-            []    -> Nothing
-        resolveRest _ _ = Nothing
-
     signedSliderDelta sliderPart step = case sliderPart of
       SliderPartMinus -> negate step
       SliderPartPlus -> step
-
-paginationRequestFor :: UiState -> Text.Text -> Text.Text -> (Maybe Int, Maybe Int)
-paginationRequestFor uiState pluginName resourceName =
-  case resourceSchemaFor uiState pluginName resourceName of
-    Just schema
-      | doPage (drsOperations schema) ->
-          let pagination = drsPagination schema
-          in ( Just (pageSizeFrom pagination)
-             , Just (max 0 (dpDefaultPageOffset pagination))
-             )
-    _ -> (Nothing, Nothing)
-
-pageStepFor :: UiState -> Text.Text -> Text.Text -> Int
-pageStepFor uiState pluginName resourceName =
-  case resourceSchemaFor uiState pluginName resourceName of
-    Just schema -> pageSizeFrom (drsPagination schema)
-    Nothing -> 20
-
-resourceSchemaFor :: UiState -> Text.Text -> Text.Text -> Maybe DataResourceSchema
-resourceSchemaFor uiState pluginName resourceName = do
-  schemas <- Map.lookup pluginName (uiDataResources uiState)
-  find (\schema -> drsName schema == resourceName) schemas
-
-pageSizeFrom :: DataPagination -> Int
-pageSizeFrom pagination =
-  max 1 (min (max 1 (dpMaxPageSize pagination)) (dpDefaultPageSize pagination))
 
 -- | Cycle through available overlay names by @dir@ (+1 or -1).
 --

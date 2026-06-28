@@ -62,6 +62,7 @@ library:
     - Seer.Command.AppServiceAdapter
     - Seer.Command.Channel
     - Seer.Command.Dispatch
+    - Seer.DataBrowser.AppService
     - Seer.DataBrowser.Model
     - Seer.System
     - Seer.System.ThreadPriority
