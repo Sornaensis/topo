@@ -12,12 +12,14 @@
 -- * @meta.json@ — 'WorldSaveManifest' with seed, chunk size, etc.
 module Seer.World.Persist
   ( -- * Types (re-exported from "Seer.World.Persist.Types")
-    WorldSaveManifest(..)
+    WorldExternalDataSourceSnapshot(..)
+  , WorldSaveManifest(..)
     -- * Directory helpers
   , worldDir
     -- * Save \/ Load
   , saveNamedWorld
   , saveNamedWorldWithPlugins
+  , saveNamedWorldWithPluginsAndExternalData
   , loadNamedWorld
   , loadNamedSparseOverlayChunk
     -- * Snapshot conversion
@@ -55,7 +57,10 @@ import Actor.UI (UiState(..))
 import Seer.Config (configFromUi)
 import Seer.Config.Snapshot (snapshotFromUi, loadSnapshot)
 import Seer.Config.Snapshot.Types (ConfigSnapshot)
-import Seer.World.Persist.Types (WorldSaveManifest(..))
+import Seer.World.Persist.Types
+  ( WorldExternalDataSourceSnapshot(..)
+  , WorldSaveManifest(..)
+  )
 import Topo.Calendar (defaultWorldTime, defaultPlanetAge)
 import Topo.Metadata (emptyMetadataStore)
 import Topo.Overlay (OverlayChunk, emptyOverlayStore, overlayNames)
@@ -107,7 +112,7 @@ saveNamedWorld
   -> TerrainWorld   -- ^ Terrain data to persist
   -> IO (Either Text ())
 saveNamedWorld name uiSnap world =
-  saveNamedWorldWithPlugins name uiSnap world []
+  saveNamedWorldWithPluginsAndExternalData name uiSnap world [] []
 
 -- | Save a named world including plugin data directories.
 --
@@ -121,7 +126,25 @@ saveNamedWorldWithPlugins
   -> [(Text, FilePath)]
   -- ^ @(pluginName, absoluteDataDir)@ — plugin data directories to bundle
   -> IO (Either Text ())
-saveNamedWorldWithPlugins name uiSnap world pluginDirs = do
+saveNamedWorldWithPlugins name uiSnap world pluginDirs =
+  saveNamedWorldWithPluginsAndExternalData name uiSnap world pluginDirs []
+
+-- | Save a named world including plugin data directories and external
+-- data-source declarations/references.
+--
+-- External data-source snapshots are persisted as opaque, backend-neutral
+-- metadata.  Loading returns them in 'WorldSaveManifest' but does not reconnect,
+-- migrate, lock, or clean up provider-owned stores.
+saveNamedWorldWithPluginsAndExternalData
+  :: Text             -- ^ World name
+  -> UiState          -- ^ Current UI state (config snapshot source)
+  -> TerrainWorld     -- ^ Terrain data to persist
+  -> [(Text, FilePath)]
+  -- ^ @(pluginName, absoluteDataDir)@ — plugin data directories to bundle
+  -> [WorldExternalDataSourceSnapshot]
+  -- ^ Opaque external data-source declarations/references to preserve
+  -> IO (Either Text ())
+saveNamedWorldWithPluginsAndExternalData name uiSnap world pluginDirs externalDataSources = do
   dir <- worldDir
   let nameStr   = Text.unpack name
       worldPath = dir </> nameStr
@@ -147,6 +170,7 @@ saveNamedWorldWithPlugins name uiSnap world pluginDirs = do
           , wsmChunkCount = chunkCount worldForSave
           , wsmOverlayNames = twOverlayManifest worldForSave
           , wsmPluginData = pluginDataEntries
+          , wsmExternalDataSources = externalDataSources
           }
         extraFiles =
           [ ("config.json", BSL.toStrict (encode snapshot))

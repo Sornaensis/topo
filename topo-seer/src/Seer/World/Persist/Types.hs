@@ -8,7 +8,8 @@
 -- without depending on 'Actor.UI', allowing both 'Actor.UI' and
 -- 'Seer.World.Persist' to import it freely.
 module Seer.World.Persist.Types
-  ( WorldSaveManifest(..)
+  ( WorldExternalDataSourceSnapshot(..)
+  , WorldSaveManifest(..)
   , defaultManifestTime
   , manifestJsonOptions
   ) where
@@ -17,8 +18,10 @@ import Data.Aeson
   ( FromJSON(..)
   , ToJSON(..)
   , genericToJSON
+  , object
   , withObject
   , (.:?)
+  , (.=)
   , (.!=)
   )
 import Data.Aeson.Types (Options(..))
@@ -27,6 +30,37 @@ import Data.Text (Text)
 import Data.Time.Clock (UTCTime)
 import Data.Word (Word64)
 import GHC.Generics (Generic)
+import Topo.Plugin.RPC.Manifest
+  ( RPCExternalDataSourceDecl
+  , RPCExternalDataSourceRef
+  )
+
+-- | Opaque external data-source declarations and references captured with a
+-- world save.  Topo preserves this metadata for compatibility checks and
+-- diagnostics without interpreting provider-owned handles, backends, locks, or
+-- writer policies.
+data WorldExternalDataSourceSnapshot = WorldExternalDataSourceSnapshot
+  { wedssPlugin :: Text
+    -- ^ Plugin whose manifest declared the provider sources or consumer refs.
+  , wedssProvidedSources :: [RPCExternalDataSourceDecl]
+    -- ^ Provider-owned external source declarations from the plugin manifest.
+  , wedssConsumedRefs :: [RPCExternalDataSourceRef]
+    -- ^ Consumer references from the plugin manifest.
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON WorldExternalDataSourceSnapshot where
+  toJSON snapshot = object
+    [ "plugin" .= wedssPlugin snapshot
+    , "provided_sources" .= wedssProvidedSources snapshot
+    , "consumed_refs" .= wedssConsumedRefs snapshot
+    ]
+
+instance FromJSON WorldExternalDataSourceSnapshot where
+  parseJSON = withObject "WorldExternalDataSourceSnapshot" $ \o ->
+    WorldExternalDataSourceSnapshot
+      <$> o .:? "plugin" .!= ""
+      <*> o .:? "provided_sources" .!= []
+      <*> o .:? "consumed_refs" .!= []
 
 -- | Metadata recorded alongside each saved world.
 data WorldSaveManifest = WorldSaveManifest
@@ -45,6 +79,10 @@ data WorldSaveManifest = WorldSaveManifest
   , wsmPluginData :: [(Text, Text)]
     -- ^ @(pluginName, relativeDataDir)@ pairs for plugins whose data
     -- directories were bundled with this world save.
+  , wsmExternalDataSources :: [WorldExternalDataSourceSnapshot]
+    -- ^ Backend-neutral external data-source declarations/references and
+    -- opaque metadata preserved with the save. Loading reports this metadata
+    -- but does not reconnect, migrate, lock, or repair provider-owned stores.
   } deriving (Eq, Show, Generic)
 
 -- | JSON field name options: strip @\"wsm\"@ prefix, camelCase to
@@ -69,6 +107,7 @@ instance FromJSON WorldSaveManifest where
       <*> o .:? "chunk_count" .!= 0
       <*> o .:? "overlay_names" .!= []
       <*> o .:? "plugin_data"   .!= []
+      <*> o .:? "external_data_sources" .!= []
 
 -- | Epoch time used as a default when the field is missing.
 defaultManifestTime :: UTCTime

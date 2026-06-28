@@ -266,6 +266,16 @@ repair procedures belong to provider plugins, adapters, user configuration, or
 external systems. SQLite is acceptable as a fixture or adapter example, but not
 as a privileged shared-state specification.
 
+External data-source grants are capability-gated at the coordination layer:
+`read` requires a `query` grant capability, `write` requires `mutate`, and
+`admin` requires `migrate`. Provider crashes, transport failures,
+provider-reported failures, shutdown, or restart-limit failures revoke brokered
+routing by marking provider/grant availability unavailable until the provider
+reports readiness again; topo does not delete, lock, migrate, or repair the
+underlying backend. World save/load preserves opaque external data-source
+references and metadata for compatibility diagnostics, but loading a world does
+not reconnect or clean up provider-owned stores.
+
 ## UI architecture
 
 Target UI organization:

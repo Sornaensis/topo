@@ -312,6 +312,12 @@ isExternalGrantCapabilityError (ManifestInvalidField field detail) =
     && "grant capabilities must be declared" `Text.isInfixOf` detail
 isExternalGrantCapabilityError _ = False
 
+isExternalGrantAccessCapabilityError :: ManifestError -> Bool
+isExternalGrantAccessCapabilityError (ManifestInvalidField field detail) =
+  "externalDataSources.ledger.grants.write.capabilities" `Text.isPrefixOf` field
+    && "grant access 'write' requires capability 'mutate'" `Text.isInfixOf` detail
+isExternalGrantAccessCapabilityError _ = False
+
 isExternalGrantResourceError :: ManifestError -> Bool
 isExternalGrantResourceError (ManifestInvalidField field detail) =
   "externalDataSources.ledger.grants.read.resources" `Text.isPrefixOf` field
@@ -640,6 +646,33 @@ spec = describe "Plugin.RPC" $ do
             { rmExternalDataSources = [source]
             }
       validateManifest manifest `shouldSatisfy` any isExternalGrantCapabilityError
+
+    it "rejects external data-source grant access without required capabilities" $ do
+      let source = RPCExternalDataSourceDecl
+            { redsdName = "ledger"
+            , redsdLabel = "Ledger"
+            , redsdDescription = ""
+            , redsdKind = "catalog"
+            , redsdCapabilities = [ExternalSourceQuery, ExternalSourceMutate]
+            , redsdResources = ["items"]
+            , redsdStatus = defaultRPCExternalDataSourceStatus { redssState = ExternalStatusReady }
+            , redsdConnection = Nothing
+            , redsdGrants =
+                [ RPCExternalDataSourceGrant
+                    { redsgName = "write"
+                    , redsgAccess = [ExternalAccessWrite]
+                    , redsgCapabilities = [ExternalSourceQuery]
+                    , redsgResources = ["items"]
+                    , redsgStatus = defaultRPCExternalDataSourceStatus { redssState = ExternalStatusReady }
+                    , redsgReference = Nothing
+                    }
+                ]
+            , redsdUiHints = defaultRPCUIHints
+            }
+          manifest = baseManifest
+            { rmExternalDataSources = [source]
+            }
+      validateManifest manifest `shouldSatisfy` any isExternalGrantAccessCapabilityError
 
     it "rejects external data-source grant resources without source resources" $ do
       let source = RPCExternalDataSourceDecl

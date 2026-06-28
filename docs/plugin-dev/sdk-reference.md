@@ -28,10 +28,12 @@ External data-source grants use `RPCExternalDataSourceGrant`; topo treats all
 `connection`/`reference` values and status `diagnostics` as opaque
 provider-owned metadata. Status can carry backend-neutral provider ID,
 availability, health, access-mode, capability-scope, version, and compatibility
-markers. Migrations, backing schemas, connection details, and consistency rules
-remain with provider plugins, adapters, or external systems; the SDK only
-serializes backend-neutral declarations, grants, status/errors, and opaque
-metadata.
+markers. Access is brokered only when the grant has the generic capability for
+that access (`read` -> `query`, `write` -> `mutate`, `admin` -> `migrate`).
+Migrations, backing schemas, connection details, failure cleanup, locks, writer
+coordination, and consistency rules remain with provider plugins, adapters, or
+external systems; the SDK only serializes backend-neutral declarations, grants,
+status/errors, and opaque metadata.
 
 ## ParamDef
 

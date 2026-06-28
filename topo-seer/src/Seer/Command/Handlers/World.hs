@@ -24,7 +24,11 @@ import qualified Data.Text as Text
 import System.FilePath ((</>))
 
 import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot, getDataSnapshot, replaceTerrainData)
-import Actor.PluginManager (getPluginDataDirectories, notifyWorldChanged)
+import Actor.PluginManager
+  ( getPluginDataDirectories
+  , getPluginExternalDataSources
+  , notifyWorldChanged
+  )
 import Actor.Simulation (setSimWorld)
 import Actor.SnapshotReceiver
   ( readTerrainSnapshot
@@ -47,7 +51,7 @@ import Seer.Command.Context (CommandContext(..))
 import Seer.Config.Snapshot (snapshotFromUi, applySnapshotToUi)
 import Seer.World.Persist
   ( listWorlds
-  , saveNamedWorldWithPlugins
+  , saveNamedWorldWithPluginsAndExternalData
   , loadNamedWorld
   , snapshotToWorld
   , worldDir
@@ -128,7 +132,8 @@ handleSaveWorld ctx reqId params = do
           terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
           let world = snapshotToWorld ui terrainSnap
           pluginDirs <- getPluginDataDirectories (ahPluginManagerHandle handles)
-          result <- saveNamedWorldWithPlugins name ui world pluginDirs
+          externalDataSources <- getPluginExternalDataSources (ahPluginManagerHandle handles)
+          result <- saveNamedWorldWithPluginsAndExternalData name ui world pluginDirs externalDataSources
           case result of
             Right () -> do
               -- Update UI with saved world name + config snapshot

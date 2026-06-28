@@ -207,19 +207,33 @@ Consumers declare dependencies with `externalDataSourceRefs`:
 ]
 ```
 
-Grant names are provider-defined and backend-neutral. `connection` and
-`reference` are opaque JSON objects for provider-owned handles or binding
-metadata; topo may broker and display them, but does not interpret them as a
-host-owned backing store, migration runner, schema authority, or consistency
-coordinator. Even when a source advertises the `migrate` capability, it is a
-provider operation/status capability rather than a topo-owned migration table
-or schema rule. Status states are `unknown`, `unconfigured`, `ready`,
-`degraded`, and `unavailable`; provider/grant summaries are brokerable only
-when status is `ready`. Optional status metadata can carry a backend-neutral
-`providerId`, `availability`, `health`, `accessMode`, `capabilityScope`,
-`version`, `compatibility`, and opaque `diagnostics` object. Manifest status is
-declarative startup metadata; runtime health can be refined by plugin
-handshakes and diagnostics.
+Grant names are provider-defined and backend-neutral. Topo only brokers a
+requested access mode when the grant carries the corresponding generic
+capability: `read` requires `query`, `write` requires `mutate`, and `admin`
+requires `migrate`. Provider plugins, adapters, or external systems still own
+concrete authorization, locks, writer coordination, and repair behavior.
+
+`connection` and `reference` are opaque JSON objects for provider-owned handles
+or binding metadata; topo may broker and display them, but does not interpret
+them as a host-owned backing store, migration runner, schema authority, or
+consistency coordinator. Even when a source advertises the `migrate`
+capability, it is a provider operation/status capability rather than a
+topo-owned migration table or schema rule. Status states are `unknown`,
+`unconfigured`, `ready`, `degraded`, and `unavailable`; provider/grant
+summaries are brokerable only when status is `ready`. On plugin crash,
+transport failure, provider-reported failure, shutdown, or restart-limit
+failure, topo treats provider sources and grants as unavailable/revoked for
+dependency routing until a refreshed manifest or runtime diagnostic reports
+`ready` again. It does not delete provider data or run backend cleanup.
+
+Optional status metadata can carry a backend-neutral `providerId`,
+`availability`, `health`, `accessMode`, `capabilityScope`, `version`,
+`compatibility`, and opaque `diagnostics` object. Manifest status is declarative
+startup metadata; runtime health can be refined by plugin handshakes and
+diagnostics. World save/load preserves external data-source declarations,
+consumer references, and opaque connection/reference metadata in the world
+manifest for compatibility checks, but loading a world does not reconnect,
+migrate, lock, or repair provider-owned stores.
 
 ## SDK generation
 

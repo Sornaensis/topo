@@ -74,6 +74,7 @@ import Topo.Plugin.RPC.Manifest
   , RPCExternalDataSourceCapability(..)
   , RPCExternalDataSourceStatusState(..)
   , RPCExternalDataSourceRef(..)
+  , externalAccessRequiredCapabilities
   , RPCGeneratorDecl(..)
   , RPCManifest(..)
   , RPCSimulationDecl(..)
@@ -1176,7 +1177,13 @@ providerHasExternalDataSource dep provider = any matches (dpExternalDataSources 
     grantSatisfies source grant =
       desgStatus grant == ExternalStatusReady
         && all (`elem` desgAccess grant) (edsdAccess dep)
+        && all (`elem` despCapabilities source) (desgCapabilities grant)
+        && accessCapabilitiesSatisfy grant
         && grantResourcesSatisfy source grant
+
+    accessCapabilitiesSatisfy grant =
+      all (`elem` desgCapabilities grant)
+        (concatMap externalAccessRequiredCapabilities (edsdAccess dep))
 
     grantResourcesSatisfy source grant =
       all (`elem` grantResources) (edsdResources dep)

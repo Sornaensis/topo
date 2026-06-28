@@ -191,7 +191,9 @@ External data-source declarations keep migrations, backing schemas, connection
 details, and consistency rules provider-owned (or external-system-owned). Topo
 may surface status/errors, backend-neutral provider/availability/health/access
 policy metadata, and opaque diagnostics, but it must not prescribe
-backend-specific migration tables or schema rules.
+backend-specific migration tables, locks, writer policies, or schema rules.
+Access grants are brokered only when their generic capabilities cover the
+requested access (`read` -> `query`, `write` -> `mutate`, `admin` -> `migrate`).
 
 ### ParamDef
 
@@ -291,7 +293,10 @@ Manifest v3 also supports backend-neutral `externalDataSources` and
 `externalDataSourceRefs` for provider-owned data shared between plugins. These
 fields name providers, sources, capabilities, access grants, resources, status,
 health/policy metadata, version/compatibility markers, and opaque diagnostics;
-they do not make the host own the external data.
+they do not make the host own the external data. Plugin/provider failures make
+brokered grants unavailable for routing until the provider reports readiness;
+world save/load preserves opaque references and metadata without reconnecting or
+cleaning up provider-owned stores.
 
 ## Plugin Configuration Persistence
 

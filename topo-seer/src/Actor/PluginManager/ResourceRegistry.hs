@@ -1,16 +1,37 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 -- | Backend-neutral plugin data-resource registry views.
 module Actor.PluginManager.ResourceRegistry
   ( buildPluginDataResources
   , collectPluginDataDirs
+  , collectPluginExternalDataSources
   ) where
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Data.Text (Text)
 
-import Actor.PluginManager.Types (LoadedPlugin(..), PluginManagerState(..))
+import Actor.PluginManager.Types
+  ( LoadedPlugin(..)
+  , PluginLifecycleSnapshot(..)
+  , PluginLifecycleState(..)
+  , PluginManagerState(..)
+  )
+import Seer.World.Persist.Types (WorldExternalDataSourceSnapshot(..))
 import Topo.Plugin.DataResource (DataResourceSchema)
-import Topo.Plugin.RPC (RPCConnection(..), RPCManifest(..))
+import Topo.Plugin.RPC
+  ( RPCConnection(..)
+  , RPCExternalDataSourceAccessMode(..)
+  , RPCExternalDataSourceAvailability(..)
+  , RPCExternalDataSourceDecl(..)
+  , RPCExternalDataSourceGrant(..)
+  , RPCExternalDataSourceHealth(..)
+  , RPCExternalDataSourceRef(..)
+  , RPCExternalDataSourceStatus(..)
+  , RPCExternalDataSourceStatusState(..)
+  , RPCManifest(..)
+  )
 
 -- | Collect data resource schemas from all loaded plugins.
 -- Returns a map from plugin name to its declared data resources.
@@ -32,3 +53,68 @@ collectPluginDataDirs st =
   , Just conn <- [lpConnection lp]
   , Just dir <- [rpcDataDirectory conn]
   ]
+
+-- | Collect backend-neutral external data-source declarations and references
+-- from loaded plugin manifests for world-save metadata.
+collectPluginExternalDataSources :: PluginManagerState -> [WorldExternalDataSourceSnapshot]
+collectPluginExternalDataSources st =
+  [ WorldExternalDataSourceSnapshot
+      { wedssPlugin = lpName lp
+      , wedssProvidedSources = providedSources
+      , wedssConsumedRefs = consumedRefs
+      }
+  | lp <- plugins
+  , let manifest = lpManifest lp
+        providedSources = markProvidedSources lp (rmExternalDataSources manifest)
+        consumedRefs = map markConsumedRefUnavailable (rmExternalDataSourceRefs manifest)
+  , not (null providedSources && null consumedRefs)
+  ]
+  where
+    plugins = Map.elems (pmsPlugins st)
+    disabled = pmsDisabledPlugins st
+    providerReady = Map.fromList
+      [(lpName lp, pluginExternalProviderReady disabled lp) | lp <- plugins]
+
+    markProvidedSources lp sources
+      | pluginExternalProviderReady disabled lp = sources
+      | otherwise = map (markSourceUnavailable (lpName lp) unavailableProviderReason) sources
+
+    markConsumedRefUnavailable ref = case redsrProvider ref of
+      Just providerName
+        | Map.findWithDefault False providerName providerReady -> ref
+        | otherwise ->
+            ref
+              { redsrStatus =
+                  unavailableStatus providerName unavailableProviderReason (redsrStatus ref)
+              }
+      _ -> ref
+
+pluginExternalProviderReady :: Set.Set Text -> LoadedPlugin -> Bool
+pluginExternalProviderReady disabled lp =
+  not (Set.member (lpName lp) disabled)
+    && plsState (lpLifecycle lp) == LifecycleReady
+
+unavailableProviderReason :: Text
+unavailableProviderReason = "provider plugin is unavailable"
+
+markSourceUnavailable :: Text -> Text -> RPCExternalDataSourceDecl -> RPCExternalDataSourceDecl
+markSourceUnavailable providerName reason source = source
+  { redsdStatus = unavailableStatus providerName reason (redsdStatus source)
+  , redsdGrants = map (markGrantUnavailable providerName reason) (redsdGrants source)
+  }
+
+markGrantUnavailable :: Text -> Text -> RPCExternalDataSourceGrant -> RPCExternalDataSourceGrant
+markGrantUnavailable providerName reason grant = grant
+  { redsgStatus = unavailableStatus providerName reason (redsgStatus grant)
+  }
+
+unavailableStatus :: Text -> Text -> RPCExternalDataSourceStatus -> RPCExternalDataSourceStatus
+unavailableStatus providerName reason status = status
+  { redssState = ExternalStatusUnavailable
+  , redssMessage = Just reason
+  , redssProviderId = Just providerName
+  , redssAvailability = Just ExternalAvailabilityUnavailable
+  , redssHealth = Just ExternalHealthUnhealthy
+  , redssAccessMode = Just ExternalAccessModeDisabled
+  , redssCapabilityScope = []
+  }

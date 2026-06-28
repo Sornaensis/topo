@@ -185,6 +185,31 @@ spec = describe "PluginDependency" $ do
     map dgdBlocking diagnostics `shouldBe` [True]
     map dgdMessage diagnostics `shouldSatisfy` any (Text.isInfixOf "missing external data-source 'ledger' from provider plugin 'geo'")
 
+  it "requires external data-source grant capabilities to satisfy requested access" $ do
+    let writeWithoutMutate = (externalProvider "ledger" ["settlements"])
+          { despCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
+          , despGrants =
+              [ DependencyExternalDataSourceGrant
+                  { desgName = "write"
+                  , desgAccess = [ExternalAccessWrite]
+                  , desgCapabilities = [ExternalSourceQuery]
+                  , desgResources = ["settlements"]
+                  , desgStatus = ExternalStatusReady
+                  }
+              ]
+          }
+        providerPlugin = (provider "geo" [])
+          { dpExternalDataSources = [writeWithoutMutate]
+          }
+        consumer = provider "consumer"
+          [ required (DependencyExternalDataSource (ExternalDataSourceDependency (Just "geo") "consumer" "ledger" (Just "write") [ExternalAccessWrite] ["settlements"]))
+          ]
+        diagnostics = validateDependencies (defaultDependencyResolverInput [providerPlugin, consumer])
+
+    map dgdStatus diagnostics `shouldBe` [DependencyMissing]
+    map dgdBlocking diagnostics `shouldBe` [True]
+    map dgdMessage diagnostics `shouldSatisfy` any (Text.isInfixOf "missing external data-source 'ledger' from provider plugin 'geo'")
+
   it "requires external data-source provider and grant status to be ready" $ do
     let nonReadySource = (externalProvider "ledger" ["settlements"])
           { despStatus = ExternalStatusDegraded

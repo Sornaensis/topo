@@ -48,6 +48,7 @@ import Actor.PluginManager.PluginSupervisor
 import Actor.PluginManager.ResourceRegistry
   ( buildPluginDataResources
   , collectPluginDataDirs
+  , collectPluginExternalDataSources
   )
 import Actor.PluginManager.Scanner
   ( pluginsBaseDir
@@ -60,6 +61,7 @@ import Actor.PluginManager.Types
   , emptyPluginManagerState
   , setParamOnPlugin
   )
+import Seer.World.Persist.Types (WorldExternalDataSourceSnapshot)
 import Topo.Overlay.Schema (OverlaySchema)
 import Topo.Pipeline (PipelineStage)
 import Topo.Plugin.DataResource (DataResourceSchema)
@@ -100,6 +102,7 @@ actor PluginManager
   call mutateData :: (Text, MutateResource) -> Either Text MutateResult
   cast notifyWorld :: Maybe Text
   call getDataDirs :: () -> [(Text, FilePath)]
+  call getExternalDataSources :: () -> [WorldExternalDataSourceSnapshot]
 
   initial emptyPluginManagerState
   on_ discover = \() st -> do
@@ -165,7 +168,10 @@ actor PluginManager
     notifyPluginsWorldChanged mWorldPath (Map.elems (pmsPlugins st))
     pure st
   onPure getDataDirs = \() st ->
-    (st, collectPluginDataDirs st)|]
+    (st, collectPluginDataDirs st)
+  on getExternalDataSources = \() st -> do
+    st' <- observePluginRuntimes st
+    pure (st', collectPluginExternalDataSources st')|]
 
 observePluginRuntimes :: PluginManagerState -> IO PluginManagerState
 observePluginRuntimes st = do

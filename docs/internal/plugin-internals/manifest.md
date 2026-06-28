@@ -69,7 +69,9 @@ External data-source fields are intentionally provider-owned and backend-neutral
   and optional opaque `connection` metadata.
 - Grant declarations use provider-defined names, access modes (`read`, `write`,
   `admin`), capability/resource subsets, declarative status, and optional opaque
-  `reference` metadata.
+  `reference` metadata. Access is capability-gated: `read` requires `query`,
+  `write` requires `mutate`, and `admin` requires `migrate` before topo can
+  broker the grant.
 - Consumer references use local `name`, optional provider plugin ID, source
   name, optional provider grant name, required/optional flag, access grants,
   resource names, UI hints, declarative status, and optional opaque `reference`
@@ -79,7 +81,10 @@ External data-source fields are intentionally provider-owned and backend-neutral
   health, access-mode, capability-scope, version, compatibility, and opaque
   diagnostics fields. Resolver-facing provider/grant summaries treat only
   `ready` as available; other states remain declared but unavailable until
-  runtime or diagnostics report readiness.
+  runtime or diagnostics report readiness. Plugin crash, transport failure,
+  provider-reported failure, shutdown, or restart-limit failure revokes brokered
+  grants by making the provider/source unavailable for routing; topo does not
+  delete provider-owned data or run backend cleanup.
 
 No host-owned storage details belong in the manifest. Migrations, backing
 schemas, connection details, and consistency rules are owned by the provider

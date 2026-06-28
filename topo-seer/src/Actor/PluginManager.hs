@@ -55,6 +55,7 @@ module Actor.PluginManager
     -- * World lifecycle
   , notifyWorldChanged
   , getPluginDataDirectories
+  , getPluginExternalDataSources
   ) where
 
 import Control.Concurrent (threadDelay)
@@ -67,6 +68,7 @@ import Hyperspace.Actor
 
 import Actor.PluginManager.PluginSupervisor (refreshAllManifests, shutdownPlugin)
 import Actor.PluginManager.RootSupervisor (PluginManager, pluginManagerActorDef)
+import Seer.World.Persist.Types (WorldExternalDataSourceSnapshot)
 import Actor.PluginManager.Types
   ( LoadedPlugin(..)
   , PluginLifecycleSnapshot(..)
@@ -226,6 +228,14 @@ getPluginDataDirectories
   -> IO [(Text, FilePath)]
 getPluginDataDirectories handle =
   call @"getDataDirs" handle #getDataDirs ()
+
+-- | Get backend-neutral external data-source declarations/references from
+-- loaded plugin manifests for world-save metadata.
+getPluginExternalDataSources
+  :: ActorHandle PluginManager (Protocol PluginManager)
+  -> IO [WorldExternalDataSourceSnapshot]
+getPluginExternalDataSources handle =
+  call @"getExternalDataSources" handle #getExternalDataSources ()
 
 -- | Update the set of disabled plugin names.
 --

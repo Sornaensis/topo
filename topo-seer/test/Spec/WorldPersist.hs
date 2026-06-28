@@ -4,10 +4,9 @@
 module Spec.WorldPersist (spec) where
 
 import Control.Exception (bracket, try, IOException)
-import Data.Aeson (Value(..), encode, eitherDecodeStrict', toJSON)
+import Data.Aeson (Value(..), encode, eitherDecodeStrict', object, toJSON, (.=))
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.IntMap.Strict as IntMap
-import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import Data.Time.Clock (UTCTime, getCurrentTime, addUTCTime)
 import qualified Data.Vector as V
@@ -25,8 +24,10 @@ import Seer.Config (configFromUi, unmapRange)
 import Seer.Config.Snapshot (snapshotFromUi)
 import Seer.Config.Snapshot.Types (ConfigSnapshot(..), defaultSnapshot)
 import Seer.World.Persist
-  ( WorldSaveManifest(..)
+  ( WorldExternalDataSourceSnapshot(..)
+  , WorldSaveManifest(..)
   , saveNamedWorld
+  , saveNamedWorldWithPluginsAndExternalData
   , loadNamedWorld
   , listWorlds
   , deleteNamedWorld
@@ -34,6 +35,20 @@ import Seer.World.Persist
   , worldDir
   )
 import Seer.World.Persist.Types (defaultManifestTime)
+import Topo.Plugin.RPC.Manifest
+  ( RPCExternalDataSourceAccess(..)
+  , RPCExternalDataSourceCapability(..)
+  , RPCExternalDataSourceAvailability(..)
+  , RPCExternalDataSourceDecl(..)
+  , RPCExternalDataSourceGrant(..)
+  , RPCExternalDataSourceHealth(..)
+  , RPCExternalDataSourceAccessMode(..)
+  , RPCExternalDataSourceRef(..)
+  , RPCExternalDataSourceStatus(..)
+  , RPCExternalDataSourceStatusState(..)
+  , defaultRPCExternalDataSourceStatus
+  , defaultRPCUIHints
+  )
 import Topo.Hex (defaultHexGridMeta)
 import Topo.Storage (emptyProvenance, saveWorldWithProvenance)
 import Topo.Overlay
@@ -76,6 +91,7 @@ manifestJsonSpec = describe "WorldSaveManifest JSON round-trip" $ do
           , wsmChunkCount = 16
           , wsmOverlayNames = ["weather", "persist_sparse_test"]
           , wsmPluginData = []
+          , wsmExternalDataSources = [testExternalDataSourceSnapshot]
           }
     let bytes = BSL.toStrict (encode manifest)
     eitherDecodeStrict' bytes `shouldBe` Right manifest
@@ -90,6 +106,7 @@ manifestJsonSpec = describe "WorldSaveManifest JSON round-trip" $ do
         wsmCreatedAt m `shouldBe` defaultManifestTime
         wsmChunkCount m `shouldBe` 0
         wsmOverlayNames m `shouldBe` []
+        wsmExternalDataSources m `shouldBe` []
 
 -- ---------------------------------------------------------------------------
 -- saveNamedWorld / loadNamedWorld round-trip
@@ -98,6 +115,71 @@ manifestJsonSpec = describe "WorldSaveManifest JSON round-trip" $ do
 -- | Unique test world name to avoid collisions with user data.
 testWorldName :: Text.Text
 testWorldName = "__topo_test_world_roundtrip__"
+
+testExternalDataSourceSnapshot :: WorldExternalDataSourceSnapshot
+testExternalDataSourceSnapshot = WorldExternalDataSourceSnapshot
+  { wedssPlugin = "settlement-provider"
+  , wedssProvidedSources = [testExternalDataSourceDecl]
+  , wedssConsumedRefs = [testExternalDataSourceRef]
+  }
+
+testExternalDataSourceDecl :: RPCExternalDataSourceDecl
+testExternalDataSourceDecl = RPCExternalDataSourceDecl
+  { redsdName = "settlement-ledger"
+  , redsdLabel = "Settlement Ledger"
+  , redsdDescription = "Provider-owned settlements"
+  , redsdKind = "catalog"
+  , redsdCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
+  , redsdResources = ["settlements"]
+  , redsdStatus = defaultRPCExternalDataSourceStatus
+      { redssState = ExternalStatusReady
+      , redssProviderId = Just "settlement-provider"
+      , redssAvailability = Just ExternalAvailabilityAvailable
+      , redssHealth = Just ExternalHealthHealthy
+      , redssAccessMode = Just ExternalAccessModeReadOnly
+      , redssCapabilityScope = [ExternalSourceQuery, ExternalSourceHealth]
+      }
+  , redsdConnection = Just (object ["handle" .= ("provider-owned:settlement-ledger" :: Text.Text)])
+  , redsdGrants =
+      [ RPCExternalDataSourceGrant
+          { redsgName = "settlement-read"
+          , redsgAccess = [ExternalAccessRead]
+          , redsgCapabilities = [ExternalSourceQuery]
+          , redsgResources = ["settlements"]
+          , redsgStatus = defaultRPCExternalDataSourceStatus
+              { redssState = ExternalStatusReady
+              , redssProviderId = Just "settlement-provider"
+              , redssAvailability = Just ExternalAvailabilityAvailable
+              , redssHealth = Just ExternalHealthHealthy
+              , redssAccessMode = Just ExternalAccessModeReadOnly
+              , redssCapabilityScope = [ExternalSourceQuery]
+              }
+          , redsgReference = Just (object ["grant" .= ("settlement-read" :: Text.Text)])
+          }
+      ]
+  , redsdUiHints = defaultRPCUIHints
+  }
+
+testExternalDataSourceRef :: RPCExternalDataSourceRef
+testExternalDataSourceRef = RPCExternalDataSourceRef
+  { redsrName = "settlements"
+  , redsrProvider = Just "settlement-provider"
+  , redsrSource = "settlement-ledger"
+  , redsrRequired = True
+  , redsrAccess = [ExternalAccessRead]
+  , redsrResources = ["settlements"]
+  , redsrGrant = Just "settlement-read"
+  , redsrStatus = defaultRPCExternalDataSourceStatus
+      { redssState = ExternalStatusUnknown
+      , redssProviderId = Just "settlement-provider"
+      , redssAvailability = Just ExternalAvailabilityUnknown
+      , redssHealth = Just ExternalHealthUnknown
+      , redssAccessMode = Just ExternalAccessModeReadOnly
+      , redssCapabilityScope = [ExternalSourceQuery]
+      }
+  , redsrReference = Just (object ["binding" .= ("consumer:settlements" :: Text.Text)])
+  , redsrUiHints = defaultRPCUIHints
+  }
 
 worldRoundTripSpec :: Spec
 worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
@@ -201,6 +283,29 @@ worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
                 wsmOverlayNames manifest `shouldBe` ["persist_sparse_test"]
         )
 
+    it "preserves external data-source reference metadata in the save manifest" $
+      bracket
+        (pure ())
+        (\_ -> do
+            _ <- deleteNamedWorld testWorldName
+            pure ()
+        )
+        (\_ -> do
+            let config = WorldConfig { wcChunkSize = 64 }
+                world = emptyWorld config defaultHexGridMeta
+                ui = emptyUiState { uiSeed = 42, uiChunkSize = 64 }
+
+            saveResult <- saveNamedWorldWithPluginsAndExternalData
+              testWorldName ui world [] [testExternalDataSourceSnapshot]
+            saveResult `shouldBe` Right ()
+
+            loadResult <- loadNamedWorld testWorldName
+            case loadResult of
+              Left err -> expectationFailure (Text.unpack err)
+              Right (manifest, _snapshot, _loadedWorld) -> do
+                wsmExternalDataSources manifest `shouldBe` [testExternalDataSourceSnapshot]
+        )
+
     it "loads old-format world directories without sidecar when manifest is empty" $
       bracket
         (pure ())
@@ -226,6 +331,7 @@ worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
                   , wsmChunkCount = 0
                   , wsmOverlayNames = []
                   , wsmPluginData = []
+                  , wsmExternalDataSources = []
                   }
 
             createDirectoryIfMissing True worldPath

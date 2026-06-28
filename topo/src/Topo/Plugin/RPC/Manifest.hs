@@ -48,6 +48,7 @@ module Topo.Plugin.RPC.Manifest
   , RPCParamType(..)
   , RPCExternalDataSourceCapability(..)
   , RPCExternalDataSourceAccess(..)
+  , externalAccessRequiredCapabilities
   , RPCExternalDataSourceStatusState(..)
   , RPCExternalDataSourceAvailability(..)
   , RPCExternalDataSourceHealth(..)
@@ -531,6 +532,14 @@ instance ToJSON RPCExternalDataSourceAccess where
   toJSON ExternalAccessRead  = "read"
   toJSON ExternalAccessWrite = "write"
   toJSON ExternalAccessAdmin = "admin"
+
+-- | Backend-neutral source capabilities required before topo may broker an
+-- access grant.  This gate is intentionally generic: providers still own the
+-- concrete backend authorization, locking, and writer policy behind the grant.
+externalAccessRequiredCapabilities :: RPCExternalDataSourceAccess -> [RPCExternalDataSourceCapability]
+externalAccessRequiredCapabilities ExternalAccessRead = [ExternalSourceQuery]
+externalAccessRequiredCapabilities ExternalAccessWrite = [ExternalSourceMutate]
+externalAccessRequiredCapabilities ExternalAccessAdmin = [ExternalSourceMigrate]
 
 -- | Declarative status for an external data source or a consumer reference.
 --
@@ -1749,6 +1758,13 @@ validateExternalDataSources sources =
         | capability <- redsgCapabilities grant
         , capability `notElem` redsdCapabilities source
         ]
+      , [ ManifestInvalidField (grantPath source grant "capabilities")
+            ("grant access " <> quote (externalAccessText access)
+              <> " requires capability " <> capabilityListText requiredCapabilities <> ".")
+        | access <- redsgAccess grant
+        , let requiredCapabilities = externalAccessRequiredCapabilities access
+        , not (all (`elem` redsgCapabilities grant) requiredCapabilities)
+        ]
       , [ ManifestInvalidField (grantPath source grant "resources") "grant resource names must be non-empty."
         | any Text.null (redsgResources grant)
         ]
@@ -1857,6 +1873,9 @@ nameOrPlaceholder value
 
 quote :: Text -> Text
 quote value = "'" <> value <> "'"
+
+capabilityListText :: [RPCExternalDataSourceCapability] -> Text
+capabilityListText = Text.intercalate ", " . map (quote . externalCapabilityText)
 
 safePluginIdentifier :: Text -> Bool
 safePluginIdentifier value =
