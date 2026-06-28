@@ -31,9 +31,10 @@ compared against generated Haskell values in `Spec.PluginRPC`:
 
 - [Provider manifest](examples/manifest-v3-provider.json) — declares generator,
   simulation, overlay, data resource schema, and a provider-owned external data
-  source.
+  source with backend-neutral grants and opaque connection metadata.
 - [Consumer manifest](examples/manifest-v3-consumer.json) — declares a plugin
-  that consumes the provider-owned source through a backend-neutral reference.
+  that consumes the provider-owned source through a backend-neutral grant and
+  opaque reference metadata.
 
 Use these JSON files as starting points when building non-Haskell plugins or
 when reviewing manifest-contract changes.

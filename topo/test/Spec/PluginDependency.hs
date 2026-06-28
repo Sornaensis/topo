@@ -31,7 +31,7 @@ spec = describe "PluginDependency" $ do
           , DependencyPlugin (PluginDependency "climate-plus" (VersionBetween "1.2.0" "2.0.0"))
           , DependencyOverlay (OverlayDependency "weather" (Just "climate-plus"))
           , DependencyResource (ResourceDependency (Just "civilization") "settlements" [ResourceList, ResourceQueryByHex, ResourceQueryByField, ResourceSort, ResourceFilter, ResourcePage] (Just "civilization"))
-          , DependencyExternalDataSource (ExternalDataSourceDependency (Just "civilization") "trade-routes" "settlement-ledger" [ExternalAccessRead] ["settlements"])
+          , DependencyExternalDataSource (ExternalDataSourceDependency (Just "civilization") "trade-routes" "settlement-ledger" Nothing [ExternalAccessRead] ["settlements"])
           , DependencyCapability CapDataRead
           ]
     mapM_ shouldRoundTrip targets
@@ -74,6 +74,7 @@ spec = describe "PluginDependency" $ do
           { edsdProvider = Just "civilization"
           , edsdConsumer = "trade-routes"
           , edsdSource = "settlement-ledger"
+          , edsdGrant = Just "settlement-read-write"
           , edsdAccess = [ExternalAccessRead, ExternalAccessWrite]
           , edsdResources = ["settlements", "markets"]
           }
@@ -82,6 +83,7 @@ spec = describe "PluginDependency" $ do
       , "provider" .= ("civilization" :: Text)
       , "consumer" .= ("trade-routes" :: Text)
       , "source" .= ("settlement-ledger" :: Text)
+      , "grant" .= ("settlement-read-write" :: Text)
       , "access" .= (["read", "write"] :: [Text])
       , "resources" .= (["settlements", "markets"] :: [Text])
       ]
@@ -98,6 +100,7 @@ spec = describe "PluginDependency" $ do
           { edsdProvider = Just "civilization"
           , edsdConsumer = "trade-routes"
           , edsdSource = "settlement-ledger"
+          , edsdGrant = Just "settlement-read"
           , edsdAccess = [ExternalAccessRead]
           , edsdResources = ["settlements"]
           })
@@ -108,7 +111,7 @@ spec = describe "PluginDependency" $ do
           , required (DependencyBuiltInStage StageBiomes)
           , required (DependencyOverlay (OverlayDependency "weather" (Just "weather-plus")))
           , required (DependencyResource (ResourceDependency (Just "civilization") "settlements" [] Nothing))
-          , required (DependencyExternalDataSource (ExternalDataSourceDependency (Just "atlas") "trade-routes" "settlement-ledger" [ExternalAccessRead] []))
+          , required (DependencyExternalDataSource (ExternalDataSourceDependency (Just "atlas") "trade-routes" "settlement-ledger" Nothing [ExternalAccessRead] []))
           , required (DependencyCapability CapDataRead)
           ]
         civilization = (provider "civilization" [])
@@ -155,11 +158,11 @@ spec = describe "PluginDependency" $ do
   it "treats resource operation/overlay and external resource mismatches as missing dependencies" $ do
     let providerPlugin = (provider "geo" [])
           { dpResources = [DependencyResourceProvider "settlements" [ResourceList] (Just "settlements-overlay")]
-          , dpExternalDataSources = [DependencyExternalDataSourceProvider "ledger" ["settlements"]]
+          , dpExternalDataSources = [externalProvider "ledger" ["settlements"]]
           }
         consumer = provider "consumer"
           [ required (DependencyResource (ResourceDependency (Just "geo") "settlements" [ResourceUpdate] (Just "other-overlay")))
-          , required (DependencyExternalDataSource (ExternalDataSourceDependency (Just "geo") "consumer" "ledger" [ExternalAccessRead] ["markets"]))
+          , required (DependencyExternalDataSource (ExternalDataSourceDependency (Just "geo") "consumer" "ledger" Nothing [ExternalAccessRead] ["markets"]))
           ]
         diagnostics = validateDependencies (defaultDependencyResolverInput [providerPlugin, consumer])
         messages = map dgdMessage diagnostics
@@ -169,15 +172,57 @@ spec = describe "PluginDependency" $ do
     messages `shouldSatisfy` any (Text.isInfixOf "missing resource 'settlements' from provider plugin 'geo'")
     messages `shouldSatisfy` any (Text.isInfixOf "missing external data-source 'ledger' from provider plugin 'geo'")
 
+  it "requires external data-source grants to satisfy requested access" $ do
+    let providerPlugin = (provider "geo" [])
+          { dpExternalDataSources = [externalProvider "ledger" ["settlements"]]
+          }
+        consumer = provider "consumer"
+          [ required (DependencyExternalDataSource (ExternalDataSourceDependency (Just "geo") "consumer" "ledger" (Just "read") [ExternalAccessWrite] ["settlements"]))
+          ]
+        diagnostics = validateDependencies (defaultDependencyResolverInput [providerPlugin, consumer])
+
+    map dgdStatus diagnostics `shouldBe` [DependencyMissing]
+    map dgdBlocking diagnostics `shouldBe` [True]
+    map dgdMessage diagnostics `shouldSatisfy` any (Text.isInfixOf "missing external data-source 'ledger' from provider plugin 'geo'")
+
+  it "requires external data-source provider and grant status to be ready" $ do
+    let nonReadySource = (externalProvider "ledger" ["settlements"])
+          { despStatus = ExternalStatusDegraded
+          }
+        nonReadyGrant = (externalProvider "archive" ["settlements"])
+          { despGrants =
+              [ DependencyExternalDataSourceGrant
+                  { desgName = "read"
+                  , desgAccess = [ExternalAccessRead]
+                  , desgCapabilities = [ExternalSourceQuery]
+                  , desgResources = ["settlements"]
+                  , desgStatus = ExternalStatusUnavailable
+                  }
+              ]
+          }
+        providerPlugin = (provider "geo" [])
+          { dpExternalDataSources = [nonReadySource, nonReadyGrant]
+          }
+        sourceConsumer = provider "source-consumer"
+          [ required (DependencyExternalDataSource (ExternalDataSourceDependency (Just "geo") "source-consumer" "ledger" (Just "read") [ExternalAccessRead] ["settlements"]))
+          ]
+        grantConsumer = provider "grant-consumer"
+          [ required (DependencyExternalDataSource (ExternalDataSourceDependency (Just "geo") "grant-consumer" "archive" (Just "read") [ExternalAccessRead] ["settlements"]))
+          ]
+        diagnostics = validateDependencies (defaultDependencyResolverInput [providerPlugin, sourceConsumer, grantConsumer])
+
+    map dgdStatus diagnostics `shouldBe` [DependencyMissing, DependencyMissing]
+    map dgdBlocking diagnostics `shouldBe` [True, True]
+
   it "detects required dependency cycles through plugin, resource, and external data-source provider edges" $ do
     let pluginA = (provider "a" [required (DependencyPlugin (PluginDependency "b" VersionAny))])
-          { dpExternalDataSources = [DependencyExternalDataSourceProvider "ledger" []]
+          { dpExternalDataSources = [externalProvider "ledger" []]
           }
         pluginB = provider "b"
           [ required (DependencyResource (ResourceDependency (Just "c") "settlements" [] Nothing))
           ]
         pluginC = (provider "c"
-          [ required (DependencyExternalDataSource (ExternalDataSourceDependency (Just "a") "c" "ledger" [ExternalAccessRead] []))
+          [ required (DependencyExternalDataSource (ExternalDataSourceDependency (Just "a") "c" "ledger" Nothing [ExternalAccessRead] []))
           ])
           { dpResources = [DependencyResourceProvider "settlements" [] Nothing]
           }
@@ -210,13 +255,13 @@ spec = describe "PluginDependency" $ do
 
   it "uses an unblocked unqualified external data-source provider when another match is blocked" $ do
     let blockedLedger = (provider "a-ledger" [required (DependencyPlugin (PluginDependency "missing-provider" VersionAny))])
-          { dpExternalDataSources = [DependencyExternalDataSourceProvider "settlement-ledger" ["settlements"]]
+          { dpExternalDataSources = [externalProvider "settlement-ledger" ["settlements"]]
           }
         healthyLedger = (provider "z-ledger" [])
-          { dpExternalDataSources = [DependencyExternalDataSourceProvider "settlement-ledger" ["settlements"]]
+          { dpExternalDataSources = [externalProvider "settlement-ledger" ["settlements"]]
           }
         consumer = provider "consumer"
-          [ required (DependencyExternalDataSource (ExternalDataSourceDependency Nothing "consumer" "settlement-ledger" [ExternalAccessRead] ["settlements"]))
+          [ required (DependencyExternalDataSource (ExternalDataSourceDependency Nothing "consumer" "settlement-ledger" Nothing [ExternalAccessRead] ["settlements"]))
           ]
         order = resolveDependencyOrder (defaultDependencyResolverInput [consumer, healthyLedger, blockedLedger])
 
@@ -305,11 +350,11 @@ spec = describe "PluginDependency" $ do
           { dpOverlays = ["settlements"]
           }
         ledger = (provider "ledger" [])
-          { dpExternalDataSources = [DependencyExternalDataSourceProvider "settlement-ledger" ["settlements"]]
+          { dpExternalDataSources = [externalProvider "settlement-ledger" ["settlements"]]
           }
         tradeRoutes = provider "trade-routes"
           [ required (DependencyOverlay (OverlayDependency "settlements" (Just "civilization")))
-          , required (DependencyExternalDataSource (ExternalDataSourceDependency (Just "ledger") "trade-routes" "settlement-ledger" [ExternalAccessRead] ["settlements"]))
+          , required (DependencyExternalDataSource (ExternalDataSourceDependency (Just "ledger") "trade-routes" "settlement-ledger" Nothing [ExternalAccessRead] ["settlements"]))
           ]
         input = defaultDependencyResolverInput [tradeRoutes, ledger, civilization]
 
@@ -333,6 +378,23 @@ provider name deps = DependencyProvider
   , dpOverlays = []
   , dpResources = []
   , dpExternalDataSources = []
+  }
+
+externalProvider :: Text -> [Text] -> DependencyExternalDataSourceProvider
+externalProvider name resources = DependencyExternalDataSourceProvider
+  { despName = name
+  , despCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
+  , despResources = resources
+  , despStatus = ExternalStatusReady
+  , despGrants =
+      [ DependencyExternalDataSourceGrant
+          { desgName = "read"
+          , desgAccess = [ExternalAccessRead]
+          , desgCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
+          , desgResources = resources
+          , desgStatus = ExternalStatusReady
+          }
+      ]
   }
 
 required :: DependencyTarget -> DependencyDecl

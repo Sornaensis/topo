@@ -113,6 +113,7 @@ module Topo.Plugin.SDK
   , RPCExternalDataSourceAccess(..)
   , RPCExternalDataSourceStatusState(..)
   , RPCExternalDataSourceStatus(..)
+  , RPCExternalDataSourceGrant(..)
   , RPCExternalDataSourceDecl(..)
   , RPCExternalDataSourceRef(..)
   , defaultRPCStartPolicy
@@ -161,6 +162,7 @@ import Topo.Plugin.RPC.Manifest
   , RPCExternalDataSourceAccess(..)
   , RPCExternalDataSourceStatusState(..)
   , RPCExternalDataSourceStatus(..)
+  , RPCExternalDataSourceGrant(..)
   , RPCExternalDataSourceDecl(..)
   , RPCExternalDataSourceRef(..)
   , defaultRPCStartPolicy

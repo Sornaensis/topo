@@ -176,6 +176,8 @@
         "capabilities": { "type": "array", "items": { "type": "string", "enum": ["query", "mutate", "subscribe", "migrate", "health"] } },
         "resources": { "type": "array", "items": { "type": "string" } },
         "status": { "$ref": "#/$defs/externalStatus" },
+        "connection": { "$ref": "#/$defs/opaqueMetadata" },
+        "grants": { "type": "array", "items": { "$ref": "#/$defs/externalGrant" } },
         "ui": { "$ref": "#/$defs/uiHints" }
       }
     },
@@ -189,8 +191,22 @@
         "required": { "type": "boolean" },
         "access": { "type": "array", "items": { "type": "string", "enum": ["read", "write", "admin"] } },
         "resources": { "type": "array", "items": { "type": "string" } },
+        "grant": { "type": "string" },
         "status": { "$ref": "#/$defs/externalStatus" },
+        "reference": { "$ref": "#/$defs/opaqueMetadata" },
         "ui": { "$ref": "#/$defs/uiHints" }
+      }
+    },
+    "externalGrant": {
+      "type": "object",
+      "required": ["name", "access", "capabilities", "status"],
+      "properties": {
+        "name": { "type": "string" },
+        "access": { "type": "array", "items": { "type": "string", "enum": ["read", "write", "admin"] } },
+        "capabilities": { "type": "array", "items": { "type": "string", "enum": ["query", "mutate", "subscribe", "migrate", "health"] } },
+        "resources": { "type": "array", "items": { "type": "string" } },
+        "status": { "$ref": "#/$defs/externalStatus" },
+        "reference": { "$ref": "#/$defs/opaqueMetadata" }
       }
     },
     "externalStatus": {
@@ -200,6 +216,11 @@
         "state": { "type": "string", "enum": ["unknown", "unconfigured", "ready", "degraded", "unavailable"] },
         "message": { "type": "string" }
       }
+    },
+    "opaqueMetadata": {
+      "type": "object",
+      "description": "Opaque provider-owned metadata; topo stores, brokers, and reports it without interpreting a backend.",
+      "additionalProperties": true
     },
     "dataFieldType": {
       "oneOf": [

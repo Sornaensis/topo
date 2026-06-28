@@ -198,6 +198,17 @@ mkExternalProviderPlugin = do
             , redsdCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
             , redsdResources = ["shared_sources"]
             , redsdStatus = RPCExternalDataSourceStatus ExternalStatusReady (Just "fixture ready")
+            , redsdConnection = Nothing
+            , redsdGrants =
+                [ RPCExternalDataSourceGrant
+                    { redsgName = "terrain-catalog-read"
+                    , redsgAccess = [ExternalAccessRead]
+                    , redsgCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
+                    , redsgResources = ["shared_sources"]
+                    , redsgStatus = RPCExternalDataSourceStatus ExternalStatusReady (Just "fixture read grant")
+                    , redsgReference = Nothing
+                    }
+                ]
             , redsdUiHints = defaultRPCUIHints { ruiDisplayName = Just "Terrain Catalog" }
             }
         ]
@@ -250,7 +261,9 @@ mkExternalConsumerPlugin = do
             , redsrRequired = True
             , redsrAccess = [ExternalAccessRead]
             , redsrResources = ["shared_sources"]
+            , redsrGrant = Just "terrain-catalog-read"
             , redsrStatus = RPCExternalDataSourceStatus ExternalStatusUnknown (Just "resolved by fixture startup")
+            , redsrReference = Nothing
             , redsrUiHints = defaultRPCUIHints { ruiDisplayName = Just "Terrain Catalog" }
             }
         ]

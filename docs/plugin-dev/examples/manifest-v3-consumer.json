@@ -24,9 +24,13 @@
       "required": true,
       "access": ["read"],
       "resources": ["settlements"],
+      "grant": "settlement-read",
       "status": {
         "state": "unknown",
         "message": "Resolved during plugin dependency startup"
+      },
+      "reference": {
+        "binding": "trade-routes:settlements"
       }
     }
   ]

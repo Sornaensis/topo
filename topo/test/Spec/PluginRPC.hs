@@ -305,6 +305,18 @@ isInvalidOverlaySchemaField :: ManifestError -> Bool
 isInvalidOverlaySchemaField (ManifestInvalidField "overlay.schemaFile" _) = True
 isInvalidOverlaySchemaField _ = False
 
+isExternalGrantCapabilityError :: ManifestError -> Bool
+isExternalGrantCapabilityError (ManifestInvalidField field detail) =
+  "externalDataSources.ledger.grants.write.capabilities" `Text.isPrefixOf` field
+    && "grant capabilities must be declared" `Text.isInfixOf` detail
+isExternalGrantCapabilityError _ = False
+
+isExternalGrantResourceError :: ManifestError -> Bool
+isExternalGrantResourceError (ManifestInvalidField field detail) =
+  "externalDataSources.ledger.grants.read.resources" `Text.isPrefixOf` field
+    && "grant resources require matching source resources" `Text.isInfixOf` detail
+isExternalGrantResourceError _ = False
+
 manifestRuntimeJSON :: Value
 manifestRuntimeJSON = object
   [ "protocol" .= object
@@ -545,7 +557,17 @@ spec = describe "Plugin.RPC" $ do
           rmrProtocolMin (rmRuntime m) `shouldBe` currentProtocolVersion
           rmrProtocolMax (rmRuntime m) `shouldBe` currentProtocolVersion
           ruiDisplayName (rmUiHints m) `shouldBe` Just "Civilization"
-          length (rmExternalDataSources m) `shouldBe` 1
+          case rmExternalDataSources m of
+            [source] -> do
+              redsdConnection source `shouldBe` Just (object ["handle" .= ("provider-owned:settlement-ledger" :: Text)])
+              map redsgName (redsdGrants source) `shouldBe` ["settlement-read"]
+              case redsdGrants source of
+                [grant] -> do
+                  redsgAccess grant `shouldBe` [ExternalAccessRead]
+                  redsgCapabilities grant `shouldBe` [ExternalSourceQuery, ExternalSourceHealth]
+                  redsgStatus grant `shouldBe` RPCExternalDataSourceStatus ExternalStatusReady (Just "Read grant can be brokered to dependent plugins")
+                _ -> expectationFailure "expected exactly one external data-source grant"
+            _ -> expectationFailure "expected exactly one external data source"
           validateManifest m `shouldBe` []
         Aeson.Error err -> expectationFailure err
 
@@ -558,9 +580,65 @@ spec = describe "Plugin.RPC" $ do
             [ref] -> do
               redsrProvider ref `shouldBe` Just "civilization"
               redsrAccess ref `shouldBe` [ExternalAccessRead]
+              redsrGrant ref `shouldBe` Just "settlement-read"
+              redsrReference ref `shouldBe` Just (object ["binding" .= ("trade-routes:settlements" :: Text)])
             _ -> expectationFailure "expected exactly one external data source reference"
           validateManifest m `shouldBe` []
         Aeson.Error err -> expectationFailure err
+
+    it "rejects external data-source grants outside declared capabilities" $ do
+      let source = RPCExternalDataSourceDecl
+            { redsdName = "ledger"
+            , redsdLabel = "Ledger"
+            , redsdDescription = ""
+            , redsdKind = "catalog"
+            , redsdCapabilities = [ExternalSourceQuery]
+            , redsdResources = ["items"]
+            , redsdStatus = RPCExternalDataSourceStatus ExternalStatusReady Nothing
+            , redsdConnection = Nothing
+            , redsdGrants =
+                [ RPCExternalDataSourceGrant
+                    { redsgName = "write"
+                    , redsgAccess = [ExternalAccessWrite]
+                    , redsgCapabilities = [ExternalSourceMutate]
+                    , redsgResources = ["items"]
+                    , redsgStatus = RPCExternalDataSourceStatus ExternalStatusReady Nothing
+                    , redsgReference = Nothing
+                    }
+                ]
+            , redsdUiHints = defaultRPCUIHints
+            }
+          manifest = baseManifest
+            { rmExternalDataSources = [source]
+            }
+      validateManifest manifest `shouldSatisfy` any isExternalGrantCapabilityError
+
+    it "rejects external data-source grant resources without source resources" $ do
+      let source = RPCExternalDataSourceDecl
+            { redsdName = "ledger"
+            , redsdLabel = "Ledger"
+            , redsdDescription = ""
+            , redsdKind = "catalog"
+            , redsdCapabilities = [ExternalSourceQuery]
+            , redsdResources = []
+            , redsdStatus = RPCExternalDataSourceStatus ExternalStatusReady Nothing
+            , redsdConnection = Nothing
+            , redsdGrants =
+                [ RPCExternalDataSourceGrant
+                    { redsgName = "read"
+                    , redsgAccess = [ExternalAccessRead]
+                    , redsgCapabilities = [ExternalSourceQuery]
+                    , redsgResources = ["items"]
+                    , redsgStatus = RPCExternalDataSourceStatus ExternalStatusReady Nothing
+                    , redsgReference = Nothing
+                    }
+                ]
+            , redsdUiHints = defaultRPCUIHints
+            }
+          manifest = baseManifest
+            { rmExternalDataSources = [source]
+            }
+      validateManifest manifest `shouldSatisfy` any isExternalGrantResourceError
 
     it "rejects external data source status without required state" $ do
       case Aeson.fromJSON (object []) :: Aeson.Result RPCExternalDataSourceStatus of

@@ -122,9 +122,9 @@ interpretation and validation beyond the advertised schema.
 
 Manifest v3 can describe data that remains owned by a provider plugin. The
 contract intentionally uses opaque source names, provider plugin IDs, generic
-capabilities, access grants, resource names, and status metadata. It does not
-require or expose a storage engine, connection string, file layout, or host-owned
-migration plan.
+capabilities, access grants, resource names, lifecycle/status metadata, and
+opaque connection/reference metadata. It does not require or expose a storage
+engine, connection string, file layout, or host-owned migration plan.
 
 Providers advertise sources with `externalDataSources`:
 
@@ -136,7 +136,18 @@ Providers advertise sources with `externalDataSources`:
     "kind": "catalog",
     "capabilities": ["query", "health"],
     "resources": ["settlements"],
-    "status": { "state": "ready" }
+    "status": { "state": "ready" },
+    "connection": { "handle": "provider-owned:settlement-ledger" },
+    "grants": [
+      {
+        "name": "settlement-read",
+        "access": ["read"],
+        "capabilities": ["query", "health"],
+        "resources": ["settlements"],
+        "status": { "state": "ready" },
+        "reference": { "handle": "grant:settlement-read" }
+      }
+    ]
   }
 ]
 ```
@@ -152,14 +163,20 @@ Consumers declare dependencies with `externalDataSourceRefs`:
     "required": true,
     "access": ["read"],
     "resources": ["settlements"],
-    "status": { "state": "unknown" }
+    "grant": "settlement-read",
+    "status": { "state": "unknown" },
+    "reference": { "binding": "trade-routes:settlements" }
   }
 ]
 ```
 
-Status states are `unknown`, `unconfigured`, `ready`, `degraded`, and
-`unavailable`. Manifest status is declarative startup metadata; runtime health
-can be refined by plugin handshakes and diagnostics.
+Grant names are provider-defined and backend-neutral. `connection` and
+`reference` are opaque JSON objects for provider-owned handles or binding
+metadata; topo may broker and display them, but does not interpret them as a
+host-owned backing store. Status states are `unknown`, `unconfigured`, `ready`,
+`degraded`, and `unavailable`; provider/grant summaries are brokerable only
+when status is `ready`. Manifest status is declarative startup metadata; runtime
+health can be refined by plugin handshakes and diagnostics.
 
 ## SDK generation
 

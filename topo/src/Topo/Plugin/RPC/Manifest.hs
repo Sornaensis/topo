@@ -6,8 +6,8 @@
 --
 -- A plugin manifest is a JSON file (@manifest.json@) that declares
 -- the plugin's identity, capabilities, pipeline participation
--- (generator and\/or simulation), overlay schema location, and
--- user-facing configuration parameters.
+-- (generator and\/or simulation), overlay schema location, user-facing
+-- configuration parameters, and backend-neutral external data-source grants.
 --
 -- = Example manifest
 --
@@ -49,6 +49,7 @@ module Topo.Plugin.RPC.Manifest
   , RPCExternalDataSourceStatusState(..)
   , RPCExternalDataSourceStatus(..)
   , defaultRPCExternalDataSourceStatus
+  , RPCExternalDataSourceGrant(..)
   , RPCExternalDataSourceDecl(..)
   , RPCExternalDataSourceRef(..)
     -- * Schema and examples
@@ -552,6 +553,41 @@ instance ToJSON RPCExternalDataSourceStatus where
     [ "state" .= redssState status ] <>
     [ "message" .= msg | Just msg <- [redssMessage status] ]
 
+-- | Backend-neutral grant offered for a provider-owned external data source.
+--
+-- A grant names the access modes and source capabilities the provider is
+-- prepared to broker.  'redsgReference' is opaque provider metadata: topo may
+-- preserve and report it, but must not interpret it as a storage backend it
+-- owns.
+data RPCExternalDataSourceGrant = RPCExternalDataSourceGrant
+  { redsgName         :: !Text
+  , redsgAccess       :: ![RPCExternalDataSourceAccess]
+  , redsgCapabilities :: ![RPCExternalDataSourceCapability]
+  , redsgResources    :: ![Text]
+  , redsgStatus       :: !RPCExternalDataSourceStatus
+  , redsgReference    :: !(Maybe Value)
+  } deriving (Eq, Show, Generic)
+
+instance FromJSON RPCExternalDataSourceGrant where
+  parseJSON = withObject "RPCExternalDataSourceGrant" $ \o ->
+    RPCExternalDataSourceGrant
+      <$> o .: "name"
+      <*> o .: "access"
+      <*> o .: "capabilities"
+      <*> (o .:? "resources" >>= pure . maybe [] id)
+      <*> o .: "status"
+      <*> o .:? "reference"
+
+instance ToJSON RPCExternalDataSourceGrant where
+  toJSON grant = object $
+    [ "name" .= redsgName grant
+    , "access" .= redsgAccess grant
+    , "capabilities" .= redsgCapabilities grant
+    , "status" .= redsgStatus grant
+    ] <>
+    [ "resources" .= redsgResources grant | not (null (redsgResources grant)) ] <>
+    [ "reference" .= ref | Just ref <- [redsgReference grant] ]
+
 -- | Provider declaration for a named external data source.
 data RPCExternalDataSourceDecl = RPCExternalDataSourceDecl
   { redsdName         :: !Text
@@ -561,6 +597,8 @@ data RPCExternalDataSourceDecl = RPCExternalDataSourceDecl
   , redsdCapabilities :: ![RPCExternalDataSourceCapability]
   , redsdResources    :: ![Text]
   , redsdStatus       :: !RPCExternalDataSourceStatus
+  , redsdConnection   :: !(Maybe Value)
+  , redsdGrants       :: ![RPCExternalDataSourceGrant]
   , redsdUiHints      :: !RPCUIHints
   } deriving (Eq, Show, Generic)
 
@@ -577,6 +615,8 @@ instance FromJSON RPCExternalDataSourceDecl where
       <*> o .: "capabilities"
       <*> (o .:? "resources" >>= pure . maybe [] id)
       <*> o .: "status"
+      <*> o .:? "connection"
+      <*> (o .:? "grants" >>= pure . maybe [] id)
       <*> optionalPolicyField o ["ui"] defaultRPCUIHints
 
 instance ToJSON RPCExternalDataSourceDecl where
@@ -589,6 +629,8 @@ instance ToJSON RPCExternalDataSourceDecl where
     ] <>
     [ "description" .= redsdDescription source | redsdDescription source /= "" ] <>
     [ "resources" .= redsdResources source | not (null (redsdResources source)) ] <>
+    [ "connection" .= conn | Just conn <- [redsdConnection source] ] <>
+    [ "grants" .= redsdGrants source | not (null (redsdGrants source)) ] <>
     [ "ui" .= redsdUiHints source | redsdUiHints source /= defaultRPCUIHints ]
 
 -- | Consumer reference to a provider-owned external data source.
@@ -599,7 +641,9 @@ data RPCExternalDataSourceRef = RPCExternalDataSourceRef
   , redsrRequired  :: !Bool
   , redsrAccess    :: ![RPCExternalDataSourceAccess]
   , redsrResources :: ![Text]
+  , redsrGrant     :: !(Maybe Text)
   , redsrStatus    :: !RPCExternalDataSourceStatus
+  , redsrReference :: !(Maybe Value)
   , redsrUiHints   :: !RPCUIHints
   } deriving (Eq, Show, Generic)
 
@@ -612,7 +656,9 @@ instance FromJSON RPCExternalDataSourceRef where
       <*> o .: "required"
       <*> o .: "access"
       <*> (o .:? "resources" >>= pure . maybe [] id)
+      <*> o .:? "grant"
       <*> o .: "status"
+      <*> o .:? "reference"
       <*> optionalPolicyField o ["ui"] defaultRPCUIHints
 
 instance ToJSON RPCExternalDataSourceRef where
@@ -625,6 +671,8 @@ instance ToJSON RPCExternalDataSourceRef where
     ] <>
     [ "provider" .= p | Just p <- [redsrProvider ref] ] <>
     [ "resources" .= redsrResources ref | not (null (redsrResources ref)) ] <>
+    [ "grant" .= grant | Just grant <- [redsrGrant ref] ] <>
+    [ "reference" .= refMeta | Just refMeta <- [redsrReference ref] ] <>
     [ "ui" .= redsrUiHints ref | redsrUiHints ref /= defaultRPCUIHints ]
 
 ------------------------------------------------------------------------
@@ -929,6 +977,8 @@ manifestV3Schema = object
               , "capabilities" .= arrayOf (enumSchema externalCapabilityNames)
               , "resources" .= arrayOf stringSchema
               , "status" .= schemaRef "externalStatus"
+              , "connection" .= schemaRef "opaqueMetadata"
+              , "grants" .= arrayOf (schemaRef "externalGrant")
               , "ui" .= schemaRef "uiHints"
               ]
           ]
@@ -942,8 +992,22 @@ manifestV3Schema = object
               , "required" .= booleanSchema
               , "access" .= arrayOf (enumSchema externalAccessNames)
               , "resources" .= arrayOf stringSchema
+              , "grant" .= stringSchema
               , "status" .= schemaRef "externalStatus"
+              , "reference" .= schemaRef "opaqueMetadata"
               , "ui" .= schemaRef "uiHints"
+              ]
+          ]
+      , "externalGrant" .= object
+          [ "type" .= ("object" :: Text)
+          , "required" .= (["name", "access", "capabilities", "status"] :: [Text])
+          , "properties" .= object
+              [ "name" .= stringSchema
+              , "access" .= arrayOf (enumSchema externalAccessNames)
+              , "capabilities" .= arrayOf (enumSchema externalCapabilityNames)
+              , "resources" .= arrayOf stringSchema
+              , "status" .= schemaRef "externalStatus"
+              , "reference" .= schemaRef "opaqueMetadata"
               ]
           ]
       , "externalStatus" .= object
@@ -953,6 +1017,11 @@ manifestV3Schema = object
               [ "state" .= enumSchema externalStatusNames
               , "message" .= stringSchema
               ]
+          ]
+      , "opaqueMetadata" .= object
+          [ "type" .= ("object" :: Text)
+          , "description" .= ("Opaque provider-owned metadata; topo stores, brokers, and reports it without interpreting a backend." :: Text)
+          , "additionalProperties" .= True
           ]
       , "dataFieldType" .= dataFieldTypeSchema
       ]
@@ -1047,6 +1116,24 @@ manifestV3ProviderExample = object
               [ "state" .= ("ready" :: Text)
               , "message" .= ("Records are available through the provider plugin" :: Text)
               ]
+          , "connection" .= object
+              [ "handle" .= ("provider-owned:settlement-ledger" :: Text)
+              ]
+          , "grants" .=
+              [ object
+                  [ "name" .= ("settlement-read" :: Text)
+                  , "access" .= (["read"] :: [Text])
+                  , "capabilities" .= (["query", "health"] :: [Text])
+                  , "resources" .= (["settlements"] :: [Text])
+                  , "status" .= object
+                      [ "state" .= ("ready" :: Text)
+                      , "message" .= ("Read grant can be brokered to dependent plugins" :: Text)
+                      ]
+                  , "reference" .= object
+                      [ "handle" .= ("grant:settlement-read" :: Text)
+                      ]
+                  ]
+              ]
           , "ui" .= object
               [ "displayName" .= ("Settlement Ledger" :: Text)
               , "category" .= ("External data" :: Text)
@@ -1082,9 +1169,13 @@ manifestV3ConsumerExample = object
           , "required" .= True
           , "access" .= (["read"] :: [Text])
           , "resources" .= (["settlements"] :: [Text])
+          , "grant" .= ("settlement-read" :: Text)
           , "status" .= object
               [ "state" .= ("unknown" :: Text)
               , "message" .= ("Resolved during plugin dependency startup" :: Text)
+              ]
+          , "reference" .= object
+              [ "binding" .= ("trade-routes:settlements" :: Text)
               ]
           ]
       ]
@@ -1438,9 +1529,45 @@ validateExternalDataSources sources =
         ]
       , duplicateErrors (sourcePath source "resources") (redsdResources source)
       , validateStatus (sourcePath source "status") (redsdStatus source)
+      , validateOpaqueMetadata (sourcePath source "connection") (redsdConnection source)
+      , duplicateErrors (sourcePath source "grants.name") (map redsgName (redsdGrants source))
+      , concatMap (validateGrant source) (redsdGrants source)
       , validateUIHints (sourcePath source "ui") (redsdUiHints source)
       ]
+    validateGrant source grant = concat
+      [ [ ManifestInvalidField (grantPath source grant "name") "grant name must be non-empty."
+        | Text.null (redsgName grant)
+        ]
+      , [ ManifestInvalidField (grantPath source grant "access") "grant access must include at least one of read, write, or admin."
+        | null (redsgAccess grant)
+        ]
+      , duplicateErrors (grantPath source grant "access") (map externalAccessText (redsgAccess grant))
+      , [ ManifestInvalidField (grantPath source grant "capabilities") "grant capabilities must include at least one of query, mutate, subscribe, migrate, or health."
+        | null (redsgCapabilities grant)
+        ]
+      , duplicateErrors (grantPath source grant "capabilities") (map externalCapabilityText (redsgCapabilities grant))
+      , [ ManifestInvalidField (grantPath source grant "capabilities") "grant capabilities must be declared by the external data source."
+        | capability <- redsgCapabilities grant
+        , capability `notElem` redsdCapabilities source
+        ]
+      , [ ManifestInvalidField (grantPath source grant "resources") "grant resource names must be non-empty."
+        | any Text.null (redsgResources grant)
+        ]
+      , duplicateErrors (grantPath source grant "resources") (redsgResources grant)
+      , [ ManifestInvalidField (grantPath source grant "resources") "grant resources require matching source resources."
+        | null (redsdResources source)
+        , not (null (redsgResources grant))
+        ]
+      , [ ManifestInvalidField (grantPath source grant "resources") "grant resources must be declared by the external data source."
+        | not (null (redsdResources source))
+        , resource <- redsgResources grant
+        , resource `notElem` redsdResources source
+        ]
+      , validateStatus (grantPath source grant "status") (redsgStatus grant)
+      , validateOpaqueMetadata (grantPath source grant "reference") (redsgReference grant)
+      ]
     sourcePath source field = "externalDataSources." <> nameOrPlaceholder (redsdName source) <> "." <> field
+    grantPath source grant field = sourcePath source ("grants." <> nameOrPlaceholder (redsgName grant) <> "." <> field)
 
 validateExternalDataSourceRefs :: [RPCExternalDataSourceRef] -> [ManifestError]
 validateExternalDataSourceRefs refs =
@@ -1463,10 +1590,22 @@ validateExternalDataSourceRefs refs =
         | any Text.null (redsrResources ref)
         ]
       , duplicateErrors (refPath ref "resources") (redsrResources ref)
+      , validateOptionalNonEmpty (refPath ref "grant") (redsrGrant ref)
       , validateStatus (refPath ref "status") (redsrStatus ref)
+      , validateOpaqueMetadata (refPath ref "reference") (redsrReference ref)
       , validateUIHints (refPath ref "ui") (redsrUiHints ref)
       ]
     refPath ref field = "externalDataSourceRefs." <> nameOrPlaceholder (redsrName ref) <> "." <> field
+
+validateOpaqueMetadata :: Text -> Maybe Value -> [ManifestError]
+validateOpaqueMetadata base metadata =
+  [ ManifestInvalidField base "opaque metadata must be a JSON object when present."
+  | Just value <- [metadata]
+  , not (isObject value)
+  ]
+  where
+    isObject (Object _) = True
+    isObject _ = False
 
 validateStatus :: Text -> RPCExternalDataSourceStatus -> [ManifestError]
 validateStatus base status =

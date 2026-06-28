@@ -187,6 +187,18 @@ settlementLedgerSource = RPCExternalDataSourceDecl
   , redsdResources = ["settlements", "cultures"]
   , redsdStatus = RPCExternalDataSourceStatus ExternalStatusReady
       (Just "Records are available through the civilization plugin")
+  , redsdConnection = Nothing
+  , redsdGrants =
+      [ RPCExternalDataSourceGrant
+          { redsgName = "settlement-read"
+          , redsgAccess = [ExternalAccessRead]
+          , redsgCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
+          , redsgResources = ["settlements", "cultures"]
+          , redsgStatus = RPCExternalDataSourceStatus ExternalStatusReady
+              (Just "Read grant is brokered by topo without owning the source")
+          , redsgReference = Nothing
+          }
+      ]
   , redsdUiHints = defaultRPCUIHints
       { ruiDisplayName = Just "Settlement Ledger"
       , ruiCategory = Just "External data"

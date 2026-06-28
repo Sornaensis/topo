@@ -11,6 +11,7 @@ import Topo.Plugin.RPC.Manifest
   ( Capability(..)
   , RPCExternalDataSourceCapability(..)
   , RPCExternalDataSourceDecl(..)
+  , RPCExternalDataSourceGrant(..)
   , RPCManifest(..), RPCManifestRuntime(..), RPCUIHints(..)
   , manifestV3, validateManifest
   )
@@ -50,6 +51,7 @@ main = hspec $ do
           redsdKind source `shouldBe` "catalog"
           redsdCapabilities source `shouldBe` [ExternalSourceQuery, ExternalSourceHealth]
           redsdResources source `shouldBe` ["settlements", "cultures"]
+          map redsgName (redsdGrants source) `shouldBe` ["settlement-read"]
         _ -> expectationFailure "expected exactly one external data source"
 
     it "round-trips through manifest JSON" $ do

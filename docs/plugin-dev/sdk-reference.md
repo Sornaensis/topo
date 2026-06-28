@@ -20,9 +20,12 @@ Top-level plugin definition. Use `defaultPluginDef` as a starting point.
 | `pdDataDirectory` | `Maybe FilePath` | Plugin data directory under the world save |
 | `pdDataResources` | `[DataResourceDef]` | Data-service resource schemas and handlers |
 | `pdUiHints` | `RPCUIHints` | Manifest v3 UI presentation hints |
-| `pdExternalDataSources` | `[RPCExternalDataSourceDecl]` | Provider-owned external data sources |
-| `pdExternalDataSourceRefs` | `[RPCExternalDataSourceRef]` | Consumed external data sources |
+| `pdExternalDataSources` | `[RPCExternalDataSourceDecl]` | Provider-owned external data sources, grants, and opaque connection metadata |
+| `pdExternalDataSourceRefs` | `[RPCExternalDataSourceRef]` | Consumed external data sources, requested grants, and opaque reference metadata |
 | `pdStartPolicy` | `RPCStartPolicy` | Host-side process supervision policy |
+
+External data-source grants use `RPCExternalDataSourceGrant`; topo treats all
+`connection`/`reference` values as opaque provider-owned metadata.
 
 ## ParamDef
 

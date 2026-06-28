@@ -65,16 +65,24 @@ External data-source fields are intentionally provider-owned and backend-neutral
 
 - Provider declarations use a source `name`, free-form `kind`, generic
   capabilities (`query`, `mutate`, `subscribe`, `migrate`, `health`), resource
-  names, UI hints, and declarative status.
+  names, UI hints, declarative lifecycle/status, optional grant declarations,
+  and optional opaque `connection` metadata.
+- Grant declarations use provider-defined names, access modes (`read`, `write`,
+  `admin`), capability/resource subsets, declarative status, and optional opaque
+  `reference` metadata.
 - Consumer references use local `name`, optional provider plugin ID, source
-  name, required/optional flag, access grants (`read`, `write`, `admin`),
-  resource names, UI hints, and declarative status.
+  name, optional provider grant name, required/optional flag, access grants,
+  resource names, UI hints, declarative status, and optional opaque `reference`
+  metadata.
 - Status states are `unknown`, `unconfigured`, `ready`, `degraded`, and
-  `unavailable`.
+  `unavailable`. Resolver-facing provider/grant summaries treat only `ready`
+  as available; other states remain declared but unavailable until runtime or
+  diagnostics report readiness.
 
-No host-owned storage details belong in the manifest. If a provider needs
-connection details or migration state, that data remains provider-owned and may
-be exposed through plugin-specific resources or runtime diagnostics.
+No host-owned storage details belong in the manifest. If a provider includes
+connection or binding details, those JSON objects are opaque provider metadata:
+topo may preserve, broker, or report them, but does not parse them into a
+host-owned storage backend or migration plan.
 
 ## Golden docs/tests
 

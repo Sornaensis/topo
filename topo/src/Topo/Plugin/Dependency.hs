@@ -24,6 +24,7 @@ module Topo.Plugin.Dependency
   , dependencyDeclBlocks
   , DependencyProvider(..)
   , DependencyResourceProvider(..)
+  , DependencyExternalDataSourceGrant(..)
   , DependencyExternalDataSourceProvider(..)
   , DependencyResolverInput(..)
   , defaultDependencyResolverInput
@@ -40,6 +41,8 @@ module Topo.Plugin.Dependency
   , blockingDependencyDiagnostics
   , manifestDependencyDecls
   , RPCExternalDataSourceAccess(..)
+  , RPCExternalDataSourceCapability(..)
+  , RPCExternalDataSourceStatusState(..)
   ) where
 
 import Data.Aeson
@@ -68,6 +71,8 @@ import Topo.Pipeline.Stage (StageId(..), allBuiltinStageIds, parseStageId, stage
 import Topo.Plugin (Capability(..))
 import Topo.Plugin.RPC.Manifest
   ( RPCExternalDataSourceAccess(..)
+  , RPCExternalDataSourceCapability(..)
+  , RPCExternalDataSourceStatusState(..)
   , RPCExternalDataSourceRef(..)
   , RPCGeneratorDecl(..)
   , RPCManifest(..)
@@ -242,12 +247,14 @@ instance ToJSON ResourceDependency where
 -- | Backend-neutral dependency on a provider-owned external data source.
 --
 -- The provider is a plugin boundary, not a storage backend.  The optional
--- provider field supports late binding by source name, while the consumer field
--- records which plugin requested the source.
+-- provider field supports late binding by source name, an optional grant names
+-- the provider-declared access contract, and the consumer field records which
+-- plugin requested the source.
 data ExternalDataSourceDependency = ExternalDataSourceDependency
   { edsdProvider :: !(Maybe Text)
   , edsdConsumer :: !Text
   , edsdSource :: !Text
+  , edsdGrant :: !(Maybe Text)
   , edsdAccess :: ![RPCExternalDataSourceAccess]
   , edsdResources :: ![Text]
   } deriving (Eq, Ord, Show, Generic)
@@ -258,6 +265,7 @@ instance FromJSON ExternalDataSourceDependency where
       <$> o .:? "provider"
       <*> o .: "consumer"
       <*> o .: "source"
+      <*> o .:? "grant"
       <*> o .: "access"
       <*> (o .:? "resources" >>= pure . maybe [] id)
 
@@ -268,6 +276,7 @@ instance ToJSON ExternalDataSourceDependency where
     , "access" .= edsdAccess dep
     ] <>
     [ "provider" .= provider | Just provider <- [edsdProvider dep] ] <>
+    [ "grant" .= grant | Just grant <- [edsdGrant dep] ] <>
     [ "resources" .= edsdResources dep | not (null (edsdResources dep)) ]
 
 -- | Concrete kinds of dependencies the resolver can reason about.
@@ -330,6 +339,7 @@ instance ToJSON DependencyTarget where
       , "access" .= edsdAccess dep
       ] <>
       [ "provider" .= provider | Just provider <- [edsdProvider dep] ] <>
+      [ "grant" .= grant | Just grant <- [edsdGrant dep] ] <>
       [ "resources" .= edsdResources dep | not (null (edsdResources dep)) ]
     DependencyCapability capability -> object
       [ "type" .= ("capability" :: Text)
@@ -360,6 +370,7 @@ dependencyTargetLabel target = case target of
   DependencyExternalDataSource dep ->
     maybe "" ((<> "/") . ("plugin:" <>)) (edsdProvider dep)
       <> "externalDataSource:" <> edsdSource dep
+      <> maybe "" (":grant:" <>) (edsdGrant dep)
       <> ":consumer:" <> edsdConsumer dep
   DependencyCapability capability -> "capability:" <> capabilityName capability
 
@@ -395,10 +406,22 @@ data DependencyResourceProvider = DependencyResourceProvider
   , drpOverlay :: !(Maybe Text)
   } deriving (Eq, Ord, Show, Read, Generic)
 
+-- | A backend-neutral grant advertised by an external data-source provider.
+data DependencyExternalDataSourceGrant = DependencyExternalDataSourceGrant
+  { desgName :: !Text
+  , desgAccess :: ![RPCExternalDataSourceAccess]
+  , desgCapabilities :: ![RPCExternalDataSourceCapability]
+  , desgResources :: ![Text]
+  , desgStatus :: !RPCExternalDataSourceStatusState
+  } deriving (Eq, Ord, Show, Read, Generic)
+
 -- | An external data source advertised by a dependency provider.
 data DependencyExternalDataSourceProvider = DependencyExternalDataSourceProvider
   { despName :: !Text
+  , despCapabilities :: ![RPCExternalDataSourceCapability]
   , despResources :: ![Text]
+  , despStatus :: !RPCExternalDataSourceStatusState
+  , despGrants :: ![DependencyExternalDataSourceGrant]
   } deriving (Eq, Ord, Show, Read, Generic)
 
 -- | Resolver-facing view of one loaded or declared plugin.
@@ -601,6 +624,7 @@ manifestDependencyDecls manifest = generatorDeps <> simulationDeps <> externalDe
               { edsdProvider = redsrProvider ref
               , edsdConsumer = rmName manifest
               , edsdSource = redsrSource ref
+              , edsdGrant = redsrGrant ref
               , edsdAccess = redsrAccess ref
               , edsdResources = redsrResources ref
               }
@@ -1133,7 +1157,28 @@ providerHasExternalDataSource dep provider = any matches (dpExternalDataSources 
   where
     matches source =
       despName source == edsdSource dep
-        && all (`elem` despResources source) (edsdResources dep)
+        && despStatus source == ExternalStatusReady
+        && sourceResourcesSatisfy source
+        && sourceGrantSatisfies source
+
+    sourceResourcesSatisfy source =
+      all (`elem` despResources source) (edsdResources dep)
+
+    sourceGrantSatisfies source = case edsdGrant dep of
+      Just grantName -> any (grantSatisfies source) (filter ((== grantName) . desgName) (despGrants source))
+      Nothing -> any (grantSatisfies source) (despGrants source)
+
+    grantSatisfies source grant =
+      desgStatus grant == ExternalStatusReady
+        && all (`elem` desgAccess grant) (edsdAccess dep)
+        && grantResourcesSatisfy source grant
+
+    grantResourcesSatisfy source grant =
+      all (`elem` grantResources) (edsdResources dep)
+      where
+        grantResources
+          | null (desgResources grant) = despResources source
+          | otherwise = desgResources grant
 
 available :: [Text] -> Text -> DependencyResolution
 available providers message = DependencyResolution DependencyAvailable providers message

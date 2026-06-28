@@ -78,6 +78,24 @@
         "state": "ready",
         "message": "Records are available through the provider plugin"
       },
+      "connection": {
+        "handle": "provider-owned:settlement-ledger"
+      },
+      "grants": [
+        {
+          "name": "settlement-read",
+          "access": ["read"],
+          "capabilities": ["query", "health"],
+          "resources": ["settlements"],
+          "status": {
+            "state": "ready",
+            "message": "Read grant can be brokered to dependent plugins"
+          },
+          "reference": {
+            "handle": "grant:settlement-read"
+          }
+        }
+      ],
       "ui": {
         "displayName": "Settlement Ledger",
         "category": "External data"
