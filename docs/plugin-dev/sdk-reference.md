@@ -20,20 +20,22 @@ Top-level plugin definition. Use `defaultPluginDef` as a starting point.
 | `pdDataDirectory` | `Maybe FilePath` | Plugin data directory under the world save |
 | `pdDataResources` | `[DataResourceDef]` | Data-service resource schemas and handlers |
 | `pdUiHints` | `RPCUIHints` | Manifest v3 UI presentation hints |
-| `pdExternalDataSources` | `[RPCExternalDataSourceDecl]` | Provider-owned external data sources, grants, status, and opaque connection metadata |
-| `pdExternalDataSourceRefs` | `[RPCExternalDataSourceRef]` | Consumed external data sources, requested grants, status, and opaque reference metadata |
+| `pdExternalDataSources` | `[RPCExternalDataSourceDecl]` | Provider-owned external data sources, grants, status, opaque config refs, and connection metadata |
+| `pdExternalDataSourceRefs` | `[RPCExternalDataSourceRef]` | Consumed external data sources, requested grants, status, opaque config refs, and reference metadata |
 | `pdStartPolicy` | `RPCStartPolicy` | Host-side process supervision policy |
 
 External data-source grants use `RPCExternalDataSourceGrant`; topo treats all
-`connection`/`reference` values and status `diagnostics` as opaque
-provider-owned metadata. Status can carry backend-neutral provider ID,
-availability, health, access-mode, capability-scope, version, and compatibility
+`connection`/`reference` values, `configRefs`, and status `diagnostics` as
+opaque provider-owned metadata. Config refs record a local name, origin (`user`,
+`provider`, `environment`, or `deployment`), opaque key, required flag,
+compatibility marker, and optional metadata. Status can carry backend-neutral
+provider ID, availability, health, access-mode, capability-scope, version, and compatibility
 markers. Access is brokered only when the grant has the generic capability for
 that access (`read` -> `query`, `write` -> `mutate`, `admin` -> `migrate`).
 Migrations, backing schemas, connection details, failure cleanup, locks, writer
 coordination, and consistency rules remain with provider plugins, adapters, or
 external systems; the SDK only serializes backend-neutral declarations, grants,
-status/errors, and opaque metadata.
+status/errors, config references, and opaque metadata.
 
 ## ParamDef
 

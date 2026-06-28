@@ -91,6 +91,18 @@
       "connection": {
         "handle": "provider-owned:settlement-ledger"
       },
+      "configRefs": [
+        {
+          "name": "settlement-ledger-binding",
+          "origin": "provider",
+          "key": "civilization.settlement-ledger",
+          "required": true,
+          "compatibility": "manifest-v3",
+          "metadata": {
+            "handle": "provider-owned:settlement-ledger"
+          }
+        }
+      ],
       "grants": [
         {
           "name": "settlement-read",
@@ -113,7 +125,19 @@
           },
           "reference": {
             "handle": "grant:settlement-read"
-          }
+          },
+          "configRefs": [
+            {
+              "name": "settlement-read-binding",
+              "origin": "provider",
+              "key": "civilization.settlement-read",
+              "required": true,
+              "compatibility": "manifest-v3",
+              "metadata": {
+                "grant": "settlement-read"
+              }
+            }
+          ]
         }
       ],
       "ui": {

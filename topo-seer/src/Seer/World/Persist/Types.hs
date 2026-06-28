@@ -37,8 +37,8 @@ import Topo.Plugin.RPC.Manifest
 
 -- | Opaque external data-source declarations and references captured with a
 -- world save.  Topo preserves this metadata for compatibility checks and
--- diagnostics without interpreting provider-owned handles, backends, locks, or
--- writer policies.
+-- diagnostics without interpreting provider-owned handles, config references,
+-- backends, locks, or writer policies.
 data WorldExternalDataSourceSnapshot = WorldExternalDataSourceSnapshot
   { wedssPlugin :: Text
     -- ^ Plugin whose manifest declared the provider sources or consumer refs.
@@ -80,8 +80,9 @@ data WorldSaveManifest = WorldSaveManifest
     -- ^ @(pluginName, relativeDataDir)@ pairs for plugins whose data
     -- directories were bundled with this world save.
   , wsmExternalDataSources :: [WorldExternalDataSourceSnapshot]
-    -- ^ Backend-neutral external data-source declarations/references and
-    -- opaque metadata preserved with the save. Loading reports this metadata
+    -- ^ Backend-neutral external data-source declarations/references,
+    -- opaque config references, and opaque metadata preserved with the save.
+    -- Loading reports this metadata
     -- but does not reconnect, migrate, lock, or repair provider-owned stores.
   } deriving (Eq, Show, Generic)
 

@@ -178,6 +178,7 @@
         "resources": { "type": "array", "items": { "type": "string" } },
         "status": { "$ref": "#/$defs/externalStatus" },
         "connection": { "$ref": "#/$defs/opaqueMetadata" },
+        "configRefs": { "type": "array", "items": { "$ref": "#/$defs/externalConfigRef" } },
         "grants": { "type": "array", "items": { "$ref": "#/$defs/externalGrant" } },
         "ui": { "$ref": "#/$defs/uiHints" }
       }
@@ -196,6 +197,7 @@
         "grant": { "type": "string" },
         "status": { "$ref": "#/$defs/externalStatus" },
         "reference": { "$ref": "#/$defs/opaqueMetadata" },
+        "configRefs": { "type": "array", "items": { "$ref": "#/$defs/externalConfigRef" } },
         "ui": { "$ref": "#/$defs/uiHints" }
       }
     },
@@ -209,7 +211,21 @@
         "capabilities": { "type": "array", "items": { "type": "string", "enum": ["query", "mutate", "subscribe", "migrate", "health"] } },
         "resources": { "type": "array", "items": { "type": "string" } },
         "status": { "$ref": "#/$defs/externalStatus" },
-        "reference": { "$ref": "#/$defs/opaqueMetadata" }
+        "reference": { "$ref": "#/$defs/opaqueMetadata" },
+        "configRefs": { "type": "array", "items": { "$ref": "#/$defs/externalConfigRef" } }
+      }
+    },
+    "externalConfigRef": {
+      "type": "object",
+      "description": "Opaque backend-neutral configuration reference for an external source, grant, or consumer binding. The key is supplied by user config, a provider plugin, the environment, or deployment settings; topo preserves it with compatibility metadata but must not interpret it as a backend-specific file layout, schema, migration table, or connection rule.",
+      "required": ["name", "origin", "key"],
+      "properties": {
+        "name": { "type": "string" },
+        "origin": { "type": "string", "enum": ["user", "provider", "environment", "deployment"] },
+        "key": { "type": "string" },
+        "required": { "type": "boolean" },
+        "compatibility": { "type": "string" },
+        "metadata": { "$ref": "#/$defs/opaqueMetadata" }
       }
     },
     "externalStatus": {

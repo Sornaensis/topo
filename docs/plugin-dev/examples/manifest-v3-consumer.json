@@ -41,7 +41,19 @@
       },
       "reference": {
         "binding": "trade-routes:settlements"
-      }
+      },
+      "configRefs": [
+        {
+          "name": "settlements-binding",
+          "origin": "deployment",
+          "key": "trade-routes.settlements",
+          "required": true,
+          "compatibility": "manifest-v3",
+          "metadata": {
+            "binding": "trade-routes:settlements"
+          }
+        }
+      ]
     }
   ]
 }

@@ -291,13 +291,15 @@ data PluginDef = PluginDef
   , pdExternalDataSources :: ![RPCExternalDataSourceDecl]
     -- ^ Provider-owned external data sources advertised in manifest v3.  The SDK
     -- serializes backend-neutral declarations, grants, status, provider IDs,
-    -- availability/health, access-mode/capability-scope policy, opaque
-    -- diagnostics, and opaque metadata only; providers/adapters/external systems
-    -- own migrations, schemas, connection details, and consistency rules.
+    -- availability/health, access-mode/capability-scope policy, opaque config
+    -- references, diagnostics, and opaque metadata only; providers/adapters/
+    -- external systems own migrations, schemas, connection details, and
+    -- consistency rules.
   , pdExternalDataSourceRefs :: ![RPCExternalDataSourceRef]
     -- ^ External data sources consumed by this plugin.  References bind to
-    -- provider-owned contracts and backend-neutral status metadata without making
-    -- topo prescribe backend-specific migration tables or schema rules.
+    -- provider-owned contracts, backend-neutral status metadata, and opaque
+    -- config references without making topo prescribe backend-specific migration
+    -- tables or schema rules.
   , pdStartPolicy :: !RPCStartPolicy
     -- ^ Host-side process supervision policy emitted into manifest v3 when it
     -- differs from the default policy.

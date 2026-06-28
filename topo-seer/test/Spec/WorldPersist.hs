@@ -38,6 +38,8 @@ import Seer.World.Persist.Types (defaultManifestTime)
 import Topo.Plugin.RPC.Manifest
   ( RPCExternalDataSourceAccess(..)
   , RPCExternalDataSourceCapability(..)
+  , RPCExternalDataSourceConfigOrigin(..)
+  , RPCExternalDataSourceConfigRef(..)
   , RPCExternalDataSourceAvailability(..)
   , RPCExternalDataSourceDecl(..)
   , RPCExternalDataSourceGrant(..)
@@ -140,6 +142,16 @@ testExternalDataSourceDecl = RPCExternalDataSourceDecl
       , redssCapabilityScope = [ExternalSourceQuery, ExternalSourceHealth]
       }
   , redsdConnection = Just (object ["handle" .= ("provider-owned:settlement-ledger" :: Text.Text)])
+  , redsdConfigRefs =
+      [ RPCExternalDataSourceConfigRef
+          { redscrName = "settlement-ledger-binding"
+          , redscrOrigin = ExternalConfigProvider
+          , redscrKey = "settlement-provider.settlement-ledger"
+          , redscrRequired = True
+          , redscrCompatibility = Just "manifest-v3"
+          , redscrMetadata = Just (object ["handle" .= ("provider-owned:settlement-ledger" :: Text.Text)])
+          }
+      ]
   , redsdGrants =
       [ RPCExternalDataSourceGrant
           { redsgName = "settlement-read"
@@ -155,6 +167,16 @@ testExternalDataSourceDecl = RPCExternalDataSourceDecl
               , redssCapabilityScope = [ExternalSourceQuery]
               }
           , redsgReference = Just (object ["grant" .= ("settlement-read" :: Text.Text)])
+          , redsgConfigRefs =
+              [ RPCExternalDataSourceConfigRef
+                  { redscrName = "settlement-read-binding"
+                  , redscrOrigin = ExternalConfigProvider
+                  , redscrKey = "settlement-provider.settlement-read"
+                  , redscrRequired = True
+                  , redscrCompatibility = Just "manifest-v3"
+                  , redscrMetadata = Just (object ["grant" .= ("settlement-read" :: Text.Text)])
+                  }
+              ]
           }
       ]
   , redsdUiHints = defaultRPCUIHints
@@ -178,6 +200,16 @@ testExternalDataSourceRef = RPCExternalDataSourceRef
       , redssCapabilityScope = [ExternalSourceQuery]
       }
   , redsrReference = Just (object ["binding" .= ("consumer:settlements" :: Text.Text)])
+  , redsrConfigRefs =
+      [ RPCExternalDataSourceConfigRef
+          { redscrName = "consumer-settlements-binding"
+          , redscrOrigin = ExternalConfigDeployment
+          , redscrKey = "consumer.settlements"
+          , redscrRequired = True
+          , redscrCompatibility = Just "manifest-v3"
+          , redscrMetadata = Just (object ["binding" .= ("consumer:settlements" :: Text.Text)])
+          }
+      ]
   , redsrUiHints = defaultRPCUIHints
   }
 

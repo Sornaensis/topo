@@ -567,6 +567,16 @@ spec = describe "Plugin.RPC" $ do
           case rmExternalDataSources m of
             [source] -> do
               redsdConnection source `shouldBe` Just (object ["handle" .= ("provider-owned:settlement-ledger" :: Text)])
+              redsdConfigRefs source `shouldBe`
+                [ RPCExternalDataSourceConfigRef
+                    { redscrName = "settlement-ledger-binding"
+                    , redscrOrigin = ExternalConfigProvider
+                    , redscrKey = "civilization.settlement-ledger"
+                    , redscrRequired = True
+                    , redscrCompatibility = Just "manifest-v3"
+                    , redscrMetadata = Just (object ["handle" .= ("provider-owned:settlement-ledger" :: Text)])
+                    }
+                ]
               redssProviderId (redsdStatus source) `shouldBe` Just "civilization"
               redssAvailability (redsdStatus source) `shouldBe` Just ExternalAvailabilityAvailable
               redssHealth (redsdStatus source) `shouldBe` Just ExternalHealthHealthy
@@ -592,6 +602,16 @@ spec = describe "Plugin.RPC" $ do
                     , redssCompatibility = Just "manifest-v3"
                     , redssDiagnostics = Just (object ["grant" .= ("settlement-read" :: Text)])
                     }
+                  redsgConfigRefs grant `shouldBe`
+                    [ RPCExternalDataSourceConfigRef
+                        { redscrName = "settlement-read-binding"
+                        , redscrOrigin = ExternalConfigProvider
+                        , redscrKey = "civilization.settlement-read"
+                        , redscrRequired = True
+                        , redscrCompatibility = Just "manifest-v3"
+                        , redscrMetadata = Just (object ["grant" .= ("settlement-read" :: Text)])
+                        }
+                    ]
                 _ -> expectationFailure "expected exactly one external data-source grant"
             _ -> expectationFailure "expected exactly one external data source"
           validateManifest m `shouldBe` []
@@ -608,6 +628,16 @@ spec = describe "Plugin.RPC" $ do
               redsrAccess ref `shouldBe` [ExternalAccessRead]
               redsrGrant ref `shouldBe` Just "settlement-read"
               redsrReference ref `shouldBe` Just (object ["binding" .= ("trade-routes:settlements" :: Text)])
+              redsrConfigRefs ref `shouldBe`
+                [ RPCExternalDataSourceConfigRef
+                    { redscrName = "settlements-binding"
+                    , redscrOrigin = ExternalConfigDeployment
+                    , redscrKey = "trade-routes.settlements"
+                    , redscrRequired = True
+                    , redscrCompatibility = Just "manifest-v3"
+                    , redscrMetadata = Just (object ["binding" .= ("trade-routes:settlements" :: Text)])
+                    }
+                ]
               redssProviderId (redsrStatus ref) `shouldBe` Just "civilization"
               redssAvailability (redsrStatus ref) `shouldBe` Just ExternalAvailabilityUnknown
               redssHealth (redsrStatus ref) `shouldBe` Just ExternalHealthUnknown
@@ -620,6 +650,36 @@ spec = describe "Plugin.RPC" $ do
           validateManifest m `shouldBe` []
         Aeson.Error err -> expectationFailure err
 
+    it "parses backend-neutral external data-source config reference origins" $ do
+      let origins =
+            [ ("user", ExternalConfigUser)
+            , ("provider", ExternalConfigProvider)
+            , ("environment", ExternalConfigEnvironment)
+            , ("deployment", ExternalConfigDeployment)
+            ]
+      mapM_
+        (\(raw, expected) ->
+          case Aeson.fromJSON (String raw) of
+            Aeson.Success origin -> origin `shouldBe` expected
+            Aeson.Error err -> expectationFailure err)
+        origins
+      case Aeson.fromJSON
+          (object
+            [ "name" .= ("env-settlements" :: Text)
+            , "origin" .= ("environment" :: Text)
+            , "key" .= ("TOPO_SETTLEMENT_LEDGER" :: Text)
+            , "compatibility" .= ("manifest-v3" :: Text)
+            , "metadata" .= object ["scope" .= ("deployment" :: Text)]
+            ]) of
+        Aeson.Success configRef -> do
+          redscrName configRef `shouldBe` "env-settlements"
+          redscrOrigin configRef `shouldBe` ExternalConfigEnvironment
+          redscrKey configRef `shouldBe` "TOPO_SETTLEMENT_LEDGER"
+          redscrRequired configRef `shouldBe` True
+          redscrCompatibility configRef `shouldBe` Just "manifest-v3"
+          redscrMetadata configRef `shouldBe` Just (object ["scope" .= ("deployment" :: Text)])
+        Aeson.Error err -> expectationFailure err
+
     it "rejects external data-source grants outside declared capabilities" $ do
       let source = RPCExternalDataSourceDecl
             { redsdName = "ledger"
@@ -630,6 +690,7 @@ spec = describe "Plugin.RPC" $ do
             , redsdResources = ["items"]
             , redsdStatus = defaultRPCExternalDataSourceStatus { redssState = ExternalStatusReady }
             , redsdConnection = Nothing
+            , redsdConfigRefs = []
             , redsdGrants =
                 [ RPCExternalDataSourceGrant
                     { redsgName = "write"
@@ -638,6 +699,7 @@ spec = describe "Plugin.RPC" $ do
                     , redsgResources = ["items"]
                     , redsgStatus = defaultRPCExternalDataSourceStatus { redssState = ExternalStatusReady }
                     , redsgReference = Nothing
+                    , redsgConfigRefs = []
                     }
                 ]
             , redsdUiHints = defaultRPCUIHints
@@ -657,6 +719,7 @@ spec = describe "Plugin.RPC" $ do
             , redsdResources = ["items"]
             , redsdStatus = defaultRPCExternalDataSourceStatus { redssState = ExternalStatusReady }
             , redsdConnection = Nothing
+            , redsdConfigRefs = []
             , redsdGrants =
                 [ RPCExternalDataSourceGrant
                     { redsgName = "write"
@@ -665,6 +728,7 @@ spec = describe "Plugin.RPC" $ do
                     , redsgResources = ["items"]
                     , redsgStatus = defaultRPCExternalDataSourceStatus { redssState = ExternalStatusReady }
                     , redsgReference = Nothing
+                    , redsgConfigRefs = []
                     }
                 ]
             , redsdUiHints = defaultRPCUIHints
@@ -684,6 +748,7 @@ spec = describe "Plugin.RPC" $ do
             , redsdResources = []
             , redsdStatus = defaultRPCExternalDataSourceStatus { redssState = ExternalStatusReady }
             , redsdConnection = Nothing
+            , redsdConfigRefs = []
             , redsdGrants =
                 [ RPCExternalDataSourceGrant
                     { redsgName = "read"
@@ -692,6 +757,7 @@ spec = describe "Plugin.RPC" $ do
                     , redsgResources = ["items"]
                     , redsgStatus = defaultRPCExternalDataSourceStatus { redssState = ExternalStatusReady }
                     , redsgReference = Nothing
+                    , redsgConfigRefs = []
                     }
                 ]
             , redsdUiHints = defaultRPCUIHints
@@ -700,6 +766,36 @@ spec = describe "Plugin.RPC" $ do
             { rmExternalDataSources = [source]
             }
       validateManifest manifest `shouldSatisfy` any isExternalGrantResourceError
+
+    it "validates backend-neutral external data-source config references" $ do
+      let source = RPCExternalDataSourceDecl
+            { redsdName = "ledger"
+            , redsdLabel = "Ledger"
+            , redsdDescription = ""
+            , redsdKind = "catalog"
+            , redsdCapabilities = [ExternalSourceQuery]
+            , redsdResources = []
+            , redsdStatus = defaultRPCExternalDataSourceStatus { redssState = ExternalStatusReady }
+            , redsdConnection = Nothing
+            , redsdConfigRefs =
+                [ RPCExternalDataSourceConfigRef
+                    { redscrName = ""
+                    , redscrOrigin = ExternalConfigEnvironment
+                    , redscrKey = ""
+                    , redscrRequired = True
+                    , redscrCompatibility = Just ""
+                    , redscrMetadata = Just (String "not-object")
+                    }
+                ]
+            , redsdGrants = []
+            , redsdUiHints = defaultRPCUIHints
+            }
+          manifest = baseManifest { rmExternalDataSources = [source] }
+          messages = map manifestErrorMessage (validateManifest manifest)
+      messages `shouldSatisfy` any (Text.isInfixOf "configRefs.<empty>.name")
+      messages `shouldSatisfy` any (Text.isInfixOf "config reference key")
+      messages `shouldSatisfy` any (Text.isInfixOf "configRefs.<empty>.compatibility")
+      messages `shouldSatisfy` any (Text.isInfixOf "configRefs.<empty>.metadata")
 
     it "rejects external data source status without required state" $ do
       case Aeson.fromJSON (object []) :: Aeson.Result RPCExternalDataSourceStatus of
@@ -738,6 +834,7 @@ spec = describe "Plugin.RPC" $ do
                 , redssDiagnostics = Just (String "not-object")
                 }
             , redsdConnection = Nothing
+            , redsdConfigRefs = []
             , redsdGrants = []
             , redsdUiHints = defaultRPCUIHints
             }

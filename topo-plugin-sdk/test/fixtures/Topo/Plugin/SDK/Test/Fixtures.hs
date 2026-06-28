@@ -210,6 +210,7 @@ mkExternalProviderPlugin = do
                 , redssDiagnostics = Just (object ["fixture" .= ("provider" :: Text)])
                 }
             , redsdConnection = Nothing
+            , redsdConfigRefs = []
             , redsdGrants =
                 [ RPCExternalDataSourceGrant
                     { redsgName = "terrain-catalog-read"
@@ -229,6 +230,7 @@ mkExternalProviderPlugin = do
                         , redssDiagnostics = Just (object ["fixture" .= ("grant" :: Text)])
                         }
                     , redsgReference = Nothing
+                    , redsgConfigRefs = []
                     }
                 ]
             , redsdUiHints = defaultRPCUIHints { ruiDisplayName = Just "Terrain Catalog" }
@@ -297,6 +299,7 @@ mkExternalConsumerPlugin = do
                 , redssDiagnostics = Just (object ["fixture" .= ("consumer" :: Text)])
                 }
             , redsrReference = Nothing
+            , redsrConfigRefs = []
             , redsrUiHints = defaultRPCUIHints { ruiDisplayName = Just "Terrain Catalog" }
             }
         ]

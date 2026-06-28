@@ -197,6 +197,16 @@ settlementLedgerSource = RPCExternalDataSourceDecl
       , redssCompatibility = Just "manifest-v3"
       }
   , redsdConnection = Nothing
+  , redsdConfigRefs =
+      [ RPCExternalDataSourceConfigRef
+          { redscrName = "settlement-ledger-binding"
+          , redscrOrigin = ExternalConfigProvider
+          , redscrKey = "civilization.settlement-ledger"
+          , redscrRequired = True
+          , redscrCompatibility = Just "manifest-v3"
+          , redscrMetadata = Nothing
+          }
+      ]
   , redsdGrants =
       [ RPCExternalDataSourceGrant
           { redsgName = "settlement-read"
@@ -215,6 +225,16 @@ settlementLedgerSource = RPCExternalDataSourceDecl
               , redssCompatibility = Just "manifest-v3"
               }
           , redsgReference = Nothing
+          , redsgConfigRefs =
+              [ RPCExternalDataSourceConfigRef
+                  { redscrName = "settlement-read-binding"
+                  , redscrOrigin = ExternalConfigProvider
+                  , redscrKey = "civilization.settlement-read"
+                  , redscrRequired = True
+                  , redscrCompatibility = Just "manifest-v3"
+                  , redscrMetadata = Nothing
+                  }
+              ]
           }
       ]
   , redsdUiHints = defaultRPCUIHints

@@ -123,9 +123,10 @@ interpretation and validation beyond the advertised schema.
 Manifest v3 can describe data that remains owned by a provider plugin, adapter,
 or external system. The contract intentionally uses opaque source names,
 provider plugin IDs, generic capabilities, access grants, resource names,
-lifecycle/status metadata, backend-neutral health/policy fields, and opaque
-connection/reference metadata. It does not require or expose a storage engine,
-connection string, file layout, or host-owned migration plan.
+lifecycle/status metadata, backend-neutral health/policy fields, opaque
+connection/reference metadata, and explicit opaque configuration references.
+It does not require or expose a storage engine, connection string, file layout,
+or host-owned migration plan.
 
 Migrations, backing schemas, connection details, and consistency rules are
 owned by the provider plugin, adapter, or external system. Topo may surface
@@ -155,6 +156,16 @@ Providers advertise sources with `externalDataSources`:
       "diagnostics": { "reportedBy": "civilization" }
     },
     "connection": { "handle": "provider-owned:settlement-ledger" },
+    "configRefs": [
+      {
+        "name": "settlement-ledger-binding",
+        "origin": "provider",
+        "key": "civilization.settlement-ledger",
+        "required": true,
+        "compatibility": "manifest-v3",
+        "metadata": { "handle": "provider-owned:settlement-ledger" }
+      }
+    ],
     "grants": [
       {
         "name": "settlement-read",
@@ -172,7 +183,17 @@ Providers advertise sources with `externalDataSources`:
           "compatibility": "manifest-v3",
           "diagnostics": { "grant": "settlement-read" }
         },
-        "reference": { "handle": "grant:settlement-read" }
+        "reference": { "handle": "grant:settlement-read" },
+        "configRefs": [
+          {
+            "name": "settlement-read-binding",
+            "origin": "provider",
+            "key": "civilization.settlement-read",
+            "required": true,
+            "compatibility": "manifest-v3",
+            "metadata": { "grant": "settlement-read" }
+          }
+        ]
       }
     ]
   }
@@ -202,7 +223,17 @@ Consumers declare dependencies with `externalDataSourceRefs`:
       "compatibility": "manifest-v3",
       "diagnostics": { "resolution": "dependency-startup" }
     },
-    "reference": { "binding": "trade-routes:settlements" }
+    "reference": { "binding": "trade-routes:settlements" },
+    "configRefs": [
+      {
+        "name": "settlements-binding",
+        "origin": "deployment",
+        "key": "trade-routes.settlements",
+        "required": true,
+        "compatibility": "manifest-v3",
+        "metadata": { "binding": "trade-routes:settlements" }
+      }
+    ]
   }
 ]
 ```
@@ -214,7 +245,10 @@ requires `migrate`. Provider plugins, adapters, or external systems still own
 concrete authorization, locks, writer coordination, and repair behavior.
 
 `connection` and `reference` are opaque JSON objects for provider-owned handles
-or binding metadata; topo may broker and display them, but does not interpret
+or binding metadata. `configRefs` are structured only enough to record a local
+reference name, an origin (`user`, `provider`, `environment`, or `deployment`),
+an opaque key, whether the binding is required, optional compatibility text, and
+opaque metadata. Topo may broker and display these values, but does not interpret
 them as a host-owned backing store, migration runner, schema authority, or
 consistency coordinator. Even when a source advertises the `migrate`
 capability, it is a provider operation/status capability rather than a
@@ -231,9 +265,10 @@ Optional status metadata can carry a backend-neutral `providerId`,
 `compatibility`, and opaque `diagnostics` object. Manifest status is declarative
 startup metadata; runtime health can be refined by plugin handshakes and
 diagnostics. World save/load preserves external data-source declarations,
-consumer references, and opaque connection/reference metadata in the world
-manifest for compatibility checks, but loading a world does not reconnect,
-migrate, lock, or repair provider-owned stores.
+consumer references, opaque config references, compatibility markers, and
+opaque connection/reference metadata in the world manifest for compatibility
+checks, but loading a world does not reconnect, migrate, lock, or repair
+provider-owned stores.
 
 ## SDK generation
 
@@ -248,7 +283,7 @@ The SDK converts `PluginDef` to manifest v3 with:
   fields, plus explicit `pdCapabilities` for non-inferable permissions such as
   simulation terrain writes
 - `pdExternalDataSources` and `pdExternalDataSourceRefs` copied into the
-  manifest unchanged
+  manifest unchanged, including any opaque external data-source `configRefs`
 
 Manual editing is supported for non-Haskell plugins, but SDK users should keep
 `PluginDef` as the source of truth.

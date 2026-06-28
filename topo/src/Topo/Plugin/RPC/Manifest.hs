@@ -48,6 +48,8 @@ module Topo.Plugin.RPC.Manifest
   , RPCParamType(..)
   , RPCExternalDataSourceCapability(..)
   , RPCExternalDataSourceAccess(..)
+  , RPCExternalDataSourceConfigOrigin(..)
+  , RPCExternalDataSourceConfigRef(..)
   , externalAccessRequiredCapabilities
   , RPCExternalDataSourceStatusState(..)
   , RPCExternalDataSourceAvailability(..)
@@ -533,6 +535,69 @@ instance ToJSON RPCExternalDataSourceAccess where
   toJSON ExternalAccessWrite = "write"
   toJSON ExternalAccessAdmin = "admin"
 
+-- | Origin for an opaque external data-source configuration reference.
+--
+-- The origin says who supplies the binding key; topo stores and reports the
+-- key without interpreting it as a file path, connection string, backend, or
+-- provider implementation detail.
+data RPCExternalDataSourceConfigOrigin
+  = ExternalConfigUser
+  | ExternalConfigProvider
+  | ExternalConfigEnvironment
+  | ExternalConfigDeployment
+  deriving (Eq, Ord, Show, Read, Generic)
+
+instance FromJSON RPCExternalDataSourceConfigOrigin where
+  parseJSON = withText "RPCExternalDataSourceConfigOrigin" $ \t -> case t of
+    "user"        -> pure ExternalConfigUser
+    "provider"    -> pure ExternalConfigProvider
+    "environment" -> pure ExternalConfigEnvironment
+    "deployment"  -> pure ExternalConfigDeployment
+    _             -> fail ("unknown external data source config origin: " <> Text.unpack t)
+
+instance ToJSON RPCExternalDataSourceConfigOrigin where
+  toJSON ExternalConfigUser        = "user"
+  toJSON ExternalConfigProvider    = "provider"
+  toJSON ExternalConfigEnvironment = "environment"
+  toJSON ExternalConfigDeployment  = "deployment"
+
+-- | Opaque, backend-neutral configuration reference for an external data
+-- source, grant, or consumer binding.
+--
+-- 'redscrKey' is an identifier in the named origin (for example a user config
+-- key, provider handle, environment variable name, or deployment binding). Topo
+-- may persist the key, compatibility marker, and opaque metadata for world
+-- compatibility checks, but it must not interpret backend-specific layouts,
+-- migrations, schemas, or connection details from the reference.
+data RPCExternalDataSourceConfigRef = RPCExternalDataSourceConfigRef
+  { redscrName          :: !Text
+  , redscrOrigin        :: !RPCExternalDataSourceConfigOrigin
+  , redscrKey           :: !Text
+  , redscrRequired      :: !Bool
+  , redscrCompatibility :: !(Maybe Text)
+  , redscrMetadata      :: !(Maybe Value)
+  } deriving (Eq, Show, Generic)
+
+instance FromJSON RPCExternalDataSourceConfigRef where
+  parseJSON = withObject "RPCExternalDataSourceConfigRef" $ \o ->
+    RPCExternalDataSourceConfigRef
+      <$> o .: "name"
+      <*> o .: "origin"
+      <*> o .: "key"
+      <*> (o .:? "required" >>= pure . maybe True id)
+      <*> optionalNonNullField o ["compatibility"]
+      <*> optionalNonNullField o ["metadata"]
+
+instance ToJSON RPCExternalDataSourceConfigRef where
+  toJSON configRef = object $
+    [ "name" .= redscrName configRef
+    , "origin" .= redscrOrigin configRef
+    , "key" .= redscrKey configRef
+    , "required" .= redscrRequired configRef
+    ] <>
+    [ "compatibility" .= compatibility | Just compatibility <- [redscrCompatibility configRef] ] <>
+    [ "metadata" .= metadata | Just metadata <- [redscrMetadata configRef] ]
+
 -- | Backend-neutral source capabilities required before topo may broker an
 -- access grant.  This gate is intentionally generic: providers still own the
 -- concrete backend authorization, locking, and writer policy behind the grant.
@@ -702,7 +767,9 @@ instance ToJSON RPCExternalDataSourceStatus where
 -- prepared to broker.  'redsgReference' is opaque provider metadata: topo may
 -- preserve and report it, but must not interpret it as a storage backend it
 -- owns.  Grant resources and capabilities do not define backend schemas,
--- migration tables, or consistency rules.
+-- migration tables, or consistency rules.  'redsgConfigRefs' names opaque
+-- configuration references that identify the grant across user/provider,
+-- environment, or deployment configuration without exposing a backend layout.
 data RPCExternalDataSourceGrant = RPCExternalDataSourceGrant
   { redsgName         :: !Text
   , redsgAccess       :: ![RPCExternalDataSourceAccess]
@@ -710,6 +777,7 @@ data RPCExternalDataSourceGrant = RPCExternalDataSourceGrant
   , redsgResources    :: ![Text]
   , redsgStatus       :: !RPCExternalDataSourceStatus
   , redsgReference    :: !(Maybe Value)
+  , redsgConfigRefs   :: ![RPCExternalDataSourceConfigRef]
   } deriving (Eq, Show, Generic)
 
 instance FromJSON RPCExternalDataSourceGrant where
@@ -721,6 +789,7 @@ instance FromJSON RPCExternalDataSourceGrant where
       <*> (o .:? "resources" >>= pure . maybe [] id)
       <*> o .: "status"
       <*> o .:? "reference"
+      <*> optionalNonNullListField o ["configRefs", "config_refs"]
 
 instance ToJSON RPCExternalDataSourceGrant where
   toJSON grant = object $
@@ -730,15 +799,17 @@ instance ToJSON RPCExternalDataSourceGrant where
     , "status" .= redsgStatus grant
     ] <>
     [ "resources" .= redsgResources grant | not (null (redsgResources grant)) ] <>
-    [ "reference" .= ref | Just ref <- [redsgReference grant] ]
+    [ "reference" .= ref | Just ref <- [redsgReference grant] ] <>
+    [ "configRefs" .= redsgConfigRefs grant | not (null (redsgConfigRefs grant)) ]
 
 -- | Provider declaration for a named external data source.
 --
 -- The provider plugin, adapter, or external system owns the backing migrations,
 -- schemas, connection details, and consistency semantics.  Topo stores and
 -- validates only backend-neutral names, capabilities, grants, resource labels,
--- statuses, and opaque metadata; it may surface status/errors but must not
--- prescribe backend-specific migration tables or schema rules.
+-- statuses, opaque config references, and opaque metadata; it may surface
+-- status/errors but must not prescribe backend-specific migration tables or
+-- schema rules.
 data RPCExternalDataSourceDecl = RPCExternalDataSourceDecl
   { redsdName         :: !Text
   , redsdLabel        :: !Text
@@ -748,6 +819,7 @@ data RPCExternalDataSourceDecl = RPCExternalDataSourceDecl
   , redsdResources    :: ![Text]
   , redsdStatus       :: !RPCExternalDataSourceStatus
   , redsdConnection   :: !(Maybe Value)
+  , redsdConfigRefs   :: ![RPCExternalDataSourceConfigRef]
   , redsdGrants       :: ![RPCExternalDataSourceGrant]
   , redsdUiHints      :: !RPCUIHints
   } deriving (Eq, Show, Generic)
@@ -766,6 +838,7 @@ instance FromJSON RPCExternalDataSourceDecl where
       <*> (o .:? "resources" >>= pure . maybe [] id)
       <*> o .: "status"
       <*> o .:? "connection"
+      <*> optionalNonNullListField o ["configRefs", "config_refs"]
       <*> (o .:? "grants" >>= pure . maybe [] id)
       <*> optionalPolicyField o ["ui"] defaultRPCUIHints
 
@@ -780,24 +853,27 @@ instance ToJSON RPCExternalDataSourceDecl where
     [ "description" .= redsdDescription source | redsdDescription source /= "" ] <>
     [ "resources" .= redsdResources source | not (null (redsdResources source)) ] <>
     [ "connection" .= conn | Just conn <- [redsdConnection source] ] <>
+    [ "configRefs" .= redsdConfigRefs source | not (null (redsdConfigRefs source)) ] <>
     [ "grants" .= redsdGrants source | not (null (redsdGrants source)) ] <>
     [ "ui" .= redsdUiHints source | redsdUiHints source /= defaultRPCUIHints ]
 
 -- | Consumer reference to a provider-owned external data source.
 --
--- References bind a plugin to provider-owned sources and grants without exposing
--- migration, schema, connection, or consistency internals to topo core.
+-- References bind a plugin to provider-owned sources, grants, and external
+-- config references without exposing migration, schema, connection, or
+-- consistency internals to topo core.
 data RPCExternalDataSourceRef = RPCExternalDataSourceRef
-  { redsrName      :: !Text
-  , redsrProvider  :: !(Maybe Text)
-  , redsrSource    :: !Text
-  , redsrRequired  :: !Bool
-  , redsrAccess    :: ![RPCExternalDataSourceAccess]
-  , redsrResources :: ![Text]
-  , redsrGrant     :: !(Maybe Text)
-  , redsrStatus    :: !RPCExternalDataSourceStatus
-  , redsrReference :: !(Maybe Value)
-  , redsrUiHints   :: !RPCUIHints
+  { redsrName       :: !Text
+  , redsrProvider   :: !(Maybe Text)
+  , redsrSource     :: !Text
+  , redsrRequired   :: !Bool
+  , redsrAccess     :: ![RPCExternalDataSourceAccess]
+  , redsrResources  :: ![Text]
+  , redsrGrant      :: !(Maybe Text)
+  , redsrStatus     :: !RPCExternalDataSourceStatus
+  , redsrReference  :: !(Maybe Value)
+  , redsrConfigRefs :: ![RPCExternalDataSourceConfigRef]
+  , redsrUiHints    :: !RPCUIHints
   } deriving (Eq, Show, Generic)
 
 instance FromJSON RPCExternalDataSourceRef where
@@ -812,6 +888,7 @@ instance FromJSON RPCExternalDataSourceRef where
       <*> o .:? "grant"
       <*> o .: "status"
       <*> o .:? "reference"
+      <*> optionalNonNullListField o ["configRefs", "config_refs"]
       <*> optionalPolicyField o ["ui"] defaultRPCUIHints
 
 instance ToJSON RPCExternalDataSourceRef where
@@ -826,6 +903,7 @@ instance ToJSON RPCExternalDataSourceRef where
     [ "resources" .= redsrResources ref | not (null (redsrResources ref)) ] <>
     [ "grant" .= grant | Just grant <- [redsrGrant ref] ] <>
     [ "reference" .= refMeta | Just refMeta <- [redsrReference ref] ] <>
+    [ "configRefs" .= redsrConfigRefs ref | not (null (redsrConfigRefs ref)) ] <>
     [ "ui" .= redsrUiHints ref | redsrUiHints ref /= defaultRPCUIHints ]
 
 ------------------------------------------------------------------------
@@ -1132,6 +1210,7 @@ manifestV3Schema = object
               , "resources" .= arrayOf stringSchema
               , "status" .= schemaRef "externalStatus"
               , "connection" .= schemaRef "opaqueMetadata"
+              , "configRefs" .= arrayOf (schemaRef "externalConfigRef")
               , "grants" .= arrayOf (schemaRef "externalGrant")
               , "ui" .= schemaRef "uiHints"
               ]
@@ -1150,6 +1229,7 @@ manifestV3Schema = object
               , "grant" .= stringSchema
               , "status" .= schemaRef "externalStatus"
               , "reference" .= schemaRef "opaqueMetadata"
+              , "configRefs" .= arrayOf (schemaRef "externalConfigRef")
               , "ui" .= schemaRef "uiHints"
               ]
           ]
@@ -1164,6 +1244,20 @@ manifestV3Schema = object
               , "resources" .= arrayOf stringSchema
               , "status" .= schemaRef "externalStatus"
               , "reference" .= schemaRef "opaqueMetadata"
+              , "configRefs" .= arrayOf (schemaRef "externalConfigRef")
+              ]
+          ]
+      , "externalConfigRef" .= object
+          [ "type" .= ("object" :: Text)
+          , "description" .= ("Opaque backend-neutral configuration reference for an external source, grant, or consumer binding. The key is supplied by user config, a provider plugin, the environment, or deployment settings; topo preserves it with compatibility metadata but must not interpret it as a backend-specific file layout, schema, migration table, or connection rule." :: Text)
+          , "required" .= (["name", "origin", "key"] :: [Text])
+          , "properties" .= object
+              [ "name" .= stringSchema
+              , "origin" .= enumSchema externalConfigOriginNames
+              , "key" .= stringSchema
+              , "required" .= booleanSchema
+              , "compatibility" .= stringSchema
+              , "metadata" .= schemaRef "opaqueMetadata"
               ]
           ]
       , "externalStatus" .= object
@@ -1294,6 +1388,18 @@ manifestV3ProviderExample = object
           , "connection" .= object
               [ "handle" .= ("provider-owned:settlement-ledger" :: Text)
               ]
+          , "configRefs" .=
+              [ object
+                  [ "name" .= ("settlement-ledger-binding" :: Text)
+                  , "origin" .= ("provider" :: Text)
+                  , "key" .= ("civilization.settlement-ledger" :: Text)
+                  , "required" .= True
+                  , "compatibility" .= ("manifest-v3" :: Text)
+                  , "metadata" .= object
+                      [ "handle" .= ("provider-owned:settlement-ledger" :: Text)
+                      ]
+                  ]
+              ]
           , "grants" .=
               [ object
                   [ "name" .= ("settlement-read" :: Text)
@@ -1316,6 +1422,18 @@ manifestV3ProviderExample = object
                       ]
                   , "reference" .= object
                       [ "handle" .= ("grant:settlement-read" :: Text)
+                      ]
+                  , "configRefs" .=
+                      [ object
+                          [ "name" .= ("settlement-read-binding" :: Text)
+                          , "origin" .= ("provider" :: Text)
+                          , "key" .= ("civilization.settlement-read" :: Text)
+                          , "required" .= True
+                          , "compatibility" .= ("manifest-v3" :: Text)
+                          , "metadata" .= object
+                              [ "grant" .= ("settlement-read" :: Text)
+                              ]
+                          ]
                       ]
                   ]
               ]
@@ -1371,6 +1489,18 @@ manifestV3ConsumerExample = object
               ]
           , "reference" .= object
               [ "binding" .= ("trade-routes:settlements" :: Text)
+              ]
+          , "configRefs" .=
+              [ object
+                  [ "name" .= ("settlements-binding" :: Text)
+                  , "origin" .= ("deployment" :: Text)
+                  , "key" .= ("trade-routes.settlements" :: Text)
+                  , "required" .= True
+                  , "compatibility" .= ("manifest-v3" :: Text)
+                  , "metadata" .= object
+                      [ "binding" .= ("trade-routes:settlements" :: Text)
+                      ]
+                  ]
               ]
           ]
       ]
@@ -1434,6 +1564,9 @@ externalCapabilityNames = ["query", "mutate", "subscribe", "migrate", "health"]
 
 externalAccessNames :: [Text]
 externalAccessNames = ["read", "write", "admin"]
+
+externalConfigOriginNames :: [Text]
+externalConfigOriginNames = ["user", "provider", "environment", "deployment"]
 
 externalStatusNames :: [Text]
 externalStatusNames = ["unknown", "unconfigured", "ready", "degraded", "unavailable"]
@@ -1738,6 +1871,7 @@ validateExternalDataSources sources =
         , capability `notElem` redsdCapabilities source
         ]
       , validateOpaqueMetadata (sourcePath source "connection") (redsdConnection source)
+      , validateConfigRefs (sourcePath source "configRefs") (redsdConfigRefs source)
       , duplicateErrors (sourcePath source "grants.name") (map redsgName (redsdGrants source))
       , concatMap (validateGrant source) (redsdGrants source)
       , validateUIHints (sourcePath source "ui") (redsdUiHints source)
@@ -1784,6 +1918,7 @@ validateExternalDataSources sources =
         , capability `notElem` redsgCapabilities grant
         ]
       , validateOpaqueMetadata (grantPath source grant "reference") (redsgReference grant)
+      , validateConfigRefs (grantPath source grant "configRefs") (redsgConfigRefs grant)
       ]
     sourcePath source field = "externalDataSources." <> nameOrPlaceholder (redsdName source) <> "." <> field
     grantPath source grant field = sourcePath source ("grants." <> nameOrPlaceholder (redsgName grant) <> "." <> field)
@@ -1812,9 +1947,27 @@ validateExternalDataSourceRefs refs =
       , validateOptionalNonEmpty (refPath ref "grant") (redsrGrant ref)
       , validateStatus (refPath ref "status") (redsrStatus ref)
       , validateOpaqueMetadata (refPath ref "reference") (redsrReference ref)
+      , validateConfigRefs (refPath ref "configRefs") (redsrConfigRefs ref)
       , validateUIHints (refPath ref "ui") (redsrUiHints ref)
       ]
     refPath ref field = "externalDataSourceRefs." <> nameOrPlaceholder (redsrName ref) <> "." <> field
+
+validateConfigRefs :: Text -> [RPCExternalDataSourceConfigRef] -> [ManifestError]
+validateConfigRefs base refs =
+  duplicateErrors (base <> ".name") (map redscrName refs) <>
+  concatMap validateConfigRef refs
+  where
+    validateConfigRef configRef = concat
+      [ [ ManifestInvalidField (configRefPath configRef "name") "config reference name must be non-empty."
+        | Text.null (redscrName configRef)
+        ]
+      , [ ManifestInvalidField (configRefPath configRef "key") "config reference key must be a non-empty opaque identifier."
+        | Text.null (redscrKey configRef)
+        ]
+      , validateOptionalNonEmpty (configRefPath configRef "compatibility") (redscrCompatibility configRef)
+      , validateOpaqueMetadata (configRefPath configRef "metadata") (redscrMetadata configRef)
+      ]
+    configRefPath configRef field = base <> "." <> nameOrPlaceholder (redscrName configRef) <> "." <> field
 
 validateOpaqueMetadata :: Text -> Maybe Value -> [ManifestError]
 validateOpaqueMetadata base metadata =
