@@ -129,14 +129,24 @@ spec = describe "Seer.HTTP.Server" $ do
       simState <- request app (mkRequest "GET" ["simulation"])
       hresStatusCode simState `shouldBe` 200
 
+      pluginStatus <- request app (mkRequest "GET" ["plugins", "status"])
+      hresStatusCode pluginStatus `shouldBe` 200
+
+      dataState <- request app (mkRequest "GET" ["data", "state"])
+      hresStatusCode dataState `shouldBe` 200
+
       events <- request app (mkRequest "GET" ["events"])
       hresStatusCode events `shouldBe` 200
       lookupText "mode" (hresBody events) `shouldBe` Just "polling"
       eventsContainTopic "ui.state.changed" (hresBody events) `shouldBe` True
       eventsContainTopic "world.generation.status" (hresBody events) `shouldBe` True
       eventsContainTopic "simulation.status" (hresBody events) `shouldBe` True
+      eventsContainTopic "plugins.status" (hresBody events) `shouldBe` True
+      eventsContainTopic "data.resources.status" (hresBody events) `shouldBe` True
       eventPayloadHasKey "ui.state.changed" "result" (hresBody events) `shouldBe` True
       eventPayloadHasKey "ui.state.changed" "body" (hresBody events) `shouldBe` False
+      eventPayloadResultHasKey "plugins.status" "external_data_sources" (hresBody events) `shouldBe` True
+      eventPayloadResultHasKey "data.resources.status" "external_data_sources" (hresBody events) `shouldBe` True
 
       let cfg = defaultHttpServerConfig { hscBindPort = 7375 }
       tid <- forkHttpServer cfg headlessHttpAppService (headlessServiceContext app)
@@ -762,6 +772,18 @@ eventPayloadHasKey expectedTopic key (Object obj) = case KM.lookup "events" obj 
     _ -> False
   _ -> False
 eventPayloadHasKey _ _ _ = False
+
+eventPayloadResultHasKey :: Text -> Text -> Value -> Bool
+eventPayloadResultHasKey expectedTopic key (Object obj) = case KM.lookup "events" obj of
+  Just (Array events) -> case find (eventHasTopic expectedTopic) (toList events) of
+    Just (Object event) -> case KM.lookup "payload" event of
+      Just (Object payload) -> case KM.lookup "result" payload of
+        Just (Object result) -> KM.member (Key.fromText key) result
+        _ -> False
+      _ -> False
+    _ -> False
+  _ -> False
+eventPayloadResultHasKey _ _ _ = False
 
 pathMethods :: Value -> Text -> Maybe [Text]
 pathMethods doc path = do

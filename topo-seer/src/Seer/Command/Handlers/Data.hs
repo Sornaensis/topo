@@ -24,10 +24,18 @@ import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as Aeson
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (isJust)
+import qualified Data.Set as Set
 import Data.Text (Text)
 
 import Actor.PluginManager
-  ( getPluginDataResources
+  ( LoadedPlugin(..)
+  , PluginExternalDataSourceDiagnostic(..)
+  , PluginExternalDataSourceGrantDiagnostic(..)
+  , getDisabledPlugins
+  , getLoadedPlugins
+  , getPluginDataResources
+  , pluginExternalDataSourceDiagnosticsFor
   , queryPluginResource
   , mutatePluginResource
   )
@@ -60,11 +68,19 @@ handleDataListPlugins :: CommandContext -> Int -> Value -> IO SeerResponse
 handleDataListPlugins ctx reqId _params = do
   let pmH = ahPluginManagerHandle (ccActorHandles ctx)
   resources <- getPluginDataResources pmH
+  loaded <- getLoadedPlugins pmH
+  disabled <- getDisabledPlugins pmH
   let plugins = Map.toList resources
-      pluginObjs = map (\(pname, schemas) -> object
-        [ "plugin"    .= pname
-        , "resources" .= map drsName schemas
-        ]) plugins
+      loadedMap = Map.fromList [(lpName lp, lp) | lp <- loaded]
+      pluginObjs = map (\(pname, schemas) ->
+        let externalDiagnostics = externalDiagnosticsFor disabled loaded loadedMap pname
+        in object
+          [ "plugin" .= pname
+          , "resources" .= map drsName schemas
+          , "external_data_sources" .= externalDiagnostics
+          , "external_data_source_count" .= length externalDiagnostics
+          , "external_data_source_failures" .= externalDiagnosticsFailureCount externalDiagnostics
+          ]) plugins
   pure $ okResponse reqId $ object
     [ "plugins" .= pluginObjs
     , "count"   .= length plugins
@@ -81,13 +97,20 @@ handleDataListResources ctx reqId params = do
     Just pluginName -> do
       let pmH = ahPluginManagerHandle (ccActorHandles ctx)
       resources <- getPluginDataResources pmH
+      loaded <- getLoadedPlugins pmH
+      disabled <- getDisabledPlugins pmH
+      let loadedMap = Map.fromList [(lpName lp, lp) | lp <- loaded]
       case Map.lookup pluginName resources of
         Nothing ->
           pure $ dataResourceErrorResponse reqId PluginUnavailable ("unknown plugin: " <> pluginName)
-        Just schemas ->
+        Just schemas -> do
+          let externalDiagnostics = externalDiagnosticsFor disabled loaded loadedMap pluginName
           pure $ okResponse reqId $ object
-            [ "plugin"    .= pluginName
+            [ "plugin" .= pluginName
             , "resources" .= map schemaToJSON schemas
+            , "external_data_sources" .= externalDiagnostics
+            , "external_data_source_count" .= length externalDiagnostics
+            , "external_data_source_failures" .= externalDiagnosticsFailureCount externalDiagnostics
             ]
 
 -- | Handle @data_list_records@ — query records for a plugin resource with
@@ -254,21 +277,41 @@ handleDataDeleteRecord ctx reqId params = do
 handleDataGetState :: CommandContext -> Int -> Value -> IO SeerResponse
 handleDataGetState ctx reqId _params = do
   ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
+  let pmH = ahPluginManagerHandle (ccActorHandles ctx)
+  loaded <- getLoadedPlugins pmH
+  disabled <- getDisabledPlugins pmH
   let dbs = uiDataBrowser ui
+      loadedMap = Map.fromList [(lpName lp, lp) | lp <- loaded]
+      selectedExternalDiagnostics = maybe [] (externalDiagnosticsFor disabled loaded loadedMap) (dbsSelectedPlugin dbs)
   pure $ okResponse reqId $ object
-    [ "selected_plugin"   .= dbsSelectedPlugin dbs
+    [ "selected_plugin" .= dbsSelectedPlugin dbs
     , "selected_resource" .= dbsSelectedResource dbs
-    , "record_count"      .= length (dbsRecords dbs)
-    , "total_count"       .= dbsTotalCount dbs
-    , "page_offset"       .= dbsPageOffset dbs
-    , "loading"           .= dbsLoading dbs
-    , "edit_mode"         .= dbsEditMode dbs
-    , "create_mode"       .= dbsCreateMode dbs
-    , "has_selection"     .= case dbsSelectedRecord dbs of
+    , "record_count" .= length (dbsRecords dbs)
+    , "total_count" .= dbsTotalCount dbs
+    , "page_offset" .= dbsPageOffset dbs
+    , "loading" .= dbsLoading dbs
+    , "edit_mode" .= dbsEditMode dbs
+    , "create_mode" .= dbsCreateMode dbs
+    , "has_selection" .= case dbsSelectedRecord dbs of
         Just _  -> True
         Nothing -> False
-    , "selected_key"      .= dbsSelectedRecordKey dbs
+    , "selected_key" .= dbsSelectedRecordKey dbs
+    , "external_data_sources" .= selectedExternalDiagnostics
+    , "external_data_source_count" .= length selectedExternalDiagnostics
+    , "external_data_source_failures" .= externalDiagnosticsFailureCount selectedExternalDiagnostics
     ]
+
+externalDiagnosticsFor :: Set.Set Text -> [LoadedPlugin] -> Map Text LoadedPlugin -> Text -> [PluginExternalDataSourceDiagnostic]
+externalDiagnosticsFor disabled loaded loadedMap pluginName =
+  maybe [] (pluginExternalDataSourceDiagnosticsFor disabled loaded) (Map.lookup pluginName loadedMap)
+
+externalDiagnosticsFailureCount :: [PluginExternalDataSourceDiagnostic] -> Int
+externalDiagnosticsFailureCount = length . filter externalDiagnosticHasFailure
+
+externalDiagnosticHasFailure :: PluginExternalDataSourceDiagnostic -> Bool
+externalDiagnosticHasFailure diagnostic =
+  isJust (pedsFailureReason diagnostic)
+    || any (isJust . pedsgFailureReason) (pedsGrants diagnostic)
 
 dataResourceErrorResponse :: Int -> DataResourceErrorCode -> Text -> SeerResponse
 dataResourceErrorResponse reqId code msg =

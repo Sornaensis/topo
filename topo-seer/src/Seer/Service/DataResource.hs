@@ -35,6 +35,7 @@ module Seer.Service.DataResource
 
 import Data.Aeson (Value)
 import Data.Text (Text)
+import Actor.PluginManager.Types (PluginExternalDataSourceDiagnostic)
 import Topo.Plugin.DataResource (DataResourceSchema)
 import Topo.Plugin.RPC.DataService (DataRecord, MutateResult, QueryResource, QueryResult)
 
@@ -54,6 +55,9 @@ data DataResourceService = DataResourceService
 data DataResourcePluginSummary = DataResourcePluginSummary
   { dataResourcePluginName :: !Text
   , dataResourcePluginResources :: ![Text]
+  , dataResourcePluginExternalDataSources :: ![PluginExternalDataSourceDiagnostic]
+  , dataResourcePluginExternalDataSourceCount :: !Int
+  , dataResourcePluginExternalDataSourceFailures :: !Int
   } deriving (Eq, Show)
 
 data DataResourceListPluginsRequest = DataResourceListPluginsRequest
@@ -70,6 +74,9 @@ newtype DataResourceListResourcesRequest = DataResourceListResourcesRequest
 data DataResourceListResourcesResponse = DataResourceListResourcesResponse
   { dataResourceResourcesPlugin :: !Text
   , dataResourceSchemas :: ![DataResourceSchema]
+  , dataResourceResourcesExternalDataSources :: ![PluginExternalDataSourceDiagnostic]
+  , dataResourceResourcesExternalDataSourceCount :: !Int
+  , dataResourceResourcesExternalDataSourceFailures :: !Int
   } deriving (Eq, Show)
 
 data DataResourceListRecordsRequest = DataResourceListRecordsRequest
@@ -146,6 +153,9 @@ data DataResourceStateResponse = DataResourceStateResponse
   , dataResourceEditMode :: !Bool
   , dataResourceCreateMode :: !Bool
   , dataResourceHasSelection :: !Bool
+  , dataResourceExternalDataSources :: ![PluginExternalDataSourceDiagnostic]
+  , dataResourceExternalDataSourceCount :: !Int
+  , dataResourceExternalDataSourceFailures :: !Int
   } deriving (Eq, Show)
 
 dataResourceServiceGroup :: ServiceGroupSpec

@@ -30,7 +30,7 @@ import Actor.PluginManager
   , pluginDiagnosticState
   , pluginDiagnosticStateText
   , pluginEndpointKind
-  , pluginExternalDataSourceDiagnostics
+  , pluginExternalDataSourceDiagnosticsFor
   , pluginLastError
   , pluginPanelDiagnosticLines
   , pluginResourceNames
@@ -54,7 +54,7 @@ handleListPlugins ctx reqId _params = do
   disabled <- getDisabledPlugins (ahPluginManagerHandle handles)
   now <- getCurrentTime
   let availableDeps = pluginAvailableDependencyKeys disabled plugins
-      entries = map (pluginToJSON now disabled availableDeps (uiPluginParamSpecs ui)) plugins
+      entries = map (pluginToJSON now disabled plugins availableDeps (uiPluginParamSpecs ui)) plugins
   pure $ okResponse reqId $ object
     [ "plugin_count" .= length entries
     , "plugins"      .= entries
@@ -80,7 +80,7 @@ handleSetPluginEnabled ctx reqId params = do
       setUiDisabledPlugins uiH disabled'
       loaded <- getLoadedPlugins pmH
       let availableDeps = pluginAvailableDependencyKeys disabled' loaded
-          diagnosticLines = Map.fromList [(lpName lp, pluginPanelDiagnosticLines availableDeps lp) | lp <- loaded]
+          diagnosticLines = Map.fromList [(lpName lp, pluginPanelDiagnosticLines disabled' availableDeps lp) | lp <- loaded]
           diagnosticStatuses = Map.fromList
             [ (lpName lp, pluginDiagnosticStateText (pluginDiagnosticState disabled' availableDeps lp))
             | lp <- loaded
@@ -114,8 +114,8 @@ handleSetPluginParam ctx reqId params = do
 -- Helpers
 -- --------------------------------------------------------------------------
 
-pluginToJSON :: UTCTime -> Set.Set Text -> Set.Set Text -> Map.Map Text [RPCParamSpec] -> LoadedPlugin -> Value
-pluginToJSON now disabled availableDeps paramSpecs lp =
+pluginToJSON :: UTCTime -> Set.Set Text -> [LoadedPlugin] -> Set.Set Text -> Map.Map Text [RPCParamSpec] -> LoadedPlugin -> Value
+pluginToJSON now disabled allPlugins availableDeps paramSpecs lp =
   let name = lpName lp
       manifest = lpManifest lp
       restartCount = length (lpRestartHistory lp)
@@ -136,7 +136,7 @@ pluginToJSON now disabled availableDeps paramSpecs lp =
     , "dependencies"          .= pluginDependencyDiagnostics availableDeps lp
     , "resources"             .= pluginResourceNames lp
     , "data_resources"        .= map dataResourceToJSON (rmDataResources manifest)
-    , "external_data_sources" .= pluginExternalDataSourceDiagnostics lp
+    , "external_data_sources" .= pluginExternalDataSourceDiagnosticsFor disabled allPlugins lp
     , "capabilities"          .= pluginCapabilitiesText manifest
     , "enabled"               .= not (Set.member name disabled)
     , "params"                .= lpParams lp

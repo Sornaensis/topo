@@ -300,6 +300,9 @@ eventBodySummary (Object obj) =
       [ Key.fromText key .= value
       | key <- eventSummaryFieldNames
       , Just value <- [KM.lookup (Key.fromText key) obj]
+      ] <>
+      [ "external_data_sources" .= summary
+      | Just summary <- [pluginExternalDataSourceEventSummary obj]
       ]
 eventBodySummary (Array values) = object
   [ "type" .= ("array" :: Text)
@@ -324,6 +327,103 @@ eventSummaryFieldNames =
   , "count"
   , "total"
   ]
+
+pluginExternalDataSourceEventSummary :: KM.KeyMap Value -> Maybe Value
+pluginExternalDataSourceEventSummary obj = case KM.lookup "plugins" obj of
+  Just (Array plugins) ->
+    let pluginSummaries = map pluginExternalSummary (toList plugins)
+        totalCount = sum [count | (_, count, _) <- pluginSummaries]
+        totalFailures = sum [failures | (_, _, failures) <- pluginSummaries]
+        visiblePlugins = [summary | (summary, count, failures) <- pluginSummaries, count > 0 || failures > 0]
+    in Just $ object
+      [ "count" .= totalCount
+      , "failures" .= totalFailures
+      , "plugins" .= visiblePlugins
+      ]
+  _ -> case KM.lookup "external_data_sources" obj of
+    Just (Array diagnostics) ->
+      let diagnosticValues = toList diagnostics
+      in Just $ object
+        [ "count" .= length diagnosticValues
+        , "failures" .= externalDiagnosticsFailureCount diagnosticValues
+        , "diagnostics" .= map externalDiagnosticSummary diagnosticValues
+        ]
+    _ -> Nothing
+
+pluginExternalSummary :: Value -> (Value, Int, Int)
+pluginExternalSummary (Object plugin) =
+  let pluginName = case lookupStringField plugin "name" of
+        Just name -> Just name
+        Nothing -> lookupStringField plugin "plugin"
+      diagnostics = case KM.lookup "external_data_sources" plugin of
+        Just (Array values) -> toList values
+        _ -> []
+      failureCount = externalDiagnosticsFailureCount diagnostics
+  in ( object
+        [ "plugin" .= pluginName
+        , "count" .= length diagnostics
+        , "failures" .= failureCount
+        , "diagnostics" .= map externalDiagnosticSummary diagnostics
+        ]
+     , length diagnostics
+     , failureCount
+     )
+pluginExternalSummary _ = (object ["count" .= (0 :: Int), "failures" .= (0 :: Int), "diagnostics" .= ([] :: [Value])], 0, 0)
+
+externalDiagnosticSummary :: Value -> Value
+externalDiagnosticSummary (Object diagnostic) = object
+  [ "role" .= lookupStringField diagnostic "role"
+  , "provider" .= lookupStringField diagnostic "provider"
+  , "consumer" .= lookupStringField diagnostic "consumer"
+  , "source" .= lookupStringField diagnostic "source"
+  , "grant" .= lookupStringField diagnostic "grant"
+  , "status" .= lookupStringField diagnostic "status"
+  , "availability" .= lookupStringField diagnostic "availability"
+  , "failure_reason" .= lookupStringField diagnostic "failure_reason"
+  , "resource_availability" .= KM.lookup "resource_availability" diagnostic
+  , "grants" .= externalGrantSummaries diagnostic
+  ]
+externalDiagnosticSummary _ = object []
+
+externalGrantSummaries :: KM.KeyMap Value -> [Value]
+externalGrantSummaries diagnostic = case KM.lookup "grants" diagnostic of
+  Just (Array grants) -> map externalGrantSummary (toList grants)
+  _ -> []
+
+externalGrantSummary :: Value -> Value
+externalGrantSummary (Object grant) = object
+  [ "name" .= lookupStringField grant "name"
+  , "status" .= lookupStringField grant "status"
+  , "availability" .= lookupStringField grant "availability"
+  , "failure_reason" .= lookupStringField grant "failure_reason"
+  , "resource_availability" .= KM.lookup "resource_availability" grant
+  ]
+externalGrantSummary _ = object []
+
+externalDiagnosticsFailureCount :: [Value] -> Int
+externalDiagnosticsFailureCount = length . filter externalDiagnosticHasFailure
+
+externalDiagnosticHasFailure :: Value -> Bool
+externalDiagnosticHasFailure (Object diagnostic) =
+  fieldPresent diagnostic "failure_reason"
+    || any externalGrantHasFailure (externalGrantValues diagnostic)
+externalDiagnosticHasFailure _ = False
+
+externalGrantHasFailure :: Value -> Bool
+externalGrantHasFailure (Object grant) = fieldPresent grant "failure_reason"
+externalGrantHasFailure _ = False
+
+externalGrantValues :: KM.KeyMap Value -> [Value]
+externalGrantValues diagnostic = case KM.lookup "grants" diagnostic of
+  Just (Array grants) -> toList grants
+  _ -> []
+
+fieldPresent :: KM.KeyMap Value -> Text -> Bool
+fieldPresent obj field = case KM.lookup (Key.fromText field) obj of
+  Just Null -> False
+  Just (String value) -> not (Text.null value)
+  Just _ -> True
+  Nothing -> False
 
 lookupStringField :: KM.KeyMap Value -> Text -> Maybe Text
 lookupStringField obj field = case KM.lookup (Key.fromText field) obj of

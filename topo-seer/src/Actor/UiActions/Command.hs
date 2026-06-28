@@ -226,7 +226,7 @@ startGeneration req = do
       lifecycles = Map.fromList [(lpName lp, lpLifecycle lp) | lp <- loadedPlugins]
   disabledPlugins <- getDisabledPlugins pluginHandle
   let availableDeps = pluginAvailableDependencyKeys disabledPlugins loadedPlugins
-      diagnosticLines = Map.fromList [(lpName lp, pluginPanelDiagnosticLines availableDeps lp) | lp <- loadedPlugins]
+      diagnosticLines = Map.fromList [(lpName lp, pluginPanelDiagnosticLines disabledPlugins availableDeps lp) | lp <- loadedPlugins]
       diagnosticStatuses = Map.fromList
         [ (lpName lp, pluginDiagnosticStateText (pluginDiagnosticState disabledPlugins availableDeps lp))
         | lp <- loadedPlugins

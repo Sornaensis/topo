@@ -158,7 +158,8 @@ drawConfigLabels renderer fontCache ui layout = when (uiShowConfig ui) $ do
       forM_ (zip [0..] pluginNames) $ \(idx, pName) -> do
         let Rect (V2 _ ry, V2 _ _rowH) = sr (configScrollRowRect idx layout)
             labelY = ry + 4
-        drawTextLineTruncated fontCache (V2 (sx + pad) labelY) textPipelinePluginName pluginLabelMaxW pName
+            statusSuffix = maybe "" (\status -> " [" <> status <> "]") (Map.lookup pName (uiPluginDiagnosticStatuses ui))
+        drawTextLineTruncated fontCache (V2 (sx + pad) labelY) textPipelinePluginName pluginLabelMaxW (pName <> statusSuffix)
       -- Resource labels when plugin selected
       let resourceOffset = length pluginNames
       case selectedPlugin of

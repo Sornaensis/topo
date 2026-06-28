@@ -19,6 +19,10 @@ module Actor.PluginManager
   , PluginStateLease(..)
   , PluginDiagnosticState(..)
   , PluginDependencyDiagnostic(..)
+  , PluginExternalDataSourceResourceDiagnostic(..)
+  , PluginExternalDataSourceConfigRefDiagnostic(..)
+  , PluginExternalDataSourceStatusDiagnostic(..)
+  , PluginExternalDataSourceGrantDiagnostic(..)
   , PluginExternalDataSourceDiagnostic(..)
   , PluginStatus(..)
   , pluginLifecycleSnapshot
@@ -30,6 +34,7 @@ module Actor.PluginManager
   , pluginAvailableDependencyKeys
   , pluginDependencyDiagnostics
   , pluginExternalDataSourceDiagnostics
+  , pluginExternalDataSourceDiagnosticsFor
   , pluginPanelDiagnosticLines
   , pluginResourceNames
   , pluginCapabilitiesText
@@ -76,6 +81,10 @@ import Actor.PluginManager.Types
   , PluginStateLease(..)
   , PluginDiagnosticState(..)
   , PluginDependencyDiagnostic(..)
+  , PluginExternalDataSourceResourceDiagnostic(..)
+  , PluginExternalDataSourceConfigRefDiagnostic(..)
+  , PluginExternalDataSourceStatusDiagnostic(..)
+  , PluginExternalDataSourceGrantDiagnostic(..)
   , PluginExternalDataSourceDiagnostic(..)
   , PluginStatus(..)
   , pluginLifecycleSnapshot
@@ -87,6 +96,7 @@ import Actor.PluginManager.Types
   , pluginAvailableDependencyKeys
   , pluginDependencyDiagnostics
   , pluginExternalDataSourceDiagnostics
+  , pluginExternalDataSourceDiagnosticsFor
   , pluginPanelDiagnosticLines
   , pluginResourceNames
   , pluginCapabilitiesText

@@ -6,6 +6,7 @@ import Actor.Log (LogLevel(..))
 import Actor.PluginManager
   ( LoadedPlugin(..)
   , PluginDiagnosticState(..)
+  , PluginExternalDataSourceGrantDiagnostic(..)
   , PluginExternalDataSourceDiagnostic(..)
   , PluginLifecycleSnapshot(..)
   , PluginLifecycleState(..)
@@ -13,13 +14,16 @@ import Actor.PluginManager
   , pluginAvailableDependencyKeys
   , pluginDiagnosticState
   , pluginExternalDataSourceDiagnostics
+  , pluginExternalDataSourceDiagnosticsFor
   , pluginLifecycleSnapshot
+  , pluginPanelDiagnosticLines
   )
 import Data.Aeson (Value(..))
 import Data.List (nub, sort)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
+import qualified Data.Text as Text
 import Data.Time (UTCTime(..), fromGregorian, secondsToDiffTime)
 import Test.Hspec
 import Topo.Overlay.Schema (OverlayFieldType(..))
@@ -27,8 +31,25 @@ import Topo.Plugin (Capability(..))
 import Topo.Plugin.DataResource (DataFieldDef(..), DataFieldType(..), DataOperations(..), DataResourceSchema(..), currentDataResourceSchemaVersion, defaultDataResourceVersion, defaultDataPagination, noOperations)
 import Topo.Plugin.RPC.DataService (DataResourceErrorCode(..))
 import Topo.Plugin.RPC.Manifest
-  ( RPCManifest(..), RPCGeneratorDecl(..), defaultRPCManifestRuntime
-  , defaultRPCStartPolicy, defaultRPCUIHints, manifestV3
+  ( RPCExternalDataSourceAccess(..)
+  , RPCExternalDataSourceAccessMode(..)
+  , RPCExternalDataSourceAvailability(..)
+  , RPCExternalDataSourceCapability(..)
+  , RPCExternalDataSourceConfigOrigin(..)
+  , RPCExternalDataSourceConfigRef(..)
+  , RPCExternalDataSourceDecl(..)
+  , RPCExternalDataSourceGrant(..)
+  , RPCExternalDataSourceHealth(..)
+  , RPCExternalDataSourceRef(..)
+  , RPCExternalDataSourceStatus(..)
+  , RPCExternalDataSourceStatusState(..)
+  , RPCGeneratorDecl(..)
+  , RPCManifest(..)
+  , defaultRPCExternalDataSourceStatus
+  , defaultRPCManifestRuntime
+  , defaultRPCStartPolicy
+  , defaultRPCUIHints
+  , manifestV3
   )
 import Topo.Simulation (SimNodeId(..))
 import Topo.Types (ChunkId(..))
@@ -336,6 +357,8 @@ spec = describe "AppService surface" $ do
     dataResourceLoading dataResourceStateContract `shouldBe` False
     asyncStatusPhase (dataResourceAsyncStatus dataResourceStateContract) `shouldBe` AsyncStatusIdle
     dataResourceHasSelection dataResourceStateContract `shouldBe` True
+    dataResourceExternalDataSourceCount dataResourceStateContract `shouldBe` 0
+    dataResourceExternalDataSourceFailures dataResourceStateContract `shouldBe` 0
 
   it "classifies plugin diagnostics and preserves backend-neutral data-source ownership" $ do
     let availableDeps = pluginAvailableDependencyKeys Set.empty [diagnosticReadyPlugin]
@@ -345,11 +368,34 @@ spec = describe "AppService surface" $ do
     pluginDiagnosticState (Set.singleton "provider-x")
       (pluginAvailableDependencyKeys (Set.singleton "provider-x") [diagnosticProviderPlugin, diagnosticConsumerPlugin])
       diagnosticConsumerPlugin `shouldBe` DiagnosticWaitingForDependencies
-    map pedsOwnership sources `shouldBe` ["plugin-owned"]
-    map pedsHostRole sources `shouldBe` ["consumer-router"]
-    map pedsLifecycleBoundary sources `shouldBe` ["external-provider-managed"]
-    map pedsDataReadGrant sources `shouldBe` [True]
-    map pedsDataWriteGrant sources `shouldBe` [True]
+    map pedsRole sources `shouldBe` ["provider", "consumer"]
+    map pedsOwnership sources `shouldBe` ["provider-owned", "provider-owned"]
+    map pedsHostRole sources `shouldBe` ["broker", "consumer-router"]
+    map pedsLifecycleBoundary sources `shouldBe` ["external-provider-managed", "external-provider-managed"]
+    map pedsProvider sources `shouldBe` ["weather", "weather"]
+    map pedsConsumer sources `shouldBe` ["brokered-by-topo", "weather"]
+    map pedsResources sources `shouldBe` [["stations"], ["stations"]]
+    map pedsDataReadGrant sources `shouldBe` [True, True]
+    map pedsDataWriteGrant sources `shouldBe` [False, False]
+    map pedsFailureReason sources `shouldBe` [Nothing, Just "provider grant not brokered"]
+    case sources of
+      providerDiag:_ -> do
+        map pedsgName (pedsGrants providerDiag) `shouldBe` ["stations-read"]
+        map pedsgFailureReason (pedsGrants providerDiag) `shouldBe` [Just "grant pending provider health check"]
+      _ -> expectationFailure "expected provider external data-source diagnostic"
+    let failedPlugin = diagnosticReadyPlugin
+          { lpStatus = PluginError "runtime failed"
+          , lpLifecycle = pluginLifecycleSnapshot appServiceTestTime LifecycleFailed
+              (Just "runtime failed") (Just "runtime_failed") (Just "runtime failed") Nothing Nothing Nothing []
+          }
+        failedSources = pluginExternalDataSourceDiagnostics failedPlugin
+    map pedsAvailability failedSources `shouldBe` ["unavailable", "unavailable"]
+    map pedsFailureReason failedSources `shouldBe` [Just "plugin lifecycle is failed: runtime failed", Just "plugin lifecycle is failed: runtime failed"]
+    let disabledSources = pluginExternalDataSourceDiagnosticsFor (Set.singleton "weather") [diagnosticReadyPlugin] diagnosticReadyPlugin
+    map pedsAvailability disabledSources `shouldBe` ["unavailable", "unavailable"]
+    map pedsFailureReason disabledSources `shouldBe` [Just "plugin is disabled", Just "plugin is disabled"]
+    let bareStageOnlyPanel = pluginPanelDiagnosticLines Set.empty (Set.singleton "weather") diagnosticReadyPlugin
+    bareStageOnlyPanel `shouldSatisfy` any (Text.isInfixOf "provider plugin is unavailable")
 
   it "keeps logs, screenshots, async status, and event hooks typed" $ do
     logGetMinLevel logRequestContract `shouldBe` Just LogWarn
@@ -775,6 +821,8 @@ diagnosticReadyManifest = diagnosticBaseManifest
   { rmGenerator = Just (RPCGeneratorDecl "biomes" ["climate"])
   , rmCapabilities = [CapDataRead, CapDataWrite]
   , rmDataResources = [diagnosticResource]
+  , rmExternalDataSources = [diagnosticExternalSource]
+  , rmExternalDataSourceRefs = [diagnosticExternalRef]
   }
 
 diagnosticWaitingManifest :: RPCManifest
@@ -828,6 +876,79 @@ diagnosticResource = DataResourceSchema
   , drsPagination = defaultDataPagination
   }
 
+diagnosticExternalSource :: RPCExternalDataSourceDecl
+diagnosticExternalSource = RPCExternalDataSourceDecl
+  { redsdName = "station-ledger"
+  , redsdLabel = "Station Ledger"
+  , redsdDescription = "Provider-owned station ledger"
+  , redsdKind = "ledger"
+  , redsdCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
+  , redsdResources = ["stations"]
+  , redsdStatus = defaultRPCExternalDataSourceStatus
+      { redssState = ExternalStatusReady
+      , redssProviderId = Just "weather"
+      , redssAvailability = Just ExternalAvailabilityAvailable
+      , redssHealth = Just ExternalHealthHealthy
+      , redssAccessMode = Just ExternalAccessModeReadOnly
+      , redssCapabilityScope = [ExternalSourceQuery, ExternalSourceHealth]
+      }
+  , redsdConnection = Nothing
+  , redsdConfigRefs = [diagnosticExternalConfig "station-ledger-binding" ExternalConfigProvider]
+  , redsdGrants = [diagnosticExternalGrant]
+  , redsdUiHints = defaultRPCUIHints
+  }
+
+diagnosticExternalGrant :: RPCExternalDataSourceGrant
+diagnosticExternalGrant = RPCExternalDataSourceGrant
+  { redsgName = "stations-read"
+  , redsgAccess = [ExternalAccessRead]
+  , redsgCapabilities = [ExternalSourceQuery]
+  , redsgResources = ["stations"]
+  , redsgStatus = defaultRPCExternalDataSourceStatus
+      { redssState = ExternalStatusDegraded
+      , redssMessage = Just "grant pending provider health check"
+      , redssProviderId = Just "weather"
+      , redssAvailability = Just ExternalAvailabilityDegraded
+      , redssHealth = Just ExternalHealthDegraded
+      , redssAccessMode = Just ExternalAccessModeReadOnly
+      , redssCapabilityScope = [ExternalSourceQuery]
+      }
+  , redsgReference = Nothing
+  , redsgConfigRefs = [diagnosticExternalConfig "stations-read-binding" ExternalConfigProvider]
+  }
+
+diagnosticExternalRef :: RPCExternalDataSourceRef
+diagnosticExternalRef = RPCExternalDataSourceRef
+  { redsrName = "station-ledger-ref"
+  , redsrProvider = Just "weather"
+  , redsrSource = "station-ledger"
+  , redsrRequired = True
+  , redsrAccess = [ExternalAccessRead]
+  , redsrResources = ["stations"]
+  , redsrGrant = Just "stations-read"
+  , redsrStatus = defaultRPCExternalDataSourceStatus
+      { redssState = ExternalStatusUnavailable
+      , redssMessage = Just "provider grant not brokered"
+      , redssProviderId = Just "weather"
+      , redssAvailability = Just ExternalAvailabilityUnavailable
+      , redssHealth = Just ExternalHealthUnhealthy
+      , redssAccessMode = Just ExternalAccessModeDisabled
+      }
+  , redsrReference = Nothing
+  , redsrConfigRefs = [diagnosticExternalConfig "station-ledger-ref-binding" ExternalConfigProvider]
+  , redsrUiHints = defaultRPCUIHints
+  }
+
+diagnosticExternalConfig :: Text -> RPCExternalDataSourceConfigOrigin -> RPCExternalDataSourceConfigRef
+diagnosticExternalConfig name origin = RPCExternalDataSourceConfigRef
+  { redscrName = name
+  , redscrOrigin = origin
+  , redscrKey = name <> "-key"
+  , redscrRequired = True
+  , redscrCompatibility = Just "manifest-v3"
+  , redscrMetadata = Nothing
+  }
+
 appServiceTestTime :: UTCTime
 appServiceTestTime = UTCTime (fromGregorian 2026 1 1) (secondsToDiffTime 0)
 
@@ -851,6 +972,9 @@ dataResourceStateContract = DataResourceStateResponse
   , dataResourceEditMode = True
   , dataResourceCreateMode = False
   , dataResourceHasSelection = True
+  , dataResourceExternalDataSources = []
+  , dataResourceExternalDataSourceCount = 0
+  , dataResourceExternalDataSourceFailures = 0
   }
 
 simulationDagContract :: SimulationDagResponse

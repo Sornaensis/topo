@@ -918,32 +918,152 @@ pluginDependencySchema = inlineObjectSchema
 
 pluginExternalDataSourceSchema :: Value
 pluginExternalDataSourceSchema = inlineObjectSchema
-  [ "provider"
+  [ "role"
+  , "plugin"
+  , "provider"
   , "consumer"
+  , "source"
   , "resource"
   , "label"
+  , "access"
+  , "capabilities"
+  , "resources"
   , "status"
+  , "status_summary"
+  , "status_detail"
+  , "availability"
+  , "resource_availability"
+  , "config_refs"
+  , "grants"
+  , "grant_summary"
   , "ownership"
   , "host_role"
   , "lifecycle_boundary"
-  , "operations"
-  , "grants"
+  , "relationship"
   ]
-  [ ("provider", stringSchema)
+  [ ("role", enumStringSchema ["provider", "consumer"])
+  , ("plugin", stringSchema)
+  , ("provider", stringSchema)
   , ("consumer", stringSchema)
+  , ("source", stringSchema)
   , ("resource", stringSchema)
+  , ("grant", nullableSchema stringSchema)
   , ("label", stringSchema)
-  , ("status", stringSchema)
-  , ("ownership", enumStringSchema ["plugin-owned"])
-  , ("host_role", enumStringSchema ["consumer-router"])
-  , ("lifecycle_boundary", enumStringSchema ["external-provider-managed"])
-  , ("operations", dataOperationsSchema)
-  , ("overlay", nullableSchema stringSchema)
-  , ("grants", inlineObjectSchema ["data_read", "data_write"]
+  , ("kind", stringSchema)
+  , ("description", stringSchema)
+  , ("required", nullableSchema booleanSchema)
+  , ("access", arraySchema externalDataAccessSchema)
+  , ("capabilities", arraySchema externalDataCapabilitySchema)
+  , ("resources", arraySchema stringSchema)
+  , ("status", externalDataStatusStateSchema)
+  , ("status_summary", stringSchema)
+  , ("status_detail", externalDataStatusDetailSchema)
+  , ("availability", externalDataAvailabilitySchema)
+  , ("health", externalDataHealthSchema)
+  , ("access_mode", externalDataAccessModeSchema)
+  , ("failure_reason", stringSchema)
+  , ("resource_availability", arraySchema externalDataResourceAvailabilitySchema)
+  , ("config_refs", arraySchema externalDataConfigRefSchema)
+  , ("grants", arraySchema externalDataGrantSchema)
+  , ("grant_summary", inlineObjectSchema ["data_read", "data_write"]
       [ ("data_read", booleanSchema)
       , ("data_write", booleanSchema)
       ])
+  , ("ownership", enumStringSchema ["provider-owned"])
+  , ("host_role", enumStringSchema ["broker", "consumer-router"])
+  , ("lifecycle_boundary", enumStringSchema ["external-provider-managed"])
+  , ("relationship", inlineObjectSchema ["role", "plugin", "provider", "consumer", "source"]
+      [ ("role", enumStringSchema ["provider", "consumer"])
+      , ("plugin", stringSchema)
+      , ("provider", stringSchema)
+      , ("consumer", stringSchema)
+      , ("source", stringSchema)
+      , ("grant", nullableSchema stringSchema)
+      ])
   ]
+
+externalDataGrantSchema :: Value
+externalDataGrantSchema = inlineObjectSchema
+  [ "name"
+  , "access"
+  , "capabilities"
+  , "resources"
+  , "status"
+  , "status_summary"
+  , "status_detail"
+  , "availability"
+  , "resource_availability"
+  , "config_refs"
+  ]
+  [ ("name", stringSchema)
+  , ("access", arraySchema externalDataAccessSchema)
+  , ("capabilities", arraySchema externalDataCapabilitySchema)
+  , ("resources", arraySchema stringSchema)
+  , ("status", externalDataStatusStateSchema)
+  , ("status_summary", stringSchema)
+  , ("status_detail", externalDataStatusDetailSchema)
+  , ("availability", externalDataAvailabilitySchema)
+  , ("health", externalDataHealthSchema)
+  , ("access_mode", externalDataAccessModeSchema)
+  , ("failure_reason", stringSchema)
+  , ("resource_availability", arraySchema externalDataResourceAvailabilitySchema)
+  , ("config_refs", arraySchema externalDataConfigRefSchema)
+  ]
+
+externalDataResourceAvailabilitySchema :: Value
+externalDataResourceAvailabilitySchema = inlineObjectSchema
+  [ "resource", "available", "status" ]
+  [ ("resource", stringSchema)
+  , ("available", booleanSchema)
+  , ("status", externalDataAvailabilitySchema)
+  , ("detail", stringSchema)
+  ]
+
+externalDataConfigRefSchema :: Value
+externalDataConfigRefSchema = inlineObjectSchema
+  [ "name", "origin", "required", "key_present" ]
+  [ ("name", stringSchema)
+  , ("origin", enumStringSchema ["user", "provider", "environment", "deployment"])
+  , ("required", booleanSchema)
+  , ("key_present", booleanSchema)
+  , ("compatibility", stringSchema)
+  ]
+
+externalDataStatusDetailSchema :: Value
+externalDataStatusDetailSchema = inlineObjectSchema
+  [ "state" ]
+  [ ("state", externalDataStatusStateSchema)
+  , ("message", stringSchema)
+  , ("providerId", stringSchema)
+  , ("availability", externalDataAvailabilitySchema)
+  , ("health", externalDataHealthSchema)
+  , ("accessMode", externalDataAccessModeSchema)
+  , ("capabilityScope", arraySchema externalDataCapabilitySchema)
+  , ("version", stringSchema)
+  , ("compatibility", stringSchema)
+  ]
+
+externalDataStatusStateSchema :: Value
+externalDataStatusStateSchema = enumStringSchema
+  [ "unknown", "unconfigured", "ready", "degraded", "unavailable" ]
+
+externalDataAvailabilitySchema :: Value
+externalDataAvailabilitySchema = enumStringSchema
+  [ "unknown", "available", "degraded", "unavailable", "unconfigured" ]
+
+externalDataHealthSchema :: Value
+externalDataHealthSchema = enumStringSchema
+  [ "unknown", "healthy", "degraded", "unhealthy" ]
+
+externalDataAccessModeSchema :: Value
+externalDataAccessModeSchema = enumStringSchema
+  [ "read_only", "read_write", "admin", "disabled", "provider_managed" ]
+
+externalDataAccessSchema :: Value
+externalDataAccessSchema = enumStringSchema ["read", "write", "admin"]
+
+externalDataCapabilitySchema :: Value
+externalDataCapabilitySchema = enumStringSchema ["query", "mutate", "subscribe", "migrate", "health"]
 
 pluginStartPolicySchema :: Value
 pluginStartPolicySchema = inlineObjectSchema
@@ -1040,6 +1160,9 @@ dataResourcesListResponseSchema = objectSchema "DataResourcesListResponse"
   [ "plugin", "resources" ]
   [ ("plugin", stringSchema)
   , ("resources", arraySchema dataResourceSchema)
+  , ("external_data_sources", arraySchema pluginExternalDataSourceSchema)
+  , ("external_data_source_count", integerSchema)
+  , ("external_data_source_failures", integerSchema)
   ]
 
 dataRecordsListResponseSchema :: JsonSchema
@@ -1113,6 +1236,9 @@ dataStateResponseSchema = objectSchema "DataStateResponse"
   , ("create_mode", booleanSchema)
   , ("has_selection", booleanSchema)
   , ("selected_key", anySchema)
+  , ("external_data_sources", arraySchema pluginExternalDataSourceSchema)
+  , ("external_data_source_count", integerSchema)
+  , ("external_data_source_failures", integerSchema)
   ]
 
 dataPluginSummarySchema :: Value
@@ -1120,6 +1246,9 @@ dataPluginSummarySchema = inlineObjectSchema
   [ "plugin", "resources" ]
   [ ("plugin", stringSchema)
   , ("resources", arraySchema stringSchema)
+  , ("external_data_sources", arraySchema pluginExternalDataSourceSchema)
+  , ("external_data_source_count", integerSchema)
+  , ("external_data_source_failures", integerSchema)
   ]
 
 dataResourceSchema :: Value

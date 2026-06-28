@@ -532,7 +532,7 @@ executeWidgetClick ctx wid = do
       setDisabledPlugins pluginH toggled
       loaded <- getLoadedPlugins pluginH
       let availableDeps = pluginAvailableDependencyKeys toggled loaded
-          diagnosticLines = Map.fromList [(lpName lp, pluginPanelDiagnosticLines availableDeps lp) | lp <- loaded]
+          diagnosticLines = Map.fromList [(lpName lp, pluginPanelDiagnosticLines toggled availableDeps lp) | lp <- loaded]
           diagnosticStatuses = Map.fromList
             [ (lpName lp, pluginDiagnosticStateText (pluginDiagnosticState toggled availableDeps lp))
             | lp <- loaded

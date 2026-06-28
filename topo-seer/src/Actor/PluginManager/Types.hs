@@ -10,6 +10,10 @@ module Actor.PluginManager.Types
   , PluginLifecycleSnapshot(..)
   , PluginDiagnosticState(..)
   , PluginDependencyDiagnostic(..)
+  , PluginExternalDataSourceResourceDiagnostic(..)
+  , PluginExternalDataSourceConfigRefDiagnostic(..)
+  , PluginExternalDataSourceStatusDiagnostic(..)
+  , PluginExternalDataSourceGrantDiagnostic(..)
   , PluginExternalDataSourceDiagnostic(..)
   , LoadedPlugin(..)
   , PluginManagerState(..)
@@ -24,6 +28,7 @@ module Actor.PluginManager.Types
   , pluginAvailableDependencyKeys
   , pluginDependencyDiagnostics
   , pluginExternalDataSourceDiagnostics
+  , pluginExternalDataSourceDiagnosticsFor
   , pluginPanelDiagnosticLines
   , pluginResourceNames
   , pluginCapabilitiesText
@@ -54,14 +59,27 @@ import System.Process (ProcessHandle)
 import Topo.Overlay.Schema (OverlaySchema(..))
 import Topo.Pipeline.Stage (allBuiltinStageIds, stageCanonicalName)
 import Topo.Plugin (Capability(..))
-import Topo.Plugin.DataResource (DataOperations(..), DataResourceSchema(..))
+import Topo.Plugin.DataResource (DataResourceSchema(..))
 import Topo.Plugin.RPC
   ( RPCConnection
+  , RPCExternalDataSourceAccess(..)
+  , RPCExternalDataSourceAccessMode(..)
+  , RPCExternalDataSourceAvailability(..)
+  , RPCExternalDataSourceCapability(..)
+  , RPCExternalDataSourceConfigOrigin(..)
+  , RPCExternalDataSourceConfigRef(..)
+  , RPCExternalDataSourceDecl(..)
+  , RPCExternalDataSourceGrant(..)
+  , RPCExternalDataSourceHealth(..)
+  , RPCExternalDataSourceRef(..)
+  , RPCExternalDataSourceStatus(..)
+  , RPCExternalDataSourceStatusState(..)
   , RPCGeneratorDecl(..)
   , RPCManifest(..)
   , RPCSimulationDecl(..)
   , RPCStartPolicy(..)
   , RPCRestartMode(..)
+  , RPCUIHints(..)
   )
 
 -- | Runtime status of a plugin.
@@ -225,41 +243,182 @@ instance ToJSON PluginDependencyDiagnostic where
     , "detail" .= pddDetail dep
     ]
 
--- | Backend-neutral data-source diagnostics.  The provider is the plugin; topo
--- is only the consumer/router for the declared grant and does not own provider
--- storage or lifecycle.
+-- | Backend-neutral resource availability for an external data-source status.
+-- These rows intentionally describe provider-owned resources without exposing
+-- storage, schema, migration, connection, or locking internals as topo state.
+data PluginExternalDataSourceResourceDiagnostic = PluginExternalDataSourceResourceDiagnostic
+  { pedsrResource :: !Text
+  , pedsrAvailable :: !Bool
+  , pedsrStatus :: !Text
+  , pedsrDetail :: !(Maybe Text)
+  } deriving (Eq, Show)
+
+instance ToJSON PluginExternalDataSourceResourceDiagnostic where
+  toJSON resource = object $
+    [ "resource" .= pedsrResource resource
+    , "available" .= pedsrAvailable resource
+    , "status" .= pedsrStatus resource
+    ] <>
+    [ "detail" .= detail | Just detail <- [pedsrDetail resource] ]
+
+-- | Sanitised config-reference diagnostics. The opaque key is deliberately not
+-- surfaced; callers get the binding name/origin and whether a key exists.
+data PluginExternalDataSourceConfigRefDiagnostic = PluginExternalDataSourceConfigRefDiagnostic
+  { pedscName :: !Text
+  , pedscOrigin :: !Text
+  , pedscRequired :: !Bool
+  , pedscCompatibility :: !(Maybe Text)
+  , pedscKeyPresent :: !Bool
+  } deriving (Eq, Show)
+
+instance ToJSON PluginExternalDataSourceConfigRefDiagnostic where
+  toJSON configRef = object $
+    [ "name" .= pedscName configRef
+    , "origin" .= pedscOrigin configRef
+    , "required" .= pedscRequired configRef
+    , "key_present" .= pedscKeyPresent configRef
+    ] <>
+    [ "compatibility" .= compatibility | Just compatibility <- [pedscCompatibility configRef] ]
+
+-- | Sanitised status detail. Opaque provider diagnostics are not copied here;
+-- providers own those internals and topo only reports backend-neutral status.
+data PluginExternalDataSourceStatusDiagnostic = PluginExternalDataSourceStatusDiagnostic
+  { pedssState :: !Text
+  , pedssMessage :: !(Maybe Text)
+  , pedssProviderId :: !(Maybe Text)
+  , pedssAvailability :: !(Maybe Text)
+  , pedssHealth :: !(Maybe Text)
+  , pedssAccessMode :: !(Maybe Text)
+  , pedssCapabilityScope :: ![RPCExternalDataSourceCapability]
+  , pedssVersion :: !(Maybe Text)
+  , pedssCompatibility :: !(Maybe Text)
+  } deriving (Eq, Show)
+
+instance ToJSON PluginExternalDataSourceStatusDiagnostic where
+  toJSON status = object $
+    [ "state" .= pedssState status
+    , "capabilityScope" .= pedssCapabilityScope status
+    ] <>
+    [ "message" .= message | Just message <- [pedssMessage status] ] <>
+    [ "providerId" .= providerId | Just providerId <- [pedssProviderId status] ] <>
+    [ "availability" .= availability | Just availability <- [pedssAvailability status] ] <>
+    [ "health" .= health | Just health <- [pedssHealth status] ] <>
+    [ "accessMode" .= accessMode | Just accessMode <- [pedssAccessMode status] ] <>
+    [ "version" .= version | Just version <- [pedssVersion status] ] <>
+    [ "compatibility" .= compatibility | Just compatibility <- [pedssCompatibility status] ]
+
+-- | One grant offered by a provider-owned external data source.
+data PluginExternalDataSourceGrantDiagnostic = PluginExternalDataSourceGrantDiagnostic
+  { pedsgName :: !Text
+  , pedsgAccess :: ![RPCExternalDataSourceAccess]
+  , pedsgCapabilities :: ![RPCExternalDataSourceCapability]
+  , pedsgResources :: ![Text]
+  , pedsgStatus :: !Text
+  , pedsgStatusSummary :: !Text
+  , pedsgStatusDetail :: !PluginExternalDataSourceStatusDiagnostic
+  , pedsgAvailability :: !Text
+  , pedsgHealth :: !(Maybe Text)
+  , pedsgAccessMode :: !(Maybe Text)
+  , pedsgFailureReason :: !(Maybe Text)
+  , pedsgResourceAvailability :: ![PluginExternalDataSourceResourceDiagnostic]
+  , pedsgConfigRefs :: ![PluginExternalDataSourceConfigRefDiagnostic]
+  } deriving (Eq, Show)
+
+instance ToJSON PluginExternalDataSourceGrantDiagnostic where
+  toJSON grant = object $
+    [ "name" .= pedsgName grant
+    , "access" .= pedsgAccess grant
+    , "capabilities" .= pedsgCapabilities grant
+    , "resources" .= pedsgResources grant
+    , "status" .= pedsgStatus grant
+    , "status_summary" .= pedsgStatusSummary grant
+    , "status_detail" .= pedsgStatusDetail grant
+    , "availability" .= pedsgAvailability grant
+    , "resource_availability" .= pedsgResourceAvailability grant
+    , "config_refs" .= pedsgConfigRefs grant
+    ] <>
+    [ "health" .= health | Just health <- [pedsgHealth grant] ] <>
+    [ "access_mode" .= accessMode | Just accessMode <- [pedsgAccessMode grant] ] <>
+    [ "failure_reason" .= reason | Just reason <- [pedsgFailureReason grant] ]
+
+-- | Backend-neutral external data-source diagnostics. Provider plugins,
+-- adapters, or external systems own the backing data source; topo only reports
+-- declarations, grants, consumer references, opaque config-reference presence,
+-- status/health, failure reasons, and availability.
 data PluginExternalDataSourceDiagnostic = PluginExternalDataSourceDiagnostic
-  { pedsProvider :: !Text
+  { pedsRole :: !Text
+  , pedsPlugin :: !Text
+  , pedsProvider :: !Text
   , pedsConsumer :: !Text
+  , pedsSource :: !Text
+  , pedsGrant :: !(Maybe Text)
   , pedsResource :: !Text
   , pedsLabel :: !Text
+  , pedsKind :: !(Maybe Text)
+  , pedsDescription :: !(Maybe Text)
+  , pedsRequired :: !(Maybe Bool)
+  , pedsAccess :: ![RPCExternalDataSourceAccess]
+  , pedsCapabilities :: ![RPCExternalDataSourceCapability]
+  , pedsResources :: ![Text]
   , pedsStatus :: !Text
+  , pedsStatusSummary :: !Text
+  , pedsStatusDetail :: !PluginExternalDataSourceStatusDiagnostic
+  , pedsAvailability :: !Text
+  , pedsHealth :: !(Maybe Text)
+  , pedsAccessMode :: !(Maybe Text)
+  , pedsFailureReason :: !(Maybe Text)
+  , pedsResourceAvailability :: ![PluginExternalDataSourceResourceDiagnostic]
+  , pedsConfigRefs :: ![PluginExternalDataSourceConfigRefDiagnostic]
+  , pedsGrants :: ![PluginExternalDataSourceGrantDiagnostic]
   , pedsOwnership :: !Text
   , pedsHostRole :: !Text
   , pedsLifecycleBoundary :: !Text
-  , pedsOperations :: !DataOperations
-  , pedsOverlay :: !(Maybe Text)
   , pedsDataReadGrant :: !Bool
   , pedsDataWriteGrant :: !Bool
   } deriving (Eq, Show)
 
 instance ToJSON PluginExternalDataSourceDiagnostic where
-  toJSON source = object
-    [ "provider" .= pedsProvider source
+  toJSON source = object $
+    [ "role" .= pedsRole source
+    , "plugin" .= pedsPlugin source
+    , "provider" .= pedsProvider source
     , "consumer" .= pedsConsumer source
+    , "source" .= pedsSource source
     , "resource" .= pedsResource source
     , "label" .= pedsLabel source
+    , "access" .= pedsAccess source
+    , "capabilities" .= pedsCapabilities source
+    , "resources" .= pedsResources source
     , "status" .= pedsStatus source
-    , "ownership" .= pedsOwnership source
-    , "host_role" .= pedsHostRole source
-    , "lifecycle_boundary" .= pedsLifecycleBoundary source
-    , "operations" .= dataOperationsDiagnosticJSON (pedsOperations source)
-    , "overlay" .= pedsOverlay source
-    , "grants" .= object
+    , "status_summary" .= pedsStatusSummary source
+    , "status_detail" .= pedsStatusDetail source
+    , "availability" .= pedsAvailability source
+    , "resource_availability" .= pedsResourceAvailability source
+    , "config_refs" .= pedsConfigRefs source
+    , "grants" .= pedsGrants source
+    , "grant_summary" .= object
         [ "data_read" .= pedsDataReadGrant source
         , "data_write" .= pedsDataWriteGrant source
         ]
-    ]
+    , "ownership" .= pedsOwnership source
+    , "host_role" .= pedsHostRole source
+    , "lifecycle_boundary" .= pedsLifecycleBoundary source
+    , "relationship" .= object
+        [ "role" .= pedsRole source
+        , "plugin" .= pedsPlugin source
+        , "provider" .= pedsProvider source
+        , "consumer" .= pedsConsumer source
+        , "source" .= pedsSource source
+        , "grant" .= pedsGrant source
+        ]
+    ] <>
+    [ "grant" .= grant | Just grant <- [pedsGrant source] ] <>
+    [ "kind" .= kind | Just kind <- [pedsKind source] ] <>
+    [ "description" .= description | Just description <- [pedsDescription source] ] <>
+    [ "required" .= required | Just required <- [pedsRequired source] ] <>
+    [ "health" .= health | Just health <- [pedsHealth source] ] <>
+    [ "access_mode" .= accessMode | Just accessMode <- [pedsAccessMode source] ] <>
+    [ "failure_reason" .= reason | Just reason <- [pedsFailureReason source] ]
 
 -- | Dependencies that are currently satisfiable in this plugin-manager view.
 pluginAvailableDependencyKeys :: Set Text -> [LoadedPlugin] -> Set Text
@@ -337,55 +496,310 @@ pluginDependencyDiagnostics availableDeps lp =
 
 pluginExternalDataSourceDiagnostics :: LoadedPlugin -> [PluginExternalDataSourceDiagnostic]
 pluginExternalDataSourceDiagnostics lp =
-  [ PluginExternalDataSourceDiagnostic
-      { pedsProvider = lpName lp
-      , pedsConsumer = "topo"
-      , pedsResource = drsName resource
-      , pedsLabel = drsLabel resource
-      , pedsStatus = dataSourceStatus resource
-      , pedsOwnership = "plugin-owned"
-      , pedsHostRole = "consumer-router"
-      , pedsLifecycleBoundary = "external-provider-managed"
-      , pedsOperations = drsOperations resource
-      , pedsOverlay = drsOverlay resource
-      , pedsDataReadGrant = hasCapability CapDataRead
-      , pedsDataWriteGrant = hasCapability CapDataWrite
-      }
-  | resource <- rmDataResources manifest
-  ]
+  pluginExternalDataSourceDiagnosticsFor Set.empty [lp] lp
+
+pluginExternalDataSourceDiagnosticsFor :: Set Text -> [LoadedPlugin] -> LoadedPlugin -> [PluginExternalDataSourceDiagnostic]
+pluginExternalDataSourceDiagnosticsFor disabled plugins lp =
+  pluginExternalDataSourceDiagnosticsWithProviderReadiness disabled providerReady lp
+  where
+    providerReady = Map.fromList [(lpName plugin, externalPluginReady disabled plugin) | plugin <- plugins]
+
+pluginExternalDataSourceDiagnosticsWithProviderReadiness :: Set Text -> Map Text Bool -> LoadedPlugin -> [PluginExternalDataSourceDiagnostic]
+pluginExternalDataSourceDiagnosticsWithProviderReadiness disabled providerReady lp =
+  map (providerExternalDataSourceDiagnostic (lpName lp) ownOverride) (rmExternalDataSources manifest)
+  <> map (consumerExternalDataSourceDiagnostic (lpName lp) (consumerStatusFor providerReady ownOverride)) (rmExternalDataSourceRefs manifest)
   where
     manifest = lpManifest lp
-    hasCapability cap = cap `elem` rmCapabilities manifest
-    dataSourceStatus resource
-      | not (hasCapability CapDataRead) = "missing-grant:dataRead"
-      | requiresDataWriteGrant (drsOperations resource) && not (hasCapability CapDataWrite) = "missing-grant:dataWrite"
-      | plsState (lpLifecycle lp) == LifecycleReady = "available"
-      | otherwise = "declared"
+    ownOverride = pluginStatusOverride disabled lp
 
-dataOperationsDiagnosticJSON :: DataOperations -> Value
-dataOperationsDiagnosticJSON ops = object
-  [ "list" .= doList ops
-  , "get" .= doGet ops
-  , "create" .= doCreate ops
-  , "update" .= doUpdate ops
-  , "delete" .= doDelete ops
-  , "query_by_hex" .= doQueryByHex ops
-  , "query_by_field" .= doQueryByField ops
-  , "sort" .= doSort ops
-  , "filter" .= doFilter ops
-  , "page" .= doPage ops
+providerExternalDataSourceDiagnostic :: Text -> Maybe (RPCExternalDataSourceStatus -> RPCExternalDataSourceStatus) -> RPCExternalDataSourceDecl -> PluginExternalDataSourceDiagnostic
+providerExternalDataSourceDiagnostic pluginName statusOverride source =
+  let status = applyStatusOverride statusOverride (redsdStatus source)
+      grants = map (grantDiagnostic statusOverride) (redsdGrants source)
+  in PluginExternalDataSourceDiagnostic
+    { pedsRole = "provider"
+    , pedsPlugin = pluginName
+    , pedsProvider = pluginName
+    , pedsConsumer = "brokered-by-topo"
+    , pedsSource = redsdName source
+    , pedsGrant = Nothing
+    , pedsResource = redsdName source
+    , pedsLabel = redsdLabel source
+    , pedsKind = Just (redsdKind source)
+    , pedsDescription = nonEmptyText (redsdDescription source)
+    , pedsRequired = Nothing
+    , pedsAccess = []
+    , pedsCapabilities = redsdCapabilities source
+    , pedsResources = redsdResources source
+    , pedsStatus = externalStatusStateText (redssState status)
+    , pedsStatusSummary = statusSummary status
+    , pedsStatusDetail = statusDiagnostic status
+    , pedsAvailability = statusAvailabilityText status
+    , pedsHealth = externalHealthText <$> redssHealth status
+    , pedsAccessMode = externalAccessModeText <$> redssAccessMode status
+    , pedsFailureReason = statusFailureReason status
+    , pedsResourceAvailability = resourceAvailabilityDiagnostics (redsdResources source) status
+    , pedsConfigRefs = map configRefDiagnostic (redsdConfigRefs source)
+    , pedsGrants = grants
+    , pedsOwnership = "provider-owned"
+    , pedsHostRole = "broker"
+    , pedsLifecycleBoundary = "external-provider-managed"
+    , pedsDataReadGrant = any (grantOffersAccess ExternalAccessRead) (redsdGrants source)
+    , pedsDataWriteGrant = anyGrantWriteAccess (redsdGrants source)
+    }
+
+consumerExternalDataSourceDiagnostic :: Text -> (RPCExternalDataSourceRef -> RPCExternalDataSourceStatus) -> RPCExternalDataSourceRef -> PluginExternalDataSourceDiagnostic
+consumerExternalDataSourceDiagnostic pluginName statusForRef ref =
+  let status = statusForRef ref
+      providerName = fromMaybe (fromMaybe "unresolved" (redssProviderId status)) (redsrProvider ref)
+  in PluginExternalDataSourceDiagnostic
+    { pedsRole = "consumer"
+    , pedsPlugin = pluginName
+    , pedsProvider = providerName
+    , pedsConsumer = pluginName
+    , pedsSource = redsrSource ref
+    , pedsGrant = redsrGrant ref
+    , pedsResource = redsrSource ref
+    , pedsLabel = externalRefLabel ref
+    , pedsKind = Nothing
+    , pedsDescription = Nothing
+    , pedsRequired = Just (redsrRequired ref)
+    , pedsAccess = redsrAccess ref
+    , pedsCapabilities = redssCapabilityScope status
+    , pedsResources = redsrResources ref
+    , pedsStatus = externalStatusStateText (redssState status)
+    , pedsStatusSummary = statusSummary status
+    , pedsStatusDetail = statusDiagnostic status
+    , pedsAvailability = statusAvailabilityText status
+    , pedsHealth = externalHealthText <$> redssHealth status
+    , pedsAccessMode = externalAccessModeText <$> redssAccessMode status
+    , pedsFailureReason = statusFailureReason status
+    , pedsResourceAvailability = resourceAvailabilityDiagnostics (redsrResources ref) status
+    , pedsConfigRefs = map configRefDiagnostic (redsrConfigRefs ref)
+    , pedsGrants = []
+    , pedsOwnership = "provider-owned"
+    , pedsHostRole = "consumer-router"
+    , pedsLifecycleBoundary = "external-provider-managed"
+    , pedsDataReadGrant = ExternalAccessRead `elem` redsrAccess ref
+    , pedsDataWriteGrant = any (`elem` redsrAccess ref) [ExternalAccessWrite, ExternalAccessAdmin]
+    }
+
+grantDiagnostic :: Maybe (RPCExternalDataSourceStatus -> RPCExternalDataSourceStatus) -> RPCExternalDataSourceGrant -> PluginExternalDataSourceGrantDiagnostic
+grantDiagnostic statusOverride grant =
+  let status = applyStatusOverride statusOverride (redsgStatus grant)
+  in PluginExternalDataSourceGrantDiagnostic
+    { pedsgName = redsgName grant
+    , pedsgAccess = redsgAccess grant
+    , pedsgCapabilities = redsgCapabilities grant
+    , pedsgResources = redsgResources grant
+    , pedsgStatus = externalStatusStateText (redssState status)
+    , pedsgStatusSummary = statusSummary status
+    , pedsgStatusDetail = statusDiagnostic status
+    , pedsgAvailability = statusAvailabilityText status
+    , pedsgHealth = externalHealthText <$> redssHealth status
+    , pedsgAccessMode = externalAccessModeText <$> redssAccessMode status
+    , pedsgFailureReason = statusFailureReason status
+    , pedsgResourceAvailability = resourceAvailabilityDiagnostics (redsgResources grant) status
+    , pedsgConfigRefs = map configRefDiagnostic (redsgConfigRefs grant)
+    }
+
+configRefDiagnostic :: RPCExternalDataSourceConfigRef -> PluginExternalDataSourceConfigRefDiagnostic
+configRefDiagnostic configRef = PluginExternalDataSourceConfigRefDiagnostic
+  { pedscName = redscrName configRef
+  , pedscOrigin = externalConfigOriginText (redscrOrigin configRef)
+  , pedscRequired = redscrRequired configRef
+  , pedscCompatibility = redscrCompatibility configRef
+  , pedscKeyPresent = not (Text.null (redscrKey configRef))
+  }
+
+resourceAvailabilityDiagnostics :: [Text] -> RPCExternalDataSourceStatus -> [PluginExternalDataSourceResourceDiagnostic]
+resourceAvailabilityDiagnostics resources status =
+  [ PluginExternalDataSourceResourceDiagnostic
+      { pedsrResource = resource
+      , pedsrAvailable = statusAvailable status
+      , pedsrStatus = statusAvailabilityText status
+      , pedsrDetail = statusFailureReason status
+      }
+  | resource <- resources
   ]
 
-requiresDataWriteGrant :: DataOperations -> Bool
-requiresDataWriteGrant ops = doCreate ops || doUpdate ops || doDelete ops
+externalRefLabel :: RPCExternalDataSourceRef -> Text
+externalRefLabel ref = fromMaybe (redsrName ref) (ruiDisplayName (redsrUiHints ref))
+
+nonEmptyText :: Text -> Maybe Text
+nonEmptyText value
+  | Text.null value = Nothing
+  | otherwise = Just value
+
+grantOffersAccess :: RPCExternalDataSourceAccess -> RPCExternalDataSourceGrant -> Bool
+grantOffersAccess access grant = access `elem` redsgAccess grant
+
+anyGrantWriteAccess :: [RPCExternalDataSourceGrant] -> Bool
+anyGrantWriteAccess grants = any (grantOffersAccess ExternalAccessWrite) grants
+  || any (grantOffersAccess ExternalAccessAdmin) grants
+
+applyStatusOverride :: Maybe (RPCExternalDataSourceStatus -> RPCExternalDataSourceStatus) -> RPCExternalDataSourceStatus -> RPCExternalDataSourceStatus
+applyStatusOverride Nothing status = status
+applyStatusOverride (Just override) status = override status
+
+consumerStatusFor :: Map Text Bool -> Maybe (RPCExternalDataSourceStatus -> RPCExternalDataSourceStatus) -> RPCExternalDataSourceRef -> RPCExternalDataSourceStatus
+consumerStatusFor providerReady ownOverride ref =
+  case ownOverride of
+    Just override -> override (redsrStatus ref)
+    Nothing -> case redsrProvider ref of
+      Just providerName
+        | not (Map.findWithDefault False providerName providerReady) ->
+            unavailableExternalStatus providerName "provider plugin is unavailable" (redsrStatus ref)
+      _ -> redsrStatus ref
+
+externalPluginReady :: Set Text -> LoadedPlugin -> Bool
+externalPluginReady disabled lp =
+  not (pluginDisabledForDiagnostics disabled lp)
+    && plsState (lpLifecycle lp) == LifecycleReady
+
+pluginStatusOverride :: Set Text -> LoadedPlugin -> Maybe (RPCExternalDataSourceStatus -> RPCExternalDataSourceStatus)
+pluginStatusOverride disabled lp
+  | pluginDisabledForDiagnostics disabled lp =
+      Just (unavailableExternalStatus (lpName lp) "plugin is disabled")
+  | plsState lifecycle == LifecycleReady = Nothing
+  | plsState lifecycle == LifecycleDegraded =
+      Just (degradedExternalStatus (lpName lp) (pluginRuntimeReason "plugin is degraded" lp))
+  | otherwise =
+      Just (unavailableExternalStatus (lpName lp) (pluginRuntimeReason ("plugin lifecycle is " <> pluginLifecycleStateText (plsState lifecycle)) lp))
+  where
+    lifecycle = lpLifecycle lp
+
+pluginRuntimeReason :: Text -> LoadedPlugin -> Text
+pluginRuntimeReason prefix lp = prefix <> maybe "" (": " <>) (pluginLastError lp)
+
+unavailableExternalStatus :: Text -> Text -> RPCExternalDataSourceStatus -> RPCExternalDataSourceStatus
+unavailableExternalStatus providerName reason status = status
+  { redssState = ExternalStatusUnavailable
+  , redssMessage = Just reason
+  , redssProviderId = Just providerName
+  , redssAvailability = Just ExternalAvailabilityUnavailable
+  , redssHealth = Just ExternalHealthUnhealthy
+  , redssAccessMode = Just ExternalAccessModeDisabled
+  , redssCapabilityScope = []
+  }
+
+degradedExternalStatus :: Text -> Text -> RPCExternalDataSourceStatus -> RPCExternalDataSourceStatus
+degradedExternalStatus providerName reason status = status
+  { redssState = ExternalStatusDegraded
+  , redssMessage = Just reason
+  , redssProviderId = Just providerName
+  , redssAvailability = Just ExternalAvailabilityDegraded
+  , redssHealth = Just ExternalHealthDegraded
+  }
+
+statusDiagnostic :: RPCExternalDataSourceStatus -> PluginExternalDataSourceStatusDiagnostic
+statusDiagnostic status = PluginExternalDataSourceStatusDiagnostic
+  { pedssState = externalStatusStateText (redssState status)
+  , pedssMessage = redssMessage status
+  , pedssProviderId = redssProviderId status
+  , pedssAvailability = externalAvailabilityText <$> redssAvailability status
+  , pedssHealth = externalHealthText <$> redssHealth status
+  , pedssAccessMode = externalAccessModeText <$> redssAccessMode status
+  , pedssCapabilityScope = redssCapabilityScope status
+  , pedssVersion = redssVersion status
+  , pedssCompatibility = redssCompatibility status
+  }
+
+statusAvailable :: RPCExternalDataSourceStatus -> Bool
+statusAvailable status =
+  redssState status == ExternalStatusReady
+  && redssAvailability status `notElem`
+      [ Just ExternalAvailabilityUnknown
+      , Just ExternalAvailabilityUnconfigured
+      , Just ExternalAvailabilityDegraded
+      , Just ExternalAvailabilityUnavailable
+      ]
+  && redssHealth status `notElem` [Just ExternalHealthDegraded, Just ExternalHealthUnhealthy]
+  && redssAccessMode status /= Just ExternalAccessModeDisabled
+
+statusFailureReason :: RPCExternalDataSourceStatus -> Maybe Text
+statusFailureReason status
+  | statusAvailable status = Nothing
+  | Just message <- redssMessage status = Just message
+  | otherwise = Just (statusSummary status)
+
+statusSummary :: RPCExternalDataSourceStatus -> Text
+statusSummary status = Text.intercalate ", " $ filter (not . Text.null)
+  [ "state=" <> externalStatusStateText (redssState status)
+  , "availability=" <> statusAvailabilityText status
+  , maybe "" (("health=" <>) . externalHealthText) (redssHealth status)
+  , maybe "" (("access_mode=" <>) . externalAccessModeText) (redssAccessMode status)
+  , capabilitiesSummary (redssCapabilityScope status)
+  , maybe "" ("message=" <>) (redssMessage status)
+  ]
+
+capabilitiesSummary :: [RPCExternalDataSourceCapability] -> Text
+capabilitiesSummary [] = ""
+capabilitiesSummary capabilities =
+  "capabilities=" <> Text.intercalate "," (map externalCapabilityText capabilities)
+
+statusAvailabilityText :: RPCExternalDataSourceStatus -> Text
+statusAvailabilityText status = case redssAvailability status of
+  Just availability -> externalAvailabilityText availability
+  Nothing -> case redssState status of
+    ExternalStatusUnknown -> "unknown"
+    ExternalStatusUnconfigured -> "unconfigured"
+    ExternalStatusReady -> "available"
+    ExternalStatusDegraded -> "degraded"
+    ExternalStatusUnavailable -> "unavailable"
+
+externalStatusStateText :: RPCExternalDataSourceStatusState -> Text
+externalStatusStateText ExternalStatusUnknown = "unknown"
+externalStatusStateText ExternalStatusUnconfigured = "unconfigured"
+externalStatusStateText ExternalStatusReady = "ready"
+externalStatusStateText ExternalStatusDegraded = "degraded"
+externalStatusStateText ExternalStatusUnavailable = "unavailable"
+
+externalAvailabilityText :: RPCExternalDataSourceAvailability -> Text
+externalAvailabilityText ExternalAvailabilityUnknown = "unknown"
+externalAvailabilityText ExternalAvailabilityAvailable = "available"
+externalAvailabilityText ExternalAvailabilityDegraded = "degraded"
+externalAvailabilityText ExternalAvailabilityUnavailable = "unavailable"
+externalAvailabilityText ExternalAvailabilityUnconfigured = "unconfigured"
+
+externalHealthText :: RPCExternalDataSourceHealth -> Text
+externalHealthText ExternalHealthUnknown = "unknown"
+externalHealthText ExternalHealthHealthy = "healthy"
+externalHealthText ExternalHealthDegraded = "degraded"
+externalHealthText ExternalHealthUnhealthy = "unhealthy"
+
+externalAccessModeText :: RPCExternalDataSourceAccessMode -> Text
+externalAccessModeText ExternalAccessModeReadOnly = "read_only"
+externalAccessModeText ExternalAccessModeReadWrite = "read_write"
+externalAccessModeText ExternalAccessModeAdmin = "admin"
+externalAccessModeText ExternalAccessModeDisabled = "disabled"
+externalAccessModeText ExternalAccessModeProviderManaged = "provider_managed"
+
+externalAccessText :: RPCExternalDataSourceAccess -> Text
+externalAccessText ExternalAccessRead = "read"
+externalAccessText ExternalAccessWrite = "write"
+externalAccessText ExternalAccessAdmin = "admin"
+
+externalCapabilityText :: RPCExternalDataSourceCapability -> Text
+externalCapabilityText ExternalSourceQuery = "query"
+externalCapabilityText ExternalSourceMutate = "mutate"
+externalCapabilityText ExternalSourceSubscribe = "subscribe"
+externalCapabilityText ExternalSourceMigrate = "migrate"
+externalCapabilityText ExternalSourceHealth = "health"
+
+externalConfigOriginText :: RPCExternalDataSourceConfigOrigin -> Text
+externalConfigOriginText ExternalConfigUser = "user"
+externalConfigOriginText ExternalConfigProvider = "provider"
+externalConfigOriginText ExternalConfigEnvironment = "environment"
+externalConfigOriginText ExternalConfigDeployment = "deployment"
 
 pluginDisabledForDiagnostics :: Set Text -> LoadedPlugin -> Bool
 pluginDisabledForDiagnostics disabled lp =
   Set.member (lpName lp) disabled
   || (requiresRuntimeConnection (lpManifest lp) && not (rspAutoStart (lpStartPolicy lp)))
 
-pluginPanelDiagnosticLines :: Set Text -> LoadedPlugin -> [Text]
-pluginPanelDiagnosticLines availableDeps lp =
+pluginPanelDiagnosticLines :: Set Text -> Set Text -> LoadedPlugin -> [Text]
+pluginPanelDiagnosticLines disabled availableDeps lp =
   [ "Lifecycle: state=" <> pluginLifecycleStateText (plsState lifecycle)
       <> " reason=" <> fromMaybe "n/a" (plsReason lifecycle)
   , "Process: pid=" <> fromMaybe "n/a" (plsProcessId lifecycle)
@@ -398,7 +812,7 @@ pluginPanelDiagnosticLines availableDeps lp =
   , "Resources: " <> summaryOrNone (pluginResourceNames lp)
   , "External data: " <> externalDataSummary
   , "Capabilities: " <> summaryOrNone (pluginCapabilitiesText (lpManifest lp))
-  ]
+  ] <> externalDataDetailLines
   where
     lifecycle = lpLifecycle lp
     dependencySummary = case pluginDependencyDiagnostics availableDeps lp of
@@ -407,13 +821,46 @@ pluginPanelDiagnosticLines availableDeps lp =
         [ pddKind dep <> ":" <> pddName dep <> "=" <> pddStatus dep
         | dep <- deps
         ]
-    externalDataSummary = case pluginExternalDataSourceDiagnostics lp of
+    externalDiagnostics = pluginExternalDataSourceDiagnosticsWithProviderReadiness disabled providerReady lp
+    providerReady = Map.fromList
+      [ (providerName, providerNameAvailable providerName)
+      | providerName <- lpName lp : [provider | ref <- rmExternalDataSourceRefs (lpManifest lp), Just provider <- [redsrProvider ref]]
+      ]
+    providerNameAvailable providerName =
+      Set.member ("plugin:" <> providerName) availableDeps
+    externalDataSummary = case externalDiagnostics of
       [] -> "none declared"
       sources -> Text.intercalate "; "
-        [ pedsResource source <> "=" <> pedsStatus source
-            <> " (plugin-owned; topo routes only)"
+        [ pedsRole source <> ":" <> pedsSource source <> "=" <> pedsAvailability source
+            <> failureSuffix (pedsFailureReason source)
         | source <- sources
         ]
+    externalDataDetailLines = concatMap externalDataSourcePanelLines externalDiagnostics
+
+externalDataSourcePanelLines :: PluginExternalDataSourceDiagnostic -> [Text]
+externalDataSourcePanelLines source =
+  [ "External " <> pedsRole source <> " " <> pedsSource source
+      <> relationshipText source
+      <> ": " <> pedsStatusSummary source
+      <> "; resources=" <> summaryOrNone (pedsResources source)
+      <> failureSuffix (pedsFailureReason source)
+  ] <> map grantPanelLine (pedsGrants source)
+  where
+    relationshipText diag
+      | pedsRole diag == "consumer" =
+          " <- " <> pedsProvider diag <> maybe "" (":" <>) (pedsGrant diag)
+          <> maybe "" (\required -> if required then " required" else " optional") (pedsRequired diag)
+      | otherwise = " -> brokered grants"
+    grantPanelLine grant =
+      "External grant " <> pedsgName grant
+        <> ": access=" <> summaryOrNone (map externalAccessText (pedsgAccess grant))
+        <> "; " <> pedsgStatusSummary grant
+        <> "; resources=" <> summaryOrNone (pedsgResources grant)
+        <> failureSuffix (pedsgFailureReason grant)
+
+failureSuffix :: Maybe Text -> Text
+failureSuffix Nothing = ""
+failureSuffix (Just reason) = "; action=" <> reason
 
 pluginResourceNames :: LoadedPlugin -> [Text]
 pluginResourceNames = map drsName . rmDataResources . lpManifest

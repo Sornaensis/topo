@@ -368,7 +368,7 @@ handleClick inputContext (SDL.P (V2 x y)) = do
         setDisabledPlugins pluginManagerHandle toggled
         loaded <- getLoadedPlugins pluginManagerHandle
         let availableDeps = pluginAvailableDependencyKeys toggled loaded
-            diagnosticLines = Map.fromList [(lpName lp, pluginPanelDiagnosticLines availableDeps lp) | lp <- loaded]
+            diagnosticLines = Map.fromList [(lpName lp, pluginPanelDiagnosticLines toggled availableDeps lp) | lp <- loaded]
             diagnosticStatuses = Map.fromList
               [ (lpName lp, pluginDiagnosticStateText (pluginDiagnosticState toggled availableDeps lp))
               | lp <- loaded
