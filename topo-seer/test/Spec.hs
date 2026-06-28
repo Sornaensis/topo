@@ -26,6 +26,7 @@ import qualified Spec.WidgetTree
 import qualified Spec.SliderSpec
 import qualified Spec.WorldPersist
 import qualified Spec.CommandDispatch
+import qualified Spec.DataResourceE2E
 import qualified Spec.Headless
 import qualified Spec.HTTP
 import qualified Spec.EditorBrush
@@ -64,6 +65,7 @@ main = do
         Spec.WidgetTree.spec
         Spec.WorldPersist.spec
         Spec.CommandDispatch.spec
+        Spec.DataResourceE2E.spec
         Spec.Headless.spec
         Spec.HTTP.spec
         Spec.EditorBrush.spec

@@ -197,14 +197,22 @@ requestParams spec req =
   case hreqBody req of
     Just value -> value
     Nothing
-      | hrsMethod spec == "GET" -> queryObject (hreqQuery req)
+      | hrsMethod spec == "GET" -> queryObject spec (hreqQuery req)
       | otherwise -> Null
 
-queryObject :: [(Text, Maybe Text)] -> Value
-queryObject query = object
-  [ Key.fromText key .= maybe Null queryValue value
+queryObject :: HttpRouteSpec -> [(Text, Maybe Text)] -> Value
+queryObject spec query = object
+  [ Key.fromText key .= maybe Null (queryValueFor spec key) value
   | (key, value) <- query
   ]
+
+queryValueFor :: HttpRouteSpec -> Text -> Text -> Value
+queryValueFor spec key value
+  -- Data-resource keys and field values are schema-owned; preserve exact
+  -- query text so values like "007" are not coerced to JSON numbers.
+  | hrsServiceMethod spec == Just "data_list_records"
+  , key == "key" || key == "value" = String value
+  | otherwise = queryValue value
 
 queryValue :: Text -> Value
 queryValue value =
@@ -590,6 +598,12 @@ friendlyHttpRouteSpecs = map annotateHttpRouteSpec
       serviceWithQuery "GET" ["data", "records"] "data.records.list" "data" "data_list_records" "List records." NoRequestBody
         [ requiredQuery "plugin" "Plugin name."
         , requiredQuery "resource" "Resource name."
+        , optionalQueryWithSchema "query" "Query mode: all, by_key, by_hex, or by_field." (queryEnumSchema ["all", "by_key", "by_hex", "by_field"])
+        , optionalQuery "key" "Primary key for by_key queries."
+        , optionalQueryWithSchema "chunk" "Chunk index for by_hex queries." queryIntegerSchema
+        , optionalQueryWithSchema "tile" "Tile index for by_hex queries." queryIntegerSchema
+        , optionalQuery "field" "Field name for by_field queries."
+        , optionalQuery "value" "Field value for by_field queries."
         , optionalQueryWithSchema "page_size" "Maximum records to return." queryIntegerSchema
         , optionalQueryWithSchema "page_offset" "Record offset." queryIntegerSchema
         ]

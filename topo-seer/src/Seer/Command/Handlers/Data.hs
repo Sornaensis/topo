@@ -90,25 +90,26 @@ handleDataListResources ctx reqId params = do
             , "resources" .= map schemaToJSON schemas
             ]
 
--- | Handle @data_list_records@ — list records for a plugin resource with
--- pagination.
+-- | Handle @data_list_records@ — query records for a plugin resource with
+-- optional pagination.
 --
 -- Params: @{ "plugin": "name", "resource": "name",
+--            "query": "all"|"by_key"|"by_hex"|"by_field"?,
+--            "key": value?, "chunk": int?, "tile": int?,
+--            "field": text?, "value": value?,
 --            "page_size": int?, "page_offset": int? }@
 handleDataListRecords :: CommandContext -> Int -> Value -> IO SeerResponse
 handleDataListRecords ctx reqId params = do
-  case Aeson.parseMaybe parsePluginResource params of
+  case Aeson.parseMaybe parseListRecordsParams params of
     Nothing ->
-      pure $ dataResourceErrorResponse reqId SchemaValidationFailed "missing or invalid 'plugin' and/or 'resource' parameters"
-    Just (pluginName, resourceName) -> do
+      pure $ dataResourceErrorResponse reqId SchemaValidationFailed "missing or invalid data record query parameters"
+    Just (pluginName, resourceName, dataQuery, requestedPageSize, requestedPageOffset) -> do
       let pmH = ahPluginManagerHandle (ccActorHandles ctx)
-          requestedPageSize   = Aeson.parseMaybe parsePageSize params
-          requestedPageOffset = Aeson.parseMaybe parsePageOffset params
       resources <- getPluginDataResources pmH
       let mSchema = Map.lookup pluginName resources >>= findResourceSchema resourceName
           qr = QueryResource
             { qrResource   = resourceName
-            , qrQuery      = QueryAll
+            , qrQuery      = dataQuery
             , qrPageSize   = effectivePageSize mSchema requestedPageSize
             , qrPageOffset = effectivePageOffset mSchema requestedPageOffset
             }
@@ -295,6 +296,22 @@ parsePlugin = Aeson.withObject "params" (.: "plugin")
 parsePluginResource :: Value -> Aeson.Parser (Text, Text)
 parsePluginResource = Aeson.withObject "params" $ \o ->
   (,) <$> o .: "plugin" <*> o .: "resource"
+
+parseListRecordsParams :: Value -> Aeson.Parser (Text, Text, DataQuery, Maybe Int, Maybe Int)
+parseListRecordsParams = Aeson.withObject "params" $ \o -> do
+  pluginName <- o .: "plugin"
+  resourceName <- o .: "resource"
+  mQueryType <- o .:? "query"
+  dataQuery <- case (mQueryType :: Maybe Text) of
+    Nothing -> pure QueryAll
+    Just "all" -> pure QueryAll
+    Just "by_key" -> QueryByKey <$> o .: "key"
+    Just "by_hex" -> QueryByHex <$> o .: "chunk" <*> o .: "tile"
+    Just "by_field" -> QueryByField <$> o .: "field" <*> o .: "value"
+    Just _ -> fail "unknown data record query type"
+  requestedPageSize <- o .:? "page_size"
+  requestedPageOffset <- o .:? "page_offset"
+  pure (pluginName, resourceName, dataQuery, requestedPageSize, requestedPageOffset)
 
 parsePluginResourceKey :: Value -> Aeson.Parser (Text, Text, Value)
 parsePluginResourceKey = Aeson.withObject "params" $ \o ->
