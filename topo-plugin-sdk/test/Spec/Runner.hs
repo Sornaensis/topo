@@ -48,10 +48,28 @@ import Topo.Plugin.RPC.Protocol
   )
 import Topo.Plugin.RPC.Manifest
   ( Capability(..)
+  , RPCExternalDataSourceAccess(..)
+  , RPCExternalDataSourceAccessMode(..)
+  , RPCExternalDataSourceAvailability(..)
+  , RPCExternalDataSourceCapability(..)
+  , RPCExternalDataSourceDecl(..)
+  , RPCExternalDataSourceGrant(..)
+  , RPCExternalDataSourceHealth(..)
+  , RPCExternalDataSourceStatus(..)
+  , RPCExternalDataSourceStatusState(..)
   , RPCManifest(..), RPCManifestRuntime(..)
   , RPCRestartMode(..), RPCStartPolicy(..), RPCUIHints(..)
+  , defaultRPCExternalDataSourceStatus
   , defaultRPCStartPolicy, defaultRPCUIHints
   , manifestV3, validateManifest
+  )
+import Topo.Plugin.RPC.ExternalDataSource
+  ( RPCExternalDataSourceGrantMessage(..)
+  , RPCExternalDataSourceGrantRevocation(..)
+  , RPCExternalDataSourceStatusEntry(..)
+  , RPCExternalDataSourceStatusReport(..)
+  , RPCExternalDataSourceStatusRequest(..)
+  , revokedExternalDataSourceStatus
   )
 import Topo.Plugin.RPC.Transport
   ( Transport(..)
@@ -244,6 +262,76 @@ spec = describe "SDK runner pipe integration" $ do
         Aeson.Success (status :: HealthStatus) -> do
           hstHealthy status `shouldBe` True
           hstMessage status `shouldBe` "ok"
+      shutdownAndWait host done
+
+  it "returns external data-source status reports with provider, grant, scope, reference, and diagnostics" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession externalStatusPlugin plugin
+      sendEnvelope host (RPCEnvelope
+        { envType = MsgExternalDataSourceStatusRequest
+        , envPayload = Aeson.toJSON RPCExternalDataSourceStatusRequest
+            { redssrProviderId = Just "external-status"
+            , redssrConsumerId = Nothing
+            , redssrSources = ["terrain.catalog"]
+            , redssrGrants = ["terrain-catalog-read"]
+            , redssrIncludeDiagnostics = True
+            , redssrReference = Nothing
+            }
+        , envRequestId = Just 503
+        })
+      statusEnv <- recvEnvelope host
+      envType statusEnv `shouldBe` MsgExternalDataSourceStatus
+      envRequestId statusEnv `shouldBe` Just 503
+      case Aeson.fromJSON (envPayload statusEnv) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success (report :: RPCExternalDataSourceStatusReport) ->
+          case redssReportStatuses report of
+            [entry] -> do
+              redsstProviderId entry `shouldBe` "external-status"
+              redsstSource entry `shouldBe` "terrain.catalog"
+              redsstGrant entry `shouldBe` Just "terrain-catalog-read"
+              redsstCapabilityScope entry `shouldBe` [ExternalSourceQuery, ExternalSourceHealth]
+              redsstReference entry `shouldBe` Just (object ["grant" .= ("terrain-catalog-read" :: Text)])
+              redsstDiagnostics entry `shouldBe` Just (object ["reportedBy" .= ("external-status" :: Text)])
+            other -> expectationFailure ("expected one status entry, got " <> show other)
+      shutdownAndWait host done
+
+  it "dispatches external data-source grants and revocations to SDK callbacks" $
+    withTransportPair $ \host plugin -> do
+      grantSeen <- newEmptyMVar
+      revocationSeen <- newEmptyMVar
+      done <- startSession (externalCallbackPlugin grantSeen revocationSeen) plugin
+      sendEnvelope host (RPCEnvelope
+        { envType = MsgExternalDataSourceGrant
+        , envPayload = Aeson.toJSON externalGrantMessage
+        , envRequestId = Nothing
+        })
+      receivedGrant <- timeout 1000000 (takeMVar grantSeen)
+      receivedGrant `shouldBe` Just externalGrantMessage
+      sendEnvelope host (RPCEnvelope
+        { envType = MsgExternalDataSourceRevoke
+        , envPayload = Aeson.toJSON externalGrantRevocation
+        , envRequestId = Nothing
+        })
+      receivedRevocation <- timeout 1000000 (takeMVar revocationSeen)
+      receivedRevocation `shouldBe` Just externalGrantRevocation
+      shutdownAndWait host done
+
+  it "correlates external grant callback failures when a request id is supplied" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession externalFailingCallbackPlugin plugin
+      sendEnvelope host (RPCEnvelope
+        { envType = MsgExternalDataSourceGrant
+        , envPayload = Aeson.toJSON externalGrantMessage
+        , envRequestId = Just 504
+        })
+      errEnv <- recvEnvelope host
+      envType errEnv `shouldBe` MsgError
+      envRequestId errEnv `shouldBe` Just 504
+      case Aeson.fromJSON (envPayload errEnv) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success (pluginErr :: PluginError) ->
+          peMessage pluginErr `shouldSatisfy` Text.isInfixOf "grant handler failed"
       shutdownAndWait host done
 
   it "dispatches query_resource to the correct data handler" $
@@ -674,6 +762,92 @@ dataPlugin = defaultPluginDef
               }
           }
       ]
+  }
+
+externalStatusPlugin :: PluginDef
+externalStatusPlugin = defaultPluginDef
+  { pdName = "external-status"
+  , pdVersion = "1.0"
+  , pdExternalDataSources =
+      [ RPCExternalDataSourceDecl
+          { redsdName = "terrain.catalog"
+          , redsdLabel = "Terrain Catalog"
+          , redsdDescription = "Backend-neutral status fixture"
+          , redsdKind = "catalog"
+          , redsdCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
+          , redsdResources = ["terrain_sources"]
+          , redsdStatus = externalReadyStatus
+          , redsdConnection = Just (object ["handle" .= ("provider-owned:terrain.catalog" :: Text)])
+          , redsdConfigRefs = []
+          , redsdGrants =
+              [ RPCExternalDataSourceGrant
+                  { redsgName = "terrain-catalog-read"
+                  , redsgAccess = [ExternalAccessRead]
+                  , redsgCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
+                  , redsgResources = ["terrain_sources"]
+                  , redsgStatus = externalReadyStatus
+                  , redsgReference = Just (object ["grant" .= ("terrain-catalog-read" :: Text)])
+                  , redsgConfigRefs = []
+                  }
+              ]
+          , redsdUiHints = defaultRPCUIHints
+          }
+      ]
+  }
+
+externalCallbackPlugin
+  :: MVar RPCExternalDataSourceGrantMessage
+  -> MVar RPCExternalDataSourceGrantRevocation
+  -> PluginDef
+externalCallbackPlugin grantSeen revocationSeen = externalStatusPlugin
+  { pdName = "external-callback"
+  , pdOnExternalDataSourceGrant = Just (putMVar grantSeen)
+  , pdOnExternalDataSourceRevocation = Just (putMVar revocationSeen)
+  }
+
+externalFailingCallbackPlugin :: PluginDef
+externalFailingCallbackPlugin = externalStatusPlugin
+  { pdName = "external-callback-failing"
+  , pdOnExternalDataSourceGrant = Just (\_ -> fail "grant callback failed")
+  }
+
+externalReadyStatus :: RPCExternalDataSourceStatus
+externalReadyStatus = defaultRPCExternalDataSourceStatus
+  { redssState = ExternalStatusReady
+  , redssMessage = Just "fixture provider ready"
+  , redssProviderId = Just "external-status"
+  , redssAvailability = Just ExternalAvailabilityAvailable
+  , redssHealth = Just ExternalHealthHealthy
+  , redssAccessMode = Just ExternalAccessModeReadOnly
+  , redssCapabilityScope = [ExternalSourceQuery, ExternalSourceHealth]
+  , redssDiagnostics = Just (object ["reportedBy" .= ("external-status" :: Text)])
+  }
+
+externalGrantMessage :: RPCExternalDataSourceGrantMessage
+externalGrantMessage = RPCExternalDataSourceGrantMessage
+  { redsgmProviderId = "external-status"
+  , redsgmConsumerId = Just "external-callback"
+  , redsgmSource = "terrain.catalog"
+  , redsgmGrant = "terrain-catalog-read"
+  , redsgmAccess = [ExternalAccessRead]
+  , redsgmResources = ["terrain_sources"]
+  , redsgmCapabilityScope = [ExternalSourceQuery, ExternalSourceHealth]
+  , redsgmStatus = externalReadyStatus
+  , redsgmReference = Just (object ["grant" .= ("terrain-catalog-read" :: Text)])
+  , redsgmConfigRefs = []
+  , redsgmDiagnostics = Just (object ["reportedBy" .= ("host" :: Text)])
+  }
+
+externalGrantRevocation :: RPCExternalDataSourceGrantRevocation
+externalGrantRevocation = RPCExternalDataSourceGrantRevocation
+  { redsrvProviderId = "external-status"
+  , redsrvConsumerId = Just "external-callback"
+  , redsrvSource = "terrain.catalog"
+  , redsrvGrant = "terrain-catalog-read"
+  , redsrvReason = Just "provider unavailable"
+  , redsrvStatus = revokedExternalDataSourceStatus "external-status" (Just "provider unavailable")
+  , redsrvReference = Just (object ["grant" .= ("terrain-catalog-read" :: Text)])
+  , redsrvDiagnostics = Just (object ["reportedBy" .= ("host" :: Text)])
   }
 
 -- | Plugin with a read-only data resource (no mutate handler).

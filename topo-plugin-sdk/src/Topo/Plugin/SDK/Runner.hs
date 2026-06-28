@@ -77,6 +77,12 @@ import Topo.Plugin.RPC.Protocol
   , encodeMessage
   , decodeMessage
   )
+import Topo.Plugin.RPC.ExternalDataSource
+  ( RPCExternalDataSourceGrantMessage(..)
+  , RPCExternalDataSourceGrantRevocation(..)
+  , RPCExternalDataSourceStatusRequest(..)
+  , externalDataSourceStatusReportFromManifest
+  )
 import Topo.Plugin.RPC.Transport
   ( Transport(..)
   , sendMessage
@@ -470,12 +476,84 @@ messageLoop pd transport params worldPath = do
           _ <- sendMessage transport (encodeMessage healthEnvelope)
           messageLoop pd transport params worldPath
 
+        MsgExternalDataSourceStatusRequest -> do
+          case Aeson.fromJSON (envPayload envelope) of
+            Aeson.Error err -> do
+              sendErrorResponseIfCorrelated transport envelope 10 ("Invalid external data-source status payload: " <> Text.pack err)
+              messageLoop pd transport params worldPath
+            Aeson.Success (request :: RPCExternalDataSourceStatusRequest) -> do
+              let statusEnvelope = RPCEnvelope
+                    { envType = MsgExternalDataSourceStatus
+                    , envPayload = Aeson.toJSON (externalDataSourceStatusReportFromManifest (generateManifest pd) request)
+                    , envRequestId = envRequestId envelope
+                    }
+              sendResponseIfCorrelated transport envelope statusEnvelope
+              messageLoop pd transport params worldPath
+
+        MsgExternalDataSourceGrant -> do
+          case Aeson.fromJSON (envPayload envelope) of
+            Aeson.Error err -> do
+              sendErrorResponseIfCorrelated transport envelope 11 ("Invalid external data-source grant payload: " <> Text.pack err)
+              messageLoop pd transport params worldPath
+            Aeson.Success (grant :: RPCExternalDataSourceGrantMessage) -> do
+              handlerResult <- runExternalDataSourceGrantHandler pd grant
+              case handlerResult of
+                Left err -> sendErrorResponseIfCorrelated transport envelope 13 err
+                Right () -> pure ()
+              messageLoop pd transport params worldPath
+
+        MsgExternalDataSourceRevoke -> do
+          case Aeson.fromJSON (envPayload envelope) of
+            Aeson.Error err -> do
+              sendErrorResponseIfCorrelated transport envelope 12 ("Invalid external data-source revocation payload: " <> Text.pack err)
+              messageLoop pd transport params worldPath
+            Aeson.Success (revocation :: RPCExternalDataSourceGrantRevocation) -> do
+              handlerResult <- runExternalDataSourceRevocationHandler pd revocation
+              case handlerResult of
+                Left err -> sendErrorResponseIfCorrelated transport envelope 14 err
+                Right () -> pure ()
+              messageLoop pd transport params worldPath
+
         -- Ignore unknown message types
         _ -> messageLoop pd transport params worldPath
 
 ------------------------------------------------------------------------
+-- External data-source callbacks
+------------------------------------------------------------------------
+
+runExternalDataSourceGrantHandler :: PluginDef -> RPCExternalDataSourceGrantMessage -> IO (Either Text ())
+runExternalDataSourceGrantHandler pd grant =
+  case pdOnExternalDataSourceGrant pd of
+    Nothing -> pure (Right ())
+    Just handler -> catch
+      (handler grant >> pure (Right ()))
+      (\e -> pure (Left ("external data-source grant handler failed: " <> Text.pack (show (e :: SomeException)))))
+
+runExternalDataSourceRevocationHandler :: PluginDef -> RPCExternalDataSourceGrantRevocation -> IO (Either Text ())
+runExternalDataSourceRevocationHandler pd revocation =
+  case pdOnExternalDataSourceRevocation pd of
+    Nothing -> pure (Right ())
+    Just handler -> catch
+      (handler revocation >> pure (Right ()))
+      (\e -> pure (Left ("external data-source revocation handler failed: " <> Text.pack (show (e :: SomeException)))))
+
+------------------------------------------------------------------------
 -- Response helpers
 ------------------------------------------------------------------------
+
+sendResponseIfCorrelated :: Transport -> RPCEnvelope -> RPCEnvelope -> IO ()
+sendResponseIfCorrelated transport request response =
+  case envRequestId request of
+    Nothing -> pure ()
+    Just _ -> do
+      _ <- sendMessage transport (encodeMessage response)
+      pure ()
+
+sendErrorResponseIfCorrelated :: Transport -> RPCEnvelope -> Int -> Text -> IO ()
+sendErrorResponseIfCorrelated transport request code msg =
+  case envRequestId request of
+    Nothing -> pure ()
+    Just requestId -> sendErrorResponse transport (Just requestId) code msg
 
 -- | Send an error response.
 sendErrorResponse :: Transport -> Maybe Word64 -> Int -> Text -> IO ()

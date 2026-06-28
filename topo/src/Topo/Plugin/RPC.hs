@@ -28,6 +28,12 @@ module Topo.Plugin.RPC
   , sendWorldChanged
   , sendHeartbeat
   , checkHealth
+    -- * External data-source grants/status
+  , sendExternalDataSourceGrant
+  , sendExternalDataSourceGrantRevocation
+  , revokeExternalDataSourceGrant
+  , requestExternalDataSourceStatus
+  , checkExternalDataSourceStatus
     -- * Invocation
   , invokeGenerator
   , invokeSimulation
@@ -54,6 +60,7 @@ module Topo.Plugin.RPC
   , module Topo.Plugin.RPC.Transport
   , module Topo.Plugin.RPC.Protocol
   , module Topo.Plugin.RPC.DataService
+  , module Topo.Plugin.RPC.ExternalDataSource
   ) where
 
 import Control.Concurrent
@@ -110,6 +117,7 @@ import qualified Topo.Plugin.RPC.Payload as Payload
 import Topo.Plugin.RPC.Protocol
 import Topo.Plugin.RPC.Transport
 import Topo.Plugin.RPC.DataService
+import Topo.Plugin.RPC.ExternalDataSource
 import Topo.Plugin.DataResource (DataResourceSchema)
 
 ------------------------------------------------------------------------
@@ -669,6 +677,64 @@ checkHealth conn = do
     Right env -> case envType env of
       MsgHealthStatus -> decodeRPCPayload env
       other -> pure (Left (RPCProtocolError ("unexpected health response: " <> Text.pack (show other))))
+
+-- | Notify a plugin that the host has brokered an external data-source grant.
+sendExternalDataSourceGrant
+  :: RPCConnection
+  -> RPCExternalDataSourceGrantMessage
+  -> IO (Either RPCError ())
+sendExternalDataSourceGrant conn grant =
+  sendOneWay conn RPCEnvelope
+    { envType = MsgExternalDataSourceGrant
+    , envPayload = Aeson.toJSON grant
+    , envRequestId = Nothing
+    }
+
+-- | Notify a plugin that a previously brokered external data-source grant has
+-- been revoked or marked unusable.
+sendExternalDataSourceGrantRevocation
+  :: RPCConnection
+  -> RPCExternalDataSourceGrantRevocation
+  -> IO (Either RPCError ())
+sendExternalDataSourceGrantRevocation conn revocation =
+  sendOneWay conn RPCEnvelope
+    { envType = MsgExternalDataSourceRevoke
+    , envPayload = Aeson.toJSON revocation
+    , envRequestId = Nothing
+    }
+
+-- | Alias for 'sendExternalDataSourceGrantRevocation'.
+revokeExternalDataSourceGrant
+  :: RPCConnection
+  -> RPCExternalDataSourceGrantRevocation
+  -> IO (Either RPCError ())
+revokeExternalDataSourceGrant = sendExternalDataSourceGrantRevocation
+
+-- | Request a backend-neutral status snapshot for a plugin's external
+-- data-source declarations, grants, and consumer references.
+requestExternalDataSourceStatus
+  :: RPCConnection
+  -> RPCExternalDataSourceStatusRequest
+  -> IO (Either RPCError RPCExternalDataSourceStatusReport)
+requestExternalDataSourceStatus conn request = do
+  let envelope = RPCEnvelope
+        { envType = MsgExternalDataSourceStatusRequest
+        , envPayload = Aeson.toJSON request
+        , envRequestId = Nothing
+        }
+  result <- rpcCall (Just (rpcRuntimeFailure conn)) (rpcRequestTimeoutMicros conn) "plugin external data-source status request timed out" conn envelope
+  case result of
+    Left err -> pure (Left err)
+    Right env -> case envType env of
+      MsgExternalDataSourceStatus -> decodeRPCPayload env
+      other -> pure (Left (RPCProtocolError ("unexpected external data-source status response: " <> Text.pack (show other))))
+
+-- | Alias for 'requestExternalDataSourceStatus'.
+checkExternalDataSourceStatus
+  :: RPCConnection
+  -> RPCExternalDataSourceStatusRequest
+  -> IO (Either RPCError RPCExternalDataSourceStatusReport)
+checkExternalDataSourceStatus = requestExternalDataSourceStatus
 
 decodeRPCPayload :: Aeson.FromJSON a => RPCEnvelope -> IO (Either RPCError a)
 decodeRPCPayload env =

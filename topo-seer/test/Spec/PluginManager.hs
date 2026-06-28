@@ -246,6 +246,33 @@ spec = describe "PluginManager" $ do
         pluginLifecycleStates pluginName loaded `shouldSatisfy` elem LifecycleDegraded
         pluginLifecycleErrorCodes pluginName loaded `shouldSatisfy` elem (Just "manifest_validation_failed")
 
+  it "blocks startup for required external data-source refs declared unavailable" $ do
+    let pluginName = "copilot-test-plugin-external-source-blocked"
+    withExecutablePluginDir pluginName (blockedExternalRefManifestFor pluginName) "ok" $ do
+      bracket newActorSystem shutdownActorSystem $ \system -> do
+        pluginManagerHandle <- getPluginManager system
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses pluginName loaded `shouldSatisfy` anyPluginErrorContaining "external data-source startup blocked"
+        pluginStatuses pluginName loaded `shouldSatisfy` anyPluginErrorContaining "external-ledger:settlements:settlement-read"
+        pluginLifecycleStates pluginName loaded `shouldSatisfy` elem LifecycleFailed
+        pluginLifecycleErrorCodes pluginName loaded `shouldSatisfy` elem (Just "external_data_source_blocked")
+        length (pluginProcessHandles pluginName loaded) `shouldBe` 0
+
+  it "launches external data-source-only plugins for status protocol handling" $ do
+    let pluginName = "copilot-test-plugin-external-source-only"
+    withExecutablePluginDir pluginName (externalOnlyProviderManifestFor pluginName) "ok" $ do
+      bracket newActorSystem shutdownActorSystem $ \system -> do
+        pluginManagerHandle <- getPluginManager system
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses pluginName loaded `shouldSatisfy` elem PluginConnected
+        pluginLifecycleStates pluginName loaded `shouldSatisfy` elem LifecycleReady
+        length (pluginProcessHandles pluginName loaded) `shouldSatisfy` (> 0)
+        shutdownPlugins pluginManagerHandle
+
   it "reports malformed handshake JSON as a plugin error" $ do
     withExecutablePluginDir malformedPluginName malformedManifestJSON "malformed-json" $ do
       bracket newActorSystem shutdownActorSystem $ \system -> do
@@ -1377,6 +1404,70 @@ invalidExternalSourceManifestFor name = BSC.pack $
     <> "      \"status\": { \"state\": \"ready\" }\n"
     <> "    }\n"
     <> "  ]\n"
+    <> "}\n"
+
+blockedExternalRefManifestFor :: String -> BS.ByteString
+blockedExternalRefManifestFor name = BSC.pack $
+  "{\n"
+    <> "  \"manifestVersion\": 3,\n"
+    <> "  \"name\": \"" <> name <> "\",\n"
+    <> "  \"version\": \"0.1.0\",\n"
+    <> "  \"runtime\": { \"protocol\": { \"min\": 3, \"max\": 3 } },\n"
+    <> "  \"generator\": { \"insertAfter\": \"erosion\" },\n"
+    <> "  \"externalDataSourceRefs\": [\n"
+    <> "    {\n"
+    <> "      \"name\": \"settlements\",\n"
+    <> "      \"provider\": \"external-ledger\",\n"
+    <> "      \"source\": \"settlements\",\n"
+    <> "      \"required\": true,\n"
+    <> "      \"access\": [\"read\"],\n"
+    <> "      \"grant\": \"settlement-read\",\n"
+    <> "      \"status\": {\n"
+    <> "        \"state\": \"unavailable\",\n"
+    <> "        \"providerId\": \"external-ledger\",\n"
+    <> "        \"availability\": \"unavailable\",\n"
+    <> "        \"health\": \"unhealthy\",\n"
+    <> "        \"accessMode\": \"disabled\"\n"
+    <> "      }\n"
+    <> "    }\n"
+    <> "  ],\n"
+    <> "  \"startPolicy\": {\n"
+    <> "    \"restart_mode\": \"never\",\n"
+    <> "    \"startup_timeout_ms\": 100,\n"
+    <> "    \"request_timeout_ms\": 100,\n"
+    <> "    \"shutdown_timeout_ms\": 100\n"
+    <> "  }\n"
+    <> "}\n"
+
+externalOnlyProviderManifestFor :: String -> BS.ByteString
+externalOnlyProviderManifestFor name = BSC.pack $
+  "{\n"
+    <> "  \"manifestVersion\": 3,\n"
+    <> "  \"name\": \"" <> name <> "\",\n"
+    <> "  \"version\": \"0.1.0\",\n"
+    <> "  \"runtime\": { \"protocol\": { \"min\": 3, \"max\": 3 } },\n"
+    <> "  \"externalDataSources\": [\n"
+    <> "    {\n"
+    <> "      \"name\": \"settlements\",\n"
+    <> "      \"label\": \"Settlements\",\n"
+    <> "      \"kind\": \"catalog\",\n"
+    <> "      \"capabilities\": [\"query\", \"health\"],\n"
+    <> "      \"status\": {\n"
+    <> "        \"state\": \"ready\",\n"
+    <> "        \"providerId\": \"" <> name <> "\",\n"
+    <> "        \"availability\": \"available\",\n"
+    <> "        \"health\": \"healthy\",\n"
+    <> "        \"accessMode\": \"read_only\",\n"
+    <> "        \"capabilityScope\": [\"query\", \"health\"]\n"
+    <> "      }\n"
+    <> "    }\n"
+    <> "  ],\n"
+    <> "  \"startPolicy\": {\n"
+    <> "    \"restart_mode\": \"never\",\n"
+    <> "    \"startup_timeout_ms\": 1000,\n"
+    <> "    \"request_timeout_ms\": 100,\n"
+    <> "    \"shutdown_timeout_ms\": 100\n"
+    <> "  }\n"
     <> "}\n"
 
 manifestWithStartPolicyFor :: String -> [String] -> BS.ByteString

@@ -511,6 +511,8 @@ requiresRuntimeConnection manifest =
   isJust (rmGenerator manifest)
   || isJust (rmSimulation manifest)
   || not (null (rmDataResources manifest))
+  || not (null (rmExternalDataSources manifest))
+  || not (null (rmExternalDataSourceRefs manifest))
 
 restartModeAllowsFailure :: RPCRestartMode -> Bool
 restartModeAllowsFailure RestartNever = False

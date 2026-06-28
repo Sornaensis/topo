@@ -58,9 +58,11 @@ import Topo.Plugin.DataResource (DataResourceSchema(..))
 import Topo.Plugin.RPC
   ( RPCConnection(..)
   , RPCError(..)
+  , RPCExternalDataSourceStartupDecision(..)
   , RPCManifest(..)
   , RPCStartPolicy(..)
   , dataResourceErrorCodeText
+  , externalDataSourceManifestStartupDecision
   , newRPCConnection
   , rpcShutdown
   )
@@ -99,6 +101,16 @@ refreshOneManifest _baseDir lp = do
 ensurePluginConnection :: LoadedPlugin -> IO LoadedPlugin
 ensurePluginConnection lp
   | plsState (lpLifecycle lp) == LifecycleDegraded = pure lp
+  | otherwise =
+      case externalDataSourceManifestStartupDecision (lpManifest lp) of
+        ExternalDataSourceStartupBlocked dependency reason ->
+          markExternalDataSourceBlocked dependency reason lp
+        ExternalDataSourceStartupDegraded dependency reason ->
+          markExternalDataSourceDegraded dependency reason lp
+        ExternalDataSourceStartupReady -> ensurePluginConnectionAfterExternalGate lp
+
+ensurePluginConnectionAfterExternalGate :: LoadedPlugin -> IO LoadedPlugin
+ensurePluginConnectionAfterExternalGate lp
   | not (requiresRuntimeConnection (lpManifest lp)) = do
       shutdownPlugin lp
       now <- getCurrentTime
@@ -255,6 +267,46 @@ markAutoStartDisabled lp = do
     { lpStatus = PluginIdle
     , lpLifecycle = pluginLifecycleSnapshot now LifecycleStopped
         (Just "auto-start disabled by plugin policy") Nothing Nothing Nothing Nothing Nothing
+        (manifestLifecycleResources (lpManifest lp))
+    , lpConnection = Nothing
+    , lpProcessHandle = Nothing
+    , lpRestartHistory = pruneRestartHistory (lpStartPolicy lp) now (lpRestartHistory lp)
+    }
+
+markExternalDataSourceBlocked :: Text -> Text -> LoadedPlugin -> IO LoadedPlugin
+markExternalDataSourceBlocked dependency reason lp = do
+  shutdownPlugin lp
+  now <- getCurrentTime
+  let message = "external data-source startup blocked: " <> reason
+  pure lp
+    { lpStatus = PluginError message
+    , lpLifecycle = pluginLifecycleSnapshot now LifecycleFailed
+        (Just "required external data source unavailable")
+        (Just "external_data_source_blocked")
+        (Just message)
+        (Just dependency)
+        Nothing
+        Nothing
+        (manifestLifecycleResources (lpManifest lp))
+    , lpConnection = Nothing
+    , lpProcessHandle = Nothing
+    , lpRestartHistory = pruneRestartHistory (lpStartPolicy lp) now (lpRestartHistory lp)
+    }
+
+markExternalDataSourceDegraded :: Text -> Text -> LoadedPlugin -> IO LoadedPlugin
+markExternalDataSourceDegraded dependency reason lp = do
+  shutdownPlugin lp
+  now <- getCurrentTime
+  let message = "external data-source degraded: " <> reason
+  pure lp
+    { lpStatus = PluginError message
+    , lpLifecycle = pluginLifecycleSnapshot now LifecycleDegraded
+        (Just "external data-source degraded")
+        (Just "external_data_source_degraded")
+        (Just message)
+        (Just dependency)
+        Nothing
+        Nothing
         (manifestLifecycleResources (lpManifest lp))
     , lpConnection = Nothing
     , lpProcessHandle = Nothing

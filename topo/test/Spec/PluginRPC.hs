@@ -34,6 +34,7 @@ import System.Timeout (timeout)
 import Topo.Plugin.RPC (RPCError(..), checkHealth, newRPCConnection, rpcErrorText, sendHeartbeat)
 import Topo.Plugin.RPC.Manifest
 import Topo.Plugin.RPC.Protocol
+import Topo.Plugin.RPC.ExternalDataSource
 import Topo.Plugin.RPC.Transport
   ( Transport
   , TransportConfig(..)
@@ -85,6 +86,10 @@ instance Arbitrary RPCMessageType where
     , MsgHeartbeat
     , MsgHealthCheck
     , MsgHealthStatus
+    , MsgExternalDataSourceGrant
+    , MsgExternalDataSourceRevoke
+    , MsgExternalDataSourceStatusRequest
+    , MsgExternalDataSourceStatus
     ]
 
 instance Arbitrary RPCEnvelope where
@@ -842,6 +847,102 @@ spec = describe "Plugin.RPC" $ do
           messages = map manifestErrorMessage (validateManifest manifest)
       messages `shouldSatisfy` any (Text.isInfixOf "status.capabilityScope")
       messages `shouldSatisfy` any (Text.isInfixOf "diagnostics")
+
+    it "round-trips external data-source protocol message tags and aliases" $ do
+      Aeson.fromJSON (String "external_data_source_grant") `shouldBe` Aeson.Success MsgExternalDataSourceGrant
+      Aeson.fromJSON (String "external_data_source_grant_revoked") `shouldBe` Aeson.Success MsgExternalDataSourceRevoke
+      Aeson.fromJSON (String "external_data_source_status_check") `shouldBe` Aeson.Success MsgExternalDataSourceStatusRequest
+      Aeson.toJSON MsgExternalDataSourceStatus `shouldBe` String "external_data_source_status"
+
+    it "encodes backend-neutral external data-source grant and revocation payloads" $ do
+      let status = defaultRPCExternalDataSourceStatus
+            { redssState = ExternalStatusReady
+            , redssProviderId = Just "civilization"
+            , redssAvailability = Just ExternalAvailabilityAvailable
+            , redssHealth = Just ExternalHealthHealthy
+            , redssAccessMode = Just ExternalAccessModeReadOnly
+            , redssCapabilityScope = [ExternalSourceQuery, ExternalSourceHealth]
+            , redssDiagnostics = Just (object ["reportedBy" .= ("provider" :: Text)])
+            }
+          grant = RPCExternalDataSourceGrantMessage
+            { redsgmProviderId = "civilization"
+            , redsgmConsumerId = Just "trade-routes"
+            , redsgmSource = "settlement-ledger"
+            , redsgmGrant = "settlement-read"
+            , redsgmAccess = [ExternalAccessRead]
+            , redsgmResources = ["settlements"]
+            , redsgmCapabilityScope = [ExternalSourceQuery, ExternalSourceHealth]
+            , redsgmStatus = status
+            , redsgmReference = Just (object ["binding" .= ("opaque" :: Text)])
+            , redsgmConfigRefs = []
+            , redsgmDiagnostics = Just (object ["scope" .= ("startup" :: Text)])
+            }
+      eitherDecode (encode grant) `shouldBe` Right grant
+      let revoked = RPCExternalDataSourceGrantRevocation
+            { redsrvProviderId = "civilization"
+            , redsrvConsumerId = Just "trade-routes"
+            , redsrvSource = "settlement-ledger"
+            , redsrvGrant = "settlement-read"
+            , redsrvReason = Just "provider unavailable"
+            , redsrvStatus = revokedExternalDataSourceStatus "civilization" (Just "provider unavailable")
+            , redsrvReference = Just (object ["binding" .= ("opaque" :: Text)])
+            , redsrvDiagnostics = Just (object ["reportedBy" .= ("host" :: Text)])
+            }
+      eitherDecode (encode revoked) `shouldBe` Right revoked
+      redssAccessMode (redsrvStatus revoked) `shouldBe` Just ExternalAccessModeDisabled
+
+    it "reports external data-source status snapshots from manifests without backend internals" $ do
+      case Aeson.fromJSON manifestV3ProviderExample of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success providerManifest -> do
+          let request = RPCExternalDataSourceStatusRequest
+                { redssrProviderId = Just "civilization"
+                , redssrConsumerId = Nothing
+                , redssrSources = []
+                , redssrGrants = []
+                , redssrIncludeDiagnostics = False
+                , redssrReference = Nothing
+                }
+              report = externalDataSourceStatusReportFromManifest providerManifest request
+          map redsstSource (redssReportStatuses report) `shouldBe` ["settlement-ledger", "settlement-ledger"]
+          map redsstGrant (redssReportStatuses report) `shouldBe` [Nothing, Just "settlement-read"]
+          map redsstDiagnostics (redssReportStatuses report) `shouldBe` [Nothing, Nothing]
+          let grantRequest = request
+                { redssrGrants = ["settlement-read"]
+                , redssrIncludeDiagnostics = True
+                }
+              grantReport = externalDataSourceStatusReportFromManifest providerManifest grantRequest
+          map redsstGrant (redssReportStatuses grantReport) `shouldBe` [Just "settlement-read"]
+          map redsstDiagnostics (redssReportStatuses grantReport) `shouldBe` [Just (object ["grant" .= ("settlement-read" :: Text)])]
+
+    it "classifies external data-source availability for startup gates" $ do
+      case Aeson.fromJSON manifestV3ConsumerExample of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success consumerManifest ->
+          case externalDataSourceManifestStartupDecision consumerManifest of
+            ExternalDataSourceStartupBlocked dependency reason -> do
+              dependency `shouldBe` "civilization:settlement-ledger:settlement-read"
+              reason `shouldSatisfy` Text.isInfixOf "required external data source"
+            other -> expectationFailure ("expected startup block, got " <> show other)
+      let degradedSource = RPCExternalDataSourceDecl
+            { redsdName = "ledger"
+            , redsdLabel = "Ledger"
+            , redsdDescription = ""
+            , redsdKind = "catalog"
+            , redsdCapabilities = [ExternalSourceQuery]
+            , redsdResources = []
+            , redsdStatus = defaultRPCExternalDataSourceStatus { redssState = ExternalStatusDegraded }
+            , redsdConnection = Nothing
+            , redsdConfigRefs = []
+            , redsdGrants = []
+            , redsdUiHints = defaultRPCUIHints
+            }
+          degradedManifest = baseManifest { rmExternalDataSources = [degradedSource] }
+      case externalDataSourceManifestStartupDecision degradedManifest of
+        ExternalDataSourceStartupDegraded dependency reason -> do
+          dependency `shouldBe` "ledger"
+          reason `shouldSatisfy` Text.isInfixOf "degraded"
+        other -> expectationFailure ("expected startup degradation, got " <> show other)
 
   ------------------------------------
   -- Manifest v3 schema and golden docs
