@@ -122,7 +122,11 @@ library
       UI.Widgets
       UI.WidgetsDraw
       UI.WidgetTree
+      UI.Component
+      UI.Components.LogFilter
       UI.DayNight
+      UI.DrawCommand
+      UI.DrawCommand.SDL
       UI.WidgetId
   other-modules:
       Actor.PluginManager.Config
@@ -229,6 +233,7 @@ test-suite topo-seer-test
       Spec.AtlasScheduler
       Spec.CacheProperties
       Spec.CommandDispatch
+      Spec.Component
       Spec.ConfigSnapshot
       Spec.DataBrowser
       Spec.DataBrowserAppService

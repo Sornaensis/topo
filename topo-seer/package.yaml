@@ -116,7 +116,11 @@ library:
     - UI.Widgets
     - UI.WidgetsDraw
     - UI.WidgetTree
+    - UI.Component
+    - UI.Components.LogFilter
     - UI.DayNight
+    - UI.DrawCommand
+    - UI.DrawCommand.SDL
     - UI.WidgetId
   other-modules:
     - Actor.PluginManager.Config

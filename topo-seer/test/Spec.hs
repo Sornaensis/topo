@@ -26,6 +26,7 @@ import qualified Spec.WidgetTree
 import qualified Spec.SliderSpec
 import qualified Spec.WorldPersist
 import qualified Spec.CommandDispatch
+import qualified Spec.Component
 import qualified Spec.DataBrowser
 import qualified Spec.DataBrowserAppService
 import qualified Spec.DataResourceE2E
@@ -67,6 +68,7 @@ main = do
         Spec.WidgetTree.spec
         Spec.WorldPersist.spec
         Spec.CommandDispatch.spec
+        Spec.Component.spec
         Spec.DataBrowser.spec
         Spec.DataBrowserAppService.spec
         Spec.DataResourceE2E.spec

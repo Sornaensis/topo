@@ -45,6 +45,8 @@ import Linear (V2(..), V4(..))
 import qualified SDL
 import Seer.Config (mapRange)
 import UI.Theme
+import UI.Components.LogFilter (LogFilterModel(..), logFilterDrawCommands)
+import UI.DrawCommand.SDL (interpretDrawCommands)
 import Seer.Draw.LeftPanel (drawChunkControl, drawDayNightToggle, drawLeftTabs, drawOverlayButtons, drawSeedControl, drawStatusBars, drawViewModeButtons, modeColor)
 import Seer.Draw.Overlay (drawHexContext, drawHoverHex, drawTooltip)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
@@ -100,18 +102,6 @@ logTextColor level =
     LogWarn  -> colLogWarnText
     LogError -> colLogErrorText
 
-logLevelColor :: LogLevel -> Bool -> V4 Word8
-logLevelColor level isActive =
-  let boost = if isActive then 60 else 0 :: Int
-      boostW8 :: Word8 -> Word8
-      boostW8 x = fromIntegral (min 255 (fromIntegral x + boost))
-      applyBoost (V4 r g b a) = V4 (boostW8 r) (boostW8 g) (boostW8 b) a
-  in case level of
-       LogDebug -> applyBoost colLogDebugFilter
-       LogInfo  -> applyBoost colLogInfoFilter
-       LogWarn  -> applyBoost colLogWarnFilter
-       LogError -> applyBoost colLogErrorFilter
-
 logLineHeight :: Maybe FontCache -> IO Int
 logLineHeight Nothing = pure 12
 logLineHeight (Just cache) = do
@@ -125,17 +115,8 @@ logTextYOffset (Just cache) lineHeight = do
   pure (max 1 ((lineHeight - fromIntegral th) `div` 2))
 
 drawLogFilters :: SDL.Renderer -> Maybe FontCache -> LogLevel -> (Rect, Rect, Rect, Rect) -> IO ()
-drawLogFilters renderer fontCache minLevel (r1, r2, r3, r4) = do
-  drawLogFilter renderer fontCache LogDebug minLevel r1 "D"
-  drawLogFilter renderer fontCache LogInfo minLevel r2 "I"
-  drawLogFilter renderer fontCache LogWarn minLevel r3 "W"
-  drawLogFilter renderer fontCache LogError minLevel r4 "E"
-
-drawLogFilter :: SDL.Renderer -> Maybe FontCache -> LogLevel -> LogLevel -> Rect -> Text -> IO ()
-drawLogFilter renderer fontCache level active rect label = do
-  SDL.rendererDrawColor renderer SDL.$= logLevelColor level (level == active)
-  SDL.fillRect renderer (Just (rectToSDL rect))
-  drawCentered fontCache textLogFilterLabel rect label
+drawLogFilters renderer fontCache minLevel rects =
+  interpretDrawCommands renderer fontCache (logFilterDrawCommands (LogFilterModel minLevel) rects)
 
 drawLogLines :: SDL.Renderer -> Maybe FontCache -> LogSnapshot -> Rect -> IO ()
 drawLogLines renderer fontCache logSnap (Rect (V2 x y, V2 w h)) = do
