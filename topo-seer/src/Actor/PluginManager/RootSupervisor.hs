@@ -64,10 +64,13 @@ import Topo.Overlay.Schema (OverlaySchema)
 import Topo.Pipeline (PipelineStage)
 import Topo.Plugin.DataResource (DataResourceSchema)
 import Topo.Plugin.RPC
-  ( MutateResource
+  ( DataResourceErrorCode(..)
+  , MutateResource
   , MutateResult
   , QueryResource
   , QueryResult
+  , dataResourceFailureFromText
+  , drfCode
   )
 
 [hyperspace|
@@ -152,11 +155,11 @@ actor PluginManager
     (st, buildPluginDataResources st)
   on queryData = \(pluginName, qr) st -> do
     result <- queryPluginDataResource pluginName qr st
-    st' <- markRuntimeFailureOnConnectedError pluginName "data_query_failed" result st
+    st' <- markRuntimeFailureOnConnectedDataError pluginName "data_query_failed" result st
     pure (st', result)
   on mutateData = \(pluginName, mr) st -> do
     result <- mutatePluginDataResource pluginName mr st
-    st' <- markRuntimeFailureOnConnectedError pluginName "data_mutation_failed" result st
+    st' <- markRuntimeFailureOnConnectedDataError pluginName "data_mutation_failed" result st
     pure (st', result)
   on_ notifyWorld = \mWorldPath st -> do
     notifyPluginsWorldChanged mWorldPath (Map.elems (pmsPlugins st))
@@ -168,6 +171,19 @@ observePluginRuntimes :: PluginManagerState -> IO PluginManagerState
 observePluginRuntimes st = do
   plugins' <- traverse observePluginRuntime (pmsPlugins st)
   pure st { pmsPlugins = plugins' }
+
+markRuntimeFailureOnConnectedDataError
+  :: Text
+  -> Text
+  -> Either Text a
+  -> PluginManagerState
+  -> IO PluginManagerState
+markRuntimeFailureOnConnectedDataError pluginName errorCode result st =
+  case result of
+    Left err
+      | dataResourceErrorMarksRuntimeFailure err ->
+          markRuntimeFailureOnConnectedError pluginName errorCode result st
+    _ -> pure st
 
 markRuntimeFailureOnConnectedError
   :: Text
@@ -181,3 +197,12 @@ markRuntimeFailureOnConnectedError pluginName errorCode result st =
       lp' <- handlePluginRuntimeFailure errorCode err lp
       pure st { pmsPlugins = Map.insert pluginName lp' (pmsPlugins st) }
     _ -> pure st
+
+dataResourceErrorMarksRuntimeFailure :: Text -> Bool
+dataResourceErrorMarksRuntimeFailure err =
+  case drfCode (dataResourceFailureFromText err) of
+    PluginUnavailable -> True
+    ExternalDataSourceUnavailable -> True
+    DataResourceTimeout -> True
+    DataResourceInternalError -> True
+    _ -> False

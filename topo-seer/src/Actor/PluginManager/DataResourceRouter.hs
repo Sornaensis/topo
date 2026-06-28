@@ -16,6 +16,13 @@ import Actor.PluginManager.Types
   , PluginManagerState(..)
   , pluginLifecycleStateText
   )
+import Topo.Plugin.DataResource (DataResourceSchema(..))
+import Topo.Plugin.DataResource.Validation
+  ( validateMutateResourceRequest
+  , validateMutateResult
+  , validateQueryResourceRequest
+  , validateQueryResult
+  )
 import Topo.Plugin.RPC
   ( DataResourceErrorCode(..)
   , DataResourceFailure(..)
@@ -23,7 +30,9 @@ import Topo.Plugin.RPC
   , MutateResult(..)
   , QueryResource(..)
   , QueryResult(..)
+  , RPCConnection(..)
   , RPCError
+  , RPCManifest(..)
   , dataResourceFailureText
   , mutateResource
   , queryResource
@@ -39,14 +48,20 @@ queryPluginDataResource
   -> IO (Either Text QueryResult)
 queryPluginDataResource pluginName qr st =
   case Map.lookup pluginName (pmsPlugins st) of
-    Nothing -> pure (Left (dataResourceFailureText (DataResourceFailure PluginUnavailable ("unknown plugin: " <> pluginName))))
+    Nothing -> pure (failureLeft (DataResourceFailure PluginUnavailable ("unknown plugin: " <> pluginName)))
     Just lp -> case lpConnection lp of
-      Nothing -> pure (Left (dataResourceFailureText (DataResourceFailure PluginUnavailable (pluginUnavailableMessage lp))))
-      Just conn -> do
-        result <- queryResource conn qr
-        case result of
-          Left err -> pure (Left (renderRPCDataResourceError err))
-          Right qResult -> pure (Right qResult)
+      Nothing -> pure (failureLeft (DataResourceFailure PluginUnavailable (pluginUnavailableMessage lp)))
+      Just conn -> case findResourceSchema (qrResource qr) lp conn of
+        Nothing -> pure (failureLeft (DataResourceFailure ResourceNotFound ("unknown resource: " <> qrResource qr)))
+        Just schema -> case validateQueryResourceRequest schema qr of
+          Just failure -> pure (failureLeft failure)
+          Nothing -> do
+            result <- queryResource conn qr
+            case result of
+              Left err -> pure (Left (renderRPCDataResourceError err))
+              Right qResult -> case validateQueryResult schema qr qResult of
+                Just failure -> pure (failureLeft failure)
+                Nothing -> pure (Right qResult)
 
 -- | Forward a data mutation to the named plugin without taking ownership
 -- of plugin storage.
@@ -57,18 +72,38 @@ mutatePluginDataResource
   -> IO (Either Text MutateResult)
 mutatePluginDataResource pluginName mr st =
   case Map.lookup pluginName (pmsPlugins st) of
-    Nothing -> pure (Left (dataResourceFailureText (DataResourceFailure PluginUnavailable ("unknown plugin: " <> pluginName))))
+    Nothing -> pure (failureLeft (DataResourceFailure PluginUnavailable ("unknown plugin: " <> pluginName)))
     Just lp -> case lpConnection lp of
-      Nothing -> pure (Left (dataResourceFailureText (DataResourceFailure PluginUnavailable (pluginUnavailableMessage lp))))
-      Just conn -> do
-        result <- mutateResource conn mr
-        case result of
-          Left err -> pure (Left (renderRPCDataResourceError err))
-          Right mResult -> pure (Right mResult)
+      Nothing -> pure (failureLeft (DataResourceFailure PluginUnavailable (pluginUnavailableMessage lp)))
+      Just conn -> case findResourceSchema (mrResource mr) lp conn of
+        Nothing -> pure (failureLeft (DataResourceFailure ResourceNotFound ("unknown resource: " <> mrResource mr)))
+        Just schema -> case validateMutateResourceRequest schema mr of
+          Just failure -> pure (failureLeft failure)
+          Nothing -> do
+            result <- mutateResource conn mr
+            case result of
+              Left err -> pure (Left (renderRPCDataResourceError err))
+              Right mResult -> case validateMutateResult schema mr mResult of
+                Just failure -> pure (failureLeft failure)
+                Nothing -> pure (Right mResult)
+
+failureLeft :: DataResourceFailure -> Either Text a
+failureLeft = Left . dataResourceFailureText
 
 renderRPCDataResourceError :: RPCError -> Text
 renderRPCDataResourceError err =
   dataResourceFailureText (rpcErrorDataResourceFailure err)
+
+findResourceSchema :: Text -> LoadedPlugin -> RPCConnection -> Maybe DataResourceSchema
+findResourceSchema resourceName lp conn = go negotiatedResources
+  where
+    negotiatedResources = case rpcResources conn of
+      [] -> rmDataResources (lpManifest lp)
+      resources -> resources
+    go [] = Nothing
+    go (schema:rest)
+      | drsName schema == resourceName = Just schema
+      | otherwise = go rest
 
 pluginUnavailableMessage :: LoadedPlugin -> Text
 pluginUnavailableMessage lp =

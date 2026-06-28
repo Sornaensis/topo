@@ -6,12 +6,13 @@
 module Spec.PluginManager (spec, runFixtureCli) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
-import Control.Exception (SomeException, bracket, catch, throwIO)
+import Control.Exception (SomeException, bracket, catch, finally, throwIO)
 import Control.Monad (unless)
 import qualified Data.Aeson as Aeson
-import Data.Aeson ((.=), object)
+import Data.Aeson (Value(..), (.=), object)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -49,6 +50,7 @@ import Actor.PluginManager
   , getLoadedPlugins
   , getPluginOverlaySchemas
   , getPluginStages
+  , mutatePluginResource
   , queryPluginResource
   , refreshManifests
   , setDisabledPlugins
@@ -59,10 +61,25 @@ import Topo.Hex (defaultHexGridMeta)
 import Topo.Overlay (Overlay, emptyOverlay)
 import Topo.Overlay.Schema (OverlayDeps(..), OverlaySchema(..), OverlayStorage(..))
 import Topo.Pipeline (PipelineStage(..))
+import Topo.Plugin.DataResource
+  ( DataFieldDef(..)
+  , DataFieldType(..)
+  , DataOperations(..)
+  , DataResourceSchema(..)
+  , currentDataResourceSchemaVersion
+  , defaultDataPagination
+  , defaultDataResourceVersion
+  , noOperations
+  )
 import Topo.Plugin.RPC (RPCConnection, invokeGenerator, invokeSimulation)
 import Topo.Plugin.RPC.DataService
-  ( DataQuery(..)
+  ( DataMutation(..)
+  , DataQuery(..)
+  , DataRecord(..)
+  , MutateResource(..)
+  , MutateResult(..)
   , QueryResource(..)
+  , QueryResult(..)
   )
 import Topo.Plugin.RPC.Protocol
   ( HandshakeAck(..)
@@ -362,6 +379,82 @@ spec = describe "PluginManager" $ do
         pluginLifecycleErrorCodes hangQueryPluginName observed `shouldSatisfy` elem (Just "restart_limit_exceeded")
         shutdownPlugins pluginManagerHandle
 
+  it "rejects unsupported data-resource mutations before plugin calls" $ do
+    withExecutablePluginDir unsupportedMutationPluginName unsupportedMutationManifestJSON "validation-ok" $ do
+      bracket newActorSystem shutdownActorSystem $ \system -> do
+        pluginManagerHandle <- getPluginManager system
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        (do
+          loaded <- getLoadedPlugins pluginManagerHandle
+          pluginStatuses unsupportedMutationPluginName loaded `shouldSatisfy` elem PluginConnected
+          timed <- timeout 1000000 $ mutatePluginResource pluginManagerHandle (Text.pack unsupportedMutationPluginName)
+            (MutateResource "records" (MutCreate (record [("id", String "alpha")])))
+          case timed of
+            Nothing -> expectationFailure "unsupported mutation hung"
+            Just (Left err) -> err `shouldSatisfy` Text.isInfixOf "operation_not_supported"
+            Just (Right _) -> expectationFailure "unsupported mutation unexpectedly reached plugin"
+          observed <- getLoadedPlugins pluginManagerHandle
+          pluginStatuses unsupportedMutationPluginName observed `shouldSatisfy` elem PluginConnected)
+          `finally` shutdownPlugins pluginManagerHandle
+
+  it "validates inbound data-resource records before plugins can accept them" $ do
+    withExecutablePluginDir validationPluginName validationManifestJSON "validation-ok" $ do
+      bracket newActorSystem shutdownActorSystem $ \system -> do
+        pluginManagerHandle <- getPluginManager system
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        (do
+          loaded <- getLoadedPlugins pluginManagerHandle
+          pluginStatuses validationPluginName loaded `shouldSatisfy` elem PluginConnected
+          timed <- timeout 1000000 $ mutatePluginResource pluginManagerHandle (Text.pack validationPluginName)
+            (MutateResource "records" (MutCreate (record [("id", Number 1), ("name", String "Alpha")])))
+          case timed of
+            Nothing -> expectationFailure "invalid mutation hung"
+            Just (Left err) -> err `shouldSatisfy` Text.isInfixOf "schema_validation_failed"
+            Just (Right _) -> expectationFailure "invalid mutation unexpectedly reached plugin"
+          observed <- getLoadedPlugins pluginManagerHandle
+          pluginStatuses validationPluginName observed `shouldSatisfy` elem PluginConnected)
+          `finally` shutdownPlugins pluginManagerHandle
+
+  it "validates plugin-returned data-resource records before exposing them" $ do
+    withExecutablePluginDir invalidReturnPluginName invalidReturnManifestJSON "invalid-mutate" $ do
+      bracket newActorSystem shutdownActorSystem $ \system -> do
+        pluginManagerHandle <- getPluginManager system
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        (do
+          loaded <- getLoadedPlugins pluginManagerHandle
+          pluginStatuses invalidReturnPluginName loaded `shouldSatisfy` elem PluginConnected
+          timed <- timeout 1000000 $ mutatePluginResource pluginManagerHandle (Text.pack invalidReturnPluginName)
+            (MutateResource "records" (MutCreate (record [("id", String "alpha"), ("name", String "Alpha")])))
+          case timed of
+            Nothing -> expectationFailure "invalid plugin record mutation hung"
+            Just (Left err) -> err `shouldSatisfy` Text.isInfixOf "schema_validation_failed"
+            Just (Right _) -> expectationFailure "invalid plugin record unexpectedly passed validation"
+          observed <- getLoadedPlugins pluginManagerHandle
+          pluginStatuses invalidReturnPluginName observed `shouldSatisfy` elem PluginConnected)
+          `finally` shutdownPlugins pluginManagerHandle
+
+  it "validates data-resource calls against negotiated handshake schemas" $ do
+    withExecutablePluginDir negotiatedValidationPluginName negotiatedValidationManifestJSON "negotiated-validation" $ do
+      bracket newActorSystem shutdownActorSystem $ \system -> do
+        pluginManagerHandle <- getPluginManager system
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        (do
+          loaded <- getLoadedPlugins pluginManagerHandle
+          pluginStatuses negotiatedValidationPluginName loaded `shouldSatisfy` elem PluginConnected
+          timed <- timeout 1000000 $ mutatePluginResource pluginManagerHandle (Text.pack negotiatedValidationPluginName)
+            (MutateResource "records" (MutCreate (record [("id", String "alpha"), ("name", String "Alpha")])))
+          case timed of
+            Nothing -> expectationFailure "negotiated-schema mutation hung"
+            Just (Left err) -> expectationFailure ("negotiated schema was not used: " <> Text.unpack err)
+            Just (Right mrs) -> mrsSuccess mrs `shouldBe` True
+          observed <- getLoadedPlugins pluginManagerHandle
+          pluginStatuses negotiatedValidationPluginName observed `shouldSatisfy` elem PluginConnected)
+          `finally` shutdownPlugins pluginManagerHandle
+
   it "surfaces generator crashes without hanging" $ do
     withExecutablePluginDir generatorCrashPluginName generatorCrashManifestJSON "exit-on-generator" $ do
       bracket newActorSystem shutdownActorSystem $ \system -> do
@@ -613,7 +706,7 @@ runFixtureCli = do
   args <- getArgs
   case args of
     ["--plugin-manager-fixture", mode] -> runFixtureMode mode
-    _ -> die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|malformed-json|bad-handshake|early-exit|slow|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|exit-on-generator|exit-on-simulation>"
+    _ -> die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|malformed-json|bad-handshake|early-exit|slow|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|exit-on-generator|exit-on-simulation>"
 
 runFixtureMode :: String -> IO ()
 runFixtureMode = \case
@@ -629,6 +722,9 @@ runFixtureMode = \case
   "counted-early-exit" -> incrementFixtureCount "counted-early-exit" >> exitFailure
   "hang-query" -> runHangQueryFixture
   "provider-failed" -> runProviderFailedFixture
+  "validation-ok" -> runValidationOkFixture
+  "invalid-mutate" -> runInvalidMutateFixture
+  "negotiated-validation" -> runNegotiatedValidationFixture
   "exit-on-generator" -> runExitOnGeneratorFixture
   "exit-on-simulation" -> runExitOnSimulationFixture
   unknown -> die ("unknown plugin-manager fixture: " <> unknown)
@@ -724,6 +820,86 @@ runProviderFailedFixture = do
                   (envRequestId envelope)
                   503
                   "external data-source provider failed: status unavailable"))
+                loop transport
+              MsgShutdown -> closeTransport transport
+              _ -> loop transport
+
+runValidationOkFixture :: IO ()
+runValidationOkFixture = do
+  connectPluginFromEnvironment "plugin-manager-validation-ok-fixture" stdin stdout >>= \case
+    Left _ -> exitFailure
+    Right transport -> loop transport
+  where
+    loop transport = do
+      recvMessage transport >>= \case
+        Left _ -> closeTransport transport
+        Right bytes ->
+          case decodeMessage bytes of
+            Left _ -> loop transport
+            Right envelope -> case envType envelope of
+              MsgHandshake -> do
+                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope (envRequestId envelope) currentProtocolVersion))
+                loop transport
+              MsgQueryResource -> do
+                _ <- sendMessage transport (encodeMessage (queryResultEnvelope
+                  (envRequestId envelope)
+                  (QueryResult "records" [record [("id", String "alpha")]] (Just 1))))
+                loop transport
+              MsgMutateResource -> do
+                _ <- sendMessage transport (encodeMessage (mutateResultEnvelope
+                  (envRequestId envelope)
+                  (MutateResult True Nothing (Just (record [("id", String "accepted"), ("name", String "Accepted")])) Nothing)))
+                loop transport
+              MsgShutdown -> closeTransport transport
+              _ -> loop transport
+
+runInvalidMutateFixture :: IO ()
+runInvalidMutateFixture = do
+  connectPluginFromEnvironment "plugin-manager-invalid-mutate-fixture" stdin stdout >>= \case
+    Left _ -> exitFailure
+    Right transport -> loop transport
+  where
+    loop transport = do
+      recvMessage transport >>= \case
+        Left _ -> closeTransport transport
+        Right bytes ->
+          case decodeMessage bytes of
+            Left _ -> loop transport
+            Right envelope -> case envType envelope of
+              MsgHandshake -> do
+                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope (envRequestId envelope) currentProtocolVersion))
+                loop transport
+              MsgMutateResource -> do
+                _ <- sendMessage transport (encodeMessage (mutateResultEnvelope
+                  (envRequestId envelope)
+                  (MutateResult True Nothing (Just (record [("id", Number 1), ("name", String "Alpha")])) Nothing)))
+                loop transport
+              MsgShutdown -> closeTransport transport
+              _ -> loop transport
+
+runNegotiatedValidationFixture :: IO ()
+runNegotiatedValidationFixture = do
+  connectPluginFromEnvironment "plugin-manager-negotiated-validation-fixture" stdin stdout >>= \case
+    Left _ -> exitFailure
+    Right transport -> loop transport
+  where
+    loop transport = do
+      recvMessage transport >>= \case
+        Left _ -> closeTransport transport
+        Right bytes ->
+          case decodeMessage bytes of
+            Left _ -> loop transport
+            Right envelope -> case envType envelope of
+              MsgHandshake -> do
+                _ <- sendMessage transport (encodeMessage (handshakeAckWithResourcesEnvelope
+                  (envRequestId envelope)
+                  currentProtocolVersion
+                  [negotiatedValidationSchema]))
+                loop transport
+              MsgMutateResource -> do
+                _ <- sendMessage transport (encodeMessage (mutateResultEnvelope
+                  (envRequestId envelope)
+                  (MutateResult True Nothing (Just (record [("id", String "alpha"), ("name", String "Alpha")])) Nothing)))
                 loop transport
               MsgShutdown -> closeTransport transport
               _ -> loop transport
@@ -855,12 +1031,16 @@ runBadHandshakeFixture = do
       closeTransport transport
 
 handshakeAckEnvelope :: Maybe Word64 -> Int -> RPCEnvelope
-handshakeAckEnvelope requestId protocolVersion = RPCEnvelope
+handshakeAckEnvelope requestId protocolVersion =
+  handshakeAckWithResourcesEnvelope requestId protocolVersion []
+
+handshakeAckWithResourcesEnvelope :: Maybe Word64 -> Int -> [DataResourceSchema] -> RPCEnvelope
+handshakeAckWithResourcesEnvelope requestId protocolVersion resources = RPCEnvelope
   { envType = MsgHandshakeAck
   , envPayload = Aeson.toJSON (HandshakeAck
       { haProtocolVersion = protocolVersion
       , haDataDirectory = Nothing
-      , haResources = []
+      , haResources = resources
       })
   , envRequestId = requestId
   }
@@ -872,6 +1052,20 @@ pluginErrorEnvelope requestId code message = RPCEnvelope
       [ "code" .= code
       , "message" .= message
       ]
+  , envRequestId = requestId
+  }
+
+queryResultEnvelope :: Maybe Word64 -> QueryResult -> RPCEnvelope
+queryResultEnvelope requestId result = RPCEnvelope
+  { envType = MsgQueryResult
+  , envPayload = Aeson.toJSON result
+  , envRequestId = requestId
+  }
+
+mutateResultEnvelope :: Maybe Word64 -> MutateResult -> RPCEnvelope
+mutateResultEnvelope requestId result = RPCEnvelope
+  { envType = MsgMutateResult
+  , envPayload = Aeson.toJSON result
   , envRequestId = requestId
   }
 
@@ -1031,6 +1225,71 @@ hangQueryManifestJSON = dataResourceManifestFor hangQueryPluginName
   , "    \"backoff_ms\": 1"
   ]
 
+unsupportedMutationPluginName :: String
+unsupportedMutationPluginName = "copilot-test-plugin-unsupported-mutation"
+
+unsupportedMutationManifestJSON :: BS.ByteString
+unsupportedMutationManifestJSON = dataResourceManifestFor unsupportedMutationPluginName
+  [ "    \"restart_mode\": \"never\","
+  , "    \"startup_timeout_ms\": 1000,"
+  , "    \"request_timeout_ms\": 300,"
+  , "    \"shutdown_timeout_ms\": 300"
+  ]
+
+validationPluginName :: String
+validationPluginName = "copilot-test-plugin-record-validation"
+
+validationManifestJSON :: BS.ByteString
+validationManifestJSON = writableDataResourceManifestFor validationPluginName
+  [ "    \"restart_mode\": \"never\","
+  , "    \"startup_timeout_ms\": 1000,"
+  , "    \"request_timeout_ms\": 300,"
+  , "    \"shutdown_timeout_ms\": 300"
+  ]
+
+invalidReturnPluginName :: String
+invalidReturnPluginName = "copilot-test-plugin-invalid-return"
+
+invalidReturnManifestJSON :: BS.ByteString
+invalidReturnManifestJSON = writableDataResourceManifestFor invalidReturnPluginName
+  [ "    \"restart_mode\": \"never\","
+  , "    \"startup_timeout_ms\": 1000,"
+  , "    \"request_timeout_ms\": 300,"
+  , "    \"shutdown_timeout_ms\": 300"
+  ]
+
+negotiatedValidationPluginName :: String
+negotiatedValidationPluginName = "copilot-test-plugin-negotiated-validation"
+
+negotiatedValidationManifestJSON :: BS.ByteString
+negotiatedValidationManifestJSON = negotiatedValidationManifestFor negotiatedValidationPluginName
+  [ "    \"restart_mode\": \"never\","
+  , "    \"startup_timeout_ms\": 1000,"
+  , "    \"request_timeout_ms\": 300,"
+  , "    \"shutdown_timeout_ms\": 300"
+  ]
+
+negotiatedValidationSchema :: DataResourceSchema
+negotiatedValidationSchema = DataResourceSchema
+  { drsSchemaVersion = currentDataResourceSchemaVersion
+  , drsResourceVersion = defaultDataResourceVersion
+  , drsName = "records"
+  , drsLabel = "Records"
+  , drsHexBound = False
+  , drsFields =
+      [ DataFieldDef "id" DFText "ID" False Nothing
+      , DataFieldDef "name" DFText "Name" False Nothing
+      ]
+  , drsOperations = noOperations
+      { doList = True
+      , doCreate = True
+      , doPage = True
+      }
+  , drsKeyField = "id"
+  , drsOverlay = Nothing
+  , drsPagination = defaultDataPagination
+  }
+
 generatorCrashPluginName :: String
 generatorCrashPluginName = "copilot-test-plugin-generator-crash"
 
@@ -1064,6 +1323,9 @@ testQuery = QueryResource
   , qrPageSize = Just 20
   , qrPageOffset = Just 0
   }
+
+record :: [(Text, Value)] -> DataRecord
+record = DataRecord . Map.fromList
 
 manifestFor :: String -> BS.ByteString
 manifestFor name = manifestWithStartPolicyFor name []
@@ -1155,7 +1417,54 @@ dataResourceManifestFor name policyLines = BSC.pack $
     <> "      \"label\": \"Records\",\n"
     <> "      \"hexBound\": false,\n"
     <> "      \"fields\": [ { \"name\": \"id\", \"type\": \"text\", \"label\": \"ID\" } ],\n"
-    <> "      \"operations\": { \"list\": true },\n"
+    <> "      \"operations\": { \"list\": true, \"page\": true },\n"
+    <> "      \"keyField\": \"id\"\n"
+    <> "    }\n"
+    <> "  ]"
+    <> renderStartPolicy policyLines
+    <> "\n}\n"
+
+negotiatedValidationManifestFor :: String -> [String] -> BS.ByteString
+negotiatedValidationManifestFor name policyLines = BSC.pack $
+  "{\n"
+    <> "  \"manifestVersion\": 3,\n"
+    <> "  \"name\": \"" <> name <> "\",\n"
+    <> "  \"version\": \"0.1.0\",\n"
+    <> "  \"runtime\": { \"protocol\": { \"min\": 3, \"max\": 3 } },\n"
+    <> "  \"generator\": { \"insertAfter\": \"erosion\" },\n"
+    <> "  \"capabilities\": [\"dataRead\", \"dataWrite\"],\n"
+    <> "  \"dataResources\": [\n"
+    <> "    {\n"
+    <> "      \"name\": \"records\",\n"
+    <> "      \"label\": \"Manifest Records\",\n"
+    <> "      \"hexBound\": false,\n"
+    <> "      \"fields\": [ { \"name\": \"id\", \"type\": \"text\", \"label\": \"ID\" } ],\n"
+    <> "      \"operations\": { \"list\": true, \"page\": true },\n"
+    <> "      \"keyField\": \"id\"\n"
+    <> "    }\n"
+    <> "  ]"
+    <> renderStartPolicy policyLines
+    <> "\n}\n"
+
+writableDataResourceManifestFor :: String -> [String] -> BS.ByteString
+writableDataResourceManifestFor name policyLines = BSC.pack $
+  "{\n"
+    <> "  \"manifestVersion\": 3,\n"
+    <> "  \"name\": \"" <> name <> "\",\n"
+    <> "  \"version\": \"0.1.0\",\n"
+    <> "  \"runtime\": { \"protocol\": { \"min\": 3, \"max\": 3 } },\n"
+    <> "  \"generator\": { \"insertAfter\": \"erosion\" },\n"
+    <> "  \"capabilities\": [\"dataRead\", \"dataWrite\"],\n"
+    <> "  \"dataResources\": [\n"
+    <> "    {\n"
+    <> "      \"name\": \"records\",\n"
+    <> "      \"label\": \"Records\",\n"
+    <> "      \"hexBound\": false,\n"
+    <> "      \"fields\": [\n"
+    <> "        { \"name\": \"id\", \"type\": \"text\", \"label\": \"ID\" },\n"
+    <> "        { \"name\": \"name\", \"type\": \"text\", \"label\": \"Name\" }\n"
+    <> "      ],\n"
+    <> "      \"operations\": { \"list\": true, \"get\": true, \"create\": true, \"update\": true, \"delete\": true, \"page\": true },\n"
     <> "      \"keyField\": \"id\"\n"
     <> "    }\n"
     <> "  ]"

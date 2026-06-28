@@ -56,6 +56,7 @@ import qualified Spec.PluginDependency
 import qualified Spec.PluginRPC
 import qualified Spec.PluginIntegration
 import qualified Spec.DataResource
+import qualified Spec.DataResourceValidation
 import qualified Spec.DataService
 import qualified Spec.WorldBundle
 import qualified Spec.CommandTypes
@@ -122,6 +123,7 @@ main = do
     Spec.PluginRPC.spec
     Spec.PluginIntegration.spec
     Spec.DataResource.spec
+    Spec.DataResourceValidation.spec
     Spec.DataService.spec
     Spec.WorldBundle.spec
     Spec.CommandTypes.spec

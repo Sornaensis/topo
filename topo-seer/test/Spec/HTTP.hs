@@ -66,10 +66,12 @@ import Seer.HTTP.Server
   , parseHttpBind
   )
 import Seer.Command.Dispatch (CommandContext(..))
-import Seer.Service.AppService (appServiceOperationMethods)
+import Seer.Service.AppService (AppService(..), DataResourceService(..), appServiceOperationMethods)
+import Seer.Service.Types (ServiceError(..))
 import Seer.System (runApp)
 import System.Environment (withArgs)
 import Topo (WorldConfig(..), chunkIdFromCoord, emptyTerrainChunk)
+import Topo.Plugin.RPC.DataService (DataResourceErrorCode(..), dataResourceErrorCodeText)
 import Topo.Types (ChunkCoord(..))
 import Paths_topo_seer (getDataFileName)
 
@@ -156,6 +158,34 @@ spec = describe "Seer.HTTP.Server" $ do
         { hreqBody = Just (object []) }
       hresStatusCode rsp `shouldBe` 400
       lookupNestedText ["error", "code"] (hresBody rsp) `shouldBe` Just "validation_failed"
+
+  it "maps standardized data-resource service errors to HTTP API envelopes" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      let cases =
+            [ (SchemaValidationFailed, 422)
+            , (PermissionDenied, 403)
+            , (OperationNotSupported, 405)
+            , (DuplicateKey, 409)
+            , (Conflict, 409)
+            , (PluginUnavailable, 503)
+            , (DataResourceTimeout, 504)
+            ]
+          requestBody = object
+            [ "plugin" .= ("fixture" :: Text)
+            , "resource" .= ("records" :: Text)
+            , "fields" .= object []
+            ]
+          appFor code = headlessHttpAppService
+            { appDataResources = (appDataResources headlessHttpAppService)
+                { dataCreateRecord = \_ _ ->
+                    pure (Left (ServiceDataResourceError code "failed" []))
+                }
+            }
+      forM_ cases $ \(code, status) -> do
+        rsp <- handleHttpRequest defaultHttpServerConfig (appFor code) (headlessServiceContext app) $
+          (mkRequest "POST" ["data", "records"]) { hreqBody = Just requestBody }
+        hresStatusCode rsp `shouldBe` status
+        lookupNestedText ["error", "code"] (hresBody rsp) `shouldBe` Just (dataResourceErrorCodeText code)
 
   it "enforces optional bearer tokens on protected routes" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
