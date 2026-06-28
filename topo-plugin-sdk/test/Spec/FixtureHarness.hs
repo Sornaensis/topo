@@ -44,8 +44,30 @@ import Topo.Plugin.RPC.DataService
   , QueryResource(..)
   , QueryResult(..)
   )
+import Topo.Plugin.RPC.ExternalDataSource
+  ( RPCExternalDataSourceGrantMessage(..)
+  , RPCExternalDataSourceGrantRevocation(..)
+  , RPCExternalDataSourceStatusEntry(..)
+  , RPCExternalDataSourceStatusReport(..)
+  , RPCExternalDataSourceStatusRequest(..)
+  )
 import Topo.Plugin.RPC.Manifest
-  ( RPCManifest(..), manifestV3, parseManifestFile, validateManifest )
+  ( RPCExternalDataSourceAccess(..)
+  , RPCExternalDataSourceAccessMode(..)
+  , RPCExternalDataSourceAvailability(..)
+  , RPCExternalDataSourceCapability(..)
+  , RPCExternalDataSourceDecl(..)
+  , RPCExternalDataSourceGrant(..)
+  , RPCExternalDataSourceHealth(..)
+  , RPCExternalDataSourceRef(..)
+  , RPCExternalDataSourceStatus(..)
+  , RPCExternalDataSourceStatusState(..)
+  , RPCManifest(..)
+  , defaultRPCExternalDataSourceStatus
+  , manifestV3
+  , parseManifestFile
+  , validateManifest
+  )
 import Topo.Plugin.RPC.Protocol
   ( GeneratorResult(..)
   , Handshake(..)
@@ -144,19 +166,35 @@ spec = describe "plugin fixture harness" $ do
       shutdownFixture fixture
 
   it "keeps external data-source provider and consumer fixtures backend-neutral" $ do
-    withFixtureProcess "external-provider" $ \fixture -> do
+    providerManifest <- withFixtureProcess "external-provider" $ \fixture -> do
       ack <- handshakeFixture fixture
       haDataDirectory ack `shouldBe` Just "external-provider-data"
-      queryByField fixture "shared_sources" "source_id" (String "terrain.catalog") >>= \rows -> do
+      manifest <- readFixtureManifest fixture
+      queryByField fixture "shared_sources" "source_id" (String externalSourceName) >>= \rows -> do
         length rows `shouldBe` 1
-        rows `shouldSatisfy` all (recordHasField "endpoint" (String "fixture://provider/terrain.catalog"))
+        rows `shouldSatisfy` all (recordHasField "endpoint" (String externalProviderEndpoint))
+      requestExternalStatus fixture externalProviderStatusRequest >>= expectProviderGrantStatus
       shutdownFixture fixture
+      pure manifest
     withFixtureProcess "external-consumer" $ \fixture -> do
       ack <- handshakeFixture fixture
       haDataDirectory ack `shouldBe` Just "external-consumer-data"
-      queryByField fixture "source_bindings" "source_id" (String "terrain.catalog") >>= \rows -> do
+      consumerManifest <- readFixtureManifest fixture
+      expectExternalContract providerManifest consumerManifest
+      queryByField fixture "source_bindings" "source_id" (String externalSourceName) >>= \rows -> do
         length rows `shouldBe` 1
-        rows `shouldSatisfy` all (recordHasField "grant" (String "read"))
+        rows `shouldSatisfy` all (recordHasField "provider" (String externalProviderPluginName))
+        rows `shouldSatisfy` all (recordHasField "grant" (String externalGrantName))
+        rows `shouldSatisfy` all (recordHasField "status" (String "declared"))
+      requestExternalStatus fixture externalConsumerStatusRequest >>= expectConsumerRefStatus
+      sendEnvelope fixture (RPCEnvelope MsgExternalDataSourceGrant (Aeson.toJSON externalGrantMessage) Nothing)
+      queryByField fixture "source_bindings" "status" (String "granted") >>= \rows -> do
+        length rows `shouldBe` 1
+        rows `shouldSatisfy` all (recordHasField "source_id" (String externalSourceName))
+      sendEnvelope fixture (RPCEnvelope MsgExternalDataSourceRevoke (Aeson.toJSON externalGrantRevocation) Nothing)
+      queryByField fixture "source_bindings" "status" (String "revoked") >>= \rows -> do
+        length rows `shouldBe` 1
+        rows `shouldSatisfy` all (recordHasField "source_id" (String externalSourceName))
       shutdownFixture fixture
 
   it "exposes bad-handshake, slow, and crashy failure fixtures" $ do
@@ -190,6 +228,172 @@ expectGeneratedManifest name = withFixtureProcess name $ \fixture -> do
   rmManifestVersion manifest `shouldBe` manifestV3
   validateManifest manifest `shouldBe` []
   shutdownFixture fixture
+
+externalProviderPluginName :: Text
+externalProviderPluginName = "fixture-external-provider"
+
+externalConsumerPluginName :: Text
+externalConsumerPluginName = "fixture-external-consumer"
+
+externalSourceName :: Text
+externalSourceName = "terrain.catalog"
+
+externalGrantName :: Text
+externalGrantName = "terrain-catalog-read"
+
+externalProviderEndpoint :: Text
+externalProviderEndpoint = "fixture://provider/terrain.catalog"
+
+externalSharedResources :: [Text]
+externalSharedResources = ["shared_sources"]
+
+externalCapabilities :: [RPCExternalDataSourceCapability]
+externalCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
+
+externalReadAccess :: [RPCExternalDataSourceAccess]
+externalReadAccess = [ExternalAccessRead]
+
+expectExternalContract :: RPCManifest -> RPCManifest -> Expectation
+expectExternalContract providerManifest consumerManifest = do
+  rmName providerManifest `shouldBe` externalProviderPluginName
+  rmName consumerManifest `shouldBe` externalConsumerPluginName
+  validateManifest providerManifest `shouldBe` []
+  validateManifest consumerManifest `shouldBe` []
+  case (rmExternalDataSources providerManifest, rmExternalDataSourceRefs consumerManifest) of
+    ([source], [ref]) -> do
+      redsdName source `shouldBe` externalSourceName
+      redsdKind source `shouldBe` "catalog"
+      redsdCapabilities source `shouldBe` externalCapabilities
+      redsdResources source `shouldBe` externalSharedResources
+      redsdConnection source `shouldBe` Nothing
+      redsdConfigRefs source `shouldBe` []
+      redssState (redsdStatus source) `shouldBe` ExternalStatusReady
+      redssProviderId (redsdStatus source) `shouldBe` Just externalProviderPluginName
+      redssAvailability (redsdStatus source) `shouldBe` Just ExternalAvailabilityAvailable
+      redssHealth (redsdStatus source) `shouldBe` Just ExternalHealthHealthy
+      redssAccessMode (redsdStatus source) `shouldBe` Just ExternalAccessModeReadOnly
+      redssCapabilityScope (redsdStatus source) `shouldBe` externalCapabilities
+      case redsdGrants source of
+        [grant] -> do
+          redsgName grant `shouldBe` externalGrantName
+          redsgAccess grant `shouldBe` externalReadAccess
+          redsgCapabilities grant `shouldBe` externalCapabilities
+          redsgResources grant `shouldBe` externalSharedResources
+          redsgReference grant `shouldBe` Nothing
+          redsgConfigRefs grant `shouldBe` []
+          redsrName ref `shouldBe` externalSourceName
+          redsrProvider ref `shouldBe` Just externalProviderPluginName
+          redsrSource ref `shouldBe` redsdName source
+          redsrRequired ref `shouldBe` True
+          redsrGrant ref `shouldBe` Just (redsgName grant)
+          redsrAccess ref `shouldBe` redsgAccess grant
+          redsrResources ref `shouldBe` redsgResources grant
+          redsrReference ref `shouldBe` Nothing
+          redsrConfigRefs ref `shouldBe` []
+          redssState (redsrStatus ref) `shouldBe` ExternalStatusReady
+          redssProviderId (redsrStatus ref) `shouldBe` Just externalProviderPluginName
+          redssAvailability (redsrStatus ref) `shouldBe` Just ExternalAvailabilityAvailable
+          redssHealth (redsrStatus ref) `shouldBe` Just ExternalHealthHealthy
+          redssAccessMode (redsrStatus ref) `shouldBe` Just ExternalAccessModeReadOnly
+          redssCapabilityScope (redsrStatus ref) `shouldBe` externalCapabilities
+        _ -> expectationFailure "expected provider fixture to expose exactly one external data-source grant"
+    _ -> expectationFailure "expected one provider source and one consumer reference fixture contract"
+
+requestExternalStatus :: FixtureProcess -> RPCExternalDataSourceStatusRequest -> IO [RPCExternalDataSourceStatusEntry]
+requestExternalStatus fixture request = do
+  sendEnvelope fixture (RPCEnvelope MsgExternalDataSourceStatusRequest (Aeson.toJSON request) (Just 203))
+  env <- recvEnvelopeOfType fixture MsgExternalDataSourceStatus
+  case Aeson.fromJSON (envPayload env) of
+    Aeson.Error err -> expectationFailure err >> fail "external status decode failed"
+    Aeson.Success (report :: RPCExternalDataSourceStatusReport) -> pure (redssReportStatuses report)
+
+externalProviderStatusRequest :: RPCExternalDataSourceStatusRequest
+externalProviderStatusRequest = RPCExternalDataSourceStatusRequest
+  { redssrProviderId = Just externalProviderPluginName
+  , redssrConsumerId = Nothing
+  , redssrSources = [externalSourceName]
+  , redssrGrants = [externalGrantName]
+  , redssrIncludeDiagnostics = False
+  , redssrReference = Nothing
+  }
+
+externalConsumerStatusRequest :: RPCExternalDataSourceStatusRequest
+externalConsumerStatusRequest = externalProviderStatusRequest
+  { redssrConsumerId = Just externalSourceName
+  }
+
+expectProviderGrantStatus :: [RPCExternalDataSourceStatusEntry] -> Expectation
+expectProviderGrantStatus [entry] = do
+  expectExternalStatusEntry Nothing entry
+  redssState (redsstStatus entry) `shouldBe` ExternalStatusReady
+expectProviderGrantStatus _ = expectationFailure "expected exactly one provider grant status entry"
+
+expectConsumerRefStatus :: [RPCExternalDataSourceStatusEntry] -> Expectation
+expectConsumerRefStatus [entry] = do
+  expectExternalStatusEntry (Just externalSourceName) entry
+  redssState (redsstStatus entry) `shouldBe` ExternalStatusReady
+expectConsumerRefStatus _ = expectationFailure "expected exactly one consumer reference status entry"
+
+expectExternalStatusEntry :: Maybe Text -> RPCExternalDataSourceStatusEntry -> Expectation
+expectExternalStatusEntry consumerId entry = do
+  redsstProviderId entry `shouldBe` externalProviderPluginName
+  redsstConsumerId entry `shouldBe` consumerId
+  redsstSource entry `shouldBe` externalSourceName
+  redsstGrant entry `shouldBe` Just externalGrantName
+  redsstAccess entry `shouldBe` externalReadAccess
+  redsstResources entry `shouldBe` externalSharedResources
+  redsstCapabilityScope entry `shouldBe` externalCapabilities
+  redsstReference entry `shouldBe` Nothing
+  redsstConfigRefs entry `shouldBe` []
+  redssProviderId (redsstStatus entry) `shouldBe` Just externalProviderPluginName
+  redssAvailability (redsstStatus entry) `shouldBe` Just ExternalAvailabilityAvailable
+  redssHealth (redsstStatus entry) `shouldBe` Just ExternalHealthHealthy
+  redssAccessMode (redsstStatus entry) `shouldBe` Just ExternalAccessModeReadOnly
+  redssCompatibility (redsstStatus entry) `shouldBe` Just "manifest-v3"
+  redssDiagnostics (redsstStatus entry) `shouldBe` Nothing
+  redsstDiagnostics entry `shouldBe` Nothing
+
+externalGrantMessage :: RPCExternalDataSourceGrantMessage
+externalGrantMessage = RPCExternalDataSourceGrantMessage
+  { redsgmProviderId = externalProviderPluginName
+  , redsgmConsumerId = Just externalConsumerPluginName
+  , redsgmSource = externalSourceName
+  , redsgmGrant = externalGrantName
+  , redsgmAccess = externalReadAccess
+  , redsgmResources = externalSharedResources
+  , redsgmCapabilityScope = externalCapabilities
+  , redsgmStatus = defaultRPCExternalDataSourceStatus
+      { redssState = ExternalStatusReady
+      , redssProviderId = Just externalProviderPluginName
+      , redssAvailability = Just ExternalAvailabilityAvailable
+      , redssHealth = Just ExternalHealthHealthy
+      , redssAccessMode = Just ExternalAccessModeReadOnly
+      , redssCapabilityScope = externalCapabilities
+      , redssCompatibility = Just "manifest-v3"
+      }
+  , redsgmReference = Nothing
+  , redsgmConfigRefs = []
+  , redsgmDiagnostics = Nothing
+  }
+
+externalGrantRevocation :: RPCExternalDataSourceGrantRevocation
+externalGrantRevocation = RPCExternalDataSourceGrantRevocation
+  { redsrvProviderId = externalProviderPluginName
+  , redsrvConsumerId = Just externalConsumerPluginName
+  , redsrvSource = externalSourceName
+  , redsrvGrant = externalGrantName
+  , redsrvReason = Just "fixture revocation"
+  , redsrvStatus = defaultRPCExternalDataSourceStatus
+      { redssState = ExternalStatusUnavailable
+      , redssProviderId = Just externalProviderPluginName
+      , redssAvailability = Just ExternalAvailabilityUnavailable
+      , redssHealth = Just ExternalHealthUnhealthy
+      , redssAccessMode = Just ExternalAccessModeDisabled
+      , redssCompatibility = Just "manifest-v3"
+      }
+  , redsrvReference = Nothing
+  , redsrvDiagnostics = Nothing
+  }
 
 readFixtureManifest :: FixtureProcess -> IO RPCManifest
 readFixtureManifest fixture = do

@@ -85,6 +85,33 @@ runNamedFixture = \case
   "crashy" -> exitFailure
   unknown -> die ("unknown topo plugin fixture: " <> unknown)
 
+externalProviderName :: Text
+externalProviderName = "fixture-external-provider"
+
+externalConsumerName :: Text
+externalConsumerName = "fixture-external-consumer"
+
+externalSourceName :: Text
+externalSourceName = "terrain.catalog"
+
+externalGrantName :: Text
+externalGrantName = "terrain-catalog-read"
+
+externalBindingId :: Text
+externalBindingId = "consumer.terrain.catalog"
+
+externalSharedResources :: [Text]
+externalSharedResources = ["shared_sources"]
+
+externalCapabilities :: [RPCExternalDataSourceCapability]
+externalCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
+
+externalReadAccess :: [RPCExternalDataSourceAccess]
+externalReadAccess = [ExternalAccessRead]
+
+externalProviderEndpoint :: Text
+externalProviderEndpoint = "fixture://provider/terrain.catalog"
+
 echoPlugin :: PluginDef
 echoPlugin = defaultPluginDef
   { pdName = "fixture-echo"
@@ -178,33 +205,33 @@ mkExternalProviderPlugin :: IO PluginDef
 mkExternalProviderPlugin = do
   sourcesRef <- newIORef
     [ record
-        [ ("source_id", String "terrain.catalog")
-        , ("endpoint", String "fixture://provider/terrain.catalog")
+        [ ("source_id", String externalSourceName)
+        , ("endpoint", String externalProviderEndpoint)
         , ("capability", String "read")
         , ("status", String "available")
         ]
     ]
   pure defaultPluginDef
-    { pdName = "fixture-external-provider"
+    { pdName = externalProviderName
     , pdVersion = "1.0.0"
     , pdDataDirectory = Just "external-provider-data"
     , pdDataResources = [externalProviderResource sourcesRef]
     , pdExternalDataSources =
         [ RPCExternalDataSourceDecl
-            { redsdName = "terrain.catalog"
+            { redsdName = externalSourceName
             , redsdLabel = "Terrain Catalog"
             , redsdDescription = "Provider-owned terrain catalogue fixture"
             , redsdKind = "catalog"
-            , redsdCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
-            , redsdResources = ["shared_sources"]
+            , redsdCapabilities = externalCapabilities
+            , redsdResources = externalSharedResources
             , redsdStatus = defaultRPCExternalDataSourceStatus
                 { redssState = ExternalStatusReady
                 , redssMessage = Just "fixture ready"
-                , redssProviderId = Just "fixture-external-provider"
+                , redssProviderId = Just externalProviderName
                 , redssAvailability = Just ExternalAvailabilityAvailable
                 , redssHealth = Just ExternalHealthHealthy
                 , redssAccessMode = Just ExternalAccessModeReadOnly
-                , redssCapabilityScope = [ExternalSourceQuery, ExternalSourceHealth]
+                , redssCapabilityScope = externalCapabilities
                 , redssVersion = Just "terrain.catalog.v1"
                 , redssCompatibility = Just "manifest-v3"
                 , redssDiagnostics = Just (object ["fixture" .= ("provider" :: Text)])
@@ -213,18 +240,18 @@ mkExternalProviderPlugin = do
             , redsdConfigRefs = []
             , redsdGrants =
                 [ RPCExternalDataSourceGrant
-                    { redsgName = "terrain-catalog-read"
-                    , redsgAccess = [ExternalAccessRead]
-                    , redsgCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
-                    , redsgResources = ["shared_sources"]
+                    { redsgName = externalGrantName
+                    , redsgAccess = externalReadAccess
+                    , redsgCapabilities = externalCapabilities
+                    , redsgResources = externalSharedResources
                     , redsgStatus = defaultRPCExternalDataSourceStatus
                         { redssState = ExternalStatusReady
                         , redssMessage = Just "fixture read grant"
-                        , redssProviderId = Just "fixture-external-provider"
+                        , redssProviderId = Just externalProviderName
                         , redssAvailability = Just ExternalAvailabilityAvailable
                         , redssHealth = Just ExternalHealthHealthy
                         , redssAccessMode = Just ExternalAccessModeReadOnly
-                        , redssCapabilityScope = [ExternalSourceQuery, ExternalSourceHealth]
+                        , redssCapabilityScope = externalCapabilities
                         , redssVersion = Just "terrain-catalog-read.v1"
                         , redssCompatibility = Just "manifest-v3"
                         , redssDiagnostics = Just (object ["fixture" .= ("grant" :: Text)])
@@ -264,36 +291,29 @@ externalProviderResource sourcesRef = DataResourceDef
 
 mkExternalConsumerPlugin :: IO PluginDef
 mkExternalConsumerPlugin = do
-  bindingsRef <- newIORef
-    [ record
-        [ ("binding_id", String "consumer.terrain.catalog")
-        , ("source_id", String "terrain.catalog")
-        , ("grant", String "read")
-        , ("status", String "linked")
-        ]
-    ]
+  bindingsRef <- newIORef [consumerBindingRecord "declared"]
   pure defaultPluginDef
-    { pdName = "fixture-external-consumer"
+    { pdName = externalConsumerName
     , pdVersion = "1.0.0"
     , pdDataDirectory = Just "external-consumer-data"
     , pdDataResources = [externalConsumerResource bindingsRef]
     , pdExternalDataSourceRefs =
         [ RPCExternalDataSourceRef
-            { redsrName = "terrain.catalog"
-            , redsrProvider = Just "fixture-external-provider"
-            , redsrSource = "terrain.catalog"
+            { redsrName = externalSourceName
+            , redsrProvider = Just externalProviderName
+            , redsrSource = externalSourceName
             , redsrRequired = True
-            , redsrAccess = [ExternalAccessRead]
-            , redsrResources = ["shared_sources"]
-            , redsrGrant = Just "terrain-catalog-read"
+            , redsrAccess = externalReadAccess
+            , redsrResources = externalSharedResources
+            , redsrGrant = Just externalGrantName
             , redsrStatus = defaultRPCExternalDataSourceStatus
-                { redssState = ExternalStatusUnknown
-                , redssMessage = Just "resolved by fixture startup"
-                , redssProviderId = Just "fixture-external-provider"
-                , redssAvailability = Just ExternalAvailabilityUnknown
-                , redssHealth = Just ExternalHealthUnknown
+                { redssState = ExternalStatusReady
+                , redssMessage = Just "fixture read grant is available through provider contract"
+                , redssProviderId = Just externalProviderName
+                , redssAvailability = Just ExternalAvailabilityAvailable
+                , redssHealth = Just ExternalHealthHealthy
                 , redssAccessMode = Just ExternalAccessModeReadOnly
-                , redssCapabilityScope = [ExternalSourceQuery]
+                , redssCapabilityScope = externalCapabilities
                 , redssVersion = Just "terrain.catalog.v1"
                 , redssCompatibility = Just "manifest-v3"
                 , redssDiagnostics = Just (object ["fixture" .= ("consumer" :: Text)])
@@ -303,7 +323,45 @@ mkExternalConsumerPlugin = do
             , redsrUiHints = defaultRPCUIHints { ruiDisplayName = Just "Terrain Catalog" }
             }
         ]
+    , pdOnExternalDataSourceGrant = Just (recordExternalGrant bindingsRef)
+    , pdOnExternalDataSourceRevocation = Just (recordExternalRevocation bindingsRef)
     }
+
+consumerBindingRecord :: Text -> DataRecord
+consumerBindingRecord status = record
+  [ ("binding_id", String externalBindingId)
+  , ("provider", String externalProviderName)
+  , ("source_id", String externalSourceName)
+  , ("grant", String externalGrantName)
+  , ("status", String status)
+  ]
+
+recordExternalGrant :: IORef [DataRecord] -> RPCExternalDataSourceGrantMessage -> IO ()
+recordExternalGrant bindingsRef grant
+  | redsgmProviderId grant == externalProviderName
+      && grantTargetsConsumer (redsgmConsumerId grant)
+      && redsgmSource grant == externalSourceName
+      && redsgmGrant grant == externalGrantName =
+      updateConsumerBinding bindingsRef "granted"
+  | otherwise = pure ()
+
+recordExternalRevocation :: IORef [DataRecord] -> RPCExternalDataSourceGrantRevocation -> IO ()
+recordExternalRevocation bindingsRef revocation
+  | redsrvProviderId revocation == externalProviderName
+      && grantTargetsConsumer (redsrvConsumerId revocation)
+      && redsrvSource revocation == externalSourceName
+      && redsrvGrant revocation == externalGrantName =
+      updateConsumerBinding bindingsRef "revoked"
+  | otherwise = pure ()
+
+grantTargetsConsumer :: Maybe Text -> Bool
+grantTargetsConsumer Nothing = True
+grantTargetsConsumer (Just consumerId) = consumerId == externalConsumerName
+
+updateConsumerBinding :: IORef [DataRecord] -> Text -> IO ()
+updateConsumerBinding bindingsRef status =
+  atomicModifyIORef' bindingsRef $ \records ->
+    (consumerBindingRecord status : filter (not . recordHasField "binding_id" (String externalBindingId)) records, ())
 
 externalConsumerResource :: IORef [DataRecord] -> DataResourceDef
 externalConsumerResource bindingsRef = DataResourceDef
@@ -315,6 +373,7 @@ externalConsumerResource bindingsRef = DataResourceDef
       , drsHexBound = False
       , drsFields =
           [ DataFieldDef "binding_id" DFText "Binding ID" False Nothing
+          , DataFieldDef "provider" DFText "Provider" False Nothing
           , DataFieldDef "source_id" DFText "Source ID" False Nothing
           , DataFieldDef "grant" DFText "Grant" False Nothing
           , DataFieldDef "status" DFText "Status" False Nothing
