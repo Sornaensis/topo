@@ -3,6 +3,8 @@ module Spec.Layout (spec) where
 import Test.Hspec
 import Linear (V2(..))
 import UI.Layout
+import qualified UI.Geometry as Geometry
+import UI.Layout.Geometry (uiGeometryForSeed)
 import UI.Widgets (Rect(..))
 
 rectCenter :: Rect -> V2 Int
@@ -206,6 +208,96 @@ spec = describe "UI.Layout" $ do
     let layout = layoutFor (V2 minUsableWindowWidth 480) 160
     leftViewScrollMax layout `shouldSatisfy` (> 0)
 
+  describe "typed UiGeometry" $ do
+    it "matches legacy layout helpers for primary panels" $ do
+      let layout = layoutForSeed (V2 800 600) 160 140
+          geometry = layoutGeometry layout
+          leftPanel = Geometry.uiLeftPanelGeometry geometry
+          configPanel = Geometry.uiConfigPanelGeometry geometry
+          logPanel = Geometry.uiLogPanelGeometry geometry
+          editor = Geometry.uiEditorGeometry geometry
+      Geometry.topBarBounds (Geometry.uiTopBarGeometry geometry) `shouldBe` topBarRect layout
+      Geometry.leftPanelBounds leftPanel `shouldBe` leftPanelRect layout
+      Geometry.leftPanelToggleButton leftPanel `shouldBe` leftToggleRect layout
+      Geometry.panelTabsToTuple (Geometry.leftPanelTabs leftPanel) `shouldBe` leftTabRects layout
+      Geometry.leftPanelGenerateButton leftPanel `shouldBe` leftGenButtonRect layout
+      Geometry.configPanelBounds configPanel `shouldBe` configPanelRect layout
+      Geometry.configPanelToggleButton configPanel `shouldBe` configToggleRect layout
+      Geometry.configTabsToTuple (Geometry.configPanelTabs configPanel) `shouldBe` configTabRects layout
+      Geometry.configScrollAreaBounds configPanel `shouldBe` configScrollAreaRect layout
+      Geometry.configScrollBarBounds configPanel `shouldBe` configScrollBarRect layout
+      Geometry.logPanelBounds logPanel `shouldBe` logPanelRect layout
+      Geometry.logHeaderBounds logPanel `shouldBe` logHeaderRect layout
+      Geometry.logFilterButtonsToTuple (Geometry.logFilterButtons logPanel) `shouldBe` logFilterRects layout
+      Geometry.editorToolbarBounds editor `shouldBe` editorToolbarRect layout
+      Geometry.editorRadiusPlusButton editor `shouldBe` editorRadiusPlusRect layout
+      Geometry.editorParamBarBounds editor `shouldBe` editorParamBarRect layout
+
+    it "keeps typed primary panel geometry inside common window sizes" $
+      mapM_ assertCommonWindowGeometry commonWindowSizes
+
+    it "moves the typed config panel with window width while keeping the left panel stable" $ do
+      let geometries = map (`typedGeometryFor` 600) [minUsableWindowWidth, 800, 1280]
+          leftPanels = map (Geometry.leftPanelBounds . Geometry.uiLeftPanelGeometry) geometries
+          configPanels = map (Geometry.configPanelBounds . Geometry.uiConfigPanelGeometry) geometries
+      map Geometry.rectLeft leftPanels `shouldBe` replicate 3 16
+      map Geometry.rectWidth leftPanels `shouldBe` replicate 3 240
+      map Geometry.rectLeft configPanels `shouldSatisfy` strictlyIncreasing
+      map Geometry.rectWidth configPanels `shouldBe` replicate 3 300
+
+    it "resizes typed vertical panel bounds with the window height" $ do
+      let shortGeometry = typedGeometryFor 800 600
+          tallGeometry = typedGeometryFor 800 720
+          shortConfig = Geometry.configPanelBounds (Geometry.uiConfigPanelGeometry shortGeometry)
+          tallConfig = Geometry.configPanelBounds (Geometry.uiConfigPanelGeometry tallGeometry)
+          shortLog = Geometry.logPanelBounds (Geometry.uiLogPanelGeometry shortGeometry)
+          tallLog = Geometry.logPanelBounds (Geometry.uiLogPanelGeometry tallGeometry)
+      Geometry.rectHeight tallConfig - Geometry.rectHeight shortConfig `shouldBe` 120
+      Geometry.rectTop tallLog - Geometry.rectTop shortLog `shouldBe` 120
+      Geometry.rectBottom tallLog `shouldBe` 720
+
+    it "clamps typed config geometry between the left panel and the window edge on narrow resize" $ do
+      let windowWidth = 500
+          geometry = typedGeometryFor windowWidth 600
+          leftPanel = Geometry.leftPanelBounds (Geometry.uiLeftPanelGeometry geometry)
+          configPanel = Geometry.configPanelBounds (Geometry.uiConfigPanelGeometry geometry)
+      Geometry.rectLeft configPanel `shouldBe` Geometry.rectRight leftPanel + 8
+      Geometry.rectRight configPanel `shouldBe` windowWidth - 16
+      Geometry.rectWidth configPanel `shouldSatisfy` (< 300)
+
 inside :: V2 Int -> Rect -> Bool
 inside (V2 px py) (Rect (V2 x y, V2 w h)) =
   px >= x && px < x + w && py >= y && py < y + h
+
+commonWindowSizes :: [V2 Int]
+commonWindowSizes = [V2 800 600, V2 1280 720, V2 1920 1080]
+
+typedGeometryFor :: Int -> Int -> Geometry.UiGeometry
+typedGeometryFor width height =
+  uiGeometryForSeed (Geometry.WindowSize (V2 width height)) (Geometry.LogHeight 160) (Geometry.SeedInputWidth 120)
+
+assertCommonWindowGeometry :: V2 Int -> Expectation
+assertCommonWindowGeometry windowSize@(V2 width height) = do
+  let geometry = uiGeometryForSeed (Geometry.WindowSize windowSize) (Geometry.LogHeight 160) (Geometry.SeedInputWidth 120)
+      windowRect = Rect (V2 0 0, windowSize)
+      topBar = Geometry.topBarBounds (Geometry.uiTopBarGeometry geometry)
+      leftPanel = Geometry.leftPanelBounds (Geometry.uiLeftPanelGeometry geometry)
+      configPanel = Geometry.configPanelBounds (Geometry.uiConfigPanelGeometry geometry)
+      configScrollArea = Geometry.configScrollAreaBounds (Geometry.uiConfigPanelGeometry geometry)
+      logPanel = Geometry.logPanelBounds (Geometry.uiLogPanelGeometry geometry)
+      logHeader = Geometry.logHeaderBounds (Geometry.uiLogPanelGeometry geometry)
+      logBody = Geometry.logBodyBounds (Geometry.uiLogPanelGeometry geometry)
+      editorToolbar = Geometry.editorToolbarBounds (Geometry.uiEditorGeometry geometry)
+      primaryRects = [topBar, leftPanel, configPanel, configScrollArea, logPanel, logHeader, logBody, editorToolbar]
+  mapM_ (`shouldSatisfy` Geometry.rectNonNegative) primaryRects
+  mapM_ (\rect -> Geometry.rectContainsRect windowRect rect `shouldBe` True) primaryRects
+  Geometry.rectRight topBar `shouldBe` width
+  Geometry.rectBottom logPanel `shouldBe` height
+  Geometry.rectTop logPanel `shouldBe` height - 160
+  Geometry.rectContainsRect configPanel configScrollArea `shouldBe` True
+  Geometry.rectContainsRect logPanel logHeader `shouldBe` True
+  Geometry.rectContainsRect logPanel logBody `shouldBe` True
+  Geometry.rectsSeparatedHorizontally 8 leftPanel configPanel `shouldBe` True
+
+strictlyIncreasing :: [Int] -> Bool
+strictlyIncreasing values = and (zipWith (<) values (drop 1 values))

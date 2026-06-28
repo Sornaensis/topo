@@ -102,7 +102,9 @@ library:
     - Seer.World.Persist
     - Seer.World.Persist.Types
     - UI.Font
+    - UI.Geometry
     - UI.Layout
+    - UI.Layout.Geometry
     - UI.HexPick
     - UI.OverlayExtract
     - UI.TerrainAtlas

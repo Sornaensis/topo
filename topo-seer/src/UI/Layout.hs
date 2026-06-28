@@ -1,5 +1,19 @@
 module UI.Layout
   ( Layout
+  , layoutGeometry
+  , WindowSize(..)
+  , LogHeight(..)
+  , SeedInputWidth(..)
+  , UiGeometry(..)
+  , TopBarGeometry(..)
+  , LeftPanelGeometry(..)
+  , ConfigPanelGeometry(..)
+  , LogPanelGeometry(..)
+  , EditorGeometry(..)
+  , PanelTabs(..)
+  , ConfigTabs(..)
+  , LogFilterButtons(..)
+  , OverlayViewGeometry(..)
   , ConfigParamRowRects(..)
   , topBarHeight
   , minUsableWindowWidth
@@ -117,6 +131,8 @@ module UI.Layout
 
 import Linear (V2(..))
 import Seer.Editor.Types (EditorTool)
+import UI.Geometry
+import UI.Layout.Geometry (layoutTopBarHeight, uiGeometryForSeed)
 import UI.Widgets (Rect(..))
 
 -- | Shared geometry for one config slider row.
@@ -131,11 +147,12 @@ data Layout = Layout
   { layoutSize :: V2 Int
   , layoutLogHeight :: Int
   , layoutSeedWidth :: Int
+  , layoutUiGeometry :: UiGeometry
   } deriving (Eq, Show)
 
 -- | Height of the top bar in pixels.
 topBarHeight :: Int
-topBarHeight = 28
+topBarHeight = layoutTopBarHeight
 
 -- | Minimum window width at which both side panels fit without overlap.
 --
@@ -152,8 +169,8 @@ minUsableWindowHeight = 480
 
 -- | Full-width bar at the top of the window displaying the world name.
 topBarRect :: Layout -> Rect
-topBarRect (Layout (V2 w _) _ _) =
-  Rect (V2 0 0, V2 w topBarHeight)
+topBarRect layout =
+  topBarBounds (uiTopBarGeometry (layoutGeometry layout))
 
 layoutFor :: V2 Int -> Int -> Layout
 layoutFor size logHeight = layoutForSeed size logHeight 120
@@ -163,86 +180,43 @@ layoutForSeed size logHeight seedWidth = Layout
   { layoutSize = size
   , layoutLogHeight = logHeight
   , layoutSeedWidth = seedWidth
+  , layoutUiGeometry = uiGeometryForSeed
+      (WindowSize size)
+      (LogHeight logHeight)
+      (SeedInputWidth seedWidth)
   }
+
+layoutGeometry :: Layout -> UiGeometry
+layoutGeometry = layoutUiGeometry
 
 -- | Generate button inside the left panel, below seed value (Row 4).
 leftGenButtonRect :: Layout -> Rect
 leftGenButtonRect layout =
-  let Rect (V2 x _y, V2 w _) = leftPanelRect layout
-      pad = 12
-      rowHeight = 24
-      gap = 10
-      top = leftControlsTop layout + 4 * (rowHeight + gap)
-  in Rect (V2 (x + pad) top, V2 (w - pad * 2) 28)
+  leftPanelGenerateButton (uiLeftPanelGeometry (layoutGeometry layout))
 
 leftPanelRect :: Layout -> Rect
-leftPanelRect (Layout (V2 _ h) logHeight _) =
-  let panelW = 240
-      x = 16
-      y = 56 + topBarHeight
-  in Rect (V2 x y, V2 panelW (h - logHeight - 72 - topBarHeight))
+leftPanelRect layout =
+  leftPanelBounds (uiLeftPanelGeometry (layoutGeometry layout))
 
 leftToggleRect :: Layout -> Rect
 leftToggleRect layout =
-  let Rect (V2 x y, V2 _ _) = leftPanelRect layout
-      pad = 12
-      buttonW = 44
-      buttonH = 22
-  in Rect (V2 (x + pad) (y + 8), V2 buttonW buttonH)
+  leftPanelToggleButton (uiLeftPanelGeometry (layoutGeometry layout))
 
 leftTabRects :: Layout -> (Rect, Rect)
 leftTabRects layout =
-  let Rect (V2 x y, V2 w _) = leftPanelRect layout
-      pad = 12
-      tabH = 22
-      gap = 8
-      toggleH = 22
-      tabY = y + 8 + toggleH + 8
-      available = w - pad * 2 - gap
-      tabW = available `div` 2
-      r1 = Rect (V2 (x + pad) tabY, V2 tabW tabH)
-      r2 = Rect (V2 (x + pad + tabW + gap) tabY, V2 tabW tabH)
-  in (r1, r2)
+  panelTabsToTuple (leftPanelTabs (uiLeftPanelGeometry (layoutGeometry layout)))
 
 configToggleRect :: Layout -> Rect
 configToggleRect layout =
-  let Rect (V2 x y, V2 _ _) = configPanelRect layout
-      pad = 12
-      buttonW = 44
-      buttonH = 22
-  in Rect (V2 (x + pad) (y + 8), V2 buttonW buttonH)
+  configPanelToggleButton (uiConfigPanelGeometry (layoutGeometry layout))
 
 configPanelRect :: Layout -> Rect
 configPanelRect layout =
-  let Layout (V2 w h) logHeight seedWidth = layout
-      pad = 12
-      buttonW = 64
-      minW = 300
-      desiredW = max minW (pad * 2 + seedWidth + buttonW + 20)
-      -- Clamp the left edge so the config panel never overlaps the left panel.
-      Rect (V2 lpx _, V2 lpw _) = leftPanelRect layout
-      leftBound = lpx + lpw + 8
-      rawPanelX = w - desiredW - 16
-      panelX = max leftBound rawPanelX
-      actualW = max 0 (w - panelX - 16)
-  in Rect (V2 panelX (16 + topBarHeight), V2 actualW (h - logHeight - 32 - topBarHeight))
+  configPanelBounds (uiConfigPanelGeometry (layoutGeometry layout))
 
 configTabRects :: Layout -> (Rect, Rect, Rect, Rect, Rect, Rect, Rect, Rect)
 configTabRects layout =
-  let Rect (V2 x y, V2 w _) = configPanelRect layout
-      pad = 12
-      tabH = 22
-      gapX = 4
-      gapY = 6
-      toggleH = 22
-      available = w - pad * 2 - gapX * 3
-      tabW = available `div` 4
-      y0 = y + 8 + toggleH + 8
-      y1 = y0 + tabH + gapY
-      mk row col = Rect (V2 (x + pad + col * (tabW + gapX)) (if row == (0 :: Int) then y0 else y1), V2 tabW tabH)
-  in ( mk 0 0, mk 0 1, mk 0 2, mk 0 3
-     , mk 1 0, mk 1 1, mk 1 2, mk 1 3
-     )
+  configTabsToTuple (configPanelTabs (uiConfigPanelGeometry (layoutGeometry layout)))
 
 configChunkMinusRect :: Layout -> Rect
 configChunkMinusRect = leftChunkMinusRect
@@ -265,48 +239,30 @@ configSeedRandomRect = leftSeedRandomRect
 -- | Config preset save button (top of 4-button stack).
 configPresetSaveRect :: Layout -> Rect
 configPresetSaveRect layout =
-  let Rect (V2 x y, V2 w h) = configPanelRect layout
-  in Rect (V2 (x + 12) (y + h - 136), V2 (w - 24) 24)
+  configPresetSaveButton (uiConfigPanelGeometry (layoutGeometry layout))
 
 -- | Config preset load button (second in 4-button stack).
 configPresetLoadRect :: Layout -> Rect
 configPresetLoadRect layout =
-  let Rect (V2 x y, V2 w h) = configPanelRect layout
-  in Rect (V2 (x + 12) (y + h - 104), V2 (w - 24) 24)
+  configPresetLoadButton (uiConfigPanelGeometry (layoutGeometry layout))
 
 -- | Config reset button (third in 4-button stack).
 configResetRect :: Layout -> Rect
 configResetRect layout =
-  let Rect (V2 x y, V2 w h) = configPanelRect layout
-  in Rect (V2 (x + 12) (y + h - 72), V2 (w - 24) 24)
+  configResetButton (uiConfigPanelGeometry (layoutGeometry layout))
 
 -- | Config revert button (bottom of 4-button stack).
 configRevertRect :: Layout -> Rect
 configRevertRect layout =
-  let Rect (V2 x y, V2 w h) = configPanelRect layout
-  in Rect (V2 (x + 12) (y + h - 40), V2 (w - 24) 24)
+  configRevertButton (uiConfigPanelGeometry (layoutGeometry layout))
 
 configScrollAreaRect :: Layout -> Rect
 configScrollAreaRect layout =
-  let Rect (V2 x y, V2 w _) = configPanelRect layout
-      Rect (V2 _ applyY, V2 _ _) = configPresetSaveRect layout
-      pad = 16
-      -- Account for two rows of tabs: toggle(22) + 8 + tabRow1(22) + gapY(6) + tabRow2(22) + 8
-      tabOffset = 96
-      barW = 8
-      barGap = 6
-      top = y + tabOffset
-      bottom = applyY - 8
-      height = max 0 (bottom - top)
-      innerW = max 0 (w - pad * 2 - barW - barGap)
-  in Rect (V2 (x + pad) top, V2 innerW height)
+  configScrollAreaBounds (uiConfigPanelGeometry (layoutGeometry layout))
 
 configScrollBarRect :: Layout -> Rect
 configScrollBarRect layout =
-  let Rect (V2 sx sy, V2 sw sh) = configScrollAreaRect layout
-      barW = 8
-      barGap = 6
-  in Rect (V2 (sx + sw + barGap) sy, V2 barW sh)
+  configScrollBarBounds (uiConfigPanelGeometry (layoutGeometry layout))
 
 configRowTopPad :: Int
 configRowTopPad = 12
@@ -363,10 +319,7 @@ configParamRowRect index layout =
 
 leftControlsTop :: Layout -> Int
 leftControlsTop layout =
-  let Rect (V2 _ y, V2 _ _) = leftPanelRect layout
-      toggleH = 22
-      tabH = 22
-  in y + 8 + toggleH + 8 + tabH + 16
+  leftPanelControlsTopY (uiLeftPanelGeometry (layoutGeometry layout))
 
 leftParamMinusRect :: Int -> Layout -> Rect
 leftParamMinusRect index layout =
@@ -400,13 +353,16 @@ leftParamBarRect index layout =
   in Rect (V2 barX barY, V2 barW barHeight)
 
 leftChunkMinusRect :: Layout -> Rect
-leftChunkMinusRect = leftParamMinusRect 0
+leftChunkMinusRect layout =
+  leftPanelChunkMinusButton (uiLeftPanelGeometry (layoutGeometry layout))
 
 leftChunkPlusRect :: Layout -> Rect
-leftChunkPlusRect = leftParamPlusRect 0
+leftChunkPlusRect layout =
+  leftPanelChunkPlusButton (uiLeftPanelGeometry (layoutGeometry layout))
 
 leftChunkValueRect :: Layout -> Rect
-leftChunkValueRect = leftParamBarRect 0
+leftChunkValueRect layout =
+  leftPanelChunkValueBounds (uiLeftPanelGeometry (layoutGeometry layout))
 
 leftSeedMinusRect :: Layout -> Rect
 leftSeedMinusRect = leftParamMinusRect 1
@@ -416,69 +372,35 @@ leftSeedPlusRect = leftParamPlusRect 1
 
 leftSeedLabelRect :: Layout -> Rect
 leftSeedLabelRect layout =
-  let Rect (V2 x _y, V2 w _) = leftPanelRect layout
-      pad = 12
-      rowHeight = 24
-      gap = 10
-      top = leftControlsTop layout + 2 * (rowHeight + gap)
-      buttonW = 64
-      valueW = min (layoutSeedWidth layout) (w - pad * 2 - buttonW - 8)
-  in Rect (V2 (x + pad) top, V2 valueW rowHeight)
+  leftPanelSeedLabelBounds (uiLeftPanelGeometry (layoutGeometry layout))
 
 leftSeedRandomRect :: Layout -> Rect
 leftSeedRandomRect layout =
-  let Rect (V2 x _y, V2 w _) = leftPanelRect layout
-      pad = 12
-      rowHeight = 24
-      gap = 10
-      top = leftControlsTop layout + 2 * (rowHeight + gap)
-      buttonW = 64
-  in Rect (V2 (x + w - pad - buttonW) top, V2 buttonW rowHeight)
+  leftPanelSeedRandomButton (uiLeftPanelGeometry (layoutGeometry layout))
 
 leftSeedValueRect :: Layout -> Rect
 leftSeedValueRect layout =
-  let Rect (V2 x _y, V2 w _) = leftPanelRect layout
-      pad = 12
-      rowHeight = 24
-      gap = 10
-      top = leftControlsTop layout + 3 * (rowHeight + gap)
-      valueW = min (layoutSeedWidth layout) (w - pad * 2)
-      valueX = x + (w - valueW) `div` 2
-  in Rect (V2 valueX top, V2 valueW rowHeight)
+  leftPanelSeedValueBounds (uiLeftPanelGeometry (layoutGeometry layout))
 
 -- | Number of rows used by view-mode buttons (ceil(15/2) = 8).
 -- | Total pixel height of the content in the left View tab
 -- (view mode buttons + overlay selector rows).
 leftViewContentHeight :: Layout -> Int
 leftViewContentHeight layout =
-  let buttonH = 28
-      gap = 8
-  in leftViewRowCount * (buttonH + gap) + 2 * (buttonH + gap) + 1 * (buttonH + gap)
+  leftPanelViewContentHeightPx (uiLeftPanelGeometry (layoutGeometry layout))
 
 -- | Maximum scroll offset for the left View tab content.
 -- Returns 0 when the content fits within the panel.
 leftViewScrollMax :: Layout -> Int
 leftViewScrollMax layout =
-  let Rect (V2 _ panelY, V2 _ panelH) = leftPanelRect layout
-      controlsTop = leftControlsTop layout
-      usable = panelH - (controlsTop - panelY)
-  in max 0 (leftViewContentHeight layout - usable)
+  leftPanelViewScrollMaxPx (uiLeftPanelGeometry (layoutGeometry layout))
 
 leftViewRowCount :: Int
 leftViewRowCount = 8
 
 leftViewRects :: Layout -> [Rect]
 leftViewRects layout =
-  let Rect (V2 x _y, V2 w _) = leftPanelRect layout
-      pad = 12
-      gap = 8
-      buttonH = 28
-      buttonW = (w - pad * 2 - gap) `div` 2
-      top = leftControlsTop layout
-      viewCount = 16
-      gridPos i = (i `div` 2, i `mod` 2)
-      rect (row, col) = Rect (V2 (x + pad + col * (buttonW + gap)) (top + row * (buttonH + gap)), V2 buttonW buttonH)
-  in map (rect . gridPos) [0 .. viewCount - 1]
+  leftPanelViewButtons (uiLeftPanelGeometry (layoutGeometry layout))
 
 -- | Overlay selector button rects in the left View panel.
 --
@@ -486,64 +408,32 @@ leftViewRects layout =
 -- below the view mode buttons.
 overlayViewRects :: Layout -> (Rect, Rect, Rect, Rect)
 overlayViewRects layout =
-  let Rect (V2 x _y, V2 w _) = leftPanelRect layout
-      pad = 12
-      gap = 8
-      buttonH = 28
-      buttonW = (w - pad * 2 - gap) `div` 2
-      top = leftControlsTop layout
-      rowAfterViews = top + (buttonH + gap) * leftViewRowCount
-      row2Y = rowAfterViews + (buttonH + gap)
-      oPrev = Rect (V2 (x + pad) rowAfterViews, V2 buttonW buttonH)
-      oNext = Rect (V2 (x + pad + buttonW + gap) rowAfterViews, V2 buttonW buttonH)
-      fPrev = Rect (V2 (x + pad) row2Y, V2 buttonW buttonH)
-      fNext = Rect (V2 (x + pad + buttonW + gap) row2Y, V2 buttonW buttonH)
-  in (oPrev, oNext, fPrev, fNext)
+  overlayViewGeometryToTuple (leftPanelOverlayButtons (uiLeftPanelGeometry (layoutGeometry layout)))
 
 -- | Day/night toggle button rect, positioned after the overlay selector rows
 -- in the left View tab.
 dayNightToggleRect :: Layout -> Rect
 dayNightToggleRect layout =
-  let Rect (V2 x _y, V2 w _) = leftPanelRect layout
-      pad = 12
-      gap = 8
-      buttonH = 28
-      buttonW = w - pad * 2
-      top = leftControlsTop layout
-      rowY = top + (buttonH + gap) * (leftViewRowCount + 2)
-  in Rect (V2 (x + pad) rowY, V2 buttonW buttonH)
+  leftPanelDayNightToggleButton (uiLeftPanelGeometry (layoutGeometry layout))
 
 logPanelRect :: Layout -> Rect
-logPanelRect (Layout (V2 w h) logHeight _) =
-  Rect (V2 0 (h - logHeight), V2 w logHeight)
+logPanelRect layout =
+  logPanelBounds (uiLogPanelGeometry (layoutGeometry layout))
 
 logHeaderRect :: Layout -> Rect
 logHeaderRect layout =
-  let Rect (V2 x y, V2 w _) = logPanelRect layout
-  in Rect (V2 x y, V2 w 24)
+  logHeaderBounds (uiLogPanelGeometry (layoutGeometry layout))
 
 logBodyRect :: Layout -> Rect
 logBodyRect layout =
-  let Rect (V2 x y, V2 w h) = logPanelRect layout
-      bodyHeight = max 0 (h - 24)
-  in Rect (V2 x (y + 24), V2 w bodyHeight)
+  logBodyBounds (uiLogPanelGeometry (layoutGeometry layout))
 
 logFilterRects :: Layout -> (Rect, Rect, Rect, Rect)
 logFilterRects layout =
-  let Rect (V2 x y, V2 w h) = logHeaderRect layout
-      buttonSize = 22
-      gap = 6
-      total = buttonSize * 4 + gap * 3
-      startX = x + w - total - 12
-      y0 = y + (h - buttonSize) `div` 2
-      r1 = Rect (V2 startX y0, V2 buttonSize buttonSize)
-      r2 = Rect (V2 (startX + buttonSize + gap) y0, V2 buttonSize buttonSize)
-      r3 = Rect (V2 (startX + (buttonSize + gap) * 2) y0, V2 buttonSize buttonSize)
-      r4 = Rect (V2 (startX + (buttonSize + gap) * 3) y0, V2 buttonSize buttonSize)
-  in (r1, r2, r3, r4)
+  logFilterButtonsToTuple (logFilterButtons (uiLogPanelGeometry (layoutGeometry layout)))
 
 menuPanelRect :: Layout -> Rect
-menuPanelRect (Layout (V2 w h) _ _) =
+menuPanelRect (Layout { layoutSize = V2 w h }) =
   let panelW = 240
       panelH = 180
       x = (w - panelW) `div` 2
@@ -574,7 +464,7 @@ menuButtonRect layout index =
 
 -- | Centered overlay for the preset save dialog (280 × 150).
 presetSaveDialogRect :: Layout -> Rect
-presetSaveDialogRect (Layout (V2 w h) _ _) =
+presetSaveDialogRect (Layout { layoutSize = V2 w h }) =
   let dw = 280; dh = 150
       dx = (w - dw) `div` 2
       dy = (h - dh) `div` 2
@@ -607,7 +497,7 @@ presetSaveCancelRect layout =
 
 -- | Centered overlay for the preset load dialog (280 × 320).
 presetLoadDialogRect :: Layout -> Rect
-presetLoadDialogRect (Layout (V2 w h) _ _) =
+presetLoadDialogRect (Layout { layoutSize = V2 w h }) =
   let dw = 280; dh = 360
       dx = (w - dw) `div` 2
       dy = (h - dh) `div` 2
@@ -654,7 +544,7 @@ presetLoadCancelRect layout =
 
 -- | Centered overlay for the world save dialog (300 × 140).
 worldSaveDialogRect :: Layout -> Rect
-worldSaveDialogRect (Layout (V2 w h) _ _) =
+worldSaveDialogRect (Layout { layoutSize = V2 w h }) =
   let dw = 300; dh = 140
       dx = (w - dw) `div` 2
       dy = (h - dh) `div` 2
@@ -687,7 +577,7 @@ worldSaveCancelRect layout =
 
 -- | Centered overlay for the world load dialog (320 × 400).
 worldLoadDialogRect :: Layout -> Rect
-worldLoadDialogRect (Layout (V2 w h) _ _) =
+worldLoadDialogRect (Layout { layoutSize = V2 w h }) =
   let dw = 320; dh = 400
       dx = (w - dw) `div` 2
       dy = (h - dh) `div` 2
@@ -850,7 +740,7 @@ dataBrowserPageNextRect index layout =
 -- (clamped to the available screen space).
 dataDetailPopoverRect :: Int -> Int -> Layout -> Rect
 dataDetailPopoverRect rowIndex fieldCount layout =
-  let Layout (V2 _winW winH) _ _ = layout
+  let V2 _winW winH = layoutSize layout
       Rect (V2 cfgX _, V2 _ _) = configPanelRect layout
       Rect (V2 _ rowY, V2 _ _) = configScrollRowRect rowIndex layout
       popW = 280
@@ -955,7 +845,7 @@ dataDetailFieldStepPlusRect rowIndex fieldCount fieldIndex layout =
 
 -- | Delete confirmation dialog (centered on screen).
 deleteConfirmDialogRect :: Layout -> Rect
-deleteConfirmDialogRect (Layout (V2 winW winH) _ _) =
+deleteConfirmDialogRect (Layout { layoutSize = V2 winW winH }) =
   let dlgW = 260
       dlgH = 100
       dx = (winW - dlgW) `div` 2
@@ -994,75 +884,49 @@ editorToolButtonCount = length ([minBound .. maxBound] :: [EditorTool])
 
 -- | Full editor toolbar rect anchored at top-center of window.
 editorToolbarRect :: Layout -> Rect
-editorToolbarRect (Layout (V2 w _) _ _) =
-  let toolBtnW = 64
-      gap = 4
-      pad = 12
-      -- tool buttons + radius controls + close + padding
-      contentW = editorToolButtonCount * toolBtnW
-               + (editorToolButtonCount - 1) * gap
-               + gap + 24 + gap + 40 + gap + 24  -- [−] value [+]
-               + gap + 28                         -- [X] close
-               + pad * 2
-      barH = 36
-      barX = (w - contentW) `div` 2
-      barY = 4 + topBarHeight
-  in Rect (V2 barX barY, V2 contentW barH)
+editorToolbarRect layout =
+  editorToolbarBounds (uiEditorGeometry (layoutGeometry layout))
 
 -- | Rect for the n-th tool button (0-indexed) inside the editor toolbar.
 editorToolButtonRect :: Int -> Layout -> Rect
 editorToolButtonRect idx layout =
-  let Rect (V2 x y, V2 _ h) = editorToolbarRect layout
-      pad = 12
-      btnW = 64
-      gap = 4
-      insetY = 4
-      btnH = h - insetY * 2
-      btnX = x + pad + idx * (btnW + gap)
-  in Rect (V2 btnX (y + insetY), V2 btnW btnH)
+  case (idx >= 0, drop idx (editorToolButtonBounds (uiEditorGeometry (layoutGeometry layout)))) of
+    (True, buttonRect : _) -> buttonRect
+    _ ->
+      let Rect (V2 x y, V2 _ h) = editorToolbarRect layout
+          pad = 12
+          btnW = 64
+          gap = 4
+          insetY = 4
+          btnH = h - insetY * 2
+          btnX = x + pad + idx * (btnW + gap)
+      in Rect (V2 btnX (y + insetY), V2 btnW btnH)
 
 -- | Minus button for brush radius in the editor toolbar.
 editorRadiusMinusRect :: Layout -> Rect
 editorRadiusMinusRect layout =
-  let Rect (V2 x y, V2 _ h) = editorToolbarRect layout
-      pad = 12
-      btnW = 64
-      gap = 4
-      insetY = 4
-      btnH = h - insetY * 2
-      afterTools = x + pad + editorToolButtonCount * (btnW + gap)
-  in Rect (V2 (afterTools + gap) (y + insetY), V2 24 btnH)
+  editorRadiusMinusButton (uiEditorGeometry (layoutGeometry layout))
 
 -- | Display rect for the current brush radius value.
 editorRadiusValueRect :: Layout -> Rect
 editorRadiusValueRect layout =
-  let Rect (V2 rx ry, V2 _ rh) = editorRadiusMinusRect layout
-  in Rect (V2 (rx + 24 + 4) ry, V2 40 rh)
+  editorRadiusValueBounds (uiEditorGeometry (layoutGeometry layout))
 
 -- | Plus button for brush radius in the editor toolbar.
 editorRadiusPlusRect :: Layout -> Rect
 editorRadiusPlusRect layout =
-  let Rect (V2 rx ry, V2 _ rh) = editorRadiusValueRect layout
-  in Rect (V2 (rx + 40 + 4) ry, V2 24 rh)
+  editorRadiusPlusButton (uiEditorGeometry (layoutGeometry layout))
 
 -- | Close button [X] at the right end of the editor toolbar.
 editorCloseRect :: Layout -> Rect
 editorCloseRect layout =
-  let Rect (V2 _ y, V2 _ h) = editorToolbarRect layout
-      Rect (V2 rx ry, V2 _ rh) = editorRadiusPlusRect layout
-      insetY = 4
-      btnH = h - insetY * 2
-  in Rect (V2 (rx + 24 + 4) (y + insetY), V2 28 btnH)
+  editorCloseButton (uiEditorGeometry (layoutGeometry layout))
 
 -- | Small reopen button shown when the editor toolbar is closed.
 -- Positioned at the same Y as the toolbar, centered in the window.
 editorReopenRect :: Layout -> Rect
-editorReopenRect (Layout (V2 w _) _ _) =
-  let btnW = 64
-      btnH = 28
-      btnX = (w - btnW) `div` 2
-      btnY = 4 + topBarHeight
-  in Rect (V2 btnX btnY, V2 btnW btnH)
+editorReopenRect layout =
+  editorReopenButton (uiEditorGeometry (layoutGeometry layout))
 
 ------------------------------------------------------------------------
 -- Editor param bar
@@ -1072,8 +936,7 @@ editorReopenRect (Layout (V2 w _) _ _) =
 -- Matches the toolbar's x/width; height is 30px with 2px gap.
 editorParamBarRect :: Layout -> Rect
 editorParamBarRect layout =
-  let Rect (V2 bx by, V2 bw bh) = editorToolbarRect layout
-  in Rect (V2 bx (by + bh + 2), V2 bw 30)
+  editorParamBarBounds (uiEditorGeometry (layoutGeometry layout))
 
 -- | Numeric control (−/value/+) rects for param-bar slot @n@ (0-indexed).
 -- Returns @(minusRect, valueRect, plusRect)@.
