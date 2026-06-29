@@ -241,42 +241,51 @@ buildDataDetailWidgets
   :: Int            -- ^ Row index the popover is anchored to
   -> [DataFieldDef] -- ^ Field definitions from the schema
   -> Set Text       -- ^ Currently expanded field paths
+  -> Int            -- ^ Validation rows rendered after fields
   -> Bool           -- ^ Edit mode active
-  -> Bool           -- ^ Can update
+  -> Bool           -- ^ Show edit toggle
   -> Bool           -- ^ Can delete
+  -> Bool           -- ^ Delete confirmation dialog shown
   -> Layout
   -> [Widget]
-buildDataDetailWidgets rowIndex fields expanded editMode canUpdate canDelete layout =
+buildDataDetailWidgets rowIndex fields expanded validationRowCount editMode showEditToggle canDelete deleteConfirmShown layout =
   let flatFields = enumerateVisibleFields "" fields expanded
       fieldCount = length flatFields
+      rowCount = fieldCount + validationRowCount
       toggleWidgets =
         [ Widget (WidgetDataFieldToggle path)
-                 (dataDetailFieldRect rowIndex fieldCount fIdx layout)
+                 (dataDetailFieldRect rowIndex rowCount fIdx layout)
         | (fIdx, (path, True)) <- zip [0..] flatFields
         ]
       dismissWidget =
         Widget WidgetDataDetailDismiss
-               (dataDetailPopoverRect rowIndex fieldCount layout)
+               (dataDetailPopoverRect rowIndex rowCount layout)
       -- Mutation header buttons
       editToggleWidget
-        | canUpdate =
+        | showEditToggle =
             [ Widget WidgetDataEditToggle
-                     (dataDetailEditToggleRect rowIndex fieldCount layout) ]
+                     (dataDetailEditToggleRect rowIndex rowCount layout) ]
         | otherwise = []
       saveWidget
         | editMode =
             [ Widget WidgetDataEditSave
-                     (dataDetailSaveRect rowIndex fieldCount layout) ]
+                     (dataDetailSaveRect rowIndex rowCount layout) ]
         | otherwise = []
       cancelWidget
         | editMode =
             [ Widget WidgetDataEditCancel
-                     (dataDetailCancelRect rowIndex fieldCount layout) ]
+                     (dataDetailCancelRect rowIndex rowCount layout) ]
         | otherwise = []
       deleteWidget
         | canDelete && not editMode =
             [ Widget WidgetDataDeleteBtn
-                     (dataDetailDeleteRect rowIndex fieldCount layout) ]
+                     (dataDetailDeleteRect rowIndex rowCount layout) ]
+        | otherwise = []
+      deleteConfirmWidgets
+        | deleteConfirmShown =
+            [ Widget WidgetDataDeleteConfirm (deleteConfirmOkRect layout)
+            , Widget WidgetDataDeleteCancel (deleteConfirmCancelRect layout)
+            ]
         | otherwise = []
       -- Per-field input widgets (only in edit mode)
       fieldInputWidgets
@@ -289,43 +298,43 @@ buildDataDetailWidgets rowIndex fields expanded editMode canUpdate canDelete lay
             in case fType of
               Just DFBool ->
                 [ Widget (WidgetDataFieldBoolToggle path)
-                         (dataDetailFieldInputRect rowIndex fieldCount fIdx layout) ]
+                         (dataDetailFieldInputRect rowIndex rowCount fIdx layout) ]
               Just (DFEnum _) ->
                 [ Widget (WidgetDataFieldEnumPrev path)
-                         (dataDetailFieldStepMinusRect rowIndex fieldCount fIdx layout)
+                         (dataDetailFieldStepMinusRect rowIndex rowCount fIdx layout)
                 , Widget (WidgetDataFieldEnumNext path)
-                         (dataDetailFieldStepPlusRect rowIndex fieldCount fIdx layout)
+                         (dataDetailFieldStepPlusRect rowIndex rowCount fIdx layout)
                 ]
               Just DFInt ->
                 [ Widget (WidgetDataFieldStepMinus path)
-                         (dataDetailFieldStepMinusRect rowIndex fieldCount fIdx layout)
+                         (dataDetailFieldStepMinusRect rowIndex rowCount fIdx layout)
                 , Widget (WidgetDataFieldStepPlus path)
-                         (dataDetailFieldStepPlusRect rowIndex fieldCount fIdx layout)
+                         (dataDetailFieldStepPlusRect rowIndex rowCount fIdx layout)
                 ]
               Just DFFloat ->
                 [ Widget (WidgetDataFieldStepMinus path)
-                         (dataDetailFieldStepMinusRect rowIndex fieldCount fIdx layout)
+                         (dataDetailFieldStepMinusRect rowIndex rowCount fIdx layout)
                 , Widget (WidgetDataFieldStepPlus path)
-                         (dataDetailFieldStepPlusRect rowIndex fieldCount fIdx layout)
+                         (dataDetailFieldStepPlusRect rowIndex rowCount fIdx layout)
                 ]
               Just DFDouble ->
                 [ Widget (WidgetDataFieldStepMinus path)
-                         (dataDetailFieldStepMinusRect rowIndex fieldCount fIdx layout)
+                         (dataDetailFieldStepMinusRect rowIndex rowCount fIdx layout)
                 , Widget (WidgetDataFieldStepPlus path)
-                         (dataDetailFieldStepPlusRect rowIndex fieldCount fIdx layout)
+                         (dataDetailFieldStepPlusRect rowIndex rowCount fIdx layout)
                 ]
               Just DFText ->
                 [ Widget (WidgetDataFieldTextClick path)
-                         (dataDetailFieldInputRect rowIndex fieldCount fIdx layout) ]
+                         (dataDetailFieldInputRect rowIndex rowCount fIdx layout) ]
               _ ->
                 -- Fixed-point types use stepper
                 [ Widget (WidgetDataFieldStepMinus path)
-                         (dataDetailFieldStepMinusRect rowIndex fieldCount fIdx layout)
+                         (dataDetailFieldStepMinusRect rowIndex rowCount fIdx layout)
                 , Widget (WidgetDataFieldStepPlus path)
-                         (dataDetailFieldStepPlusRect rowIndex fieldCount fIdx layout)
+                         (dataDetailFieldStepPlusRect rowIndex rowCount fIdx layout)
                 ]
-  in dismissWidget : editToggleWidget ++ deleteWidget ++ saveWidget ++ cancelWidget
-       ++ fieldInputWidgets ++ toggleWidgets
+  in deleteConfirmWidgets ++ editToggleWidget ++ deleteWidget ++ saveWidget ++ cancelWidget
+       ++ fieldInputWidgets ++ toggleWidgets ++ [dismissWidget]
 
 -- | Enumerate the visible field rows, returning @(dotPath, isExpandable)@.
 --
@@ -371,7 +380,27 @@ lookupFieldType path defs = case T.splitOn "." path of
       case filter (\d -> dfName d == s) subDefs of
         (d:_) -> resolveRest ss (dfType d)
         []    -> Nothing
+    resolveRest (ctorName:indexText:ss) (DFAdt ctors) = do
+      ctor <- findConstructor ctorName ctors
+      index <- parseIndex indexText
+      fieldType <- safeIndex (dcdFields ctor) index
+      resolveRest ss fieldType
     resolveRest _ _ = Nothing
+
+findConstructor :: Text -> [DataConstructorDef] -> Maybe DataConstructorDef
+findConstructor ctorName = foldr (\ctor acc -> if dcdName ctor == ctorName then Just ctor else acc) Nothing
+
+safeIndex :: [a] -> Int -> Maybe a
+safeIndex xs index
+  | index < 0 = Nothing
+  | otherwise = case drop index xs of
+      value:_ -> Just value
+      []      -> Nothing
+
+parseIndex :: Text -> Maybe Int
+parseIndex text = case reads (T.unpack text) of
+  [(n, "")] | n >= 0 -> Just n
+  _                  -> Nothing
 
 -- | Build full-row tooltip hit areas for config sliders, grouped by tab.
 --

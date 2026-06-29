@@ -43,7 +43,9 @@ import Actor.UI.State
   )
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
+import Seer.DataBrowser.Model (clearAdtSiblingEditValues)
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
+import Topo.Plugin.DataResource (DataResourceSchema(..))
 
 -- --------------------------------------------------------------------------
 -- get_dialog_state
@@ -152,7 +154,7 @@ handleSetDialogText ctx reqId params = do
             Just path -> do
               let filtered = Text.filter isPrint txt
                   newDbs = dbs
-                    { dbsEditValues = Map.insert path (String filtered) (dbsEditValues dbs)
+                    { dbsEditValues = dataFieldEditValues ui dbs path (String filtered)
                     , dbsTextCursor = Text.length filtered
                     }
               setUiDataBrowser uiH newDbs
@@ -451,7 +453,7 @@ handleSendKey ctx reqId params = do
 -- Data field helpers (no type signatures — UiHandle is module-internal)
 -- --------------------------------------------------------------------------
 
-handleDataFieldBackspace _ui dbs uiH reqId keyName =
+handleDataFieldBackspace ui dbs uiH reqId keyName =
   case dbsFocusedField dbs of
     Just path | dbsEditMode dbs || dbsCreateMode dbs -> do
       let cursor = dbsTextCursor dbs
@@ -464,7 +466,7 @@ handleDataFieldBackspace _ui dbs uiH reqId keyName =
           let (before, after) = Text.splitAt cursor currentText
               newText = Text.dropEnd 1 before <> after
               newDbs = dbs
-                { dbsEditValues = Map.insert path (String newText) editVals
+                { dbsEditValues = dataFieldEditValues ui dbs path (String newText)
                 , dbsTextCursor = cursor - 1
                 }
           setUiDataBrowser uiH newDbs
@@ -477,7 +479,7 @@ handleDataFieldBackspace _ui dbs uiH reqId keyName =
       pure $ okResponse reqId $ object
         [ "key" .= keyName, "action" .= ("no_effect" :: Text) ]
 
-handleDataFieldDeleteKey _ui dbs uiH reqId keyName =
+handleDataFieldDeleteKey ui dbs uiH reqId keyName =
   case dbsFocusedField dbs of
     Just path | dbsEditMode dbs || dbsCreateMode dbs -> do
       let cursor = dbsTextCursor dbs
@@ -490,7 +492,7 @@ handleDataFieldDeleteKey _ui dbs uiH reqId keyName =
           let (before, after) = Text.splitAt cursor currentText
               newText = before <> Text.drop 1 after
               newDbs = dbs
-                { dbsEditValues = Map.insert path (String newText) editVals
+                { dbsEditValues = dataFieldEditValues ui dbs path (String newText)
                 }
           setUiDataBrowser uiH newDbs
           pure $ okResponse reqId $ object
@@ -529,7 +531,7 @@ handleDataFieldCursorKey _ui dbs uiH direction reqId keyName =
       pure $ okResponse reqId $ object
         [ "key" .= keyName, "action" .= ("no_effect" :: Text) ]
 
-handleDataFieldChar _ui dbs uiH ch reqId keyName =
+handleDataFieldChar ui dbs uiH ch reqId keyName =
   case dbsFocusedField dbs of
     Just path | dbsEditMode dbs || dbsCreateMode dbs -> do
       let cursor = dbsTextCursor dbs
@@ -541,7 +543,7 @@ handleDataFieldChar _ui dbs uiH ch reqId keyName =
           newText = before <> ch <> after
           newCursor = cursor + Text.length ch
           newDbs = dbs
-            { dbsEditValues = Map.insert path (String newText) editVals
+            { dbsEditValues = dataFieldEditValues ui dbs path (String newText)
             , dbsTextCursor = newCursor
             }
       setUiDataBrowser uiH newDbs
@@ -554,6 +556,20 @@ handleDataFieldChar _ui dbs uiH ch reqId keyName =
 -- --------------------------------------------------------------------------
 -- Internal helpers
 -- --------------------------------------------------------------------------
+
+dataFieldEditValues :: UiState -> DataBrowserState -> Text -> Value -> Map.Map Text Value
+dataFieldEditValues ui dbs path value =
+  let cleared = case selectedDataSchema ui dbs of
+        Nothing -> dbsEditValues dbs
+        Just schema -> clearAdtSiblingEditValues (drsFields schema) path (dbsEditValues dbs)
+  in Map.insert path value cleared
+
+selectedDataSchema :: UiState -> DataBrowserState -> Maybe DataResourceSchema
+selectedDataSchema ui dbs = do
+  pName <- dbsSelectedPlugin dbs
+  rName <- dbsSelectedResource dbs
+  schemas <- Map.lookup pName (uiDataResources ui)
+  foldr (\schema acc -> if drsName schema == rName then Just schema else acc) Nothing schemas
 
 autoDetectTarget :: UiState -> Text
 autoDetectTarget ui = case uiMenuMode ui of

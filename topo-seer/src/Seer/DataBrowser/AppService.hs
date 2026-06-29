@@ -111,7 +111,7 @@ dataBrowserStateToModel resources state = DataBrowserModel
   , dbModelEditBuffer = DataBrowserEditBuffer (dbsEditValues state)
   , dbModelFocusedField = dbsFocusedField state
   , dbModelTextCursor = dbsTextCursor state
-  , dbModelValidationErrors = []
+  , dbModelValidationErrors = dbsValidationErrors state
   , dbModelPendingRequest = Nothing
   , dbModelLoading = dbsLoading state
   }
@@ -146,6 +146,7 @@ dataBrowserStateFromModel model = emptyDataBrowserState
   , dbsFocusedField = dbModelFocusedField model
   , dbsTextCursor = dbModelTextCursor model
   , dbsDeleteConfirm = dbModelMode model == DataBrowserDeleteConfirmMode
+  , dbsValidationErrors = dbModelValidationErrors model
   }
   where
     selection = dbModelSelection model

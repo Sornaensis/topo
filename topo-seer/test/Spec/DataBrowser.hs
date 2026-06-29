@@ -2,12 +2,14 @@
 
 module Spec.DataBrowser (spec) where
 
-import Data.Aeson (Value(..))
+import Data.Aeson (Value(..), object, (.=))
 import qualified Data.Map.Strict as Map
+import qualified Data.Vector as Vector
 import Seer.DataBrowser.Model
 import Test.Hspec
 import Topo.Plugin.DataResource
-  ( DataFieldDef(..)
+  ( DataConstructorDef(..)
+  , DataFieldDef(..)
   , DataFieldType(..)
   , DataOperations(..)
   , DataPagination(..)
@@ -129,6 +131,67 @@ spec = describe "DataBrowser model reducer" $ do
     Map.lookup "kind" values `shouldBe` Just (String "city")
     dbModelTextCursor editing5 `shouldBe` 11
 
+  it "submits nested record and ADT edits as nested payload values" $ do
+    let selected = dataBrowserReducer emptyDataBrowserModel (DataBrowserSelectResource "atlas" detailSchema)
+        loaded = dataBrowserReducer selected $
+          DataBrowserListSucceeded
+            (DataBrowserListRecordsRequest "atlas" "details" Nothing Nothing)
+            (QueryResult "details" [detailRecord] (Just 1))
+        editing0 = dataBrowserReducer (selectFirstRecord loaded) DataBrowserStartEdit
+        values0 = dbEditBufferValues (dbModelEditBuffer editing0)
+    Map.lookup "profile.name" values0 `shouldBe` Just (String "Nested")
+    Map.lookup "profile.code" values0 `shouldBe` Nothing
+    Map.lookup "shape.Circle.1" values0 `shouldBe` Just (String "red")
+
+    let editing1 = dataBrowserReducer editing0 (DataBrowserSetFieldValue "profile.name" (String "Updated"))
+        editing2 = dataBrowserReducer editing1 (DataBrowserSetFieldValue "shape.Circle.1" (String "blue"))
+        saved = dataBrowserReducer editing2 DataBrowserSave
+        expectedRecord = DataRecord $ Map.fromList
+          [ ("profile", object
+              [ "age" .= Number 42
+              , "code" .= String "P-1"
+              , "name" .= String "Updated"
+              ])
+          , ("shape", object
+              [ "constructor" .= String "Circle"
+              , "fields" .= Array (Vector.fromList [Number 12.5, String "blue"])
+              ])
+          , ("active", Bool True)
+          ]
+        request = DataBrowserUpdateRecordRequest "atlas" "details" (Number 1) expectedRecord
+    dbModelValidationErrors saved `shouldBe` []
+    dbModelPendingRequest saved `shouldBe` Just request
+
+    let switched0 = dataBrowserReducer editing0 (DataBrowserSetFieldValue "shape.Point.0" (Number 7))
+        switched1 = dataBrowserReducer switched0 (DataBrowserSetFieldValue "shape.Point.1" (Number 8))
+        switchedValues = dbEditBufferValues (dbModelEditBuffer switched1)
+        switched = dataBrowserReducer switched1 DataBrowserSave
+        expectedSwitchedRecord = DataRecord $ Map.fromList
+          [ ("profile", object
+              [ "age" .= Number 42
+              , "code" .= String "P-1"
+              , "name" .= String "Nested"
+              ])
+          , ("shape", object
+              [ "constructor" .= String "Point"
+              , "fields" .= Array (Vector.fromList [Number 7, Number 8])
+              ])
+          , ("active", Bool True)
+          ]
+        switchedRequest = DataBrowserUpdateRecordRequest "atlas" "details" (Number 1) expectedSwitchedRecord
+    Map.lookup "shape.Circle.0" switchedValues `shouldBe` Nothing
+    Map.lookup "shape.Circle.1" switchedValues `shouldBe` Nothing
+    dbModelPendingRequest switched `shouldBe` Just switchedRequest
+
+  it "clears stale siblings for nested ADTs inside constructor fields" $ do
+    let values = Map.fromList
+          [ ("outer.Wrap.0.choice.A.0", String "old")
+          , ("outer.Wrap.0.choice.B.0", String "new")
+          ]
+        cleared = clearAdtSiblingEditValues nestedAdtFields "outer.Wrap.0.choice.B.0" values
+    Map.lookup "outer.Wrap.0.choice.A.0" cleared `shouldBe` Nothing
+    Map.lookup "outer.Wrap.0.choice.B.0" cleared `shouldBe` Just (String "new")
+
   it "requests pages and clears record selection" $ do
     let selected = selectFirstRecord loadedModel
         nextPage = dataBrowserReducer selected (DataBrowserPage DataBrowserPageNext)
@@ -228,4 +291,62 @@ cityFields =
   , DataFieldDef "population" DFInt "Population" True (Just (Number 0))
   , DataFieldDef "kind" (DFEnum ["town", "city"]) "Kind" True (Just (String "town"))
   , DataFieldDef "capital" DFBool "Capital" True (Just (Bool False))
+  ]
+
+detailRecord :: DataRecord
+detailRecord = DataRecord $ Map.fromList
+  [ ("id", Number 1)
+  , ("profile", object
+      [ "age" .= Number 42
+      , "code" .= String "P-1"
+      , "name" .= String "Nested"
+      ])
+  , ("shape", object
+      [ "constructor" .= String "Circle"
+      , "fields" .= Array (Vector.fromList [Number 12.5, String "red"])
+      ])
+  , ("active", Bool True)
+  ]
+
+detailSchema :: DataResourceSchema
+detailSchema = DataResourceSchema
+  { drsSchemaVersion = currentDataResourceSchemaVersion
+  , drsResourceVersion = defaultDataResourceVersion
+  , drsName = "details"
+  , drsLabel = "Details"
+  , drsHexBound = False
+  , drsFields = detailFields
+  , drsOperations = allOperations { doPage = False }
+  , drsKeyField = "id"
+  , drsOverlay = Nothing
+  , drsPagination = DataPagination 20 100 0
+  }
+
+detailFields :: [DataFieldDef]
+detailFields =
+  [ DataFieldDef "id" DFInt "ID" False Nothing
+  , DataFieldDef "profile" (DFRecord
+      [ DataFieldDef "age" DFInt "Age" True Nothing
+      , DataFieldDef "code" DFText "Code" False Nothing
+      , DataFieldDef "name" DFText "Name" True Nothing
+      ]) "Profile" True Nothing
+  , DataFieldDef "shape" (DFAdt
+      [ DataConstructorDef "Circle" [DFFloat, DFText]
+      , DataConstructorDef "Point" [DFInt, DFInt]
+      ]) "Shape" True Nothing
+  , DataFieldDef "active" DFBool "Active" True Nothing
+  ]
+
+nestedAdtFields :: [DataFieldDef]
+nestedAdtFields =
+  [ DataFieldDef "outer" (DFAdt
+      [ DataConstructorDef "Wrap"
+          [ DFRecord
+              [ DataFieldDef "choice" (DFAdt
+                  [ DataConstructorDef "A" [DFText]
+                  , DataConstructorDef "B" [DFText]
+                  ]) "Choice" True Nothing
+              ]
+          ]
+      ]) "Outer" True Nothing
   ]

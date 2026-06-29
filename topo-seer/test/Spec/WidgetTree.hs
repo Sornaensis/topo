@@ -1,13 +1,17 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Spec.WidgetTree (spec) where
 
 import Actor.UI (ConfigTab(..), configRowCount, emptyUiState)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import qualified Data.Text as Text
 import Linear (V2(..))
 import Seer.Config.SliderSpec (SliderId(..))
 import Seer.Editor.Types (EditorTool(..))
 import Test.Hspec
 import Topo.Pipeline.Stage (allBuiltinStageIds)
+import Topo.Plugin.DataResource (DataConstructorDef(..), DataFieldDef(..), DataFieldType(..))
 import UI.Layout
 import UI.WidgetTree
 import UI.Widgets (Rect(..))
@@ -162,6 +166,59 @@ spec = describe "UI.WidgetTree" $ do
     hitTest widgets (rectHitPoint (pipelineCheckboxRect (simBase + 1) layout))
       `shouldBe` Just WidgetSimAutoTick
 
+  it "aligns data detail widgets to validation-adjusted popover geometry" $ do
+    let layout = layoutFor (V2 1200 800) 160
+        rowIndex = 2
+        validationRows = 2
+        rowCount = detailWidgetFieldCount + validationRows
+        widgets = buildDataDetailWidgets
+          rowIndex
+          detailWidgetFields
+          detailWidgetExpanded
+          validationRows
+          True
+          True
+          False
+          False
+          layout
+    hitTest widgets (rectHitPoint (dataDetailSaveRect rowIndex rowCount layout))
+      `shouldBe` Just WidgetDataEditSave
+
+  it "emits delete confirmation dialog widgets before the popover dismiss hit area" $ do
+    let layout = layoutFor (V2 1200 800) 160
+        rowIndex = 2
+        widgets = buildDataDetailWidgets
+          rowIndex
+          detailWidgetFields
+          detailWidgetExpanded
+          1
+          False
+          True
+          True
+          True
+          layout
+    hitTest widgets (rectHitPoint (deleteConfirmOkRect layout))
+      `shouldBe` Just WidgetDataDeleteConfirm
+    hitTest widgets (rectHitPoint (deleteConfirmCancelRect layout))
+      `shouldBe` Just WidgetDataDeleteCancel
+
+  it "uses ADT positional field types for data detail edit widgets" $ do
+    let layout = layoutFor (V2 1200 800) 160
+        rowIndex = 2
+        circleTextIndex = 6
+        widgets = buildDataDetailWidgets
+          rowIndex
+          detailWidgetFields
+          detailWidgetExpanded
+          0
+          True
+          True
+          False
+          False
+          layout
+    hitTest widgets (rectHitPoint (dataDetailFieldInputRect rowIndex detailWidgetFieldCount circleTextIndex layout))
+      `shouldBe` Just (WidgetDataFieldTextClick "shape.Circle.1")
+
   it "hit tests editor toolbar tool buttons" $ do
     let layout = layoutFor (V2 1200 800) 160
         widgets = buildEditorWidgets layout ToolRaise
@@ -196,6 +253,26 @@ spec = describe "UI.WidgetTree" $ do
     length widgets `shouldBe` 1
     hitTest widgets (rectHitPoint (editorReopenRect layout))
       `shouldBe` Just WidgetEditorReopen
+
+detailWidgetExpanded :: Set.Set Text.Text
+detailWidgetExpanded = Set.fromList ["profile", "shape"]
+
+detailWidgetFieldCount :: Int
+detailWidgetFieldCount = 10
+
+detailWidgetFields :: [DataFieldDef]
+detailWidgetFields =
+  [ DataFieldDef "id" DFInt "ID" False Nothing
+  , DataFieldDef "profile" (DFRecord
+      [ DataFieldDef "age" DFInt "Age" True Nothing
+      , DataFieldDef "name" DFText "Name" True Nothing
+      ]) "Profile" True Nothing
+  , DataFieldDef "shape" (DFAdt
+      [ DataConstructorDef "Circle" [DFFloat, DFText]
+      , DataConstructorDef "Point" [DFInt, DFInt]
+      ]) "Shape" True Nothing
+  , DataFieldDef "active" DFBool "Active" True Nothing
+  ]
 
 assertSliderButtons :: [Widget] -> Layout -> (Int, WidgetId, WidgetId) -> Expectation
 assertSliderButtons widgets layout (rowIndex, minusWidgetId, plusWidgetId) = do

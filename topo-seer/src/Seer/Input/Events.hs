@@ -63,7 +63,9 @@ import Seer.Input.ViewControls
   , defaultZoomSettings
   , viewModeForKey
   )
+import Seer.DataBrowser.Model (clearAdtSiblingEditValues)
 import Topo (ChunkCoord(..), ChunkId(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
+import Topo.Plugin.DataResource (DataResourceSchema(..))
 import Topo.Types (BiomeId, TerrainForm)
 import UI.Layout
 import UI.WidgetTree (Widget(..), WidgetId(..), buildEditorWidgets, buildEditorReopenWidget, buildViewModeWidgets, buildSliderRowWidgets, hitTest)
@@ -318,7 +320,7 @@ handleEvent inputContext event = do
                 newText = before <> filtered <> after
                 newCursor = cursor + Text.length filtered
                 newDbs = dbs
-                  { dbsEditValues = Map.insert path (String newText) editVals
+                  { dbsEditValues = dataFieldEditValues uiSnap dbs path (String newText)
                   , dbsTextCursor = newCursor
                   }
             setUiDataBrowser uiHandle newDbs
@@ -333,7 +335,7 @@ handleEvent inputContext event = do
               else let dbs = uiDataBrowser uiSnap
                    in case dbsFocusedField dbs of
                         Just path | dbsEditMode dbs || dbsCreateMode dbs ->
-                          handleDataFieldKey dbs path keycode
+                          handleDataFieldKey uiSnap dbs path keycode
                         _ -> case uiMenuMode uiSnap of
                               MenuPresetSave -> handlePresetSaveKey uiSnap keycode
                               MenuPresetLoad -> handlePresetLoadKey uiSnap keycode
@@ -532,8 +534,8 @@ handleEvent inputContext event = do
       in fs !! ((idx + dir + n) `mod` n)
 
     -- | Handle keyboard events when a data browser text field is focused.
-    handleDataFieldKey :: DataBrowserState -> Text.Text -> SDL.Keycode -> IO ()
-    handleDataFieldKey dbs path keycode = do
+    handleDataFieldKey :: UiState -> DataBrowserState -> Text.Text -> SDL.Keycode -> IO ()
+    handleDataFieldKey uiSnap dbs path keycode = do
       let editVals = dbsEditValues dbs
           cursor   = dbsTextCursor dbs
           currentText = case Map.lookup path editVals of
@@ -560,7 +562,7 @@ handleEvent inputContext event = do
             let (before, after) = Text.splitAt cursor currentText
                 newText = Text.dropEnd 1 before <> after
                 newDbs = dbs
-                  { dbsEditValues = Map.insert path (String newText) editVals
+                  { dbsEditValues = dataFieldEditValues uiSnap dbs path (String newText)
                   , dbsTextCursor = cursor - 1
                   }
             setUiDataBrowser uiHandle newDbs
@@ -569,7 +571,7 @@ handleEvent inputContext event = do
             let (before, after) = Text.splitAt cursor currentText
                 newText = before <> Text.drop 1 after
                 newDbs = dbs
-                  { dbsEditValues = Map.insert path (String newText) editVals
+                  { dbsEditValues = dataFieldEditValues uiSnap dbs path (String newText)
                   }
             setUiDataBrowser uiHandle newDbs
         SDL.KeycodeLeft -> do
@@ -587,6 +589,18 @@ handleEvent inputContext event = do
           let newDbs = dbs { dbsTextCursor = Text.length currentText }
           setUiDataBrowser uiHandle newDbs
         _ -> pure ()
+
+    dataFieldEditValues ui dbs path value =
+      let cleared = case selectedDataSchema ui dbs of
+            Nothing -> dbsEditValues dbs
+            Just schema -> clearAdtSiblingEditValues (drsFields schema) path (dbsEditValues dbs)
+      in Map.insert path value cleared
+
+    selectedDataSchema ui dbs = do
+      pName <- dbsSelectedPlugin dbs
+      rName <- dbsSelectedResource dbs
+      schemas <- Map.lookup pName (uiDataResources ui)
+      foldr (\schema acc -> if drsName schema == rName then Just schema else acc) Nothing schemas
 
     closeContextOrMenu = do
       uiSnap <- getUiSnapshot uiHandle

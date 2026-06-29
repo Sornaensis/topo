@@ -49,6 +49,7 @@ import Hyperspace.Actor.QQ (hyperspace)
 import Hyperspace.Actor.Spec (OpTag(..))
 import Seer.Config.SliderRegistry (SliderId(..), SliderTab(..), sliderDefaultValueForId, sliderRowCountForTab)
 import Seer.Config.Snapshot.Types (ConfigSnapshot)
+import Seer.DataBrowser.Model (DataBrowserValidationError)
 import Seer.Editor.Types (EditorState(..), defaultEditorState)
 import Seer.Render.ZoomStage (maxCameraZoom)
 import Seer.World.Persist.Types (WorldSaveManifest)
@@ -119,6 +120,8 @@ data DataBrowserState = DataBrowserState
   -- ^ Cursor position within the focused text field.
   , dbsDeleteConfirm    :: !Bool
   -- ^ Whether the delete confirmation modal is shown.
+  , dbsValidationErrors :: ![DataBrowserValidationError]
+  -- ^ Validation or reducer guard errors shown in the detail popover.
   } deriving (Eq, Show)
 
 -- | Empty initial state for the data browser.
@@ -140,6 +143,7 @@ emptyDataBrowserState = DataBrowserState
   , dbsFocusedField     = Nothing
   , dbsTextCursor       = 0
   , dbsDeleteConfirm    = False
+  , dbsValidationErrors = []
   }
 
 -- | Number of rows to display in the data browser tab.

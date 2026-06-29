@@ -29,6 +29,7 @@ import qualified Spec.CommandDispatch
 import qualified Spec.Component
 import qualified Spec.DataBrowser
 import qualified Spec.DataBrowserAppService
+import qualified Spec.DataDetailPopover
 import qualified Spec.DataResourceE2E
 import qualified Spec.Headless
 import qualified Spec.HTTP
@@ -71,6 +72,7 @@ main = do
         Spec.Component.spec
         Spec.DataBrowser.spec
         Spec.DataBrowserAppService.spec
+        Spec.DataDetailPopover.spec
         Spec.DataResourceE2E.spec
         Spec.Headless.spec
         Spec.HTTP.spec

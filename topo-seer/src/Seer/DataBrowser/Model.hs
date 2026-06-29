@@ -30,9 +30,12 @@ module Seer.DataBrowser.Model
   , dataBrowserPageRequestFor
   , dataBrowserPageStep
   , lookupDataBrowserFieldType
+  , clearAdtSiblingEditValues
   ) where
 
 import Data.Aeson (Value(..))
+import qualified Data.Aeson.Key as AesonKey
+import qualified Data.Aeson.KeyMap as AesonKM
 import Data.List (find, findIndex)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -41,6 +44,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Vector as Vector
 import Topo.Plugin.DataResource
   ( DataConstructorDef(..)
   , DataFieldDef(..)
@@ -415,7 +419,7 @@ startCreate model = case dbSelectionSchema (dbModelSelection model) of
     { dbModelValidationErrors = [validationError Nothing "no resource selected"] }
   Just schema ->
     let defaults = defaultValues schema
-        dummyRecord = DataRecord defaults
+        dummyRecord = editBufferRecord schema Nothing (DataBrowserEditBuffer defaults)
         selection = dbModelSelection model
     in model
       { dbModelMode = DataBrowserCreateMode
@@ -467,9 +471,9 @@ saveEditBuffer model = case dbSelectionSchema selection of
     selection = dbModelSelection model
 
 saveCreate :: DataBrowserSelection -> DataBrowserModel -> DataBrowserModel
-saveCreate selection model = case (dbSelectionPlugin selection, dbSelectionResource selection) of
-  (Just pluginName, Just resourceName) ->
-    let record = DataRecord (dbEditBufferValues (dbModelEditBuffer model))
+saveCreate selection model = case (dbSelectionPlugin selection, dbSelectionResource selection, dbSelectionSchema selection) of
+  (Just pluginName, Just resourceName, Just schema) ->
+    let record = editBufferRecord schema Nothing (dbModelEditBuffer model)
         request = DataBrowserCreateRecordRequest pluginName resourceName record
     in model
       { dbModelPendingRequest = Just request
@@ -480,9 +484,9 @@ saveCreate selection model = case (dbSelectionPlugin selection, dbSelectionResou
 
 saveUpdate :: DataBrowserSelection -> DataBrowserModel -> DataBrowserModel
 saveUpdate selection model =
-  case (dbSelectionPlugin selection, dbSelectionResource selection, dbSelectionRecordKey selection) of
-    (Just pluginName, Just resourceName, Just keyValue) ->
-      let record = DataRecord (dbEditBufferValues (dbModelEditBuffer model))
+  case (dbSelectionPlugin selection, dbSelectionResource selection, dbSelectionRecordKey selection, dbSelectionSchema selection) of
+    (Just pluginName, Just resourceName, Just keyValue, Just schema) ->
+      let record = editBufferRecord schema (dbSelectionRecord selection) (dbModelEditBuffer model)
           request = DataBrowserUpdateRecordRequest pluginName resourceName keyValue record
       in model
         { dbModelValidationErrors = []
@@ -640,11 +644,55 @@ hasSelectedRecord model = case dbSelectionRecord (dbModelSelection model) of
 updateEditValue :: Text -> Value -> DataBrowserModel -> DataBrowserModel
 updateEditValue path value model =
   let DataBrowserEditBuffer values = dbModelEditBuffer model
+      valuesForPath = clearAdtSiblingValues path model values
       errors = filter ((/= Just path) . dbValidationField) (dbModelValidationErrors model)
   in model
-    { dbModelEditBuffer = DataBrowserEditBuffer (Map.insert path value values)
+    { dbModelEditBuffer = DataBrowserEditBuffer (Map.insert path value valuesForPath)
     , dbModelValidationErrors = errors
     }
+
+clearAdtSiblingValues :: Text -> DataBrowserModel -> Map Text Value -> Map Text Value
+clearAdtSiblingValues path model values =
+  case dbSelectionSchema (dbModelSelection model) of
+    Nothing -> values
+    Just schema -> clearAdtSiblingEditValues (drsFields schema) path values
+
+clearAdtSiblingEditValues :: [DataFieldDef] -> Text -> Map Text Value -> Map Text Value
+clearAdtSiblingEditValues fields path values =
+  foldl clearOne values (adtEditSelections path fields)
+  where
+    clearOne acc (adtPath, constructorName) =
+      let adtPrefix = adtPath <> "."
+          constructorPrefix = adtPath <> "." <> constructorName <> "."
+          keep key _ = not (Text.isPrefixOf adtPrefix key) || Text.isPrefixOf constructorPrefix key
+      in Map.filterWithKey keep acc
+
+adtEditSelections :: Text -> [DataFieldDef] -> [(Text, Text)]
+adtEditSelections path fields = resolveFields "" (Text.splitOn "." path) fields
+  where
+    resolveFields _ [] _ = []
+    resolveFields prefix (segment:rest) defs =
+      case find ((== segment) . dfName) defs of
+        Nothing -> []
+        Just field -> resolveFieldType (qualifyPath prefix segment) rest (dfType field)
+
+    resolveFieldType _ [] _ = []
+    resolveFieldType pathPrefix segments fieldType = case fieldType of
+      DFRecord nestedFields -> resolveFields pathPrefix segments nestedFields
+      DFAdt constructors -> case segments of
+        constructorName:indexText:rest -> case find ((== constructorName) . dcdName) constructors of
+          Nothing -> []
+          Just constructorDef ->
+            let here = [(pathPrefix, constructorName)]
+                nested = case readInt indexText >>= (`nth` dcdFields constructorDef) of
+                  Nothing -> []
+                  Just positionalType ->
+                    resolveFieldType (pathPrefix <> "." <> constructorName <> "." <> indexText) rest positionalType
+            in here <> nested
+        constructorName:_
+          | any ((== constructorName) . dcdName) constructors -> [(pathPrefix, constructorName)]
+        _ -> []
+      _ -> []
 
 editFocusedText :: (Text -> Int -> (Text, Int)) -> DataBrowserModel -> DataBrowserModel
 editFocusedText f model = case dbModelFocusedField model of
@@ -771,16 +819,147 @@ lookupDataBrowserField path fields = case Text.splitOn "." path of
       resolve rest field
 
 defaultValues :: DataResourceSchema -> Map Text Value
-defaultValues schema = Map.fromList
-  [ (dfName field, value)
-  | field <- drsFields schema
-  , dfEditable field
-  , Just value <- [dfDefault field]
-  ]
+defaultValues schema = Map.fromList (concatMap (defaultField "") (drsFields schema))
 
 editableRecordValues :: DataResourceSchema -> DataRecord -> Map Text Value
 editableRecordValues schema (DataRecord values) =
-  Map.filterWithKey (\path _ -> maybe False dfEditable (lookupDataBrowserField path (drsFields schema))) values
+  Map.fromList (concatMap (flattenRecordField "" values) (drsFields schema))
+
+-- | Build the mutation payload from dot-path edit values.
+editBufferRecord :: DataResourceSchema -> Maybe DataRecord -> DataBrowserEditBuffer -> DataRecord
+editBufferRecord schema mBaseRecord (DataBrowserEditBuffer values) =
+  let baseValues = maybe Map.empty unDataRecord mBaseRecord
+  in DataRecord (Map.fromList (concatMap (hydrateTopField values baseValues "") (drsFields schema)))
+
+defaultField :: Text -> DataFieldDef -> [(Text, Value)]
+defaultField prefix field =
+  let path = qualifyPath prefix (dfName field)
+  in case dfDefault field of
+    Just value -> flattenFieldValue path (dfEditable field) (dfType field) value
+    Nothing -> case dfType field of
+      DFRecord nestedFields -> concatMap (defaultField path) nestedFields
+      _ -> []
+
+flattenRecordField :: Text -> Map Text Value -> DataFieldDef -> [(Text, Value)]
+flattenRecordField prefix values field =
+  let path = qualifyPath prefix (dfName field)
+  in case Map.lookup (dfName field) values of
+    Nothing -> []
+    Just value -> flattenFieldValue path (dfEditable field) (dfType field) value
+
+flattenFieldValue :: Text -> Bool -> DataFieldType -> Value -> [(Text, Value)]
+flattenFieldValue path editable fieldType value = case fieldType of
+  DFRecord nestedFields -> case value of
+    Object objectValue -> concatMap (flattenObjectField path objectValue) nestedFields
+    _ -> []
+  DFAdt constructors -> flattenAdtValue path editable constructors value
+  _
+    | editable -> [(path, value)]
+    | otherwise -> []
+
+flattenObjectField :: Text -> AesonKM.KeyMap Value -> DataFieldDef -> [(Text, Value)]
+flattenObjectField prefix objectValue field =
+  let path = qualifyPath prefix (dfName field)
+  in case AesonKM.lookup (AesonKey.fromText (dfName field)) objectValue of
+    Nothing -> []
+    Just value -> flattenFieldValue path (dfEditable field) (dfType field) value
+
+flattenAdtValue :: Text -> Bool -> [DataConstructorDef] -> Value -> [(Text, Value)]
+flattenAdtValue path editable constructors (Object objectValue) =
+  case (AesonKM.lookup "constructor" objectValue, AesonKM.lookup "fields" objectValue) of
+    (Just (String constructorName), Just (Array fieldValues)) ->
+      case find ((== constructorName) . dcdName) constructors of
+        Nothing -> []
+        Just constructorDef -> concat
+          [ flattenFieldValue
+              (path <> "." <> constructorName <> "." <> Text.pack (show index))
+              editable
+              fieldType
+              fieldValue
+          | (index, fieldType, fieldValue) <- zip3 [(0 :: Int)..] (dcdFields constructorDef) (Vector.toList fieldValues)
+          ]
+    _ -> []
+flattenAdtValue _ _ _ _ = []
+
+hydrateTopField :: Map Text Value -> Map Text Value -> Text -> DataFieldDef -> [(Text, Value)]
+hydrateTopField values baseValues prefix field =
+  let path = qualifyPath prefix (dfName field)
+      baseValue = Map.lookup (dfName field) baseValues
+  in case hydrateFieldValue values baseValue path (dfType field) of
+    Nothing -> []
+    Just value -> [(dfName field, value)]
+
+hydrateFieldValue :: Map Text Value -> Maybe Value -> Text -> DataFieldType -> Maybe Value
+hydrateFieldValue values baseValue path fieldType = case fieldType of
+  DFRecord nestedFields
+    | hasEditAt path values ->
+        let objectValue = case baseValue of
+              Just (Object km) -> Just km
+              _ -> Nothing
+            objectPairs = concatMap (hydrateObjectField values objectValue path) nestedFields
+        in if null objectPairs
+           then Nothing
+           else Just (Object (AesonKM.fromList objectPairs))
+    | otherwise -> Nothing
+  DFAdt constructors
+    | hasEditAt path values -> hydrateAdtField values baseValue path constructors
+    | otherwise -> Nothing
+  _ -> Map.lookup path values
+
+hydrateObjectField :: Map Text Value -> Maybe (AesonKM.KeyMap Value) -> Text -> DataFieldDef -> [(AesonKey.Key, Value)]
+hydrateObjectField values mBaseObject prefix field =
+  let path = qualifyPath prefix (dfName field)
+      baseValue = mBaseObject >>= AesonKM.lookup (AesonKey.fromText (dfName field))
+  in case hydrateFieldValue values baseValue path (dfType field) of
+    Just value -> [(AesonKey.fromText (dfName field), value)]
+    Nothing -> case baseValue of
+      Just value
+        | hasEditAt prefix values -> [(AesonKey.fromText (dfName field), value)]
+      _ -> []
+
+hydrateAdtField :: Map Text Value -> Maybe Value -> Text -> [DataConstructorDef] -> Maybe Value
+hydrateAdtField values baseValue path constructors = do
+  constructorDef <- find (constructorHasValues values path) constructors
+  let constructorName = dcdName constructorDef
+      baseFields = baseAdtFields constructorName baseValue
+      fieldValues =
+        [ hydrateAdtPosition values baseFields (path <> "." <> constructorName <> "." <> Text.pack (show index)) index fieldType
+        | (index, fieldType) <- zip [(0 :: Int)..] (dcdFields constructorDef)
+        ]
+  pure $ Object $ AesonKM.fromList
+    [ (AesonKey.fromText "constructor", String constructorName)
+    , (AesonKey.fromText "fields", Array (Vector.fromList fieldValues))
+    ]
+
+hydrateAdtPosition :: Map Text Value -> Maybe [Value] -> Text -> Int -> DataFieldType -> Value
+hydrateAdtPosition values mBaseFields path index fieldType =
+  let baseValue = mBaseFields >>= nth index
+  in case hydrateFieldValue values baseValue path fieldType of
+    Just value -> value
+    Nothing -> maybe Null id baseValue
+
+baseAdtFields :: Text -> Maybe Value -> Maybe [Value]
+baseAdtFields constructorName (Just (Object objectValue)) =
+  case (AesonKM.lookup "constructor" objectValue, AesonKM.lookup "fields" objectValue) of
+    (Just (String baseConstructor), Just (Array fieldValues))
+      | baseConstructor == constructorName -> Just (Vector.toList fieldValues)
+    _ -> Nothing
+baseAdtFields _ _ = Nothing
+
+constructorHasValues :: Map Text Value -> Text -> DataConstructorDef -> Bool
+constructorHasValues values path constructorDef =
+  let prefix = path <> "." <> dcdName constructorDef <> "."
+  in any (Text.isPrefixOf prefix) (Map.keys values)
+
+hasEditAt :: Text -> Map Text Value -> Bool
+hasEditAt path values =
+  let prefix = path <> "."
+  in Map.member path values || any (Text.isPrefixOf prefix) (Map.keys values)
+
+qualifyPath :: Text -> Text -> Text
+qualifyPath prefix name
+  | Text.null prefix = name
+  | otherwise = prefix <> "." <> name
 
 replaceRecord :: Text -> Value -> Maybe Int -> DataRecord -> [DataRecord] -> [DataRecord]
 replaceRecord keyField keyValue fallbackIndex updatedRecord records =

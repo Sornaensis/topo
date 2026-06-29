@@ -132,7 +132,18 @@ handleClick inputContext (SDL.P (V2 x y)) = do
               fields = maybe [] drsFields mSchema
               ops = maybe noOperations drsOperations mSchema
               isEditing = dbsEditMode dbs_ || dbsCreateMode dbs_
-          in buildDataDetailWidgets rowIdx fields (dbsExpandedFields dbs_) isEditing (doUpdate ops) (doDelete ops) layout
+              showEditToggle = doUpdate ops && not (dbsCreateMode dbs_)
+              validationRowCount = length (dbsValidationErrors dbs_)
+          in buildDataDetailWidgets
+               rowIdx
+               fields
+               (dbsExpandedFields dbs_)
+               validationRowCount
+               isEditing
+               showEditToggle
+               (doDelete ops)
+               (dbsDeleteConfirm dbs_)
+               layout
         _ -> []
       selectedSchema = do
         pName <- dbsSelectedPlugin (uiDataBrowser uiSnap)
@@ -155,7 +166,8 @@ handleClick inputContext (SDL.P (V2 x y)) = do
                         && containsPoint (leftPanelRect layout) point
       leftViewAdjPoint = V2 (fromIntegral x) (fromIntegral y + uiLeftViewScroll uiSnap)
       (leftViewWidgets, otherWidgets) = partition (isLeftViewWidget . widgetId) nonSliderWidgets
-      hitWidget =
+      detailHit = hitTest detailWidgets point
+      hitWidget = detailHit <|>
         if inConfigScroll
           then case hitTest configSliderWidgets scrollPoint of
             Just wid -> Just wid
