@@ -181,6 +181,16 @@ library
       Seer.Config.SliderRegistry
       Seer.Config.SliderId
       Seer.Input.Context
+      Seer.System.Actors
+      Seer.System.Cache
+      Seer.System.EventPump
+      Seer.System.Headless
+      Seer.System.MainLoop
+      Seer.System.RenderFrame
+      Seer.System.Runtime
+      Seer.System.Screenshot
+      Seer.System.Sdl
+      Seer.System.Snapshot
       Seer.Render.Context
       Seer.Screenshot.Request
       UI.TerrainColor
