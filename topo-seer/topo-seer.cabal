@@ -125,6 +125,7 @@ library
       UI.WidgetTree
       UI.Component
       UI.Components.ConfigSliders
+      UI.Components.DataBrowser
       UI.Components.PipelineControls
       UI.Components.LogFilter
       UI.DayNight
@@ -259,8 +260,10 @@ test-suite topo-seer-test
       Spec.Support.OverlayFixtures
       Spec.TerrainActor
       Spec.TerrainCacheWorker
+      Spec.TerrainInspector
       Spec.TerrainRender
       Spec.UiActor
+      Spec.UIDrawSnapshots
       Spec.Widgets
       Spec.WidgetTree
       Spec.WorldPersist

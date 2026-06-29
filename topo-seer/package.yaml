@@ -119,6 +119,7 @@ library:
     - UI.WidgetTree
     - UI.Component
     - UI.Components.ConfigSliders
+    - UI.Components.DataBrowser
     - UI.Components.PipelineControls
     - UI.Components.LogFilter
     - UI.DayNight

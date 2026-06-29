@@ -18,6 +18,7 @@ import qualified Spec.AtlasCache
 import qualified Spec.SnapshotReceiver
 import qualified Spec.TerrainCacheWorker
 import qualified Spec.TerrainRender
+import qualified Spec.TerrainInspector
 import qualified Spec.RiverRender
 import qualified Spec.TerrainActor
 import qualified Spec.PluginManager
@@ -29,6 +30,7 @@ import qualified Spec.SliderSpec
 import qualified Spec.WorldPersist
 import qualified Spec.CommandDispatch
 import qualified Spec.Component
+import qualified Spec.UIDrawSnapshots
 import qualified Spec.DataBrowser
 import qualified Spec.DataBrowserAppService
 import qualified Spec.DataDetailPopover
@@ -64,6 +66,7 @@ main = do
         Spec.SnapshotReceiver.spec
         Spec.TerrainCacheWorker.spec
         Spec.TerrainRender.spec
+        Spec.TerrainInspector.spec
         Spec.RiverRender.spec
         Spec.TerrainActor.spec
         Spec.PluginManager.spec
@@ -74,6 +77,7 @@ main = do
         Spec.WorldPersist.spec
         Spec.CommandDispatch.spec
         Spec.Component.spec
+        Spec.UIDrawSnapshots.spec
         Spec.DataBrowser.spec
         Spec.DataBrowserAppService.spec
         Spec.DataDetailPopover.spec

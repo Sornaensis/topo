@@ -1,7 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Seer.Draw.Overlay
-  ( drawHoverHex
+  ( TerrainInspectorView(..)
+  , terrainInspectorView
+  , drawHoverHex
   , drawHexContext
   , drawTooltip
     -- * Hex drawing primitives (reused by brush preview)
@@ -87,6 +89,20 @@ import UI.Theme
 import UI.WidgetsDraw (drawTextLine)
 import qualified Data.Vector.Unboxed as U
 
+-- | Pure view model for the pinned hover-hex terrain inspector.
+data TerrainInspectorView = TerrainInspectorView
+  { tivHex :: !(Int, Int)
+  , tivLines :: ![Text]
+  } deriving (Eq, Show)
+
+terrainInspectorView :: UiState -> TerrainSnapshot -> Maybe TerrainInspectorView
+terrainInspectorView ui terrainSnap = do
+  hexCoord@(q, r) <- uiHoverHex ui
+  pure TerrainInspectorView
+    { tivHex = hexCoord
+    , tivLines = contextLines ui terrainSnap (q, r)
+    }
+
 drawHoverHex :: SDL.Renderer -> UiState -> Int -> IO ()
 drawHoverHex renderer uiSnap hexRadius =
   case uiHoverHex uiSnap of
@@ -129,12 +145,12 @@ drawHexContext :: SDL.Renderer -> Maybe FontCache -> UiState -> TerrainSnapshot 
 drawHexContext renderer fontCache ui terrainSnap (V2 winW winH) =
   if not (uiHexTooltipPinned ui)
     then pure ()
-    else case uiHoverHex ui of
-      Just (q, r) -> do
+    else case terrainInspectorView ui terrainSnap of
+      Just inspector -> do
         SDL.P (V2 mx my) <- SDL.getAbsoluteMouseLocation
         let sx = fromIntegral mx
             sy = fromIntegral my
-            linesToDraw = contextLines ui terrainSnap (q, r)
+            linesToDraw = tivLines inspector
             lineHeight = 16
             hPad = 12
             vPad = 10

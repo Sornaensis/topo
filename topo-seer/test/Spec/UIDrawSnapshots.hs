@@ -1,0 +1,161 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+module Spec.UIDrawSnapshots (spec) where
+
+import Actor.Log (LogLevel(..))
+import Actor.UI
+  ( ConfigTab(..)
+  , DataBrowserState(..)
+  , emptyDataBrowserState
+  , emptyUiState
+  )
+import Data.Aeson (Value(..))
+import qualified Data.Map.Strict as Map
+import Data.Text (Text)
+import qualified Data.Text as Text
+import Linear (V2(..))
+import Test.Hspec
+import Topo.Plugin.DataResource
+  ( DataFieldDef(..)
+  , DataFieldType(..)
+  , DataOperations(..)
+  , DataPagination(..)
+  , DataResourceSchema(..)
+  , allOperations
+  , currentDataResourceSchemaVersion
+  , defaultDataResourceVersion
+  )
+import Topo.Plugin.RPC.DataService (DataRecord(..))
+import UI.Components.ConfigSliders
+  ( configSliderDrawCommands
+  , configSliderRowsForTab
+  )
+import UI.Components.DataBrowser
+import UI.Components.LogFilter (LogFilterModel(..), logFilterDrawCommands)
+import UI.DrawCommand (DrawCommand(..), TextPlacement(..))
+import UI.Layout
+import UI.Widgets (Rect(..))
+
+spec :: Spec
+spec = describe "UI draw-command snapshots" $ do
+  it "captures log-filter and config-slider command shapes" $ do
+    let logLayout = layoutFor (V2 800 600) 160
+        sliderLayout = layoutFor (V2 800 960) 0
+        logCommands = logFilterDrawCommands (LogFilterModel LogWarn) (logFilterRects logLayout)
+        firstSlider = take 1 (configSliderRowsForTab ConfigClimate emptyUiState sliderLayout)
+        sliderCommands = configSliderDrawCommands firstSlider
+    map commandShape logCommands `shouldBe`
+      [ "fill (682,441,22,22)"
+      , "text centered (682,441,22,22) D"
+      , "fill (710,441,22,22)"
+      , "text centered (710,441,22,22) I"
+      , "fill (738,441,22,22)"
+      , "text centered (738,441,22,22) W"
+      , "fill (766,441,22,22)"
+      , "text centered (766,441,22,22) E"
+      ]
+    map commandShape sliderCommands `shouldBe`
+      [ "fill (500,152,24,24)"
+      , "fill (730,152,24,24)"
+      , "fill (532,158,190,12)"
+      , "fill (532,158,82,12)"
+      ]
+
+  it "captures Data Browser browse, pagination, create, and loading states" $ do
+    let layout = layoutFor (V2 800 960) 0
+        loaded = dataBrowserView resources loadedBrowserState layout
+        loading = dataBrowserView resources loadingBrowserState layout
+    fmap dbpcvRowIndex (dbvPageControls loaded) `shouldBe` Just 4
+    fmap dbcbvRowIndex (dbvCreateButton loaded) `shouldBe` Just 5
+    map commandShape (dataBrowserDrawCommands loaded) `shouldBe`
+      [ "fill (508,152,238,24)"
+      , "stroke (508,152,238,24)"
+      , "fill (508,186,238,24)"
+      , "stroke (508,186,238,24)"
+      , "fill (508,220,238,24)"
+      , "stroke (508,220,238,24)"
+      , "fill (508,254,238,24)"
+      , "stroke (508,254,238,24)"
+      , "fill (508,290,40,20)"
+      , "stroke (508,290,40,20)"
+      , "fill (556,290,40,20)"
+      , "stroke (556,290,40,20)"
+      , "fill (508,324,28,20)"
+      , "text at (516,328) +"
+      ]
+    fmap (rectShape . dblvRect) (dbvLoading loading)
+      `shouldBe` Just "(508,220,40,24)"
+
+commandShape :: DrawCommand -> Text
+commandShape command = case command of
+  DrawFillRect _ rect -> "fill " <> rectShape rect
+  DrawStrokeRect _ rect -> "stroke " <> rectShape rect
+  DrawText _ placement label -> "text " <> placementShape placement <> " " <> label
+  DrawLine _ start end -> "line " <> pointShape start <> " " <> pointShape end
+  DrawClip Nothing -> "clip clear"
+  DrawClip (Just rect) -> "clip " <> rectShape rect
+
+placementShape :: TextPlacement -> Text
+placementShape placement = case placement of
+  TextAt point -> "at " <> pointShape point
+  TextCentered rect -> "centered " <> rectShape rect
+  TextLeft rect -> "left " <> rectShape rect
+  TextLabelAbove rect -> "above " <> rectShape rect
+  TextLabelLeft rect -> "left-label " <> rectShape rect
+
+rectShape :: Rect -> Text
+rectShape (Rect (V2 x y, V2 w h)) =
+  "(" <> tshow x <> "," <> tshow y <> "," <> tshow w <> "," <> tshow h <> ")"
+
+pointShape :: V2 Int -> Text
+pointShape (V2 x y) = "(" <> tshow x <> "," <> tshow y <> ")"
+
+tshow :: Show a => a -> Text
+tshow = Text.pack . show
+
+resources :: Map.Map Text [DataResourceSchema]
+resources = Map.singleton "atlas" [citiesSchema]
+
+loadedBrowserState :: DataBrowserState
+loadedBrowserState = emptyDataBrowserState
+  { dbsSelectedPlugin = Just "atlas"
+  , dbsSelectedResource = Just "cities"
+  , dbsRecords = [record1, record2]
+  , dbsSelectedRowIndex = Just 1
+  }
+
+loadingBrowserState :: DataBrowserState
+loadingBrowserState = emptyDataBrowserState
+  { dbsSelectedPlugin = Just "atlas"
+  , dbsSelectedResource = Just "cities"
+  , dbsLoading = True
+  }
+
+record1 :: DataRecord
+record1 = DataRecord $ Map.fromList
+  [ ("id", Number 1)
+  , ("name", String "Alpha")
+  ]
+
+record2 :: DataRecord
+record2 = DataRecord $ Map.fromList
+  [ ("id", Number 2)
+  , ("name", String "Beta")
+  ]
+
+citiesSchema :: DataResourceSchema
+citiesSchema = DataResourceSchema
+  { drsSchemaVersion = currentDataResourceSchemaVersion
+  , drsResourceVersion = defaultDataResourceVersion
+  , drsName = "cities"
+  , drsLabel = "Cities"
+  , drsHexBound = False
+  , drsKeyField = "id"
+  , drsOverlay = Nothing
+  , drsFields =
+      [ DataFieldDef "id" DFInt "ID" False Nothing
+      , DataFieldDef "name" DFText "Name" True Nothing
+      ]
+  , drsOperations = allOperations { doCreate = True, doPage = True }
+  , drsPagination = DataPagination 2 10 0
+  }
