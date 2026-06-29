@@ -145,7 +145,7 @@ run, so no manual manifest setup is required.
 
 ### Message Protocol
 
-Messages are length-prefixed JSON envelopes:
+Messages are length-prefixed JSON envelopes on the host-created transport:
 
 ```
 ┌──────────────┬──────────────────┐
@@ -153,15 +153,28 @@ Messages are length-prefixed JSON envelopes:
 └──────────────┴──────────────────┘
 ```
 
-The envelope format:
+The envelope format includes an optional correlation ID:
 
 ```json
-{ "type": "invoke_generator", "payload": { ... } }
+{ "id": 42, "type": "invoke_generator", "payload": { "payload_version": 1 } }
 ```
 
-Message types:
-- **Host → Plugin**: `invoke_generator`, `invoke_simulation`, `shutdown`
-- **Plugin → Host**: `progress`, `log`, `generator_result`, `simulation_result`, `error`
+Protocol v3 message groups:
+
+- **Lifecycle/liveness:** `handshake`, `handshake_ack`, `world_changed`,
+  `heartbeat`, `health_check`, `health_status`, `shutdown`.
+- **Generation/simulation:** `invoke_generator`, `generator_result`,
+  `invoke_simulation`, `simulation_result`, with interim `progress` and `log`
+  messages and final `error` failures.
+- **Data resources:** `query_resource`, `query_result`, `mutate_resource`, and
+  `mutate_result` for plugin-owned schemas declared in the manifest/handshake.
+- **Backend-neutral external data sources:** `external_data_source_grant`,
+  `external_data_source_revoke`, `external_data_source_status_request`, and
+  `external_data_source_status` for provider-owned sources, grants, status,
+  opaque references, and opaque config refs.
+
+See [Plugin Dev: RPC Protocol](plugin-dev/rpc-protocol.md) for the full
+contract-tested wire reference.
 
 ## SDK Types
 

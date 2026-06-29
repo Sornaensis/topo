@@ -15,6 +15,37 @@ Canonical machine-readable files:
 - [Provider example](examples/manifest-v3-provider.json)
 - [Consumer example](examples/manifest-v3-consumer.json)
 
+`Topo.Plugin.RPC.Manifest` generates those values as `manifestV3Schema`,
+`manifestV3ProviderExample`, and `manifestV3ConsumerExample`. `Spec.PluginRPC`
+compares the committed JSON files with the compiled values, and
+`Spec.PluginDocs` checks that this reference names every top-level manifest
+schema field.
+
+## Top-level field reference
+
+| Field | Required | Source type | Meaning |
+| --- | --- | --- | --- |
+| `manifestVersion` | Yes | `rmManifestVersion` | Must be manifest v3 (`3`). |
+| `name` | Yes | `rmName` | Stable plugin identifier; must not be a path. |
+| `version` | Yes | `rmVersion` | Plugin version string. |
+| `runtime` | Yes | `rmRuntime` | Protocol bounds and optional opaque Topo release bounds. |
+| `description` | No | `rmDescription` | Human-readable summary. |
+| `ui` | No | `rmUiHints` | Presentation hints only. |
+| `generator` | No | `rmGenerator` | Generation-pipeline insertion and prerequisites. |
+| `simulation` | No | `rmSimulation` | Simulation DAG dependencies. |
+| `overlay` | No | `rmOverlay` | Plugin-owned `.toposchema` path. |
+| `capabilities` | No | `rmCapabilities` | Host permissions requested by the plugin. |
+| `config` | No | `rmParameters` | User-facing `parameters`. |
+| `dataResources` | No | `rmDataResources` | Plugin-owned data-service schemas. |
+| `dataDirectory` | No | `rmDataDirectory` | Relative data directory under the world save. |
+| `externalDataSources` | No | `rmExternalDataSources` | Provider-owned external source declarations. |
+| `externalDataSourceRefs` | No | `rmExternalDataSourceRefs` | Consumer references to provider-owned sources/grants. |
+| `startPolicy` | No | `rmStartPolicy` | Host process supervision overrides. |
+
+A manifest must declare at least one participation surface: `generator`,
+`simulation`, `dataResources`, `externalDataSources`, or
+`externalDataSourceRefs`.
+
 ## Minimal shape
 
 ```json

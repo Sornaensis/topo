@@ -203,6 +203,7 @@ test-suite topo-test
       Spec.Pipeline
       Spec.Planet
       Spec.PluginDependency
+      Spec.PluginDocs
       Spec.PluginIntegration
       Spec.PluginRPC
       Spec.Precipitation
