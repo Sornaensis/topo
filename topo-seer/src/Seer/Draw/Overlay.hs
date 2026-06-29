@@ -4,8 +4,10 @@ module Seer.Draw.Overlay
   ( TerrainInspectorView(..)
   , TerrainInspectorSection(..)
   , TerrainInspectorField(..)
+  , TerrainInspectorPluginData(..)
   , terrainInspectorView
   , terrainInspectorViewAt
+  , terrainInspectorViewAtWithPluginData
   , terrainInspectorSectionsObject
   , drawHoverHex
   , drawHexContext
@@ -19,17 +21,20 @@ module Seer.Draw.Overlay
   ) where
 
 import Actor.Data (TerrainSnapshot(..))
+import Actor.PluginManager.Types (PluginLifecycleSnapshot(..), pluginLifecycleStateText)
 import Actor.UI (UiState(..), ViewMode(..))
 import Data.Aeson (Value(..), object, toJSON, (.=))
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (sort)
 import Data.Maybe (mapMaybe)
+import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Vector (Vector)
 import qualified Data.Vector as V
-import Data.Word (Word8, Word16, Word32)
+import Data.Word (Word8, Word16, Word32, Word64)
 import Linear (V2(..), V4(..))
 import qualified SDL
 import Seer.Config (mapRange)
@@ -66,8 +71,10 @@ import Topo
   , dsAvgSlope
   , dsMaxSlope
   , dsMinSlope
+  , allBuiltinStageIds
   , oceanCurrentOffset
   , plateBoundaryToCode
+  , stageCanonicalName
   , terrainFormDisplayName
   , tileIndex
   , ventActivityToCode
@@ -79,15 +86,32 @@ import Topo.Overlay
   ( Overlay(..)
   , OverlayData(..)
   , OverlayChunk(..)
+  , OverlayProvenance(..)
   , OverlayRecord(..)
+  , OverlayStore(..)
   , OverlayValue(..)
+  , chunkLookup
+  , defaultValue
+  , floatToOverlayValue
   , lookupOverlay
   , recordField
   )
 import Topo.Overlay.Schema
-  ( OverlayFieldDef(..)
+  ( OverlayDeps(..)
+  , OverlayFieldDef(..)
   , OverlayFieldType(..)
   , OverlaySchema(..)
+  , OverlayStorage(..)
+  , overlayFieldTypeName
+  )
+import Topo.Plugin.DataResource
+  ( DataFieldDef(..)
+  , DataOperations(..)
+  , DataPagination(..)
+  , DataResourceSchema(..)
+  )
+import Topo.Plugin.RPC.DataService
+  ( QueryResult(..)
   )
 import Topo.Hex (HexGridMeta(..))
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), formatLatLon, tileLatitude, tileLongitude)
@@ -133,13 +157,26 @@ data TerrainInspectorField = TerrainInspectorField
   , tifRaw :: !Value
   } deriving (Eq, Show)
 
+-- | Plugin data-resource query results to splice into the otherwise pure
+-- terrain inspector. UI callers normally provide schema-only entries from
+-- 'UiState'; service/API callers can attach per-hex query results.
+data TerrainInspectorPluginData = TerrainInspectorPluginData
+  { tipdPlugin :: !Text
+  , tipdSchema :: !DataResourceSchema
+  , tipdResult :: !(Maybe (Either Text QueryResult))
+  } deriving (Eq, Show)
+
 terrainInspectorView :: UiState -> TerrainSnapshot -> Maybe TerrainInspectorView
 terrainInspectorView ui terrainSnap = do
   hexCoord <- uiHoverHex ui
   pure (terrainInspectorViewAt ui terrainSnap hexCoord)
 
 terrainInspectorViewAt :: UiState -> TerrainSnapshot -> (Int, Int) -> TerrainInspectorView
-terrainInspectorViewAt ui terrainSnap hexCoord@(q, r) =
+terrainInspectorViewAt ui =
+  terrainInspectorViewAtWithPluginData (inspectorPluginDataFromUi ui) ui
+
+terrainInspectorViewAtWithPluginData :: [TerrainInspectorPluginData] -> UiState -> TerrainSnapshot -> (Int, Int) -> TerrainInspectorView
+terrainInspectorViewAtWithPluginData pluginData ui terrainSnap hexCoord@(q, r) =
   case sampleAt terrainSnap hexCoord of
     Nothing -> TerrainInspectorView
       { tivHex = hexCoord
@@ -147,7 +184,7 @@ terrainInspectorViewAt ui terrainSnap hexCoord@(q, r) =
       , tivLines = [hexHeader q r, "No data"]
       }
     Just sample ->
-      let sections = inspectorSections ui terrainSnap hexCoord sample
+      let sections = inspectorSections pluginData ui terrainSnap hexCoord sample
           lines = hexHeader q r : latLonLine ui terrainSnap q r : (sectionsToLines sections <> modeContextLines ui terrainSnap hexCoord sample)
       in TerrainInspectorView
         { tivHex = hexCoord
@@ -505,8 +542,8 @@ solarLinesFor ui terrainSnap tileQ tileR =
      , "Irrad " <> fmtF irr
      ]
 
-inspectorSections :: UiState -> TerrainSnapshot -> (Int, Int) -> HexSample -> [TerrainInspectorSection]
-inspectorSections ui terrainSnap (q, r) sample =
+inspectorSections :: [TerrainInspectorPluginData] -> UiState -> TerrainSnapshot -> (Int, Int) -> HexSample -> [TerrainInspectorSection]
+inspectorSections pluginData ui terrainSnap (q, r) sample =
   [ coordinatesSection
   , elevationSection
   , tectonicsSection
@@ -522,6 +559,13 @@ inspectorSections ui terrainSnap (q, r) sample =
   , glacierSection
   , volcanismSection
   , oceanCurrentSection
+  , overlayRecordsSection
+  , overlaySchemaSection
+  , overlayProvenanceSection
+  , pluginDataSection
+  , stageProvenanceSection
+  , unitConversionsSection
+  , exportLinksSection
   ]
   where
     units = defaultUnitScales
@@ -759,6 +803,56 @@ inspectorSections ui terrainSnap (q, r) sample =
       , floatField "cold_scale" "Cold scale" (occColdScale oceanCurrentCfg)
       ]
 
+    overlayRecordsSection = section "overlay_records" "Overlay Records"
+      (overlayRecordFields terrainSnap chunkKey tileIdx)
+
+    overlaySchemaSection = section "overlay_schema" "Overlay Schema"
+      (overlaySchemaFields terrainSnap)
+
+    overlayProvenanceSection = section "overlay_provenance" "Overlay Provenance"
+      (overlayProvenanceFields terrainSnap)
+
+    pluginDataSection = section "plugin_hex_data" "Plugin Hex Data"
+      (pluginDataFields pluginData chunkKey tileIdx)
+
+    stageProvenanceSection = section "stage_provenance" "Stage Provenance"
+      [ word64Field "seed" "Seed" (uiSeed ui)
+      , word64Field "terrain_version" "Terrain version" (tsVersion terrainSnap)
+      , word64Field "sim_tick" "Sim tick" (uiSimTickCount ui)
+      , intField "chunk_id" "Chunk" chunkKey
+      , intField "tile_index" "Tile" tileIdx
+      , textListField "enabled_stages" "Enabled stages" enabledStageNames
+      , textListField "disabled_stages" "Disabled stages" disabledStageNames
+      , textListField "enabled_plugins" "Enabled plugins" enabledPluginNames
+      , textListField "disabled_plugins" "Disabled plugins" disabledPluginNames
+      , pluginLifecycleField (uiPluginLifecycles ui)
+      ]
+
+    unitConversionsSection = section "unit_conversions" "Unit Conversions"
+      [ conversionField "elevation" "Elevation" (hsElevation sample) elevationM "m"
+      , conversionField "water_level" "Water level" waterLevel (normToMetres units waterLevel) "m"
+      , conversionField "relative_water_level" "Sea delta" (hsElevation sample - waterLevel) relativeWaterM "m"
+      , conversionField "slope_avg" "Slope avg" (hsSlope sample) (slopeDeg (hsSlope sample)) "°"
+      , conversionField "temp_avg" "Temp avg" (hsTemp sample) (normToC units (hsTemp sample)) "°C"
+      , conversionField "precip_avg" "Precip avg" (hsPrecipAvg sample) (normToMmYear units (hsPrecipAvg sample)) "mm/yr"
+      , conversionField "humidity" "Humidity" (hsHumidity sample) (normToRH (hsHumidity sample)) "% RH"
+      , conversionField "weather_wind_spd" "Wind speed" (hsWeatherWindSpd sample) (normToWindMs units (hsWeatherWindSpd sample)) "m/s"
+      , conversionField "weather_pressure" "Pressure" (hsWeatherPressure sample) (normToHPa units (hsWeatherPressure sample)) "hPa"
+      , conversionField "soil_depth" "Soil depth" (hsSoilDepth sample) (normToSoilM units (hsSoilDepth sample)) "m"
+      ]
+
+    exportLinksSection = section "export_links" "Export / Copy JSON"
+      (exportLinkFields q r chunkKey tileIdx terrainSnap pluginData)
+
+    enabledStageNames =
+      [ stageCanonicalName sid
+      | sid <- allBuiltinStageIds
+      , not (Set.member sid (uiDisabledStages ui))
+      ]
+    disabledStageNames = map stageCanonicalName (Set.toList (uiDisabledStages ui))
+    enabledPluginNames = filter (`Set.notMember` uiDisabledPlugins ui) (uiPluginNames ui)
+    disabledPluginNames = Set.toList (uiDisabledPlugins ui)
+
 section :: Text -> Text -> [TerrainInspectorField] -> TerrainInspectorSection
 section = TerrainInspectorSection
 
@@ -776,6 +870,26 @@ intField key label value = TerrainInspectorField key label (Text.pack (show valu
 
 word16Field :: Text -> Text -> Word16 -> TerrainInspectorField
 word16Field key label value = intField key label (fromIntegral value)
+
+word64Field :: Text -> Text -> Word64 -> TerrainInspectorField
+word64Field key label value = TerrainInspectorField key label (Text.pack (show value)) (toJSON value)
+
+jsonField :: Text -> Text -> Text -> Value -> TerrainInspectorField
+jsonField = TerrainInspectorField
+
+textListField :: Text -> Text -> [Text] -> TerrainInspectorField
+textListField key label values =
+  TerrainInspectorField key label display (toJSON values)
+  where
+    display = if null values then "-" else Text.intercalate ", " values
+
+conversionField :: Text -> Text -> Float -> Float -> Text -> TerrainInspectorField
+conversionField key label normalized converted unit =
+  TerrainInspectorField key label (fmtU converted unit) $ object
+    [ "normalized" .= normalized
+    , "converted" .= converted
+    , "unit" .= unit
+    ]
 
 floatField :: Text -> Text -> Float -> TerrainInspectorField
 floatField key label value = TerrainInspectorField key label (fmtF value) (toJSON value)
@@ -907,6 +1021,340 @@ hasLandAlongChunk terrainSnap waterLevel sample direction =
     landAt terrainChunk step =
       let tracedIdx = traceIndexInDirection chunkSize chunkSize direction step startIdx
       in tracedIdx /= startIdx && maybe False (>= waterLevel) (safeIndexMaybe (tcElevation terrainChunk) tracedIdx)
+
+inspectorPluginDataFromUi :: UiState -> [TerrainInspectorPluginData]
+inspectorPluginDataFromUi ui =
+  [ TerrainInspectorPluginData pluginName schema Nothing
+  | (pluginName, schemas) <- Map.toList (uiDataResources ui)
+  , schema <- schemas
+  , dataResourceHexQueryable schema
+  ]
+
+dataResourceHexQueryable :: DataResourceSchema -> Bool
+dataResourceHexQueryable schema =
+  drsHexBound schema && doQueryByHex (drsOperations schema)
+
+overlayRecordFields :: TerrainSnapshot -> Int -> Int -> [TerrainInspectorField]
+overlayRecordFields terrainSnap chunkKey tileIdx =
+  case overlayEntries terrainSnap of
+    [] -> [statusField "none"]
+    overlays -> map (overlayRecordField chunkKey tileIdx) overlays
+
+overlayRecordField :: Int -> Int -> (Text, Overlay) -> TerrainInspectorField
+overlayRecordField chunkKey tileIdx (name, overlay) =
+  jsonField ("overlay_" <> sanitizeKey name) name display raw
+  where
+    (recordStatus, fieldValues) = overlayRecordValues overlay chunkKey tileIdx
+    renderedValues =
+      [ ofdName fd <> "=" <> maybe "-" formatOverlayValue mValue
+      | (fd, mValue) <- fieldValues
+      ]
+    display = recordStatus <> if null renderedValues then "" else " · " <> Text.intercalate ", " renderedValues
+    raw = object
+      [ "name" .= name
+      , "storage" .= overlayStorageText (osStorage (ovSchema overlay))
+      , "status" .= recordStatus
+      , "chunk" .= chunkKey
+      , "tile" .= tileIdx
+      , "fields" .= map overlayFieldValueObject fieldValues
+      ]
+
+overlayRecordValues :: Overlay -> Int -> Int -> (Text, [(OverlayFieldDef, Maybe OverlayValue)])
+overlayRecordValues overlay chunkKey tileIdx =
+  case ovData overlay of
+    SparseData chunks ->
+      case IntMap.lookup chunkKey chunks of
+        Nothing -> ("no_chunk", [])
+        Just chunk ->
+          case chunkLookup tileIdx chunk of
+            Nothing -> ("default_record", [(fd, Just (defaultValue fd)) | fd <- fields])
+            Just record -> ("sparse_record", [(fd, recordField idx record) | (idx, fd) <- zip [0..] fields])
+    DenseData chunks ->
+      case IntMap.lookup chunkKey chunks of
+        Nothing -> ("no_chunk", [])
+        Just fieldVecs ->
+          ("dense_record", [(fd, denseFieldValue idx fd fieldVecs) | (idx, fd) <- zip [0..] fields])
+  where
+    fields = osFields (ovSchema overlay)
+    denseFieldValue idx fd fieldVecs
+      | idx < V.length fieldVecs =
+          let values = fieldVecs V.! idx
+          in if tileIdx >= 0 && tileIdx < U.length values
+               then Just (floatToOverlayValue (ofdType fd) (values U.! tileIdx))
+               else Nothing
+      | otherwise = Nothing
+
+overlaySchemaFields :: TerrainSnapshot -> [TerrainInspectorField]
+overlaySchemaFields terrainSnap =
+  case overlayEntries terrainSnap of
+    [] -> [statusField "none"]
+    overlays -> map overlaySchemaField overlays
+
+overlaySchemaField :: (Text, Overlay) -> TerrainInspectorField
+overlaySchemaField (name, overlay) =
+  jsonField ("schema_" <> sanitizeKey name) name display raw
+  where
+    schema = ovSchema overlay
+    display = overlayStorageText (osStorage schema) <> " · " <> showText (length (osFields schema)) <> " fields"
+    raw = object
+      [ "schema" .= schema
+      , "data" .= overlayDataSummary (ovData overlay)
+      , "dependencies" .= overlayDepsObject (osDependencies schema)
+      ]
+
+overlayProvenanceFields :: TerrainSnapshot -> [TerrainInspectorField]
+overlayProvenanceFields terrainSnap =
+  case overlayEntries terrainSnap of
+    [] -> [statusField "none"]
+    overlays -> map overlayProvenanceField overlays
+
+overlayProvenanceField :: (Text, Overlay) -> TerrainInspectorField
+overlayProvenanceField (name, overlay) =
+  jsonField ("provenance_" <> sanitizeKey name) name display raw
+  where
+    provenance = ovProvenance overlay
+    display = opSource provenance <> " v" <> showText (opVersion provenance) <> " seed " <> showText (opSeed provenance)
+    raw = object
+      [ "name" .= name
+      , "seed" .= opSeed provenance
+      , "version" .= opVersion provenance
+      , "source" .= opSource provenance
+      ]
+
+pluginDataFields :: [TerrainInspectorPluginData] -> Int -> Int -> [TerrainInspectorField]
+pluginDataFields pluginData chunkKey tileIdx =
+  case pluginData of
+    [] -> [statusField "no_hex_bound_resources"]
+    entries -> map (pluginDataField chunkKey tileIdx) entries
+
+pluginDataField :: Int -> Int -> TerrainInspectorPluginData -> TerrainInspectorField
+pluginDataField chunkKey tileIdx entry =
+  jsonField fieldKey (drsLabel schema) display raw
+  where
+    pluginName = tipdPlugin entry
+    schema = tipdSchema entry
+    fieldKey = "resource_" <> sanitizeKey pluginName <> "_" <> sanitizeKey (drsName schema)
+    display = case tipdResult entry of
+      Nothing -> "query available"
+      Just (Left _) -> "query failed"
+      Just (Right result) -> showText (length (qrsRecords result)) <> " records"
+    raw = object $ baseFields <> resultFields
+    baseFields =
+      [ "plugin" .= pluginName
+      , "resource" .= drsName schema
+      , "label" .= drsLabel schema
+      , "schema" .= dataResourceSchemaObject schema
+      , "query" .= object
+          [ "type" .= ("by_hex" :: Text)
+          , "chunk" .= chunkKey
+          , "tile" .= tileIdx
+          ]
+      , "http" .= object
+          [ "method" .= ("GET" :: Text)
+          , "path" .= ("/data/records" :: Text)
+          , "query" .= object
+              [ "plugin" .= pluginName
+              , "resource" .= drsName schema
+              , "query" .= ("by_hex" :: Text)
+              , "chunk" .= chunkKey
+              , "tile" .= tileIdx
+              ]
+          ]
+      ]
+    resultFields = case tipdResult entry of
+      Nothing -> ["status" .= ("query_available" :: Text)]
+      Just (Left err) ->
+        [ "status" .= ("query_failed" :: Text)
+        , "error" .= err
+        ]
+      Just (Right result) ->
+        [ "status" .= ("loaded" :: Text)
+        , "records" .= qrsRecords result
+        , "total_count" .= qrsTotalCount result
+        ]
+
+dataResourceSchemaObject :: DataResourceSchema -> Value
+dataResourceSchemaObject schema = object
+  [ "schema_version" .= drsSchemaVersion schema
+  , "resource_version" .= drsResourceVersion schema
+  , "name" .= drsName schema
+  , "label" .= drsLabel schema
+  , "hex_bound" .= drsHexBound schema
+  , "key_field" .= drsKeyField schema
+  , "overlay" .= drsOverlay schema
+  , "fields" .= map dataResourceFieldObject (drsFields schema)
+  , "operations" .= dataResourceOperationsObject (drsOperations schema)
+  , "pagination" .= dataResourcePaginationObject (drsPagination schema)
+  ]
+
+dataResourceFieldObject :: DataFieldDef -> Value
+dataResourceFieldObject field = object
+  [ "name" .= dfName field
+  , "type" .= dfType field
+  , "label" .= dfLabel field
+  , "editable" .= dfEditable field
+  , "default" .= dfDefault field
+  ]
+
+dataResourceOperationsObject :: DataOperations -> Value
+dataResourceOperationsObject ops = object
+  [ "list" .= doList ops
+  , "get" .= doGet ops
+  , "create" .= doCreate ops
+  , "update" .= doUpdate ops
+  , "delete" .= doDelete ops
+  , "query_by_hex" .= doQueryByHex ops
+  , "query_by_field" .= doQueryByField ops
+  , "sort" .= doSort ops
+  , "filter" .= doFilter ops
+  , "page" .= doPage ops
+  ]
+
+dataResourcePaginationObject :: DataPagination -> Value
+dataResourcePaginationObject pagination = object
+  [ "default_page_size" .= dpDefaultPageSize pagination
+  , "max_page_size" .= dpMaxPageSize pagination
+  , "default_page_offset" .= dpDefaultPageOffset pagination
+  ]
+
+pluginLifecycleField :: Map.Map Text PluginLifecycleSnapshot -> TerrainInspectorField
+pluginLifecycleField lifecycles =
+  jsonField "plugin_lifecycles" "Plugin lifecycles" display raw
+  where
+    entries = Map.toList lifecycles
+    displayValues = [name <> ":" <> pluginLifecycleStateText (plsState snapshot) | (name, snapshot) <- entries]
+    display = if null displayValues then "-" else Text.intercalate ", " displayValues
+    raw = toJSON (map lifecycleObject entries)
+    lifecycleObject (name, snapshot) = object
+      [ "plugin" .= name
+      , "state" .= pluginLifecycleStateText (plsState snapshot)
+      , "resources" .= plsResources snapshot
+      , "reason" .= plsReason snapshot
+      , "error_code" .= plsErrorCode snapshot
+      , "error_message" .= plsErrorMessage snapshot
+      ]
+
+exportLinkFields :: Int -> Int -> Int -> Int -> TerrainSnapshot -> [TerrainInspectorPluginData] -> [TerrainInspectorField]
+exportLinkFields q r chunkKey tileIdx terrainSnap pluginData =
+  [ jsonField "copy_hex_json" "Copy hex JSON" ("GET " <> hexPath) hexRaw
+  , jsonField "copy_sections_json" "Copy sections JSON" "sections[] in get_hex response" sectionsRaw
+  , jsonField "export_chunk_json" "Export chunk JSON" "POST /terrain/export" exportRaw
+  , jsonField "copy_overlay_json" "Overlay JSON" overlayDisplay overlayRaw
+  , jsonField "copy_plugin_hex_json" "Plugin records JSON" pluginDisplay pluginRaw
+  ]
+  where
+    hexPath = "/terrain/hex?q=" <> showText q <> "&r=" <> showText r
+    hexRaw = object
+      [ "kind" .= ("copy_as_json" :: Text)
+      , "http" .= object
+          [ "method" .= ("GET" :: Text)
+          , "path" .= ("/terrain/hex" :: Text)
+          , "query" .= object ["q" .= q, "r" .= r]
+          ]
+      , "command" .= object
+          [ "method" .= ("get_hex" :: Text)
+          , "params" .= object ["q" .= q, "r" .= r]
+          ]
+      ]
+    sectionsRaw = object
+      [ "kind" .= ("copy_as_json" :: Text)
+      , "source" .= ("terrain.hex.sections" :: Text)
+      , "field" .= ("sections" :: Text)
+      , "hex" .= object ["q" .= q, "r" .= r, "chunk" .= chunkKey, "tile" .= tileIdx]
+      ]
+    exportRaw = object
+      [ "kind" .= ("export_json" :: Text)
+      , "http" .= object
+          [ "method" .= ("POST" :: Text)
+          , "path" .= ("/terrain/export" :: Text)
+          , "body" .= object
+              [ "chunks" .= [chunkKey]
+              , "fields" .= (["elevation", "moisture", "biome"] :: [Text])
+              ]
+          ]
+      , "command" .= object
+          [ "method" .= ("export_terrain_data" :: Text)
+          , "params" .= object
+              [ "chunks" .= [chunkKey]
+              , "fields" .= (["elevation", "moisture", "biome"] :: [Text])
+              ]
+          ]
+      ]
+    overlayNamesLoaded = map fst (overlayEntries terrainSnap)
+    overlayDisplay = if null overlayNamesLoaded then "no overlays" else Text.intercalate ", " overlayNamesLoaded
+    overlayRaw = object
+      [ "kind" .= ("copy_as_json" :: Text)
+      , "source" .= ("terrain.hex.sections.overlay_records" :: Text)
+      , "overlays" .= overlayNamesLoaded
+      ]
+    pluginResources = [tipdPlugin entry <> ":" <> drsName (tipdSchema entry) | entry <- pluginData]
+    pluginDisplay = if null pluginResources then "no hex resources" else Text.intercalate ", " pluginResources
+    pluginRaw = object
+      [ "kind" .= ("copy_as_json" :: Text)
+      , "source" .= ("terrain.hex.sections.plugin_hex_data" :: Text)
+      , "resources" .= pluginResources
+      , "query" .= object
+          [ "type" .= ("by_hex" :: Text)
+          , "chunk" .= chunkKey
+          , "tile" .= tileIdx
+          ]
+      ]
+
+overlayEntries :: TerrainSnapshot -> [(Text, Overlay)]
+overlayEntries terrainSnap =
+  case tsOverlayStore terrainSnap of
+    OverlayStore overlays -> Map.toList overlays
+
+overlayFieldValueObject :: (OverlayFieldDef, Maybe OverlayValue) -> Value
+overlayFieldValueObject (fd, mValue) = object
+  [ "name" .= ofdName fd
+  , "type" .= overlayFieldTypeDisplay (ofdType fd)
+  , "value" .= maybe Null overlayValueRaw mValue
+  ]
+
+overlayFieldTypeDisplay :: OverlayFieldType -> Text
+overlayFieldTypeDisplay (OFList inner) = "list<" <> overlayFieldTypeDisplay inner <> ">"
+overlayFieldTypeDisplay typ = overlayFieldTypeName typ
+
+overlayValueRaw :: OverlayValue -> Value
+overlayValueRaw (OVFloat value) = toJSON value
+overlayValueRaw (OVInt value) = toJSON value
+overlayValueRaw (OVBool value) = toJSON value
+overlayValueRaw (OVText value) = toJSON value
+overlayValueRaw (OVList values) = toJSON (map overlayValueRaw (V.toList values))
+
+overlayDataSummary :: OverlayData -> Value
+overlayDataSummary (SparseData chunks) = object
+  [ "storage" .= ("sparse" :: Text)
+  , "chunks" .= IntMap.size chunks
+  , "records" .= sum [IntMap.size records | OverlayChunk records <- IntMap.elems chunks]
+  ]
+overlayDataSummary (DenseData chunks) = object
+  [ "storage" .= ("dense" :: Text)
+  , "chunks" .= IntMap.size chunks
+  , "field_vectors" .= sum [V.length fieldVecs | fieldVecs <- IntMap.elems chunks]
+  ]
+
+overlayDepsObject :: OverlayDeps -> Value
+overlayDepsObject deps = object
+  [ "terrain" .= odTerrain deps
+  , "overlays" .= odOverlays deps
+  ]
+
+overlayStorageText :: OverlayStorage -> Text
+overlayStorageText StorageSparse = "sparse"
+overlayStorageText StorageDense = "dense"
+
+sanitizeKey :: Text -> Text
+sanitizeKey =
+  Text.replace ":" "_"
+  . Text.replace "/" "_"
+  . Text.replace "." "_"
+  . Text.replace "-" "_"
+  . Text.replace " " "_"
+
+showText :: Show a => a -> Text
+showText = Text.pack . show
 
 data HexSample = HexSample
   { hsChunk :: !ChunkCoord

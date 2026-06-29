@@ -5,10 +5,22 @@ module Spec.TerrainInspector (spec) where
 
 import Actor.Data (TerrainSnapshot(..))
 import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
+import Data.Aeson (Value(..))
+import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.IntMap.Strict as IntMap
+import Data.List (find)
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Vector.Unboxed as U
-import Seer.Draw.Overlay (TerrainInspectorSection(..), TerrainInspectorView(..), terrainInspectorView)
+import Seer.Draw.Overlay
+  ( TerrainInspectorField(..)
+  , TerrainInspectorPluginData(..)
+  , TerrainInspectorSection(..)
+  , TerrainInspectorView(..)
+  , terrainInspectorView
+  , terrainInspectorViewAtWithPluginData
+  )
+import Spec.Support.OverlayFixtures (mkSparseFloatOverlay)
 import Test.Hspec
 import Topo
   ( ClimateChunk(..)
@@ -21,7 +33,18 @@ import Topo
   , WeatherChunk(..)
   , zeroDirSlope
   )
-import Topo.Overlay (emptyOverlayStore)
+import Topo.Overlay (OverlayProvenance(..), emptyOverlayStore, insertOverlay)
+import Topo.Plugin.DataResource
+  ( DataFieldDef(..)
+  , DataFieldType(..)
+  , DataOperations(..)
+  , DataResourceSchema(..)
+  , currentDataResourceSchemaVersion
+  , defaultDataPagination
+  , defaultDataResourceVersion
+  , noOperations
+  )
+import Topo.Plugin.RPC.DataService (DataRecord(..), QueryResult(..))
 import Topo.Types
   ( pattern BiomeDesert
   , pattern BiomeTempRainforest
@@ -67,6 +90,13 @@ spec = describe "terrain inspector view model" $ do
       , "glacier_snow_ice"
       , "volcanism"
       , "ocean_currents"
+      , "overlay_records"
+      , "overlay_schema"
+      , "overlay_provenance"
+      , "plugin_hex_data"
+      , "stage_provenance"
+      , "unit_conversions"
+      , "export_links"
       ]
 
   it "surfaces populated water body and water-table section fields" $ do
@@ -104,8 +134,62 @@ spec = describe "terrain inspector view model" $ do
     tivLines view `shouldSatisfy` elem "Overlay culture"
     tivLines view `shouldSatisfy` elem "(not loaded)"
 
+  it "surfaces overlay records, schema, provenance, units, and JSON export affordances" $ do
+    let provenance = OverlayProvenance 99 3 "plugin:civ"
+        overlay = mkSparseFloatOverlay "culture" "Culture score" 0.87 provenance
+        snap = terrainSnapshotWithChunk { tsOverlayStore = insertOverlay overlay emptyOverlayStore }
+        ui = emptyUiState { uiHoverHex = Just (0, 0) }
+        Just view = terrainInspectorView ui snap
+    map tisKey (tivSections view) `shouldSatisfy` elem "overlay_records"
+    map tisKey (tivSections view) `shouldSatisfy` elem "overlay_schema"
+    map tisKey (tivSections view) `shouldSatisfy` elem "overlay_provenance"
+    map tisKey (tivSections view) `shouldSatisfy` elem "unit_conversions"
+    map tisKey (tivSections view) `shouldSatisfy` elem "export_links"
+    tivLines view `shouldSatisfy` any (Text.isInfixOf "culture sparse_record")
+    tivLines view `shouldSatisfy` any (Text.isInfixOf "culture sparse · 1 fields")
+    tivLines view `shouldSatisfy` any (Text.isInfixOf "culture plugin:civ v3 seed 99")
+    tivLines view `shouldSatisfy` any (Text.isInfixOf "Elevation -5160.0 m")
+    tivLines view `shouldSatisfy` any (Text.isInfixOf "Copy hex JSON GET /terrain/hex?q=0&r=0")
+
+  it "surfaces plugin hex-bound data records when service queries provide them" $ do
+    let ui = emptyUiState { uiHoverHex = Just (0, 0) }
+        record = DataRecord (Map.fromList [("id", Number 1), ("name", String "Hillfort")])
+        result = QueryResult "settlements" [record] (Just 1)
+        pluginData = [TerrainInspectorPluginData "civ" settlementResourceSchema (Just (Right result))]
+        view = terrainInspectorViewAtWithPluginData pluginData ui terrainSnapshotWithChunk (0, 0)
+    map tisKey (tivSections view) `shouldSatisfy` elem "plugin_hex_data"
+    tivLines view `shouldSatisfy` any (Text.isInfixOf "Settlements 1 records")
+    tivLines view `shouldSatisfy` any (Text.isInfixOf "Plugin records JSON civ:settlements")
+    let Just pluginSection = find ((== "plugin_hex_data") . tisKey) (tivSections view)
+        [pluginField] = tisFields pluginSection
+    case tifRaw pluginField of
+      Object raw ->
+        case KeyMap.lookup "schema" raw of
+          Just (Object schemaRaw) -> do
+            KeyMap.lookup "hex_bound" schemaRaw `shouldBe` Just (Bool True)
+            KeyMap.lookup "hexBound" schemaRaw `shouldBe` Nothing
+          _ -> expectationFailure "expected plugin schema raw object"
+      _ -> expectationFailure "expected plugin field raw object"
+
 emptyTerrainSnapshot :: TerrainSnapshot
 emptyTerrainSnapshot = TerrainSnapshot 0 0 IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty emptyOverlayStore
+
+settlementResourceSchema :: DataResourceSchema
+settlementResourceSchema = DataResourceSchema
+  { drsSchemaVersion = currentDataResourceSchemaVersion
+  , drsResourceVersion = defaultDataResourceVersion
+  , drsName = "settlements"
+  , drsLabel = "Settlements"
+  , drsHexBound = True
+  , drsFields =
+      [ DataFieldDef "id" DFInt "Id" False Nothing
+      , DataFieldDef "name" DFText "Name" False Nothing
+      ]
+  , drsOperations = noOperations { doQueryByHex = True }
+  , drsKeyField = "id"
+  , drsOverlay = Nothing
+  , drsPagination = defaultDataPagination
+  }
 
 terrainSnapshotWithChunk :: TerrainSnapshot
 terrainSnapshotWithChunk = TerrainSnapshot

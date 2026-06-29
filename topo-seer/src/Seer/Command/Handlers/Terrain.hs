@@ -14,6 +14,7 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as Aeson
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word16, Word32)
@@ -22,13 +23,23 @@ import qualified Data.Vector.Unboxed as U
 import Actor.Data
   ( TerrainSnapshot(..)
   )
+import Actor.PluginManager
+  ( getPluginDataResources
+  , queryPluginResource
+  )
 import Actor.SnapshotReceiver (readTerrainSnapshot)
 import Actor.UI.State (readUiSnapshotRef)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
-import Seer.Draw.Overlay (terrainInspectorSectionsObject, terrainInspectorViewAt)
+import Seer.Draw.Overlay
+  ( TerrainInspectorPluginData(..)
+  , terrainInspectorSectionsObject
+  , terrainInspectorViewAtWithPluginData
+  )
 import Topo.Biome.Name (biomeDisplayName)
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
+import Topo.Plugin.DataResource (DataOperations(..), DataPagination(..), DataResourceSchema(..))
+import Topo.Plugin.RPC.DataService (DataQuery(..), QueryResource(..))
 import Topo.Types
   ( WorldConfig(..), ChunkId(..), TileCoord(..), TileIndex(..)
   , chunkCoordFromTile, chunkIdFromCoord, tileIndex
@@ -82,6 +93,7 @@ handleGetHex ctx reqId params =
                 Nothing ->
                   pure $ errResponse reqId ("no terrain at hex: q=" <> Text.pack (show q) <> ", r=" <> Text.pack (show r))
                 Just tc -> do
+                  pluginData <- terrainInspectorPluginDataForHex ctx chunkId tileIdx
                   let terrainLayer = object
                         [ "elevation"     .= safeIndex (tcElevation tc) tileIdx
                         , "curvature"     .= safeIndex (tcCurvature tc) tileIdx
@@ -196,7 +208,7 @@ handleGetHex ctx reqId params =
                           , "deposit_potential" .= safeIndex (vcDepositPotential vc) tileIdx
                           ]
 
-                      inspector = terrainInspectorViewAt ui snap (q, r)
+                      inspector = terrainInspectorViewAtWithPluginData pluginData ui snap (q, r)
 
                       vegLayer = case IntMap.lookup chunkId (tsVegetationChunks snap) of
                         Nothing -> Null
@@ -220,6 +232,48 @@ handleGetHex ctx reqId params =
                     , "volcanism"  .= volcanismLayer
                     , "sections"   .= terrainInspectorSectionsObject inspector
                     ]
+
+terrainInspectorPluginDataForHex :: CommandContext -> Int -> Int -> IO [TerrainInspectorPluginData]
+terrainInspectorPluginDataForHex ctx chunkId tileIdx = do
+  let pmH = ahPluginManagerHandle (ccActorHandles ctx)
+  resources <- getPluginDataResources pmH
+  mapM queryOne
+    [ (pluginName, schema)
+    | (pluginName, schemas) <- Map.toList resources
+    , schema <- schemas
+    , drsHexBound schema
+    , doQueryByHex (drsOperations schema)
+    ]
+  where
+    queryOne (pluginName, schema) = do
+      let qr = QueryResource
+            { qrResource = drsName schema
+            , qrQuery = QueryByHex chunkId tileIdx
+            , qrPageSize = inspectorPageSize schema
+            , qrPageOffset = inspectorPageOffset schema
+            }
+      result <- queryPluginResource (ahPluginManagerHandle (ccActorHandles ctx)) pluginName qr
+      pure TerrainInspectorPluginData
+        { tipdPlugin = pluginName
+        , tipdSchema = schema
+        , tipdResult = Just result
+        }
+
+inspectorPageSize :: DataResourceSchema -> Maybe Int
+inspectorPageSize schema
+  | doPage (drsOperations schema) =
+      let pagination = drsPagination schema
+          maxSize = max 1 (dpMaxPageSize pagination)
+      in Just (clampInt 1 maxSize (dpDefaultPageSize pagination))
+  | otherwise = Nothing
+
+inspectorPageOffset :: DataResourceSchema -> Maybe Int
+inspectorPageOffset schema
+  | doPage (drsOperations schema) = Just (max 0 (dpDefaultPageOffset (drsPagination schema)))
+  | otherwise = Nothing
+
+clampInt :: Int -> Int -> Int -> Int
+clampInt lo hi = max lo . min hi
 
 -- | Handle @get_chunks@ — list all chunk IDs with basic stats.
 handleGetChunks :: CommandContext -> Int -> Value -> IO SeerResponse
