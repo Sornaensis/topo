@@ -9,18 +9,28 @@ module Seer.Command.Handlers.World
   ( handleGetWorldMeta
   , handleGetGenerationStatus
   , handleGetOverlays
+  , handleGetOverlaySchema
+  , handleGetOverlayProvenance
+  , handleExportOverlayData
+  , handleValidateOverlayImport
   , handleListWorlds
   , handleSaveWorld
   , handleLoadWorld
   , handleSetWorldName
   ) where
 
-import Data.Aeson (Value(..), object, (.=), (.:))
+import Control.Applicative ((<|>))
+import Data.Aeson (Value(..), object, (.=), (.:), (.:?), toJSON)
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Aeson.Types as Aeson
+import qualified Data.ByteString.Lazy as BL
 import qualified Data.IntMap.Strict as IntMap
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Vector as V
+import qualified Data.Vector.Unboxed as U
 import System.FilePath ((</>))
 
 import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot, getDataSnapshot, replaceTerrainData)
@@ -45,7 +55,7 @@ import Actor.UiActions
   , submitUiAction
   )
 import Actor.UiActions.Handles (ActorHandles(..))
-import Actor.UI.State (UiState(..), readUiSnapshotRef)
+import Actor.UI.State (UiState(..), ViewMode(..), readUiSnapshotRef)
 import Hyperspace.Actor (replyTo)
 import Seer.Command.Context (CommandContext(..))
 import Seer.Config.Snapshot (snapshotFromUi, applySnapshotToUi)
@@ -58,7 +68,25 @@ import Seer.World.Persist
   )
 import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
-import Topo.Overlay (overlayNames)
+import Topo.Overlay
+  ( Overlay(..)
+  , OverlayChunk(..)
+  , OverlayData(..)
+  , OverlayProvenance(..)
+  , OverlayStore(..)
+  , chunkSize
+  , lookupOverlay
+  , overlayNames
+  )
+import Topo.Overlay.JSON (overlayFromJSON, overlayToJSON)
+import Topo.Overlay.Schema
+  ( OverlayDeps(..)
+  , OverlayFieldDef(..)
+  , OverlayFieldType(..)
+  , OverlaySchema(..)
+  , OverlayStorage(..)
+  , parseOverlaySchema
+  )
 import Topo.World (TerrainWorld(..))
 
 -- | Handle @get_world_meta@ — return world metadata: seed, chunk size,
@@ -96,14 +124,96 @@ handleGetGenerationStatus ctx reqId _params = do
     , "seed"         .= uiSeed ui
     ]
 
--- | Handle @get_overlays@ — return the names and count of loaded overlays.
+-- | Handle @get_overlays@ — return overlay-manager metadata for loaded overlays.
 handleGetOverlays :: CommandContext -> Int -> Value -> IO SeerResponse
 handleGetOverlays ctx reqId _params = do
+  ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
   snap <- readTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx))
-  let names = overlayNames (tsOverlayStore snap)
+  let store = tsOverlayStore snap
+      names = overlayNames store
+      active = case uiViewMode ui of
+        ViewOverlay name fieldIdx -> Just (name, fieldIdx)
+        _ -> Nothing
   pure $ okResponse reqId $ object
     [ "overlay_count" .= length names
     , "overlay_names" .= names
+    , "active_overlay" .= fmap fst active
+    , "active_field_index" .= fmap snd active
+    , "overlays" .= overlayStoreSummaries store active
+    , "diagnostics" .= [diagnostic "info" "overlay_manager_ready" "overlay manager metadata is available"]
+    ]
+
+-- | Handle @get_overlay_schema@ — return one overlay's schema as JSON.
+handleGetOverlaySchema :: CommandContext -> Int -> Value -> IO SeerResponse
+handleGetOverlaySchema ctx reqId params = do
+  case Aeson.parseMaybe parseOverlayNameParam params of
+    Nothing -> pure $ errResponse reqId "missing or invalid 'overlay' parameter"
+    Just name -> do
+      snap <- readTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx))
+      case lookupOverlay name (tsOverlayStore snap) of
+        Nothing -> pure $ errResponse reqId (overlayNotFoundMessage name (tsOverlayStore snap))
+        Just ov -> pure $ okResponse reqId $ object
+          [ "overlay" .= name
+          , "format" .= ("toposchema" :: Text)
+          , "schema" .= toJSON (ovSchema ov)
+          , "fields" .= map fieldSummary (zip [0..] (osFields (ovSchema ov)))
+          , "diagnostics" .= [diagnostic "info" "schema_loaded" "overlay schema is valid and loaded"]
+          ]
+
+-- | Handle @get_overlay_provenance@ — return one overlay's provenance header.
+handleGetOverlayProvenance :: CommandContext -> Int -> Value -> IO SeerResponse
+handleGetOverlayProvenance ctx reqId params = do
+  case Aeson.parseMaybe parseOverlayNameParam params of
+    Nothing -> pure $ errResponse reqId "missing or invalid 'overlay' parameter"
+    Just name -> do
+      snap <- readTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx))
+      case lookupOverlay name (tsOverlayStore snap) of
+        Nothing -> pure $ errResponse reqId (overlayNotFoundMessage name (tsOverlayStore snap))
+        Just ov -> pure $ okResponse reqId $ object
+          [ "overlay" .= name
+          , "format" .= ("topolay-provenance" :: Text)
+          , "provenance" .= provenanceJSON (ovProvenance ov)
+          , "diagnostics" .= [diagnostic "info" "provenance_loaded" "overlay provenance header is available"]
+          ]
+
+-- | Handle @export_overlay_data@ — export schema, provenance, and payload JSON.
+handleExportOverlayData :: CommandContext -> Int -> Value -> IO SeerResponse
+handleExportOverlayData ctx reqId params = do
+  case Aeson.parseMaybe parseOverlayExportParams params of
+    Nothing -> pure $ errResponse reqId "missing or invalid 'overlay' parameter"
+    Just (name, mChunks) -> do
+      snap <- readTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx))
+      case lookupOverlay name (tsOverlayStore snap) of
+        Nothing -> pure $ errResponse reqId (overlayNotFoundMessage name (tsOverlayStore snap))
+        Just ov -> do
+          let requested = maybe [] id mChunks
+              ov' = maybe ov (`filterOverlayChunks` ov) mChunks
+              missing = [ cid | cid <- requested, not (overlayHasChunk cid ov) ]
+              diagnostics = diagnostic "info" "overlay_export_ready" "overlay export payload built"
+                : [ diagnostic "warn" "missing_chunk" ("overlay chunk not present: " <> Text.pack (show cid))
+                  | cid <- missing
+                  ]
+          pure $ okResponse reqId $ object
+            [ "overlay" .= name
+            , "format" .= ("topolay-json" :: Text)
+            , "schema" .= toJSON (ovSchema ov)
+            , "provenance" .= provenanceJSON (ovProvenance ov)
+            , "chunk_count" .= overlayDataChunkCount (ovData ov')
+            , "payload" .= overlayToJSON ov'
+            , "diagnostics" .= diagnostics
+            ]
+
+-- | Handle @validate_overlay_import@ — validate a schema/payload pair.
+handleValidateOverlayImport :: CommandContext -> Int -> Value -> IO SeerResponse
+handleValidateOverlayImport _ctx reqId params = do
+  let result = validateOverlayImportPayload params
+      (isValid, mName, diags) = case result of
+        Right name -> (True, Just name, [diagnostic "info" "overlay_import_valid" "schema and payload are importable"])
+        Left errs -> (False, Nothing, errs)
+  pure $ okResponse reqId $ object
+    [ "valid" .= isValid
+    , "overlay" .= mName
+    , "diagnostics" .= diags
     ]
 
 -- | Handle @list_worlds@ — return saved worlds from @~\/.topo\/worlds\/@.
@@ -145,6 +255,8 @@ handleSaveWorld ctx reqId params = do
               pure $ okResponse reqId $ object
                 [ "name" .= name
                 , "saved" .= True
+                , "formats" .= worldPersistenceFormats
+                , "diagnostics" .= [diagnostic "info" "world_saved" "world.topo, world.topolay, config.json, and meta.json were written"]
                 ]
             Left err ->
               pure $ errResponse reqId ("failed to save world: " <> err)
@@ -167,7 +279,7 @@ handleLoadWorld ctx reqId params = do
           case result of
             Left err ->
               pure $ errResponse reqId ("failed to load world: " <> err)
-            Right (_manifest, snapshot, world) -> do
+            Right (manifest, snapshot, world) -> do
               let handles = ccActorHandles ctx
                   uiH = ahUiHandle handles
               -- Replace terrain data
@@ -199,6 +311,9 @@ handleLoadWorld ctx reqId params = do
               pure $ okResponse reqId $ object
                 [ "name" .= name
                 , "loaded" .= True
+                , "formats" .= worldPersistenceFormats
+                , "overlay_names" .= wsmOverlayNames manifest
+                , "diagnostics" .= [diagnostic "info" "world_loaded" "world bundle, config snapshot, manifest, and overlay sidecar were loaded"]
                 ]
 
 -- | Handle @set_world_name@ — set the display name of the current world.
@@ -221,6 +336,123 @@ handleSetWorldName ctx reqId params = do
 -- Helpers
 -- --------------------------------------------------------------------------
 
+overlayStoreSummaries :: OverlayStore -> Maybe (Text, Int) -> [Value]
+overlayStoreSummaries (OverlayStore overlays) active =
+  [ overlaySummary active ov | ov <- Map.elems overlays ]
+
+overlaySummary :: Maybe (Text, Int) -> Overlay -> Value
+overlaySummary active ov = object
+  [ "name" .= osName schema
+  , "version" .= osVersion schema
+  , "description" .= osDescription schema
+  , "storage" .= storageText (osStorage schema)
+  , "field_count" .= length (osFields schema)
+  , "fields" .= map fieldSummary (zip [0..] (osFields schema))
+  , "chunk_count" .= overlayDataChunkCount (ovData ov)
+  , "populated_tile_count" .= overlayDataTileCount (ovData ov)
+  , "dependencies" .= depsJSON (osDependencies schema)
+  , "provenance" .= provenanceJSON (ovProvenance ov)
+  , "active" .= case active of
+      Just (name, _) -> name == osName schema
+      Nothing -> False
+  , "active_field_index" .= case active of
+      Just (name, idx) | name == osName schema -> Just idx
+      _ -> Nothing
+  ]
+  where
+    schema = ovSchema ov
+
+fieldSummary :: (Int, OverlayFieldDef) -> Value
+fieldSummary (idx, field) = object
+  [ "index" .= idx
+  , "name" .= ofdName field
+  , "type" .= fieldTypeText (ofdType field)
+  , "default" .= ofdDefault field
+  , "indexed" .= ofdIndexed field
+  , "renamed_from" .= ofdRenamedFrom field
+  ]
+
+fieldTypeText :: OverlayFieldType -> Text
+fieldTypeText OFFloat = "float"
+fieldTypeText OFInt = "int"
+fieldTypeText OFBool = "bool"
+fieldTypeText OFText = "text"
+fieldTypeText (OFList t) = "list<" <> fieldTypeText t <> ">"
+
+storageText :: OverlayStorage -> Text
+storageText StorageSparse = "sparse"
+storageText StorageDense = "dense"
+
+depsJSON :: OverlayDeps -> Value
+depsJSON deps = object
+  [ "terrain" .= odTerrain deps
+  , "overlays" .= odOverlays deps
+  ]
+
+provenanceJSON :: OverlayProvenance -> Value
+provenanceJSON prov = object
+  [ "seed" .= opSeed prov
+  , "version" .= opVersion prov
+  , "source" .= opSource prov
+  ]
+
+overlayDataChunkCount :: OverlayData -> Int
+overlayDataChunkCount (SparseData chunks) = IntMap.size chunks
+overlayDataChunkCount (DenseData chunks) = IntMap.size chunks
+
+overlayDataTileCount :: OverlayData -> Int
+overlayDataTileCount (SparseData chunks) = sum (map chunkSize (IntMap.elems chunks))
+overlayDataTileCount (DenseData chunks) = sum (map denseChunkTileCount (IntMap.elems chunks))
+
+denseChunkTileCount :: V.Vector (U.Vector Float) -> Int
+denseChunkTileCount fields
+  | V.null fields = 0
+  | otherwise = U.length (V.head fields)
+
+filterOverlayChunks :: [Int] -> Overlay -> Overlay
+filterOverlayChunks chunkIds ov = ov { ovData = filtered }
+  where
+    keep key _ = key `elem` chunkIds
+    filtered = case ovData ov of
+      SparseData chunks -> SparseData (IntMap.filterWithKey keep chunks)
+      DenseData chunks -> DenseData (IntMap.filterWithKey keep chunks)
+
+overlayHasChunk :: Int -> Overlay -> Bool
+overlayHasChunk cid ov = case ovData ov of
+  SparseData chunks -> IntMap.member cid chunks
+  DenseData chunks -> IntMap.member cid chunks
+
+validateOverlayImportPayload :: Value -> Either [Value] Text
+validateOverlayImportPayload (Object obj) =
+  case KM.lookup "schema" obj of
+    Nothing -> Left [diagnostic "error" "missing_schema" "missing required field 'schema'"]
+    Just schemaValue ->
+      case parseOverlaySchema (BL.toStrict (Aeson.encode schemaValue)) of
+        Left err -> Left [diagnostic "error" "invalid_schema" err]
+        Right schema ->
+          case KM.lookup "payload" obj <|> KM.lookup "data" obj of
+            Nothing -> Left [diagnostic "error" "missing_payload" "missing required field 'payload'"]
+            Just payload ->
+              case overlayFromJSON schema payload of
+                Left err -> Left [diagnostic "error" "invalid_payload" err]
+                Right _ -> Right (osName schema)
+validateOverlayImportPayload _ =
+  Left [diagnostic "error" "invalid_request" "request body must be a JSON object"]
+
+overlayNotFoundMessage :: Text -> OverlayStore -> Text
+overlayNotFoundMessage name store =
+  "overlay not found: " <> name <> "; available: " <> Text.intercalate ", " (overlayNames store)
+
+diagnostic :: Text -> Text -> Text -> Value
+diagnostic level code message = object
+  [ "level" .= level
+  , "code" .= code
+  , "message" .= message
+  ]
+
+worldPersistenceFormats :: [Text]
+worldPersistenceFormats = ["world.topo", "world.topolay", "config.json", "meta.json"]
+
 manifestToJSON :: WorldSaveManifest -> Value
 manifestToJSON m = object
   [ "name"          .= wsmName m
@@ -233,3 +465,10 @@ manifestToJSON m = object
 
 parseName :: Value -> Aeson.Parser Text
 parseName = Aeson.withObject "params" (.: "name")
+
+parseOverlayNameParam :: Value -> Aeson.Parser Text
+parseOverlayNameParam = Aeson.withObject "params" (.: "overlay")
+
+parseOverlayExportParams :: Value -> Aeson.Parser (Text, Maybe [Int])
+parseOverlayExportParams = Aeson.withObject "params" $ \o ->
+  (,) <$> o .: "overlay" <*> o .:? "chunks"

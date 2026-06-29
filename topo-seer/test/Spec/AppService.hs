@@ -140,6 +140,12 @@ import Seer.Service.AppService
   , stateGetUiStateOperation
   , stateGetViewModesOperation
   , terrainExportDataOperation
+  , terrainExportMeshOperation
+  , terrainExportSampleOperation
+  , overlayExportDataOperation
+  , overlayGetProvenanceOperation
+  , overlayGetSchemaOperation
+  , overlayValidateImportOperation
   , terrainFindHexesOperation
   , terrainGetChunkSummaryOperation
   , terrainGetChunksOperation
@@ -272,6 +278,12 @@ spec = describe "AppService surface" $ do
       , "get_overlays"
       , "find_hexes"
       , "export_terrain_data"
+      , "get_overlay_schema"
+      , "get_overlay_provenance"
+      , "export_overlay_data"
+      , "validate_overlay_import"
+      , "export_mesh_data"
+      , "export_sample_data"
       , "editor_toggle"
       , "editor_set_tool"
       , "editor_set_brush"
@@ -460,6 +472,12 @@ typedOperationMethods =
   , typedOperationMethod terrainGetOverlaysOperation
   , typedOperationMethod terrainFindHexesOperation
   , typedOperationMethod terrainExportDataOperation
+  , typedOperationMethod overlayGetSchemaOperation
+  , typedOperationMethod overlayGetProvenanceOperation
+  , typedOperationMethod overlayExportDataOperation
+  , typedOperationMethod overlayValidateImportOperation
+  , typedOperationMethod terrainExportMeshOperation
+  , typedOperationMethod terrainExportSampleOperation
   , typedOperationMethod editorToggleOperation
   , typedOperationMethod editorSetToolOperation
   , typedOperationMethod editorSetBrushOperation
@@ -1065,6 +1083,12 @@ expectedServiceGroups =
       , "get_overlays"
       , "find_hexes"
       , "export_terrain_data"
+      , "get_overlay_schema"
+      , "get_overlay_provenance"
+      , "export_overlay_data"
+      , "validate_overlay_import"
+      , "export_mesh_data"
+      , "export_sample_data"
       ]
     )
   , ( "editor"

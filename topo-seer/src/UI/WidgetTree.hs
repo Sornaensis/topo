@@ -38,6 +38,7 @@ data Widget = Widget
 buildWidgets :: Layout -> [Widget]
 buildWidgets layout =
   let (overlayPrev, overlayNext, fieldPrev, fieldNext) = overlayViewRects layout
+      overlayActionWidgets = zipWith Widget overlayActionWidgetIds (overlayActionRects layout)
       (logDebug, logInfo, logWarn, logError) = logFilterRects layout
       (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline, tabData) = configTabRects layout
       (leftTabTopo, leftTabView) = leftTabRects layout
@@ -74,7 +75,9 @@ buildWidgets layout =
     , Widget WidgetViewOverlayNext overlayNext
     , Widget WidgetViewFieldPrev fieldPrev
     , Widget WidgetViewFieldNext fieldNext
-     , Widget WidgetLogDebug logDebug
+    ] ++
+    overlayActionWidgets ++
+    [ Widget WidgetLogDebug logDebug
      , Widget WidgetLogInfo logInfo
      , Widget WidgetLogWarn logWarn
      , Widget WidgetLogError logError
@@ -99,6 +102,15 @@ buildWidgets layout =
 -- | Preserve the pre-registry raw widget precedence for overlapping config-row
 -- hit tests. Runtime input filters these by active tab, but the widget-tree
 -- spec exercises the unfiltered list directly.
+overlayActionWidgetIds :: [WidgetId]
+overlayActionWidgetIds =
+  [ WidgetOverlayManager
+  , WidgetOverlaySchema
+  , WidgetOverlayProvenance
+  , WidgetOverlayExport
+  , WidgetOverlayImportValidate
+  ]
+
 sliderDefsInWidgetOrder :: [SliderDef]
 sliderDefsInWidgetOrder =
   let climateDefs = sliderDefsForTab SliderTabClimate
@@ -502,4 +514,9 @@ isLeftViewWidget wid = case wid of
   WidgetViewOverlayNext   -> True
   WidgetViewFieldPrev     -> True
   WidgetViewFieldNext     -> True
+  WidgetOverlayManager    -> True
+  WidgetOverlaySchema     -> True
+  WidgetOverlayProvenance -> True
+  WidgetOverlayExport     -> True
+  WidgetOverlayImportValidate -> True
   _                       -> False

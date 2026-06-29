@@ -31,6 +31,7 @@ import Seer.Draw
   , drawSeedControl
   , drawStatusBars
   , drawDayNightToggle
+  , drawOverlayActionButtons
   , drawOverlayButtons
   , drawViewModeButtons
   , seedMaxDigits
@@ -263,6 +264,7 @@ renderFrame context = do
             drawViewModeButtons renderer mode scrolledViewRects
             drawDayNightToggle renderer (uiDayNightEnabled (rsUi snapshot)) (shiftY scrollY (dayNightToggleRect layout))
             drawOverlayButtons renderer fontCache (rsUi snapshot) scrolledOR
+            drawOverlayActionButtons renderer fontCache (map (shiftY scrollY) (overlayActionRects layout))
             SDL.rendererClipRect renderer SDL.$= Nothing
       drawConfigPanel renderer fontCache (rsUi snapshot) dataSnap layout
       -- Record detail popover (floats over config panel).

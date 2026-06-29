@@ -96,6 +96,12 @@ commandAppService = AppService
       , terrainGetOverlays = commandServiceHandler terrainGetOverlaysOperation HWorld.handleGetOverlays
       , terrainFindHexes = commandServiceHandler terrainFindHexesOperation HQuery.handleFindHexes
       , terrainExportData = commandServiceHandler terrainExportDataOperation HQuery.handleExportTerrainData
+      , overlayGetSchema = commandServiceHandler overlayGetSchemaOperation HWorld.handleGetOverlaySchema
+      , overlayGetProvenance = commandServiceHandler overlayGetProvenanceOperation HWorld.handleGetOverlayProvenance
+      , overlayExportData = commandServiceHandler overlayExportDataOperation HWorld.handleExportOverlayData
+      , overlayValidateImport = commandServiceHandler overlayValidateImportOperation HWorld.handleValidateOverlayImport
+      , terrainExportMesh = commandServiceHandler terrainExportMeshOperation HQuery.handleExportMeshData
+      , terrainExportSample = commandServiceHandler terrainExportSampleOperation HQuery.handleExportSampleData
       }
   , appEditor = EditorService
       { editorToggle = commandServiceHandler editorToggleOperation HEditor.handleEditorToggle

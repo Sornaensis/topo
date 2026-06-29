@@ -1,7 +1,7 @@
 # Chunk Codecs
 
 > **Module:** `Topo.Export` (1087 LOC)
-> **Status:** Stub
+> **Status:** Implemented with terrain, overlay, mesh, and sample service/API surfaces
 
 ## Overview
 
@@ -22,6 +22,20 @@ per-region export functions used by `Topo.Storage`.
 | Vegetation | V1, V2 |
 | Water body | V1 |
 | Biome | V1 |
+
+## Topo-seer Export/API Surfaces
+
+Persisted/exportable formats have UI actions, AppService methods, HTTP routes, and diagnostics:
+
+| Format | Route / command | Payload |
+|--------|-----------------|---------|
+| Terrain chunk JSON | `POST /terrain/export`, `export_terrain_data` | Selected fields per chunk plus `available_fields` and diagnostics. |
+| Overlay JSON | `POST /overlays/export`, `export_overlay_data` | `.toposchema` JSON, `.topolay` provenance, and storage-aware overlay payload. |
+| Overlay import validation | `POST /overlays/import/validate`, `validate_overlay_import` | Validates schema + payload and returns `valid` plus diagnostics. |
+| Mesh patch JSON | `POST /terrain/mesh/export`, `export_mesh_data` | Region, vertices, indices, counts, and diagnostics. |
+| Terrain sample JSON | `POST /terrain/sample/export`, `export_sample_data` | Normalized or real-unit sample at `x`,`y` with diagnostics. |
+
+Save/load responses include the persisted world bundle formats (`world.topo`, `world.topolay`, `config.json`, `meta.json`) and success diagnostics; failures propagate as service/HTTP error envelopes with the failed operation context.
 
 ## Design Notes
 

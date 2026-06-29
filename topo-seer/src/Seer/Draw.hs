@@ -13,6 +13,7 @@ module Seer.Draw
   , drawViewModeButtons
   , drawDayNightToggle
   , drawOverlayButtons
+  , drawOverlayActionButtons
   , drawLogFilters
   , drawLogLines
   , drawLogScrollbar
@@ -47,7 +48,7 @@ import Seer.Config (mapRange)
 import UI.Theme
 import UI.Components.LogFilter (LogFilterModel(..), logFilterDrawCommands)
 import UI.DrawCommand.SDL (interpretDrawCommands)
-import Seer.Draw.LeftPanel (drawChunkControl, drawDayNightToggle, drawLeftTabs, drawOverlayButtons, drawSeedControl, drawStatusBars, drawViewModeButtons, modeColor)
+import Seer.Draw.LeftPanel (drawChunkControl, drawDayNightToggle, drawLeftTabs, drawOverlayActionButtons, drawOverlayButtons, drawSeedControl, drawStatusBars, drawViewModeButtons, modeColor)
 import Seer.Draw.Overlay (drawHexContext, drawHoverHex, drawTooltip)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Topo.Calendar (CalendarDate(..), WorldTime(..), mkCalendarConfig, tickToDate)

@@ -1,7 +1,7 @@
 # Overlay Provenance
 
 > **Module:** `Topo.Overlay.Provenance` (29 LOC)
-> **Status:** Stub
+> **Status:** Implemented with provenance inspector surface
 
 ## Overview
 
@@ -14,6 +14,16 @@ Per-overlay provenance metadata persisted in the `.topolay` binary header.
 | `opSeed` | `Word64` | Base world seed |
 | `opVersion` | `Word32` | Monotonic overlay version counter |
 | `opSource` | `Text` | Producer identifier (plugin name or `"builtin"`) |
+
+## Inspector Surface
+
+Topo-seer exposes provenance through:
+
+- `GET /overlays/provenance?overlay=<name>`
+- command/AppService method `get_overlay_provenance`
+- widget action `WidgetOverlayProvenance`
+
+Responses include `format: "topolay-provenance"`, the `seed`, `version`, `source`, and diagnostics.
 
 ## Seed Derivation
 

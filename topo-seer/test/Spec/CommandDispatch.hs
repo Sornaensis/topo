@@ -1068,6 +1068,12 @@ serviceOperationCases =
   , serviceCase "get_overlays" Null ExpectServiceSuccess
   , serviceCase "find_hexes" (object ["filters" .= ([] :: [Value])]) ExpectServiceSuccess
   , serviceCase "export_terrain_data" Null ExpectServiceFailure
+  , serviceCase "get_overlay_schema" (object ["overlay" .= ("missing" :: String)]) ExpectServiceFailure
+  , serviceCase "get_overlay_provenance" (object ["overlay" .= ("missing" :: String)]) ExpectServiceFailure
+  , serviceCase "export_overlay_data" (object ["overlay" .= ("missing" :: String)]) ExpectServiceFailure
+  , serviceCase "validate_overlay_import" Null ExpectServiceSuccess
+  , serviceCase "export_mesh_data" Null ExpectServiceFailure
+  , serviceCase "export_sample_data" (object ["x" .= (0 :: Double), "y" .= (0 :: Double)]) ExpectServiceFailure
   , serviceCase "editor_toggle" (object []) ExpectServiceSuccess
   , serviceCase "editor_set_tool" (object ["tool" .= ("erode" :: String)]) ExpectServiceSuccess
   , serviceCase "editor_set_brush" (object

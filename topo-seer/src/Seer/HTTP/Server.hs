@@ -644,14 +644,22 @@ friendlyHttpRouteSpecs = map annotateHttpRouteSpec
   , service "GET" ["terrain", "overlays"] "terrain.overlays" "terrain" "get_overlays" "List overlays." NoRequestBody
 
   , service "GET" ["overlays"] "overlays.list" "overlays" "get_overlays" "List overlays." NoRequestBody
+  , serviceWithQuery "GET" ["overlays", "schema"] "overlays.schema.get" "overlays" "get_overlay_schema" "Read an overlay schema." NoRequestBody
+      [requiredQuery "overlay" "Overlay name."]
+  , serviceWithQuery "GET" ["overlays", "provenance"] "overlays.provenance.get" "overlays" "get_overlay_provenance" "Read overlay provenance." NoRequestBody
+      [requiredQuery "overlay" "Overlay name."]
   , serviceWithQuery "GET" ["overlays", "fields"] "overlays.fields.list" "overlays" "list_overlay_fields" "List overlay fields." NoRequestBody
       [optionalQuery "overlay" "Overlay name."]
+  , service "POST" ["overlays", "export"] "overlays.export" "overlays" "export_overlay_data" "Export overlay data." RequiredJsonRequestBody
+  , service "POST" ["overlays", "import", "validate"] "overlays.import.validate" "overlays" "validate_overlay_import" "Validate overlay import payload." RequiredJsonRequestBody
   , service "PUT" ["overlays", "current"] "overlays.current.set" "overlays" "set_overlay" "Set current overlay." RequiredJsonRequestBody
   , service "POST" ["overlays", "cycle"] "overlays.cycle" "overlays" "cycle_overlay" "Cycle overlay." RequiredJsonRequestBody
   , service "POST" ["overlays", "fields", "cycle"] "overlays.field.cycle" "overlays" "cycle_overlay_field" "Cycle overlay field." RequiredJsonRequestBody
 
   , service "POST" ["terrain", "search"] "terrain.search" "terrain" "find_hexes" "Find hexes." RequiredJsonRequestBody
   , service "POST" ["terrain", "export"] "terrain.export" "terrain" "export_terrain_data" "Export terrain data." OptionalJsonRequestBody
+  , service "POST" ["terrain", "mesh", "export"] "terrain.mesh.export" "terrain" "export_mesh_data" "Export a terrain mesh patch." OptionalJsonRequestBody
+  , service "POST" ["terrain", "sample", "export"] "terrain.sample.export" "terrain" "export_sample_data" "Export a terrain sample." RequiredJsonRequestBody
 
   , service "GET" ["editor"] "editor.state" "editor" "editor_get_state" "Read editor state." NoRequestBody
   , service "POST" ["editor", "toggle"] "editor.toggle" "editor" "editor_toggle" "Toggle editor." OptionalJsonRequestBody

@@ -64,6 +64,19 @@ spec = describe "UI.WidgetTree" $ do
     mapM_ (\(rect, wid) -> hitTest widgets (rectHitPoint rect) `shouldBe` Just wid)
       (drop 10 (zip viewRects expectedIds))
 
+  it "hit tests overlay action buttons" $ do
+    let layout = layoutFor (V2 800 1200) 160
+        widgets = buildWidgets layout
+        expectedIds =
+          [ WidgetOverlayManager
+          , WidgetOverlaySchema
+          , WidgetOverlayProvenance
+          , WidgetOverlayExport
+          , WidgetOverlayImportValidate
+          ]
+    mapM_ (\(rect, wid) -> hitTest widgets (rectHitPoint rect) `shouldBe` Just wid)
+      (zip (overlayActionRects layout) expectedIds)
+
   it "hit tests log filter buttons" $ do
     let layout = layoutFor (V2 800 600) 160
         widgets = buildWidgets layout

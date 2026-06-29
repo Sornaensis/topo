@@ -36,6 +36,7 @@ module UI.Layout
   , leftViewScrollMax
   , leftControlsTop
   , overlayViewRects
+  , overlayActionRects
   , configToggleRect
   , configPanelRect
   , configTabRects
@@ -409,6 +410,31 @@ leftViewRects layout =
 overlayViewRects :: Layout -> (Rect, Rect, Rect, Rect)
 overlayViewRects layout =
   overlayViewGeometryToTuple (leftPanelOverlayButtons (uiLeftPanelGeometry (layoutGeometry layout)))
+
+-- | Overlay action button rects in the left View panel.
+--
+-- The buttons are placed after the base view grid, overlay selector rows,
+-- and day/night toggle, in scrollable content space.
+overlayActionRects :: Layout -> [Rect]
+overlayActionRects layout =
+  let Rect (V2 x _, V2 w _) = leftPanelRect layout
+      pad = 12
+      gap = 8
+      buttonH = 28
+      buttonW = (w - pad * 2 - gap) `div` 2
+      fullW = w - pad * 2
+      rowStride = buttonH + gap
+      row0 = leftControlsTop layout + rowStride * (leftViewRowCount + 3)
+      row1 = row0 + rowStride
+      row2 = row1 + rowStride
+      leftX = x + pad
+      rightX = x + pad + buttonW + gap
+  in [ Rect (V2 leftX row0, V2 fullW buttonH)
+     , Rect (V2 leftX row1, V2 buttonW buttonH)
+     , Rect (V2 rightX row1, V2 buttonW buttonH)
+     , Rect (V2 leftX row2, V2 buttonW buttonH)
+     , Rect (V2 rightX row2, V2 buttonW buttonH)
+     ]
 
 -- | Day/night toggle button rect, positioned after the overlay selector rows
 -- in the left View tab.

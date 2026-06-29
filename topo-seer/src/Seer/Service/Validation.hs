@@ -181,6 +181,11 @@ appServiceRequestValidators =
   , ("get_chunk_summary", fields "get_chunk_summary" [requiredInt "chunk"])
   , ("find_hexes", fields "find_hexes" [requiredArray "filters", optionalInt "limit"])
   , ("export_terrain_data", fields "export_terrain_data" [optionalArray "chunks", optionalArray "fields"])
+  , ("get_overlay_schema", fields "get_overlay_schema" [requiredText "overlay"])
+  , ("get_overlay_provenance", fields "get_overlay_provenance" [requiredText "overlay"])
+  , ("export_overlay_data", fields "export_overlay_data" [requiredText "overlay", optionalArray "chunks"])
+  , ("export_mesh_data", fields "export_mesh_data" [optionalInt "x0", optionalInt "y0", optionalInt "x1", optionalInt "y1"])
+  , ("export_sample_data", fields "export_sample_data" [requiredNumber "x", requiredNumber "y", optionalBool "real_units"])
 
   , ("editor_toggle", fields "editor_toggle" [optionalBool "active"])
   , ("editor_set_tool", fields "editor_set_tool" [requiredText "tool"])

@@ -26,6 +26,18 @@ module Seer.Service.Terrain
   , TerrainHexSearchMatch(..)
   , TerrainExportRequest(..)
   , TerrainExportResponse(..)
+  , OverlaySchemaRequest(..)
+  , OverlaySchemaResponse(..)
+  , OverlayProvenanceRequest(..)
+  , OverlayProvenanceResponse(..)
+  , OverlayExportRequest(..)
+  , OverlayExportResponse(..)
+  , OverlayImportValidateRequest(..)
+  , OverlayImportValidateResponse(..)
+  , TerrainMeshExportRequest(..)
+  , TerrainMeshExportResponse(..)
+  , TerrainSampleExportRequest(..)
+  , TerrainSampleExportResponse(..)
   , terrainGetHexOperation
   , terrainGetChunksOperation
   , terrainGetChunkSummaryOperation
@@ -33,6 +45,12 @@ module Seer.Service.Terrain
   , terrainGetOverlaysOperation
   , terrainFindHexesOperation
   , terrainExportDataOperation
+  , overlayGetSchemaOperation
+  , overlayGetProvenanceOperation
+  , overlayExportDataOperation
+  , overlayValidateImportOperation
+  , terrainExportMeshOperation
+  , terrainExportSampleOperation
   , terrainServiceGroup
   , terrainServiceOperationSpecs
   ) where
@@ -53,6 +71,12 @@ data TerrainService = TerrainService
   , terrainGetOverlays :: !ServiceHandler
   , terrainFindHexes :: !ServiceHandler
   , terrainExportData :: !ServiceHandler
+  , overlayGetSchema :: !ServiceHandler
+  , overlayGetProvenance :: !ServiceHandler
+  , overlayExportData :: !ServiceHandler
+  , overlayValidateImport :: !ServiceHandler
+  , terrainExportMesh :: !ServiceHandler
+  , terrainExportSample :: !ServiceHandler
   }
 
 newtype TerrainGetHexRequest = TerrainGetHexRequest
@@ -203,6 +227,78 @@ data TerrainExportResponse = TerrainExportResponse
   , terrainExportChunkData :: !(Map ChunkId (Map Text Value))
   } deriving (Eq, Show)
 
+data OverlaySchemaRequest = OverlaySchemaRequest
+  { overlaySchemaRequestName :: !Text
+  } deriving (Eq, Show)
+
+data OverlaySchemaResponse = OverlaySchemaResponse
+  { overlaySchemaResponseName :: !Text
+  , overlaySchemaResponseSchema :: !Value
+  , overlaySchemaResponseDiagnostics :: ![Value]
+  } deriving (Eq, Show)
+
+data OverlayProvenanceRequest = OverlayProvenanceRequest
+  { overlayProvenanceRequestName :: !Text
+  } deriving (Eq, Show)
+
+data OverlayProvenanceResponse = OverlayProvenanceResponse
+  { overlayProvenanceResponseName :: !Text
+  , overlayProvenanceResponseProvenance :: !Value
+  , overlayProvenanceResponseDiagnostics :: ![Value]
+  } deriving (Eq, Show)
+
+data OverlayExportRequest = OverlayExportRequest
+  { overlayExportRequestName :: !Text
+  , overlayExportRequestChunks :: !(Maybe [ChunkId])
+  } deriving (Eq, Show)
+
+data OverlayExportResponse = OverlayExportResponse
+  { overlayExportResponseName :: !Text
+  , overlayExportResponseFormat :: !Text
+  , overlayExportResponseChunkCount :: !Int
+  , overlayExportResponsePayload :: !Value
+  , overlayExportResponseDiagnostics :: ![Value]
+  } deriving (Eq, Show)
+
+data OverlayImportValidateRequest = OverlayImportValidateRequest
+  { overlayImportValidateSchema :: !Value
+  , overlayImportValidatePayload :: !Value
+  } deriving (Eq, Show)
+
+data OverlayImportValidateResponse = OverlayImportValidateResponse
+  { overlayImportValidateValid :: !Bool
+  , overlayImportValidateOverlay :: !(Maybe Text)
+  , overlayImportValidateDiagnostics :: ![Value]
+  } deriving (Eq, Show)
+
+data TerrainMeshExportRequest = TerrainMeshExportRequest
+  { terrainMeshExportX0 :: !Int
+  , terrainMeshExportY0 :: !Int
+  , terrainMeshExportX1 :: !Int
+  , terrainMeshExportY1 :: !Int
+  } deriving (Eq, Show)
+
+data TerrainMeshExportResponse = TerrainMeshExportResponse
+  { terrainMeshExportFormat :: !Text
+  , terrainMeshExportVertexCount :: !Int
+  , terrainMeshExportIndexCount :: !Int
+  , terrainMeshExportVertices :: ![Value]
+  , terrainMeshExportIndices :: ![Int]
+  , terrainMeshExportDiagnostics :: ![Value]
+  } deriving (Eq, Show)
+
+data TerrainSampleExportRequest = TerrainSampleExportRequest
+  { terrainSampleExportX :: !Float
+  , terrainSampleExportY :: !Float
+  , terrainSampleExportRealUnits :: !Bool
+  } deriving (Eq, Show)
+
+data TerrainSampleExportResponse = TerrainSampleExportResponse
+  { terrainSampleExportFormat :: !Text
+  , terrainSampleExportSample :: !Value
+  , terrainSampleExportDiagnostics :: ![Value]
+  } deriving (Eq, Show)
+
 terrainServiceGroup :: ServiceGroupSpec
 terrainServiceGroup = ServiceGroupSpec "terrain" terrainServiceOperationSpecs
 
@@ -215,6 +311,12 @@ terrainServiceOperationSpecs =
   , typedServiceOperationSpec terrainGetOverlaysOperation
   , typedServiceOperationSpec terrainFindHexesOperation
   , typedServiceOperationSpec terrainExportDataOperation
+  , typedServiceOperationSpec overlayGetSchemaOperation
+  , typedServiceOperationSpec overlayGetProvenanceOperation
+  , typedServiceOperationSpec overlayExportDataOperation
+  , typedServiceOperationSpec overlayValidateImportOperation
+  , typedServiceOperationSpec terrainExportMeshOperation
+  , typedServiceOperationSpec terrainExportSampleOperation
   ]
 
 terrainGetHexOperation :: TypedServiceOperation TerrainGetHexRequest TerrainHexResponse
@@ -244,3 +346,27 @@ terrainFindHexesOperation = typedOperation $
 terrainExportDataOperation :: TypedServiceOperation TerrainExportRequest TerrainExportResponse
 terrainExportDataOperation = typedOperation $
   operationSpec "terrain.export" "export_terrain_data" "Export terrain data for external consumers."
+
+overlayGetSchemaOperation :: TypedServiceOperation OverlaySchemaRequest OverlaySchemaResponse
+overlayGetSchemaOperation = typedOperation $
+  operationSpec "overlays.schema.get" "get_overlay_schema" "Inspect an overlay schema."
+
+overlayGetProvenanceOperation :: TypedServiceOperation OverlayProvenanceRequest OverlayProvenanceResponse
+overlayGetProvenanceOperation = typedOperation $
+  operationSpec "overlays.provenance.get" "get_overlay_provenance" "Inspect an overlay provenance header."
+
+overlayExportDataOperation :: TypedServiceOperation OverlayExportRequest OverlayExportResponse
+overlayExportDataOperation = typedOperation $
+  operationSpec "overlays.export" "export_overlay_data" "Export overlay schema, provenance, and payload data."
+
+overlayValidateImportOperation :: TypedServiceOperation OverlayImportValidateRequest OverlayImportValidateResponse
+overlayValidateImportOperation = typedOperation $
+  operationSpec "overlays.import.validate" "validate_overlay_import" "Validate overlay schema and payload import data."
+
+terrainExportMeshOperation :: TypedServiceOperation TerrainMeshExportRequest TerrainMeshExportResponse
+terrainExportMeshOperation = typedOperation $
+  operationSpec "terrain.mesh.export" "export_mesh_data" "Export a terrain mesh patch."
+
+terrainExportSampleOperation :: TypedServiceOperation TerrainSampleExportRequest TerrainSampleExportResponse
+terrainExportSampleOperation = typedOperation $
+  operationSpec "terrain.sample.export" "export_sample_data" "Export one terrain sample."

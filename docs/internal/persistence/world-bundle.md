@@ -29,6 +29,8 @@ Includes provenance for all overlays.
 2. Validate overlay manifest against sidecar directory
 3. Load `.topolay` payloads with schema validation
 
+Topo-seer `save_world` / `load_world` and their HTTP routes (`POST /worlds/save`, `POST /worlds/load`) return the bundle format list and diagnostics on success. Failures include the save/load context in the service error message so UI dialogs and HTTP clients can report which persisted format failed.
+
 ## Load Policies
 
 | Policy | Behaviour |

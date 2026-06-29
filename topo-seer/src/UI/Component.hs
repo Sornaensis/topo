@@ -113,6 +113,11 @@ componentForWidget wid = case wid of
   WidgetViewOverlayNext -> componentViewPanel
   WidgetViewFieldPrev -> componentViewPanel
   WidgetViewFieldNext -> componentViewPanel
+  WidgetOverlayManager -> componentViewPanel
+  WidgetOverlaySchema -> componentViewPanel
+  WidgetOverlayProvenance -> componentViewPanel
+  WidgetOverlayExport -> componentViewPanel
+  WidgetOverlayImportValidate -> componentViewPanel
 
   WidgetConfigTabTerrain -> componentConfigPanel
   WidgetConfigTabPlanet -> componentConfigPanel

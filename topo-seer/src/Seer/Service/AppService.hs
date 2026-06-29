@@ -136,6 +136,12 @@ appServiceOperations app = concat
     , appOperation terrainGetOverlaysOperation (terrainGetOverlays terrainSvc)
     , appOperation terrainFindHexesOperation (terrainFindHexes terrainSvc)
     , appOperation terrainExportDataOperation (terrainExportData terrainSvc)
+    , appOperation overlayGetSchemaOperation (overlayGetSchema terrainSvc)
+    , appOperation overlayGetProvenanceOperation (overlayGetProvenance terrainSvc)
+    , appOperation overlayExportDataOperation (overlayExportData terrainSvc)
+    , appOperation overlayValidateImportOperation (overlayValidateImport terrainSvc)
+    , appOperation terrainExportMeshOperation (terrainExportMesh terrainSvc)
+    , appOperation terrainExportSampleOperation (terrainExportSample terrainSvc)
     ]
   , [ appOperation editorToggleOperation (editorToggle editorSvc)
     , appOperation editorSetToolOperation (editorSetTool editorSvc)

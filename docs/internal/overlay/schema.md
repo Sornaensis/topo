@@ -1,7 +1,7 @@
 # Overlay Schema
 
 > **Module:** `Topo.Overlay.Schema` (336 LOC)
-> **Status:** Stub
+> **Status:** Implemented with schema viewer/export validation surfaces
 
 ## Overview
 
@@ -28,6 +28,17 @@ validation, migration, and wire-format encoding.
 | Text | `Text` | `"text"` |
 | Enum | `Int` (tag) | `"enum"` + metadata |
 
+## UI/API Surface
+
+Topo-seer schema inspection is available through:
+
+- `GET /overlays/schema?overlay=<name>`
+- command/AppService method `get_overlay_schema`
+- widget action `WidgetOverlaySchema`
+
+The response includes `format: "toposchema"`, the canonical schema JSON, field summaries, and diagnostics. Import validation uses the same parser via `POST /overlays/import/validate` and returns structured diagnostics instead of mutating runtime state.
+
 ## See Also
 
 - [Format spec](../../specs/toposchema-format.md)
+- [Overlay overview](overview.md)

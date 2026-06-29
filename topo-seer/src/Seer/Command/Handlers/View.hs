@@ -31,10 +31,12 @@ import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.UI (getUiSnapshot)
 import Actor.UI.State (ViewMode(..), ConfigTab(..), UiState(..), readUiSnapshotRef, uiRenderWaterLevel, viewModeFromText, viewModeToText)
-import Actor.UI.Setters (setUiSeed, setUiSeedInput, setUiViewMode, setUiConfigScroll, setUiConfigTab, setUiContextHex, setUiHexTooltipPinned)
+import Actor.SnapshotReceiver (readTerrainSnapshot)
+import Actor.UI.Setters (setUiSeed, setUiSeedInput, setUiViewMode, setUiConfigScroll, setUiConfigTab, setUiContextHex, setUiHexTooltipPinned, setUiOverlayFields)
 import Seer.Command.Context (CommandContext(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
-import Topo.Overlay.Schema (OverlayFieldType(..))
+import Topo.Overlay (Overlay(..), lookupOverlay, overlayNames)
+import Topo.Overlay.Schema (OverlayFieldDef(..), OverlayFieldType(..), OverlaySchema(..))
 
 -- | Handle @set_seed@ — set the random seed.
 handleSetSeed :: CommandContext -> Int -> Value -> IO SeerResponse
@@ -170,6 +172,31 @@ textToConfigTab "pipeline" = Just ConfigPipeline
 textToConfigTab "data"     = Just ConfigData
 textToConfigTab _          = Nothing
 
+overlayNamesFromSnapshot :: TerrainSnapshot -> [Text]
+overlayNamesFromSnapshot = overlayNames . tsOverlayStore
+
+overlayFieldsFromOverlay :: Overlay -> [(Text, OverlayFieldType)]
+overlayFieldsFromOverlay ov = map fieldPair (osFields (ovSchema ov))
+  where
+    fieldPair fd = (ofdName fd, ofdType fd)
+
+overlayFieldsForName :: TerrainSnapshot -> Text -> Maybe [(Text, OverlayFieldType)]
+overlayFieldsForName snap name = overlayFieldsFromOverlay <$> lookupOverlay name (tsOverlayStore snap)
+
+overlayFieldsResponse :: Int -> Text -> [(Text, OverlayFieldType)] -> SeerResponse
+overlayFieldsResponse reqId overlayName fields =
+  okResponse reqId $ object
+    [ "overlay" .= overlayName
+    , "field_count" .= length fields
+    , "fields" .= zipWith fieldObject [0..] fields
+    ]
+  where
+    fieldObject i (fname, ftype) = object
+      [ "index" .= (i :: Int)
+      , "name" .= fname
+      , "type" .= overlayFieldTypeToText ftype
+      ]
+
 overlayFieldTypeToText :: OverlayFieldType -> Text
 overlayFieldTypeToText OFFloat    = "float"
 overlayFieldTypeToText OFInt      = "int"
@@ -193,21 +220,33 @@ handleSetOverlay ctx reqId params = do
       pure $ errResponse reqId "missing or invalid 'overlay' parameter"
     Just overlayName -> do
       ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
+      snap <- readTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx))
       let names = uiOverlayNames ui
-      if overlayName `notElem` names
+          storeNames = overlayNamesFromSnapshot snap
+          availableNames = names ++ [n | n <- storeNames, n `notElem` names]
+      if overlayName `notElem` availableNames
         then pure $ errResponse reqId ("unknown overlay: " <> overlayName
-                      <> "; available: " <> Text.intercalate ", " names)
+                      <> "; available: " <> Text.intercalate ", " availableNames)
         else do
           let fieldIdx = maybe 0 id (Aeson.parseMaybe parseFieldIndex params)
-              vm = ViewOverlay overlayName fieldIdx
-              handles = ccActorHandles ctx
-          setUiViewMode (ahUiHandle handles) vm
-          scheduleAtlasRebuild handles vm
-          pure $ okResponse reqId $ object
-            [ "overlay"     .= overlayName
-            , "field_index" .= fieldIdx
-            , "view_mode"   .= viewModeToText vm
-            ]
+              mOverlay = lookupOverlay overlayName (tsOverlayStore snap)
+              fields = maybe (uiOverlayFields ui) overlayFieldsFromOverlay mOverlay
+              fieldCount = length fields
+          if fieldIdx < 0 || (fieldCount > 0 && fieldIdx >= fieldCount)
+            then pure $ errResponse reqId ("field_index out of range for overlay " <> overlayName)
+            else do
+              let vm = ViewOverlay overlayName fieldIdx
+                  handles = ccActorHandles ctx
+                  uiHandle = ahUiHandle handles
+              setUiOverlayFields uiHandle fields
+              setUiViewMode uiHandle vm
+              scheduleAtlasRebuild handles vm
+              pure $ okResponse reqId $ object
+                [ "overlay"     .= overlayName
+                , "field_index" .= fieldIdx
+                , "field_count" .= fieldCount
+                , "view_mode"   .= viewModeToText vm
+                ]
 
 -- | Handle @list_overlay_fields@ — return fields for an overlay.
 --
@@ -216,31 +255,18 @@ handleSetOverlay ctx reqId params = do
 handleListOverlayFields :: CommandContext -> Int -> Value -> IO SeerResponse
 handleListOverlayFields ctx reqId params = do
   ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
-  let mExplicit = Aeson.parseMaybe parseOverlayName params
-      mOverlay = case mExplicit of
-        Just n  -> Just n
-        Nothing -> case uiViewMode ui of
-          ViewOverlay n _ -> Just n
-          _               -> Nothing
-  case mOverlay of
+  snap <- readTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx))
+  case Aeson.parseMaybe parseOverlayName params of
+    Just overlayName ->
+      case overlayFieldsForName snap overlayName of
+        Nothing -> pure $ errResponse reqId ("overlay not found: " <> overlayName)
+        Just fields -> pure (overlayFieldsResponse reqId overlayName fields)
     Nothing ->
-      pure $ errResponse reqId "no overlay specified and not currently viewing an overlay"
-    Just _overlayName -> do
-      -- Return the current overlay fields.  Note: uiOverlayFields is
-      -- populated when an overlay is active — if the requested overlay
-      -- differs from the current one, we'd need to look it up from the
-      -- overlay store, but that's only available as raw data.  For now
-      -- return whatever the current field list is.
-      let fields = uiOverlayFields ui
-          fieldObjs = zipWith (\i (fname, ftype) -> object
-            [ "index" .= (i :: Int)
-            , "name"  .= fname
-            , "type"  .= overlayFieldTypeToText ftype
-            ]) [0..] fields
-      pure $ okResponse reqId $ object
-        [ "field_count" .= length fields
-        , "fields"      .= fieldObjs
-        ]
+      case uiViewMode ui of
+        ViewOverlay overlayName _ -> do
+          let fields = maybe (uiOverlayFields ui) id (overlayFieldsForName snap overlayName)
+          pure (overlayFieldsResponse reqId overlayName fields)
+        _ -> pure $ errResponse reqId "no overlay specified and not currently viewing an overlay"
 
 -- | Handle @cycle_overlay@ — navigate to the next or previous overlay.
 --
@@ -253,7 +279,9 @@ handleCycleOverlay ctx reqId params = do
       pure $ errResponse reqId "missing or invalid 'direction' parameter (expected 1 or -1)"
     Just dir -> do
       ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
-      let names = uiOverlayNames ui
+      snap <- readTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx))
+      let storeNames = overlayNamesFromSnapshot snap
+          names = uiOverlayNames ui ++ [n | n <- storeNames, n `notElem` uiOverlayNames ui]
       if null names
         then pure $ errResponse reqId "no overlays available"
         else do
@@ -278,11 +306,15 @@ handleCycleOverlay ctx reqId params = do
               let overlayName = names !! (newIdx - 1)
                   vm = ViewOverlay overlayName 0
                   handles = ccActorHandles ctx
-              setUiViewMode (ahUiHandle handles) vm
+                  uiHandle = ahUiHandle handles
+                  fields = maybe (uiOverlayFields ui) id (overlayFieldsForName snap overlayName)
+              setUiOverlayFields uiHandle fields
+              setUiViewMode uiHandle vm
               scheduleAtlasRebuild handles vm
               pure $ okResponse reqId $ object
                 [ "view_mode" .= viewModeToText vm
                 , "overlay"   .= overlayName
+                , "field_count" .= length fields
                 ]
 
 -- | Handle @cycle_overlay_field@ — navigate to the next or previous field
@@ -297,9 +329,10 @@ handleCycleOverlayField ctx reqId params = do
       pure $ errResponse reqId "missing or invalid 'direction' parameter (expected 1 or -1)"
     Just dir -> do
       ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
+      snap <- readTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx))
       case uiViewMode ui of
         ViewOverlay name fieldIdx -> do
-          let fields = uiOverlayFields ui
+          let fields = maybe (uiOverlayFields ui) id (overlayFieldsForName snap name)
               fieldCount = length fields
           if fieldCount <= 0
             then pure $ errResponse reqId "overlay has no fields"
@@ -307,7 +340,9 @@ handleCycleOverlayField ctx reqId params = do
               let newIdx = (fieldIdx + dir) `mod` fieldCount
                   vm = ViewOverlay name newIdx
                   handles = ccActorHandles ctx
-              setUiViewMode (ahUiHandle handles) vm
+                  uiHandle = ahUiHandle handles
+              setUiOverlayFields uiHandle fields
+              setUiViewMode uiHandle vm
               scheduleAtlasRebuild handles vm
               let (fname, ftype) = fields !! newIdx
               pure $ okResponse reqId $ object

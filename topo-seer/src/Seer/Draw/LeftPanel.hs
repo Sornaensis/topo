@@ -6,6 +6,7 @@ module Seer.Draw.LeftPanel
   , drawViewModeButtons
   , drawDayNightToggle
   , drawOverlayButtons
+  , drawOverlayActionButtons
   , drawChunkControl
   , drawSeedControl
   , drawStatusBars
@@ -93,6 +94,17 @@ drawOverlayButtons renderer fontCache ui (oPrev, oNext, fPrev, fNext) = do
   SDL.fillRect renderer (Just (rectToSDL fNext))
   drawCentered fontCache labelColor fPrev "\9664 Fld"
   drawCentered fontCache labelColor fNext "Fld \9654"
+
+-- | Draw overlay manager/schema/provenance/export/import action buttons.
+drawOverlayActionButtons :: SDL.Renderer -> Maybe FontCache -> [Rect] -> IO ()
+drawOverlayActionButtons renderer fontCache rects =
+  mapM_ drawOne (zip rects labels)
+  where
+    labels = ["Overlays", "Schema", "Prov", "Export", "Validate"] :: [Text]
+    drawOne (rect, label) = do
+      SDL.rendererDrawColor renderer SDL.$= colOverlayInactive
+      SDL.fillRect renderer (Just (rectToSDL rect))
+      drawCentered fontCache textOverlayBtn rect label
 
 drawChunkControl :: SDL.Renderer -> UiState -> Rect -> Rect -> Rect -> IO ()
 drawChunkControl renderer _ui minusRect valueRect plusRect = do

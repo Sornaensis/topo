@@ -186,7 +186,7 @@ leftViewContentHeightFor :: Int
 leftViewContentHeightFor =
   let buttonH = 28
       gap = 8
-  in leftViewRowCountFor * (buttonH + gap) + 2 * (buttonH + gap) + 1 * (buttonH + gap)
+  in leftViewRowCountFor * (buttonH + gap) + 2 * (buttonH + gap) + 1 * (buttonH + gap) + 3 * (buttonH + gap)
 
 leftViewScrollMaxFor :: Rect -> Int -> Int -> Int
 leftViewScrollMaxFor (Rect (V2 _ panelY, V2 _ panelH)) controlsTop contentHeight =

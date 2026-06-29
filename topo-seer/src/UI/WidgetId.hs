@@ -54,6 +54,16 @@ data WidgetId
   -- ^ Previous field within the selected overlay.
   | WidgetViewFieldNext
   -- ^ Next field within the selected overlay.
+  | WidgetOverlayManager
+    -- ^ Open/inspect the overlay manager surface.
+  | WidgetOverlaySchema
+    -- ^ Inspect schema for the selected overlay.
+  | WidgetOverlayProvenance
+    -- ^ Inspect provenance for the selected overlay.
+  | WidgetOverlayExport
+    -- ^ Open overlay export action surface.
+  | WidgetOverlayImportValidate
+    -- ^ Open overlay import validation action surface.
   | WidgetLogDebug
   | WidgetLogInfo
   | WidgetLogWarn

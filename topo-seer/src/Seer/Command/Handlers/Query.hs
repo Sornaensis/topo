@@ -5,6 +5,8 @@
 module Seer.Command.Handlers.Query
   ( handleFindHexes
   , handleExportTerrainData
+  , handleExportMeshData
+  , handleExportSampleData
   ) where
 
 import Data.Aeson (Value(..), object, (.=), (.:), (.:?))
@@ -18,12 +20,16 @@ import Data.Word (Word16)
 import qualified Data.Vector.Unboxed as U
 
 import Actor.Data (TerrainSnapshot(..))
-import Actor.UI.State (allViewModeExportFields)
+import Actor.UI.State (allViewModeExportFields, readUiSnapshotRef)
 import Actor.SnapshotReceiver (readTerrainSnapshot)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
+import Seer.World.Persist (snapshotToWorld)
 import Topo.Biome.Name (biomeDisplayName)
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
+import Topo.Mesh (Mesh(..), meshPatch)
+import Topo.Sample (TerrainSampleReal(..), convertSample, sampleTerrain)
+import Topo.World (TerrainWorld(..))
 import Topo.Types
   ( TerrainChunk(..)
   , ClimateChunk(..)
@@ -33,12 +39,20 @@ import Topo.Types
   , BiomeId
   , TerrainForm
   , PlateBoundary
+  , DirectionalSlope(..)
+  , Region(..)
+  , TerrainSample(..)
+  , TileCoord(..)
+  , Vec3(..)
+  , WorldConfig(..)
+  , WorldPos(..)
   , biomeIdToCode
   , biomeIdFromCode
   , plateBoundaryToCode
   , terrainFormToCode
   , terrainFormFromCode
   , terrainFormDisplayName
+  , waterBodyToCode
   )
 
 -- | Handle @find_hexes@ — search tiles matching filter predicates.
@@ -96,7 +110,176 @@ handleExportTerrainData ctx reqId params = do
         , "available_fields" .= allViewModeExportFields
         , "data"        .= object
             [ Key.fromText (Text.pack (show cid)) .= val | (cid, val) <- chunkEntries ]
+        , "diagnostics" .= [diagnostic "info" "terrain_export_ready" "terrain export JSON payload built"]
         ]
+
+-- | Handle @export_mesh_data@ — export a rectangular terrain mesh patch.
+handleExportMeshData :: CommandContext -> Int -> Value -> IO SeerResponse
+handleExportMeshData ctx reqId params = do
+  worldResult <- currentWorld ctx
+  case worldResult of
+    Left err -> pure $ errResponse reqId err
+    Right world -> do
+      let defaultMax = max 0 (wcChunkSize (twConfig world) - 1)
+          params' = case params of
+            Null -> object []
+            _ -> params
+      case Aeson.parseMaybe (parseRegionParams defaultMax) params' of
+        Nothing -> pure $ errResponse reqId "missing or invalid mesh export region (expected x0,y0,x1,y1 integers)"
+        Just region
+          | not (validRegion region) ->
+              pure $ errResponse reqId "mesh export region must have non-negative, non-overflowing extents"
+          | regionCellCount region > maxMeshExportCells ->
+              pure $ errResponse reqId ("mesh export region too large; maximum cells: " <> Text.pack (show maxMeshExportCells))
+          | otherwise -> do
+              let mesh = meshPatch world region
+              pure $ okResponse reqId $ object
+                [ "format" .= ("topo-mesh-json" :: Text)
+                , "region" .= regionJSON region
+                , "vertex_count" .= length (meshVertices mesh)
+                , "index_count" .= length (meshIndices mesh)
+                , "vertices" .= map vec3JSON (meshVertices mesh)
+                , "indices" .= meshIndices mesh
+                , "diagnostics" .= [diagnostic "info" "mesh_export_ready" "mesh patch export payload built"]
+                ]
+
+-- | Handle @export_sample_data@ — export one sampled terrain point.
+handleExportSampleData :: CommandContext -> Int -> Value -> IO SeerResponse
+handleExportSampleData ctx reqId params = do
+  worldResult <- currentWorld ctx
+  case worldResult of
+    Left err -> pure $ errResponse reqId err
+    Right world -> do
+      case Aeson.parseMaybe parseSampleParams params of
+        Nothing -> pure $ errResponse reqId "missing or invalid sample export parameters (expected x and y numbers)"
+        Just (x, y, realUnits) -> do
+          let sample = sampleTerrain world (WorldPos x y)
+              sampleBody
+                | realUnits = sampleRealJSON (convertSample (twUnitScales world) sample)
+                | otherwise = sampleJSON sample
+          pure $ okResponse reqId $ object
+            [ "format" .= ("topo-sample-json" :: Text)
+            , "position" .= object ["x" .= x, "y" .= y]
+            , "real_units" .= realUnits
+            , "sample" .= sampleBody
+            , "diagnostics" .= [diagnostic "info" "sample_export_ready" "terrain sample export payload built"]
+            ]
+
+currentWorld :: CommandContext -> IO (Either Text TerrainWorld)
+currentWorld ctx = do
+  snap <- readTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx))
+  if tsChunkSize snap <= 0 || IntMap.null (tsTerrainChunks snap)
+    then pure (Left "no terrain generated")
+    else do
+      ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
+      pure (Right (snapshotToWorld ui snap))
+
+maxMeshExportCells :: Integer
+maxMeshExportCells = 262144
+
+validRegion :: Region -> Bool
+validRegion (RegionRect (TileCoord x0 y0) (TileCoord x1 y1)) =
+  x1 >= x0 && y1 >= y0 && x1 < (maxBound :: Int) && y1 < (maxBound :: Int)
+
+regionCellCount :: Region -> Integer
+regionCellCount (RegionRect (TileCoord x0 y0) (TileCoord x1 y1)) =
+  let width = toInteger x1 - toInteger x0 + 1
+      height = toInteger y1 - toInteger y0 + 1
+  in width * height
+
+regionJSON :: Region -> Value
+regionJSON (RegionRect (TileCoord x0 y0) (TileCoord x1 y1)) = object
+  [ "x0" .= x0
+  , "y0" .= y0
+  , "x1" .= x1
+  , "y1" .= y1
+  ]
+
+vec3JSON :: Vec3 -> Value
+vec3JSON (Vec3 x y z) = object
+  [ "x" .= x
+  , "y" .= y
+  , "z" .= z
+  ]
+
+sampleJSON :: TerrainSample -> Value
+sampleJSON sample = object
+  [ "elevation" .= tsElevation sample
+  , "slope" .= slopeJSON (tsDirSlope sample)
+  , "curvature" .= tsCurvature sample
+  , "hardness" .= tsHardness sample
+  , "soil_depth" .= tsSoilDepth sample
+  , "moisture" .= tsMoisture sample
+  , "fertility" .= tsFertility sample
+  , "roughness" .= tsRoughness sample
+  , "rock_density" .= tsRockDensity sample
+  , "soil_grain" .= tsSoilGrain sample
+  , "temperature" .= tsTemperature sample
+  , "humidity" .= tsHumidity sample
+  , "wind_speed" .= tsWindSpeed sample
+  , "pressure" .= tsPressure sample
+  , "precipitation" .= tsPrecip sample
+  , "biome" .= biomeDisplayName (tsBiomeId sample)
+  , "biome_code" .= biomeIdToCode (tsBiomeId sample)
+  , "vegetation_cover" .= tsVegCover sample
+  , "vegetation_density" .= tsVegDensity sample
+  , "relief" .= tsRelief sample
+  , "ruggedness" .= tsRuggedness sample
+  , "terrain_form" .= Text.pack (terrainFormDisplayName (tsTerrainForm sample))
+  , "terrain_form_code" .= terrainFormToCode (tsTerrainForm sample)
+  , "water_body_code" .= waterBodyToCode (tsWaterBodyType sample)
+  , "river_discharge" .= tsDischarge sample
+  , "snowpack" .= tsSnowpack sample
+  , "ice_thickness" .= tsIceThickness sample
+  ]
+
+sampleRealJSON :: TerrainSampleReal -> Value
+sampleRealJSON sample = object
+  [ "elevation_m" .= tsrElevation sample
+  , "slope_deg" .= tsrSlope sample
+  , "curvature" .= tsrCurvature sample
+  , "hardness" .= tsrHardness sample
+  , "soil_depth_m" .= tsrSoilDepth sample
+  , "moisture_pct" .= tsrMoisture sample
+  , "fertility" .= tsrFertility sample
+  , "roughness" .= tsrRoughness sample
+  , "rock_density" .= tsrRockDensity sample
+  , "soil_grain" .= tsrSoilGrain sample
+  , "temperature_c" .= tsrTemperature sample
+  , "humidity_pct" .= tsrHumidity sample
+  , "wind_speed_ms" .= tsrWindSpeed sample
+  , "pressure_hpa" .= tsrPressure sample
+  , "precipitation_mm_year" .= tsrPrecip sample
+  , "biome" .= biomeDisplayName (tsrBiomeId sample)
+  , "biome_code" .= biomeIdToCode (tsrBiomeId sample)
+  , "vegetation_cover" .= tsrVegCover sample
+  , "vegetation_density" .= tsrVegDensity sample
+  , "relief_m" .= tsrRelief sample
+  , "ruggedness" .= tsrRuggedness sample
+  , "terrain_form" .= Text.pack (terrainFormDisplayName (tsrTerrainForm sample))
+  , "terrain_form_code" .= terrainFormToCode (tsrTerrainForm sample)
+  , "water_body_code" .= waterBodyToCode (tsrWaterBodyType sample)
+  , "river_discharge" .= tsrDischarge sample
+  , "snowpack" .= tsrSnowpack sample
+  , "ice_thickness" .= tsrIceThickness sample
+  ]
+
+slopeJSON :: DirectionalSlope -> Value
+slopeJSON (DirectionalSlope e ne nw w sw se) = object
+  [ "e" .= e
+  , "ne" .= ne
+  , "nw" .= nw
+  , "w" .= w
+  , "sw" .= sw
+  , "se" .= se
+  ]
+
+diagnostic :: Text -> Text -> Text -> Value
+diagnostic level code message = object
+  [ "level" .= level
+  , "code" .= code
+  , "message" .= message
+  ]
 
 -- =====================================================================
 -- find_hexes implementation
@@ -343,3 +526,18 @@ parseFilter = Aeson.withObject "filter" $ \o -> do
 parseExportOpts :: Value -> Aeson.Parser ExportOpts
 parseExportOpts = Aeson.withObject "export_terrain_data" $ \o ->
   ExportOpts <$> o .:? "chunks" <*> o .:? "fields"
+
+parseRegionParams :: Int -> Value -> Aeson.Parser Region
+parseRegionParams defaultMax = Aeson.withObject "export_mesh_data" $ \o -> do
+  x0 <- maybe 0 id <$> o .:? "x0"
+  y0 <- maybe 0 id <$> o .:? "y0"
+  x1 <- maybe defaultMax id <$> o .:? "x1"
+  y1 <- maybe defaultMax id <$> o .:? "y1"
+  pure (RegionRect (TileCoord x0 y0) (TileCoord x1 y1))
+
+parseSampleParams :: Value -> Aeson.Parser (Float, Float, Bool)
+parseSampleParams = Aeson.withObject "export_sample_data" $ \o -> do
+  x <- o .: "x"
+  y <- o .: "y"
+  realUnits <- maybe False id <$> o .:? "real_units"
+  pure (x, y, realUnits)

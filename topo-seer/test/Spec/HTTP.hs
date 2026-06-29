@@ -15,7 +15,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
-import Actor.Data (getTerrainSnapshot, setTerrainChunkData)
+import Actor.Data (getTerrainSnapshot, setOverlayStoreData, setTerrainChunkData)
 import Actor.SnapshotReceiver (writeTerrainSnapshot)
 import Actor.UiActions (ActorHandles(..))
 import Network.HTTP.Client
@@ -69,8 +69,10 @@ import Seer.Command.Dispatch (CommandContext(..))
 import Seer.Service.AppService (AppService(..), DataResourceService(..), appServiceOperationMethods)
 import Seer.Service.Types (ServiceError(..))
 import Seer.System (runApp)
+import Spec.Support.OverlayFixtures (mkSparseFloatOverlay)
 import System.Environment (withArgs)
 import Topo (WorldConfig(..), chunkIdFromCoord, emptyTerrainChunk)
+import Topo.Overlay (emptyOverlayStore, insertOverlay, OverlayProvenance(..))
 import Topo.Plugin.RPC.DataService (DataResourceErrorCode(..), dataResourceErrorCodeText)
 import Topo.Types (ChunkCoord(..))
 import Paths_topo_seer (getDataFileName)
@@ -469,6 +471,83 @@ spec = describe "Seer.HTTP.Server" $ do
         , "units"
         ] `shouldBe` replicate 12 True
 
+  it "serves overlay manager, schema/provenance, import validation, mesh, and sample export routes" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      installTerrainFixture app
+      installOverlayFixture app
+
+      overlays <- request app (mkRequest "GET" ["overlays"])
+      hresStatusCode overlays `shouldBe` 200
+      objectHasKey "overlays" (hresBody overlays) `shouldBe` True
+      objectHasKey "diagnostics" (hresBody overlays) `shouldBe` True
+
+      schema <- request app (mkRequest "GET" ["overlays", "schema"])
+        { hreqQuery = [("overlay", Just "weather")] }
+      hresStatusCode schema `shouldBe` 200
+      lookupText "format" (hresBody schema) `shouldBe` Just "toposchema"
+      objectHasKey "diagnostics" (hresBody schema) `shouldBe` True
+
+      provenance <- request app (mkRequest "GET" ["overlays", "provenance"])
+        { hreqQuery = [("overlay", Just "weather")] }
+      hresStatusCode provenance `shouldBe` 200
+      lookupText "format" (hresBody provenance) `shouldBe` Just "topolay-provenance"
+
+      exportRsp <- request app (mkRequest "POST" ["overlays", "export"])
+        { hreqBody = Just (object ["overlay" .= ("weather" :: Text)]) }
+      hresStatusCode exportRsp `shouldBe` 200
+      lookupText "format" (hresBody exportRsp) `shouldBe` Just "topolay-json"
+      objectHasKey "payload" (hresBody exportRsp) `shouldBe` True
+
+      case (lookupValue "schema" (hresBody exportRsp), lookupValue "payload" (hresBody exportRsp)) of
+        (Just schemaValue, Just payloadValue) -> do
+          validateRsp <- request app (mkRequest "POST" ["overlays", "import", "validate"])
+            { hreqBody = Just (object ["schema" .= schemaValue, "payload" .= payloadValue]) }
+          hresStatusCode validateRsp `shouldBe` 200
+          lookupValue "valid" (hresBody validateRsp) `shouldBe` Just (Bool True)
+          objectHasKey "diagnostics" (hresBody validateRsp) `shouldBe` True
+        _ -> expectationFailure "overlay export did not include schema and payload"
+
+      badDenseImport <- request app (mkRequest "POST" ["overlays", "import", "validate"])
+        { hreqBody = Just badDenseOverlayImport }
+      hresStatusCode badDenseImport `shouldBe` 200
+      lookupValue "valid" (hresBody badDenseImport) `shouldBe` Just (Bool False)
+      objectHasKey "diagnostics" (hresBody badDenseImport) `shouldBe` True
+
+      missingFields <- request app (mkRequest "GET" ["overlays", "fields"])
+        { hreqQuery = [("overlay", Just "missing")] }
+      hresStatusCode missingFields `shouldBe` 404
+      lookupNestedText ["error", "code"] (hresBody missingFields) `shouldBe` Just "not_found"
+
+      setCurrent <- request app (mkRequest "PUT" ["overlays", "current"])
+        { hreqBody = Just (object ["overlay" .= ("weather" :: Text)]) }
+      hresStatusCode setCurrent `shouldBe` 200
+      cycleField <- request app (mkRequest "POST" ["overlays", "fields", "cycle"])
+        { hreqBody = Just (object ["direction" .= (1 :: Int)]) }
+      hresStatusCode cycleField `shouldBe` 200
+      lookupText "field_name" (hresBody cycleField) `shouldBe` Just "value"
+
+      mesh <- request app (mkRequest "POST" ["terrain", "mesh", "export"])
+        { hreqBody = Just (object ["x0" .= (0 :: Int), "y0" .= (0 :: Int), "x1" .= (1 :: Int), "y1" .= (1 :: Int)]) }
+      hresStatusCode mesh `shouldBe` 200
+      lookupText "format" (hresBody mesh) `shouldBe` Just "topo-mesh-json"
+      objectHasKey "diagnostics" (hresBody mesh) `shouldBe` True
+
+      largeMesh <- request app (mkRequest "POST" ["terrain", "mesh", "export"])
+        { hreqBody = Just (object ["x0" .= (0 :: Int), "y0" .= (0 :: Int), "x1" .= (10000 :: Int), "y1" .= (10000 :: Int)]) }
+      hresStatusCode largeMesh `shouldBe` 400
+      lookupNestedText ["error", "code"] (hresBody largeMesh) `shouldBe` Just "invalid_request"
+
+      overflowMesh <- request app (mkRequest "POST" ["terrain", "mesh", "export"])
+        { hreqBody = Just (object ["x0" .= (0 :: Int), "y0" .= (0 :: Int), "x1" .= (maxBound :: Int), "y1" .= (0 :: Int)]) }
+      hresStatusCode overflowMesh `shouldBe` 400
+      lookupNestedText ["error", "code"] (hresBody overflowMesh) `shouldBe` Just "invalid_request"
+
+      sample <- request app (mkRequest "POST" ["terrain", "sample", "export"])
+        { hreqBody = Just (object ["x" .= (0 :: Double), "y" .= (0 :: Double)]) }
+      hresStatusCode sample `shouldBe` 200
+      lookupText "format" (hresBody sample) `shouldBe` Just "topo-sample-json"
+      objectHasKey "sample" (hresBody sample) `shouldBe` True
+
   it "maps retired MCP resources/list coverage to OpenAPI resource routes" $ do
     let doc = openApiDocument publicHttpRouteSpecs
         resourceNames = map ptLegacyName retiredMcpResourceTargets
@@ -598,6 +677,39 @@ installTerrainFixture app = do
       cfg = WorldConfig { wcChunkSize = 64 }
       chunkId = chunkIdFromCoord (ChunkCoord 0 0)
   setTerrainChunkData (ahDataHandle handles) (wcChunkSize cfg) [(chunkId, emptyTerrainChunk cfg)]
+  terrainSnapshot <- getTerrainSnapshot (ahDataHandle handles)
+  writeTerrainSnapshot (ahTerrainSnapshotRef handles) terrainSnapshot
+
+badDenseOverlayImport :: Value
+badDenseOverlayImport = object
+  [ "schema" .= object
+      [ "name" .= ("dense-weather" :: Text)
+      , "version" .= ("1.0.0" :: Text)
+      , "description" .= ("Dense weather overlay" :: Text)
+      , "storage" .= ("dense" :: Text)
+      , "fields" .=
+          [ object ["name" .= ("temperature" :: Text), "type" .= ("float" :: Text), "default" .= (0 :: Double)]
+          , object ["name" .= ("humidity" :: Text), "type" .= ("float" :: Text), "default" .= (0 :: Double)]
+          ]
+      ]
+  , "payload" .= object
+      [ "storage" .= ("dense" :: Text)
+      , "chunks" .=
+          [ object
+              [ "chunk_id" .= (0 :: Int)
+              , "fields" .= ([[1.0, 2.0]] :: [[Double]])
+              ]
+          ]
+      ]
+  ]
+
+installOverlayFixture :: HeadlessApp -> IO ()
+installOverlayFixture app = do
+  let handles = ccActorHandles (headlessCommandContext app)
+      provenance = OverlayProvenance 42 7 "fixture"
+      overlay = mkSparseFloatOverlay "weather" "Weather overlay" 0.5 provenance
+      store = insertOverlay overlay emptyOverlayStore
+  setOverlayStoreData (ahDataHandle handles) store
   terrainSnapshot <- getTerrainSnapshot (ahDataHandle handles)
   writeTerrainSnapshot (ahTerrainSnapshotRef handles) terrainSnapshot
 

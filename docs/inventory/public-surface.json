@@ -92,14 +92,14 @@
       "waiver": null
     },
     {
-      "id": "overlay-manager-provenance-ui-missing",
+      "id": "overlay-manager-provenance-ui-present",
       "title": "Overlay manager, schema/provenance inspection, and import/export dialogs",
-      "availability": "missing",
+      "availability": "present",
       "owner": "topo persistence and overlay maintainers",
-      "status": "planned",
+      "status": "present",
       "featureGroup": "topo-overlay-persistence-export",
-      "tests": [],
-      "waiver": "Missing by design in this matrix-maintenance task; tracked by M9 overlay manager work rather than this CI automation change."
+      "tests": ["topo-seer:test:Spec.AppService", "topo-seer:test:Spec.HTTP", "topo-seer:test:Spec.FeatureMatrix"],
+      "waiver": null
     },
     {
       "id": "plugin-resource-status-surfaces-present",
@@ -186,8 +186,14 @@
       "routes": [
         {"operationId": "terrain.overlays", "method": "GET", "path": "/terrain/overlays"},
         {"operationId": "terrain.export", "method": "POST", "path": "/terrain/export"},
+        {"operationId": "terrain.mesh.export", "method": "POST", "path": "/terrain/mesh/export"},
+        {"operationId": "terrain.sample.export", "method": "POST", "path": "/terrain/sample/export"},
         {"operationId": "overlays.list", "method": "GET", "path": "/overlays"},
+        {"operationId": "overlays.schema.get", "method": "GET", "path": "/overlays/schema"},
+        {"operationId": "overlays.provenance.get", "method": "GET", "path": "/overlays/provenance"},
         {"operationId": "overlays.fields.list", "method": "GET", "path": "/overlays/fields"},
+        {"operationId": "overlays.export", "method": "POST", "path": "/overlays/export"},
+        {"operationId": "overlays.import.validate", "method": "POST", "path": "/overlays/import/validate"},
         {"operationId": "overlays.current.set", "method": "PUT", "path": "/overlays/current"},
         {"operationId": "overlays.cycle", "method": "POST", "path": "/overlays/cycle"},
         {"operationId": "overlays.field.cycle", "method": "POST", "path": "/overlays/fields/cycle"}
@@ -319,7 +325,13 @@
       "featureGroup": "topo-overlay-persistence-export",
       "operations": [
         {"name": "terrain.overlays", "method": "get_overlays"},
-        {"name": "terrain.export", "method": "export_terrain_data"}
+        {"name": "terrain.export", "method": "export_terrain_data"},
+        {"name": "overlays.schema.get", "method": "get_overlay_schema"},
+        {"name": "overlays.provenance.get", "method": "get_overlay_provenance"},
+        {"name": "overlays.export", "method": "export_overlay_data"},
+        {"name": "overlays.import.validate", "method": "validate_overlay_import"},
+        {"name": "terrain.mesh.export", "method": "export_mesh_data"},
+        {"name": "terrain.sample.export", "method": "export_sample_data"}
       ]
     },
     {

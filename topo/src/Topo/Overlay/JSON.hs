@@ -135,7 +135,7 @@ parseOverlayPayload schema = withObject "overlay payload" $ \o -> do
   chunksVal <- o .: "chunks"
   overlayData <- case osStorage schema of
     StorageSparse -> SparseData <$> parseSparseChunks schema chunksVal
-    StorageDense -> DenseData <$> parseDenseChunks chunksVal
+    StorageDense -> DenseData <$> parseDenseChunks schema chunksVal
   pure Overlay
     { ovSchema = schema
     , ovData = overlayData
@@ -148,10 +148,10 @@ parseSparseChunks schema value = do
   pairs <- traverse (decodeSparseChunk schema) payload
   pure (IntMap.fromList pairs)
 
-parseDenseChunks :: Value -> Parser (IntMap (V.Vector (U.Vector Float)))
-parseDenseChunks value = do
+parseDenseChunks :: OverlaySchema -> Value -> Parser (IntMap (V.Vector (U.Vector Float)))
+parseDenseChunks schema value = do
   payload <- parseJSON value :: Parser [DenseChunkPayload]
-  let pairs = map decodeDenseChunk payload
+  pairs <- traverse (decodeDenseChunk schema) payload
   pure (IntMap.fromList pairs)
 
 decodeSparseChunk :: OverlaySchema -> SparseChunkPayload -> Parser (Int, OverlayChunk)
@@ -182,11 +182,22 @@ decodeOverlayValue (OFList elemType) value = do
   elems <- traverse (decodeOverlayValue elemType) arr
   pure (OVList (V.fromList elems))
 
-decodeDenseChunk :: DenseChunkPayload -> (Int, V.Vector (U.Vector Float))
-decodeDenseChunk payload =
-  ( dcpChunkId payload
-  , V.fromList (map U.fromList (dcpFields payload))
-  )
+decodeDenseChunk :: OverlaySchema -> DenseChunkPayload -> Parser (Int, V.Vector (U.Vector Float))
+decodeDenseChunk schema payload = do
+  let fieldArrays = dcpFields payload
+      expectedFieldCount = length (osFields schema)
+      lengths = map length fieldArrays
+  if length fieldArrays /= expectedFieldCount
+    then fail "dense chunk field count does not match schema"
+    else case lengths of
+      [] -> pure ()
+      firstLen:rest
+        | any (/= firstLen) rest -> fail "dense chunk field arrays must have equal length"
+        | otherwise -> pure ()
+  pure
+    ( dcpChunkId payload
+    , V.fromList (map U.fromList fieldArrays)
+    )
 
 toSparseChunkPayload :: (Int, OverlayChunk) -> SparseChunkPayload
 toSparseChunkPayload (chunkId, OverlayChunk records) =

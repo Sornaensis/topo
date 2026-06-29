@@ -91,6 +91,10 @@ requestSchemasByOperation =
   , ("world.name.set", worldNameSetRequestSchema)
   , ("terrain.search", terrainSearchRequestSchema)
   , ("terrain.export", terrainExportRequestSchema)
+  , ("terrain.mesh.export", terrainMeshExportRequestSchema)
+  , ("terrain.sample.export", terrainSampleExportRequestSchema)
+  , ("overlays.export", overlayExportRequestSchema)
+  , ("overlays.import.validate", overlayImportValidateRequestSchema)
   , ("editor.toggle", editorToggleRequestSchema)
   , ("editor.tool.set", editorToolSetRequestSchema)
   , ("editor.brush.set", editorBrushSetRequestSchema)
@@ -170,6 +174,8 @@ responseSchemasByOperation =
   , ("terrain.overlays", terrainOverlaysResponseSchema)
   , ("terrain.search", terrainSearchResponseSchema)
   , ("terrain.export", terrainExportResponseSchema)
+  , ("terrain.mesh.export", terrainMeshExportResponseSchema)
+  , ("terrain.sample.export", terrainSampleExportResponseSchema)
   , ("editor.state", editorStateResponseSchema)
   , ("editor.toggle", editorStateResponseSchema)
   , ("editor.tool.set", editorStateResponseSchema)
@@ -212,6 +218,10 @@ responseSchemasByOperation =
   , ("ui.overlay.cycle", uiOverlayCycleResponseSchema)
   , ("ui.overlayField.cycle", uiOverlayFieldCycleResponseSchema)
   , ("overlays.list", terrainOverlaysResponseSchema)
+  , ("overlays.schema.get", overlaySchemaResponseSchema)
+  , ("overlays.provenance.get", overlayProvenanceResponseSchema)
+  , ("overlays.export", overlayExportResponseSchema)
+  , ("overlays.import.validate", overlayImportValidateResponseSchema)
   , ("overlays.current.set", uiOverlaySetResponseSchema)
   , ("overlays.fields.list", uiOverlayFieldsResponseSchema)
   , ("overlays.cycle", uiOverlayCycleResponseSchema)
@@ -503,6 +513,8 @@ worldSaveResponseSchema = objectSchema "WorldSaveResponse"
   [ "name", "saved" ]
   [ ("name", stringSchema)
   , ("saved", booleanSchema)
+  , ("formats", arraySchema stringSchema)
+  , ("diagnostics", arraySchema diagnosticSchema)
   ]
 
 worldLoadRequestSchema :: JsonSchema
@@ -513,6 +525,9 @@ worldLoadResponseSchema = objectSchema "WorldLoadResponse"
   [ "name", "loaded" ]
   [ ("name", stringSchema)
   , ("loaded", booleanSchema)
+  , ("formats", arraySchema stringSchema)
+  , ("overlay_names", arraySchema stringSchema)
+  , ("diagnostics", arraySchema diagnosticSchema)
   ]
 
 worldNameSetRequestSchema :: JsonSchema
@@ -610,6 +625,10 @@ terrainOverlaysResponseSchema = objectSchema "TerrainOverlaysResponse"
   [ "overlay_count", "overlay_names" ]
   [ ("overlay_count", integerSchema)
   , ("overlay_names", arraySchema stringSchema)
+  , ("active_overlay", nullableSchema stringSchema)
+  , ("active_field_index", nullableSchema integerSchema)
+  , ("overlays", arraySchema overlaySummarySchema)
+  , ("diagnostics", arraySchema diagnosticSchema)
   ]
 
 terrainSearchRequestSchema :: JsonSchema
@@ -640,6 +659,99 @@ terrainExportResponseSchema = objectSchema "TerrainExportResponse"
   , ("fields", arraySchema stringSchema)
   , ("available_fields", arraySchema stringSchema)
   , ("data", freeObjectSchema)
+  , ("diagnostics", arraySchema diagnosticSchema)
+  ]
+
+terrainMeshExportRequestSchema :: JsonSchema
+terrainMeshExportRequestSchema = objectSchema "TerrainMeshExportRequest"
+  []
+  [ ("x0", integerSchema)
+  , ("y0", integerSchema)
+  , ("x1", integerSchema)
+  , ("y1", integerSchema)
+  ]
+
+terrainMeshExportResponseSchema :: JsonSchema
+terrainMeshExportResponseSchema = objectSchema "TerrainMeshExportResponse"
+  [ "format", "vertex_count", "index_count", "vertices", "indices", "diagnostics" ]
+  [ ("format", enumStringSchema ["topo-mesh-json"])
+  , ("region", freeObjectSchema)
+  , ("vertex_count", integerSchema)
+  , ("index_count", integerSchema)
+  , ("vertices", arraySchema vertexSchema)
+  , ("indices", arraySchema integerSchema)
+  , ("diagnostics", arraySchema diagnosticSchema)
+  ]
+
+terrainSampleExportRequestSchema :: JsonSchema
+terrainSampleExportRequestSchema = objectSchema "TerrainSampleExportRequest"
+  [ "x", "y" ]
+  [ ("x", numberSchema)
+  , ("y", numberSchema)
+  , ("real_units", booleanSchema)
+  ]
+
+terrainSampleExportResponseSchema :: JsonSchema
+terrainSampleExportResponseSchema = objectSchema "TerrainSampleExportResponse"
+  [ "format", "position", "sample", "diagnostics" ]
+  [ ("format", enumStringSchema ["topo-sample-json"])
+  , ("position", freeObjectSchema)
+  , ("real_units", booleanSchema)
+  , ("sample", freeObjectSchema)
+  , ("diagnostics", arraySchema diagnosticSchema)
+  ]
+
+overlaySchemaResponseSchema :: JsonSchema
+overlaySchemaResponseSchema = objectSchema "OverlaySchemaResponse"
+  [ "overlay", "format", "schema", "fields", "diagnostics" ]
+  [ ("overlay", stringSchema)
+  , ("format", enumStringSchema ["toposchema"])
+  , ("schema", freeObjectSchema)
+  , ("fields", arraySchema overlayFieldSchema)
+  , ("diagnostics", arraySchema diagnosticSchema)
+  ]
+
+overlayProvenanceResponseSchema :: JsonSchema
+overlayProvenanceResponseSchema = objectSchema "OverlayProvenanceResponse"
+  [ "overlay", "format", "provenance", "diagnostics" ]
+  [ ("overlay", stringSchema)
+  , ("format", enumStringSchema ["topolay-provenance"])
+  , ("provenance", overlayProvenanceSchema)
+  , ("diagnostics", arraySchema diagnosticSchema)
+  ]
+
+overlayExportRequestSchema :: JsonSchema
+overlayExportRequestSchema = objectSchema "OverlayExportRequest"
+  [ "overlay" ]
+  [ ("overlay", stringSchema)
+  , ("chunks", arraySchema integerSchema)
+  ]
+
+overlayExportResponseSchema :: JsonSchema
+overlayExportResponseSchema = objectSchema "OverlayExportResponse"
+  [ "overlay", "format", "schema", "provenance", "chunk_count", "payload", "diagnostics" ]
+  [ ("overlay", stringSchema)
+  , ("format", enumStringSchema ["topolay-json"])
+  , ("schema", freeObjectSchema)
+  , ("provenance", overlayProvenanceSchema)
+  , ("chunk_count", integerSchema)
+  , ("payload", freeObjectSchema)
+  , ("diagnostics", arraySchema diagnosticSchema)
+  ]
+
+overlayImportValidateRequestSchema :: JsonSchema
+overlayImportValidateRequestSchema = objectSchema "OverlayImportValidateRequest"
+  [ "schema", "payload" ]
+  [ ("schema", freeObjectSchema)
+  , ("payload", freeObjectSchema)
+  ]
+
+overlayImportValidateResponseSchema :: JsonSchema
+overlayImportValidateResponseSchema = objectSchema "OverlayImportValidateResponse"
+  [ "valid", "diagnostics" ]
+  [ ("valid", booleanSchema)
+  , ("overlay", nullableSchema stringSchema)
+  , ("diagnostics", arraySchema diagnosticSchema)
   ]
 
 terrainActiveViewSchema :: Value
@@ -2025,6 +2137,50 @@ overlayFieldSchema = inlineObjectSchema
   [ ("index", integerSchema)
   , ("name", stringSchema)
   , ("type", stringSchema)
+  , ("default", anySchema)
+  , ("indexed", booleanSchema)
+  , ("renamed_from", nullableSchema stringSchema)
+  ]
+
+overlaySummarySchema :: Value
+overlaySummarySchema = inlineObjectSchema
+  [ "name", "version", "storage", "field_count", "fields", "chunk_count" ]
+  [ ("name", stringSchema)
+  , ("version", stringSchema)
+  , ("description", stringSchema)
+  , ("storage", enumStringSchema ["sparse", "dense"])
+  , ("field_count", integerSchema)
+  , ("fields", arraySchema overlayFieldSchema)
+  , ("chunk_count", integerSchema)
+  , ("populated_tile_count", integerSchema)
+  , ("dependencies", freeObjectSchema)
+  , ("provenance", overlayProvenanceSchema)
+  , ("active", booleanSchema)
+  , ("active_field_index", nullableSchema integerSchema)
+  ]
+
+overlayProvenanceSchema :: Value
+overlayProvenanceSchema = inlineObjectSchema
+  [ "seed", "version", "source" ]
+  [ ("seed", integerSchema)
+  , ("version", integerSchema)
+  , ("source", stringSchema)
+  ]
+
+vertexSchema :: Value
+vertexSchema = inlineObjectSchema
+  [ "x", "y", "z" ]
+  [ ("x", numberSchema)
+  , ("y", numberSchema)
+  , ("z", numberSchema)
+  ]
+
+diagnosticSchema :: Value
+diagnosticSchema = inlineObjectSchema
+  [ "level", "code", "message" ]
+  [ ("level", enumStringSchema ["info", "warn", "error"])
+  , ("code", stringSchema)
+  , ("message", stringSchema)
   ]
 
 -- Shared schema helpers ------------------------------------------------------

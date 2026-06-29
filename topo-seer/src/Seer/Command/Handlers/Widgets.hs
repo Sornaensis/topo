@@ -130,6 +130,11 @@ widgetIdToText wid = case wid of
   WidgetViewOverlayNext        -> "WidgetViewOverlayNext"
   WidgetViewFieldPrev          -> "WidgetViewFieldPrev"
   WidgetViewFieldNext          -> "WidgetViewFieldNext"
+  WidgetOverlayManager         -> "WidgetOverlayManager"
+  WidgetOverlaySchema          -> "WidgetOverlaySchema"
+  WidgetOverlayProvenance      -> "WidgetOverlayProvenance"
+  WidgetOverlayExport          -> "WidgetOverlayExport"
+  WidgetOverlayImportValidate  -> "WidgetOverlayImportValidate"
   WidgetLogDebug               -> "WidgetLogDebug"
   WidgetLogInfo                -> "WidgetLogInfo"
   WidgetLogWarn                -> "WidgetLogWarn"
@@ -298,6 +303,11 @@ nullaryWidgetMap = Map.fromList
   , ("WidgetViewOverlayNext",   WidgetViewOverlayNext)
   , ("WidgetViewFieldPrev",     WidgetViewFieldPrev)
   , ("WidgetViewFieldNext",     WidgetViewFieldNext)
+  , ("WidgetOverlayManager",    WidgetOverlayManager)
+  , ("WidgetOverlaySchema",     WidgetOverlaySchema)
+  , ("WidgetOverlayProvenance", WidgetOverlayProvenance)
+  , ("WidgetOverlayExport",     WidgetOverlayExport)
+  , ("WidgetOverlayImportValidate", WidgetOverlayImportValidate)
   , ("WidgetLogDebug",          WidgetLogDebug)
   , ("WidgetLogInfo",           WidgetLogInfo)
   , ("WidgetLogWarn",           WidgetLogWarn)
@@ -472,6 +482,11 @@ executeWidgetClick ctx wid = do
     WidgetViewOverlayNext -> pure $ Right "use 'cycle_overlay' IPC with direction 1"
     WidgetViewFieldPrev   -> pure $ Right "use 'cycle_overlay_field' IPC with direction -1"
     WidgetViewFieldNext   -> pure $ Right "use 'cycle_overlay_field' IPC with direction 1"
+    WidgetOverlayManager  -> pure $ Right "use 'get_overlays' or GET /overlays for overlay manager metadata"
+    WidgetOverlaySchema   -> pure $ Right "use 'get_overlay_schema' or GET /overlays/schema for schema inspection"
+    WidgetOverlayProvenance -> pure $ Right "use 'get_overlay_provenance' or GET /overlays/provenance for provenance inspection"
+    WidgetOverlayExport   -> pure $ Right "use 'export_overlay_data' or POST /overlays/export for overlay export"
+    WidgetOverlayImportValidate -> pure $ Right "use 'validate_overlay_import' or POST /overlays/import/validate for import diagnostics"
 
     -- ----- Slider +/- buttons -----
     WidgetSliderMinus sid -> bumpSlider ctx uiSnap sid SliderPartMinus
@@ -817,6 +832,11 @@ handleListWidgets ctx reqId _params = do
         , ("WidgetViewOverlayNext",   leftView)
         , ("WidgetViewFieldPrev",     leftView)
         , ("WidgetViewFieldNext",     leftView)
+        , ("WidgetOverlayManager",    leftView)
+        , ("WidgetOverlaySchema",     leftView)
+        , ("WidgetOverlayProvenance", leftView)
+        , ("WidgetOverlayExport",     leftView)
+        , ("WidgetOverlayImportValidate", leftView)
         ]
       logWidgets =
         [ ("WidgetLogDebug",  True)
