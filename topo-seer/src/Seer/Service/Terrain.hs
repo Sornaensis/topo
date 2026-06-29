@@ -62,14 +62,26 @@ newtype TerrainGetHexRequest = TerrainGetHexRequest
 data TerrainHexResponse = TerrainHexResponse
   { terrainHexCoord :: !TileCoord
   , terrainHexTerrain :: !Value
+  , terrainHexHypsometry :: !Value
+  , terrainHexTerrainFormMetrics :: !Value
+  , terrainHexHydrology :: !Value
   , terrainHexClimate :: !(Maybe Value)
+  , terrainHexClimateDiagnostics :: !Value
   , terrainHexWeather :: !(Maybe Value)
+  , terrainHexWeatherSnapshot :: !(Maybe Value)
+  , terrainHexWeatherTimeline :: !Value
   , terrainHexRiver :: !(Maybe Value)
   , terrainHexWaterBody :: !(Maybe Value)
+  , terrainHexWaterBodies :: !(Maybe Value)
   , terrainHexWaterTable :: !(Maybe Value)
+  , terrainHexSoil :: !Value
+  , terrainHexBiomeRefinement :: !Value
   , terrainHexVegetation :: !(Maybe Value)
   , terrainHexGlacier :: !(Maybe Value)
+  , terrainHexGlacierSnowIce :: !(Maybe Value)
   , terrainHexVolcanism :: !(Maybe Value)
+  , terrainHexOceanCurrents :: !Value
+  , terrainHexUnits :: !Value
   , terrainHexSections :: !Value
   } deriving (Eq, Show)
 

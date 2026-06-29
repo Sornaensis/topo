@@ -28,9 +28,12 @@ import Actor.PluginManager
   , queryPluginResource
   )
 import Actor.SnapshotReceiver (readTerrainSnapshot)
-import Actor.UI.State (readUiSnapshotRef)
+import Actor.UI.State (UiState(..), readUiSnapshotRef)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
+import Seer.Config (mapRange)
+import Seer.Config.SliderConversion (sliderToDomainFloat)
+import Seer.Config.SliderRegistry (SliderId(..))
 import Seer.Draw.Overlay
   ( TerrainInspectorPluginData(..)
   , terrainInspectorSectionsObject
@@ -39,6 +42,10 @@ import Seer.Draw.Overlay
 import Topo.Biome.Name (biomeDisplayName)
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 import Topo.Plugin.DataResource (DataOperations(..), DataPagination(..), DataResourceSchema(..))
+import Topo.Grid.HexDirection (traceIndexInDirection)
+import Topo.Hex (HexDirection(..), HexGridMeta(..))
+import Topo.OceanCurrent (OceanCurrentConfig(..), oceanCurrentOffset)
+import Topo.Planet (PlanetConfig(..), WorldSlice(..), tileLatitude, tileLongitude)
 import Topo.Plugin.RPC.DataService (DataQuery(..), QueryResource(..))
 import Topo.Types
   ( WorldConfig(..), ChunkId(..), TileCoord(..), TileIndex(..)
@@ -56,15 +63,31 @@ import Topo.Types
   , VentActivity
   , VentType
   , BiomeId
+  , DirectionalSlope
   , TerrainForm
   , biomeIdToCode
   , biomeIdFromCode
   , terrainFormToCode
   , terrainFormFromCode
   , terrainFormDisplayName
+  , dsAvgSlope
+  , dsMaxSlope
+  , dsMinSlope
   , ventActivityToCode
   , ventTypeToCode
   , waterBodyToCode
+  )
+import Topo.Units
+  ( defaultUnitScales
+  , normDepthToMetres
+  , normSlopeToDeg
+  , normToC
+  , normToHPa
+  , normToMetres
+  , normToMmYear
+  , normToRH
+  , normToSoilM
+  , normToWindMs
   )
 
 -- | Handle @get_hex@ — return full terrain data at an axial hex coordinate.
@@ -94,8 +117,39 @@ handleGetHex ctx reqId params =
                   pure $ errResponse reqId ("no terrain at hex: q=" <> Text.pack (show q) <> ", r=" <> Text.pack (show r))
                 Just tc -> do
                   pluginData <- terrainInspectorPluginDataForHex ctx chunkId tileIdx
-                  let terrainLayer = object
-                        [ "elevation"     .= safeIndex (tcElevation tc) tileIdx
+                  let units = defaultUnitScales
+                      elevationNorm = safeIndex (tcElevation tc) tileIdx
+                      waterLevelNorm = uiWaterLevel ui
+                      waterLevelM = normToMetres units waterLevelNorm
+                      elevationM = fmap (normToMetres units) elevationNorm
+                      relativeWaterNorm = fmap (\elevation -> elevation - waterLevelNorm) elevationNorm
+                      relativeWaterM = fmap (\elevation -> normToMetres units elevation - waterLevelM) elevationNorm
+                      terrainForm = safeIndexTF (tcTerrainForm tc) tileIdx
+                      biome = safeIndexBiome (tcFlags tc) tileIdx
+                      dirSlope = safeIndexDirSlope (tcDirSlope tc) tileIdx
+                      avgSlope = fmap dsAvgSlope dirSlope
+                      maxSlope = fmap dsMaxSlope dirSlope
+                      minSlope = fmap dsMinSlope dirSlope
+                      (latDeg, lonDeg) = latLonValuesForApi ui snap q r
+                      climateChunk = IntMap.lookup chunkId (tsClimateChunks snap)
+                      weatherChunk = IntMap.lookup chunkId (tsWeatherChunks snap)
+                      riverChunk = IntMap.lookup chunkId (tsRiverChunks snap)
+                      groundwaterChunk = IntMap.lookup chunkId (tsGroundwaterChunks snap)
+                      waterBodyChunk = IntMap.lookup chunkId (tsWaterBodyChunks snap)
+                      glacierChunk = IntMap.lookup chunkId (tsGlacierChunks snap)
+                      volcanismChunk = IntMap.lookup chunkId (tsVolcanismChunks snap)
+                      vegetationChunk = IntMap.lookup chunkId (tsVegetationChunks snap)
+                      waterBodyTypeAt = waterBodyChunk >>= \wb -> safeIndexWaterBody (wbType wb) tileIdx
+                      adjacentWaterBodyTypeAt = waterBodyChunk >>= \wb -> safeIndexWaterBody (wbAdjacentType wb) tileIdx
+                      oceanCurrentCfg = oceanCurrentConfigFromUiForApi ui
+                      isWater = maybe False (< waterLevelNorm) elevationNorm
+                      landEast = hasLandAlongChunk snap waterLevelNorm chunkId tileIdx HexE
+                      landWest = hasLandAlongChunk snap waterLevelNorm chunkId tileIdx HexW
+                      currentOffsetNorm = if isWater then oceanCurrentOffset oceanCurrentCfg (latDeg * pi / 180) landEast landWest else 0
+                      currentOffsetC = normToC units (0.5 + currentOffsetNorm) - normToC units 0.5
+                      terrainLayer = object
+                        [ "elevation"     .= elevationNorm
+                        , "elevation_m"   .= elevationM
                         , "curvature"     .= safeIndex (tcCurvature tc) tileIdx
                         , "hardness"      .= safeIndex (tcHardness tc) tileIdx
                         , "moisture"      .= safeIndex (tcMoisture tc) tileIdx
@@ -109,19 +163,24 @@ handleGetHex ctx reqId params =
                         , "relief_3ring"  .= safeIndex (tcRelief3Ring tc) tileIdx
                         , "micro_relief"  .= safeIndex (tcMicroRelief tc) tileIdx
                         , "ruggedness"    .= safeIndex (tcRuggedness tc) tileIdx
-                        , "terrain_form"  .= fmap (Text.pack . terrainFormDisplayName)
-                                                  (safeIndexTF (tcTerrainForm tc) tileIdx)
-                        , "biome"         .= fmap biomeDisplayName
-                                                  (safeIndexBiome (tcFlags tc) tileIdx)
+                        , "terrain_form"  .= fmap (Text.pack . terrainFormDisplayName) terrainForm
+                        , "terrain_form_code" .= fmap terrainFormToCode terrainForm
+                        , "biome"         .= fmap biomeDisplayName biome
+                        , "biome_code"    .= fmap biomeIdToCode biome
                         , "rock_type"     .= safeIndexW16 (tcRockType tc) tileIdx
                         , "soil_type"     .= safeIndexW16 (tcSoilType tc) tileIdx
                         , "plate_id"      .= safeIndexW16 (tcPlateId tc) tileIdx
                         , "plate_height"  .= safeIndex (tcPlateHeight tc) tileIdx
                         , "plate_hardness" .= safeIndex (tcPlateHardness tc) tileIdx
                         , "plate_age"     .= safeIndex (tcPlateAge tc) tileIdx
+                        , "plate_velocity_x" .= safeIndex (tcPlateVelX tc) tileIdx
+                        , "plate_velocity_y" .= safeIndex (tcPlateVelY tc) tileIdx
+                        , "slope_avg"     .= avgSlope
+                        , "slope_max"     .= maxSlope
+                        , "slope_min"     .= minSlope
                         ]
 
-                      climateLayer = case IntMap.lookup chunkId (tsClimateChunks snap) of
+                      climateLayer = case climateChunk of
                         Nothing -> Null
                         Just cc -> object
                           [ "temp_avg"            .= safeIndex (ccTempAvg cc) tileIdx
@@ -133,7 +192,7 @@ handleGetHex ctx reqId params =
                           , "precip_seasonality"  .= safeIndex (ccPrecipSeasonality cc) tileIdx
                           ]
 
-                      weatherLayer = case IntMap.lookup chunkId (tsWeatherChunks snap) of
+                      weatherLayer = case weatherChunk of
                         Nothing -> Null
                         Just wc -> object
                           [ "temp"     .= safeIndex (wcTemp wc) tileIdx
@@ -142,9 +201,17 @@ handleGetHex ctx reqId params =
                           , "wind_spd" .= safeIndex (wcWindSpd wc) tileIdx
                           , "pressure" .= safeIndex (wcPressure wc) tileIdx
                           , "precip"   .= safeIndex (wcPrecip wc) tileIdx
+                          , "cloud_cover" .= safeIndex (wcCloudCover wc) tileIdx
+                          , "cloud_water" .= safeIndex (wcCloudWater wc) tileIdx
+                          , "cloud_cover_low" .= safeIndex (wcCloudCoverLow wc) tileIdx
+                          , "cloud_cover_mid" .= safeIndex (wcCloudCoverMid wc) tileIdx
+                          , "cloud_cover_high" .= safeIndex (wcCloudCoverHigh wc) tileIdx
+                          , "cloud_water_low" .= safeIndex (wcCloudWaterLow wc) tileIdx
+                          , "cloud_water_mid" .= safeIndex (wcCloudWaterMid wc) tileIdx
+                          , "cloud_water_high" .= safeIndex (wcCloudWaterHigh wc) tileIdx
                           ]
 
-                      riverLayer = case IntMap.lookup chunkId (tsRiverChunks snap) of
+                      riverLayer = case riverChunk of
                         Nothing -> Null
                         Just rc -> object
                           [ "flow_accum"        .= safeIndex (rcFlowAccum rc) tileIdx
@@ -159,7 +226,7 @@ handleGetHex ctx reqId params =
                           , "segment_count"     .= riverSegmentCount rc tileIdx
                           ]
 
-                      waterBodyLayer = case IntMap.lookup chunkId (tsWaterBodyChunks snap) of
+                      waterBodyLayer = case waterBodyChunk of
                         Nothing -> Null
                         Just wb -> object
                           [ "type"          .= fmap waterBodyDisplayName (safeIndexWaterBody (wbType wb) tileIdx)
@@ -170,7 +237,7 @@ handleGetHex ctx reqId params =
                           , "depth"         .= safeIndex (wbDepth wb) tileIdx
                           ]
 
-                      waterTableLayer = case IntMap.lookup chunkId (tsGroundwaterChunks snap) of
+                      waterTableLayer = case groundwaterChunk of
                         Nothing -> Null
                         Just gw -> object
                           [ "storage"            .= safeIndex (gwStorage gw) tileIdx
@@ -182,7 +249,7 @@ handleGetHex ctx reqId params =
                           , "root_zone_moisture" .= safeIndex (gwRootZoneMoisture gw) tileIdx
                           ]
 
-                      glacierLayer = case IntMap.lookup chunkId (tsGlacierChunks snap) of
+                      glacierLayer = case glacierChunk of
                         Nothing -> Null
                         Just gl -> object
                           [ "snowpack"          .= safeIndex (glSnowpack gl) tileIdx
@@ -193,7 +260,7 @@ handleGetHex ctx reqId params =
                           , "deposit_potential" .= safeIndex (glDepositPotential gl) tileIdx
                           ]
 
-                      volcanismLayer = case IntMap.lookup chunkId (tsVolcanismChunks snap) of
+                      volcanismLayer = case volcanismChunk of
                         Nothing -> Null
                         Just vc -> object
                           [ "vent_type"         .= fmap ventTypeDisplayName (safeIndexVentType (vcVentType vc) tileIdx)
@@ -210,7 +277,7 @@ handleGetHex ctx reqId params =
 
                       inspector = terrainInspectorViewAtWithPluginData pluginData ui snap (q, r)
 
-                      vegLayer = case IntMap.lookup chunkId (tsVegetationChunks snap) of
+                      vegLayer = case vegetationChunk of
                         Nothing -> Null
                         Just vc -> object
                           [ "cover"   .= safeIndex (vegCover vc) tileIdx
@@ -218,18 +285,151 @@ handleGetHex ctx reqId params =
                           , "density" .= safeIndex (vegDensity vc) tileIdx
                           ]
 
+                      hypsometryLayer = object
+                        [ "elevation_norm" .= elevationNorm
+                        , "elevation_m" .= elevationM
+                        , "water_level_norm" .= waterLevelNorm
+                        , "water_level_m" .= waterLevelM
+                        , "relative_water_level_norm" .= relativeWaterNorm
+                        , "relative_water_level_m" .= relativeWaterM
+                        , "zone" .= fmap (hypsometricZone waterLevelNorm) elevationNorm
+                        ]
+
+                      terrainFormMetricsLayer = object
+                        [ "terrain_form" .= fmap (Text.pack . terrainFormDisplayName) terrainForm
+                        , "terrain_form_code" .= fmap terrainFormToCode terrainForm
+                        , "slope_avg_norm" .= avgSlope
+                        , "slope_avg_deg" .= fmap (normSlopeToDeg units) avgSlope
+                        , "slope_max_norm" .= maxSlope
+                        , "slope_max_deg" .= fmap (normSlopeToDeg units) maxSlope
+                        , "slope_min_norm" .= minSlope
+                        , "slope_min_deg" .= fmap (normSlopeToDeg units) minSlope
+                        , "curvature" .= safeIndex (tcCurvature tc) tileIdx
+                        , "roughness" .= safeIndex (tcRoughness tc) tileIdx
+                        , "ruggedness" .= safeIndex (tcRuggedness tc) tileIdx
+                        , "relief" .= safeIndex (tcRelief tc) tileIdx
+                        , "relief_2ring" .= safeIndex (tcRelief2Ring tc) tileIdx
+                        , "relief_3ring" .= safeIndex (tcRelief3Ring tc) tileIdx
+                        , "micro_relief" .= safeIndex (tcMicroRelief tc) tileIdx
+                        ]
+
+                      hydrologyLayer = object
+                        [ "loaded" .= maybe False (const True) riverChunk
+                        , "moisture" .= safeIndex (tcMoisture tc) tileIdx
+                        , "river" .= riverLayer
+                        ]
+
+                      soilLayer = object
+                        [ "soil_type" .= safeIndexW16 (tcSoilType tc) tileIdx
+                        , "soil_depth_norm" .= safeIndex (tcSoilDepth tc) tileIdx
+                        , "soil_depth_m" .= fmap (normToSoilM units) (safeIndex (tcSoilDepth tc) tileIdx)
+                        , "soil_moisture" .= safeIndex (tcMoisture tc) tileIdx
+                        , "fertility" .= safeIndex (tcFertility tc) tileIdx
+                        , "soil_grain" .= safeIndex (tcSoilGrain tc) tileIdx
+                        , "rock_type" .= safeIndexW16 (tcRockType tc) tileIdx
+                        , "rock_density" .= safeIndex (tcRockDensity tc) tileIdx
+                        , "hardness" .= safeIndex (tcHardness tc) tileIdx
+                        ]
+
+                      biomeRefinementLayer = object
+                        [ "biome_code" .= fmap biomeIdToCode biome
+                        , "biome" .= fmap biomeDisplayName biome
+                        , "family" .= fmap biomeFamilyName biome
+                        , "refinement" .= fmap biomeRefinementStatus biome
+                        , "terrain_form" .= fmap (Text.pack . terrainFormDisplayName) terrainForm
+                        , "water_type" .= fmap waterBodyDisplayName waterBodyTypeAt
+                        , "adjacent_water_type" .= fmap waterBodyDisplayName adjacentWaterBodyTypeAt
+                        , "temp_avg" .= (climateChunk >>= \cc -> safeIndex (ccTempAvg cc) tileIdx)
+                        , "temp_avg_c" .= fmap (normToC units) (climateChunk >>= \cc -> safeIndex (ccTempAvg cc) tileIdx)
+                        , "precip_avg" .= (climateChunk >>= \cc -> safeIndex (ccPrecipAvg cc) tileIdx)
+                        , "precip_avg_mm_year" .= fmap (normToMmYear units) (climateChunk >>= \cc -> safeIndex (ccPrecipAvg cc) tileIdx)
+                        , "moisture" .= safeIndex (tcMoisture tc) tileIdx
+                        , "fertility" .= safeIndex (tcFertility tc) tileIdx
+                        ]
+
+                      climateDiagnosticsLayer = case climateChunk of
+                        Nothing -> object
+                          [ "loaded" .= False
+                          , "status" .= ("not_loaded" :: Text)
+                          ]
+                        Just cc -> object
+                          [ "loaded" .= True
+                          , "status" .= ("loaded" :: Text)
+                          , "temp_avg" .= safeIndex (ccTempAvg cc) tileIdx
+                          , "temp_avg_c" .= fmap (normToC units) (safeIndex (ccTempAvg cc) tileIdx)
+                          , "precip_avg" .= safeIndex (ccPrecipAvg cc) tileIdx
+                          , "precip_avg_mm_year" .= fmap (normToMmYear units) (safeIndex (ccPrecipAvg cc) tileIdx)
+                          , "humidity_avg_pct" .= fmap normToRH (safeIndex (ccHumidityAvg cc) tileIdx)
+                          , "wind_spd_avg_ms" .= fmap (normToWindMs units) (safeIndex (ccWindSpdAvg cc) tileIdx)
+                          , "wind_dir_avg_rad" .= safeIndex (ccWindDirAvg cc) tileIdx
+                          , "temp_range" .= safeIndex (ccTempRange cc) tileIdx
+                          , "precip_seasonality" .= safeIndex (ccPrecipSeasonality cc) tileIdx
+                          ]
+
+                      weatherTimelineLayer = object
+                        [ "loaded" .= maybe False (const True) weatherChunk
+                        , "status" .= (if maybe False (const True) weatherChunk then "loaded" else "not_loaded" :: Text)
+                        , "tick" .= uiSimTickCount ui
+                        , "auto_tick" .= uiSimAutoTick ui
+                        , "tick_rate" .= uiSimTickRate ui
+                        , "source" .= ("simulation_tick" :: Text)
+                        ]
+
+                      oceanCurrentLayer = object
+                        [ "status" .= (if isWater then "estimate_current_ui" else "land" :: Text)
+                        , "sample_scope" .= ("same_chunk_2_hexes" :: Text)
+                        , "water_tile" .= isWater
+                        , "water_type" .= fmap waterBodyDisplayName waterBodyTypeAt
+                        , "land_east_2" .= landEast
+                        , "land_west_2" .= landWest
+                        , "latitude_deg" .= latDeg
+                        , "longitude_deg" .= lonDeg
+                        , "temp_offset_norm" .= currentOffsetNorm
+                        , "temp_offset_c" .= currentOffsetC
+                        , "warm_scale" .= occWarmScale oceanCurrentCfg
+                        , "cold_scale" .= occColdScale oceanCurrentCfg
+                        , "lat_peak_deg" .= occLatPeakDeg oceanCurrentCfg
+                        , "lat_width_deg" .= occLatWidthDeg oceanCurrentCfg
+                        ]
+
+                      unitsLayer = object
+                        [ "elevation" .= object ["normalized" .= elevationNorm, "converted" .= elevationM, "unit" .= ("m" :: Text)]
+                        , "water_level" .= object ["normalized" .= waterLevelNorm, "converted" .= waterLevelM, "unit" .= ("m" :: Text)]
+                        , "relative_water_level" .= object ["normalized" .= relativeWaterNorm, "converted" .= relativeWaterM, "unit" .= ("m" :: Text)]
+                        , "slope_avg" .= object ["normalized" .= avgSlope, "converted" .= fmap (normSlopeToDeg units) avgSlope, "unit" .= ("°" :: Text)]
+                        , "temp_avg" .= object ["normalized" .= (climateChunk >>= \cc -> safeIndex (ccTempAvg cc) tileIdx), "converted" .= fmap (normToC units) (climateChunk >>= \cc -> safeIndex (ccTempAvg cc) tileIdx), "unit" .= ("°C" :: Text)]
+                        , "precip_avg" .= object ["normalized" .= (climateChunk >>= \cc -> safeIndex (ccPrecipAvg cc) tileIdx), "converted" .= fmap (normToMmYear units) (climateChunk >>= \cc -> safeIndex (ccPrecipAvg cc) tileIdx), "unit" .= ("mm/yr" :: Text)]
+                        , "humidity" .= object ["normalized" .= (climateChunk >>= \cc -> safeIndex (ccHumidityAvg cc) tileIdx), "converted" .= fmap normToRH (climateChunk >>= \cc -> safeIndex (ccHumidityAvg cc) tileIdx), "unit" .= ("% RH" :: Text)]
+                        , "weather_wind_spd" .= object ["normalized" .= (weatherChunk >>= \wc -> safeIndex (wcWindSpd wc) tileIdx), "converted" .= fmap (normToWindMs units) (weatherChunk >>= \wc -> safeIndex (wcWindSpd wc) tileIdx), "unit" .= ("m/s" :: Text)]
+                        , "weather_pressure" .= object ["normalized" .= (weatherChunk >>= \wc -> safeIndex (wcPressure wc) tileIdx), "converted" .= fmap (normToHPa units) (weatherChunk >>= \wc -> safeIndex (wcPressure wc) tileIdx), "unit" .= ("hPa" :: Text)]
+                        , "soil_depth" .= object ["normalized" .= safeIndex (tcSoilDepth tc) tileIdx, "converted" .= fmap (normToSoilM units) (safeIndex (tcSoilDepth tc) tileIdx), "unit" .= ("m" :: Text)]
+                        , "water_depth" .= object ["normalized" .= (waterBodyChunk >>= \wb -> safeIndex (wbDepth wb) tileIdx), "converted" .= fmap (negate . normDepthToMetres units) (waterBodyChunk >>= \wb -> safeIndex (wbDepth wb) tileIdx), "unit" .= ("m" :: Text)]
+                        ]
+
                   pure $ okResponse reqId $ object
                     [ "q"          .= q
                     , "r"          .= r
                     , "terrain"    .= terrainLayer
+                    , "hypsometry" .= hypsometryLayer
+                    , "terrain_form_metrics" .= terrainFormMetricsLayer
+                    , "hydrology"  .= hydrologyLayer
                     , "climate"    .= climateLayer
+                    , "climate_diagnostics" .= climateDiagnosticsLayer
                     , "weather"    .= weatherLayer
+                    , "weather_snapshot" .= weatherLayer
+                    , "weather_timeline" .= weatherTimelineLayer
                     , "river"      .= riverLayer
                     , "water_body" .= waterBodyLayer
+                    , "water_bodies" .= waterBodyLayer
                     , "water_table" .= waterTableLayer
+                    , "soil"       .= soilLayer
+                    , "biome_refinement" .= biomeRefinementLayer
                     , "vegetation" .= vegLayer
                     , "glacier"    .= glacierLayer
+                    , "glacier_snow_ice" .= glacierLayer
                     , "volcanism"  .= volcanismLayer
+                    , "ocean_currents" .= oceanCurrentLayer
+                    , "units"      .= unitsLayer
                     , "sections"   .= terrainInspectorSectionsObject inspector
                     ]
 
@@ -475,6 +675,11 @@ safeIndexInt v i
   | i >= 0 && i < U.length v = Just (v U.! i)
   | otherwise = Nothing
 
+safeIndexDirSlope :: U.Vector DirectionalSlope -> Int -> Maybe DirectionalSlope
+safeIndexDirSlope v i
+  | i >= 0 && i < U.length v = Just (v U.! i)
+  | otherwise = Nothing
+
 safeIndexWaterBody :: U.Vector WaterBodyType -> Int -> Maybe WaterBodyType
 safeIndexWaterBody v i
   | i >= 0 && i < U.length v = Just (v U.! i)
@@ -533,6 +738,91 @@ safeIndexBiome :: U.Vector BiomeId -> Int -> Maybe BiomeId
 safeIndexBiome v i
   | i >= 0 && i < U.length v = Just (v U.! i)
   | otherwise = Nothing
+
+hypsometricZone :: Float -> Float -> Text
+hypsometricZone waterLevel elevation
+  | elevation < waterLevel = "submerged"
+  | elevation < waterLevel + 0.04 = "coastal"
+  | elevation < 0.55 = "lowland"
+  | elevation < 0.75 = "upland"
+  | otherwise = "highland"
+
+biomeRefinementStatus :: BiomeId -> Text
+biomeRefinementStatus biomeId =
+  if biomeIdToCode biomeId <= 13 then "family" else "refined"
+
+biomeFamilyName :: BiomeId -> Text
+biomeFamilyName biomeId =
+  case biomeIdToCode biomeId of
+    0 -> "Desert"
+    1 -> "Grassland"
+    2 -> "Forest"
+    3 -> "Tundra"
+    4 -> "Rainforest"
+    5 -> "Shrubland"
+    6 -> "Savanna"
+    7 -> "Taiga"
+    8 -> "Swamp"
+    10 -> "Ocean"
+    11 -> "Snow"
+    12 -> "Coastal"
+    13 -> "Alpine"
+    code
+      | code `elem` [14, 15, 16, 20, 38, 63] -> "Forest"
+      | code `elem` [17, 35, 36, 37] -> "Grassland"
+      | code `elem` [18, 47, 48] -> "Shrubland"
+      | code `elem` [19, 51, 52, 53, 54, 55] -> "Swamp"
+      | code `elem` [21, 56, 57] -> "Snow"
+      | code `elem` [22, 49, 50] -> "Savanna"
+      | code `elem` [23, 65] -> "Taiga"
+      | code `elem` [24, 25, 26, 27, 28, 29] -> "Coastal"
+      | code `elem` [30, 31, 32, 33, 34, 64] -> "Desert"
+      | code `elem` [39, 46] -> "Rainforest"
+      | code `elem` [40, 41, 42] -> "Ocean"
+      | code `elem` [43, 44, 45] -> "Tundra"
+      | code == 58 -> "Alpine"
+      | code `elem` [59, 60] -> "Volcanic"
+      | code `elem` [61, 62] -> "Water body"
+      | otherwise -> "Unknown"
+
+oceanCurrentConfigFromUiForApi :: UiState -> OceanCurrentConfig
+oceanCurrentConfigFromUiForApi ui = OceanCurrentConfig
+  { occWarmScale = sliderToDomainFloat SliderOccWarmScale (uiOccWarmScale ui)
+  , occColdScale = sliderToDomainFloat SliderOccColdScale (uiOccColdScale ui)
+  , occLatPeakDeg = sliderToDomainFloat SliderOccLatPeakDeg (uiOccLatPeakDeg ui)
+  , occLatWidthDeg = sliderToDomainFloat SliderOccLatWidthDeg (uiOccLatWidthDeg ui)
+  }
+
+latLonValuesForApi :: UiState -> TerrainSnapshot -> Int -> Int -> (Float, Float)
+latLonValuesForApi ui terrainSnap tileQ tileR =
+  let planet = PlanetConfig
+        { pcRadius = mapRange 4778 9557 (uiPlanetRadius ui)
+        , pcAxialTilt = mapRange 0 45 (uiAxialTilt ui)
+        , pcInsolation = mapRange 0.7 1.3 (uiInsolation ui)
+        }
+      slice = WorldSlice
+        { wsLatCenter = mapRange (-90) 90 (uiSliceLatCenter ui)
+        , wsLatExtent = 0
+        , wsLonCenter = mapRange (-180) 180 (uiSliceLonCenter ui)
+        , wsLonExtent = 0
+        }
+      hex = HexGridMeta { hexSizeKm = sliderToDomainFloat SliderHexSizeKm (uiHexSizeKm ui) }
+      worldConfig = WorldConfig { wcChunkSize = tsChunkSize terrainSnap }
+      tile = TileCoord tileQ tileR
+  in ( tileLatitude planet hex slice worldConfig tile
+     , tileLongitude planet hex slice worldConfig tile
+     )
+
+hasLandAlongChunk :: TerrainSnapshot -> Float -> Int -> Int -> HexDirection -> Bool
+hasLandAlongChunk terrainSnap waterLevel chunkKey startIdx direction =
+  case IntMap.lookup chunkKey (tsTerrainChunks terrainSnap) of
+    Nothing -> False
+    Just terrainChunk -> any (landAt terrainChunk) [1, 2]
+  where
+    chunkSize = tsChunkSize terrainSnap
+    landAt terrainChunk step =
+      let tracedIdx = traceIndexInDirection chunkSize chunkSize direction step startIdx
+      in tracedIdx /= startIdx && maybe False (>= waterLevel) (safeIndex (tcElevation terrainChunk) tracedIdx)
 
 -- | Brief summary of a chunk for listing.
 chunkSummaryBrief :: Int -> (Int, TerrainChunk) -> Value

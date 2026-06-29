@@ -302,6 +302,7 @@ spec = describe "Seer.HTTP.Server" $ do
           , ("/simulation/tick", "post", "SimulationTickResponse")
           , ("/logs", "get", "LogGetResponse")
           , ("/screenshots", "post", "ScreenshotTakeResponse")
+          , ("/terrain/hex", "get", "TerrainHexResponse")
           ] :: [(Text, Text, Text)]
         requestRefs =
           [ ("/presets", "post", "PresetsSaveRequest")
@@ -328,6 +329,12 @@ spec = describe "Seer.HTTP.Server" $ do
     componentPropertyNullable doc "DataRecordsListResponse" "total_count" `shouldBe` Just True
     sort <$> componentPropertyNames doc "ScreenshotTakeResponse"
       `shouldBe` Just ["format", "image_base64", "saved_path", "source"]
+    componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("soil" `elem`)
+    componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("ocean_currents" `elem`)
+    componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("weather_snapshot" `elem`)
+    componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("weather_timeline" `elem`)
+    componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("water_bodies" `elem`)
+    componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("glacier_snow_ice" `elem`)
     schemaComponentNames doc `shouldSatisfy` elem "ErrorEnvelope"
 
   it "has a handler for every route spec" $ do
@@ -431,6 +438,20 @@ spec = describe "Seer.HTTP.Server" $ do
       hresStatusCode hexRsp `shouldBe` 200
       lookupValue "q" (hresBody hexRsp) `shouldBe` Just (Number 0)
       lookupValue "r" (hresBody hexRsp) `shouldBe` Just (Number 0)
+      map (`objectHasKey` hresBody hexRsp)
+        [ "hypsometry"
+        , "terrain_form_metrics"
+        , "hydrology"
+        , "soil"
+        , "biome_refinement"
+        , "climate_diagnostics"
+        , "weather_snapshot"
+        , "weather_timeline"
+        , "water_bodies"
+        , "glacier_snow_ice"
+        , "ocean_currents"
+        , "units"
+        ] `shouldBe` replicate 12 True
 
   it "maps retired MCP resources/list coverage to OpenAPI resource routes" $ do
     let doc = openApiDocument publicHttpRouteSpecs

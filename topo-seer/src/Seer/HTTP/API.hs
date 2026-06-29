@@ -536,18 +536,30 @@ worldSummarySchema = inlineObjectSchema
 
 terrainHexResponseSchema :: JsonSchema
 terrainHexResponseSchema = objectSchema "TerrainHexResponse"
-  [ "q", "r", "terrain", "climate", "weather", "river", "water_body", "water_table", "vegetation", "glacier", "volcanism", "sections" ]
+  [ "q", "r", "terrain", "hypsometry", "terrain_form_metrics", "hydrology", "climate", "climate_diagnostics", "weather", "weather_snapshot", "weather_timeline", "river", "water_body", "water_bodies", "water_table", "soil", "biome_refinement", "vegetation", "glacier", "glacier_snow_ice", "volcanism", "ocean_currents", "units", "sections" ]
   [ ("q", integerSchema)
   , ("r", integerSchema)
   , ("terrain", terrainLayerSchema)
+  , ("hypsometry", freeObjectSchema)
+  , ("terrain_form_metrics", freeObjectSchema)
+  , ("hydrology", freeObjectSchema)
   , ("climate", nullableSchema freeObjectSchema)
+  , ("climate_diagnostics", freeObjectSchema)
   , ("weather", nullableSchema freeObjectSchema)
+  , ("weather_snapshot", nullableSchema freeObjectSchema)
+  , ("weather_timeline", freeObjectSchema)
   , ("river", nullableSchema freeObjectSchema)
   , ("water_body", nullableSchema freeObjectSchema)
+  , ("water_bodies", nullableSchema freeObjectSchema)
   , ("water_table", nullableSchema freeObjectSchema)
+  , ("soil", freeObjectSchema)
+  , ("biome_refinement", freeObjectSchema)
   , ("vegetation", nullableSchema freeObjectSchema)
   , ("glacier", nullableSchema freeObjectSchema)
+  , ("glacier_snow_ice", nullableSchema freeObjectSchema)
   , ("volcanism", nullableSchema freeObjectSchema)
+  , ("ocean_currents", freeObjectSchema)
+  , ("units", freeObjectSchema)
   , ("sections", arraySchema terrainInspectorSectionSchema)
   ]
 
@@ -648,6 +660,7 @@ terrainLayerSchema :: Value
 terrainLayerSchema = inlineObjectSchema
   []
   [ ("elevation", nullableSchema numberSchema)
+  , ("elevation_m", nullableSchema numberSchema)
   , ("curvature", nullableSchema numberSchema)
   , ("hardness", nullableSchema numberSchema)
   , ("moisture", nullableSchema numberSchema)
@@ -655,9 +668,27 @@ terrainLayerSchema = inlineObjectSchema
   , ("roughness", nullableSchema numberSchema)
   , ("rock_density", nullableSchema numberSchema)
   , ("soil_depth", nullableSchema numberSchema)
+  , ("soil_grain", nullableSchema numberSchema)
+  , ("relief", nullableSchema numberSchema)
+  , ("relief_2ring", nullableSchema numberSchema)
+  , ("relief_3ring", nullableSchema numberSchema)
+  , ("micro_relief", nullableSchema numberSchema)
+  , ("ruggedness", nullableSchema numberSchema)
   , ("terrain_form", nullableSchema stringSchema)
+  , ("terrain_form_code", nullableSchema integerSchema)
   , ("biome", nullableSchema stringSchema)
+  , ("biome_code", nullableSchema integerSchema)
+  , ("rock_type", nullableSchema integerSchema)
+  , ("soil_type", nullableSchema integerSchema)
   , ("plate_id", nullableSchema integerSchema)
+  , ("plate_height", nullableSchema numberSchema)
+  , ("plate_hardness", nullableSchema numberSchema)
+  , ("plate_age", nullableSchema numberSchema)
+  , ("plate_velocity_x", nullableSchema numberSchema)
+  , ("plate_velocity_y", nullableSchema numberSchema)
+  , ("slope_avg", nullableSchema numberSchema)
+  , ("slope_max", nullableSchema numberSchema)
+  , ("slope_min", nullableSchema numberSchema)
   ]
 
 terrainChunkBriefSchema :: Value
