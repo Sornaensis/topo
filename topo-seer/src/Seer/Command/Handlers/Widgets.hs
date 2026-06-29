@@ -41,6 +41,7 @@ import Actor.UI.State
   , LeftTab(..)
   , UiState(..)
   , ViewMode(..)
+  , getUiSnapshot
   , readUiSnapshotRef
   )
 import Actor.UI.Setters
@@ -377,7 +378,9 @@ executeWidgetClick ctx wid = do
       uiH = ahUiHandle handles
       logH = ahLogHandle handles
       pluginH = ahPluginManagerHandle handles
-  uiSnap <- readUiSnapshotRef (ccUiSnapshotRef ctx)
+  -- Use an actor call for command-triggered widget clicks so a rapid sequence
+  -- of clicks observes UI updates enqueued by prior clicks before it.
+  uiSnap <- getUiSnapshot uiH
   let dataBrowserResult message action = do
         result <- applyDataBrowserClick ctx uiSnap action
         pure (result *> Right message)
