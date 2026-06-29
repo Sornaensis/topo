@@ -82,14 +82,14 @@
       "waiver": null
     },
     {
-      "id": "pipeline-diagnostics-parity-missing",
+      "id": "pipeline-diagnostics-parity-present",
       "title": "Pipeline diagnostics parity and stage dependency visibility",
-      "availability": "missing",
+      "availability": "present",
       "owner": "topo generation maintainers",
-      "status": "planned",
+      "status": "present",
       "featureGroup": "topo-pipeline-terrain",
-      "tests": [],
-      "waiver": "Missing by design in this matrix-maintenance task; tracked by M9 pipeline diagnostics work rather than this CI automation change."
+      "tests": ["topo:test:Spec.Pipeline", "topo-seer:test:Spec.CommandDispatch", "topo-seer:test:Spec.HTTP"],
+      "waiver": null
     },
     {
       "id": "overlay-manager-provenance-ui-missing",
@@ -462,6 +462,8 @@
           "Topo.Pipeline",
           "Topo.Pipeline.Stage",
           "Topo.Pipeline.Dep",
+          "Topo.Pipeline.Registry",
+          "Topo.Pipeline.Diagnostics",
           "Topo.BaseHeight",
           "Topo.Gen",
           "Topo.Tectonics",

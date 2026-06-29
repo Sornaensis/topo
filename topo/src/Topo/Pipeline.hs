@@ -12,6 +12,9 @@ module Topo.Pipeline
     module Topo.Pipeline.Stage
     -- * Dependencies
   , module Topo.Pipeline.Dep
+    -- * Registry and diagnostics
+  , module Topo.Pipeline.Registry
+  , module Topo.Pipeline.Diagnostics
     -- * Pipeline types
   , PipelineStage(..)
   , PipelineConfig(..)
@@ -36,6 +39,8 @@ import Data.Word (Word64)
 import Topo.Overlay (overlayNames)
 import Topo.Overlay.Schema (OverlaySchema)
 import Topo.Pipeline.Dep (builtinDependencies, disabledClosure)
+import Topo.Pipeline.Diagnostics
+import Topo.Pipeline.Registry
 import qualified Topo.Pipeline.OverlayLifecycle as OverlayLifecycle
 import qualified Topo.Pipeline.OverlayValidation as OverlayValidation
 import Topo.Pipeline.Stage (StageId, stageCanonicalName)

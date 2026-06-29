@@ -44,6 +44,14 @@ import qualified Data.Text as Text
 import Data.Time (UTCTime, diffUTCTime)
 import Data.Word (Word8)
 import Linear (V2(..), V4)
+import Topo.Pipeline
+  ( PipelineStageDiagnostic(..)
+  , builtinDependencies
+  , inferExplicitDisabledRoots
+  , pipelineStageDiagnostics
+  , stageDiagnosticFor
+  , stageDiagnosticStatusText
+  )
 import Topo.Pipeline.Stage (StageId, allBuiltinStageIds, stageCanonicalName)
 import Topo.Plugin.RPC.Manifest (RPCParamSpec(..), RPCParamType(..))
 import UI.DrawCommand (DrawCommand, fillRect, line, strokeRect)
@@ -289,15 +297,20 @@ pipelineLabelViews now ui layout =
     pad = 12
     checkboxSize = 16
     labelMaxW = sw - (pad + checkboxSize + 8) - 8
+    explicitDisabled
+      | Set.null (uiExplicitDisabledStages ui) = inferExplicitDisabledRoots builtinDependencies (uiDisabledStages ui)
+      | otherwise = uiExplicitDisabledStages ui
+    stageDiagnostics = pipelineStageDiagnostics builtinDependencies allBuiltinStageIds explicitDisabled
     stageLabels =
       [ let Rect (V2 _ ry, V2 _ _rowH) = sr (configScrollRowRect idx layout)
             isDisabled = Set.member sid (uiDisabledStages ui)
             textColor = if isDisabled then textPipelineStageDisabled else textPipelineStageName
+            mDiag = stageDiagnosticFor sid stageDiagnostics
         in PipelineLabelView
           { plvPosition = V2 (sx + pad + checkboxSize + 8) (ry + 4)
           , plvColor = textColor
-          , plvText = stageCanonicalName sid
-          , plvMaxWidth = Nothing
+          , plvText = pipelineStageLabel sid mDiag
+          , plvMaxWidth = Just labelMaxW
           }
       | (idx, sid) <- zip [0..] allBuiltinStageIds
       ]
@@ -335,6 +348,15 @@ pipelineLabelViews now ui layout =
           , plvMaxWidth = Nothing
           }
       ]
+
+pipelineStageLabel :: StageId -> Maybe PipelineStageDiagnostic -> Text
+pipelineStageLabel sid Nothing = stageCanonicalName sid
+pipelineStageLabel sid (Just diag) =
+  stageCanonicalName sid <> " [" <> stageDiagnosticStatusText diag <> "]" <> dependencySuffix
+  where
+    dependencySuffix = case psdiagDependencies diag of
+      [] -> ""
+      deps -> " deps:" <> Text.intercalate "," (map stageCanonicalName deps)
 
 pluginLabelRows
   :: (Rect -> Rect)

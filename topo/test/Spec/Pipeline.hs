@@ -12,6 +12,7 @@ import Data.Either (isRight)
 import Data.IORef (newIORef, readIORef, modifyIORef')
 import Data.List (foldl')
 import Data.Text (Text, pack)
+import qualified Data.Text as Text
 import System.IO.Temp (withSystemTempDirectory)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
@@ -177,6 +178,33 @@ spec = describe "Pipeline" $ do
 
     it "empty seed set produces empty closure" $ do
       disabledClosure builtinDependencies Set.empty `shouldBe` Set.empty
+
+  describe "Stage registry diagnostics" $ do
+    it "generates stage docs from the registry without dependency drift" $ do
+      let docs = builtinStageDocs
+          names = stageDocsMarkdown docs
+      climateDoc <- fromMaybeFailure "climate doc" (stageDocFor StageClimate)
+      map psdStageId docs `shouldBe` allBuiltinStageIds
+      stageDocDependencies climateDoc `shouldBe` [StagePlateTerrain, StageVegetation]
+      names `shouldSatisfy` Text.isInfixOf "## plate-terrain"
+      names `shouldSatisfy` Text.isInfixOf "Dependencies: plate-terrain, vegetation"
+
+    it "explains dependency-closure diagnostics" $ do
+      let diagnostics = pipelineStageDiagnostics builtinDependencies allBuiltinStageIds (Set.singleton StageClimate)
+      climateDiag <- fromMaybeFailure "climate diagnostic" (stageDiagnosticFor StageClimate diagnostics)
+      oceanDiag <- fromMaybeFailure "ocean-current diagnostic" (stageDiagnosticFor StageOceanCurrents diagnostics)
+      weatherDiag <- fromMaybeFailure "weather diagnostic" (stageDiagnosticFor StageWeather diagnostics)
+      psdiagEnabled climateDiag `shouldBe` False
+      psdiagExplicitlyDisabled climateDiag `shouldBe` True
+      psdiagEnabled oceanDiag `shouldBe` False
+      psdiagAutoDisabled oceanDiag `shouldBe` True
+      psdiagDisabledBy oceanDiag `shouldBe` [StageClimate]
+      psdiagDisabledBy weatherDiag `shouldSatisfy` elem StageClimate
+      psdiagDiagnostics oceanDiag `shouldSatisfy` any (Text.isInfixOf "auto-disabled")
+
+    it "infers explicit roots from closure-style disabled sets" $ do
+      let closure = disabledClosure builtinDependencies (Set.singleton StageClimate)
+      inferExplicitDisabledRoots builtinDependencies closure `shouldBe` Set.singleton StageClimate
 
   -- Phase 1: Stage skipping
   describe "Stage skipping" $ do
@@ -566,6 +594,10 @@ spec = describe "Pipeline" $ do
       StageBiomes `elem` ids `shouldBe` True
       StageClimate `elem` ids `shouldBe` True
       StageErosion `elem` ids `shouldBe` True
+
+fromMaybeFailure :: String -> Maybe a -> IO a
+fromMaybeFailure _ (Just value) = pure value
+fromMaybeFailure label Nothing = expectationFailure label >> fail label
 
 expectPipeline :: Either PipelineError (TerrainWorld, [PipelineSnapshot]) -> IO TerrainWorld
 expectPipeline result =

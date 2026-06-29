@@ -249,6 +249,8 @@ module Actor.UI.Setters
   , setUiContextPos
   , setUiHexTooltipPinned
   , setUiDisabledStages
+  , setUiExplicitDisabledStages
+  , setUiPipelineStageRun
   , setUiDisabledPlugins
   , setUiPluginParam
   , setUiPluginNames
@@ -287,6 +289,7 @@ import UI.WidgetTree (WidgetId)
 import Actor.UI.State
   ( ConfigTab
   , DataBrowserState
+  , PipelineStageRunState
   , LeftTab
   , Ui
   , UiMenuMode
@@ -555,6 +558,8 @@ setUiContextHex = sendUnary SetContextHex
 setUiContextPos = sendUnary SetContextPos
 setUiHexTooltipPinned = sendUnary SetHexTooltipPinned
 setUiDisabledStages = sendUnary SetDisabledStages
+setUiExplicitDisabledStages = sendUnary SetExplicitDisabledStages
+setUiPipelineStageRun = sendUnary SetPipelineStageRun
 setUiDisabledPlugins = sendUnary SetDisabledPlugins
 setUiPluginNames = sendUnary SetPluginNames
 setUiDayNightEnabled = sendUnary SetDayNightEnabled

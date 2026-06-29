@@ -40,9 +40,10 @@ spec = describe "Feature matrix" $ do
     assertPublicHttpRoutes matrix
     assertServiceOperations matrix
 
-  it "marks plugin/data-resource and simulation DAG feature surfaces present for 1.0" $ do
+  it "marks pipeline, plugin/data-resource, and simulation DAG feature surfaces present for 1.0" $ do
     root <- findRepoRoot
     matrix <- loadFeatureMatrix root
+    assertFeaturePresent matrix "pipeline-diagnostics-parity-present"
     assertFeaturePresent matrix "plugin-resource-status-surfaces-present"
     assertFeaturePresent matrix "simulation-dag-status-surfaces-present"
 

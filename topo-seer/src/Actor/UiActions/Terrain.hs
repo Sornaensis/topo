@@ -44,13 +44,21 @@ import Actor.SnapshotReceiver
   , bumpSnapshotVersion
   )
 import Actor.Terrain (TerrainGenProgress(..), TerrainGenResult(..))
-import Actor.UI (Ui, UiState(..), getUiSnapshot, setUiGenerating)
+import Actor.UI
+  ( PipelineStageRunState(..)
+  , Ui
+  , UiState(..)
+  , getUiSnapshot
+  , setUiGenerating
+  , setUiPipelineStageRun
+  )
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
 import GHC.Clock (getMonotonicTimeNSec)
 import Hyperspace.Actor (ActorHandle, Protocol)
 import Seer.Timing (nsToMs)
+import Topo.Pipeline (StageStatus(..))
 
 -- | Handles cached from the last UI action request.
 data UiActionHandles = UiActionHandles
@@ -64,7 +72,13 @@ data UiActionHandles = UiActionHandles
   }
 
 handleTerrainProgress :: UiActionHandles -> TerrainGenProgress -> IO ()
-handleTerrainProgress handles progressMsg =
+handleTerrainProgress handles progressMsg = do
+  setUiPipelineStageRun (uahUi handles) PipelineStageRunState
+    { psrsStageId = tgpStageId progressMsg
+    , psrsStageName = tgpStageName progressMsg
+    , psrsStatus = tgpStageStatus progressMsg
+    , psrsElapsedMs = tgpStageElapsedMs progressMsg
+    }
   appendLog (uahLog handles) (LogEntry LogInfo (renderTerrainProgress progressMsg))
 
 handleTerrainLog :: UiActionHandles -> LogEntry -> IO ()
@@ -76,10 +90,11 @@ renderTerrainProgress progressMsg =
   let idx = tgpStageIndex progressMsg
       total = tgpStageCount progressMsg
       name = tgpStageName progressMsg
-      prefix = "terrain: stage " <> toText idx <> "/" <> toText total <> " "
+      status = stageStatusText (tgpStageStatus progressMsg)
+      prefix = "terrain: stage " <> toText idx <> "/" <> toText total <> " " <> status <> " "
       timing = case tgpStageElapsedMs progressMsg of
         Nothing -> ""
-        Just elapsed -> " (prev stage " <> toText elapsed <> "ms)"
+        Just elapsed -> " (elapsed " <> toText elapsed <> "ms)"
   in prefix <> name <> timing
 
 applyTerrainResult :: UiActionHandles -> TerrainGenResult -> IO ()
@@ -179,6 +194,11 @@ rebuildAtlas handles terrainSnap uiSnap = do
 
 toText :: Show a => a -> Text
 toText = Text.pack . show
+
+stageStatusText :: StageStatus -> Text
+stageStatusText StageStarted = "started"
+stageStatusText StageCompleted = "completed"
+stageStatusText StageSkipped = "skipped"
 
 logElapsed :: ActorHandle Log (Protocol Log) -> Text -> Word64 -> Word64 -> IO ()
 logElapsed logHandle label start end =

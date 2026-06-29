@@ -103,6 +103,13 @@ spec = describe "Seer.HTTP.Server" $ do
       hresStatusCode state `shouldBe` 200
       objectHasKey "seed" (hresBody state) `shouldBe` True
 
+      pipeline <- request app (mkRequest "GET" ["pipeline"])
+      hresStatusCode pipeline `shouldBe` 200
+      objectHasKey "stages" (hresBody pipeline) `shouldBe` True
+      objectHasKey "dag" (hresBody pipeline) `shouldBe` True
+      objectHasKey "docs" (hresBody pipeline) `shouldBe` True
+      pipelineStagesExposeDiagnostics (hresBody pipeline) `shouldBe` True
+
       dag <- request app (mkRequest "GET" ["simulation", "dag"])
       hresStatusCode dag `shouldBe` 200
       objectHasKey "available" (hresBody dag) `shouldBe` True
@@ -781,6 +788,22 @@ lookupValue _ _ = Nothing
 objectHasKey :: Text -> Value -> Bool
 objectHasKey key (Object obj) = KM.member (Key.fromText key) obj
 objectHasKey _ _ = False
+
+pipelineStagesExposeDiagnostics :: Value -> Bool
+pipelineStagesExposeDiagnostics (Object obj) = case KM.lookup "stages" obj of
+  Just (Array stages) -> any stageHasPipelineDiagnostics (toList stages)
+  _ -> False
+  where
+    stageHasPipelineDiagnostics (Object stage) = all (`KM.member` stage)
+      (map Key.fromText
+        [ "dependencies"
+        , "output_fields"
+        , "last_run"
+        , "provenance"
+        , "diagnostics"
+        ])
+    stageHasPipelineDiagnostics _ = False
+pipelineStagesExposeDiagnostics _ = False
 
 pluginsExposeSurfaceKeys :: Value -> Bool
 pluginsExposeSurfaceKeys (Object obj) = case KM.lookup "plugins" obj of

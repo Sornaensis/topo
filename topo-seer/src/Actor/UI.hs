@@ -11,6 +11,7 @@ module Actor.UI
   , LeftTab(..)
   , UiMenuMode(..)
   , ViewMode(..)
+  , PipelineStageRunState(..)
   , UiState(..)
   , emptyUiState
   , uiActorDef
@@ -33,6 +34,7 @@ import Actor.UI.State
   , UiMenuMode(..)
   , UiSnapshotReply
   , UiSnapshotRef
+  , PipelineStageRunState(..)
   , UiState(..)
   , ViewMode(..)
   , builtinStageRowCount

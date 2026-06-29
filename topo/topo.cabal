@@ -25,6 +25,8 @@ library
       Topo.Pipeline
       Topo.Pipeline.Stage
       Topo.Pipeline.Dep
+      Topo.Pipeline.Registry
+      Topo.Pipeline.Diagnostics
       Topo.Calendar
       Topo.Solar
       Topo.Overlay

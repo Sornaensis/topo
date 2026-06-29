@@ -697,6 +697,22 @@ spec = describe "CommandDispatch" $ do
   -- -------------------------------------------------------------------
   -- pipeline and plugin mutations
   -- -------------------------------------------------------------------
+  describe "get_pipeline" $ do
+    it "exposes registry docs, dependency DAG, and stage diagnostics" $ withCtx $ \ctx -> do
+      _ <- dispatch ctx "set_stage_enabled" (object ["stage" .= ("climate" :: String), "enabled" .= False])
+      rsp <- dispatch ctx "get_pipeline" Null
+      srSuccess rsp `shouldBe` True
+      lookupKey "dag" (srResult rsp) `shouldSatisfy` maybe False valueHasNodesAndEdges
+      lookupKey "docs" (srResult rsp) `shouldSatisfy` maybe False nonEmptyArray
+      case lookupKey "stages" (srResult rsp) of
+        Just (Array stages) -> do
+          length stages `shouldSatisfy` (> 0)
+          let stageValues = toList stages
+          findStage "climate" stageValues `shouldSatisfy` maybe False (stageHasStatus "disabled")
+          findStage "ocean-currents" stageValues `shouldSatisfy` maybe False (stageHasStatus "auto-disabled")
+          findStage "weather" stageValues `shouldSatisfy` maybe False (valueHasKey "last_run")
+        _ -> expectationFailure "expected stages array"
+
   describe "set_stage_enabled" $ do
     it "applies the built-in dependency closure used by UI stage toggles" $ withCtx $ \ctx -> do
       rsp <- dispatch ctx "set_stage_enabled" (object ["stage" .= ("climate" :: String), "enabled" .= False])
@@ -705,6 +721,18 @@ spec = describe "CommandDispatch" $ do
       Set.member StageClimate (uiDisabledStages ui) `shouldBe` True
       Set.member StageOceanCurrents (uiDisabledStages ui) `shouldBe` True
       Set.member StageWeather (uiDisabledStages ui) `shouldBe` True
+
+    it "preserves overlapping explicit disables across later toggles" $ withCtx $ \ctx -> do
+      climateOff <- dispatch ctx "set_stage_enabled" (object ["stage" .= ("climate" :: String), "enabled" .= False])
+      srSuccess climateOff `shouldBe` True
+      biomesOff <- dispatch ctx "set_stage_enabled" (object ["stage" .= ("biomes" :: String), "enabled" .= False])
+      srSuccess biomesOff `shouldBe` True
+      climateOn <- dispatch ctx "set_stage_enabled" (object ["stage" .= ("climate" :: String), "enabled" .= True])
+      srSuccess climateOn `shouldBe` True
+      ui <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
+      Set.member StageClimate (uiDisabledStages ui) `shouldBe` False
+      Set.member StageBiomes (uiDisabledStages ui) `shouldBe` True
+      Set.member StageBiomes (uiExplicitDisabledStages ui) `shouldBe` True
 
   describe "set_plugin_param" $ do
     it "updates the UI plugin parameter snapshot as well as the plugin manager" $ withCtx $ \ctx -> do
@@ -1121,6 +1149,28 @@ serviceOperationCases =
 lookupKey :: Key -> Value -> Maybe Value
 lookupKey k (Object o) = KM.lookup k o
 lookupKey _ _          = Nothing
+
+valueHasKey :: Key -> Value -> Bool
+valueHasKey key (Object obj) = KM.member key obj
+valueHasKey _ _ = False
+
+nonEmptyArray :: Value -> Bool
+nonEmptyArray (Array values) = not (null (toList values))
+nonEmptyArray _ = False
+
+valueHasNodesAndEdges :: Value -> Bool
+valueHasNodesAndEdges value = valueHasKey "nodes" value && valueHasKey "edges" value
+
+findStage :: Text -> [Value] -> Maybe Value
+findStage stageId = go
+  where
+    go [] = Nothing
+    go (value:rest)
+      | lookupKey "id" value == Just (String stageId) = Just value
+      | otherwise = go rest
+
+stageHasStatus :: Text -> Value -> Bool
+stageHasStatus expected value = lookupKey "status" value == Just (String expected)
 
 -- | Check whether a view-mode entry has @"active": true@.
 isActive :: Value -> Bool

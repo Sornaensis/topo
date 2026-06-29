@@ -36,6 +36,7 @@ module Actor.UI.State
   , viewModeFromText
   , builtinViewModeFromText
   , viewModeLabel
+  , PipelineStageRunState(..)
   , UiState(..)
   , emptyUiState
   , UiUpdate(..)
@@ -73,6 +74,7 @@ import Seer.Editor.Types (EditorState(..), defaultEditorState)
 import Seer.Render.ZoomStage (maxCameraZoom)
 import Seer.World.Persist.Types (WorldSaveManifest)
 import Topo.Overlay.Schema (OverlayFieldType(..))
+import Topo.Pipeline (StageStatus)
 import Topo.Pipeline.Stage (StageId)
 import Topo.Plugin.DataResource (DataResourceSchema)
 import Topo.Plugin.RPC.DataService (DataRecord)
@@ -632,6 +634,13 @@ data UiMenuMode
   | MenuWorldLoad
   deriving (Eq, Show)
 
+data PipelineStageRunState = PipelineStageRunState
+  { psrsStageId :: !StageId
+  , psrsStageName :: !Text
+  , psrsStatus :: !StageStatus
+  , psrsElapsedMs :: !(Maybe Int)
+  } deriving (Eq, Show)
+
 data UiState = UiState
   { uiSeed :: !Word64
   , uiGenerating :: !Bool
@@ -871,6 +880,8 @@ data UiState = UiState
   , uiSliceLonCenter :: !Float
   , uiDayNightEnabled :: !Bool
   , uiDisabledStages :: !(Set StageId)
+  , uiExplicitDisabledStages :: !(Set StageId)
+  , uiPipelineStageRuns :: !(Map StageId PipelineStageRunState)
   , uiDisabledPlugins :: !(Set Text)
   , uiPluginParams :: !(Map Text (Map Text Value))
   , uiPluginNames :: ![Text]
@@ -1137,6 +1148,8 @@ emptyUiState = UiState
   , uiSliceLonCenter = sliderDefault SliderSliceLonCenter
   , uiDayNightEnabled = False
   , uiDisabledStages = Set.empty
+  , uiExplicitDisabledStages = Set.empty
+  , uiPipelineStageRuns = Map.empty
   , uiDisabledPlugins = Set.empty
   , uiPluginParams = Map.empty
   , uiPluginNames = []
@@ -1200,6 +1213,8 @@ data UiUpdate
   | SetHoverHex !(Maybe (Int, Int))
   | SetHoverWidget !(Maybe WidgetId)
   | SetDisabledStages !(Set StageId)
+  | SetExplicitDisabledStages !(Set StageId)
+  | SetPipelineStageRun !PipelineStageRunState
   | SetDisabledPlugins !(Set Text)
   | SetPluginParam !Text !Text !Value
   | SetPluginNames ![Text]
@@ -1259,6 +1274,9 @@ applyUpdate upd st = case upd of
   SetHoverHex v -> st { uiHoverHex = v }
   SetHoverWidget v -> st { uiHoverWidget = v }
   SetDisabledStages v -> st { uiDisabledStages = v }
+  SetExplicitDisabledStages v -> st { uiExplicitDisabledStages = v }
+  SetPipelineStageRun runState ->
+    st { uiPipelineStageRuns = Map.insert (psrsStageId runState) runState (uiPipelineStageRuns st) }
   SetDisabledPlugins v -> st { uiDisabledPlugins = v }
   SetPluginParam pluginName paramName value ->
     let inner = Map.findWithDefault Map.empty pluginName (uiPluginParams st)

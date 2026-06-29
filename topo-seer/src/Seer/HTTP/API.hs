@@ -857,8 +857,11 @@ codedNameSchema = inlineObjectSchema
 
 pipelineGetResponseSchema :: JsonSchema
 pipelineGetResponseSchema = objectSchema "PipelineGetResponse"
-  [ "stages" ]
+  [ "stages", "dag", "docs", "diagnostics" ]
   [ ("stages", arraySchema pipelineStageSchema)
+  , ("dag", pipelineDagSchema)
+  , ("docs", arraySchema pipelineStageDocSchema)
+  , ("diagnostics", freeObjectSchema)
   ]
 
 pipelineSetStageEnabledRequestSchema :: JsonSchema
@@ -873,6 +876,8 @@ pipelineSetStageEnabledResponseSchema = objectSchema "PipelineSetStageEnabledRes
   [ "stage", "enabled" ]
   [ ("stage", stringSchema)
   , ("enabled", booleanSchema)
+  , ("disabled_closure", arraySchema stringSchema)
+  , ("diagnostics", arraySchema stringSchema)
   ]
 
 pipelineStageSchema :: Value
@@ -882,6 +887,49 @@ pipelineStageSchema = inlineObjectSchema
   , ("name", stringSchema)
   , ("enabled", booleanSchema)
   , ("source", enumStringSchema ["builtin", "plugin"])
+  , ("status", stringSchema)
+  , ("explicitly_disabled", booleanSchema)
+  , ("auto_disabled", booleanSchema)
+  , ("dependencies", arraySchema stringSchema)
+  , ("dependents", arraySchema stringSchema)
+  , ("disabled_by", arraySchema stringSchema)
+  , ("config", freeObjectSchema)
+  , ("output_fields", arraySchema stringSchema)
+  , ("output_overlays", arraySchema stringSchema)
+  , ("last_run", freeObjectSchema)
+  , ("provenance", freeObjectSchema)
+  , ("diagnostics", arraySchema stringSchema)
+  , ("plugin_insertion", nullableSchema freeObjectSchema)
+  , ("plugin_diagnostics", freeObjectSchema)
+  , ("doc", pipelineStageDocSchema)
+  ]
+
+pipelineDagSchema :: Value
+pipelineDagSchema = inlineObjectSchema ["nodes", "edges"]
+  [ ("nodes", arraySchema (inlineObjectSchema ["id", "source", "enabled"]
+      [ ("id", stringSchema)
+      , ("source", enumStringSchema ["builtin", "plugin"])
+      , ("enabled", booleanSchema)
+      , ("status", stringSchema)
+      ]))
+  , ("edges", arraySchema (inlineObjectSchema ["from", "to", "kind"]
+      [ ("from", stringSchema)
+      , ("to", stringSchema)
+      , ("kind", enumStringSchema ["requires", "insert_after"])
+      ]))
+  ]
+
+pipelineStageDocSchema :: Value
+pipelineStageDocSchema = inlineObjectSchema ["id", "title", "summary", "dependencies", "config_keys", "output_fields"]
+  [ ("id", stringSchema)
+  , ("title", stringSchema)
+  , ("summary", stringSchema)
+  , ("stage_seed_tag", stringSchema)
+  , ("dependencies", arraySchema stringSchema)
+  , ("config_keys", arraySchema stringSchema)
+  , ("output_fields", arraySchema stringSchema)
+  , ("output_overlays", arraySchema stringSchema)
+  , ("diagnostic_hints", arraySchema stringSchema)
   ]
 
 -- Plugins -------------------------------------------------------------------

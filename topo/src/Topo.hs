@@ -10,6 +10,8 @@ module Topo
   , module Topo.Pipeline
   , module Topo.Pipeline.Stage
   , module Topo.Pipeline.Dep
+  , module Topo.Pipeline.Registry
+  , module Topo.Pipeline.Diagnostics
   , module Topo.Calendar
   , module Topo.Solar
   , module Topo.Overlay
@@ -58,6 +60,8 @@ import Topo.Plugin
 import Topo.Pipeline
 import Topo.Pipeline.Stage
 import Topo.Pipeline.Dep
+import Topo.Pipeline.Registry
+import Topo.Pipeline.Diagnostics
 import Topo.Calendar
 import Topo.Solar
 import Topo.Overlay

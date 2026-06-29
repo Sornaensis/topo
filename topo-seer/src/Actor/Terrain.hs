@@ -20,7 +20,7 @@ module Actor.Terrain
 import Actor.Log (LogEntry(..), LogLevel(..))
 import Control.Concurrent (threadDelay)
 import Control.Exception (evaluate)
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Set (Set)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -50,7 +50,7 @@ import Topo
   , getWeatherFromOverlay
   , insertOverlay
   )
-import Topo.Pipeline (PipelineConfig(..), PipelineStage, runPipeline)
+import Topo.Pipeline (PipelineConfig(..), PipelineStage, StageProgress(..), StageStatus(..), runPipeline)
 import Topo.Pipeline.Stage (StageId)
 import Topo.WorldGen (WorldGenConfig(..), buildFullPipelineConfig)
 import Actor.Simulation (Simulation, setSimWorld)
@@ -84,7 +84,9 @@ data TerrainGenRequest = TerrainGenRequest
 data TerrainGenProgress = TerrainGenProgress
   { tgpStageIndex :: !Int
   , tgpStageCount :: !Int
+  , tgpStageId :: !StageId
   , tgpStageName :: !Text
+  , tgpStageStatus :: !StageStatus
   , tgpStageElapsedMs :: !(Maybe Int)
   } deriving (Eq, Show)
 
@@ -141,15 +143,16 @@ actor Terrain
                    (worldPlanet cfg) (worldSlice cfg)
         world0 = registerPluginOverlays (tgrOverlaySchemas req) baseWorld
         pipeline0 = buildFullPipelineConfig cfg worldCfg (tgrSeed req)
-        pipeline = pipeline0
+        pipelineWithoutProgress = pipeline0
           { pipelineDisabled = tgrDisabledStages req
           , pipelineStages = pipelineStages pipeline0 ++ tgrExtraStages req
           }
-        stageCount = length (pipelineStages pipeline)
-    stageRef <- newIORef 0
     stageStartRef <- newIORef Nothing
-    let topoEnv = TopoEnv
-          { teLogger = \msg -> do
+    let pipeline = pipelineWithoutProgress
+          { pipelineOnProgress = publishPipelineProgress replyTo stageStartRef
+          }
+        topoEnv = TopoEnv
+          { teLogger = \_msg -> do
               -- Yield between pipeline stages so the render thread's
               -- bound OS thread can re-acquire a GHC capability.
               -- Every safe FFI call in the render loop (all SDL
@@ -157,21 +160,9 @@ actor Terrain
               -- without this yield the monolithic pipeline can hold
               -- the terrain capability for the entire ~5s generation.
               threadDelay stageYieldUs
-              case Text.stripPrefix (Text.pack "stage:start ") msg of
-                Just stageName -> do
-                  stageIndex <- bumpStageIndex stageRef
-                  elapsed <- bumpStageStart stageStartRef
-                  replyCast replyTo progressTag TerrainGenProgress
-                    { tgpStageIndex = stageIndex
-                    , tgpStageCount = stageCount
-                    , tgpStageName = stageName
-                    , tgpStageElapsedMs = elapsed
-                    }
-                Nothing -> pure ()
           }
     runResult <- runPipeline pipeline topoEnv world0
     genEnd <- getCurrentTime
-    logFinalStageDuration replyTo stageStartRef
     let totalElapsed = diffToMs genEnd genStart
     replyCast replyTo logMessageTag (LogEntry LogInfo (Text.pack ("terrain: total generation took " <> show totalElapsed <> "ms")))
     case runResult of
@@ -235,26 +226,27 @@ startTerrainGen
 startTerrainGen handle replyTo req =
   castReply @"start" handle replyTo #start req
 
-bumpStageIndex :: IORef Int -> IO Int
-bumpStageIndex ref =
-  atomicModifyIORef' ref (\n -> let n' = n + 1 in (n', n'))
-
-bumpStageStart :: IORef (Maybe UTCTime) -> IO (Maybe Int)
-bumpStageStart ref = do
+publishPipelineProgress :: ReplyTo TerrainReplyOps -> IORef (Maybe UTCTime) -> StageProgress -> IO ()
+publishPipelineProgress replyTo stageStartRef progress = do
   now <- getCurrentTime
-  atomicModifyIORef' ref $ \prev ->
-    let elapsed = fmap (diffToMs now) prev
-    in (Just now, elapsed)
+  elapsed <- case spStatus progress of
+    StageStarted -> writeIORef stageStartRef (Just now) >> pure Nothing
+    StageCompleted -> consumeStageStart now stageStartRef
+    StageSkipped -> pure Nothing
+  replyCast replyTo progressTag TerrainGenProgress
+    { tgpStageIndex = spStageIndex progress + 1
+    , tgpStageCount = spStageCount progress
+    , tgpStageId = spStageId progress
+    , tgpStageName = spStageName progress
+    , tgpStageStatus = spStatus progress
+    , tgpStageElapsedMs = elapsed
+    }
 
-logFinalStageDuration :: ReplyTo TerrainReplyOps -> IORef (Maybe UTCTime) -> IO ()
-logFinalStageDuration replyTo ref = do
-  now <- getCurrentTime
+consumeStageStart :: UTCTime -> IORef (Maybe UTCTime) -> IO (Maybe Int)
+consumeStageStart now ref = do
   mbPrev <- readIORef ref
-  case mbPrev of
-    Nothing -> pure ()
-    Just prev -> do
-      let elapsed = diffToMs now prev
-      replyCast replyTo logMessageTag (LogEntry LogInfo (Text.pack ("terrain: last stage took " <> show elapsed <> "ms")))
+  writeIORef ref Nothing
+  pure (fmap (diffToMs now) mbPrev)
 
 diffToMs :: UTCTime -> UTCTime -> Int
 diffToMs now prev =
