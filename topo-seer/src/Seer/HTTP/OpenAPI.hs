@@ -15,8 +15,9 @@ module Seer.HTTP.OpenAPI
   , withSchemas
   ) where
 
-import Data.Aeson (Value, object, (.=))
+import Data.Aeson (Value(..), object, (.=))
 import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Map.Strict as Map
 import Data.Maybe (mapMaybe)
 import Data.Text (Text)
@@ -76,10 +77,24 @@ openApiDocument specs = object
   [ "openapi" .= ("3.0.3" :: Text)
   , "info" .= object
       [ "title" .= ("Topo Seer HTTP API" :: Text)
-      , "version" .= ("0.1.0" :: Text)
+      , "version" .= ("1.0.0" :: Text)
+      , "description" .= openApiDescription
+      , "x-topo-api-version" .= ("1" :: Text)
+      , "x-topo-versioning-policy" .= versioningPolicy
       ]
+  , "servers" .=
+      [ object
+          [ "url" .= ("http://127.0.0.1:7373" :: Text)
+          , "description" .= ("Default loopback topo-seer HTTP host." :: Text)
+          ]
+      ]
+  , "tags" .= tagObjects specs
   , "paths" .= pathsObject specs
   , "components" .= componentsObject specs
+  , "externalDocs" .= object
+      [ "description" .= ("Published Topo HTTP/OpenAPI automation guide." :: Text)
+      , "url" .= ("./README.md" :: Text)
+      ]
   ]
 
 pathsObject :: [HttpRouteSpec] -> Value
@@ -106,12 +121,16 @@ operationObject spec = object $ baseFields <> securityFields <> queryFields <> b
       , "tags" .= [hrsTag spec]
       , "responses" .= object
           [ "200" .= okResponseObject spec
-          , "400" .= responseObject "Invalid request" (Just errorEnvelopeSchema)
-          , "401" .= responseObject "Unauthorized" (Just errorEnvelopeSchema)
-          , "404" .= responseObject "Not found" (Just errorEnvelopeSchema)
-          , "409" .= responseObject "Rejected" (Just errorEnvelopeSchema)
-          , "500" .= responseObject "Internal server error" (Just errorEnvelopeSchema)
-          , "503" .= responseObject "Unavailable" (Just errorEnvelopeSchema)
+          , "400" .= errorResponseObject "Invalid request or unsupported query" "invalid_request"
+          , "401" .= errorResponseObject "Unauthorized" "unauthorized"
+          , "403" .= errorResponseObject "Forbidden" "permission_denied"
+          , "404" .= errorResponseObject "Not found" "not_found"
+          , "405" .= errorResponseObject "Operation not supported" "operation_not_supported"
+          , "409" .= errorResponseObject "Conflict or rejected state change" "conflict"
+          , "422" .= errorResponseObject "Schema validation failed" "schema_validation_failed"
+          , "500" .= errorResponseObject "Internal server error" "internal_error"
+          , "503" .= errorResponseObject "Unavailable" "unavailable"
+          , "504" .= errorResponseObject "Data resource timeout" "timeout"
           ]
       ]
     securityFields
@@ -149,6 +168,11 @@ responseObject :: Text -> Maybe JsonSchema -> Value
 responseObject description schema =
   responseObjectWithContent description (jsonContent . schemaRef <$> schema)
 
+errorResponseObject :: Text -> Text -> Value
+errorResponseObject description code =
+  responseObjectWithContent description . Just $
+    jsonContentWithExample (schemaRef errorEnvelopeSchema) (Just (errorEnvelopeExampleFor code description))
+
 responseObjectWithContent :: Text -> Maybe Value -> Value
 responseObjectWithContent description content = object $
   [ "description" .= description
@@ -165,10 +189,13 @@ requestIdResponseHeaders = object
   ]
 
 jsonContent :: Value -> Value
-jsonContent schema = object
+jsonContent schema = jsonContentWithExample schema (schemaExample schema)
+
+jsonContentWithExample :: Value -> Maybe Value -> Value
+jsonContentWithExample schema example = object
   [ "application/json" .= object
-      [ "schema" .= schema
-      ]
+      ([ "schema" .= schema
+       ] <> maybe [] (\value -> ["example" .= value]) example)
   ]
 
 eventStreamContent :: JsonSchema -> Value
@@ -220,6 +247,114 @@ schemasObject schemas = object
       | schema <- schemas
       ]
 
+openApiDescription :: Text
+openApiDescription = Text.unlines
+  [ "Resource-oriented HTTP automation contract for topo-seer 1.0."
+  , "The document is generated from the same route metadata used by dispatch."
+  , "Protected routes use optional Bearer authentication when a token is configured; /health remains unauthenticated."
+  , "Errors use the shared ErrorEnvelope schema and echo X-Request-Id when the request supplies it."
+  ]
+
+versioningPolicy :: Text
+versioningPolicy = Text.unlines
+  [ "The HTTP API is versioned independently from the topo-seer package."
+  , "The /version route exposes api_version=1 for this contract."
+  , "Within major version 1, additive routes, fields, enum values, and schemas may be introduced without breaking existing clients."
+  , "Breaking route, request, response, authentication, or error-envelope changes require a new major API version or an explicitly documented migration window."
+  ]
+
+tagObjects :: [HttpRouteSpec] -> [Value]
+tagObjects specs =
+  [ object
+      [ "name" .= tag
+      , "description" .= tagDescription tag
+      ]
+  | tag <- Map.keys (Map.fromList [(hrsTag spec, ()) | spec <- specs])
+  ]
+
+tagDescription :: Text -> Text
+tagDescription "meta" = "Health, version, and OpenAPI discovery."
+tagDescription "events" = "Buffered and streaming service events."
+tagDescription "state" = "Application and view-mode state reads."
+tagDescription "ui" = "UI state, panel, widget, input, and selection operations."
+tagDescription "config" = "Runtime configuration, slider, and enum operations."
+tagDescription "presets" = "Preset save, load, and list operations."
+tagDescription "world" = "World generation, metadata, persistence, and naming operations."
+tagDescription "terrain" = "Terrain, hex, chunk, export, search, and sample operations."
+tagDescription "overlays" = "Overlay schema, provenance, field, import, export, and selection operations."
+tagDescription "editor" = "Terrain editor state and brush operations."
+tagDescription "pipeline" = "Generation pipeline stage and DAG controls."
+tagDescription "plugins" = "Plugin status, dependency, parameter, and lifecycle operations."
+tagDescription "data" = "Plugin-owned data-resource discovery and CRUD operations."
+tagDescription "simulation" = "Simulation state, DAG, auto-tick, and tick operations."
+tagDescription "logs" = "Runtime log queries."
+tagDescription "screenshots" = "Screenshot capture operations."
+tagDescription "camera" = "Viewport camera read and mutation operations."
+tagDescription tag = "Topo HTTP API operations tagged as " <> tag <> "."
+
+schemaExample :: Value -> Maybe Value
+schemaExample schema = do
+  name <- schemaRefName schema
+  lookup name schemaExamples
+
+schemaRefName :: Value -> Maybe Text
+schemaRefName (Object schema) = do
+  String ref <- KM.lookup "$ref" schema
+  Text.stripPrefix "#/components/schemas/" ref
+schemaRefName _ = Nothing
+
+schemaExamples :: [(Text, Value)]
+schemaExamples =
+  [ ("HealthResponse", object ["status" .= ("ok" :: Text)])
+  , ("VersionResponse", object
+      [ "name" .= ("topo-seer" :: Text)
+      , "version" .= ("0.1.0.0" :: Text)
+      , "api_version" .= ("1" :: Text)
+      ])
+  , ("UiSeedSetRequest", object ["seed" .= (123 :: Int)])
+  , ("UiSeedSetResponse", object ["seed" .= (123 :: Int)])
+  , ("DataRecordCreateRequest", object
+      [ "plugin" .= ("civ" :: Text)
+      , "resource" .= ("settlements" :: Text)
+      , "fields" .= object
+          [ "name" .= ("Riverford" :: Text)
+          , "population" .= (1200 :: Int)
+          ]
+      ])
+  , ("DataRecordCreateResponse", object
+      [ "plugin" .= ("civ" :: Text)
+      , "resource" .= ("settlements" :: Text)
+      , "created" .= True
+      , "record" .= object
+          [ "id" .= ("riverford" :: Text)
+          , "name" .= ("Riverford" :: Text)
+          ]
+      ])
+  , ("ErrorEnvelope", errorEnvelopeExample)
+  ]
+
+errorEnvelopeExample :: Value
+errorEnvelopeExample = errorEnvelopeExampleWithDetails "validation_failed" "validation failed"
+  [ object
+      [ "path" .= (["name"] :: [Text])
+      , "code" .= ("missing_field" :: Text)
+      , "message" .= ("missing required field 'name'" :: Text)
+      ]
+  ]
+
+errorEnvelopeExampleFor :: Text -> Text -> Value
+errorEnvelopeExampleFor code message = errorEnvelopeExampleWithDetails code message []
+
+errorEnvelopeExampleWithDetails :: Text -> Text -> [Value] -> Value
+errorEnvelopeExampleWithDetails code message details = object
+  [ "error" .= object
+      [ "code" .= code
+      , "message" .= message
+      , "request_id" .= ("req-123" :: Text)
+      , "details" .= details
+      ]
+  ]
+
 errorEnvelopeSchema :: JsonSchema
 errorEnvelopeSchema = JsonSchema "ErrorEnvelope" $ object
   [ "type" .= ("object" :: Text)
@@ -233,6 +368,10 @@ errorEnvelopeSchema = JsonSchema "ErrorEnvelope" $ object
                   [ "type" .= ("string" :: Text)
                   , "enum" .= ([ "invalid_json", "invalid_request", "validation_failed", "unauthorized"
                                 , "not_found", "rejected", "internal_error", "unavailable"
+                                , "resource_not_found", "operation_not_supported", "record_not_found"
+                                , "duplicate_key", "schema_validation_failed", "permission_denied"
+                                , "conflict", "plugin_unavailable", "external_data_source_unavailable"
+                                , "query_unsupported", "timeout", "data_resource_error"
                                 ] :: [Text])
                   ]
               , "message" .= object ["type" .= ("string" :: Text)]
@@ -257,18 +396,5 @@ errorEnvelopeSchema = JsonSchema "ErrorEnvelope" $ object
               ]
           ]
       ]
-  , "example" .= object
-      [ "error" .= object
-          [ "code" .= ("validation_failed" :: Text)
-          , "message" .= ("validation failed" :: Text)
-          , "request_id" .= ("req-123" :: Text)
-          , "details" .=
-              [ object
-                  [ "path" .= (["name"] :: [Text])
-                  , "code" .= ("missing_field" :: Text)
-                  , "message" .= ("missing required field 'name'" :: Text)
-                  ]
-              ]
-          ]
-      ]
+  , "example" .= errorEnvelopeExample
   ]

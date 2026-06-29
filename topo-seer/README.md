@@ -24,9 +24,10 @@ From the repo root:
 
 The supported automation path is direct HTTP to `topo-seer`; generated OpenAPI
 is served at `GET /openapi.json` from the same route metadata used by dispatch
-and tests. Loopback (`127.0.0.1`) is the default safe binding. Non-loopback
-bindings require `--http-token TOKEN`, and protected requests must include
-`Authorization: Bearer TOKEN`.
+and tests. The committed publication artifact and contract notes live at
+`../docs/api/openapi.json` and `../docs/api/README.md`. Loopback (`127.0.0.1`)
+is the default safe binding. Non-loopback bindings require `--http-token TOKEN`,
+and protected requests must include `Authorization: Bearer TOKEN`.
 
 ```sh
 # Discover the live contract and basic server metadata.

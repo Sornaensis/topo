@@ -42,8 +42,9 @@ curl -X POST http://127.0.0.1:7373/ui/seed \
 
 The retired MCP bridge and legacy command IPC appear only in migration/internal
 compatibility notes. New clients should use the resource-oriented HTTP routes in
-OpenAPI only; there is no public 1.0 command IPC exception. See the
-[MCP-to-HTTP parity matrix](inventory/mcp-http-parity.md) when translating old
+OpenAPI only; there is no public 1.0 command IPC exception. The committed
+contract artifact and usage notes live in the [HTTP/OpenAPI contract guide](api/README.md).
+See the [MCP-to-HTTP parity matrix](inventory/mcp-http-parity.md) when translating old
 MCP tool or resource names.
 
 ---
@@ -57,6 +58,7 @@ MCP tool or resource names.
 | Current architecture baseline | [architecture/current.md](architecture/current.md) |
 | Target architecture for 1.0 | [architecture/target.md](architecture/target.md) |
 | HTTP framework/API package decision | [architecture/decisions/0001-http-framework-and-api-package.md](architecture/decisions/0001-http-framework-and-api-package.md) |
+| Published HTTP/OpenAPI contract | [api/README.md](api/README.md) |
 | HTTP/OpenAPI migration matrix | [inventory/mcp-http-parity.md](inventory/mcp-http-parity.md) |
 | Plugin protocol versioning decision | [architecture/decisions/0002-plugin-protocol-versioning.md](architecture/decisions/0002-plugin-protocol-versioning.md) |
 | Public module and feature inventory | [inventory/public-surface.md](inventory/public-surface.md) |

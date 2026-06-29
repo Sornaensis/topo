@@ -6,6 +6,7 @@ import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Exception (SomeException, finally, throwIO, try)
 import Control.Monad (forM_)
 import Data.Aeson (Value(..), object, (.=))
+import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LBS
 import Data.Foldable (toList)
 import qualified Data.Aeson.Key as Key
@@ -70,7 +71,9 @@ import Seer.Service.AppService (AppService(..), DataResourceService(..), appServ
 import Seer.Service.Types (ServiceError(..))
 import Seer.System (runApp)
 import Spec.Support.OverlayFixtures (mkSparseFloatOverlay)
+import System.Directory (doesFileExist, getCurrentDirectory)
 import System.Environment (withArgs)
+import System.FilePath ((</>), takeDirectory)
 import Topo (WorldConfig(..), chunkIdFromCoord, emptyTerrainChunk)
 import Topo.Overlay (emptyOverlayStore, insertOverlay, OverlayProvenance(..))
 import Topo.Plugin.RPC.DataService (DataResourceErrorCode(..), dataResourceErrorCodeText)
@@ -369,6 +372,11 @@ spec = describe "Seer.HTTP.Server" $ do
     openApiSignatureProblems doc `shouldBe` []
     sort (openApiSignatureLines doc) `shouldBe` sort golden
 
+  it "matches the published OpenAPI artifact" $ do
+    path <- publishedOpenApiPath
+    published <- LBS.readFile path
+    published `shouldBe` Aeson.encode (openApiDocument publicHttpRouteSpecs)
+
   it "publishes query and auth metadata in OpenAPI" $ do
     let doc = openApiDocument publicHttpRouteSpecs
     queryParameterInfo doc "/terrain/hex" "get"
@@ -397,6 +405,22 @@ spec = describe "Seer.HTTP.Server" $ do
       `shouldSatisfy` maybe False ("text/event-stream" `elem`)
     operationHasSecurity doc "/state" "get" "bearerAuth" `shouldBe` True
     operationHasSecurity doc "/health" "get" "bearerAuth" `shouldBe` False
+
+  it "documents tags, examples, errors, and versioning in OpenAPI" $ do
+    let doc = openApiDocument publicHttpRouteSpecs
+    lookupNestedText ["info", "version"] doc `shouldBe` Just "1.0.0"
+    lookupNestedText ["info", "x-topo-api-version"] doc `shouldBe` Just "1"
+    sort (openApiTags doc) `shouldBe` sort (nub (map hrsTag publicHttpRouteSpecs))
+    operationRequestExample doc "/ui/seed" "post" `shouldBe` Just (object ["seed" .= (123 :: Int)])
+    operationResponseExample doc "/health" "get" "200" `shouldBe` Just (object ["status" .= ("ok" :: Text)])
+    operationResponseErrorCode doc "/data/records" "post" "403" `shouldBe` Just "permission_denied"
+    operationResponseErrorCode doc "/data/records" "post" "405" `shouldBe` Just "operation_not_supported"
+    operationResponseErrorCode doc "/data/records" "post" "422" `shouldBe` Just "schema_validation_failed"
+    operationResponseErrorCode doc "/data/records" "post" "504" `shouldBe` Just "timeout"
+    operationResponseStatuses doc "/data/records" "post"
+      `shouldSatisfy` maybe False (\statuses -> all (`elem` statuses) ["400", "401", "403", "404", "405", "409", "422", "500", "503", "504"])
+    errorCodeEnum doc
+      `shouldSatisfy` maybe False (\codes -> all (`elem` codes) ["validation_failed", "schema_validation_failed", "permission_denied", "operation_not_supported", "timeout"])
 
   it "rejects unauthorized WAI requests before parsing protected bodies" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
@@ -1085,6 +1109,56 @@ operationResponseContentTypes doc path routeMethod status = do
   Object content <- KM.lookup "content" response
   pure (map Key.toText (KM.keys content))
 
+operationResponseStatuses :: Value -> Text -> Text -> Maybe [Text]
+operationResponseStatuses doc path routeMethod = do
+  Object operation <- pathOperation doc path routeMethod
+  Object responses <- KM.lookup "responses" operation
+  pure (map Key.toText (KM.keys responses))
+
+operationRequestExample :: Value -> Text -> Text -> Maybe Value
+operationRequestExample doc path routeMethod = do
+  Object operation <- pathOperation doc path routeMethod
+  requestBody <- KM.lookup "requestBody" operation
+  jsonContentExample requestBody
+
+operationResponseExample :: Value -> Text -> Text -> Text -> Maybe Value
+operationResponseExample doc path routeMethod status = do
+  Object operation <- pathOperation doc path routeMethod
+  Object responses <- KM.lookup "responses" operation
+  response <- KM.lookup (Key.fromText status) responses
+  jsonContentExample response
+
+operationResponseErrorCode :: Value -> Text -> Text -> Text -> Maybe Text
+operationResponseErrorCode doc path routeMethod status =
+  operationResponseExample doc path routeMethod status >>= lookupNestedText ["error", "code"]
+
+jsonContentExample :: Value -> Maybe Value
+jsonContentExample (Object container) = do
+  Object content <- KM.lookup "content" container
+  Object json <- KM.lookup "application/json" content
+  KM.lookup "example" json
+jsonContentExample _ = Nothing
+
+openApiTags :: Value -> [Text]
+openApiTags doc = case lookupValue "tags" doc of
+  Just (Array tags) ->
+    [ tag
+    | Object tagObject <- toList tags
+    , Just (String tag) <- [KM.lookup "name" tagObject]
+    ]
+  _ -> []
+
+errorCodeEnum :: Value -> Maybe [Text]
+errorCodeEnum doc = do
+  Object errorSchema <- componentProperty doc "ErrorEnvelope" "error"
+  Object properties <- KM.lookup "properties" errorSchema
+  Object codeSchema <- KM.lookup "code" properties
+  Array codes <- KM.lookup "enum" codeSchema
+  traverse codeText (toList codes)
+  where
+    codeText (String code) = Just code
+    codeText _ = Nothing
+
 schemaRefFromContent :: Value -> Maybe Text
 schemaRefFromContent (Object container) = do
   Object content <- KM.lookup "content" container
@@ -1212,6 +1286,23 @@ readOpenApiRouteGolden = do
   path <- getDataFileName "test/golden/openapi-routes.txt"
   filter (not . Text.null) . map Text.strip . Text.lines
     <$> TextIO.readFile path
+
+publishedOpenApiPath :: IO FilePath
+publishedOpenApiPath = do
+  cwd <- getCurrentDirectory
+  (</> "openapi.json") <$> findDocsApiDir cwd
+  where
+    findDocsApiDir dir = do
+      let docsDir = dir </> "docs" </> "api"
+          marker = docsDir </> "README.md"
+      exists <- doesFileExist marker
+      if exists
+        then pure docsDir
+        else do
+          let parent = takeDirectory dir
+          if parent == dir
+            then pure docsDir
+            else findDocsApiDir parent
 
 assertEndpoint :: Manager -> String -> IO ()
 assertEndpoint manager path = do
