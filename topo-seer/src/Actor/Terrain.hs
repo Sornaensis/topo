@@ -35,10 +35,12 @@ import Topo
   , WorldConfig(..)
   , ChunkId(..)
   , ClimateChunk
+  , GroundwaterChunk
   , OverlaySchema
   , RiverChunk
   , TerrainChunk
   , VegetationChunk
+  , WaterBodyChunk
   , WeatherChunk
   , TerrainWorld(..)
   , emptyOverlay
@@ -92,6 +94,8 @@ data TerrainGenResult = TerrainGenResult
   , tgrResultClimateChunks :: ![(ChunkId, ClimateChunk)]
   , tgrResultWeatherChunks :: ![(ChunkId, WeatherChunk)]
   , tgrResultRiverChunks :: ![(ChunkId, RiverChunk)]
+  , tgrResultGroundwaterChunks :: ![(ChunkId, GroundwaterChunk)]
+  , tgrResultWaterBodyChunks :: ![(ChunkId, WaterBodyChunk)]
   , tgrResultVegetationChunks :: ![(ChunkId, VegetationChunk)]
   , tgrResultTerrainCount :: !Int
   , tgrResultBiomeCount :: !Int
@@ -175,6 +179,8 @@ actor Terrain
             climateChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twClimate world1))
             weatherChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (getWeatherFromOverlay world1))
             riverChunks   = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twRivers world1))
+            groundwaterChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twGroundwater world1))
+            waterBodyChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twWaterBodies world1))
             vegetationChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twVegetation world1))
             terrainCount = IntMap.size (twTerrain world1)
             biomeCount = terrainCount
@@ -187,6 +193,8 @@ actor Terrain
         _ <- evaluate (length climateChunks)
         _ <- evaluate (length weatherChunks)
         _ <- evaluate (length riverChunks)
+        _ <- evaluate (length groundwaterChunks)
+        _ <- evaluate (length waterBodyChunks)
         _ <- evaluate (length vegetationChunks)
         let result = TerrainGenResult
               { tgrResultSeed = tgrSeed req
@@ -195,6 +203,8 @@ actor Terrain
               , tgrResultClimateChunks = climateChunks
               , tgrResultWeatherChunks = weatherChunks
               , tgrResultRiverChunks = riverChunks
+              , tgrResultGroundwaterChunks = groundwaterChunks
+              , tgrResultWaterBodyChunks = waterBodyChunks
               , tgrResultVegetationChunks = vegetationChunks
               , tgrResultTerrainCount = terrainCount
               , tgrResultBiomeCount = biomeCount

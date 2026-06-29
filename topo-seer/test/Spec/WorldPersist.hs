@@ -397,6 +397,8 @@ snapshotToWorldSpec = describe "snapshotToWorld" $
           , tsClimateChunks = IntMap.empty
           , tsWeatherChunks = IntMap.empty
           , tsRiverChunks = IntMap.empty
+          , tsGroundwaterChunks = IntMap.empty
+          , tsWaterBodyChunks = IntMap.empty
           , tsVegetationChunks = IntMap.empty
           , tsOverlayStore = overlayStore
           }

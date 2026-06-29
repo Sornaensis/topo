@@ -23,8 +23,10 @@ import Actor.Data
   ( TerrainSnapshot(..)
   )
 import Actor.SnapshotReceiver (readTerrainSnapshot)
+import Actor.UI.State (readUiSnapshotRef)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
+import Seer.Draw.Overlay (terrainInspectorSectionsObject, terrainInspectorViewAt)
 import Topo.Biome.Name (biomeDisplayName)
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 import Topo.Types
@@ -33,8 +35,11 @@ import Topo.Types
   , TerrainChunk(..)
   , ClimateChunk(..)
   , WeatherChunk(..)
+  , GroundwaterChunk(..)
   , RiverChunk(..)
   , VegetationChunk(..)
+  , WaterBodyChunk(..)
+  , WaterBodyType
   , BiomeId
   , TerrainForm
   , biomeIdToCode
@@ -42,6 +47,7 @@ import Topo.Types
   , terrainFormToCode
   , terrainFormFromCode
   , terrainFormDisplayName
+  , waterBodyToCode
   )
 
 -- | Handle @get_hex@ — return full terrain data at an axial hex coordinate.
@@ -54,6 +60,7 @@ handleGetHex ctx reqId params =
       pure $ errResponse reqId "missing or invalid 'q' and/or 'r' parameters"
     Just (q, r) -> do
       snap <- readTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx))
+      ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
       let chunkSize = tsChunkSize snap
       if chunkSize <= 0
         then pure $ errResponse reqId "no terrain loaded"
@@ -130,7 +137,34 @@ handleGetHex ctx reqId params =
                           , "baseflow"          .= safeIndex (rcBaseflow rc) tileIdx
                           , "erosion_potential"  .= safeIndex (rcErosionPotential rc) tileIdx
                           , "deposit_potential"  .= safeIndex (rcDepositPotential rc) tileIdx
+                          , "flow_dir"          .= safeIndexInt (rcFlowDir rc) tileIdx
+                          , "segment_count"     .= riverSegmentCount rc tileIdx
                           ]
+
+                      waterBodyLayer = case IntMap.lookup chunkId (tsWaterBodyChunks snap) of
+                        Nothing -> Null
+                        Just wb -> object
+                          [ "type"          .= fmap waterBodyDisplayName (safeIndexWaterBody (wbType wb) tileIdx)
+                          , "type_code"     .= fmap waterBodyToCode (safeIndexWaterBody (wbType wb) tileIdx)
+                          , "adjacent_type" .= fmap waterBodyDisplayName (safeIndexWaterBody (wbAdjacentType wb) tileIdx)
+                          , "surface_elev"  .= safeIndex (wbSurfaceElev wb) tileIdx
+                          , "basin_id"      .= safeIndexW32 (wbBasinId wb) tileIdx
+                          , "depth"         .= safeIndex (wbDepth wb) tileIdx
+                          ]
+
+                      waterTableLayer = case IntMap.lookup chunkId (tsGroundwaterChunks snap) of
+                        Nothing -> Null
+                        Just gw -> object
+                          [ "storage"            .= safeIndex (gwStorage gw) tileIdx
+                          , "recharge"           .= safeIndex (gwRecharge gw) tileIdx
+                          , "discharge"          .= safeIndex (gwDischarge gw) tileIdx
+                          , "basin_id"           .= safeIndexW32 (gwBasinId gw) tileIdx
+                          , "infiltration"       .= safeIndex (gwInfiltration gw) tileIdx
+                          , "water_table_depth"  .= safeIndex (gwWaterTableDepth gw) tileIdx
+                          , "root_zone_moisture" .= safeIndex (gwRootZoneMoisture gw) tileIdx
+                          ]
+
+                      inspector = terrainInspectorViewAt ui snap (q, r)
 
                       vegLayer = case IntMap.lookup chunkId (tsVegetationChunks snap) of
                         Nothing -> Null
@@ -147,7 +181,10 @@ handleGetHex ctx reqId params =
                     , "climate"    .= climateLayer
                     , "weather"    .= weatherLayer
                     , "river"      .= riverLayer
+                    , "water_body" .= waterBodyLayer
+                    , "water_table" .= waterTableLayer
                     , "vegetation" .= vegLayer
+                    , "sections"   .= terrainInspectorSectionsObject inspector
                     ]
 
 -- | Handle @get_chunks@ — list all chunk IDs with basic stats.
@@ -343,6 +380,32 @@ safeIndexW32 :: U.Vector Word32 -> Int -> Maybe Word32
 safeIndexW32 v i
   | i >= 0 && i < U.length v = Just (v U.! i)
   | otherwise = Nothing
+
+-- | Safe index into an unboxed Int vector.
+safeIndexInt :: U.Vector Int -> Int -> Maybe Int
+safeIndexInt v i
+  | i >= 0 && i < U.length v = Just (v U.! i)
+  | otherwise = Nothing
+
+safeIndexWaterBody :: U.Vector WaterBodyType -> Int -> Maybe WaterBodyType
+safeIndexWaterBody v i
+  | i >= 0 && i < U.length v = Just (v U.! i)
+  | otherwise = Nothing
+
+riverSegmentCount :: RiverChunk -> Int -> Maybe Int
+riverSegmentCount rc tileIdx = do
+  start <- safeIndexInt (rcSegOffsets rc) tileIdx
+  end <- safeIndexInt (rcSegOffsets rc) (tileIdx + 1)
+  pure (max 0 (end - start))
+
+waterBodyDisplayName :: WaterBodyType -> Text
+waterBodyDisplayName bodyType =
+  case waterBodyToCode bodyType of
+    0 -> "Dry"
+    1 -> "Ocean"
+    2 -> "Lake"
+    3 -> "Inland sea"
+    code -> "Unknown (" <> Text.pack (show code) <> ")"
 
 -- | Safe index for TerrainForm vectors.
 safeIndexTF :: U.Vector TerrainForm -> Int -> Maybe TerrainForm

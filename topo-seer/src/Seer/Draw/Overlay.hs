@@ -2,7 +2,11 @@
 
 module Seer.Draw.Overlay
   ( TerrainInspectorView(..)
+  , TerrainInspectorSection(..)
+  , TerrainInspectorField(..)
   , terrainInspectorView
+  , terrainInspectorViewAt
+  , terrainInspectorSectionsObject
   , drawHoverHex
   , drawHexContext
   , drawTooltip
@@ -16,6 +20,7 @@ module Seer.Draw.Overlay
 
 import Actor.Data (TerrainSnapshot(..))
 import Actor.UI (UiState(..), ViewMode(..))
+import Data.Aeson (Value(..), object, toJSON, (.=))
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (sort)
@@ -24,7 +29,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Vector (Vector)
 import qualified Data.Vector as V
-import Data.Word (Word8, Word16)
+import Data.Word (Word8, Word16, Word32)
 import Linear (V2(..), V4(..))
 import qualified SDL
 import Seer.Config (mapRange)
@@ -36,12 +41,16 @@ import Topo
   , ChunkId(..)
   , ClimateChunk(..)
   , DirectionalSlope(..)
+  , GroundwaterChunk(..)
   , PlateBoundary(..)
+  , RiverChunk(..)
   , TerrainChunk(..)
   , TerrainForm
   , TileCoord(..)
   , TileIndex(..)
   , VegetationChunk(..)
+  , WaterBodyChunk(..)
+  , WaterBodyType
   , WeatherChunk(..)
   , WorldConfig(..)
   , biomeDisplayName
@@ -53,6 +62,7 @@ import Topo
   , plateBoundaryToCode
   , terrainFormDisplayName
   , tileIndex
+  , waterBodyToCode
   )
 import Topo.Overlay
   ( Overlay(..)
@@ -77,6 +87,7 @@ import Topo.Units
   , normSlopeToDeg
   , normToC
   , normToHPa
+  , normDepthToMetres
   , normToMetres
   , normToMmYear
   , normToRH
@@ -92,16 +103,61 @@ import qualified Data.Vector.Unboxed as U
 -- | Pure view model for the pinned hover-hex terrain inspector.
 data TerrainInspectorView = TerrainInspectorView
   { tivHex :: !(Int, Int)
+  , tivSections :: ![TerrainInspectorSection]
   , tivLines :: ![Text]
+  } deriving (Eq, Show)
+
+-- | Canonical structured inspector section.
+data TerrainInspectorSection = TerrainInspectorSection
+  { tisKey :: !Text
+  , tisTitle :: !Text
+  , tisFields :: ![TerrainInspectorField]
+  } deriving (Eq, Show)
+
+-- | One display/API field in a terrain-inspector section.
+data TerrainInspectorField = TerrainInspectorField
+  { tifKey :: !Text
+  , tifLabel :: !Text
+  , tifValue :: !Text
+  , tifRaw :: !Value
   } deriving (Eq, Show)
 
 terrainInspectorView :: UiState -> TerrainSnapshot -> Maybe TerrainInspectorView
 terrainInspectorView ui terrainSnap = do
-  hexCoord@(q, r) <- uiHoverHex ui
-  pure TerrainInspectorView
-    { tivHex = hexCoord
-    , tivLines = contextLines ui terrainSnap (q, r)
-    }
+  hexCoord <- uiHoverHex ui
+  pure (terrainInspectorViewAt ui terrainSnap hexCoord)
+
+terrainInspectorViewAt :: UiState -> TerrainSnapshot -> (Int, Int) -> TerrainInspectorView
+terrainInspectorViewAt ui terrainSnap hexCoord@(q, r) =
+  case sampleAt terrainSnap hexCoord of
+    Nothing -> TerrainInspectorView
+      { tivHex = hexCoord
+      , tivSections = []
+      , tivLines = [hexHeader q r, "No data"]
+      }
+    Just sample ->
+      let sections = inspectorSections ui terrainSnap hexCoord sample
+          lines = hexHeader q r : latLonLine ui terrainSnap q r : (sectionsToLines sections <> modeContextLines ui terrainSnap hexCoord sample)
+      in TerrainInspectorView
+        { tivHex = hexCoord
+        , tivSections = sections
+        , tivLines = lines
+        }
+
+terrainInspectorSectionsObject :: TerrainInspectorView -> Value
+terrainInspectorSectionsObject view = toJSON (map sectionObject (tivSections view))
+  where
+    sectionObject section = object
+      [ "key" .= tisKey section
+      , "title" .= tisTitle section
+      , "fields" .= map fieldObject (tisFields section)
+      ]
+    fieldObject field = object
+      [ "key" .= tifKey field
+      , "label" .= tifLabel field
+      , "value" .= tifValue field
+      , "raw" .= tifRaw field
+      ]
 
 drawHoverHex :: SDL.Renderer -> UiState -> Int -> IO ()
 drawHoverHex renderer uiSnap hexRadius =
@@ -264,151 +320,130 @@ degToRad :: Float -> Float
 degToRad degrees = degrees * pi / 180
 
 contextLines :: UiState -> TerrainSnapshot -> (Int, Int) -> [Text]
-contextLines ui terrainSnap (q, r) =
-  case sampleAt terrainSnap (q, r) of
-    Nothing -> [hexHeader q r, "No data"]
-    Just sample -> hexHeader q r : latLonLine q r : modeLines (uiViewMode ui) sample
+contextLines ui terrainSnap hexCoord = tivLines (terrainInspectorViewAt ui terrainSnap hexCoord)
+
+latLonLine :: UiState -> TerrainSnapshot -> Int -> Int -> Text
+latLonLine ui terrainSnap tileQ tileR =
+  let (lat, lon) = latLonValues ui terrainSnap tileQ tileR
+  in formatLatLon lat lon
+
+latLonValues :: UiState -> TerrainSnapshot -> Int -> Int -> (Float, Float)
+latLonValues ui terrainSnap tileQ tileR =
+  let (planet, slice, hex, worldConfig) = geoContext ui terrainSnap
+      tile = TileCoord tileQ tileR
+      lat = tileLatitude planet hex slice worldConfig tile
+      lon = tileLongitude planet hex slice worldConfig tile
+  in (lat, lon)
+
+geoContext :: UiState -> TerrainSnapshot -> (PlanetConfig, WorldSlice, HexGridMeta, WorldConfig)
+geoContext ui terrainSnap =
+  let planet = PlanetConfig
+        { pcRadius = mapRange 4778 9557 (uiPlanetRadius ui)
+        , pcAxialTilt = mapRange 0 45 (uiAxialTilt ui)
+        , pcInsolation = mapRange 0.7 1.3 (uiInsolation ui)
+        }
+      slice = WorldSlice
+        { wsLatCenter = mapRange (-90) 90 (uiSliceLatCenter ui)
+        , wsLatExtent = 0
+        , wsLonCenter = mapRange (-180) 180 (uiSliceLonCenter ui)
+        , wsLonExtent = 0
+        }
+      hex = HexGridMeta { hexSizeKm = sliderToDomainFloat SliderHexSizeKm (uiHexSizeKm ui) }
+      worldConfig = WorldConfig { wcChunkSize = tsChunkSize terrainSnap }
+  in (planet, slice, hex, worldConfig)
+
+sectionsToLines :: [TerrainInspectorSection] -> [Text]
+sectionsToLines = concatMap sectionLines
+  where
+    sectionLines section = ("--- " <> tisTitle section <> " ---") : map fieldLine (tisFields section)
+    fieldLine field = tifLabel field <> " " <> tifValue field
+
+modeContextLines :: UiState -> TerrainSnapshot -> (Int, Int) -> HexSample -> [Text]
+modeContextLines ui terrainSnap (q, r) sample = modeLines (uiViewMode ui) sample
   where
     units = defaultUnitScales
-    planet = PlanetConfig
-      { pcRadius = mapRange 4778 9557 (uiPlanetRadius ui)
-      , pcAxialTilt = mapRange 0 45 (uiAxialTilt ui)
-      , pcInsolation = mapRange 0.7 1.3 (uiInsolation ui)
-      }
-    slice = WorldSlice
-      { wsLatCenter = mapRange (-90) 90 (uiSliceLatCenter ui)
-      , wsLatExtent = 0
-      , wsLonCenter = mapRange (-180) 180 (uiSliceLonCenter ui)
-      , wsLonExtent = 0
-      }
-    hex = HexGridMeta { hexSizeKm = sliderToDomainFloat SliderHexSizeKm (uiHexSizeKm ui) }
-    worldConfig = WorldConfig { wcChunkSize = tsChunkSize terrainSnap }
+    solarLines = solarLinesFor ui terrainSnap
 
-    latLonLine tileQ tileR =
-      let tile = TileCoord tileQ tileR
-          lat = tileLatitude planet hex slice worldConfig tile
-          lon = tileLongitude planet hex slice worldConfig tile
-      in formatLatLon lat lon
-
-    -- Solar info helper: computes sun position, day length, irradiance
-    -- for a tile given current simulation time.
-    calCfg = mkCalendarConfig planet
-    worldTime = WorldTime
-      { wtTick     = uiSimTickCount ui
-      , wtTickRate = realToFrac (uiSimTickRate ui)
-      }
-    calDate = tickToDate calCfg worldTime
-    yf      = realToFrac (yearFraction calCfg worldTime) :: Float
-    hpd     = realToFrac (ccHoursPerDay calCfg) :: Float
-    calHour = realToFrac (cdHourOfDay calDate) :: Float
-    tiltDeg = pcAxialTilt planet
-
-    solarLines tileQ tileR =
-      let tile    = TileCoord tileQ tileR
-          latDeg  = tileLatitude planet hex slice worldConfig tile
-          latRad  = latDeg * pi / 180
-          lonDeg  = tileLongitude planet hex slice worldConfig tile
-          sp      = tileSolarPos tiltDeg yf hpd calHour latRad lonDeg
-          di      = tileDayInfo tiltDeg yf hpd latRad
-          irr     = tileIrradiance defaultSolarConfig tiltDeg yf hpd calHour latRad lonDeg
-          radToDeg a = a * 180 / pi
-          altDeg  = radToDeg (spAltitude sp)
-          azDeg   = radToDeg (spAzimuth sp)
-          dayH    = diDayLength di
-          riseH   = diSunriseHour di
-          setH    = diSunsetHour di
-          lsh     = localSolarHour hpd calHour lonDeg
-          fmtHM h = let hrs = floor h :: Int
-                        mins = round ((h - fromIntegral hrs) * 60) :: Int
-                    in Text.pack (show hrs) <> ":" <> (if mins < 10 then "0" else "") <> Text.pack (show mins)
-      in [ "--- Sun ---"
-         , "Local " <> fmtHM lsh
-         , "Alt   " <> fmtU altDeg "°"  <> "  Az " <> fmtU azDeg "°"
-         , "Day   " <> fmtU dayH "h"
-         , "Rise  " <> fmtHM riseH <> "  Set " <> fmtHM setH
-         , "Irrad " <> fmtF irr
-         ]
-
-    modeLines ViewElevation sample =
-      let dirSlope = hsDirSlope sample
+    modeLines ViewElevation sample' =
+      let dirSlope = hsDirSlope sample'
           slopeDeg = normSlopeToDeg units
-      in [ "Elev  " <> fmtU (normToMetres units (hsElevation sample)) "m"
-         , "Form  " <> Text.pack (terrainFormDisplayName (hsTerrainForm sample))
-         , "Slope " <> fmtU (slopeDeg (hsSlope sample)) "° avg"
+      in [ "Elev  " <> fmtU (normToMetres units (hsElevation sample')) "m"
+         , "Form  " <> Text.pack (terrainFormDisplayName (hsTerrainForm sample'))
+         , "Slope " <> fmtU (slopeDeg (hsSlope sample')) "° avg"
          , "      " <> fmtU (slopeDeg (dsMaxSlope dirSlope)) "° max  " <> fmtU (slopeDeg (dsMinSlope dirSlope)) "° min"
          , "  E   " <> fmtU (slopeDeg (dsSlopeE dirSlope)) "°" <> "   W  " <> fmtU (slopeDeg (dsSlopeW dirSlope)) "°"
          , "  NE  " <> fmtU (slopeDeg (dsSlopeNE dirSlope)) "°" <> "   SW " <> fmtU (slopeDeg (dsSlopeSW dirSlope)) "°"
          , "  NW  " <> fmtU (slopeDeg (dsSlopeNW dirSlope)) "°" <> "   SE " <> fmtU (slopeDeg (dsSlopeSE dirSlope)) "°"
          ] ++ solarLines q r
-    modeLines ViewBiome sample =
-      [ "Biome  " <> biomeDisplayName (hsBiome sample)
-      , "Form   " <> Text.pack (terrainFormDisplayName (hsTerrainForm sample))
-      , "Elev   " <> fmtU (normToMetres units (hsElevation sample)) "m"
-      , "Slope  " <> fmtU (normSlopeToDeg units (hsSlope sample)) "°"
-      , "Precip " <> fmtU (normToMmYear units (hsPrecipAvg sample)) "mm/yr"
-      , "Humid  " <> fmtU (normToRH (hsHumidity sample)) "% RH"
-      , "Fert   " <> fmtF (hsFertility sample)
-      , "Veg    " <> fmtF (hsVegCover sample)
-      , "VDen   " <> fmtF (hsVegDensity sample)
+    modeLines ViewBiome sample' =
+      [ "Biome  " <> biomeDisplayName (hsBiome sample')
+      , "Form   " <> Text.pack (terrainFormDisplayName (hsTerrainForm sample'))
+      , "Elev   " <> fmtU (normToMetres units (hsElevation sample')) "m"
+      , "Slope  " <> fmtU (normSlopeToDeg units (hsSlope sample')) "°"
+      , "Precip " <> fmtU (normToMmYear units (hsPrecipAvg sample')) "mm/yr"
+      , "Humid  " <> fmtU (normToRH (hsHumidity sample')) "% RH"
+      , "Fert   " <> fmtF (hsFertility sample')
+      , "Veg    " <> fmtF (hsVegCover sample')
+      , "VDen   " <> fmtF (hsVegDensity sample')
       ] ++ solarLines q r
-    modeLines ViewClimate sample =
-      [ "Temp  " <> fmtU (normToC units (hsTemp sample)) "°C"
-      , "Precip " <> fmtU (normToMmYear units (hsPrecipAvg sample)) "mm/yr"
+    modeLines ViewClimate sample' =
+      [ "Temp  " <> fmtU (normToC units (hsTemp sample')) "°C"
+      , "Precip " <> fmtU (normToMmYear units (hsPrecipAvg sample')) "mm/yr"
       ] ++ solarLines q r
-    modeLines ViewWeather sample =
-      [ "Biome " <> biomeDisplayName (hsBiome sample)
-      , "Elev  " <> fmtU (normToMetres units (hsElevation sample)) "m"
-      , "Slope " <> fmtU (normSlopeToDeg units (hsSlope sample)) "° avg"
-      , "Temp  " <> fmtU (normToC units (hsWeatherTemp sample)) "°C"
-      , "Humid " <> fmtU (normToRH (hsWeatherHumidity sample)) "% RH"
-      , "WindD " <> fmtU (hsWeatherWindDir sample) "rad"
-      , "WindS " <> fmtU (normToWindMs units (hsWeatherWindSpd sample)) "m/s"
-      , "Press " <> fmtU (normToHPa units (hsWeatherPressure sample)) "hPa"
-      , "Precp " <> fmtU (normToMmYear units (hsWeatherPrecip sample)) "mm/yr"
+    modeLines ViewWeather sample' =
+      [ "Biome " <> biomeDisplayName (hsBiome sample')
+      , "Elev  " <> fmtU (normToMetres units (hsElevation sample')) "m"
+      , "Slope " <> fmtU (normSlopeToDeg units (hsSlope sample')) "° avg"
+      , "Temp  " <> fmtU (normToC units (hsWeatherTemp sample')) "°C"
+      , "Humid " <> fmtU (normToRH (hsWeatherHumidity sample')) "% RH"
+      , "WindD " <> fmtU (hsWeatherWindDir sample') "rad"
+      , "WindS " <> fmtU (normToWindMs units (hsWeatherWindSpd sample')) "m/s"
+      , "Press " <> fmtU (normToHPa units (hsWeatherPressure sample')) "hPa"
+      , "Precp " <> fmtU (normToMmYear units (hsWeatherPrecip sample')) "mm/yr"
       ] ++ solarLines q r
-    modeLines ViewMoisture sample =
-      [ "Moist " <> fmtU (normToRH (hsMoisture sample)) "%"
-      , "Soil  " <> fmtU (normToSoilM units (hsSoilDepth sample)) "m"
+    modeLines ViewMoisture sample' =
+      [ "Moist " <> fmtU (normToRH (hsMoisture sample')) "%"
+      , "Soil  " <> fmtU (normToSoilM units (hsSoilDepth sample')) "m"
       ]
-    modeLines ViewPrecip sample =
-      [ "Precip " <> fmtU (normToMmYear units (hsPrecipAvg sample)) "mm/yr"
-      , "Humid " <> fmtU (normToRH (hsHumidity sample)) "% RH"
+    modeLines ViewPrecip sample' =
+      [ "Precip " <> fmtU (normToMmYear units (hsPrecipAvg sample')) "mm/yr"
+      , "Humid " <> fmtU (normToRH (hsHumidity sample')) "% RH"
       ]
-    modeLines ViewPlateId sample = ["Plate " <> Text.pack (show (hsPlateId sample))]
-    modeLines ViewPlateBoundary sample = ["Boundary " <> plateBoundaryDisplayName (hsPlateBoundary sample)]
-    modeLines ViewPlateHardness sample = ["Hardness " <> fmtF (hsPlateHardness sample)]
-    modeLines ViewPlateCrust sample = ["Crust " <> crustDisplayName (hsPlateCrust sample)]
-    modeLines ViewPlateAge sample = ["Age   " <> fmtF (hsPlateAge sample)]
-    modeLines ViewPlateHeight sample = ["Height " <> fmtU (normToMetres units (hsPlateHeight sample)) "m"]
-    modeLines ViewPlateVelocity sample =
-      [ "Vel X " <> fmtF (hsPlateVelX sample)
-      , "Vel Y " <> fmtF (hsPlateVelY sample)
-      , "Speed " <> fmtF (sqrt (hsPlateVelX sample ** 2 + hsPlateVelY sample ** 2))
+    modeLines ViewPlateId sample' = ["Plate " <> Text.pack (show (hsPlateId sample'))]
+    modeLines ViewPlateBoundary sample' = ["Boundary " <> plateBoundaryDisplayName (hsPlateBoundary sample')]
+    modeLines ViewPlateHardness sample' = ["Hardness " <> fmtF (hsPlateHardness sample')]
+    modeLines ViewPlateCrust sample' = ["Crust " <> crustDisplayName (hsPlateCrust sample')]
+    modeLines ViewPlateAge sample' = ["Age   " <> fmtF (hsPlateAge sample')]
+    modeLines ViewPlateHeight sample' = ["Height " <> fmtU (normToMetres units (hsPlateHeight sample')) "m"]
+    modeLines ViewPlateVelocity sample' =
+      [ "Vel X " <> fmtF (hsPlateVelX sample')
+      , "Vel Y " <> fmtF (hsPlateVelY sample')
+      , "Speed " <> fmtF (sqrt (hsPlateVelX sample' ** 2 + hsPlateVelY sample' ** 2))
       ]
-    modeLines ViewVegetation sample =
-      [ "VCov  " <> fmtF (hsVegCover sample)
-      , "VDen  " <> fmtF (hsVegDensity sample)
-      , "Fert  " <> fmtF (hsFertility sample)
-      , "Moist " <> fmtU (normToRH (hsMoisture sample)) "%"
+    modeLines ViewVegetation sample' =
+      [ "VCov  " <> fmtF (hsVegCover sample')
+      , "VDen  " <> fmtF (hsVegDensity sample')
+      , "Fert  " <> fmtF (hsFertility sample')
+      , "Moist " <> fmtU (normToRH (hsMoisture sample')) "%"
       ]
-    modeLines ViewTerrainForm sample =
-      [ "Form  " <> Text.pack (terrainFormDisplayName (hsTerrainForm sample))
-      , "Slope " <> fmtF (hsSlope sample)
-      , "Elev  " <> fmtU (normToMetres units (hsElevation sample)) "m"
+    modeLines ViewTerrainForm sample' =
+      [ "Form  " <> Text.pack (terrainFormDisplayName (hsTerrainForm sample'))
+      , "Slope " <> fmtF (hsSlope sample')
+      , "Elev  " <> fmtU (normToMetres units (hsElevation sample')) "m"
       ]
-    modeLines ViewCloud sample =
+    modeLines ViewCloud sample' =
       let pct v = fmtU (v * 100) "%"
-          stormI = hsCloudWater sample * min 1 (hsWeatherPrecip sample * 3)
-      in [ "Cloud " <> pct (hsCloudCover sample) <> "  Water " <> fmtF (hsCloudWater sample)
-         , "  Low  " <> pct (hsCloudCoverLow sample) <> "  " <> fmtF (hsCloudWaterLow sample)
-         , "  Mid  " <> pct (hsCloudCoverMid sample) <> "  " <> fmtF (hsCloudWaterMid sample)
-         , "  High " <> pct (hsCloudCoverHigh sample) <> "  " <> fmtF (hsCloudWaterHigh sample)
-         , "Precp " <> fmtU (normToMmYear units (hsWeatherPrecip sample)) "mm/yr"
-         , "WindD " <> fmtU (hsWeatherWindDir sample) "rad"
-         , "WindS " <> fmtU (normToWindMs units (hsWeatherWindSpd sample)) "m/s"
+          stormI = hsCloudWater sample' * min 1 (hsWeatherPrecip sample' * 3)
+      in [ "Cloud " <> pct (hsCloudCover sample') <> "  Water " <> fmtF (hsCloudWater sample')
+         , "  Low  " <> pct (hsCloudCoverLow sample') <> "  " <> fmtF (hsCloudWaterLow sample')
+         , "  Mid  " <> pct (hsCloudCoverMid sample') <> "  " <> fmtF (hsCloudWaterMid sample')
+         , "  High " <> pct (hsCloudCoverHigh sample') <> "  " <> fmtF (hsCloudWaterHigh sample')
+         , "Precp " <> fmtU (normToMmYear units (hsWeatherPrecip sample')) "mm/yr"
+         , "WindD " <> fmtU (hsWeatherWindDir sample') "rad"
+         , "WindS " <> fmtU (normToWindMs units (hsWeatherWindSpd sample')) "m/s"
          , "Storm " <> fmtF stormI
          ] ++ solarLines q r
-    modeLines (ViewOverlay overlayName fieldIndex) sample =
+    modeLines (ViewOverlay overlayName fieldIndex) sample' =
       case lookupOverlay overlayName (tsOverlayStore terrainSnap) of
         Nothing -> ["Overlay " <> overlayName, "(not loaded)"]
         Just overlay ->
@@ -417,19 +452,260 @@ contextLines ui terrainSnap (q, r) =
               fieldHeader = case drop fieldIndex fields of
                 (fd:_) -> ofdName fd
                 []     -> "field " <> Text.pack (show fieldIndex)
-              ChunkId key = chunkIdFromCoord (hsChunk sample)
+              ChunkId key = chunkIdFromCoord (hsChunk sample')
           in ("Overlay " <> overlayName) : ("Field  " <> fieldHeader) :
-               overlayValuesAt overlay key (tsChunkSize terrainSnap) sample fields
+               overlayValuesAt overlay key (tsChunkSize terrainSnap) sample' fields
+
+solarLinesFor :: UiState -> TerrainSnapshot -> Int -> Int -> [Text]
+solarLinesFor ui terrainSnap tileQ tileR =
+  let (planet, slice, hex, worldConfig) = geoContext ui terrainSnap
+      calCfg = mkCalendarConfig planet
+      worldTime = WorldTime
+        { wtTick     = uiSimTickCount ui
+        , wtTickRate = realToFrac (uiSimTickRate ui)
+        }
+      calDate = tickToDate calCfg worldTime
+      yf      = realToFrac (yearFraction calCfg worldTime) :: Float
+      hpd     = realToFrac (ccHoursPerDay calCfg) :: Float
+      calHour = realToFrac (cdHourOfDay calDate) :: Float
+      tiltDeg = pcAxialTilt planet
+      tile    = TileCoord tileQ tileR
+      latDeg  = tileLatitude planet hex slice worldConfig tile
+      latRad  = latDeg * pi / 180
+      lonDeg  = tileLongitude planet hex slice worldConfig tile
+      sp      = tileSolarPos tiltDeg yf hpd calHour latRad lonDeg
+      di      = tileDayInfo tiltDeg yf hpd latRad
+      irr     = tileIrradiance defaultSolarConfig tiltDeg yf hpd calHour latRad lonDeg
+      radToDeg a = a * 180 / pi
+      altDeg  = radToDeg (spAltitude sp)
+      azDeg   = radToDeg (spAzimuth sp)
+      dayH    = diDayLength di
+      riseH   = diSunriseHour di
+      setH    = diSunsetHour di
+      lsh     = localSolarHour hpd calHour lonDeg
+      fmtHM h = let hrs = floor h :: Int
+                    mins = round ((h - fromIntegral hrs) * 60) :: Int
+                in Text.pack (show hrs) <> ":" <> (if mins < 10 then "0" else "") <> Text.pack (show mins)
+  in [ "--- Sun ---"
+     , "Local " <> fmtHM lsh
+     , "Alt   " <> fmtU altDeg "°"  <> "  Az " <> fmtU azDeg "°"
+     , "Day   " <> fmtU dayH "h"
+     , "Rise  " <> fmtHM riseH <> "  Set " <> fmtHM setH
+     , "Irrad " <> fmtF irr
+     ]
+
+inspectorSections :: UiState -> TerrainSnapshot -> (Int, Int) -> HexSample -> [TerrainInspectorSection]
+inspectorSections ui terrainSnap (q, r) sample =
+  [ coordinatesSection
+  , elevationSection
+  , tectonicsSection
+  , erosionSection
+  , hydrologySection
+  , waterBodySection
+  , waterTableSection
+  ]
+  where
+    units = defaultUnitScales
+    ChunkCoord chunkQ chunkR = hsChunk sample
+    ChunkId chunkKey = chunkIdFromCoord (hsChunk sample)
+    TileCoord localQ localR = hsLocal sample
+    tileIdx = hsTileIndex sample
+    (lat, lon) = latLonValues ui terrainSnap q r
+    waterLevel = uiWaterLevel ui
+    elevationM = normToMetres units (hsElevation sample)
+    relativeWaterM = elevationM - normToMetres units waterLevel
+    dirSlope = hsDirSlope sample
+    slopeDeg = normSlopeToDeg units
+    plateSpeed = sqrt (hsPlateVelX sample ** 2 + hsPlateVelY sample ** 2)
+
+    coordinatesSection = section "coordinates" "Coordinates / Chunk"
+      [ intField "q" "Q" q
+      , intField "r" "R" r
+      , floatUnitField "latitude_deg" "Latitude" lat "°"
+      , floatUnitField "longitude_deg" "Longitude" lon "°"
+      , intField "chunk_id" "Chunk" chunkKey
+      , intField "chunk_q" "Chunk q" chunkQ
+      , intField "chunk_r" "Chunk r" chunkR
+      , intField "tile_index" "Tile" tileIdx
+      , intField "local_q" "Local q" localQ
+      , intField "local_r" "Local r" localR
+      , intField "chunk_size" "Chunk size" (tsChunkSize terrainSnap)
+      ]
+
+    elevationSection = section "elevation_hypsometry" "Elevation / Hypsometry"
+      [ floatField "elevation_norm" "Elev norm" (hsElevation sample)
+      , floatUnitField "elevation_m" "Elev" elevationM "m"
+      , floatField "water_level_norm" "Water level" waterLevel
+      , floatUnitField "relative_water_level_m" "Sea delta" relativeWaterM "m"
+      , textField "hypsometric_zone" "Zone" (hypsometricZone waterLevel (hsElevation sample))
+      ]
+
+    tectonicsSection = section "tectonics_plates" "Tectonics / Plates"
+      [ word16Field "plate_id" "Plate" (hsPlateId sample)
+      , textField "boundary" "Boundary" (plateBoundaryDisplayName (hsPlateBoundary sample))
+      , textField "crust" "Crust" (crustDisplayName (hsPlateCrust sample))
+      , floatUnitField "plate_height_m" "Plate h" (normToMetres units (hsPlateHeight sample)) "m"
+      , floatField "plate_hardness" "Hardness" (hsPlateHardness sample)
+      , floatField "plate_age" "Age" (hsPlateAge sample)
+      , floatField "velocity_x" "Vel X" (hsPlateVelX sample)
+      , floatField "velocity_y" "Vel Y" (hsPlateVelY sample)
+      , floatField "velocity_speed" "Speed" plateSpeed
+      ]
+
+    erosionSection = section "erosion_terrain_form" "Erosion / Terrain Form"
+      [ textField "terrain_form" "Form" (Text.pack (terrainFormDisplayName (hsTerrainForm sample)))
+      , floatUnitField "slope_avg_deg" "Slope" (slopeDeg (hsSlope sample)) "°"
+      , floatUnitField "slope_max_deg" "Slope max" (slopeDeg (dsMaxSlope dirSlope)) "°"
+      , floatUnitField "slope_min_deg" "Slope min" (slopeDeg (dsMinSlope dirSlope)) "°"
+      , floatField "curvature" "Curvature" (hsCurvature sample)
+      , floatField "roughness" "Roughness" (hsRoughness sample)
+      , floatField "ruggedness" "Rugged" (hsRuggedness sample)
+      , floatField "relief" "Relief" (hsRelief sample)
+      , floatField "relief_2ring" "Relief2" (hsRelief2Ring sample)
+      , floatField "relief_3ring" "Relief3" (hsRelief3Ring sample)
+      , floatField "micro_relief" "Micro" (hsMicroRelief sample)
+      , floatField "hardness" "Rock hard" (hsHardness sample)
+      , word16Field "rock_type" "Rock type" (hsRockType sample)
+      , floatField "rock_density" "Rock dens" (hsRockDensity sample)
+      , word16Field "soil_type" "Soil type" (hsSoilType sample)
+      , floatUnitField "soil_depth_m" "Soil" (normToSoilM units (hsSoilDepth sample)) "m"
+      , floatField "soil_grain" "Grain" (hsSoilGrain sample)
+      ]
+
+    hydrologySection = section "hydrology_rivers" "Hydrology / Rivers" $
+      case hsRiverChunk sample of
+        Nothing -> [statusField "not_loaded"]
+        Just rc ->
+          [ floatField "moisture" "Moist" (hsMoisture sample)
+          , maybeFloatField "flow_accum" "Flow acc" (safeIndexMaybe (rcFlowAccum rc) tileIdx)
+          , maybeFloatField "discharge" "Dischg" (safeIndexMaybe (rcDischarge rc) tileIdx)
+          , maybeFloatField "channel_depth" "Depth" (safeIndexMaybe (rcChannelDepth rc) tileIdx)
+          , maybeWord16Field "river_order" "Order" (safeIndexMaybe (rcRiverOrder rc) tileIdx)
+          , maybeWord32Field "basin_id" "Basin" (safeIndexMaybe (rcBasinId rc) tileIdx)
+          , maybeFloatField "baseflow" "Baseflow" (safeIndexMaybe (rcBaseflow rc) tileIdx)
+          , maybeFloatField "erosion_potential" "Erode" (safeIndexMaybe (rcErosionPotential rc) tileIdx)
+          , maybeFloatField "deposit_potential" "Deposit" (safeIndexMaybe (rcDepositPotential rc) tileIdx)
+          , maybeIntField "flow_dir" "Flow dir" (safeIndexMaybe (rcFlowDir rc) tileIdx)
+          , maybeIntField "segment_count" "Segments" (riverSegmentCount rc tileIdx)
+          ]
+
+    waterBodySection = section "water_bodies" "Water Bodies" $
+      case hsWaterBodyChunk sample of
+        Nothing -> [statusField "not_loaded"]
+        Just wb ->
+          [ maybeTextField "type" "Type" waterBodyDisplayName (safeIndexMaybe (wbType wb) tileIdx)
+          , maybeTextField "adjacent_type" "Adjacent" waterBodyDisplayName (safeIndexMaybe (wbAdjacentType wb) tileIdx)
+          , maybeUnitField "surface_elevation_m" "Surface" (normToMetres units) "m" (safeIndexMaybe (wbSurfaceElev wb) tileIdx)
+          , maybeWord32Field "basin_id" "Basin" (safeIndexMaybe (wbBasinId wb) tileIdx)
+          , maybeFloatField "depth_norm" "Depth n" (safeIndexMaybe (wbDepth wb) tileIdx)
+          , maybeUnitField "depth_m" "Depth" (negate . normDepthToMetres units) "m" (safeIndexMaybe (wbDepth wb) tileIdx)
+          ]
+
+    waterTableSection = section "water_table" "Water Table" $
+      case hsGroundwaterChunk sample of
+        Nothing -> [statusField "not_loaded"]
+        Just gw ->
+          [ maybeFloatField "storage" "Storage" (safeIndexMaybe (gwStorage gw) tileIdx)
+          , maybeFloatField "recharge" "Recharge" (safeIndexMaybe (gwRecharge gw) tileIdx)
+          , maybeFloatField "discharge" "Dischg" (safeIndexMaybe (gwDischarge gw) tileIdx)
+          , maybeWord32Field "basin_id" "Basin" (safeIndexMaybe (gwBasinId gw) tileIdx)
+          , maybeFloatField "infiltration" "Infil" (safeIndexMaybe (gwInfiltration gw) tileIdx)
+          , maybeFloatField "water_table_depth" "WT depth" (safeIndexMaybe (gwWaterTableDepth gw) tileIdx)
+          , maybeFloatField "root_zone_moisture" "Root moist" (safeIndexMaybe (gwRootZoneMoisture gw) tileIdx)
+          ]
+
+section :: Text -> Text -> [TerrainInspectorField] -> TerrainInspectorSection
+section = TerrainInspectorSection
+
+textField :: Text -> Text -> Text -> TerrainInspectorField
+textField key label value = TerrainInspectorField key label value (String value)
+
+statusField :: Text -> TerrainInspectorField
+statusField status = textField "status" "Status" status
+
+intField :: Text -> Text -> Int -> TerrainInspectorField
+intField key label value = TerrainInspectorField key label (Text.pack (show value)) (toJSON value)
+
+word16Field :: Text -> Text -> Word16 -> TerrainInspectorField
+word16Field key label value = intField key label (fromIntegral value)
+
+floatField :: Text -> Text -> Float -> TerrainInspectorField
+floatField key label value = TerrainInspectorField key label (fmtF value) (toJSON value)
+
+floatUnitField :: Text -> Text -> Float -> Text -> TerrainInspectorField
+floatUnitField key label value unit = TerrainInspectorField key label (fmtU value unit) (toJSON value)
+
+missingField :: Text -> Text -> TerrainInspectorField
+missingField key label = TerrainInspectorField key label "-" Null
+
+maybeTextField :: Text -> Text -> (a -> Text) -> Maybe a -> TerrainInspectorField
+maybeTextField key label render = maybe (missingField key label) (\value -> textField key label (render value))
+
+maybeFloatField :: Text -> Text -> Maybe Float -> TerrainInspectorField
+maybeFloatField key label = maybe (missingField key label) (floatField key label)
+
+maybeUnitField :: Text -> Text -> (Float -> Float) -> Text -> Maybe Float -> TerrainInspectorField
+maybeUnitField key label convert unit = maybe (missingField key label) (\value -> floatUnitField key label (convert value) unit)
+
+maybeIntField :: Text -> Text -> Maybe Int -> TerrainInspectorField
+maybeIntField key label = maybe (missingField key label) (intField key label)
+
+maybeWord16Field :: Text -> Text -> Maybe Word16 -> TerrainInspectorField
+maybeWord16Field key label = maybe (missingField key label) (word16Field key label)
+
+maybeWord32Field :: Text -> Text -> Maybe Word32 -> TerrainInspectorField
+maybeWord32Field key label = maybe (missingField key label) (intField key label . fromIntegral)
+
+safeIndexMaybe :: U.Unbox a => U.Vector a -> Int -> Maybe a
+safeIndexMaybe v i
+  | i >= 0 && i < U.length v = Just (v U.! i)
+  | otherwise = Nothing
+
+riverSegmentCount :: RiverChunk -> Int -> Maybe Int
+riverSegmentCount rc tileIdx = do
+  start <- safeIndexMaybe (rcSegOffsets rc) tileIdx
+  end <- safeIndexMaybe (rcSegOffsets rc) (tileIdx + 1)
+  pure (max 0 (end - start))
+
+hypsometricZone :: Float -> Float -> Text
+hypsometricZone waterLevel elevation
+  | elevation < waterLevel = "submerged"
+  | elevation < waterLevel + 0.04 = "coastal"
+  | elevation < 0.55 = "lowland"
+  | elevation < 0.75 = "upland"
+  | otherwise = "highland"
+
+waterBodyDisplayName :: WaterBodyType -> Text
+waterBodyDisplayName bodyType =
+  case waterBodyToCode bodyType of
+    0 -> "Dry"
+    1 -> "Ocean"
+    2 -> "Lake"
+    3 -> "Inland sea"
+    code -> "Unknown (" <> Text.pack (show code) <> ")"
 
 data HexSample = HexSample
   { hsChunk :: !ChunkCoord
   , hsLocal :: !TileCoord
+  , hsTileIndex :: !Int
   , hsElevation :: !Float
   , hsSlope :: !Float
   , hsDirSlope :: !DirectionalSlope
-  , hsMoisture :: !Float
+  , hsCurvature :: !Float
+  , hsHardness :: !Float
+  , hsRockType :: !Word16
+  , hsSoilType :: !Word16
   , hsSoilDepth :: !Float
+  , hsMoisture :: !Float
   , hsFertility :: !Float
+  , hsRoughness :: !Float
+  , hsRockDensity :: !Float
+  , hsSoilGrain :: !Float
+  , hsRelief :: !Float
+  , hsRelief2Ring :: !Float
+  , hsRelief3Ring :: !Float
+  , hsMicroRelief :: !Float
+  , hsRuggedness :: !Float
   , hsBiome :: !BiomeId
   , hsTemp :: !Float
   , hsPrecipAvg :: !Float
@@ -459,6 +735,9 @@ data HexSample = HexSample
   , hsPlateVelX :: !Float
   , hsPlateVelY :: !Float
   , hsTerrainForm :: !TerrainForm
+  , hsRiverChunk :: !(Maybe RiverChunk)
+  , hsGroundwaterChunk :: !(Maybe GroundwaterChunk)
+  , hsWaterBodyChunk :: !(Maybe WaterBodyChunk)
   }
 
 sampleAt :: TerrainSnapshot -> (Int, Int) -> Maybe HexSample
@@ -473,17 +752,33 @@ sampleAt terrainSnap (q, r)
       terrainChunk <- IntMap.lookup key (tsTerrainChunks terrainSnap)
       let climateChunk = IntMap.lookup key (tsClimateChunks terrainSnap)
           weatherChunk = IntMap.lookup key (tsWeatherChunks terrainSnap)
+          riverChunk = IntMap.lookup key (tsRiverChunks terrainSnap)
+          groundwaterChunk = IntMap.lookup key (tsGroundwaterChunks terrainSnap)
+          waterBodyChunk = IntMap.lookup key (tsWaterBodyChunks terrainSnap)
           vegetationChunk = IntMap.lookup key (tsVegetationChunks terrainSnap)
           dirSlope = tcDirSlope terrainChunk U.! idx
       Just HexSample
         { hsChunk = chunkCoord
         , hsLocal = local
+        , hsTileIndex = idx
         , hsElevation = tcElevation terrainChunk U.! idx
         , hsSlope = dsAvgSlope dirSlope
         , hsDirSlope = dirSlope
+        , hsCurvature = tcCurvature terrainChunk U.! idx
+        , hsHardness = tcHardness terrainChunk U.! idx
+        , hsRockType = tcRockType terrainChunk U.! idx
+        , hsSoilType = tcSoilType terrainChunk U.! idx
         , hsMoisture = tcMoisture terrainChunk U.! idx
         , hsSoilDepth = tcSoilDepth terrainChunk U.! idx
         , hsFertility = tcFertility terrainChunk U.! idx
+        , hsRoughness = tcRoughness terrainChunk U.! idx
+        , hsRockDensity = tcRockDensity terrainChunk U.! idx
+        , hsSoilGrain = tcSoilGrain terrainChunk U.! idx
+        , hsRelief = tcRelief terrainChunk U.! idx
+        , hsRelief2Ring = tcRelief2Ring terrainChunk U.! idx
+        , hsRelief3Ring = tcRelief3Ring terrainChunk U.! idx
+        , hsMicroRelief = tcMicroRelief terrainChunk U.! idx
+        , hsRuggedness = tcRuggedness terrainChunk U.! idx
         , hsBiome = tcFlags terrainChunk U.! idx
         , hsTemp = maybe 0 (\chunk -> ccTempAvg chunk U.! idx) climateChunk
         , hsPrecipAvg = maybe 0 (\chunk -> ccPrecipAvg chunk U.! idx) climateChunk
@@ -513,6 +808,9 @@ sampleAt terrainSnap (q, r)
         , hsPlateVelX = tcPlateVelX terrainChunk U.! idx
         , hsPlateVelY = tcPlateVelY terrainChunk U.! idx
         , hsTerrainForm = tcTerrainForm terrainChunk U.! idx
+        , hsRiverChunk = riverChunk
+        , hsGroundwaterChunk = groundwaterChunk
+        , hsWaterBodyChunk = waterBodyChunk
         }
 
 fmtF :: Float -> Text

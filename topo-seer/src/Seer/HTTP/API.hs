@@ -536,14 +536,17 @@ worldSummarySchema = inlineObjectSchema
 
 terrainHexResponseSchema :: JsonSchema
 terrainHexResponseSchema = objectSchema "TerrainHexResponse"
-  [ "q", "r", "terrain", "climate", "weather", "river", "vegetation" ]
+  [ "q", "r", "terrain", "climate", "weather", "river", "water_body", "water_table", "vegetation", "sections" ]
   [ ("q", integerSchema)
   , ("r", integerSchema)
   , ("terrain", terrainLayerSchema)
   , ("climate", nullableSchema freeObjectSchema)
   , ("weather", nullableSchema freeObjectSchema)
   , ("river", nullableSchema freeObjectSchema)
+  , ("water_body", nullableSchema freeObjectSchema)
+  , ("water_table", nullableSchema freeObjectSchema)
   , ("vegetation", nullableSchema freeObjectSchema)
+  , ("sections", arraySchema terrainInspectorSectionSchema)
   ]
 
 terrainChunksResponseSchema :: JsonSchema
@@ -620,6 +623,23 @@ terrainExportResponseSchema = objectSchema "TerrainExportResponse"
   [ ("chunk_count", integerSchema)
   , ("fields", arraySchema stringSchema)
   , ("data", freeObjectSchema)
+  ]
+
+terrainInspectorSectionSchema :: Value
+terrainInspectorSectionSchema = inlineObjectSchema
+  [ "key", "title", "fields" ]
+  [ ("key", stringSchema)
+  , ("title", stringSchema)
+  , ("fields", arraySchema terrainInspectorFieldSchema)
+  ]
+
+terrainInspectorFieldSchema :: Value
+terrainInspectorFieldSchema = inlineObjectSchema
+  [ "key", "label", "value", "raw" ]
+  [ ("key", stringSchema)
+  , ("label", stringSchema)
+  , ("value", stringSchema)
+  , ("raw", anySchema)
   ]
 
 terrainLayerSchema :: Value

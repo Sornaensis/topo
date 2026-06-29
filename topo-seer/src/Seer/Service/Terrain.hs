@@ -65,7 +65,10 @@ data TerrainHexResponse = TerrainHexResponse
   , terrainHexClimate :: !(Maybe Value)
   , terrainHexWeather :: !(Maybe Value)
   , terrainHexRiver :: !(Maybe Value)
+  , terrainHexWaterBody :: !(Maybe Value)
+  , terrainHexWaterTable :: !(Maybe Value)
   , terrainHexVegetation :: !(Maybe Value)
+  , terrainHexSections :: !Value
   } deriving (Eq, Show)
 
 data TerrainGetChunksRequest = TerrainGetChunksRequest

@@ -167,6 +167,8 @@ benchTerrainSnapshot = TerrainSnapshot
   , tsClimateChunks    = climateMap16
   , tsWeatherChunks    = weatherMap16
   , tsRiverChunks      = IntMap.fromList [(i, benchRiverChunk) | i <- [0..15]]
+  , tsGroundwaterChunks = IntMap.empty
+  , tsWaterBodyChunks  = IntMap.empty
   , tsVegetationChunks = vegMap16
   , tsOverlayStore     = emptyOverlayStore
   }

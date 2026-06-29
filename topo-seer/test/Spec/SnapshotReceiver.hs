@@ -29,7 +29,7 @@ spec = describe "SnapshotReceiver IORef helpers" $ do
     readDataSnapshot ref >>= (`shouldBe` updated)
 
   it "terrain ref starts with default and round-trips" $ do
-    let initial = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore
+    let initial = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore
     ref <- newTerrainSnapshotRef initial
     readTerrainSnapshot ref >>= (`shouldBe` initial)
 

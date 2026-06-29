@@ -22,11 +22,13 @@ import Actor.Data
   , getDataSnapshot
   , setBiomeChunkCount
   , setClimateChunkData
+  , setGroundwaterChunkData
   , setLastSeed
   , setRiverChunkData
   , setTerrainChunkCount
   , setTerrainChunkData
   , setVegetationChunkData
+  , setWaterBodyChunkData
   , setWeatherChunkData
   )
 import Actor.Log (Log, LogEntry(..), LogLevel(..), appendLog)
@@ -87,6 +89,8 @@ applyTerrainResult handles resultMsg = do
       climateChunks = tgrResultClimateChunks resultMsg
       weatherChunks = tgrResultWeatherChunks resultMsg
       riverChunks   = tgrResultRiverChunks resultMsg
+      groundwaterChunks = tgrResultGroundwaterChunks resultMsg
+      waterBodyChunks = tgrResultWaterBodyChunks resultMsg
       vegetationChunks = tgrResultVegetationChunks resultMsg
       terrainCount = tgrResultTerrainCount resultMsg
       biomeCount = tgrResultBiomeCount resultMsg
@@ -94,11 +98,15 @@ applyTerrainResult handles resultMsg = do
   setClimateChunkData (uahData handles) chunkSize []
   setWeatherChunkData (uahData handles) chunkSize []
   setRiverChunkData   (uahData handles) chunkSize []
+  setGroundwaterChunkData (uahData handles) chunkSize []
+  setWaterBodyChunkData (uahData handles) chunkSize []
   setVegetationChunkData (uahData handles) chunkSize []
   setTerrainChunkData (uahData handles) chunkSize terrainChunks
   setClimateChunkData (uahData handles) chunkSize climateChunks
   setWeatherChunkData (uahData handles) chunkSize weatherChunks
   setRiverChunkData   (uahData handles) chunkSize riverChunks
+  setGroundwaterChunkData (uahData handles) chunkSize groundwaterChunks
+  setWaterBodyChunkData (uahData handles) chunkSize waterBodyChunks
   setVegetationChunkData (uahData handles) chunkSize vegetationChunks
   setTerrainChunkCount (uahData handles) terrainCount
   setBiomeChunkCount (uahData handles) biomeCount

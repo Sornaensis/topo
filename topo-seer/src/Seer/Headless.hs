@@ -226,7 +226,7 @@ startHeadlessAppWithSystem cfg system = do
   simulationHandle <- get @Simulation system
 
   dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
-  terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty emptyOverlayStore)
+  terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
   snapshotVersionRef <- newSnapshotVersionRef
   setSimHandles simulationHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasManagerHandle
   simReady <- simulationHandlesConfigured simulationHandle
