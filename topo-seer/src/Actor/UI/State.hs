@@ -58,7 +58,7 @@ import Topo.Pipeline.Stage (StageId)
 import Topo.Plugin.DataResource (DataResourceSchema)
 import Topo.Plugin.RPC.DataService (DataRecord)
 import Topo.Plugin.RPC.Manifest (RPCParamSpec(..), RPCParamType(..))
-import UI.WidgetTree (WidgetId)
+import UI.WidgetId (WidgetId)
 
 -- | Which data layer to visualize on the hex map.
 data ViewMode

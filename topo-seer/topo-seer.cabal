@@ -125,6 +125,7 @@ library
       UI.WidgetTree
       UI.Component
       UI.Components.ConfigSliders
+      UI.Components.PipelineControls
       UI.Components.LogFilter
       UI.DayNight
       UI.DrawCommand
@@ -249,6 +250,7 @@ test-suite topo-seer-test
       Spec.HTTP
       Spec.Layout
       Spec.LogActor
+      Spec.PipelineControls
       Spec.PluginManager
       Spec.RiverRender
       Spec.Simulation

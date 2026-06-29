@@ -6,19 +6,14 @@ module Seer.Draw.Config
   , drawDataDetailPopover
   ) where
 
-import Actor.Data (DataSnapshot(..))
-import Actor.UI (ConfigTab(..), DataBrowserState(..), UiState(..), builtinStageRowCount, configRowCount, pluginRowIndex, pluginRowsWithParams)
+import Actor.Data (DataSnapshot)
+import Actor.UI (ConfigTab(..), DataBrowserState(..), UiState(..), configRowCount)
 import Control.Monad (forM_, when)
-import Data.Aeson (Value(..))
 import qualified Data.Map.Strict as Map
-import qualified Data.Set as Set
-import Data.Word (Word8)
-import Linear (V2(..), V4(..))
+import Linear (V2(..))
 import qualified SDL
 import Seer.Draw.Config.DataDetail (drawDataDetailPopover)
-import Topo.Pipeline.Stage (allBuiltinStageIds)
 import Topo.Plugin.DataResource (DataResourceSchema(..), DataOperations(..))
-import Topo.Plugin.RPC.Manifest (RPCParamSpec(..), RPCParamType(..))
 import UI.Layout
   ( Layout
   , configPanelRect
@@ -30,14 +25,6 @@ import UI.Layout
   , configScrollAreaRect
   , configScrollBarRect
   , configTabRects
-  , pipelineCheckboxRect
-  , pipelineMoveDownRect
-  , pipelineMoveUpRect
-  , pipelineTickButtonRect
-  , pipelineTickRateBarRect
-  , pipelineExpandRect
-  , pipelineParamBarRect
-  , pipelineParamCheckRect
   , dataBrowserItemRect
   , dataBrowserCreateButtonRect
   )
@@ -47,20 +34,15 @@ import UI.Components.ConfigSliders
   , configTabDrawCommands
   , configTabViews
   )
+import UI.Components.PipelineControls
+  ( pipelineControlDrawCommands
+  , pipelineControlsView
+  )
 import UI.DrawCommand.SDL (interpretDrawCommands)
 import UI.Font (FontCache, drawText)
 import UI.Widgets (Rect(..))
 import UI.Theme
 import UI.WidgetsDraw (rectToSDL)
-
--- | Normalize a numeric parameter value into [0,1] using the spec's range bounds.
---   Falls back to 0.5 when range is missing or invalid.
-normalizeParam :: RPCParamSpec -> Double -> Float
-normalizeParam spec val =
-  case rpsRange spec of
-    Just (Number lo, Number hi)
-      | hi > lo   -> max 0 . min 1 $ realToFrac ((val - realToFrac lo) / (realToFrac hi - realToFrac lo))
-    _             -> max 0 (min 1 (realToFrac val))
 
 drawConfigTabs :: SDL.Renderer -> UiState -> (Rect, Rect, Rect, Rect, Rect, Rect, Rect, Rect) -> IO ()
 drawConfigTabs renderer ui tabs =
@@ -96,115 +78,8 @@ drawConfigPanel renderer mFontCache ui dataSnap layout =
       SDL.drawRect renderer (Just (rectToSDL scrollAreaRect))
       SDL.rendererClipRect renderer SDL.$= Just (rectToSDL scrollAreaRect)
       case uiConfigTab ui of
-        ConfigPipeline -> do
-          let stages = allBuiltinStageIds
-              disabled = uiDisabledStages ui
-              plugins = uiPluginNames ui
-              checkboxSize = 16
-          forM_ (zip [0 ..] stages) $ \(idx, sid) -> do
-            let isDisabled = Set.member sid disabled
-                Rect (V2 checkX checkY, V2 _ _ ) = scrollRect (pipelineCheckboxRect idx layout)
-                checkColor = if isDisabled then colPipelineCheckDisabled else colPipelineCheckEnabled
-                borderColor = if isDisabled then colPipelineCheckDisabledBorder else colPipelineCheckEnabledBorder
-            SDL.rendererDrawColor renderer SDL.$= checkColor
-            SDL.fillRect renderer (Just (rectToSDL (Rect (V2 checkX checkY, V2 checkboxSize checkboxSize))))
-            SDL.rendererDrawColor renderer SDL.$= borderColor
-            SDL.drawRect renderer (Just (rectToSDL (Rect (V2 checkX checkY, V2 checkboxSize checkboxSize))))
-          let pluginOffset = length stages
-          forM_ (zip [0 ..] plugins) $ \(idx, pName) -> do
-            let rowIndex = pluginRowIndex ui idx
-                Rect (V2 checkX checkY, V2 _ _) = scrollRect (pipelineCheckboxRect rowIndex layout)
-                isPluginDisabled = Set.member pName (uiDisabledPlugins ui)
-                pluginColor = if isPluginDisabled then colPipelineCheckDisabled else colPipelinePlugin
-                pluginBorder = if isPluginDisabled then colPipelineCheckDisabledBorder else colPipelinePluginBorder
-                btnSize = 14
-                Rect (V2 upX btnY, V2 _ _) = scrollRect (pipelineMoveUpRect rowIndex layout)
-                Rect (V2 downX _downY, V2 _ _) = scrollRect (pipelineMoveDownRect rowIndex layout)
-                arrowColor = colPipelineArrow
-                arrowBorder = colPipelineArrowBorder
-                -- Expand toggle
-                isExpanded = Map.findWithDefault False pName (uiPluginExpanded ui)
-                Rect (V2 expX expY, V2 expW expH) = scrollRect (pipelineExpandRect rowIndex layout)
-                expColor = if isExpanded then colPipelineExpandActive else colPipelineExpandInactive
-            SDL.rendererDrawColor renderer SDL.$= pluginColor
-            SDL.fillRect renderer (Just (rectToSDL (Rect (V2 checkX checkY, V2 checkboxSize checkboxSize))))
-            SDL.rendererDrawColor renderer SDL.$= pluginBorder
-            SDL.drawRect renderer (Just (rectToSDL (Rect (V2 checkX checkY, V2 checkboxSize checkboxSize))))
-            SDL.rendererDrawColor renderer SDL.$= colPipelineArrowBg
-            SDL.fillRect renderer (Just (rectToSDL (Rect (V2 upX btnY, V2 btnSize btnSize))))
-            SDL.rendererDrawColor renderer SDL.$= arrowBorder
-            SDL.drawRect renderer (Just (rectToSDL (Rect (V2 upX btnY, V2 btnSize btnSize))))
-            SDL.rendererDrawColor renderer SDL.$= arrowColor
-            let upMidX = upX + btnSize `div` 2
-                upTop = btnY + 3
-                upBot = btnY + btnSize - 3
-            forM_ [upTop .. upBot] $ \row -> do
-              let halfW = (row - upTop) * (btnSize `div` 2 - 2) `div` max 1 (upBot - upTop)
-              SDL.drawLine renderer
-                (SDL.P (V2 (fromIntegral (upMidX - halfW)) (fromIntegral row)))
-                (SDL.P (V2 (fromIntegral (upMidX + halfW)) (fromIntegral row)))
-            SDL.rendererDrawColor renderer SDL.$= colPipelineArrowBg
-            SDL.fillRect renderer (Just (rectToSDL (Rect (V2 downX btnY, V2 btnSize btnSize))))
-            SDL.rendererDrawColor renderer SDL.$= arrowBorder
-            SDL.drawRect renderer (Just (rectToSDL (Rect (V2 downX btnY, V2 btnSize btnSize))))
-            SDL.rendererDrawColor renderer SDL.$= arrowColor
-            let dnMidX = downX + btnSize `div` 2
-                dnTop = btnY + 3
-                dnBot = btnY + btnSize - 3
-            forM_ [dnTop .. dnBot] $ \row -> do
-              let halfW = (dnBot - row) * (btnSize `div` 2 - 2) `div` max 1 (dnBot - dnTop)
-              SDL.drawLine renderer
-                (SDL.P (V2 (fromIntegral (dnMidX - halfW)) (fromIntegral row)))
-                (SDL.P (V2 (fromIntegral (dnMidX + halfW)) (fromIntegral row)))
-            -- Expand toggle: small filled square
-            SDL.rendererDrawColor renderer SDL.$= expColor
-            SDL.fillRect renderer (Just (rectToSDL (Rect (V2 expX expY, V2 expW expH))))
-            SDL.rendererDrawColor renderer SDL.$= colPipelineExpandBorder
-            SDL.drawRect renderer (Just (rectToSDL (Rect (V2 expX expY, V2 expW expH))))
-            -- Draw parameter sub-rows when expanded
-            when isExpanded $ do
-              let specs = Map.findWithDefault [] pName (uiPluginParamSpecs ui)
-                  params = Map.findWithDefault Map.empty pName (uiPluginParams ui)
-                  detailCount = length (Map.findWithDefault [] pName (uiPluginDiagnosticLines ui))
-              forM_ (zip [0..] specs) $ \(pIdx, spec) -> do
-                let paramRowIdx = rowIndex + 1 + detailCount + pIdx
-                case rpsType spec of
-                  ParamBool -> do
-                    let Rect (V2 pcX pcY, V2 pcW pcH) = scrollRect (pipelineParamCheckRect paramRowIdx layout)
-                        isChecked = case Map.lookup (rpsName spec) params of
-                                      Just (Bool b) -> b
-                                      _             -> False
-                        boolColor = if isChecked then colPipelineCheckEnabled else colPipelineCheckDisabled
-                        boolBorder = if isChecked then colPipelineCheckEnabledBorder else colPipelineCheckDisabledBorder
-                    SDL.rendererDrawColor renderer SDL.$= boolColor
-                    SDL.fillRect renderer (Just (rectToSDL (Rect (V2 pcX pcY, V2 pcW pcH))))
-                    SDL.rendererDrawColor renderer SDL.$= boolBorder
-                    SDL.drawRect renderer (Just (rectToSDL (Rect (V2 pcX pcY, V2 pcW pcH))))
-                  _ -> do
-                    let barRect = scrollRect (pipelineParamBarRect paramRowIdx layout)
-                        paramVal = case Map.lookup (rpsName spec) params of
-                                     Just (Number n) -> normalizeParam spec (realToFrac n)
-                                     _               -> 0.5
-                    SDL.rendererDrawColor renderer SDL.$= colSliderTrack
-                    SDL.fillRect renderer (Just (rectToSDL barRect))
-                    drawBarFill renderer paramVal barRect colPipelineParamBarFill
-          let simOffset = builtinStageRowCount + pluginRowsWithParams ui
-              simWorldReady = dsTerrainChunks dataSnap > 0
-              tickBtnRect = scrollRect (pipelineTickButtonRect simOffset layout)
-              tickBtnColor = if simWorldReady then colPipelineTickEnabled else colPipelineTickDisabled
-              Rect (V2 autoTickCheckX autoTickCheckY, V2 _ _) = scrollRect (pipelineCheckboxRect (simOffset + 1) layout)
-              autoTickColor = if uiSimAutoTick ui then colPipelineCheckEnabled else colPipelineCheckDisabled
-              autoTickBorder = if uiSimAutoTick ui then colPipelineCheckEnabledBorder else colPipelineCheckDisabledBorder
-              tickRateBarRect = scrollRect (pipelineTickRateBarRect (simOffset + 2) layout)
-          SDL.rendererDrawColor renderer SDL.$= tickBtnColor
-          SDL.fillRect renderer (Just (rectToSDL tickBtnRect))
-          SDL.rendererDrawColor renderer SDL.$= autoTickColor
-          SDL.fillRect renderer (Just (rectToSDL (Rect (V2 autoTickCheckX autoTickCheckY, V2 checkboxSize checkboxSize))))
-          SDL.rendererDrawColor renderer SDL.$= autoTickBorder
-          SDL.drawRect renderer (Just (rectToSDL (Rect (V2 autoTickCheckX autoTickCheckY, V2 checkboxSize checkboxSize))))
-          SDL.rendererDrawColor renderer SDL.$= colSliderTrack
-          SDL.fillRect renderer (Just (rectToSDL tickRateBarRect))
-          drawBarFill renderer (uiSimTickRate ui) tickRateBarRect colPipelineTickRateBarFill
+        ConfigPipeline -> interpretDrawCommands renderer Nothing $
+          pipelineControlDrawCommands (pipelineControlsView ui dataSnap layout)
         ConfigData -> do
           -- Data browser: list plugins with data resources, selected resource's records
           let dbs = uiDataBrowser ui
@@ -298,10 +173,4 @@ drawConfigPanel renderer mFontCache ui dataSnap layout =
       SDL.rendererDrawColor renderer SDL.$= revertColor
       SDL.fillRect renderer (Just (rectToSDL revertRect))
     else pure ()
-
-drawBarFill :: SDL.Renderer -> Float -> Rect -> V4 Word8 -> IO ()
-drawBarFill renderer value (Rect (V2 x y, V2 w h)) color = do
-  let fillW = max 0 (min w (round (fromIntegral w * value)))
-  SDL.rendererDrawColor renderer SDL.$= color
-  SDL.fillRect renderer (Just (rectToSDL (Rect (V2 x y, V2 fillW h))))
 

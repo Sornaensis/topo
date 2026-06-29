@@ -15,6 +15,7 @@ module UI.DrawCommand
   , textLeft
   , textLabelAbove
   , textLabelLeft
+  , line
   , clipTo
   , clearClip
   ) where
@@ -38,6 +39,7 @@ data DrawCommand
   = DrawFillRect !(V4 Word8) !Rect
   | DrawStrokeRect !(V4 Word8) !Rect
   | DrawText !(V4 Word8) !TextPlacement !Text
+  | DrawLine !(V4 Word8) !(V2 Int) !(V2 Int)
   | DrawClip !(Maybe Rect)
   deriving (Eq, Show)
 
@@ -61,6 +63,9 @@ textLabelAbove color rect = DrawText color (TextLabelAbove rect)
 
 textLabelLeft :: V4 Word8 -> Rect -> Text -> DrawCommand
 textLabelLeft color rect = DrawText color (TextLabelLeft rect)
+
+line :: V4 Word8 -> V2 Int -> V2 Int -> DrawCommand
+line = DrawLine
 
 clipTo :: Rect -> DrawCommand
 clipTo = DrawClip . Just

@@ -686,6 +686,21 @@ spec = describe "CommandDispatch" $ do
       ui <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
       (Map.lookup "example" (uiPluginParams ui) >>= Map.lookup "enabled") `shouldBe` Just (Bool True)
 
+    it "click_widget toggles plugin parameter checkboxes through pipeline action helpers" $ withCtx $ \ctx -> do
+      seedRsp <- dispatch ctx "set_plugin_param" (object
+        [ "plugin" .= ("example" :: String)
+        , "param" .= ("enabled" :: String)
+        , "value" .= Bool True
+        ])
+      srSuccess seedRsp `shouldBe` True
+      seedUi <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
+      (Map.lookup "example" (uiPluginParams seedUi) >>= Map.lookup "enabled") `shouldBe` Just (Bool True)
+      rsp <- dispatch ctx "click_widget" (object
+        [ "widget_id" .= ("WidgetPluginParamCheck:example:enabled" :: Text) ])
+      srSuccess rsp `shouldBe` True
+      ui <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
+      (Map.lookup "example" (uiPluginParams ui) >>= Map.lookup "enabled") `shouldBe` Just (Bool False)
+
   describe "sim_tick" $ do
     it "rejects ticks when no world terrain is loaded" $ withCtx $ \ctx -> do
       rsp <- dispatch ctx "sim_tick" Null

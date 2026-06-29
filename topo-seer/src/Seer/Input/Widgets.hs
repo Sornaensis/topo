@@ -78,6 +78,7 @@ import Seer.DataBrowser.Model (DataBrowserPageAction(..))
 import Topo.Plugin.DataResource (DataResourceSchema(..), DataOperations(..), noOperations)
 import Topo.Plugin.RPC.Manifest (RPCParamSpec(..))
 import UI.Components.ConfigSliders (configSliderInputValueForId)
+import UI.Components.PipelineControls (pipelineParamToggleValue, pipelineParamValueFromClick, pipelineScrollOffset)
 import UI.Layout
 import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets, buildDataBrowserWidgets, buildDataDetailWidgets, hitTest, isLeftViewWidget)
 import UI.Widgets (Rect(..), containsPoint)
@@ -120,8 +121,11 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       scrollBar = configScrollBarRect layout
       inScrollBar = uiShowConfig uiSnap && containsPoint scrollBar point
       inConfigScroll = uiShowConfig uiSnap && containsPoint scrollArea point
+      configScrollForHit = case uiConfigTab uiSnap of
+        ConfigPipeline -> pipelineScrollOffset uiSnap layout
+        _ -> uiConfigScroll uiSnap
       scrollPoint = if inConfigScroll
-        then V2 (fromIntegral x) (fromIntegral y + uiConfigScroll uiSnap)
+        then V2 (fromIntegral x) (fromIntegral y + configScrollForHit)
         else point
       dbs_ = uiDataBrowser uiSnap
       detailWidgets = case (dbsSelectedRowIndex dbs_, dbsSelectedPlugin dbs_, dbsSelectedResource dbs_) of
@@ -165,14 +169,15 @@ handleClick inputContext (SDL.P (V2 x y)) = do
                         && containsPoint (leftPanelRect layout) point
       leftViewAdjPoint = V2 (fromIntegral x) (fromIntegral y + uiLeftViewScroll uiSnap)
       (leftViewWidgets, otherWidgets) = partition (isLeftViewWidget . widgetId) nonSliderWidgets
+      (pipelineWidgets, nonPipelineWidgets) = partition (isPipelineScrollWidget . widgetId) otherWidgets
       detailHit = hitTest detailWidgets point
       hitWidget = detailHit <|>
         if inConfigScroll
-          then case hitTest configSliderWidgets scrollPoint of
+          then case hitTest configSliderWidgets scrollPoint <|> hitTest pipelineWidgets scrollPoint of
             Just wid -> Just wid
             Nothing ->
               let viewHit = if inLeftViewPanel then hitTest leftViewWidgets leftViewAdjPoint else Nothing
-              in viewHit <|> hitTest otherWidgets point
+              in viewHit <|> hitTest nonPipelineWidgets point
           else if inLeftViewPanel
             then hitTest leftViewWidgets leftViewAdjPoint <|> hitTest otherWidgets point
             else hitTest widgets point
@@ -278,6 +283,19 @@ handleClick inputContext (SDL.P (V2 x y)) = do
 
     quitRef = icQuitRef inputContext
 
+    isPipelineScrollWidget :: WidgetId -> Bool
+    isPipelineScrollWidget wid = case wid of
+      WidgetPipelineToggle _ -> True
+      WidgetSimTick -> True
+      WidgetSimAutoTick -> True
+      WidgetPluginMoveUp _ -> True
+      WidgetPluginMoveDown _ -> True
+      WidgetPluginToggle _ -> True
+      WidgetPluginExpand _ -> True
+      WidgetPluginParamSlider _ _ -> True
+      WidgetPluginParamCheck _ _ -> True
+      _ -> False
+
     -- Controls like presets, pipeline toggles, and sim/plugin management do
     -- not fit the generic slider model and stay on an explicit bespoke path.
     isBespokeConfigWidget :: WidgetId -> Bool
@@ -291,6 +309,7 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       WidgetSimAutoTick -> True
       WidgetPluginMoveUp _ -> True
       WidgetPluginMoveDown _ -> True
+      WidgetPluginToggle _ -> True
       WidgetPluginExpand _ -> True
       WidgetPluginParamSlider _ _ -> True
       WidgetPluginParamCheck _ _ -> True
@@ -318,10 +337,12 @@ handleClick inputContext (SDL.P (V2 x y)) = do
 
     bespokeConfigWidgetAllowed :: ConfigTab -> WidgetId -> Bool
     bespokeConfigWidgetAllowed tab wid = case wid of
+      WidgetPipelineToggle _ -> tab == ConfigPipeline
       WidgetSimTick -> tab == ConfigPipeline
       WidgetSimAutoTick -> tab == ConfigPipeline
       WidgetPluginMoveUp _ -> tab == ConfigPipeline
       WidgetPluginMoveDown _ -> tab == ConfigPipeline
+      WidgetPluginToggle _ -> tab == ConfigPipeline
       WidgetPluginExpand _ -> tab == ConfigPipeline
       WidgetPluginParamSlider _ _ -> tab == ConfigPipeline
       WidgetPluginParamCheck _ _ -> tab == ConfigPipeline
@@ -393,25 +414,16 @@ handleClick inputContext (SDL.P (V2 x y)) = do
         let current = Map.findWithDefault False name (uiPluginExpanded uiState)
         setUiPluginExpanded uiHandle name (not current)
       WidgetPluginParamSlider pluginName paramName -> whenConfigVisible $ do
-        -- Positional click-to-set: use click X relative to the bar rect
-        let Rect (V2 barX _, V2 barW _) = pipelineParamBarRect 0 currentLayout
-            V2 cx _ = clickPoint
-            normalized = max 0 (min 1 (fromIntegral (cx - barX) / max 1 (fromIntegral barW))) :: Float
-            specs = Map.findWithDefault [] pluginName (uiPluginParamSpecs uiState)
+        let specs = Map.findWithDefault [] pluginName (uiPluginParamSpecs uiState)
             mSpec = find (\s -> rpsName s == paramName) specs
-            value = case mSpec >>= rpsRange of
-              Just (Number lo, Number hi)
-                | hi > lo ->
-                    let v = realToFrac lo + realToFrac normalized * (realToFrac hi - realToFrac lo) :: Double
-                    in Number (realToFrac (max (realToFrac lo) (min (realToFrac hi) v)))
-              _ -> Number (realToFrac normalized)
+            value = pipelineParamValueFromClick currentLayout clickPoint mSpec
         runService "set_plugin_param" (object ["plugin" .= pluginName, "param" .= paramName, "value" .= value])
-      WidgetPluginParamCheck pluginName paramName -> whenConfigVisible $ do
-        let params = Map.findWithDefault Map.empty pluginName (uiPluginParams uiState)
-            current = case Map.lookup paramName params of
-                        Just (Bool b) -> b
-                        _ -> False
-        runService "set_plugin_param" (object ["plugin" .= pluginName, "param" .= paramName, "value" .= Bool (not current)])
+      WidgetPluginParamCheck pluginName paramName -> whenConfigVisible $
+        runService "set_plugin_param" (object
+          [ "plugin" .= pluginName
+          , "param" .= paramName
+          , "value" .= pipelineParamToggleValue uiState pluginName paramName
+          ])
       WidgetDataPluginSelect pluginName -> whenConfigVisible $
         applyDataBrowserAction uiState (DataBrowser.DataBrowserSelectPlugin pluginName)
       WidgetDataResourceSelect pluginName resourceName -> whenConfigVisible $

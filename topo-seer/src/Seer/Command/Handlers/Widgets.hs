@@ -77,6 +77,7 @@ import qualified Seer.DataBrowser.AppService as DataBrowser
 import Seer.DataBrowser.Model (DataBrowserPageAction(..))
 import Topo.Plugin.DataResource (DataResourceSchema(..), DataOperations(..))
 import Seer.Editor.Types (EditorState(..))
+import UI.Components.PipelineControls (pipelineParamToggleValue)
 import UI.WidgetTree (WidgetId(..))
 
 -- ---------------------------------------------------------------------------
@@ -555,16 +556,12 @@ executeWidgetClick ctx wid = do
       pure $ Right ("plugin " <> name <> if current then " collapsed" else " expanded")
     WidgetPluginParamSlider _pluginName _paramName ->
       pure $ Left "use 'set_plugin_param' IPC command for positional slider"
-    WidgetPluginParamCheck pluginName paramName -> do
-      let params' = Map.findWithDefault Map.empty pluginName (uiPluginParams uiSnap)
-          current = case Map.lookup paramName params' of
-                      Just (Bool b) -> b
-                      _ -> False
+    WidgetPluginParamCheck pluginName paramName ->
       commandResult ("plugin param " <> paramName <> " toggled") $
         HPlugin.handleSetPluginParam ctx 0 (object
           [ "plugin" .= pluginName
           , "param" .= paramName
-          , "value" .= Bool (not current)
+          , "value" .= pipelineParamToggleValue uiSnap pluginName paramName
           ])
 
     -- ----- Data browser -----

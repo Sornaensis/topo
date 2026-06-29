@@ -5,8 +5,9 @@
 --
 -- This module keeps the terrain/planet/climate/weather/biome/erosion slider
 -- view model, draw commands, hit regions, tooltip metadata, validation
--- display, and input stepping together.  Pipeline, plugin, simulation, and
--- data-browser controls remain in their existing bespoke panel code.
+-- display, and input stepping together.  Pipeline/plugin/simulation controls
+-- live in 'UI.Components.PipelineControls'; data-browser controls remain in
+-- their bespoke panel code.
 module UI.Components.ConfigSliders
   ( SliderId(..)
   , SliderPart(..)

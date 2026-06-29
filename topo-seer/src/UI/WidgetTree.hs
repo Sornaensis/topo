@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE OverloadedStrings #-}
 module UI.WidgetTree
   ( WidgetId(..)
@@ -24,9 +23,9 @@ import qualified Data.Text as T
 import Linear (V2(..))
 import Seer.Config.SliderRegistry (SliderTab(..), SliderDef(..), allSliderDefs, sliderDefsForTab, sliderMinusWidgetId, sliderPlusWidgetId)
 import Seer.Editor.Types (EditorTool(..))
-import Topo.Pipeline.Stage (allBuiltinStageIds, stageCanonicalName)
 import Topo.Plugin.DataResource (DataResourceSchema(..), DataFieldDef(..), DataFieldType(..), DataConstructorDef(..))
-import Topo.Plugin.RPC.Manifest (RPCParamSpec(..), RPCParamType(..))
+import Topo.Plugin.RPC.Manifest (RPCParamSpec)
+import UI.Components.PipelineControls (pipelinePluginWidgetRects, pipelineStageWidgetRects)
 import UI.Layout
 import UI.WidgetId (WidgetId(..))
 import UI.Widgets (Rect(..), containsPoint)
@@ -66,11 +65,7 @@ buildWidgets layout =
      , Widget WidgetConfigRevert (configRevertRect layout)
     ] ++
     sliderWidgets ++
-    -- Pipeline stage toggle checkboxes
-    [ Widget (WidgetPipelineToggle (stageCanonicalName sid))
-             (pipelineCheckboxRect idx layout)
-    | (idx, sid) <- zip [0..] allBuiltinStageIds
-    ] ++
+    map (uncurry Widget) (pipelineStageWidgetRects layout) ++
     -- View mode buttons (unscrolled / content-space; use isLeftViewWidget +
     -- scroll adjustment in the hit-test layer when left-view scroll is non-zero)
     buildViewModeWidgets layout 0 ++
@@ -143,40 +138,8 @@ buildPluginWidgets
   -> Layout
   -> [Widget]
 buildPluginWidgets pluginNames expanded paramSpecs diagnosticLines layout =
-  let builtinCount = length allBuiltinStageIds
-      -- Build widgets for each plugin, tracking absolute row index
-      (pluginWidgets, nextRow) = foldl buildOne ([], builtinCount) (zip [0..] pluginNames)
-      buildOne (!accWidgets, !rowIdx) (_idx, name) =
-        let moveWidgets =
-              [ Widget (WidgetPluginMoveUp name)   (pipelineMoveUpRect   rowIdx layout)
-              , Widget (WidgetPluginMoveDown name)  (pipelineMoveDownRect rowIdx layout)
-              , Widget (WidgetPluginToggle name)     (pipelineCheckboxRect rowIdx layout)
-              , Widget (WidgetPluginExpand name)     (pipelineExpandRect   rowIdx layout)
-              ]
-            isExpanded = Map.findWithDefault False name expanded
-            specs = Map.findWithDefault [] name paramSpecs
-            detailCount = if isExpanded then length (Map.findWithDefault [] name diagnosticLines) else 0
-            paramWidgets
-              | isExpanded =
-                  concatMap (\(pIdx, spec) ->
-                    let paramRow = rowIdx + 1 + detailCount + pIdx
-                    in case rpsType spec of
-                         ParamBool ->
-                           [ Widget (WidgetPluginParamCheck name (rpsName spec))
-                                    (pipelineParamCheckRect paramRow layout) ]
-                         _ ->
-                           [ Widget (WidgetPluginParamSlider name (rpsName spec))
-                                    (pipelineParamBarRect paramRow layout) ]
-                  ) (zip [0..] specs)
-              | otherwise = []
-            paramCount = if isExpanded then length specs else 0
-        in (accWidgets ++ moveWidgets ++ paramWidgets, rowIdx + 1 + detailCount + paramCount)
-      -- Simulation controls after all plugins
-      simWidgets =
-        [ Widget WidgetSimTick     (pipelineTickButtonRect nextRow layout)
-        , Widget WidgetSimAutoTick (pipelineCheckboxRect (nextRow + 1) layout)
-        ]
-  in pluginWidgets ++ simWidgets
+  map (uncurry Widget) $
+    pipelinePluginWidgetRects pluginNames expanded paramSpecs diagnosticLines layout
 
 -- | Build dynamic widgets for the Data Browser tab.
 --

@@ -35,5 +35,8 @@ interpretDrawCommand renderer fontCache command =
         TextLeft rect -> drawLeft fontCache color rect label
         TextLabelAbove rect -> drawLabelAbove fontCache color rect label
         TextLabelLeft rect -> drawLabelLeft fontCache color rect label
+    DrawLine color start end -> do
+      SDL.rendererDrawColor renderer SDL.$= color
+      SDL.drawLine renderer (SDL.P (fromIntegral <$> start)) (SDL.P (fromIntegral <$> end))
     DrawClip clipRect ->
       SDL.rendererClipRect renderer SDL.$= fmap rectToSDL clipRect
