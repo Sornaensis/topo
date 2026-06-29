@@ -80,8 +80,9 @@ checks and every other route, including `GET /openapi.json`, requires
 `Authorization: Bearer TOKEN`.
 
 The retired MCP bridge and legacy command IPC are not 1.0 automation paths.
-Migration notes and the old-tool/resource mapping live in
-`docs/inventory/mcp-http-parity.md`; new clients should use resource-oriented
+Migration guidance lives in `docs/migration/pre-1.0-to-1.0.md`, release notes
+live in `docs/release-notes/1.0.md`, and the old-tool/resource mapping remains
+in `docs/inventory/mcp-http-parity.md`; new clients should use resource-oriented
 HTTP/OpenAPI routes only. Command IPC remains internal/test compatibility while
 service extraction continues, with no public 1.0 exception.
 

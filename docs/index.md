@@ -44,8 +44,9 @@ The retired MCP bridge and legacy command IPC appear only in migration/internal
 compatibility notes. New clients should use the resource-oriented HTTP routes in
 OpenAPI only; there is no public 1.0 command IPC exception. The committed
 contract artifact and usage notes live in the [HTTP/OpenAPI contract guide](api/README.md).
-See the [MCP-to-HTTP parity matrix](inventory/mcp-http-parity.md) when translating old
-MCP tool or resource names.
+Use the [pre-1.0 migration guide](migration/pre-1.0-to-1.0.md) for client and
+plugin upgrades, and see the [MCP-to-HTTP parity matrix](inventory/mcp-http-parity.md)
+when translating old MCP tool or resource names.
 
 ---
 
@@ -54,6 +55,8 @@ MCP tool or resource names.
 | Topic | Link |
 |-------|------|
 | 1.0 readiness roadmap | [roadmap/1.0.md](roadmap/1.0.md) |
+| 1.0 release notes | [release-notes/1.0.md](release-notes/1.0.md) |
+| Pre-1.0 migration guide | [migration/pre-1.0-to-1.0.md](migration/pre-1.0-to-1.0.md) |
 | Architecture overview | [internal/architecture.md](internal/architecture.md) |
 | Current architecture baseline | [architecture/current.md](architecture/current.md) |
 | Target architecture for 1.0 | [architecture/target.md](architecture/target.md) |

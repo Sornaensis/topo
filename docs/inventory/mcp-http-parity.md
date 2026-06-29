@@ -5,6 +5,11 @@ maps every MCP protocol behavior, advertised tool, advertised resource, and the
 command method each item used to the direct `topo-seer` HTTP/OpenAPI target or
 to an explicit waiver.
 
+For the full pre-1.0 upgrade path, including plugin manifest/protocol v3,
+backend-neutral external data-source changes, and compatibility policy, see the
+[pre-1.0 migration guide](../migration/pre-1.0-to-1.0.md) and
+[Topo 1.0 release notes](../release-notes/1.0.md).
+
 Sources used for this inventory:
 
 - Removed MCP package at `44b7a33^`: `Topo.MCP.Server`, `Topo.MCP.Tools`,
