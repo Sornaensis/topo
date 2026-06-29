@@ -10,6 +10,7 @@ lacks ownership/status/surface/test metadata.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY_PATH = ROOT / "docs" / "inventory" / "public-surface.json"
 VALID_STATUSES = {"present", "partial", "planned", "compatibility", "internal", "waived"}
+VALID_FEATURE_AVAILABILITY = {"present", "missing"}
 
 
 def strip_inline_comment(line: str) -> str:
@@ -363,7 +365,7 @@ def validate_test_reference(
     parts = test_ref.split(":", 2)
     if len(parts) != 3 or parts[1] != "test" or not parts[2].strip():
         errors.append(
-            f"feature group {group_id} has invalid test reference {test_ref!r}; "
+            f"matrix entry {group_id} has invalid test reference {test_ref!r}; "
             "expected '<package>:test:<Module.Name>'"
         )
         return
@@ -371,31 +373,255 @@ def validate_test_reference(
     package_name, _kind, module_name = parts
     package_yaml = inventory_packages.get(package_name)
     if package_yaml is None:
-        errors.append(f"feature group {group_id} references tests for unknown package {package_name}")
+        errors.append(f"matrix entry {group_id} references tests for unknown package {package_name}")
         return
     if not package_yaml.exists():
         return
 
     source_dirs = parse_test_source_dirs(package_yaml)
     if not source_dirs:
-        errors.append(f"feature group {group_id} references tests for package {package_name}, but it has no test source-dirs")
+        errors.append(f"matrix entry {group_id} references tests for package {package_name}, but it has no test source-dirs")
         return
 
     module_path = Path(*module_name.split(".")).with_suffix(".hs")
-    if not any((package_yaml.parent / source_dir / module_path).exists() for source_dir in source_dirs):
+    candidate_module_paths = [package_yaml.parent / source_dir / module_path for source_dir in source_dirs]
+    if not any(path.exists() for path in candidate_module_paths):
         searched = ", ".join(str(Path(source_dir) / module_path) for source_dir in source_dirs)
-        errors.append(f"feature group {group_id} test reference {test_ref!r} does not exist; searched {searched}")
+        errors.append(f"matrix entry {group_id} test reference {test_ref!r} does not exist; searched {searched}")
         return
 
     main_paths, searched_mains = find_test_main_paths(package_yaml)
     if not main_paths:
         searched = ", ".join(searched_mains) if searched_mains else "<none>"
-        errors.append(f"feature group {group_id} test reference {test_ref!r} has no existing test suite main file; searched {searched}")
+        errors.append(f"matrix entry {group_id} test reference {test_ref!r} has no existing test suite main file; searched {searched}")
+        return
+
+    if any(path in main_paths for path in candidate_module_paths):
         return
 
     suite_imports = parse_test_suite_imports(package_yaml)
     if suite_imports and module_name not in suite_imports:
-        errors.append(f"feature group {group_id} test reference {test_ref!r} is not imported by the test suite main module")
+        errors.append(f"matrix entry {group_id} test reference {test_ref!r} is not imported by the test suite main module")
+
+
+def parse_public_http_routes() -> set[tuple[str, str, str]]:
+    """Parse the literal public route table in Seer.HTTP.Server.
+
+    The runtime route table remains the authoritative source; this lightweight
+    parser lets the drift check run in Python-only CI before Stack is built.
+    The Haskell FeatureMatrix spec also compares against publicHttpRouteSpecs.
+    """
+
+    server_path = ROOT / "topo-seer" / "src" / "Seer" / "HTTP" / "Server.hs"
+    source = server_path.read_text(encoding="utf-8")
+    start = source.find("friendlyHttpRouteSpecs = map annotateHttpRouteSpec")
+    end = source.find("\ncommandHttpRouteSpecs", start)
+    if start == -1 or end == -1:
+        fail("could not find friendlyHttpRouteSpecs block in topo-seer/src/Seer/HTTP/Server.hs")
+
+    block = source[start:end]
+    pattern = re.compile(
+        r"\b(?:specialWithQuery|special|serviceWithQuery|service)\s+"
+        r'"([^"]+)"\s+\[([^\]]*)\]\s+"([^"]+)"',
+        re.MULTILINE | re.DOTALL,
+    )
+    routes: set[tuple[str, str, str]] = set()
+    for method, raw_segments, operation_id in pattern.findall(block):
+        segments = re.findall(r'"([^"]+)"', raw_segments)
+        if not segments:
+            continue
+        routes.add((operation_id, method, "/" + "/".join(segments)))
+    return routes
+
+
+def parse_service_operations() -> set[tuple[str, str]]:
+    operations: set[tuple[str, str]] = set()
+    service_dir = ROOT / "topo-seer" / "src" / "Seer" / "Service"
+    pattern = re.compile(r'operationSpec\s+"([^"]+)"\s+"([^"]+)"\s+"([^"]+)"')
+    for service_file in service_dir.glob("*.hs"):
+        if service_file.name == "Types.hs":
+            continue
+        source = service_file.read_text(encoding="utf-8")
+        for operation_name, method_name, _description in pattern.findall(source):
+            operations.add((operation_name, method_name))
+    return operations
+
+
+def has_tests_or_waiver(entry: dict[str, Any]) -> bool:
+    tests = entry.get("tests")
+    waiver = entry.get("waiver")
+    has_tests = isinstance(tests, list) and all(isinstance(test, str) and test.strip() for test in tests) and bool(tests)
+    has_waiver = isinstance(waiver, str) and bool(waiver.strip())
+    return has_tests or has_waiver
+
+
+def validate_test_refs(
+    owner_label: str,
+    tests: Any,
+    inventory_packages: dict[str, Path],
+    errors: list[str],
+) -> None:
+    if tests is not None and not isinstance(tests, list):
+        errors.append(f"{owner_label} tests must be a list when present")
+        return
+    if isinstance(tests, list):
+        for test_ref in tests:
+            if not isinstance(test_ref, str) or not test_ref.strip():
+                errors.append(f"{owner_label} has invalid test reference entry {test_ref!r}")
+                continue
+            validate_test_reference(test_ref, owner_label, inventory_packages, errors)
+
+
+def validate_features(
+    inventory: dict[str, Any],
+    feature_group_ids: set[str],
+    inventory_packages: dict[str, Path],
+    errors: list[str],
+) -> None:
+    features = inventory.get("features")
+    if not isinstance(features, list) or not features:
+        errors.append("inventory must contain a non-empty features list")
+        return
+
+    feature_ids: set[str] = set()
+    for feature in features:
+        if not isinstance(feature, dict):
+            errors.append("features entries must be objects")
+            continue
+        feature_id = feature.get("id") if isinstance(feature.get("id"), str) and feature.get("id", "").strip() else "<unknown>"
+        if feature_id in feature_ids:
+            errors.append(f"duplicate feature id {feature_id}")
+        feature_ids.add(feature_id)
+
+        for field in ("id", "title", "availability", "owner", "status", "featureGroup"):
+            value = feature.get(field)
+            if not isinstance(value, str) or not value.strip():
+                errors.append(f"feature {feature_id} must set non-empty {field}")
+        availability = feature.get("availability")
+        if isinstance(availability, str) and availability not in VALID_FEATURE_AVAILABILITY:
+            errors.append(
+                f"feature {feature_id} has invalid availability {availability!r}; "
+                f"expected one of {sorted(VALID_FEATURE_AVAILABILITY)}"
+            )
+        status = feature.get("status")
+        if isinstance(status, str) and status not in VALID_STATUSES:
+            errors.append(
+                f"feature {feature_id} has invalid status {status!r}; "
+                f"expected one of {sorted(VALID_STATUSES)}"
+            )
+        group_id = feature.get("featureGroup")
+        if isinstance(group_id, str) and group_id not in feature_group_ids:
+            errors.append(f"feature {feature_id} references unknown feature group {group_id}")
+        if not has_tests_or_waiver(feature):
+            errors.append(f"feature {feature_id} needs tests or an explicit waiver")
+        validate_test_refs(f"feature {feature_id}", feature.get("tests"), inventory_packages, errors)
+
+
+def validate_public_http_routes(
+    inventory: dict[str, Any],
+    feature_group_ids: set[str],
+    errors: list[str],
+) -> None:
+    sections = inventory.get("publicHttpRoutes")
+    if not isinstance(sections, list) or not sections:
+        errors.append("inventory must contain a non-empty publicHttpRoutes list")
+        return
+
+    matrix_routes: set[tuple[str, str, str]] = set()
+    for section in sections:
+        if not isinstance(section, dict):
+            errors.append("publicHttpRoutes entries must be objects")
+            continue
+        group_id = section.get("featureGroup")
+        if not isinstance(group_id, str) or not group_id.strip():
+            errors.append("publicHttpRoutes entry must set non-empty featureGroup")
+        elif group_id not in feature_group_ids:
+            errors.append(f"publicHttpRoutes entry references unknown feature group {group_id}")
+        routes = section.get("routes")
+        if not isinstance(routes, list) or not routes:
+            errors.append(f"publicHttpRoutes entry {group_id!r} must contain a non-empty routes list")
+            continue
+        for route in routes:
+            if not isinstance(route, dict):
+                errors.append(f"publicHttpRoutes entry {group_id!r} contains a non-object route")
+                continue
+            operation_id = route.get("operationId")
+            method = route.get("method")
+            path = route.get("path")
+            if not all(isinstance(value, str) and value.strip() for value in (operation_id, method, path)):
+                errors.append(f"publicHttpRoutes entry {group_id!r} contains an invalid route {route!r}")
+                continue
+            key = (operation_id, method, path)
+            if key in matrix_routes:
+                errors.append(f"duplicate public HTTP route matrix entry {method} {path} ({operation_id})")
+            matrix_routes.add(key)
+
+    source_routes = parse_public_http_routes()
+    missing = sorted(source_routes - matrix_routes)
+    stale = sorted(matrix_routes - source_routes)
+    if missing:
+        errors.append(
+            "public HTTP routes missing from feature matrix: "
+            + ", ".join(f"{method} {path} ({op})" for op, method, path in missing)
+        )
+    if stale:
+        errors.append(
+            "feature matrix contains stale public HTTP routes: "
+            + ", ".join(f"{method} {path} ({op})" for op, method, path in stale)
+        )
+
+
+def validate_service_operations(
+    inventory: dict[str, Any],
+    feature_group_ids: set[str],
+    errors: list[str],
+) -> None:
+    sections = inventory.get("serviceOperations")
+    if not isinstance(sections, list) or not sections:
+        errors.append("inventory must contain a non-empty serviceOperations list")
+        return
+
+    matrix_operations: set[tuple[str, str]] = set()
+    for section in sections:
+        if not isinstance(section, dict):
+            errors.append("serviceOperations entries must be objects")
+            continue
+        group_id = section.get("featureGroup")
+        if not isinstance(group_id, str) or not group_id.strip():
+            errors.append("serviceOperations entry must set non-empty featureGroup")
+        elif group_id not in feature_group_ids:
+            errors.append(f"serviceOperations entry references unknown feature group {group_id}")
+        operations = section.get("operations")
+        if not isinstance(operations, list) or not operations:
+            errors.append(f"serviceOperations entry {group_id!r} must contain a non-empty operations list")
+            continue
+        for operation in operations:
+            if not isinstance(operation, dict):
+                errors.append(f"serviceOperations entry {group_id!r} contains a non-object operation")
+                continue
+            name = operation.get("name")
+            method = operation.get("method")
+            if not all(isinstance(value, str) and value.strip() for value in (name, method)):
+                errors.append(f"serviceOperations entry {group_id!r} contains an invalid operation {operation!r}")
+                continue
+            key = (name, method)
+            if key in matrix_operations:
+                errors.append(f"duplicate service operation matrix entry {name} ({method})")
+            matrix_operations.add(key)
+
+    source_operations = parse_service_operations()
+    missing = sorted(source_operations - matrix_operations)
+    stale = sorted(matrix_operations - source_operations)
+    if missing:
+        errors.append(
+            "service operations missing from feature matrix: "
+            + ", ".join(f"{name} ({method})" for name, method in missing)
+        )
+    if stale:
+        errors.append(
+            "feature matrix contains stale service operations: "
+            + ", ".join(f"{name} ({method})" for name, method in stale)
+        )
 
 
 def run_parser_self_tests(errors: list[str]) -> None:
@@ -511,19 +737,9 @@ def main() -> int:
             )
 
         tests = group.get("tests")
-        waiver = group.get("waiver")
-        has_tests = isinstance(tests, list) and all(isinstance(test, str) and test.strip() for test in tests) and bool(tests)
-        has_waiver = isinstance(waiver, str) and bool(waiver.strip())
-        if not has_tests and not has_waiver:
+        if not has_tests_or_waiver(group):
             errors.append(f"feature group {group_id} needs tests or an explicit waiver")
-        if tests is not None and not isinstance(tests, list):
-            errors.append(f"feature group {group_id} tests must be a list when present")
-        if isinstance(tests, list):
-            for test_ref in tests:
-                if not isinstance(test_ref, str) or not test_ref.strip():
-                    errors.append(f"feature group {group_id} has invalid test reference entry {test_ref!r}")
-                    continue
-                validate_test_reference(test_ref, group_id, inventory_packages, errors)
+        validate_test_refs(f"feature group {group_id}", tests, inventory_packages, errors)
 
         modules_by_package = group.get("modules")
         if not isinstance(modules_by_package, dict) or not modules_by_package:
@@ -554,6 +770,10 @@ def main() -> int:
                         f"module {package_name}:{module_name} is mapped by both {previous} and {group_id}"
                     )
                 module_to_group[key] = group_id
+
+    validate_features(inventory, feature_group_ids, inventory_packages, errors)
+    validate_public_http_routes(inventory, feature_group_ids, errors)
+    validate_service_operations(inventory, feature_group_ids, errors)
 
     for package_name, package_yaml in inventory_packages.items():
         if not package_yaml.exists():

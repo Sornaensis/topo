@@ -1,26 +1,29 @@
 # Public Module and Feature Inventory
 
-This inventory is the maintained 1.0 planning report for exposed library
-modules and feature groups. The machine-readable source is
-[`public-surface.json`](public-surface.json), and the drift check is
-[`tools/check-public-surface.py`](../../tools/check-public-surface.py).
+This inventory is the maintained 1.0 feature matrix for exposed library
+modules, public HTTP routes, AppService operations, and present/missing feature
+scope. The machine-readable source is [`public-surface.json`](public-surface.json),
+and the drift checks are [`tools/check-public-surface.py`](../../tools/check-public-surface.py)
+and the `Spec.FeatureMatrix` test.
 
 The active hmem Topo 1.0 project tree supplies the feature-completion scope.
-Package `exposed-modules` lists supply the public module surface. No separate
-markdown planning file is required as the source of truth.
+Package `exposed-modules`, `Seer.HTTP.Server.publicHttpRouteSpecs`, and
+`Seer.Service.AppService.appServiceOperationSpecs` supply the public surfaces.
+No separate markdown planning file is required as the source of truth.
 
 ## Maintenance contract
 
-Run the check after changing any package `exposed-modules` list or changing a
-feature group mapping:
+Run the checks after changing any package `exposed-modules` list, public route,
+AppService operation, feature entry, or feature-group mapping:
 
 ```sh
 python tools/check-public-surface.py
+stack test topo-seer:topo-seer-test --test-arguments '--match Feature'
 ```
 
-The check also runs in the `Public surface inventory` GitHub Actions workflow on
-pull requests and pushes that touch package metadata, the inventory, or the
-checker.
+The checks also run in the `Feature matrix` GitHub Actions workflow on pull
+requests and pushes that touch package metadata, the inventory, route/service
+source, the checker, or the feature-matrix test.
 
 The check fails when any of these conditions is true:
 
@@ -28,13 +31,20 @@ The check fails when any of these conditions is true:
 - an exposed module is missing from all feature groups;
 - an inventoried module is no longer exposed;
 - a module is mapped by more than one feature group;
-- package or feature-group entries are duplicated;
+- package, present/missing feature, route, operation, or feature-group entries
+  are duplicated;
 - package role metadata is missing;
 - a listed test reference does not resolve to a test module or is not imported by
   the test suite main module;
 - a package test suite main file referenced by test metadata cannot be found;
 - a feature group lacks owner, status, UI surface, service surface, HTTP surface,
-  and tests or an explicit waiver.
+  and tests or an explicit waiver;
+- a top-level present/missing feature lacks owner, status, and tests or an
+  explicit waiver;
+- a public route from `publicHttpRouteSpecs` is missing from the matrix or the
+  matrix lists a stale route;
+- an AppService operation from `appServiceOperationSpecs` is missing from the
+  matrix or the matrix lists a stale operation.
 
 ## Current feature groups
 
@@ -61,7 +71,8 @@ The inventory currently covers exposed library modules from these packages:
 - `topo`
 - `topo-seer`
 - `topo-plugin-sdk`
+- `topo-plugin-example`
+- `topo-plugin-civ-example`
 
-Executable-only example plugin packages are intentionally absent because they do
-not expose library modules. Their behavior is tracked through plugin SDK and
-plugin-contract feature groups and later manifest/protocol fixture tasks.
+Example plugin packages are included because their libraries expose public
+fixture modules used by SDK, manifest, and protocol coverage.

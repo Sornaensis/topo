@@ -39,6 +39,7 @@ import qualified Spec.Headless
 import qualified Spec.HTTP
 import qualified Spec.EditorBrush
 import qualified Spec.EditorHistory
+import qualified Spec.FeatureMatrix
 import qualified Spec.ZoomStageProperties
 
 main :: IO ()
@@ -86,4 +87,5 @@ main = do
         Spec.HTTP.spec
         Spec.EditorBrush.spec
         Spec.EditorHistory.spec
+        Spec.FeatureMatrix.spec
         Spec.ZoomStageProperties.spec

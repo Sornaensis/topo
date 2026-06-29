@@ -256,6 +256,7 @@ test-suite topo-seer-test
       Spec.DataResourceE2E
       Spec.EditorBrush
       Spec.EditorHistory
+      Spec.FeatureMatrix
       Spec.Headless
       Spec.HexPick
       Spec.HTTP

@@ -1,0 +1,42 @@
+name: Feature matrix
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'docs/inventory/public-surface.json'
+      - 'docs/inventory/public-surface.md'
+      - 'tools/check-public-surface.py'
+      - '**/package.yaml'
+      - 'topo-seer/src/Seer/HTTP/**'
+      - 'topo-seer/src/Seer/Service/**'
+      - 'topo-seer/test/Spec/FeatureMatrix.hs'
+      - 'topo-seer/test/Spec.hs'
+      - 'stack.yaml'
+  pull_request:
+    paths:
+      - 'docs/inventory/public-surface.json'
+      - 'docs/inventory/public-surface.md'
+      - 'tools/check-public-surface.py'
+      - '**/package.yaml'
+      - 'topo-seer/src/Seer/HTTP/**'
+      - 'topo-seer/src/Seer/Service/**'
+      - 'topo-seer/test/Spec/FeatureMatrix.hs'
+      - 'topo-seer/test/Spec.hs'
+      - 'stack.yaml'
+
+jobs:
+  check-feature-matrix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: haskell-actions/setup@v2
+        with:
+          enable-stack: true
+          stack-version: 'latest'
+      - name: Install native SDL dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libsdl2-dev libsdl2-ttf-dev
+      - name: Check feature matrix inventory drift
+        run: python3 tools/check-public-surface.py
+      - name: Check runtime route and service drift
+        run: stack test topo-seer:topo-seer-test --test-arguments '--match Feature'

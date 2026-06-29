@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "title": "Topo public module and feature inventory",
-  "planningSource": "The active hmem Topo 1.0 project tree and the package.yaml exposed-modules lists are the sources of truth for this inventory.",
-  "checkCommand": "python tools/check-public-surface.py",
+  "title": "Topo feature matrix and public surface inventory",
+  "planningSource": "The active hmem Topo 1.0 project tree, package.yaml exposed-modules lists, Seer.HTTP.Server.publicHttpRouteSpecs, and Seer.Service.AppService.appServiceOperationSpecs are the sources of truth for this inventory.",
+  "checkCommand": "python tools/check-public-surface.py; stack test topo-seer:topo-seer-test --test-arguments '--match Feature'",
   "packages": [
     {
       "name": "topo",
@@ -18,6 +18,379 @@
       "name": "topo-plugin-sdk",
       "packageYaml": "topo-plugin-sdk/package.yaml",
       "role": "Canonical Haskell SDK for plugin manifests, payload helpers, and runtime connection behavior."
+    },
+    {
+      "name": "topo-plugin-example",
+      "packageYaml": "topo-plugin-example/package.yaml",
+      "role": "Example SDK plugin package used as a public manifest/protocol fixture."
+    },
+    {
+      "name": "topo-plugin-civ-example",
+      "packageYaml": "topo-plugin-civ-example/package.yaml",
+      "role": "Example civilization overlay plugin package used as a public data/resource fixture."
+    }
+  ],
+  "features": [
+    {
+      "id": "core-terrain-generation-present",
+      "title": "Deterministic terrain generation, core data models, and domain modules",
+      "availability": "present",
+      "owner": "topo core maintainers",
+      "status": "present",
+      "featureGroup": "topo-core-model",
+      "tests": ["topo:test:Spec.World", "topo:test:Spec.Pipeline", "topo:test:Spec.Hydrology", "topo:test:Spec.Climate"],
+      "waiver": null
+    },
+    {
+      "id": "appservice-http-baseline-present",
+      "title": "AppService operation catalog and public HTTP/OpenAPI route catalog",
+      "availability": "present",
+      "owner": "topo-seer service maintainers",
+      "status": "present",
+      "featureGroup": "seer-command-control-compatibility",
+      "tests": ["topo-seer:test:Spec.AppService", "topo-seer:test:Spec.HTTP"],
+      "waiver": null
+    },
+    {
+      "id": "terrain-inspector-domain-sections-present",
+      "title": "Canonical terrain inspector domain sections and HTTP terrain response fields",
+      "availability": "present",
+      "owner": "topo-seer UI maintainers",
+      "status": "present",
+      "featureGroup": "seer-ui-render-input-editor",
+      "tests": ["topo-seer:test:Spec.TerrainInspector", "topo-seer:test:Spec.HTTP"],
+      "waiver": null
+    },
+    {
+      "id": "feature-matrix-ci-present",
+      "title": "Machine-checkable feature matrix maintenance and drift CI",
+      "availability": "present",
+      "owner": "topo release maintainers",
+      "status": "present",
+      "featureGroup": "seer-command-control-compatibility",
+      "tests": ["topo-seer:test:Spec.FeatureMatrix"],
+      "waiver": null
+    },
+    {
+      "id": "view-mode-registry-legends-export-missing",
+      "title": "View-mode registry, legends, units, and export mapping parity",
+      "availability": "missing",
+      "owner": "topo-seer UI maintainers",
+      "status": "planned",
+      "featureGroup": "seer-ui-render-input-editor",
+      "tests": [],
+      "waiver": "Missing by design in this matrix-maintenance task; tracked by M9 feature implementation work rather than this CI automation change."
+    },
+    {
+      "id": "pipeline-diagnostics-parity-missing",
+      "title": "Pipeline diagnostics parity and stage dependency visibility",
+      "availability": "missing",
+      "owner": "topo generation maintainers",
+      "status": "planned",
+      "featureGroup": "topo-pipeline-terrain",
+      "tests": [],
+      "waiver": "Missing by design in this matrix-maintenance task; tracked by M9 pipeline diagnostics work rather than this CI automation change."
+    },
+    {
+      "id": "overlay-manager-provenance-ui-missing",
+      "title": "Overlay manager, schema/provenance inspection, and import/export dialogs",
+      "availability": "missing",
+      "owner": "topo persistence and overlay maintainers",
+      "status": "planned",
+      "featureGroup": "topo-overlay-persistence-export",
+      "tests": [],
+      "waiver": "Missing by design in this matrix-maintenance task; tracked by M9 overlay manager work rather than this CI automation change."
+    },
+    {
+      "id": "plugin-resource-status-surfaces-missing",
+      "title": "Plugin resource, dependency, CRUD, and external data-source status surfaces",
+      "availability": "missing",
+      "owner": "topo plugin maintainers",
+      "status": "planned",
+      "featureGroup": "topo-plugin-contract",
+      "tests": [],
+      "waiver": "Missing by design in this matrix-maintenance task; tracked by M9 plugin/status feature-surface work rather than this CI automation change."
+    },
+    {
+      "id": "simulation-dag-status-surfaces-missing",
+      "title": "Simulation DAG, tick-log, and plugin simulation-node status surfaces",
+      "availability": "missing",
+      "owner": "topo simulation maintainers",
+      "status": "planned",
+      "featureGroup": "topo-simulation",
+      "tests": [],
+      "waiver": "Missing by design in this matrix-maintenance task; tracked by M9 simulation feature-surface work rather than this CI automation change."
+    },
+    {
+      "id": "m9-acceptance-review-missing",
+      "title": "M9 acceptance review and final feature-completion signoff",
+      "availability": "missing",
+      "owner": "topo release maintainers",
+      "status": "planned",
+      "featureGroup": "seer-app-config-persistence",
+      "tests": [],
+      "waiver": "Missing by design in this matrix-maintenance task; acceptance review is a separate ready task after feature-surface implementation completes."
+    }
+  ],
+  "publicHttpRoutes": [
+    {
+      "featureGroup": "seer-app-config-persistence",
+      "routes": [
+        {"operationId": "meta.health", "method": "GET", "path": "/health"},
+        {"operationId": "meta.version", "method": "GET", "path": "/version"},
+        {"operationId": "meta.openapi", "method": "GET", "path": "/openapi.json"},
+        {"operationId": "events.list", "method": "GET", "path": "/events"},
+        {"operationId": "config.sliders.list", "method": "GET", "path": "/config/sliders"},
+        {"operationId": "config.sliders.get", "method": "POST", "path": "/config/sliders/get"},
+        {"operationId": "config.sliders.set", "method": "POST", "path": "/config/sliders"},
+        {"operationId": "config.sliders.setMany", "method": "PATCH", "path": "/config/sliders"},
+        {"operationId": "config.sliders.reset", "method": "POST", "path": "/config/sliders/reset"},
+        {"operationId": "config.summary", "method": "GET", "path": "/config/summary"},
+        {"operationId": "config.enums", "method": "GET", "path": "/config/enums"},
+        {"operationId": "presets.list", "method": "GET", "path": "/presets"},
+        {"operationId": "presets.save", "method": "POST", "path": "/presets"},
+        {"operationId": "presets.load", "method": "POST", "path": "/presets/load"},
+        {"operationId": "world.meta", "method": "GET", "path": "/world"},
+        {"operationId": "world.generationStatus", "method": "GET", "path": "/world/generation-status"},
+        {"operationId": "worlds.list", "method": "GET", "path": "/worlds"},
+        {"operationId": "worlds.save", "method": "POST", "path": "/worlds/save"},
+        {"operationId": "worlds.load", "method": "POST", "path": "/worlds/load"},
+        {"operationId": "world.name.set", "method": "PATCH", "path": "/world/name"},
+        {"operationId": "logs.get", "method": "GET", "path": "/logs"},
+        {"operationId": "screenshots.take", "method": "POST", "path": "/screenshots"}
+      ]
+    },
+    {
+      "featureGroup": "seer-runtime-actors",
+      "routes": [
+        {"operationId": "state.get", "method": "GET", "path": "/state"},
+        {"operationId": "state.viewModes", "method": "GET", "path": "/state/view-modes"},
+        {"operationId": "ui.state", "method": "GET", "path": "/ui/state"}
+      ]
+    },
+    {
+      "featureGroup": "topo-pipeline-terrain",
+      "routes": [
+        {"operationId": "world.generate", "method": "POST", "path": "/world/generate"},
+        {"operationId": "terrain.hex", "method": "GET", "path": "/terrain/hex"},
+        {"operationId": "terrain.chunks", "method": "GET", "path": "/terrain/chunks"},
+        {"operationId": "terrain.chunkSummary", "method": "GET", "path": "/terrain/chunk-summary"},
+        {"operationId": "terrain.stats", "method": "GET", "path": "/terrain/stats"},
+        {"operationId": "terrain.search", "method": "POST", "path": "/terrain/search"},
+        {"operationId": "pipeline.get", "method": "GET", "path": "/pipeline"},
+        {"operationId": "pipeline.stage.setEnabled", "method": "PATCH", "path": "/pipeline/stages"}
+      ]
+    },
+    {
+      "featureGroup": "topo-overlay-persistence-export",
+      "routes": [
+        {"operationId": "terrain.overlays", "method": "GET", "path": "/terrain/overlays"},
+        {"operationId": "terrain.export", "method": "POST", "path": "/terrain/export"},
+        {"operationId": "overlays.list", "method": "GET", "path": "/overlays"},
+        {"operationId": "overlays.fields.list", "method": "GET", "path": "/overlays/fields"},
+        {"operationId": "overlays.current.set", "method": "PUT", "path": "/overlays/current"},
+        {"operationId": "overlays.cycle", "method": "POST", "path": "/overlays/cycle"},
+        {"operationId": "overlays.field.cycle", "method": "POST", "path": "/overlays/fields/cycle"}
+      ]
+    },
+    {
+      "featureGroup": "topo-simulation",
+      "routes": [
+        {"operationId": "simulation.state", "method": "GET", "path": "/simulation"},
+        {"operationId": "simulation.dag", "method": "GET", "path": "/simulation/dag"},
+        {"operationId": "simulation.autoTick.set", "method": "POST", "path": "/simulation/auto-tick"},
+        {"operationId": "simulation.tick", "method": "POST", "path": "/simulation/tick"}
+      ]
+    },
+    {
+      "featureGroup": "topo-plugin-contract",
+      "routes": [
+        {"operationId": "plugins.list", "method": "GET", "path": "/plugins"},
+        {"operationId": "plugins.status", "method": "GET", "path": "/plugins/status"},
+        {"operationId": "plugins.state", "method": "GET", "path": "/plugins/state"},
+        {"operationId": "plugins.dependencies", "method": "GET", "path": "/plugins/dependencies"},
+        {"operationId": "plugins.setEnabled", "method": "PATCH", "path": "/plugins/enabled"},
+        {"operationId": "plugins.params.set", "method": "PATCH", "path": "/plugins/params"},
+        {"operationId": "data.plugins.list", "method": "GET", "path": "/data/plugins"},
+        {"operationId": "data.resources.list", "method": "GET", "path": "/data/resources"},
+        {"operationId": "data.records.list", "method": "GET", "path": "/data/records"},
+        {"operationId": "data.records.get", "method": "POST", "path": "/data/records/get"},
+        {"operationId": "data.records.create", "method": "POST", "path": "/data/records"},
+        {"operationId": "data.records.update", "method": "PUT", "path": "/data/records"},
+        {"operationId": "data.records.delete", "method": "DELETE", "path": "/data/records"},
+        {"operationId": "data.state", "method": "GET", "path": "/data/state"}
+      ]
+    },
+    {
+      "featureGroup": "seer-ui-render-input-editor",
+      "routes": [
+        {"operationId": "editor.state", "method": "GET", "path": "/editor"},
+        {"operationId": "editor.toggle", "method": "POST", "path": "/editor/toggle"},
+        {"operationId": "editor.tool.set", "method": "POST", "path": "/editor/tool"},
+        {"operationId": "editor.brush.set", "method": "PATCH", "path": "/editor/brush"},
+        {"operationId": "editor.brushStroke", "method": "POST", "path": "/editor/brush-stroke"},
+        {"operationId": "editor.brushLine", "method": "POST", "path": "/editor/brush-line"},
+        {"operationId": "editor.biome.set", "method": "POST", "path": "/editor/biome"},
+        {"operationId": "editor.form.set", "method": "POST", "path": "/editor/form"},
+        {"operationId": "editor.hardness.set", "method": "POST", "path": "/editor/hardness"},
+        {"operationId": "editor.undo", "method": "POST", "path": "/editor/undo"},
+        {"operationId": "editor.redo", "method": "POST", "path": "/editor/redo"},
+        {"operationId": "ui.seed.set", "method": "POST", "path": "/ui/seed"},
+        {"operationId": "ui.viewMode.set", "method": "POST", "path": "/ui/view-mode"},
+        {"operationId": "ui.configTab.set", "method": "POST", "path": "/ui/config-tab"},
+        {"operationId": "ui.hex.select", "method": "POST", "path": "/ui/select-hex"},
+        {"operationId": "ui.overlay.set", "method": "POST", "path": "/ui/overlay"},
+        {"operationId": "ui.overlayFields.list", "method": "GET", "path": "/ui/overlay-fields"},
+        {"operationId": "ui.overlay.cycle", "method": "POST", "path": "/ui/overlay/cycle"},
+        {"operationId": "ui.overlayField.cycle", "method": "POST", "path": "/ui/overlay-field/cycle"},
+        {"operationId": "camera.set", "method": "PUT", "path": "/camera"},
+        {"operationId": "camera.get", "method": "GET", "path": "/camera"},
+        {"operationId": "camera.zoomToChunk", "method": "POST", "path": "/camera/zoom-to-chunk"},
+        {"operationId": "ui.camera.set", "method": "PUT", "path": "/ui/camera"},
+        {"operationId": "ui.camera.get", "method": "GET", "path": "/ui/camera"},
+        {"operationId": "ui.camera.zoomToChunk", "method": "POST", "path": "/ui/camera/zoom-to-chunk"},
+        {"operationId": "ui.leftPanel.set", "method": "PUT", "path": "/ui/left-panel"},
+        {"operationId": "ui.leftTab.set", "method": "PUT", "path": "/ui/left-tab"},
+        {"operationId": "ui.configPanel.toggle", "method": "POST", "path": "/ui/config-panel/toggle"},
+        {"operationId": "ui.logCollapsed.set", "method": "PUT", "path": "/ui/log/collapsed"},
+        {"operationId": "ui.logLevel.set", "method": "PUT", "path": "/ui/log/level"},
+        {"operationId": "ui.panels.get", "method": "GET", "path": "/ui/panels"},
+        {"operationId": "ui.viewport.scroll", "method": "POST", "path": "/ui/viewport/scroll"},
+        {"operationId": "ui.viewport.click", "method": "POST", "path": "/ui/viewport/click"},
+        {"operationId": "ui.viewport.drag", "method": "POST", "path": "/ui/viewport/drag"},
+        {"operationId": "ui.viewport.hover", "method": "POST", "path": "/ui/viewport/hover"},
+        {"operationId": "ui.widgets.click", "method": "POST", "path": "/ui/widgets/click"},
+        {"operationId": "ui.widgets.list", "method": "GET", "path": "/ui/widgets"},
+        {"operationId": "ui.widgetState.get", "method": "GET", "path": "/ui/widget-state"},
+        {"operationId": "ui.dialog.get", "method": "GET", "path": "/ui/dialog"},
+        {"operationId": "ui.dialogText.set", "method": "PUT", "path": "/ui/dialog/text"},
+        {"operationId": "ui.dialog.confirm", "method": "POST", "path": "/ui/dialog/confirm"},
+        {"operationId": "ui.dialog.cancel", "method": "POST", "path": "/ui/dialog/cancel"},
+        {"operationId": "ui.key.send", "method": "POST", "path": "/ui/key"}
+      ]
+    }
+  ],
+  "serviceOperations": [
+    {
+      "featureGroup": "seer-app-config-persistence",
+      "operations": [
+        {"name": "config.sliders.list", "method": "get_sliders"},
+        {"name": "config.sliders.get", "method": "get_slider"},
+        {"name": "config.sliders.set", "method": "set_slider"},
+        {"name": "config.sliders.setMany", "method": "set_sliders"},
+        {"name": "config.sliders.reset", "method": "reset_sliders"},
+        {"name": "config.summary", "method": "get_config_summary"},
+        {"name": "config.enums", "method": "get_enums"},
+        {"name": "config.presets.list", "method": "list_presets"},
+        {"name": "config.presets.save", "method": "save_preset"},
+        {"name": "config.presets.load", "method": "load_preset"},
+        {"name": "world.meta", "method": "get_world_meta"},
+        {"name": "world.generationStatus", "method": "get_generation_status"},
+        {"name": "world.list", "method": "list_worlds"},
+        {"name": "world.save", "method": "save_world"},
+        {"name": "world.load", "method": "load_world"},
+        {"name": "world.setName", "method": "set_world_name"},
+        {"name": "logs.get", "method": "get_logs"},
+        {"name": "screenshots.take", "method": "take_screenshot"}
+      ]
+    },
+    {
+      "featureGroup": "seer-runtime-actors",
+      "operations": [
+        {"name": "state.get", "method": "get_state"},
+        {"name": "state.viewModes", "method": "get_view_modes"},
+        {"name": "state.ui", "method": "get_ui_state"}
+      ]
+    },
+    {
+      "featureGroup": "topo-pipeline-terrain",
+      "operations": [
+        {"name": "world.generate", "method": "generate"},
+        {"name": "terrain.hex.get", "method": "get_hex"},
+        {"name": "terrain.chunks.list", "method": "get_chunks"},
+        {"name": "terrain.chunk.summary", "method": "get_chunk_summary"},
+        {"name": "terrain.stats", "method": "get_terrain_stats"},
+        {"name": "terrain.hex.find", "method": "find_hexes"},
+        {"name": "pipeline.get", "method": "get_pipeline"},
+        {"name": "pipeline.stage.setEnabled", "method": "set_stage_enabled"}
+      ]
+    },
+    {
+      "featureGroup": "topo-overlay-persistence-export",
+      "operations": [
+        {"name": "terrain.overlays", "method": "get_overlays"},
+        {"name": "terrain.export", "method": "export_terrain_data"}
+      ]
+    },
+    {
+      "featureGroup": "topo-plugin-contract",
+      "operations": [
+        {"name": "plugins.list", "method": "list_plugins"},
+        {"name": "plugins.setEnabled", "method": "set_plugin_enabled"},
+        {"name": "plugins.params.set", "method": "set_plugin_param"},
+        {"name": "data.plugins.list", "method": "data_list_plugins"},
+        {"name": "data.resources.list", "method": "data_list_resources"},
+        {"name": "data.records.list", "method": "data_list_records"},
+        {"name": "data.records.get", "method": "data_get_record"},
+        {"name": "data.records.create", "method": "data_create_record"},
+        {"name": "data.records.update", "method": "data_update_record"},
+        {"name": "data.records.delete", "method": "data_delete_record"},
+        {"name": "data.state", "method": "data_get_state"}
+      ]
+    },
+    {
+      "featureGroup": "topo-simulation",
+      "operations": [
+        {"name": "simulation.state", "method": "get_sim_state"},
+        {"name": "simulation.autoTick.set", "method": "set_sim_auto_tick"},
+        {"name": "simulation.tick", "method": "sim_tick"},
+        {"name": "simulation.dag", "method": "get_sim_dag"}
+      ]
+    },
+    {
+      "featureGroup": "seer-ui-render-input-editor",
+      "operations": [
+        {"name": "editor.toggle", "method": "editor_toggle"},
+        {"name": "editor.tool.set", "method": "editor_set_tool"},
+        {"name": "editor.brush.set", "method": "editor_set_brush"},
+        {"name": "editor.brush.stroke", "method": "editor_brush_stroke"},
+        {"name": "editor.brush.line", "method": "editor_brush_line"},
+        {"name": "editor.biome.set", "method": "editor_set_biome"},
+        {"name": "editor.form.set", "method": "editor_set_form"},
+        {"name": "editor.hardness.set", "method": "editor_set_hardness"},
+        {"name": "editor.undo", "method": "editor_undo"},
+        {"name": "editor.redo", "method": "editor_redo"},
+        {"name": "editor.state", "method": "editor_get_state"},
+        {"name": "ui.seed.set", "method": "set_seed"},
+        {"name": "ui.viewMode.set", "method": "set_view_mode"},
+        {"name": "ui.configTab.set", "method": "set_config_tab"},
+        {"name": "ui.hex.select", "method": "select_hex"},
+        {"name": "ui.overlay.set", "method": "set_overlay"},
+        {"name": "ui.overlay.fields", "method": "list_overlay_fields"},
+        {"name": "ui.overlay.cycle", "method": "cycle_overlay"},
+        {"name": "ui.overlay.field.cycle", "method": "cycle_overlay_field"},
+        {"name": "ui.camera.set", "method": "set_camera"},
+        {"name": "ui.camera.get", "method": "get_camera"},
+        {"name": "ui.camera.zoomToChunk", "method": "zoom_to_chunk"},
+        {"name": "ui.panels.left.set", "method": "set_left_panel"},
+        {"name": "ui.tabs.left.set", "method": "set_left_tab"},
+        {"name": "ui.panels.config.toggle", "method": "toggle_config_panel"},
+        {"name": "ui.logs.collapsed.set", "method": "set_log_collapsed"},
+        {"name": "ui.logs.level.set", "method": "set_log_level"},
+        {"name": "ui.panels.get", "method": "get_ui_panels"},
+        {"name": "ui.viewport.scroll", "method": "viewport_scroll"},
+        {"name": "ui.viewport.click", "method": "viewport_click"},
+        {"name": "ui.viewport.drag", "method": "viewport_drag"},
+        {"name": "ui.viewport.hover", "method": "viewport_hover"},
+        {"name": "ui.widgets.click", "method": "click_widget"},
+        {"name": "ui.widgets.list", "method": "list_widgets"},
+        {"name": "ui.widgets.state", "method": "get_widget_state"},
+        {"name": "ui.dialog.state", "method": "get_dialog_state"},
+        {"name": "ui.dialog.text.set", "method": "set_dialog_text"},
+        {"name": "ui.dialog.confirm", "method": "dialog_confirm"},
+        {"name": "ui.dialog.cancel", "method": "dialog_cancel"},
+        {"name": "ui.keyboard.send", "method": "send_key"}
+      ]
     }
   ],
   "featureGroups": [
@@ -59,7 +432,8 @@
           "Topo.Planet",
           "Topo.Units",
           "Topo.Units.Config",
-          "Topo.Config.JSON"
+          "Topo.Config.JSON",
+          "Topo.Config"
         ]
       }
     },
@@ -257,8 +631,11 @@
         "topo": [
           "Topo.Plugin",
           "Topo.Plugin.DataResource",
+          "Topo.Plugin.DataResource.Validation",
+          "Topo.Plugin.Dependency",
           "Topo.Plugin.RPC",
           "Topo.Plugin.RPC.DataService",
+          "Topo.Plugin.RPC.ExternalDataSource",
           "Topo.Plugin.RPC.Manifest",
           "Topo.Plugin.RPC.Protocol",
           "Topo.Plugin.RPC.Transport"
@@ -332,7 +709,7 @@
       "uiSurface": "Current UI and internal/test command IPC compatibility paths use command/UI-action adapters; M2 moves behavior behind AppService.",
       "serviceSurface": "Compatibility adapter over AppService after M2; current command dispatch is the seed inventory for service operations.",
       "httpSurface": "No direct public 1.0 automation surface; M3 maps public operations to HTTP/OpenAPI routes and M4 removes MCP dependence. Legacy command IPC has no public 1.0 exception.",
-      "tests": ["topo-seer:test:Spec.CommandDispatch", "topo-seer:test:Spec.HTTP"],
+      "tests": ["topo-seer:test:Spec.AppService", "topo-seer:test:Spec.CommandDispatch", "topo-seer:test:Spec.HTTP"],
       "waiver": null,
       "planRefs": ["M0 command method inventory", "M2 service layer extraction", "M4 MCP migration and removal"],
       "modules": {
@@ -340,8 +717,27 @@
           "Actor.UiActions",
           "Actor.UiActions.Command",
           "Actor.UiActions.Terrain",
+          "Seer.Command.AppServiceAdapter",
           "Seer.Command.Channel",
-          "Seer.Command.Dispatch"
+          "Seer.Command.Dispatch",
+          "Seer.Service.AppService",
+          "Seer.Service.Config",
+          "Seer.Service.Context",
+          "Seer.Service.DataResource",
+          "Seer.Service.Editor",
+          "Seer.Service.EventTypes",
+          "Seer.Service.Events",
+          "Seer.Service.Log",
+          "Seer.Service.Pipeline",
+          "Seer.Service.Plugin",
+          "Seer.Service.Screenshot",
+          "Seer.Service.Simulation",
+          "Seer.Service.State",
+          "Seer.Service.Terrain",
+          "Seer.Service.Types",
+          "Seer.Service.UI",
+          "Seer.Service.Validation",
+          "Seer.Service.World"
         ]
       }
     },
@@ -373,6 +769,7 @@
           "Seer.Config.Snapshot.Types",
           "Seer.Headless",
           "Seer.HTTP.Auth",
+          "Seer.HTTP.API",
           "Seer.HTTP.OpenAPI",
           "Seer.HTTP.Server",
           "Seer.System",
@@ -409,9 +806,12 @@
         "topo-seer": [
           "Seer.Draw",
           "Seer.Draw.Config",
+          "Seer.Draw.Config.DataDetail",
           "Seer.Draw.Dialog",
           "Seer.Draw.LeftPanel",
           "Seer.Draw.Overlay",
+          "Seer.DataBrowser.AppService",
+          "Seer.DataBrowser.Model",
           "Seer.Editor.Brush",
           "Seer.Editor.History",
           "Seer.Editor.Preview",
@@ -434,7 +834,9 @@
           "Seer.Render.Viewport",
           "Seer.Render.ZoomStage",
           "UI.Font",
+          "UI.Geometry",
           "UI.Layout",
+          "UI.Layout.Geometry",
           "UI.HexPick",
           "UI.OverlayExtract",
           "UI.TerrainAtlas",
@@ -447,7 +849,14 @@
           "UI.WidgetsDraw",
           "UI.WidgetTree",
           "UI.DayNight",
-          "UI.WidgetId"
+          "UI.DrawCommand",
+          "UI.DrawCommand.SDL",
+          "UI.WidgetId",
+          "UI.Component",
+          "UI.Components.ConfigSliders",
+          "UI.Components.DataBrowser",
+          "UI.Components.PipelineControls",
+          "UI.Components.LogFilter"
         ]
       }
     },
@@ -461,7 +870,9 @@
       "httpSurface": "No direct HTTP endpoints for SDK modules; generated plugin declarations appear through plugin/status/resource/data routes.",
       "tests": [
         "topo-plugin-sdk:test:Spec.Payload",
-        "topo-plugin-sdk:test:Spec.Runner"
+        "topo-plugin-sdk:test:Spec.Runner",
+        "topo-plugin-example:test:Spec",
+        "topo-plugin-civ-example:test:Spec"
       ],
       "waiver": null,
       "planRefs": ["ADR 0002", "M5 production transport", "M6 manifest v3", "M7 external data-source contract"],
@@ -473,7 +884,9 @@
           "Topo.Plugin.SDK.Types",
           "Topo.Plugin.SDK.Payload",
           "Topo.Plugin.SDK.Runner"
-        ]
+        ],
+        "topo-plugin-example": ["Topo.Plugin.Example"],
+        "topo-plugin-civ-example": ["Topo.Plugin.CivExample"]
       }
     }
   ]
