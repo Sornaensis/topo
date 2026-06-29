@@ -135,6 +135,8 @@ exerciseCrudFixture app = do
   recordFieldTexts "name" firstPage `shouldBe` ["Alpha", "Beta"]
   lookupValue "count" firstPage `shouldBe` Just (Number 2)
   lookupValue "total_count" firstPage `shouldBe` Just (Number 3)
+  lookupValue "page_size" firstPage `shouldBe` Just (Number 2)
+  lookupValue "page_offset" firstPage `shouldBe` Just (Number 0)
 
   secondPage <- serviceOk app "data_list_records" $ object
     [ "plugin" .= crudPluginName

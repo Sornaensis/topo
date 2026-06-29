@@ -40,6 +40,12 @@ spec = describe "Feature matrix" $ do
     assertPublicHttpRoutes matrix
     assertServiceOperations matrix
 
+  it "marks plugin/data-resource and simulation DAG feature surfaces present for 1.0" $ do
+    root <- findRepoRoot
+    matrix <- loadFeatureMatrix root
+    assertFeaturePresent matrix "plugin-resource-status-surfaces-present"
+    assertFeaturePresent matrix "simulation-dag-status-surfaces-present"
+
 -- Matrix shape --------------------------------------------------------------
 
 data FeatureMatrix = FeatureMatrix
@@ -213,6 +219,15 @@ assertPublicHttpRoutes matrix = do
         ]
   duplicates matrixRoutes `shouldBe` []
   matrixRoutes `shouldBe` sourceRoutes
+
+assertFeaturePresent :: FeatureMatrix -> Text -> Expectation
+assertFeaturePresent matrix featureId =
+  case filter ((== featureId) . mfId) (fmFeatures matrix) of
+    [feature] -> do
+      mfAvailability feature `shouldBe` "present"
+      mfStatus feature `shouldBe` "present"
+    [] -> expectationFailure ("missing feature matrix entry " <> Text.unpack featureId)
+    _ -> expectationFailure ("duplicate feature matrix entry " <> Text.unpack featureId)
 
 assertServiceOperations :: FeatureMatrix -> Expectation
 assertServiceOperations matrix = do

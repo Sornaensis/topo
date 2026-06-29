@@ -106,10 +106,13 @@ spec = describe "Seer.HTTP.Server" $ do
       dag <- request app (mkRequest "GET" ["simulation", "dag"])
       hresStatusCode dag `shouldBe` 200
       objectHasKey "available" (hresBody dag) `shouldBe` True
+      objectHasKey "tick_logs" (hresBody dag) `shouldBe` True
+      objectHasKey "plugin_nodes" (hresBody dag) `shouldBe` True
 
       pluginStatus <- request app (mkRequest "GET" ["plugins", "status"])
       hresStatusCode pluginStatus `shouldBe` 200
       objectHasKey "plugins" (hresBody pluginStatus) `shouldBe` True
+      pluginsExposeSurfaceKeys (hresBody pluginStatus) `shouldBe` True
 
       screenshot <- request app (mkRequest "POST" ["screenshots"])
       hresStatusCode screenshot `shouldBe` 200
@@ -778,6 +781,24 @@ lookupValue _ _ = Nothing
 objectHasKey :: Text -> Value -> Bool
 objectHasKey key (Object obj) = KM.member (Key.fromText key) obj
 objectHasKey _ _ = False
+
+pluginsExposeSurfaceKeys :: Value -> Bool
+pluginsExposeSurfaceKeys (Object obj) = case KM.lookup "plugins" obj of
+  Just (Array plugins) -> all pluginHasSurfaceKeys (toList plugins)
+  _ -> False
+  where
+    pluginHasSurfaceKeys (Object plugin) = all (`KM.member` plugin)
+      (map Key.fromText
+        [ "capabilities"
+        , "params"
+        , "dependencies"
+        , "resources"
+        , "external_data_sources"
+        , "logs"
+        , "has_simulation"
+        ])
+    pluginHasSurfaceKeys _ = False
+pluginsExposeSurfaceKeys _ = False
 
 eventsContainTopic :: Text -> Value -> Bool
 eventsContainTopic expectedTopic (Object obj) = case KM.lookup "events" obj of

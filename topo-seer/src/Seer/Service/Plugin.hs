@@ -62,8 +62,12 @@ data PluginSummary = PluginSummary
   , pluginSummaryParams :: !(Map Text Value)
   , pluginSummaryParamSpecs :: ![RPCParamSpec]
   , pluginSummaryDataResources :: ![DataResourceSchema]
+  , pluginSummaryResourceCount :: !Int
+  , pluginSummaryExternalDataSourceCount :: !Int
+  , pluginSummaryExternalDataSourceFailures :: !Int
   , pluginSummaryHasGenerator :: !Bool
   , pluginSummaryHasSimulation :: !Bool
+  , pluginSummaryLogs :: ![Text]
   } deriving (Eq, Show)
 
 newtype PluginListResponse = PluginListResponse

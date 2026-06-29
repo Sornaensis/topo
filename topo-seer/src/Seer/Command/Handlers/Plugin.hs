@@ -12,12 +12,15 @@ import Data.Aeson (Value(..), object, (.=), (.:))
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as Aeson
 import qualified Data.Map.Strict as Map
+import Data.Maybe (isJust)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import Data.Time (UTCTime, getCurrentTime)
 
 import Actor.PluginManager
   ( LoadedPlugin(..)
+  , PluginExternalDataSourceDiagnostic(..)
+  , PluginExternalDataSourceGrantDiagnostic(..)
   , PluginLifecycleSnapshot(..)
   , getLoadedPlugins
   , setDisabledPlugins
@@ -43,7 +46,7 @@ import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 import Topo.Plugin.DataResource (DataFieldDef(..), DataOperations(..), DataPagination(..), DataResourceSchema(..))
-import Topo.Plugin.RPC.Manifest (RPCManifest(..), RPCParamSpec(..))
+import Topo.Plugin.RPC.Manifest (RPCManifest(..), RPCParamSpec(..), RPCSimulationDecl(..))
 
 -- | Handle @list_plugins@ — return loaded plugins with status and params.
 handleListPlugins :: CommandContext -> Int -> Value -> IO SeerResponse
@@ -119,8 +122,12 @@ pluginToJSON now disabled allPlugins availableDeps paramSpecs lp =
   let name = lpName lp
       manifest = lpManifest lp
       restartCount = length (lpRestartHistory lp)
+      externalDiagnostics = pluginExternalDataSourceDiagnosticsFor disabled allPlugins lp
+      diagnosticLines = pluginPanelDiagnosticLines disabled availableDeps lp
   in object
     [ "name"                  .= name
+    , "version"               .= rmVersion manifest
+    , "description"           .= rmDescription manifest
     , "status"                .= pluginStatusText (lpStatus lp)
     , "diagnostic_status"     .= pluginDiagnosticState disabled availableDeps lp
     , "status_detail"         .= pluginDiagnosticDetail disabled availableDeps lp
@@ -135,13 +142,34 @@ pluginToJSON now disabled allPlugins availableDeps paramSpecs lp =
     , "restart_count"         .= restartCount
     , "dependencies"          .= pluginDependencyDiagnostics availableDeps lp
     , "resources"             .= pluginResourceNames lp
+    , "resource_count"        .= length (pluginResourceNames lp)
     , "data_resources"        .= map dataResourceToJSON (rmDataResources manifest)
-    , "external_data_sources" .= pluginExternalDataSourceDiagnosticsFor disabled allPlugins lp
+    , "external_data_sources" .= externalDiagnostics
+    , "external_data_source_count" .= length externalDiagnostics
+    , "external_data_source_failures" .= externalDiagnosticsFailureCount externalDiagnostics
     , "capabilities"          .= pluginCapabilitiesText manifest
     , "enabled"               .= not (Set.member name disabled)
     , "params"                .= lpParams lp
     , "param_specs"           .= map paramSpecToJSON (maybe [] id (Map.lookup name paramSpecs))
+    , "has_generator"         .= isJust (rmGenerator manifest)
+    , "has_simulation"        .= isJust (rmSimulation manifest)
+    , "simulation"            .= maybe Null simulationDeclToJSON (rmSimulation manifest)
+    , "logs"                  .= diagnosticLines
+    , "diagnostic_lines"      .= diagnosticLines
     ]
+
+simulationDeclToJSON :: RPCSimulationDecl -> Value
+simulationDeclToJSON sim = object
+  [ "dependencies" .= rsdDependencies sim
+  ]
+
+externalDiagnosticsFailureCount :: [PluginExternalDataSourceDiagnostic] -> Int
+externalDiagnosticsFailureCount = length . filter externalDiagnosticHasFailure
+
+externalDiagnosticHasFailure :: PluginExternalDataSourceDiagnostic -> Bool
+externalDiagnosticHasFailure diagnostic =
+  isJust (pedsFailureReason diagnostic)
+    || any (isJust . pedsgFailureReason) (pedsGrants diagnostic)
 
 dataResourceToJSON :: DataResourceSchema -> Value
 dataResourceToJSON drs = object

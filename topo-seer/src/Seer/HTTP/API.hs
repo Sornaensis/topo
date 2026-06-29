@@ -926,6 +926,8 @@ pluginSetParamResponseSchema = objectSchema "PluginSetParamResponse"
 pluginSummarySchema :: Value
 pluginSummarySchema = inlineObjectSchema
   [ "name"
+  , "version"
+  , "description"
   , "status"
   , "diagnostic_status"
   , "status_detail"
@@ -943,11 +945,20 @@ pluginSummarySchema = inlineObjectSchema
   , "last_error"
   , "dependencies"
   , "resources"
+  , "resource_count"
   , "data_resources"
   , "external_data_sources"
+  , "external_data_source_count"
+  , "external_data_source_failures"
   , "capabilities"
+  , "has_generator"
+  , "has_simulation"
+  , "logs"
+  , "diagnostic_lines"
   ]
   [ ("name", stringSchema)
+  , ("version", stringSchema)
+  , ("description", stringSchema)
   , ("status", stringSchema)
   , ("diagnostic_status", pluginDiagnosticStatusSchema)
   , ("status_detail", stringSchema)
@@ -965,9 +976,17 @@ pluginSummarySchema = inlineObjectSchema
   , ("last_error", nullableSchema stringSchema)
   , ("dependencies", arraySchema pluginDependencySchema)
   , ("resources", arraySchema stringSchema)
+  , ("resource_count", integerSchema)
   , ("data_resources", arraySchema dataResourceSchema)
   , ("external_data_sources", arraySchema pluginExternalDataSourceSchema)
+  , ("external_data_source_count", integerSchema)
+  , ("external_data_source_failures", integerSchema)
   , ("capabilities", arraySchema stringSchema)
+  , ("has_generator", booleanSchema)
+  , ("has_simulation", booleanSchema)
+  , ("simulation", nullableSchema pluginSimulationSchema)
+  , ("logs", arraySchema stringSchema)
+  , ("diagnostic_lines", arraySchema stringSchema)
   ]
 
 pluginDiagnosticStatusSchema :: Value
@@ -1169,6 +1188,12 @@ pluginParamSpecSchema = inlineObjectSchema
   , ("tooltip", nullableSchema stringSchema)
   ]
 
+pluginSimulationSchema :: Value
+pluginSimulationSchema = inlineObjectSchema
+  [ "dependencies" ]
+  [ ("dependencies", arraySchema stringSchema)
+  ]
+
 pluginLifecycleSchema :: Value
 pluginLifecycleSchema = inlineObjectSchema
   [ "state"
@@ -1246,6 +1271,8 @@ dataRecordsListResponseSchema = objectSchema "DataRecordsListResponse"
   , ("records", arraySchema freeObjectSchema)
   , ("total_count", nullableSchema integerSchema)
   , ("count", integerSchema)
+  , ("page_size", nullableSchema integerSchema)
+  , ("page_offset", nullableSchema integerSchema)
   ]
 
 dataRecordGetRequestSchema :: JsonSchema
@@ -1410,6 +1437,11 @@ simulationStateResponseSchema = objectSchema "SimulationStateResponse"
   [ ("auto_tick", booleanSchema)
   , ("tick_rate", numberSchema)
   , ("tick_count", integerSchema)
+  , ("dag_available", booleanSchema)
+  , ("dag_node_count", integerSchema)
+  , ("pending_tick", nullableSchema integerSchema)
+  , ("last_tick_log", nullableSchema simulationTickLogSchema)
+  , ("async_status", asyncStatusSchema)
   ]
 
 simulationDagResponseSchema :: JsonSchema
@@ -1417,8 +1449,14 @@ simulationDagResponseSchema = objectSchema "SimulationDagResponse"
   [ "available", "nodes", "levels", "terrain_writers" ]
   [ ("available", booleanSchema)
   , ("nodes", arraySchema simulationDagNodeSchema)
+  , ("node_count", integerSchema)
   , ("levels", arraySchema (arraySchema stringSchema))
   , ("terrain_writers", arraySchema stringSchema)
+  , ("last_tick", integerSchema)
+  , ("pending_tick", nullableSchema integerSchema)
+  , ("tick_logs", arraySchema simulationTickLogSchema)
+  , ("plugin_nodes", arraySchema simulationDagNodeSchema)
+  , ("plugin_node_count", integerSchema)
   ]
 
 simulationAutoTickRequestSchema :: JsonSchema
@@ -1450,11 +1488,37 @@ simulationTickResponseSchema = objectSchema "SimulationTickResponse"
 
 simulationDagNodeSchema :: Value
 simulationDagNodeSchema = inlineObjectSchema
-  [ "id", "overlay", "dependencies", "writes_terrain" ]
+  [ "id", "kind", "overlay", "dependencies", "writes_terrain", "status" ]
   [ ("id", stringSchema)
+  , ("kind", enumStringSchema ["builtin", "plugin"])
+  , ("plugin", nullableSchema stringSchema)
   , ("overlay", stringSchema)
   , ("dependencies", arraySchema stringSchema)
   , ("writes_terrain", booleanSchema)
+  , ("status", stringSchema)
+  , ("status_detail", nullableSchema stringSchema)
+  , ("enabled", booleanSchema)
+  ]
+
+simulationTickLogSchema :: Value
+simulationTickLogSchema = inlineObjectSchema
+  [ "tick", "status", "message" ]
+  [ ("tick", integerSchema)
+  , ("node_id", nullableSchema stringSchema)
+  , ("status", enumStringSchema ["deferred", "running", "completed", "failed"])
+  , ("message", stringSchema)
+  , ("elapsed_ms", nullableSchema numberSchema)
+  ]
+
+asyncStatusSchema :: Value
+asyncStatusSchema = inlineObjectSchema
+  [ "name", "phase", "active" ]
+  [ ("name", stringSchema)
+  , ("phase", enumStringSchema ["idle", "queued", "running", "succeeded", "failed", "unavailable"])
+  , ("active", booleanSchema)
+  , ("current", nullableSchema integerSchema)
+  , ("total", nullableSchema integerSchema)
+  , ("message", nullableSchema stringSchema)
   ]
 
 -- Logs and screenshots -------------------------------------------------------

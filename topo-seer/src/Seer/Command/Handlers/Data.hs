@@ -147,6 +147,8 @@ handleDataListRecords ctx reqId params = do
             , "records"     .= map recordToJSON (qrsRecords qrs)
             , "total_count" .= qrsTotalCount qrs
             , "count"       .= length (qrsRecords qrs)
+            , "page_size"   .= qrPageSize qr
+            , "page_offset" .= qrPageOffset qr
             ]
 
 -- | Handle @data_get_record@ — get a single record by primary key.

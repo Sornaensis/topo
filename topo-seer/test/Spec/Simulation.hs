@@ -15,7 +15,16 @@ import qualified Data.Vector.Unboxed as U
 import Actor.AtlasManager (AtlasManager)
 import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..), getTerrainSnapshot, tsVersion, tsWeatherChunks)
 import Actor.Log (Log, getLogSnapshot, leMessage, lsEntries)
-import Actor.Simulation (Simulation, requestSimTick, setSimHandles, setSimWorld)
+import Actor.Simulation
+  ( Simulation
+  , SimulationDagNodeSnapshot(..)
+  , SimulationDagSnapshot(..)
+  , SimulationTickLogEntry(..)
+  , getSimDagSnapshot
+  , requestSimTick
+  , setSimHandles
+  , setSimWorld
+  )
 import Actor.SnapshotReceiver
   ( newDataSnapshotRef
   , newTerrainSnapshotRef
@@ -281,3 +290,8 @@ spec = describe "Simulation actor" $ do
     logSnap <- getLogSnapshot logHandle
     let messages = map leMessage (lsEntries logSnap)
     containsText (Text.pack "simulation: tick") messages `shouldBe` True
+
+    dagSnapshot <- getSimDagSnapshot simHandle
+    sdsAvailable dagSnapshot `shouldBe` True
+    map sdnsStatus (sdsNodes dagSnapshot) `shouldSatisfy` elem (Text.pack "completed")
+    map stleStatus (sdsTickLogs dagSnapshot) `shouldSatisfy` elem (Text.pack "completed")

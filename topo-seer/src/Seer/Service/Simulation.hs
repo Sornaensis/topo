@@ -12,6 +12,7 @@ module Seer.Service.Simulation
   , SimulationDagRequest(..)
   , SimulationDagResponse(..)
   , SimulationDagNodeSummary(..)
+  , SimulationTickLogEntrySummary(..)
   , simulationStateOperation
   , simulationSetAutoTickOperation
   , simulationTickOperation
@@ -67,15 +68,31 @@ data SimulationDagRequest = SimulationDagRequest
 
 data SimulationDagNodeSummary = SimulationDagNodeSummary
   { simulationDagNodeId :: !SimNodeId
+  , simulationDagNodeKind :: !Text
+  , simulationDagNodePlugin :: !(Maybe Text)
   , simulationDagNodeOverlay :: !Text
   , simulationDagNodeDependencies :: ![SimNodeId]
   , simulationDagNodeWritesTerrain :: !Bool
+  , simulationDagNodeStatus :: !Text
+  , simulationDagNodeStatusDetail :: !(Maybe Text)
+  } deriving (Eq, Show)
+
+data SimulationTickLogEntrySummary = SimulationTickLogEntrySummary
+  { simulationTickLogTick :: !Word64
+  , simulationTickLogNodeId :: !(Maybe SimNodeId)
+  , simulationTickLogStatus :: !Text
+  , simulationTickLogMessage :: !Text
+  , simulationTickLogElapsedMs :: !(Maybe Double)
   } deriving (Eq, Show)
 
 data SimulationDagResponse = SimulationDagResponse
   { simulationDagNodes :: ![SimulationDagNodeSummary]
   , simulationDagLevels :: ![[SimNodeId]]
   , simulationDagTerrainWriters :: ![SimNodeId]
+  , simulationDagLastTick :: !Word64
+  , simulationDagPendingTick :: !(Maybe Word64)
+  , simulationDagTickLogs :: ![SimulationTickLogEntrySummary]
+  , simulationDagPluginNodes :: ![SimulationDagNodeSummary]
   } deriving (Eq, Show)
 
 simulationServiceGroup :: ServiceGroupSpec

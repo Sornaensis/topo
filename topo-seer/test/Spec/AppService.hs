@@ -804,8 +804,12 @@ pluginSummaryContract = PluginSummary
   , pluginSummaryParams = Map.empty
   , pluginSummaryParamSpecs = []
   , pluginSummaryDataResources = []
+  , pluginSummaryResourceCount = 0
+  , pluginSummaryExternalDataSourceCount = 0
+  , pluginSummaryExternalDataSourceFailures = 0
   , pluginSummaryHasGenerator = False
   , pluginSummaryHasSimulation = True
+  , pluginSummaryLogs = []
   }
 
 diagnosticReadyPlugin :: LoadedPlugin
@@ -1002,13 +1006,21 @@ simulationDagContract = SimulationDagResponse
   { simulationDagNodes =
       [ SimulationDagNodeSummary
           { simulationDagNodeId = SimNodeId "weather"
+          , simulationDagNodeKind = "builtin"
+          , simulationDagNodePlugin = Nothing
           , simulationDagNodeOverlay = "rainfall"
           , simulationDagNodeDependencies = [SimNodeId "temperature"]
           , simulationDagNodeWritesTerrain = True
+          , simulationDagNodeStatus = "completed"
+          , simulationDagNodeStatusDetail = Nothing
           }
       ]
   , simulationDagLevels = [[SimNodeId "temperature"], [SimNodeId "weather"]]
   , simulationDagTerrainWriters = [SimNodeId "weather"]
+  , simulationDagLastTick = 42
+  , simulationDagPendingTick = Nothing
+  , simulationDagTickLogs = []
+  , simulationDagPluginNodes = []
   }
 
 expectedCommandMethods :: [Text]

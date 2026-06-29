@@ -24,12 +24,14 @@ module Actor.Simulation
     -- * DAG status
   , SimulationDagSnapshot(..)
   , SimulationDagNodeSnapshot(..)
+  , SimulationTickLogEntry(..)
   , getSimDagSnapshot
     -- * Handles setup
   , setSimHandles
   , simulationHandlesConfigured
   ) where
 
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
@@ -38,6 +40,7 @@ import GHC.Clock (getMonotonicTimeNSec)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
 import qualified Data.IntMap.Strict as IntMap
+import qualified Data.Map.Strict as Map
 
 import Actor.AtlasCache (AtlasKey(..))
 import Actor.AtlasManager
@@ -114,9 +117,21 @@ data SimHandles = SimHandles
 
 data SimulationDagNodeSnapshot = SimulationDagNodeSnapshot
   { sdnsNodeId :: !Text
+  , sdnsKind :: !Text
+  , sdnsPlugin :: !(Maybe Text)
   , sdnsOverlay :: !Text
   , sdnsDependencies :: ![Text]
   , sdnsWritesTerrain :: !Bool
+  , sdnsStatus :: !Text
+  , sdnsStatusDetail :: !(Maybe Text)
+  } deriving (Eq, Show)
+
+data SimulationTickLogEntry = SimulationTickLogEntry
+  { stleTick :: !Word64
+  , stleNodeId :: !(Maybe Text)
+  , stleStatus :: !Text
+  , stleMessage :: !Text
+  , stleElapsedMs :: !(Maybe Double)
   } deriving (Eq, Show)
 
 data SimulationDagSnapshot = SimulationDagSnapshot
@@ -124,6 +139,9 @@ data SimulationDagSnapshot = SimulationDagSnapshot
   , sdsNodes :: ![SimulationDagNodeSnapshot]
   , sdsLevels :: ![[Text]]
   , sdsTerrainWriters :: ![Text]
+  , sdsLastTick :: !Word64
+  , sdsPendingTick :: !(Maybe Word64)
+  , sdsTickLogs :: ![SimulationTickLogEntry]
   } deriving (Eq, Show)
 
 -- | Internal simulation state.
@@ -140,6 +158,10 @@ data SimState = SimState
     -- ^ Actor handles for pushing results.
   , ssPendingTick :: !(Maybe Word64)
     -- ^ Latest requested tick queued while simulation is not ready.
+  , ssNodeStatuses :: !(Map.Map Text (Text, Maybe Text))
+    -- ^ Latest observable per-node status and detail for UI/API DAG diagnostics.
+  , ssTickLogs :: ![SimulationTickLogEntry]
+    -- ^ Bounded tick and per-node status log exposed through the DAG surface.
   }
 
 emptySimState :: SimState
@@ -150,6 +172,8 @@ emptySimState = SimState
   , ssLastTick = 0
   , ssHandles  = Nothing
   , ssPendingTick = Nothing
+  , ssNodeStatuses = Map.empty
+  , ssTickLogs = []
   }
 
 -- ---------------------------------------------------------------------------
@@ -187,6 +211,7 @@ actor Simulation
                      , ssDAG = Nothing
                      , ssCalCfg = Just calCfg
                      , ssLastTick = worldTick
+                     , ssNodeStatuses = Map.empty
                      }
         maybeProcessPendingTick st'
       Right dag -> do
@@ -199,6 +224,7 @@ actor Simulation
                      , ssDAG = Just dag
                      , ssCalCfg = Just calCfg
                      , ssLastTick = worldTick
+                     , ssNodeStatuses = readyNodeStatuses nodes
                      }
         maybeProcessPendingTick st'
   onPure_ clearWorld = \() st -> st
@@ -206,6 +232,9 @@ actor Simulation
     , ssDAG    = Nothing
     , ssCalCfg = Nothing
     , ssLastTick = 0
+    , ssPendingTick = Nothing
+    , ssNodeStatuses = Map.empty
+    , ssTickLogs = []
     }
   on_ tick = \requestedTick st ->
     processTick requestedTick st
@@ -250,23 +279,42 @@ simulationDagSnapshotFromState st = case ssDAG st of
     , sdsNodes = []
     , sdsLevels = []
     , sdsTerrainWriters = []
+    , sdsLastTick = ssLastTick st
+    , sdsPendingTick = ssPendingTick st
+    , sdsTickLogs = ssTickLogs st
     }
   Just dag -> SimulationDagSnapshot
     { sdsAvailable = True
-    , sdsNodes = map nodeSnapshot (sdNodes dag)
+    , sdsNodes = map (nodeSnapshot (ssNodeStatuses st)) (sdNodes dag)
     , sdsLevels = map (map simNodeIdText) (sdLevels dag)
     , sdsTerrainWriters = map simNodeIdText (sdTerrainWriters dag)
+    , sdsLastTick = ssLastTick st
+    , sdsPendingTick = ssPendingTick st
+    , sdsTickLogs = ssTickLogs st
     }
 
-nodeSnapshot :: SimNode -> SimulationDagNodeSnapshot
-nodeSnapshot node = SimulationDagNodeSnapshot
-  { sdnsNodeId = simNodeIdText (simNodeId node)
+nodeSnapshot :: Map.Map Text (Text, Maybe Text) -> SimNode -> SimulationDagNodeSnapshot
+nodeSnapshot statuses node = SimulationDagNodeSnapshot
+  { sdnsNodeId = nodeId
+  , sdnsKind = "builtin"
+  , sdnsPlugin = Nothing
   , sdnsOverlay = simNodeOverlayName node
   , sdnsDependencies = map simNodeIdText (simNodeDependencies node)
   , sdnsWritesTerrain = case node of
       SimNodeWriter{} -> True
       SimNodeReader{} -> False
+  , sdnsStatus = status
+  , sdnsStatusDetail = detail
   }
+  where
+    nodeId = simNodeIdText (simNodeId node)
+    (status, detail) = Map.findWithDefault ("idle", Nothing) nodeId statuses
+
+readyNodeStatuses :: [SimNode] -> Map.Map Text (Text, Maybe Text)
+readyNodeStatuses nodes = Map.fromList
+  [ (simNodeIdText (simNodeId node), ("ready", Nothing))
+  | node <- nodes
+  ]
 
 simNodeIdText :: SimNodeId -> Text
 simNodeIdText (SimNodeId value) = value
@@ -328,16 +376,24 @@ logMsg st msg =
     Nothing      -> pure ()
     Just handles -> appendLog (shLogHandle handles) (LogEntry LogInfo msg)
 
--- | Progress callback that logs each simulation node's status.
-simProgressCb :: SimHandles -> SimProgress -> IO ()
-simProgressCb handles prog =
+-- | Progress callback that logs and records each simulation node's status.
+simProgressCb
+  :: SimHandles
+  -> IORef (Map.Map Text (Text, Maybe Text))
+  -> IORef [SimulationTickLogEntry]
+  -> Word64
+  -> SimProgress
+  -> IO ()
+simProgressCb handles statusesRef tickLogsRef tickValue prog = do
   let SimNodeId nid = simpNodeId prog
-      status = case simpStatus prog of
-        SimStarted   -> "started"
-        SimCompleted -> "completed"
-        SimFailed e  -> "FAILED: " <> e
-      msg = "sim: node " <> nid <> " " <> status
-  in appendLog (shLogHandle handles) (LogEntry LogDebug msg)
+      (status, detail) = case simpStatus prog of
+        SimStarted   -> ("running", Nothing)
+        SimCompleted -> ("completed", Nothing)
+        SimFailed e  -> ("failed", Just e)
+      msg = "sim: node " <> nid <> " " <> maybe status ((status <> ": ") <>) detail
+  modifyIORef' statusesRef (Map.insert nid (status, detail))
+  modifyIORef' tickLogsRef (<> [SimulationTickLogEntry tickValue (Just nid) status msg Nothing])
+  appendLog (shLogHandle handles) (LogEntry LogDebug msg)
 
 isReadyForTick :: SimState -> Bool
 isReadyForTick st =
@@ -353,6 +409,9 @@ maybeProcessPendingTick st =
       | isReadyForTick st ->
           processTick pending st { ssPendingTick = Nothing }
       | otherwise -> pure st
+
+boundedTickLogs :: [SimulationTickLogEntry] -> [SimulationTickLogEntry]
+boundedTickLogs logs = drop (max 0 (length logs - 100)) logs
 
 processTick :: Word64 -> SimState -> IO SimState
 processTick requestedTick st =
@@ -371,16 +430,24 @@ processTick requestedTick st =
             ("simulation: requested tick " <> Text.pack (show requestedTick)
               <> " <= last tick " <> Text.pack (show (ssLastTick st))
               <> "; applying single-step tick to " <> Text.pack (show appliedTick)))
+      statusesRef <- newIORef (ssNodeStatuses st)
+      tickLogsRef <- newIORef []
       tStart <- getMonotonicTimeNSec
       result <- tickSimulation dag
-                  (simProgressCb handles)
+                  (simProgressCb handles statusesRef tickLogsRef appliedTick)
                   world store calDate wt dt
       tEnd <- getMonotonicTimeNSec
       let elapsedMs = fromIntegral (tEnd - tStart) / (1e6 :: Double)
+      nodeStatuses <- readIORef statusesRef
+      progressLogs <- readIORef tickLogsRef
       case result of
         Left err -> do
           logMsg st ("simulation: tick failed: " <> err)
+          let failureLog = SimulationTickLogEntry appliedTick Nothing "failed" ("simulation: tick failed: " <> err) (Just elapsedMs)
           pure st
+            { ssNodeStatuses = nodeStatuses
+            , ssTickLogs = boundedTickLogs (ssTickLogs st <> progressLogs <> [failureLog])
+            }
         Right (newStore, terrainWrites) -> do
           let world'  = applyTerrainWrites terrainWrites world
               world'' = world'
@@ -406,13 +473,15 @@ processTick requestedTick st =
                 , ajAtlasScale = zsAtlasScale stage
                 }
           mapM_ (enqueueAtlasBuild (shAtlasHandle handles) . mkJob) allZoomStages
-          appendLog (shLogHandle handles)
-            (LogEntry LogInfo
-              ("simulation: tick " <> Text.pack (show appliedTick)
-                <> " completed in " <> Text.pack (show (round elapsedMs :: Int)) <> "ms"))
+          let completeMsg = "simulation: tick " <> Text.pack (show appliedTick)
+                <> " completed in " <> Text.pack (show (round elapsedMs :: Int)) <> "ms"
+              completeLog = SimulationTickLogEntry appliedTick Nothing "completed" completeMsg (Just elapsedMs)
+          appendLog (shLogHandle handles) (LogEntry LogInfo completeMsg)
           pure st
             { ssWorld    = Just world''
             , ssLastTick = appliedTick
+            , ssNodeStatuses = nodeStatuses
+            , ssTickLogs = boundedTickLogs (ssTickLogs st <> progressLogs <> [completeLog])
             }
     _ -> do
       let hasWorld  = maybe "False" (const "True") (ssWorld st)
@@ -423,11 +492,16 @@ processTick requestedTick st =
           queued' = case ssPendingTick st of
             Nothing -> requestedTick
             Just prev -> max prev requestedTick
-      logMsg st ("simulation: tick deferred (not ready)"
-        <> " requested=" <> Text.pack (show requestedTick)
-        <> " hasWorld=" <> hasWorld
-        <> " hasDag=" <> hasDag
-        <> " hasCalCfg=" <> hasCalCfg
-        <> " hasHandles=" <> hasHandles
-        <> " pending=" <> queuedTarget)
-      pure st { ssPendingTick = Just queued' }
+      let deferredMsg = "simulation: tick deferred (not ready)"
+            <> " requested=" <> Text.pack (show requestedTick)
+            <> " hasWorld=" <> hasWorld
+            <> " hasDag=" <> hasDag
+            <> " hasCalCfg=" <> hasCalCfg
+            <> " hasHandles=" <> hasHandles
+            <> " pending=" <> queuedTarget
+          deferredLog = SimulationTickLogEntry requestedTick Nothing "deferred" deferredMsg Nothing
+      logMsg st deferredMsg
+      pure st
+        { ssPendingTick = Just queued'
+        , ssTickLogs = boundedTickLogs (ssTickLogs st <> [deferredLog])
+        }

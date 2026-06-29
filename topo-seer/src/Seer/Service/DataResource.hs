@@ -87,6 +87,8 @@ data DataResourceListRecordsRequest = DataResourceListRecordsRequest
 data DataResourceListRecordsResponse = DataResourceListRecordsResponse
   { dataResourceRecordsPlugin :: !Text
   , dataResourceRecordsResult :: !QueryResult
+  , dataResourceRecordsPageSize :: !(Maybe Int)
+  , dataResourceRecordsPageOffset :: !(Maybe Int)
   } deriving (Eq, Show)
 
 data DataResourceGetRecordRequest = DataResourceGetRecordRequest
