@@ -18,15 +18,12 @@ import Actor.UI
   , ViewMode(..)
   , configRowCount
   , getUiSnapshot
-  , setUiChunkSize
-  , setUiConfigTab
   , setUiConfigScroll
   , setUiContextHex
   , setUiContextPos
   , setUiDataBrowser
   , setUiDataResources
   , setUiLeftTab
-  , setUiSeed
   , setUiSeedEditing
   , setUiSeedInput
   , setUiShowConfig
@@ -40,19 +37,15 @@ import Actor.UI
   , setUiWorldList
   , setUiWorldSelected
   , setUiWorldFilter
-  , setUiZoom
   , setUiDayNightEnabled
-  , setUiPluginNames
   , setUiPluginExpanded
-  , setUiDisabledPlugins
-  , setUiPluginDiagnosticLines
-  , setUiPluginDiagnosticStatuses
   )
 import Control.Applicative ((<|>))
 import Control.Monad (when)
 import Data.IORef (writeIORef)
 import Data.Int (Int32)
 import Data.List (find, findIndex, partition)
+import Data.Word (Word64)
 import Data.Maybe (isJust)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -84,16 +77,6 @@ import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets
 import UI.Widgets (Rect(..), containsPoint)
 import System.Random (randomIO)
 import Hyperspace.Actor (ActorHandle, Protocol)
-import Actor.PluginManager
-  ( LoadedPlugin(..)
-  , getLoadedPlugins
-  , pluginAvailableDependencyKeys
-  , pluginDiagnosticState
-  , pluginDiagnosticStateText
-  , pluginPanelDiagnosticLines
-  , setDisabledPlugins
-  , setPluginOrder
-  )
 import Actor.UiActions (ActorHandles(..), UiAction(..))
 import Seer.Input.Actions (InputEnv(..), runInputService, submitAction)
 import Seer.Input.Context (InputContext(..))
@@ -107,7 +90,6 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       actorHandles = ieActorHandles widgetEnv
       uiHandle = ahUiHandle actorHandles
       logHandle = ahLogHandle actorHandles
-      pluginManagerHandle = ahPluginManagerHandle actorHandles
       quitRef = icQuitRef inputContext
   (V2 winW winH) <- SDL.get (SDL.windowSize window)
   let logSnap = ieLogSnapshot widgetEnv
@@ -217,19 +199,18 @@ handleClick inputContext (SDL.P (V2 x y)) = do
           ; Just WidgetLeftTabView -> whenLeftPanel (setUiLeftTab uiHandle LeftView)
           ; Just WidgetSeedValue -> whenLeftTopo (startSeedEdit seedValue)
           ; Just WidgetSeedRandom -> whenLeftTopo randomSeed
-          ; Just WidgetChunkMinus -> whenLeftTopo (bumpChunk (-8))
-          ; Just WidgetChunkPlus -> whenLeftTopo (bumpChunk 8)
+          ; Just WidgetChunkMinus -> whenLeftTopo (runService "click_widget" (object ["widget_id" .= ("WidgetChunkMinus" :: Text.Text)]))
+          ; Just WidgetChunkPlus -> whenLeftTopo (runService "click_widget" (object ["widget_id" .= ("WidgetChunkPlus" :: Text.Text)]))
           ; Just WidgetConfigToggle -> toggleConfig
-          ; Just WidgetConfigTabTerrain -> whenConfigVisible (setUiConfigTab uiHandle ConfigTerrain >> setUiConfigScroll uiHandle 0)
-          ; Just WidgetConfigTabPlanet -> whenConfigVisible (setUiConfigTab uiHandle ConfigPlanet >> setUiConfigScroll uiHandle 0)
-          ; Just WidgetConfigTabClimate -> whenConfigVisible (setUiConfigTab uiHandle ConfigClimate >> setUiConfigScroll uiHandle 0)
-          ; Just WidgetConfigTabWeather -> whenConfigVisible (setUiConfigTab uiHandle ConfigWeather >> setUiConfigScroll uiHandle 0)
-          ; Just WidgetConfigTabBiome -> whenConfigVisible (setUiConfigTab uiHandle ConfigBiome >> setUiConfigScroll uiHandle 0)
-          ; Just WidgetConfigTabErosion -> whenConfigVisible (setUiConfigTab uiHandle ConfigErosion >> setUiConfigScroll uiHandle 0)
-          ; Just WidgetConfigTabPipeline -> whenConfigVisible (setUiConfigTab uiHandle ConfigPipeline >> setUiConfigScroll uiHandle 0)
+          ; Just WidgetConfigTabTerrain -> whenConfigVisible (setConfigTab "terrain")
+          ; Just WidgetConfigTabPlanet -> whenConfigVisible (setConfigTab "planet")
+          ; Just WidgetConfigTabClimate -> whenConfigVisible (setConfigTab "climate")
+          ; Just WidgetConfigTabWeather -> whenConfigVisible (setConfigTab "weather")
+          ; Just WidgetConfigTabBiome -> whenConfigVisible (setConfigTab "biome")
+          ; Just WidgetConfigTabErosion -> whenConfigVisible (setConfigTab "erosion")
+          ; Just WidgetConfigTabPipeline -> whenConfigVisible (setConfigTab "pipeline")
           ; Just WidgetConfigTabData -> whenConfigVisible $ do
-              setUiConfigTab uiHandle ConfigData
-              setUiConfigScroll uiHandle 0
+              setConfigTab "data"
               applyDataBrowserAction uiSnap DataBrowser.DataBrowserLoadPlugins
           ; Just wid
           | Just (sliderDef, sliderPart) <- sliderWidgetPart wid
@@ -278,8 +259,6 @@ handleClick inputContext (SDL.P (V2 x y)) = do
     uiHandle = ahUiHandle actorHandles
 
     logHandle = ahLogHandle actorHandles
-
-    pluginManagerHandle = ahPluginManagerHandle actorHandles
 
     quitRef = icQuitRef inputContext
 
@@ -372,8 +351,8 @@ handleClick inputContext (SDL.P (V2 x y)) = do
     handleBespokeConfigWidget currentLayout wid clickPoint whenConfigVisible uiState = case wid of
       WidgetConfigPresetSave -> whenConfigVisible (openPresetSaveDialog currentLayout uiState)
       WidgetConfigPresetLoad -> whenConfigVisible (openPresetLoadDialog currentLayout)
-      WidgetConfigReset -> whenConfigVisible (SDL.stopTextInput >> submit UiActionReset)
-      WidgetConfigRevert -> whenConfigVisible (submit UiActionRevert)
+      WidgetConfigReset -> whenConfigVisible (SDL.stopTextInput >> clickWidget "WidgetConfigReset")
+      WidgetConfigRevert -> whenConfigVisible (clickWidget "WidgetConfigRevert")
       WidgetPipelineToggle name -> whenConfigVisible $
         case parseStageId name of
           Nothing -> pure ()
@@ -384,32 +363,13 @@ handleClick inputContext (SDL.P (V2 x y)) = do
         runService "sim_tick" (object ["count" .= (1 :: Int)])
       WidgetSimAutoTick -> whenConfigVisible $
         runService "set_sim_auto_tick" (object ["enabled" .= not (uiSimAutoTick uiState)])
-      WidgetPluginMoveUp name -> whenConfigVisible $ do
-        let names = uiPluginNames uiState
-            swapped = swapWithPrev name names
-        setUiPluginNames uiHandle swapped
-        setPluginOrder pluginManagerHandle swapped
-      WidgetPluginMoveDown name -> whenConfigVisible $ do
-        let names = uiPluginNames uiState
-            swapped = swapWithNext name names
-        setUiPluginNames uiHandle swapped
-        setPluginOrder pluginManagerHandle swapped
+      WidgetPluginMoveUp name -> whenConfigVisible $
+        clickWidget ("WidgetPluginMoveUp:" <> name)
+      WidgetPluginMoveDown name -> whenConfigVisible $
+        clickWidget ("WidgetPluginMoveDown:" <> name)
       WidgetPluginToggle name -> whenConfigVisible $ do
-        let current = uiDisabledPlugins uiState
-            toggled
-              | Set.member name current = Set.delete name current
-              | otherwise               = Set.insert name current
-        setUiDisabledPlugins uiHandle toggled
-        setDisabledPlugins pluginManagerHandle toggled
-        loaded <- getLoadedPlugins pluginManagerHandle
-        let availableDeps = pluginAvailableDependencyKeys toggled loaded
-            diagnosticLines = Map.fromList [(lpName lp, pluginPanelDiagnosticLines toggled availableDeps lp) | lp <- loaded]
-            diagnosticStatuses = Map.fromList
-              [ (lpName lp, pluginDiagnosticStateText (pluginDiagnosticState toggled availableDeps lp))
-              | lp <- loaded
-              ]
-        setUiPluginDiagnosticLines uiHandle diagnosticLines
-        setUiPluginDiagnosticStatuses uiHandle diagnosticStatuses
+        let enabled = Set.member name (uiDisabledPlugins uiState)
+        runService "set_plugin_enabled" (object ["name" .= name, "enabled" .= enabled])
       WidgetPluginExpand name -> whenConfigVisible $ do
         let current = Map.findWithDefault False name (uiPluginExpanded uiState)
         setUiPluginExpanded uiHandle name (not current)
@@ -628,14 +588,6 @@ handleClick inputContext (SDL.P (V2 x y)) = do
         pure ()
       setUiMenuMode uiHandle MenuNone
 
-    bumpSeed delta = do
-      uiSnap <- getUiSnapshot uiHandle
-      let newSeed = uiSeed uiSnap + fromIntegral delta
-      setUiSeed uiHandle newSeed
-      setUiSeedInput uiHandle (Text.pack (show newSeed))
-    bumpChunk delta = do
-      uiSnap <- getUiSnapshot uiHandle
-      setUiChunkSize uiHandle (uiChunkSize uiSnap + delta)
     toggleLog = do
       logSnap <- getLogSnapshot logHandle
       setLogCollapsed logHandle (not (lsCollapsed logSnap))
@@ -649,6 +601,11 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       submitAction widgetEnv action
     runService method params =
       runInputService widgetEnv method params >> pure ()
+    clickWidget :: Text.Text -> IO ()
+    clickWidget widgetId =
+      runService "click_widget" (object ["widget_id" .= widgetId])
+    setConfigTab tabName =
+      runService "set_config_tab" (object ["tab" .= (tabName :: Text.Text)])
     setConfigSlider sliderDef sliderPart = do
       uiSnap <- getUiSnapshot uiHandle
       let sid = sliderId sliderDef
@@ -662,9 +619,8 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       setUiSeedEditing uiHandle True
       setUiSeedInput uiHandle (Text.pack (show (uiSeed uiSnap)))
     randomSeed = do
-      seed <- randomIO
-      setUiSeed uiHandle seed
-      setUiSeedInput uiHandle (Text.pack (show seed))
+      seed <- (randomIO :: IO Word64)
+      runService "set_seed" (object ["seed" .= seed])
       setUiSeedEditing uiHandle False
       SDL.stopTextInput
 
@@ -710,29 +666,3 @@ cycleOverlayField uiSnap _uiHandle dir submit =
           submit (UiActionSetViewMode (ViewOverlay name newIdx))
     _ -> pure ()
 
--- | Swap an element with the one before it in a list.
---
--- If the element is at index 0 or not found, the list is returned unchanged.
-swapWithPrev :: Eq a => a -> [a] -> [a]
-swapWithPrev _ [] = []
-swapWithPrev target (x:xs)
-  | x == target = x : xs  -- already first, no swap
-  | otherwise   = go x xs
-  where
-    go prev []     = [prev]  -- target not found, reconstruct
-    go prev (y:ys)
-      | y == target = target : prev : ys
-      | otherwise   = prev : go y ys
-
--- | Swap an element with the one after it in a list.
---
--- If the element is last or not found, the list is returned unchanged.
-swapWithNext :: Eq a => a -> [a] -> [a]
-swapWithNext _ [] = []
-swapWithNext target xs = go xs
-  where
-    go []         = []
-    go [y]        = [y]  -- last element, no swap
-    go (y:z:ys)
-      | y == target = z : y : ys
-      | otherwise   = y : go (z:ys)

@@ -22,7 +22,6 @@ import Actor.UI
   , setUiContextHex
   , setUiContextPos
   , setUiDataBrowser
-  , setUiEditor
   , setUiHexTooltipPinned
   , setUiPanOffset
   , setUiHoverHex
@@ -43,7 +42,7 @@ import Control.Monad (when)
 import Data.Aeson (Value(..), object, (.=))
 import Data.IORef (IORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
-import Data.Word (Word32)
+import Data.Word (Word32, Word64)
 import qualified Data.Text as Text
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Set as Set
@@ -66,7 +65,7 @@ import Seer.Input.ViewControls
 import Seer.DataBrowser.Model (clearAdtSiblingEditValues)
 import Topo (ChunkCoord(..), ChunkId(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
 import Topo.Plugin.DataResource (DataResourceSchema(..))
-import Topo.Types (BiomeId, TerrainForm)
+import Topo.Types (BiomeId, TerrainForm, biomeIdToCode, terrainFormToCode)
 import UI.Layout
 import UI.WidgetTree (Widget(..), WidgetId(..), buildEditorWidgets, buildEditorReopenWidget, buildViewModeWidgets, buildSliderRowWidgets, hitTest)
 import UI.Widgets (Rect(..), containsPoint)
@@ -136,7 +135,7 @@ handleEvent inputContext event = do
         let editor = uiEditor uiSnapDrag
         when (editorActive editor) $
           case uiHoverHex uiSnapDrag of
-            Just hex -> submitAction inputEnv (UiActionBrushStroke hex)
+            Just hex -> submitEditorBrushStroke hex
             Nothing  -> pure ()
       -- Widget hover detection for tooltips
       do (V2 winW winH) <- SDL.get (SDL.windowSize window)
@@ -252,7 +251,7 @@ handleEvent inputContext event = do
                     Just wid -> handleEditorWidgetClick editor wid
                     Nothing  ->
                       case uiHoverHex uiSnap' of
-                        Just hex -> submitAction inputEnv (UiActionBrushStroke hex)
+                        Just hex -> submitEditorBrushStroke hex
                         Nothing  -> handleClick inputContext (SDL.mouseButtonEventPos btnEvent)
                 else do
                   -- Editor is inactive — check if the reopen button was hit
@@ -266,7 +265,7 @@ handleEvent inputContext event = do
                       reopenWidgets = buildEditorReopenWidget rLayout
                   case hitTest reopenWidgets rPoint of
                     Just WidgetEditorReopen ->
-                      setUiEditor uiHandle (editor { editorActive = True })
+                      setEditorActive True
                     _ -> handleClick inputContext (SDL.mouseButtonEventPos btnEvent)
       | SDL.mouseButtonEventMotion btnEvent == SDL.Released ->
           case SDL.mouseButtonEventButton btnEvent of
@@ -286,7 +285,7 @@ handleEvent inputContext event = do
               uiSnap <- getUiSnapshot uiHandle
               let editor = uiEditor uiSnap
               when (editorActive editor && editorTool editor == ToolFlatten) $
-                setUiEditor uiHandle (editor { editorFlattenRef = Nothing })
+                clearEditorStrokeSession
             _ -> pure ()
     SDL.TextInputEvent textEvent -> do
       uiSnap <- InputActions.getUiSnapshot inputEnv
@@ -331,7 +330,7 @@ handleEvent inputContext event = do
             uiSnap <- InputActions.getUiSnapshot inputEnv
             let keycode = SDL.keysymKeycode (SDL.keyboardEventKeysym keyboardEvent)
             if uiSeedEditing uiSnap
-              then handleSeedKey uiHandle (getUiSnapshot uiHandle) keycode
+              then handleSeedKey uiHandle (getUiSnapshot uiHandle) setSeedValue keycode
               else let dbs = uiDataBrowser uiSnap
                    in case dbsFocusedField dbs of
                         Just path | dbsEditMode dbs || dbsCreateMode dbs ->
@@ -349,8 +348,8 @@ handleEvent inputContext event = do
                                 if editorActive editor
                                   then if ctrl
                                     then case keycode of
-                                      SDL.KeycodeZ -> submitAction inputEnv UiActionUndo
-                                      SDL.KeycodeY -> submitAction inputEnv UiActionRedo
+                                      SDL.KeycodeZ -> runEditorService "editor_undo" Null
+                                      SDL.KeycodeY -> runEditorService "editor_redo" Null
                                       _ -> handleEditorKey editor keycode
                                     else handleEditorKey editor keycode
                                   else case keycode of
@@ -358,8 +357,8 @@ handleEvent inputContext event = do
                                     SDL.KeycodeG -> runInputService inputEnv "generate" Null >> pure ()
                                     SDL.KeycodeC -> toggleConfig
                                     SDL.KeycodeE -> toggleEditor
-                                    SDL.KeycodeUp -> bumpSeed uiHandle (getUiSnapshot uiHandle) 1
-                                    SDL.KeycodeDown -> bumpSeed uiHandle (getUiSnapshot uiHandle) (-1)
+                                    SDL.KeycodeUp -> bumpSeed (getUiSnapshot uiHandle) setSeedValue 1
+                                    SDL.KeycodeDown -> bumpSeed (getUiSnapshot uiHandle) setSeedValue (-1)
                                     SDL.KeycodeL -> do
                                       logSnap <- getLogSnapshot logHandle
                                       setLogCollapsed logHandle (not (lsCollapsed logSnap))
@@ -381,6 +380,76 @@ handleEvent inputContext event = do
     logHandle = ahLogHandle actorHandles
 
     dataHandle = ahDataHandle actorHandles
+
+    runService method params =
+      runInputService inputEnv method params >> pure ()
+
+    setSeedValue :: Word64 -> IO ()
+    setSeedValue seed =
+      runService "set_seed" (object ["seed" .= seed])
+
+    runEditorService method params =
+      runService method params
+
+    setEditorActive active =
+      runEditorService "editor_toggle" (object ["active" .= active])
+
+    setEditorTool tool =
+      runEditorService "editor_set_tool" (object ["tool" .= editorToolName tool])
+
+    setEditorBrushRadius radius =
+      runEditorService "editor_set_brush" (object ["radius" .= radius])
+
+    setEditorBrushStrength strength =
+      runEditorService "editor_set_brush" (object ["strength" .= strength])
+
+    setEditorBrushFalloff falloff =
+      runEditorService "editor_set_brush" (object ["falloff" .= falloffName falloff])
+
+    setEditorSmoothPasses passes =
+      runEditorService "editor_set_brush" (object ["smooth_passes" .= passes])
+
+    setEditorNoiseFrequency frequency =
+      runEditorService "editor_set_brush" (object ["noise_frequency" .= frequency])
+
+    setEditorErodePasses passes =
+      runEditorService "editor_set_brush" (object ["erode_passes" .= passes])
+
+    setEditorBiome biome =
+      runEditorService "editor_set_biome" (object ["biome" .= biomeIdToCode biome])
+
+    setEditorForm form =
+      runEditorService "editor_set_form" (object ["form" .= terrainFormToCode form])
+
+    setEditorHardness hardness =
+      runEditorService "editor_set_hardness" (object ["hardness" .= hardness])
+
+    submitEditorBrushStroke hex =
+      -- Local drag strokes stay on the shared UiActions stroke stream so
+      -- ToolFlatten keeps one reference height for the whole drag gesture;
+      -- discrete API/IPC strokes enter through editor_brush_stroke.
+      submitAction inputEnv (UiActionBrushStroke hex)
+
+    clearEditorStrokeSession =
+      submitAction inputEnv UiActionClearFlattenRef
+
+    editorToolName :: EditorTool -> Text.Text
+    editorToolName tool = case tool of
+      ToolRaise -> "raise"
+      ToolLower -> "lower"
+      ToolSmooth -> "smooth"
+      ToolFlatten -> "flatten"
+      ToolNoise -> "noise"
+      ToolPaintBiome -> "paint_biome"
+      ToolPaintForm -> "paint_form"
+      ToolSetHardness -> "set_hardness"
+      ToolErode -> "erode"
+
+    falloffName :: Falloff -> Text.Text
+    falloffName falloff = case falloff of
+      FalloffLinear -> "linear"
+      FalloffSmooth -> "smooth"
+      FalloffConstant -> "constant"
 
     dragThreshold :: Float
     dragThreshold = 4
@@ -404,57 +473,57 @@ handleEvent inputContext event = do
     toggleEditor = do
       uiSnap <- getUiSnapshot uiHandle
       let editor = uiEditor uiSnap
-      setUiEditor uiHandle (editor { editorActive = not (editorActive editor) })
+      setEditorActive (not (editorActive editor))
     handleEditorKey :: EditorState -> SDL.Keycode -> IO ()
     handleEditorKey editor keycode = case keycode of
       SDL.KeycodeEscape ->
-        setUiEditor uiHandle (editor { editorActive = False })
+        setEditorActive False
       SDL.KeycodeE ->
-        setUiEditor uiHandle (editor { editorActive = False })
+        setEditorActive False
       SDL.Keycode1 ->
-        setUiEditor uiHandle (editor { editorTool = ToolRaise })
+        setEditorTool ToolRaise
       SDL.Keycode2 ->
-        setUiEditor uiHandle (editor { editorTool = ToolLower })
+        setEditorTool ToolLower
       SDL.Keycode3 ->
-        setUiEditor uiHandle (editor { editorTool = ToolSmooth })
+        setEditorTool ToolSmooth
       SDL.Keycode4 ->
-        setUiEditor uiHandle (editor { editorTool = ToolFlatten })
+        setEditorTool ToolFlatten
       SDL.Keycode5 ->
-        setUiEditor uiHandle (editor { editorTool = ToolNoise })
+        setEditorTool ToolNoise
       SDL.Keycode6 ->
-        setUiEditor uiHandle (editor { editorTool = ToolPaintBiome })
+        setEditorTool ToolPaintBiome
       SDL.Keycode7 ->
-        setUiEditor uiHandle (editor { editorTool = ToolPaintForm })
+        setEditorTool ToolPaintForm
       SDL.Keycode8 ->
-        setUiEditor uiHandle (editor { editorTool = ToolSetHardness })
+        setEditorTool ToolSetHardness
       SDL.Keycode9 ->
-        setUiEditor uiHandle (editor { editorTool = ToolErode })
+        setEditorTool ToolErode
       SDL.KeycodeLeftBracket ->
         let brush = editorBrush editor
             r = max 0 (brushRadius brush - 1)
-        in setUiEditor uiHandle (editor { editorBrush = brush { brushRadius = r } })
+        in setEditorBrushRadius r
       SDL.KeycodeRightBracket ->
         let brush = editorBrush editor
             r = min 6 (brushRadius brush + 1)
-        in setUiEditor uiHandle (editor { editorBrush = brush { brushRadius = r } })
+        in setEditorBrushRadius r
       _ -> pure ()
     handleEditorWidgetClick :: EditorState -> WidgetId -> IO ()
     handleEditorWidgetClick editor wid = case wid of
       WidgetEditorTool idx ->
         let tools = [minBound .. maxBound] :: [EditorTool]
         in case drop idx tools of
-          (tool:_) -> setUiEditor uiHandle (editor { editorTool = tool })
+          (tool:_) -> setEditorTool tool
           []       -> pure ()
       WidgetEditorRadiusMinus ->
         let brush = editorBrush editor
             r = max 0 (brushRadius brush - 1)
-        in setUiEditor uiHandle (editor { editorBrush = brush { brushRadius = r } })
+        in setEditorBrushRadius r
       WidgetEditorRadiusPlus ->
         let brush = editorBrush editor
             r = min 6 (brushRadius brush + 1)
-        in setUiEditor uiHandle (editor { editorBrush = brush { brushRadius = r } })
+        in setEditorBrushRadius r
       WidgetEditorClose ->
-        setUiEditor uiHandle (editor { editorActive = False })
+        setEditorActive False
       -- Param bar: numeric minus/plus
       WidgetEditorParamMinus slot -> applyNumericDelta editor slot (-1)
       WidgetEditorParamPlus  slot -> applyNumericDelta editor slot 1
@@ -471,40 +540,32 @@ handleEvent inputContext event = do
       let brush = editorBrush editor
           sign  = fromIntegral dir :: Float
       in case editorTool editor of
-        ToolRaise -> setUiEditor uiHandle
-          (editor { editorBrush = brush { brushStrength = clamp 0.005 0.2 (brushStrength brush + sign * 0.005) } })
-        ToolLower -> setUiEditor uiHandle
-          (editor { editorBrush = brush { brushStrength = clamp 0.005 0.2 (brushStrength brush + sign * 0.005) } })
-        ToolSmooth -> setUiEditor uiHandle
-          (editor { editorSmoothPasses = clampI 1 5 (editorSmoothPasses editor + dir) })
-        ToolFlatten -> setUiEditor uiHandle
-          (editor { editorBrush = brush { brushStrength = clamp 0.01 0.5 (brushStrength brush + sign * 0.01) } })
+        ToolRaise -> setEditorBrushStrength (clamp 0.005 0.2 (brushStrength brush + sign * 0.005))
+        ToolLower -> setEditorBrushStrength (clamp 0.005 0.2 (brushStrength brush + sign * 0.005))
+        ToolSmooth -> setEditorSmoothPasses (clampI 1 5 (editorSmoothPasses editor + dir))
+        ToolFlatten -> setEditorBrushStrength (clamp 0.01 0.5 (brushStrength brush + sign * 0.01))
         ToolNoise
-          | slot == 0 -> setUiEditor uiHandle
-              (editor { editorNoiseFrequency = clamp 0.5 4.0 (editorNoiseFrequency editor + sign * 0.1) })
-          | otherwise -> setUiEditor uiHandle
-              (editor { editorBrush = brush { brushStrength = clamp 0.005 0.2 (brushStrength brush + sign * 0.005) } })
-        ToolSetHardness -> setUiEditor uiHandle
-          (editor { editorHardnessTarget = clamp 0.0 1.0 (editorHardnessTarget editor + sign * 0.05) })
-        ToolErode -> setUiEditor uiHandle
-          (editor { editorErodePasses = clampI 1 20 (editorErodePasses editor + dir) })
+          | slot == 0 -> setEditorNoiseFrequency (clamp 0.5 4.0 (editorNoiseFrequency editor + sign * 0.1))
+          | otherwise -> setEditorBrushStrength (clamp 0.005 0.2 (brushStrength brush + sign * 0.005))
+        ToolSetHardness -> setEditorHardness (clamp 0.0 1.0 (editorHardnessTarget editor + sign * 0.05))
+        ToolErode -> setEditorErodePasses (clampI 1 20 (editorErodePasses editor + dir))
         _ -> pure ()
 
     applyCycleStep :: EditorState -> Int -> IO ()
     applyCycleStep editor dir = case editorTool editor of
       ToolPaintBiome ->
         let next = cycleBiome (editorBiomeId editor) dir
-        in setUiEditor uiHandle (editor { editorBiomeId = next })
+        in setEditorBiome next
       ToolPaintForm ->
         let next = cycleForm (editorFormOverride editor) dir
-        in setUiEditor uiHandle (editor { editorFormOverride = next })
+        in setEditorForm next
       _ -> pure ()
 
     applyFalloffStep :: EditorState -> Int -> IO ()
     applyFalloffStep editor dir =
       let brush  = editorBrush editor
           next   = cycleFalloff (brushFalloff brush) dir
-      in setUiEditor uiHandle (editor { editorBrush = brush { brushFalloff = next } })
+      in setEditorBrushFalloff next
 
     clamp :: Float -> Float -> Float -> Float
     clamp lo hi v = max lo (min hi v)

@@ -12,7 +12,6 @@ import Actor.UI
   ( Ui
   , UiMenuMode(..)
   , UiState(..)
-  , setUiSeed
   , setUiSeedEditing
   , setUiSeedInput
   , setUiMenuMode
@@ -21,20 +20,20 @@ import Data.Char (isDigit)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Text.Read (decimal)
+import Data.Word (Word64)
 import Hyperspace.Actor (ActorHandle, Protocol)
 import qualified SDL
 
 -- | Increment or decrement the seed value and sync the input field.
-bumpSeed :: ActorHandle Ui (Protocol Ui) -> IO UiState -> Int -> IO ()
-bumpSeed uiHandle getUiSnapshot delta = do
+bumpSeed :: IO UiState -> (Word64 -> IO ()) -> Int -> IO ()
+bumpSeed getUiSnapshot setSeed delta = do
   uiSnap <- getUiSnapshot
   let newSeed = uiSeed uiSnap + fromIntegral delta
-  setUiSeed uiHandle newSeed
-  setUiSeedInput uiHandle (Text.pack (show newSeed))
+  setSeed newSeed
 
 -- | Handle key events while editing the seed input.
-handleSeedKey :: ActorHandle Ui (Protocol Ui) -> IO UiState -> SDL.Keycode -> IO ()
-handleSeedKey uiHandle getUiSnapshot key =
+handleSeedKey :: ActorHandle Ui (Protocol Ui) -> IO UiState -> (Word64 -> IO ()) -> SDL.Keycode -> IO ()
+handleSeedKey uiHandle getUiSnapshot setSeed key =
   case key of
     SDL.KeycodeEscape -> do
       cancelSeedEdit uiHandle getUiSnapshot
@@ -42,7 +41,7 @@ handleSeedKey uiHandle getUiSnapshot key =
       case uiMenuMode uiSnap of
         MenuNone -> setUiMenuMode uiHandle MenuEscape
         _        -> setUiMenuMode uiHandle MenuNone
-    SDL.KeycodeReturn -> commitSeedEdit uiHandle getUiSnapshot
+    SDL.KeycodeReturn -> commitSeedEdit uiHandle getUiSnapshot setSeed
     SDL.KeycodeBackspace -> do
       uiSnap <- getUiSnapshot
       let current = uiSeedInput uiSnap
@@ -69,8 +68,8 @@ cancelSeedEdit uiHandle getUiSnapshot = do
   setUiSeedEditing uiHandle False
   SDL.stopTextInput
 
-commitSeedEdit :: ActorHandle Ui (Protocol Ui) -> IO UiState -> IO ()
-commitSeedEdit uiHandle getUiSnapshot = do
+commitSeedEdit :: ActorHandle Ui (Protocol Ui) -> IO UiState -> (Word64 -> IO ()) -> IO ()
+commitSeedEdit uiHandle getUiSnapshot setSeed = do
   uiSnap <- getUiSnapshot
   let current = uiSeedInput uiSnap
       seedValue =
@@ -78,8 +77,7 @@ commitSeedEdit uiHandle getUiSnapshot = do
           Just n | n >= 0 -> fromIntegral n
           Just n -> fromIntegral (abs n)
           Nothing -> uiSeed uiSnap
-  setUiSeed uiHandle seedValue
-  setUiSeedInput uiHandle (Text.pack (show seedValue))
+  setSeed seedValue
   setUiSeedEditing uiHandle False
   SDL.stopTextInput
 
