@@ -68,6 +68,8 @@ data TerrainHexResponse = TerrainHexResponse
   , terrainHexWaterBody :: !(Maybe Value)
   , terrainHexWaterTable :: !(Maybe Value)
   , terrainHexVegetation :: !(Maybe Value)
+  , terrainHexGlacier :: !(Maybe Value)
+  , terrainHexVolcanism :: !(Maybe Value)
   , terrainHexSections :: !Value
   } deriving (Eq, Show)
 

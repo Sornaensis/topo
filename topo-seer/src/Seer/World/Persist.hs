@@ -263,10 +263,9 @@ loadNamedSparseOverlayChunk worldName overlayName chunkId = do
 
 -- | Reconstruct a 'TerrainWorld' from a 'TerrainSnapshot'.
 --
--- Terrain, climate, river, groundwater, water-body, vegetation, and overlay
--- chunks are preserved from the snapshot. Volcanism and glacier data are stored
--- as empty maps because they are not retained in the Data actor after
--- generation. World-level hex and planet metadata are reconstructed from
+-- Terrain, climate, river, groundwater, volcanism, glacier, water-body,
+-- vegetation, and overlay chunks are preserved from the snapshot. World-level
+-- hex and planet metadata are reconstructed from
 -- the current UI config so saved worlds preserve the active geographic
 -- scale instead of silently falling back to defaults.
 snapshotToWorld :: UiState -> TerrainSnapshot -> TerrainWorld
@@ -275,8 +274,8 @@ snapshotToWorld uiSnap ts = TerrainWorld
   , twClimate     = tsClimateChunks ts
   , twRivers      = tsRiverChunks ts
   , twGroundwater = tsGroundwaterChunks ts
-  , twVolcanism   = IntMap.empty
-  , twGlaciers    = IntMap.empty
+  , twVolcanism   = tsVolcanismChunks ts
+  , twGlaciers    = tsGlacierChunks ts
   , twWaterBodies = tsWaterBodyChunks ts
   , twVegetation  = tsVegetationChunks ts
   , twHexGrid     = worldHexGrid genCfg

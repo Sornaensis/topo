@@ -11,13 +11,27 @@ import qualified Data.Vector.Unboxed as U
 import Seer.Draw.Overlay (TerrainInspectorSection(..), TerrainInspectorView(..), terrainInspectorView)
 import Test.Hspec
 import Topo
-  ( GroundwaterChunk(..)
+  ( ClimateChunk(..)
+  , GlacierChunk(..)
+  , GroundwaterChunk(..)
   , TerrainChunk(..)
+  , VegetationChunk(..)
+  , VolcanismChunk(..)
   , WaterBodyChunk(..)
+  , WeatherChunk(..)
   , zeroDirSlope
   )
 import Topo.Overlay (emptyOverlayStore)
-import Topo.Types (pattern BiomeDesert, pattern FormFlat, pattern PlateBoundaryNone, pattern WaterLake)
+import Topo.Types
+  ( pattern BiomeDesert
+  , pattern BiomeTempRainforest
+  , pattern FormFlat
+  , pattern PlateBoundaryConvergent
+  , pattern PlateBoundaryNone
+  , pattern VentActive
+  , pattern VentShield
+  , pattern WaterLake
+  )
 
 spec :: Spec
 spec = describe "terrain inspector view model" $ do
@@ -45,6 +59,14 @@ spec = describe "terrain inspector view model" $ do
       , "hydrology_rivers"
       , "water_bodies"
       , "water_table"
+      , "climate_weather"
+      , "weather_snapshot"
+      , "biome_refinement"
+      , "soil"
+      , "vegetation"
+      , "glacier_snow_ice"
+      , "volcanism"
+      , "ocean_currents"
       ]
 
   it "surfaces populated water body and water-table section fields" $ do
@@ -52,6 +74,26 @@ spec = describe "terrain inspector view model" $ do
         Just view = terrainInspectorView ui terrainSnapshotWithWater
     tivLines view `shouldSatisfy` any (Text.isInfixOf "Type Lake")
     tivLines view `shouldSatisfy` any (Text.isInfixOf "Storage 0.25")
+
+  it "surfaces climate, weather, biome, soil, vegetation, glacier, volcanism, and currents" $ do
+    let ui = emptyUiState { uiHoverHex = Just (0, 0), uiViewMode = ViewClimate }
+        Just view = terrainInspectorView ui terrainSnapshotWithDomainLayers
+    map tisKey (tivSections view) `shouldSatisfy` elem "climate_weather"
+    map tisKey (tivSections view) `shouldSatisfy` elem "weather_snapshot"
+    map tisKey (tivSections view) `shouldSatisfy` elem "biome_refinement"
+    map tisKey (tivSections view) `shouldSatisfy` elem "soil"
+    map tisKey (tivSections view) `shouldSatisfy` elem "vegetation"
+    map tisKey (tivSections view) `shouldSatisfy` elem "glacier_snow_ice"
+    map tisKey (tivSections view) `shouldSatisfy` elem "volcanism"
+    map tisKey (tivSections view) `shouldSatisfy` elem "ocean_currents"
+    tivLines view `shouldSatisfy` any (Text.isInfixOf "Temp avg")
+    tivLines view `shouldSatisfy` any (Text.isInfixOf "Cloud")
+    tivLines view `shouldSatisfy` any (Text.isInfixOf "Family Rainforest")
+    tivLines view `shouldSatisfy` any (Text.isInfixOf "Depth 3.0 m")
+    tivLines view `shouldSatisfy` any (Text.isInfixOf "Cover 0.67")
+    tivLines view `shouldSatisfy` any (Text.isInfixOf "Ice 0.45")
+    tivLines view `shouldSatisfy` any (Text.isInfixOf "Vent Shield")
+    tivLines view `shouldSatisfy` any (Text.isInfixOf "Est temp Δ")
 
   it "surfaces missing overlay state for overlay view mode" $ do
     let ui = emptyUiState
@@ -63,7 +105,7 @@ spec = describe "terrain inspector view model" $ do
     tivLines view `shouldSatisfy` elem "(not loaded)"
 
 emptyTerrainSnapshot :: TerrainSnapshot
-emptyTerrainSnapshot = TerrainSnapshot 0 0 IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty emptyOverlayStore
+emptyTerrainSnapshot = TerrainSnapshot 0 0 IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty emptyOverlayStore
 
 terrainSnapshotWithChunk :: TerrainSnapshot
 terrainSnapshotWithChunk = TerrainSnapshot
@@ -74,6 +116,8 @@ terrainSnapshotWithChunk = TerrainSnapshot
   , tsWeatherChunks = IntMap.empty
   , tsRiverChunks = IntMap.empty
   , tsGroundwaterChunks = IntMap.empty
+  , tsVolcanismChunks = IntMap.empty
+  , tsGlacierChunks = IntMap.empty
   , tsWaterBodyChunks = IntMap.empty
   , tsVegetationChunks = IntMap.empty
   , tsOverlayStore = emptyOverlayStore
@@ -83,6 +127,16 @@ terrainSnapshotWithWater :: TerrainSnapshot
 terrainSnapshotWithWater = terrainSnapshotWithChunk
   { tsGroundwaterChunks = IntMap.singleton 0 (groundwaterChunk chunkSize)
   , tsWaterBodyChunks = IntMap.singleton 0 (waterBodyChunk chunkSize)
+  }
+
+terrainSnapshotWithDomainLayers :: TerrainSnapshot
+terrainSnapshotWithDomainLayers = terrainSnapshotWithWater
+  { tsTerrainChunks = IntMap.singleton 0 (domainTerrainChunk chunkSize)
+  , tsClimateChunks = IntMap.singleton 0 (climateChunk chunkSize)
+  , tsWeatherChunks = IntMap.singleton 0 (weatherChunk chunkSize)
+  , tsVolcanismChunks = IntMap.singleton 0 (volcanismChunk chunkSize)
+  , tsGlacierChunks = IntMap.singleton 0 (glacierChunk chunkSize)
+  , tsVegetationChunks = IntMap.singleton 0 (vegetationChunk chunkSize)
   }
 
 chunkSize :: Int
@@ -110,6 +164,74 @@ waterBodyChunk size =
       , wbBasinId = U.replicate total 7
       , wbDepth = U.replicate total 0.1
       , wbAdjacentType = U.replicate total WaterLake
+      }
+
+climateChunk :: Int -> ClimateChunk
+climateChunk size =
+  let total = size * size
+  in ClimateChunk
+      { ccTempAvg = U.replicate total 0.62
+      , ccPrecipAvg = U.replicate total 0.35
+      , ccWindDirAvg = U.replicate total 1.1
+      , ccWindSpdAvg = U.replicate total 0.24
+      , ccHumidityAvg = U.replicate total 0.58
+      , ccTempRange = U.replicate total 0.18
+      , ccPrecipSeasonality = U.replicate total 0.42
+      }
+
+weatherChunk :: Int -> WeatherChunk
+weatherChunk size =
+  let total = size * size
+  in WeatherChunk
+      { wcTemp = U.replicate total 0.64
+      , wcHumidity = U.replicate total 0.66
+      , wcWindDir = U.replicate total 0.7
+      , wcWindSpd = U.replicate total 0.22
+      , wcPressure = U.replicate total 0.51
+      , wcPrecip = U.replicate total 0.27
+      , wcCloudCover = U.replicate total 0.73
+      , wcCloudWater = U.replicate total 0.31
+      , wcCloudCoverLow = U.replicate total 0.2
+      , wcCloudCoverMid = U.replicate total 0.3
+      , wcCloudCoverHigh = U.replicate total 0.4
+      , wcCloudWaterLow = U.replicate total 0.11
+      , wcCloudWaterMid = U.replicate total 0.12
+      , wcCloudWaterHigh = U.replicate total 0.13
+      }
+
+vegetationChunk :: Int -> VegetationChunk
+vegetationChunk size =
+  let total = size * size
+  in VegetationChunk
+      { vegCover = U.replicate total 0.67
+      , vegAlbedo = U.replicate total 0.12
+      , vegDensity = U.replicate total 0.8
+      }
+
+glacierChunk :: Int -> GlacierChunk
+glacierChunk size =
+  let total = size * size
+  in GlacierChunk
+      { glSnowpack = U.replicate total 0.3
+      , glIceThickness = U.replicate total 0.45
+      , glMelt = U.replicate total 0.1
+      , glFlow = U.replicate total 0.2
+      , glErosionPotential = U.replicate total 0.15
+      , glDepositPotential = U.replicate total 0.05
+      }
+
+volcanismChunk :: Int -> VolcanismChunk
+volcanismChunk size =
+  let total = size * size
+  in VolcanismChunk
+      { vcVentType = U.replicate total VentShield
+      , vcActivity = U.replicate total VentActive
+      , vcMagma = U.replicate total 0.72
+      , vcEruptionCount = U.replicate total 3
+      , vcEruptedTotal = U.replicate total 0.44
+      , vcLavaPotential = U.replicate total 0.31
+      , vcAshPotential = U.replicate total 0.21
+      , vcDepositPotential = U.replicate total 0.41
       }
 
 emptyTerrainChunk :: Int -> TerrainChunk
@@ -145,4 +267,21 @@ emptyTerrainChunk size =
       , tcPlateAge = zerosF
       , tcPlateVelX = zerosF
       , tcPlateVelY = zerosF
+      }
+
+domainTerrainChunk :: Int -> TerrainChunk
+domainTerrainChunk size =
+  let total = size * size
+  in (emptyTerrainChunk size)
+      { tcElevation = U.replicate total 0.5
+      , tcHardness = U.replicate total 0.35
+      , tcRockType = U.replicate total 2
+      , tcSoilType = U.replicate total 4
+      , tcSoilDepth = U.replicate total 0.6
+      , tcMoisture = U.replicate total 0.55
+      , tcFertility = U.replicate total 0.48
+      , tcRockDensity = U.replicate total 0.37
+      , tcSoilGrain = U.replicate total 0.29
+      , tcFlags = U.replicate total BiomeTempRainforest
+      , tcPlateBoundary = U.replicate total PlateBoundaryConvergent
       }

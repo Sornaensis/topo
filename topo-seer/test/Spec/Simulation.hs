@@ -119,7 +119,7 @@ spec = describe "Simulation actor" $ do
     logHandle <- get @Log system
     uiHandle <- get @Ui system
     dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
-    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
+    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
     snapshotVersionRef <- newSnapshotVersionRef
     atlasHandle <- get @AtlasManager system
 
@@ -174,7 +174,7 @@ spec = describe "Simulation actor" $ do
     logHandle <- get @Log system
     uiHandle <- get @Ui system
     dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
-    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
+    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
     snapshotVersionRef <- newSnapshotVersionRef
     atlasHandle <- get @AtlasManager system
 
@@ -224,7 +224,7 @@ spec = describe "Simulation actor" $ do
     logHandle <- get @Log system
     uiHandle <- get @Ui system
     dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
-    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
+    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
     snapshotVersionRef <- newSnapshotVersionRef
     atlasHandle <- get @AtlasManager system
 

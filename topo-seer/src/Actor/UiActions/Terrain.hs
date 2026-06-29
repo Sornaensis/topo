@@ -22,12 +22,14 @@ import Actor.Data
   , getDataSnapshot
   , setBiomeChunkCount
   , setClimateChunkData
+  , setGlacierChunkData
   , setGroundwaterChunkData
   , setLastSeed
   , setRiverChunkData
   , setTerrainChunkCount
   , setTerrainChunkData
   , setVegetationChunkData
+  , setVolcanismChunkData
   , setWaterBodyChunkData
   , setWeatherChunkData
   )
@@ -90,6 +92,8 @@ applyTerrainResult handles resultMsg = do
       weatherChunks = tgrResultWeatherChunks resultMsg
       riverChunks   = tgrResultRiverChunks resultMsg
       groundwaterChunks = tgrResultGroundwaterChunks resultMsg
+      volcanismChunks = tgrResultVolcanismChunks resultMsg
+      glacierChunks = tgrResultGlacierChunks resultMsg
       waterBodyChunks = tgrResultWaterBodyChunks resultMsg
       vegetationChunks = tgrResultVegetationChunks resultMsg
       terrainCount = tgrResultTerrainCount resultMsg
@@ -99,6 +103,8 @@ applyTerrainResult handles resultMsg = do
   setWeatherChunkData (uahData handles) chunkSize []
   setRiverChunkData   (uahData handles) chunkSize []
   setGroundwaterChunkData (uahData handles) chunkSize []
+  setVolcanismChunkData (uahData handles) chunkSize []
+  setGlacierChunkData (uahData handles) chunkSize []
   setWaterBodyChunkData (uahData handles) chunkSize []
   setVegetationChunkData (uahData handles) chunkSize []
   setTerrainChunkData (uahData handles) chunkSize terrainChunks
@@ -106,6 +112,8 @@ applyTerrainResult handles resultMsg = do
   setWeatherChunkData (uahData handles) chunkSize weatherChunks
   setRiverChunkData   (uahData handles) chunkSize riverChunks
   setGroundwaterChunkData (uahData handles) chunkSize groundwaterChunks
+  setVolcanismChunkData (uahData handles) chunkSize volcanismChunks
+  setGlacierChunkData (uahData handles) chunkSize glacierChunks
   setWaterBodyChunkData (uahData handles) chunkSize waterBodyChunks
   setVegetationChunkData (uahData handles) chunkSize vegetationChunks
   setTerrainChunkCount (uahData handles) terrainCount

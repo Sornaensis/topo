@@ -35,11 +35,15 @@ import Topo.Types
   , TerrainChunk(..)
   , ClimateChunk(..)
   , WeatherChunk(..)
+  , GlacierChunk(..)
   , GroundwaterChunk(..)
   , RiverChunk(..)
   , VegetationChunk(..)
+  , VolcanismChunk(..)
   , WaterBodyChunk(..)
   , WaterBodyType
+  , VentActivity
+  , VentType
   , BiomeId
   , TerrainForm
   , biomeIdToCode
@@ -47,6 +51,8 @@ import Topo.Types
   , terrainFormToCode
   , terrainFormFromCode
   , terrainFormDisplayName
+  , ventActivityToCode
+  , ventTypeToCode
   , waterBodyToCode
   )
 
@@ -164,6 +170,32 @@ handleGetHex ctx reqId params =
                           , "root_zone_moisture" .= safeIndex (gwRootZoneMoisture gw) tileIdx
                           ]
 
+                      glacierLayer = case IntMap.lookup chunkId (tsGlacierChunks snap) of
+                        Nothing -> Null
+                        Just gl -> object
+                          [ "snowpack"          .= safeIndex (glSnowpack gl) tileIdx
+                          , "ice_thickness"     .= safeIndex (glIceThickness gl) tileIdx
+                          , "melt"              .= safeIndex (glMelt gl) tileIdx
+                          , "flow"              .= safeIndex (glFlow gl) tileIdx
+                          , "erosion_potential" .= safeIndex (glErosionPotential gl) tileIdx
+                          , "deposit_potential" .= safeIndex (glDepositPotential gl) tileIdx
+                          ]
+
+                      volcanismLayer = case IntMap.lookup chunkId (tsVolcanismChunks snap) of
+                        Nothing -> Null
+                        Just vc -> object
+                          [ "vent_type"         .= fmap ventTypeDisplayName (safeIndexVentType (vcVentType vc) tileIdx)
+                          , "vent_type_code"    .= fmap ventTypeToCode (safeIndexVentType (vcVentType vc) tileIdx)
+                          , "activity"          .= fmap ventActivityDisplayName (safeIndexVentActivity (vcActivity vc) tileIdx)
+                          , "activity_code"     .= fmap ventActivityToCode (safeIndexVentActivity (vcActivity vc) tileIdx)
+                          , "magma"             .= safeIndex (vcMagma vc) tileIdx
+                          , "eruption_count"    .= safeIndexW16 (vcEruptionCount vc) tileIdx
+                          , "erupted_total"     .= safeIndex (vcEruptedTotal vc) tileIdx
+                          , "lava_potential"    .= safeIndex (vcLavaPotential vc) tileIdx
+                          , "ash_potential"     .= safeIndex (vcAshPotential vc) tileIdx
+                          , "deposit_potential" .= safeIndex (vcDepositPotential vc) tileIdx
+                          ]
+
                       inspector = terrainInspectorViewAt ui snap (q, r)
 
                       vegLayer = case IntMap.lookup chunkId (tsVegetationChunks snap) of
@@ -184,6 +216,8 @@ handleGetHex ctx reqId params =
                     , "water_body" .= waterBodyLayer
                     , "water_table" .= waterTableLayer
                     , "vegetation" .= vegLayer
+                    , "glacier"    .= glacierLayer
+                    , "volcanism"  .= volcanismLayer
                     , "sections"   .= terrainInspectorSectionsObject inspector
                     ]
 
@@ -392,6 +426,16 @@ safeIndexWaterBody v i
   | i >= 0 && i < U.length v = Just (v U.! i)
   | otherwise = Nothing
 
+safeIndexVentType :: U.Vector VentType -> Int -> Maybe VentType
+safeIndexVentType v i
+  | i >= 0 && i < U.length v = Just (v U.! i)
+  | otherwise = Nothing
+
+safeIndexVentActivity :: U.Vector VentActivity -> Int -> Maybe VentActivity
+safeIndexVentActivity v i
+  | i >= 0 && i < U.length v = Just (v U.! i)
+  | otherwise = Nothing
+
 riverSegmentCount :: RiverChunk -> Int -> Maybe Int
 riverSegmentCount rc tileIdx = do
   start <- safeIndexInt (rcSegOffsets rc) tileIdx
@@ -405,6 +449,23 @@ waterBodyDisplayName bodyType =
     1 -> "Ocean"
     2 -> "Lake"
     3 -> "Inland sea"
+    code -> "Unknown (" <> Text.pack (show code) <> ")"
+
+ventTypeDisplayName :: VentType -> Text
+ventTypeDisplayName ventType =
+  case ventTypeToCode ventType of
+    0 -> "None"
+    1 -> "Shield"
+    2 -> "Stratovolcano"
+    3 -> "Fissure"
+    code -> "Unknown (" <> Text.pack (show code) <> ")"
+
+ventActivityDisplayName :: VentActivity -> Text
+ventActivityDisplayName activity =
+  case ventActivityToCode activity of
+    0 -> "Dormant"
+    1 -> "Active"
+    2 -> "Erupting"
     code -> "Unknown (" <> Text.pack (show code) <> ")"
 
 -- | Safe index for TerrainForm vectors.

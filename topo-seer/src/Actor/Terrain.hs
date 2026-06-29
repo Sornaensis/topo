@@ -35,11 +35,13 @@ import Topo
   , WorldConfig(..)
   , ChunkId(..)
   , ClimateChunk
+  , GlacierChunk
   , GroundwaterChunk
   , OverlaySchema
   , RiverChunk
   , TerrainChunk
   , VegetationChunk
+  , VolcanismChunk
   , WaterBodyChunk
   , WeatherChunk
   , TerrainWorld(..)
@@ -95,6 +97,8 @@ data TerrainGenResult = TerrainGenResult
   , tgrResultWeatherChunks :: ![(ChunkId, WeatherChunk)]
   , tgrResultRiverChunks :: ![(ChunkId, RiverChunk)]
   , tgrResultGroundwaterChunks :: ![(ChunkId, GroundwaterChunk)]
+  , tgrResultVolcanismChunks :: ![(ChunkId, VolcanismChunk)]
+  , tgrResultGlacierChunks :: ![(ChunkId, GlacierChunk)]
   , tgrResultWaterBodyChunks :: ![(ChunkId, WaterBodyChunk)]
   , tgrResultVegetationChunks :: ![(ChunkId, VegetationChunk)]
   , tgrResultTerrainCount :: !Int
@@ -180,6 +184,8 @@ actor Terrain
             weatherChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (getWeatherFromOverlay world1))
             riverChunks   = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twRivers world1))
             groundwaterChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twGroundwater world1))
+            volcanismChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twVolcanism world1))
+            glacierChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twGlaciers world1))
             waterBodyChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twWaterBodies world1))
             vegetationChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twVegetation world1))
             terrainCount = IntMap.size (twTerrain world1)
@@ -194,6 +200,8 @@ actor Terrain
         _ <- evaluate (length weatherChunks)
         _ <- evaluate (length riverChunks)
         _ <- evaluate (length groundwaterChunks)
+        _ <- evaluate (length volcanismChunks)
+        _ <- evaluate (length glacierChunks)
         _ <- evaluate (length waterBodyChunks)
         _ <- evaluate (length vegetationChunks)
         let result = TerrainGenResult
@@ -204,6 +212,8 @@ actor Terrain
               , tgrResultWeatherChunks = weatherChunks
               , tgrResultRiverChunks = riverChunks
               , tgrResultGroundwaterChunks = groundwaterChunks
+              , tgrResultVolcanismChunks = volcanismChunks
+              , tgrResultGlacierChunks = glacierChunks
               , tgrResultWaterBodyChunks = waterBodyChunks
               , tgrResultVegetationChunks = vegetationChunks
               , tgrResultTerrainCount = terrainCount

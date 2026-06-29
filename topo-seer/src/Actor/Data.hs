@@ -17,6 +17,8 @@ module Actor.Data
   , setWeatherChunkData
   , setRiverChunkData
   , setGroundwaterChunkData
+  , setVolcanismChunkData
+  , setGlacierChunkData
   , setWaterBodyChunkData
   , setVegetationChunkData
   , setOverlayStoreData
@@ -31,7 +33,7 @@ import qualified Data.IntMap.Strict as IntMap
 import Data.Word (Word64)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
-import Topo (ChunkId(..), ClimateChunk, GroundwaterChunk, RiverChunk, TerrainChunk, VegetationChunk, WaterBodyChunk, WeatherChunk, getWeatherFromOverlay)
+import Topo (ChunkId(..), ClimateChunk, GlacierChunk, GroundwaterChunk, RiverChunk, TerrainChunk, VegetationChunk, VolcanismChunk, WaterBodyChunk, WeatherChunk, getWeatherFromOverlay)
 import Topo.Overlay (OverlayStore, emptyOverlayStore)
 import Topo.World (TerrainWorld(..))
 import Topo.Types (WorldConfig(..))
@@ -55,6 +57,8 @@ data TerrainSnapshot = TerrainSnapshot
   , tsWeatherChunks :: !(IntMap WeatherChunk)
   , tsRiverChunks :: !(IntMap RiverChunk)
   , tsGroundwaterChunks :: !(IntMap GroundwaterChunk)
+  , tsVolcanismChunks :: !(IntMap VolcanismChunk)
+  , tsGlacierChunks :: !(IntMap GlacierChunk)
   , tsWaterBodyChunks :: !(IntMap WaterBodyChunk)
   , tsVegetationChunks :: !(IntMap VegetationChunk)
   , tsOverlayStore :: !OverlayStore
@@ -72,6 +76,8 @@ data DataState = DataState
   , stWeatherChunks :: !(IntMap WeatherChunk)
   , stRiverChunks :: !(IntMap RiverChunk)
   , stGroundwaterChunks :: !(IntMap GroundwaterChunk)
+  , stVolcanismChunks :: !(IntMap VolcanismChunk)
+  , stGlacierChunks :: !(IntMap GlacierChunk)
   , stWaterBodyChunks :: !(IntMap WaterBodyChunk)
   , stVegetationChunks :: !(IntMap VegetationChunk)
   , stOverlayStore :: !OverlayStore
@@ -89,6 +95,8 @@ emptyDataState = DataState
   , stWeatherChunks = IntMap.empty
   , stRiverChunks = IntMap.empty
   , stGroundwaterChunks = IntMap.empty
+  , stVolcanismChunks = IntMap.empty
+  , stGlacierChunks = IntMap.empty
   , stWaterBodyChunks = IntMap.empty
   , stVegetationChunks = IntMap.empty
   , stOverlayStore = emptyOverlayStore
@@ -110,6 +118,8 @@ snapshotTerrain st = TerrainSnapshot
   , tsWeatherChunks = stWeatherChunks st
   , tsRiverChunks = stRiverChunks st
   , tsGroundwaterChunks = stGroundwaterChunks st
+  , tsVolcanismChunks = stVolcanismChunks st
+  , tsGlacierChunks = stGlacierChunks st
   , tsWaterBodyChunks = stWaterBodyChunks st
   , tsVegetationChunks = stVegetationChunks st
   , tsOverlayStore = stOverlayStore st
@@ -134,6 +144,8 @@ actor Data
   cast setWeatherData :: (Int, [(ChunkId, WeatherChunk)])
   cast setRiverData :: (Int, [(ChunkId, RiverChunk)])
   cast setGroundwaterData :: (Int, [(ChunkId, GroundwaterChunk)])
+  cast setVolcanismData :: (Int, [(ChunkId, VolcanismChunk)])
+  cast setGlacierData :: (Int, [(ChunkId, GlacierChunk)])
   cast setWaterBodyData :: (Int, [(ChunkId, WaterBodyChunk)])
   cast setVegetationData :: (Int, [(ChunkId, VegetationChunk)])
   cast setOverlayStore :: OverlayStore
@@ -174,6 +186,18 @@ actor Data
     _ <- evaluate (IntMap.size m)
     pure st { stChunkSize = size
             , stGroundwaterChunks = m
+            }
+  on_ setVolcanismData = \(size, chunks) st -> do
+    let m = IntMap.fromList (map (\(cid, chunk) -> (chunkKey cid, chunk)) chunks)
+    _ <- evaluate (IntMap.size m)
+    pure st { stChunkSize = size
+            , stVolcanismChunks = m
+            }
+  on_ setGlacierData = \(size, chunks) st -> do
+    let m = IntMap.fromList (map (\(cid, chunk) -> (chunkKey cid, chunk)) chunks)
+    _ <- evaluate (IntMap.size m)
+    pure st { stChunkSize = size
+            , stGlacierChunks = m
             }
   on_ setWaterBodyData = \(size, chunks) st -> do
     let m = IntMap.fromList (map (\(cid, chunk) -> (chunkKey cid, chunk)) chunks)
@@ -233,6 +257,16 @@ setGroundwaterChunkData :: ActorHandle Data (Protocol Data) -> Int -> [(ChunkId,
 setGroundwaterChunkData handle size chunks =
   cast @"setGroundwaterData" handle #setGroundwaterData (size, chunks)
 
+-- | Send volcanism chunk data to the Data actor.
+setVolcanismChunkData :: ActorHandle Data (Protocol Data) -> Int -> [(ChunkId, VolcanismChunk)] -> IO ()
+setVolcanismChunkData handle size chunks =
+  cast @"setVolcanismData" handle #setVolcanismData (size, chunks)
+
+-- | Send glacier chunk data to the Data actor.
+setGlacierChunkData :: ActorHandle Data (Protocol Data) -> Int -> [(ChunkId, GlacierChunk)] -> IO ()
+setGlacierChunkData handle size chunks =
+  cast @"setGlacierData" handle #setGlacierData (size, chunks)
+
 -- | Send water-body chunk data to the Data actor.
 setWaterBodyChunkData :: ActorHandle Data (Protocol Data) -> Int -> [(ChunkId, WaterBodyChunk)] -> IO ()
 setWaterBodyChunkData handle size chunks =
@@ -254,8 +288,8 @@ getTerrainSnapshot handle =
 
 -- | Replace all terrain data from a loaded 'TerrainWorld'.
 --
--- Sends terrain, climate, weather, river, groundwater, water-body, and
--- vegetation chunk data as separate messages. The terrain message increments 'tsVersion', triggering
+-- Sends terrain, climate, weather, river, groundwater, volcanism, glacier,
+-- water-body, and vegetation chunk data as separate messages. The terrain message increments 'tsVersion', triggering
 -- atlas/cache invalidation.  Also sets the terrain chunk count so
 -- the render pipeline's @dataReady@ guard passes.
 replaceTerrainData :: ActorHandle Data (Protocol Data) -> TerrainWorld -> IO ()
@@ -267,6 +301,8 @@ replaceTerrainData handle world = do
   setWeatherChunkData handle size (toList (getWeatherFromOverlay world))
   setRiverChunkData   handle size (toList (twRivers world))
   setGroundwaterChunkData handle size (toList (twGroundwater world))
+  setVolcanismChunkData handle size (toList (twVolcanism world))
+  setGlacierChunkData handle size (toList (twGlaciers world))
   setWaterBodyChunkData handle size (toList (twWaterBodies world))
   setVegetationChunkData handle size (toList (twVegetation world))
   setOverlayStoreData handle (twOverlays world)

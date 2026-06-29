@@ -536,7 +536,7 @@ worldSummarySchema = inlineObjectSchema
 
 terrainHexResponseSchema :: JsonSchema
 terrainHexResponseSchema = objectSchema "TerrainHexResponse"
-  [ "q", "r", "terrain", "climate", "weather", "river", "water_body", "water_table", "vegetation", "sections" ]
+  [ "q", "r", "terrain", "climate", "weather", "river", "water_body", "water_table", "vegetation", "glacier", "volcanism", "sections" ]
   [ ("q", integerSchema)
   , ("r", integerSchema)
   , ("terrain", terrainLayerSchema)
@@ -546,6 +546,8 @@ terrainHexResponseSchema = objectSchema "TerrainHexResponse"
   , ("water_body", nullableSchema freeObjectSchema)
   , ("water_table", nullableSchema freeObjectSchema)
   , ("vegetation", nullableSchema freeObjectSchema)
+  , ("glacier", nullableSchema freeObjectSchema)
+  , ("volcanism", nullableSchema freeObjectSchema)
   , ("sections", arraySchema terrainInspectorSectionSchema)
   ]
 

@@ -824,7 +824,7 @@ withCtx action = bracket newActorSystem shutdownActorSystem $ \system -> do
   simH       <- get @Simulation system
   uiActionsH <- get @UiActions system
   dataSnapRef    <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
-  terrainSnapRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
+  terrainSnapRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
   versionRef     <- newSnapshotVersionRef
   uiSnapRef      <- newUiSnapshotRef
   screenshotRef  <- newScreenshotRequestRef

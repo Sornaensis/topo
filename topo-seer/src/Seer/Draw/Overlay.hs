@@ -41,7 +41,10 @@ import Topo
   , ChunkId(..)
   , ClimateChunk(..)
   , DirectionalSlope(..)
+  , GlacierChunk(..)
   , GroundwaterChunk(..)
+  , HexDirection(..)
+  , OceanCurrentConfig(..)
   , PlateBoundary(..)
   , RiverChunk(..)
   , TerrainChunk(..)
@@ -49,21 +52,29 @@ import Topo
   , TileCoord(..)
   , TileIndex(..)
   , VegetationChunk(..)
+  , VentActivity
+  , VentType
+  , VolcanismChunk(..)
   , WaterBodyChunk(..)
   , WaterBodyType
   , WeatherChunk(..)
   , WorldConfig(..)
   , biomeDisplayName
+  , biomeIdToCode
   , chunkCoordFromTile
   , chunkIdFromCoord
   , dsAvgSlope
   , dsMaxSlope
   , dsMinSlope
+  , oceanCurrentOffset
   , plateBoundaryToCode
   , terrainFormDisplayName
   , tileIndex
+  , ventActivityToCode
+  , ventTypeToCode
   , waterBodyToCode
   )
+import Topo.Grid.HexDirection (traceIndexInDirection)
 import Topo.Overlay
   ( Overlay(..)
   , OverlayData(..)
@@ -503,6 +514,14 @@ inspectorSections ui terrainSnap (q, r) sample =
   , hydrologySection
   , waterBodySection
   , waterTableSection
+  , climateSection
+  , weatherSection
+  , biomeSection
+  , soilSection
+  , vegetationSection
+  , glacierSection
+  , volcanismSection
+  , oceanCurrentSection
   ]
   where
     units = defaultUnitScales
@@ -517,6 +536,12 @@ inspectorSections ui terrainSnap (q, r) sample =
     dirSlope = hsDirSlope sample
     slopeDeg = normSlopeToDeg units
     plateSpeed = sqrt (hsPlateVelX sample ** 2 + hsPlateVelY sample ** 2)
+    oceanCurrentCfg = oceanCurrentConfigFromUi ui
+    isWater = hsElevation sample < waterLevel
+    landEast = hasLandAlongChunk terrainSnap waterLevel sample HexE
+    landWest = hasLandAlongChunk terrainSnap waterLevel sample HexW
+    currentOffsetNorm = if isWater then oceanCurrentOffset oceanCurrentCfg (lat * pi / 180) landEast landWest else 0
+    currentOffsetC = normToC units (0.5 + currentOffsetNorm) - normToC units 0.5
 
     coordinatesSection = section "coordinates" "Coordinates / Chunk"
       [ intField "q" "Q" q
@@ -614,6 +639,126 @@ inspectorSections ui terrainSnap (q, r) sample =
           , maybeFloatField "root_zone_moisture" "Root moist" (safeIndexMaybe (gwRootZoneMoisture gw) tileIdx)
           ]
 
+    climateSection = section "climate_weather" "Climate / Averages" $
+      case hsClimateChunk sample of
+        Nothing -> [statusField "not_loaded"]
+        Just cc ->
+          [ maybeFloatField "temp_avg_norm" "Temp avg n" (safeIndexMaybe (ccTempAvg cc) tileIdx)
+          , maybeUnitField "temp_avg_c" "Temp avg" (normToC units) "°C" (safeIndexMaybe (ccTempAvg cc) tileIdx)
+          , maybeFloatField "precip_avg_norm" "Precip n" (safeIndexMaybe (ccPrecipAvg cc) tileIdx)
+          , maybeUnitField "precip_avg_mm_year" "Precip" (normToMmYear units) "mm/yr" (safeIndexMaybe (ccPrecipAvg cc) tileIdx)
+          , maybeUnitField "humidity_avg_pct" "Humid avg" normToRH "% RH" (safeIndexMaybe (ccHumidityAvg cc) tileIdx)
+          , maybeUnitField "wind_spd_avg_ms" "Wind avg" (normToWindMs units) "m/s" (safeIndexMaybe (ccWindSpdAvg cc) tileIdx)
+          , maybeUnitField "wind_dir_avg_rad" "Wind dir" id "rad" (safeIndexMaybe (ccWindDirAvg cc) tileIdx)
+          , maybeFloatField "temp_range_norm" "Temp range" (safeIndexMaybe (ccTempRange cc) tileIdx)
+          , maybeFloatField "precip_seasonality" "Seasonality" (safeIndexMaybe (ccPrecipSeasonality cc) tileIdx)
+          ]
+
+    weatherSection = section "weather_snapshot" "Weather / Snapshot" $
+      case hsWeatherChunk sample of
+        Nothing -> [statusField "not_loaded"]
+        Just wc ->
+          [ maybeUnitField "temp_c" "Temp" (normToC units) "°C" (safeIndexMaybe (wcTemp wc) tileIdx)
+          , maybeUnitField "humidity_pct" "Humid" normToRH "% RH" (safeIndexMaybe (wcHumidity wc) tileIdx)
+          , maybeUnitField "wind_dir_rad" "Wind dir" id "rad" (safeIndexMaybe (wcWindDir wc) tileIdx)
+          , maybeUnitField "wind_spd_ms" "Wind" (normToWindMs units) "m/s" (safeIndexMaybe (wcWindSpd wc) tileIdx)
+          , maybeUnitField "pressure_hpa" "Pressure" (normToHPa units) "hPa" (safeIndexMaybe (wcPressure wc) tileIdx)
+          , maybeUnitField "precip_mm_year" "Precip" (normToMmYear units) "mm/yr" (safeIndexMaybe (wcPrecip wc) tileIdx)
+          , maybeFloatField "cloud_cover" "Cloud" (safeIndexMaybe (wcCloudCover wc) tileIdx)
+          , maybeFloatField "cloud_water" "Cloud water" (safeIndexMaybe (wcCloudWater wc) tileIdx)
+          , maybeFloatField "cloud_cover_low" "Cloud low" (safeIndexMaybe (wcCloudCoverLow wc) tileIdx)
+          , maybeFloatField "cloud_cover_mid" "Cloud mid" (safeIndexMaybe (wcCloudCoverMid wc) tileIdx)
+          , maybeFloatField "cloud_cover_high" "Cloud high" (safeIndexMaybe (wcCloudCoverHigh wc) tileIdx)
+          , maybeFloatField "cloud_water_low" "Water low" (safeIndexMaybe (wcCloudWaterLow wc) tileIdx)
+          , maybeFloatField "cloud_water_mid" "Water mid" (safeIndexMaybe (wcCloudWaterMid wc) tileIdx)
+          , maybeFloatField "cloud_water_high" "Water high" (safeIndexMaybe (wcCloudWaterHigh wc) tileIdx)
+          ]
+
+    biomeSection = section "biome_refinement" "Biome / Refinement"
+      [ word16Field "biome_code" "Code" (biomeIdToCode (hsBiome sample))
+      , textField "biome" "Biome" (biomeDisplayName (hsBiome sample))
+      , textField "family" "Family" (biomeFamilyName (hsBiome sample))
+      , textField "refinement" "Refined" (biomeRefinementStatus (hsBiome sample))
+      , textField "terrain_form" "Form" (Text.pack (terrainFormDisplayName (hsTerrainForm sample)))
+      , maybeTextField "water_type" "Water" waterBodyDisplayName (hsWaterBodyChunk sample >>= \wb -> safeIndexMaybe (wbType wb) tileIdx)
+      , maybeTextField "adjacent_water_type" "Adj water" waterBodyDisplayName (hsWaterBodyChunk sample >>= \wb -> safeIndexMaybe (wbAdjacentType wb) tileIdx)
+      , floatUnitField "temp_avg_c" "Temp avg" (normToC units (hsTemp sample)) "°C"
+      , floatUnitField "precip_avg_mm_year" "Precip" (normToMmYear units (hsPrecipAvg sample)) "mm/yr"
+      , floatField "moisture" "Moist" (hsMoisture sample)
+      , floatField "fertility" "Fert" (hsFertility sample)
+      ]
+
+    soilSection = section "soil" "Soil"
+      [ word16Field "soil_type" "Soil type" (hsSoilType sample)
+      , floatField "soil_depth_norm" "Depth n" (hsSoilDepth sample)
+      , floatUnitField "soil_depth_m" "Depth" (normToSoilM units (hsSoilDepth sample)) "m"
+      , floatField "soil_moisture" "Moist" (hsMoisture sample)
+      , floatField "fertility" "Fert" (hsFertility sample)
+      , floatField "soil_grain" "Grain" (hsSoilGrain sample)
+      , word16Field "rock_type" "Rock type" (hsRockType sample)
+      , floatField "rock_density" "Rock dens" (hsRockDensity sample)
+      , floatField "hardness" "Hardness" (hsHardness sample)
+      ]
+
+    vegetationSection = section "vegetation" "Vegetation" $
+      case hsVegetationChunk sample of
+        Nothing -> [statusField "not_loaded"]
+        Just vc ->
+          [ maybeFloatField "cover" "Cover" (safeIndexMaybe (vegCover vc) tileIdx)
+          , maybeFloatField "density" "Density" (safeIndexMaybe (vegDensity vc) tileIdx)
+          , maybeFloatField "albedo" "Albedo" (safeIndexMaybe (vegAlbedo vc) tileIdx)
+          , floatField "fertility" "Fert" (hsFertility sample)
+          , floatField "moisture" "Moist" (hsMoisture sample)
+          , textField "biome" "Biome" (biomeDisplayName (hsBiome sample))
+          ]
+
+    glacierSection = section "glacier_snow_ice" "Glacier / Snow / Ice" $
+      case hsGlacierChunk sample of
+        Nothing -> [statusField "not_loaded"]
+        Just gl ->
+          [ maybeFloatField "snowpack" "Snowpack" (safeIndexMaybe (glSnowpack gl) tileIdx)
+          , maybeFloatField "ice_thickness" "Ice" (safeIndexMaybe (glIceThickness gl) tileIdx)
+          , maybeFloatField "melt" "Melt" (safeIndexMaybe (glMelt gl) tileIdx)
+          , maybeFloatField "flow" "Flow" (safeIndexMaybe (glFlow gl) tileIdx)
+          , maybeFloatField "erosion_potential" "Erode" (safeIndexMaybe (glErosionPotential gl) tileIdx)
+          , maybeFloatField "deposit_potential" "Deposit" (safeIndexMaybe (glDepositPotential gl) tileIdx)
+          , floatUnitField "temp_avg_c" "Temp avg" (normToC units (hsTemp sample)) "°C"
+          , floatUnitField "elevation_m" "Elev" elevationM "m"
+          , textField "biome" "Biome" (biomeDisplayName (hsBiome sample))
+          ]
+
+    volcanismSection = section "volcanism" "Volcanism" $
+      case hsVolcanismChunk sample of
+        Nothing -> [statusField "not_loaded"]
+        Just vc ->
+          [ maybeTextField "vent_type" "Vent" ventTypeDisplayName (safeIndexMaybe (vcVentType vc) tileIdx)
+          , maybeTextField "activity" "Activity" ventActivityDisplayName (safeIndexMaybe (vcActivity vc) tileIdx)
+          , maybeFloatField "magma" "Magma" (safeIndexMaybe (vcMagma vc) tileIdx)
+          , maybeWord16Field "eruption_count" "Eruptions" (safeIndexMaybe (vcEruptionCount vc) tileIdx)
+          , maybeFloatField "erupted_total" "Erupted" (safeIndexMaybe (vcEruptedTotal vc) tileIdx)
+          , maybeFloatField "lava_potential" "Lava" (safeIndexMaybe (vcLavaPotential vc) tileIdx)
+          , maybeFloatField "ash_potential" "Ash" (safeIndexMaybe (vcAshPotential vc) tileIdx)
+          , maybeFloatField "deposit_potential" "Deposit" (safeIndexMaybe (vcDepositPotential vc) tileIdx)
+          , textField "plate_boundary" "Boundary" (plateBoundaryDisplayName (hsPlateBoundary sample))
+          , floatField "rock_density" "Rock dens" (hsRockDensity sample)
+          , floatField "soil_grain" "Soil grain" (hsSoilGrain sample)
+          ]
+
+    oceanCurrentSection = section "ocean_currents" "Ocean Currents"
+      [ textField "status" "Status" (if isWater then "estimate_current_ui" else "land")
+      , textField "config_source" "Config" "current UI"
+      , textField "sample_scope" "Scope" "same chunk, 2 hexes"
+      , boolField "water_tile" "Water" isWater
+      , maybeTextField "water_type" "Water type" waterBodyDisplayName (hsWaterBodyChunk sample >>= \wb -> safeIndexMaybe (wbType wb) tileIdx)
+      , boolField "land_east_2" "Land east" landEast
+      , boolField "land_west_2" "Land west" landWest
+      , floatUnitField "latitude_deg" "Latitude" lat "°"
+      , floatField "temp_offset_norm" "Est temp offset" currentOffsetNorm
+      , floatUnitField "temp_offset_c" "Est temp Δ" currentOffsetC "°C"
+      , floatField "warm_scale" "Warm scale" (occWarmScale oceanCurrentCfg)
+      , floatField "cold_scale" "Cold scale" (occColdScale oceanCurrentCfg)
+      ]
+
 section :: Text -> Text -> [TerrainInspectorField] -> TerrainInspectorSection
 section = TerrainInspectorSection
 
@@ -622,6 +767,9 @@ textField key label value = TerrainInspectorField key label value (String value)
 
 statusField :: Text -> TerrainInspectorField
 statusField status = textField "status" "Status" status
+
+boolField :: Text -> Text -> Bool -> TerrainInspectorField
+boolField key label value = TerrainInspectorField key label (if value then "yes" else "no") (toJSON value)
 
 intField :: Text -> Text -> Int -> TerrainInspectorField
 intField key label value = TerrainInspectorField key label (Text.pack (show value)) (toJSON value)
@@ -684,6 +832,82 @@ waterBodyDisplayName bodyType =
     3 -> "Inland sea"
     code -> "Unknown (" <> Text.pack (show code) <> ")"
 
+ventTypeDisplayName :: VentType -> Text
+ventTypeDisplayName ventType =
+  case ventTypeToCode ventType of
+    0 -> "None"
+    1 -> "Shield"
+    2 -> "Stratovolcano"
+    3 -> "Fissure"
+    code -> "Unknown (" <> Text.pack (show code) <> ")"
+
+ventActivityDisplayName :: VentActivity -> Text
+ventActivityDisplayName activity =
+  case ventActivityToCode activity of
+    0 -> "Dormant"
+    1 -> "Active"
+    2 -> "Erupting"
+    code -> "Unknown (" <> Text.pack (show code) <> ")"
+
+biomeRefinementStatus :: BiomeId -> Text
+biomeRefinementStatus biomeId =
+  let code = biomeIdToCode biomeId
+  in if code <= 13 then "family" else "refined"
+
+biomeFamilyName :: BiomeId -> Text
+biomeFamilyName biomeId =
+  case biomeIdToCode biomeId of
+    0 -> "Desert"
+    1 -> "Grassland"
+    2 -> "Forest"
+    3 -> "Tundra"
+    4 -> "Rainforest"
+    5 -> "Shrubland"
+    6 -> "Savanna"
+    7 -> "Taiga"
+    8 -> "Swamp"
+    10 -> "Ocean"
+    11 -> "Snow"
+    12 -> "Coastal"
+    13 -> "Alpine"
+    code | code `elem` [14, 15, 16, 20, 38, 63] -> "Forest"
+         | code `elem` [17, 35, 36, 37] -> "Grassland"
+         | code `elem` [18, 47, 48] -> "Shrubland"
+         | code `elem` [19, 51, 52, 53, 54, 55] -> "Swamp"
+         | code `elem` [21, 56, 57] -> "Snow"
+         | code `elem` [22, 49, 50] -> "Savanna"
+         | code `elem` [23, 65] -> "Taiga"
+         | code `elem` [24, 25, 26, 27, 28, 29] -> "Coastal"
+         | code `elem` [30, 31, 32, 33, 34, 64] -> "Desert"
+         | code `elem` [39, 46] -> "Rainforest"
+         | code `elem` [40, 41, 42] -> "Ocean"
+         | code `elem` [43, 44, 45] -> "Tundra"
+         | code == 58 -> "Alpine"
+         | code `elem` [59, 60] -> "Volcanic"
+         | code `elem` [61, 62] -> "Water body"
+         | otherwise -> "Unknown"
+
+oceanCurrentConfigFromUi :: UiState -> OceanCurrentConfig
+oceanCurrentConfigFromUi ui = OceanCurrentConfig
+  { occWarmScale = sliderToDomainFloat SliderOccWarmScale (uiOccWarmScale ui)
+  , occColdScale = sliderToDomainFloat SliderOccColdScale (uiOccColdScale ui)
+  , occLatPeakDeg = sliderToDomainFloat SliderOccLatPeakDeg (uiOccLatPeakDeg ui)
+  , occLatWidthDeg = sliderToDomainFloat SliderOccLatWidthDeg (uiOccLatWidthDeg ui)
+  }
+
+hasLandAlongChunk :: TerrainSnapshot -> Float -> HexSample -> HexDirection -> Bool
+hasLandAlongChunk terrainSnap waterLevel sample direction =
+  case IntMap.lookup chunkKey (tsTerrainChunks terrainSnap) of
+    Nothing -> False
+    Just terrainChunk -> any (landAt terrainChunk) [1, 2]
+  where
+    ChunkId chunkKey = chunkIdFromCoord (hsChunk sample)
+    chunkSize = tsChunkSize terrainSnap
+    startIdx = hsTileIndex sample
+    landAt terrainChunk step =
+      let tracedIdx = traceIndexInDirection chunkSize chunkSize direction step startIdx
+      in tracedIdx /= startIdx && maybe False (>= waterLevel) (safeIndexMaybe (tcElevation terrainChunk) tracedIdx)
+
 data HexSample = HexSample
   { hsChunk :: !ChunkCoord
   , hsLocal :: !TileCoord
@@ -735,9 +959,14 @@ data HexSample = HexSample
   , hsPlateVelX :: !Float
   , hsPlateVelY :: !Float
   , hsTerrainForm :: !TerrainForm
+  , hsClimateChunk :: !(Maybe ClimateChunk)
+  , hsWeatherChunk :: !(Maybe WeatherChunk)
   , hsRiverChunk :: !(Maybe RiverChunk)
   , hsGroundwaterChunk :: !(Maybe GroundwaterChunk)
+  , hsVolcanismChunk :: !(Maybe VolcanismChunk)
+  , hsGlacierChunk :: !(Maybe GlacierChunk)
   , hsWaterBodyChunk :: !(Maybe WaterBodyChunk)
+  , hsVegetationChunk :: !(Maybe VegetationChunk)
   }
 
 sampleAt :: TerrainSnapshot -> (Int, Int) -> Maybe HexSample
@@ -754,8 +983,11 @@ sampleAt terrainSnap (q, r)
           weatherChunk = IntMap.lookup key (tsWeatherChunks terrainSnap)
           riverChunk = IntMap.lookup key (tsRiverChunks terrainSnap)
           groundwaterChunk = IntMap.lookup key (tsGroundwaterChunks terrainSnap)
+          volcanismChunk = IntMap.lookup key (tsVolcanismChunks terrainSnap)
+          glacierChunk = IntMap.lookup key (tsGlacierChunks terrainSnap)
           waterBodyChunk = IntMap.lookup key (tsWaterBodyChunks terrainSnap)
           vegetationChunk = IntMap.lookup key (tsVegetationChunks terrainSnap)
+          fromMaybeChunk accessor = maybe 0 (maybe 0 id . (`safeIndexMaybe` idx) . accessor)
           dirSlope = tcDirSlope terrainChunk U.! idx
       Just HexSample
         { hsChunk = chunkCoord
@@ -780,25 +1012,25 @@ sampleAt terrainSnap (q, r)
         , hsMicroRelief = tcMicroRelief terrainChunk U.! idx
         , hsRuggedness = tcRuggedness terrainChunk U.! idx
         , hsBiome = tcFlags terrainChunk U.! idx
-        , hsTemp = maybe 0 (\chunk -> ccTempAvg chunk U.! idx) climateChunk
-        , hsPrecipAvg = maybe 0 (\chunk -> ccPrecipAvg chunk U.! idx) climateChunk
-        , hsHumidity = maybe 0 (\chunk -> wcHumidity chunk U.! idx) weatherChunk
-        , hsWeatherTemp = maybe 0 (\chunk -> wcTemp chunk U.! idx) weatherChunk
-        , hsWeatherHumidity = maybe 0 (\chunk -> wcHumidity chunk U.! idx) weatherChunk
-        , hsWeatherWindDir = maybe 0 (\chunk -> wcWindDir chunk U.! idx) weatherChunk
-        , hsWeatherWindSpd = maybe 0 (\chunk -> wcWindSpd chunk U.! idx) weatherChunk
-        , hsWeatherPressure = maybe 0 (\chunk -> wcPressure chunk U.! idx) weatherChunk
-        , hsWeatherPrecip = maybe 0 (\chunk -> wcPrecip chunk U.! idx) weatherChunk
-        , hsCloudCover = maybe 0 (\chunk -> wcCloudCover chunk U.! idx) weatherChunk
-        , hsCloudWater = maybe 0 (\chunk -> wcCloudWater chunk U.! idx) weatherChunk
-        , hsCloudCoverLow = maybe 0 (\chunk -> wcCloudCoverLow chunk U.! idx) weatherChunk
-        , hsCloudCoverMid = maybe 0 (\chunk -> wcCloudCoverMid chunk U.! idx) weatherChunk
-        , hsCloudCoverHigh = maybe 0 (\chunk -> wcCloudCoverHigh chunk U.! idx) weatherChunk
-        , hsCloudWaterLow = maybe 0 (\chunk -> wcCloudWaterLow chunk U.! idx) weatherChunk
-        , hsCloudWaterMid = maybe 0 (\chunk -> wcCloudWaterMid chunk U.! idx) weatherChunk
-        , hsCloudWaterHigh = maybe 0 (\chunk -> wcCloudWaterHigh chunk U.! idx) weatherChunk
-        , hsVegCover = maybe 0 (\chunk -> vegCover chunk U.! idx) vegetationChunk
-        , hsVegDensity = maybe 0 (\chunk -> vegDensity chunk U.! idx) vegetationChunk
+        , hsTemp = fromMaybeChunk ccTempAvg climateChunk
+        , hsPrecipAvg = fromMaybeChunk ccPrecipAvg climateChunk
+        , hsHumidity = fromMaybeChunk wcHumidity weatherChunk
+        , hsWeatherTemp = fromMaybeChunk wcTemp weatherChunk
+        , hsWeatherHumidity = fromMaybeChunk wcHumidity weatherChunk
+        , hsWeatherWindDir = fromMaybeChunk wcWindDir weatherChunk
+        , hsWeatherWindSpd = fromMaybeChunk wcWindSpd weatherChunk
+        , hsWeatherPressure = fromMaybeChunk wcPressure weatherChunk
+        , hsWeatherPrecip = fromMaybeChunk wcPrecip weatherChunk
+        , hsCloudCover = fromMaybeChunk wcCloudCover weatherChunk
+        , hsCloudWater = fromMaybeChunk wcCloudWater weatherChunk
+        , hsCloudCoverLow = fromMaybeChunk wcCloudCoverLow weatherChunk
+        , hsCloudCoverMid = fromMaybeChunk wcCloudCoverMid weatherChunk
+        , hsCloudCoverHigh = fromMaybeChunk wcCloudCoverHigh weatherChunk
+        , hsCloudWaterLow = fromMaybeChunk wcCloudWaterLow weatherChunk
+        , hsCloudWaterMid = fromMaybeChunk wcCloudWaterMid weatherChunk
+        , hsCloudWaterHigh = fromMaybeChunk wcCloudWaterHigh weatherChunk
+        , hsVegCover = fromMaybeChunk vegCover vegetationChunk
+        , hsVegDensity = fromMaybeChunk vegDensity vegetationChunk
         , hsPlateId = tcPlateId terrainChunk U.! idx
         , hsPlateBoundary = tcPlateBoundary terrainChunk U.! idx
         , hsPlateHardness = tcPlateHardness terrainChunk U.! idx
@@ -808,9 +1040,14 @@ sampleAt terrainSnap (q, r)
         , hsPlateVelX = tcPlateVelX terrainChunk U.! idx
         , hsPlateVelY = tcPlateVelY terrainChunk U.! idx
         , hsTerrainForm = tcTerrainForm terrainChunk U.! idx
+        , hsClimateChunk = climateChunk
+        , hsWeatherChunk = weatherChunk
         , hsRiverChunk = riverChunk
         , hsGroundwaterChunk = groundwaterChunk
+        , hsVolcanismChunk = volcanismChunk
+        , hsGlacierChunk = glacierChunk
         , hsWaterBodyChunk = waterBodyChunk
+        , hsVegetationChunk = vegetationChunk
         }
 
 fmtF :: Float -> Text
