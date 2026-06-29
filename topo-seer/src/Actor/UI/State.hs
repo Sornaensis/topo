@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedLabels #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -19,6 +20,22 @@ module Actor.UI.State
   , sliderValueForId
   , UiMenuMode(..)
   , ViewMode(..)
+  , ViewModeKind(..)
+  , ViewModeLegend(..)
+  , ViewModeLegendStop(..)
+  , ViewModeLegendCategory(..)
+  , ViewModeMetadata(..)
+  , allBuiltinViewModes
+  , allViewModeExportFields
+  , viewModeMetadata
+  , viewModeMetadataToJSON
+  , viewModeSummaryToJSON
+  , viewModeKindToText
+  , viewModeLegendTitle
+  , viewModeToText
+  , viewModeFromText
+  , builtinViewModeFromText
+  , viewModeLabel
   , UiState(..)
   , emptyUiState
   , UiUpdate(..)
@@ -34,8 +51,10 @@ module Actor.UI.State
   ) where
 
 import Actor.PluginManager.Types (PluginLifecycleSnapshot)
-import Data.Aeson (Value)
+import Data.Aeson (Value, object, (.=))
+import Data.Aeson.Types (Pair)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.List (find, nub)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
@@ -44,7 +63,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text as Text
 import Data.Word (Word64)
-import Hyperspace.Actor
+import Hyperspace.Actor hiding (stop)
 import Hyperspace.Actor.QQ (hyperspace)
 import Hyperspace.Actor.Spec (OpTag(..))
 import Seer.Config.SliderRegistry (SliderId(..), SliderTab(..), sliderDefaultValueForId, sliderRowCountForTab)
@@ -80,6 +99,399 @@ data ViewMode
   | ViewCloud
   | ViewOverlay !Text !Int
   deriving (Eq, Ord, Show)
+
+-- | Scalar modes use a continuous color scale; categorical modes map stable
+-- domain codes/names to discrete legend entries.
+data ViewModeKind
+  = ViewModeScalar
+  | ViewModeCategorical
+  deriving (Eq, Show)
+
+data ViewModeLegendStop = ViewModeLegendStop
+  { vmlsValue :: !Text
+  , vmlsLabel :: !Text
+  , vmlsColor :: !Text
+  } deriving (Eq, Show)
+
+data ViewModeLegendCategory = ViewModeLegendCategory
+  { vmlcValue :: !Text
+  , vmlcLabel :: !Text
+  , vmlcColor :: !Text
+  } deriving (Eq, Show)
+
+data ViewModeLegend
+  = ViewModeGradientLegend !Text ![ViewModeLegendStop]
+  | ViewModeCategoricalLegend !Text ![ViewModeLegendCategory]
+  deriving (Eq, Show)
+
+data ViewModeMetadata = ViewModeMetadata
+  { vmmMode            :: !ViewMode
+  , vmmName            :: !Text
+  , vmmLabel           :: !Text
+  , vmmDescription     :: !Text
+  , vmmKind            :: !ViewModeKind
+  , vmmUnitLabel       :: !(Maybe Text)
+  , vmmColorScale      :: !Text
+  , vmmLegend          :: !ViewModeLegend
+  , vmmTooltipFields   :: ![Text]
+  , vmmInspectorFields :: ![Text]
+  , vmmExportFields    :: ![Text]
+  , vmmHttpMetadata    :: ![Text]
+  } deriving (Eq, Show)
+
+allBuiltinViewModes :: [ViewMode]
+allBuiltinViewModes =
+  [ ViewElevation
+  , ViewBiome
+  , ViewClimate
+  , ViewWeather
+  , ViewMoisture
+  , ViewPrecip
+  , ViewPlateId
+  , ViewPlateBoundary
+  , ViewPlateHardness
+  , ViewPlateCrust
+  , ViewPlateAge
+  , ViewPlateHeight
+  , ViewPlateVelocity
+  , ViewVegetation
+  , ViewTerrainForm
+  , ViewCloud
+  ]
+
+allViewModeExportFields :: [Text]
+allViewModeExportFields = nub (concatMap vmmExportFields viewModeRegistry)
+
+viewModeMetadata :: ViewMode -> Maybe ViewModeMetadata
+viewModeMetadata (ViewOverlay _ _) = Nothing
+viewModeMetadata mode = find ((== mode) . vmmMode) viewModeRegistry
+
+viewModeToText :: ViewMode -> Text
+viewModeToText ViewElevation     = "elevation"
+viewModeToText ViewBiome         = "biome"
+viewModeToText ViewClimate       = "climate"
+viewModeToText ViewWeather       = "weather"
+viewModeToText ViewMoisture      = "moisture"
+viewModeToText ViewPrecip        = "precipitation"
+viewModeToText ViewPlateId       = "plate_id"
+viewModeToText ViewPlateBoundary = "plate_boundary"
+viewModeToText ViewPlateHardness = "plate_hardness"
+viewModeToText ViewPlateCrust    = "plate_crust"
+viewModeToText ViewPlateAge      = "plate_age"
+viewModeToText ViewPlateHeight   = "plate_height"
+viewModeToText ViewPlateVelocity = "plate_velocity"
+viewModeToText ViewVegetation    = "vegetation"
+viewModeToText ViewTerrainForm   = "terrain_form"
+viewModeToText ViewCloud         = "cloud"
+viewModeToText (ViewOverlay name _idx) = "overlay:" <> name
+
+builtinViewModeFromText :: Text -> Maybe ViewMode
+builtinViewModeFromText "elevation"      = Just ViewElevation
+builtinViewModeFromText "biome"          = Just ViewBiome
+builtinViewModeFromText "climate"        = Just ViewClimate
+builtinViewModeFromText "weather"        = Just ViewWeather
+builtinViewModeFromText "moisture"       = Just ViewMoisture
+builtinViewModeFromText "precipitation"  = Just ViewPrecip
+builtinViewModeFromText "plate_id"       = Just ViewPlateId
+builtinViewModeFromText "plate_boundary" = Just ViewPlateBoundary
+builtinViewModeFromText "plate_hardness" = Just ViewPlateHardness
+builtinViewModeFromText "plate_crust"    = Just ViewPlateCrust
+builtinViewModeFromText "plate_age"      = Just ViewPlateAge
+builtinViewModeFromText "plate_height"   = Just ViewPlateHeight
+builtinViewModeFromText "plate_velocity" = Just ViewPlateVelocity
+builtinViewModeFromText "vegetation"     = Just ViewVegetation
+builtinViewModeFromText "terrain_form"   = Just ViewTerrainForm
+builtinViewModeFromText "cloud"          = Just ViewCloud
+builtinViewModeFromText _                = Nothing
+
+viewModeFromText :: Text -> Maybe Int -> Maybe ViewMode
+viewModeFromText name mIdx = case builtinViewModeFromText name of
+  Just mode -> Just mode
+  Nothing
+    | Just rest <- Text.stripPrefix "overlay:" name
+    , not (Text.null rest) -> Just (ViewOverlay rest (maybe 0 id mIdx))
+    | otherwise -> Nothing
+
+viewModeLabel :: ViewMode -> Text
+viewModeLabel mode = case viewModeMetadata mode of
+  Just meta -> vmmLabel meta
+  Nothing -> case mode of
+    ViewOverlay name _ -> "Overlay: " <> name
+    _ -> viewModeToText mode
+
+viewModeKindToText :: ViewModeKind -> Text
+viewModeKindToText ViewModeScalar = "scalar"
+viewModeKindToText ViewModeCategorical = "categorical"
+
+viewModeLegendTitle :: ViewModeLegend -> Text
+viewModeLegendTitle (ViewModeGradientLegend title _) = title
+viewModeLegendTitle (ViewModeCategoricalLegend title _) = title
+
+viewModeMetadataToJSON :: ViewModeMetadata -> Value
+viewModeMetadataToJSON = object . viewModeMetadataFields
+
+viewModeSummaryToJSON :: Bool -> ViewModeMetadata -> Value
+viewModeSummaryToJSON active meta = object (("active" .= active) : viewModeMetadataFields meta)
+
+viewModeMetadataFields :: ViewModeMetadata -> [Pair]
+viewModeMetadataFields meta =
+  [ "name" .= vmmName meta
+  , "label" .= vmmLabel meta
+  , "description" .= vmmDescription meta
+  , "kind" .= viewModeKindToText (vmmKind meta)
+  , "unit" .= vmmUnitLabel meta
+  , "color_scale" .= vmmColorScale meta
+  , "legend" .= viewModeLegendToJSON (vmmLegend meta)
+  , "tooltip_fields" .= vmmTooltipFields meta
+  , "inspector_fields" .= vmmInspectorFields meta
+  , "export_fields" .= vmmExportFields meta
+  , "http" .= vmmHttpMetadata meta
+  ]
+
+viewModeLegendToJSON :: ViewModeLegend -> Value
+viewModeLegendToJSON (ViewModeGradientLegend title stops) = object
+  [ "type" .= ("gradient" :: Text)
+  , "title" .= title
+  , "stops" .= map legendStopToJSON stops
+  ]
+viewModeLegendToJSON (ViewModeCategoricalLegend title categories) = object
+  [ "type" .= ("categorical" :: Text)
+  , "title" .= title
+  , "categories" .= map legendCategoryToJSON categories
+  ]
+
+legendStopToJSON :: ViewModeLegendStop -> Value
+legendStopToJSON stop = object
+  [ "value" .= vmlsValue stop
+  , "label" .= vmlsLabel stop
+  , "color" .= vmlsColor stop
+  ]
+
+legendCategoryToJSON :: ViewModeLegendCategory -> Value
+legendCategoryToJSON category = object
+  [ "value" .= vmlcValue category
+  , "label" .= vmlcLabel category
+  , "color" .= vmlcColor category
+  ]
+
+viewModeRegistry :: [ViewModeMetadata]
+viewModeRegistry =
+  [ scalar ViewElevation "elevation" "Elevation"
+      "Hypsometric elevation relative to the configured water level."
+      (Just "m") "elevation-blue-green"
+      (gradient "Elevation"
+        [ stop "0.00" "deep water" "#17468c"
+        , stop "water" "water level" "#2b7ab9"
+        , stop "0.50" "lowland" "#70a060"
+        , stop "1.00" "highland" "#66ffcc"
+        ])
+      ["elevation_m", "terrain_form", "slope_avg_deg"]
+      ["hypsometry.elevation_m", "terrain.terrain_form", "terrain_form_metrics.slope_avg_deg"]
+      ["elevation"]
+  , categorical ViewBiome "biome" "Biome"
+      "Biome classification including water, alpine, desert, forest, grassland, tundra, and wetland families."
+      "biome-palette"
+      (categories "Biome families"
+        [ category "water" "Water" "#1e50a0"
+        , category "desert" "Desert" "#d2be78"
+        , category "grassland" "Grassland" "#78aa5a"
+        , category "forest" "Forest" "#32783c"
+        , category "tundra" "Tundra" "#828c96"
+        , category "rainforest" "Rainforest" "#286e50"
+        , category "snow_ice" "Snow / ice" "#e6ebf0"
+        ])
+      ["biome", "terrain_form", "elevation_m"]
+      ["terrain.biome", "terrain.biome_code", "biome_refinement.family"]
+      ["biome", "biome_code"]
+  , scalar ViewClimate "climate" "Climate"
+      "Long-run average climate temperature with precipitation context."
+      (Just "degC") "heat"
+      (gradient "Average temperature"
+        [ stop "0.00" "cold" "#802f33"
+        , stop "0.50" "temperate" "#b35c5c"
+        , stop "1.00" "hot" "#ff9966"
+        ])
+      ["temp_avg_c", "precip_avg_mm_year"]
+      ["climate_diagnostics.temp_avg_c", "climate_diagnostics.precip_avg_mm_year"]
+      ["temperature"]
+  , scalar ViewWeather "weather" "Weather"
+      "Current simulated weather temperature with humidity, wind, pressure, and precipitation context."
+      (Just "degC") "weather-heat"
+      (gradient "Weather temperature"
+        [ stop "0.00" "cold" "#802f33"
+        , stop "0.50" "mild" "#b35c5c"
+        , stop "1.00" "hot" "#ff9966"
+        ])
+      ["temp_c", "humidity_pct", "wind_spd_ms"]
+      ["weather.temp", "weather.humidity", "weather.wind_spd", "weather.pressure", "weather.precip"]
+      ["weather_temperature", "weather_humidity", "weather_wind_speed", "weather_pressure", "weather_precipitation"]
+  , scalar ViewMoisture "moisture" "Moisture"
+      "Terrain soil moisture, shown as relative humidity percent in hover and inspector values."
+      (Just "%") "moisture"
+      (gradient "Soil moisture"
+        [ stop "0.00" "dry" "#1a4d66"
+        , stop "0.50" "moist" "#337fb3"
+        , stop "1.00" "saturated" "#4dccff"
+        ])
+      ["moisture_pct", "soil_depth_m"]
+      ["terrain.moisture", "soil.soil_depth_m", "soil.soil_moisture"]
+      ["moisture"]
+  , scalar ViewPrecip "precipitation" "Precipitation"
+      "Long-run average precipitation with humidity context."
+      (Just "mm/yr") "precipitation-moisture"
+      (gradient "Average precipitation"
+        [ stop "0.00" "arid" "#1a4d66"
+        , stop "0.50" "seasonal" "#337fb3"
+        , stop "1.00" "wet" "#4dccff"
+        ])
+      ["precip_avg_mm_year", "humidity_pct"]
+      ["climate_diagnostics.precip_avg_mm_year", "climate_diagnostics.humidity_avg_pct"]
+      ["precipitation"]
+  , categorical ViewPlateId "plate_id" "Plate ID"
+      "Discrete tectonic plate identifier palette."
+      "categorical-id-palette"
+      (categories "Plate IDs"
+        [ category "0" "Plate 0" "#5ac85a"
+        , category "1" "Plate 1" "#5aa0c8"
+        , category "2" "Plate 2" "#c8c85a"
+        , category "n" "Additional IDs" "#8c5ac8"
+        ])
+      ["plate_id"]
+      ["terrain.plate_id"]
+      ["plate_id"]
+  , categorical ViewPlateBoundary "plate_boundary" "Plate Boundary"
+      "Discrete plate boundary classification."
+      "plate-boundary"
+      (categories "Boundary type"
+        [ category "0" "None" "#28282d"
+        , category "1" "Convergent" "#d25046"
+        , category "2" "Divergent" "#3ca0d2"
+        , category "3" "Transform" "#c8c85a"
+        ])
+      ["plate_boundary"]
+      ["terrain.plate_boundary", "terrain.plate_boundary_code"]
+      ["plate_boundary", "plate_boundary_code"]
+  , scalar ViewPlateHardness "plate_hardness" "Plate Hardness"
+      "Normalized tectonic plate hardness."
+      (Just "normalized") "heat"
+      (gradient "Plate hardness"
+        [ stop "0.00" "soft" "#802f33"
+        , stop "0.50" "mixed" "#b35c5c"
+        , stop "1.00" "hard" "#ff9966"
+        ])
+      ["plate_hardness"]
+      ["terrain.plate_hardness"]
+      ["plate_hardness"]
+  , categorical ViewPlateCrust "plate_crust" "Plate Crust"
+      "Discrete oceanic or continental crust classification."
+      "plate-crust"
+      (categories "Crust type"
+        [ category "0" "Oceanic" "#285aa0"
+        , category "1" "Continental" "#a08c6e"
+        ])
+      ["plate_crust"]
+      ["terrain.plate_crust"]
+      ["plate_crust", "plate_crust_code"]
+  , scalar ViewPlateAge "plate_age" "Plate Age"
+      "Normalized tectonic plate age."
+      (Just "normalized") "heat"
+      (gradient "Plate age"
+        [ stop "0.00" "young" "#802f33"
+        , stop "0.50" "mature" "#b35c5c"
+        , stop "1.00" "old" "#ff9966"
+        ])
+      ["plate_age"]
+      ["terrain.plate_age"]
+      ["plate_age"]
+  , scalar ViewPlateHeight "plate_height" "Plate Height"
+      "Plate height contribution converted to metres for display."
+      (Just "m") "blue-green"
+      (gradient "Plate height"
+        [ stop "0.00" "low" "#1a4d99"
+        , stop "0.50" "mid" "#4c99aa"
+        , stop "1.00" "high" "#66ffcc"
+        ])
+      ["plate_height_m"]
+      ["terrain.plate_height"]
+      ["plate_height"]
+  , scalar ViewPlateVelocity "plate_velocity" "Plate Velocity"
+      "Normalized tectonic plate velocity magnitude with X/Y components."
+      (Just "normalized speed") "heat"
+      (gradient "Plate velocity"
+        [ stop "0.00" "still" "#802f33"
+        , stop "0.50" "drifting" "#b35c5c"
+        , stop "1.00" "fast" "#ff9966"
+        ])
+      ["plate_velocity", "plate_velocity_x", "plate_velocity_y"]
+      ["terrain.plate_velocity_x", "terrain.plate_velocity_y"]
+      ["plate_velocity", "plate_velocity_x", "plate_velocity_y"]
+  , scalar ViewVegetation "vegetation" "Vegetation"
+      "Vegetation cover with density, fertility, and moisture context."
+      (Just "cover") "vegetation"
+      (gradient "Vegetation cover"
+        [ stop "0.00" "barren" "#59331a"
+        , stop "0.50" "sparse" "#4c8a32"
+        , stop "1.00" "dense" "#19d91f"
+        ])
+      ["vegetation_cover", "vegetation_density", "fertility"]
+      ["vegetation.cover", "vegetation.density", "soil.fertility"]
+      ["vegetation_cover", "vegetation_density", "vegetation_albedo"]
+  , categorical ViewTerrainForm "terrain_form" "Terrain Form"
+      "Discrete terrain-form classification derived from slope, relief, and curvature."
+      "terrain-form"
+      (categories "Terrain form"
+        [ category "0" "Flat" "#b4c3a0"
+        , category "1" "Rolling" "#a5b478"
+        , category "2" "Hilly" "#8c9b50"
+        , category "3" "Mountainous" "#826e5a"
+        , category "4" "Cliff" "#503c37"
+        , category "7" "Ridge" "#be7846"
+        , category "12" "Canyon" "#6e465a"
+        ])
+      ["terrain_form", "slope_avg_deg", "elevation_m"]
+      ["terrain_form_metrics.terrain_form", "terrain_form_metrics.slope_avg_deg", "hypsometry.elevation_m"]
+      ["terrain_form", "terrain_form_code"]
+  , scalar ViewCloud "cloud" "Cloud"
+      "Cloud cover and cloud-water density with storm intensity context."
+      (Just "% cover") "cloud-storm"
+      (gradient "Cloud cover"
+        [ stop "0.00" "clear" "#242428"
+        , stop "0.50" "cloudy" "#a0a0a0"
+        , stop "1.00" "storm" "#4c408c"
+        ])
+      ["cloud_cover_pct", "cloud_water", "storm_intensity"]
+      ["weather.cloud_cover", "weather.cloud_water", "weather.precip"]
+      ["cloud_cover", "cloud_water", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"]
+  ]
+
+scalar :: ViewMode -> Text -> Text -> Text -> Maybe Text -> Text -> ViewModeLegend -> [Text] -> [Text] -> [Text] -> ViewModeMetadata
+scalar mode name label description unitLabel colorScale legend tooltipFields inspectorFields exportFields =
+  ViewModeMetadata mode name label description ViewModeScalar unitLabel colorScale legend tooltipFields inspectorFields exportFields standardViewModeHttp
+
+categorical :: ViewMode -> Text -> Text -> Text -> Text -> ViewModeLegend -> [Text] -> [Text] -> [Text] -> ViewModeMetadata
+categorical mode name label description colorScale legend tooltipFields inspectorFields exportFields =
+  ViewModeMetadata mode name label description ViewModeCategorical Nothing colorScale legend tooltipFields inspectorFields exportFields standardViewModeHttp
+
+gradient :: Text -> [ViewModeLegendStop] -> ViewModeLegend
+gradient = ViewModeGradientLegend
+
+categories :: Text -> [ViewModeLegendCategory] -> ViewModeLegend
+categories = ViewModeCategoricalLegend
+
+stop :: Text -> Text -> Text -> ViewModeLegendStop
+stop = ViewModeLegendStop
+
+category :: Text -> Text -> Text -> ViewModeLegendCategory
+category = ViewModeLegendCategory
+
+standardViewModeHttp :: [Text]
+standardViewModeHttp =
+  [ "GET /state/view-modes"
+  , "GET /ui/state"
+  , "GET /terrain/hex"
+  , "POST /ui/view-mode"
+  , "POST /terrain/export"
+  ]
 
 data ConfigTab
   = ConfigTerrain

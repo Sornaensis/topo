@@ -1,0 +1,90 @@
+elevation|scalar|m|elevation-blue-green
+  Elevation
+  stop 0.00 deep water #17468c
+  stop water water level #2b7ab9
+  stop 0.50 lowland #70a060
+  stop 1.00 highland #66ffcc
+biome|categorical|unitless|biome-palette
+  Biome families
+  category water Water #1e50a0
+  category desert Desert #d2be78
+  category grassland Grassland #78aa5a
+  category forest Forest #32783c
+  category tundra Tundra #828c96
+  category rainforest Rainforest #286e50
+  category snow_ice Snow / ice #e6ebf0
+climate|scalar|degC|heat
+  Average temperature
+  stop 0.00 cold #802f33
+  stop 0.50 temperate #b35c5c
+  stop 1.00 hot #ff9966
+weather|scalar|degC|weather-heat
+  Weather temperature
+  stop 0.00 cold #802f33
+  stop 0.50 mild #b35c5c
+  stop 1.00 hot #ff9966
+moisture|scalar|%|moisture
+  Soil moisture
+  stop 0.00 dry #1a4d66
+  stop 0.50 moist #337fb3
+  stop 1.00 saturated #4dccff
+precipitation|scalar|mm/yr|precipitation-moisture
+  Average precipitation
+  stop 0.00 arid #1a4d66
+  stop 0.50 seasonal #337fb3
+  stop 1.00 wet #4dccff
+plate_id|categorical|unitless|categorical-id-palette
+  Plate IDs
+  category 0 Plate 0 #5ac85a
+  category 1 Plate 1 #5aa0c8
+  category 2 Plate 2 #c8c85a
+  category n Additional IDs #8c5ac8
+plate_boundary|categorical|unitless|plate-boundary
+  Boundary type
+  category 0 None #28282d
+  category 1 Convergent #d25046
+  category 2 Divergent #3ca0d2
+  category 3 Transform #c8c85a
+plate_hardness|scalar|normalized|heat
+  Plate hardness
+  stop 0.00 soft #802f33
+  stop 0.50 mixed #b35c5c
+  stop 1.00 hard #ff9966
+plate_crust|categorical|unitless|plate-crust
+  Crust type
+  category 0 Oceanic #285aa0
+  category 1 Continental #a08c6e
+plate_age|scalar|normalized|heat
+  Plate age
+  stop 0.00 young #802f33
+  stop 0.50 mature #b35c5c
+  stop 1.00 old #ff9966
+plate_height|scalar|m|blue-green
+  Plate height
+  stop 0.00 low #1a4d99
+  stop 0.50 mid #4c99aa
+  stop 1.00 high #66ffcc
+plate_velocity|scalar|normalized speed|heat
+  Plate velocity
+  stop 0.00 still #802f33
+  stop 0.50 drifting #b35c5c
+  stop 1.00 fast #ff9966
+vegetation|scalar|cover|vegetation
+  Vegetation cover
+  stop 0.00 barren #59331a
+  stop 0.50 sparse #4c8a32
+  stop 1.00 dense #19d91f
+terrain_form|categorical|unitless|terrain-form
+  Terrain form
+  category 0 Flat #b4c3a0
+  category 1 Rolling #a5b478
+  category 2 Hilly #8c9b50
+  category 3 Mountainous #826e5a
+  category 4 Cliff #503c37
+  category 7 Ridge #be7846
+  category 12 Canyon #6e465a
+cloud|scalar|% cover|cloud-storm
+  Cloud cover
+  stop 0.00 clear #242428
+  stop 0.50 cloudy #a0a0a0
+  stop 1.00 storm #4c408c

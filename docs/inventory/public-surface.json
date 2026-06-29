@@ -72,14 +72,14 @@
       "waiver": null
     },
     {
-      "id": "view-mode-registry-legends-export-missing",
+      "id": "view-mode-registry-legends-export-present",
       "title": "View-mode registry, legends, units, and export mapping parity",
-      "availability": "missing",
+      "availability": "present",
       "owner": "topo-seer UI maintainers",
-      "status": "planned",
+      "status": "present",
       "featureGroup": "seer-ui-render-input-editor",
-      "tests": [],
-      "waiver": "Missing by design in this matrix-maintenance task; tracked by M9 feature implementation work rather than this CI automation change."
+      "tests": ["topo-seer:test:Spec.ViewModeRegistry", "topo-seer:test:Spec.CommandDispatch"],
+      "waiver": null
     },
     {
       "id": "pipeline-diagnostics-parity-missing",

@@ -697,10 +697,30 @@ stateViewModesContract = StateViewModesResponse
       [ StateViewModeSummary
           { stateViewModeName = "elevation"
           , stateViewModeActive = True
+          , stateViewModeLabel = "Elevation"
+          , stateViewModeDescription = "Hypsometric elevation relative to the configured water level."
+          , stateViewModeKind = "scalar"
+          , stateViewModeUnit = Just "m"
+          , stateViewModeColorScale = "elevation-blue-green"
+          , stateViewModeLegend = Null
+          , stateViewModeTooltipFields = ["elevation_m"]
+          , stateViewModeInspectorFields = ["hypsometry.elevation_m"]
+          , stateViewModeExportFields = ["elevation"]
+          , stateViewModeHttp = ["GET /state/view-modes"]
           }
       , StateViewModeSummary
           { stateViewModeName = "biome"
           , stateViewModeActive = False
+          , stateViewModeLabel = "Biome"
+          , stateViewModeDescription = "Biome classification."
+          , stateViewModeKind = "categorical"
+          , stateViewModeUnit = Nothing
+          , stateViewModeColorScale = "biome-palette"
+          , stateViewModeLegend = Null
+          , stateViewModeTooltipFields = ["biome"]
+          , stateViewModeInspectorFields = ["terrain.biome"]
+          , stateViewModeExportFields = ["biome", "biome_code"]
+          , stateViewModeHttp = ["GET /state/view-modes"]
           }
       ]
   }

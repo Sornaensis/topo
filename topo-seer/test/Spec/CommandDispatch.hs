@@ -36,6 +36,7 @@ import Actor.SnapshotReceiver
   ( newDataSnapshotRef
   , newTerrainSnapshotRef
   , newSnapshotVersionRef
+  , writeTerrainSnapshot
   )
 import Actor.Terrain (Terrain, TerrainReplyOps)
 import Actor.UI
@@ -501,7 +502,7 @@ spec = describe "CommandDispatch" $ do
       rsp <- dispatch ctx "get_enums" (object ["type" .= ("view_mode" :: String)])
       srSuccess rsp `shouldBe` True
       case lookupKey "values" (srResult rsp) of
-        Just (Array arr) -> length arr `shouldBe` 15
+        Just (Array arr) -> length arr `shouldBe` 16
         _ -> expectationFailure "expected values array"
 
     it "returns config_tab enum values" $ withCtx $ \ctx -> do
@@ -593,9 +594,39 @@ spec = describe "CommandDispatch" $ do
       rsp <- dispatch ctx "get_hex" (object ["q" .= (0 :: Int), "r" .= (0 :: Int)])
       srSuccess rsp `shouldBe` False
 
+    it "returns active view metadata and values for populated terrain" $ withCtx $ \ctx -> do
+      _chunkKey <- writeSingleChunkTerrain ctx
+      rsp <- dispatch ctx "get_hex" (object ["q" .= (0 :: Int), "r" .= (0 :: Int)])
+      srSuccess rsp `shouldBe` True
+      case lookupKey "active_view" (srResult rsp) of
+        Just (Object active) -> do
+          KM.lookup "mode" active `shouldBe` Just (String "elevation")
+          KM.member "tooltip_fields" active `shouldBe` True
+          KM.member "inspector_fields" active `shouldBe` True
+          KM.member "export_fields" active `shouldBe` True
+          case KM.lookup "values" active of
+            Just (Object values) -> KM.member "elevation_m" values `shouldBe` True
+            _ -> expectationFailure "expected active_view.values object"
+        _ -> expectationFailure "expected active_view object"
+
     it "returns error when params are missing" $ withCtx $ \ctx -> do
       rsp <- dispatch ctx "get_hex" Null
       srSuccess rsp `shouldBe` False
+
+  -- -------------------------------------------------------------------
+  -- export_terrain_data (populated terrain)
+  -- -------------------------------------------------------------------
+  describe "export_terrain_data" $ do
+    it "returns registry export field metadata" $ withCtx $ \ctx -> do
+      chunkKey <- writeSingleChunkTerrain ctx
+      rsp <- dispatch ctx "export_terrain_data" (object
+        [ "chunks" .= [chunkKey]
+        , "fields" .= ["plate_boundary_code" :: Text]
+        ])
+      srSuccess rsp `shouldBe` True
+      case lookupKey "available_fields" (srResult rsp) of
+        Just (Array fields) -> toList fields `shouldSatisfy` elem (String "plate_boundary_code")
+        _ -> expectationFailure "expected available_fields array"
 
   -- -------------------------------------------------------------------
   -- get_terrain_stats (empty terrain)
@@ -851,6 +882,27 @@ withCtx action = bracket newActorSystem shutdownActorSystem $ \system -> do
         , ccLogSnapshotRef  = Nothing
         }
   action ctx
+
+writeSingleChunkTerrain :: CommandContext -> IO Int
+writeSingleChunkTerrain ctx = do
+  let cfg = WorldConfig { wcChunkSize = 64 }
+      chunkId = chunkIdFromCoord (ChunkCoord 0 0)
+      ChunkId chunkKey = chunkId
+      snap = TerrainSnapshot
+        1
+        (wcChunkSize cfg)
+        (IntMap.singleton chunkKey (emptyTerrainChunk cfg))
+        mempty
+        mempty
+        mempty
+        mempty
+        mempty
+        mempty
+        mempty
+        mempty
+        emptyOverlayStore
+  writeTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx)) snap
+  pure chunkKey
 
 -- | Convenience: dispatch a command with a given method and params,
 -- using request id 1.

@@ -28,7 +28,19 @@ import Actor.PluginManager
   , queryPluginResource
   )
 import Actor.SnapshotReceiver (readTerrainSnapshot)
-import Actor.UI.State (UiState(..), readUiSnapshotRef)
+import Actor.UI.State
+  ( UiState(..)
+  , ViewMode(..)
+  , readUiSnapshotRef
+  , viewModeMetadata
+  , viewModeToText
+  , vmmColorScale
+  , vmmExportFields
+  , vmmInspectorFields
+  , vmmLabel
+  , vmmTooltipFields
+  , vmmUnitLabel
+  )
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
 import Seer.Config (mapRange)
@@ -65,8 +77,10 @@ import Topo.Types
   , BiomeId
   , DirectionalSlope
   , TerrainForm
+  , PlateBoundary
   , biomeIdToCode
   , biomeIdFromCode
+  , plateBoundaryToCode
   , terrainFormToCode
   , terrainFormFromCode
   , terrainFormDisplayName
@@ -170,6 +184,10 @@ handleGetHex ctx reqId params =
                         , "rock_type"     .= safeIndexW16 (tcRockType tc) tileIdx
                         , "soil_type"     .= safeIndexW16 (tcSoilType tc) tileIdx
                         , "plate_id"      .= safeIndexW16 (tcPlateId tc) tileIdx
+                        , "plate_boundary" .= fmap plateBoundaryDisplayName (safeIndexPlateBoundary (tcPlateBoundary tc) tileIdx)
+                        , "plate_boundary_code" .= fmap plateBoundaryToCode (safeIndexPlateBoundary (tcPlateBoundary tc) tileIdx)
+                        , "plate_crust" .= fmap crustDisplayName (safeIndexW16 (tcPlateCrust tc) tileIdx)
+                        , "plate_crust_code" .= safeIndexW16 (tcPlateCrust tc) tileIdx
                         , "plate_height"  .= safeIndex (tcPlateHeight tc) tileIdx
                         , "plate_hardness" .= safeIndex (tcPlateHardness tc) tileIdx
                         , "plate_age"     .= safeIndex (tcPlateAge tc) tileIdx
@@ -406,6 +424,105 @@ handleGetHex ctx reqId params =
                         , "water_depth" .= object ["normalized" .= (waterBodyChunk >>= \wb -> safeIndex (wbDepth wb) tileIdx), "converted" .= fmap (negate . normDepthToMetres units) (waterBodyChunk >>= \wb -> safeIndex (wbDepth wb) tileIdx), "unit" .= ("m" :: Text)]
                         ]
 
+                      activeMetadata = viewModeMetadata (uiViewMode ui)
+                      activeViewLayer = object
+                        [ "mode" .= viewModeToText (uiViewMode ui)
+                        , "label" .= maybe (viewModeToText (uiViewMode ui)) vmmLabel activeMetadata
+                        , "unit" .= maybe Null (maybe Null Aeson.toJSON . vmmUnitLabel) activeMetadata
+                        , "color_scale" .= maybe Null (Aeson.toJSON . vmmColorScale) activeMetadata
+                        , "tooltip_fields" .= maybe [] vmmTooltipFields activeMetadata
+                        , "inspector_fields" .= maybe [] vmmInspectorFields activeMetadata
+                        , "export_fields" .= maybe [] vmmExportFields activeMetadata
+                        , "values" .= activeViewValues
+                        ]
+                      activeViewValues = case uiViewMode ui of
+                        ViewElevation -> object
+                          [ "elevation_norm" .= elevationNorm
+                          , "elevation_m" .= elevationM
+                          , "relative_water_level_m" .= relativeWaterM
+                          , "terrain_form" .= fmap (Text.pack . terrainFormDisplayName) terrainForm
+                          , "slope_avg_deg" .= fmap (normSlopeToDeg units) avgSlope
+                          ]
+                        ViewBiome -> object
+                          [ "biome" .= fmap biomeDisplayName biome
+                          , "biome_code" .= fmap biomeIdToCode biome
+                          , "terrain_form" .= fmap (Text.pack . terrainFormDisplayName) terrainForm
+                          , "elevation_m" .= elevationM
+                          ]
+                        ViewClimate -> object
+                          [ "temp_avg" .= (climateChunk >>= \cc -> safeIndex (ccTempAvg cc) tileIdx)
+                          , "temp_avg_c" .= fmap (normToC units) (climateChunk >>= \cc -> safeIndex (ccTempAvg cc) tileIdx)
+                          , "precip_avg" .= (climateChunk >>= \cc -> safeIndex (ccPrecipAvg cc) tileIdx)
+                          , "precip_avg_mm_year" .= fmap (normToMmYear units) (climateChunk >>= \cc -> safeIndex (ccPrecipAvg cc) tileIdx)
+                          ]
+                        ViewWeather -> object
+                          [ "temp" .= (weatherChunk >>= \wc -> safeIndex (wcTemp wc) tileIdx)
+                          , "temp_c" .= fmap (normToC units) (weatherChunk >>= \wc -> safeIndex (wcTemp wc) tileIdx)
+                          , "humidity" .= (weatherChunk >>= \wc -> safeIndex (wcHumidity wc) tileIdx)
+                          , "humidity_pct" .= fmap normToRH (weatherChunk >>= \wc -> safeIndex (wcHumidity wc) tileIdx)
+                          , "wind_spd_ms" .= fmap (normToWindMs units) (weatherChunk >>= \wc -> safeIndex (wcWindSpd wc) tileIdx)
+                          , "pressure_hpa" .= fmap (normToHPa units) (weatherChunk >>= \wc -> safeIndex (wcPressure wc) tileIdx)
+                          , "precip_mm_year" .= fmap (normToMmYear units) (weatherChunk >>= \wc -> safeIndex (wcPrecip wc) tileIdx)
+                          ]
+                        ViewMoisture -> object
+                          [ "moisture" .= safeIndex (tcMoisture tc) tileIdx
+                          , "moisture_pct" .= fmap normToRH (safeIndex (tcMoisture tc) tileIdx)
+                          , "soil_depth_m" .= fmap (normToSoilM units) (safeIndex (tcSoilDepth tc) tileIdx)
+                          ]
+                        ViewPrecip -> object
+                          [ "precip_avg" .= (climateChunk >>= \cc -> safeIndex (ccPrecipAvg cc) tileIdx)
+                          , "precip_avg_mm_year" .= fmap (normToMmYear units) (climateChunk >>= \cc -> safeIndex (ccPrecipAvg cc) tileIdx)
+                          , "humidity_pct" .= fmap normToRH (climateChunk >>= \cc -> safeIndex (ccHumidityAvg cc) tileIdx)
+                          ]
+                        ViewPlateId -> object
+                          [ "plate_id" .= safeIndexW16 (tcPlateId tc) tileIdx ]
+                        ViewPlateBoundary -> object
+                          [ "plate_boundary" .= fmap plateBoundaryDisplayName (safeIndexPlateBoundary (tcPlateBoundary tc) tileIdx)
+                          , "plate_boundary_code" .= fmap plateBoundaryToCode (safeIndexPlateBoundary (tcPlateBoundary tc) tileIdx)
+                          ]
+                        ViewPlateHardness -> object
+                          [ "plate_hardness" .= safeIndex (tcPlateHardness tc) tileIdx ]
+                        ViewPlateCrust -> object
+                          [ "plate_crust" .= fmap crustDisplayName (safeIndexW16 (tcPlateCrust tc) tileIdx)
+                          , "plate_crust_code" .= safeIndexW16 (tcPlateCrust tc) tileIdx
+                          ]
+                        ViewPlateAge -> object
+                          [ "plate_age" .= safeIndex (tcPlateAge tc) tileIdx ]
+                        ViewPlateHeight -> object
+                          [ "plate_height" .= safeIndex (tcPlateHeight tc) tileIdx
+                          , "plate_height_m" .= fmap (normToMetres units) (safeIndex (tcPlateHeight tc) tileIdx)
+                          ]
+                        ViewPlateVelocity -> object
+                          [ "plate_velocity_x" .= safeIndex (tcPlateVelX tc) tileIdx
+                          , "plate_velocity_y" .= safeIndex (tcPlateVelY tc) tileIdx
+                          , "plate_velocity" .= plateVelocityAt tc tileIdx
+                          ]
+                        ViewVegetation -> object
+                          [ "vegetation_cover" .= (vegetationChunk >>= \vc -> safeIndex (vegCover vc) tileIdx)
+                          , "vegetation_density" .= (vegetationChunk >>= \vc -> safeIndex (vegDensity vc) tileIdx)
+                          , "vegetation_albedo" .= (vegetationChunk >>= \vc -> safeIndex (vegAlbedo vc) tileIdx)
+                          , "fertility" .= safeIndex (tcFertility tc) tileIdx
+                          ]
+                        ViewTerrainForm -> object
+                          [ "terrain_form" .= fmap (Text.pack . terrainFormDisplayName) terrainForm
+                          , "terrain_form_code" .= fmap terrainFormToCode terrainForm
+                          , "slope_avg_deg" .= fmap (normSlopeToDeg units) avgSlope
+                          , "elevation_m" .= elevationM
+                          ]
+                        ViewCloud -> object
+                          [ "cloud_cover" .= (weatherChunk >>= \wc -> safeIndex (wcCloudCover wc) tileIdx)
+                          , "cloud_cover_pct" .= fmap (* 100) (weatherChunk >>= \wc -> safeIndex (wcCloudCover wc) tileIdx)
+                          , "cloud_water" .= (weatherChunk >>= \wc -> safeIndex (wcCloudWater wc) tileIdx)
+                          , "cloud_cover_low" .= (weatherChunk >>= \wc -> safeIndex (wcCloudCoverLow wc) tileIdx)
+                          , "cloud_cover_mid" .= (weatherChunk >>= \wc -> safeIndex (wcCloudCoverMid wc) tileIdx)
+                          , "cloud_cover_high" .= (weatherChunk >>= \wc -> safeIndex (wcCloudCoverHigh wc) tileIdx)
+                          , "storm_intensity" .= stormIntensityAt weatherChunk tileIdx
+                          ]
+                        ViewOverlay overlayName fieldIndex -> object
+                          [ "overlay_name" .= overlayName
+                          , "field_index" .= fieldIndex
+                          ]
+
                   pure $ okResponse reqId $ object
                     [ "q"          .= q
                     , "r"          .= r
@@ -430,6 +547,7 @@ handleGetHex ctx reqId params =
                     , "volcanism"  .= volcanismLayer
                     , "ocean_currents" .= oceanCurrentLayer
                     , "units"      .= unitsLayer
+                    , "active_view" .= activeViewLayer
                     , "sections"   .= terrainInspectorSectionsObject inspector
                     ]
 
@@ -685,6 +803,24 @@ safeIndexWaterBody v i
   | i >= 0 && i < U.length v = Just (v U.! i)
   | otherwise = Nothing
 
+safeIndexPlateBoundary :: U.Vector PlateBoundary -> Int -> Maybe PlateBoundary
+safeIndexPlateBoundary v i
+  | i >= 0 && i < U.length v = Just (v U.! i)
+  | otherwise = Nothing
+
+plateVelocityAt :: TerrainChunk -> Int -> Maybe Float
+plateVelocityAt tc idx = do
+  vx <- safeIndex (tcPlateVelX tc) idx
+  vy <- safeIndex (tcPlateVelY tc) idx
+  pure (sqrt (vx * vx + vy * vy))
+
+stormIntensityAt :: Maybe WeatherChunk -> Int -> Maybe Float
+stormIntensityAt weatherChunk tileIdx = do
+  wc <- weatherChunk
+  water <- safeIndex (wcCloudWater wc) tileIdx
+  precip <- safeIndex (wcPrecip wc) tileIdx
+  pure (water * min 1 (precip * 3))
+
 safeIndexVentType :: U.Vector VentType -> Int -> Maybe VentType
 safeIndexVentType v i
   | i >= 0 && i < U.length v = Just (v U.! i)
@@ -700,6 +836,20 @@ riverSegmentCount rc tileIdx = do
   start <- safeIndexInt (rcSegOffsets rc) tileIdx
   end <- safeIndexInt (rcSegOffsets rc) (tileIdx + 1)
   pure (max 0 (end - start))
+
+plateBoundaryDisplayName :: PlateBoundary -> Text
+plateBoundaryDisplayName boundary =
+  case plateBoundaryToCode boundary of
+    0 -> "None"
+    1 -> "Convergent"
+    2 -> "Divergent"
+    3 -> "Transform"
+    code -> "Unknown (" <> Text.pack (show code) <> ")"
+
+crustDisplayName :: Word16 -> Text
+crustDisplayName 0 = "Oceanic"
+crustDisplayName 1 = "Continental"
+crustDisplayName code = "Unknown (" <> Text.pack (show code) <> ")"
 
 waterBodyDisplayName :: WaterBodyType -> Text
 waterBodyDisplayName bodyType =

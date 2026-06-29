@@ -12,7 +12,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word8, Word16)
 
-import Actor.UI.State (ViewMode(..), ConfigTab(..))
+import Actor.UI.State (ConfigTab(..), allBuiltinViewModes, viewModeToText)
 import Seer.Command.Context (CommandContext(..))
 import Seer.Config.SliderRegistry (SliderTab(..))
 import Topo.Biome.Name (biomeDisplayName)
@@ -115,21 +115,8 @@ ventActivityEnums =
 -- | All non-parameterized ViewMode constructors.
 viewModeEnums :: [Value]
 viewModeEnums =
-  [ mkEnum "elevation"      (0 :: Int)
-  , mkEnum "biome"          (1 :: Int)
-  , mkEnum "climate"        (2 :: Int)
-  , mkEnum "weather"        (3 :: Int)
-  , mkEnum "moisture"       (4 :: Int)
-  , mkEnum "precipitation"  (5 :: Int)
-  , mkEnum "plate_id"       (6 :: Int)
-  , mkEnum "plate_boundary" (7 :: Int)
-  , mkEnum "plate_hardness" (8 :: Int)
-  , mkEnum "plate_crust"    (9 :: Int)
-  , mkEnum "plate_age"      (10 :: Int)
-  , mkEnum "plate_height"   (11 :: Int)
-  , mkEnum "plate_velocity" (12 :: Int)
-  , mkEnum "vegetation"     (13 :: Int)
-  , mkEnum "terrain_form"   (14 :: Int)
+  [ mkEnum (viewModeToText mode) code
+  | (code, mode) <- zip [0 :: Int ..] allBuiltinViewModes
   ]
 
 -- | All ConfigTab constructors.

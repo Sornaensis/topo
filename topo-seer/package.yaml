@@ -8,6 +8,7 @@ category: Terrain
 synopsis: SDL app for terrain generation
 data-files:
   - test/golden/openapi-routes.txt
+  - test/golden/view-mode-legends.txt
 
 library:
   source-dirs: src

@@ -21,6 +21,10 @@ import Actor.UI.State
   , UiSnapshotRef
   , ViewMode(..)
   , ConfigTab(..)
+  , allBuiltinViewModes
+  , viewModeMetadata
+  , viewModeSummaryToJSON
+  , viewModeToText
   , LeftTab(..)
   , readUiSnapshotRef
   )
@@ -48,70 +52,13 @@ handleGetViewModes :: CommandContext -> Int -> Value -> IO SeerResponse
 handleGetViewModes ctx reqId _params = do
   ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
   let current = uiViewMode ui
-      modes = map (\vm -> object
-        [ "name"   .= viewModeToText vm
-        , "active" .= (vm == current)
-        ]) allViewModes
+      modeSummary vm =
+        maybe
+          (object ["name" .= viewModeToText vm, "active" .= (vm == current)])
+          (viewModeSummaryToJSON (vm == current))
+          (viewModeMetadata vm)
+      modes = map modeSummary allBuiltinViewModes
   pure $ okResponse reqId $ object ["view_modes" .= modes]
-
--- | All non-parameterized view modes.
-allViewModes :: [ViewMode]
-allViewModes =
-  [ ViewElevation
-  , ViewBiome
-  , ViewClimate
-  , ViewWeather
-  , ViewMoisture
-  , ViewPrecip
-  , ViewPlateId
-  , ViewPlateBoundary
-  , ViewPlateHardness
-  , ViewPlateCrust
-  , ViewPlateAge
-  , ViewPlateHeight
-  , ViewPlateVelocity
-  , ViewVegetation
-  , ViewTerrainForm
-  , ViewCloud
-  ]
-
-viewModeToText :: ViewMode -> Text.Text
-viewModeToText ViewElevation     = "elevation"
-viewModeToText ViewBiome         = "biome"
-viewModeToText ViewClimate       = "climate"
-viewModeToText ViewWeather       = "weather"
-viewModeToText ViewMoisture      = "moisture"
-viewModeToText ViewPrecip        = "precipitation"
-viewModeToText ViewPlateId       = "plate_id"
-viewModeToText ViewPlateBoundary = "plate_boundary"
-viewModeToText ViewPlateHardness = "plate_hardness"
-viewModeToText ViewPlateCrust    = "plate_crust"
-viewModeToText ViewPlateAge      = "plate_age"
-viewModeToText ViewPlateHeight   = "plate_height"
-viewModeToText ViewPlateVelocity = "plate_velocity"
-viewModeToText ViewVegetation    = "vegetation"
-viewModeToText ViewTerrainForm   = "terrain_form"
-viewModeToText ViewCloud         = "cloud"
-viewModeToText (ViewOverlay name _idx) = "overlay:" <> name
-
-textToViewMode :: Text.Text -> Maybe ViewMode
-textToViewMode "elevation"      = Just ViewElevation
-textToViewMode "biome"          = Just ViewBiome
-textToViewMode "climate"        = Just ViewClimate
-textToViewMode "weather"        = Just ViewWeather
-textToViewMode "moisture"       = Just ViewMoisture
-textToViewMode "precipitation"  = Just ViewPrecip
-textToViewMode "plate_id"       = Just ViewPlateId
-textToViewMode "plate_boundary" = Just ViewPlateBoundary
-textToViewMode "plate_hardness" = Just ViewPlateHardness
-textToViewMode "plate_crust"    = Just ViewPlateCrust
-textToViewMode "plate_age"      = Just ViewPlateAge
-textToViewMode "plate_height"   = Just ViewPlateHeight
-textToViewMode "plate_velocity" = Just ViewPlateVelocity
-textToViewMode "vegetation"     = Just ViewVegetation
-textToViewMode "terrain_form"   = Just ViewTerrainForm
-textToViewMode "cloud"          = Just ViewCloud
-textToViewMode _                = Nothing
 
 configTabToText :: ConfigTab -> Text.Text
 configTabToText ConfigTerrain  = "terrain"

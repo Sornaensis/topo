@@ -335,6 +335,12 @@ spec = describe "Seer.HTTP.Server" $ do
     componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("weather_timeline" `elem`)
     componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("water_bodies" `elem`)
     componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("glacier_snow_ice" `elem`)
+    componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("active_view" `elem`)
+    let activeViewProps = inlinePropertyNames =<< componentProperty doc "TerrainHexResponse" "active_view"
+        terrainProps = inlinePropertyNames =<< componentProperty doc "TerrainHexResponse" "terrain"
+    activeViewProps `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["color_scale", "export_fields", "inspector_fields", "label", "mode", "tooltip_fields", "unit", "values"])
+    terrainProps `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["plate_boundary", "plate_boundary_code", "plate_crust", "plate_crust_code"])
+    componentPropertyNames doc "TerrainExportResponse" `shouldSatisfy` maybe False ("available_fields" `elem`)
     schemaComponentNames doc `shouldSatisfy` elem "ErrorEnvelope"
 
   it "has a handler for every route spec" $ do
@@ -957,8 +963,13 @@ componentRequiredFields doc name = do
 componentPropertyNames :: Value -> Text -> Maybe [Text]
 componentPropertyNames doc name = do
   Object schema <- schemaComponent doc name
+  inlinePropertyNames (Object schema)
+
+inlinePropertyNames :: Value -> Maybe [Text]
+inlinePropertyNames (Object schema) = do
   Object properties <- KM.lookup "properties" schema
   pure (map Key.toText (KM.keys properties))
+inlinePropertyNames _ = Nothing
 
 componentPropertyNullable :: Value -> Text -> Text -> Maybe Bool
 componentPropertyNullable doc name property = do

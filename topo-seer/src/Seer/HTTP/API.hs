@@ -54,6 +54,7 @@ import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import Data.Text (Text)
 
+import Actor.UI.State (allBuiltinViewModes, viewModeToText)
 import Seer.HTTP.OpenAPI (HttpRouteSpec(..), JsonSchema(..))
 
 -- Route annotation -----------------------------------------------------------
@@ -536,7 +537,7 @@ worldSummarySchema = inlineObjectSchema
 
 terrainHexResponseSchema :: JsonSchema
 terrainHexResponseSchema = objectSchema "TerrainHexResponse"
-  [ "q", "r", "terrain", "hypsometry", "terrain_form_metrics", "hydrology", "climate", "climate_diagnostics", "weather", "weather_snapshot", "weather_timeline", "river", "water_body", "water_bodies", "water_table", "soil", "biome_refinement", "vegetation", "glacier", "glacier_snow_ice", "volcanism", "ocean_currents", "units", "sections" ]
+  [ "q", "r", "terrain", "hypsometry", "terrain_form_metrics", "hydrology", "climate", "climate_diagnostics", "weather", "weather_snapshot", "weather_timeline", "river", "water_body", "water_bodies", "water_table", "soil", "biome_refinement", "vegetation", "glacier", "glacier_snow_ice", "volcanism", "ocean_currents", "units", "active_view", "sections" ]
   [ ("q", integerSchema)
   , ("r", integerSchema)
   , ("terrain", terrainLayerSchema)
@@ -560,6 +561,7 @@ terrainHexResponseSchema = objectSchema "TerrainHexResponse"
   , ("volcanism", nullableSchema freeObjectSchema)
   , ("ocean_currents", freeObjectSchema)
   , ("units", freeObjectSchema)
+  , ("active_view", terrainActiveViewSchema)
   , ("sections", arraySchema terrainInspectorSectionSchema)
   ]
 
@@ -633,10 +635,24 @@ terrainExportRequestSchema = objectSchema "TerrainExportRequest"
 
 terrainExportResponseSchema :: JsonSchema
 terrainExportResponseSchema = objectSchema "TerrainExportResponse"
-  [ "chunk_count", "fields", "data" ]
+  [ "chunk_count", "fields", "available_fields", "data" ]
   [ ("chunk_count", integerSchema)
   , ("fields", arraySchema stringSchema)
+  , ("available_fields", arraySchema stringSchema)
   , ("data", freeObjectSchema)
+  ]
+
+terrainActiveViewSchema :: Value
+terrainActiveViewSchema = inlineObjectSchema
+  [ "mode", "label", "tooltip_fields", "inspector_fields", "export_fields", "values" ]
+  [ ("mode", viewModeSchema)
+  , ("label", stringSchema)
+  , ("unit", nullableSchema stringSchema)
+  , ("color_scale", nullableSchema stringSchema)
+  , ("tooltip_fields", arraySchema stringSchema)
+  , ("inspector_fields", arraySchema stringSchema)
+  , ("export_fields", arraySchema stringSchema)
+  , ("values", freeObjectSchema)
   ]
 
 terrainInspectorSectionSchema :: Value
@@ -681,6 +697,10 @@ terrainLayerSchema = inlineObjectSchema
   , ("rock_type", nullableSchema integerSchema)
   , ("soil_type", nullableSchema integerSchema)
   , ("plate_id", nullableSchema integerSchema)
+  , ("plate_boundary", nullableSchema stringSchema)
+  , ("plate_boundary_code", nullableSchema integerSchema)
+  , ("plate_crust", nullableSchema stringSchema)
+  , ("plate_crust_code", nullableSchema integerSchema)
   , ("plate_height", nullableSchema numberSchema)
   , ("plate_hardness", nullableSchema numberSchema)
   , ("plate_age", nullableSchema numberSchema)
@@ -1872,9 +1892,19 @@ dataBrowserStateSchema = inlineObjectSchema
 
 viewModeEntrySchema :: Value
 viewModeEntrySchema = inlineObjectSchema
-  [ "name", "active" ]
+  [ "name", "active", "label", "kind", "color_scale", "legend", "tooltip_fields", "inspector_fields", "export_fields", "http" ]
   [ ("name", viewModeSchema)
   , ("active", booleanSchema)
+  , ("label", stringSchema)
+  , ("description", stringSchema)
+  , ("kind", enumStringSchema ["scalar", "categorical"])
+  , ("unit", nullableSchema stringSchema)
+  , ("color_scale", stringSchema)
+  , ("legend", freeObjectSchema)
+  , ("tooltip_fields", arraySchema stringSchema)
+  , ("inspector_fields", arraySchema stringSchema)
+  , ("export_fields", arraySchema stringSchema)
+  , ("http", arraySchema stringSchema)
   ]
 
 overlayFieldSchema :: Value
@@ -1931,11 +1961,7 @@ viewModeSchema :: Value
 viewModeSchema = object
   [ "description" .= ("Built-in view mode name, or a dynamic overlay:<name> mode." :: Text)
   , "oneOf" .=
-      [ enumStringSchema
-          [ "elevation", "biome", "climate", "weather", "moisture", "precipitation"
-          , "plate_id", "plate_boundary", "plate_hardness", "plate_crust", "plate_age"
-          , "plate_height", "plate_velocity", "vegetation", "terrain_form", "cloud"
-          ]
+      [ enumStringSchema (map viewModeToText allBuiltinViewModes)
       , object
           [ "type" .= ("string" :: Text)
           , "pattern" .= ("^overlay:.+" :: Text)

@@ -19,6 +19,7 @@ import qualified Spec.SnapshotReceiver
 import qualified Spec.TerrainCacheWorker
 import qualified Spec.TerrainRender
 import qualified Spec.TerrainInspector
+import qualified Spec.ViewModeRegistry
 import qualified Spec.RiverRender
 import qualified Spec.TerrainActor
 import qualified Spec.PluginManager
@@ -68,6 +69,7 @@ main = do
         Spec.TerrainCacheWorker.spec
         Spec.TerrainRender.spec
         Spec.TerrainInspector.spec
+        Spec.ViewModeRegistry.spec
         Spec.RiverRender.spec
         Spec.TerrainActor.spec
         Spec.PluginManager.spec

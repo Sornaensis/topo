@@ -18,6 +18,7 @@ import Data.Word (Word16)
 import qualified Data.Vector.Unboxed as U
 
 import Actor.Data (TerrainSnapshot(..))
+import Actor.UI.State (allViewModeExportFields)
 import Actor.SnapshotReceiver (readTerrainSnapshot)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
@@ -26,12 +27,15 @@ import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 import Topo.Types
   ( TerrainChunk(..)
   , ClimateChunk(..)
+  , WeatherChunk(..)
   , VegetationChunk(..)
   , RiverChunk(..)
   , BiomeId
   , TerrainForm
+  , PlateBoundary
   , biomeIdToCode
   , biomeIdFromCode
+  , plateBoundaryToCode
   , terrainFormToCode
   , terrainFormFromCode
   , terrainFormDisplayName
@@ -89,6 +93,7 @@ handleExportTerrainData ctx reqId params = do
       pure $ okResponse reqId $ object
         [ "chunk_count" .= length chunkEntries
         , "fields"      .= fields
+        , "available_fields" .= allViewModeExportFields
         , "data"        .= object
             [ Key.fromText (Text.pack (show cid)) .= val | (cid, val) <- chunkEntries ]
         ]
@@ -198,6 +203,23 @@ formAtIdx tc idx
       Just (Text.pack (terrainFormDisplayName (tcTerrainForm tc U.! idx)))
   | otherwise = Nothing
 
+plateBoundaryDisplayName :: PlateBoundary -> Text
+plateBoundaryDisplayName boundary =
+  case plateBoundaryToCode boundary of
+    0 -> "None"
+    1 -> "Convergent"
+    2 -> "Divergent"
+    3 -> "Transform"
+    code -> "Unknown (" <> Text.pack (show code) <> ")"
+
+crustDisplayName :: Word16 -> Text
+crustDisplayName 0 = "Oceanic"
+crustDisplayName 1 = "Continental"
+crustDisplayName code = "Unknown (" <> Text.pack (show code) <> ")"
+
+velocityMagnitude :: Float -> Float -> Float
+velocityMagnitude vx vy = sqrt (vx * vx + vy * vy)
+
 safeIdx :: U.Vector Float -> Int -> Maybe Float
 safeIdx v i
   | i >= 0 && i < U.length v = Just (v U.! i)
@@ -249,20 +271,48 @@ exportField cid tc snap field = (Key.fromText field, val)
       "roughness"    -> Aeson.toJSON (U.toList (tcRoughness tc))
       "soil_depth"   -> Aeson.toJSON (U.toList (tcSoilDepth tc))
       "biome"        -> Aeson.toJSON [ biomeDisplayName b | b <- U.toList (tcFlags tc) ]
+      "biome_code"   -> Aeson.toJSON [ biomeIdToCode b | b <- U.toList (tcFlags tc) ]
       "terrain_form" -> Aeson.toJSON [ Text.pack (terrainFormDisplayName f) | f <- U.toList (tcTerrainForm tc) ]
-      "temperature"  -> case IntMap.lookup cid (tsClimateChunks snap) of
-                          Nothing -> Null
-                          Just cc -> Aeson.toJSON (U.toList (ccTempAvg cc))
-      "precipitation" -> case IntMap.lookup cid (tsClimateChunks snap) of
-                           Nothing -> Null
-                           Just cc -> Aeson.toJSON (U.toList (ccPrecipAvg cc))
-      "vegetation_cover" -> case IntMap.lookup cid (tsVegetationChunks snap) of
-                              Nothing -> Null
-                              Just vc -> Aeson.toJSON (U.toList (vegCover vc))
+      "terrain_form_code" -> Aeson.toJSON [ terrainFormToCode f | f <- U.toList (tcTerrainForm tc) ]
+      "temperature"  -> climateJson ccTempAvg
+      "precipitation" -> climateJson ccPrecipAvg
+      "plate_id" -> Aeson.toJSON (U.toList (tcPlateId tc))
+      "plate_boundary" -> Aeson.toJSON [ plateBoundaryDisplayName b | b <- U.toList (tcPlateBoundary tc) ]
+      "plate_boundary_code" -> Aeson.toJSON [ plateBoundaryToCode b | b <- U.toList (tcPlateBoundary tc) ]
+      "plate_hardness" -> Aeson.toJSON (U.toList (tcPlateHardness tc))
+      "plate_crust" -> Aeson.toJSON [ crustDisplayName c | c <- U.toList (tcPlateCrust tc) ]
+      "plate_crust_code" -> Aeson.toJSON (U.toList (tcPlateCrust tc))
+      "plate_age" -> Aeson.toJSON (U.toList (tcPlateAge tc))
+      "plate_height" -> Aeson.toJSON (U.toList (tcPlateHeight tc))
+      "plate_velocity" -> Aeson.toJSON (zipWith velocityMagnitude (U.toList (tcPlateVelX tc)) (U.toList (tcPlateVelY tc)))
+      "plate_velocity_x" -> Aeson.toJSON (U.toList (tcPlateVelX tc))
+      "plate_velocity_y" -> Aeson.toJSON (U.toList (tcPlateVelY tc))
+      "weather_temperature" -> weatherJson wcTemp
+      "weather_humidity" -> weatherJson wcHumidity
+      "weather_wind_speed" -> weatherJson wcWindSpd
+      "weather_pressure" -> weatherJson wcPressure
+      "weather_precipitation" -> weatherJson wcPrecip
+      "cloud_cover" -> weatherJson wcCloudCover
+      "cloud_water" -> weatherJson wcCloudWater
+      "cloud_cover_low" -> weatherJson wcCloudCoverLow
+      "cloud_cover_mid" -> weatherJson wcCloudCoverMid
+      "cloud_cover_high" -> weatherJson wcCloudCoverHigh
+      "vegetation_cover" -> vegetationJson vegCover
+      "vegetation_density" -> vegetationJson vegDensity
+      "vegetation_albedo" -> vegetationJson vegAlbedo
       "river_discharge" -> case IntMap.lookup cid (tsRiverChunks snap) of
                              Nothing -> Null
                              Just rc -> Aeson.toJSON (U.toList (rcDischarge rc))
       _              -> Null
+    climateJson accessor = case IntMap.lookup cid (tsClimateChunks snap) of
+      Nothing -> Null
+      Just cc -> Aeson.toJSON (U.toList (accessor cc))
+    weatherJson accessor = case IntMap.lookup cid (tsWeatherChunks snap) of
+      Nothing -> Null
+      Just wc -> Aeson.toJSON (U.toList (accessor wc))
+    vegetationJson accessor = case IntMap.lookup cid (tsVegetationChunks snap) of
+      Nothing -> Null
+      Just vc -> Aeson.toJSON (U.toList (accessor vc))
 
 -- =====================================================================
 -- Parsing helpers

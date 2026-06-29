@@ -27,6 +27,7 @@ module Seer.Service.State
   , stateServiceOperationSpecs
   ) where
 
+import Data.Aeson (Value)
 import Data.Text (Text)
 import Data.Word (Word64)
 
@@ -63,6 +64,16 @@ data StateViewModesRequest = StateViewModesRequest
 data StateViewModeSummary = StateViewModeSummary
   { stateViewModeName :: !Text
   , stateViewModeActive :: !Bool
+  , stateViewModeLabel :: !Text
+  , stateViewModeDescription :: !Text
+  , stateViewModeKind :: !Text
+  , stateViewModeUnit :: !(Maybe Text)
+  , stateViewModeColorScale :: !Text
+  , stateViewModeLegend :: !Value
+  , stateViewModeTooltipFields :: ![Text]
+  , stateViewModeInspectorFields :: ![Text]
+  , stateViewModeExportFields :: ![Text]
+  , stateViewModeHttp :: ![Text]
   } deriving (Eq, Show)
 
 newtype StateViewModesResponse = StateViewModesResponse

@@ -30,7 +30,7 @@ import Seer.Render.ZoomStage (ZoomStage(..), allZoomStages)
 import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.UI (getUiSnapshot)
-import Actor.UI.State (ViewMode(..), ConfigTab(..), UiState(..), readUiSnapshotRef, uiRenderWaterLevel)
+import Actor.UI.State (ViewMode(..), ConfigTab(..), UiState(..), readUiSnapshotRef, uiRenderWaterLevel, viewModeFromText, viewModeToText)
 import Actor.UI.Setters (setUiSeed, setUiSeedInput, setUiViewMode, setUiConfigScroll, setUiConfigTab, setUiContextHex, setUiHexTooltipPinned)
 import Seer.Command.Context (CommandContext(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
@@ -58,7 +58,7 @@ handleSetViewMode ctx reqId params = do
       pure $ errResponse reqId "missing or invalid 'mode' parameter"
     Just modeName -> do
       let mFieldIdx = Aeson.parseMaybe parseFieldIndex params
-      case textToViewMode modeName mFieldIdx of
+      case viewModeFromText modeName mFieldIdx of
         Nothing ->
           pure $ errResponse reqId ("unknown view mode: " <> modeName)
         Just vm -> do
@@ -156,49 +156,8 @@ parseTabName :: Value -> Aeson.Parser Text
 parseTabName = Aeson.withObject "params" (.: "tab")
 
 -- --------------------------------------------------------------------------
--- View mode / config tab text conversion
+-- Config tab text conversion
 -- --------------------------------------------------------------------------
-
-textToViewMode :: Text -> Maybe Int -> Maybe ViewMode
-textToViewMode "elevation"      _ = Just ViewElevation
-textToViewMode "biome"          _ = Just ViewBiome
-textToViewMode "climate"        _ = Just ViewClimate
-textToViewMode "weather"        _ = Just ViewWeather
-textToViewMode "moisture"       _ = Just ViewMoisture
-textToViewMode "precipitation"  _ = Just ViewPrecip
-textToViewMode "plate_id"       _ = Just ViewPlateId
-textToViewMode "plate_boundary" _ = Just ViewPlateBoundary
-textToViewMode "plate_hardness" _ = Just ViewPlateHardness
-textToViewMode "plate_crust"    _ = Just ViewPlateCrust
-textToViewMode "plate_age"      _ = Just ViewPlateAge
-textToViewMode "plate_height"   _ = Just ViewPlateHeight
-textToViewMode "plate_velocity" _ = Just ViewPlateVelocity
-textToViewMode "vegetation"     _ = Just ViewVegetation
-textToViewMode "terrain_form"   _ = Just ViewTerrainForm
-textToViewMode "cloud"          _ = Just ViewCloud
-textToViewMode name             mIdx
-  | Just rest <- Text.stripPrefix "overlay:" name
-  , not (Text.null rest) = Just (ViewOverlay rest (maybe 0 id mIdx))
-  | otherwise            = Nothing
-
-viewModeToText :: ViewMode -> Text
-viewModeToText ViewElevation     = "elevation"
-viewModeToText ViewBiome         = "biome"
-viewModeToText ViewClimate       = "climate"
-viewModeToText ViewWeather       = "weather"
-viewModeToText ViewMoisture      = "moisture"
-viewModeToText ViewPrecip        = "precipitation"
-viewModeToText ViewPlateId       = "plate_id"
-viewModeToText ViewPlateBoundary = "plate_boundary"
-viewModeToText ViewPlateHardness = "plate_hardness"
-viewModeToText ViewPlateCrust    = "plate_crust"
-viewModeToText ViewPlateAge      = "plate_age"
-viewModeToText ViewPlateHeight   = "plate_height"
-viewModeToText ViewPlateVelocity = "plate_velocity"
-viewModeToText ViewVegetation    = "vegetation"
-viewModeToText ViewTerrainForm   = "terrain_form"
-viewModeToText ViewCloud         = "cloud"
-viewModeToText (ViewOverlay name _idx) = "overlay:" <> name
 
 textToConfigTab :: Text -> Maybe ConfigTab
 textToConfigTab "terrain"  = Just ConfigTerrain
