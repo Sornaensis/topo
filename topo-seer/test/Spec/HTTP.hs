@@ -99,6 +99,12 @@ spec = describe "Seer.HTTP.Server" $ do
       hresStatusCode health `shouldBe` 200
       lookupText "status" (hresBody health) `shouldBe` Just "ok"
 
+      version <- request app (mkRequest "GET" ["version"])
+      hresStatusCode version `shouldBe` 200
+      lookupText "name" (hresBody version) `shouldBe` Just "topo-seer"
+      lookupText "version" (hresBody version) `shouldBe` Just "1.0.0.0"
+      lookupText "api_version" (hresBody version) `shouldBe` Just "1"
+
       openapi <- request app (mkRequest "GET" ["openapi.json"])
       hresStatusCode openapi `shouldBe` 200
       lookupText "openapi" (hresBody openapi) `shouldBe` Just "3.0.3"
@@ -373,9 +379,12 @@ spec = describe "Seer.HTTP.Server" $ do
     sort (openApiSignatureLines doc) `shouldBe` sort golden
 
   it "matches the published OpenAPI artifact" $ do
-    path <- publishedOpenApiPath
-    published <- LBS.readFile path
-    published `shouldBe` Aeson.encode (openApiDocument publicHttpRouteSpecs)
+    mPath <- publishedOpenApiPath
+    case mPath of
+      Nothing -> pendingWith "repository docs/api/openapi.json is not present in this package-only test run"
+      Just path -> do
+        published <- LBS.readFile path
+        published `shouldBe` Aeson.encode (openApiDocument publicHttpRouteSpecs)
 
   it "publishes query and auth metadata in OpenAPI" $ do
     let doc = openApiDocument publicHttpRouteSpecs
@@ -1287,22 +1296,22 @@ readOpenApiRouteGolden = do
   filter (not . Text.null) . map Text.strip . Text.lines
     <$> TextIO.readFile path
 
-publishedOpenApiPath :: IO FilePath
+publishedOpenApiPath :: IO (Maybe FilePath)
 publishedOpenApiPath = do
   cwd <- getCurrentDirectory
-  (</> "openapi.json") <$> findDocsApiDir cwd
+  -- Keep this repository-only check from escaping package-only sdist test runs
+  -- under .stack-work and accidentally reading the outer checkout's docs.
+  firstExisting
+    [ cwd </> "docs" </> "api" </> "openapi.json"
+    , takeDirectory cwd </> "docs" </> "api" </> "openapi.json"
+    ]
   where
-    findDocsApiDir dir = do
-      let docsDir = dir </> "docs" </> "api"
-          marker = docsDir </> "README.md"
-      exists <- doesFileExist marker
+    firstExisting [] = pure Nothing
+    firstExisting (path:rest) = do
+      exists <- doesFileExist path
       if exists
-        then pure docsDir
-        else do
-          let parent = takeDirectory dir
-          if parent == dir
-            then pure docsDir
-            else findDocsApiDir parent
+        then pure (Just path)
+        else firstExisting rest
 
 assertEndpoint :: Manager -> String -> IO ()
 assertEndpoint manager path = do

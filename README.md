@@ -7,13 +7,13 @@ command IPC are not public automation paths.
 
 ## Supported package roles
 
-| Package | 1.0 role |
-|---|---|
-| `topo` | Core terrain, world, overlay, simulation, persistence, and format library. Includes `topo:test:topo-test`. |
-| `topo-seer` | SDL UI executable plus the direct HTTP/OpenAPI host. It is the only package that launches the app, opens an SDL window, or serves the 1.0 HTTP API. |
-| `topo-plugin-sdk` | SDK types, runner, and fixtures for external plugin authors. |
-| `topo-plugin-example` | Minimal generator plugin example and test fixture. |
-| `topo-plugin-civ-example` | Civilization/data-resource plugin example and test fixture. |
+| Package | Version | 1.0 role |
+|---|---:|---|
+| `topo` | `1.0.0.0` | Core terrain, world, overlay, simulation, persistence, and format library. Includes `topo:test:topo-test`. |
+| `topo-seer` | `1.0.0.0` | SDL UI executable plus the direct HTTP/OpenAPI host. It is the only package that launches the app, opens an SDL window, or serves the 1.0 HTTP API. |
+| `topo-plugin-sdk` | `1.0.0.0` | SDK types, runner, and fixtures for external plugin authors. |
+| `topo-plugin-example` | `1.0.0.0` | Minimal generator plugin example and test fixture. |
+| `topo-plugin-civ-example` | `1.0.0.0` | Civilization/data-resource plugin example and test fixture. |
 
 ## Quick start
 
@@ -85,6 +85,12 @@ live in `docs/release-notes/1.0.md`, and the old-tool/resource mapping remains
 in `docs/inventory/mcp-http-parity.md`; new clients should use resource-oriented
 HTTP/OpenAPI routes only. Command IPC remains internal/test compatibility while
 service extraction continues, with no public 1.0 exception.
+
+## Release packaging
+
+Reproducible source tarball, executable staging, and `v1.0.0` tag instructions
+live in [docs/release.md](docs/release.md). User-facing changes are summarized
+in [CHANGELOG.md](CHANGELOG.md) and [docs/release-notes/1.0.md](docs/release-notes/1.0.md).
 
 ## Runtime dependencies
 

@@ -175,7 +175,7 @@ handleHttpRequest cfg app ctx req =
       "meta.health" -> pure (jsonResponse 200 (object ["status" .= ("ok" :: Text)]))
       "meta.version" -> pure (jsonResponse 200 (object
         [ "name" .= ("topo-seer" :: Text)
-        , "version" .= ("0.1.0.0" :: Text)
+        , "version" .= ("1.0.0.0" :: Text)
         , "api_version" .= ("1" :: Text)
         ]))
       "meta.openapi" -> pure (jsonResponse 200 (openApiDocument publicHttpRouteSpecs))

@@ -308,7 +308,7 @@ schemaExamples =
   [ ("HealthResponse", object ["status" .= ("ok" :: Text)])
   , ("VersionResponse", object
       [ "name" .= ("topo-seer" :: Text)
-      , "version" .= ("0.1.0.0" :: Text)
+      , "version" .= ("1.0.0.0" :: Text)
       , "api_version" .= ("1" :: Text)
       ])
   , ("UiSeedSetRequest", object ["seed" .= (123 :: Int)])
