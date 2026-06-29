@@ -4,33 +4,58 @@ topo-seer is an SDL-based editor, UI, and direct HTTP/OpenAPI host for working
 with topo terrains.
 
 ## Status
-- **Stability:** active development, APIs may change.
+- **1.0 runtime surface:** SDL UI plus direct HTTP/OpenAPI from this executable.
+- **Automation support:** HTTP/OpenAPI only; MCP and command IPC are not public 1.0 APIs.
 - **Support:** best-effort via repository issues.
 
 ## Quick start
 
-From the repo root:
+Run commands from the repository root.
 
-- Build and run the SDL UI:
-	- `stack run topo-seer`
-- Run the direct headless HTTP/OpenAPI host:
-	- `stack exec topo-seer -- --headless --http 127.0.0.1:7373`
-- Run the SDL UI with HTTP enabled:
-	- `stack exec topo-seer -- --http 127.0.0.1:7373`
-- Build tests (no execution):
-	- `stack test topo-seer --no-run-tests`
+```sh
+# Build the topo-seer executable and library.
+stack build topo-seer:exe:topo-seer
+
+# Run the topo-seer test suite.
+stack test topo-seer:test:topo-seer-test
+
+# Launch the SDL UI.
+stack exec topo-seer --
+
+# Launch the SDL UI with HTTP/OpenAPI enabled.
+stack exec topo-seer -- --http 127.0.0.1:7373
+
+# Launch the headless HTTP/OpenAPI host for automation or CI.
+stack exec topo-seer -- --headless --http 127.0.0.1:7373
+```
+
+## Runtime modes
+
+- **SDL UI:** `stack exec topo-seer --` starts the interactive editor and render
+  loop.
+- **SDL UI + HTTP:** add `--http HOST:PORT` to serve the same HTTP/OpenAPI API
+  while the UI is running.
+- **Headless HTTP:** `--headless --http HOST:PORT` starts the service/actor
+  runtime and HTTP server without creating an SDL window. `--headless` requires
+  `--http`; use this mode for automation and CI smoke checks.
+
+The HTTP binding accepts `--http HOST:PORT` or `--http=HOST:PORT`. The
+`topo-seer` executable links SDL2/SDL2_ttf in every mode, so the native runtime
+libraries must be available even when you run headless.
 
 ## HTTP/OpenAPI automation
 
 The supported automation path is direct HTTP to `topo-seer`; generated OpenAPI
 is served at `GET /openapi.json` from the same route metadata used by dispatch
 and tests. The committed publication artifact and contract notes live at
-`../docs/api/openapi.json` and `../docs/api/README.md`. Loopback (`127.0.0.1`)
-is the default safe binding. Non-loopback bindings require `--http-token TOKEN`,
-and protected requests must include `Authorization: Bearer TOKEN`.
+`../docs/api/openapi.json` and `../docs/api/README.md`.
 
 ```sh
+# Start the local headless host.
+stack exec topo-seer -- --headless --http 127.0.0.1:7373
+
 # Discover the live contract and basic server metadata.
+curl http://127.0.0.1:7373/health
 curl http://127.0.0.1:7373/openapi.json
 curl http://127.0.0.1:7373/version
 
@@ -40,19 +65,37 @@ curl 'http://127.0.0.1:7373/terrain/hex?q=0&r=0'
 
 # Mutate UI/service state through JSON requests.
 curl -X POST http://127.0.0.1:7373/ui/seed \
-	-H 'Content-Type: application/json' \
-	-d '{"seed":123}'
-
-# Authenticated request when a token is configured.
-curl http://127.0.0.1:7373/state \
-	-H 'Authorization: Bearer TOKEN'
+  -H 'Content-Type: application/json' \
+  -d '{"seed":123}'
 ```
+
+Loopback (`127.0.0.1`, `localhost`, and other loopback addresses) is the
+default safe binding and may run without a token. Non-loopback bindings require
+a non-empty bearer token before the server starts:
+
+```sh
+stack exec topo-seer -- --headless --http 0.0.0.0:7373 --http-token TOKEN
+curl http://127.0.0.1:7373/health
+curl http://127.0.0.1:7373/openapi.json \
+  -H 'Authorization: Bearer TOKEN'
+```
+
+When `--http-token TOKEN` is configured, `GET /health` remains unauthenticated
+for readiness checks and every other route, including `GET /openapi.json`,
+requires `Authorization: Bearer TOKEN`.
 
 MCP was a transition bridge and is retired for 1.0. Legacy command IPC is
 internal/test compatibility only while service extraction continues. Use the
 parity matrix at `../docs/inventory/mcp-http-parity.md` only to migrate old MCP
 tool/resource names to HTTP/OpenAPI routes; do not build new automation against
 MCP, command IPC, or command-shaped compatibility routes.
+
+## Related workspace packages
+
+- `topo`: core terrain/world/overlay/simulation/persistence library.
+- `topo-plugin-sdk`: SDK types and runner for external plugins.
+- `topo-plugin-example` and `topo-plugin-civ-example`: maintained plugin examples
+  and fixtures for generator, simulation, and data-resource behavior.
 
 ## Architecture overview
 
