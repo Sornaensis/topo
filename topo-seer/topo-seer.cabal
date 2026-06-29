@@ -124,6 +124,7 @@ library
       UI.WidgetsDraw
       UI.WidgetTree
       UI.Component
+      UI.Components.ConfigSliders
       UI.Components.LogFilter
       UI.DayNight
       UI.DrawCommand
@@ -235,6 +236,7 @@ test-suite topo-seer-test
       Spec.CacheProperties
       Spec.CommandDispatch
       Spec.Component
+      Spec.ConfigSliders
       Spec.ConfigSnapshot
       Spec.DataBrowser
       Spec.DataBrowserAppService

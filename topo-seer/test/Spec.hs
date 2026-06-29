@@ -9,6 +9,7 @@ import qualified Spec.LogActor
 import qualified Spec.AppService
 import qualified Spec.CacheProperties
 import qualified Spec.ConfigSnapshot
+import qualified Spec.ConfigSliders
 import qualified Spec.AtlasResultBroker
 import qualified Spec.AtlasScheduleBroker
 import qualified Spec.AtlasScheduler
@@ -50,6 +51,7 @@ main = do
         Spec.LogActor.spec
         Spec.CacheProperties.spec
         Spec.ConfigSnapshot.spec
+        Spec.ConfigSliders.spec
         Spec.SliderSpec.spec
         Spec.AtlasResultBroker.spec
         Spec.AtlasScheduleBroker.spec

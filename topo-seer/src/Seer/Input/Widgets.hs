@@ -61,13 +61,11 @@ import Linear (V2(..))
 import qualified SDL
 import qualified SDL.Raw.Types as Raw
 import Seer.Config.SliderRegistry
-  ( SliderPart(..)
-  , SliderDef(..)
+  ( SliderDef(..)
   , sliderDefForWidget
   , sliderWidgetPart
   )
-import Seer.Config.SliderStyle (SliderStyle(..), sliderStyleForId)
-import Seer.Config.SliderUi (configTabForSliderTab, sliderValueForId)
+import Seer.Config.SliderUi (configTabForSliderTab)
 import Seer.Draw (seedMaxDigits)
 import Seer.Config.Snapshot (listSnapshots)
 import Seer.World.Persist (listWorlds)
@@ -79,8 +77,9 @@ import qualified Seer.DataBrowser.AppService as DataBrowser
 import Seer.DataBrowser.Model (DataBrowserPageAction(..))
 import Topo.Plugin.DataResource (DataResourceSchema(..), DataOperations(..), noOperations)
 import Topo.Plugin.RPC.Manifest (RPCParamSpec(..))
+import UI.Components.ConfigSliders (configSliderInputValueForId)
 import UI.Layout
-import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets, buildDataBrowserWidgets, buildDataDetailWidgets, buildSliderRowWidgets, hitTest, isLeftViewWidget)
+import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets, buildDataBrowserWidgets, buildDataDetailWidgets, hitTest, isLeftViewWidget)
 import UI.Widgets (Rect(..), containsPoint)
 import System.Random (randomIO)
 import Hyperspace.Actor (ActorHandle, Protocol)
@@ -641,8 +640,7 @@ handleClick inputContext (SDL.P (V2 x y)) = do
     setConfigSlider sliderDef sliderPart = do
       uiSnap <- getUiSnapshot uiHandle
       let sid = sliderId sliderDef
-          sliderStyle = sliderStyleForId sid
-          newValue = sliderValueForId uiSnap sid + signedSliderDelta sliderPart (sliderStyleStep sliderStyle)
+          newValue = configSliderInputValueForId uiSnap sid sliderPart
       runService "set_slider" (object ["name" .= Text.pack (show sid), "value" .= newValue])
     startSeedEdit rect = do
       let uiSnap = ieUiSnapshot widgetEnv
@@ -657,10 +655,6 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       setUiSeedInput uiHandle (Text.pack (show seed))
       setUiSeedEditing uiHandle False
       SDL.stopTextInput
-
-    signedSliderDelta sliderPart step = case sliderPart of
-      SliderPartMinus -> negate step
-      SliderPartPlus -> step
 
 -- | Cycle through available overlay names by @dir@ (+1 or -1).
 --

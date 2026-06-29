@@ -15,18 +15,13 @@ import qualified Data.Set as Set
 import Data.Word (Word8)
 import Linear (V2(..), V4(..))
 import qualified SDL
-import Seer.Config.SliderRegistry (SliderDef(..))
-import Seer.Config.SliderStyle (SliderStyle(..), sliderStyleForId)
-import Seer.Config.SliderUi (sliderDefsForConfigTab, sliderValueForId)
 import Seer.Draw.Config.DataDetail (drawDataDetailPopover)
 import Topo.Pipeline.Stage (allBuiltinStageIds)
 import Topo.Plugin.DataResource (DataResourceSchema(..), DataOperations(..))
 import Topo.Plugin.RPC.Manifest (RPCParamSpec(..), RPCParamType(..))
 import UI.Layout
-  ( ConfigParamRowRects(..)
-  , Layout
+  ( Layout
   , configPanelRect
-  , configParamRects
   , configPresetLoadRect
   , configPresetSaveRect
   , configResetRect
@@ -46,6 +41,13 @@ import UI.Layout
   , dataBrowserItemRect
   , dataBrowserCreateButtonRect
   )
+import UI.Components.ConfigSliders
+  ( configSliderDrawCommands
+  , configSliderRowsScrolled
+  , configTabDrawCommands
+  , configTabViews
+  )
+import UI.DrawCommand.SDL (interpretDrawCommands)
 import UI.Font (FontCache, drawText)
 import UI.Widgets (Rect(..))
 import UI.Theme
@@ -61,20 +63,9 @@ normalizeParam spec val =
     _             -> max 0 (min 1 (realToFrac val))
 
 drawConfigTabs :: SDL.Renderer -> UiState -> (Rect, Rect, Rect, Rect, Rect, Rect, Rect, Rect) -> IO ()
-drawConfigTabs renderer ui (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline, tabData) = do
-  drawTab tabTerrain (uiConfigTab ui == ConfigTerrain)
-  drawTab tabPlanet (uiConfigTab ui == ConfigPlanet)
-  drawTab tabClimate (uiConfigTab ui == ConfigClimate)
-  drawTab tabWeather (uiConfigTab ui == ConfigWeather)
-  drawTab tabBiome (uiConfigTab ui == ConfigBiome)
-  drawTab tabErosion (uiConfigTab ui == ConfigErosion)
-  drawTab tabPipeline (uiConfigTab ui == ConfigPipeline)
-  drawTab tabData (uiConfigTab ui == ConfigData)
-  where
-    drawTab rect isActive = do
-      let fill = if isActive then colTabActive else colTabInactive
-      SDL.rendererDrawColor renderer SDL.$= fill
-      SDL.fillRect renderer (Just (rectToSDL rect))
+drawConfigTabs renderer ui tabs =
+  interpretDrawCommands renderer Nothing $
+    configTabDrawCommands (configTabViews (uiConfigTab ui) tabs)
 
 drawConfigPanel :: SDL.Renderer -> Maybe FontCache -> UiState -> DataSnapshot -> Layout -> IO ()
 drawConfigPanel renderer mFontCache ui dataSnap layout =
@@ -94,22 +85,6 @@ drawConfigPanel renderer mFontCache ui dataSnap layout =
       maxOffset = max 0 (contentHeight - scrollH)
       scrollY = min maxOffset (uiConfigScroll ui)
       scrollRect (Rect (V2 x y, V2 w h)) = Rect (V2 x (y - scrollY), V2 w h)
-      activeSliderDefs = sliderDefsForConfigTab (uiConfigTab ui)
-      sliderRects sliderDef =
-        let ConfigParamRowRects _ minusRect barRect plusRect =
-              configParamRects (sliderRowIndex sliderDef) layout
-        in (minusRect, barRect, plusRect)
-      drawSliderDef sliderDef =
-        let sid = sliderId sliderDef
-            (minusRect, barRect, plusRect) = sliderRects sliderDef
-            sliderStyle = sliderStyleForId sid
-        in drawConfigSlider
-            renderer
-            (sliderValueForId ui sid)
-            (scrollRect minusRect)
-            (scrollRect barRect)
-            (scrollRect plusRect)
-            (sliderStyleFillColor sliderStyle)
   in if uiShowConfig ui
     then do
       SDL.rendererDrawColor renderer SDL.$= colConfigPanel
@@ -301,7 +276,8 @@ drawConfigPanel renderer mFontCache ui dataSnap layout =
                 Nothing -> pure ()
               where
                 find p = foldr (\x acc -> if p x then Just x else acc) Nothing
-        _ -> forM_ activeSliderDefs drawSliderDef
+        _ -> interpretDrawCommands renderer Nothing $
+          configSliderDrawCommands (configSliderRowsScrolled ui layout)
       SDL.rendererClipRect renderer SDL.$= Nothing
       let Rect (V2 bx by, V2 bw bh) = scrollBarRect
           handleH = if maxOffset == 0 then bh else max 12 (bh * scrollH `div` max 1 contentHeight)
@@ -322,15 +298,6 @@ drawConfigPanel renderer mFontCache ui dataSnap layout =
       SDL.rendererDrawColor renderer SDL.$= revertColor
       SDL.fillRect renderer (Just (rectToSDL revertRect))
     else pure ()
-
-drawConfigSlider :: SDL.Renderer -> Float -> Rect -> Rect -> Rect -> V4 Word8 -> IO ()
-drawConfigSlider renderer value minusRect barRect plusRect fillColor = do
-  SDL.rendererDrawColor renderer SDL.$= colSliderBtn
-  SDL.fillRect renderer (Just (rectToSDL minusRect))
-  SDL.fillRect renderer (Just (rectToSDL plusRect))
-  SDL.rendererDrawColor renderer SDL.$= colSliderTrack
-  SDL.fillRect renderer (Just (rectToSDL barRect))
-  drawBarFill renderer value barRect fillColor
 
 drawBarFill :: SDL.Renderer -> Float -> Rect -> V4 Word8 -> IO ()
 drawBarFill renderer value (Rect (V2 x y, V2 w h)) color = do

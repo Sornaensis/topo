@@ -15,18 +15,23 @@ import qualified Data.Text as Text
 import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
 import Linear (V2(..))
 import qualified SDL
-import Seer.Config.SliderRegistry (SliderDef(..))
-import Seer.Config.SliderSpec
-import Seer.Config.SliderStyle (SliderLabelMode(..), SliderStyle(..), sliderStyleForId)
-import Seer.Config.SliderUi (sliderDefsForConfigTab, sliderValueForId)
 import Topo.Pipeline.Stage (allBuiltinStageIds, stageCanonicalName)
 import Topo.Plugin.DataResource (DataResourceSchema(..))
 import Topo.Plugin.RPC.Manifest (RPCParamSpec(..))
+import UI.Components.ConfigSliders
+  ( configSliderLabelCommands
+  , configSliderRowsScrolled
+  , configSliderValidationCommands
+  , configSliderValidations
+  , configTabLabelCommands
+  , configTabViews
+  )
+import UI.DrawCommand.SDL (interpretDrawCommands)
 import UI.Font (FontCache)
 import UI.Layout
 import UI.Theme
 import UI.Widgets (Rect(..))
-import UI.WidgetsDraw (drawCentered, drawLabelAbove, drawTextLine, drawTextLineTruncated, rectToSDL)
+import UI.WidgetsDraw (drawCentered, drawTextLine, drawTextLineTruncated, rectToSDL)
 
 -- | Render all config-panel text labels when the config panel is visible.
 drawConfigLabels :: SDL.Renderer -> Maybe FontCache -> UiState -> Layout -> IO ()
@@ -41,30 +46,11 @@ drawConfigLabels renderer fontCache ui layout = when (uiShowConfig ui) $ do
       maxOffset = max 0 (contentHeight - scrollH)
       scrollY = min maxOffset (uiConfigScroll ui)
       sr (Rect (V2 x y, V2 w h)) = Rect (V2 x (y - scrollY), V2 w h)
-      activeSliderDefs = sliderDefsForConfigTab (uiConfigTab ui)
-      drawSliderLabels sliderDef = do
-        let rowIndex = sliderRowIndex sliderDef
-            sid = sliderId sliderDef
-            val = sliderValueForId ui sid
-            sliderStyle = sliderStyleForId sid
-            rects = configParamRects rowIndex layout
-        case sliderStyleLabelMode sliderStyle of
-          SliderLabelFull -> do
-            drawCentered fontCache lc (sr (configParamRowMinusRect rects)) "-"
-            drawCentered fontCache lc (sr (configParamRowPlusRect rects)) "+"
-          SliderLabelBarOnly -> pure ()
-        drawLabelAbove fontCache lc (sr (configParamRowBarRect rects)) (sliderLabelForId sid val)
-      (tabTerrain, tabPlanet, tabClimate, tabWeather, tabBiome, tabErosion, tabPipeline, tabData) = configTabRects layout
+      activeSliderRows = configSliderRowsScrolled ui layout
 
   -- Tab labels
-  drawCentered fontCache lc tabTerrain "Terrain"
-  drawCentered fontCache lc tabPlanet "Planet"
-  drawCentered fontCache lc tabClimate "Climate"
-  drawCentered fontCache lc tabWeather "Weather"
-  drawCentered fontCache lc tabBiome "Biome"
-  drawCentered fontCache lc tabErosion "Erosion"
-  drawCentered fontCache lc tabPipeline "Pipeline"
-  drawCentered fontCache lc tabData "Data"
+  interpretDrawCommands renderer fontCache $
+    configTabLabelCommands (configTabViews (uiConfigTab ui) (configTabRects layout))
 
   -- Preset / reset / revert
   drawCentered fontCache lc (configPresetSaveRect layout) "Save"
@@ -186,7 +172,9 @@ drawConfigLabels renderer fontCache ui layout = when (uiShowConfig ui) $ do
                 Rect (V2 _ ly, V2 _ _lh) = sr (configScrollRowRect loadRow layout)
             drawTextLine fontCache (V2 (sx + pad) (ly + 4)) textDataLoading "Loading..."
 
-    _ -> forM_ activeSliderDefs drawSliderLabels
+    _ -> interpretDrawCommands renderer fontCache $
+      configSliderLabelCommands activeSliderRows
+        ++ configSliderValidationCommands (configSliderValidations activeSliderRows)
 
   SDL.rendererClipRect renderer SDL.$= Nothing
 

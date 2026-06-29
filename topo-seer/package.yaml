@@ -118,6 +118,7 @@ library:
     - UI.WidgetsDraw
     - UI.WidgetTree
     - UI.Component
+    - UI.Components.ConfigSliders
     - UI.Components.LogFilter
     - UI.DayNight
     - UI.DrawCommand
