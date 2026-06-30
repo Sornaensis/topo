@@ -3,7 +3,7 @@
 module Spec.HTTP (spec) where
 
 import Control.Concurrent (forkIO, killThread, threadDelay)
-import Control.Exception (SomeException, finally, throwIO, try)
+import Control.Exception (SomeException, bracket, finally, throwIO, try)
 import Control.Monad (forM_)
 import Data.Aeson (Value(..), object, (.=))
 import qualified Data.Aeson as Aeson
@@ -16,6 +16,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
+import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import Actor.Data (getTerrainSnapshot, setOverlayStoreData, setTerrainChunkData)
 import Actor.SnapshotReceiver (writeTerrainSnapshot)
 import Actor.UiActions (ActorHandles(..))
@@ -71,8 +72,14 @@ import Seer.Service.AppService (AppService(..), DataResourceService(..), appServ
 import Seer.Service.Types (ServiceError(..))
 import Seer.System (runApp)
 import Spec.Support.OverlayFixtures (mkSparseFloatOverlay)
-import System.Directory (doesFileExist, getCurrentDirectory)
-import System.Environment (withArgs)
+import System.Directory
+  ( createDirectory
+  , doesFileExist
+  , getCurrentDirectory
+  , getTemporaryDirectory
+  , removeDirectoryRecursive
+  )
+import System.Environment (lookupEnv, setEnv, unsetEnv, withArgs)
 import System.FilePath ((</>), takeDirectory)
 import Topo (WorldConfig(..), chunkIdFromCoord, emptyTerrainChunk)
 import Topo.Overlay (emptyOverlayStore, insertOverlay, OverlayProvenance(..))
@@ -176,6 +183,90 @@ spec = describe "Seer.HTTP.Server" $ do
         `finally` (do
           killThread tid
           threadDelay 100000)
+
+  it "smoke-tests world generation, save, and load through HTTP" $
+    withHttpSmokeTempHome $ \home ->
+      withTemporaryTopoHome home $ do
+        let smokeName = "smoke-1-0" :: Text
+            smokeSeed = 424242 :: Int
+
+        generatedChunkCount <- withHeadlessApp defaultHeadlessConfig $ \app -> do
+          setSeed <- request app (mkRequest "POST" ["ui", "seed"])
+            { hreqBody = Just (object ["seed" .= smokeSeed]) }
+          hresStatusCode setSeed `shouldBe` 200
+          lookupValue "seed" (hresBody setSeed) `shouldBe` Just (Number 424242)
+
+          forM_ ([1..7] :: [Int]) $ \_ -> do
+            chunkDown <- request app (mkRequest "POST" ["ui", "widgets", "click"])
+              { hreqBody = Just (object ["widget_id" .= ("WidgetChunkMinus" :: Text)]) }
+            hresStatusCode chunkDown `shouldBe` 200
+
+          setExtents <- request app (mkRequest "PATCH" ["config", "sliders"])
+            { hreqBody = Just (object ["values" .= object
+                [ "SliderExtentX" .= (0.0625 :: Double)
+                , "SliderExtentY" .= (0.0625 :: Double)
+                ]]) }
+          hresStatusCode setExtents `shouldBe` 200
+          objectHasKey "updated" (hresBody setExtents) `shouldBe` True
+
+          generate <- request app (mkRequest "POST" ["world", "generate"])
+          hresStatusCode generate `shouldBe` 200
+          lookupText "status" (hresBody generate) `shouldBe` Just "generating"
+
+          generatedStatus <- waitForGeneratedWorld app
+          lookupValue "generating" (hresBody generatedStatus) `shouldBe` Just (Bool False)
+          lookupValue "chunk_count" (hresBody generatedStatus)
+            `shouldSatisfy` maybe False positiveNumber
+          lookupValue "seed" (hresBody generatedStatus) `shouldBe` Just (Number 424242)
+
+          generatedMeta <- request app (mkRequest "GET" ["world"])
+          hresStatusCode generatedMeta `shouldBe` 200
+          let generatedChunkCount = lookupValue "chunk_count" (hresBody generatedMeta)
+          generatedChunkCount `shouldBe` lookupValue "chunk_count" (hresBody generatedStatus)
+          generatedChunkCount `shouldSatisfy` maybe False positiveNumber
+          lookupValue "seed" (hresBody generatedMeta) `shouldBe` Just (Number 424242)
+          arrayFieldContainsText "overlay_names" "weather" (hresBody generatedMeta) `shouldBe` True
+
+          assertWeatherOverlayAvailable app
+          assertBackendNeutralPluginDataSurfaces app
+
+          events <- request app (mkRequest "GET" ["events"])
+          hresStatusCode events `shouldBe` 200
+          eventsContainTopic "world.generation.requested" (hresBody events) `shouldBe` True
+          eventsContainTopic "world.generation.status" (hresBody events) `shouldBe` True
+
+          save <- request app (mkRequest "POST" ["worlds", "save"])
+            { hreqBody = Just (object ["name" .= smokeName]) }
+          hresStatusCode save `shouldBe` 200
+          lookupText "name" (hresBody save) `shouldBe` Just smokeName
+          lookupValue "saved" (hresBody save) `shouldBe` Just (Bool True)
+          arrayFieldContainsText "formats" "world.topo" (hresBody save) `shouldBe` True
+          arrayFieldContainsText "formats" "world.topolay" (hresBody save) `shouldBe` True
+
+          worlds <- request app (mkRequest "GET" ["worlds"])
+          hresStatusCode worlds `shouldBe` 200
+          worldListContains smokeName (hresBody worlds) `shouldBe` True
+          pure generatedChunkCount
+
+        withHeadlessApp defaultHeadlessConfig $ \loadApp -> do
+          load <- request loadApp (mkRequest "POST" ["worlds", "load"])
+            { hreqBody = Just (object ["name" .= smokeName]) }
+          hresStatusCode load `shouldBe` 200
+          lookupText "name" (hresBody load) `shouldBe` Just smokeName
+          lookupValue "loaded" (hresBody load) `shouldBe` Just (Bool True)
+          arrayFieldContainsText "formats" "world.topo" (hresBody load) `shouldBe` True
+          arrayFieldContainsText "formats" "world.topolay" (hresBody load) `shouldBe` True
+          arrayFieldContainsText "overlay_names" "weather" (hresBody load) `shouldBe` True
+
+          loadedMeta <- waitForWorldName loadApp smokeName
+          hresStatusCode loadedMeta `shouldBe` 200
+          lookupText "world_name" (hresBody loadedMeta) `shouldBe` Just smokeName
+          lookupValue "chunk_count" (hresBody loadedMeta) `shouldBe` generatedChunkCount
+          lookupValue "seed" (hresBody loadedMeta) `shouldBe` Just (Number 424242)
+          arrayFieldContainsText "overlay_names" "weather" (hresBody loadedMeta) `shouldBe` True
+
+          assertWeatherOverlayAvailable loadApp
+          assertBackendNeutralPluginDataSurfaces loadApp
 
   it "coerces signed numeric query parameters before service validation" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
@@ -627,6 +718,114 @@ spec = describe "Seer.HTTP.Server" $ do
 
 request :: HeadlessApp -> HttpRequest -> IO HttpResponse
 request app req = handleHttpRequest defaultHttpServerConfig headlessHttpAppService (headlessServiceContext app) req
+
+withHttpSmokeTempHome :: (FilePath -> IO a) -> IO a
+withHttpSmokeTempHome action = do
+  tmp <- getTemporaryDirectory
+  stamp <- round . (* (1000000 :: POSIXTime)) <$> getPOSIXTime
+  let home = tmp </> ("topo-http-world-smoke-home-" <> show (stamp :: Integer))
+  bracket (createDirectory home >> pure home) removeDirectoryRecursive action
+
+withTemporaryTopoHome :: FilePath -> IO a -> IO a
+withTemporaryTopoHome home action = bracket capture restore $ \_ -> withTempHome action
+  where
+    envNames = ["HOME", "USERPROFILE"]
+    capture = mapM (\name -> do
+        value <- lookupEnv name
+        pure (name, value)
+      ) envNames
+    restore saved = forM_ saved $ \(name, value) ->
+      case value of
+        Just old -> setEnv name old
+        Nothing -> unsetEnv name
+    withTempHome action = do
+      forM_ envNames (`setEnv` home)
+      action
+
+waitForGeneratedWorld :: HeadlessApp -> IO HttpResponse
+waitForGeneratedWorld app = go (300 :: Int) Nothing
+  where
+    go attempts latest = do
+      status <- request app (mkRequest "GET" ["world", "generation-status"])
+      hresStatusCode status `shouldBe` 200
+      case lookupValue "chunk_count" (hresBody status) of
+        Just count | lookupValue "generating" (hresBody status) == Just (Bool False)
+          && positiveNumber count -> pure status
+        _ | attempts <= 0 -> fail $ "generation did not complete; last status: " <> show (hresBody status, fmap hresBody latest)
+          | otherwise -> do
+              threadDelay 100000
+              go (attempts - 1) (Just status)
+
+waitForWorldName :: HeadlessApp -> Text -> IO HttpResponse
+waitForWorldName app expectedName = go (50 :: Int) Nothing
+  where
+    go attempts latest = do
+      meta <- request app (mkRequest "GET" ["world"])
+      hresStatusCode meta `shouldBe` 200
+      if lookupText "world_name" (hresBody meta) == Just expectedName
+        then pure meta
+        else if attempts <= 0
+          then fail $ "world name did not update; last meta: " <> show (hresBody meta, fmap hresBody latest)
+          else do
+            threadDelay 100000
+            go (attempts - 1) (Just meta)
+
+assertWeatherOverlayAvailable :: HeadlessApp -> IO ()
+assertWeatherOverlayAvailable app = do
+  overlays <- request app (mkRequest "GET" ["overlays"])
+  hresStatusCode overlays `shouldBe` 200
+  arrayFieldContainsText "overlay_names" "weather" (hresBody overlays) `shouldBe` True
+  objectHasKey "diagnostics" (hresBody overlays) `shouldBe` True
+
+  schema <- request app (mkRequest "GET" ["overlays", "schema"])
+    { hreqQuery = [("overlay", Just "weather")] }
+  hresStatusCode schema `shouldBe` 200
+  lookupText "format" (hresBody schema) `shouldBe` Just "toposchema"
+
+  provenance <- request app (mkRequest "GET" ["overlays", "provenance"])
+    { hreqQuery = [("overlay", Just "weather")] }
+  hresStatusCode provenance `shouldBe` 200
+  lookupText "format" (hresBody provenance) `shouldBe` Just "topolay-provenance"
+
+  exportRsp <- request app (mkRequest "POST" ["overlays", "export"])
+    { hreqBody = Just (object ["overlay" .= ("weather" :: Text)]) }
+  hresStatusCode exportRsp `shouldBe` 200
+  lookupText "format" (hresBody exportRsp) `shouldBe` Just "topolay-json"
+  lookupValue "chunk_count" (hresBody exportRsp) `shouldSatisfy` maybe False positiveNumber
+  objectHasKey "schema" (hresBody exportRsp) `shouldBe` True
+  objectHasKey "payload" (hresBody exportRsp) `shouldBe` True
+
+assertBackendNeutralPluginDataSurfaces :: HeadlessApp -> IO ()
+assertBackendNeutralPluginDataSurfaces app = do
+  pluginStatus <- request app (mkRequest "GET" ["plugins", "status"])
+  hresStatusCode pluginStatus `shouldBe` 200
+  objectHasKey "plugins" (hresBody pluginStatus) `shouldBe` True
+  pluginsExposeSurfaceKeys (hresBody pluginStatus) `shouldBe` True
+
+  dataState <- request app (mkRequest "GET" ["data", "state"])
+  hresStatusCode dataState `shouldBe` 200
+  objectHasKey "external_data_sources" (hresBody dataState) `shouldBe` True
+  objectHasKey "external_data_source_count" (hresBody dataState) `shouldBe` True
+  objectHasKey "external_data_source_failures" (hresBody dataState) `shouldBe` True
+
+positiveNumber :: Value -> Bool
+positiveNumber (Number n) = n > 0
+positiveNumber _ = False
+
+arrayFieldContainsText :: Text -> Text -> Value -> Bool
+arrayFieldContainsText field expected (Object obj) = case KM.lookup (Key.fromText field) obj of
+  Just (Array values) -> String expected `elem` toList values
+  _ -> False
+arrayFieldContainsText _ _ _ = False
+
+worldListContains :: Text -> Value -> Bool
+worldListContains expected (Object obj) = case KM.lookup "worlds" obj of
+  Just (Array worlds) -> any worldEntryMatches (toList worlds)
+  _ -> False
+  where
+    worldEntryMatches (Object world) = KM.lookup "name" world == Just (String expected)
+    worldEntryMatches _ = False
+worldListContains _ _ = False
 
 mkRequest :: Text -> [Text] -> HttpRequest
 mkRequest method path = HttpRequest

@@ -52,6 +52,7 @@ import Topo
   )
 import Topo.Pipeline (PipelineConfig(..), PipelineStage, StageProgress(..), StageStatus(..), runPipeline)
 import Topo.Pipeline.Stage (StageId)
+import Topo.Overlay (OverlayStore)
 import Topo.WorldGen (WorldGenConfig(..), buildFullPipelineConfig)
 import Actor.Simulation (Simulation, setSimWorld)
 
@@ -103,6 +104,7 @@ data TerrainGenResult = TerrainGenResult
   , tgrResultGlacierChunks :: ![(ChunkId, GlacierChunk)]
   , tgrResultWaterBodyChunks :: ![(ChunkId, WaterBodyChunk)]
   , tgrResultVegetationChunks :: ![(ChunkId, VegetationChunk)]
+  , tgrResultOverlayStore :: !OverlayStore
   , tgrResultTerrainCount :: !Int
   , tgrResultBiomeCount :: !Int
   } deriving (Eq, Show)
@@ -179,6 +181,7 @@ actor Terrain
             glacierChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twGlaciers world1))
             waterBodyChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twWaterBodies world1))
             vegetationChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twVegetation world1))
+            overlayStore = twOverlays world1
             terrainCount = IntMap.size (twTerrain world1)
             biomeCount = terrainCount
         -- Force the full list spines + tuple WHNF on the terrain actor's
@@ -207,6 +210,7 @@ actor Terrain
               , tgrResultGlacierChunks = glacierChunks
               , tgrResultWaterBodyChunks = waterBodyChunks
               , tgrResultVegetationChunks = vegetationChunks
+              , tgrResultOverlayStore = overlayStore
               , tgrResultTerrainCount = terrainCount
               , tgrResultBiomeCount = biomeCount
               }

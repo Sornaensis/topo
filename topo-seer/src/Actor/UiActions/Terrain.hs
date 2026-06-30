@@ -25,6 +25,7 @@ import Actor.Data
   , setGlacierChunkData
   , setGroundwaterChunkData
   , setLastSeed
+  , setOverlayStoreData
   , setRiverChunkData
   , setTerrainChunkCount
   , setTerrainChunkData
@@ -50,6 +51,7 @@ import Actor.UI
   , UiState(..)
   , getUiSnapshot
   , setUiGenerating
+  , setUiOverlayNames
   , setUiPipelineStageRun
   )
 import Data.Text (Text)
@@ -58,6 +60,7 @@ import Data.Word (Word64)
 import GHC.Clock (getMonotonicTimeNSec)
 import Hyperspace.Actor (ActorHandle, Protocol)
 import Seer.Timing (nsToMs)
+import Topo.Overlay (overlayNames)
 import Topo.Pipeline (StageStatus(..))
 
 -- | Handles cached from the last UI action request.
@@ -111,6 +114,7 @@ applyTerrainResult handles resultMsg = do
       glacierChunks = tgrResultGlacierChunks resultMsg
       waterBodyChunks = tgrResultWaterBodyChunks resultMsg
       vegetationChunks = tgrResultVegetationChunks resultMsg
+      overlayStore = tgrResultOverlayStore resultMsg
       terrainCount = tgrResultTerrainCount resultMsg
       biomeCount = tgrResultBiomeCount resultMsg
   setTerrainChunkData (uahData handles) chunkSize []
@@ -122,6 +126,7 @@ applyTerrainResult handles resultMsg = do
   setGlacierChunkData (uahData handles) chunkSize []
   setWaterBodyChunkData (uahData handles) chunkSize []
   setVegetationChunkData (uahData handles) chunkSize []
+  setOverlayStoreData (uahData handles) overlayStore
   setTerrainChunkData (uahData handles) chunkSize terrainChunks
   setClimateChunkData (uahData handles) chunkSize climateChunks
   setWeatherChunkData (uahData handles) chunkSize weatherChunks
@@ -139,6 +144,7 @@ applyTerrainResult handles resultMsg = do
         , dsBiomeChunks = biomeCount
         , dsLastSeed = Just (tgrResultSeed resultMsg)
         }
+  setUiOverlayNames (uahUi handles) (overlayNames overlayStore)
   uiStart <- getMonotonicTimeNSec
   uiSnap <- getUiSnapshot (uahUi handles)
   uiEnd <- getMonotonicTimeNSec
