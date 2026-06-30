@@ -6,7 +6,7 @@
 module Spec.PluginManager (spec, runFixtureCli) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
-import Control.Exception (SomeException, bracket, catch, finally, throwIO)
+import Control.Exception (SomeAsyncException, SomeException, bracket, catch, finally, fromException, onException, throwIO)
 import Control.Monad (unless)
 import Data.List (elemIndex)
 import qualified Data.Aeson as Aeson
@@ -146,20 +146,39 @@ import Topo.World (emptyWorld)
 getPluginManager :: ActorSystem -> IO (ActorHandle PluginManager (Protocol PluginManager))
 getPluginManager system = get @PluginManager system
 
+withPluginManager :: (ActorHandle PluginManager (Protocol PluginManager) -> IO a) -> IO a
+withPluginManager action =
+  bracket acquire release (action . snd)
+  where
+    acquire = do
+      system <- newActorSystem
+      pluginManagerHandle <-
+        getPluginManager system `onException` ignoreCleanupExceptions (shutdownActorSystem system)
+      pure (system, pluginManagerHandle)
+
+    release (system, pluginManagerHandle) =
+      ignoreCleanupExceptions (shutdownPlugins pluginManagerHandle)
+        `finally` ignoreCleanupExceptions (shutdownActorSystem system)
+
+ignoreCleanupExceptions :: IO () -> IO ()
+ignoreCleanupExceptions action =
+  action `catch` \(err :: SomeException) ->
+    case fromException err :: Maybe SomeAsyncException of
+      Just _ -> throwIO err
+      Nothing -> pure ()
+
 spec :: Spec
 spec = describe "PluginManager" $ do
   it "loads declared .toposchema files during discovery" $ do
     withTestPluginDir testPluginName testManifestJSON testSchemaJSON $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         schemas <- getPluginOverlaySchemas pluginManagerHandle
         map osName schemas `shouldSatisfy` elem "copilot_test_overlay"
 
   it "launches plugin subprocesses and exposes generator stages cross-platform" $ do
     withExecutablePluginDir testLaunchPluginName testLaunchManifestJSON "ok" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         stages <- getPluginStages pluginManagerHandle
@@ -180,21 +199,17 @@ spec = describe "PluginManager" $ do
   it "launches plugins with the complete TOPO_PLUGIN environment over endpoint transport" $ do
     withParentStdioCompatibilityFlag $ do
       withExecutablePluginDir envContractPluginName envContractManifestJSON "env-contract" $ do
-        bracket newActorSystem shutdownActorSystem $ \system -> do
-          pluginManagerHandle <- getPluginManager system
+        withPluginManager $ \pluginManagerHandle -> do
           discoverPlugins pluginManagerHandle
           refreshManifests pluginManagerHandle
           loaded <- getLoadedPlugins pluginManagerHandle
           pluginStatuses envContractPluginName loaded `shouldSatisfy` elem PluginConnected
           pluginLifecycleStates envContractPluginName loaded `shouldSatisfy` elem LifecycleReady
           pluginLifecycleProtocols envContractPluginName loaded `shouldSatisfy` elem (Just currentProtocolVersion)
-          shutdownPlugins pluginManagerHandle
-          threadDelay 200000
 
   it "exposes Starting while public refreshManifests performs supervisor work" $ do
     withExecutablePluginDir refreshTransientPluginName refreshTransientManifestJSON "slow" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         done <- newEmptyMVar
         _ <- forkIO (refreshManifests pluginManagerHandle >> putMVar done ())
@@ -207,8 +222,7 @@ spec = describe "PluginManager" $ do
 
   it "exposes Stopping while public shutdownPlugins performs supervisor work" $ do
     withExecutablePluginDir shutdownTransientPluginName shutdownTransientManifestJSON "slow-shutdown" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         ready <- getLoadedPlugins pluginManagerHandle
@@ -224,8 +238,7 @@ spec = describe "PluginManager" $ do
 
   it "reports a protocol-version mismatch as a plugin error" $ do
     withExecutablePluginDir mismatchPluginName mismatchManifestJSON "protocol-mismatch" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
@@ -235,8 +248,7 @@ spec = describe "PluginManager" $ do
   it "surfaces manifest parse diagnostics for missing required fields" $ do
     let pluginName = "copilot-test-plugin-missing-runtime"
     withExecutablePluginDir pluginName (missingRuntimeManifestFor pluginName) "ok" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
         pluginStatuses pluginName loaded `shouldSatisfy` anyPluginErrorContaining "runtime"
@@ -246,8 +258,7 @@ spec = describe "PluginManager" $ do
   it "blocks startup when manifest runtime protocol bounds exclude the host" $ do
     let pluginName = "copilot-test-plugin-invalid-protocol"
     withExecutablePluginDir pluginName (invalidProtocolManifestFor pluginName) "ok" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
@@ -259,8 +270,7 @@ spec = describe "PluginManager" $ do
   it "blocks startup when a declared overlay schema cannot be loaded" $ do
     let pluginName = "copilot-test-plugin-missing-overlay-schema"
     withExecutablePluginDir pluginName (missingOverlaySchemaManifestFor pluginName) "ok" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
         pluginStatuses pluginName loaded `shouldSatisfy` anyPluginErrorContaining "overlay.schemaFile"
@@ -271,8 +281,7 @@ spec = describe "PluginManager" $ do
   it "validates backend-neutral external data-source declarations with actionable diagnostics" $ do
     let pluginName = "copilot-test-plugin-invalid-external-source"
     withExecutablePluginDir pluginName (invalidExternalSourceManifestFor pluginName) "ok" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
         pluginStatuses pluginName loaded `shouldSatisfy` anyPluginErrorContaining "externalDataSources"
@@ -284,8 +293,7 @@ spec = describe "PluginManager" $ do
   it "blocks startup for required external data-source refs declared unavailable" $ do
     let pluginName = "copilot-test-plugin-external-source-blocked"
     withExecutablePluginDir pluginName (blockedExternalRefManifestFor pluginName) "ok" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
@@ -298,15 +306,13 @@ spec = describe "PluginManager" $ do
   it "launches external data-source-only plugins for status protocol handling" $ do
     let pluginName = "copilot-test-plugin-external-source-only"
     withExecutablePluginDir pluginName (externalOnlyProviderManifestFor pluginName) "ok" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
         pluginStatuses pluginName loaded `shouldSatisfy` elem PluginConnected
         pluginLifecycleStates pluginName loaded `shouldSatisfy` elem LifecycleReady
         length (pluginProcessHandles pluginName loaded) `shouldSatisfy` (> 0)
-        shutdownPlugins pluginManagerHandle
 
   it "integrates shared external data-source provider and consumer fixtures without backend assumptions" $
     withExecutablePluginDirs
@@ -316,8 +322,7 @@ spec = describe "PluginManager" $ do
         bracket
           (deleteNamedWorld externalIntegrationWorldName >> pure ())
           (\_ -> deleteNamedWorld externalIntegrationWorldName >> pure ())
-          (\_ -> bracket newActorSystem shutdownActorSystem $ \system -> do
-              pluginManagerHandle <- getPluginManager system
+          (\_ -> withPluginManager $ \pluginManagerHandle -> do
               discoverPlugins pluginManagerHandle
               refreshManifests pluginManagerHandle
               (do
@@ -366,13 +371,11 @@ spec = describe "PluginManager" $ do
 
                 setDisabledPlugins pluginManagerHandle (Set.singleton externalProviderPluginNameText)
                 unavailableSnapshots <- getPluginExternalDataSources pluginManagerHandle
-                expectProviderUnavailableSnapshots unavailableSnapshots)
-                `finally` shutdownPlugins pluginManagerHandle)
+                expectProviderUnavailableSnapshots unavailableSnapshots))
 
   it "reports malformed handshake JSON as a plugin error" $ do
     withExecutablePluginDir malformedPluginName malformedManifestJSON "malformed-json" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
@@ -380,8 +383,7 @@ spec = describe "PluginManager" $ do
 
   it "reports unexpected handshake responses as plugin errors" $ do
     withExecutablePluginDir badHandshakePluginName badHandshakeManifestJSON "bad-handshake" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
@@ -390,8 +392,7 @@ spec = describe "PluginManager" $ do
 
   it "reports early plugin exit during startup as a plugin error" $ do
     withExecutablePluginDir crashPluginName crashManifestJSON "early-exit" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
@@ -399,8 +400,7 @@ spec = describe "PluginManager" $ do
 
   it "reports handshake timeouts as plugin errors" $ do
     withExecutablePluginDir slowPluginName slowManifestJSON "slow" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
@@ -408,8 +408,7 @@ spec = describe "PluginManager" $ do
 
   it "honors auto_start=false by leaving runtime capabilities unavailable" $ do
     withExecutablePluginDir autoStartDisabledPluginName autoStartDisabledManifestJSON "ok" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
@@ -425,8 +424,7 @@ spec = describe "PluginManager" $ do
 
   it "omits disabled plugin dependencies from pipeline views" $ do
     withExecutablePluginDir disabledDependencyPluginName disabledDependencyManifestJSON "ok" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
@@ -438,12 +436,10 @@ spec = describe "PluginManager" $ do
         stages <- getPluginStages pluginManagerHandle
         map stageName stages `shouldNotSatisfy` elem disabledName
         setDisabledPlugins pluginManagerHandle Set.empty
-        shutdownPlugins pluginManagerHandle
 
   it "surfaces external data-source provider failures without backend-specific storage assumptions" $ do
     withExecutablePluginDir providerFailedPluginName providerFailedManifestJSON "provider-failed" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
@@ -458,24 +454,20 @@ spec = describe "PluginManager" $ do
         observed <- getLoadedPlugins pluginManagerHandle
         pluginStatuses providerFailedPluginName observed `shouldSatisfy` anyPluginErrorContaining "external data-source provider failed"
         pluginLifecycleErrorCodes providerFailedPluginName observed `shouldSatisfy` elem (Just "data_query_failed")
-        shutdownPlugins pluginManagerHandle
 
   it "restarts startup failures with policy backoff and then connects" $ do
     withExecutablePluginDir flakyStartPluginName flakyStartManifestJSON "flaky-start" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
         pluginStatuses flakyStartPluginName loaded `shouldSatisfy` elem PluginConnected
-        shutdownPlugins pluginManagerHandle
         count <- readFixtureCount flakyStartPluginName "flaky-start"
         count `shouldBe` 2
 
   it "stops restarting startup failures after the max restart window is exhausted" $ do
     withExecutablePluginDir restartLimitPluginName restartLimitManifestJSON "counted-early-exit" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
@@ -486,8 +478,7 @@ spec = describe "PluginManager" $ do
 
   it "times out data-resource requests instead of hanging" $ do
     withExecutablePluginDir hangQueryPluginName hangQueryManifestJSON "hang-query" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
@@ -500,12 +491,10 @@ spec = describe "PluginManager" $ do
         observed <- getLoadedPlugins pluginManagerHandle
         pluginStatuses hangQueryPluginName observed `shouldSatisfy` anyPluginErrorContaining "restart limit exceeded"
         pluginLifecycleErrorCodes hangQueryPluginName observed `shouldSatisfy` elem (Just "restart_limit_exceeded")
-        shutdownPlugins pluginManagerHandle
 
   it "rejects unsupported data-resource mutations before plugin calls" $ do
     withExecutablePluginDir unsupportedMutationPluginName unsupportedMutationManifestJSON "validation-ok" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         (do
@@ -519,12 +508,10 @@ spec = describe "PluginManager" $ do
             Just (Right _) -> expectationFailure "unsupported mutation unexpectedly reached plugin"
           observed <- getLoadedPlugins pluginManagerHandle
           pluginStatuses unsupportedMutationPluginName observed `shouldSatisfy` elem PluginConnected)
-          `finally` shutdownPlugins pluginManagerHandle
 
   it "validates inbound data-resource records before plugins can accept them" $ do
     withExecutablePluginDir validationPluginName validationManifestJSON "validation-ok" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         (do
@@ -538,12 +525,10 @@ spec = describe "PluginManager" $ do
             Just (Right _) -> expectationFailure "invalid mutation unexpectedly reached plugin"
           observed <- getLoadedPlugins pluginManagerHandle
           pluginStatuses validationPluginName observed `shouldSatisfy` elem PluginConnected)
-          `finally` shutdownPlugins pluginManagerHandle
 
   it "validates plugin-returned data-resource records before exposing them" $ do
     withExecutablePluginDir invalidReturnPluginName invalidReturnManifestJSON "invalid-mutate" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         (do
@@ -557,12 +542,10 @@ spec = describe "PluginManager" $ do
             Just (Right _) -> expectationFailure "invalid plugin record unexpectedly passed validation"
           observed <- getLoadedPlugins pluginManagerHandle
           pluginStatuses invalidReturnPluginName observed `shouldSatisfy` elem PluginConnected)
-          `finally` shutdownPlugins pluginManagerHandle
 
   it "validates data-resource calls against negotiated handshake schemas" $ do
     withExecutablePluginDir negotiatedValidationPluginName negotiatedValidationManifestJSON "negotiated-validation" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         (do
@@ -576,12 +559,10 @@ spec = describe "PluginManager" $ do
             Just (Right mrs) -> mrsSuccess mrs `shouldBe` True
           observed <- getLoadedPlugins pluginManagerHandle
           pluginStatuses negotiatedValidationPluginName observed `shouldSatisfy` elem PluginConnected)
-          `finally` shutdownPlugins pluginManagerHandle
 
   it "surfaces generator crashes without hanging" $ do
     withExecutablePluginDir generatorCrashPluginName generatorCrashManifestJSON "exit-on-generator" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
@@ -596,12 +577,10 @@ spec = describe "PluginManager" $ do
         observed <- getLoadedPlugins pluginManagerHandle
         pluginStatuses generatorCrashPluginName observed `shouldSatisfy` anyPluginErrorContaining "restart limit exceeded"
         pluginLifecycleErrorCodes generatorCrashPluginName observed `shouldSatisfy` elem (Just "restart_limit_exceeded")
-        shutdownPlugins pluginManagerHandle
 
   it "surfaces simulation crashes without hanging" $ do
     withExecutablePluginDir simulationCrashPluginName simulationCrashManifestJSON "exit-on-simulation" $ do
-      bracket newActorSystem shutdownActorSystem $ \system -> do
-        pluginManagerHandle <- getPluginManager system
+      withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
@@ -617,7 +596,6 @@ spec = describe "PluginManager" $ do
         observed <- getLoadedPlugins pluginManagerHandle
         pluginStatuses simulationCrashPluginName observed `shouldSatisfy` anyPluginErrorContaining "restart limit exceeded"
         pluginLifecycleErrorCodes simulationCrashPluginName observed `shouldSatisfy` elem (Just "restart_limit_exceeded")
-        shutdownPlugins pluginManagerHandle
 
 pluginStatuses :: String -> [LoadedPlugin] -> [PluginStatus]
 pluginStatuses name loaded =
