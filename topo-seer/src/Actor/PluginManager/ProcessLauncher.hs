@@ -1,3 +1,5 @@
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -9,7 +11,14 @@ module Actor.PluginManager.ProcessLauncher
   , safeTerminateProcess
   ) where
 
+#if defined(mingw32_HOST_OS)
+import Control.Concurrent (forkIO, threadDelay)
+#else
 import Control.Concurrent (threadDelay)
+#endif
+#if defined(mingw32_HOST_OS)
+import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar)
+#endif
 import Control.Exception
   ( SomeAsyncException
   , SomeException
@@ -23,13 +32,27 @@ import qualified Data.ByteString as BS
 import Crypto.Random (getRandomBytes)
 import Data.Char (toLower)
 import Data.Text (Text)
+#if defined(mingw32_HOST_OS)
+import Data.Word (Word8, Word32)
+#else
 import Data.Word (Word8)
+#endif
+#if defined(mingw32_HOST_OS)
+import Foreign.C.Types (CInt(..))
+import Foreign.Marshal.Alloc (allocaBytes)
+import Foreign.Marshal.Utils (fillBytes)
+import Foreign.Ptr (IntPtr, Ptr, nullPtr)
+import Foreign.Storable (pokeByteOff, sizeOf)
+#endif
 import Numeric (showHex)
 import qualified Data.Text as Text
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.Environment (getEnvironment)
 import System.FilePath ((</>), (<.>))
 import System.IO (Handle, hClose)
+#if defined(mingw32_HOST_OS)
+import System.IO.Unsafe (unsafePerformIO)
+#endif
 import System.Info (os)
 import System.Process
   ( CreateProcess(..)
@@ -41,7 +64,9 @@ import System.Process
   , proc
   , terminateProcess
   )
-
+#if defined(mingw32_HOST_OS)
+import Text.Read (readMaybe)
+#endif
 
 import Topo.Plugin.RPC.Protocol (currentProtocolVersion)
 import Topo.Plugin.RPC.Transport
@@ -137,6 +162,10 @@ launchPluginTransportViaEndpoint executablePath workingDir pluginName startupTim
           safeCloseServer server
           pure (Left (Text.pack (show err), Nothing))
         Right (_, _, _, processHandle) -> do
+          protectionResult <- trySync (registerProcessParentDeathProtection processHandle)
+          case protectionResult of
+            Left _ -> pure ()
+            Right _ -> pure ()
           let cleanupLaunched = do
                 safeCloseServer server
                 terminated <- safeTerminateProcess processHandle
@@ -201,6 +230,166 @@ byteToHex byte = case showHex byte "" of
 unsavedWorldId :: String
 unsavedWorldId = "unsaved"
 
+registerProcessParentDeathProtection :: ProcessHandle -> IO ()
+#if defined(mingw32_HOST_OS)
+registerProcessParentDeathProtection processHandle = do
+  mJob <- attachProcessToKillOnCloseJob processHandle
+  case mJob of
+    Nothing -> pure ()
+    Just (pid, jobHandle) -> do
+      modifyMVar_ windowsProcessJobs $ \jobs -> do
+        let (oldHandles, retainedJobs) = partitionWindowsJobs pid jobs
+        mapM_ closeWindowsHandle oldHandles
+        pure ((pid, jobHandle) : retainedJobs)
+      _ <- forkIO $ do
+        waitForProcessExitForParentDeathProtection processHandle
+        releaseWindowsJobHandle pid jobHandle
+      pure ()
+#else
+registerProcessParentDeathProtection _ = pure ()
+#endif
+
+releaseProcessParentDeathProtection :: ProcessHandle -> IO ()
+#if defined(mingw32_HOST_OS)
+releaseProcessParentDeathProtection processHandle = do
+  mPid <- processHandlePidWord32 processHandle
+  case mPid of
+    Nothing -> pure ()
+    Just pid -> do
+      handles <- modifyMVar windowsProcessJobs $ \jobs -> do
+        let (matchedHandles, retainedJobs) = partitionWindowsJobs pid jobs
+        pure (retainedJobs, matchedHandles)
+      mapM_ closeWindowsHandle handles
+#else
+releaseProcessParentDeathProtection _ = pure ()
+#endif
+
+#if defined(mingw32_HOST_OS)
+type HANDLE = Ptr ()
+
+foreign import ccall unsafe "windows.h CreateJobObjectW"
+  c_CreateJobObjectW :: Ptr () -> Ptr () -> IO HANDLE
+
+foreign import ccall unsafe "windows.h SetInformationJobObject"
+  c_SetInformationJobObject :: HANDLE -> CInt -> Ptr () -> Word32 -> IO CInt
+
+foreign import ccall unsafe "windows.h AssignProcessToJobObject"
+  c_AssignProcessToJobObject :: HANDLE -> HANDLE -> IO CInt
+
+foreign import ccall unsafe "windows.h OpenProcess"
+  c_OpenProcess :: Word32 -> CInt -> Word32 -> IO HANDLE
+
+foreign import ccall unsafe "windows.h CloseHandle"
+  c_CloseHandle :: HANDLE -> IO CInt
+
+windowsProcessJobs :: MVar [(Word32, HANDLE)]
+windowsProcessJobs = unsafePerformIO (newMVar [])
+{-# NOINLINE windowsProcessJobs #-}
+
+attachProcessToKillOnCloseJob :: ProcessHandle -> IO (Maybe (Word32, HANDLE))
+attachProcessToKillOnCloseJob processHandle = do
+  mPid <- processHandlePidWord32 processHandle
+  case mPid of
+    Nothing -> pure Nothing
+    Just pid -> do
+      jobHandle <- createKillOnCloseJob
+      if jobHandle == nullPtr
+        then pure Nothing
+        else do
+          processHandleForAssign <- c_OpenProcess processAssignJobRights 0 pid
+          if processHandleForAssign == nullPtr
+            then closeWindowsHandle jobHandle >> pure Nothing
+            else do
+              assigned <- c_AssignProcessToJobObject jobHandle processHandleForAssign
+              closeWindowsHandle processHandleForAssign
+              if assigned == 0
+                then closeWindowsHandle jobHandle >> pure Nothing
+                else pure (Just (pid, jobHandle))
+
+createKillOnCloseJob :: IO HANDLE
+createKillOnCloseJob = do
+  jobHandle <- c_CreateJobObjectW nullPtr nullPtr
+  if jobHandle == nullPtr
+    then pure nullPtr
+    else do
+      configured <- allocaBytes jobObjectExtendedLimitInformationSize $ \infoPtr -> do
+        fillBytes infoPtr 0 jobObjectExtendedLimitInformationSize
+        pokeByteOff infoPtr jobObjectLimitFlagsOffset jobObjectLimitKillOnJobClose
+        c_SetInformationJobObject
+          jobHandle
+          jobObjectExtendedLimitInformation
+          infoPtr
+          (fromIntegral jobObjectExtendedLimitInformationSize)
+      if configured == 0
+        then closeWindowsHandle jobHandle >> pure nullPtr
+        else pure jobHandle
+
+processHandlePidWord32 :: ProcessHandle -> IO (Maybe Word32)
+processHandlePidWord32 processHandle = do
+  mPid <- getPid processHandle
+  pure (mPid >>= readMaybe . show)
+
+partitionWindowsJobs :: Word32 -> [(Word32, HANDLE)] -> ([HANDLE], [(Word32, HANDLE)])
+partitionWindowsJobs _ [] = ([], [])
+partitionWindowsJobs targetPid ((pid, handle):jobs)
+  | targetPid == pid =
+      let (matchedHandles, retainedJobs) = partitionWindowsJobs targetPid jobs
+      in (handle : matchedHandles, retainedJobs)
+  | otherwise =
+      let (matchedHandles, retainedJobs) = partitionWindowsJobs targetPid jobs
+      in (matchedHandles, (pid, handle) : retainedJobs)
+
+releaseWindowsJobHandle :: Word32 -> HANDLE -> IO ()
+releaseWindowsJobHandle targetPid targetHandle = do
+  mHandle <- modifyMVar windowsProcessJobs $ \jobs -> do
+    let (matchedHandle, retainedJobs) = removeWindowsJob targetPid targetHandle jobs
+    pure (retainedJobs, matchedHandle)
+  case mHandle of
+    Nothing -> pure ()
+    Just handle -> closeWindowsHandle handle
+
+removeWindowsJob :: Word32 -> HANDLE -> [(Word32, HANDLE)] -> (Maybe HANDLE, [(Word32, HANDLE)])
+removeWindowsJob _ _ [] = (Nothing, [])
+removeWindowsJob targetPid targetHandle ((pid, handle):jobs)
+  | targetPid == pid && targetHandle == handle = (Just handle, jobs)
+  | otherwise =
+      let (matchedHandle, retainedJobs) = removeWindowsJob targetPid targetHandle jobs
+      in (matchedHandle, (pid, handle) : retainedJobs)
+
+waitForProcessExitForParentDeathProtection :: ProcessHandle -> IO ()
+waitForProcessExitForParentDeathProtection processHandle = do
+  mExit <- getProcessExitCode processHandle
+  case mExit of
+    Just _ -> pure ()
+    Nothing -> do
+      threadDelay processPollDelayMicros
+      waitForProcessExitForParentDeathProtection processHandle
+
+closeWindowsHandle :: HANDLE -> IO ()
+closeWindowsHandle handle
+  | handle == nullPtr = pure ()
+  | otherwise = do
+      _ <- c_CloseHandle handle
+      pure ()
+
+processAssignJobRights :: Word32
+processAssignJobRights = 0x00000101
+
+jobObjectExtendedLimitInformation :: CInt
+jobObjectExtendedLimitInformation = 9
+
+jobObjectLimitKillOnJobClose :: Word32
+jobObjectLimitKillOnJobClose = 0x00002000
+
+jobObjectLimitFlagsOffset :: Int
+jobObjectLimitFlagsOffset = 16
+
+jobObjectExtendedLimitInformationSize :: Int
+jobObjectExtendedLimitInformationSize
+  | sizeOf (undefined :: IntPtr) == 8 = 144
+  | otherwise = 112
+#endif
+
 safeCloseHandle :: Handle -> IO ()
 safeCloseHandle handle = do
   _ <- try @SomeException (hClose handle)
@@ -212,7 +401,12 @@ safeTerminateProcess processHandle = do
     then terminateWindowsProcessTree processHandle
     else pure ()
   _ <- try @SomeException (terminateProcess processHandle)
-  waitForProcessExitPoll processTerminationWaitMicros processHandle
+  terminated <- waitForProcessExitPoll processTerminationWaitMicros processHandle
+  if terminated
+    then releaseProcessParentDeathProtection processHandle >> pure True
+    else do
+      releaseProcessParentDeathProtection processHandle
+      waitForProcessExitPoll processTerminationWaitMicros processHandle
 
 terminateWindowsProcessTree :: ProcessHandle -> IO ()
 terminateWindowsProcessTree processHandle = do

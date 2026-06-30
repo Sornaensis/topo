@@ -1,7 +1,6 @@
 module Main (main) where
 
 import System.IO (hSetEncoding, stdout, stderr, utf8)
-import System.Environment (getArgs)
 import Test.Hspec
 import qualified Spec.HexPick
 import qualified Spec.Layout
@@ -45,10 +44,10 @@ import qualified Spec.ZoomStageProperties
 
 main :: IO ()
 main = do
-  args <- getArgs
-  case args of
-    "--plugin-manager-fixture":_ -> Spec.PluginManager.runFixtureCli
-    _ -> do
+  handledFixture <- Spec.PluginManager.runFixtureCliIfRequested
+  if handledFixture
+    then pure ()
+    else do
       hSetEncoding stdout utf8
       hSetEncoding stderr utf8
       hspec $ do

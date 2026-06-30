@@ -3,7 +3,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Spec.PluginManager (spec, runFixtureCli) where
+module Spec.PluginManager (spec, runFixtureCli, runFixtureCliIfRequested) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
 import Control.Exception (SomeAsyncException, SomeException, bracket, catch, finally, fromException, onException, throwIO)
@@ -22,9 +22,11 @@ import Data.Word (Word64)
 import Hyperspace.Actor (ActorHandle, ActorSystem, Protocol, get, newActorSystem, shutdownActorSystem)
 import System.Directory
   ( Permissions(..)
+  , copyFile
   , createDirectoryIfMissing
   , doesDirectoryExist
   , doesFileExist
+  , getCurrentDirectory
   , getHomeDirectory
   , getPermissions
   , getTemporaryDirectory
@@ -968,11 +970,9 @@ writePluginWrapper pluginDir pluginName fixtureMode = do
   testExe <- getExecutablePath
   if os == "mingw32"
     then do
-      let wrapperPath = pluginDir </> (pluginName <> ".cmd")
-      writeFile wrapperPath $ unlines
-        [ "@echo off"
-        , "\"" <> testExe <> "\" --plugin-manager-fixture " <> fixtureMode
-        ]
+      let wrapperPath = pluginDir </> (pluginName <> ".exe")
+      copyFile testExe wrapperPath
+      writeFile (windowsFixtureModePath pluginDir) fixtureMode
     else do
       let wrapperPath = pluginDir </> pluginName
       writeFile wrapperPath $ unlines
@@ -988,12 +988,44 @@ shellQuote value = "'" <> concatMap quoteChar value <> "'"
     quoteChar '\'' = "'\\''"
     quoteChar c = [c]
 
+runFixtureCliIfRequested :: IO Bool
+runFixtureCliIfRequested = do
+  modeResult <- fixtureCliMode
+  case modeResult of
+    Left shouldFail
+      | shouldFail -> fixtureUsage
+      | otherwise -> pure False
+    Right mode -> runFixtureMode mode >> pure True
+
 runFixtureCli :: IO ()
 runFixtureCli = do
+  modeResult <- fixtureCliMode
+  case modeResult of
+    Right mode -> runFixtureMode mode
+    Left _ -> fixtureUsage
+
+fixtureCliMode :: IO (Either Bool String)
+fixtureCliMode = do
   args <- getArgs
   case args of
-    ["--plugin-manager-fixture", mode] -> runFixtureMode mode
-    _ -> die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|malformed-json|bad-handshake|early-exit|slow|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|exit-on-generator|exit-on-simulation|external-provider|external-consumer>"
+    ["--plugin-manager-fixture", mode] -> pure (Right mode)
+    "--plugin-manager-fixture":_ -> pure (Left True)
+    [] | os == "mingw32" -> do
+      cwd <- getCurrentDirectory
+      exists <- doesFileExist (windowsFixtureModePath cwd)
+      if exists
+        then Right . normalizeFixtureMode <$> readFile (windowsFixtureModePath cwd)
+        else pure (Left False)
+    _ -> pure (Left False)
+
+windowsFixtureModePath :: FilePath -> FilePath
+windowsFixtureModePath dir = dir </> ".topo-plugin-manager-fixture-mode"
+
+normalizeFixtureMode :: String -> String
+normalizeFixtureMode = takeWhile (`notElem` ['\r', '\n'])
+
+fixtureUsage :: IO a
+fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|malformed-json|bad-handshake|early-exit|slow|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|exit-on-generator|exit-on-simulation|external-provider|external-consumer>"
 
 runFixtureMode :: String -> IO ()
 runFixtureMode = \case
