@@ -65,13 +65,14 @@ module Topo.Plugin.RPC
 
 import Control.Concurrent
   ( MVar
+  , ThreadId
   , forkIO
   , modifyMVar
   , modifyMVar_
   , newEmptyMVar
   , newMVar
-  , putMVar
   , takeMVar
+  , tryPutMVar
   )
 import Control.Exception (SomeException, try)
 import Control.Monad (forM_, when)
@@ -143,7 +144,7 @@ data RPCSession = RPCSession
   { rpcsWriteLock :: !(MVar ())
   , rpcsPending :: !(MVar (Map Word64 RPCPending))
   , rpcsNextRequestId :: !(IORef Word64)
-  , rpcsReceiverStarted :: !(MVar Bool)
+  , rpcsReceiverThread :: !(MVar (Maybe ThreadId))
   }
 
 -- | A request awaiting a correlated response.
@@ -158,12 +159,12 @@ newRPCSession = do
   writeLock <- newMVar ()
   pending <- newMVar Map.empty
   nextRequestId <- newIORef 1
-  receiverStarted <- newMVar False
+  receiverThread <- newMVar Nothing
   pure RPCSession
     { rpcsWriteLock = writeLock
     , rpcsPending = pending
     , rpcsNextRequestId = nextRequestId
-    , rpcsReceiverStarted = receiverStarted
+    , rpcsReceiverThread = receiverThread
     }
 
 ------------------------------------------------------------------------
@@ -237,7 +238,6 @@ rpcCallWithProgress
 rpcCallWithProgress failureRef mTimeout timeoutMessage conn envelope onProgress onLog = do
   let session = rpcSession conn
       transport = rpcTransport conn
-  startRPCReceiver failureRef conn
   requestId <- nextRPCRequestId session
   done <- newEmptyMVar
   let pending = RPCPending
@@ -247,19 +247,17 @@ rpcCallWithProgress failureRef mTimeout timeoutMessage conn envelope onProgress 
         }
       requestEnvelope = envelope { envRequestId = Just requestId }
   registerPending session requestId pending
-  sendAndAwaitPendingResult failureRef mTimeout timeoutMessage transport session requestId done requestEnvelope
+  sendAndAwaitPendingResult failureRef mTimeout timeoutMessage conn transport session requestId done requestEnvelope
 
 startRPCReceiver :: Maybe (IORef (Maybe RPCError)) -> RPCConnection -> IO ()
 startRPCReceiver failureRef conn =
   let receiverFailureRef = case failureRef of
         Just ref -> Just ref
         Nothing -> Just (rpcRuntimeFailure conn)
-  in modifyMVar_ (rpcsReceiverStarted (rpcSession conn)) $ \started ->
-    if started
-      then pure True
-      else do
-        _ <- forkIO (rpcReceiverLoop receiverFailureRef conn)
-        pure True
+  in modifyMVar_ (rpcsReceiverThread (rpcSession conn)) $ \mReceiver ->
+    case mReceiver of
+      Just _ -> pure mReceiver
+      Nothing -> Just <$> forkIO (rpcReceiverLoop receiverFailureRef conn)
 
 rpcReceiverLoop :: Maybe (IORef (Maybe RPCError)) -> RPCConnection -> IO ()
 rpcReceiverLoop failureRef conn = loop
@@ -274,14 +272,14 @@ rpcReceiverLoop failureRef conn = loop
           let rpcErr = RPCTransportError err
           recordRuntimeFailureIfNeeded failureRef rpcErr
           completeAllPending session rpcErr
-          _ <- forkIO (closeTransport transport)
+          closeTransport transport
           pure ()
         Right bs -> case decodeMessage bs of
           Left err -> do
             let rpcErr = RPCProtocolError err
             recordRuntimeFailureIfNeeded failureRef rpcErr
             completeAllPending session rpcErr
-            _ <- forkIO (closeTransport transport)
+            closeTransport transport
             pure ()
           Right envelope -> do
             dispatchIncomingEnvelope session envelope
@@ -307,13 +305,14 @@ sendAndAwaitPendingResult
   :: Maybe (IORef (Maybe RPCError))
   -> Maybe Int
   -> Text
+  -> RPCConnection
   -> Transport
   -> RPCSession
   -> Word64
   -> MVar (Either RPCError RPCEnvelope)
   -> RPCEnvelope
   -> IO (Either RPCError RPCEnvelope)
-sendAndAwaitPendingResult failureRef mTimeout timeoutMessage transport session requestId done envelope = do
+sendAndAwaitPendingResult failureRef mTimeout timeoutMessage conn transport session requestId done envelope = do
   result <- case mTimeout of
     Nothing -> Just <$> sendThenWait
     Just micros -> timeout micros sendThenWait
@@ -322,7 +321,6 @@ sendAndAwaitPendingResult failureRef mTimeout timeoutMessage transport session r
       _ <- removePending session requestId
       let err = RPCTimeout timeoutMessage
       recordRuntimeFailure failureRef err
-      _ <- forkIO (closeTransport transport)
       pure (Left err)
     Just value -> do
       recordResultFailure failureRef value
@@ -334,7 +332,9 @@ sendAndAwaitPendingResult failureRef mTimeout timeoutMessage transport session r
         Left err -> do
           _ <- removePending session requestId
           pure (Left (RPCTransportError err))
-        Right () -> takeMVar done
+        Right () -> do
+          startRPCReceiver failureRef conn
+          takeMVar done
 
 nextRPCRequestId :: RPCSession -> IO Word64
 nextRPCRequestId session =
@@ -357,7 +357,9 @@ removePending session requestId =
 completeAllPending :: RPCSession -> RPCError -> IO ()
 completeAllPending session err = do
   pendingMap <- modifyMVar (rpcsPending session) $ \pending -> pure (Map.empty, pending)
-  forM_ (Map.elems pendingMap) $ \pending -> putMVar (rpResult pending) (Left err)
+  forM_ (Map.elems pendingMap) $ \pending -> do
+    _ <- tryPutMVar (rpResult pending) (Left err)
+    pure ()
 
 dispatchIncomingEnvelope :: RPCSession -> RPCEnvelope -> IO ()
 dispatchIncomingEnvelope session envelope =
@@ -406,11 +408,12 @@ handleInterimEnvelope pending envelope =
     _ -> pure ()
 
 handleFinalEnvelope :: RPCPending -> RPCEnvelope -> IO ()
-handleFinalEnvelope pending envelope =
-  case envType envelope of
-    MsgError ->
-      putMVar (rpResult pending) (Left (decodePluginErrorPayload (envPayload envelope)))
-    _ -> putMVar (rpResult pending) (Right envelope)
+handleFinalEnvelope pending envelope = do
+  let result = case envType envelope of
+        MsgError -> Left (decodePluginErrorPayload (envPayload envelope))
+        _ -> Right envelope
+  _ <- tryPutMVar (rpResult pending) result
+  pure ()
 
 ignoreCallbackException :: IO () -> IO ()
 ignoreCallbackException action = do

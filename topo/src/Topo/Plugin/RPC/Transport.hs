@@ -63,6 +63,9 @@ module Topo.Plugin.RPC.Transport
   , pluginPipeName
   ) where
 
+#if defined(mingw32_HOST_OS)
+import Control.Concurrent (threadDelay)
+#endif
 import Control.Exception (IOException, SomeException, catch, evaluate, try)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
@@ -91,10 +94,10 @@ import System.IO
   , hSetBuffering
   , openBinaryTempFile
   )
+import GHC.IO.Handle (hDuplicate)
 import System.Timeout (timeout)
 
 #if defined(mingw32_HOST_OS)
-import Control.Concurrent (threadDelay)
 import Data.Bits ((.|.))
 import Data.IORef (IORef, atomicModifyIORef', newIORef, writeIORef)
 import Data.Unique (hashUnique, newUnique)
@@ -102,6 +105,7 @@ import Foreign.C.String (withCString)
 import Foreign.C.Types (CChar, CInt(..))
 import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (Ptr, nullPtr, plusPtr)
+import Foreign.Storable (peek)
 import GHC.IO.Handle.FD (fdToHandle)
 #else
 import qualified Network.Socket as Socket
@@ -366,27 +370,31 @@ stdioCompatibilityEnabled (Just raw) =
 connectPlugin :: Text -> Handle -> Handle -> IO (Either TransportError Transport)
 connectPlugin name readH writeH = do
   result <- catch
-    (Right <$> mkTransport name readH writeH)
+    (Right <$> mkTransport name readH writeH False)
     (\e -> pure (Left (TransportConnectionFailed (Text.pack (show (e :: SomeException))))))
   pure result
 
-mkTransport :: Text -> Handle -> Handle -> IO Transport
-mkTransport name readH writeH = do
+mkTransport :: Text -> Handle -> Handle -> Bool -> IO Transport
+mkTransport name readH writeH shared = do
+  -- A single duplex Handle serializes reads and writes internally.  Production
+  -- socket/pipe endpoints therefore duplicate the handle so the background RPC
+  -- receiver cannot block concurrent sends on the same Handle lock.
+  writeHandle <- if shared then hDuplicate readH else pure writeH
   hSetBinaryMode readH True
-  hSetBinaryMode writeH True
-  hSetBuffering readH (BlockBuffering Nothing)
-  hSetBuffering writeH (BlockBuffering Nothing)
+  hSetBinaryMode writeHandle True
+  hSetBuffering readH NoBuffering
+  hSetBuffering writeHandle NoBuffering
   pure Transport
     { tReadHandle  = readH
-    , tWriteHandle = writeH
+    , tWriteHandle = writeHandle
     , tPluginName  = name
     }
 
 -- | Close the transport connection.
 closeTransport :: Transport -> IO ()
 closeTransport t = do
-  catch (hClose (tReadHandle t)) (\(_ :: SomeException) -> pure ())
   catch (hClose (tWriteHandle t)) (\(_ :: SomeException) -> pure ())
+  catch (hClose (tReadHandle t)) (\(_ :: SomeException) -> pure ())
 
 #if defined(mingw32_HOST_OS)
 ------------------------------------------------------------------------
@@ -432,8 +440,22 @@ foreign import ccall safe "windows.h CreateFileA"
 foreign import ccall unsafe "windows.h CloseHandle"
   c_CloseHandle :: HANDLE -> IO CInt
 
+foreign import ccall unsafe "windows.h DuplicateHandle"
+  c_DuplicateHandle
+    :: HANDLE     -- hSourceProcessHandle
+    -> HANDLE     -- hSourceHandle
+    -> HANDLE     -- hTargetProcessHandle
+    -> Ptr HANDLE -- lpTargetHandle
+    -> Word32     -- dwDesiredAccess
+    -> CInt       -- bInheritHandle
+    -> Word32     -- dwOptions
+    -> IO CInt
+
 foreign import ccall unsafe "windows.h GetLastError"
   c_GetLastError :: IO Word32
+
+foreign import ccall unsafe "windows.h GetCurrentProcess"
+  c_GetCurrentProcess :: IO HANDLE
 
 foreign import ccall unsafe "windows.h GetCurrentProcessId"
   c_GetCurrentProcessId :: IO Word32
@@ -461,34 +483,64 @@ openNamedPipeServer :: TransportConfig -> Text -> IO (Either TransportError Tran
 openNamedPipeServer cfg pluginName = catch go handler
   where
     go = do
-      pipeName <- allocateNamedPipeName pluginName
-      pipeH <- withCString pipeName $ \namePtr ->
-        c_CreateNamedPipe
-          namePtr
-          pipeAccessDuplex
-          pipeByteModeNonblocking
-          1       -- one client per host-created endpoint
-          65536   -- output buffer size
-          65536   -- input buffer size
-          0       -- default timeout
-          nullPtr -- default security attributes
-      if pipeH == invalidHandleValue
-        then do
-          err <- c_GetLastError
-          pure (Left (TransportConnectionFailed
-            ("CreateNamedPipe failed for " <> Text.pack pipeName <> " (GetLastError=" <> Text.pack (show err) <> ")")))
-        else do
-          owned <- newIORef True
-          pure (Right TransportServer
-            { tsEndpoint = TransportEndpoint
-                { teKind = TransportEndpointNamedPipe
-                , teAddress = pipeName
-                }
-            , tsAccept = acceptNamedPipeTransport cfg pluginName owned pipeH pipeName
-            , tsClose = closeOwnedNamedPipe owned pipeH
-            })
+      hostReadPipeName <- allocateNamedPipeName (pluginName <> "-host-read")
+      hostWritePipeName <- allocateNamedPipeName (pluginName <> "-host-write")
+      readPipeResult <- createNamedPipeEndpoint hostReadPipeName
+      case readPipeResult of
+        Left err -> pure (Left err)
+        Right readPipeH -> do
+          writePipeResult <- createNamedPipeEndpoint hostWritePipeName
+          case writePipeResult of
+            Left err -> do
+              closeRawHandle readPipeH
+              pure (Left err)
+            Right writePipeH -> do
+              readOwned <- newIORef True
+              writeOwned <- newIORef True
+              pure (Right TransportServer
+                { tsEndpoint = TransportEndpoint
+                    { teKind = TransportEndpointNamedPipe
+                    , teAddress = encodeNamedPipePair hostReadPipeName hostWritePipeName
+                    }
+                , tsAccept = acceptNamedPipeTransportPair cfg pluginName
+                    readOwned readPipeH hostReadPipeName
+                    writeOwned writePipeH hostWritePipeName
+                , tsClose = do
+                    closeOwnedNamedPipe readOwned readPipeH
+                    closeOwnedNamedPipe writeOwned writePipeH
+                })
     handler (err :: SomeException) =
       pure (Left (TransportConnectionFailed (Text.pack (show err))))
+
+createNamedPipeEndpoint :: FilePath -> IO (Either TransportError HANDLE)
+createNamedPipeEndpoint pipeName = do
+  pipeH <- withCString pipeName $ \namePtr ->
+    c_CreateNamedPipe
+      namePtr
+      pipeAccessDuplex
+      pipeByteModeNonblocking
+      1       -- one client per host-created endpoint
+      65536   -- output buffer size
+      65536   -- input buffer size
+      0       -- default timeout
+      nullPtr -- default security attributes
+  if pipeH == invalidHandleValue
+    then do
+      err <- c_GetLastError
+      pure (Left (TransportConnectionFailed
+        ("CreateNamedPipe failed for " <> Text.pack pipeName <> " (GetLastError=" <> Text.pack (show err) <> ")")))
+    else pure (Right pipeH)
+
+encodeNamedPipePair :: FilePath -> FilePath -> FilePath
+encodeNamedPipePair hostReadPipeName hostWritePipeName = hostReadPipeName <> "|" <> hostWritePipeName
+
+decodeNamedPipePair :: FilePath -> Maybe (FilePath, FilePath)
+decodeNamedPipePair raw =
+  case break (== '|') raw of
+    (hostReadPipeName, '|':hostWritePipeName)
+      | not (null hostReadPipeName) && not (null hostWritePipeName) ->
+          Just (hostReadPipeName, hostWritePipeName)
+    _ -> Nothing
 
 pipeAccessDuplex :: Word32
 pipeAccessDuplex = 0x00000003
@@ -507,6 +559,9 @@ openExisting = 3
 
 fileAttributeNormal :: Word32
 fileAttributeNormal = 0x00000080
+
+duplicateSameAccess :: Word32
+duplicateSameAccess = 0x00000002
 
 openOsfHandleFlags :: CInt
 openOsfHandleFlags = 0x0002 .|. 0x8000 -- _O_RDWR | _O_BINARY
@@ -530,6 +585,33 @@ acceptNamedPipeTransport cfg pluginName owned pipeH pipeName = do
   case connectResult of
     Left err -> pure (Left err)
     Right () -> convertNamedPipeHandle owned pipeH pluginName pipeName
+
+acceptNamedPipeTransportPair
+  :: TransportConfig
+  -> Text
+  -> IORef Bool
+  -> HANDLE
+  -> FilePath
+  -> IORef Bool
+  -> HANDLE
+  -> FilePath
+  -> IO (Either TransportError Transport)
+acceptNamedPipeTransportPair cfg pluginName readOwned readPipeH readPipeName writeOwned writePipeH writePipeName = do
+  readConnectResult <- waitForNamedPipeConnection cfg readOwned readPipeH readPipeName
+  case readConnectResult of
+    Left err -> do
+      closeOwnedNamedPipe writeOwned writePipeH
+      pure (Left err)
+    Right () -> do
+      writeConnectResult <- waitForNamedPipeConnection cfg writeOwned writePipeH writePipeName
+      case writeConnectResult of
+        Left err -> do
+          closeOwnedNamedPipe readOwned readPipeH
+          pure (Left err)
+        Right () -> convertNamedPipeHandlePair
+          readOwned readPipeH readPipeName
+          writeOwned writePipeH writePipeName
+          pluginName
 
 waitForNamedPipeConnection
   :: TransportConfig
@@ -592,17 +674,46 @@ setNamedPipeBlocking owned pipeH pipeName = do
       pure (Left (TransportConnectionFailed
         ("SetNamedPipeHandleState failed for " <> Text.pack pipeName <> " (GetLastError=" <> Text.pack (show err) <> ")")))
 
-convertNamedPipeHandle :: IORef Bool -> HANDLE -> Text -> FilePath -> IO (Either TransportError Transport)
-convertNamedPipeHandle owned pipeH pluginName pipeName = do
+convertNamedPipeHandlePair
+  :: IORef Bool
+  -> HANDLE
+  -> FilePath
+  -> IORef Bool
+  -> HANDLE
+  -> FilePath
+  -> Text
+  -> IO (Either TransportError Transport)
+convertNamedPipeHandlePair readOwned readPipeH readPipeName writeOwned writePipeH writePipeName pluginName = do
+  readHandleResult <- namedPipeHandleToHandle readOwned readPipeH readPipeName
+  case readHandleResult of
+    Left err -> do
+      closeOwnedNamedPipe writeOwned writePipeH
+      pure (Left err)
+    Right readHandle -> do
+      writeHandleResult <- namedPipeHandleToHandle writeOwned writePipeH writePipeName
+      case writeHandleResult of
+        Left err -> do
+          safeCloseHandle readHandle
+          pure (Left err)
+        Right writeHandle -> do
+          transportResult <- try (mkTransport pluginName readHandle writeHandle False)
+            :: IO (Either SomeException Transport)
+          case transportResult of
+            Left err -> do
+              safeCloseHandle readHandle
+              safeCloseHandle writeHandle
+              pure (Left (TransportConnectionFailed (Text.pack (show err))))
+            Right transport -> pure (Right transport)
+
+namedPipeHandleToHandle :: IORef Bool -> HANDLE -> FilePath -> IO (Either TransportError Handle)
+namedPipeHandleToHandle owned pipeH pipeName = do
   fd <- c_open_osfhandle pipeH openOsfHandleFlags
   if fd == (-1)
     then do
       err <- c_GetLastError
       closeOwnedNamedPipe owned pipeH
-      pure (Left (TransportConnectionFailed
-        ("_open_osfhandle failed for " <> Text.pack pipeName <> " (GetLastError=" <> Text.pack (show err) <> ")")))
+      pure (Left (openOsfHandleError pipeName err))
     else do
-      -- _open_osfhandle transfers HANDLE ownership to the C file descriptor.
       writeIORef owned False
       handleResult <- try (fdToHandle (fromIntegral fd))
         :: IO (Either SomeException Handle)
@@ -610,23 +721,86 @@ convertNamedPipeHandle owned pipeH pluginName pipeName = do
         Left err -> do
           closeFileDescriptor fd
           pure (Left (TransportConnectionFailed (Text.pack (show err))))
-        Right handle -> do
-          transportResult <- try (mkTransport pluginName handle handle)
-            :: IO (Either SomeException Transport)
-          case transportResult of
-            Left err -> do
-              safeCloseHandle handle
-              pure (Left (TransportConnectionFailed (Text.pack (show err))))
-            Right transport -> pure (Right transport)
+        Right handle -> pure (Right handle)
+
+convertNamedPipeHandle :: IORef Bool -> HANDLE -> Text -> FilePath -> IO (Either TransportError Transport)
+convertNamedPipeHandle owned pipeH pluginName pipeName = do
+  writeHandleResult <- duplicateNamedPipeHandle pipeH pipeName
+  case writeHandleResult of
+    Left err -> do
+      closeOwnedNamedPipe owned pipeH
+      pure (Left err)
+    Right writePipeH -> do
+      readFd <- c_open_osfhandle pipeH openOsfHandleFlags
+      if readFd == (-1)
+        then do
+          err <- c_GetLastError
+          closeRawHandle writePipeH
+          closeOwnedNamedPipe owned pipeH
+          pure (Left (openOsfHandleError pipeName err))
+        else do
+          -- _open_osfhandle transfers HANDLE ownership to the C file descriptor.
+          writeIORef owned False
+          writeFd <- c_open_osfhandle writePipeH openOsfHandleFlags
+          if writeFd == (-1)
+            then do
+              err <- c_GetLastError
+              closeFileDescriptor readFd
+              closeRawHandle writePipeH
+              pure (Left (openOsfHandleError pipeName err))
+            else do
+              readHandleResult <- try (fdToHandle (fromIntegral readFd))
+                :: IO (Either SomeException Handle)
+              case readHandleResult of
+                Left err -> do
+                  closeFileDescriptor readFd
+                  closeFileDescriptor writeFd
+                  pure (Left (TransportConnectionFailed (Text.pack (show err))))
+                Right readHandle -> do
+                  writeHandleResult' <- try (fdToHandle (fromIntegral writeFd))
+                    :: IO (Either SomeException Handle)
+                  case writeHandleResult' of
+                    Left err -> do
+                      safeCloseHandle readHandle
+                      closeFileDescriptor writeFd
+                      pure (Left (TransportConnectionFailed (Text.pack (show err))))
+                    Right writeHandle -> do
+                      transportResult <- try (mkTransport pluginName readHandle writeHandle False)
+                        :: IO (Either SomeException Transport)
+                      case transportResult of
+                        Left err -> do
+                          safeCloseHandle readHandle
+                          safeCloseHandle writeHandle
+                          pure (Left (TransportConnectionFailed (Text.pack (show err))))
+                        Right transport -> pure (Right transport)
+
+duplicateNamedPipeHandle :: HANDLE -> FilePath -> IO (Either TransportError HANDLE)
+duplicateNamedPipeHandle pipeH pipeName = do
+  currentProcess <- c_GetCurrentProcess
+  with nullPtr $ \targetPtr -> do
+    ok <- c_DuplicateHandle currentProcess pipeH currentProcess targetPtr 0 0 duplicateSameAccess
+    if ok == 0
+      then do
+        err <- c_GetLastError
+        pure (Left (TransportConnectionFailed
+          ("DuplicateHandle failed for " <> Text.pack pipeName <> " (GetLastError=" <> Text.pack (show err) <> ")")))
+      else Right <$> peek targetPtr
+
+openOsfHandleError :: FilePath -> Word32 -> TransportError
+openOsfHandleError pipeName err = TransportConnectionFailed
+  ("_open_osfhandle failed for " <> Text.pack pipeName <> " (GetLastError=" <> Text.pack (show err) <> ")")
 
 closeOwnedNamedPipe :: IORef Bool -> HANDLE -> IO ()
 closeOwnedNamedPipe owned pipeH = do
   shouldClose <- atomicModifyIORef' owned (\isOwned -> (False, isOwned))
   if shouldClose
-    then do
-      _ <- try (c_CloseHandle pipeH) :: IO (Either SomeException CInt)
-      pure ()
+    then closeRawHandle pipeH
     else pure ()
+
+closeRawHandle :: HANDLE -> IO ()
+closeRawHandle handle = do
+  _ <- try (c_CloseHandle handle) :: IO (Either SomeException CInt)
+  pure ()
 
 closeFileDescriptor :: CInt -> IO ()
 closeFileDescriptor fd = do
@@ -641,26 +815,55 @@ safeCloseHandle handle = do
 connectNamedPipeEndpoint :: Text -> FilePath -> IO (Either TransportError Transport)
 connectNamedPipeEndpoint name pipeName = catch go handler
   where
-    go = do
-      pipeH <- withCString pipeName $ \namePtr ->
-        c_CreateFile
-          namePtr
-          genericReadWrite
-          0                   -- exclusive access to this client endpoint
-          nullPtr             -- default security attributes
-          openExisting
-          fileAttributeNormal
-          nullPtr
-      if pipeH == invalidHandleValue
-        then do
-          err <- c_GetLastError
-          pure (Left (TransportConnectionFailed
-            ("CreateFile failed for " <> Text.pack pipeName <> " (GetLastError=" <> Text.pack (show err) <> ")")))
-        else do
-          owned <- newIORef True
-          convertNamedPipeHandle owned pipeH name pipeName
+    go = case decodeNamedPipePair pipeName of
+      Just (hostReadPipeName, hostWritePipeName) ->
+        connectNamedPipeEndpointPair name hostReadPipeName hostWritePipeName
+      Nothing -> do
+        pipeResult <- openExistingNamedPipe pipeName
+        case pipeResult of
+          Left err -> pure (Left err)
+          Right pipeH -> do
+            owned <- newIORef True
+            convertNamedPipeHandle owned pipeH name pipeName
     handler (err :: SomeException) =
       pure (Left (TransportConnectionFailed (Text.pack (show err))))
+
+connectNamedPipeEndpointPair :: Text -> FilePath -> FilePath -> IO (Either TransportError Transport)
+connectNamedPipeEndpointPair name hostReadPipeName hostWritePipeName = do
+  writePipeResult <- openExistingNamedPipe hostReadPipeName
+  case writePipeResult of
+    Left err -> pure (Left err)
+    Right writePipeH -> do
+      readPipeResult <- openExistingNamedPipe hostWritePipeName
+      case readPipeResult of
+        Left err -> do
+          closeRawHandle writePipeH
+          pure (Left err)
+        Right readPipeH -> do
+          readOwned <- newIORef True
+          writeOwned <- newIORef True
+          convertNamedPipeHandlePair
+            readOwned readPipeH hostWritePipeName
+            writeOwned writePipeH hostReadPipeName
+            name
+
+openExistingNamedPipe :: FilePath -> IO (Either TransportError HANDLE)
+openExistingNamedPipe pipeName = do
+  pipeH <- withCString pipeName $ \namePtr ->
+    c_CreateFile
+      namePtr
+      genericReadWrite
+      0                   -- exclusive access to this client endpoint
+      nullPtr             -- default security attributes
+      openExisting
+      fileAttributeNormal
+      nullPtr
+  if pipeH == invalidHandleValue
+    then do
+      err <- c_GetLastError
+      pure (Left (TransportConnectionFailed
+        ("CreateFile failed for " <> Text.pack pipeName <> " (GetLastError=" <> Text.pack (show err) <> ")")))
+    else pure (Right pipeH)
 #endif
 
 #if !defined(mingw32_HOST_OS)
@@ -736,7 +939,7 @@ acceptUnixSocketTransport cfg pluginName sock socketPath = do
     Right (Just (conn, _addr)) -> do
       safeCloseSocket sock
       removeUnixSocketPath socketPath
-      handleResult <- try (Socket.socketToHandle conn ReadWriteMode >>= \h -> mkTransport pluginName h h)
+      handleResult <- try (Socket.socketToHandle conn ReadWriteMode >>= \h -> mkTransport pluginName h h True)
         :: IO (Either SomeException Transport)
       case handleResult of
         Left err -> do
@@ -753,7 +956,7 @@ connectUnixSocketEndpoint name socketPath = do
     Right sock -> do
       connectResult <- try $ do
         Socket.connect sock (Socket.SockAddrUnix socketPath)
-        Socket.socketToHandle sock ReadWriteMode >>= \h -> mkTransport name h h
+        Socket.socketToHandle sock ReadWriteMode >>= \h -> mkTransport name h h True
       case connectResult of
         Left (err :: SomeException) -> do
           safeCloseSocket sock

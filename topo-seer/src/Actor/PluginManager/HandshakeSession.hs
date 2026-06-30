@@ -5,8 +5,7 @@ module Actor.PluginManager.HandshakeSession
   , performPluginHandshakeWithTimeout
   ) where
 
-import Control.Concurrent (forkFinally, newEmptyMVar, putMVar, takeMVar)
-import Control.Exception (SomeException)
+import Control.Exception (SomeException, try)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import System.Timeout (timeout)
@@ -23,10 +22,9 @@ pluginHandshakeTimeoutMicros = 1000000
 
 performPluginHandshakeWithTimeout :: Int -> RPCConnection -> IO (Maybe (Either PluginHandshakeError RPCConnection))
 performPluginHandshakeWithTimeout timeoutMicros conn = do
-  done <- newEmptyMVar
-  _ <- forkFinally (performHandshake conn Nothing) $ \result ->
-    putMVar done $ case result of
-      Left err -> Left (PluginHandshakeException (Text.pack (show (err :: SomeException))))
-      Right (Left rpcErr) -> Left (PluginHandshakeRPC rpcErr)
-      Right (Right conn') -> Right conn'
-  timeout (max 1 timeoutMicros) (takeMVar done)
+  result <- timeout (max 1 timeoutMicros) (try (performHandshake conn Nothing))
+  pure $ case result of
+    Nothing -> Nothing
+    Just (Left err) -> Just (Left (PluginHandshakeException (Text.pack (show (err :: SomeException)))))
+    Just (Right (Left rpcErr)) -> Just (Left (PluginHandshakeRPC rpcErr))
+    Just (Right (Right conn')) -> Just (Right conn')

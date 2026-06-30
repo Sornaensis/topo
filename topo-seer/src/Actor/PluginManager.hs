@@ -179,8 +179,8 @@ shutdownPlugins handle = do
   cast @"shutdown" handle #shutdown ()
   plugins <- call @"getPlugins" handle #getPlugins ()
   waitForLifecycleObservationLease plugins
-  mapM_ shutdownPlugin plugins
-  cast @"finishShutdown" handle #finishShutdown ()
+  stopped <- traverse shutdownPlugin plugins
+  cast @"finishShutdown" handle #finishShutdown stopped
 
 -- | Set the user-defined plugin order.
 setPluginOrder

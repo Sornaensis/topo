@@ -6,14 +6,19 @@ module Actor.PluginManager.DataResourceRouter
   , mutatePluginDataResource
   ) where
 
+import Control.Concurrent (forkFinally, killThread, newEmptyMVar, takeMVar, tryPutMVar)
+import Control.Exception (SomeException, throwIO)
 import Data.Maybe (fromMaybe)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import System.Timeout (timeout)
 
+import Actor.PluginManager.ProcessLauncher (safeTerminateProcess)
 import Actor.PluginManager.Types
   ( LoadedPlugin(..)
   , PluginLifecycleSnapshot(..)
   , PluginManagerState(..)
+  , PluginStatus(..)
   , pluginLifecycleStateText
   )
 import Topo.Plugin.DataResource (DataResourceSchema(..))
@@ -33,6 +38,7 @@ import Topo.Plugin.RPC
   , RPCConnection(..)
   , RPCError
   , RPCManifest(..)
+  , RPCStartPolicy(..)
   , dataResourceFailureText
   , mutateResource
   , queryResource
@@ -49,19 +55,20 @@ queryPluginDataResource
 queryPluginDataResource pluginName qr st =
   case Map.lookup pluginName (pmsPlugins st) of
     Nothing -> pure (failureLeft (DataResourceFailure PluginUnavailable ("unknown plugin: " <> pluginName)))
-    Just lp -> case lpConnection lp of
-      Nothing -> pure (failureLeft (DataResourceFailure PluginUnavailable (pluginUnavailableMessage lp)))
-      Just conn -> case findResourceSchema (qrResource qr) lp conn of
+    Just lp -> case (lpStatus lp, lpConnection lp) of
+      (PluginConnected, Just conn) -> case findResourceSchema (qrResource qr) lp conn of
         Nothing -> pure (failureLeft (DataResourceFailure ResourceNotFound ("unknown resource: " <> qrResource qr)))
         Just schema -> case validateQueryResourceRequest schema qr of
           Just failure -> pure (failureLeft failure)
           Nothing -> do
-            result <- queryResource conn qr
-            case result of
-              Left err -> pure (Left (renderRPCDataResourceError err))
-              Right qResult -> case validateQueryResult schema qr qResult of
+            mResult <- withPluginRequestTimeout lp conn (queryResource conn qr)
+            case mResult of
+              Nothing -> pure (failureLeft (DataResourceFailure DataResourceTimeout "plugin data query timed out"))
+              Just (Left err) -> pure (Left (renderRPCDataResourceError err))
+              Just (Right qResult) -> case validateQueryResult schema qr qResult of
                 Just failure -> pure (failureLeft failure)
                 Nothing -> pure (Right qResult)
+      _ -> pure (failureLeft (DataResourceFailure PluginUnavailable (pluginUnavailableMessage lp)))
 
 -- | Forward a data mutation to the named plugin without taking ownership
 -- of plugin storage.
@@ -73,19 +80,44 @@ mutatePluginDataResource
 mutatePluginDataResource pluginName mr st =
   case Map.lookup pluginName (pmsPlugins st) of
     Nothing -> pure (failureLeft (DataResourceFailure PluginUnavailable ("unknown plugin: " <> pluginName)))
-    Just lp -> case lpConnection lp of
-      Nothing -> pure (failureLeft (DataResourceFailure PluginUnavailable (pluginUnavailableMessage lp)))
-      Just conn -> case findResourceSchema (mrResource mr) lp conn of
+    Just lp -> case (lpStatus lp, lpConnection lp) of
+      (PluginConnected, Just conn) -> case findResourceSchema (mrResource mr) lp conn of
         Nothing -> pure (failureLeft (DataResourceFailure ResourceNotFound ("unknown resource: " <> mrResource mr)))
         Just schema -> case validateMutateResourceRequest schema mr of
           Just failure -> pure (failureLeft failure)
           Nothing -> do
-            result <- mutateResource conn mr
-            case result of
-              Left err -> pure (Left (renderRPCDataResourceError err))
-              Right mResult -> case validateMutateResult schema mr mResult of
+            mResult <- withPluginRequestTimeout lp conn (mutateResource conn mr)
+            case mResult of
+              Nothing -> pure (failureLeft (DataResourceFailure DataResourceTimeout "plugin data mutation timed out"))
+              Just (Left err) -> pure (Left (renderRPCDataResourceError err))
+              Just (Right mResult) -> case validateMutateResult schema mr mResult of
                 Just failure -> pure (failureLeft failure)
                 Nothing -> pure (Right mResult)
+      _ -> pure (failureLeft (DataResourceFailure PluginUnavailable (pluginUnavailableMessage lp)))
+
+withPluginRequestTimeout :: LoadedPlugin -> RPCConnection -> IO a -> IO (Maybe a)
+withPluginRequestTimeout lp conn action = do
+  done <- newEmptyMVar
+  worker <- forkFinally action $ \result -> do
+    _ <- tryPutMVar done result
+    pure ()
+  result <- timeout (max 1 (rspRequestTimeoutMs (lpStartPolicy lp) * 1000)) (takeMVar done)
+  case result of
+    Just (Right value) -> pure (Just value)
+    Just (Left err) -> throwIO (err :: SomeException)
+    Nothing -> do
+      abortPluginRequest lp conn
+      killThread worker
+      _ <- takeMVar done
+      pure Nothing
+
+abortPluginRequest :: LoadedPlugin -> RPCConnection -> IO ()
+abortPluginRequest lp _conn = do
+  case lpProcessHandle lp of
+    Nothing -> pure ()
+    Just processHandle -> do
+      _ <- safeTerminateProcess processHandle
+      pure ()
 
 failureLeft :: DataResourceFailure -> Either Text a
 failureLeft = Left . dataResourceFailureText

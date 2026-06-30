@@ -10,7 +10,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
 
-import Actor.PluginManager.Types (LoadedPlugin(..), PluginManagerState(..))
+import Actor.PluginManager.Types (LoadedPlugin(..), PluginManagerState(..), PluginStatus(..))
 import Topo.Overlay.Schema (OverlaySchema)
 import Topo.Pipeline (PipelineStage)
 import Topo.Plugin.RPC (RPCManifest(..), rpcGeneratorStage)
@@ -45,13 +45,6 @@ orderPlugins order plugins =
 -- declaration.
 pluginToStage :: LoadedPlugin -> [PipelineStage]
 pluginToStage lp =
-  case rmGenerator (lpManifest lp) of
-    Nothing -> []
-    Just _genDecl ->
-      case lpConnection lp of
-        Nothing ->
-          -- Not connected: refreshManifests ensures connection before
-          -- generation so this branch is normally unreachable.
-          []
-        Just conn ->
-          [rpcGeneratorStage conn]
+  case (lpStatus lp, rmGenerator (lpManifest lp), lpConnection lp) of
+    (PluginConnected, Just _genDecl, Just conn) -> [rpcGeneratorStage conn]
+    _ -> []

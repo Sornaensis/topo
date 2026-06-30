@@ -46,6 +46,11 @@ git status --short
 # Build and test the workspace with the pinned resolver and lock file.
 stack build --test --work-dir .tmp/stack-work-release
 
+# Generate coverage and enforce the 1.0 release thresholds used by CI.
+stack --work-dir .tmp/stack-work-release test --coverage 2>&1 | tee .tmp/release/coverage-test.log
+stack --work-dir .tmp/stack-work-release hpc report --all 2>&1 | tee .tmp/release/coverage-report.log
+python3 tools/check-coverage-thresholds.py .tmp/release/coverage-report.log
+
 # Build source distributions and validate each tarball by compiling it.
 stack sdist --work-dir .tmp/stack-work-release --test-tarball --tar-dir .tmp/release/sdist
 

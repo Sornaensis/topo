@@ -17,6 +17,7 @@ import Actor.PluginManager.Types
   , PluginLifecycleSnapshot(..)
   , PluginLifecycleState(..)
   , PluginManagerState(..)
+  , PluginStatus(..)
   )
 import Seer.World.Persist.Types (WorldExternalDataSourceSnapshot(..))
 import Topo.Plugin.DataResource (DataResourceSchema)
@@ -50,6 +51,7 @@ collectPluginDataDirs :: PluginManagerState -> [(Text, FilePath)]
 collectPluginDataDirs st =
   [ (lpName lp, dir)
   | lp <- Map.elems (pmsPlugins st)
+  , lpStatus lp == PluginConnected
   , Just conn <- [lpConnection lp]
   , Just dir <- [rpcDataDirectory conn]
   ]

@@ -9,6 +9,7 @@ module Actor.PluginManager.ProcessLauncher
   , safeTerminateProcess
   ) where
 
+import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, try)
 import qualified Data.ByteString as BS
 import Crypto.Random (getRandomBytes)
@@ -27,12 +28,12 @@ import System.Process
   , ProcessHandle
   , StdStream(..)
   , createProcess
+  , getPid
+  , getProcessExitCode
   , proc
   , terminateProcess
-  , waitForProcess
   )
 
-import System.Timeout (timeout)
 
 import Topo.Plugin.RPC.Protocol (currentProtocolVersion)
 import Topo.Plugin.RPC.Transport
@@ -81,7 +82,7 @@ launchPluginTransport
   -> FilePath
   -> Text
   -> Int
-  -> IO (Either Text (Transport, ProcessHandle))
+  -> IO (Either (Text, Maybe ProcessHandle) (Transport, ProcessHandle))
 launchPluginTransport = launchPluginTransportViaEndpoint
 
 -- Keep the endpoint accept budget aligned with the startup/handshake timeout
@@ -91,13 +92,13 @@ launchPluginTransportViaEndpoint
   -> FilePath
   -> Text
   -> Int
-  -> IO (Either Text (Transport, ProcessHandle))
+  -> IO (Either (Text, Maybe ProcessHandle) (Transport, ProcessHandle))
 launchPluginTransportViaEndpoint executablePath workingDir pluginName startupTimeoutMillis = do
   serverResult <- openPluginServer
     defaultTransportConfig { tcTimeout = max 1 startupTimeoutMillis }
     pluginName
   case serverResult of
-    Left err -> pure (Left (Text.pack (show err)))
+    Left err -> pure (Left (Text.pack (show err), Nothing))
     Right server -> do
       processResult <- try @SomeException $ do
         environment <- endpointEnvironment (tsEndpoint server) pluginName workingDir
@@ -112,14 +113,15 @@ launchPluginTransportViaEndpoint executablePath workingDir pluginName startupTim
       case processResult of
         Left err -> do
           tsClose server
-          pure (Left (Text.pack (show err)))
+          pure (Left (Text.pack (show err), Nothing))
         Right (_, _, _, processHandle) -> do
           acceptResult <- tsAccept server
           case acceptResult of
             Left transportErr -> do
               tsClose server
-              safeTerminateProcess processHandle
-              pure (Left (Text.pack (show transportErr)))
+              terminated <- safeTerminateProcess processHandle
+              let mProcessHandle = if terminated then Nothing else Just processHandle
+              pure (Left (Text.pack (show transportErr), mProcessHandle))
             Right transport -> pure (Right (transport, processHandle))
 
 endpointEnvironment :: TransportEndpoint -> Text -> FilePath -> IO [(String, String)]
@@ -174,11 +176,46 @@ safeCloseHandle handle = do
   _ <- try @SomeException (hClose handle)
   pure ()
 
-safeTerminateProcess :: ProcessHandle -> IO ()
+safeTerminateProcess :: ProcessHandle -> IO Bool
 safeTerminateProcess processHandle = do
+  if os == "mingw32"
+    then terminateWindowsProcessTree processHandle
+    else pure ()
   _ <- try @SomeException (terminateProcess processHandle)
-  _ <- timeout processTerminationWaitMicros (try @SomeException (waitForProcess processHandle))
-  pure ()
+  waitForProcessExitPoll processTerminationWaitMicros processHandle
+
+terminateWindowsProcessTree :: ProcessHandle -> IO ()
+terminateWindowsProcessTree processHandle = do
+  mPid <- getPid processHandle
+  case mPid of
+    Nothing -> pure ()
+    Just pid -> do
+      taskkillResult <- try @SomeException $
+        createProcess (proc "taskkill" ["/PID", show pid, "/T", "/F"])
+          { std_in = NoStream
+          , std_out = NoStream
+          , std_err = NoStream
+          }
+      case taskkillResult of
+        Left _ -> pure ()
+        Right (_, _, _, taskkillHandle) -> do
+          _ <- waitForProcessExitPoll processTerminationWaitMicros taskkillHandle
+          pure ()
+
+waitForProcessExitPoll :: Int -> ProcessHandle -> IO Bool
+waitForProcessExitPoll remainingMicros processHandle = do
+  mExit <- getProcessExitCode processHandle
+  case mExit of
+    Just _ -> pure True
+    Nothing
+      | remainingMicros <= 0 -> pure False
+      | otherwise -> do
+          let delayMicros = min processPollDelayMicros remainingMicros
+          threadDelay delayMicros
+          waitForProcessExitPoll (remainingMicros - delayMicros) processHandle
 
 processTerminationWaitMicros :: Int
-processTerminationWaitMicros = 100000
+processTerminationWaitMicros = 1000000
+
+processPollDelayMicros :: Int
+processPollDelayMicros = 10000

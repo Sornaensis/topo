@@ -58,6 +58,7 @@ import Actor.PluginManager.SimulationIntegrator (notifyPluginsWorldChanged)
 import Actor.PluginManager.Types
   ( LoadedPlugin(..)
   , PluginManagerState(..)
+  , PluginStatus(..)
   , emptyPluginManagerState
   , setParamOnPlugin
   )
@@ -96,7 +97,7 @@ actor PluginManager
   call getRefreshSnapshot :: () -> (FilePath, [LoadedPlugin])
   cast finishRefresh :: [LoadedPlugin]
   cast shutdown :: ()
-  cast finishShutdown :: ()
+  cast finishShutdown :: [LoadedPlugin]
   call getDataResources :: () -> Map Text [DataResourceSchema]
   call queryData :: (Text, QueryResource) -> Either Text QueryResult
   call mutateData :: (Text, MutateResource) -> Either Text MutateResult
@@ -151,9 +152,9 @@ actor PluginManager
   on_ shutdown = \() st -> do
     stoppingAt <- getCurrentTime
     pure st { pmsPlugins = Map.map (markPluginStopping stoppingAt) (pmsPlugins st) }
-  on_ finishShutdown = \() st -> do
+  on_ finishShutdown = \plugins st -> do
     stoppedAt <- getCurrentTime
-    pure st { pmsPlugins = Map.map (disconnectPlugin stoppedAt) (pmsPlugins st) }
+    pure st { pmsPlugins = Map.fromList [(lpName p, disconnectPlugin stoppedAt p) | p <- plugins] }
   onPure getDataResources = \() st ->
     (st, buildPluginDataResources st)
   on queryData = \(pluginName, qr) st -> do
@@ -199,7 +200,7 @@ markRuntimeFailureOnConnectedError
   -> IO PluginManagerState
 markRuntimeFailureOnConnectedError pluginName errorCode result st =
   case (result, Map.lookup pluginName (pmsPlugins st)) of
-    (Left err, Just lp@LoadedPlugin { lpConnection = Just _ }) -> do
+    (Left err, Just lp@LoadedPlugin { lpStatus = PluginConnected, lpConnection = Just _ }) -> do
       lp' <- handlePluginRuntimeFailure errorCode err lp
       pure st { pmsPlugins = Map.insert pluginName lp' (pmsPlugins st) }
     _ -> pure st

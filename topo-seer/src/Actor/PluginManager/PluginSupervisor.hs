@@ -16,7 +16,7 @@ module Actor.PluginManager.PluginSupervisor
   , disconnectPlugin
   ) where
 
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, try)
 import Control.Monad (when)
 import Data.IORef (readIORef, writeIORef)
@@ -28,8 +28,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time (UTCTime, getCurrentTime)
 import System.Info (os)
-import System.Process (ProcessHandle, getPid, getProcessExitCode, waitForProcess)
-import System.Timeout (timeout)
+import System.Process (ProcessHandle, getPid, getProcessExitCode)
 
 import Actor.PluginManager.HandshakeSession
   ( PluginHandshakeError(..)
@@ -83,7 +82,7 @@ import Topo.Plugin.RPC
   , newRPCConnection
   , rpcShutdown
   )
-import Topo.Plugin.RPC.Transport (closeTransport)
+import Topo.Plugin.RPC.Transport (Transport, closeTransport)
 
 -- | Re-read manifests for all known plugins, preserving params.
 refreshAllManifests :: FilePath -> Map Text LoadedPlugin -> IO (Map Text LoadedPlugin)
@@ -178,8 +177,8 @@ refreshOneManifest _baseDir lp = do
   now <- getCurrentTime
   case result of
     Left failure -> do
-      shutdownPlugin lp
-      pure $ markPluginManifestLoadFailure now failure lp
+      stopped <- shutdownPlugin lp
+      pure $ preserveRuntimeHandles stopped (markPluginManifestLoadFailure now failure lp)
     Right (manifest, overlaySchema) -> do
       pure lp
         { lpName = rmName manifest
@@ -206,9 +205,9 @@ ensurePluginConnection lp
 ensurePluginConnectionAfterExternalGate :: LoadedPlugin -> IO LoadedPlugin
 ensurePluginConnectionAfterExternalGate lp
   | not (requiresRuntimeConnection (lpManifest lp)) = do
-      shutdownPlugin lp
+      stopped <- shutdownPlugin lp
       now <- getCurrentTime
-      pure lp
+      pure $ preserveRuntimeHandles stopped lp
         { lpStatus = PluginIdle
         , lpLifecycle = pluginLifecycleSnapshot now LifecycleReady
             (Just "manifest loaded; no runtime connection required") Nothing Nothing Nothing Nothing Nothing
@@ -218,11 +217,17 @@ ensurePluginConnectionAfterExternalGate lp
         , lpRestartHistory = pruneRestartHistory (lpStartPolicy lp) now (lpRestartHistory lp)
         }
   | not (rspAutoStart (lpStartPolicy lp)) = do
-      shutdownPlugin lp
-      markAutoStartDisabled lp
+      stopped <- shutdownPlugin lp
+      disabled <- markAutoStartDisabled lp
+      pure (preserveRuntimeHandles stopped disabled)
   | otherwise =
-      case lpConnection lp of
-        Just conn -> do
+      case (lpConnection lp, lpProcessHandle lp, lpStatus lp) of
+        (_, Just processHandle, PluginError _) -> do
+          alive <- isNothing <$> getProcessExitCode processHandle
+          if alive
+            then pure lp
+            else restartCrashedPlugin lp
+        (Just conn, _, _) -> do
           alive <- pluginProcessAlive lp
           if alive
             then do
@@ -234,7 +239,12 @@ ensurePluginConnectionAfterExternalGate lp
                 , lpRestartHistory = pruneRestartHistory (lpStartPolicy lp) now (lpRestartHistory lp)
                 }
             else restartCrashedPlugin lp
-        Nothing -> connectLoadedPlugin lp
+        (Nothing, Nothing, _) -> connectLoadedPlugin lp
+        (Nothing, Just processHandle, _) -> do
+          alive <- isNothing <$> getProcessExitCode processHandle
+          if alive
+            then pure lp
+            else restartCrashedPlugin lp
 
 connectLoadedPlugin :: LoadedPlugin -> IO LoadedPlugin
 connectLoadedPlugin lp
@@ -271,14 +281,14 @@ connectLoadedPluginOnce executablePath lp = do
       startupTimeoutMicros = policyTimeoutMicros startupTimeoutMs
   launchResult <- launchPluginTransport executablePath (lpDirectory lp) (lpName lp) startupTimeoutMs
   case launchResult of
-    Left err -> do
+    Left (err, mProcessHandle) -> do
       now <- getCurrentTime
       pure lp
         { lpStatus = PluginError err
         , lpLifecycle = failedLifecycle now "launch_failed" err
             (Just (Text.pack executablePath)) Nothing Nothing (manifestLifecycleResources (lpManifest lp))
         , lpConnection = Nothing
-        , lpProcessHandle = Nothing
+        , lpProcessHandle = mProcessHandle
         , lpRestartHistory = pruneRestartHistory policy now (lpRestartHistory lp)
         }
     Right (transport, processHandle) -> do
@@ -287,15 +297,14 @@ connectLoadedPluginOnce executablePath lp = do
       hsResult <- performPluginHandshakeWithTimeout startupTimeoutMicros conn
       case hsResult of
         Nothing -> do
-          closeTransport transport
-          safeTerminateProcess processHandle
+          terminated <- stopLaunchedPlugin policy transport processHandle
           now <- getCurrentTime
           pure lp
             { lpStatus = PluginError "plugin handshake timed out"
             , lpLifecycle = failedLifecycle now "handshake_timeout" "plugin handshake timed out"
                 (Just "handshake") mPid Nothing (manifestLifecycleResources (lpManifest lp))
-            , lpConnection = Nothing
-            , lpProcessHandle = Nothing
+            , lpConnection = if terminated then Nothing else Just conn
+            , lpProcessHandle = if terminated then Nothing else Just processHandle
             , lpRestartHistory = pruneRestartHistory policy now (lpRestartHistory lp)
             }
         Just (Right conn') -> do
@@ -308,31 +317,33 @@ connectLoadedPluginOnce executablePath lp = do
             , lpRestartHistory = pruneRestartHistory policy now (lpRestartHistory lp)
             }
         Just (Left err) -> do
-          closeTransport transport
-          safeTerminateProcess processHandle
+          terminated <- stopLaunchedPlugin policy transport processHandle
           now <- getCurrentTime
           let message = handshakeErrorMessage err
           pure lp
             { lpStatus = PluginError message
             , lpLifecycle = failedLifecycle now (handshakeErrorCode err) message
                 (Just "handshake") mPid Nothing (manifestLifecycleResources (lpManifest lp))
-            , lpConnection = Nothing
-            , lpProcessHandle = Nothing
+            , lpConnection = if terminated then Nothing else Just conn
+            , lpProcessHandle = if terminated then Nothing else Just processHandle
             , lpRestartHistory = pruneRestartHistory policy now (lpRestartHistory lp)
             }
 
 maybeRestartAfterFailure :: FilePath -> LoadedPlugin -> IO LoadedPlugin
-maybeRestartAfterFailure executablePath failedLp = do
-  let policy = lpStartPolicy failedLp
-      failedAt = plsUpdatedAt (lpLifecycle failedLp)
-      history = lpRestartHistory failedLp
-  if canRestartPlugin policy failedAt history
-    then do
-      let history' = recordPluginRestart policy failedAt history
-          backoffMicros = rspBackoffMs policy * 1000
-      when (backoffMicros > 0) (threadDelay backoffMicros)
-      connectWithRestartPolicy executablePath failedLp { lpRestartHistory = history' }
-    else pure (markRestartLimitIfApplicable failedAt failedLp)
+maybeRestartAfterFailure executablePath failedLp =
+  case lpProcessHandle failedLp of
+    Just _ -> pure failedLp
+    Nothing -> do
+      let policy = lpStartPolicy failedLp
+          failedAt = plsUpdatedAt (lpLifecycle failedLp)
+          history = lpRestartHistory failedLp
+      if canRestartPlugin policy failedAt history
+        then do
+          let history' = recordPluginRestart policy failedAt history
+              backoffMicros = rspBackoffMs policy * 1000
+          when (backoffMicros > 0) (threadDelay backoffMicros)
+          connectWithRestartPolicy executablePath failedLp { lpRestartHistory = history' }
+        else pure (markRestartLimitIfApplicable failedAt failedLp)
 
 markRestartLimitIfApplicable :: UTCTime -> LoadedPlugin -> LoadedPlugin
 markRestartLimitIfApplicable now lp
@@ -369,10 +380,10 @@ markAutoStartDisabled lp = do
 
 markExternalDataSourceBlocked :: Text -> Text -> LoadedPlugin -> IO LoadedPlugin
 markExternalDataSourceBlocked dependency reason lp = do
-  shutdownPlugin lp
+  stopped <- shutdownPlugin lp
   now <- getCurrentTime
   let message = "external data-source startup blocked: " <> reason
-  pure lp
+  pure $ preserveRuntimeHandles stopped lp
     { lpStatus = PluginError message
     , lpLifecycle = pluginLifecycleSnapshot now LifecycleFailed
         (Just "required external data source unavailable")
@@ -389,10 +400,10 @@ markExternalDataSourceBlocked dependency reason lp = do
 
 markExternalDataSourceDegraded :: Text -> Text -> LoadedPlugin -> IO LoadedPlugin
 markExternalDataSourceDegraded dependency reason lp = do
-  shutdownPlugin lp
+  stopped <- shutdownPlugin lp
   now <- getCurrentTime
   let message = "external data-source degraded: " <> reason
-  pure lp
+  pure $ preserveRuntimeHandles stopped lp
     { lpStatus = PluginError message
     , lpLifecycle = pluginLifecycleSnapshot now LifecycleDegraded
         (Just "external data-source degraded")
@@ -409,18 +420,15 @@ markExternalDataSourceDegraded dependency reason lp = do
 
 restartCrashedPlugin :: LoadedPlugin -> IO LoadedPlugin
 restartCrashedPlugin lp = do
-  closePluginTransportAsync lp
-  case lpProcessHandle lp of
-    Nothing -> pure ()
-    Just processHandle -> waitForProcessExitOrTerminate 1 processHandle
+  terminated <- stopLoadedPluginRuntime lp
   now <- getCurrentTime
   let failed = lp
         { lpStatus = PluginError "plugin process exited"
         , lpLifecycle = failedLifecycle now "process_exited" "plugin process exited"
             (Just "process") (plsProcessId (lpLifecycle lp)) (plsProtocolVersion (lpLifecycle lp))
             (plsResources (lpLifecycle lp))
-        , lpConnection = Nothing
-        , lpProcessHandle = Nothing
+        , lpConnection = if terminated then Nothing else lpConnection lp
+        , lpProcessHandle = if terminated then Nothing else lpProcessHandle lp
         , lpRestartHistory = pruneRestartHistory (lpStartPolicy lp) now (lpRestartHistory lp)
         }
   mExecutable <- resolvePluginExecutable (lpDirectory lp) (lpName lp)
@@ -431,6 +439,7 @@ restartCrashedPlugin lp = do
 observePluginRuntime :: LoadedPlugin -> IO LoadedPlugin
 observePluginRuntime lp
   | plsState (lpLifecycle lp) `elem` [LifecycleDegraded, LifecycleStopping] = pure lp
+  | lpStatus lp /= PluginConnected = pure lp
   | otherwise = case lpConnection lp of
       Nothing -> pure lp
       Just conn -> do
@@ -447,10 +456,7 @@ observePluginRuntime lp
 
 handlePluginRuntimeFailure :: Text -> Text -> LoadedPlugin -> IO LoadedPlugin
 handlePluginRuntimeFailure errorCode message lp = do
-  closePluginTransportAsync lp
-  case lpProcessHandle lp of
-    Nothing -> pure ()
-    Just processHandle -> safeTerminateProcess processHandle
+  terminated <- stopLoadedPluginRuntime lp
   now <- getCurrentTime
   let failed = lp
         { lpStatus = PluginError message
@@ -460,8 +466,8 @@ handlePluginRuntimeFailure errorCode message lp = do
             (plsProcessId (lpLifecycle lp))
             (plsProtocolVersion (lpLifecycle lp))
             (plsResources (lpLifecycle lp))
-        , lpConnection = Nothing
-        , lpProcessHandle = Nothing
+        , lpConnection = if terminated then Nothing else lpConnection lp
+        , lpProcessHandle = if terminated then Nothing else lpProcessHandle lp
         , lpRestartHistory = pruneRestartHistory (lpStartPolicy lp) now (lpRestartHistory lp)
         }
   mExecutable <- resolvePluginExecutable (lpDirectory lp) (lpName lp)
@@ -469,15 +475,35 @@ handlePluginRuntimeFailure errorCode message lp = do
     Nothing -> pure failed
     Just executablePath -> maybeRestartAfterFailure executablePath failed
 
-closePluginTransportAsync :: LoadedPlugin -> IO ()
-closePluginTransportAsync lp =
+stopLaunchedPlugin :: RPCStartPolicy -> Transport -> ProcessHandle -> IO Bool
+stopLaunchedPlugin _policy transport processHandle = do
+  terminated <- safeTerminateProcess processHandle
+  when terminated $ do
+    _ <- try @SomeException (closeTransport transport)
+    pure ()
+  pure terminated
+
+stopLoadedPluginRuntime :: LoadedPlugin -> IO Bool
+stopLoadedPluginRuntime lp = do
+  terminated <- case lpProcessHandle lp of
+    Nothing -> pure True
+    Just processHandle -> safeTerminateProcess processHandle
+  when terminated (closePluginTransport lp)
+  pure terminated
+
+closePluginTransport :: LoadedPlugin -> IO ()
+closePluginTransport lp =
   case lpConnection lp of
     Nothing -> pure ()
     Just conn -> do
-      _ <- forkIO $ do
-        _ <- try @SomeException (closeTransport (rpcTransport conn))
-        pure ()
+      _ <- try @SomeException (closeTransport (rpcTransport conn))
       pure ()
+
+preserveRuntimeHandles :: LoadedPlugin -> LoadedPlugin -> LoadedPlugin
+preserveRuntimeHandles stopped updated = updated
+  { lpConnection = lpConnection stopped
+  , lpProcessHandle = lpProcessHandle stopped
+  }
 
 pluginProcessAlive :: LoadedPlugin -> IO Bool
 pluginProcessAlive lp =
@@ -495,24 +521,43 @@ markPluginStarting now lp = lp
   }
 
 -- | Shut down a single plugin's RPC connection.
-shutdownPlugin :: LoadedPlugin -> IO ()
+shutdownPlugin :: LoadedPlugin -> IO LoadedPlugin
 shutdownPlugin lp = do
   case lpConnection lp of
     Nothing -> pure ()
     Just conn -> do
       _ <- try @SomeException (rpcShutdown conn)
-      _ <- try @SomeException (closeTransport (rpcTransport conn))
       pure ()
-  case lpProcessHandle lp of
-    Nothing -> pure ()
+  terminated <- case lpProcessHandle lp of
+    Nothing -> pure True
     Just processHandle -> waitForProcessExitOrTerminate (rspShutdownTimeoutMs (lpStartPolicy lp)) processHandle
+  when terminated (closePluginTransport lp)
+  pure lp
+    { lpConnection = if terminated then Nothing else lpConnection lp
+    , lpProcessHandle = if terminated then Nothing else lpProcessHandle lp
+    }
 
-waitForProcessExitOrTerminate :: Int -> ProcessHandle -> IO ()
+waitForProcessExitOrTerminate :: Int -> ProcessHandle -> IO Bool
 waitForProcessExitOrTerminate timeoutMillis processHandle = do
-  exited <- timeout (policyTimeoutMicros timeoutMillis) (try @SomeException (waitForProcess processHandle))
-  case exited of
-    Just _ -> pure ()
-    Nothing -> safeTerminateProcess processHandle
+  exited <- waitForProcessExitPoll (policyTimeoutMicros timeoutMillis) processHandle
+  if exited
+    then pure True
+    else safeTerminateProcess processHandle
+
+waitForProcessExitPoll :: Int -> ProcessHandle -> IO Bool
+waitForProcessExitPoll remainingMicros processHandle = do
+  mExit <- getProcessExitCode processHandle
+  case mExit of
+    Just _ -> pure True
+    Nothing
+      | remainingMicros <= 0 -> pure False
+      | otherwise -> do
+          let delayMicros = min processPollDelayMicros remainingMicros
+          threadDelay delayMicros
+          waitForProcessExitPoll (remainingMicros - delayMicros) processHandle
+
+processPollDelayMicros :: Int
+processPollDelayMicros = 10000
 
 markPluginStopping :: UTCTime -> LoadedPlugin -> LoadedPlugin
 markPluginStopping now lp = lp
@@ -532,8 +577,8 @@ disconnectPlugin now lp = lp
       (plsProcessId (lpLifecycle lp))
       (plsProtocolVersion (lpLifecycle lp))
       (plsResources (lpLifecycle lp))
-  , lpConnection = Nothing
-  , lpProcessHandle = Nothing
+  , lpConnection = lpConnection lp
+  , lpProcessHandle = lpProcessHandle lp
   }
 
 markPluginManifestLoadFailure :: UTCTime -> ManifestLoadFailure -> LoadedPlugin -> LoadedPlugin

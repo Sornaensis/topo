@@ -6,7 +6,7 @@ module Actor.PluginManager.SimulationIntegrator
 
 import Data.Text (Text)
 
-import Actor.PluginManager.Types (LoadedPlugin(..))
+import Actor.PluginManager.Types (LoadedPlugin(..), PluginStatus(..))
 import Topo.Plugin.RPC (sendWorldChanged)
 
 -- | Send a world-change notification to all connected plugins.
@@ -18,8 +18,8 @@ notifyPluginsWorldChanged mWorldPath plugins =
 -- No-op if the plugin is not connected.
 notifyPluginWorldChanged :: Maybe Text -> LoadedPlugin -> IO ()
 notifyPluginWorldChanged mWorldPath lp =
-  case lpConnection lp of
-    Nothing -> pure ()
-    Just conn -> do
+  case (lpStatus lp, lpConnection lp) of
+    (PluginConnected, Just conn) -> do
       _ <- sendWorldChanged conn mWorldPath
       pure ()
+    _ -> pure ()

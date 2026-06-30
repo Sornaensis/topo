@@ -1490,8 +1490,8 @@ withConnectedTransports name action =
         Right plugin -> pure (host, plugin)
 
     cleanup (host, plugin) = do
-      closeTransport host
       closeTransport plugin
+      closeTransport host
 
 recvEnvelopeFrom :: Transport -> IO RPCEnvelope
 recvEnvelopeFrom transport = do
