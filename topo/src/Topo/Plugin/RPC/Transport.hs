@@ -66,7 +66,17 @@ module Topo.Plugin.RPC.Transport
 #if defined(mingw32_HOST_OS)
 import Control.Concurrent (threadDelay)
 #endif
-import Control.Exception (IOException, SomeException, catch, evaluate, try)
+import Control.Exception
+  ( IOException
+  , SomeAsyncException
+  , SomeException
+  , catch
+  , evaluate
+  , fromException
+  , onException
+  , throwIO
+  , try
+  )
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.Binary.Get (getWord32le, runGetOrFail)
@@ -264,6 +274,21 @@ pluginPipeName cfg pluginName =
               else tcPipeDir cfg
   in dir </> escapedPluginPipeBase pluginName <> ".sock"
 #endif
+
+trySync :: IO a -> IO (Either SomeException a)
+trySync action = do
+  result <- try action
+  case result of
+    Left err
+      | Just (asyncErr :: SomeAsyncException) <- fromException err -> throwIO asyncErr
+      | otherwise -> pure (Left err)
+    Right value -> pure (Right value)
+
+catchSync :: IO a -> (SomeException -> IO a) -> IO a
+catchSync action handler = action `catch` \err ->
+  case fromException err of
+    Just (asyncErr :: SomeAsyncException) -> throwIO asyncErr
+    Nothing -> handler err
 
 escapedPluginPipeBase :: Text -> FilePath
 escapedPluginPipeBase pluginName = "topo-plugin-" <> escapeEndpointSegment pluginName
@@ -480,7 +505,7 @@ invalidHandleValue :: HANDLE
 invalidHandleValue = nullPtr `plusPtr` (-1)
 
 openNamedPipeServer :: TransportConfig -> Text -> IO (Either TransportError TransportServer)
-openNamedPipeServer cfg pluginName = catch go handler
+openNamedPipeServer cfg pluginName = catchSync go handler
   where
     go = do
       hostReadPipeName <- allocateNamedPipeName (pluginName <> "-host-read")
@@ -813,7 +838,7 @@ safeCloseHandle handle = do
   pure ()
 
 connectNamedPipeEndpoint :: Text -> FilePath -> IO (Either TransportError Transport)
-connectNamedPipeEndpoint name pipeName = catch go handler
+connectNamedPipeEndpoint name pipeName = catchSync go handler
   where
     go = case decodeNamedPipePair pipeName of
       Just (hostReadPipeName, hostWritePipeName) ->
@@ -868,11 +893,11 @@ openExistingNamedPipe pipeName = do
 
 #if !defined(mingw32_HOST_OS)
 openUnixSocketServer :: TransportConfig -> Text -> IO (Either TransportError TransportServer)
-openUnixSocketServer cfg pluginName = catch go handler
+openUnixSocketServer cfg pluginName = catchSync go handler
   where
     go = do
       socketPath <- allocateUnixSocketPath cfg pluginName
-      socketResult <- try (Socket.socket Socket.AF_UNIX Socket.Stream Socket.defaultProtocol)
+      socketResult <- trySync (Socket.socket Socket.AF_UNIX Socket.Stream Socket.defaultProtocol)
         :: IO (Either SomeException Socket.Socket)
       case socketResult of
         Left err -> do
@@ -886,7 +911,7 @@ openUnixSocketServer cfg pluginName = catch go handler
                 removeFileIfExists socketPath
                 Socket.bind sock (Socket.SockAddrUnix socketPath)
                 Socket.listen sock 1
-          setupResult <- try setup :: IO (Either SomeException ())
+          setupResult <- trySync (setup `onException` cleanup) :: IO (Either SomeException ())
           case setupResult of
             Left err -> do
               cleanup
@@ -927,7 +952,7 @@ acceptUnixSocketTransport cfg pluginName sock socketPath = do
       waitForAccept
         | tcTimeout cfg <= 0 = Just <$> acceptOnce
         | otherwise = timeout (tcTimeout cfg * 1000) acceptOnce
-  acceptResult <- try waitForAccept :: IO (Either SomeException (Maybe (Socket.Socket, Socket.SockAddr)))
+  acceptResult <- trySync waitForAccept :: IO (Either SomeException (Maybe (Socket.Socket, Socket.SockAddr)))
   case acceptResult of
     Left err -> do
       cleanup
@@ -939,7 +964,7 @@ acceptUnixSocketTransport cfg pluginName sock socketPath = do
     Right (Just (conn, _addr)) -> do
       safeCloseSocket sock
       removeUnixSocketPath socketPath
-      handleResult <- try (Socket.socketToHandle conn ReadWriteMode >>= \h -> mkTransport pluginName h h True)
+      handleResult <- trySync ((Socket.socketToHandle conn ReadWriteMode >>= \h -> mkTransport pluginName h h True) `onException` safeCloseSocket conn)
         :: IO (Either SomeException Transport)
       case handleResult of
         Left err -> do
@@ -949,14 +974,16 @@ acceptUnixSocketTransport cfg pluginName sock socketPath = do
 
 connectUnixSocketEndpoint :: Text -> FilePath -> IO (Either TransportError Transport)
 connectUnixSocketEndpoint name socketPath = do
-  socketResult <- try (Socket.socket Socket.AF_UNIX Socket.Stream Socket.defaultProtocol)
+  socketResult <- trySync (Socket.socket Socket.AF_UNIX Socket.Stream Socket.defaultProtocol)
     :: IO (Either SomeException Socket.Socket)
   case socketResult of
     Left err -> pure (Left (TransportConnectionFailed (Text.pack (show err))))
     Right sock -> do
-      connectResult <- try $ do
-        Socket.connect sock (Socket.SockAddrUnix socketPath)
-        Socket.socketToHandle sock ReadWriteMode >>= \h -> mkTransport name h h True
+      connectResult <- trySync $ do
+        (do
+          Socket.connect sock (Socket.SockAddrUnix socketPath)
+          Socket.socketToHandle sock ReadWriteMode >>= \h -> mkTransport name h h True)
+          `onException` safeCloseSocket sock
       case connectResult of
         Left (err :: SomeException) -> do
           safeCloseSocket sock

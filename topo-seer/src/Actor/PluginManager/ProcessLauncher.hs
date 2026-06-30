@@ -10,7 +10,15 @@ module Actor.PluginManager.ProcessLauncher
   ) where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException, try)
+import Control.Exception
+  ( SomeAsyncException
+  , SomeException
+  , fromException
+  , mask
+  , onException
+  , throwIO
+  , try
+  )
 import qualified Data.ByteString as BS
 import Crypto.Random (getRandomBytes)
 import Data.Char (toLower)
@@ -77,6 +85,20 @@ findFirstExisting (candidate:rest) = do
     then pure (Just candidate)
     else findFirstExisting rest
 
+trySync :: IO a -> IO (Either SomeException a)
+trySync action = do
+  result <- try @SomeException action
+  case result of
+    Left err
+      | Just asyncErr <- fromException @SomeAsyncException err -> throwIO asyncErr
+      | otherwise -> pure (Left err)
+    Right value -> pure (Right value)
+
+safeCloseServer :: TransportServer -> IO ()
+safeCloseServer server = do
+  _ <- try @SomeException (tsClose server)
+  pure ()
+
 launchPluginTransport
   :: FilePath
   -> FilePath
@@ -99,8 +121,8 @@ launchPluginTransportViaEndpoint executablePath workingDir pluginName startupTim
     pluginName
   case serverResult of
     Left err -> pure (Left (Text.pack (show err), Nothing))
-    Right server -> do
-      processResult <- try @SomeException $ do
+    Right server -> mask $ \restore -> do
+      processResult <- trySync $ do
         environment <- endpointEnvironment (tsEndpoint server) pluginName workingDir
         createProcess
           (proc executablePath [])
@@ -112,13 +134,21 @@ launchPluginTransportViaEndpoint executablePath workingDir pluginName startupTim
             }
       case processResult of
         Left err -> do
-          tsClose server
+          safeCloseServer server
           pure (Left (Text.pack (show err), Nothing))
         Right (_, _, _, processHandle) -> do
-          acceptResult <- tsAccept server
+          let cleanupLaunched = do
+                safeCloseServer server
+                terminated <- safeTerminateProcess processHandle
+                if terminated
+                  then pure ()
+                  else do
+                    _ <- safeTerminateProcess processHandle
+                    pure ()
+          acceptResult <- restore (tsAccept server) `onException` cleanupLaunched
           case acceptResult of
             Left transportErr -> do
-              tsClose server
+              safeCloseServer server
               terminated <- safeTerminateProcess processHandle
               let mProcessHandle = if terminated then Nothing else Just processHandle
               pure (Left (Text.pack (show transportErr), mProcessHandle))

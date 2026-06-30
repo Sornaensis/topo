@@ -5,6 +5,7 @@
 -- shutdown of live runtime sessions.
 module Actor.PluginManager.PluginSupervisor
   ( refreshAllManifests
+  , withRefreshedManifests
   , refreshOneManifest
   , ensurePluginConnection
   , connectLoadedPlugin
@@ -17,12 +18,12 @@ module Actor.PluginManager.PluginSupervisor
   ) where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException, try)
+import Control.Exception (SomeException, mask, onException, try)
 import Control.Monad (when)
-import Data.IORef (readIORef, writeIORef)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (isNothing)
+import Data.Maybe (isJust, isNothing)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -86,10 +87,84 @@ import Topo.Plugin.RPC.Transport (Transport, closeTransport)
 
 -- | Re-read manifests for all known plugins, preserving params.
 refreshAllManifests :: FilePath -> Map Text LoadedPlugin -> IO (Map Text LoadedPlugin)
-refreshAllManifests baseDir plugins = do
-  refreshed <- Map.traverseWithKey (\_ lp -> refreshOneManifest baseDir lp) plugins
-  connected <- traverse ensurePluginConnection (orderLoadedPluginsByDependencies refreshed)
+refreshAllManifests baseDir plugins =
+  withRefreshedManifests baseDir plugins pure
+
+-- | Run a manifest refresh and hand the refreshed state to a publisher.
+-- Runtime handles launched during the refresh are owned here until the
+-- publisher succeeds, so interrupted refreshes do not strand unpublished
+-- subprocesses outside the actor state.
+withRefreshedManifests
+  :: FilePath
+  -> Map Text LoadedPlugin
+  -> (Map Text LoadedPlugin -> IO a)
+  -> IO a
+withRefreshedManifests baseDir plugins publish = mask $ \restore -> do
+  ownedRef <- newIORef []
+  let cleanupOwned = cleanupTrackedRefreshRuntimes ownedRef
+  refreshed <- restore (Map.traverseWithKey (\_ lp -> refreshOneManifest baseDir lp) plugins)
+    `onException` cleanupOwned
+  connected <- restore (connectAndTrackRefreshRuntimes ownedRef refreshed)
+    `onException` cleanupOwned
+  restore (publish connected) `onException` cleanupOwned
+
+connectAndTrackRefreshRuntimes :: IORef [LoadedPlugin] -> Map Text LoadedPlugin -> IO (Map Text LoadedPlugin)
+connectAndTrackRefreshRuntimes ownedRef refreshed = do
+  connected <- traverse (connectAndTrackRefreshRuntime ownedRef) (orderLoadedPluginsByDependencies refreshed)
   pure (Map.fromList [(lpName p, p) | p <- connected])
+
+connectAndTrackRefreshRuntime :: IORef [LoadedPlugin] -> LoadedPlugin -> IO LoadedPlugin
+connectAndTrackRefreshRuntime ownedRef lp = mask $ \restore -> do
+  before <- runtimeIdentity lp
+  lp' <- restore (ensurePluginConnection lp)
+  after <- runtimeIdentity lp'
+  when (refreshOwnsRuntime before after) (modifyIORef' ownedRef (lp':))
+  pure lp'
+
+data RuntimeIdentity = RuntimeIdentity
+  { riHasConnection :: !Bool
+  , riHasProcess :: !Bool
+  , riProcessId :: !(Maybe Text)
+  } deriving (Eq)
+
+runtimeIdentity :: LoadedPlugin -> IO RuntimeIdentity
+runtimeIdentity lp = do
+  mPid <- maybe (pure Nothing) processHandleIdText (lpProcessHandle lp)
+  pure RuntimeIdentity
+    { riHasConnection = isJust (lpConnection lp)
+    , riHasProcess = isJust (lpProcessHandle lp)
+    , riProcessId = mPid
+    }
+
+refreshOwnsRuntime :: RuntimeIdentity -> RuntimeIdentity -> Bool
+refreshOwnsRuntime before after = runtimePresent after && before /= after
+  where
+    runtimePresent identity = riHasConnection identity || riHasProcess identity
+
+cleanupTrackedRefreshRuntimes :: IORef [LoadedPlugin] -> IO ()
+cleanupTrackedRefreshRuntimes ownedRef = do
+  owned <- readIORef ownedRef
+  writeIORef ownedRef []
+  mapM_ cleanup owned
+  where
+    cleanup lp = do
+      result <- try @SomeException (shutdownPlugin lp)
+      case result of
+        Left _ -> pure ()
+        Right stopped -> retryTrackedCleanup 1 stopped
+
+retryTrackedCleanup :: Int -> LoadedPlugin -> IO ()
+retryTrackedCleanup attemptsLeft lp
+  | not (runtimeHandlesPresent lp) = pure ()
+  | attemptsLeft <= 0 = pure ()
+  | otherwise = do
+      result <- try @SomeException (shutdownPlugin lp)
+      case result of
+        Left _ -> pure ()
+        Right stopped -> retryTrackedCleanup (attemptsLeft - 1) stopped
+
+runtimeHandlesPresent :: LoadedPlugin -> Bool
+runtimeHandlesPresent lp = isJust (lpConnection lp) || isJust (lpProcessHandle lp)
 
 orderLoadedPluginsByDependencies :: Map Text LoadedPlugin -> [LoadedPlugin]
 orderLoadedPluginsByDependencies plugins =
@@ -275,11 +350,11 @@ connectWithRestartPolicy executablePath lp = do
     Nothing -> maybeRestartAfterFailure executablePath attempted
 
 connectLoadedPluginOnce :: FilePath -> LoadedPlugin -> IO LoadedPlugin
-connectLoadedPluginOnce executablePath lp = do
+connectLoadedPluginOnce executablePath lp = mask $ \restore -> do
   let policy = lpStartPolicy lp
       startupTimeoutMs = rspStartupTimeoutMs policy
       startupTimeoutMicros = policyTimeoutMicros startupTimeoutMs
-  launchResult <- launchPluginTransport executablePath (lpDirectory lp) (lpName lp) startupTimeoutMs
+  launchResult <- restore (launchPluginTransport executablePath (lpDirectory lp) (lpName lp) startupTimeoutMs)
   case launchResult of
     Left (err, mProcessHandle) -> do
       now <- getCurrentTime
@@ -291,43 +366,57 @@ connectLoadedPluginOnce executablePath lp = do
         , lpProcessHandle = mProcessHandle
         , lpRestartHistory = pruneRestartHistory policy now (lpRestartHistory lp)
         }
-    Right (transport, processHandle) -> do
-      mPid <- processHandleIdText processHandle
-      let conn = newRPCConnection (lpManifest lp) transport (lpParams lp)
-      hsResult <- performPluginHandshakeWithTimeout startupTimeoutMicros conn
-      case hsResult of
-        Nothing -> do
-          terminated <- stopLaunchedPlugin policy transport processHandle
-          now <- getCurrentTime
-          pure lp
-            { lpStatus = PluginError "plugin handshake timed out"
-            , lpLifecycle = failedLifecycle now "handshake_timeout" "plugin handshake timed out"
-                (Just "handshake") mPid Nothing (manifestLifecycleResources (lpManifest lp))
-            , lpConnection = if terminated then Nothing else Just conn
-            , lpProcessHandle = if terminated then Nothing else Just processHandle
-            , lpRestartHistory = pruneRestartHistory policy now (lpRestartHistory lp)
-            }
-        Just (Right conn') -> do
-          now <- getCurrentTime
-          pure lp
-            { lpStatus = PluginConnected
-            , lpLifecycle = readyLifecycle now (Just "handshake complete") mPid conn'
-            , lpConnection = Just conn'
-            , lpProcessHandle = Just processHandle
-            , lpRestartHistory = pruneRestartHistory policy now (lpRestartHistory lp)
-            }
-        Just (Left err) -> do
-          terminated <- stopLaunchedPlugin policy transport processHandle
-          now <- getCurrentTime
-          let message = handshakeErrorMessage err
-          pure lp
-            { lpStatus = PluginError message
-            , lpLifecycle = failedLifecycle now (handshakeErrorCode err) message
-                (Just "handshake") mPid Nothing (manifestLifecycleResources (lpManifest lp))
-            , lpConnection = if terminated then Nothing else Just conn
-            , lpProcessHandle = if terminated then Nothing else Just processHandle
-            , lpRestartHistory = pruneRestartHistory policy now (lpRestartHistory lp)
-            }
+    Right (transport, processHandle) ->
+      restore (connectLaunchedPlugin lp policy startupTimeoutMicros transport processHandle)
+        `onException` cleanupLaunchedPlugin policy transport processHandle
+
+connectLaunchedPlugin :: LoadedPlugin -> RPCStartPolicy -> Int -> Transport -> ProcessHandle -> IO LoadedPlugin
+connectLaunchedPlugin lp policy startupTimeoutMicros transport processHandle = do
+  mPid <- processHandleIdText processHandle
+  let conn = newRPCConnection (lpManifest lp) transport (lpParams lp)
+  hsResult <- performPluginHandshakeWithTimeout startupTimeoutMicros conn
+  case hsResult of
+    Nothing -> do
+      terminated <- stopLaunchedPlugin policy transport processHandle
+      now <- getCurrentTime
+      pure lp
+        { lpStatus = PluginError "plugin handshake timed out"
+        , lpLifecycle = failedLifecycle now "handshake_timeout" "plugin handshake timed out"
+            (Just "handshake") mPid Nothing (manifestLifecycleResources (lpManifest lp))
+        , lpConnection = Nothing
+        , lpProcessHandle = if terminated then Nothing else Just processHandle
+        , lpRestartHistory = pruneRestartHistory policy now (lpRestartHistory lp)
+        }
+    Just (Right conn') -> do
+      now <- getCurrentTime
+      pure lp
+        { lpStatus = PluginConnected
+        , lpLifecycle = readyLifecycle now (Just "handshake complete") mPid conn'
+        , lpConnection = Just conn'
+        , lpProcessHandle = Just processHandle
+        , lpRestartHistory = pruneRestartHistory policy now (lpRestartHistory lp)
+        }
+    Just (Left err) -> do
+      terminated <- stopLaunchedPlugin policy transport processHandle
+      now <- getCurrentTime
+      let message = handshakeErrorMessage err
+      pure lp
+        { lpStatus = PluginError message
+        , lpLifecycle = failedLifecycle now (handshakeErrorCode err) message
+            (Just "handshake") mPid Nothing (manifestLifecycleResources (lpManifest lp))
+        , lpConnection = Nothing
+        , lpProcessHandle = if terminated then Nothing else Just processHandle
+        , lpRestartHistory = pruneRestartHistory policy now (lpRestartHistory lp)
+        }
+
+cleanupLaunchedPlugin :: RPCStartPolicy -> Transport -> ProcessHandle -> IO ()
+cleanupLaunchedPlugin policy transport processHandle = do
+  result <- try @SomeException (stopLaunchedPlugin policy transport processHandle)
+  case result of
+    Right False -> do
+      _ <- try @SomeException (safeTerminateProcess processHandle)
+      pure ()
+    _ -> pure ()
 
 maybeRestartAfterFailure :: FilePath -> LoadedPlugin -> IO LoadedPlugin
 maybeRestartAfterFailure executablePath failedLp =
@@ -427,7 +516,7 @@ restartCrashedPlugin lp = do
         , lpLifecycle = failedLifecycle now "process_exited" "plugin process exited"
             (Just "process") (plsProcessId (lpLifecycle lp)) (plsProtocolVersion (lpLifecycle lp))
             (plsResources (lpLifecycle lp))
-        , lpConnection = if terminated then Nothing else lpConnection lp
+        , lpConnection = Nothing
         , lpProcessHandle = if terminated then Nothing else lpProcessHandle lp
         , lpRestartHistory = pruneRestartHistory (lpStartPolicy lp) now (lpRestartHistory lp)
         }
@@ -466,7 +555,7 @@ handlePluginRuntimeFailure errorCode message lp = do
             (plsProcessId (lpLifecycle lp))
             (plsProtocolVersion (lpLifecycle lp))
             (plsResources (lpLifecycle lp))
-        , lpConnection = if terminated then Nothing else lpConnection lp
+        , lpConnection = Nothing
         , lpProcessHandle = if terminated then Nothing else lpProcessHandle lp
         , lpRestartHistory = pruneRestartHistory (lpStartPolicy lp) now (lpRestartHistory lp)
         }
@@ -477,27 +566,27 @@ handlePluginRuntimeFailure errorCode message lp = do
 
 stopLaunchedPlugin :: RPCStartPolicy -> Transport -> ProcessHandle -> IO Bool
 stopLaunchedPlugin _policy transport processHandle = do
-  terminated <- safeTerminateProcess processHandle
-  when terminated $ do
-    _ <- try @SomeException (closeTransport transport)
-    pure ()
-  pure terminated
+  closeTransportIgnoring transport
+  safeTerminateProcess processHandle
 
 stopLoadedPluginRuntime :: LoadedPlugin -> IO Bool
 stopLoadedPluginRuntime lp = do
   terminated <- case lpProcessHandle lp of
     Nothing -> pure True
     Just processHandle -> safeTerminateProcess processHandle
-  when terminated (closePluginTransport lp)
+  closePluginTransport lp
   pure terminated
 
 closePluginTransport :: LoadedPlugin -> IO ()
 closePluginTransport lp =
   case lpConnection lp of
     Nothing -> pure ()
-    Just conn -> do
-      _ <- try @SomeException (closeTransport (rpcTransport conn))
-      pure ()
+    Just conn -> closeTransportIgnoring (rpcTransport conn)
+
+closeTransportIgnoring :: Transport -> IO ()
+closeTransportIgnoring transport = do
+  _ <- try @SomeException (closeTransport transport)
+  pure ()
 
 preserveRuntimeHandles :: LoadedPlugin -> LoadedPlugin -> LoadedPlugin
 preserveRuntimeHandles stopped updated = updated
@@ -531,9 +620,9 @@ shutdownPlugin lp = do
   terminated <- case lpProcessHandle lp of
     Nothing -> pure True
     Just processHandle -> waitForProcessExitOrTerminate (rspShutdownTimeoutMs (lpStartPolicy lp)) processHandle
-  when terminated (closePluginTransport lp)
+  closePluginTransport lp
   pure lp
-    { lpConnection = if terminated then Nothing else lpConnection lp
+    { lpConnection = Nothing
     , lpProcessHandle = if terminated then Nothing else lpProcessHandle lp
     }
 

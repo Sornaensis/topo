@@ -71,7 +71,7 @@ import Data.Set (Set)
 import Data.Text (Text)
 import Hyperspace.Actor
 
-import Actor.PluginManager.PluginSupervisor (refreshAllManifests, shutdownPlugin)
+import Actor.PluginManager.PluginSupervisor (shutdownPlugin, withRefreshedManifests)
 import Actor.PluginManager.RootSupervisor (PluginManager, pluginManagerActorDef)
 import Seer.World.Persist.Types (WorldExternalDataSourceSnapshot)
 import Actor.PluginManager.Types
@@ -168,8 +168,8 @@ refreshManifests handle = do
   cast @"refresh" handle #refresh ()
   (baseDir, plugins) <- call @"getRefreshSnapshot" handle #getRefreshSnapshot ()
   waitForLifecycleObservationLease plugins
-  refreshed <- refreshAllManifests baseDir (Map.fromList [(lpName p, p) | p <- plugins])
-  cast @"finishRefresh" handle #finishRefresh (Map.elems refreshed)
+  withRefreshedManifests baseDir (Map.fromList [(lpName p, p) | p <- plugins]) $ \refreshed ->
+    cast @"finishRefresh" handle #finishRefresh (Map.elems refreshed)
 
 -- | Shut down all connected plugins.
 shutdownPlugins

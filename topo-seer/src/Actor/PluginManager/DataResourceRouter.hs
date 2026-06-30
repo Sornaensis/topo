@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- | Data-resource RPC routing for plugin-owned resources.
 module Actor.PluginManager.DataResourceRouter
@@ -7,13 +8,12 @@ module Actor.PluginManager.DataResourceRouter
   ) where
 
 import Control.Concurrent (forkFinally, killThread, newEmptyMVar, takeMVar, tryPutMVar)
-import Control.Exception (SomeException, throwIO)
+import Control.Exception (SomeException, throwIO, try)
 import Data.Maybe (fromMaybe)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import System.Timeout (timeout)
 
-import Actor.PluginManager.ProcessLauncher (safeTerminateProcess)
 import Actor.PluginManager.Types
   ( LoadedPlugin(..)
   , PluginLifecycleSnapshot(..)
@@ -44,6 +44,7 @@ import Topo.Plugin.RPC
   , queryResource
   , rpcErrorDataResourceFailure
   )
+import Topo.Plugin.RPC.Transport (closeTransport)
 
 -- | Forward a data query to the named plugin without taking ownership of
 -- plugin storage.
@@ -108,16 +109,16 @@ withPluginRequestTimeout lp conn action = do
     Nothing -> do
       abortPluginRequest lp conn
       killThread worker
-      _ <- takeMVar done
+      _ <- timeout pluginRequestAbortWaitMicros (takeMVar done)
       pure Nothing
 
+pluginRequestAbortWaitMicros :: Int
+pluginRequestAbortWaitMicros = 100000
+
 abortPluginRequest :: LoadedPlugin -> RPCConnection -> IO ()
-abortPluginRequest lp _conn = do
-  case lpProcessHandle lp of
-    Nothing -> pure ()
-    Just processHandle -> do
-      _ <- safeTerminateProcess processHandle
-      pure ()
+abortPluginRequest _lp conn = do
+  _ <- try @SomeException (closeTransport (rpcTransport conn))
+  pure ()
 
 failureLeft :: DataResourceFailure -> Either Text a
 failureLeft = Left . dataResourceFailureText

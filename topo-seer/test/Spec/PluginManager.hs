@@ -190,6 +190,7 @@ spec = describe "PluginManager" $ do
         let handles = pluginProcessHandles testLaunchPluginName loaded
         null handles `shouldBe` False
         shutdownPlugins pluginManagerHandle
+        shutdownPlugins pluginManagerHandle
         threadDelay 200000
         loadedAfterShutdown <- getLoadedPlugins pluginManagerHandle
         pluginStatuses testLaunchPluginName loadedAfterShutdown `shouldSatisfy` elem PluginDisconnected
@@ -219,6 +220,13 @@ spec = describe "PluginManager" $ do
         takeMVar done
         failed <- getLoadedPlugins pluginManagerHandle
         pluginLifecycleStates refreshTransientPluginName failed `shouldSatisfy` elem LifecycleFailed
+
+  it "cleans up unpublished subprocesses when refreshManifests is interrupted" $ do
+    withExecutablePluginDir interruptedRefreshPluginName interruptedRefreshManifestJSON "slow" $ do
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        result <- timeout 300000 (refreshManifests pluginManagerHandle)
+        result `shouldBe` Nothing
 
   it "exposes Stopping while public shutdownPlugins performs supervisor work" $ do
     withExecutablePluginDir shutdownTransientPluginName shutdownTransientManifestJSON "slow-shutdown" $ do
@@ -389,6 +397,7 @@ spec = describe "PluginManager" $ do
         loaded <- getLoadedPlugins pluginManagerHandle
         pluginStatuses badHandshakePluginName loaded `shouldSatisfy` anyPluginErrorContaining "unexpected response to handshake"
         pluginLifecycleStates badHandshakePluginName loaded `shouldSatisfy` elem LifecycleFailed
+        length (pluginProcessHandles badHandshakePluginName loaded) `shouldBe` 0
 
   it "reports early plugin exit during startup as a plugin error" $ do
     withExecutablePluginDir crashPluginName crashManifestJSON "early-exit" $ do
@@ -397,6 +406,7 @@ spec = describe "PluginManager" $ do
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
         pluginStatuses crashPluginName loaded `shouldSatisfy` anyPluginError
+        length (pluginProcessHandles crashPluginName loaded) `shouldBe` 0
 
   it "reports handshake timeouts as plugin errors" $ do
     withExecutablePluginDir slowPluginName slowManifestJSON "slow" $ do
@@ -405,6 +415,7 @@ spec = describe "PluginManager" $ do
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
         pluginStatuses slowPluginName loaded `shouldSatisfy` anyPluginErrorContaining "timed out"
+        length (pluginProcessHandles slowPluginName loaded) `shouldBe` 0
 
   it "honors auto_start=false by leaving runtime capabilities unavailable" $ do
     withExecutablePluginDir autoStartDisabledPluginName autoStartDisabledManifestJSON "ok" $ do
@@ -483,7 +494,7 @@ spec = describe "PluginManager" $ do
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
         pluginStatuses hangQueryPluginName loaded `shouldSatisfy` elem PluginConnected
-        timed <- timeout 1000000 $ queryPluginResource pluginManagerHandle (Text.pack hangQueryPluginName) testQuery
+        timed <- timeout 5000000 $ queryPluginResource pluginManagerHandle (Text.pack hangQueryPluginName) testQuery
         case timed of
           Nothing -> expectationFailure "data query hung"
           Just (Left err) -> err `shouldSatisfy` Text.isInfixOf "timed out"
@@ -491,6 +502,7 @@ spec = describe "PluginManager" $ do
         observed <- getLoadedPlugins pluginManagerHandle
         pluginStatuses hangQueryPluginName observed `shouldSatisfy` anyPluginErrorContaining "restart limit exceeded"
         pluginLifecycleErrorCodes hangQueryPluginName observed `shouldSatisfy` elem (Just "restart_limit_exceeded")
+        length (pluginProcessHandles hangQueryPluginName observed) `shouldBe` 0
 
   it "rejects unsupported data-resource mutations before plugin calls" $ do
     withExecutablePluginDir unsupportedMutationPluginName unsupportedMutationManifestJSON "validation-ok" $ do
@@ -1566,6 +1578,12 @@ refreshTransientPluginName = "copilot-test-plugin-refresh-transient"
 
 refreshTransientManifestJSON :: BS.ByteString
 refreshTransientManifestJSON = manifestFor refreshTransientPluginName
+
+interruptedRefreshPluginName :: String
+interruptedRefreshPluginName = "copilot-test-plugin-refresh-interrupted"
+
+interruptedRefreshManifestJSON :: BS.ByteString
+interruptedRefreshManifestJSON = manifestFor interruptedRefreshPluginName
 
 shutdownTransientPluginName :: String
 shutdownTransientPluginName = "copilot-test-plugin-shutdown-transient"

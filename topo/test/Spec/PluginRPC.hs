@@ -1417,9 +1417,12 @@ spec = describe "Plugin.RPC" $ do
       onWindows $ withTransportServer "bad/name\\with:chars" $ \server -> do
         let address = teAddress (tsEndpoint server)
             prefix = "\\\\.\\pipe\\"
-            pipeName = drop (length prefix) address
-        address `shouldSatisfy` (prefix `isPrefixOf`)
-        pipeName `shouldSatisfy` \suffix -> not (any (`elem` ['\\', '/', ':']) suffix)
+            pipeNames = case break (== '|') address of
+              (readPipe, '|':writePipe) -> [readPipe, writePipe]
+              _ -> [address]
+            suffixes = map (drop (length prefix)) pipeNames
+        pipeNames `shouldSatisfy` all (prefix `isPrefixOf`)
+        suffixes `shouldSatisfy` all (not . any (`elem` ['\\', '/', ':']))
 
     it "connects over a host-created Windows named pipe endpoint" $
       onWindows $ withTransportServer "pipe-smoke" $ \server -> do
