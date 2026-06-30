@@ -6,7 +6,18 @@
 module Spec.PluginManager (spec, runFixtureCli, runFixtureCliIfRequested) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
-import Control.Exception (SomeAsyncException, SomeException, bracket, catch, finally, fromException, onException, throwIO)
+import Control.Exception
+  ( Exception
+  , SomeAsyncException
+  , SomeException
+  , bracket
+  , catch
+  , finally
+  , fromException
+  , onException
+  , throwIO
+  , try
+  )
 import Control.Monad (unless)
 import Data.List (elemIndex)
 import qualified Data.Aeson as Aeson
@@ -38,7 +49,14 @@ import System.Exit (die, exitFailure)
 import System.FilePath ((</>))
 import System.Info (os)
 import System.IO (stdin, stdout)
-import System.Process (ProcessHandle, getProcessExitCode)
+import System.Process
+  ( CreateProcess(..)
+  , ProcessHandle
+  , StdStream(..)
+  , createProcess
+  , getProcessExitCode
+  , proc
+  )
 import System.Timeout (timeout)
 import Test.Hspec
 
@@ -169,6 +187,11 @@ ignoreCleanupExceptions action =
       Just _ -> throwIO err
       Nothing -> pure ()
 
+data FixtureCleanupProbe = FixtureCleanupProbe
+  deriving (Eq, Show)
+
+instance Exception FixtureCleanupProbe
+
 spec :: Spec
 spec = describe "PluginManager" $ do
   it "loads declared .toposchema files during discovery" $ do
@@ -209,6 +232,43 @@ spec = describe "PluginManager" $ do
           pluginStatuses envContractPluginName loaded `shouldSatisfy` elem PluginConnected
           pluginLifecycleStates envContractPluginName loaded `shouldSatisfy` elem LifecycleReady
           pluginLifecycleProtocols envContractPluginName loaded `shouldSatisfy` elem (Just currentProtocolVersion)
+
+  it "cleans up connected fixture subprocesses when the manager scope aborts" $ do
+    withExecutablePluginDir cleanupAbortPluginName cleanupAbortManifestJSON "ok" $ do
+      handleVar <- newEmptyMVar
+      result <- try @FixtureCleanupProbe $
+        withPluginManager $ \pluginManagerHandle -> do
+          discoverPlugins pluginManagerHandle
+          refreshManifests pluginManagerHandle
+          loaded <- getLoadedPlugins pluginManagerHandle
+          pluginStatuses cleanupAbortPluginName loaded `shouldSatisfy` elem PluginConnected
+          handles <- expectPluginProcessHandles cleanupAbortPluginName loaded
+          case handles of
+            processHandle:_ -> putMVar handleVar processHandle
+            [] -> expectationFailure "expected a non-empty fixture process handle list"
+          throwIO FixtureCleanupProbe :: IO ()
+      result `shouldBe` Left FixtureCleanupProbe
+      captured <- timeout 1000000 (takeMVar handleVar)
+      case captured of
+        Nothing -> expectationFailure "did not capture a connected fixture process handle"
+        Just processHandle -> assertProcessExited cleanupAbortPluginName processHandle
+
+  it "cleans up Windows fixture child processes when the parent hangs during shutdown" $ do
+    if os /= "mingw32"
+      then pure ()
+      else withExecutablePluginDir windowsProcessTreePluginName windowsProcessTreeManifestJSON "windows-process-tree" $ do
+        heartbeatPath <- fixtureDataFile windowsProcessTreePluginName windowsHeartbeatFileName
+        handles <- withPluginManager $ \pluginManagerHandle -> do
+          discoverPlugins pluginManagerHandle
+          refreshManifests pluginManagerHandle
+          loaded <- getLoadedPlugins pluginManagerHandle
+          pluginStatuses windowsProcessTreePluginName loaded `shouldSatisfy` elem PluginConnected
+          pluginLifecycleStates windowsProcessTreePluginName loaded `shouldSatisfy` elem LifecycleReady
+          processHandles <- expectPluginProcessHandles windowsProcessTreePluginName loaded
+          expectHeartbeatAdvances heartbeatPath
+          pure processHandles
+        mapM_ (assertProcessExited windowsProcessTreePluginName) handles
+        assertHeartbeatStops heartbeatPath
 
   it "exposes Starting while public refreshManifests performs supervisor work" $ do
     withExecutablePluginDir refreshTransientPluginName refreshTransientManifestJSON "slow" $ do
@@ -496,6 +556,7 @@ spec = describe "PluginManager" $ do
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
         pluginStatuses hangQueryPluginName loaded `shouldSatisfy` elem PluginConnected
+        handles <- expectPluginProcessHandles hangQueryPluginName loaded
         timed <- timeout 5000000 $ queryPluginResource pluginManagerHandle (Text.pack hangQueryPluginName) testQuery
         case timed of
           Nothing -> expectationFailure "data query hung"
@@ -505,6 +566,7 @@ spec = describe "PluginManager" $ do
         pluginStatuses hangQueryPluginName observed `shouldSatisfy` anyPluginErrorContaining "restart limit exceeded"
         pluginLifecycleErrorCodes hangQueryPluginName observed `shouldSatisfy` elem (Just "restart_limit_exceeded")
         length (pluginProcessHandles hangQueryPluginName observed) `shouldBe` 0
+        mapM_ (assertProcessExited hangQueryPluginName) handles
 
   it "rejects unsupported data-resource mutations before plugin calls" $ do
     withExecutablePluginDir unsupportedMutationPluginName unsupportedMutationManifestJSON "validation-ok" $ do
@@ -650,6 +712,12 @@ pluginProcessHandles name loaded =
   , Just processHandle <- [lpProcessHandle plugin]
   ]
 
+expectPluginProcessHandles :: String -> [LoadedPlugin] -> IO [ProcessHandle]
+expectPluginProcessHandles name loaded =
+  case pluginProcessHandles name loaded of
+    [] -> expectationFailure (name <> " did not expose a fixture process handle") >> fail "missing process handle"
+    handles -> pure handles
+
 assertProcessExited :: String -> ProcessHandle -> IO ()
 assertProcessExited label processHandle = do
   result <- timeout 1000000 waitForExitCode
@@ -662,6 +730,50 @@ assertProcessExited label processHandle = do
       case mExitCode of
         Just exitCode -> pure exitCode
         Nothing -> threadDelay 10000 >> waitForExitCode
+
+expectHeartbeatAdvances :: FilePath -> IO ()
+expectHeartbeatAdvances path = do
+  first <- waitForHeartbeatChange path Nothing "start"
+  _ <- waitForHeartbeatChange path (Just first) "advance"
+  pure ()
+
+waitForHeartbeatChange :: FilePath -> Maybe String -> String -> IO String
+waitForHeartbeatChange path previous label = do
+  result <- timeout 2000000 go
+  case result of
+    Nothing -> expectationFailure ("windows fixture heartbeat did not " <> label) >> fail "heartbeat did not change"
+    Just value -> pure value
+  where
+    go = do
+      current <- readHeartbeat path
+      case current of
+        Just value | Just value /= previous -> pure value
+        _ -> threadDelay 50000 >> go
+
+assertHeartbeatStops :: FilePath -> IO ()
+assertHeartbeatStops path = do
+  current <- readHeartbeat path
+  result <- timeout 3000000 (waitForStableHeartbeat current (0 :: Int))
+  case result of
+    Nothing -> expectationFailure "windows fixture child heartbeat kept changing after plugin teardown"
+    Just _ -> pure ()
+  where
+    waitForStableHeartbeat previous stableSamples
+      | stableSamples >= 4 = pure ()
+      | otherwise = do
+          threadDelay 100000
+          current <- readHeartbeat path
+          let stableSamples' = case (previous, current) of
+                (Just old, Just new) | old == new -> stableSamples + 1
+                _ -> 0
+          waitForStableHeartbeat current stableSamples'
+
+readHeartbeat :: FilePath -> IO (Maybe String)
+readHeartbeat path = do
+  exists <- doesFileExist path
+  if not exists
+    then pure Nothing
+    else (Just . BSC.unpack <$> BS.readFile path) `catch` \(_ :: SomeException) -> pure Nothing
 
 expectPluginConnection :: String -> [LoadedPlugin] -> IO RPCConnection
 expectPluginConnection name loaded =
@@ -940,9 +1052,13 @@ resetPluginDir pluginDir = do
 
 readFixtureCount :: String -> String -> IO Int
 readFixtureCount pluginName label = do
-  baseDir <- currentPluginBaseDir
-  let path = baseDir </> pluginName </> "data" </> (label <> ".count")
+  path <- fixtureDataFile pluginName (label <> ".count")
   readCountFile path
+
+fixtureDataFile :: String -> String -> IO FilePath
+fixtureDataFile pluginName fileName = do
+  baseDir <- currentPluginBaseDir
+  pure (baseDir </> pluginName </> "data" </> fileName)
 
 incrementFixtureCount :: String -> IO Int
 incrementFixtureCount label = do
@@ -1025,7 +1141,7 @@ normalizeFixtureMode :: String -> String
 normalizeFixtureMode = takeWhile (`notElem` ['\r', '\n'])
 
 fixtureUsage :: IO a
-fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|malformed-json|bad-handshake|early-exit|slow|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|exit-on-generator|exit-on-simulation|external-provider|external-consumer>"
+fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|malformed-json|bad-handshake|early-exit|slow|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|exit-on-generator|exit-on-simulation|external-provider|external-consumer|windows-process-tree|windows-heartbeat-child>"
 
 runFixtureMode :: String -> IO ()
 runFixtureMode = \case
@@ -1048,6 +1164,8 @@ runFixtureMode = \case
   "exit-on-simulation" -> runExitOnSimulationFixture
   "external-provider" -> runExternalProviderFixture
   "external-consumer" -> runExternalConsumerFixture
+  "windows-process-tree" -> runWindowsProcessTreeFixture
+  "windows-heartbeat-child" -> runWindowsHeartbeatChild
   unknown -> die ("unknown plugin-manager fixture: " <> unknown)
 
 runEnvContractFixture :: IO ()
@@ -1119,6 +1237,52 @@ runHangQueryFixture = do
               MsgQueryResource -> threadDelay 2000000 >> closeTransport transport
               MsgShutdown -> closeTransport transport
               _ -> loop transport
+
+runWindowsProcessTreeFixture :: IO ()
+runWindowsProcessTreeFixture
+  | os /= "mingw32" = runOkFixture
+  | otherwise = do
+      connectPluginFromEnvironment "plugin-manager-windows-process-tree-fixture" stdin stdout >>= \case
+        Left _ -> exitFailure
+        Right transport -> loop transport False
+  where
+    loop transport childStarted = do
+      recvMessage transport >>= \case
+        Left _ -> threadDelay 1000000 >> loop transport childStarted
+        Right bytes ->
+          case decodeMessage bytes of
+            Left _ -> loop transport childStarted
+            Right envelope -> case envType envelope of
+              MsgHandshake -> do
+                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope (envRequestId envelope) currentProtocolVersion))
+                unless childStarted startWindowsHeartbeatChild
+                loop transport True
+              MsgShutdown -> loop transport childStarted
+              _ -> loop transport childStarted
+
+startWindowsHeartbeatChild :: IO ()
+startWindowsHeartbeatChild = do
+  dataRoot <- requireEnv pluginDataRootEnv
+  createDirectoryIfMissing True dataRoot
+  testExe <- getExecutablePath
+  _ <- createProcess (proc testExe ["--plugin-manager-fixture", "windows-heartbeat-child"])
+    { cwd = Just dataRoot
+    , std_in = NoStream
+    , std_out = NoStream
+    , std_err = NoStream
+    }
+  pure ()
+
+runWindowsHeartbeatChild :: IO ()
+runWindowsHeartbeatChild = do
+  dataRoot <- requireEnv pluginDataRootEnv
+  createDirectoryIfMissing True dataRoot
+  let heartbeatPath = dataRoot </> windowsHeartbeatFileName
+      loop n = do
+        BS.writeFile heartbeatPath (BSC.pack (show n))
+        threadDelay 50000
+        loop (n + 1 :: Int)
+  loop (0 :: Int)
 
 runProviderFailedFixture :: IO ()
 runProviderFailedFixture = do
@@ -1581,6 +1745,12 @@ envContractPluginName = "copilot-test-plugin-env-contract"
 envContractManifestJSON :: BS.ByteString
 envContractManifestJSON = manifestFor envContractPluginName
 
+cleanupAbortPluginName :: String
+cleanupAbortPluginName = "copilot-test-plugin-cleanup-abort"
+
+cleanupAbortManifestJSON :: BS.ByteString
+cleanupAbortManifestJSON = manifestFor cleanupAbortPluginName
+
 mismatchPluginName :: String
 mismatchPluginName = "copilot-test-plugin-protocol-mismatch"
 
@@ -1700,6 +1870,20 @@ hangQueryManifestJSON = dataResourceManifestFor hangQueryPluginName
   , "    \"shutdown_timeout_ms\": 300,"
   , "    \"backoff_ms\": 1"
   ]
+
+windowsProcessTreePluginName :: String
+windowsProcessTreePluginName = "copilot-test-plugin-windows-process-tree"
+
+windowsProcessTreeManifestJSON :: BS.ByteString
+windowsProcessTreeManifestJSON = manifestWithStartPolicyFor windowsProcessTreePluginName
+  [ "    \"restart_mode\": \"never\","
+  , "    \"startup_timeout_ms\": 1000,"
+  , "    \"request_timeout_ms\": 300,"
+  , "    \"shutdown_timeout_ms\": 100"
+  ]
+
+windowsHeartbeatFileName :: String
+windowsHeartbeatFileName = "windows-child-heartbeat.txt"
 
 unsupportedMutationPluginName :: String
 unsupportedMutationPluginName = "copilot-test-plugin-unsupported-mutation"
