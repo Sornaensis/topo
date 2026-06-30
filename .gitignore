@@ -1,5 +1,5 @@
 # Stack / Haskell
-.stack-work/
+.stack-work*/
 dist/
 dist-newstyle/
 .cabal-sandbox/
