@@ -819,6 +819,7 @@ executableHint
 handshakeErrorCode :: PluginHandshakeError -> Text
 handshakeErrorCode err = case err of
   PluginHandshakeException _ -> "handshake_exception"
+  PluginHandshakeRPC (RPCTimeout _) -> "handshake_timeout"
   PluginHandshakeRPC rpcErr -> rpcErrorCode rpcErr
 
 handshakeErrorMessage :: PluginHandshakeError -> Text

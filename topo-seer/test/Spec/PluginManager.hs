@@ -537,14 +537,27 @@ spec = describe "PluginManager" $ do
         pluginStatuses crashPluginName loaded `shouldSatisfy` anyPluginError
         length (pluginProcessHandles crashPluginName loaded) `shouldBe` 0
 
-  it "reports handshake timeouts as plugin errors" $ do
-    withExecutablePluginDir slowPluginName slowManifestJSON "slow" $ do
+  it "reports endpoint accept timeouts as launch failures" $ do
+    withExecutablePluginDir endpointAcceptTimeoutPluginName endpointAcceptTimeoutManifestJSON "slow" $ do
       withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
-        pluginStatuses slowPluginName loaded `shouldSatisfy` anyPluginErrorContaining "timed out"
-        length (pluginProcessHandles slowPluginName loaded) `shouldBe` 0
+        pluginStatuses endpointAcceptTimeoutPluginName loaded `shouldSatisfy` anyPluginErrorContaining "timed out waiting for plugin connection"
+        pluginLifecycleStates endpointAcceptTimeoutPluginName loaded `shouldSatisfy` elem LifecycleFailed
+        pluginLifecycleErrorCodes endpointAcceptTimeoutPluginName loaded `shouldSatisfy` elem (Just "launch_failed")
+        length (pluginProcessHandles endpointAcceptTimeoutPluginName loaded) `shouldBe` 0
+
+  it "reports handshake stalls as handshake timeouts" $ do
+    withExecutablePluginDir handshakeStallPluginName handshakeStallManifestJSON "handshake-stall" $ do
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses handshakeStallPluginName loaded `shouldSatisfy` anyPluginErrorContaining "plugin handshake timed out"
+        pluginLifecycleStates handshakeStallPluginName loaded `shouldSatisfy` elem LifecycleFailed
+        pluginLifecycleErrorCodes handshakeStallPluginName loaded `shouldSatisfy` elem (Just "handshake_timeout")
+        length (pluginProcessHandles handshakeStallPluginName loaded) `shouldBe` 0
 
   it "honors auto_start=false by leaving runtime capabilities unavailable" $ do
     withExecutablePluginDir autoStartDisabledPluginName autoStartDisabledManifestJSON "ok" $ do
@@ -1329,7 +1342,7 @@ normalizeFixtureMode :: String -> String
 normalizeFixtureMode = takeWhile (`notElem` ['\r', '\n'])
 
 fixtureUsage :: IO a
-fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|malformed-json|bad-handshake|early-exit|slow|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|exit-on-generator|exit-on-simulation|external-provider|external-consumer|windows-process-tree|windows-heartbeat-child>"
+fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|malformed-json|bad-handshake|early-exit|slow|handshake-stall|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|exit-on-generator|exit-on-simulation|external-provider|external-consumer|windows-process-tree|windows-heartbeat-child>"
 
 runFixtureMode :: String -> IO ()
 runFixtureMode = \case
@@ -1340,6 +1353,7 @@ runFixtureMode = \case
   "bad-handshake" -> runBadHandshakeFixture
   "early-exit" -> exitFailure
   "slow" -> threadDelay 2000000 >> runOkFixture
+  "handshake-stall" -> runHandshakeStallFixture
   "slow-shutdown" -> runSlowShutdownFixture
   "flaky-start" -> runFlakyStartFixture
   "counted-early-exit" -> incrementFixtureCount "counted-early-exit" >> exitFailure
@@ -1848,6 +1862,15 @@ runBadHandshakeFixture = do
         }))
       closeTransport transport
 
+runHandshakeStallFixture :: IO ()
+runHandshakeStallFixture = do
+  connectPluginFromEnvironment "plugin-manager-handshake-stall-fixture" stdin stdout >>= \case
+    Left _ -> exitFailure
+    Right transport -> do
+      _ <- recvMessage transport
+      threadDelay 2000000
+      closeTransport transport
+
 handshakeAckEnvelope :: Maybe Word64 -> Int -> RPCEnvelope
 handshakeAckEnvelope requestId protocolVersion =
   handshakeAckWithResourcesEnvelope requestId protocolVersion []
@@ -2002,11 +2025,27 @@ interruptedShutdownPluginName = "copilot-test-plugin-shutdown-interrupted"
 interruptedShutdownManifestJSON :: BS.ByteString
 interruptedShutdownManifestJSON = manifestFor interruptedShutdownPluginName
 
-slowPluginName :: String
-slowPluginName = "copilot-test-plugin-slow"
+endpointAcceptTimeoutPluginName :: String
+endpointAcceptTimeoutPluginName = "copilot-test-plugin-endpoint-accept-timeout"
 
-slowManifestJSON :: BS.ByteString
-slowManifestJSON = manifestFor slowPluginName
+endpointAcceptTimeoutManifestJSON :: BS.ByteString
+endpointAcceptTimeoutManifestJSON = manifestWithStartPolicyFor endpointAcceptTimeoutPluginName
+  [ "    \"restart_mode\": \"never\","
+  , "    \"startup_timeout_ms\": 100,"
+  , "    \"request_timeout_ms\": 100,"
+  , "    \"shutdown_timeout_ms\": 100"
+  ]
+
+handshakeStallPluginName :: String
+handshakeStallPluginName = "copilot-test-plugin-handshake-stall"
+
+handshakeStallManifestJSON :: BS.ByteString
+handshakeStallManifestJSON = manifestWithStartPolicyFor handshakeStallPluginName
+  [ "    \"restart_mode\": \"never\","
+  , "    \"startup_timeout_ms\": 500,"
+  , "    \"request_timeout_ms\": 100,"
+  , "    \"shutdown_timeout_ms\": 100"
+  ]
 
 autoStartDisabledPluginName :: String
 autoStartDisabledPluginName = "copilot-test-plugin-auto-start-disabled"
