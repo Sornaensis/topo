@@ -26,6 +26,7 @@ import Actor.PluginManager
   , pluginDiagnosticState
   , pluginDiagnosticStateText
   )
+import Actor.SnapshotReceiver (bumpSnapshotVersion)
 import Actor.Simulation
   ( SimulationDagNodeSnapshot(..)
   , SimulationDagSnapshot(..)
@@ -34,7 +35,7 @@ import Actor.Simulation
   , requestSimTick
   )
 import Actor.UI.Setters (setUiSimAutoTick, setUiSimTickRate)
-import Actor.UI.State (UiState(..), readUiSnapshotRef)
+import Actor.UI.State (UiState(..), getUiSnapshot, readUiSnapshotRef)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
@@ -80,12 +81,12 @@ handleSetSimAutoTick ctx reqId params = do
       let handles = ccActorHandles ctx
           uiH = ahUiHandle handles
       setUiSimAutoTick uiH enabled
-      case mRate of
-        Just rate | rate > 0 -> setUiSimTickRate uiH rate
-        _ -> pure ()
+      mapM_ (setUiSimTickRate uiH) mRate
+      ui <- getUiSnapshot uiH
+      bumpSnapshotVersion (ahSnapshotVersionRef handles)
       pure $ okResponse reqId $ object
-        [ "auto_tick" .= enabled
-        , "rate"      .= mRate
+        [ "auto_tick" .= uiSimAutoTick ui
+        , "rate"      .= fmap (const (uiSimTickRate ui)) mRate
         ]
 
 -- | Handle @sim_tick@ — request a number of manual simulation ticks.
@@ -95,20 +96,24 @@ handleSimTick :: CommandContext -> Int -> Value -> IO SeerResponse
 handleSimTick ctx reqId params = do
   let count = maybe 1 id (Aeson.parseMaybe parseTickCount params)
       handles = ccActorHandles ctx
+  ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
   dataSnap <- getDataSnapshot (ahDataHandle handles)
-  if dsTerrainChunks dataSnap <= 0
+  if uiGenerating ui
     then do
-      appendLog (ahLogHandle handles) (LogEntry LogWarn "sim tick ignored (no world terrain loaded yet)")
-      pure $ errResponse reqId "no world terrain loaded yet"
-    else do
-      ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
-      let currentTick = uiSimTickCount ui
-          targetTick  = currentTick + fromIntegral (max 1 (min 100 count :: Int))
-      requestSimTick (ahSimulationHandle handles) targetTick
-      pure $ okResponse reqId $ object
-        [ "requested_ticks" .= count
-        , "target_tick"     .= targetTick
-        ]
+      appendLog (ahLogHandle handles) (LogEntry LogWarn "sim tick ignored (world generation in progress)")
+      pure $ errResponse reqId "world generation in progress"
+    else if dsTerrainChunks dataSnap <= 0
+      then do
+        appendLog (ahLogHandle handles) (LogEntry LogWarn "sim tick ignored (no world terrain loaded yet)")
+        pure $ errResponse reqId "no world terrain loaded yet"
+      else do
+        let currentTick = uiSimTickCount ui
+            targetTick  = currentTick + fromIntegral (max 1 (min 100 count :: Int))
+        requestSimTick (ahSimulationHandle handles) targetTick
+        pure $ okResponse reqId $ object
+          [ "requested_ticks" .= count
+          , "target_tick"     .= targetTick
+          ]
 
 -- | Handle @get_sim_dag@ — return current simulation DAG topology.
 handleGetSimDag :: CommandContext -> Int -> Value -> IO SeerResponse

@@ -30,7 +30,7 @@ import Actor.Log
   , setLogSnapshotRef
   )
 import Actor.PluginManager (PluginManager, discoverPlugins)
-import Actor.Simulation (Simulation, setSimHandles)
+import Actor.Simulation (Simulation, setSimHandles, simulationHandlesConfigured)
 import Actor.SnapshotReceiver
   ( DataSnapshotRef
   , SnapshotVersionRef
@@ -54,7 +54,7 @@ import Actor.UI
 import Actor.UiActions (UiActions)
 import Actor.UiActions.Handles (ActorHandles, mkActorHandles)
 import Control.Concurrent (forkIO)
-import Control.Monad (replicateM)
+import Control.Monad (replicateM, when)
 import Data.IORef (newIORef)
 import qualified Data.Text as Text
 import Hyperspace.Actor
@@ -75,6 +75,12 @@ import Seer.HTTP.Server (forkHttpServer)
 import Seer.Service.Context (ServiceContext(..))
 import Seer.Service.Events (newDefaultServiceEventBus)
 import Seer.Screenshot.Request (ScreenshotRequestRef, newScreenshotRequestRef)
+import Seer.System.AutoTick
+  ( AutoTickHandles(..)
+  , AutoTickScheduler
+  , startAutoTickScheduler
+  , stopAutoTickScheduler
+  )
 import Seer.System.Runtime (RuntimeOptions(..))
 import System.Random (randomIO)
 import Topo.Overlay (emptyOverlayStore)
@@ -95,6 +101,7 @@ data AppActors = AppActors
   , aaAtlasScheduleRef :: !AtlasScheduleRef
   , aaAtlasResultRef :: !AtlasResultRef
   , aaScreenshotRef :: !ScreenshotRequestRef
+  , aaAutoTickScheduler :: !AutoTickScheduler
   }
 
 initialiseAppActors :: TopoSeerConfig -> IO AppActors
@@ -135,6 +142,15 @@ initialiseAppActors runtimeCfg = do
   terrainSnapshotRef <- newTerrainSnapshotRef terrainSnap
   snapshotVersionRef <- newSnapshotVersionRef
   setSimHandles simulationHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasManagerHandle
+  simReady <- simulationHandlesConfigured simulationHandle
+  when (not simReady) (fail "topo-seer startup: simulation handles were not configured")
+  autoTickScheduler <- startAutoTickScheduler AutoTickHandles
+    { athUiHandle = uiHandle
+    , athUiSnapshotRef = uiSnapshotRef
+    , athSimulationHandle = simulationHandle
+    , athLogHandle = logHandle
+    , athSnapshotVersionRef = snapshotVersionRef
+    }
   seed <- randomIO
   setUiSeed uiHandle seed
   setUiSeedInput uiHandle (Text.pack (show seed))
@@ -159,6 +175,7 @@ initialiseAppActors runtimeCfg = do
     , aaAtlasScheduleRef = atlasScheduleRef
     , aaAtlasResultRef = atlasResultRef
     , aaScreenshotRef = screenshotRef
+    , aaAutoTickScheduler = autoTickScheduler
     }
 
 startCommandServices :: RuntimeOptions -> AppActors -> IO ()
@@ -175,7 +192,9 @@ startCommandServices opts actors = do
       pure ()
 
 shutdownAppActors :: AppActors -> IO ()
-shutdownAppActors = shutdownActorSystem . aaSystem
+shutdownAppActors actors = do
+  stopAutoTickScheduler (aaAutoTickScheduler actors)
+  shutdownActorSystem (aaSystem actors)
 
 commandContextForActors :: AppActors -> CommandContext
 commandContextForActors actors = CommandContext

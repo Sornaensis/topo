@@ -178,6 +178,7 @@ library:
     - Seer.Config.SliderId
     - Seer.Input.Context
     - Seer.System.Actors
+    - Seer.System.AutoTick
     - Seer.System.Cache
     - Seer.System.EventPump
     - Seer.System.Headless

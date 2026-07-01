@@ -39,7 +39,7 @@ import Actor.PluginManager
   , getPluginExternalDataSources
   , notifyWorldChanged
   )
-import Actor.Simulation (setSimWorld)
+import Actor.Simulation (beginSimWorldTransition, cancelSimWorldTransition, clearSimWorld, setSimWorld)
 import Actor.SnapshotReceiver
   ( readTerrainSnapshot
   , readDataSnapshot
@@ -275,14 +275,18 @@ handleLoadWorld ctx reqId params = do
       | Text.null name ->
           pure $ errResponse reqId "world name must not be empty"
       | otherwise -> do
+          let handles = ccActorHandles ctx
+              simH = ahSimulationHandle handles
+          beginSimWorldTransition simH
           result <- loadNamedWorld name
           case result of
-            Left err ->
+            Left err -> do
+              cancelSimWorldTransition simH
               pure $ errResponse reqId ("failed to load world: " <> err)
             Right (manifest, snapshot, world) -> do
-              let handles = ccActorHandles ctx
-                  uiH = ahUiHandle handles
+              let uiH = ahUiHandle handles
               -- Replace terrain data
+              clearSimWorld simH ()
               replaceTerrainData (ahDataHandle handles) world
               setSimWorld (ahSimulationHandle handles) world
               setUiOverlayNames uiH (overlayNames (twOverlays world))

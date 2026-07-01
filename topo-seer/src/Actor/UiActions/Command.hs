@@ -30,7 +30,7 @@ import Actor.PluginManager
   , pluginPanelDiagnosticLines
   , refreshManifests
   )
-import Actor.Simulation (Simulation)
+import Actor.Simulation (Simulation, clearSimWorld)
 import Actor.AtlasManager (AtlasJob(..), AtlasManager, enqueueAtlasBuild)
 import Seer.Render.ZoomStage (ZoomStage(..), allZoomStages, stageForZoom)
 import Actor.Data
@@ -203,6 +203,7 @@ startGeneration req = do
       pluginHandle = ahPluginManagerHandle handles
   uiSnap <- getUiSnapshot uiHandle
   setUiGenerating uiHandle True
+  clearSimWorld (ahSimulationHandle handles) ()
   -- Commit the pending water level so atlas/terrain caches use the applied value
   setUiRenderWaterLevel uiHandle (uiWaterLevel uiSnap)
   -- Capture config snapshot for revert support

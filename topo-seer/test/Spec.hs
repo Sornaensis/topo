@@ -25,6 +25,7 @@ import qualified Spec.TerrainActor
 import qualified Spec.PluginManager
 import qualified Spec.UiActor
 import qualified Spec.Simulation
+import qualified Spec.AutoTick
 import qualified Spec.Widgets
 import qualified Spec.WidgetTree
 import qualified Spec.SliderSpec
@@ -76,6 +77,7 @@ main = do
         Spec.PluginManager.spec
         Spec.UiActor.spec
         Spec.Simulation.spec
+        Spec.AutoTick.spec
         Spec.Widgets.spec
         Spec.WidgetTree.spec
         Spec.WorldPersist.spec

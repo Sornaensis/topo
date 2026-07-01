@@ -44,6 +44,7 @@ import Actor.UI
   , UiState(..)
   , getUiSnapshot
   , newUiSnapshotRef
+  , setUiGenerating
   , setUiSnapshotRef
   )
 import Actor.UiActions (ActorHandles(..), UiActions)
@@ -760,10 +761,37 @@ spec = describe "CommandDispatch" $ do
       ui <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
       (Map.lookup "example" (uiPluginParams ui) >>= Map.lookup "enabled") `shouldBe` Just (Bool False)
 
+  describe "set_sim_auto_tick" $ do
+    it "sets and clamps the normalized auto tick rate" $ withCtx $ \ctx -> do
+      highRsp <- dispatch ctx "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (5.0 :: Double)])
+      srSuccess highRsp `shouldBe` True
+      lookupKey "auto_tick" (srResult highRsp) `shouldBe` Just (Bool True)
+      lookupKey "rate" (srResult highRsp) `shouldBe` Just (Number 1)
+      highUi <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
+      uiSimAutoTick highUi `shouldBe` True
+      uiSimTickRate highUi `shouldBe` 1
+
+      zeroRsp <- dispatch ctx "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (0.0 :: Double)])
+      srSuccess zeroRsp `shouldBe` True
+      lookupKey "auto_tick" (srResult zeroRsp) `shouldBe` Just (Bool True)
+      lookupKey "rate" (srResult zeroRsp) `shouldBe` Just (Number 0)
+      zeroUi <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
+      uiSimAutoTick zeroUi `shouldBe` True
+      uiSimTickRate zeroUi `shouldBe` 0
+
   describe "sim_tick" $ do
     it "rejects ticks when no world terrain is loaded" $ withCtx $ \ctx -> do
       rsp <- dispatch ctx "sim_tick" Null
       srSuccess rsp `shouldBe` False
+
+    it "rejects ticks while world generation is in progress" $ withCtx $ \ctx -> do
+      let handles = ccActorHandles ctx
+      setTerrainChunkCount (ahDataHandle handles) 1
+      setUiGenerating (ahUiHandle handles) True
+      _ <- getUiSnapshot (ahUiHandle handles)
+      rsp <- dispatch ctx "sim_tick" (object ["count" .= (1 :: Int)])
+      srSuccess rsp `shouldBe` False
+      srError rsp `shouldSatisfy` maybe False (Text.isInfixOf "generation")
 
     it "requests a tick when world terrain is loaded" $ withCtx $ \ctx -> do
       setTerrainChunkCount (ahDataHandle (ccActorHandles ctx)) 1

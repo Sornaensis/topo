@@ -184,6 +184,7 @@ library
       Seer.Config.SliderId
       Seer.Input.Context
       Seer.System.Actors
+      Seer.System.AutoTick
       Seer.System.Cache
       Seer.System.EventPump
       Seer.System.Headless
@@ -247,6 +248,7 @@ test-suite topo-seer-test
       Spec.AtlasResultBroker
       Spec.AtlasScheduleBroker
       Spec.AtlasScheduler
+      Spec.AutoTick
       Spec.CacheProperties
       Spec.CommandDispatch
       Spec.Component

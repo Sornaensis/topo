@@ -94,6 +94,12 @@ import Seer.Service.Context (ServiceContext(..))
 import Seer.Service.Events (ServiceEventBus, newDefaultServiceEventBus)
 import Seer.Editor.History (EditHistory, emptyHistory)
 import Seer.Screenshot.Request (ScreenshotRequestRef, newScreenshotRequestRef)
+import Seer.System.AutoTick
+  ( AutoTickHandles(..)
+  , AutoTickScheduler
+  , startAutoTickScheduler
+  , stopAutoTickScheduler
+  )
 import System.IO (Handle, hClose)
 import Topo.Overlay (emptyOverlayStore)
 
@@ -156,6 +162,7 @@ data HeadlessApp = HeadlessApp
   , haActorHandles :: !ActorHandles
   , haCommandContext :: !CommandContext
   , haCommandChannelThread :: !(Maybe ThreadId)
+  , haAutoTickScheduler :: !AutoTickScheduler
   }
 
 -- | Command context wired to the headless actor graph. Service and HTTP tests
@@ -231,6 +238,13 @@ startHeadlessAppWithSystem cfg system = do
   setSimHandles simulationHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasManagerHandle
   simReady <- simulationHandlesConfigured simulationHandle
   unless simReady (fail "topo-seer headless startup: simulation handles were not configured")
+  autoTickScheduler <- startAutoTickScheduler AutoTickHandles
+    { athUiHandle = uiHandle
+    , athUiSnapshotRef = uiSnapshotRef
+    , athSimulationHandle = simulationHandle
+    , athLogHandle = logHandle
+    , athSnapshotVersionRef = snapshotVersionRef
+    }
 
   screenshotRef <- newScreenshotRequestRef
   historyRef <- newIORef (emptyHistory 50)
@@ -283,11 +297,13 @@ startHeadlessAppWithSystem cfg system = do
     , haActorHandles = actorHandles
     , haCommandContext = commandContext
     , haCommandChannelThread = commandThread
+    , haAutoTickScheduler = autoTickScheduler
     }
 
 -- | Stop a headless runtime and release actor resources.
 stopHeadlessApp :: HeadlessApp -> IO ()
 stopHeadlessApp app = do
+  stopAutoTickScheduler (haAutoTickScheduler app)
   mapM_ killThread (haCommandChannelThread app)
   shutdownPlugins (haPluginManagerHandle app)
   shutdownActorSystem (haActorSystem app)
