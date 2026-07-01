@@ -21,6 +21,7 @@ import qualified Data.IntMap.Strict as IntMap
 import Data.IORef (newIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import Data.List (nub, sort)
+import Data.Maybe (mapMaybe)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -609,6 +610,9 @@ spec = describe "CommandDispatch" $ do
             Just (Object values) -> KM.member "elevation_m" values `shouldBe` True
             _ -> expectationFailure "expected active_view.values object"
         _ -> expectationFailure "expected active_view object"
+      case lookupKey "sections" (srResult rsp) of
+        Just (Array sections) -> mapMaybe inspectorSectionKey (toList sections) `shouldBe` canonicalInspectorSectionKeys
+        _ -> expectationFailure "expected complete inspector sections array"
 
     it "returns error when params are missing" $ withCtx $ \ctx -> do
       rsp <- dispatch ctx "get_hex" Null
@@ -938,6 +942,38 @@ withCtx action = bracket newActorSystem shutdownActorSystem $ \system -> do
         , ccLogSnapshotRef  = Nothing
         }
   action ctx
+
+inspectorSectionKey :: Value -> Maybe Text
+inspectorSectionKey (Object section) = case KM.lookup "key" section of
+  Just (String key) -> Just key
+  _ -> Nothing
+inspectorSectionKey _ = Nothing
+
+canonicalInspectorSectionKeys :: [Text]
+canonicalInspectorSectionKeys =
+  [ "coordinates"
+  , "elevation_hypsometry"
+  , "tectonics_plates"
+  , "erosion_terrain_form"
+  , "hydrology_rivers"
+  , "water_bodies"
+  , "water_table"
+  , "climate_weather"
+  , "weather_snapshot"
+  , "biome_refinement"
+  , "soil"
+  , "vegetation"
+  , "glacier_snow_ice"
+  , "volcanism"
+  , "ocean_currents"
+  , "overlay_records"
+  , "overlay_schema"
+  , "overlay_provenance"
+  , "plugin_hex_data"
+  , "stage_provenance"
+  , "unit_conversions"
+  , "export_links"
+  ]
 
 writeSingleChunkTerrain :: CommandContext -> IO Int
 writeSingleChunkTerrain ctx = do

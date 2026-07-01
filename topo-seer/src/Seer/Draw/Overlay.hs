@@ -8,6 +8,9 @@ module Seer.Draw.Overlay
   , terrainInspectorView
   , terrainInspectorViewAt
   , terrainInspectorViewAtWithPluginData
+  , terrainInspectorPinnedView
+  , terrainInspectorPanelLinesForHeight
+  , terrainInspectorPanelLineHardCap
   , terrainInspectorSectionsObject
   , drawHoverHex
   , drawHexContext
@@ -26,7 +29,7 @@ import Actor.UI (UiState(..), ViewMode(..))
 import Data.Aeson (Value(..), object, toJSON, (.=))
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
-import Data.List (sort)
+import Data.List (find, sort)
 import Data.Maybe (mapMaybe)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -136,11 +139,15 @@ import UI.Widgets (Rect(..))
 import UI.WidgetsDraw (drawTextLine)
 import qualified Data.Vector.Unboxed as U
 
--- | Pure view model for the pinned hover-hex terrain inspector.
+-- | Pure view model for the hover-hex terrain inspector.
 data TerrainInspectorView = TerrainInspectorView
   { tivHex :: !(Int, Int)
   , tivSections :: ![TerrainInspectorSection]
   , tivLines :: ![Text]
+    -- ^ Full diagnostic line dump for tests/debugging. The pinned panel uses
+    -- 'tivPanelLines' so the canonical structured sections can stay complete.
+  , tivPanelLines :: ![Text]
+    -- ^ Compact, view-mode-aware, bounded line projection for the pinned panel.
   } deriving (Eq, Show)
 
 -- | Canonical structured inspector section.
@@ -172,6 +179,13 @@ terrainInspectorView ui terrainSnap = do
   hexCoord <- uiHoverHex ui
   pure (terrainInspectorViewAt ui terrainSnap hexCoord)
 
+terrainInspectorPinnedView :: UiState -> TerrainSnapshot -> Maybe TerrainInspectorView
+terrainInspectorPinnedView ui terrainSnap = do
+  hexCoord <- case uiContextHex ui of
+    Just selectedHex -> Just selectedHex
+    Nothing -> uiHoverHex ui
+  pure (terrainInspectorViewAt ui terrainSnap hexCoord)
+
 terrainInspectorViewAt :: UiState -> TerrainSnapshot -> (Int, Int) -> TerrainInspectorView
 terrainInspectorViewAt ui =
   terrainInspectorViewAtWithPluginData (inspectorPluginDataFromUi ui) ui
@@ -183,14 +197,17 @@ terrainInspectorViewAtWithPluginData pluginData ui terrainSnap hexCoord@(q, r) =
       { tivHex = hexCoord
       , tivSections = []
       , tivLines = [hexHeader q r, "No data"]
+      , tivPanelLines = [hexHeader q r, "No data"]
       }
     Just sample ->
       let sections = inspectorSections pluginData ui terrainSnap hexCoord sample
           lines = hexHeader q r : latLonLine ui terrainSnap q r : (sectionsToLines sections <> modeContextLines ui terrainSnap hexCoord sample)
+          panelLines = terrainInspectorPanelLines ui terrainSnap hexCoord sample sections
       in TerrainInspectorView
         { tivHex = hexCoord
         , tivSections = sections
         , tivLines = lines
+        , tivPanelLines = panelLines
         }
 
 terrainInspectorSectionsObject :: TerrainInspectorView -> Value
@@ -238,21 +255,22 @@ drawHexContext :: SDL.Renderer -> Maybe FontCache -> UiState -> TerrainSnapshot 
 drawHexContext renderer fontCache ui terrainSnap (V2 winW winH) =
   if not (uiHexTooltipPinned ui)
     then pure ()
-    else case terrainInspectorView ui terrainSnap of
+    else case terrainInspectorPinnedView ui terrainSnap of
       Just inspector -> do
         SDL.P (V2 mx my) <- SDL.getAbsoluteMouseLocation
         let sx = fromIntegral mx
             sy = fromIntegral my
-            linesToDraw = tivLines inspector
-            lineHeight = 16
+            panelAvailableH = max panelLineHeightPx (winH - 16)
+            linesToDraw = terrainInspectorPanelLinesForHeight panelAvailableH inspector
+            lineHeight = panelLineHeightPx
             hPad = 12
-            vPad = 10
+            vPad = panelVerticalPaddingPx
         panelW <- case fontCache of
           Just fc -> do
             widths <- mapM (lineWidth fc) linesToDraw
             pure (maximum (220 : map (+ hPad * 2) widths))
           Nothing -> pure (maximum (220 : map (\line -> Text.length line * 8 + hPad * 2) linesToDraw))
-        let panelH = max 40 (vPad * 2 + lineHeight * length linesToDraw)
+        let panelH = min panelAvailableH (max 40 (vPad * 2 + lineHeight * length linesToDraw))
             px = clamp 8 (winW - panelW - 8) (sx + 12)
             py = clamp 8 (winH - panelH - 8) (sy + 12)
             panelRect = SDL.Rectangle (SDL.P (V2 (fromIntegral px) (fromIntegral py))) (V2 (fromIntegral panelW) (fromIntegral panelH))
@@ -354,7 +372,7 @@ degToRad :: Float -> Float
 degToRad degrees = degrees * pi / 180
 
 contextLines :: UiState -> TerrainSnapshot -> (Int, Int) -> [Text]
-contextLines ui terrainSnap hexCoord = tivLines (terrainInspectorViewAt ui terrainSnap hexCoord)
+contextLines ui terrainSnap hexCoord = tivPanelLines (terrainInspectorViewAt ui terrainSnap hexCoord)
 
 latLonLine :: UiState -> TerrainSnapshot -> Int -> Int -> Text
 latLonLine ui terrainSnap tileQ tileR =
@@ -391,6 +409,238 @@ sectionsToLines = concatMap sectionLines
   where
     sectionLines section = ("--- " <> tisTitle section <> " ---") : map fieldLine (tisFields section)
     fieldLine field = tifLabel field <> " " <> tifValue field
+
+terrainInspectorPanelLineHardCap :: Int
+terrainInspectorPanelLineHardCap = 14
+
+panelLineTextLimit :: Int
+panelLineTextLimit = 96
+
+panelLineHeightPx :: Int
+panelLineHeightPx = 16
+
+panelVerticalPaddingPx :: Int
+panelVerticalPaddingPx = 10
+
+data InspectorPanelLine = InspectorPanelLine
+  { iplText :: !Text
+  , iplFieldCount :: !Int
+  }
+
+terrainInspectorPanelLinesForHeight :: Int -> TerrainInspectorView -> [Text]
+terrainInspectorPanelLinesForHeight availableHeight view =
+  clipPanelLineTexts lineCap (tivPanelLines view)
+  where
+    lineCap = clampInt 2 terrainInspectorPanelLineHardCap ((availableHeight - panelVerticalPaddingPx * 2) `div` panelLineHeightPx)
+
+terrainInspectorPanelLines :: UiState -> TerrainSnapshot -> (Int, Int) -> HexSample -> [TerrainInspectorSection] -> [Text]
+terrainInspectorPanelLines ui terrainSnap hexCoord sample sections =
+  renderPanelLines terrainInspectorPanelLineHardCap totalFields coreLines
+  where
+    totalFields = sum (map (length . tisFields) sections)
+    coreLines =
+      commonInspectorPanelLines ui terrainSnap hexCoord sections
+        <> modeInspectorPanelLines ui terrainSnap hexCoord sample sections
+        <> notableInspectorPanelLines sections
+        <> availabilityInspectorPanelLines sections
+
+commonInspectorPanelLines :: UiState -> TerrainSnapshot -> (Int, Int) -> [TerrainInspectorSection] -> [InspectorPanelLine]
+commonInspectorPanelLines ui terrainSnap (q, r) sections =
+  [ staticPanelLine (hexHeader q r)
+  , staticPanelLine (latLonLine ui terrainSnap q r)
+  ]
+  <> maybe [] pure (chunkPanelLine sections)
+  <> fieldPanelLines sections "elevation_hypsometry"
+       [ "elevation_m"
+       , "relative_water_level_m"
+       , "hypsometric_zone"
+       ]
+
+modeInspectorPanelLines :: UiState -> TerrainSnapshot -> (Int, Int) -> HexSample -> [TerrainInspectorSection] -> [InspectorPanelLine]
+modeInspectorPanelLines ui terrainSnap hexCoord sample sections =
+  case uiViewMode ui of
+    ViewElevation -> fields "erosion_terrain_form"
+      [ "terrain_form", "slope_avg_deg", "slope_max_deg", "slope_min_deg" ]
+    ViewTerrainForm -> fields "erosion_terrain_form"
+      [ "terrain_form", "slope_avg_deg", "roughness", "relief" ]
+    ViewBiome -> fields "biome_refinement"
+      [ "biome", "family", "terrain_form", "precip_avg_mm_year" ]
+    ViewClimate -> fields "climate_weather"
+      [ "temp_avg_c", "precip_avg_mm_year", "humidity_avg_pct", "wind_spd_avg_ms" ]
+    ViewPrecip -> fields "climate_weather"
+      [ "precip_avg_mm_year", "humidity_avg_pct", "temp_avg_c", "precip_seasonality" ]
+    ViewWeather -> fields "weather_snapshot"
+      [ "temp_c", "humidity_pct", "wind_spd_ms", "pressure_hpa", "precip_mm_year" ]
+    ViewCloud -> fields "weather_snapshot"
+      [ "cloud_cover", "cloud_water", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high" ]
+    ViewMoisture -> fields "soil"
+      [ "soil_moisture", "soil_depth_m", "fertility" ]
+      <> fields "water_table"
+      [ "water_table_depth", "root_zone_moisture" ]
+    ViewVegetation -> fields "vegetation"
+      [ "cover", "density", "albedo", "fertility" ]
+    ViewPlateId -> fields "tectonics_plates"
+      [ "plate_id", "boundary", "crust" ]
+    ViewPlateBoundary -> fields "tectonics_plates"
+      [ "boundary", "plate_id", "velocity_speed" ]
+    ViewPlateHardness -> fields "tectonics_plates"
+      [ "plate_hardness", "plate_id", "crust" ]
+    ViewPlateCrust -> fields "tectonics_plates"
+      [ "crust", "plate_height_m", "plate_id" ]
+    ViewPlateAge -> fields "tectonics_plates"
+      [ "plate_age", "plate_id", "boundary" ]
+    ViewPlateHeight -> fields "tectonics_plates"
+      [ "plate_height_m", "plate_id", "crust" ]
+    ViewPlateVelocity -> fields "tectonics_plates"
+      [ "velocity_x", "velocity_y", "velocity_speed", "boundary" ]
+    ViewOverlay overlayName fieldIndex ->
+      overlayInspectorPanelLines ui terrainSnap hexCoord sample sections overlayName fieldIndex
+  where
+    fields sectionKey fieldKeys = fieldPanelLinesWithStatus sections sectionKey fieldKeys
+
+notableInspectorPanelLines :: [TerrainInspectorSection] -> [InspectorPanelLine]
+notableInspectorPanelLines sections = take 2 $ mapMaybe id
+  [ waterBodyPanelLine sections
+  , glacierPanelLine sections
+  , volcanismPanelLine sections
+  , oceanCurrentPanelLine sections
+  ]
+
+availabilityInspectorPanelLines :: [TerrainInspectorSection] -> [InspectorPanelLine]
+availabilityInspectorPanelLines sections =
+  [ staticPanelLine $ "Full data " <> showText (length sections) <> " sections"
+      <> " · overlays " <> sectionAvailabilityCount "overlay_records" sections
+      <> " · plugins " <> sectionAvailabilityCount "plugin_hex_data" sections
+  ]
+
+renderPanelLines :: Int -> Int -> [InspectorPanelLine] -> [Text]
+renderPanelLines cap totalFields coreLines
+  | cap <= 0 = []
+  | otherwise = map (truncatePanelText . iplText) visibleLines <> [truncatePanelText footer]
+  where
+    visibleLines = take (max 0 (cap - 1)) coreLines
+    shownFields = sum (map iplFieldCount visibleLines)
+    hiddenFields = max 0 (totalFields - shownFields)
+    footer = "… " <> showText hiddenFields <> " hidden fields · Full/API: get_hex.sections · Export/provenance JSON"
+
+clipPanelLineTexts :: Int -> [Text] -> [Text]
+clipPanelLineTexts cap linesToClip
+  | cap <= 0 = []
+  | length linesToClip <= cap = linesToClip
+  | cap == 1 = [truncatePanelText (heightFooter (length linesToClip))]
+  | otherwise = take (cap - 1) linesToClip <> [truncatePanelText (heightFooter hiddenLines)]
+  where
+    hiddenLines = length linesToClip - cap + 1
+    heightFooter count = "… " <> showText count <> " more lines · get_hex.sections · Export/provenance JSON"
+
+overlayInspectorPanelLines :: UiState -> TerrainSnapshot -> (Int, Int) -> HexSample -> [TerrainInspectorSection] -> Text -> Int -> [InspectorPanelLine]
+overlayInspectorPanelLines ui terrainSnap hexCoord sample sections overlayName fieldIndex =
+  map staticPanelLine selectedModeLines
+    <> fieldPanelLineOrStatus sections "overlay_records" ("overlay_" <> sanitizeKey overlayName)
+    <> fieldPanelLineOrStatus sections "overlay_schema" ("schema_" <> sanitizeKey overlayName)
+    <> fieldPanelLineOrStatus sections "overlay_provenance" ("provenance_" <> sanitizeKey overlayName)
+  where
+    safeFieldIndex = max 0 fieldIndex
+    modeLines = modeContextLines ui terrainSnap hexCoord sample
+    selectedModeLines = case modeLines of
+      header : fieldHeader : valueLines -> [header, fieldHeader] <> take 1 (drop safeFieldIndex valueLines)
+      otherLines -> otherLines
+
+fieldPanelLines :: [TerrainInspectorSection] -> Text -> [Text] -> [InspectorPanelLine]
+fieldPanelLines sections sectionKey fieldKeys =
+  mapMaybe (fieldPanelLine sections sectionKey) fieldKeys
+
+fieldPanelLinesWithStatus :: [TerrainInspectorSection] -> Text -> [Text] -> [InspectorPanelLine]
+fieldPanelLinesWithStatus sections sectionKey fieldKeys =
+  case fieldPanelLines sections sectionKey fieldKeys of
+    [] -> maybe [] pure (fieldPanelLine sections sectionKey "status")
+    selectedLines -> selectedLines
+
+fieldPanelLineOrStatus :: [TerrainInspectorSection] -> Text -> Text -> [InspectorPanelLine]
+fieldPanelLineOrStatus sections sectionKey fieldKey =
+  case fieldPanelLine sections sectionKey fieldKey of
+    Just selectedLine -> [selectedLine]
+    Nothing -> maybe [] pure (fieldPanelLine sections sectionKey "status")
+
+fieldPanelLine :: [TerrainInspectorSection] -> Text -> Text -> Maybe InspectorPanelLine
+fieldPanelLine sections sectionKey fieldKey = do
+  field <- findInspectorField sections sectionKey fieldKey
+  pure (InspectorPanelLine (fieldDisplayLine field) 1)
+
+chunkPanelLine :: [TerrainInspectorSection] -> Maybe InspectorPanelLine
+chunkPanelLine sections = do
+  chunk <- fieldValue "coordinates" "chunk_id"
+  tile <- fieldValue "coordinates" "tile_index"
+  size <- fieldValue "coordinates" "chunk_size"
+  pure $ InspectorPanelLine ("Chunk " <> chunk <> " · Tile " <> tile <> " · Size " <> size) 3
+  where
+    fieldValue sectionKey fieldKey = tifValue <$> findInspectorField sections sectionKey fieldKey
+
+waterBodyPanelLine :: [TerrainInspectorSection] -> Maybe InspectorPanelLine
+waterBodyPanelLine sections = do
+  field <- findInspectorField sections "water_bodies" "type"
+  if tifValue field `elem` ["-", "Dry"]
+    then Nothing
+    else Just (InspectorPanelLine ("Water " <> tifValue field) 1)
+
+glacierPanelLine :: [TerrainInspectorSection] -> Maybe InspectorPanelLine
+glacierPanelLine sections = do
+  field <- findInspectorField sections "glacier_snow_ice" "ice_thickness"
+  if ignorableValue (tifValue field)
+    then Nothing
+    else Just (InspectorPanelLine ("Ice " <> tifValue field) 1)
+
+volcanismPanelLine :: [TerrainInspectorSection] -> Maybe InspectorPanelLine
+volcanismPanelLine sections = do
+  field <- findInspectorField sections "volcanism" "vent_type"
+  if tifValue field `elem` ["-", "None"]
+    then Nothing
+    else Just (InspectorPanelLine ("Volcanism " <> tifValue field) 1)
+
+oceanCurrentPanelLine :: [TerrainInspectorSection] -> Maybe InspectorPanelLine
+oceanCurrentPanelLine sections = do
+  water <- findInspectorField sections "ocean_currents" "water_tile"
+  tempDelta <- findInspectorField sections "ocean_currents" "temp_offset_c"
+  if tifValue water == "yes"
+    then Just (InspectorPanelLine ("Current Δ " <> tifValue tempDelta) 2)
+    else Nothing
+
+findInspectorSection :: [TerrainInspectorSection] -> Text -> Maybe TerrainInspectorSection
+findInspectorSection sections sectionKey = find ((== sectionKey) . tisKey) sections
+
+findInspectorField :: [TerrainInspectorSection] -> Text -> Text -> Maybe TerrainInspectorField
+findInspectorField sections sectionKey fieldKey = do
+  section <- findInspectorSection sections sectionKey
+  find ((== fieldKey) . tifKey) (tisFields section)
+
+sectionAvailabilityCount :: Text -> [TerrainInspectorSection] -> Text
+sectionAvailabilityCount sectionKey sections =
+  case findInspectorSection sections sectionKey of
+    Nothing -> "0"
+    Just section
+      | any unavailableStatus (tisFields section) -> "0"
+      | otherwise -> showText (length (tisFields section))
+
+unavailableStatus :: TerrainInspectorField -> Bool
+unavailableStatus field =
+  tifKey field == "status" && tifValue field `elem` ["none", "not_loaded", "no_hex_bound_resources"]
+
+ignorableValue :: Text -> Bool
+ignorableValue value = value `elem` ["-", "0.0", "0.0 m", "0.0 °C", "no", "None", "Dormant", "Dry"]
+
+fieldDisplayLine :: TerrainInspectorField -> Text
+fieldDisplayLine field = tifLabel field <> " " <> tifValue field
+
+staticPanelLine :: Text -> InspectorPanelLine
+staticPanelLine text = InspectorPanelLine text 0
+
+truncatePanelText :: Text -> Text
+truncatePanelText text
+  | Text.length text <= panelLineTextLimit = text
+  | otherwise = Text.take (panelLineTextLimit - 1) text <> "…"
+
+clampInt :: Int -> Int -> Int -> Int
+clampInt lo hi value = max lo (min hi value)
 
 modeContextLines :: UiState -> TerrainSnapshot -> (Int, Int) -> HexSample -> [Text]
 modeContextLines ui terrainSnap (q, r) sample = modeLines (uiViewMode ui) sample

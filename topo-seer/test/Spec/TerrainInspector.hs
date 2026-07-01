@@ -3,12 +3,15 @@
 
 module Spec.TerrainInspector (spec) where
 
+import Control.Monad (forM_)
 import Actor.Data (TerrainSnapshot(..))
 import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
+import Actor.UI.State (allBuiltinViewModes)
 import Data.Aeson (Value(..))
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (find)
+import Data.Text (Text)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Vector.Unboxed as U
@@ -17,6 +20,9 @@ import Seer.Draw.Overlay
   , TerrainInspectorPluginData(..)
   , TerrainInspectorSection(..)
   , TerrainInspectorView(..)
+  , terrainInspectorPanelLineHardCap
+  , terrainInspectorPanelLinesForHeight
+  , terrainInspectorPinnedView
   , terrainInspectorView
   , terrainInspectorViewAtWithPluginData
   )
@@ -74,30 +80,93 @@ spec = describe "terrain inspector view model" $ do
     tivLines view `shouldSatisfy` any (Text.isPrefixOf "Elev")
     tivLines view `shouldSatisfy` any (Text.isPrefixOf "Form")
     tivLines view `shouldSatisfy` any (Text.isPrefixOf "Slope")
-    map tisKey (tivSections view) `shouldBe`
-      [ "coordinates"
-      , "elevation_hypsometry"
-      , "tectonics_plates"
-      , "erosion_terrain_form"
-      , "hydrology_rivers"
-      , "water_bodies"
-      , "water_table"
-      , "climate_weather"
-      , "weather_snapshot"
-      , "biome_refinement"
-      , "soil"
-      , "vegetation"
-      , "glacier_snow_ice"
-      , "volcanism"
-      , "ocean_currents"
-      , "overlay_records"
-      , "overlay_schema"
-      , "overlay_provenance"
-      , "plugin_hex_data"
-      , "stage_provenance"
-      , "unit_conversions"
-      , "export_links"
-      ]
+    map tisKey (tivSections view) `shouldBe` canonicalInspectorSectionKeys
+
+  it "uses the selected context hex for pinned inspectors before hover fallback" $ do
+    let ui = emptyUiState
+          { uiHoverHex = Just (0, 0)
+          , uiContextHex = Just (1, 0)
+          }
+        Just view = terrainInspectorPinnedView ui terrainSnapshotWithChunk
+    tivHex view `shouldBe` (1, 0)
+
+  it "builds compact bounded panel lines with common fields for every view" $ do
+    let overlayMode = ViewOverlay "culture" 0
+        modes = allBuiltinViewModes <> [overlayMode]
+    forM_ modes $ \mode -> do
+      let ui = emptyUiState { uiHoverHex = Just (0, 0), uiViewMode = mode }
+          Just view = terrainInspectorView ui terrainSnapshotWithDomainLayers
+          panel = tivPanelLines view
+      length panel `shouldSatisfy` (<= terrainInspectorPanelLineHardCap)
+      panel `shouldSatisfy` any (== "Hex (0, 0)")
+      panel `shouldSatisfy` any (Text.isPrefixOf "Chunk ")
+      panel `shouldSatisfy` any (Text.isPrefixOf "Elev ")
+      panel `shouldSatisfy` any (Text.isPrefixOf "Zone ")
+      panel `shouldSatisfy` any (Text.isInfixOf "get_hex.sections")
+
+  it "keeps compact panel lines scoped to the active view mode" $ do
+    let panelFor mode =
+          let ui = emptyUiState { uiHoverHex = Just (0, 0), uiViewMode = mode }
+              Just view = terrainInspectorView ui terrainSnapshotWithDomainLayers
+          in tivPanelLines view
+        climatePanel = panelFor ViewClimate
+        platePanel = panelFor ViewPlateId
+        biomePanel = panelFor ViewBiome
+    climatePanel `shouldSatisfy` any (Text.isInfixOf "Temp avg")
+    climatePanel `shouldSatisfy` any (Text.isInfixOf "Precip")
+    climatePanel `shouldNotSatisfy` any (Text.isInfixOf "Plate ")
+    platePanel `shouldSatisfy` any (Text.isInfixOf "Plate 0")
+    platePanel `shouldNotSatisfy` any (Text.isInfixOf "Temp avg")
+    biomePanel `shouldSatisfy` any (Text.isInfixOf "Biome")
+    biomePanel `shouldNotSatisfy` any (Text.isInfixOf "Pressure")
+
+  it "clips compact panel lines by available height and truncates long display values" $ do
+    let longOverlay = Text.replicate 140 "x"
+        ui = emptyUiState
+          { uiHoverHex = Just (0, 0)
+          , uiViewMode = ViewOverlay longOverlay 0
+          }
+        Just view = terrainInspectorView ui terrainSnapshotWithDomainLayers
+        shortPanel = terrainInspectorPanelLinesForHeight 60 view
+    length shortPanel `shouldSatisfy` (<= 2)
+    shortPanel `shouldSatisfy` any (Text.isInfixOf "get_hex.sections")
+    shortPanel `shouldSatisfy` any (Text.isInfixOf "Export/provenance JSON")
+    map Text.length (tivPanelLines view) `shouldSatisfy` all (<= 96)
+    tivLines view `shouldSatisfy` any ((> 96) . Text.length)
+
+  it "scopes overlay compact panel details to the selected overlay" $ do
+    let culture = mkSparseFloatOverlay "culture" "Culture score" 0.87 (OverlayProvenance 99 3 "plugin:civ")
+        roads = mkSparseFloatOverlay "roads" "Road density" 0.42 (OverlayProvenance 100 4 "plugin:roads")
+        snap = terrainSnapshotWithChunk { tsOverlayStore = insertOverlay roads (insertOverlay culture emptyOverlayStore) }
+        ui = emptyUiState
+          { uiHoverHex = Just (0, 0)
+          , uiViewMode = ViewOverlay "roads" 0
+          }
+        Just view = terrainInspectorView ui snap
+        panel = tivPanelLines view
+    panel `shouldSatisfy` any (Text.isInfixOf "Overlay roads")
+    panel `shouldSatisfy` any (Text.isInfixOf "roads sparse_record")
+    panel `shouldSatisfy` any (Text.isInfixOf "roads plugin:roads v4 seed 100")
+    panel `shouldNotSatisfy` any (Text.isInfixOf "culture sparse_record")
+
+  it "collapses overlay, plugin, provenance, and export details in the compact default" $ do
+    let provenance = OverlayProvenance 99 3 "plugin:civ"
+        overlay = mkSparseFloatOverlay "culture" "Culture score" 0.87 provenance
+        snap = terrainSnapshotWithChunk { tsOverlayStore = insertOverlay overlay emptyOverlayStore }
+        record = DataRecord (Map.fromList [("id", Number 1), ("name", String "Hillfort")])
+        result = QueryResult "settlements" [record] (Just 1)
+        pluginData = [TerrainInspectorPluginData "civ" settlementResourceSchema (Just (Right result))]
+        ui = emptyUiState { uiHoverHex = Just (0, 0), uiViewMode = ViewElevation }
+        view = terrainInspectorViewAtWithPluginData pluginData ui snap (0, 0)
+        panel = tivPanelLines view
+    panel `shouldSatisfy` any (Text.isInfixOf "overlays 1")
+    panel `shouldSatisfy` any (Text.isInfixOf "plugins 1")
+    panel `shouldNotSatisfy` any (Text.isInfixOf "Plugin records JSON")
+    panel `shouldNotSatisfy` any (Text.isInfixOf "plugin:civ v3 seed 99")
+    tivLines view `shouldSatisfy` any (Text.isInfixOf "Plugin records JSON civ:settlements")
+    map tisKey (tivSections view) `shouldBe` canonicalInspectorSectionKeys
+    map tisKey (tivSections view) `shouldSatisfy` elem "overlay_provenance"
+    map tisKey (tivSections view) `shouldSatisfy` elem "export_links"
 
   it "surfaces populated water body and water-table section fields" $ do
     let ui = emptyUiState { uiHoverHex = Just (0, 0), uiViewMode = ViewElevation }
@@ -170,6 +239,32 @@ spec = describe "terrain inspector view model" $ do
             KeyMap.lookup "hexBound" schemaRaw `shouldBe` Nothing
           _ -> expectationFailure "expected plugin schema raw object"
       _ -> expectationFailure "expected plugin field raw object"
+
+canonicalInspectorSectionKeys :: [Text]
+canonicalInspectorSectionKeys =
+  [ "coordinates"
+  , "elevation_hypsometry"
+  , "tectonics_plates"
+  , "erosion_terrain_form"
+  , "hydrology_rivers"
+  , "water_bodies"
+  , "water_table"
+  , "climate_weather"
+  , "weather_snapshot"
+  , "biome_refinement"
+  , "soil"
+  , "vegetation"
+  , "glacier_snow_ice"
+  , "volcanism"
+  , "ocean_currents"
+  , "overlay_records"
+  , "overlay_schema"
+  , "overlay_provenance"
+  , "plugin_hex_data"
+  , "stage_provenance"
+  , "unit_conversions"
+  , "export_links"
+  ]
 
 emptyTerrainSnapshot :: TerrainSnapshot
 emptyTerrainSnapshot = TerrainSnapshot 0 0 IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty emptyOverlayStore
