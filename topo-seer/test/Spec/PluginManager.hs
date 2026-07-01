@@ -5,7 +5,7 @@
 
 module Spec.PluginManager (spec, runFixtureCli, runFixtureCliIfRequested) where
 
-import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
+import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
 import Control.Exception
   ( Exception
   , SomeAsyncException
@@ -281,12 +281,14 @@ spec = describe "PluginManager" $ do
     withExecutablePluginDir refreshTransientPluginName refreshTransientManifestJSON "slow" $ do
       withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
-        done <- newEmptyMVar
-        _ <- forkIO (refreshManifests pluginManagerHandle >> putMVar done ())
-        threadDelay 50000
-        starting <- getLoadedPlugins pluginManagerHandle
+        done <- forkLifecycleAction (refreshManifests pluginManagerHandle)
+        starting <- waitForPluginLifecycleState
+          (refreshTransientPluginName <> " refresh transient")
+          refreshTransientPluginName
+          LifecycleStarting
+          pluginManagerHandle
         pluginLifecycleStates refreshTransientPluginName starting `shouldSatisfy` elem LifecycleStarting
-        takeMVar done
+        waitForLifecycleAction (refreshTransientPluginName <> " refresh") done
         failed <- getLoadedPlugins pluginManagerHandle
         pluginLifecycleStates refreshTransientPluginName failed `shouldSatisfy` elem LifecycleFailed
 
@@ -339,12 +341,14 @@ spec = describe "PluginManager" $ do
         refreshManifests pluginManagerHandle
         ready <- getLoadedPlugins pluginManagerHandle
         pluginLifecycleStates shutdownTransientPluginName ready `shouldSatisfy` elem LifecycleReady
-        done <- newEmptyMVar
-        _ <- forkIO (shutdownPlugins pluginManagerHandle >> putMVar done ())
-        threadDelay 50000
-        stopping <- getLoadedPlugins pluginManagerHandle
+        done <- forkLifecycleAction (shutdownPlugins pluginManagerHandle)
+        stopping <- waitForPluginLifecycleState
+          (shutdownTransientPluginName <> " shutdown transient")
+          shutdownTransientPluginName
+          LifecycleStopping
+          pluginManagerHandle
         pluginLifecycleStates shutdownTransientPluginName stopping `shouldSatisfy` elem LifecycleStopping
-        takeMVar done
+        waitForLifecycleAction (shutdownTransientPluginName <> " shutdown") done
         stopped <- getLoadedPlugins pluginManagerHandle
         pluginLifecycleStates shutdownTransientPluginName stopped `shouldSatisfy` elem LifecycleStopped
 
@@ -792,6 +796,54 @@ expectPluginProcessHandles name loaded =
     [] -> expectationFailure (name <> " did not expose a fixture process handle") >> fail "missing process handle"
     handles -> pure handles
 
+forkLifecycleAction :: IO () -> IO (MVar (Either SomeException ()))
+forkLifecycleAction action = do
+  done <- newEmptyMVar
+  _ <- forkIO (try @SomeException action >>= putMVar done)
+  pure done
+
+waitForLifecycleAction :: String -> MVar (Either SomeException ()) -> IO ()
+waitForLifecycleAction label done = do
+  result <- timeout lifecycleActionTimeoutMicros (takeMVar done)
+  case result of
+    Nothing -> expectationFailure $ label <> " did not finish within bounded test timeout"
+    Just (Left err) -> expectationFailure $ label <> " failed: " <> show err
+    Just (Right ()) -> pure ()
+
+waitForPluginLifecycleState
+  :: String
+  -> String
+  -> PluginLifecycleState
+  -> ActorHandle PluginManager (Protocol PluginManager)
+  -> IO [LoadedPlugin]
+waitForPluginLifecycleState label pluginName expected pluginManagerHandle =
+  go transientLifecyclePollAttempts []
+  where
+    go attemptsLeft observed = do
+      loaded <- getLoadedPlugins pluginManagerHandle
+      let observed' = observed <> [summarizePluginObservation pluginName loaded]
+      if expected `elem` pluginLifecycleStates pluginName loaded
+        then pure loaded
+        else if attemptsLeft <= 0
+          then do
+            expectationFailure $
+              label <> " did not observe " <> show expected <> ". Observed states/statuses:\n"
+                <> formatObservedLifecycleStates observed'
+                <> "Last full plugin state:\n"
+                <> summarizeLoadedPlugins loaded
+            fail label
+          else threadDelay transientLifecyclePollDelayMicros >> go (attemptsLeft - 1) observed'
+
+summarizePluginObservation :: String -> [LoadedPlugin] -> String
+summarizePluginObservation pluginName loaded =
+  case filter ((== Text.pack pluginName) . lpName) loaded of
+    [] -> pluginName <> " missing; loaded plugins=" <> show (map (Text.unpack . lpName) loaded)
+    matching -> unlines (map summarizeLoadedPlugin matching)
+
+formatObservedLifecycleStates :: [String] -> String
+formatObservedLifecycleStates observed =
+  unlines [show index <> ". " <> observation | (index, observation) <- zip [(1 :: Int)..] observed]
+
 waitForLoadedPlugins
   :: String
   -> ActorHandle PluginManager (Protocol PluginManager)
@@ -848,6 +900,15 @@ waitForProcessExitCode remainingMicros processHandle = do
           let delayMicros = min cleanupPollDelayMicros remainingMicros
           threadDelay delayMicros
           waitForProcessExitCode (remainingMicros - delayMicros) processHandle
+
+lifecycleActionTimeoutMicros :: Int
+lifecycleActionTimeoutMicros = 10000000
+
+transientLifecyclePollAttempts :: Int
+transientLifecyclePollAttempts = 200
+
+transientLifecyclePollDelayMicros :: Int
+transientLifecyclePollDelayMicros = 25000
 
 processExitAssertTimeoutMicros :: Int
 processExitAssertTimeoutMicros = 5000000
