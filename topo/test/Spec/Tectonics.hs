@@ -174,6 +174,33 @@ spec = describe "Tectonics" $ do
             maxSpeed = U.maximum (U.zipWith (\x y -> abs x + abs y) vx vy)
         maxSpeed `shouldSatisfy` (> 0)
 
+  it "applyTectonicsChunkFingerprint" $ do
+    let expected =
+          [ ("tcElevation.sum", 86.86653)
+          , ("tcElevation.weighted", 10880.47)
+          , ("tcHardness.sum", 90.48373)
+          , ("tcHardness.weighted", 11627.142)
+          , ("tcPlateId.sum", 665088.0)
+          , ("tcPlateId.weighted", 8.546381e7)
+          , ("tcPlateBoundary.sum", 768.0)
+          , ("tcPlateBoundary.weighted", 98688.0)
+          , ("tcPlateHeight.sum", 86.86653)
+          , ("tcPlateHeight.weighted", 10880.47)
+          , ("tcPlateHardness.sum", 90.48373)
+          , ("tcPlateHardness.weighted", 11627.142)
+          , ("tcPlateCrust.sum", 256.0)
+          , ("tcPlateCrust.weighted", 32896.0)
+          , ("tcPlateAge.sum", 124.295395)
+          , ("tcPlateAge.weighted", 15972.001)
+          , ("tcPlateVelX.sum", -62.50195)
+          , ("tcPlateVelX.weighted", -8031.496)
+          , ("tcPlateVelY.sum", -140.30858)
+          , ("tcPlateVelY.weighted", -18029.64)
+          ]
+        actual = tectonicsFieldFingerprint
+    length actual `shouldBe` length expected
+    mapM_ assertFingerprintClose (zip expected actual)
+
   -- ----------------------------------------------------------------
   -- Rift profile property tests
   -- ----------------------------------------------------------------
@@ -300,6 +327,49 @@ spec = describe "Tectonics" $ do
           vals = [ boundaryDistanceNormalised 123 cfg x y
                  | x <- [-50 .. 50], y <- [-50 .. 50] ]
       all (\v -> v >= 0 && v <= 1) vals `shouldBe` True
+
+assertFingerprintClose :: ((String, Float), (String, Float)) -> Expectation
+assertFingerprintClose ((expectedName, expected), (actualName, actual)) = do
+  actualName `shouldBe` expectedName
+  abs (actual - expected) `shouldSatisfy` (< 1e-4)
+
+tectonicsFieldFingerprint :: [(String, Float)]
+tectonicsFieldFingerprint =
+  let config = WorldConfig { wcChunkSize = 16 }
+      world = emptyWorld config defaultHexGridMeta
+      ChunkId key = chunkIdFromCoord (ChunkCoord 0 0)
+      chunk = applyTectonicsChunk
+        config
+        424242
+        defaultGenConfig
+        (twLatMapping world)
+        defaultTectonicsConfig
+        key
+        (emptyTerrainChunk config)
+      floatFingerprint name vec =
+        [ (name <> ".sum", U.sum vec)
+        , (name <> ".weighted", U.ifoldl' (\acc i v -> acc + fromIntegral (i + 1) * v) 0 vec)
+        ]
+      word16Fingerprint name vec =
+        [ (name <> ".sum", fromIntegral (U.foldl' (\acc v -> acc + fromIntegral v) (0 :: Int) vec))
+        , (name <> ".weighted", fromIntegral (U.ifoldl' (\acc i v -> acc + (i + 1) * fromIntegral v) (0 :: Int) vec))
+        ]
+      boundaryFingerprint name vec =
+        [ (name <> ".sum", fromIntegral (U.foldl' (\acc v -> acc + fromIntegral (plateBoundaryToCode v)) (0 :: Int) vec))
+        , (name <> ".weighted", fromIntegral (U.ifoldl' (\acc i v -> acc + (i + 1) * fromIntegral (plateBoundaryToCode v)) (0 :: Int) vec))
+        ]
+  in concat
+     [ floatFingerprint "tcElevation" (tcElevation chunk)
+     , floatFingerprint "tcHardness" (tcHardness chunk)
+     , word16Fingerprint "tcPlateId" (tcPlateId chunk)
+     , boundaryFingerprint "tcPlateBoundary" (tcPlateBoundary chunk)
+     , floatFingerprint "tcPlateHeight" (tcPlateHeight chunk)
+     , floatFingerprint "tcPlateHardness" (tcPlateHardness chunk)
+     , word16Fingerprint "tcPlateCrust" (tcPlateCrust chunk)
+     , floatFingerprint "tcPlateAge" (tcPlateAge chunk)
+     , floatFingerprint "tcPlateVelX" (tcPlateVelX chunk)
+     , floatFingerprint "tcPlateVelY" (tcPlateVelY chunk)
+     ]
 
 -- | Helper to construct a minimal 'PlateInfo' for testing boundary tangent.
 makePlateInfo :: (Float, Float) -> PlateInfo

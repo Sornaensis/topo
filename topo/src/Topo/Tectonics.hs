@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Plate tectonics configuration and terrain synthesis.
@@ -15,9 +16,10 @@ module Topo.Tectonics
   ) where
 
 import Control.Monad.Reader (asks)
+import Control.Monad.ST (runST)
 import Data.Word (Word16, Word64)
 import qualified Data.IntMap.Strict as IntMap
-import Topo.BaseHeight (GenConfig(..), OceanEdgeDepth, defaultGenConfig, oceanEdgeBiasAt, sampleBaseHeightAt)
+import Topo.BaseHeight (GenConfig(..), defaultGenConfig, oceanEdgeBiasAt, sampleBaseHeightAt)
 import Topo.Math (clamp01, lerp, smoothstep)
 import Topo.Noise (directionalRidge2D, directionalRidge2DAniso, domainWarp2D, fbm2D, noise2DContinuous, ridgedFbm2D)
 import Topo.Pipeline (PipelineStage(..))
@@ -42,8 +44,8 @@ import Topo.Tectonics.PlateVoronoi
   )
 import Topo.Types
 import Topo.World (TerrainWorld(..))
-import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
+import qualified Data.Vector.Unboxed.Mutable as UM
 
 -- | Apply tectonic generation to the existing terrain chunks in a world.
 --
@@ -65,36 +67,100 @@ applyTectonicsChunk config seed gcfg lm tcfg key chunk =
   let tcfg' = normalizeTectonicsConfig config gcfg tcfg
       origin = chunkOriginTile config (chunkCoordFromId (ChunkId key))
       n = chunkTileCount config
-      extent = gcWorldExtent gcfg
-      edgeCfg = gcOceanEdgeDepth gcfg
-      plateSamples = V.generate n (plateSampleAt config seed gcfg tcfg' origin)
-      sample i = plateSamples V.! i
-      baseHeightRaw = U.generate n (\i -> plateHeightFromSample config seed gcfg lm tcfg' (sample i))
-      edgeBias = U.generate n (edgeBiasAt config extent edgeCfg origin)
-      baseHeight = U.zipWith (+) baseHeightRaw edgeBias
-      baseHardness = U.generate n (\i -> plateHardnessFromSample seed tcfg' (sample i))
-      plateIds = U.generate n (psPlateId . sample)
-      plateBoundary = U.generate n (psBoundaryType . sample)
-      plateCrust = U.generate n (plateCrustCode . psPlateCrust . sample)
-      plateAge = U.generate n (psPlateAge . sample)
-      plateVelX = U.generate n (fst . psPlateVelocity . sample)
-      plateVelY = U.generate n (snd . psPlateVelocity . sample)
-      edgeDelta = U.generate n (\i -> tectonicDeltaFromSample seed tcfg' (sample i) (baseHeight U.! i))
-      -- Clamp to [0,1] after stacking base height + tectonic delta.
-      -- Raw values routinely exceed this range; downstream stages
-      -- (erosion, hydrology, climate) assume normalised elevation.
-      elev' = U.map clamp01 (U.zipWith (+) baseHeight edgeDelta)
+      fields = buildTectonicsChunkFields config seed gcfg lm tcfg' origin n
   in chunk
-    { tcElevation = elev'
-    , tcHardness = U.map clamp01 baseHardness
-    , tcPlateId = plateIds
-    , tcPlateBoundary = plateBoundary
-    , tcPlateHeight = baseHeight
-    , tcPlateHardness = baseHardness
-    , tcPlateCrust = plateCrust
-    , tcPlateAge = plateAge
-    , tcPlateVelX = plateVelX
-    , tcPlateVelY = plateVelY
+    { tcElevation = tcfElevation fields
+    , tcHardness = tcfHardness fields
+    , tcPlateId = tcfPlateId fields
+    , tcPlateBoundary = tcfPlateBoundary fields
+    , tcPlateHeight = tcfPlateHeight fields
+    , tcPlateHardness = tcfPlateHardness fields
+    , tcPlateCrust = tcfPlateCrust fields
+    , tcPlateAge = tcfPlateAge fields
+    , tcPlateVelX = tcfPlateVelX fields
+    , tcPlateVelY = tcfPlateVelY fields
+    }
+
+-- | Strict terrain vectors produced by the tectonics pass.
+data TectonicsChunkFields = TectonicsChunkFields
+  { tcfElevation :: !(U.Vector Float)
+  , tcfHardness :: !(U.Vector Float)
+  , tcfPlateId :: !(U.Vector Word16)
+  , tcfPlateBoundary :: !(U.Vector PlateBoundary)
+  , tcfPlateHeight :: !(U.Vector Float)
+  , tcfPlateHardness :: !(U.Vector Float)
+  , tcfPlateCrust :: !(U.Vector Word16)
+  , tcfPlateAge :: !(U.Vector Float)
+  , tcfPlateVelX :: !(U.Vector Float)
+  , tcfPlateVelY :: !(U.Vector Float)
+  }
+
+buildTectonicsChunkFields :: WorldConfig -> Word64 -> GenConfig -> LatitudeMapping -> TectonicsConfig -> TileCoord -> Int -> TectonicsChunkFields
+buildTectonicsChunkFields config seed gcfg lm tcfg origin n = runST $ do
+  mElevation <- UM.unsafeNew n
+  mPlateId <- UM.unsafeNew n
+  mPlateBoundary <- UM.unsafeNew n
+  mPlateHeight <- UM.unsafeNew n
+  mPlateHardness <- UM.unsafeNew n
+  mPlateCrust <- UM.unsafeNew n
+  mPlateAge <- UM.unsafeNew n
+  mPlateVelX <- UM.unsafeNew n
+  mPlateVelY <- UM.unsafeNew n
+
+  let extent = gcWorldExtent gcfg
+      edgeCfg = gcOceanEdgeDepth gcfg
+      go !i
+        | i >= n = pure ()
+        | otherwise = do
+            let !sample = plateSampleAt config seed gcfg tcfg origin i
+                !baseHeightRaw = plateHeightFromSample config seed gcfg lm tcfg sample
+                !edgeBias = oceanEdgeBiasAt config extent edgeCfg (TileCoord (psX sample) (psY sample))
+                !baseHeight = baseHeightRaw + edgeBias
+                !baseHardness = plateHardnessFromSample seed tcfg sample
+                !edgeDelta = tectonicDeltaFromSample seed tcfg sample baseHeight
+                -- Clamp to [0,1] after stacking base height + tectonic delta.
+                -- Raw values routinely exceed this range; downstream stages
+                -- (erosion, hydrology, climate) assume normalised elevation.
+                !elevation = clamp01 (baseHeight + edgeDelta)
+                !plateId = psPlateId sample
+                !plateBoundary = psBoundaryType sample
+                !plateCrust = plateCrustCode (psPlateCrust sample)
+                !plateAge = psPlateAge sample
+                (!plateVelX, !plateVelY) = psPlateVelocity sample
+            UM.unsafeWrite mElevation i elevation
+            UM.unsafeWrite mPlateId i plateId
+            UM.unsafeWrite mPlateBoundary i plateBoundary
+            UM.unsafeWrite mPlateHeight i baseHeight
+            UM.unsafeWrite mPlateHardness i baseHardness
+            UM.unsafeWrite mPlateCrust i plateCrust
+            UM.unsafeWrite mPlateAge i plateAge
+            UM.unsafeWrite mPlateVelX i plateVelX
+            UM.unsafeWrite mPlateVelY i plateVelY
+            go (i + 1)
+
+  go 0
+  elevation <- U.unsafeFreeze mElevation
+  plateId <- U.unsafeFreeze mPlateId
+  plateBoundary <- U.unsafeFreeze mPlateBoundary
+  plateHeight <- U.unsafeFreeze mPlateHeight
+  plateHardness <- U.unsafeFreeze mPlateHardness
+  plateCrust <- U.unsafeFreeze mPlateCrust
+  plateAge <- U.unsafeFreeze mPlateAge
+  plateVelX <- U.unsafeFreeze mPlateVelX
+  plateVelY <- U.unsafeFreeze mPlateVelY
+  pure TectonicsChunkFields
+    { tcfElevation = elevation
+      -- plateHardnessFromSample already clamps; both fields can share
+      -- the same immutable vector.
+    , tcfHardness = plateHardness
+    , tcfPlateId = plateId
+    , tcfPlateBoundary = plateBoundary
+    , tcfPlateHeight = plateHeight
+    , tcfPlateHardness = plateHardness
+    , tcfPlateCrust = plateCrust
+    , tcfPlateAge = plateAge
+    , tcfPlateVelX = plateVelX
+    , tcfPlateVelY = plateVelY
     }
 
 normalizeTectonicsConfig :: WorldConfig -> GenConfig -> TectonicsConfig -> TectonicsConfig
@@ -408,14 +474,6 @@ plateHardnessFromSample seed tcfg sample =
       boundaryFade = clamp01 (1 - psBoundaryStrength sample)
       detail = local * tcPlateHardnessVariance tcfg * centerFade * boundaryFade
   in clamp01 (base + detail)
-
-edgeBiasAt :: WorldConfig -> WorldExtent -> OceanEdgeDepth -> TileCoord -> Int -> Float
-edgeBiasAt config extent edgeCfg origin i =
-  let TileCoord lx ly = tileCoordFromIndex config (TileIndex i)
-      TileCoord ox oy = origin
-      gx = ox + lx
-      gy = oy + ly
-  in oceanEdgeBiasAt config extent edgeCfg (TileCoord gx gy)
 
 plateLocalNoise :: Word64 -> Word16 -> Int -> Int -> Float
 plateLocalNoise seed pid gx gy =
