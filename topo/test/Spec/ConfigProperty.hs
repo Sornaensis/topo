@@ -57,7 +57,9 @@ import Topo.WaterBody         (WaterBodyConfig)
 import Topo.Weather           (WeatherConfig)
 import Topo.WorldGen
   ( WorldGenConfig, TerrainConfig
-  , defaultWorldGenConfig, aridWorldGenConfig, lushWorldGenConfig
+  , defaultWorldGenConfig, continentalWorldGenConfig
+  , archipelagoWorldGenConfig, largeOceanWorldGenConfig, inlandSeaWorldGenConfig
+  , aridWorldGenConfig, lushWorldGenConfig
   , validateWorldGenConfig
   )
 
@@ -162,9 +164,13 @@ roundTrip name _ =
 -- 'validateWorldGenConfig' (non-negative iteration counts, etc.).
 validationSpec :: Spec
 validationSpec = describe "Built-in configs pass validation" $ do
-  validates "defaultWorldGenConfig" defaultWorldGenConfig
-  validates "aridWorldGenConfig"    aridWorldGenConfig
-  validates "lushWorldGenConfig"    lushWorldGenConfig
+  validates "defaultWorldGenConfig"      defaultWorldGenConfig
+  validates "continentalWorldGenConfig"  continentalWorldGenConfig
+  validates "archipelagoWorldGenConfig"  archipelagoWorldGenConfig
+  validates "largeOceanWorldGenConfig"   largeOceanWorldGenConfig
+  validates "inlandSeaWorldGenConfig"    inlandSeaWorldGenConfig
+  validates "aridWorldGenConfig"         aridWorldGenConfig
+  validates "lushWorldGenConfig"         lushWorldGenConfig
 
 -- | Helper: assert that 'validateWorldGenConfig' succeeds.
 validates :: String -> WorldGenConfig -> Spec

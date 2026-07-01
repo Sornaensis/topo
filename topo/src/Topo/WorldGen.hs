@@ -5,6 +5,10 @@ module Topo.WorldGen
   , WorldGenConfigError(..)
   , defaultTerrainConfig
   , defaultWorldGenConfig
+  , continentalWorldGenConfig
+  , archipelagoWorldGenConfig
+  , largeOceanWorldGenConfig
+  , inlandSeaWorldGenConfig
   , aridWorldGenConfig
   , lushWorldGenConfig
   , mkWorldGenConfig
@@ -198,7 +202,30 @@ defaultTerrainConfig = TerrainConfig
   }
 
 defaultWorldGenConfig :: WorldGenConfig
-defaultWorldGenConfig = WorldGenConfig
+defaultWorldGenConfig = continentalWorldGenConfig
+
+-- | Balanced continental default with explicit soft ocean edges.
+--
+-- This is the library default terrain shape.  It deliberately configures
+-- edge depth so local slices avoid the legacy implicit 0.5-depth moat while
+-- still giving exposed slice boundaries ocean access.
+continentalWorldGenConfig :: WorldGenConfig
+continentalWorldGenConfig = continentalTerrainShape baseWorldGenConfig
+
+-- | Fragmented island chains and volcanic archipelagos.
+archipelagoWorldGenConfig :: WorldGenConfig
+archipelagoWorldGenConfig = archipelagoTerrainShape baseWorldGenConfig
+
+-- | Broad oceans with a few marginal landmasses and shelves.
+largeOceanWorldGenConfig :: WorldGenConfig
+largeOceanWorldGenConfig = largeOceanTerrainShape baseWorldGenConfig
+
+-- | Endorheic basins with weak map-edge oceans and inland seas.
+inlandSeaWorldGenConfig :: WorldGenConfig
+inlandSeaWorldGenConfig = inlandSeaTerrainShape baseWorldGenConfig
+
+baseWorldGenConfig :: WorldGenConfig
+baseWorldGenConfig = WorldGenConfig
   { worldTerrain = defaultTerrainConfig
   , worldClimate = defaultClimateConfig
   , worldBiome = defaultBiomeConfig
@@ -218,6 +245,179 @@ aridWorldGenConfig = defaultWorldGenConfig
 lushWorldGenConfig :: WorldGenConfig
 lushWorldGenConfig = defaultWorldGenConfig
   { worldBiome = lushBiomeConfig
+  }
+
+continentalTerrainShape :: WorldGenConfig -> WorldGenConfig
+continentalTerrainShape = updateTerrainShape $ \terrain ->
+  terrain
+    { terrainGen = (terrainGen terrain)
+        { gcContinentScale = 0.010
+        , gcLandRatio = 0.72
+        , gcShelfWidth = 0.23
+        , gcCoastSharpness = 1.05
+        , gcOceanEdgeDepth = softEdge 0.10 40
+        }
+    , terrainTectonics = (terrainTectonics terrain)
+        { tcPlateSize = 96
+        , tcPlateHeightBase = 0.19
+        , tcPlateHeightVariance = 0.36
+        , tcCrustContinentalBias = 0.24
+        , tcCrustOceanicBias = -0.22
+        , tcPlateDetailStrength = 0.18
+        , tcPlateRidgeStrength = 0.12
+        }
+    , terrainHydrology = (terrainHydrology terrain)
+        { hcWaterLevel = 0.43
+        , hcCoastalErodeStrength = 0.035
+        }
+    , terrainHypsometry = (terrainHypsometry terrain)
+        { hpWaterLevel = 0.43
+        , hpCoastalRampWidth = 0.10
+        , hpCoastalRampStrength = 0.45
+        }
+    , terrainWaterBody = (terrainWaterBody terrain)
+        { wbcOceanEdgeMargin = 2
+        , wbcInlandSeaMinSize = 220
+        , wbcMinLakeSize = 4
+        , wbcMaxBasinDepth = 0.04
+        }
+    }
+
+archipelagoTerrainShape :: WorldGenConfig -> WorldGenConfig
+archipelagoTerrainShape = updateTerrainShape $ \terrain ->
+  terrain
+    { terrainGen = (terrainGen terrain)
+        { gcContinentScale = 0.040
+        , gcLandRatio = 0.56
+        , gcShelfWidth = 0.15
+        , gcCoastSharpness = 1.45
+        , gcOceanEdgeDepth = softEdge 0.12 32
+        }
+    , terrainTectonics = (terrainTectonics terrain)
+        { tcPlateSize = 48
+        , tcPlateHeightBase = 0.15
+        , tcPlateHeightVariance = 0.50
+        , tcCrustContinentalBias = 0.24
+        , tcCrustOceanicBias = -0.24
+        , tcPlateDetailStrength = 0.26
+        , tcPlateRidgeStrength = 0.18
+        , tcRidgeHeight = 0.10
+        }
+    , terrainHydrology = (terrainHydrology terrain)
+        { hcWaterLevel = 0.48
+        , hcCoastalErodeStrength = 0.045
+        }
+    , terrainHypsometry = (terrainHypsometry terrain)
+        { hpWaterLevel = 0.48
+        , hpCoastalRampWidth = 0.07
+        , hpCoastalRampStrength = 0.55
+        }
+    , terrainVolcanism = (terrainVolcanism terrain)
+        { vcVentDensityBase = 0.07
+        , vcDepositRaiseScale = 0.03
+        }
+    , terrainWaterBody = (terrainWaterBody terrain)
+        { wbcOceanEdgeMargin = 2
+        , wbcInlandSeaMinSize = 260
+        , wbcMinLakeSize = 6
+        , wbcMaxBasinDepth = 0.035
+        }
+    }
+
+largeOceanTerrainShape :: WorldGenConfig -> WorldGenConfig
+largeOceanTerrainShape = updateTerrainShape $ \terrain ->
+  terrain
+    { terrainGen = (terrainGen terrain)
+        { gcContinentScale = 0.007
+        , gcLandRatio = 0.66
+        , gcShelfWidth = 0.28
+        , gcCoastSharpness = 1.00
+        , gcOceanEdgeDepth = OceanEdgeDepth
+            { oedRMin = 0.18
+            , oedRMax = 0.04
+            , oedQMax = 0.14
+            , oedQMin = 0.04
+            , oedFalloff = 64
+            }
+        }
+    , terrainTectonics = (terrainTectonics terrain)
+        { tcPlateSize = 112
+        , tcPlateHeightBase = 0.20
+        , tcPlateHeightVariance = 0.36
+        , tcCrustContinentalBias = 0.25
+        , tcCrustOceanicBias = -0.22
+        , tcPlateDetailStrength = 0.16
+        , tcPlateRidgeStrength = 0.11
+        }
+    , terrainHydrology = (terrainHydrology terrain)
+        { hcWaterLevel = 0.45
+        , hcCoastalErodeStrength = 0.05
+        }
+    , terrainHypsometry = (terrainHypsometry terrain)
+        { hpWaterLevel = 0.45
+        , hpCoastalRampWidth = 0.13
+        , hpCoastalRampStrength = 0.60
+        }
+    , terrainWaterBody = (terrainWaterBody terrain)
+        { wbcOceanEdgeMargin = 2
+        , wbcInlandSeaMinSize = 260
+        , wbcMinLakeSize = 4
+        , wbcMaxBasinDepth = 0.04
+        }
+    }
+
+inlandSeaTerrainShape :: WorldGenConfig -> WorldGenConfig
+inlandSeaTerrainShape = updateTerrainShape $ \terrain ->
+  terrain
+    { terrainGen = (terrainGen terrain)
+        { gcContinentScale = 0.012
+        , gcLandRatio = 0.82
+        , gcShelfWidth = 0.29
+        , gcCoastSharpness = 0.90
+        , gcOceanEdgeDepth = softEdge 0.015 48
+        }
+    , terrainTectonics = (terrainTectonics terrain)
+        { tcPlateSize = 88
+        , tcPlateHeightBase = 0.24
+        , tcPlateHeightVariance = 0.36
+        , tcCrustContinentalBias = 0.26
+        , tcCrustOceanicBias = -0.18
+        , tcPlateDetailStrength = 0.22
+        , tcPlateRidgeStrength = 0.13
+        , tcRiftDepth = 0.12
+        }
+    , terrainHydrology = (terrainHydrology terrain)
+        { hcWaterLevel = 0.51
+        , hcSinkBreachDepth = 0.015
+        , hcCoastalErodeStrength = 0.025
+        }
+    , terrainRivers = (terrainRivers terrain)
+        { rcSinkBreachDepth = 0.015
+        , rcMinLakeSize = 3
+        }
+    , terrainHypsometry = (terrainHypsometry terrain)
+        { hpWaterLevel = 0.51
+        , hpCoastalRampWidth = 0.06
+        , hpCoastalRampStrength = 0.30
+        }
+    , terrainWaterBody = (terrainWaterBody terrain)
+        { wbcOceanEdgeMargin = 1
+        , wbcInlandSeaMinSize = 100
+        , wbcMinLakeSize = 3
+        , wbcMaxBasinDepth = 0.05
+        }
+    }
+
+updateTerrainShape :: (TerrainConfig -> TerrainConfig) -> WorldGenConfig -> WorldGenConfig
+updateTerrainShape f cfg = cfg { worldTerrain = f (worldTerrain cfg) }
+
+softEdge :: Float -> Float -> OceanEdgeDepth
+softEdge depth falloff = OceanEdgeDepth
+  { oedRMin = depth
+  , oedRMax = depth
+  , oedQMax = depth
+  , oedQMin = depth
+  , oedFalloff = falloff
   }
 
 -- | Construct a world generation config with validation.

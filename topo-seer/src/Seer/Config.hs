@@ -15,6 +15,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Seer.Config.Range (mapIntRange, mapRange, unmapIntRange, unmapRange)
 import Seer.Config.SliderConfig (applySliderConfig)
+import Seer.Config.Snapshot.Types (ConfigSnapshot(..))
 import Topo.WorldGen (TerrainConfig(..), WorldGenConfig(..), defaultWorldGenConfig)
 
 -- | Apply the current UI slider state to an existing 'WorldGenConfig'.
@@ -38,8 +39,12 @@ configSummary ui =
 
 -- | Build a 'WorldGenConfig' from the current slider state.
 --
--- This is a thin wrapper around 'applyUiConfig' applied to the library
--- default.  Every slider value in 'UiState' is mapped to its real domain
--- value inside 'WorldGenConfig'.
+-- This is a thin wrapper around 'applyUiConfig' applied to the loaded
+-- snapshot base when present, otherwise the library default. Every slider
+-- value in 'UiState' is mapped to its real domain value inside
+-- 'WorldGenConfig', while non-slider fields from a loaded snapshot remain
+-- intact.
 configFromUi :: UiState -> WorldGenConfig
-configFromUi ui = applyUiConfig ui defaultWorldGenConfig
+configFromUi ui = applyUiConfig ui baseConfig
+  where
+    baseConfig = maybe defaultWorldGenConfig csGenConfig (uiWorldConfig ui)

@@ -279,12 +279,12 @@ sliderDefaultValueForId sliderIdValue = case sliderIdValue of
   SliderGenWarpStrength -> 0.5556
   SliderExtentX -> 0.125
   SliderExtentY -> 0.125
-  SliderEdgeNorth -> 0.0
-  SliderEdgeSouth -> 0.0
-  SliderEdgeEast -> 0.0
-  SliderEdgeWest -> 0.0
-  SliderEdgeFalloff -> 0.0
-  SliderPlateSize -> 0.45
+  SliderEdgeNorth -> 0.05
+  SliderEdgeSouth -> 0.05
+  SliderEdgeEast -> 0.05
+  SliderEdgeWest -> 0.05
+  SliderEdgeFalloff -> 0.078125
+  SliderPlateSize -> 0.7143
   SliderUplift -> 0.3
   SliderRiftDepth -> 0.35
   SliderDetailScale -> 0.5
@@ -298,10 +298,10 @@ sliderDefaultValueForId sliderIdValue = case sliderIdValue of
   SliderPlateMergeScale -> 0.3
   SliderPlateMergeBias -> 0.44
   SliderPlateDetailScale -> 0.33
-  SliderPlateDetailStrength -> 0.35
-  SliderPlateRidgeStrength -> 0.25
-  SliderPlateHeightBase -> 0.62
-  SliderPlateHeightVariance -> 0.65
+  SliderPlateDetailStrength -> 0.2889
+  SliderPlateRidgeStrength -> 0.2
+  SliderPlateHeightBase -> 0.475
+  SliderPlateHeightVariance -> 0.3714
   SliderPlateHardnessBase -> 0.42
   SliderPlateHardnessVariance -> 0.4
   SliderTrenchDepth -> 0.38
@@ -441,8 +441,8 @@ sliderDefaultValueForId sliderIdValue = case sliderIdValue of
   SliderHypsometryHighlandExp -> 0.333
   SliderHypsometryPlateauBreak -> 0.348
   SliderHypsometryOceanExp -> 0.5
-  SliderHypsometryCoastalRampWidth -> 0.467
-  SliderHypsometryCoastalRampStr -> 0.6
+  SliderHypsometryCoastalRampWidth -> 0.487
+  SliderHypsometryCoastalRampStr -> 0.45
   SliderGlacierSnowTemp -> 0.5
   SliderGlacierSnowRange -> 0.417
   SliderGlacierMeltTemp -> 0.429
@@ -468,10 +468,10 @@ sliderDefaultValueForId sliderIdValue = case sliderIdValue of
   SliderSinkBreachDepth -> 0.2
   SliderStreamPowerMaxErosion -> 0.25
   SliderRiverCarveMaxDepth -> 0.25
-  SliderCoastalErodeStrength -> 0.2
+  SliderCoastalErodeStrength -> 0.35
   SliderHydroHardnessWeight -> 0.7
   SliderMinLakeSize -> 0.061
-  SliderInlandSeaMinSize -> 0.333
+  SliderInlandSeaMinSize -> 0.3778
   SliderRoughnessScale -> 0.375
   SliderHexSizeKm -> 1 / 3
 

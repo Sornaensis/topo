@@ -47,6 +47,7 @@ import Actor.UI
   , setUiSeed
   , setUiChunkSize
   , setUiRenderWaterLevel
+  , setUiWorldConfig
   )
 
 import Hyperspace.Actor (ActorHandle, Protocol)
@@ -91,6 +92,7 @@ applySnapshotToUi cs h = do
   setUiChunkSize h (csChunkSize cs)
   setUiRenderWaterLevel h (csRenderWaterLevel cs)
   mapM_ (applySnapshotSliderValue cs h . sliderId) allSliderDefs
+  setUiWorldConfig h (Just cs)
 
 applySnapshotSliderValue :: ConfigSnapshot -> ActorHandle Ui (Protocol Ui) -> SliderId -> IO ()
 applySnapshotSliderValue cs h sliderIdValue =

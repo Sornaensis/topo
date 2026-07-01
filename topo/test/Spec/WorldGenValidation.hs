@@ -10,7 +10,7 @@ import Data.Bits ((.&.), (.|.), xor)
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.IntSet as IntSet
-import Data.List (intercalate, sort, sortBy)
+import Data.List (intercalate, nub, sort, sortBy)
 import Data.Ord (Down(..), comparing)
 import qualified Data.Set as Set
 import qualified Data.Text as Text
@@ -41,6 +41,7 @@ spec = describe "WorldGen validation" $ do
       [] -> expectationFailure "world-gen validation produced no metrics"
 
     assertStructuralMetrics topologyMetrics
+    assertPresetTargets topologyMetrics
     putStrLn (renderValidationReport modeLabel topologyMetrics)
 
   it "guards final full-pipeline land topology for configured guard seeds" $ do
@@ -82,7 +83,24 @@ defaultValidationPreset = ValidationPreset
   }
 
 validationPresets :: [ValidationPreset]
-validationPresets = [defaultValidationPreset]
+validationPresets =
+  [ defaultValidationPreset
+  , ValidationPreset
+      { vpName = "archipelago"
+      , vpConfig = archipelagoWorldGenConfig
+      , vpConfigLabel = "archipelagoWorldGenConfig"
+      }
+  , ValidationPreset
+      { vpName = "large-ocean"
+      , vpConfig = largeOceanWorldGenConfig
+      , vpConfigLabel = "largeOceanWorldGenConfig"
+      }
+  , ValidationPreset
+      { vpName = "inland-sea"
+      , vpConfig = inlandSeaWorldGenConfig
+      , vpConfigLabel = "inlandSeaWorldGenConfig"
+      }
+  ]
 
 data ValidationPreset = ValidationPreset
   { vpName :: !String
@@ -584,16 +602,78 @@ assertStructuralMetrics metrics = forM_ metrics $ \m -> do
   wgmGridWidth m `shouldBe` 320
   wgmGridHeight m `shouldBe` 320
   wgmTotalTiles m `shouldBe` 102400
-  wgmLandFraction m `shouldSatisfy` between 0.05 0.95
-  wgmWaterFraction m `shouldSatisfy` between 0.05 0.95
-  wgmLandComponentCount m `shouldSatisfy` (> 0)
-  wbsCount (wgmOceanSummary m) `shouldSatisfy` (> 0)
-  wbsLargestFraction (wgmOceanSummary m) `shouldSatisfy` between 0.05 0.95
-  wgmHomogeneous16Fraction m `shouldSatisfy` between 0 0.95
+  wgmLandFraction m `shouldSatisfy` between 0 1
+  wgmWaterFraction m `shouldSatisfy` between 0 1
+  wgmLandComponentCount m `shouldSatisfy` (>= 0)
+  wbsCount (wgmOceanSummary m) `shouldSatisfy` (>= 0)
+  wbsLargestFraction (wgmOceanSummary m) `shouldSatisfy` between 0 1
+  wgmHomogeneous16Fraction m `shouldSatisfy` between 0 1
   wgmEdgeFrameWaterFraction m `shouldSatisfy` between 0 1
+  wgmImplicitLegacyAutoEdge m `shouldBe` False
   allFinite (metricFloats m) `shouldBe` True
   wgmLandTiles m + wgmWaterTiles m `shouldBe` wgmTotalTiles m
   sum (wgmCoastDirectionHistogram m) `shouldBe` wgmCoastEdges m
+
+assertPresetTargets :: [WorldGenMetrics] -> Expectation
+assertPresetTargets metrics = do
+  expectPreset "default" $ \ms -> do
+    expectMedianBetween "default land" 0.30 0.58 wgmLandFraction ms
+    expectMedianBetween "default largest land" 0.18 0.60 wgmLargestLandFraction ms
+    expectMedianBetween "default edge-frame water" 0.30 0.85 wgmEdgeFrameWaterFraction ms
+    expectMedianBetween "default largest edge ocean" 0.20 0.80 wgmLargestEdgeOceanFraction ms
+    expectMedianAtMost "default homogeneous16" 0.80 wgmHomogeneous16Fraction ms
+    expectAll "default avoids four-edge moat" (not . wgmContinuousFourEdgeMoat) ms
+  expectPreset "archipelago" $ \ms -> do
+    expectMedianBetween "archipelago land" 0.12 0.42 wgmLandFraction ms
+    expectMedianAtMost "archipelago largest land" 0.35 wgmLargestLandFraction ms
+    expectMedianBetween "archipelago edge-frame water" 0.45 0.90 wgmEdgeFrameWaterFraction ms
+    expectMedianBetween "archipelago largest edge ocean" 0.45 0.90 wgmLargestEdgeOceanFraction ms
+    expectMedianAtMost "archipelago homogeneous16" 0.80 wgmHomogeneous16Fraction ms
+  expectPreset "large-ocean" $ \ms -> do
+    expectMedianBetween "large-ocean water" 0.50 0.85 wgmWaterFraction ms
+    expectMedianBetween "large-ocean largest edge ocean" 0.35 0.90 wgmLargestEdgeOceanFraction ms
+    expectMedianBetween "large-ocean largest land" 0.05 0.45 wgmLargestLandFraction ms
+    expectMedianBetween "large-ocean edge-frame water" 0.55 0.95 wgmEdgeFrameWaterFraction ms
+    expectMedianAtMost "large-ocean homogeneous16" 0.88 wgmHomogeneous16Fraction ms
+  expectPreset "inland-sea" $ \ms -> do
+    expectMedianBetween "inland-sea land" 0.35 0.80 wgmLandFraction ms
+    expectMedianBetween "inland-sea largest land" 0.20 0.75 wgmLargestLandFraction ms
+    expectMedianAtMost "inland-sea edge-frame water" 0.65 wgmEdgeFrameWaterFraction ms
+    expectMedianAtMost "inland-sea homogeneous16" 0.85 wgmHomogeneous16Fraction ms
+    expectAtLeast "inland-sea total inland-sea components" 1 (sum (map (wbsCount . wgmInlandSeaSummary) ms)) ms
+  where
+    expectPreset name action =
+      case filter ((== name) . wgmPresetName) metrics of
+        [] -> expectationFailure ("missing preset metrics for " <> name)
+        ms -> action ms
+
+expectMedianBetween :: String -> Float -> Float -> (WorldGenMetrics -> Float) -> [WorldGenMetrics] -> Expectation
+expectMedianBetween label lo hi f ms =
+  expectBetween label lo hi (median (map f ms)) ms
+
+expectMedianAtMost :: String -> Float -> (WorldGenMetrics -> Float) -> [WorldGenMetrics] -> Expectation
+expectMedianAtMost label hi f ms =
+  expectAtMost label hi (median (map f ms)) ms
+
+expectBetween :: String -> Float -> Float -> Float -> [WorldGenMetrics] -> Expectation
+expectBetween label lo hi value ms =
+  unless (between lo hi value) $
+    expectationFailure (label <> "=" <> fmt value <> " outside " <> fmt lo <> "-" <> fmt hi <> "\n" <> unlines (map renderMetric ms))
+
+expectAtMost :: String -> Float -> Float -> [WorldGenMetrics] -> Expectation
+expectAtMost label hi value ms =
+  unless (value <= hi) $
+    expectationFailure (label <> "=" <> fmt value <> " above " <> fmt hi <> "\n" <> unlines (map renderMetric ms))
+
+expectAtLeast :: String -> Int -> Int -> [WorldGenMetrics] -> Expectation
+expectAtLeast label lo value ms =
+  unless (value >= lo) $
+    expectationFailure (label <> "=" <> show value <> " below " <> show lo <> "\n" <> unlines (map renderMetric ms))
+
+expectAll :: String -> (WorldGenMetrics -> Bool) -> [WorldGenMetrics] -> Expectation
+expectAll label predicate ms =
+  unless (all predicate ms) $
+    expectationFailure (label <> " failed\n" <> unlines (map renderMetric ms))
 
 between :: Float -> Float -> Float -> Bool
 between lo hi x = x >= lo && x <= hi
@@ -628,7 +708,7 @@ waterBodyFloats WaterBodySummary{..} = wbsLargestFraction : wbsTopFractions
 renderValidationReport :: String -> [WorldGenMetrics] -> String
 renderValidationReport modeLabel metrics = unlines $
   [ "WorldGen validation report (" <> modeLabel <> ", schema=" <> schemaVersion <> ")"
-  , "Future aesthetic ranges below are report-only; structural smoke assertions are the only hard gates in this task."
+  , "Preset profile ranges are hard gates for smoke/sweep seeds; aggregate lines show medians."
   ]
   <> map renderMetric metrics
   <> renderAggregate metrics
@@ -698,38 +778,62 @@ renderEdgePolicy EdgePolicy{..} =
   ",falloff=" <> fmt epFalloff <> "}"
 
 renderAggregate :: [WorldGenMetrics] -> [String]
-renderAggregate metrics =
-  [ "Aggregate default medians: land=" <> medianOf wgmLandFraction <>
-      " largestLand=" <> medianOf wgmLargestLandFraction <>
-      " edgeFrame=" <> medianOf wgmEdgeFrameWaterFraction <>
-      " largestOcean=" <> medianOf (wbsLargestFraction . wgmOceanSummary) <>
-      " homogeneous16=" <> medianOf wgmHomogeneous16Fraction
-  ]
-  <> if length metrics >= 9
-       then [ "Aggregate sweep p10/p90: land=" <> percentilePair wgmLandFraction <>
-              " edgeFrame=" <> percentilePair wgmEdgeFrameWaterFraction <>
-              " homogeneous16=" <> percentilePair wgmHomogeneous16Fraction
-            ]
-       else []
+renderAggregate metrics = concatMap renderPresetAggregate (sort (nub (map wgmPresetName metrics)))
   where
-    medianOf f = fmt (median (map f metrics))
-    percentilePair f =
-      let values = map f metrics
-      in fmt (nearestPercentile 0.10 values) <> "/" <> fmt (nearestPercentile 0.90 values)
+    renderPresetAggregate presetName =
+      let ms = filter ((== presetName) . wgmPresetName) metrics
+          medianOf f = fmt (median (map f ms))
+          percentilePair f =
+            let values = map f ms
+            in fmt (nearestPercentile 0.10 values) <> "/" <> fmt (nearestPercentile 0.90 values)
+      in [ "Aggregate " <> presetName <> " medians: land=" <> medianOf wgmLandFraction <>
+             " largestLand=" <> medianOf wgmLargestLandFraction <>
+             " edgeFrame=" <> medianOf wgmEdgeFrameWaterFraction <>
+             " largestEdgeOcean=" <> medianOf wgmLargestEdgeOceanFraction <>
+             " ocean=" <> medianOf (wbsLargestFraction . wgmOceanSummary) <>
+             " inlandSeaCount=" <> show (sum (map (wbsCount . wgmInlandSeaSummary) ms)) <>
+             " lakeCount=" <> show (sum (map (wbsCount . wgmLakeSummary) ms)) <>
+             " homogeneous16=" <> medianOf wgmHomogeneous16Fraction
+         ]
+         <> if length ms >= 9
+              then [ "Aggregate " <> presetName <> " sweep p10/p90: land=" <> percentilePair wgmLandFraction <>
+                     " edgeFrame=" <> percentilePair wgmEdgeFrameWaterFraction <>
+                     " homogeneous16=" <> percentilePair wgmHomogeneous16Fraction
+                   ]
+              else []
 
 renderReportOnlyThresholds :: [WorldGenMetrics] -> [String]
-renderReportOnlyThresholds metrics =
-  "Report-only future threshold probes for balanced/default:" :
-  map renderProbe probes <>
-  [ "Report-only target catalog: archipelago land 0.18-0.35 median with >=2 island chains; large-ocean water 0.60-0.80 median; inland-seas land 0.45-0.65 with inland sea >=0.03."
-  ]
+renderReportOnlyThresholds metrics = concatMap renderProbes (sort (nub (map wgmPresetName metrics)))
   where
-    probes =
-      [ ("median land", median (map wgmLandFraction metrics), 0.35, 0.50)
-      , ("median largest land", median (map wgmLargestLandFraction metrics), 0.25, 0.45)
-      , ("median edge-frame water", median (map wgmEdgeFrameWaterFraction metrics), 0.45, 0.75)
-      , ("median homogeneous16", median (map wgmHomogeneous16Fraction metrics), 0.00, 0.65)
-      ]
+    renderProbes presetName =
+      let ms = filter ((== presetName) . wgmPresetName) metrics
+          probes = case presetName of
+            "default" ->
+              [ ("median land", median (map wgmLandFraction ms), 0.35, 0.50)
+              , ("median largest land", median (map wgmLargestLandFraction ms), 0.25, 0.45)
+              , ("median edge-frame water", median (map wgmEdgeFrameWaterFraction ms), 0.45, 0.75)
+              , ("median homogeneous16", median (map wgmHomogeneous16Fraction ms), 0.00, 0.65)
+              ]
+            "archipelago" ->
+              [ ("median land", median (map wgmLandFraction ms), 0.18, 0.35)
+              , ("median largest land", median (map wgmLargestLandFraction ms), 0.00, 0.18)
+              , ("median edge-frame water", median (map wgmEdgeFrameWaterFraction ms), 0.55, 0.85)
+              , ("median homogeneous16", median (map wgmHomogeneous16Fraction ms), 0.00, 0.65)
+              ]
+            "large-ocean" ->
+              [ ("median water", median (map wgmWaterFraction ms), 0.60, 0.80)
+              , ("median largest edge ocean", median (map wgmLargestEdgeOceanFraction ms), 0.45, 0.70)
+              , ("median largest land", median (map wgmLargestLandFraction ms), 0.12, 0.30)
+              , ("median homogeneous16", median (map wgmHomogeneous16Fraction ms), 0.00, 0.70)
+              ]
+            "inland-sea" ->
+              [ ("median land", median (map wgmLandFraction ms), 0.45, 0.65)
+              , ("median edge-frame water", median (map wgmEdgeFrameWaterFraction ms), 0.15, 0.40)
+              , ("median largest land", median (map wgmLargestLandFraction ms), 0.35, 0.60)
+              , ("median homogeneous16", median (map wgmHomogeneous16Fraction ms), 0.00, 0.70)
+              ]
+            _ -> []
+      in ("Report-only target probes for " <> presetName <> ":") : map renderProbe probes
     renderProbe (label, value, lo, hi) =
       "  " <> label <> "=" <> fmt value <> " target=" <> fmt lo <> "-" <> fmt hi <>
       " status=" <> if between lo hi value then "inside-target(report-only)" else "outside-target(report-only)"

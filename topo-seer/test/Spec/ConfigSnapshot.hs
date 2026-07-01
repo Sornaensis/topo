@@ -43,10 +43,15 @@ import Topo.Hex (hexSizeKm)
 import Topo.Hydrology (HydroConfig(..))
 import Topo.Planet (WorldSlice(..), hexesPerDegreeLatitude, hexesPerDegreeLongitude)
 import Topo.Types (worldExtentRadiusX, worldExtentRadiusY)
+import Topo.WaterBody (WaterBodyConfig(..))
 import Topo.WorldGen
   ( WorldGenConfig(..)
   , TerrainConfig(..)
   , defaultWorldGenConfig
+  , continentalWorldGenConfig
+  , archipelagoWorldGenConfig
+  , largeOceanWorldGenConfig
+  , inlandSeaWorldGenConfig
   , aridWorldGenConfig
   , lushWorldGenConfig
   )
@@ -287,9 +292,46 @@ presetVariantSpec = describe "Preset variant serialization" $ do
       Left err -> expectationFailure err
       Right snap' -> csGenConfig snap' `shouldBe` defaultWorldGenConfig
 
+  it "terrain-shape WorldGenConfig presets round-trip through ConfigSnapshot" $ do
+    let cases =
+          [ ("continental", continentalWorldGenConfig)
+          , ("archipelago", archipelagoWorldGenConfig)
+          , ("large-ocean", largeOceanWorldGenConfig)
+          , ("inland-sea", inlandSeaWorldGenConfig)
+          ]
+    mapM_ assertPresetRoundTrip cases
+
+  it "preserves non-slider terrain-shape fields when restored through UI" $
+    withSystem $ \system -> do
+      let snap = defaultSnapshot { csName = "inland-sea", csGenConfig = inlandSeaWorldGenConfig }
+      handle <- get @Ui system
+      applySnapshotToUi snap handle
+      restored <- getUiSnapshot handle
+      let cfg = csGenConfig (snapshotFromUi restored "restored")
+          originalTerrain = worldTerrain inlandSeaWorldGenConfig
+          restoredTerrain = worldTerrain cfg
+          originalGen = terrainGen originalTerrain
+          restoredGen = terrainGen restoredTerrain
+          originalWaterBody = terrainWaterBody originalTerrain
+          restoredWaterBody = terrainWaterBody restoredTerrain
+      gcContinentScale restoredGen `shouldBe` gcContinentScale originalGen
+      gcLandRatio restoredGen `shouldBe` gcLandRatio originalGen
+      gcShelfWidth restoredGen `shouldBe` gcShelfWidth originalGen
+      gcCoastSharpness restoredGen `shouldBe` gcCoastSharpness originalGen
+      wbcOceanEdgeMargin restoredWaterBody `shouldBe` wbcOceanEdgeMargin originalWaterBody
+      wbcMaxBasinDepth restoredWaterBody `shouldBe` wbcMaxBasinDepth originalWaterBody
+
 -- ---------------------------------------------------------------------------
 -- Helpers
 -- ---------------------------------------------------------------------------
+
+assertPresetRoundTrip :: (Text, WorldGenConfig) -> Expectation
+assertPresetRoundTrip (name, cfg) = do
+  let snap = defaultSnapshot { csName = name, csGenConfig = cfg }
+      bytes = BSL.toStrict (encode snap)
+  case eitherDecodeStrict' @ConfigSnapshot bytes of
+    Left err -> expectationFailure err
+    Right snap' -> csGenConfig snap' `shouldBe` cfg
 
 isLeft :: Either a b -> Bool
 isLeft (Left _) = True

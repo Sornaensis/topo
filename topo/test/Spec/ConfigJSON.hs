@@ -8,8 +8,8 @@
 -- 1. __Round-trip__: @decode (encode x) == Just x@ for the default config.
 -- 2. __Forward-compatible__: An empty JSON object @{}@ decodes to the
 --    default config (all fields are optional via 'mergeDefaults').
--- 3. __Preset round-trip__: Named preset variants (arid, lush) also
---    survive serialization.
+-- 3. __Preset round-trip__: Named biome and terrain-shape preset variants
+--    also survive serialization.
 module Spec.ConfigJSON (spec) where
 
 import Data.Aeson (FromJSON, ToJSON, decode, encode, Key, Value(..))
@@ -73,6 +73,8 @@ import Topo.Weather                  (WeatherConfig, defaultWeatherConfig)
 import Topo.WorldGen
   ( TerrainConfig, WorldGenConfig
   , defaultTerrainConfig, defaultWorldGenConfig
+  , continentalWorldGenConfig, archipelagoWorldGenConfig
+  , largeOceanWorldGenConfig, inlandSeaWorldGenConfig
   , aridWorldGenConfig, lushWorldGenConfig
   )
 
@@ -112,6 +114,10 @@ spec = describe "Config JSON serialization" $ do
     emptyDecodes "TerrainConfig" defaultTerrainConfig
 
   describe "Preset variants" $ do
+    roundTrip "continentalWorldGenConfig" continentalWorldGenConfig
+    roundTrip "archipelagoWorldGenConfig" archipelagoWorldGenConfig
+    roundTrip "largeOceanWorldGenConfig" largeOceanWorldGenConfig
+    roundTrip "inlandSeaWorldGenConfig" inlandSeaWorldGenConfig
     roundTrip "aridWorldGenConfig" aridWorldGenConfig
     roundTrip "lushWorldGenConfig" lushWorldGenConfig
     roundTrip "aridBiomeConfig" aridBiomeConfig

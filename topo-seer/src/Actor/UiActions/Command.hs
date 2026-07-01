@@ -96,7 +96,7 @@ import GHC.Clock (getMonotonicTimeNSec)
 import Hyperspace.Actor (ActorHandle, Protocol, ReplyTo)
 import Numeric (showFFloat)
 import qualified Data.Map.Strict as Map
-import Seer.Config (applyUiConfig, configSummary)
+import Seer.Config (configFromUi, configSummary)
 import Seer.Editor.Brush (applyBrushStroke, applyErodeStroke, applyFlattenStroke, applyNoiseStroke, applyPaintBiomeStroke, applyPaintFormStroke, applySetHardnessStroke, applySmoothStroke)
 import Seer.Editor.History (EditAction(..), pushEdit, undoEdit, redoEdit)
 import Seer.Editor.Types (EditorState(..), EditorTool(..), BrushSettings(..))
@@ -107,7 +107,7 @@ import Topo.Overlay.Schema (OverlaySchema(..))
 import Topo.Parameters.Recompute (recomputeDerivedChunks)
 import Topo.Plugin.RPC.Manifest (rmParameters)
 import Topo.Types (TerrainChunk(..))
-import Topo.WorldGen (WorldGenConfig(..), TerrainConfig(..), defaultWorldGenConfig)
+import Topo.WorldGen (WorldGenConfig(..), TerrainConfig(..))
 import qualified Data.Vector.Unboxed as U
 
 -- | UI-triggered actions that can be executed asynchronously.
@@ -243,7 +243,7 @@ startGeneration req = do
   setUiDisabledPlugins uiHandle disabledPlugins
   setUiDataResources uiHandle dataResources
   setUiOverlayNames uiHandle (map osName overlaySchemas)
-  let cfg = applyUiConfig uiSnap defaultWorldGenConfig
+  let cfg = configFromUi uiSnap
       request = TerrainGenRequest
         { tgrSeed = uiSeed uiSnap
         , tgrWorldConfig = WorldConfig { wcChunkSize = uiChunkSize uiSnap }
@@ -353,6 +353,7 @@ resetConfig req = do
   setUiViewMode uiHandle (uiViewMode defaults)
   setUiRenderWaterLevel uiHandle (uiRenderWaterLevel defaults)
   setUiConfigTab uiHandle (uiConfigTab defaults)
+  setUiWorldConfig uiHandle Nothing
   resetSliderDefaults uiHandle
 
 -- | Apply the current editor brush at the given hex coordinate.
@@ -378,7 +379,7 @@ applyBrush req hex = do
       tool = editorTool editor
       brush = editorBrush editor
       oldChunks = tsTerrainChunks terrainSnap
-      genCfg = applyUiConfig uiSnap defaultWorldGenConfig
+      genCfg = configFromUi uiSnap
       terrain = worldTerrain genCfg
   -- Capture flatten reference on first stroke
   editor' <- case tool of
