@@ -2,9 +2,11 @@
 module Topo.Tectonics.PlateVoronoi
   ( PlateInfo(..)
   , plateInfoAtXY
+  , plateInfoAtXYWith
   , plateInfoForCell
   , plateDistancePair
   , plateNearestPairAtXY
+  , plateNearestPairAtXYWith
   , plateDistSq
   , plateCellActive
   , plateWarpXY
@@ -12,6 +14,7 @@ module Topo.Tectonics.PlateVoronoi
   , chooseNearest
   ) where
 
+import Control.Monad (foldM)
 import Data.Bits (xor)
 import Data.List (foldl')
 import Data.Word (Word16, Word64)
@@ -75,11 +78,40 @@ plateNearestPairAtXY seed tcfg x y =
         let info0 = plateInfoForCell seed tcfg cx cy
         in (info0, info0, 0, fromIntegral size)
 
+plateNearestPairAtXYWith :: Monad m => (Int -> Int -> m PlateInfo) -> Word64 -> TectonicsConfig -> Int -> Int -> m (PlateInfo, PlateInfo, Float, Float)
+plateNearestPairAtXYWith getInfo seed tcfg x y = do
+  let size = max 1 (tcPlateSize tcfg)
+      (wx, wy) = plateWarpXY seed tcfg x y
+      fx = wx / fromIntegral size
+      fy = wy / fromIntegral size
+      cx = floor fx
+      cy = floor fy
+      cells = [ (ix, iy) | iy <- [cy - 1 .. cy + 1], ix <- [cx - 1 .. cx + 1] ]
+      activeCells = filter (uncurry (plateCellActive seed tcfg)) cells
+      cells' = if null activeCells then cells else activeCells
+  nearest <- nearestPlatePairWith getInfo (wx, wy) cells'
+  case nearest of
+    TwoNearestPlates d0 info0 d1 info1 -> pure (info0, info1, sqrt d0, sqrt d1)
+    OneNearestPlate d0 info0 -> pure (info0, info0, sqrt d0, sqrt d0 + fromIntegral size)
+    NoNearestPlate -> do
+      info0 <- getInfo cx cy
+      pure (info0, info0, 0, fromIntegral size)
+{-# INLINE plateNearestPairAtXYWith #-}
+
 nearestPlatePair :: Word64 -> TectonicsConfig -> (Float, Float) -> [(Int, Int)] -> NearestPlatePair
 nearestPlatePair seed tcfg xy =
   foldl' step NoNearestPlate
   where
     step nearest cell = insertNearestPlate (plateDistSq seed tcfg xy cell) nearest
+
+nearestPlatePairWith :: Monad m => (Int -> Int -> m PlateInfo) -> (Float, Float) -> [(Int, Int)] -> m NearestPlatePair
+nearestPlatePairWith getInfo xy =
+  foldM step NoNearestPlate
+  where
+    step nearest cell = do
+      dist <- plateDistSqWith getInfo xy cell
+      pure $! insertNearestPlate dist nearest
+{-# INLINE nearestPlatePairWith #-}
 
 insertNearestPlate :: (Float, PlateInfo) -> NearestPlatePair -> NearestPlatePair
 insertNearestPlate (d, info) nearest =
@@ -101,6 +133,15 @@ plateDistSq seed tcfg (x, y) (cx, cy) =
       dy = y - py
   in (dx * dx + dy * dy, info)
 
+plateDistSqWith :: Monad m => (Int -> Int -> m PlateInfo) -> (Float, Float) -> (Int, Int) -> m (Float, PlateInfo)
+plateDistSqWith getInfo (x, y) (cx, cy) = do
+  info <- getInfo cx cy
+  let (px, py) = plateInfoCenter info
+      dx = x - px
+      dy = y - py
+  pure (dx * dx + dy * dy, info)
+{-# INLINE plateDistSqWith #-}
+
 plateInfoAtXY :: Word64 -> TectonicsConfig -> Int -> Int -> PlateInfo
 plateInfoAtXY seed tcfg x y =
   let (wx, wy) = plateWarpXY seed tcfg x y
@@ -117,6 +158,23 @@ plateInfoAtXY seed tcfg x y =
       Just (_, info) -> info
       Nothing -> plateInfoForCell seed tcfg cx cy
 
+plateInfoAtXYWith :: Monad m => (Int -> Int -> m PlateInfo) -> Word64 -> TectonicsConfig -> Int -> Int -> m PlateInfo
+plateInfoAtXYWith getInfo seed tcfg x y = do
+  let (wx, wy) = plateWarpXY seed tcfg x y
+      size = max 1 (tcPlateSize tcfg)
+      fx = wx / fromIntegral size
+      fy = wy / fromIntegral size
+      cx = floor fx
+      cy = floor fy
+      cells = [ (ix, iy) | iy <- [cy - 1 .. cy + 1], ix <- [cx - 1 .. cx + 1] ]
+      activeCells = filter (uncurry (plateCellActive seed tcfg)) cells
+      cells' = if null activeCells then cells else activeCells
+  pickNearest <- foldM (chooseNearestWith getInfo (wx, wy)) Nothing cells'
+  case pickNearest of
+    Just (_, info) -> pure info
+    Nothing -> getInfo cx cy
+{-# INLINE plateInfoAtXYWith #-}
+
 chooseNearest :: (Float, Float) -> Word64 -> TectonicsConfig -> Maybe (Float, PlateInfo) -> (Int, Int) -> Maybe (Float, PlateInfo)
 chooseNearest (x, y) seed tcfg best (cx, cy) =
   let info = plateInfoForCell seed tcfg cx cy
@@ -127,6 +185,19 @@ chooseNearest (x, y) seed tcfg best (cx, cy) =
   in case best of
       Nothing -> Just (d2, info)
       Just (d2Best, bestInfo) -> if d2 < d2Best then Just (d2, info) else Just (d2Best, bestInfo)
+
+chooseNearestWith :: Monad m => (Int -> Int -> m PlateInfo) -> (Float, Float) -> Maybe (Float, PlateInfo) -> (Int, Int) -> m (Maybe (Float, PlateInfo))
+chooseNearestWith getInfo (x, y) best (cx, cy) = do
+  info <- getInfo cx cy
+  let (px, py) = plateInfoCenter info
+      dx = x - px
+      dy = y - py
+      d2 = dx * dx + dy * dy
+      best' = case best of
+        Nothing -> Just (d2, info)
+        Just (d2Best, bestInfo) -> if d2 < d2Best then Just (d2, info) else Just (d2Best, bestInfo)
+  pure $! best'
+{-# INLINE chooseNearestWith #-}
 
 plateInfoForCell :: Word64 -> TectonicsConfig -> Int -> Int -> PlateInfo
 plateInfoForCell seed tcfg cx cy =

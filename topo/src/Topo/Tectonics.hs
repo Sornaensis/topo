@@ -18,7 +18,8 @@ module Topo.Tectonics
   ) where
 
 import Control.Monad.Reader (asks)
-import Control.Monad.ST (runST)
+import Control.Monad.ST (ST, runST)
+import Data.STRef (STRef, newSTRef, readSTRef, writeSTRef)
 import Data.Word (Word16, Word64)
 import qualified Data.IntMap.Strict as IntMap
 import Topo.BaseHeight (GenConfig(..), defaultGenConfig, oceanEdgeBiasAt, sampleBaseHeightAt)
@@ -40,8 +41,10 @@ import Topo.Tectonics.Config (TectonicsConfig(..), defaultTectonicsConfig)
 import Topo.Tectonics.PlateVoronoi
   ( PlateInfo(..)
   , plateDistancePair
-  , plateInfoAtXY
+  , plateInfoAtXYWith
+  , plateInfoForCell
   , plateNearestPairAtXY
+  , plateNearestPairAtXYWith
   , plateWarpXY
   , warpOctaves
   )
@@ -109,14 +112,15 @@ buildTectonicsChunkFields config seed gcfg lm tcfg origin n = runST $ do
   mPlateAge <- UM.unsafeNew n
   mPlateVelX <- UM.unsafeNew n
   mPlateVelY <- UM.unsafeNew n
+  plateCache <- newPlateCellCache
 
   let extent = gcWorldExtent gcfg
       edgeCfg = gcOceanEdgeDepth gcfg
       go !i
         | i >= n = pure ()
         | otherwise = do
-            let !sample = plateSampleAt config seed gcfg tcfg origin i
-                !baseHeightRaw = plateHeightFromSample config seed gcfg lm tcfg sample
+            sample <- plateSampleAtCached plateCache config seed gcfg tcfg origin i
+            let !baseHeightRaw = plateHeightFromSample config seed gcfg lm tcfg sample
                 !edgeBias = oceanEdgeBiasAt config extent edgeCfg (TileCoord (psX sample) (psY sample))
                 !baseHeight = baseHeightRaw + edgeBias
                 !baseHardness = plateHardnessFromSample seed tcfg sample
@@ -341,17 +345,38 @@ data PlateSample = PlateSample
   , psBoundaryTangent :: !(Float, Float)
   }
 
-plateSampleAt :: WorldConfig -> Word64 -> GenConfig -> TectonicsConfig -> TileCoord -> Int -> PlateSample
-plateSampleAt config seed gcfg tcfg origin i =
+-- | Chunk-local cache for deterministic per-cell plate metadata.
+-- A fresh cache is allocated for each chunk build, so cached values never leak
+-- across chunks, runs, or seeds.
+newtype PlateCellCache s = PlateCellCache (STRef s (IntMap.IntMap (IntMap.IntMap PlateInfo)))
+
+newPlateCellCache :: ST s (PlateCellCache s)
+newPlateCellCache = PlateCellCache <$> newSTRef IntMap.empty
+
+cachedPlateInfoForCell :: PlateCellCache s -> Word64 -> TectonicsConfig -> Int -> Int -> ST s PlateInfo
+cachedPlateInfoForCell (PlateCellCache ref) seed tcfg cx cy = do
+  cache <- readSTRef ref
+  case IntMap.lookup cy cache >>= IntMap.lookup cx of
+    Just info -> pure info
+    Nothing -> do
+      let !info = plateInfoForCell seed tcfg cx cy
+          !row = maybe IntMap.empty id (IntMap.lookup cy cache)
+          !row' = IntMap.insert cx info row
+      writeSTRef ref $! IntMap.insert cy row' cache
+      pure info
+
+plateSampleAtCached :: PlateCellCache s -> WorldConfig -> Word64 -> GenConfig -> TectonicsConfig -> TileCoord -> Int -> ST s PlateSample
+plateSampleAtCached cache config seed gcfg tcfg origin i = do
   let TileCoord lx ly = tileCoordFromIndex config (TileIndex i)
       TileCoord ox oy = origin
       gx = ox + lx
       gy = oy + ly
-      (infoA, infoB, d0, d1) = plateNearestPairAtXY seed tcfg gx gy
-      tileInfo = plateInfoAtXY seed tcfg gx gy
-      infoX = plateInfoAtXY seed tcfg (gx + 1) gy
-      infoY = plateInfoAtXY seed tcfg gx (gy + 1)
-      pidA = plateInfoId infoA
+      getInfo = cachedPlateInfoForCell cache seed tcfg
+  (infoA, infoB, d0, d1) <- plateNearestPairAtXYWith getInfo seed tcfg gx gy
+  tileInfo <- plateInfoAtXYWith getInfo seed tcfg gx gy
+  infoX <- plateInfoAtXYWith getInfo seed tcfg (gx + 1) gy
+  infoY <- plateInfoAtXYWith getInfo seed tcfg gx (gy + 1)
+  let pidA = plateInfoId infoA
       pidB = plateInfoId infoB
       localA@(lxA, lyA) = plateLocalCoord seed tcfg pidA gx gy
       localB@(lxB, lyB) = plateLocalCoord seed tcfg pidB gx gy
@@ -370,34 +395,34 @@ plateSampleAt config seed gcfg tcfg origin i =
       motionX = boundaryMotionBetween tileInfo infoX
       motionY = boundaryMotionBetween tileInfo infoY
       nearestNeighbour = if abs motionX >= abs motionY then infoX else infoY
-  in PlateSample
-      { psX = gx
-      , psY = gy
-      , psInfo = infoA
-      , psNeighbourInfo = infoB
-      , psDistance = d0
-      , psNeighbourDistance = d1
-      , psBoundaryRawDistance = rawDistance
-      , psBoundaryStrength = strength
-      , psLocalA = localA
-      , psLocalB = localB
-      , psBaseA = baseA
-      , psBaseB = baseB
-      , psPlateId = plateInfoId tileInfo
-      , psPlateVelocity = plateInfoVelocity tileInfo
-      , psPlateBaseA = plateInfoBaseHeight infoA
-      , psPlateBaseB = plateInfoBaseHeight infoB
-      , psPlateBaseHardness = plateInfoBaseHardness tileInfo
-      , psPlateAge = plateInfoAge tileInfo
-      , psPlateCrust = plateInfoCrust tileInfo
-      , psCenterDistance = dist
-      , psTileCenterDistance = tileDist
-      , psBoundaryType = classifyBoundary tileInfo infoX infoY
-      , psBoundaryDirection = boundaryDirection tileInfo infoX infoY
-      , psMotionX = motionX
-      , psMotionY = motionY
-      , psBoundaryTangent = boundaryTangent tileInfo nearestNeighbour
-      }
+  pure PlateSample
+    { psX = gx
+    , psY = gy
+    , psInfo = infoA
+    , psNeighbourInfo = infoB
+    , psDistance = d0
+    , psNeighbourDistance = d1
+    , psBoundaryRawDistance = rawDistance
+    , psBoundaryStrength = strength
+    , psLocalA = localA
+    , psLocalB = localB
+    , psBaseA = baseA
+    , psBaseB = baseB
+    , psPlateId = plateInfoId tileInfo
+    , psPlateVelocity = plateInfoVelocity tileInfo
+    , psPlateBaseA = plateInfoBaseHeight infoA
+    , psPlateBaseB = plateInfoBaseHeight infoB
+    , psPlateBaseHardness = plateInfoBaseHardness tileInfo
+    , psPlateAge = plateInfoAge tileInfo
+    , psPlateCrust = plateInfoCrust tileInfo
+    , psCenterDistance = dist
+    , psTileCenterDistance = tileDist
+    , psBoundaryType = classifyBoundary tileInfo infoX infoY
+    , psBoundaryDirection = boundaryDirection tileInfo infoX infoY
+    , psMotionX = motionX
+    , psMotionY = motionY
+    , psBoundaryTangent = boundaryTangent tileInfo nearestNeighbour
+    }
 
 plateHeightFromSample :: WorldConfig -> Word64 -> GenConfig -> LatitudeMapping -> TectonicsConfig -> PlateSample -> Float
 plateHeightFromSample config seed gcfg lm tcfg sample =
