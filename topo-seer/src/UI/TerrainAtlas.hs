@@ -28,7 +28,7 @@ import Topo.Overlay (OverlayStore)
 import UI.OverlayExtract (extractOverlayField)
 import UI.RiverRender (RiverGeometry(..))
 import UI.TerrainRender (ChunkGeometry(..), buildChunkGeometry)
-import UI.HexPick (renderHexRadiusPx, hexOriginX, hexOriginY)
+import UI.HexGeometry (normalizeHexBounds)
 import UI.Widgets (Rect(..))
 
 
@@ -165,30 +165,6 @@ attachRiverOverlay riverGeoMap tiles
           { acgVertices = verts
           , acgIndices = rgIndices rg
           }
-
--- | Normalise a world-space rect from an arbitrary hexRadius coordinate frame
--- to the base 'renderHexRadiusPx' (= 6) coordinate frame.
---
--- 'axialToScreen' adds fixed offsets ('hexOriginX', 'hexOriginY') that do not
--- scale with hexRadius.  We subtract those before scaling and re-add them
--- after, so the result is identical to what 'axialToScreen renderHexRadiusPx'
--- would produce for the same hex coordinates.
---
--- Both edges are computed explicitly so that adjacent tiles with matching
--- source-frame edges (@r1.x + r1.w == r2.x@) produce matching normalised
--- edges, eliminating ±1 px rounding gaps.
-normalizeHexBounds :: Int -> Rect -> Rect
-normalizeHexBounds hexR rect
-  | hexR == renderHexRadiusPx = rect
-  | otherwise =
-      let s = fromIntegral renderHexRadiusPx / fromIntegral hexR :: Float
-          scaleEdge ox v = round (s * fromIntegral (v - ox)) + ox
-          Rect (V2 x y, V2 w h) = rect
-          x1 = scaleEdge hexOriginX x
-          y1 = scaleEdge hexOriginY y
-          x2 = scaleEdge hexOriginX (x + w)
-          y2 = scaleEdge hexOriginY (y + h)
-      in Rect (V2 x1 y1, V2 (max 1 (x2 - x1)) (max 1 (y2 - y1)))
 
 -- | Upload pre-built atlas geometry into render-target textures.
 --

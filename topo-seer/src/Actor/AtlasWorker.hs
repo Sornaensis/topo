@@ -10,6 +10,7 @@ module Actor.AtlasWorker
   , AtlasBuild(..)
   , AtlasBuildResult(..)
   , atlasWorkerActorDef
+  , atlasWorkerPaddedViewport
   , enqueueAtlasBuildWork
   ) where
 
@@ -27,6 +28,7 @@ import Hyperspace.Actor.QQ (hyperspace)
 import Topo (WorldConfig(..))
 import Seer.Render.Viewport (visibleChunkKeys)
 import UI.OverlayExtract (extractOverlayField)
+import UI.HexGeometry (renderHexRadiusPx)
 import UI.RiverRender (RiverGeometry(..), buildChunkRiverGeometry, defaultRiverRenderConfig, scaleRiverWidths)
 import UI.TerrainAtlas (AtlasChunkGeometry(..), AtlasTileGeometry(..), attachRiverOverlay, composeTilesFromGeometry, mergeChunkGeometry)
 import UI.TerrainRender (ChunkGeometry, buildChunkGeometry, buildDayNightGeometry)
@@ -46,6 +48,17 @@ data AtlasBuild = AtlasBuild
   , abResultRef  :: !AtlasResultRef
   , abDayNightFn :: !(Maybe (Int -> Int -> Float))
   }
+
+atlasWorkerPaddedViewport :: WorldConfig -> (Float, Float) -> Float -> (Int, Int) -> ((Float, Float), Float, (Int, Int))
+atlasWorkerPaddedViewport config (panX, panY) zoom (winW, winH) =
+  let chunkPxSize = wcChunkSize config * renderHexRadiusPx * 2
+      padWorld = fromIntegral (chunkPxSize * 2) :: Float
+      zoom' = max 0.001 zoom
+      paddedWin = ( winW + ceiling (2 * padWorld * zoom')
+                  , winH + ceiling (2 * padWorld * zoom')
+                  )
+      paddedPan = (panX + padWorld, panY + padWorld)
+  in (paddedPan, zoom', paddedWin)
 
 [hyperspace|
 actor AtlasWorker
@@ -72,15 +85,11 @@ actor AtlasWorker
         -- normal panning. Fast panning beyond the padding triggers the
         -- next scheduled rebuild (30ms poll).
         --
-        -- Padding is achieved by inflating the window size passed to
-        -- visibleChunkKeys, which already has its own 1-chunk pad.
-        -- Two extra rings at the base hex radius need approximately
-        -- chunkSize * hexRadius * 4 extra pixels per side.
-        chunkPxSize = wcChunkSize config * abHexRadius job * 2
-        padPx       = chunkPxSize * 2   -- 2 extra chunk-rings
-        (winW, winH) = abWindowSize job
-        paddedWin    = (winW + padPx * 2, winH + padPx * 2)
-        visibleKeys = visibleChunkKeys config (abPanOffset job) (abZoom job) paddedWin (tsTerrainChunks terrainSnap)
+        -- Apply symmetric padding in the canonical base world frame used by
+        -- visibleChunkKeys.  Expanding only the window biases coverage toward
+        -- right/bottom; shifting the pan by the world pad expands left/top too.
+        (paddedPan, zoom', paddedWin) = atlasWorkerPaddedViewport config (abPanOffset job) (abZoom job) (abWindowSize job)
+        visibleKeys = visibleChunkKeys config paddedPan zoom' paddedWin (tsTerrainChunks terrainSnap)
         chunkPairs  = [ (k, chunk)
                       | k <- visibleKeys
                       , Just chunk <- [IntMap.lookup k (tsTerrainChunks terrainSnap)]

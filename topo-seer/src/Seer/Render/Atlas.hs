@@ -49,6 +49,7 @@ import Data.IORef ()
 import qualified SDL
 import Seer.Render.ZoomStage (ZoomStage(..))
 import Seer.Timing (nsToMs, timedMs)
+import UI.HexGeometry (transformWorldRect)
 import UI.TerrainAtlas (TerrainAtlasTile(..), renderAtlasTileTextures)
 import UI.TexturePool (TexturePool, releaseTexture)
 import UI.Widgets (Rect(..))
@@ -163,24 +164,11 @@ drawAtlasAlpha renderer tiles (panX, panY) zoom (V2 winW winH) alpha = do
   where
     drawTile tile = do
       let Rect (V2 x y, V2 w h) = tatBounds tile
-          Rect (V2 tx ty, V2 tw th) = transformRect panX panY zoom (Rect (V2 x y, V2 w h))
+          Rect (V2 tx ty, V2 tw th) = transformWorldRect (panX, panY) zoom (Rect (V2 x y, V2 w h))
           outside = tx > winW || ty > winH || tx + tw < 0 || ty + th < 0
       if outside
         then pure ()
         else SDL.copy renderer (tatTexture tile) Nothing (Just (rectToSDL (Rect (V2 tx ty, V2 tw th))))
-
-    -- Compute screen rect from tile bounds + pan + zoom.
-    -- Uses floor/ceiling to guarantee adjacent tiles touch without gaps.
-    transformRect px py z (Rect (V2 rx ry, V2 rw rh)) =
-      let fx  = (fromIntegral rx + px) * z
-          fy  = (fromIntegral ry + py) * z
-          fx2 = (fromIntegral (rx + rw) + px) * z
-          fy2 = (fromIntegral (ry + rh) + py) * z
-          ix  = floor fx  :: Int
-          iy  = floor fy  :: Int
-          ix2 = ceiling fx2 :: Int
-          iy2 = ceiling fy2 :: Int
-      in Rect (V2 ix iy, V2 (max 1 (ix2 - ix)) (max 1 (iy2 - iy)))
 
 -- | Drain atlas build results and upload textures.
 --

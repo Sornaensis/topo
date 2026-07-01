@@ -7,10 +7,11 @@ import qualified Data.Vector.Storable as SV
 import qualified Data.Vector.Unboxed as U
 import Test.Hspec
 import Linear (V2(..))
+import qualified SDL.Raw.Types as Raw
 import Topo (WorldConfig(..), TerrainChunk(..), zeroDirSlope)
 import Topo.Types (pattern BiomeDesert, pattern FormFlat, pattern PlateBoundaryNone)
 import Actor.UI (ViewMode(..))
-import UI.HexPick (renderHexRadiusPx)
+import UI.HexGeometry (hexCenterF, renderHexRadiusPx)
 import UI.TerrainRender (ChunkGeometry(..), buildChunkGeometry)
 import UI.Widgets (Rect(..))
 
@@ -33,6 +34,20 @@ spec = describe "Terrain render geometry" $ do
         Rect (V2 _ _ , V2 w h) = cgBounds geometry
     w `shouldSatisfy` (> 0)
     h `shouldSatisfy` (> 0)
+
+  it "keeps fallback geometry vertices local to cgBounds" $ do
+    let size = 1
+        config = WorldConfig { wcChunkSize = size }
+        chunk = emptyTerrainChunk size
+        geometry = buildChunkGeometry renderHexRadiusPx config ViewElevation 0 IntMap.empty IntMap.empty IntMap.empty Nothing 0 chunk
+        Rect (V2 bx by, _) = cgBounds geometry
+        Raw.Vertex (Raw.FPoint localX localY) _ _ = cgVertices geometry SV.! 0
+        (centerX, centerY) = hexCenterF renderHexRadiusPx 0 0
+    realToFrac bx + realToFrac localX `shouldSatisfy` closeTo centerX
+    realToFrac by + realToFrac localY `shouldSatisfy` closeTo centerY
+
+closeTo :: Float -> Float -> Bool
+closeTo expected actual = abs (actual - expected) < 0.001
 
 emptyTerrainChunk :: Int -> TerrainChunk
 emptyTerrainChunk size =

@@ -10,7 +10,7 @@ module Seer.Render.Viewport
 
 import qualified Data.IntMap.Strict as IntMap
 import Topo (ChunkCoord(..), ChunkId(..), WorldConfig(..), chunkIdFromCoord)
-import UI.HexPick (renderHexRadiusPx, hexOriginX, hexOriginY)
+import UI.HexGeometry (renderHexRadiusPx, hexOriginX, hexOriginY)
 
 -- | Return the 'IntMap' keys of chunks whose coordinates place them in or
 -- near the camera viewport.

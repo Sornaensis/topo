@@ -23,12 +23,9 @@ import Linear (V2(..), V4(..))
 import qualified SDL
 import qualified SDL.Raw.Types as Raw
 import Topo (ChunkCoord(..), ChunkId(..), ClimateChunk(..), TerrainChunk(..), VegetationChunk(..), WeatherChunk(..), TileCoord(..), TileIndex(..), WorldConfig(..), chunkCoordFromId, chunkOriginTile, tileCoordFromIndex)
-import UI.HexPick (axialToScreen, renderHexRadiusPx)
+import UI.HexGeometry (hexCenterF, hexChunkBounds, hexCornerOffsets, renderHexRadiusPx)
 import UI.TerrainColor (terrainColor)
 import UI.Widgets (Rect(..))
-
-hexOverlap :: Float
-hexOverlap = 0.6
 
 -- | Triangle mesh for a single terrain chunk, ready for rendering.
 data ChunkGeometry = ChunkGeometry
@@ -76,9 +73,9 @@ buildChunkGeometry hexRadiusPx config mode waterLevel climateMap weatherMap vegM
                   let TileCoord tx ty = tileCoordFromIndex config (TileIndex idx)
                       q = ox + tx
                       r = oy + ty
-                      (scx, scy) = axialToScreen hexRadiusPx q r
-                      centerX = fromIntegral (scx - minX) :: CFloat
-                      centerY = fromIntegral (scy - minY) :: CFloat
+                      (scx, scy) = hexCenterF hexRadiusPx q r
+                      centerX = realToFrac (scx - fromIntegral minX) :: CFloat
+                      centerY = realToFrac (scy - fromIntegral minY) :: CFloat
                       overlayVal = case mOverlayVec of
                         Just vec | idx < U.length vec -> Just (vec U.! idx)
                         _ -> Nothing
@@ -138,9 +135,9 @@ buildDayNightGeometry hexRadiusPx config dayNightFn key chunk =
                   let TileCoord tx ty = tileCoordFromIndex config (TileIndex idx)
                       q = ox + tx
                       r = oy + ty
-                      (scx, scy) = axialToScreen hexRadiusPx q r
-                      centerX = fromIntegral (scx - minX) :: CFloat
-                      centerY = fromIntegral (scy - minY) :: CFloat
+                      (scx, scy) = hexCenterF hexRadiusPx q r
+                      centerX = realToFrac (scx - fromIntegral minX) :: CFloat
+                      centerY = realToFrac (scy - fromIntegral minY) :: CFloat
                       brightness = dayNightFn q r
                       alpha = fromIntegral (round ((1 - max 0 (min 1 brightness)) * 255) :: Int) :: Word8
                       rawColor = Raw.Color 0 0 0 alpha
@@ -203,32 +200,15 @@ writeHexIndices mi iOff base = do
 
 hexCornersF :: Int -> [Raw.FPoint]
 hexCornersF size =
-  let s = fromIntegral size + hexOverlap
-      angles = [-30, 30, 90, 150, 210, 270]
-      toPoint a =
-        let rad = degToRad a
-        in Raw.FPoint (realToFrac (s * cos rad)) (realToFrac (s * sin rad))
-  in map toPoint angles
-
-degToRad :: Float -> Float
-degToRad deg = deg * pi / 180
+  [ Raw.FPoint (realToFrac x) (realToFrac y)
+  | (x, y) <- hexCornerOffsets size
+  ]
 
 chunkBounds :: WorldConfig -> Int -> ChunkCoord -> (Int, Int, Int, Int)
-chunkBounds config size (ChunkCoord cx cy) =
-  let TileCoord ox oy = chunkOriginTile config (ChunkCoord cx cy)
-      s = wcChunkSize config
-      corners =
-        [ (ox, oy)
-        , (ox + s, oy)
-        , (ox, oy + s)
-        , (ox + s, oy + s)
-        ]
-      (xs, ys) = unzip [axialToScreen size q r | (q, r) <- corners]
-      minX = minimum xs
-      maxX = maximum xs
-      minY = minimum ys
-      maxY = maximum ys
-  in (minX - size, minY - size, maxX + size, maxY + size)
+chunkBounds config size chunkCoord =
+  let TileCoord ox oy = chunkOriginTile config chunkCoord
+      Rect (V2 minX minY, V2 w h) = hexChunkBounds (wcChunkSize config) size ox oy
+  in (minX, minY, minX + w, minY + h)
 
 toRawColor :: V4 Word8 -> Raw.Color
 toRawColor (V4 r g b a) = Raw.Color r g b a

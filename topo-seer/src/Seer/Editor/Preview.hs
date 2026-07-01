@@ -18,7 +18,8 @@ import Seer.Editor.Types (BrushSettings(..), EditorState(..), EditorTool(..), Fa
 import Seer.Editor.Brush (brushWeight)
 import Topo.Hex (hexDisc, hexDistance)
 import Topo.Types (HexCoord(..))
-import UI.HexPick (axialToScreen, renderHexRadiusPx)
+import UI.HexGeometry (hexFillRectAt, hexSpanTextureSize, renderHexRadiusPx)
+import UI.Widgets (Rect(..))
 
 -- | Draw the brush cursor preview overlay.
 --
@@ -40,18 +41,12 @@ drawBrushPreview renderer uiSnap hexRadius = do
             center = HexAxial hq hr
             disc   = hexDisc center radius
             (cr, cg, cb) = toolColor tool
-            -- World-space bounds for tile placement (renderHexRadiusPx=6 frame).
-            -- Derived from actual hex geometry size to match atlas tile extents.
-            hexHalfW = round (sqrt 3 / 2 * fromIntegral renderHexRadiusPx :: Float)
-            wMinX = -hexHalfW :: Int
-            wMinY = -renderHexRadiusPx :: Int
-            hexW = 2 * hexHalfW + 1
-            hexH = 2 * renderHexRadiusPx
             -- Texture rendered at hexRadius resolution for crisp edges
             hiResSpans = hexSpans hexRadius
-            (tMinX, tMinY, tMaxX, tMaxY) = spanBounds hiResSpans
-            texW   = fromIntegral (max 1 (tMaxX - tMinX + 1))
-            texH   = fromIntegral (max 1 (tMaxY - tMinY + 1))
+            (tMinX, tMinY, _, _) = spanBounds hiResSpans
+            (spanW, spanH) = hexSpanTextureSize hiResSpans
+            texW   = fromIntegral spanW
+            texH   = fromIntegral spanH
         -- Create a single hex-shaped texture with full-opacity tool colour.
         -- Per-tile alpha is applied via textureAlphaMod before each copy.
         hexTex <- SDL.createTexture renderer SDL.RGBA8888
@@ -74,9 +69,7 @@ drawBrushPreview renderer uiSnap hexRadius = do
           when (alpha > 0) $ do
             SDL.textureAlphaMod hexTex SDL.$= fromIntegral (min 255 alpha)
             let HexAxial tq tr = tile
-                (cx, cy) = axialToScreen renderHexRadiusPx tq tr
-                worldX = cx + wMinX
-                worldY = cy + wMinY
+                Rect (V2 worldX worldY, V2 hexW hexH) = hexFillRectAt renderHexRadiusPx tq tr
                 rect = transformRect (ox, oy) z
                          (RectInt (V2 worldX worldY) (V2 hexW hexH))
                 RectInt (V2 tx ty) (V2 tw th) = rect

@@ -3,6 +3,7 @@ module Main (main) where
 import System.IO (hSetEncoding, stdout, stderr, utf8)
 import Test.Hspec
 import qualified Spec.HexPick
+import qualified Spec.HexAlignment
 import qualified Spec.Layout
 import qualified Spec.LogActor
 import qualified Spec.AppService
@@ -63,6 +64,7 @@ main = do
         Spec.AtlasScheduler.spec
         Spec.AtlasCache.spec
         Spec.HexPick.spec
+        Spec.HexAlignment.spec
         Spec.Layout.spec
         Spec.SnapshotReceiver.spec
         Spec.TerrainCacheWorker.spec

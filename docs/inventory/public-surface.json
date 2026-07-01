@@ -806,6 +806,7 @@
       "tests": [
         "topo-seer:test:Spec.EditorBrush",
         "topo-seer:test:Spec.EditorHistory",
+        "topo-seer:test:Spec.HexAlignment",
         "topo-seer:test:Spec.HexPick",
         "topo-seer:test:Spec.Layout",
         "topo-seer:test:Spec.RiverRender",
@@ -849,6 +850,7 @@
           "Seer.Render.ZoomStage",
           "UI.Font",
           "UI.Geometry",
+          "UI.HexGeometry",
           "UI.Layout",
           "UI.Layout.Geometry",
           "UI.HexPick",

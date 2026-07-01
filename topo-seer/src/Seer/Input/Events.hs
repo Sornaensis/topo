@@ -76,7 +76,7 @@ import Actor.UiActions (UiAction(..))
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Input.Widgets (handleClick)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
-import UI.HexPick (renderHexRadiusPx, screenToAxial)
+import UI.HexGeometry (renderHexRadiusPx, screenPixelToAxial)
 
 -- | Wall-clock delay (milliseconds) the cursor must remain still on a
 -- widget before the tooltip appears.
@@ -123,8 +123,7 @@ handleEvent inputContext event = do
         Nothing -> pure ()
       uiSnap <- getUiSnapshot uiHandle
       terrainSnap <- getTerrainSnapshot dataHandle
-      let (wx, wy) = screenToWorld uiSnap (fromIntegral mx, fromIntegral my)
-          (q, r) = screenToAxial renderHexRadiusPx (round wx) (round wy)
+      let (q, r) = screenPixelToAxial renderHexRadiusPx (uiPanOffset uiSnap) (uiZoom uiSnap) (fromIntegral mx, fromIntegral my)
       if isTerrainHex terrainSnap (q, r)
         then setUiHoverHex uiHandle (Just (q, r))
         else setUiHoverHex uiHandle Nothing
@@ -453,10 +452,6 @@ handleEvent inputContext event = do
 
     dragThreshold :: Float
     dragThreshold = 4
-    screenToWorld uiSnap (sx, sy) =
-      let (ox, oy) = uiPanOffset uiSnap
-          z = uiZoom uiSnap
-      in (sx / z - ox, sy / z - oy)
 
     isTerrainHex terrainSnap (q, r) =
       let size = tsChunkSize terrainSnap

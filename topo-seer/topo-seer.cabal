@@ -111,6 +111,7 @@ library
       Seer.World.Persist.Types
       UI.Font
       UI.Geometry
+      UI.HexGeometry
       UI.Layout
       UI.Layout.Geometry
       UI.HexPick
@@ -259,6 +260,7 @@ test-suite topo-seer-test
       Spec.EditorHistory
       Spec.FeatureMatrix
       Spec.Headless
+      Spec.HexAlignment
       Spec.HexPick
       Spec.HTTP
       Spec.Layout

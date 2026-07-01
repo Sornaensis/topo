@@ -48,7 +48,7 @@ import Topo
   )
 import Topo.River (isCoastalExit, coastalExitEdge)
 import Topo.Types (BiomeId, pattern RiverStream, pattern RiverCreek, pattern RiverRiver, riverSizeFromOrder)
-import UI.HexPick (axialToScreen, renderHexRadiusPx)
+import UI.HexGeometry (hexCenterF, hexChunkBoundsF, renderHexRadiusPx)
 import UI.Widgets (Rect(..))
 import Linear (V2(..))
 
@@ -152,14 +152,6 @@ data RiverGeometry = RiverGeometry
   } deriving (Eq, Show)
 
 -- ---------------------------------------------------------------------------
--- Constants
--- ---------------------------------------------------------------------------
-
--- | Extra overlap pixels (matching TerrainRender).
-hexOverlap :: Float
-hexOverlap = 0.6
-
--- ---------------------------------------------------------------------------
 -- Core builder
 -- ---------------------------------------------------------------------------
 
@@ -215,7 +207,7 @@ buildGeometry cfg config hexRadiusPx key rc mbBiomeVec =
       rawColor   = Raw.Color rCol_r rCol_g rCol_b rCol_a
       (dCol_r, dCol_g, dCol_b, dCol_a) = rrcDeltaColor cfg
       deltaColor = Raw.Color dCol_r dCol_g dCol_b dCol_a
-      hexR       = fromIntegral hexRadiusPx + hexOverlap :: Float
+      hexR       = fromIntegral hexRadiusPx :: Float
 
       -- Test whether a tile is classified as a water biome.
       isTileWater idx = case mbBiomeVec of
@@ -235,9 +227,9 @@ buildGeometry cfg config hexRadiusPx key rc mbBiomeVec =
                  let TileCoord tx ty = tileCoordFromIndex config (TileIndex tileIdx)
                      q = ox + tx
                      r = oy + ty
-                     (scrX, scrY) = axialToScreen hexRadiusPx q r
-                     centerX = fromIntegral scrX - minX
-                     centerY = fromIntegral scrY - minY
+                     (scrX, scrY) = hexCenterF hexRadiusPx q r
+                     centerX = scrX - minX
+                     centerY = scrY - minY
                      tileOrder = riverOrder U.! tileIdx
                      (sv, si, newBase) = buildTileRiverSegs
                        cfg rawColor deltaColor hexR
@@ -274,7 +266,7 @@ buildTileRiverSegs
   :: RiverRenderConfig
   -> Raw.Color
   -> Raw.Color       -- ^ delta colour
-  -> Float           -- ^ hex radius (with overlap)
+  -> Float           -- ^ semantic hex radius
   -> U.Vector Word8  -- ^ entry edges (global)
   -> U.Vector Word8  -- ^ exit edges (global)
   -> U.Vector Word16 -- ^ segment orders (global)
@@ -544,21 +536,6 @@ halfWidthForOrder cfg order =
 
 -- | Compute the pixel bounding box of a chunk (as floats for sub-pixel work).
 chunkBoundsF :: WorldConfig -> Int -> ChunkCoord -> (Float, Float, Float, Float)
-chunkBoundsF config size (ChunkCoord cx cy) =
-  let TileCoord ox oy = chunkOriginTile config (ChunkCoord cx cy)
-      s = wcChunkSize config
-      corners =
-        [ (ox, oy)
-        , (ox + s, oy)
-        , (ox, oy + s)
-        , (ox + s, oy + s)
-        ]
-      screenPts = [axialToScreen size q r | (q, r) <- corners]
-      xs = map (fromIntegral . fst) screenPts
-      ys = map (fromIntegral . snd) screenPts
-      minX = minimum xs
-      maxX = maximum xs
-      minY = minimum ys
-      maxY = maximum ys
-  in (minX - fromIntegral size, minY - fromIntegral size,
-      maxX + fromIntegral size, maxY + fromIntegral size)
+chunkBoundsF config size chunkCoord =
+  let TileCoord ox oy = chunkOriginTile config chunkCoord
+  in hexChunkBoundsF (wcChunkSize config) size ox oy

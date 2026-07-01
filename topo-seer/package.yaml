@@ -105,6 +105,7 @@ library:
     - Seer.World.Persist.Types
     - UI.Font
     - UI.Geometry
+    - UI.HexGeometry
     - UI.Layout
     - UI.Layout.Geometry
     - UI.HexPick

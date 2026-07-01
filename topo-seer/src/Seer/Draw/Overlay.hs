@@ -130,8 +130,9 @@ import Topo.Units
   , normToWindMs
   )
 import UI.Font (FontCache, textSize)
-import UI.HexPick (axialToScreen, renderHexRadiusPx)
+import UI.HexGeometry (hexFillRectAt, hexSpanTextureSize, renderHexRadiusPx, transformWorldRect)
 import UI.Theme
+import UI.Widgets (Rect(..))
 import UI.WidgetsDraw (drawTextLine)
 import qualified Data.Vector.Unboxed as U
 
@@ -212,25 +213,13 @@ drawHoverHex renderer uiSnap hexRadius =
   case uiHoverHex uiSnap of
     Nothing -> pure ()
     Just (q, r) -> do
-      let -- World-space placement rect (renderHexRadiusPx=6 coordinate frame).
-          -- Derived from the actual hex geometry half-width so the overlay
-          -- matches the atlas-normalised hex extents rather than the wider
-          -- floor/ceil scanline bounding box of hexSpans.
-          hexHalfW = round (sqrt 3 / 2 * fromIntegral renderHexRadiusPx :: Float)
-          (cx, cy) = axialToScreen renderHexRadiusPx q r
+      let Rect (V2 worldX worldY, V2 worldW worldH) = hexFillRectAt renderHexRadiusPx q r
           (ox, oy) = uiPanOffset uiSnap
           z = uiZoom uiSnap
-          wMinX = -hexHalfW :: Int
-          wMinY = -renderHexRadiusPx
-          worldX = cx + wMinX
-          worldY = cy + wMinY
-          worldW = 2 * hexHalfW + 1
-          worldH = 2 * renderHexRadiusPx
           -- Texture rendered at hexRadius resolution for crisp edges
           hiResSpans = hexSpans hexRadius
-          (tMinX, tMinY, tMaxX, tMaxY) = spanBounds hiResSpans
-          texW = max 1 (tMaxX - tMinX + 1)
-          texH = max 1 (tMaxY - tMinY + 1)
+          (tMinX, tMinY, _, _) = spanBounds hiResSpans
+          (texW, texH) = hexSpanTextureSize hiResSpans
       hoverTexture <- SDL.createTexture renderer SDL.RGBA8888 SDL.TextureAccessTarget (V2 (fromIntegral texW) (fromIntegral texH))
       SDL.textureBlendMode hoverTexture SDL.$= SDL.BlendAlphaBlend
       SDL.rendererRenderTarget renderer SDL.$= Just hoverTexture
@@ -307,12 +296,9 @@ drawTooltip renderer fontCache (V2 winW winH) (V2 mx my) tipText = do
 data RectInt = RectInt !(V2 Int) !(V2 Int)
 
 transformRect :: (Float, Float) -> Float -> RectInt -> RectInt
-transformRect (ox, oy) z (RectInt (V2 rx ry) (V2 rw rh)) =
-  let fx = (fromIntegral rx + ox) * z
-      fy = (fromIntegral ry + oy) * z
-      fw = fromIntegral rw * z
-      fh = fromIntegral rh * z
-  in RectInt (V2 (round fx) (round fy)) (V2 (max 1 (round fw)) (max 1 (round fh)))
+transformRect pan z (RectInt pos size) =
+  let Rect (screenPos, screenSize) = transformWorldRect pan z (Rect (pos, size))
+  in RectInt screenPos screenSize
 
 drawHexSpansSupersampled :: SDL.Renderer -> [(Int, Int, Int)] -> Int -> (Int, Int) -> IO ()
 drawHexSpansSupersampled renderer spans scale (minX, minY) =

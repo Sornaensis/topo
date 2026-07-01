@@ -18,7 +18,7 @@ import qualified SDL
 import qualified SDL.Raw.Types as Raw
 import UI.OverlayExtract (extractOverlayField)
 import UI.TerrainCache (ChunkTextureCache(..), emptyChunkTextureCache)
-import UI.HexPick (renderHexRadiusPx)
+import UI.HexGeometry (renderHexRadiusPx, transformWorldPoint, transformWorldRect)
 import UI.TerrainRender (ChunkGeometry(..), ChunkTexture(..), buildChunkGeometry, buildChunkTexture, destroyChunkTexture)
 import UI.Widgets (Rect(..))
 import UI.WidgetsDraw (rectToSDL)
@@ -113,7 +113,7 @@ drawTerrain renderer terrainSnap cache textureCache (panX, panY) zoom (V2 winW w
   where
     drawChunkTexture renderer winW winH chunkTexture = do
       let Rect (V2 x y, V2 w h) = ctBounds chunkTexture
-          Rect (V2 tx ty, V2 tw th) = transformRect panX panY zoom (Rect (V2 x y, V2 w h))
+          Rect (V2 tx ty, V2 tw th) = transformWorldRect (panX, panY) zoom (Rect (V2 x y, V2 w h))
           outside = tx > winW || ty > winH || tx + tw < 0 || ty + th < 0
       if outside
         then pure ()
@@ -121,25 +121,17 @@ drawTerrain renderer terrainSnap cache textureCache (panX, panY) zoom (V2 winW w
 
     drawChunkGeometry renderer winW winH geometry = do
       let Rect (V2 x y, V2 w h) = cgBounds geometry
-          Rect (V2 tx ty, V2 tw th) = transformRect panX panY zoom (Rect (V2 x y, V2 w h))
+          Rect (V2 tx ty, V2 tw th) = transformWorldRect (panX, panY) zoom (Rect (V2 x y, V2 w h))
           outside = tx > winW || ty > winH || tx + tw < 0 || ty + th < 0
       if outside
         then pure ()
         else do
-          let verts = SV.map (transformVertex panX panY zoom) (cgVertices geometry)
+          let verts = SV.map (transformVertex (fromIntegral x) (fromIntegral y) panX panY zoom) (cgVertices geometry)
           SDL.renderGeometry renderer Nothing verts (cgIndices geometry)
 
-    transformRect px py z (Rect (V2 x y, V2 w h)) =
-      let fx = (fromIntegral x + px) * z
-          fy = (fromIntegral y + py) * z
-          fw = fromIntegral w * z
-          fh = fromIntegral h * z
-      in Rect (V2 (round fx) (round fy), V2 (max 1 (round fw)) (max 1 (round fh)))
-
-    transformVertex px py z (Raw.Vertex (Raw.FPoint x y) color tex) =
-      let x' = (realToFrac x + realToFrac px) * realToFrac z
-          y' = (realToFrac y + realToFrac py) * realToFrac z
-      in Raw.Vertex (Raw.FPoint x' y') color tex
+    transformVertex bx by px py z (Raw.Vertex (Raw.FPoint x y) color tex) =
+      let (x', y') = transformWorldPoint (px, py) z (bx + realToFrac x, by + realToFrac y)
+      in Raw.Vertex (Raw.FPoint (realToFrac x') (realToFrac y')) color tex
 
 -- | Update cached chunk textures for the current atlas scale.
 updateChunkTextures :: SDL.Renderer -> TerrainCache -> Int -> ChunkTextureCache -> IO ChunkTextureCache

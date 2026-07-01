@@ -5,9 +5,8 @@
 -- @viewport_click@, @viewport_drag@, @viewport_hover@.
 --
 -- These simulate the same mouse interactions that a user performs on
--- the terrain canvas.  Screen-to-world conversion uses the camera
--- transform @world = screen / zoom - panOffset@, followed by
--- 'screenToAxial' for hex resolution.
+-- the terrain canvas.  Screen-to-world conversion and hex resolution use
+-- the shared hex picking transform.
 module Seer.Command.Handlers.Viewport
   ( handleViewportScroll
   , handleViewportClick
@@ -31,7 +30,7 @@ import Seer.Editor.Types (EditorState(..))
 import Seer.Render.ZoomStage (maxCameraZoom)
 import Topo (ChunkCoord(..), ChunkId(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
-import UI.HexPick (screenToAxial, renderHexRadiusPx)
+import UI.HexGeometry (screenPixelToAxial, renderHexRadiusPx)
 
 -- --------------------------------------------------------------------------
 -- Constants (matching Seer.Input.ViewControls)
@@ -51,15 +50,6 @@ clampZoom = max zoomMin . min zoomMax
 -- --------------------------------------------------------------------------
 -- Coordinate helpers
 -- --------------------------------------------------------------------------
-
--- | Convert screen pixel coordinates to world coordinates using camera state.
---
--- @world = screen / zoom - panOffset@
-screenToWorld :: UiState -> (Float, Float) -> (Float, Float)
-screenToWorld ui (sx, sy) =
-  let (ox, oy) = uiPanOffset ui
-      z = uiZoom ui
-  in (sx / z - ox, sy / z - oy)
 
 -- | Check whether a hex @(q, r)@ exists in the current terrain.
 isTerrainHex :: TerrainSnapshot -> (Int, Int) -> Bool
@@ -134,8 +124,7 @@ handleViewportClick ctx reqId params = do
           uiH = ahUiHandle handles
       ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
       terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
-      let (wx, wy) = screenToWorld ui (fromIntegral px, fromIntegral py)
-          (q, r) = screenToAxial renderHexRadiusPx (round wx) (round wy)
+      let (q, r) = screenPixelToAxial renderHexRadiusPx (uiPanOffset ui) (uiZoom ui) (px, py)
           hexExists = isTerrainHex terrainSnap (q, r)
       case button of
         "right" -> do
@@ -221,8 +210,7 @@ handleViewportHover ctx reqId params = do
           uiH = ahUiHandle handles
       ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
       terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
-      let (wx, wy) = screenToWorld ui (fromIntegral px, fromIntegral py)
-          (q, r) = screenToAxial renderHexRadiusPx (round wx) (round wy)
+      let (q, r) = screenPixelToAxial renderHexRadiusPx (uiPanOffset ui) (uiZoom ui) (px, py)
           hexExists = isTerrainHex terrainSnap (q, r)
       if hexExists
         then do

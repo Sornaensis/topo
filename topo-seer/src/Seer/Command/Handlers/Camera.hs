@@ -23,7 +23,7 @@ import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
 import Topo (ChunkCoord(..), ChunkId(..), TileCoord(..), chunkCoordFromId)
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
-import UI.HexPick (axialToScreen, renderHexRadiusPx)
+import UI.HexGeometry (axialToScreen, renderHexRadiusPx)
 import Seer.Render.ZoomStage (maxCameraZoom)
 
 -- | Zoom range clamping bounds, matching 'Seer.Input.ViewControls'.
