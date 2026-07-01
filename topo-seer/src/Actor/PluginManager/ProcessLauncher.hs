@@ -22,6 +22,7 @@ import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar)
 import Control.Exception
   ( SomeAsyncException
   , SomeException
+  , finally
   , fromException
   , mask
   , onException
@@ -37,8 +38,8 @@ import Data.Word (Word8, Word32)
 #else
 import Data.Word (Word8)
 #endif
-#if defined(mingw32_HOST_OS)
 import Foreign.C.Types (CInt(..))
+#if defined(mingw32_HOST_OS)
 import Foreign.Marshal.Alloc (allocaBytes)
 import Foreign.Marshal.Utils (fillBytes)
 import Foreign.Ptr (IntPtr, Ptr, nullPtr)
@@ -64,9 +65,7 @@ import System.Process
   , proc
   , terminateProcess
   )
-#if defined(mingw32_HOST_OS)
 import Text.Read (readMaybe)
-#endif
 
 import Topo.Plugin.RPC.Protocol (currentProtocolVersion)
 import Topo.Plugin.RPC.Transport
@@ -150,13 +149,13 @@ launchPluginTransportViaEndpoint executablePath workingDir pluginName startupTim
       processResult <- trySync $ do
         environment <- endpointEnvironment (tsEndpoint server) pluginName workingDir
         createProcess
-          (proc executablePath [])
+          (pluginProcessSpec (proc executablePath [])
             { cwd = Just workingDir
             , env = Just environment
             , std_in = NoStream
             , std_out = NoStream
             , std_err = Inherit
-            }
+            })
       case processResult of
         Left err -> do
           safeCloseServer server
@@ -229,6 +228,13 @@ byteToHex byte = case showHex byte "" of
 
 unsavedWorldId :: String
 unsavedWorldId = "unsaved"
+
+pluginProcessSpec :: CreateProcess -> CreateProcess
+#if defined(mingw32_HOST_OS)
+pluginProcessSpec = id
+#else
+pluginProcessSpec processSpec = processSpec { new_session = True }
+#endif
 
 registerProcessParentDeathProtection :: ProcessHandle -> IO ()
 #if defined(mingw32_HOST_OS)
@@ -396,17 +402,48 @@ safeCloseHandle handle = do
   pure ()
 
 safeTerminateProcess :: ProcessHandle -> IO Bool
-safeTerminateProcess processHandle = do
+safeTerminateProcess processHandle =
+  terminateProcessCascade processHandle
+    `finally` safeReleaseProcessParentDeathProtection processHandle
+
+terminateProcessCascade :: ProcessHandle -> IO Bool
+terminateProcessCascade processHandle = do
+  alreadyExited <- waitForProcessExitPoll 0 processHandle
+  if alreadyExited
+    then pure True
+    else do
+      terminateProcessGracefully processHandle
+      terminated <- waitForProcessExitPoll processTerminationWaitMicros processHandle
+      if terminated
+        then pure True
+        else do
+          escalateProcessTermination processHandle
+          waitForProcessExitPoll processKillWaitMicros processHandle
+
+terminateProcessGracefully :: ProcessHandle -> IO ()
+terminateProcessGracefully processHandle = do
   if os == "mingw32"
     then terminateWindowsProcessTree processHandle
-    else pure ()
-  _ <- try @SomeException (terminateProcess processHandle)
-  terminated <- waitForProcessExitPoll processTerminationWaitMicros processHandle
-  if terminated
-    then releaseProcessParentDeathProtection processHandle >> pure True
-    else do
-      releaseProcessParentDeathProtection processHandle
-      waitForProcessExitPoll processTerminationWaitMicros processHandle
+    else terminatePosixProcessGroup sigTERM processHandle
+  ignoreSyncExceptions (terminateProcess processHandle)
+
+escalateProcessTermination :: ProcessHandle -> IO ()
+escalateProcessTermination processHandle = do
+  if os == "mingw32"
+    then terminateWindowsProcessTree processHandle
+    else terminatePosixProcessGroup sigKILL processHandle
+  ignoreSyncExceptions (terminateProcess processHandle)
+
+safeReleaseProcessParentDeathProtection :: ProcessHandle -> IO ()
+safeReleaseProcessParentDeathProtection processHandle =
+  ignoreSyncExceptions (releaseProcessParentDeathProtection processHandle)
+
+ignoreSyncExceptions :: IO () -> IO ()
+ignoreSyncExceptions action = do
+  result <- trySync action
+  case result of
+    Left _ -> pure ()
+    Right _ -> pure ()
 
 terminateWindowsProcessTree :: ProcessHandle -> IO ()
 terminateWindowsProcessTree processHandle = do
@@ -414,7 +451,7 @@ terminateWindowsProcessTree processHandle = do
   case mPid of
     Nothing -> pure ()
     Just pid -> do
-      taskkillResult <- try @SomeException $
+      taskkillResult <- trySync $
         createProcess (proc "taskkill" ["/PID", show pid, "/T", "/F"])
           { std_in = NoStream
           , std_out = NoStream
@@ -438,8 +475,40 @@ waitForProcessExitPoll remainingMicros processHandle = do
           threadDelay delayMicros
           waitForProcessExitPoll (remainingMicros - delayMicros) processHandle
 
+terminatePosixProcessGroup :: CInt -> ProcessHandle -> IO ()
+#if defined(mingw32_HOST_OS)
+terminatePosixProcessGroup _ _ = pure ()
+#else
+terminatePosixProcessGroup signalNumber processHandle = do
+  mPid <- processHandlePidCInt processHandle
+  case mPid of
+    Nothing -> pure ()
+    Just pid -> ignoreSyncExceptions $ do
+      _ <- c_kill (negate pid) signalNumber
+      pure ()
+#endif
+
+#if !defined(mingw32_HOST_OS)
+processHandlePidCInt :: ProcessHandle -> IO (Maybe CInt)
+processHandlePidCInt processHandle = do
+  mPid <- getPid processHandle
+  pure (mPid >>= readMaybe . show)
+
+foreign import ccall unsafe "kill"
+  c_kill :: CInt -> CInt -> IO CInt
+#endif
+
+sigTERM :: CInt
+sigTERM = 15
+
+sigKILL :: CInt
+sigKILL = 9
+
 processTerminationWaitMicros :: Int
 processTerminationWaitMicros = 1000000
+
+processKillWaitMicros :: Int
+processKillWaitMicros = 2000000
 
 processPollDelayMicros :: Int
 processPollDelayMicros = 10000

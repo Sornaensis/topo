@@ -19,7 +19,7 @@ module Actor.PluginManager.PluginSupervisor
   ) where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException, mask, onException, throwIO, try)
+import Control.Exception (SomeException, finally, mask, onException, throwIO, try)
 import Control.Monad (when)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict (Map)
@@ -459,20 +459,57 @@ cleanupLaunchedPlugin policy transport processHandle = do
     _ -> pure ()
 
 maybeRestartAfterFailure :: FilePath -> LoadedPlugin -> IO LoadedPlugin
-maybeRestartAfterFailure executablePath failedLp =
-  case lpProcessHandle failedLp of
-    Just _ -> pure failedLp
+maybeRestartAfterFailure executablePath failedLp = do
+  failedLp' <- clearExitedProcessHandle failedLp
+  case lpProcessHandle failedLp' of
+    Just _ -> do
+      now <- getCurrentTime
+      pure (markTerminationFailed now "plugin termination failed after startup failure" failedLp')
     Nothing -> do
-      let policy = lpStartPolicy failedLp
-          failedAt = plsUpdatedAt (lpLifecycle failedLp)
-          history = lpRestartHistory failedLp
+      let policy = lpStartPolicy failedLp'
+          failedAt = plsUpdatedAt (lpLifecycle failedLp')
+          history = lpRestartHistory failedLp'
       if canRestartPlugin policy failedAt history
         then do
           let history' = recordPluginRestart policy failedAt history
               backoffMicros = rspBackoffMs policy * 1000
           when (backoffMicros > 0) (threadDelay backoffMicros)
-          connectWithRestartPolicy executablePath failedLp { lpRestartHistory = history' }
-        else pure (markRestartLimitIfApplicable failedAt failedLp)
+          connectWithRestartPolicy executablePath failedLp' { lpRestartHistory = history' }
+        else pure (markRestartLimitIfApplicable failedAt failedLp')
+
+clearExitedProcessHandle :: LoadedPlugin -> IO LoadedPlugin
+clearExitedProcessHandle lp =
+  case lpProcessHandle lp of
+    Nothing -> pure lp
+    Just processHandle -> do
+      alive <- isNothing <$> getProcessExitCode processHandle
+      pure $ if alive
+        then lp
+        else lp { lpProcessHandle = Nothing }
+
+markTerminationFailed :: UTCTime -> Text -> LoadedPlugin -> LoadedPlugin
+markTerminationFailed now context lp
+  | plsErrorCode (lpLifecycle lp) == Just "termination_failed" = lp
+      { lpConnection = Nothing }
+  | otherwise = lp
+      { lpStatus = PluginError message
+      , lpLifecycle = pluginLifecycleSnapshot now LifecycleFailed
+          (Just "plugin termination failed") (Just "termination_failed") (Just message)
+          (plsBlockingDependency (lpLifecycle lp))
+          (plsProcessId (lpLifecycle lp))
+          (plsProtocolVersion (lpLifecycle lp))
+          (plsResources (lpLifecycle lp))
+      , lpConnection = Nothing
+      }
+  where
+    message = case previousErrorMessage lp of
+      Nothing -> context
+      Just previous -> context <> "; previous error: " <> previous
+
+previousErrorMessage :: LoadedPlugin -> Maybe Text
+previousErrorMessage lp = case lpStatus lp of
+  PluginError message -> Just message
+  _ -> plsErrorMessage (lpLifecycle lp)
 
 markRestartLimitIfApplicable :: UTCTime -> LoadedPlugin -> LoadedPlugin
 markRestartLimitIfApplicable now lp
@@ -610,12 +647,11 @@ stopLaunchedPlugin _policy transport processHandle = do
   safeTerminateProcess processHandle
 
 stopLoadedPluginRuntime :: LoadedPlugin -> IO Bool
-stopLoadedPluginRuntime lp = do
-  terminated <- case lpProcessHandle lp of
+stopLoadedPluginRuntime lp =
+  (case lpProcessHandle lp of
     Nothing -> pure True
-    Just processHandle -> safeTerminateProcess processHandle
-  closePluginTransport lp
-  pure terminated
+    Just processHandle -> safeTerminateProcess processHandle)
+    `finally` closePluginTransport lp
 
 closePluginTransport :: LoadedPlugin -> IO ()
 closePluginTransport lp =
@@ -629,10 +665,17 @@ closeTransportIgnoring transport = do
   pure ()
 
 preserveRuntimeHandles :: LoadedPlugin -> LoadedPlugin -> LoadedPlugin
-preserveRuntimeHandles stopped updated = updated
-  { lpConnection = lpConnection stopped
-  , lpProcessHandle = lpProcessHandle stopped
-  }
+preserveRuntimeHandles stopped updated
+  | isJust (lpProcessHandle stopped) = updated
+      { lpStatus = lpStatus stopped
+      , lpLifecycle = lpLifecycle stopped
+      , lpConnection = lpConnection stopped
+      , lpProcessHandle = lpProcessHandle stopped
+      }
+  | otherwise = updated
+      { lpConnection = lpConnection stopped
+      , lpProcessHandle = lpProcessHandle stopped
+      }
 
 pluginProcessAlive :: LoadedPlugin -> IO Bool
 pluginProcessAlive lp =
@@ -657,14 +700,19 @@ shutdownPlugin lp = do
     Just conn -> do
       _ <- try @SomeException (rpcShutdown conn)
       pure ()
-  terminated <- case lpProcessHandle lp of
+  terminated <- (case lpProcessHandle lp of
     Nothing -> pure True
-    Just processHandle -> waitForProcessExitOrTerminate (rspShutdownTimeoutMs (lpStartPolicy lp)) processHandle
-  closePluginTransport lp
-  pure lp
-    { lpConnection = Nothing
-    , lpProcessHandle = if terminated then Nothing else lpProcessHandle lp
-    }
+    Just processHandle -> waitForProcessExitOrTerminate (rspShutdownTimeoutMs (lpStartPolicy lp)) processHandle)
+    `finally` closePluginTransport lp
+  let stopped = lp
+        { lpConnection = Nothing
+        , lpProcessHandle = if terminated then Nothing else lpProcessHandle lp
+        }
+  if terminated
+    then pure stopped
+    else do
+      now <- getCurrentTime
+      pure (markTerminationFailed now "plugin termination failed during shutdown" stopped)
 
 waitForProcessExitOrTerminate :: Int -> ProcessHandle -> IO Bool
 waitForProcessExitOrTerminate timeoutMillis processHandle = do
@@ -699,16 +747,19 @@ markPluginStopping now lp = lp
 
 -- | Mark a plugin as disconnected.
 disconnectPlugin :: UTCTime -> LoadedPlugin -> LoadedPlugin
-disconnectPlugin now lp = lp
-  { lpStatus = PluginDisconnected
-  , lpLifecycle = pluginLifecycleSnapshot now LifecycleStopped
-      (Just "plugin stopped") Nothing Nothing Nothing
-      (plsProcessId (lpLifecycle lp))
-      (plsProtocolVersion (lpLifecycle lp))
-      (plsResources (lpLifecycle lp))
-  , lpConnection = lpConnection lp
-  , lpProcessHandle = lpProcessHandle lp
-  }
+disconnectPlugin now lp
+  | isJust (lpProcessHandle lp) =
+      markTerminationFailed now "plugin termination failed during shutdown" lp
+  | otherwise = lp
+      { lpStatus = PluginDisconnected
+      , lpLifecycle = pluginLifecycleSnapshot now LifecycleStopped
+          (Just "plugin stopped") Nothing Nothing Nothing
+          (plsProcessId (lpLifecycle lp))
+          (plsProtocolVersion (lpLifecycle lp))
+          (plsResources (lpLifecycle lp))
+      , lpConnection = lpConnection lp
+      , lpProcessHandle = lpProcessHandle lp
+      }
 
 markPluginManifestLoadFailure :: UTCTime -> ManifestLoadFailure -> LoadedPlugin -> LoadedPlugin
 markPluginManifestLoadFailure now failure lp =

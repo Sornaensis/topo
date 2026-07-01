@@ -20,6 +20,7 @@ import Control.Exception
   )
 import Control.Monad (unless)
 import Data.List (elemIndex)
+import Data.Maybe (isJust)
 import qualified Data.Aeson as Aeson
 import Data.Aeson (Value(..), (.=), object)
 import qualified Data.ByteString as BS
@@ -54,6 +55,7 @@ import System.Process
   , ProcessHandle
   , StdStream(..)
   , createProcess
+  , getPid
   , getProcessExitCode
   , proc
   )
@@ -216,8 +218,13 @@ spec = describe "PluginManager" $ do
         null handles `shouldBe` False
         shutdownPlugins pluginManagerHandle
         shutdownPlugins pluginManagerHandle
-        threadDelay 200000
-        loadedAfterShutdown <- getLoadedPlugins pluginManagerHandle
+        loadedAfterShutdown <- waitForLoadedPlugins
+          (testLaunchPluginName <> " repeated shutdown cleanup")
+          pluginManagerHandle
+          (\loaded ->
+            PluginDisconnected `elem` pluginStatuses testLaunchPluginName loaded
+              && LifecycleStopped `elem` pluginLifecycleStates testLaunchPluginName loaded
+              && null (pluginProcessHandles testLaunchPluginName loaded))
         pluginStatuses testLaunchPluginName loadedAfterShutdown `shouldSatisfy` elem PluginDisconnected
         pluginLifecycleStates testLaunchPluginName loadedAfterShutdown `shouldSatisfy` elem LifecycleStopped
         mapM_ (assertProcessExited testLaunchPluginName) handles
@@ -289,7 +296,13 @@ spec = describe "PluginManager" $ do
         discoverPlugins pluginManagerHandle
         result <- timeout 300000 (refreshManifests pluginManagerHandle)
         result `shouldBe` Nothing
-        interrupted <- getLoadedPlugins pluginManagerHandle
+        interrupted <- waitForLoadedPlugins
+          (interruptedRefreshPluginName <> " interrupted refresh cleanup")
+          pluginManagerHandle
+          (\loaded ->
+            LifecycleDiscovered `elem` pluginLifecycleStates interruptedRefreshPluginName loaded
+              && not (LifecycleStarting `elem` pluginLifecycleStates interruptedRefreshPluginName loaded)
+              && null (pluginProcessHandles interruptedRefreshPluginName loaded))
         pluginLifecycleStates interruptedRefreshPluginName interrupted `shouldSatisfy` elem LifecycleDiscovered
         pluginLifecycleStates interruptedRefreshPluginName interrupted `shouldNotSatisfy` elem LifecycleStarting
         length (pluginProcessHandles interruptedRefreshPluginName interrupted) `shouldBe` 0
@@ -307,7 +320,13 @@ spec = describe "PluginManager" $ do
           connectedRefreshInterruptedDisabledManifestJSON
         result <- timeout 300000 (refreshManifests pluginManagerHandle)
         result `shouldBe` Nothing
-        interrupted <- getLoadedPlugins pluginManagerHandle
+        interrupted <- waitForLoadedPlugins
+          (connectedRefreshInterruptedPluginName <> " interrupted connected refresh cleanup")
+          pluginManagerHandle
+          (\loaded ->
+            LifecycleStopped `elem` pluginLifecycleStates connectedRefreshInterruptedPluginName loaded
+              && not (LifecycleStarting `elem` pluginLifecycleStates connectedRefreshInterruptedPluginName loaded)
+              && null (pluginProcessHandles connectedRefreshInterruptedPluginName loaded))
         pluginLifecycleStates connectedRefreshInterruptedPluginName interrupted `shouldSatisfy` elem LifecycleStopped
         pluginLifecycleStates connectedRefreshInterruptedPluginName interrupted `shouldNotSatisfy` elem LifecycleStarting
         length (pluginProcessHandles connectedRefreshInterruptedPluginName interrupted) `shouldBe` 0
@@ -338,7 +357,13 @@ spec = describe "PluginManager" $ do
         handles <- expectPluginProcessHandles interruptedShutdownPluginName ready
         result <- timeout 300000 (shutdownPlugins pluginManagerHandle)
         result `shouldBe` Nothing
-        interrupted <- getLoadedPlugins pluginManagerHandle
+        interrupted <- waitForLoadedPlugins
+          (interruptedShutdownPluginName <> " interrupted shutdown cleanup")
+          pluginManagerHandle
+          (\loaded ->
+            LifecycleStopped `elem` pluginLifecycleStates interruptedShutdownPluginName loaded
+              && not (LifecycleStopping `elem` pluginLifecycleStates interruptedShutdownPluginName loaded)
+              && null (pluginProcessHandles interruptedShutdownPluginName loaded))
         pluginLifecycleStates interruptedShutdownPluginName interrupted `shouldSatisfy` elem LifecycleStopped
         pluginLifecycleStates interruptedShutdownPluginName interrupted `shouldNotSatisfy` elem LifecycleStopping
         length (pluginProcessHandles interruptedShutdownPluginName interrupted) `shouldBe` 0
@@ -600,7 +625,13 @@ spec = describe "PluginManager" $ do
           Nothing -> expectationFailure "data query hung"
           Just (Left err) -> err `shouldSatisfy` Text.isInfixOf "timed out"
           Just (Right _) -> expectationFailure "hung data query unexpectedly succeeded"
-        observed <- getLoadedPlugins pluginManagerHandle
+        observed <- waitForLoadedPlugins
+          (hangQueryPluginName <> " timeout cleanup")
+          pluginManagerHandle
+          (\loaded ->
+            anyPluginErrorContaining "restart limit exceeded" (pluginStatuses hangQueryPluginName loaded)
+              && Just "restart_limit_exceeded" `elem` pluginLifecycleErrorCodes hangQueryPluginName loaded
+              && null (pluginProcessHandles hangQueryPluginName loaded))
         pluginStatuses hangQueryPluginName observed `shouldSatisfy` anyPluginErrorContaining "restart limit exceeded"
         pluginLifecycleErrorCodes hangQueryPluginName observed `shouldSatisfy` elem (Just "restart_limit_exceeded")
         length (pluginProcessHandles hangQueryPluginName observed) `shouldBe` 0
@@ -761,18 +792,71 @@ expectPluginProcessHandles name loaded =
     [] -> expectationFailure (name <> " did not expose a fixture process handle") >> fail "missing process handle"
     handles -> pure handles
 
+waitForLoadedPlugins
+  :: String
+  -> ActorHandle PluginManager (Protocol PluginManager)
+  -> ([LoadedPlugin] -> Bool)
+  -> IO [LoadedPlugin]
+waitForLoadedPlugins label pluginManagerHandle predicate = go cleanupPollAttempts
+  where
+    go attemptsLeft = do
+      loaded <- getLoadedPlugins pluginManagerHandle
+      if predicate loaded
+        then pure loaded
+        else if attemptsLeft <= 0
+          then do
+            expectationFailure $
+              label <> " did not reach expected cleanup state. Last plugin state:\n"
+                <> summarizeLoadedPlugins loaded
+            fail label
+          else threadDelay cleanupPollDelayMicros >> go (attemptsLeft - 1)
+
+summarizeLoadedPlugins :: [LoadedPlugin] -> String
+summarizeLoadedPlugins [] = "<no plugins>"
+summarizeLoadedPlugins plugins = unlines (map summarizeLoadedPlugin plugins)
+
+summarizeLoadedPlugin :: LoadedPlugin -> String
+summarizeLoadedPlugin plugin =
+  Text.unpack (lpName plugin)
+    <> " status=" <> show (lpStatus plugin)
+    <> " lifecycle=" <> show (plsState (lpLifecycle plugin))
+    <> " errorCode=" <> show (plsErrorCode (lpLifecycle plugin))
+    <> " processId=" <> show (plsProcessId (lpLifecycle plugin))
+    <> " hasConnection=" <> show (isJust (lpConnection plugin))
+    <> " hasProcess=" <> show (isJust (lpProcessHandle plugin))
+
 assertProcessExited :: String -> ProcessHandle -> IO ()
 assertProcessExited label processHandle = do
-  result <- timeout 1000000 waitForExitCode
-  case result of
-    Nothing -> expectationFailure (label <> " fixture process did not exit after shutdown")
-    Just _ -> pure ()
-  where
-    waitForExitCode = do
+  mPid <- getPid processHandle
+  exited <- waitForProcessExitCode processExitAssertTimeoutMicros processHandle
+  if exited
+    then pure ()
+    else do
       mExitCode <- getProcessExitCode processHandle
-      case mExitCode of
-        Just exitCode -> pure exitCode
-        Nothing -> threadDelay 10000 >> waitForExitCode
+      expectationFailure $
+        label <> " fixture process " <> maybe "<unknown pid>" show mPid
+          <> " did not exit after shutdown; last observed exit code: " <> show mExitCode
+
+waitForProcessExitCode :: Int -> ProcessHandle -> IO Bool
+waitForProcessExitCode remainingMicros processHandle = do
+  mExitCode <- getProcessExitCode processHandle
+  case mExitCode of
+    Just _ -> pure True
+    Nothing
+      | remainingMicros <= 0 -> pure False
+      | otherwise -> do
+          let delayMicros = min cleanupPollDelayMicros remainingMicros
+          threadDelay delayMicros
+          waitForProcessExitCode (remainingMicros - delayMicros) processHandle
+
+processExitAssertTimeoutMicros :: Int
+processExitAssertTimeoutMicros = 5000000
+
+cleanupPollAttempts :: Int
+cleanupPollAttempts = 100
+
+cleanupPollDelayMicros :: Int
+cleanupPollDelayMicros = 50000
 
 expectHeartbeatAdvances :: FilePath -> IO ()
 expectHeartbeatAdvances path = do
