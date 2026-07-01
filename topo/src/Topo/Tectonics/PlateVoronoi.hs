@@ -13,8 +13,7 @@ module Topo.Tectonics.PlateVoronoi
   ) where
 
 import Data.Bits (xor)
-import Data.List (foldl', sortBy)
-import Data.Ord (comparing)
+import Data.List (foldl')
 import Data.Word (Word16, Word64)
 import Topo.Math (clamp01)
 import Topo.Noise (domainWarp2D, noise2DContinuous)
@@ -33,6 +32,13 @@ data PlateInfo = PlateInfo
   , plateInfoCrust :: !PlateCrust
   }
 
+-- | Strict nearest-two accumulator.  Equal-distance candidates keep their
+-- input order, matching the stable order that @sortBy@ used to provide.
+data NearestPlatePair
+  = NoNearestPlate
+  | OneNearestPlate !Float !PlateInfo
+  | TwoNearestPlates !Float !PlateInfo !Float !PlateInfo
+
 plateDistancePair :: Word64 -> TectonicsConfig -> Int -> Int -> (Float, Float)
 plateDistancePair seed tcfg x y =
   let size = max 1 (tcPlateSize tcfg)
@@ -44,12 +50,11 @@ plateDistancePair seed tcfg x y =
       cells = [ (ix, iy) | iy <- [cy - 1 .. cy + 1], ix <- [cx - 1 .. cx + 1] ]
       activeCells = filter (uncurry (plateCellActive seed tcfg)) cells
       cells' = if null activeCells then cells else activeCells
-      dists = map (plateDistSq seed tcfg (wx, wy)) cells'
-      sorted = sortBy (comparing fst) dists
-  in case sorted of
-      (d0, _) : (d1, _) : _ -> (sqrt d0, sqrt d1)
-      (d0, _) : _ -> (sqrt d0, sqrt d0 + fromIntegral size)
-      [] -> (0, fromIntegral size)
+      nearest = nearestPlatePair seed tcfg (wx, wy) cells'
+  in case nearest of
+      TwoNearestPlates d0 _ d1 _ -> (sqrt d0, sqrt d1)
+      OneNearestPlate d0 _ -> (sqrt d0, sqrt d0 + fromIntegral size)
+      NoNearestPlate -> (0, fromIntegral size)
 
 plateNearestPairAtXY :: Word64 -> TectonicsConfig -> Int -> Int -> (PlateInfo, PlateInfo, Float, Float)
 plateNearestPairAtXY seed tcfg x y =
@@ -62,13 +67,31 @@ plateNearestPairAtXY seed tcfg x y =
       cells = [ (ix, iy) | iy <- [cy - 1 .. cy + 1], ix <- [cx - 1 .. cx + 1] ]
       activeCells = filter (uncurry (plateCellActive seed tcfg)) cells
       cells' = if null activeCells then cells else activeCells
-      dists = sortBy (comparing fst) (map (plateDistSq seed tcfg (wx, wy)) cells')
-  in case dists of
-      (d0, info0) : (d1, info1) : _ -> (info0, info1, sqrt d0, sqrt d1)
-      (d0, info0) : _ -> (info0, info0, sqrt d0, sqrt d0 + fromIntegral size)
-      [] ->
+      nearest = nearestPlatePair seed tcfg (wx, wy) cells'
+  in case nearest of
+      TwoNearestPlates d0 info0 d1 info1 -> (info0, info1, sqrt d0, sqrt d1)
+      OneNearestPlate d0 info0 -> (info0, info0, sqrt d0, sqrt d0 + fromIntegral size)
+      NoNearestPlate ->
         let info0 = plateInfoForCell seed tcfg cx cy
         in (info0, info0, 0, fromIntegral size)
+
+nearestPlatePair :: Word64 -> TectonicsConfig -> (Float, Float) -> [(Int, Int)] -> NearestPlatePair
+nearestPlatePair seed tcfg xy =
+  foldl' step NoNearestPlate
+  where
+    step nearest cell = insertNearestPlate (plateDistSq seed tcfg xy cell) nearest
+
+insertNearestPlate :: (Float, PlateInfo) -> NearestPlatePair -> NearestPlatePair
+insertNearestPlate (d, info) nearest =
+  case nearest of
+    NoNearestPlate -> OneNearestPlate d info
+    OneNearestPlate d0 info0
+      | d < d0 -> TwoNearestPlates d info d0 info0
+      | otherwise -> TwoNearestPlates d0 info0 d info
+    TwoNearestPlates d0 info0 d1 info1
+      | d < d0 -> TwoNearestPlates d info d0 info0
+      | d < d1 -> TwoNearestPlates d0 info0 d info
+      | otherwise -> nearest
 
 plateDistSq :: Word64 -> TectonicsConfig -> (Float, Float) -> (Int, Int) -> (Float, PlateInfo)
 plateDistSq seed tcfg (x, y) (cx, cy) =

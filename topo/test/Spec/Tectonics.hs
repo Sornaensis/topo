@@ -5,11 +5,21 @@ import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
 import qualified Data.Vector.Unboxed as U
 import qualified Data.List as List
+import Data.Word (Word16, Word64)
 import Topo
 import Topo.Noise (directionalRidge2DAniso)
 
 spec :: Spec
 spec = describe "Tectonics" $ do
+  describe "plate nearest pair lookup" $ do
+    it "matches plateDistancePair distances for representative samples" $ do
+      mapM_ assertPlatePairDistance nearestPairSamples
+
+    it "matches representative nearest-pair snapshots" $ do
+      let actual = map (\(seed, cfg, x, y) -> nearestPairSnapshot seed cfg x y) nearestPairSamples
+      length actual `shouldBe` length nearestPairExpected
+      mapM_ assertPlatePairSnapshotClose (zip nearestPairExpected actual)
+
   it "marks plate ids in flags" $ do
     let config = WorldConfig { wcChunkSize = 8 }
         world0 = emptyWorld config defaultHexGridMeta
@@ -327,6 +337,99 @@ spec = describe "Tectonics" $ do
           vals = [ boundaryDistanceNormalised 123 cfg x y
                  | x <- [-50 .. 50], y <- [-50 .. 50] ]
       all (\v -> v >= 0 && v <= 1) vals `shouldBe` True
+
+nearestPairSamples :: [(Word64, TectonicsConfig, Int, Int)]
+nearestPairSamples =
+  [ (42, defaultTectonicsConfig, 0, 0)
+  , (42, defaultTectonicsConfig, -17, 29)
+  , (99, defaultTectonicsConfig { tcPlateSize = 7 }, 123, -45)
+  , (101, defaultTectonicsConfig { tcPlateSize = 16, tcPlateMergeBias = 1 }, 31, 63)
+  , (202, defaultTectonicsConfig { tcPlateSize = 23, tcPlateMergeBias = 0, tcBoundaryNoiseStrength = 0 }, -128, 256)
+  ]
+
+assertPlatePairDistance :: (Word64, TectonicsConfig, Int, Int) -> Expectation
+assertPlatePairDistance (seed, cfg, x, y) = do
+  let (_, _, nearestD0, nearestD1) = plateNearestPairAtXY seed cfg x y
+      (pairD0, pairD1) = plateDistancePair seed cfg x y
+  nearestD0 `shouldBe` pairD0
+  nearestD1 `shouldBe` pairD1
+  nearestD0 `shouldSatisfy` (>= 0)
+  nearestD1 `shouldSatisfy` (>= nearestD0)
+
+type PlateInfoSnapshot = (Word16, (Float, Float), (Float, Float), Float, Float, Float, PlateCrust)
+
+type PlatePairSnapshot = (PlateInfoSnapshot, PlateInfoSnapshot, Float, Float)
+
+nearestPairExpected :: [PlatePairSnapshot]
+nearestPairExpected =
+  [ ( (3, (-3.9080324, 65.254), (-0.5182072, -0.30242574), 0.17329057, 0.5248912, 0.47953635, PlateContinental)
+    , (61417, (-68.912575, 71.0486), (-0.5068382, -0.32111531), 0.20441785, 0.5681231, 0.4129234, PlateContinental)
+    , 65.37092
+    , 98.97902
+    )
+  , ( (3, (-3.9080324, 65.254), (-0.5182072, -0.30242574), 0.17329057, 0.5248912, 0.47953635, PlateContinental)
+    , (61417, (-68.912575, 71.0486), (-0.5068382, -0.32111531), 0.20441785, 0.5681231, 0.4129234, PlateContinental)
+    , 37.0529
+    , 62.49265
+    )
+  , ( (40249, (124.45233, -44.49209), (-0.26388115, -0.5388569), -1.164522e-2, 0.40627396, 0.36679056, PlateOceanic)
+    , (37859, (124.61941, -38.775375), (-0.5855772, -0.1307646), 9.5974416e-2, 0.43489024, 0.39816374, PlateContinental)
+    , 2.6027744
+    , 3.4917572
+    )
+  , ( (55531, (31.560066, 60.39452), (-0.5561831, 0.2250786), 0.12743488, 0.32141, 0.3171345, PlateContinental)
+    , (57143, (28.853426, 78.23545), (-0.58520925, -0.13240147), 6.2030986e-2, 0.3532619, 0.29723424, PlateContinental)
+    , 7.694636
+    , 11.583889
+    )
+  , ( (37399, (-136.59427, 253.0), (-0.5369428, -0.2677546), 0.15525189, 0.48486438, 0.48604354, PlateContinental)
+    , (40158, (-118.29779, 252.85938), (-0.4501256, -0.39672023), 7.173467e-2, 0.42929927, 0.55062896, PlateContinental)
+    , 9.102827
+    , 10.197862
+    )
+  ]
+
+nearestPairSnapshot :: Word64 -> TectonicsConfig -> Int -> Int -> PlatePairSnapshot
+nearestPairSnapshot seed cfg x y =
+  let (info0, info1, d0, d1) = plateNearestPairAtXY seed cfg x y
+  in (plateInfoSnapshot info0, plateInfoSnapshot info1, d0, d1)
+
+plateInfoSnapshot :: PlateInfo -> PlateInfoSnapshot
+plateInfoSnapshot info =
+  ( plateInfoId info
+  , plateInfoCenter info
+  , plateInfoVelocity info
+  , plateInfoBaseHeight info
+  , plateInfoBaseHardness info
+  , plateInfoAge info
+  , plateInfoCrust info
+  )
+
+assertPlatePairSnapshotClose :: (PlatePairSnapshot, PlatePairSnapshot) -> Expectation
+assertPlatePairSnapshotClose ((expected0, expected1, expectedD0, expectedD1), (actual0, actual1, actualD0, actualD1)) = do
+  assertPlateInfoSnapshotClose (expected0, actual0)
+  assertPlateInfoSnapshotClose (expected1, actual1)
+  assertFloatClose expectedD0 actualD0
+  assertFloatClose expectedD1 actualD1
+
+assertPlateInfoSnapshotClose :: (PlateInfoSnapshot, PlateInfoSnapshot) -> Expectation
+assertPlateInfoSnapshotClose ((expectedId, expectedCenter, expectedVelocity, expectedHeight, expectedHardness, expectedAge, expectedCrust), (actualId, actualCenter, actualVelocity, actualHeight, actualHardness, actualAge, actualCrust)) = do
+  actualId `shouldBe` expectedId
+  assertFloatPairClose expectedCenter actualCenter
+  assertFloatPairClose expectedVelocity actualVelocity
+  assertFloatClose expectedHeight actualHeight
+  assertFloatClose expectedHardness actualHardness
+  assertFloatClose expectedAge actualAge
+  actualCrust `shouldBe` expectedCrust
+
+assertFloatPairClose :: (Float, Float) -> (Float, Float) -> Expectation
+assertFloatPairClose (expectedX, expectedY) (actualX, actualY) = do
+  assertFloatClose expectedX actualX
+  assertFloatClose expectedY actualY
+
+assertFloatClose :: Float -> Float -> Expectation
+assertFloatClose expected actual =
+  abs (actual - expected) `shouldSatisfy` (< 1e-4)
 
 assertFingerprintClose :: ((String, Float), (String, Float)) -> Expectation
 assertFingerprintClose ((expectedName, expected), (actualName, actual)) = do

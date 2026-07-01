@@ -11,8 +11,10 @@ module Topo.Tectonics
   , riftProfile
   , boundaryTangent
   , boundaryDistanceNormalised
-  -- * Internal types (for testing)
+  -- * Internal helpers (for testing)
   , PlateInfo(..)
+  , plateDistancePair
+  , plateNearestPairAtXY
   ) where
 
 import Control.Monad.Reader (asks)
@@ -37,6 +39,7 @@ import Topo.Tectonics.Boundary
 import Topo.Tectonics.Config (TectonicsConfig(..), defaultTectonicsConfig)
 import Topo.Tectonics.PlateVoronoi
   ( PlateInfo(..)
+  , plateDistancePair
   , plateInfoAtXY
   , plateNearestPairAtXY
   , plateWarpXY
