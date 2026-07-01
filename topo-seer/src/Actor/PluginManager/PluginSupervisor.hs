@@ -6,6 +6,7 @@
 module Actor.PluginManager.PluginSupervisor
   ( refreshAllManifests
   , withRefreshedManifests
+  , withRefreshedManifestsHandlingPublishException
   , refreshOneManifest
   , ensurePluginConnection
   , connectLoadedPlugin
@@ -18,7 +19,7 @@ module Actor.PluginManager.PluginSupervisor
   ) where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException, mask, onException, try)
+import Control.Exception (SomeException, mask, onException, throwIO, try)
 import Control.Monad (when)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict (Map)
@@ -99,14 +100,44 @@ withRefreshedManifests
   -> Map Text LoadedPlugin
   -> (Map Text LoadedPlugin -> IO a)
   -> IO a
-withRefreshedManifests baseDir plugins publish = mask $ \restore -> do
+withRefreshedManifests baseDir plugins publish =
+  withRefreshedManifestsHandlingPublishException baseDir plugins publish (\_ _ -> pure True)
+
+-- | Variant of 'withRefreshedManifests' that lets the publisher decide whether
+-- newly launched runtimes should still be cleaned up when publish is interrupted.
+withRefreshedManifestsHandlingPublishException
+  :: FilePath
+  -> Map Text LoadedPlugin
+  -> (Map Text LoadedPlugin -> IO a)
+  -> (Map Text LoadedPlugin -> SomeException -> IO Bool)
+     -- ^ Return 'True' when unpublished runtimes are still owned here and must
+     -- be cleaned up; return 'False' when the actor has already accepted them.
+  -> IO a
+withRefreshedManifestsHandlingPublishException baseDir plugins publish handlePublishException = mask $ \restore -> do
   ownedRef <- newIORef []
   let cleanupOwned = cleanupTrackedRefreshRuntimes ownedRef
   refreshed <- restore (Map.traverseWithKey (\_ lp -> refreshOneManifest baseDir lp) plugins)
     `onException` cleanupOwned
   connected <- restore (connectAndTrackRefreshRuntimes ownedRef refreshed)
     `onException` cleanupOwned
-  restore (publish connected) `onException` cleanupOwned
+  publishResult <- try @SomeException (restore (publish connected))
+  case publishResult of
+    Right value -> pure value
+    Left err -> do
+      cleanupStillOwned <- publishExceptionCleanupDecision connected err handlePublishException
+      when cleanupStillOwned cleanupOwned
+      throwIO err
+
+publishExceptionCleanupDecision
+  :: Map Text LoadedPlugin
+  -> SomeException
+  -> (Map Text LoadedPlugin -> SomeException -> IO Bool)
+  -> IO Bool
+publishExceptionCleanupDecision connected err handlePublishException = do
+  decision <- try @SomeException (handlePublishException connected err)
+  case decision of
+    Right cleanupStillOwned -> pure cleanupStillOwned
+    Left _ -> pure True
 
 connectAndTrackRefreshRuntimes :: IORef [LoadedPlugin] -> Map Text LoadedPlugin -> IO (Map Text LoadedPlugin)
 connectAndTrackRefreshRuntimes ownedRef refreshed = do

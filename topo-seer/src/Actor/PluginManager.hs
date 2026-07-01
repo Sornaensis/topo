@@ -68,6 +68,8 @@ module Actor.PluginManager
   ) where
 
 import Control.Concurrent (threadDelay)
+import Control.Exception (SomeException, mask, mask_, onException, try)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Aeson (Value)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -75,7 +77,10 @@ import Data.Set (Set)
 import Data.Text (Text)
 import Hyperspace.Actor
 
-import Actor.PluginManager.PluginSupervisor (shutdownPlugin, withRefreshedManifests)
+import Actor.PluginManager.PluginSupervisor
+  ( shutdownPlugin
+  , withRefreshedManifestsHandlingPublishException
+  )
 import Actor.PluginManager.RootSupervisor (PluginManager, pluginManagerActorDef)
 import Actor.PluginManager.SimulationIntegrator
   ( PluginSimulationPlan(..)
@@ -131,6 +136,20 @@ waitForLifecycleObservationLease plugins =
     then pure ()
     else threadDelay lifecycleObservationLeaseMicros
 
+commitLifecycleTransition :: IO a -> IO a
+commitLifecycleTransition = mask_
+
+trackStoppedPlugin :: IORef (Map Text LoadedPlugin) -> LoadedPlugin -> IO ()
+trackStoppedPlugin stoppedRef plugin =
+  modifyIORef' stoppedRef (Map.insert (lpName plugin) plugin)
+
+cleanupInterruptedShutdown :: (LoadedPlugin -> IO ()) -> LoadedPlugin -> IO ()
+cleanupInterruptedShutdown trackStopped plugin = do
+  result <- try @SomeException (shutdownPlugin plugin)
+  case result of
+    Left _ -> pure ()
+    Right stopped -> trackStopped stopped
+
 -- | Discover all plugins in the standard directory.
 -- This is asynchronous — use 'getLoadedPlugins' afterwards to
 -- retrieve the discovered plugins.
@@ -172,23 +191,50 @@ getPluginOverlaySchemas handle =
 refreshManifests
   :: ActorHandle PluginManager (Protocol PluginManager)
   -> IO ()
-refreshManifests handle = do
-  cast @"refresh" handle #refresh ()
-  (baseDir, plugins) <- call @"getRefreshSnapshot" handle #getRefreshSnapshot ()
-  waitForLifecycleObservationLease plugins
-  withRefreshedManifests baseDir (Map.fromList [(lpName p, p) | p <- plugins]) $ \refreshed ->
-    cast @"finishRefresh" handle #finishRefresh (Map.elems refreshed)
+refreshManifests handle = mask $ \restore -> do
+  (baseDir, plugins) <- commitLifecycleTransition (call @"refresh" handle #refresh ())
+    `onException` commitLifecycleTransition (call @"cancelRefresh" handle #cancelRefresh [])
+  let cancelRefresh = commitLifecycleTransition $
+        call @"cancelRefresh" handle #cancelRefresh plugins
+  restore
+    ( do
+        waitForLifecycleObservationLease plugins
+        withRefreshedManifestsHandlingPublishException
+          baseDir
+          (Map.fromList [(lpName p, p) | p <- plugins])
+          (\refreshed ->
+            commitLifecycleTransition $
+              call @"finishRefresh" handle #finishRefresh (Map.elems refreshed))
+          (\_ _ ->
+            commitLifecycleTransition $
+              call @"cancelRefresh" handle #cancelRefresh plugins)
+    ) `onException` cancelRefresh
 
 -- | Shut down all connected plugins.
 shutdownPlugins
   :: ActorHandle PluginManager (Protocol PluginManager)
   -> IO ()
-shutdownPlugins handle = do
-  cast @"shutdown" handle #shutdown ()
-  plugins <- call @"getPlugins" handle #getPlugins ()
-  waitForLifecycleObservationLease plugins
-  stopped <- traverse shutdownPlugin plugins
-  cast @"finishShutdown" handle #finishShutdown stopped
+shutdownPlugins handle = mask $ \restore -> do
+  plugins <- commitLifecycleTransition (call @"shutdown" handle #shutdown ())
+    `onException` commitLifecycleTransition (call @"cancelShutdown" handle #cancelShutdown ([], []))
+  stoppedRef <- newIORef Map.empty
+  let trackStopped = trackStoppedPlugin stoppedRef
+      cancelShutdown = do
+        stopped <- Map.elems <$> readIORef stoppedRef
+        commitLifecycleTransition $
+          call @"cancelShutdown" handle #cancelShutdown (plugins, stopped)
+      shutdownAndTrack plugin = mask $ \restoreOne -> do
+        stopped <- restoreOne (shutdownPlugin plugin)
+          `onException` cleanupInterruptedShutdown trackStopped plugin
+        trackStopped stopped
+        pure stopped
+  stopped <- restore
+    ( do
+        waitForLifecycleObservationLease plugins
+        traverse shutdownAndTrack plugins
+    ) `onException` cancelShutdown
+  commitLifecycleTransition (call @"finishShutdown" handle #finishShutdown stopped)
+    `onException` cancelShutdown
 
 -- | Set the user-defined plugin order.
 setPluginOrder

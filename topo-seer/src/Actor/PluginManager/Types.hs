@@ -941,6 +941,10 @@ data PluginManagerState = PluginManagerState
     -- ^ Base directory for plugin discovery (@~\/.topo\/plugins\/@).
   , pmsDisabledPlugins :: !(Set Text)
     -- ^ Plugins the user has disabled in the pipeline.
+  , pmsPendingRefresh :: !(Maybe (Map Text LoadedPlugin))
+    -- ^ Pre-refresh snapshot used to roll back interrupted refreshes.
+  , pmsPendingShutdown :: !(Maybe (Map Text LoadedPlugin))
+    -- ^ Pre-shutdown snapshot used to roll back interrupted shutdowns.
   }
 
 emptyPluginManagerState :: PluginManagerState
@@ -949,6 +953,8 @@ emptyPluginManagerState = PluginManagerState
   , pmsPluginOrder = []
   , pmsBaseDir     = ""
   , pmsDisabledPlugins = Set.empty
+  , pmsPendingRefresh = Nothing
+  , pmsPendingShutdown = Nothing
   }
 
 -- | Whether a manifest needs a live RPC session to serve its declared

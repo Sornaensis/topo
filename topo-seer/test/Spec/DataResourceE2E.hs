@@ -34,7 +34,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time (getCurrentTime)
 import Data.Word (Word64)
-import Hyperspace.Actor (cast)
+import Hyperspace.Actor (call)
 import Seer.Command.Dispatch (CommandContext(..))
 import Seer.Headless
   ( HeadlessApp
@@ -303,7 +303,7 @@ installCrudFixturePlugin headlessApp = do
         , lpOverlaySchema = Nothing
         }
       pluginHandle = ahPluginManagerHandle (ccActorHandles (headlessCommandContext headlessApp))
-  cast @"finishRefresh" pluginHandle #finishRefresh [loaded]
+  call @"finishRefresh" pluginHandle #finishRefresh [loaded]
 
 createTransportPair :: Text -> IO (Transport, Transport)
 createTransportPair pluginName = do

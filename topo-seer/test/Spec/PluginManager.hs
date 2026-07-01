@@ -289,6 +289,29 @@ spec = describe "PluginManager" $ do
         discoverPlugins pluginManagerHandle
         result <- timeout 300000 (refreshManifests pluginManagerHandle)
         result `shouldBe` Nothing
+        interrupted <- getLoadedPlugins pluginManagerHandle
+        pluginLifecycleStates interruptedRefreshPluginName interrupted `shouldSatisfy` elem LifecycleDiscovered
+        pluginLifecycleStates interruptedRefreshPluginName interrupted `shouldNotSatisfy` elem LifecycleStarting
+        length (pluginProcessHandles interruptedRefreshPluginName interrupted) `shouldBe` 0
+
+  it "finalizes connected runtime state when refreshManifests is interrupted" $ do
+    withExecutablePluginDir connectedRefreshInterruptedPluginName connectedRefreshInterruptedManifestJSON "slow-shutdown" $ do
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        ready <- getLoadedPlugins pluginManagerHandle
+        handles <- expectPluginProcessHandles connectedRefreshInterruptedPluginName ready
+        baseDir <- currentPluginBaseDir
+        BS.writeFile
+          (baseDir </> connectedRefreshInterruptedPluginName </> "manifest.json")
+          connectedRefreshInterruptedDisabledManifestJSON
+        result <- timeout 300000 (refreshManifests pluginManagerHandle)
+        result `shouldBe` Nothing
+        interrupted <- getLoadedPlugins pluginManagerHandle
+        pluginLifecycleStates connectedRefreshInterruptedPluginName interrupted `shouldSatisfy` elem LifecycleStopped
+        pluginLifecycleStates connectedRefreshInterruptedPluginName interrupted `shouldNotSatisfy` elem LifecycleStarting
+        length (pluginProcessHandles connectedRefreshInterruptedPluginName interrupted) `shouldBe` 0
+        mapM_ (assertProcessExited connectedRefreshInterruptedPluginName) handles
 
   it "exposes Stopping while public shutdownPlugins performs supervisor work" $ do
     withExecutablePluginDir shutdownTransientPluginName shutdownTransientManifestJSON "slow-shutdown" $ do
@@ -305,6 +328,21 @@ spec = describe "PluginManager" $ do
         takeMVar done
         stopped <- getLoadedPlugins pluginManagerHandle
         pluginLifecycleStates shutdownTransientPluginName stopped `shouldSatisfy` elem LifecycleStopped
+
+  it "finalizes shutdown state when shutdownPlugins is interrupted" $ do
+    withExecutablePluginDir interruptedShutdownPluginName interruptedShutdownManifestJSON "slow-shutdown" $ do
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        ready <- getLoadedPlugins pluginManagerHandle
+        handles <- expectPluginProcessHandles interruptedShutdownPluginName ready
+        result <- timeout 300000 (shutdownPlugins pluginManagerHandle)
+        result `shouldBe` Nothing
+        interrupted <- getLoadedPlugins pluginManagerHandle
+        pluginLifecycleStates interruptedShutdownPluginName interrupted `shouldSatisfy` elem LifecycleStopped
+        pluginLifecycleStates interruptedShutdownPluginName interrupted `shouldNotSatisfy` elem LifecycleStopping
+        length (pluginProcessHandles interruptedShutdownPluginName interrupted) `shouldBe` 0
+        mapM_ (assertProcessExited interruptedShutdownPluginName) handles
 
   it "reports a protocol-version mismatch as a plugin error" $ do
     withExecutablePluginDir mismatchPluginName mismatchManifestJSON "protocol-mismatch" $ do
@@ -1787,11 +1825,32 @@ interruptedRefreshPluginName = "copilot-test-plugin-refresh-interrupted"
 interruptedRefreshManifestJSON :: BS.ByteString
 interruptedRefreshManifestJSON = manifestFor interruptedRefreshPluginName
 
+connectedRefreshInterruptedPluginName :: String
+connectedRefreshInterruptedPluginName = "copilot-test-plugin-refresh-connected-interrupted"
+
+connectedRefreshInterruptedManifestJSON :: BS.ByteString
+connectedRefreshInterruptedManifestJSON = manifestFor connectedRefreshInterruptedPluginName
+
+connectedRefreshInterruptedDisabledManifestJSON :: BS.ByteString
+connectedRefreshInterruptedDisabledManifestJSON = manifestWithStartPolicyFor connectedRefreshInterruptedPluginName
+  [ "    \"auto_start\": false,"
+  , "    \"restart_mode\": \"never\","
+  , "    \"startup_timeout_ms\": 1000,"
+  , "    \"request_timeout_ms\": 300,"
+  , "    \"shutdown_timeout_ms\": 1000"
+  ]
+
 shutdownTransientPluginName :: String
 shutdownTransientPluginName = "copilot-test-plugin-shutdown-transient"
 
 shutdownTransientManifestJSON :: BS.ByteString
 shutdownTransientManifestJSON = manifestFor shutdownTransientPluginName
+
+interruptedShutdownPluginName :: String
+interruptedShutdownPluginName = "copilot-test-plugin-shutdown-interrupted"
+
+interruptedShutdownManifestJSON :: BS.ByteString
+interruptedShutdownManifestJSON = manifestFor interruptedShutdownPluginName
 
 slowPluginName :: String
 slowPluginName = "copilot-test-plugin-slow"

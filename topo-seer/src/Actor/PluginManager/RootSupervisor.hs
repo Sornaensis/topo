@@ -16,9 +16,11 @@ module Actor.PluginManager.RootSupervisor
 import Data.Aeson (Value)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (isNothing)
 import Data.Set (Set)
 import Data.Text (Text)
-import Data.Time (getCurrentTime)
+import Data.Time (UTCTime, getCurrentTime)
+import Data.Traversable (mapAccumM)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
 import System.Directory (createDirectoryIfMissing)
@@ -44,6 +46,7 @@ import Actor.PluginManager.PluginSupervisor
   , markPluginStarting
   , markPluginStopping
   , observePluginRuntime
+  , shutdownPlugin
   )
 import Actor.PluginManager.ResourceRegistry
   ( buildPluginDataResources
@@ -61,6 +64,8 @@ import Actor.PluginManager.SimulationIntegrator
   )
 import Actor.PluginManager.Types
   ( LoadedPlugin(..)
+  , PluginLifecycleSnapshot(..)
+  , PluginLifecycleState(..)
   , PluginManagerState(..)
   , PluginStatus(..)
   , emptyPluginManagerState
@@ -97,11 +102,12 @@ actor PluginManager
   cast setParam :: (Text, Text, Value)
   cast setOrder :: [Text]
   cast setDisabled :: Set Text
-  cast refresh :: ()
-  call getRefreshSnapshot :: () -> (FilePath, [LoadedPlugin])
-  cast finishRefresh :: [LoadedPlugin]
-  cast shutdown :: ()
-  cast finishShutdown :: [LoadedPlugin]
+  call refresh :: () -> (FilePath, [LoadedPlugin])
+  call finishRefresh :: [LoadedPlugin] -> ()
+  call cancelRefresh :: [LoadedPlugin] -> Bool
+  call shutdown :: () -> [LoadedPlugin]
+  call finishShutdown :: [LoadedPlugin] -> ()
+  call cancelShutdown :: ([LoadedPlugin], [LoadedPlugin]) -> ()
   call getDataResources :: () -> Map Text [DataResourceSchema]
   call queryData :: (Text, QueryResource) -> Either Text QueryResult
   call mutateData :: (Text, MutateResource) -> Either Text MutateResult
@@ -122,6 +128,8 @@ actor PluginManager
       , pmsPluginOrder = orderTxt
       , pmsBaseDir = baseDir
       , pmsDisabledPlugins = disabled
+      , pmsPendingRefresh = Nothing
+      , pmsPendingShutdown = Nothing
       }
   on getPlugins = \() st -> do
     st' <- observePluginRuntimes st
@@ -147,19 +155,49 @@ actor PluginManager
   on_ setDisabled = \disabled st -> do
     saveDisabledPlugins (pmsBaseDir st) disabled
     pure st { pmsDisabledPlugins = disabled }
-  on_ refresh = \() st -> do
+  on refresh = \() st -> do
     startingAt <- getCurrentTime
-    pure st { pmsPlugins = Map.map (markPluginStarting startingAt) (pmsPlugins st) }
-  onPure getRefreshSnapshot = \() st ->
-    (st, (pmsBaseDir st, Map.elems (pmsPlugins st)))
-  on_ finishRefresh = \plugins st ->
-    pure st { pmsPlugins = Map.fromList [(lpName p, p) | p <- plugins] }
-  on_ shutdown = \() st -> do
+    let plugins = Map.elems (pmsPlugins st)
+    pure
+      ( st
+          { pmsPlugins = Map.map (markPluginStarting startingAt) (pmsPlugins st)
+          , pmsPendingRefresh = Just (pmsPlugins st)
+          }
+      , (pmsBaseDir st, plugins)
+      )
+  onPure finishRefresh = \plugins st ->
+    ( st
+        { pmsPlugins = Map.fromList [(lpName p, p) | p <- plugins]
+        , pmsPendingRefresh = Nothing
+        }
+    , ()
+    )
+  on cancelRefresh = \plugins st -> do
+    cancelledAt <- getCurrentTime
+    (st', cancelled) <- cancelStartingPlugins cancelledAt plugins st
+    pure (st', cancelled)
+  on shutdown = \() st -> do
     stoppingAt <- getCurrentTime
-    pure st { pmsPlugins = Map.map (markPluginStopping stoppingAt) (pmsPlugins st) }
-  on_ finishShutdown = \plugins st -> do
+    let plugins = Map.elems (pmsPlugins st)
+    pure
+      ( st
+          { pmsPlugins = Map.map (markPluginStopping stoppingAt) (pmsPlugins st)
+          , pmsPendingShutdown = Just (pmsPlugins st)
+          }
+      , plugins
+      )
+  on finishShutdown = \plugins st -> do
     stoppedAt <- getCurrentTime
-    pure st { pmsPlugins = Map.fromList [(lpName p, disconnectPlugin stoppedAt p) | p <- plugins] }
+    pure
+      ( st
+          { pmsPlugins = Map.fromList [(lpName p, disconnectPlugin stoppedAt p) | p <- plugins]
+          , pmsPendingShutdown = Nothing
+          }
+      , ()
+      )
+  on cancelShutdown = \(plugins, stoppedPlugins) st -> do
+    stoppedAt <- getCurrentTime
+    pure (cancelStoppingPlugins stoppedAt plugins stoppedPlugins st, ())
   onPure getDataResources = \() st ->
     (st, buildPluginDataResources st)
   on queryData = \(pluginName, qr) st -> do
@@ -181,6 +219,51 @@ actor PluginManager
   on getSimulationPlan = \mOverlayNames st -> do
     st' <- observePluginRuntimes st
     pure (st', buildPluginSimulationPlan mOverlayNames st')|]
+
+cancelStartingPlugins :: UTCTime -> [LoadedPlugin] -> PluginManagerState -> IO (PluginManagerState, Bool)
+cancelStartingPlugins cancelledAt plugins st = do
+  (cancelledAny, plugins') <- mapAccumM rollbackStartingPlugin False (pmsPlugins st)
+  pure
+    ( st
+        { pmsPlugins = plugins'
+        , pmsPendingRefresh = Nothing
+        }
+    , cancelledAny
+    )
+  where
+    previous = maybe (loadedPluginsByName plugins) id (pmsPendingRefresh st)
+    rollbackStartingPlugin cancelled current
+      | plsState (lpLifecycle current) /= LifecycleStarting = pure (cancelled, current)
+      | Just previousPlugin <- Map.lookup (lpName current) previous = do
+          plugin' <- cancelRefreshPlugin cancelledAt previousPlugin
+          pure (True, plugin')
+      | otherwise = pure (cancelled, current)
+
+cancelRefreshPlugin :: UTCTime -> LoadedPlugin -> IO LoadedPlugin
+cancelRefreshPlugin cancelledAt previousPlugin
+  | isNothing (lpConnection previousPlugin) && isNothing (lpProcessHandle previousPlugin) =
+      pure previousPlugin
+  | otherwise = do
+      stopped <- shutdownPlugin previousPlugin
+      pure (disconnectPlugin cancelledAt stopped)
+
+cancelStoppingPlugins :: UTCTime -> [LoadedPlugin] -> [LoadedPlugin] -> PluginManagerState -> PluginManagerState
+cancelStoppingPlugins stoppedAt plugins stoppedPlugins st =
+  st
+    { pmsPlugins = Map.map rollbackOrFinalizeStoppingPlugin (pmsPlugins st)
+    , pmsPendingShutdown = Nothing
+    }
+  where
+    previous = maybe (loadedPluginsByName plugins) id (pmsPendingShutdown st)
+    stopped = loadedPluginsByName stoppedPlugins
+    rollbackOrFinalizeStoppingPlugin current
+      | plsState (lpLifecycle current) /= LifecycleStopping = current
+      | Just stoppedPlugin <- Map.lookup (lpName current) stopped =
+          disconnectPlugin stoppedAt stoppedPlugin
+      | otherwise = Map.findWithDefault current (lpName current) previous
+
+loadedPluginsByName :: [LoadedPlugin] -> Map Text LoadedPlugin
+loadedPluginsByName plugins = Map.fromList [(lpName p, p) | p <- plugins]
 
 observePluginRuntimes :: PluginManagerState -> IO PluginManagerState
 observePluginRuntimes st = do
