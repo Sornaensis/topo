@@ -248,6 +248,7 @@ test-suite topo-seer-test
       Spec.AtlasResultBroker
       Spec.AtlasScheduleBroker
       Spec.AtlasScheduler
+      Spec.AtlasTransparency
       Spec.AutoTick
       Spec.CacheProperties
       Spec.CommandDispatch

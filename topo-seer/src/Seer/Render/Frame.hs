@@ -217,10 +217,8 @@ renderFrame context = do
     let dnTiles = getNearestDayNight (zsHexRadius stage) atlasCache''
     case dnTiles of
       Just dt | not (null dt) -> do
-        -- Set alpha blending on each day/night texture so black+alpha
-        -- composites correctly over the base atlas.
-        forM_ dt $ \tile ->
-          SDL.textureBlendMode (tatTexture tile) SDL.$= SDL.BlendAlphaBlend
+        -- Day/night atlas tiles carry source alpha; drawAtlas preserves that
+        -- alpha so transparent overlay margins leave the base atlas intact.
         drawAtlas renderer dt (uiPanOffset (rsUi snapshot)) (uiZoom (rsUi snapshot)) (V2 (fromIntegral winW) (fromIntegral winH))
       _ -> pure ()
   let hexHoverRadius = zsHexRadius stage
