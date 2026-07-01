@@ -62,6 +62,7 @@ import qualified Spec.DataService
 import qualified Spec.WorldBundle
 import qualified Spec.CommandTypes
 import qualified Spec.WritSmoke
+import qualified Spec.WorldGenValidation
 import qualified WorldProperty
 import qualified HexProperty
 
@@ -130,5 +131,6 @@ main = do
     Spec.WorldBundle.spec
     Spec.CommandTypes.spec
     Spec.WritSmoke.spec
+    Spec.WorldGenValidation.spec
     WorldProperty.spec
     HexProperty.spec

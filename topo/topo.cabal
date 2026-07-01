@@ -231,6 +231,7 @@ test-suite topo-test
       Spec.Weather
       Spec.World
       Spec.WorldBundle
+      Spec.WorldGenValidation
       Spec.WritSmoke
       WorldProperty
       Paths_topo
