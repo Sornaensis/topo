@@ -9,6 +9,7 @@ module Topo.Tectonics.Boundary
   , boundaryTypeBetween
   , boundaryStrengthAtXY
   , boundaryDistanceNormalised
+  , boundaryDistanceFromPair
   , boundaryTypeAtXY
   ) where
 
@@ -92,8 +93,12 @@ boundaryStrengthAtXY seed tcfg x y =
 -- | Raw normalised distance from the boundary centre.
 boundaryDistanceNormalised :: Word64 -> TectonicsConfig -> Int -> Int -> Float
 boundaryDistanceNormalised seed tcfg x y =
+  let (d0, d1) = plateDistancePair seed tcfg x y
+  in boundaryDistanceFromPair tcfg d0 d1
+
+boundaryDistanceFromPair :: TectonicsConfig -> Float -> Float -> Float
+boundaryDistanceFromPair tcfg d0 d1 =
   let size = fromIntegral (max 1 (tcPlateSize tcfg))
-      (d0, d1) = plateDistancePair seed tcfg x y
       gap = max 0 (d1 - d0)
       sharp = max 0.2 (tcBoundarySharpness tcfg)
       width = max 1e-3 (size * (0.35 / sharp))

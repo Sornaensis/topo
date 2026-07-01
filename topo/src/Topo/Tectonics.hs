@@ -26,11 +26,10 @@ import Topo.Planet (LatitudeMapping(..))
 import Topo.Plugin (logInfo, modifyWorldP, peSeed)
 import Topo.Tectonics.Boundary
   ( boundaryDirection
+  , boundaryDistanceFromPair
   , boundaryDistanceNormalised
   , boundaryMotionBetween
-  , boundaryStrengthAtXY
   , boundaryTangent
-  , boundaryTypeAtXY
   , classifyBoundary
   )
 import Topo.Tectonics.Config (TectonicsConfig(..), defaultTectonicsConfig)
@@ -43,6 +42,7 @@ import Topo.Tectonics.PlateVoronoi
   )
 import Topo.Types
 import Topo.World (TerrainWorld(..))
+import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 
 -- | Apply tectonic generation to the existing terrain chunks in a world.
@@ -67,17 +67,19 @@ applyTectonicsChunk config seed gcfg lm tcfg key chunk =
       n = chunkTileCount config
       extent = gcWorldExtent gcfg
       edgeCfg = gcOceanEdgeDepth gcfg
-      baseHeightRaw = U.generate n (plateHeightAt config seed gcfg lm tcfg' origin)
+      plateSamples = V.generate n (plateSampleAt config seed gcfg tcfg' origin)
+      sample i = plateSamples V.! i
+      baseHeightRaw = U.generate n (\i -> plateHeightFromSample config seed gcfg lm tcfg' (sample i))
       edgeBias = U.generate n (edgeBiasAt config extent edgeCfg origin)
       baseHeight = U.zipWith (+) baseHeightRaw edgeBias
-      baseHardness = U.generate n (plateHardnessAt config seed tcfg' origin)
-      plateIds = U.generate n (plateIdAt config seed tcfg' origin)
-      plateBoundary = U.generate n (plateBoundaryAt config seed tcfg' origin)
-      plateCrust = U.generate n (plateCrustAt config seed tcfg' origin)
-      plateAge = U.generate n (plateAgeAt config seed tcfg' origin)
-      plateVelX = U.generate n (plateVelXAt config seed tcfg' origin)
-      plateVelY = U.generate n (plateVelYAt config seed tcfg' origin)
-      edgeDelta = U.generate n (tectonicDelta config seed tcfg' origin baseHeight)
+      baseHardness = U.generate n (\i -> plateHardnessFromSample seed tcfg' (sample i))
+      plateIds = U.generate n (psPlateId . sample)
+      plateBoundary = U.generate n (psBoundaryType . sample)
+      plateCrust = U.generate n (plateCrustCode . psPlateCrust . sample)
+      plateAge = U.generate n (psPlateAge . sample)
+      plateVelX = U.generate n (fst . psPlateVelocity . sample)
+      plateVelY = U.generate n (snd . psPlateVelocity . sample)
+      edgeDelta = U.generate n (\i -> tectonicDeltaFromSample seed tcfg' (sample i) (baseHeight U.! i))
       -- Clamp to [0,1] after stacking base height + tectonic delta.
       -- Raw values routinely exceed this range; downstream stages
       -- (erosion, hydrology, climate) assume normalised elevation.
@@ -120,23 +122,16 @@ effectivePlateSize config gcfg tcfg =
     minPlateSize = 1
     minPlateCount = 1
 
-tectonicDelta :: WorldConfig -> Word64 -> TectonicsConfig -> TileCoord -> U.Vector Float -> Int -> Float
-tectonicDelta config seed tcfg origin elev i =
-  let TileCoord lx ly = tileCoordFromIndex config (TileIndex i)
-      TileCoord ox oy = origin
-      gx = ox + lx
-      gy = oy + ly
-      info = plateInfoAtXY seed tcfg gx gy
-      infoX = plateInfoAtXY seed tcfg (gx + 1) gy
-      infoY = plateInfoAtXY seed tcfg gx (gy + 1)
-      strength = boundaryStrengthAtXY seed tcfg gx gy
+tectonicDeltaFromSample :: Word64 -> TectonicsConfig -> PlateSample -> Float -> Float
+tectonicDeltaFromSample seed tcfg sample e0 =
+  let gx = psX sample
+      gy = psY sample
+      strength = psBoundaryStrength sample
       -- Raw linear distance (before smoothstep) for the rift profile.
-      rawDist = boundaryDistanceNormalised seed tcfg gx gy
-      e0 = elev U.! i
-      boundaryType = classifyBoundary info infoX infoY
-      (dirX, dirY) = boundaryDirection info infoX infoY
-      motionX = boundaryMotionBetween info infoX
-      motionY = boundaryMotionBetween info infoY
+      rawDist = psBoundaryRawDistance sample
+      (dirX, dirY) = psBoundaryDirection sample
+      motionX = psMotionX sample
+      motionY = psMotionY sample
       motion = dominantMotion motionX motionY
       motionScale =
         if tcPlateSpeed tcfg <= 0
@@ -145,8 +140,7 @@ tectonicDelta config seed tcfg origin elev i =
       ridge = directionalRidge2D (seed + 9001) 4 2 0.55 0.004 (fromIntegral gx) (fromIntegral gy) dirX dirY
       -- Rift uses boundary tangent (Phase 2) and anisotropic noise (Phase 3)
       -- to produce elongated features that follow the plate boundary.
-      nearestNeighbour = if abs motionX >= abs motionY then infoX else infoY
-      (tanX, tanY) = boundaryTangent info nearestNeighbour
+      (tanX, tanY) = psBoundaryTangent sample
       riftScaleAlong = tcRiftNoiseScale tcfg
       riftScaleAcross = tcRiftNoiseScale tcfg * max 1 (tcRiftElongation tcfg)
       rift = directionalRidge2DAniso
@@ -162,7 +156,7 @@ tectonicDelta config seed tcfg origin elev i =
       then 0
       else
         let s = strength
-        in case boundaryType of
+        in case psBoundaryType sample of
           PlateBoundaryConvergent -> applyConvergentEdge tcfg s motionScale ridge e0
           PlateBoundaryDivergent  -> applyRiftEdge tcfg rawDist motionScale rift e0
           PlateBoundaryTransform  -> applyTransformEdge tcfg s motionScale ridge
@@ -248,78 +242,112 @@ dominantMotion motionX motionY =
   if abs motionX >= abs motionY then motionX else motionY
 
 
-plateIdAt :: WorldConfig -> Word64 -> TectonicsConfig -> TileCoord -> Int -> Word16
-plateIdAt config seed tcfg origin i =
-  let TileCoord lx ly = tileCoordFromIndex config (TileIndex i)
-      TileCoord ox oy = origin
-      gx = ox + lx
-      gy = oy + ly
-  in plateInfoId (plateInfoAtXY seed tcfg gx gy)
+-- | Internal per-tile plate snapshot shared by terrain field synthesis.
+data PlateSample = PlateSample
+  { psX :: !Int
+  , psY :: !Int
+  , psInfo :: !PlateInfo
+  , psNeighbourInfo :: !PlateInfo
+  , psDistance :: !Float
+  , psNeighbourDistance :: !Float
+  , psBoundaryRawDistance :: !Float
+  , psBoundaryStrength :: !Float
+  , psLocalA :: !(Float, Float)
+  , psLocalB :: !(Float, Float)
+  , psBaseA :: !Float
+  , psBaseB :: !Float
+  , psPlateId :: !Word16
+  , psPlateVelocity :: !(Float, Float)
+  , psPlateBaseA :: !Float
+  , psPlateBaseB :: !Float
+  , psPlateBaseHardness :: !Float
+  , psPlateAge :: !Float
+  , psPlateCrust :: !PlateCrust
+  , psCenterDistance :: !Float
+  , psTileCenterDistance :: !Float
+  , psBoundaryType :: !PlateBoundary
+  , psBoundaryDirection :: !(Float, Float)
+  , psMotionX :: !Float
+  , psMotionY :: !Float
+  , psBoundaryTangent :: !(Float, Float)
+  }
 
-plateBoundaryAt :: WorldConfig -> Word64 -> TectonicsConfig -> TileCoord -> Int -> PlateBoundary
-plateBoundaryAt config seed tcfg origin i =
-  let TileCoord lx ly = tileCoordFromIndex config (TileIndex i)
-      TileCoord ox oy = origin
-      gx = ox + lx
-      gy = oy + ly
-  in boundaryTypeAtXY seed tcfg gx gy
-
-plateCrustAt :: WorldConfig -> Word64 -> TectonicsConfig -> TileCoord -> Int -> Word16
-plateCrustAt config seed tcfg origin i =
-  let TileCoord lx ly = tileCoordFromIndex config (TileIndex i)
-      TileCoord ox oy = origin
-      gx = ox + lx
-      gy = oy + ly
-      crust = plateInfoCrust (plateInfoAtXY seed tcfg gx gy)
-  in plateCrustCode crust
-
-plateAgeAt :: WorldConfig -> Word64 -> TectonicsConfig -> TileCoord -> Int -> Float
-plateAgeAt config seed tcfg origin i =
-  let TileCoord lx ly = tileCoordFromIndex config (TileIndex i)
-      TileCoord ox oy = origin
-      gx = ox + lx
-      gy = oy + ly
-  in plateInfoAge (plateInfoAtXY seed tcfg gx gy)
-
-plateVelXAt :: WorldConfig -> Word64 -> TectonicsConfig -> TileCoord -> Int -> Float
-plateVelXAt config seed tcfg origin i =
-  let TileCoord lx ly = tileCoordFromIndex config (TileIndex i)
-      TileCoord ox oy = origin
-      gx = ox + lx
-      gy = oy + ly
-      (vx, _) = plateInfoVelocity (plateInfoAtXY seed tcfg gx gy)
-  in vx
-
-plateVelYAt :: WorldConfig -> Word64 -> TectonicsConfig -> TileCoord -> Int -> Float
-plateVelYAt config seed tcfg origin i =
-  let TileCoord lx ly = tileCoordFromIndex config (TileIndex i)
-      TileCoord ox oy = origin
-      gx = ox + lx
-      gy = oy + ly
-      (_, vy) = plateInfoVelocity (plateInfoAtXY seed tcfg gx gy)
-  in vy
-
-plateHeightAt :: WorldConfig -> Word64 -> GenConfig -> LatitudeMapping -> TectonicsConfig -> TileCoord -> Int -> Float
-plateHeightAt config seed gcfg lm tcfg origin i =
+plateSampleAt :: WorldConfig -> Word64 -> GenConfig -> TectonicsConfig -> TileCoord -> Int -> PlateSample
+plateSampleAt config seed gcfg tcfg origin i =
   let TileCoord lx ly = tileCoordFromIndex config (TileIndex i)
       TileCoord ox oy = origin
       gx = ox + lx
       gy = oy + ly
       (infoA, infoB, d0, d1) = plateNearestPairAtXY seed tcfg gx gy
+      tileInfo = plateInfoAtXY seed tcfg gx gy
+      infoX = plateInfoAtXY seed tcfg (gx + 1) gy
+      infoY = plateInfoAtXY seed tcfg gx (gy + 1)
       pidA = plateInfoId infoA
       pidB = plateInfoId infoB
-      (lxA, lyA) = plateLocalCoord seed tcfg pidA gx gy
-      (lxB, lyB) = plateLocalCoord seed tcfg pidB gx gy
+      localA@(lxA, lyA) = plateLocalCoord seed tcfg pidA gx gy
+      localB@(lxB, lyB) = plateLocalCoord seed tcfg pidB gx gy
       baseA = sampleBaseHeightAt seed gcfg lxA lyA
       baseB = sampleBaseHeightAt seed gcfg lxB lyB
-      plateBaseA = plateInfoBaseHeight infoA
-      plateBaseB = plateInfoBaseHeight infoB
+      rawDistance = boundaryDistanceFromPair tcfg d0 d1
+      strength = smoothstep 0 1 rawDistance
+      (px, py) = plateInfoCenter infoA
+      dx = fromIntegral gx - px
+      dy = fromIntegral gy - py
+      dist = sqrt (dx * dx + dy * dy)
+      (tilePx, tilePy) = plateInfoCenter tileInfo
+      tileDx = fromIntegral gx - tilePx
+      tileDy = fromIntegral gy - tilePy
+      tileDist = sqrt (tileDx * tileDx + tileDy * tileDy)
+      motionX = boundaryMotionBetween tileInfo infoX
+      motionY = boundaryMotionBetween tileInfo infoY
+      nearestNeighbour = if abs motionX >= abs motionY then infoX else infoY
+  in PlateSample
+      { psX = gx
+      , psY = gy
+      , psInfo = infoA
+      , psNeighbourInfo = infoB
+      , psDistance = d0
+      , psNeighbourDistance = d1
+      , psBoundaryRawDistance = rawDistance
+      , psBoundaryStrength = strength
+      , psLocalA = localA
+      , psLocalB = localB
+      , psBaseA = baseA
+      , psBaseB = baseB
+      , psPlateId = plateInfoId tileInfo
+      , psPlateVelocity = plateInfoVelocity tileInfo
+      , psPlateBaseA = plateInfoBaseHeight infoA
+      , psPlateBaseB = plateInfoBaseHeight infoB
+      , psPlateBaseHardness = plateInfoBaseHardness tileInfo
+      , psPlateAge = plateInfoAge tileInfo
+      , psPlateCrust = plateInfoCrust tileInfo
+      , psCenterDistance = dist
+      , psTileCenterDistance = tileDist
+      , psBoundaryType = classifyBoundary tileInfo infoX infoY
+      , psBoundaryDirection = boundaryDirection tileInfo infoX infoY
+      , psMotionX = motionX
+      , psMotionY = motionY
+      , psBoundaryTangent = boundaryTangent tileInfo nearestNeighbour
+      }
+
+plateHeightFromSample :: WorldConfig -> Word64 -> GenConfig -> LatitudeMapping -> TectonicsConfig -> PlateSample -> Float
+plateHeightFromSample config seed gcfg lm tcfg sample =
+  let gx = psX sample
+      gy = psY sample
+      d0 = psDistance sample
+      d1 = psNeighbourDistance sample
+      (lxA, lyA) = psLocalA sample
+      (lxB, lyB) = psLocalB sample
+      baseA = psBaseA sample
+      baseB = psBaseB sample
+      plateBaseA = psPlateBaseA sample
+      plateBaseB = psPlateBaseB sample
       detailScale = max 0.001 (tcPlateDetailScale tcfg)
       detailA = fbm2D (seed + 5555) 4 2 0.5 (lxA * detailScale) (lyA * detailScale)
       detailB = fbm2D (seed + 5555) 4 2 0.5 (lxB * detailScale) (lyB * detailScale)
       ridgeA = ridgedFbm2D (seed + 6666) 4 2 0.55 (lxA * detailScale * 0.8) (lyA * detailScale * 0.8)
       ridgeB = ridgedFbm2D (seed + 6666) 4 2 0.55 (lxB * detailScale * 0.8) (lyB * detailScale * 0.8)
-      blend = boundaryStrengthAtXY seed tcfg gx gy
+      blend = psBoundaryStrength sample
       denom = max 1e-6 (d0 + d1)
       wB = d0 / denom
       baseRaw = lerp baseA baseB (blend * wB)
@@ -327,14 +355,11 @@ plateHeightAt config seed gcfg lm tcfg origin i =
       detailRaw = lerp detailA detailB (blend * wB)
       ridgeRaw = lerp ridgeA ridgeB (blend * wB)
       base = baseRaw * tcPlateHeightVariance tcfg + plateBase
-      (px, py) = plateInfoCenter infoA
-      dx = fromIntegral gx - px
-      dy = fromIntegral gy - py
-      dist = sqrt (dx * dx + dy * dy)
+      dist = psCenterDistance sample
       size = fromIntegral (max 1 (tcPlateSize tcfg))
       centerT = clamp01 (1 - dist / (size * max 0.01 (tcCenterFalloffScale tcfg)))
       centerFade = smoothstep 0 1 centerT
-      boundaryFade = smoothstep 0 1 (clamp01 (1 - boundaryStrengthAtXY seed tcfg gx gy * tcBoundaryFadeScale tcfg))
+      boundaryFade = smoothstep 0 1 (clamp01 (1 - blend * tcBoundaryFadeScale tcfg))
       centerWeight = clamp01 (1 - dist / (size * max 0.01 (tcCenterWeightScale tcfg)))
       edgeWeight = clamp01 (dist / (size * max 0.01 (tcEdgeWeightScale tcfg)))
       maxCoordY = fromIntegral (max 1 (worldExtentRadiusY (gcWorldExtent gcfg))) * fromIntegral (wcChunkSize config)
@@ -356,7 +381,7 @@ plateHeightAt config seed gcfg lm tcfg origin i =
         + tcPlateBiasEdge tcfg * edgeWeight
         + tcPlateBiasNorth tcfg * northWeight
         + tcPlateBiasSouth tcfg * southWeight)
-      crustBias = case plateInfoCrust infoA of
+      crustBias = case plateInfoCrust (psInfo sample) of
         PlateContinental -> tcCrustContinentalBias tcfg
         PlateOceanic -> tcCrustOceanicBias tcfg
       crustBiasScaled = crustBias * (0.5 + 0.5 * centerFade)
@@ -369,24 +394,18 @@ plateHeightAt config seed gcfg lm tcfg origin i =
       ridge = ridgeRaw * tcPlateRidgeStrength tcfg * (0.1 + 0.9 * elevAboveSea) * (0.4 + 0.6 * boundaryFade)
   in interior + detail + ridge + bias + crustBiasScaled
 
-plateHardnessAt :: WorldConfig -> Word64 -> TectonicsConfig -> TileCoord -> Int -> Float
-plateHardnessAt config seed tcfg origin i =
-  let TileCoord lx ly = tileCoordFromIndex config (TileIndex i)
-      TileCoord ox oy = origin
-      gx = ox + lx
-      gy = oy + ly
-      info = plateInfoAtXY seed tcfg gx gy
-      pid = plateInfoId info
-      base = plateInfoBaseHardness info
+plateHardnessFromSample :: Word64 -> TectonicsConfig -> PlateSample -> Float
+plateHardnessFromSample seed tcfg sample =
+  let gx = psX sample
+      gy = psY sample
+      pid = psPlateId sample
+      base = psPlateBaseHardness sample
       local = plateLocalNoise (seed + 1357) pid gx gy
-      (px, py) = plateInfoCenter info
-      dx = fromIntegral gx - px
-      dy = fromIntegral gy - py
-      dist = sqrt (dx * dx + dy * dy)
+      dist = psTileCenterDistance sample
       size = fromIntegral (max 1 (tcPlateSize tcfg))
       centerT = clamp01 (1 - dist / (size * 0.85))
       centerFade = smoothstep 0 1 centerT
-      boundaryFade = clamp01 (1 - boundaryStrengthAtXY seed tcfg gx gy)
+      boundaryFade = clamp01 (1 - psBoundaryStrength sample)
       detail = local * tcPlateHardnessVariance tcfg * centerFade * boundaryFade
   in clamp01 (base + detail)
 
