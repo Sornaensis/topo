@@ -61,7 +61,7 @@ import Topo.Pipeline.Stage (allBuiltinStageIds, stageCanonicalName)
 import Topo.Plugin (Capability(..))
 import Topo.Plugin.DataResource (DataResourceSchema(..))
 import Topo.Plugin.RPC
-  ( RPCConnection
+  ( RPCConnection(..)
   , RPCExternalDataSourceAccess(..)
   , RPCExternalDataSourceAccessMode(..)
   , RPCExternalDataSourceAvailability(..)
@@ -993,4 +993,9 @@ withinRestartWindow now window startedAt =
 -- | Update a single parameter in a loaded plugin.
 setParamOnPlugin :: Text -> Value -> LoadedPlugin -> LoadedPlugin
 setParamOnPlugin paramName value lp =
-  lp { lpParams = Map.insert paramName value (lpParams lp) }
+  lp
+    { lpParams = params'
+    , lpConnection = fmap (\conn -> conn { rpcParams = params' }) (lpConnection lp)
+    }
+  where
+    params' = Map.insert paramName value (lpParams lp)

@@ -61,6 +61,10 @@ module Actor.PluginManager
   , notifyWorldChanged
   , getPluginDataDirectories
   , getPluginExternalDataSources
+    -- * Simulation DAG integration
+  , PluginSimulationPlan(..)
+  , PluginSimulationNodeDiagnostic(..)
+  , getPluginSimulationPlan
   ) where
 
 import Control.Concurrent (threadDelay)
@@ -73,6 +77,10 @@ import Hyperspace.Actor
 
 import Actor.PluginManager.PluginSupervisor (shutdownPlugin, withRefreshedManifests)
 import Actor.PluginManager.RootSupervisor (PluginManager, pluginManagerActorDef)
+import Actor.PluginManager.SimulationIntegrator
+  ( PluginSimulationPlan(..)
+  , PluginSimulationNodeDiagnostic(..)
+  )
 import Seer.World.Persist.Types (WorldExternalDataSourceSnapshot)
 import Actor.PluginManager.Types
   ( LoadedPlugin(..)
@@ -246,6 +254,16 @@ getPluginExternalDataSources
   -> IO [WorldExternalDataSourceSnapshot]
 getPluginExternalDataSources handle =
   call @"getExternalDataSources" handle #getExternalDataSources ()
+
+-- | Build executable plugin simulation nodes and declaration diagnostics for
+-- the current plugin-manager snapshot.  Pass bound-world overlay names when a
+-- world is available; otherwise declarations are reported as non-executable.
+getPluginSimulationPlan
+  :: ActorHandle PluginManager (Protocol PluginManager)
+  -> Maybe [Text]
+  -> IO PluginSimulationPlan
+getPluginSimulationPlan handle mOverlayNames =
+  call @"getSimulationPlan" handle #getSimulationPlan mOverlayNames
 
 -- | Update the set of disabled plugin names.
 --

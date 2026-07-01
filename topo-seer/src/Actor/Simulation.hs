@@ -18,6 +18,8 @@ module Actor.Simulation
   , simulationActorDef
     -- * World lifecycle
   , setSimWorld
+  , setSimWorldWithNodes
+  , rebindSimNodes
   , clearSimWorld
   , beginSimWorldTransition
   , cancelSimWorldTransition
@@ -29,6 +31,7 @@ module Actor.Simulation
     -- * DAG status
   , SimulationDagSnapshot(..)
   , SimulationDagNodeSnapshot(..)
+  , SimulationNodeBinding(..)
   , SimulationTickLogEntry(..)
   , getSimDagSnapshot
     -- * Handles setup
@@ -120,6 +123,15 @@ data SimHandles = SimHandles
   , shAtlasHandle    :: !(ActorHandle AtlasManager (Protocol AtlasManager))
   }
 
+-- | A simulation node plus provenance metadata for diagnostics.
+-- Built-in callers can keep using 'setSimWorld'; plugin integration uses this
+-- binding so the actor-owned DAG can report executable plugin nodes truthfully.
+data SimulationNodeBinding = SimulationNodeBinding
+  { snbNode :: !SimNode
+  , snbKind :: !Text
+  , snbPlugin :: !(Maybe Text)
+  }
+
 data SimulationDagNodeSnapshot = SimulationDagNodeSnapshot
   { sdnsNodeId :: !Text
   , sdnsKind :: !Text
@@ -153,6 +165,8 @@ data AutoTickStepResult
 
 data SimulationDagSnapshot = SimulationDagSnapshot
   { sdsAvailable :: !Bool
+  , sdsWorldBound :: !Bool
+  , sdsOverlayNames :: ![Text]
   , sdsNodes :: ![SimulationDagNodeSnapshot]
   , sdsLevels :: ![[Text]]
   , sdsTerrainWriters :: ![Text]
@@ -184,6 +198,8 @@ data SimState = SimState
     -- defer and auto requests skip instead of ticking the previous world.
   , ssNodeStatuses :: !(Map.Map Text (Text, Maybe Text))
     -- ^ Latest observable per-node status and detail for UI/API DAG diagnostics.
+  , ssNodeMetadata :: !(Map.Map Text (Text, Maybe Text))
+    -- ^ Node provenance metadata: kind plus optional plugin name.
   , ssTickLogs :: ![SimulationTickLogEntry]
     -- ^ Bounded tick and per-node status log exposed through the DAG surface.
   }
@@ -199,6 +215,7 @@ emptySimState = SimState
   , ssWorldEpoch = 0
   , ssWorldTransition = False
   , ssNodeStatuses = Map.empty
+  , ssNodeMetadata = Map.empty
   , ssTickLogs = []
   }
 
@@ -215,6 +232,8 @@ actor Simulation
   mailbox Unbounded
 
   cast setWorld   :: TerrainWorld
+  cast setWorldWithNodes :: (TerrainWorld, [SimulationNodeBinding])
+  call rebindNodes :: [SimulationNodeBinding] -> Bool
   call clearWorld :: () -> ()
   call beginTransition :: () -> ()
   call cancelTransition :: () -> ()
@@ -225,42 +244,16 @@ actor Simulation
   call dagSnapshot :: () -> SimulationDagSnapshot
 
   initial emptySimState
-  on_ setWorld = \world st -> do
-    let calCfg = mkCalendarConfig (twPlanet world)
-    let weatherCfg = extractWeatherConfig (twGenConfig world)
-    let nodes = builtinSimNodes weatherCfg
-    let worldTick = wtTick (twWorldTime world)
-    case ssHandles st of
-      Just handles -> setUiSimTickCount (shUiHandle handles) worldTick
-      Nothing -> pure ()
-    let drainPending = not (ssWorldTransition st)
-    case buildSimDAG nodes of
-      Left err -> do
-        logMsg st ("simulation: failed to build DAG: " <> err)
-        let st' = st { ssWorld = Just world
-                     , ssDAG = Nothing
-                     , ssCalCfg = Just calCfg
-                     , ssLastTick = worldTick
-                     , ssWorldEpoch = ssWorldEpoch st + 1
-                     , ssWorldTransition = False
-                     , ssNodeStatuses = Map.empty
-                     }
-        if drainPending then maybeProcessPendingTick st' else pure st' { ssPendingTick = Nothing }
-      Right dag -> do
-        logMsg st ("simulation: setWorld accepted"
-          <> " tick=" <> Text.pack (show worldTick)
-          <> " terrainChunks=" <> Text.pack (show (IntMap.size (twTerrain world)))
-          <> " climateChunks=" <> Text.pack (show (IntMap.size (twClimate world)))
-          <> " nodes=" <> Text.pack (show (length nodes)))
-        let st' = st { ssWorld = Just world
-                     , ssDAG = Just dag
-                     , ssCalCfg = Just calCfg
-                     , ssLastTick = worldTick
-                     , ssWorldEpoch = ssWorldEpoch st + 1
-                     , ssWorldTransition = False
-                     , ssNodeStatuses = readyNodeStatuses nodes
-                     }
-        if drainPending then maybeProcessPendingTick st' else pure st' { ssPendingTick = Nothing }
+  on_ setWorld = \world st ->
+    bindWorld world [] st
+  on_ setWorldWithNodes = \(world, pluginNodes) st ->
+    bindWorld world pluginNodes st
+  on rebindNodes = \pluginNodes st ->
+    case ssWorld st of
+      Just world | not (ssWorldTransition st) -> do
+        st' <- bindWorld world pluginNodes st
+        pure (st', True)
+      _ -> pure (st, False)
   onPure clearWorld = \() st ->
     ( st
       { ssWorld  = Nothing
@@ -271,6 +264,7 @@ actor Simulation
       , ssWorldEpoch = ssWorldEpoch st + 1
       , ssWorldTransition = True
       , ssNodeStatuses = Map.empty
+      , ssNodeMetadata = Map.empty
       , ssTickLogs = []
       }
     , ()
@@ -309,6 +303,26 @@ setSimWorld :: ActorHandle Simulation (Protocol Simulation) -> TerrainWorld -> I
 setSimWorld handle world =
   cast @"setWorld" handle #setWorld world
 
+-- | Store the generated 'TerrainWorld' with additional executable plugin
+-- simulation nodes.  All nodes are executed by the Simulation actor for both
+-- manual and automatic ticks.
+setSimWorldWithNodes
+  :: ActorHandle Simulation (Protocol Simulation)
+  -> TerrainWorld
+  -> [SimulationNodeBinding]
+  -> IO ()
+setSimWorldWithNodes handle world pluginNodes =
+  cast @"setWorldWithNodes" handle #setWorldWithNodes (world, pluginNodes)
+
+-- | Rebuild the current world's simulation DAG with a new executable plugin
+-- node set. Returns 'False' when no stable world is currently bound.
+rebindSimNodes
+  :: ActorHandle Simulation (Protocol Simulation)
+  -> [SimulationNodeBinding]
+  -> IO Bool
+rebindSimNodes handle pluginNodes =
+  call @"rebindNodes" handle #rebindNodes pluginNodes
+
 -- | Clear the stored world (e.g. before a new generation).
 clearSimWorld :: ActorHandle Simulation (Protocol Simulation) -> () -> IO ()
 clearSimWorld handle () =
@@ -346,6 +360,8 @@ simulationDagSnapshotFromState :: SimState -> SimulationDagSnapshot
 simulationDagSnapshotFromState st = case ssDAG st of
   Nothing -> SimulationDagSnapshot
     { sdsAvailable = False
+    , sdsWorldBound = maybe False (const True) (ssWorld st)
+    , sdsOverlayNames = maybe [] (overlayNames . twOverlays) (ssWorld st)
     , sdsNodes = []
     , sdsLevels = []
     , sdsTerrainWriters = []
@@ -356,7 +372,9 @@ simulationDagSnapshotFromState st = case ssDAG st of
     }
   Just dag -> SimulationDagSnapshot
     { sdsAvailable = True
-    , sdsNodes = map (nodeSnapshot (ssNodeStatuses st)) (sdNodes dag)
+    , sdsWorldBound = maybe False (const True) (ssWorld st)
+    , sdsOverlayNames = maybe [] (overlayNames . twOverlays) (ssWorld st)
+    , sdsNodes = map (nodeSnapshot (ssNodeStatuses st) (ssNodeMetadata st)) (sdNodes dag)
     , sdsLevels = map (map simNodeIdText) (sdLevels dag)
     , sdsTerrainWriters = map simNodeIdText (sdTerrainWriters dag)
     , sdsLastTick = ssLastTick st
@@ -365,11 +383,11 @@ simulationDagSnapshotFromState st = case ssDAG st of
     , sdsTickLogs = ssTickLogs st
     }
 
-nodeSnapshot :: Map.Map Text (Text, Maybe Text) -> SimNode -> SimulationDagNodeSnapshot
-nodeSnapshot statuses node = SimulationDagNodeSnapshot
+nodeSnapshot :: Map.Map Text (Text, Maybe Text) -> Map.Map Text (Text, Maybe Text) -> SimNode -> SimulationDagNodeSnapshot
+nodeSnapshot statuses metadata node = SimulationDagNodeSnapshot
   { sdnsNodeId = nodeId
-  , sdnsKind = "builtin"
-  , sdnsPlugin = Nothing
+  , sdnsKind = kind
+  , sdnsPlugin = pluginName
   , sdnsOverlay = simNodeOverlayName node
   , sdnsDependencies = map simNodeIdText (simNodeDependencies node)
   , sdnsWritesTerrain = case node of
@@ -381,6 +399,7 @@ nodeSnapshot statuses node = SimulationDagNodeSnapshot
   where
     nodeId = simNodeIdText (simNodeId node)
     (status, detail) = Map.findWithDefault ("idle", Nothing) nodeId statuses
+    (kind, pluginName) = Map.findWithDefault ("builtin", Nothing) nodeId metadata
 
 readyNodeStatuses :: [SimNode] -> Map.Map Text (Text, Maybe Text)
 readyNodeStatuses nodes = Map.fromList
@@ -439,6 +458,63 @@ extractWeatherConfig (Just val) =
 builtinSimNodes :: WeatherConfig -> [SimNode]
 builtinSimNodes weatherCfg =
   [ weatherSimNode weatherCfg
+  ]
+
+bindWorld :: TerrainWorld -> [SimulationNodeBinding] -> SimState -> IO SimState
+bindWorld world pluginBindings st = do
+  let calCfg = mkCalendarConfig (twPlanet world)
+      weatherCfg = extractWeatherConfig (twGenConfig world)
+      builtinNodes = builtinSimNodes weatherCfg
+      builtinBindings =
+        [ SimulationNodeBinding
+            { snbNode = node
+            , snbKind = "builtin"
+            , snbPlugin = Nothing
+            }
+        | node <- builtinNodes
+        ]
+      bindings = builtinBindings <> pluginBindings
+      nodes = map snbNode bindings
+      nodeMetadata = bindingMetadata bindings
+      worldTick = wtTick (twWorldTime world)
+  case ssHandles st of
+    Just handles -> setUiSimTickCount (shUiHandle handles) worldTick
+    Nothing -> pure ()
+  let drainPending = not (ssWorldTransition st)
+  case buildSimDAG nodes of
+    Left err -> do
+      logMsg st ("simulation: failed to build DAG: " <> err)
+      let st' = st { ssWorld = Just world
+                   , ssDAG = Nothing
+                   , ssCalCfg = Just calCfg
+                   , ssLastTick = worldTick
+                   , ssWorldEpoch = ssWorldEpoch st + 1
+                   , ssWorldTransition = False
+                   , ssNodeStatuses = Map.empty
+                   , ssNodeMetadata = nodeMetadata
+                   }
+      if drainPending then maybeProcessPendingTick st' else pure st' { ssPendingTick = Nothing }
+    Right dag -> do
+      logMsg st ("simulation: setWorld accepted"
+        <> " tick=" <> Text.pack (show worldTick)
+        <> " terrainChunks=" <> Text.pack (show (IntMap.size (twTerrain world)))
+        <> " climateChunks=" <> Text.pack (show (IntMap.size (twClimate world)))
+        <> " nodes=" <> Text.pack (show (length nodes)))
+      let st' = st { ssWorld = Just world
+                   , ssDAG = Just dag
+                   , ssCalCfg = Just calCfg
+                   , ssLastTick = worldTick
+                   , ssWorldEpoch = ssWorldEpoch st + 1
+                   , ssWorldTransition = False
+                   , ssNodeStatuses = readyNodeStatuses nodes
+                   , ssNodeMetadata = nodeMetadata
+                   }
+      if drainPending then maybeProcessPendingTick st' else pure st' { ssPendingTick = Nothing }
+
+bindingMetadata :: [SimulationNodeBinding] -> Map.Map Text (Text, Maybe Text)
+bindingMetadata bindings = Map.fromList
+  [ (simNodeIdText (simNodeId (snbNode binding)), (snbKind binding, snbPlugin binding))
+  | binding <- bindings
   ]
 
 -- | Log a message via the handles (if available).

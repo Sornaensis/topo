@@ -117,14 +117,30 @@ buildSimDAG nodes = do
         | n <- nodes
         ]
 
-  case kahnLevels inDegree0 dependents of
+  -- The current executor runs all readers before any terrain writer, so a
+  -- reader depending on a writer would observe stale data.  Reject that shape
+  -- explicitly instead of publishing a misleading DAG.
+  let isWriter nid = case Map.lookup nid nodeMap of
+        Just SimNodeWriter{} -> True
+        _                    -> False
+      readerAfterWriter =
+        [ (simNodeId n, depId)
+        | n@SimNodeReader{} <- nodes
+        , depId <- simNodeDependencies n
+        , isWriter depId
+        ]
+  case readerAfterWriter of
+    ((nid, depId):_) ->
+      Left $ "Reader node " <> unSimNodeId nid
+          <> " depends on terrain writer " <> unSimNodeId depId
+          <> ", which is unsupported by the two-phase simulation executor"
+    [] -> pure ()
+
+  case kahnLevels ids inDegree0 dependents of
     Left _cycle -> Left "Cycle detected in simulation DAG"
     Right levels -> do
       -- Partition into reader levels and writer list
-      let isWriter nid = case Map.lookup nid nodeMap of
-            Just SimNodeWriter{} -> True
-            _                    -> False
-          readerLevels = map (filter (not . isWriter)) levels
+      let readerLevels = map (filter (not . isWriter)) levels
           -- Filter out empty levels
           nonEmptyReaderLevels = filter (not . null) readerLevels
           -- Collect writers in topological order
@@ -146,17 +162,18 @@ buildSimDAG nodes = do
 -- iteration.  Returns 'Left' if a cycle is detected (remaining
 -- nodes with non-zero in-degree).
 kahnLevels
-  :: Map SimNodeId Int              -- ^ Initial in-degrees
+  :: [SimNodeId]                    -- ^ Deterministic tie-break order
+  -> Map SimNodeId Int              -- ^ Initial in-degrees
   -> Map SimNodeId [SimNodeId]      -- ^ Adjacency: node → its dependents
   -> Either Text [[SimNodeId]]      -- ^ Wavefront levels or cycle error
-kahnLevels inDeg0 adj = go inDeg0 []
+kahnLevels order inDeg0 adj = go inDeg0 []
   where
     go inDeg acc
       | Map.null inDeg = Right (reverse acc)
       | null ready     = Left "Cycle detected"
       | otherwise      = go inDeg'' (ready : acc)
       where
-        ready   = Map.keys (Map.filter (<= 0) inDeg)
+        ready   = [nid | nid <- order, Map.lookup nid inDeg == Just 0]
         inDeg'  = foldr Map.delete inDeg ready
         -- Decrement in-degree for dependents of ready nodes
         inDeg'' = foldr decrementDeps inDeg' ready

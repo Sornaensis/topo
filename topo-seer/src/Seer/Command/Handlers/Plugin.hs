@@ -8,6 +8,7 @@ module Seer.Command.Handlers.Plugin
   , handleSetPluginParam
   ) where
 
+import Control.Monad (when)
 import Data.Aeson (Value(..), object, (.=), (.:))
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as Aeson
@@ -22,9 +23,11 @@ import Actor.PluginManager
   , PluginExternalDataSourceDiagnostic(..)
   , PluginExternalDataSourceGrantDiagnostic(..)
   , PluginLifecycleSnapshot(..)
+  , PluginSimulationPlan(..)
   , getLoadedPlugins
   , setDisabledPlugins
   , getDisabledPlugins
+  , getPluginSimulationPlan
   , setPluginParam
   , pluginAvailableDependencyKeys
   , pluginCapabilitiesText
@@ -40,6 +43,7 @@ import Actor.PluginManager
   , pluginStatusText
   , pluginUptimeSeconds
   )
+import Actor.Simulation (SimulationDagSnapshot(..), getSimDagSnapshot, rebindSimNodes)
 import Actor.UI.Setters (setUiDisabledPlugins, setUiPluginDiagnosticLines, setUiPluginDiagnosticStatuses, setUiPluginParam)
 import Actor.UI.State (UiState(..), readUiSnapshotRef)
 import Actor.UiActions.Handles (ActorHandles(..))
@@ -90,6 +94,7 @@ handleSetPluginEnabled ctx reqId params = do
             ]
       setUiPluginDiagnosticLines uiH diagnosticLines
       setUiPluginDiagnosticStatuses uiH diagnosticStatuses
+      rebindSimulationForCurrentWorld handles
       pure $ okResponse reqId $ object
         [ "name"    .= name
         , "enabled" .= enabled
@@ -107,6 +112,7 @@ handleSetPluginParam ctx reqId params = do
       let handles = ccActorHandles ctx
       setPluginParam (ahPluginManagerHandle handles) pluginName paramName value
       setUiPluginParam (ahUiHandle handles) pluginName paramName value
+      rebindSimulationForCurrentWorld handles
       pure $ okResponse reqId $ object
         [ "plugin" .= pluginName
         , "param"  .= paramName
@@ -116,6 +122,14 @@ handleSetPluginParam ctx reqId params = do
 -- --------------------------------------------------------------------------
 -- Helpers
 -- --------------------------------------------------------------------------
+
+rebindSimulationForCurrentWorld :: ActorHandles -> IO ()
+rebindSimulationForCurrentWorld handles = do
+  dag <- getSimDagSnapshot (ahSimulationHandle handles)
+  when (sdsWorldBound dag) $ do
+    simPlan <- getPluginSimulationPlan (ahPluginManagerHandle handles) (Just (sdsOverlayNames dag))
+    _ <- rebindSimNodes (ahSimulationHandle handles) (pspExecutableNodes simPlan)
+    pure ()
 
 pluginToJSON :: UTCTime -> Set.Set Text -> [LoadedPlugin] -> Set.Set Text -> Map.Map Text [RPCParamSpec] -> LoadedPlugin -> Value
 pluginToJSON now disabled allPlugins availableDeps paramSpecs lp =

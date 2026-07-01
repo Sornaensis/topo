@@ -35,11 +35,13 @@ import System.FilePath ((</>))
 
 import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot, getDataSnapshot, replaceTerrainData)
 import Actor.PluginManager
-  ( getPluginDataDirectories
+  ( PluginSimulationPlan(..)
+  , getPluginDataDirectories
   , getPluginExternalDataSources
+  , getPluginSimulationPlan
   , notifyWorldChanged
   )
-import Actor.Simulation (beginSimWorldTransition, cancelSimWorldTransition, clearSimWorld, setSimWorld)
+import Actor.Simulation (beginSimWorldTransition, cancelSimWorldTransition, clearSimWorld, setSimWorldWithNodes)
 import Actor.SnapshotReceiver
   ( readTerrainSnapshot
   , readDataSnapshot
@@ -288,7 +290,8 @@ handleLoadWorld ctx reqId params = do
               -- Replace terrain data
               clearSimWorld simH ()
               replaceTerrainData (ahDataHandle handles) world
-              setSimWorld (ahSimulationHandle handles) world
+              simPlan <- getPluginSimulationPlan (ahPluginManagerHandle handles) (Just (overlayNames (twOverlays world)))
+              setSimWorldWithNodes (ahSimulationHandle handles) world (pspExecutableNodes simPlan)
               setUiOverlayNames uiH (overlayNames (twOverlays world))
               -- Update snapshot refs for readers
               dataSnap <- getDataSnapshot (ahDataHandle handles)

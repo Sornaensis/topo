@@ -308,9 +308,11 @@ ensurePluginConnectionAfterExternalGate lp
             then do
               now <- getCurrentTime
               mPid <- maybe (pure Nothing) processHandleIdText (lpProcessHandle lp)
+              let conn' = syncConnectionForPlugin lp conn
               pure lp
                 { lpStatus = PluginConnected
-                , lpLifecycle = readyLifecycle now (Just "connection already active") mPid conn
+                , lpLifecycle = readyLifecycle now (Just "connection already active") mPid conn'
+                , lpConnection = Just conn'
                 , lpRestartHistory = pruneRestartHistory (lpStartPolicy lp) now (lpRestartHistory lp)
                 }
             else restartCrashedPlugin lp
@@ -320,6 +322,13 @@ ensurePluginConnectionAfterExternalGate lp
           if alive
             then pure lp
             else restartCrashedPlugin lp
+
+syncConnectionForPlugin :: LoadedPlugin -> RPCConnection -> RPCConnection
+syncConnectionForPlugin lp conn = conn
+  { rpcManifest = lpManifest lp
+  , rpcParams = lpParams lp
+  , rpcRequestTimeoutMicros = Just (policyTimeoutMicros (rspRequestTimeoutMs (lpStartPolicy lp)))
+  }
 
 connectLoadedPlugin :: LoadedPlugin -> IO LoadedPlugin
 connectLoadedPlugin lp

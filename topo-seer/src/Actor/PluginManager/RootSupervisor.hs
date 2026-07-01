@@ -54,7 +54,11 @@ import Actor.PluginManager.Scanner
   ( pluginsBaseDir
   , scanPluginDirs
   )
-import Actor.PluginManager.SimulationIntegrator (notifyPluginsWorldChanged)
+import Actor.PluginManager.SimulationIntegrator
+  ( PluginSimulationPlan
+  , buildPluginSimulationPlan
+  , notifyPluginsWorldChanged
+  )
 import Actor.PluginManager.Types
   ( LoadedPlugin(..)
   , PluginManagerState(..)
@@ -104,6 +108,7 @@ actor PluginManager
   cast notifyWorld :: Maybe Text
   call getDataDirs :: () -> [(Text, FilePath)]
   call getExternalDataSources :: () -> [WorldExternalDataSourceSnapshot]
+  call getSimulationPlan :: Maybe [Text] -> PluginSimulationPlan
 
   initial emptyPluginManagerState
   on_ discover = \() st -> do
@@ -172,7 +177,10 @@ actor PluginManager
     (st, collectPluginDataDirs st)
   on getExternalDataSources = \() st -> do
     st' <- observePluginRuntimes st
-    pure (st', collectPluginExternalDataSources st')|]
+    pure (st', collectPluginExternalDataSources st')
+  on getSimulationPlan = \mOverlayNames st -> do
+    st' <- observePluginRuntimes st
+    pure (st', buildPluginSimulationPlan mOverlayNames st')|]
 
 observePluginRuntimes :: PluginManagerState -> IO PluginManagerState
 observePluginRuntimes st = do

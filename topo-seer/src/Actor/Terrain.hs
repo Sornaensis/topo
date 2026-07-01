@@ -54,7 +54,7 @@ import Topo.Pipeline (PipelineConfig(..), PipelineStage, StageProgress(..), Stag
 import Topo.Pipeline.Stage (StageId)
 import Topo.Overlay (OverlayStore)
 import Topo.WorldGen (WorldGenConfig(..), buildFullPipelineConfig)
-import Actor.Simulation (Simulation, setSimWorld)
+import Actor.Simulation (Simulation, SimulationNodeBinding, setSimWorldWithNodes)
 
 progressTag :: OpTag "progress"
 progressTag = OpTag
@@ -78,6 +78,8 @@ data TerrainGenRequest = TerrainGenRequest
     -- ^ Plugin overlay schemas pre-registered in generated worlds.
   , tgrSimHandle :: !(ActorHandle Simulation (Protocol Simulation))
     -- ^ Simulation actor handle for posting the generated world.
+  , tgrSimNodes :: ![SimulationNodeBinding]
+    -- ^ Executable plugin simulation nodes to bind with the generated world.
   }
 
 -- | Stage progress during terrain generation.
@@ -217,7 +219,7 @@ actor Terrain
         replyCast replyTo resultTag result
         -- Send the full world to the Simulation actor so it can
         -- run tick-based overlay simulation on demand.
-        setSimWorld (tgrSimHandle req) world1
+        setSimWorldWithNodes (tgrSimHandle req) world1 (tgrSimNodes req)
         pure st { tsLastSeed = Just (tgrSeed req), tsRunning = False }
 |]
 

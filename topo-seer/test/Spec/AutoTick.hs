@@ -5,8 +5,10 @@ module Spec.AutoTick (spec) where
 import Control.Concurrent (threadDelay)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Aeson (Value(..), object, (.=))
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import Test.Hspec
 
@@ -14,8 +16,11 @@ import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot)
 import Actor.Simulation
   ( SimulationDagSnapshot(..)
   , SimulationTickLogEntry(..)
+  , SimulationDagNodeSnapshot(..)
+  , SimulationNodeBinding(..)
   , getSimDagSnapshot
   , setSimWorld
+  , setSimWorldWithNodes
   )
 import Actor.SnapshotReceiver (readSnapshotVersion)
 import Actor.UI (UiState(..), getUiSnapshot)
@@ -40,8 +45,16 @@ import Topo
   , setTerrainChunk
   )
 import Topo.Command.Types (SeerCommand(..), SeerResponse(..))
-import Topo.Overlay (Overlay(..), OverlayData(..), OverlayProvenance(..), insertOverlay)
+import Topo.Overlay (Overlay(..), OverlayData(..), OverlayProvenance(..), insertOverlay, lookupOverlay)
+import Topo.Overlay.Schema
+  ( OverlayDeps(..)
+  , OverlayFieldDef(..)
+  , OverlayFieldType(..)
+  , OverlaySchema(..)
+  , OverlayStorage(..)
+  )
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice)
+import Topo.Simulation (SimContext(..), SimNode(..), SimNodeId(..))
 import Topo.Weather (weatherChunkToOverlay, weatherOverlaySchema)
 import Topo.World (TerrainWorld(..))
 
@@ -96,6 +109,32 @@ spec = describe "AutoTick scheduler" $ do
       sdsPendingTick dag `shouldBe` Nothing
       map stleStatus (sdsTickLogs dag) `shouldSatisfy` elem (Text.pack "completed")
 
+  it "auto ticks builtin weather and plugin simulation nodes through the actor DAG" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      installPluginWorld app
+      let handles = appHandles app
+
+      rsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (1.0 :: Double)])
+      srSuccess rsp `shouldBe` True
+
+      advanced <- awaitTrue 100 $ do
+        ui <- getUiSnapshot (ahUiHandle handles)
+        pure (uiSimTickCount ui >= 1)
+      advanced `shouldBe` True
+
+      terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
+      pluginValue <- case lookupOverlay pluginOverlayName (tsOverlayStore terrainSnap) >>= firstPluginOverlayValue of
+        Just value -> pure value
+        Nothing -> expectationFailure "Expected plugin overlay after auto tick" >> pure 0
+      pluginValue `shouldBe` 1
+
+      dag <- getSimDagSnapshot (ahSimulationHandle handles)
+      sdsLevels dag `shouldBe` [[Text.pack "weather"], [pluginOverlayName]]
+      let pluginNodes = filter ((== Just pluginOverlayName) . sdnsPlugin) (sdsNodes dag)
+      case pluginNodes of
+        [node] -> sdnsStatus node `shouldBe` Text.pack "completed"
+        _ -> expectationFailure "Expected one executable plugin node in auto tick DAG"
+
 appHandles :: HeadlessApp -> ActorHandles
 appHandles app = ccActorHandles (headlessCommandContext app)
 
@@ -110,6 +149,13 @@ installWorld :: HeadlessApp -> IO ()
 installWorld app = do
   let handles = appHandles app
   setSimWorld (ahSimulationHandle handles) testWorld
+  dag <- getSimDagSnapshot (ahSimulationHandle handles)
+  sdsAvailable dag `shouldBe` True
+
+installPluginWorld :: HeadlessApp -> IO ()
+installPluginWorld app = do
+  let handles = appHandles app
+  setSimWorldWithNodes (ahSimulationHandle handles) pluginTestWorld [pluginSimulationBinding]
   dag <- getSimDagSnapshot (ahSimulationHandle handles)
   sdsAvailable dag `shouldBe` True
 
@@ -133,14 +179,31 @@ testWorld = withSeedWeather
     terrain = generateTerrainChunk config (const 0.5)
     climate0 = emptyClimateChunk config
     tileCount = U.length (ccTempAvg climate0)
-    climate = climate0
-      { ccTempAvg = U.replicate tileCount 0.55
-      , ccPrecipAvg = U.replicate tileCount 0.45
-      , ccWindDirAvg = U.replicate tileCount 0.3
-      , ccWindSpdAvg = U.replicate tileCount 0.25
-      , ccHumidityAvg = U.replicate tileCount 0.4
-      }
+    climate = testClimate tileCount climate0
     world0 = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice
+
+pluginTestWorld :: TerrainWorld
+pluginTestWorld = withSeedPluginOverlay tileCount 0 $
+  withSeedWeather
+    (setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) terrain world0))
+    (ChunkId 0)
+    climate
+  where
+    config = WorldConfig { wcChunkSize = 8 }
+    terrain = generateTerrainChunk config (const 0.5)
+    climate0 = emptyClimateChunk config
+    tileCount = U.length (ccTempAvg climate0)
+    climate = testClimate tileCount climate0
+    world0 = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice
+
+testClimate :: Int -> ClimateChunk -> ClimateChunk
+testClimate tileCount climate0 = climate0
+  { ccTempAvg = U.replicate tileCount 0.55
+  , ccPrecipAvg = U.replicate tileCount 0.45
+  , ccWindDirAvg = U.replicate tileCount 0.3
+  , ccWindSpdAvg = U.replicate tileCount 0.25
+  , ccHumidityAvg = U.replicate tileCount 0.4
+  }
 
 withSeedWeather :: TerrainWorld -> ChunkId -> ClimateChunk -> TerrainWorld
 withSeedWeather world (ChunkId chunkId) climate =
@@ -175,3 +238,70 @@ mkSeedWeatherChunk climate = WeatherChunk
   }
   where
     tileCount = U.length (ccTempAvg climate)
+
+pluginOverlayName :: Text
+pluginOverlayName = Text.pack "plugin-sim"
+
+pluginOverlaySchema :: OverlaySchema
+pluginOverlaySchema = OverlaySchema
+  { osName = pluginOverlayName
+  , osVersion = Text.pack "1.0.0"
+  , osDescription = Text.pack "Auto tick plugin overlay"
+  , osFields =
+      [ OverlayFieldDef
+          { ofdName = Text.pack "value"
+          , ofdType = OFFloat
+          , ofdDefault = Number 0
+          , ofdIndexed = False
+          , ofdRenamedFrom = Nothing
+          }
+      ]
+  , osStorage = StorageDense
+  , osDependencies = OverlayDeps { odTerrain = False, odOverlays = [Text.pack "weather"] }
+  , osFieldIndex = Map.fromList [(Text.pack "value", 0)]
+  }
+
+seedPluginOverlay :: Int -> Float -> Overlay
+seedPluginOverlay tileCount value = Overlay
+  { ovSchema = pluginOverlaySchema
+  , ovData = DenseData (IntMap.singleton 0 (V.singleton (U.replicate tileCount value)))
+  , ovProvenance = OverlayProvenance
+      { opSeed = 0
+      , opVersion = 1
+      , opSource = Text.pack "auto-tick-spec-plugin"
+      }
+  }
+
+withSeedPluginOverlay :: Int -> Float -> TerrainWorld -> TerrainWorld
+withSeedPluginOverlay tileCount value world =
+  world { twOverlays = insertOverlay (seedPluginOverlay tileCount value) (twOverlays world) }
+
+firstPluginOverlayValue :: Overlay -> Maybe Float
+firstPluginOverlayValue overlay = case ovData overlay of
+  DenseData chunks -> do
+    (_chunkId, fields) <- IntMap.lookupMin chunks
+    values <- fields V.!? 0
+    if U.null values then Nothing else Just (values U.! 0)
+  SparseData{} -> Nothing
+
+incrementPluginOverlay :: Overlay -> Overlay
+incrementPluginOverlay overlay = overlay
+  { ovData = case ovData overlay of
+      DenseData chunks -> DenseData (fmap (V.map (U.map (+ 1))) chunks)
+      sparse@SparseData{} -> sparse
+  }
+
+pluginSimulationBinding :: SimulationNodeBinding
+pluginSimulationBinding = SimulationNodeBinding
+  { snbNode = SimNodeReader
+      { snrId = SimNodeId pluginOverlayName
+      , snrOverlayName = pluginOverlayName
+      , snrDependencies = [SimNodeId (Text.pack "weather")]
+      , snrReadTick = \ctx overlay ->
+          if Map.member (Text.pack "weather") (scOverlays ctx)
+            then pure (Right (incrementPluginOverlay overlay))
+            else pure (Left (Text.pack "missing weather dependency"))
+      }
+  , snbKind = Text.pack "plugin"
+  , snbPlugin = Just pluginOverlayName
+  }

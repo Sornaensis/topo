@@ -21,8 +21,10 @@ import Actor.PluginManager
   , getDisabledPlugins
   , getLoadedPlugins
   , getPluginDataResources
+  , PluginSimulationPlan(..)
   , getPluginOrder
   , getPluginOverlaySchemas
+  , getPluginSimulationPlan
   , getPluginStages
   , pluginAvailableDependencyKeys
   , pluginDiagnosticState
@@ -214,6 +216,7 @@ startGeneration req = do
   refreshManifests pluginHandle
   pluginStages <- getPluginStages pluginHandle
   overlaySchemas <- getPluginOverlaySchemas pluginHandle
+  simulationPlan <- getPluginSimulationPlan pluginHandle (Just (map osName overlaySchemas))
   -- Populate plugin UI state from discovered plugins
   pluginOrder <- getPluginOrder pluginHandle
   loadedPlugins <- getLoadedPlugins pluginHandle
@@ -249,6 +252,7 @@ startGeneration req = do
         , tgrExtraStages = pluginStages
         , tgrOverlaySchemas = overlaySchemas
         , tgrSimHandle = ahSimulationHandle handles
+        , tgrSimNodes = pspExecutableNodes simulationPlan
         }
   startTerrainGen (ahTerrainHandle handles) (uarTerrainReplyTo req) request
 

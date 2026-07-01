@@ -11,6 +11,7 @@ module Seer.Command.Handlers.Widgets
   , handleGetWidgetState
   ) where
 
+import Control.Monad (when)
 import Data.Aeson (Value(..), object, (.=), (.:))
 import qualified Data.Aeson.Types as Aeson
 import Data.List (find)
@@ -23,15 +24,11 @@ import qualified Data.Text.Read as Text
 
 import Actor.Log (LogLevel(..), setLogMinLevel)
 import Actor.PluginManager
-  ( LoadedPlugin(..)
-  , getLoadedPlugins
-  , pluginAvailableDependencyKeys
-  , pluginDiagnosticState
-  , pluginDiagnosticStateText
-  , pluginPanelDiagnosticLines
-  , setDisabledPlugins
+  ( PluginSimulationPlan(..)
+  , getPluginSimulationPlan
   , setPluginOrder
   )
+import Actor.Simulation (SimulationDagSnapshot(..), getSimDagSnapshot, rebindSimNodes)
 import Actor.Terrain (TerrainReplyOps)
 import Actor.UiActions (UiAction(..), UiActionRequest(..), submitUiAction)
 import Actor.UiActions.Handles (ActorHandles(..))
@@ -52,11 +49,8 @@ import Actor.UI.Setters
   , setUiConfigScroll
   , setUiChunkSize
   , setUiDayNightEnabled
-  , setUiDisabledPlugins
   , setUiPluginNames
   , setUiPluginExpanded
-  , setUiPluginDiagnosticLines
-  , setUiPluginDiagnosticStatuses
   , setUiDataBrowser
   , setUiDataResources
   )
@@ -543,31 +537,19 @@ executeWidgetClick ctx wid = do
           swapped = swapWithPrev name names
       setUiPluginNames uiH swapped
       setPluginOrder pluginH swapped
+      rebindSimulationForCurrentWorld handles
       pure $ Right ("moved plugin " <> name <> " up")
     WidgetPluginMoveDown name -> do
       let names = uiPluginNames uiSnap
           swapped = swapWithNext name names
       setUiPluginNames uiH swapped
       setPluginOrder pluginH swapped
+      rebindSimulationForCurrentWorld handles
       pure $ Right ("moved plugin " <> name <> " down")
     WidgetPluginToggle name -> do
-      let current = uiDisabledPlugins uiSnap
-          toggled
-            | Set.member name current = Set.delete name current
-            | otherwise               = Set.insert name current
-      setUiDisabledPlugins uiH toggled
-      setDisabledPlugins pluginH toggled
-      loaded <- getLoadedPlugins pluginH
-      let availableDeps = pluginAvailableDependencyKeys toggled loaded
-          diagnosticLines = Map.fromList [(lpName lp, pluginPanelDiagnosticLines toggled availableDeps lp) | lp <- loaded]
-          diagnosticStatuses = Map.fromList
-            [ (lpName lp, pluginDiagnosticStateText (pluginDiagnosticState toggled availableDeps lp))
-            | lp <- loaded
-            ]
-          enabled = not (Set.member name toggled)
-      setUiPluginDiagnosticLines uiH diagnosticLines
-      setUiPluginDiagnosticStatuses uiH diagnosticStatuses
-      pure $ Right ("plugin " <> name <> if enabled then " enabled" else " disabled")
+      let enabled = Set.member name (uiDisabledPlugins uiSnap)
+      commandResult ("plugin " <> name <> if enabled then " enabled" else " disabled") $
+        HPlugin.handleSetPluginEnabled ctx 0 (object ["name" .= name, "enabled" .= enabled])
     WidgetPluginExpand name -> do
       let current = Map.findWithDefault False name (uiPluginExpanded uiSnap)
       setUiPluginExpanded uiH name (not current)
@@ -700,6 +682,14 @@ submitAction ctx action = do
         , uarTerrainReplyTo = replyTo @TerrainReplyOps uiActionsH
         }
   submitUiAction uiActionsH request
+
+rebindSimulationForCurrentWorld :: ActorHandles -> IO ()
+rebindSimulationForCurrentWorld handles = do
+  dag <- getSimDagSnapshot (ahSimulationHandle handles)
+  when (sdsWorldBound dag) $ do
+    simPlan <- getPluginSimulationPlan (ahPluginManagerHandle handles) (Just (sdsOverlayNames dag))
+    _ <- rebindSimNodes (ahSimulationHandle handles) (pspExecutableNodes simPlan)
+    pure ()
 
 commandResult :: Text -> IO SeerResponse -> IO (Either Text Text)
 commandResult successInfo action = do

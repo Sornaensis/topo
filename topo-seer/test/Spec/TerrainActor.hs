@@ -84,6 +84,7 @@ spec = describe "TerrainActor" $ do
           , tgrExtraStages = []
           , tgrOverlaySchemas = []
           , tgrSimHandle = simHandle
+          , tgrSimNodes = []
           }
     startTerrainGen terrainHandle (replyTo @TerrainReplyOps replyHandle) req
     result <- await 500 (trsResult <$> call @"snapshot" replyHandle #snapshot ())
