@@ -7,8 +7,8 @@ import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
 
-import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, takeMVar)
-import Control.Exception (SomeException, bracket, try)
+import Control.Concurrent (MVar, forkIO, killThread, newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (SomeException, bracket, finally, try)
 import Data.Char (toLower)
 import Data.Aeson (Value(..), (.=), object, encode, eitherDecode)
 import qualified Data.Aeson as Aeson
@@ -1207,6 +1207,26 @@ spec = describe "Plugin.RPC" $ do
             msg `shouldSatisfy` Text.isInfixOf "health check"
             rpcErrorText err `shouldSatisfy` Text.isInfixOf "timeout"
           Just other -> expectationFailure ("expected timeout, got " <> show other)
+
+    it "removes cancelled pending requests before later legacy responses" $
+      withConnectedTransports "rpc-cancelled-health" $ \host plugin -> do
+        let conn = newRPCConnection baseManifest host Map.empty
+        cancelledDone <- newEmptyMVar
+        worker <- forkIO $ do
+          _ <- checkHealth conn `finally` putMVar cancelledDone ()
+          pure ()
+        firstReq <- recvEnvelopeFrom plugin
+        envType firstReq `shouldBe` MsgHealthCheck
+        killThread worker
+        cancelled <- timeout transportTestTimeoutMicros (takeMVar cancelledDone)
+        cancelled `shouldBe` Just ()
+        secondDone <- newEmptyMVar
+        _ <- forkIO (checkHealth conn >>= putMVar secondDone)
+        secondReq <- recvEnvelopeFrom plugin
+        envType secondReq `shouldBe` MsgHealthCheck
+        sendEnvelopeTo plugin ((healthResponse secondReq "after-cancel") { envRequestId = Nothing })
+        secondResult <- takeHealthResult secondDone
+        hstMessage secondResult `shouldBe` "after-cancel"
 
     it "round-trips heartbeat responses with correlation ids" $
       withConnectedTransports "rpc-heartbeat" $ \host plugin -> do

@@ -604,6 +604,11 @@ spec = describe "PluginManager" $ do
         pluginStatuses hangQueryPluginName observed `shouldSatisfy` anyPluginErrorContaining "restart limit exceeded"
         pluginLifecycleErrorCodes hangQueryPluginName observed `shouldSatisfy` elem (Just "restart_limit_exceeded")
         length (pluginProcessHandles hangQueryPluginName observed) `shouldBe` 0
+        unavailable <- timeout 1000000 $ queryPluginResource pluginManagerHandle (Text.pack hangQueryPluginName) testQuery
+        case unavailable of
+          Nothing -> expectationFailure "unavailable data query after timeout hung"
+          Just (Left err) -> err `shouldSatisfy` Text.isInfixOf "plugin_unavailable"
+          Just (Right _) -> expectationFailure "unavailable data query after timeout unexpectedly succeeded"
         mapM_ (assertProcessExited hangQueryPluginName) handles
 
   it "rejects unsupported data-resource mutations before plugin calls" $ do

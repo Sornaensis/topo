@@ -74,7 +74,7 @@ import Control.Concurrent
   , takeMVar
   , tryPutMVar
   )
-import Control.Exception (SomeException, try)
+import Control.Exception (SomeException, mask, onException, try)
 import Control.Monad (forM_, when)
 import Control.Monad.Except (throwError)
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
@@ -235,7 +235,7 @@ rpcCallWithProgress
   -> (PluginProgress -> IO ())
   -> (PluginLog -> IO ())
   -> IO (Either RPCError RPCEnvelope)
-rpcCallWithProgress failureRef mTimeout timeoutMessage conn envelope onProgress onLog = do
+rpcCallWithProgress failureRef mTimeout timeoutMessage conn envelope onProgress onLog = mask $ \restore -> do
   let session = rpcSession conn
       transport = rpcTransport conn
   requestId <- nextRPCRequestId session
@@ -246,8 +246,12 @@ rpcCallWithProgress failureRef mTimeout timeoutMessage conn envelope onProgress 
         , rpOnLog = onLog
         }
       requestEnvelope = envelope { envRequestId = Just requestId }
+      cleanupPending = do
+        _ <- removePending session requestId
+        pure ()
   registerPending session requestId pending
-  sendAndAwaitPendingResult failureRef mTimeout timeoutMessage conn transport session requestId done requestEnvelope
+  restore (sendAndAwaitPendingResult failureRef mTimeout timeoutMessage conn transport session requestId done requestEnvelope)
+    `onException` cleanupPending
 
 startRPCReceiver :: Maybe (IORef (Maybe RPCError)) -> RPCConnection -> IO ()
 startRPCReceiver failureRef conn =
