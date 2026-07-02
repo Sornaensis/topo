@@ -4,10 +4,10 @@
 -- | Runtime-owned automatic simulation tick scheduler.
 --
 -- The scheduler is deliberately outside the UI, command, and simulation
--- actors: it observes the published UI snapshot, calls the Simulation actor
--- synchronously for one auto step, and arms the next due time only after the
--- prior attempt completes.  That gives automatic ticking one-in-flight,
--- no-backlog semantics.
+-- actors: it observes the published UI snapshot, submits one auto step to the
+-- Simulation actor's background worker, and arms the next due time only after
+-- the worker reply is folded.  That gives automatic ticking one-in-flight,
+-- no-backlog semantics while Simulation/UI control calls remain responsive.
 module Seer.System.AutoTick
   ( AutoTickHandles(..)
   , AutoTickScheduler

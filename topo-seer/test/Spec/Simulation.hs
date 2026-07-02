@@ -4,13 +4,16 @@
 module Spec.Simulation (spec) where
 
 import Control.Concurrent (threadDelay)
+import Control.Concurrent.MVar (newEmptyMVar, readMVar, tryPutMVar)
 import Control.Exception (bracket)
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Aeson (Value(..))
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Hyperspace.Actor (ActorSystem, get, newActorSystem, shutdownActorSystem)
+import System.Timeout (timeout)
 import Test.Hspec
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
@@ -375,6 +378,72 @@ spec = describe "Simulation actor" $ do
     sdsAvailable dagSnapshot `shouldBe` True
     map sdnsStatus (sdsNodes dagSnapshot) `shouldSatisfy` elem (Text.pack "completed")
     map stleStatus (sdsTickLogs dagSnapshot) `shouldSatisfy` elem (Text.pack "completed")
+
+  it "keeps control calls responsive and folds only the latest queued tick while a worker runs" $ withSystem $ \system -> do
+    simHandle <- get @Simulation system
+    dataHandle <- get @Data system
+    logHandle <- get @Log system
+    uiHandle <- get @Ui system
+    dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
+    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
+    snapshotVersionRef <- newSnapshotVersionRef
+    atlasHandle <- get @AtlasManager system
+
+    setSimHandles simHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasHandle
+
+    started <- newEmptyMVar
+    runCountRef <- newIORef (0 :: Int)
+    let config = WorldConfig { wcChunkSize = 8 }
+        chunk = generateTerrainChunk config (const 0.5)
+        climate0 = emptyClimateChunk config
+        tileCount = U.length (ccTempAvg climate0)
+        climate = climate0
+          { ccTempAvg = U.replicate tileCount 0.6
+          , ccPrecipAvg = U.replicate tileCount 0.5
+          , ccWindDirAvg = U.replicate tileCount 0.4
+          , ccWindSpdAvg = U.replicate tileCount 0.35
+          , ccHumidityAvg = U.replicate tileCount 0.5
+          }
+        world0 = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice
+        world1 = withSeedPluginOverlay tileCount 0 $
+          withSeedWeather
+            (setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) chunk world0))
+            (ChunkId 0)
+            climate
+        slowBinding = SimulationNodeBinding
+          { snbNode = SimNodeReader
+              { snrId = SimNodeId (Text.pack "slow-plugin")
+              , snrOverlayName = pluginOverlayName
+              , snrDependencies = []
+              , snrReadTick = \_ overlay -> do
+                  modifyIORef' runCountRef (+ 1)
+                  _ <- tryPutMVar started ()
+                  threadDelay 300000
+                  pure (Right overlay)
+              }
+          , snbKind = Text.pack "plugin"
+          , snbPlugin = Just pluginOverlayName
+          }
+
+    setSimWorldWithNodes simHandle world1 [slowBinding]
+    requestSimTick simHandle 1
+
+    workerStarted <- timeout 1000000 (readMVar started)
+    workerStarted `shouldBe` Just ()
+
+    responsive <- timeout 100000 (getSimDagSnapshot simHandle)
+    responsive `shouldSatisfy` maybe False sdsAvailable
+
+    requestSimTick simHandle 2
+    requestSimTick simHandle 5
+
+    tickAdvanced <- awaitTrue 500 $ do
+      uiSnap <- getUiSnapshot uiHandle
+      pure (uiSimTickCount uiSnap >= 5)
+    tickAdvanced `shouldBe` True
+
+    runCount <- readIORef runCountRef
+    runCount `shouldBe` 2
 
   it "executes plugin simulation nodes with builtin weather on manual ticks" $ withSystem $ \system -> do
     simHandle <- get @Simulation system

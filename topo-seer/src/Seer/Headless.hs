@@ -47,6 +47,7 @@ import Actor.PluginManager
   )
 import Actor.Simulation
   ( Simulation
+  , beginSimShutdown
   , setSimHandles
   , simulationHandlesConfigured
   )
@@ -303,7 +304,9 @@ startHeadlessAppWithSystem cfg system = do
 -- | Stop a headless runtime and release actor resources.
 stopHeadlessApp :: HeadlessApp -> IO ()
 stopHeadlessApp app = do
+  waitForSimIdle <- beginSimShutdown (haSimulationHandle app)
   stopAutoTickScheduler (haAutoTickScheduler app)
+  waitForSimIdle
   mapM_ killThread (haCommandChannelThread app)
   shutdownPlugins (haPluginManagerHandle app)
   shutdownActorSystem (haActorSystem app)

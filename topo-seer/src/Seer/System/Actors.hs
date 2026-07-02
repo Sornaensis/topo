@@ -30,7 +30,7 @@ import Actor.Log
   , setLogSnapshotRef
   )
 import Actor.PluginManager (PluginManager, discoverPlugins)
-import Actor.Simulation (Simulation, setSimHandles, simulationHandlesConfigured)
+import Actor.Simulation (Simulation, beginSimShutdown, setSimHandles, simulationHandlesConfigured)
 import Actor.SnapshotReceiver
   ( DataSnapshotRef
   , SnapshotVersionRef
@@ -52,7 +52,7 @@ import Actor.UI
   , setUiSnapshotRef
   )
 import Actor.UiActions (UiActions)
-import Actor.UiActions.Handles (ActorHandles, mkActorHandles)
+import Actor.UiActions.Handles (ActorHandles(..), mkActorHandles)
 import Control.Concurrent (forkIO)
 import Control.Monad (replicateM, when)
 import Data.IORef (newIORef)
@@ -193,7 +193,9 @@ startCommandServices opts actors = do
 
 shutdownAppActors :: AppActors -> IO ()
 shutdownAppActors actors = do
+  waitForSimIdle <- beginSimShutdown (ahSimulationHandle (aaActorHandles actors))
   stopAutoTickScheduler (aaAutoTickScheduler actors)
+  waitForSimIdle
   shutdownActorSystem (aaSystem actors)
 
 commandContextForActors :: AppActors -> CommandContext
