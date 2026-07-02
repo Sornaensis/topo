@@ -23,7 +23,14 @@
 -- Next Word32le: provenance version
 -- Next Word32le: provenance source length
 -- Next Bytes:    provenance source (UTF-8)
--- Next Byte:     flags (0x00 for this format revision)
+-- Next Byte:     flags (bit 0 = chunk index, bit 1 = zstd, bit 2 = schedule)
+-- If schedule flag set:
+--   Word64le interval ticks
+--   Word64le phase ticks
+--   Byte     has last-fire tick (0/1)
+--   Optional Word64le last-fire tick
+--   Word64le next-fire tick
+--   Byte     catch-up policy tag
 -- Next Word32le: chunk count
 -- Per chunk:
 --   Word32le  chunkId
@@ -140,9 +147,15 @@ import Topo.Overlay.Storage.ChunkIndex
   , decodeChunkEntryPayload
   , loadSparseChunkFromTopolayBytes
   , overlayFlagChunkIndex
+  , overlayFlagSchedule
   , overlayFlagZstd
   , overlayHasChunkIndex
   , overlaySupportsFlags
+  )
+import Topo.Simulation.Schedule
+  ( SimulationScheduleState(..)
+  , catchUpPolicyFromTag
+  , catchUpPolicyTag
   )
 
 ------------------------------------------------------------------------
@@ -405,7 +418,10 @@ encodeOverlayData options ov = do
     let schema = ovSchema ov
         prov = ovProvenance ov
         hasZstd = osoCompression options == CompressionZstd
-        headerFlags = overlayFlagChunkIndex .|. if hasZstd then overlayFlagZstd else 0x00
+        maybeSchedule = opSchedule prov
+        zstdFlag = if hasZstd then overlayFlagZstd else 0x00
+        scheduleFlag = maybe 0x00 (const overlayFlagSchedule) maybeSchedule
+        headerFlags = overlayFlagChunkIndex .|. zstdFlag .|. scheduleFlag
     -- Header: name hash
     putWord32le (fnvHash (osName schema))
     -- Schema version
@@ -433,8 +449,9 @@ encodeOverlayData options ov = do
     let sourceBytes = encodeUtf8 (opSource prov)
     putWord32le (fromIntegral (BS.length sourceBytes))
     putByteString sourceBytes
-    -- Header flags (bit 0 = chunk index, bit 1 = zstd)
+    -- Header flags (bit 0 = chunk index, bit 1 = zstd, bit 2 = schedule)
     putWord8 headerFlags
+    forM_ maybeSchedule putScheduleBlock
     -- Chunks
     putWord32le (fromIntegral (length payloadEntries))
     forM_ payloadEntries $ \(cid, payloadLenWord, maybeRawLen, payload) -> do
@@ -443,7 +460,7 @@ encodeOverlayData options ov = do
       forM_ maybeRawLen putWord32le
       putByteString payload
     let fieldDescriptorBytes = sum [4 + BS.length (encodeUtf8 (ofdName fd)) + 1 + fieldTypeExtraBytes (ofdType fd) | fd <- fields]
-        headerBytes = 4 + 4 + BS.length verBytes + 1 + 4 + fieldDescriptorBytes + 8 + 4 + 4 + BS.length sourceBytes + 1 + 4
+        headerBytes = 4 + 4 + BS.length verBytes + 1 + 4 + fieldDescriptorBytes + 8 + 4 + 4 + BS.length sourceBytes + 1 + scheduleBlockBytes maybeSchedule + 4
         indexEntries = chunkIndexEntries (fromIntegral headerBytes) (map entryToIndex payloadEntries)
     putWord32le (fromIntegral (length indexEntries))
     forM_ indexEntries $ \(cid, offset) -> do
@@ -471,12 +488,55 @@ prepareChunkEntries options schema ovd =
         Right (payload, maybeRawLen) ->
           Right (cid, fromIntegral (BS.length payload), fmap fromIntegral maybeRawLen, payload)
 
+putScheduleBlock :: SimulationScheduleState -> Put
+putScheduleBlock schedule = do
+  putWord64le (schedIntervalTicks schedule)
+  putWord64le (schedPhaseTicks schedule)
+  case schedLastFireTick schedule of
+    Nothing -> putWord8 0
+    Just tick -> putWord8 1 >> putWord64le tick
+  putWord64le (schedNextFireTick schedule)
+  putWord8 (catchUpPolicyTag (schedCatchUpPolicy schedule))
+
+scheduleBlockBytes :: Maybe SimulationScheduleState -> Int
+scheduleBlockBytes Nothing = 0
+scheduleBlockBytes (Just schedule) =
+  8 + 8 + 1 + maybe 0 (const 8) (schedLastFireTick schedule) + 8 + 1
+
 -- | Decode overlay data from binary bytes.
 decodeOverlayData :: OverlaySchema -> BS.ByteString -> Either Text (OverlayData, OverlayProvenance)
 decodeOverlayData schema bytes =
   case runGetOrFail (getOverlayData schema) (BL.fromStrict bytes) of
     Left  (_, _, err) -> Left (Text.pack err)
     Right (_, _, d)   -> Right d
+
+getScheduleBlock :: Get SimulationScheduleState
+getScheduleBlock = do
+  interval <- getWord64le
+  if interval < 1
+    then fail "overlay: schedule interval must be at least 1"
+    else pure ()
+  phase <- getWord64le
+  if phase >= interval
+    then fail "overlay: schedule phase must be less than interval"
+    else pure ()
+  hasLast <- getWord8
+  lastFire <- case hasLast of
+    0 -> pure Nothing
+    1 -> Just <$> getWord64le
+    other -> fail ("overlay: invalid schedule last-fire tag 0x" <> show other)
+  nextFire <- getWord64le
+  policyTag <- getWord8
+  policy <- case catchUpPolicyFromTag policyTag of
+    Just value -> pure value
+    Nothing -> fail ("overlay: unknown schedule catch-up policy tag 0x" <> show policyTag)
+  pure SimulationScheduleState
+    { schedIntervalTicks = interval
+    , schedPhaseTicks = phase
+    , schedLastFireTick = lastFire
+    , schedNextFireTick = nextFire
+    , schedCatchUpPolicy = policy
+    }
 
 getOverlayData :: OverlaySchema -> Get (OverlayData, OverlayProvenance)
 getOverlayData schema = do
@@ -492,8 +552,10 @@ getOverlayData schema = do
   _ <- replicateM fieldCount $ do
     nameLen <- fromIntegral <$> getWord32le
     _ <- getByteString nameLen
-    _ <- getWord8
-    pure ()
+    fieldTag <- getWord8
+    if fieldTag == 4  -- list fields include one element-type byte
+      then getWord8 >> pure ()
+      else pure ()
   -- Provenance block
   provSeed <- getWord64le
   provVersion <- getWord32le
@@ -506,10 +568,14 @@ getOverlayData schema = do
   if not (overlaySupportsFlags flags)
     then fail ("overlay: unsupported flags byte 0x" <> show flags)
     else pure ()
+  schedule <- if (flags .&. overlayFlagSchedule) /= 0
+    then Just <$> getScheduleBlock
+    else pure Nothing
   let prov = OverlayProvenance
         { opSeed = provSeed
         , opVersion = provVersion
         , opSource = source
+        , opSchedule = schedule
         }
   -- Chunks
   chunkCount <- fromIntegral <$> getWord32le

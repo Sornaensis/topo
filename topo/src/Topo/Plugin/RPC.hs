@@ -108,6 +108,7 @@ import Topo.Simulation
   , SimContext(..)
   , TerrainWrites(..)
   , applyTerrainWrites
+  , defaultScheduleDecl
   , emptyTerrainWrites
   )
 import qualified Topo.Types
@@ -850,6 +851,7 @@ rpcSimNode conn =
       { snwId           = nodeId
       , snwOverlayName  = name
       , snwDependencies = deps
+      , snwSchedule     = Just defaultScheduleDecl
       , snwWriteTick    = \ctx overlay -> do
           if not (sppRequireWriteOverlay policy)
             then pure (Left "manifest missing writeOverlay capability")
@@ -858,7 +860,8 @@ rpcSimNode conn =
               case result of
                 Left err -> pure (Left (rpcErrorText err))
                 Right sr -> do
-                  let decodedOverlay = overlayFromJSON (ovSchema overlay) (srOverlay sr)
+                  let decodedOverlay = preserveHostProvenance overlay
+                        <$> overlayFromJSON (ovSchema overlay) (srOverlay sr)
                       decodedWrites = Payload.decodeTerrainWritesValue (srTerrainWrites sr)
                   pure $ case (decodedOverlay, decodedWrites) of
                     (Right nextOverlay, Right writes) -> Right (nextOverlay, writes)
@@ -869,6 +872,7 @@ rpcSimNode conn =
       { snrId           = nodeId
       , snrOverlayName  = name
       , snrDependencies = deps
+      , snrSchedule     = Just defaultScheduleDecl
       , snrReadTick     = \ctx overlay -> do
           if not (sppRequireWriteOverlay policy)
             then pure (Left "manifest missing writeOverlay capability")
@@ -876,11 +880,15 @@ rpcSimNode conn =
               result <- invokeSimulation conn ctx overlay ignoreProgress ignoreLog
               pure $ case result of
                 Left err -> Left (rpcErrorText err)
-                Right sr -> overlayFromJSON (ovSchema overlay) (srOverlay sr)
+                Right sr -> preserveHostProvenance overlay <$> overlayFromJSON (ovSchema overlay) (srOverlay sr)
       }
   where
     ignoreProgress _ = pure ()
     ignoreLog _ = pure ()
+
+preserveHostProvenance :: Overlay -> Overlay -> Overlay
+preserveHostProvenance existing decoded =
+  decoded { ovProvenance = ovProvenance existing }
 
 hasCapability :: RPCManifest -> Capability -> Bool
 hasCapability manifest capability = capability `elem` rmCapabilities manifest
@@ -971,5 +979,6 @@ applyGeneratorOverlayPayload manifest world (Just overlayValue) =
     Nothing -> Left "generator returned overlay data but no host overlay is registered"
     Just existingOverlay -> do
       decodedOverlay <- overlayFromJSON (ovSchema existingOverlay) overlayValue
-      let nextOverlays = insertOverlay decodedOverlay (Topo.World.twOverlays world)
+      let nextOverlay = preserveHostProvenance existingOverlay decodedOverlay
+          nextOverlays = insertOverlay nextOverlay (Topo.World.twOverlays world)
       Right world { Topo.World.twOverlays = nextOverlays }

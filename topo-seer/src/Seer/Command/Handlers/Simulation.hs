@@ -169,6 +169,11 @@ dagNodeToJSON node = object
   , "writes_terrain" .= sdnsWritesTerrain node
   , "status" .= sdnsStatus node
   , "status_detail" .= sdnsStatusDetail node
+  , "interval_ticks" .= sdnsScheduleIntervalTicks node
+  , "phase_ticks" .= sdnsSchedulePhaseTicks node
+  , "last_fire_tick" .= sdnsScheduleLastFireTick node
+  , "next_fire_tick" .= sdnsScheduleNextFireTick node
+  , "due" .= sdnsScheduleDue node
   ]
 
 tickLogToJSON :: SimulationTickLogEntry -> Value

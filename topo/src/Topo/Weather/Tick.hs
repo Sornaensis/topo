@@ -19,7 +19,7 @@ import Topo.Noise (noise2D, noise2DContinuous)
 import Topo.Overlay (Overlay(..), OverlayData(..), OverlayProvenance(..))
 import Topo.Planet (LatitudeMapping(..), PlanetConfig(..), WorldSlice(..), hexesPerDegreeLatitude)
 import Topo.Seed (deriveOverlaySeed)
-import Topo.Simulation (SimNode(..), SimNodeId(..), SimContext(..))
+import Topo.Simulation (SimNode(..), SimNodeId(..), SimContext(..), hourlyScheduleDecl)
 import Topo.Solar (SolarConfig(..), defaultSolarConfig, tileIrradiance)
 import Topo.TerrainGrid (chunkCoordBounds)
 import Topo.Types
@@ -538,6 +538,7 @@ weatherSimNode cfg = SimNodeReader
   { snrId           = SimNodeId "weather"
   , snrOverlayName  = "weather"
   , snrDependencies = []
+  , snrSchedule     = Just hourlyScheduleDecl
   , snrReadTick     = weatherTick cfg
   }
 

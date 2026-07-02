@@ -9,6 +9,8 @@ module Topo.Overlay.Provenance
 import Data.Text (Text)
 import Data.Word (Word32, Word64)
 
+import Topo.Simulation.Schedule (SimulationScheduleState)
+
 -- | Provenance metadata for a single overlay.
 data OverlayProvenance = OverlayProvenance
   { opSeed :: !Word64
@@ -17,6 +19,9 @@ data OverlayProvenance = OverlayProvenance
   -- ^ Monotonic overlay version counter.
   , opSource :: !Text
   -- ^ Overlay source tag (plugin name, builtin tag, etc.).
+  , opSchedule :: !(Maybe SimulationScheduleState)
+  -- ^ Persisted fire schedule cursor for this overlay, if bound to a scheduled
+  -- simulation node.
   } deriving (Eq, Show)
 
 -- | Empty provenance placeholder.
@@ -25,4 +30,5 @@ emptyOverlayProvenance = OverlayProvenance
   { opSeed = 0
   , opVersion = 1
   , opSource = "unknown"
+  , opSchedule = Nothing
   }

@@ -1657,6 +1657,11 @@ simulationDagNodeSchema = inlineObjectSchema
   , ("writes_terrain", booleanSchema)
   , ("status", stringSchema)
   , ("status_detail", nullableSchema stringSchema)
+  , ("interval_ticks", nullableSchema integerSchema)
+  , ("phase_ticks", nullableSchema integerSchema)
+  , ("last_fire_tick", nullableSchema integerSchema)
+  , ("next_fire_tick", nullableSchema integerSchema)
+  , ("due", nullableSchema booleanSchema)
   , ("enabled", booleanSchema)
   ]
 

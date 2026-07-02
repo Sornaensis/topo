@@ -694,6 +694,7 @@ spec = describe "Weather" $ do
         Nothing -> expectationFailure "weather overlay not found in twOverlays"
         Just ov -> do
           osName (ovSchema ov) `shouldBe` "weather"
+          (schedNextFireTick <$> opSchedule (ovProvenance ov)) `shouldBe` Just 1
           case ovData ov of
             DenseData chunks -> IntMap.null chunks `shouldBe` False
             SparseData _     -> expectationFailure "expected DenseData"

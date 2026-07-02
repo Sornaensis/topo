@@ -8,7 +8,7 @@ module Topo.Weather.Init
 
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Vector.Unboxed as U
-import Topo.Calendar (yearFraction, mkCalendarConfig)
+import Topo.Calendar (WorldTime(..), yearFraction, mkCalendarConfig)
 import Topo.Climate.ITCZ (seasonalITCZShift)
 import Topo.Math (clamp01)
 import Topo.Overlay (Overlay(..), OverlayData(..), OverlayProvenance(..), insertOverlay)
@@ -17,6 +17,7 @@ import Topo.Pipeline.Stage (StageId(..))
 import Topo.Planet (LatitudeMapping(..), PlanetConfig(..))
 import Topo.Plugin (logInfo, modifyWorldP)
 import Topo.Types
+import Topo.Simulation.Schedule (hourlyScheduleDecl, initialScheduleAt)
 import Topo.Weather.Config (WeatherConfig(..))
 import Topo.Weather.Grid (weatherChunkToOverlay, weatherOverlaySchema)
 import Topo.World (TerrainWorld(..))
@@ -59,6 +60,7 @@ initWeatherStage cfg = PipelineStage StageWeather "initWeather" "initWeather" No
               { opSeed = twSeed world
               , opVersion = 1
               , opSource = "weather"
+              , opSchedule = Just (initialScheduleAt (wtTick worldTime) hourlyScheduleDecl)
               }
           }
         overlays' = insertOverlay weatherOverlay (twOverlays world)

@@ -108,7 +108,8 @@ seedWeatherOverlay weatherChunks = Overlay
   , ovProvenance = OverlayProvenance
       { opSeed = 0
       , opVersion = 1
-        , opSource = Text.pack "simulation-spec"
+      , opSource = Text.pack "simulation-spec"
+      , opSchedule = Nothing
       }
   }
 
@@ -170,6 +171,7 @@ seedPluginOverlay tileCount value = Overlay
       { opSeed = 0
       , opVersion = 1
       , opSource = Text.pack "simulation-spec-plugin"
+      , opSchedule = Nothing
       }
   }
 
@@ -198,6 +200,7 @@ pluginSimulationBinding = SimulationNodeBinding
       { snrId = SimNodeId pluginOverlayName
       , snrOverlayName = pluginOverlayName
       , snrDependencies = [SimNodeId (Text.pack "weather")]
+      , snrSchedule = Nothing
       , snrReadTick = \ctx overlay ->
           if Map.member (Text.pack "weather") (scOverlays ctx)
             then pure (Right (incrementPluginOverlay overlay))
@@ -488,6 +491,7 @@ spec = describe "Simulation actor" $ do
               { snrId = SimNodeId (Text.pack "slow-plugin")
               , snrOverlayName = pluginOverlayName
               , snrDependencies = []
+              , snrSchedule = Nothing
               , snrReadTick = \_ overlay -> do
                   modifyIORef' runCountRef (+ 1)
                   _ <- tryPutMVar started ()
@@ -578,6 +582,14 @@ spec = describe "Simulation actor" $ do
 
     dagSnapshot <- getSimDagSnapshot simHandle
     sdsLevels dagSnapshot `shouldBe` [[Text.pack "weather"], [pluginOverlayName]]
+    let weatherNodes = filter ((== Text.pack "weather") . sdnsNodeId) (sdsNodes dagSnapshot)
+    case weatherNodes of
+      [node] -> do
+        sdnsScheduleIntervalTicks node `shouldBe` Just 1
+        sdnsSchedulePhaseTicks node `shouldBe` Just 0
+        sdnsScheduleLastFireTick node `shouldBe` Nothing
+        sdnsScheduleNextFireTick node `shouldBe` Just 1
+      _ -> expectationFailure "Expected one weather node in simulation DAG"
     let pluginNodes = filter ((== Just pluginOverlayName) . sdnsPlugin) (sdsNodes dagSnapshot)
     case pluginNodes of
       [node] -> do

@@ -101,10 +101,13 @@ import Topo.Weather (WeatherConfig, defaultWeatherConfig, weatherSimNode)
 import Topo.Simulation
   ( SimNode(..)
   , SimProgress(..)
+  , SimulationScheduleState(..)
   , SimStatus(..)
   , SimNodeId(..)
   , TerrainWrites(..)
   , applyTerrainWrites
+  , ensureWorldOverlaySchedules
+  , scheduleDue
   , simNodeDependencies
   , simNodeId
   , simNodeOverlayName
@@ -116,7 +119,7 @@ import Topo.Simulation.DAG
   )
 import Topo (ChunkId(..), getWeatherFromOverlay)
 import Topo.World (TerrainWorld(..))
-import Topo.Overlay (OverlayStore, overlayNames)
+import Topo.Overlay (Overlay(..), OverlayProvenance(..), OverlayStore, lookupOverlay, overlayNames)
 import Topo.WorldGen (WorldGenConfig(..))
 import Topo.Types (WorldConfig(..))
 import Data.Aeson (fromJSON, Result(..), Value)
@@ -154,6 +157,11 @@ data SimulationDagNodeSnapshot = SimulationDagNodeSnapshot
   , sdnsWritesTerrain :: !Bool
   , sdnsStatus :: !Text
   , sdnsStatusDetail :: !(Maybe Text)
+  , sdnsScheduleIntervalTicks :: !(Maybe Word64)
+  , sdnsSchedulePhaseTicks :: !(Maybe Word64)
+  , sdnsScheduleLastFireTick :: !(Maybe Word64)
+  , sdnsScheduleNextFireTick :: !(Maybe Word64)
+  , sdnsScheduleDue :: !(Maybe Bool)
   } deriving (Eq, Show)
 
 data SimulationTickLogEntry = SimulationTickLogEntry
@@ -506,7 +514,7 @@ simulationDagSnapshotFromState st = case ssDAG st of
     { sdsAvailable = True
     , sdsWorldBound = maybe False (const True) (ssWorld st)
     , sdsOverlayNames = maybe [] (overlayNames . twOverlays) (ssWorld st)
-    , sdsNodes = map (nodeSnapshot (ssNodeStatuses st) (ssNodeMetadata st)) (sdNodes dag)
+    , sdsNodes = map (nodeSnapshot (ssWorld st) (ssLastTick st) (ssNodeStatuses st) (ssNodeMetadata st)) (sdNodes dag)
     , sdsLevels = map (map simNodeIdText) (sdLevels dag)
     , sdsTerrainWriters = map simNodeIdText (sdTerrainWriters dag)
     , sdsLastTick = ssLastTick st
@@ -518,8 +526,8 @@ simulationDagSnapshotFromState st = case ssDAG st of
 pendingTickTarget :: SimState -> Maybe Word64
 pendingTickTarget st = ptRequestedTick <$> ssPendingTick st
 
-nodeSnapshot :: Map.Map Text (Text, Maybe Text) -> Map.Map Text (Text, Maybe Text) -> SimNode -> SimulationDagNodeSnapshot
-nodeSnapshot statuses metadata node = SimulationDagNodeSnapshot
+nodeSnapshot :: Maybe TerrainWorld -> Word64 -> Map.Map Text (Text, Maybe Text) -> Map.Map Text (Text, Maybe Text) -> SimNode -> SimulationDagNodeSnapshot
+nodeSnapshot maybeWorld lastTick statuses metadata node = SimulationDagNodeSnapshot
   { sdnsNodeId = nodeId
   , sdnsKind = kind
   , sdnsPlugin = pluginName
@@ -530,11 +538,20 @@ nodeSnapshot statuses metadata node = SimulationDagNodeSnapshot
       SimNodeReader{} -> False
   , sdnsStatus = status
   , sdnsStatusDetail = detail
+  , sdnsScheduleIntervalTicks = schedIntervalTicks <$> scheduleState
+  , sdnsSchedulePhaseTicks = schedPhaseTicks <$> scheduleState
+  , sdnsScheduleLastFireTick = scheduleState >>= schedLastFireTick
+  , sdnsScheduleNextFireTick = schedNextFireTick <$> scheduleState
+  , sdnsScheduleDue = scheduleDue lastTick <$> scheduleState
   }
   where
     nodeId = simNodeIdText (simNodeId node)
     (status, detail) = Map.findWithDefault ("idle", Nothing) nodeId statuses
     (kind, pluginName) = Map.findWithDefault ("builtin", Nothing) nodeId metadata
+    scheduleState = do
+      world <- maybeWorld
+      overlay <- lookupOverlay (simNodeOverlayName node) (twOverlays world)
+      opSchedule (ovProvenance overlay)
 
 readyNodeStatuses :: [SimNode] -> Map.Map Text (Text, Maybe Text)
 readyNodeStatuses nodes = Map.fromList
@@ -617,7 +634,8 @@ bindWorld world pluginBindings st = do
       bindings = builtinBindings <> pluginBindings
       nodes = map snbNode bindings
       nodeMetadata = bindingMetadata bindings
-      worldTick = wtTick (twWorldTime world)
+      scheduledWorld = ensureWorldOverlaySchedules nodes world
+      worldTick = wtTick (twWorldTime scheduledWorld)
   case ssHandles st of
     Just handles -> setUiSimTickCount (shUiHandle handles) worldTick
     Nothing -> pure ()
@@ -625,7 +643,7 @@ bindWorld world pluginBindings st = do
   case buildSimDAG nodes of
     Left err -> do
       logMsg st ("simulation: failed to build DAG: " <> err)
-      let st' = st { ssWorld = Just world
+      let st' = st { ssWorld = Just scheduledWorld
                    , ssDAG = Nothing
                    , ssCalCfg = Just calCfg
                    , ssLastTick = worldTick
@@ -642,7 +660,7 @@ bindWorld world pluginBindings st = do
         <> " terrainChunks=" <> Text.pack (show (IntMap.size (twTerrain world)))
         <> " climateChunks=" <> Text.pack (show (IntMap.size (twClimate world)))
         <> " nodes=" <> Text.pack (show (length nodes)))
-      let st' = st { ssWorld = Just world
+      let st' = st { ssWorld = Just scheduledWorld
                    , ssDAG = Just dag
                    , ssCalCfg = Just calCfg
                    , ssLastTick = worldTick

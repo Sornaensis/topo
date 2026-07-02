@@ -65,6 +65,7 @@ noopReader name deps = SimNodeReader
   { snrId           = SimNodeId name
   , snrOverlayName  = name
   , snrDependencies = deps
+  , snrSchedule     = Nothing
   , snrReadTick     = \_ctx ov -> pure (Right ov)
   }
 
@@ -74,6 +75,7 @@ recordingReader ref name deps = SimNodeReader
   { snrId           = SimNodeId name
   , snrOverlayName  = name
   , snrDependencies = deps
+  , snrSchedule     = Nothing
   , snrReadTick     = \_ctx ov -> do
       modifyIORef' ref (++ [name])
       pure (Right ov)
@@ -85,6 +87,7 @@ recordingWriter ref name deps = SimNodeWriter
   { snwId           = SimNodeId name
   , snwOverlayName  = name
   , snwDependencies = deps
+  , snwSchedule     = Nothing
   , snwWriteTick    = \_ctx ov -> do
       modifyIORef' ref (++ [name])
       pure (Right (ov, emptyTerrainWrites))
@@ -96,6 +99,7 @@ failingReader errMsg name deps = SimNodeReader
   { snrId           = SimNodeId name
   , snrOverlayName  = name
   , snrDependencies = deps
+  , snrSchedule     = Nothing
   , snrReadTick     = \_ctx _ov -> pure (Left errMsg)
   }
 
@@ -455,6 +459,7 @@ overlayIsolationSpec = describe "SimContext overlay isolation" $ do
           { snrId           = SimNodeId "inspector"
           , snrOverlayName  = "inspector"
           , snrDependencies = []
+          , snrSchedule     = Nothing
           , snrReadTick     = \ctx ov -> do
               -- scTerrain should have empty overlays (stripped by DAG)
               writeIORef leakRef (overlayCount (twOverlays (scTerrain ctx)))
@@ -478,6 +483,7 @@ overlayIsolationSpec = describe "SimContext overlay isolation" $ do
           { snwId           = SimNodeId "w-inspector"
           , snwOverlayName  = "w-inspector"
           , snwDependencies = []
+          , snwSchedule     = Nothing
           , snwWriteTick    = \ctx ov -> do
               writeIORef leakRef (overlayCount (twOverlays (scTerrain ctx)))
               pure (Right (ov, emptyTerrainWrites))

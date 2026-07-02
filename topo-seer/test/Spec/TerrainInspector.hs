@@ -135,8 +135,8 @@ spec = describe "terrain inspector view model" $ do
     tivLines view `shouldSatisfy` any ((> 96) . Text.length)
 
   it "scopes overlay compact panel details to the selected overlay" $ do
-    let culture = mkSparseFloatOverlay "culture" "Culture score" 0.87 (OverlayProvenance 99 3 "plugin:civ")
-        roads = mkSparseFloatOverlay "roads" "Road density" 0.42 (OverlayProvenance 100 4 "plugin:roads")
+    let culture = mkSparseFloatOverlay "culture" "Culture score" 0.87 (OverlayProvenance 99 3 "plugin:civ" Nothing)
+        roads = mkSparseFloatOverlay "roads" "Road density" 0.42 (OverlayProvenance 100 4 "plugin:roads" Nothing)
         snap = terrainSnapshotWithChunk { tsOverlayStore = insertOverlay roads (insertOverlay culture emptyOverlayStore) }
         ui = emptyUiState
           { uiHoverHex = Just (0, 0)
@@ -150,7 +150,7 @@ spec = describe "terrain inspector view model" $ do
     panel `shouldNotSatisfy` any (Text.isInfixOf "culture sparse_record")
 
   it "collapses overlay, plugin, provenance, and export details in the compact default" $ do
-    let provenance = OverlayProvenance 99 3 "plugin:civ"
+    let provenance = OverlayProvenance 99 3 "plugin:civ" Nothing
         overlay = mkSparseFloatOverlay "culture" "Culture score" 0.87 provenance
         snap = terrainSnapshotWithChunk { tsOverlayStore = insertOverlay overlay emptyOverlayStore }
         record = DataRecord (Map.fromList [("id", Number 1), ("name", String "Hillfort")])
@@ -204,7 +204,7 @@ spec = describe "terrain inspector view model" $ do
     tivLines view `shouldSatisfy` elem "(not loaded)"
 
   it "surfaces overlay records, schema, provenance, units, and JSON export affordances" $ do
-    let provenance = OverlayProvenance 99 3 "plugin:civ"
+    let provenance = OverlayProvenance 99 3 "plugin:civ" Nothing
         overlay = mkSparseFloatOverlay "culture" "Culture score" 0.87 provenance
         snap = terrainSnapshotWithChunk { tsOverlayStore = insertOverlay overlay emptyOverlayStore }
         ui = emptyUiState { uiHoverHex = Just (0, 0) }

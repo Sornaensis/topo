@@ -938,7 +938,7 @@ badDenseOverlayImport = object
 installOverlayFixture :: HeadlessApp -> IO ()
 installOverlayFixture app = do
   let handles = ccActorHandles (headlessCommandContext app)
-      provenance = OverlayProvenance 42 7 "fixture"
+      provenance = OverlayProvenance 42 7 "fixture" Nothing
       overlay = mkSparseFloatOverlay "weather" "Weather overlay" 0.5 provenance
       store = insertOverlay overlay emptyOverlayStore
   setOverlayStoreData (ahDataHandle handles) store

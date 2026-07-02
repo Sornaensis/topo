@@ -22,6 +22,11 @@ module Topo.Simulation
   , simNodeId
   , simNodeOverlayName
   , simNodeDependencies
+  , simNodeScheduleDecl
+  , ensureOverlaySchedule
+  , ensureWorldOverlaySchedules
+    -- * Schedule declarations
+  , module Topo.Simulation.Schedule
     -- * Terrain writes
   , TerrainWrites(..)
   , emptyTerrainWrites
@@ -38,10 +43,17 @@ import Data.Map.Strict (Map)
 import Data.Text (Text)
 import Data.Word (Word64)
 
-import Topo.Calendar (CalendarDate, WorldTime)
-import Topo.Overlay (Overlay, OverlayStore)
-import Topo.Types (TerrainChunk, ClimateChunk, VegetationChunk)
+import Topo.Calendar (CalendarDate, WorldTime(..))
+import Topo.Overlay
+  ( Overlay(..)
+  , OverlayProvenance(..)
+  , OverlayStore(..)
+  , insertOverlay
+  , lookupOverlay
+  )
+import Topo.Simulation.Schedule
 import Topo.World (TerrainWorld(..))
+import Topo.Types (TerrainChunk, ClimateChunk, VegetationChunk)
 
 -- ---------------------------------------------------------------------------
 -- Node identity
@@ -89,6 +101,8 @@ data SimNode
       -- ^ Which overlay this node owns and updates.
     , snrDependencies :: ![SimNodeId]
       -- ^ Which other sim nodes must run before this one.
+    , snrSchedule     :: !(Maybe SimulationScheduleDecl)
+      -- ^ Static cadence declaration for this node, if it is scheduled.
     , snrReadTick     :: SimContext -> Overlay -> IO (Either Text Overlay)
       -- ^ Given read-only context and current overlay state,
       -- produce an updated overlay.  No terrain mutation.
@@ -100,6 +114,8 @@ data SimNode
       -- ^ Which overlay this node owns and updates.
     , snwDependencies :: ![SimNodeId]
       -- ^ Which other sim nodes must run before this one.
+    , snwSchedule     :: !(Maybe SimulationScheduleDecl)
+      -- ^ Static cadence declaration for this node, if it is scheduled.
     , snwWriteTick    :: SimContext -> Overlay -> IO (Either Text (Overlay, TerrainWrites))
       -- ^ Overlay update plus terrain mutations (whole-chunk
       -- replacements).
@@ -119,6 +135,39 @@ simNodeOverlayName (SimNodeWriter{snwOverlayName = n}) = n
 simNodeDependencies :: SimNode -> [SimNodeId]
 simNodeDependencies (SimNodeReader{snrDependencies = ds}) = ds
 simNodeDependencies (SimNodeWriter{snwDependencies = ds}) = ds
+
+-- | Extract the optional static schedule declaration from either constructor.
+simNodeScheduleDecl :: SimNode -> Maybe SimulationScheduleDecl
+simNodeScheduleDecl (SimNodeReader{snrSchedule = decl}) = decl
+simNodeScheduleDecl (SimNodeWriter{snwSchedule = decl}) = decl
+
+-- | Fill a missing overlay schedule from a node declaration.
+--
+-- Existing persisted schedules are preserved exactly.  A 'Nothing'
+-- declaration leaves the overlay unchanged.
+ensureOverlaySchedule :: Word64 -> Maybe SimulationScheduleDecl -> Overlay -> Overlay
+ensureOverlaySchedule _ Nothing overlay = overlay
+ensureOverlaySchedule currentTick (Just decl) overlay =
+  case opSchedule (ovProvenance overlay) of
+    Just _ -> overlay
+    Nothing -> overlay
+      { ovProvenance = (ovProvenance overlay)
+          { opSchedule = Just (initialScheduleAt currentTick decl)
+          }
+      }
+
+-- | Fill missing schedules on overlays owned by the supplied nodes.
+ensureWorldOverlaySchedules :: [SimNode] -> TerrainWorld -> TerrainWorld
+ensureWorldOverlaySchedules nodes world =
+  world { twOverlays = foldr ensureNodeSchedule (twOverlays world) nodes }
+  where
+    currentTick = wtTick (twWorldTime world)
+    ensureNodeSchedule node store =
+      case lookupOverlay (simNodeOverlayName node) store of
+        Nothing -> store
+        Just overlay -> insertOverlay
+          (ensureOverlaySchedule currentTick (simNodeScheduleDecl node) overlay)
+          store
 
 -- ---------------------------------------------------------------------------
 -- Terrain writes

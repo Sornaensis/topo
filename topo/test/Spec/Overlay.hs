@@ -11,7 +11,7 @@ module Spec.Overlay (spec) where
 import Data.Aeson (Value(..), encode, eitherDecodeStrict')
 import Control.Monad (replicateM_)
 import Data.Bits ((.&.), xor)
-import Data.Binary.Get (bytesRead, getByteString, getWord8, getWord32le, getWord64le, runGetOrFail)
+import Data.Binary.Get (bytesRead, getByteString, getWord8, getWord32le, getWord64le, runGetOrFail, skip)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.IntMap.Strict (IntMap)
@@ -31,6 +31,7 @@ import Test.QuickCheck hiding ((.&.))
 import Topo.Overlay
   ( Overlay(..)
   , OverlayChunk(..)
+  , OverlayProvenance(..)
   , OverlayData(..)
   , OverlayRecord(..)
   , OverlayValue(..)
@@ -115,6 +116,10 @@ import Topo.Overlay.Indexed
   , deleteSparseRecord
   )
 import qualified Topo.Overlay.Indexed as Indexed
+import Topo.Simulation.Schedule
+  ( SimulationCatchUpPolicy(..)
+  , SimulationScheduleState(..)
+  )
 
 ------------------------------------------------------------------------
 -- Test schema fixtures
@@ -161,6 +166,24 @@ testDenseSchema = case parseOverlaySchema (encodeOverlaySchema rawSchema) of
       , osFieldIndex = Map.empty
       }
 
+-- | A sparse schema with a list field for header descriptor coverage.
+testListSchema :: OverlaySchema
+testListSchema = case parseOverlaySchema (encodeOverlaySchema rawSchema) of
+    Right s -> s
+    Left  e -> error ("testListSchema parse failed: " <> show e)
+  where
+    rawSchema = OverlaySchema
+      { osName = "test-list"
+      , osVersion = "1.0.0"
+      , osDescription = "Test sparse list overlay"
+      , osFields =
+          [ OverlayFieldDef "scores" (OFList OFInt) (Array V.empty) False Nothing
+          ]
+      , osStorage = StorageSparse
+      , osDependencies = OverlayDeps False []
+      , osFieldIndex = Map.empty
+      }
+
 -- | A sample sparse record for the test schema.
 testRecord :: OverlayRecord
 testRecord = OverlayRecord $ V.fromList
@@ -169,6 +192,9 @@ testRecord = OverlayRecord $ V.fromList
   , OVBool True
   , OVText "Gondolin"
   ]
+
+testListRecord :: OverlayRecord
+testListRecord = OverlayRecord $ V.singleton (OVList (V.fromList [OVInt 1, OVInt 2]))
 
 spec :: Spec
 spec = do
@@ -791,6 +817,13 @@ chunkIoSpec = describe "Overlay.Storage chunk I/O" $ do
   let zstdOptions = defaultOverlayStorageOptions
         { osoCompression = CompressionZstd
         }
+      scheduleFixture = SimulationScheduleState
+        { schedIntervalTicks = 24
+        , schedPhaseTicks = 3
+        , schedLastFireTick = Just 27
+        , schedNextFireTick = 51
+        , schedCatchUpPolicy = SkipMissed
+        }
 
   it "loads full sparse overlay from indexed .topolay format" $
     withSystemTempDirectory "overlay-indexed-full-load" $ \dir -> do
@@ -812,6 +845,121 @@ chunkIoSpec = describe "Overlay.Storage chunk I/O" $ do
           case ovData loadedOverlay of
             DenseData _ -> expectationFailure "expected sparse overlay"
             SparseData chunks -> IntMap.member 7 chunks `shouldBe` True
+
+  it "loads old/no-schedule overlays with Nothing schedule provenance" $
+    withSystemTempDirectory "overlay-no-schedule-load" $ \dir -> do
+      let chunk = OverlayChunk (IntMap.singleton 3 testRecord)
+          overlay = Overlay
+            { ovSchema = testSparseSchema
+            , ovData = SparseData (IntMap.singleton 7 chunk)
+            , ovProvenance = emptyOverlayProvenance
+            }
+      saveResult <- saveOverlay dir overlay
+      case saveResult of
+        Left err -> expectationFailure (show err)
+        Right () -> pure ()
+
+      loadResult <- loadOverlay dir testSparseSchema
+      case loadResult of
+        Left err -> expectationFailure (show err)
+        Right loadedOverlay -> opSchedule (ovProvenance loadedOverlay) `shouldBe` Nothing
+
+  it "round-trips sparse overlay schedule provenance" $
+    withSystemTempDirectory "overlay-schedule-roundtrip" $ \dir -> do
+      let chunk = OverlayChunk (IntMap.singleton 3 testRecord)
+          overlay = Overlay
+            { ovSchema = testSparseSchema
+            , ovData = SparseData (IntMap.singleton 7 chunk)
+            , ovProvenance = emptyOverlayProvenance
+                { opSchedule = Just scheduleFixture
+                }
+            }
+      saveResult <- saveOverlay dir overlay
+      case saveResult of
+        Left err -> expectationFailure (show err)
+        Right () -> pure ()
+
+      loadResult <- loadOverlay dir testSparseSchema
+      case loadResult of
+        Left err -> expectationFailure (show err)
+        Right loadedOverlay -> opSchedule (ovProvenance loadedOverlay) `shouldBe` Just scheduleFixture
+
+  it "round-trips scheduled sparse overlays with list field descriptors" $
+    withSystemTempDirectory "overlay-schedule-list-roundtrip" $ \dir -> do
+      let chunk = OverlayChunk (IntMap.singleton 3 testListRecord)
+          overlay = Overlay
+            { ovSchema = testListSchema
+            , ovData = SparseData (IntMap.singleton 7 chunk)
+            , ovProvenance = emptyOverlayProvenance
+                { opSchedule = Just scheduleFixture
+                }
+            }
+      saveResult <- saveOverlay dir overlay
+      case saveResult of
+        Left err -> expectationFailure (show err)
+        Right () -> pure ()
+
+      loadResult <- loadOverlay dir testListSchema
+      case loadResult of
+        Left err -> expectationFailure (show err)
+        Right loadedOverlay -> do
+          opSchedule (ovProvenance loadedOverlay) `shouldBe` Just scheduleFixture
+          case ovData loadedOverlay of
+            DenseData _ -> expectationFailure "expected sparse overlay"
+            SparseData chunks -> do
+              case IntMap.lookup 7 chunks of
+                Nothing -> expectationFailure "expected chunk 7"
+                Just chunk7 -> chunkLookup 3 chunk7 `shouldBe` Just testListRecord
+
+      chunkResult <- loadOverlayChunk dir "test-list" 7
+      case chunkResult of
+        Left err -> expectationFailure (show err)
+        Right loadedChunk -> chunkLookup 3 loadedChunk `shouldBe` Just testListRecord
+
+  it "loads sparse chunks from indexed overlays with schedule metadata" $
+    withSystemTempDirectory "overlay-scheduled-chunk-io" $ \dir -> do
+      let chunk = OverlayChunk (IntMap.singleton 3 testRecord)
+          overlay = Overlay
+            { ovSchema = testSparseSchema
+            , ovData = SparseData (IntMap.singleton 7 chunk)
+            , ovProvenance = emptyOverlayProvenance
+                { opSchedule = Just scheduleFixture
+                }
+            }
+      saveResult <- saveOverlay dir overlay
+      case saveResult of
+        Left err -> expectationFailure (show err)
+        Right () -> pure ()
+
+      loadResult <- loadOverlayChunk dir "test-sparse" 7
+      case loadResult of
+        Left err -> expectationFailure (show err)
+        Right loadedChunk -> chunkLookup 3 loadedChunk `shouldBe` Just testRecord
+
+  it "loads sparse chunks from zstd overlays with schedule metadata" $
+    withSystemTempDirectory "overlay-zstd-scheduled-chunk" $ \dir -> do
+      let chunk = OverlayChunk (IntMap.singleton 3 testRecord)
+          overlay = Overlay
+            { ovSchema = testSparseSchema
+            , ovData = SparseData (IntMap.singleton 7 chunk)
+            , ovProvenance = emptyOverlayProvenance
+                { opSchedule = Just scheduleFixture
+                }
+            }
+      saveResult <- saveOverlayWithOptions zstdOptions dir overlay
+      case saveResult of
+        Left err -> expectationFailure (show err)
+        Right () -> pure ()
+
+      fullLoad <- loadOverlay dir testSparseSchema
+      case fullLoad of
+        Left err -> expectationFailure (show err)
+        Right loadedOverlay -> opSchedule (ovProvenance loadedOverlay) `shouldBe` Just scheduleFixture
+
+      loadResult <- loadOverlayChunk dir "test-sparse" 7
+      case loadResult of
+        Left err -> expectationFailure (show err)
+        Right loadedChunk -> chunkLookup 3 loadedChunk `shouldBe` Just testRecord
 
   it "loads a sparse chunk by overlay name" $
     withSystemTempDirectory "overlay-chunk-io" $ \dir -> do
@@ -1086,13 +1234,25 @@ chunkIoSpec = describe "Overlay.Storage chunk I/O" $ do
       replicateM_ fieldCount $ do
         nameLen <- fromIntegral <$> getWord32le
         _ <- getByteString nameLen
-        _ <- getWord8
-        pure ()
+        fieldTag <- getWord8
+        if fieldTag == 4
+          then getWord8 >> pure ()
+          else pure ()
       _ <- getWord64le
       _ <- getWord32le
       sourceLen <- fromIntegral <$> getWord32le
       _ <- getByteString sourceLen
       flags <- getWord8
+      if (flags .&. 0x04) /= 0
+        then do
+          _ <- getWord64le
+          _ <- getWord64le
+          hasLast <- getWord8
+          if hasLast == 1 then skip 8 else pure ()
+          _ <- getWord64le
+          _ <- getWord8
+          pure ()
+        else pure ()
       _ <- getWord32le
       _ <- getWord32le
       payloadLen <- fromIntegral <$> getWord32le

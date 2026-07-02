@@ -303,7 +303,7 @@ data Overlay = Overlay
   , ovData   :: !OverlayData
   -- ^ The overlay's tile data, in the layout declared by the schema.
   , ovProvenance :: !OverlayProvenance
-  -- ^ Overlay provenance metadata (seed/version/source).
+  -- ^ Overlay provenance metadata (seed/version/source/schedule).
   } deriving (Eq, Show)
 
 -- | Create an empty overlay from a schema (no populated data).

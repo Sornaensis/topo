@@ -337,6 +337,7 @@ withSeedWeather world (ChunkId chunkId) climate =
           { opSeed = 0
           , opVersion = 1
           , opSource = Text.pack "auto-tick-spec"
+          , opSchedule = Nothing
           }
       }
 
@@ -390,6 +391,7 @@ seedPluginOverlay tileCount value = Overlay
       { opSeed = 0
       , opVersion = 1
       , opSource = Text.pack "auto-tick-spec-plugin"
+      , opSchedule = Nothing
       }
   }
 
@@ -418,6 +420,7 @@ pluginSimulationBinding = SimulationNodeBinding
       { snrId = SimNodeId pluginOverlayName
       , snrOverlayName = pluginOverlayName
       , snrDependencies = [SimNodeId (Text.pack "weather")]
+      , snrSchedule = Nothing
       , snrReadTick = \ctx overlay ->
           if Map.member (Text.pack "weather") (scOverlays ctx)
             then pure (Right (incrementPluginOverlay overlay))
@@ -433,6 +436,7 @@ responsiveSimulationBinding workerStarted runCountRef = SimulationNodeBinding
       { snrId = SimNodeId (Text.pack "responsive-slow-plugin")
       , snrOverlayName = pluginOverlayName
       , snrDependencies = [SimNodeId (Text.pack "weather")]
+      , snrSchedule = Nothing
       , snrReadTick = \ctx overlay ->
           if Map.member (Text.pack "weather") (scOverlays ctx)
             then do

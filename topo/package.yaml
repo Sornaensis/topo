@@ -91,6 +91,7 @@ library:
     - Topo.Units
     - Topo.Units.Config
     - Topo.Simulation
+    - Topo.Simulation.Schedule
     - Topo.Simulation.DAG
     - Topo.Plugin.DataResource
     - Topo.Plugin.DataResource.Validation

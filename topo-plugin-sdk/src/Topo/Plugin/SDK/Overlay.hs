@@ -27,6 +27,17 @@ module Topo.Plugin.SDK.Overlay
   , OverlayRecord(..)
   , OverlayChunk(..)
   , OverlayProvenance(..)
+    -- * Schedule metadata
+  , SimulationCatchUpPolicy(..)
+  , SimulationScheduleDecl(..)
+  , SimulationScheduleState(..)
+  , defaultCatchUpPolicy
+  , defaultScheduleDecl
+  , hourlyScheduleDecl
+  , initialScheduleAt
+  , scheduleDue
+  , markScheduleFired
+  , ensureNextFireAfter
     -- * Schema types
   , OverlaySchema(..)
   , OverlayFieldDef(..)
@@ -80,6 +91,18 @@ import Topo.Overlay.Schema
   , OverlayStorage(..)
   , fieldIndex
   , parseOverlaySchema
+  )
+import Topo.Simulation.Schedule
+  ( SimulationCatchUpPolicy(..)
+  , SimulationScheduleDecl(..)
+  , SimulationScheduleState(..)
+  , defaultCatchUpPolicy
+  , defaultScheduleDecl
+  , ensureNextFireAfter
+  , hourlyScheduleDecl
+  , initialScheduleAt
+  , markScheduleFired
+  , scheduleDue
   )
 
 -- | Look up a record at a given chunk and tile index.

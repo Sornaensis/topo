@@ -3,6 +3,7 @@
 module Topo.Overlay.Storage.ChunkIndex
   ( overlayFlagChunkIndex
   , overlayFlagZstd
+  , overlayFlagSchedule
   , overlaySupportsFlags
   , overlayHasChunkIndex
   , chunkEntriesForData
@@ -47,6 +48,7 @@ import Topo.Overlay.Export
 import Topo.Overlay.Schema
   ( OverlaySchema(..)
   )
+import Topo.Simulation.Schedule (catchUpPolicyFromTag)
 
 overlayFlagChunkIndex :: Word8
 overlayFlagChunkIndex = 0x01
@@ -54,8 +56,11 @@ overlayFlagChunkIndex = 0x01
 overlayFlagZstd :: Word8
 overlayFlagZstd = 0x02
 
+overlayFlagSchedule :: Word8
+overlayFlagSchedule = 0x04
+
 overlaySupportsFlags :: Word8 -> Bool
-overlaySupportsFlags flags = (flags .&. complement (overlayFlagChunkIndex .|. overlayFlagZstd)) == 0
+overlaySupportsFlags flags = (flags .&. complement (overlayFlagChunkIndex .|. overlayFlagZstd .|. overlayFlagSchedule)) == 0
 
 overlayHasChunkIndex :: Word8 -> Bool
 overlayHasChunkIndex flags = (flags .&. overlayFlagChunkIndex) /= 0
@@ -139,8 +144,10 @@ getSparseChunkFromBytes schema targetCid fullBytes = do
   replicateM_ fieldCount $ do
     nameLen <- fromIntegral <$> getWord32le
     _ <- getByteString nameLen
-    _ <- getWord8
-    pure ()
+    fieldTag <- getWord8
+    if fieldTag == 4  -- list fields include one element-type byte
+      then getWord8 >> pure ()
+      else pure ()
   _ <- getWord64le
   _ <- getWord32le
   sourceLen <- fromIntegral <$> getWord32le
@@ -149,6 +156,7 @@ getSparseChunkFromBytes schema targetCid fullBytes = do
   if not (overlaySupportsFlags flags)
     then fail ("overlay: unsupported flags byte 0x" <> show flags)
     else pure ()
+  skipScheduleBlockIfPresent flags
   chunkCount <- fromIntegral <$> getWord32le
   if overlayHasChunkIndex flags
     then do
@@ -174,6 +182,29 @@ getSparseChunkFromBytes schema targetCid fullBytes = do
             Left (_, _, err) -> fail err
             Right (_, _, chunk) -> pure chunk
     else scanEntries flags schema targetCid chunkCount
+
+skipScheduleBlockIfPresent :: Word8 -> Get ()
+skipScheduleBlockIfPresent flags
+  | (flags .&. overlayFlagSchedule) == 0 = pure ()
+  | otherwise = do
+      interval <- getWord64le
+      if interval < 1
+        then fail "overlay: schedule interval must be at least 1"
+        else pure ()
+      phase <- getWord64le
+      if phase >= interval
+        then fail "overlay: schedule phase must be less than interval"
+        else pure ()
+      hasLast <- getWord8
+      case hasLast of
+        0 -> pure ()
+        1 -> skip 8
+        other -> fail ("overlay: invalid schedule last-fire tag 0x" <> show other)
+      _nextFire <- getWord64le
+      policyTag <- getWord8
+      case catchUpPolicyFromTag policyTag of
+        Just _ -> pure ()
+        Nothing -> fail ("overlay: unknown schedule catch-up policy tag 0x" <> show policyTag)
 
 scanEntries :: Word8 -> OverlaySchema -> Int -> Int -> Get OverlayChunk
 scanEntries _ _ _ 0 = pure emptyOverlayChunk
