@@ -23,11 +23,13 @@ import Actor.AtlasManager (AtlasJob(..), AtlasManager, drainAtlasJobs)
 import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..), getTerrainSnapshot, replaceTerrainData)
 import Actor.Log (Log, getLogSnapshot, leMessage, lsEntries)
 import Actor.Simulation
-  ( Simulation
+  ( AutoTickStepResult(..)
+  , Simulation
   , SimulationDagNodeSnapshot(..)
   , SimulationDagSnapshot(..)
   , SimulationNodeBinding(..)
   , SimulationTickLogEntry(..)
+  , autoTickStep
   , getSimDagSnapshot
   , requestSimTick
   , setSimHandles
@@ -38,9 +40,10 @@ import Actor.SnapshotReceiver
   ( newDataSnapshotRef
   , newTerrainSnapshotRef
   , newSnapshotVersionRef
+  , readSnapshotVersion
   , readTerrainSnapshot
   )
-import Actor.UI (Ui, ViewMode(..), getUiSnapshot, setUiDayNightEnabled, uiRenderWaterLevel, uiSimTickCount)
+import Actor.UI (Ui, ViewMode(..), getUiSnapshot, setUiDayNightEnabled, setUiViewMode, uiRenderWaterLevel, uiSimTickCount)
 
 import Topo
   ( ChunkId(..)
@@ -399,6 +402,55 @@ spec = describe "Simulation actor" $ do
     sdsAvailable dagSnapshot `shouldBe` True
     map sdnsStatus (sdsNodes dagSnapshot) `shouldSatisfy` elem (Text.pack "completed")
     map stleStatus (sdsTickLogs dagSnapshot) `shouldSatisfy` elem (Text.pack "completed")
+
+  it "coalesces hidden auto-tick snapshot publication while manual and visible updates publish immediately" $ withSystem $ \system -> do
+    simHandle <- get @Simulation system
+    dataHandle <- get @Data system
+    logHandle <- get @Log system
+    uiHandle <- get @Ui system
+    dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
+    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
+    snapshotVersionRef <- newSnapshotVersionRef
+    atlasHandle <- get @AtlasManager system
+
+    setSimHandles simHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasHandle
+
+    let config = WorldConfig { wcChunkSize = 8 }
+        world1 = (emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice)
+          { twOverlays = insertOverlay (seedWeatherOverlay IntMap.empty) emptyOverlayStore
+          }
+
+    replaceTerrainData dataHandle world1
+    _ <- getTerrainSnapshot dataHandle
+    setSimWorld simHandle world1
+    dag0 <- getSimDagSnapshot simHandle
+    version0 <- readSnapshotVersion snapshotVersionRef
+
+    autoTickStep simHandle (Just (sdsWorldEpoch dag0)) `shouldReturn` AutoTickApplied 1
+    version1 <- readSnapshotVersion snapshotVersionRef
+    version1 `shouldSatisfy` (> version0)
+
+    dag1 <- getSimDagSnapshot simHandle
+    autoTickStep simHandle (Just (sdsWorldEpoch dag1)) `shouldReturn` AutoTickApplied 2
+    version2 <- readSnapshotVersion snapshotVersionRef
+    version2 `shouldBe` version1
+    uiAfterAuto <- getUiSnapshot uiHandle
+    uiSimTickCount uiAfterAuto `shouldBe` 2
+
+    requestSimTick simHandle 3
+    manualPublished <- awaitTrue 500 $ do
+      version <- readSnapshotVersion snapshotVersionRef
+      pure (version > version2)
+    manualPublished `shouldBe` True
+    version3 <- readSnapshotVersion snapshotVersionRef
+    uiAfterManual <- getUiSnapshot uiHandle
+    uiSimTickCount uiAfterManual `shouldBe` 3
+
+    setUiViewMode uiHandle (ViewOverlay (Text.pack "weather") 0)
+    dag3 <- getSimDagSnapshot simHandle
+    autoTickStep simHandle (Just (sdsWorldEpoch dag3)) `shouldReturn` AutoTickApplied 4
+    version4 <- readSnapshotVersion snapshotVersionRef
+    version4 `shouldSatisfy` (> version3)
 
   it "keeps control calls responsive and folds only the latest queued tick while a worker runs" $ withSystem $ \system -> do
     simHandle <- get @Simulation system

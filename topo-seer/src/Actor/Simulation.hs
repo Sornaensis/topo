@@ -284,6 +284,8 @@ data SimState = SimState
     -- ^ Node provenance metadata: kind plus optional plugin name.
   , ssTickLogs :: ![SimulationTickLogEntry]
     -- ^ Bounded tick and per-node status log exposed through the DAG surface.
+  , ssLastAutoStatusPublishNs :: !Word64
+    -- ^ Last snapshot-version bump for auto-tick status-only publication.
   }
 
 emptySimState :: SimState
@@ -302,6 +304,7 @@ emptySimState = SimState
   , ssNodeStatuses = Map.empty
   , ssNodeMetadata = Map.empty
   , ssTickLogs = []
+  , ssLastAutoStatusPublishNs = 0
   }
 
 -- ---------------------------------------------------------------------------
@@ -358,6 +361,7 @@ actor Simulation
       , ssNodeStatuses = Map.empty
       , ssNodeMetadata = Map.empty
       , ssTickLogs = []
+      , ssLastAutoStatusPublishNs = 0
       }
     , ()
     )
@@ -629,6 +633,7 @@ bindWorld world pluginBindings st = do
                    , ssWorldTransition = False
                    , ssNodeStatuses = Map.empty
                    , ssNodeMetadata = nodeMetadata
+                   , ssLastAutoStatusPublishNs = 0
                    }
       if drainPending then maybeProcessPendingTick st' else pure st' { ssPendingTick = Nothing }
     Right dag -> do
@@ -645,6 +650,7 @@ bindWorld world pluginBindings st = do
                    , ssWorldTransition = False
                    , ssNodeStatuses = readyNodeStatuses nodes
                    , ssNodeMetadata = nodeMetadata
+                   , ssLastAutoStatusPublishNs = 0
                    }
       if drainPending then maybeProcessPendingTick st' else pure st' { ssPendingTick = Nothing }
 
@@ -901,7 +907,8 @@ integrateFreshTickResult result st
           case terrainSnapMaybe of
             Just terrainSnap -> writeTerrainSnapshot (shTerrainSnapshotRef handles) terrainSnap
             Nothing -> pure ()
-          bumpSnapshotVersion (shSnapshotVersionRef handles)
+          let visibleDataChanged = viewAffectedBySimulationPublication (uiViewMode uiSnap) terrainChanged climateChanged weatherChanged vegetationChanged overlayChanged
+          stPublished <- publishTickSnapshot handles st (isAutoTickCompletion (strCompletion result)) (uiDayNightEnabled uiSnap || visibleDataChanged)
           terrainSnapForAtlas <- case terrainSnapMaybe of
             Just terrainSnap -> pure (Just terrainSnap)
             Nothing
@@ -924,11 +931,11 @@ integrateFreshTickResult result st
           let completeMsg = "simulation: tick " <> Text.pack (show (strAppliedTick result))
                 <> " completed in " <> Text.pack (show (round (strElapsedMs result) :: Int)) <> "ms"
               completeLog = SimulationTickLogEntry (strAppliedTick result) Nothing "completed" completeMsg (Just (strElapsedMs result))
-              st' = st
+              st' = stPublished
                 { ssWorld = Just world''
                 , ssLastTick = strAppliedTick result
                 , ssNodeStatuses = strNodeStatuses result
-                , ssTickLogs = boundedTickLogs (ssTickLogs st <> strProgressLogs result <> [completeLog])
+                , ssTickLogs = boundedTickLogs (ssTickLogs stPublished <> strProgressLogs result <> [completeLog])
                 }
           appendLog (shLogHandle handles) (LogEntry LogInfo completeMsg)
           completeTickRequest (strCompletion result) (AutoTickApplied (strAppliedTick result))
@@ -954,6 +961,32 @@ viewAffectedBySimulationPublication mode terrainChanged climateChanged weatherCh
     ViewVegetation -> terrainChanged || vegetationChanged
     ViewOverlay{}  -> terrainChanged || overlayChanged
     _              -> terrainChanged
+
+isAutoTickCompletion :: SimulationTickCompletion -> Bool
+isAutoTickCompletion SimulationTickNoCompletion = False
+isAutoTickCompletion SimulationTickAutoCompletion{} = True
+
+publishTickSnapshot :: SimHandles -> SimState -> Bool -> Bool -> IO SimState
+publishTickSnapshot handles st isAutoTick immediateDataVisible
+  | not isAutoTick || immediateDataVisible = do
+      bumpSnapshotVersion (shSnapshotVersionRef handles)
+      stampAutoPublish st isAutoTick
+  | otherwise = do
+      now <- getMonotonicTimeNSec
+      if now - ssLastAutoStatusPublishNs st >= autoTickStatusPublishIntervalNs
+        then do
+          bumpSnapshotVersion (shSnapshotVersionRef handles)
+          pure st { ssLastAutoStatusPublishNs = now }
+        else pure st
+
+stampAutoPublish :: SimState -> Bool -> IO SimState
+stampAutoPublish st False = pure st
+stampAutoPublish st True = do
+  now <- getMonotonicTimeNSec
+  pure st { ssLastAutoStatusPublishNs = now }
+
+autoTickStatusPublishIntervalNs :: Word64
+autoTickStatusPublishIntervalNs = 250000000
 
 signalInFlightDone :: SimInFlight -> IO ()
 signalInFlightDone inFlight = do
