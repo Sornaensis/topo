@@ -10,11 +10,13 @@ module Actor.AtlasResult
   ) where
 
 import Actor.AtlasCache (AtlasKey)
+import Actor.SnapshotReceiver (SnapshotVersion)
 import UI.TerrainAtlas (AtlasTileGeometry)
 
 -- | Result payload from CPU atlas build work.
 data AtlasBuildResult = AtlasBuildResult
   { abrKey       :: !AtlasKey
+  , abrSnapshotVersion :: !SnapshotVersion
   , abrHexRadius :: !Int
   , abrTile      :: !AtlasTileGeometry
   , abrDayNightTile :: !(Maybe AtlasTileGeometry)

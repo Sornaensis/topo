@@ -95,6 +95,7 @@ runMainLoop runtimeCfg actors sdl = do
         , rfeAtlasSchedulerHandle = aaAtlasSchedulerHandle actors
         , rfeAtlasScheduleRef = aaAtlasScheduleRef actors
         , rfeAtlasResultRef = aaAtlasResultRef actors
+        , rfeAtlasFreshnessRef = aaAtlasFreshnessRef actors
         , rfeScreenshotRef = aaScreenshotRef actors
         , rfeTraceHandle = traceH
         }

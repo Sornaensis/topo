@@ -79,7 +79,7 @@ import Actor.Log
   , LogLevel(..)
   , appendLog
   )
-import Actor.SnapshotReceiver (DataSnapshotRef, TerrainSnapshotRef, SnapshotVersionRef, writeTerrainSnapshot, bumpSnapshotVersion)
+import Actor.SnapshotReceiver (DataSnapshotRef, TerrainSnapshotRef, SnapshotVersionRef, readSnapshotVersion, writeTerrainSnapshot, bumpSnapshotVersion)
 import Actor.UI
   ( Ui
   , UiState(..)
@@ -909,6 +909,7 @@ integrateFreshTickResult result st
             Nothing -> pure ()
           let visibleDataChanged = viewAffectedBySimulationPublication (uiViewMode uiSnap) terrainChanged climateChanged weatherChanged vegetationChanged overlayChanged
           stPublished <- publishTickSnapshot handles st (isAutoTickCompletion (strCompletion result)) (uiDayNightEnabled uiSnap || visibleDataChanged)
+          snapshotVersion <- readSnapshotVersion (shSnapshotVersionRef handles)
           terrainSnapForAtlas <- case terrainSnapMaybe of
             Just terrainSnap -> pure (Just terrainSnap)
             Nothing
@@ -922,6 +923,7 @@ integrateFreshTickResult result st
                         { ajKey = atlasKey
                         , ajViewMode = uiViewMode uiSnap
                         , ajWaterLevel = uiRenderWaterLevel uiSnap
+                        , ajSnapshotVersion = snapshotVersion
                         , ajTerrain = terrainSnap
                         , ajHexRadius = zsHexRadius stage
                         , ajAtlasScale = zsAtlasScale stage

@@ -43,7 +43,7 @@ import Actor.Data
   , setTerrainChunkData
   )
 import Actor.Log (Log, LogEntry(..), LogLevel(..), appendLog)
-import Actor.SnapshotReceiver (bumpSnapshotVersion, writeDataSnapshot, writeTerrainSnapshot)
+import Actor.SnapshotReceiver (bumpSnapshotVersion, readSnapshotVersion, writeDataSnapshot, writeTerrainSnapshot)
 import Actor.Terrain
   ( Terrain
   , TerrainGenRequest(..)
@@ -266,6 +266,7 @@ rebuildAtlasFor req mode = do
   let handles = uarActorHandles req
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap <- getUiSnapshot (ahUiHandle handles)
+  snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
   let atlasKey = atlasKeyFor mode (uiRenderWaterLevel uiSnap) terrainSnap
       currentStage = stageForZoom (uiZoom uiSnap)
       -- Enqueue the current zoom stage first so the visible tiles are
@@ -275,6 +276,7 @@ rebuildAtlasFor req mode = do
         { ajKey        = atlasKey
         , ajViewMode   = mode
         , ajWaterLevel = uiRenderWaterLevel uiSnap
+        , ajSnapshotVersion = snapshotVersion
         , ajTerrain    = terrainSnap
         , ajHexRadius  = zsHexRadius stage
         , ajAtlasScale = zsAtlasScale stage
@@ -287,6 +289,7 @@ rebuildAtlasFor' :: ActorHandles -> ViewMode -> IO ()
 rebuildAtlasFor' handles mode = do
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap <- getUiSnapshot (ahUiHandle handles)
+  snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
   let atlasKey = atlasKeyFor mode (uiRenderWaterLevel uiSnap) terrainSnap
       currentStage = stageForZoom (uiZoom uiSnap)
       orderedStages = currentStage : filter (/= currentStage) allZoomStages
@@ -294,6 +297,7 @@ rebuildAtlasFor' handles mode = do
         { ajKey        = atlasKey
         , ajViewMode   = mode
         , ajWaterLevel = uiRenderWaterLevel uiSnap
+        , ajSnapshotVersion = snapshotVersion
         , ajTerrain    = terrainSnap
         , ajHexRadius  = zsHexRadius stage
         , ajAtlasScale = zsAtlasScale stage
@@ -310,6 +314,7 @@ refreshViewport req = do
   let handles = uarActorHandles req
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap <- getUiSnapshot (ahUiHandle handles)
+  snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
   let mode = uiViewMode uiSnap
       atlasKey = atlasKeyFor mode (uiRenderWaterLevel uiSnap) terrainSnap
       currentStage = stageForZoom (uiZoom uiSnap)
@@ -317,6 +322,7 @@ refreshViewport req = do
         { ajKey        = atlasKey
         , ajViewMode   = mode
         , ajWaterLevel = uiRenderWaterLevel uiSnap
+        , ajSnapshotVersion = snapshotVersion
         , ajTerrain    = terrainSnap
         , ajHexRadius  = zsHexRadius stage
         , ajAtlasScale = zsAtlasScale stage

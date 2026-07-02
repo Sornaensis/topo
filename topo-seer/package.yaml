@@ -129,6 +129,7 @@ library:
     - UI.DrawCommand.SDL
     - UI.WidgetId
   other-modules:
+    - Actor.AtlasFreshness
     - Actor.PluginManager.Config
     - Actor.PluginManager.DataResourceRouter
     - Actor.PluginManager.HandshakeSession

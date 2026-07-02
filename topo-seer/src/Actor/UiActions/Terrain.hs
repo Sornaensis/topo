@@ -43,6 +43,7 @@ import Actor.SnapshotReceiver
   , writeDataSnapshot
   , writeTerrainSnapshot
   , bumpSnapshotVersion
+  , readSnapshotVersion
   )
 import Actor.Terrain (TerrainGenProgress(..), TerrainGenResult(..))
 import Actor.UI
@@ -147,10 +148,6 @@ applyTerrainResult handles resultMsg = do
         , dsLastSeed = Just (tgrResultSeed resultMsg)
         }
   setUiOverlayNames (uahUi handles) (overlayNames overlayStore)
-  uiStart <- getMonotonicTimeNSec
-  uiSnap <- getUiSnapshot (uahUi handles)
-  uiEnd <- getMonotonicTimeNSec
-  logStep "terrain: get ui snapshot" uiStart uiEnd
   -- Fetch the authoritative snapshot from the Data actor so the version
   -- stamp matches what rebuildAtlasFor (view-mode buttons) will see.
   terrainSnap <- getTerrainSnapshot (uahData handles)
@@ -162,12 +159,13 @@ applyTerrainResult handles resultMsg = do
   bumpSnapshotVersion (uahSnapshotVersionRef handles)
   castEnd <- getMonotonicTimeNSec
   logStep "terrain: write snapshot refs" castStart castEnd
+  setUiGenerating (uahUi handles) False
+  uiSnapForAtlas <- getUiSnapshot (uahUi handles)
+  bumpSnapshotVersion (uahSnapshotVersionRef handles)
   atlasStart <- getMonotonicTimeNSec
-  rebuildAtlas handles terrainSnap uiSnap
+  rebuildAtlas handles terrainSnap uiSnapForAtlas
   atlasEnd <- getMonotonicTimeNSec
   logStep "terrain: enqueue atlas" atlasStart atlasEnd
-  setUiGenerating (uahUi handles) False
-  bumpSnapshotVersion (uahSnapshotVersionRef handles)
   completeNs <- getMonotonicTimeNSec
   appendLog (uahLog handles) (LogEntry LogInfo ("terrain: generation complete, awaiting render pipeline, chunks=" <> toText terrainCount <> " t=" <> nsText completeNs))
   end <- getMonotonicTimeNSec
@@ -179,6 +177,7 @@ applyTerrainResult handles resultMsg = do
 rebuildAtlas :: UiActionHandles -> TerrainSnapshot -> UiState -> IO ()
 rebuildAtlas handles terrainSnap uiSnap = do
   start <- getMonotonicTimeNSec
+  snapshotVersion <- readSnapshotVersion (uahSnapshotVersionRef handles)
   let currentMode = uiViewMode uiSnap
       currentStage = stageForZoom (uiZoom uiSnap)
       -- Enqueue the current zoom stage first so the visible tiles are
@@ -190,6 +189,7 @@ rebuildAtlas handles terrainSnap uiSnap = do
           { ajKey        = atlasKey
           , ajViewMode   = currentMode
           , ajWaterLevel = uiRenderWaterLevel uiSnap
+          , ajSnapshotVersion = snapshotVersion
           , ajTerrain    = terrainSnap
           , ajHexRadius  = zsHexRadius stage
           , ajAtlasScale = zsAtlasScale stage

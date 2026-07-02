@@ -9,6 +9,7 @@ import Actor.AtlasCache (AtlasKey(..))
 import Actor.AtlasResult (AtlasBuildResult(..))
 import Actor.AtlasResultBroker (drainAtlasResultsN, drainFreshResultsN, pushAtlasResult)
 import Actor.Data (TerrainSnapshot(..))
+import Actor.SnapshotReceiver (SnapshotVersion(..))
 import Topo.Overlay (emptyOverlayStore)
 import Actor.UI (ViewMode(..))
 import Linear (V2(..))
@@ -24,12 +25,14 @@ spec = describe "AtlasResultBroker" $ do
         tile2 = AtlasTileGeometry { atgBounds = Rect (V2 1 1, V2 1 1), atgScale = 1, atgHexRadius = 25, atgChunks = [], atgRiverOverlay = [] }
         result1 = AtlasBuildResult
           { abrKey = key
+          , abrSnapshotVersion = SnapshotVersion 1
           , abrHexRadius = 6
           , abrTile = tile1
           , abrDayNightTile = Nothing
           }
         result2 = AtlasBuildResult
           { abrKey = key
+          , abrSnapshotVersion = SnapshotVersion 1
           , abrHexRadius = 25
           , abrTile = tile2
           , abrDayNightTile = Nothing
@@ -46,8 +49,8 @@ spec = describe "AtlasResultBroker" $ do
     let freshKey = AtlasKey ViewElevation 0 1
         staleKey = AtlasKey ViewBiome 0 1
         tile = AtlasTileGeometry { atgBounds = Rect (V2 0 0, V2 1 1), atgScale = 1, atgHexRadius = 6, atgChunks = [], atgRiverOverlay = [] }
-        freshResult = AtlasBuildResult { abrKey = freshKey, abrHexRadius = 6, abrTile = tile, abrDayNightTile = Nothing }
-        staleResult = AtlasBuildResult { abrKey = staleKey, abrHexRadius = 10, abrTile = tile, abrDayNightTile = Nothing }
+        freshResult = AtlasBuildResult { abrKey = freshKey, abrSnapshotVersion = SnapshotVersion 1, abrHexRadius = 6, abrTile = tile, abrDayNightTile = Nothing }
+        staleResult = AtlasBuildResult { abrKey = staleKey, abrSnapshotVersion = SnapshotVersion 1, abrHexRadius = 10, abrTile = tile, abrDayNightTile = Nothing }
     pushAtlasResult ref staleResult
     pushAtlasResult ref freshResult
     (results, staleCount) <- drainFreshResultsN ref (\r -> abrKey r == freshKey) 10
@@ -61,8 +64,8 @@ spec = describe "AtlasResultBroker" $ do
     ref <- newIORef []
     let key = AtlasKey ViewElevation 0 1
         tile = AtlasTileGeometry { atgBounds = Rect (V2 0 0, V2 1 1), atgScale = 1, atgHexRadius = 6, atgChunks = [], atgRiverOverlay = [] }
-        r1 = AtlasBuildResult { abrKey = key, abrHexRadius = 6, abrTile = tile, abrDayNightTile = Nothing }
-        r2 = AtlasBuildResult { abrKey = key, abrHexRadius = 10, abrTile = tile, abrDayNightTile = Nothing }
+        r1 = AtlasBuildResult { abrKey = key, abrSnapshotVersion = SnapshotVersion 1, abrHexRadius = 6, abrTile = tile, abrDayNightTile = Nothing }
+        r2 = AtlasBuildResult { abrKey = key, abrSnapshotVersion = SnapshotVersion 1, abrHexRadius = 10, abrTile = tile, abrDayNightTile = Nothing }
     pushAtlasResult ref r1
     pushAtlasResult ref r2
     (results1, _) <- drainFreshResultsN ref (const True) 1
@@ -74,7 +77,7 @@ spec = describe "AtlasResultBroker" $ do
     ref <- newIORef []
     let key = AtlasKey ViewElevation 0 1
         tile = AtlasTileGeometry { atgBounds = Rect (V2 0 0, V2 1 1), atgScale = 1, atgHexRadius = 6, atgChunks = [], atgRiverOverlay = [] }
-        mkResult hr = AtlasBuildResult { abrKey = key, abrHexRadius = hr, abrTile = tile, abrDayNightTile = Nothing }
+        mkResult hr = AtlasBuildResult { abrKey = key, abrSnapshotVersion = SnapshotVersion 1, abrHexRadius = hr, abrTile = tile, abrDayNightTile = Nothing }
         pushN n hr = replicateM_ n (pushAtlasResult ref (mkResult hr))
     -- Spawn 3 threads each pushing 100 results concurrently
     barriers <- sequence [newEmptyMVar | _ <- [1 :: Int, 2, 3]]

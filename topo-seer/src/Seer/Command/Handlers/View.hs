@@ -31,7 +31,7 @@ import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.UI (getUiSnapshot)
 import Actor.UI.State (ViewMode(..), ConfigTab(..), UiState(..), readUiSnapshotRef, uiRenderWaterLevel, viewModeFromText, viewModeToText)
-import Actor.SnapshotReceiver (readTerrainSnapshot)
+import Actor.SnapshotReceiver (readSnapshotVersion, readTerrainSnapshot)
 import Actor.UI.Setters (setUiSeed, setUiSeedInput, setUiViewMode, setUiConfigScroll, setUiConfigTab, setUiContextHex, setUiHexTooltipPinned, setUiOverlayFields)
 import Seer.Command.Context (CommandContext(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
@@ -130,11 +130,13 @@ scheduleAtlasRebuild :: ActorHandles -> ViewMode -> IO ()
 scheduleAtlasRebuild handles mode = do
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap      <- getUiSnapshot (ahUiHandle handles)
+  snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
   let atlasKey = atlasKeyFor mode (uiRenderWaterLevel uiSnap) terrainSnap
       job stage = AtlasJob
         { ajKey        = atlasKey
         , ajViewMode   = mode
         , ajWaterLevel = uiRenderWaterLevel uiSnap
+        , ajSnapshotVersion = snapshotVersion
         , ajTerrain    = terrainSnap
         , ajHexRadius  = zsHexRadius stage
         , ajAtlasScale = zsAtlasScale stage

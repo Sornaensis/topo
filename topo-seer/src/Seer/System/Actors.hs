@@ -7,7 +7,8 @@ module Seer.System.Actors
   , shutdownAppActors
   ) where
 
-import Actor.AtlasManager (AtlasManager)
+import Actor.AtlasFreshness (AtlasFreshnessRef, newAtlasFreshnessRef)
+import Actor.AtlasManager (AtlasManager, setAtlasManagerFreshnessRef)
 import Actor.AtlasResultBroker (AtlasResultRef, newAtlasResultRef)
 import Actor.AtlasScheduleBroker (AtlasScheduleRef, newAtlasScheduleRef)
 import Actor.AtlasScheduler
@@ -100,6 +101,7 @@ data AppActors = AppActors
   , aaAtlasSchedulerHandle :: !(ActorHandle AtlasScheduler (Protocol AtlasScheduler))
   , aaAtlasScheduleRef :: !AtlasScheduleRef
   , aaAtlasResultRef :: !AtlasResultRef
+  , aaAtlasFreshnessRef :: !AtlasFreshnessRef
   , aaScreenshotRef :: !ScreenshotRequestRef
   , aaAutoTickScheduler :: !AutoTickScheduler
   }
@@ -124,13 +126,16 @@ initialiseAppActors runtimeCfg = do
   terrainCacheWorkerHandle <- get @TerrainCacheWorker system
   atlasResultRef <- newAtlasResultRef
   atlasScheduleRef <- newAtlasScheduleRef
+  atlasFreshnessRef <- newAtlasFreshnessRef
   terrainCacheRef <- newTerrainCacheRef
+  setAtlasManagerFreshnessRef atlasManagerHandle atlasFreshnessRef
   setAtlasSchedulerHandles atlasSchedulerHandle AtlasSchedulerHandles
     { ashManager = atlasManagerHandle
     , ashWorkers = atlasWorkerHandles
     , ashWorkerNext = atlasWorkerNextRef
     , ashResultRef = atlasResultRef
     , ashScheduleRef = atlasScheduleRef
+    , ashFreshnessRef = atlasFreshnessRef
     }
   uiActionsHandle <- get @UiActions system
   pluginManagerHandle <- get @PluginManager system
@@ -174,6 +179,7 @@ initialiseAppActors runtimeCfg = do
     , aaAtlasSchedulerHandle = atlasSchedulerHandle
     , aaAtlasScheduleRef = atlasScheduleRef
     , aaAtlasResultRef = atlasResultRef
+    , aaAtlasFreshnessRef = atlasFreshnessRef
     , aaScreenshotRef = screenshotRef
     , aaAutoTickScheduler = autoTickScheduler
     }

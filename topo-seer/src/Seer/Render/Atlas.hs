@@ -21,7 +21,8 @@ module Seer.Render.Atlas
   , zoomTextureScale
   ) where
 
-import Actor.AtlasCache (AtlasKey(..), atlasKeyFor, atlasKeyVersion)
+import Actor.AtlasCache (AtlasKey, atlasKeyFor, atlasKeyVersion)
+import Actor.AtlasFreshness (AtlasFreshnessRef, atlasBuildIsFresh, readAtlasFreshnessRef)
 import Actor.AtlasResult (AtlasBuildResult(..))
 import Actor.AtlasResultBroker (AtlasResultRef, drainAtlasResultsN, drainFreshResultsN)
 import Actor.AtlasScheduleBroker
@@ -170,9 +171,8 @@ drawAtlasAlpha renderer tiles (panX, panY) zoom (V2 winW winH) alpha = do
 -- synchronous actor call.  Textures are acquired from the given
 -- 'TexturePool'.
 --
--- Stale results (key mismatch) are discarded without creating GPU
--- textures so that view mode switches are not blocked by a long queue
--- of superseded results.
+-- Stale results (current-key mismatch) are discarded without creating GPU
+-- textures so obsolete worker results cannot block the render thread.
 drainAtlasBuildResults
   :: Bool
   -> Int
@@ -180,17 +180,19 @@ drainAtlasBuildResults
   -> SDL.Renderer
   -> AtlasTextureCache
   -> AtlasResultRef
+  -> AtlasFreshnessRef
   -> IO (AtlasTextureCache, Int, Word32)
-drainAtlasBuildResults renderTargetOk perFrame pool renderer atlasCache resultRef =
+drainAtlasBuildResults renderTargetOk perFrame pool renderer atlasCache resultRef freshnessRef =
   if renderTargetOk
     then do
-      -- With multi-key caching, results for any view mode are valuable
-      -- as long as the terrain version matches.  Only discard results
-      -- from an outdated generation pass.
-      let isFresh r = case atcKey atlasCache of
-            Just currentKey ->
-              atlasKeyVersion (abrKey r) == atlasKeyVersion currentKey
-            Nothing -> True
+      latestFreshness <- readAtlasFreshnessRef freshnessRef
+      -- Latest-wins upload: only the current key and latest dispatched
+      -- key/snapshot pair may create GPU textures.
+      let isFresh r =
+            let keyMatches = case atcKey atlasCache of
+                  Just currentKey -> abrKey r == currentKey
+                  Nothing -> True
+            in keyMatches && atlasBuildIsFresh latestFreshness (abrKey r) (abrSnapshotVersion r)
       (results, _staleCount) <- drainFreshResultsN resultRef isFresh perFrame
       (cache', totalMs) <- foldM cacheStep (atlasCache, 0) results
       pure (cache', length results, totalMs)

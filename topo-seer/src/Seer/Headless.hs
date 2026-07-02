@@ -21,7 +21,8 @@ module Seer.Headless
   , withHeadlessApp
   ) where
 
-import Actor.AtlasManager (AtlasManager)
+import Actor.AtlasFreshness (AtlasFreshnessRef, newAtlasFreshnessRef)
+import Actor.AtlasManager (AtlasManager, setAtlasManagerFreshnessRef)
 import Actor.AtlasResultBroker (AtlasResultRef, newAtlasResultRef)
 import Actor.AtlasScheduleBroker (AtlasScheduleRef, newAtlasScheduleRef)
 import Actor.AtlasScheduler
@@ -149,6 +150,7 @@ data HeadlessApp = HeadlessApp
   , haAtlasSchedulerHandle :: !(ActorHandle AtlasScheduler (Protocol AtlasScheduler))
   , haAtlasResultRef :: !AtlasResultRef
   , haAtlasScheduleRef :: !AtlasScheduleRef
+  , haAtlasFreshnessRef :: !AtlasFreshnessRef
   , haTerrainCacheRef :: !TerrainCacheRef
   , haTerrainCacheWorkerHandle :: !(ActorHandle TerrainCacheWorker (Protocol TerrainCacheWorker))
   , haUiActionsHandle :: !(ActorHandle UiActions (Protocol UiActions))
@@ -217,12 +219,15 @@ startHeadlessAppWithSystem cfg system = do
   atlasSchedulerHandle <- get @AtlasScheduler system
   atlasResultRef <- newAtlasResultRef
   atlasScheduleRef <- newAtlasScheduleRef
+  atlasFreshnessRef <- newAtlasFreshnessRef
+  setAtlasManagerFreshnessRef atlasManagerHandle atlasFreshnessRef
   setAtlasSchedulerHandles atlasSchedulerHandle AtlasSchedulerHandles
     { ashManager = atlasManagerHandle
     , ashWorkers = atlasWorkerHandles
     , ashWorkerNext = atlasWorkerNextRef
     , ashResultRef = atlasResultRef
     , ashScheduleRef = atlasScheduleRef
+    , ashFreshnessRef = atlasFreshnessRef
     }
   schedulerReady <- atlasSchedulerConfigured atlasSchedulerHandle
   unless schedulerReady (fail "topo-seer headless startup: atlas scheduler handles were not configured")
@@ -284,6 +289,7 @@ startHeadlessAppWithSystem cfg system = do
     , haAtlasSchedulerHandle = atlasSchedulerHandle
     , haAtlasResultRef = atlasResultRef
     , haAtlasScheduleRef = atlasScheduleRef
+    , haAtlasFreshnessRef = atlasFreshnessRef
     , haTerrainCacheRef = terrainCacheRef
     , haTerrainCacheWorkerHandle = terrainCacheWorkerHandle
     , haUiActionsHandle = uiActionsHandle

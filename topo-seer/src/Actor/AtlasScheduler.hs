@@ -8,15 +8,28 @@
 -- | Worker manager for atlas scheduling, delegating jobs to the worker pool.
 module Actor.AtlasScheduler
   ( AtlasScheduler
+  , AtlasFreshness(..)
+  , AtlasFreshnessRef
   , AtlasSchedulerHandles(..)
   , AtlasScheduleRequest(..)
   , atlasSchedulerActorDef
   , setAtlasSchedulerHandles
   , atlasSchedulerConfigured
   , requestAtlasSchedule
+  , newAtlasFreshnessRef
+  , writeAtlasFreshness
+  , writeAtlasFreshnessKey
   ) where
 
-import Actor.AtlasManager (AtlasJob(..), AtlasManager, drainAtlasJobs)
+import Actor.AtlasCache (atlasKeyFor)
+import Actor.AtlasFreshness
+  ( AtlasFreshness(..)
+  , AtlasFreshnessRef
+  , newAtlasFreshnessRef
+  , writeAtlasFreshness
+  , writeAtlasFreshnessKey
+  )
+import Actor.AtlasManager (AtlasJob(..), AtlasManager, drainFreshAtlasJobs)
 import Actor.AtlasResultBroker (AtlasResultRef)
 import Actor.AtlasScheduleBroker
   ( AtlasScheduleRef
@@ -30,7 +43,6 @@ import Actor.SnapshotReceiver (SnapshotVersion)
 import Actor.UI (UiState(..))
 import Control.Monad (forM_)
 import Data.IORef (IORef, atomicModifyIORef')
-import Data.Word (Word32)
 import UI.DayNight (mkDayNightFn)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
@@ -43,6 +55,7 @@ data AtlasSchedulerHandles = AtlasSchedulerHandles
   , ashWorkerNext :: !(IORef Int)
   , ashResultRef :: !AtlasResultRef
   , ashScheduleRef :: !AtlasScheduleRef
+  , ashFreshnessRef :: !AtlasFreshnessRef
   }
 
 -- | Request to schedule atlas work.
@@ -112,14 +125,21 @@ requestAtlasSchedule handle req =
 runSchedule :: AtlasSchedulerHandles -> AtlasScheduleRequest -> IO ()
 runSchedule handles req = do
   let snapshot = asqSnapshot req
+      uiSnap = rsUi snapshot
+      terrainSnap = rsTerrain snapshot
+      currentKey = atlasKeyFor (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) terrainSnap
       shouldSchedule = asqRenderTargetOk req
         && asqDataReady req
-        && not (uiGenerating (rsUi snapshot))
+        && not (uiGenerating uiSnap)
       workers = ashWorkers handles
       workerCount = length workers
   if shouldSchedule && workerCount > 0
     then do
-      (jobs, drainMs) <- timedMs (drainAtlasJobs (ashManager handles))
+      let currentFreshness = AtlasFreshness
+            { afKey = currentKey
+            , afSnapshotVersion = asqSnapshotVersion req
+            }
+      (jobs, drainMs) <- timedMs (drainFreshAtlasJobs (ashManager handles) currentFreshness)
       (_, enqueueMs) <- timedMs $
         forM_ jobs $ \job -> do
           idx <- atomicModifyIORef' (ashWorkerNext handles) (\i -> (i + 1, i))
@@ -131,12 +151,14 @@ runSchedule handles req = do
             , abTerrain    = ajTerrain job
             , abHexRadius  = ajHexRadius job
             , abAtlasScale = ajAtlasScale job
-            , abPanOffset  = uiPanOffset (rsUi snapshot)
-            , abZoom       = uiZoom (rsUi snapshot)
+            , abPanOffset  = uiPanOffset uiSnap
+            , abZoom       = uiZoom uiSnap
             , abWindowSize = asqWindowSize req
+            , abSnapshotVersion = ajSnapshotVersion job
             , abResultRef  = ashResultRef handles
-            , abDayNightFn = if uiDayNightEnabled (rsUi snapshot)
-                              then mkDayNightFn (rsUi snapshot) (tsChunkSize (ajTerrain job))
+            , abFreshnessRef = ashFreshnessRef handles
+            , abDayNightFn = if uiDayNightEnabled uiSnap
+                              then mkDayNightFn uiSnap (tsChunkSize (ajTerrain job))
                               else Nothing
             }
       let report = AtlasScheduleReport
@@ -147,6 +169,7 @@ runSchedule handles req = do
             }
       writeAtlasScheduleReport (ashScheduleRef handles) report
     else do
+      writeAtlasFreshnessKey (ashFreshnessRef handles) currentKey
       let report = AtlasScheduleReport
             { asrSnapshotVersion = asqSnapshotVersion req
             , asrJobCount = 0

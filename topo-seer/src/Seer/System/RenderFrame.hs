@@ -5,6 +5,7 @@ module Seer.System.RenderFrame
   , renderFrameStep
   ) where
 
+import Actor.AtlasFreshness (AtlasFreshnessRef)
 import Actor.AtlasResultBroker (AtlasResultRef)
 import Actor.AtlasScheduleBroker (AtlasScheduleRef)
 import Actor.AtlasScheduler (AtlasScheduler)
@@ -44,6 +45,7 @@ data RenderFrameEnv = RenderFrameEnv
   , rfeAtlasSchedulerHandle :: !(ActorHandle AtlasScheduler (Protocol AtlasScheduler))
   , rfeAtlasScheduleRef :: !AtlasScheduleRef
   , rfeAtlasResultRef :: !AtlasResultRef
+  , rfeAtlasFreshnessRef :: !AtlasFreshnessRef
   , rfeScreenshotRef :: !ScreenshotRequestRef
   , rfeTraceHandle :: !(Maybe Handle)
   }
@@ -109,6 +111,7 @@ renderFrameStep env settings nowMs snapVersion renderSnap cacheState0 = do
       , rcAtlasSchedulerHandle = rfeAtlasSchedulerHandle env
       , rcAtlasScheduleRef = rfeAtlasScheduleRef env
       , rcAtlasResultRef = rfeAtlasResultRef env
+      , rcAtlasFreshnessRef = rfeAtlasFreshnessRef env
       , rcAtlasUploadsPerFrame = rfsetAtlasUploadsPerFrame settings
       , rcShouldDrainAtlas = shouldDrainAtlas
       , rcShouldScheduleAtlas = shouldScheduleAtlas

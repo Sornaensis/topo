@@ -11,17 +11,19 @@ module Actor.AtlasWorker
   , AtlasBuildResult(..)
   , atlasWorkerActorDef
   , atlasWorkerPaddedViewport
+  , atlasBuildIsCurrent
   , enqueueAtlasBuildWork
   ) where
 
-import Actor.AtlasCache (AtlasKey(..))
+import Actor.AtlasCache (AtlasKey)
+import Actor.AtlasFreshness (AtlasFreshnessRef, atlasBuildIsFresh, readAtlasFreshnessRef)
 import Actor.AtlasResult (AtlasBuildResult(..))
 import Actor.AtlasResultBroker (AtlasResultRef, pushAtlasResult)
 import Actor.Data (TerrainSnapshot(..))
+import Actor.SnapshotReceiver (SnapshotVersion)
 import Actor.UI (ViewMode(..))
 import Control.Concurrent (threadDelay)
 import Control.Exception (evaluate)
-import Control.Monad (forM)
 import qualified Data.IntMap.Strict as IntMap
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
@@ -45,7 +47,9 @@ data AtlasBuild = AtlasBuild
   , abPanOffset  :: !(Float, Float)
   , abZoom       :: !Float
   , abWindowSize :: !(Int, Int)
+  , abSnapshotVersion :: !SnapshotVersion
   , abResultRef  :: !AtlasResultRef
+  , abFreshnessRef :: !AtlasFreshnessRef
   , abDayNightFn :: !(Maybe (Int -> Int -> Float))
   }
 
@@ -59,6 +63,33 @@ atlasWorkerPaddedViewport config (panX, panY) zoom (winW, winH) =
                   )
       paddedPan = (panX + padWorld, panY + padWorld)
   in (paddedPan, zoom', paddedWin)
+
+atlasBuildIsCurrent :: AtlasBuild -> IO Bool
+atlasBuildIsCurrent job = do
+  latest <- readAtlasFreshnessRef (abFreshnessRef job)
+  pure (atlasBuildIsFresh latest (abKey job) (abSnapshotVersion job))
+
+traverseFresh :: AtlasBuild -> [a] -> (a -> IO b) -> IO (Maybe [b])
+traverseFresh job = go []
+  where
+    go acc [] _ = pure (Just (reverse acc))
+    go acc (x:xs) action = do
+      fresh <- atlasBuildIsCurrent job
+      if fresh
+        then do
+          y <- action x
+          go (y:acc) xs action
+        else pure Nothing
+
+forFresh_ :: AtlasBuild -> [a] -> (a -> IO ()) -> IO ()
+forFresh_ job = go
+  where
+    go [] _ = pure ()
+    go (x:xs) action = do
+      fresh <- atlasBuildIsCurrent job
+      if fresh
+        then action x >> go xs action
+        else pure ()
 
 [hyperspace|
 actor AtlasWorker
@@ -100,83 +131,98 @@ actor AtlasWorker
               Just m  -> m
               Nothing -> IntMap.empty
           _ -> IntMap.empty
-    -- Build per-chunk geometry in IO, releasing the capability between
-    -- each chunk via threadDelay.  Storable vector allocation (pinned
-    -- memory) bypasses GHC's allocation counter, and yield only
-    -- reorders within the same capability's ready queue.  threadDelay
-    -- removes the green thread entirely, guaranteeing the bound main
-    -- thread (render loop) can reclaim its capability.
-    geomPairs <- forM chunkPairs $ \(k, chunk) -> do
-      let geom = buildChunkGeometry (abHexRadius job) config mode waterLevel climateChunks weatherChunks vegChunks (IntMap.lookup k overlayMap) k chunk
-      _ <- evaluate geom
-      threadDelay 100  -- 0.1ms, releases capability
-      pure (k, geom)
-    -- Build day/night overlay geometry when a brightness function is provided.
-    -- This produces an independent overlay (black + alpha) that can be
-    -- cached and drawn separately from the base view-mode tiles.
-    dayNightGeomPairs <- case abDayNightFn job of
-      Nothing -> pure []
-      Just dnFn -> forM chunkPairs $ \(k, chunk) -> do
-        let geom = buildDayNightGeometry (abHexRadius job) config dnFn k chunk
-        _ <- evaluate geom
-        threadDelay 100
-        pure (k, geom)
-    let geometryMap = IntMap.fromList geomPairs
-        dayNightGeometryMap = IntMap.fromList dayNightGeomPairs
-        -- Build river geometry for visible chunks only (matching the
-        -- padded viewport). Cross-chunk neighbour lookups still use the
-        -- full tsTerrainChunks map for correct boundary rendering.
-        visibleTerrainChunks = IntMap.fromList chunkPairs
-        riverGeoMap = case mode of
-          ViewBiome -> IntMap.mapMaybeWithKey
-            (\ cid _chunk -> buildChunkRiverGeometry (scaleRiverWidths (abHexRadius job) defaultRiverRenderConfig) config (abHexRadius job) cid (tsRiverChunks terrainSnap) (tsTerrainChunks terrainSnap))
-            visibleTerrainChunks
-          _ -> IntMap.empty
-        baseTiles = composeTilesFromGeometry geometryMap (abHexRadius job) (abAtlasScale job)
-        tiles = attachRiverOverlay riverGeoMap baseTiles
-        -- Day/night overlay tiles share the same tiling structure but
-        -- have no river overlay.
-        dayNightTiles = if IntMap.null dayNightGeometryMap
-          then Nothing
-          else Just (composeTilesFromGeometry dayNightGeometryMap (abHexRadius job) (abAtlasScale job))
-        buildResult tile mbDnTile = AtlasBuildResult
-          { abrKey       = abKey job
-          , abrHexRadius = abHexRadius job
-          , abrTile      = tile
-          , abrDayNightTile = mbDnTile
-          }
-    if null tiles
-      then threadDelay 100 >> pure st
+    freshAtStart <- atlasBuildIsCurrent job
+    if not freshAtStart
+      then pure st
       else do
-        let dnTileList = maybe (repeat Nothing) (map Just) dayNightTiles
-        mapM_ (\(tile, mbDnTile) -> do
-                   -- Pre-merge terrain + river chunks into a single geometry
-                   -- so the render thread avoids SV.concat and index-rebasing
-                   -- allocations during texture upload.
-                   let merged = mergeChunkGeometry (atgChunks tile ++ atgRiverOverlay tile)
-                       tile' = tile { atgChunks = [merged], atgRiverOverlay = [] }
-                   -- Pre-merge day/night overlay if present.
-                   let mbDnTile' = case mbDnTile of
-                         Just dnTile ->
-                           let dnMerged = mergeChunkGeometry (atgChunks dnTile)
-                           in Just (dnTile { atgChunks = [dnMerged], atgRiverOverlay = [] })
-                         Nothing -> Nothing
-                   -- Force the merged storable vectors on the worker thread.
-                   _ <- evaluate (acgVertices merged)
-                   _ <- evaluate (acgIndices merged)
-                   case mbDnTile' of
-                     Just dt -> case atgChunks dt of
-                       dnM:_ -> do
-                         _ <- evaluate (acgVertices dnM)
-                         _ <- evaluate (acgIndices dnM)
-                         pure ()
-                       [] -> pure ()
-                     Nothing -> pure ()
-                   let r = buildResult tile' mbDnTile'
-                   _ <- evaluate r
-                   pushAtlasResult (abResultRef job) r) (zip tiles dnTileList)
-        threadDelay 100
-        pure st
+        -- Build per-chunk geometry in IO, releasing the capability between
+        -- each chunk via threadDelay.  Storable vector allocation (pinned
+        -- memory) bypasses GHC's allocation counter, and yield only
+        -- reorders within the same capability's ready queue.  threadDelay
+        -- removes the green thread entirely, guaranteeing the bound main
+        -- thread (render loop) can reclaim its capability.
+        mbGeomPairs <- traverseFresh job chunkPairs $ \(k, chunk) -> do
+          let geom = buildChunkGeometry (abHexRadius job) config mode waterLevel climateChunks weatherChunks vegChunks (IntMap.lookup k overlayMap) k chunk
+          _ <- evaluate geom
+          threadDelay 100  -- 0.1ms, releases capability
+          pure (k, geom)
+        case mbGeomPairs of
+          Nothing -> pure st
+          Just geomPairs -> do
+            -- Build day/night overlay geometry when a brightness function is provided.
+            -- This produces an independent overlay (black + alpha) that can be
+            -- cached and drawn separately from the base view-mode tiles.
+            mbDayNightGeomPairs <- case abDayNightFn job of
+              Nothing -> pure (Just [])
+              Just dnFn -> traverseFresh job chunkPairs $ \(k, chunk) -> do
+                let geom = buildDayNightGeometry (abHexRadius job) config dnFn k chunk
+                _ <- evaluate geom
+                threadDelay 100
+                pure (k, geom)
+            case mbDayNightGeomPairs of
+              Nothing -> pure st
+              Just dayNightGeomPairs -> do
+                freshBeforeCompose <- atlasBuildIsCurrent job
+                if not freshBeforeCompose
+                  then pure st
+                  else do
+                    let geometryMap = IntMap.fromList geomPairs
+                        dayNightGeometryMap = IntMap.fromList dayNightGeomPairs
+                        -- Build river geometry for visible chunks only (matching the
+                        -- padded viewport). Cross-chunk neighbour lookups still use the
+                        -- full tsTerrainChunks map for correct boundary rendering.
+                        visibleTerrainChunks = IntMap.fromList chunkPairs
+                        riverGeoMap = case mode of
+                          ViewBiome -> IntMap.mapMaybeWithKey
+                            (\ cid _chunk -> buildChunkRiverGeometry (scaleRiverWidths (abHexRadius job) defaultRiverRenderConfig) config (abHexRadius job) cid (tsRiverChunks terrainSnap) (tsTerrainChunks terrainSnap))
+                            visibleTerrainChunks
+                          _ -> IntMap.empty
+                        baseTiles = composeTilesFromGeometry geometryMap (abHexRadius job) (abAtlasScale job)
+                        tiles = attachRiverOverlay riverGeoMap baseTiles
+                        -- Day/night overlay tiles share the same tiling structure but
+                        -- have no river overlay.
+                        dayNightTiles = if IntMap.null dayNightGeometryMap
+                          then Nothing
+                          else Just (composeTilesFromGeometry dayNightGeometryMap (abHexRadius job) (abAtlasScale job))
+                        buildResult tile mbDnTile = AtlasBuildResult
+                          { abrKey       = abKey job
+                          , abrSnapshotVersion = abSnapshotVersion job
+                          , abrHexRadius = abHexRadius job
+                          , abrTile      = tile
+                          , abrDayNightTile = mbDnTile
+                          }
+                    if null tiles
+                      then threadDelay 100 >> pure st
+                      else do
+                        let dnTileList = maybe (repeat Nothing) (map Just) dayNightTiles
+                        forFresh_ job (zip tiles dnTileList) $ \(tile, mbDnTile) -> do
+                          -- Pre-merge terrain + river chunks into a single geometry
+                          -- so the render thread avoids SV.concat and index-rebasing
+                          -- allocations during texture upload.
+                          let merged = mergeChunkGeometry (atgChunks tile ++ atgRiverOverlay tile)
+                              tile' = tile { atgChunks = [merged], atgRiverOverlay = [] }
+                          -- Pre-merge day/night overlay if present.
+                          let mbDnTile' = case mbDnTile of
+                                Just dnTile ->
+                                  let dnMerged = mergeChunkGeometry (atgChunks dnTile)
+                                  in Just (dnTile { atgChunks = [dnMerged], atgRiverOverlay = [] })
+                                Nothing -> Nothing
+                          -- Force the merged storable vectors on the worker thread.
+                          _ <- evaluate (acgVertices merged)
+                          _ <- evaluate (acgIndices merged)
+                          case mbDnTile' of
+                            Just dt -> case atgChunks dt of
+                              dnM:_ -> do
+                                _ <- evaluate (acgVertices dnM)
+                                _ <- evaluate (acgIndices dnM)
+                                pure ()
+                              [] -> pure ()
+                            Nothing -> pure ()
+                          let r = buildResult tile' mbDnTile'
+                          _ <- evaluate r
+                          pushAtlasResult (abResultRef job) r
+                        threadDelay 100
+                        pure st
 |]
 
 enqueueAtlasBuildWork :: ActorHandle AtlasWorker (Protocol AtlasWorker) -> AtlasBuild -> IO ()

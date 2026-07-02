@@ -88,6 +88,7 @@ renderFrame context = do
       atlasSchedulerHandle = rcAtlasSchedulerHandle context
       scheduleRef = rcAtlasScheduleRef context
       resultRef = rcAtlasResultRef context
+      freshnessRef = rcAtlasFreshnessRef context
       atlasUploadsPerFrame = rcAtlasUploadsPerFrame context
       shouldDrainAtlas = rcShouldDrainAtlas context
       shouldScheduleAtlas = rcShouldScheduleAtlas context
@@ -159,7 +160,7 @@ renderFrame context = do
   (atlasCache', uploadCount, uploadMs, uploadTextureMs) <- if shouldDrainAtlas
     then do
       ((cache', count, createMs), elapsed) <- timedMs $ do
-        (cacheNext, count, createMs) <- drainAtlasBuildResults renderTargetOk atlasUploadsPerFrame pool renderer atlasCacheKeyed resultRef
+        (cacheNext, count, createMs) <- drainAtlasBuildResults renderTargetOk atlasUploadsPerFrame pool renderer atlasCacheKeyed resultRef freshnessRef
         pure (cacheNext, count, createMs)
       pure (cache', count, elapsed, createMs)
     else pure (atlasCacheKeyed, 0, 0, 0)
