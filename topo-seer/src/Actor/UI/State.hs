@@ -39,6 +39,7 @@ module Actor.UI.State
   , PipelineStageRunState(..)
   , UiState(..)
   , emptyUiState
+  , uiWorldTime
   , UiUpdate(..)
   , applyUpdate
   , UiSnapshotReply
@@ -73,6 +74,7 @@ import Seer.DataBrowser.Model (DataBrowserValidationError)
 import Seer.Editor.Types (EditorState(..), defaultEditorState)
 import Seer.Render.ZoomStage (maxCameraZoom)
 import Seer.World.Persist.Types (WorldSaveManifest)
+import Topo.Calendar (WorldTime(..), simulationTickSeconds)
 import Topo.Overlay.Schema (OverlayFieldType(..))
 import Topo.Pipeline (StageStatus)
 import Topo.Pipeline.Stage (StageId)
@@ -1175,6 +1177,16 @@ emptyUiState = UiState
   , uiDataBrowser = emptyDataBrowserState
   , uiDataResources = Map.empty
   , uiEditor = defaultEditorState
+  }
+
+-- | Build UI display world time from the canonical simulation clock.
+--
+-- 'uiSimTickRate' is a wall-clock auto-scheduler control, so it must not
+-- influence calendar, solar, or day/night calculations at a fixed tick.
+uiWorldTime :: UiState -> WorldTime
+uiWorldTime ui = WorldTime
+  { wtTick = uiSimTickCount ui
+  , wtTickRate = simulationTickSeconds
   }
 
 sliderDefault :: SliderId -> Float

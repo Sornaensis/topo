@@ -378,7 +378,7 @@ sliderDefaultValueForId sliderIdValue = case sliderIdValue of
   SliderPiedmontSlopeMax -> 0.35
   SliderWindCoriolisDeflection -> 0.287
   SliderMoistMinVegFloor -> 0.15
-  SliderWeatherTick -> 0.2
+  SliderWeatherTick -> 0.0
   SliderWeatherPhase -> 0.0
   SliderWeatherAmplitude -> 0.3
   SliderSeasonCycleLength -> 0.4786

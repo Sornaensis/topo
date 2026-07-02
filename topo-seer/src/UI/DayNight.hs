@@ -3,11 +3,11 @@ module UI.DayNight
   ( mkDayNightFn
   ) where
 
-import Actor.UI (UiState(..))
+import Actor.UI (UiState(..), uiWorldTime)
 import Seer.Config (mapRange)
 import Seer.Config.SliderConversion (sliderToDomainFloat)
 import Seer.Config.SliderSpec (SliderId(..))
-import Topo.Calendar (CalendarConfig(..), CalendarDate(..), WorldTime(..), mkCalendarConfig, tickToDate, yearFraction)
+import Topo.Calendar (CalendarConfig(..), CalendarDate(..), mkCalendarConfig, tickToDate, yearFraction)
 import Topo.Hex (HexGridMeta(..))
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), tileLatitude, tileLongitude)
 import Topo.Solar (SolarPosition(..), tileSolarPos)
@@ -44,10 +44,7 @@ mkDayNightFn ui chunkSize
     hex = HexGridMeta { hexSizeKm = sliderToDomainFloat SliderHexSizeKm (uiHexSizeKm ui) }
     config = WorldConfig { wcChunkSize = chunkSize }
     calCfg = mkCalendarConfig planet
-    worldTime = WorldTime
-      { wtTick     = uiSimTickCount ui
-      , wtTickRate = realToFrac (uiSimTickRate ui)
-      }
+    worldTime = uiWorldTime ui
     calDate = tickToDate calCfg worldTime
     yf      = realToFrac (yearFraction calCfg worldTime) :: Float
     hpd     = realToFrac (ccHoursPerDay calCfg) :: Float

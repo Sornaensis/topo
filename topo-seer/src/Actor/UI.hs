@@ -14,6 +14,7 @@ module Actor.UI
   , PipelineStageRunState(..)
   , UiState(..)
   , emptyUiState
+  , uiWorldTime
   , uiActorDef
   , UiSnapshotReply
   , requestUiSnapshot
@@ -48,4 +49,5 @@ import Actor.UI.State
   , requestUiSnapshot
   , setUiSnapshotRef
   , uiActorDef
+  , uiWorldTime
   )

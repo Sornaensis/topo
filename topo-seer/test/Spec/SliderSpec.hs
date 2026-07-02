@@ -44,6 +44,14 @@ spec = do
       sliderLabelForId SliderHypsometryEnabled 1.0
         `shouldBe` "(?) Hypsometry: 1/1"
 
+    it "formats weather cadence as whole world hours" $
+      sliderLabelForId SliderWeatherTick 0.0
+        `shouldBe` "(?) Weather Cadence: 1/24"
+
+    it "describes weather cadence without world-clock seconds" $
+      tooltipForWidget (WidgetSliderMinus SliderWeatherTick)
+        `shouldBe` Just "Weather scheduler interval (world hours; independent of world tick duration)"
+
     it "always starts with (?) prefix" $
       property $ \(NonNegative t) ->
         let label = sliderLabelForId SliderGenScale (min 1.0 t)
@@ -134,7 +142,7 @@ spec = do
         , (uiRenderWaterLevel, 0.43)
         , (uiSliceLatCenter, 0.6944444444444444)
         , (uiBoundaryMotionTemp, 0.5)
-        , (uiWeatherTick, 0.2)
+        , (uiWeatherTick, 0.0)
         , (uiVegBase, 0.2)
         , (uiRainRate, 0.2)
         ]

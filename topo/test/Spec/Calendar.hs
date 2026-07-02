@@ -23,8 +23,9 @@ spec :: Spec
 spec = describe "Calendar" $ do
   -- WorldTime basics
   describe "WorldTime" $ do
-    it "defaultWorldTime starts at tick 0" $
+    it "defaultWorldTime starts at tick 0 with the canonical hourly duration" $ do
       wtTick defaultWorldTime `shouldBe` 0
+      wtTickRate defaultWorldTime `shouldBe` simulationTickSeconds
 
     it "advanceTicks increments tick counter" $
       wtTick (advanceTicks 10 defaultWorldTime) `shouldBe` 10
@@ -32,6 +33,10 @@ spec = describe "Calendar" $ do
     it "worldTimeElapsedSeconds is tick * tickRate" $ do
       let wt = WorldTime { wtTick = 100, wtTickRate = 2.5 }
       worldTimeElapsedSeconds wt `shouldBe` 250.0
+
+    it "one default tick advances one world hour" $
+      worldTimeElapsedSeconds (advanceTicks 1 defaultWorldTime)
+        `shouldBe` simulationTickSeconds
 
     prop "worldTimeElapsedSeconds is non-negative" $
       forAll genTick $ \t ->
@@ -75,6 +80,13 @@ spec = describe "Calendar" $ do
       cdYear d `shouldBe` 0
       cdDayOfYear d `shouldBe` 0
       cdHourOfDay d `shouldSatisfy` (< 1.0)
+
+    it "one default tick advances to hour ~1" $ do
+      let cal = defaultCalendarConfig
+          d   = tickToDate cal (advanceTicks 1 defaultWorldTime)
+      cdYear d `shouldBe` 0
+      cdDayOfYear d `shouldBe` 0
+      cdHourOfDay d `shouldSatisfy` (\h -> abs (h - 1.0) < 1.0e-9)
 
     it "one full year of ticks → year 1, day 0" $ do
       let cal = defaultCalendarConfig

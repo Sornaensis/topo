@@ -198,7 +198,7 @@ sliderConversion sliderIdValue = case sliderIdValue of
   SliderPiedmontSlopeMax -> SliderFloatRange 0.05 0.25
   SliderWindCoriolisDeflection -> SliderFloatRange 0 1.57
   SliderMoistMinVegFloor -> SliderFloatRange 0 1
-  SliderWeatherTick -> SliderFloatRange 0.1 5
+  SliderWeatherTick -> SliderIntRange 1 24
   SliderWeatherPhase -> SliderFloatRange 0 1
   SliderWeatherAmplitude -> SliderFloatRange 0 0.5
   SliderSeasonCycleLength -> SliderFloatRange 30 730

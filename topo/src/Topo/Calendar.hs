@@ -4,9 +4,10 @@
 -- | Calendar and temporal model for topo worlds.
 --
 -- Time in topo is tracked by a monotonic tick counter ('WorldTime')
--- combined with a tick rate (seconds per tick).  Calendar dates
--- ('CalendarDate') are derived from the tick counter and the planet's
--- orbital parameters ('CalendarConfig').
+-- combined with a simulation duration per tick.  One canonical world
+-- tick is one world hour.  Calendar dates ('CalendarDate') are derived
+-- from the tick counter and the planet's orbital parameters
+-- ('CalendarConfig').
 --
 -- 'CalendarConfig' is derived from 'PlanetConfig' via 'mkCalendarConfig',
 -- using Earth-like defaults for rotation and orbital periods scaled by
@@ -18,6 +19,7 @@ module Topo.Calendar
   ( -- * World time
     WorldTime(..)
   , defaultWorldTime
+  , simulationTickSeconds
   , advanceTicks
   , worldTimeElapsedSeconds
     -- * Calendar configuration
@@ -44,19 +46,23 @@ import Topo.Planet (PlanetConfig(..))
 -- | A point in simulation time, tracked by a monotonic tick counter.
 --
 -- The tick counter never resets.  'wtTickRate' is fixed at world
--- creation and determines how many seconds elapse per tick.
+-- creation and determines how many simulation seconds elapse per tick.
 data WorldTime = WorldTime
   { wtTick     :: !Word64
     -- ^ Monotonic tick counter (never resets).
   , wtTickRate :: !Double
-    -- ^ Seconds per tick (from config, immutable after creation).
+    -- ^ Simulation seconds per world tick (immutable after creation).
   } deriving (Eq, Show, Generic)
 
--- | Default world time: tick 0, 1 second per tick.
+-- | Canonical duration of one simulation/world tick: one world hour.
+simulationTickSeconds :: Double
+simulationTickSeconds = 3600.0
+
+-- | Default world time: tick 0, one world hour per tick.
 defaultWorldTime :: WorldTime
 defaultWorldTime = WorldTime
   { wtTick     = 0
-  , wtTickRate = 1.0
+  , wtTickRate = simulationTickSeconds
   }
 
 -- | Advance the world time by a given number of ticks.
@@ -149,7 +155,7 @@ data CalendarDate = CalendarDate
 -- | Convert a world time to a calendar date.
 --
 -- @tickToDate cal wt@ computes the year, day-of-year, and hour-of-day
--- from the elapsed seconds implied by the tick counter and tick rate.
+-- from the elapsed seconds implied by the tick counter and simulation tick duration.
 tickToDate :: CalendarConfig -> WorldTime -> CalendarDate
 tickToDate cal wt =
   let elapsed     = worldTimeElapsedSeconds wt

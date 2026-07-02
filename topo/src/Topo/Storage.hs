@@ -538,13 +538,15 @@ getUnitScales = do
     , usSoilScale     = soilScale
     }
 
--- | Encode a 'WorldTime' as Word64 (tick) + Float64 (tickRate).
+-- | Encode a 'WorldTime' as Word64 (tick) + Float64
+-- (simulation seconds per world tick).
 putWorldTime :: WorldTime -> Put
 putWorldTime wt = do
   putWord64le (wtTick wt)
   putDoublele (wtTickRate wt)
 
--- | Decode a 'WorldTime' from Word64 + Float64.
+-- | Decode a 'WorldTime' from Word64 + Float64
+-- (simulation seconds per world tick).
 getWorldTime :: Get WorldTime
 getWorldTime = do
   tick     <- getWord64le

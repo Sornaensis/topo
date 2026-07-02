@@ -44,6 +44,7 @@ import Topo.Hydrology (HydroConfig(..))
 import Topo.Planet (WorldSlice(..), hexesPerDegreeLatitude, hexesPerDegreeLongitude)
 import Topo.Types (worldExtentRadiusX, worldExtentRadiusY)
 import Topo.WaterBody (WaterBodyConfig(..))
+import Topo.Weather (WeatherConfig(..))
 import Topo.WorldGen
   ( WorldGenConfig(..)
   , TerrainConfig(..)
@@ -142,6 +143,12 @@ snapshotFromUiSpec = describe "snapshotFromUi" $ do
     abs (wsLatCenter uiSlice - wsLatCenter defaultSlice) `shouldSatisfy` (< 1.0e-4)
     abs (wsLatExtent uiSlice - wsLatExtent defaultSlice) `shouldSatisfy` (< 0.5)
     abs (wsLonExtent uiSlice - wsLonExtent defaultSlice) `shouldSatisfy` (< 0.5)
+
+  it "maps weather cadence slider to whole world-hour intervals" $ do
+    let oneHour = worldWeather (configFromUi emptyUiState { uiWeatherTick = 0.0 })
+        fullDay = worldWeather (configFromUi emptyUiState { uiWeatherTick = 1.0 })
+    wcTickSeconds oneHour `shouldBe` 1
+    wcTickSeconds fullDay `shouldBe` 24
 
   it "keeps derived slice extents aligned with the generated config" $ do
     let ui = emptyUiState

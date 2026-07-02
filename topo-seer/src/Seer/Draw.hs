@@ -36,7 +36,7 @@ module Seer.Draw
   ) where
 
 import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshot(..))
-import Actor.UI (LeftTab(..), UiMenuMode(..), UiState(..), ViewMode(..))
+import Actor.UI (LeftTab(..), UiMenuMode(..), UiState(..), ViewMode(..), uiWorldTime)
 import Control.Monad (when)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -51,7 +51,7 @@ import UI.DrawCommand.SDL (interpretDrawCommands)
 import Seer.Draw.LeftPanel (drawChunkControl, drawDayNightToggle, drawLeftTabs, drawOverlayActionButtons, drawOverlayButtons, drawSeedControl, drawStatusBars, drawViewModeButtons, modeColor)
 import Seer.Draw.Overlay (drawHexContext, drawHoverHex, drawTooltip)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
-import Topo.Calendar (CalendarDate(..), WorldTime(..), mkCalendarConfig, tickToDate)
+import Topo.Calendar (CalendarDate(..), mkCalendarConfig, tickToDate)
 import Topo.Planet (PlanetConfig(..))
 import UI.Font (FontCache, textSize)
 import UI.Layout
@@ -288,10 +288,7 @@ drawTopBar renderer fontCache ui layout = do
         , pcInsolation = mapRange 0.7 1.3 (uiInsolation ui)
         }
       calCfg = mkCalendarConfig planet
-      worldTime = WorldTime
-        { wtTick     = uiSimTickCount ui
-        , wtTickRate = realToFrac (uiSimTickRate ui)
-        }
+      worldTime = uiWorldTime ui
       calDate = tickToDate calCfg worldTime
       yr   = cdYear calDate
       doy  = cdDayOfYear calDate + 1  -- 1-based for display

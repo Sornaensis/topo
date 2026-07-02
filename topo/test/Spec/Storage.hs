@@ -165,6 +165,8 @@ spec = describe "Storage" $ do
           Left err -> expectationFailure (show err)
           Right world1 -> do
             twWorldTime world1 `shouldBe` defaultWorldTime
+            wtTick (twWorldTime world1) `shouldBe` 0
+            wtTickRate (twWorldTime world1) `shouldBe` wtTickRate defaultWorldTime
             twPlanetAge world1 `shouldBe` defaultPlanetAge
 
   it "roundtrips tcMicroRelief in terrain chunks" $ do

@@ -17,8 +17,10 @@ import Topo.Config.JSON
 -- pressure/wind coupling, and stateful operator strengths used by
 -- weather generation and simulation.
 data WeatherConfig = WeatherConfig
-  { -- | Simulation seconds per weather tick. Also used as the
-    -- 'wtTickRate' when initialising 'WorldTime'.
+  { -- | Weather scheduler cadence in world hours.  The legacy field name
+    -- is retained for config compatibility, but this value is not a
+    -- world-clock duration, does not initialise 'wtTickRate', and is not
+    -- the UI auto-tick wall-clock rate.
     wcTickSeconds :: !Float
     -- | Initial seasonal phase offset (radians), combined with dynamic
     -- year-fraction phase.

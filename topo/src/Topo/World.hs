@@ -89,9 +89,9 @@ data TerrainWorld = TerrainWorld
   -- world configuration.  Computed once at world creation; used by
   -- every pipeline stage that needs tile-Y → latitude conversion.
   , twLatMapping :: !LatitudeMapping
-  -- | Monotonic simulation time.  Advanced by simulation ticks
-  -- (including weather simulation); used for time-varying weather
-  -- noise and seasonal phase computation via
+  -- | Monotonic simulation time.  Advanced by world ticks; by
+  -- default each tick is one world hour.  Used for time-varying
+  -- weather noise and seasonal phase computation via
   -- 'Topo.Calendar.yearFraction'.
   , twWorldTime :: !WorldTime
   -- | Deterministic world seed used for all time-varying simulation

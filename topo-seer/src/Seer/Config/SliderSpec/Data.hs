@@ -527,7 +527,7 @@ specMoistureIterations = SliderSpec
 
 specWeatherTick :: SliderSpec
 specWeatherTick = SliderSpec
-  "Weather Tick" "Simulated time per weather step (seconds)" 0.1 5 False
+  "Weather Cadence" "Weather scheduler interval (world hours; independent of world tick duration)" 1 24 True
 
 specWeatherPhase :: SliderSpec
 specWeatherPhase = SliderSpec

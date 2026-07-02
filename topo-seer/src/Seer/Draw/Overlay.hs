@@ -25,7 +25,7 @@ module Seer.Draw.Overlay
 
 import Actor.Data (TerrainSnapshot(..))
 import Actor.PluginManager.Types (PluginLifecycleSnapshot(..), pluginLifecycleStateText)
-import Actor.UI (UiState(..), ViewMode(..))
+import Actor.UI (UiState(..), ViewMode(..), uiWorldTime)
 import Data.Aeson (Value(..), object, toJSON, (.=))
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
@@ -118,7 +118,7 @@ import Topo.Plugin.RPC.DataService
   )
 import Topo.Hex (HexGridMeta(..))
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), formatLatLon, tileLatitude, tileLongitude)
-import Topo.Calendar (CalendarConfig(..), WorldTime(..), mkCalendarConfig, tickToDate, yearFraction, CalendarDate(..))
+import Topo.Calendar (CalendarConfig(..), mkCalendarConfig, tickToDate, yearFraction, CalendarDate(..))
 import Topo.Solar (SolarPosition(..), DayInfo(..), tileSolarPos, tileDayInfo, defaultSolarConfig, tileIrradiance, localSolarHour)
 import Topo.Units
   ( defaultUnitScales
@@ -744,10 +744,7 @@ solarLinesFor :: UiState -> TerrainSnapshot -> Int -> Int -> [Text]
 solarLinesFor ui terrainSnap tileQ tileR =
   let (planet, slice, hex, worldConfig) = geoContext ui terrainSnap
       calCfg = mkCalendarConfig planet
-      worldTime = WorldTime
-        { wtTick     = uiSimTickCount ui
-        , wtTickRate = realToFrac (uiSimTickRate ui)
-        }
+      worldTime = uiWorldTime ui
       calDate = tickToDate calCfg worldTime
       yf      = realToFrac (yearFraction calCfg worldTime) :: Float
       hpd     = realToFrac (ccHoursPerDay calCfg) :: Float
