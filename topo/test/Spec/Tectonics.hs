@@ -1,5 +1,7 @@
 module Spec.Tectonics (spec) where
 
+import Control.Exception (bracket_)
+import GHC.Conc (getNumCapabilities, setNumCapabilities)
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
@@ -7,6 +9,7 @@ import qualified Data.Vector.Unboxed as U
 import qualified Data.List as List
 import Data.Word (Word16, Word64)
 import Topo
+import Topo.Gen (plateTerrainWorkerCount)
 import Topo.Noise (directionalRidge2DAniso)
 
 spec :: Spec
@@ -183,6 +186,19 @@ spec = describe "Tectonics" $ do
             vy = tcPlateVelY chunk
             maxSpeed = U.maximum (U.zipWith (\x y -> abs x + abs y) vx vy)
         maxSpeed `shouldSatisfy` (> 0)
+
+  describe "plate terrain stage parallelism" $ do
+    it "bounds chunk workers by capabilities and chunk count" $ do
+      plateTerrainWorkerCount 0 25 `shouldBe` 1
+      plateTerrainWorkerCount 1 25 `shouldBe` 1
+      plateTerrainWorkerCount 4 25 `shouldBe` 4
+      plateTerrainWorkerCount 64 3 `shouldBe` 3
+      plateTerrainWorkerCount 4 0 `shouldBe` 1
+
+    it "is deterministic across single-capability and multi-capability runs" $ do
+      serial <- runPlateTerrainWithCapabilities 1
+      parallel <- runPlateTerrainWithCapabilities 2
+      parallel `shouldBe` serial
 
   it "applyTectonicsChunkFingerprint" $ do
     let expected =
@@ -485,6 +501,32 @@ makePlateInfo center = PlateInfo
   , plateInfoAge = 0.5
   , plateInfoCrust = PlateContinental
   }
+
+runPlateTerrainWithCapabilities :: Int -> IO (ChunkMap TerrainChunk)
+runPlateTerrainWithCapabilities capabilityCount =
+  withCapabilities capabilityCount $ do
+    let config = WorldConfig { wcChunkSize = 16 }
+        gen = defaultGenConfig { gcWorldExtent = worldExtentSquareOrDefault 1 }
+        world0 = emptyWorld config defaultHexGridMeta
+        stages = [generatePlateTerrainStage gen defaultTectonicsConfig]
+        pipeline = PipelineConfig
+          { pipelineSeed = 2468
+          , pipelineStages = stages
+          , pipelineDisabled = mempty
+          , pipelineSnapshots = False
+          , pipelineOnProgress = \_ -> pure ()
+          }
+        env = TopoEnv { teLogger = \_ -> pure () }
+    result <- runPipeline pipeline env world0
+    twTerrain <$> expectPipeline result
+
+withCapabilities :: Int -> IO a -> IO a
+withCapabilities capabilityCount action = do
+  original <- getNumCapabilities
+  bracket_
+    (setNumCapabilities (max 1 capabilityCount))
+    (setNumCapabilities original)
+    action
 
 expectPipeline :: Either PipelineError (TerrainWorld, [PipelineSnapshot]) -> IO TerrainWorld
 expectPipeline result =

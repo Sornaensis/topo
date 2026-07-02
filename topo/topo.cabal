@@ -237,6 +237,7 @@ test-suite topo-test
       Paths_topo
   hs-source-dirs:
       test
+  ghc-options: -threaded -rtsopts
   build-depends:
       QuickCheck
     , aeson

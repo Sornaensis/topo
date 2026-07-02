@@ -131,6 +131,9 @@ tests:
   topo-test:
     main: Spec.hs
     source-dirs: test
+    ghc-options:
+      - -threaded
+      - -rtsopts
     dependencies:
       - base
       - topo
