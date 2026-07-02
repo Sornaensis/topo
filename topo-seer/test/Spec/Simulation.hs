@@ -18,8 +18,9 @@ import Test.Hspec
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 
-import Actor.AtlasManager (AtlasManager)
-import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..), getTerrainSnapshot, tsVersion, tsWeatherChunks)
+import Actor.AtlasCache (atlasKeyFor)
+import Actor.AtlasManager (AtlasJob(..), AtlasManager, drainAtlasJobs)
+import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..), getTerrainSnapshot, replaceTerrainData)
 import Actor.Log (Log, getLogSnapshot, leMessage, lsEntries)
 import Actor.Simulation
   ( Simulation
@@ -39,7 +40,7 @@ import Actor.SnapshotReceiver
   , newSnapshotVersionRef
   , readTerrainSnapshot
   )
-import Actor.UI (Ui, getUiSnapshot, uiSimTickCount)
+import Actor.UI (Ui, ViewMode(..), getUiSnapshot, setUiDayNightEnabled, uiRenderWaterLevel, uiSimTickCount)
 
 import Topo
   ( ChunkId(..)
@@ -211,7 +212,7 @@ spec = describe "Simulation actor" $ do
     logHandle <- get @Log system
     uiHandle <- get @Ui system
     dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
-    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
+    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
     snapshotVersionRef <- newSnapshotVersionRef
     atlasHandle <- get @AtlasManager system
 
@@ -234,6 +235,8 @@ spec = describe "Simulation actor" $ do
           (ChunkId 0)
           climate
 
+    replaceTerrainData dataHandle world1
+    _ <- getTerrainSnapshot dataHandle
     setSimWorld simHandle world1
     requestSimTick simHandle 1
 
@@ -266,7 +269,7 @@ spec = describe "Simulation actor" $ do
     logHandle <- get @Log system
     uiHandle <- get @Ui system
     dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
-    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
+    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
     snapshotVersionRef <- newSnapshotVersionRef
     atlasHandle <- get @AtlasManager system
 
@@ -291,6 +294,8 @@ spec = describe "Simulation actor" $ do
           (ChunkId 0)
           climate
 
+    replaceTerrainData dataHandle world1
+    _ <- getTerrainSnapshot dataHandle
     setSimWorld simHandle world1
 
     tickAdvanced <- awaitTrue 500 $ do
@@ -316,7 +321,7 @@ spec = describe "Simulation actor" $ do
     logHandle <- get @Log system
     uiHandle <- get @Ui system
     dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
-    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
+    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
     snapshotVersionRef <- newSnapshotVersionRef
     atlasHandle <- get @AtlasManager system
 
@@ -339,7 +344,16 @@ spec = describe "Simulation actor" $ do
           (ChunkId 0)
           climate
 
+    replaceTerrainData dataHandle world1
+    initialTerrainSnap <- getTerrainSnapshot dataHandle
+    let baseVersion0 = tsVersion initialTerrainSnap
+        weatherVersion0 = tsWeatherVersion initialTerrainSnap
     setSimWorld simHandle world1
+    setUiDayNightEnabled uiHandle True
+    uiSnapBeforeTick <- getUiSnapshot uiHandle
+    let waterLevel0 = uiRenderWaterLevel uiSnapBeforeTick
+        elevationKey0 = atlasKeyFor ViewElevation waterLevel0 initialTerrainSnap
+        weatherKey0 = atlasKeyFor ViewWeather waterLevel0 initialTerrainSnap
     requestSimTick simHandle 1
 
     tickAdvanced <- awaitTrue 500 $ do
@@ -348,7 +362,10 @@ spec = describe "Simulation actor" $ do
     tickAdvanced `shouldBe` True
 
     terrainSnap <- getTerrainSnapshot dataHandle
-    tsVersion terrainSnap `shouldSatisfy` (> 0)
+    tsVersion terrainSnap `shouldBe` baseVersion0
+    tsWeatherVersion terrainSnap `shouldSatisfy` (> weatherVersion0)
+    atlasKeyFor ViewElevation waterLevel0 terrainSnap `shouldBe` elevationKey0
+    atlasKeyFor ViewWeather waterLevel0 terrainSnap `shouldNotBe` weatherKey0
     tempAfterTick1 <- case firstWeatherTemp (tsWeatherChunks terrainSnap) of
       Just t -> pure t
       Nothing -> expectationFailure "Expected weather chunks after tick 1" >> pure 0
@@ -367,12 +384,16 @@ spec = describe "Simulation actor" $ do
 
     snapshotPublished <- awaitTrue 500 $ do
       terrainRef <- readTerrainSnapshot terrainSnapshotRef
-      pure (tsVersion terrainRef > 0)
+      pure (tsWeatherVersion terrainRef > weatherVersion0 && tsVersion terrainRef == baseVersion0)
     snapshotPublished `shouldBe` True
 
     logSnap <- getLogSnapshot logHandle
     let messages = map leMessage (lsEntries logSnap)
     containsText (Text.pack "simulation: tick") messages `shouldBe` True
+    atlasJobs <- drainAtlasJobs atlasHandle
+    length atlasJobs `shouldBe` 5
+    map ajViewMode atlasJobs `shouldBe` replicate 5 ViewElevation
+    map ajKey atlasJobs `shouldSatisfy` all (== elevationKey0)
 
     dagSnapshot <- getSimDagSnapshot simHandle
     sdsAvailable dagSnapshot `shouldBe` True
@@ -385,7 +406,7 @@ spec = describe "Simulation actor" $ do
     logHandle <- get @Log system
     uiHandle <- get @Ui system
     dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
-    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
+    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
     snapshotVersionRef <- newSnapshotVersionRef
     atlasHandle <- get @AtlasManager system
 
@@ -425,6 +446,8 @@ spec = describe "Simulation actor" $ do
           , snbPlugin = Just pluginOverlayName
           }
 
+    replaceTerrainData dataHandle world1
+    _ <- getTerrainSnapshot dataHandle
     setSimWorldWithNodes simHandle world1 [slowBinding]
     requestSimTick simHandle 1
 
@@ -451,7 +474,7 @@ spec = describe "Simulation actor" $ do
     logHandle <- get @Log system
     uiHandle <- get @Ui system
     dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
-    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
+    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
     snapshotVersionRef <- newSnapshotVersionRef
     atlasHandle <- get @AtlasManager system
 
@@ -476,6 +499,10 @@ spec = describe "Simulation actor" $ do
             climate
         tempBefore = firstWeatherTemp (IntMap.singleton 0 (mkSeedWeatherChunk climate))
 
+    replaceTerrainData dataHandle world1
+    initialTerrainSnap <- getTerrainSnapshot dataHandle
+    let baseVersion0 = tsVersion initialTerrainSnap
+        overlayVersion0 = tsOverlayVersion initialTerrainSnap
     setSimWorldWithNodes simHandle world1 [pluginSimulationBinding]
     requestSimTick simHandle 1
 
@@ -485,6 +512,8 @@ spec = describe "Simulation actor" $ do
     tickAdvanced `shouldBe` True
 
     terrainSnap <- getTerrainSnapshot dataHandle
+    tsVersion terrainSnap `shouldBe` baseVersion0
+    tsOverlayVersion terrainSnap `shouldSatisfy` (> overlayVersion0)
     tempAfter <- case firstWeatherTemp (tsWeatherChunks terrainSnap) of
       Just t -> pure t
       Nothing -> expectationFailure "Expected weather chunks after manual plugin tick" >> pure 0

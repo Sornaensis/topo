@@ -11,7 +11,7 @@ module Actor.UiActions.Terrain
   , applyTerrainResult
   ) where
 
-import Actor.AtlasCache (AtlasKey(..))
+import Actor.AtlasCache (atlasKeyFor)
 import Actor.AtlasManager (AtlasJob(..), AtlasManager, enqueueAtlasBuild)
 import Seer.Render.ZoomStage (ZoomStage(..), allZoomStages, stageForZoom)
 import Actor.Data
@@ -185,7 +185,7 @@ rebuildAtlas handles terrainSnap uiSnap = do
       -- prioritised by the scheduler's round-robin dispatch.
       orderedStages = currentStage : filter (/= currentStage) allZoomStages
       mkJob stage =
-        let atlasKey = AtlasKey currentMode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
+        let atlasKey = atlasKeyFor currentMode (uiRenderWaterLevel uiSnap) terrainSnap
         in AtlasJob
           { ajKey        = atlasKey
           , ajViewMode   = currentMode

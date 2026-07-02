@@ -14,7 +14,7 @@ module Actor.UiActions.Command
   ) where
 
 import Actor.UiActions.Handles (ActorHandles(..))
-import Actor.AtlasCache (AtlasKey(..))
+import Actor.AtlasCache (atlasKeyFor)
 import Actor.PluginManager
   ( LoadedPlugin(..)
   , PluginManager
@@ -266,7 +266,7 @@ rebuildAtlasFor req mode = do
   let handles = uarActorHandles req
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap <- getUiSnapshot (ahUiHandle handles)
-  let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
+  let atlasKey = atlasKeyFor mode (uiRenderWaterLevel uiSnap) terrainSnap
       currentStage = stageForZoom (uiZoom uiSnap)
       -- Enqueue the current zoom stage first so the visible tiles are
       -- prioritised by the scheduler's round-robin dispatch.
@@ -287,7 +287,7 @@ rebuildAtlasFor' :: ActorHandles -> ViewMode -> IO ()
 rebuildAtlasFor' handles mode = do
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap <- getUiSnapshot (ahUiHandle handles)
-  let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
+  let atlasKey = atlasKeyFor mode (uiRenderWaterLevel uiSnap) terrainSnap
       currentStage = stageForZoom (uiZoom uiSnap)
       orderedStages = currentStage : filter (/= currentStage) allZoomStages
       job stage = AtlasJob
@@ -311,7 +311,7 @@ refreshViewport req = do
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap <- getUiSnapshot (ahUiHandle handles)
   let mode = uiViewMode uiSnap
-      atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
+      atlasKey = atlasKeyFor mode (uiRenderWaterLevel uiSnap) terrainSnap
       currentStage = stageForZoom (uiZoom uiSnap)
       job stage = AtlasJob
         { ajKey        = atlasKey

@@ -267,7 +267,7 @@ canonicalInspectorSectionKeys =
   ]
 
 emptyTerrainSnapshot :: TerrainSnapshot
-emptyTerrainSnapshot = TerrainSnapshot 0 0 IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty emptyOverlayStore
+emptyTerrainSnapshot = TerrainSnapshot 0 0 0 0 0 0 IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty emptyOverlayStore
 
 settlementResourceSchema :: DataResourceSchema
 settlementResourceSchema = DataResourceSchema
@@ -289,6 +289,10 @@ settlementResourceSchema = DataResourceSchema
 terrainSnapshotWithChunk :: TerrainSnapshot
 terrainSnapshotWithChunk = TerrainSnapshot
   { tsVersion = 1
+  , tsClimateVersion = 0
+  , tsWeatherVersion = 0
+  , tsVegetationVersion = 0
+  , tsOverlayVersion = 0
   , tsChunkSize = chunkSize
   , tsTerrainChunks = IntMap.singleton 0 (emptyTerrainChunk chunkSize)
   , tsClimateChunks = IntMap.empty

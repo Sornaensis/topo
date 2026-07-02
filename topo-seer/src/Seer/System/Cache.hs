@@ -8,6 +8,7 @@ module Seer.System.Cache
   , shouldPoll
   ) where
 
+import Actor.AtlasCache (terrainSnapshotViewVersion)
 import Actor.Data (TerrainSnapshot(..))
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion(..))
@@ -135,7 +136,7 @@ terrainCacheNeedsRebuild uiSnap terrainSnap cache
   | tcViewMode cache /= uiViewMode uiSnap = True
   | tcWaterLevel cache /= uiRenderWaterLevel uiSnap = True
   | tcChunkSize cache /= tsChunkSize terrainSnap = True
-  | tcVersion cache /= tsVersion terrainSnap = True
+  | tcVersion cache /= terrainSnapshotViewVersion (uiViewMode uiSnap) terrainSnap = True
   | otherwise = False
 
 renderMetrics :: Word32 -> RenderSnapshot -> RenderCacheState -> Text.Text

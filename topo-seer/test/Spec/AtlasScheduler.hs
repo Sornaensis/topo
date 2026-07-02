@@ -58,7 +58,7 @@ spec = describe "AtlasScheduler" $ do
       , ashResultRef = resultRef
       , ashScheduleRef = scheduleRef
       }
-    let terrainSnap = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore
+    let terrainSnap = TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore
         atlasKey = AtlasKey ViewElevation 0.5 (tsVersion terrainSnap)
         job = AtlasJob
           { ajKey = atlasKey
@@ -88,7 +88,7 @@ spec = describe "AtlasScheduler" $ do
 
   it "single-mode rebuild enqueues exactly one job per zoom stage" $ withSystem $ \system -> do
     managerHandle <- get @AtlasManager system
-    let terrainSnap = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore
+    let terrainSnap = TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore
         mkJob stage =
           let atlasKey = AtlasKey ViewElevation 0.5 (tsVersion terrainSnap)
           in AtlasJob
@@ -108,7 +108,7 @@ spec = describe "AtlasScheduler" $ do
 
   it "does not multiply jobs across view modes for single-mode rebuild" $ withSystem $ \system -> do
     managerHandle <- get @AtlasManager system
-    let terrainSnap = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore
+    let terrainSnap = TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore
         mkJobFor mode stage =
           let atlasKey = AtlasKey mode 0.5 (tsVersion terrainSnap)
           in AtlasJob
@@ -144,7 +144,7 @@ spec = describe "AtlasScheduler" $ do
       , ashResultRef = resultRef
       , ashScheduleRef = scheduleRef
       }
-    let terrainSnap = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore
+    let terrainSnap = TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore
         mkJob i =
           let atlasKey = AtlasKey ViewElevation 0.5 (tsVersion terrainSnap)
           in AtlasJob

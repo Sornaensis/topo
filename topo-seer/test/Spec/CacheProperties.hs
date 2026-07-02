@@ -66,6 +66,10 @@ spec = describe "Cache properties" $ do
 emptyTerrainSnapshot :: TerrainSnapshot
 emptyTerrainSnapshot = TerrainSnapshot
   { tsVersion = 0
+  , tsClimateVersion = 0
+  , tsWeatherVersion = 0
+  , tsVegetationVersion = 0
+  , tsOverlayVersion = 0
   , tsChunkSize = 0
   , tsTerrainChunks = IntMap.empty
   , tsClimateChunks = IntMap.empty

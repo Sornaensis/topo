@@ -57,7 +57,7 @@ import Hyperspace.Actor.Spec (OpTag(..))
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 
-import Actor.AtlasCache (AtlasKey(..))
+import Actor.AtlasCache (atlasKeyFor)
 import Actor.AtlasManager
   ( AtlasManager
   , AtlasJob(..)
@@ -66,9 +66,12 @@ import Actor.AtlasManager
 import Actor.Data
   ( Data
   , TerrainSnapshot(..)
-  , getDataSnapshot
   , getTerrainSnapshot
-  , replaceTerrainData
+  , setOverlayStoreData
+  , setWeatherChunkData
+  , updateClimateChunkData
+  , updateTerrainChunkData
+  , updateVegetationChunkData
   )
 import Actor.Log
   ( Log
@@ -76,10 +79,11 @@ import Actor.Log
   , LogLevel(..)
   , appendLog
   )
-import Actor.SnapshotReceiver (DataSnapshotRef, TerrainSnapshotRef, SnapshotVersionRef, writeDataSnapshot, writeTerrainSnapshot, bumpSnapshotVersion)
+import Actor.SnapshotReceiver (DataSnapshotRef, TerrainSnapshotRef, SnapshotVersionRef, writeTerrainSnapshot, bumpSnapshotVersion)
 import Actor.UI
   ( Ui
   , UiState(..)
+  , ViewMode(..)
   , getUiSnapshot
   , setUiSimTickCount
   , setUiOverlayNames
@@ -99,7 +103,7 @@ import Topo.Simulation
   , SimProgress(..)
   , SimStatus(..)
   , SimNodeId(..)
-  , TerrainWrites
+  , TerrainWrites(..)
   , applyTerrainWrites
   , simNodeDependencies
   , simNodeId
@@ -110,9 +114,11 @@ import Topo.Simulation.DAG
   , buildSimDAG
   , tickSimulation
   )
+import Topo (ChunkId(..), getWeatherFromOverlay)
 import Topo.World (TerrainWorld(..))
 import Topo.Overlay (OverlayStore, overlayNames)
 import Topo.WorldGen (WorldGenConfig(..))
+import Topo.Types (WorldConfig(..))
 import Data.Aeson (fromJSON, Result(..), Value)
 
 -- ---------------------------------------------------------------------------
@@ -855,8 +861,9 @@ integrateFreshTickResult result st
           completeTickRequest (strCompletion result) (AutoTickFailed err)
           maybeProcessPendingTick st'
         Right (newStore, terrainWrites) -> do
-          let wt = twWorldTime (strBaseWorld result)
-              world' = applyTerrainWrites terrainWrites (strBaseWorld result)
+          let baseWorld = strBaseWorld result
+              wt = twWorldTime baseWorld
+              world' = applyTerrainWrites terrainWrites baseWorld
               world'' = world'
                 { twOverlays = newStore
                 , twWorldTime = advanceTicks (strDeltaTicks result) wt
@@ -864,25 +871,56 @@ integrateFreshTickResult result st
               handles = case ssHandles st of
                 Just h -> h
                 Nothing -> strHandles result
-          replaceTerrainData (shDataHandle handles) world''
-          setUiOverlayNames (shUiHandle handles) (overlayNames (twOverlays world''))
+              chunkSize = wcChunkSize (twConfig world'')
+              terrainChanged = not (IntMap.null (twrTerrain terrainWrites))
+              climateChanged = not (IntMap.null (twrClimate terrainWrites))
+              vegetationChanged = not (IntMap.null (twrVegetation terrainWrites))
+              weatherChunksBefore = getWeatherFromOverlay baseWorld
+              weatherChunksAfter = getWeatherFromOverlay world''
+              weatherChanged = weatherChunksBefore /= weatherChunksAfter
+              overlayChanged = newStore /= twOverlays baseWorld
+              overlayNamesChanged = overlayNames newStore /= overlayNames (twOverlays baseWorld)
+              dataChanged = terrainChanged || climateChanged || weatherChanged || vegetationChanged || overlayChanged
+          when terrainChanged $
+            updateTerrainChunkData (shDataHandle handles) chunkSize (twrTerrain terrainWrites)
+          when climateChanged $
+            updateClimateChunkData (shDataHandle handles) chunkSize (twrClimate terrainWrites)
+          when weatherChanged $
+            setWeatherChunkData (shDataHandle handles) chunkSize (chunkList weatherChunksAfter)
+          when vegetationChanged $
+            updateVegetationChunkData (shDataHandle handles) chunkSize (twrVegetation terrainWrites)
+          when overlayChanged $
+            setOverlayStoreData (shDataHandle handles) newStore
+          when overlayNamesChanged $
+            setUiOverlayNames (shUiHandle handles) (overlayNames newStore)
           setUiSimTickCount (shUiHandle handles) (strAppliedTick result)
-          dataSnap <- getDataSnapshot (shDataHandle handles)
-          terrainSnap <- getTerrainSnapshot (shDataHandle handles)
-          writeDataSnapshot (shDataSnapshotRef handles) dataSnap
-          writeTerrainSnapshot (shTerrainSnapshotRef handles) terrainSnap
-          bumpSnapshotVersion (shSnapshotVersionRef handles)
+          terrainSnapMaybe <- if dataChanged
+            then Just <$> getTerrainSnapshot (shDataHandle handles)
+            else pure Nothing
           uiSnap <- getUiSnapshot (shUiHandle handles)
-          let atlasKey = AtlasKey (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
-              mkJob stage = AtlasJob
-                { ajKey = atlasKey
-                , ajViewMode = uiViewMode uiSnap
-                , ajWaterLevel = uiRenderWaterLevel uiSnap
-                , ajTerrain = terrainSnap
-                , ajHexRadius = zsHexRadius stage
-                , ajAtlasScale = zsAtlasScale stage
-                }
-          mapM_ (enqueueAtlasBuild (shAtlasHandle handles) . mkJob) allZoomStages
+          case terrainSnapMaybe of
+            Just terrainSnap -> writeTerrainSnapshot (shTerrainSnapshotRef handles) terrainSnap
+            Nothing -> pure ()
+          bumpSnapshotVersion (shSnapshotVersionRef handles)
+          terrainSnapForAtlas <- case terrainSnapMaybe of
+            Just terrainSnap -> pure (Just terrainSnap)
+            Nothing
+              | uiDayNightEnabled uiSnap -> Just <$> getTerrainSnapshot (shDataHandle handles)
+              | otherwise -> pure Nothing
+          case terrainSnapForAtlas of
+            Just terrainSnap
+              | uiDayNightEnabled uiSnap || viewAffectedBySimulationPublication (uiViewMode uiSnap) terrainChanged climateChanged weatherChanged vegetationChanged overlayChanged -> do
+                  let atlasKey = atlasKeyFor (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) terrainSnap
+                      mkJob stage = AtlasJob
+                        { ajKey = atlasKey
+                        , ajViewMode = uiViewMode uiSnap
+                        , ajWaterLevel = uiRenderWaterLevel uiSnap
+                        , ajTerrain = terrainSnap
+                        , ajHexRadius = zsHexRadius stage
+                        , ajAtlasScale = zsAtlasScale stage
+                        }
+                  mapM_ (enqueueAtlasBuild (shAtlasHandle handles) . mkJob) allZoomStages
+            _ -> pure ()
           let completeMsg = "simulation: tick " <> Text.pack (show (strAppliedTick result))
                 <> " completed in " <> Text.pack (show (round (strElapsedMs result) :: Int)) <> "ms"
               completeLog = SimulationTickLogEntry (strAppliedTick result) Nothing "completed" completeMsg (Just (strElapsedMs result))
@@ -895,6 +933,27 @@ integrateFreshTickResult result st
           appendLog (shLogHandle handles) (LogEntry LogInfo completeMsg)
           completeTickRequest (strCompletion result) (AutoTickApplied (strAppliedTick result))
           maybeProcessPendingTick st'
+
+chunkList :: IntMap.IntMap a -> [(ChunkId, a)]
+chunkList = map (\(k, v) -> (ChunkId k, v)) . IntMap.toList
+
+viewAffectedBySimulationPublication
+  :: ViewMode
+  -> Bool
+  -> Bool
+  -> Bool
+  -> Bool
+  -> Bool
+  -> Bool
+viewAffectedBySimulationPublication mode terrainChanged climateChanged weatherChanged vegetationChanged overlayChanged =
+  case mode of
+    ViewClimate    -> terrainChanged || climateChanged
+    ViewPrecip     -> terrainChanged || climateChanged
+    ViewWeather    -> terrainChanged || weatherChanged
+    ViewCloud      -> terrainChanged || weatherChanged
+    ViewVegetation -> terrainChanged || vegetationChanged
+    ViewOverlay{}  -> terrainChanged || overlayChanged
+    _              -> terrainChanged
 
 signalInFlightDone :: SimInFlight -> IO ()
 signalInFlightDone inFlight = do

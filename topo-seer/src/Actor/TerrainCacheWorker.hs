@@ -15,6 +15,7 @@ module Actor.TerrainCacheWorker
   , terrainCacheKeyFrom
   ) where
 
+import Actor.AtlasCache (terrainSnapshotViewVersion)
 import Actor.Data (TerrainSnapshot(..))
 import Actor.UI (UiState(..), ViewMode(..))
 import Control.Exception (evaluate)
@@ -27,8 +28,9 @@ import Seer.Render (TerrainCache(..), buildTerrainCache, emptyTerrainCache)
 
 -- | Lightweight cache key for O(1) staleness checks.
 --
--- Uses 'tsVersion' from the terrain snapshot rather than embedding full
--- 'IntMap's, avoiding deep structural equality on the render thread.
+-- Uses the view-specific version from the terrain snapshot rather than
+-- embedding full 'IntMap's, avoiding deep structural equality on the render
+-- thread.
 data TerrainCacheKey = TerrainCacheKey
   { tckViewMode :: !ViewMode
   , tckWaterLevel :: !Float
@@ -96,5 +98,5 @@ terrainCacheKeyFrom uiSnap terrainSnap
       { tckViewMode = uiViewMode uiSnap
       , tckWaterLevel = uiRenderWaterLevel uiSnap
       , tckChunkSize = tsChunkSize terrainSnap
-      , tckVersion = tsVersion terrainSnap
+      , tckVersion = terrainSnapshotViewVersion (uiViewMode uiSnap) terrainSnap
       }

@@ -24,7 +24,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
 
-import Actor.AtlasCache (AtlasKey(..))
+import Actor.AtlasCache (atlasKeyFor)
 import Actor.AtlasManager (AtlasJob(..), enqueueAtlasBuild)
 import Seer.Render.ZoomStage (ZoomStage(..), allZoomStages)
 import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot)
@@ -130,7 +130,7 @@ scheduleAtlasRebuild :: ActorHandles -> ViewMode -> IO ()
 scheduleAtlasRebuild handles mode = do
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap      <- getUiSnapshot (ahUiHandle handles)
-  let atlasKey = AtlasKey mode (uiRenderWaterLevel uiSnap) (tsVersion terrainSnap)
+  let atlasKey = atlasKeyFor mode (uiRenderWaterLevel uiSnap) terrainSnap
       job stage = AtlasJob
         { ajKey        = atlasKey
         , ajViewMode   = mode

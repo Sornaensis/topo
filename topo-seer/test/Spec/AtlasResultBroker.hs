@@ -85,4 +85,4 @@ spec = describe "AtlasResultBroker" $ do
     length results `shouldBe` 300
 
 sampleTerrainSnapshot :: TerrainSnapshot
-sampleTerrainSnapshot = TerrainSnapshot 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore
+sampleTerrainSnapshot = TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore

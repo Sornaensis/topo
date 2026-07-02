@@ -41,7 +41,7 @@ spec = describe "TerrainCacheWorker" $ do
     workerHandle <- get @TerrainCacheWorker system
     cacheRef <- newTerrainCacheRef
     let uiSnap = emptyUiState
-        terrainSnap = TerrainSnapshot 0 sampleChunkSize sampleTerrainChunks sampleClimateChunks sampleWeatherChunks mempty mempty mempty mempty mempty mempty emptyOverlayStore
+        terrainSnap = TerrainSnapshot 0 0 0 0 0 sampleChunkSize sampleTerrainChunks sampleClimateChunks sampleWeatherChunks mempty mempty mempty mempty mempty mempty emptyOverlayStore
     case terrainCacheKeyFrom uiSnap terrainSnap of
       Nothing -> expectationFailure "Expected terrain cache key to be available"
       Just key -> do

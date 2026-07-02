@@ -37,7 +37,7 @@ import Seer.Draw
   , seedMaxDigits
   , viewColor
   )
-import Actor.AtlasCache (AtlasKey(..))
+import Actor.AtlasCache (atlasKeyFor)
 import Seer.Render.Atlas
   ( AtlasTextureCache(..)
   , drawAtlas
@@ -142,7 +142,7 @@ renderFrame context = do
       -- Synchronise the render-thread cache key with the current UI state
       -- BEFORE draining results.  This ensures stale worker results (from a
       -- superseded view mode) are discarded rather than thrashing the key.
-      expectedAtlasKey = AtlasKey mode (uiRenderWaterLevel (rsUi snapshot)) (tsVersion terrainSnap)
+      expectedAtlasKey = atlasKeyFor mode (uiRenderWaterLevel (rsUi snapshot)) terrainSnap
       atlasCacheKeyed = setAtlasKey expectedAtlasKey atlasCacheWithStage
       dataReady = tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
   (loggedSchedule, loggedScheduleDrain, loggedScheduleEnqueue) <-

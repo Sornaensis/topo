@@ -7,6 +7,7 @@ module Seer.Render.Terrain
   , drawTerrain
   ) where
 
+import Actor.AtlasCache (terrainSnapshotViewVersion)
 import Actor.Data (TerrainSnapshot(..))
 import Actor.UI (UiState(..), ViewMode(..))
 import Data.IntMap.Strict (IntMap)
@@ -26,9 +27,9 @@ import Topo (ClimateChunk(..), TerrainChunk(..), WeatherChunk(..), WorldConfig(.
 
 -- | Cached per-chunk geometry for the current renderable terrain state.
 --
--- @tcVersion@ mirrors 'tsVersion' from the 'TerrainSnapshot' that was used to
--- build this cache.  Staleness is checked via the version rather than deep
--- IntMap equality.
+-- @tcVersion@ mirrors the view-specific version from the 'TerrainSnapshot'
+-- that was used to build this cache.  Staleness is checked via the version
+-- rather than deep IntMap equality.
 data TerrainCache = TerrainCache
   { tcVersion :: !Word64
   , tcViewMode :: !ViewMode
@@ -57,8 +58,8 @@ emptyTerrainCache = TerrainCache
 
 -- | Update the cached geometry when the UI or terrain snapshot changes.
 --
--- Uses 'tsVersion' for O(1) terrain data staleness instead of comparing the
--- full IntMaps element-by-element.
+-- Uses a view-specific version for O(1) data staleness instead of comparing
+-- the full IntMaps element-by-element.
 updateTerrainCache :: UiState -> TerrainSnapshot -> TerrainCache -> TerrainCache
 updateTerrainCache uiSnap terrainSnap cache
   | tsChunkSize terrainSnap <= 0 = emptyTerrainCache
@@ -66,7 +67,7 @@ updateTerrainCache uiSnap terrainSnap cache
   | tcWaterLevel cache /= uiRenderWaterLevel uiSnap = buildTerrainCache uiSnap terrainSnap
   | tcDayNightEnabled cache /= uiDayNightEnabled uiSnap = buildTerrainCache uiSnap terrainSnap
   | tcChunkSize cache /= tsChunkSize terrainSnap = buildTerrainCache uiSnap terrainSnap
-  | tcVersion cache /= tsVersion terrainSnap = buildTerrainCache uiSnap terrainSnap
+  | tcVersion cache /= terrainSnapshotViewVersion (uiViewMode uiSnap) terrainSnap = buildTerrainCache uiSnap terrainSnap
   | otherwise = cache
 
 -- | Build a fresh terrain cache for the current UI and terrain state.
@@ -75,6 +76,7 @@ buildTerrainCache uiSnap terrainSnap =
   let config = WorldConfig { wcChunkSize = tsChunkSize terrainSnap }
       mode = uiViewMode uiSnap
       waterLevel = uiRenderWaterLevel uiSnap
+      viewVersion = terrainSnapshotViewVersion mode terrainSnap
       overlayMap = case mode of
         ViewOverlay name fieldIdx ->
           case extractOverlayField name fieldIdx (wcChunkSize config * wcChunkSize config) (tsOverlayStore terrainSnap) of
@@ -89,7 +91,7 @@ buildTerrainCache uiSnap terrainSnap =
                          k chunk
       cacheChunks = IntMap.mapWithKey mkGeom (tsTerrainChunks terrainSnap)
   in TerrainCache
-      { tcVersion = tsVersion terrainSnap
+      { tcVersion = viewVersion
       , tcViewMode = mode
       , tcWaterLevel = waterLevel
       , tcDayNightEnabled = uiDayNightEnabled uiSnap

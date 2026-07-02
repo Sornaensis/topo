@@ -21,6 +21,9 @@ module Actor.Data
   , setGlacierChunkData
   , setWaterBodyChunkData
   , setVegetationChunkData
+  , updateTerrainChunkData
+  , updateClimateChunkData
+  , updateVegetationChunkData
   , setOverlayStoreData
   , getDataSnapshot
   , getTerrainSnapshot
@@ -51,6 +54,11 @@ data DataSnapshot = DataSnapshot
 -- paths — use the version instead.
 data TerrainSnapshot = TerrainSnapshot
   { tsVersion :: !Word64
+    -- ^ Base terrain chunk version.  Only terrain chunk writes bump this stamp.
+  , tsClimateVersion :: !Word64
+  , tsWeatherVersion :: !Word64
+  , tsVegetationVersion :: !Word64
+  , tsOverlayVersion :: !Word64
   , tsChunkSize :: !Int
   , tsTerrainChunks :: !(IntMap TerrainChunk)
   , tsClimateChunks :: !(IntMap ClimateChunk)
@@ -70,7 +78,12 @@ data DataState = DataState
   , stBiomeCount :: !Int
   , stLastSeed :: !(Maybe Word64)
   , stChunkSize :: !Int
+  , stNextVersion :: !Word64
   , stTerrainVersion :: !Word64
+  , stClimateVersion :: !Word64
+  , stWeatherVersion :: !Word64
+  , stVegetationVersion :: !Word64
+  , stOverlayVersion :: !Word64
   , stTerrainChunks :: !(IntMap TerrainChunk)
   , stClimateChunks :: !(IntMap ClimateChunk)
   , stWeatherChunks :: !(IntMap WeatherChunk)
@@ -89,7 +102,12 @@ emptyDataState = DataState
   , stBiomeCount = 0
   , stLastSeed = Nothing
   , stChunkSize = 0
+  , stNextVersion = 1
   , stTerrainVersion = 0
+  , stClimateVersion = 0
+  , stWeatherVersion = 0
+  , stVegetationVersion = 0
+  , stOverlayVersion = 0
   , stTerrainChunks = IntMap.empty
   , stClimateChunks = IntMap.empty
   , stWeatherChunks = IntMap.empty
@@ -112,6 +130,10 @@ snapshotData st = DataSnapshot
 snapshotTerrain :: DataState -> TerrainSnapshot
 snapshotTerrain st = TerrainSnapshot
   { tsVersion = stTerrainVersion st
+  , tsClimateVersion = stClimateVersion st
+  , tsWeatherVersion = stWeatherVersion st
+  , tsVegetationVersion = stVegetationVersion st
+  , tsOverlayVersion = stOverlayVersion st
   , tsChunkSize = stChunkSize st
   , tsTerrainChunks = stTerrainChunks st
   , tsClimateChunks = stClimateChunks st
@@ -127,6 +149,36 @@ snapshotTerrain st = TerrainSnapshot
 
 chunkKey :: ChunkId -> Int
 chunkKey (ChunkId key) = key
+
+nextVersion :: DataState -> (Word64, DataState)
+nextVersion st =
+  let version = stNextVersion st
+  in (version, st { stNextVersion = version + 1 })
+
+bumpTerrainVersion :: DataState -> DataState
+bumpTerrainVersion st =
+  let (version, st') = nextVersion st
+  in st' { stTerrainVersion = version }
+
+bumpClimateVersion :: DataState -> DataState
+bumpClimateVersion st =
+  let (version, st') = nextVersion st
+  in st' { stClimateVersion = version }
+
+bumpWeatherVersion :: DataState -> DataState
+bumpWeatherVersion st =
+  let (version, st') = nextVersion st
+  in st' { stWeatherVersion = version }
+
+bumpVegetationVersion :: DataState -> DataState
+bumpVegetationVersion st =
+  let (version, st') = nextVersion st
+  in st' { stVegetationVersion = version }
+
+bumpOverlayVersion :: DataState -> DataState
+bumpOverlayVersion st =
+  let (version, st') = nextVersion st
+  in st' { stOverlayVersion = version }
 
 [hyperspace|
 actor Data
@@ -148,6 +200,9 @@ actor Data
   cast setGlacierData :: (Int, [(ChunkId, GlacierChunk)])
   cast setWaterBodyData :: (Int, [(ChunkId, WaterBodyChunk)])
   cast setVegetationData :: (Int, [(ChunkId, VegetationChunk)])
+  cast updateTerrainData :: (Int, IntMap TerrainChunk)
+  cast updateClimateData :: (Int, IntMap ClimateChunk)
+  cast updateVegetationData :: (Int, IntMap VegetationChunk)
   cast setOverlayStore :: OverlayStore
   call snapshot :: () -> DataSnapshot
   call terrainSnapshot :: () -> TerrainSnapshot
@@ -159,22 +214,24 @@ actor Data
   on_ setTerrainData = \(size, chunks) st -> do
     let m = IntMap.fromList (map (\(cid, chunk) -> (chunkKey cid, chunk)) chunks)
     _ <- evaluate (IntMap.size m)
-    pure st { stChunkSize = size
-            , stTerrainVersion = stTerrainVersion st + 1
-            , stTerrainChunks = m
-            }
+    let st' = bumpTerrainVersion st
+    pure st' { stChunkSize = size
+             , stTerrainChunks = m
+             }
   on_ setClimateData = \(size, chunks) st -> do
     let m = IntMap.fromList (map (\(cid, chunk) -> (chunkKey cid, chunk)) chunks)
     _ <- evaluate (IntMap.size m)
-    pure st { stChunkSize = size
-            , stClimateChunks = m
-            }
+    let st' = bumpClimateVersion st
+    pure st' { stChunkSize = size
+             , stClimateChunks = m
+             }
   on_ setWeatherData = \(size, chunks) st -> do
     let m = IntMap.fromList (map (\(cid, chunk) -> (chunkKey cid, chunk)) chunks)
     _ <- evaluate (IntMap.size m)
-    pure st { stChunkSize = size
-            , stWeatherChunks = m
-            }
+    let st' = bumpWeatherVersion st
+    pure st' { stChunkSize = size
+             , stWeatherChunks = m
+             }
   on_ setRiverData = \(size, chunks) st -> do
     let m = IntMap.fromList (map (\(cid, chunk) -> (chunkKey cid, chunk)) chunks)
     _ <- evaluate (IntMap.size m)
@@ -208,13 +265,41 @@ actor Data
   on_ setVegetationData = \(size, chunks) st -> do
     let m = IntMap.fromList (map (\(cid, chunk) -> (chunkKey cid, chunk)) chunks)
     _ <- evaluate (IntMap.size m)
-    pure st { stChunkSize = size
-            , stVegetationChunks = m
-            }
+    let st' = bumpVegetationVersion st
+    pure st' { stChunkSize = size
+             , stVegetationChunks = m
+             }
+  on_ updateTerrainData = \(size, chunks) st -> do
+    if IntMap.null chunks
+      then pure st
+      else do
+        _ <- evaluate (IntMap.size chunks)
+        let st' = bumpTerrainVersion st
+        pure st' { stChunkSize = size
+                 , stTerrainChunks = IntMap.union chunks (stTerrainChunks st)
+                 }
+  on_ updateClimateData = \(size, chunks) st -> do
+    if IntMap.null chunks
+      then pure st
+      else do
+        _ <- evaluate (IntMap.size chunks)
+        let st' = bumpClimateVersion st
+        pure st' { stChunkSize = size
+                 , stClimateChunks = IntMap.union chunks (stClimateChunks st)
+                 }
+  on_ updateVegetationData = \(size, chunks) st -> do
+    if IntMap.null chunks
+      then pure st
+      else do
+        _ <- evaluate (IntMap.size chunks)
+        let st' = bumpVegetationVersion st
+        pure st' { stChunkSize = size
+                 , stVegetationChunks = IntMap.union chunks (stVegetationChunks st)
+                 }
   onPure_ setOverlayStore = \store st ->
-    st { stOverlayStore = store
-       , stTerrainVersion = stTerrainVersion st + 1
-       }
+    if store == stOverlayStore st
+      then st
+      else (bumpOverlayVersion st) { stOverlayStore = store }
   onPure snapshot = \() st -> (st, snapshotData st)
   onPure terrainSnapshot = \() st -> (st, snapshotTerrain st)
 |]
@@ -277,6 +362,21 @@ setVegetationChunkData :: ActorHandle Data (Protocol Data) -> Int -> [(ChunkId, 
 setVegetationChunkData handle size chunks =
   cast @"setVegetationData" handle #setVegetationData (size, chunks)
 
+-- | Merge changed terrain chunks into the current terrain map.
+updateTerrainChunkData :: ActorHandle Data (Protocol Data) -> Int -> IntMap TerrainChunk -> IO ()
+updateTerrainChunkData handle size chunks =
+  cast @"updateTerrainData" handle #updateTerrainData (size, chunks)
+
+-- | Merge changed climate chunks into the current climate map.
+updateClimateChunkData :: ActorHandle Data (Protocol Data) -> Int -> IntMap ClimateChunk -> IO ()
+updateClimateChunkData handle size chunks =
+  cast @"updateClimateData" handle #updateClimateData (size, chunks)
+
+-- | Merge changed vegetation chunks into the current vegetation map.
+updateVegetationChunkData :: ActorHandle Data (Protocol Data) -> Int -> IntMap VegetationChunk -> IO ()
+updateVegetationChunkData handle size chunks =
+  cast @"updateVegetationData" handle #updateVegetationData (size, chunks)
+
 -- | Replace the in-memory overlay store for overlay field visualization.
 setOverlayStoreData :: ActorHandle Data (Protocol Data) -> OverlayStore -> IO ()
 setOverlayStoreData handle store =
@@ -289,8 +389,9 @@ getTerrainSnapshot handle =
 -- | Replace all terrain data from a loaded 'TerrainWorld'.
 --
 -- Sends terrain, climate, weather, river, groundwater, volcanism, glacier,
--- water-body, and vegetation chunk data as separate messages. The terrain message increments 'tsVersion', triggering
--- atlas/cache invalidation.  Also sets the terrain chunk count so
+-- water-body, overlay, and vegetation data as separate messages. Each
+-- render-facing layer bumps only its own version stamp; the terrain message
+-- increments 'tsVersion', triggering base atlas/cache invalidation.  Also sets the terrain chunk count so
 -- the render pipeline's @dataReady@ guard passes.
 replaceTerrainData :: ActorHandle Data (Protocol Data) -> TerrainWorld -> IO ()
 replaceTerrainData handle world = do

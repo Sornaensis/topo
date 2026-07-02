@@ -21,7 +21,7 @@ module Seer.Render.Atlas
   , zoomTextureScale
   ) where
 
-import Actor.AtlasCache (AtlasKey(..), atlasKeyVersion)
+import Actor.AtlasCache (AtlasKey(..), atlasKeyFor, atlasKeyVersion)
 import Actor.AtlasResult (AtlasBuildResult(..))
 import Actor.AtlasResultBroker (AtlasResultRef, drainAtlasResultsN, drainFreshResultsN)
 import Actor.AtlasScheduleBroker
@@ -255,7 +255,7 @@ resolveAtlasTiles
   -> IO (Maybe [TerrainAtlasTile], Bool, AtlasTextureCache)
 resolveAtlasTiles renderTargetOk pool snapshot atlasCache stage = do
   let terrainSnap = rsTerrain snapshot
-      atlasKey = AtlasKey (uiViewMode (rsUi snapshot)) (uiRenderWaterLevel (rsUi snapshot)) (tsVersion terrainSnap)
+      atlasKey = atlasKeyFor (uiViewMode (rsUi snapshot)) (uiRenderWaterLevel (rsUi snapshot)) terrainSnap
       dataReady = tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
       (atlasToDraw, keyMismatch, cacheResolved) =
         resolveAtlasPure renderTargetOk dataReady atlasKey (zsHexRadius stage) atlasCache

@@ -12,7 +12,7 @@ import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import Test.Hspec
 
-import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot)
+import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot, replaceTerrainData)
 import Actor.Simulation
   ( SimulationDagSnapshot(..)
   , SimulationTickLogEntry(..)
@@ -91,6 +91,9 @@ spec = describe "AutoTick scheduler" $ do
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       installWorld app
       let handles = appHandles app
+      terrainSnap0 <- getTerrainSnapshot (ahDataHandle handles)
+      let terrainVersion0 = tsVersion terrainSnap0
+          weatherVersion0 = tsWeatherVersion terrainSnap0
       version0 <- readSnapshotVersion (ahSnapshotVersionRef handles)
 
       rsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (1.0 :: Double)])
@@ -102,7 +105,8 @@ spec = describe "AutoTick scheduler" $ do
       advanced `shouldBe` True
 
       terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
-      tsVersion terrainSnap `shouldSatisfy` (> 0)
+      tsVersion terrainSnap `shouldBe` terrainVersion0
+      tsWeatherVersion terrainSnap `shouldSatisfy` (> weatherVersion0)
       version1 <- readSnapshotVersion (ahSnapshotVersionRef handles)
       version1 `shouldSatisfy` (> version0)
       dag <- getSimDagSnapshot (ahSimulationHandle handles)
@@ -148,6 +152,8 @@ dispatch app method params = dispatchCommand (headlessCommandContext app) SeerCo
 installWorld :: HeadlessApp -> IO ()
 installWorld app = do
   let handles = appHandles app
+  replaceTerrainData (ahDataHandle handles) testWorld
+  _ <- getTerrainSnapshot (ahDataHandle handles)
   setSimWorld (ahSimulationHandle handles) testWorld
   dag <- getSimDagSnapshot (ahSimulationHandle handles)
   sdsAvailable dag `shouldBe` True
@@ -155,6 +161,8 @@ installWorld app = do
 installPluginWorld :: HeadlessApp -> IO ()
 installPluginWorld app = do
   let handles = appHandles app
+  replaceTerrainData (ahDataHandle handles) pluginTestWorld
+  _ <- getTerrainSnapshot (ahDataHandle handles)
   setSimWorldWithNodes (ahSimulationHandle handles) pluginTestWorld [pluginSimulationBinding]
   dag <- getSimDagSnapshot (ahSimulationHandle handles)
   sdsAvailable dag `shouldBe` True
