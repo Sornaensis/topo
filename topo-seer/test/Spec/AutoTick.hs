@@ -3,6 +3,8 @@
 module Spec.AutoTick (spec) where
 
 import Control.Concurrent (threadDelay)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, tryPutMVar)
+import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Aeson (Value(..), object, (.=))
 import qualified Data.Map.Strict as Map
@@ -10,8 +12,12 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
+import GHC.Clock (getMonotonicTimeNSec)
+import System.Timeout (timeout)
 import Test.Hspec
 
+import Actor.AtlasCache (atlasKeyVersion)
+import Actor.AtlasManager (AtlasJob(..), drainAtlasJobs)
 import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot, replaceTerrainData)
 import Actor.Simulation
   ( SimulationDagSnapshot(..)
@@ -23,7 +29,7 @@ import Actor.Simulation
   , setSimWorldWithNodes
   )
 import Actor.SnapshotReceiver (readSnapshotVersion)
-import Actor.UI (UiState(..), getUiSnapshot)
+import Actor.UI (UiState(..), ViewMode(..), getUiSnapshot)
 import Actor.UiActions (ActorHandles(..))
 import Seer.Command.Dispatch (CommandContext(..), dispatchCommand)
 import Seer.Headless
@@ -32,6 +38,7 @@ import Seer.Headless
   , headlessCommandContext
   , withHeadlessApp
   )
+import Seer.Render.ZoomStage (allZoomStages)
 import Topo
   ( ChunkId(..)
   , ClimateChunk(..)
@@ -139,6 +146,59 @@ spec = describe "AutoTick scheduler" $ do
         [node] -> sdnsStatus node `shouldBe` Text.pack "completed"
         _ -> expectationFailure "Expected one executable plugin node in auto tick DAG"
 
+  it "keeps commands responsive and atlas queues bounded while max-rate auto ticking" $ do
+    completed <- timeout 7000000 $
+      withHeadlessApp defaultHeadlessConfig $ \app -> do
+        workerStarted <- newEmptyMVar
+        runCountRef <- newIORef (0 :: Int)
+        installResponsiveWorld app workerStarted runCountRef
+        let handles = appHandles app
+
+        viewRsp <- dispatch app "set_view_mode" (object ["mode" .= (Text.pack "weather")])
+        srSuccess viewRsp `shouldBe` True
+        _ <- drainAtlasJobs (ahAtlasManagerHandle handles)
+
+        rsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (1.0 :: Double)])
+        srSuccess rsp `shouldBe` True
+
+        workerStartedResult <- timeout 1000000 (readMVar workerStarted)
+        workerStartedResult `shouldBe` Just ()
+
+        (latencyMs, stateRspResult) <- timedMillis $
+          timeout 250000 (dispatch app "get_sim_state" Null)
+        case stateRspResult of
+          Nothing -> expectationFailure "get_sim_state timed out while auto tick worker was in-flight"
+          Just stateRsp -> srSuccess stateRsp `shouldBe` True
+        latencyMs `shouldSatisfy` (< 250)
+
+        advanced <- awaitTrue 100 $ do
+          ui <- getUiSnapshot (ahUiHandle handles)
+          pure (uiSimTickCount ui >= 2)
+        advanced `shouldBe` True
+
+        uiDuring <- getUiSnapshot (ahUiHandle handles)
+        runsDuring <- readRunCount runCountRef
+        runsDuring `shouldSatisfy` (<= fromIntegral (uiSimTickCount uiDuring) + 1)
+        dagDuring <- getSimDagSnapshot (ahSimulationHandle handles)
+        sdsPendingTick dagDuring `shouldBe` Nothing
+
+        stopRsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= False])
+        srSuccess stopRsp `shouldBe` True
+        idle <- awaitStoppedAutoTickIdle handles runCountRef
+        idle `shouldBe` True
+        dagAfterIdle <- getSimDagSnapshot (ahSimulationHandle handles)
+        sdsPendingTick dagAfterIdle `shouldBe` Nothing
+
+        jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+        length jobs `shouldSatisfy` (\n -> n > 0 && n <= length allZoomStages)
+        all ((== ViewWeather) . ajViewMode) jobs `shouldBe` True
+        terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
+        all ((== tsWeatherVersion terrainSnap) . atlasKeyVersion . ajKey) jobs `shouldBe` True
+        dag <- getSimDagSnapshot (ahSimulationHandle handles)
+        sdsPendingTick dag `shouldBe` Nothing
+        map stleStatus (sdsTickLogs dag) `shouldSatisfy` notElem (Text.pack "failed")
+    completed `shouldBe` Just ()
+
 appHandles :: HeadlessApp -> ActorHandles
 appHandles app = ccActorHandles (headlessCommandContext app)
 
@@ -167,6 +227,15 @@ installPluginWorld app = do
   dag <- getSimDagSnapshot (ahSimulationHandle handles)
   sdsAvailable dag `shouldBe` True
 
+installResponsiveWorld :: HeadlessApp -> MVar () -> IORef Int -> IO ()
+installResponsiveWorld app workerStarted runCountRef = do
+  let handles = appHandles app
+  replaceTerrainData (ahDataHandle handles) responsiveTestWorld
+  _ <- getTerrainSnapshot (ahDataHandle handles)
+  setSimWorldWithNodes (ahSimulationHandle handles) responsiveTestWorld [responsiveSimulationBinding workerStarted runCountRef]
+  dag <- getSimDagSnapshot (ahSimulationHandle handles)
+  sdsAvailable dag `shouldBe` True
+
 awaitTrue :: Int -> IO Bool -> IO Bool
 awaitTrue 0 action = action
 awaitTrue retries action = do
@@ -176,6 +245,36 @@ awaitTrue retries action = do
     else do
       threadDelay 20000
       awaitTrue (retries - 1) action
+
+timedMillis :: IO a -> IO (Double, a)
+timedMillis action = do
+  started <- getMonotonicTimeNSec
+  result <- action
+  finished <- getMonotonicTimeNSec
+  pure (fromIntegral (finished - started) / (1e6 :: Double), result)
+
+readRunCount :: IORef Int -> IO Int
+readRunCount ref = atomicModifyIORef' ref (\n -> (n, n))
+
+awaitStoppedAutoTickIdle :: ActorHandles -> IORef Int -> IO Bool
+awaitStoppedAutoTickIdle handles runCountRef = awaitTrue 20 $ do
+  ui0 <- getUiSnapshot (ahUiHandle handles)
+  runs0 <- readRunCount runCountRef
+  threadDelay 300000
+  ui1 <- getUiSnapshot (ahUiHandle handles)
+  runs1 <- readRunCount runCountRef
+  dag1 <- getSimDagSnapshot (ahSimulationHandle handles)
+  let tick0 = fromIntegral (uiSimTickCount ui0) :: Int
+      tick1 = fromIntegral (uiSimTickCount ui1) :: Int
+      nodeStatuses = map sdnsStatus (sdsNodes dag1)
+  pure
+    ( not (uiSimAutoTick ui1)
+      && runs0 == runs1
+      && tick0 == tick1
+      && runs1 == tick1
+      && sdsPendingTick dag1 == Nothing
+      && notElem (Text.pack "running") nodeStatuses
+    )
 
 testWorld :: TerrainWorld
 testWorld = withSeedWeather
@@ -198,6 +297,20 @@ pluginTestWorld = withSeedPluginOverlay tileCount 0 $
     climate
   where
     config = WorldConfig { wcChunkSize = 8 }
+    terrain = generateTerrainChunk config (const 0.5)
+    climate0 = emptyClimateChunk config
+    tileCount = U.length (ccTempAvg climate0)
+    climate = testClimate tileCount climate0
+    world0 = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice
+
+responsiveTestWorld :: TerrainWorld
+responsiveTestWorld = withSeedPluginOverlay tileCount 0 $
+  withSeedWeather
+    (setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) terrain world0))
+    (ChunkId 0)
+    climate
+  where
+    config = WorldConfig { wcChunkSize = 16 }
     terrain = generateTerrainChunk config (const 0.5)
     climate0 = emptyClimateChunk config
     tileCount = U.length (ccTempAvg climate0)
@@ -308,6 +421,25 @@ pluginSimulationBinding = SimulationNodeBinding
       , snrReadTick = \ctx overlay ->
           if Map.member (Text.pack "weather") (scOverlays ctx)
             then pure (Right (incrementPluginOverlay overlay))
+            else pure (Left (Text.pack "missing weather dependency"))
+      }
+  , snbKind = Text.pack "plugin"
+  , snbPlugin = Just pluginOverlayName
+  }
+
+responsiveSimulationBinding :: MVar () -> IORef Int -> SimulationNodeBinding
+responsiveSimulationBinding workerStarted runCountRef = SimulationNodeBinding
+  { snbNode = SimNodeReader
+      { snrId = SimNodeId (Text.pack "responsive-slow-plugin")
+      , snrOverlayName = pluginOverlayName
+      , snrDependencies = [SimNodeId (Text.pack "weather")]
+      , snrReadTick = \ctx overlay ->
+          if Map.member (Text.pack "weather") (scOverlays ctx)
+            then do
+              _ <- atomicModifyIORef' runCountRef (\n -> let n' = n + 1 in (n', n'))
+              _ <- tryPutMVar workerStarted ()
+              threadDelay 150000
+              pure (Right (incrementPluginOverlay overlay))
             else pure (Left (Text.pack "missing weather dependency"))
       }
   , snbKind = Text.pack "plugin"
