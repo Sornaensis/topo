@@ -639,6 +639,7 @@ data PipelineStageRunState = PipelineStageRunState
   , psrsStageName :: !Text
   , psrsStatus :: !StageStatus
   , psrsElapsedMs :: !(Maybe Int)
+  , psrsDetail :: !(Maybe Text)
   } deriving (Eq, Show)
 
 data UiState = UiState

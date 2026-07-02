@@ -13,6 +13,7 @@ module Topo.Plugin
   , runPluginM
   , requireCapability
   , logInfo
+  , reportProgress
   , noiseAt
   , getWorldP
   , putWorldP
@@ -106,9 +107,10 @@ allowAllCapabilities = PluginCapabilities
     ])
 
 data PluginEnv = PluginEnv
-  { peLogger :: !Logger
-  , peSeed   :: !Word64
-  , peCaps   :: !PluginCapabilities
+  { peLogger   :: !Logger
+  , peProgress :: !Logger
+  , peSeed     :: !Word64
+  , peCaps     :: !PluginCapabilities
   }
 
 -- | Errors raised by plugin capability checks.
@@ -140,6 +142,11 @@ logInfo msg = do
   requireCapability CapLog
   logger <- peLogger <$> ask
   liftIO (logger msg)
+
+reportProgress :: Text -> PluginM ()
+reportProgress msg = do
+  progress <- peProgress <$> ask
+  liftIO (progress msg)
 
 topoLog :: Text -> TopoM ()
 topoLog msg = do

@@ -218,6 +218,7 @@ lastRunJson dataSnap runState seedTag source sid = object
   , "stage" .= stageCanonicalName sid
   , "stage_seed_tag" .= seedTag
   , "elapsed_ms" .= (runState >>= psrsElapsedMs)
+  , "detail" .= (runState >>= psrsDetail)
   , "provenance" .= provenanceJson source seedTag sid
   ]
 
@@ -342,6 +343,7 @@ stageNames = map stageCanonicalName
 
 stageRunStatusText :: StageStatus -> Text
 stageRunStatusText StageStarted = "started"
+stageRunStatusText StageRunning = "running"
 stageRunStatusText StageCompleted = "completed"
 stageRunStatusText StageSkipped = "skipped"
 

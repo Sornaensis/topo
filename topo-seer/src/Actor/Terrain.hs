@@ -91,6 +91,7 @@ data TerrainGenProgress = TerrainGenProgress
   , tgpStageName :: !Text
   , tgpStageStatus :: !StageStatus
   , tgpStageElapsedMs :: !(Maybe Int)
+  , tgpStageDetail :: !(Maybe Text)
   } deriving (Eq, Show)
 
 -- | Final terrain generation result payload.
@@ -237,6 +238,7 @@ publishPipelineProgress replyTo stageStartRef progress = do
   now <- getCurrentTime
   elapsed <- case spStatus progress of
     StageStarted -> writeIORef stageStartRef (Just now) >> pure Nothing
+    StageRunning -> peekStageStart now stageStartRef
     StageCompleted -> consumeStageStart now stageStartRef
     StageSkipped -> pure Nothing
   replyCast replyTo progressTag TerrainGenProgress
@@ -246,7 +248,13 @@ publishPipelineProgress replyTo stageStartRef progress = do
     , tgpStageName = spStageName progress
     , tgpStageStatus = spStatus progress
     , tgpStageElapsedMs = elapsed
+    , tgpStageDetail = spDetail progress
     }
+
+peekStageStart :: UTCTime -> IORef (Maybe UTCTime) -> IO (Maybe Int)
+peekStageStart now ref = do
+  mbPrev <- readIORef ref
+  pure (fmap (diffToMs now) mbPrev)
 
 consumeStageStart :: UTCTime -> IORef (Maybe UTCTime) -> IO (Maybe Int)
 consumeStageStart now ref = do

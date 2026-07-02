@@ -81,6 +81,7 @@ handleTerrainProgress handles progressMsg = do
     , psrsStageName = tgpStageName progressMsg
     , psrsStatus = tgpStageStatus progressMsg
     , psrsElapsedMs = tgpStageElapsedMs progressMsg
+    , psrsDetail = tgpStageDetail progressMsg
     }
   appendLog (uahLog handles) (LogEntry LogInfo (renderTerrainProgress progressMsg))
 
@@ -95,10 +96,11 @@ renderTerrainProgress progressMsg =
       name = tgpStageName progressMsg
       status = stageStatusText (tgpStageStatus progressMsg)
       prefix = "terrain: stage " <> toText idx <> "/" <> toText total <> " " <> status <> " "
+      detail = maybe "" (" — " <>) (tgpStageDetail progressMsg)
       timing = case tgpStageElapsedMs progressMsg of
         Nothing -> ""
         Just elapsed -> " (elapsed " <> toText elapsed <> "ms)"
-  in prefix <> name <> timing
+  in prefix <> name <> detail <> timing
 
 applyTerrainResult :: UiActionHandles -> TerrainGenResult -> IO ()
 applyTerrainResult handles resultMsg = do
@@ -203,6 +205,7 @@ toText = Text.pack . show
 
 stageStatusText :: StageStatus -> Text
 stageStatusText StageStarted = "started"
+stageStatusText StageRunning = "running"
 stageStatusText StageCompleted = "completed"
 stageStatusText StageSkipped = "skipped"
 

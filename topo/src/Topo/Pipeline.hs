@@ -27,10 +27,12 @@ module Topo.Pipeline
   , runPipeline
   ) where
 
+import Control.Concurrent.MVar (newMVar, withMVar)
 import Control.Monad (foldM)
 import Control.Monad.IO.Class (liftIO)
 import Data.Bits (xor)
 import Data.Char (ord)
+import Data.IORef (atomicWriteIORef, newIORef, readIORef)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -101,11 +103,14 @@ data StageProgress = StageProgress
     -- ^ Human-readable stage name.
   , spStatus     :: !StageStatus
     -- ^ Current status of the stage.
+  , spDetail     :: !(Maybe Text)
+    -- ^ Optional lightweight substage or chunk diagnostic.
   } deriving (Eq, Show)
 
 -- | Status of a pipeline stage.
 data StageStatus
   = StageStarted
+  | StageRunning
   | StageCompleted
   | StageSkipped
   deriving (Eq, Show)
@@ -146,6 +151,7 @@ runPipeline config env world = do
       let logger = teLogger env
           pluginEnv = PluginEnv
             { peLogger = logger
+            , peProgress = \_ -> pure ()
             , peSeed = pipelineSeed config
             , peCaps = allowAllCapabilities
             }
@@ -176,29 +182,38 @@ runStage pluginEnv disabled stageCount onProgress snapshotsEnabled acc stage =
     Right (idx, snapshots) -> do
       let sid  = stageId stage
           name = stageName stage
-          progress status = StageProgress
+          progress status detail = StageProgress
             { spStageIndex = idx
             , spStageCount = stageCount
             , spStageId    = sid
             , spStageName  = name
             , spStatus     = status
+            , spDetail     = detail
             }
       if Set.member sid disabled
         then do
           topoLog ("stage:skip " <> name <> " (" <> stageCanonicalName sid <> ")")
-          liftIO (onProgress (progress StageSkipped))
+          liftIO (onProgress (progress StageSkipped Nothing))
           pure (Right (idx + 1, snapshots))
         else do
-          let stageEnv = pluginEnv { peSeed = deriveStageSeed (peSeed pluginEnv) (stageSeedTag stage) }
+          lastDetailRef <- liftIO (newIORef Nothing)
+          progressLock <- liftIO (newMVar ())
+          let stageEnv = pluginEnv
+                { peSeed = deriveStageSeed (peSeed pluginEnv) (stageSeedTag stage)
+                , peProgress = \detail -> withMVar progressLock $ \() -> do
+                    atomicWriteIORef lastDetailRef (Just detail)
+                    onProgress (progress StageRunning (Just detail))
+                }
           ensureProducedOverlayRegistered stage
           topoLog ("stage:start " <> name)
-          liftIO (onProgress (progress StageStarted))
+          liftIO (onProgress (progress StageStarted Nothing))
           result <- runPluginM stageEnv (stageRun stage)
           topoLog ("stage:end " <> name)
           case result of
             Left err -> pure (Left err)
             Right _ -> do
-              liftIO (onProgress (progress StageCompleted))
+              lastDetail <- liftIO (readIORef lastDetailRef)
+              liftIO (onProgress (progress StageCompleted lastDetail))
               if snapshotsEnabled
                 then do
                   w <- getWorld

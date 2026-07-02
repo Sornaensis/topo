@@ -13,6 +13,7 @@ import Data.IORef (newIORef, readIORef, modifyIORef')
 import Data.List (foldl')
 import Data.Text (Text, pack)
 import qualified Data.Text as Text
+import Text.Read (readMaybe)
 import System.IO.Temp (withSystemTempDirectory)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
@@ -365,12 +366,59 @@ spec = describe "Pipeline" $ do
           spStageCount e2 `shouldBe` 2
         _ -> expectationFailure "expected 4 progress events"
 
+    it "emits lightweight running diagnostics for plate terrain chunks" $ do
+      let config = WorldConfig { wcChunkSize = 8 }
+          world0 = emptyWorld config defaultHexGridMeta
+          gen = defaultGenConfig { gcWorldExtent = worldExtentSquareOrDefault 0 }
+      ref <- newIORef []
+      let pipeline = defaultPipelineConfig
+            { pipelineSeed = 42
+            , pipelineStages = [generatePlateTerrainStage gen defaultTectonicsConfig]
+            , pipelineOnProgress = \p -> modifyIORef' ref (p :)
+            }
+          env = TopoEnv { teLogger = \_ -> pure () }
+      _ <- runPipeline pipeline env world0
+      events <- reverse <$> readIORef ref
+      let running = filter ((== StageRunning) . spStatus) events
+          completed = filter ((== StageCompleted) . spStatus) events
+      running `shouldSatisfy` (not . null)
+      any (maybe False (Text.isInfixOf "chunkSize=8") . spDetail) running `shouldBe` True
+      any (maybe False (Text.isInfixOf "chunks=1/1") . spDetail) running `shouldBe` True
+      any (maybe False (Text.isInfixOf "tiles=64") . spDetail) running `shouldBe` True
+      any (maybe False (Text.isInfixOf "chunks=1/1") . spDetail) completed `shouldBe` True
+
+    it "throttles plate terrain running diagnostics for larger extents" $ do
+      let config = WorldConfig { wcChunkSize = 2 }
+          world0 = emptyWorld config defaultHexGridMeta
+          gen = defaultGenConfig { gcWorldExtent = worldExtentSquareOrDefault 4 }
+      ref <- newIORef []
+      let pipeline = defaultPipelineConfig
+            { pipelineSeed = 42
+            , pipelineStages = [generatePlateTerrainStage gen defaultTectonicsConfig]
+            , pipelineOnProgress = \p -> modifyIORef' ref (p :)
+            }
+          env = TopoEnv { teLogger = \_ -> pure () }
+      _ <- runPipeline pipeline env world0
+      events <- reverse <$> readIORef ref
+      let running = filter ((== StageRunning) . spStatus) events
+          completed = filter ((== StageCompleted) . spStatus) events
+          reportedCounts = [n | Just detail <- map spDetail running, Just n <- [chunkProgressDone detail]]
+      length running `shouldSatisfy` (<= 25)
+      reportedCounts `shouldSatisfy` nondecreasing
+      case reverse reportedCounts of
+        (lastCount : _) -> lastCount `shouldBe` 81
+        [] -> expectationFailure "expected chunk progress counts"
+      any (maybe False (Text.isInfixOf "chunks=81/81") . spDetail) running `shouldBe` True
+      any (maybe False (Text.isInfixOf "tiles=324") . spDetail) running `shouldBe` True
+      any (maybe False (Text.isInfixOf "chunks=81/81") . spDetail) completed `shouldBe` True
+
   describe "Plugin overlay capabilities" $ do
     it "rejects putOverlayP without CapWriteOverlay" $ do
       let world0 = emptyWorld (WorldConfig { wcChunkSize = 8 }) defaultHexGridMeta
           env = TopoEnv { teLogger = \_ -> pure () }
           pluginEnv = PluginEnv
             { peLogger = \_ -> pure ()
+            , peProgress = \_ -> pure ()
             , peSeed = 1
             , peCaps = PluginCapabilities (Set.fromList [CapReadTerrain])
             }
@@ -392,6 +440,7 @@ spec = describe "Pipeline" $ do
           env = TopoEnv { teLogger = \_ -> pure () }
           pluginEnv = PluginEnv
             { peLogger = \_ -> pure ()
+            , peProgress = \_ -> pure ()
             , peSeed = 1
             , peCaps = PluginCapabilities (Set.fromList [CapWriteOverlay, CapReadOverlay])
             }
@@ -416,6 +465,7 @@ spec = describe "Pipeline" $ do
           env = TopoEnv { teLogger = \_ -> pure () }
           pluginEnv = PluginEnv
             { peLogger = \_ -> pure ()
+            , peProgress = \_ -> pure ()
             , peSeed = 1
             , peCaps = PluginCapabilities (Set.fromList [CapReadWorld, CapWriteWorld])
             }
@@ -598,6 +648,14 @@ spec = describe "Pipeline" $ do
 fromMaybeFailure :: String -> Maybe a -> IO a
 fromMaybeFailure _ (Just value) = pure value
 fromMaybeFailure label Nothing = expectationFailure label >> fail label
+
+chunkProgressDone :: Text -> Maybe Int
+chunkProgressDone detail = do
+  rest <- Text.stripPrefix "generatePlateTerrain: chunks=" detail
+  readMaybe (Text.unpack (Text.takeWhile (/= '/') rest))
+
+nondecreasing :: Ord a => [a] -> Bool
+nondecreasing xs = and (zipWith (<=) xs (drop 1 xs))
 
 expectPipeline :: Either PipelineError (TerrainWorld, [PipelineSnapshot]) -> IO TerrainWorld
 expectPipeline result =
