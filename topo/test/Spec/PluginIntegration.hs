@@ -19,6 +19,10 @@ import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck (NonEmptyList(..))
 
+import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (SomeException, bracket, try)
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Reader (asks)
 import Data.Aeson (Value(..), (.=), object)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KM
@@ -31,13 +35,14 @@ import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector.Unboxed as U
-import Data.Word (Word8)
+import Data.Word (Word64, Word8)
 import System.IO (stdin, stdout)
+import System.Timeout (timeout)
 
 import Topo.Calendar (CalendarDate(..))
 import Topo.Overlay (emptyOverlay, insertOverlay)
 import Topo.Overlay.Schema (OverlaySchema(..), OverlayStorage(..), OverlayDeps(..))
-import Topo.Pipeline (PipelineStage(..))
+import Topo.Pipeline (PipelineConfig(..), PipelineStage(..), defaultPipelineConfig, runPipeline)
 import Topo.Pipeline.Stage (StageId(..))
 import Topo.Hex (HexGridMeta(..), defaultHexGridMeta)
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), defaultPlanetConfig, defaultWorldSlice)
@@ -48,7 +53,11 @@ import Topo.Plugin.RPC
   , RPCSimulationDecl(..)
   , RPCOverlayDecl(..)
   , Capability(..)
+  , GeneratorResult(..)
+  , InvokeGenerator(..)
   , RPCCapability
+  , RPCEnvelope(..)
+  , RPCMessageType(..)
   , RPCParamSpec(..)
   , RPCParamType(..)
   , defaultRPCManifestRuntime
@@ -69,8 +78,21 @@ import Topo.Plugin.RPC
   , terrainWorldToPayload
   , decodeBase64Text
   , encodeBase64Text
+  , decodeMessage
+  , encodeMessage
   )
-import Topo.Plugin.RPC.Transport (Transport(..))
+import Topo.Plugin (PluginEnv(..), TopoEnv(..))
+import Topo.Plugin.RPC.Transport
+  ( Transport(..)
+  , TransportConfig(..)
+  , TransportServer(..)
+  , closeTransport
+  , connectPluginEndpoint
+  , defaultTransportConfig
+  , openPluginServer
+  , recvMessage
+  , sendMessage
+  )
 import Topo.Simulation
   ( SimContext(..), SimNode(..), SimNodeId(..)
   , SimulationCatchUpPolicy(..), SimulationScheduleDecl(..)
@@ -104,6 +126,140 @@ mockTransport name = do
     , tWriteHandle = stdout
     , tPluginName  = name
     }
+
+capturePipelineGeneratorSeed :: Word64 -> RPCManifest -> IO (Word64, Word64)
+capturePipelineGeneratorSeed pipelineSeed manifest =
+  withConnectedTransports ("pipeline-seed-" <> rmName manifest) $ \host plugin -> do
+    controlSeedVar <- newEmptyMVar
+    capturedRequest <- newEmptyMVar
+    _ <- forkIO (serveGeneratorEchoOnce plugin capturedRequest)
+    let conn = newRPCConnection manifest host Map.empty
+        rpcStage = rpcGeneratorStage conn
+        config = defaultPipelineConfig
+          { pipelineSeed = pipelineSeed
+          , pipelineStages =
+              [ captureSeedStage (stageSeedTag rpcStage) controlSeedVar
+              , rpcStage
+              ]
+          }
+        env = TopoEnv { teLogger = \_ -> pure () }
+        world = mkTestWorld (WorldConfig { wcChunkSize = 8 })
+    pipelineResult <- timeout transportTestTimeoutMicros (runPipeline config env world)
+    case pipelineResult of
+      Nothing -> expectationFailure "pipeline run timed out waiting for generator RPC"
+      Just (Left err) -> expectationFailure ("pipeline failed: " <> show err)
+      Just (Right _) -> pure ()
+    controlSeed <- takeMVarWithin "control stage seed" controlSeedVar
+    request <- takeCapturedGeneratorRequest capturedRequest
+    pure (controlSeed, igSeed request)
+
+captureSeedStage :: Text -> MVar Word64 -> PipelineStage
+captureSeedStage seedTag seedVar = PipelineStage
+  { stageId = StageBaseHeight
+  , stageName = "control seed"
+  , stageSeedTag = seedTag
+  , stageOverlayProduces = Nothing
+  , stageOverlayReads = []
+  , stageOverlaySchema = Nothing
+  , stageRun = asks peSeed >>= liftIO . putMVar seedVar
+  }
+
+serveGeneratorEchoOnce :: Transport -> MVar (Either String InvokeGenerator) -> IO ()
+serveGeneratorEchoOnce plugin captured = do
+  outcome <- try receiveAndRespond :: IO (Either SomeException InvokeGenerator)
+  putMVar captured $ case outcome of
+    Left err -> Left (show err)
+    Right request -> Right request
+  where
+    receiveAndRespond = do
+      request <- recvEnvelopeFrom plugin
+      case envType request of
+        MsgInvokeGenerator -> pure ()
+        other -> fail ("expected invoke_generator request, got " <> show other)
+      invoke <- case Aeson.fromJSON (envPayload request) of
+        Aeson.Error err -> fail ("failed to decode invoke_generator payload: " <> err)
+        Aeson.Success decoded -> pure decoded
+      sendEnvelopeTo plugin RPCEnvelope
+        { envType = MsgGeneratorResult
+        , envPayload = Aeson.toJSON GeneratorResult
+            { grTerrain = igTerrain invoke
+            , grOverlay = Nothing
+            , grMetadata = Nothing
+            }
+        , envRequestId = envRequestId request
+        }
+      pure invoke
+
+withConnectedTransports :: Text -> (Transport -> Transport -> IO a) -> IO a
+withConnectedTransports name action =
+  withTransportServer name $ \server ->
+    bracket (acquire server) cleanup (uncurry action)
+  where
+    acquire server = do
+      pluginResultVar <- newEmptyMVar
+      _ <- forkIO $ connectPluginEndpoint (name <> "-plugin") (tsEndpoint server) >>= putMVar pluginResultVar
+      host <- requireAccept server
+      pluginResult <- takeMVar pluginResultVar
+      case pluginResult of
+        Left err -> do
+          closeTransport host
+          expectationFailure ("client connect failed: " <> show err)
+          fail "client connect"
+        Right plugin -> pure (host, plugin)
+
+    cleanup (host, plugin) = do
+      closeTransport plugin
+      closeTransport host
+
+recvEnvelopeFrom :: Transport -> IO RPCEnvelope
+recvEnvelopeFrom transport = do
+  result <- timeout transportTestTimeoutMicros (recvMessage transport)
+  case result of
+    Nothing -> expectationFailure "timed out waiting for RPC envelope" >> fail "recv timeout"
+    Just (Left err) -> expectationFailure ("recv failed: " <> show err) >> fail "recv failed"
+    Just (Right bytes) -> case decodeMessage bytes of
+      Left err -> expectationFailure ("decode failed: " <> Text.unpack err) >> fail "decode failed"
+      Right envelope -> pure envelope
+
+sendEnvelopeTo :: Transport -> RPCEnvelope -> IO ()
+sendEnvelopeTo transport envelope = do
+  result <- sendMessage transport (encodeMessage envelope)
+  case result of
+    Left err -> expectationFailure ("send failed: " <> show err)
+    Right () -> pure ()
+
+takeMVarWithin :: String -> MVar a -> IO a
+takeMVarWithin label var = do
+  result <- timeout transportTestTimeoutMicros (takeMVar var)
+  case result of
+    Nothing -> expectationFailure ("timed out waiting for " <> label) >> fail "mvar timeout"
+    Just value -> pure value
+
+takeCapturedGeneratorRequest :: MVar (Either String InvokeGenerator) -> IO InvokeGenerator
+takeCapturedGeneratorRequest var = do
+  result <- takeMVarWithin "captured generator request" var
+  case result of
+    Left err -> expectationFailure err >> fail "generator capture failed"
+    Right request -> pure request
+
+withTransportServer :: Text -> (TransportServer -> IO a) -> IO a
+withTransportServer pluginName = bracket acquire tsClose
+  where
+    acquire = do
+      serverResult <- openPluginServer defaultTransportConfig { tcTimeout = 1000 } pluginName
+      case serverResult of
+        Left err -> expectationFailure ("openPluginServer failed: " <> show err) >> fail "openPluginServer"
+        Right server -> pure server
+
+requireAccept :: TransportServer -> IO Transport
+requireAccept server = do
+  acceptResult <- tsAccept server
+  case acceptResult of
+    Left err -> expectationFailure ("accept failed: " <> show err) >> fail "accept failed"
+    Right transport -> pure transport
+
+transportTestTimeoutMicros :: Int
+transportTestTimeoutMicros = 2000000
 
 -- | A civilization-style manifest for integration tests.
 civManifest :: RPCManifest
@@ -227,6 +383,23 @@ spec = describe "Plugin Integration" $ do
       let conn = newRPCConnection genOnlyManifest transport Map.empty
           stage = rpcGeneratorStage conn
       stageId stage `shouldBe` StagePlugin "terrain-roughen"
+
+    it "passes the pipeline-derived stage seed to RPC generator invocations" $ do
+      let pipelineSeed = 424242
+      (controlSeed, rpcSeed) <- capturePipelineGeneratorSeed pipelineSeed civManifest
+      (controlSeedAgain, rpcSeedAgain) <- capturePipelineGeneratorSeed pipelineSeed civManifest
+      (changedControlSeed, changedRPCSeed) <- capturePipelineGeneratorSeed (pipelineSeed + 1) civManifest
+      let renamedManifest = civManifest { rmName = "civilization-alt" }
+      (renamedControlSeed, renamedRPCSeed) <- capturePipelineGeneratorSeed pipelineSeed renamedManifest
+
+      rpcSeed `shouldBe` controlSeed
+      rpcSeedAgain `shouldBe` controlSeedAgain
+      rpcSeedAgain `shouldBe` rpcSeed
+      rpcSeed `shouldNotBe` pipelineSeed
+      changedRPCSeed `shouldBe` changedControlSeed
+      changedRPCSeed `shouldNotBe` rpcSeed
+      renamedRPCSeed `shouldBe` renamedControlSeed
+      renamedRPCSeed `shouldNotBe` rpcSeed
 
   ------------------------------------
   -- Manifest → Connection → SimNode

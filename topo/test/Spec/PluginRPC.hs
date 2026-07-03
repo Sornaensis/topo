@@ -31,7 +31,7 @@ import System.IO (stdin, stdout)
 import System.IO.Temp (withSystemTempFile)
 import System.Timeout (timeout)
 
-import Topo.Plugin.RPC (RPCError(..), checkHealth, newRPCConnection, rpcErrorText, sendHeartbeat)
+import Topo.Plugin.RPC (RPCError(..), checkHealth, invokeGenerator, newRPCConnection, rpcErrorText, sendHeartbeat)
 import Topo.Plugin.RPC.Manifest
 import Topo.Plugin.RPC.Protocol
 import Topo.Plugin.RPC.ExternalDataSource
@@ -1352,6 +1352,33 @@ spec = describe "Plugin.RPC" $ do
           })
         heartbeat <- takeHeartbeatResult done
         hbStatus heartbeat `shouldBe` "ok"
+
+    it "sends the caller-provided seed in invoke_generator requests" $
+      withConnectedTransports "rpc-generator-seed" $ \host plugin -> do
+        let explicitSeed = 0x123456789abcdef0 :: Word64
+            terrainPayload = object ["marker" .= ("terrain" :: Text)]
+            generatorResult = GeneratorResult
+              { grTerrain = Null
+              , grOverlay = Nothing
+              , grMetadata = Just (object ["ok" .= True])
+              }
+            conn = newRPCConnection baseManifest host Map.empty
+        done <- newEmptyMVar
+        _ <- forkIO (invokeGenerator conn explicitSeed terrainPayload >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgInvokeGenerator
+        case Aeson.fromJSON (envPayload request) of
+          Aeson.Error err -> expectationFailure ("failed to decode invoke_generator payload: " <> err)
+          Aeson.Success invoke -> do
+            igSeed invoke `shouldBe` explicitSeed
+            igTerrain invoke `shouldBe` terrainPayload
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgGeneratorResult
+          , envPayload = Aeson.toJSON generatorResult
+          , envRequestId = envRequestId request
+          }
+        result <- timeout transportTestTimeoutMicros (takeMVar done)
+        result `shouldBe` Just (Right generatorResult)
 
   ------------------------------------
   -- Protocol message round-trips

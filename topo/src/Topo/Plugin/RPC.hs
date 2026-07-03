@@ -77,6 +77,7 @@ import Control.Concurrent
 import Control.Exception (SomeException, mask, onException, try)
 import Control.Monad (forM_, when)
 import Control.Monad.Except (throwError)
+import Control.Monad.Reader (asks)
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import System.IO.Unsafe (unsafePerformIO)
 import Control.Monad.IO.Class (liftIO)
@@ -100,7 +101,7 @@ import Topo.Overlay (Overlay(..), insertOverlay, lookupOverlay)
 import Topo.Overlay.JSON (overlayFromJSON, overlayToJSON)
 import Topo.Pipeline (PipelineStage(..))
 import Topo.Pipeline.Stage (StageId(..))
-import Topo.Plugin (Capability(..), PluginError(..), PluginM, getWorldP, logInfo, putWorldP)
+import Topo.Plugin (Capability(..), PluginEnv(..), PluginError(..), PluginM, getWorldP, logInfo, putWorldP)
 import Topo.Calendar (CalendarDate(..), WorldTime(..))
 import Topo.Simulation
   ( SimNode(..)
@@ -503,20 +504,22 @@ timeoutMicrosFromMs millis
 -- collects progress updates, and returns the generator result.
 invokeGenerator
   :: RPCConnection
+  -> Word64
+  -- ^ Deterministic seed supplied by the caller.
   -> Value
   -- ^ Encoded terrain data (relevant chunks).
   -> IO (Either RPCError GeneratorResult)
-invokeGenerator conn terrainData = do
+invokeGenerator conn seed terrainData = do
   let manifest = rpcManifest conn
       envelope = RPCEnvelope
         { envType = MsgInvokeGenerator
         , envPayload = Aeson.toJSON InvokeGenerator
           { igPayloadVersion = 1
           , igStageId = "plugin:" <> rmName manifest
-            , igSeed    = 0  -- Seed is set by the pipeline at call time
-            , igConfig  = rpcParams conn
-            , igTerrain = terrainData
-            }
+          , igSeed    = seed
+          , igConfig  = rpcParams conn
+          , igTerrain = terrainData
+          }
         , envRequestId = Nothing
         }
   result <- rpcCallWithProgress (Just (rpcRuntimeFailure conn)) (rpcRequestTimeoutMicros conn) "plugin generator request timed out" conn envelope
@@ -821,7 +824,8 @@ rpcGeneratorStage conn =
           Left err ->
             throwError (PluginInvariantError ("rpc generator encode failed: " <> err))
           Right terrainPayload -> do
-            result <- liftIO (invokeGenerator conn terrainPayload)
+            seed <- asks peSeed
+            result <- liftIO (invokeGenerator conn seed terrainPayload)
             case result of
               Left err -> throwError (PluginInvariantError ("rpc generator failed: " <> rpcErrorText err))
               Right generatorResult ->

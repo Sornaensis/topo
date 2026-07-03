@@ -785,7 +785,7 @@ spec = describe "PluginManager" $ do
         conn <- case pluginConnections generatorCrashPluginName loaded of
           Just c -> pure c
           Nothing -> expectationFailure "plugin did not connect" >> fail "missing plugin connection"
-        timed <- timeout 1000000 $ invokeGenerator conn Aeson.Null
+        timed <- timeout 1000000 $ invokeGenerator conn 0 Aeson.Null
         case timed of
           Nothing -> expectationFailure "generator request hung"
           Just (Left _) -> pure ()

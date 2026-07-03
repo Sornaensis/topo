@@ -251,6 +251,7 @@ test-suite topo-test
     , directory
     , filepath
     , hspec
+    , mtl
     , scientific
     , temporary
     , text
