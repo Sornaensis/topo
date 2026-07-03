@@ -74,6 +74,7 @@ terrainRoughenPlugin = defaultPluginDef
 runRoughenGenerator :: PluginContext -> IO (Either Text GeneratorTickResult)
 runRoughenGenerator ctx = do
   pcLog ctx "terrain-roughen: generator invoked"
+  reportPluginProgress ctx "terrain-roughen: decoding terrain" 0.1
   let params    = pcParams ctx
       roughness = paramFloat params "roughness" 0.3
       iters     = paramInt params "iterations" 2
@@ -85,6 +86,7 @@ runRoughenGenerator ctx = do
       pure (Left ("terrain-roughen: failed to decode terrain payload: " <> decodeErr))
     Right terrainWorld -> do
       let terrainWorld' = applyRoughening seed roughness iters terrainWorld
+      pcProgress ctx "terrain-roughen: terrain modified" 0.8
       pcLog ctx "terrain-roughen: terrain modified"
       case generatorResultFromTerrain terrainWorld' of
         Left encodeErr ->

@@ -75,5 +75,23 @@ Runtime context provided to callbacks.
 |-------|------|-------------|
 | `pcWorld` | `TerrainWorld` | Current terrain state |
 | `pcParams` | `Map Text Value` | Current parameter values |
+| `pcTerrain` | `Value` | Raw terrain payload from the host invocation |
+| `pcOwnOverlay` | `Maybe Value` | Plugin-owned overlay payload for simulation ticks |
+| `pcOverlays` | `Map Text Value` | Dependency overlay payloads keyed by overlay name |
 | `pcSeed` | `Word64` | World generation seed |
 | `pcLog` | `Text -> IO ()` | Log to host |
+| `pcProgress` | `Text -> Double -> IO ()` | Emit interim progress for the current generator, simulation, query, or mutation callback |
+| `pcWorldPath` | `Maybe FilePath` | Current world save directory path, when known |
+
+Use `reportPluginProgress ctx message fraction` for a named helper around
+`pcProgress`; the longer name avoids confusion with the host-side
+`Topo.Plugin.reportProgress`. Fractions are absolute for the current invocation,
+conventionally `0.0` through `1.0` inclusive. The final result or error remains
+authoritative, and callbacks do not need to emit either endpoint. The SDK
+clamps finite values into `[0,1]` and maps `NaN`/infinities defensively before
+JSON encoding.
+
+`PluginContext(..)` is exported. The added `pcProgress` field is therefore
+source-breaking for plugins that manually construct `PluginContext` values or
+pattern-match the record exhaustively/positionally; add a `pcProgress` field or
+use record wildcards/field selectors as appropriate.

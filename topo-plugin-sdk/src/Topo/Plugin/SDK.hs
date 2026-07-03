@@ -23,6 +23,7 @@
 --       , gdRequires    = ["erosion"]
 --       , gdRun         = \\ctx -> do
 --           pcLog ctx "Hello from my plugin!"
+--           reportPluginProgress ctx "working" 0.5
 --           pure (Right defaultGeneratorTickResult)
 --       }
 --   }
@@ -40,6 +41,7 @@
 -- * Explicit manifest-only install command before topo-seer discovery
 -- * Transport connection and message framing
 -- * RPC message dispatch (generator invocation, simulation ticks)
+-- * Correlated logging and progress reporting from callbacks
 -- * Clean shutdown handling
 --
 -- You only need to implement the business logic in 'GeneratorDef'
@@ -65,6 +67,7 @@ module Topo.Plugin.SDK
   , hourlyScheduleDecl
     -- * Context
   , PluginContext(..)
+  , reportPluginProgress
     -- * Data resource schemas
   , DataResourceSchema(..)
   , DataPagination(..)

@@ -318,6 +318,7 @@ queryCultures _ctx query = do
 runCivGenerator :: PluginContext -> IO (Either Text GeneratorTickResult)
 runCivGenerator ctx = do
   pcLog ctx "civilization: generator — seeding initial population"
+  reportPluginProgress ctx "civilization: preparing settlement seed data" 0.2
   pcLog ctx ("civilization: habitability threshold = "
               <> showParam (pcParams ctx) "habitability_threshold")
   pcLog ctx ("civilization: seed = " <> pack (show (pcSeed ctx)))
@@ -329,6 +330,7 @@ runCivGenerator ctx = do
         Left encodeErr ->
           pure (Left ("civilization: failed to encode generator terrain payload: " <> encodeErr))
         Right result -> do
+          pcProgress ctx "civilization: generator complete" 0.9
           pcLog ctx "civilization: generator complete"
           pure (Right result)
 
@@ -347,6 +349,7 @@ runCivGenerator ctx = do
 runCivSimTick :: PluginContext -> IO (Either Text SimulationTickResult)
 runCivSimTick ctx = do
   pcLog ctx "civilization: simulation tick"
+  pcProgress ctx "civilization: loading civilization overlay" 0.1
   let params = pcParams ctx
       growthRate = paramFloat params "growth_rate" defaultGrowthRate
       infraCost  = paramFloat params "infra_cost"  defaultInfraCost
@@ -362,6 +365,7 @@ runCivSimTick ctx = do
           pure (Left ("civilization: failed to decode own overlay payload: " <> decodeErr))
         Right overlay -> do
           let overlay' = tickOverlay growthRate infraCost cityThresh schema overlay
+          reportPluginProgress ctx "civilization: tick complete" 0.85
           pcLog ctx "civilization: tick complete"
           pure (Right (simulationResultFromOverlay overlay'))
 

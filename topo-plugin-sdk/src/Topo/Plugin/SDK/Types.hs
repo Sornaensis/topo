@@ -35,6 +35,7 @@ module Topo.Plugin.SDK.Types
   , noDataHandler
     -- * Plugin context
   , PluginContext(..)
+  , reportPluginProgress
     -- * Defaults
   , defaultPluginDef
   ) where
@@ -168,9 +169,10 @@ defaultSimulationTickResult = SimulationTickResult
 -- Context
 ------------------------------------------------------------------------
 
--- | Runtime context passed to generator and simulation callbacks.
+-- | Runtime context passed to generator, simulation, and data callbacks.
 --
--- Provides access to the current terrain, parameters, and seed.
+-- Provides access to the current terrain, parameters, seed, host logging, and
+-- interim progress reporting for the current invocation.
 data PluginContext = PluginContext
   { pcWorld  :: !TerrainWorld
     -- ^ Current terrain world state.
@@ -186,9 +188,22 @@ data PluginContext = PluginContext
     -- ^ World generation seed.
   , pcLog    :: Text -> IO ()
     -- ^ Logging callback (messages appear in topo-seer log panel).
+  , pcProgress :: Text -> Double -> IO ()
+    -- ^ Progress callback for the current invocation. The fraction is absolute
+    -- progress for this callback, conventionally from @0.0@ through @1.0@;
+    -- callers do not need to emit either endpoint, and the final result or
+    -- error remains authoritative.
   , pcWorldPath :: !(Maybe FilePath)
     -- ^ Path to the current world save directory, if known.
   }
+
+-- | Report progress for the current plugin callback.
+--
+-- This is a named helper for 'pcProgress' to avoid ambiguity with the host-side
+-- @Topo.Plugin.reportProgress@ helper.
+reportPluginProgress :: PluginContext -> Text -> Double -> IO ()
+reportPluginProgress context message fraction =
+  pcProgress context message fraction
 
 ------------------------------------------------------------------------
 -- Data service

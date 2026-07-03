@@ -78,6 +78,7 @@ testContext = PluginContext
   , pcOverlays = Map.empty
   , pcSeed = 0
   , pcLog = \_ -> pure ()
+  , pcProgress = \_ _ -> pure ()
   , pcWorldPath = Nothing
   }
 

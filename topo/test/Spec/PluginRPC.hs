@@ -31,7 +31,7 @@ import System.IO (stdin, stdout)
 import System.IO.Temp (withSystemTempFile)
 import System.Timeout (timeout)
 
-import Topo.Plugin.RPC (RPCError(..), checkHealth, invokeGenerator, newRPCConnection, rpcErrorText, sendHeartbeat)
+import Topo.Plugin.RPC (RPCError(..), checkHealth, invokeGenerator, invokeSimulation, newRPCConnection, rpcErrorText, sendHeartbeat)
 import Topo.Plugin.RPC.Manifest
 import Topo.Plugin.RPC.Protocol
 import Topo.Plugin.RPC.ExternalDataSource
@@ -57,7 +57,20 @@ import Topo.Plugin.RPC.Transport
   , sendMessageWithLimit
   )
 import Topo.Plugin.DataResource
+import Topo.Calendar (CalendarDate(..), WorldTime(..), simulationTickSeconds)
+import Topo.Hex (defaultHexGridMeta)
+import Topo.Overlay (Overlay, emptyOverlay)
+import Topo.Overlay.Schema
+  ( OverlayFieldDef(..)
+  , OverlayFieldType(..)
+  , OverlaySchema(..)
+  , OverlayStorage(..)
+  , emptyOverlayDeps
+  )
+import Topo.Simulation (SimContext(..))
 import Topo.Simulation.Schedule (SimulationCatchUpPolicy(..), SimulationScheduleDecl(..), defaultScheduleDecl)
+import Topo.Types (WorldConfig(..))
+import Topo.World (emptyWorld)
 
 ------------------------------------------------------------------------
 -- Arbitrary instances for QuickCheck
@@ -1380,6 +1393,54 @@ spec = describe "Plugin.RPC" $ do
         result <- timeout transportTestTimeoutMicros (takeMVar done)
         result `shouldBe` Just (Right generatorResult)
 
+    it "routes correlated simulation progress to the invokeSimulation callback and completes" $
+      withConnectedTransports "rpc-simulation-progress" $ \host plugin -> do
+        let conn = newRPCConnection simulationProgressManifest host Map.empty
+        progressSeen <- newEmptyMVar
+        done <- newEmptyMVar
+        _ <- forkIO (invokeSimulation conn testSimContext testOverlay (putMVar progressSeen) (\_ -> pure ()) >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgInvokeSimulation
+        requestId <- requireRequestId request
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgProgress
+          , envPayload = Aeson.toJSON (PluginProgress "halfway" 0.5)
+          , envRequestId = Just requestId
+          }
+        observed <- timeout transportTestTimeoutMicros (takeMVar progressSeen)
+        observed `shouldBe` Just (PluginProgress "halfway" 0.5)
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgSimulationResult
+          , envPayload = Aeson.toJSON simulationResultFixture
+          , envRequestId = Just requestId
+          }
+        result <- timeout transportTestTimeoutMicros (takeMVar done)
+        result `shouldBe` Just (Right simulationResultFixture)
+
+    it "ignores progress with no matching pending request and still completes the final response" $
+      withConnectedTransports "rpc-simulation-progress-wrong-id" $ \host plugin -> do
+        let conn = newRPCConnection simulationProgressManifest host Map.empty
+        progressSeen <- newEmptyMVar
+        done <- newEmptyMVar
+        _ <- forkIO (invokeSimulation conn testSimContext testOverlay (putMVar progressSeen) (\_ -> pure ()) >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgInvokeSimulation
+        requestId <- requireRequestId request
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgProgress
+          , envPayload = Aeson.toJSON (PluginProgress "wrong" 0.9)
+          , envRequestId = Just (requestId + 1000)
+          }
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgSimulationResult
+          , envPayload = Aeson.toJSON simulationResultFixture
+          , envRequestId = Just requestId
+          }
+        result <- timeout transportTestTimeoutMicros (takeMVar done)
+        result `shouldBe` Just (Right simulationResultFixture)
+        ignored <- timeout 200000 (takeMVar progressSeen)
+        ignored `shouldBe` Nothing
+
   ------------------------------------
   -- Protocol message round-trips
   ------------------------------------
@@ -1696,6 +1757,12 @@ takeHeartbeatResult done = do
     Just (Left err) -> expectationFailure ("heartbeat failed: " <> show err) >> fail "heartbeat failed"
     Just (Right heartbeat) -> pure heartbeat
 
+requireRequestId :: RPCEnvelope -> IO Word64
+requireRequestId envelope =
+  case envRequestId envelope of
+    Nothing -> expectationFailure "expected correlated request id" >> fail "missing request id"
+    Just requestId -> pure requestId
+
 withTransportServer :: Text -> (TransportServer -> IO a) -> IO a
 withTransportServer pluginName = bracket acquire tsClose
   where
@@ -1844,4 +1911,60 @@ baseManifest = RPCManifest
   , rmExternalDataSources = []
   , rmExternalDataSourceRefs = []
   , rmStartPolicy   = defaultRPCStartPolicy
+  }
+
+simulationProgressManifest :: RPCManifest
+simulationProgressManifest = baseManifest
+  { rmName = "sim-progress"
+  , rmGenerator = Nothing
+  , rmSimulation = Just RPCSimulationDecl
+      { rsdDependencies = []
+      , rsdSchedule = defaultScheduleDecl
+      }
+  , rmOverlay = Just (RPCOverlayDecl "sim-progress.toposchema")
+  , rmCapabilities = [CapWriteOverlay]
+  }
+
+testSimContext :: SimContext
+testSimContext = SimContext
+  { scTerrain = emptyWorld (WorldConfig { wcChunkSize = 64 }) defaultHexGridMeta
+  , scCalendar = CalendarDate
+      { cdYear = 0
+      , cdDayOfYear = 0
+      , cdHourOfDay = 0
+      }
+  , scWorldTime = WorldTime
+      { wtTick = 0
+      , wtTickRate = simulationTickSeconds
+      }
+  , scDeltaTicks = 1
+  , scOverlays = Map.empty
+  }
+
+testOverlay :: Overlay
+testOverlay = emptyOverlay testOverlaySchema
+
+testOverlaySchema :: OverlaySchema
+testOverlaySchema = OverlaySchema
+  { osName = "sim_progress"
+  , osVersion = "1.0.0"
+  , osDescription = "simulation progress routing test schema"
+  , osFields =
+      [ OverlayFieldDef
+          { ofdName = "value"
+          , ofdType = OFFloat
+          , ofdDefault = Number 0
+          , ofdIndexed = False
+          , ofdRenamedFrom = Nothing
+          }
+      ]
+  , osStorage = StorageSparse
+  , osDependencies = emptyOverlayDeps
+  , osFieldIndex = Map.fromList [("value", 0)]
+  }
+
+simulationResultFixture :: SimulationResult
+simulationResultFixture = SimulationResult
+  { srOverlay = object ["ok" .= True]
+  , srTerrainWrites = Nothing
   }

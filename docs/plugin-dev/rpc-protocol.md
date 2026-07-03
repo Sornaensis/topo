@@ -277,6 +277,13 @@ is optional and uses the same base64 chunk sections as terrain payloads.
 { "message": "classifying settlements", "fraction": 0.5 }
 ```
 
+A `progress.fraction` is absolute progress for the current invocation,
+conventionally `0.0` through `1.0` inclusive. Plugins are not required to emit
+`0.0` or `1.0`, and the final result or `error` remains authoritative. SDK
+callbacks sanitize before encoding by clamping finite values into `[0,1]` and
+mapping `NaN`/infinities to finite defensive values so wire JSON never contains
+invalid numbers.
+
 ```json
 { "level": "info", "message": "settlements loaded" }
 ```

@@ -49,6 +49,7 @@ import Topo.Plugin.RPC.Protocol
   , InvokeSimulation(..)
   , PluginError(..)
   , PluginLog(..)
+  , PluginProgress(..)
   , RPCEnvelope(..)
   , RPCMessageType(..)
   , SimulationResult(..)
@@ -210,6 +211,39 @@ spec = describe "SDK runner pipe integration" $ do
           grMetadata result `shouldBe` Just (object ["source" .= ("test" :: Text)])
       shutdownAndWait host done
 
+  it "emits generator progress before generator_result with the request id" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession generatorProgressPlugin plugin
+      sendEnvelope host (generatorInvoke 78)
+      progressEnv <- recvEnvelope host
+      resultEnv <- recvEnvelope host
+      envType progressEnv `shouldBe` MsgProgress
+      envRequestId progressEnv `shouldBe` Just 78
+      progress <- decodeProgress progressEnv
+      ppMessage progress `shouldBe` "generator:halfway"
+      ppFraction progress `shouldBe` 0.5
+      envType resultEnv `shouldBe` MsgGeneratorResult
+      envRequestId resultEnv `shouldBe` Just 78
+      shutdownAndWait host done
+
+  it "sanitizes progress fractions before JSON encoding" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession generatorSanitizingProgressPlugin plugin
+      sendEnvelope host (generatorInvoke 79)
+      progressEnvs <- traverse (\_ -> recvEnvelope host) [1 .. 5 :: Int]
+      resultEnv <- recvEnvelope host
+      mapM_ (\env -> envType env `shouldBe` MsgProgress) progressEnvs
+      decoded <- traverse decodeProgress progressEnvs
+      map (\p -> (ppMessage p, ppFraction p)) decoded `shouldBe`
+        [ ("below", 0)
+        , ("above", 1)
+        , ("nan", 0)
+        , ("positive-infinity", 1)
+        , ("negative-infinity", 0)
+        ]
+      envType resultEnv `shouldBe` MsgGeneratorResult
+      shutdownAndWait host done
+
   it "handles invoke_simulation with log interleaving before simulation_result" $
     withTransportPair $ \host plugin -> do
       done <- startSession simulationPlugin plugin
@@ -225,6 +259,70 @@ spec = describe "SDK runner pipe integration" $ do
         Aeson.Success result -> do
           srOverlay result `shouldBe` object ["population" .= (42 :: Int)]
           srTerrainWrites result `shouldBe` Nothing
+      shutdownAndWait host done
+
+  it "emits simulation progress before simulation_result with the request id" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession simulationProgressPlugin plugin
+      sendEnvelope host simulationInvoke
+      progressEnv <- recvEnvelope host
+      resultEnv <- recvEnvelope host
+      envType progressEnv `shouldBe` MsgProgress
+      envRequestId progressEnv `shouldBe` Just 100
+      progress <- decodeProgress progressEnv
+      ppMessage progress `shouldBe` "simulation:tick"
+      ppFraction progress `shouldBe` 0.25
+      envType resultEnv `shouldBe` MsgSimulationResult
+      envRequestId resultEnv `shouldBe` Just 100
+      shutdownAndWait host done
+
+  it "emits query_resource progress before query_result with the request id" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession progressDataPlugin plugin
+      let qr = RPCEnvelope
+            { envType = MsgQueryResource
+            , envPayload = Aeson.toJSON QueryResource
+                { qrResource = "items"
+                , qrQuery = QueryAll
+                , qrPageSize = Nothing
+                , qrPageOffset = Nothing
+                }
+            , envRequestId = Just 142
+            }
+      sendEnvelope host qr
+      progressEnv <- recvEnvelope host
+      resultEnv <- recvEnvelope host
+      envType progressEnv `shouldBe` MsgProgress
+      envRequestId progressEnv `shouldBe` Just 142
+      progress <- decodeProgress progressEnv
+      ppMessage progress `shouldBe` "query:loading"
+      ppFraction progress `shouldBe` 0.4
+      envType resultEnv `shouldBe` MsgQueryResult
+      envRequestId resultEnv `shouldBe` Just 142
+      shutdownAndWait host done
+
+  it "emits mutate_resource progress before mutate_result with the request id" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession progressDataPlugin plugin
+      let record = DataRecord (Map.fromList [("name", String "Lantern")])
+          mr = RPCEnvelope
+            { envType = MsgMutateResource
+            , envPayload = Aeson.toJSON MutateResource
+                { mrResource = "items"
+                , mrMutation = MutCreate record
+                }
+            , envRequestId = Just 143
+            }
+      sendEnvelope host mr
+      progressEnv <- recvEnvelope host
+      resultEnv <- recvEnvelope host
+      envType progressEnv `shouldBe` MsgProgress
+      envRequestId progressEnv `shouldBe` Just 143
+      progress <- decodeProgress progressEnv
+      ppMessage progress `shouldBe` "mutate:saving"
+      ppFraction progress `shouldBe` 0.6
+      envType resultEnv `shouldBe` MsgMutateResult
+      envRequestId resultEnv `shouldBe` Just 143
       shutdownAndWait host done
 
   it "hydrates generator pcWorld from terrain payload metadata" $
@@ -623,6 +721,12 @@ decodeLog envelope =
     Aeson.Error err -> expectationFailure err >> fail "log decode"
     Aeson.Success (pluginLog :: PluginLog) -> pure (plMessage pluginLog)
 
+decodeProgress :: RPCEnvelope -> IO PluginProgress
+decodeProgress envelope =
+  case Aeson.fromJSON (envPayload envelope) of
+    Aeson.Error err -> expectationFailure err >> fail "progress decode"
+    Aeson.Success progress -> pure progress
+
 generatorInvoke :: Word64 -> RPCEnvelope
 generatorInvoke seed = generatorInvokeWithTerrain seed minimalTerrainPayload
 
@@ -729,6 +833,39 @@ generatorPlugin = defaultPluginDef
       }
   }
 
+generatorProgressPlugin :: PluginDef
+generatorProgressPlugin = defaultPluginDef
+  { pdName = "generator-progress"
+  , pdVersion = "1.0"
+  , pdGenerator = Just GeneratorDef
+      { gdInsertAfter = "erosion"
+      , gdRequires = []
+      , gdRun = \ctx -> do
+          reportPluginProgress ctx "generator:halfway" 0.5
+          pure (Right defaultGeneratorTickResult)
+      }
+  }
+
+generatorSanitizingProgressPlugin :: PluginDef
+generatorSanitizingProgressPlugin = defaultPluginDef
+  { pdName = "generator-progress-sanitize"
+  , pdVersion = "1.0"
+  , pdGenerator = Just GeneratorDef
+      { gdInsertAfter = "erosion"
+      , gdRequires = []
+      , gdRun = \ctx -> do
+          let nan = 0 / 0 :: Double
+              positiveInfinity = 1 / 0 :: Double
+              negativeInfinity = -1 / 0 :: Double
+          reportPluginProgress ctx "below" (-0.25)
+          pcProgress ctx "above" 1.25
+          reportPluginProgress ctx "nan" nan
+          reportPluginProgress ctx "positive-infinity" positiveInfinity
+          reportPluginProgress ctx "negative-infinity" negativeInfinity
+          pure (Right defaultGeneratorTickResult)
+      }
+  }
+
 simulationPlugin :: PluginDef
 simulationPlugin = defaultPluginDef
   { pdName = "simulation"
@@ -784,6 +921,20 @@ worldMetadataValue world = object
   , "slice_lat_center" .= wsLatCenter (twSlice world)
   , "slice_lon_center" .= wsLonCenter (twSlice world)
   ]
+
+simulationProgressPlugin :: PluginDef
+simulationProgressPlugin = defaultPluginDef
+  { pdName = "simulation-progress"
+  , pdVersion = "1.0"
+  , pdSchemaFile = Just "sim.toposchema"
+  , pdSimulation = Just SimulationDef
+      { sdDependencies = []
+      , sdSchedule = Just hourlyScheduleDecl
+      , sdTick = \ctx -> do
+          pcProgress ctx "simulation:tick" 0.25
+          pure (Right defaultSimulationTickResult)
+      }
+  }
 
 simOnlyPlugin :: PluginDef
 simOnlyPlugin = defaultPluginDef
@@ -842,6 +993,41 @@ dataPlugin = defaultPluginDef
                         , mrsRecord = Nothing
                         , mrsErrorCode = Nothing
                         })
+              }
+          }
+      ]
+  }
+
+progressDataPlugin :: PluginDef
+progressDataPlugin = defaultPluginDef
+  { pdName = "data-progress"
+  , pdVersion = "1.0"
+  , pdDataResources =
+      [ DataResourceDef
+          { drdSchema = DataResourceSchema
+              { drsSchemaVersion = currentDataResourceSchemaVersion
+              , drsResourceVersion = defaultDataResourceVersion
+              , drsName = "items"
+              , drsLabel = "Items"
+              , drsHexBound = False
+              , drsFields = [DataFieldDef "name" DFText "Name" False Nothing]
+              , drsOperations = allOperations
+              , drsKeyField = "name"
+              , drsOverlay = Nothing
+              , drsPagination = defaultDataPagination
+              }
+          , drdHandler = DataHandler
+              { dhQuery = Just $ \ctx _query -> do
+                  reportPluginProgress ctx "query:loading" 0.4
+                  pure (Right (QueryResult "items" [] (Just 0)))
+              , dhMutate = Just $ \ctx _mutation -> do
+                  pcProgress ctx "mutate:saving" 0.6
+                  pure (Right MutateResult
+                    { mrsSuccess = True
+                    , mrsError = Nothing
+                    , mrsRecord = Nothing
+                    , mrsErrorCode = Nothing
+                    })
               }
           }
       ]

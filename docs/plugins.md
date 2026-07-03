@@ -92,6 +92,7 @@ myPlugin = defaultPluginDef
       , gdRequires    = ["erosion"]
       , gdRun         = \ctx -> do
           pcLog ctx "my-plugin: running generator"
+          reportPluginProgress ctx "my-plugin: applying terrain effect" 0.5
           -- Your terrain modification logic here
           pure (Right defaultGeneratorTickResult)
       }
@@ -256,12 +257,27 @@ A user-facing parameter shown as a slider or checkbox in topo-seer.
 
 Runtime context provided to callbacks.
 
-| Field      | Type                | Description                       |
-|------------|---------------------|-----------------------------------|
-| `pcWorld`  | `TerrainWorld`      | Current terrain state             |
-| `pcParams` | `Map Text Value`    | Current parameter values          |
-| `pcSeed`   | `Word64`            | World generation seed             |
-| `pcLog`    | `Text -> IO ()`     | Log to topo-seer                  |
+| Field | Type | Description |
+|--------|------|-------------|
+| `pcWorld` | `TerrainWorld` | Current terrain state |
+| `pcParams` | `Map Text Value` | Current parameter values |
+| `pcTerrain` | `Value` | Raw terrain payload from the host invocation |
+| `pcOwnOverlay` | `Maybe Value` | Plugin-owned overlay payload for simulation ticks |
+| `pcOverlays` | `Map Text Value` | Dependency overlay payloads keyed by overlay name |
+| `pcSeed` | `Word64` | World generation seed |
+| `pcLog` | `Text -> IO ()` | Log to topo-seer |
+| `pcProgress` | `Text -> Double -> IO ()` | Emit interim progress for the current generator, simulation, query, or mutation callback |
+| `pcWorldPath` | `Maybe FilePath` | Current world save directory path, when known |
+
+Use `reportPluginProgress ctx message fraction` (or
+`pcProgress ctx message fraction`) for progress updates. Fractions are absolute
+progress for the current invocation, conventionally `0.0` through `1.0`
+inclusive; callbacks are not required to emit either endpoint, and the final
+result or error remains authoritative. The SDK clamps finite values into
+`[0,1]` and maps non-finite values defensively before JSON encoding.
+`PluginContext(..)` is exported, so adding `pcProgress` is source-breaking for
+plugins that manually construct, positionally pattern-match, or exhaustively
+pattern-match the record; update those sites to include or ignore the new field.
 
 ## Manifest Format
 

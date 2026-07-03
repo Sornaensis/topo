@@ -79,6 +79,7 @@ import Topo.Plugin.RPC.Protocol
   , WorldChanged(..)
   , Heartbeat(..)
   , HealthStatus(..)
+  , PluginProgress(..)
   , currentProtocolVersion
   , encodeMessage
   , decodeMessage
@@ -465,7 +466,8 @@ messageLoop pd transport params worldPath = do
                     Map.empty
                     (igSeed ig)
                     worldPath
-                    (sendLogMessage transport (envRequestId envelope)) of
+                    (sendLogMessage transport (envRequestId envelope))
+                    (sendProgress transport (envRequestId envelope)) of
                     Left err -> do
                       sendErrorResponse transport (envRequestId envelope) 6 ("Invalid terrain payload: " <> err)
                       messageLoop pd transport mergedParams worldPath
@@ -499,7 +501,8 @@ messageLoop pd transport params worldPath = do
                     (valueObjectToMap (isOverlays is'))
                     0
                     worldPath
-                    (sendLogMessage transport (envRequestId envelope)) of
+                    (sendLogMessage transport (envRequestId envelope))
+                    (sendProgress transport (envRequestId envelope)) of
                     Left err -> do
                       sendErrorResponse transport (envRequestId envelope) 7 ("Invalid terrain payload: " <> err)
                       messageLoop pd transport mergedParams worldPath
@@ -693,8 +696,9 @@ makeTerrainContext
   -> Word64
   -> Maybe FilePath
   -> (Text -> IO ())
+  -> (Text -> Double -> IO ())
   -> Either Text PluginContext
-makeTerrainContext params terrainPayload ownOverlay overlays seed worldPath logFn = do
+makeTerrainContext params terrainPayload ownOverlay overlays seed worldPath logFn progressFn = do
   world <- decodeTerrainPayload terrainPayload
   Right PluginContext
     { pcWorld = world
@@ -704,6 +708,7 @@ makeTerrainContext params terrainPayload ownOverlay overlays seed worldPath logF
     , pcOverlays = overlays
     , pcSeed = seed
     , pcLog = logFn
+    , pcProgress = progressFn
     , pcWorldPath = worldPath
     }
 
@@ -722,18 +727,27 @@ sendLogMessage transport requestId msg = do
   pure ()
 
 -- | Send progress to the host.
+--
+-- SDK progress fractions are absolute for the current invocation. Finite
+-- values are clamped to [0,1]; non-finite values are mapped defensively before
+-- JSON encoding so plugins never emit invalid JSON numbers.
 sendProgress :: Transport -> Maybe Word64 -> Text -> Double -> IO ()
 sendProgress transport requestId msg fraction = do
   let envelope = RPCEnvelope
         { envType = MsgProgress
-        , envPayload = object
-            [ "message"  .= msg
-            , "fraction" .= fraction
-            ]
+        , envPayload = Aeson.toJSON (PluginProgress msg (sanitizeProgressFraction fraction))
         , envRequestId = requestId
         }
   _ <- sendMessage transport (encodeMessage envelope)
   pure ()
+
+sanitizeProgressFraction :: Double -> Double
+sanitizeProgressFraction fraction
+  | isNaN fraction = 0
+  | isInfinite fraction = if fraction > 0 then 1 else 0
+  | fraction < 0 = 0
+  | fraction > 1 = 1
+  | otherwise = fraction
 
 ------------------------------------------------------------------------
 -- Data service helpers
@@ -801,6 +815,7 @@ makeDataContext params worldPath transport requestId = PluginContext
   , pcOverlays   = Map.empty
   , pcSeed       = 0
   , pcLog        = sendLogMessage transport requestId
+  , pcProgress   = sendProgress transport requestId
   , pcWorldPath  = worldPath
   }
 
