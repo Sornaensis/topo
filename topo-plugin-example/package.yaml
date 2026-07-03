@@ -34,7 +34,10 @@ tests:
     dependencies:
       - base
       - aeson
+      - directory
+      - filepath
       - hspec
+      - text
       - topo
       - topo-plugin-example
       - topo-plugin-sdk

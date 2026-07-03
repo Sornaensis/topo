@@ -31,4 +31,11 @@ pipeline and simulation system.
 
 - GHC and Stack (see root README for versions)
 - `topo-plugin-sdk` as a dependency (via Git extra-dep)
+- A packaging step that installs the executable, writes `manifest.json` before
+  discovery, and copies any referenced schemas or sidecar assets
 - No direct dependency on `topo` internals is required
+
+Topo-seer discovery is manifest-first: it reads existing `manifest.json` files
+under `~/.topo/plugins/` and will not execute unmanifested plugin directories to
+bootstrap manifests. SDK users can expose this install action with
+`runPluginWithManifestCommand`; non-Haskell plugins can hand-write manifest v3.

@@ -51,7 +51,10 @@ test-suite topo-plugin-example-test
   build-depends:
       aeson
     , base
+    , directory
+    , filepath
     , hspec
+    , text
     , topo
     , topo-plugin-example
     , topo-plugin-sdk

@@ -159,4 +159,4 @@ showParam params key = case Map.lookup key params of
   Nothing         -> "<not set>"
 
 main :: IO ()
-main = runPlugin terrainRoughenPlugin
+main = runPluginWithManifestCommand terrainRoughenPlugin

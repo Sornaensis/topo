@@ -245,8 +245,9 @@ noDataHandler = DataHandler
 -- explicit capabilities, and backend-neutral external data-source declarations
 -- here instead of hand-editing @manifest.json@.
 --
--- Create a 'PluginDef' and pass it to 'Topo.Plugin.SDK.runPlugin'
--- to start the plugin process.
+-- Create a 'PluginDef' and pass it to
+-- 'Topo.Plugin.SDK.runPluginWithManifestCommand' so plugin authors can write
+-- @manifest.json@ during install before normal host-launched RPC startup.
 --
 -- === Minimal example
 --

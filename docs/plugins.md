@@ -98,49 +98,63 @@ myPlugin = defaultPluginDef
   }
 
 main :: IO ()
-main = runPlugin myPlugin
+main = runPluginWithManifestCommand myPlugin
 ```
 
-### 3. Build and install
+### 3. Build, install, and package the manifest
 
-Build and install in one step using `stack install`. The `--local-bin-path`
-flag tells Stack where to copy the built executable, and it creates the
-target directory automatically:
+`stack install` copies only the executable. topo-seer discovery requires
+`manifest.json` to exist in the plugin directory before discovery, so SDK
+plugins should run the explicit manifest-only command during packaging:
 
-```
-stack install --local-bin-path ~/.topo/plugins/my-plugin/
+```bash
+PLUGIN_DIR="$HOME/.topo/plugins/my-plugin"
+stack install --local-bin-path "$PLUGIN_DIR"
+"$PLUGIN_DIR/my-plugin" --topo-write-manifest "$PLUGIN_DIR"
 ```
 
 On Windows (PowerShell):
 
 ```powershell
-stack install --local-bin-path "$env:USERPROFILE\.topo\plugins\my-plugin\"
+$PluginDir = "$env:USERPROFILE\.topo\plugins\my-plugin"
+stack install --local-bin-path "$PluginDir"
+& "$PluginDir\my-plugin.exe" --topo-write-manifest "$PluginDir"
 ```
 
-That's it — the SDK auto-generates `manifest.json` on the plugin's first
-run, so no manual manifest setup is required.
+If your executable component name differs from `pdName`, copy or rename the
+installed executable so the plugin directory contains a launch executable named
+for the manifest `name`. If your manifest references schemas or other sidecar
+assets, copy those files into the same plugin directory during this install
+step. Non-Haskell plugins can hand-write/package manifest v3 JSON directly.
+
+Topo-seer does **not** execute unmanifested plugin directories to bootstrap
+manifests; automatic host scanning only reads existing `manifest.json` files.
 
 ## Architecture
 
 ### Plugin Lifecycle
 
-1. **Discovery** — topo-seer scans `~/.topo/plugins/` for directories
-   containing a `manifest.json`.
+1. **Packaging** — install the executable, then generate/copy `manifest.json`
+   (and any referenced `.toposchema` files) into the plugin directory.
 
-2. **Manifest** — the SDK generates `manifest.json` from your `PluginDef` on
-   first run. The manifest declares the plugin's identity, capabilities,
-   pipeline position, and parameters.
+2. **Discovery** — topo-seer scans `~/.topo/plugins/` for directories
+   containing an existing `manifest.json`. It will not launch unknown
+   executables just to create one.
 
-3. **Connection** — topo-seer launches your plugin executable with
+3. **Manifest** — SDK plugins generate `manifest.json` from `PluginDef` via an
+   explicit manifest-only install command. The manifest declares the plugin's
+   identity, capabilities, pipeline position, and parameters.
+
+4. **Connection** — topo-seer launches your plugin executable with
    `TOPO_PLUGIN_ENDPOINT` and `TOPO_PLUGIN_ENDPOINT_KIND` set, then the SDK
    connects to that host-created named pipe (Windows) or Unix domain socket
    (Linux/macOS).
 
-4. **Invocation** — the host sends `invoke_generator` or `invoke_simulation`
+5. **Invocation** — the host sends `invoke_generator` or `invoke_simulation`
    messages. Your callbacks receive a `PluginContext` with the current world
    state, parameters, and seed.
 
-5. **Shutdown** — the host sends a `shutdown` message, and the SDK exits
+6. **Shutdown** — the host sends a `shutdown` message, and the SDK exits
    cleanly.
 
 ### Message Protocol
@@ -251,7 +265,8 @@ Runtime context provided to callbacks.
 
 ## Manifest Format
 
-The SDK auto-generates manifest v3 `manifest.json` from `PluginDef`. Manual
+The SDK generates manifest v3 `manifest.json` from `PluginDef` when you run the
+manifest-only install command (or call `writePluginManifestToDirectory`). Manual
 editing is possible for non-Haskell plugins:
 
 ```json
@@ -319,9 +334,30 @@ Parameter values are saved per-plugin in
 topo-seer sessions. They are **not** included in preset files — plugin
 config is independent of generation presets.
 
-## Example: topo-plugin-example
+## First-party example packaging
 
-See
-[topo-plugin-example/app/Main.hs](../topo-plugin-example/app/Main.hs)
-for a complete minimal plugin that registers a generator stage with
-configurable parameters.
+`topo-plugin-example` packages the executable plus generated manifest. The
+manifest name is `terrain-roughen`, so copy the Stack-installed executable to
+that launch name before discovery:
+
+```bash
+PLUGIN_DIR="$HOME/.topo/plugins/terrain-roughen"
+stack install topo-plugin-example:exe:topo-plugin-example --local-bin-path "$PLUGIN_DIR"
+cp "$PLUGIN_DIR/topo-plugin-example" "$PLUGIN_DIR/terrain-roughen"
+"$PLUGIN_DIR/terrain-roughen" --topo-write-manifest "$PLUGIN_DIR"
+```
+
+`topo-plugin-civ-example` also packages the schema referenced by the manifest;
+its launch executable must be named `civilization`:
+
+```bash
+PLUGIN_DIR="$HOME/.topo/plugins/civilization"
+stack install topo-plugin-civ-example:exe:topo-plugin-civ-example --local-bin-path "$PLUGIN_DIR"
+cp "$PLUGIN_DIR/topo-plugin-civ-example" "$PLUGIN_DIR/civilization"
+cp topo-plugin-civ-example/civilization.toposchema "$PLUGIN_DIR/"
+"$PLUGIN_DIR/civilization" --topo-write-manifest "$PLUGIN_DIR"
+```
+
+See [topo-plugin-example/app/Main.hs](../topo-plugin-example/app/Main.hs) for a
+complete minimal plugin that registers a generator stage with configurable
+parameters.

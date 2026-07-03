@@ -1,8 +1,10 @@
 # Manifest Format
 
-Topo plugins declare their public contract in `manifest.json`. The Haskell SDK
-writes this file from `PluginDef` when the plugin starts, but non-Haskell
-plugins can produce the same JSON directly.
+Topo plugins declare their public contract in `manifest.json`. topo-seer reads
+this file during discovery and will not execute unmanifested plugin directories
+to bootstrap one. Haskell SDK plugins should write the file from `PluginDef`
+during an explicit build/install packaging step; non-Haskell plugins can produce
+the same JSON directly.
 
 The current contract is **manifest v3**. It describes plugin identity, runtime
 and RPC protocol compatibility, capabilities, parameters, generator/simulation
@@ -45,6 +47,29 @@ schema field.
 A manifest must declare at least one participation surface: `generator`,
 `simulation`, `dataResources`, `externalDataSources`, or
 `externalDataSourceRefs`.
+
+## Discovery and packaging contract
+
+Discovery is manifest-first. topo-seer scans plugin directories for an existing
+`manifest.json`; it does **not** launch unknown executables to ask them to
+create a manifest. `stack install` alone copies only the executable, so SDK
+plugins need a packaging command that also writes `manifest.json`, ensures the
+launch executable is available under the manifest `name`, and copies any
+referenced sidecar files.
+
+For SDK plugins, use `runPluginWithManifestCommand` as the executable entry
+point and run the manifest-only branch during install:
+
+```bash
+PLUGIN_DIR="$HOME/.topo/plugins/my-plugin"
+stack install --local-bin-path "$PLUGIN_DIR"
+"$PLUGIN_DIR/my-plugin" --topo-write-manifest "$PLUGIN_DIR"
+```
+
+If `overlay.schemaFile` or another manifest field references a file such as
+`civilization.toposchema`, copy that file into the plugin directory before
+starting topo-seer. Non-Haskell plugins can hand-write and package manifest v3
+JSON directly.
 
 ## Minimal shape
 
@@ -308,7 +333,13 @@ provider-owned stores.
 
 ## SDK generation
 
-The SDK converts `PluginDef` to manifest v3 with:
+The SDK converts `PluginDef` to manifest v3 with `generateManifest`. Use
+`writePluginManifestToDirectory` or the `runPluginWithManifestCommand`
+`--topo-write-manifest` branch to write that manifest without starting the RPC
+transport loop. Lower-level `writeManifest` remains available when you already
+have an `RPCManifest` value.
+
+The generated manifest includes:
 
 - `manifestVersion = 3`
 - protocol bounds set to the current RPC protocol version, plus optional
@@ -322,4 +353,5 @@ The SDK converts `PluginDef` to manifest v3 with:
   manifest unchanged, including any opaque external data-source `configRefs`
 
 Manual editing is supported for non-Haskell plugins, but SDK users should keep
-`PluginDef` as the source of truth.
+`PluginDef` as the source of truth and generate/copy `manifest.json` during
+build or install before topo-seer discovery.

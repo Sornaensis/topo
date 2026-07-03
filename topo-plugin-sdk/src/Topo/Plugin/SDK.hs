@@ -12,7 +12,7 @@
 -- import Topo.Plugin.SDK
 --
 -- main :: IO ()
--- main = runPlugin myPlugin
+-- main = runPluginWithManifestCommand myPlugin
 --
 -- myPlugin :: PluginDef
 -- myPlugin = defaultPluginDef
@@ -37,6 +37,7 @@
 -- The SDK handles:
 --
 -- * Manifest generation from your 'PluginDef'
+-- * Explicit manifest-only install command before topo-seer discovery
 -- * Transport connection and message framing
 -- * RPC message dispatch (generator invocation, simulation ticks)
 -- * Clean shutdown handling
@@ -107,7 +108,9 @@ module Topo.Plugin.SDK
   , module Topo.Plugin.SDK.Terrain
     -- * Entry point
   , runPlugin
+  , runPluginWithManifestCommand
     -- * Manifest utilities
+  , pluginManifestFileName
   , Capability(..)
   , RPCCapability
   , RPCStartPolicy(..)
@@ -135,13 +138,23 @@ module Topo.Plugin.SDK
   , defaultRPCExternalDataSourceStatus
   , generateManifest
   , writeManifest
+  , writePluginManifest
+  , writePluginManifestToDirectory
   ) where
 
 import Topo.Plugin.SDK.Types
 import Topo.Plugin.SDK.Overlay
 import Topo.Plugin.SDK.Terrain
 import Topo.Plugin.SDK.Payload
-import Topo.Plugin.SDK.Runner (runPlugin, generateManifest, writeManifest)
+import Topo.Plugin.SDK.Runner
+  ( runPlugin
+  , runPluginWithManifestCommand
+  , pluginManifestFileName
+  , generateManifest
+  , writeManifest
+  , writePluginManifest
+  , writePluginManifestToDirectory
+  )
 import Topo.Plugin.DataResource
   ( DataResourceSchema(..)
   , DataPagination(..)

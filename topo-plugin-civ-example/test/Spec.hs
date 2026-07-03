@@ -3,10 +3,23 @@
 
 module Main (main) where
 
+import Control.Exception (bracket)
 import qualified Data.Aeson as Aeson
+import qualified Data.Text as Text
+import System.Directory
+  ( copyFile
+  , createDirectory
+  , doesFileExist
+  , getTemporaryDirectory
+  , removeFile
+  , removePathForcibly
+  )
+import System.Environment (withArgs)
+import System.FilePath ((</>))
+import System.IO (hClose, openTempFile)
 import Test.Hspec
 
-import Topo.Plugin.CivExample (civPlugin)
+import qualified Topo.Plugin.CivExample as CivExample
 import Topo.Plugin.RPC.Manifest
   ( Capability(..)
   , RPCExternalDataSourceCapability(..)
@@ -16,18 +29,18 @@ import Topo.Plugin.RPC.Manifest
   , RPCExternalDataSourceStatus(..)
   , RPCExternalDataSourceDecl(..)
   , RPCExternalDataSourceGrant(..)
-  , RPCManifest(..), RPCManifestRuntime(..), RPCSimulationDecl(..), RPCUIHints(..)
-  , manifestV3, validateManifest
+  , RPCManifest(..), RPCManifestRuntime(..), RPCOverlayDecl(..), RPCSimulationDecl(..), RPCUIHints(..)
+  , manifestV3, parseManifestFile, validateManifest
   )
 import Topo.Plugin.RPC.Protocol (currentProtocolVersion)
-import Topo.Plugin.SDK (generateManifest)
+import Topo.Plugin.SDK (generateManifest, pluginManifestFileName)
 import Topo.Simulation.Schedule (hourlyScheduleDecl)
 
 main :: IO ()
 main = hspec $ do
   describe "topo-plugin-civ-example manifest" $ do
     it "generates a valid manifest v3 from PluginDef" $ do
-      let manifest = generateManifest civPlugin
+      let manifest = generateManifest CivExample.civPlugin
       rmManifestVersion manifest `shouldBe` manifestV3
       rmrProtocolMin (rmRuntime manifest) `shouldBe` currentProtocolVersion
       rmrProtocolMax (rmRuntime manifest) `shouldBe` currentProtocolVersion
@@ -50,7 +63,7 @@ main = hspec $ do
       validateManifest manifest `shouldBe` []
 
     it "preserves backend-neutral external data-source declarations" $ do
-      let manifest = generateManifest civPlugin
+      let manifest = generateManifest CivExample.civPlugin
       case rmExternalDataSources manifest of
         [source] -> do
           redsdName source `shouldBe` "settlement-ledger"
@@ -66,9 +79,45 @@ main = hspec $ do
         _ -> expectationFailure "expected exactly one external data source"
 
     it "round-trips through manifest JSON" $ do
-      let encoded = Aeson.encode (generateManifest civPlugin)
+      let encoded = Aeson.encode (generateManifest CivExample.civPlugin)
       case Aeson.eitherDecode encoded of
         Left err -> expectationFailure err
         Right (decoded :: RPCManifest) -> do
           rmName decoded `shouldBe` "civilization"
           validateManifest decoded `shouldBe` []
+
+    it "packages an install directory with the executable, generated manifest.json, and civilization.toposchema" $
+      withTempDir "topo-plugin-civ-example-install" $ \pluginDir -> do
+        let executablePath = pluginDir </> "civilization"
+        writeFile executablePath "installed executable placeholder"
+        copyFile "civilization.toposchema" (pluginDir </> "civilization.toposchema")
+        withArgs ["--topo-write-manifest", pluginDir] CivExample.main
+        let manifestPath = pluginDir </> pluginManifestFileName
+            schemaPath = pluginDir </> "civilization.toposchema"
+        doesFileExist executablePath `shouldReturn` True
+        doesFileExist manifestPath `shouldReturn` True
+        doesFileExist schemaPath `shouldReturn` True
+        readGeneratedManifest manifestPath $ \manifest -> do
+          rmName manifest `shouldBe` "civilization"
+          doesFileExist (pluginDir </> Text.unpack (rmName manifest)) `shouldReturn` True
+          (Text.unpack . rodSchemaFile <$> rmOverlay manifest) `shouldBe` Just "civilization.toposchema"
+          validateManifest manifest `shouldBe` []
+
+withTempDir :: String -> (FilePath -> IO a) -> IO a
+withTempDir label action = bracket setup cleanup action
+  where
+    setup = do
+      tmp <- getTemporaryDirectory
+      (path, handle) <- openTempFile tmp label
+      hClose handle
+      removeFile path
+      createDirectory path
+      pure path
+    cleanup dir = removePathForcibly dir
+
+readGeneratedManifest :: FilePath -> (RPCManifest -> Expectation) -> Expectation
+readGeneratedManifest path check = do
+  result <- parseManifestFile path
+  case result of
+    Left err -> expectationFailure ("manifest parse failed: " <> show err)
+    Right manifest -> check manifest

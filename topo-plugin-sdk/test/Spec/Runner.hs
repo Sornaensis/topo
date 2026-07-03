@@ -4,7 +4,7 @@
 module Spec.Runner (spec) where
 
 import Control.Concurrent (MVar, forkFinally, newEmptyMVar, putMVar, takeMVar)
-import Control.Exception (finally)
+import Control.Exception (bracket, finally)
 import Data.Aeson (Value(..), (.:), (.=), object)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes (parseMaybe)
@@ -13,7 +13,17 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Word (Word64)
-import System.IO (BufferMode(NoBuffering), Handle, hSetBinaryMode, hSetBuffering)
+import System.Directory
+  ( createDirectory
+  , doesFileExist
+  , getTemporaryDirectory
+  , removeFile
+  , removePathForcibly
+  , withCurrentDirectory
+  )
+import System.Environment (withArgs)
+import System.FilePath ((</>))
+import System.IO (BufferMode(NoBuffering), Handle, hClose, hSetBinaryMode, hSetBuffering, openTempFile)
 import System.Process (createPipe)
 import System.Timeout (timeout)
 import Test.Hspec
@@ -61,7 +71,7 @@ import Topo.Plugin.RPC.Manifest
   , RPCRestartMode(..), RPCStartPolicy(..), RPCUIHints(..)
   , defaultRPCExternalDataSourceStatus
   , defaultRPCStartPolicy, defaultRPCUIHints
-  , manifestV3, validateManifest
+  , manifestV3, parseManifestFile, validateManifest
   )
 import Topo.Plugin.RPC.ExternalDataSource
   ( RPCExternalDataSourceGrantMessage(..)
@@ -77,7 +87,13 @@ import Topo.Plugin.RPC.Transport
   , recvMessage
   , sendMessage
   )
-import Topo.Plugin.SDK.Runner (generateManifest, runPluginSession)
+import Topo.Plugin.SDK.Runner
+  ( generateManifest
+  , pluginManifestFileName
+  , runPluginSession
+  , runPluginWithManifestCommand
+  , writePluginManifestToDirectory
+  )
 import Topo.Plugin.SDK.Types
 import Topo.Simulation.Schedule (SimulationCatchUpPolicy(..), SimulationScheduleDecl(..), hourlyScheduleDecl)
 import Topo.Hex (HexGridMeta(..), defaultHexGridMeta)
@@ -119,6 +135,30 @@ spec = describe "SDK runner pipe integration" $ do
     ruiCategory (rmUiHints manifest) `shouldBe` Just "Generation"
     rmStartPolicy manifest `shouldBe` customPolicy
     validateManifest manifest `shouldBe` []
+
+  it "writes a PluginDef manifest without starting the RPC transport loop" $
+    withTempDir "topo-sdk-manifest-cwd" $ \cwd ->
+      withTempDir "topo-sdk-manifest-install" $ \pluginDir -> do
+        withCurrentDirectory cwd $
+          withArgs ["--topo-write-manifest", pluginDir] $
+            runPluginWithManifestCommand generatorPlugin
+        let manifestPath = pluginDir </> pluginManifestFileName
+            cwdManifestPath = cwd </> pluginManifestFileName
+        doesFileExist manifestPath `shouldReturn` True
+        doesFileExist cwdManifestPath `shouldReturn` False
+        readGeneratedManifest manifestPath $ \manifest -> do
+          rmName manifest `shouldBe` pdName generatorPlugin
+          validateManifest manifest `shouldBe` []
+
+  it "writes manifest.json directly to a plugin install directory" $
+    withTempDir "topo-sdk-manifest-directory" $ \pluginDir -> do
+      manifestPath <- writePluginManifestToDirectory pluginDir simulationPlugin
+      manifestPath `shouldBe` pluginDir </> pluginManifestFileName
+      doesFileExist manifestPath `shouldReturn` True
+      readGeneratedManifest manifestPath $ \manifest -> do
+        rmName manifest `shouldBe` pdName simulationPlugin
+        rmOverlay manifest `shouldSatisfy` maybe False (const True)
+        validateManifest manifest `shouldBe` []
 
   it "infers overlay simulation capabilities without implicit terrain writes" $ do
     let manifest = generateManifest simulationPlugin
@@ -494,6 +534,25 @@ spec = describe "SDK runner pipe integration" $ do
           peMessage pluginErr `shouldBe` "missing"
           expectDataResourceError env RecordNotFound
       shutdownAndWait host done
+
+withTempDir :: String -> (FilePath -> IO a) -> IO a
+withTempDir label action = bracket setup cleanup action
+  where
+    setup = do
+      tmp <- getTemporaryDirectory
+      (path, handle) <- openTempFile tmp label
+      hClose handle
+      removeFile path
+      createDirectory path
+      pure path
+    cleanup dir = removePathForcibly dir
+
+readGeneratedManifest :: FilePath -> (RPCManifest -> Expectation) -> Expectation
+readGeneratedManifest path check = do
+  result <- parseManifestFile path
+  case result of
+    Left err -> expectationFailure ("manifest parse failed: " <> Text.unpack err)
+    Right manifest -> check manifest
 
 withTransportPair :: (Transport -> Transport -> IO a) -> IO a
 withTransportPair action = do

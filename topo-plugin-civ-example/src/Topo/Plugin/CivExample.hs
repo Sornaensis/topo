@@ -449,4 +449,4 @@ loadCivilizationSchema = do
 ------------------------------------------------------------------------
 
 main :: IO ()
-main = runPlugin civPlugin
+main = runPluginWithManifestCommand civPlugin

@@ -5,14 +5,10 @@
 -- | Plugin process runner.
 --
 -- This module provides 'runPlugin', the entry point for a plugin
--- executable.  It:
---
--- 1. Generates a manifest from the 'PluginDef'
--- 2. Writes it to @manifest.json@ in the plugin's working directory
--- 3. Connects to the host-created named pipe (Windows) or Unix socket
--- 4. Enters a message loop that dispatches incoming RPC messages
---    to the appropriate callback
--- 5. Shuts down cleanly when the host sends a @shutdown@ message
+-- executable, plus explicit manifest-writing helpers for install/package
+-- workflows. topo-seer discovers only directories that already contain
+-- @manifest.json@; it does not execute unknown plugin directories to
+-- bootstrap manifests.
 --
 -- === Usage
 --
@@ -20,15 +16,23 @@
 -- import Topo.Plugin.SDK
 --
 -- main :: IO ()
--- main = runPlugin myPluginDef
+-- main = runPluginWithManifestCommand myPluginDef
 -- @
+--
+-- Authors can then run @my-plugin --topo-write-manifest ~/.topo/plugins/my-plugin@
+-- during installation to write @manifest.json@ without starting the RPC
+-- transport loop. Normal host launches fall through to 'runPlugin'.
 module Topo.Plugin.SDK.Runner
   ( -- * Entry point
     runPlugin
+  , runPluginWithManifestCommand
   , runPluginSession
     -- * Manifest generation
+  , pluginManifestFileName
   , generateManifest
   , writeManifest
+  , writePluginManifest
+  , writePluginManifestToDirectory
   ) where
 
 import Control.Exception (SomeException, catch)
@@ -44,8 +48,10 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
 import Data.Word (Word64)
-import System.Directory (getCurrentDirectory)
-import System.FilePath ((</>))
+import System.Directory (createDirectoryIfMissing, getCurrentDirectory)
+import System.Environment (getArgs)
+import System.Exit (exitFailure)
+import System.FilePath ((</>), takeDirectory)
 import System.IO (stderr, stdin, stdout)
 
 import Topo.Plugin.RPC.Manifest
@@ -206,10 +212,33 @@ inferCapabilities pd = concat
       let ops = drsOperations (drdSchema drd)
       in doCreate ops || doUpdate ops || doDelete ops
 
+-- | Standard manifest filename used by topo-seer discovery.
+pluginManifestFileName :: FilePath
+pluginManifestFileName = "manifest.json"
+
 -- | Write the manifest JSON to a file.
 writeManifest :: FilePath -> RPCManifest -> IO ()
 writeManifest path manifest =
   BL.writeFile path (Aeson.encode manifest)
+
+-- | Generate and write a plugin manifest without opening any RPC transport.
+--
+-- Use this from packaging or install steps when you want a concrete
+-- @manifest.json@ from a 'PluginDef'. The parent directory is created when
+-- needed.
+writePluginManifest :: FilePath -> PluginDef -> IO ()
+writePluginManifest path pd = do
+  createDirectoryIfMissing True (takeDirectory path)
+  writeManifest path (generateManifest pd)
+
+-- | Generate @manifest.json@ in a plugin install directory without opening any
+-- RPC transport. Returns the written manifest path.
+writePluginManifestToDirectory :: FilePath -> PluginDef -> IO FilePath
+writePluginManifestToDirectory pluginDir pd = do
+  createDirectoryIfMissing True pluginDir
+  let manifestPath = pluginDir </> pluginManifestFileName
+  writePluginManifest manifestPath pd
+  pure manifestPath
 
 ------------------------------------------------------------------------
 -- Entry point
@@ -217,13 +246,15 @@ writeManifest path manifest =
 
 -- | Run a plugin.
 --
--- This is the standard entry point for a plugin executable.
--- It generates and writes a manifest, connects to the host-created
--- production endpoint advertised in the TOPO_PLUGIN_* environment,
--- then enters the length-prefixed RPC message loop. If no endpoint
--- environment is present, stdin/stdout compatibility is available only
--- when @TOPO_PLUGIN_STDIO_COMPAT=1@ is explicitly set for a test or
--- development harness.
+-- This is the standard host-launched entry point for a plugin executable.
+-- It refreshes @manifest.json@ in the plugin working directory, connects to the
+-- host-created production endpoint advertised in the TOPO_PLUGIN_* environment,
+-- then enters the length-prefixed RPC message loop. If no endpoint environment
+-- is present, stdin/stdout compatibility is available only when
+-- @TOPO_PLUGIN_STDIO_COMPAT=1@ is explicitly set for a test or development
+-- harness. Do not rely on this startup write for discovery; use
+-- 'runPluginWithManifestCommand' or 'writePluginManifestToDirectory' during
+-- install/package steps so @manifest.json@ exists before topo-seer scans.
 --
 -- The message loop dispatches:
 --
@@ -239,11 +270,9 @@ writeManifest path manifest =
 -- @
 runPlugin :: PluginDef -> IO ()
 runPlugin pd = do
-  -- Write manifest
+  -- Refresh manifest for already-discovered, host-launched plugins.
   cwd <- getCurrentDirectory
-  let manifest = generateManifest pd
-      manifestPath = cwd </> "manifest.json"
-  writeManifest manifestPath manifest
+  _ <- writePluginManifestToDirectory cwd pd
 
   -- Connect via the host-created endpoint; stdio requires explicit
   -- test/development compatibility opt-in.
@@ -260,6 +289,34 @@ runPlugin pd = do
             ]
       runPluginSession pd transport defaultParams
       closeTransport transport
+
+-- | Entry point wrapper that supports an explicit manifest-only install action.
+--
+-- Supported commands:
+--
+-- * @--topo-write-manifest@ writes @manifest.json@ in the current directory.
+-- * @--topo-write-manifest DIR@ writes @DIR/manifest.json@.
+-- * @--topo-write-manifest-file PATH@ writes an explicit manifest file path.
+--
+-- Any other argument list runs the normal RPC plugin entry point. The manifest
+-- commands return after writing and never connect to the RPC transport.
+runPluginWithManifestCommand :: PluginDef -> IO ()
+runPluginWithManifestCommand pd = do
+  args <- getArgs
+  case args of
+    ["--topo-write-manifest"] -> do
+      _ <- writePluginManifestToDirectory "." pd
+      pure ()
+    ["--topo-write-manifest", pluginDir] -> do
+      _ <- writePluginManifestToDirectory pluginDir pd
+      pure ()
+    ["--topo-write-manifest-file", manifestPath] ->
+      writePluginManifest manifestPath pd
+    flag:_
+      | flag == "--topo-write-manifest" || flag == "--topo-write-manifest-file" -> do
+          TextIO.hPutStrLn stderr "Usage: plugin [--topo-write-manifest [DIR] | --topo-write-manifest-file PATH]"
+          exitFailure
+    _ -> runPlugin pd
 
 -- | Run the SDK dispatch loop on an already-connected transport.
 --

@@ -54,6 +54,13 @@ spec = describe "Plugin and pipeline contract docs" $ do
           ]
     missing `shouldBe` []
 
+  it "documents safe manifest packaging before plugin discovery" $ do
+    docs <- mconcat <$> traverse readDoc manifestPackagingDocs
+    docs `shouldSatisfy` Text.isInfixOf "stack install` only copies the executable"
+    docs `shouldSatisfy` Text.isInfixOf "--topo-write-manifest"
+    docs `shouldSatisfy` Text.isInfixOf "will not execute unmanifested"
+    docs `shouldSatisfy` Text.isInfixOf "Non-Haskell plugins can hand-write"
+
   it "documents every manifest v3 top-level schema field in the public manifest ref" $ do
     doc <- readDoc "docs/plugin-dev/manifest.md"
     fields <- manifestSchemaPropertyNames manifestV3Schema
@@ -72,6 +79,14 @@ rpcProtocolDocs :: [FilePath]
 rpcProtocolDocs =
   [ "docs/plugin-dev/rpc-protocol.md"
   , "docs/internal/plugin-internals/protocol.md"
+  ]
+
+manifestPackagingDocs :: [FilePath]
+manifestPackagingDocs =
+  [ "docs/plugins.md"
+  , "docs/plugin-dev/getting-started.md"
+  , "docs/plugin-dev/manifest.md"
+  , "docs/plugin-dev/index.md"
   ]
 
 backendNeutralDocs :: [FilePath]
