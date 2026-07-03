@@ -29,6 +29,7 @@ import Data.Time (UTCTime, getCurrentTime)
 import Actor.PluginManager.Config (loadPluginConfig)
 import Actor.PluginManager.Types
   ( LoadedPlugin(..)
+  , PluginLifecycleSnapshot(..)
   , PluginLifecycleState(..)
   , PluginStatus(..)
   , manifestLifecycleResources
@@ -65,7 +66,7 @@ pluginsBaseDir = do
       home <- getHomeDirectory
       pure (home </> ".topo" </> "plugins")
 
--- | Scan the plugins directory for subdirectories with manifest.json.
+-- | Scan the plugins directory for plugin subdirectories and diagnostics.
 scanPluginDirs :: FilePath -> IO [LoadedPlugin]
 scanPluginDirs baseDir = do
   exists <- doesDirectoryExist baseDir
@@ -74,7 +75,20 @@ scanPluginDirs baseDir = do
     else do
       entries <- listDirectory baseDir
       plugins <- mapM (tryLoadPlugin baseDir) entries
-      pure (concat plugins)
+      pure (dedupeDiscoveredPlugins (concat plugins))
+
+dedupeDiscoveredPlugins :: [LoadedPlugin] -> [LoadedPlugin]
+dedupeDiscoveredPlugins plugins =
+  Map.elems $ Map.fromListWith preferDiscoveredPlugin
+    [(lpName plugin, plugin) | plugin <- plugins]
+
+preferDiscoveredPlugin :: LoadedPlugin -> LoadedPlugin -> LoadedPlugin
+preferDiscoveredPlugin new old
+  | isMissingManifestDiagnostic new && not (isMissingManifestDiagnostic old) = old
+  | otherwise = new
+
+isMissingManifestDiagnostic :: LoadedPlugin -> Bool
+isMissingManifestDiagnostic plugin = plsErrorCode (lpLifecycle plugin) == Just "manifest_missing"
 
 -- | Try to load a single plugin from a subdirectory.
 tryLoadPlugin :: FilePath -> String -> IO [LoadedPlugin]
@@ -84,8 +98,8 @@ tryLoadPlugin baseDir entry = do
       fallbackName = Text.pack entry
   isDir <- doesDirectoryExist pluginDir
   hasManifest <- doesFileExist manifestPath
-  if isDir && hasManifest
-    then do
+  case (isDir, hasManifest) of
+    (True, True) -> do
       loadResult <- loadManifestForHost pluginDir fallbackName
       now <- getCurrentTime
       case loadResult of
@@ -107,35 +121,42 @@ tryLoadPlugin baseDir entry = do
             , lpDirectory  = pluginDir
             , lpOverlaySchema = overlaySchema
             }]
-    else pure []
+    (True, False) -> do
+      now <- getCurrentTime
+      pure [loadedPluginFromFailure now pluginDir (missingManifestFailure fallbackName)]
+    (False, _) -> pure []
 
 -- | Parse, validate, and load schema files for a plugin manifest before the
 -- supervisor is allowed to launch the runtime process.
 loadManifestForHost :: FilePath -> Text -> IO (Either ManifestLoadFailure (RPCManifest, Maybe OverlaySchema))
 loadManifestForHost pluginDir fallbackName = do
   let manifestPath = pluginDir </> "manifest.json"
-  result <- try @SomeException (parseManifestFile manifestPath)
-  case result of
-    Left err -> pure $ Left $ manifestFailure fallbackName Nothing
-      "manifest_read_failed"
-      ("manifest.json could not be read: " <> Text.pack (show err))
-    Right (Left parseErr) -> pure $ Left $ manifestFailure fallbackName Nothing
-      "manifest_parse_failed"
-      ("manifest.json could not be parsed as manifest v3: " <> parseErr
-        <> ". Check required fields manifestVersion, name, version, runtime.protocol.min, and runtime.protocol.max.")
-    Right (Right manifest) -> do
-      let validationErrors = RPCManifest.validateManifest manifest
-      if not (null validationErrors)
-        then pure $ Left $ manifestFailure fallbackName (Just manifest)
-          "manifest_validation_failed"
-          ("manifest v3 validation failed: " <> RPCManifest.renderManifestErrors validationErrors)
-        else do
-          schemaResult <- loadOverlaySchemaStrict pluginDir manifest
-          case schemaResult of
-            Left schemaErr -> pure $ Left $ manifestFailure fallbackName (Just manifest)
-              "manifest_schema_failed"
-              schemaErr
-            Right overlaySchema -> pure (Right (manifest, overlaySchema))
+  hasManifest <- doesFileExist manifestPath
+  if not hasManifest
+    then pure $ Left $ missingManifestFailure fallbackName
+    else do
+      result <- try @SomeException (parseManifestFile manifestPath)
+      case result of
+        Left err -> pure $ Left $ manifestFailure fallbackName Nothing
+          "manifest_read_failed"
+          ("manifest.json could not be read: " <> Text.pack (show err))
+        Right (Left parseErr) -> pure $ Left $ manifestFailure fallbackName Nothing
+          "manifest_parse_failed"
+          ("manifest.json could not be parsed as manifest v3: " <> parseErr
+            <> ". Check required fields manifestVersion, name, version, runtime.protocol.min, and runtime.protocol.max.")
+        Right (Right manifest) -> do
+          let validationErrors = RPCManifest.validateManifest manifest
+          if not (null validationErrors)
+            then pure $ Left $ manifestFailure fallbackName (Just manifest)
+              "manifest_validation_failed"
+              ("manifest v3 validation failed: " <> RPCManifest.renderManifestErrors validationErrors)
+            else do
+              schemaResult <- loadOverlaySchemaStrict pluginDir manifest
+              case schemaResult of
+                Left schemaErr -> pure $ Left $ manifestFailure fallbackName (Just manifest)
+                  "manifest_schema_failed"
+                  schemaErr
+                Right overlaySchema -> pure (Right (manifest, overlaySchema))
 
 loadOverlaySchema :: FilePath -> RPCManifest -> IO (Maybe OverlaySchema)
 loadOverlaySchema pluginDir manifest = do
@@ -179,6 +200,14 @@ loadedPluginFromFailure now pluginDir failure =
     , lpDirectory  = pluginDir
     , lpOverlaySchema = Nothing
     }
+
+missingManifestFailure :: Text -> ManifestLoadFailure
+missingManifestFailure fallbackName = manifestFailure fallbackName Nothing
+  "manifest_missing"
+  ( "manifest.json is missing from the plugin directory; generate or package "
+      <> "manifest.json before discovery. topo-seer will not launch unmanifested "
+      <> "plugin directories."
+  )
 
 manifestFailure :: Text -> Maybe RPCManifest -> Text -> Text -> ManifestLoadFailure
 manifestFailure fallbackName mManifest code message = ManifestLoadFailure

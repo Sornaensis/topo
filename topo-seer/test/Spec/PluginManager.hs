@@ -441,6 +441,37 @@ spec = describe "PluginManager" $ do
         pluginLifecycleStates pluginName loaded `shouldSatisfy` elem LifecycleDegraded
         pluginLifecycleErrorCodes pluginName loaded `shouldSatisfy` elem (Just "manifest_parse_failed")
 
+  it "surfaces missing manifest diagnostics without launching unmanifested directories" $ do
+    let pluginName = "copilot-test-plugin-missing-manifest"
+    withUnmanifestedExecutablePluginDir pluginName "counted-early-exit" $ do
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses pluginName loaded `shouldSatisfy` anyPluginErrorContaining "manifest.json is missing"
+        pluginLifecycleStates pluginName loaded `shouldSatisfy` elem LifecycleDegraded
+        pluginLifecycleErrorCodes pluginName loaded `shouldSatisfy` elem (Just "manifest_missing")
+        length (pluginProcessHandles pluginName loaded) `shouldBe` 0
+        countAfterDiscover <- readFixtureCount pluginName "counted-early-exit"
+        countAfterDiscover `shouldBe` 0
+        refreshManifests pluginManagerHandle
+        refreshed <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses pluginName refreshed `shouldSatisfy` anyPluginErrorContaining "manifest.json is missing"
+        pluginLifecycleErrorCodes pluginName refreshed `shouldSatisfy` elem (Just "manifest_missing")
+        length (pluginProcessHandles pluginName refreshed) `shouldBe` 0
+        countAfterRefresh <- readFixtureCount pluginName "counted-early-exit"
+        countAfterRefresh `shouldBe` 0
+
+  it "prefers manifest-present plugins over missing-manifest fallback name collisions" $ do
+    let pluginName = "copilot-test-plugin-collision"
+        manifestDirName = pluginName <> "-manifested"
+    withMissingManifestNameCollision pluginName manifestDirName $ do
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses pluginName loaded `shouldBe` [PluginIdle]
+        pluginLifecycleStates pluginName loaded `shouldBe` [LifecycleDiscovered]
+        pluginLifecycleErrorCodes pluginName loaded `shouldBe` [Nothing]
+
   it "blocks startup when manifest runtime protocol bounds exclude the host" $ do
     let pluginName = "copilot-test-plugin-invalid-protocol"
     withExecutablePluginDir pluginName (invalidProtocolManifestFor pluginName) "ok" $ do
@@ -1248,6 +1279,37 @@ withExecutablePluginDir pluginName manifestJSON fixtureMode action =
       pure pluginDir
 
     teardown = removePathForciblyEventually
+
+withUnmanifestedExecutablePluginDir :: String -> String -> IO a -> IO a
+withUnmanifestedExecutablePluginDir pluginName fixtureMode action =
+  withIsolatedPluginHome pluginName $
+    bracket setup teardown (const action)
+  where
+    setup = do
+      baseDir <- currentPluginBaseDir
+      let pluginDir = baseDir </> pluginName
+      resetPluginDir pluginDir
+      writePluginWrapper pluginDir pluginName fixtureMode
+      pure pluginDir
+
+    teardown = removePathForciblyEventually
+
+withMissingManifestNameCollision :: String -> String -> IO a -> IO a
+withMissingManifestNameCollision missingDirName manifestDirName action =
+  withIsolatedPluginHome missingDirName $
+    bracket setup teardown (const action)
+  where
+    setup = do
+      baseDir <- currentPluginBaseDir
+      let missingDir = baseDir </> missingDirName
+          manifestDir = baseDir </> manifestDirName
+      resetPluginDir missingDir
+      writePluginWrapper missingDir missingDirName "counted-early-exit"
+      resetPluginDir manifestDir
+      BS.writeFile (manifestDir </> "manifest.json") (manifestFor missingDirName)
+      pure [missingDir, manifestDir]
+
+    teardown = mapM_ removePathForciblyEventually
 
 withExecutablePluginDirs :: [(String, BS.ByteString, String)] -> IO a -> IO a
 withExecutablePluginDirs pluginSpecs action =

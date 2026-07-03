@@ -130,6 +130,9 @@ step. Non-Haskell plugins can hand-write/package manifest v3 JSON directly.
 
 Topo-seer does **not** execute unmanifested plugin directories to bootstrap
 manifests; automatic host scanning only reads existing `manifest.json` files.
+A subdirectory missing `manifest.json` is surfaced as a degraded
+`manifest_missing` diagnostic using the directory name so users know to
+generate or package the manifest.
 
 ## Architecture
 
