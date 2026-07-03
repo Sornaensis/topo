@@ -66,7 +66,14 @@ import Topo.Overlay.Schema
   , OverlayStorage(..)
   )
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice)
-import Topo.Simulation (SimContext(..), SimNode(..), SimNodeId(..), hourlyScheduleDecl)
+import Topo.Simulation
+  ( SimContext(..)
+  , SimNode(..)
+  , SimNodeId(..)
+  , SimulationCatchUpPolicy(..)
+  , SimulationScheduleState(..)
+  , hourlyScheduleDecl
+  )
 import Topo.Weather (weatherChunkToOverlay, weatherOverlaySchema)
 import Topo.World (TerrainWorld(..))
 
@@ -102,14 +109,17 @@ firstWeatherTemp chunks = do
     else Just (wcTemp weatherChunk U.! 0)
 
 seedWeatherOverlay :: IntMap.IntMap WeatherChunk -> Overlay
-seedWeatherOverlay weatherChunks = Overlay
+seedWeatherOverlay = seedWeatherOverlayWithSchedule Nothing
+
+seedWeatherOverlayWithSchedule :: Maybe SimulationScheduleState -> IntMap.IntMap WeatherChunk -> Overlay
+seedWeatherOverlayWithSchedule schedule weatherChunks = Overlay
   { ovSchema = weatherOverlaySchema
   , ovData = DenseData (IntMap.map weatherChunkToOverlay weatherChunks)
   , ovProvenance = OverlayProvenance
       { opSeed = 0
       , opVersion = 1
       , opSource = Text.pack "simulation-spec"
-      , opSchedule = Nothing
+      , opSchedule = schedule
       }
   }
 
@@ -140,6 +150,14 @@ withSeedWeather world (ChunkId chunkId) climate =
     }
   where
     weatherOverlay = seedWeatherOverlay (IntMap.singleton chunkId (mkSeedWeatherChunk climate))
+
+withSeedWeatherSchedule :: SimulationScheduleState -> TerrainWorld -> ChunkId -> ClimateChunk -> TerrainWorld
+withSeedWeatherSchedule schedule world (ChunkId chunkId) climate =
+  world
+    { twOverlays = insertOverlay weatherOverlay (twOverlays world)
+    }
+  where
+    weatherOverlay = seedWeatherOverlayWithSchedule (Just schedule) (IntMap.singleton chunkId (mkSeedWeatherChunk climate))
 
 pluginOverlayName :: Text
 pluginOverlayName = Text.pack "plugin-sim"
@@ -455,6 +473,61 @@ spec = describe "Simulation actor" $ do
     version4 <- readSnapshotVersion snapshotVersionRef
     version4 `shouldSatisfy` (> version3)
 
+  it "publishes manual time-only ticks when every node is skipped" $ withSystem $ \system -> do
+    simHandle <- get @Simulation system
+    dataHandle <- get @Data system
+    logHandle <- get @Log system
+    uiHandle <- get @Ui system
+    dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
+    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
+    snapshotVersionRef <- newSnapshotVersionRef
+    atlasHandle <- get @AtlasManager system
+
+    setSimHandles simHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasHandle
+
+    let config = WorldConfig { wcChunkSize = 8 }
+        chunk = generateTerrainChunk config (const 0.5)
+        climate0 = emptyClimateChunk config
+        tileCount = U.length (ccTempAvg climate0)
+        climate = climate0
+          { ccTempAvg = U.replicate tileCount 0.55
+          , ccPrecipAvg = U.replicate tileCount 0.45
+          , ccWindDirAvg = U.replicate tileCount 0.3
+          , ccWindSpdAvg = U.replicate tileCount 0.25
+          , ccHumidityAvg = U.replicate tileCount 0.4
+          }
+        delayedSchedule = SimulationScheduleState
+          { schedIntervalTicks = 10
+          , schedPhaseTicks = 0
+          , schedLastFireTick = Nothing
+          , schedNextFireTick = 10
+          , schedCatchUpPolicy = RunOnceIfDue
+          }
+        world0 = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice
+        world1 = withSeedWeatherSchedule delayedSchedule
+          (setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) chunk world0))
+          (ChunkId 0)
+          climate
+
+    replaceTerrainData dataHandle world1
+    terrainSnap0 <- getTerrainSnapshot dataHandle
+    version0 <- readSnapshotVersion snapshotVersionRef
+    setSimWorld simHandle world1
+    requestSimTick simHandle 1
+
+    tickAdvanced <- awaitTrue 500 $ do
+      uiSnap <- getUiSnapshot uiHandle
+      pure (uiSimTickCount uiSnap >= 1)
+    tickAdvanced `shouldBe` True
+
+    version1 <- readSnapshotVersion snapshotVersionRef
+    version1 `shouldSatisfy` (> version0)
+    terrainSnap1 <- getTerrainSnapshot dataHandle
+    tsWeatherVersion terrainSnap1 `shouldBe` tsWeatherVersion terrainSnap0
+    dagSnapshot <- getSimDagSnapshot simHandle
+    sdsLastTick dagSnapshot `shouldBe` 1
+    map sdnsStatus (sdsNodes dagSnapshot) `shouldSatisfy` elem (Text.pack "skipped")
+
   it "keeps control calls responsive and folds only the latest queued tick while a worker runs" $ withSystem $ \system -> do
     simHandle <- get @Simulation system
     dataHandle <- get @Data system
@@ -522,7 +595,7 @@ spec = describe "Simulation actor" $ do
     tickAdvanced `shouldBe` True
 
     runCount <- readIORef runCountRef
-    runCount `shouldBe` 2
+    runCount `shouldBe` 5
 
   it "executes plugin simulation nodes with builtin weather on manual ticks" $ withSystem $ \system -> do
     simHandle <- get @Simulation system
@@ -588,9 +661,9 @@ spec = describe "Simulation actor" $ do
         sdnsScheduleIntervalTicks node `shouldBe` Just 1
         sdnsSchedulePhaseTicks node `shouldBe` Just 0
         sdnsScheduleCatchUp node `shouldBe` Just (Text.pack "run_once_if_due")
-        sdnsScheduleLastFireTick node `shouldBe` Nothing
-        sdnsScheduleNextFireTick node `shouldBe` Just 1
-        sdnsScheduleDue node `shouldBe` Just True
+        sdnsScheduleLastFireTick node `shouldBe` Just 1
+        sdnsScheduleNextFireTick node `shouldBe` Just 2
+        sdnsScheduleDue node `shouldBe` Just False
       _ -> expectationFailure "Expected one weather node in simulation DAG"
     let pluginNodes = filter ((== Just pluginOverlayName) . sdnsPlugin) (sdsNodes dagSnapshot)
     case pluginNodes of

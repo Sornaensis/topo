@@ -44,6 +44,7 @@ handleGetSimState ctx reqId _params = do
   dag <- getSimDagSnapshot (ahSimulationHandle handles)
   pure $ okResponse reqId $ object
     [ "auto_tick"  .= uiSimAutoTick ui
+      -- Compatibility field: normalized wall-clock auto rate, not hours per tick.
     , "tick_rate"  .= uiSimTickRate ui
     , "tick_count" .= uiSimTickCount ui
     , "dag_available" .= sdsAvailable dag

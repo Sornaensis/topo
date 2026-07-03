@@ -7,13 +7,11 @@
 {-# LANGUAGE TypeFamilies #-}
 
 -- | Simulation actor: holds the generated 'TerrainWorld' and drives
--- the overlay simulation DAG ('tickSimulation') in response to tick
--- requests from the UI.
+-- the hourly simulation tick pipeline in response to tick requests from the UI.
 --
--- After terrain generation, the Terrain actor sends the full world
--- here via 'setSimWorld'.  Each tick request runs one step of the
--- simulation DAG, applies 'TerrainWrites', advances 'WorldTime',
--- and pushes the updated chunk data to the Data actor.
+-- After terrain generation, the Terrain actor sends the full world here via
+-- 'setSimWorld'.  Each background worker runs one or more one-hour pipeline
+-- steps, then publishes the final world/overlay state to the Data actor.
 module Actor.Simulation
   ( Simulation
   , simulationActorDef
@@ -93,21 +91,21 @@ import Seer.Render.ZoomStage (ZoomStage(..), allZoomStages)
 import Topo.Calendar
   ( CalendarConfig
   , WorldTime(..)
-  , advanceTicks
   , mkCalendarConfig
-  , tickToDate
   )
 import Topo.Weather (WeatherConfig, defaultWeatherConfig, weatherSimNode)
 import Topo.Simulation
   ( SimNode(..)
   , SimProgress(..)
-  , SimulationScheduleState(..)
   , SimStatus(..)
   , SimNodeId(..)
+  , SimulationScheduleState(..)
   , TerrainWrites(..)
-  , applyTerrainWrites
+  , emptyTerrainWrites
+  , mergeTerrainWrites
   , ensureWorldOverlaySchedules
   , catchUpPolicyText
+  , normalizeScheduleState
   , scheduleDue
   , simNodeDependencies
   , simNodeId
@@ -116,7 +114,11 @@ import Topo.Simulation
 import Topo.Simulation.DAG
   ( SimDAG(..)
   , buildSimDAG
-  , tickSimulation
+  )
+import Topo.Simulation.Pipeline
+  ( SimulationTickNodeStatus(..)
+  , SimulationTickPipelineResult(..)
+  , runSimulationTickPipeline
   )
 import Topo (ChunkId(..), getWeatherFromOverlay)
 import Topo.World (TerrainWorld(..))
@@ -214,10 +216,14 @@ data SimulationTickWork = SimulationTickWork
   , stwWorldEpoch :: !Word64
   , stwWorld :: !TerrainWorld
   , stwDAG :: !SimDAG
-  , stwCalCfg :: !CalendarConfig
   , stwHandles :: !SimHandles
   , stwNodeStatuses :: !(Map.Map Text (Text, Maybe Text))
   , stwCompletion :: !SimulationTickCompletion
+  }
+
+data SimulationTickSuccess = SimulationTickSuccess
+  { stsWorld :: !TerrainWorld
+  , stsTerrainWrites :: !TerrainWrites
   }
 
 data SimulationTickResult = SimulationTickResult
@@ -232,7 +238,7 @@ data SimulationTickResult = SimulationTickResult
   , strElapsedMs :: !Double
   , strNodeStatuses :: !(Map.Map Text (Text, Maybe Text))
   , strProgressLogs :: ![SimulationTickLogEntry]
-  , strResult :: !(Either Text (OverlayStore, TerrainWrites))
+  , strResult :: !(Either Text SimulationTickSuccess)
   , strCompletion :: !SimulationTickCompletion
   }
 
@@ -554,7 +560,7 @@ nodeSnapshot maybeWorld lastTick statuses metadata node = SimulationDagNodeSnaps
     scheduleState = do
       world <- maybeWorld
       overlay <- lookupOverlay (simNodeOverlayName node) (twOverlays world)
-      opSchedule (ovProvenance overlay)
+      normalizeScheduleState <$> opSchedule (ovProvenance overlay)
 
 readyNodeStatuses :: [SimNode] -> Map.Map Text (Text, Maybe Text)
 readyNodeStatuses nodes = Map.fromList
@@ -698,15 +704,17 @@ simProgressCb
   -> IO ()
 simProgressCb handles statusesRef tickLogsRef tickValue prog = do
   let SimNodeId nid = simpNodeId prog
-      (status, detail) = case simpStatus prog of
-        SimStarted    -> ("running", Nothing)
-        SimCompleted  -> ("completed", Nothing)
-        SimFailed e   -> ("failed", Just e)
-        SimSkipped e  -> ("skipped", Just e)
+      (status, detail) = simStatusSnapshot (simpStatus prog)
       msg = "sim: node " <> nid <> " " <> maybe status ((status <> ": ") <>) detail
   modifyIORef' statusesRef (Map.insert nid (status, detail))
   modifyIORef' tickLogsRef (<> [SimulationTickLogEntry tickValue (Just nid) status msg Nothing])
   appendLog (shLogHandle handles) (LogEntry LogDebug msg)
+
+simStatusSnapshot :: SimStatus -> (Text, Maybe Text)
+simStatusSnapshot SimStarted = ("running", Nothing)
+simStatusSnapshot SimCompleted = ("completed", Nothing)
+simStatusSnapshot (SimFailed err) = ("failed", Just err)
+simStatusSnapshot (SimSkipped reason) = ("skipped", Just reason)
 
 isReadyForTick :: SimState -> Bool
 isReadyForTick st =
@@ -785,7 +793,7 @@ startTickWorker
   -> CalendarConfig
   -> SimHandles
   -> IO SimState
-startTickWorker sink completion expectedEpoch requestedTick st world dag calCfg handles = do
+startTickWorker sink completion expectedEpoch requestedTick st world dag _calCfg handles = do
   done <- newEmptyMVar
   let dt
         | requestedTick > ssLastTick st = requestedTick - ssLastTick st
@@ -801,7 +809,6 @@ startTickWorker sink completion expectedEpoch requestedTick st world dag calCfg 
         , stwWorldEpoch = ssWorldEpoch st
         , stwWorld = world
         , stwDAG = dag
-        , stwCalCfg = calCfg
         , stwHandles = handles
         , stwNodeStatuses = ssNodeStatuses st
         , stwCompletion = completion
@@ -828,16 +835,12 @@ startTickWorker sink completion expectedEpoch requestedTick st world dag calCfg 
 runSimulationTickWorker :: TickResultSink -> SimulationTickWork -> IO ()
 runSimulationTickWorker sink work = do
   let world = stwWorld work
-      wt = twWorldTime world
-      calDate = tickToDate (stwCalCfg work) wt
-      store = twOverlays world
       handles = stwHandles work
   statusesRef <- newIORef (stwNodeStatuses work)
   tickLogsRef <- newIORef []
   tStart <- getMonotonicTimeNSec
-  runResult <- try $ tickSimulation (stwDAG work)
-    (simProgressCb handles statusesRef tickLogsRef (stwAppliedTick work))
-    world store calDate wt (stwDeltaTicks work)
+  runResult <- try $
+    runHourlyPipelineSteps handles statusesRef tickLogsRef (stwDAG work) (stwDeltaTicks work) world
   tEnd <- getMonotonicTimeNSec
   let elapsedMs = fromIntegral (tEnd - tStart) / (1e6 :: Double)
       tickResult = case runResult of
@@ -860,6 +863,48 @@ runSimulationTickWorker sink work = do
     , strResult = tickResult
     , strCompletion = stwCompletion work
     }
+
+runHourlyPipelineSteps
+  :: SimHandles
+  -> IORef (Map.Map Text (Text, Maybe Text))
+  -> IORef [SimulationTickLogEntry]
+  -> SimDAG
+  -> Word64
+  -> TerrainWorld
+  -> IO (Either Text SimulationTickSuccess)
+runHourlyPipelineSteps handles statusesRef tickLogsRef dag totalSteps world0 =
+  go totalSteps world0 emptyTerrainWrites
+  where
+    go 0 world terrainWrites = pure $ Right SimulationTickSuccess
+      { stsWorld = world
+      , stsTerrainWrites = terrainWrites
+      }
+    go remaining world terrainWrites = do
+      let targetTick = wtTick (twWorldTime world) + 1
+      tickResult <- runSimulationTickPipeline
+        world
+        dag
+        (simProgressCb handles statusesRef tickLogsRef targetTick)
+        (Just targetTick)
+      case tickResult of
+        Left err -> pure (Left err)
+        Right pipelineResult -> do
+          recordPipelineNodeStatuses statusesRef (stprNodeStatuses pipelineResult)
+          go
+            (remaining - 1)
+            (stprWorld pipelineResult)
+            (mergeTerrainWrites terrainWrites (stprTerrainWrites pipelineResult))
+
+recordPipelineNodeStatuses
+  :: IORef (Map.Map Text (Text, Maybe Text))
+  -> [SimulationTickNodeStatus]
+  -> IO ()
+recordPipelineNodeStatuses statusesRef nodeStatuses =
+  modifyIORef' statusesRef $ \statuses -> foldr applyStatus statuses nodeStatuses
+  where
+    applyStatus nodeStatus statuses =
+      let SimNodeId nid = stnsNodeId nodeStatus
+      in Map.insert nid (simStatusSnapshot (stnsStatus nodeStatus)) statuses
 
 integrateTickResult :: SimulationTickResult -> SimState -> IO SimState
 integrateTickResult result st =
@@ -888,23 +933,21 @@ integrateFreshTickResult result st
                 }
           completeTickRequest (strCompletion result) (AutoTickFailed err)
           maybeProcessPendingTick st'
-        Right (newStore, terrainWrites) -> do
+        Right success -> do
           let baseWorld = strBaseWorld result
-              wt = twWorldTime baseWorld
-              world' = applyTerrainWrites terrainWrites baseWorld
-              world'' = world'
-                { twOverlays = newStore
-                , twWorldTime = advanceTicks (strDeltaTicks result) wt
-                }
+              world' = stsWorld success
+              newStore = twOverlays world'
+              terrainWrites = stsTerrainWrites success
+              appliedTick = wtTick (twWorldTime world')
               handles = case ssHandles st of
                 Just h -> h
                 Nothing -> strHandles result
-              chunkSize = wcChunkSize (twConfig world'')
+              chunkSize = wcChunkSize (twConfig world')
               terrainChanged = not (IntMap.null (twrTerrain terrainWrites))
               climateChanged = not (IntMap.null (twrClimate terrainWrites))
               vegetationChanged = not (IntMap.null (twrVegetation terrainWrites))
               weatherChunksBefore = getWeatherFromOverlay baseWorld
-              weatherChunksAfter = getWeatherFromOverlay world''
+              weatherChunksAfter = getWeatherFromOverlay world'
               weatherChanged = weatherChunksBefore /= weatherChunksAfter
               overlayChanged = newStore /= twOverlays baseWorld
               overlayNamesChanged = overlayNames newStore /= overlayNames (twOverlays baseWorld)
@@ -921,7 +964,7 @@ integrateFreshTickResult result st
             setOverlayStoreData (shDataHandle handles) newStore
           when overlayNamesChanged $
             setUiOverlayNames (shUiHandle handles) (overlayNames newStore)
-          setUiSimTickCount (shUiHandle handles) (strAppliedTick result)
+          setUiSimTickCount (shUiHandle handles) appliedTick
           terrainSnapMaybe <- if dataChanged
             then Just <$> getTerrainSnapshot (shDataHandle handles)
             else pure Nothing
@@ -952,17 +995,17 @@ integrateFreshTickResult result st
                         }
                   mapM_ (enqueueAtlasBuild (shAtlasHandle handles) . mkJob) allZoomStages
             _ -> pure ()
-          let completeMsg = "simulation: tick " <> Text.pack (show (strAppliedTick result))
+          let completeMsg = "simulation: tick " <> Text.pack (show appliedTick)
                 <> " completed in " <> Text.pack (show (round (strElapsedMs result) :: Int)) <> "ms"
-              completeLog = SimulationTickLogEntry (strAppliedTick result) Nothing "completed" completeMsg (Just (strElapsedMs result))
+              completeLog = SimulationTickLogEntry appliedTick Nothing "completed" completeMsg (Just (strElapsedMs result))
               st' = stPublished
-                { ssWorld = Just world''
-                , ssLastTick = strAppliedTick result
+                { ssWorld = Just world'
+                , ssLastTick = appliedTick
                 , ssNodeStatuses = strNodeStatuses result
                 , ssTickLogs = boundedTickLogs (ssTickLogs stPublished <> strProgressLogs result <> [completeLog])
                 }
           appendLog (shLogHandle handles) (LogEntry LogInfo completeMsg)
-          completeTickRequest (strCompletion result) (AutoTickApplied (strAppliedTick result))
+          completeTickRequest (strCompletion result) (AutoTickApplied appliedTick)
           maybeProcessPendingTick st'
 
 chunkList :: IntMap.IntMap a -> [(ChunkId, a)]
