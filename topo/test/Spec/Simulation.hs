@@ -36,6 +36,7 @@ import Topo.Persistence.WorldBundle
   )
 import Topo.Simulation
 import Topo.Simulation.DAG
+import Topo.Simulation.Pipeline
 import Topo.Weather
   ( defaultWeatherConfig, weatherSimNode, weatherOverlaySchema
   , weatherChunkToOverlay, overlayToWeatherChunk, weatherFieldCount
@@ -108,6 +109,12 @@ mkStore :: [Text] -> OverlayStore
 mkStore names = foldr (\n s -> insertOverlay (emptyOverlay (testSchema n)) s)
                       emptyOverlayStore names
 
+-- | Attach a persisted simulation schedule to a test overlay.
+withSchedule :: SimulationScheduleState -> Overlay -> Overlay
+withSchedule sched ov = ov
+  { ovProvenance = (ovProvenance ov) { opSchedule = Just sched }
+  }
+
 -- | Default calendar date for testing.
 testCalDate :: CalendarDate
 testCalDate = CalendarDate { cdYear = 0, cdDayOfYear = 0, cdHourOfDay = 0.0 }
@@ -127,6 +134,7 @@ spec = describe "Simulation" $ do
   executionOrderSpec
   terrainWriteSpec
   failureSpec
+  pipelineSpec
   overlayIsolationSpec
   weatherSimNodeSpec
 
@@ -411,6 +419,203 @@ failureSpec = describe "failure handling" $ do
       (first:_) -> simpStatus first `shouldBe` SimStarted
       []        -> expectationFailure "expected progress events"
     simpStatus (last events) `shouldBe` SimCompleted
+
+-- =========================================================================
+-- Hourly tick pipeline
+-- =========================================================================
+
+pipelineSpec :: Spec
+pipelineSpec = describe "hourly simulation tick pipeline" $ do
+
+  it "advances one tick and passes the target hour to due nodes" $ do
+    seenRef <- newIORef Nothing
+    let node = SimNodeReader
+          { snrId = SimNodeId "clocked"
+          , snrOverlayName = "clocked"
+          , snrDependencies = []
+          , snrSchedule = hourlyScheduleDecl
+          , snrReadTick = \ctx ov -> do
+              writeIORef seenRef $ Just
+                ( wtTick (scWorldTime ctx)
+                , scDeltaTicks ctx
+                , cdHourOfDay (scCalendar ctx)
+                )
+              pure (Right ov)
+          }
+        Right dag = buildSimDAG [node]
+    terrain <- mkTestTerrain
+    let world0 = terrain { twOverlays = mkStore ["clocked"] }
+    result <- runSimulationTickPipeline world0 dag noProgress Nothing
+    case result of
+      Left err -> expectationFailure (T.unpack err)
+      Right tickResult -> do
+        stprAppliedTick tickResult `shouldBe` 1
+        wtTick (twWorldTime (stprWorld tickResult)) `shouldBe` 1
+        readIORef seenRef >>= (`shouldBe` Just (1, 1, 1.0))
+        case lookupOverlay "clocked" (stprOverlayStore tickResult) of
+          Nothing -> expectationFailure "clocked overlay missing"
+          Just ov -> case opSchedule (ovProvenance ov) of
+            Nothing -> expectationFailure "clocked schedule missing"
+            Just sched -> do
+              schedLastFireTick sched `shouldBe` Just 1
+              schedNextFireTick sched `shouldBe` 2
+
+  it "skips non-due nodes and leaves their schedule unchanged" $ do
+    executedRef <- newIORef ([] :: [Text])
+    progressRef <- newIORef ([] :: [SimProgress])
+    let progressCb p = modifyIORef' progressRef (++ [p])
+        slowSchedule = SimulationScheduleState
+          { schedIntervalTicks = 10
+          , schedPhaseTicks = 0
+          , schedLastFireTick = Nothing
+          , schedNextFireTick = 10
+          , schedCatchUpPolicy = RunOnceIfDue
+          }
+        slowNode = (recordingReader executedRef "slow" [])
+          { snrSchedule = hourlyScheduleDecl { schedDeclIntervalTicks = 10 }
+          }
+        slowOverlay = withSchedule slowSchedule (emptyOverlay (testSchema "slow"))
+        Right dag = buildSimDAG [slowNode]
+    terrain <- mkTestTerrain
+    let world0 = terrain { twOverlays = insertOverlay slowOverlay emptyOverlayStore }
+    result <- runSimulationTickPipeline world0 dag progressCb Nothing
+    case result of
+      Left err -> expectationFailure (T.unpack err)
+      Right tickResult -> do
+        readIORef executedRef >>= (`shouldBe` [])
+        wtTick (twWorldTime (stprWorld tickResult)) `shouldBe` 1
+        case lookupOverlay "slow" (stprOverlayStore tickResult) of
+          Nothing -> expectationFailure "slow overlay missing"
+          Just ov -> opSchedule (ovProvenance ov) `shouldBe` Just slowSchedule
+        stnsStatus <$> stprNodeStatuses tickResult
+          `shouldBe` [SimSkipped "not due until tick 10"]
+        events <- readIORef progressRef
+        events `shouldSatisfy` any (\p ->
+          simpNodeId p == SimNodeId "slow"
+            && case simpStatus p of
+                 SimSkipped _ -> True
+                 _            -> False)
+
+  it "lets due dependents observe dependency overlays from the same target hour" $ do
+    seenSourceRef <- newIORef Nothing
+    let weatherNode = SimNodeReader
+          { snrId = SimNodeId "weather"
+          , snrOverlayName = "weather"
+          , snrDependencies = []
+          , snrSchedule = hourlyScheduleDecl
+          , snrReadTick = \_ctx ov -> pure $ Right ov
+              { ovProvenance = (ovProvenance ov) { opSource = "target-hour" }
+              }
+          }
+        consumerNode = SimNodeReader
+          { snrId = SimNodeId "consumer"
+          , snrOverlayName = "consumer"
+          , snrDependencies = [SimNodeId "weather"]
+          , snrSchedule = hourlyScheduleDecl
+          , snrReadTick = \ctx ov -> do
+              writeIORef seenSourceRef $
+                opSource . ovProvenance <$> Map.lookup "weather" (scOverlays ctx)
+              pure (Right ov)
+          }
+        Right dag = buildSimDAG [weatherNode, consumerNode]
+    terrain <- mkTestTerrain
+    let world0 = terrain { twOverlays = mkStore ["weather", "consumer"] }
+    result <- runSimulationTickPipeline world0 dag noProgress Nothing
+    case result of
+      Left err -> expectationFailure (T.unpack err)
+      Right _ -> readIORef seenSourceRef >>= (`shouldBe` Just "target-hour")
+
+  it "lets due nodes read persisted overlays for skipped dependencies" $ do
+    skippedRanRef <- newIORef False
+    seenSourceRef <- newIORef Nothing
+    let slowSchedule = SimulationScheduleState
+          { schedIntervalTicks = 10
+          , schedPhaseTicks = 0
+          , schedLastFireTick = Nothing
+          , schedNextFireTick = 10
+          , schedCatchUpPolicy = RunOnceIfDue
+          }
+        slowNode = SimNodeReader
+          { snrId = SimNodeId "slow-weather"
+          , snrOverlayName = "slow-weather"
+          , snrDependencies = []
+          , snrSchedule = hourlyScheduleDecl { schedDeclIntervalTicks = 10 }
+          , snrReadTick = \_ctx ov -> do
+              writeIORef skippedRanRef True
+              pure $ Right ov
+                { ovProvenance = (ovProvenance ov) { opSource = "new" }
+                }
+          }
+        consumerNode = SimNodeReader
+          { snrId = SimNodeId "consumer"
+          , snrOverlayName = "consumer"
+          , snrDependencies = [SimNodeId "slow-weather"]
+          , snrSchedule = hourlyScheduleDecl
+          , snrReadTick = \ctx ov -> do
+              writeIORef seenSourceRef $
+                opSource . ovProvenance <$> Map.lookup "slow-weather" (scOverlays ctx)
+              pure (Right ov)
+          }
+        Right dag = buildSimDAG [slowNode, consumerNode]
+        baseSlowOverlay = withSchedule slowSchedule (emptyOverlay (testSchema "slow-weather"))
+        slowOverlay = baseSlowOverlay
+          { ovProvenance = (ovProvenance baseSlowOverlay) { opSource = "persisted" }
+          }
+        store0 = insertOverlay slowOverlay (mkStore ["consumer"])
+    terrain <- mkTestTerrain
+    let world0 = terrain { twOverlays = store0 }
+    result <- runSimulationTickPipeline world0 dag noProgress Nothing
+    case result of
+      Left err -> expectationFailure (T.unpack err)
+      Right _ -> do
+        readIORef skippedRanRef >>= (`shouldBe` False)
+        readIORef seenSourceRef >>= (`shouldBe` Just "persisted")
+
+  it "applies terrain writes to the returned world while reporting them" $ do
+    terrain <- mkTestTerrain
+    let config = twConfig terrain
+        n = chunkTileCount config
+        changedChunk = (emptyTerrainChunk config)
+          { tcElevation = U.replicate n 0.75
+          }
+        writerNode = SimNodeWriter
+          { snwId = SimNodeId "erosion"
+          , snwOverlayName = "erosion"
+          , snwDependencies = []
+          , snwSchedule = hourlyScheduleDecl
+          , snwWriteTick = \_ctx ov -> pure $ Right
+              ( ov
+              , emptyTerrainWrites
+                  { twrTerrain = IntMap.singleton 0 changedChunk }
+              )
+          }
+        Right dag = buildSimDAG [writerNode]
+        world0 = terrain { twOverlays = mkStore ["erosion"] }
+    result <- runSimulationTickPipeline world0 dag noProgress Nothing
+    case result of
+      Left err -> expectationFailure (T.unpack err)
+      Right tickResult -> do
+        IntMap.lookup 0 (twrTerrain (stprTerrainWrites tickResult))
+          `shouldBe` Just changedChunk
+        getTerrainChunk (ChunkId 0) (stprWorld tickResult)
+          `shouldBe` Just changedChunk
+
+  it "returns failures without advancing the input world or schedule cursor" $ do
+    let schedule0 = initialScheduleAt 0 hourlyScheduleDecl
+        overlay0 = withSchedule schedule0 (emptyOverlay (testSchema "weather"))
+        store0 = insertOverlay overlay0 emptyOverlayStore
+        nodes = [ failingReader "weather broke" "weather" [] ]
+        Right dag = buildSimDAG nodes
+    terrain <- mkTestTerrain
+    let world0 = terrain { twOverlays = store0 }
+    result <- runSimulationTickPipeline world0 dag noProgress Nothing
+    case result of
+      Left err -> err `shouldBe` "weather broke"
+      Right _ -> expectationFailure "Expected pipeline failure"
+    wtTick (twWorldTime world0) `shouldBe` 0
+    case lookupOverlay "weather" (twOverlays world0) of
+      Nothing -> expectationFailure "weather overlay missing"
+      Just ov -> opSchedule (ovProvenance ov) `shouldBe` Just schedule0
 
 -- ---------------------------------------------------------------------------
 -- Utilities

@@ -11,7 +11,7 @@ import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import Spec.Support.FloatApprox (approxEqAbs)
 import Topo
-import Topo.Calendar (WorldTime(..), advanceTicks, mkCalendarConfig, tickToDate)
+import Topo.Calendar (WorldTime(..))
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice, PlanetConfig(..), WorldSlice(..))
 import Topo.Weather (cloudFraction, seasonalITCZLatitude,
                      weatherOverlaySchema, overlayToWeatherChunk, weatherFieldCount,
@@ -885,15 +885,10 @@ runWeatherTick weatherCfg world =
   case buildSimDAG [weatherSimNode weatherCfg] of
     Left err -> expectationFailure (show err) >> pure world
     Right dag -> do
-      let calDate = tickToDate (mkCalendarConfig (twPlanet world)) (twWorldTime world)
-      result <- tickSimulation dag (\_ -> pure ()) world (twOverlays world) calDate (twWorldTime world) 1
+      result <- runSimulationTickPipeline world dag (\_ -> pure ()) Nothing
       case result of
         Left err -> expectationFailure (show err) >> pure world
-        Right (overlays', _writes) ->
-          pure world
-            { twOverlays = overlays'
-            , twWorldTime = advanceTicks 1 (twWorldTime world)
-            }
+        Right tickResult -> pure (stprWorld tickResult)
 
 initWeatherAndTick :: WeatherConfig -> TerrainWorld -> IO TerrainWorld
 initWeatherAndTick weatherCfg world0 = do

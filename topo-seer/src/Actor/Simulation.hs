@@ -699,9 +699,10 @@ simProgressCb
 simProgressCb handles statusesRef tickLogsRef tickValue prog = do
   let SimNodeId nid = simpNodeId prog
       (status, detail) = case simpStatus prog of
-        SimStarted   -> ("running", Nothing)
-        SimCompleted -> ("completed", Nothing)
-        SimFailed e  -> ("failed", Just e)
+        SimStarted    -> ("running", Nothing)
+        SimCompleted  -> ("completed", Nothing)
+        SimFailed e   -> ("failed", Just e)
+        SimSkipped e  -> ("skipped", Just e)
       msg = "sim: node " <> nid <> " " <> maybe status ((status <> ": ") <>) detail
   modifyIORef' statusesRef (Map.insert nid (status, detail))
   modifyIORef' tickLogsRef (<> [SimulationTickLogEntry tickValue (Just nid) status msg Nothing])

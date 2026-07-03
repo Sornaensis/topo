@@ -236,4 +236,5 @@ data SimStatus
   = SimStarted
   | SimCompleted
   | SimFailed !Text
+  | SimSkipped !Text
   deriving (Eq, Show)

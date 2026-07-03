@@ -23,6 +23,7 @@ module Topo
   , module Topo.Overlay.Storage
   , module Topo.Simulation
   , module Topo.Simulation.DAG
+  , module Topo.Simulation.Pipeline
   , module Topo.BaseHeight
   , module Topo.Gen
   , module Topo.Tectonics
@@ -73,6 +74,7 @@ import Topo.Overlay.JSON
 import Topo.Overlay.Storage
 import Topo.Simulation
 import Topo.Simulation.DAG
+import Topo.Simulation.Pipeline
 import Topo.BaseHeight
 import Topo.Gen
 import Topo.Tectonics

@@ -93,6 +93,7 @@ library:
     - Topo.Simulation
     - Topo.Simulation.Schedule
     - Topo.Simulation.DAG
+    - Topo.Simulation.Pipeline
     - Topo.Plugin.DataResource
     - Topo.Plugin.DataResource.Validation
     - Topo.Plugin.Dependency
