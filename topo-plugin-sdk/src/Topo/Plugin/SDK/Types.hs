@@ -58,6 +58,7 @@ import Topo.Plugin.RPC.DataService
   ( DataQuery, DataRecord, DataMutation
   , QueryResult, MutateResult
   )
+import Topo.Simulation.Schedule (SimulationScheduleDecl)
 import Topo.World (TerrainWorld)
 
 ------------------------------------------------------------------------
@@ -123,7 +124,9 @@ data GeneratorDef = GeneratorDef
 -- after the world has been generated.
 data SimulationDef = SimulationDef
   { sdDependencies :: ![Text]
-    -- ^ Overlay names that must tick before this node.
+    -- ^ Simulation node IDs that must tick before this node.
+  , sdSchedule :: !(Maybe SimulationScheduleDecl)
+    -- ^ Optional static cadence declaration. 'Nothing' emits the hourly default.
   , sdTick         :: PluginContext -> IO (Either Text SimulationTickResult)
     -- ^ Simulation tick implementation.
   }

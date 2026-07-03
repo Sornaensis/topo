@@ -105,10 +105,15 @@ should request only what the plugin needs.
 }
 ```
 
-`simulation` declares simulation DAG dependencies by overlay or node name:
+`simulation` declares simulation DAG dependencies by simulation node ID plus an optional tick cadence. Missing schedule fields default to hourly (`interval_ticks: 1`, `phase_ticks: 0`, `catch_up: "run_once_if_due"`). `interval_ticks` must be at least `1`, `phase_ticks` must be non-negative and less than `interval_ticks`, and `catch_up` must be one of the documented enum values:
 
 ```json
-"simulation": { "dependencies": ["weather"] }
+"simulation": {
+  "dependencies": ["weather"],
+  "interval_ticks": 1,
+  "phase_ticks": 0,
+  "catch_up": "run_once_if_due"
+}
 ```
 
 `overlay.schemaFile` points to the plugin-owned `.toposchema` file relative to

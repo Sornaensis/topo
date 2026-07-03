@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 -- | Pure simulation schedule declarations and durable per-overlay state.
 --
 -- A schedule declaration is the static cadence a node asks for.  A schedule
@@ -14,14 +16,19 @@ module Topo.Simulation.Schedule
   , hourlyScheduleDecl
   , normalizeScheduleDecl
   , normalizeScheduleState
+  , validateScheduleDecl
+  , scheduleDeclError
   , initialScheduleAt
   , scheduleDue
   , markScheduleFired
   , ensureNextFireAfter
+  , catchUpPolicyText
   , catchUpPolicyTag
   , catchUpPolicyFromTag
   ) where
 
+import Data.Text (Text)
+import qualified Data.Text as Text
 import Data.Word (Word64, Word8)
 
 -- | Policy for handling ticks missed while a world was paused or unloaded.
@@ -83,6 +90,30 @@ normalizeScheduleDecl decl =
     , schedDeclPhaseTicks = schedDeclPhaseTicks decl `mod` interval
     }
 
+-- | Validate a node declaration before it is admitted to an executable DAG.
+--
+-- Normalization remains useful for persisted cursors and migration repair, but
+-- schedulable nodes must declare a real positive interval and an in-range phase
+-- so impossible cadences surface as host diagnostics instead of being silently
+-- coerced.
+validateScheduleDecl :: SimulationScheduleDecl -> Either Text ()
+validateScheduleDecl decl =
+  case scheduleDeclError decl of
+    Nothing -> Right ()
+    Just err -> Left err
+
+scheduleDeclError :: SimulationScheduleDecl -> Maybe Text
+scheduleDeclError decl
+  | schedDeclIntervalTicks decl < 1 =
+      Just "interval_ticks must be greater than or equal to 1"
+  | schedDeclPhaseTicks decl >= schedDeclIntervalTicks decl =
+      Just ("phase_ticks must be less than interval_ticks (phase="
+        <> Text.pack (show (schedDeclPhaseTicks decl))
+        <> ", interval="
+        <> Text.pack (show (schedDeclIntervalTicks decl))
+        <> ")")
+  | otherwise = Nothing
+
 -- | Normalize a persisted state for use by pure scheduling helpers.
 normalizeScheduleState :: SimulationScheduleState -> SimulationScheduleState
 normalizeScheduleState state =
@@ -136,6 +167,11 @@ ensureNextFireAfter targetTick state0 =
              (schedIntervalTicks state)
              (schedPhaseTicks state)
          }
+
+-- | Stable manifest/API text for a catch-up policy.
+catchUpPolicyText :: SimulationCatchUpPolicy -> Text
+catchUpPolicyText RunOnceIfDue = "run_once_if_due"
+catchUpPolicyText SkipMissed = "skip_missed"
 
 -- | Stable binary tag for a catch-up policy.
 catchUpPolicyTag :: SimulationCatchUpPolicy -> Word8

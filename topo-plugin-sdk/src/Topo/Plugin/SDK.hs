@@ -58,6 +58,10 @@ module Topo.Plugin.SDK
   , SimulationDef(..)
   , SimulationTickResult(..)
   , defaultSimulationTickResult
+  , SimulationCatchUpPolicy(..)
+  , SimulationScheduleDecl(..)
+  , defaultScheduleDecl
+  , hourlyScheduleDecl
     -- * Context
   , PluginContext(..)
     -- * Data resource schemas
@@ -190,4 +194,10 @@ import Topo.Plugin.RPC.ExternalDataSource
   , RPCExternalDataSourceStatusRequest(..)
   , RPCExternalDataSourceStatusEntry(..)
   , RPCExternalDataSourceStatusReport(..)
+  )
+import Topo.Simulation.Schedule
+  ( SimulationCatchUpPolicy(..)
+  , SimulationScheduleDecl(..)
+  , defaultScheduleDecl
+  , hourlyScheduleDecl
   )

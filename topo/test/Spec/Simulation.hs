@@ -65,7 +65,7 @@ noopReader name deps = SimNodeReader
   { snrId           = SimNodeId name
   , snrOverlayName  = name
   , snrDependencies = deps
-  , snrSchedule     = Nothing
+  , snrSchedule     = hourlyScheduleDecl
   , snrReadTick     = \_ctx ov -> pure (Right ov)
   }
 
@@ -75,7 +75,7 @@ recordingReader ref name deps = SimNodeReader
   { snrId           = SimNodeId name
   , snrOverlayName  = name
   , snrDependencies = deps
-  , snrSchedule     = Nothing
+  , snrSchedule     = hourlyScheduleDecl
   , snrReadTick     = \_ctx ov -> do
       modifyIORef' ref (++ [name])
       pure (Right ov)
@@ -87,7 +87,7 @@ recordingWriter ref name deps = SimNodeWriter
   { snwId           = SimNodeId name
   , snwOverlayName  = name
   , snwDependencies = deps
-  , snwSchedule     = Nothing
+  , snwSchedule     = hourlyScheduleDecl
   , snwWriteTick    = \_ctx ov -> do
       modifyIORef' ref (++ [name])
       pure (Right (ov, emptyTerrainWrites))
@@ -99,7 +99,7 @@ failingReader errMsg name deps = SimNodeReader
   { snrId           = SimNodeId name
   , snrOverlayName  = name
   , snrDependencies = deps
-  , snrSchedule     = Nothing
+  , snrSchedule     = hourlyScheduleDecl
   , snrReadTick     = \_ctx _ov -> pure (Left errMsg)
   }
 
@@ -203,6 +203,19 @@ dagConstructionSpec = describe "DAG construction" $ do
                 [ noopReader "civilization" [SimNodeId "nonexistent"]
                 ]
     isLeft dag `shouldBe` True
+
+  it "rejects invalid schedule declarations" $ do
+    let invalidInterval = (noopReader "bad-interval" [])
+          { snrSchedule = hourlyScheduleDecl { schedDeclIntervalTicks = 0 }
+          }
+        invalidPhase = (noopReader "bad-phase" [])
+          { snrSchedule = hourlyScheduleDecl
+              { schedDeclIntervalTicks = 3
+              , schedDeclPhaseTicks = 3
+              }
+          }
+    isLeft (buildSimDAG [invalidInterval]) `shouldBe` True
+    isLeft (buildSimDAG [invalidPhase]) `shouldBe` True
 
 -- =========================================================================
 -- Cycle detection
@@ -459,7 +472,7 @@ overlayIsolationSpec = describe "SimContext overlay isolation" $ do
           { snrId           = SimNodeId "inspector"
           , snrOverlayName  = "inspector"
           , snrDependencies = []
-          , snrSchedule     = Nothing
+          , snrSchedule     = hourlyScheduleDecl
           , snrReadTick     = \ctx ov -> do
               -- scTerrain should have empty overlays (stripped by DAG)
               writeIORef leakRef (overlayCount (twOverlays (scTerrain ctx)))
@@ -483,7 +496,7 @@ overlayIsolationSpec = describe "SimContext overlay isolation" $ do
           { snwId           = SimNodeId "w-inspector"
           , snwOverlayName  = "w-inspector"
           , snwDependencies = []
-          , snwSchedule     = Nothing
+          , snwSchedule     = hourlyScheduleDecl
           , snwWriteTick    = \ctx ov -> do
               writeIORef leakRef (overlayCount (twOverlays (scTerrain ctx)))
               pure (Right (ov, emptyTerrainWrites))
@@ -1012,3 +1025,7 @@ tickSpec = describe "weather tick" $ do
   it "weatherSimNode has no overlay dependencies" $ do
     let node = weatherSimNode defaultWeatherConfig
     simNodeDependencies node `shouldBe` []
+
+  it "weatherSimNode declares hourly schedule" $ do
+    let node = weatherSimNode defaultWeatherConfig
+    simNodeSchedule node `shouldBe` hourlyScheduleDecl

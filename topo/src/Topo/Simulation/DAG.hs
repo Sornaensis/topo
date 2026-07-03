@@ -35,15 +35,15 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Word (Word64)
 
-import Topo.Calendar (CalendarDate)
-import Topo.Overlay (Overlay(..), OverlayStore(..), emptyOverlayStore, lookupOverlay, insertOverlay)
+import Topo.Calendar (CalendarDate, WorldTime)
+import Topo.Overlay (Overlay, OverlayStore(..), emptyOverlayStore, lookupOverlay, insertOverlay)
 import Topo.Simulation
   ( SimNode(..), SimNodeId(..)
   , SimContext(..), SimProgress(..), SimStatus(..)
   , TerrainWrites(..), emptyTerrainWrites, mergeTerrainWrites, applyTerrainWrites
-  , simNodeId, simNodeOverlayName, simNodeDependencies
+  , simNodeId, simNodeOverlayName, simNodeDependencies, simNodeSchedule
+  , validateScheduleDecl
   )
-import Topo.Calendar (WorldTime)
 import Topo.World (TerrainWorld(..))
 
 -- ---------------------------------------------------------------------------
@@ -85,6 +85,17 @@ buildSimDAG nodes = do
   if Set.size idSet /= length ids
     then Left "Duplicate SimNodeId detected"
     else pure ()
+
+  -- Validate schedule declarations before admitting nodes to the executable DAG.
+  let invalidSchedules =
+        [ (simNodeId n, err)
+        | n <- nodes
+        , Left err <- [validateScheduleDecl (simNodeSchedule n)]
+        ]
+  case invalidSchedules of
+    ((nid, err):_) ->
+      Left $ "Node " <> unSimNodeId nid <> " has invalid schedule: " <> err
+    [] -> pure ()
 
   -- Build name → node map
   let nodeMap = Map.fromList [(simNodeId n, n) | n <- nodes]

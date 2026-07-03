@@ -120,6 +120,7 @@ civPlugin = defaultPluginDef
 
   , pdSimulation = Just SimulationDef
       { sdDependencies = ["weather"]
+      , sdSchedule     = Just hourlyScheduleDecl
       , sdTick         = runCivSimTick
       }
   }

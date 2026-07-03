@@ -107,6 +107,7 @@ import Topo.Simulation
   , TerrainWrites(..)
   , applyTerrainWrites
   , ensureWorldOverlaySchedules
+  , catchUpPolicyText
   , scheduleDue
   , simNodeDependencies
   , simNodeId
@@ -159,6 +160,7 @@ data SimulationDagNodeSnapshot = SimulationDagNodeSnapshot
   , sdnsStatusDetail :: !(Maybe Text)
   , sdnsScheduleIntervalTicks :: !(Maybe Word64)
   , sdnsSchedulePhaseTicks :: !(Maybe Word64)
+  , sdnsScheduleCatchUp :: !(Maybe Text)
   , sdnsScheduleLastFireTick :: !(Maybe Word64)
   , sdnsScheduleNextFireTick :: !(Maybe Word64)
   , sdnsScheduleDue :: !(Maybe Bool)
@@ -540,6 +542,7 @@ nodeSnapshot maybeWorld lastTick statuses metadata node = SimulationDagNodeSnaps
   , sdnsStatusDetail = detail
   , sdnsScheduleIntervalTicks = schedIntervalTicks <$> scheduleState
   , sdnsSchedulePhaseTicks = schedPhaseTicks <$> scheduleState
+  , sdnsScheduleCatchUp = catchUpPolicyText . schedCatchUpPolicy <$> scheduleState
   , sdnsScheduleLastFireTick = scheduleState >>= schedLastFireTick
   , sdnsScheduleNextFireTick = schedNextFireTick <$> scheduleState
   , sdnsScheduleDue = scheduleDue lastTick <$> scheduleState
@@ -634,8 +637,7 @@ bindWorld world pluginBindings st = do
       bindings = builtinBindings <> pluginBindings
       nodes = map snbNode bindings
       nodeMetadata = bindingMetadata bindings
-      scheduledWorld = ensureWorldOverlaySchedules nodes world
-      worldTick = wtTick (twWorldTime scheduledWorld)
+      worldTick = wtTick (twWorldTime world)
   case ssHandles st of
     Just handles -> setUiSimTickCount (shUiHandle handles) worldTick
     Nothing -> pure ()
@@ -643,7 +645,7 @@ bindWorld world pluginBindings st = do
   case buildSimDAG nodes of
     Left err -> do
       logMsg st ("simulation: failed to build DAG: " <> err)
-      let st' = st { ssWorld = Just scheduledWorld
+      let st' = st { ssWorld = Just world
                    , ssDAG = Nothing
                    , ssCalCfg = Just calCfg
                    , ssLastTick = worldTick
@@ -655,6 +657,7 @@ bindWorld world pluginBindings st = do
                    }
       if drainPending then maybeProcessPendingTick st' else pure st' { ssPendingTick = Nothing }
     Right dag -> do
+      let scheduledWorld = ensureWorldOverlaySchedules nodes world
       logMsg st ("simulation: setWorld accepted"
         <> " tick=" <> Text.pack (show worldTick)
         <> " terrainChunks=" <> Text.pack (show (IntMap.size (twTerrain world)))

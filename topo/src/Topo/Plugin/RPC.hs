@@ -846,12 +846,13 @@ rpcSimNode conn =
       deps     = case rmSimulation manifest of
         Just sd -> map SimNodeId (rsdDependencies sd)
         Nothing -> []
+      schedule = maybe defaultScheduleDecl rsdSchedule (rmSimulation manifest)
   in if manifestWritesTerrain manifest
     then SimNodeWriter
       { snwId           = nodeId
       , snwOverlayName  = name
       , snwDependencies = deps
-      , snwSchedule     = Just defaultScheduleDecl
+      , snwSchedule     = schedule
       , snwWriteTick    = \ctx overlay -> do
           if not (sppRequireWriteOverlay policy)
             then pure (Left "manifest missing writeOverlay capability")
@@ -872,7 +873,7 @@ rpcSimNode conn =
       { snrId           = nodeId
       , snrOverlayName  = name
       , snrDependencies = deps
-      , snrSchedule     = Just defaultScheduleDecl
+      , snrSchedule     = schedule
       , snrReadTick     = \ctx overlay -> do
           if not (sppRequireWriteOverlay policy)
             then pure (Left "manifest missing writeOverlay capability")

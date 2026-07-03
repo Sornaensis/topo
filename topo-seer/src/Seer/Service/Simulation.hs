@@ -75,6 +75,12 @@ data SimulationDagNodeSummary = SimulationDagNodeSummary
   , simulationDagNodeWritesTerrain :: !Bool
   , simulationDagNodeStatus :: !Text
   , simulationDagNodeStatusDetail :: !(Maybe Text)
+  , simulationDagNodeIntervalTicks :: !(Maybe Word64)
+  , simulationDagNodePhaseTicks :: !(Maybe Word64)
+  , simulationDagNodeCatchUp :: !(Maybe Text)
+  , simulationDagNodeLastFireTick :: !(Maybe Word64)
+  , simulationDagNodeNextFireTick :: !(Maybe Word64)
+  , simulationDagNodeDue :: !(Maybe Bool)
   } deriving (Eq, Show)
 
 data SimulationTickLogEntrySummary = SimulationTickLogEntrySummary

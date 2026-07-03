@@ -21,7 +21,7 @@
 --   "runtime": { "protocol": { "min": 3, "max": 3 } },
 --   "description": "Civilization simulation overlay",
 --   "generator": { "insertAfter": "biomes", "requires": ["biomes","rivers"] },
---   "simulation": { "dependencies": ["weather"] },
+--   "simulation": { "dependencies": ["weather"], "interval_ticks": 1, "phase_ticks": 0, "catch_up": "run_once_if_due" },
 --   "overlay": { "schemaFile": "civilization.toposchema" },
 --   "capabilities": ["readTerrain","readOverlay","writeOverlay","log"],
 --   "config": { "parameters": [...] },
@@ -99,6 +99,7 @@ import qualified Data.ByteString.Lazy as BL
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Word (Word64)
 import GHC.Generics (Generic)
 import Topo.Plugin (Capability(..))
 import Topo.Plugin.DataResource
@@ -108,6 +109,13 @@ import Topo.Plugin.DataResource
   , validateDataResource
   )
 import Topo.Plugin.RPC.Protocol (currentProtocolVersion)
+import Topo.Simulation.Schedule
+  ( SimulationCatchUpPolicy(..)
+  , SimulationScheduleDecl(..)
+  , catchUpPolicyText
+  , defaultScheduleDecl
+  , scheduleDeclError
+  )
 
 ------------------------------------------------------------------------
 -- Capability
@@ -232,18 +240,35 @@ instance ToJSON RPCGeneratorDecl where
 -- | Simulation DAG participation.
 data RPCSimulationDecl = RPCSimulationDecl
   { rsdDependencies :: ![Text]
-    -- ^ Overlay names that must tick before this plugin's sim node.
+    -- ^ Simulation node IDs that must tick before this plugin's sim node.
+  , rsdSchedule :: !SimulationScheduleDecl
+    -- ^ Static cadence declaration for this plugin's sim node.
   } deriving (Eq, Show, Generic)
 
 instance FromJSON RPCSimulationDecl where
-  parseJSON = withObject "RPCSimulationDecl" $ \o ->
-    RPCSimulationDecl
-      <$> (o .:? "dependencies" >>= pure . maybe [] id)
+  parseJSON = withObject "RPCSimulationDecl" $ \o -> do
+    dependencies <- o .:? "dependencies" >>= pure . maybe [] id
+    interval <- optionalScheduleField o ["interval_ticks", "intervalTicks"] (schedDeclIntervalTicks defaultScheduleDecl)
+    phase <- optionalScheduleField o ["phase_ticks", "phaseTicks"] (schedDeclPhaseTicks defaultScheduleDecl)
+    catchUp <- optionalScheduleCatchUp o ["catch_up", "catchUp"] (schedDeclCatchUpPolicy defaultScheduleDecl)
+    pure RPCSimulationDecl
+      { rsdDependencies = dependencies
+      , rsdSchedule = SimulationScheduleDecl
+          { schedDeclIntervalTicks = interval
+          , schedDeclPhaseTicks = phase
+          , schedDeclCatchUpPolicy = catchUp
+          }
+      }
 
 instance ToJSON RPCSimulationDecl where
   toJSON rsd = object
     [ "dependencies" .= rsdDependencies rsd
+    , "interval_ticks" .= schedDeclIntervalTicks schedule
+    , "phase_ticks" .= schedDeclPhaseTicks schedule
+    , "catch_up" .= catchUpPolicyText (schedDeclCatchUpPolicy schedule)
     ]
+    where
+      schedule = rsdSchedule rsd
 
 ------------------------------------------------------------------------
 -- Overlay declaration
@@ -368,6 +393,29 @@ optionalNonNullListField o aliases =
     Nothing -> pure []
     Just (alias, Null) -> fail (Text.unpack alias <> " must not be null")
     Just (_, value) -> parseJSON value
+
+optionalScheduleField :: Aeson.Object -> [Text] -> Word64 -> Parser Word64
+optionalScheduleField o aliases fallback =
+  case lookupAliasedField o aliases of
+    Nothing -> pure fallback
+    Just (alias, Null) -> fail (Text.unpack alias <> " must not be null")
+    Just (_, value) -> parseJSON value
+
+optionalScheduleCatchUp :: Aeson.Object -> [Text] -> SimulationCatchUpPolicy -> Parser SimulationCatchUpPolicy
+optionalScheduleCatchUp o aliases fallback =
+  case lookupAliasedField o aliases of
+    Nothing -> pure fallback
+    Just (alias, Null) -> fail (Text.unpack alias <> " must not be null")
+    Just (_, value) -> parseJSON value >>= parseCatchUpPolicyText
+
+parseCatchUpPolicyText :: Text -> Parser SimulationCatchUpPolicy
+parseCatchUpPolicyText raw =
+  case Text.replace "-" "_" (Text.toLower raw) of
+    "run_once_if_due" -> pure RunOnceIfDue
+    "runonceifdue" -> pure RunOnceIfDue
+    "skip_missed" -> pure SkipMissed
+    "skipmissed" -> pure SkipMissed
+    normalized -> fail ("unknown simulation catch_up policy: " <> Text.unpack normalized)
 
 lookupAliasedField :: Aeson.Object -> [Text] -> Maybe (Text, Value)
 lookupAliasedField o aliases =
@@ -1094,6 +1142,9 @@ manifestV3Schema = object
           [ "type" .= ("object" :: Text)
           , "properties" .= object
               [ "dependencies" .= arrayOf stringSchema
+              , "interval_ticks" .= integerMinimumSchema 1
+              , "phase_ticks" .= integerMinimumSchema 0
+              , "catch_up" .= enumSchema ["run_once_if_due", "skip_missed"]
               ]
           ]
       , "overlay" .= object
@@ -1307,6 +1358,9 @@ manifestV3ProviderExample = object
       ]
   , "simulation" .= object
       [ "dependencies" .= (["weather"] :: [Text])
+      , "interval_ticks" .= (1 :: Int)
+      , "phase_ticks" .= (0 :: Int)
+      , "catch_up" .= ("run_once_if_due" :: Text)
       ]
   , "overlay" .= object
       [ "schemaFile" .= ("civilization.toposchema" :: Text)
@@ -1511,6 +1565,12 @@ stringSchema = object ["type" .= ("string" :: Text)]
 
 integerSchema :: Value
 integerSchema = object ["type" .= ("integer" :: Text)]
+
+integerMinimumSchema :: Int -> Value
+integerMinimumSchema minimumValue = object
+  [ "type" .= ("integer" :: Text)
+  , "minimum" .= minimumValue
+  ]
 
 booleanSchema :: Value
 booleanSchema = object ["type" .= ("boolean" :: Text)]
@@ -1762,6 +1822,13 @@ validateSimulation (Just sim) = concat
     | any Text.null (rsdDependencies sim)
     ]
   , duplicateErrors "simulation.dependencies" (rsdDependencies sim)
+  , validateSimulationSchedule (rsdSchedule sim)
+  ]
+
+validateSimulationSchedule :: SimulationScheduleDecl -> [ManifestError]
+validateSimulationSchedule schedule =
+  [ ManifestInvalidField "simulation.schedule" err
+  | Just err <- [scheduleDeclError schedule]
   ]
 
 validateOverlay :: Maybe RPCOverlayDecl -> [ManifestError]

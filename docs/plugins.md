@@ -234,7 +234,8 @@ A user-facing parameter shown as a slider or checkbox in topo-seer.
 
 | Field            | Type                                    | Description                        |
 |------------------|-----------------------------------------|------------------------------------|
-| `sdDependencies` | `[Text]`                                | Overlay dependencies               |
+| `sdDependencies` | `[Text]`                                | Simulation node ID dependencies    |
+| `sdSchedule`     | `Maybe SimulationScheduleDecl`          | Optional cadence; `Nothing` emits the hourly default |
 | `sdTick`         | `PluginContext -> IO (Either Text SimulationTickResult)` | Simulation tick implementation |
 
 ### PluginContext

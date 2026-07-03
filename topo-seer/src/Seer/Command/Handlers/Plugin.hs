@@ -51,6 +51,7 @@ import Seer.Command.Context (CommandContext(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 import Topo.Plugin.DataResource (DataFieldDef(..), DataOperations(..), DataPagination(..), DataResourceSchema(..))
 import Topo.Plugin.RPC.Manifest (RPCManifest(..), RPCParamSpec(..), RPCSimulationDecl(..))
+import Topo.Simulation.Schedule (SimulationScheduleDecl(..), catchUpPolicyText)
 
 -- | Handle @list_plugins@ — return loaded plugins with status and params.
 handleListPlugins :: CommandContext -> Int -> Value -> IO SeerResponse
@@ -175,7 +176,12 @@ pluginToJSON now disabled allPlugins availableDeps paramSpecs lp =
 simulationDeclToJSON :: RPCSimulationDecl -> Value
 simulationDeclToJSON sim = object
   [ "dependencies" .= rsdDependencies sim
+  , "interval_ticks" .= schedDeclIntervalTicks schedule
+  , "phase_ticks" .= schedDeclPhaseTicks schedule
+  , "catch_up" .= catchUpPolicyText (schedDeclCatchUpPolicy schedule)
   ]
+  where
+    schedule = rsdSchedule sim
 
 externalDiagnosticsFailureCount :: [PluginExternalDataSourceDiagnostic] -> Int
 externalDiagnosticsFailureCount = length . filter externalDiagnosticHasFailure

@@ -143,6 +143,7 @@ simulationPlugin = defaultPluginDef
   , pdCapabilities = [CapWriteTerrain]
   , pdSimulation = Just SimulationDef
       { sdDependencies = ["weather"]
+      , sdSchedule = Just hourlyScheduleDecl
       , sdTick = \ctx -> do
           pcLog ctx "fixture-simulation: tick"
           pure (Right defaultSimulationTickResult

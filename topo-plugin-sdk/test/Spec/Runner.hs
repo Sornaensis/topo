@@ -57,7 +57,7 @@ import Topo.Plugin.RPC.Manifest
   , RPCExternalDataSourceHealth(..)
   , RPCExternalDataSourceStatus(..)
   , RPCExternalDataSourceStatusState(..)
-  , RPCManifest(..), RPCManifestRuntime(..)
+  , RPCManifest(..), RPCManifestRuntime(..), RPCSimulationDecl(..)
   , RPCRestartMode(..), RPCStartPolicy(..), RPCUIHints(..)
   , defaultRPCExternalDataSourceStatus
   , defaultRPCStartPolicy, defaultRPCUIHints
@@ -79,6 +79,7 @@ import Topo.Plugin.RPC.Transport
   )
 import Topo.Plugin.SDK.Runner (generateManifest, runPluginSession)
 import Topo.Plugin.SDK.Types
+import Topo.Simulation.Schedule (SimulationCatchUpPolicy(..), SimulationScheduleDecl(..), hourlyScheduleDecl)
 import Topo.Hex (HexGridMeta(..), defaultHexGridMeta)
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), defaultPlanetConfig, defaultWorldSlice)
 import Topo.Types (WorldConfig(..))
@@ -125,6 +126,7 @@ spec = describe "SDK runner pipe integration" $ do
     rmCapabilities manifest `shouldSatisfy` elem CapReadOverlay
     rmCapabilities manifest `shouldSatisfy` elem CapWriteOverlay
     rmCapabilities manifest `shouldSatisfy` notElem CapWriteTerrain
+    (rsdSchedule <$> rmSimulation manifest) `shouldBe` Just hourlyScheduleDecl
     validateManifest manifest `shouldBe` []
 
   it "emits explicit terrain write capability when a simulation requests it" $ do
@@ -133,6 +135,25 @@ spec = describe "SDK runner pipe integration" $ do
           , pdCapabilities = [CapWriteTerrain]
           })
     rmCapabilities manifest `shouldSatisfy` elem CapWriteTerrain
+    validateManifest manifest `shouldBe` []
+
+  it "emits custom simulation schedule declarations" $ do
+    let schedule = SimulationScheduleDecl
+          { schedDeclIntervalTicks = 6
+          , schedDeclPhaseTicks = 2
+          , schedDeclCatchUpPolicy = SkipMissed
+          }
+        plugin = simulationPlugin
+          { pdSimulation = fmap (\sim -> sim { sdSchedule = Just schedule }) (pdSimulation simulationPlugin)
+          }
+        manifest = generateManifest plugin
+    (rsdSchedule <$> rmSimulation manifest) `shouldBe` Just schedule
+    (Aeson.toJSON <$> rmSimulation manifest) `shouldBe` Just (object
+      [ "dependencies" .= ([] :: [Text])
+      , "interval_ticks" .= (6 :: Word64)
+      , "phase_ticks" .= (2 :: Word64)
+      , "catch_up" .= ("skip_missed" :: Text)
+      ])
     validateManifest manifest `shouldBe` []
 
   it "handles invoke_generator and returns generator_result payload" $
@@ -656,6 +677,7 @@ simulationPlugin = defaultPluginDef
   , pdSchemaFile = Just "sim.toposchema"
   , pdSimulation = Just SimulationDef
       { sdDependencies = []
+      , sdSchedule = Nothing
       , sdTick = \ctx -> do
           pcLog ctx "sim:start"
           pcLog ctx "sim:end"
@@ -687,6 +709,7 @@ simulationMetadataPlugin = defaultPluginDef
   , pdSchemaFile = Just "sim.toposchema"
   , pdSimulation = Just SimulationDef
       { sdDependencies = []
+      , sdSchedule = Just hourlyScheduleDecl
       , sdTick = \ctx ->
           pure (Right defaultSimulationTickResult
             { strOverlay = worldMetadataValue (pcWorld ctx)
@@ -710,6 +733,7 @@ simOnlyPlugin = defaultPluginDef
   , pdSchemaFile = Just "sim.toposchema"
   , pdSimulation = Just SimulationDef
       { sdDependencies = []
+      , sdSchedule = Just hourlyScheduleDecl
       , sdTick = \_ -> pure (Right defaultSimulationTickResult)
       }
   }

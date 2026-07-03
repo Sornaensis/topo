@@ -29,7 +29,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Data.Time.Clock.POSIX (getPOSIXTime)
+import Data.Time.Clock.POSIX (getPOSIXTime, posixSecondsToUTCTime)
 import Data.Word (Word64)
 import Hyperspace.Actor (ActorHandle, ActorSystem, Protocol, get, newActorSystem, shutdownActorSystem)
 import System.Directory
@@ -65,6 +65,7 @@ import Test.Hspec
 import Actor.UI (UiState(..), emptyUiState)
 import Actor.PluginManager
   ( LoadedPlugin(..)
+  , PluginDiagnosticState(..)
   , PluginLifecycleSnapshot(..)
   , PluginLifecycleState(..)
   , PluginManager
@@ -76,6 +77,9 @@ import Actor.PluginManager
   , getPluginOverlaySchemas
   , getPluginStages
   , mutatePluginResource
+  , pluginDependencyDiagnostics
+  , pluginDiagnosticState
+  , pluginLifecycleSnapshot
   , queryPluginResource
   , refreshManifests
   , setDisabledPlugins
@@ -122,7 +126,13 @@ import Topo.Plugin.RPC
   , RPCExternalDataSourceStatusReport(..)
   , RPCExternalDataSourceStatusRequest(..)
   , RPCExternalDataSourceStatusState(..)
+  , RPCManifest(..)
+  , RPCManifestRuntime(..)
+  , RPCOverlayDecl(..)
+  , RPCSimulationDecl(..)
   , defaultRPCExternalDataSourceStatus
+  , defaultRPCStartPolicy
+  , defaultRPCUIHints
   , invokeGenerator
   , invokeSimulation
   , requestExternalDataSourceStatus
@@ -161,7 +171,7 @@ import Topo.Plugin.RPC.Transport
   , recvMessage
   , sendMessage
   )
-import Topo.Simulation (SimContext(..))
+import Topo.Simulation (SimContext(..), defaultScheduleDecl)
 import Topo.Types (WorldConfig(..))
 import Topo.World (emptyWorld)
 
@@ -202,6 +212,45 @@ spec = describe "PluginManager" $ do
         discoverPlugins pluginManagerHandle
         schemas <- getPluginOverlaySchemas pluginManagerHandle
         map osName schemas `shouldSatisfy` elem "copilot_test_overlay"
+
+  it "keeps simulation node dependencies out of plugin startup diagnostics" $ do
+    let now = posixSecondsToUTCTime 0
+        manifest = RPCManifest
+          { rmManifestVersion = 3
+          , rmName = "weather-consumer"
+          , rmVersion = "1.0.0"
+          , rmRuntime = RPCManifestRuntime currentProtocolVersion currentProtocolVersion Nothing Nothing
+          , rmDescription = ""
+          , rmUiHints = defaultRPCUIHints
+          , rmGenerator = Nothing
+          , rmSimulation = Just RPCSimulationDecl
+              { rsdDependencies = ["weather"]
+              , rsdSchedule = defaultScheduleDecl
+              }
+          , rmOverlay = Just (RPCOverlayDecl "weather-consumer.toposchema")
+          , rmCapabilities = []
+          , rmParameters = []
+          , rmDataResources = []
+          , rmDataDirectory = Nothing
+          , rmExternalDataSources = []
+          , rmExternalDataSourceRefs = []
+          , rmStartPolicy = defaultRPCStartPolicy
+          }
+        loaded = LoadedPlugin
+          { lpName = "weather-consumer"
+          , lpManifest = manifest
+          , lpParams = Map.empty
+          , lpStatus = PluginConnected
+          , lpLifecycle = pluginLifecycleSnapshot now LifecycleReady Nothing Nothing Nothing Nothing Nothing (Just currentProtocolVersion) []
+          , lpConnection = Nothing
+          , lpProcessHandle = Nothing
+          , lpStartPolicy = defaultRPCStartPolicy
+          , lpRestartHistory = []
+          , lpDirectory = ""
+          , lpOverlaySchema = Nothing
+          }
+    pluginDependencyDiagnostics Set.empty loaded `shouldBe` []
+    pluginDiagnosticState Set.empty Set.empty loaded `shouldBe` DiagnosticReady
 
   it "launches plugin subprocesses and exposes generator stages cross-platform" $ do
     withExecutablePluginDir testLaunchPluginName testLaunchManifestJSON "ok" $ do

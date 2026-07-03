@@ -1031,6 +1031,12 @@ simulationDagContract = SimulationDagResponse
           , simulationDagNodeWritesTerrain = True
           , simulationDagNodeStatus = "completed"
           , simulationDagNodeStatusDetail = Nothing
+          , simulationDagNodeIntervalTicks = Just 1
+          , simulationDagNodePhaseTicks = Just 0
+          , simulationDagNodeCatchUp = Just "run_once_if_due"
+          , simulationDagNodeLastFireTick = Just 41
+          , simulationDagNodeNextFireTick = Just 43
+          , simulationDagNodeDue = Just False
           }
       ]
   , simulationDagLevels = [[SimNodeId "temperature"], [SimNodeId "weather"]]

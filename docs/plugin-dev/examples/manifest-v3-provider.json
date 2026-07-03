@@ -17,7 +17,10 @@
     "requires": ["biomes", "rivers"]
   },
   "simulation": {
-    "dependencies": ["weather"]
+    "dependencies": ["weather"],
+    "interval_ticks": 1,
+    "phase_ticks": 0,
+    "catch_up": "run_once_if_due"
   },
   "overlay": {
     "schemaFile": "civilization.toposchema"

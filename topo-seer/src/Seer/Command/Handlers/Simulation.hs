@@ -171,6 +171,7 @@ dagNodeToJSON node = object
   , "status_detail" .= sdnsStatusDetail node
   , "interval_ticks" .= sdnsScheduleIntervalTicks node
   , "phase_ticks" .= sdnsSchedulePhaseTicks node
+  , "catch_up" .= sdnsScheduleCatchUp node
   , "last_fire_tick" .= sdnsScheduleLastFireTick node
   , "next_fire_tick" .= sdnsScheduleNextFireTick node
   , "due" .= sdnsScheduleDue node
@@ -195,6 +196,12 @@ pluginSimulationDiagnosticToJSON boundNodes node = object
   , "writes_terrain" .= psndWritesTerrain node
   , "status" .= status
   , "status_detail" .= detail
+  , "interval_ticks" .= maybe (Just (psndScheduleIntervalTicks node)) sdnsScheduleIntervalTicks mBoundNode
+  , "phase_ticks" .= maybe (Just (psndSchedulePhaseTicks node)) sdnsSchedulePhaseTicks mBoundNode
+  , "catch_up" .= maybe (Just (psndScheduleCatchUp node)) sdnsScheduleCatchUp mBoundNode
+  , "last_fire_tick" .= (mBoundNode >>= sdnsScheduleLastFireTick)
+  , "next_fire_tick" .= (mBoundNode >>= sdnsScheduleNextFireTick)
+  , "due" .= (mBoundNode >>= sdnsScheduleDue)
   , "enabled" .= psndEnabled node
   , "executable" .= actorBound
   , "bound" .= actorBound

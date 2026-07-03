@@ -72,7 +72,7 @@ spec = describe "Simulation.Schedule" $ do
 
   it "fills missing overlay schedules without overwriting persisted state" $ do
     let overlay0 = emptyOverlay scheduleSchema
-        filled = ensureOverlaySchedule 0 (Just defaultScheduleDecl) overlay0
+        filled = ensureOverlaySchedule 0 defaultScheduleDecl overlay0
     (schedNextFireTick <$> opSchedule (ovProvenance filled)) `shouldBe` Just 1
 
     let existingSchedule = SimulationScheduleState
@@ -87,7 +87,7 @@ spec = describe "Simulation.Schedule" $ do
               { opSchedule = Just existingSchedule
               }
           }
-        preserved = ensureOverlaySchedule 0 (Just defaultScheduleDecl) overlayWithSchedule
+        preserved = ensureOverlaySchedule 0 defaultScheduleDecl overlayWithSchedule
     opSchedule (ovProvenance preserved) `shouldBe` Just existingSchedule
 
   it "fills world overlay schedules from node declarations" $ do
@@ -117,6 +117,6 @@ scheduleNode = SimNodeReader
   { snrId = SimNodeId "scheduled"
   , snrOverlayName = "scheduled"
   , snrDependencies = []
-  , snrSchedule = Just defaultScheduleDecl
+  , snrSchedule = defaultScheduleDecl
   , snrReadTick = \_ctx overlay -> pure (Right overlay)
   }

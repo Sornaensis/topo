@@ -11,7 +11,7 @@ import Test.Hspec
 import Topo.Pipeline.Stage (StageId(..))
 import Topo.Plugin (Capability(..))
 import Topo.Plugin.Dependency
-import Topo.Plugin.RPC.Manifest (RPCManifest, manifestV3ConsumerExample)
+import Topo.Plugin.RPC.Manifest (RPCManifest, manifestV3, manifestV3ConsumerExample)
 
 spec :: Spec
 spec = describe "PluginDependency" $ do
@@ -104,6 +104,25 @@ spec = describe "PluginDependency" $ do
           , edsdAccess = [ExternalAccessRead]
           , edsdResources = ["settlements"]
           })
+
+  it "keeps simulation node dependencies out of plugin startup dependencies" $ do
+    let value = object
+          [ "manifestVersion" .= manifestV3
+          , "name" .= ("weather-consumer" :: Text)
+          , "version" .= ("1.0.0" :: Text)
+          , "runtime" .= object
+              [ "protocol" .= object ["min" .= (3 :: Int), "max" .= (3 :: Int)]
+              ]
+          , "description" .= ("Consumes the built-in weather simulation node" :: Text)
+          , "simulation" .= object
+              [ "dependencies" .= (["weather"] :: [Text])
+              ]
+          , "capabilities" .= ([] :: [Text])
+          ]
+    case fromJSON value :: Result RPCManifest of
+      Error err -> expectationFailure err
+      Success manifest ->
+        manifestDependencyDecls manifest `shouldBe` []
 
   it "validates missing, disabled, and available dependency targets with actionable diagnostics" $ do
     let consumer = provider "trade-routes"

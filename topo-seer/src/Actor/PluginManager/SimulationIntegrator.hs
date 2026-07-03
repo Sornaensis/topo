@@ -12,6 +12,7 @@ module Actor.PluginManager.SimulationIntegrator
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
+import Data.Word (Word64)
 import qualified Data.Text as Text
 
 import Actor.PluginManager.PipelineIntegrator (orderPlugins)
@@ -36,6 +37,11 @@ import Topo.Plugin.RPC
   , rpcSimNode
   , sendWorldChanged
   )
+import Topo.Simulation.Schedule
+  ( SimulationScheduleDecl(..)
+  , catchUpPolicyText
+  , scheduleDeclError
+  )
 
 -- | Executable plugin sim nodes plus declaration diagnostics for the current
 -- plugin-manager view and optional bound-world overlay set.
@@ -52,6 +58,9 @@ data PluginSimulationNodeDiagnostic = PluginSimulationNodeDiagnostic
   , psndOverlay :: !Text
   , psndDependencies :: ![Text]
   , psndWritesTerrain :: !Bool
+  , psndScheduleIntervalTicks :: !Word64
+  , psndSchedulePhaseTicks :: !Word64
+  , psndScheduleCatchUp :: !Text
   , psndEnabled :: !Bool
   , psndExecutable :: !Bool
   , psndStatus :: !Text
@@ -130,6 +139,7 @@ data LocalSimDecl = LocalSimDecl
   { lrName :: !Text
   , lrPlugin :: !LoadedPlugin
   , lrSimulation :: !RPCSimulationDecl
+  , lrSchedule :: !SimulationScheduleDecl
   , lrWritesTerrain :: !Bool
   , lrLocalIssue :: !(Maybe Text)
   }
@@ -139,6 +149,7 @@ mkLocal disabled overlaySet plugin simDecl = LocalSimDecl
   { lrName = pluginName
   , lrPlugin = plugin
   , lrSimulation = simDecl
+  , lrSchedule = rsdSchedule simDecl
   , lrWritesTerrain = manifestWritesTerrain manifest
   , lrLocalIssue = firstJust
       [ if Set.member pluginName disabled
@@ -153,6 +164,7 @@ mkLocal disabled overlaySet plugin simDecl = LocalSimDecl
       , if Set.member pluginName builtinSimulationNodeIds
           then Just ("simulation node id " <> pluginName <> " collides with a built-in node")
           else Nothing
+      , fmap ("invalid simulation schedule: " <>) (scheduleDeclError (rsdSchedule simDecl))
       , case lpOverlaySchema plugin of
           Nothing -> Just "overlay schema is not loaded"
           Just schema
@@ -220,6 +232,9 @@ diagnosticFor disabled allDeclaredNames executableNames executableWriterNames lo
   , psndOverlay = lrName local
   , psndDependencies = deps
   , psndWritesTerrain = lrWritesTerrain local
+  , psndScheduleIntervalTicks = schedDeclIntervalTicks schedule
+  , psndSchedulePhaseTicks = schedDeclPhaseTicks schedule
+  , psndScheduleCatchUp = catchUpPolicyText (schedDeclCatchUpPolicy schedule)
   , psndEnabled = not (Set.member (lrName local) disabled) && not (policyDisabled plugin)
   , psndExecutable = executable
   , psndStatus = status
@@ -228,6 +243,7 @@ diagnosticFor disabled allDeclaredNames executableNames executableWriterNames lo
   where
     plugin = lrPlugin local
     deps = rsdDependencies (lrSimulation local)
+    schedule = lrSchedule local
     executable = Set.member (lrName local) executableNames
     missingDeps = [dep | dep <- deps, not (Set.member dep builtinSimulationNodeIds), not (Set.member dep allDeclaredNames)]
     blockedDeps = [dep | dep <- deps, Set.member dep allDeclaredNames, not (Set.member dep executableNames)]

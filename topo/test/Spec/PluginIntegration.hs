@@ -71,7 +71,11 @@ import Topo.Plugin.RPC
   , encodeBase64Text
   )
 import Topo.Plugin.RPC.Transport (Transport(..))
-import Topo.Simulation (SimContext(..), SimNode(..), SimNodeId(..), twrTerrain)
+import Topo.Simulation
+  ( SimContext(..), SimNode(..), SimNodeId(..)
+  , SimulationCatchUpPolicy(..), SimulationScheduleDecl(..)
+  , defaultScheduleDecl, simNodeSchedule, twrTerrain
+  )
 import Topo.Types (ChunkId(..), TerrainChunk, TileCoord(..), WorldConfig(..), tcElevation)
 import Topo.Weather (weatherOverlaySchema)
 import Topo.World
@@ -116,6 +120,7 @@ civManifest = RPCManifest
       }
   , rmSimulation   = Just RPCSimulationDecl
       { rsdDependencies = ["weather"]
+      , rsdSchedule = defaultScheduleDecl
       }
   , rmOverlay      = Just RPCOverlayDecl
       { rodSchemaFile = "civilization.toposchema"
@@ -174,6 +179,7 @@ writerManifest = RPCManifest
   , rmGenerator    = Nothing
   , rmSimulation   = Just RPCSimulationDecl
       { rsdDependencies = []
+      , rsdSchedule = defaultScheduleDecl
       }
   , rmOverlay      = Just RPCOverlayDecl
       { rodSchemaFile = "writer.toposchema"
@@ -277,6 +283,18 @@ spec = describe "Plugin Integration" $ do
           deps `shouldBe` [SimNodeId "weather"]
         SimNodeWriter { snwDependencies = deps } ->
           deps `shouldBe` [SimNodeId "weather"]
+
+    it "wires simulation schedule from manifest" $ do
+      transport <- mockTransport "civilization"
+      let schedule = SimulationScheduleDecl 6 2 SkipMissed
+          manifest = civManifest
+            { rmSimulation = Just RPCSimulationDecl
+                { rsdDependencies = ["weather"]
+                , rsdSchedule = schedule
+                }
+            }
+          conn = newRPCConnection manifest transport Map.empty
+      simNodeSchedule (rpcSimNode conn) `shouldBe` schedule
 
     it "rejects reader simulation tick without writeOverlay capability" $ do
       transport <- mockTransport "civilization"

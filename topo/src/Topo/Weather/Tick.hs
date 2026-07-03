@@ -538,7 +538,7 @@ weatherSimNode cfg = SimNodeReader
   { snrId           = SimNodeId "weather"
   , snrOverlayName  = "weather"
   , snrDependencies = []
-  , snrSchedule     = Just hourlyScheduleDecl
+  , snrSchedule     = hourlyScheduleDecl
   , snrReadTick     = weatherTick cfg
   }
 

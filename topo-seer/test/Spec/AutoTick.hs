@@ -61,7 +61,7 @@ import Topo.Overlay.Schema
   , OverlayStorage(..)
   )
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice)
-import Topo.Simulation (SimContext(..), SimNode(..), SimNodeId(..))
+import Topo.Simulation (SimContext(..), SimNode(..), SimNodeId(..), hourlyScheduleDecl)
 import Topo.Weather (weatherChunkToOverlay, weatherOverlaySchema)
 import Topo.World (TerrainWorld(..))
 
@@ -420,7 +420,7 @@ pluginSimulationBinding = SimulationNodeBinding
       { snrId = SimNodeId pluginOverlayName
       , snrOverlayName = pluginOverlayName
       , snrDependencies = [SimNodeId (Text.pack "weather")]
-      , snrSchedule = Nothing
+      , snrSchedule = hourlyScheduleDecl
       , snrReadTick = \ctx overlay ->
           if Map.member (Text.pack "weather") (scOverlays ctx)
             then pure (Right (incrementPluginOverlay overlay))
@@ -436,7 +436,7 @@ responsiveSimulationBinding workerStarted runCountRef = SimulationNodeBinding
       { snrId = SimNodeId (Text.pack "responsive-slow-plugin")
       , snrOverlayName = pluginOverlayName
       , snrDependencies = [SimNodeId (Text.pack "weather")]
-      , snrSchedule = Nothing
+      , snrSchedule = hourlyScheduleDecl
       , snrReadTick = \ctx overlay ->
           if Map.member (Text.pack "weather") (scOverlays ctx)
             then do

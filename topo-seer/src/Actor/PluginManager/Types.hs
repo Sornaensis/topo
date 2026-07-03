@@ -76,7 +76,6 @@ import Topo.Plugin.RPC
   , RPCExternalDataSourceStatusState(..)
   , RPCGeneratorDecl(..)
   , RPCManifest(..)
-  , RPCSimulationDecl(..)
   , RPCStartPolicy(..)
   , RPCRestartMode(..)
   , RPCUIHints(..)
@@ -472,7 +471,8 @@ pluginDiagnosticDetail disabled availableDeps lp = case pluginDiagnosticState di
 
 pluginDependencyDiagnostics :: Set Text -> LoadedPlugin -> [PluginDependencyDiagnostic]
 pluginDependencyDiagnostics availableDeps lp =
-  generatorInsertAfter <> generatorRequires <> simulationDeps
+  -- Simulation dependencies name simulation DAG nodes, not plugin/startup providers.
+  generatorInsertAfter <> generatorRequires
   where
     manifest = lpManifest lp
     mkDep kind name required = PluginDependencyDiagnostic
@@ -490,9 +490,6 @@ pluginDependencyDiagnostics availableDeps lp =
     generatorRequires = case rmGenerator manifest of
       Nothing -> []
       Just gen -> map (\dep -> mkDep "generator_requires" dep True) (rgdRequires gen)
-    simulationDeps = case rmSimulation manifest of
-      Nothing -> []
-      Just sim -> map (\dep -> mkDep "simulation_dependency" dep True) (rsdDependencies sim)
 
 pluginExternalDataSourceDiagnostics :: LoadedPlugin -> [PluginExternalDataSourceDiagnostic]
 pluginExternalDataSourceDiagnostics lp =

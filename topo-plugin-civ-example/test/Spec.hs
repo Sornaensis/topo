@@ -16,11 +16,12 @@ import Topo.Plugin.RPC.Manifest
   , RPCExternalDataSourceStatus(..)
   , RPCExternalDataSourceDecl(..)
   , RPCExternalDataSourceGrant(..)
-  , RPCManifest(..), RPCManifestRuntime(..), RPCUIHints(..)
+  , RPCManifest(..), RPCManifestRuntime(..), RPCSimulationDecl(..), RPCUIHints(..)
   , manifestV3, validateManifest
   )
 import Topo.Plugin.RPC.Protocol (currentProtocolVersion)
 import Topo.Plugin.SDK (generateManifest)
+import Topo.Simulation.Schedule (hourlyScheduleDecl)
 
 main :: IO ()
 main = hspec $ do
@@ -34,6 +35,7 @@ main = hspec $ do
       ruiDisplayName (rmUiHints manifest) `shouldBe` Just "Civilization"
       rmGenerator manifest `shouldSatisfy` maybe False (const True)
       rmSimulation manifest `shouldSatisfy` maybe False (const True)
+      (rsdSchedule <$> rmSimulation manifest) `shouldBe` Just hourlyScheduleDecl
       rmOverlay manifest `shouldSatisfy` maybe False (const True)
       rmDataDirectory manifest `shouldBe` Just "civilization-data"
       length (rmDataResources manifest) `shouldBe` 2

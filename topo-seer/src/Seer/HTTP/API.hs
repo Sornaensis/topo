@@ -1352,6 +1352,9 @@ pluginSimulationSchema :: Value
 pluginSimulationSchema = inlineObjectSchema
   [ "dependencies" ]
   [ ("dependencies", arraySchema stringSchema)
+  , ("interval_ticks", diagnosticScheduleIntervalSchema)
+  , ("phase_ticks", integerMinimumSchema 0)
+  , ("catch_up", simulationCatchUpSchema)
   ]
 
 pluginLifecycleSchema :: Value
@@ -1657,13 +1660,24 @@ simulationDagNodeSchema = inlineObjectSchema
   , ("writes_terrain", booleanSchema)
   , ("status", stringSchema)
   , ("status_detail", nullableSchema stringSchema)
-  , ("interval_ticks", nullableSchema integerSchema)
-  , ("phase_ticks", nullableSchema integerSchema)
-  , ("last_fire_tick", nullableSchema integerSchema)
-  , ("next_fire_tick", nullableSchema integerSchema)
+  , ("interval_ticks", nullableSchema diagnosticScheduleIntervalSchema)
+  , ("phase_ticks", nullableSchema (integerMinimumSchema 0))
+  , ("catch_up", nullableSchema simulationCatchUpSchema)
+  , ("last_fire_tick", nullableSchema (integerMinimumSchema 0))
+  , ("next_fire_tick", nullableSchema (integerMinimumSchema 0))
   , ("due", nullableSchema booleanSchema)
   , ("enabled", booleanSchema)
+  , ("executable", booleanSchema)
+  , ("bound", booleanSchema)
   ]
+
+diagnosticScheduleIntervalSchema :: Value
+-- Diagnostic endpoints echo raw manifest declarations so invalid interval 0
+-- values remain visible while validation still rejects them before DAG use.
+diagnosticScheduleIntervalSchema = integerMinimumSchema 0
+
+simulationCatchUpSchema :: Value
+simulationCatchUpSchema = enumStringSchema ["run_once_if_due", "skip_missed"]
 
 simulationTickLogSchema :: Value
 simulationTickLogSchema = inlineObjectSchema
@@ -2297,6 +2311,12 @@ stringSchema = object ["type" .= ("string" :: Text)]
 
 integerSchema :: Value
 integerSchema = object ["type" .= ("integer" :: Text)]
+
+integerMinimumSchema :: Int -> Value
+integerMinimumSchema minimumValue = object
+  [ "type" .= ("integer" :: Text)
+  , "minimum" .= minimumValue
+  ]
 
 numberSchema :: Value
 numberSchema = object ["type" .= ("number" :: Text)]

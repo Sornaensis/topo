@@ -586,7 +586,7 @@ spec = describe "Pipeline" $ do
             { snrId = SimNodeId "lifecycle_overlay"
             , snrOverlayName = "lifecycle_overlay"
             , snrDependencies = []
-            , snrSchedule = Nothing
+            , snrSchedule = hourlyScheduleDecl
             , snrReadTick = \_ctx ov -> pure (Right ov)
             }
         ] of

@@ -77,7 +77,6 @@ import Topo.Plugin.RPC.Manifest
   , externalAccessRequiredCapabilities
   , RPCGeneratorDecl(..)
   , RPCManifest(..)
-  , RPCSimulationDecl(..)
   )
 
 -- | Resolver treatment for a dependency edge.
@@ -602,28 +601,19 @@ validateDependencies input = map markCycle baseDiagnostics
 blockingDependencyDiagnostics :: [DependencyDiagnostic] -> [DependencyDiagnostic]
 blockingDependencyDiagnostics = filter dgdBlocking
 
--- | Translate legacy manifest declarations into typed dependency declarations.
+-- | Translate manifest declarations into typed plugin/startup dependencies.
 -- Generator stage names are parsed as built-in stages when possible; unknown
--- names are treated as plugin dependencies.  Simulation dependencies remain
--- overlay dependencies because simulation declarations name overlay inputs.
+-- names are treated as plugin dependencies.  Simulation dependencies stay on
+-- the simulation declaration as simulation node IDs; the runtime DAG validator
+-- resolves those IDs when binding executable nodes.
 manifestDependencyDecls :: RPCManifest -> [DependencyDecl]
-manifestDependencyDecls manifest = generatorDeps <> simulationDeps <> externalDeps <> capabilityDeps
+manifestDependencyDecls manifest = generatorDeps <> externalDeps <> capabilityDeps
   where
     generatorDeps = case rmGenerator manifest of
       Nothing -> []
       Just gen ->
         [ stageOrPluginDependency (rgdInsertAfter gen) (Just "generator insertAfter") ]
         <> map (\name -> stageOrPluginDependency name (Just "generator requires")) (rgdRequires gen)
-    simulationDeps = case rmSimulation manifest of
-      Nothing -> []
-      Just sim ->
-        [ DependencyDecl
-            { ddTarget = DependencyOverlay (OverlayDependency name Nothing)
-            , ddMode = DependencyRequired
-            , ddReason = Just "simulation dependency"
-            }
-        | name <- rsdDependencies sim
-        ]
     externalDeps =
       [ DependencyDecl
           { ddTarget = DependencyExternalDataSource ExternalDataSourceDependency

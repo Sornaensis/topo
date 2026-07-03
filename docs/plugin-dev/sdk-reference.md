@@ -56,7 +56,8 @@ Use `generatorResultFromTerrain` or related payload helpers when returning modif
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `sdDependencies` | `[Text]` | Overlay/node dependencies that tick before this node |
+| `sdDependencies` | `[Text]` | Simulation node IDs that tick before this node |
+| `sdSchedule` | `Maybe SimulationScheduleDecl` | Optional cadence; `Nothing` emits the hourly default |
 | `sdTick` | `PluginContext -> IO (Either Text SimulationTickResult)` | Simulation callback |
 
 `defaultSimulationTickResult` returns an empty overlay payload with no terrain writes.

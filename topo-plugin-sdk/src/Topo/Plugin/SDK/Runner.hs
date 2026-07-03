@@ -99,6 +99,7 @@ import Topo.Plugin.RPC.DataService
   , dataResourceErrorCodeText, dataResourceErrorRPCCode, dataResourceFailureFromText
   )
 import Topo.Plugin.SDK.Payload (decodeTerrainPayload)
+import Topo.Simulation.Schedule (defaultScheduleDecl)
 import Topo.Types (WorldConfig(..))
 import Topo.World (TerrainWorld, emptyWorld)
 
@@ -163,6 +164,7 @@ generateManifest pd = RPCManifest
       }
     toSimDecl sd = RPCSimulationDecl
       { rsdDependencies = sdDependencies sd
+      , rsdSchedule = maybe defaultScheduleDecl id (sdSchedule sd)
       }
 
 sdkDescription :: PluginDef -> Text

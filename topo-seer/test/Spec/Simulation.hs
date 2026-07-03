@@ -66,7 +66,7 @@ import Topo.Overlay.Schema
   , OverlayStorage(..)
   )
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice)
-import Topo.Simulation (SimContext(..), SimNode(..), SimNodeId(..))
+import Topo.Simulation (SimContext(..), SimNode(..), SimNodeId(..), hourlyScheduleDecl)
 import Topo.Weather (weatherChunkToOverlay, weatherOverlaySchema)
 import Topo.World (TerrainWorld(..))
 
@@ -200,7 +200,7 @@ pluginSimulationBinding = SimulationNodeBinding
       { snrId = SimNodeId pluginOverlayName
       , snrOverlayName = pluginOverlayName
       , snrDependencies = [SimNodeId (Text.pack "weather")]
-      , snrSchedule = Nothing
+      , snrSchedule = hourlyScheduleDecl
       , snrReadTick = \ctx overlay ->
           if Map.member (Text.pack "weather") (scOverlays ctx)
             then pure (Right (incrementPluginOverlay overlay))
@@ -491,7 +491,7 @@ spec = describe "Simulation actor" $ do
               { snrId = SimNodeId (Text.pack "slow-plugin")
               , snrOverlayName = pluginOverlayName
               , snrDependencies = []
-              , snrSchedule = Nothing
+              , snrSchedule = hourlyScheduleDecl
               , snrReadTick = \_ overlay -> do
                   modifyIORef' runCountRef (+ 1)
                   _ <- tryPutMVar started ()
@@ -587,8 +587,10 @@ spec = describe "Simulation actor" $ do
       [node] -> do
         sdnsScheduleIntervalTicks node `shouldBe` Just 1
         sdnsSchedulePhaseTicks node `shouldBe` Just 0
+        sdnsScheduleCatchUp node `shouldBe` Just (Text.pack "run_once_if_due")
         sdnsScheduleLastFireTick node `shouldBe` Nothing
         sdnsScheduleNextFireTick node `shouldBe` Just 1
+        sdnsScheduleDue node `shouldBe` Just True
       _ -> expectationFailure "Expected one weather node in simulation DAG"
     let pluginNodes = filter ((== Just pluginOverlayName) . sdnsPlugin) (sdsNodes dagSnapshot)
     case pluginNodes of

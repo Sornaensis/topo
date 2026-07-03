@@ -57,6 +57,7 @@ import Topo.Plugin.RPC.Transport
   , sendMessageWithLimit
   )
 import Topo.Plugin.DataResource
+import Topo.Simulation.Schedule (SimulationCatchUpPolicy(..), SimulationScheduleDecl(..), defaultScheduleDecl)
 
 ------------------------------------------------------------------------
 -- Arbitrary instances for QuickCheck
@@ -153,8 +154,22 @@ instance Arbitrary RPCParamSpec where
 instance Arbitrary RPCOverlayDecl where
   arbitrary = RPCOverlayDecl <$> arbitrary
 
+instance Arbitrary SimulationCatchUpPolicy where
+  arbitrary = elements [RunOnceIfDue, SkipMissed]
+
+instance Arbitrary SimulationScheduleDecl where
+  arbitrary = do
+    Positive interval <- arbitrary
+    phase <- choose (0, interval - 1)
+    catchUp <- arbitrary
+    pure SimulationScheduleDecl
+      { schedDeclIntervalTicks = interval
+      , schedDeclPhaseTicks = phase
+      , schedDeclCatchUpPolicy = catchUp
+      }
+
 instance Arbitrary RPCSimulationDecl where
-  arbitrary = RPCSimulationDecl <$> listOf arbitrary
+  arbitrary = RPCSimulationDecl <$> listOf arbitrary <*> arbitrary
 
 instance Arbitrary RPCGeneratorDecl where
   arbitrary = RPCGeneratorDecl
@@ -311,6 +326,10 @@ isInvalidOverlaySchemaField :: ManifestError -> Bool
 isInvalidOverlaySchemaField (ManifestInvalidField "overlay.schemaFile" _) = True
 isInvalidOverlaySchemaField _ = False
 
+isInvalidSimulationScheduleField :: ManifestError -> Bool
+isInvalidSimulationScheduleField (ManifestInvalidField "simulation.schedule" _) = True
+isInvalidSimulationScheduleField _ = False
+
 isExternalGrantCapabilityError :: ManifestError -> Bool
 isExternalGrantCapabilityError (ManifestInvalidField field detail) =
   "externalDataSources.ledger.grants.write.capabilities" `Text.isPrefixOf` field
@@ -384,7 +403,11 @@ fullManifestBS = jsonBS $ object
       , "requires"    .= (["biomes", "rivers"] :: [Text])
       ]
   , "simulation" .= object
-      [ "dependencies" .= (["weather"] :: [Text]) ]
+      [ "dependencies" .= (["weather"] :: [Text])
+      , "interval_ticks" .= (1 :: Word64)
+      , "phase_ticks" .= (0 :: Word64)
+      , "catch_up" .= ("run_once_if_due" :: Text)
+      ]
   , "overlay" .= object
       [ "schemaFile" .= ("civilization.toposchema" :: Text) ]
   , "capabilities" .= (["readTerrain", "readOverlay", "writeOverlay", "log"] :: [Text])
@@ -441,6 +464,7 @@ spec = describe "Plugin.RPC" $ do
           manifestHasGenerator m `shouldBe` True
           manifestHasSimulation m `shouldBe` True
           manifestHasOverlay m `shouldBe` True
+          fmap rsdSchedule (rmSimulation m) `shouldBe` Just defaultScheduleDecl
           rmCapabilities m `shouldSatisfy` (elem CapReadTerrain)
           rmCapabilities m `shouldSatisfy` (elem CapWriteOverlay)
           length (rmParameters m) `shouldBe` 1
@@ -465,6 +489,35 @@ spec = describe "Plugin.RPC" $ do
             Just o -> rodSchemaFile o `shouldBe` "civilization.toposchema"
             Nothing -> expectationFailure "expected overlay"
         Left err -> expectationFailure (Text.unpack err)
+
+    it "defaults missing simulation schedule fields to hourly" $ do
+      let manifestBytes = jsonBS $ object
+            [ "manifestVersion" .= manifestV3
+            , "name" .= ("scheduled-default" :: Text)
+            , "version" .= ("1.0.0" :: Text)
+            , "runtime" .= manifestRuntimeJSON
+            , "simulation" .= object ["dependencies" .= ([] :: [Text])]
+            , "overlay" .= object ["schemaFile" .= ("scheduled-default.toposchema" :: Text)]
+            , "capabilities" .= (["writeOverlay"] :: [Text])
+            ]
+      case parseManifest manifestBytes of
+        Right manifest -> fmap rsdSchedule (rmSimulation manifest) `shouldBe` Just defaultScheduleDecl
+        Left err -> expectationFailure (Text.unpack err)
+
+    it "rejects unknown simulation catch-up policies" $ do
+      let manifestBytes = jsonBS $ object
+            [ "manifestVersion" .= manifestV3
+            , "name" .= ("bad-catch-up" :: Text)
+            , "version" .= ("1.0.0" :: Text)
+            , "runtime" .= manifestRuntimeJSON
+            , "simulation" .= object
+                [ "dependencies" .= ([] :: [Text])
+                , "catch_up" .= ("replay_all" :: Text)
+                ]
+            , "overlay" .= object ["schemaFile" .= ("bad-catch-up.toposchema" :: Text)]
+            , "capabilities" .= (["writeOverlay"] :: [Text])
+            ]
+      parseManifest manifestBytes `shouldSatisfy` isLeft
 
     it "rejects invalid JSON" $ do
       let result = parseManifest "not valid json"
@@ -537,7 +590,9 @@ spec = describe "Plugin.RPC" $ do
             ]
       case parseManifest bs of
         Right m -> case rmSimulation m of
-          Just s  -> rsdDependencies s `shouldBe` []
+          Just s -> do
+            rsdDependencies s `shouldBe` []
+            rsdSchedule s `shouldBe` defaultScheduleDecl
           Nothing -> expectationFailure "expected simulation"
         Left _ -> expectationFailure "parse failed"
 
@@ -999,7 +1054,10 @@ spec = describe "Plugin.RPC" $ do
 
     it "detects simulation without overlay" $ do
       let m = baseManifest
-            { rmSimulation = Just (RPCSimulationDecl [])
+            { rmSimulation = Just RPCSimulationDecl
+                { rsdDependencies = []
+                , rsdSchedule = defaultScheduleDecl
+                }
             , rmOverlay    = Nothing
             }
       validateManifest m `shouldSatisfy` elem ManifestSimWithoutOverlay
@@ -1029,10 +1087,34 @@ spec = describe "Plugin.RPC" $ do
     it "accepts simulation-with-overlay manifest" $ do
       let m = baseManifest
             { rmGenerator  = Nothing
-            , rmSimulation = Just (RPCSimulationDecl [])
+            , rmSimulation = Just RPCSimulationDecl
+                { rsdDependencies = []
+                , rsdSchedule = defaultScheduleDecl
+                }
             , rmOverlay    = Just (RPCOverlayDecl "test.toposchema")
             }
       validateManifest m `shouldBe` []
+
+    it "detects invalid simulation schedule declarations" $ do
+      let invalidInterval = baseManifest
+            { rmGenerator = Nothing
+            , rmSimulation = Just RPCSimulationDecl
+                { rsdDependencies = []
+                , rsdSchedule = defaultScheduleDecl { schedDeclIntervalTicks = 0 }
+                }
+            , rmOverlay = Just (RPCOverlayDecl "test.toposchema")
+            }
+          invalidPhase = invalidInterval
+            { rmSimulation = Just RPCSimulationDecl
+                { rsdDependencies = []
+                , rsdSchedule = defaultScheduleDecl
+                    { schedDeclIntervalTicks = 3
+                    , schedDeclPhaseTicks = 3
+                    }
+                }
+            }
+      validateManifest invalidInterval `shouldSatisfy` any isInvalidSimulationScheduleField
+      validateManifest invalidPhase `shouldSatisfy` any isInvalidSimulationScheduleField
 
   ------------------------------------
   -- Manifest queries
@@ -1055,7 +1137,10 @@ spec = describe "Plugin.RPC" $ do
 
     it "manifestHasSimulation detects simulation decl" $ do
       let m = baseManifest
-            { rmSimulation = Just (RPCSimulationDecl [])
+            { rmSimulation = Just RPCSimulationDecl
+                { rsdDependencies = []
+                , rsdSchedule = defaultScheduleDecl
+                }
             , rmOverlay    = Just (RPCOverlayDecl "x")
             }
       manifestHasSimulation m `shouldBe` True
