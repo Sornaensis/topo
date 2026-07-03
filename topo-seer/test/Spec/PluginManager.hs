@@ -2852,6 +2852,7 @@ sampleSimContext = SimContext
   , scWorldTime = defaultWorldTime
   , scDeltaTicks = 1
   , scOverlays = mempty
+  , scReportProgress = \_ -> pure ()
   }
 
 sampleOverlay :: Overlay

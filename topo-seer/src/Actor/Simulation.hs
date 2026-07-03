@@ -725,6 +725,7 @@ simProgressCb handles statusesRef tickLogsRef tickValue prog = do
 
 simStatusSnapshot :: SimStatus -> (Text, Maybe Text)
 simStatusSnapshot SimStarted = ("running", Nothing)
+simStatusSnapshot (SimRunning detail) = ("running", Just detail)
 simStatusSnapshot SimCompleted = ("completed", Nothing)
 simStatusSnapshot (SimFailed err) = ("failed", Just err)
 simStatusSnapshot (SimSkipped reason) = ("skipped", Just reason)

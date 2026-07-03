@@ -421,6 +421,27 @@ failureSpec = describe "failure handling" $ do
       []        -> expectationFailure "expected progress events"
     simpStatus (last events) `shouldBe` SimCompleted
 
+  it "reports in-node progress details for diagnostics" $ do
+    progressRef <- newIORef ([] :: [SimProgress])
+    let progressCb p = modifyIORef' progressRef (++ [p])
+        node = SimNodeReader
+          { snrId = SimNodeId "weather"
+          , snrOverlayName = "weather"
+          , snrDependencies = []
+          , snrSchedule = hourlyScheduleDecl
+          , snrReadTick = \ctx ov -> do
+              scReportProgress ctx "plugin:weather: loading (fraction=0.5, percent=50%)"
+              pure (Right ov)
+          }
+        Right dag = buildSimDAG [node]
+        store = mkStore ["weather"]
+    terrain <- mkTestTerrain
+    _ <- tickSimulation dag progressCb terrain store testCalDate defaultWorldTime 1
+    events <- readIORef progressRef
+    events `shouldSatisfy` any (\p ->
+      simpNodeId p == SimNodeId "weather"
+        && simpStatus p == SimRunning "plugin:weather: loading (fraction=0.5, percent=50%)")
+
 -- =========================================================================
 -- Schedule helpers
 -- =========================================================================

@@ -286,6 +286,12 @@ runOneReader nodeMap terrain store cal wt dt progress total (nid, node) =
             , scWorldTime  = wt
             , scDeltaTicks = dt
             , scOverlays   = depOverlays
+            , scReportProgress = \detail -> progress SimProgress
+                { simpNodeIndex = 0
+                , simpNodeCount = total
+                , simpNodeId    = nid
+                , simpStatus    = SimRunning detail
+                }
             }
       case lookupOverlay name store of
         Nothing -> pure (Left (
@@ -369,6 +375,12 @@ runWriterPhase nodeMap total progress terrain store cal wt dt (nid:rest) = do
               , scWorldTime  = wt
               , scDeltaTicks = dt
               , scOverlays   = depOverlays
+              , scReportProgress = \detail -> progress SimProgress
+                  { simpNodeIndex = 0
+                  , simpNodeCount = total
+                  , simpNodeId    = nid
+                  , simpStatus    = SimRunning detail
+                  }
               }
 
         case lookupOverlay name store of

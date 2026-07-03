@@ -509,7 +509,17 @@ invokeGenerator
   -> Value
   -- ^ Encoded terrain data (relevant chunks).
   -> IO (Either RPCError GeneratorResult)
-invokeGenerator conn seed terrainData = do
+invokeGenerator conn seed terrainData =
+  invokeGeneratorWithProgress conn seed terrainData (\_ -> pure ()) (\_ -> pure ())
+
+invokeGeneratorWithProgress
+  :: RPCConnection
+  -> Word64
+  -> Value
+  -> (PluginProgress -> IO ())
+  -> (PluginLog -> IO ())
+  -> IO (Either RPCError GeneratorResult)
+invokeGeneratorWithProgress conn seed terrainData onProgress onLog = do
   let manifest = rpcManifest conn
       envelope = RPCEnvelope
         { envType = MsgInvokeGenerator
@@ -522,9 +532,7 @@ invokeGenerator conn seed terrainData = do
           }
         , envRequestId = Nothing
         }
-  result <- rpcCallWithProgress (Just (rpcRuntimeFailure conn)) (rpcRequestTimeoutMicros conn) "plugin generator request timed out" conn envelope
-              (\_ -> pure ())
-              (\_ -> pure ())
+  result <- rpcCallWithProgress (Just (rpcRuntimeFailure conn)) (rpcRequestTimeoutMicros conn) "plugin generator request timed out" conn envelope onProgress onLog
   case result of
     Left err  -> pure (Left err)
     Right env ->
@@ -759,8 +767,10 @@ decodeRPCPayload env =
 
 -- | Query a plugin's data resource.
 --
--- Sends 'MsgQueryResource' and waits for 'MsgQueryResult', collecting
--- any progress or log messages in the interim.
+-- Sends 'MsgQueryResource' and waits for 'MsgQueryResult'.  The
+-- plugin-manager data-resource surface is request/response-only, so
+-- correlated progress/log messages are consumed by the RPC layer and
+-- intentionally ignored at this boundary.
 queryResource :: RPCConnection -> QueryResource -> IO (Either RPCError QueryResult)
 queryResource conn qr = do
   let envelope = RPCEnvelope
@@ -780,8 +790,10 @@ queryResource conn qr = do
 
 -- | Mutate a plugin's data resource.
 --
--- Sends 'MsgMutateResource' and waits for 'MsgMutateResult', collecting
--- any progress or log messages in the interim.
+-- Sends 'MsgMutateResource' and waits for 'MsgMutateResult'.  The
+-- plugin-manager data-resource surface is request/response-only, so
+-- correlated progress/log messages are consumed by the RPC layer and
+-- intentionally ignored at this boundary.
 mutateResource :: RPCConnection -> MutateResource -> IO (Either RPCError MutateResult)
 mutateResource conn mr = do
   let envelope = RPCEnvelope
@@ -825,7 +837,10 @@ rpcGeneratorStage conn =
             throwError (PluginInvariantError ("rpc generator encode failed: " <> err))
           Right terrainPayload -> do
             seed <- asks peSeed
-            result <- liftIO (invokeGenerator conn seed terrainPayload)
+            reportProgress <- asks peProgress
+            result <- liftIO (invokeGeneratorWithProgress conn seed terrainPayload
+              (reportProgress . formatPluginProgressDetail (rmName manifest))
+              (\_ -> pure ()))
             case result of
               Left err -> throwError (PluginInvariantError ("rpc generator failed: " <> rpcErrorText err))
               Right generatorResult ->
@@ -861,7 +876,7 @@ rpcSimNode conn =
           if not (sppRequireWriteOverlay policy)
             then pure (Left "manifest missing writeOverlay capability")
             else do
-              result <- invokeSimulation conn ctx overlay ignoreProgress ignoreLog
+              result <- invokeSimulation conn ctx overlay (reportSimulationProgress ctx name) ignoreLog
               case result of
                 Left err -> pure (Left (rpcErrorText err))
                 Right sr -> do
@@ -882,14 +897,22 @@ rpcSimNode conn =
           if not (sppRequireWriteOverlay policy)
             then pure (Left "manifest missing writeOverlay capability")
             else do
-              result <- invokeSimulation conn ctx overlay ignoreProgress ignoreLog
+              result <- invokeSimulation conn ctx overlay (reportSimulationProgress ctx name) ignoreLog
               pure $ case result of
                 Left err -> Left (rpcErrorText err)
                 Right sr -> preserveHostProvenance overlay <$> overlayFromJSON (ovSchema overlay) (srOverlay sr)
       }
   where
-    ignoreProgress _ = pure ()
+    reportSimulationProgress ctx pluginName progress =
+      scReportProgress ctx (formatPluginProgressDetail pluginName progress)
     ignoreLog _ = pure ()
+
+formatPluginProgressDetail :: Text -> PluginProgress -> Text
+formatPluginProgressDetail pluginName progress =
+  "plugin:" <> pluginName <> ": " <> ppMessage progress
+    <> " (fraction=" <> Text.pack (show (ppFraction progress))
+    <> ", percent=" <> Text.pack (show (round (ppFraction progress * 100) :: Int))
+    <> "%)"
 
 preserveHostProvenance :: Overlay -> Overlay -> Overlay
 preserveHostProvenance existing decoded =

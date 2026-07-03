@@ -86,6 +86,9 @@ data SimContext = SimContext
     -- ^ Number of ticks elapsed since the last simulation run.
   , scOverlays   :: !(Map Text Overlay)
     -- ^ Read-only: dependency overlays (only those declared).
+  , scReportProgress :: !(Text -> IO ())
+    -- ^ Host-visible node progress detail.  The DAG executor turns these
+    -- updates into 'SimProgress' events for status/log diagnostics.
   }
 
 -- ---------------------------------------------------------------------------
@@ -234,6 +237,7 @@ data SimProgress = SimProgress
 -- | Status of a single simulation node.
 data SimStatus
   = SimStarted
+  | SimRunning !Text
   | SimCompleted
   | SimFailed !Text
   | SimSkipped !Text

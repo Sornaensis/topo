@@ -31,7 +31,24 @@ import System.IO (stdin, stdout)
 import System.IO.Temp (withSystemTempFile)
 import System.Timeout (timeout)
 
-import Topo.Plugin.RPC (RPCError(..), checkHealth, invokeGenerator, invokeSimulation, newRPCConnection, rpcErrorText, sendHeartbeat)
+import Topo.Plugin.RPC
+  ( DataMutation(..)
+  , DataQuery(..)
+  , DataRecord(..)
+  , MutateResource(..)
+  , MutateResult(..)
+  , QueryResource(..)
+  , QueryResult(..)
+  , RPCError(..)
+  , checkHealth
+  , invokeGenerator
+  , invokeSimulation
+  , mutateResource
+  , newRPCConnection
+  , queryResource
+  , rpcErrorText
+  , sendHeartbeat
+  )
 import Topo.Plugin.RPC.Manifest
 import Topo.Plugin.RPC.Protocol
 import Topo.Plugin.RPC.ExternalDataSource
@@ -1441,6 +1458,53 @@ spec = describe "Plugin.RPC" $ do
         ignored <- timeout 200000 (takeMVar progressSeen)
         ignored `shouldBe` Nothing
 
+    it "intentionally consumes and ignores data-resource query progress" $
+      withConnectedTransports "rpc-query-progress-ignored" $ \host plugin -> do
+        let conn = newRPCConnection baseManifest host Map.empty
+            requestPayload = QueryResource "records" QueryAll Nothing Nothing
+            queryResult = QueryResult "records" [DataRecord (Map.singleton "id" (String "alpha"))] (Just 1)
+        done <- newEmptyMVar
+        _ <- forkIO (queryResource conn requestPayload >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgQueryResource
+        requestId <- requireRequestId request
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgProgress
+          , envPayload = Aeson.toJSON (PluginProgress "query halfway" 0.5)
+          , envRequestId = Just requestId
+          }
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgQueryResult
+          , envPayload = Aeson.toJSON queryResult
+          , envRequestId = Just requestId
+          }
+        result <- timeout transportTestTimeoutMicros (takeMVar done)
+        result `shouldBe` Just (Right queryResult)
+
+    it "intentionally consumes and ignores data-resource mutation progress" $
+      withConnectedTransports "rpc-mutate-progress-ignored" $ \host plugin -> do
+        let conn = newRPCConnection baseManifest host Map.empty
+            recordPayload = DataRecord (Map.singleton "id" (String "alpha"))
+            requestPayload = MutateResource "records" (MutCreate recordPayload)
+            mutateResult = MutateResult True Nothing (Just recordPayload) Nothing
+        done <- newEmptyMVar
+        _ <- forkIO (mutateResource conn requestPayload >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgMutateResource
+        requestId <- requireRequestId request
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgProgress
+          , envPayload = Aeson.toJSON (PluginProgress "mutation halfway" 0.5)
+          , envRequestId = Just requestId
+          }
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgMutateResult
+          , envPayload = Aeson.toJSON mutateResult
+          , envRequestId = Just requestId
+          }
+        result <- timeout transportTestTimeoutMicros (takeMVar done)
+        result `shouldBe` Just (Right mutateResult)
+
   ------------------------------------
   -- Protocol message round-trips
   ------------------------------------
@@ -1939,6 +2003,7 @@ testSimContext = SimContext
       }
   , scDeltaTicks = 1
   , scOverlays = Map.empty
+  , scReportProgress = \_ -> pure ()
   }
 
 testOverlay :: Overlay

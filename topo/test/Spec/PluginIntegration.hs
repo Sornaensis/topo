@@ -19,7 +19,7 @@ import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck (NonEmptyList(..))
 
-import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, takeMVar)
+import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, takeMVar, tryPutMVar)
 import Control.Exception (SomeException, bracket, try)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (asks)
@@ -39,10 +39,11 @@ import Data.Word (Word64, Word8)
 import System.IO (stdin, stdout)
 import System.Timeout (timeout)
 
-import Topo.Calendar (CalendarDate(..))
-import Topo.Overlay (emptyOverlay, insertOverlay)
+import Topo.Calendar (CalendarDate(..), WorldTime(..), simulationTickSeconds)
+import Topo.Overlay (emptyOverlay, emptyOverlayStore, insertOverlay)
+import Topo.Overlay.JSON (overlayToJSON)
 import Topo.Overlay.Schema (OverlaySchema(..), OverlayStorage(..), OverlayDeps(..))
-import Topo.Pipeline (PipelineConfig(..), PipelineStage(..), defaultPipelineConfig, runPipeline)
+import Topo.Pipeline (PipelineConfig(..), PipelineStage(..), StageProgress(..), StageStatus(..), defaultPipelineConfig, runPipeline)
 import Topo.Pipeline.Stage (StageId(..))
 import Topo.Hex (HexGridMeta(..), defaultHexGridMeta)
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), defaultPlanetConfig, defaultWorldSlice)
@@ -55,11 +56,14 @@ import Topo.Plugin.RPC
   , Capability(..)
   , GeneratorResult(..)
   , InvokeGenerator(..)
+  , InvokeSimulation(..)
+  , PluginProgress(..)
   , RPCCapability
   , RPCEnvelope(..)
   , RPCMessageType(..)
   , RPCParamSpec(..)
   , RPCParamType(..)
+  , SimulationResult(..)
   , defaultRPCManifestRuntime
   , defaultRPCStartPolicy
   , defaultRPCUIHints
@@ -95,9 +99,11 @@ import Topo.Plugin.RPC.Transport
   )
 import Topo.Simulation
   ( SimContext(..), SimNode(..), SimNodeId(..)
+  , SimProgress(..), SimStatus(..)
   , SimulationCatchUpPolicy(..), SimulationScheduleDecl(..)
   , defaultScheduleDecl, simNodeSchedule, twrTerrain
   )
+import Topo.Simulation.DAG (buildSimDAG, tickSimulation)
 import Topo.Types (ChunkId(..), TerrainChunk, TileCoord(..), WorldConfig(..), tcElevation)
 import Topo.Weather (weatherOverlaySchema)
 import Topo.World
@@ -241,6 +247,73 @@ takeCapturedGeneratorRequest var = do
   case result of
     Left err -> expectationFailure err >> fail "generator capture failed"
     Right request -> pure request
+
+requireRequestId :: RPCEnvelope -> IO Word64
+requireRequestId envelope =
+  case envRequestId envelope of
+    Nothing -> expectationFailure "expected correlated request id" >> fail "missing request id"
+    Just requestId -> pure requestId
+
+captureStageDetail :: Text -> MVar Text -> StageProgress -> IO ()
+captureStageDetail expected detailVar progress =
+  case (spStatus progress, spDetail progress) of
+    (StageRunning, Just detail) | expected `Text.isInfixOf` detail -> do
+      _ <- tryPutMVar detailVar detail
+      pure ()
+    _ -> pure ()
+
+captureSimRunningDetail :: Text -> MVar Text -> SimProgress -> IO ()
+captureSimRunningDetail expected detailVar progress =
+  case simpStatus progress of
+    SimRunning detail | expected `Text.isInfixOf` detail -> do
+      _ <- tryPutMVar detailVar detail
+      pure ()
+    _ -> pure ()
+
+assertPipelineSuccess :: Either a b -> IO ()
+assertPipelineSuccess (Right _) = pure ()
+assertPipelineSuccess (Left _) = expectationFailure "pipeline failed"
+
+decodeGeneratorRequest :: RPCEnvelope -> IO InvokeGenerator
+decodeGeneratorRequest request = do
+  envType request `shouldBe` MsgInvokeGenerator
+  case Aeson.fromJSON (envPayload request) of
+    Aeson.Error err -> expectationFailure ("failed to decode invoke_generator payload: " <> err) >> fail "decode generator"
+    Aeson.Success decoded -> pure decoded
+
+sendGeneratorResult :: Transport -> RPCEnvelope -> InvokeGenerator -> IO ()
+sendGeneratorResult transport request invoke =
+  sendEnvelopeTo transport RPCEnvelope
+    { envType = MsgGeneratorResult
+    , envPayload = Aeson.toJSON GeneratorResult
+        { grTerrain = igTerrain invoke
+        , grOverlay = Nothing
+        , grMetadata = Nothing
+        }
+    , envRequestId = envRequestId request
+    }
+
+decodeSimulationRequest :: RPCEnvelope -> IO InvokeSimulation
+decodeSimulationRequest request = do
+  envType request `shouldBe` MsgInvokeSimulation
+  case Aeson.fromJSON (envPayload request) of
+    Aeson.Error err -> expectationFailure ("failed to decode invoke_simulation payload: " <> err) >> fail "decode simulation"
+    Aeson.Success decoded -> pure decoded
+
+sendSimulationResult :: Transport -> RPCEnvelope -> IO ()
+sendSimulationResult transport request =
+  sendEnvelopeTo transport RPCEnvelope
+    { envType = MsgSimulationResult
+    , envPayload = Aeson.toJSON SimulationResult
+        { srOverlay = overlayToJSON (emptyOverlay testOverlaySchema)
+        , srTerrainWrites = Nothing
+        }
+    , envRequestId = envRequestId request
+    }
+
+assertSimulationSuccess :: Either Text a -> IO ()
+assertSimulationSuccess (Right _) = pure ()
+assertSimulationSuccess (Left err) = expectationFailure (Text.unpack err)
 
 withTransportServer :: Text -> (TransportServer -> IO a) -> IO a
 withTransportServer pluginName = bracket acquire tsClose
@@ -401,6 +474,68 @@ spec = describe "Plugin Integration" $ do
       renamedRPCSeed `shouldBe` renamedControlSeed
       renamedRPCSeed `shouldNotBe` rpcSeed
 
+    it "surfaces plugin generator progress as correlated pipeline stage details" $
+      withConnectedTransports "pipeline-generator-progress" $ \host plugin -> do
+        let conn = newRPCConnection genOnlyManifest host Map.empty
+            rpcStage = rpcGeneratorStage conn
+            env = TopoEnv { teLogger = \_ -> pure () }
+            world = mkTestWorld (WorldConfig { wcChunkSize = 8 })
+            mkConfig seed seedVar detailVar = defaultPipelineConfig
+              { pipelineSeed = seed
+              , pipelineStages =
+                  [ captureSeedStage (stageSeedTag rpcStage) seedVar
+                  , rpcStage
+                  ]
+              , pipelineOnProgress = captureStageDetail "generator-progress" detailVar
+              }
+        seedA <- newEmptyMVar
+        seedB <- newEmptyMVar
+        detailA <- newEmptyMVar
+        detailB <- newEmptyMVar
+        doneA <- newEmptyMVar
+        doneB <- newEmptyMVar
+        _ <- forkIO (runPipeline (mkConfig 101 seedA detailA) env world >>= putMVar doneA)
+        _ <- forkIO (runPipeline (mkConfig 202 seedB detailB) env world >>= putMVar doneB)
+        controlSeedA <- takeMVarWithin "pipeline A control seed" seedA
+        controlSeedB <- takeMVarWithin "pipeline B control seed" seedB
+        controlSeedA `shouldNotBe` controlSeedB
+        firstRequest <- recvEnvelopeFrom plugin
+        secondRequest <- recvEnvelopeFrom plugin
+        firstInvoke <- decodeGeneratorRequest firstRequest
+        secondInvoke <- decodeGeneratorRequest secondRequest
+        (requestA, invokeA, requestB, invokeB) <-
+          if igSeed firstInvoke == controlSeedA && igSeed secondInvoke == controlSeedB
+            then pure (firstRequest, firstInvoke, secondRequest, secondInvoke)
+            else if igSeed firstInvoke == controlSeedB && igSeed secondInvoke == controlSeedA
+              then pure (secondRequest, secondInvoke, firstRequest, firstInvoke)
+              else expectationFailure "generator request seeds did not match pipeline runs" >> fail "generator seed map"
+        requestIdA <- requireRequestId requestA
+        requestIdB <- requireRequestId requestB
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgProgress
+          , envPayload = Aeson.toJSON (PluginProgress "generator-progress-B" 0.75)
+          , envRequestId = Just requestIdB
+          }
+        observedB <- takeMVarWithin "pipeline B plugin progress" detailB
+        observedB `shouldSatisfy` Text.isInfixOf "plugin:terrain-roughen: generator-progress-B"
+        observedB `shouldSatisfy` Text.isInfixOf "fraction=0.75"
+        observedB `shouldSatisfy` Text.isInfixOf "percent=75%"
+        leakedA <- timeout 200000 (takeMVar detailA)
+        leakedA `shouldBe` Nothing
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgProgress
+          , envPayload = Aeson.toJSON (PluginProgress "generator-progress-A" 0.25)
+          , envRequestId = Just requestIdA
+          }
+        observedA <- takeMVarWithin "pipeline A plugin progress" detailA
+        observedA `shouldSatisfy` Text.isInfixOf "plugin:terrain-roughen: generator-progress-A"
+        observedA `shouldSatisfy` Text.isInfixOf "fraction=0.25"
+        observedA `shouldSatisfy` Text.isInfixOf "percent=25%"
+        sendGeneratorResult plugin requestB invokeB
+        sendGeneratorResult plugin requestA invokeA
+        takeMVarWithin "pipeline A result" doneA >>= assertPipelineSuccess
+        takeMVarWithin "pipeline B result" doneB >>= assertPipelineSuccess
+
   ------------------------------------
   -- Manifest → Connection → SimNode
   ------------------------------------
@@ -496,6 +631,69 @@ spec = describe "Plugin Integration" $ do
             Left err -> err `shouldBe` "manifest missing writeOverlay capability"
             Right _ -> expectationFailure "expected capability rejection"
         SimNodeReader {} -> expectationFailure "expected SimNodeWriter"
+
+    it "surfaces plugin simulation progress as correlated simulation node diagnostics" $
+      withConnectedTransports "sim-node-progress" $ \host plugin -> do
+        let simManifest = civManifest
+              { rmSimulation = Just RPCSimulationDecl
+                  { rsdDependencies = []
+                  , rsdSchedule = defaultScheduleDecl
+                  }
+              }
+            conn = newRPCConnection simManifest host Map.empty
+            node = rpcSimNode conn
+            Right dag = buildSimDAG [node]
+            terrain = mkTestWorld (WorldConfig { wcChunkSize = 8 })
+            store = insertOverlay (emptyOverlay testOverlaySchema) emptyOverlayStore
+            runTick tickValue detailVar doneVar =
+              tickSimulation dag (captureSimRunningDetail "sim-progress" detailVar)
+                terrain store
+                (CalendarDate { cdYear = 0, cdDayOfYear = 0, cdHourOfDay = 0 })
+                (WorldTime { wtTick = tickValue, wtTickRate = simulationTickSeconds })
+                1
+                >>= putMVar doneVar
+        detailA <- newEmptyMVar
+        detailB <- newEmptyMVar
+        doneA <- newEmptyMVar
+        doneB <- newEmptyMVar
+        _ <- forkIO (runTick 11 detailA doneA)
+        _ <- forkIO (runTick 22 detailB doneB)
+        firstRequest <- recvEnvelopeFrom plugin
+        secondRequest <- recvEnvelopeFrom plugin
+        firstInvoke <- decodeSimulationRequest firstRequest
+        secondInvoke <- decodeSimulationRequest secondRequest
+        (requestA, requestB) <-
+          if isWorldTime firstInvoke == 11 && isWorldTime secondInvoke == 22
+            then pure (firstRequest, secondRequest)
+            else if isWorldTime firstInvoke == 22 && isWorldTime secondInvoke == 11
+              then pure (secondRequest, firstRequest)
+              else expectationFailure "simulation request world times did not match tick runs" >> fail "simulation request map"
+        requestIdA <- requireRequestId requestA
+        requestIdB <- requireRequestId requestB
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgProgress
+          , envPayload = Aeson.toJSON (PluginProgress "sim-progress-B" 0.8)
+          , envRequestId = Just requestIdB
+          }
+        observedB <- takeMVarWithin "simulation B plugin progress" detailB
+        observedB `shouldSatisfy` Text.isInfixOf "plugin:civilization: sim-progress-B"
+        observedB `shouldSatisfy` Text.isInfixOf "fraction=0.8"
+        observedB `shouldSatisfy` Text.isInfixOf "percent=80%"
+        leakedA <- timeout 200000 (takeMVar detailA)
+        leakedA `shouldBe` Nothing
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgProgress
+          , envPayload = Aeson.toJSON (PluginProgress "sim-progress-A" 0.2)
+          , envRequestId = Just requestIdA
+          }
+        observedA <- takeMVarWithin "simulation A plugin progress" detailA
+        observedA `shouldSatisfy` Text.isInfixOf "plugin:civilization: sim-progress-A"
+        observedA `shouldSatisfy` Text.isInfixOf "fraction=0.2"
+        observedA `shouldSatisfy` Text.isInfixOf "percent=20%"
+        sendSimulationResult plugin requestB
+        sendSimulationResult plugin requestA
+        takeMVarWithin "simulation A result" doneA >>= assertSimulationSuccess
+        takeMVarWithin "simulation B result" doneB >>= assertSimulationSuccess
 
   ------------------------------------
   -- Connection parameter threading
@@ -744,6 +942,7 @@ mkSimContext world = SimContext
   , scWorldTime = twWorldTime world
   , scDeltaTicks = 1
   , scOverlays = Map.empty
+  , scReportProgress = \_ -> pure ()
   }
 
 testOverlaySchema :: OverlaySchema
