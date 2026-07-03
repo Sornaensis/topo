@@ -29,6 +29,7 @@ import Topo.Overlay
   ( Overlay(..)
   , OverlayChunk(..)
   , OverlayData(..)
+  , OverlayProvenance(..)
   , OverlayRecord(..)
   , OverlayValue(..)
   , emptyOverlayStore
@@ -47,6 +48,10 @@ import Topo.Persistence.WorldBundle
   , saveWorldBundle
   , saveWorldBundleWithProvenance
   , saveWorldBundleWithProvenanceAndHooks
+  )
+import Topo.Simulation.Schedule
+  ( SimulationCatchUpPolicy(..)
+  , SimulationScheduleState(..)
   )
 import Topo.Types (ChunkId(..), TileCoord(..), WorldConfig(..))
 import Topo.World (TerrainWorld(..), emptyWorld, generateTerrainChunk, getElevationAt, setTerrainChunk)
@@ -137,6 +142,38 @@ spec = describe "WorldBundle" $ do
             Just ov -> do
               ovProvenance ov `shouldBe` overlayProvenanceFixture
               case ovData ov of
+                DenseData _ -> expectationFailure "expected sparse overlay"
+                SparseData chunks -> IntMap.member 0 chunks `shouldBe` True
+
+  it "round-trips overlay schedule provenance through the world bundle sidecar" $
+    withSystemTempDirectory "topo-world-bundle-schedule" $ \tmp -> do
+      let topoPath = tmp </> "world.topo"
+          config = WorldConfig { wcChunkSize = 16 }
+          scheduledProvenance = overlayProvenanceFixture
+            { opSchedule = Just scheduleFixture }
+          overlay = mkSparseFloatOverlay
+            "scheduled_sparse"
+            "world bundle scheduled overlay"
+            0.75
+            scheduledProvenance
+          world0 = (emptyWorld config defaultHexGridMeta)
+            { twOverlays = insertOverlay overlay emptyOverlayStore }
+
+      saveResult <- saveWorldBundle topoPath world0
+      case saveResult of
+        Left err -> expectationFailure (show err)
+        Right () -> pure ()
+
+      loadResult <- loadWorldBundle StrictManifest topoPath
+      case loadResult of
+        Left err -> expectationFailure (show err)
+        Right world1 -> do
+          twOverlayManifest world1 `shouldBe` ["scheduled_sparse"]
+          case lookupOverlay "scheduled_sparse" (twOverlays world1) of
+            Nothing -> expectationFailure "expected scheduled_sparse overlay"
+            Just loadedOverlay -> do
+              opSchedule (ovProvenance loadedOverlay) `shouldBe` Just scheduleFixture
+              case ovData loadedOverlay of
                 DenseData _ -> expectationFailure "expected sparse overlay"
                 SparseData chunks -> IntMap.member 0 chunks `shouldBe` True
 
@@ -333,6 +370,15 @@ mkWorldWithDenseAndSparseOverlays =
       withSparse = insertOverlay sparseOverlay emptyOverlayStore
       withBoth = insertOverlay denseOverlay withSparse
   in base { twOverlays = withBoth }
+
+scheduleFixture :: SimulationScheduleState
+scheduleFixture = SimulationScheduleState
+  { schedIntervalTicks = 6
+  , schedPhaseTicks = 2
+  , schedLastFireTick = Just 14
+  , schedNextFireTick = 20
+  , schedCatchUpPolicy = SkipMissed
+  }
 
 sparseOverlaySchema :: Text.Text -> OverlaySchema
 sparseOverlaySchema name = sparseFloatOverlaySchema name "world bundle test overlay"

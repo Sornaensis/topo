@@ -50,6 +50,29 @@ spec = describe "Weather" $ do
       Just wk -> U.length (wcTemp wk) `shouldBe` n
       Nothing -> expectationFailure "missing weather chunk"
 
+  it "runs weather through the hourly pipeline, changing weather and advancing one hour" $ do
+    let config = WorldConfig { wcChunkSize = 4 }
+        n = chunkTileCount config
+        climate = ClimateChunk
+          { ccTempAvg = U.replicate n 0.5
+          , ccPrecipAvg = U.replicate n 0.5
+          , ccWindDirAvg = U.replicate n 0
+          , ccWindSpdAvg = U.replicate n 0.3
+          , ccHumidityAvg = U.replicate n 0.2
+          , ccTempRange = U.replicate n 0
+          , ccPrecipSeasonality = U.replicate n 0
+          }
+        world0 = setClimateChunk (ChunkId 0) climate (emptyWorld config defaultHexGridMeta)
+    worldInit <- initWeatherOnly defaultWeatherConfig world0
+    tempInit <- case firstWeatherTemp worldInit of
+      Nothing -> expectationFailure "missing initial weather temperature" >> pure []
+      Just temps -> pure temps
+    worldTicked <- runWeatherTick defaultWeatherConfig worldInit
+    wtTick (twWorldTime worldTicked) `shouldBe` wtTick (twWorldTime worldInit) + 1
+    case firstWeatherTemp worldTicked of
+      Nothing -> expectationFailure "missing ticked weather temperature"
+      Just temps -> temps `shouldNotBe` tempInit
+
   it "applies seasonal offsets" $ do
     let config = WorldConfig { wcChunkSize = 4 }
         climate = ClimateChunk
@@ -879,6 +902,11 @@ initWeatherOnly weatherCfg world0 = do
         }
   result <- runPipeline pipeline env world0
   expectPipeline result
+
+firstWeatherTemp :: TerrainWorld -> Maybe [Float]
+firstWeatherTemp world = do
+  chunk <- getWeatherChunk (ChunkId 0) world
+  pure (U.toList (wcTemp chunk))
 
 runWeatherTick :: WeatherConfig -> TerrainWorld -> IO TerrainWorld
 runWeatherTick weatherCfg world =

@@ -134,6 +134,7 @@ spec = describe "Simulation" $ do
   executionOrderSpec
   terrainWriteSpec
   failureSpec
+  scheduleHelperSpec
   pipelineSpec
   overlayIsolationSpec
   weatherSimNodeSpec
@@ -421,6 +422,38 @@ failureSpec = describe "failure handling" $ do
     simpStatus (last events) `shouldBe` SimCompleted
 
 -- =========================================================================
+-- Schedule helpers
+-- =========================================================================
+
+scheduleHelperSpec :: Spec
+scheduleHelperSpec = describe "schedule helpers" $ do
+
+  it "initializes the first hourly fire after tick 0" $ do
+    let sched = initialScheduleAt 0 hourlyScheduleDecl
+    schedIntervalTicks sched `shouldBe` 1
+    schedPhaseTicks sched `shouldBe` 0
+    schedLastFireTick sched `shouldBe` Nothing
+    schedNextFireTick sched `shouldBe` 1
+    schedCatchUpPolicy sched `shouldBe` RunOnceIfDue
+
+  it "detects due ticks and advances the next fire cursor" $ do
+    let sched0 = initialScheduleAt 0 hourlyScheduleDecl
+    scheduleDue 0 sched0 `shouldBe` False
+    scheduleDue 1 sched0 `shouldBe` True
+    let sched1 = markScheduleFired 1 sched0
+    schedLastFireTick sched1 `shouldBe` Just 1
+    schedNextFireTick sched1 `shouldBe` 2
+
+  it "rejects invalid schedule declarations" $ do
+    validateScheduleDecl (hourlyScheduleDecl { schedDeclIntervalTicks = 0 })
+      `shouldSatisfy` isLeft
+    validateScheduleDecl (hourlyScheduleDecl
+      { schedDeclIntervalTicks = 3
+      , schedDeclPhaseTicks = 3
+      })
+      `shouldSatisfy` isLeft
+
+-- =========================================================================
 -- Hourly tick pipeline
 -- =========================================================================
 
@@ -524,6 +557,37 @@ pipelineSpec = describe "hourly simulation tick pipeline" $ do
     case result of
       Left err -> expectationFailure (T.unpack err)
       Right _ -> readIORef seenSourceRef >>= (`shouldBe` Just "target-hour")
+
+  it "lets a due plugin dependent observe weather updated for the same target hour" $ do
+    seenWeatherRef <- newIORef Nothing
+    let consumerNode = SimNodeReader
+          { snrId = SimNodeId "weather-consumer"
+          , snrOverlayName = "weather-consumer"
+          , snrDependencies = [SimNodeId "weather"]
+          , snrSchedule = hourlyScheduleDecl
+          , snrReadTick = \ctx ov -> do
+              writeIORef seenWeatherRef $ do
+                weatherOverlay <- Map.lookup "weather" (scOverlays ctx)
+                temp <- firstWeatherTempFromOverlay weatherOverlay
+                pure ( wtTick (scWorldTime ctx)
+                     , cdHourOfDay (scCalendar ctx)
+                     , temp
+                     )
+              pure (Right ov)
+          }
+        Right dag = buildSimDAG [weatherSimNode defaultWeatherConfig, consumerNode]
+    terrain <- mkTestTerrainWithClimate (WorldConfig 4)
+    let initialStore = insertOverlay (emptyOverlay weatherOverlaySchema) (mkStore ["weather-consumer"])
+        world0 = terrain { twOverlays = initialStore }
+    result <- runSimulationTickPipeline world0 dag noProgress Nothing
+    case result of
+      Left err -> expectationFailure (T.unpack err)
+      Right tickResult -> do
+        expectedTemp <- case lookupOverlay "weather" (stprOverlayStore tickResult)
+                          >>= firstWeatherTempFromOverlay of
+          Nothing -> expectationFailure "expected updated weather temperature" >> pure 0
+          Just temp -> pure temp
+        readIORef seenWeatherRef >>= (`shouldBe` Just (1, 1.0, expectedTemp))
 
   it "lets due nodes read persisted overlays for skipped dependencies" $ do
     skippedRanRef <- newIORef False
@@ -637,6 +701,14 @@ isLeft _        = False
 isJust :: Maybe a -> Bool
 isJust (Just _) = True
 isJust _        = False
+
+firstWeatherTempFromOverlay :: Overlay -> Maybe Float
+firstWeatherTempFromOverlay overlay = case ovData overlay of
+  DenseData chunks -> do
+    fields <- IntMap.lookup 0 chunks
+    temps <- fields V.!? 0
+    if U.null temps then Nothing else Just (temps U.! 0)
+  SparseData _ -> Nothing
 
 -- | Create a minimal test terrain world (no climate data).
 mkTestTerrain :: IO TerrainWorld

@@ -504,6 +504,31 @@ spec = describe "Plugin.RPC" $ do
         Right manifest -> fmap rsdSchedule (rmSimulation manifest) `shouldBe` Just defaultScheduleDecl
         Left err -> expectationFailure (Text.unpack err)
 
+    it "surfaces invalid interval and phase schedule diagnostics" $ do
+      let scheduled name fields = jsonBS $ object
+            [ "manifestVersion" .= manifestV3
+            , "name" .= (name :: Text)
+            , "version" .= ("1.0.0" :: Text)
+            , "runtime" .= manifestRuntimeJSON
+            , "simulation" .= object fields
+            , "overlay" .= object ["schemaFile" .= (name <> ".toposchema")]
+            , "capabilities" .= (["writeOverlay"] :: [Text])
+            ]
+          expectScheduleDiagnostic bytes =
+            case parseManifest bytes of
+              Left err -> expectationFailure (Text.unpack err)
+              Right manifest -> validateManifest manifest
+                `shouldSatisfy` any isInvalidSimulationScheduleField
+      expectScheduleDiagnostic $ scheduled "bad-interval"
+        [ "dependencies" .= ([] :: [Text])
+        , "interval_ticks" .= (0 :: Word64)
+        ]
+      expectScheduleDiagnostic $ scheduled "bad-phase"
+        [ "dependencies" .= ([] :: [Text])
+        , "interval_ticks" .= (3 :: Word64)
+        , "phase_ticks" .= (3 :: Word64)
+        ]
+
     it "rejects unknown simulation catch-up policies" $ do
       let manifestBytes = jsonBS $ object
             [ "manifestVersion" .= manifestV3

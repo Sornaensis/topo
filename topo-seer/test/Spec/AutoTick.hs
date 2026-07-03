@@ -4,6 +4,7 @@ module Spec.AutoTick (spec) where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, tryPutMVar)
+import Control.Monad (forM_)
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Aeson (Value(..), object, (.=))
@@ -94,6 +95,29 @@ spec = describe "AutoTick scheduler" $ do
       uiSimTickRate ui `shouldBe` 0
       uiSimTickCount ui `shouldBe` 0
 
+  it "advances one simulation hour per successful auto tick across UI rates" $
+    forM_ [0.25 :: Double, 0.5, 1.0] $ \rate ->
+      withHeadlessApp defaultHeadlessConfig $ \app -> do
+        installWorld app
+        let handles = appHandles app
+        rsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= rate])
+        srSuccess rsp `shouldBe` True
+
+        advanced <- awaitTrue 120 $ do
+          ui <- getUiSnapshot (ahUiHandle handles)
+          pure (uiSimTickCount ui >= 1)
+        advanced `shouldBe` True
+
+        stopRsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= False])
+        srSuccess stopRsp `shouldBe` True
+        stable <- awaitTrue 50 $ do
+          ui <- getUiSnapshot (ahUiHandle handles)
+          dag <- getSimDagSnapshot (ahSimulationHandle handles)
+          pure (sdsLastTick dag == uiSimTickCount ui && sdsPendingTick dag == Nothing)
+        stable `shouldBe` True
+        ui <- getUiSnapshot (ahUiHandle handles)
+        uiSimTickCount ui `shouldSatisfy` (> 0)
+
   it "ticks a headless world through the same state-update path as manual ticks" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       installWorld app
@@ -145,6 +169,31 @@ spec = describe "AutoTick scheduler" $ do
       case pluginNodes of
         [node] -> sdnsStatus node `shouldBe` Text.pack "completed"
         _ -> expectationFailure "Expected one executable plugin node in auto tick DAG"
+
+  it "manual sim_tick count advances exactly that many hours and pipeline steps" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      workerStarted <- newEmptyMVar
+      runCountRef <- newIORef (0 :: Int)
+      installResponsiveWorld app workerStarted runCountRef
+      let handles = appHandles app
+
+      rsp <- dispatch app "sim_tick" (object ["count" .= (3 :: Int)])
+      srSuccess rsp `shouldBe` True
+
+      tickAdvanced <- awaitTrue 150 $ do
+        ui <- getUiSnapshot (ahUiHandle handles)
+        pure (uiSimTickCount ui == 3)
+      tickAdvanced `shouldBe` True
+
+      runCount <- readRunCount runCountRef
+      runCount `shouldBe` 3
+      terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
+      pluginValue <- case lookupOverlay pluginOverlayName (tsOverlayStore terrainSnap) >>= firstPluginOverlayValue of
+        Just value -> pure value
+        Nothing -> expectationFailure "Expected plugin overlay after manual counted tick" >> pure 0
+      pluginValue `shouldBe` 3
+      dag <- getSimDagSnapshot (ahSimulationHandle handles)
+      sdsLastTick dag `shouldBe` 3
 
   it "keeps commands responsive and atlas queues bounded while max-rate auto ticking" $ do
     completed <- timeout 7000000 $

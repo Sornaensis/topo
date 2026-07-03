@@ -527,7 +527,17 @@ spec = describe "Simulation actor" $ do
     tsWeatherVersion terrainSnap1 `shouldBe` tsWeatherVersion terrainSnap0
     dagSnapshot <- getSimDagSnapshot simHandle
     sdsLastTick dagSnapshot `shouldBe` 1
-    map sdnsStatus (sdsNodes dagSnapshot) `shouldSatisfy` elem (Text.pack "skipped")
+    let weatherNodes = filter ((== Text.pack "weather") . sdnsNodeId) (sdsNodes dagSnapshot)
+    case weatherNodes of
+      [node] -> do
+        sdnsStatus node `shouldBe` Text.pack "skipped"
+        sdnsScheduleIntervalTicks node `shouldBe` Just 10
+        sdnsSchedulePhaseTicks node `shouldBe` Just 0
+        sdnsScheduleLastFireTick node `shouldBe` Nothing
+        sdnsScheduleNextFireTick node `shouldBe` Just 10
+        sdnsScheduleDue node `shouldBe` Just False
+      _ -> expectationFailure "Expected one skipped weather node in simulation DAG"
+    map stleStatus (sdsTickLogs dagSnapshot) `shouldSatisfy` elem (Text.pack "skipped")
 
   it "keeps control calls responsive and folds only the latest queued tick while a worker runs" $ withSystem $ \system -> do
     simHandle <- get @Simulation system
@@ -727,4 +737,10 @@ spec = describe "Simulation actor" $ do
         sdnsKind node `shouldBe` Text.pack "plugin"
         sdnsDependencies node `shouldBe` [Text.pack "weather"]
         sdnsStatus node `shouldBe` Text.pack "completed"
+        sdnsScheduleIntervalTicks node `shouldBe` Just 1
+        sdnsSchedulePhaseTicks node `shouldBe` Just 0
+        sdnsScheduleCatchUp node `shouldBe` Just (Text.pack "run_once_if_due")
+        sdnsScheduleLastFireTick node `shouldBe` Just 1
+        sdnsScheduleNextFireTick node `shouldBe` Just 2
+        sdnsScheduleDue node `shouldBe` Just False
       _ -> expectationFailure "Expected one executable plugin node in simulation DAG"
