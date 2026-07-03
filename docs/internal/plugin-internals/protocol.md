@@ -153,11 +153,18 @@ include `providerId`, optional `consumerId`, `source`, optional `grant`,
 `access`, `resources`, `capabilityScope`, `status`, optional opaque
 `reference`, `configRefs`, and optional opaque `diagnostics`.
 
-Startup helpers classify required references with `unknown`, `unconfigured`, or
-`unavailable` states as blockers, and provider/optional degradations as degraded
-startup diagnostics. Provider crash, transport failure, provider-reported
-failure, shutdown, or restart-limit failure should revoke routing by marking
-provider/grant availability unavailable until a fresh ready status arrives.
+PluginManager brokers declared consumer refs automatically. The dependency
+resolver selects an exact provider when `provider` is present, otherwise an
+eligible provider in deterministic dependency/startup order. A required ref only
+blocks startup when no ready, capability/access/resource-compatible provider
+source+grant can be resolved; optional unresolved refs become diagnostics. After
+the refresh is committed and the consumer is connected, the host sends one-way
+`external_data_source_grant` messages and tracks them by
+consumer/provider/source/grant so disable/failure/shutdown/restart or
+source/grant incompatibility can produce `external_data_source_revoke`. Provider
+crash, transport failure, provider-reported failure, shutdown, or restart-limit
+failure should revoke routing by marking provider/grant availability unavailable
+until a fresh ready status arrives.
 
 ## Terrain payload contract
 

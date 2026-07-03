@@ -15,6 +15,8 @@ module Actor.PluginManager.Types
   , PluginExternalDataSourceStatusDiagnostic(..)
   , PluginExternalDataSourceGrantDiagnostic(..)
   , PluginExternalDataSourceDiagnostic(..)
+  , ExternalDataSourceGrantKey(..)
+  , ExternalDataSourceGrantBrokerState(..)
   , LoadedPlugin(..)
   , PluginManagerState(..)
   , emptyPluginManagerState
@@ -70,6 +72,7 @@ import Topo.Plugin.RPC
   , RPCExternalDataSourceConfigRef(..)
   , RPCExternalDataSourceDecl(..)
   , RPCExternalDataSourceGrant(..)
+  , RPCExternalDataSourceGrantMessage(..)
   , RPCExternalDataSourceHealth(..)
   , RPCExternalDataSourceRef(..)
   , RPCExternalDataSourceStatus(..)
@@ -356,6 +359,9 @@ data PluginExternalDataSourceDiagnostic = PluginExternalDataSourceDiagnostic
   , pedsKind :: !(Maybe Text)
   , pedsDescription :: !(Maybe Text)
   , pedsRequired :: !(Maybe Bool)
+  , pedsResolvedProvider :: !(Maybe Text)
+  , pedsBrokerState :: !Text
+  , pedsBrokerReason :: !(Maybe Text)
   , pedsAccess :: ![RPCExternalDataSourceAccess]
   , pedsCapabilities :: ![RPCExternalDataSourceCapability]
   , pedsResources :: ![Text]
@@ -388,6 +394,7 @@ instance ToJSON PluginExternalDataSourceDiagnostic where
     , "access" .= pedsAccess source
     , "capabilities" .= pedsCapabilities source
     , "resources" .= pedsResources source
+    , "broker_state" .= pedsBrokerState source
     , "status" .= pedsStatus source
     , "status_summary" .= pedsStatusSummary source
     , "status_detail" .= pedsStatusDetail source
@@ -415,6 +422,8 @@ instance ToJSON PluginExternalDataSourceDiagnostic where
     [ "kind" .= kind | Just kind <- [pedsKind source] ] <>
     [ "description" .= description | Just description <- [pedsDescription source] ] <>
     [ "required" .= required | Just required <- [pedsRequired source] ] <>
+    [ "resolved_provider" .= provider | Just provider <- [pedsResolvedProvider source] ] <>
+    [ "broker_reason" .= reason | Just reason <- [pedsBrokerReason source] ] <>
     [ "health" .= health | Just health <- [pedsHealth source] ] <>
     [ "access_mode" .= accessMode | Just accessMode <- [pedsAccessMode source] ] <>
     [ "failure_reason" .= reason | Just reason <- [pedsFailureReason source] ]
@@ -525,6 +534,9 @@ providerExternalDataSourceDiagnostic pluginName statusOverride source =
     , pedsKind = Just (redsdKind source)
     , pedsDescription = nonEmptyText (redsdDescription source)
     , pedsRequired = Nothing
+    , pedsResolvedProvider = Just pluginName
+    , pedsBrokerState = if statusAvailable status then "available" else "unavailable"
+    , pedsBrokerReason = statusFailureReason status
     , pedsAccess = []
     , pedsCapabilities = redsdCapabilities source
     , pedsResources = redsdResources source
@@ -561,6 +573,9 @@ consumerExternalDataSourceDiagnostic pluginName statusForRef ref =
     , pedsKind = Nothing
     , pedsDescription = Nothing
     , pedsRequired = Just (redsrRequired ref)
+    , pedsResolvedProvider = Just providerName
+    , pedsBrokerState = consumerBrokerState providerName status ref
+    , pedsBrokerReason = statusFailureReason status
     , pedsAccess = redsrAccess ref
     , pedsCapabilities = redssCapabilityScope status
     , pedsResources = redsrResources ref
@@ -580,6 +595,14 @@ consumerExternalDataSourceDiagnostic pluginName statusForRef ref =
     , pedsDataReadGrant = ExternalAccessRead `elem` redsrAccess ref
     , pedsDataWriteGrant = any (`elem` redsrAccess ref) [ExternalAccessWrite, ExternalAccessAdmin]
     }
+
+consumerBrokerState :: Text -> RPCExternalDataSourceStatus -> RPCExternalDataSourceRef -> Text
+consumerBrokerState providerName status ref
+  | providerName == "unresolved" = "unresolved"
+  | statusAvailable status = "sent"
+  | redssState status == ExternalStatusUnavailable && redsrRequired ref = "unavailable"
+  | redssState status == ExternalStatusUnavailable = "unavailable"
+  | otherwise = "unresolved"
 
 grantDiagnostic :: Maybe (RPCExternalDataSourceStatus -> RPCExternalDataSourceStatus) -> RPCExternalDataSourceGrant -> PluginExternalDataSourceGrantDiagnostic
 grantDiagnostic statusOverride grant =
@@ -838,7 +861,8 @@ externalDataSourcePanelLines :: PluginExternalDataSourceDiagnostic -> [Text]
 externalDataSourcePanelLines source =
   [ "External " <> pedsRole source <> " " <> pedsSource source
       <> relationshipText source
-      <> ": " <> pedsStatusSummary source
+      <> ": broker=" <> pedsBrokerState source
+      <> "; " <> pedsStatusSummary source
       <> "; resources=" <> summaryOrNone (pedsResources source)
       <> failureSuffix (pedsFailureReason source)
   ] <> map grantPanelLine (pedsGrants source)
@@ -902,6 +926,28 @@ capabilityText CapWriteWorld = "writeWorld"
 capabilityText CapDataRead = "dataRead"
 capabilityText CapDataWrite = "dataWrite"
 
+-- | Stable identity for a grant that the host has attempted to broker to a
+-- consumer. The provider owns the referenced data; this key is only a host
+-- lifecycle/revocation handle.
+data ExternalDataSourceGrantKey = ExternalDataSourceGrantKey
+  { edsgkConsumer :: !Text
+  , edsgkRef :: !Text
+  , edsgkProvider :: !Text
+  , edsgkSource :: !Text
+  , edsgkGrant :: !Text
+  } deriving (Eq, Ord, Show)
+
+-- | Host-side send/revocation state for a brokered external data-source grant.
+data ExternalDataSourceGrantBrokerState = ExternalDataSourceGrantBrokerState
+  { edsgbsKey :: !ExternalDataSourceGrantKey
+  , edsgbsRequired :: !Bool
+  , edsgbsMessage :: !RPCExternalDataSourceGrantMessage
+  , edsgbsConsumerReadyAt :: !UTCTime
+  , edsgbsProviderReadyAt :: !UTCTime
+  , edsgbsState :: !Text
+  , edsgbsReason :: !(Maybe Text)
+  } deriving (Eq, Show)
+
 -- | A discovered plugin with its manifest and current state.
 data LoadedPlugin = LoadedPlugin
   { lpName       :: !Text
@@ -942,6 +988,8 @@ data PluginManagerState = PluginManagerState
     -- ^ Pre-refresh snapshot used to roll back interrupted refreshes.
   , pmsPendingShutdown :: !(Maybe (Map Text LoadedPlugin))
     -- ^ Pre-shutdown snapshot used to roll back interrupted shutdowns.
+  , pmsExternalDataSourceGrants :: !(Map ExternalDataSourceGrantKey ExternalDataSourceGrantBrokerState)
+    -- ^ Grants the host has sent and must revoke deterministically.
   }
 
 emptyPluginManagerState :: PluginManagerState
@@ -952,6 +1000,7 @@ emptyPluginManagerState = PluginManagerState
   , pmsDisabledPlugins = Set.empty
   , pmsPendingRefresh = Nothing
   , pmsPendingShutdown = Nothing
+  , pmsExternalDataSourceGrants = Map.empty
   }
 
 -- | Whether a manifest needs a live RPC session to serve its declared

@@ -13,7 +13,9 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 
 import Actor.PluginManager.Types
-  ( LoadedPlugin(..)
+  ( ExternalDataSourceGrantBrokerState(..)
+  , ExternalDataSourceGrantKey(..)
+  , LoadedPlugin(..)
   , PluginLifecycleSnapshot(..)
   , PluginLifecycleState(..)
   , PluginManagerState(..)
@@ -27,6 +29,7 @@ import Topo.Plugin.RPC
   , RPCExternalDataSourceAvailability(..)
   , RPCExternalDataSourceDecl(..)
   , RPCExternalDataSourceGrant(..)
+  , RPCExternalDataSourceGrantMessage(..)
   , RPCExternalDataSourceHealth(..)
   , RPCExternalDataSourceRef(..)
   , RPCExternalDataSourceStatus(..)
@@ -68,7 +71,7 @@ collectPluginExternalDataSources st =
   | lp <- plugins
   , let manifest = lpManifest lp
         providedSources = markProvidedSources lp (rmExternalDataSources manifest)
-        consumedRefs = map markConsumedRefUnavailable (rmExternalDataSourceRefs manifest)
+        consumedRefs = map (markConsumedRefUnavailable lp) (rmExternalDataSourceRefs manifest)
   , not (null providedSources && null consumedRefs)
   ]
   where
@@ -76,20 +79,36 @@ collectPluginExternalDataSources st =
     disabled = pmsDisabledPlugins st
     providerReady = Map.fromList
       [(lpName lp, pluginExternalProviderReady disabled lp) | lp <- plugins]
+    activeGrants = pmsExternalDataSourceGrants st
 
     markProvidedSources lp sources
       | pluginExternalProviderReady disabled lp = sources
       | otherwise = map (markSourceUnavailable (lpName lp) unavailableProviderReason) sources
 
-    markConsumedRefUnavailable ref = case redsrProvider ref of
-      Just providerName
-        | Map.findWithDefault False providerName providerReady -> ref
-        | otherwise ->
-            ref
-              { redsrStatus =
-                  unavailableStatus providerName unavailableProviderReason (redsrStatus ref)
-              }
-      _ -> ref
+    markConsumedRefUnavailable lp ref = case activeGrantForRef lp ref of
+      Just grantState -> ref
+        { redsrProvider = Just (edsgkProvider (edsgbsKey grantState))
+        , redsrStatus = redsgmStatus (edsgbsMessage grantState)
+        }
+      Nothing -> case redsrProvider ref of
+        Just providerName
+          | Map.findWithDefault False providerName providerReady -> ref
+          | otherwise ->
+              ref
+                { redsrStatus =
+                    unavailableStatus providerName unavailableProviderReason (redsrStatus ref)
+                }
+        _ -> ref
+
+    activeGrantForRef lp ref =
+      let matches grantState =
+            let key = edsgbsKey grantState
+            in edsgbsState grantState == "sent"
+              && edsgkConsumer key == lpName lp
+              && edsgkRef key == redsrName ref
+      in case filter matches (Map.elems activeGrants) of
+        grantState:_ -> Just grantState
+        [] -> Nothing
 
 pluginExternalProviderReady :: Set.Set Text -> LoadedPlugin -> Bool
 pluginExternalProviderReady disabled lp =

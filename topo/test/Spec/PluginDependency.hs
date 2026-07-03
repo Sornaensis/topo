@@ -214,6 +214,7 @@ spec = describe "PluginDependency" $ do
                   , desgCapabilities = [ExternalSourceQuery]
                   , desgResources = ["settlements"]
                   , desgStatus = ExternalStatusReady
+                  , desgBrokerable = True
                   }
               ]
           }
@@ -241,6 +242,7 @@ spec = describe "PluginDependency" $ do
                   , desgCapabilities = [ExternalSourceQuery]
                   , desgResources = ["settlements"]
                   , desgStatus = ExternalStatusUnavailable
+                  , desgBrokerable = False
                   }
               ]
           }
@@ -257,6 +259,38 @@ spec = describe "PluginDependency" $ do
 
     map dgdStatus diagnostics `shouldBe` [DependencyMissing, DependencyMissing]
     map dgdBlocking diagnostics `shouldBe` [True, True]
+
+  it "treats ready-state but unavailable external data-source status as unbrokerable" $ do
+    let unavailableReadySource = (externalProvider "ledger" ["settlements"])
+          { despBrokerable = False
+          }
+        disabledReadyGrant = (externalProvider "archive" ["settlements"])
+          { despGrants =
+              [ DependencyExternalDataSourceGrant
+                  { desgName = "read"
+                  , desgAccess = [ExternalAccessRead]
+                  , desgCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
+                  , desgResources = ["settlements"]
+                  , desgStatus = ExternalStatusReady
+                  , desgBrokerable = False
+                  }
+              ]
+          }
+        providerPlugin = (provider "geo" [])
+          { dpExternalDataSources = [unavailableReadySource, disabledReadyGrant]
+          }
+        sourceConsumer = provider "source-consumer"
+          [ required (DependencyExternalDataSource (ExternalDataSourceDependency (Just "geo") "source-consumer" "ledger" (Just "read") [ExternalAccessRead] ["settlements"]))
+          ]
+        grantConsumer = provider "grant-consumer"
+          [ required (DependencyExternalDataSource (ExternalDataSourceDependency (Just "geo") "grant-consumer" "archive" (Just "read") [ExternalAccessRead] ["settlements"]))
+          ]
+        diagnostics = validateDependencies (defaultDependencyResolverInput [providerPlugin, sourceConsumer, grantConsumer])
+        bindings = resolveExternalDataSourceBindings (defaultDependencyResolverInput [providerPlugin, sourceConsumer, grantConsumer])
+
+    map dgdStatus diagnostics `shouldBe` [DependencyMissing, DependencyMissing]
+    map dgdBlocking diagnostics `shouldBe` [True, True]
+    desbrBindings bindings `shouldBe` []
 
   it "detects required dependency cycles through plugin, resource, and external data-source provider edges" $ do
     let pluginA = (provider "a" [required (DependencyPlugin (PluginDependency "b" VersionAny))])
@@ -312,6 +346,10 @@ spec = describe "PluginDependency" $ do
     droBlockedPlugins order `shouldBe` ["a-ledger"]
     droStartupOrder order `shouldBe` ["z-ledger", "consumer"]
     droSimulationOrder order `shouldBe` ["z-ledger", "consumer"]
+    let bindings = resolveExternalDataSourceBindings (defaultDependencyResolverInput [consumer, healthyLedger, blockedLedger])
+    map desbProvider (desbrBindings bindings) `shouldBe` ["z-ledger"]
+    map desbGrant (desbrBindings bindings) `shouldBe` ["read"]
+    desbrDiagnostics bindings `shouldBe` []
 
   it "uses an acyclic unqualified overlay provider when an earlier match would cycle" $ do
     let consumer = provider "a-consumer"
@@ -430,6 +468,7 @@ externalProvider name resources = DependencyExternalDataSourceProvider
   , despCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
   , despResources = resources
   , despStatus = ExternalStatusReady
+  , despBrokerable = True
   , despGrants =
       [ DependencyExternalDataSourceGrant
           { desgName = "read"
@@ -437,6 +476,7 @@ externalProvider name resources = DependencyExternalDataSourceProvider
           , desgCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
           , desgResources = resources
           , desgStatus = ExternalStatusReady
+          , desgBrokerable = True
           }
       ]
   }

@@ -29,13 +29,17 @@ External data-source grants use `RPCExternalDataSourceGrant`; topo treats all
 opaque provider-owned metadata. Config refs record a local name, origin (`user`,
 `provider`, `environment`, or `deployment`), opaque key, required flag,
 compatibility marker, and optional metadata. Status can carry backend-neutral
-provider ID, availability, health, access-mode, capability-scope, version, and compatibility
-markers. Access is brokered only when the grant has the generic capability for
-that access (`read` -> `query`, `write` -> `mutate`, `admin` -> `migrate`).
-Migrations, backing schemas, connection details, failure cleanup, locks, writer
-coordination, and consistency rules remain with provider plugins, adapters, or
-external systems; the SDK only serializes backend-neutral declarations, grants,
-status/errors, config references, and opaque metadata.
+provider ID, availability, health, access-mode, capability-scope, version, and
+compatibility markers. The normal SDK path is declarative: providers populate
+`pdExternalDataSources`, consumers populate `pdExternalDataSourceRefs`, and the
+host automatically sends grant/revocation callbacks when a ready compatible
+provider grant is resolved or becomes unavailable. Access is brokered only when
+the grant has the generic capability for that access (`read` -> `query`,
+`write` -> `mutate`, `admin` -> `migrate`). Migrations, backing schemas,
+connection details, failure cleanup, locks, writer coordination, and consistency
+rules remain with provider plugins, adapters, or external systems; the SDK only
+serializes backend-neutral declarations, grants, status/errors, config
+references, and opaque metadata.
 
 ## ParamDef
 

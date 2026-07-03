@@ -489,6 +489,22 @@ spec = describe "PluginManager" $ do
         pluginLifecycleErrorCodes pluginName loaded `shouldSatisfy` elem (Just "external_data_source_blocked")
         length (pluginProcessHandles pluginName loaded) `shouldBe` 0
 
+  it "starts plugins with optional unresolved external data-source refs and diagnostics" $ do
+    let pluginName = "copilot-test-plugin-external-source-optional"
+    withExecutablePluginDir pluginName (optionalExternalRefManifestFor pluginName) "ok" $ do
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses pluginName loaded `shouldSatisfy` elem PluginConnected
+        pluginLifecycleStates pluginName loaded `shouldSatisfy` elem LifecycleReady
+        snapshots <- getPluginExternalDataSources pluginManagerHandle
+        case findExternalSnapshot (Text.pack pluginName) snapshots of
+          Nothing -> expectationFailure "missing optional consumer external data-source snapshot"
+          Just snapshot -> case wedssConsumedRefs snapshot of
+            [ref] -> expectUnavailableStatus "external-ledger" (redsrStatus ref)
+            other -> expectationFailure ("expected one optional consumed ref, got " <> show other)
+
   it "launches external data-source-only plugins for status protocol handling" $ do
     let pluginName = "copilot-test-plugin-external-source-only"
     withExecutablePluginDir pluginName (externalOnlyProviderManifestFor pluginName) "ok" $ do
@@ -529,18 +545,10 @@ spec = describe "PluginManager" $ do
                   expectWithin "consumer external status request" (requestExternalDataSourceStatus consumerConn externalConsumerStatusRequest)
                 expectConsumerStatusReport consumerStatus
 
-                initialBinding <- expectRight "initial consumer binding query" =<<
-                  expectWithin "initial consumer binding query" (queryPluginResource pluginManagerHandle externalConsumerPluginNameText externalBindingQuery)
-                expectBindingStatus "declared" initialBinding
-                shouldNotMentionSQLite initialBinding
-                expectRight "send external grant" =<< expectWithin "send external grant" (sendExternalDataSourceGrant consumerConn externalGrantMessage)
-                grantedBinding <- expectRight "granted consumer binding query" =<<
-                  expectWithin "granted consumer binding query" (queryPluginResource pluginManagerHandle externalConsumerPluginNameText externalBindingQuery)
+                grantedBinding <- expectRight "automatically granted consumer binding query" =<<
+                  expectWithin "automatically granted consumer binding query" (queryPluginResource pluginManagerHandle externalConsumerPluginNameText externalBindingQuery)
                 expectBindingStatus "granted" grantedBinding
-                expectRight "send external grant revocation" =<< expectWithin "send external grant revocation" (sendExternalDataSourceGrantRevocation consumerConn externalGrantRevocation)
-                revokedBinding <- expectRight "revoked consumer binding query" =<<
-                  expectWithin "revoked consumer binding query" (queryPluginResource pluginManagerHandle externalConsumerPluginNameText externalBindingQuery)
-                expectBindingStatus "revoked" revokedBinding
+                shouldNotMentionSQLite grantedBinding
 
                 snapshots <- getPluginExternalDataSources pluginManagerHandle
                 expectExternalSnapshots snapshots
@@ -556,8 +564,17 @@ spec = describe "PluginManager" $ do
                     shouldNotMentionSQLite (wsmExternalDataSources manifest)
 
                 setDisabledPlugins pluginManagerHandle (Set.singleton externalProviderPluginNameText)
+                revokedBinding <- expectRight "provider-disabled revoked consumer binding query" =<<
+                  expectWithin "provider-disabled revoked consumer binding query" (queryPluginResource pluginManagerHandle externalConsumerPluginNameText externalBindingQuery)
+                expectBindingStatus "revoked" revokedBinding
                 unavailableSnapshots <- getPluginExternalDataSources pluginManagerHandle
-                expectProviderUnavailableSnapshots unavailableSnapshots))
+                expectProviderUnavailableSnapshots unavailableSnapshots
+
+                setDisabledPlugins pluginManagerHandle Set.empty
+                refreshManifests pluginManagerHandle
+                recoveredBinding <- expectRight "provider-recovered granted consumer binding query" =<<
+                  expectWithin "provider-recovered granted consumer binding query" (queryPluginResource pluginManagerHandle externalConsumerPluginNameText externalBindingQuery)
+                expectBindingStatus "granted" recoveredBinding))
 
   it "reports malformed handshake JSON as a plugin error" $ do
     withExecutablePluginDir malformedPluginName malformedManifestJSON "malformed-json" $ do
@@ -2337,7 +2354,13 @@ invalidExternalSourceManifestFor name = BSC.pack $
     <> "}\n"
 
 blockedExternalRefManifestFor :: String -> BS.ByteString
-blockedExternalRefManifestFor name = BSC.pack $
+blockedExternalRefManifestFor name = externalRefManifestFor name True
+
+optionalExternalRefManifestFor :: String -> BS.ByteString
+optionalExternalRefManifestFor name = externalRefManifestFor name False
+
+externalRefManifestFor :: String -> Bool -> BS.ByteString
+externalRefManifestFor name required = BSC.pack $
   "{\n"
     <> "  \"manifestVersion\": 3,\n"
     <> "  \"name\": \"" <> name <> "\",\n"
@@ -2349,7 +2372,7 @@ blockedExternalRefManifestFor name = BSC.pack $
     <> "      \"name\": \"settlements\",\n"
     <> "      \"provider\": \"external-ledger\",\n"
     <> "      \"source\": \"settlements\",\n"
-    <> "      \"required\": true,\n"
+    <> "      \"required\": " <> (if required then "true" else "false") <> ",\n"
     <> "      \"access\": [\"read\"],\n"
     <> "      \"grant\": \"settlement-read\",\n"
     <> "      \"status\": {\n"
@@ -2641,7 +2664,7 @@ externalConsumerManifestFor name providerName = BSC.pack $
     <> "      \"access\": [\"read\"],\n"
     <> "      \"resources\": [\"shared_sources\"],\n"
     <> "      \"grant\": \"terrain-catalog-read\",\n"
-    <> "      \"status\": " <> externalReadyStatusJSON providerName <> ",\n"
+    <> "      \"status\": " <> externalUnknownStatusJSON providerName <> ",\n"
     <> "      \"reference\": { \"binding\": \"fixture://consumer/terrain.catalog\" },\n"
     <> "      \"configRefs\": [\n"
     <> "        { \"name\": \"terrain-catalog-consumer-binding\", \"origin\": \"deployment\", \"key\": \"fixture.consumer.terrain.catalog\", \"required\": true, \"compatibility\": \"manifest-v3\", \"metadata\": { \"binding\": \"fixture://consumer/terrain.catalog\" } }\n"
@@ -2654,6 +2677,10 @@ externalConsumerManifestFor name providerName = BSC.pack $
 externalReadyStatusJSON :: String -> String
 externalReadyStatusJSON providerName =
   "{ \"state\": \"ready\", \"providerId\": \"" <> providerName <> "\", \"availability\": \"available\", \"health\": \"healthy\", \"accessMode\": \"read_only\", \"capabilityScope\": [\"query\", \"health\"], \"compatibility\": \"manifest-v3\", \"diagnostics\": { \"backend\": \"fixture-service\", \"owner\": \"provider-managed\" } }"
+
+externalUnknownStatusJSON :: String -> String
+externalUnknownStatusJSON providerName =
+  "{ \"state\": \"unknown\", \"providerId\": \"" <> providerName <> "\", \"availability\": \"unknown\", \"health\": \"unknown\", \"accessMode\": \"provider_managed\", \"compatibility\": \"manifest-v3\" }"
 
 externalIntegrationStartPolicy :: String
 externalIntegrationStartPolicy =

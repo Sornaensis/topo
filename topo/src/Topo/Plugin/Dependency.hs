@@ -26,6 +26,9 @@ module Topo.Plugin.Dependency
   , DependencyResourceProvider(..)
   , DependencyExternalDataSourceGrant(..)
   , DependencyExternalDataSourceProvider(..)
+  , DependencyExternalDataSourceBinding(..)
+  , DependencyExternalDataSourceBindingDiagnostic(..)
+  , DependencyExternalDataSourceBindingResolution(..)
   , DependencyResolverInput(..)
   , defaultDependencyResolverInput
   , DependencyDiagnosticStatus(..)
@@ -34,6 +37,7 @@ module Topo.Plugin.Dependency
   , DependencyPipelineInsertion(..)
   , DependencyResolvedOrder(..)
   , resolveDependencyOrder
+  , resolveExternalDataSourceBindings
   , dependencyStartupOrder
   , dependencyPipelineOrder
   , dependencySimulationOrder
@@ -414,6 +418,7 @@ data DependencyExternalDataSourceGrant = DependencyExternalDataSourceGrant
   , desgCapabilities :: ![RPCExternalDataSourceCapability]
   , desgResources :: ![Text]
   , desgStatus :: !RPCExternalDataSourceStatusState
+  , desgBrokerable :: !Bool
   } deriving (Eq, Ord, Show, Read, Generic)
 
 -- | An external data source advertised by a dependency provider.
@@ -426,7 +431,46 @@ data DependencyExternalDataSourceProvider = DependencyExternalDataSourceProvider
   , despCapabilities :: ![RPCExternalDataSourceCapability]
   , despResources :: ![Text]
   , despStatus :: !RPCExternalDataSourceStatusState
+  , despBrokerable :: !Bool
   , despGrants :: ![DependencyExternalDataSourceGrant]
+  } deriving (Eq, Ord, Show, Read, Generic)
+
+-- | Concrete external data-source provider/grant binding selected by the
+-- dependency resolver for a consumer declaration.
+data DependencyExternalDataSourceBinding = DependencyExternalDataSourceBinding
+  { desbConsumer :: !Text
+  , desbRef :: !Text
+  , desbProvider :: !Text
+  , desbSource :: !Text
+  , desbGrant :: !Text
+  , desbRequired :: !Bool
+  , desbAccess :: ![RPCExternalDataSourceAccess]
+  , desbResources :: ![Text]
+  , desbCapabilityScope :: ![RPCExternalDataSourceCapability]
+  , desbSourceStatus :: !RPCExternalDataSourceStatusState
+  , desbGrantStatus :: !RPCExternalDataSourceStatusState
+  , desbDiagnostic :: !Text
+  } deriving (Eq, Ord, Show, Read, Generic)
+
+-- | Resolver diagnostic for a consumer ref that did not produce a concrete
+-- binding. Required diagnostics block startup; optional diagnostics are
+-- surfaced without blocking.
+data DependencyExternalDataSourceBindingDiagnostic = DependencyExternalDataSourceBindingDiagnostic
+  { desbdConsumer :: !Text
+  , desbdRef :: !Text
+  , desbdProvider :: !(Maybe Text)
+  , desbdSource :: !Text
+  , desbdGrant :: !(Maybe Text)
+  , desbdRequired :: !Bool
+  , desbdStatus :: !DependencyDiagnosticStatus
+  , desbdMessage :: !Text
+  } deriving (Eq, Ord, Show, Read, Generic)
+
+-- | Binding resolver output for all manifest-declared external data-source
+-- consumer refs in a resolver input.
+data DependencyExternalDataSourceBindingResolution = DependencyExternalDataSourceBindingResolution
+  { desbrBindings :: ![DependencyExternalDataSourceBinding]
+  , desbrDiagnostics :: ![DependencyExternalDataSourceBindingDiagnostic]
   } deriving (Eq, Ord, Show, Read, Generic)
 
 -- | Resolver-facing view of one loaded or declared plugin.
@@ -596,6 +640,129 @@ validateDependencies input = map markCycle baseDiagnostics
       _ -> diag
     selectedProviderFor diag =
       Map.lookup (dependencyEdgeKey (dgdConsumer diag) (dgdDependency diag)) selectedProviders
+
+-- | Resolve concrete external data-source provider/grant bindings for every
+-- manifest-declared consumer dependency in the input.
+resolveExternalDataSourceBindings :: DependencyResolverInput -> DependencyExternalDataSourceBindingResolution
+resolveExternalDataSourceBindings input = DependencyExternalDataSourceBindingResolution
+  { desbrBindings = bindings
+  , desbrDiagnostics = diagnostics
+  }
+  where
+    providerMap = dependencyProviderMap input
+    order = resolveDependencyOrder input
+    eligibleOrder = droStartupOrder order
+    eligibleSet = Set.fromList eligibleOrder
+    consumers = driProviders input
+    resolved = concatMap (bindingsForConsumer providerMap eligibleOrder eligibleSet) consumers
+    bindings = [binding | Left binding <- resolved]
+    diagnostics = [diagnostic | Right diagnostic <- resolved]
+
+bindingsForConsumer
+  :: Map Text DependencyProvider
+  -> [Text]
+  -> Set Text
+  -> DependencyProvider
+  -> [Either DependencyExternalDataSourceBinding DependencyExternalDataSourceBindingDiagnostic]
+bindingsForConsumer providerMap eligibleOrder eligibleSet consumer =
+  [ bindingForDependency providerMap eligibleOrder eligibleSet consumer dep externalDep
+  | dep <- dpDependencies consumer
+  , DependencyExternalDataSource externalDep <- [ddTarget dep]
+  ]
+
+bindingForDependency
+  :: Map Text DependencyProvider
+  -> [Text]
+  -> Set Text
+  -> DependencyProvider
+  -> DependencyDecl
+  -> ExternalDataSourceDependency
+  -> Either DependencyExternalDataSourceBinding DependencyExternalDataSourceBindingDiagnostic
+bindingForDependency providerMap eligibleOrder eligibleSet consumer dep externalDep =
+  case selectedBindingCandidate providerMap eligibleOrder eligibleSet externalDep of
+    Just (providerName, source, grant) -> Left DependencyExternalDataSourceBinding
+      { desbConsumer = dpName consumer
+      , desbRef = externalDependencyRefName dep externalDep
+      , desbProvider = providerName
+      , desbSource = despName source
+      , desbGrant = desgName grant
+      , desbRequired = dependencyDeclBlocks dep
+      , desbAccess = edsdAccess externalDep
+      , desbResources = effectiveResources source grant (edsdResources externalDep)
+      , desbCapabilityScope = desgCapabilities grant
+      , desbSourceStatus = despStatus source
+      , desbGrantStatus = desgStatus grant
+      , desbDiagnostic = bindingDiagnosticMessage consumer providerName source grant
+      }
+    Nothing -> Right DependencyExternalDataSourceBindingDiagnostic
+      { desbdConsumer = dpName consumer
+      , desbdRef = externalDependencyRefName dep externalDep
+      , desbdProvider = edsdProvider externalDep
+      , desbdSource = edsdSource externalDep
+      , desbdGrant = edsdGrant externalDep
+      , desbdRequired = dependencyDeclBlocks dep
+      , desbdStatus = DependencyMissing
+      , desbdMessage = unresolvedBindingMessage consumer externalDep
+      }
+
+selectedBindingCandidate
+  :: Map Text DependencyProvider
+  -> [Text]
+  -> Set Text
+  -> ExternalDataSourceDependency
+  -> Maybe (Text, DependencyExternalDataSourceProvider, DependencyExternalDataSourceGrant)
+selectedBindingCandidate providerMap eligibleOrder eligibleSet dep = case edsdProvider dep of
+  Just providerName -> do
+    provider <- Map.lookup providerName providerMap
+    if Set.member providerName eligibleSet
+      then concreteBindingCandidate dep provider
+      else Nothing
+  Nothing -> listToMaybe
+    [ candidate
+    | providerName <- eligibleOrder
+    , Just provider <- [Map.lookup providerName providerMap]
+    , Just candidate <- [concreteBindingCandidate dep provider]
+    ]
+
+concreteBindingCandidate
+  :: ExternalDataSourceDependency
+  -> DependencyProvider
+  -> Maybe (Text, DependencyExternalDataSourceProvider, DependencyExternalDataSourceGrant)
+concreteBindingCandidate dep provider = listToMaybe
+  [ (dpName provider, source, grant)
+  | source <- dpExternalDataSources provider
+  , despName source == edsdSource dep
+  , sourceReadyAndCompatible dep source
+  , grant <- despGrants source
+  , maybe True (== desgName grant) (edsdGrant dep)
+  , grantSatisfiesExternalDataSourceDependency dep source grant
+  ]
+
+externalDependencyRefName :: DependencyDecl -> ExternalDataSourceDependency -> Text
+externalDependencyRefName dep externalDep = case ddReason dep of
+  Just reason
+    | Just refName <- Text.stripPrefix "external data source ref:" reason -> refName
+  _ -> edsdSource externalDep
+
+bindingDiagnosticMessage
+  :: DependencyProvider
+  -> Text
+  -> DependencyExternalDataSourceProvider
+  -> DependencyExternalDataSourceGrant
+  -> Text
+bindingDiagnosticMessage consumer providerName source grant =
+  pluginPhrase (dpName consumer)
+    <> " external data-source '" <> despName source <> "' is bound to provider plugin '"
+    <> providerName <> "' grant '" <> desgName grant <> "'."
+
+unresolvedBindingMessage :: DependencyProvider -> ExternalDataSourceDependency -> Text
+unresolvedBindingMessage consumer dep =
+  pluginPhrase (dpName consumer)
+    <> " has no ready compatible external data-source binding for '"
+    <> edsdSource dep <> "'"
+    <> maybe "" (\grantName -> " grant '" <> grantName <> "'") (edsdGrant dep)
+    <> maybe "" (\providerName -> " from provider plugin '" <> providerName <> "'") (edsdProvider dep)
+    <> "."
 
 -- | Blocking diagnostics only, for readiness checks.
 blockingDependencyDiagnostics :: [DependencyDiagnostic] -> [DependencyDiagnostic]
@@ -1153,34 +1320,52 @@ providerHasExternalDataSource dep provider = any matches (dpExternalDataSources 
   where
     matches source =
       despName source == edsdSource dep
-        && despStatus source == ExternalStatusReady
-        && sourceResourcesSatisfy source
+        && sourceReadyAndCompatible dep source
         && sourceGrantSatisfies source
 
-    sourceResourcesSatisfy source =
-      all (`elem` despResources source) (edsdResources dep)
-
     sourceGrantSatisfies source = case edsdGrant dep of
-      Just grantName -> any (grantSatisfies source) (filter ((== grantName) . desgName) (despGrants source))
-      Nothing -> any (grantSatisfies source) (despGrants source)
+      Just grantName -> any (grantSatisfiesExternalDataSourceDependency dep source) (filter ((== grantName) . desgName) (despGrants source))
+      Nothing -> any (grantSatisfiesExternalDataSourceDependency dep source) (despGrants source)
 
-    grantSatisfies source grant =
-      desgStatus grant == ExternalStatusReady
-        && all (`elem` desgAccess grant) (edsdAccess dep)
-        && all (`elem` despCapabilities source) (desgCapabilities grant)
-        && accessCapabilitiesSatisfy grant
-        && grantResourcesSatisfy source grant
+sourceReadyAndCompatible :: ExternalDataSourceDependency -> DependencyExternalDataSourceProvider -> Bool
+sourceReadyAndCompatible dep source =
+  despStatus source == ExternalStatusReady
+    && despBrokerable source
+    && all (`elem` despResources source) (edsdResources dep)
 
-    accessCapabilitiesSatisfy grant =
-      all (`elem` desgCapabilities grant)
+grantSatisfiesExternalDataSourceDependency
+  :: ExternalDataSourceDependency
+  -> DependencyExternalDataSourceProvider
+  -> DependencyExternalDataSourceGrant
+  -> Bool
+grantSatisfiesExternalDataSourceDependency dep source grant =
+  desgStatus grant == ExternalStatusReady
+    && desgBrokerable grant
+    && all (`elem` desgAccess grant) (edsdAccess dep)
+    && all (`elem` despCapabilities source) (desgCapabilities grant)
+    && accessCapabilitiesSatisfy grant
+    && grantResourcesSatisfy source grant
+  where
+    accessCapabilitiesSatisfy selectedGrant =
+      all (`elem` desgCapabilities selectedGrant)
         (concatMap externalAccessRequiredCapabilities (edsdAccess dep))
 
-    grantResourcesSatisfy source grant =
-      all (`elem` grantResources) (edsdResources dep)
+    grantResourcesSatisfy selectedSource selectedGrant =
+      all (`elem` grantResources selectedGrant) (edsdResources dep)
       where
-        grantResources
-          | null (desgResources grant) = despResources source
-          | otherwise = desgResources grant
+        grantResources candidate
+          | null (desgResources candidate) = despResources selectedSource
+          | otherwise = desgResources candidate
+
+effectiveResources
+  :: DependencyExternalDataSourceProvider
+  -> DependencyExternalDataSourceGrant
+  -> [Text]
+  -> [Text]
+effectiveResources source grant requested
+  | not (null requested) = requested
+  | not (null (desgResources grant)) = desgResources grant
+  | otherwise = despResources source
 
 available :: [Text] -> Text -> DependencyResolution
 available providers message = DependencyResolution DependencyAvailable providers message

@@ -9,6 +9,9 @@ module Actor.PluginManager.PluginSupervisor
   , withRefreshedManifestsHandlingPublishException
   , refreshOneManifest
   , ensurePluginConnection
+  , loadedPluginDependencyProvider
+  , allHostCapabilities
+  , markExternalDataSourceBlocked
   , connectLoadedPlugin
   , observePluginRuntime
   , handlePluginRuntimeFailure
@@ -60,7 +63,9 @@ import Topo.Overlay.Schema (OverlaySchema(..))
 import Topo.Plugin (Capability(..))
 import Topo.Plugin.DataResource (DataOperations(..), DataResourceSchema(..))
 import Topo.Plugin.Dependency
-  ( DependencyExternalDataSourceGrant(..)
+  ( DependencyExternalDataSourceBindingDiagnostic(..)
+  , DependencyExternalDataSourceBindingResolution(..)
+  , DependencyExternalDataSourceGrant(..)
   , DependencyExternalDataSourceProvider(..)
   , DependencyProvider(..)
   , DependencyResourceProvider(..)
@@ -69,14 +74,19 @@ import Topo.Plugin.Dependency
   , dependencyStartupOrder
   , driAvailableCapabilities
   , manifestDependencyDecls
+  , resolveExternalDataSourceBindings
   )
 import Topo.Plugin.RPC
   ( RPCConnection(..)
   , RPCError(..)
+  , RPCExternalDataSourceAccessMode(..)
+  , RPCExternalDataSourceAvailability(..)
   , RPCExternalDataSourceDecl(..)
   , RPCExternalDataSourceGrant(..)
+  , RPCExternalDataSourceHealth(..)
   , RPCExternalDataSourceStartupDecision(..)
   , RPCExternalDataSourceStatus(..)
+  , RPCExternalDataSourceStatusState(..)
   , RPCManifest(..)
   , RPCStartPolicy(..)
   , dataResourceErrorCodeText
@@ -141,16 +151,40 @@ publishExceptionCleanupDecision connected err handlePublishException = do
 
 connectAndTrackRefreshRuntimes :: IORef [LoadedPlugin] -> Map Text LoadedPlugin -> IO (Map Text LoadedPlugin)
 connectAndTrackRefreshRuntimes ownedRef refreshed = do
-  connected <- traverse (connectAndTrackRefreshRuntime ownedRef) (orderLoadedPluginsByDependencies refreshed)
+  let startupBlocks = externalDataSourceStartupBlocks refreshed
+  connected <- traverse (connectAndTrackRefreshRuntime ownedRef startupBlocks) (orderLoadedPluginsByDependencies refreshed)
   pure (Map.fromList [(lpName p, p) | p <- connected])
 
-connectAndTrackRefreshRuntime :: IORef [LoadedPlugin] -> LoadedPlugin -> IO LoadedPlugin
-connectAndTrackRefreshRuntime ownedRef lp = mask $ \restore -> do
+connectAndTrackRefreshRuntime :: IORef [LoadedPlugin] -> Map Text (Text, Text) -> LoadedPlugin -> IO LoadedPlugin
+connectAndTrackRefreshRuntime ownedRef startupBlocks lp = mask $ \restore -> do
   before <- runtimeIdentity lp
-  lp' <- restore (ensurePluginConnection lp)
+  lp' <- restore $ case Map.lookup (lpName lp) startupBlocks of
+    Just (dependency, reason)
+      | isNothing (lpConnection lp) -> markExternalDataSourceBlocked dependency reason lp
+    _ -> ensurePluginConnection lp
   after <- runtimeIdentity lp'
   when (refreshOwnsRuntime before after) (modifyIORef' ownedRef (lp':))
   pure lp'
+
+externalDataSourceStartupBlocks :: Map Text LoadedPlugin -> Map Text (Text, Text)
+externalDataSourceStartupBlocks plugins = Map.fromList
+  [ (desbdConsumer diag, (dependency, dependency <> ": " <> desbdMessage diag))
+  | diag <- desbrDiagnostics resolution
+  , let dependency = externalBindingDiagnosticDependency diag
+  , desbdRequired diag
+  ]
+  where
+    providers = map loadedPluginDependencyProvider (Map.elems plugins)
+    resolverInput = (defaultDependencyResolverInput providers)
+      { driAvailableCapabilities = Set.fromList allHostCapabilities
+      }
+    resolution = resolveExternalDataSourceBindings resolverInput
+
+externalBindingDiagnosticDependency :: DependencyExternalDataSourceBindingDiagnostic -> Text
+externalBindingDiagnosticDependency diag =
+  maybe "" (<> ":") (desbdProvider diag)
+    <> desbdSource diag
+    <> maybe "" (":" <>) (desbdGrant diag)
 
 data RuntimeIdentity = RuntimeIdentity
   { riHasConnection :: !Bool
@@ -264,6 +298,7 @@ dependencyExternalDataSourceProvider source = DependencyExternalDataSourceProvid
   , despCapabilities = redsdCapabilities source
   , despResources = redsdResources source
   , despStatus = redssState (redsdStatus source)
+  , despBrokerable = externalDataSourceStatusReady (redsdStatus source)
   , despGrants = map dependencyExternalDataSourceGrant (redsdGrants source)
   }
 
@@ -274,7 +309,20 @@ dependencyExternalDataSourceGrant grant = DependencyExternalDataSourceGrant
   , desgCapabilities = redsgCapabilities grant
   , desgResources = redsgResources grant
   , desgStatus = redssState (redsgStatus grant)
+  , desgBrokerable = externalDataSourceStatusReady (redsgStatus grant)
   }
+
+externalDataSourceStatusReady :: RPCExternalDataSourceStatus -> Bool
+externalDataSourceStatusReady status =
+  redssState status == ExternalStatusReady
+    && redssAvailability status `notElem`
+      [ Just ExternalAvailabilityUnknown
+      , Just ExternalAvailabilityUnconfigured
+      , Just ExternalAvailabilityDegraded
+      , Just ExternalAvailabilityUnavailable
+      ]
+    && redssHealth status `notElem` [Just ExternalHealthDegraded, Just ExternalHealthUnhealthy]
+    && redssAccessMode status /= Just ExternalAccessModeDisabled
 
 -- | Re-read a single plugin's manifest, preserving current params.
 refreshOneManifest :: FilePath -> LoadedPlugin -> IO LoadedPlugin
@@ -300,13 +348,7 @@ refreshOneManifest _baseDir lp = do
 ensurePluginConnection :: LoadedPlugin -> IO LoadedPlugin
 ensurePluginConnection lp
   | plsState (lpLifecycle lp) == LifecycleDegraded = pure lp
-  | otherwise =
-      case externalDataSourceManifestStartupDecision (lpManifest lp) of
-        ExternalDataSourceStartupBlocked dependency reason ->
-          markExternalDataSourceBlocked dependency reason lp
-        ExternalDataSourceStartupDegraded dependency reason ->
-          markExternalDataSourceDegraded dependency reason lp
-        ExternalDataSourceStartupReady -> ensurePluginConnectionAfterExternalGate lp
+  | otherwise = ensurePluginConnectionAfterExternalGate lp
 
 ensurePluginConnectionAfterExternalGate :: LoadedPlugin -> IO LoadedPlugin
 ensurePluginConnectionAfterExternalGate lp

@@ -367,7 +367,10 @@ External data-source messages coordinate provider-owned sources and grants. They
 intentionally carry provider/source names, generic capabilities, status, opaque
 references, and opaque config references; they do not define a database engine,
 connection string format, migration table, lock protocol, writer policy, or host
-schema authority.
+schema authority. Plugin authors normally declare providers/consumers in the
+manifest and let topo broker grants automatically after refresh/handshake; the
+low-level grant/revoke RPC helpers are host, SDK, and protocol test primitives,
+not an application-level acknowledgement protocol.
 
 ### `external_data_source_grant`
 
@@ -437,6 +440,9 @@ source, grant, and consumer reference.
 Status states are `unknown`, `unconfigured`, `ready`, `degraded`, and
 `unavailable`. Only `ready` is brokerable for provider/grant routing; other
 states are surfaced as diagnostics until the provider reports readiness again.
+Grant messages are one-way host-sent state. A sent grant means topo selected and
+notified the consumer; it does not imply consumer-acknowledged acceptance unless
+a future protocol adds an explicit acknowledgement.
 
 ## See also
 

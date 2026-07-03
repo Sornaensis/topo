@@ -299,11 +299,17 @@ Consumers declare dependencies with `externalDataSourceRefs`:
 ]
 ```
 
-Grant names are provider-defined and backend-neutral. Topo only brokers a
-requested access mode when the grant carries the corresponding generic
-capability: `read` requires `query`, `write` requires `mutate`, and `admin`
-requires `migrate`. Provider plugins, adapters, or external systems still own
-concrete authorization, locks, writer coordination, and repair behavior.
+Grant names are provider-defined and backend-neutral. In the normal 1.0 path,
+topo automatically resolves each consumer `externalDataSourceRefs` entry to a
+ready provider source/grant during plugin refresh and sends the resulting
+`external_data_source_grant` notification after the consumer handshake. Exact
+`provider` refs bind only to that plugin; omitted `provider` refs use the same
+deterministic dependency ordering as startup. Topo only brokers a requested
+access mode when the source and grant are `ready`, resource-compatible, and the
+grant carries the corresponding generic capability: `read` requires `query`,
+`write` requires `mutate`, and `admin` requires `migrate`. Provider plugins,
+adapters, or external systems still own concrete authorization, locks, writer
+coordination, and repair behavior.
 
 `connection` and `reference` are opaque JSON objects for provider-owned handles
 or binding metadata. `configRefs` are structured only enough to record a local
@@ -315,11 +321,14 @@ consistency coordinator. Even when a source advertises the `migrate`
 capability, it is a provider operation/status capability rather than a
 topo-owned migration table or schema rule. Status states are `unknown`,
 `unconfigured`, `ready`, `degraded`, and `unavailable`; provider/grant
-summaries are brokerable only when status is `ready`. On plugin crash,
-transport failure, provider-reported failure, shutdown, or restart-limit
-failure, topo treats provider sources and grants as unavailable/revoked for
-dependency routing until a refreshed manifest or runtime diagnostic reports
-`ready` again. It does not delete provider data or run backend cleanup.
+summaries are brokerable only when status is `ready`. Required refs that cannot
+be resolved to a ready grant block startup with `external_data_source_blocked`;
+optional refs start with diagnostics. On provider disable, plugin crash,
+transport failure, provider-reported failure, shutdown, restart, or refreshed
+source/grant incompatibility, topo sends `external_data_source_revoke` for any
+active brokered grants and treats provider sources and grants as
+unavailable/revoked for dependency routing until a fresh ready manifest/runtime
+status is available. It does not delete provider data or run backend cleanup.
 
 Optional status metadata can carry a backend-neutral `providerId`,
 `availability`, `health`, `accessMode`, `capabilityScope`, `version`,

@@ -36,6 +36,10 @@ import Actor.PluginManager.DataResourceRouter
   ( mutatePluginDataResource
   , queryPluginDataResource
   )
+import Actor.PluginManager.ExternalDataSourceBroker
+  ( reconcileExternalDataSourceBrokering
+  , revokeExternalDataSourceBrokeredGrants
+  )
 import Actor.PluginManager.PipelineIntegrator
   ( buildPluginOverlaySchemas
   , buildPluginStages
@@ -130,6 +134,7 @@ actor PluginManager
       , pmsDisabledPlugins = disabled
       , pmsPendingRefresh = Nothing
       , pmsPendingShutdown = Nothing
+      , pmsExternalDataSourceGrants = Map.empty
       }
   on getPlugins = \() st -> do
     st' <- observePluginRuntimes st
@@ -154,7 +159,8 @@ actor PluginManager
     pure st { pmsPluginOrder = order }
   on_ setDisabled = \disabled st -> do
     saveDisabledPlugins (pmsBaseDir st) disabled
-    pure st { pmsDisabledPlugins = disabled }
+    let st' = st { pmsDisabledPlugins = disabled }
+    reconcileExternalDataSourceBrokering st st'
   on refresh = \() st -> do
     startingAt <- getCurrentTime
     let plugins = Map.elems (pmsPlugins st)
@@ -165,24 +171,25 @@ actor PluginManager
           }
       , (pmsBaseDir st, plugins)
       )
-  onPure finishRefresh = \plugins st ->
-    ( st
-        { pmsPlugins = Map.fromList [(lpName p, p) | p <- plugins]
-        , pmsPendingRefresh = Nothing
-        }
-    , ()
-    )
+  on finishRefresh = \plugins st -> do
+    let st' = st
+          { pmsPlugins = Map.fromList [(lpName p, p) | p <- plugins]
+          , pmsPendingRefresh = Nothing
+          }
+    st'' <- reconcileExternalDataSourceBrokering st st'
+    pure (st'', ())
   on cancelRefresh = \plugins st -> do
     cancelledAt <- getCurrentTime
     (st', cancelled) <- cancelStartingPlugins cancelledAt plugins st
     pure (st', cancelled)
   on shutdown = \() st -> do
     stoppingAt <- getCurrentTime
-    let plugins = Map.elems (pmsPlugins st)
+    stRevoked <- revokeExternalDataSourceBrokeredGrants st "plugin manager shutdown requested"
+    let plugins = Map.elems (pmsPlugins stRevoked)
     pure
-      ( st
-          { pmsPlugins = Map.map (markPluginStopping stoppingAt) (pmsPlugins st)
-          , pmsPendingShutdown = Just (pmsPlugins st)
+      ( stRevoked
+          { pmsPlugins = Map.map (markPluginStopping stoppingAt) (pmsPlugins stRevoked)
+          , pmsPendingShutdown = Just (pmsPlugins stRevoked)
           }
       , plugins
       )
@@ -192,6 +199,7 @@ actor PluginManager
       ( st
           { pmsPlugins = Map.fromList [(lpName p, disconnectPlugin stoppedAt p) | p <- plugins]
           , pmsPendingShutdown = Nothing
+          , pmsExternalDataSourceGrants = Map.empty
           }
       , ()
       )
@@ -203,11 +211,13 @@ actor PluginManager
   on queryData = \(pluginName, qr) st -> do
     result <- queryPluginDataResource pluginName qr st
     st' <- markRuntimeFailureOnConnectedDataError pluginName "data_query_failed" result st
-    pure (st', result)
+    st'' <- reconcileExternalDataSourceBrokering st st'
+    pure (st'', result)
   on mutateData = \(pluginName, mr) st -> do
     result <- mutatePluginDataResource pluginName mr st
     st' <- markRuntimeFailureOnConnectedDataError pluginName "data_mutation_failed" result st
-    pure (st', result)
+    st'' <- reconcileExternalDataSourceBrokering st st'
+    pure (st'', result)
   on_ notifyWorld = \mWorldPath st -> do
     notifyPluginsWorldChanged mWorldPath (Map.elems (pmsPlugins st))
     pure st
@@ -266,9 +276,12 @@ loadedPluginsByName :: [LoadedPlugin] -> Map Text LoadedPlugin
 loadedPluginsByName plugins = Map.fromList [(lpName p, p) | p <- plugins]
 
 observePluginRuntimes :: PluginManagerState -> IO PluginManagerState
-observePluginRuntimes st = do
-  plugins' <- traverse observePluginRuntime (pmsPlugins st)
-  pure st { pmsPlugins = plugins' }
+observePluginRuntimes st
+  | isNothing (pmsPendingRefresh st) && isNothing (pmsPendingShutdown st) = do
+      plugins' <- traverse observePluginRuntime (pmsPlugins st)
+      let observed = st { pmsPlugins = plugins' }
+      reconcileExternalDataSourceBrokering st observed
+  | otherwise = pure st
 
 markRuntimeFailureOnConnectedDataError
   :: Text

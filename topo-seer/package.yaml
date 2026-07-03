@@ -132,6 +132,7 @@ library:
     - Actor.AtlasFreshness
     - Actor.PluginManager.Config
     - Actor.PluginManager.DataResourceRouter
+    - Actor.PluginManager.ExternalDataSourceBroker
     - Actor.PluginManager.HandshakeSession
     - Actor.PluginManager.PipelineIntegrator
     - Actor.PluginManager.PluginSupervisor
