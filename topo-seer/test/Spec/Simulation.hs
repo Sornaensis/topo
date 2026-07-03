@@ -32,6 +32,7 @@ import Actor.Simulation
   , autoTickStep
   , getSimDagSnapshot
   , requestSimTick
+  , rebindSimNodes
   , setSimHandles
   , setSimWorld
   , setSimWorldWithNodes
@@ -596,6 +597,61 @@ spec = describe "Simulation actor" $ do
 
     runCount <- readIORef runCountRef
     runCount `shouldBe` 5
+
+  it "defaults schedules during bind and preserves cursors across rebind" $ withSystem $ \system -> do
+    simHandle <- get @Simulation system
+
+    let config = WorldConfig { wcChunkSize = 8 }
+        tileCount = wcChunkSize config * wcChunkSize config
+        world0 = withSeedPluginOverlay tileCount 0 $
+          (emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice)
+            { twOverlays = insertOverlay (seedWeatherOverlay IntMap.empty) emptyOverlayStore
+            }
+
+    setSimWorldWithNodes simHandle world0 [pluginSimulationBinding]
+    dag0 <- getSimDagSnapshot simHandle
+    let weatherNodes0 = filter ((== Text.pack "weather") . sdnsNodeId) (sdsNodes dag0)
+        pluginNodes0 = filter ((== Just pluginOverlayName) . sdnsPlugin) (sdsNodes dag0)
+    case weatherNodes0 of
+      [node] -> do
+        sdnsScheduleLastFireTick node `shouldBe` Nothing
+        sdnsScheduleNextFireTick node `shouldBe` Just 1
+      _ -> expectationFailure "Expected one default-scheduled weather node"
+    case pluginNodes0 of
+      [node] -> do
+        sdnsScheduleLastFireTick node `shouldBe` Nothing
+        sdnsScheduleNextFireTick node `shouldBe` Just 1
+      _ -> expectationFailure "Expected one default-scheduled plugin node"
+
+    let persistedSchedule = SimulationScheduleState
+          { schedIntervalTicks = 6
+          , schedPhaseTicks = 2
+          , schedLastFireTick = Just 14
+          , schedNextFireTick = 20
+          , schedCatchUpPolicy = SkipMissed
+          }
+        pluginOverlay = (seedPluginOverlay tileCount 0)
+          { ovProvenance = (ovProvenance (seedPluginOverlay tileCount 0))
+              { opSchedule = Just persistedSchedule
+              }
+          }
+        worldWithPersistedSchedule =
+          (emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice)
+            { twOverlays = insertOverlay pluginOverlay
+                (insertOverlay (seedWeatherOverlay IntMap.empty) emptyOverlayStore)
+            }
+
+    setSimWorldWithNodes simHandle worldWithPersistedSchedule [pluginSimulationBinding]
+    rebindSimNodes simHandle [pluginSimulationBinding] `shouldReturn` True
+    dag1 <- getSimDagSnapshot simHandle
+    let pluginNodes1 = filter ((== Just pluginOverlayName) . sdnsPlugin) (sdsNodes dag1)
+    case pluginNodes1 of
+      [node] -> do
+        sdnsScheduleIntervalTicks node `shouldBe` Just 6
+        sdnsSchedulePhaseTicks node `shouldBe` Just 2
+        sdnsScheduleLastFireTick node `shouldBe` Just 14
+        sdnsScheduleNextFireTick node `shouldBe` Just 20
+      _ -> expectationFailure "Expected one plugin node with preserved schedule"
 
   it "executes plugin simulation nodes with builtin weather on manual ticks" $ withSystem $ \system -> do
     simHandle <- get @Simulation system

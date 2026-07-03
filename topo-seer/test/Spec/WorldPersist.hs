@@ -35,6 +35,7 @@ import Seer.World.Persist
   , worldDir
   )
 import Seer.World.Persist.Types (defaultManifestTime)
+import Topo.Calendar (WorldTime(..), simulationTickSeconds)
 import Topo.Plugin.RPC.Manifest
   ( RPCExternalDataSourceAccess(..)
   , RPCExternalDataSourceCapability(..)
@@ -54,7 +55,9 @@ import Topo.Plugin.RPC.Manifest
 import Topo.Hex (defaultHexGridMeta)
 import Topo.Storage (emptyProvenance, saveWorldWithProvenance)
 import Topo.Overlay
-  ( OverlayData(..)
+  ( Overlay(..)
+  , OverlayData(..)
+  , OverlayProvenance(..)
   , OverlayStore(..)
   , emptyOverlayProvenance
   , emptyOverlayStore
@@ -62,6 +65,7 @@ import Topo.Overlay
   , lookupOverlay
   , ovData
   )
+import Topo.Simulation.Schedule (SimulationCatchUpPolicy(..), SimulationScheduleState(..))
 import Topo.Types (WorldConfig(..))
 import Topo.World (TerrainWorld(..), emptyWorld)
 import Topo.WorldGen (WorldGenConfig(..))
@@ -117,6 +121,35 @@ manifestJsonSpec = describe "WorldSaveManifest JSON round-trip" $ do
 -- | Unique test world name to avoid collisions with user data.
 testWorldName :: Text.Text
 testWorldName = "__topo_test_world_roundtrip__"
+
+emptyTerrainSnapshot :: Int -> TerrainSnapshot
+emptyTerrainSnapshot chunkSize = TerrainSnapshot
+  { tsVersion = 0
+  , tsClimateVersion = 0
+  , tsWeatherVersion = 0
+  , tsVegetationVersion = 0
+  , tsOverlayVersion = 0
+  , tsChunkSize = chunkSize
+  , tsTerrainChunks = IntMap.empty
+  , tsClimateChunks = IntMap.empty
+  , tsWeatherChunks = IntMap.empty
+  , tsRiverChunks = IntMap.empty
+  , tsGroundwaterChunks = IntMap.empty
+  , tsVolcanismChunks = IntMap.empty
+  , tsGlacierChunks = IntMap.empty
+  , tsWaterBodyChunks = IntMap.empty
+  , tsVegetationChunks = IntMap.empty
+  , tsOverlayStore = emptyOverlayStore
+  }
+
+scheduleFixture :: SimulationScheduleState
+scheduleFixture = SimulationScheduleState
+  { schedIntervalTicks = 6
+  , schedPhaseTicks = 2
+  , schedLastFireTick = Just 14
+  , schedNextFireTick = 20
+  , schedCatchUpPolicy = SkipMissed
+  }
 
 testExternalDataSourceSnapshot :: WorldExternalDataSourceSnapshot
 testExternalDataSourceSnapshot = WorldExternalDataSourceSnapshot
@@ -315,6 +348,40 @@ worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
                 wsmOverlayNames manifest `shouldBe` ["persist_sparse_test"]
         )
 
+    it "round-trips canonical world time and overlay schedule provenance" $
+      bracket
+        (pure ())
+        (\_ -> do
+            _ <- deleteNamedWorld testWorldName
+            pure ()
+        )
+        (\_ -> do
+            let overlay = mkSparseFloatOverlay
+                  "persist_sparse_test"
+                  "scheduled overlay persistence test"
+                  0.75
+                  emptyOverlayProvenance { opSchedule = Just scheduleFixture }
+                terrainSnap = (emptyTerrainSnapshot 64)
+                  { tsOverlayStore = insertOverlay overlay emptyOverlayStore
+                  }
+                ui = emptyUiState { uiSeed = 42, uiChunkSize = 64, uiSimTickCount = 11 }
+                world = snapshotToWorld ui terrainSnap
+
+            saveResult <- saveNamedWorld testWorldName ui world
+            saveResult `shouldBe` Right ()
+
+            loadResult <- loadNamedWorld testWorldName
+            case loadResult of
+              Left err -> expectationFailure (Text.unpack err)
+              Right (_manifest, _snapshot, loadedWorld) -> do
+                wtTick (twWorldTime loadedWorld) `shouldBe` 11
+                wtTickRate (twWorldTime loadedWorld) `shouldBe` simulationTickSeconds
+                case lookupOverlay "persist_sparse_test" (twOverlays loadedWorld) of
+                  Nothing -> expectationFailure "scheduled overlay missing after load"
+                  Just loadedOverlay ->
+                    opSchedule (ovProvenance loadedOverlay) `shouldBe` Just scheduleFixture
+        )
+
     it "preserves external data-source reference metadata in the save manifest" $
       bracket
         (pure ())
@@ -390,22 +457,8 @@ snapshotToWorldSpec = describe "snapshotToWorld" $
           0.75
           emptyOverlayProvenance
         overlayStore = insertOverlay overlay emptyOverlayStore
-        terrainSnap = TerrainSnapshot
+        terrainSnap = (emptyTerrainSnapshot 32)
           { tsVersion = 1
-          , tsClimateVersion = 0
-          , tsWeatherVersion = 0
-          , tsVegetationVersion = 0
-          , tsOverlayVersion = 0
-          , tsChunkSize = 32
-          , tsTerrainChunks = IntMap.empty
-          , tsClimateChunks = IntMap.empty
-          , tsWeatherChunks = IntMap.empty
-          , tsRiverChunks = IntMap.empty
-          , tsGroundwaterChunks = IntMap.empty
-          , tsVolcanismChunks = IntMap.empty
-          , tsGlacierChunks = IntMap.empty
-          , tsWaterBodyChunks = IntMap.empty
-          , tsVegetationChunks = IntMap.empty
           , tsOverlayStore = overlayStore
           }
         ui = emptyUiState
@@ -414,6 +467,7 @@ snapshotToWorldSpec = describe "snapshotToWorld" $
           , uiPlanetRadius = unmapRange 4778.0 9557.0 7000.0
           , uiSliceLatCenter = unmapRange (-90.0) 90.0 12.5
           , uiSliceLonCenter = unmapRange (-180.0) 180.0 (-45.0)
+          , uiSimTickCount = 17
           }
         genCfg = configFromUi ui
         world = snapshotToWorld ui terrainSnap
@@ -423,9 +477,13 @@ snapshotToWorldSpec = describe "snapshotToWorld" $
     twPlanet world `shouldBe` worldPlanet genCfg
     twSlice world `shouldBe` worldSlice genCfg
     twSeed world `shouldBe` 99
+    wtTick (twWorldTime world) `shouldBe` 17
+    wtTickRate (twWorldTime world) `shouldBe` simulationTickSeconds
     twGenConfig world `shouldBe` Just (toJSON genCfg)
     twOverlayManifest world `shouldBe` ["persist_sparse_test"]
     lookupOverlay "persist_sparse_test" (twOverlays world) `shouldSatisfy` (/= Nothing)
+    (opSchedule . ovProvenance <$> lookupOverlay "persist_sparse_test" (twOverlays world))
+      `shouldBe` Just Nothing
 
 -- ---------------------------------------------------------------------------
 -- listWorlds

@@ -53,7 +53,7 @@ import System.Directory
 import System.FilePath ((</>), takeFileName)
 
 import Actor.Data (TerrainSnapshot(..))
-import Actor.UI (UiState(..))
+import Actor.UI (UiState(..), uiWorldTime)
 import Seer.Config (configFromUi)
 import Seer.Config.Snapshot (snapshotFromUi, loadSnapshot)
 import Seer.Config.Snapshot.Types (ConfigSnapshot)
@@ -61,7 +61,7 @@ import Seer.World.Persist.Types
   ( WorldExternalDataSourceSnapshot(..)
   , WorldSaveManifest(..)
   )
-import Topo.Calendar (defaultWorldTime, defaultPlanetAge)
+import Topo.Calendar (defaultPlanetAge)
 import Topo.Metadata (emptyMetadataStore)
 import Topo.Overlay (OverlayChunk, emptyOverlayStore, overlayNames)
 import Topo.Overlay.Storage
@@ -284,7 +284,7 @@ snapshotToWorld uiSnap ts = TerrainWorld
   , twPlanet      = worldPlanet genCfg
   , twSlice       = worldSlice genCfg
   , twLatMapping  = mkLatitudeMapping (worldPlanet genCfg) (worldHexGrid genCfg) (worldSlice genCfg) wc
-  , twWorldTime   = defaultWorldTime
+  , twWorldTime   = uiWorldTime uiSnap
   , twSeed        = uiSeed uiSnap
   , twPlanetAge   = defaultPlanetAge
   , twGenConfig   = Just (toJSON genCfg)

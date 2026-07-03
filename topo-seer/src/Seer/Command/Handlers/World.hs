@@ -41,7 +41,7 @@ import Actor.PluginManager
   , getPluginSimulationPlan
   , notifyWorldChanged
   )
-import Actor.Simulation (beginSimWorldTransition, cancelSimWorldTransition, clearSimWorld, setSimWorldWithNodes)
+import Actor.Simulation (beginSimWorldTransition, cancelSimWorldTransition, clearSimWorld, normalizeWorldSchedulesForBindings, setSimWorldWithNodes)
 import Actor.SnapshotReceiver
   ( readTerrainSnapshot
   , readDataSnapshot
@@ -50,7 +50,7 @@ import Actor.SnapshotReceiver
   , bumpSnapshotVersion
   )
 import Actor.Terrain (TerrainReplyOps)
-import Actor.UI.Setters (setUiWorldName, setUiWorldConfig, setUiOverlayNames)
+import Actor.UI.Setters (setUiWorldName, setUiWorldConfig, setUiOverlayNames, setUiSimTickCount)
 import Actor.UiActions
   ( UiAction(..)
   , UiActionRequest(..)
@@ -69,6 +69,7 @@ import Seer.World.Persist
   , worldDir
   )
 import Seer.World.Persist.Types (WorldSaveManifest(..))
+import Topo.Calendar (WorldTime(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 import Topo.Overlay
   ( Overlay(..)
@@ -242,7 +243,9 @@ handleSaveWorld ctx reqId params = do
           let handles = ccActorHandles ctx
           ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
           terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
-          let world = snapshotToWorld ui terrainSnap
+          let world0 = snapshotToWorld ui terrainSnap
+          simPlan <- getPluginSimulationPlan (ahPluginManagerHandle handles) (Just (overlayNames (twOverlays world0)))
+          let world = normalizeWorldSchedulesForBindings world0 (pspExecutableNodes simPlan)
           pluginDirs <- getPluginDataDirectories (ahPluginManagerHandle handles)
           externalDataSources <- getPluginExternalDataSources (ahPluginManagerHandle handles)
           result <- saveNamedWorldWithPluginsAndExternalData name ui world pluginDirs externalDataSources
@@ -285,12 +288,14 @@ handleLoadWorld ctx reqId params = do
             Left err -> do
               cancelSimWorldTransition simH
               pure $ errResponse reqId ("failed to load world: " <> err)
-            Right (manifest, snapshot, world) -> do
+            Right (manifest, snapshot, loadedWorld) -> do
               let uiH = ahUiHandle handles
+                  loadedOverlayNames = overlayNames (twOverlays loadedWorld)
+              simPlan <- getPluginSimulationPlan (ahPluginManagerHandle handles) (Just loadedOverlayNames)
+              let world = normalizeWorldSchedulesForBindings loadedWorld (pspExecutableNodes simPlan)
               -- Replace terrain data
               clearSimWorld simH ()
               replaceTerrainData (ahDataHandle handles) world
-              simPlan <- getPluginSimulationPlan (ahPluginManagerHandle handles) (Just (overlayNames (twOverlays world)))
               setSimWorldWithNodes (ahSimulationHandle handles) world (pspExecutableNodes simPlan)
               setUiOverlayNames uiH (overlayNames (twOverlays world))
               -- Update snapshot refs for readers
@@ -301,6 +306,7 @@ handleLoadWorld ctx reqId params = do
               bumpSnapshotVersion (ahSnapshotVersionRef handles)
               -- Apply config snapshot
               applySnapshotToUi snapshot uiH
+              setUiSimTickCount uiH (wtTick (twWorldTime world))
               setUiWorldName uiH name
               setUiWorldConfig uiH (Just snapshot)
               -- Notify plugins

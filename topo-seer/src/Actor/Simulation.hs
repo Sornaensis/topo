@@ -19,6 +19,7 @@ module Actor.Simulation
   , setSimWorld
   , setSimWorldWithNodes
   , rebindSimNodes
+  , normalizeWorldSchedulesForBindings
   , clearSimWorld
   , beginSimWorldTransition
   , cancelSimWorldTransition
@@ -627,23 +628,36 @@ builtinSimNodes weatherCfg =
   [ weatherSimNode weatherCfg
   ]
 
+builtinSimulationBindings :: TerrainWorld -> [SimulationNodeBinding]
+builtinSimulationBindings world =
+  [ SimulationNodeBinding
+      { snbNode = node
+      , snbKind = "builtin"
+      , snbPlugin = Nothing
+      }
+  | node <- builtinSimNodes (extractWeatherConfig (twGenConfig world))
+  ]
+
+simulationBindingsForWorld :: TerrainWorld -> [SimulationNodeBinding] -> [SimulationNodeBinding]
+simulationBindingsForWorld world pluginBindings =
+  builtinSimulationBindings world <> pluginBindings
+
+-- | Fill missing overlay schedules from the same built-in and plugin nodes used
+-- by the Simulation actor. Existing persisted schedule cursors are preserved.
+normalizeWorldSchedulesForBindings :: TerrainWorld -> [SimulationNodeBinding] -> TerrainWorld
+normalizeWorldSchedulesForBindings world pluginBindings =
+  ensureWorldOverlaySchedules nodes world
+  where
+    nodes = map snbNode (simulationBindingsForWorld world pluginBindings)
+
 bindWorld :: TerrainWorld -> [SimulationNodeBinding] -> SimState -> IO SimState
 bindWorld world pluginBindings st = do
   let calCfg = mkCalendarConfig (twPlanet world)
-      weatherCfg = extractWeatherConfig (twGenConfig world)
-      builtinNodes = builtinSimNodes weatherCfg
-      builtinBindings =
-        [ SimulationNodeBinding
-            { snbNode = node
-            , snbKind = "builtin"
-            , snbPlugin = Nothing
-            }
-        | node <- builtinNodes
-        ]
-      bindings = builtinBindings <> pluginBindings
+      bindings = simulationBindingsForWorld world pluginBindings
       nodes = map snbNode bindings
       nodeMetadata = bindingMetadata bindings
-      worldTick = wtTick (twWorldTime world)
+      scheduledWorld = normalizeWorldSchedulesForBindings world pluginBindings
+      worldTick = wtTick (twWorldTime scheduledWorld)
   case ssHandles st of
     Just handles -> setUiSimTickCount (shUiHandle handles) worldTick
     Nothing -> pure ()
@@ -651,7 +665,7 @@ bindWorld world pluginBindings st = do
   case buildSimDAG nodes of
     Left err -> do
       logMsg st ("simulation: failed to build DAG: " <> err)
-      let st' = st { ssWorld = Just world
+      let st' = st { ssWorld = Just scheduledWorld
                    , ssDAG = Nothing
                    , ssCalCfg = Just calCfg
                    , ssLastTick = worldTick
@@ -663,11 +677,10 @@ bindWorld world pluginBindings st = do
                    }
       if drainPending then maybeProcessPendingTick st' else pure st' { ssPendingTick = Nothing }
     Right dag -> do
-      let scheduledWorld = ensureWorldOverlaySchedules nodes world
       logMsg st ("simulation: setWorld accepted"
         <> " tick=" <> Text.pack (show worldTick)
-        <> " terrainChunks=" <> Text.pack (show (IntMap.size (twTerrain world)))
-        <> " climateChunks=" <> Text.pack (show (IntMap.size (twClimate world)))
+        <> " terrainChunks=" <> Text.pack (show (IntMap.size (twTerrain scheduledWorld)))
+        <> " climateChunks=" <> Text.pack (show (IntMap.size (twClimate scheduledWorld)))
         <> " nodes=" <> Text.pack (show (length nodes)))
       let st' = st { ssWorld = Just scheduledWorld
                    , ssDAG = Just dag

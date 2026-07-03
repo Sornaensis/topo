@@ -54,7 +54,7 @@ import Topo.Pipeline (PipelineConfig(..), PipelineStage, StageProgress(..), Stag
 import Topo.Pipeline.Stage (StageId)
 import Topo.Overlay (OverlayStore)
 import Topo.WorldGen (WorldGenConfig(..), buildFullPipelineConfig)
-import Actor.Simulation (Simulation, SimulationNodeBinding, setSimWorldWithNodes)
+import Actor.Simulation (Simulation, SimulationNodeBinding, normalizeWorldSchedulesForBindings, setSimWorldWithNodes)
 
 progressTag :: OpTag "progress"
 progressTag = OpTag
@@ -175,17 +175,18 @@ actor Terrain
         replyCast replyTo logMessageTag (LogEntry LogError (Text.pack ("terrain: pipeline failed: " <> show err)))
         pure st { tsRunning = False }
       Right (world1, _) -> do
-        let terrainChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twTerrain world1))
-            climateChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twClimate world1))
-            weatherChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (getWeatherFromOverlay world1))
-            riverChunks   = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twRivers world1))
-            groundwaterChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twGroundwater world1))
-            volcanismChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twVolcanism world1))
-            glacierChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twGlaciers world1))
-            waterBodyChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twWaterBodies world1))
-            vegetationChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twVegetation world1))
-            overlayStore = twOverlays world1
-            terrainCount = IntMap.size (twTerrain world1)
+        let scheduledWorld = normalizeWorldSchedulesForBindings world1 (tgrSimNodes req)
+            terrainChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twTerrain scheduledWorld))
+            climateChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twClimate scheduledWorld))
+            weatherChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (getWeatherFromOverlay scheduledWorld))
+            riverChunks   = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twRivers scheduledWorld))
+            groundwaterChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twGroundwater scheduledWorld))
+            volcanismChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twVolcanism scheduledWorld))
+            glacierChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twGlaciers scheduledWorld))
+            waterBodyChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twWaterBodies scheduledWorld))
+            vegetationChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twVegetation scheduledWorld))
+            overlayStore = twOverlays scheduledWorld
+            terrainCount = IntMap.size (twTerrain scheduledWorld)
             biomeCount = terrainCount
         -- Force the full list spines + tuple WHNF on the terrain actor's
         -- capability.  Without this, the lazy map/toList chains travel
@@ -220,7 +221,7 @@ actor Terrain
         replyCast replyTo resultTag result
         -- Send the full world to the Simulation actor so it can
         -- run tick-based overlay simulation on demand.
-        setSimWorldWithNodes (tgrSimHandle req) world1 (tgrSimNodes req)
+        setSimWorldWithNodes (tgrSimHandle req) scheduledWorld (tgrSimNodes req)
         pure st { tsLastSeed = Just (tgrSeed req), tsRunning = False }
 |]
 

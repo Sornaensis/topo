@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedLabels #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -22,7 +23,9 @@ import Actor.Terrain
   )
 import Actor.Simulation (Simulation)
 import Topo (WorldConfig(..))
+import Topo.Overlay (Overlay(..), OverlayProvenance(..), lookupOverlay)
 import Topo.Planet (WorldSlice(..))
+import Topo.Simulation.Schedule (SimulationScheduleState(..))
 import Topo.WorldGen (WorldGenConfig(..), defaultWorldGenConfig)
 
 newtype TerrainReplyState = TerrainReplyState
@@ -90,5 +93,9 @@ spec = describe "TerrainActor" $ do
     result <- await 500 (trsResult <$> call @"snapshot" replyHandle #snapshot ())
     case result of
       Nothing -> expectationFailure "Expected a terrain generation reply"
-      Just replyMsg ->
+      Just replyMsg -> do
         tgrResultSeed replyMsg `shouldBe` 123
+        case lookupOverlay "weather" (tgrResultOverlayStore replyMsg) of
+          Nothing -> expectationFailure "Expected generated weather overlay"
+          Just weatherOverlay ->
+            (schedNextFireTick <$> opSchedule (ovProvenance weatherOverlay)) `shouldBe` Just 1
