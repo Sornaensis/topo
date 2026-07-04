@@ -40,6 +40,11 @@ spec = describe "Feature matrix" $ do
     assertPublicHttpRoutes matrix
     assertServiceOperations matrix
 
+  it "keeps simulation scheduling exposed modules in the public surface inventory" $ do
+    root <- findRepoRoot
+    matrix <- loadFeatureMatrix root
+    assertSimulationExposedModulesInventoried root matrix
+
   it "marks pipeline, plugin/data-resource, and simulation DAG feature surfaces present for 1.0" $ do
     root <- findRepoRoot
     matrix <- loadFeatureMatrix root
@@ -206,6 +211,23 @@ assertExposedModules root matrix = do
     exposed <- parseExposedModulesFile (root </> packageYaml)
     let inventoried = sort (fromMaybe [] (Map.lookup packageName matrixModules))
     inventoried `shouldBe` sort exposed
+
+assertSimulationExposedModulesInventoried :: FilePath -> FeatureMatrix -> Expectation
+assertSimulationExposedModulesInventoried root matrix = do
+  exposed <- parseExposedModulesFile (root </> "topo" </> "package.yaml")
+  filter (`notElem` exposed) simulationInventoryRegressionModules `shouldBe` []
+  case filter ((== "topo-simulation") . fgId) (fmFeatureGroups matrix) of
+    [group] -> do
+      let inventoried = fromMaybe [] (Map.lookup "topo" (fgModules group))
+      filter (`notElem` inventoried) simulationInventoryRegressionModules `shouldBe` []
+    [] -> expectationFailure "missing topo-simulation feature group in public surface inventory"
+    _ -> expectationFailure "duplicate topo-simulation feature group in public surface inventory"
+
+simulationInventoryRegressionModules :: [Text]
+simulationInventoryRegressionModules =
+  [ "Topo.Simulation.Schedule"
+  , "Topo.Simulation.Pipeline"
+  ]
 
 assertPublicHttpRoutes :: FeatureMatrix -> Expectation
 assertPublicHttpRoutes matrix = do
