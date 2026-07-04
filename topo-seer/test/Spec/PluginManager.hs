@@ -25,6 +25,7 @@ import qualified Data.Aeson as Aeson
 import Data.Aeson (Value(..), (.=), object)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
+import qualified Data.ByteString.Lazy as BL
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -69,6 +70,7 @@ import Actor.PluginManager
   , PluginLifecycleSnapshot(..)
   , PluginLifecycleState(..)
   , PluginManager
+  , PluginParamUpdateError(..)
   , PluginStatus(..)
   , discoverPlugins
   , getDisabledPlugins
@@ -83,6 +85,7 @@ import Actor.PluginManager
   , queryPluginResource
   , refreshManifests
   , setDisabledPlugins
+  , setPluginParam
   , shutdownPlugins
   )
 import Topo.Calendar (CalendarDate(..), defaultWorldTime)
@@ -128,6 +131,9 @@ import Topo.Plugin.RPC
   , RPCExternalDataSourceStatusState(..)
   , RPCManifest(..)
   , RPCManifestRuntime(..)
+  , RPCParamSpec(..)
+  , RPCParamType(..)
+  , RPCParamValidationError(..)
   , RPCOverlayDecl(..)
   , RPCSimulationDecl(..)
   , defaultRPCExternalDataSourceStatus
@@ -212,6 +218,83 @@ spec = describe "PluginManager" $ do
         discoverPlugins pluginManagerHandle
         schemas <- getPluginOverlaySchemas pluginManagerHandle
         map osName schemas `shouldSatisfy` elem "copilot_test_overlay"
+
+  it "recovers plugin config by sanitizing saved values against parameter specs" $ do
+    withIsolatedPluginHome "config-recovery" $ do
+      baseDir <- currentPluginBaseDir
+      let pluginDir = baseDir </> "config-recovery"
+      resetPluginDir pluginDir
+      BS.writeFile (pluginDir </> "manifest.json") (paramValidationManifestJSON 1 0.5)
+      BL.writeFile (pluginDir </> "config.json") $ Aeson.encode $ object
+        [ "density" .= String "dense"
+        , "iterations" .= Number 99
+        , "unknown" .= Bool False
+        ]
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        fmap lpParams (findLoadedPlugin "validation-plugin" loaded) `shouldBe` Just (Map.fromList
+          [ ("enabled", Bool True)
+          , ("density", Number 0.5)
+          , ("iterations", Number 3)
+          ])
+
+  it "uses manifest defaults when persisted plugin config is invalid JSON" $ do
+    withIsolatedPluginHome "config-invalid-json" $ do
+      baseDir <- currentPluginBaseDir
+      let pluginDir = baseDir </> "config-invalid-json"
+      resetPluginDir pluginDir
+      BS.writeFile (pluginDir </> "manifest.json") (paramValidationManifestJSON 1 0.5)
+      BS.writeFile (pluginDir </> "config.json") "{not-json"
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        fmap lpParams (findLoadedPlugin "validation-plugin" loaded) `shouldBe` Just (Map.fromList
+          [ ("enabled", Bool True)
+          , ("density", Number 0.5)
+          , ("iterations", Number 3)
+          ])
+
+  it "validates parameter updates synchronously in the plugin manager facade" $ do
+    withTestPluginDir paramValidationPluginName (paramValidationManifestJSON 1 0.5) testSchemaJSON $ do
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        wrongType <- setPluginParam pluginManagerHandle "validation-plugin" "enabled" (String "yes")
+        expectParamValidation ["value"] wrongType
+        unknownParam <- setPluginParam pluginManagerHandle "validation-plugin" "missing" (Bool True)
+        expectParamValidation ["param"] unknownParam
+        unknownPlugin <- setPluginParam pluginManagerHandle "missing-plugin" "enabled" (Bool True)
+        unknownPlugin `shouldBe` Left (PluginParamUnknownPlugin "missing-plugin")
+        loaded <- getLoadedPlugins pluginManagerHandle
+        (lookupPluginParam "validation-plugin" "enabled" loaded) `shouldBe` Just (Bool True)
+        configPath <- (</> "validation-plugin" </> "config.json") <$> currentPluginBaseDir
+        doesFileExist configPath `shouldReturn` False
+
+        success <- setPluginParam pluginManagerHandle "validation-plugin" "density" (Number 0.7)
+        success `shouldBe` Right (Number 0.7)
+        loadedAfterSuccess <- getLoadedPlugins pluginManagerHandle
+        lookupPluginParam "validation-plugin" "density" loadedAfterSuccess `shouldBe` Just (Number 0.7)
+        savedBytes <- BL.readFile configPath
+        case (Aeson.decode savedBytes :: Maybe (Map.Map Text Value)) of
+          Just saved -> saved `shouldBe` Map.fromList
+            [ ("enabled", Bool True)
+            , ("density", Number 0.7)
+            , ("iterations", Number 3)
+            ]
+          Nothing -> expectationFailure "expected saved plugin config JSON object"
+
+  it "sanitizes preserved params when manifests are refreshed" $ do
+    withTestPluginDir paramValidationPluginName (paramValidationManifestJSON 1 0.5) testSchemaJSON $ do
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        setResult <- setPluginParam pluginManagerHandle "validation-plugin" "density" (Number 0.8)
+        setResult `shouldBe` Right (Number 0.8)
+        baseDir <- currentPluginBaseDir
+        let manifestPath = baseDir </> paramValidationPluginName </> "manifest.json"
+        BS.writeFile manifestPath (paramValidationManifestJSON 0.5 0.25)
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        lookupPluginParam "validation-plugin" "density" loaded `shouldBe` Just (Number 0.25)
 
   it "keeps simulation node dependencies out of plugin startup diagnostics" $ do
     let now = posixSecondsToUTCTime 0
@@ -1239,6 +1322,84 @@ anyPluginErrorContaining :: Text -> [PluginStatus] -> Bool
 anyPluginErrorContaining needle = any $ \case
   PluginError msg -> needle `Text.isInfixOf` msg
   _ -> False
+
+expectParamValidation :: [Text] -> Either PluginParamUpdateError Value -> Expectation
+expectParamValidation expectedPath result = case result of
+  Left (PluginParamValidationFailed err) -> rpvPath err `shouldBe` expectedPath
+  other -> expectationFailure ("expected PluginParamValidationFailed, got: " <> show other)
+
+lookupPluginParam :: Text -> Text -> [LoadedPlugin] -> Maybe Value
+lookupPluginParam pluginName paramName plugins = do
+  plugin <- findLoadedPlugin pluginName plugins
+  Map.lookup paramName (lpParams plugin)
+
+findLoadedPlugin :: Text -> [LoadedPlugin] -> Maybe LoadedPlugin
+findLoadedPlugin _ [] = Nothing
+findLoadedPlugin pluginName (plugin:rest)
+  | lpName plugin == pluginName = Just plugin
+  | otherwise = findLoadedPlugin pluginName rest
+
+validationParamSpecs :: [RPCParamSpec]
+validationParamSpecs =
+  [ RPCParamSpec
+      { rpsName = "enabled"
+      , rpsLabel = "Enabled"
+      , rpsType = ParamBool
+      , rpsRange = Nothing
+      , rpsDefault = Bool True
+      , rpsTooltip = ""
+      }
+  , RPCParamSpec
+      { rpsName = "density"
+      , rpsLabel = "Density"
+      , rpsType = ParamFloat
+      , rpsRange = Just (Number 0, Number 1)
+      , rpsDefault = Number 0.5
+      , rpsTooltip = ""
+      }
+  , RPCParamSpec
+      { rpsName = "iterations"
+      , rpsLabel = "Iterations"
+      , rpsType = ParamInt
+      , rpsRange = Just (Number 1, Number 10)
+      , rpsDefault = Number 3
+      , rpsTooltip = ""
+      }
+  ]
+
+paramValidationPluginName :: String
+paramValidationPluginName = "validation-plugin"
+
+paramValidationManifestJSON :: Double -> Double -> BS.ByteString
+paramValidationManifestJSON densityMax densityDefault = BL.toStrict $ Aeson.encode $ object
+  [ "manifestVersion" .= (3 :: Int)
+  , "name" .= ("validation-plugin" :: Text)
+  , "version" .= ("1.0.0" :: Text)
+  , "runtime" .= object
+      [ "protocol" .= object
+          [ "min" .= currentProtocolVersion
+          , "max" .= currentProtocolVersion
+          ]
+      ]
+  , "generator" .= object ["insertAfter" .= ("biomes" :: Text)]
+  , "config" .= object ["parameters" .= refreshedSpecs]
+  ]
+  where
+    refreshedSpecs =
+      [ spec
+      | spec <- validationParamSpecs
+      , let specName = rpsName spec
+      , specName /= "density"
+      ] <>
+      [ RPCParamSpec
+          { rpsName = "density"
+          , rpsLabel = "Density"
+          , rpsType = ParamFloat
+          , rpsRange = Just (Number 0, Aeson.toJSON densityMax)
+          , rpsDefault = Aeson.toJSON densityDefault
+          , rpsTooltip = ""
+          }
+      ]
 
 withTestPluginDir :: String -> BS.ByteString -> BS.ByteString -> IO a -> IO a
 withTestPluginDir pluginName manifestJSON schemaJSON action =

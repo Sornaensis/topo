@@ -1171,6 +1171,45 @@ spec = describe "Plugin.RPC" $ do
       validateManifest invalidInterval `shouldSatisfy` any isInvalidSimulationScheduleField
       validateManifest invalidPhase `shouldSatisfy` any isInvalidSimulationScheduleField
 
+    it "validates parameter defaults and numeric ranges before runtime use" $ do
+      let assertParamError expectedDetail spec =
+            map manifestErrorMessage (validateManifest baseManifest { rmParameters = [spec] })
+              `shouldSatisfy` any (Text.isInfixOf expectedDetail)
+          mkParam name ty range def = RPCParamSpec
+            { rpsName = name
+            , rpsLabel = name
+            , rpsType = ty
+            , rpsRange = range
+            , rpsDefault = def
+            , rpsTooltip = ""
+            }
+      assertParamError "default must be a boolean" $
+        mkParam "bool_default" ParamBool Nothing (Number 0)
+      assertParamError "default must be a numeric" $
+        mkParam "float_default" ParamFloat Nothing (String "0.5")
+      assertParamError "default must be an integral" $
+        mkParam "int_default" ParamInt Nothing (Number 1.5)
+      assertParamError "integer range bounds must be integral" $
+        mkParam "int_range" ParamInt (Just (Number 0.5, Number 2)) (Number 1)
+      assertParamError "default must be within" $
+        mkParam "default_range" ParamFloat (Just (Number 0, Number 1)) (Number 2)
+      assertParamError "range bounds must be numeric" $
+        mkParam "non_numeric_range" ParamFloat (Just (String "low", Number 1)) (Number 0.5)
+      assertParamError "range bounds must be strictly increasing" $
+        mkParam "float_range" ParamFloat (Just (Number 2, Number 1)) (Number 1)
+      assertParamError "range bounds must be strictly increasing" $
+        mkParam "int_non_increasing" ParamInt (Just (Number 2, Number 2)) (Number 2)
+      assertParamError "bool parameters must not declare" $
+        mkParam "bool_range" ParamBool (Just (Number 0, Number 1)) (Bool True)
+      case eitherDecode "1.0000000000000000000000000000000000001" of
+        Right justAboveOne -> do
+          let preciseRange = Just (Number 0, Number 1)
+              preciseSpec = mkParam "precise" ParamFloat preciseRange (Number 0.5)
+          validateRPCParamValue preciseSpec justAboveOne `shouldSatisfy` isLeft
+          assertParamError "default must be within" $
+            mkParam "precise_default" ParamFloat preciseRange justAboveOne
+        Left err -> expectationFailure err
+
   ------------------------------------
   -- Manifest queries
   ------------------------------------

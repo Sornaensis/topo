@@ -94,6 +94,7 @@ import Topo.Plugin.RPC
   , newRPCConnection
   , rpcShutdown
   )
+import Topo.Plugin.RPC.Manifest (sanitizeRPCManifestParams)
 import Topo.Plugin.RPC.Transport (Transport, closeTransport)
 
 -- | Re-read manifests for all known plugins, preserving params.
@@ -334,9 +335,12 @@ refreshOneManifest _baseDir lp = do
       stopped <- shutdownPlugin lp
       pure $ preserveRuntimeHandles stopped (markPluginManifestLoadFailure now failure lp)
     Right (manifest, overlaySchema) -> do
+      let sanitizedParams = sanitizeRPCManifestParams manifest (lpParams lp)
       pure lp
         { lpName = rmName manifest
         , lpManifest = manifest
+        , lpParams = sanitizedParams
+        , lpConnection = fmap (\conn -> conn { rpcManifest = manifest, rpcParams = sanitizedParams }) (lpConnection lp)
         , lpStartPolicy = rmStartPolicy manifest
         , lpOverlaySchema = overlaySchema
         , lpRestartHistory = pruneRestartHistory (rmStartPolicy manifest) now (lpRestartHistory lp)
@@ -399,7 +403,7 @@ ensurePluginConnectionAfterExternalGate lp
 syncConnectionForPlugin :: LoadedPlugin -> RPCConnection -> RPCConnection
 syncConnectionForPlugin lp conn = conn
   { rpcManifest = lpManifest lp
-  , rpcParams = lpParams lp
+  , rpcParams = sanitizeRPCManifestParams (lpManifest lp) (lpParams lp)
   , rpcRequestTimeoutMicros = Just (policyTimeoutMicros (rspRequestTimeoutMs (lpStartPolicy lp)))
   }
 

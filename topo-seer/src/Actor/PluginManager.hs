@@ -24,6 +24,7 @@ module Actor.PluginManager
   , PluginExternalDataSourceStatusDiagnostic(..)
   , PluginExternalDataSourceGrantDiagnostic(..)
   , PluginExternalDataSourceDiagnostic(..)
+  , PluginParamUpdateError(..)
   , PluginStatus(..)
   , pluginLifecycleSnapshot
   , pluginLifecycleStateText
@@ -112,6 +113,7 @@ import Actor.PluginManager.Types
   , PluginExternalDataSourceStatusDiagnostic(..)
   , PluginExternalDataSourceGrantDiagnostic(..)
   , PluginExternalDataSourceDiagnostic(..)
+  , PluginParamUpdateError(..)
   , PluginStatus(..)
   , pluginLifecycleSnapshot
   , pluginLifecycleStateText
@@ -182,9 +184,9 @@ getLoadedPlugins handle =
 -- | Set a parameter value on a named plugin.
 setPluginParam
   :: ActorHandle PluginManager (Protocol PluginManager)
-  -> Text -> Text -> Value -> IO ()
+  -> Text -> Text -> Value -> IO (Either PluginParamUpdateError Value)
 setPluginParam handle pluginName paramName value =
-  cast @"setParam" handle #setParam (pluginName, paramName, value)
+  call @"setParam" handle #setParam (pluginName, paramName, value)
 
 -- | Get pipeline stages for all loaded generator plugins.
 getPluginStages

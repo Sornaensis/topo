@@ -71,6 +71,7 @@ import Actor.PluginManager.Types
   , PluginLifecycleSnapshot(..)
   , PluginLifecycleState(..)
   , PluginManagerState(..)
+  , PluginParamUpdateError(..)
   , PluginStatus(..)
   , emptyPluginManagerState
   , setParamOnPlugin
@@ -88,6 +89,10 @@ import Topo.Plugin.RPC
   , dataResourceFailureFromText
   , drfCode
   )
+import Topo.Plugin.RPC.Manifest
+  ( rmParameters
+  , validateRPCParamUpdate
+  )
 
 [hyperspace|
 actor PluginManager
@@ -103,7 +108,7 @@ actor PluginManager
   call getOverlaySchemas :: () -> [OverlaySchema]
   call getOrder :: () -> [Text]
   call getDisabled :: () -> Set Text
-  cast setParam :: (Text, Text, Value)
+  call setParam :: (Text, Text, Value) -> Either PluginParamUpdateError Value
   cast setOrder :: [Text]
   cast setDisabled :: Set Text
   call refresh :: () -> (FilePath, [LoadedPlugin])
@@ -148,12 +153,16 @@ actor PluginManager
     (st, pmsPluginOrder st)
   onPure getDisabled = \() st ->
     (st, pmsDisabledPlugins st)
-  on_ setParam = \(pluginName, paramName, value) st -> do
-    let st' = st { pmsPlugins = Map.adjust (setParamOnPlugin paramName value) pluginName (pmsPlugins st) }
-    case Map.lookup pluginName (pmsPlugins st') of
-      Just lp -> savePluginConfig (lpDirectory lp) (lpParams lp)
-      Nothing -> pure ()
-    pure st'
+  on setParam = \(pluginName, paramName, value) st -> do
+    case Map.lookup pluginName (pmsPlugins st) of
+      Nothing -> pure (st, Left (PluginParamUnknownPlugin pluginName))
+      Just lp -> case validateRPCParamUpdate (rmParameters (lpManifest lp)) paramName value of
+        Left err -> pure (st, Left (PluginParamValidationFailed err))
+        Right sanitized -> do
+          let lp' = setParamOnPlugin paramName sanitized lp
+              st' = st { pmsPlugins = Map.insert pluginName lp' (pmsPlugins st) }
+          savePluginConfig (lpDirectory lp') (lpParams lp')
+          pure (st', Right sanitized)
   on_ setOrder = \order st -> do
     savePluginOrder (pmsBaseDir st) order
     pure st { pmsPluginOrder = order }

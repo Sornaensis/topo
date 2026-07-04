@@ -46,6 +46,12 @@ module Topo.Plugin.RPC.Manifest
   , RPCCapability
   , RPCParamSpec(..)
   , RPCParamType(..)
+  , RPCParamValidationError(..)
+  , rpcParamDefaults
+  , sanitizeRPCParamMap
+  , sanitizeRPCManifestParams
+  , validateRPCParamUpdate
+  , validateRPCParamValue
   , RPCExternalDataSourceCapability(..)
   , RPCExternalDataSourceAccess(..)
   , RPCExternalDataSourceConfigOrigin(..)
@@ -96,6 +102,8 @@ import qualified Data.Aeson.KeyMap as KM
 import Data.Aeson.Types (Parser)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -206,6 +214,108 @@ instance ToJSON RPCParamSpec where
     where
       fromList :: [Value] -> Aeson.Array
       fromList = foldMap (\v -> pure v)
+
+-- | Runtime parameter validation failure with a transport-neutral detail path.
+data RPCParamValidationError = RPCParamValidationError
+  { rpvPath :: ![Text]
+  , rpvCode :: !Text
+  , rpvMessage :: !Text
+  } deriving (Eq, Show, Generic)
+
+-- | Manifest defaults keyed by parameter name.
+rpcParamDefaults :: [RPCParamSpec] -> Map Text Value
+rpcParamDefaults specs = Map.fromList
+  [ (rpsName spec, rpsDefault spec)
+  | spec <- specs
+  ]
+
+-- | Validate a single parameter value against its manifest declaration.
+validateRPCParamValue :: RPCParamSpec -> Value -> Either RPCParamValidationError Value
+validateRPCParamValue spec value = case rpsType spec of
+  ParamBool -> case value of
+    Bool _ -> Right value
+    _ -> Left (valueValidationError spec "invalid_type" "expected a boolean value")
+  ParamFloat -> case numericValue value of
+    Nothing -> Left (valueValidationError spec "invalid_type" "expected a numeric value")
+    Just n -> validateFloatRange spec n value
+  ParamInt -> case integerValue value of
+    Nothing -> Left (valueValidationError spec code message)
+      where
+        (code, message) = case value of
+          Number _ -> ("invalid_integer", "expected an integral numeric value")
+          _ -> ("invalid_type", "expected an integral numeric value")
+    Just n -> validateIntRange spec n value
+
+-- | Validate an update by parameter name, reporting unknown names on @param@.
+validateRPCParamUpdate :: [RPCParamSpec] -> Text -> Value -> Either RPCParamValidationError Value
+validateRPCParamUpdate specs paramName value =
+  case findParamSpec paramName specs of
+    Nothing -> Left RPCParamValidationError
+      { rpvPath = ["param"]
+      , rpvCode = "unknown_param"
+      , rpvMessage = "unknown plugin parameter: " <> paramName
+      }
+    Just spec -> validateRPCParamValue spec value
+
+-- | Sanitize a value map to exactly the known manifest keys, falling back to
+-- defaults for missing or invalid values and dropping unknown saved keys.
+sanitizeRPCParamMap :: [RPCParamSpec] -> Map Text Value -> Map Text Value
+sanitizeRPCParamMap specs params = Map.fromList
+  [ (rpsName spec, sanitizeOne spec)
+  | spec <- specs
+  ]
+  where
+    sanitizeOne spec =
+      let candidate = Map.findWithDefault (rpsDefault spec) (rpsName spec) params
+      in case validateRPCParamValue spec candidate of
+        Right sanitized -> sanitized
+        Left _ -> rpsDefault spec
+
+-- | Sanitize a parameter map using the parameter declarations in a manifest.
+sanitizeRPCManifestParams :: RPCManifest -> Map Text Value -> Map Text Value
+sanitizeRPCManifestParams manifest = sanitizeRPCParamMap (rmParameters manifest)
+
+findParamSpec :: Text -> [RPCParamSpec] -> Maybe RPCParamSpec
+findParamSpec _ [] = Nothing
+findParamSpec paramName (spec:rest)
+  | rpsName spec == paramName = Just spec
+  | otherwise = findParamSpec paramName rest
+
+validateFloatRange spec n value = case rpsRange spec of
+  Nothing -> Right value
+  Just (loValue, hiValue) -> case (numericValue loValue, numericValue hiValue) of
+    (Just lo, Just hi)
+      | n >= lo && n <= hi -> Right value
+      | otherwise -> Left (valueValidationError spec "out_of_range" (rangeMessage lo hi))
+    _ -> Left (valueValidationError spec "invalid_spec" "parameter range bounds must be numeric")
+
+validateIntRange :: RPCParamSpec -> Integer -> Value -> Either RPCParamValidationError Value
+validateIntRange spec n value = case rpsRange spec of
+  Nothing -> Right value
+  Just (loValue, hiValue) -> case (integerValue loValue, integerValue hiValue) of
+    (Just lo, Just hi)
+      | n >= lo && n <= hi -> Right value
+      | otherwise -> Left (valueValidationError spec "out_of_range" (rangeMessage lo hi))
+    _ -> Left (valueValidationError spec "invalid_spec" "integer parameter range bounds must be integral numbers")
+
+valueValidationError :: RPCParamSpec -> Text -> Text -> RPCParamValidationError
+valueValidationError spec code message = RPCParamValidationError
+  { rpvPath = ["value"]
+  , rpvCode = code
+  , rpvMessage = "parameter '" <> rpsName spec <> "' " <> message
+  }
+
+rangeMessage :: Show a => a -> a -> Text
+rangeMessage lo hi = "must be within inclusive range [" <> Text.pack (show lo) <> ", " <> Text.pack (show hi) <> "]"
+
+numericValue (Number n) = Just n
+numericValue _ = Nothing
+
+integerValue :: Value -> Maybe Integer
+integerValue value@(Number _) = case (Aeson.fromJSON value :: Aeson.Result Integer) of
+  Aeson.Success n -> Just n
+  Aeson.Error _ -> Nothing
+integerValue _ = Nothing
 
 ------------------------------------------------------------------------
 -- Generator declaration
@@ -1878,15 +1988,93 @@ validateParameters params = concat
     | param <- params
     , Text.null (rpsLabel param)
     ]
-  , [ ManifestInvalidField (paramPath param "range") "bool parameters must not declare numeric ranges."
-    | param <- params
-    , rpsType param == ParamBool
-    , Just _ <- [rpsRange param]
-    ]
+  , concatMap validateParameterSpec params
   , duplicateErrors "config.parameters.name" (map rpsName params)
   ]
   where
     paramPath param field = "config.parameters." <> nameOrPlaceholder (rpsName param) <> "." <> field
+
+validateParameterSpec :: RPCParamSpec -> [ManifestError]
+validateParameterSpec param = concat
+  [ validateParameterDefault param
+  , validateParameterRange param
+  , validateParameterDefaultWithinRange param
+  ]
+
+validateParameterDefault :: RPCParamSpec -> [ManifestError]
+validateParameterDefault param = case rpsType param of
+  ParamBool ->
+    [ invalidDefault param "default must be a boolean value."
+    | not (isBoolValue (rpsDefault param))
+    ]
+  ParamFloat ->
+    [ invalidDefault param "default must be a numeric value."
+    | not (isNumberValue (rpsDefault param))
+    ]
+  ParamInt ->
+    [ invalidDefault param "default must be an integral numeric value."
+    | not (isIntegralNumberValue (rpsDefault param))
+    ]
+
+validateParameterRange :: RPCParamSpec -> [ManifestError]
+validateParameterRange param = case (rpsType param, rpsRange param) of
+  (ParamBool, Just _) ->
+    [ ManifestInvalidField (paramFieldPath param "range") "bool parameters must not declare numeric ranges." ]
+  (ParamBool, Nothing) -> []
+  (ParamFloat, Just (lo, hi)) -> validateFloatParameterRange param lo hi
+  (ParamFloat, Nothing) -> []
+  (ParamInt, Just (lo, hi)) -> validateIntParameterRange param lo hi
+  (ParamInt, Nothing) -> []
+
+validateFloatParameterRange :: RPCParamSpec -> Value -> Value -> [ManifestError]
+validateFloatParameterRange param lo hi = case (numericValue lo, numericValue hi) of
+  (Just loNum, Just hiNum)
+    | loNum < hiNum -> []
+    | otherwise -> [invalidRange param "range bounds must be strictly increasing."]
+  _ -> [invalidRange param "range bounds must be numeric values."]
+
+validateIntParameterRange :: RPCParamSpec -> Value -> Value -> [ManifestError]
+validateIntParameterRange param lo hi = case (lo, hi) of
+  (Number _, Number _) -> case (integerValue lo, integerValue hi) of
+    (Just loInt, Just hiInt)
+      | loInt < hiInt -> []
+      | otherwise -> [invalidRange param "range bounds must be strictly increasing."]
+    _ -> [invalidRange param "integer range bounds must be integral numeric values."]
+  _ -> [invalidRange param "range bounds must be numeric values."]
+
+validateParameterDefaultWithinRange :: RPCParamSpec -> [ManifestError]
+validateParameterDefaultWithinRange param = case (rpsType param, rpsRange param) of
+  (ParamFloat, Just (lo, hi)) -> case (numericValue (rpsDefault param), numericValue lo, numericValue hi) of
+    (Just def, Just loNum, Just hiNum)
+      | loNum < hiNum && (def < loNum || def > hiNum) -> [invalidDefault param "default must be within the inclusive range."]
+      | otherwise -> []
+    _ -> []
+  (ParamInt, Just (lo, hi)) -> case (integerValue (rpsDefault param), integerValue lo, integerValue hi) of
+    (Just def, Just loInt, Just hiInt)
+      | loInt < hiInt && (def < loInt || def > hiInt) -> [invalidDefault param "default must be within the inclusive range."]
+      | otherwise -> []
+    _ -> []
+  _ -> []
+
+invalidDefault :: RPCParamSpec -> Text -> ManifestError
+invalidDefault param = ManifestInvalidField (paramFieldPath param "default")
+
+invalidRange :: RPCParamSpec -> Text -> ManifestError
+invalidRange param = ManifestInvalidField (paramFieldPath param "range")
+
+paramFieldPath :: RPCParamSpec -> Text -> Text
+paramFieldPath param field = "config.parameters." <> nameOrPlaceholder (rpsName param) <> "." <> field
+
+isBoolValue :: Value -> Bool
+isBoolValue (Bool _) = True
+isBoolValue _ = False
+
+isNumberValue :: Value -> Bool
+isNumberValue (Number _) = True
+isNumberValue _ = False
+
+isIntegralNumberValue :: Value -> Bool
+isIntegralNumberValue = maybe False (const True) . integerValue
 
 validateDataResources :: [DataResourceSchema] -> [ManifestError]
 validateDataResources resources =

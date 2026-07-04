@@ -39,6 +39,7 @@ import Test.Hspec
 
 import Seer.Headless
   ( HeadlessApp
+  , HeadlessConfig(..)
   , defaultHeadlessConfig
   , headlessCommandContext
   , headlessServiceContext
@@ -74,6 +75,7 @@ import Seer.System (runApp)
 import Spec.Support.OverlayFixtures (mkSparseFloatOverlay)
 import System.Directory
   ( createDirectory
+  , createDirectoryIfMissing
   , doesFileExist
   , getCurrentDirectory
   , getTemporaryDirectory
@@ -84,6 +86,8 @@ import System.FilePath ((</>), takeDirectory)
 import Topo (WorldConfig(..), chunkIdFromCoord, emptyTerrainChunk)
 import Topo.Overlay (emptyOverlayStore, insertOverlay, OverlayProvenance(..))
 import Topo.Plugin.RPC.DataService (DataResourceErrorCode(..), dataResourceErrorCodeText)
+import Topo.Plugin.RPC.Manifest (RPCParamSpec(..), RPCParamType(..), manifestV3)
+import Topo.Plugin.RPC.Protocol (currentProtocolVersion)
 import Topo.Types (ChunkCoord(..))
 import Paths_topo_seer (getDataFileName)
 
@@ -280,6 +284,39 @@ spec = describe "Seer.HTTP.Server" $ do
         { hreqBody = Just (object []) }
       hresStatusCode rsp `shouldBe` 400
       lookupNestedText ["error", "code"] (hresBody rsp) `shouldBe` Just "validation_failed"
+
+  it "maps plugin parameter validation and not-found errors to HTTP envelopes" $
+    withHttpPluginDir $ do
+      let cfg = defaultHeadlessConfig { hcDiscoverPlugins = True }
+      withHeadlessApp cfg $ \app -> do
+        wrongType <- request app (mkRequest "PATCH" ["plugins", "params"])
+          { hreqBody = Just (object
+              [ "plugin" .= ("http-example" :: Text)
+              , "param" .= ("enabled" :: Text)
+              , "value" .= String "yes"
+              ]) }
+        hresStatusCode wrongType `shouldBe` 400
+        lookupNestedText ["error", "code"] (hresBody wrongType) `shouldBe` Just "validation_failed"
+        errorDetailPath (hresBody wrongType) `shouldBe` Just ["value"]
+
+        unknownParam <- request app (mkRequest "PATCH" ["plugins", "params"])
+          { hreqBody = Just (object
+              [ "plugin" .= ("http-example" :: Text)
+              , "param" .= ("missing" :: Text)
+              , "value" .= Bool True
+              ]) }
+        hresStatusCode unknownParam `shouldBe` 400
+        lookupNestedText ["error", "code"] (hresBody unknownParam) `shouldBe` Just "validation_failed"
+        errorDetailPath (hresBody unknownParam) `shouldBe` Just ["param"]
+
+        unknownPlugin <- request app (mkRequest "PATCH" ["plugins", "params"])
+          { hreqBody = Just (object
+              [ "plugin" .= ("missing" :: Text)
+              , "param" .= ("enabled" :: Text)
+              , "value" .= Bool True
+              ]) }
+        hresStatusCode unknownPlugin `shouldBe` 404
+        lookupNestedText ["error", "code"] (hresBody unknownPlugin) `shouldBe` Just "not_found"
 
   it "maps standardized data-resource service errors to HTTP API envelopes" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
@@ -1108,6 +1145,70 @@ retiredMcpResourceReadCases =
   , resourceReadCase (retiredMcpResourceTargets !! 14) [("chunk", Just "0")] Nothing
   , resourceReadCase (retiredMcpResourceTargets !! 15) [("type", Just "biome")] Nothing
   ]
+
+withHttpPluginDir :: IO a -> IO a
+withHttpPluginDir action = bracket setup teardown (const action)
+  where
+    setup = do
+      oldPluginDir <- lookupEnv httpPluginDirEnv
+      tmp <- getTemporaryDirectory
+      now <- getPOSIXTime
+      let root = tmp </> ("topo-http-plugin-" <> show (round (now * 1000000) :: Integer))
+          pluginBase = root </> "plugins"
+          pluginDir = pluginBase </> "http-example"
+      createDirectoryIfMissing True pluginDir
+      LBS.writeFile (pluginDir </> "manifest.json") (Aeson.encode httpPluginManifest)
+      setEnv httpPluginDirEnv pluginBase
+      pure (root, oldPluginDir)
+
+    teardown (root, oldPluginDir) = do
+      maybe (unsetEnv httpPluginDirEnv) (setEnv httpPluginDirEnv) oldPluginDir
+      removeDirectoryRecursive root
+
+httpPluginDirEnv :: String
+httpPluginDirEnv = "TOPO_PLUGIN_DIR"
+
+httpPluginManifest :: Value
+httpPluginManifest = object
+  [ "manifestVersion" .= manifestV3
+  , "name" .= ("http-example" :: Text)
+  , "version" .= ("1.0.0" :: Text)
+  , "runtime" .= object
+      [ "protocol" .= object
+          [ "min" .= currentProtocolVersion
+          , "max" .= currentProtocolVersion
+          ]
+      ]
+  , "generator" .= object ["insertAfter" .= ("biomes" :: Text)]
+  , "config" .= object ["parameters" .= httpPluginParamSpecs]
+  ]
+
+httpPluginParamSpecs :: [RPCParamSpec]
+httpPluginParamSpecs =
+  [ RPCParamSpec
+      { rpsName = "enabled"
+      , rpsLabel = "Enabled"
+      , rpsType = ParamBool
+      , rpsRange = Nothing
+      , rpsDefault = Bool True
+      , rpsTooltip = ""
+      }
+  ]
+
+errorDetailPath :: Value -> Maybe [Text]
+errorDetailPath (Object obj) = do
+  Object err <- KM.lookup "error" obj
+  Array details <- KM.lookup "details" err
+  case toList details of
+    Object detail:_ -> case KM.lookup "path" detail of
+      Just (Array pathValues) -> traverse valueText (toList pathValues)
+      _ -> Nothing
+    _ -> Nothing
+errorDetailPath _ = Nothing
+
+valueText :: Value -> Maybe Text
+valueText (String text) = Just text
+valueText _ = Nothing
 
 lookupText :: Text -> Value -> Maybe Text
 lookupText key value = case lookupValue key value of

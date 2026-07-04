@@ -6,6 +6,7 @@ module Seer.Command.Handlers.Plugin
   ( handleListPlugins
   , handleSetPluginEnabled
   , handleSetPluginParam
+  , handleSetPluginParamService
   ) where
 
 import Control.Monad (when)
@@ -23,6 +24,7 @@ import Actor.PluginManager
   , PluginExternalDataSourceDiagnostic(..)
   , PluginExternalDataSourceGrantDiagnostic(..)
   , PluginLifecycleSnapshot(..)
+  , PluginParamUpdateError(..)
   , PluginSimulationPlan(..)
   , getLoadedPlugins
   , setDisabledPlugins
@@ -48,9 +50,21 @@ import Actor.UI.Setters (setUiDisabledPlugins, setUiPluginDiagnosticLines, setUi
 import Actor.UI.State (UiState(..), readUiSnapshotRef)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
+import Seer.Service.Types
+  ( ServiceError(..)
+  , ServiceErrorDetail(..)
+  , ServiceResponse(..)
+  , ServiceResult
+  , serviceErrorText
+  )
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 import Topo.Plugin.DataResource (DataFieldDef(..), DataOperations(..), DataPagination(..), DataResourceSchema(..))
-import Topo.Plugin.RPC.Manifest (RPCManifest(..), RPCParamSpec(..), RPCSimulationDecl(..))
+import Topo.Plugin.RPC.Manifest
+  ( RPCManifest(..)
+  , RPCParamSpec(..)
+  , RPCParamValidationError(..)
+  , RPCSimulationDecl(..)
+  )
 import Topo.Simulation.Schedule (SimulationScheduleDecl(..), catchUpPolicyText)
 
 -- | Handle @list_plugins@ — return loaded plugins with status and params.
@@ -106,23 +120,45 @@ handleSetPluginEnabled ctx reqId params = do
 -- Params: @{ "plugin": "my-plugin", "param": "density", "value": 0.5 }@
 handleSetPluginParam :: CommandContext -> Int -> Value -> IO SeerResponse
 handleSetPluginParam ctx reqId params = do
+  result <- handleSetPluginParamService ctx params
+  pure $ case result of
+    Right response -> okResponse reqId (serviceResponseBody response)
+    Left err -> errResponse reqId (serviceErrorText err)
+
+handleSetPluginParamService :: CommandContext -> Value -> IO ServiceResult
+handleSetPluginParamService ctx params = do
   case Aeson.parseMaybe parsePluginParam params of
     Nothing ->
-      pure $ errResponse reqId "missing or invalid 'plugin', 'param', and/or 'value' parameters"
+      pure $ Left $ ServiceInvalidRequest "missing or invalid 'plugin', 'param', and/or 'value' parameters"
     Just (pluginName, paramName, value) -> do
       let handles = ccActorHandles ctx
-      setPluginParam (ahPluginManagerHandle handles) pluginName paramName value
-      setUiPluginParam (ahUiHandle handles) pluginName paramName value
-      rebindSimulationForCurrentWorld handles
-      pure $ okResponse reqId $ object
-        [ "plugin" .= pluginName
-        , "param"  .= paramName
-        , "value"  .= value
-        ]
+      result <- setPluginParam (ahPluginManagerHandle handles) pluginName paramName value
+      case result of
+        Left err -> pure (Left (pluginParamUpdateServiceError err))
+        Right sanitized -> do
+          setUiPluginParam (ahUiHandle handles) pluginName paramName sanitized
+          rebindSimulationForCurrentWorld handles
+          pure $ Right $ ServiceResponse $ object
+            [ "plugin" .= pluginName
+            , "param"  .= paramName
+            , "value"  .= sanitized
+            ]
 
 -- --------------------------------------------------------------------------
 -- Helpers
 -- --------------------------------------------------------------------------
+
+pluginParamUpdateServiceError :: PluginParamUpdateError -> ServiceError
+pluginParamUpdateServiceError (PluginParamUnknownPlugin pluginName) =
+  ServiceNotFound ("unknown plugin: " <> pluginName)
+pluginParamUpdateServiceError (PluginParamValidationFailed err) =
+  ServiceValidationError "validation failed"
+    [ ServiceErrorDetail
+        { serviceErrorDetailPath = rpvPath err
+        , serviceErrorDetailCode = rpvCode err
+        , serviceErrorDetailMessage = rpvMessage err
+        }
+    ]
 
 rebindSimulationForCurrentWorld :: ActorHandles -> IO ()
 rebindSimulationForCurrentWorld handles = do

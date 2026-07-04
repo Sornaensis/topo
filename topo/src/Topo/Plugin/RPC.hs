@@ -204,10 +204,11 @@ newRPCConnection :: RPCManifest -> Transport -> Map Text Value -> RPCConnection
 newRPCConnection manifest transport params = unsafePerformIO $ do
   failureRef <- newIORef Nothing
   session <- newRPCSession
+  let sanitizedParams = sanitizeRPCManifestParams manifest params
   pure RPCConnection
     { rpcManifest        = manifest
     , rpcTransport       = transport
-    , rpcParams          = params
+    , rpcParams          = sanitizedParams
     , rpcProtocolVersion = currentProtocolVersion
     , rpcDataDirectory   = Nothing
     , rpcResources       = []

@@ -15,6 +15,7 @@ module Actor.PluginManager.Types
   , PluginExternalDataSourceStatusDiagnostic(..)
   , PluginExternalDataSourceGrantDiagnostic(..)
   , PluginExternalDataSourceDiagnostic(..)
+  , PluginParamUpdateError(..)
   , ExternalDataSourceGrantKey(..)
   , ExternalDataSourceGrantBrokerState(..)
   , LoadedPlugin(..)
@@ -83,6 +84,10 @@ import Topo.Plugin.RPC
   , RPCRestartMode(..)
   , RPCUIHints(..)
   )
+import Topo.Plugin.RPC.Manifest
+  ( RPCParamValidationError(..)
+  , sanitizeRPCManifestParams
+  )
 
 -- | Runtime status of a plugin.
 data PluginStatus
@@ -124,6 +129,12 @@ pluginLifecycleStateText LifecycleFailed = "failed"
 
 instance ToJSON PluginLifecycleState where
   toJSON = toJSON . pluginLifecycleStateText
+
+-- | Result errors for synchronous, manifest-backed parameter updates.
+data PluginParamUpdateError
+  = PluginParamUnknownPlugin !Text
+  | PluginParamValidationFailed !RPCParamValidationError
+  deriving (Eq, Show)
 
 -- | Lease held by the supervisor for a plugin's current lifecycle state.
 data PluginStateLease = PluginStateLease
@@ -1050,4 +1061,4 @@ setParamOnPlugin paramName value lp =
     , lpConnection = fmap (\conn -> conn { rpcParams = params' }) (lpConnection lp)
     }
   where
-    params' = Map.insert paramName value (lpParams lp)
+    params' = sanitizeRPCManifestParams (lpManifest lp) (Map.insert paramName value (lpParams lp))

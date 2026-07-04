@@ -12,9 +12,11 @@
 module Spec.CommandDispatch (spec) where
 
 import Control.Concurrent.MVar (newEmptyMVar)
-import Control.Exception (bracket)
+import Control.Exception (bracket, catch)
 import Control.Monad (forM_)
+import qualified Data.ByteString.Lazy as BL
 import Data.Aeson (Value(..), object, (.=), Key)
+import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KM
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
@@ -25,13 +27,16 @@ import Data.Maybe (mapMaybe)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
+import System.Directory (createDirectoryIfMissing, getTemporaryDirectory, removePathForcibly)
+import System.Environment (lookupEnv, setEnv, unsetEnv)
+import System.FilePath ((</>))
 import Hyperspace.Actor (ActorSystem, get, newActorSystem, replyTo, shutdownActorSystem)
 import Test.Hspec
 
 import Actor.AtlasManager (AtlasManager)
 import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..), getTerrainSnapshot, setTerrainChunkCount, setTerrainChunkData)
 import Actor.Log (Log)
-import Actor.PluginManager (PluginManager)
+import Actor.PluginManager (LoadedPlugin(..), PluginManager, discoverPlugins, getLoadedPlugins)
 import Actor.Simulation (Simulation)
 import Actor.SnapshotReceiver
   ( newDataSnapshotRef
@@ -48,6 +53,7 @@ import Actor.UI
   , setUiGenerating
   , setUiSnapshotRef
   )
+import Actor.UI.Setters (setUiPluginParamSpecs)
 import Actor.UiActions (ActorHandles(..), UiActions)
 import Actor.UiActions.Command (UiAction(..), UiActionRequest(..), runUiAction)
 
@@ -89,6 +95,12 @@ import Topo (WorldConfig(..), chunkIdFromCoord, emptyTerrainChunk)
 import Topo.Command.Types (SeerCommand(..), SeerResponse(..))
 import Topo.Overlay (emptyOverlayStore)
 import Topo.Pipeline.Stage (StageId(..))
+import Topo.Plugin.RPC.Manifest
+  ( RPCParamSpec(..)
+  , RPCParamType(..)
+  , manifestV3
+  )
+import Topo.Plugin.RPC.Protocol (currentProtocolVersion)
 import Topo.Types (ChunkCoord(..), ChunkId(..))
 
 spec :: Spec
@@ -131,6 +143,30 @@ spec = describe "CommandDispatch" $ do
       case chunkResult of
         Left (ServiceNotFound msg) -> msg `shouldSatisfy` Text.isInfixOf "chunk"
         other -> expectationFailure ("expected chunk ServiceNotFound, got: " <> show other)
+
+    it "returns structured plugin parameter update errors from the AppService boundary" $ withPluginCtx $ \ctx -> do
+      unknownPlugin <- runService ctx "set_plugin_param" (object
+        [ "plugin" .= ("missing" :: String)
+        , "param" .= ("enabled" :: String)
+        , "value" .= Bool True
+        ])
+      case unknownPlugin of
+        Left (ServiceNotFound msg) -> msg `shouldSatisfy` Text.isInfixOf "unknown plugin"
+        other -> expectationFailure ("expected plugin ServiceNotFound, got: " <> show other)
+
+      unknownParam <- runService ctx "set_plugin_param" (object
+        [ "plugin" .= ("example" :: String)
+        , "param" .= ("missing" :: String)
+        , "value" .= Bool True
+        ])
+      assertSingleValidationDetail unknownParam ["param"] "unknown_param"
+
+      wrongType <- runService ctx "set_plugin_param" (object
+        [ "plugin" .= ("example" :: String)
+        , "param" .= ("enabled" :: String)
+        , "value" .= String "yes"
+        ])
+      assertSingleValidationDetail wrongType ["value"] "invalid_type"
 
     it "returns structured service validation errors before handler envelopes" $ withCtx $ \ctx -> do
       result <- runService ctx "set_seed" Null
@@ -740,7 +776,7 @@ spec = describe "CommandDispatch" $ do
       Set.member StageBiomes (uiExplicitDisabledStages ui) `shouldBe` True
 
   describe "set_plugin_param" $ do
-    it "updates the UI plugin parameter snapshot as well as the plugin manager" $ withCtx $ \ctx -> do
+    it "updates the UI plugin parameter snapshot as well as the plugin manager" $ withPluginCtx $ \ctx -> do
       rsp <- dispatch ctx "set_plugin_param" (object
         [ "plugin" .= ("example" :: String)
         , "param" .= ("enabled" :: String)
@@ -750,7 +786,34 @@ spec = describe "CommandDispatch" $ do
       ui <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
       (Map.lookup "example" (uiPluginParams ui) >>= Map.lookup "enabled") `shouldBe` Just (Bool True)
 
-    it "click_widget toggles plugin parameter checkboxes through pipeline action helpers" $ withCtx $ \ctx -> do
+    it "rejects invalid updates without mutating the UI snapshot or plugin manager" $ withPluginCtx $ \ctx -> do
+      seedRsp <- dispatch ctx "set_plugin_param" (object
+        [ "plugin" .= ("example" :: String)
+        , "param" .= ("enabled" :: String)
+        , "value" .= Bool True
+        ])
+      srSuccess seedRsp `shouldBe` True
+
+      let invalidCases =
+            [ object ["plugin" .= ("missing" :: String), "param" .= ("enabled" :: String), "value" .= Bool False]
+            , object ["plugin" .= ("example" :: String), "param" .= ("missing" :: String), "value" .= Bool False]
+            , object ["plugin" .= ("example" :: String), "param" .= ("enabled" :: String), "value" .= String "yes"]
+            , object ["plugin" .= ("example" :: String), "param" .= ("iterations" :: String), "value" .= Number 1.5]
+            , object ["plugin" .= ("example" :: String), "param" .= ("density" :: String), "value" .= Number 2]
+            ]
+      forM_ invalidCases $ \payload -> do
+        rsp <- dispatch ctx "set_plugin_param" payload
+        srSuccess rsp `shouldBe` False
+
+      ui <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
+      (Map.lookup "example" (uiPluginParams ui) >>= Map.lookup "enabled") `shouldBe` Just (Bool True)
+      loaded <- getLoadedPlugins (ahPluginManagerHandle (ccActorHandles ctx))
+      let managerValue = do
+            plugin <- findPlugin "example" loaded
+            Map.lookup "enabled" (lpParams plugin)
+      managerValue `shouldBe` Just (Bool True)
+
+    it "click_widget toggles plugin parameter checkboxes through pipeline action helpers" $ withPluginCtx $ \ctx -> do
       seedRsp <- dispatch ctx "set_plugin_param" (object
         [ "plugin" .= ("example" :: String)
         , "param" .= ("enabled" :: String)
@@ -942,6 +1005,90 @@ withCtx action = bracket newActorSystem shutdownActorSystem $ \system -> do
         , ccLogSnapshotRef  = Nothing
         }
   action ctx
+
+withPluginCtx :: (CommandContext -> IO a) -> IO a
+withPluginCtx action = withIsolatedPluginDir $ \_pluginRoot ->
+  withCtx $ \ctx -> do
+    discoverPlugins (ahPluginManagerHandle (ccActorHandles ctx))
+    _ <- getLoadedPlugins (ahPluginManagerHandle (ccActorHandles ctx))
+    setUiPluginParamSpecs (ahUiHandle (ccActorHandles ctx)) (Map.singleton "example" commandPluginParamSpecs)
+    action ctx
+
+testPluginDirEnv :: String
+testPluginDirEnv = "TOPO_PLUGIN_DIR"
+
+withIsolatedPluginDir :: (FilePath -> IO a) -> IO a
+withIsolatedPluginDir action = bracket setup teardown (action . fst)
+  where
+    setup = do
+      oldPluginDir <- lookupEnv testPluginDirEnv
+      tmp <- getTemporaryDirectory
+      let root = tmp </> "topo-command-dispatch-plugin"
+          pluginBase = root </> "plugins"
+          pluginDir = pluginBase </> "example"
+      removePathForcibly root `catchAny` \_ -> pure ()
+      createDirectoryIfMissing True pluginDir
+      BL.writeFile (pluginDir </> "manifest.json") (Aeson.encode commandPluginManifest)
+      setEnv testPluginDirEnv pluginBase
+      pure (root, oldPluginDir)
+
+    teardown (root, oldPluginDir) = do
+      maybe (unsetEnv testPluginDirEnv) (setEnv testPluginDirEnv) oldPluginDir
+      removePathForcibly root `catchAny` \_ -> pure ()
+
+catchAny :: IO a -> (IOError -> IO a) -> IO a
+catchAny = catch
+
+findPlugin :: Text -> [LoadedPlugin] -> Maybe LoadedPlugin
+findPlugin name = go
+  where
+    go [] = Nothing
+    go (plugin:rest)
+      | lpName plugin == name = Just plugin
+      | otherwise = go rest
+
+commandPluginParamSpecs :: [RPCParamSpec]
+commandPluginParamSpecs =
+  [ RPCParamSpec
+      { rpsName = "enabled"
+      , rpsLabel = "Enabled"
+      , rpsType = ParamBool
+      , rpsRange = Nothing
+      , rpsDefault = Bool False
+      , rpsTooltip = ""
+      }
+  , RPCParamSpec
+      { rpsName = "density"
+      , rpsLabel = "Density"
+      , rpsType = ParamFloat
+      , rpsRange = Just (Number 0, Number 1)
+      , rpsDefault = Number 0.5
+      , rpsTooltip = ""
+      }
+  , RPCParamSpec
+      { rpsName = "iterations"
+      , rpsLabel = "Iterations"
+      , rpsType = ParamInt
+      , rpsRange = Just (Number 1, Number 10)
+      , rpsDefault = Number 3
+      , rpsTooltip = ""
+      }
+  ]
+
+commandPluginManifest :: Value
+commandPluginManifest = object
+  [ "manifestVersion" .= manifestV3
+  , "name" .= ("example" :: Text)
+  , "version" .= ("1.0.0" :: Text)
+  , "runtime" .= object
+      [ "protocol" .= object
+          [ "min" .= currentProtocolVersion
+          , "max" .= currentProtocolVersion
+          ]
+      ]
+  , "generator" .= object ["insertAfter" .= ("biomes" :: Text)]
+  , "config" .= object ["parameters" .= commandPluginParamSpecs]
+  ]
 
 inspectorSectionKey :: Value -> Maybe Text
 inspectorSectionKey (Object section) = case KM.lookup "key" section of

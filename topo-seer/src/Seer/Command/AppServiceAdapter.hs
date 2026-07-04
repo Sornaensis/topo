@@ -123,7 +123,7 @@ commandAppService = AppService
   , appPlugins = PluginService
       { pluginList = commandServiceHandler pluginListOperation HPlugin.handleListPlugins
       , pluginSetEnabled = commandServiceHandler pluginSetEnabledOperation HPlugin.handleSetPluginEnabled
-      , pluginSetParam = commandServiceHandler pluginSetParamOperation HPlugin.handleSetPluginParam
+      , pluginSetParam = commandServiceResultHandler pluginSetParamOperation HPlugin.handleSetPluginParamService
       }
   , appDataResources = DataResourceService
       { dataListPlugins = commandServiceHandler dataResourceListPluginsOperation HData.handleDataListPlugins
@@ -199,6 +199,16 @@ commandServiceHandler operation handler = validateServiceHandler method $ \ctx r
   let params = serviceRequestBodyValue request
   response <- handler (serviceCommandContext ctx) 0 params
   pure (commandResponseToServiceResult response)
+  where
+    method = serviceOperationMethod (typedServiceOperationSpec operation)
+
+commandServiceResultHandler
+  :: TypedServiceOperation request response
+  -> (CommandContext -> Value -> IO ServiceResult)
+  -> ServiceHandler
+commandServiceResultHandler operation handler = validateServiceHandler method $ \ctx request -> do
+  let params = serviceRequestBodyValue request
+  handler (serviceCommandContext ctx) params
   where
     method = serviceOperationMethod (typedServiceOperationSpec operation)
 

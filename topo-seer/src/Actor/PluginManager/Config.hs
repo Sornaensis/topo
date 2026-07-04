@@ -28,14 +28,17 @@ import System.Directory
   )
 import System.FilePath ((</>))
 
-import Topo.Plugin.RPC (RPCParamSpec(..))
+import Topo.Plugin.RPC.Manifest
+  ( RPCParamSpec
+  , rpcParamDefaults
+  , sanitizeRPCParamMap
+  )
 
 -- | Load saved parameter values, falling back to manifest defaults.
 loadPluginConfig :: FilePath -> [RPCParamSpec] -> IO (Map Text Value)
 loadPluginConfig pluginDir paramSpecs = do
   let configPath = pluginDir </> "config.json"
-      defaults = Map.fromList
-        [(rpsName spec, rpsDefault spec) | spec <- paramSpecs]
+      defaults = rpcParamDefaults paramSpecs
   exists <- doesFileExist configPath
   if not exists
     then pure defaults
@@ -48,7 +51,7 @@ loadPluginConfig pluginDir paramSpecs = do
           Just (Object km) ->
             let saved = Map.fromList
                   [(Key.toText k, v) | (k, v) <- KM.toList km]
-            in pure (Map.union saved defaults)
+            in pure (sanitizeRPCParamMap paramSpecs saved)
           Just _ -> pure defaults
 
 -- | Save current parameter values to config.json.
