@@ -621,7 +621,7 @@
       "waiver": null,
       "planRefs": ["M2 service extraction", "M3 simulation routes", "M9 simulation DAG and plugin data-source/resource feature surfaces"],
       "modules": {
-        "topo": ["Topo.Simulation", "Topo.Simulation.DAG"]
+        "topo": ["Topo.Simulation", "Topo.Simulation.Schedule", "Topo.Simulation.DAG", "Topo.Simulation.Pipeline"]
       }
     },
     {
