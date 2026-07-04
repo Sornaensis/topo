@@ -39,12 +39,15 @@ import Topo.Plugin.RPC
   , MutateResult(..)
   , QueryResource(..)
   , QueryResult(..)
+  , RPCConnection(..)
+  , HandshakeAuthChallenge(..)
   , RPCError(..)
   , checkHealth
   , invokeGenerator
   , invokeSimulation
   , mutateResource
   , newRPCConnection
+  , performHandshakeWithAuth
   , queryResource
   , rpcErrorText
   , sendHeartbeat
@@ -286,13 +289,16 @@ instance Arbitrary Handshake where
   arbitrary = Handshake
     <$> pure currentProtocolVersion
     <*> arbitrary
-    <*> listOf (elements ["query", "mutate", "subscribe"])
+    <*> listOf (elements ["query", "mutate", "subscribe", "launch_auth"])
+    <*> arbitrary
 
 instance Arbitrary HandshakeAck where
   arbitrary = HandshakeAck
     <$> pure currentProtocolVersion
     <*> arbitrary
     <*> listOf arbitrary
+    <*> arbitrary
+    <*> arbitrary
 
 instance Arbitrary WorldChanged where
   arbitrary = WorldChanged <$> arbitrary
@@ -1280,12 +1286,23 @@ spec = describe "Plugin.RPC" $ do
       Aeson.fromJSON (Aeson.toJSON health) === Aeson.Success health
 
     it "Handshake with no world path round-trips" $ do
-      let hs = Handshake currentProtocolVersion Nothing ["query"]
+      let hs = Handshake currentProtocolVersion Nothing ["query"] Nothing
       Aeson.fromJSON (Aeson.toJSON hs) `shouldBe` Aeson.Success hs
 
+    it "Handshake carries an auth challenge without using the endpoint name as a credential" $ do
+      let hs = Handshake currentProtocolVersion Nothing ["query", "launch_auth"] (Just "nonce-1")
+      Aeson.fromJSON (Aeson.toJSON hs) `shouldBe` Aeson.Success hs
+      hsAuthChallenge hs `shouldBe` Just "nonce-1"
+
     it "HandshakeAck with no data directory round-trips" $ do
-      let ha = HandshakeAck currentProtocolVersion Nothing []
+      let ha = HandshakeAck currentProtocolVersion Nothing [] Nothing Nothing
       Aeson.fromJSON (Aeson.toJSON ha) `shouldBe` Aeson.Success ha
+
+    it "HandshakeAck carries session id and auth proof" $ do
+      let proof = handshakeAuthProof "session-1" "token-1" "nonce-1"
+          ha = HandshakeAck currentProtocolVersion Nothing [] (Just "session-1") (Just proof)
+      Aeson.fromJSON (Aeson.toJSON ha) `shouldBe` Aeson.Success ha
+      proof `shouldNotBe` "token-1"
 
     it "WorldChanged with Nothing round-trips" $ do
       let wc = WorldChanged Nothing
@@ -1421,6 +1438,109 @@ spec = describe "Plugin.RPC" $ do
           })
         heartbeat <- takeHeartbeatResult done
         hbStatus heartbeat `shouldBe` "ok"
+
+    it "accepts a plugin handshake with a matching launch session proof" $
+      withConnectedTransports "rpc-handshake-auth-ok" $ \host plugin -> do
+        let conn = newRPCConnection baseManifest host Map.empty
+            auth = HandshakeAuthChallenge
+              { hacSessionId = "session-ok"
+              , hacChallenge = "nonce-ok"
+              , hacExpectedProof = handshakeAuthProof "session-ok" "token-ok" "nonce-ok"
+              }
+        done <- newEmptyMVar
+        _ <- forkIO (performHandshakeWithAuth conn Nothing (Just auth) >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgHandshake
+        case Aeson.fromJSON (envPayload request) of
+          Aeson.Error err -> expectationFailure err
+          Aeson.Success (hs :: Handshake) -> do
+            hsAuthChallenge hs `shouldBe` Just "nonce-ok"
+            hsHostCapabilities hs `shouldSatisfy` elem "launch_auth"
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgHandshakeAck
+          , envPayload = Aeson.toJSON (HandshakeAck
+              currentProtocolVersion
+              Nothing
+              []
+              (Just "session-ok")
+              (Just (handshakeAuthProof "session-ok" "token-ok" "nonce-ok")))
+          , envRequestId = envRequestId request
+          }
+        result <- timeout transportTestTimeoutMicros (takeMVar done)
+        case result of
+          Just (Right conn') -> rpcProtocolVersion conn' `shouldBe` currentProtocolVersion
+          _ -> expectationFailure "expected authenticated handshake success"
+
+    it "rejects missing launch session proof during handshake" $
+      withConnectedTransports "rpc-handshake-auth-missing" $ \host plugin -> do
+        let conn = newRPCConnection baseManifest host Map.empty
+            auth = HandshakeAuthChallenge
+              { hacSessionId = "session-missing"
+              , hacChallenge = "nonce-missing"
+              , hacExpectedProof = handshakeAuthProof "session-missing" "token-missing" "nonce-missing"
+              }
+        done <- newEmptyMVar
+        _ <- forkIO (performHandshakeWithAuth conn Nothing (Just auth) >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgHandshake
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgHandshakeAck
+          , envPayload = Aeson.toJSON (HandshakeAck currentProtocolVersion Nothing [] Nothing Nothing)
+          , envRequestId = envRequestId request
+          }
+        result <- timeout transportTestTimeoutMicros (takeMVar done)
+        case result of
+          Just (Left (RPCProtocolError msg)) -> msg `shouldSatisfy` Text.isInfixOf "launch session"
+          _ -> expectationFailure "expected missing launch session rejection"
+
+    it "rejects mismatched launch session id during handshake" $
+      withConnectedTransports "rpc-handshake-session-mismatch" $ \host plugin -> do
+        let conn = newRPCConnection baseManifest host Map.empty
+            auth = HandshakeAuthChallenge
+              { hacSessionId = "session-expected"
+              , hacChallenge = "nonce-session"
+              , hacExpectedProof = handshakeAuthProof "session-expected" "token-session" "nonce-session"
+              }
+        done <- newEmptyMVar
+        _ <- forkIO (performHandshakeWithAuth conn Nothing (Just auth) >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgHandshake
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgHandshakeAck
+          , envPayload = Aeson.toJSON (HandshakeAck
+              currentProtocolVersion
+              Nothing
+              []
+              (Just "session-wrong")
+              (Just (handshakeAuthProof "session-wrong" "token-session" "nonce-session")))
+          , envRequestId = envRequestId request
+          }
+        result <- timeout transportTestTimeoutMicros (takeMVar done)
+        case result of
+          Just (Left (RPCProtocolError msg)) -> msg `shouldSatisfy` Text.isInfixOf "launch session"
+          _ -> expectationFailure "expected mismatched launch session rejection"
+
+    it "rejects mismatched launch auth proof during handshake" $
+      withConnectedTransports "rpc-handshake-auth-mismatch" $ \host plugin -> do
+        let conn = newRPCConnection baseManifest host Map.empty
+            auth = HandshakeAuthChallenge
+              { hacSessionId = "session-proof"
+              , hacChallenge = "nonce-proof"
+              , hacExpectedProof = handshakeAuthProof "session-proof" "token-proof" "nonce-proof"
+              }
+        done <- newEmptyMVar
+        _ <- forkIO (performHandshakeWithAuth conn Nothing (Just auth) >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgHandshake
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgHandshakeAck
+          , envPayload = Aeson.toJSON (HandshakeAck currentProtocolVersion Nothing [] (Just "session-proof") (Just "wrong-proof"))
+          , envRequestId = envRequestId request
+          }
+        result <- timeout transportTestTimeoutMicros (takeMVar done)
+        case result of
+          Just (Left (RPCProtocolError msg)) -> msg `shouldSatisfy` Text.isInfixOf "auth proof"
+          _ -> expectationFailure "expected mismatched auth proof rejection"
 
     it "sends the caller-provided seed in invoke_generator requests" $
       withConnectedTransports "rpc-generator-seed" $ \host plugin -> do

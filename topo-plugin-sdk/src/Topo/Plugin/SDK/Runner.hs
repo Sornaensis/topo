@@ -49,7 +49,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
 import Data.Word (Word64)
 import System.Directory (createDirectoryIfMissing, getCurrentDirectory)
-import System.Environment (getArgs)
+import System.Environment (getArgs, lookupEnv)
 import System.Exit (exitFailure)
 import System.FilePath ((</>), takeDirectory)
 import System.IO (stderr, stdin, stdout)
@@ -81,6 +81,7 @@ import Topo.Plugin.RPC.Protocol
   , HealthStatus(..)
   , PluginProgress(..)
   , currentProtocolVersion
+  , handshakeAuthProof
   , encodeMessage
   , decodeMessage
   )
@@ -96,6 +97,8 @@ import Topo.Plugin.RPC.Transport
   , recvMessage
   , closeTransport
   , connectPluginFromEnvironment
+  , pluginAuthTokenEnv
+  , pluginSessionEnv
   )
 import Topo.Hex (defaultHexGridMeta)
 import Topo.Plugin.DataResource (DataResourceSchema(..), DataOperations(..))
@@ -326,6 +329,29 @@ runPluginWithManifestCommand pd = do
 runPluginSession :: PluginDef -> Transport -> Map Text Value -> IO ()
 runPluginSession pd transport params = messageLoop pd transport params Nothing
 
+data LaunchAuth = LaunchAuth
+  { laSessionId :: !Text
+  , laAuthToken :: !Text
+  }
+
+readLaunchAuthFromEnvironment :: IO (Maybe LaunchAuth)
+readLaunchAuthFromEnvironment = do
+  mSession <- lookupEnv pluginSessionEnv
+  mAuthToken <- lookupEnv pluginAuthTokenEnv
+  pure $ case (mSession, mAuthToken) of
+    (Just sessionId, Just authToken) -> Just LaunchAuth
+      { laSessionId = Text.pack sessionId
+      , laAuthToken = Text.pack authToken
+      }
+    _ -> Nothing
+
+launchAuthProof :: Maybe LaunchAuth -> Maybe Text -> Maybe (Text, Text)
+launchAuthProof (Just launchAuth) (Just challenge) = Just
+  ( laSessionId launchAuth
+  , handshakeAuthProof (laSessionId launchAuth) (laAuthToken launchAuth) challenge
+  )
+launchAuthProof _ _ = Nothing
+
 -- | Main message loop.  Reads RPC envelopes and dispatches them.
 messageLoop :: PluginDef -> Transport -> Map Text Value -> Maybe FilePath -> IO ()
 messageLoop pd transport params worldPath = do
@@ -351,11 +377,15 @@ messageLoop pd transport params worldPath = do
               sendErrorResponse transport (envRequestId envelope) 8 "Invalid handshake payload"
               messageLoop pd transport params worldPath
             Aeson.Success (hs :: Handshake) -> do
+              launchAuth <- readLaunchAuthFromEnvironment
               let newWorldPath = fmap Text.unpack (hsWorldPath hs)
+                  mAuthProof = launchAuthProof launchAuth (hsAuthChallenge hs)
                   ack = HandshakeAck
                     { haProtocolVersion = currentProtocolVersion
                     , haDataDirectory   = fmap Text.pack (pdDataDirectory pd)
                     , haResources       = map drdSchema (pdDataResources pd)
+                    , haSessionId       = fst <$> mAuthProof
+                    , haAuthProof       = snd <$> mAuthProof
                     }
                   ackEnvelope = RPCEnvelope
                     { envType    = MsgHandshakeAck

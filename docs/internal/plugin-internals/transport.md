@@ -18,7 +18,13 @@ The host creates the endpoint, launches the plugin, and passes the endpoint
 through environment variables. Plugins connect to that endpoint; they must not
 assume a stable global pipe/socket name. Stdio compatibility is only available
 when `TOPO_PLUGIN_STDIO_COMPAT=1` is explicitly set for tests or development
-harnesses.
+harnesses, and production launches strip that variable.
+
+Endpoint uniqueness is not the authentication boundary. Unix sockets live under
+an owner-only temporary directory and Windows named pipe names are unique per
+launch, but protocol v4 still verifies launch session/token proof during the RPC
+handshake as defense-in-depth against same-host endpoint races or
+accidental/malicious local clients.
 
 ## Launch environment
 
@@ -31,8 +37,8 @@ harnesses.
 | `TOPO_PLUGIN_STDIO_COMPAT` | `pluginStdioCompatibilityEnv` | Explicit stdio test/development opt-in. |
 | `TOPO_PLUGIN_SESSION` | `pluginSessionEnv` | Opaque launch session ID. |
 | `TOPO_PLUGIN_AUTH_TOKEN` | `pluginAuthTokenEnv` | Opaque launch token. |
-| `TOPO_PLUGIN_WORLD_ID` | `pluginWorldIdEnv` | Active world identifier or sentinel. |
-| `TOPO_PLUGIN_DATA_ROOT` | `pluginDataRootEnv` | Writable plugin data root selected by the host. |
+| `TOPO_PLUGIN_WORLD_ID` | `pluginWorldIdEnv` | Active world identifier or sentinel; host-provided launch metadata for plugin authors/diagnostics, not currently host-enforced behavior. |
+| `TOPO_PLUGIN_DATA_ROOT` | `pluginDataRootEnv` | Writable plugin data root selected and created by the host; metadata unless a future contract gives it host-enforced behavior. |
 
 `endpointKindText` emits `unix` or `named-pipe`; `parseEndpointKind` also accepts
 legacy spellings such as `unix_socket`, `named_pipe`, and `pipe`.

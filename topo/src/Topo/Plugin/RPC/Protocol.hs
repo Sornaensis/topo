@@ -35,8 +35,9 @@ module Topo.Plugin.RPC.Protocol
   , PluginError(..)
   , HandshakeAck(..)
   , HealthStatus(..)
-    -- * Protocol version
+    -- * Protocol version and launch authentication
   , currentProtocolVersion
+  , handshakeAuthProof
     -- * Encoding / decoding
   , encodeMessage
   , decodeMessage
@@ -58,9 +59,12 @@ import Data.Aeson
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
+import Crypto.Hash (SHA256)
+import Crypto.MAC.HMAC (HMAC, hmac, hmacGetDigest)
 import Data.Map.Strict (Map)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 import GHC.Generics (Generic)
 
@@ -412,10 +416,31 @@ instance ToJSON PluginError where
 
 -- | Current protocol version.
 --
--- Version 3 introduces envelope correlation IDs, heartbeat/health messages,
--- and bounded frame handling in the session layer.
+-- Version 4 adds a launch-auth challenge to the startup handshake.  The host
+-- sends a nonce in 'Handshake' and requires a 'HandshakeAck' session id plus an
+-- HMAC-SHA256 proof derived from the launch auth token before marking a plugin
+-- ready.  This is a deliberate major-version bump because older protocol v3
+-- peers cannot prove they received the launch environment.
 currentProtocolVersion :: Int
-currentProtocolVersion = 3
+currentProtocolVersion = 4
+
+-- | Compute the protocol v4 launch-auth proof.
+--
+-- The auth token itself is never sent over the RPC connection.  Both sides
+-- derive this HMAC from the launch session id, the host challenge, and a fixed
+-- domain separator so a same-host client that merely guesses or races the local
+-- endpoint name cannot complete startup.
+handshakeAuthProof :: Text -> Text -> Text -> Text
+handshakeAuthProof sessionId authToken challenge =
+  Text.pack (show (hmacGetDigest (hmac key message :: HMAC SHA256)))
+  where
+    key = TextEncoding.encodeUtf8 authToken
+    message = TextEncoding.encodeUtf8 (Text.intercalate "\n"
+      [ "topo-plugin-launch-auth-v1"
+      , Text.pack (show currentProtocolVersion)
+      , sessionId
+      , challenge
+      ])
 
 ------------------------------------------------------------------------
 -- Handshake messages
@@ -423,8 +448,9 @@ currentProtocolVersion = 3
 
 -- | Handshake message sent by the host when a plugin connects.
 --
--- Provides the world save path (if a world is loaded) and tells the
--- plugin which host-side data-service capabilities are available.
+-- Provides the world save path (if a world is loaded), tells the plugin which
+-- host-side data-service capabilities are available, and may include a
+-- launch-auth nonce that must be answered with 'handshakeAuthProof'.
 data Handshake = Handshake
   { hsProtocolVersion  :: !Int
     -- ^ Protocol version the host speaks.
@@ -433,6 +459,9 @@ data Handshake = Handshake
     --   'Nothing' if no world is loaded yet.
   , hsHostCapabilities :: ![Text]
     -- ^ Host-side capabilities (e.g. @\"query\"@, @\"mutate\"@).
+  , hsAuthChallenge    :: !(Maybe Text)
+    -- ^ Opaque host nonce for launch-auth proof.  Production host launches set
+    --   this; in-process tests and explicit stdio compatibility may omit it.
   } deriving (Eq, Show, Generic)
 
 instance FromJSON Handshake where
@@ -441,13 +470,15 @@ instance FromJSON Handshake where
       <$> o .: "protocol_version"
       <*> o .:? "world_path"
       <*> (o .:? "host_capabilities" >>= pure . maybe [] id)
+      <*> o .:? "auth_challenge"
 
 instance ToJSON Handshake where
-  toJSON hs = object
+  toJSON hs = object $
     [ "protocol_version"  .= hsProtocolVersion hs
     , "world_path"        .= hsWorldPath hs
     , "host_capabilities" .= hsHostCapabilities hs
-    ]
+    ] <>
+    [ "auth_challenge" .= challenge | Just challenge <- [hsAuthChallenge hs] ]
 
 -- | Handshake acknowledgement sent by the plugin in response to
 -- 'Handshake'.
@@ -461,6 +492,10 @@ data HandshakeAck = HandshakeAck
     -- ^ Data subdirectory relative to world path, or 'Nothing'.
   , haResources       :: ![DataResourceSchema]
     -- ^ Data resource schemas the plugin manages.
+  , haSessionId       :: !(Maybe Text)
+    -- ^ Launch session id read from @TOPO_PLUGIN_SESSION@.
+  , haAuthProof       :: !(Maybe Text)
+    -- ^ HMAC proof derived from @TOPO_PLUGIN_AUTH_TOKEN@ and the host challenge.
   } deriving (Eq, Show, Generic)
 
 instance FromJSON HandshakeAck where
@@ -469,13 +504,17 @@ instance FromJSON HandshakeAck where
       <$> o .: "protocol_version"
       <*> o .:? "data_directory"
       <*> (o .:? "resources" >>= pure . maybe [] id)
+      <*> o .:? "session_id"
+      <*> o .:? "auth_proof"
 
 instance ToJSON HandshakeAck where
-  toJSON ha = object
+  toJSON ha = object $
     [ "protocol_version" .= haProtocolVersion ha
     , "data_directory"   .= haDataDirectory ha
     , "resources"        .= haResources ha
-    ]
+    ] <>
+    [ "session_id" .= sessionId | Just sessionId <- [haSessionId ha] ] <>
+    [ "auth_proof" .= proof | Just proof <- [haAuthProof ha] ]
 
 -- | Notification from the host that the world save path has changed.
 --

@@ -14,7 +14,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import System.Directory (createDirectoryIfMissing, getTemporaryDirectory, removePathForcibly)
-import System.Directory (doesDirectoryExist, findExecutable, getCurrentDirectory, listDirectory)
+import System.Directory (doesDirectoryExist, getCurrentDirectory, listDirectory)
 import System.Environment (getEnvironment, getExecutablePath, lookupEnv)
 import System.Exit (ExitCode(..))
 import System.FilePath ((</>))
@@ -562,6 +562,7 @@ handshakeEnvelope = RPCEnvelope MsgHandshake (Aeson.toJSON (Handshake
   { hsProtocolVersion = currentProtocolVersion
   , hsWorldPath = Just "/tmp/topo-fixture-world"
   , hsHostCapabilities = ["query", "mutate"]
+  , hsAuthChallenge = Nothing
   })) (Just 100)
 
 shutdownFixture :: FixtureProcess -> IO ()
@@ -593,17 +594,13 @@ findDedicatedFixtureExecutable = do
   case fromEnv of
     Just path -> pure (Just path)
     Nothing -> do
-      fromPath <- findExecutable "topo-plugin-fixture"
-      case fromPath of
-        Just path -> pure (Just path)
-        Nothing -> do
-          cwd <- getCurrentDirectory
-          let roots =
-                [ cwd </> ".stack-work"
-                , cwd </> "topo-plugin-sdk" </> ".stack-work"
-                , cwd </> ".." </> ".stack-work"
-                ]
-          findFirstJustM findFixtureExecutableRecursively roots
+      cwd <- getCurrentDirectory
+      let roots =
+            [ cwd </> ".stack-work"
+            , cwd </> "topo-plugin-sdk" </> ".stack-work"
+            , cwd </> ".." </> ".stack-work"
+            ]
+      findFirstJustM findFixtureExecutableRecursively roots
 
 findFixtureExecutableRecursively :: FilePath -> IO (Maybe FilePath)
 findFixtureExecutableRecursively root = do

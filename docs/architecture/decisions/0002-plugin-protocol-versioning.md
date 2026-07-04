@@ -17,9 +17,10 @@ CRUD messages. Some message payloads also carry a separate `payload_version`
 currently fixed at `1`.
 
 Earlier SDK launch paths generated `manifest.json` from `PluginDef` and
-connected over stdin/stdout. Protocol v3 replaces production launch with
-environment-provided named-pipe/Unix-domain-socket endpoints, leaving stdio only
-as explicit test/development compatibility.
+connected over stdin/stdout. The v3 planning baseline replaced production launch
+with environment-provided named-pipe/Unix-domain-socket endpoints, leaving stdio
+only as explicit test/development compatibility; protocol v4 keeps that transport
+contract and adds launch auth/session proof.
 
 For 1.0, the plugin system needs larger contract changes:
 
@@ -36,15 +37,17 @@ For 1.0, the plugin system needs larger contract changes:
 
 ## Decision
 
-Define **plugin protocol v3** and **manifest v3** as the production-supported
-1.0 plugin contract.
+Define **manifest v3** and the current **plugin protocol v4** as the
+production-supported 1.0 plugin contract. Protocol v4 supersedes the earlier v3
+planning baseline by adding required launch auth/session proof to the startup
+handshake.
 
 Protocol, manifest, resource schemas, and application/API versions are separate
 version axes:
 
 | Version axis | 1.0 target | Owns |
 |---|---:|---|
-| Plugin RPC protocol | `3` | session envelope, message types, handshake, lifecycle, transport expectations, request correlation, timeout/error semantics |
+| Plugin RPC protocol | `4` | session envelope, message types, launch-auth handshake, lifecycle, transport expectations, request correlation, timeout/error semantics |
 | Plugin manifest schema | `3` | plugin identity, runtime, capabilities, params, generator/simulation/resource declarations, dependency declarations, external data-source declarations, UI hints |
 | Data-resource schema | independently versioned | CRUD schemas, operations, pagination/filter/sort, conflict fields, validation rules |
 | HTTP/API | independently versioned | topo-seer public HTTP routes and OpenAPI |
@@ -58,7 +61,7 @@ be able to generate a complete manifest v3 for all first-party examples.
 A plugin is considered production-supported for 1.0 only when it uses:
 
 1. manifest v3 generated or validated against the v3 schema;
-2. protocol v3 handshake and message envelopes;
+2. protocol v4 handshake and message envelopes, including launch auth proof;
 3. host-created named pipe or Unix domain socket endpoint;
 4. endpoint/session/auth metadata passed through launch environment variables;
 5. length-prefixed JSON framing;
@@ -80,9 +83,9 @@ contract.
   can produce clear deprecation diagnostics.
 - The host may temporarily speak protocol v2 to existing first-party examples
   only while v3 support is being implemented.
-- All first-party examples must be upgraded to manifest v3 and protocol v3
+- All first-party examples must be upgraded to manifest v3 and protocol v4
   before 1.0 release.
-- 1.0 docs should describe manifest v3 and protocol v3 as the supported plugin
+- 1.0 docs should describe manifest v3 and protocol v4 as the supported plugin
   contract. Older formats may be documented only in migration notes.
 
 ### Stdio compatibility
@@ -99,7 +102,7 @@ contract.
   deprecated and covered by tests.
 - Compatibility fields should have a removal milestone or documented 1.0 waiver.
 - Compatibility fields must not be required for a clean manifest v3 or protocol
-  v3 implementation.
+  v4 implementation.
 
 ## Versioning rules
 
@@ -109,7 +112,7 @@ contract.
   a way older peers cannot safely ignore.
 - Add optional fields or optional message groups only behind feature negotiation
   when older peers can safely ignore them.
-- Every request/response-style protocol v3 message should carry a correlation
+- Every request/response-style protocol v4 message should carry a correlation
   ID.
 - Handshake must negotiate protocol version, manifest version, feature flags,
   maximum frame size, timeout expectations, resource schema versions, and
@@ -147,7 +150,7 @@ Required SDK behavior:
   data-source declarations.
 - Refuse to generate invalid v3 manifests without actionable errors.
 - Include golden tests for generated example manifests.
-- Keep runtime message dispatch aligned with protocol v3.
+- Keep runtime message dispatch aligned with protocol v4.
 
 The SDK should not make backend-specific external data-source assumptions. It
 may expose generic provider/requirement/reference types that adapters or plugins
@@ -159,7 +162,7 @@ First-party examples are part of the compatibility story and should be upgraded
 as part of the v3 work:
 
 - `topo-plugin-example` remains the minimal generator fixture using manifest v3
-  and protocol v3.
+  and protocol v4.
 - `topo-plugin-civ-example` becomes the richer full-stack fixture covering
   overlay, generator, simulation, data resources, dependency declarations, and
   backend-neutral external data-source provider/consumer behavior where useful.
@@ -173,7 +176,7 @@ Protocol and manifest v3 work must include tests for:
 
 - manifest v3 JSON round trips and golden examples;
 - manifest validation errors with actionable diagnostics;
-- protocol v3 envelope round trips;
+- protocol v4 envelope and launch-auth handshake round trips;
 - malformed frame, oversized frame, invalid JSON, and unknown message handling;
 - handshake version negotiation and mismatch failure;
 - feature negotiation;
@@ -188,7 +191,7 @@ Protocol and manifest v3 work must include tests for:
 Before 1.0, docs must include:
 
 - manifest v3 field reference;
-- protocol v3 envelope and message reference;
+- protocol v4 envelope, message, and launch-auth reference;
 - transport launch contract and environment variables;
 - version negotiation and feature flag rules;
 - migration notes from current protocol/manifest behavior;

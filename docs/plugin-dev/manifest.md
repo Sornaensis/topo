@@ -79,7 +79,7 @@ JSON directly.
   "name": "terrain-roughen",
   "version": "0.1.0",
   "runtime": {
-    "protocol": { "min": 3, "max": 3 }
+    "protocol": { "min": 4, "max": 4 }
   },
   "generator": {
     "insertAfter": "erosion",
@@ -96,10 +96,11 @@ contract.
 ## Runtime and protocol bounds
 
 `runtime.protocol.min` and `runtime.protocol.max` declare the inclusive RPC
-message contract versions the plugin supports. A plugin should keep this range
-as narrow as its tested compatibility. `runtime.topo.min` and
-`runtime.topo.max` are optional opaque Topo release strings for plugins that
-want to state host release bounds.
+message contract versions the plugin supports. The current SDK emits protocol 4
+bounds because production startup requires launch auth/session proof in the
+handshake. A plugin should keep this range as narrow as its tested
+compatibility. `runtime.topo.min` and `runtime.topo.max` are optional opaque
+Topo release strings for plugins that want to state host release bounds.
 
 ## Capabilities
 

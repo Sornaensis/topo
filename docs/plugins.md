@@ -177,7 +177,7 @@ The envelope format includes an optional correlation ID:
 { "id": 42, "type": "invoke_generator", "payload": { "payload_version": 1 } }
 ```
 
-Protocol v3 message groups:
+Protocol v4 message groups (v3 messages plus launch auth/session proof):
 
 - **Lifecycle/liveness:** `handshake`, `handshake_ack`, `world_changed`,
   `heartbeat`, `health_check`, `health_status`, `shutdown`.
@@ -293,7 +293,7 @@ editing is possible for non-Haskell plugins:
   "manifestVersion": 3,
   "name": "my-plugin",
   "version": "0.1.0",
-  "runtime": { "protocol": { "min": 3, "max": 3 } },
+  "runtime": { "protocol": { "min": 4, "max": 4 } },
   "description": "My terrain plugin",
   "ui": { "displayName": "My Plugin", "category": "Generation" },
   "generator": {

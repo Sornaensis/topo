@@ -5,7 +5,8 @@
 
 -- | Plugin subprocess startup and production transport attachment.
 module Actor.PluginManager.ProcessLauncher
-  ( resolvePluginExecutable
+  ( LaunchPluginResult(..)
+  , resolvePluginExecutable
   , launchPluginTransport
   , safeCloseHandle
   , safeTerminateProcess
@@ -123,12 +124,21 @@ safeCloseServer server = do
   _ <- try @SomeException (tsClose server)
   pure ()
 
+-- | Successful plugin launch output, including the credentials that were
+-- injected into the process environment and must be proven during handshake.
+data LaunchPluginResult = LaunchPluginResult
+  { lprTransport :: !Transport
+  , lprProcessHandle :: !ProcessHandle
+  , lprSessionId :: !Text
+  , lprAuthToken :: !Text
+  }
+
 launchPluginTransport
   :: FilePath
   -> FilePath
   -> Text
   -> Int
-  -> IO (Either (Text, Maybe ProcessHandle) (Transport, ProcessHandle))
+  -> IO (Either (Text, Maybe ProcessHandle) LaunchPluginResult)
 launchPluginTransport = launchPluginTransportViaEndpoint
 
 -- Keep the endpoint accept budget aligned with the startup/handshake timeout
@@ -138,7 +148,7 @@ launchPluginTransportViaEndpoint
   -> FilePath
   -> Text
   -> Int
-  -> IO (Either (Text, Maybe ProcessHandle) (Transport, ProcessHandle))
+  -> IO (Either (Text, Maybe ProcessHandle) LaunchPluginResult)
 launchPluginTransportViaEndpoint executablePath workingDir pluginName startupTimeoutMillis = do
   serverResult <- openPluginServer
     defaultTransportConfig { tcTimeout = max 1 startupTimeoutMillis }
@@ -147,20 +157,21 @@ launchPluginTransportViaEndpoint executablePath workingDir pluginName startupTim
     Left err -> pure (Left (Text.pack (show err), Nothing))
     Right server -> mask $ \restore -> do
       processResult <- trySync $ do
-        environment <- endpointEnvironment (tsEndpoint server) pluginName workingDir
-        createProcess
+        launchEnvironment <- endpointEnvironment (tsEndpoint server) pluginName workingDir
+        (_, _, _, processHandle) <- createProcess
           (pluginProcessSpec (proc executablePath [])
             { cwd = Just workingDir
-            , env = Just environment
+            , env = Just (leVariables launchEnvironment)
             , std_in = NoStream
             , std_out = NoStream
             , std_err = Inherit
             })
+        pure (launchEnvironment, processHandle)
       case processResult of
         Left err -> do
           safeCloseServer server
           pure (Left (Text.pack (show err), Nothing))
-        Right (_, _, _, processHandle) -> do
+        Right (launchEnvironment, processHandle) -> do
           protectionResult <- trySync (registerProcessParentDeathProtection processHandle)
           case protectionResult of
             Left _ -> pure ()
@@ -180,21 +191,32 @@ launchPluginTransportViaEndpoint executablePath workingDir pluginName startupTim
               terminated <- safeTerminateProcess processHandle
               let mProcessHandle = if terminated then Nothing else Just processHandle
               pure (Left (Text.pack (show transportErr), mProcessHandle))
-            Right transport -> pure (Right (transport, processHandle))
+            Right transport -> pure (Right LaunchPluginResult
+              { lprTransport = transport
+              , lprProcessHandle = processHandle
+              , lprSessionId = leSessionId launchEnvironment
+              , lprAuthToken = leAuthToken launchEnvironment
+              })
 
-endpointEnvironment :: TransportEndpoint -> Text -> FilePath -> IO [(String, String)]
+data LaunchEnvironment = LaunchEnvironment
+  { leVariables :: ![(String, String)]
+  , leSessionId :: !Text
+  , leAuthToken :: !Text
+  }
+
+endpointEnvironment :: TransportEndpoint -> Text -> FilePath -> IO LaunchEnvironment
 endpointEnvironment endpoint pluginName workingDir = do
   inherited <- getEnvironment
-  launchSession <- freshLaunchSecret "session"
-  authToken <- freshLaunchSecret "auth"
+  launchSession <- Text.pack <$> freshLaunchSecret "session"
+  authToken <- Text.pack <$> freshLaunchSecret "auth"
   let dataRoot = workingDir </> "data"
       launchVars =
         [ (pluginIdEnv, Text.unpack pluginName)
         , (pluginProtocolEnv, show currentProtocolVersion)
         , (pluginEndpointEnv, teAddress endpoint)
         , (pluginEndpointKindEnv, Text.unpack (endpointKindText (teKind endpoint)))
-        , (pluginSessionEnv, launchSession)
-        , (pluginAuthTokenEnv, authToken)
+        , (pluginSessionEnv, Text.unpack launchSession)
+        , (pluginAuthTokenEnv, Text.unpack authToken)
         , (pluginWorldIdEnv, unsavedWorldId)
         , (pluginDataRootEnv, dataRoot)
         ]
@@ -203,7 +225,11 @@ endpointEnvironment endpoint pluginName workingDir = do
       overridden = pluginStdioCompatibilityEnv : map fst launchVars
       preserved = filter (not . isOverriddenEnvKey overridden . fst) inherited
   createDirectoryIfMissing True dataRoot
-  pure (launchVars <> preserved)
+  pure LaunchEnvironment
+    { leVariables = launchVars <> preserved
+    , leSessionId = launchSession
+    , leAuthToken = authToken
+    }
 
 isOverriddenEnvKey :: [String] -> String -> Bool
 isOverriddenEnvKey overridden key = any (envKeyEquals key) overridden

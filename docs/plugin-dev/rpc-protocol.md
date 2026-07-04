@@ -29,18 +29,18 @@ payloads.
 
 ## Protocol version
 
-The current RPC protocol version is **3** (`currentProtocolVersion`). Manifest
+The current RPC protocol version is **4** (`currentProtocolVersion`). Manifest
 v3 advertises compatible protocol bounds in `runtime.protocol.min` and
 `runtime.protocol.max`; the host rejects plugins whose range does not include
-protocol 3.
+protocol 4.
 
-Protocol 3 includes:
-
-- envelope request correlation through optional `id` fields;
-- heartbeat and health checks;
-- bounded frame handling in the transport/session layer;
-- data-service query/mutation payloads;
-- backend-neutral external data-source grant, revoke, and status payloads.
+Protocol 4 includes the protocol 3 envelope, heartbeat, health, bounded-frame,
+data-service, and external data-source message groups, plus required production
+launch authentication. The host sends an `auth_challenge` nonce during the
+startup handshake and rejects a plugin before it becomes ready unless the
+`handshake_ack` proves the launch `session_id` and `TOPO_PLUGIN_AUTH_TOKEN`.
+This is a major-version bump because protocol 3 plugins cannot prove they
+received the host launch environment.
 
 ## Production transport
 
@@ -56,12 +56,21 @@ they must not invent a fixed pipe/socket name.
 | `TOPO_PLUGIN_ENDPOINT_KIND` | `named-pipe` on Windows, `unix` on Linux/macOS. |
 | `TOPO_PLUGIN_SESSION` | Opaque launch/session identifier. |
 | `TOPO_PLUGIN_AUTH_TOKEN` | Opaque launch token for the session. |
-| `TOPO_PLUGIN_WORLD_ID` | Active world identifier or a host sentinel. |
-| `TOPO_PLUGIN_DATA_ROOT` | Writable plugin data root selected by the host. |
+| `TOPO_PLUGIN_WORLD_ID` | Active world identifier or a host sentinel; host-provided metadata for plugin authors/diagnostics, not currently host-enforced behavior. |
+| `TOPO_PLUGIN_DATA_ROOT` | Writable plugin data root selected and created by the host; metadata for plugin authors/diagnostics unless a future contract assigns host-enforced behavior. |
 
 `TOPO_PLUGIN_STDIO_COMPAT=1` is only an explicit test/development compatibility
-mode. Production launch uses named pipes on Windows and Unix domain sockets on
-Unix-like systems.
+mode and is stripped from production plugin launches. Production launch uses
+named pipes on Windows and Unix domain sockets on Unix-like systems.
+
+### Local endpoint threat model
+
+Unix socket endpoints are created under an owner-only temporary directory.
+Windows named pipe names are unique per launch. Those endpoint names are still
+not treated as authentication: a same-host process can race, guess, inherit, or
+accidentally reuse local endpoint metadata. The protocol 4 session/token proof is
+defense-in-depth against endpoint races and accidental or malicious local clients
+that did not receive the host launch environment.
 
 ## Frame format
 
@@ -138,15 +147,17 @@ Sent by the host immediately after transport connection:
 
 ```json
 {
-  "protocol_version": 3,
+  "protocol_version": 4,
   "world_path": "C:/worlds/demo",
-  "host_capabilities": ["query", "mutate"]
+  "host_capabilities": ["query", "mutate", "launch_auth"],
+  "auth_challenge": "challenge-..."
 }
 ```
 
 `world_path` may be absent or `null` when no world is loaded. Host capabilities
 are backend-neutral capabilities for host-brokered services, not storage engine
-identifiers.
+identifiers. Production launches include `launch_auth` and `auth_challenge`;
+in-process tests or explicit stdio compatibility may omit them.
 
 ### `handshake_ack`
 
@@ -154,15 +165,19 @@ Returned by the plugin:
 
 ```json
 {
-  "protocol_version": 3,
+  "protocol_version": 4,
   "data_directory": "civilization",
-  "resources": []
+  "resources": [],
+  "session_id": "session-...",
+  "auth_proof": "hex-hmac-sha256"
 }
 ```
 
-The protocol version must equal 3. `data_directory` is relative to the world
+The protocol version must equal 4. `data_directory` is relative to the world
 save path. `resources` contains `DataResourceSchema` values also valid in
-manifest v3 `dataResources`.
+manifest v3 `dataResources`. When `auth_challenge` is present, `session_id` must
+match `TOPO_PLUGIN_SESSION` and `auth_proof` must be
+`HMAC-SHA256(TOPO_PLUGIN_AUTH_TOKEN, "topo-plugin-launch-auth-v1\n4\n" <> session_id <> "\n" <> auth_challenge)` encoded as lowercase hex. The auth token itself is never sent.
 
 ### `world_changed`
 

@@ -24,7 +24,9 @@ module Topo.Plugin.RPC
   , RPCSession
   , newRPCConnection
     -- * Handshake
+  , HandshakeAuthChallenge(..)
   , performHandshake
+  , performHandshakeWithAuth
   , sendWorldChanged
   , sendHeartbeat
   , checkHealth
@@ -604,23 +606,48 @@ rpcShutdown conn = do
 -- Handshake
 ------------------------------------------------------------------------
 
+-- | Host-side launch authentication challenge for the initial handshake.
+--
+-- The host chooses the challenge and precomputes the expected proof from the
+-- launch session id and token.  The token itself is never sent in the RPC
+-- handshake.
+data HandshakeAuthChallenge = HandshakeAuthChallenge
+  { hacSessionId :: !Text
+  , hacChallenge :: !Text
+  , hacExpectedProof :: !Text
+  } deriving (Eq, Show)
+
 -- | Perform the protocol handshake with a connected plugin.
 --
--- Sends 'MsgHandshake' with the current world path and waits for
--- 'MsgHandshakeAck'.  Returns an updated 'RPCConnection' with the
--- negotiated protocol version, data directory, and resource schemas.
+-- This compatibility wrapper omits launch-auth verification.  Production plugin
+-- launches should call 'performHandshakeWithAuth' with a challenge.
 performHandshake
   :: RPCConnection
   -> Maybe Text
   -- ^ World save path, or 'Nothing' if no world is loaded.
   -> IO (Either RPCError RPCConnection)
-performHandshake conn worldPath = do
+performHandshake conn worldPath = performHandshakeWithAuth conn worldPath Nothing
+
+-- | Perform the protocol handshake and optionally verify launch credentials.
+--
+-- Sends 'MsgHandshake' with the current world path and, for production launches,
+-- an auth challenge.  The plugin must answer with 'MsgHandshakeAck' containing
+-- the expected session id and proof before the connection is marked ready.
+performHandshakeWithAuth
+  :: RPCConnection
+  -> Maybe Text
+  -- ^ World save path, or 'Nothing' if no world is loaded.
+  -> Maybe HandshakeAuthChallenge
+  -- ^ Expected launch credentials and challenge for production startup.
+  -> IO (Either RPCError RPCConnection)
+performHandshakeWithAuth conn worldPath mAuth = do
   let envelope = RPCEnvelope
         { envType = MsgHandshake
         , envPayload = Aeson.toJSON Handshake
           { hsProtocolVersion  = currentProtocolVersion
           , hsWorldPath        = worldPath
-          , hsHostCapabilities = ["query", "mutate"]
+          , hsHostCapabilities = ["query", "mutate"] <> ["launch_auth" | Just _ <- [mAuth]]
+          , hsAuthChallenge    = hacChallenge <$> mAuth
           }
         , envRequestId = Nothing
         }
@@ -642,6 +669,8 @@ performHandshake conn worldPath = do
                    <> Text.pack (show currentProtocolVersion)
                    <> ", plugin="
                    <> Text.pack (show (haProtocolVersion ack)))))
+            | Just authErr <- validateHandshakeAuth mAuth ack ->
+                pure (Left (RPCProtocolError authErr))
             | otherwise -> pure (Right conn
                 { rpcProtocolVersion = haProtocolVersion ack
                 , rpcDataDirectory   = fmap Text.unpack (haDataDirectory ack)
@@ -653,6 +682,15 @@ performHandshake conn worldPath = do
       other ->
         pure (Left (RPCProtocolError
           ("unexpected response to handshake: " <> Text.pack (show other))))
+
+validateHandshakeAuth :: Maybe HandshakeAuthChallenge -> HandshakeAck -> Maybe Text
+validateHandshakeAuth Nothing _ = Nothing
+validateHandshakeAuth (Just expected) ack
+  | haSessionId ack /= Just (hacSessionId expected) =
+      Just "plugin launch session missing or mismatched during handshake"
+  | haAuthProof ack /= Just (hacExpectedProof expected) =
+      Just "plugin launch auth proof missing or mismatched during handshake"
+  | otherwise = Nothing
 
 -- | Notify the plugin that the world save path has changed.
 --

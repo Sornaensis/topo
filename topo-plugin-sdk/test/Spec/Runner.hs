@@ -21,7 +21,7 @@ import System.Directory
   , removePathForcibly
   , withCurrentDirectory
   )
-import System.Environment (withArgs)
+import System.Environment (lookupEnv, setEnv, unsetEnv, withArgs)
 import System.FilePath ((</>))
 import System.IO (BufferMode(NoBuffering), Handle, hClose, hSetBinaryMode, hSetBuffering, openTempFile)
 import System.Process (createPipe)
@@ -54,6 +54,7 @@ import Topo.Plugin.RPC.Protocol
   , RPCMessageType(..)
   , SimulationResult(..)
   , currentProtocolVersion
+  , handshakeAuthProof
   , decodeMessage
   , encodeMessage
   )
@@ -84,13 +85,24 @@ import Topo.Plugin.RPC.ExternalDataSource
   )
 import Topo.Plugin.RPC.Transport
   ( Transport(..)
+  , TransportConfig(..)
+  , TransportEndpoint(..)
+  , TransportServer(..)
   , closeTransport
+  , defaultTransportConfig
+  , endpointKindText
+  , openPluginServer
+  , pluginAuthTokenEnv
+  , pluginEndpointEnv
+  , pluginEndpointKindEnv
+  , pluginSessionEnv
   , recvMessage
   , sendMessage
   )
 import Topo.Plugin.SDK.Runner
   ( generateManifest
   , pluginManifestFileName
+  , runPlugin
   , runPluginSession
   , runPluginWithManifestCommand
   , writePluginManifestToDirectory
@@ -378,6 +390,7 @@ spec = describe "SDK runner pipe integration" $ do
                 { hsProtocolVersion = 1
                 , hsWorldPath = Just "/world/save"
                 , hsHostCapabilities = []
+                , hsAuthChallenge = Nothing
                 }
             , envRequestId = Just 41
             }
@@ -393,6 +406,38 @@ spec = describe "SDK runner pipe integration" $ do
             [resource] -> drsName resource `shouldBe` "items"
             _ -> expectationFailure "expected exactly one data resource in handshake ack"
       shutdownAndWait host done
+
+  it "runPlugin reads launch session/auth environment and returns a challenge proof" $
+    withTempDir "topo-sdk-launch-auth" $ \cwd ->
+      withTransportServer "sdk-launch-auth" $ \server ->
+        withPluginLaunchEnvironment (tsEndpoint server) "session-sdk" "token-sdk" $
+          withCurrentDirectory cwd $ do
+            done <- newEmptyMVar
+            _ <- forkFinally (runPlugin dataPlugin) (\_ -> putMVar done ())
+            host <- requireServerAccept server
+            let challenge = "nonce-sdk"
+                hs = RPCEnvelope
+                  { envType = MsgHandshake
+                  , envPayload = Aeson.toJSON Handshake
+                      { hsProtocolVersion = currentProtocolVersion
+                      , hsWorldPath = Nothing
+                      , hsHostCapabilities = ["query", "mutate", "launch_auth"]
+                      , hsAuthChallenge = Just challenge
+                      }
+                  , envRequestId = Just 411
+                  }
+            (do
+              sendEnvelope host hs
+              env <- recvEnvelope host
+              envType env `shouldBe` MsgHandshakeAck
+              envRequestId env `shouldBe` Just 411
+              case Aeson.fromJSON (envPayload env) of
+                Aeson.Error err -> expectationFailure err
+                Aeson.Success (ack :: HandshakeAck) -> do
+                  haSessionId ack `shouldBe` Just "session-sdk"
+                  haAuthProof ack `shouldBe` Just (handshakeAuthProof "session-sdk" "token-sdk" challenge)
+              shutdownAndWait host done)
+              `finally` closeTransport host
 
   it "echoes request ids on heartbeat and health responses" $
     withTransportPair $ \host plugin -> do
@@ -658,6 +703,42 @@ withTransportPair action = do
   action host plugin `finally` do
     closeTransport host
     closeTransport plugin
+
+withTransportServer :: Text -> (TransportServer -> IO a) -> IO a
+withTransportServer name = bracket acquire tsClose
+  where
+    acquire = do
+      serverResult <- openPluginServer defaultTransportConfig { tcTimeout = 1000 } name
+      case serverResult of
+        Left err -> expectationFailure ("openPluginServer failed: " <> show err) >> fail "openPluginServer"
+        Right server -> pure server
+
+requireServerAccept :: TransportServer -> IO Transport
+requireServerAccept server = do
+  acceptResult <- tsAccept server
+  case acceptResult of
+    Left err -> expectationFailure ("accept failed: " <> show err) >> fail "accept"
+    Right transport -> pure transport
+
+withPluginLaunchEnvironment :: TransportEndpoint -> String -> String -> IO a -> IO a
+withPluginLaunchEnvironment endpoint sessionId authToken = bracket setup restore . const
+  where
+    setup = do
+      oldEndpoint <- lookupEnv pluginEndpointEnv
+      oldKind <- lookupEnv pluginEndpointKindEnv
+      oldSession <- lookupEnv pluginSessionEnv
+      oldAuthToken <- lookupEnv pluginAuthTokenEnv
+      setEnv pluginEndpointEnv (teAddress endpoint)
+      setEnv pluginEndpointKindEnv (Text.unpack (endpointKindText (teKind endpoint)))
+      setEnv pluginSessionEnv sessionId
+      setEnv pluginAuthTokenEnv authToken
+      pure (oldEndpoint, oldKind, oldSession, oldAuthToken)
+    restore (oldEndpoint, oldKind, oldSession, oldAuthToken) = do
+      restoreEnv pluginEndpointEnv oldEndpoint
+      restoreEnv pluginEndpointKindEnv oldKind
+      restoreEnv pluginSessionEnv oldSession
+      restoreEnv pluginAuthTokenEnv oldAuthToken
+    restoreEnv key = maybe (unsetEnv key) (setEnv key)
 
 mkTransportPair :: IO (Transport, Transport)
 mkTransportPair = do

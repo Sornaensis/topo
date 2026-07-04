@@ -12,6 +12,7 @@ import Topo.Pipeline.Stage (StageId(..))
 import Topo.Plugin (Capability(..))
 import Topo.Plugin.Dependency
 import Topo.Plugin.RPC.Manifest (RPCManifest, manifestV3, manifestV3ConsumerExample)
+import Topo.Plugin.RPC.Protocol (currentProtocolVersion)
 
 spec :: Spec
 spec = describe "PluginDependency" $ do
@@ -111,7 +112,7 @@ spec = describe "PluginDependency" $ do
           , "name" .= ("weather-consumer" :: Text)
           , "version" .= ("1.0.0" :: Text)
           , "runtime" .= object
-              [ "protocol" .= object ["min" .= (3 :: Int), "max" .= (3 :: Int)]
+              [ "protocol" .= object ["min" .= currentProtocolVersion, "max" .= currentProtocolVersion]
               ]
           , "description" .= ("Consumes the built-in weather simulation node" :: Text)
           , "simulation" .= object

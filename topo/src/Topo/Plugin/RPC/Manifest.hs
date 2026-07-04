@@ -18,7 +18,7 @@
 --   "manifestVersion": 3,
 --   "name": "civilization",
 --   "version": "1.0.0",
---   "runtime": { "protocol": { "min": 3, "max": 3 } },
+--   "runtime": { "protocol": { "min": 4, "max": 4 } },
 --   "description": "Civilization simulation overlay",
 --   "generator": { "insertAfter": "biomes", "requires": ["biomes","rivers"] },
 --   "simulation": { "dependencies": ["weather"], "interval_ticks": 1, "phase_ticks": 0, "catch_up": "run_once_if_due" },
@@ -1453,7 +1453,7 @@ manifestV3ProviderExample = object
   , "name" .= ("civilization" :: Text)
   , "version" .= ("1.0.0" :: Text)
   , "runtime" .= object
-      [ "protocol" .= object ["min" .= (3 :: Int), "max" .= (3 :: Int)]
+      [ "protocol" .= object ["min" .= currentProtocolVersion, "max" .= currentProtocolVersion]
       , "topo" .= object ["min" .= ("1.0" :: Text)]
       ]
   , "description" .= ("Civilization simulation overlay and settlement catalogue" :: Text)
@@ -1615,7 +1615,7 @@ manifestV3ConsumerExample = object
   , "name" .= ("trade-routes" :: Text)
   , "version" .= ("0.3.0" :: Text)
   , "runtime" .= object
-      [ "protocol" .= object ["min" .= (3 :: Int), "max" .= (3 :: Int)]
+      [ "protocol" .= object ["min" .= currentProtocolVersion, "max" .= currentProtocolVersion]
       ]
   , "description" .= ("Trade route simulation that consumes settlement data" :: Text)
   , "ui" .= object

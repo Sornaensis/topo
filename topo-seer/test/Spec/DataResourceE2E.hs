@@ -390,6 +390,8 @@ handshakeAckEnvelope requestId protocolVersion = RPCEnvelope
       { haProtocolVersion = protocolVersion
       , haDataDirectory = Nothing
       , haResources = []
+      , haSessionId = Nothing
+      , haAuthProof = Nothing
       }
   , envRequestId = requestId
   }

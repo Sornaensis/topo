@@ -3,7 +3,7 @@
   "name": "trade-routes",
   "version": "0.3.0",
   "runtime": {
-    "protocol": { "min": 3, "max": 3 }
+    "protocol": { "min": 4, "max": 4 }
   },
   "description": "Trade route simulation that consumes settlement data",
   "ui": {

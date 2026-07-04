@@ -10,8 +10,8 @@ simulation nodes.
 ## Responsibilities
 
 - Own `RPCConnection`, the host's active session state for one plugin process.
-- Perform the protocol-3 handshake and maintain negotiated data-resource
-  metadata.
+- Perform the protocol-4 handshake, including launch auth verification for
+  production launches, and maintain negotiated data-resource metadata.
 - Send correlated generator, simulation, health, heartbeat, data-service, and
   external data-source status requests.
 - Send one-way shutdown, world-change, external grant, and revocation messages.
@@ -52,7 +52,7 @@ default request timeout from `rmStartPolicy`, and an empty runtime-failure slot.
 | `rpcManifest` | Parsed manifest used for names, capabilities, timeouts, and integration decisions. |
 | `rpcTransport` | Connected transport handle. |
 | `rpcParams` | Current plugin parameter map sent on generator/simulation calls. |
-| `rpcProtocolVersion` | Negotiated protocol version, currently expected to be `3`. |
+| `rpcProtocolVersion` | Negotiated protocol version, currently expected to be `4`. |
 | `rpcDataDirectory` | Resolved plugin data directory returned by handshake. |
 | `rpcResources` | Data-resource schemas returned by handshake. |
 | `rpcRequestTimeoutMicros` | Request timeout derived from `startPolicy.request_timeout_ms`. |
@@ -76,7 +76,7 @@ Uncorrelated one-way sends (`sendOneWay`) are used for `shutdown`,
 
 | Function(s) | Message(s) | Notes |
 | --- | --- | --- |
-| `performHandshake` | `handshake` → `handshake_ack` | Uses startup timeout and validates plugin protocol version. |
+| `performHandshake` / `performHandshakeWithAuth` | `handshake` → `handshake_ack` | Uses startup timeout, validates plugin protocol version, and verifies launch session/proof when challenged. |
 | `sendWorldChanged` | `world_changed` | One-way notification after save/load/unload changes. |
 | `sendHeartbeat` | `heartbeat` → `heartbeat` | Liveness probe with timeout. |
 | `checkHealth` | `health_check` → `health_status` | Runtime health probe. |

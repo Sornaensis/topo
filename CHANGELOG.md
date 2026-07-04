@@ -25,7 +25,7 @@ packaging and tag instructions live in [docs/release.md](docs/release.md).
 
 ### Plugin contract
 
-- Standardized manifest v3 and RPC protocol v3 for external plugins.
+- Standardized manifest v3 and RPC protocol v4 for external plugins.
 - Documented production plugin transports using host-created named pipes or Unix
   domain sockets with length-prefixed JSON envelopes.
 - Added backend-neutral external data-source declarations, grants, revocations,

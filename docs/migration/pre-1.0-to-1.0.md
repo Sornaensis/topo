@@ -3,7 +3,7 @@
 Topo 1.0 has one public automation surface: direct HTTP/OpenAPI served by
 `topo-seer`. The former `topo-mcp` bridge has been removed, and legacy command
 IPC is internal/test compatibility only. This guide collects the migration work
-for old MCP or command clients, plugin authors moving to manifest/protocol v3,
+for old MCP or command clients, plugin authors moving to manifest v3/protocol v4,
 backend-neutral external data-source declarations, and compatibility policy.
 
 ## Upgrade checklist
@@ -18,7 +18,7 @@ backend-neutral external data-source declarations, and compatibility policy.
 - Remove dependencies on the retired `topo-mcp` package, stdio JSON-RPC
   transport, `topo://` resource URIs, and external command IPC usage.
 - Regenerate or update plugin manifests to `manifestVersion: 3` with protocol
-  bounds that include RPC protocol `3`.
+  bounds that include RPC protocol `4`.
 - Move external data-source provisioning, migrations, backing schemas,
   connection details, locking, and repair policy into provider plugins,
   adapters, deployment configuration, or external systems.
@@ -60,9 +60,9 @@ in-repo compatibility and tests while service extraction continues. They are
 not a public 1.0 automation path and are not a migration target for client
 integrations.
 
-## Plugin authors: manifest v3 and RPC protocol v3
+## Plugin authors: manifest v3 and RPC protocol v4
 
-Topo 1.0 supports manifest v3 and RPC protocol v3 as the public plugin
+Topo 1.0 supports manifest v3 and RPC protocol v4 as the public plugin
 contract. Haskell plugins should update to the 1.0 `topo-plugin-sdk` and let the
 SDK emit `manifest.json`; non-Haskell plugins should write the same v3 JSON
 shape directly.
@@ -71,7 +71,7 @@ Manifest updates to check:
 
 - Set `manifestVersion` to `3`.
 - Declare `runtime.protocol.min` and `runtime.protocol.max` so the range
-  includes protocol `3`.
+  includes protocol `4`.
 - Declare at least one participation surface: `generator`, `simulation`,
   `dataResources`, `externalDataSources`, or `externalDataSourceRefs`.
 - Keep capabilities minimal and explicit. Data-resource plugins need `dataRead`
@@ -132,7 +132,7 @@ host-owned external data-source backend.
 - **Command IPC:** Command IPC remains internal/test compatibility only. It is
   not publicly deprecated because it is not a public 1.0 interface, and it must
   not be documented as an automation exception.
-- **Plugins:** Manifest v3 and RPC protocol v3 are the supported 1.0 plugin
+- **Plugins:** Manifest v3 and RPC protocol v4 are the supported 1.0 plugin
   contract. Older manifests/protocols may appear only in migration notes or
   host diagnostics and should be upgraded before relying on 1.0 compatibility.
 - **Data resources:** Plugin-owned data-resource schemas and backend-neutral

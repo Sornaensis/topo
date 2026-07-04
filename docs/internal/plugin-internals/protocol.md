@@ -14,8 +14,12 @@ payloads.
 
 ## Version and envelope
 
-`currentProtocolVersion` is **3**. The corresponding manifest contract is
-manifest v3, whose `runtime.protocol.min`/`max` range must include `3`.
+`currentProtocolVersion` is **4**. The corresponding manifest contract is
+manifest v3, whose `runtime.protocol.min`/`max` range must include `4`.
+Protocol 4 is a major-version bump for production launch authentication: the
+host sends an `auth_challenge` nonce during startup and requires the plugin to
+return the launch `session_id` and an HMAC-SHA256 `auth_proof` before the
+supervisor can mark the plugin ready.
 
 Every frame payload is an `RPCEnvelope` JSON object:
 
@@ -107,11 +111,15 @@ Both payloads reject unsupported `payload_version` values at JSON parse time.
 
 ### Handshake payloads
 
-`Handshake` carries `protocol_version`, optional `world_path`, and
-`host_capabilities`. `HandshakeAck` echoes `protocol_version`, may return a
-relative `data_directory`, and may return `resources` (`DataResourceSchema`
-values). `WorldChanged` carries a new optional `world_path` and expects no
-response.
+`Handshake` carries `protocol_version`, optional `world_path`,
+`host_capabilities`, and optional `auth_challenge`. Production launches include
+`launch_auth` in `host_capabilities` and set `auth_challenge`; explicit stdio or
+in-process test sessions may omit it. `HandshakeAck` echoes `protocol_version`,
+may return a relative `data_directory`, may return `resources`
+(`DataResourceSchema` values), and must include `session_id` plus `auth_proof`
+when challenged. The proof is `handshakeAuthProof` over the launch session id,
+`TOPO_PLUGIN_AUTH_TOKEN`, and challenge; the token is not sent on the wire.
+`WorldChanged` carries a new optional `world_path` and expects no response.
 
 ## Data-service protocol
 

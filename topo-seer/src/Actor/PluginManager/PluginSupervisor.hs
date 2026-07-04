@@ -36,11 +36,13 @@ import System.Info (os)
 import System.Process (ProcessHandle, getPid, getProcessExitCode)
 
 import Actor.PluginManager.HandshakeSession
-  ( PluginHandshakeError(..)
+  ( ExpectedHandshakeCredentials(..)
+  , PluginHandshakeError(..)
   , performPluginHandshakeWithTimeout
   )
 import Actor.PluginManager.ProcessLauncher
-  ( launchPluginTransport
+  ( LaunchPluginResult(..)
+  , launchPluginTransport
   , resolvePluginExecutable
   , safeTerminateProcess
   )
@@ -452,15 +454,21 @@ connectLoadedPluginOnce executablePath lp = mask $ \restore -> do
         , lpProcessHandle = mProcessHandle
         , lpRestartHistory = pruneRestartHistory policy now (lpRestartHistory lp)
         }
-    Right (transport, processHandle) ->
-      restore (connectLaunchedPlugin lp policy startupTimeoutMicros transport processHandle)
-        `onException` cleanupLaunchedPlugin policy transport processHandle
+    Right launch ->
+      restore (connectLaunchedPlugin lp policy startupTimeoutMicros launch)
+        `onException` cleanupLaunchedPlugin policy (lprTransport launch) (lprProcessHandle launch)
 
-connectLaunchedPlugin :: LoadedPlugin -> RPCStartPolicy -> Int -> Transport -> ProcessHandle -> IO LoadedPlugin
-connectLaunchedPlugin lp policy startupTimeoutMicros transport processHandle = do
+connectLaunchedPlugin :: LoadedPlugin -> RPCStartPolicy -> Int -> LaunchPluginResult -> IO LoadedPlugin
+connectLaunchedPlugin lp policy startupTimeoutMicros launch = do
+  let transport = lprTransport launch
+      processHandle = lprProcessHandle launch
+      expectedCredentials = ExpectedHandshakeCredentials
+        { ehcSessionId = lprSessionId launch
+        , ehcAuthToken = lprAuthToken launch
+        }
   mPid <- processHandleIdText processHandle
   let conn = newRPCConnection (lpManifest lp) transport (lpParams lp)
-  hsResult <- performPluginHandshakeWithTimeout startupTimeoutMicros conn
+  hsResult <- performPluginHandshakeWithTimeout startupTimeoutMicros (Just expectedCredentials) conn
   case hsResult of
     Nothing -> do
       terminated <- stopLaunchedPlugin policy transport processHandle

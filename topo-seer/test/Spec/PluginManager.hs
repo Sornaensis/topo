@@ -155,12 +155,14 @@ import Topo.Plugin.RPC.DataService
   , QueryResult(..)
   )
 import Topo.Plugin.RPC.Protocol
-  ( HandshakeAck(..)
+  ( Handshake(..)
+  , HandshakeAck(..)
   , RPCEnvelope(..)
   , RPCMessageType(..)
   , currentProtocolVersion
   , decodeMessage
   , encodeMessage
+  , handshakeAuthProof
   )
 import Topo.Plugin.RPC.Transport
   ( closeTransport
@@ -513,6 +515,28 @@ spec = describe "PluginManager" $ do
         loaded <- getLoadedPlugins pluginManagerHandle
         pluginStatuses mismatchPluginName loaded `shouldSatisfy` anyPluginErrorContaining "protocol version mismatch"
         pluginLifecycleStates mismatchPluginName loaded `shouldSatisfy` elem LifecycleFailed
+
+  it "rejects missing launch auth proof before marking a plugin ready" $ do
+    withExecutablePluginDir authMissingPluginName authMissingManifestJSON "auth-missing" $ do
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses authMissingPluginName loaded `shouldSatisfy` anyPluginErrorContaining "launch session"
+        pluginLifecycleStates authMissingPluginName loaded `shouldSatisfy` elem LifecycleFailed
+        pluginLifecycleErrorCodes authMissingPluginName loaded `shouldSatisfy` elem (Just "protocol_error")
+        length (pluginProcessHandles authMissingPluginName loaded) `shouldBe` 0
+
+  it "rejects mismatched launch auth proof and cleans up the launched process" $ do
+    withExecutablePluginDir authMismatchPluginName authMismatchManifestJSON "auth-mismatch" $ do
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses authMismatchPluginName loaded `shouldSatisfy` anyPluginErrorContaining "auth proof"
+        pluginLifecycleStates authMismatchPluginName loaded `shouldSatisfy` elem LifecycleFailed
+        pluginLifecycleErrorCodes authMismatchPluginName loaded `shouldSatisfy` elem (Just "protocol_error")
+        length (pluginProcessHandles authMismatchPluginName loaded) `shouldBe` 0
 
   it "surfaces manifest parse diagnostics for missing required fields" $ do
     let pluginName = "copilot-test-plugin-missing-runtime"
@@ -1631,13 +1655,15 @@ normalizeFixtureMode :: String -> String
 normalizeFixtureMode = takeWhile (`notElem` ['\r', '\n'])
 
 fixtureUsage :: IO a
-fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|malformed-json|bad-handshake|early-exit|slow|handshake-stall|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|exit-on-generator|exit-on-simulation|external-provider|external-consumer|windows-process-tree|windows-heartbeat-child>"
+fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|auth-missing|auth-mismatch|malformed-json|bad-handshake|early-exit|slow|handshake-stall|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|exit-on-generator|exit-on-simulation|external-provider|external-consumer|windows-process-tree|windows-heartbeat-child>"
 
 runFixtureMode :: String -> IO ()
 runFixtureMode = \case
   "ok" -> runOkFixture
   "env-contract" -> runEnvContractFixture
   "protocol-mismatch" -> runOneShotAckFixture (currentProtocolVersion + 1)
+  "auth-missing" -> runMissingAuthAckFixture
+  "auth-mismatch" -> runMismatchedAuthAckFixture
   "malformed-json" -> runMalformedJsonFixture
   "bad-handshake" -> runBadHandshakeFixture
   "early-exit" -> exitFailure
@@ -1678,7 +1704,8 @@ runOkFixture = do
             Left _ -> loop transport
             Right envelope -> case envType envelope of
               MsgHandshake -> do
-                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope (envRequestId envelope) currentProtocolVersion))
+                ack <- handshakeAckEnvelopeFor envelope currentProtocolVersion
+                _ <- sendMessage transport (encodeMessage ack)
                 loop transport
               MsgShutdown -> closeTransport transport
               _ -> loop transport
@@ -1697,7 +1724,8 @@ runSlowShutdownFixture = do
             Left _ -> loop transport
             Right envelope -> case envType envelope of
               MsgHandshake -> do
-                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope (envRequestId envelope) currentProtocolVersion))
+                ack <- handshakeAckEnvelopeFor envelope currentProtocolVersion
+                _ <- sendMessage transport (encodeMessage ack)
                 loop transport
               MsgShutdown -> threadDelay 1000000 >> closeTransport transport
               _ -> loop transport
@@ -1723,7 +1751,8 @@ runHangQueryFixture = do
             Left _ -> loop transport
             Right envelope -> case envType envelope of
               MsgHandshake -> do
-                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope (envRequestId envelope) currentProtocolVersion))
+                ack <- handshakeAckEnvelopeFor envelope currentProtocolVersion
+                _ <- sendMessage transport (encodeMessage ack)
                 loop transport
               MsgQueryResource -> threadDelay 2000000 >> closeTransport transport
               MsgShutdown -> closeTransport transport
@@ -1745,7 +1774,8 @@ runWindowsProcessTreeFixture
             Left _ -> loop transport childStarted
             Right envelope -> case envType envelope of
               MsgHandshake -> do
-                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope (envRequestId envelope) currentProtocolVersion))
+                ack <- handshakeAckEnvelopeFor envelope currentProtocolVersion
+                _ <- sendMessage transport (encodeMessage ack)
                 unless childStarted startWindowsHeartbeatChild
                 loop transport True
               MsgShutdown -> loop transport childStarted
@@ -1789,7 +1819,8 @@ runProviderFailedFixture = do
             Left _ -> loop transport
             Right envelope -> case envType envelope of
               MsgHandshake -> do
-                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope (envRequestId envelope) currentProtocolVersion))
+                ack <- handshakeAckEnvelopeFor envelope currentProtocolVersion
+                _ <- sendMessage transport (encodeMessage ack)
                 loop transport
               MsgQueryResource -> do
                 _ <- sendMessage transport (encodeMessage (pluginErrorEnvelope
@@ -1815,8 +1846,8 @@ runExternalProviderFixture = do
             Left _ -> loop transport
             Right envelope -> case envType envelope of
               MsgHandshake -> do
-                _ <- sendMessage transport (encodeMessage
-                  (handshakeAckWithDataDirectoryEnvelope (envRequestId envelope) currentProtocolVersion (Just "external-provider-data") []))
+                ack <- handshakeAckWithDataDirectoryEnvelopeFor envelope currentProtocolVersion (Just "external-provider-data") []
+                _ <- sendMessage transport (encodeMessage ack)
                 loop transport
               MsgExternalDataSourceStatusRequest -> do
                 let includeDiagnostics = requestIncludesDiagnostics envelope
@@ -1847,8 +1878,8 @@ runExternalConsumerFixture = do
             Left _ -> loop transport bindingStatus
             Right envelope -> case envType envelope of
               MsgHandshake -> do
-                _ <- sendMessage transport (encodeMessage
-                  (handshakeAckWithDataDirectoryEnvelope (envRequestId envelope) currentProtocolVersion (Just "external-consumer-data") []))
+                ack <- handshakeAckWithDataDirectoryEnvelopeFor envelope currentProtocolVersion (Just "external-consumer-data") []
+                _ <- sendMessage transport (encodeMessage ack)
                 loop transport bindingStatus
               MsgExternalDataSourceStatusRequest -> do
                 let includeDiagnostics = requestIncludesDiagnostics envelope
@@ -1959,7 +1990,8 @@ runValidationOkFixture = do
             Left _ -> loop transport
             Right envelope -> case envType envelope of
               MsgHandshake -> do
-                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope (envRequestId envelope) currentProtocolVersion))
+                ack <- handshakeAckEnvelopeFor envelope currentProtocolVersion
+                _ <- sendMessage transport (encodeMessage ack)
                 loop transport
               MsgQueryResource -> do
                 _ <- sendMessage transport (encodeMessage (queryResultEnvelope
@@ -1988,7 +2020,8 @@ runInvalidMutateFixture = do
             Left _ -> loop transport
             Right envelope -> case envType envelope of
               MsgHandshake -> do
-                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope (envRequestId envelope) currentProtocolVersion))
+                ack <- handshakeAckEnvelopeFor envelope currentProtocolVersion
+                _ <- sendMessage transport (encodeMessage ack)
                 loop transport
               MsgMutateResource -> do
                 _ <- sendMessage transport (encodeMessage (mutateResultEnvelope
@@ -2012,10 +2045,8 @@ runNegotiatedValidationFixture = do
             Left _ -> loop transport
             Right envelope -> case envType envelope of
               MsgHandshake -> do
-                _ <- sendMessage transport (encodeMessage (handshakeAckWithResourcesEnvelope
-                  (envRequestId envelope)
-                  currentProtocolVersion
-                  [negotiatedValidationSchema]))
+                ack <- handshakeAckWithResourcesEnvelopeFor envelope currentProtocolVersion [negotiatedValidationSchema]
+                _ <- sendMessage transport (encodeMessage ack)
                 loop transport
               MsgMutateResource -> do
                 _ <- sendMessage transport (encodeMessage (mutateResultEnvelope
@@ -2039,7 +2070,8 @@ runExitOnGeneratorFixture = do
             Left _ -> loop transport
             Right envelope -> case envType envelope of
               MsgHandshake -> do
-                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope (envRequestId envelope) currentProtocolVersion))
+                ack <- handshakeAckEnvelopeFor envelope currentProtocolVersion
+                _ <- sendMessage transport (encodeMessage ack)
                 loop transport
               MsgInvokeGenerator -> exitFailure
               MsgShutdown -> closeTransport transport
@@ -2059,7 +2091,8 @@ runExitOnSimulationFixture = do
             Left _ -> loop transport
             Right envelope -> case envType envelope of
               MsgHandshake -> do
-                _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope (envRequestId envelope) currentProtocolVersion))
+                ack <- handshakeAckEnvelopeFor envelope currentProtocolVersion
+                _ <- sendMessage transport (encodeMessage ack)
                 loop transport
               MsgInvokeSimulation -> exitFailure
               MsgShutdown -> closeTransport transport
@@ -2073,8 +2106,43 @@ runOneShotAckFixture protocolVersion = do
       recvMessage transport >>= \case
         Left _ -> closeTransport transport
         Right bytes -> do
+          ack <- case decodeMessage bytes of
+            Left _ -> pure (handshakeAckEnvelope Nothing protocolVersion)
+            Right envelope -> handshakeAckEnvelopeFor envelope protocolVersion
+          _ <- sendMessage transport (encodeMessage ack)
+          closeTransport transport
+
+runMissingAuthAckFixture :: IO ()
+runMissingAuthAckFixture = do
+  connectPluginFromEnvironment "plugin-manager-auth-missing-fixture" stdin stdout >>= \case
+    Left _ -> exitFailure
+    Right transport -> do
+      recvMessage transport >>= \case
+        Left _ -> closeTransport transport
+        Right bytes -> do
           let requestId = either (const Nothing) envRequestId (decodeMessage bytes)
-          _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope requestId protocolVersion))
+          _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope requestId currentProtocolVersion))
+          threadDelay 2000000
+          closeTransport transport
+
+runMismatchedAuthAckFixture :: IO ()
+runMismatchedAuthAckFixture = do
+  connectPluginFromEnvironment "plugin-manager-auth-mismatch-fixture" stdin stdout >>= \case
+    Left _ -> exitFailure
+    Right transport -> do
+      recvMessage transport >>= \case
+        Left _ -> closeTransport transport
+        Right bytes -> do
+          let requestId = either (const Nothing) envRequestId (decodeMessage bytes)
+          sessionId <- Text.pack <$> requireEnv pluginSessionEnv
+          let ack = handshakeAckWithDataDirectoryAndAuthEnvelope
+                requestId
+                currentProtocolVersion
+                Nothing
+                []
+                (Just (sessionId, "wrong-proof"))
+          _ <- sendMessage transport (encodeMessage ack)
+          threadDelay 2000000
           closeTransport transport
 
 verifyLaunchEnvironment :: IO ()
@@ -2162,22 +2230,48 @@ runHandshakeStallFixture = do
 
 handshakeAckEnvelope :: Maybe Word64 -> Int -> RPCEnvelope
 handshakeAckEnvelope requestId protocolVersion =
-  handshakeAckWithResourcesEnvelope requestId protocolVersion []
+  handshakeAckWithDataDirectoryAndAuthEnvelope requestId protocolVersion Nothing [] Nothing
 
-handshakeAckWithResourcesEnvelope :: Maybe Word64 -> Int -> [DataResourceSchema] -> RPCEnvelope
-handshakeAckWithResourcesEnvelope requestId protocolVersion =
-  handshakeAckWithDataDirectoryEnvelope requestId protocolVersion Nothing
+handshakeAckEnvelopeFor :: RPCEnvelope -> Int -> IO RPCEnvelope
+handshakeAckEnvelopeFor envelope protocolVersion =
+  handshakeAckWithDataDirectoryEnvelopeFor envelope protocolVersion Nothing []
 
-handshakeAckWithDataDirectoryEnvelope :: Maybe Word64 -> Int -> Maybe Text -> [DataResourceSchema] -> RPCEnvelope
-handshakeAckWithDataDirectoryEnvelope requestId protocolVersion dataDirectory resources = RPCEnvelope
+handshakeAckWithResourcesEnvelopeFor :: RPCEnvelope -> Int -> [DataResourceSchema] -> IO RPCEnvelope
+handshakeAckWithResourcesEnvelopeFor envelope protocolVersion =
+  handshakeAckWithDataDirectoryEnvelopeFor envelope protocolVersion Nothing
+
+handshakeAckWithDataDirectoryEnvelopeFor :: RPCEnvelope -> Int -> Maybe Text -> [DataResourceSchema] -> IO RPCEnvelope
+handshakeAckWithDataDirectoryEnvelopeFor envelope protocolVersion dataDirectory resources = do
+  mAuth <- handshakeAuthFromEnvelope envelope
+  pure (handshakeAckWithDataDirectoryAndAuthEnvelope
+    (envRequestId envelope)
+    protocolVersion
+    dataDirectory
+    resources
+    mAuth)
+
+handshakeAckWithDataDirectoryAndAuthEnvelope :: Maybe Word64 -> Int -> Maybe Text -> [DataResourceSchema] -> Maybe (Text, Text) -> RPCEnvelope
+handshakeAckWithDataDirectoryAndAuthEnvelope requestId protocolVersion dataDirectory resources mAuth = RPCEnvelope
   { envType = MsgHandshakeAck
   , envPayload = Aeson.toJSON (HandshakeAck
       { haProtocolVersion = protocolVersion
       , haDataDirectory = dataDirectory
       , haResources = resources
+      , haSessionId = fst <$> mAuth
+      , haAuthProof = snd <$> mAuth
       })
   , envRequestId = requestId
   }
+
+handshakeAuthFromEnvelope :: RPCEnvelope -> IO (Maybe (Text, Text))
+handshakeAuthFromEnvelope envelope = case Aeson.fromJSON (envPayload envelope) of
+  Aeson.Error _ -> pure Nothing
+  Aeson.Success (hs :: Handshake) -> case hsAuthChallenge hs of
+    Nothing -> pure Nothing
+    Just challenge -> do
+      sessionId <- Text.pack <$> requireEnv pluginSessionEnv
+      authToken <- Text.pack <$> requireEnv pluginAuthTokenEnv
+      pure (Just (sessionId, handshakeAuthProof sessionId authToken challenge))
 
 pluginErrorEnvelope :: Maybe Word64 -> Int -> Text -> RPCEnvelope
 pluginErrorEnvelope requestId code message = RPCEnvelope
@@ -2203,6 +2297,11 @@ mutateResultEnvelope requestId result = RPCEnvelope
   , envRequestId = requestId
   }
 
+runtimeProtocolLine :: String
+runtimeProtocolLine =
+  "  \"runtime\": { \"protocol\": { \"min\": " <> show currentProtocolVersion
+    <> ", \"max\": " <> show currentProtocolVersion <> " } },\n"
+
 testPluginName :: String
 testPluginName = "copilot-test-plugin-manager-schema"
 
@@ -2212,7 +2311,7 @@ testManifestJSON =
     <> "  \"manifestVersion\": 3,\n"
     <> "  \"name\": \"copilot-test-plugin-manager-schema\",\n"
     <> "  \"version\": \"0.1.0\",\n"
-    <> "  \"runtime\": { \"protocol\": { \"min\": 3, \"max\": 3 } },\n"
+    <> BSC.pack runtimeProtocolLine
     <> "  \"generator\": { \"insertAfter\": \"erosion\" },\n"
     <> "  \"overlay\": { \"schemaFile\": \"test.toposchema\" }\n"
     <> "}\n"
@@ -2256,6 +2355,28 @@ mismatchPluginName = "copilot-test-plugin-protocol-mismatch"
 
 mismatchManifestJSON :: BS.ByteString
 mismatchManifestJSON = manifestFor mismatchPluginName
+
+authMissingPluginName :: String
+authMissingPluginName = "copilot-test-plugin-auth-missing"
+
+authMissingManifestJSON :: BS.ByteString
+authMissingManifestJSON = manifestWithStartPolicyFor authMissingPluginName
+  [ "    \"restart_mode\": \"never\","
+  , "    \"startup_timeout_ms\": 1000,"
+  , "    \"request_timeout_ms\": 100,"
+  , "    \"shutdown_timeout_ms\": 100"
+  ]
+
+authMismatchPluginName :: String
+authMismatchPluginName = "copilot-test-plugin-auth-mismatch"
+
+authMismatchManifestJSON :: BS.ByteString
+authMismatchManifestJSON = manifestWithStartPolicyFor authMismatchPluginName
+  [ "    \"restart_mode\": \"never\","
+  , "    \"startup_timeout_ms\": 1000,"
+  , "    \"request_timeout_ms\": 100,"
+  , "    \"shutdown_timeout_ms\": 100"
+  ]
 
 malformedPluginName :: String
 malformedPluginName = "copilot-test-plugin-malformed-json"
@@ -2553,7 +2674,7 @@ missingOverlaySchemaManifestFor name = BSC.pack $
     <> "  \"manifestVersion\": 3,\n"
     <> "  \"name\": \"" <> name <> "\",\n"
     <> "  \"version\": \"0.1.0\",\n"
-    <> "  \"runtime\": { \"protocol\": { \"min\": 3, \"max\": 3 } },\n"
+    <> runtimeProtocolLine
     <> "  \"generator\": { \"insertAfter\": \"erosion\" },\n"
     <> "  \"overlay\": { \"schemaFile\": \"missing.toposchema\" }\n"
     <> "}\n"
@@ -2564,7 +2685,7 @@ invalidExternalSourceManifestFor name = BSC.pack $
     <> "  \"manifestVersion\": 3,\n"
     <> "  \"name\": \"" <> name <> "\",\n"
     <> "  \"version\": \"0.1.0\",\n"
-    <> "  \"runtime\": { \"protocol\": { \"min\": 3, \"max\": 3 } },\n"
+    <> runtimeProtocolLine
     <> "  \"externalDataSources\": [\n"
     <> "    {\n"
     <> "      \"name\": \"records\",\n"
@@ -2588,7 +2709,7 @@ externalRefManifestFor name required = BSC.pack $
     <> "  \"manifestVersion\": 3,\n"
     <> "  \"name\": \"" <> name <> "\",\n"
     <> "  \"version\": \"0.1.0\",\n"
-    <> "  \"runtime\": { \"protocol\": { \"min\": 3, \"max\": 3 } },\n"
+    <> runtimeProtocolLine
     <> "  \"generator\": { \"insertAfter\": \"erosion\" },\n"
     <> "  \"externalDataSourceRefs\": [\n"
     <> "    {\n"
@@ -2621,7 +2742,7 @@ externalOnlyProviderManifestFor name = BSC.pack $
     <> "  \"manifestVersion\": 3,\n"
     <> "  \"name\": \"" <> name <> "\",\n"
     <> "  \"version\": \"0.1.0\",\n"
-    <> "  \"runtime\": { \"protocol\": { \"min\": 3, \"max\": 3 } },\n"
+    <> runtimeProtocolLine
     <> "  \"externalDataSources\": [\n"
     <> "    {\n"
     <> "      \"name\": \"settlements\",\n"
@@ -2920,7 +3041,7 @@ manifestWithStartPolicyFor name policyLines = BSC.pack $
     <> "  \"manifestVersion\": 3,\n"
     <> "  \"name\": \"" <> name <> "\",\n"
     <> "  \"version\": \"0.1.0\",\n"
-    <> "  \"runtime\": { \"protocol\": { \"min\": 3, \"max\": 3 } },\n"
+    <> runtimeProtocolLine
     <> "  \"generator\": { \"insertAfter\": \"erosion\" }"
     <> renderStartPolicy policyLines
     <> "\n}\n"
@@ -2931,7 +3052,7 @@ simulationManifestWithStartPolicyFor name policyLines = BSC.pack $
     <> "  \"manifestVersion\": 3,\n"
     <> "  \"name\": \"" <> name <> "\",\n"
     <> "  \"version\": \"0.1.0\",\n"
-    <> "  \"runtime\": { \"protocol\": { \"min\": 3, \"max\": 3 } },\n"
+    <> runtimeProtocolLine
     <> "  \"simulation\": { \"dependencies\": [] },\n"
     <> "  \"overlay\": { \"schemaFile\": \"test.toposchema\" }"
     <> renderStartPolicy policyLines
@@ -2943,7 +3064,7 @@ dataResourceManifestFor name policyLines = BSC.pack $
     <> "  \"manifestVersion\": 3,\n"
     <> "  \"name\": \"" <> name <> "\",\n"
     <> "  \"version\": \"0.1.0\",\n"
-    <> "  \"runtime\": { \"protocol\": { \"min\": 3, \"max\": 3 } },\n"
+    <> runtimeProtocolLine
     <> "  \"generator\": { \"insertAfter\": \"erosion\" },\n"
     <> "  \"capabilities\": [\"dataRead\"],\n"
     <> "  \"dataResources\": [\n"
@@ -2965,7 +3086,7 @@ negotiatedValidationManifestFor name policyLines = BSC.pack $
     <> "  \"manifestVersion\": 3,\n"
     <> "  \"name\": \"" <> name <> "\",\n"
     <> "  \"version\": \"0.1.0\",\n"
-    <> "  \"runtime\": { \"protocol\": { \"min\": 3, \"max\": 3 } },\n"
+    <> runtimeProtocolLine
     <> "  \"generator\": { \"insertAfter\": \"erosion\" },\n"
     <> "  \"capabilities\": [\"dataRead\", \"dataWrite\"],\n"
     <> "  \"dataResources\": [\n"
@@ -2987,7 +3108,7 @@ writableDataResourceManifestFor name policyLines = BSC.pack $
     <> "  \"manifestVersion\": 3,\n"
     <> "  \"name\": \"" <> name <> "\",\n"
     <> "  \"version\": \"0.1.0\",\n"
-    <> "  \"runtime\": { \"protocol\": { \"min\": 3, \"max\": 3 } },\n"
+    <> runtimeProtocolLine
     <> "  \"generator\": { \"insertAfter\": \"erosion\" },\n"
     <> "  \"capabilities\": [\"dataRead\", \"dataWrite\"],\n"
     <> "  \"dataResources\": [\n"
