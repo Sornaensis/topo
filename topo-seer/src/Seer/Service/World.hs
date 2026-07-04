@@ -36,13 +36,13 @@ import Seer.Service.Types
 import Topo.Types (ChunkId)
 
 data WorldService = WorldService
-  { worldGenerate :: !ServiceHandler
-  , worldGetMeta :: !ServiceHandler
-  , worldGetGenerationStatus :: !ServiceHandler
-  , worldList :: !ServiceHandler
-  , worldSave :: !ServiceHandler
-  , worldLoad :: !ServiceHandler
-  , worldSetName :: !ServiceHandler
+  { worldGenerate :: !(ServiceHandler WorldGenerateRequest WorldGenerateResponse)
+  , worldGetMeta :: !(ServiceHandler WorldMetaRequest WorldMetaResponse)
+  , worldGetGenerationStatus :: !(ServiceHandler WorldGenerationStatusRequest WorldGenerationStatusResponse)
+  , worldList :: !(ServiceHandler WorldListRequest WorldListResponse)
+  , worldSave :: !(ServiceHandler WorldSaveRequest WorldSaveResponse)
+  , worldLoad :: !(ServiceHandler WorldLoadRequest WorldLoadResponse)
+  , worldSetName :: !(ServiceHandler WorldSetNameRequest WorldSetNameResponse)
   }
 
 data WorldGenerateRequest = WorldGenerateRequest

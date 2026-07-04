@@ -58,6 +58,7 @@ import Seer.Command.AppServiceAdapter (appServiceCommandMethods, commandAppServi
 import Seer.Command.Dispatch (dispatchCommandMethods)
 import Seer.Service.AppService
   ( AppServiceOperation(..)
+  , appServiceOperationSpec
   , appServiceGroups
   , appServiceOperationMethods
   , appServiceOperationSpecs

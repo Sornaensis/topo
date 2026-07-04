@@ -15,7 +15,7 @@ import Data.Text (Text)
 import Seer.Service.Types
 
 data ScreenshotService = ScreenshotService
-  { screenshotTake :: !ServiceHandler
+  { screenshotTake :: !(ServiceHandler ScreenshotTakeRequest ScreenshotTakeResponse)
   }
 
 newtype ScreenshotTakeRequest = ScreenshotTakeRequest

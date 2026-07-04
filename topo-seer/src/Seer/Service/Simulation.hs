@@ -28,10 +28,10 @@ import Topo.Simulation (SimNodeId)
 import Seer.Service.Types
 
 data SimulationService = SimulationService
-  { simulationGetState :: !ServiceHandler
-  , simulationSetAutoTick :: !ServiceHandler
-  , simulationTick :: !ServiceHandler
-  , simulationGetDag :: !ServiceHandler
+  { simulationGetState :: !(ServiceHandler SimulationStateRequest SimulationStateResponse)
+  , simulationSetAutoTick :: !(ServiceHandler SimulationSetAutoTickRequest SimulationSetAutoTickResponse)
+  , simulationTick :: !(ServiceHandler SimulationTickRequest SimulationTickResponse)
+  , simulationGetDag :: !(ServiceHandler SimulationDagRequest SimulationDagResponse)
   }
 
 data SimulationStateRequest = SimulationStateRequest

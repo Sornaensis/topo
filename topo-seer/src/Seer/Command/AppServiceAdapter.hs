@@ -194,23 +194,19 @@ runAppServiceOperation app ctx =
 appServiceCommandMethods :: AppService -> [Text]
 appServiceCommandMethods = map fst . appServiceHandlersByMethod
 
-commandServiceHandler :: TypedServiceOperation request response -> RawCommandHandler -> ServiceHandler
-commandServiceHandler operation handler = validateServiceHandler method $ \ctx request -> do
+commandServiceHandler :: TypedServiceOperation request response -> RawCommandHandler -> ServiceHandler request response
+commandServiceHandler operation handler = validateServiceHandler operation $ \ctx request -> do
   let params = serviceRequestBodyValue request
   response <- handler (serviceCommandContext ctx) 0 params
   pure (commandResponseToServiceResult response)
-  where
-    method = serviceOperationMethod (typedServiceOperationSpec operation)
 
 commandServiceResultHandler
   :: TypedServiceOperation request response
   -> (CommandContext -> Value -> IO ServiceResult)
-  -> ServiceHandler
-commandServiceResultHandler operation handler = validateServiceHandler method $ \ctx request -> do
+  -> ServiceHandler request response
+commandServiceResultHandler operation handler = validateServiceHandler operation $ \ctx request -> do
   let params = serviceRequestBodyValue request
   handler (serviceCommandContext ctx) params
-  where
-    method = serviceOperationMethod (typedServiceOperationSpec operation)
 
 commandResponseToServiceResult :: SeerResponse -> ServiceResult
 commandResponseToServiceResult response
@@ -232,9 +228,8 @@ commandErrorToServiceError msg
 serviceResultToCommandResponse :: Int -> ServiceResult -> SeerResponse
 serviceResultToCommandResponse reqId = \case
   Right response -> okResponse reqId (serviceResponseBody response)
-  Left (ServiceNotFound msg)
-    | Just method <- Text.stripPrefix "unknown service method: " msg ->
-        errResponse reqId ("unknown command: " <> method)
+  Left (ServiceUnknownMethod method) ->
+    errResponse reqId ("unknown command: " <> method)
   Left (ServiceDataResourceError code msg _) ->
     errResponse reqId (dataResourceFailureText (DataResourceFailure code msg))
   Left err -> errResponse reqId (serviceErrorText err)

@@ -108,35 +108,35 @@ import Topo.Overlay.Schema (OverlayFieldType)
 import Topo.Types (ChunkId)
 
 data UiService = UiService
-  { uiSetSeed :: !ServiceHandler
-  , uiSetViewMode :: !ServiceHandler
-  , uiSetConfigTab :: !ServiceHandler
-  , uiSelectHex :: !ServiceHandler
-  , uiSetOverlay :: !ServiceHandler
-  , uiListOverlayFields :: !ServiceHandler
-  , uiCycleOverlay :: !ServiceHandler
-  , uiCycleOverlayField :: !ServiceHandler
-  , uiSetCamera :: !ServiceHandler
-  , uiGetCamera :: !ServiceHandler
-  , uiZoomToChunk :: !ServiceHandler
-  , uiSetLeftPanel :: !ServiceHandler
-  , uiSetLeftTab :: !ServiceHandler
-  , uiToggleConfigPanel :: !ServiceHandler
-  , uiSetLogCollapsed :: !ServiceHandler
-  , uiSetLogLevel :: !ServiceHandler
-  , uiGetPanels :: !ServiceHandler
-  , uiViewportScroll :: !ServiceHandler
-  , uiViewportClick :: !ServiceHandler
-  , uiViewportDrag :: !ServiceHandler
-  , uiViewportHover :: !ServiceHandler
-  , uiClickWidget :: !ServiceHandler
-  , uiListWidgets :: !ServiceHandler
-  , uiGetWidgetState :: !ServiceHandler
-  , uiGetDialogState :: !ServiceHandler
-  , uiSetDialogText :: !ServiceHandler
-  , uiDialogConfirm :: !ServiceHandler
-  , uiDialogCancel :: !ServiceHandler
-  , uiSendKey :: !ServiceHandler
+  { uiSetSeed :: !(ServiceHandler UiSetSeedRequest UiSetSeedResponse)
+  , uiSetViewMode :: !(ServiceHandler UiSetViewModeRequest UiSetViewModeResponse)
+  , uiSetConfigTab :: !(ServiceHandler UiSetConfigTabRequest UiSetConfigTabResponse)
+  , uiSelectHex :: !(ServiceHandler UiSelectHexRequest UiSelectHexResponse)
+  , uiSetOverlay :: !(ServiceHandler UiSetOverlayRequest UiSetOverlayResponse)
+  , uiListOverlayFields :: !(ServiceHandler UiListOverlayFieldsRequest UiListOverlayFieldsResponse)
+  , uiCycleOverlay :: !(ServiceHandler UiCycleOverlayRequest UiCycleOverlayResponse)
+  , uiCycleOverlayField :: !(ServiceHandler UiCycleOverlayFieldRequest UiCycleOverlayFieldResponse)
+  , uiSetCamera :: !(ServiceHandler UiSetCameraRequest UiSetCameraResponse)
+  , uiGetCamera :: !(ServiceHandler UiGetCameraRequest UiCameraSnapshot)
+  , uiZoomToChunk :: !(ServiceHandler UiZoomToChunkRequest UiZoomToChunkResponse)
+  , uiSetLeftPanel :: !(ServiceHandler UiSetLeftPanelRequest UiSetLeftPanelResponse)
+  , uiSetLeftTab :: !(ServiceHandler UiSetLeftTabRequest UiSetLeftTabResponse)
+  , uiToggleConfigPanel :: !(ServiceHandler UiToggleConfigPanelRequest UiToggleConfigPanelResponse)
+  , uiSetLogCollapsed :: !(ServiceHandler UiSetLogCollapsedRequest UiSetLogCollapsedResponse)
+  , uiSetLogLevel :: !(ServiceHandler UiSetLogLevelRequest UiSetLogLevelResponse)
+  , uiGetPanels :: !(ServiceHandler UiGetPanelsRequest UiPanelsResponse)
+  , uiViewportScroll :: !(ServiceHandler UiViewportScrollRequest UiViewportScrollResponse)
+  , uiViewportClick :: !(ServiceHandler UiViewportClickRequest UiViewportClickResponse)
+  , uiViewportDrag :: !(ServiceHandler UiViewportDragRequest UiViewportDragResponse)
+  , uiViewportHover :: !(ServiceHandler UiViewportHoverRequest UiViewportHoverResponse)
+  , uiClickWidget :: !(ServiceHandler UiClickWidgetRequest UiClickWidgetResponse)
+  , uiListWidgets :: !(ServiceHandler UiListWidgetsRequest UiListWidgetsResponse)
+  , uiGetWidgetState :: !(ServiceHandler UiGetWidgetStateRequest UiWidgetStateResponse)
+  , uiGetDialogState :: !(ServiceHandler UiGetDialogStateRequest UiDialogStateResponse)
+  , uiSetDialogText :: !(ServiceHandler UiSetDialogTextRequest UiSetDialogTextResponse)
+  , uiDialogConfirm :: !(ServiceHandler UiDialogConfirmRequest UiDialogActionResponse)
+  , uiDialogCancel :: !(ServiceHandler UiDialogCancelRequest UiDialogActionResponse)
+  , uiSendKey :: !(ServiceHandler UiSendKeyRequest UiSendKeyResponse)
   }
 
 data UiHexCoord = UiHexCoord

@@ -42,14 +42,14 @@ import Topo.Plugin.RPC.DataService (DataRecord, MutateResult, QueryResource, Que
 import Seer.Service.Types
 
 data DataResourceService = DataResourceService
-  { dataListPlugins :: !ServiceHandler
-  , dataListResources :: !ServiceHandler
-  , dataListRecords :: !ServiceHandler
-  , dataGetRecord :: !ServiceHandler
-  , dataCreateRecord :: !ServiceHandler
-  , dataUpdateRecord :: !ServiceHandler
-  , dataDeleteRecord :: !ServiceHandler
-  , dataGetState :: !ServiceHandler
+  { dataListPlugins :: !(ServiceHandler DataResourceListPluginsRequest DataResourceListPluginsResponse)
+  , dataListResources :: !(ServiceHandler DataResourceListResourcesRequest DataResourceListResourcesResponse)
+  , dataListRecords :: !(ServiceHandler DataResourceListRecordsRequest DataResourceListRecordsResponse)
+  , dataGetRecord :: !(ServiceHandler DataResourceGetRecordRequest DataResourceGetRecordResponse)
+  , dataCreateRecord :: !(ServiceHandler DataResourceCreateRecordRequest DataResourceCreateRecordResponse)
+  , dataUpdateRecord :: !(ServiceHandler DataResourceUpdateRecordRequest DataResourceUpdateRecordResponse)
+  , dataDeleteRecord :: !(ServiceHandler DataResourceDeleteRecordRequest DataResourceDeleteRecordResponse)
+  , dataGetState :: !(ServiceHandler DataResourceStateRequest DataResourceStateResponse)
   }
 
 data DataResourcePluginSummary = DataResourcePluginSummary

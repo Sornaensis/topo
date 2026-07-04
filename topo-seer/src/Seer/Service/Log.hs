@@ -17,7 +17,7 @@ import Actor.Log (LogLevel)
 import Seer.Service.Types
 
 data LogService = LogService
-  { logGet :: !ServiceHandler
+  { logGet :: !(ServiceHandler LogGetRequest LogGetResponse)
   }
 
 data LogGetRequest = LogGetRequest

@@ -71,10 +71,13 @@ import Seer.Service.AppService
   , WorldListRequest(..)
   , WorldListResponse(..)
   , WorldService(..)
+  , UiSetSeedRequest(..)
+  , UiSetSeedResponse(..)
   , appServiceOperationMethods
   , appUi
   , configListPresetsOperation
   , uiSetSeed
+  , uiSetSeedOperation
   , worldGenerateOperation
   , worldListOperation
   )
@@ -87,6 +90,7 @@ import Seer.Service.Types
   , ServiceResponse(..)
   , ServiceResult
   , adaptTypedServiceHandler
+  , runServiceHandler
   , serviceErrorCode
   , serviceErrorDetails
   , serviceErrorKind
@@ -119,6 +123,19 @@ spec = describe "CommandDispatch" $ do
       unknown <- dispatchWithId ctx 44 "no_such_command" Null
       srId unknown `shouldBe` 44
       srSuccess unknown `shouldBe` False
+
+    it "returns typed unknown-method service errors without parsing message text" $ withCtx $ \ctx -> do
+      result <- runService ctx "no_such_command" Null
+      case result of
+        Left err -> do
+          serviceErrorCode err `shouldBe` "unknown_method"
+          serviceErrorKind err `shouldBe` ServiceErrorNotFound
+          case serviceErrorDetails err of
+            [detail] -> do
+              serviceErrorDetailPath detail `shouldBe` ["method"]
+              serviceErrorDetailCode detail `shouldBe` "unknown_method"
+            details -> expectationFailure ("expected one unknown-method detail, got: " <> show details)
+        other -> expectationFailure ("expected unknown-method service error, got: " <> show other)
 
     it "exposes representative successful operations as direct service handlers" $ withCtx $ \ctx -> do
       stateResult <- runService ctx "get_state" Null
@@ -193,7 +210,20 @@ spec = describe "CommandDispatch" $ do
       assertSingleValidationDetail brushWithoutObject [] "invalid_body"
 
     it "validates commandAppService handlers at the service-record boundary" $ withCtx $ \ctx -> do
-      result <- uiSetSeed (appUi commandAppService) (serviceContextFromCommand ctx) (ServiceRequest (Just Null))
+      result <- runServiceHandler (uiSetSeed (appUi commandAppService)) (serviceContextFromCommand ctx) (ServiceRequest (Just Null))
+      assertSingleValidationDetail result ["seed"] "missing_field"
+
+    it "validates adapted typed handlers before caller-supplied decoders" $ withCtx $ \ctx -> do
+      let app = commandAppService
+            { appUi = (appUi commandAppService)
+                { uiSetSeed = adaptTypedServiceHandler
+                    uiSetSeedOperation
+                    (const (Left (ServiceInvalidRequest "decoder should not run")))
+                    (\response -> object ["seed" .= uiSetSeedResponseValue response])
+                    (\_ request -> pure (Right (UiSetSeedResponse (uiSetSeedRequestValue request))))
+                }
+            }
+      result <- runAppServiceOperation app ctx "set_seed" Null
       assertSingleValidationDetail result ["seed"] "missing_field"
 
     it "translates structured service validation errors back to command errors" $ withCtx $ \ctx -> do

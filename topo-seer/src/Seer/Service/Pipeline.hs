@@ -28,8 +28,8 @@ import Topo.Pipeline.Stage (StageId)
 import Seer.Service.Types
 
 data PipelineService = PipelineService
-  { pipelineGet :: !ServiceHandler
-  , pipelineSetStageEnabled :: !ServiceHandler
+  { pipelineGet :: !(ServiceHandler PipelineGetRequest PipelineGetResponse)
+  , pipelineSetStageEnabled :: !(ServiceHandler PipelineSetStageEnabledRequest PipelineSetStageEnabledResponse)
   }
 
 data PipelineGetRequest = PipelineGetRequest

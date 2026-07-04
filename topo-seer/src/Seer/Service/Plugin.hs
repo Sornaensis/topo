@@ -31,9 +31,9 @@ import Topo.Plugin.RPC.Manifest (RPCParamSpec)
 import Seer.Service.Types
 
 data PluginService = PluginService
-  { pluginList :: !ServiceHandler
-  , pluginSetEnabled :: !ServiceHandler
-  , pluginSetParam :: !ServiceHandler
+  { pluginList :: !(ServiceHandler PluginListRequest PluginListResponse)
+  , pluginSetEnabled :: !(ServiceHandler PluginSetEnabledRequest PluginSetEnabledResponse)
+  , pluginSetParam :: !(ServiceHandler PluginSetParamRequest PluginSetParamResponse)
   }
 
 data PluginListRequest = PluginListRequest

@@ -34,9 +34,9 @@ import Data.Word (Word64)
 import Seer.Service.Types
 
 data StateService = StateService
-  { stateGetState :: !ServiceHandler
-  , stateGetViewModes :: !ServiceHandler
-  , stateGetUiState :: !ServiceHandler
+  { stateGetState :: !(ServiceHandler StateGetRequest StateSummaryResponse)
+  , stateGetViewModes :: !(ServiceHandler StateViewModesRequest StateViewModesResponse)
+  , stateGetUiState :: !(ServiceHandler StateUiStateRequest StateUiStateResponse)
   }
 
 data StateGetRequest = StateGetRequest

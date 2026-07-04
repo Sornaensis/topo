@@ -64,19 +64,19 @@ import Topo.Overlay.Schema (OverlayFieldType)
 import Topo.Types (ChunkId, TileCoord)
 
 data TerrainService = TerrainService
-  { terrainGetHex :: !ServiceHandler
-  , terrainGetChunks :: !ServiceHandler
-  , terrainGetChunkSummary :: !ServiceHandler
-  , terrainGetStats :: !ServiceHandler
-  , terrainGetOverlays :: !ServiceHandler
-  , terrainFindHexes :: !ServiceHandler
-  , terrainExportData :: !ServiceHandler
-  , overlayGetSchema :: !ServiceHandler
-  , overlayGetProvenance :: !ServiceHandler
-  , overlayExportData :: !ServiceHandler
-  , overlayValidateImport :: !ServiceHandler
-  , terrainExportMesh :: !ServiceHandler
-  , terrainExportSample :: !ServiceHandler
+  { terrainGetHex :: !(ServiceHandler TerrainGetHexRequest TerrainHexResponse)
+  , terrainGetChunks :: !(ServiceHandler TerrainGetChunksRequest TerrainChunksResponse)
+  , terrainGetChunkSummary :: !(ServiceHandler TerrainGetChunkSummaryRequest TerrainChunkSummaryResponse)
+  , terrainGetStats :: !(ServiceHandler TerrainStatsRequest TerrainStatsResponse)
+  , terrainGetOverlays :: !(ServiceHandler TerrainOverlaysRequest TerrainOverlaysResponse)
+  , terrainFindHexes :: !(ServiceHandler TerrainFindHexesRequest TerrainFindHexesResponse)
+  , terrainExportData :: !(ServiceHandler TerrainExportRequest TerrainExportResponse)
+  , overlayGetSchema :: !(ServiceHandler OverlaySchemaRequest OverlaySchemaResponse)
+  , overlayGetProvenance :: !(ServiceHandler OverlayProvenanceRequest OverlayProvenanceResponse)
+  , overlayExportData :: !(ServiceHandler OverlayExportRequest OverlayExportResponse)
+  , overlayValidateImport :: !(ServiceHandler OverlayImportValidateRequest OverlayImportValidateResponse)
+  , terrainExportMesh :: !(ServiceHandler TerrainMeshExportRequest TerrainMeshExportResponse)
+  , terrainExportSample :: !(ServiceHandler TerrainSampleExportRequest TerrainSampleExportResponse)
   }
 
 newtype TerrainGetHexRequest = TerrainGetHexRequest

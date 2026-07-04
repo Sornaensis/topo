@@ -864,8 +864,8 @@ headlessHttpAppService = commandAppService
       }
   }
 
-headlessScreenshotHandler :: ServiceHandler
-headlessScreenshotHandler _ request = do
+headlessScreenshotHandler :: ServiceHandler ScreenshotTakeRequest ScreenshotTakeResponse
+headlessScreenshotHandler = rawServiceHandler screenshotTakeOperation $ \_ request -> do
   let pngBytes = blankPng
       body = fromMaybe Null (serviceRequestBody request)
       mSavePath = case body of

@@ -39,17 +39,17 @@ import Seer.Service.Types
 import Topo.Types (BiomeId, TerrainForm, TileCoord)
 
 data EditorService = EditorService
-  { editorToggle :: !ServiceHandler
-  , editorSetTool :: !ServiceHandler
-  , editorSetBrush :: !ServiceHandler
-  , editorBrushStroke :: !ServiceHandler
-  , editorBrushLine :: !ServiceHandler
-  , editorSetBiome :: !ServiceHandler
-  , editorSetForm :: !ServiceHandler
-  , editorSetHardness :: !ServiceHandler
-  , editorUndo :: !ServiceHandler
-  , editorRedo :: !ServiceHandler
-  , editorGetState :: !ServiceHandler
+  { editorToggle :: !(ServiceHandler EditorToggleRequest EditorStateResponse)
+  , editorSetTool :: !(ServiceHandler EditorSetToolRequest EditorStateResponse)
+  , editorSetBrush :: !(ServiceHandler EditorSetBrushRequest EditorStateResponse)
+  , editorBrushStroke :: !(ServiceHandler EditorBrushStrokeRequest EditorStrokeQueuedResponse)
+  , editorBrushLine :: !(ServiceHandler EditorBrushLineRequest EditorStrokeQueuedResponse)
+  , editorSetBiome :: !(ServiceHandler EditorSetBiomeRequest EditorStateResponse)
+  , editorSetForm :: !(ServiceHandler EditorSetFormRequest EditorStateResponse)
+  , editorSetHardness :: !(ServiceHandler EditorSetHardnessRequest EditorStateResponse)
+  , editorUndo :: !(ServiceHandler EditorUndoRequest EditorActionQueuedResponse)
+  , editorRedo :: !(ServiceHandler EditorRedoRequest EditorActionQueuedResponse)
+  , editorGetState :: !(ServiceHandler EditorGetStateRequest EditorStateResponse)
   }
 
 newtype EditorToggleRequest = EditorToggleRequest

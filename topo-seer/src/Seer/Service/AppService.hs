@@ -1,3 +1,4 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StrictData #-}
 
@@ -10,6 +11,8 @@
 module Seer.Service.AppService
   ( AppService(..)
   , AppServiceOperation(..)
+  , appServiceOperationSpec
+  , appServiceOperationHandler
   , appServiceGroups
   , appServiceOperations
   , appServiceHandlersByMethod
@@ -67,11 +70,20 @@ data AppService = AppService
   , appUi :: !UiService
   }
 
--- | A concrete AppService operation paired with its stable metadata.
-data AppServiceOperation = AppServiceOperation
-  { appServiceOperationSpec :: !ServiceOperationSpec
-  , appServiceOperationHandler :: !ServiceHandler
-  }
+-- | A concrete AppService operation with existential request/response types.
+data AppServiceOperation where
+  AppServiceOperation :: TypedServiceOperation request response -> ServiceHandler request response -> AppServiceOperation
+
+appServiceOperationSpec :: AppServiceOperation -> ServiceOperationSpec
+appServiceOperationSpec (AppServiceOperation operation _) = typedServiceOperationSpec operation
+
+appServiceOperationHandler :: AppServiceOperation -> RawServiceHandler
+appServiceOperationHandler (AppServiceOperation operation handler)
+  | serviceHandlerSpec handler == expectedSpec = runServiceHandler handler
+  | otherwise = \_ _ ->
+      pure (Left (ServiceInternalError ("AppService handler metadata mismatch for method: " <> serviceOperationMethod expectedSpec)))
+  where
+    expectedSpec = typedServiceOperationSpec operation
 
 -- | Focused service groups in the order used by diagnostics/docs/tests.
 appServiceGroups :: [ServiceGroupSpec]
@@ -101,7 +113,7 @@ runServiceOperation :: AppService -> ServiceContext -> Text -> Value -> IO Servi
 runServiceOperation app ctx method params =
   case lookup method (appServiceHandlersByMethod app) of
     Just handler -> handler ctx (ServiceRequest (Just params))
-    Nothing -> pure (Left (ServiceNotFound ("unknown service method: " <> method)))
+    Nothing -> pure (Left (ServiceUnknownMethod method))
 
 -- | Concrete operations in the same order as 'appServiceOperationSpecs'.
 appServiceOperations :: AppService -> [AppServiceOperation]
@@ -225,7 +237,7 @@ appServiceOperations app = concat
     screenshotSvc = appScreenshots app
     uiSvc = appUi app
 
-appServiceHandlersByMethod :: AppService -> [(Text, ServiceHandler)]
+appServiceHandlersByMethod :: AppService -> [(Text, RawServiceHandler)]
 appServiceHandlersByMethod =
   map (\op -> ( serviceOperationMethod (appServiceOperationSpec op)
               , appServiceOperationHandler op
@@ -233,5 +245,5 @@ appServiceHandlersByMethod =
       )
     . appServiceOperations
 
-appOperation :: TypedServiceOperation request response -> ServiceHandler -> AppServiceOperation
-appOperation operation handler = AppServiceOperation (typedServiceOperationSpec operation) handler
+appOperation :: TypedServiceOperation request response -> ServiceHandler request response -> AppServiceOperation
+appOperation = AppServiceOperation

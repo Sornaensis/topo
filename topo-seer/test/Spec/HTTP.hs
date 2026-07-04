@@ -69,8 +69,13 @@ import Seer.HTTP.Server
   , parseHttpBind
   )
 import Seer.Command.Dispatch (CommandContext(..))
-import Seer.Service.AppService (AppService(..), DataResourceService(..), appServiceOperationMethods)
-import Seer.Service.Types (ServiceError(..))
+import Seer.Service.AppService
+  ( AppService(..)
+  , DataResourceService(..)
+  , appServiceOperationMethods
+  , dataResourceCreateRecordOperation
+  )
+import Seer.Service.Types (ServiceError(..), rawServiceHandler)
 import Seer.System (runApp)
 import Spec.Support.OverlayFixtures (mkSparseFloatOverlay)
 import System.Directory
@@ -336,7 +341,7 @@ spec = describe "Seer.HTTP.Server" $ do
             ]
           appFor code = headlessHttpAppService
             { appDataResources = (appDataResources headlessHttpAppService)
-                { dataCreateRecord = \_ _ ->
+                { dataCreateRecord = rawServiceHandler dataResourceCreateRecordOperation $ \_ _ ->
                     pure (Left (ServiceDataResourceError code "failed" []))
                 }
             }

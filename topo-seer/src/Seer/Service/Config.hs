@@ -46,16 +46,16 @@ import Data.Text (Text)
 import Seer.Service.Types
 
 data ConfigService = ConfigService
-  { configGetSliders :: !ServiceHandler
-  , configGetSlider :: !ServiceHandler
-  , configSetSlider :: !ServiceHandler
-  , configSetSliders :: !ServiceHandler
-  , configResetSliders :: !ServiceHandler
-  , configGetSummary :: !ServiceHandler
-  , configGetEnums :: !ServiceHandler
-  , configListPresets :: !ServiceHandler
-  , configSavePreset :: !ServiceHandler
-  , configLoadPreset :: !ServiceHandler
+  { configGetSliders :: !(ServiceHandler ConfigSlidersRequest ConfigSlidersResponse)
+  , configGetSlider :: !(ServiceHandler ConfigSliderRequest ConfigSliderSummary)
+  , configSetSlider :: !(ServiceHandler ConfigSetSliderRequest ConfigSetSliderResponse)
+  , configSetSliders :: !(ServiceHandler ConfigSetSlidersRequest ConfigSetSlidersResponse)
+  , configResetSliders :: !(ServiceHandler ConfigResetSlidersRequest ConfigResetSlidersResponse)
+  , configGetSummary :: !(ServiceHandler ConfigSummaryRequest ConfigSummaryResponse)
+  , configGetEnums :: !(ServiceHandler ConfigEnumsRequest ConfigEnumsResponse)
+  , configListPresets :: !(ServiceHandler ConfigListPresetsRequest ConfigListPresetsResponse)
+  , configSavePreset :: !(ServiceHandler ConfigSavePresetRequest ConfigSavePresetResponse)
+  , configLoadPreset :: !(ServiceHandler ConfigLoadPresetRequest ConfigLoadPresetResponse)
   }
 
 newtype ConfigSlidersRequest = ConfigSlidersRequest
