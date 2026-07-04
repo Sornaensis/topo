@@ -11,6 +11,7 @@ import qualified Spec.CacheProperties
 import qualified Spec.ConfigSnapshot
 import qualified Spec.ConfigSliders
 import qualified Spec.PipelineControls
+import qualified Spec.PipelineIntegrator
 import qualified Spec.AtlasResultBroker
 import qualified Spec.AtlasScheduleBroker
 import qualified Spec.AtlasScheduler
@@ -60,6 +61,7 @@ main = do
         Spec.ConfigSnapshot.spec
         Spec.ConfigSliders.spec
         Spec.PipelineControls.spec
+        Spec.PipelineIntegrator.spec
         Spec.SliderSpec.spec
         Spec.AtlasResultBroker.spec
         Spec.AtlasScheduleBroker.spec

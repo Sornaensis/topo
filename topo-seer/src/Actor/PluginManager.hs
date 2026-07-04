@@ -41,6 +41,12 @@ module Actor.PluginManager
   , pluginEndpointKind
   , pluginLastError
   , pluginUptimeSeconds
+    -- * Pipeline generator integration
+  , PluginPipelineInput(..)
+  , PluginPipelinePlan(..)
+  , PluginGeneratorResolution(..)
+  , PluginPipelineDiagnostic(..)
+  , buildPluginPipelinePlan
     -- * Commands
   , discoverPlugins
   , getLoadedPlugins
@@ -77,6 +83,13 @@ import Data.Set (Set)
 import Data.Text (Text)
 import Hyperspace.Actor
 
+import Actor.PluginManager.PipelineIntegrator
+  ( PluginPipelineInput(..)
+  , PluginPipelinePlan(..)
+  , PluginGeneratorResolution(..)
+  , PluginPipelineDiagnostic(..)
+  , buildPluginPipelinePlan
+  )
 import Actor.PluginManager.PluginSupervisor
   ( shutdownPlugin
   , withRefreshedManifestsHandlingPublishException

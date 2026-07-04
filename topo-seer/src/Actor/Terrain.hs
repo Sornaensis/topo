@@ -50,7 +50,8 @@ import Topo
   , getWeatherFromOverlay
   , insertOverlay
   )
-import Topo.Pipeline (PipelineConfig(..), PipelineStage, StageProgress(..), StageStatus(..), runPipeline)
+import Actor.PluginManager.PipelineIntegrator (PluginPipelineInput, integratePluginStages)
+import Topo.Pipeline (PipelineConfig(..), StageProgress(..), StageStatus(..), runPipeline)
 import Topo.Pipeline.Stage (StageId)
 import Topo.Overlay (OverlayStore)
 import Topo.WorldGen (WorldGenConfig(..), buildFullPipelineConfig)
@@ -72,8 +73,8 @@ data TerrainGenRequest = TerrainGenRequest
   , tgrGenConfig :: !WorldGenConfig
   , tgrDisabledStages :: !(Set StageId)
     -- ^ Pipeline stages the user has disabled via the Pipeline tab.
-  , tgrExtraStages :: ![PipelineStage]
-    -- ^ Additional pipeline stages injected by plugins.
+  , tgrPluginPipeline :: !PluginPipelineInput
+    -- ^ Loaded plugin manifests/connections and user ordering for generator-stage integration.
   , tgrOverlaySchemas :: ![OverlaySchema]
     -- ^ Plugin overlay schemas pre-registered in generated worlds.
   , tgrSimHandle :: !(ActorHandle Simulation (Protocol Simulation))
@@ -148,9 +149,9 @@ actor Terrain
                    (worldPlanet cfg) (worldSlice cfg)
         world0 = registerPluginOverlays (tgrOverlaySchemas req) baseWorld
         pipeline0 = buildFullPipelineConfig cfg worldCfg (tgrSeed req)
-        pipelineWithoutProgress = pipeline0
+        pipelineWithPlugins = integratePluginStages (tgrPluginPipeline req) pipeline0
+        pipelineWithoutProgress = pipelineWithPlugins
           { pipelineDisabled = tgrDisabledStages req
-          , pipelineStages = pipelineStages pipeline0 ++ tgrExtraStages req
           }
     stageStartRef <- newIORef Nothing
     let pipeline = pipelineWithoutProgress

@@ -21,6 +21,7 @@ import Actor.Terrain
   , TerrainReplyOps
   , startTerrainGen
   )
+import Actor.PluginManager (PluginPipelineInput(..))
 import Actor.Simulation (Simulation)
 import Topo (WorldConfig(..))
 import Topo.Overlay (Overlay(..), OverlayProvenance(..), lookupOverlay)
@@ -84,7 +85,12 @@ spec = describe "TerrainActor" $ do
           , tgrWorldConfig = WorldConfig { wcChunkSize = 8 }
           , tgrGenConfig = genConfig
           , tgrDisabledStages = mempty
-          , tgrExtraStages = []
+          , tgrPluginPipeline = PluginPipelineInput
+              { ppiPlugins = []
+              , ppiPluginOrder = []
+              , ppiDisabledPlugins = mempty
+              , ppiDisabledStages = mempty
+              }
           , tgrOverlaySchemas = []
           , tgrSimHandle = simHandle
           , tgrSimNodes = []

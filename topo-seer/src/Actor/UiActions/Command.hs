@@ -25,12 +25,18 @@ import Actor.PluginManager
   , getPluginOrder
   , getPluginOverlaySchemas
   , getPluginSimulationPlan
-  , getPluginStages
-  , pluginAvailableDependencyKeys
   , pluginDiagnosticState
   , pluginDiagnosticStateText
   , pluginPanelDiagnosticLines
   , refreshManifests
+  )
+import Actor.PluginManager.PipelineIntegrator
+  ( PluginPipelineDiagnostic(..)
+  , PluginPipelineInput(..)
+  , PluginPipelinePlan(..)
+  , buildPluginPipelinePlan
+  , pluginNamesDisabledByStage
+  , pluginPipelineAvailableDependencyKeys
   )
 import Actor.Simulation (Simulation, clearSimWorld)
 import Actor.AtlasManager (AtlasJob(..), AtlasManager, enqueueAtlasBuild)
@@ -96,6 +102,7 @@ import GHC.Clock (getMonotonicTimeNSec)
 import Hyperspace.Actor (ActorHandle, Protocol, ReplyTo)
 import Numeric (showFFloat)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Seer.Config (configFromUi, configSummary)
 import Seer.Editor.Brush (applyBrushStroke, applyErodeStroke, applyFlattenStroke, applyNoiseStroke, applyPaintBiomeStroke, applyPaintFormStroke, applySetHardnessStroke, applySmoothStroke)
 import Seer.Editor.History (EditAction(..), pushEdit, undoEdit, redoEdit)
@@ -107,7 +114,7 @@ import Topo.Overlay.Schema (OverlaySchema(..))
 import Topo.Parameters.Recompute (recomputeDerivedChunks)
 import Topo.Plugin.RPC.Manifest (rmParameters)
 import Topo.Types (TerrainChunk(..))
-import Topo.WorldGen (WorldGenConfig(..), TerrainConfig(..))
+import Topo.WorldGen (WorldGenConfig(..), TerrainConfig(..), buildFullPipelineConfig)
 import qualified Data.Vector.Unboxed as U
 
 -- | UI-triggered actions that can be executed asynchronously.
@@ -212,9 +219,8 @@ startGeneration req = do
   setUiWorldConfig uiHandle (Just (snapshotFromUi uiSnap "world"))
   bumpSnapshotVersion (ahSnapshotVersionRef handles)
   appendLog logHandle (LogEntry LogInfo (configSummary uiSnap))
-  -- Hot-reload plugin manifests and collect plugin pipeline stages
+  -- Hot-reload plugin manifests and collect plugin metadata for pipeline planning.
   refreshManifests pluginHandle
-  pluginStages <- getPluginStages pluginHandle
   overlaySchemas <- getPluginOverlaySchemas pluginHandle
   simulationPlan <- getPluginSimulationPlan pluginHandle (Just (map osName overlaySchemas))
   -- Populate plugin UI state from discovered plugins
@@ -229,10 +235,37 @@ startGeneration req = do
         ]
       lifecycles = Map.fromList [(lpName lp, lpLifecycle lp) | lp <- loadedPlugins]
   disabledPlugins <- getDisabledPlugins pluginHandle
-  let availableDeps = pluginAvailableDependencyKeys disabledPlugins loadedPlugins
-      diagnosticLines = Map.fromList [(lpName lp, pluginPanelDiagnosticLines disabledPlugins availableDeps lp) | lp <- loadedPlugins]
+  let cfg = configFromUi uiSnap
+      disabledByStage = pluginNamesDisabledByStage (uiDisabledStages uiSnap)
+      effectiveDisabledPlugins = disabledPlugins <> disabledByStage
+      availableDeps = pluginPipelineAvailableDependencyKeys (uiDisabledStages uiSnap) effectiveDisabledPlugins loadedPlugins
+      pluginPipelineInput = PluginPipelineInput
+        { ppiPlugins = loadedPlugins
+        , ppiPluginOrder = pluginOrder
+        , ppiDisabledPlugins = disabledPlugins
+        , ppiDisabledStages = uiDisabledStages uiSnap
+        }
+      pluginPlan = buildPluginPipelinePlan pluginPipelineInput
+        (buildFullPipelineConfig cfg (WorldConfig { wcChunkSize = uiChunkSize uiSnap }) (uiSeed uiSnap))
+      resolverLines = Map.fromListWith (<>)
+        [ (ppdPlugin diag, ["Generator resolver: " <> ppdMessage diag])
+        | diag <- pppDiagnostics pluginPlan
+        , ppdBlocking diag
+        ]
+      resolverBlocked = Map.keysSet resolverLines
+      diagnosticLines = Map.fromList
+        [ ( lpName lp
+          , pluginPanelDiagnosticLines effectiveDisabledPlugins availableDeps lp
+              <> Map.findWithDefault [] (lpName lp) resolverLines
+          )
+        | lp <- loadedPlugins
+        ]
       diagnosticStatuses = Map.fromList
-        [ (lpName lp, pluginDiagnosticStateText (pluginDiagnosticState disabledPlugins availableDeps lp))
+        [ ( lpName lp
+          , if Set.member (lpName lp) resolverBlocked && not (Set.member (lpName lp) effectiveDisabledPlugins)
+              then "WaitingForDependencies"
+              else pluginDiagnosticStateText (pluginDiagnosticState effectiveDisabledPlugins availableDeps lp)
+          )
         | lp <- loadedPlugins
         ]
   setUiPluginNames uiHandle pluginOrder
@@ -243,13 +276,12 @@ startGeneration req = do
   setUiDisabledPlugins uiHandle disabledPlugins
   setUiDataResources uiHandle dataResources
   setUiOverlayNames uiHandle (map osName overlaySchemas)
-  let cfg = configFromUi uiSnap
-      request = TerrainGenRequest
+  let request = TerrainGenRequest
         { tgrSeed = uiSeed uiSnap
         , tgrWorldConfig = WorldConfig { wcChunkSize = uiChunkSize uiSnap }
         , tgrGenConfig = cfg
         , tgrDisabledStages = uiDisabledStages uiSnap
-        , tgrExtraStages = pluginStages
+        , tgrPluginPipeline = pluginPipelineInput
         , tgrOverlaySchemas = overlaySchemas
         , tgrSimHandle = ahSimulationHandle handles
         , tgrSimNodes = pspExecutableNodes simulationPlan

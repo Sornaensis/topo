@@ -13,11 +13,19 @@ import Actor.PluginManager
   , PluginDependencyDiagnostic(..)
   , getDisabledPlugins
   , getLoadedPlugins
-  , pluginAvailableDependencyKeys
   , pluginDependencyDiagnostics
   , pluginDiagnosticDetail
   , pluginDiagnosticState
   , pluginDiagnosticStateText
+  )
+import Actor.PluginManager.PipelineIntegrator
+  ( PluginGeneratorResolution(..)
+  , PluginPipelineDiagnostic(..)
+  , PluginPipelineInput(..)
+  , PluginPipelinePlan(..)
+  , buildPluginPipelinePlan
+  , pluginNamesDisabledByStage
+  , pluginPipelineAvailableDependencyKeys
   )
 import Actor.SnapshotReceiver (readDataSnapshot)
 import Actor.UI.Setters (setUiDisabledStages, setUiExplicitDisabledStages)
@@ -31,6 +39,8 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Seer.Command.Context (CommandContext(..))
+import Seer.Config (configFromUi)
+import Topo (WorldConfig(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 import Topo.Overlay.Schema (OverlayFieldDef(..), OverlaySchema(..))
 import Topo.Pipeline
@@ -52,7 +62,9 @@ import Topo.Pipeline.Stage
   , parseStageId
   )
 import Topo.Plugin.RPC.Manifest (RPCGeneratorDecl(..), RPCManifest(..))
-import Topo.Pipeline (StageStatus(..))
+import Topo.Pipeline (PipelineConfig(..), PipelineStage(..), StageStatus(..))
+import Topo.Plugin.Dependency (DependencyDiagnosticStatus(..))
+import Topo.WorldGen (buildFullPipelineConfig)
 
 -- | Handle @get_pipeline@ — list stages, DAG edges, registry docs, last-run
 -- state, and plugin insertion diagnostics.
@@ -68,18 +80,43 @@ handleGetPipeline ctx reqId _params = do
   disabledPlugins <- getDisabledPlugins (ahPluginManagerHandle handles)
   let stageDisabledPluginNames = pluginNamesDisabledByStage disabledClosureSet
       effectiveDisabledPlugins = disabledPlugins <> stageDisabledPluginNames
-      availableDeps = pipelineAvailableDependencyKeys ui effectiveDisabledPlugins plugins
-      orderedPlugins = orderLoadedPlugins (uiPluginNames ui) plugins
-      pluginGenerators = filter (isJust . rmGenerator . lpManifest) orderedPlugins
-      builtinEntries = map (builtinStageEntry ui dataSnap) builtinDiags
-      pluginEntries = map (pluginStageEntry ui dataSnap disabledPlugins effectiveDisabledPlugins availableDeps) pluginGenerators
+      availableDeps = pluginPipelineAvailableDependencyKeys disabledClosureSet effectiveDisabledPlugins plugins
+      basePipeline = buildFullPipelineConfig (configFromUi ui) (WorldConfig { wcChunkSize = uiChunkSize ui }) (uiSeed ui)
+      pluginPlan = buildPluginPipelinePlan PluginPipelineInput
+        { ppiPlugins = plugins
+        , ppiPluginOrder = uiPluginNames ui
+        , ppiDisabledPlugins = disabledPlugins
+        , ppiDisabledStages = disabledClosureSet
+        } basePipeline
+      resolutionsByName = Map.fromList [(pgrPlugin res, res) | res <- pppResolutions pluginPlan]
+      loadedByName = Map.fromList [(lpName plugin, plugin) | plugin <- plugins]
+      pluginGenerators =
+        [ plugin
+        | res <- pppResolutions pluginPlan
+        , Just plugin <- [Map.lookup (pgrPlugin res) loadedByName]
+        , isJust (rmGenerator (lpManifest plugin))
+        ]
+      builtinDiagByStage = Map.fromList [(psdiagStageId diag, diag) | diag <- builtinDiags]
+      builtinEntryTriples =
+        [ (idx, sid, builtinStageEntry ui dataSnap diag)
+        | (idx, stage) <- zip [0 :: Int ..] (pipelineStages basePipeline)
+        , let sid = stageId stage
+        , Just diag <- [Map.lookup sid builtinDiagByStage]
+        ]
+      pluginEntryPairs =
+        [ (lpName plugin, pluginStageEntry ui dataSnap disabledPlugins effectiveDisabledPlugins availableDeps (Map.lookup (lpName plugin) resolutionsByName) plugin)
+        | plugin <- pluginGenerators
+        ]
+      builtinEntries = [entry | (_, _, entry) <- builtinEntryTriples]
+      pluginEntries = map snd pluginEntryPairs
+      stageEntries = interleavePipelineEntries builtinEntryTriples pluginEntryPairs resolutionsByName
       builtinNodes = map builtinDagNode builtinDiags
-      pluginNodes = map (pluginDagNode ui effectiveDisabledPlugins availableDeps) pluginGenerators
+      pluginNodes = map (pluginDagNode ui effectiveDisabledPlugins availableDeps resolutionsByName) pluginGenerators
       builtinEdges = concatMap builtinDagEdges builtinDiags
-      pluginEdges = concatMap pluginDagEdges pluginGenerators
+      pluginEdges = concatMap (pluginDagEdges resolutionsByName) pluginGenerators
       docs = map stageDocJson builtinStageDocs
   pure $ okResponse reqId $ object
-    [ "stages" .= (builtinEntries ++ pluginEntries)
+    [ "stages" .= stageEntries
     , "dag" .= object
         [ "nodes" .= (builtinNodes ++ pluginNodes)
         , "edges" .= (builtinEdges ++ pluginEdges)
@@ -90,6 +127,7 @@ handleGetPipeline ctx reqId _params = do
         , "explicit_disabled" .= map stageCanonicalName (Set.toList explicitDisabled)
         , "stage_count" .= length builtinEntries
         , "plugin_stage_count" .= length pluginEntries
+        , "runtime_stage_count" .= length (pipelineStages (pppPipelineConfig pluginPlan))
         ]
     ]
 
@@ -156,25 +194,33 @@ builtinStageEntry ui dataSnap diag =
     , "doc" .= stageDocJson doc
     ]
 
-pluginStageEntry :: UiState -> DataSnapshot -> Set.Set Text -> Set.Set Text -> Set.Set Text -> LoadedPlugin -> Value
-pluginStageEntry ui dataSnap disabledPlugins effectiveDisabledPlugins availableDeps lp =
+pluginStageEntry :: UiState -> DataSnapshot -> Set.Set Text -> Set.Set Text -> Set.Set Text -> Maybe PluginGeneratorResolution -> LoadedPlugin -> Value
+pluginStageEntry ui dataSnap disabledPlugins effectiveDisabledPlugins availableDeps mResolution lp =
   let manifest = lpManifest lp
       name = lpName lp
       sid = StagePlugin name
       disabledByPluginToggle = Set.member name disabledPlugins
       disabledByStageToggle = Set.member sid (uiDisabledStages ui)
-      enabled = not (Set.member name effectiveDisabledPlugins) && not disabledByStageToggle
+      enabled = maybe False pgrEnabled mResolution
+        && not (Set.member name effectiveDisabledPlugins)
+        && not disabledByStageToggle
       gen = rmGenerator manifest
       overlayNames = maybe [] ((:[]) . osName) (lpOverlaySchema lp)
       overlayFields = maybe [] (map ofdName . osFields) (lpOverlaySchema lp)
       pluginDiagnostics = pluginDependencyDiagnostics availableDeps lp
+      planDiagnostics = maybe [] pgrDiagnostics mResolution
       statusText = pluginDiagnosticStateText (pluginDiagnosticState effectiveDisabledPlugins availableDeps lp)
+      resolvedStatus
+        | enabled = statusText
+        | disabledByPluginToggle || disabledByStageToggle = "Disabled"
+        | any ppdBlocking planDiagnostics = "Blocked"
+        | otherwise = statusText
   in object
     [ "id" .= stageCanonicalName sid
     , "name" .= name
     , "enabled" .= enabled
     , "source" .= ("plugin" :: Text)
-    , "status" .= if enabled then statusText else ("Disabled" :: Text)
+    , "status" .= resolvedStatus
     , "explicitly_disabled" .= disabledByStageToggle
     , "auto_disabled" .= False
     , "dependencies" .= maybe [] rgdRequires gen
@@ -188,11 +234,12 @@ pluginStageEntry ui dataSnap disabledPlugins effectiveDisabledPlugins availableD
     , "output_overlays" .= overlayNames
     , "last_run" .= lastRunJson dataSnap (Map.lookup sid (uiPipelineStageRuns ui)) ("plugin:" <> name) "plugin-manifest" sid
     , "provenance" .= provenanceJson "plugin-manifest" ("plugin:" <> name) sid
-    , "diagnostics" .= (pluginDiagnosticDetail effectiveDisabledPlugins availableDeps lp : map dependencyDiagnosticLine pluginDiagnostics)
-    , "plugin_insertion" .= pluginInsertionJson gen
+    , "diagnostics" .= (pluginDiagnosticDetail effectiveDisabledPlugins availableDeps lp : map dependencyDiagnosticLine pluginDiagnostics <> map pipelineDiagnosticLine planDiagnostics)
+    , "plugin_insertion" .= pluginInsertionJson mResolution gen
     , "plugin_diagnostics" .= object
-        [ "diagnostic_status" .= statusText
+        [ "diagnostic_status" .= resolvedStatus
         , "dependencies" .= pluginDiagnostics
+        , "resolver" .= map pipelineDiagnosticJson planDiagnostics
         , "manifest_version" .= rmManifestVersion manifest
         , "plugin_version" .= rmVersion manifest
         ]
@@ -229,11 +276,17 @@ provenanceJson source seedTag sid = object
   , "stage_seed_tag" .= seedTag
   ]
 
-pluginInsertionJson :: Maybe RPCGeneratorDecl -> Value
-pluginInsertionJson Nothing = Null
-pluginInsertionJson (Just gen) = object
+pluginInsertionJson :: Maybe PluginGeneratorResolution -> Maybe RPCGeneratorDecl -> Value
+pluginInsertionJson _ Nothing = Null
+pluginInsertionJson mResolution (Just gen) = object
   [ "insert_after" .= rgdInsertAfter gen
   , "requires" .= rgdRequires gen
+  , "resolved_after" .= fmap stageCanonicalName (mResolution >>= pgrAnchor)
+  , "concrete_anchor" .= fmap stageCanonicalName (mResolution >>= pgrConcreteAnchorStage)
+  , "display_anchor" .= fmap stageCanonicalName (mResolution >>= pgrDisplayAnchor)
+  , "anchor_index" .= (mResolution >>= pgrAnchorIndex)
+  , "runtime_order" .= (mResolution >>= pgrRuntimeOrder)
+  , "executable" .= maybe False pgrEnabled mResolution
   ]
 
 fallbackDoc :: StageId -> PipelineStageDoc
@@ -260,11 +313,18 @@ builtinDagNode diag = object
   , "status" .= stageDiagnosticStatusText diag
   ]
 
-pluginDagNode :: UiState -> Set.Set Text -> Set.Set Text -> LoadedPlugin -> Value
-pluginDagNode ui effectiveDisabledPlugins availableDeps lp =
+pluginDagNode :: UiState -> Set.Set Text -> Set.Set Text -> Map.Map Text PluginGeneratorResolution -> LoadedPlugin -> Value
+pluginDagNode ui effectiveDisabledPlugins availableDeps resolutionsByName lp =
   let sid = StagePlugin (lpName lp)
-      enabled = not (Set.member (lpName lp) effectiveDisabledPlugins) && not (Set.member sid (uiDisabledStages ui))
-      statusText = pluginDiagnosticStateText (pluginDiagnosticState effectiveDisabledPlugins availableDeps lp)
+      mResolution = Map.lookup (lpName lp) resolutionsByName
+      enabled = maybe False pgrEnabled mResolution
+        && not (Set.member (lpName lp) effectiveDisabledPlugins)
+        && not (Set.member sid (uiDisabledStages ui))
+      statusText
+        | enabled = pluginDiagnosticStateText (pluginDiagnosticState effectiveDisabledPlugins availableDeps lp)
+        | Set.member (lpName lp) effectiveDisabledPlugins || Set.member sid (uiDisabledStages ui) = "Disabled"
+        | maybe False (any ppdBlocking . pgrDiagnostics) mResolution = "Blocked"
+        | otherwise = pluginDiagnosticStateText (pluginDiagnosticState effectiveDisabledPlugins availableDeps lp)
   in object
     [ "id" .= stageCanonicalName sid
     , "source" .= ("plugin" :: Text)
@@ -282,23 +342,31 @@ builtinDagEdges diag =
   | dep <- psdiagDependencies diag
   ]
 
-pluginDagEdges :: LoadedPlugin -> [Value]
-pluginDagEdges lp = case rmGenerator (lpManifest lp) of
+pluginDagEdges :: Map.Map Text PluginGeneratorResolution -> LoadedPlugin -> [Value]
+pluginDagEdges resolutionsByName lp = case rmGenerator (lpManifest lp) of
   Nothing -> []
   Just gen ->
-    [ object
-        [ "from" .= rgdInsertAfter gen
-        , "to" .= stageCanonicalName (StagePlugin (lpName lp))
-        , "kind" .= ("insert_after" :: Text)
-        ]
-    ] ++
-    [ object
-        [ "from" .= dep
-        , "to" .= stageCanonicalName (StagePlugin (lpName lp))
-        , "kind" .= ("requires" :: Text)
-        ]
-    | dep <- rgdRequires gen
-    ]
+    let insertAfterFrom = fromMaybe
+          (canonicalDependencyRef (rgdInsertAfter gen))
+          (Map.lookup (lpName lp) resolutionsByName >>= pgrAnchor >>= pure . stageCanonicalName)
+    in [ object
+          [ "from" .= insertAfterFrom
+          , "to" .= stageCanonicalName (StagePlugin (lpName lp))
+          , "kind" .= ("insert_after" :: Text)
+          ]
+       ] ++
+       [ object
+          [ "from" .= canonicalDependencyRef dep
+          , "to" .= stageCanonicalName (StagePlugin (lpName lp))
+          , "kind" .= ("requires" :: Text)
+          ]
+       | dep <- rgdRequires gen
+       ]
+
+canonicalDependencyRef :: Text -> Text
+canonicalDependencyRef raw = case parseStageId raw of
+  Just sid -> stageCanonicalName sid
+  Nothing -> stageCanonicalName (StagePlugin raw)
 
 -- --------------------------------------------------------------------------
 -- Small helpers
@@ -312,31 +380,53 @@ explicitDisabledRootsFor ui
     explicit = uiExplicitDisabledStages ui
     closure = uiDisabledStages ui
 
-pipelineAvailableDependencyKeys :: UiState -> Set.Set Text -> [LoadedPlugin] -> Set.Set Text
-pipelineAvailableDependencyKeys ui effectiveDisabledPlugins plugins =
-  pluginAvailableDependencyKeys effectiveDisabledPlugins plugins
-    `Set.difference` Set.map stageCanonicalName (uiDisabledStages ui)
-    `Set.difference` pluginProviderKeys plugins (pluginNamesDisabledByStage (uiDisabledStages ui))
+interleavePipelineEntries
+  :: [(Int, StageId, Value)]
+  -> [(Text, Value)]
+  -> Map.Map Text PluginGeneratorResolution
+  -> [Value]
+interleavePipelineEntries builtinEntries pluginEntries resolutionsByName =
+  concatMap entriesForBuiltin builtinEntries <> unresolvedPluginEntries
+  where
+    concreteIndexes = Set.fromList [idx | (idx, _, _) <- builtinEntries]
+    entriesForBuiltin (idx, _sid, entry) = entry :
+      [ pluginEntry
+      | (pluginName, pluginEntry) <- pluginEntries
+      , Just resolution <- [Map.lookup pluginName resolutionsByName]
+      , pgrAnchorIndex resolution == Just idx
+      ]
+    unresolvedPluginEntries =
+      [ pluginEntry
+      | (pluginName, pluginEntry) <- pluginEntries
+      , let anchorIndex = Map.lookup pluginName resolutionsByName >>= pgrAnchorIndex
+      , maybe True (`Set.notMember` concreteIndexes) anchorIndex
+      ]
 
-pluginNamesDisabledByStage :: Set.Set StageId -> Set.Set Text
-pluginNamesDisabledByStage disabledStages = Set.fromList
-  [ name | StagePlugin name <- Set.toList disabledStages ]
+pipelineDiagnosticLine :: PluginPipelineDiagnostic -> Text
+pipelineDiagnosticLine diag =
+  "resolver:" <> ppdMessage diag <> " [" <> statusText <> blockingSuffix <> "]"
+  where
+    statusText = case ppdStatus diag of
+      DependencyAvailable -> "available"
+      DependencyMissing -> "missing"
+      DependencyDisabled -> "disabled"
+      DependencyCycle -> "cycle"
+    blockingSuffix
+      | ppdBlocking diag = ", blocking"
+      | otherwise = ""
 
-pluginProviderKeys :: [LoadedPlugin] -> Set.Set Text -> Set.Set Text
-pluginProviderKeys plugins disabledNames = Set.fromList $ concat
-  [ [lpName plugin, "plugin:" <> lpName plugin] <> overlayNames plugin
-  | plugin <- plugins
-  , Set.member (lpName plugin) disabledNames
+pipelineDiagnosticJson :: PluginPipelineDiagnostic -> Value
+pipelineDiagnosticJson diag = object
+  [ "status" .= statusText
+  , "blocking" .= ppdBlocking diag
+  , "message" .= ppdMessage diag
   ]
   where
-    overlayNames plugin = maybe [] ((:[]) . osName) (lpOverlaySchema plugin)
-
-orderLoadedPlugins :: [Text] -> [LoadedPlugin] -> [LoadedPlugin]
-orderLoadedPlugins desiredOrder plugins = ordered ++ remaining
-  where
-    byName = Map.fromList [(lpName plugin, plugin) | plugin <- plugins]
-    ordered = [plugin | name <- desiredOrder, Just plugin <- [Map.lookup name byName]]
-    remaining = [plugin | plugin <- plugins, lpName plugin `notElem` desiredOrder]
+    statusText = case ppdStatus diag of
+      DependencyAvailable -> "available" :: Text
+      DependencyMissing -> "missing"
+      DependencyDisabled -> "disabled"
+      DependencyCycle -> "cycle"
 
 stageNames :: [StageId] -> [Text]
 stageNames = map stageCanonicalName

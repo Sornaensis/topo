@@ -271,6 +271,7 @@ test-suite topo-seer-test
       Spec.Layout
       Spec.LogActor
       Spec.PipelineControls
+      Spec.PipelineIntegrator
       Spec.PluginManager
       Spec.RiverRender
       Spec.Simulation
