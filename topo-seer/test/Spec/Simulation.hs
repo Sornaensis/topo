@@ -18,7 +18,7 @@ import Test.Hspec
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 
-import Actor.AtlasCache (atlasKeyFor)
+import Actor.AtlasCache (atlasKeyFor, atlasKeyVersion, terrainSnapshotViewVersion)
 import Actor.AtlasManager (AtlasJob(..), AtlasManager, drainAtlasJobs)
 import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..), getTerrainSnapshot, replaceTerrainData)
 import Actor.Log (Log, getLogSnapshot, leMessage, lsEntries)
@@ -45,6 +45,7 @@ import Actor.SnapshotReceiver
   , readTerrainSnapshot
   )
 import Actor.UI (Ui, ViewMode(..), getUiSnapshot, setUiDayNightEnabled, setUiViewMode, uiRenderWaterLevel, uiSimTickCount)
+import Seer.Render.ZoomStage (allZoomStages)
 
 import Topo
   ( ChunkId(..)
@@ -425,6 +426,95 @@ spec = describe "Simulation actor" $ do
     sdsAvailable dagSnapshot `shouldBe` True
     map sdnsStatus (sdsNodes dagSnapshot) `shouldSatisfy` elem (Text.pack "completed")
     map stleStatus (sdsTickLogs dagSnapshot) `shouldSatisfy` elem (Text.pack "completed")
+
+  it "publishes visible ViewCloud auto ticks and schedules weather-versioned atlas jobs" $ withSystem $ \system -> do
+    simHandle <- get @Simulation system
+    dataHandle <- get @Data system
+    logHandle <- get @Log system
+    uiHandle <- get @Ui system
+    dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
+    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
+    snapshotVersionRef <- newSnapshotVersionRef
+    atlasHandle <- get @AtlasManager system
+
+    setSimHandles simHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasHandle
+
+    let config = WorldConfig { wcChunkSize = 8 }
+        chunk = generateTerrainChunk config (const 0.5)
+        climate0 = emptyClimateChunk config
+        tileCount = U.length (ccTempAvg climate0)
+        climate = climate0
+          { ccTempAvg = U.replicate tileCount 0.6
+          , ccPrecipAvg = U.replicate tileCount 0.5
+          , ccWindDirAvg = U.replicate tileCount 0.4
+          , ccWindSpdAvg = U.replicate tileCount 0.35
+          , ccHumidityAvg = U.replicate tileCount 0.5
+          }
+        world0 = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice
+        world1 = withSeedWeather
+          (setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) chunk world0))
+          (ChunkId 0)
+          climate
+
+    replaceTerrainData dataHandle world1
+    initialTerrainSnap <- getTerrainSnapshot dataHandle
+    setSimWorld simHandle world1
+    setUiViewMode uiHandle ViewCloud
+    uiSnapBeforeTick <- getUiSnapshot uiHandle
+    version0 <- readSnapshotVersion snapshotVersionRef
+    _ <- drainAtlasJobs atlasHandle
+    let waterLevel0 = uiRenderWaterLevel uiSnapBeforeTick
+        baseVersion0 = tsVersion initialTerrainSnap
+        weatherVersion0 = tsWeatherVersion initialTerrainSnap
+        cloudVersion0 = terrainSnapshotViewVersion ViewCloud initialTerrainSnap
+        cloudKey0 = atlasKeyFor ViewCloud waterLevel0 initialTerrainSnap
+        elevationKey0 = atlasKeyFor ViewElevation waterLevel0 initialTerrainSnap
+
+    autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 1
+
+    version1 <- readSnapshotVersion snapshotVersionRef
+    version1 `shouldSatisfy` (> version0)
+    terrainSnap <- getTerrainSnapshot dataHandle
+    tsVersion terrainSnap `shouldBe` baseVersion0
+    tsWeatherVersion terrainSnap `shouldSatisfy` (> weatherVersion0)
+    let cloudVersion1 = terrainSnapshotViewVersion ViewCloud terrainSnap
+        cloudKey1 = atlasKeyFor ViewCloud waterLevel0 terrainSnap
+    cloudVersion1 `shouldBe` tsWeatherVersion terrainSnap
+    cloudVersion1 `shouldNotBe` cloudVersion0
+    cloudKey1 `shouldNotBe` cloudKey0
+    atlasKeyVersion cloudKey1 `shouldBe` tsWeatherVersion terrainSnap
+    atlasKeyFor ViewElevation waterLevel0 terrainSnap `shouldBe` elevationKey0
+
+    publishedSnap <- readTerrainSnapshot terrainSnapshotRef
+    tsWeatherVersion publishedSnap `shouldBe` tsWeatherVersion terrainSnap
+
+    atlasJobs <- drainAtlasJobs atlasHandle
+    length atlasJobs `shouldBe` length allZoomStages
+    map ajViewMode atlasJobs `shouldBe` replicate (length allZoomStages) ViewCloud
+    map ajKey atlasJobs `shouldSatisfy` all (== cloudKey1)
+    map (atlasKeyVersion . ajKey) atlasJobs `shouldSatisfy` all (== tsWeatherVersion terrainSnap)
+    map ajSnapshotVersion atlasJobs `shouldSatisfy` all (== version1)
+
+    autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 2
+
+    version2 <- readSnapshotVersion snapshotVersionRef
+    version2 `shouldSatisfy` (> version1)
+    terrainSnap2 <- getTerrainSnapshot dataHandle
+    tsVersion terrainSnap2 `shouldBe` baseVersion0
+    tsWeatherVersion terrainSnap2 `shouldSatisfy` (> tsWeatherVersion terrainSnap)
+    let cloudKey2 = atlasKeyFor ViewCloud waterLevel0 terrainSnap2
+    cloudKey2 `shouldNotBe` cloudKey1
+    atlasKeyVersion cloudKey2 `shouldBe` tsWeatherVersion terrainSnap2
+
+    publishedSnap2 <- readTerrainSnapshot terrainSnapshotRef
+    tsWeatherVersion publishedSnap2 `shouldBe` tsWeatherVersion terrainSnap2
+
+    atlasJobs2 <- drainAtlasJobs atlasHandle
+    length atlasJobs2 `shouldBe` length allZoomStages
+    map ajViewMode atlasJobs2 `shouldBe` replicate (length allZoomStages) ViewCloud
+    map ajKey atlasJobs2 `shouldSatisfy` all (== cloudKey2)
+    map (atlasKeyVersion . ajKey) atlasJobs2 `shouldSatisfy` all (== tsWeatherVersion terrainSnap2)
+    map ajSnapshotVersion atlasJobs2 `shouldSatisfy` all (== version2)
 
   it "coalesces hidden auto-tick snapshot publication while manual and visible updates publish immediately" $ withSystem $ \system -> do
     simHandle <- get @Simulation system

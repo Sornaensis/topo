@@ -1,9 +1,10 @@
 module Spec.CacheProperties (spec) where
 
+import Actor.AtlasCache (atlasKeyFor, atlasKeyVersion, terrainSnapshotViewVersion)
 import Actor.Data (TerrainSnapshot(..))
+import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
 import Topo (WeatherChunk(..), WorldConfig(..), emptyTerrainChunk)
 import Topo.Overlay (emptyOverlayStore)
-import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Vector.Unboxed as U
@@ -57,6 +58,30 @@ spec = describe "Cache properties" $ do
           updatedToWeather = updateTerrainCache uiWeather terrainSnap cacheElevation
       in not (sameTerrainCache updatedFromWeather cacheWeather)
          && not (sameTerrainCache updatedToWeather cacheElevation)
+
+  it "uses weather versions for ViewCloud atlas and terrain cache keys" $ do
+    let waterLevel = 0.4
+        terrainSnap0 = emptyTerrainSnapshot { tsVersion = 3, tsWeatherVersion = 7 }
+        terrainSnap1 = terrainSnap0 { tsWeatherVersion = 8 }
+        terrainSnapBaseNewer = terrainSnap0 { tsVersion = 11 }
+        cloudKey0 = atlasKeyFor ViewCloud waterLevel terrainSnap0
+    terrainSnapshotViewVersion ViewCloud terrainSnap0 `shouldBe` 7
+    atlasKeyVersion cloudKey0 `shouldBe` 7
+    terrainSnapshotViewVersion ViewCloud terrainSnap1 `shouldBe` 8
+    atlasKeyFor ViewCloud waterLevel terrainSnap1 `shouldNotBe` cloudKey0
+    terrainSnapshotViewVersion ViewCloud terrainSnapBaseNewer `shouldBe` 11
+    atlasKeyVersion (atlasKeyFor ViewCloud waterLevel terrainSnapBaseNewer) `shouldBe` 11
+
+  it "refreshes ViewCloud terrain cache when weather version changes" $ do
+    let uiCloud = emptyUiState { uiViewMode = ViewCloud }
+        terrainSnap0 = renderableTerrainSnapshot 1 3 sampleWeatherChunkA
+        terrainSnap1 = renderableTerrainSnapshot 1 4 sampleWeatherChunkB
+        cache0 = buildTerrainCache uiCloud terrainSnap0
+        cache1 = updateTerrainCache uiCloud terrainSnap1 cache0
+    tcVersion cache0 `shouldBe` terrainSnapshotViewVersion ViewCloud terrainSnap0
+    terrainCacheNeedsRefresh uiCloud terrainSnap1 cache0 `shouldBe` True
+    tcVersion cache1 `shouldBe` terrainSnapshotViewVersion ViewCloud terrainSnap1
+    sameTerrainCache cache1 cache0 `shouldBe` False
 
   it "invalidates terrain cache when water level changes" $
     property $ \(Positive chunkSize) (NonNegative levelA) (NonNegative levelB) ->
@@ -205,6 +230,7 @@ viewModes =
   , ViewPlateHeight
   , ViewPlateVelocity
   , ViewVegetation
+  , ViewCloud
   ]
 
 sameTerrainCache :: TerrainCache -> TerrainCache -> Bool
