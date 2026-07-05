@@ -5,7 +5,8 @@ module Spec.ViewModeRegistry (spec) where
 import Control.Monad (filterM)
 
 import Actor.UI.State
-  ( ViewModeLegend(..)
+  ( ViewMode(..)
+  , ViewModeLegend(..)
   , ViewModeMetadata(..)
   , allBuiltinViewModes
   , builtinViewModeFromText
@@ -49,6 +50,21 @@ spec = describe "view mode registry" $ do
   it "exposes HTTP metadata, legends, and export mappings in JSON summaries" $ do
     let metas = mapMaybe viewModeMetadata allBuiltinViewModes
     mapM_ assertSummaryJson metas
+
+  it "presents weather as current temperature and redirects cloud/storm expectations" $ do
+    let cloudOrStorm field = Text.isInfixOf "cloud" field || Text.isInfixOf "storm" field
+    case viewModeMetadata ViewWeather of
+      Just meta -> do
+        vmmName meta `shouldBe` "weather"
+        vmmLabel meta `shouldBe` "Weather Temp"
+        vmmDescription meta `shouldBe`
+          "Current simulated weather temperature with humidity, wind, pressure, and precipitation context; use the Cloud view for cloud cover and storm cells."
+        viewModeLegendTitle (vmmLegend meta) `shouldBe` "Current weather temperature"
+        Text.toLower (vmmLabel meta <> " " <> viewModeLegendTitle (vmmLegend meta))
+          `shouldNotSatisfy` cloudOrStorm
+        (vmmTooltipFields meta <> vmmInspectorFields meta)
+          `shouldNotSatisfy` (any cloudOrStorm)
+      Nothing -> expectationFailure "missing ViewWeather metadata"
 
   it "matches the golden legend fixture" $ do
     path <- locateGolden

@@ -123,6 +123,10 @@ spec = do
            ] $ \wid ->
         tooltipForWidget wid `shouldSatisfy` isNonEmptyTip
 
+    it "describes the weather view as current temperature and redirects cloud expectations" $
+      tooltipForWidget WidgetViewWeather
+        `shouldBe` Just "Current weather temperature; use the Cloud view for cloud cover and storm cells"
+
   describe "water level separation" $ do
     it "changing uiWaterLevel does not affect uiRenderWaterLevel" $
       -- This is a conceptual test: uiWaterLevel and uiRenderWaterLevel

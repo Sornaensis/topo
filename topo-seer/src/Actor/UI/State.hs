@@ -318,10 +318,10 @@ viewModeRegistry =
       ["temp_avg_c", "precip_avg_mm_year"]
       ["climate_diagnostics.temp_avg_c", "climate_diagnostics.precip_avg_mm_year"]
       ["temperature"]
-  , scalar ViewWeather "weather" "Weather"
-      "Current simulated weather temperature with humidity, wind, pressure, and precipitation context."
+  , scalar ViewWeather "weather" "Weather Temp"
+      "Current simulated weather temperature with humidity, wind, pressure, and precipitation context; use the Cloud view for cloud cover and storm cells."
       (Just "degC") "weather-heat"
-      (gradient "Weather temperature"
+      (gradient "Current weather temperature"
         [ stop "0.00" "cold" "#802f33"
         , stop "0.50" "mild" "#b35c5c"
         , stop "1.00" "hot" "#ff9966"

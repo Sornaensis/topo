@@ -277,6 +277,19 @@ spec = describe "CommandDispatch" $ do
           in length actives `shouldBe` 1
         _ -> expectationFailure "expected view_modes array"
 
+    it "exposes weather as temperature metadata" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "get_view_modes" Null
+      srSuccess rsp `shouldBe` True
+      case lookupKey "view_modes" (srResult rsp) of
+        Just (Array arr) ->
+          case findViewMode "weather" (toList arr) of
+            Just weather -> do
+              lookupKey "label" weather `shouldBe` Just (String "Weather Temp")
+              lookupKey "description" weather `shouldBe`
+                Just (String "Current simulated weather temperature with humidity, wind, pressure, and precipitation context; use the Cloud view for cloud cover and storm cells.")
+            Nothing -> expectationFailure "missing weather view mode summary"
+        _ -> expectationFailure "expected view_modes array"
+
   -- -------------------------------------------------------------------
   -- get_sliders
   -- -------------------------------------------------------------------
@@ -679,6 +692,18 @@ spec = describe "CommandDispatch" $ do
       case lookupKey "sections" (srResult rsp) of
         Just (Array sections) -> mapMaybe inspectorSectionKey (toList sections) `shouldBe` canonicalInspectorSectionKeys
         _ -> expectationFailure "expected complete inspector sections array"
+
+    it "returns weather temperature label in active view metadata" $ withCtx $ \ctx -> do
+      viewRsp <- dispatch ctx "set_view_mode" (object ["mode" .= ("weather" :: Text)])
+      srSuccess viewRsp `shouldBe` True
+      _chunkKey <- writeSingleChunkTerrain ctx
+      rsp <- dispatch ctx "get_hex" (object ["q" .= (0 :: Int), "r" .= (0 :: Int)])
+      srSuccess rsp `shouldBe` True
+      case lookupKey "active_view" (srResult rsp) of
+        Just (Object active) -> do
+          KM.lookup "mode" active `shouldBe` Just (String "weather")
+          KM.lookup "label" active `shouldBe` Just (String "Weather Temp")
+        _ -> expectationFailure "expected active_view object"
 
     it "returns error when params are missing" $ withCtx $ \ctx -> do
       rsp <- dispatch ctx "get_hex" Null
@@ -1418,6 +1443,14 @@ findStage stageId = go
     go [] = Nothing
     go (value:rest)
       | lookupKey "id" value == Just (String stageId) = Just value
+      | otherwise = go rest
+
+findViewMode :: Text -> [Value] -> Maybe Value
+findViewMode modeName = go
+  where
+    go [] = Nothing
+    go (value:rest)
+      | lookupKey "name" value == Just (String modeName) = Just value
       | otherwise = go rest
 
 stageHasStatus :: Text -> Value -> Bool

@@ -189,7 +189,7 @@ viewModeLabel mode =
     ViewElevation -> "Elevation"
     ViewBiome -> "Biome"
     ViewClimate -> "Climate"
-    ViewWeather -> "Weather"
+    ViewWeather -> "Weather Temp"
     ViewMoisture -> "Moisture"
     ViewPrecip -> "Precip"
     ViewPlateId -> "PlateId"
