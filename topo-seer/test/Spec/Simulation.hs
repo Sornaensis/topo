@@ -7,7 +7,7 @@ import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, readMVar, tryPutMVar)
 import Control.Exception (bracket)
 import Data.IORef (modifyIORef', newIORef, readIORef)
-import Data.Aeson (Value(..))
+import Data.Aeson (Value(..), toJSON)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -75,8 +75,9 @@ import Topo.Simulation
   , SimulationScheduleState(..)
   , hourlyScheduleDecl
   )
-import Topo.Weather (weatherChunkToOverlay, weatherOverlaySchema)
+import Topo.Weather (WeatherConfig(..), defaultWeatherConfig, weatherChunkToOverlay, weatherOverlaySchema)
 import Topo.World (TerrainWorld(..))
+import Topo.WorldGen (WorldGenConfig(..), defaultWorldGenConfig)
 
 withSystem :: (ActorSystem -> IO a) -> IO a
 withSystem = bracket newActorSystem shutdownActorSystem
@@ -662,6 +663,84 @@ spec = describe "Simulation actor" $ do
         sdnsScheduleLastFireTick node `shouldBe` Just 14
         sdnsScheduleNextFireTick node `shouldBe` Just 20
       _ -> expectationFailure "Expected one plugin node with preserved schedule"
+
+  it "uses world generation weather config for builtin weather and falls back for legacy configs" $ withSystem $ \system -> do
+    simHandle <- get @Simulation system
+    dataHandle <- get @Data system
+    logHandle <- get @Log system
+    uiHandle <- get @Ui system
+    dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
+    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
+    snapshotVersionRef <- newSnapshotVersionRef
+    atlasHandle <- get @AtlasManager system
+
+    setSimHandles simHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasHandle
+
+    let config = WorldConfig { wcChunkSize = 8 }
+        chunk = generateTerrainChunk config (const 0.5)
+        climate0 = emptyClimateChunk config
+        tileCount = U.length (ccTempAvg climate0)
+        climate = climate0
+          { ccTempAvg = U.replicate tileCount 0.90
+          , ccPrecipAvg = U.replicate tileCount 0.25
+          , ccWindDirAvg = U.replicate tileCount 0.0
+          , ccWindSpdAvg = U.replicate tileCount 0.0
+          , ccHumidityAvg = U.replicate tileCount 0.50
+          }
+        seedWeather = (mkSeedWeatherChunk climate)
+          { wcTemp = U.replicate tileCount 0.05
+          , wcHumidity = U.replicate tileCount 0.20
+          , wcWindDir = U.replicate tileCount 0.0
+          , wcWindSpd = U.replicate tileCount 0.0
+          , wcCloudCover = U.replicate tileCount 0.0
+          , wcCloudWater = U.replicate tileCount 0.0
+          , wcCloudCoverLow = U.replicate tileCount 0.0
+          , wcCloudCoverMid = U.replicate tileCount 0.0
+          , wcCloudCoverHigh = U.replicate tileCount 0.0
+          , wcCloudWaterLow = U.replicate tileCount 0.0
+          , wcCloudWaterMid = U.replicate tileCount 0.0
+          , wcCloudWaterHigh = U.replicate tileCount 0.0
+          }
+        customWeather = defaultWeatherConfig
+          { wcSeasonAmplitude = 0
+          , wcJitterAmplitude = 0
+          , wcITCZPrecipBoost = 0
+          , wcPressureGradientWindScale = 0
+          , wcCloudAlbedoEffect = 0
+          , wcCloudPrecipBoost = 0
+          , wcCloudFormationRate = 0
+          , wcCloudDissipationRate = 0
+          , wcCloudGreenhouseCoeff = 0
+          , wcAdvectDt = 0
+          , wcClimatePullStrength = 1
+          , wcWeatherDiffuseFactor = 0
+          }
+        genConfig = defaultWorldGenConfig { worldWeather = customWeather }
+        world0 = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice
+        baseWorld = (setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) chunk world0))
+          { twOverlays = insertOverlay (seedWeatherOverlay (IntMap.singleton 0 seedWeather)) emptyOverlayStore
+          }
+        worldWithGenConfig cfg = baseWorld { twGenConfig = cfg }
+        runBoundWorldTick world = do
+          replaceTerrainData dataHandle world
+          _ <- getTerrainSnapshot dataHandle
+          setSimWorld simHandle world
+          autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 1
+          getTerrainSnapshot dataHandle
+
+    fallbackSnap <- runBoundWorldTick (worldWithGenConfig Nothing)
+    invalidSnap <- runBoundWorldTick (worldWithGenConfig (Just (String (Text.pack "not-world-gen-config"))))
+    customSnap <- runBoundWorldTick (worldWithGenConfig (Just (toJSON genConfig)))
+
+    tsWeatherChunks invalidSnap `shouldBe` tsWeatherChunks fallbackSnap
+    tsWeatherChunks customSnap `shouldNotBe` tsWeatherChunks fallbackSnap
+    fallbackTemp <- case firstWeatherTemp (tsWeatherChunks fallbackSnap) of
+      Just t -> pure t
+      Nothing -> expectationFailure "Expected fallback weather chunks after tick" >> pure 0
+    customTemp <- case firstWeatherTemp (tsWeatherChunks customSnap) of
+      Just t -> pure t
+      Nothing -> expectationFailure "Expected custom weather chunks after tick" >> pure fallbackTemp
+    customTemp `shouldSatisfy` (> fallbackTemp + 0.25)
 
   it "executes plugin simulation nodes with builtin weather on manual ticks" $ withSystem $ \system -> do
     simHandle <- get @Simulation system

@@ -9,6 +9,7 @@ module Spec.TerrainActor (spec) where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (bracket)
+import Data.Aeson (toJSON)
 import Hyperspace.Actor (ActorSystem, call, get, newActorSystem, replyTo, shutdownActorSystem)
 import Hyperspace.Actor.QQ (hyperspace)
 import Test.Hspec
@@ -19,14 +20,16 @@ import Actor.Terrain
   , TerrainGenRequest(..)
   , TerrainGenResult(..)
   , TerrainReplyOps
+  , prepareGeneratedWorldForSimulation
   , startTerrainGen
   )
 import Actor.PluginManager (PluginPipelineInput(..))
 import Actor.Simulation (Simulation)
-import Topo (WorldConfig(..))
-import Topo.Overlay (Overlay(..), OverlayProvenance(..), lookupOverlay)
+import Topo (TerrainWorld(..), WorldConfig(..), emptyWorldWithPlanet)
+import Topo.Overlay (Overlay(..), OverlayProvenance(..), emptyOverlay, insertOverlay, lookupOverlay)
 import Topo.Planet (WorldSlice(..))
 import Topo.Simulation.Schedule (SimulationScheduleState(..))
+import Topo.Weather (WeatherConfig(..), weatherOverlaySchema)
 import Topo.WorldGen (WorldGenConfig(..), defaultWorldGenConfig)
 
 newtype TerrainReplyState = TerrainReplyState
@@ -71,6 +74,26 @@ await n action = do
 
 spec :: Spec
 spec = describe "TerrainActor" $ do
+  it "attaches generated config before simulation binding normalization" $ do
+    let weatherCfg = (worldWeather defaultWorldGenConfig)
+          { wcClimatePullStrength = 0.91
+          }
+        genConfig = defaultWorldGenConfig { worldWeather = weatherCfg }
+        baseWorld = emptyWorldWithPlanet
+          (WorldConfig { wcChunkSize = 8 })
+          (worldHexGrid genConfig)
+          (worldPlanet genConfig)
+          (worldSlice genConfig)
+        world0 = baseWorld
+          { twOverlays = insertOverlay (emptyOverlay weatherOverlaySchema) (twOverlays baseWorld)
+          }
+        world = prepareGeneratedWorldForSimulation genConfig [] world0
+    twGenConfig world `shouldBe` Just (toJSON genConfig)
+    case lookupOverlay "weather" (twOverlays world) of
+      Nothing -> expectationFailure "Expected generated weather overlay"
+      Just weatherOverlay ->
+        (schedNextFireTick <$> opSchedule (ovProvenance weatherOverlay)) `shouldBe` Just 1
+
   it "runs generation and replies with a result" $ withSystem $ \system -> do
     terrainHandle <- get @Terrain system
     replyHandle <- get @TerrainReplyTest system

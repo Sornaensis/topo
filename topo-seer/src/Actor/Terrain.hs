@@ -13,6 +13,7 @@ module Actor.Terrain
   , TerrainGenProgress(..)
   , TerrainGenResult(..)
   , TerrainReplyOps
+  , prepareGeneratedWorldForSimulation
   , terrainActorDef
   , startTerrainGen
   ) where
@@ -20,6 +21,7 @@ module Actor.Terrain
 import Actor.Log (LogEntry(..), LogLevel(..))
 import Control.Concurrent (threadDelay)
 import Control.Exception (evaluate)
+import Data.Aeson (toJSON)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Set (Set)
 import Data.Text (Text)
@@ -176,7 +178,7 @@ actor Terrain
         replyCast replyTo logMessageTag (LogEntry LogError (Text.pack ("terrain: pipeline failed: " <> show err)))
         pure st { tsRunning = False }
       Right (world1, _) -> do
-        let scheduledWorld = normalizeWorldSchedulesForBindings world1 (tgrSimNodes req)
+        let scheduledWorld = prepareGeneratedWorldForSimulation cfg (tgrSimNodes req) world1
             terrainChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twTerrain scheduledWorld))
             climateChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twClimate scheduledWorld))
             weatherChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (getWeatherFromOverlay scheduledWorld))
@@ -274,6 +276,13 @@ diffToMs now prev =
 -- 1 000 µs ≈ 1 ms; on Windows the actual sleep rounds up to ~ 1–2 ms.
 stageYieldUs :: Int
 stageYieldUs = 1000
+
+-- | Attach the request's generation config before deriving built-in simulation bindings.
+prepareGeneratedWorldForSimulation :: WorldGenConfig -> [SimulationNodeBinding] -> TerrainWorld -> TerrainWorld
+prepareGeneratedWorldForSimulation cfg simNodes world =
+  normalizeWorldSchedulesForBindings
+    (world { twGenConfig = Just (toJSON cfg) })
+    simNodes
 
 registerPluginOverlays :: [OverlaySchema] -> TerrainWorld -> TerrainWorld
 registerPluginOverlays schemas world =
