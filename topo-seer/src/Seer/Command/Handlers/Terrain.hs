@@ -35,6 +35,7 @@ import Actor.UI.State
   , viewModeMetadata
   , viewModeToText
   , vmmColorScale
+  , vmmDescription
   , vmmExportFields
   , vmmInspectorFields
   , vmmLabel
@@ -428,6 +429,7 @@ handleGetHex ctx reqId params =
                       activeViewLayer = object
                         [ "mode" .= viewModeToText (uiViewMode ui)
                         , "label" .= maybe (viewModeToText (uiViewMode ui)) vmmLabel activeMetadata
+                        , "description" .= maybe Null (Aeson.toJSON . vmmDescription) activeMetadata
                         , "unit" .= maybe Null (maybe Null Aeson.toJSON . vmmUnitLabel) activeMetadata
                         , "color_scale" .= maybe Null (Aeson.toJSON . vmmColorScale) activeMetadata
                         , "tooltip_fields" .= maybe [] vmmTooltipFields activeMetadata
@@ -516,6 +518,9 @@ handleGetHex ctx reqId params =
                           , "cloud_cover_low" .= (weatherChunk >>= \wc -> safeIndex (wcCloudCoverLow wc) tileIdx)
                           , "cloud_cover_mid" .= (weatherChunk >>= \wc -> safeIndex (wcCloudCoverMid wc) tileIdx)
                           , "cloud_cover_high" .= (weatherChunk >>= \wc -> safeIndex (wcCloudCoverHigh wc) tileIdx)
+                          , "cloud_water_low" .= (weatherChunk >>= \wc -> safeIndex (wcCloudWaterLow wc) tileIdx)
+                          , "cloud_water_mid" .= (weatherChunk >>= \wc -> safeIndex (wcCloudWaterMid wc) tileIdx)
+                          , "cloud_water_high" .= (weatherChunk >>= \wc -> safeIndex (wcCloudWaterHigh wc) tileIdx)
                           , "storm_intensity" .= stormIntensityAt weatherChunk tileIdx
                           ]
                         ViewOverlay overlayName fieldIndex -> object

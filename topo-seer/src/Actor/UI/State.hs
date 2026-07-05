@@ -149,6 +149,7 @@ allBuiltinViewModes =
   , ViewBiome
   , ViewClimate
   , ViewWeather
+  , ViewCloud
   , ViewMoisture
   , ViewPrecip
   , ViewPlateId
@@ -160,7 +161,6 @@ allBuiltinViewModes =
   , ViewPlateVelocity
   , ViewVegetation
   , ViewTerrainForm
-  , ViewCloud
   ]
 
 allViewModeExportFields :: [Text]
@@ -319,7 +319,7 @@ viewModeRegistry =
       ["climate_diagnostics.temp_avg_c", "climate_diagnostics.precip_avg_mm_year"]
       ["temperature"]
   , scalar ViewWeather "weather" "Weather Temp"
-      "Current simulated weather temperature with humidity, wind, pressure, and precipitation context; use the Cloud view for cloud cover and storm cells."
+      "Current simulated weather temperature with humidity, wind, pressure, and precipitation context; use Cloud/Storm for aggregate cloud cover and storm tint."
       (Just "degC") "weather-heat"
       (gradient "Current weather temperature"
         [ stop "0.00" "cold" "#802f33"
@@ -329,6 +329,20 @@ viewModeRegistry =
       ["temp_c", "humidity_pct", "wind_spd_ms"]
       ["weather.temp", "weather.humidity", "weather.wind_spd", "weather.pressure", "weather.precip"]
       ["weather_temperature", "weather_humidity", "weather_wind_speed", "weather_pressure", "weather_precipitation"]
+  , scalar ViewCloud "cloud" "Cloud/Storm"
+      "Renders aggregate cloud cover and cloud-water density with precipitation-derived storm tint; low/mid/high layer fields are inspector/API context, not separate rendered layers."
+      (Just "% cover") "cloud-storm"
+      (gradient "Aggregate cloud cover"
+        [ stop "0.00" "clear" "#242428"
+        , stop "0.50" "cloudy" "#a0a0a0"
+        , stop "1.00" "storm" "#4c408c"
+        ])
+      ["cloud_cover_pct", "cloud_water", "storm_intensity"]
+      [ "weather.cloud_cover", "weather.cloud_water", "weather.precip"
+      , "weather.cloud_cover_low", "weather.cloud_cover_mid", "weather.cloud_cover_high"
+      , "weather.cloud_water_low", "weather.cloud_water_mid", "weather.cloud_water_high"
+      ]
+      ["cloud_cover", "cloud_water", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"]
   , scalar ViewMoisture "moisture" "Moisture"
       "Terrain soil moisture, shown as relative humidity percent in hover and inspector values."
       (Just "%") "moisture"
@@ -455,17 +469,6 @@ viewModeRegistry =
       ["terrain_form", "slope_avg_deg", "elevation_m"]
       ["terrain_form_metrics.terrain_form", "terrain_form_metrics.slope_avg_deg", "hypsometry.elevation_m"]
       ["terrain_form", "terrain_form_code"]
-  , scalar ViewCloud "cloud" "Cloud"
-      "Cloud cover and cloud-water density with storm intensity context."
-      (Just "% cover") "cloud-storm"
-      (gradient "Cloud cover"
-        [ stop "0.00" "clear" "#242428"
-        , stop "0.50" "cloudy" "#a0a0a0"
-        , stop "1.00" "storm" "#4c408c"
-        ])
-      ["cloud_cover_pct", "cloud_water", "storm_intensity"]
-      ["weather.cloud_cover", "weather.cloud_water", "weather.precip"]
-      ["cloud_cover", "cloud_water", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"]
   ]
 
 scalar :: ViewMode -> Text -> Text -> Text -> Maybe Text -> Text -> ViewModeLegend -> [Text] -> [Text] -> [Text] -> ViewModeMetadata

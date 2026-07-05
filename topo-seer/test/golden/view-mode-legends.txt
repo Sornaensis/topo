@@ -23,6 +23,11 @@ weather|scalar|degC|weather-heat
   stop 0.00 cold #802f33
   stop 0.50 mild #b35c5c
   stop 1.00 hot #ff9966
+cloud|scalar|% cover|cloud-storm
+  Aggregate cloud cover
+  stop 0.00 clear #242428
+  stop 0.50 cloudy #a0a0a0
+  stop 1.00 storm #4c408c
 moisture|scalar|%|moisture
   Soil moisture
   stop 0.00 dry #1a4d66
@@ -83,8 +88,3 @@ terrain_form|categorical|unitless|terrain-form
   category 4 Cliff #503c37
   category 7 Ridge #be7846
   category 12 Canyon #6e465a
-cloud|scalar|% cover|cloud-storm
-  Cloud cover
-  stop 0.00 clear #242428
-  stop 0.50 cloudy #a0a0a0
-  stop 1.00 storm #4c408c

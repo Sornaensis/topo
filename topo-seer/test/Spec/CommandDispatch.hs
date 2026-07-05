@@ -286,8 +286,27 @@ spec = describe "CommandDispatch" $ do
             Just weather -> do
               lookupKey "label" weather `shouldBe` Just (String "Weather Temp")
               lookupKey "description" weather `shouldBe`
-                Just (String "Current simulated weather temperature with humidity, wind, pressure, and precipitation context; use the Cloud view for cloud cover and storm cells.")
+                Just (String "Current simulated weather temperature with humidity, wind, pressure, and precipitation context; use Cloud/Storm for aggregate cloud cover and storm tint.")
             Nothing -> expectationFailure "missing weather view mode summary"
+        _ -> expectationFailure "expected view_modes array"
+
+    it "places Cloud/Storm beside weather and exposes aggregate render metadata" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "get_view_modes" Null
+      srSuccess rsp `shouldBe` True
+      case lookupKey "view_modes" (srResult rsp) of
+        Just (Array arr) -> do
+          let modes = toList arr
+              names = mapMaybe viewModeName modes
+          take 6 names `shouldBe`
+            [ "elevation", "biome", "climate"
+            , "weather", "cloud", "moisture"
+            ]
+          case findViewMode "cloud" modes of
+            Just cloud -> do
+              lookupKey "label" cloud `shouldBe` Just (String "Cloud/Storm")
+              lookupKey "description" cloud `shouldBe`
+                Just (String "Renders aggregate cloud cover and cloud-water density with precipitation-derived storm tint; low/mid/high layer fields are inspector/API context, not separate rendered layers.")
+            Nothing -> expectationFailure "missing cloud view mode summary"
         _ -> expectationFailure "expected view_modes array"
 
   -- -------------------------------------------------------------------
@@ -703,6 +722,26 @@ spec = describe "CommandDispatch" $ do
         Just (Object active) -> do
           KM.lookup "mode" active `shouldBe` Just (String "weather")
           KM.lookup "label" active `shouldBe` Just (String "Weather Temp")
+        _ -> expectationFailure "expected active_view object"
+
+    it "returns Cloud/Storm active view metadata and aggregate value fields" $ withCtx $ \ctx -> do
+      viewRsp <- dispatch ctx "set_view_mode" (object ["mode" .= ("cloud" :: Text)])
+      srSuccess viewRsp `shouldBe` True
+      _chunkKey <- writeSingleChunkTerrain ctx
+      rsp <- dispatch ctx "get_hex" (object ["q" .= (0 :: Int), "r" .= (0 :: Int)])
+      srSuccess rsp `shouldBe` True
+      case lookupKey "active_view" (srResult rsp) of
+        Just (Object active) -> do
+          KM.lookup "mode" active `shouldBe` Just (String "cloud")
+          KM.lookup "label" active `shouldBe` Just (String "Cloud/Storm")
+          KM.lookup "description" active `shouldBe`
+            Just (String "Renders aggregate cloud cover and cloud-water density with precipitation-derived storm tint; low/mid/high layer fields are inspector/API context, not separate rendered layers.")
+          case KM.lookup "values" active of
+            Just (Object values) -> mapM_ (`shouldSatisfy` (`KM.member` values))
+              [ "cloud_cover", "cloud_water", "storm_intensity"
+              , "cloud_cover_low", "cloud_cover_high", "cloud_water_high"
+              ]
+            _ -> expectationFailure "expected active_view.values object"
         _ -> expectationFailure "expected active_view object"
 
     it "returns error when params are missing" $ withCtx $ \ctx -> do
@@ -1452,6 +1491,11 @@ findViewMode modeName = go
     go (value:rest)
       | lookupKey "name" value == Just (String modeName) = Just value
       | otherwise = go rest
+
+viewModeName :: Value -> Maybe Text
+viewModeName value = case lookupKey "name" value of
+  Just (String name) -> Just name
+  _                  -> Nothing
 
 stageHasStatus :: Text -> Value -> Bool
 stageHasStatus expected value = lookupKey "status" value == Just (String expected)

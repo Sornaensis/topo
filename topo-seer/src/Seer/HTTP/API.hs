@@ -756,9 +756,10 @@ overlayImportValidateResponseSchema = objectSchema "OverlayImportValidateRespons
 
 terrainActiveViewSchema :: Value
 terrainActiveViewSchema = inlineObjectSchema
-  [ "mode", "label", "tooltip_fields", "inspector_fields", "export_fields", "values" ]
+  [ "mode", "label", "description", "tooltip_fields", "inspector_fields", "export_fields", "values" ]
   [ ("mode", viewModeSchema)
   , ("label", stringSchema)
+  , ("description", nullableSchema stringSchema)
   , ("unit", nullableSchema stringSchema)
   , ("color_scale", nullableSchema stringSchema)
   , ("tooltip_fields", arraySchema stringSchema)

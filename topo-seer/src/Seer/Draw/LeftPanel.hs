@@ -55,6 +55,7 @@ viewModeButtonStyles =
   , (ViewBiome,         \mc -> V4 90  mc  90  255)
   , (ViewClimate,       \mc -> V4 90  90  mc  255)
   , (ViewWeather,       \mc -> V4 170 90  mc  255)
+  , (ViewCloud,         \mc -> V4 mc  mc  mc  255)
   , (ViewMoisture,      \mc -> V4 mc  90  140 255)
   , (ViewPrecip,        \mc -> V4 90  140 mc  255)
   , (ViewVegetation,    \mc -> V4 90  mc  120 255)
@@ -66,7 +67,6 @@ viewModeButtonStyles =
   , (ViewPlateAge,      \mc -> V4 90  mc  100 255)
   , (ViewPlateHeight,   \mc -> V4 90  mc  120 255)
   , (ViewPlateVelocity, \mc -> V4 90  mc  140 255)
-  , (ViewCloud,         \mc -> V4 mc  mc  mc  255)
   ]
 
 drawDayNightToggle :: SDL.Renderer -> Bool -> Rect -> IO ()

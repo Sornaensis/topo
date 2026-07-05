@@ -120,6 +120,12 @@ spec = describe "terrain inspector view model" $ do
     biomePanel `shouldSatisfy` any (Text.isInfixOf "Biome")
     biomePanel `shouldNotSatisfy` any (Text.isInfixOf "Pressure")
 
+  it "clarifies Cloud/Storm aggregate render and layer context in inspector lines" $ do
+    let ui = emptyUiState { uiHoverHex = Just (0, 0), uiViewMode = ViewCloud }
+        Just view = terrainInspectorView ui terrainSnapshotWithDomainLayers
+    tivLines view `shouldSatisfy` elem "Cloud/Storm aggregate render"
+    tivLines view `shouldSatisfy` elem "  Layer fields: context only"
+
   it "clips compact panel lines by available height and truncates long display values" $ do
     let longOverlay = Text.replicate 140 "x"
         ui = emptyUiState

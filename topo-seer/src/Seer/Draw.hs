@@ -347,7 +347,12 @@ drawUiLabels renderer fontCache ui layout = do
           drawCentered fontCache labelColor seedValue seedText
           drawCentered fontCache labelColor buttonRect "Generate"
         LeftView -> do
-          let viewLabels = ["Elevation", "Biome", "Climate", "Weather Temp", "Moisture", "Precip", "Vegetation", "Terr. Form", "Plate ID", "Boundary", "Hardness", "Crust", "Age", "Plt. Height", "Plt. Vel.", "Cloud"]
+          let viewLabels =
+                [ "Elevation", "Biome", "Climate", "Weather Temp"
+                , "Cloud/Storm", "Moisture", "Precip", "Vegetation"
+                , "Terr. Form", "Plate ID", "Boundary", "Hardness"
+                , "Crust", "Age", "Plt. Height", "Plt. Vel."
+                ]
               scrollY = uiLeftViewScroll ui
               shiftY (Rect (V2 rx ry, V2 rw rh)) = Rect (V2 rx (ry - scrollY), V2 rw rh)
               scrolledViewRects = map shiftY viewRects

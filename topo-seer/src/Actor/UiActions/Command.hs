@@ -201,7 +201,7 @@ viewModeLabel mode =
     ViewPlateVelocity -> "PlateVelocity"
     ViewVegetation -> "Vegetation"
     ViewTerrainForm -> "TerrainForm"
-    ViewCloud -> "Cloud"
+    ViewCloud -> "Cloud/Storm"
     ViewOverlay name _fieldIdx -> "Overlay:" <> name
 
 startGeneration :: UiActionRequest -> IO ()

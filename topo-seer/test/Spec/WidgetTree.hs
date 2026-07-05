@@ -37,10 +37,18 @@ spec = describe "UI.WidgetTree" $ do
 
   it "hit tests moisture view button" $ do
     let layout = layoutFor (V2 800 600) 160
-        widgets = buildWidgets layout
+        widgets = buildViewModeWidgets layout 0
         viewRects = leftViewRects layout
-        moistureRect = viewRects !! 4  -- index 4: Moisture
+        moistureRect = viewRects !! 5  -- index 5: Moisture, after Cloud/Storm
     hitTest widgets (rectHitPoint moistureRect) `shouldBe` Just WidgetViewMoisture
+
+  it "orders Cloud/Storm immediately after Weather in the View widget tree" $ do
+    let layout = layoutFor (V2 800 1200) 160
+        viewIds = map widgetId (buildViewModeWidgets layout 0)
+    take 6 viewIds `shouldBe`
+      [ WidgetViewElevation, WidgetViewBiome, WidgetViewClimate
+      , WidgetViewWeather, WidgetViewCloud, WidgetViewMoisture
+      ]
 
   it "hit tests all 16 view mode buttons" $ do
     let layout = layoutFor (V2 800 1200) 160
@@ -48,12 +56,12 @@ spec = describe "UI.WidgetTree" $ do
         viewRects = leftViewRects layout
         expectedIds =
           [ WidgetViewElevation, WidgetViewBiome, WidgetViewClimate
-          , WidgetViewWeather, WidgetViewMoisture, WidgetViewPrecip
-          , WidgetViewVegetation, WidgetViewTerrainForm
+          , WidgetViewWeather, WidgetViewCloud, WidgetViewMoisture
+          , WidgetViewPrecip, WidgetViewVegetation, WidgetViewTerrainForm
           , WidgetViewPlateId, WidgetViewPlateBoundary
           , WidgetViewPlateHardness, WidgetViewPlateCrust
           , WidgetViewPlateAge, WidgetViewPlateHeight
-          , WidgetViewPlateVelocity, WidgetViewCloud
+          , WidgetViewPlateVelocity
           ]
     length viewRects `shouldBe` 16
     -- Rows 5-7 (indices 10-14) are below LeftTopo controls and can be

@@ -472,7 +472,10 @@ modeInspectorPanelLines ui terrainSnap hexCoord sample sections =
     ViewWeather -> fields "weather_snapshot"
       [ "temp_c", "humidity_pct", "wind_spd_ms", "pressure_hpa", "precip_mm_year" ]
     ViewCloud -> fields "weather_snapshot"
-      [ "cloud_cover", "cloud_water", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high" ]
+      [ "cloud_cover", "cloud_water"
+      , "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"
+      , "cloud_water_low", "cloud_water_mid", "cloud_water_high"
+      ]
     ViewMoisture -> fields "soil"
       [ "soil_moisture", "soil_depth_m", "fertility" ]
       <> fields "water_table"
@@ -718,7 +721,9 @@ modeContextLines ui terrainSnap (q, r) sample = modeLines (uiViewMode ui) sample
     modeLines ViewCloud sample' =
       let pct v = fmtU (v * 100) "%"
           stormI = hsCloudWater sample' * min 1 (hsWeatherPrecip sample' * 3)
-      in [ "Cloud " <> pct (hsCloudCover sample') <> "  Water " <> fmtF (hsCloudWater sample')
+      in [ "Cloud/Storm aggregate render"
+         , "Cloud " <> pct (hsCloudCover sample') <> "  Water " <> fmtF (hsCloudWater sample')
+         , "  Layer fields: context only"
          , "  Low  " <> pct (hsCloudCoverLow sample') <> "  " <> fmtF (hsCloudWaterLow sample')
          , "  Mid  " <> pct (hsCloudCoverMid sample') <> "  " <> fmtF (hsCloudWaterMid sample')
          , "  High " <> pct (hsCloudCoverHigh sample') <> "  " <> fmtF (hsCloudWaterHigh sample')

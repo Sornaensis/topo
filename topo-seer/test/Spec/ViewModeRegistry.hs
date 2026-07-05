@@ -47,6 +47,12 @@ spec = describe "view mode registry" $ do
   it "round-trips built-in mode names through the registry parser" $
     mapM_ (\mode -> builtinViewModeFromText (viewModeToText mode) `shouldBe` Just mode) allBuiltinViewModes
 
+  it "places Cloud/Storm immediately after Weather in built-in/API order" $
+    take 6 allBuiltinViewModes `shouldBe`
+      [ ViewElevation, ViewBiome, ViewClimate
+      , ViewWeather, ViewCloud, ViewMoisture
+      ]
+
   it "exposes HTTP metadata, legends, and export mappings in JSON summaries" $ do
     let metas = mapMaybe viewModeMetadata allBuiltinViewModes
     mapM_ assertSummaryJson metas
@@ -58,13 +64,26 @@ spec = describe "view mode registry" $ do
         vmmName meta `shouldBe` "weather"
         vmmLabel meta `shouldBe` "Weather Temp"
         vmmDescription meta `shouldBe`
-          "Current simulated weather temperature with humidity, wind, pressure, and precipitation context; use the Cloud view for cloud cover and storm cells."
+          "Current simulated weather temperature with humidity, wind, pressure, and precipitation context; use Cloud/Storm for aggregate cloud cover and storm tint."
         viewModeLegendTitle (vmmLegend meta) `shouldBe` "Current weather temperature"
         Text.toLower (vmmLabel meta <> " " <> viewModeLegendTitle (vmmLegend meta))
           `shouldNotSatisfy` cloudOrStorm
         (vmmTooltipFields meta <> vmmInspectorFields meta)
           `shouldNotSatisfy` (any cloudOrStorm)
       Nothing -> expectationFailure "missing ViewWeather metadata"
+
+  it "describes Cloud/Storm as an aggregate cloud-water renderer with layer context" $ do
+    case viewModeMetadata ViewCloud of
+      Just meta -> do
+        vmmName meta `shouldBe` "cloud"
+        vmmLabel meta `shouldBe` "Cloud/Storm"
+        vmmDescription meta `shouldBe`
+          "Renders aggregate cloud cover and cloud-water density with precipitation-derived storm tint; low/mid/high layer fields are inspector/API context, not separate rendered layers."
+        viewModeLegendTitle (vmmLegend meta) `shouldBe` "Aggregate cloud cover"
+        vmmTooltipFields meta `shouldBe` ["cloud_cover_pct", "cloud_water", "storm_intensity"]
+        vmmInspectorFields meta `shouldSatisfy` elem "weather.cloud_cover_low"
+        vmmInspectorFields meta `shouldSatisfy` elem "weather.cloud_water_high"
+      Nothing -> expectationFailure "missing ViewCloud metadata"
 
   it "matches the golden legend fixture" $ do
     path <- locateGolden

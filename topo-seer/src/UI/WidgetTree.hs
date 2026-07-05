@@ -474,12 +474,12 @@ buildViewModeWidgets layout scrollY =
     shiftY dy (Rect (V2 x y, V2 w h)) = Rect (V2 x (y + dy), V2 w h)
     viewWidgetIds =
       [ WidgetViewElevation, WidgetViewBiome, WidgetViewClimate
-      , WidgetViewWeather, WidgetViewMoisture, WidgetViewPrecip
-      , WidgetViewVegetation, WidgetViewTerrainForm
+      , WidgetViewWeather, WidgetViewCloud, WidgetViewMoisture
+      , WidgetViewPrecip, WidgetViewVegetation, WidgetViewTerrainForm
       , WidgetViewPlateId, WidgetViewPlateBoundary
       , WidgetViewPlateHardness, WidgetViewPlateCrust
       , WidgetViewPlateAge, WidgetViewPlateHeight
-      , WidgetViewPlateVelocity, WidgetViewCloud
+      , WidgetViewPlateVelocity
       ]
 
 hitTest :: [Widget] -> V2 Int -> Maybe WidgetId
