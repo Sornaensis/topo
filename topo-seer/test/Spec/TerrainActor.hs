@@ -77,6 +77,7 @@ spec = describe "TerrainActor" $ do
   it "attaches generated config before simulation binding normalization" $ do
     let weatherCfg = (worldWeather defaultWorldGenConfig)
           { wcClimatePullStrength = 0.91
+          , wcTickSeconds = 6
           }
         genConfig = defaultWorldGenConfig { worldWeather = weatherCfg }
         baseWorld = emptyWorldWithPlanet
@@ -91,8 +92,9 @@ spec = describe "TerrainActor" $ do
     twGenConfig world `shouldBe` Just (toJSON genConfig)
     case lookupOverlay "weather" (twOverlays world) of
       Nothing -> expectationFailure "Expected generated weather overlay"
-      Just weatherOverlay ->
-        (schedNextFireTick <$> opSchedule (ovProvenance weatherOverlay)) `shouldBe` Just 1
+      Just weatherOverlay -> do
+        (schedIntervalTicks <$> opSchedule (ovProvenance weatherOverlay)) `shouldBe` Just 6
+        (schedNextFireTick <$> opSchedule (ovProvenance weatherOverlay)) `shouldBe` Just 6
 
   it "runs generation and replies with a result" $ withSystem $ \system -> do
     terrainHandle <- get @Terrain system

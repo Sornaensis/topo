@@ -5,6 +5,8 @@
 module Topo.Weather
   ( WeatherConfig(..)
   , defaultWeatherConfig
+  , weatherScheduleDecl
+  , weatherScheduleIntervalTicks
   , deriveWeatherSeed
   , initWeatherStage
   , weatherSimNode
@@ -19,7 +21,12 @@ module Topo.Weather
   ) where
 
 import Data.Word (Word64)
-import Topo.Weather.Config (WeatherConfig(..), defaultWeatherConfig)
+import Topo.Weather.Config
+  ( WeatherConfig(..)
+  , defaultWeatherConfig
+  , weatherScheduleDecl
+  , weatherScheduleIntervalTicks
+  )
 import Topo.Seed (deriveOverlaySeed)
 import Topo.Weather.Grid
   ( weatherOverlaySchema

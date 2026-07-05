@@ -17,8 +17,8 @@ import Topo.Pipeline.Stage (StageId(..))
 import Topo.Planet (LatitudeMapping(..), PlanetConfig(..))
 import Topo.Plugin (logInfo, modifyWorldP)
 import Topo.Types
-import Topo.Simulation.Schedule (hourlyScheduleDecl, initialScheduleAt)
-import Topo.Weather.Config (WeatherConfig(..))
+import Topo.Simulation.Schedule (initialScheduleAt)
+import Topo.Weather.Config (WeatherConfig(..), weatherScheduleDecl)
 import Topo.Weather.Grid (weatherChunkToOverlay, weatherOverlaySchema)
 import Topo.World (TerrainWorld(..))
 
@@ -60,7 +60,7 @@ initWeatherStage cfg = PipelineStage StageWeather "initWeather" "initWeather" No
               { opSeed = twSeed world
               , opVersion = 1
               , opSource = "weather"
-              , opSchedule = Just (initialScheduleAt (wtTick worldTime) hourlyScheduleDecl)
+              , opSchedule = Just (initialScheduleAt (wtTick worldTime) (weatherScheduleDecl cfg))
               }
           }
         overlays' = insertOverlay weatherOverlay (twOverlays world)

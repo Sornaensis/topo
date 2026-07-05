@@ -16,6 +16,7 @@ module Topo.Simulation.Schedule
   , hourlyScheduleDecl
   , normalizeScheduleDecl
   , normalizeScheduleState
+  , scheduleStateMatchesDecl
   , validateScheduleDecl
   , scheduleDeclError
   , initialScheduleAt
@@ -122,6 +123,15 @@ normalizeScheduleState state =
     { schedIntervalTicks = interval
     , schedPhaseTicks = schedPhaseTicks state `mod` interval
     }
+
+-- | Test whether a persisted cursor uses the same cadence declaration.
+scheduleStateMatchesDecl :: SimulationScheduleDecl -> SimulationScheduleState -> Bool
+scheduleStateMatchesDecl decl0 state0 =
+  let decl = normalizeScheduleDecl decl0
+      state = normalizeScheduleState state0
+  in schedIntervalTicks state == schedDeclIntervalTicks decl
+    && schedPhaseTicks state == schedDeclPhaseTicks decl
+    && schedCatchUpPolicy state == schedDeclCatchUpPolicy decl
 
 -- | Build initial persisted state from a static declaration.
 --

@@ -4,12 +4,19 @@
 module Topo.Weather.Config
   ( WeatherConfig(..)
   , defaultWeatherConfig
+  , weatherScheduleDecl
+  , weatherScheduleIntervalTicks
   ) where
 
 import Data.Aeson (FromJSON(..), ToJSON(..))
+import Data.Word (Word64)
 import GHC.Generics (Generic)
 import Topo.Config.JSON
   (configOptions, genericParseJSON, genericToJSON, mergeDefaults)
+import Topo.Simulation.Schedule
+  ( SimulationScheduleDecl(..)
+  , defaultCatchUpPolicy
+  )
 
 -- | Weather update configuration.
 --
@@ -118,6 +125,23 @@ instance FromJSON WeatherConfig where
   parseJSON v =
     genericParseJSON (configOptions "wc")
       (mergeDefaults (toJSON defaultWeatherConfig) v)
+
+-- | Built-in weather simulation schedule declaration derived from the legacy
+-- cadence field.  The value is treated as whole world-hour ticks, clamped to
+-- a defensible one-hour-to-one-day range.
+weatherScheduleDecl :: WeatherConfig -> SimulationScheduleDecl
+weatherScheduleDecl cfg = SimulationScheduleDecl
+  { schedDeclIntervalTicks = weatherScheduleIntervalTicks cfg
+  , schedDeclPhaseTicks = 0
+  , schedDeclCatchUpPolicy = defaultCatchUpPolicy
+  }
+
+weatherScheduleIntervalTicks :: WeatherConfig -> Word64
+weatherScheduleIntervalTicks cfg
+  | isNaN raw || isInfinite raw = 1
+  | otherwise = fromInteger (round (min 24 (max 1 raw)))
+  where
+    raw = wcTickSeconds cfg
 
 -- | Default weather configuration tuned for stable, smooth weather evolution.
 defaultWeatherConfig :: WeatherConfig

@@ -505,11 +505,16 @@ spec = describe "Simulation actor" $ do
           , schedNextFireTick = 10
           , schedCatchUpPolicy = RunOnceIfDue
           }
+        genConfig = defaultWorldGenConfig
+          { worldWeather = defaultWeatherConfig { wcTickSeconds = 10 }
+          }
         world0 = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice
-        world1 = withSeedWeatherSchedule delayedSchedule
+        world1 = (withSeedWeatherSchedule delayedSchedule
           (setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) chunk world0))
           (ChunkId 0)
-          climate
+          climate)
+          { twGenConfig = Just (toJSON genConfig)
+          }
 
     replaceTerrainData dataHandle world1
     terrainSnap0 <- getTerrainSnapshot dataHandle
@@ -614,8 +619,9 @@ spec = describe "Simulation actor" $ do
 
     let config = WorldConfig { wcChunkSize = 8 }
         tileCount = wcChunkSize config * wcChunkSize config
+        baseWorld = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice
         world0 = withSeedPluginOverlay tileCount 0 $
-          (emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice)
+          baseWorld
             { twOverlays = insertOverlay (seedWeatherOverlay IntMap.empty) emptyOverlayStore
             }
 
@@ -634,28 +640,61 @@ spec = describe "Simulation actor" $ do
         sdnsScheduleNextFireTick node `shouldBe` Just 1
       _ -> expectationFailure "Expected one default-scheduled plugin node"
 
-    let persistedSchedule = SimulationScheduleState
+    let cadenceWeather = defaultWeatherConfig { wcTickSeconds = 6 }
+        cadenceGenConfig = defaultWorldGenConfig { worldWeather = cadenceWeather }
+        withCadenceConfig world = world { twGenConfig = Just (toJSON cadenceGenConfig) }
+        missingScheduleWorld = withCadenceConfig (baseWorld
+          { twOverlays = insertOverlay (seedWeatherOverlay IntMap.empty) emptyOverlayStore
+          })
+
+    setSimWorld simHandle missingScheduleWorld
+    dagCadence <- getSimDagSnapshot simHandle
+    let cadenceWeatherNodes = filter ((== Text.pack "weather") . sdnsNodeId) (sdsNodes dagCadence)
+    case cadenceWeatherNodes of
+      [node] -> do
+        sdnsScheduleIntervalTicks node `shouldBe` Just 6
+        sdnsSchedulePhaseTicks node `shouldBe` Just 0
+        sdnsScheduleCatchUp node `shouldBe` Just (Text.pack "run_once_if_due")
+        sdnsScheduleNextFireTick node `shouldBe` Just 6
+      _ -> expectationFailure "Expected one cadence-scheduled weather node"
+
+    let pluginSchedule = SimulationScheduleState
           { schedIntervalTicks = 6
           , schedPhaseTicks = 2
           , schedLastFireTick = Just 14
           , schedNextFireTick = 20
           , schedCatchUpPolicy = SkipMissed
           }
+        legacyWeatherSchedule = SimulationScheduleState
+          { schedIntervalTicks = 1
+          , schedPhaseTicks = 0
+          , schedLastFireTick = Just 4
+          , schedNextFireTick = 5
+          , schedCatchUpPolicy = RunOnceIfDue
+          }
         pluginOverlay = (seedPluginOverlay tileCount 0)
           { ovProvenance = (ovProvenance (seedPluginOverlay tileCount 0))
-              { opSchedule = Just persistedSchedule
+              { opSchedule = Just pluginSchedule
               }
           }
-        worldWithPersistedSchedule =
-          (emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice)
-            { twOverlays = insertOverlay pluginOverlay
-                (insertOverlay (seedWeatherOverlay IntMap.empty) emptyOverlayStore)
-            }
+        weatherOverlay = seedWeatherOverlayWithSchedule (Just legacyWeatherSchedule) IntMap.empty
+        worldWithPersistedSchedule = withCadenceConfig (baseWorld
+          { twOverlays = insertOverlay pluginOverlay
+              (insertOverlay weatherOverlay emptyOverlayStore)
+          })
 
     setSimWorldWithNodes simHandle worldWithPersistedSchedule [pluginSimulationBinding]
     rebindSimNodes simHandle [pluginSimulationBinding] `shouldReturn` True
     dag1 <- getSimDagSnapshot simHandle
-    let pluginNodes1 = filter ((== Just pluginOverlayName) . sdnsPlugin) (sdsNodes dag1)
+    let weatherNodes1 = filter ((== Text.pack "weather") . sdnsNodeId) (sdsNodes dag1)
+        pluginNodes1 = filter ((== Just pluginOverlayName) . sdnsPlugin) (sdsNodes dag1)
+    case weatherNodes1 of
+      [node] -> do
+        sdnsScheduleIntervalTicks node `shouldBe` Just 6
+        sdnsSchedulePhaseTicks node `shouldBe` Just 0
+        sdnsScheduleLastFireTick node `shouldBe` Nothing
+        sdnsScheduleNextFireTick node `shouldBe` Just 6
+      _ -> expectationFailure "Expected one rebased weather node"
     case pluginNodes1 of
       [node] -> do
         sdnsScheduleIntervalTicks node `shouldBe` Just 6
@@ -663,6 +702,28 @@ spec = describe "Simulation actor" $ do
         sdnsScheduleLastFireTick node `shouldBe` Just 14
         sdnsScheduleNextFireTick node `shouldBe` Just 20
       _ -> expectationFailure "Expected one plugin node with preserved schedule"
+
+    let matchingWeatherSchedule = SimulationScheduleState
+          { schedIntervalTicks = 6
+          , schedPhaseTicks = 0
+          , schedLastFireTick = Just 12
+          , schedNextFireTick = 18
+          , schedCatchUpPolicy = RunOnceIfDue
+          }
+        matchingWeatherWorld = withCadenceConfig (baseWorld
+          { twOverlays = insertOverlay
+              (seedWeatherOverlayWithSchedule (Just matchingWeatherSchedule) IntMap.empty)
+              emptyOverlayStore
+          })
+    setSimWorld simHandle matchingWeatherWorld
+    dag2 <- getSimDagSnapshot simHandle
+    let weatherNodes2 = filter ((== Text.pack "weather") . sdnsNodeId) (sdsNodes dag2)
+    case weatherNodes2 of
+      [node] -> do
+        sdnsScheduleIntervalTicks node `shouldBe` Just 6
+        sdnsScheduleLastFireTick node `shouldBe` Just 12
+        sdnsScheduleNextFireTick node `shouldBe` Just 18
+      _ -> expectationFailure "Expected one preserved weather node"
 
   it "uses world generation weather config for builtin weather and falls back for legacy configs" $ withSystem $ \system -> do
     simHandle <- get @Simulation system

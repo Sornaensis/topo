@@ -104,13 +104,15 @@ import Topo.Simulation
   , TerrainWrites(..)
   , emptyTerrainWrites
   , mergeTerrainWrites
-  , ensureWorldOverlaySchedules
   , catchUpPolicyText
+  , ensureOverlaySchedule
+  , reconcileOverlaySchedule
   , normalizeScheduleState
   , scheduleDue
   , simNodeDependencies
   , simNodeId
   , simNodeOverlayName
+  , simNodeSchedule
   )
 import Topo.Simulation.DAG
   ( SimDAG(..)
@@ -123,7 +125,7 @@ import Topo.Simulation.Pipeline
   )
 import Topo (ChunkId(..), getWeatherFromOverlay)
 import Topo.World (TerrainWorld(..))
-import Topo.Overlay (Overlay(..), OverlayProvenance(..), OverlayStore, lookupOverlay, overlayNames)
+import Topo.Overlay (Overlay(..), OverlayProvenance(..), OverlayStore, insertOverlay, lookupOverlay, overlayNames)
 import Topo.WorldGen (WorldGenConfig(..))
 import Topo.Types (WorldConfig(..))
 import Data.Aeson (fromJSON, Result(..), Value)
@@ -642,13 +644,34 @@ simulationBindingsForWorld :: TerrainWorld -> [SimulationNodeBinding] -> [Simula
 simulationBindingsForWorld world pluginBindings =
   builtinSimulationBindings world <> pluginBindings
 
--- | Fill missing overlay schedules from the same built-in and plugin nodes used
--- by the Simulation actor. Existing persisted schedule cursors are preserved.
+-- | Fill overlay schedules from the same built-in and plugin nodes used by the
+-- Simulation actor. Plugin cursors are preserved; the built-in weather cursor
+-- is rebased when the stored cadence no longer matches the world config.
 normalizeWorldSchedulesForBindings :: TerrainWorld -> [SimulationNodeBinding] -> TerrainWorld
 normalizeWorldSchedulesForBindings world pluginBindings =
-  ensureWorldOverlaySchedules nodes world
+  world { twOverlays = foldr ensureBindingSchedule (twOverlays world) bindings }
   where
-    nodes = map snbNode (simulationBindingsForWorld world pluginBindings)
+    bindings = simulationBindingsForWorld world pluginBindings
+    currentTick = wtTick (twWorldTime world)
+
+    ensureBindingSchedule binding store =
+      let node = snbNode binding
+          overlayName = simNodeOverlayName node
+      in case lookupOverlay overlayName store of
+        Nothing -> store
+        Just overlay -> insertOverlay (normalizeBindingOverlay binding overlay) store
+
+    normalizeBindingOverlay binding overlay
+      | isBuiltinWeatherBinding binding =
+          reconcileOverlaySchedule currentTick (simNodeSchedule (snbNode binding)) overlay
+      | otherwise =
+          ensureOverlaySchedule currentTick (simNodeSchedule (snbNode binding)) overlay
+
+    isBuiltinWeatherBinding binding =
+      snbKind binding == "builtin"
+        && snbPlugin binding == Nothing
+        && simNodeIdText (simNodeId (snbNode binding)) == "weather"
+        && simNodeOverlayName (snbNode binding) == "weather"
 
 bindWorld :: TerrainWorld -> [SimulationNodeBinding] -> SimState -> IO SimState
 bindWorld world pluginBindings st = do

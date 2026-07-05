@@ -25,6 +25,7 @@ module Topo.Simulation
   , simNodeSchedule
   , simNodeScheduleDecl
   , ensureOverlaySchedule
+  , reconcileOverlaySchedule
   , ensureWorldOverlaySchedules
     -- * Schedule declarations
   , module Topo.Simulation.Schedule
@@ -156,11 +157,25 @@ ensureOverlaySchedule :: Word64 -> SimulationScheduleDecl -> Overlay -> Overlay
 ensureOverlaySchedule currentTick decl overlay =
   case opSchedule (ovProvenance overlay) of
     Just _ -> overlay
-    Nothing -> overlay
-      { ovProvenance = (ovProvenance overlay)
-          { opSchedule = Just (initialScheduleAt currentTick decl)
-          }
+    Nothing -> setOverlaySchedule currentTick decl overlay
+
+-- | Ensure an overlay schedule matches a node declaration.
+--
+-- Matching cursors are preserved, including last/next fire ticks.  Missing or
+-- declaration-mismatched schedules are deterministically rebased around the
+-- supplied current tick.
+reconcileOverlaySchedule :: Word64 -> SimulationScheduleDecl -> Overlay -> Overlay
+reconcileOverlaySchedule currentTick decl overlay =
+  case opSchedule (ovProvenance overlay) of
+    Just persisted | scheduleStateMatchesDecl decl persisted -> overlay
+    _ -> setOverlaySchedule currentTick decl overlay
+
+setOverlaySchedule :: Word64 -> SimulationScheduleDecl -> Overlay -> Overlay
+setOverlaySchedule currentTick decl overlay = overlay
+  { ovProvenance = (ovProvenance overlay)
+      { opSchedule = Just (initialScheduleAt currentTick decl)
       }
+  }
 
 -- | Fill missing schedules on overlays owned by the supplied nodes.
 ensureWorldOverlaySchedules :: [SimNode] -> TerrainWorld -> TerrainWorld

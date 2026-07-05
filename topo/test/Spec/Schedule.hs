@@ -29,10 +29,12 @@ import Topo.Simulation
   , ensureOverlaySchedule
   , ensureWorldOverlaySchedules
   , hourlyScheduleDecl
+  , reconcileOverlaySchedule
   , initialScheduleAt
   , markScheduleFired
   , normalizeScheduleDecl
   , scheduleDue
+  , scheduleStateMatchesDecl
   )
 import Topo.Hex (defaultHexGridMeta)
 import Topo.Types (WorldConfig(..))
@@ -100,6 +102,36 @@ spec = describe "Simulation.Schedule" $ do
       Nothing -> expectationFailure "expected scheduled overlay"
       Just loaded ->
         (schedNextFireTick <$> opSchedule (ovProvenance loaded)) `shouldBe` Just 1
+
+  it "rebases overlay schedules when declarations change" $ do
+    let decl6 = defaultScheduleDecl { schedDeclIntervalTicks = 6 }
+        matching = SimulationScheduleState
+          { schedIntervalTicks = 6
+          , schedPhaseTicks = 0
+          , schedLastFireTick = Just 12
+          , schedNextFireTick = 18
+          , schedCatchUpPolicy = RunOnceIfDue
+          }
+        mismatched = matching { schedIntervalTicks = 1, schedNextFireTick = 13 }
+        catchUpMismatch = matching { schedCatchUpPolicy = SkipMissed }
+        withExisting sched = (emptyOverlay scheduleSchema)
+          { ovProvenance = emptyOverlayProvenance { opSchedule = Just sched }
+          }
+        preserved = reconcileOverlaySchedule 12 decl6 (withExisting matching)
+        rebased = reconcileOverlaySchedule 12 decl6 (withExisting mismatched)
+        rebasedCatchUp = reconcileOverlaySchedule 12 decl6 (withExisting catchUpMismatch)
+    scheduleStateMatchesDecl decl6 matching `shouldBe` True
+    scheduleStateMatchesDecl decl6 catchUpMismatch `shouldBe` False
+    opSchedule (ovProvenance preserved) `shouldBe` Just matching
+    opSchedule (ovProvenance rebasedCatchUp) `shouldBe` opSchedule (ovProvenance rebased)
+    case opSchedule (ovProvenance rebased) of
+      Nothing -> expectationFailure "expected rebased schedule"
+      Just sched -> do
+        schedIntervalTicks sched `shouldBe` 6
+        schedPhaseTicks sched `shouldBe` 0
+        schedLastFireTick sched `shouldBe` Nothing
+        schedNextFireTick sched `shouldBe` 18
+        schedCatchUpPolicy sched `shouldBe` RunOnceIfDue
 
 scheduleSchema :: OverlaySchema
 scheduleSchema = OverlaySchema

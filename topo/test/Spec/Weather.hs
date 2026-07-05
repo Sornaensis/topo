@@ -73,6 +73,39 @@ spec = describe "Weather" $ do
       Nothing -> expectationFailure "missing ticked weather temperature"
       Just temps -> temps `shouldNotBe` tempInit
 
+  it "skips non-due weather ticks until the configured cadence fires" $ do
+    let config = WorldConfig { wcChunkSize = 4 }
+        n = chunkTileCount config
+        climate = ClimateChunk
+          { ccTempAvg = U.replicate n 0.5
+          , ccPrecipAvg = U.replicate n 0.5
+          , ccWindDirAvg = U.replicate n 0
+          , ccWindSpdAvg = U.replicate n 0.3
+          , ccHumidityAvg = U.replicate n 0.2
+          , ccTempRange = U.replicate n 0
+          , ccPrecipSeasonality = U.replicate n 0
+          }
+        weatherCfg = defaultWeatherConfig { wcTickSeconds = 6 }
+        world0 = setClimateChunk (ChunkId 0) climate (emptyWorld config defaultHexGridMeta)
+        runNTicks count start = foldl (\acc _ -> acc >>= runWeatherTick weatherCfg) (pure start) [1 .. count]
+        weatherSchedule world = lookupOverlay "weather" (twOverlays world) >>= opSchedule . ovProvenance
+    worldInit <- initWeatherOnly weatherCfg world0
+    let initialWeather = getWeatherFromOverlay worldInit
+        initialSchedule = weatherSchedule worldInit
+    initialSchedule `shouldSatisfy` (/= Nothing)
+    world5 <- runNTicks (5 :: Int) worldInit
+    wtTick (twWorldTime world5) `shouldBe` 5
+    getWeatherFromOverlay world5 `shouldBe` initialWeather
+    weatherSchedule world5 `shouldBe` initialSchedule
+    world6 <- runWeatherTick weatherCfg world5
+    wtTick (twWorldTime world6) `shouldBe` 6
+    case weatherSchedule world6 of
+      Nothing -> expectationFailure "missing weather schedule after due tick"
+      Just sched -> do
+        schedIntervalTicks sched `shouldBe` 6
+        schedLastFireTick sched `shouldBe` Just 6
+        schedNextFireTick sched `shouldBe` 12
+
   it "applies seasonal offsets" $ do
     let config = WorldConfig { wcChunkSize = 4 }
         climate = ClimateChunk
@@ -721,6 +754,35 @@ spec = describe "Weather" $ do
           case ovData ov of
             DenseData chunks -> IntMap.null chunks `shouldBe` False
             SparseData _     -> expectationFailure "expected DenseData"
+
+    it "initWeatherStage derives schedules from configured weather cadence" $ do
+      let config = WorldConfig { wcChunkSize = 4 }
+          n = chunkTileCount config
+          climate = ClimateChunk
+            { ccTempAvg           = U.replicate n 0.5
+            , ccPrecipAvg         = U.replicate n 0.5
+            , ccWindDirAvg        = U.replicate n 0.0
+            , ccWindSpdAvg        = U.replicate n 0.3
+            , ccHumidityAvg       = U.replicate n 0.0
+            , ccTempRange         = U.replicate n 0.0
+            , ccPrecipSeasonality = U.replicate n 0.0
+            }
+          weatherCfg = defaultWeatherConfig { wcTickSeconds = 6 }
+          world0 = setClimateChunk (ChunkId 0) climate (emptyWorld config defaultHexGridMeta)
+          world5 = world0 { twWorldTime = (twWorldTime world0) { wtTick = 5 } }
+          scheduleOf world = lookupOverlay "weather" (twOverlays world) >>= opSchedule . ovProvenance
+      generated0 <- initWeatherOnly weatherCfg world0
+      case scheduleOf generated0 of
+        Nothing -> expectationFailure "missing tick-0 weather schedule"
+        Just sched -> do
+          schedIntervalTicks sched `shouldBe` 6
+          schedPhaseTicks sched `shouldBe` 0
+          schedCatchUpPolicy sched `shouldBe` RunOnceIfDue
+          schedNextFireTick sched `shouldBe` 6
+      generated5 <- initWeatherOnly weatherCfg world5
+      case scheduleOf generated5 of
+        Nothing -> expectationFailure "missing tick-5 weather schedule"
+        Just sched -> schedNextFireTick sched `shouldSatisfy` (> 5)
 
     it "weather overlay round-trips via getWeatherFromOverlay" $ do
       let config = WorldConfig { wcChunkSize = 4 }

@@ -38,7 +38,7 @@ import Topo.Simulation
 import Topo.Simulation.DAG
 import Topo.Simulation.Pipeline
 import Topo.Weather
-  ( defaultWeatherConfig, weatherSimNode, weatherOverlaySchema
+  ( defaultWeatherConfig, weatherScheduleDecl, weatherSimNode, weatherOverlaySchema
   , weatherChunkToOverlay, overlayToWeatherChunk, weatherFieldCount
   )
 
@@ -814,9 +814,35 @@ overlayIsolationSpec = describe "SimContext overlay isolation" $ do
 
 weatherSimNodeSpec :: Spec
 weatherSimNodeSpec = describe "weatherSimNode" $ do
+  weatherScheduleSpec
   conversionSpec
   schemaSpec
   tickSpec
+
+-- -------------------------------------------------------------------------
+-- Schedule declaration
+-- -------------------------------------------------------------------------
+
+weatherScheduleSpec :: Spec
+weatherScheduleSpec = describe "schedule" $ do
+
+  it "derives the built-in cadence from WeatherConfig world-hour intervals" $ do
+    let cfg = defaultWeatherConfig { wcTickSeconds = 6 }
+        decl = simNodeSchedule (weatherSimNode cfg)
+    decl `shouldBe` weatherScheduleDecl cfg
+    schedDeclIntervalTicks decl `shouldBe` 6
+    schedDeclPhaseTicks decl `shouldBe` 0
+    schedDeclCatchUpPolicy decl `shouldBe` RunOnceIfDue
+
+  it "clamps defensive cadence conversion to one day" $ do
+    schedDeclIntervalTicks (weatherScheduleDecl (defaultWeatherConfig { wcTickSeconds = 0 }))
+      `shouldBe` 1
+    schedDeclIntervalTicks (weatherScheduleDecl (defaultWeatherConfig { wcTickSeconds = 25 }))
+      `shouldBe` 24
+    schedDeclIntervalTicks (weatherScheduleDecl (defaultWeatherConfig { wcTickSeconds = 0 / 0 }))
+      `shouldBe` 1
+    schedDeclIntervalTicks (weatherScheduleDecl (defaultWeatherConfig { wcTickSeconds = 1 / 0 }))
+      `shouldBe` 1
 
 -- -------------------------------------------------------------------------
 -- Overlay conversion round-trip
@@ -1324,6 +1350,6 @@ tickSpec = describe "weather tick" $ do
     let node = weatherSimNode defaultWeatherConfig
     simNodeDependencies node `shouldBe` []
 
-  it "weatherSimNode declares hourly schedule" $ do
+  it "weatherSimNode declares the default weather cadence schedule" $ do
     let node = weatherSimNode defaultWeatherConfig
-    simNodeSchedule node `shouldBe` hourlyScheduleDecl
+    simNodeSchedule node `shouldBe` weatherScheduleDecl defaultWeatherConfig
