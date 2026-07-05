@@ -91,8 +91,8 @@ data TerrainWorld = TerrainWorld
   , twLatMapping :: !LatitudeMapping
   -- | Monotonic simulation time.  Advanced by world ticks; by
   -- default each tick is one world hour.  Used for time-varying
-  -- weather noise and seasonal phase computation via
-  -- 'Topo.Calendar.yearFraction'.
+  -- weather noise and weather seasonal phase computation; calendar
+  -- date and day/night derivations remain calendar-based.
   , twWorldTime :: !WorldTime
   -- | Deterministic world seed used for all time-varying simulation
   -- noise.  Set from the pipeline master seed and persisted with the

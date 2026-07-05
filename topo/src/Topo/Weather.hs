@@ -7,6 +7,7 @@ module Topo.Weather
   , defaultWeatherConfig
   , weatherScheduleDecl
   , weatherScheduleIntervalTicks
+  , weatherSeasonalPhase
   , deriveWeatherSeed
   , initWeatherStage
   , weatherSimNode
@@ -26,6 +27,7 @@ import Topo.Weather.Config
   , defaultWeatherConfig
   , weatherScheduleDecl
   , weatherScheduleIntervalTicks
+  , weatherSeasonalPhase
   )
 import Topo.Seed (deriveOverlaySeed)
 import Topo.Weather.Grid

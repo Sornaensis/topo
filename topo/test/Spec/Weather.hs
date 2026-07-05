@@ -13,7 +13,7 @@ import Spec.Support.FloatApprox (approxEqAbs)
 import Topo
 import Topo.Calendar (WorldTime(..))
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice, PlanetConfig(..), WorldSlice(..))
-import Topo.Weather (cloudFraction, seasonalITCZLatitude,
+import Topo.Weather (cloudFraction, seasonalITCZLatitude, weatherSeasonalPhase,
                      weatherOverlaySchema, overlayToWeatherChunk, weatherFieldCount,
                      weatherChunkToOverlay,
                      initWeatherStage, weatherSimNode,
@@ -105,6 +105,41 @@ spec = describe "Weather" $ do
         schedIntervalTicks sched `shouldBe` 6
         schedLastFireTick sched `shouldBe` Just 6
         schedNextFireTick sched `shouldBe` 12
+
+  describe "weatherSeasonalPhase" $ do
+    it "advances over wcSeasonCycleLength world ticks and preserves radian offset" $ do
+      let cfg = defaultWeatherConfig { wcSeasonCycleLength = 12, wcSeasonPhase = 0 }
+          phaseAt c tick = weatherSeasonalPhase c (WorldTime tick 3600)
+          expectedPhases =
+            [ (0, 0)
+            , (3, pi / 2)
+            , (6, pi)
+            , (9, 3 * pi / 2)
+            , (12, 0)
+            ]
+      mapM_
+        (\(tick, expectedPhase) ->
+          phaseAt cfg tick `shouldSatisfy` approxEqAbs 1.0e-5 expectedPhase)
+        expectedPhases
+
+      let offset = 0.37
+          cfgOffset = cfg { wcSeasonPhase = offset }
+      phaseAt cfgOffset 3 `shouldSatisfy` approxEqAbs 1.0e-5 (offset + pi / 2)
+      phaseAt cfgOffset 12 `shouldSatisfy` approxEqAbs 1.0e-5 offset
+
+    it "clamps invalid season cycle lengths to a one-world-tick cycle" $ do
+      let offset = 0.42
+          phaseFor cycleLength tick =
+            weatherSeasonalPhase
+              (defaultWeatherConfig
+                { wcSeasonCycleLength = cycleLength
+                , wcSeasonPhase = offset
+                })
+              (WorldTime tick 3600)
+      mapM_
+        (\cycleLength ->
+          phaseFor cycleLength 1 `shouldSatisfy` approxEqAbs 1.0e-6 offset)
+        [0, -12, 0.5, 1 / 0, 0 / 0]
 
   it "applies seasonal offsets" $ do
     let config = WorldConfig { wcChunkSize = 4 }
@@ -335,34 +370,108 @@ spec = describe "Weather" $ do
         pFirst `shouldSatisfy` (> pLast)
       Nothing -> expectationFailure "missing weather chunk"
 
-  -- 5.6.4: integration — 12 weather ticks produce oscillating temperature
-  -- at a mid-latitude tile.
-  it "12 weather ticks produce temperature oscillation at mid-latitude" $ do
+  -- 5.6.4: wcSeasonCycleLength drives deterministic seasonal baselines
+  -- for both initialisation and stateful ticks.
+  it "uses season cycle length for init and tick temperature baselines" $ do
     let config  = WorldConfig { wcChunkSize = 4 }
         slice40 = defaultWorldSlice { wsLatCenter = 40, wsLatExtent = 10 }
+        planetNoSun = defaultPlanetConfig { pcInsolation = 0 }
         n = chunkTileCount config
         climate = ClimateChunk
           { ccTempAvg = U.replicate n 0.5
-          , ccPrecipAvg = U.replicate n 0.5
+          , ccPrecipAvg = U.replicate n 0
           , ccWindDirAvg = U.replicate n 0
           , ccWindSpdAvg = U.replicate n 0
           , ccHumidityAvg = U.replicate n 0
           , ccTempRange = U.replicate n 0
           , ccPrecipSeasonality = U.replicate n 0
           }
-        world0 = setClimateChunk (ChunkId 0) climate
-                   (emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig slice40)
-        weatherCfg = defaultWeatherConfig
-          { wcSeasonCycleLength = 12  -- 12 ticks = one year for fast cycling
+        worldAt tick =
+          (setClimateChunk (ChunkId 0) climate
+            (emptyWorldWithPlanet config defaultHexGridMeta planetNoSun slice40))
+            { twWorldTime = WorldTime tick 3600 }
+        weatherCfg cycleLength = defaultWeatherConfig
+          { wcSeasonCycleLength = cycleLength
+          , wcSeasonPhase = 0
+          , wcSeasonAmplitude = 0.25
+          , wcJitterAmplitude = 0
+          , wcHumidityNoiseScale = 0
+          , wcPrecipNoiseScale = 0
+          , wcITCZPrecipBoost = 0
+          , wcCloudPrecipBoost = 0
+          , wcCloudOpticalScale = 0
+          , wcCloudGreenhouseCoeff = 0
+          , wcTempDiffuseIterations = 0
+          , wcTempDiffuseFactor = 0
+          , wcAdvectDt = 0
+          , wcClimatePullStrength = 1
+          , wcWeatherDiffuseFactor = 0
+          , wcSeasonalBase = 1
+          , wcSeasonalRange = 0
           }
-        tickOnce w = runWeatherTick weatherCfg w
-    wInit <- initWeatherOnly weatherCfg world0
-    -- Accumulate the center-tile temperature across 12 ticks.
-    temps <- go tickOnce wInit 12 []
-    let tempRange = maximum temps - minimum temps
-    -- Over a full seasonal cycle at 40° latitude, temperature should
-    -- oscillate over a meaningful range (> 0.1).
-    tempRange `shouldSatisfy` (> 1.0e-5)
+        avgTemp world = case getWeatherChunk (ChunkId 0) world of
+          Just wk -> pure (U.sum (wcTemp wk) / fromIntegral n)
+          Nothing -> expectationFailure "missing weather chunk" >> pure 0
+        tickedAt cfg tick = do
+          wInit <- initWeatherOnly cfg (worldAt (tick - 1))
+          runWeatherTick cfg wInit
+
+    shortInit3 <- initWeatherOnly (weatherCfg 12) (worldAt 3)
+    shortInit9 <- initWeatherOnly (weatherCfg 12) (worldAt 9)
+    longInit3 <- initWeatherOnly (weatherCfg 12000) (worldAt 3)
+    longInit9 <- initWeatherOnly (weatherCfg 12000) (worldAt 9)
+    shortTick3 <- tickedAt (weatherCfg 12) 3
+    shortTick9 <- tickedAt (weatherCfg 12) 9
+    longTick3 <- tickedAt (weatherCfg 12000) 3
+    longTick9 <- tickedAt (weatherCfg 12000) 9
+
+    shortInitDelta <- abs <$> ((-) <$> avgTemp shortInit3 <*> avgTemp shortInit9)
+    longInitDelta <- abs <$> ((-) <$> avgTemp longInit3 <*> avgTemp longInit9)
+    shortTickDelta <- abs <$> ((-) <$> avgTemp shortTick3 <*> avgTemp shortTick9)
+    longTickDelta <- abs <$> ((-) <$> avgTemp longTick3 <*> avgTemp longTick9)
+
+    shortInitDelta `shouldSatisfy` (> 0.05)
+    shortTickDelta `shouldSatisfy` (> 0.05)
+    longInitDelta `shouldSatisfy` (< 0.005)
+    longTickDelta `shouldSatisfy` (< 0.005)
+
+  it "uses season cycle length for initial ITCZ migration" $ do
+    let config = WorldConfig { wcChunkSize = 4 }
+        sliceNorthITCZ = defaultWorldSlice { wsLatCenter = 16, wsLatExtent = 4 }
+        n = chunkTileCount config
+        climate = ClimateChunk
+          { ccTempAvg = U.replicate n 0.5
+          , ccPrecipAvg = U.replicate n 0.4
+          , ccWindDirAvg = U.replicate n 0
+          , ccWindSpdAvg = U.replicate n 0
+          , ccHumidityAvg = U.replicate n 0
+          , ccTempRange = U.replicate n 0
+          , ccPrecipSeasonality = U.replicate n 0
+          }
+        worldAt tick =
+          (setClimateChunk (ChunkId 0) climate
+            (emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig sliceNorthITCZ))
+            { twWorldTime = WorldTime tick 3600 }
+        weatherCfg = defaultWeatherConfig
+          { wcSeasonCycleLength = 12
+          , wcSeasonPhase = 0
+          , wcSeasonAmplitude = 0
+          , wcJitterAmplitude = 0
+          , wcPrecipNoiseScale = 0
+          , wcSeasonalBase = 1
+          , wcSeasonalRange = 0
+          , wcITCZLatitude = 0
+          , wcITCZWidth = 4
+          , wcITCZPrecipBoost = 1
+          }
+        avgPrecip world = case getWeatherChunk (ChunkId 0) world of
+          Just wk -> pure (U.sum (wcPrecip wk) / fromIntegral n)
+          Nothing -> expectationFailure "missing weather chunk" >> pure 0
+    northSeason <- initWeatherOnly weatherCfg (worldAt 3)
+    southSeason <- initWeatherOnly weatherCfg (worldAt 9)
+    northPrecip <- avgPrecip northSeason
+    southPrecip <- avgPrecip southSeason
+    northPrecip `shouldSatisfy` (> southPrecip + 0.1)
 
   -- Model F.1: dry tile -> low RH regardless of temperature.
   it "dry tile has low RH regardless of temperature" $ do
@@ -985,13 +1094,3 @@ initWeatherAndTick weatherCfg world0 = do
   wInit <- initWeatherOnly weatherCfg world0
   runWeatherTick weatherCfg wInit
 
--- | Run @n@ successive weather ticks, collecting the center-tile temperature
---   after each tick.
-go :: (TerrainWorld -> IO TerrainWorld) -> TerrainWorld -> Int -> [Float] -> IO [Float]
-go _tick _w 0 acc = pure (reverse acc)
-go tick w remaining acc = do
-  w' <- tick w
-  let t = case getWeatherChunk (ChunkId 0) w' of
-            Just wk -> wcTemp wk U.! 0
-            Nothing -> 0
-  go tick w' (remaining - 1) (t : acc)

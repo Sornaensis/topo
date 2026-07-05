@@ -8,7 +8,7 @@ module Topo.Weather.Init
 
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Vector.Unboxed as U
-import Topo.Calendar (WorldTime(..), yearFraction, mkCalendarConfig)
+import Topo.Calendar (WorldTime(..))
 import Topo.Climate.ITCZ (seasonalITCZShift)
 import Topo.Math (clamp01)
 import Topo.Overlay (Overlay(..), OverlayData(..), OverlayProvenance(..), insertOverlay)
@@ -18,7 +18,7 @@ import Topo.Planet (LatitudeMapping(..), PlanetConfig(..))
 import Topo.Plugin (logInfo, modifyWorldP)
 import Topo.Types
 import Topo.Simulation.Schedule (initialScheduleAt)
-import Topo.Weather.Config (WeatherConfig(..), weatherScheduleDecl)
+import Topo.Weather.Config (WeatherConfig(..), weatherScheduleDecl, weatherSeasonalPhase)
 import Topo.Weather.Grid (weatherChunkToOverlay, weatherOverlaySchema)
 import Topo.World (TerrainWorld(..))
 
@@ -36,9 +36,7 @@ initWeatherStage cfg = PipelineStage StageWeather "initWeather" "initWeather" No
         latBiasRad = lmBiasRad lm
         tiltScale = lmTiltScale lm
         worldTime = twWorldTime world
-        calCfg = mkCalendarConfig planet
-        yf = yearFraction calCfg worldTime
-        dynamicPhase = wcSeasonPhase cfg + realToFrac yf * 2 * pi
+        dynamicPhase = weatherSeasonalPhase cfg worldTime
         dynamicITCZLat = seasonalITCZLatitude
                            (wcITCZLatitude cfg)
                            (wcITCZMigrationScale cfg)
@@ -150,10 +148,17 @@ initialWeatherPrecipAt config cfg radPerTile latBiasRad origin climate i =
   let TileCoord _lx ly = tileCoordFromIndex config (TileIndex i)
       TileCoord _ox oy = origin
       latRad = fromIntegral (oy + ly) * radPerTile + latBiasRad
+      latDeg = latRad * (180.0 / pi)
       latScale = abs (sin latRad)
       rawSeasonal = (sin (wcSeasonPhase cfg + latRad) * latScale + 1) * 0.5
       seasonalFactor = wcSeasonalBase cfg + rawSeasonal * wcSeasonalRange cfg
-  in clamp01 ((climate U.! i) * seasonalFactor)
+      -- Deterministic initial ITCZ boost uses the same dynamic latitude
+      -- as stateful weather ticks, without stochastic precipitation noise.
+      dLat = latDeg - wcITCZLatitude cfg
+      itczW = max 0.1 (wcITCZWidth cfg)
+      convergenceFactor = 1.0 + wcITCZPrecipBoost cfg
+                        * exp (negate (dLat * dLat) / (2 * itczW * itczW))
+  in clamp01 ((climate U.! i) * seasonalFactor * convergenceFactor)
 
 -- | Dynamic ITCZ latitude from base position, migration scale, axial
 -- tilt, and current season phase.

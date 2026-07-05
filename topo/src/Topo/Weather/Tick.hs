@@ -23,7 +23,7 @@ import Topo.Simulation (SimNode(..), SimNodeId(..), SimContext(..))
 import Topo.Solar (SolarConfig(..), defaultSolarConfig, tileIrradiance)
 import Topo.TerrainGrid (chunkCoordBounds)
 import Topo.Types
-import Topo.Weather.Config (WeatherConfig(..), weatherScheduleDecl)
+import Topo.Weather.Config (WeatherConfig(..), weatherScheduleDecl, weatherSeasonalPhase)
 import Topo.Weather.Grid
   ( WeatherGridState(..)
   , buildChunkWeatherFromOverlayOrClimate
@@ -555,7 +555,7 @@ weatherTick cfg ctx overlay = do
       seed = twSeed terrain
       calCfg = mkCalendarConfig planet
       yf = yearFraction calCfg wtime
-      dynamicPhase = wcSeasonPhase cfg + realToFrac yf * 2 * pi
+      dynamicPhase = weatherSeasonalPhase cfg wtime
       timeHash = wtTick wtime
       dynamicITCZLat = seasonalITCZLatitude
                          (wcITCZLatitude cfg)

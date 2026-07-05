@@ -6,11 +6,14 @@ module Topo.Weather.Config
   , defaultWeatherConfig
   , weatherScheduleDecl
   , weatherScheduleIntervalTicks
+  , weatherSeasonalPhase
   ) where
 
 import Data.Aeson (FromJSON(..), ToJSON(..))
+import Data.Fixed (mod')
 import Data.Word (Word64)
 import GHC.Generics (Generic)
+import Topo.Calendar (WorldTime(..))
 import Topo.Config.JSON
   (configOptions, genericParseJSON, genericToJSON, mergeDefaults)
 import Topo.Simulation.Schedule
@@ -29,12 +32,14 @@ data WeatherConfig = WeatherConfig
     -- world-clock duration, does not initialise 'wtTickRate', and is not
     -- the UI auto-tick wall-clock rate.
     wcTickSeconds :: !Float
-    -- | Initial seasonal phase offset (radians), combined with dynamic
-    -- year-fraction phase.
+    -- | Initial seasonal phase offset (radians), combined with the
+    -- dynamic cycle phase from 'weatherSeasonalPhase'.
   , wcSeasonPhase :: !Float
     -- | Base seasonal temperature amplitude before latitude/tilt scaling.
   , wcSeasonAmplitude :: !Float
-    -- | Number of weather ticks per full seasonal cycle.
+    -- | Number of world ticks per full seasonal cycle.  Under the
+    -- current 'WorldTime' model, one world tick is one world hour;
+    -- weather scheduler cadence only controls node firing frequency.
   , wcSeasonCycleLength :: !Float
     -- | Temperature jitter amplitude from time-varying noise.
   , wcJitterAmplitude :: !Float
@@ -142,6 +147,29 @@ weatherScheduleIntervalTicks cfg
   | otherwise = fromInteger (round (min 24 (max 1 raw)))
   where
     raw = wcTickSeconds cfg
+
+-- | Seasonal phase used by weather initialisation and stateful ticks.
+--
+-- 'wcSeasonCycleLength' is measured in world ticks (currently world
+-- hours), not weather-node firings or UI auto-tick wall-clock seconds.
+-- Invalid or sub-hour cycle lengths are treated as a one-tick cycle;
+-- 'wcSeasonPhase' remains an unconstrained radian offset.
+weatherSeasonalPhase :: WeatherConfig -> WorldTime -> Float
+weatherSeasonalPhase cfg worldTime =
+  wcSeasonPhase cfg + realToFrac (turnFraction * tau)
+  where
+    cycleLength = realToFrac (effectiveSeasonCycleLength cfg) :: Double
+    tickInCycle = fromIntegral (wtTick worldTime) `mod'` cycleLength
+    turnFraction = tickInCycle / cycleLength
+    tau = 2 * (pi :: Double)
+
+-- | Defensive lower bound for seasonal cycles.
+effectiveSeasonCycleLength :: WeatherConfig -> Float
+effectiveSeasonCycleLength cfg
+  | isNaN raw || isInfinite raw || raw < 1 = 1
+  | otherwise = raw
+  where
+    raw = wcSeasonCycleLength cfg
 
 -- | Default weather configuration tuned for stable, smooth weather evolution.
 defaultWeatherConfig :: WeatherConfig
