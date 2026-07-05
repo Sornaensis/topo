@@ -8,7 +8,6 @@ module Seer.System.Cache
   , shouldPoll
   ) where
 
-import Actor.AtlasCache (terrainSnapshotViewVersion)
 import Actor.Data (TerrainSnapshot(..))
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion(..))
@@ -28,7 +27,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import Data.Word (Word32)
 import Hyperspace.Actor (ActorHandle, Protocol)
-import Seer.Render (TerrainCache(..), emptyTerrainCache)
+import Seer.Render (TerrainCache(..), emptyTerrainCache, terrainCacheNeedsRefresh)
 import Seer.Render.Atlas
   ( AtlasTextureCache(..)
   , collectAtlasTextures
@@ -94,12 +93,15 @@ applyTerrainCacheUpdate renderSnap workerHandle cacheRef cacheState = do
   let stateAfterResult =
         case (desiredKey, latest) of
           (Nothing, _) -> cacheState
-            { rcsLastRequest = Nothing
+            { rcsTerrainCache = emptyTerrainCache
+            , rcsCacheKey = Nothing
+            , rcsLastRequest = Nothing
             }
           (Just key, Just result)
             | tcrResultKey result == key -> cacheState
                 { rcsTerrainCache = tcrResultCache result
                 , rcsCacheKey = Just key
+                , rcsLastRequest = Nothing
                 }
             | otherwise -> cacheState
           (Just _key, Nothing) -> cacheState
@@ -123,21 +125,10 @@ shouldStartTerrainCacheBuild :: RenderSnapshot -> TerrainCache -> Bool
 shouldStartTerrainCacheBuild renderSnap cache =
   let uiSnap = rsUi renderSnap
       terrainSnap = rsTerrain renderSnap
+      dataReady = tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
   in not (uiGenerating uiSnap)
-      && terrainCacheNeedsRebuild uiSnap terrainSnap cache
-
-terrainCacheNeedsRebuild :: UiState -> TerrainSnapshot -> TerrainCache -> Bool
-terrainCacheNeedsRebuild uiSnap terrainSnap cache
-  | tsChunkSize terrainSnap <= 0 =
-      tcChunkSize cache /= 0
-        || not (IntMap.null (tcTerrainChunks cache))
-        || not (IntMap.null (tcClimateChunks cache))
-        || not (IntMap.null (tcWeatherChunks cache))
-  | tcViewMode cache /= uiViewMode uiSnap = True
-  | tcWaterLevel cache /= uiRenderWaterLevel uiSnap = True
-  | tcChunkSize cache /= tsChunkSize terrainSnap = True
-  | tcVersion cache /= terrainSnapshotViewVersion (uiViewMode uiSnap) terrainSnap = True
-  | otherwise = False
+      && dataReady
+      && terrainCacheNeedsRefresh uiSnap terrainSnap cache
 
 renderMetrics :: Word32 -> RenderSnapshot -> RenderCacheState -> Text.Text
 renderMetrics frameMs _snap cacheState =

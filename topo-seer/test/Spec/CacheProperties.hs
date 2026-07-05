@@ -1,14 +1,30 @@
 module Spec.CacheProperties (spec) where
 
 import Actor.Data (TerrainSnapshot(..))
+import Topo (WeatherChunk(..), WorldConfig(..), emptyTerrainChunk)
 import Topo.Overlay (emptyOverlayStore)
 import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
+import qualified Data.Vector.Unboxed as U
+import Foreign.Ptr (Ptr, intPtrToPtr)
+import Linear (V2(..))
+import qualified SDL
 import Seer.Render.Atlas (zoomTextureScale)
-import Seer.Render.Terrain (TerrainCache(..), buildTerrainCache, updateTerrainCache)
+import Seer.Render.Terrain
+  ( TerrainCache(..)
+  , buildTerrainCache
+  , chunkTextureCacheNeedsUpdate
+  , fallbackTerrainNeedsRefresh
+  , terrainCacheNeedsRefresh
+  , updateTerrainCache
+  )
 import Test.Hspec
 import Test.QuickCheck
+import UI.TerrainCache (ChunkTextureCache(..))
+import UI.TerrainRender (ChunkTexture(..))
+import UI.Widgets (Rect(..))
+import Unsafe.Coerce (unsafeCoerce)
 
 spec :: Spec
 spec = describe "Cache properties" $ do
@@ -52,6 +68,28 @@ spec = describe "Cache properties" $ do
             updated = updateTerrainCache uiB terrainSnap cacheA
         in not (sameTerrainCache updated cacheA)
 
+  it "keeps fallback ViewCloud frames incomplete after weather auto-ticks until terrain cache refreshes" $ do
+    let uiCloud = emptyUiState { uiViewMode = ViewCloud }
+        terrainSnap0 = renderableTerrainSnapshot 1 1 sampleWeatherChunkA
+        terrainSnap1 = renderableTerrainSnapshot 1 2 sampleWeatherChunkB
+        oldCache = buildTerrainCache uiCloud terrainSnap0
+        oldTextures = chunkTexturesFor 1 oldCache
+    terrainCacheNeedsRefresh uiCloud terrainSnap1 oldCache `shouldBe` True
+    fallbackTerrainNeedsRefresh uiCloud terrainSnap1 1 oldCache oldTextures `shouldBe` True
+
+  it "keeps fallback ViewWeather frames incomplete after worker results until chunk textures refresh" $ do
+    let uiWeather = emptyUiState { uiViewMode = ViewWeather }
+        terrainSnap0 = renderableTerrainSnapshot 1 1 sampleWeatherChunkA
+        terrainSnap1 = renderableTerrainSnapshot 1 2 sampleWeatherChunkB
+        oldCache = buildTerrainCache uiWeather terrainSnap0
+        freshCache = buildTerrainCache uiWeather terrainSnap1
+        oldTextures = chunkTexturesFor 1 oldCache
+        freshTextures = chunkTexturesFor 1 freshCache
+    terrainCacheNeedsRefresh uiWeather terrainSnap1 freshCache `shouldBe` False
+    chunkTextureCacheNeedsUpdate freshCache 1 oldTextures `shouldBe` True
+    fallbackTerrainNeedsRefresh uiWeather terrainSnap1 1 freshCache oldTextures `shouldBe` True
+    fallbackTerrainNeedsRefresh uiWeather terrainSnap1 1 freshCache freshTextures `shouldBe` False
+
   it "clamps atlas scale between 1 and 6" $
     property $ \(NonNegative zoom) ->
       let scale = zoomTextureScale zoom
@@ -62,6 +100,68 @@ spec = describe "Cache properties" $ do
       let scale1 = zoomTextureScale z1
           scale2 = zoomTextureScale z2
       in if z1 <= z2 then scale1 <= scale2 else scale1 >= scale2
+
+sampleWorldConfig :: WorldConfig
+sampleWorldConfig = WorldConfig { wcChunkSize = sampleChunkSize }
+
+sampleChunkSize :: Int
+sampleChunkSize = 1
+
+renderableTerrainSnapshot :: Int -> Int -> WeatherChunk -> TerrainSnapshot
+renderableTerrainSnapshot baseVersion weatherVersion weatherChunk = emptyTerrainSnapshot
+  { tsVersion = fromIntegral baseVersion
+  , tsWeatherVersion = fromIntegral weatherVersion
+  , tsChunkSize = sampleChunkSize
+  , tsTerrainChunks = IntMap.singleton 0 (emptyTerrainChunk sampleWorldConfig)
+  , tsWeatherChunks = IntMap.singleton 0 weatherChunk
+  }
+
+sampleWeatherChunkA :: WeatherChunk
+sampleWeatherChunkA = sampleWeatherChunk 0.25
+
+sampleWeatherChunkB :: WeatherChunk
+sampleWeatherChunkB = sampleWeatherChunk 0.75
+
+sampleWeatherChunk :: Float -> WeatherChunk
+sampleWeatherChunk value = WeatherChunk
+  { wcTemp = vals
+  , wcHumidity = vals
+  , wcWindDir = vals
+  , wcWindSpd = vals
+  , wcPressure = vals
+  , wcPrecip = vals
+  , wcCloudCover = vals
+  , wcCloudWater = vals
+  , wcCloudCoverLow = vals
+  , wcCloudCoverMid = vals
+  , wcCloudCoverHigh = vals
+  , wcCloudWaterLow = vals
+  , wcCloudWaterMid = vals
+  , wcCloudWaterHigh = vals
+  }
+  where
+    vals = U.replicate sampleChunkSize value
+
+chunkTexturesFor :: Int -> TerrainCache -> ChunkTextureCache
+chunkTexturesFor scale cache = ChunkTextureCache
+  { ctcViewMode = tcViewMode cache
+  , ctcWaterLevel = tcWaterLevel cache
+  , ctcChunkSize = tcChunkSize cache
+  , ctcScale = scale
+  , ctcTerrainChunks = tcTerrainChunks cache
+  , ctcClimateChunks = tcClimateChunks cache
+  , ctcWeatherChunks = tcWeatherChunks cache
+  , ctcTextures = IntMap.mapWithKey (\key _ -> mockChunkTexture key) (tcGeometry cache)
+  }
+
+mockChunkTexture :: Int -> ChunkTexture
+mockChunkTexture key = ChunkTexture
+  { ctTexture = mockTexture key
+  , ctBounds = Rect (V2 0 0, V2 1 1)
+  }
+
+mockTexture :: Int -> SDL.Texture
+mockTexture n = unsafeCoerce (intPtrToPtr (fromIntegral (max 1 n)) :: Ptr ())
 
 emptyTerrainSnapshot :: TerrainSnapshot
 emptyTerrainSnapshot = TerrainSnapshot

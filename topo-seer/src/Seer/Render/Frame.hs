@@ -55,6 +55,7 @@ import Seer.Render.ZoomStage (ZoomStage(..), stageForZoom)
 import Seer.Render.Context (RenderContext(..))
 import Seer.Render.Terrain
   ( TerrainCache(..)
+  , chunkTextureCacheNeedsUpdate
   , updateChunkTextures
   , drawTerrain
   )
@@ -178,10 +179,13 @@ renderFrame context = do
     logged <- logTiming logHandle timingLogThresholdMs (Text.pack "atlas resolve") elapsed Nothing
     pure (resolvedTiles, mismatch, resolvedCache, logged)
   tAfterResolve <- getMonotonicTimeNSec
+  let chunkTexturesNeedRefresh = not renderTargetOk
+        && chunkTextureCacheNeedsUpdate terrainCache (zsAtlasScale stage) textureCache
+      updateFallbackChunkTextures = shouldUpdateChunkTextures || chunkTexturesNeedRefresh
   (textureCache', loggedChunkTexture) <-
     if renderTargetOk
       then pure (emptyChunkTextureCache, False)
-      else if shouldUpdateChunkTextures
+      else if updateFallbackChunkTextures
         then do
           (updatedCache, elapsed) <- timedMs (updateChunkTextures renderer terrainCache (zsAtlasScale stage) textureCache)
           logged <- logTiming logHandle timingLogThresholdMs (Text.pack "chunk texture build") elapsed Nothing
@@ -307,7 +311,10 @@ renderFrame context = do
       <> " atlas=" <> show (isNothing atlasToDraw)
     hFlush h
   let didLog = loggedWindowSize || loggedSchedule || loggedScheduleDrain || loggedScheduleEnqueue || loggedUpload || loggedTextureCreate || loggedAtlasResolve || loggedChunkTexture || loggedDraw || loggedHover || loggedChrome || loggedUi || loggedPresent
-  pure (renderTargetOk && dataReady && (isNothing atlasToDraw || atlasKeyMismatch), textureCache', atlasCache'', didLog)
+      atlasNeedsRetry = renderTargetOk && dataReady && (isNothing atlasToDraw || atlasKeyMismatch)
+      fallbackChunkNeedsRetry = not renderTargetOk
+        && chunkTextureCacheNeedsUpdate terrainCache (zsAtlasScale stage) textureCache'
+  pure (atlasNeedsRetry || fallbackChunkNeedsRetry, textureCache', atlasCache'', didLog)
 
 logTiming :: ActorHandle Log (Protocol Log) -> Word32 -> Text.Text -> Word32 -> Maybe Int -> IO Bool
 logTiming handle thresholdMs label elapsed maybeCount =

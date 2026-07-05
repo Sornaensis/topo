@@ -28,6 +28,7 @@ import Seer.System.RenderFrame
   , RenderFrameSettings(..)
   , RenderFrameStepResult(..)
   , renderFrameStep
+  , renderFrameStepMaintenanceDue
   )
 import Seer.System.Screenshot (screenshotRequestPending)
 import Seer.System.Sdl (SdlResources(..))
@@ -126,8 +127,14 @@ runMainLoop runtimeCfg actors sdl = do
         tHandle <- getMonotonicTimeNSec
         let isVersionUnchanged = rcsLastSnapshot cacheState0 == Just snapVersion
             generating = uiGenerating (rsUi renderSnap)
+            fallbackMaintenanceDue = renderFrameStepMaintenanceDue
+              renderFrameSettings
+              (srRenderTargetOk sdl)
+              nowMs
+              renderSnap
+              cacheState0
         screenshotPending <- screenshotRequestPending (aaScreenshotRef actors)
-        if isVersionUnchanged && not generating && not screenshotPending
+        if isVersionUnchanged && not generating && not screenshotPending && not fallbackMaintenanceDue
           then do
             -- Stale-snapshot detection: log once if version unchanged for >1s.
             now <- getMonotonicTimeNSec
@@ -153,7 +160,7 @@ runMainLoop runtimeCfg actors sdl = do
               then pure cacheState0
               else loop cacheState0
           else do
-            -- Snapshot version changed; reset stale tracking before rendering.
+            -- Snapshot changed or fallback maintenance is due; reset stale tracking before rendering.
             tElseBranch <- getMonotonicTimeNSec
             writeIORef lastSnapshotChangeNs =<< getMonotonicTimeNSec
             writeIORef staleLoggedRef False

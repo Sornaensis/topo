@@ -3,6 +3,7 @@ module Seer.System.RenderFrame
   , RenderFrameSettings(..)
   , RenderFrameStepResult(..)
   , renderFrameStep
+  , renderFrameStepMaintenanceDue
   ) where
 
 import Actor.AtlasFreshness (AtlasFreshnessRef)
@@ -20,7 +21,14 @@ import Data.Word (Word32)
 import GHC.Clock (getMonotonicTimeNSec)
 import Hyperspace.Actor (ActorHandle, Protocol)
 import qualified SDL
-import Seer.Render (RenderContext(..), renderFrame)
+import Seer.Render
+  ( RenderContext(..)
+  , fallbackTerrainNeedsRefresh
+  , renderFrame
+  , terrainCacheNeedsRefresh
+  )
+import Seer.Render.Atlas (AtlasTextureCache(..))
+import Seer.Render.ZoomStage (ZoomStage(..), stageForZoom)
 import Seer.Screenshot.Request (ScreenshotRequestRef)
 import Seer.System.Cache
   ( RenderCacheState(..)
@@ -67,6 +75,31 @@ data RenderFrameStepResult = RenderFrameStepResult
   , rfrPostFrameElapsed :: !Word32
   }
 
+-- | Whether an unchanged-snapshot loop still has fallback terrain work that
+-- should wake the renderer instead of idling.
+renderFrameStepMaintenanceDue
+  :: RenderFrameSettings
+  -> Bool
+  -> Word32
+  -> RenderSnapshot
+  -> RenderCacheState
+  -> Bool
+renderFrameStepMaintenanceDue _settings renderTargetOk _nowMs renderSnap cacheState =
+  not renderTargetOk
+    && not (uiGenerating (rsUi renderSnap))
+    && fallbackTerrainNeedsRefresh
+         (rsUi renderSnap)
+         (rsTerrain renderSnap)
+         (fallbackTextureScale renderSnap (rcsAtlasCache cacheState))
+         (rcsTerrainCache cacheState)
+         (rcsChunkTextures cacheState)
+
+fallbackTextureScale :: RenderSnapshot -> AtlasTextureCache -> Int
+fallbackTextureScale renderSnap atlasCache =
+  maybe rawScale zsAtlasScale (atcCommittedStage atlasCache)
+  where
+    rawScale = zsAtlasScale (stageForZoom (uiZoom (rsUi renderSnap)))
+
 renderFrameStep
   :: RenderFrameEnv
   -> RenderFrameSettings
@@ -80,10 +113,12 @@ renderFrameStep env settings nowMs snapVersion renderSnap cacheState0 = do
   -- Skip terrain cache, atlas, and chunk texture polling while generating; those
   -- operations are no-ops then and can otherwise stall the SDL render thread.
   let generating = uiGenerating (rsUi renderSnap)
-      shouldPollTerrain = not generating && shouldPoll nowMs (rfsetTerrainCachePollMs settings) (rcsLastTerrainPoll cacheState0)
+      fallbackTerrainStale = not (rfeRenderTargetOk env)
+        && terrainCacheNeedsRefresh (rsUi renderSnap) (rsTerrain renderSnap) (rcsTerrainCache cacheState0)
+      shouldPollTerrain = not generating
+        && (fallbackTerrainStale || shouldPoll nowMs (rfsetTerrainCachePollMs settings) (rcsLastTerrainPoll cacheState0))
       shouldDrainAtlas = not generating && shouldPoll nowMs (rfsetAtlasDrainPollMs settings) (rcsLastAtlasDrain cacheState0)
       shouldScheduleAtlas = not generating && shouldPoll nowMs (rfsetAtlasSchedulePollMs settings) (rcsLastAtlasSchedule cacheState0)
-      shouldUpdateChunkTextures = not generating && shouldPoll nowMs (rfsetChunkTexturePollMs settings) (rcsLastChunkTexturePoll cacheState0)
   tAfterLets <- getMonotonicTimeNSec
   (cacheState', terrainElapsed) <-
     if shouldPollTerrain
@@ -97,6 +132,19 @@ renderFrameStep env settings nowMs snapVersion renderSnap cacheState0 = do
           else pure ()
         pure (updated { rcsLastTerrainPoll = Just nowMs }, cacheElapsed)
       else pure (cacheState0, 0)
+  let fallbackTerrainFresh = not (terrainCacheNeedsRefresh (rsUi renderSnap) (rsTerrain renderSnap) (rcsTerrainCache cacheState'))
+      fallbackTextureStale = not (rfeRenderTargetOk env)
+        && fallbackTerrainFresh
+        && fallbackTerrainNeedsRefresh
+             (rsUi renderSnap)
+             (rsTerrain renderSnap)
+             (fallbackTextureScale renderSnap (rcsAtlasCache cacheState'))
+             (rcsTerrainCache cacheState')
+             (rcsChunkTextures cacheState')
+      shouldUpdateChunkTextures = not generating
+        && not (rfeRenderTargetOk env)
+        && fallbackTerrainFresh
+        && (fallbackTextureStale || shouldPoll nowMs (rfsetChunkTexturePollMs settings) (rcsLastChunkTexturePoll cacheState'))
   frameStart <- getMonotonicTimeNSec
   (needsRetry, nextChunkTextures, nextAtlasCache, _didLog) <-
     renderFrame RenderContext
@@ -125,10 +173,17 @@ renderFrameStep env settings nowMs snapVersion renderSnap cacheState0 = do
       }
   frameEnd <- getMonotonicTimeNSec
   let frameElapsed = nsToMs frameStart frameEnd
+      fallbackNeedsRetry = not (rfeRenderTargetOk env)
+        && fallbackTerrainNeedsRefresh
+             (rsUi renderSnap)
+             (rsTerrain renderSnap)
+             (fallbackTextureScale renderSnap nextAtlasCache)
+             (rcsTerrainCache cacheState')
+             nextChunkTextures
       cacheState = cacheState'
         { rcsChunkTextures = nextChunkTextures
         , rcsAtlasCache = nextAtlasCache
-        , rcsLastSnapshot = if needsRetry then Nothing else Just snapVersion
+        , rcsLastSnapshot = if needsRetry || fallbackNeedsRetry then Nothing else Just snapVersion
         , rcsLastSnapshotData = Just renderSnap
         , rcsLastAtlasDrain = if shouldDrainAtlas then Just nowMs else rcsLastAtlasDrain cacheState'
         , rcsLastAtlasSchedule = if shouldScheduleAtlas then Just nowMs else rcsLastAtlasSchedule cacheState'

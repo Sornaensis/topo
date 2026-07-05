@@ -4,6 +4,9 @@ module Seer.Render.Terrain
   , updateTerrainCache
   , buildTerrainCache
   , updateChunkTextures
+  , terrainCacheNeedsRefresh
+  , chunkTextureCacheNeedsUpdate
+  , fallbackTerrainNeedsRefresh
   , drawTerrain
   ) where
 
@@ -70,6 +73,23 @@ updateTerrainCache uiSnap terrainSnap cache
   | tcVersion cache /= terrainSnapshotViewVersion (uiViewMode uiSnap) terrainSnap = buildTerrainCache uiSnap terrainSnap
   | otherwise = cache
 
+-- | Whether the fallback terrain cache is stale for the renderable snapshot.
+-- Empty terrain snapshots are considered fresh only when no previous cache
+-- remains, preventing stale fallback geometry from surviving data resets.
+terrainCacheNeedsRefresh :: UiState -> TerrainSnapshot -> TerrainCache -> Bool
+terrainCacheNeedsRefresh uiSnap terrainSnap cache
+  | tsChunkSize terrainSnap <= 0 || IntMap.null (tsTerrainChunks terrainSnap) =
+      tcChunkSize cache /= 0
+        || not (IntMap.null (tcTerrainChunks cache))
+        || not (IntMap.null (tcClimateChunks cache))
+        || not (IntMap.null (tcWeatherChunks cache))
+        || not (IntMap.null (tcGeometry cache))
+  | tcViewMode cache /= uiViewMode uiSnap = True
+  | tcWaterLevel cache /= uiRenderWaterLevel uiSnap = True
+  | tcChunkSize cache /= tsChunkSize terrainSnap = True
+  | tcVersion cache /= terrainSnapshotViewVersion (uiViewMode uiSnap) terrainSnap = True
+  | otherwise = False
+
 -- | Build a fresh terrain cache for the current UI and terrain state.
 buildTerrainCache :: UiState -> TerrainSnapshot -> TerrainCache
 buildTerrainCache uiSnap terrainSnap =
@@ -135,6 +155,40 @@ drawTerrain renderer terrainSnap cache textureCache (panX, panY) zoom (V2 winW w
       let (x', y') = transformWorldPoint (px, py) z (bx + realToFrac x, by + realToFrac y)
       in Raw.Vertex (Raw.FPoint (realToFrac x') (realToFrac y')) color tex
 
+-- | Whether cached fallback chunk textures are stale for a terrain cache and
+-- atlas scale.  This mirrors 'updateChunkTextures' without touching SDL.
+chunkTextureCacheNeedsUpdate :: TerrainCache -> Int -> ChunkTextureCache -> Bool
+chunkTextureCacheNeedsUpdate cache scale textureCache
+  | IntMap.null (tcGeometry cache) =
+      not (IntMap.null (ctcTextures textureCache))
+        || ctcChunkSize textureCache /= 0
+        || not (IntMap.null (ctcTerrainChunks textureCache))
+        || not (IntMap.null (ctcClimateChunks textureCache))
+        || not (IntMap.null (ctcWeatherChunks textureCache))
+  | chunkTextureMetadataMismatch cache scale textureCache = True
+  | currentKeys /= geomKeys = True
+  | otherwise = False
+  where
+    geomKeys = IntMap.keysSet (tcGeometry cache)
+    currentKeys = IntMap.keysSet (ctcTextures textureCache)
+
+-- | Whether a non-render-target fallback frame still needs terrain or chunk
+-- texture work before it can be considered complete for this snapshot.
+fallbackTerrainNeedsRefresh :: UiState -> TerrainSnapshot -> Int -> TerrainCache -> ChunkTextureCache -> Bool
+fallbackTerrainNeedsRefresh uiSnap terrainSnap scale cache textureCache =
+  terrainCacheNeedsRefresh uiSnap terrainSnap cache
+    || chunkTextureCacheNeedsUpdate cache scale textureCache
+
+chunkTextureMetadataMismatch :: TerrainCache -> Int -> ChunkTextureCache -> Bool
+chunkTextureMetadataMismatch cache scale textureCache =
+  ctcViewMode textureCache /= tcViewMode cache
+    || ctcWaterLevel textureCache /= tcWaterLevel cache
+    || ctcChunkSize textureCache /= tcChunkSize cache
+    || ctcScale textureCache /= scale
+    || ctcTerrainChunks textureCache /= tcTerrainChunks cache
+    || ctcClimateChunks textureCache /= tcClimateChunks cache
+    || ctcWeatherChunks textureCache /= tcWeatherChunks cache
+
 -- | Update cached chunk textures for the current atlas scale.
 updateChunkTextures :: SDL.Renderer -> TerrainCache -> Int -> ChunkTextureCache -> IO ChunkTextureCache
 updateChunkTextures renderer cache scale textureCache = do
@@ -151,13 +205,7 @@ updateChunkTextures renderer cache scale textureCache = do
           , ctcTextures = IntMap.empty
           }
   baseCache <-
-    if ctcViewMode textureCache /= tcViewMode cache
-        || ctcWaterLevel textureCache /= tcWaterLevel cache
-        || ctcChunkSize textureCache /= tcChunkSize cache
-        || ctcScale textureCache /= scale
-        || ctcTerrainChunks textureCache /= tcTerrainChunks cache
-        || ctcClimateChunks textureCache /= tcClimateChunks cache
-        || ctcWeatherChunks textureCache /= tcWeatherChunks cache
+    if chunkTextureMetadataMismatch cache scale textureCache
       then resetCache
       else pure textureCache
   let geomKeys = IntMap.keysSet (tcGeometry cache)

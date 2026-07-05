@@ -3,6 +3,9 @@ module Seer.Render
   , emptyTerrainCache
   , buildTerrainCache
   , updateChunkTextures
+  , terrainCacheNeedsRefresh
+  , chunkTextureCacheNeedsUpdate
+  , fallbackTerrainNeedsRefresh
   , drawTerrain
   , RenderContext(..)
   , renderFrame
@@ -15,6 +18,9 @@ import Seer.Render.Terrain
   , emptyTerrainCache
   , buildTerrainCache
   , updateChunkTextures
+  , terrainCacheNeedsRefresh
+  , chunkTextureCacheNeedsUpdate
+  , fallbackTerrainNeedsRefresh
   , drawTerrain
   )
 
