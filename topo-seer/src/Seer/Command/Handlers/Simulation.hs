@@ -9,33 +9,37 @@ module Seer.Command.Handlers.Simulation
   , handleGetSimDag
   ) where
 
+import Control.Monad (when)
 import Data.Aeson (Value(..), object, (.=), (.:), (.:?))
 import qualified Data.Aeson.Types as Aeson
+import qualified Data.IntMap.Strict as IntMap
 import Data.List (find)
 import Data.Text (Text)
 
-import Actor.Data (DataSnapshot(..), getDataSnapshot)
+import Actor.AtlasCache (atlasKeyFor)
+import Actor.AtlasManager (AtlasJob(..), enqueueAtlasBuild)
+import Actor.Data (DataSnapshot(..), TerrainSnapshot(..), getDataSnapshot)
 import Actor.Log (LogEntry(..), LogLevel(..), appendLog)
 import Actor.PluginManager
   ( PluginSimulationNodeDiagnostic(..)
   , PluginSimulationPlan(..)
   , getPluginSimulationPlan
   )
-import Actor.SnapshotReceiver (bumpSnapshotVersion)
+import Actor.SnapshotReceiver (bumpSnapshotVersion, readSnapshotVersion, readTerrainSnapshot)
 import Actor.Simulation
   ( SimulationDagNodeSnapshot(..)
   , SimulationDagSnapshot(..)
   , SimulationTickLogEntry(..)
-  , autoTickWeatherPublishIntervalNs
   , flushSimWeatherPublication
   , getSimDagSnapshot
   , requestSimTick
+  , simulationAtlasBackfillRateThreshold
   )
 import Actor.UI.Setters (setUiSimAutoTick, setUiSimTickRate)
-import Actor.UI.State (UiState(..), getUiSnapshot, readUiSnapshotRef)
+import Actor.UI.State (UiState(..), ViewMode(..), getUiSnapshot, readUiSnapshotRef)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
-import Seer.System.AutoTick (autoTickPeriodMicros)
+import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom)
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 
 -- | Handle @get_sim_state@ — return current simulation state.
@@ -80,12 +84,16 @@ handleSetSimAutoTick ctx reqId params = do
       setUiSimAutoTick uiH enabled
       mapM_ (setUiSimTickRate uiH) mRate
       ui <- getUiSnapshot uiH
-      flushed <- if shouldFlushAutoTickPublication ui mRate
+      let shouldBackfill = shouldBackfillAutoTickPublication ui
+      flushed <- if shouldBackfill
         then flushSimWeatherPublication (ahSimulationHandle handles)
         else pure False
       if flushed
         then pure ()
-        else bumpSnapshotVersion (ahSnapshotVersionRef handles)
+        else do
+          bumpSnapshotVersion (ahSnapshotVersionRef handles)
+          when shouldBackfill $
+            enqueueLatestSimulationAtlasBackfill handles ui
       pure $ okResponse reqId $ object
         [ "auto_tick" .= uiSimAutoTick ui
         , "rate"      .= fmap (const (uiSimTickRate ui)) mRate
@@ -162,13 +170,61 @@ parseTickCount :: Value -> Aeson.Parser Int
 parseTickCount = Aeson.withObject "sim_tick" $ \o ->
   maybe 1 id <$> o .:? "count"
 
-shouldFlushAutoTickPublication :: UiState -> Maybe Float -> Bool
-shouldFlushAutoTickPublication ui mRate =
-  not (uiSimAutoTick ui) || case mRate of
-    Nothing -> False
-    Just _  -> case autoTickPeriodMicros (uiSimTickRate ui) of
-      Nothing -> True
-      Just micros -> fromIntegral micros * 1000 > autoTickWeatherPublishIntervalNs
+shouldBackfillAutoTickPublication :: UiState -> Bool
+shouldBackfillAutoTickPublication ui =
+  not (uiSimAutoTick ui)
+    || uiSimTickRate ui <= simulationAtlasBackfillRateThreshold
+
+enqueueLatestSimulationAtlasBackfill :: ActorHandles -> UiState -> IO ()
+enqueueLatestSimulationAtlasBackfill handles ui
+  | not (simulationAtlasBackfillViewAffected ui) = pure ()
+  | otherwise = do
+      terrainSnap <- readTerrainSnapshot (ahTerrainSnapshotRef handles)
+      when (simulationAtlasBackfillSnapshotReady terrainSnap) $ do
+        latestUi <- getUiSnapshot (ahUiHandle handles)
+        latestTerrainSnap <- readTerrainSnapshot (ahTerrainSnapshotRef handles)
+        when
+          (simulationAtlasBackfillStillCurrent ui terrainSnap latestUi latestTerrainSnap) $ do
+            snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
+            let atlasKey = atlasKeyFor (uiViewMode ui) (uiRenderWaterLevel ui) terrainSnap
+                mkJob stage = AtlasJob
+                  { ajKey = atlasKey
+                  , ajViewMode = uiViewMode ui
+                  , ajWaterLevel = uiRenderWaterLevel ui
+                  , ajSnapshotVersion = snapshotVersion
+                  , ajTerrain = terrainSnap
+                  , ajHexRadius = zsHexRadius stage
+                  , ajAtlasScale = zsAtlasScale stage
+                  }
+            mapM_
+              (enqueueAtlasBuild (ahAtlasManagerHandle handles) . mkJob)
+              (orderedZoomStagesForZoom (uiZoom ui))
+
+simulationAtlasBackfillViewAffected :: UiState -> Bool
+simulationAtlasBackfillViewAffected ui =
+  uiDayNightEnabled ui || case uiViewMode ui of
+    ViewWeather -> True
+    ViewCloud -> True
+    ViewOverlay name _ -> name == "weather"
+    _ -> False
+
+simulationAtlasBackfillSnapshotReady :: TerrainSnapshot -> Bool
+simulationAtlasBackfillSnapshotReady terrainSnap =
+  tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
+
+simulationAtlasBackfillStillCurrent
+  :: UiState
+  -> TerrainSnapshot
+  -> UiState
+  -> TerrainSnapshot
+  -> Bool
+simulationAtlasBackfillStillCurrent requestedUi requestedTerrain latestUi latestTerrain =
+  uiViewMode requestedUi == uiViewMode latestUi
+    && uiRenderWaterLevel requestedUi == uiRenderWaterLevel latestUi
+    && uiZoom requestedUi == uiZoom latestUi
+    && uiDayNightEnabled requestedUi == uiDayNightEnabled latestUi
+    && atlasKeyFor (uiViewMode requestedUi) (uiRenderWaterLevel requestedUi) requestedTerrain
+       == atlasKeyFor (uiViewMode latestUi) (uiRenderWaterLevel latestUi) latestTerrain
 
 simulationPhase :: DataSnapshot -> SimulationDagSnapshot -> Text
 simulationPhase dataSnap dag

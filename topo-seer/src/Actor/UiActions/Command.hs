@@ -40,7 +40,7 @@ import Actor.PluginManager.PipelineIntegrator
   )
 import Actor.Simulation (Simulation, clearSimWorld)
 import Actor.AtlasManager (AtlasJob(..), AtlasManager, enqueueAtlasBuild)
-import Seer.Render.ZoomStage (ZoomStage(..), allZoomStages, stageForZoom)
+import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom, stageForZoom)
 import Actor.Data
   ( Data
   , TerrainSnapshot(..)
@@ -300,10 +300,9 @@ rebuildAtlasFor req mode = do
   uiSnap <- getUiSnapshot (ahUiHandle handles)
   snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
   let atlasKey = atlasKeyFor mode (uiRenderWaterLevel uiSnap) terrainSnap
-      currentStage = stageForZoom (uiZoom uiSnap)
       -- Enqueue the current zoom stage first so the visible tiles are
       -- prioritised by the scheduler's round-robin dispatch.
-      orderedStages = currentStage : filter (/= currentStage) allZoomStages
+      orderedStages = orderedZoomStagesForZoom (uiZoom uiSnap)
       job stage = AtlasJob
         { ajKey        = atlasKey
         , ajViewMode   = mode
@@ -323,8 +322,7 @@ rebuildAtlasFor' handles mode = do
   uiSnap <- getUiSnapshot (ahUiHandle handles)
   snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
   let atlasKey = atlasKeyFor mode (uiRenderWaterLevel uiSnap) terrainSnap
-      currentStage = stageForZoom (uiZoom uiSnap)
-      orderedStages = currentStage : filter (/= currentStage) allZoomStages
+      orderedStages = orderedZoomStagesForZoom (uiZoom uiSnap)
       job stage = AtlasJob
         { ajKey        = atlasKey
         , ajViewMode   = mode

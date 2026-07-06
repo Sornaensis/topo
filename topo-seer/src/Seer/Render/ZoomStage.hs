@@ -8,6 +8,8 @@
 module Seer.Render.ZoomStage
   ( ZoomStage(..)
   , allZoomStages
+  , prioritizeZoomStage
+  , orderedZoomStagesForZoom
   , stageForZoom
   , maxCameraZoom
   ) where
@@ -55,6 +57,17 @@ allZoomStages =
   , ZoomStage { zsHexRadius = 32, zsAtlasScale = 1, zsZoomMin = 4.0, zsZoomMax = 6.0 }
   , ZoomStage { zsHexRadius = 50, zsAtlasScale = 1, zsZoomMin = 6.0, zsZoomMax = 8.0 }
   ]
+
+-- | Return all stages with the supplied current stage first.
+--
+-- Remaining stages keep the stable 'allZoomStages' order and each stage
+-- appears exactly once.
+prioritizeZoomStage :: ZoomStage -> [ZoomStage]
+prioritizeZoomStage currentStage = currentStage : filter (/= currentStage) allZoomStages
+
+-- | Return all stages with the stage for the camera zoom first.
+orderedZoomStagesForZoom :: Float -> [ZoomStage]
+orderedZoomStagesForZoom = prioritizeZoomStage . stageForZoom
 
 -- | Select the zoom stage for the given camera zoom level.
 --

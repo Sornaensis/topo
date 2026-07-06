@@ -30,7 +30,7 @@ import Actor.Simulation
   , setSimWorldWithNodes
   )
 import Actor.SnapshotReceiver (readSnapshotVersion, readTerrainSnapshot)
-import Actor.UI (UiState(..), ViewMode(..), getUiSnapshot)
+import Actor.UI (UiState(..), ViewMode(..), getUiSnapshot, setUiZoom)
 import Actor.UiActions (ActorHandles(..))
 import Seer.Command.Dispatch (CommandContext(..), dispatchCommand)
 import Seer.Headless
@@ -39,7 +39,12 @@ import Seer.Headless
   , headlessCommandContext
   , withHeadlessApp
   )
-import Seer.Render.ZoomStage (allZoomStages)
+import Seer.Render.ZoomStage
+  ( ZoomStage(..)
+  , allZoomStages
+  , orderedZoomStagesForZoom
+  , stageForZoom
+  )
 import Topo
   ( ChunkId(..)
   , ClimateChunk(..)
@@ -143,6 +148,95 @@ spec = describe "AutoTick scheduler" $ do
       dag <- getSimDagSnapshot (ahSimulationHandle handles)
       sdsPendingTick dag `shouldBe` Nothing
       map stleStatus (sdsTickLogs dag) `shouldSatisfy` elem (Text.pack "completed")
+
+  it "backfills all stages current-first when high-rate auto tick is disabled" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      installWorld app
+      let handles = appHandles app
+      setUiZoom (ahUiHandle handles) 2.5
+      viewRsp <- dispatch app "set_view_mode" (object ["mode" .= (Text.pack "weather")])
+      srSuccess viewRsp `shouldBe` True
+      uiBeforeAuto <- getUiSnapshot (ahUiHandle handles)
+      let currentStage = stageForZoom (uiZoom uiBeforeAuto)
+          expectedCurrent = zoomStagePair currentStage
+          expectedBackfill = map zoomStagePair (orderedZoomStagesForZoom (uiZoom uiBeforeAuto))
+      _ <- drainAtlasJobs (ahAtlasManagerHandle handles)
+
+      rsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (1.0 :: Double)])
+      srSuccess rsp `shouldBe` True
+      advanced <- awaitTrue 100 $ do
+        ui <- getUiSnapshot (ahUiHandle handles)
+        pure (uiSimTickCount ui >= 1)
+      advanced `shouldBe` True
+
+      firstJobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+      length firstJobs `shouldBe` 1
+      map ajViewMode firstJobs `shouldBe` [ViewWeather]
+      map atlasJobStage firstJobs `shouldBe` [expectedCurrent]
+
+      stopRsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= False])
+      srSuccess stopRsp `shouldBe` True
+      publishedSnap <- readTerrainSnapshot (ahTerrainSnapshotRef handles)
+      jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+      length jobs `shouldBe` length allZoomStages
+      map ajViewMode jobs `shouldBe` replicate (length allZoomStages) ViewWeather
+      map atlasJobStage jobs `shouldBe` expectedBackfill
+      all ((== tsWeatherVersion publishedSnap) . atlasKeyVersion . ajKey) jobs `shouldBe` True
+
+  it "backfills all stages current-first when high-rate auto tick is slowed" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      installWorld app
+      let handles = appHandles app
+      setUiZoom (ahUiHandle handles) 2.5
+      viewRsp <- dispatch app "set_view_mode" (object ["mode" .= (Text.pack "weather")])
+      srSuccess viewRsp `shouldBe` True
+      uiBeforeAuto <- getUiSnapshot (ahUiHandle handles)
+      let expectedBackfill = map zoomStagePair (orderedZoomStagesForZoom (uiZoom uiBeforeAuto))
+      _ <- drainAtlasJobs (ahAtlasManagerHandle handles)
+
+      rsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (1.0 :: Double)])
+      srSuccess rsp `shouldBe` True
+      advanced <- awaitTrue 100 $ do
+        ui <- getUiSnapshot (ahUiHandle handles)
+        pure (uiSimTickCount ui >= 1)
+      advanced `shouldBe` True
+      firstJobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+      length firstJobs `shouldBe` 1
+
+      slowRsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (0.1 :: Double)])
+      srSuccess slowRsp `shouldBe` True
+      slowedUi <- getUiSnapshot (ahUiHandle handles)
+      uiSimAutoTick slowedUi `shouldBe` True
+      uiSimTickRate slowedUi `shouldBe` 0.1
+      publishedSnap <- readTerrainSnapshot (ahTerrainSnapshotRef handles)
+      jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+      length jobs `shouldBe` length allZoomStages
+      map ajViewMode jobs `shouldBe` replicate (length allZoomStages) ViewWeather
+      map atlasJobStage jobs `shouldBe` expectedBackfill
+      all ((== tsWeatherVersion publishedSnap) . atlasKeyVersion . ajKey) jobs `shouldBe` True
+
+  it "does not enqueue disable backfill for unaffected non-weather views" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      installWorld app
+      let handles = appHandles app
+      setUiZoom (ahUiHandle handles) 2.5
+      viewRsp <- dispatch app "set_view_mode" (object ["mode" .= (Text.pack "biome")])
+      srSuccess viewRsp `shouldBe` True
+      _ <- drainAtlasJobs (ahAtlasManagerHandle handles)
+
+      rsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (1.0 :: Double)])
+      srSuccess rsp `shouldBe` True
+      advanced <- awaitTrue 100 $ do
+        ui <- getUiSnapshot (ahUiHandle handles)
+        pure (uiSimTickCount ui >= 1)
+      advanced `shouldBe` True
+      hiddenJobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+      length hiddenJobs `shouldBe` 0
+
+      stopRsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= False])
+      srSuccess stopRsp `shouldBe` True
+      jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+      length jobs `shouldBe` 0
 
   it "auto ticks builtin weather and plugin simulation nodes through the actor DAG" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
@@ -343,6 +437,12 @@ timedMillis action = do
 
 readRunCount :: IORef Int -> IO Int
 readRunCount ref = atomicModifyIORef' ref (\n -> (n, n))
+
+atlasJobStage :: AtlasJob -> (Int, Int)
+atlasJobStage job = (ajHexRadius job, ajAtlasScale job)
+
+zoomStagePair :: ZoomStage -> (Int, Int)
+zoomStagePair stage = (zsHexRadius stage, zsAtlasScale stage)
 
 awaitStoppedAutoTickIdle :: ActorHandles -> IORef Int -> IO Bool
 awaitStoppedAutoTickIdle handles runCountRef = awaitTrue 20 $ do

@@ -29,6 +29,7 @@ module Actor.Simulation
   , autoTickStepArmed
   , flushSimWeatherPublication
   , autoTickWeatherPublishIntervalNs
+  , simulationAtlasBackfillRateThreshold
   , beginSimShutdown
   , waitForSimIdle
   , AutoTickStepResult(..)
@@ -99,7 +100,7 @@ import Actor.UI
   , setUiSimTickCount
   , setUiOverlayNames
   )
-import Seer.Render.ZoomStage (ZoomStage(..), allZoomStages)
+import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom, stageForZoom)
 
 import Topo.Calendar
   ( CalendarConfig
@@ -1073,7 +1074,7 @@ integrateFreshTickResult result st
                   weatherChanged
                   vegetationChanged
                   visibleOverlayChanged ->
-                  enqueueAtlasJobsForPublication handles uiSnap terrainSnap snapshotVersion
+                  enqueueAtlasJobsForPublication handles (strCompletion result) uiSnap terrainSnap snapshotVersion
             _ -> pure ()
           let stPublished = tprState publication
               completeMsg = "simulation: tick " <> Text.pack (show appliedTick)
@@ -1245,16 +1246,7 @@ autoWeatherPublicationDue now st =
 autoWeatherPublicationFlushBeforeIdle :: UiState -> Bool
 autoWeatherPublicationFlushBeforeIdle uiSnap
   | not (uiSimAutoTick uiSnap) = True
-  | otherwise = case autoTickPeriodNs (uiSimTickRate uiSnap) of
-      Nothing -> True
-      Just periodNs -> periodNs > autoTickWeatherPublishIntervalNs
-
-autoTickPeriodNs :: Float -> Maybe Word64
-autoTickPeriodNs rate
-  | hz <= 0 = Nothing
-  | otherwise = Just (max 1 (round (1000000000 / hz)))
-  where
-    hz = realToFrac (max 0 (min 1 rate)) * 10 :: Double
+  | otherwise = uiSimTickRate uiSnap <= simulationAtlasBackfillRateThreshold
 
 publishDataSnapshot
   :: SimHandles
@@ -1297,8 +1289,44 @@ atlasPublicationAffected coalescedWeatherAffected uiSnap terrainChanged climateC
     || coalescedWeatherAffected
     || viewAffectedBySimulationPublication (uiViewMode uiSnap) terrainChanged climateChanged weatherChanged vegetationChanged overlayChanged
 
-enqueueAtlasJobsForPublication :: SimHandles -> UiState -> TerrainSnapshot -> SnapshotVersion -> IO ()
-enqueueAtlasJobsForPublication handles uiSnap terrainSnap snapshotVersion = do
+-- | Normalized auto-tick rates at or below this value are slow enough to
+-- backfill all zoom stages whenever a weather/cloud/day-night publication is
+-- allowed. Faster active auto-tick publishes only the visible stage first.
+simulationAtlasBackfillRateThreshold :: Float
+simulationAtlasBackfillRateThreshold = 0.4
+
+simulationAtlasBackfillAllowed :: SimulationTickCompletion -> UiState -> Bool
+simulationAtlasBackfillAllowed SimulationTickNoCompletion _ = True
+simulationAtlasBackfillAllowed SimulationTickAutoCompletion{} uiSnap =
+  not (uiSimAutoTick uiSnap)
+    || uiSimTickRate uiSnap <= simulationAtlasBackfillRateThreshold
+
+simulationAtlasCurrentStageOnly :: SimulationTickCompletion -> UiState -> Bool
+simulationAtlasCurrentStageOnly completion uiSnap =
+  simulationAtlasCurrentStageOnlyEligible uiSnap
+    && not (simulationAtlasBackfillAllowed completion uiSnap)
+
+simulationAtlasCurrentStageOnlyEligible :: UiState -> Bool
+simulationAtlasCurrentStageOnlyEligible uiSnap =
+  uiDayNightEnabled uiSnap || case uiViewMode uiSnap of
+    ViewWeather -> True
+    ViewCloud -> True
+    ViewOverlay name _ -> name == "weather"
+    _ -> False
+
+simulationAtlasStagesForTick :: SimulationTickCompletion -> UiState -> [ZoomStage]
+simulationAtlasStagesForTick completion uiSnap
+  | simulationAtlasCurrentStageOnly completion uiSnap = [stageForZoom (uiZoom uiSnap)]
+  | otherwise = orderedZoomStagesForZoom (uiZoom uiSnap)
+
+enqueueAtlasJobsForPublication
+  :: SimHandles
+  -> SimulationTickCompletion
+  -> UiState
+  -> TerrainSnapshot
+  -> SnapshotVersion
+  -> IO ()
+enqueueAtlasJobsForPublication handles completion uiSnap terrainSnap snapshotVersion = do
   let atlasKey = atlasKeyFor (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) terrainSnap
       mkJob stage = AtlasJob
         { ajKey = atlasKey
@@ -1309,7 +1337,9 @@ enqueueAtlasJobsForPublication handles uiSnap terrainSnap snapshotVersion = do
         , ajHexRadius = zsHexRadius stage
         , ajAtlasScale = zsAtlasScale stage
         }
-  mapM_ (enqueueAtlasBuild (shAtlasHandle handles) . mkJob) allZoomStages
+  mapM_
+    (enqueueAtlasBuild (shAtlasHandle handles) . mkJob)
+    (simulationAtlasStagesForTick completion uiSnap)
 
 flushLatestWeatherPublication :: SimState -> IO (SimState, Bool)
 flushLatestWeatherPublication st =
@@ -1329,7 +1359,7 @@ flushLatestWeatherPublication st =
                 else do
                   now <- getMonotonicTimeNSec
                   (st', snapshotVersion) <- publishDataSnapshot handles st True now latest
-                  enqueueAtlasJobsForPublication handles uiSnap latest snapshotVersion
+                  enqueueAtlasJobsForPublication handles SimulationTickNoCompletion uiSnap latest snapshotVersion
                   pure (st', True)
 
 flushWeatherPublicationViewAffected :: SimState -> UiState -> Bool
@@ -1337,6 +1367,7 @@ flushWeatherPublicationViewAffected _ uiSnap =
   uiDayNightEnabled uiSnap || case uiViewMode uiSnap of
     ViewWeather -> True
     ViewCloud   -> True
+    ViewOverlay name _ -> name == "weather"
     _           -> False
 
 flushWeatherPublicationNeeded :: SimState -> UiState -> TerrainSnapshot -> TerrainSnapshot -> Bool
@@ -1345,6 +1376,11 @@ flushWeatherPublicationNeeded st uiSnap latest published
   | otherwise = case uiViewMode uiSnap of
       ViewWeather -> ssAutoWeatherPublicationPending st || terrainSnapshotViewVersion ViewWeather latest /= terrainSnapshotViewVersion ViewWeather published
       ViewCloud   -> ssAutoWeatherPublicationPending st || terrainSnapshotViewVersion ViewCloud latest /= terrainSnapshotViewVersion ViewCloud published
+      mode@(ViewOverlay name _) ->
+        name == "weather"
+          && ( ssAutoWeatherPublicationPending st
+               || terrainSnapshotViewVersion mode latest /= terrainSnapshotViewVersion mode published
+             )
       _           -> False
 
 autoTickWeatherPublishIntervalNs :: Word64

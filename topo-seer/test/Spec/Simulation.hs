@@ -44,8 +44,20 @@ import Actor.SnapshotReceiver
   , readSnapshotVersion
   , readTerrainSnapshot
   )
-import Actor.UI (Ui, ViewMode(..), getUiSnapshot, setUiDayNightEnabled, setUiViewMode, uiRenderWaterLevel, uiSimTickCount)
-import Seer.Render.ZoomStage (allZoomStages)
+import Actor.UI
+  ( Ui
+  , ViewMode(..)
+  , getUiSnapshot
+  , setUiDayNightEnabled
+  , setUiSimAutoTick
+  , setUiSimTickRate
+  , setUiViewMode
+  , setUiZoom
+  , uiRenderWaterLevel
+  , uiSimTickCount
+  , uiZoom
+  )
+import Seer.Render.ZoomStage (ZoomStage(..), allZoomStages, orderedZoomStagesForZoom, stageForZoom)
 
 import Topo
   ( ChunkId(..)
@@ -110,6 +122,12 @@ firstWeatherTemp chunks = do
   if U.null (wcTemp weatherChunk)
     then Nothing
     else Just (wcTemp weatherChunk U.! 0)
+
+atlasJobStage :: AtlasJob -> (Int, Int)
+atlasJobStage job = (ajHexRadius job, ajAtlasScale job)
+
+zoomStagePair :: ZoomStage -> (Int, Int)
+zoomStagePair stage = (zsHexRadius stage, zsAtlasScale stage)
 
 seedWeatherOverlay :: IntMap.IntMap WeatherChunk -> Overlay
 seedWeatherOverlay = seedWeatherOverlayWithSchedule Nothing
@@ -490,6 +508,8 @@ spec = describe "Simulation actor" $ do
 
     atlasJobs <- drainAtlasJobs atlasHandle
     length atlasJobs `shouldBe` length allZoomStages
+    map atlasJobStage atlasJobs `shouldBe`
+      map zoomStagePair (orderedZoomStagesForZoom (uiZoom uiSnapBeforeTick))
     map ajViewMode atlasJobs `shouldBe` replicate (length allZoomStages) ViewCloud
     map ajKey atlasJobs `shouldSatisfy` all (== cloudKey1)
     map (atlasKeyVersion . ajKey) atlasJobs `shouldSatisfy` all (== tsWeatherVersion terrainSnap)
@@ -529,10 +549,127 @@ spec = describe "Simulation actor" $ do
 
     atlasJobs3 <- drainAtlasJobs atlasHandle
     length atlasJobs3 `shouldBe` length allZoomStages
+    map atlasJobStage atlasJobs3 `shouldBe`
+      map zoomStagePair (orderedZoomStagesForZoom (uiZoom uiSnapBeforeTick))
     map ajViewMode atlasJobs3 `shouldBe` replicate (length allZoomStages) ViewCloud
     map ajKey atlasJobs3 `shouldSatisfy` all (== cloudKey3)
     map (atlasKeyVersion . ajKey) atlasJobs3 `shouldSatisfy` all (== tsWeatherVersion terrainSnap3)
     map ajSnapshotVersion atlasJobs3 `shouldSatisfy` all (== version3)
+
+  it "keeps high-rate visible auto ticks queued to the latest current stage" $ withSystem $ \system -> do
+    simHandle <- get @Simulation system
+    dataHandle <- get @Data system
+    logHandle <- get @Log system
+    uiHandle <- get @Ui system
+    dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
+    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
+    snapshotVersionRef <- newSnapshotVersionRef
+    atlasHandle <- get @AtlasManager system
+
+    setSimHandles simHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasHandle
+
+    let config = WorldConfig { wcChunkSize = 8 }
+        chunk = generateTerrainChunk config (const 0.5)
+        climate0 = emptyClimateChunk config
+        tileCount = U.length (ccTempAvg climate0)
+        climate = climate0
+          { ccTempAvg = U.replicate tileCount 0.6
+          , ccPrecipAvg = U.replicate tileCount 0.5
+          , ccWindDirAvg = U.replicate tileCount 0.4
+          , ccWindSpdAvg = U.replicate tileCount 0.35
+          , ccHumidityAvg = U.replicate tileCount 0.5
+          }
+        world0 = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice
+        world1 = withSeedWeather
+          (setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) chunk world0))
+          (ChunkId 0)
+          climate
+
+    replaceTerrainData dataHandle world1
+    _ <- getTerrainSnapshot dataHandle
+    setSimWorld simHandle world1
+    setUiViewMode uiHandle ViewCloud
+    setUiZoom uiHandle 2.5
+    setUiSimAutoTick uiHandle True
+    setUiSimTickRate uiHandle 1.0
+    uiSnapBeforeTick <- getUiSnapshot uiHandle
+    _ <- drainAtlasJobs atlasHandle
+    let waterLevel0 = uiRenderWaterLevel uiSnapBeforeTick
+        currentStage = stageForZoom (uiZoom uiSnapBeforeTick)
+        expectedStage = zoomStagePair currentStage
+
+    autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 1
+    firstSnap <- getTerrainSnapshot dataHandle
+    let firstCloudKey = atlasKeyFor ViewCloud waterLevel0 firstSnap
+
+    threadDelay 260000
+    autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 2
+
+    version <- readSnapshotVersion snapshotVersionRef
+    terrainSnap <- getTerrainSnapshot dataHandle
+    let latestCloudKey = atlasKeyFor ViewCloud waterLevel0 terrainSnap
+    latestCloudKey `shouldNotBe` firstCloudKey
+
+    atlasJobs <- drainAtlasJobs atlasHandle
+    length atlasJobs `shouldBe` 1
+    map ajViewMode atlasJobs `shouldBe` [ViewCloud]
+    map ajKey atlasJobs `shouldBe` [latestCloudKey]
+    map atlasJobStage atlasJobs `shouldBe` [expectedStage]
+    map ajSnapshotVersion atlasJobs `shouldBe` [version]
+
+  it "keeps high-rate non-weather overlay auto ticks on full current-first backfill" $ withSystem $ \system -> do
+    simHandle <- get @Simulation system
+    dataHandle <- get @Data system
+    logHandle <- get @Log system
+    uiHandle <- get @Ui system
+    dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
+    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
+    snapshotVersionRef <- newSnapshotVersionRef
+    atlasHandle <- get @AtlasManager system
+
+    setSimHandles simHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasHandle
+
+    let config = WorldConfig { wcChunkSize = 8 }
+        chunk = generateTerrainChunk config (const 0.5)
+        climate0 = emptyClimateChunk config
+        tileCount = U.length (ccTempAvg climate0)
+        climate = climate0
+          { ccTempAvg = U.replicate tileCount 0.6
+          , ccPrecipAvg = U.replicate tileCount 0.5
+          , ccWindDirAvg = U.replicate tileCount 0.4
+          , ccWindSpdAvg = U.replicate tileCount 0.35
+          , ccHumidityAvg = U.replicate tileCount 0.5
+          }
+        world0 = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice
+        world1 = withSeedPluginOverlay tileCount 0 $
+          withSeedWeather
+            (setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) chunk world0))
+            (ChunkId 0)
+            climate
+        viewMode = ViewOverlay pluginOverlayName 0
+
+    replaceTerrainData dataHandle world1
+    _ <- getTerrainSnapshot dataHandle
+    setSimWorldWithNodes simHandle world1 [pluginSimulationBinding]
+    setUiViewMode uiHandle viewMode
+    setUiZoom uiHandle 2.5
+    setUiSimAutoTick uiHandle True
+    setUiSimTickRate uiHandle 1.0
+    uiSnapBeforeTick <- getUiSnapshot uiHandle
+    _ <- drainAtlasJobs atlasHandle
+
+    autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 1
+
+    version <- readSnapshotVersion snapshotVersionRef
+    terrainSnap <- getTerrainSnapshot dataHandle
+    let overlayKey = atlasKeyFor viewMode (uiRenderWaterLevel uiSnapBeforeTick) terrainSnap
+    atlasJobs <- drainAtlasJobs atlasHandle
+    length atlasJobs `shouldBe` length allZoomStages
+    map ajViewMode atlasJobs `shouldBe` replicate (length allZoomStages) viewMode
+    map ajKey atlasJobs `shouldSatisfy` all (== overlayKey)
+    map atlasJobStage atlasJobs `shouldBe`
+      map zoomStagePair (orderedZoomStagesForZoom (uiZoom uiSnapBeforeTick))
+    map ajSnapshotVersion atlasJobs `shouldSatisfy` all (== version)
 
   it "coalesces hidden auto-tick snapshot publication while manual and visible updates publish immediately" $ withSystem $ \system -> do
     simHandle <- get @Simulation system

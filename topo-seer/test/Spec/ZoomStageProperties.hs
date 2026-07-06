@@ -1,5 +1,6 @@
 module Spec.ZoomStageProperties (spec) where
 
+import Data.List (nub)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Word (Word64)
 import Test.Hspec
@@ -11,6 +12,7 @@ import Seer.Render.ZoomStage
   ( ZoomStage(..)
   , allZoomStages
   , maxCameraZoom
+  , orderedZoomStagesForZoom
   , stageForZoom
   )
 import Topo (WorldConfig(..))
@@ -50,6 +52,40 @@ spec = describe "ZoomStage properties" $ do
 
     it "baked PPI meets screen demand at each stage midpoint" $
       mapM_ checkBakedPpi allZoomStages
+
+  describe "orderedZoomStagesForZoom" $ do
+
+    it "puts the current stage first across representative zooms" $
+      mapM_
+        (\zoom -> orderedZoomStagesForZoom zoom `shouldSatisfy` startsWith (stageForZoom zoom))
+        representativeZooms
+
+    it "prioritizes a non-head current stage" $ do
+      let zoom = 2.5
+          currentStage = stageForZoom zoom
+      case allZoomStages of
+        firstStage:_ -> currentStage `shouldNotBe` firstStage
+        [] -> expectationFailure "expected at least one zoom stage"
+      orderedZoomStagesForZoom zoom `shouldSatisfy` startsWith currentStage
+
+    it "contains each stage exactly once" $
+      mapM_
+        (\zoom ->
+          let stages = orderedZoomStagesForZoom zoom
+          in length stages `shouldBe` length (nub stages))
+        representativeZooms
+
+    it "contains the same stages as allZoomStages" $
+      mapM_
+        (\zoom -> orderedZoomStagesForZoom zoom `shouldMatchList` allZoomStages)
+        representativeZooms
+
+    it "keeps remaining stages in stable allZoomStages order" $
+      mapM_
+        (\zoom ->
+          let currentStage = stageForZoom zoom
+          in drop 1 (orderedZoomStagesForZoom zoom) `shouldBe` filter (/= currentStage) allZoomStages)
+        representativeZooms
 
   describe "viewport culling" $ do
 
@@ -151,6 +187,13 @@ spec = describe "ZoomStage properties" $ do
       zsHexRadius eff3 `shouldBe` zsHexRadius stage1
       -- Timer should be reset
       atcStageChangeNs cache3 `shouldBe` 0
+
+representativeZooms :: [Float]
+representativeZooms = [0.0, 0.5, 1.0, 2.5, 4.5, 7.5, maxCameraZoom]
+
+startsWith :: Eq a => a -> [a] -> Bool
+startsWith expected (actual:_) = actual == expected
+startsWith _ [] = False
 
 -- | Verify that baked pixels per hex >= screen demand at stage midpoint.
 --
