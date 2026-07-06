@@ -29,6 +29,11 @@ import Seer.Render
   , terrainCacheNeedsRefresh
   )
 import Seer.Render.Atlas (AtlasTextureCache(..))
+import Seer.Render.Frame
+  ( AtlasFrameStepPolicy(..)
+  , applyAtlasFrameStepTimestamps
+  , atlasFrameStepPolicy
+  )
 import Seer.Render.ZoomStage (ZoomStage(..), stageForZoom)
 import Seer.Screenshot.Request (ScreenshotRequestRef)
 import Seer.System.Cache
@@ -97,11 +102,17 @@ renderFrameStepMaintenanceDue settings renderTargetOk nowMs atlasPending renderS
            (fallbackTextureScale renderSnap (rcsAtlasCache cacheState))
            (rcsTerrainCache cacheState)
            (rcsChunkTextures cacheState)
-    atlasMaintenanceDue = renderTargetOk
-      && ( atlasPending
-        || (rcsAtlasNeedsRetry cacheState
-              && shouldPoll nowMs (rfsetAtlasSchedulePollMs settings) (rcsLastAtlasSchedule cacheState))
-         )
+    atlasMaintenanceDue = afspAtlasMaintenanceDue $
+      atlasFrameStepPolicy
+        nowMs
+        (rfsetAtlasDrainPollMs settings)
+        (rfsetAtlasSchedulePollMs settings)
+        generating
+        renderTargetOk
+        atlasPending
+        (rcsAtlasNeedsRetry cacheState)
+        (rcsLastAtlasDrain cacheState)
+        (rcsLastAtlasSchedule cacheState)
 
 fallbackTextureScale :: RenderSnapshot -> AtlasTextureCache -> Int
 fallbackTextureScale renderSnap atlasCache =
@@ -129,9 +140,18 @@ renderFrameStep env settings nowMs snapVersion renderSnap cacheState0 = do
         && terrainCacheNeedsRefresh (rsUi renderSnap) (rsTerrain renderSnap) (rcsTerrainCache cacheState0)
       shouldPollTerrain = not generating
         && (fallbackTerrainStale || shouldPoll nowMs (rfsetTerrainCachePollMs settings) (rcsLastTerrainPoll cacheState0))
-      shouldDrainAtlas = not generating
-        && (atlasPending || shouldPoll nowMs (rfsetAtlasDrainPollMs settings) (rcsLastAtlasDrain cacheState0))
-      shouldScheduleAtlas = not generating && shouldPoll nowMs (rfsetAtlasSchedulePollMs settings) (rcsLastAtlasSchedule cacheState0)
+      atlasPolicy = atlasFrameStepPolicy
+        nowMs
+        (rfsetAtlasDrainPollMs settings)
+        (rfsetAtlasSchedulePollMs settings)
+        generating
+        (rfeRenderTargetOk env)
+        atlasPending
+        (rcsAtlasNeedsRetry cacheState0)
+        (rcsLastAtlasDrain cacheState0)
+        (rcsLastAtlasSchedule cacheState0)
+      shouldDrainAtlas = afspShouldDrainAtlas atlasPolicy
+      shouldScheduleAtlas = afspShouldScheduleAtlas atlasPolicy
   tAfterLets <- getMonotonicTimeNSec
   (cacheState', terrainElapsed) <-
     if shouldPollTerrain
@@ -196,15 +216,22 @@ renderFrameStep env settings nowMs snapVersion renderSnap cacheState0 = do
                    (fallbackTextureScale renderSnap nextAtlasCache)
                    (rcsTerrainCache cacheState')
                    nextChunkTextures)
-      cacheState = cacheState'
+      cacheStateBeforeAtlasTimestamps = cacheState'
         { rcsChunkTextures = nextChunkTextures
         , rcsAtlasCache = nextAtlasCache
         , rcsAtlasNeedsRetry = rfoAtlasNeedsRetry frameOutcome
         , rcsLastSnapshot = if fallbackNeedsRetry then Nothing else Just snapVersion
         , rcsLastSnapshotData = Just renderSnap
-        , rcsLastAtlasDrain = if shouldDrainAtlas then Just nowMs else rcsLastAtlasDrain cacheState'
-        , rcsLastAtlasSchedule = if shouldScheduleAtlas then Just nowMs else rcsLastAtlasSchedule cacheState'
         , rcsLastChunkTexturePoll = if shouldUpdateChunkTextures then Just nowMs else rcsLastChunkTexturePoll cacheState'
+        }
+      (lastAtlasDrain, lastAtlasSchedule) = applyAtlasFrameStepTimestamps
+        nowMs
+        atlasPolicy
+        (rcsLastAtlasDrain cacheStateBeforeAtlasTimestamps)
+        (rcsLastAtlasSchedule cacheStateBeforeAtlasTimestamps)
+      cacheState = cacheStateBeforeAtlasTimestamps
+        { rcsLastAtlasDrain = lastAtlasDrain
+        , rcsLastAtlasSchedule = lastAtlasSchedule
         }
   if frameElapsed >= rfsetTimingLogThresholdMs settings
     then appendLog (rfeLogHandle env) (LogEntry LogInfo (renderMetrics frameElapsed renderSnap cacheState))

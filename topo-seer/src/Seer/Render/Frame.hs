@@ -1,6 +1,9 @@
 module Seer.Render.Frame
   ( RenderContext(..)
   , RenderFrameOutcome(..)
+  , AtlasFrameStepPolicy(..)
+  , applyAtlasFrameStepTimestamps
+  , atlasFrameStepPolicy
   , renderFrame
   ) where
 
@@ -83,6 +86,52 @@ data RenderFrameOutcome = RenderFrameOutcome
   , rfoAtlasTextureCache :: !AtlasTextureCache
   , rfoDidLog :: !Bool
   }
+
+-- | Render-loop atlas maintenance decisions shared by the frame step and tests.
+data AtlasFrameStepPolicy = AtlasFrameStepPolicy
+  { afspShouldDrainAtlas :: !Bool
+  , afspShouldScheduleAtlas :: !Bool
+  , afspAtlasMaintenanceDue :: !Bool
+  } deriving (Eq, Show)
+
+atlasFrameStepPolicy
+  :: Word32
+  -> Int
+  -> Int
+  -> Bool
+  -> Bool
+  -> Bool
+  -> Bool
+  -> Maybe Word32
+  -> Maybe Word32
+  -> AtlasFrameStepPolicy
+atlasFrameStepPolicy nowMs drainPollMs schedulePollMs generating renderTargetOk atlasPending atlasNeedsRetry lastDrain lastSchedule =
+  let scheduleDue = atlasPolicyShouldPoll nowMs schedulePollMs lastSchedule
+  in AtlasFrameStepPolicy
+    { afspShouldDrainAtlas = not generating
+        && (atlasPending || atlasPolicyShouldPoll nowMs drainPollMs lastDrain)
+    , afspShouldScheduleAtlas = not generating && scheduleDue
+    , afspAtlasMaintenanceDue = not generating
+        && renderTargetOk
+        && (atlasPending || (atlasNeedsRetry && scheduleDue))
+    }
+
+applyAtlasFrameStepTimestamps
+  :: Word32
+  -> AtlasFrameStepPolicy
+  -> Maybe Word32
+  -> Maybe Word32
+  -> (Maybe Word32, Maybe Word32)
+applyAtlasFrameStepTimestamps nowMs policy lastDrain lastSchedule =
+  ( if afspShouldDrainAtlas policy then Just nowMs else lastDrain
+  , if afspShouldScheduleAtlas policy then Just nowMs else lastSchedule
+  )
+
+atlasPolicyShouldPoll :: Word32 -> Int -> Maybe Word32 -> Bool
+atlasPolicyShouldPoll nowMs pollMs lastPoll =
+  case lastPoll of
+    Nothing -> True
+    Just prev -> nowMs - prev >= fromIntegral pollMs
 
 -- | Render one UI frame and schedule atlas work if needed.
 renderFrame
