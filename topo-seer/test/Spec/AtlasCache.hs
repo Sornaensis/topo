@@ -22,7 +22,9 @@ import Seer.Render.Atlas
   , setAtlasKey
   , storeAtlasTiles
   , storeAtlasTileSet
+  , storeDayNightTiles
   , getNearestAtlas
+  , getNearestDayNight
   , getCompleteAtlas
   , getCurrentCompleteAtlasForTarget
   , touchAtlasScale
@@ -82,6 +84,13 @@ mkManifestWithAtlasScale atlasScale buildId key hexRadius bounds = AtlasTileSetM
   , atsmAtlasScale = atlasScale
   , atsmExpectedTileCount = length bounds
   , atsmExpectedBounds = bounds
+  }
+
+mkFreshness :: AtlasTileSetManifest -> AtlasFreshness
+mkFreshness manifest = AtlasFreshness
+  { afKey = atsmKey manifest
+  , afSnapshotVersion = atsmSnapshotVersion manifest
+  , afLatestBuildIds = Map.singleton (atlasManifestTarget manifest) (atsmBuildId manifest)
   }
 
 -- | Helper to count total scales across all keys in the nested Map.
@@ -244,6 +253,151 @@ spec = describe "AtlasTextureCache" $ do
       fmap (map tatHexRadius) tiles `shouldBe` Just [10]
       status `shouldBe` NearestScaleFallback
       atlasResolveNeedsRetry status `shouldBe` True
+
+  -- -------------------------------------------------------------------
+  -- Completeness/retry regressions
+  -- -------------------------------------------------------------------
+  describe "atlas completeness and fallback promotion regressions" $ do
+    it "draws prior complete atcLast for partial exact delivery without promoting it" $ do
+      let previousTiles = [mkTile 10 6 testRect, mkTile 11 6 testRect2]
+          manifest = mkManifest 2 keyA 6 [testRect, testRect2]
+          cache0 = (emptyAtlasTextureCache 30)
+            { atcKey = Just keyA
+            , atcLast = Just (keyA, previousTiles)
+            }
+          cache1 = storeAtlasTileSet manifest [mkTile 1 6 testRect] cache0
+          (tiles, status, cache2) = resolveAtlasPureWithFreshness (Just (mkFreshness manifest)) True True keyA 6 cache1
+      status `shouldBe` LastGoodFallback
+      atlasResolveNeedsRetry status `shouldBe` True
+      fmap (map tatBounds) tiles `shouldBe` Just (map tatBounds previousTiles)
+      (fmap (map tatTexture) tiles == Just (map tatTexture previousTiles)) `shouldBe` True
+      fmap (map tatBounds . snd) (atcLast cache2) `shouldBe` Just (map tatBounds previousTiles)
+      (fmap (map tatTexture . snd) (atcLast cache2) == Just (map tatTexture previousTiles)) `shouldBe` True
+      isNothing (getCompleteAtlas keyA 6 cache2) `shouldBe` True
+
+    it "preserves last-good tiles across repeated partial resolves and build id replacement" $ do
+      let manifest1 = mkManifest 1 keyA 6 [testRect, testRect2]
+          manifest2 = mkManifest 2 keyA 6 [testRect, testRect2]
+          manifest3 = mkManifest 3 keyA 6 [testRect, testRect2]
+          fullTiles = [mkTile 10 6 testRect, mkTile 11 6 testRect2]
+          cache0 = storeAtlasTileSet manifest1 fullTiles
+            ((emptyAtlasTextureCache 30) { atcKey = Just keyA })
+          (initialTiles, initialStatus, cachePromoted) = resolveAtlasPureWithFreshness (Just (mkFreshness manifest1)) True True keyA 6 cache0
+          cache1 = storeAtlasTileSet manifest2 [mkTile 20 6 testRect] cachePromoted
+          (tiles1, status1, cache2) = resolveAtlasPureWithFreshness (Just (mkFreshness manifest2)) True True keyA 6 cache1
+          (tiles2, status2, cache3) = resolveAtlasPureWithFreshness (Just (mkFreshness manifest2)) True True keyA 6 cache2
+          cache4 = storeAtlasTileSet manifest3 [mkTile 30 6 testRect2] cache3
+          (tiles3, status3, cache5) = resolveAtlasPureWithFreshness (Just (mkFreshness manifest3)) True True keyA 6 cache4
+      initialStatus `shouldBe` CompleteExact
+      fmap (map tatBounds) initialTiles `shouldBe` Just (map tatBounds fullTiles)
+      [status1, status2, status3] `shouldBe` [LastGoodFallback, LastGoodFallback, LastGoodFallback]
+      map atlasResolveNeedsRetry [status1, status2, status3] `shouldBe` [True, True, True]
+      fmap (map tatBounds) tiles1 `shouldBe` Just (map tatBounds fullTiles)
+      fmap (map tatBounds) tiles2 `shouldBe` Just (map tatBounds fullTiles)
+      fmap (map tatBounds) tiles3 `shouldBe` Just (map tatBounds fullTiles)
+      (fmap (map tatTexture) tiles1 == Just (map tatTexture fullTiles)) `shouldBe` True
+      (fmap (map tatTexture) tiles2 == Just (map tatTexture fullTiles)) `shouldBe` True
+      (fmap (map tatTexture) tiles3 == Just (map tatTexture fullTiles)) `shouldBe` True
+      fmap (map tatBounds . snd) (atcLast cache5) `shouldBe` Just (map tatBounds fullTiles)
+      (fmap (map tatTexture . snd) (atcLast cache5) == Just (map tatTexture fullTiles)) `shouldBe` True
+      isNothing (getCompleteAtlas keyA 6 cache5) `shouldBe` True
+
+    it "keeps a complete nearest-scale atlas provisional for the current target scale" $ do
+      let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          nearestManifest = mkManifest 1 keyA 10 [testRect, testRect2]
+          cache1 = storeAtlasTileSet nearestManifest [mkTile 1 10 testRect, mkTile 2 10 testRect2] cache0
+          (tiles, status, cache2) = resolveAtlasPureWithStatus True True keyA 6 cache1
+      fmap (map tatHexRadius) tiles `shouldBe` Just [10, 10]
+      status `shouldBe` NearestScaleFallback
+      atlasResolveNeedsRetry status `shouldBe` True
+      isNothing (atcLast cache2) `shouldBe` True
+      isNothing (getCompleteAtlas keyA 6 cache2) `shouldBe` True
+
+    it "draws stale last-good keys and obsolete exact builds only as retrying fallback" $ do
+      let keyWet = AtlasKey ViewElevation 0.5 1
+          keyDry = AtlasKey ViewElevation 0.0 1
+          keyAv1 = AtlasKey ViewElevation 0.0 1
+          keyAv2 = AtlasKey ViewElevation 0.0 2
+          stalePairs = [(keyB, keyA), (keyDry, keyWet), (keyAv2, keyAv1)]
+      mapM_ (\(currentKey, lastKey) -> do
+          let staleTiles = [mkTile 40 6 testRect]
+              cache0 = (emptyAtlasTextureCache 30)
+                { atcKey = Just currentKey
+                , atcLast = Just (lastKey, staleTiles)
+                }
+              (tiles, status, cache1) = resolveAtlasPureWithStatus True True currentKey 6 cache0
+          fmap (map tatBounds) tiles `shouldBe` Just (map tatBounds staleTiles)
+          status `shouldBe` LastGoodFallback
+          atlasResolveNeedsRetry status `shouldBe` True
+          fmap fst (atcLast cache1) `shouldBe` Just lastKey
+        ) stalePairs
+      let oldManifest = mkManifest 1 keyA 6 [testRect]
+          latestManifest = mkManifest 2 keyA 6 [testRect]
+          cacheOld = storeAtlasTileSet oldManifest [mkTile 50 6 testRect]
+            ((emptyAtlasTextureCache 30) { atcKey = Just keyA })
+          (oldTiles, oldStatus, oldCache) = resolveAtlasPureWithFreshness (Just (mkFreshness latestManifest)) True True keyA 6 cacheOld
+      fmap length oldTiles `shouldBe` Just 1
+      oldStatus `shouldBe` StaleExactFallback
+      atlasResolveNeedsRetry oldStatus `shouldBe` True
+      isNothing (atcLast oldCache) `shouldBe` True
+
+    it "promotes full current completion and touches the target scale" $ do
+      let manifest = mkManifest 5 keyA 6 [testRect, testRect2]
+          cache0 = (emptyAtlasTextureCache 30)
+            { atcKey = Just keyA
+            , atcLru = [(keyA, 10)]
+            }
+          cache1 = storeAtlasTileSet manifest [mkTile 1 6 testRect] cache0
+          cache2 = storeAtlasTileSet manifest [mkTile 2 6 testRect2] cache1
+          cacheReady = cache2 { atcLru = [(keyA, 10), (keyA, 6)] }
+          (tiles, status, cache3) = resolveAtlasPureWithFreshness (Just (mkFreshness manifest)) True True keyA 6 cacheReady
+      case fmap (map tatBounds) tiles of
+        Just bounds -> do
+          length bounds `shouldBe` 2
+          all (`elem` bounds) [testRect, testRect2] `shouldBe` True
+        Nothing -> expectationFailure "expected complete target tiles"
+      status `shouldBe` CompleteExact
+      atlasResolveNeedsRetry status `shouldBe` False
+      fmap fst (atcLast cache3) `shouldBe` Just keyA
+      fmap (map tatBounds . snd) (atcLast cache3) `shouldBe` fmap (map tatBounds) tiles
+      fmap length (getCurrentCompleteAtlasForTarget (Just (mkFreshness manifest)) keyA 6 1 cache3) `shouldBe` Just 2
+      case atcLru cache3 of
+        ((k, s):_) -> do k `shouldBe` keyA; s `shouldBe` 6
+        []         -> expectationFailure "LRU should not be empty"
+
+    it "requires exact complete target-stage tiles before cross-fade blending" $ do
+      let committedManifest = mkManifest 1 keyA 6 [testRect]
+          partialTargetManifest = mkManifest 2 keyA 10 [testRect, testRect2]
+          nearestManifest = mkManifest 3 keyA 12 [testRect]
+          completeTargetManifest = mkManifest 4 keyA 10 [testRect, testRect2]
+          staleTargetManifest = mkManifest 5 keyA 10 [testRect, testRect2]
+          cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          cache1 = storeAtlasTileSet committedManifest [mkTile 1 6 testRect] cache0
+          cache2 = storeAtlasTileSet partialTargetManifest [mkTile 2 10 testRect] cache1
+          cache3 = storeAtlasTileSet nearestManifest [mkTile 3 12 testRect] cache2
+          cacheNearestOnly = storeAtlasTileSet nearestManifest [mkTile 30 12 testRect] cache0
+          cache4 = storeAtlasTileSet completeTargetManifest [mkTile 4 10 testRect] cache3
+          cache5 = storeAtlasTileSet completeTargetManifest [mkTile 5 10 testRect2] cache4
+      isNothing (getCurrentCompleteAtlasForTarget Nothing keyA 10 1 cache2) `shouldBe` True
+      isNothing (getCurrentCompleteAtlasForTarget Nothing keyA 10 1 cache3) `shouldBe` True
+      isNothing (getCurrentCompleteAtlasForTarget Nothing keyA 10 1 cacheNearestOnly) `shouldBe` True
+      isNothing (getCurrentCompleteAtlasForTarget (Just (mkFreshness staleTargetManifest)) keyA 10 1 cache5) `shouldBe` True
+      fmap length (getCurrentCompleteAtlasForTarget (Just (mkFreshness completeTargetManifest)) keyA 10 1 cache5) `shouldBe` Just 2
+
+    it "keeps base atlas completion independent of day/night overlay tile count" $ do
+      let manifest = mkManifest 6 keyA 6 [testRect, testRect2]
+          baseTiles = [mkTile 1 6 testRect, mkTile 2 6 testRect2]
+          dayNightTiles = [mkTile 90 6 testRect]
+          cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          cache1 = storeAtlasTileSet manifest baseTiles cache0
+          cache2 = storeDayNightTiles 6 dayNightTiles cache1
+          (tiles, status, cache3) = resolveAtlasPureWithFreshness (Just (mkFreshness manifest)) True True keyA 6 cache2
+      fmap length (getCompleteAtlas keyA 6 cache2) `shouldBe` Just 2
+      fmap length (getNearestDayNight 6 cache2) `shouldBe` Just 1
+      fmap length tiles `shouldBe` Just 2
+      status `shouldBe` CompleteExact
+      atlasResolveNeedsRetry status `shouldBe` False
+      fmap (length . snd) (atcLast cache3) `shouldBe` Just 2
 
   -- -------------------------------------------------------------------
   -- getNearestAtlas (looks up by any key)
