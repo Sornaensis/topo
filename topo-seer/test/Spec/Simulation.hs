@@ -12,7 +12,7 @@ import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Hyperspace.Actor (ActorSystem, get, newActorSystem, shutdownActorSystem)
+import Hyperspace.Actor (ActorHandle, ActorSystem, Protocol, get, newActorSystem, shutdownActorSystem)
 import System.Timeout (timeout)
 import Test.Hspec
 import qualified Data.Vector as V
@@ -30,6 +30,8 @@ import Actor.Simulation
   , SimulationNodeBinding(..)
   , SimulationTickLogEntry(..)
   , autoTickStep
+  , autoTickWeatherPublishIntervalNs
+  , flushSimWeatherPublication
   , getSimDagSnapshot
   , requestSimTick
   , rebindSimNodes
@@ -38,7 +40,9 @@ import Actor.Simulation
   , setSimWorldWithNodes
   )
 import Actor.SnapshotReceiver
-  ( newDataSnapshotRef
+  ( SnapshotVersionRef
+  , TerrainSnapshotRef
+  , newDataSnapshotRef
   , newTerrainSnapshotRef
   , newSnapshotVersionRef
   , readSnapshotVersion
@@ -249,6 +253,66 @@ pluginSimulationBinding = SimulationNodeBinding
   , snbPlugin = Just pluginOverlayName
   }
 
+coalescingTestWorld :: TerrainWorld
+coalescingTestWorld = withSeedWeather
+  (setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) terrain world0))
+  (ChunkId 0)
+  climate
+  where
+    config = WorldConfig { wcChunkSize = 8 }
+    terrain = generateTerrainChunk config (const 0.5)
+    climate0 = emptyClimateChunk config
+    tileCount = U.length (ccTempAvg climate0)
+    climate = climate0
+      { ccTempAvg = U.replicate tileCount 0.6
+      , ccPrecipAvg = U.replicate tileCount 0.5
+      , ccWindDirAvg = U.replicate tileCount 0.4
+      , ccWindSpdAvg = U.replicate tileCount 0.35
+      , ccHumidityAvg = U.replicate tileCount 0.5
+      }
+    world0 = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice
+
+withConfiguredSimulation
+  :: ( ActorHandle Simulation (Protocol Simulation)
+     -> ActorHandle Data (Protocol Data)
+     -> ActorHandle Ui (Protocol Ui)
+     -> TerrainSnapshotRef
+     -> SnapshotVersionRef
+     -> ActorHandle AtlasManager (Protocol AtlasManager)
+     -> IO a
+     )
+  -> IO a
+withConfiguredSimulation action = withSystem $ \system -> do
+  simHandle <- get @Simulation system
+  dataHandle <- get @Data system
+  logHandle <- get @Log system
+  uiHandle <- get @Ui system
+  dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
+  terrainSnapshotRef <- newTerrainSnapshotRef emptyTerrainSnap
+  snapshotVersionRef <- newSnapshotVersionRef
+  atlasHandle <- get @AtlasManager system
+
+  setSimHandles simHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasHandle
+  action simHandle dataHandle uiHandle terrainSnapshotRef snapshotVersionRef atlasHandle
+  where
+    emptyTerrainSnap = TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore
+
+installCoalescingWorld
+  :: ActorHandle Data (Protocol Data)
+  -> ActorHandle Simulation (Protocol Simulation)
+  -> IO TerrainSnapshot
+installCoalescingWorld dataHandle simHandle = do
+  replaceTerrainData dataHandle coalescingTestWorld
+  initialTerrainSnap <- getTerrainSnapshot dataHandle
+  setSimWorld simHandle coalescingTestWorld
+  dag <- getSimDagSnapshot simHandle
+  sdsAvailable dag `shouldBe` True
+  pure initialTerrainSnap
+
+waitPastAutoWeatherPublishInterval :: IO ()
+waitPastAutoWeatherPublishInterval =
+  threadDelay (fromIntegral (autoTickWeatherPublishIntervalNs `div` 1000 + 20000))
+
 spec :: Spec
 spec = describe "Simulation actor" $ do
   it "binds world before processing first post-load tick request" $ withSystem $ \system -> do
@@ -444,6 +508,211 @@ spec = describe "Simulation actor" $ do
     sdsAvailable dagSnapshot `shouldBe` True
     map sdnsStatus (sdsNodes dagSnapshot) `shouldSatisfy` elem (Text.pack "completed")
     map stleStatus (sdsTickLogs dagSnapshot) `shouldSatisfy` elem (Text.pack "completed")
+
+  it "coalesces rapid visible ViewWeather auto ticks and eventually publishes the latest weather" $
+    withConfiguredSimulation $ \simHandle dataHandle uiHandle terrainSnapshotRef snapshotVersionRef atlasHandle -> do
+      initialTerrainSnap <- installCoalescingWorld dataHandle simHandle
+      setUiViewMode uiHandle ViewWeather
+      setUiZoom uiHandle 2.5
+      setUiSimAutoTick uiHandle True
+      setUiSimTickRate uiHandle 1.0
+      uiSnap <- getUiSnapshot uiHandle
+      version0 <- readSnapshotVersion snapshotVersionRef
+      let waterLevel = uiRenderWaterLevel uiSnap
+          currentStage = zoomStagePair (stageForZoom (uiZoom uiSnap))
+          initialWeatherVersion = tsWeatherVersion initialTerrainSnap
+      _ <- drainAtlasJobs atlasHandle
+
+      autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 1
+      version1 <- readSnapshotVersion snapshotVersionRef
+      version1 `shouldSatisfy` (> version0)
+      terrainSnap1 <- getTerrainSnapshot dataHandle
+      publishedSnap1 <- readTerrainSnapshot terrainSnapshotRef
+      tsWeatherVersion terrainSnap1 `shouldSatisfy` (> initialWeatherVersion)
+      tsWeatherVersion publishedSnap1 `shouldBe` tsWeatherVersion terrainSnap1
+
+      autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 2
+      version2 <- readSnapshotVersion snapshotVersionRef
+      terrainSnap2 <- getTerrainSnapshot dataHandle
+      publishedSnap2 <- readTerrainSnapshot terrainSnapshotRef
+      version2 `shouldBe` version1
+      tsWeatherVersion terrainSnap2 `shouldSatisfy` (> tsWeatherVersion terrainSnap1)
+      tsWeatherVersion publishedSnap2 `shouldBe` tsWeatherVersion publishedSnap1
+
+      autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 3
+      version3 <- readSnapshotVersion snapshotVersionRef
+      terrainSnap3 <- getTerrainSnapshot dataHandle
+      publishedSnap3 <- readTerrainSnapshot terrainSnapshotRef
+      version3 `shouldBe` version1
+      tsWeatherVersion terrainSnap3 `shouldSatisfy` (> tsWeatherVersion terrainSnap2)
+      tsWeatherVersion publishedSnap3 `shouldBe` tsWeatherVersion publishedSnap1
+
+      uiAfterRapid <- getUiSnapshot uiHandle
+      uiSimTickCount uiAfterRapid `shouldBe` 3
+      dagAfterRapid <- getSimDagSnapshot simHandle
+      sdsLastTick dagAfterRapid `shouldBe` 3
+
+      rapidJobs <- drainAtlasJobs atlasHandle
+      length rapidJobs `shouldBe` 1
+      map ajViewMode rapidJobs `shouldBe` [ViewWeather]
+      map atlasJobStage rapidJobs `shouldBe` [currentStage]
+      map (atlasKeyVersion . ajKey) rapidJobs `shouldBe` [tsWeatherVersion publishedSnap1]
+      map (tsWeatherVersion . ajTerrain) rapidJobs `shouldBe` [tsWeatherVersion publishedSnap1]
+      map ajSnapshotVersion rapidJobs `shouldBe` [version1]
+
+      waitPastAutoWeatherPublishInterval
+      autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 4
+      version4 <- readSnapshotVersion snapshotVersionRef
+      version4 `shouldSatisfy` (> version3)
+      terrainSnap4 <- getTerrainSnapshot dataHandle
+      publishedSnap4 <- readTerrainSnapshot terrainSnapshotRef
+      tsWeatherVersion terrainSnap4 `shouldSatisfy` (> tsWeatherVersion terrainSnap3)
+      tsWeatherVersion publishedSnap4 `shouldBe` tsWeatherVersion terrainSnap4
+      let latestWeatherKey = atlasKeyFor ViewWeather waterLevel terrainSnap4
+      latestJobs <- drainAtlasJobs atlasHandle
+      length latestJobs `shouldBe` 1
+      map ajViewMode latestJobs `shouldBe` [ViewWeather]
+      map ajKey latestJobs `shouldBe` [latestWeatherKey]
+      map atlasJobStage latestJobs `shouldBe` [currentStage]
+      map (tsWeatherVersion . ajTerrain) latestJobs `shouldBe` [tsWeatherVersion terrainSnap4]
+      map ajSnapshotVersion latestJobs `shouldBe` [version4]
+
+  it "publishes consecutive manual ViewCloud ticks immediately" $
+    withConfiguredSimulation $ \simHandle dataHandle uiHandle terrainSnapshotRef snapshotVersionRef atlasHandle -> do
+      initialTerrainSnap <- installCoalescingWorld dataHandle simHandle
+      setUiViewMode uiHandle ViewCloud
+      uiSnap <- getUiSnapshot uiHandle
+      version0 <- readSnapshotVersion snapshotVersionRef
+      let waterLevel = uiRenderWaterLevel uiSnap
+          expectedStages = map zoomStagePair (orderedZoomStagesForZoom (uiZoom uiSnap))
+          assertManualPublish tickTarget previousVersion previousWeatherVersion = do
+            requestSimTick simHandle tickTarget
+            published <- awaitTrue 500 $ do
+              version <- readSnapshotVersion snapshotVersionRef
+              pure (version > previousVersion)
+            published `shouldBe` True
+            version <- readSnapshotVersion snapshotVersionRef
+            uiAfterTick <- getUiSnapshot uiHandle
+            uiSimTickCount uiAfterTick `shouldBe` tickTarget
+            dagAfterTick <- getSimDagSnapshot simHandle
+            sdsLastTick dagAfterTick `shouldBe` tickTarget
+            terrainSnap <- getTerrainSnapshot dataHandle
+            publishedSnap <- readTerrainSnapshot terrainSnapshotRef
+            tsWeatherVersion terrainSnap `shouldSatisfy` (> previousWeatherVersion)
+            tsWeatherVersion publishedSnap `shouldBe` tsWeatherVersion terrainSnap
+            let cloudKey = atlasKeyFor ViewCloud waterLevel terrainSnap
+            terrainSnapshotViewVersion ViewCloud publishedSnap `shouldBe` tsWeatherVersion terrainSnap
+            atlasKeyVersion cloudKey `shouldBe` tsWeatherVersion terrainSnap
+            atlasJobs <- drainAtlasJobs atlasHandle
+            length atlasJobs `shouldBe` length allZoomStages
+            map ajViewMode atlasJobs `shouldBe` replicate (length allZoomStages) ViewCloud
+            map atlasJobStage atlasJobs `shouldBe` expectedStages
+            map ajKey atlasJobs `shouldSatisfy` all (== cloudKey)
+            map (tsWeatherVersion . ajTerrain) atlasJobs `shouldSatisfy` all (== tsWeatherVersion terrainSnap)
+            map ajSnapshotVersion atlasJobs `shouldSatisfy` all (== version)
+            pure (version, tsWeatherVersion terrainSnap)
+      _ <- drainAtlasJobs atlasHandle
+
+      (version1, weatherVersion1) <- assertManualPublish 1 version0 (tsWeatherVersion initialTerrainSnap)
+      _ <- assertManualPublish 2 version1 weatherVersion1
+      pure ()
+
+  it "coalesces day/night auto publications and flushes the latest snapshot on disable" $
+    withConfiguredSimulation $ \simHandle dataHandle uiHandle terrainSnapshotRef snapshotVersionRef atlasHandle -> do
+      _ <- installCoalescingWorld dataHandle simHandle
+      setUiViewMode uiHandle ViewElevation
+      setUiDayNightEnabled uiHandle True
+      setUiZoom uiHandle 2.5
+      setUiSimAutoTick uiHandle True
+      setUiSimTickRate uiHandle 1.0
+      uiSnap <- getUiSnapshot uiHandle
+      let currentStage = zoomStagePair (stageForZoom (uiZoom uiSnap))
+          expectedBackfillStages = map zoomStagePair (orderedZoomStagesForZoom (uiZoom uiSnap))
+      _ <- drainAtlasJobs atlasHandle
+
+      autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 1
+      version1 <- readSnapshotVersion snapshotVersionRef
+      terrainSnap1 <- getTerrainSnapshot dataHandle
+      publishedSnap1 <- readTerrainSnapshot terrainSnapshotRef
+      tsWeatherVersion publishedSnap1 `shouldBe` tsWeatherVersion terrainSnap1
+
+      autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 2
+      autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 3
+      version3 <- readSnapshotVersion snapshotVersionRef
+      terrainSnap3 <- getTerrainSnapshot dataHandle
+      publishedSnap3 <- readTerrainSnapshot terrainSnapshotRef
+      version3 `shouldBe` version1
+      tsWeatherVersion terrainSnap3 `shouldSatisfy` (> tsWeatherVersion terrainSnap1)
+      tsWeatherVersion publishedSnap3 `shouldBe` tsWeatherVersion publishedSnap1
+      uiAfterRapid <- getUiSnapshot uiHandle
+      uiSimTickCount uiAfterRapid `shouldBe` 3
+      dagAfterRapid <- getSimDagSnapshot simHandle
+      sdsLastTick dagAfterRapid `shouldBe` 3
+
+      rapidJobs <- drainAtlasJobs atlasHandle
+      length rapidJobs `shouldBe` 1
+      map ajViewMode rapidJobs `shouldBe` [ViewElevation]
+      map atlasJobStage rapidJobs `shouldBe` [currentStage]
+      map (tsWeatherVersion . ajTerrain) rapidJobs `shouldBe` [tsWeatherVersion publishedSnap1]
+      map ajSnapshotVersion rapidJobs `shouldBe` [version1]
+
+      setUiSimAutoTick uiHandle False
+      flushed <- flushSimWeatherPublication simHandle
+      flushed `shouldBe` True
+      versionAfterFlush <- readSnapshotVersion snapshotVersionRef
+      versionAfterFlush `shouldSatisfy` (> version3)
+      latestTerrainSnap <- getTerrainSnapshot dataHandle
+      latestPublishedSnap <- readTerrainSnapshot terrainSnapshotRef
+      tsWeatherVersion latestPublishedSnap `shouldBe` tsWeatherVersion latestTerrainSnap
+      flushedJobs <- drainAtlasJobs atlasHandle
+      length flushedJobs `shouldBe` length allZoomStages
+      map ajViewMode flushedJobs `shouldBe` replicate (length allZoomStages) ViewElevation
+      map atlasJobStage flushedJobs `shouldBe` expectedBackfillStages
+      map (tsWeatherVersion . ajTerrain) flushedJobs `shouldSatisfy` all (== tsWeatherVersion latestTerrainSnap)
+      map ajSnapshotVersion flushedJobs `shouldSatisfy` all (== versionAfterFlush)
+
+  it "keeps weather-only auto ticks render-stable for ViewElevation with day/night disabled" $
+    withConfiguredSimulation $ \simHandle dataHandle uiHandle terrainSnapshotRef snapshotVersionRef atlasHandle -> do
+      initialTerrainSnap <- installCoalescingWorld dataHandle simHandle
+      setUiViewMode uiHandle ViewElevation
+      setUiDayNightEnabled uiHandle False
+      setUiSimAutoTick uiHandle True
+      setUiSimTickRate uiHandle 1.0
+      uiSnap <- getUiSnapshot uiHandle
+      version0 <- readSnapshotVersion snapshotVersionRef
+      let waterLevel = uiRenderWaterLevel uiSnap
+      _ <- drainAtlasJobs atlasHandle
+
+      requestSimTick simHandle 1
+      manualPublished <- awaitTrue 500 $ do
+        version <- readSnapshotVersion snapshotVersionRef
+        pure (version > version0)
+      manualPublished `shouldBe` True
+      baselineVersion <- readSnapshotVersion snapshotVersionRef
+      baselineTerrainSnap <- getTerrainSnapshot dataHandle
+      baselinePublishedSnap <- readTerrainSnapshot terrainSnapshotRef
+      tsWeatherVersion baselineTerrainSnap `shouldSatisfy` (> tsWeatherVersion initialTerrainSnap)
+      tsWeatherVersion baselinePublishedSnap `shouldBe` tsWeatherVersion baselineTerrainSnap
+      let elevationKey0 = atlasKeyFor ViewElevation waterLevel baselinePublishedSnap
+          weatherKey0 = atlasKeyFor ViewWeather waterLevel baselinePublishedSnap
+      baselineJobs <- drainAtlasJobs atlasHandle
+      length baselineJobs `shouldBe` 0
+
+      autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 2
+      versionAfterAuto <- readSnapshotVersion snapshotVersionRef
+      versionAfterAuto `shouldSatisfy` (> baselineVersion)
+      dataAfterAuto <- getTerrainSnapshot dataHandle
+      publishedAfterAuto <- readTerrainSnapshot terrainSnapshotRef
+      tsWeatherVersion dataAfterAuto `shouldSatisfy` (> tsWeatherVersion baselineTerrainSnap)
+      tsWeatherVersion publishedAfterAuto `shouldBe` tsWeatherVersion baselinePublishedSnap
+      atlasKeyFor ViewElevation waterLevel publishedAfterAuto `shouldBe` elevationKey0
+      atlasKeyFor ViewWeather waterLevel publishedAfterAuto `shouldBe` weatherKey0
+      autoJobs <- drainAtlasJobs atlasHandle
+      length autoJobs `shouldBe` 0
+      uiAfterAuto <- getUiSnapshot uiHandle
+      uiSimTickCount uiAfterAuto `shouldBe` 2
+      dagAfterAuto <- getSimDagSnapshot simHandle
+      sdsLastTick dagAfterAuto `shouldBe` 2
 
   it "coalesces visible ViewCloud auto ticks and schedules only published weather atlas jobs" $ withSystem $ \system -> do
     simHandle <- get @Simulation system
