@@ -51,6 +51,7 @@ data RenderCacheState = RenderCacheState
   , rcsLastSnapshotData :: !(Maybe RenderSnapshot)
   , rcsLastAtlasDrain :: !(Maybe Word32)
   , rcsLastAtlasSchedule :: !(Maybe Word32)
+  , rcsAtlasNeedsRetry :: !Bool
   , rcsLastChunkTexturePoll :: !(Maybe Word32)
   }
 
@@ -68,6 +69,7 @@ initialRenderCacheState atlasCacheEntries = RenderCacheState
   , rcsLastSnapshotData = Nothing
   , rcsLastAtlasDrain = Nothing
   , rcsLastAtlasSchedule = Nothing
+  , rcsAtlasNeedsRetry = False
   , rcsLastChunkTexturePoll = Nothing
   }
 

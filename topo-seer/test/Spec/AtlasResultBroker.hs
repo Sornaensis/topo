@@ -7,7 +7,7 @@ import Data.IORef (newIORef)
 import Test.Hspec
 import Actor.AtlasCache (AtlasKey(..))
 import Actor.AtlasResult (AtlasBuildId(..), AtlasBuildResult(..), AtlasTileSetManifest(..))
-import Actor.AtlasResultBroker (drainAtlasResultsN, drainFreshResultsN, pushAtlasResult)
+import Actor.AtlasResultBroker (atlasResultsPending, drainAtlasResultsN, drainFreshResultsN, pushAtlasResult)
 import Actor.Data (TerrainSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion(..))
 import Topo.Overlay (emptyOverlayStore)
@@ -41,6 +41,18 @@ mkResult key snapshotVersion hexRadius tile =
 
 spec :: Spec
 spec = describe "AtlasResultBroker" $ do
+  it "reports pending results without draining them" $ do
+    ref <- newIORef []
+    let key = AtlasKey ViewElevation 0 (tsVersion sampleTerrainSnapshot)
+        tile = AtlasTileGeometry { atgBounds = Rect (V2 0 0, V2 1 1), atgScale = 1, atgHexRadius = 6, atgChunks = [], atgRiverOverlay = [] }
+        result = mkResult key (SnapshotVersion 1) 6 tile
+    atlasResultsPending ref `shouldReturn` False
+    pushAtlasResult ref result
+    atlasResultsPending ref `shouldReturn` True
+    drained <- drainAtlasResultsN ref 1
+    map abrHexRadius drained `shouldBe` [6]
+    atlasResultsPending ref `shouldReturn` False
+
   it "drains results in FIFO order" $ do
     ref <- newIORef []
     let key = AtlasKey ViewElevation 0 (tsVersion sampleTerrainSnapshot)

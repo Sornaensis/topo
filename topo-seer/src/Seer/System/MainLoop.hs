@@ -4,6 +4,7 @@ module Seer.System.MainLoop
   ( runMainLoop
   ) where
 
+import Actor.AtlasResultBroker (atlasResultsPending)
 import Actor.Log (LogEntry(..), LogLevel(..), appendLog)
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion(..))
@@ -125,16 +126,20 @@ runMainLoop runtimeCfg actors sdl = do
         let quit = quitFlag || hasQuitEvent events
         handleElapsed <- processEvents eventPumpEnv timingLogThresholdMs events renderSnap
         tHandle <- getMonotonicTimeNSec
+        let generating = uiGenerating (rsUi renderSnap)
+        atlasPending <- if generating
+          then pure False
+          else atlasResultsPending (aaAtlasResultRef actors)
         let isVersionUnchanged = rcsLastSnapshot cacheState0 == Just snapVersion
-            generating = uiGenerating (rsUi renderSnap)
-            fallbackMaintenanceDue = renderFrameStepMaintenanceDue
+            maintenanceDue = renderFrameStepMaintenanceDue
               renderFrameSettings
               (srRenderTargetOk sdl)
               nowMs
+              atlasPending
               renderSnap
               cacheState0
         screenshotPending <- screenshotRequestPending (aaScreenshotRef actors)
-        if isVersionUnchanged && not generating && not screenshotPending && not fallbackMaintenanceDue
+        if isVersionUnchanged && not generating && not screenshotPending && not maintenanceDue
           then do
             -- Stale-snapshot detection: log once if version unchanged for >1s.
             now <- getMonotonicTimeNSec
@@ -160,7 +165,7 @@ runMainLoop runtimeCfg actors sdl = do
               then pure cacheState0
               else loop cacheState0
           else do
-            -- Snapshot changed or fallback maintenance is due; reset stale tracking before rendering.
+            -- Snapshot changed or render-thread maintenance is due; reset stale tracking before rendering.
             tElseBranch <- getMonotonicTimeNSec
             writeIORef lastSnapshotChangeNs =<< getMonotonicTimeNSec
             writeIORef staleLoggedRef False

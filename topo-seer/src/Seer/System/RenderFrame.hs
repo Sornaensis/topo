@@ -7,7 +7,7 @@ module Seer.System.RenderFrame
   ) where
 
 import Actor.AtlasFreshness (AtlasFreshnessRef)
-import Actor.AtlasResultBroker (AtlasResultRef)
+import Actor.AtlasResultBroker (AtlasResultRef, atlasResultsPending)
 import Actor.AtlasScheduleBroker (AtlasScheduleRef)
 import Actor.AtlasScheduler (AtlasScheduler)
 import Actor.Log (Log, LogEntry(..), LogLevel(..), appendLog)
@@ -23,6 +23,7 @@ import Hyperspace.Actor (ActorHandle, Protocol)
 import qualified SDL
 import Seer.Render
   ( RenderContext(..)
+  , RenderFrameOutcome(..)
   , fallbackTerrainNeedsRefresh
   , renderFrame
   , terrainCacheNeedsRefresh
@@ -75,24 +76,32 @@ data RenderFrameStepResult = RenderFrameStepResult
   , rfrPostFrameElapsed :: !Word32
   }
 
--- | Whether an unchanged-snapshot loop still has fallback terrain work that
+-- | Whether an unchanged-snapshot loop has render-thread maintenance that
 -- should wake the renderer instead of idling.
 renderFrameStepMaintenanceDue
   :: RenderFrameSettings
   -> Bool
   -> Word32
+  -> Bool
   -> RenderSnapshot
   -> RenderCacheState
   -> Bool
-renderFrameStepMaintenanceDue _settings renderTargetOk _nowMs renderSnap cacheState =
-  not renderTargetOk
-    && not (uiGenerating (rsUi renderSnap))
-    && fallbackTerrainNeedsRefresh
-         (rsUi renderSnap)
-         (rsTerrain renderSnap)
-         (fallbackTextureScale renderSnap (rcsAtlasCache cacheState))
-         (rcsTerrainCache cacheState)
-         (rcsChunkTextures cacheState)
+renderFrameStepMaintenanceDue settings renderTargetOk nowMs atlasPending renderSnap cacheState =
+  not generating && (fallbackMaintenanceDue || atlasMaintenanceDue)
+  where
+    generating = uiGenerating (rsUi renderSnap)
+    fallbackMaintenanceDue = not renderTargetOk
+      && fallbackTerrainNeedsRefresh
+           (rsUi renderSnap)
+           (rsTerrain renderSnap)
+           (fallbackTextureScale renderSnap (rcsAtlasCache cacheState))
+           (rcsTerrainCache cacheState)
+           (rcsChunkTextures cacheState)
+    atlasMaintenanceDue = renderTargetOk
+      && ( atlasPending
+        || (rcsAtlasNeedsRetry cacheState
+              && shouldPoll nowMs (rfsetAtlasSchedulePollMs settings) (rcsLastAtlasSchedule cacheState))
+         )
 
 fallbackTextureScale :: RenderSnapshot -> AtlasTextureCache -> Int
 fallbackTextureScale renderSnap atlasCache =
@@ -113,11 +122,15 @@ renderFrameStep env settings nowMs snapVersion renderSnap cacheState0 = do
   -- Skip terrain cache, atlas, and chunk texture polling while generating; those
   -- operations are no-ops then and can otherwise stall the SDL render thread.
   let generating = uiGenerating (rsUi renderSnap)
-      fallbackTerrainStale = not (rfeRenderTargetOk env)
+  atlasPending <- if generating
+    then pure False
+    else atlasResultsPending (rfeAtlasResultRef env)
+  let fallbackTerrainStale = not (rfeRenderTargetOk env)
         && terrainCacheNeedsRefresh (rsUi renderSnap) (rsTerrain renderSnap) (rcsTerrainCache cacheState0)
       shouldPollTerrain = not generating
         && (fallbackTerrainStale || shouldPoll nowMs (rfsetTerrainCachePollMs settings) (rcsLastTerrainPoll cacheState0))
-      shouldDrainAtlas = not generating && shouldPoll nowMs (rfsetAtlasDrainPollMs settings) (rcsLastAtlasDrain cacheState0)
+      shouldDrainAtlas = not generating
+        && (atlasPending || shouldPoll nowMs (rfsetAtlasDrainPollMs settings) (rcsLastAtlasDrain cacheState0))
       shouldScheduleAtlas = not generating && shouldPoll nowMs (rfsetAtlasSchedulePollMs settings) (rcsLastAtlasSchedule cacheState0)
   tAfterLets <- getMonotonicTimeNSec
   (cacheState', terrainElapsed) <-
@@ -146,7 +159,7 @@ renderFrameStep env settings nowMs snapVersion renderSnap cacheState0 = do
         && fallbackTerrainFresh
         && (fallbackTextureStale || shouldPoll nowMs (rfsetChunkTexturePollMs settings) (rcsLastChunkTexturePoll cacheState'))
   frameStart <- getMonotonicTimeNSec
-  (needsRetry, nextChunkTextures, nextAtlasCache, _didLog) <-
+  frameOutcome <-
     renderFrame RenderContext
       { rcRenderer = rfeRenderer env
       , rcWindow = rfeWindow env
@@ -173,17 +186,21 @@ renderFrameStep env settings nowMs snapVersion renderSnap cacheState0 = do
       }
   frameEnd <- getMonotonicTimeNSec
   let frameElapsed = nsToMs frameStart frameEnd
-      fallbackNeedsRetry = not (rfeRenderTargetOk env)
-        && fallbackTerrainNeedsRefresh
-             (rsUi renderSnap)
-             (rsTerrain renderSnap)
-             (fallbackTextureScale renderSnap nextAtlasCache)
-             (rcsTerrainCache cacheState')
-             nextChunkTextures
+      nextChunkTextures = rfoChunkTextureCache frameOutcome
+      nextAtlasCache = rfoAtlasTextureCache frameOutcome
+      fallbackNeedsRetry = rfoFallbackNeedsRetry frameOutcome
+        || (not (rfeRenderTargetOk env)
+              && fallbackTerrainNeedsRefresh
+                   (rsUi renderSnap)
+                   (rsTerrain renderSnap)
+                   (fallbackTextureScale renderSnap nextAtlasCache)
+                   (rcsTerrainCache cacheState')
+                   nextChunkTextures)
       cacheState = cacheState'
         { rcsChunkTextures = nextChunkTextures
         , rcsAtlasCache = nextAtlasCache
-        , rcsLastSnapshot = if needsRetry || fallbackNeedsRetry then Nothing else Just snapVersion
+        , rcsAtlasNeedsRetry = rfoAtlasNeedsRetry frameOutcome
+        , rcsLastSnapshot = if fallbackNeedsRetry then Nothing else Just snapVersion
         , rcsLastSnapshotData = Just renderSnap
         , rcsLastAtlasDrain = if shouldDrainAtlas then Just nowMs else rcsLastAtlasDrain cacheState'
         , rcsLastAtlasSchedule = if shouldScheduleAtlas then Just nowMs else rcsLastAtlasSchedule cacheState'

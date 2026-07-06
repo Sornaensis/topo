@@ -1,5 +1,6 @@
 module Seer.Render.Frame
   ( RenderContext(..)
+  , RenderFrameOutcome(..)
   , renderFrame
   ) where
 
@@ -75,10 +76,18 @@ import UI.TerrainAtlas (TerrainAtlasTile(..))
 import UI.Widgets (Rect(..))
 import UI.WidgetsDraw (rectToSDL)
 
+data RenderFrameOutcome = RenderFrameOutcome
+  { rfoAtlasNeedsRetry :: !Bool
+  , rfoFallbackNeedsRetry :: !Bool
+  , rfoChunkTextureCache :: !ChunkTextureCache
+  , rfoAtlasTextureCache :: !AtlasTextureCache
+  , rfoDidLog :: !Bool
+  }
+
 -- | Render one UI frame and schedule atlas work if needed.
 renderFrame
   :: RenderContext
-  -> IO (Bool, ChunkTextureCache, AtlasTextureCache, Bool)
+  -> IO RenderFrameOutcome
 renderFrame context = do
   let renderer = rcRenderer context
       window = rcWindow context
@@ -317,7 +326,13 @@ renderFrame context = do
       atlasNeedsRetry = renderTargetOk && dataReady && atlasResolveNeedsRetry atlasResolveStatus
       fallbackChunkNeedsRetry = not renderTargetOk
         && chunkTextureCacheNeedsUpdate terrainCache (zsAtlasScale stage) textureCache'
-  pure (atlasNeedsRetry || fallbackChunkNeedsRetry, textureCache', atlasCache'', didLog)
+  pure RenderFrameOutcome
+    { rfoAtlasNeedsRetry = atlasNeedsRetry
+    , rfoFallbackNeedsRetry = fallbackChunkNeedsRetry
+    , rfoChunkTextureCache = textureCache'
+    , rfoAtlasTextureCache = atlasCache''
+    , rfoDidLog = didLog
+    }
 
 logTiming :: ActorHandle Log (Protocol Log) -> Word32 -> Text.Text -> Word32 -> Maybe Int -> IO Bool
 logTiming handle thresholdMs label elapsed maybeCount =

@@ -6,6 +6,7 @@ module Actor.AtlasResultBroker
   ( AtlasResultRef
   , newAtlasResultRef
   , pushAtlasResult
+  , atlasResultsPending
   , drainAtlasResultsN
   , drainFreshResultsN
   ) where
@@ -28,6 +29,14 @@ newAtlasResultRef = newIORef []
 pushAtlasResult :: AtlasResultRef -> AtlasBuildResult -> IO ()
 pushAtlasResult ref result =
   atomicModifyIORef' ref (\xs -> (result : xs, ()))
+
+-- | Check whether any atlas build results are pending without draining them.
+--
+-- Uses a no-op atomic modification so concurrent worker pushes are observed
+-- with the same synchronisation semantics as the render-thread drain path.
+atlasResultsPending :: AtlasResultRef -> IO Bool
+atlasResultsPending ref =
+  atomicModifyIORef' ref (\xs -> (xs, not (null xs)))
 
 -- | Drain up to N pending atlas results in FIFO order (lock-free).
 drainAtlasResultsN :: AtlasResultRef -> Int -> IO [AtlasBuildResult]
