@@ -26,6 +26,8 @@ import Actor.Simulation
   ( SimulationDagNodeSnapshot(..)
   , SimulationDagSnapshot(..)
   , SimulationTickLogEntry(..)
+  , autoTickWeatherPublishIntervalNs
+  , flushSimWeatherPublication
   , getSimDagSnapshot
   , requestSimTick
   )
@@ -33,6 +35,7 @@ import Actor.UI.Setters (setUiSimAutoTick, setUiSimTickRate)
 import Actor.UI.State (UiState(..), getUiSnapshot, readUiSnapshotRef)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
+import Seer.System.AutoTick (autoTickPeriodMicros)
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 
 -- | Handle @get_sim_state@ — return current simulation state.
@@ -77,7 +80,12 @@ handleSetSimAutoTick ctx reqId params = do
       setUiSimAutoTick uiH enabled
       mapM_ (setUiSimTickRate uiH) mRate
       ui <- getUiSnapshot uiH
-      bumpSnapshotVersion (ahSnapshotVersionRef handles)
+      flushed <- if shouldFlushAutoTickPublication ui mRate
+        then flushSimWeatherPublication (ahSimulationHandle handles)
+        else pure False
+      if flushed
+        then pure ()
+        else bumpSnapshotVersion (ahSnapshotVersionRef handles)
       pure $ okResponse reqId $ object
         [ "auto_tick" .= uiSimAutoTick ui
         , "rate"      .= fmap (const (uiSimTickRate ui)) mRate
@@ -153,6 +161,14 @@ parseAutoTick = Aeson.withObject "set_sim_auto_tick" $ \o ->
 parseTickCount :: Value -> Aeson.Parser Int
 parseTickCount = Aeson.withObject "sim_tick" $ \o ->
   maybe 1 id <$> o .:? "count"
+
+shouldFlushAutoTickPublication :: UiState -> Maybe Float -> Bool
+shouldFlushAutoTickPublication ui mRate =
+  not (uiSimAutoTick ui) || case mRate of
+    Nothing -> False
+    Just _  -> case autoTickPeriodMicros (uiSimTickRate ui) of
+      Nothing -> True
+      Just micros -> fromIntegral micros * 1000 > autoTickWeatherPublishIntervalNs
 
 simulationPhase :: DataSnapshot -> SimulationDagSnapshot -> Text
 simulationPhase dataSnap dag

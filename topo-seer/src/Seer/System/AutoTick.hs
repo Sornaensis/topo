@@ -23,7 +23,8 @@ import Actor.Simulation
   ( AutoTickStepResult(..)
   , Simulation
   , SimulationDagSnapshot(..)
-  , autoTickStep
+  , autoTickStepArmed
+  , flushSimWeatherPublication
   , getSimDagSnapshot
   )
 import Actor.SnapshotReceiver
@@ -172,7 +173,7 @@ fireAutoTick handles stopVar expectedSig _periodUs = do
       if freshSig /= expectedSig
         then schedulerLoop handles stopVar SchedulerIdle
         else do
-          result <- autoTickStep (athSimulationHandle handles) (Just (atsWorldEpoch freshSig))
+          result <- autoTickStepArmed (athSimulationHandle handles) (Just (atsWorldEpoch freshSig)) True
           case result of
             AutoTickFailed err -> do
               disableAutoAfterFailure handles err
@@ -200,7 +201,10 @@ disableAutoAfterFailure handles err = do
   -- Barrier: make sure the UI actor has published the disabled state before
   -- bumping the shared snapshot version for render/HTTP readers.
   _ <- getUiSnapshot (athUiHandle handles)
-  bumpSnapshotVersion (athSnapshotVersionRef handles)
+  flushed <- flushSimWeatherPublication (athSimulationHandle handles)
+  if flushed
+    then pure ()
+    else bumpSnapshotVersion (athSnapshotVersionRef handles)
 
 waitMicrosUntil :: Word64 -> Word64 -> Int
 waitMicrosUntil now due

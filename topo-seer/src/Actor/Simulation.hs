@@ -26,6 +26,9 @@ module Actor.Simulation
     -- * Tick control
   , requestSimTick
   , autoTickStep
+  , autoTickStepArmed
+  , flushSimWeatherPublication
+  , autoTickWeatherPublishIntervalNs
   , beginSimShutdown
   , waitForSimIdle
   , AutoTickStepResult(..)
@@ -56,7 +59,7 @@ import Hyperspace.Actor.Spec (OpTag(..))
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 
-import Actor.AtlasCache (atlasKeyFor)
+import Actor.AtlasCache (atlasKeyFor, terrainSnapshotViewVersion)
 import Actor.AtlasManager
   ( AtlasManager
   , AtlasJob(..)
@@ -78,7 +81,16 @@ import Actor.Log
   , LogLevel(..)
   , appendLog
   )
-import Actor.SnapshotReceiver (DataSnapshotRef, TerrainSnapshotRef, SnapshotVersionRef, readSnapshotVersion, writeTerrainSnapshot, bumpSnapshotVersion)
+import Actor.SnapshotReceiver
+  ( DataSnapshotRef
+  , TerrainSnapshotRef
+  , SnapshotVersion
+  , SnapshotVersionRef
+  , readSnapshotVersion
+  , readTerrainSnapshot
+  , writeTerrainSnapshot
+  , bumpSnapshotVersion
+  )
 import Actor.UI
   ( Ui
   , UiState(..)
@@ -196,11 +208,11 @@ tickResultTag = OpTag
 
 data SimulationTickCompletion
   = SimulationTickNoCompletion
-  | SimulationTickAutoCompletion !(MVar AutoTickStepResult)
+  | SimulationTickAutoCompletion !Bool !(MVar AutoTickStepResult)
 
 data SimulationTickKind
   = SimulationManualTick !Word64
-  | SimulationAutoTick !(Maybe Word64) !(MVar AutoTickStepResult)
+  | SimulationAutoTick !(Maybe Word64) !Bool !(MVar AutoTickStepResult)
 
 data SimInFlight = SimInFlight
   { sifToken :: !Word64
@@ -305,6 +317,10 @@ data SimState = SimState
     -- ^ Bounded tick and per-node status log exposed through the DAG surface.
   , ssLastAutoStatusPublishNs :: !Word64
     -- ^ Last snapshot-version bump for auto-tick status-only publication.
+  , ssLastAutoWeatherPublishNs :: !Word64
+    -- ^ Last render-facing weather/cloud/day-night publication during auto-tick.
+  , ssAutoWeatherPublicationPending :: !Bool
+    -- ^ True when a coalesced weather/cloud/day-night publication was skipped.
   }
 
 emptySimState :: SimState
@@ -324,6 +340,8 @@ emptySimState = SimState
   , ssNodeMetadata = Map.empty
   , ssTickLogs = []
   , ssLastAutoStatusPublishNs = 0
+  , ssLastAutoWeatherPublishNs = 0
+  , ssAutoWeatherPublicationPending = False
   }
 
 -- ---------------------------------------------------------------------------
@@ -356,6 +374,7 @@ actor Simulation
   cast setHandles :: SimHandles
   call handlesConfigured :: () -> Bool
   call dagSnapshot :: () -> SimulationDagSnapshot
+  call flushWeatherPublication :: () -> Bool
 
   initial emptySimState
   on_ setWorld = \world st ->
@@ -381,6 +400,8 @@ actor Simulation
       , ssNodeMetadata = Map.empty
       , ssTickLogs = []
       , ssLastAutoStatusPublishNs = 0
+      , ssLastAutoWeatherPublishNs = 0
+      , ssAutoWeatherPublicationPending = False
       }
     , ()
     )
@@ -389,6 +410,9 @@ actor Simulation
       { ssWorldTransition = True
       , ssWorldEpoch = ssWorldEpoch st + 1
       , ssPendingTick = Nothing
+      , ssLastAutoStatusPublishNs = 0
+      , ssLastAutoWeatherPublishNs = 0
+      , ssAutoWeatherPublicationPending = False
       }
     , ()
     )
@@ -414,6 +438,9 @@ actor Simulation
     (st, maybe False (const True) (ssHandles st))
   onPure dagSnapshot = \() st ->
     (st, simulationDagSnapshotFromState st)
+  on flushWeatherPublication = \() st -> do
+    (st', published) <- flushLatestWeatherPublication st
+    pure (st', published)
 |]
 
 -- ---------------------------------------------------------------------------
@@ -491,13 +518,30 @@ autoTickStep
   :: ActorHandle Simulation (Protocol Simulation)
   -> Maybe Word64
   -> IO AutoTickStepResult
-autoTickStep handle expectedVersion = do
+autoTickStep handle expectedVersion =
+  autoTickStepArmed handle expectedVersion False
+
+-- | Attempt one automatic scheduler-owned tick. The boolean records that the
+-- scheduler had auto-tick armed when it fired, so completion can flush if the
+-- UI disables or slows auto-tick while the worker is in-flight.
+autoTickStepArmed
+  :: ActorHandle Simulation (Protocol Simulation)
+  -> Maybe Word64
+  -> Bool
+  -> IO AutoTickStepResult
+autoTickStepArmed handle expectedVersion flushOnIdle = do
   completion <- newEmptyMVar
   cast @"tick" handle #tick SimulationTickControl
-    { stcKind = SimulationAutoTick expectedVersion completion
+    { stcKind = SimulationAutoTick expectedVersion flushOnIdle completion
     , stcResultSink = simulationTickResultSink handle
     }
   readMVar completion
+
+-- | Flush the latest authoritative weather/cloud/day-night render publication
+-- when auto-tick is disabled or slowed before the next coalesced tick.
+flushSimWeatherPublication :: ActorHandle Simulation (Protocol Simulation) -> IO Bool
+flushSimWeatherPublication handle =
+  call @"flushWeatherPublication" handle #flushWeatherPublication ()
 
 simulationTickResultSink :: ActorHandle Simulation (Protocol Simulation) -> TickResultSink
 simulationTickResultSink handle =
@@ -697,6 +741,8 @@ bindWorld world pluginBindings st = do
                    , ssNodeStatuses = Map.empty
                    , ssNodeMetadata = nodeMetadata
                    , ssLastAutoStatusPublishNs = 0
+                   , ssLastAutoWeatherPublishNs = 0
+                   , ssAutoWeatherPublicationPending = False
                    }
       if drainPending then maybeProcessPendingTick st' else pure st' { ssPendingTick = Nothing }
     Right dag -> do
@@ -714,6 +760,8 @@ bindWorld world pluginBindings st = do
                    , ssNodeStatuses = readyNodeStatuses nodes
                    , ssNodeMetadata = nodeMetadata
                    , ssLastAutoStatusPublishNs = 0
+                   , ssLastAutoWeatherPublishNs = 0
+                   , ssAutoWeatherPublicationPending = False
                    }
       if drainPending then maybeProcessPendingTick st' else pure st' { ssPendingTick = Nothing }
 
@@ -782,8 +830,8 @@ submitTickRequest :: SimulationTickControl -> SimState -> IO SimState
 submitTickRequest req st = case stcKind req of
   SimulationManualTick requestedTick ->
     startManualTick (stcResultSink req) requestedTick st
-  SimulationAutoTick expectedEpoch completion ->
-    startAutoTick (stcResultSink req) expectedEpoch completion st
+  SimulationAutoTick expectedEpoch flushOnIdle completion ->
+    startAutoTick (stcResultSink req) expectedEpoch flushOnIdle completion st
 
 startManualTick :: TickResultSink -> Word64 -> SimState -> IO SimState
 startManualTick sink requestedTick st
@@ -797,10 +845,11 @@ startManualTick sink requestedTick st
 startAutoTick
   :: TickResultSink
   -> Maybe Word64
+  -> Bool
   -> MVar AutoTickStepResult
   -> SimState
   -> IO SimState
-startAutoTick sink expectedEpoch completion st
+startAutoTick sink expectedEpoch flushOnIdle completion st
   | ssWorldTransition st = completeAuto AutoTickUnready
   | ssShuttingDown st = completeAuto AutoTickUnready
   | maybe False (const True) (ssInFlightTick st) = completeAuto AutoTickUnready
@@ -813,10 +862,10 @@ startAutoTick sink expectedEpoch completion st
         (Just world, Just dag, Just calCfg, Just handles)
           | not (worldEpochMatches st expectedEpoch) -> completeAuto AutoTickEpochChanged
           | otherwise ->
-              startTickWorker sink (SimulationTickAutoCompletion completion) expectedEpoch (ssLastTick st + 1) st world dag calCfg handles
+              startTickWorker sink (SimulationTickAutoCompletion flushOnIdle completion) expectedEpoch (ssLastTick st + 1) st world dag calCfg handles
   where
     completeAuto reason = do
-      completeTickRequest (SimulationTickAutoCompletion completion) (AutoTickSkipped reason)
+      completeTickRequest (SimulationTickAutoCompletion flushOnIdle completion) (AutoTickSkipped reason)
       pure st
 
 startTickWorker
@@ -988,7 +1037,6 @@ integrateFreshTickResult result st
               weatherChanged = weatherChunksBefore /= weatherChunksAfter
               overlayChanged = newStore /= twOverlays baseWorld
               overlayNamesChanged = overlayNames newStore /= overlayNames (twOverlays baseWorld)
-              dataChanged = terrainChanged || climateChanged || weatherChanged || vegetationChanged || overlayChanged
           when terrainChanged $
             updateTerrainChunkData (shDataHandle handles) chunkSize (twrTerrain terrainWrites)
           when climateChanged $
@@ -1002,37 +1050,33 @@ integrateFreshTickResult result st
           when overlayNamesChanged $
             setUiOverlayNames (shUiHandle handles) (overlayNames newStore)
           setUiSimTickCount (shUiHandle handles) appliedTick
-          terrainSnapMaybe <- if dataChanged
-            then Just <$> getTerrainSnapshot (shDataHandle handles)
-            else pure Nothing
           uiSnap <- getUiSnapshot (shUiHandle handles)
-          case terrainSnapMaybe of
-            Just terrainSnap -> writeTerrainSnapshot (shTerrainSnapshotRef handles) terrainSnap
-            Nothing -> pure ()
-          let visibleDataChanged = viewAffectedBySimulationPublication (uiViewMode uiSnap) terrainChanged climateChanged weatherChanged vegetationChanged overlayChanged
-          stPublished <- publishTickSnapshot handles st (isAutoTickCompletion (strCompletion result)) (uiDayNightEnabled uiSnap || visibleDataChanged)
-          snapshotVersion <- readSnapshotVersion (shSnapshotVersionRef handles)
-          terrainSnapForAtlas <- case terrainSnapMaybe of
-            Just terrainSnap -> pure (Just terrainSnap)
-            Nothing
-              | uiDayNightEnabled uiSnap -> Just <$> getTerrainSnapshot (shDataHandle handles)
-              | otherwise -> pure Nothing
-          case terrainSnapForAtlas of
-            Just terrainSnap
-              | uiDayNightEnabled uiSnap || viewAffectedBySimulationPublication (uiViewMode uiSnap) terrainChanged climateChanged weatherChanged vegetationChanged overlayChanged -> do
-                  let atlasKey = atlasKeyFor (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) terrainSnap
-                      mkJob stage = AtlasJob
-                        { ajKey = atlasKey
-                        , ajViewMode = uiViewMode uiSnap
-                        , ajWaterLevel = uiRenderWaterLevel uiSnap
-                        , ajSnapshotVersion = snapshotVersion
-                        , ajTerrain = terrainSnap
-                        , ajHexRadius = zsHexRadius stage
-                        , ajAtlasScale = zsAtlasScale stage
-                        }
-                  mapM_ (enqueueAtlasBuild (shAtlasHandle handles) . mkJob) allZoomStages
+          let visibleOverlayChanged = selectedOverlayChanged (uiViewMode uiSnap) (twOverlays baseWorld) newStore
+          publication <- publishTickSnapshot
+            handles
+            st
+            (isAutoTickCompletion (strCompletion result))
+            (autoTickFlushOnIdleCompletion (strCompletion result))
+            uiSnap
+            terrainChanged
+            climateChanged
+            weatherChanged
+            vegetationChanged
+            visibleOverlayChanged
+          case (tprTerrainSnapshot publication, tprSnapshotVersion publication) of
+            (Just terrainSnap, Just snapshotVersion)
+              | atlasPublicationAffected
+                  (tprCoalescedWeatherAffected publication)
+                  uiSnap
+                  terrainChanged
+                  climateChanged
+                  weatherChanged
+                  vegetationChanged
+                  visibleOverlayChanged ->
+                  enqueueAtlasJobsForPublication handles uiSnap terrainSnap snapshotVersion
             _ -> pure ()
-          let completeMsg = "simulation: tick " <> Text.pack (show appliedTick)
+          let stPublished = tprState publication
+              completeMsg = "simulation: tick " <> Text.pack (show appliedTick)
                 <> " completed in " <> Text.pack (show (round (strElapsedMs result) :: Int)) <> "ms"
               completeLog = SimulationTickLogEntry appliedTick Nothing "completed" completeMsg (Just (strElapsedMs result))
               st' = stPublished
@@ -1047,6 +1091,11 @@ integrateFreshTickResult result st
 
 chunkList :: IntMap.IntMap a -> [(ChunkId, a)]
 chunkList = map (\(k, v) -> (ChunkId k, v)) . IntMap.toList
+
+selectedOverlayChanged :: ViewMode -> OverlayStore -> OverlayStore -> Bool
+selectedOverlayChanged (ViewOverlay name _) before after =
+  lookupOverlay name before /= lookupOverlay name after
+selectedOverlayChanged _ _ _ = False
 
 viewAffectedBySimulationPublication
   :: ViewMode
@@ -1070,27 +1119,239 @@ isAutoTickCompletion :: SimulationTickCompletion -> Bool
 isAutoTickCompletion SimulationTickNoCompletion = False
 isAutoTickCompletion SimulationTickAutoCompletion{} = True
 
-publishTickSnapshot :: SimHandles -> SimState -> Bool -> Bool -> IO SimState
-publishTickSnapshot handles st isAutoTick immediateDataVisible
-  | not isAutoTick || immediateDataVisible = do
-      bumpSnapshotVersion (shSnapshotVersionRef handles)
-      stampAutoPublish st isAutoTick
-  | otherwise = do
-      now <- getMonotonicTimeNSec
-      if now - ssLastAutoStatusPublishNs st >= autoTickStatusPublishIntervalNs
-        then do
-          bumpSnapshotVersion (shSnapshotVersionRef handles)
-          pure st { ssLastAutoStatusPublishNs = now }
-        else pure st
+autoTickFlushOnIdleCompletion :: SimulationTickCompletion -> Bool
+autoTickFlushOnIdleCompletion SimulationTickNoCompletion = False
+autoTickFlushOnIdleCompletion (SimulationTickAutoCompletion flushOnIdle _) = flushOnIdle
 
-stampAutoPublish :: SimState -> Bool -> IO SimState
-stampAutoPublish st False = pure st
-stampAutoPublish st True = do
+data SimulationPublicationPlan = SimulationPublicationPlan
+  { sppPublishData :: !Bool
+  , sppCoalescedWeatherAffected :: !Bool
+  }
+
+data TickPublicationResult = TickPublicationResult
+  { tprState :: !SimState
+  , tprTerrainSnapshot :: !(Maybe TerrainSnapshot)
+  , tprSnapshotVersion :: !(Maybe SnapshotVersion)
+  , tprCoalescedWeatherAffected :: !Bool
+  }
+
+publishTickSnapshot
+  :: SimHandles
+  -> SimState
+  -> Bool
+  -> Bool
+  -> UiState
+  -> Bool
+  -> Bool
+  -> Bool
+  -> Bool
+  -> Bool
+  -> IO TickPublicationResult
+publishTickSnapshot handles st isAutoTick flushOnIdle uiSnap terrainChanged climateChanged weatherChanged vegetationChanged overlayChanged = do
   now <- getMonotonicTimeNSec
-  pure st { ssLastAutoStatusPublishNs = now }
+  let plan = simulationPublicationPlan
+        st
+        isAutoTick
+        now
+        flushOnIdle
+        uiSnap
+        terrainChanged
+        climateChanged
+        weatherChanged
+        vegetationChanged
+        overlayChanged
+  if sppPublishData plan
+    then do
+      terrainSnap <- getTerrainSnapshot (shDataHandle handles)
+      (st', snapshotVersion) <- publishDataSnapshot handles st isAutoTick now terrainSnap
+      pure TickPublicationResult
+        { tprState = st'
+        , tprTerrainSnapshot = Just terrainSnap
+        , tprSnapshotVersion = Just snapshotVersion
+        , tprCoalescedWeatherAffected = sppCoalescedWeatherAffected plan
+        }
+    else do
+      stStatus <- publishStatusSnapshot handles st now
+      let st' = if sppCoalescedWeatherAffected plan
+            then stStatus { ssAutoWeatherPublicationPending = True }
+            else stStatus
+      pure TickPublicationResult
+        { tprState = st'
+        , tprTerrainSnapshot = Nothing
+        , tprSnapshotVersion = Nothing
+        , tprCoalescedWeatherAffected = sppCoalescedWeatherAffected plan
+        }
+
+simulationPublicationPlan
+  :: SimState
+  -> Bool
+  -> Word64
+  -> Bool
+  -> UiState
+  -> Bool
+  -> Bool
+  -> Bool
+  -> Bool
+  -> Bool
+  -> SimulationPublicationPlan
+simulationPublicationPlan st isAutoTick now flushOnIdle uiSnap terrainChanged climateChanged weatherChanged vegetationChanged overlayChanged =
+  SimulationPublicationPlan
+    { sppPublishData = publishData
+    , sppCoalescedWeatherAffected = coalescedWeatherAffected
+    }
+  where
+    immediateAffected = immediatePublicationAffected
+      (uiViewMode uiSnap)
+      terrainChanged
+      climateChanged
+      vegetationChanged
+      overlayChanged
+    coalescedWeatherAffected = isAutoTick && weatherPublicationAffected st uiSnap weatherChanged
+    publishData =
+      not isAutoTick
+        || immediateAffected
+        || (coalescedWeatherAffected && (autoWeatherPublicationDue now st || (flushOnIdle && autoWeatherPublicationFlushBeforeIdle uiSnap)))
+
+immediatePublicationAffected
+  :: ViewMode
+  -> Bool
+  -> Bool
+  -> Bool
+  -> Bool
+  -> Bool
+immediatePublicationAffected mode terrainChanged climateChanged vegetationChanged overlayChanged =
+  case mode of
+    ViewClimate    -> terrainChanged || climateChanged
+    ViewPrecip     -> terrainChanged || climateChanged
+    ViewWeather    -> terrainChanged
+    ViewCloud      -> terrainChanged
+    ViewVegetation -> terrainChanged || vegetationChanged
+    ViewOverlay{}  -> terrainChanged || overlayChanged
+    _              -> terrainChanged
+
+weatherPublicationAffected :: SimState -> UiState -> Bool -> Bool
+weatherPublicationAffected st uiSnap weatherChanged =
+  uiDayNightEnabled uiSnap || weatherViewAffected
+  where
+    weatherViewAffected = case uiViewMode uiSnap of
+      ViewWeather -> weatherChanged || ssAutoWeatherPublicationPending st
+      ViewCloud   -> weatherChanged || ssAutoWeatherPublicationPending st
+      _           -> False
+
+autoWeatherPublicationDue :: Word64 -> SimState -> Bool
+autoWeatherPublicationDue now st =
+  now - ssLastAutoWeatherPublishNs st >= autoTickWeatherPublishIntervalNs
+
+autoWeatherPublicationFlushBeforeIdle :: UiState -> Bool
+autoWeatherPublicationFlushBeforeIdle uiSnap
+  | not (uiSimAutoTick uiSnap) = True
+  | otherwise = case autoTickPeriodNs (uiSimTickRate uiSnap) of
+      Nothing -> True
+      Just periodNs -> periodNs > autoTickWeatherPublishIntervalNs
+
+autoTickPeriodNs :: Float -> Maybe Word64
+autoTickPeriodNs rate
+  | hz <= 0 = Nothing
+  | otherwise = Just (max 1 (round (1000000000 / hz)))
+  where
+    hz = realToFrac (max 0 (min 1 rate)) * 10 :: Double
+
+publishDataSnapshot
+  :: SimHandles
+  -> SimState
+  -> Bool
+  -> Word64
+  -> TerrainSnapshot
+  -> IO (SimState, SnapshotVersion)
+publishDataSnapshot handles st isAutoTick now terrainSnap = do
+  writeTerrainSnapshot (shTerrainSnapshotRef handles) terrainSnap
+  bumpSnapshotVersion (shSnapshotVersionRef handles)
+  snapshotVersion <- readSnapshotVersion (shSnapshotVersionRef handles)
+  let st' = if isAutoTick
+        then st
+          { ssLastAutoStatusPublishNs = now
+          , ssLastAutoWeatherPublishNs = now
+          , ssAutoWeatherPublicationPending = False
+          }
+        else st { ssAutoWeatherPublicationPending = False }
+  pure (st', snapshotVersion)
+
+publishStatusSnapshot :: SimHandles -> SimState -> Word64 -> IO SimState
+publishStatusSnapshot handles st now
+  | now - ssLastAutoStatusPublishNs st >= autoTickStatusPublishIntervalNs = do
+      bumpSnapshotVersion (shSnapshotVersionRef handles)
+      pure st { ssLastAutoStatusPublishNs = now }
+  | otherwise = pure st
+
+atlasPublicationAffected
+  :: Bool
+  -> UiState
+  -> Bool
+  -> Bool
+  -> Bool
+  -> Bool
+  -> Bool
+  -> Bool
+atlasPublicationAffected coalescedWeatherAffected uiSnap terrainChanged climateChanged weatherChanged vegetationChanged overlayChanged =
+  uiDayNightEnabled uiSnap
+    || coalescedWeatherAffected
+    || viewAffectedBySimulationPublication (uiViewMode uiSnap) terrainChanged climateChanged weatherChanged vegetationChanged overlayChanged
+
+enqueueAtlasJobsForPublication :: SimHandles -> UiState -> TerrainSnapshot -> SnapshotVersion -> IO ()
+enqueueAtlasJobsForPublication handles uiSnap terrainSnap snapshotVersion = do
+  let atlasKey = atlasKeyFor (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) terrainSnap
+      mkJob stage = AtlasJob
+        { ajKey = atlasKey
+        , ajViewMode = uiViewMode uiSnap
+        , ajWaterLevel = uiRenderWaterLevel uiSnap
+        , ajSnapshotVersion = snapshotVersion
+        , ajTerrain = terrainSnap
+        , ajHexRadius = zsHexRadius stage
+        , ajAtlasScale = zsAtlasScale stage
+        }
+  mapM_ (enqueueAtlasBuild (shAtlasHandle handles) . mkJob) allZoomStages
+
+flushLatestWeatherPublication :: SimState -> IO (SimState, Bool)
+flushLatestWeatherPublication st =
+  case ssHandles st of
+    Nothing -> pure (st, False)
+    Just handles
+      | maybe False (const True) (ssInFlightTick st) -> pure (st, False)
+      | otherwise -> do
+          uiSnap <- getUiSnapshot (shUiHandle handles)
+          if not (flushWeatherPublicationViewAffected st uiSnap)
+            then pure (st, False)
+            else do
+              latest <- getTerrainSnapshot (shDataHandle handles)
+              published <- readTerrainSnapshot (shTerrainSnapshotRef handles)
+              if not (flushWeatherPublicationNeeded st uiSnap latest published)
+                then pure (st { ssAutoWeatherPublicationPending = False }, False)
+                else do
+                  now <- getMonotonicTimeNSec
+                  (st', snapshotVersion) <- publishDataSnapshot handles st True now latest
+                  enqueueAtlasJobsForPublication handles uiSnap latest snapshotVersion
+                  pure (st', True)
+
+flushWeatherPublicationViewAffected :: SimState -> UiState -> Bool
+flushWeatherPublicationViewAffected _ uiSnap =
+  uiDayNightEnabled uiSnap || case uiViewMode uiSnap of
+    ViewWeather -> True
+    ViewCloud   -> True
+    _           -> False
+
+flushWeatherPublicationNeeded :: SimState -> UiState -> TerrainSnapshot -> TerrainSnapshot -> Bool
+flushWeatherPublicationNeeded st uiSnap latest published
+  | uiDayNightEnabled uiSnap = True
+  | otherwise = case uiViewMode uiSnap of
+      ViewWeather -> ssAutoWeatherPublicationPending st || terrainSnapshotViewVersion ViewWeather latest /= terrainSnapshotViewVersion ViewWeather published
+      ViewCloud   -> ssAutoWeatherPublicationPending st || terrainSnapshotViewVersion ViewCloud latest /= terrainSnapshotViewVersion ViewCloud published
+      _           -> False
+
+autoTickWeatherPublishIntervalNs :: Word64
+autoTickWeatherPublishIntervalNs = 250000000
 
 autoTickStatusPublishIntervalNs :: Word64
-autoTickStatusPublishIntervalNs = 250000000
+autoTickStatusPublishIntervalNs = autoTickWeatherPublishIntervalNs
 
 signalInFlightDone :: SimInFlight -> IO ()
 signalInFlightDone inFlight = do
@@ -1099,7 +1360,7 @@ signalInFlightDone inFlight = do
 
 completeTickRequest :: SimulationTickCompletion -> AutoTickStepResult -> IO ()
 completeTickRequest SimulationTickNoCompletion _ = pure ()
-completeTickRequest (SimulationTickAutoCompletion completion) result = do
+completeTickRequest (SimulationTickAutoCompletion _ completion) result = do
   _ <- tryPutMVar completion result
   pure ()
 

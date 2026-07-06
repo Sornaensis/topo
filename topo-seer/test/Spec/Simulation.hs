@@ -427,7 +427,7 @@ spec = describe "Simulation actor" $ do
     map sdnsStatus (sdsNodes dagSnapshot) `shouldSatisfy` elem (Text.pack "completed")
     map stleStatus (sdsTickLogs dagSnapshot) `shouldSatisfy` elem (Text.pack "completed")
 
-  it "publishes visible ViewCloud auto ticks and schedules weather-versioned atlas jobs" $ withSystem $ \system -> do
+  it "coalesces visible ViewCloud auto ticks and schedules only published weather atlas jobs" $ withSystem $ \system -> do
     simHandle <- get @Simulation system
     dataHandle <- get @Data system
     logHandle <- get @Log system
@@ -498,7 +498,7 @@ spec = describe "Simulation actor" $ do
     autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 2
 
     version2 <- readSnapshotVersion snapshotVersionRef
-    version2 `shouldSatisfy` (> version1)
+    version2 `shouldBe` version1
     terrainSnap2 <- getTerrainSnapshot dataHandle
     tsVersion terrainSnap2 `shouldBe` baseVersion0
     tsWeatherVersion terrainSnap2 `shouldSatisfy` (> tsWeatherVersion terrainSnap)
@@ -507,14 +507,32 @@ spec = describe "Simulation actor" $ do
     atlasKeyVersion cloudKey2 `shouldBe` tsWeatherVersion terrainSnap2
 
     publishedSnap2 <- readTerrainSnapshot terrainSnapshotRef
-    tsWeatherVersion publishedSnap2 `shouldBe` tsWeatherVersion terrainSnap2
+    tsWeatherVersion publishedSnap2 `shouldBe` tsWeatherVersion terrainSnap
 
     atlasJobs2 <- drainAtlasJobs atlasHandle
-    length atlasJobs2 `shouldBe` length allZoomStages
-    map ajViewMode atlasJobs2 `shouldBe` replicate (length allZoomStages) ViewCloud
-    map ajKey atlasJobs2 `shouldSatisfy` all (== cloudKey2)
-    map (atlasKeyVersion . ajKey) atlasJobs2 `shouldSatisfy` all (== tsWeatherVersion terrainSnap2)
-    map ajSnapshotVersion atlasJobs2 `shouldSatisfy` all (== version2)
+    length atlasJobs2 `shouldBe` 0
+
+    threadDelay 260000
+    autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 3
+
+    version3 <- readSnapshotVersion snapshotVersionRef
+    version3 `shouldSatisfy` (> version2)
+    terrainSnap3 <- getTerrainSnapshot dataHandle
+    tsVersion terrainSnap3 `shouldBe` baseVersion0
+    tsWeatherVersion terrainSnap3 `shouldSatisfy` (> tsWeatherVersion terrainSnap2)
+    let cloudKey3 = atlasKeyFor ViewCloud waterLevel0 terrainSnap3
+    cloudKey3 `shouldNotBe` cloudKey2
+    atlasKeyVersion cloudKey3 `shouldBe` tsWeatherVersion terrainSnap3
+
+    publishedSnap3 <- readTerrainSnapshot terrainSnapshotRef
+    tsWeatherVersion publishedSnap3 `shouldBe` tsWeatherVersion terrainSnap3
+
+    atlasJobs3 <- drainAtlasJobs atlasHandle
+    length atlasJobs3 `shouldBe` length allZoomStages
+    map ajViewMode atlasJobs3 `shouldBe` replicate (length allZoomStages) ViewCloud
+    map ajKey atlasJobs3 `shouldSatisfy` all (== cloudKey3)
+    map (atlasKeyVersion . ajKey) atlasJobs3 `shouldSatisfy` all (== tsWeatherVersion terrainSnap3)
+    map ajSnapshotVersion atlasJobs3 `shouldSatisfy` all (== version3)
 
   it "coalesces hidden auto-tick snapshot publication while manual and visible updates publish immediately" $ withSystem $ \system -> do
     simHandle <- get @Simulation system
@@ -549,6 +567,10 @@ spec = describe "Simulation actor" $ do
     version2 `shouldBe` version1
     uiAfterAuto <- getUiSnapshot uiHandle
     uiSimTickCount uiAfterAuto `shouldBe` 2
+    publishedAfterHiddenAuto <- readTerrainSnapshot terrainSnapshotRef
+    tsWeatherVersion publishedAfterHiddenAuto `shouldBe` 0
+    hiddenAtlasJobs <- drainAtlasJobs atlasHandle
+    length hiddenAtlasJobs `shouldBe` 0
 
     requestSimTick simHandle 3
     manualPublished <- awaitTrue 500 $ do
@@ -564,6 +586,56 @@ spec = describe "Simulation actor" $ do
     autoTickStep simHandle (Just (sdsWorldEpoch dag3)) `shouldReturn` AutoTickApplied 4
     version4 <- readSnapshotVersion snapshotVersionRef
     version4 `shouldSatisfy` (> version3)
+
+  it "does not publish weather-only auto ticks for an unchanged non-weather overlay view" $ withSystem $ \system -> do
+    simHandle <- get @Simulation system
+    dataHandle <- get @Data system
+    logHandle <- get @Log system
+    uiHandle <- get @Ui system
+    dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
+    terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
+    snapshotVersionRef <- newSnapshotVersionRef
+    atlasHandle <- get @AtlasManager system
+
+    setSimHandles simHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasHandle
+
+    let config = WorldConfig { wcChunkSize = 8 }
+        chunk = generateTerrainChunk config (const 0.5)
+        climate0 = emptyClimateChunk config
+        tileCount = U.length (ccTempAvg climate0)
+        climate = climate0
+          { ccTempAvg = U.replicate tileCount 0.6
+          , ccPrecipAvg = U.replicate tileCount 0.5
+          , ccWindDirAvg = U.replicate tileCount 0.4
+          , ccWindSpdAvg = U.replicate tileCount 0.35
+          , ccHumidityAvg = U.replicate tileCount 0.5
+          }
+        world0 = emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice
+        world1 = withSeedPluginOverlay tileCount 0 $
+          withSeedWeather
+            (setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) chunk world0))
+            (ChunkId 0)
+            climate
+
+    replaceTerrainData dataHandle world1
+    initialTerrainSnap <- getTerrainSnapshot dataHandle
+    setSimWorld simHandle world1
+    setUiViewMode uiHandle (ViewOverlay pluginOverlayName 0)
+    version0 <- readSnapshotVersion snapshotVersionRef
+    _ <- drainAtlasJobs atlasHandle
+
+    autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 1
+
+    version1 <- readSnapshotVersion snapshotVersionRef
+    version1 `shouldSatisfy` (> version0)
+    terrainSnap <- getTerrainSnapshot dataHandle
+    tsWeatherVersion terrainSnap `shouldSatisfy` (> tsWeatherVersion initialTerrainSnap)
+    publishedSnap <- readTerrainSnapshot terrainSnapshotRef
+    tsWeatherVersion publishedSnap `shouldBe` 0
+    atlasJobs <- drainAtlasJobs atlasHandle
+    length atlasJobs `shouldBe` 0
+    uiAfterAuto <- getUiSnapshot uiHandle
+    uiSimTickCount uiAfterAuto `shouldBe` 1
 
   it "publishes manual time-only ticks when every node is skipped" $ withSystem $ \system -> do
     simHandle <- get @Simulation system

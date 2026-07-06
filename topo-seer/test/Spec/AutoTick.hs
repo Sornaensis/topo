@@ -29,7 +29,7 @@ import Actor.Simulation
   , setSimWorld
   , setSimWorldWithNodes
   )
-import Actor.SnapshotReceiver (readSnapshotVersion)
+import Actor.SnapshotReceiver (readSnapshotVersion, readTerrainSnapshot)
 import Actor.UI (UiState(..), ViewMode(..), getUiSnapshot)
 import Actor.UiActions (ActorHandles(..))
 import Seer.Command.Dispatch (CommandContext(..), dispatchCommand)
@@ -195,6 +195,42 @@ spec = describe "AutoTick scheduler" $ do
       dag <- getSimDagSnapshot (ahSimulationHandle handles)
       sdsLastTick dag `shouldBe` 3
 
+  it "flushes skipped weather publication when disabled while an auto tick is in-flight" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      workerStarted <- newEmptyMVar
+      runCountRef <- newIORef (0 :: Int)
+      installResponsiveWorldWithDelay 80000 app workerStarted runCountRef
+      let handles = appHandles app
+
+      viewRsp <- dispatch app "set_view_mode" (object ["mode" .= (Text.pack "weather")])
+      srSuccess viewRsp `shouldBe` True
+      rsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (1.0 :: Double)])
+      srSuccess rsp `shouldBe` True
+
+      firstPublished <- awaitTrue 100 $ do
+        ui <- getUiSnapshot (ahUiHandle handles)
+        pure (uiSimTickCount ui >= 1)
+      firstPublished `shouldBe` True
+      _ <- drainAtlasJobs (ahAtlasManagerHandle handles)
+
+      secondStarted <- awaitTrue 100 $ do
+        runs <- readRunCount runCountRef
+        pure (runs >= 2)
+      secondStarted `shouldBe` True
+
+      stopRsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= False])
+      srSuccess stopRsp `shouldBe` True
+      idle <- awaitStoppedAutoTickIdle handles runCountRef
+      idle `shouldBe` True
+
+      terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
+      publishedSnap <- readTerrainSnapshot (ahTerrainSnapshotRef handles)
+      tsWeatherVersion publishedSnap `shouldBe` tsWeatherVersion terrainSnap
+      jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+      length jobs `shouldBe` length allZoomStages
+      all ((== ViewWeather) . ajViewMode) jobs `shouldBe` True
+      all ((== tsWeatherVersion terrainSnap) . atlasKeyVersion . ajKey) jobs `shouldBe` True
+
   it "keeps commands responsive and atlas queues bounded while max-rate auto ticking" $ do
     completed <- timeout 7000000 $
       withHeadlessApp defaultHeadlessConfig $ \app -> do
@@ -277,11 +313,14 @@ installPluginWorld app = do
   sdsAvailable dag `shouldBe` True
 
 installResponsiveWorld :: HeadlessApp -> MVar () -> IORef Int -> IO ()
-installResponsiveWorld app workerStarted runCountRef = do
+installResponsiveWorld = installResponsiveWorldWithDelay 150000
+
+installResponsiveWorldWithDelay :: Int -> HeadlessApp -> MVar () -> IORef Int -> IO ()
+installResponsiveWorldWithDelay delayMicros app workerStarted runCountRef = do
   let handles = appHandles app
   replaceTerrainData (ahDataHandle handles) responsiveTestWorld
   _ <- getTerrainSnapshot (ahDataHandle handles)
-  setSimWorldWithNodes (ahSimulationHandle handles) responsiveTestWorld [responsiveSimulationBinding workerStarted runCountRef]
+  setSimWorldWithNodes (ahSimulationHandle handles) responsiveTestWorld [responsiveSimulationBinding delayMicros workerStarted runCountRef]
   dag <- getSimDagSnapshot (ahSimulationHandle handles)
   sdsAvailable dag `shouldBe` True
 
@@ -479,8 +518,8 @@ pluginSimulationBinding = SimulationNodeBinding
   , snbPlugin = Just pluginOverlayName
   }
 
-responsiveSimulationBinding :: MVar () -> IORef Int -> SimulationNodeBinding
-responsiveSimulationBinding workerStarted runCountRef = SimulationNodeBinding
+responsiveSimulationBinding :: Int -> MVar () -> IORef Int -> SimulationNodeBinding
+responsiveSimulationBinding delayMicros workerStarted runCountRef = SimulationNodeBinding
   { snbNode = SimNodeReader
       { snrId = SimNodeId (Text.pack "responsive-slow-plugin")
       , snrOverlayName = pluginOverlayName
@@ -491,7 +530,7 @@ responsiveSimulationBinding workerStarted runCountRef = SimulationNodeBinding
             then do
               _ <- atomicModifyIORef' runCountRef (\n -> let n' = n + 1 in (n', n'))
               _ <- tryPutMVar workerStarted ()
-              threadDelay 150000
+              threadDelay delayMicros
               pure (Right (incrementPluginOverlay overlay))
             else pure (Left (Text.pack "missing weather dependency"))
       }
