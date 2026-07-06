@@ -25,11 +25,12 @@ import Actor.AtlasCache (atlasKeyFor)
 import Actor.AtlasFreshness
   ( AtlasFreshness(..)
   , AtlasFreshnessRef
+  , emptyAtlasFreshness
   , newAtlasFreshnessRef
   , writeAtlasFreshness
   , writeAtlasFreshnessKey
   )
-import Actor.AtlasManager (AtlasJob(..), AtlasManager, drainFreshAtlasJobs)
+import Actor.AtlasManager (AtlasJob(..), AtlasDispatchJob(..), AtlasManager, drainFreshAtlasJobs)
 import Actor.AtlasResultBroker (AtlasResultRef)
 import Actor.AtlasScheduleBroker
   ( AtlasScheduleRef
@@ -135,17 +136,16 @@ runSchedule handles req = do
       workerCount = length workers
   if shouldSchedule && workerCount > 0
     then do
-      let currentFreshness = AtlasFreshness
-            { afKey = currentKey
-            , afSnapshotVersion = asqSnapshotVersion req
-            }
+      let currentFreshness = emptyAtlasFreshness currentKey (asqSnapshotVersion req)
       (jobs, drainMs) <- timedMs (drainFreshAtlasJobs (ashManager handles) currentFreshness)
       (_, enqueueMs) <- timedMs $
-        forM_ jobs $ \job -> do
+        forM_ jobs $ \dispatchJob -> do
           idx <- atomicModifyIORef' (ashWorkerNext handles) (\i -> (i + 1, i))
           let worker = workers !! (idx `mod` workerCount)
+              job = adjJob dispatchJob
           enqueueAtlasBuildWork worker AtlasBuild
-            { abKey        = ajKey job
+            { abBuildId   = adjBuildId dispatchJob
+            , abKey        = ajKey job
             , abViewMode   = ajViewMode job
             , abWaterLevel = ajWaterLevel job
             , abTerrain    = ajTerrain job

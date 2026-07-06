@@ -9,6 +9,7 @@ import System.Timeout (timeout)
 import Test.Hspec
 import Actor.AtlasCache (AtlasKey(..), atlasKeyVersion)
 import Actor.AtlasManager (AtlasManager, AtlasJob(..), enqueueAtlasBuild, drainAtlasJobs)
+import Actor.AtlasResult (AtlasBuildId(..))
 import Actor.AtlasResultBroker (newAtlasResultRef)
 import Actor.AtlasScheduleBroker
   ( AtlasScheduleRef
@@ -332,7 +333,8 @@ spec = describe "AtlasScheduler" $ do
         key1 = AtlasKey ViewElevation defaultWaterLevel 1
         key2 = AtlasKey ViewElevation defaultWaterLevel 2
         build = AtlasBuild
-          { abKey = key1
+          { abBuildId = AtlasBuildId 1
+          , abKey = key1
           , abViewMode = ViewElevation
           , abWaterLevel = defaultWaterLevel
           , abTerrain = terrainSnap
@@ -349,16 +351,19 @@ spec = describe "AtlasScheduler" $ do
     writeAtlasFreshness freshnessRef AtlasFreshness
       { afKey = key1
       , afSnapshotVersion = SnapshotVersion 1
+      , afLatestBuildIds = mempty
       }
     atlasBuildIsCurrent build `shouldReturn` True
     writeAtlasFreshness freshnessRef AtlasFreshness
       { afKey = key1
       , afSnapshotVersion = SnapshotVersion 2
+      , afLatestBuildIds = mempty
       }
     atlasBuildIsCurrent build `shouldReturn` False
     writeAtlasFreshness freshnessRef AtlasFreshness
       { afKey = key2
       , afSnapshotVersion = SnapshotVersion 2
+      , afLatestBuildIds = mempty
       }
     atlasBuildIsCurrent build `shouldReturn` False
 

@@ -8,6 +8,7 @@
 module Actor.AtlasManager
   ( AtlasManager
   , AtlasJob(..)
+  , AtlasDispatchJob(..)
   , atlasManagerActorDef
   , setAtlasManagerFreshnessRef
   , enqueueAtlasBuild
@@ -16,7 +17,8 @@ module Actor.AtlasManager
   ) where
 
 import Actor.AtlasCache (AtlasKey, atlasKeyVersion)
-import Actor.AtlasFreshness (AtlasFreshness(..), AtlasFreshnessRef, writeAtlasFreshness)
+import Actor.AtlasFreshness (AtlasFreshness(..), AtlasFreshnessRef, writeAtlasFreshnessBuild, writeAtlasFreshnessCurrent)
+import Actor.AtlasResult (AtlasBuildId(..), AtlasBuildTarget(..))
 import Actor.Data (TerrainSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion)
 import Actor.UI (ViewMode(..))
@@ -36,15 +38,21 @@ data AtlasJob = AtlasJob
   , ajAtlasScale :: !Int
   }
 
+data AtlasDispatchJob = AtlasDispatchJob
+  { adjBuildId :: !AtlasBuildId
+  , adjJob :: !AtlasJob
+  }
+
 
 data AtlasJobSlot = AtlasJobSlot !ViewMode !Float !Int !Int
   deriving (Eq, Ord, Show)
 
 data AtlasManagerState = AtlasManagerState
   { amKey :: !(Maybe AtlasKey)
-  , amQueue :: ![AtlasJob]
+  , amQueue :: ![AtlasDispatchJob]
   , amFreshnessRef :: !(Maybe AtlasFreshnessRef)
   , amLatestVersions :: !(Map.Map AtlasJobSlot (Word64, SnapshotVersion))
+  , amNextBuildId :: !Word64
   }
 
 emptyAtlasManagerState :: AtlasManagerState
@@ -53,10 +61,19 @@ emptyAtlasManagerState = AtlasManagerState
   , amQueue = []
   , amFreshnessRef = Nothing
   , amLatestVersions = Map.empty
+  , amNextBuildId = 1
   }
 
 atlasJobSlot :: AtlasJob -> AtlasJobSlot
 atlasJobSlot job = AtlasJobSlot (ajViewMode job) (ajWaterLevel job) (ajHexRadius job) (ajAtlasScale job)
+
+atlasJobTarget :: AtlasJob -> AtlasBuildTarget
+atlasJobTarget job = AtlasBuildTarget
+  { abtKey = ajKey job
+  , abtSnapshotVersion = ajSnapshotVersion job
+  , abtHexRadius = ajHexRadius job
+  , abtAtlasScale = ajAtlasScale job
+  }
 
 [hyperspace|
 actor AtlasManager
@@ -69,41 +86,51 @@ actor AtlasManager
   cast setFreshnessRef :: AtlasFreshnessRef
   cast enqueue :: AtlasJob
   call drainJobs :: () -> [AtlasJob]
-  call drainFreshJobs :: AtlasFreshness -> [AtlasJob]
+  call drainFreshJobs :: AtlasFreshness -> [AtlasDispatchJob]
 
   initial emptyAtlasManagerState
   onPure_ setFreshnessRef = \ref st -> st { amFreshnessRef = Just ref }
   on_ enqueue = \job st -> do
     -- Latest-wins per view/water/scale slot: a newer terrain/layer version
     -- for the same atlas slot replaces older queued or already-dispatched
-    -- work. Equal-version jobs still replace older viewport/pan work.
+    -- work. Equal-version jobs still replace older viewport/pan work.  The
+    -- accepted build id is published immediately so same-key obsolete viewport
+    -- results cannot promote before the replacement is dispatched.
     let slot = atlasJobSlot job
         jobStamp = (atlasKeyVersion (ajKey job), ajSnapshotVersion job)
         hasNewerAccepted = maybe False (> jobStamp) (Map.lookup slot (amLatestVersions st))
     if hasNewerAccepted
       then pure st
       else do
+        let buildId = AtlasBuildId (amNextBuildId st)
+            dispatchJob = AtlasDispatchJob buildId job
         case amFreshnessRef st of
-          Just ref -> writeAtlasFreshness ref AtlasFreshness
-            { afKey = ajKey job
-            , afSnapshotVersion = ajSnapshotVersion job
-            }
+          Just ref -> writeAtlasFreshnessBuild ref (atlasJobTarget job) buildId
           Nothing -> pure ()
-        let pruned = filter (\j -> atlasJobSlot j /= slot) (amQueue st)
+        let pruned = filter (\queued -> atlasJobSlot (adjJob queued) /= slot) (amQueue st)
             latestVersions' = Map.insert slot jobStamp (amLatestVersions st)
-        pure st { amKey = Just (ajKey job), amQueue = pruned ++ [job], amLatestVersions = latestVersions' }
-  onPure drainJobs = \() st -> (st { amQueue = [] }, amQueue st)
+        pure st
+          { amKey = Just (ajKey job)
+          , amQueue = pruned ++ [dispatchJob]
+          , amLatestVersions = latestVersions'
+          , amNextBuildId = amNextBuildId st + 1
+          }
+  onPure drainJobs = \() st -> (st { amQueue = [] }, map adjJob (amQueue st))
   on drainFreshJobs = \freshness st -> do
     let key = afKey freshness
         requestKeyVersion = atlasKeyVersion key
         requestSnapshotVersion = afSnapshotVersion freshness
-        isFresh job = ajKey job == key && ajSnapshotVersion job == requestSnapshotVersion
-        keepQueued job = not (isFresh job)
-          && (ajSnapshotVersion job > requestSnapshotVersion || atlasKeyVersion (ajKey job) > requestKeyVersion)
+        isFresh queued =
+          let job = adjJob queued
+          in ajKey job == key && ajSnapshotVersion job == requestSnapshotVersion
+        keepQueued queued =
+          let job = adjJob queued
+          in not (isFresh queued)
+            && (ajSnapshotVersion job > requestSnapshotVersion || atlasKeyVersion (ajKey job) > requestKeyVersion)
         fresh = filter isFresh (amQueue st)
         queue' = filter keepQueued (amQueue st)
     case amFreshnessRef st of
-      Just ref | not (null fresh) -> writeAtlasFreshness ref freshness
+      Just ref | not (null fresh) -> writeAtlasFreshnessCurrent ref key requestSnapshotVersion
       _ -> pure ()
     pure (st { amQueue = queue' }, fresh)
 |]
@@ -120,6 +147,6 @@ drainAtlasJobs :: ActorHandle AtlasManager (Protocol AtlasManager) -> IO [AtlasJ
 drainAtlasJobs handle =
   call @"drainJobs" handle #drainJobs ()
 
-drainFreshAtlasJobs :: ActorHandle AtlasManager (Protocol AtlasManager) -> AtlasFreshness -> IO [AtlasJob]
+drainFreshAtlasJobs :: ActorHandle AtlasManager (Protocol AtlasManager) -> AtlasFreshness -> IO [AtlasDispatchJob]
 drainFreshAtlasJobs handle freshness =
   call @"drainFreshJobs" handle #drainFreshJobs freshness

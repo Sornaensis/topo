@@ -3,6 +3,7 @@ module Seer.Render.Frame
   , renderFrame
   ) where
 
+import Actor.AtlasFreshness (readAtlasFreshnessRef)
 import Actor.AtlasResultBroker (AtlasResultRef)
 import Actor.AtlasScheduleBroker (AtlasScheduleRef)
 import Actor.AtlasScheduler (AtlasScheduler)
@@ -42,8 +43,9 @@ import Seer.Render.Atlas
   ( AtlasTextureCache(..)
   , drawAtlas
   , drawAtlasAlpha
+  , atlasResolveNeedsRetry
   , drainAtlasBuildResults
-  , getNearestAtlas
+  , getCurrentCompleteAtlasForTarget
   , getNearestDayNight
   , resolveAtlasTiles
   , resolveEffectiveStage
@@ -174,10 +176,11 @@ renderFrame context = do
       then logTiming logHandle timingLogThresholdMs (Text.pack "atlas texture create") uploadTextureMs (Just uploadCount)
       else pure False
   tAfterDrain <- getMonotonicTimeNSec
-  (atlasToDraw, atlasKeyMismatch, atlasCache'', loggedAtlasResolve) <- do
-    ((resolvedTiles, mismatch, resolvedCache), elapsed) <- timedMs (resolveAtlasTiles renderTargetOk pool snapshot atlasCache' stage)
+  latestAtlasFreshness <- readAtlasFreshnessRef freshnessRef
+  (atlasToDraw, atlasResolveStatus, atlasCache'', loggedAtlasResolve) <- do
+    ((resolvedTiles, resolveStatus, resolvedCache), elapsed) <- timedMs (resolveAtlasTiles latestAtlasFreshness renderTargetOk pool snapshot atlasCache' stage)
     logged <- logTiming logHandle timingLogThresholdMs (Text.pack "atlas resolve") elapsed Nothing
-    pure (resolvedTiles, mismatch, resolvedCache, logged)
+    pure (resolvedTiles, resolveStatus, resolvedCache, logged)
   tAfterResolve <- getMonotonicTimeNSec
   let chunkTexturesNeedRefresh = not renderTargetOk
         && chunkTextureCacheNeedsUpdate terrainCache (zsAtlasScale stage) textureCache
@@ -199,7 +202,7 @@ renderFrame context = do
           -- Without target tiles, draw committed at full opacity to prevent
           -- the viewColor background bleeding through during the hysteresis
           -- window.
-          let targetTiles = getNearestAtlas expectedAtlasKey (zsHexRadius targetStage) atlasCache''
+          let targetTiles = getCurrentCompleteAtlasForTarget latestAtlasFreshness expectedAtlasKey (zsHexRadius targetStage) (zsAtlasScale targetStage) atlasCache''
               pan = uiPanOffset (rsUi snapshot)
               z = uiZoom (rsUi snapshot)
               win = V2 (fromIntegral winW) (fromIntegral winH)
@@ -311,7 +314,7 @@ renderFrame context = do
       <> " atlas=" <> show (isNothing atlasToDraw)
     hFlush h
   let didLog = loggedWindowSize || loggedSchedule || loggedScheduleDrain || loggedScheduleEnqueue || loggedUpload || loggedTextureCreate || loggedAtlasResolve || loggedChunkTexture || loggedDraw || loggedHover || loggedChrome || loggedUi || loggedPresent
-      atlasNeedsRetry = renderTargetOk && dataReady && (isNothing atlasToDraw || atlasKeyMismatch)
+      atlasNeedsRetry = renderTargetOk && dataReady && atlasResolveNeedsRetry atlasResolveStatus
       fallbackChunkNeedsRetry = not renderTargetOk
         && chunkTextureCacheNeedsUpdate terrainCache (zsAtlasScale stage) textureCache'
   pure (atlasNeedsRetry || fallbackChunkNeedsRetry, textureCache', atlasCache'', didLog)

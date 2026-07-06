@@ -30,6 +30,7 @@ import Hyperspace.Actor (ActorHandle, Protocol)
 import Seer.Render (TerrainCache(..), emptyTerrainCache, terrainCacheNeedsRefresh)
 import Seer.Render.Atlas
   ( AtlasTextureCache(..)
+  , CachedAtlasTileSet(..)
   , collectAtlasTextures
   , emptyAtlasTextureCache
   )
@@ -135,7 +136,7 @@ renderMetrics frameMs _snap cacheState =
   let terrainCount = IntMap.size (tcTerrainChunks (rcsTerrainCache cacheState))
       chunkTextures = IntMap.size (ctcTextures (rcsChunkTextures cacheState))
       atlasScales = length (atcLru (rcsAtlasCache cacheState))
-      atlasTiles = sum (map length (concatMap IntMap.elems (Map.elems (atcCaches (rcsAtlasCache cacheState)))))
+      atlasTiles = sum (map (length . catsTiles) (concatMap IntMap.elems (Map.elems (atcCaches (rcsAtlasCache cacheState)))))
       snapshotVer = case rcsLastSnapshot cacheState of
         Nothing -> "none"
         Just (SnapshotVersion v) -> show v

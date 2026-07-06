@@ -16,21 +16,22 @@ module Actor.AtlasWorker
   ) where
 
 import Actor.AtlasCache (AtlasKey)
-import Actor.AtlasFreshness (AtlasFreshnessRef, atlasBuildIsFresh, readAtlasFreshnessRef)
-import Actor.AtlasResult (AtlasBuildResult(..))
+import Actor.AtlasFreshness (AtlasFreshnessRef, atlasTargetBuildIsFresh, readAtlasFreshnessRef)
+import Actor.AtlasResult (AtlasBuildId, AtlasBuildResult(..), AtlasBuildTarget(..), AtlasTileSetManifest(..))
 import Actor.AtlasResultBroker (AtlasResultRef, pushAtlasResult)
 import Actor.Data (TerrainSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion)
 import Actor.UI (ViewMode(..))
 import Control.Concurrent (threadDelay)
 import Control.Exception (evaluate)
+import Data.List (find)
 import qualified Data.IntMap.Strict as IntMap
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
 import Topo (WorldConfig(..))
 import Seer.Render.Viewport (visibleChunkKeys)
 import UI.OverlayExtract (extractOverlayField)
-import UI.HexGeometry (renderHexRadiusPx)
+import UI.HexGeometry (normalizeHexBounds, renderHexRadiusPx)
 import UI.RiverRender (RiverGeometry(..), buildChunkRiverGeometry, defaultRiverRenderConfig, scaleRiverWidths)
 import UI.TerrainAtlas (AtlasChunkGeometry(..), AtlasTileGeometry(..), attachRiverOverlay, composeTilesFromGeometry, mergeChunkGeometry)
 import UI.TerrainRender (ChunkGeometry, buildChunkGeometry, buildDayNightGeometry)
@@ -38,7 +39,8 @@ import UI.TerrainRender (ChunkGeometry, buildChunkGeometry, buildDayNightGeometr
 
 -- | Payload for CPU-side atlas builds executed by pooled workers.
 data AtlasBuild = AtlasBuild
-  { abKey        :: AtlasKey
+  { abBuildId    :: !AtlasBuildId
+  , abKey        :: AtlasKey
   , abViewMode   :: ViewMode
   , abWaterLevel :: Float
   , abTerrain    :: TerrainSnapshot
@@ -64,10 +66,18 @@ atlasWorkerPaddedViewport config (panX, panY) zoom (winW, winH) =
       paddedPan = (panX + padWorld, panY + padWorld)
   in (paddedPan, zoom', paddedWin)
 
+atlasBuildTarget :: AtlasBuild -> AtlasBuildTarget
+atlasBuildTarget job = AtlasBuildTarget
+  { abtKey = abKey job
+  , abtSnapshotVersion = abSnapshotVersion job
+  , abtHexRadius = abHexRadius job
+  , abtAtlasScale = abAtlasScale job
+  }
+
 atlasBuildIsCurrent :: AtlasBuild -> IO Bool
 atlasBuildIsCurrent job = do
   latest <- readAtlasFreshnessRef (abFreshnessRef job)
-  pure (atlasBuildIsFresh latest (abKey job) (abSnapshotVersion job))
+  pure (atlasTargetBuildIsFresh latest (atlasBuildTarget job) (abBuildId job))
 
 traverseFresh :: AtlasBuild -> [a] -> (a -> IO b) -> IO (Maybe [b])
 traverseFresh job = go []
@@ -184,18 +194,34 @@ actor AtlasWorker
                         dayNightTiles = if IntMap.null dayNightGeometryMap
                           then Nothing
                           else Just (composeTilesFromGeometry dayNightGeometryMap (abHexRadius job) (abAtlasScale job))
-                        buildResult tile mbDnTile = AtlasBuildResult
+                        normalisedBounds tile = normalizeHexBounds (abHexRadius job) (atgBounds tile)
+                        expectedBounds = map normalisedBounds tiles
+                        manifest = AtlasTileSetManifest
+                          { atsmBuildId = abBuildId job
+                          , atsmKey = abKey job
+                          , atsmSnapshotVersion = abSnapshotVersion job
+                          , atsmHexRadius = abHexRadius job
+                          , atsmAtlasScale = abAtlasScale job
+                          , atsmExpectedTileCount = length tiles
+                          , atsmExpectedBounds = expectedBounds
+                          }
+                        dayNightLookup = maybe [] (map (\dnTile -> (normalisedBounds dnTile, dnTile))) dayNightTiles
+                        dayNightFor tile = snd <$> find ((== normalisedBounds tile) . fst) dayNightLookup
+                        buildResult ix tile mbDnTile = AtlasBuildResult
                           { abrKey       = abKey job
                           , abrSnapshotVersion = abSnapshotVersion job
                           , abrHexRadius = abHexRadius job
+                          , abrManifest = manifest
+                          , abrTileIndex = ix
+                          , abrTileBounds = normalisedBounds tile
                           , abrTile      = tile
                           , abrDayNightTile = mbDnTile
                           }
                     if null tiles
                       then threadDelay 100 >> pure st
                       else do
-                        let dnTileList = maybe (repeat Nothing) (map Just) dayNightTiles
-                        forFresh_ job (zip tiles dnTileList) $ \(tile, mbDnTile) -> do
+                        forFresh_ job (zip [0..] tiles) $ \(ix, tile) -> do
+                          let mbDnTile = dayNightFor tile
                           -- Pre-merge terrain + river chunks into a single geometry
                           -- so the render thread avoids SV.concat and index-rebasing
                           -- allocations during texture upload.
@@ -218,7 +244,7 @@ actor AtlasWorker
                                 pure ()
                               [] -> pure ()
                             Nothing -> pure ()
-                          let r = buildResult tile' mbDnTile'
+                          let r = buildResult ix tile' mbDnTile'
                           _ <- evaluate r
                           pushAtlasResult (abResultRef job) r
                         threadDelay 100

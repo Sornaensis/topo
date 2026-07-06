@@ -9,18 +9,29 @@ import Linear (V2(..))
 import qualified SDL
 import Unsafe.Coerce (unsafeCoerce)
 import Actor.AtlasCache (AtlasKey(..))
+import Actor.AtlasResult (AtlasBuildId(..), AtlasTileSetManifest(..), atlasManifestTarget)
+import Actor.SnapshotReceiver (SnapshotVersion(..))
+import Actor.AtlasScheduler (AtlasFreshness(..))
 import Actor.UI (ViewMode(..))
 import Seer.Render.Atlas
   ( AtlasTextureCache(..)
+  , CachedAtlasTileSet
+  , AtlasResolveStatus(..)
+  , atlasResolveNeedsRetry
   , emptyAtlasTextureCache
   , setAtlasKey
   , storeAtlasTiles
+  , storeAtlasTileSet
   , getNearestAtlas
+  , getCompleteAtlas
+  , getCurrentCompleteAtlasForTarget
   , touchAtlasScale
   , drainAtlasPending
   , evictIfNeeded
   , resolveAtlasFallback
   , resolveAtlasPure
+  , resolveAtlasPureWithStatus
+  , resolveAtlasPureWithFreshness
   , resolveEffectiveStage
   , collectAtlasTextures
   )
@@ -59,8 +70,22 @@ keyB = AtlasKey ViewBiome     0 1
 keyStale :: AtlasKey
 keyStale = AtlasKey ViewElevation 0 999
 
+mkManifest :: Int -> AtlasKey -> Int -> [Rect] -> AtlasTileSetManifest
+mkManifest = mkManifestWithAtlasScale 1
+
+mkManifestWithAtlasScale :: Int -> Int -> AtlasKey -> Int -> [Rect] -> AtlasTileSetManifest
+mkManifestWithAtlasScale atlasScale buildId key hexRadius bounds = AtlasTileSetManifest
+  { atsmBuildId = AtlasBuildId (fromIntegral buildId)
+  , atsmKey = key
+  , atsmSnapshotVersion = SnapshotVersion 1
+  , atsmHexRadius = hexRadius
+  , atsmAtlasScale = atlasScale
+  , atsmExpectedTileCount = length bounds
+  , atsmExpectedBounds = bounds
+  }
+
 -- | Helper to count total scales across all keys in the nested Map.
-totalScales :: Map.Map AtlasKey (IntMap.IntMap [TerrainAtlasTile]) -> Int
+totalScales :: Map.Map AtlasKey (IntMap.IntMap CachedAtlasTileSet) -> Int
 totalScales = sum . map IntMap.size . Map.elems
 
 spec :: Spec
@@ -153,6 +178,73 @@ spec = describe "AtlasTextureCache" $ do
           cache2 = storeAtlasTiles keyB 6 [mkTile 2 6 testRect] cache1
       Map.size (atcCaches cache2) `shouldBe` 2
 
+    it "keeps partial exact target-scale tiles from promoting atcLast" $ do
+      let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          manifest = mkManifest 1 keyA 6 [testRect, testRect2]
+          cache1 = storeAtlasTileSet manifest [mkTile 1 6 testRect] cache0
+          (tiles, status, cache2) = resolveAtlasPureWithStatus True True keyA 6 cache1
+      fmap length tiles `shouldBe` Just 1
+      status `shouldBe` PartialExact
+      atlasResolveNeedsRetry status `shouldBe` True
+      isNothing (atcLast cache2) `shouldBe` True
+      isNothing (getCompleteAtlas keyA 6 cache2) `shouldBe` True
+
+    it "promotes only complete exact target-scale tile sets" $ do
+      let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          manifest = mkManifest 1 keyA 6 [testRect, testRect2]
+          cache1 = storeAtlasTileSet manifest [mkTile 1 6 testRect] cache0
+          cache2 = storeAtlasTileSet manifest [mkTile 2 6 testRect2] cache1
+          (tiles, status, cache3) = resolveAtlasPureWithStatus True True keyA 6 cache2
+      fmap length tiles `shouldBe` Just 2
+      status `shouldBe` CompleteExact
+      atlasResolveNeedsRetry status `shouldBe` False
+      fmap fst (atcLast cache3) `shouldBe` Just keyA
+      fmap length (getCompleteAtlas keyA 6 cache3) `shouldBe` Just 2
+
+    it "requires both hex radius and atlas scale for complete current lookup" $ do
+      let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          manifest = mkManifestWithAtlasScale 2 1 keyA 6 [testRect]
+          tile = (mkTile 1 6 testRect) { tatScale = 2 }
+          cache1 = storeAtlasTileSet manifest [tile] cache0
+      fmap length (getCurrentCompleteAtlasForTarget Nothing keyA 6 2 cache1) `shouldBe` Just 1
+      isNothing (getCurrentCompleteAtlasForTarget Nothing keyA 6 1 cache1) `shouldBe` True
+
+    it "does not merge different build ids into one complete tile set" $ do
+      let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          manifest1 = mkManifest 1 keyA 6 [testRect, testRect2]
+          manifest2 = mkManifest 2 keyA 6 [testRect, testRect2]
+          cache1 = storeAtlasTileSet manifest1 [mkTile 1 6 testRect] cache0
+          cache2 = storeAtlasTileSet manifest2 [mkTile 2 6 testRect2] cache1
+          (tiles, status, _cache3) = resolveAtlasPureWithStatus True True keyA 6 cache2
+      fmap length tiles `shouldBe` Just 1
+      status `shouldBe` PartialExact
+      length (atcPending cache2) `shouldBe` 1
+
+    it "treats an obsolete complete exact build id as retrying fallback" $ do
+      let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          oldManifest = mkManifest 1 keyA 6 [testRect]
+          latestManifest = mkManifest 2 keyA 6 [testRect]
+          latestFreshness = AtlasFreshness
+            { afKey = keyA
+            , afSnapshotVersion = SnapshotVersion 1
+            , afLatestBuildIds = Map.singleton (atlasManifestTarget latestManifest) (AtlasBuildId 2)
+            }
+          cache1 = storeAtlasTileSet oldManifest [mkTile 1 6 testRect] cache0
+          (tiles, status, cache2) = resolveAtlasPureWithFreshness (Just latestFreshness) True True keyA 6 cache1
+      fmap length tiles `shouldBe` Just 1
+      status `shouldBe` StaleExactFallback
+      atlasResolveNeedsRetry status `shouldBe` True
+      isNothing (atcLast cache2) `shouldBe` True
+
+    it "reports nearest-scale tiles as retrying fallback" $ do
+      let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          manifest = mkManifest 1 keyA 10 [testRect]
+          cache1 = storeAtlasTileSet manifest [mkTile 1 10 testRect] cache0
+          (tiles, status, _cache2) = resolveAtlasPureWithStatus True True keyA 6 cache1
+      fmap (map tatHexRadius) tiles `shouldBe` Just [10]
+      status `shouldBe` NearestScaleFallback
+      atlasResolveNeedsRetry status `shouldBe` True
+
   -- -------------------------------------------------------------------
   -- getNearestAtlas (looks up by any key)
   -- -------------------------------------------------------------------
@@ -163,7 +255,7 @@ spec = describe "AtlasTextureCache" $ do
                  $ storeAtlasTiles keyA 10 [mkTile 2 10 testRect] cache0
           result = getNearestAtlas keyA 6 cache1
       fmap length result `shouldBe` Just 1
-      fmap (tatHexRadius . head) result `shouldBe` Just 6
+      fmap (map tatHexRadius) result `shouldBe` Just [6]
 
     it "returns nearest scale when exact is missing" $ do
       let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
@@ -171,7 +263,7 @@ spec = describe "AtlasTextureCache" $ do
                  $ storeAtlasTiles keyA 20 [mkTile 2 20 testRect] cache0
           result = getNearestAtlas keyA 10 cache1
       fmap length result `shouldBe` Just 1
-      fmap (tatHexRadius . head) result `shouldBe` Just 8
+      fmap (map tatHexRadius) result `shouldBe` Just [8]
 
     it "returns Nothing when key is not in cache" $ do
       let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
