@@ -15,7 +15,7 @@ Top-level plugin definition. Use `defaultPluginDef` as a starting point.
 | `pdParams` | `[ParamDef]` | User-facing parameters |
 | `pdSchemaFile` | `Maybe FilePath` | Overlay schema file |
 | `pdGenerator` | `Maybe GeneratorDef` | Generator participation |
-| `pdSimulation` | `Maybe SimulationDef` | Simulation participation |
+| `pdSimulation` | `Maybe SimulationDef` | Plugin simulation declaration; dependencies are simulation node IDs and may reference host built-ins like `weather` |
 | `pdCapabilities` | `[RPCCapability]` | Explicit extra capabilities, for example `CapWriteTerrain` |
 | `pdDataDirectory` | `Maybe FilePath` | Plugin data directory under the world save |
 | `pdDataResources` | `[DataResourceDef]` | Data-service resource schemas and handlers |
@@ -60,7 +60,7 @@ Use `generatorResultFromTerrain` or related payload helpers when returning modif
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `sdDependencies` | `[Text]` | Simulation node IDs that tick before this node |
+| `sdDependencies` | `[Text]` | Simulation node IDs that tick before this plugin declaration; may include host built-ins such as `weather` |
 | `sdSchedule` | `Maybe SimulationScheduleDecl` | Optional cadence; `Nothing` emits the hourly default |
 | `sdTick` | `PluginContext -> IO (Either Text SimulationTickResult)` | Simulation callback |
 

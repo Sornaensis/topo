@@ -162,7 +162,7 @@ mkLocal disabled overlaySet plugin simDecl = LocalSimDecl
           then Just ("manifest name " <> rmName manifest <> " does not match loaded plugin name " <> pluginName)
           else Nothing
       , if Set.member pluginName builtinSimulationNodeIds
-          then Just ("simulation node id " <> pluginName <> " collides with a built-in node")
+          then Just (pluginName <> " is a host built-in simulation node; plugin simulation declarations must use a distinct node id")
           else Nothing
       , fmap ("invalid simulation schedule: " <>) (scheduleDeclError (rsdSchedule simDecl))
       , case lpOverlaySchema plugin of
@@ -249,16 +249,16 @@ diagnosticFor disabled allDeclaredNames executableNames executableWriterNames lo
     blockedDeps = [dep | dep <- deps, Set.member dep allDeclaredNames, not (Set.member dep executableNames)]
     writerDeps = [dep | dep <- deps, Set.member dep executableWriterNames]
     (status, detail)
-      | executable = ("Ready", "Ready; simulation node executes in the actor-owned tick DAG.")
+      | executable = ("Ready", "Ready; plugin simulation declaration is eligible for binding into the actor-owned tick DAG plan.")
       | Just issue <- lrLocalIssue local = (statusForLocalIssue issue, issue)
       | not (null missingDeps) =
-          ("WaitingForDependencies", "missing simulation dependencies: " <> Text.intercalate ", " missingDeps)
+          ("WaitingForDependencies", "missing plugin simulation declaration dependencies (simulation node IDs): " <> Text.intercalate ", " missingDeps)
       | not (lrWritesTerrain local) && not (null writerDeps) =
           ("WaitingForDependencies", "reader simulation node depends on terrain writer(s), unsupported by the two-phase executor: " <> Text.intercalate ", " writerDeps)
       | not (null blockedDeps) =
-          ("WaitingForDependencies", "simulation dependencies are not executable: " <> Text.intercalate ", " blockedDeps)
+          ("WaitingForDependencies", "plugin simulation declaration dependencies are not plan-executable: " <> Text.intercalate ", " blockedDeps)
       | otherwise =
-          ("WaitingForDependencies", "cycle or unresolved simulation dependencies prevent execution")
+          ("WaitingForDependencies", "cycle or unresolved plugin simulation declaration dependencies prevent plan execution")
 
 statusForLocalIssue :: Text -> Text
 statusForLocalIssue issue

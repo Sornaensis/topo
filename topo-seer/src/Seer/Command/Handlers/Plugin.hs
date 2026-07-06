@@ -204,7 +204,9 @@ pluginToJSON now disabled allPlugins availableDeps paramSpecs lp =
     , "param_specs"           .= map paramSpecToJSON (maybe [] id (Map.lookup name paramSpecs))
     , "has_generator"         .= isJust (rmGenerator manifest)
     , "has_simulation"        .= isJust (rmSimulation manifest)
+    , "has_simulation_declaration" .= isJust (rmSimulation manifest)
     , "simulation"            .= maybe Null simulationDeclToJSON (rmSimulation manifest)
+    , "simulation_declaration" .= maybe Null simulationDeclToJSON (rmSimulation manifest)
     , "logs"                  .= diagnosticLines
     , "diagnostic_lines"      .= diagnosticLines
     ]
@@ -212,6 +214,7 @@ pluginToJSON now disabled allPlugins availableDeps paramSpecs lp =
 simulationDeclToJSON :: RPCSimulationDecl -> Value
 simulationDeclToJSON sim = object
   [ "dependencies" .= rsdDependencies sim
+  , "dependency_kind" .= ("simulation_node_ids" :: Text)
   , "interval_ticks" .= schedDeclIntervalTicks schedule
   , "phase_ticks" .= schedDeclPhaseTicks schedule
   , "catch_up" .= catchUpPolicyText (schedDeclCatchUpPolicy schedule)

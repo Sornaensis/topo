@@ -131,7 +131,7 @@ should request only what the plugin needs.
 }
 ```
 
-`simulation` declares simulation DAG dependencies by simulation node ID plus an optional tick cadence. Missing schedule fields default to hourly (`interval_ticks: 1`, `phase_ticks: 0`, `catch_up: "run_once_if_due"`). `interval_ticks` must be at least `1`, `phase_ticks` must be non-negative and less than `interval_ticks`, and `catch_up` must be one of the documented enum values:
+`simulation` declares a plugin simulation node, separate from host built-in simulation nodes such as `weather`. Its `dependencies` list contains simulation node IDs, not generator stage names or plugin startup dependencies, and may reference host built-ins like `weather` when the plugin should tick after built-in weather. Missing schedule fields default to hourly (`interval_ticks: 1`, `phase_ticks: 0`, `catch_up: "run_once_if_due"`). `interval_ticks` must be at least `1`, `phase_ticks` must be non-negative and less than `interval_ticks`, and `catch_up` must be one of the documented enum values:
 
 ```json
 "simulation": {

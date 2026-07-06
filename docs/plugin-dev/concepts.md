@@ -24,9 +24,13 @@ system handles persistence, indexing, and wire transport.
 ## Simulation DAG
 
 After initial generation, plugins can participate in tick-based
-simulation by registering `SimulationDef` nodes. Each tick, your
-node reads terrain + declared dependency overlays and writes to
-your owned overlay.
+simulation by declaring a plugin simulation node. The host-owned
+simulation DAG always includes built-in nodes such as `weather`; those
+built-ins are not plugin declarations. A plugin `simulation.dependencies`
+list names simulation node IDs, so it may depend on host built-ins like
+`weather` or on other eligible plugin simulation declarations. Each tick,
+your bound node reads terrain plus dependency overlays and writes to your
+owned overlay.
 
 ## Capabilities
 

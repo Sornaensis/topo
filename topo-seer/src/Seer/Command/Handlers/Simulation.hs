@@ -119,7 +119,8 @@ handleGetSimDag ctx reqId _params = do
     if sdsWorldBound snapshot then Just (sdsOverlayNames snapshot) else Nothing
   let nodeValues = map dagNodeToJSON (sdsNodes snapshot)
       boundPluginNodes = filter ((== "plugin") . sdnsKind) (sdsNodes snapshot)
-      pluginNodeValues = map (pluginSimulationDiagnosticToJSON boundPluginNodes) (pspDiagnostics simPlan)
+      pluginDeclarationValues = map (pluginSimulationDiagnosticToJSON boundPluginNodes) (pspDiagnostics simPlan)
+      pluginDeclarationCount = length pluginDeclarationValues
   pure $ okResponse reqId $ object
     [ "available" .= sdsAvailable snapshot
     , "world_bound" .= sdsWorldBound snapshot
@@ -131,8 +132,14 @@ handleGetSimDag ctx reqId _params = do
     , "last_tick" .= sdsLastTick snapshot
     , "pending_tick" .= sdsPendingTick snapshot
     , "tick_logs" .= map tickLogToJSON (sdsTickLogs snapshot)
-    , "plugin_nodes" .= pluginNodeValues
-    , "plugin_node_count" .= length pluginNodeValues
+      -- Backward-compatible aliases: these are plugin simulation declaration
+      -- diagnostics, not the authoritative actor-bound DAG node list.
+    , "plugin_nodes" .= pluginDeclarationValues
+    , "plugin_node_count" .= pluginDeclarationCount
+    , "plugin_declarations" .= pluginDeclarationValues
+    , "plugin_declaration_count" .= pluginDeclarationCount
+    , "plugin_simulation_declarations" .= pluginDeclarationValues
+    , "plugin_simulation_declaration_count" .= pluginDeclarationCount
     ]
 
 -- --------------------------------------------------------------------------
@@ -197,6 +204,10 @@ pluginSimulationDiagnosticToJSON boundNodes node = object
   , "writes_terrain" .= psndWritesTerrain node
   , "status" .= status
   , "status_detail" .= detail
+  , "declaration_status" .= psndStatus node
+  , "declaration_status_detail" .= psndStatusDetail node
+  , "actor_status" .= fmap sdnsStatus mBoundNode
+  , "actor_status_detail" .= (mBoundNode >>= sdnsStatusDetail)
   , "interval_ticks" .= maybe (Just (psndScheduleIntervalTicks node)) sdnsScheduleIntervalTicks mBoundNode
   , "phase_ticks" .= maybe (Just (psndSchedulePhaseTicks node)) sdnsSchedulePhaseTicks mBoundNode
   , "catch_up" .= maybe (Just (psndScheduleCatchUp node)) sdnsScheduleCatchUp mBoundNode
@@ -204,8 +215,12 @@ pluginSimulationDiagnosticToJSON boundNodes node = object
   , "next_fire_tick" .= (mBoundNode >>= sdnsScheduleNextFireTick)
   , "due" .= (mBoundNode >>= sdnsScheduleDue)
   , "enabled" .= psndEnabled node
+  , "eligible" .= psndExecutable node
+  , "eligible_for_binding" .= psndExecutable node
+  , "plan_executable" .= psndExecutable node
   , "executable" .= actorBound
   , "bound" .= actorBound
+  , "actor_bound" .= actorBound
   ]
   where
     mBoundNode = find ((== psndId node) . sdnsNodeId) boundNodes
@@ -215,6 +230,6 @@ pluginSimulationDiagnosticToJSON boundNodes node = object
       Nothing
         | psndExecutable node ->
             ( "WaitingForRebind"
-            , Just "Plugin simulation declaration is eligible, but it is not bound in the current Simulation actor DAG. Regenerate or reload the world to bind this runtime."
+            , Just "Plugin simulation declaration is plan-eligible, but it is not bound in the current Simulation actor DAG. Regenerate, reload, or rebind the world to bind this runtime."
             )
         | otherwise -> (psndStatus node, psndStatusDetail node)

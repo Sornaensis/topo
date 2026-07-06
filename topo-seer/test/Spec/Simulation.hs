@@ -954,6 +954,8 @@ spec = describe "Simulation actor" $ do
     let weatherNodes = filter ((== Text.pack "weather") . sdnsNodeId) (sdsNodes dagSnapshot)
     case weatherNodes of
       [node] -> do
+        sdnsKind node `shouldBe` Text.pack "builtin"
+        sdnsPlugin node `shouldBe` Nothing
         sdnsScheduleIntervalTicks node `shouldBe` Just 1
         sdnsSchedulePhaseTicks node `shouldBe` Just 0
         sdnsScheduleCatchUp node `shouldBe` Just (Text.pack "run_once_if_due")
@@ -965,6 +967,7 @@ spec = describe "Simulation actor" $ do
     case pluginNodes of
       [node] -> do
         sdnsKind node `shouldBe` Text.pack "plugin"
+        sdnsPlugin node `shouldBe` Just pluginOverlayName
         sdnsDependencies node `shouldBe` [Text.pack "weather"]
         sdnsStatus node `shouldBe` Text.pack "completed"
         sdnsScheduleIntervalTicks node `shouldBe` Just 1

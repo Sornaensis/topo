@@ -5,8 +5,12 @@
 
 ## Overview
 
-Constructs and executes a directed acyclic graph of simulation nodes.
-Each tick, the DAG executor runs all nodes in dependency order.
+Constructs and executes a directed acyclic graph of actor-bound simulation nodes.
+The host-owned weather node is built in and appears in the actor DAG as
+`kind=builtin` with no plugin owner. Plugin manifest `simulation` sections are
+separate declarations; they become actor-bound plugin nodes only when the plugin
+manager marks them eligible for the current world and the Simulation actor is
+rebound. Each tick, the DAG executor runs all bound nodes in dependency order.
 
 ## Construction
 

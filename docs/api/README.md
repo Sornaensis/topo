@@ -19,6 +19,22 @@ Loopback binds are intended for local automation. Non-loopback binds require `--
 - **Errors:** Error responses use `ErrorEnvelope` and may include `invalid_json`, `invalid_request`, `validation_failed`, auth/not-found/rejected/unavailable/internal codes, and standardized data-resource codes such as `schema_validation_failed`, `permission_denied`, `operation_not_supported`, and `timeout`. Responses echo `X-Request-Id` when supplied.
 - **Versioning:** `info.version` is the public HTTP API version (`1.0.0`), while `GET /version` exposes `api_version=1` plus the application package version. API major version 1 permits additive routes, fields, enum values, and schemas; breaking route, payload, auth, or error-envelope changes require a new major API version or documented migration window.
 
+## Simulation and plugin declaration terminology
+
+`GET /simulation/dag` distinguishes `nodes` (actor-bound DAG nodes) from plugin
+simulation declaration diagnostics. Built-in weather remains an actor-bound node
+with `kind: "builtin"` and `plugin: null`. The legacy `plugin_nodes` field is a
+backward-compatible alias for plugin simulation declarations; prefer
+`plugin_simulation_declarations` for new clients and use `bound`/`actor_bound`
+versus `plan_executable`/`eligible_for_binding` to distinguish current actor
+binding from plan eligibility.
+
+Plugin list responses use `has_simulation`/`simulation` as compatibility aliases
+for `has_simulation_declaration`/`simulation_declaration`. These fields describe
+a plugin manifest declaration only, not the host built-in weather simulation.
+`simulation.dependencies` entries are simulation node IDs and may reference host
+built-ins such as `weather`.
+
 ## Examples
 
 ```sh

@@ -1114,6 +1114,7 @@ pluginSummarySchema = inlineObjectSchema
   , "capabilities"
   , "has_generator"
   , "has_simulation"
+  , "has_simulation_declaration"
   , "logs"
   , "diagnostic_lines"
   ]
@@ -1144,8 +1145,10 @@ pluginSummarySchema = inlineObjectSchema
   , ("external_data_source_failures", integerSchema)
   , ("capabilities", arraySchema stringSchema)
   , ("has_generator", booleanSchema)
-  , ("has_simulation", booleanSchema)
-  , ("simulation", nullableSchema pluginSimulationSchema)
+  , ("has_simulation", describedSchema "Backward-compatible alias for has_simulation_declaration; true when this plugin manifest declares a plugin simulation node, not when the host built-in weather simulation exists." booleanSchema)
+  , ("has_simulation_declaration", describedSchema "True when this plugin manifest declares a plugin simulation node. Host built-ins such as weather are not plugin declarations." booleanSchema)
+  , ("simulation", describedSchema "Backward-compatible alias for simulation_declaration. Describes the plugin manifest's simulation declaration, not the host built-in weather simulation node." (nullableSchema pluginSimulationSchema))
+  , ("simulation_declaration", describedSchema "Plugin manifest simulation declaration metadata. Dependencies are simulation node IDs and may reference host built-ins such as weather." (nullableSchema pluginSimulationSchema))
   , ("logs", arraySchema stringSchema)
   , ("diagnostic_lines", arraySchema stringSchema)
   ]
@@ -1352,7 +1355,8 @@ pluginParamSpecSchema = inlineObjectSchema
 pluginSimulationSchema :: Value
 pluginSimulationSchema = inlineObjectSchema
   [ "dependencies" ]
-  [ ("dependencies", arraySchema stringSchema)
+  [ ("dependencies", describedSchema "Simulation node IDs that must tick before this plugin declaration. Entries may reference host built-in simulation nodes such as weather." (arraySchema stringSchema))
+  , ("dependency_kind", enumStringSchema ["simulation_node_ids"])
   , ("interval_ticks", diagnosticScheduleIntervalSchema)
   , ("phase_ticks", integerMinimumSchema 0)
   , ("catch_up", simulationCatchUpSchema)
@@ -1610,17 +1614,23 @@ simulationStateResponseSchema = objectSchema "SimulationStateResponse"
 
 simulationDagResponseSchema :: JsonSchema
 simulationDagResponseSchema = objectSchema "SimulationDagResponse"
-  [ "available", "nodes", "levels", "terrain_writers" ]
+  [ "available", "world_bound", "overlay_names", "nodes", "levels", "terrain_writers" ]
   [ ("available", booleanSchema)
-  , ("nodes", arraySchema simulationDagNodeSchema)
-  , ("node_count", integerSchema)
+  , ("world_bound", describedSchema "True when the Simulation actor currently has a world bound. Plugin declarations can be plan-eligible while still waiting for actor binding." booleanSchema)
+  , ("overlay_names", describedSchema "Overlay names in the bound world used to evaluate plugin simulation declaration eligibility." (arraySchema stringSchema))
+  , ("nodes", describedSchema "Actor-bound simulation DAG nodes. Built-in weather appears here with kind=builtin and plugin=null; plugin declarations appear here only after they are bound into the actor DAG." (arraySchema simulationDagNodeSchema))
+  , ("node_count", describedSchema "Count of actor-bound simulation DAG nodes in nodes." integerSchema)
   , ("levels", arraySchema (arraySchema stringSchema))
   , ("terrain_writers", arraySchema stringSchema)
   , ("last_tick", integerSchema)
   , ("pending_tick", nullableSchema integerSchema)
   , ("tick_logs", arraySchema simulationTickLogSchema)
-  , ("plugin_nodes", arraySchema simulationDagNodeSchema)
-  , ("plugin_node_count", integerSchema)
+  , ("plugin_nodes", describedSchema "Backward-compatible alias for plugin_simulation_declarations; these are plugin declaration diagnostics, not the authoritative actor-bound DAG node list." (arraySchema simulationPluginDeclarationSchema))
+  , ("plugin_node_count", describedSchema "Backward-compatible count of plugin simulation declarations, not actor-bound plugin DAG nodes." integerSchema)
+  , ("plugin_declarations", describedSchema "Alias for plugin_simulation_declarations." (arraySchema simulationPluginDeclarationSchema))
+  , ("plugin_declaration_count", describedSchema "Alias for plugin_simulation_declaration_count." integerSchema)
+  , ("plugin_simulation_declarations", describedSchema "Diagnostics for plugin manifest simulation declarations. Bound/executable fields distinguish plan eligibility from actor binding." (arraySchema simulationPluginDeclarationSchema))
+  , ("plugin_simulation_declaration_count", describedSchema "Count of plugin_simulation_declarations." integerSchema)
   ]
 
 simulationAutoTickRequestSchema :: JsonSchema
@@ -1653,11 +1663,32 @@ simulationTickResponseSchema = objectSchema "SimulationTickResponse"
 simulationDagNodeSchema :: Value
 simulationDagNodeSchema = inlineObjectSchema
   [ "id", "kind", "overlay", "dependencies", "writes_terrain", "status" ]
-  [ ("id", stringSchema)
-  , ("kind", enumStringSchema ["builtin", "plugin"])
-  , ("plugin", nullableSchema stringSchema)
+  simulationDagNodeProperties
+
+simulationPluginDeclarationSchema :: Value
+simulationPluginDeclarationSchema = inlineObjectSchema
+  [ "id", "kind", "plugin", "overlay", "dependencies", "writes_terrain", "status", "bound", "plan_executable" ]
+  (simulationDagNodeProperties <>
+    [ ("declaration_status", describedSchema "Status from the plugin simulation declaration plan before actor binding is considered." stringSchema)
+    , ("declaration_status_detail", nullableSchema stringSchema)
+    , ("actor_status", describedSchema "Current actor-bound DAG node status when bound; null when the declaration is not in the actor DAG." (nullableSchema stringSchema))
+    , ("actor_status_detail", nullableSchema stringSchema)
+    , ("enabled", describedSchema "False when disabled by user or plugin start policy." booleanSchema)
+    , ("eligible", describedSchema "Alias for plan_executable." booleanSchema)
+    , ("eligible_for_binding", describedSchema "Alias for plan_executable; true when the declaration can be bound into the actor DAG plan." booleanSchema)
+    , ("plan_executable", describedSchema "True when plugin-manager diagnostics deem this declaration eligible for an executable Simulation actor node plan." booleanSchema)
+    , ("executable", describedSchema "Backward-compatible actor-bound executable flag; equivalent to bound/actor_bound, not plan eligibility." booleanSchema)
+    , ("bound", describedSchema "True when this plugin declaration currently has an actor-bound DAG node in nodes[]." booleanSchema)
+    , ("actor_bound", describedSchema "Alias for bound." booleanSchema)
+    ])
+
+simulationDagNodeProperties :: [(Text, Value)]
+simulationDagNodeProperties =
+  [ ("id", describedSchema "Simulation node ID. Host built-in weather uses id=weather." stringSchema)
+  , ("kind", describedSchema "Actor node provenance: builtin for host nodes such as weather, plugin for bound plugin declarations." (enumStringSchema ["builtin", "plugin"]))
+  , ("plugin", describedSchema "Owning plugin for plugin nodes; null for host built-ins such as weather." (nullableSchema stringSchema))
   , ("overlay", stringSchema)
-  , ("dependencies", arraySchema stringSchema)
+  , ("dependencies", describedSchema "Simulation node ID dependencies. Values may reference host built-ins such as weather." (arraySchema stringSchema))
   , ("writes_terrain", booleanSchema)
   , ("status", stringSchema)
   , ("status_detail", nullableSchema stringSchema)
@@ -1667,9 +1698,6 @@ simulationDagNodeSchema = inlineObjectSchema
   , ("last_fire_tick", nullableSchema (integerMinimumSchema 0))
   , ("next_fire_tick", nullableSchema (integerMinimumSchema 0))
   , ("due", nullableSchema booleanSchema)
-  , ("enabled", booleanSchema)
-  , ("executable", booleanSchema)
-  , ("bound", booleanSchema)
   ]
 
 diagnosticScheduleIntervalSchema :: Value
@@ -2280,6 +2308,13 @@ brushFalloffSchema = enumStringSchema ["linear", "smooth", "constant"]
 
 objectSchema :: Text -> [Text] -> [(Text, Value)] -> JsonSchema
 objectSchema name required properties = JsonSchema name (inlineObjectSchema required properties)
+
+describedSchema :: Text -> Value -> Value
+describedSchema description (Object schema) = Object (KM.insert "description" (String description) schema)
+describedSchema description schema = object
+  [ "description" .= description
+  , "allOf" .= [schema]
+  ]
 
 inlineObjectSchema :: [Text] -> [(Text, Value)] -> Value
 inlineObjectSchema required properties = object $

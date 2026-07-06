@@ -71,6 +71,7 @@ module Actor.PluginManager
     -- * Simulation DAG integration
   , PluginSimulationPlan(..)
   , PluginSimulationNodeDiagnostic(..)
+  , buildPluginSimulationPlanForPlugins
   , getPluginSimulationPlan
   ) where
 
@@ -99,6 +100,7 @@ import Actor.PluginManager.RootSupervisor (PluginManager, pluginManagerActorDef)
 import Actor.PluginManager.SimulationIntegrator
   ( PluginSimulationPlan(..)
   , PluginSimulationNodeDiagnostic(..)
+  , buildPluginSimulationPlan
   )
 import Seer.World.Persist.Types (WorldExternalDataSourceSnapshot)
 import Actor.PluginManager.Types
@@ -114,7 +116,9 @@ import Actor.PluginManager.Types
   , PluginExternalDataSourceGrantDiagnostic(..)
   , PluginExternalDataSourceDiagnostic(..)
   , PluginParamUpdateError(..)
+  , PluginManagerState(..)
   , PluginStatus(..)
+  , emptyPluginManagerState
   , pluginLifecycleSnapshot
   , pluginLifecycleStateText
   , pluginStatusText
@@ -315,6 +319,16 @@ getPluginExternalDataSources
   -> IO [WorldExternalDataSourceSnapshot]
 getPluginExternalDataSources handle =
   call @"getExternalDataSources" handle #getExternalDataSources ()
+
+-- | Build plugin simulation diagnostics from an explicit plugin list.
+-- This keeps tests and service previews on the public facade without exposing
+-- the actor's full mutable state.
+buildPluginSimulationPlanForPlugins :: Maybe [Text] -> [LoadedPlugin] -> PluginSimulationPlan
+buildPluginSimulationPlanForPlugins mOverlayNames plugins =
+  buildPluginSimulationPlan mOverlayNames emptyPluginManagerState
+    { pmsPlugins = Map.fromList [(lpName plugin, plugin) | plugin <- plugins]
+    , pmsPluginOrder = map lpName plugins
+    }
 
 -- | Build executable plugin simulation nodes and declaration diagnostics for
 -- the current plugin-manager snapshot.  Pass bound-world overlay names when a

@@ -71,7 +71,10 @@ import Actor.PluginManager
   , PluginLifecycleState(..)
   , PluginManager
   , PluginParamUpdateError(..)
+  , PluginSimulationNodeDiagnostic(..)
+  , PluginSimulationPlan(..)
   , PluginStatus(..)
+  , buildPluginSimulationPlanForPlugins
   , discoverPlugins
   , getDisabledPlugins
   , getLoadedPlugins
@@ -93,6 +96,7 @@ import Topo.Hex (defaultHexGridMeta)
 import Topo.Overlay (Overlay, emptyOverlay)
 import Topo.Overlay.Schema (OverlayDeps(..), OverlaySchema(..), OverlayStorage(..))
 import Topo.Pipeline (PipelineStage(..))
+import Topo.Plugin (Capability(..))
 import Topo.Plugin.DataResource
   ( DataFieldDef(..)
   , DataFieldType(..)
@@ -141,6 +145,7 @@ import Topo.Plugin.RPC
   , defaultRPCUIHints
   , invokeGenerator
   , invokeSimulation
+  , newRPCConnection
   , requestExternalDataSourceStatus
   , sendExternalDataSourceGrant
   , sendExternalDataSourceGrantRevocation
@@ -165,7 +170,8 @@ import Topo.Plugin.RPC.Protocol
   , handshakeAuthProof
   )
 import Topo.Plugin.RPC.Transport
-  ( closeTransport
+  ( Transport(..)
+  , closeTransport
   , connectPluginFromEnvironment
   , pluginAuthTokenEnv
   , pluginDataRootEnv
@@ -336,6 +342,29 @@ spec = describe "PluginManager" $ do
           }
     pluginDependencyDiagnostics Set.empty loaded `shouldBe` []
     pluginDiagnosticState Set.empty Set.empty loaded `shouldBe` DiagnosticReady
+
+  it "treats weather dependencies as host built-in simulation node dependencies" $ do
+    let plugin = simulationPlanPlugin "weather-consumer" ["weather"] [CapWriteOverlay]
+        plan = buildPluginSimulationPlanForPlugins (Just ["weather-consumer", "weather"]) [plugin]
+    length (pspExecutableNodes plan) `shouldBe` 1
+    case pspDiagnostics plan of
+      [diagnostic] -> do
+        psndDependencies diagnostic `shouldBe` ["weather"]
+        psndExecutable diagnostic `shouldBe` True
+        psndStatus diagnostic `shouldBe` "Ready"
+        psndStatusDetail diagnostic `shouldSatisfy` maybe False (Text.isInfixOf "eligible for binding")
+      _ -> expectationFailure "expected one plugin simulation declaration diagnostic"
+
+  it "diagnoses plugin simulation declarations named weather as host built-in collisions" $ do
+    let plugin = simulationPlanPlugin "weather" [] [CapWriteOverlay]
+        plan = buildPluginSimulationPlanForPlugins (Just ["weather"]) [plugin]
+    length (pspExecutableNodes plan) `shouldBe` 0
+    case pspDiagnostics plan of
+      [diagnostic] -> do
+        psndExecutable diagnostic `shouldBe` False
+        psndStatus diagnostic `shouldBe` "WaitingForDependencies"
+        psndStatusDetail diagnostic `shouldSatisfy` maybe False (Text.isInfixOf "weather is a host built-in simulation node")
+      _ -> expectationFailure "expected one builtin-collision plugin simulation diagnostic"
 
   it "launches plugin subprocesses and exposes generator stages cross-platform" $ do
     withExecutablePluginDir testLaunchPluginName testLaunchManifestJSON "ok" $ do
@@ -998,6 +1027,58 @@ pluginConnections name (plugin:rest)
       Just conn -> Just conn
       Nothing -> Nothing
   | otherwise = pluginConnections name rest
+
+simulationPlanPlugin :: Text -> [Text] -> [Capability] -> LoadedPlugin
+simulationPlanPlugin name deps capabilities = plugin
+  where
+    plugin = LoadedPlugin
+      { lpName = name
+      , lpManifest = manifest
+      , lpParams = Map.empty
+      , lpStatus = PluginConnected
+      , lpLifecycle = pluginLifecycleSnapshot (posixSecondsToUTCTime 0) LifecycleReady Nothing Nothing Nothing Nothing Nothing (Just currentProtocolVersion) []
+      , lpConnection = Just (newRPCConnection manifest (Transport stdin stdout name) Map.empty)
+      , lpProcessHandle = Nothing
+      , lpStartPolicy = defaultRPCStartPolicy
+      , lpRestartHistory = []
+      , lpDirectory = ""
+      , lpOverlaySchema = Just (simulationPlanOverlaySchema name)
+      }
+    manifest = simulationPlanManifest name deps capabilities
+
+simulationPlanManifest :: Text -> [Text] -> [Capability] -> RPCManifest
+simulationPlanManifest name deps capabilities = RPCManifest
+  { rmManifestVersion = 3
+  , rmName = name
+  , rmVersion = "1.0.0"
+  , rmRuntime = RPCManifestRuntime currentProtocolVersion currentProtocolVersion Nothing Nothing
+  , rmDescription = ""
+  , rmUiHints = defaultRPCUIHints
+  , rmGenerator = Nothing
+  , rmSimulation = Just RPCSimulationDecl
+      { rsdDependencies = deps
+      , rsdSchedule = defaultScheduleDecl
+      }
+  , rmOverlay = Just (RPCOverlayDecl "test.toposchema")
+  , rmCapabilities = capabilities
+  , rmParameters = []
+  , rmDataResources = []
+  , rmDataDirectory = Nothing
+  , rmExternalDataSources = []
+  , rmExternalDataSourceRefs = []
+  , rmStartPolicy = defaultRPCStartPolicy
+  }
+
+simulationPlanOverlaySchema :: Text -> OverlaySchema
+simulationPlanOverlaySchema name = OverlaySchema
+  { osName = name
+  , osVersion = "1.0.0"
+  , osDescription = "simulation plan test overlay"
+  , osFields = []
+  , osStorage = StorageSparse
+  , osDependencies = OverlayDeps { odTerrain = False, odOverlays = [] }
+  , osFieldIndex = Map.empty
+  }
 
 pluginProcessHandles :: String -> [LoadedPlugin] -> [ProcessHandle]
 pluginProcessHandles name loaded =

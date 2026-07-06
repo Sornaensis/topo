@@ -140,8 +140,12 @@ spec = describe "Seer.HTTP.Server" $ do
       dag <- request app (mkRequest "GET" ["simulation", "dag"])
       hresStatusCode dag `shouldBe` 200
       objectHasKey "available" (hresBody dag) `shouldBe` True
+      objectHasKey "world_bound" (hresBody dag) `shouldBe` True
+      objectHasKey "overlay_names" (hresBody dag) `shouldBe` True
       objectHasKey "tick_logs" (hresBody dag) `shouldBe` True
       objectHasKey "plugin_nodes" (hresBody dag) `shouldBe` True
+      objectHasKey "plugin_declarations" (hresBody dag) `shouldBe` True
+      objectHasKey "plugin_simulation_declarations" (hresBody dag) `shouldBe` True
 
       pluginStatus <- request app (mkRequest "GET" ["plugins", "status"])
       hresStatusCode pluginStatus `shouldBe` 200
@@ -480,6 +484,9 @@ spec = describe "Seer.HTTP.Server" $ do
       schemaComponentNames doc `shouldSatisfy` elem schemaName
     componentRequiredFields doc "PipelineSetStageEnabledRequest" `shouldBe` Just ["stage", "enabled"]
     componentRequiredFields doc "DataRecordUpdateRequest" `shouldBe` Just ["plugin", "resource", "key", "fields"]
+    componentRequiredFields doc "SimulationDagResponse" `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["available", "world_bound", "overlay_names", "nodes", "levels", "terrain_writers"])
+    componentPropertyNames doc "SimulationDagResponse" `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["plugin_nodes", "plugin_node_count", "plugin_declarations", "plugin_declaration_count", "plugin_simulation_declarations", "plugin_simulation_declaration_count"])
+    componentPropertyDescription doc "SimulationDagResponse" "nodes" `shouldSatisfy` maybe False (Text.isInfixOf "Actor-bound simulation DAG nodes")
     componentPropertyNullable doc "DataRecordsListResponse" "total_count" `shouldBe` Just True
     sort <$> componentPropertyNames doc "ScreenshotTakeResponse"
       `shouldBe` Just ["format", "image_base64", "saved_path", "source"]
@@ -1269,6 +1276,8 @@ pluginsExposeSurfaceKeys (Object obj) = case KM.lookup "plugins" obj of
         , "external_data_sources"
         , "logs"
         , "has_simulation"
+        , "has_simulation_declaration"
+        , "simulation_declaration"
         ])
     pluginHasSurfaceKeys _ = False
 pluginsExposeSurfaceKeys _ = False
@@ -1520,6 +1529,12 @@ componentPropertyNullable doc name property = do
   Object propertySchema <- componentProperty doc name property
   Bool nullable <- KM.lookup "nullable" propertySchema
   pure nullable
+
+componentPropertyDescription :: Value -> Text -> Text -> Maybe Text
+componentPropertyDescription doc name property = do
+  Object propertySchema <- componentProperty doc name property
+  String description <- KM.lookup "description" propertySchema
+  pure description
 
 componentProperty :: Value -> Text -> Text -> Maybe Value
 componentProperty doc name property = do
