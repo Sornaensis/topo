@@ -4,7 +4,7 @@ module Seer.System.MainLoop
   ( runMainLoop
   ) where
 
-import Actor.AtlasResultBroker (atlasResultsPending)
+import Actor.AtlasResultBroker (atlasResultsPendingCount)
 import Actor.Log (LogEntry(..), LogLevel(..), appendLog)
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion(..))
@@ -27,9 +27,10 @@ import Seer.System.EventPump (EventPumpEnv(..), hasQuitEvent, processEvents)
 import Seer.System.RenderFrame
   ( RenderFrameEnv(..)
   , RenderFrameSettings(..)
+  , RenderFrameMaintenanceDiagnostics(..)
   , RenderFrameStepResult(..)
   , renderFrameStep
-  , renderFrameStepMaintenanceDue
+  , renderFrameStepMaintenance
   )
 import Seer.System.Screenshot (screenshotRequestPending)
 import Seer.System.Sdl (SdlResources(..))
@@ -38,6 +39,15 @@ import Seer.Timing (nsToMs)
 import System.Directory (getHomeDirectory)
 import System.FilePath ((</>))
 import System.IO (IOMode(..), hFlush, hPutStrLn, openFile)
+
+renderMaintenanceWakeSummary :: Int -> RenderFrameMaintenanceDiagnostics -> String
+renderMaintenanceWakeSummary atlasPendingCount diag =
+  "render maintenance wake: pendingAtlasResults=" <> show atlasPendingCount
+    <> " pendingAtlasWake=" <> show (rfmdAtlasPendingWake diag)
+    <> " scheduleRetryWake=" <> show (rfmdAtlasScheduleRetryWake diag)
+    <> " fallbackTerrainWake=" <> show (rfmdFallbackTerrainWake diag)
+    <> " drainAttempted=" <> show (rfmdDrainAttempted diag)
+    <> " scheduleAttempted=" <> show (rfmdScheduleAttempted diag)
 
 runMainLoop :: TopoSeerConfig -> AppActors -> SdlResources -> IO RenderCacheState
 runMainLoop runtimeCfg actors sdl = do
@@ -127,17 +137,19 @@ runMainLoop runtimeCfg actors sdl = do
         handleElapsed <- processEvents eventPumpEnv timingLogThresholdMs events renderSnap
         tHandle <- getMonotonicTimeNSec
         let generating = uiGenerating (rsUi renderSnap)
-        atlasPending <- if generating
-          then pure False
-          else atlasResultsPending (aaAtlasResultRef actors)
-        let isVersionUnchanged = rcsLastSnapshot cacheState0 == Just snapVersion
-            maintenanceDue = renderFrameStepMaintenanceDue
+        atlasPendingCount <- if generating
+          then pure 0
+          else atlasResultsPendingCount (aaAtlasResultRef actors)
+        let atlasPending = atlasPendingCount > 0
+            isVersionUnchanged = rcsLastSnapshot cacheState0 == Just snapVersion
+            maintenanceDiagnostics = renderFrameStepMaintenance
               renderFrameSettings
               (srRenderTargetOk sdl)
               nowMs
               atlasPending
               renderSnap
               cacheState0
+            maintenanceDue = rfmdMaintenanceDue maintenanceDiagnostics
         screenshotPending <- screenshotRequestPending (aaScreenshotRef actors)
         if isVersionUnchanged && not generating && not screenshotPending && not maintenanceDue
           then do
@@ -166,6 +178,11 @@ runMainLoop runtimeCfg actors sdl = do
               else loop cacheState0
           else do
             -- Snapshot changed or render-thread maintenance is due; reset stale tracking before rendering.
+            when (renderTraceEnabled && isVersionUnchanged && maintenanceDue) $
+              appendLog (aaLogHandle actors) (LogEntry LogInfo (Text.pack (renderMaintenanceWakeSummary atlasPendingCount maintenanceDiagnostics)))
+            forM_ traceH $ \h -> when (isVersionUnchanged && maintenanceDue) $ do
+              hPutStrLn h ("WAKE " <> renderMaintenanceWakeSummary atlasPendingCount maintenanceDiagnostics <> " v=" <> show (unSnapshotVersion snapVersion))
+              hFlush h
             tElseBranch <- getMonotonicTimeNSec
             writeIORef lastSnapshotChangeNs =<< getMonotonicTimeNSec
             writeIORef staleLoggedRef False

@@ -16,7 +16,12 @@ import Actor.UI (ViewMode(..))
 import Seer.Render.Atlas
   ( AtlasTextureCache(..)
   , CachedAtlasTileSet
+  , AtlasCacheSummary(..)
+  , AtlasResolveDiagnostic(..)
   , AtlasResolveStatus(..)
+  , AtlasTileSetSummary(..)
+  , atlasCacheSummary
+  , atlasResolveDiagnostic
   , atlasResolveNeedsRetry
   , emptyAtlasTextureCache
   , setAtlasKey
@@ -36,6 +41,8 @@ import Seer.Render.Atlas
   , resolveAtlasPureWithFreshness
   , resolveEffectiveStage
   , collectAtlasTextures
+  , formatAtlasCacheSummary
+  , formatAtlasResolveDiagnostic
   )
 import Seer.Render.ZoomStage (ZoomStage(..))
 import UI.TerrainAtlas (TerrainAtlasTile(..))
@@ -253,6 +260,45 @@ spec = describe "AtlasTextureCache" $ do
       fmap (map tatHexRadius) tiles `shouldBe` Just [10]
       status `shouldBe` NearestScaleFallback
       atlasResolveNeedsRetry status `shouldBe` True
+
+    it "summarizes complete and partial atlas buckets for diagnostics" $ do
+      let targetStage = ZoomStage 6 1 0 1
+          cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          partialManifest = mkManifest 1 keyA 6 [testRect, testRect2]
+          completeManifest = mkManifest 2 keyB 10 [testRect]
+          cache1 = storeAtlasTileSet partialManifest [mkTile 1 6 testRect] cache0
+          cache2 = storeAtlasTileSet completeManifest [mkTile 2 10 testRect] cache1
+          summary = atlasCacheSummary (Just keyA) (Just targetStage) cache2
+      acsCompleteTileSets summary `shouldBe` 1
+      acsPartialTileSets summary `shouldBe` 1
+      acsPendingTextureReleases summary `shouldBe` 0
+      fmap atssComplete (acsTargetTileSet summary) `shouldBe` Just False
+      fmap atssTileCount (acsTargetTileSet summary) `shouldBe` Just 1
+      fmap atssExpectedTileCount (acsTargetTileSet summary) `shouldBe` Just 2
+      formatAtlasCacheSummary summary `shouldContain` "completeSets=1 partialSets=1 pendingRelease=0"
+
+    it "formats resolve diagnostics with stale-key fallback and promotion state" $ do
+      let targetStage = ZoomStage 6 1 0 1
+          lastTiles = [mkTile 99 6 testRect]
+          cache0 = (emptyAtlasTextureCache 30)
+            { atcKey = Just keyA
+            , atcLast = Just (keyB, lastTiles)
+            }
+          partialManifest = mkManifest 1 keyA 6 [testRect, testRect2]
+          cache1 = storeAtlasTileSet partialManifest [mkTile 1 6 testRect] cache0
+          (fallbackTiles, fallbackStatus, fallbackCache) = resolveAtlasPureWithStatus True True keyA 6 cache1
+          fallbackDiag = atlasResolveDiagnostic keyA targetStage fallbackStatus fallbackTiles cache1 fallbackCache
+          completeCache = storeAtlasTileSet partialManifest [mkTile 2 6 testRect2] fallbackCache
+          (completeTiles, completeStatus, completeResolvedCache) = resolveAtlasPureWithStatus True True keyA 6 completeCache
+          completeDiag = atlasResolveDiagnostic keyA targetStage completeStatus completeTiles completeCache completeResolvedCache
+      ardRetryReason fallbackDiag `shouldBe` "stale-key-last-good-fallback"
+      ardStaleKeyFallback fallbackDiag `shouldBe` True
+      ardPromotionSuppressed fallbackDiag `shouldBe` True
+      formatAtlasResolveDiagnostic fallbackDiag `shouldContain` "status=last-good-fallback"
+      formatAtlasResolveDiagnostic fallbackDiag `shouldContain` "promotion=suppressed"
+      ardPromotionAccepted completeDiag `shouldBe` True
+      ardRetryReason completeDiag `shouldBe` "ready"
+      formatAtlasResolveDiagnostic completeDiag `shouldContain` "promotion=accepted"
 
   -- -------------------------------------------------------------------
   -- Completeness/retry regressions

@@ -7,7 +7,16 @@ import Data.IORef (newIORef)
 import Test.Hspec
 import Actor.AtlasCache (AtlasKey(..))
 import Actor.AtlasResult (AtlasBuildId(..), AtlasBuildResult(..), AtlasTileSetManifest(..))
-import Actor.AtlasResultBroker (atlasResultsPending, drainAtlasResultsN, drainFreshResultsN, pushAtlasResult)
+import Actor.AtlasResultBroker
+  ( AtlasResultDrainStats(..)
+  , atlasResultsPending
+  , atlasResultsPendingCount
+  , drainAtlasResultsN
+  , drainFreshResultsN
+  , drainFreshResultsNWithStats
+  , formatAtlasResultDrainStats
+  , pushAtlasResult
+  )
 import Actor.Data (TerrainSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion(..))
 import Topo.Overlay (emptyOverlayStore)
@@ -52,6 +61,42 @@ spec = describe "AtlasResultBroker" $ do
     drained <- drainAtlasResultsN ref 1
     map abrHexRadius drained `shouldBe` [6]
     atlasResultsPending ref `shouldReturn` False
+
+  it "reports pending counts without draining" $ do
+    ref <- newIORef []
+    let key = AtlasKey ViewElevation 0 (tsVersion sampleTerrainSnapshot)
+        tile = AtlasTileGeometry { atgBounds = Rect (V2 0 0, V2 1 1), atgScale = 1, atgHexRadius = 6, atgChunks = [], atgRiverOverlay = [] }
+        result = mkResult key (SnapshotVersion 1) 6 tile
+    atlasResultsPendingCount ref `shouldReturn` 0
+    pushAtlasResult ref result
+    pushAtlasResult ref result
+    atlasResultsPendingCount ref `shouldReturn` 2
+    drained <- drainAtlasResultsN ref 1
+    length drained `shouldBe` 1
+    atlasResultsPendingCount ref `shouldReturn` 1
+
+  it "reports stale drops and upload-budget backlog in fresh drain stats" $ do
+    ref <- newIORef []
+    let freshKey = AtlasKey ViewElevation 0 1
+        staleKey = AtlasKey ViewBiome 0 1
+        tile = AtlasTileGeometry { atgBounds = Rect (V2 0 0, V2 1 1), atgScale = 1, atgHexRadius = 6, atgChunks = [], atgRiverOverlay = [] }
+        fresh1 = mkResult freshKey (SnapshotVersion 1) 6 tile
+        fresh2 = mkResult freshKey (SnapshotVersion 1) 10 tile
+        stale = mkResult staleKey (SnapshotVersion 1) 25 tile
+    pushAtlasResult ref stale
+    pushAtlasResult ref fresh1
+    pushAtlasResult ref fresh2
+    (results, stats) <- drainFreshResultsNWithStats ref (\r -> abrKey r == freshKey) 1
+    map abrHexRadius results `shouldBe` [6]
+    stats `shouldBe` AtlasResultDrainStats
+      { ardsPendingBefore = 3
+      , ardsPendingAfter = 1
+      , ardsFreshDrained = 1
+      , ardsStaleDropped = 1
+      , ardsFreshPreserved = 1
+      , ardsBudgetExhausted = True
+      }
+    formatAtlasResultDrainStats stats `shouldBe` "brokerBefore=3 brokerAfter=1 drained=1 staleDropped=1 preserved=1 uploadBudgetExhausted=True"
 
   it "drains results in FIFO order" $ do
     ref <- newIORef []

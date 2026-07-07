@@ -4,10 +4,13 @@ module Seer.System.Cache
   , destroyRenderCacheState
   , applyTerrainCacheUpdate
   , renderMetrics
+  , renderAtlasDiagnosticSummary
   , renderStepSummary
   , shouldPoll
   ) where
 
+import Actor.AtlasCache (atlasKeyFor)
+import Actor.AtlasResultBroker (AtlasResultDrainStats(..), formatAtlasResultDrainStats)
 import Actor.Data (TerrainSnapshot(..))
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion(..))
@@ -29,11 +32,16 @@ import Data.Word (Word32)
 import Hyperspace.Actor (ActorHandle, Protocol)
 import Seer.Render (TerrainCache(..), emptyTerrainCache, terrainCacheNeedsRefresh)
 import Seer.Render.Atlas
-  ( AtlasTextureCache(..)
+  ( AtlasResolveStatus(..)
+  , AtlasTextureCache(..)
   , CachedAtlasTileSet(..)
+  , atlasCacheSummary
+  , atlasResolveStatusLabel
   , collectAtlasTextures
   , emptyAtlasTextureCache
+  , formatAtlasCacheSummary
   )
+import Seer.Render.ZoomStage (stageForZoom)
 import UI.TerrainCache (ChunkTextureCache(..), emptyChunkTextureCache)
 import UI.TerrainRender (destroyChunkTexture)
 import UI.TexturePool (TexturePool, releaseTexture)
@@ -52,6 +60,11 @@ data RenderCacheState = RenderCacheState
   , rcsLastAtlasDrain :: !(Maybe Word32)
   , rcsLastAtlasSchedule :: !(Maybe Word32)
   , rcsAtlasNeedsRetry :: !Bool
+  , rcsLastAtlasResolveStatus :: !AtlasResolveStatus
+  , rcsLastAtlasDrainStats :: !(Maybe AtlasResultDrainStats)
+  , rcsLastAtlasDrainAttempted :: !Bool
+  , rcsLastAtlasScheduleAttempted :: !Bool
+  , rcsLastAtlasPendingCount :: !Int
   , rcsLastChunkTexturePoll :: !(Maybe Word32)
   }
 
@@ -70,6 +83,11 @@ initialRenderCacheState atlasCacheEntries = RenderCacheState
   , rcsLastAtlasDrain = Nothing
   , rcsLastAtlasSchedule = Nothing
   , rcsAtlasNeedsRetry = False
+  , rcsLastAtlasResolveStatus = Missing
+  , rcsLastAtlasDrainStats = Nothing
+  , rcsLastAtlasDrainAttempted = False
+  , rcsLastAtlasScheduleAttempted = False
+  , rcsLastAtlasPendingCount = 0
   , rcsLastChunkTexturePoll = Nothing
   }
 
@@ -134,7 +152,7 @@ shouldStartTerrainCacheBuild renderSnap cache =
       && terrainCacheNeedsRefresh uiSnap terrainSnap cache
 
 renderMetrics :: Word32 -> RenderSnapshot -> RenderCacheState -> Text.Text
-renderMetrics frameMs _snap cacheState =
+renderMetrics frameMs snap cacheState =
   let terrainCount = IntMap.size (tcTerrainChunks (rcsTerrainCache cacheState))
       chunkTextures = IntMap.size (ctcTextures (rcsChunkTextures cacheState))
       atlasScales = length (atcLru (rcsAtlasCache cacheState))
@@ -148,7 +166,28 @@ renderMetrics frameMs _snap cacheState =
         <> " chunkTextures=" <> show chunkTextures
         <> " atlasScales=" <> show atlasScales
         <> " atlasTiles=" <> show atlasTiles
-        <> " snapshot=" <> snapshotVer)
+        <> " snapshot=" <> snapshotVer
+        <> " " <> renderAtlasDiagnosticSummary snap cacheState)
+
+renderAtlasDiagnosticSummary :: RenderSnapshot -> RenderCacheState -> String
+renderAtlasDiagnosticSummary snap cacheState =
+  let uiSnap = rsUi snap
+      terrainSnap = rsTerrain snap
+      rawStage = stageForZoom (uiZoom uiSnap)
+      targetStage = maybe rawStage id (atcCommittedStage (rcsAtlasCache cacheState))
+      targetKey = atlasKeyFor (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) terrainSnap
+      cacheSummary = atlasCacheSummary (Just targetKey) (Just targetStage) (rcsAtlasCache cacheState)
+      lastSnapshotDecision = case rcsLastSnapshot cacheState of
+        Nothing -> "retry"
+        Just (SnapshotVersion v) -> "committed:" <> show v
+  in "atlasRetry=" <> show (rcsAtlasNeedsRetry cacheState)
+    <> " atlasResolve=" <> atlasResolveStatusLabel (rcsLastAtlasResolveStatus cacheState)
+    <> " atlasPending=" <> show (rcsLastAtlasPendingCount cacheState)
+    <> " atlasDrainAttempted=" <> show (rcsLastAtlasDrainAttempted cacheState)
+    <> " atlasScheduleAttempted=" <> show (rcsLastAtlasScheduleAttempted cacheState)
+    <> " lastSnapshotDecision=" <> lastSnapshotDecision
+    <> maybe "" ((" " <>) . formatAtlasResultDrainStats) (rcsLastAtlasDrainStats cacheState)
+    <> " " <> formatAtlasCacheSummary cacheSummary
 
 shouldPoll :: Word32 -> Int -> Maybe Word32 -> Bool
 shouldPoll nowMs pollMs lastPoll =

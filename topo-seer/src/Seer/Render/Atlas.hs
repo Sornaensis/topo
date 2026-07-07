@@ -2,7 +2,15 @@ module Seer.Render.Atlas
   ( AtlasTextureCache(..)
   , CachedAtlasTileSet(..)
   , AtlasResolveStatus(..)
+  , AtlasTileSetSummary(..)
+  , AtlasCacheSummary(..)
+  , AtlasResolveDiagnostic(..)
   , atlasResolveNeedsRetry
+  , atlasResolveStatusLabel
+  , atlasCacheSummary
+  , formatAtlasCacheSummary
+  , atlasResolveDiagnostic
+  , formatAtlasResolveDiagnostic
   , emptyAtlasTextureCache
   , collectAtlasTextures
   , drawAtlas
@@ -38,7 +46,12 @@ import Actor.AtlasResult
   , AtlasTileSetManifest(..)
   , atlasManifestTarget
   )
-import Actor.AtlasResultBroker (AtlasResultRef, drainAtlasResultsN, drainFreshResultsN)
+import Actor.AtlasResultBroker
+  ( AtlasResultDrainStats(..)
+  , AtlasResultRef
+  , drainAtlasResultsNWithStats
+  , drainFreshResultsNWithStats
+  )
 import Actor.AtlasScheduleBroker
   ( AtlasScheduleReport(..)
   , AtlasScheduleRef
@@ -96,6 +109,50 @@ atlasResolveNeedsRetry :: AtlasResolveStatus -> Bool
 atlasResolveNeedsRetry CompleteExact = False
 atlasResolveNeedsRetry _ = True
 
+atlasResolveStatusLabel :: AtlasResolveStatus -> String
+atlasResolveStatusLabel CompleteExact = "complete-exact"
+atlasResolveStatusLabel PartialExact = "partial-exact"
+atlasResolveStatusLabel NearestScaleFallback = "nearest-scale-fallback"
+atlasResolveStatusLabel StaleExactFallback = "stale-exact-fallback"
+atlasResolveStatusLabel LastGoodFallback = "last-good-fallback"
+atlasResolveStatusLabel Missing = "missing"
+
+-- | Production cache counters for atlas trace and timing diagnostics.
+data AtlasTileSetSummary = AtlasTileSetSummary
+  { atssKey :: !AtlasKey
+  , atssHexRadius :: !Int
+  , atssAtlasScale :: !Int
+  , atssBuildId :: !(Maybe AtlasBuildId)
+  , atssTileCount :: !Int
+  , atssExpectedTileCount :: !Int
+  , atssComplete :: !Bool
+  } deriving (Eq, Show)
+
+data AtlasCacheSummary = AtlasCacheSummary
+  { acsCompleteTileSets :: !Int
+  , acsPartialTileSets :: !Int
+  , acsPendingTextureReleases :: !Int
+  , acsLastGood :: !(Maybe AtlasTileSetSummary)
+  , acsTargetKey :: !(Maybe AtlasKey)
+  , acsTargetStage :: !(Maybe ZoomStage)
+  , acsTargetTileSet :: !(Maybe AtlasTileSetSummary)
+  } deriving (Eq, Show)
+
+-- | Per-frame resolve diagnostic built from the resolver's production status.
+data AtlasResolveDiagnostic = AtlasResolveDiagnostic
+  { ardStatus :: !AtlasResolveStatus
+  , ardRetryReason :: !String
+  , ardExpectedKey :: !AtlasKey
+  , ardTargetStage :: !ZoomStage
+  , ardSelectedKey :: !(Maybe AtlasKey)
+  , ardSelectedHexRadius :: !(Maybe Int)
+  , ardSelectedBuildId :: !(Maybe AtlasBuildId)
+  , ardSelectedTileCount :: !Int
+  , ardStaleKeyFallback :: !Bool
+  , ardPromotionAccepted :: !Bool
+  , ardPromotionSuppressed :: !Bool
+  } deriving (Eq, Show)
+
 -- | Render-thread-owned cache of atlas textures keyed by (AtlasKey, scale).
 --
 -- Tiles for different view modes and water levels coexist in a
@@ -133,6 +190,94 @@ emptyAtlasTextureCache maxEntries = AtlasTextureCache
   , atcStageChangeNs = 0
   , atcDayNight = IntMap.empty
   }
+
+atlasCacheSummary :: Maybe AtlasKey -> Maybe ZoomStage -> AtlasTextureCache -> AtlasCacheSummary
+atlasCacheSummary targetKey targetStage cache =
+  let sets = [ tileSetSummary key set
+             | (key, bucket) <- Map.toList (atcCaches cache)
+             , set <- IntMap.elems bucket
+             ]
+      completeCount = length (filter atssComplete sets)
+      partialCount = length sets - completeCount
+      targetSet = do
+        key <- targetKey
+        stage <- targetStage
+        tileSetSummary key <$> lookupAtlasSet key (zsHexRadius stage) cache
+  in AtlasCacheSummary
+    { acsCompleteTileSets = completeCount
+    , acsPartialTileSets = partialCount
+    , acsPendingTextureReleases = length (atcPending cache)
+    , acsLastGood = lastGoodSummary cache
+    , acsTargetKey = targetKey
+    , acsTargetStage = targetStage
+    , acsTargetTileSet = targetSet
+    }
+
+formatAtlasCacheSummary :: AtlasCacheSummary -> String
+formatAtlasCacheSummary summary =
+  "atlasCache completeSets=" <> show (acsCompleteTileSets summary)
+    <> " partialSets=" <> show (acsPartialTileSets summary)
+    <> " pendingRelease=" <> show (acsPendingTextureReleases summary)
+    <> " last=" <> formatMaybeTileSetSummary (acsLastGood summary)
+    <> " targetKey=" <> maybe "none" show (acsTargetKey summary)
+    <> " targetStage=" <> maybe "none" formatZoomStage (acsTargetStage summary)
+    <> " targetSet=" <> formatMaybeTileSetSummary (acsTargetTileSet summary)
+
+atlasResolveDiagnostic
+  :: AtlasKey
+  -> ZoomStage
+  -> AtlasResolveStatus
+  -> Maybe [TerrainAtlasTile]
+  -> AtlasTextureCache
+  -> AtlasTextureCache
+  -> AtlasResolveDiagnostic
+atlasResolveDiagnostic expectedKey targetStage status atlasToDraw cacheBefore cacheAfter =
+  let selectedTiles = maybe [] id atlasToDraw
+      selectedHex = case selectedTiles of
+        tile:_ -> Just (tatHexRadius tile)
+        [] -> Nothing
+      selectedKey = case status of
+        LastGoodFallback -> fmap fst (atcLast cacheBefore)
+        Missing -> Nothing
+        _ | null selectedTiles -> Nothing
+          | otherwise -> Just expectedKey
+      selectedBuild = do
+        key <- selectedKey
+        hexRadius <- selectedHex
+        lookupBuildId key hexRadius cacheBefore `orMaybe` lookupBuildId key hexRadius cacheAfter
+      staleKeyFallback = case selectedKey of
+        Just key -> status == LastGoodFallback && key /= expectedKey
+        Nothing -> False
+      promotionAccepted = status == CompleteExact
+        && not (null selectedTiles)
+        && lastGoodSummary cacheBefore /= lastGoodSummary cacheAfter
+      promotionSuppressed = status /= CompleteExact && not (null selectedTiles)
+  in AtlasResolveDiagnostic
+    { ardStatus = status
+    , ardRetryReason = atlasRetryReason status staleKeyFallback
+    , ardExpectedKey = expectedKey
+    , ardTargetStage = targetStage
+    , ardSelectedKey = selectedKey
+    , ardSelectedHexRadius = selectedHex
+    , ardSelectedBuildId = selectedBuild
+    , ardSelectedTileCount = length selectedTiles
+    , ardStaleKeyFallback = staleKeyFallback
+    , ardPromotionAccepted = promotionAccepted
+    , ardPromotionSuppressed = promotionSuppressed
+    }
+
+formatAtlasResolveDiagnostic :: AtlasResolveDiagnostic -> String
+formatAtlasResolveDiagnostic diag =
+  "atlasResolve status=" <> atlasResolveStatusLabel (ardStatus diag)
+    <> " retryReason=" <> ardRetryReason diag
+    <> " targetKey=" <> show (ardExpectedKey diag)
+    <> " targetStage=" <> formatZoomStage (ardTargetStage diag)
+    <> " selectedKey=" <> maybe "none" show (ardSelectedKey diag)
+    <> " selectedHex=" <> maybe "none" show (ardSelectedHexRadius diag)
+    <> " selectedBuild=" <> maybe "none" show (ardSelectedBuildId diag)
+    <> " selectedTiles=" <> show (ardSelectedTileCount diag)
+    <> " staleKeyFallback=" <> show (ardStaleKeyFallback diag)
+    <> " promotion=" <> promotionText diag
 
 -- | Hysteresis threshold: do not switch zoom stage until the camera has
 -- been in the new range for at least this many nanoseconds (300 ms).
@@ -223,7 +368,7 @@ drainAtlasBuildResults
   -> AtlasTextureCache
   -> AtlasResultRef
   -> AtlasFreshnessRef
-  -> IO (AtlasTextureCache, Int, Word32)
+  -> IO (AtlasTextureCache, Int, Word32, AtlasResultDrainStats)
 drainAtlasBuildResults renderTargetOk perFrame pool renderer atlasCache resultRef freshnessRef =
   if renderTargetOk
     then do
@@ -239,12 +384,12 @@ drainAtlasBuildResults renderTargetOk perFrame pool renderer atlasCache resultRe
             in keyMatches
               && resultMatchesManifest
               && atlasTargetBuildIsFresh latestFreshness (atlasManifestTarget manifest) (atsmBuildId manifest)
-      (results, _staleCount) <- drainFreshResultsN resultRef isFresh perFrame
+      (results, drainStats) <- drainFreshResultsNWithStats resultRef isFresh perFrame
       (cache', totalMs) <- foldM cacheStep (atlasCache, 0) results
-      pure (cache', length results, totalMs)
+      pure (cache', length results, totalMs, drainStats)
     else do
-      results <- drainAtlasResultsN resultRef perFrame
-      pure (atlasCache, length results, 0)
+      (results, drainStats) <- drainAtlasResultsNWithStats resultRef perFrame
+      pure (atlasCache, length results, 0, drainStats)
   where
     cacheStep (cache, totalMs) result = do
       start <- getMonotonicTimeNSec
@@ -551,6 +696,86 @@ getCurrentCompleteAtlasForTarget latestFreshness key targetHex targetAtlasScale 
   if cachedSetIsCurrentFor latestFreshness targetHex targetAtlasScale set && catsComplete set && not (null (catsTiles set))
     then Just (catsTiles set)
     else Nothing
+
+tileSetSummary :: AtlasKey -> CachedAtlasTileSet -> AtlasTileSetSummary
+tileSetSummary key set =
+  let manifest = catsManifest set
+  in AtlasTileSetSummary
+    { atssKey = key
+    , atssHexRadius = atsmHexRadius manifest
+    , atssAtlasScale = atsmAtlasScale manifest
+    , atssBuildId = Just (atsmBuildId manifest)
+    , atssTileCount = length (catsTiles set)
+    , atssExpectedTileCount = atsmExpectedTileCount manifest
+    , atssComplete = catsComplete set
+    }
+
+lastGoodSummary :: AtlasTextureCache -> Maybe AtlasTileSetSummary
+lastGoodSummary cache = do
+  (key, tiles) <- atcLast cache
+  case tiles of
+    [] -> Nothing
+    tile:_ ->
+      let hexRadius = tatHexRadius tile
+          fromBucket = do
+            set <- lookupAtlasSet key hexRadius cache
+            if sameTileTextures tiles (catsTiles set)
+              then Just (tileSetSummary key set)
+              else Nothing
+          fallback = Just AtlasTileSetSummary
+            { atssKey = key
+            , atssHexRadius = hexRadius
+            , atssAtlasScale = tatScale tile
+            , atssBuildId = Nothing
+            , atssTileCount = length tiles
+            , atssExpectedTileCount = length tiles
+            , atssComplete = True
+            }
+      in fromBucket `orMaybe` fallback
+
+sameTileTextures :: [TerrainAtlasTile] -> [TerrainAtlasTile] -> Bool
+sameTileTextures xs ys =
+  length xs == length ys
+    && all (\tile -> any (sameTextureAndBounds tile) ys) xs
+  where
+    sameTextureAndBounds a b = tatTexture a == tatTexture b && tatBounds a == tatBounds b
+
+lookupBuildId :: AtlasKey -> Int -> AtlasTextureCache -> Maybe AtlasBuildId
+lookupBuildId key hexRadius cache =
+  atsmBuildId . catsManifest <$> lookupAtlasSet key hexRadius cache
+
+orMaybe :: Maybe a -> Maybe a -> Maybe a
+orMaybe (Just x) _ = Just x
+orMaybe Nothing y = y
+
+formatMaybeTileSetSummary :: Maybe AtlasTileSetSummary -> String
+formatMaybeTileSetSummary Nothing = "none"
+formatMaybeTileSetSummary (Just summary) =
+  "key=" <> show (atssKey summary)
+    <> "/hex=" <> show (atssHexRadius summary)
+    <> "/scale=" <> show (atssAtlasScale summary)
+    <> "/build=" <> maybe "unknown" show (atssBuildId summary)
+    <> "/tiles=" <> show (atssTileCount summary) <> "/" <> show (atssExpectedTileCount summary)
+    <> "/complete=" <> show (atssComplete summary)
+
+formatZoomStage :: ZoomStage -> String
+formatZoomStage stage =
+  "hex=" <> show (zsHexRadius stage) <> "/scale=" <> show (zsAtlasScale stage)
+
+atlasRetryReason :: AtlasResolveStatus -> Bool -> String
+atlasRetryReason CompleteExact _ = "ready"
+atlasRetryReason PartialExact _ = "partial-current-atlas"
+atlasRetryReason NearestScaleFallback _ = "nearest-scale-fallback"
+atlasRetryReason StaleExactFallback _ = "obsolete-build-or-stale-exact"
+atlasRetryReason LastGoodFallback True = "stale-key-last-good-fallback"
+atlasRetryReason LastGoodFallback False = "last-good-while-current-incomplete"
+atlasRetryReason Missing _ = "missing-current-atlas"
+
+promotionText :: AtlasResolveDiagnostic -> String
+promotionText diag
+  | ardPromotionAccepted diag = "accepted"
+  | ardPromotionSuppressed diag = "suppressed"
+  | otherwise = "none"
 
 cachedSetIsCurrentFor :: Maybe AtlasFreshness -> Int -> Int -> CachedAtlasTileSet -> Bool
 cachedSetIsCurrentFor latestFreshness targetHex targetAtlasScale set =

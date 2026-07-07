@@ -8,7 +8,7 @@ module Seer.Render.Frame
   ) where
 
 import Actor.AtlasFreshness (readAtlasFreshnessRef)
-import Actor.AtlasResultBroker (AtlasResultRef)
+import Actor.AtlasResultBroker (AtlasResultDrainStats(..), AtlasResultRef, formatAtlasResultDrainStats)
 import Actor.AtlasScheduleBroker (AtlasScheduleRef)
 import Actor.AtlasScheduler (AtlasScheduler)
 import Actor.Data (DataSnapshot(..), TerrainSnapshot(..))
@@ -42,13 +42,20 @@ import Seer.Draw
   , seedMaxDigits
   , viewColor
   )
-import Actor.AtlasCache (atlasKeyFor)
+import Actor.AtlasCache (AtlasKey, atlasKeyFor)
 import Seer.Render.Atlas
-  ( AtlasTextureCache(..)
+  ( AtlasCacheSummary(..)
+  , AtlasResolveStatus
+  , AtlasTextureCache(..)
+  , AtlasTileSetSummary(..)
+  , atlasCacheSummary
+  , atlasResolveDiagnostic
+  , atlasResolveNeedsRetry
   , drawAtlas
   , drawAtlasAlpha
-  , atlasResolveNeedsRetry
   , drainAtlasBuildResults
+  , formatAtlasCacheSummary
+  , formatAtlasResolveDiagnostic
   , getCurrentCompleteAtlasForTarget
   , getNearestDayNight
   , resolveAtlasTiles
@@ -84,6 +91,8 @@ data RenderFrameOutcome = RenderFrameOutcome
   , rfoFallbackNeedsRetry :: !Bool
   , rfoChunkTextureCache :: !ChunkTextureCache
   , rfoAtlasTextureCache :: !AtlasTextureCache
+  , rfoAtlasResolveStatus :: !AtlasResolveStatus
+  , rfoAtlasDrainStats :: !(Maybe AtlasResultDrainStats)
   , rfoDidLog :: !Bool
   }
 
@@ -207,7 +216,7 @@ renderFrame context = do
       expectedAtlasKey = atlasKeyFor mode (uiRenderWaterLevel (rsUi snapshot)) terrainSnap
       atlasCacheKeyed = setAtlasKey expectedAtlasKey atlasCacheWithStage
       dataReady = tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
-  (loggedSchedule, loggedScheduleDrain, loggedScheduleEnqueue) <-
+  (scheduleJobCount, loggedSchedule, loggedScheduleDrain, loggedScheduleEnqueue) <-
     if shouldScheduleAtlas
       then do
         (jobCount, drainMs, enqueueMs) <- scheduleAtlasBuilds renderTargetOk dataReady atlasSchedulerHandle scheduleRef snapshotVersion snapshot (fromIntegral winW, fromIntegral winH)
@@ -215,16 +224,16 @@ renderFrame context = do
         totalLogged <- logTiming logHandle timingLogThresholdMs (Text.pack "atlas schedule") totalMs (Just jobCount)
         drainLogged <- logTiming logHandle timingLogThresholdMs (Text.pack "atlas schedule drain") drainMs (Just jobCount)
         enqueueLogged <- logTiming logHandle timingLogThresholdMs (Text.pack "atlas schedule enqueue") enqueueMs (Just jobCount)
-        pure (totalLogged, drainLogged, enqueueLogged)
-      else pure (False, False, False)
+        pure (jobCount, totalLogged, drainLogged, enqueueLogged)
+      else pure (0, False, False, False)
   tAfterSchedule <- getMonotonicTimeNSec
-  (atlasCache', uploadCount, uploadMs, uploadTextureMs) <- if shouldDrainAtlas
+  (atlasCache', uploadCount, uploadMs, uploadTextureMs, mbDrainStats) <- if shouldDrainAtlas
     then do
-      ((cache', count, createMs), elapsed) <- timedMs $ do
-        (cacheNext, count, createMs) <- drainAtlasBuildResults renderTargetOk atlasUploadsPerFrame pool renderer atlasCacheKeyed resultRef freshnessRef
-        pure (cacheNext, count, createMs)
-      pure (cache', count, elapsed, createMs)
-    else pure (atlasCacheKeyed, 0, 0, 0)
+      ((cache', count, createMs, drainStats), elapsed) <- timedMs $ do
+        (cacheNext, count, createMs, drainStats) <- drainAtlasBuildResults renderTargetOk atlasUploadsPerFrame pool renderer atlasCacheKeyed resultRef freshnessRef
+        pure (cacheNext, count, createMs, drainStats)
+      pure (cache', count, elapsed, createMs, Just drainStats)
+    else pure (atlasCacheKeyed, 0, 0, 0, Nothing)
   loggedUpload <-
     if shouldDrainAtlas && uploadCount > 0
       then logTiming logHandle timingLogThresholdMs (Text.pack "atlas upload") uploadMs (Just uploadCount)
@@ -353,6 +362,22 @@ renderFrame context = do
     (_, elapsed) <- timedMs (SDL.present renderer)
     logTiming logHandle timingLogThresholdMs (Text.pack "present") elapsed Nothing
   tEnd <- getMonotonicTimeNSec
+  loggedAtlasTraceEvents <- traceAtlasFrame
+    traceH
+    logHandle
+    (atcCommittedStage atlasCache)
+    (atcCommittedStage atlasCacheWithStage)
+    expectedAtlasKey
+    stage
+    atlasResolveStatus
+    atlasToDraw
+    atlasCache'
+    atlasCache''
+    shouldDrainAtlas
+    shouldScheduleAtlas
+    scheduleJobCount
+    uploadCount
+    mbDrainStats
   let totalMs = nsToMs tStart tEnd
   when (totalMs >= 100) $ forM_ traceH $ \h -> do
     hPutStrLn h $ "  FRAME total=" <> show totalMs
@@ -370,8 +395,11 @@ renderFrame context = do
       <> " rtOk=" <> show renderTargetOk
       <> " dataReady=" <> show dataReady
       <> " atlas=" <> show (isNothing atlasToDraw)
+      <> " atlasStatus=" <> show atlasResolveStatus
+      <> " uploadCount=" <> show uploadCount
+      <> " budgetExhausted=" <> maybe "False" (show . ardsBudgetExhausted) mbDrainStats
     hFlush h
-  let didLog = loggedWindowSize || loggedSchedule || loggedScheduleDrain || loggedScheduleEnqueue || loggedUpload || loggedTextureCreate || loggedAtlasResolve || loggedChunkTexture || loggedDraw || loggedHover || loggedChrome || loggedUi || loggedPresent
+  let didLog = loggedWindowSize || loggedSchedule || loggedScheduleDrain || loggedScheduleEnqueue || loggedUpload || loggedTextureCreate || loggedAtlasResolve || loggedAtlasTraceEvents || loggedChunkTexture || loggedDraw || loggedHover || loggedChrome || loggedUi || loggedPresent
       atlasNeedsRetry = renderTargetOk && dataReady && atlasResolveNeedsRetry atlasResolveStatus
       fallbackChunkNeedsRetry = not renderTargetOk
         && chunkTextureCacheNeedsUpdate terrainCache (zsAtlasScale stage) textureCache'
@@ -380,8 +408,93 @@ renderFrame context = do
     , rfoFallbackNeedsRetry = fallbackChunkNeedsRetry
     , rfoChunkTextureCache = textureCache'
     , rfoAtlasTextureCache = atlasCache''
+    , rfoAtlasResolveStatus = atlasResolveStatus
+    , rfoAtlasDrainStats = mbDrainStats
     , rfoDidLog = didLog
     }
+
+traceAtlasFrame
+  :: Maybe Handle
+  -> ActorHandle Log (Protocol Log)
+  -> Maybe ZoomStage
+  -> Maybe ZoomStage
+  -> AtlasKey
+  -> ZoomStage
+  -> AtlasResolveStatus
+  -> Maybe [TerrainAtlasTile]
+  -> AtlasTextureCache
+  -> AtlasTextureCache
+  -> Bool
+  -> Bool
+  -> Int
+  -> Int
+  -> Maybe AtlasResultDrainStats
+  -> IO Bool
+traceAtlasFrame Nothing _ _ _ _ _ _ _ _ _ _ _ _ _ _ = pure False
+traceAtlasFrame traceH@(Just h) logHandle oldStage newStage expectedKey stage resolveStatus atlasToDraw cacheBeforeResolve cacheAfterResolve drainAttempted scheduleAttempted scheduleJobCount uploadCount mbDrainStats = do
+  let resolveDiag = atlasResolveDiagnostic expectedKey stage resolveStatus atlasToDraw cacheBeforeResolve cacheAfterResolve
+      cacheSummaryBeforeResolve = atlasCacheSummary (Just expectedKey) (Just stage) cacheBeforeResolve
+      cacheSummary = atlasCacheSummary (Just expectedKey) (Just stage) cacheAfterResolve
+  loggedStageChange <- logAtlasStageChange traceH logHandle oldStage newStage (acsLastGood cacheSummary)
+  loggedPromotion <- logAtlasPromotion traceH logHandle (acsLastGood cacheSummaryBeforeResolve) (acsLastGood cacheSummary)
+  hPutStrLn h $ "  ATLAS drainAttempted=" <> show drainAttempted
+    <> " scheduleAttempted=" <> show scheduleAttempted
+    <> " scheduleJobs=" <> show scheduleJobCount
+    <> " uploadCount=" <> show uploadCount
+    <> maybe "" ((" " <>) . formatAtlasResultDrainStats) mbDrainStats
+    <> " " <> formatAtlasResolveDiagnostic resolveDiag
+    <> " " <> formatAtlasCacheSummary cacheSummary
+  hFlush h
+  pure (loggedStageChange || loggedPromotion)
+
+logAtlasStageChange
+  :: Maybe Handle
+  -> ActorHandle Log (Protocol Log)
+  -> Maybe ZoomStage
+  -> Maybe ZoomStage
+  -> Maybe AtlasTileSetSummary
+  -> IO Bool
+logAtlasStageChange traceH logHandle oldStage newStage currentLast =
+  case (oldStage, newStage) of
+    (Just old, Just new) | old /= new ->
+      logAtlasEvent traceH logHandle $
+        "stage-commit old=" <> formatStage old <> " new=" <> formatStage new
+          <> " last=" <> formatTileSet currentLast
+    _ -> pure False
+
+logAtlasPromotion
+  :: Maybe Handle
+  -> ActorHandle Log (Protocol Log)
+  -> Maybe AtlasTileSetSummary
+  -> Maybe AtlasTileSetSummary
+  -> IO Bool
+logAtlasPromotion traceH logHandle oldLast newLast =
+  case newLast of
+    Just summary | oldLast /= newLast && atssComplete summary ->
+      logAtlasEvent traceH logHandle $
+        "last-good-promote old=" <> formatTileSet oldLast <> " new=" <> formatTileSet newLast
+    _ -> pure False
+
+logAtlasEvent :: Maybe Handle -> ActorHandle Log (Protocol Log) -> String -> IO Bool
+logAtlasEvent Nothing _ _ = pure False
+logAtlasEvent (Just h) logHandle message = do
+  let line = "atlas " <> message
+  hPutStrLn h ("  ATLAS-EVENT " <> message)
+  hFlush h
+  appendLog logHandle (LogEntry LogInfo (Text.pack line))
+  pure True
+
+formatStage :: ZoomStage -> String
+formatStage stage = "hex=" <> show (zsHexRadius stage) <> "/scale=" <> show (zsAtlasScale stage)
+
+formatTileSet :: Maybe AtlasTileSetSummary -> String
+formatTileSet Nothing = "none"
+formatTileSet (Just summary) =
+  "key=" <> show (atssKey summary)
+    <> "/hex=" <> show (atssHexRadius summary)
+    <> "/scale=" <> show (atssAtlasScale summary)
+    <> "/build=" <> maybe "unknown" show (atssBuildId summary)
+    <> "/tiles=" <> show (atssTileCount summary) <> "/" <> show (atssExpectedTileCount summary)
 
 logTiming :: ActorHandle Log (Protocol Log) -> Word32 -> Text.Text -> Word32 -> Maybe Int -> IO Bool
 logTiming handle thresholdMs label elapsed maybeCount =
