@@ -15,6 +15,7 @@ import qualified Spec.PipelineIntegrator
 import qualified Spec.AtlasResultBroker
 import qualified Spec.AtlasScheduleBroker
 import qualified Spec.AtlasScheduler
+import qualified Spec.AtlasManager
 import qualified Spec.AtlasCache
 import qualified Spec.RenderLoopAtlasMaintenance
 import qualified Spec.WeatherAtlasFlicker
@@ -68,6 +69,7 @@ main = do
         Spec.AtlasResultBroker.spec
         Spec.AtlasScheduleBroker.spec
         Spec.AtlasScheduler.spec
+        Spec.AtlasManager.spec
         Spec.AtlasCache.spec
         Spec.RenderLoopAtlasMaintenance.spec
         Spec.WeatherAtlasFlicker.spec

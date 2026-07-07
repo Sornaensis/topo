@@ -75,6 +75,19 @@ atlasJobTarget job = AtlasBuildTarget
   , abtAtlasScale = ajAtlasScale job
   }
 
+restampDispatchJob :: SnapshotVersion -> AtlasDispatchJob -> AtlasDispatchJob
+restampDispatchJob snapshotVersion dispatchJob = dispatchJob
+  { adjJob = (adjJob dispatchJob) { ajSnapshotVersion = snapshotVersion }
+  }
+
+publishDispatchFreshness :: AtlasFreshnessRef -> AtlasKey -> SnapshotVersion -> [AtlasDispatchJob] -> IO ()
+publishDispatchFreshness ref key snapshotVersion dispatchJobs = do
+  writeAtlasFreshnessCurrent ref key snapshotVersion
+  mapM_ publishBuild dispatchJobs
+  where
+    publishBuild dispatchJob =
+      writeAtlasFreshnessBuild ref (atlasJobTarget (adjJob dispatchJob)) (adjBuildId dispatchJob)
+
 [hyperspace|
 actor AtlasManager
   state AtlasManagerState
@@ -120,19 +133,24 @@ actor AtlasManager
     let key = afKey freshness
         requestKeyVersion = atlasKeyVersion key
         requestSnapshotVersion = afSnapshotVersion freshness
-        isFresh queued =
+        isDispatchable queued =
           let job = adjJob queued
-          in ajKey job == key && ajSnapshotVersion job == requestSnapshotVersion
+          in ajKey job == key && ajSnapshotVersion job <= requestSnapshotVersion
         keepQueued queued =
           let job = adjJob queued
-          in not (isFresh queued)
+          in not (isDispatchable queued)
             && (ajSnapshotVersion job > requestSnapshotVersion || atlasKeyVersion (ajKey job) > requestKeyVersion)
-        fresh = filter isFresh (amQueue st)
+        fresh = map (restampDispatchJob requestSnapshotVersion) (filter isDispatchable (amQueue st))
         queue' = filter keepQueued (amQueue st)
+        acceptedStamp = (requestKeyVersion, requestSnapshotVersion)
+        latestVersions' = foldr
+          (\dispatchJob versions -> Map.insert (atlasJobSlot (adjJob dispatchJob)) acceptedStamp versions)
+          (amLatestVersions st)
+          fresh
     case amFreshnessRef st of
-      Just ref | not (null fresh) -> writeAtlasFreshnessCurrent ref key requestSnapshotVersion
+      Just ref | not (null fresh) -> publishDispatchFreshness ref key requestSnapshotVersion fresh
       _ -> pure ()
-    pure (st { amQueue = queue' }, fresh)
+    pure (st { amQueue = queue', amLatestVersions = latestVersions' }, fresh)
 |]
 
 setAtlasManagerFreshnessRef :: ActorHandle AtlasManager (Protocol AtlasManager) -> AtlasFreshnessRef -> IO ()
