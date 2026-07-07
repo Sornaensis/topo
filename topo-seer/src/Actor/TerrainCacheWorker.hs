@@ -25,6 +25,7 @@ import Data.Word (Word64)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
 import Seer.Render (TerrainCache(..), buildTerrainCache, emptyTerrainCache)
+import UI.DayNight (DayNightKey, mkDayNightKey)
 
 -- | Lightweight cache key for O(1) staleness checks.
 --
@@ -34,6 +35,7 @@ import Seer.Render (TerrainCache(..), buildTerrainCache, emptyTerrainCache)
 data TerrainCacheKey = TerrainCacheKey
   { tckViewMode :: !ViewMode
   , tckWaterLevel :: !Float
+  , tckDayNightKey :: !(Maybe DayNightKey)
   , tckChunkSize :: !Int
   , tckVersion :: !Word64
   } deriving (Eq, Show)
@@ -69,11 +71,11 @@ actor TerrainCacheWorker
           case terrainCacheKeyFrom (tcrUi req) (tcrTerrain req) of
             Nothing -> emptyTerrainCache
             Just _ -> buildTerrainCache (tcrUi req) (tcrTerrain req)
-    -- Force the full IntMap spine of tcGeometry on the worker thread.
-    -- IntMap.Strict.mapWithKey is strict at Tip nodes ($!) but has a lazy
-    -- spine — without this, the render thread pays ~350ms to evaluate
-    -- buildChunkGeometry thunks when it first traverses the IntMap.
-    _ <- evaluate (IntMap.size (tcGeometry cache))
+    -- Force the full IntMap spines on the worker thread.  IntMap.Strict.mapWithKey
+    -- is strict at Tip nodes ($!) but has a lazy spine — without this, the render
+    -- thread pays to evaluate buildChunkGeometry thunks when it first traverses
+    -- the IntMaps.
+    _ <- evaluate (IntMap.size (tcGeometry cache) + IntMap.size (tcDayNightGeometry cache))
     let result = TerrainCacheBuildResult
           { tcrResultKey = tcrKey req
           , tcrResultCache = cache
@@ -97,6 +99,10 @@ terrainCacheKeyFrom uiSnap terrainSnap
   | otherwise = Just TerrainCacheKey
       { tckViewMode = uiViewMode uiSnap
       , tckWaterLevel = uiRenderWaterLevel uiSnap
+      , tckDayNightKey =
+          if uiDayNightEnabled uiSnap
+            then mkDayNightKey uiSnap (tsChunkSize terrainSnap)
+            else Nothing
       , tckChunkSize = tsChunkSize terrainSnap
       , tckVersion = terrainSnapshotViewVersion (uiViewMode uiSnap) terrainSnap
       }

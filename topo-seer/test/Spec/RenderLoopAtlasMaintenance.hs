@@ -4,9 +4,11 @@ import Actor.AtlasCache (AtlasKey(..))
 import Actor.AtlasResult (AtlasBuildId(..), AtlasBuildResult(..), AtlasTileSetManifest(..), atlasManifestTarget)
 import Actor.AtlasResultBroker (atlasResultsPending, drainFreshResultsN, newAtlasResultRef, pushAtlasResult)
 import Actor.AtlasScheduler (AtlasFreshness(..))
+import Actor.Data (TerrainSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion(..))
-import Actor.UI (ViewMode(..), emptyUiState)
+import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
 import Data.Maybe (isNothing)
+import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Foreign.Ptr (Ptr, intPtrToPtr)
 import Linear (V2(..))
@@ -27,11 +29,17 @@ import Seer.Render.Frame
   ( AtlasFrameStepPolicy(..)
   , applyAtlasFrameStepTimestamps
   , atlasFrameStepPolicy
+  , fallbackFrameMaintenanceDue
   )
-import Seer.Render.ZoomStage (ZoomStage(..))
+import Seer.Render.Terrain (TerrainCache(..), buildTerrainCache)
+import Seer.Render.ZoomStage (ZoomStage(..), stageForZoom)
 import Test.Hspec
+import Topo (WorldConfig(..), emptyTerrainChunk)
+import Topo.Overlay (emptyOverlayStore)
 import UI.DayNight (DayNightKey, mkDayNightKey)
 import UI.TerrainAtlas (AtlasTileGeometry(..), TerrainAtlasTile(..))
+import UI.TerrainCache (ChunkTextureCache(..))
+import UI.TerrainRender (ChunkTexture(..))
 import UI.Widgets (Rect(..))
 import Unsafe.Coerce (unsafeCoerce)
 
@@ -115,6 +123,19 @@ spec = describe "render-loop atlas maintenance wakeups" $ do
     afspShouldDrainAtlas atPoll `shouldBe` False
     afspShouldScheduleAtlas atPoll `shouldBe` True
 
+  it "wakes fallback maintenance for stale day/night overlay without atlas maintenance when render targets are unavailable" $ do
+    let terrainSnap = renderableFallbackTerrainSnapshot
+        uiOld = emptyUiState { uiDayNightEnabled = True, uiSimTickCount = 0 }
+        uiNew = emptyUiState { uiDayNightEnabled = True, uiSimTickCount = 1 }
+        oldCache = buildTerrainCache uiOld terrainSnap
+        scale = zsAtlasScale (stageForZoom (uiZoom uiNew))
+        fallbackDue = fallbackFrameMaintenanceDue False uiNew terrainSnap scale oldCache (chunkTexturesFor scale oldCache)
+        atlasPolicy = atlasFrameStepPolicy 101 atlasDrainPollMs atlasSchedulePollMs False False False False (Just 100) (Just 100)
+    fallbackDue `shouldBe` True
+    afspAtlasMaintenanceDue atlasPolicy `shouldBe` False
+    afspShouldDrainAtlas atlasPolicy `shouldBe` False
+    afspShouldScheduleAtlas atlasPolicy `shouldBe` False
+
   it "updates atlas timestamps only for attempted drain and schedule steps" $ do
     let skipped = applyAtlasFrameStepTimestamps 100 (AtlasFrameStepPolicy False False False) (Just 10) (Just 20)
         drained = applyAtlasFrameStepTimestamps 101 (AtlasFrameStepPolicy True False True) (Just 10) (Just 20)
@@ -169,6 +190,44 @@ spec = describe "render-loop atlas maintenance wakeups" $ do
     atlasResolveNeedsRetry completeStatus `shouldBe` False
     fmap length (getCurrentCompleteAtlasForTarget (Just freshness) weatherKey targetHex 1 completeResolvedCache) `shouldBe` Just 2
     afspAtlasMaintenanceDue completePolicy `shouldBe` False
+
+renderableFallbackTerrainSnapshot :: TerrainSnapshot
+renderableFallbackTerrainSnapshot = TerrainSnapshot
+  { tsVersion = 1
+  , tsClimateVersion = 0
+  , tsWeatherVersion = 0
+  , tsVegetationVersion = 0
+  , tsOverlayVersion = 0
+  , tsChunkSize = 1
+  , tsTerrainChunks = IntMap.singleton 0 (emptyTerrainChunk (WorldConfig { wcChunkSize = 1 }))
+  , tsClimateChunks = IntMap.empty
+  , tsWeatherChunks = IntMap.empty
+  , tsRiverChunks = IntMap.empty
+  , tsGroundwaterChunks = IntMap.empty
+  , tsVolcanismChunks = IntMap.empty
+  , tsGlacierChunks = IntMap.empty
+  , tsWaterBodyChunks = IntMap.empty
+  , tsVegetationChunks = IntMap.empty
+  , tsOverlayStore = emptyOverlayStore
+  }
+
+chunkTexturesFor :: Int -> TerrainCache -> ChunkTextureCache
+chunkTexturesFor scale cache = ChunkTextureCache
+  { ctcViewMode = tcViewMode cache
+  , ctcWaterLevel = tcWaterLevel cache
+  , ctcChunkSize = tcChunkSize cache
+  , ctcScale = scale
+  , ctcTerrainChunks = tcTerrainChunks cache
+  , ctcClimateChunks = tcClimateChunks cache
+  , ctcWeatherChunks = tcWeatherChunks cache
+  , ctcTextures = IntMap.mapWithKey (\key _ -> mockChunkTexture key) (tcGeometry cache)
+  }
+
+mockChunkTexture :: Int -> ChunkTexture
+mockChunkTexture key = ChunkTexture
+  { ctTexture = mockTexture key
+  , ctBounds = Rect (V2 0 0, V2 1 1)
+  }
 
 testDayNightKey :: DayNightKey
 testDayNightKey = case mkDayNightKey emptyUiState 16 of
@@ -254,4 +313,4 @@ mkTile tag hexRadius bounds = TerrainAtlasTile
   }
 
 mockTexture :: Int -> SDL.Texture
-mockTexture n = unsafeCoerce (intPtrToPtr (fromIntegral n) :: Ptr ())
+mockTexture n = unsafeCoerce (intPtrToPtr (fromIntegral (max 1 n)) :: Ptr ())

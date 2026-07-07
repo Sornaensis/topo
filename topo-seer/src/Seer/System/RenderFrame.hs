@@ -35,6 +35,7 @@ import Seer.Render.Frame
   ( AtlasFrameStepPolicy(..)
   , applyAtlasFrameStepTimestamps
   , atlasFrameStepPolicy
+  , fallbackFrameMaintenanceDue
   )
 import Seer.Render.ZoomStage (ZoomStage(..), stageForZoom)
 import Seer.Screenshot.Request (ScreenshotRequestRef)
@@ -104,14 +105,13 @@ renderFrameStepMaintenance
   -> RenderFrameMaintenanceDiagnostics
 renderFrameStepMaintenance settings renderTargetOk nowMs atlasPending renderSnap cacheState =
   let generating = uiGenerating (rsUi renderSnap)
-      fallbackMaintenanceDue = not generating
-        && not renderTargetOk
-        && fallbackTerrainNeedsRefresh
-             (rsUi renderSnap)
-             (rsTerrain renderSnap)
-             (fallbackTextureScale renderSnap (rcsAtlasCache cacheState))
-             (rcsTerrainCache cacheState)
-             (rcsChunkTextures cacheState)
+      fallbackMaintenanceDue = fallbackFrameMaintenanceDue
+        renderTargetOk
+        (rsUi renderSnap)
+        (rsTerrain renderSnap)
+        (fallbackTextureScale renderSnap (rcsAtlasCache cacheState))
+        (rcsTerrainCache cacheState)
+        (rcsChunkTextures cacheState)
       atlasPolicy = atlasFrameStepPolicy
         nowMs
         (rfsetAtlasDrainPollMs settings)

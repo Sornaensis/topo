@@ -15,15 +15,16 @@ import Actor.Data (TerrainSnapshot(..))
 import Actor.UI (UiState(..), ViewMode(..))
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
-import Data.Word (Word8, Word64)
-import Linear (V2(..), V4(..))
+import Data.Word (Word64)
+import Linear (V2(..))
 import qualified Data.Vector.Storable as SV
 import qualified SDL
 import qualified SDL.Raw.Types as Raw
 import UI.OverlayExtract (extractOverlayField)
 import UI.TerrainCache (ChunkTextureCache(..), emptyChunkTextureCache)
 import UI.HexGeometry (renderHexRadiusPx, transformWorldPoint, transformWorldRect)
-import UI.TerrainRender (ChunkGeometry(..), ChunkTexture(..), buildChunkGeometry, buildChunkTexture, destroyChunkTexture)
+import UI.DayNight (DayNightKey, mkDayNightKey, mkDayNightSpec)
+import UI.TerrainRender (ChunkGeometry(..), ChunkTexture(..), buildChunkGeometry, buildChunkTexture, buildDayNightGeometry, destroyChunkTexture)
 import UI.Widgets (Rect(..))
 import UI.WidgetsDraw (rectToSDL)
 import Topo (ClimateChunk(..), TerrainChunk(..), WeatherChunk(..), WorldConfig(..))
@@ -38,11 +39,13 @@ data TerrainCache = TerrainCache
   , tcViewMode :: !ViewMode
   , tcWaterLevel :: !Float
   , tcDayNightEnabled :: !Bool
+  , tcDayNightKey :: !(Maybe DayNightKey)
   , tcChunkSize :: !Int
   , tcTerrainChunks :: !(IntMap TerrainChunk)
   , tcClimateChunks :: !(IntMap ClimateChunk)
   , tcWeatherChunks :: !(IntMap WeatherChunk)
   , tcGeometry :: !(IntMap ChunkGeometry)
+  , tcDayNightGeometry :: !(IntMap ChunkGeometry)
   }
 
 -- | Empty terrain cache used before any terrain data is available.
@@ -52,11 +55,13 @@ emptyTerrainCache = TerrainCache
   , tcViewMode = ViewElevation
   , tcWaterLevel = 0
   , tcDayNightEnabled = True
+  , tcDayNightKey = Nothing
   , tcChunkSize = 0
   , tcTerrainChunks = IntMap.empty
   , tcClimateChunks = IntMap.empty
   , tcWeatherChunks = IntMap.empty
   , tcGeometry = IntMap.empty
+  , tcDayNightGeometry = IntMap.empty
   }
 
 -- | Update the cached geometry when the UI or terrain snapshot changes.
@@ -69,6 +74,7 @@ updateTerrainCache uiSnap terrainSnap cache
   | tcViewMode cache /= uiViewMode uiSnap = buildTerrainCache uiSnap terrainSnap
   | tcWaterLevel cache /= uiRenderWaterLevel uiSnap = buildTerrainCache uiSnap terrainSnap
   | tcDayNightEnabled cache /= uiDayNightEnabled uiSnap = buildTerrainCache uiSnap terrainSnap
+  | tcDayNightKey cache /= terrainDayNightKey uiSnap terrainSnap = buildTerrainCache uiSnap terrainSnap
   | tcChunkSize cache /= tsChunkSize terrainSnap = buildTerrainCache uiSnap terrainSnap
   | tcVersion cache /= terrainSnapshotViewVersion (uiViewMode uiSnap) terrainSnap = buildTerrainCache uiSnap terrainSnap
   | otherwise = cache
@@ -84,8 +90,12 @@ terrainCacheNeedsRefresh uiSnap terrainSnap cache
         || not (IntMap.null (tcClimateChunks cache))
         || not (IntMap.null (tcWeatherChunks cache))
         || not (IntMap.null (tcGeometry cache))
+        || tcDayNightKey cache /= Nothing
+        || not (IntMap.null (tcDayNightGeometry cache))
   | tcViewMode cache /= uiViewMode uiSnap = True
   | tcWaterLevel cache /= uiRenderWaterLevel uiSnap = True
+  | tcDayNightEnabled cache /= uiDayNightEnabled uiSnap = True
+  | tcDayNightKey cache /= terrainDayNightKey uiSnap terrainSnap = True
   | tcChunkSize cache /= tsChunkSize terrainSnap = True
   | tcVersion cache /= terrainSnapshotViewVersion (uiViewMode uiSnap) terrainSnap = True
   | otherwise = False
@@ -110,21 +120,38 @@ buildTerrainCache uiSnap terrainSnap =
                          (IntMap.lookup k overlayMap)
                          k chunk
       cacheChunks = IntMap.mapWithKey mkGeom (tsTerrainChunks terrainSnap)
+      dayNightSpec =
+        if uiDayNightEnabled uiSnap
+          then mkDayNightSpec uiSnap (tsChunkSize terrainSnap)
+          else Nothing
+      (dayNightKey, dayNightGeometry) = case dayNightSpec of
+        Just (key, dayNightFn) ->
+          ( Just key
+          , IntMap.mapWithKey (buildDayNightGeometry renderHexRadiusPx config dayNightFn) (tsTerrainChunks terrainSnap)
+          )
+        Nothing -> (Nothing, IntMap.empty)
   in TerrainCache
       { tcVersion = viewVersion
       , tcViewMode = mode
       , tcWaterLevel = waterLevel
       , tcDayNightEnabled = uiDayNightEnabled uiSnap
+      , tcDayNightKey = dayNightKey
       , tcChunkSize = tsChunkSize terrainSnap
       , tcTerrainChunks = tsTerrainChunks terrainSnap
       , tcClimateChunks = tsClimateChunks terrainSnap
       , tcWeatherChunks = tsWeatherChunks terrainSnap
       , tcGeometry = cacheChunks
+      , tcDayNightGeometry = dayNightGeometry
       }
+
+terrainDayNightKey :: UiState -> TerrainSnapshot -> Maybe DayNightKey
+terrainDayNightKey uiSnap terrainSnap
+  | uiDayNightEnabled uiSnap = mkDayNightKey uiSnap (tsChunkSize terrainSnap)
+  | otherwise = Nothing
 
 -- | Draw terrain either from cached textures or immediate geometry.
 drawTerrain :: SDL.Renderer -> TerrainSnapshot -> TerrainCache -> ChunkTextureCache -> (Float, Float) -> Float -> V2 Int -> IO ()
-drawTerrain renderer terrainSnap cache textureCache (panX, panY) zoom (V2 winW winH) =
+drawTerrain renderer _terrainSnap cache textureCache (panX, panY) zoom (V2 winW winH) =
   if tcChunkSize cache <= 0 || IntMap.null (tcGeometry cache)
     then pure ()
     else do
@@ -132,6 +159,7 @@ drawTerrain renderer terrainSnap cache textureCache (panX, panY) zoom (V2 winW w
       if IntMap.null textures
         then mapM_ (drawChunkGeometry renderer winW winH) (IntMap.elems (tcGeometry cache))
         else mapM_ (drawChunkTexture renderer winW winH) (IntMap.elems textures)
+      mapM_ (drawChunkGeometry renderer winW winH) (IntMap.elems (tcDayNightGeometry cache))
   where
     drawChunkTexture renderer winW winH chunkTexture = do
       let Rect (V2 x y, V2 w h) = ctBounds chunkTexture

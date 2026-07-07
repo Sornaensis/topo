@@ -1280,6 +1280,15 @@ spec = describe "AtlasTextureCache" $ do
       isNothing tiles `shouldBe` True
       mismatch `shouldBe` False
 
+    it "resolveAtlasPure returns no tiles when not renderTargetOk even with atcLast" $ do
+      let elevTiles = [mkTile 1 6 testRect]
+          cache0 = (storeAtlasTiles keyA 6 elevTiles
+                     ((emptyAtlasTextureCache 30) { atcKey = Just keyA }))
+                     { atcLast = Just (keyA, elevTiles) }
+      let (tiles, mismatch, _) = resolveAtlasPure False True keyA 6 cache0
+      isNothing tiles `shouldBe` True
+      mismatch `shouldBe` False
+
     it "resolveAtlasPure returns no tiles when not dataReady" $ do
       let elevTiles = [mkTile 1 6 testRect]
           cache0 = storeAtlasTiles keyA 6 elevTiles

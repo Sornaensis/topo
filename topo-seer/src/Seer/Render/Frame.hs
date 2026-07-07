@@ -4,6 +4,7 @@ module Seer.Render.Frame
   , AtlasFrameStepPolicy(..)
   , applyAtlasFrameStepTimestamps
   , atlasFrameStepPolicy
+  , fallbackFrameMaintenanceDue
   , renderFrame
   ) where
 
@@ -71,6 +72,7 @@ import Seer.Render.Context (RenderContext(..))
 import Seer.Render.Terrain
   ( TerrainCache(..)
   , chunkTextureCacheNeedsUpdate
+  , fallbackTerrainNeedsRefresh
   , updateChunkTextures
   , drawTerrain
   )
@@ -138,6 +140,20 @@ applyAtlasFrameStepTimestamps nowMs policy lastDrain lastSchedule =
   ( if afspShouldDrainAtlas policy then Just nowMs else lastDrain
   , if afspShouldScheduleAtlas policy then Just nowMs else lastSchedule
   )
+
+-- | Whether non-render-target fallback terrain maintenance should wake a frame.
+fallbackFrameMaintenanceDue
+  :: Bool
+  -> UiState
+  -> TerrainSnapshot
+  -> Int
+  -> TerrainCache
+  -> ChunkTextureCache
+  -> Bool
+fallbackFrameMaintenanceDue renderTargetOk uiSnap terrainSnap scale terrainCache textureCache =
+  not (uiGenerating uiSnap)
+    && not renderTargetOk
+    && fallbackTerrainNeedsRefresh uiSnap terrainSnap scale terrainCache textureCache
 
 atlasPolicyShouldPoll :: Word32 -> Int -> Maybe Word32 -> Bool
 atlasPolicyShouldPoll nowMs pollMs lastPoll =
@@ -305,27 +321,29 @@ renderFrame context = do
       (_, elapsed) <- timedMs (drawTerrain renderer terrainSnap terrainCache textureCache' (uiPanOffset (rsUi snapshot)) (uiZoom (rsUi snapshot)) (V2 (fromIntegral winW) (fromIntegral winH)))
       logTiming logHandle timingLogThresholdMs (Text.pack "draw terrain") elapsed Nothing
   tAfterDraw <- getMonotonicTimeNSec
-  -- Draw day/night overlay on top of base atlas when enabled. Provisional
-  -- same-key overlays may be drawn, but their retrying status remains active.
-  when (uiDayNightEnabled (rsUi snapshot)) $ do
-    let pan = uiPanOffset (rsUi snapshot)
-        z = uiZoom (rsUi snapshot)
-        win = V2 (fromIntegral winW) (fromIntegral winH)
-    case (dayNightTiles, mbTargetDayNight) of
-      (Just currentTiles, Just (_targetStage, blend, Just targetTiles, _targetStatus)) -> do
-        let oldAlpha = round ((1.0 - blend) * 255) :: Word8
-            newAlpha = round (blend * 255) :: Word8
-        drawAtlasAlpha renderer currentTiles pan z win oldAlpha
-        drawAtlasAlpha renderer targetTiles pan z win newAlpha
-      (Just currentTiles, Just (_targetStage, blend, Nothing, _targetStatus)) -> do
-        let oldAlpha = round ((1.0 - blend) * 255) :: Word8
-        drawAtlasAlpha renderer currentTiles pan z win oldAlpha
-      (Just currentTiles, Nothing) ->
-        drawAtlas renderer currentTiles pan z win
-      (Nothing, Just (_targetStage, blend, Just targetTiles, _targetStatus)) -> do
-        let newAlpha = round (blend * 255) :: Word8
-        drawAtlasAlpha renderer targetTiles pan z win newAlpha
-      _ -> pure ()
+  -- Draw day/night overlay only on top of atlas base tiles.  When atlas tiles
+  -- are unavailable, drawTerrain handles the non-render-target fallback overlay.
+  case atlasToDraw of
+    Just _ -> when (uiDayNightEnabled (rsUi snapshot)) $ do
+      let pan = uiPanOffset (rsUi snapshot)
+          z = uiZoom (rsUi snapshot)
+          win = V2 (fromIntegral winW) (fromIntegral winH)
+      case (dayNightTiles, mbTargetDayNight) of
+        (Just currentTiles, Just (_targetStage, blend, Just targetTiles, _targetStatus)) -> do
+          let oldAlpha = round ((1.0 - blend) * 255) :: Word8
+              newAlpha = round (blend * 255) :: Word8
+          drawAtlasAlpha renderer currentTiles pan z win oldAlpha
+          drawAtlasAlpha renderer targetTiles pan z win newAlpha
+        (Just currentTiles, Just (_targetStage, blend, Nothing, _targetStatus)) -> do
+          let oldAlpha = round ((1.0 - blend) * 255) :: Word8
+          drawAtlasAlpha renderer currentTiles pan z win oldAlpha
+        (Just currentTiles, Nothing) ->
+          drawAtlas renderer currentTiles pan z win
+        (Nothing, Just (_targetStage, blend, Just targetTiles, _targetStatus)) -> do
+          let newAlpha = round (blend * 255) :: Word8
+          drawAtlasAlpha renderer targetTiles pan z win newAlpha
+        _ -> pure ()
+    Nothing -> pure ()
   let hexHoverRadius = zsHexRadius stage
   loggedHover <- do
     (_, elapsed) <- timedMs (drawHoverHex renderer (rsUi snapshot) hexHoverRadius)

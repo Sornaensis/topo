@@ -4,6 +4,7 @@ module Spec.TerrainRender (spec) where
 
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Vector.Storable as SV
+import Data.Word (Word8)
 import qualified Data.Vector.Unboxed as U
 import Test.Hspec
 import Linear (V2(..))
@@ -12,7 +13,7 @@ import Topo (WorldConfig(..), TerrainChunk(..), zeroDirSlope)
 import Topo.Types (pattern BiomeDesert, pattern FormFlat, pattern PlateBoundaryNone)
 import Actor.UI (ViewMode(..))
 import UI.HexGeometry (hexCenterF, renderHexRadiusPx)
-import UI.TerrainRender (ChunkGeometry(..), buildChunkGeometry)
+import UI.TerrainRender (ChunkGeometry(..), buildChunkGeometry, buildDayNightGeometry)
 import UI.Widgets (Rect(..))
 
 spec :: Spec
@@ -45,6 +46,23 @@ spec = describe "Terrain render geometry" $ do
         (centerX, centerY) = hexCenterF renderHexRadiusPx 0 0
     realToFrac bx + realToFrac localX `shouldSatisfy` closeTo centerX
     realToFrac by + realToFrac localY `shouldSatisfy` closeTo centerY
+
+  it "builds a transparent black day/night overlay at full brightness" $ do
+    let size = 1
+        config = WorldConfig { wcChunkSize = size }
+        chunk = emptyTerrainChunk size
+        geometry = buildDayNightGeometry renderHexRadiusPx config (\_ _ -> 1.0) 0 chunk
+    map vertexColor (SV.toList (cgVertices geometry)) `shouldSatisfy` all (== (0, 0, 0, 0))
+
+  it "builds a high-alpha black day/night overlay for deep night" $ do
+    let size = 1
+        config = WorldConfig { wcChunkSize = size }
+        chunk = emptyTerrainChunk size
+        geometry = buildDayNightGeometry renderHexRadiusPx config (\_ _ -> 0.15) 0 chunk
+    map vertexColor (SV.toList (cgVertices geometry)) `shouldSatisfy` all (== (0, 0, 0, 217))
+
+vertexColor :: Raw.Vertex -> (Word8, Word8, Word8, Word8)
+vertexColor (Raw.Vertex _ (Raw.Color r g b a) _) = (r, g, b, a)
 
 closeTo :: Float -> Float -> Bool
 closeTo expected actual = abs (actual - expected) < 0.001

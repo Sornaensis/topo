@@ -626,7 +626,7 @@ resolveAtlasSelection latestFreshness renderTargetOk dataReady atlasKey hexRadiu
   in case exactSet of
       Just set | catsComplete set && not (null (catsTiles set)) ->
         (Just (catsTiles set), CompleteExact, touchFor atlasKey (catsTiles set))
-      _ -> case atcLast atlasCache of
+      _ | renderTargetOk -> case atcLast atlasCache of
         Just (lastKey, lastTiles) | not (null lastTiles) ->
           (Just lastTiles, LastGoodFallback, touchFor lastKey lastTiles)
         _ -> case exactSet of
@@ -641,6 +641,7 @@ resolveAtlasSelection latestFreshness renderTargetOk dataReady atlasKey hexRadiu
                   (Just (catsTiles set), NearestScaleFallback, touchFor atlasKey (catsTiles set))
                 _ -> (Nothing, Missing, Nothing)
               else (Nothing, Missing, Nothing)
+      _ -> (Nothing, Missing, Nothing)
 
 zoomTextureScale :: Float -> Int
 zoomTextureScale zoom =

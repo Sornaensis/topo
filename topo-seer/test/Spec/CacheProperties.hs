@@ -2,6 +2,7 @@ module Spec.CacheProperties (spec) where
 
 import Actor.AtlasCache (atlasKeyFor, atlasKeyVersion, terrainSnapshotViewVersion)
 import Actor.Data (TerrainSnapshot(..))
+import Actor.TerrainCacheWorker (TerrainCacheKey(..), terrainCacheKeyFrom)
 import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
 import Topo (WeatherChunk(..), WorldConfig(..), emptyTerrainChunk)
 import Topo.Overlay (emptyOverlayStore)
@@ -114,6 +115,35 @@ spec = describe "Cache properties" $ do
     chunkTextureCacheNeedsUpdate freshCache 1 oldTextures `shouldBe` True
     fallbackTerrainNeedsRefresh uiWeather terrainSnap1 1 freshCache oldTextures `shouldBe` True
     fallbackTerrainNeedsRefresh uiWeather terrainSnap1 1 freshCache freshTextures `shouldBe` False
+
+  it "refreshes fallback day/night overlays without rebuilding base chunk textures" $ do
+    let terrainSnap = renderableTerrainSnapshot 1 1 sampleWeatherChunkA
+        uiOff = emptyUiState { uiDayNightEnabled = False, uiSimTickCount = 0 }
+        uiOn0 = emptyUiState { uiDayNightEnabled = True, uiSimTickCount = 0 }
+        uiOn1 = emptyUiState { uiDayNightEnabled = True, uiSimTickCount = 1 }
+        cacheOff = buildTerrainCache uiOff terrainSnap
+        cacheOn0 = buildTerrainCache uiOn0 terrainSnap
+        cacheOn1 = buildTerrainCache uiOn1 terrainSnap
+        texturesOn0 = chunkTexturesFor 1 cacheOn0
+    tcDayNightKey cacheOff `shouldBe` Nothing
+    tcDayNightGeometry cacheOff `shouldBe` IntMap.empty
+    tcDayNightKey cacheOn0 `shouldNotBe` Nothing
+    IntMap.keysSet (tcDayNightGeometry cacheOn0) `shouldBe` IntMap.keysSet (tcGeometry cacheOn0)
+    terrainCacheNeedsRefresh uiOn0 terrainSnap cacheOff `shouldBe` True
+    terrainCacheNeedsRefresh uiOff terrainSnap cacheOn0 `shouldBe` True
+    terrainCacheNeedsRefresh uiOn0 terrainSnap cacheOn0 `shouldBe` False
+    terrainCacheNeedsRefresh uiOn1 terrainSnap cacheOn0 `shouldBe` True
+    fallbackTerrainNeedsRefresh uiOn1 terrainSnap 1 cacheOn0 texturesOn0 `shouldBe` True
+    terrainCacheNeedsRefresh uiOn1 terrainSnap cacheOn1 `shouldBe` False
+    chunkTextureCacheNeedsUpdate cacheOn1 1 texturesOn0 `shouldBe` False
+    fallbackTerrainNeedsRefresh uiOn1 terrainSnap 1 cacheOn1 texturesOn0 `shouldBe` False
+    case (terrainCacheKeyFrom uiOff terrainSnap, terrainCacheKeyFrom uiOn0 terrainSnap, terrainCacheKeyFrom uiOn1 terrainSnap) of
+      (Just keyOff, Just keyOn0, Just keyOn1) -> do
+        tckDayNightKey keyOff `shouldBe` Nothing
+        tckDayNightKey keyOn0 `shouldBe` tcDayNightKey cacheOn0
+        tckDayNightKey keyOn1 `shouldBe` tcDayNightKey cacheOn1
+        keyOn1 `shouldNotBe` keyOn0
+      _ -> expectationFailure "expected terrain cache keys for renderable terrain"
 
   it "clamps atlas scale between 1 and 6" $
     property $ \(NonNegative zoom) ->
@@ -238,8 +268,11 @@ sameTerrainCache left right =
   tcVersion left == tcVersion right
     && tcViewMode left == tcViewMode right
     && tcWaterLevel left == tcWaterLevel right
+    && tcDayNightEnabled left == tcDayNightEnabled right
+    && tcDayNightKey left == tcDayNightKey right
     && tcChunkSize left == tcChunkSize right
     && tcTerrainChunks left == tcTerrainChunks right
     && tcClimateChunks left == tcClimateChunks right
     && tcWeatherChunks left == tcWeatherChunks right
     && tcGeometry left == tcGeometry right
+    && tcDayNightGeometry left == tcDayNightGeometry right
