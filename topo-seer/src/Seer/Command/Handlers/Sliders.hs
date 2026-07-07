@@ -11,20 +11,26 @@ module Seer.Command.Handlers.Sliders
   , handleGetConfigSummary
   ) where
 
+import Control.Monad (when)
 import Data.Aeson (Value(..), object, (.=), (.:))
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Aeson.Types as Aeson
 import Data.Either (partitionEithers)
+import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import Data.Text (Text)
 
+import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot)
+import Actor.SnapshotReceiver (bumpSnapshotVersionAndRead)
+import Actor.UiActions.Command (enqueueAtlasRebuildForTerrain)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.UI.State
   ( UiState(..)
   , UiSnapshotRef
+  , getUiSnapshot
   , readUiSnapshotRef
   , sliderValueForId
   )
@@ -45,6 +51,7 @@ import Seer.Config.SliderConversion
   )
 import Seer.Command.Context (CommandContext(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
+import UI.DayNight (mkDayNightKey)
 
 -- | Handle @get_sliders@ — return all sliders or sliders for a specific tab.
 handleGetSliders :: CommandContext -> Int -> Value -> IO SeerResponse
@@ -88,8 +95,13 @@ handleSetSlider ctx reqId params = do
         Nothing ->
           pure $ errResponse reqId ("unknown slider: " <> name)
         Just sid -> do
-          let normVal = max 0 (min 1 val)
-          setUiSliderValue (ahUiHandle (ccActorHandles ctx)) sid normVal
+          let handles = ccActorHandles ctx
+              uiH = ahUiHandle handles
+              normVal = max 0 (min 1 val)
+          oldUi <- getUiSnapshot uiH
+          setUiSliderValue uiH sid normVal
+          newUi <- getUiSnapshot uiH
+          maybeEnqueueDayNightSliderRebuild handles oldUi newUi
           pure $ okResponse reqId $ object
             [ "name"  .= name
             , "value" .= normVal
@@ -104,14 +116,18 @@ handleSetSliders ctx reqId params = do
     Nothing ->
       pure $ errResponse reqId "missing or invalid 'values' parameter (expected object of {name: value})"
     Just kvs -> do
-      let uiH = ahUiHandle (ccActorHandles ctx)
+      let handles = ccActorHandles ctx
+          uiH = ahUiHandle handles
           go (name, val) = case lookupSliderId name of
             Nothing -> pure $ Left name
             Just sid -> do
               let normVal = max 0 (min 1 val)
               setUiSliderValue uiH sid normVal
               pure $ Right $ object ["name" .= name, "value" .= normVal]
+      oldUi <- getUiSnapshot uiH
       results <- mapM go kvs
+      newUi <- getUiSnapshot uiH
+      maybeEnqueueDayNightSliderRebuild handles oldUi newUi
       let (errs, oks) = partitionEithers results
       pure $ okResponse reqId $ object
         [ "updated" .= oks
@@ -122,7 +138,8 @@ handleSetSliders ctx reqId params = do
 -- Optional @tab@ parameter to reset only a specific tab's sliders.
 handleResetSliders :: CommandContext -> Int -> Value -> IO SeerResponse
 handleResetSliders ctx reqId params = do
-  let uiH = ahUiHandle (ccActorHandles ctx)
+  let handles = ccActorHandles ctx
+      uiH = ahUiHandle handles
       maybeTab = case params of
         Object o -> case Aeson.parseMaybe (.: "tab") o of
           Just tabName -> textToSliderTab tabName
@@ -131,7 +148,10 @@ handleResetSliders ctx reqId params = do
       defs = case maybeTab of
         Just tab -> filter ((== tab) . sliderTab) allSliderDefs
         Nothing  -> allSliderDefs
+  oldUi <- getUiSnapshot uiH
   mapM_ (\d -> setUiSliderValue uiH (sliderId d) (sliderDefaultValueForId (sliderId d))) defs
+  newUi <- getUiSnapshot uiH
+  maybeEnqueueDayNightSliderRebuild handles oldUi newUi
   pure $ okResponse reqId $ object
     [ "reset_count" .= length defs
     , "tab"         .= fmap sliderTabToText maybeTab
@@ -154,6 +174,19 @@ handleGetConfigSummary ctx reqId _params = do
 -- --------------------------------------------------------------------------
 -- Helpers
 -- --------------------------------------------------------------------------
+
+maybeEnqueueDayNightSliderRebuild :: ActorHandles -> UiState -> UiState -> IO ()
+maybeEnqueueDayNightSliderRebuild handles oldUi newUi = do
+  terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
+  let oldKey = mkDayNightKey oldUi (tsChunkSize terrainSnap)
+      newKey = mkDayNightKey newUi (tsChunkSize terrainSnap)
+  when (uiDayNightEnabled newUi && terrainSnapshotReady terrainSnap && oldKey /= newKey) $ do
+    snapshotVersion <- bumpSnapshotVersionAndRead (ahSnapshotVersionRef handles)
+    enqueueAtlasRebuildForTerrain handles (uiViewMode newUi) newUi snapshotVersion terrainSnap
+
+terrainSnapshotReady :: TerrainSnapshot -> Bool
+terrainSnapshotReady terrainSnap =
+  tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
 
 parseSliderName :: Value -> Aeson.Parser Text
 parseSliderName = Aeson.withObject "params" (.: "name")

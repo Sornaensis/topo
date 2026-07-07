@@ -10,6 +10,7 @@ module Actor.UiActions.Command
   , ActorHandles(..)
   , UiActionRequest(..)
   , runUiAction
+  , enqueueAtlasRebuildForTerrain
   , isElevationTool
   ) where
 
@@ -338,6 +339,11 @@ toggleDayNight req = do
 enqueueAtlasRebuildFor :: ActorHandles -> ViewMode -> UiState -> SnapshotVersion -> IO ()
 enqueueAtlasRebuildFor handles mode uiSnap snapshotVersion = do
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
+  enqueueAtlasRebuildForTerrain handles mode uiSnap snapshotVersion terrainSnap
+
+-- | Enqueue a full ordered atlas rebuild using an already-captured terrain snapshot.
+enqueueAtlasRebuildForTerrain :: ActorHandles -> ViewMode -> UiState -> SnapshotVersion -> TerrainSnapshot -> IO ()
+enqueueAtlasRebuildForTerrain handles mode uiSnap snapshotVersion terrainSnap = do
   let atlasKey = atlasKeyFor mode (uiRenderWaterLevel uiSnap) terrainSnap
       -- Enqueue the current zoom stage first so the visible tiles are
       -- prioritised by the scheduler's round-robin dispatch.

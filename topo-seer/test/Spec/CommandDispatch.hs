@@ -53,6 +53,7 @@ import Actor.UI
   , UiState(..)
   , getUiSnapshot
   , newUiSnapshotRef
+  , setUiDayNightEnabled
   , setUiGenerating
   , setUiSnapshotRef
   )
@@ -359,6 +360,56 @@ spec = describe "CommandDispatch" $ do
       rsp <- dispatch ctx "set_slider" (object ["name" .= ("SliderGenScale" :: String), "value" .= (0.42 :: Double)])
       srSuccess rsp `shouldBe` True
       lookupKey "name" (srResult rsp) `shouldBe` Just (String "SliderGenScale")
+
+    it "enqueues day/night atlas work when a key slider changes" $ withCtx $ \ctx -> do
+      prepareReadyDayNight ctx
+      let handles = ccActorHandles ctx
+      version0 <- readSnapshotVersion (ahSnapshotVersionRef handles)
+
+      rsp <- dispatch ctx "set_slider" (object ["name" .= ("SliderAxialTilt" :: String), "value" .= (0.9 :: Double)])
+      srSuccess rsp `shouldBe` True
+
+      version1 <- readSnapshotVersion (ahSnapshotVersionRef handles)
+      version1 `shouldSatisfy` (> version0)
+      expectQueuedAtlasJobsForVersion ctx version1
+
+    it "does not enqueue day/night work for a non-key slider" $ withCtx $ \ctx -> do
+      prepareReadyDayNight ctx
+      let handles = ccActorHandles ctx
+      version0 <- readSnapshotVersion (ahSnapshotVersionRef handles)
+
+      rsp <- dispatch ctx "set_slider" (object ["name" .= ("SliderInsolation" :: String), "value" .= (0.9 :: Double)])
+      srSuccess rsp `shouldBe` True
+
+      readSnapshotVersion (ahSnapshotVersionRef handles) `shouldReturn` version0
+      jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+      length jobs `shouldBe` 0
+
+    it "does not enqueue day/night work while day/night is disabled" $ withCtx $ \ctx -> do
+      _ <- writeReadyTerrainData ctx
+      let handles = ccActorHandles ctx
+      version0 <- readSnapshotVersion (ahSnapshotVersionRef handles)
+
+      rsp <- dispatch ctx "set_slider" (object ["name" .= ("SliderAxialTilt" :: String), "value" .= (0.9 :: Double)])
+      srSuccess rsp `shouldBe` True
+
+      readSnapshotVersion (ahSnapshotVersionRef handles) `shouldReturn` version0
+      jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+      length jobs `shouldBe` 0
+
+    it "does not enqueue day/night work when terrain is unavailable" $ withCtx $ \ctx -> do
+      let handles = ccActorHandles ctx
+          uiH = ahUiHandle handles
+      setUiDayNightEnabled uiH True
+      _ <- getUiSnapshot uiH
+      version0 <- readSnapshotVersion (ahSnapshotVersionRef handles)
+
+      rsp <- dispatch ctx "set_slider" (object ["name" .= ("SliderAxialTilt" :: String), "value" .= (0.9 :: Double)])
+      srSuccess rsp `shouldBe` True
+
+      readSnapshotVersion (ahSnapshotVersionRef handles) `shouldReturn` version0
+      jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+      length jobs `shouldBe` 0
 
     it "clamps values above 1" $ withCtx $ \ctx -> do
       rsp <- dispatch ctx "set_slider" (object ["name" .= ("SliderGenScale" :: String), "value" .= (5.0 :: Double)])
@@ -802,6 +853,22 @@ spec = describe "CommandDispatch" $ do
         Just (Array arr) -> length arr `shouldBe` 2
         _ -> expectationFailure "expected updated array"
 
+    it "coalesces multiple key slider changes into one day/night rebuild set" $ withCtx $ \ctx -> do
+      prepareReadyDayNight ctx
+      let handles = ccActorHandles ctx
+          args = object ["values" .= object
+                    [ "SliderAxialTilt" .= (0.9 :: Double)
+                    , "SliderPlanetRadius" .= (0.8 :: Double)
+                    ]]
+      version0 <- readSnapshotVersion (ahSnapshotVersionRef handles)
+
+      rsp <- dispatch ctx "set_sliders" args
+      srSuccess rsp `shouldBe` True
+
+      version1 <- readSnapshotVersion (ahSnapshotVersionRef handles)
+      version1 `shouldSatisfy` (> version0)
+      expectQueuedAtlasJobsForVersion ctx version1
+
     it "reports unknown sliders" $ withCtx $ \ctx -> do
       let args = object ["values" .= object
                     [ "SliderGenScale" .= (0.3 :: Double)
@@ -832,6 +899,21 @@ spec = describe "CommandDispatch" $ do
       rsp <- dispatch ctx "reset_sliders" (object ["tab" .= ("terrain" :: String)])
       srSuccess rsp `shouldBe` True
       lookupKey "tab" (srResult rsp) `shouldBe` Just (String "terrain")
+
+    it "coalesces reset key changes into one day/night rebuild set" $ withCtx $ \ctx -> do
+      prepareReadyDayNight ctx
+      let handles = ccActorHandles ctx
+      changed <- dispatch ctx "set_slider" (object ["name" .= ("SliderAxialTilt" :: String), "value" .= (0.9 :: Double)])
+      srSuccess changed `shouldBe` True
+      _ <- drainAtlasJobs (ahAtlasManagerHandle handles)
+      versionBeforeReset <- readSnapshotVersion (ahSnapshotVersionRef handles)
+
+      rsp <- dispatch ctx "reset_sliders" Null
+      srSuccess rsp `shouldBe` True
+
+      versionAfterReset <- readSnapshotVersion (ahSnapshotVersionRef handles)
+      versionAfterReset `shouldSatisfy` (> versionBeforeReset)
+      expectQueuedAtlasJobsForVersion ctx versionAfterReset
 
   -- -------------------------------------------------------------------
   -- pipeline and plugin mutations
@@ -1145,6 +1227,30 @@ atlasJobStage job = (ajHexRadius job, ajAtlasScale job)
 zoomStagePair :: ZoomStage -> (Int, Int)
 zoomStagePair stage = (zsHexRadius stage, zsAtlasScale stage)
 
+prepareReadyDayNight :: CommandContext -> IO ()
+prepareReadyDayNight ctx = do
+  _ <- writeReadyTerrainData ctx
+  let handles = ccActorHandles ctx
+      uiH = ahUiHandle handles
+  setUiDayNightEnabled uiH True
+  _ <- getUiSnapshot uiH
+  _ <- drainAtlasJobs (ahAtlasManagerHandle handles)
+  pure ()
+
+expectQueuedAtlasJobsForVersion :: CommandContext -> SnapshotVersion -> IO ()
+expectQueuedAtlasJobsForVersion ctx version = do
+  let handles = ccActorHandles ctx
+      atlasH = ahAtlasManagerHandle handles
+  ui <- getUiSnapshot (ahUiHandle handles)
+  jobs <- drainAtlasJobs atlasH
+  let expectedStages = map zoomStagePair (orderedZoomStagesForZoom (uiZoom ui))
+  length jobs `shouldBe` length expectedStages
+  map ajViewMode jobs `shouldBe` replicate (length expectedStages) (uiViewMode ui)
+  map atlasJobStage jobs `shouldBe` expectedStages
+  map ajSnapshotVersion jobs `shouldSatisfy` all (== version)
+  map ajWaterLevel jobs `shouldSatisfy` all (== uiRenderWaterLevel ui)
+  map (tsChunkSize . ajTerrain) jobs `shouldSatisfy` all (== 64)
+
 -- | Bracket that creates a full actor system with all handles needed
 -- for a 'CommandContext'.
 withCtx :: (CommandContext -> IO a) -> IO a
@@ -1326,6 +1432,16 @@ writeSingleChunkTerrain ctx = do
         emptyOverlayStore
   writeTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx)) snap
   pure chunkKey
+
+writeReadyTerrainData :: CommandContext -> IO TerrainSnapshot
+writeReadyTerrainData ctx = do
+  let handles = ccActorHandles ctx
+      cfg = WorldConfig { wcChunkSize = 64 }
+      chunkId = chunkIdFromCoord (ChunkCoord 0 0)
+  setTerrainChunkData (ahDataHandle handles) (wcChunkSize cfg) [(chunkId, emptyTerrainChunk cfg)]
+  snap <- getTerrainSnapshot (ahDataHandle handles)
+  writeTerrainSnapshot (ahTerrainSnapshotRef handles) snap
+  pure snap
 
 -- | Convenience: dispatch a command with a given method and params,
 -- using request id 1.
