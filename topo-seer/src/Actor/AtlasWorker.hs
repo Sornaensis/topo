@@ -11,6 +11,7 @@ module Actor.AtlasWorker
   , AtlasBuildResult(..)
   , atlasWorkerActorDef
   , atlasWorkerPaddedViewport
+  , atlasBuildResultsForTiles
   , atlasBuildIsCurrent
   , enqueueAtlasBuildWork
   ) where
@@ -73,6 +74,43 @@ atlasBuildTarget job = AtlasBuildTarget
   , abtHexRadius = abHexRadius job
   , abtAtlasScale = abAtlasScale job
   }
+
+-- | Build result payloads for every base atlas tile, pairing day/night overlay
+-- geometry by normalised tile bounds when an overlay tile exists.
+atlasBuildResultsForTiles
+  :: AtlasBuildId
+  -> AtlasKey
+  -> SnapshotVersion
+  -> Int
+  -> Int
+  -> [AtlasTileGeometry]
+  -> Maybe [AtlasTileGeometry]
+  -> [AtlasBuildResult]
+atlasBuildResultsForTiles buildId key snapshotVersion hexRadius atlasScale tiles dayNightTiles =
+  let normalisedBounds tile = normalizeHexBounds hexRadius (atgBounds tile)
+      expectedBounds = map normalisedBounds tiles
+      manifest = AtlasTileSetManifest
+        { atsmBuildId = buildId
+        , atsmKey = key
+        , atsmSnapshotVersion = snapshotVersion
+        , atsmHexRadius = hexRadius
+        , atsmAtlasScale = atlasScale
+        , atsmExpectedTileCount = length tiles
+        , atsmExpectedBounds = expectedBounds
+        }
+      dayNightLookup = maybe [] (map (\dnTile -> (normalisedBounds dnTile, dnTile))) dayNightTiles
+      dayNightFor tile = snd <$> find ((== normalisedBounds tile) . fst) dayNightLookup
+      buildResult ix tile = AtlasBuildResult
+        { abrKey = key
+        , abrSnapshotVersion = snapshotVersion
+        , abrHexRadius = hexRadius
+        , abrManifest = manifest
+        , abrTileIndex = ix
+        , abrTileBounds = normalisedBounds tile
+        , abrTile = tile
+        , abrDayNightTile = dayNightFor tile
+        }
+  in zipWith buildResult [0..] tiles
 
 atlasBuildIsCurrent :: AtlasBuild -> IO Bool
 atlasBuildIsCurrent job = do
@@ -194,34 +232,13 @@ actor AtlasWorker
                         dayNightTiles = if IntMap.null dayNightGeometryMap
                           then Nothing
                           else Just (composeTilesFromGeometry dayNightGeometryMap (abHexRadius job) (abAtlasScale job))
-                        normalisedBounds tile = normalizeHexBounds (abHexRadius job) (atgBounds tile)
-                        expectedBounds = map normalisedBounds tiles
-                        manifest = AtlasTileSetManifest
-                          { atsmBuildId = abBuildId job
-                          , atsmKey = abKey job
-                          , atsmSnapshotVersion = abSnapshotVersion job
-                          , atsmHexRadius = abHexRadius job
-                          , atsmAtlasScale = abAtlasScale job
-                          , atsmExpectedTileCount = length tiles
-                          , atsmExpectedBounds = expectedBounds
-                          }
-                        dayNightLookup = maybe [] (map (\dnTile -> (normalisedBounds dnTile, dnTile))) dayNightTiles
-                        dayNightFor tile = snd <$> find ((== normalisedBounds tile) . fst) dayNightLookup
-                        buildResult ix tile mbDnTile = AtlasBuildResult
-                          { abrKey       = abKey job
-                          , abrSnapshotVersion = abSnapshotVersion job
-                          , abrHexRadius = abHexRadius job
-                          , abrManifest = manifest
-                          , abrTileIndex = ix
-                          , abrTileBounds = normalisedBounds tile
-                          , abrTile      = tile
-                          , abrDayNightTile = mbDnTile
-                          }
+                        results = atlasBuildResultsForTiles (abBuildId job) (abKey job) (abSnapshotVersion job) (abHexRadius job) (abAtlasScale job) tiles dayNightTiles
                     if null tiles
                       then threadDelay 100 >> pure st
                       else do
-                        forFresh_ job (zip [0..] tiles) $ \(ix, tile) -> do
-                          let mbDnTile = dayNightFor tile
+                        forFresh_ job results $ \result -> do
+                          let tile = abrTile result
+                              mbDnTile = abrDayNightTile result
                           -- Pre-merge terrain + river chunks into a single geometry
                           -- so the render thread avoids SV.concat and index-rebasing
                           -- allocations during texture upload.
@@ -244,7 +261,7 @@ actor AtlasWorker
                                 pure ()
                               [] -> pure ()
                             Nothing -> pure ()
-                          let r = buildResult ix tile' mbDnTile'
+                          let r = result { abrTile = tile', abrDayNightTile = mbDnTile' }
                           _ <- evaluate r
                           pushAtlasResult (abResultRef job) r
                         threadDelay 100

@@ -4,9 +4,11 @@ import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Monad (forM_, replicateM_)
 import Data.IORef (newIORef)
+import qualified Data.Map.Strict as Map
+import Foreign.Ptr (Ptr, intPtrToPtr)
 import Test.Hspec
 import Actor.AtlasCache (AtlasKey(..))
-import Actor.AtlasResult (AtlasBuildId(..), AtlasBuildResult(..), AtlasTileSetManifest(..))
+import Actor.AtlasResult (AtlasBuildId(..), AtlasBuildResult(..), AtlasTileSetManifest(..), atlasManifestTarget)
 import Actor.AtlasResultBroker
   ( AtlasResultDrainStats(..)
   , atlasResultsPending
@@ -15,15 +17,30 @@ import Actor.AtlasResultBroker
   , drainFreshResultsN
   , drainFreshResultsNWithStats
   , formatAtlasResultDrainStats
+  , newAtlasResultRef
   , pushAtlasResult
   )
+import Actor.AtlasScheduler (AtlasFreshness(..))
+import Actor.AtlasWorker (atlasBuildResultsForTiles)
 import Actor.Data (TerrainSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion(..))
 import Topo.Overlay (emptyOverlayStore)
 import Actor.UI (ViewMode(..))
 import Linear (V2(..))
-import UI.TerrainAtlas (AtlasTileGeometry(..))
+import qualified SDL
+import Seer.Render.Atlas
+  ( AtlasResolveStatus(..)
+  , AtlasTextureCache(..)
+  , emptyAtlasTextureCache
+  , getCurrentCompleteAtlasForTarget
+  , getNearestDayNight
+  , resolveAtlasPureWithFreshness
+  , storeAtlasTileSet
+  , storeDayNightTiles
+  )
+import UI.TerrainAtlas (AtlasTileGeometry(..), TerrainAtlasTile(..))
 import UI.Widgets (Rect(..))
+import Unsafe.Coerce (unsafeCoerce)
 
 mkResult :: AtlasKey -> SnapshotVersion -> Int -> AtlasTileGeometry -> AtlasBuildResult
 mkResult key snapshotVersion hexRadius tile =
@@ -98,6 +115,55 @@ spec = describe "AtlasResultBroker" $ do
       }
     formatAtlasResultDrainStats stats `shouldBe` "brokerBefore=3 brokerAfter=1 drained=1 staleDropped=1 preserved=1 uploadBudgetExhausted=True"
 
+  it "drains all worker-published base results when a day/night overlay tile is missing" $ do
+    ref <- newAtlasResultRef
+    let key = AtlasKey ViewElevation 0 1
+        snapshotVersion = SnapshotVersion 7
+        buildId = AtlasBuildId 42
+        hexRadius = 6
+        atlasScale = 1
+        baseTiles = [mkTileGeometry hexRadius atlasScale testRect, mkTileGeometry hexRadius atlasScale testRect2]
+        dayNightTiles = [mkTileGeometry hexRadius atlasScale testRect]
+        results = atlasBuildResultsForTiles buildId key snapshotVersion hexRadius atlasScale baseTiles (Just dayNightTiles)
+    length results `shouldBe` 2
+    map abrTileIndex results `shouldBe` [0, 1]
+    map (fmap atgBounds . abrDayNightTile) results `shouldBe` [Just testRect, Nothing]
+    mapM_ (pushAtlasResult ref) results
+
+    case results of
+      [] -> expectationFailure "expected worker results"
+      firstResult:_ -> do
+        let manifest = abrManifest firstResult
+            freshness = AtlasFreshness
+              { afKey = key
+              , afSnapshotVersion = snapshotVersion
+              , afLatestBuildIds = Map.singleton (atlasManifestTarget manifest) buildId
+              }
+            isFresh result = abrKey result == key
+              && abrSnapshotVersion result == snapshotVersion
+              && atlasManifestTarget (abrManifest result) == atlasManifestTarget manifest
+              && atsmBuildId (abrManifest result) == buildId
+        (drained, stats) <- drainFreshResultsNWithStats ref isFresh 10
+        map abrTileIndex drained `shouldBe` [0, 1]
+        map (fmap atgBounds . abrDayNightTile) drained `shouldBe` [Just testRect, Nothing]
+        stats `shouldBe` AtlasResultDrainStats
+          { ardsPendingBefore = 2
+          , ardsPendingAfter = 0
+          , ardsFreshDrained = 2
+          , ardsStaleDropped = 0
+          , ardsFreshPreserved = 0
+          , ardsBudgetExhausted = False
+          }
+
+        let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just key }
+            cache1 = foldl storeDrainedResult cache0 drained
+            (resolvedTiles, status, cache2) = resolveAtlasPureWithFreshness (Just freshness) True True key hexRadius cache1
+        fmap length (getCurrentCompleteAtlasForTarget (Just freshness) key hexRadius atlasScale cache1) `shouldBe` Just 2
+        fmap length (getNearestDayNight hexRadius cache1) `shouldBe` Just 1
+        fmap length resolvedTiles `shouldBe` Just 2
+        status `shouldBe` CompleteExact
+        fmap length (getCurrentCompleteAtlasForTarget (Just freshness) key hexRadius atlasScale cache2) `shouldBe` Just 2
+
   it "drains results in FIFO order" $ do
     ref <- newIORef []
     let key = AtlasKey ViewElevation 0 (tsVersion sampleTerrainSnapshot)
@@ -154,6 +220,47 @@ spec = describe "AtlasResultBroker" $ do
     mapM_ takeMVar barriers
     results <- drainAtlasResultsN ref 300
     length results `shouldBe` 300
+
+testRect :: Rect
+testRect = Rect (V2 0 0, V2 64 64)
+
+testRect2 :: Rect
+testRect2 = Rect (V2 64 0, V2 64 64)
+
+mkTileGeometry :: Int -> Int -> Rect -> AtlasTileGeometry
+mkTileGeometry hexRadius atlasScale bounds = AtlasTileGeometry
+  { atgBounds = bounds
+  , atgScale = atlasScale
+  , atgHexRadius = hexRadius
+  , atgChunks = []
+  , atgRiverOverlay = []
+  }
+
+storeDrainedResult :: AtlasTextureCache -> AtlasBuildResult -> AtlasTextureCache
+storeDrainedResult cache result =
+  let cache' = storeAtlasTileSet (abrManifest result) [uploadedBaseTile result] cache
+  in case abrDayNightTile result of
+    Just dnTile -> storeDayNightTiles (abrHexRadius result) [uploadedDayNightTile result dnTile] cache'
+    Nothing -> cache'
+
+uploadedBaseTile :: AtlasBuildResult -> TerrainAtlasTile
+uploadedBaseTile result = TerrainAtlasTile
+  { tatTexture = mockTexture (100 + abrTileIndex result)
+  , tatBounds = abrTileBounds result
+  , tatScale = atgScale (abrTile result)
+  , tatHexRadius = abrHexRadius result
+  }
+
+uploadedDayNightTile :: AtlasBuildResult -> AtlasTileGeometry -> TerrainAtlasTile
+uploadedDayNightTile result dnTile = TerrainAtlasTile
+  { tatTexture = mockTexture (200 + abrTileIndex result)
+  , tatBounds = abrTileBounds result
+  , tatScale = atgScale dnTile
+  , tatHexRadius = atgHexRadius dnTile
+  }
+
+mockTexture :: Int -> SDL.Texture
+mockTexture n = unsafeCoerce (intPtrToPtr (fromIntegral n) :: Ptr ())
 
 sampleTerrainSnapshot :: TerrainSnapshot
 sampleTerrainSnapshot = TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore
