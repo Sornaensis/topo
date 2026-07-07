@@ -5,7 +5,7 @@ import Actor.AtlasResult (AtlasBuildId(..), AtlasBuildResult(..), AtlasTileSetMa
 import Actor.AtlasResultBroker (atlasResultsPending, drainFreshResultsN, newAtlasResultRef, pushAtlasResult)
 import Actor.AtlasScheduler (AtlasFreshness(..))
 import Actor.SnapshotReceiver (SnapshotVersion(..))
-import Actor.UI (ViewMode(..))
+import Actor.UI (ViewMode(..), emptyUiState)
 import Data.Maybe (isNothing)
 import qualified Data.Map.Strict as Map
 import Foreign.Ptr (Ptr, intPtrToPtr)
@@ -14,10 +14,13 @@ import qualified SDL
 import Seer.Render.Atlas
   ( AtlasResolveStatus(..)
   , AtlasTextureCache(..)
+  , DayNightOverlayStatus(..)
   , atlasResolveNeedsRetry
+  , dayNightOverlayNeedsRetry
   , emptyAtlasTextureCache
   , getCurrentCompleteAtlasForTarget
   , resolveAtlasPureWithFreshness
+  , resolveDayNightOverlayForTarget
   , storeAtlasTileSet
   )
 import Seer.Render.Frame
@@ -25,7 +28,9 @@ import Seer.Render.Frame
   , applyAtlasFrameStepTimestamps
   , atlasFrameStepPolicy
   )
+import Seer.Render.ZoomStage (ZoomStage(..))
 import Test.Hspec
+import UI.DayNight (DayNightKey, mkDayNightKey)
 import UI.TerrainAtlas (AtlasTileGeometry(..), TerrainAtlasTile(..))
 import UI.Widgets (Rect(..))
 import Unsafe.Coerce (unsafeCoerce)
@@ -85,6 +90,31 @@ spec = describe "render-loop atlas maintenance wakeups" $ do
     afspAtlasMaintenanceDue afterSchedulePolicy `shouldBe` False
     afspShouldScheduleAtlas afterSchedulePolicy `shouldBe` False
 
+  it "wakes missing day/night overlay retry at the atlas schedule poll interval" $ do
+    let targetHex = 6
+        targetStage = ZoomStage targetHex 1 0 1
+        manifest = mkManifest (AtlasBuildId 88) keyElevation targetHex 1 [testRect]
+        freshness = AtlasFreshness
+          { afKey = keyElevation
+          , afSnapshotVersion = snapVersion
+          , afLatestBuildIds = Map.singleton (atlasManifestTarget manifest) (AtlasBuildId 88)
+          }
+        cacheWithBase = storeAtlasTileSet manifest [mkTile 88 targetHex testRect]
+          ((emptyAtlasTextureCache 30) { atcKey = Just keyElevation })
+        (_, overlayStatus) = resolveDayNightOverlayForTarget (Just freshness) True True CompleteExact (Just testDayNightKey) targetStage cacheWithBase
+        overlayRetry = dayNightOverlayNeedsRetry overlayStatus
+        beforePoll = atlasFrameStepPolicy 150 atlasDrainPollMs atlasSchedulePollMs False True False overlayRetry (Just 100) (Just 100)
+        atPoll = atlasFrameStepPolicy 200 atlasDrainPollMs atlasSchedulePollMs False True False overlayRetry (Just 100) (Just 100)
+
+    overlayStatus `shouldBe` DayNightOverlayMissing
+    overlayRetry `shouldBe` True
+    afspAtlasMaintenanceDue beforePoll `shouldBe` False
+    afspShouldDrainAtlas beforePoll `shouldBe` False
+    afspShouldScheduleAtlas beforePoll `shouldBe` False
+    afspAtlasMaintenanceDue atPoll `shouldBe` True
+    afspShouldDrainAtlas atPoll `shouldBe` False
+    afspShouldScheduleAtlas atPoll `shouldBe` True
+
   it "updates atlas timestamps only for attempted drain and schedule steps" $ do
     let skipped = applyAtlasFrameStepTimestamps 100 (AtlasFrameStepPolicy False False False) (Just 10) (Just 20)
         drained = applyAtlasFrameStepTimestamps 101 (AtlasFrameStepPolicy True False True) (Just 10) (Just 20)
@@ -139,6 +169,11 @@ spec = describe "render-loop atlas maintenance wakeups" $ do
     atlasResolveNeedsRetry completeStatus `shouldBe` False
     fmap length (getCurrentCompleteAtlasForTarget (Just freshness) weatherKey targetHex 1 completeResolvedCache) `shouldBe` Just 2
     afspAtlasMaintenanceDue completePolicy `shouldBe` False
+
+testDayNightKey :: DayNightKey
+testDayNightKey = case mkDayNightKey emptyUiState 16 of
+  Just key -> key
+  Nothing -> error "expected day/night key for positive chunk size"
 
 atlasUploadsPerFrame :: Int
 atlasUploadsPerFrame = 1

@@ -51,14 +51,14 @@ import Seer.Render.Atlas
   , atlasCacheSummary
   , atlasResolveDiagnostic
   , atlasResolveNeedsRetry
+  , dayNightOverlayNeedsRetry
   , drawAtlas
   , drawAtlasAlpha
   , drainAtlasBuildResults
   , formatAtlasCacheSummary
   , formatAtlasResolveDiagnostic
   , getCurrentCompleteAtlasForTarget
-  , getCurrentCompleteDayNight
-  , getNearestDayNight
+  , resolveDayNightOverlayForTarget
   , retireDayNightOverlaysExcept
   , resolveAtlasTiles
   , resolveEffectiveStage
@@ -269,47 +269,63 @@ renderFrame context = do
           logged <- logTiming logHandle timingLogThresholdMs (Text.pack "chunk texture build") elapsed Nothing
           pure (updatedCache, logged)
         else pure (textureCache, False)
+  let mbDrawnCrossFadeTarget = case (atlasToDraw, mbBlend) of
+        (Just _, Just (targetStage, blend)) | blend > 0 -> do
+          targetTiles <- getCurrentCompleteAtlasForTarget latestAtlasFreshness expectedAtlasKey (zsHexRadius targetStage) (zsAtlasScale targetStage) atlasCache''
+          if null targetTiles
+            then Nothing
+            else Just (targetStage, blend, targetTiles)
+        _ -> Nothing
+      (dayNightTiles, dayNightStatus) =
+        resolveDayNightOverlayForTarget latestAtlasFreshness renderTargetOk dataReady atlasResolveStatus currentDayNightKey stage atlasCacheForOverlay
+      mbTargetDayNight = do
+        (targetStage, blend, _) <- mbDrawnCrossFadeTarget
+        let (targetTiles, targetStatus) =
+              resolveDayNightOverlayForTarget latestAtlasFreshness renderTargetOk dataReady atlasResolveStatus currentDayNightKey targetStage atlasCacheForOverlay
+        pure (targetStage, blend, targetTiles, targetStatus)
+      dayNightStatuses = dayNightStatus : maybe [] (\(_, _, _, status) -> [status]) mbTargetDayNight
   loggedDraw <- case atlasToDraw of
     Just tiles -> do
-      (_, elapsed) <- timedMs $ case mbBlend of
-        Just (targetStage, blend) | blend > 0 -> do
-          -- Cross-fade: only reduce committed alpha when target tiles exist.
-          -- Without target tiles, draw committed at full opacity to prevent
-          -- the viewColor background bleeding through during the hysteresis
-          -- window.
-          let targetTiles = getCurrentCompleteAtlasForTarget latestAtlasFreshness expectedAtlasKey (zsHexRadius targetStage) (zsAtlasScale targetStage) atlasCache''
-              pan = uiPanOffset (rsUi snapshot)
+      (_, elapsed) <- timedMs $ case mbDrawnCrossFadeTarget of
+        Just (_targetStage, blend, targetTiles) -> do
+          -- Cross-fade: only reduce committed alpha when exact target tiles are
+          -- actually drawn. Without target tiles, draw committed at full opacity
+          -- to prevent the viewColor background bleeding through.
+          let pan = uiPanOffset (rsUi snapshot)
               z = uiZoom (rsUi snapshot)
               win = V2 (fromIntegral winW) (fromIntegral winH)
-          case targetTiles of
-            Just tt | not (null tt) -> do
-              let oldAlpha = round ((1.0 - blend) * 255) :: Word8
-                  newAlpha = round (blend * 255) :: Word8
-              drawAtlasAlpha renderer tiles pan z win oldAlpha
-              drawAtlasAlpha renderer tt pan z win newAlpha
-            _ -> drawAtlas renderer tiles pan z win
-        _ ->
+              oldAlpha = round ((1.0 - blend) * 255) :: Word8
+              newAlpha = round (blend * 255) :: Word8
+          drawAtlasAlpha renderer tiles pan z win oldAlpha
+          drawAtlasAlpha renderer targetTiles pan z win newAlpha
+        Nothing ->
           drawAtlas renderer tiles (uiPanOffset (rsUi snapshot)) (uiZoom (rsUi snapshot)) (V2 (fromIntegral winW) (fromIntegral winH))
       logTiming logHandle timingLogThresholdMs (Text.pack "draw atlas") elapsed Nothing
     Nothing -> do
       (_, elapsed) <- timedMs (drawTerrain renderer terrainSnap terrainCache textureCache' (uiPanOffset (rsUi snapshot)) (uiZoom (rsUi snapshot)) (V2 (fromIntegral winW) (fromIntegral winH)))
       logTiming logHandle timingLogThresholdMs (Text.pack "draw terrain") elapsed Nothing
   tAfterDraw <- getMonotonicTimeNSec
-  -- Draw day/night overlay on top of base atlas when enabled.
+  -- Draw day/night overlay on top of base atlas when enabled. Provisional
+  -- same-key overlays may be drawn, but their retrying status remains active.
   when (uiDayNightEnabled (rsUi snapshot)) $ do
-    case currentDayNightKey of
-      Just dnKey -> do
-        let exactTiles = getCurrentCompleteDayNight latestAtlasFreshness dnKey (zsHexRadius stage) (zsAtlasScale stage) atlasCacheForOverlay
-            dnTiles = case exactTiles of
-              Just tiles | not (null tiles) -> Just tiles
-              _ -> getNearestDayNight dnKey (zsHexRadius stage) atlasCacheForOverlay
-        case dnTiles of
-          Just dt | not (null dt) -> do
-            -- Day/night atlas tiles carry source alpha; drawAtlas preserves that
-            -- alpha so transparent overlay margins leave the base atlas intact.
-            drawAtlas renderer dt (uiPanOffset (rsUi snapshot)) (uiZoom (rsUi snapshot)) (V2 (fromIntegral winW) (fromIntegral winH))
-          _ -> pure ()
-      Nothing -> pure ()
+    let pan = uiPanOffset (rsUi snapshot)
+        z = uiZoom (rsUi snapshot)
+        win = V2 (fromIntegral winW) (fromIntegral winH)
+    case (dayNightTiles, mbTargetDayNight) of
+      (Just currentTiles, Just (_targetStage, blend, Just targetTiles, _targetStatus)) -> do
+        let oldAlpha = round ((1.0 - blend) * 255) :: Word8
+            newAlpha = round (blend * 255) :: Word8
+        drawAtlasAlpha renderer currentTiles pan z win oldAlpha
+        drawAtlasAlpha renderer targetTiles pan z win newAlpha
+      (Just currentTiles, Just (_targetStage, blend, Nothing, _targetStatus)) -> do
+        let oldAlpha = round ((1.0 - blend) * 255) :: Word8
+        drawAtlasAlpha renderer currentTiles pan z win oldAlpha
+      (Just currentTiles, Nothing) ->
+        drawAtlas renderer currentTiles pan z win
+      (Nothing, Just (_targetStage, blend, Just targetTiles, _targetStatus)) -> do
+        let newAlpha = round (blend * 255) :: Word8
+        drawAtlasAlpha renderer targetTiles pan z win newAlpha
+      _ -> pure ()
   let hexHoverRadius = zsHexRadius stage
   loggedHover <- do
     (_, elapsed) <- timedMs (drawHoverHex renderer (rsUi snapshot) hexHoverRadius)
@@ -414,7 +430,9 @@ renderFrame context = do
       <> " budgetExhausted=" <> maybe "False" (show . ardsBudgetExhausted) mbDrainStats
     hFlush h
   let didLog = loggedWindowSize || loggedSchedule || loggedScheduleDrain || loggedScheduleEnqueue || loggedUpload || loggedTextureCreate || loggedAtlasResolve || loggedAtlasTraceEvents || loggedChunkTexture || loggedDraw || loggedHover || loggedChrome || loggedUi || loggedPresent
-      atlasNeedsRetry = renderTargetOk && dataReady && atlasResolveNeedsRetry atlasResolveStatus
+      baseAtlasNeedsRetry = renderTargetOk && dataReady && atlasResolveNeedsRetry atlasResolveStatus
+      dayNightNeedsRetry = not generating && any dayNightOverlayNeedsRetry dayNightStatuses
+      atlasNeedsRetry = baseAtlasNeedsRetry || dayNightNeedsRetry
       fallbackChunkNeedsRetry = not renderTargetOk
         && chunkTextureCacheNeedsUpdate terrainCache (zsAtlasScale stage) textureCache'
   pure RenderFrameOutcome

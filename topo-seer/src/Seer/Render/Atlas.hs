@@ -3,11 +3,15 @@ module Seer.Render.Atlas
   , CachedAtlasTileSet(..)
   , CachedDayNightTileSet(..)
   , AtlasResolveStatus(..)
+  , DayNightOverlayStatus(..)
   , AtlasTileSetSummary(..)
   , AtlasCacheSummary(..)
   , AtlasResolveDiagnostic(..)
   , atlasResolveNeedsRetry
   , atlasResolveStatusLabel
+  , dayNightOverlayNeedsRetry
+  , resolveDayNightOverlayForTarget
+  , formatDayNightOverlayStatus
   , atlasCacheSummary
   , formatAtlasCacheSummary
   , atlasResolveDiagnostic
@@ -111,6 +115,24 @@ data AtlasResolveStatus
   | Missing
   deriving (Eq, Show)
 
+-- | Readiness of a day/night overlay for one target zoom stage.
+--
+-- The retrying states may still carry same-key provisional tiles for drawing,
+-- but only 'DayNightOverlayCompleteExact' proves exact, non-empty, current
+-- overlay coverage for the requested @(DayNightKey, hex radius, atlas scale)@.
+data DayNightOverlayStatus
+  = DayNightOverlayDisabled
+  | DayNightOverlayRenderTargetUnavailable
+  | DayNightOverlayDataUnavailable
+  | DayNightOverlayBaseAtlasNotReady !AtlasResolveStatus
+  | DayNightOverlayCompleteExact
+  | DayNightOverlayPartialExact
+  | DayNightOverlayStaleExactFallback
+  | DayNightOverlayNearestScaleFallback
+  | DayNightOverlayWrongKeyFallback
+  | DayNightOverlayMissing
+  deriving (Eq, Show)
+
 atlasResolveNeedsRetry :: AtlasResolveStatus -> Bool
 atlasResolveNeedsRetry CompleteExact = False
 atlasResolveNeedsRetry _ = True
@@ -122,6 +144,35 @@ atlasResolveStatusLabel NearestScaleFallback = "nearest-scale-fallback"
 atlasResolveStatusLabel StaleExactFallback = "stale-exact-fallback"
 atlasResolveStatusLabel LastGoodFallback = "last-good-fallback"
 atlasResolveStatusLabel Missing = "missing"
+
+dayNightOverlayNeedsRetry :: DayNightOverlayStatus -> Bool
+dayNightOverlayNeedsRetry DayNightOverlayDisabled = False
+dayNightOverlayNeedsRetry DayNightOverlayRenderTargetUnavailable = False
+dayNightOverlayNeedsRetry DayNightOverlayDataUnavailable = False
+dayNightOverlayNeedsRetry (DayNightOverlayBaseAtlasNotReady _) = False
+dayNightOverlayNeedsRetry DayNightOverlayCompleteExact = False
+dayNightOverlayNeedsRetry DayNightOverlayPartialExact = True
+dayNightOverlayNeedsRetry DayNightOverlayStaleExactFallback = True
+dayNightOverlayNeedsRetry DayNightOverlayNearestScaleFallback = True
+dayNightOverlayNeedsRetry DayNightOverlayWrongKeyFallback = True
+dayNightOverlayNeedsRetry DayNightOverlayMissing = True
+
+formatDayNightOverlayStatus :: DayNightOverlayStatus -> String
+formatDayNightOverlayStatus status =
+  "dayNightOverlay status=" <> dayNightOverlayStatusLabel status
+    <> " retry=" <> show (dayNightOverlayNeedsRetry status)
+
+dayNightOverlayStatusLabel :: DayNightOverlayStatus -> String
+dayNightOverlayStatusLabel DayNightOverlayDisabled = "disabled"
+dayNightOverlayStatusLabel DayNightOverlayRenderTargetUnavailable = "render-target-unavailable"
+dayNightOverlayStatusLabel DayNightOverlayDataUnavailable = "data-unavailable"
+dayNightOverlayStatusLabel (DayNightOverlayBaseAtlasNotReady status) = "base-atlas-not-ready:" <> atlasResolveStatusLabel status
+dayNightOverlayStatusLabel DayNightOverlayCompleteExact = "complete-exact"
+dayNightOverlayStatusLabel DayNightOverlayPartialExact = "partial-exact"
+dayNightOverlayStatusLabel DayNightOverlayStaleExactFallback = "stale-exact-fallback"
+dayNightOverlayStatusLabel DayNightOverlayNearestScaleFallback = "nearest-scale-fallback"
+dayNightOverlayStatusLabel DayNightOverlayWrongKeyFallback = "wrong-key-fallback"
+dayNightOverlayStatusLabel DayNightOverlayMissing = "missing"
 
 -- | Production cache counters for atlas trace and timing diagnostics.
 data AtlasTileSetSummary = AtlasTileSetSummary
@@ -741,6 +792,66 @@ getCurrentCompleteDayNight latestFreshness dnKey targetHex targetAtlasScale cach
     then Just (cdntsTiles set)
     else Nothing
 
+-- | Resolve day/night overlay tiles and exact-readiness for one target stage.
+--
+-- Same-key provisional tiles may be returned for drawing when an exact current
+-- overlay is unavailable.  The returned status stays retrying until the cache
+-- contains a non-empty, complete, current set for the exact target stage.
+resolveDayNightOverlayForTarget
+  :: Maybe AtlasFreshness
+  -> Bool
+  -> Bool
+  -> AtlasResolveStatus
+  -> Maybe DayNightKey
+  -> ZoomStage
+  -> AtlasTextureCache
+  -> (Maybe [TerrainAtlasTile], DayNightOverlayStatus)
+resolveDayNightOverlayForTarget _ _ _ _ Nothing _ _ =
+  (Nothing, DayNightOverlayDisabled)
+resolveDayNightOverlayForTarget latestFreshness renderTargetOk dataReady baseStatus (Just dnKey) targetStage cache
+  | not renderTargetOk = (Nothing, DayNightOverlayRenderTargetUnavailable)
+  | not dataReady = (Nothing, DayNightOverlayDataUnavailable)
+  | baseStatus /= CompleteExact =
+      let (tiles, _) = resolveDayNightOverlaySelection latestFreshness dnKey targetStage cache
+      in (tiles, DayNightOverlayBaseAtlasNotReady baseStatus)
+  | otherwise = resolveDayNightOverlaySelection latestFreshness dnKey targetStage cache
+
+resolveDayNightOverlaySelection
+  :: Maybe AtlasFreshness
+  -> DayNightKey
+  -> ZoomStage
+  -> AtlasTextureCache
+  -> (Maybe [TerrainAtlasTile], DayNightOverlayStatus)
+resolveDayNightOverlaySelection latestFreshness dnKey targetStage cache =
+  let targetHex = zsHexRadius targetStage
+      targetAtlasScale = zsAtlasScale targetStage
+      rawExactSet = lookupDayNightSet dnKey targetHex targetAtlasScale cache
+      currentExactSet = rawExactSet >>= \set ->
+        if cachedDayNightSetIsCurrentFor latestFreshness dnKey targetHex targetAtlasScale set
+          then Just set
+          else Nothing
+      staleExactSet = rawExactSet >>= \set ->
+        if cachedDayNightSetIsCurrentFor latestFreshness dnKey targetHex targetAtlasScale set
+          then Nothing
+          else Just set
+      sameKeyFallback = nearestDayNightSet dnKey targetHex (atcDayNight cache)
+      wrongKeyFallback = nearestWrongDayNightSet dnKey targetHex (atcDayNight cache)
+      tilesOf = cdntsTiles
+  in case currentExactSet of
+      Just set | cdntsComplete set && not (null (tilesOf set)) ->
+        (Just (tilesOf set), DayNightOverlayCompleteExact)
+      Just set | not (null (tilesOf set)) ->
+        (Just (tilesOf set), DayNightOverlayPartialExact)
+      _ -> case staleExactSet of
+        Just set | not (null (tilesOf set)) ->
+          (Just (tilesOf set), DayNightOverlayStaleExactFallback)
+        _ -> case sameKeyFallback of
+          Just set | not (null (tilesOf set)) ->
+            (Just (tilesOf set), DayNightOverlayNearestScaleFallback)
+          _ -> case wrongKeyFallback of
+            Just _ -> (Nothing, DayNightOverlayWrongKeyFallback)
+            Nothing -> (Nothing, DayNightOverlayMissing)
+
 -- | Retire overlays whose day/night input identity no longer matches the
 -- current frame, moving their textures to 'atcPending' for safe release.
 retireDayNightOverlaysExcept :: DayNightKey -> AtlasTextureCache -> AtlasTextureCache
@@ -924,6 +1035,12 @@ pickBestTiles target current scale atlas =
 nearestDayNightSet :: DayNightKey -> Int -> IntMap.IntMap (IntMap.IntMap [CachedDayNightTileSet]) -> Maybe CachedDayNightTileSet
 nearestDayNightSet dnKey target caches =
   let candidates = filter ((== dnKey) . cdntsKey) (allDayNightSets caches)
+      best = foldl (pickBestDayNightSet target) Nothing candidates
+  in best
+
+nearestWrongDayNightSet :: DayNightKey -> Int -> IntMap.IntMap (IntMap.IntMap [CachedDayNightTileSet]) -> Maybe CachedDayNightTileSet
+nearestWrongDayNightSet dnKey target caches =
+  let candidates = filter ((/= dnKey) . cdntsKey) (allDayNightSets caches)
       best = foldl (pickBestDayNightSet target) Nothing candidates
   in best
 

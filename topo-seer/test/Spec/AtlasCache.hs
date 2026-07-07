@@ -19,10 +19,12 @@ import Seer.Render.Atlas
   , AtlasCacheSummary(..)
   , AtlasResolveDiagnostic(..)
   , AtlasResolveStatus(..)
+  , DayNightOverlayStatus(..)
   , AtlasTileSetSummary(..)
   , atlasCacheSummary
   , atlasResolveDiagnostic
   , atlasResolveNeedsRetry
+  , dayNightOverlayNeedsRetry
   , emptyAtlasTextureCache
   , setAtlasKey
   , storeAtlasTiles
@@ -41,10 +43,12 @@ import Seer.Render.Atlas
   , resolveAtlasPure
   , resolveAtlasPureWithStatus
   , resolveAtlasPureWithFreshness
+  , resolveDayNightOverlayForTarget
   , resolveEffectiveStage
   , collectAtlasTextures
   , formatAtlasCacheSummary
   , formatAtlasResolveDiagnostic
+  , formatDayNightOverlayStatus
   )
 import Seer.Render.ZoomStage (ZoomStage(..))
 import UI.DayNight (DayNightKey(..), mkDayNightKey)
@@ -456,6 +460,81 @@ spec = describe "AtlasTextureCache" $ do
       status `shouldBe` CompleteExact
       atlasResolveNeedsRetry status `shouldBe` False
       fmap (length . snd) (atcLast cache3) `shouldBe` Just 2
+
+    it "reports day/night overlay retry only for required missing or provisional overlays" $ do
+      let targetStage = ZoomStage 6 1 0 1
+          manifest = mkManifest 20 keyA 6 [testRect]
+          completeOverlay = storeDayNightTileSet testDayNightKey manifest [mkTile 120 6 testRect]
+            ((emptyAtlasTextureCache 30) { atcKey = Just keyA })
+          resolve mbKey renderOk dataOk baseStatus cache =
+            snd (resolveDayNightOverlayForTarget (Just (mkFreshness manifest)) renderOk dataOk baseStatus mbKey targetStage cache)
+          missingStatus = resolve (Just testDayNightKey) True True CompleteExact ((emptyAtlasTextureCache 30) { atcKey = Just keyA })
+          disabledStatus = resolve Nothing True True CompleteExact completeOverlay
+          noRenderTargetStatus = resolve (Just testDayNightKey) False True CompleteExact completeOverlay
+          noDataStatus = resolve (Just testDayNightKey) True False CompleteExact completeOverlay
+          basePartialStatus = resolve (Just testDayNightKey) True True PartialExact completeOverlay
+          completeStatus = resolve (Just testDayNightKey) True True CompleteExact completeOverlay
+      missingStatus `shouldBe` DayNightOverlayMissing
+      dayNightOverlayNeedsRetry missingStatus `shouldBe` True
+      map dayNightOverlayNeedsRetry [disabledStatus, noRenderTargetStatus, noDataStatus, basePartialStatus, completeStatus]
+        `shouldBe` [False, False, False, False, False]
+      completeStatus `shouldBe` DayNightOverlayCompleteExact
+      formatDayNightOverlayStatus missingStatus `shouldContain` "status=missing"
+
+    it "keeps day/night retry active for partial, stale, wrong-scale, nearest-scale, and wrong-key overlays" $ do
+      let targetStage = ZoomStage 6 1 0 1
+          targetFreshness = mkFreshness (mkManifest 31 keyA 6 [testRect, testRect2])
+          partialManifest = mkManifest 31 keyA 6 [testRect, testRect2]
+          staleManifest = mkManifest 32 keyA 6 [testRect]
+          wrongScaleManifest = mkManifestWithAtlasScale 2 34 keyA 6 [testRect]
+          nearestManifest = mkManifest 35 keyA 10 [testRect]
+          wrongKeyManifest = mkManifest 36 keyA 6 [testRect]
+          partialCache = storeDayNightTileSet testDayNightKey partialManifest [mkTile 121 6 testRect]
+            ((emptyAtlasTextureCache 30) { atcKey = Just keyA })
+          staleCache = storeDayNightTileSet testDayNightKey staleManifest [mkTile 122 6 testRect]
+            ((emptyAtlasTextureCache 30) { atcKey = Just keyA })
+          wrongScaleTile = (mkTile 123 6 testRect) { tatScale = 2 }
+          wrongScaleCache = storeDayNightTileSet testDayNightKey wrongScaleManifest [wrongScaleTile]
+            ((emptyAtlasTextureCache 30) { atcKey = Just keyA })
+          nearestCache = storeDayNightTileSet testDayNightKey nearestManifest [mkTile 124 10 testRect]
+            ((emptyAtlasTextureCache 30) { atcKey = Just keyA })
+          wrongKeyCache = storeDayNightTileSet testDayNightKey2 wrongKeyManifest [mkTile 125 6 testRect]
+            ((emptyAtlasTextureCache 30) { atcKey = Just keyA })
+          resolve freshness cache =
+            snd (resolveDayNightOverlayForTarget freshness True True CompleteExact (Just testDayNightKey) targetStage cache)
+          partialStatus = resolve (Just (mkFreshness partialManifest)) partialCache
+          staleStatus = resolve (Just targetFreshness) staleCache
+          wrongScaleStatus = resolve (Just (mkFreshness wrongScaleManifest)) wrongScaleCache
+          nearestStatus = resolve (Just (mkFreshness nearestManifest)) nearestCache
+          wrongKeyStatus = resolve (Just (mkFreshness wrongKeyManifest)) wrongKeyCache
+      partialStatus `shouldBe` DayNightOverlayPartialExact
+      staleStatus `shouldBe` DayNightOverlayStaleExactFallback
+      wrongScaleStatus `shouldBe` DayNightOverlayNearestScaleFallback
+      nearestStatus `shouldBe` DayNightOverlayNearestScaleFallback
+      wrongKeyStatus `shouldBe` DayNightOverlayWrongKeyFallback
+      map dayNightOverlayNeedsRetry [partialStatus, staleStatus, wrongScaleStatus, nearestStatus, wrongKeyStatus]
+        `shouldBe` replicate 5 True
+
+    it "requires a cross-fade target overlay only when exact target base tiles are available to draw" $ do
+      let committedStage = ZoomStage 6 1 0 1
+          targetStage = ZoomStage 10 1 0 1
+          committedManifest = mkManifest 40 keyA 6 [testRect]
+          nearestTargetManifest = mkManifest 41 keyA 12 [testRect]
+          exactTargetManifest = mkManifest 42 keyA 10 [testRect]
+          overlayCommitted = storeDayNightTileSet testDayNightKey committedManifest [mkTile 129 6 testRect]
+            ((emptyAtlasTextureCache 30) { atcKey = Just keyA })
+          overlayNearestTarget = storeDayNightTileSet testDayNightKey nearestTargetManifest [mkTile 130 12 testRect] overlayCommitted
+          cacheWithoutTargetBase = storeAtlasTileSet committedManifest [mkTile 131 6 testRect] overlayNearestTarget
+          cacheWithTargetBase = storeAtlasTileSet exactTargetManifest [mkTile 132 10 testRect] cacheWithoutTargetBase
+          targetBaseWithoutExact = getCurrentCompleteAtlasForTarget (Just (mkFreshness exactTargetManifest)) keyA 10 1 cacheWithoutTargetBase
+          targetBaseExact = getCurrentCompleteAtlasForTarget (Just (mkFreshness exactTargetManifest)) keyA 10 1 cacheWithTargetBase
+          (_, committedStatus) = resolveDayNightOverlayForTarget (Just (mkFreshness committedManifest)) True True CompleteExact (Just testDayNightKey) committedStage cacheWithTargetBase
+          targetStatusWhenDrawn = snd (resolveDayNightOverlayForTarget (Just (mkFreshness nearestTargetManifest)) True True CompleteExact (Just testDayNightKey) targetStage cacheWithTargetBase)
+      isNothing targetBaseWithoutExact `shouldBe` True
+      fmap length targetBaseExact `shouldBe` Just 1
+      dayNightOverlayNeedsRetry committedStatus `shouldBe` False
+      targetStatusWhenDrawn `shouldBe` DayNightOverlayNearestScaleFallback
+      dayNightOverlayNeedsRetry targetStatusWhenDrawn `shouldBe` True
 
     it "accumulates day/night result tiles until the keyed manifest is complete" $ do
       let manifest = mkManifestWithAtlasScale 2 7 keyA 6 [testRect, testRect2]
