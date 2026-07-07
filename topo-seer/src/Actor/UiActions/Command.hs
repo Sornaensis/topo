@@ -49,7 +49,14 @@ import Actor.Data
   , setTerrainChunkData
   )
 import Actor.Log (Log, LogEntry(..), LogLevel(..), appendLog)
-import Actor.SnapshotReceiver (bumpSnapshotVersion, readSnapshotVersion, writeDataSnapshot, writeTerrainSnapshot)
+import Actor.SnapshotReceiver
+  ( SnapshotVersion
+  , bumpSnapshotVersion
+  , bumpSnapshotVersionAndRead
+  , readSnapshotVersion
+  , writeDataSnapshot
+  , writeTerrainSnapshot
+  )
 import Actor.Terrain
   ( Terrain
   , TerrainGenRequest(..)
@@ -59,6 +66,7 @@ import Actor.Terrain
 import Actor.UI
   ( ConfigTab(..)
   , Ui
+  , UiState(..)
   , ViewMode(..)
   , emptyUiState
   , getUiSnapshot
@@ -70,6 +78,7 @@ import Actor.UI
   , setUiDataResources
   , setUiEditor
   , setUiGenerating
+  , uiDayNightEnabled
   , uiEditor
   , uiRenderWaterLevel
   , setUiSeed
@@ -91,6 +100,7 @@ import Actor.UI
   , uiZoom
   , setUiRenderWaterLevel
   , setUiWorldConfig
+  , setUiDayNightEnabled
   )
 import Seer.Config.Snapshot (snapshotFromUi, applySnapshotToUi)
 import Seer.Config.SliderState (resetSliderDefaults)
@@ -124,6 +134,7 @@ data UiAction
   | UiActionRevert
   | UiActionSetViewMode !ViewMode
   | UiActionRebuildAtlas !ViewMode
+  | UiActionToggleDayNight
   | UiActionRefreshViewport !ViewMode
   | UiActionBrushStroke !(Int, Int)
     -- ^ Apply the current editor brush at the given hex @(q, r)@.
@@ -154,7 +165,9 @@ runUiAction req =
     UiActionSetViewMode mode ->
       logTimed req ("View " <> viewModeLabel mode) (setViewMode req mode >> rebuildAtlas req)
     UiActionRebuildAtlas mode ->
-      logTimed req ("Rebuild Atlas " <> viewModeLabel mode) (rebuildAtlas req)
+      logTimed req ("Rebuild Atlas " <> viewModeLabel mode) (rebuildAtlasFor req mode)
+    UiActionToggleDayNight ->
+      logTimed req "Toggle Day/Night" (toggleDayNight req)
     UiActionRefreshViewport mode ->
       logTimed req ("Refresh Viewport " <> viewModeLabel mode) (refreshViewport req)
     UiActionBrushStroke hex ->
@@ -290,38 +303,44 @@ startGeneration req = do
 
 rebuildAtlas :: UiActionRequest -> IO ()
 rebuildAtlas req = do
-  uiSnap <- getUiSnapshot (ahUiHandle (uarActorHandles req))
-  rebuildAtlasFor req (uiViewMode uiSnap)
+  let handles = uarActorHandles req
+  uiSnap <- getUiSnapshot (ahUiHandle handles)
+  snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
+  enqueueAtlasRebuildFor handles (uiViewMode uiSnap) uiSnap snapshotVersion
 
 rebuildAtlasFor :: UiActionRequest -> ViewMode -> IO ()
 rebuildAtlasFor req mode = do
   let handles = uarActorHandles req
-  terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap <- getUiSnapshot (ahUiHandle handles)
   snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
-  let atlasKey = atlasKeyFor mode (uiRenderWaterLevel uiSnap) terrainSnap
-      -- Enqueue the current zoom stage first so the visible tiles are
-      -- prioritised by the scheduler's round-robin dispatch.
-      orderedStages = orderedZoomStagesForZoom (uiZoom uiSnap)
-      job stage = AtlasJob
-        { ajKey        = atlasKey
-        , ajViewMode   = mode
-        , ajWaterLevel = uiRenderWaterLevel uiSnap
-        , ajSnapshotVersion = snapshotVersion
-        , ajTerrain    = terrainSnap
-        , ajHexRadius  = zsHexRadius stage
-        , ajAtlasScale = zsAtlasScale stage
-        }
-  mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles) . job) orderedStages
+  enqueueAtlasRebuildFor handles mode uiSnap snapshotVersion
 
 -- | 'rebuildAtlasFor' variant that takes 'ActorHandles' directly
 -- (used by undo\/redo which don't carry a 'UiActionRequest').
 rebuildAtlasFor' :: ActorHandles -> ViewMode -> IO ()
 rebuildAtlasFor' handles mode = do
-  terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap <- getUiSnapshot (ahUiHandle handles)
   snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
+  enqueueAtlasRebuildFor handles mode uiSnap snapshotVersion
+
+-- | Toggle day/night through the UiActions actor so rapid clicks serialize
+-- against the latest UI state before publishing a rebuild version.
+toggleDayNight :: UiActionRequest -> IO ()
+toggleDayNight req = do
+  let handles = uarActorHandles req
+      uiHandle = ahUiHandle handles
+  uiSnap <- getUiSnapshot uiHandle
+  setUiDayNightEnabled uiHandle (not (uiDayNightEnabled uiSnap))
+  postToggle <- getUiSnapshot uiHandle
+  snapshotVersion <- bumpSnapshotVersionAndRead (ahSnapshotVersionRef handles)
+  enqueueAtlasRebuildFor handles (uiViewMode postToggle) postToggle snapshotVersion
+
+enqueueAtlasRebuildFor :: ActorHandles -> ViewMode -> UiState -> SnapshotVersion -> IO ()
+enqueueAtlasRebuildFor handles mode uiSnap snapshotVersion = do
+  terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   let atlasKey = atlasKeyFor mode (uiRenderWaterLevel uiSnap) terrainSnap
+      -- Enqueue the current zoom stage first so the visible tiles are
+      -- prioritised by the scheduler's round-robin dispatch.
       orderedStages = orderedZoomStagesForZoom (uiZoom uiSnap)
       job stage = AtlasJob
         { ajKey        = atlasKey

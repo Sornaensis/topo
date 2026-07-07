@@ -25,6 +25,7 @@ module Actor.SnapshotReceiver
   , newSnapshotVersionRef
   , readSnapshotVersion
   , bumpSnapshotVersion
+  , bumpSnapshotVersionAndRead
   ) where
 
 import Actor.Data (DataSnapshot(..), TerrainSnapshot(..))
@@ -112,3 +113,10 @@ readSnapshotVersion = readIORef
 bumpSnapshotVersion :: SnapshotVersionRef -> IO ()
 bumpSnapshotVersion ref =
   atomicModifyIORef' ref (\(SnapshotVersion v) -> (SnapshotVersion (v + 1), ()))
+
+-- | Atomically bump the version counter and return the newly-published version.
+bumpSnapshotVersionAndRead :: SnapshotVersionRef -> IO SnapshotVersion
+bumpSnapshotVersionAndRead ref =
+  atomicModifyIORef' ref $ \(SnapshotVersion v) ->
+    let next = SnapshotVersion (v + 1)
+    in (next, next)

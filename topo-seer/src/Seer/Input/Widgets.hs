@@ -38,7 +38,6 @@ import Actor.UI
   , setUiWorldList
   , setUiWorldSelected
   , setUiWorldFilter
-  , setUiDayNightEnabled
   , setUiPluginExpanded
   , setUiOverlayFields
   )
@@ -239,7 +238,7 @@ handleClick inputContext (SDL.P (V2 x y)) = do
           ; Just WidgetViewPlateHeight -> whenLeftView (submit (UiActionSetViewMode ViewPlateHeight))
           ; Just WidgetViewPlateVelocity -> whenLeftView (submit (UiActionSetViewMode ViewPlateVelocity))
           ; Just WidgetViewCloud -> whenLeftView (submit (UiActionSetViewMode ViewCloud))
-          ; Just WidgetDayNightToggle -> whenLeftView (setUiDayNightEnabled uiHandle (not (uiDayNightEnabled uiSnap)) >> submit (UiActionRebuildAtlas (uiViewMode uiSnap)))
+          ; Just WidgetDayNightToggle -> whenLeftView (submit UiActionToggleDayNight)
           -- Overlay cycling: prev/next overlay name, prev/next field
           ; Just WidgetViewOverlayPrev -> whenLeftView $ cycleOverlay uiSnap uiHandle (ieTerrainSnapshot widgetEnv) (-1) submit
           ; Just WidgetViewOverlayNext -> whenLeftView $ cycleOverlay uiSnap uiHandle (ieTerrainSnapshot widgetEnv) 1 submit

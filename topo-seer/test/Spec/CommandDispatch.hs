@@ -11,6 +11,7 @@
 -- the resulting 'SeerResponse'.
 module Spec.CommandDispatch (spec) where
 
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar)
 import Control.Exception (bracket, catch)
 import Control.Monad (forM_)
@@ -30,18 +31,20 @@ import qualified Data.Text as Text
 import System.Directory (createDirectoryIfMissing, getTemporaryDirectory, removePathForcibly)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.FilePath ((</>))
-import Hyperspace.Actor (ActorSystem, get, newActorSystem, replyTo, shutdownActorSystem)
+import Hyperspace.Actor (ActorHandle, ActorSystem, Protocol, get, newActorSystem, replyTo, shutdownActorSystem)
 import Test.Hspec
 
-import Actor.AtlasManager (AtlasManager)
+import Actor.AtlasManager (AtlasJob(..), AtlasManager, drainAtlasJobs)
 import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..), getTerrainSnapshot, setTerrainChunkCount, setTerrainChunkData)
-import Actor.Log (Log)
+import Actor.Log (Log, LogEntry(..), LogSnapshot(..), getLogSnapshot)
 import Actor.PluginManager (LoadedPlugin(..), PluginManager, discoverPlugins, getLoadedPlugins)
 import Actor.Simulation (Simulation)
 import Actor.SnapshotReceiver
-  ( newDataSnapshotRef
+  ( SnapshotVersion(..)
+  , newDataSnapshotRef
   , newTerrainSnapshotRef
   , newSnapshotVersionRef
+  , readSnapshotVersion
   , writeTerrainSnapshot
   )
 import Actor.Terrain (Terrain, TerrainReplyOps)
@@ -60,6 +63,7 @@ import Actor.UiActions.Command (UiAction(..), UiActionRequest(..), runUiAction)
 import Seer.Command.AppServiceAdapter (commandAppService, runAppServiceOperation)
 import Seer.Command.Dispatch (CommandContext(..), dispatchCommand)
 import Seer.Editor.History (emptyHistory)
+import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom)
 import Seer.Screenshot (ScreenshotRequest(..), newScreenshotRequestRef)
 import Seer.Service.AppService
   ( AppService(..)
@@ -922,6 +926,58 @@ spec = describe "CommandDispatch" $ do
       ui <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
       (Map.lookup "example" (uiPluginParams ui) >>= Map.lookup "enabled") `shouldBe` Just (Bool False)
 
+  describe "click_widget day/night" $ do
+    it "routes the toggle through UiActions, bumps the snapshot version, and enqueues current atlas jobs" $ withCtx $ \ctx -> do
+      let handles = ccActorHandles ctx
+          uiH = ahUiHandle handles
+          logH = ahLogHandle handles
+          atlasH = ahAtlasManagerHandle handles
+      startLogs <- toggleLogCount logH
+      version0 <- readSnapshotVersion (ahSnapshotVersionRef handles)
+
+      rsp <- dispatch ctx "click_widget" (object
+        [ "widget_id" .= ("WidgetDayNightToggle" :: Text) ])
+      srSuccess rsp `shouldBe` True
+      awaitToggleLogCount logH (startLogs + 1) `shouldReturn` True
+
+      ui <- getUiSnapshot uiH
+      uiDayNightEnabled ui `shouldBe` True
+      version1 <- readSnapshotVersion (ahSnapshotVersionRef handles)
+      version1 `shouldSatisfy` (> version0)
+      jobs <- drainAtlasJobs atlasH
+      let expectedStages = map zoomStagePair (orderedZoomStagesForZoom (uiZoom ui))
+      length jobs `shouldBe` length expectedStages
+      map ajViewMode jobs `shouldBe` replicate (length expectedStages) (uiViewMode ui)
+      map atlasJobStage jobs `shouldBe` expectedStages
+      map ajSnapshotVersion jobs `shouldSatisfy` all (== version1)
+
+    it "serializes rapid day/night clicks against the latest UI state" $ withCtx $ \ctx -> do
+      let handles = ccActorHandles ctx
+          uiH = ahUiHandle handles
+          logH = ahLogHandle handles
+          atlasH = ahAtlasManagerHandle handles
+      startLogs <- toggleLogCount logH
+      version0 <- readSnapshotVersion (ahSnapshotVersionRef handles)
+
+      rsp1 <- dispatch ctx "click_widget" (object
+        [ "widget_id" .= ("WidgetDayNightToggle" :: Text) ])
+      rsp2 <- dispatch ctx "click_widget" (object
+        [ "widget_id" .= ("WidgetDayNightToggle" :: Text) ])
+      srSuccess rsp1 `shouldBe` True
+      srSuccess rsp2 `shouldBe` True
+      awaitToggleLogCount logH (startLogs + 2) `shouldReturn` True
+
+      ui <- getUiSnapshot uiH
+      uiDayNightEnabled ui `shouldBe` False
+      versionFinal <- readSnapshotVersion (ahSnapshotVersionRef handles)
+      unSnapshotVersion versionFinal `shouldSatisfy` (>= unSnapshotVersion version0 + 2)
+      jobs <- drainAtlasJobs atlasH
+      let expectedStages = map zoomStagePair (orderedZoomStagesForZoom (uiZoom ui))
+      length jobs `shouldBe` length expectedStages
+      map ajViewMode jobs `shouldBe` replicate (length expectedStages) (uiViewMode ui)
+      map atlasJobStage jobs `shouldBe` expectedStages
+      map ajSnapshotVersion jobs `shouldSatisfy` all (== versionFinal)
+
   describe "set_sim_auto_tick" $ do
     it "sets and clamps the normalized auto tick rate" $ withCtx $ \ctx -> do
       highRsp <- dispatch ctx "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (5.0 :: Double)])
@@ -1058,6 +1114,36 @@ spec = describe "CommandDispatch" $ do
 -- =====================================================================
 -- Test helpers
 -- =====================================================================
+
+toggleLogCount :: ActorHandle Log (Protocol Log) -> IO Int
+toggleLogCount logH = do
+  snap <- getLogSnapshot logH
+  pure $ length
+    [ ()
+    | entry <- lsEntries snap
+    , "Toggle Day/Night" `Text.isInfixOf` leMessage entry
+    ]
+
+awaitToggleLogCount :: ActorHandle Log (Protocol Log) -> Int -> IO Bool
+awaitToggleLogCount logH target = awaitTrue 50 $ do
+  count <- toggleLogCount logH
+  pure (count >= target)
+
+awaitTrue :: Int -> IO Bool -> IO Bool
+awaitTrue 0 action = action
+awaitTrue retries action = do
+  ok <- action
+  if ok
+    then pure True
+    else do
+      threadDelay 20000
+      awaitTrue (retries - 1) action
+
+atlasJobStage :: AtlasJob -> (Int, Int)
+atlasJobStage job = (ajHexRadius job, ajAtlasScale job)
+
+zoomStagePair :: ZoomStage -> (Int, Int)
+zoomStagePair stage = (zsHexRadius stage, zsAtlasScale stage)
 
 -- | Bracket that creates a full actor system with all handles needed
 -- for a 'CommandContext'.

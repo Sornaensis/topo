@@ -16,6 +16,7 @@ import Actor.SnapshotReceiver
   , writeDataSnapshot
   , writeTerrainSnapshot
   , bumpSnapshotVersion
+  , bumpSnapshotVersionAndRead
   )
 
 spec :: Spec
@@ -41,3 +42,10 @@ spec = describe "SnapshotReceiver IORef helpers" $ do
     bumpSnapshotVersion ref
     bumpSnapshotVersion ref
     readSnapshotVersion ref >>= (`shouldBe` SnapshotVersion 3)
+
+  it "can atomically bump and read the published version" $ do
+    ref <- newSnapshotVersionRef
+    bumpSnapshotVersionAndRead ref `shouldReturn` SnapshotVersion 1
+    readSnapshotVersion ref >>= (`shouldBe` SnapshotVersion 1)
+    bumpSnapshotVersionAndRead ref `shouldReturn` SnapshotVersion 2
+    readSnapshotVersion ref >>= (`shouldBe` SnapshotVersion 2)

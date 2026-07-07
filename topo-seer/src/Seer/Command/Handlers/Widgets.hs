@@ -48,7 +48,6 @@ import Actor.UI.Setters
   , setUiConfigTab
   , setUiConfigScroll
   , setUiChunkSize
-  , setUiDayNightEnabled
   , setUiPluginNames
   , setUiPluginExpanded
   , setUiDataBrowser
@@ -467,9 +466,8 @@ executeWidgetClick ctx wid = do
 
     -- ----- Day/night toggle -----
     WidgetDayNightToggle -> do
-      setUiDayNightEnabled uiH (not (uiDayNightEnabled uiSnap))
-      submitAction ctx (UiActionRebuildAtlas (uiViewMode uiSnap))
-      pure $ Right ("day/night " <> if uiDayNightEnabled uiSnap then "off" else "on")
+      submitAction ctx UiActionToggleDayNight
+      pure $ Right "day/night toggle queued"
 
     -- ----- Overlay cycling -----
     WidgetViewOverlayPrev -> pure $ Right "use 'cycle_overlay' IPC with direction -1"
