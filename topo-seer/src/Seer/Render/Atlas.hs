@@ -32,7 +32,10 @@ module Seer.Render.Atlas
   , storeAtlasTiles
   , storeAtlasTileSet
   , storeDayNightTiles
+  , storeDayNightTileSet
   , getNearestDayNight
+  , getCurrentCompleteDayNight
+  , retireDayNightOverlaysExcept
   , touchAtlasScale
   , drainAtlasPending
   , evictIfNeeded
@@ -69,7 +72,7 @@ import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion(..))
 import Actor.UI (UiState(..))
 import Control.Monad (foldM, forM_, unless)
-import Data.List (partition)
+import Data.List (find, partition)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Word (Word8, Word32, Word64)
@@ -134,6 +137,8 @@ data AtlasTileSetSummary = AtlasTileSetSummary
 data AtlasCacheSummary = AtlasCacheSummary
   { acsCompleteTileSets :: !Int
   , acsPartialTileSets :: !Int
+  , acsDayNightCompleteTileSets :: !Int
+  , acsDayNightPartialTileSets :: !Int
   , acsPendingTextureReleases :: !Int
   , acsLastGood :: !(Maybe AtlasTileSetSummary)
   , acsTargetKey :: !(Maybe AtlasKey)
@@ -163,12 +168,14 @@ data AtlasResolveDiagnostic = AtlasResolveDiagnostic
 -- Switching the active key ('atcKey') is an O(1) pointer update —
 -- no textures are flushed.
 --
--- Day\/night overlay tiles are stored separately in 'atcDayNight',
--- keyed only by scale (hex radius) while carrying the day/night input identity
--- that produced the current tiles at that scale.
+-- Day\/night overlay tiles are stored separately in 'atcDayNight'.  Each
+-- cached set carries the day/night input identity and the worker manifest used
+-- to prove exact target-stage completeness before it can be drawn as current.
 data CachedDayNightTileSet = CachedDayNightTileSet
   { cdntsKey :: !DayNightKey
+  , cdntsManifest :: !AtlasTileSetManifest
   , cdntsTiles :: ![TerrainAtlasTile]
+  , cdntsComplete :: !Bool
   }
 
 data AtlasTextureCache = AtlasTextureCache
@@ -180,9 +187,10 @@ data AtlasTextureCache = AtlasTextureCache
   , atcLast :: !(Maybe (AtlasKey, [TerrainAtlasTile]))
   , atcCommittedStage :: !(Maybe ZoomStage)
   , atcStageChangeNs :: !Word64
-  , atcDayNight :: !(IntMap.IntMap CachedDayNightTileSet)
-    -- ^ Day\/night overlay tiles keyed by scale (hex radius), each carrying
-    -- the day/night input identity that produced it.
+  , atcDayNight :: !(IntMap.IntMap (IntMap.IntMap [CachedDayNightTileSet]))
+    -- ^ Day\/night overlay tiles keyed first by target hex radius, then atlas
+    -- scale; the leaf list distinguishes day/night input identities without
+    -- requiring an 'Ord' instance for 'DayNightKey'.
   }
 
 -- | Create an empty atlas texture cache.
@@ -205,8 +213,11 @@ atlasCacheSummary targetKey targetStage cache =
              | (key, bucket) <- Map.toList (atcCaches cache)
              , set <- IntMap.elems bucket
              ]
+      dayNightSets = allDayNightSets (atcDayNight cache)
       completeCount = length (filter atssComplete sets)
       partialCount = length sets - completeCount
+      dayNightCompleteCount = length (filter cdntsComplete dayNightSets)
+      dayNightPartialCount = length dayNightSets - dayNightCompleteCount
       targetSet = do
         key <- targetKey
         stage <- targetStage
@@ -214,6 +225,8 @@ atlasCacheSummary targetKey targetStage cache =
   in AtlasCacheSummary
     { acsCompleteTileSets = completeCount
     , acsPartialTileSets = partialCount
+    , acsDayNightCompleteTileSets = dayNightCompleteCount
+    , acsDayNightPartialTileSets = dayNightPartialCount
     , acsPendingTextureReleases = length (atcPending cache)
     , acsLastGood = lastGoodSummary cache
     , acsTargetKey = targetKey
@@ -226,6 +239,8 @@ formatAtlasCacheSummary summary =
   "atlasCache completeSets=" <> show (acsCompleteTileSets summary)
     <> " partialSets=" <> show (acsPartialTileSets summary)
     <> " pendingRelease=" <> show (acsPendingTextureReleases summary)
+    <> " dayNightCompleteSets=" <> show (acsDayNightCompleteTileSets summary)
+    <> " dayNightPartialSets=" <> show (acsDayNightPartialTileSets summary)
     <> " last=" <> formatMaybeTileSetSummary (acsLastGood summary)
     <> " targetKey=" <> maybe "none" show (acsTargetKey summary)
     <> " targetStage=" <> maybe "none" formatZoomStage (acsTargetStage summary)
@@ -326,7 +341,7 @@ collectAtlasTextures :: AtlasTextureCache -> [SDL.Texture]
 collectAtlasTextures cache =
   atcPending cache
   ++ concatMap collectTextures (Map.elems (atcCaches cache))
-  ++ concatMap (map tatTexture . cdntsTiles) (IntMap.elems (atcDayNight cache))
+  ++ concatMap (map tatTexture . cdntsTiles) (allDayNightSets (atcDayNight cache))
 
 -- | Draw atlas tiles to the renderer.
 drawAtlas :: SDL.Renderer -> [TerrainAtlasTile] -> (Float, Float) -> Float -> V2 Int -> IO ()
@@ -415,7 +430,7 @@ drainAtlasBuildResults renderTargetOk perFrame pool renderer atlasCache resultRe
             else storeAtlasTileSet (abrManifest result) tiles cache
           cache'' = case mbDnTiles of
             Just (dnKey, dnTiles) | not (null dnTiles) ->
-              storeDayNightTiles dnKey (abrHexRadius result) dnTiles cache'
+              storeDayNightTileSet dnKey (abrManifest result) dnTiles cache'
             _ -> cache'
       pure (cache'', totalMs + elapsedMs)
 
@@ -665,28 +680,76 @@ storeAtlasTileSet manifest tiles cache =
                 }
           in evictIfNeeded cache'
 
--- | Store day\/night overlay tiles with the key for the brightness inputs that
--- produced them.
---
--- Day\/night tiles currently live in one scale-indexed slot outside the per-key
--- LRU cache. Old tiles at the same scale are moved to 'atcPending' for texture
--- release, but callers must provide the day/night identity before storage.
+-- | Legacy helper for tests and callers that already have a complete overlay
+-- tile list but no worker manifest. Production worker results should call
+-- 'storeDayNightTileSet' with the manifest so completeness and freshness stay
+-- tied to the target build.
 storeDayNightTiles :: DayNightKey -> Int -> [TerrainAtlasTile] -> AtlasTextureCache -> AtlasTextureCache
 storeDayNightTiles dnKey scale tiles cache =
-  let old = maybe [] cdntsTiles (IntMap.lookup scale (atcDayNight cache))
-      pending = map tatTexture old
-      tileSet = CachedDayNightTileSet
-        { cdntsKey = dnKey
-        , cdntsTiles = tiles
-        }
-  in cache
-    { atcDayNight = IntMap.insert scale tileSet (atcDayNight cache)
-    , atcPending  = pending ++ atcPending cache
-    }
+  case atcKey cache of
+    Just key -> storeDayNightTileSet dnKey (legacyManifest key scale tiles) tiles cache
+    Nothing -> cache { atcPending = map tatTexture tiles ++ atcPending cache }
 
--- | Look up the nearest-scale day\/night overlay tiles.
-getNearestDayNight :: Int -> AtlasTextureCache -> Maybe [TerrainAtlasTile]
-getNearestDayNight target cache = cdntsTiles <$> nearestDayNightSet target (atcDayNight cache)
+-- | Store day\/night overlay tiles with the key for the brightness inputs that
+-- produced them and the manifest for the base target build they accompany.
+--
+-- Tiles accumulate by @(DayNightKey, target hex radius, atlas scale)@ until the
+-- manifest's full expected bound set is present. A newer build id or replacement
+-- manifest starts a new set and moves superseded textures to 'atcPending'.
+storeDayNightTileSet :: DayNightKey -> AtlasTileSetManifest -> [TerrainAtlasTile] -> AtlasTextureCache -> AtlasTextureCache
+storeDayNightTileSet dnKey manifest tiles cache =
+  let key = atsmKey manifest
+      hexRadius = atsmHexRadius manifest
+      atlasScale = atsmAtlasScale manifest
+      isStale = case atcKey cache of
+        Just currentKey -> atlasKeyVersion key /= atlasKeyVersion currentKey
+        Nothing -> False
+  in if isStale
+    then cache { atcPending = map tatTexture tiles ++ atcPending cache }
+    else
+      let hexBucket = maybe IntMap.empty id (IntMap.lookup hexRadius (atcDayNight cache))
+          scaleBucket = maybe [] id (IntMap.lookup atlasScale hexBucket)
+          (sameKeySets, otherKeySets) = partition ((== dnKey) . cdntsKey) scaleBucket
+          existing = case sameKeySets of
+            set:_ -> Just set
+            [] -> Nothing
+          duplicatePending = concatMap (map tatTexture . cdntsTiles) (drop 1 sameKeySets)
+          (mbMerged, pending) = mergeDayNightTiles existing dnKey manifest tiles
+      in case mbMerged of
+        Nothing -> cache { atcPending = duplicatePending ++ pending ++ atcPending cache }
+        Just merged ->
+          let scaleBucket' = merged : otherKeySets
+              hexBucket' = IntMap.insert atlasScale scaleBucket' hexBucket
+          in cache
+            { atcDayNight = IntMap.insert hexRadius hexBucket' (atcDayNight cache)
+            , atcPending = duplicatePending ++ pending ++ atcPending cache
+            }
+
+-- | Look up a same-key day\/night overlay for provisional drawing. This may
+-- return partial, nearest-scale, or stale same-key sets, but never a wrong-key
+-- set and never establishes exact/current readiness.
+getNearestDayNight :: DayNightKey -> Int -> AtlasTextureCache -> Maybe [TerrainAtlasTile]
+getNearestDayNight dnKey target cache = cdntsTiles <$> nearestDayNightSet dnKey target (atcDayNight cache)
+
+-- | Look up an exact, complete, current day\/night overlay tile set.
+getCurrentCompleteDayNight :: Maybe AtlasFreshness -> DayNightKey -> Int -> Int -> AtlasTextureCache -> Maybe [TerrainAtlasTile]
+getCurrentCompleteDayNight latestFreshness dnKey targetHex targetAtlasScale cache = do
+  set <- lookupDayNightSet dnKey targetHex targetAtlasScale cache
+  if cachedDayNightSetIsCurrentFor latestFreshness dnKey targetHex targetAtlasScale set
+      && cdntsComplete set
+      && not (null (cdntsTiles set))
+    then Just (cdntsTiles set)
+    else Nothing
+
+-- | Retire overlays whose day/night input identity no longer matches the
+-- current frame, moving their textures to 'atcPending' for safe release.
+retireDayNightOverlaysExcept :: DayNightKey -> AtlasTextureCache -> AtlasTextureCache
+retireDayNightOverlaysExcept dnKey cache =
+  let (dayNight', pending) = pruneDayNightCache ((== dnKey) . cdntsKey) (atcDayNight cache)
+  in cache
+    { atcDayNight = dayNight'
+    , atcPending = pending ++ atcPending cache
+    }
 
 -- | Look up the nearest-scale tiles for a given key.
 --
@@ -799,6 +862,14 @@ cachedSetIsCurrentFor latestFreshness targetHex targetAtlasScale set =
     && atsmAtlasScale manifest == targetAtlasScale
     && atlasTargetBuildIsFresh latestFreshness (atlasManifestTarget manifest) (atsmBuildId manifest)
 
+cachedDayNightSetIsCurrentFor :: Maybe AtlasFreshness -> DayNightKey -> Int -> Int -> CachedDayNightTileSet -> Bool
+cachedDayNightSetIsCurrentFor latestFreshness dnKey targetHex targetAtlasScale set =
+  let manifest = cdntsManifest set
+  in cdntsKey set == dnKey
+    && atsmHexRadius manifest == targetHex
+    && atsmAtlasScale manifest == targetAtlasScale
+    && atlasTargetBuildIsFresh latestFreshness (atlasManifestTarget manifest) (atsmBuildId manifest)
+
 lookupAtlasSet :: AtlasKey -> Int -> AtlasTextureCache -> Maybe CachedAtlasTileSet
 lookupAtlasSet key target cache = do
   bucket <- Map.lookup key (atcCaches cache)
@@ -808,6 +879,12 @@ getNearestAtlasSet :: AtlasKey -> Int -> AtlasTextureCache -> Maybe CachedAtlasT
 getNearestAtlasSet key target cache = do
   bucket <- Map.lookup key (atcCaches cache)
   nearestAtlasSet target bucket
+
+lookupDayNightSet :: DayNightKey -> Int -> Int -> AtlasTextureCache -> Maybe CachedDayNightTileSet
+lookupDayNightSet dnKey targetHex targetAtlasScale cache = do
+  hexBucket <- IntMap.lookup targetHex (atcDayNight cache)
+  scaleBucket <- IntMap.lookup targetAtlasScale hexBucket
+  find ((== dnKey) . cdntsKey) scaleBucket
 
 -- | Touch an atlas entry in the LRU, moving it to the front.
 --
@@ -844,20 +921,23 @@ pickBestTiles target current scale atlas =
       | abs (scale - target) < abs (bestScale - target) -> Just (scale, atlas)
       | otherwise -> current
 
-nearestDayNightSet :: Int -> IntMap.IntMap CachedDayNightTileSet -> Maybe CachedDayNightTileSet
-nearestDayNightSet _ caches | IntMap.null caches = Nothing
-nearestDayNightSet target caches =
-  let best = IntMap.foldlWithKey' (pickBestDayNightSet target) Nothing caches
-  in fmap snd best
+nearestDayNightSet :: DayNightKey -> Int -> IntMap.IntMap (IntMap.IntMap [CachedDayNightTileSet]) -> Maybe CachedDayNightTileSet
+nearestDayNightSet dnKey target caches =
+  let candidates = filter ((== dnKey) . cdntsKey) (allDayNightSets caches)
+      best = foldl (pickBestDayNightSet target) Nothing candidates
+  in best
 
-pickBestDayNightSet :: Int -> Maybe (Int, CachedDayNightTileSet) -> Int -> CachedDayNightTileSet -> Maybe (Int, CachedDayNightTileSet)
-pickBestDayNightSet _ current _ set | null (cdntsTiles set) = current
-pickBestDayNightSet target current scale set =
-  case current of
-    Nothing -> Just (scale, set)
-    Just (bestScale, _)
-      | abs (scale - target) < abs (bestScale - target) -> Just (scale, set)
-      | otherwise -> current
+pickBestDayNightSet :: Int -> Maybe CachedDayNightTileSet -> CachedDayNightTileSet -> Maybe CachedDayNightTileSet
+pickBestDayNightSet _ current set | null (cdntsTiles set) = current
+pickBestDayNightSet target current set =
+  let scale = atsmHexRadius (cdntsManifest set)
+  in case current of
+    Nothing -> Just set
+    Just bestSet ->
+      let bestScale = atsmHexRadius (cdntsManifest bestSet)
+      in if abs (scale - target) < abs (bestScale - target)
+        then Just set
+        else current
 
 nearestAtlasSet :: Int -> IntMap.IntMap CachedAtlasTileSet -> Maybe CachedAtlasTileSet
 nearestAtlasSet _ caches | IntMap.null caches = Nothing
@@ -904,32 +984,74 @@ collectTextures :: IntMap.IntMap CachedAtlasTileSet -> [SDL.Texture]
 collectTextures caches =
   concatMap (map tatTexture . catsTiles) (IntMap.elems caches)
 
+allDayNightSets :: IntMap.IntMap (IntMap.IntMap [CachedDayNightTileSet]) -> [CachedDayNightTileSet]
+allDayNightSets caches =
+  concatMap concat (map IntMap.elems (IntMap.elems caches))
+
+pruneDayNightCache
+  :: (CachedDayNightTileSet -> Bool)
+  -> IntMap.IntMap (IntMap.IntMap [CachedDayNightTileSet])
+  -> (IntMap.IntMap (IntMap.IntMap [CachedDayNightTileSet]), [SDL.Texture])
+pruneDayNightCache keep caches =
+  IntMap.foldrWithKey pruneHex (IntMap.empty, []) caches
+  where
+    pruneHex hexRadius scaleBuckets (hexAcc, pendingAcc) =
+      let (scaleBuckets', pending) = IntMap.foldrWithKey pruneScale (IntMap.empty, []) scaleBuckets
+      in if IntMap.null scaleBuckets'
+        then (hexAcc, pending ++ pendingAcc)
+        else (IntMap.insert hexRadius scaleBuckets' hexAcc, pending ++ pendingAcc)
+    pruneScale atlasScale sets (scaleAcc, pendingAcc) =
+      let (kept, retired) = partition keep sets
+          pending = concatMap (map tatTexture . cdntsTiles) retired
+      in if null kept
+        then (scaleAcc, pending ++ pendingAcc)
+        else (IntMap.insert atlasScale kept scaleAcc, pending ++ pendingAcc)
+
 mergeTiles :: Maybe CachedAtlasTileSet -> AtlasTileSetManifest -> [TerrainAtlasTile] -> (Maybe CachedAtlasTileSet, [SDL.Texture])
 mergeTiles existing manifest newTiles =
+  let existingPayload = (\old -> (catsManifest old, catsTiles old)) <$> existing
+      mkSet setManifest mergedTiles = CachedAtlasTileSet
+        { catsManifest = setManifest
+        , catsTiles = mergedTiles
+        , catsComplete = tileSetComplete setManifest mergedTiles
+        }
+  in case mergeTilePayload existingPayload manifest newTiles of
+    (Nothing, pending) -> (Nothing, pending)
+    (Just (setManifest, mergedTiles), pending) -> (Just (mkSet setManifest mergedTiles), pending)
+
+mergeDayNightTiles :: Maybe CachedDayNightTileSet -> DayNightKey -> AtlasTileSetManifest -> [TerrainAtlasTile] -> (Maybe CachedDayNightTileSet, [SDL.Texture])
+mergeDayNightTiles existing dnKey manifest newTiles =
+  let existingPayload = (\old -> (cdntsManifest old, cdntsTiles old)) <$> existing
+      mkSet setManifest mergedTiles = CachedDayNightTileSet
+        { cdntsKey = dnKey
+        , cdntsManifest = setManifest
+        , cdntsTiles = mergedTiles
+        , cdntsComplete = tileSetComplete setManifest mergedTiles
+        }
+  in case mergeTilePayload existingPayload manifest newTiles of
+    (Nothing, pending) -> (Nothing, pending)
+    (Just (setManifest, mergedTiles), pending) -> (Just (mkSet setManifest mergedTiles), pending)
+
+mergeTilePayload :: Maybe (AtlasTileSetManifest, [TerrainAtlasTile]) -> AtlasTileSetManifest -> [TerrainAtlasTile] -> (Maybe (AtlasTileSetManifest, [TerrainAtlasTile]), [SDL.Texture])
+mergeTilePayload existing manifest newTiles =
   let expectedBounds = atsmExpectedBounds manifest
       (acceptedNew, rejectedNew) = partition (\tile -> tatBounds tile `elem` expectedBounds) newTiles
       rejectedTextures = map tatTexture rejectedNew
-      mkSet mergedTiles = CachedAtlasTileSet
-        { catsManifest = manifest
-        , catsTiles = mergedTiles
-        , catsComplete = tileSetComplete manifest mergedTiles
-        }
   in case existing of
     Nothing
       | null acceptedNew -> (Nothing, rejectedTextures)
-      | otherwise -> (Just (mkSet acceptedNew), rejectedTextures)
-    Just old
-      | atsmBuildId (catsManifest old) == atsmBuildId manifest ->
+      | otherwise -> (Just (manifest, acceptedNew), rejectedTextures)
+    Just (oldManifest, oldTiles)
+      | oldManifest == manifest ->
           let newBounds = map tatBounds acceptedNew
-              (replaced, kept) = partitionByBounds newBounds (catsTiles old)
+              (replaced, kept) = partitionByBounds newBounds oldTiles
               mergedTiles = acceptedNew ++ kept
               pending = map tatTexture replaced ++ rejectedTextures
-          in (Just (mkSet mergedTiles), pending)
+          in (Just (manifest, mergedTiles), pending)
       | null acceptedNew ->
-          (Just old, rejectedTextures)
+          (Just (oldManifest, oldTiles), rejectedTextures)
       | otherwise ->
-          let pendingOld = map tatTexture (catsTiles old)
-          in (Just (mkSet acceptedNew), pendingOld ++ rejectedTextures)
+          (Just (manifest, acceptedNew), map tatTexture oldTiles ++ rejectedTextures)
 
 tileSetComplete :: AtlasTileSetManifest -> [TerrainAtlasTile] -> Bool
 tileSetComplete manifest tiles =

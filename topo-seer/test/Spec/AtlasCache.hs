@@ -16,7 +16,6 @@ import Actor.UI (ViewMode(..), emptyUiState)
 import Seer.Render.Atlas
   ( AtlasTextureCache(..)
   , CachedAtlasTileSet
-  , CachedDayNightTileSet(..)
   , AtlasCacheSummary(..)
   , AtlasResolveDiagnostic(..)
   , AtlasResolveStatus(..)
@@ -28,9 +27,11 @@ import Seer.Render.Atlas
   , setAtlasKey
   , storeAtlasTiles
   , storeAtlasTileSet
-  , storeDayNightTiles
+  , storeDayNightTileSet
   , getNearestAtlas
   , getNearestDayNight
+  , getCurrentCompleteDayNight
+  , retireDayNightOverlaysExcept
   , getCompleteAtlas
   , getCurrentCompleteAtlasForTarget
   , touchAtlasScale
@@ -46,7 +47,7 @@ import Seer.Render.Atlas
   , formatAtlasResolveDiagnostic
   )
 import Seer.Render.ZoomStage (ZoomStage(..))
-import UI.DayNight (DayNightKey, mkDayNightKey)
+import UI.DayNight (DayNightKey(..), mkDayNightKey)
 import UI.TerrainAtlas (TerrainAtlasTile(..))
 import UI.Widgets (Rect(..))
 
@@ -85,6 +86,9 @@ testDayNightKey :: DayNightKey
 testDayNightKey = case mkDayNightKey emptyUiState 16 of
   Just key -> key
   Nothing -> error "expected day/night key for positive chunk size"
+
+testDayNightKey2 :: DayNightKey
+testDayNightKey2 = testDayNightKey { dnkChunkSize = dnkChunkSize testDayNightKey + 1 }
 
 mkManifest :: Int -> AtlasKey -> Int -> [Rect] -> AtlasTileSetManifest
 mkManifest = mkManifestWithAtlasScale 1
@@ -437,21 +441,91 @@ spec = describe "AtlasTextureCache" $ do
       isNothing (getCurrentCompleteAtlasForTarget (Just (mkFreshness staleTargetManifest)) keyA 10 1 cache5) `shouldBe` True
       fmap length (getCurrentCompleteAtlasForTarget (Just (mkFreshness completeTargetManifest)) keyA 10 1 cache5) `shouldBe` Just 2
 
-    it "keeps base atlas completion independent of day/night overlay tile count" $ do
+    it "keeps base atlas completion independent of partial day/night overlay completion" $ do
       let manifest = mkManifest 6 keyA 6 [testRect, testRect2]
           baseTiles = [mkTile 1 6 testRect, mkTile 2 6 testRect2]
           dayNightTiles = [mkTile 90 6 testRect]
           cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
           cache1 = storeAtlasTileSet manifest baseTiles cache0
-          cache2 = storeDayNightTiles testDayNightKey 6 dayNightTiles cache1
+          cache2 = storeDayNightTileSet testDayNightKey manifest dayNightTiles cache1
           (tiles, status, cache3) = resolveAtlasPureWithFreshness (Just (mkFreshness manifest)) True True keyA 6 cache2
       fmap length (getCompleteAtlas keyA 6 cache2) `shouldBe` Just 2
-      fmap cdntsKey (IntMap.lookup 6 (atcDayNight cache2)) `shouldBe` Just testDayNightKey
-      fmap length (getNearestDayNight 6 cache2) `shouldBe` Just 1
+      fmap length (getNearestDayNight testDayNightKey 6 cache2) `shouldBe` Just 1
+      isNothing (getCurrentCompleteDayNight (Just (mkFreshness manifest)) testDayNightKey 6 1 cache2) `shouldBe` True
       fmap length tiles `shouldBe` Just 2
       status `shouldBe` CompleteExact
       atlasResolveNeedsRetry status `shouldBe` False
       fmap (length . snd) (atcLast cache3) `shouldBe` Just 2
+
+    it "accumulates day/night result tiles until the keyed manifest is complete" $ do
+      let manifest = mkManifestWithAtlasScale 2 7 keyA 6 [testRect, testRect2]
+          tile1 = (mkTile 91 6 testRect) { tatScale = 2 }
+          tile2 = (mkTile 92 6 testRect2) { tatScale = 2 }
+          cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          cache1 = storeDayNightTileSet testDayNightKey manifest [tile1] cache0
+          cache2 = storeDayNightTileSet testDayNightKey manifest [tile2] cache1
+      fmap length (getNearestDayNight testDayNightKey 6 cache1) `shouldBe` Just 1
+      isNothing (getCurrentCompleteDayNight (Just (mkFreshness manifest)) testDayNightKey 6 2 cache1) `shouldBe` True
+      fmap length (getCurrentCompleteDayNight (Just (mkFreshness manifest)) testDayNightKey 6 2 cache2) `shouldBe` Just 2
+      null (atcPending cache2) `shouldBe` True
+
+    it "requires day/night key, target hex, atlas scale, and current build id for exact overlay readiness" $ do
+      let manifest = mkManifestWithAtlasScale 2 8 keyA 6 [testRect]
+          staleManifest = mkManifestWithAtlasScale 2 9 keyA 6 [testRect]
+          tile = (mkTile 93 6 testRect) { tatScale = 2 }
+          cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          cache1 = storeDayNightTileSet testDayNightKey manifest [tile] cache0
+      fmap length (getCurrentCompleteDayNight (Just (mkFreshness manifest)) testDayNightKey 6 2 cache1) `shouldBe` Just 1
+      isNothing (getCurrentCompleteDayNight (Just (mkFreshness manifest)) testDayNightKey2 6 2 cache1) `shouldBe` True
+      isNothing (getNearestDayNight testDayNightKey2 6 cache1) `shouldBe` True
+      isNothing (getCurrentCompleteDayNight (Just (mkFreshness manifest)) testDayNightKey 6 1 cache1) `shouldBe` True
+      isNothing (getCurrentCompleteDayNight (Just (mkFreshness manifest)) testDayNightKey 10 2 cache1) `shouldBe` True
+      isNothing (getCurrentCompleteDayNight (Just (mkFreshness staleManifest)) testDayNightKey 6 2 cache1) `shouldBe` True
+
+    it "supersedes older day/night build ids and replacement bounds" $ do
+      let oldManifest = mkManifest 10 keyA 6 [testRect, testRect2]
+          newerManifest = mkManifest 11 keyA 6 [testRect, testRect2]
+          replacementManifest = mkManifest 12 keyA 10 [testRect2]
+          replacementManifest' = replacementManifest { atsmExpectedBounds = [testRect], atsmExpectedTileCount = 1 }
+          oldTiles = [mkTile 101 6 testRect, mkTile 102 6 testRect2]
+          newerTile = mkTile 103 6 testRect
+          replacementTile = mkTile 104 10 testRect2
+          replacementTile' = mkTile 105 10 testRect
+          cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          cacheOld = storeDayNightTileSet testDayNightKey oldManifest oldTiles cache0
+          cacheNewerPartial = storeDayNightTileSet testDayNightKey newerManifest [newerTile] cacheOld
+          cacheReplacement = storeDayNightTileSet testDayNightKey replacementManifest [replacementTile] cacheNewerPartial
+          cacheReplacement' = storeDayNightTileSet testDayNightKey replacementManifest' [replacementTile'] cacheReplacement
+      fmap length (getCurrentCompleteDayNight (Just (mkFreshness oldManifest)) testDayNightKey 6 1 cacheOld) `shouldBe` Just 2
+      isNothing (getCurrentCompleteDayNight (Just (mkFreshness newerManifest)) testDayNightKey 6 1 cacheNewerPartial) `shouldBe` True
+      fmap length (getNearestDayNight testDayNightKey 6 cacheNewerPartial) `shouldBe` Just 1
+      length (atcPending cacheNewerPartial) `shouldBe` 2
+      fmap length (getCurrentCompleteDayNight (Just (mkFreshness replacementManifest')) testDayNightKey 10 1 cacheReplacement') `shouldBe` Just 1
+      length (atcPending cacheReplacement') `shouldBe` 3
+
+    it "does not relabel old day/night tiles when a replacement result is rejected" $ do
+      let oldManifest = mkManifest 14 keyA 6 [testRect]
+          replacementManifest = mkManifest 15 keyA 6 [testRect2]
+          oldTile = mkTile 106 6 testRect
+          rejectedReplacementTile = mkTile 107 6 testRect
+          cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          cache1 = storeDayNightTileSet testDayNightKey oldManifest [oldTile] cache0
+          cache2 = storeDayNightTileSet testDayNightKey replacementManifest [rejectedReplacementTile] cache1
+      fmap length (getCurrentCompleteDayNight (Just (mkFreshness oldManifest)) testDayNightKey 6 1 cache2) `shouldBe` Just 1
+      isNothing (getCurrentCompleteDayNight (Just (mkFreshness replacementManifest)) testDayNightKey 6 1 cache2) `shouldBe` True
+      fmap length (getNearestDayNight testDayNightKey 6 cache2) `shouldBe` Just 1
+      length (atcPending cache2) `shouldBe` 1
+
+    it "retires old day/night keys to pending and never returns them for a new key" $ do
+      let manifest = mkManifest 13 keyA 6 [testRect]
+          cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          cache1 = storeDayNightTileSet testDayNightKey manifest [mkTile 110 6 testRect] cache0
+          cache2 = retireDayNightOverlaysExcept testDayNightKey2 cache1
+      fmap length (getCurrentCompleteDayNight (Just (mkFreshness manifest)) testDayNightKey 6 1 cache1) `shouldBe` Just 1
+      isNothing (getCurrentCompleteDayNight (Just (mkFreshness manifest)) testDayNightKey2 6 1 cache1) `shouldBe` True
+      isNothing (getNearestDayNight testDayNightKey2 6 cache1) `shouldBe` True
+      isNothing (getNearestDayNight testDayNightKey 6 cache2) `shouldBe` True
+      length (atcPending cache2) `shouldBe` 1
 
   -- -------------------------------------------------------------------
   -- getNearestAtlas (looks up by any key)

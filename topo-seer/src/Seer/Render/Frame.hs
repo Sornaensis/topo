@@ -57,7 +57,9 @@ import Seer.Render.Atlas
   , formatAtlasCacheSummary
   , formatAtlasResolveDiagnostic
   , getCurrentCompleteAtlasForTarget
+  , getCurrentCompleteDayNight
   , getNearestDayNight
+  , retireDayNightOverlaysExcept
   , resolveAtlasTiles
   , resolveEffectiveStage
   , scheduleAtlasBuilds
@@ -82,6 +84,7 @@ import Seer.Editor.Types (EditorState(..))
 import UI.Font (FontCache)
 import UI.Layout
 import UI.TerrainCache (ChunkTextureCache(..), emptyChunkTextureCache)
+import UI.DayNight (mkDayNightKey)
 import UI.TerrainAtlas (TerrainAtlasTile(..))
 import UI.Widgets (Rect(..))
 import UI.WidgetsDraw (rectToSDL)
@@ -248,6 +251,11 @@ renderFrame context = do
     ((resolvedTiles, resolveStatus, resolvedCache), elapsed) <- timedMs (resolveAtlasTiles latestAtlasFreshness renderTargetOk pool snapshot atlasCache' stage)
     logged <- logTiming logHandle timingLogThresholdMs (Text.pack "atlas resolve") elapsed Nothing
     pure (resolvedTiles, resolveStatus, resolvedCache, logged)
+  let currentDayNightKey =
+        if uiDayNightEnabled (rsUi snapshot)
+          then mkDayNightKey (rsUi snapshot) (tsChunkSize terrainSnap)
+          else Nothing
+      atlasCacheForOverlay = maybe atlasCache'' (\dnKey -> retireDayNightOverlaysExcept dnKey atlasCache'') currentDayNightKey
   tAfterResolve <- getMonotonicTimeNSec
   let chunkTexturesNeedRefresh = not renderTargetOk
         && chunkTextureCacheNeedsUpdate terrainCache (zsAtlasScale stage) textureCache
@@ -289,13 +297,19 @@ renderFrame context = do
   tAfterDraw <- getMonotonicTimeNSec
   -- Draw day/night overlay on top of base atlas when enabled.
   when (uiDayNightEnabled (rsUi snapshot)) $ do
-    let dnTiles = getNearestDayNight (zsHexRadius stage) atlasCache''
-    case dnTiles of
-      Just dt | not (null dt) -> do
-        -- Day/night atlas tiles carry source alpha; drawAtlas preserves that
-        -- alpha so transparent overlay margins leave the base atlas intact.
-        drawAtlas renderer dt (uiPanOffset (rsUi snapshot)) (uiZoom (rsUi snapshot)) (V2 (fromIntegral winW) (fromIntegral winH))
-      _ -> pure ()
+    case currentDayNightKey of
+      Just dnKey -> do
+        let exactTiles = getCurrentCompleteDayNight latestAtlasFreshness dnKey (zsHexRadius stage) (zsAtlasScale stage) atlasCacheForOverlay
+            dnTiles = case exactTiles of
+              Just tiles | not (null tiles) -> Just tiles
+              _ -> getNearestDayNight dnKey (zsHexRadius stage) atlasCacheForOverlay
+        case dnTiles of
+          Just dt | not (null dt) -> do
+            -- Day/night atlas tiles carry source alpha; drawAtlas preserves that
+            -- alpha so transparent overlay margins leave the base atlas intact.
+            drawAtlas renderer dt (uiPanOffset (rsUi snapshot)) (uiZoom (rsUi snapshot)) (V2 (fromIntegral winW) (fromIntegral winH))
+          _ -> pure ()
+      Nothing -> pure ()
   let hexHoverRadius = zsHexRadius stage
   loggedHover <- do
     (_, elapsed) <- timedMs (drawHoverHex renderer (rsUi snapshot) hexHoverRadius)
@@ -372,7 +386,7 @@ renderFrame context = do
     atlasResolveStatus
     atlasToDraw
     atlasCache'
-    atlasCache''
+    atlasCacheForOverlay
     shouldDrainAtlas
     shouldScheduleAtlas
     scheduleJobCount
@@ -407,7 +421,7 @@ renderFrame context = do
     { rfoAtlasNeedsRetry = atlasNeedsRetry
     , rfoFallbackNeedsRetry = fallbackChunkNeedsRetry
     , rfoChunkTextureCache = textureCache'
-    , rfoAtlasTextureCache = atlasCache''
+    , rfoAtlasTextureCache = atlasCacheForOverlay
     , rfoAtlasResolveStatus = atlasResolveStatus
     , rfoAtlasDrainStats = mbDrainStats
     , rfoDidLog = didLog

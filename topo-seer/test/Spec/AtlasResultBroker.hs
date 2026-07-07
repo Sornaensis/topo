@@ -4,6 +4,7 @@ import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Monad (forM_, replicateM_)
 import Data.IORef (newIORef)
+import Data.Maybe (isNothing)
 import qualified Data.Map.Strict as Map
 import Foreign.Ptr (Ptr, intPtrToPtr)
 import Test.Hspec
@@ -34,9 +35,10 @@ import Seer.Render.Atlas
   , emptyAtlasTextureCache
   , getCurrentCompleteAtlasForTarget
   , getNearestDayNight
+  , getCurrentCompleteDayNight
   , resolveAtlasPureWithFreshness
   , storeAtlasTileSet
-  , storeDayNightTiles
+  , storeDayNightTileSet
   )
 import UI.DayNight (DayNightKey, mkDayNightKey)
 import UI.TerrainAtlas (AtlasTileGeometry(..), TerrainAtlasTile(..))
@@ -162,7 +164,8 @@ spec = describe "AtlasResultBroker" $ do
             cache1 = foldl storeDrainedResult cache0 drained
             (resolvedTiles, status, cache2) = resolveAtlasPureWithFreshness (Just freshness) True True key hexRadius cache1
         fmap length (getCurrentCompleteAtlasForTarget (Just freshness) key hexRadius atlasScale cache1) `shouldBe` Just 2
-        fmap length (getNearestDayNight hexRadius cache1) `shouldBe` Just 1
+        isNothing (getCurrentCompleteDayNight (Just freshness) testDayNightKey hexRadius atlasScale cache1) `shouldBe` True
+        fmap length (getNearestDayNight testDayNightKey hexRadius cache1) `shouldBe` Just 1
         fmap length resolvedTiles `shouldBe` Just 2
         status `shouldBe` CompleteExact
         fmap length (getCurrentCompleteAtlasForTarget (Just freshness) key hexRadius atlasScale cache2) `shouldBe` Just 2
@@ -258,7 +261,7 @@ storeDrainedResult :: AtlasTextureCache -> AtlasBuildResult -> AtlasTextureCache
 storeDrainedResult cache result =
   let cache' = storeAtlasTileSet (abrManifest result) [uploadedBaseTile result] cache
   in case abrDayNightTile result of
-    Just dnTile -> storeDayNightTiles (adntKey dnTile) (abrHexRadius result) [uploadedDayNightTile result dnTile] cache'
+    Just dnTile -> storeDayNightTileSet (adntKey dnTile) (abrManifest result) [uploadedDayNightTile result dnTile] cache'
     Nothing -> cache'
 
 uploadedBaseTile :: AtlasBuildResult -> TerrainAtlasTile
