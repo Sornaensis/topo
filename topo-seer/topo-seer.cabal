@@ -262,6 +262,7 @@ test-suite topo-seer-test
       Spec.DataBrowserAppService
       Spec.DataDetailPopover
       Spec.DataResourceE2E
+      Spec.DayNight
       Spec.EditorBrush
       Spec.EditorHistory
       Spec.FeatureMatrix

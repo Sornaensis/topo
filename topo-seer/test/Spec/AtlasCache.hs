@@ -12,10 +12,11 @@ import Actor.AtlasCache (AtlasKey(..))
 import Actor.AtlasResult (AtlasBuildId(..), AtlasTileSetManifest(..), atlasManifestTarget)
 import Actor.SnapshotReceiver (SnapshotVersion(..))
 import Actor.AtlasScheduler (AtlasFreshness(..))
-import Actor.UI (ViewMode(..))
+import Actor.UI (ViewMode(..), emptyUiState)
 import Seer.Render.Atlas
   ( AtlasTextureCache(..)
   , CachedAtlasTileSet
+  , CachedDayNightTileSet(..)
   , AtlasCacheSummary(..)
   , AtlasResolveDiagnostic(..)
   , AtlasResolveStatus(..)
@@ -45,6 +46,7 @@ import Seer.Render.Atlas
   , formatAtlasResolveDiagnostic
   )
 import Seer.Render.ZoomStage (ZoomStage(..))
+import UI.DayNight (DayNightKey, mkDayNightKey)
 import UI.TerrainAtlas (TerrainAtlasTile(..))
 import UI.Widgets (Rect(..))
 
@@ -78,6 +80,11 @@ keyB = AtlasKey ViewBiome     0 1
 -- | Key with a different terrain version (stale).
 keyStale :: AtlasKey
 keyStale = AtlasKey ViewElevation 0 999
+
+testDayNightKey :: DayNightKey
+testDayNightKey = case mkDayNightKey emptyUiState 16 of
+  Just key -> key
+  Nothing -> error "expected day/night key for positive chunk size"
 
 mkManifest :: Int -> AtlasKey -> Int -> [Rect] -> AtlasTileSetManifest
 mkManifest = mkManifestWithAtlasScale 1
@@ -436,9 +443,10 @@ spec = describe "AtlasTextureCache" $ do
           dayNightTiles = [mkTile 90 6 testRect]
           cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
           cache1 = storeAtlasTileSet manifest baseTiles cache0
-          cache2 = storeDayNightTiles 6 dayNightTiles cache1
+          cache2 = storeDayNightTiles testDayNightKey 6 dayNightTiles cache1
           (tiles, status, cache3) = resolveAtlasPureWithFreshness (Just (mkFreshness manifest)) True True keyA 6 cache2
       fmap length (getCompleteAtlas keyA 6 cache2) `shouldBe` Just 2
+      fmap cdntsKey (IntMap.lookup 6 (atcDayNight cache2)) `shouldBe` Just testDayNightKey
       fmap length (getNearestDayNight 6 cache2) `shouldBe` Just 1
       fmap length tiles `shouldBe` Just 2
       status `shouldBe` CompleteExact

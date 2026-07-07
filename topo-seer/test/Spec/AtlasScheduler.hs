@@ -22,6 +22,7 @@ import Actor.AtlasScheduler
   , AtlasScheduleRequest(..)
   , AtlasScheduler
   , AtlasSchedulerHandles(..)
+  , atlasSchedulerDayNightSpec
   , newAtlasFreshnessRef
   , requestAtlasSchedule
   , setAtlasSchedulerHandles
@@ -35,6 +36,7 @@ import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion(..))
 import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
 import Seer.Render.ZoomStage (allZoomStages, ZoomStage(..))
+import UI.DayNight (mkDayNightKey)
 import Data.Word (Word64)
 import Hyperspace.Actor
   ( ActorSystem
@@ -346,7 +348,7 @@ spec = describe "AtlasScheduler" $ do
           , abSnapshotVersion = SnapshotVersion 1
           , abResultRef = resultRef
           , abFreshnessRef = freshnessRef
-          , abDayNightFn = Nothing
+          , abDayNightSpec = Nothing
           }
     writeAtlasFreshness freshnessRef AtlasFreshness
       { afKey = key1
@@ -366,6 +368,42 @@ spec = describe "AtlasScheduler" $ do
       , afLatestBuildIds = mempty
       }
     atlasBuildIsCurrent build `shouldReturn` False
+
+  it "builds a day/night spec only when enabled and terrain chunk size is available" $ do
+    resultRef <- newAtlasResultRef
+    freshnessRef <- newAtlasFreshnessRef
+    let terrainSnap = (emptyTerrainSnapshotWithVersion 12) { tsChunkSize = 16 }
+        ui = emptyUiState { uiDayNightEnabled = True, uiSimTickCount = 5 }
+        expectedKey = mkDayNightKey ui (tsChunkSize terrainSnap)
+        buildWith spec = AtlasBuild
+          { abBuildId = AtlasBuildId 2
+          , abKey = AtlasKey ViewElevation defaultWaterLevel (tsVersion terrainSnap)
+          , abViewMode = ViewElevation
+          , abWaterLevel = defaultWaterLevel
+          , abTerrain = terrainSnap
+          , abHexRadius = 6
+          , abAtlasScale = 1
+          , abPanOffset = (0, 0)
+          , abZoom = 1
+          , abWindowSize = (800, 600)
+          , abSnapshotVersion = SnapshotVersion (tsVersion terrainSnap)
+          , abResultRef = resultRef
+          , abFreshnessRef = freshnessRef
+          , abDayNightSpec = spec
+          }
+    case (expectedKey, atlasSchedulerDayNightSpec ui terrainSnap) of
+      (Just key, Just (actualKey, fn)) -> do
+        actualKey `shouldBe` key
+        fn 3 (-1) `shouldSatisfy` (\v -> v >= 0.15 && v <= 1.0)
+      _ -> expectationFailure "expected enabled day/night spec"
+    fmap fst (abDayNightSpec (buildWith (atlasSchedulerDayNightSpec ui terrainSnap))) `shouldBe` expectedKey
+    fmap fst (abDayNightSpec (buildWith (atlasSchedulerDayNightSpec (ui { uiDayNightEnabled = False }) terrainSnap))) `shouldBe` Nothing
+    case atlasSchedulerDayNightSpec (ui { uiDayNightEnabled = False }) terrainSnap of
+      Nothing -> pure ()
+      Just _ -> expectationFailure "expected disabled scheduler day/night spec to be absent"
+    case atlasSchedulerDayNightSpec ui (terrainSnap { tsChunkSize = 0 }) of
+      Nothing -> pure ()
+      Just _ -> expectationFailure "expected scheduler day/night spec to require terrain chunk size"
 
 awaitReport
   :: AtlasScheduleRef

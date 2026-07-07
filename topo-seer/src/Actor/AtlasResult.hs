@@ -9,6 +9,7 @@ module Actor.AtlasResult
   ( AtlasBuildId(..)
   , AtlasBuildTarget(..)
   , AtlasTileSetManifest(..)
+  , AtlasDayNightTile(..)
   , AtlasBuildResult(..)
   , atlasManifestTarget
   ) where
@@ -16,6 +17,7 @@ module Actor.AtlasResult
 import Actor.AtlasCache (AtlasKey)
 import Actor.SnapshotReceiver (SnapshotVersion)
 import Data.Word (Word64)
+import UI.DayNight (DayNightKey)
 import UI.TerrainAtlas (AtlasTileGeometry)
 import UI.Widgets (Rect)
 
@@ -58,6 +60,13 @@ atlasManifestTarget manifest = AtlasBuildTarget
   , abtAtlasScale = atsmAtlasScale manifest
   }
 
+-- | Day/night overlay geometry paired with the freshness identity of the
+-- brightness function that produced it.
+data AtlasDayNightTile = AtlasDayNightTile
+  { adntKey :: !DayNightKey
+  , adntTile :: !AtlasTileGeometry
+  }
+
 -- | Result payload from CPU atlas build work.
 data AtlasBuildResult = AtlasBuildResult
   { abrKey       :: !AtlasKey
@@ -67,8 +76,8 @@ data AtlasBuildResult = AtlasBuildResult
   , abrTileIndex :: !Int
   , abrTileBounds :: !Rect
   , abrTile      :: !AtlasTileGeometry
-  , abrDayNightTile :: !(Maybe AtlasTileGeometry)
-    -- ^ Day\/night overlay tile geometry, if the build included a
-    -- brightness function.  Rendered as a separate black+alpha
-    -- overlay on top of the base tile.
+  , abrDayNightTile :: !(Maybe AtlasDayNightTile)
+    -- ^ Day\/night overlay tile geometry and its freshness key, if the
+    -- build included a brightness function.  Rendered as a separate
+    -- black+alpha overlay on top of the base tile.
   }

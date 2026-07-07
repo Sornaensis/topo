@@ -8,7 +8,7 @@ import qualified Data.Map.Strict as Map
 import Foreign.Ptr (Ptr, intPtrToPtr)
 import Test.Hspec
 import Actor.AtlasCache (AtlasKey(..))
-import Actor.AtlasResult (AtlasBuildId(..), AtlasBuildResult(..), AtlasTileSetManifest(..), atlasManifestTarget)
+import Actor.AtlasResult (AtlasBuildId(..), AtlasBuildResult(..), AtlasDayNightTile(..), AtlasTileSetManifest(..), atlasManifestTarget)
 import Actor.AtlasResultBroker
   ( AtlasResultDrainStats(..)
   , atlasResultsPending
@@ -25,7 +25,7 @@ import Actor.AtlasWorker (atlasBuildResultsForTiles)
 import Actor.Data (TerrainSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion(..))
 import Topo.Overlay (emptyOverlayStore)
-import Actor.UI (ViewMode(..))
+import Actor.UI (ViewMode(..), emptyUiState)
 import Linear (V2(..))
 import qualified SDL
 import Seer.Render.Atlas
@@ -38,6 +38,7 @@ import Seer.Render.Atlas
   , storeAtlasTileSet
   , storeDayNightTiles
   )
+import UI.DayNight (DayNightKey, mkDayNightKey)
 import UI.TerrainAtlas (AtlasTileGeometry(..), TerrainAtlasTile(..))
 import UI.Widgets (Rect(..))
 import Unsafe.Coerce (unsafeCoerce)
@@ -124,10 +125,11 @@ spec = describe "AtlasResultBroker" $ do
         atlasScale = 1
         baseTiles = [mkTileGeometry hexRadius atlasScale testRect, mkTileGeometry hexRadius atlasScale testRect2]
         dayNightTiles = [mkTileGeometry hexRadius atlasScale testRect]
-        results = atlasBuildResultsForTiles buildId key snapshotVersion hexRadius atlasScale baseTiles (Just dayNightTiles)
+        results = atlasBuildResultsForTiles buildId key snapshotVersion hexRadius atlasScale baseTiles (Just (testDayNightKey, dayNightTiles))
     length results `shouldBe` 2
     map abrTileIndex results `shouldBe` [0, 1]
-    map (fmap atgBounds . abrDayNightTile) results `shouldBe` [Just testRect, Nothing]
+    map (fmap (atgBounds . adntTile) . abrDayNightTile) results `shouldBe` [Just testRect, Nothing]
+    map (fmap adntKey . abrDayNightTile) results `shouldBe` [Just testDayNightKey, Nothing]
     mapM_ (pushAtlasResult ref) results
 
     case results of
@@ -145,7 +147,8 @@ spec = describe "AtlasResultBroker" $ do
               && atsmBuildId (abrManifest result) == buildId
         (drained, stats) <- drainFreshResultsNWithStats ref isFresh 10
         map abrTileIndex drained `shouldBe` [0, 1]
-        map (fmap atgBounds . abrDayNightTile) drained `shouldBe` [Just testRect, Nothing]
+        map (fmap (atgBounds . adntTile) . abrDayNightTile) drained `shouldBe` [Just testRect, Nothing]
+        map (fmap adntKey . abrDayNightTile) drained `shouldBe` [Just testDayNightKey, Nothing]
         stats `shouldBe` AtlasResultDrainStats
           { ardsPendingBefore = 2
           , ardsPendingAfter = 0
@@ -163,6 +166,16 @@ spec = describe "AtlasResultBroker" $ do
         fmap length resolvedTiles `shouldBe` Just 2
         status `shouldBe` CompleteExact
         fmap length (getCurrentCompleteAtlasForTarget (Just freshness) key hexRadius atlasScale cache2) `shouldBe` Just 2
+
+  it "does not attach a day/night key or tile when worker results have no overlay spec" $ do
+    let key = AtlasKey ViewElevation 0 1
+        snapshotVersion = SnapshotVersion 7
+        buildId = AtlasBuildId 43
+        hexRadius = 6
+        atlasScale = 1
+        baseTiles = [mkTileGeometry hexRadius atlasScale testRect]
+        results = atlasBuildResultsForTiles buildId key snapshotVersion hexRadius atlasScale baseTiles Nothing
+    map (maybe False (const True) . abrDayNightTile) results `shouldBe` [False]
 
   it "drains results in FIFO order" $ do
     ref <- newIORef []
@@ -227,6 +240,11 @@ testRect = Rect (V2 0 0, V2 64 64)
 testRect2 :: Rect
 testRect2 = Rect (V2 64 0, V2 64 64)
 
+testDayNightKey :: DayNightKey
+testDayNightKey = case mkDayNightKey emptyUiState 16 of
+  Just key -> key
+  Nothing -> error "expected day/night key for positive chunk size"
+
 mkTileGeometry :: Int -> Int -> Rect -> AtlasTileGeometry
 mkTileGeometry hexRadius atlasScale bounds = AtlasTileGeometry
   { atgBounds = bounds
@@ -240,7 +258,7 @@ storeDrainedResult :: AtlasTextureCache -> AtlasBuildResult -> AtlasTextureCache
 storeDrainedResult cache result =
   let cache' = storeAtlasTileSet (abrManifest result) [uploadedBaseTile result] cache
   in case abrDayNightTile result of
-    Just dnTile -> storeDayNightTiles (abrHexRadius result) [uploadedDayNightTile result dnTile] cache'
+    Just dnTile -> storeDayNightTiles (adntKey dnTile) (abrHexRadius result) [uploadedDayNightTile result dnTile] cache'
     Nothing -> cache'
 
 uploadedBaseTile :: AtlasBuildResult -> TerrainAtlasTile
@@ -251,13 +269,15 @@ uploadedBaseTile result = TerrainAtlasTile
   , tatHexRadius = abrHexRadius result
   }
 
-uploadedDayNightTile :: AtlasBuildResult -> AtlasTileGeometry -> TerrainAtlasTile
-uploadedDayNightTile result dnTile = TerrainAtlasTile
-  { tatTexture = mockTexture (200 + abrTileIndex result)
-  , tatBounds = abrTileBounds result
-  , tatScale = atgScale dnTile
-  , tatHexRadius = atgHexRadius dnTile
-  }
+uploadedDayNightTile :: AtlasBuildResult -> AtlasDayNightTile -> TerrainAtlasTile
+uploadedDayNightTile result dnResult =
+  let dnTile = adntTile dnResult
+  in TerrainAtlasTile
+    { tatTexture = mockTexture (200 + abrTileIndex result)
+    , tatBounds = abrTileBounds result
+    , tatScale = atgScale dnTile
+    , tatHexRadius = atgHexRadius dnTile
+    }
 
 mockTexture :: Int -> SDL.Texture
 mockTexture n = unsafeCoerce (intPtrToPtr (fromIntegral n) :: Ptr ())

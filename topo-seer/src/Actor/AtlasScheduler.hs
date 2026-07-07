@@ -16,6 +16,7 @@ module Actor.AtlasScheduler
   , setAtlasSchedulerHandles
   , atlasSchedulerConfigured
   , requestAtlasSchedule
+  , atlasSchedulerDayNightSpec
   , newAtlasFreshnessRef
   , writeAtlasFreshness
   , writeAtlasFreshnessKey
@@ -44,7 +45,7 @@ import Actor.SnapshotReceiver (SnapshotVersion)
 import Actor.UI (UiState(..))
 import Control.Monad (forM_)
 import Data.IORef (IORef, atomicModifyIORef')
-import UI.DayNight (mkDayNightFn)
+import UI.DayNight (DayNightSpec, mkDayNightSpec)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
 import Seer.Timing (timedMs)
@@ -123,6 +124,11 @@ requestAtlasSchedule
 requestAtlasSchedule handle req =
   cast @"schedule" handle #schedule req
 
+atlasSchedulerDayNightSpec :: UiState -> TerrainSnapshot -> Maybe DayNightSpec
+atlasSchedulerDayNightSpec ui terrain
+  | uiDayNightEnabled ui = mkDayNightSpec ui (tsChunkSize terrain)
+  | otherwise = Nothing
+
 runSchedule :: AtlasSchedulerHandles -> AtlasScheduleRequest -> IO ()
 runSchedule handles req = do
   let snapshot = asqSnapshot req
@@ -134,6 +140,7 @@ runSchedule handles req = do
         && not (uiGenerating uiSnap)
       workers = ashWorkers handles
       workerCount = length workers
+      dayNightSpec = atlasSchedulerDayNightSpec uiSnap terrainSnap
   if shouldSchedule && workerCount > 0
     then do
       let currentFreshness = emptyAtlasFreshness currentKey (asqSnapshotVersion req)
@@ -157,9 +164,7 @@ runSchedule handles req = do
             , abSnapshotVersion = ajSnapshotVersion job
             , abResultRef  = ashResultRef handles
             , abFreshnessRef = ashFreshnessRef handles
-            , abDayNightFn = if uiDayNightEnabled uiSnap
-                              then mkDayNightFn uiSnap (tsChunkSize (ajTerrain job))
-                              else Nothing
+            , abDayNightSpec = dayNightSpec
             }
       let report = AtlasScheduleReport
             { asrSnapshotVersion = asqSnapshotVersion req

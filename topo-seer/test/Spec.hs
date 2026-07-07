@@ -29,6 +29,7 @@ import qualified Spec.RiverRender
 import qualified Spec.TerrainActor
 import qualified Spec.PluginManager
 import qualified Spec.UiActor
+import qualified Spec.DayNight
 import qualified Spec.Simulation
 import qualified Spec.AutoTick
 import qualified Spec.Widgets
@@ -86,6 +87,7 @@ main = do
         Spec.TerrainActor.spec
         Spec.PluginManager.spec
         Spec.UiActor.spec
+        Spec.DayNight.spec
         Spec.Simulation.spec
         Spec.AutoTick.spec
         Spec.Widgets.spec

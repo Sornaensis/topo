@@ -18,7 +18,7 @@ module Actor.AtlasWorker
 
 import Actor.AtlasCache (AtlasKey)
 import Actor.AtlasFreshness (AtlasFreshnessRef, atlasTargetBuildIsFresh, readAtlasFreshnessRef)
-import Actor.AtlasResult (AtlasBuildId, AtlasBuildResult(..), AtlasBuildTarget(..), AtlasTileSetManifest(..))
+import Actor.AtlasResult (AtlasBuildId, AtlasBuildResult(..), AtlasBuildTarget(..), AtlasDayNightTile(..), AtlasTileSetManifest(..))
 import Actor.AtlasResultBroker (AtlasResultRef, pushAtlasResult)
 import Actor.Data (TerrainSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion)
@@ -35,6 +35,7 @@ import UI.OverlayExtract (extractOverlayField)
 import UI.HexGeometry (normalizeHexBounds, renderHexRadiusPx)
 import UI.RiverRender (RiverGeometry(..), buildChunkRiverGeometry, defaultRiverRenderConfig, scaleRiverWidths)
 import UI.TerrainAtlas (AtlasChunkGeometry(..), AtlasTileGeometry(..), attachRiverOverlay, composeTilesFromGeometry, mergeChunkGeometry)
+import UI.DayNight (DayNightKey, DayNightSpec)
 import UI.TerrainRender (ChunkGeometry, buildChunkGeometry, buildDayNightGeometry)
 
 
@@ -53,7 +54,7 @@ data AtlasBuild = AtlasBuild
   , abSnapshotVersion :: !SnapshotVersion
   , abResultRef  :: !AtlasResultRef
   , abFreshnessRef :: !AtlasFreshnessRef
-  , abDayNightFn :: !(Maybe (Int -> Int -> Float))
+  , abDayNightSpec :: !(Maybe DayNightSpec)
   }
 
 atlasWorkerPaddedViewport :: WorldConfig -> (Float, Float) -> Float -> (Int, Int) -> ((Float, Float), Float, (Int, Int))
@@ -84,7 +85,7 @@ atlasBuildResultsForTiles
   -> Int
   -> Int
   -> [AtlasTileGeometry]
-  -> Maybe [AtlasTileGeometry]
+  -> Maybe (DayNightKey, [AtlasTileGeometry])
   -> [AtlasBuildResult]
 atlasBuildResultsForTiles buildId key snapshotVersion hexRadius atlasScale tiles dayNightTiles =
   let normalisedBounds tile = normalizeHexBounds hexRadius (atgBounds tile)
@@ -98,7 +99,10 @@ atlasBuildResultsForTiles buildId key snapshotVersion hexRadius atlasScale tiles
         , atsmExpectedTileCount = length tiles
         , atsmExpectedBounds = expectedBounds
         }
-      dayNightLookup = maybe [] (map (\dnTile -> (normalisedBounds dnTile, dnTile))) dayNightTiles
+      dayNightLookup = case dayNightTiles of
+        Nothing -> []
+        Just (dnKey, dnTiles) ->
+          map (\dnTile -> (normalisedBounds dnTile, AtlasDayNightTile dnKey dnTile)) dnTiles
       dayNightFor tile = snd <$> find ((== normalisedBounds tile) . fst) dayNightLookup
       buildResult ix tile = AtlasBuildResult
         { abrKey = key
@@ -200,9 +204,9 @@ actor AtlasWorker
             -- Build day/night overlay geometry when a brightness function is provided.
             -- This produces an independent overlay (black + alpha) that can be
             -- cached and drawn separately from the base view-mode tiles.
-            mbDayNightGeomPairs <- case abDayNightFn job of
+            mbDayNightGeomPairs <- case abDayNightSpec job of
               Nothing -> pure (Just [])
-              Just dnFn -> traverseFresh job chunkPairs $ \(k, chunk) -> do
+              Just (_, dnFn) -> traverseFresh job chunkPairs $ \(k, chunk) -> do
                 let geom = buildDayNightGeometry (abHexRadius job) config dnFn k chunk
                 _ <- evaluate geom
                 threadDelay 100
@@ -229,9 +233,10 @@ actor AtlasWorker
                         tiles = attachRiverOverlay riverGeoMap baseTiles
                         -- Day/night overlay tiles share the same tiling structure but
                         -- have no river overlay.
-                        dayNightTiles = if IntMap.null dayNightGeometryMap
-                          then Nothing
-                          else Just (composeTilesFromGeometry dayNightGeometryMap (abHexRadius job) (abAtlasScale job))
+                        dayNightTiles = case abDayNightSpec job of
+                          Just (dnKey, _) | not (IntMap.null dayNightGeometryMap) ->
+                            Just (dnKey, composeTilesFromGeometry dayNightGeometryMap (abHexRadius job) (abAtlasScale job))
+                          _ -> Nothing
                         results = atlasBuildResultsForTiles (abBuildId job) (abKey job) (abSnapshotVersion job) (abHexRadius job) (abAtlasScale job) tiles dayNightTiles
                     if null tiles
                       then threadDelay 100 >> pure st
@@ -246,15 +251,16 @@ actor AtlasWorker
                               tile' = tile { atgChunks = [merged], atgRiverOverlay = [] }
                           -- Pre-merge day/night overlay if present.
                           let mbDnTile' = case mbDnTile of
-                                Just dnTile ->
-                                  let dnMerged = mergeChunkGeometry (atgChunks dnTile)
-                                  in Just (dnTile { atgChunks = [dnMerged], atgRiverOverlay = [] })
+                                Just dnResult ->
+                                  let dnTile = adntTile dnResult
+                                      dnMerged = mergeChunkGeometry (atgChunks dnTile)
+                                  in Just (dnResult { adntTile = dnTile { atgChunks = [dnMerged], atgRiverOverlay = [] } })
                                 Nothing -> Nothing
                           -- Force the merged storable vectors on the worker thread.
                           _ <- evaluate (acgVertices merged)
                           _ <- evaluate (acgIndices merged)
                           case mbDnTile' of
-                            Just dt -> case atgChunks dt of
+                            Just dt -> case atgChunks (adntTile dt) of
                               dnM:_ -> do
                                 _ <- evaluate (acgVertices dnM)
                                 _ <- evaluate (acgIndices dnM)
