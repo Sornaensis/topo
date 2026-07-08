@@ -4,7 +4,7 @@
 module Spec.TerrainInspector (spec) where
 
 import Control.Monad (forM_)
-import Actor.Data (TerrainSnapshot(..))
+import Actor.Data (TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
 import Actor.UI.State (allBuiltinViewModes)
 import Data.Aeson (Value(..))
@@ -273,7 +273,7 @@ canonicalInspectorSectionKeys =
   ]
 
 emptyTerrainSnapshot :: TerrainSnapshot
-emptyTerrainSnapshot = TerrainSnapshot 0 0 0 0 0 0 IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty emptyOverlayStore
+emptyTerrainSnapshot = TerrainSnapshot 0 0 0 0 0 0 IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty IntMap.empty emptyOverlayStore defaultTerrainGeoContext
 
 settlementResourceSchema :: DataResourceSchema
 settlementResourceSchema = DataResourceSchema
@@ -310,6 +310,7 @@ terrainSnapshotWithChunk = TerrainSnapshot
   , tsWaterBodyChunks = IntMap.empty
   , tsVegetationChunks = IntMap.empty
   , tsOverlayStore = emptyOverlayStore
+  , tsGeoContext = defaultTerrainGeoContext
   }
 
 terrainSnapshotWithWater :: TerrainSnapshot

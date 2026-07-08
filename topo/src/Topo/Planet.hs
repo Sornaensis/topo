@@ -25,6 +25,8 @@ module Topo.Planet
   , planetCircumferenceMiles
   , hexesPerDegreeLatitude
   , hexesPerDegreeLongitude
+  , pointyAxialTileOffsetKm
+  , tileLatLon
   , tileLatitude
   , tileLongitude
   , tileYToLatDeg
@@ -45,7 +47,7 @@ import GHC.Generics (Generic)
 import Topo.Config.JSON
   (ToJSON(..), FromJSON(..), configOptions, mergeDefaults,
    genericToJSON, genericParseJSON)
-import Topo.Hex (HexGridMeta, hexSizeMiles)
+import Topo.Hex (HexGridMeta, hexSizeKm, hexSizeMiles)
 import Topo.Types (TileCoord(..), WorldConfig(..), WorldExtent, WorldExtentError, mkWorldExtent)
 
 -- ---------------------------------------------------------------------------
@@ -195,28 +197,71 @@ planetCircumferenceMiles pc =
   let radiusMiles = pcRadius pc * kmToMiles
   in 2 * pi * radiusMiles
 
--- | Number of hexes per degree of latitude, given a planet and hex size.
+-- | Number of axial row steps per degree of latitude.
 --
--- @hexesPerDegLat = circumference / 360 / hexSizeMiles(hex)@
+-- The pointy-top axial grid uses @hexSizeKm@ as flat-to-flat distance.
+-- Adjacent axial rows are @sqrt 3 / 2@ flat-to-flat distances apart in
+-- the north/south direction.
 hexesPerDegreeLatitude :: PlanetConfig -> HexGridMeta -> Float
 hexesPerDegreeLatitude pc hex =
-  planetCircumferenceMiles pc / 360.0 / hexSizeMiles hex
+  planetCircumferenceMiles pc / 360.0 / pointyAxialRowSpacingMiles hex
 
--- | Number of hexes per degree of longitude at a given latitude.
+-- | Number of east/west flat-to-flat axial steps per degree of longitude.
 --
 -- Longitude degrees shrink toward the poles by @cos(latitude)@.
 -- Returns @max 0.001@ to avoid division by zero at the poles.
 hexesPerDegreeLongitude :: PlanetConfig -> HexGridMeta -> Float -> Float
 hexesPerDegreeLongitude pc hex latDeg =
-  let baseLon = hexesPerDegreeLatitude pc hex
+  let baseLon = planetCircumferenceMiles pc / 360.0 / hexSizeMiles hex
       latRad  = latDeg * degToRad
   in baseLon * max 0.001 (cos latRad)
+
+-- | Physical pointy-top axial offset from the world-slice centre.
+--
+-- Returns @(eastKm, northKm)@ for a global axial tile coordinate.  The
+-- reference centre is the middle tile of chunk @(0,0)@, matching the historic
+-- world-slice origin.  For pointy axial coordinates:
+--
+-- * east/west distance is @(q + r/2)@ flat-to-flat steps
+-- * north/south row spacing is @sqrt 3 / 2@ flat-to-flat steps
+pointyAxialTileOffsetKm :: HexGridMeta -> WorldConfig -> TileCoord -> (Float, Float)
+pointyAxialTileOffsetKm hex config (TileCoord q r) =
+  let cs = wcChunkSize config
+      centerQ = fromIntegral (cs `div` 2) :: Float
+      centerR = fromIntegral (cs `div` 2) :: Float
+      qf = fromIntegral q :: Float
+      rf = fromIntegral r :: Float
+      flatKm = hexSizeKm hex
+      centerEastSteps = centerQ + centerR / 2
+      eastSteps = qf + rf / 2 - centerEastSteps
+      northSteps = (centerR - rf) * sqrt 3 / 2
+  in (eastSteps * flatKm, northSteps * flatKm)
+
+-- | Convert a pointy axial tile coordinate to geographic latitude/longitude.
+--
+-- Latitude is derived from the physical north/south row offset.  Longitude
+-- uses the physical east/west offset at the tile latitude, so large local
+-- slices naturally span real local-solar hours across west/centre/east tiles.
+tileLatLon
+  :: PlanetConfig
+  -> HexGridMeta
+  -> WorldSlice
+  -> WorldConfig
+  -> TileCoord
+  -> (Float, Float)
+tileLatLon planet hex slice config tile =
+  let (eastKm, northKm) = pointyAxialTileOffsetKm hex config tile
+      kmPerDegLat = planetCircumferenceKm planet / 360.0
+      latDeg = wsLatCenter slice + northKm / kmPerDegLat
+      kmPerDegLon = kmPerDegLat * max 0.001 (cos (latDeg * degToRad))
+      lonDeg = wsLonCenter slice + eastKm / kmPerDegLon
+  in (latDeg, lonDeg)
 
 -- | Convert a tile Y coordinate to geographic latitude in degrees.
 --
 -- The tile grid center maps to @wsLatCenter@. Chunks are symmetric
 -- around chunk (0,0), so the center tile Y is @chunkSize \`div\` 2@.
--- Each tile offset corresponds to @1 / hexesPerDegreeLatitude@ degrees.
+-- Pointy axial row spacing is @sqrt 3 / 2@ flat-to-flat distances.
 --
 -- Low tile Y (top of rendered grid) = high latitude (north).
 -- High tile Y (bottom of rendered grid) = low latitude (south).
@@ -228,17 +273,8 @@ tileLatitude
   -> WorldConfig
   -> TileCoord
   -> Float
-tileLatitude planet hex slice config (TileCoord _tx ty) =
-  let hpd    = hexesPerDegreeLatitude planet hex
-      cs     = wcChunkSize config
-      -- Chunks range from -ry to ry; chunk (0,0) origin is tile (0,0).
-      -- The center of the grid is at the middle of chunk (0,0).
-      -- Negate the offset so that screen-down (increasing Y) maps to
-      -- decreasing latitude (south), matching cartographic convention.
-      centerTileY = cs `div` 2
-      offsetTiles = centerTileY - ty
-      offsetDeg   = fromIntegral offsetTiles / hpd
-  in wsLatCenter slice + offsetDeg
+tileLatitude planet hex slice config tile =
+  fst (tileLatLon planet hex slice config tile)
 
 -- | Convert a tile X coordinate to geographic longitude in degrees.
 --
@@ -251,19 +287,13 @@ tileLongitude
   -> WorldConfig
   -> TileCoord
   -> Float
-tileLongitude planet hex slice config coord@(TileCoord tx _ty) =
-  let lat    = tileLatitude planet hex slice config coord
-      hpdLon = hexesPerDegreeLongitude planet hex lat
-      cs     = wcChunkSize config
-      centerTileX = cs `div` 2
-      offsetTiles = tx - centerTileX
-      offsetDeg   = fromIntegral offsetTiles / hpdLon
-  in wsLonCenter slice + offsetDeg
+tileLongitude planet hex slice config tile =
+  snd (tileLatLon planet hex slice config tile)
 
 -- | Compute latitude in degrees from a global tile Y coordinate.
 --
--- Convenience wrapper: @tileYToLatDeg planet slice config gy@
--- is equivalent to @tileLatitude planet slice config (TileCoord 0 gy)@.
+-- Convenience wrapper: @tileYToLatDeg planet hex slice config gy@
+-- is equivalent to @tileLatitude planet hex slice config (TileCoord 0 gy)@.
 tileYToLatDeg :: PlanetConfig -> HexGridMeta -> WorldSlice -> WorldConfig -> Int -> Float
 tileYToLatDeg planet hex slice config gy =
   tileLatitude planet hex slice config (TileCoord 0 gy)
@@ -382,6 +412,13 @@ fmtDeg1 v =
 -- ---------------------------------------------------------------------------
 -- Internal constants
 -- ---------------------------------------------------------------------------
+
+-- | Planet circumference in kilometres, derived from radius (km, C = 2πr).
+planetCircumferenceKm :: PlanetConfig -> Float
+planetCircumferenceKm pc = 2 * pi * pcRadius pc
+
+pointyAxialRowSpacingMiles :: HexGridMeta -> Float
+pointyAxialRowSpacingMiles hex = hexSizeMiles hex * sqrt 3 / 2
 
 -- | Conversion factor: kilometres to miles.
 kmToMiles :: Float

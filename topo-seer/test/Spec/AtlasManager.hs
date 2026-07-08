@@ -31,7 +31,7 @@ import Actor.AtlasManager
   )
 import Actor.AtlasResult (AtlasBuildTarget(..))
 import Actor.AtlasScheduler (AtlasFreshness(..), newAtlasFreshnessRef)
-import Actor.Data (TerrainSnapshot(..))
+import Actor.Data (TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.SnapshotReceiver (SnapshotVersion(..))
 import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
 import Hyperspace.Actor
@@ -51,7 +51,7 @@ defaultWaterLevel = uiRenderWaterLevel emptyUiState
 
 emptyTerrainSnapshotWithVersion :: Word64 -> TerrainSnapshot
 emptyTerrainSnapshotWithVersion version =
-  TerrainSnapshot version 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore
+  TerrainSnapshot version 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore defaultTerrainGeoContext
 
 atlasJobFor :: ViewMode -> Word64 -> AtlasJob
 atlasJobFor mode version =

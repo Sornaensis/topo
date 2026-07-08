@@ -27,6 +27,7 @@ import Actor.Data
   ( Data
   , DataSnapshot(..)
   , TerrainSnapshot(..)
+  , defaultTerrainGeoContext
   )
 import Actor.Log
   ( Log
@@ -153,7 +154,7 @@ initialiseAppActors runtimeCfg = do
   simulationHandle <- get @Simulation system
   discoverPlugins pluginManagerHandle
   let dataSnap = DataSnapshot 0 0 Nothing
-      terrainSnap = TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore
+      terrainSnap = TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore defaultTerrainGeoContext
   dataSnapshotRef <- newDataSnapshotRef dataSnap
   terrainSnapshotRef <- newTerrainSnapshotRef terrainSnap
   snapshotVersionRef <- newSnapshotVersionRef

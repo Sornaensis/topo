@@ -152,7 +152,7 @@ requestAtlasSchedule handle req =
 
 atlasSchedulerDayNightSpec :: UiState -> TerrainSnapshot -> Maybe DayNightSpec
 atlasSchedulerDayNightSpec ui terrain
-  | uiDayNightEnabled ui = mkDayNightSpec ui (tsChunkSize terrain)
+  | uiDayNightEnabled ui = mkDayNightSpec terrain
   | otherwise = Nothing
 
 atlasViewportRefreshJob :: SnapshotVersion -> RenderSnapshot -> ZoomStage -> AtlasJob

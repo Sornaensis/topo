@@ -8,20 +8,17 @@ module UI.DayNight
   , mkDayNightFn
   ) where
 
-import Actor.UI (UiState(..), uiWorldTime)
-import Seer.Config (mapRange)
-import Seer.Config.SliderConversion (sliderToDomainFloat)
-import Seer.Config.SliderSpec (SliderId(..))
+import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..))
 import Topo.Calendar (CalendarConfig(..), CalendarDate(..), WorldTime, mkCalendarConfig, tickToDate, yearFraction)
 import Topo.Hex (HexGridMeta(..))
-import Topo.Planet (PlanetConfig(..), WorldSlice(..), tileLatitude, tileLongitude)
+import Topo.Planet (PlanetConfig(..), WorldSlice(..), tileLatLon)
 import Topo.Solar (SolarPosition(..), tileSolarPos)
 import Topo.Types (TileCoord(..), WorldConfig(..))
 
 -- | Day/night brightness function for global tile coordinates @(q, r)@.
 type DayNightFn = Int -> Int -> Float
 
--- | Stable identity for all UI and world inputs currently used to build a
+-- | Stable identity for the authoritative world inputs used to build a
 -- day/night brightness function.
 data DayNightKey = DayNightKey
   { dnkWorldTime :: !WorldTime
@@ -47,43 +44,44 @@ data DayNightInputs = DayNightInputs
   , dniTiltDeg :: !Float
   }
 
--- | Build the freshness key for a day/night brightness function from UI state.
+-- | Build the freshness key for a day/night brightness function from the
+-- terrain snapshot's authoritative world context.
 --
 -- Returns 'Nothing' when the chunk size is not yet available.
-mkDayNightKey :: UiState -> Int -> Maybe DayNightKey
-mkDayNightKey ui chunkSize = dniKey <$> mkDayNightInputs ui chunkSize
+mkDayNightKey :: TerrainSnapshot -> Maybe DayNightKey
+mkDayNightKey terrainSnap = dniKey <$> mkDayNightInputs terrainSnap
 
 -- | Build a day/night freshness key and brightness function from the same
--- derived input path.
+-- authoritative terrain snapshot context.
 --
 -- Returns @Just (key, f)@ where @f q r@ gives a brightness multiplier in
 -- @[0.15, 1.0]@ for global tile coordinates @(q, r)@.  Returns 'Nothing'
 -- when the chunk size is not yet available (no terrain data).
-mkDayNightSpec :: UiState -> Int -> Maybe DayNightSpec
-mkDayNightSpec ui chunkSize = do
-  inputs <- mkDayNightInputs ui chunkSize
+mkDayNightSpec :: TerrainSnapshot -> Maybe DayNightSpec
+mkDayNightSpec terrainSnap = do
+  inputs <- mkDayNightInputs terrainSnap
   pure (dniKey inputs, dayNightFnFromInputs inputs)
 
--- | Build a day/night brightness function from UI state.
+-- | Build a day/night brightness function from a terrain snapshot.
 --
 -- Returns @Just f@ where @f q r@ gives a brightness multiplier in @[0.15, 1.0]@
 -- for global tile coordinates @(q, r)@.  Returns @Nothing@ when the chunk
 -- size is not yet available (no terrain data).
-mkDayNightFn :: UiState -> Int -> Maybe DayNightFn
-mkDayNightFn ui chunkSize = snd <$> mkDayNightSpec ui chunkSize
+mkDayNightFn :: TerrainSnapshot -> Maybe DayNightFn
+mkDayNightFn terrainSnap = snd <$> mkDayNightSpec terrainSnap
 
-mkDayNightInputs :: UiState -> Int -> Maybe DayNightInputs
-mkDayNightInputs ui chunkSize
+mkDayNightInputs :: TerrainSnapshot -> Maybe DayNightInputs
+mkDayNightInputs terrainSnap
   | chunkSize <= 0 = Nothing
   | otherwise = Just DayNightInputs
       { dniKey = DayNightKey
           { dnkWorldTime = worldTime
           , dnkChunkSize = chunkSize
-          , dnkPlanetRadiusKm = radiusKm
+          , dnkPlanetRadiusKm = pcRadius planet
           , dnkAxialTiltDeg = tiltDeg
-          , dnkHexSizeKm = hexSizeKmValue
-          , dnkSliceLatCenterDeg = latCenterDeg
-          , dnkSliceLonCenterDeg = lonCenterDeg
+          , dnkHexSizeKm = hexSizeKm hex
+          , dnkSliceLatCenterDeg = wsLatCenter slice
+          , dnkSliceLonCenterDeg = wsLonCenter slice
           }
       , dniPlanet = planet
       , dniSlice = slice
@@ -95,34 +93,22 @@ mkDayNightInputs ui chunkSize
       , dniTiltDeg = tiltDeg
       }
   where
-    radiusKm = mapRange 4778 9557 (uiPlanetRadius ui)
-    tiltDeg = mapRange 0 45 (uiAxialTilt ui)
-    hexSizeKmValue = sliderToDomainFloat SliderHexSizeKm (uiHexSizeKm ui)
-    latCenterDeg = mapRange (-90) 90 (uiSliceLatCenter ui)
-    lonCenterDeg = mapRange (-180) 180 (uiSliceLonCenter ui)
-    planet = PlanetConfig
-      { pcRadius = radiusKm
-      , pcAxialTilt = tiltDeg
-      , pcInsolation = mapRange 0.7 1.3 (uiInsolation ui)
-      }
-    slice = WorldSlice
-      { wsLatCenter = latCenterDeg
-      , wsLatExtent = 0
-      , wsLonCenter = lonCenterDeg
-      , wsLonExtent = 0
-      }
-    hex = HexGridMeta { hexSizeKm = hexSizeKmValue }
+    chunkSize = tsChunkSize terrainSnap
+    geo = tsGeoContext terrainSnap
+    planet = tgcPlanet geo
+    slice = tgcSlice geo
+    hex = tgcHexGrid geo
+    worldTime = tgcWorldTime geo
+    tiltDeg = pcAxialTilt planet
     config = WorldConfig { wcChunkSize = chunkSize }
     calCfg = mkCalendarConfig planet
-    worldTime = uiWorldTime ui
     calDate = tickToDate calCfg worldTime
 
 dayNightFnFromInputs :: DayNightInputs -> DayNightFn
 dayNightFnFromInputs inputs q r =
   let tile = TileCoord q r
-      latDeg = tileLatitude (dniPlanet inputs) (dniHex inputs) (dniSlice inputs) (dniConfig inputs) tile
+      (latDeg, lonDeg) = tileLatLon (dniPlanet inputs) (dniHex inputs) (dniSlice inputs) (dniConfig inputs) tile
       latRad = latDeg * pi / 180
-      lonDeg = tileLongitude (dniPlanet inputs) (dniHex inputs) (dniSlice inputs) (dniConfig inputs) tile
       sp = tileSolarPos (dniTiltDeg inputs) (dniYearFraction inputs) (dniHoursPerDay inputs) (dniCalendarHour inputs) latRad lonDeg
       altDeg = spAltitude sp * 180 / pi
   in solarBrightness altDeg

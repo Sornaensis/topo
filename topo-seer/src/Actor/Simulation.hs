@@ -71,6 +71,8 @@ import Actor.Data
   , TerrainSnapshot(..)
   , getTerrainSnapshot
   , setOverlayStoreData
+  , setTerrainGeoContextData
+  , terrainGeoContextFromWorld
   , setWeatherChunkData
   , updateClimateChunkData
   , updateTerrainChunkData
@@ -1048,6 +1050,7 @@ integrateFreshTickResult result st
             updateVegetationChunkData (shDataHandle handles) chunkSize (twrVegetation terrainWrites)
           when overlayChanged $
             setOverlayStoreData (shDataHandle handles) newStore
+          setTerrainGeoContextData (shDataHandle handles) (terrainGeoContextFromWorld world')
           when overlayNamesChanged $
             setUiOverlayNames (shUiHandle handles) (overlayNames newStore)
           setUiSimTickCount (shUiHandle handles) appliedTick

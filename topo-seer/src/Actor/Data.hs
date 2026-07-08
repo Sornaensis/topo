@@ -7,11 +7,15 @@
 module Actor.Data
   ( Data
   , DataSnapshot(..)
+  , TerrainGeoContext(..)
   , TerrainSnapshot(..)
+  , defaultTerrainGeoContext
+  , terrainGeoContextFromWorld
   , dataActorDef
   , setTerrainChunkCount
   , setBiomeChunkCount
   , setLastSeed
+  , setTerrainGeoContextData
   , setTerrainChunkData
   , setClimateChunkData
   , setWeatherChunkData
@@ -37,15 +41,46 @@ import Data.Word (Word64)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
 import Topo (ChunkId(..), ClimateChunk, GlacierChunk, GroundwaterChunk, RiverChunk, TerrainChunk, VegetationChunk, VolcanismChunk, WaterBodyChunk, WeatherChunk, getWeatherFromOverlay)
+import Topo.Calendar (WorldTime, defaultWorldTime)
+import Topo.Hex (HexGridMeta, defaultHexGridMeta)
 import Topo.Overlay (OverlayStore, emptyOverlayStore)
-import Topo.World (TerrainWorld(..))
+import Topo.Planet (PlanetConfig, WorldSlice, defaultPlanetConfig, defaultWorldSlice)
 import Topo.Types (WorldConfig(..))
+import Topo.World (TerrainWorld(..))
 
 data DataSnapshot = DataSnapshot
   { dsTerrainChunks :: !Int
   , dsBiomeChunks :: !Int
   , dsLastSeed :: !(Maybe Word64)
   } deriving (Eq, Show)
+
+-- | Authoritative geographic and clock context for render-time derivations.
+--
+-- This is copied from the actor-owned 'TerrainWorld' rather than reconstructed
+-- from mutable UI sliders, so render overlays and inspector tooltips share the
+-- same planet, local slice, hex scale, and world time that produced the terrain.
+data TerrainGeoContext = TerrainGeoContext
+  { tgcPlanet :: !PlanetConfig
+  , tgcSlice :: !WorldSlice
+  , tgcHexGrid :: !HexGridMeta
+  , tgcWorldTime :: !WorldTime
+  } deriving (Eq, Show)
+
+defaultTerrainGeoContext :: TerrainGeoContext
+defaultTerrainGeoContext = TerrainGeoContext
+  { tgcPlanet = defaultPlanetConfig
+  , tgcSlice = defaultWorldSlice
+  , tgcHexGrid = defaultHexGridMeta
+  , tgcWorldTime = defaultWorldTime
+  }
+
+terrainGeoContextFromWorld :: TerrainWorld -> TerrainGeoContext
+terrainGeoContextFromWorld world = TerrainGeoContext
+  { tgcPlanet = twPlanet world
+  , tgcSlice = twSlice world
+  , tgcHexGrid = twHexGrid world
+  , tgcWorldTime = twWorldTime world
+  }
 
 -- | Snapshot of terrain chunk data.
 --
@@ -71,6 +106,8 @@ data TerrainSnapshot = TerrainSnapshot
   , tsVegetationChunks :: !(IntMap VegetationChunk)
   , tsOverlayStore :: !OverlayStore
   -- ^ Current overlay data for overlay field visualization.
+  , tsGeoContext :: !TerrainGeoContext
+  -- ^ Authoritative planet/slice/hex/time context copied from the terrain world.
   } deriving (Eq, Show)
 
 data DataState = DataState
@@ -84,6 +121,7 @@ data DataState = DataState
   , stWeatherVersion :: !Word64
   , stVegetationVersion :: !Word64
   , stOverlayVersion :: !Word64
+  , stGeoContext :: !TerrainGeoContext
   , stTerrainChunks :: !(IntMap TerrainChunk)
   , stClimateChunks :: !(IntMap ClimateChunk)
   , stWeatherChunks :: !(IntMap WeatherChunk)
@@ -108,6 +146,7 @@ emptyDataState = DataState
   , stWeatherVersion = 0
   , stVegetationVersion = 0
   , stOverlayVersion = 0
+  , stGeoContext = defaultTerrainGeoContext
   , stTerrainChunks = IntMap.empty
   , stClimateChunks = IntMap.empty
   , stWeatherChunks = IntMap.empty
@@ -145,6 +184,7 @@ snapshotTerrain st = TerrainSnapshot
   , tsWaterBodyChunks = stWaterBodyChunks st
   , tsVegetationChunks = stVegetationChunks st
   , tsOverlayStore = stOverlayStore st
+  , tsGeoContext = stGeoContext st
   }
 
 chunkKey :: ChunkId -> Int
@@ -191,6 +231,7 @@ actor Data
   cast setTerrainChunks :: Int
   cast setBiomeChunks :: Int
   cast setLastSeed :: Word64
+  cast setTerrainGeoContext :: TerrainGeoContext
   cast setTerrainData :: (Int, [(ChunkId, TerrainChunk)])
   cast setClimateData :: (Int, [(ChunkId, ClimateChunk)])
   cast setWeatherData :: (Int, [(ChunkId, WeatherChunk)])
@@ -211,6 +252,7 @@ actor Data
   onPure_ setTerrainChunks = \count st -> st { stTerrainCount = count }
   onPure_ setBiomeChunks = \count st -> st { stBiomeCount = count }
   onPure_ setLastSeed = \seed st -> st { stLastSeed = Just seed }
+  onPure_ setTerrainGeoContext = \geo st -> st { stGeoContext = geo }
   on_ setTerrainData = \(size, chunks) st -> do
     let m = IntMap.fromList (map (\(cid, chunk) -> (chunkKey cid, chunk)) chunks)
     _ <- evaluate (IntMap.size m)
@@ -316,6 +358,10 @@ setLastSeed :: ActorHandle Data (Protocol Data) -> Word64 -> IO ()
 setLastSeed handle seed =
   cast @"setLastSeed" handle #setLastSeed seed
 
+setTerrainGeoContextData :: ActorHandle Data (Protocol Data) -> TerrainGeoContext -> IO ()
+setTerrainGeoContextData handle geo =
+  cast @"setTerrainGeoContext" handle #setTerrainGeoContext geo
+
 getDataSnapshot :: ActorHandle Data (Protocol Data) -> IO DataSnapshot
 getDataSnapshot handle =
   call @"snapshot" handle #snapshot ()
@@ -397,6 +443,7 @@ replaceTerrainData :: ActorHandle Data (Protocol Data) -> TerrainWorld -> IO ()
 replaceTerrainData handle world = do
   let size = wcChunkSize (twConfig world)
       toList m = map (\(k, v) -> (ChunkId k, v)) (IntMap.toList m)
+  setTerrainGeoContextData handle (terrainGeoContextFromWorld world)
   setTerrainChunkData handle size (toList (twTerrain world))
   setClimateChunkData handle size (toList (twClimate world))
   setWeatherChunkData handle size (toList (getWeatherFromOverlay world))

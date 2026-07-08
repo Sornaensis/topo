@@ -35,7 +35,7 @@ import Hyperspace.Actor (ActorHandle, ActorSystem, Protocol, get, newActorSystem
 import Test.Hspec
 
 import Actor.AtlasManager (AtlasJob(..), AtlasManager, drainAtlasJobs)
-import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..), getTerrainSnapshot, setTerrainChunkCount, setTerrainChunkData)
+import Actor.Data (Data, DataSnapshot(..), TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext, getTerrainSnapshot, setTerrainChunkCount, setTerrainChunkData, setTerrainGeoContextData)
 import Actor.Log (Log, LogEntry(..), LogSnapshot(..), getLogSnapshot)
 import Actor.PluginManager (LoadedPlugin(..), PluginManager, discoverPlugins, getLoadedPlugins)
 import Actor.Simulation (Simulation)
@@ -45,6 +45,7 @@ import Actor.SnapshotReceiver
   , newTerrainSnapshotRef
   , newSnapshotVersionRef
   , readSnapshotVersion
+  , readTerrainSnapshot
   , writeTerrainSnapshot
   )
 import Actor.Terrain (Terrain, TerrainReplyOps)
@@ -101,6 +102,7 @@ import Seer.Service.Types
   , serviceErrorKind
   )
 import Topo (WorldConfig(..), chunkIdFromCoord, emptyTerrainChunk)
+import Topo.Calendar (WorldTime(..), simulationTickSeconds)
 import Topo.Command.Types (SeerCommand(..), SeerResponse(..))
 import Topo.Overlay (emptyOverlayStore)
 import Topo.Pipeline.Stage (StageId(..))
@@ -361,7 +363,7 @@ spec = describe "CommandDispatch" $ do
       srSuccess rsp `shouldBe` True
       lookupKey "name" (srResult rsp) `shouldBe` Just (String "SliderGenScale")
 
-    it "enqueues day/night atlas work when a key slider changes" $ withCtx $ \ctx -> do
+    it "does not enqueue day/night atlas work when authoritative geometry sliders change" $ withCtx $ \ctx -> do
       prepareReadyDayNight ctx
       let handles = ccActorHandles ctx
       version0 <- readSnapshotVersion (ahSnapshotVersionRef handles)
@@ -369,9 +371,9 @@ spec = describe "CommandDispatch" $ do
       rsp <- dispatch ctx "set_slider" (object ["name" .= ("SliderAxialTilt" :: String), "value" .= (0.9 :: Double)])
       srSuccess rsp `shouldBe` True
 
-      version1 <- readSnapshotVersion (ahSnapshotVersionRef handles)
-      version1 `shouldSatisfy` (> version0)
-      expectQueuedAtlasJobsForVersion ctx version1
+      readSnapshotVersion (ahSnapshotVersionRef handles) `shouldReturn` version0
+      jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+      length jobs `shouldBe` 0
 
     it "does not enqueue day/night work for a non-key slider" $ withCtx $ \ctx -> do
       prepareReadyDayNight ctx
@@ -853,7 +855,7 @@ spec = describe "CommandDispatch" $ do
         Just (Array arr) -> length arr `shouldBe` 2
         _ -> expectationFailure "expected updated array"
 
-    it "coalesces multiple key slider changes into one day/night rebuild set" $ withCtx $ \ctx -> do
+    it "does not enqueue day/night rebuilds for authoritative geometry slider batches" $ withCtx $ \ctx -> do
       prepareReadyDayNight ctx
       let handles = ccActorHandles ctx
           args = object ["values" .= object
@@ -865,9 +867,9 @@ spec = describe "CommandDispatch" $ do
       rsp <- dispatch ctx "set_sliders" args
       srSuccess rsp `shouldBe` True
 
-      version1 <- readSnapshotVersion (ahSnapshotVersionRef handles)
-      version1 `shouldSatisfy` (> version0)
-      expectQueuedAtlasJobsForVersion ctx version1
+      readSnapshotVersion (ahSnapshotVersionRef handles) `shouldReturn` version0
+      jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+      length jobs `shouldBe` 0
 
     it "reports unknown sliders" $ withCtx $ \ctx -> do
       let args = object ["values" .= object
@@ -900,7 +902,7 @@ spec = describe "CommandDispatch" $ do
       srSuccess rsp `shouldBe` True
       lookupKey "tab" (srResult rsp) `shouldBe` Just (String "terrain")
 
-    it "coalesces reset key changes into one day/night rebuild set" $ withCtx $ \ctx -> do
+    it "does not enqueue day/night rebuilds when authoritative geometry sliders reset" $ withCtx $ \ctx -> do
       prepareReadyDayNight ctx
       let handles = ccActorHandles ctx
       changed <- dispatch ctx "set_slider" (object ["name" .= ("SliderAxialTilt" :: String), "value" .= (0.9 :: Double)])
@@ -911,9 +913,9 @@ spec = describe "CommandDispatch" $ do
       rsp <- dispatch ctx "reset_sliders" Null
       srSuccess rsp `shouldBe` True
 
-      versionAfterReset <- readSnapshotVersion (ahSnapshotVersionRef handles)
-      versionAfterReset `shouldSatisfy` (> versionBeforeReset)
-      expectQueuedAtlasJobsForVersion ctx versionAfterReset
+      readSnapshotVersion (ahSnapshotVersionRef handles) `shouldReturn` versionBeforeReset
+      jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+      length jobs `shouldBe` 0
 
   -- -------------------------------------------------------------------
   -- pipeline and plugin mutations
@@ -1032,6 +1034,26 @@ spec = describe "CommandDispatch" $ do
       map ajViewMode jobs `shouldBe` replicate (length expectedStages) (uiViewMode ui)
       map atlasJobStage jobs `shouldBe` expectedStages
       map ajSnapshotVersion jobs `shouldSatisfy` all (== version1)
+
+    it "publishes the latest authoritative terrain context before toggling day/night" $ withCtx $ \ctx -> do
+      _ <- writeReadyTerrainData ctx
+      let handles = ccActorHandles ctx
+          logH = ahLogHandle handles
+          atlasH = ahAtlasManagerHandle handles
+          latestTime = WorldTime 7 simulationTickSeconds
+      setTerrainGeoContextData (ahDataHandle handles) (defaultTerrainGeoContext { tgcWorldTime = latestTime })
+      startLogs <- toggleLogCount logH
+
+      rsp <- dispatch ctx "click_widget" (object
+        [ "widget_id" .= ("WidgetDayNightToggle" :: Text) ])
+      srSuccess rsp `shouldBe` True
+      awaitToggleLogCount logH (startLogs + 1) `shouldReturn` True
+
+      published <- readTerrainSnapshot (ahTerrainSnapshotRef handles)
+      tgcWorldTime (tsGeoContext published) `shouldBe` latestTime
+      jobs <- drainAtlasJobs atlasH
+      length jobs `shouldSatisfy` (> 0)
+      map (tgcWorldTime . tsGeoContext . ajTerrain) jobs `shouldSatisfy` all (== latestTime)
 
     it "serializes rapid day/night clicks against the latest UI state" $ withCtx $ \ctx -> do
       let handles = ccActorHandles ctx
@@ -1278,20 +1300,6 @@ prepareReadyDayNight ctx = do
   _ <- drainAtlasJobs (ahAtlasManagerHandle handles)
   pure ()
 
-expectQueuedAtlasJobsForVersion :: CommandContext -> SnapshotVersion -> IO ()
-expectQueuedAtlasJobsForVersion ctx version = do
-  let handles = ccActorHandles ctx
-      atlasH = ahAtlasManagerHandle handles
-  ui <- getUiSnapshot (ahUiHandle handles)
-  jobs <- drainAtlasJobs atlasH
-  let expectedStages = map zoomStagePair (orderedZoomStagesForZoom (uiZoom ui))
-  length jobs `shouldBe` length expectedStages
-  map ajViewMode jobs `shouldBe` replicate (length expectedStages) (uiViewMode ui)
-  map atlasJobStage jobs `shouldBe` expectedStages
-  map ajSnapshotVersion jobs `shouldSatisfy` all (== version)
-  map ajWaterLevel jobs `shouldSatisfy` all (== uiRenderWaterLevel ui)
-  map (tsChunkSize . ajTerrain) jobs `shouldSatisfy` all (== 64)
-
 expectViewportRefreshForCommand :: CommandContext -> Text -> Value -> IO ()
 expectViewportRefreshForCommand ctx method params = do
   _ <- writeReadyTerrainData ctx
@@ -1328,7 +1336,7 @@ withCtx action = bracket newActorSystem shutdownActorSystem $ \system -> do
   simH       <- get @Simulation system
   uiActionsH <- get @UiActions system
   dataSnapRef    <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
-  terrainSnapRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
+  terrainSnapRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore defaultTerrainGeoContext)
   versionRef     <- newSnapshotVersionRef
   uiSnapRef      <- newUiSnapshotRef
   screenshotRef  <- newScreenshotRequestRef
@@ -1494,6 +1502,7 @@ writeSingleChunkTerrain ctx = do
         mempty
         mempty
         emptyOverlayStore
+        defaultTerrainGeoContext
   writeTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx)) snap
   pure chunkKey
 

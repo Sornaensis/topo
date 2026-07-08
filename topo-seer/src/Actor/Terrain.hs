@@ -18,6 +18,7 @@ module Actor.Terrain
   , startTerrainGen
   ) where
 
+import Actor.Data (TerrainGeoContext, terrainGeoContextFromWorld)
 import Actor.Log (LogEntry(..), LogLevel(..))
 import Control.Concurrent (threadDelay)
 import Control.Exception (evaluate)
@@ -111,6 +112,7 @@ data TerrainGenResult = TerrainGenResult
   , tgrResultWaterBodyChunks :: ![(ChunkId, WaterBodyChunk)]
   , tgrResultVegetationChunks :: ![(ChunkId, VegetationChunk)]
   , tgrResultOverlayStore :: !OverlayStore
+  , tgrResultGeoContext :: !TerrainGeoContext
   , tgrResultTerrainCount :: !Int
   , tgrResultBiomeCount :: !Int
   } deriving (Eq, Show)
@@ -189,6 +191,7 @@ actor Terrain
             waterBodyChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twWaterBodies scheduledWorld))
             vegetationChunks = map (\(key, chunk) -> (ChunkId key, chunk)) (IntMap.toList (twVegetation scheduledWorld))
             overlayStore = twOverlays scheduledWorld
+            geoContext = terrainGeoContextFromWorld scheduledWorld
             terrainCount = IntMap.size (twTerrain scheduledWorld)
             biomeCount = terrainCount
         -- Force the full list spines + tuple WHNF on the terrain actor's
@@ -218,6 +221,7 @@ actor Terrain
               , tgrResultWaterBodyChunks = waterBodyChunks
               , tgrResultVegetationChunks = vegetationChunks
               , tgrResultOverlayStore = overlayStore
+              , tgrResultGeoContext = geoContext
               , tgrResultTerrainCount = terrainCount
               , tgrResultBiomeCount = biomeCount
               }

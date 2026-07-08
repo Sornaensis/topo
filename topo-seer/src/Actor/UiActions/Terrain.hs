@@ -26,6 +26,7 @@ import Actor.Data
   , setGroundwaterChunkData
   , setLastSeed
   , setOverlayStoreData
+  , setTerrainGeoContextData
   , setRiverChunkData
   , setTerrainChunkCount
   , setTerrainChunkData
@@ -118,8 +119,10 @@ applyTerrainResult handles resultMsg = do
       waterBodyChunks = tgrResultWaterBodyChunks resultMsg
       vegetationChunks = tgrResultVegetationChunks resultMsg
       overlayStore = tgrResultOverlayStore resultMsg
+      geoContext = tgrResultGeoContext resultMsg
       terrainCount = tgrResultTerrainCount resultMsg
       biomeCount = tgrResultBiomeCount resultMsg
+  setTerrainGeoContextData (uahData handles) geoContext
   setTerrainChunkData (uahData handles) chunkSize []
   setClimateChunkData (uahData handles) chunkSize []
   setWeatherChunkData (uahData handles) chunkSize []

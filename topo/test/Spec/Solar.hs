@@ -60,8 +60,9 @@ spec = describe "Solar" $ do
   -- localSolarHour
   -- -----------------------------------------------------------------------
   describe "localSolarHour" $ do
-    it "longitude 0 gives same as calendar hour" $
+    it "treats calendar hour 12 as solar noon at longitude 0" $ do
       localSolarHour 24.0 12.0 0.0 `shouldSatisfy` approxEqAbs hourTol 12.0
+      hourAngle (localSolarHour 24.0 12.0 0.0) 24.0 `shouldSatisfy` approxEqAbs angTol 0
 
     it "longitude 180 offsets by half a day" $
       localSolarHour 24.0 12.0 180.0 `shouldSatisfy` approxEqAbs hourTol 0.0

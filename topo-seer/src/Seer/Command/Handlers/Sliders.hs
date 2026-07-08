@@ -11,21 +11,16 @@ module Seer.Command.Handlers.Sliders
   , handleGetConfigSummary
   ) where
 
-import Control.Monad (when)
 import Data.Aeson (Value(..), object, (.=), (.:))
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Aeson.Types as Aeson
 import Data.Either (partitionEithers)
-import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import Data.Text (Text)
 
-import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot)
-import Actor.SnapshotReceiver (bumpSnapshotVersionAndRead)
-import Actor.UiActions.Command (enqueueAtlasRebuildForTerrain)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.UI.State
   ( UiState(..)
@@ -51,8 +46,6 @@ import Seer.Config.SliderConversion
   )
 import Seer.Command.Context (CommandContext(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
-import UI.DayNight (mkDayNightKey)
-
 -- | Handle @get_sliders@ — return all sliders or sliders for a specific tab.
 handleGetSliders :: CommandContext -> Int -> Value -> IO SeerResponse
 handleGetSliders ctx reqId params = do
@@ -176,17 +169,10 @@ handleGetConfigSummary ctx reqId _params = do
 -- --------------------------------------------------------------------------
 
 maybeEnqueueDayNightSliderRebuild :: ActorHandles -> UiState -> UiState -> IO ()
-maybeEnqueueDayNightSliderRebuild handles oldUi newUi = do
-  terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
-  let oldKey = mkDayNightKey oldUi (tsChunkSize terrainSnap)
-      newKey = mkDayNightKey newUi (tsChunkSize terrainSnap)
-  when (uiDayNightEnabled newUi && terrainSnapshotReady terrainSnap && oldKey /= newKey) $ do
-    snapshotVersion <- bumpSnapshotVersionAndRead (ahSnapshotVersionRef handles)
-    enqueueAtlasRebuildForTerrain handles (uiViewMode newUi) newUi snapshotVersion terrainSnap
-
-terrainSnapshotReady :: TerrainSnapshot -> Bool
-terrainSnapshotReady terrainSnap =
-  tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
+maybeEnqueueDayNightSliderRebuild _ _ _ =
+  -- Day/night geo/time is now authoritative terrain-world context.  Slider
+  -- changes do not mutate the already-rendered world's solar geometry.
+  pure ()
 
 parseSliderName :: Value -> Aeson.Parser Text
 parseSliderName = Aeson.withObject "params" (.: "name")

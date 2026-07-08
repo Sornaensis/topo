@@ -122,7 +122,7 @@ buildTerrainCache uiSnap terrainSnap =
       cacheChunks = IntMap.mapWithKey mkGeom (tsTerrainChunks terrainSnap)
       dayNightSpec =
         if uiDayNightEnabled uiSnap
-          then mkDayNightSpec uiSnap (tsChunkSize terrainSnap)
+          then mkDayNightSpec terrainSnap
           else Nothing
       (dayNightKey, dayNightGeometry) = case dayNightSpec of
         Just (key, dayNightFn) ->
@@ -146,7 +146,7 @@ buildTerrainCache uiSnap terrainSnap =
 
 terrainDayNightKey :: UiState -> TerrainSnapshot -> Maybe DayNightKey
 terrainDayNightKey uiSnap terrainSnap
-  | uiDayNightEnabled uiSnap = mkDayNightKey uiSnap (tsChunkSize terrainSnap)
+  | uiDayNightEnabled uiSnap = mkDayNightKey terrainSnap
   | otherwise = Nothing
 
 -- | Draw terrain either from cached textures or immediate geometry.

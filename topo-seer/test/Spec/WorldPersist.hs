@@ -18,7 +18,7 @@ import System.FilePath ((</>))
 import Test.Hspec
 import Spec.Support.OverlayFixtures (mkSparseFloatOverlay)
 
-import Actor.Data (TerrainSnapshot(..))
+import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.UI (emptyUiState, UiState(..))
 import Seer.Config (configFromUi, unmapRange)
 import Seer.Config.Snapshot (snapshotFromUi)
@@ -36,6 +36,7 @@ import Seer.World.Persist
   )
 import Seer.World.Persist.Types (defaultManifestTime)
 import Topo.Calendar (WorldTime(..), simulationTickSeconds)
+import Topo.Planet (PlanetConfig(..), WorldSlice(..), defaultPlanetConfig, defaultWorldSlice)
 import Topo.Plugin.RPC.Manifest
   ( RPCExternalDataSourceAccess(..)
   , RPCExternalDataSourceCapability(..)
@@ -52,7 +53,7 @@ import Topo.Plugin.RPC.Manifest
   , defaultRPCExternalDataSourceStatus
   , defaultRPCUIHints
   )
-import Topo.Hex (defaultHexGridMeta)
+import Topo.Hex (HexGridMeta(..), defaultHexGridMeta)
 import Topo.Storage (emptyProvenance, saveWorldWithProvenance)
 import Topo.Overlay
   ( Overlay(..)
@@ -140,6 +141,7 @@ emptyTerrainSnapshot chunkSize = TerrainSnapshot
   , tsWaterBodyChunks = IntMap.empty
   , tsVegetationChunks = IntMap.empty
   , tsOverlayStore = emptyOverlayStore
+  , tsGeoContext = defaultTerrainGeoContext
   }
 
 scheduleFixture :: SimulationScheduleState
@@ -363,8 +365,9 @@ worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
                   emptyOverlayProvenance { opSchedule = Just scheduleFixture }
                 terrainSnap = (emptyTerrainSnapshot 64)
                   { tsOverlayStore = insertOverlay overlay emptyOverlayStore
+                  , tsGeoContext = defaultTerrainGeoContext { tgcWorldTime = WorldTime 11 simulationTickSeconds }
                   }
-                ui = emptyUiState { uiSeed = 42, uiChunkSize = 64, uiSimTickCount = 11 }
+                ui = emptyUiState { uiSeed = 42, uiChunkSize = 64, uiSimTickCount = 99 }
                 world = snapshotToWorld ui terrainSnap
 
             saveResult <- saveNamedWorld testWorldName ui world
@@ -450,32 +453,43 @@ worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
 
 snapshotToWorldSpec :: Spec
 snapshotToWorldSpec = describe "snapshotToWorld" $
-  it "rebuilds geographic metadata from the UI config and preserves overlays" $ do
+  it "preserves authoritative snapshot geographic metadata/time and overlays" $ do
     let overlay = mkSparseFloatOverlay
           "persist_sparse_test"
           "snapshot reconstruction test"
           0.75
           emptyOverlayProvenance
         overlayStore = insertOverlay overlay emptyOverlayStore
+        authoritativeGeo = defaultTerrainGeoContext
+          { tgcHexGrid = HexGridMeta 13
+          , tgcPlanet = defaultPlanetConfig { pcRadius = 6800, pcAxialTilt = 12 }
+          , tgcSlice = defaultWorldSlice { wsLatCenter = 12.5, wsLonCenter = (-45.0) }
+          , tgcWorldTime = WorldTime 17 simulationTickSeconds
+          }
         terrainSnap = (emptyTerrainSnapshot 32)
           { tsVersion = 1
           , tsOverlayStore = overlayStore
+          , tsGeoContext = authoritativeGeo
           }
         ui = emptyUiState
           { uiSeed = 99
-          , uiHexSizeKm = unmapRange 2.0 20.0 11.0
+          , uiHexSizeKm = unmapRange 2.0 20.0 3.0
           , uiPlanetRadius = unmapRange 4778.0 9557.0 7000.0
-          , uiSliceLatCenter = unmapRange (-90.0) 90.0 12.5
-          , uiSliceLonCenter = unmapRange (-180.0) 180.0 (-45.0)
-          , uiSimTickCount = 17
+          , uiSliceLatCenter = unmapRange (-90.0) 90.0 30.0
+          , uiSliceLonCenter = unmapRange (-180.0) 180.0 70.0
+          , uiSimTickCount = 99
           }
-        genCfg = configFromUi ui
+        genCfg = (configFromUi ui)
+          { worldHexGrid = tgcHexGrid authoritativeGeo
+          , worldPlanet = tgcPlanet authoritativeGeo
+          , worldSlice = tgcSlice authoritativeGeo
+          }
         world = snapshotToWorld ui terrainSnap
 
     twConfig world `shouldBe` WorldConfig { wcChunkSize = 32 }
-    twHexGrid world `shouldBe` worldHexGrid genCfg
-    twPlanet world `shouldBe` worldPlanet genCfg
-    twSlice world `shouldBe` worldSlice genCfg
+    twHexGrid world `shouldBe` tgcHexGrid authoritativeGeo
+    twPlanet world `shouldBe` tgcPlanet authoritativeGeo
+    twSlice world `shouldBe` tgcSlice authoritativeGeo
     twSeed world `shouldBe` 99
     wtTick (twWorldTime world) `shouldBe` 17
     wtTickRate (twWorldTime world) `shouldBe` simulationTickSeconds

@@ -95,7 +95,7 @@ sampleTileGeometry =
 
 -- | Day/night function for chunkSize=8.
 dayNightFn :: Maybe (Int -> Int -> Float)
-dayNightFn = mkDayNightFn benchUiState 8
+dayNightFn = mkDayNightFn benchTerrainSnapshot
 
 sampleTileGeometryDayNight :: [AtlasTileGeometry]
 sampleTileGeometryDayNight =

@@ -23,9 +23,9 @@ module Seer.Draw.Overlay
   , transformRect
   ) where
 
-import Actor.Data (TerrainSnapshot(..))
+import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..))
 import Actor.PluginManager.Types (PluginLifecycleSnapshot(..), pluginLifecycleStateText)
-import Actor.UI (UiState(..), ViewMode(..), uiWorldTime)
+import Actor.UI (UiState(..), ViewMode(..))
 import Data.Aeson (Value(..), object, toJSON, (.=))
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
@@ -40,7 +40,6 @@ import qualified Data.Vector as V
 import Data.Word (Word8, Word16, Word32, Word64)
 import Linear (V2(..), V4(..))
 import qualified SDL
-import Seer.Config (mapRange)
 import Seer.Config.SliderConversion (sliderToDomainFloat)
 import Seer.Config.SliderRegistry (SliderId(..))
 import Topo
@@ -117,7 +116,7 @@ import Topo.Plugin.RPC.DataService
   ( QueryResult(..)
   )
 import Topo.Hex (HexGridMeta(..))
-import Topo.Planet (PlanetConfig(..), WorldSlice(..), formatLatLon, tileLatitude, tileLongitude)
+import Topo.Planet (PlanetConfig(..), WorldSlice(..), formatLatLon, tileLatLon)
 import Topo.Calendar (CalendarConfig(..), mkCalendarConfig, tickToDate, yearFraction, CalendarDate(..))
 import Topo.Solar (SolarPosition(..), DayInfo(..), tileSolarPos, tileDayInfo, defaultSolarConfig, tileIrradiance, localSolarHour)
 import Topo.Units
@@ -380,29 +379,16 @@ latLonLine ui terrainSnap tileQ tileR =
   in formatLatLon lat lon
 
 latLonValues :: UiState -> TerrainSnapshot -> Int -> Int -> (Float, Float)
-latLonValues ui terrainSnap tileQ tileR =
-  let (planet, slice, hex, worldConfig) = geoContext ui terrainSnap
-      tile = TileCoord tileQ tileR
-      lat = tileLatitude planet hex slice worldConfig tile
-      lon = tileLongitude planet hex slice worldConfig tile
-  in (lat, lon)
+latLonValues _ terrainSnap tileQ tileR =
+  tileLatLon planet hex slice worldConfig (TileCoord tileQ tileR)
+  where
+    (planet, slice, hex, worldConfig) = geoContext terrainSnap
 
-geoContext :: UiState -> TerrainSnapshot -> (PlanetConfig, WorldSlice, HexGridMeta, WorldConfig)
-geoContext ui terrainSnap =
-  let planet = PlanetConfig
-        { pcRadius = mapRange 4778 9557 (uiPlanetRadius ui)
-        , pcAxialTilt = mapRange 0 45 (uiAxialTilt ui)
-        , pcInsolation = mapRange 0.7 1.3 (uiInsolation ui)
-        }
-      slice = WorldSlice
-        { wsLatCenter = mapRange (-90) 90 (uiSliceLatCenter ui)
-        , wsLatExtent = 0
-        , wsLonCenter = mapRange (-180) 180 (uiSliceLonCenter ui)
-        , wsLonExtent = 0
-        }
-      hex = HexGridMeta { hexSizeKm = sliderToDomainFloat SliderHexSizeKm (uiHexSizeKm ui) }
+geoContext :: TerrainSnapshot -> (PlanetConfig, WorldSlice, HexGridMeta, WorldConfig)
+geoContext terrainSnap =
+  let geo = tsGeoContext terrainSnap
       worldConfig = WorldConfig { wcChunkSize = tsChunkSize terrainSnap }
-  in (planet, slice, hex, worldConfig)
+  in (tgcPlanet geo, tgcSlice geo, tgcHexGrid geo, worldConfig)
 
 sectionsToLines :: [TerrainInspectorSection] -> [Text]
 sectionsToLines = concatMap sectionLines
@@ -746,19 +732,18 @@ modeContextLines ui terrainSnap (q, r) sample = modeLines (uiViewMode ui) sample
                overlayValuesAt overlay key (tsChunkSize terrainSnap) sample' fields
 
 solarLinesFor :: UiState -> TerrainSnapshot -> Int -> Int -> [Text]
-solarLinesFor ui terrainSnap tileQ tileR =
-  let (planet, slice, hex, worldConfig) = geoContext ui terrainSnap
+solarLinesFor _ terrainSnap tileQ tileR =
+  let (planet, slice, hex, worldConfig) = geoContext terrainSnap
+      worldTime = tgcWorldTime (tsGeoContext terrainSnap)
       calCfg = mkCalendarConfig planet
-      worldTime = uiWorldTime ui
       calDate = tickToDate calCfg worldTime
       yf      = realToFrac (yearFraction calCfg worldTime) :: Float
       hpd     = realToFrac (ccHoursPerDay calCfg) :: Float
       calHour = realToFrac (cdHourOfDay calDate) :: Float
       tiltDeg = pcAxialTilt planet
       tile    = TileCoord tileQ tileR
-      latDeg  = tileLatitude planet hex slice worldConfig tile
+      (latDeg, lonDeg) = tileLatLon planet hex slice worldConfig tile
       latRad  = latDeg * pi / 180
-      lonDeg  = tileLongitude planet hex slice worldConfig tile
       sp      = tileSolarPos tiltDeg yf hpd calHour latRad lonDeg
       di      = tileDayInfo tiltDeg yf hpd latRad
       irr     = tileIrradiance defaultSolarConfig tiltDeg yf hpd calHour latRad lonDeg

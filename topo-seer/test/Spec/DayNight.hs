@@ -1,61 +1,112 @@
 module Spec.DayNight (spec) where
 
-import Data.Foldable (forM_)
 import Test.Hspec
 
-import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
+import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext)
+import qualified Data.IntMap.Strict as IntMap
+import Topo.Calendar (WorldTime(..), defaultWorldTime)
+import Topo.Hex (HexGridMeta(..))
+import Topo.Overlay (emptyOverlayStore)
+import Topo.Planet (PlanetConfig(..), WorldSlice(..), defaultPlanetConfig, defaultWorldSlice)
 import UI.DayNight (mkDayNightFn, mkDayNightKey, mkDayNightSpec)
 
 spec :: Spec
 spec = describe "DayNight" $ do
   describe "DayNightKey" $ do
-    let baseUi = emptyUiState
-          { uiSimTickCount = 10
-          , uiPlanetRadius = 0.5
-          , uiAxialTilt = 0.5
-          , uiHexSizeKm = 0.5
-          , uiSliceLatCenter = 0.5
-          , uiSliceLonCenter = 0.5
+    let baseSnap = (emptyTerrainSnapshot 16)
+          { tsGeoContext = defaultTerrainGeoContext
+              { tgcPlanet = defaultPlanetConfig { pcRadius = 6371, pcAxialTilt = 23.44 }
+              , tgcHexGrid = HexGridMeta 8
+              , tgcSlice = defaultWorldSlice { wsLatCenter = 35, wsLonCenter = 0 }
+              , tgcWorldTime = WorldTime 10 3600
+              }
           }
-        baseChunkSize = 16
-        baseKey = mkDayNightKey baseUi baseChunkSize
+        baseKey = mkDayNightKey baseSnap
 
-    forM_
-      [ ("simulation tick/world time", mkDayNightKey (baseUi { uiSimTickCount = 11 }) baseChunkSize)
-      , ("planet radius", mkDayNightKey (baseUi { uiPlanetRadius = 0.75 }) baseChunkSize)
-      , ("axial tilt", mkDayNightKey (baseUi { uiAxialTilt = 0.75 }) baseChunkSize)
-      , ("hex size", mkDayNightKey (baseUi { uiHexSizeKm = 0.75 }) baseChunkSize)
-      , ("slice latitude center", mkDayNightKey (baseUi { uiSliceLatCenter = 0.75 }) baseChunkSize)
-      , ("slice longitude center", mkDayNightKey (baseUi { uiSliceLonCenter = 0.75 }) baseChunkSize)
-      , ("terrain chunk size", mkDayNightKey baseUi 32)
-      ] $ \(label, changedKey) ->
-        it ("changes when " <> label <> " changes") $ do
-          baseKey `shouldNotBe` Nothing
-          changedKey `shouldNotBe` baseKey
+    it "changes when authoritative world time changes" $
+      mkDayNightKey (baseSnap { tsGeoContext = (tsGeoContext baseSnap) { tgcWorldTime = WorldTime 11 3600 } }) `shouldNotBe` baseKey
 
-    forM_
-      [ ("view mode", mkDayNightKey (baseUi { uiViewMode = ViewBiome }) baseChunkSize)
-      , ("render water level", mkDayNightKey (baseUi { uiRenderWaterLevel = 0.9 }) baseChunkSize)
-      , ("terrain water level", mkDayNightKey (baseUi { uiWaterLevel = 0.9 }) baseChunkSize)
-      , ("terrain color slider", mkDayNightKey (baseUi { uiGenScale = 0.1 }) baseChunkSize)
-      , ("pan offset", mkDayNightKey (baseUi { uiPanOffset = (123, -45) }) baseChunkSize)
-      , ("zoom", mkDayNightKey (baseUi { uiZoom = 2.0 }) baseChunkSize)
-      , ("simulation tick rate", mkDayNightKey (baseUi { uiSimTickRate = 1.0 }) baseChunkSize)
-      , ("insolation", mkDayNightKey (baseUi { uiInsolation = 1.0 }) baseChunkSize)
-      ] $ \(label, unchangedKey) ->
-        it ("does not change when only " <> label <> " changes") $
-          unchangedKey `shouldBe` baseKey
+    it "changes when authoritative planet geometry changes" $
+      mkDayNightKey (baseSnap { tsGeoContext = (tsGeoContext baseSnap) { tgcPlanet = defaultPlanetConfig { pcRadius = 7000, pcAxialTilt = 23.44 } } }) `shouldNotBe` baseKey
+
+    it "changes when authoritative axial tilt changes" $
+      mkDayNightKey (baseSnap { tsGeoContext = (tsGeoContext baseSnap) { tgcPlanet = defaultPlanetConfig { pcAxialTilt = 10 } } }) `shouldNotBe` baseKey
+
+    it "changes when authoritative hex size changes" $
+      mkDayNightKey (baseSnap { tsGeoContext = (tsGeoContext baseSnap) { tgcHexGrid = HexGridMeta 16 } }) `shouldNotBe` baseKey
+
+    it "changes when authoritative slice center changes" $
+      mkDayNightKey (baseSnap { tsGeoContext = (tsGeoContext baseSnap) { tgcSlice = defaultWorldSlice { wsLatCenter = 20, wsLonCenter = 30 } } }) `shouldNotBe` baseKey
+
+    it "changes when terrain chunk size changes" $
+      mkDayNightKey (baseSnap { tsChunkSize = 32 }) `shouldNotBe` baseKey
 
     it "is unavailable without a positive terrain chunk size" $ do
-      mkDayNightKey baseUi 0 `shouldBe` Nothing
-      case mkDayNightSpec baseUi 0 of
+      mkDayNightKey (baseSnap { tsChunkSize = 0 }) `shouldBe` Nothing
+      case mkDayNightSpec (baseSnap { tsChunkSize = 0 }) of
         Nothing -> pure ()
         Just _ -> expectationFailure "expected no day/night spec for non-positive chunk size"
 
   it "builds mkDayNightFn from the same spec input path" $ do
-    let ui = emptyUiState { uiSimTickCount = 24, uiAxialTilt = 0.6 }
-    case (mkDayNightSpec ui 16, mkDayNightFn ui 16) of
+    let snap = (emptyTerrainSnapshot 16)
+          { tsGeoContext = defaultTerrainGeoContext
+              { tgcWorldTime = WorldTime 24 3600
+              , tgcPlanet = defaultPlanetConfig { pcAxialTilt = 27 }
+              }
+          }
+    case (mkDayNightSpec snap, mkDayNightFn snap) of
       (Just (key, specFn), Just fn) -> do
-        mkDayNightKey ui 16 `shouldBe` Just key
+        mkDayNightKey snap `shouldBe` Just key
         specFn 3 (-1) `shouldBe` fn 3 (-1)
       _ -> expectationFailure "expected day/night spec and function for positive chunk size"
+
+  it "changes centre brightness between tick 0 midnight and tick 12 noon" $ do
+    let centre = 8
+        mkSnap tick = (emptyTerrainSnapshot 16)
+          { tsGeoContext = defaultTerrainGeoContext
+              { tgcWorldTime = WorldTime tick 3600
+              , tgcPlanet = defaultPlanetConfig { pcAxialTilt = 0 }
+              , tgcSlice = defaultWorldSlice { wsLatCenter = 0, wsLonCenter = 0 }
+              }
+          }
+        Just nightFn = mkDayNightFn (mkSnap 0)
+        Just noonFn = mkDayNightFn (mkSnap 12)
+    noonFn centre centre `shouldSatisfy` (> nightFn centre centre)
+
+  it "gives west/centre/east tiles physically distinct brightness near the terminator" $ do
+    let centre = 8
+        snap = (emptyTerrainSnapshot 16)
+          { tsGeoContext = defaultTerrainGeoContext
+              { tgcWorldTime = WorldTime 6 3600
+              , tgcPlanet = defaultPlanetConfig { pcAxialTilt = 0 }
+              , tgcSlice = defaultWorldSlice { wsLatCenter = 0, wsLonCenter = 0 }
+              , tgcHexGrid = HexGridMeta 1000
+              }
+          }
+        Just fn = mkDayNightFn snap
+        west = fn (centre - 4) centre
+        mid = fn centre centre
+        east = fn (centre + 4) centre
+    west `shouldSatisfy` (< mid)
+    mid `shouldSatisfy` (< east)
+
+emptyTerrainSnapshot :: Int -> TerrainSnapshot
+emptyTerrainSnapshot chunkSize = TerrainSnapshot
+  { tsVersion = 0
+  , tsClimateVersion = 0
+  , tsWeatherVersion = 0
+  , tsVegetationVersion = 0
+  , tsOverlayVersion = 0
+  , tsChunkSize = chunkSize
+  , tsTerrainChunks = IntMap.empty
+  , tsClimateChunks = IntMap.empty
+  , tsWeatherChunks = IntMap.empty
+  , tsRiverChunks = IntMap.empty
+  , tsGroundwaterChunks = IntMap.empty
+  , tsVolcanismChunks = IntMap.empty
+  , tsGlacierChunks = IntMap.empty
+  , tsWaterBodyChunks = IntMap.empty
+  , tsVegetationChunks = IntMap.empty
+  , tsOverlayStore = emptyOverlayStore
+  , tsGeoContext = defaultTerrainGeoContext { tgcWorldTime = defaultWorldTime }
+  }

@@ -21,7 +21,8 @@ import Data.Word (Word16, Word32)
 import qualified Data.Vector.Unboxed as U
 
 import Actor.Data
-  ( TerrainSnapshot(..)
+  ( TerrainGeoContext(..)
+  , TerrainSnapshot(..)
   )
 import Actor.PluginManager
   ( getPluginDataResources
@@ -44,7 +45,6 @@ import Actor.UI.State
   )
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
-import Seer.Config (mapRange)
 import Seer.Config.SliderConversion (sliderToDomainFloat)
 import Seer.Config.SliderRegistry (SliderId(..))
 import Seer.Draw.Overlay
@@ -56,9 +56,9 @@ import Topo.Biome.Name (biomeDisplayName)
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 import Topo.Plugin.DataResource (DataOperations(..), DataPagination(..), DataResourceSchema(..))
 import Topo.Grid.HexDirection (traceIndexInDirection)
-import Topo.Hex (HexDirection(..), HexGridMeta(..))
+import Topo.Hex (HexDirection(..))
 import Topo.OceanCurrent (OceanCurrentConfig(..), oceanCurrentOffset)
-import Topo.Planet (PlanetConfig(..), WorldSlice(..), tileLatitude, tileLongitude)
+import Topo.Planet (tileLatLon)
 import Topo.Plugin.RPC.DataService (DataQuery(..), QueryResource(..))
 import Topo.Types
   ( WorldConfig(..), ChunkId(..), TileCoord(..), TileIndex(..)
@@ -949,24 +949,11 @@ oceanCurrentConfigFromUiForApi ui = OceanCurrentConfig
   }
 
 latLonValuesForApi :: UiState -> TerrainSnapshot -> Int -> Int -> (Float, Float)
-latLonValuesForApi ui terrainSnap tileQ tileR =
-  let planet = PlanetConfig
-        { pcRadius = mapRange 4778 9557 (uiPlanetRadius ui)
-        , pcAxialTilt = mapRange 0 45 (uiAxialTilt ui)
-        , pcInsolation = mapRange 0.7 1.3 (uiInsolation ui)
-        }
-      slice = WorldSlice
-        { wsLatCenter = mapRange (-90) 90 (uiSliceLatCenter ui)
-        , wsLatExtent = 0
-        , wsLonCenter = mapRange (-180) 180 (uiSliceLonCenter ui)
-        , wsLonExtent = 0
-        }
-      hex = HexGridMeta { hexSizeKm = sliderToDomainFloat SliderHexSizeKm (uiHexSizeKm ui) }
-      worldConfig = WorldConfig { wcChunkSize = tsChunkSize terrainSnap }
-      tile = TileCoord tileQ tileR
-  in ( tileLatitude planet hex slice worldConfig tile
-     , tileLongitude planet hex slice worldConfig tile
-     )
+latLonValuesForApi _ terrainSnap tileQ tileR =
+  tileLatLon (tgcPlanet geo) (tgcHexGrid geo) (tgcSlice geo) worldConfig (TileCoord tileQ tileR)
+  where
+    geo = tsGeoContext terrainSnap
+    worldConfig = WorldConfig { wcChunkSize = tsChunkSize terrainSnap }
 
 hasLandAlongChunk :: TerrainSnapshot -> Float -> Int -> Int -> HexDirection -> Bool
 hasLandAlongChunk terrainSnap waterLevel chunkKey startIdx direction =

@@ -23,10 +23,10 @@ import Actor.AtlasResultBroker
   )
 import Actor.AtlasScheduler (AtlasFreshness(..))
 import Actor.AtlasWorker (atlasBuildResultsForTiles)
-import Actor.Data (TerrainSnapshot(..))
+import Actor.Data (TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.SnapshotReceiver (SnapshotVersion(..))
 import Topo.Overlay (emptyOverlayStore)
-import Actor.UI (ViewMode(..), emptyUiState)
+import Actor.UI (ViewMode(..))
 import Linear (V2(..))
 import qualified SDL
 import Seer.Render.Viewport (atlasViewportCoverageFromKeys, emptyAtlasViewportCoverage)
@@ -41,7 +41,8 @@ import Seer.Render.Atlas
   , storeAtlasTileSet
   , storeDayNightTileSet
   )
-import UI.DayNight (DayNightKey, mkDayNightKey)
+import Topo.Calendar (defaultWorldTime)
+import UI.DayNight (DayNightKey(..))
 import UI.TerrainAtlas (AtlasTileGeometry(..), TerrainAtlasTile(..))
 import UI.Widgets (Rect(..))
 import Unsafe.Coerce (unsafeCoerce)
@@ -248,9 +249,7 @@ testRect2 :: Rect
 testRect2 = Rect (V2 64 0, V2 64 64)
 
 testDayNightKey :: DayNightKey
-testDayNightKey = case mkDayNightKey emptyUiState 16 of
-  Just key -> key
-  Nothing -> error "expected day/night key for positive chunk size"
+testDayNightKey = DayNightKey defaultWorldTime 16 6371 23.44 8 35 0
 
 mkTileGeometry :: Int -> Int -> Rect -> AtlasTileGeometry
 mkTileGeometry hexRadius atlasScale bounds = AtlasTileGeometry
@@ -290,4 +289,4 @@ mockTexture :: Int -> SDL.Texture
 mockTexture n = unsafeCoerce (intPtrToPtr (fromIntegral n) :: Ptr ())
 
 sampleTerrainSnapshot :: TerrainSnapshot
-sampleTerrainSnapshot = TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore
+sampleTerrainSnapshot = TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore defaultTerrainGeoContext

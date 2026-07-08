@@ -32,7 +32,7 @@ import Actor.AtlasScheduler
   , setAtlasSchedulerHandles
   )
 import Actor.AtlasWorker (AtlasWorker, atlasWorkerActorDef, newAtlasWorkerLoadRef)
-import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..))
+import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.Log
   ( Log
   , LogSnapshotRef
@@ -241,7 +241,7 @@ startHeadlessAppWithSystem cfg system = do
   simulationHandle <- get @Simulation system
 
   dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
-  terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore)
+  terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore defaultTerrainGeoContext)
   snapshotVersionRef <- newSnapshotVersionRef
   setSimHandles simulationHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasManagerHandle
   simReady <- simulationHandlesConfigured simulationHandle

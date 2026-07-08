@@ -12,7 +12,7 @@ import Actor.AtlasCache (AtlasKey(..))
 import Actor.AtlasResult (AtlasBuildId(..), AtlasTileSetManifest(..), atlasManifestTarget)
 import Actor.SnapshotReceiver (SnapshotVersion(..))
 import Actor.AtlasScheduler (AtlasFreshness(..))
-import Actor.UI (ViewMode(..), emptyUiState)
+import Actor.UI (ViewMode(..))
 import Seer.Render.Atlas
   ( AtlasTextureCache(..)
   , CachedAtlasTileSet
@@ -54,7 +54,8 @@ import Seer.Render.Atlas
   )
 import Seer.Render.Viewport (AtlasViewportCoverage, atlasViewportCoverageFromKeys, emptyAtlasViewportCoverage)
 import Seer.Render.ZoomStage (ZoomStage(..))
-import UI.DayNight (DayNightKey(..), mkDayNightKey)
+import Topo.Calendar (defaultWorldTime)
+import UI.DayNight (DayNightKey(..))
 import UI.TerrainAtlas (TerrainAtlasTile(..))
 import UI.Widgets (Rect(..))
 
@@ -90,9 +91,7 @@ keyStale :: AtlasKey
 keyStale = AtlasKey ViewElevation 0 999
 
 testDayNightKey :: DayNightKey
-testDayNightKey = case mkDayNightKey emptyUiState 16 of
-  Just key -> key
-  Nothing -> error "expected day/night key for positive chunk size"
+testDayNightKey = DayNightKey defaultWorldTime 16 6371 23.44 8 35 0
 
 testDayNightKey2 :: DayNightKey
 testDayNightKey2 = testDayNightKey { dnkChunkSize = dnkChunkSize testDayNightKey + 1 }

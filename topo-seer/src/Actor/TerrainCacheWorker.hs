@@ -101,7 +101,7 @@ terrainCacheKeyFrom uiSnap terrainSnap
       , tckWaterLevel = uiRenderWaterLevel uiSnap
       , tckDayNightKey =
           if uiDayNightEnabled uiSnap
-            then mkDayNightKey uiSnap (tsChunkSize terrainSnap)
+            then mkDayNightKey terrainSnap
             else Nothing
       , tckChunkSize = tsChunkSize terrainSnap
       , tckVersion = terrainSnapshotViewVersion (uiViewMode uiSnap) terrainSnap

@@ -7,7 +7,7 @@ import Test.Hspec
 import Test.QuickCheck
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Topo.Hex (defaultHexGridMeta)
+import Topo.Hex (HexGridMeta(..), defaultHexGridMeta)
 import Topo.Planet
 import Topo.Types (WorldConfig(..), WorldExtent, TileCoord(..), mkWorldExtent, worldExtentRadii)
 
@@ -84,15 +84,40 @@ spec = describe "Planet" $ do
       hexesPerDegreeLatitude big defaultHexGridMeta `shouldSatisfy` (> hexesPerDegreeLatitude small defaultHexGridMeta)
 
   describe "hexesPerDegreeLongitude" $ do
-    it "equals hexesPerDegreeLatitude at equator" $ do
+    it "uses flat-to-flat east/west spacing at the equator" $ do
       let hpdLat = hexesPerDegreeLatitude defaultPlanetConfig defaultHexGridMeta
           hpdLon = hexesPerDegreeLongitude defaultPlanetConfig defaultHexGridMeta 0
-      abs (hpdLat - hpdLon) `shouldSatisfy` (< 0.01)
+      abs (hpdLat * sqrt 3 / 2 - hpdLon) `shouldSatisfy` (< 0.01)
 
     it "shrinks toward poles" $ do
       let lon0  = hexesPerDegreeLongitude defaultPlanetConfig defaultHexGridMeta 0
           lon60 = hexesPerDegreeLongitude defaultPlanetConfig defaultHexGridMeta 60
       lon60 `shouldSatisfy` (< lon0)
+
+  describe "pointy axial geography" $ do
+    it "uses q + r/2 for east offset and sqrt(3)/2 row spacing" $ do
+      let config = WorldConfig { wcChunkSize = 16 }
+          center = TileCoord 8 8
+          east = TileCoord 9 8
+          southEast = TileCoord 8 9
+          (centerE, centerN) = pointyAxialTileOffsetKm defaultHexGridMeta config center
+          (eastE, eastN) = pointyAxialTileOffsetKm defaultHexGridMeta config east
+          (seE, seN) = pointyAxialTileOffsetKm defaultHexGridMeta config southEast
+      abs centerE `shouldSatisfy` (< 0.001)
+      abs centerN `shouldSatisfy` (< 0.001)
+      eastE - centerE `shouldSatisfy` approx 8.0
+      eastN - centerN `shouldSatisfy` approx 0.0
+      seE - centerE `shouldSatisfy` approx 4.0
+      seN - centerN `shouldSatisfy` approx (negate (8.0 * sqrt 3 / 2))
+
+    it "large local slices have real longitude spread" $ do
+      let planet = defaultPlanetConfig
+          slice  = defaultWorldSlice { wsLatCenter = 0, wsLonCenter = 0 }
+          config = WorldConfig { wcChunkSize = 16 }
+          hex = HexGridMeta 1000
+          (_, lonWest) = tileLatLon planet hex slice config (TileCoord 4 8)
+          (_, lonEast) = tileLatLon planet hex slice config (TileCoord 12 8)
+      lonEast - lonWest `shouldSatisfy` (> 60)
 
   describe "tileLatitude" $ do
     it "grid center maps to slice latCenter" $ do
@@ -256,6 +281,9 @@ instance Arbitrary ValidSliceParams where
 -- | Helpers
 inWritDefaultRange :: Float -> Bool
 inWritDefaultRange km = km >= 1900 && km <= 2100
+
+approx :: Float -> Float -> Bool
+approx expected actual = abs (actual - expected) < 0.001
 
 isLeft :: Either a b -> Bool
 isLeft (Left _) = True

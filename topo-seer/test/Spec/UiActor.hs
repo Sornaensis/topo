@@ -9,7 +9,6 @@ import Test.Hspec
 import Actor.UI
 import Seer.Config.SliderSpec (SliderId(..))
 import Topo.Calendar (WorldTime(..), simulationTickSeconds)
-import UI.DayNight (mkDayNightFn)
 
 withSystem :: (ActorSystem -> IO a) -> IO a
 withSystem = bracket newActorSystem shutdownActorSystem
@@ -95,10 +94,3 @@ spec = describe "UiActor" $ do
     uiWorldTime fast `shouldBe` wt
     wtTick wt `shouldBe` 7
     wtTickRate wt `shouldBe` simulationTickSeconds
-
-  it "keeps day/night shading fixed when only UI auto rate changes" $ do
-    let slow = emptyUiState { uiSimTickCount = 9, uiSimTickRate = 0.0 }
-        fast = emptyUiState { uiSimTickCount = 9, uiSimTickRate = 1.0 }
-    case (mkDayNightFn slow 16, mkDayNightFn fast 16) of
-      (Just slowFn, Just fastFn) -> slowFn 3 (-1) `shouldBe` fastFn 3 (-1)
-      _ -> expectationFailure "expected day/night functions for positive chunk size"

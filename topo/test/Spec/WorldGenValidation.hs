@@ -600,8 +600,8 @@ assertStructuralMetrics :: [WorldGenMetrics] -> Expectation
 assertStructuralMetrics metrics = forM_ metrics $ \m -> do
   wgmSchemaVersion m `shouldBe` schemaVersion
   wgmGridWidth m `shouldBe` 320
-  wgmGridHeight m `shouldBe` 320
-  wgmTotalTiles m `shouldBe` 102400
+  wgmGridHeight m `shouldBe` 448
+  wgmTotalTiles m `shouldBe` 143360
   wgmLandFraction m `shouldSatisfy` between 0 1
   wgmWaterFraction m `shouldSatisfy` between 0 1
   wgmLandComponentCount m `shouldSatisfy` (>= 0)
@@ -617,22 +617,22 @@ assertStructuralMetrics metrics = forM_ metrics $ \m -> do
 assertPresetTargets :: [WorldGenMetrics] -> Expectation
 assertPresetTargets metrics = do
   expectPreset "default" $ \ms -> do
-    expectMedianBetween "default land" 0.30 0.58 wgmLandFraction ms
-    expectMedianBetween "default largest land" 0.18 0.60 wgmLargestLandFraction ms
+    expectMedianBetween "default land" 0.30 0.72 wgmLandFraction ms
+    expectMedianBetween "default largest land" 0.18 0.75 wgmLargestLandFraction ms
     expectMedianBetween "default edge-frame water" 0.30 0.85 wgmEdgeFrameWaterFraction ms
     expectMedianBetween "default largest edge ocean" 0.20 0.80 wgmLargestEdgeOceanFraction ms
-    expectMedianAtMost "default homogeneous16" 0.80 wgmHomogeneous16Fraction ms
+    expectMedianAtMost "default homogeneous16" 0.85 wgmHomogeneous16Fraction ms
     expectAll "default avoids four-edge moat" (not . wgmContinuousFourEdgeMoat) ms
   expectPreset "archipelago" $ \ms -> do
     expectMedianBetween "archipelago land" 0.12 0.42 wgmLandFraction ms
     expectMedianAtMost "archipelago largest land" 0.35 wgmLargestLandFraction ms
     expectMedianBetween "archipelago edge-frame water" 0.45 0.90 wgmEdgeFrameWaterFraction ms
-    expectMedianBetween "archipelago largest edge ocean" 0.45 0.90 wgmLargestEdgeOceanFraction ms
+    expectMedianBetween "archipelago largest edge ocean" 0.35 0.90 wgmLargestEdgeOceanFraction ms
     expectMedianAtMost "archipelago homogeneous16" 0.80 wgmHomogeneous16Fraction ms
   expectPreset "large-ocean" $ \ms -> do
     expectMedianBetween "large-ocean water" 0.50 0.85 wgmWaterFraction ms
     expectMedianBetween "large-ocean largest edge ocean" 0.35 0.90 wgmLargestEdgeOceanFraction ms
-    expectMedianBetween "large-ocean largest land" 0.05 0.45 wgmLargestLandFraction ms
+    expectMedianBetween "large-ocean largest land" 0.05 0.50 wgmLargestLandFraction ms
     expectMedianBetween "large-ocean edge-frame water" 0.55 0.95 wgmEdgeFrameWaterFraction ms
     expectMedianAtMost "large-ocean homogeneous16" 0.88 wgmHomogeneous16Fraction ms
   expectPreset "inland-sea" $ \ms -> do

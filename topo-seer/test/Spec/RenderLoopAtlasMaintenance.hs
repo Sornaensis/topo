@@ -4,7 +4,7 @@ import Actor.AtlasCache (AtlasKey(..))
 import Actor.AtlasResult (AtlasBuildId(..), AtlasBuildResult(..), AtlasTileSetManifest(..), atlasManifestTarget)
 import Actor.AtlasResultBroker (atlasResultsPending, drainFreshResultsN, newAtlasResultRef, pushAtlasResult)
 import Actor.AtlasScheduler (AtlasFreshness(..))
-import Actor.Data (TerrainSnapshot(..))
+import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.SnapshotReceiver (SnapshotVersion(..))
 import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
 import Data.Maybe (isNothing)
@@ -41,8 +41,10 @@ import Seer.Render.Terrain (TerrainCache(..), buildTerrainCache)
 import Seer.Render.ZoomStage (ZoomStage(..), stageForZoom)
 import Test.Hspec
 import Topo (WorldConfig(..), emptyTerrainChunk)
+import Topo.Calendar (WorldTime(..), simulationTickSeconds)
 import Topo.Overlay (emptyOverlayStore)
-import UI.DayNight (DayNightKey, mkDayNightKey)
+import Topo.Calendar (defaultWorldTime)
+import UI.DayNight (DayNightKey(..))
 import UI.TerrainAtlas (AtlasTileGeometry(..), TerrainAtlasTile(..))
 import UI.TerrainCache (ChunkTextureCache(..))
 import UI.TerrainRender (ChunkTexture(..))
@@ -183,12 +185,17 @@ spec = describe "render-loop atlas maintenance wakeups" $ do
     afspShouldScheduleAtlas atPoll `shouldBe` True
 
   it "wakes fallback maintenance for stale day/night overlay without atlas maintenance when render targets are unavailable" $ do
-    let terrainSnap = renderableFallbackTerrainSnapshot
+    let terrainSnapOld = renderableFallbackTerrainSnapshot
+          { tsGeoContext = defaultTerrainGeoContext { tgcWorldTime = WorldTime 0 simulationTickSeconds }
+          }
+        terrainSnapNew = terrainSnapOld
+          { tsGeoContext = defaultTerrainGeoContext { tgcWorldTime = WorldTime 1 simulationTickSeconds }
+          }
         uiOld = emptyUiState { uiDayNightEnabled = True, uiSimTickCount = 0 }
         uiNew = emptyUiState { uiDayNightEnabled = True, uiSimTickCount = 1 }
-        oldCache = buildTerrainCache uiOld terrainSnap
+        oldCache = buildTerrainCache uiOld terrainSnapOld
         scale = zsAtlasScale (stageForZoom (uiZoom uiNew))
-        fallbackDue = fallbackFrameMaintenanceDue False uiNew terrainSnap scale oldCache (chunkTexturesFor scale oldCache)
+        fallbackDue = fallbackFrameMaintenanceDue False uiNew terrainSnapNew scale oldCache (chunkTexturesFor scale oldCache)
         atlasPolicy = atlasFrameStepPolicy 101 atlasDrainPollMs atlasSchedulePollMs False False False noAtlasQueuedWork False (Just 100) (Just 100)
     fallbackDue `shouldBe` True
     afspAtlasMaintenanceDue atlasPolicy `shouldBe` False
@@ -268,6 +275,7 @@ renderableFallbackTerrainSnapshot = TerrainSnapshot
   , tsWaterBodyChunks = IntMap.empty
   , tsVegetationChunks = IntMap.empty
   , tsOverlayStore = emptyOverlayStore
+  , tsGeoContext = defaultTerrainGeoContext
   }
 
 chunkTexturesFor :: Int -> TerrainCache -> ChunkTextureCache
@@ -289,9 +297,7 @@ mockChunkTexture key = ChunkTexture
   }
 
 testDayNightKey :: DayNightKey
-testDayNightKey = case mkDayNightKey emptyUiState 16 of
-  Just key -> key
-  Nothing -> error "expected day/night key for positive chunk size"
+testDayNightKey = DayNightKey defaultWorldTime 16 6371 23.44 8 35 0
 
 atlasUploadsPerFrame :: Int
 atlasUploadsPerFrame = 1

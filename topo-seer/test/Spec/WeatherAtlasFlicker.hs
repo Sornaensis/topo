@@ -22,7 +22,7 @@ import Actor.AtlasManager (AtlasJob(..), AtlasManager, drainAtlasJobs)
 import Actor.AtlasResult (AtlasBuildId(..), AtlasBuildResult(..), AtlasTileSetManifest(..), atlasManifestTarget)
 import Actor.AtlasResultBroker (atlasResultsPending, drainFreshResultsN, newAtlasResultRef, pushAtlasResult)
 import Actor.AtlasScheduler (AtlasFreshness(..))
-import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..), getTerrainSnapshot, replaceTerrainData)
+import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..), defaultTerrainGeoContext, getTerrainSnapshot, replaceTerrainData)
 import Actor.Log (Log)
 import Actor.Simulation
   ( AutoTickStepResult(..)
@@ -482,7 +482,7 @@ atlasResultBounds :: [Rect]
 atlasResultBounds = [testRect, testRect2]
 
 emptyTerrainSnap :: TerrainSnapshot
-emptyTerrainSnap = TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore
+emptyTerrainSnap = TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore defaultTerrainGeoContext
 
 weatherTestWorld :: TerrainWorld
 weatherTestWorld = withSeedWeather

@@ -136,13 +136,21 @@ snapshotFromUiSpec = describe "snapshotFromUi" $ do
         hypsometry = terrainHypsometry terrain
         defaultSlice = worldSlice defaultWorldGenConfig
         uiSlice = worldSlice cfg
+        extent = gcWorldExtent (terrainGen terrain)
+        planet = worldPlanet cfg
+        hex = worldHexGrid cfg
+        chunkSize = max 1 (uiChunkSize emptyUiState)
+        expectedLatExtent =
+          max 0.1 (fromIntegral (worldExtentRadiusY extent * 2 * chunkSize) / hexesPerDegreeLatitude planet hex)
+        expectedLonExtent =
+          max 0.1 (fromIntegral (worldExtentRadiusX extent * 2 * chunkSize) / hexesPerDegreeLongitude planet hex (wsLatCenter uiSlice))
     hcWaterLevel hydro `shouldBe` hcWaterLevel (terrainHydrology (worldTerrain defaultWorldGenConfig))
     hpWaterLevel hypsometry `shouldBe` hcWaterLevel hydro
     uiRenderWaterLevel emptyUiState `shouldBe` uiWaterLevel emptyUiState
     csRenderWaterLevel defaultSnapshot `shouldBe` hcWaterLevel hydro
     abs (wsLatCenter uiSlice - wsLatCenter defaultSlice) `shouldSatisfy` (< 1.0e-4)
-    abs (wsLatExtent uiSlice - wsLatExtent defaultSlice) `shouldSatisfy` (< 0.5)
-    abs (wsLonExtent uiSlice - wsLonExtent defaultSlice) `shouldSatisfy` (< 0.5)
+    wsLatExtent uiSlice `shouldBe` expectedLatExtent
+    wsLonExtent uiSlice `shouldBe` expectedLonExtent
 
   it "maps weather cadence slider to whole world-hour intervals" $ do
     let oneHour = worldWeather (configFromUi emptyUiState { uiWeatherTick = 0.0 })

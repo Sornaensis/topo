@@ -52,8 +52,8 @@ import System.Directory
   )
 import System.FilePath ((</>), takeFileName)
 
-import Actor.Data (TerrainSnapshot(..))
-import Actor.UI (UiState(..), uiWorldTime)
+import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..))
+import Actor.UI (UiState(..))
 import Seer.Config (configFromUi)
 import Seer.Config.Snapshot (snapshotFromUi, loadSnapshot)
 import Seer.Config.Snapshot.Types (ConfigSnapshot)
@@ -265,9 +265,9 @@ loadNamedSparseOverlayChunk worldName overlayName chunkId = do
 --
 -- Terrain, climate, river, groundwater, volcanism, glacier, water-body,
 -- vegetation, and overlay chunks are preserved from the snapshot. World-level
--- hex and planet metadata are reconstructed from
--- the current UI config so saved worlds preserve the active geographic
--- scale instead of silently falling back to defaults.
+-- planet, slice, hex, and world-time metadata are preserved from the
+-- authoritative terrain snapshot context rather than reconstructed from live UI
+-- sliders.
 snapshotToWorld :: UiState -> TerrainSnapshot -> TerrainWorld
 snapshotToWorld uiSnap ts = TerrainWorld
   { twTerrain     = tsTerrainChunks ts
@@ -278,13 +278,13 @@ snapshotToWorld uiSnap ts = TerrainWorld
   , twGlaciers    = tsGlacierChunks ts
   , twWaterBodies = tsWaterBodyChunks ts
   , twVegetation  = tsVegetationChunks ts
-  , twHexGrid     = worldHexGrid genCfg
+  , twHexGrid     = tgcHexGrid geo
   , twMeta        = emptyMetadataStore
   , twConfig      = wc
-  , twPlanet      = worldPlanet genCfg
-  , twSlice       = worldSlice genCfg
-  , twLatMapping  = mkLatitudeMapping (worldPlanet genCfg) (worldHexGrid genCfg) (worldSlice genCfg) wc
-  , twWorldTime   = uiWorldTime uiSnap
+  , twPlanet      = tgcPlanet geo
+  , twSlice       = tgcSlice geo
+  , twLatMapping  = mkLatitudeMapping (tgcPlanet geo) (tgcHexGrid geo) (tgcSlice geo) wc
+  , twWorldTime   = tgcWorldTime geo
   , twSeed        = uiSeed uiSnap
   , twPlanetAge   = defaultPlanetAge
   , twGenConfig   = Just (toJSON genCfg)
@@ -294,7 +294,12 @@ snapshotToWorld uiSnap ts = TerrainWorld
   }
   where
     wc = WorldConfig { wcChunkSize = tsChunkSize ts }
-    genCfg = configFromUi uiSnap
+    geo = tsGeoContext ts
+    genCfg = (configFromUi uiSnap)
+      { worldPlanet = tgcPlanet geo
+      , worldSlice = tgcSlice geo
+      , worldHexGrid = tgcHexGrid geo
+      }
 
 -------------------------------------------------------------------------------
 -- Listing

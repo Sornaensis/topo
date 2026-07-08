@@ -335,12 +335,19 @@ toggleDayNight req = do
   uiSnap <- getUiSnapshot uiHandle
   setUiDayNightEnabled uiHandle (not (uiDayNightEnabled uiSnap))
   postToggle <- getUiSnapshot uiHandle
+  terrainSnap <- publishLatestTerrainSnapshot handles
   snapshotVersion <- bumpSnapshotVersionAndRead (ahSnapshotVersionRef handles)
-  enqueueAtlasRebuildFor handles (uiViewMode postToggle) postToggle snapshotVersion
+  enqueueAtlasRebuildForTerrain handles (uiViewMode postToggle) postToggle snapshotVersion terrainSnap
+
+publishLatestTerrainSnapshot :: ActorHandles -> IO TerrainSnapshot
+publishLatestTerrainSnapshot handles = do
+  terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
+  writeTerrainSnapshot (ahTerrainSnapshotRef handles) terrainSnap
+  pure terrainSnap
 
 enqueueAtlasRebuildFor :: ActorHandles -> ViewMode -> UiState -> SnapshotVersion -> IO ()
 enqueueAtlasRebuildFor handles mode uiSnap snapshotVersion = do
-  terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
+  terrainSnap <- publishLatestTerrainSnapshot handles
   enqueueAtlasRebuildForTerrain handles mode uiSnap snapshotVersion terrainSnap
 
 -- | Enqueue a full ordered atlas rebuild using an already-captured terrain snapshot.

@@ -1,10 +1,11 @@
 module Spec.CacheProperties (spec) where
 
 import Actor.AtlasCache (atlasKeyFor, atlasKeyVersion, terrainSnapshotViewVersion)
-import Actor.Data (TerrainSnapshot(..))
+import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.TerrainCacheWorker (TerrainCacheKey(..), terrainCacheKeyFrom)
 import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
 import Topo (WeatherChunk(..), WorldConfig(..), emptyTerrainChunk)
+import Topo.Calendar (WorldTime(..), simulationTickSeconds)
 import Topo.Overlay (emptyOverlayStore)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
@@ -117,27 +118,31 @@ spec = describe "Cache properties" $ do
     fallbackTerrainNeedsRefresh uiWeather terrainSnap1 1 freshCache freshTextures `shouldBe` False
 
   it "refreshes fallback day/night overlays without rebuilding base chunk textures" $ do
-    let terrainSnap = renderableTerrainSnapshot 1 1 sampleWeatherChunkA
+    let terrainSnap0 = (renderableTerrainSnapshot 1 1 sampleWeatherChunkA)
+          { tsGeoContext = defaultTerrainGeoContext { tgcWorldTime = WorldTime 0 simulationTickSeconds }
+          }
+        terrainSnap1 = terrainSnap0
+          { tsGeoContext = defaultTerrainGeoContext { tgcWorldTime = WorldTime 1 simulationTickSeconds }
+          }
         uiOff = emptyUiState { uiDayNightEnabled = False, uiSimTickCount = 0 }
-        uiOn0 = emptyUiState { uiDayNightEnabled = True, uiSimTickCount = 0 }
-        uiOn1 = emptyUiState { uiDayNightEnabled = True, uiSimTickCount = 1 }
-        cacheOff = buildTerrainCache uiOff terrainSnap
-        cacheOn0 = buildTerrainCache uiOn0 terrainSnap
-        cacheOn1 = buildTerrainCache uiOn1 terrainSnap
+        uiOn = emptyUiState { uiDayNightEnabled = True, uiSimTickCount = 0 }
+        cacheOff = buildTerrainCache uiOff terrainSnap0
+        cacheOn0 = buildTerrainCache uiOn terrainSnap0
+        cacheOn1 = buildTerrainCache uiOn terrainSnap1
         texturesOn0 = chunkTexturesFor 1 cacheOn0
     tcDayNightKey cacheOff `shouldBe` Nothing
     tcDayNightGeometry cacheOff `shouldBe` IntMap.empty
     tcDayNightKey cacheOn0 `shouldNotBe` Nothing
     IntMap.keysSet (tcDayNightGeometry cacheOn0) `shouldBe` IntMap.keysSet (tcGeometry cacheOn0)
-    terrainCacheNeedsRefresh uiOn0 terrainSnap cacheOff `shouldBe` True
-    terrainCacheNeedsRefresh uiOff terrainSnap cacheOn0 `shouldBe` True
-    terrainCacheNeedsRefresh uiOn0 terrainSnap cacheOn0 `shouldBe` False
-    terrainCacheNeedsRefresh uiOn1 terrainSnap cacheOn0 `shouldBe` True
-    fallbackTerrainNeedsRefresh uiOn1 terrainSnap 1 cacheOn0 texturesOn0 `shouldBe` True
-    terrainCacheNeedsRefresh uiOn1 terrainSnap cacheOn1 `shouldBe` False
+    terrainCacheNeedsRefresh uiOn terrainSnap0 cacheOff `shouldBe` True
+    terrainCacheNeedsRefresh uiOff terrainSnap0 cacheOn0 `shouldBe` True
+    terrainCacheNeedsRefresh uiOn terrainSnap0 cacheOn0 `shouldBe` False
+    terrainCacheNeedsRefresh uiOn terrainSnap1 cacheOn0 `shouldBe` True
+    fallbackTerrainNeedsRefresh uiOn terrainSnap1 1 cacheOn0 texturesOn0 `shouldBe` True
+    terrainCacheNeedsRefresh uiOn terrainSnap1 cacheOn1 `shouldBe` False
     chunkTextureCacheNeedsUpdate cacheOn1 1 texturesOn0 `shouldBe` False
-    fallbackTerrainNeedsRefresh uiOn1 terrainSnap 1 cacheOn1 texturesOn0 `shouldBe` False
-    case (terrainCacheKeyFrom uiOff terrainSnap, terrainCacheKeyFrom uiOn0 terrainSnap, terrainCacheKeyFrom uiOn1 terrainSnap) of
+    fallbackTerrainNeedsRefresh uiOn terrainSnap1 1 cacheOn1 texturesOn0 `shouldBe` False
+    case (terrainCacheKeyFrom uiOff terrainSnap0, terrainCacheKeyFrom uiOn terrainSnap0, terrainCacheKeyFrom uiOn terrainSnap1) of
       (Just keyOff, Just keyOn0, Just keyOn1) -> do
         tckDayNightKey keyOff `shouldBe` Nothing
         tckDayNightKey keyOn0 `shouldBe` tcDayNightKey cacheOn0
@@ -236,6 +241,7 @@ emptyTerrainSnapshot = TerrainSnapshot
   , tsWaterBodyChunks = IntMap.empty
   , tsVegetationChunks = IntMap.empty
   , tsOverlayStore = emptyOverlayStore
+  , tsGeoContext = defaultTerrainGeoContext
   }
 
 distinctViewModes :: Gen (ViewMode, ViewMode)

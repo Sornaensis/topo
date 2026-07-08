@@ -113,9 +113,10 @@ hourAngle localHour hpd =
 
 -- | Compute local solar hour from calendar hour and longitude.
 --
--- Convention: calendar hour 'cdHourOfDay' represents solar noon at
--- longitude 0 (or equivalently at the world-slice centre when
--- @lonCenter = 0@).  The returned hour wraps into @[0, hoursPerDay)@.
+-- Convention: @calHour = hoursPerDay / 2@ is solar noon at longitude 0;
+-- with the default 24-hour calendar this means @calHour = 12@ at lon 0.
+-- Longitude then shifts local solar time east/west.  The returned hour wraps
+-- into @[0, hoursPerDay)@.
 localSolarHour :: Float  -- ^ Hours per day
                -> Float  -- ^ Calendar hour of day (0–hoursPerDay)
                -> Float  -- ^ Tile longitude (degrees, −180..180)
@@ -340,9 +341,10 @@ annualMeanInsolation cfg tiltDeg hpd latRad =
 -- 'solarPosition'.
 --
 -- __Convention:__ @calendarHour@ ('cdHourOfDay') is the hour at the
--- reference meridian (longitude 0).  Tile longitude offsets the local
--- solar time so that solar noon occurs when the sun is highest at
--- each tile.
+-- reference meridian (longitude 0), where @calendarHour = hoursPerDay / 2@
+-- is local solar noon (12:00 on the default 24-hour calendar).  Tile longitude
+-- offsets the local solar time so that solar noon occurs when the sun is
+-- highest at each tile.
 tileSolarPos :: Float  -- ^ Axial tilt (degrees, 'pcAxialTilt')
              -> Float  -- ^ Year fraction (0–1, from 'yearFraction')
              -> Float  -- ^ Hours per day ('ccHoursPerDay')

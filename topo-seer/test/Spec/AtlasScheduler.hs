@@ -52,7 +52,7 @@ import Actor.AtlasWorker
   , newAtlasWorkerLoadRef
   , readAtlasWorkerLoad
   )
-import Actor.Data (DataSnapshot(..), TerrainSnapshot(..))
+import Actor.Data (DataSnapshot(..), TerrainSnapshot(..), defaultTerrainGeoContext)
 import Topo.Overlay (emptyOverlayStore)
 import Actor.Log (LogLevel(..), LogSnapshot(..))
 import Actor.Render (RenderSnapshot(..))
@@ -77,7 +77,7 @@ defaultWaterLevel = uiRenderWaterLevel emptyUiState
 
 emptyTerrainSnapshotWithVersion :: Word64 -> TerrainSnapshot
 emptyTerrainSnapshotWithVersion version =
-  TerrainSnapshot version 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore
+  TerrainSnapshot version 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore defaultTerrainGeoContext
 
 atlasJobFor :: ViewMode -> Word64 -> ZoomStage -> AtlasJob
 atlasJobFor mode version stage =
@@ -682,7 +682,7 @@ spec = describe "AtlasScheduler" $ do
     freshnessRef <- newAtlasFreshnessRef
     let terrainSnap = (emptyTerrainSnapshotWithVersion 12) { tsChunkSize = 16 }
         ui = emptyUiState { uiDayNightEnabled = True, uiSimTickCount = 5 }
-        expectedKey = mkDayNightKey ui (tsChunkSize terrainSnap)
+        expectedKey = mkDayNightKey terrainSnap
         buildWith spec = AtlasBuild
           { abBuildId = AtlasBuildId 2
           , abKey = AtlasKey ViewElevation defaultWaterLevel (tsVersion terrainSnap)

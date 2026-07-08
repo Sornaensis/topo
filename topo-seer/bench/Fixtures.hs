@@ -41,7 +41,7 @@ import Data.Word (Word8, Word16, Word32)
 import Topo
 
 import Actor.AtlasCache (AtlasKey(..))
-import Actor.Data (TerrainSnapshot(..))
+import Actor.Data (TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.UI.State (UiState, emptyUiState)
 import UI.TerrainRender (ChunkGeometry(..))
 
@@ -162,6 +162,10 @@ benchUiState = emptyUiState
 benchTerrainSnapshot :: TerrainSnapshot
 benchTerrainSnapshot = TerrainSnapshot
   { tsVersion          = 1
+  , tsClimateVersion   = 1
+  , tsWeatherVersion   = 1
+  , tsVegetationVersion = 1
+  , tsOverlayVersion   = 1
   , tsChunkSize        = 8
   , tsTerrainChunks    = terrainMap16
   , tsClimateChunks    = climateMap16
@@ -173,6 +177,7 @@ benchTerrainSnapshot = TerrainSnapshot
   , tsWaterBodyChunks  = IntMap.empty
   , tsVegetationChunks = vegMap16
   , tsOverlayStore     = emptyOverlayStore
+  , tsGeoContext       = defaultTerrainGeoContext
   }
 
 ------------------------------------------------------------------------

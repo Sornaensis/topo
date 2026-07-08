@@ -17,7 +17,7 @@ import Topo.Grid.Diffusion (diffuseFieldGrid)
 import Topo.Math (clamp01)
 import Topo.Noise (noise2D, noise2DContinuous)
 import Topo.Overlay (Overlay(..), OverlayData(..), OverlayProvenance(..))
-import Topo.Planet (LatitudeMapping(..), PlanetConfig(..), WorldSlice(..), hexesPerDegreeLatitude)
+import Topo.Planet (LatitudeMapping(..), PlanetConfig(..), WorldSlice(..), tileLatLon)
 import Topo.Seed (deriveOverlaySeed)
 import Topo.Simulation (SimNode(..), SimNodeId(..), SimContext(..))
 import Topo.Solar (SolarConfig(..), defaultSolarConfig, tileIrradiance)
@@ -578,7 +578,6 @@ weatherTick cfg ctx overlay = do
       tiltDeg = pcAxialTilt planet
       yfF     = realToFrac yf :: Float
       solarCfg = defaultSolarConfig
-      hpdLat  = hexesPerDegreeLatitude planet hex
 
       denseChunks =
         case chunkCoordBounds climateMap of
@@ -588,16 +587,12 @@ weatherTick cfg ctx overlay = do
                 gridW = (maxCx - minCx + 1) * chunkSize
                 gridH = (maxCy - minCy + 1) * chunkSize
 
-                -- Pre-compute per-tile solar irradiance
+                -- Pre-compute per-tile solar irradiance using the same pointy
+                -- axial geography as render-time day/night overlays.
                 solarIrr = U.generate (gridW * gridH) (\i ->
                   let (gx, gy) = globalTileXY config minCoord gridW i
-                      latRad = fromIntegral gy * radPerTile + latBiasRad
-                      -- Approximate longitude: use latitude-corrected tiles/degree
-                      hpdLon = hpdLat * max 0.001 (cos latRad)
-                      cs = wcChunkSize config
-                      centerTileX = cs `div` 2
-                      lonDeg = wsLonCenter slice
-                             + fromIntegral (gx - centerTileX) / hpdLon
+                      (latDeg, lonDeg) = tileLatLon planet hex slice config (TileCoord gx gy)
+                      latRad = latDeg * pi / 180
                   in tileIrradiance solarCfg tiltDeg yfF hpd calHour latRad lonDeg
                         * lmInsolation lm)
 

@@ -302,7 +302,7 @@ renderFrame context = do
     pure (resolvedTiles, resolveStatus, resolvedCache, logged)
   let currentDayNightKey =
         if uiDayNightEnabled (rsUi snapshot)
-          then mkDayNightKey (rsUi snapshot) (tsChunkSize terrainSnap)
+          then mkDayNightKey terrainSnap
           else Nothing
       atlasCacheForOverlay = maybe atlasCache'' (\dnKey -> retireDayNightOverlaysExcept dnKey atlasCache'') currentDayNightKey
   tAfterResolve <- getMonotonicTimeNSec

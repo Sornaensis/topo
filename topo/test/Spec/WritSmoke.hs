@@ -55,7 +55,7 @@ writWorldConfig :: WorldConfig
 writWorldConfig = WorldConfig { wcChunkSize = 32 }
 
 writExpectedChunkCount :: Int
-writExpectedChunkCount = 81
+writExpectedChunkCount = 99
 
 writSmokeConfig :: WorldGenConfig
 writSmokeConfig = defaultWorldGenConfig
