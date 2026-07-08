@@ -20,7 +20,7 @@ import qualified Data.Vector.Unboxed as U
 
 import Actor.AtlasCache (atlasKeyFor, atlasKeyVersion, terrainSnapshotViewVersion)
 import Actor.AtlasManager (AtlasJob(..), AtlasManager, drainAtlasJobs)
-import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..), defaultTerrainGeoContext, getTerrainSnapshot, replaceTerrainData)
+import Actor.Data (Data, DataSnapshot(..), TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext, getTerrainSnapshot, replaceTerrainData)
 import Actor.Log (Log, getLogSnapshot, leMessage, lsEntries)
 import Actor.Simulation
   ( AutoTickStepResult(..)
@@ -62,6 +62,7 @@ import Actor.UI
   , uiZoom
   )
 import Seer.Render.ZoomStage (ZoomStage(..), allZoomStages, orderedZoomStagesForZoom, stageForZoom)
+import UI.DayNight (mkDayNightKey)
 
 import Topo
   ( ChunkId(..)
@@ -75,6 +76,7 @@ import Topo
   , setClimateChunk
   , setTerrainChunk
   )
+import Topo.Calendar (WorldTime(..))
 import Topo.Overlay (Overlay(..), OverlayData(..), OverlayProvenance(..), emptyOverlayStore, insertOverlay, lookupOverlay)
 import Topo.Overlay.Schema
   ( OverlayDeps(..)
@@ -639,6 +641,10 @@ spec = describe "Simulation actor" $ do
       terrainSnap1 <- getTerrainSnapshot dataHandle
       publishedSnap1 <- readTerrainSnapshot terrainSnapshotRef
       tsWeatherVersion publishedSnap1 `shouldBe` tsWeatherVersion terrainSnap1
+      wtTick (tgcWorldTime (tsGeoContext publishedSnap1)) `shouldBe` 1
+      mkDayNightKey publishedSnap1 `shouldBe` mkDayNightKey terrainSnap1
+      let publishedDayNightKey1 = mkDayNightKey publishedSnap1
+          publishedWorldTime1 = tgcWorldTime (tsGeoContext publishedSnap1)
 
       autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 2
       autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 3
@@ -648,6 +654,10 @@ spec = describe "Simulation actor" $ do
       version3 `shouldBe` version1
       tsWeatherVersion terrainSnap3 `shouldSatisfy` (> tsWeatherVersion terrainSnap1)
       tsWeatherVersion publishedSnap3 `shouldBe` tsWeatherVersion publishedSnap1
+      wtTick (tgcWorldTime (tsGeoContext terrainSnap3)) `shouldBe` 3
+      tgcWorldTime (tsGeoContext publishedSnap3) `shouldBe` publishedWorldTime1
+      mkDayNightKey terrainSnap3 `shouldNotBe` publishedDayNightKey1
+      mkDayNightKey publishedSnap3 `shouldBe` publishedDayNightKey1
       uiAfterRapid <- getUiSnapshot uiHandle
       uiSimTickCount uiAfterRapid `shouldBe` 3
       dagAfterRapid <- getSimDagSnapshot simHandle
@@ -658,6 +668,8 @@ spec = describe "Simulation actor" $ do
       map ajViewMode rapidJobs `shouldBe` [ViewElevation]
       map atlasJobStage rapidJobs `shouldBe` [currentStage]
       map (tsWeatherVersion . ajTerrain) rapidJobs `shouldBe` [tsWeatherVersion publishedSnap1]
+      map (tgcWorldTime . tsGeoContext . ajTerrain) rapidJobs `shouldBe` [publishedWorldTime1]
+      map (mkDayNightKey . ajTerrain) rapidJobs `shouldBe` [publishedDayNightKey1]
       map ajSnapshotVersion rapidJobs `shouldBe` [version1]
 
       setUiSimAutoTick uiHandle False
@@ -668,11 +680,18 @@ spec = describe "Simulation actor" $ do
       latestTerrainSnap <- getTerrainSnapshot dataHandle
       latestPublishedSnap <- readTerrainSnapshot terrainSnapshotRef
       tsWeatherVersion latestPublishedSnap `shouldBe` tsWeatherVersion latestTerrainSnap
+      wtTick (tgcWorldTime (tsGeoContext latestPublishedSnap)) `shouldBe` 3
+      mkDayNightKey latestPublishedSnap `shouldBe` mkDayNightKey latestTerrainSnap
+      mkDayNightKey latestPublishedSnap `shouldNotBe` publishedDayNightKey1
+      let latestDayNightKey = mkDayNightKey latestPublishedSnap
+          latestPublishedWorldTime = tgcWorldTime (tsGeoContext latestPublishedSnap)
       flushedJobs <- drainAtlasJobs atlasHandle
       length flushedJobs `shouldBe` length allZoomStages
       map ajViewMode flushedJobs `shouldBe` replicate (length allZoomStages) ViewElevation
       map atlasJobStage flushedJobs `shouldBe` expectedBackfillStages
       map (tsWeatherVersion . ajTerrain) flushedJobs `shouldSatisfy` all (== tsWeatherVersion latestTerrainSnap)
+      map (tgcWorldTime . tsGeoContext . ajTerrain) flushedJobs `shouldSatisfy` all (== latestPublishedWorldTime)
+      map (mkDayNightKey . ajTerrain) flushedJobs `shouldSatisfy` all (== latestDayNightKey)
       map ajSnapshotVersion flushedJobs `shouldSatisfy` all (== versionAfterFlush)
 
   it "keeps weather-only auto ticks render-stable for ViewElevation with day/night disabled" $

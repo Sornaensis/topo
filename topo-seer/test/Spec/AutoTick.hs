@@ -19,7 +19,7 @@ import Test.Hspec
 
 import Actor.AtlasCache (atlasKeyVersion)
 import Actor.AtlasManager (AtlasJob(..), drainAtlasJobs)
-import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot, replaceTerrainData)
+import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..), getTerrainSnapshot, replaceTerrainData)
 import Actor.Simulation
   ( SimulationDagSnapshot(..)
   , SimulationTickLogEntry(..)
@@ -30,7 +30,7 @@ import Actor.Simulation
   , setSimWorldWithNodes
   )
 import Actor.SnapshotReceiver (readSnapshotVersion, readTerrainSnapshot)
-import Actor.UI (UiState(..), ViewMode(..), getUiSnapshot, setUiZoom)
+import Actor.UI (UiState(..), ViewMode(..), getUiSnapshot, setUiDayNightEnabled, setUiZoom)
 import Actor.UiActions (ActorHandles(..))
 import Seer.Command.Dispatch (CommandContext(..), dispatchCommand)
 import Seer.Headless
@@ -45,6 +45,7 @@ import Seer.Render.ZoomStage
   , orderedZoomStagesForZoom
   , stageForZoom
   )
+import UI.DayNight (mkDayNightKey)
 import Topo
   ( ChunkId(..)
   , ClimateChunk(..)
@@ -214,6 +215,46 @@ spec = describe "AutoTick scheduler" $ do
       map ajViewMode jobs `shouldBe` replicate (length allZoomStages) ViewWeather
       map atlasJobStage jobs `shouldBe` expectedBackfill
       all ((== tsWeatherVersion publishedSnap) . atlasKeyVersion . ajKey) jobs `shouldBe` True
+
+  it "backfills latest day/night world time when high-rate auto tick is slowed" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      installWorld app
+      let handles = appHandles app
+      setUiZoom (ahUiHandle handles) 2.5
+      setUiDayNightEnabled (ahUiHandle handles) True
+      uiBeforeAuto <- getUiSnapshot (ahUiHandle handles)
+      let currentStage = stageForZoom (uiZoom uiBeforeAuto)
+          expectedCurrent = zoomStagePair currentStage
+          expectedBackfill = map zoomStagePair (orderedZoomStagesForZoom (uiZoom uiBeforeAuto))
+      _ <- drainAtlasJobs (ahAtlasManagerHandle handles)
+
+      rsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (1.0 :: Double)])
+      srSuccess rsp `shouldBe` True
+      advanced <- awaitTrue 100 $ do
+        ui <- getUiSnapshot (ahUiHandle handles)
+        pure (uiSimTickCount ui >= 1)
+      advanced `shouldBe` True
+      firstPublished <- readTerrainSnapshot (ahTerrainSnapshotRef handles)
+      firstJobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+      length firstJobs `shouldBe` 1
+      map ajViewMode firstJobs `shouldBe` [ViewElevation]
+      map atlasJobStage firstJobs `shouldBe` [expectedCurrent]
+      map (mkDayNightKey . ajTerrain) firstJobs `shouldBe` [mkDayNightKey firstPublished]
+
+      slowRsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (0.1 :: Double)])
+      srSuccess slowRsp `shouldBe` True
+      slowedUi <- getUiSnapshot (ahUiHandle handles)
+      uiSimAutoTick slowedUi `shouldBe` True
+      uiSimTickRate slowedUi `shouldBe` 0.1
+      latestTerrainSnap <- getTerrainSnapshot (ahDataHandle handles)
+      publishedSnap <- readTerrainSnapshot (ahTerrainSnapshotRef handles)
+      tgcWorldTime (tsGeoContext publishedSnap) `shouldBe` tgcWorldTime (tsGeoContext latestTerrainSnap)
+      jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+      length jobs `shouldBe` length allZoomStages
+      map ajViewMode jobs `shouldBe` replicate (length allZoomStages) ViewElevation
+      map atlasJobStage jobs `shouldBe` expectedBackfill
+      map (tgcWorldTime . tsGeoContext . ajTerrain) jobs `shouldSatisfy` all (== tgcWorldTime (tsGeoContext publishedSnap))
+      map (mkDayNightKey . ajTerrain) jobs `shouldSatisfy` all (== mkDayNightKey publishedSnap)
 
   it "does not enqueue disable backfill for unaffected non-weather views" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do

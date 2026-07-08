@@ -1174,17 +1174,24 @@ publishTickSnapshot handles st isAutoTick flushOnIdle uiSnap terrainChanged clim
         , tprSnapshotVersion = Just snapshotVersion
         , tprCoalescedWeatherAffected = sppCoalescedWeatherAffected plan
         }
-    else do
-      stStatus <- publishStatusSnapshot handles st now
-      let st' = if sppCoalescedWeatherAffected plan
-            then stStatus { ssAutoWeatherPublicationPending = True }
-            else stStatus
-      pure TickPublicationResult
-        { tprState = st'
+    else if sppCoalescedWeatherAffected plan
+      -- Do not emit a status-only snapshot bump for a coalesced weather or
+      -- day/night epoch: render must keep using the last published terrain
+      -- context until the matching atlas work is enqueued.
+      then pure TickPublicationResult
+        { tprState = st { ssAutoWeatherPublicationPending = True }
         , tprTerrainSnapshot = Nothing
         , tprSnapshotVersion = Nothing
-        , tprCoalescedWeatherAffected = sppCoalescedWeatherAffected plan
+        , tprCoalescedWeatherAffected = True
         }
+      else do
+        stStatus <- publishStatusSnapshot handles st now
+        pure TickPublicationResult
+          { tprState = stStatus
+          , tprTerrainSnapshot = Nothing
+          , tprSnapshotVersion = Nothing
+          , tprCoalescedWeatherAffected = False
+          }
 
 simulationPublicationPlan
   :: SimState
