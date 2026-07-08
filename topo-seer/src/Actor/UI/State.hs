@@ -20,6 +20,36 @@ module Actor.UI.State
   , sliderValueForId
   , UiMenuMode(..)
   , ViewMode(..)
+  , BaseViewMode(..)
+  , SkyOverlayMode(..)
+  , WeatherBasis(..)
+  , LayeredViewState(..)
+  , ViewSelection
+  , defaultOverlayOpacity
+  , defaultLayeredViewState
+  , allBaseViewModes
+  , allBuiltinSkyOverlayModes
+  , baseViewModeToText
+  , baseViewModeFromText
+  , baseViewModeLabel
+  , baseViewModeToViewMode
+  , baseViewModeFromViewMode
+  , baseViewModeMetadataToJSON
+  , baseViewModeSummaryToJSON
+  , skyOverlayModeToText
+  , skyOverlayModeFromText
+  , skyOverlayModeLabel
+  , skyOverlayModeToViewMode
+  , skyOverlayModeFromViewMode
+  , skyOverlayModeMetadataToJSON
+  , skyOverlayModeSummaryToJSON
+  , weatherBasisToText
+  , weatherBasisFromText
+  , weatherOverlayTemporalBasis
+  , layeredViewStateToJSON
+  , viewModeToLayeredViewState
+  , legacyViewModeToLayeredViewState
+  , layeredViewStateToViewMode
   , ViewModeKind(..)
   , TemporalBasis(..)
   , SourceKind(..)
@@ -115,6 +145,298 @@ data ViewMode
   | ViewCloudTypical
   | ViewOverlay !Text !Int
   deriving (Eq, Ord, Show)
+
+-- | Terrain or physical base selected independently of any sky/weather
+-- overlay.  The constructors intentionally cover legacy non-weather
+-- 'ViewMode' values so existing render paths can keep a one-dimensional
+-- adapter during the layered migration.
+data BaseViewMode
+  = BaseViewElevation
+  | BaseViewBiome
+  | BaseViewMoisture
+  | BaseViewPlateId
+  | BaseViewPlateBoundary
+  | BaseViewPlateHardness
+  | BaseViewPlateCrust
+  | BaseViewPlateAge
+  | BaseViewPlateHeight
+  | BaseViewPlateVelocity
+  | BaseViewVegetation
+  | BaseViewTerrainForm
+  deriving (Eq, Ord, Show)
+
+-- | Optional sky/weather overlay selected orthogonally from the base.
+-- Plugin overlays remain represented here so dynamic overlay names have a
+-- compatibility path back to legacy @overlay:<name>@ view-mode strings.
+data SkyOverlayMode
+  = SkyOverlayWeatherTemperature
+  | SkyOverlayPrecipitation
+  | SkyOverlayCloud
+  | SkyOverlayPlugin !Text !Int
+  deriving (Eq, Ord, Show)
+
+-- | UI-facing weather basis for overlays.  Average cloud overlays map to the
+-- existing typical-normal legacy mode while temperature/precipitation map to
+-- long-run climate averages.
+data WeatherBasis
+  = WeatherBasisAverage
+  | WeatherBasisCurrent
+  deriving (Eq, Ord, Show)
+
+-- | Layered view selection used by new callers.  'uiViewMode' remains in
+-- 'UiState' as a compatibility facade for legacy render, command, and test
+-- paths while call sites migrate.
+data LayeredViewState = LayeredViewState
+  { lvsBaseView       :: !BaseViewMode
+  , lvsSkyOverlay     :: !(Maybe SkyOverlayMode)
+  , lvsWeatherBasis   :: !WeatherBasis
+  , lvsOverlayOpacity :: !Float
+  } deriving (Eq, Show)
+
+type ViewSelection = LayeredViewState
+
+defaultOverlayOpacity :: Float
+defaultOverlayOpacity = 1.0
+
+defaultLayeredViewState :: LayeredViewState
+defaultLayeredViewState = LayeredViewState
+  { lvsBaseView = BaseViewElevation
+  , lvsSkyOverlay = Nothing
+  , lvsWeatherBasis = WeatherBasisCurrent
+  , lvsOverlayOpacity = defaultOverlayOpacity
+  }
+
+allBaseViewModes :: [BaseViewMode]
+allBaseViewModes =
+  [ BaseViewElevation
+  , BaseViewBiome
+  , BaseViewMoisture
+  , BaseViewPlateId
+  , BaseViewPlateBoundary
+  , BaseViewPlateHardness
+  , BaseViewPlateCrust
+  , BaseViewPlateAge
+  , BaseViewPlateHeight
+  , BaseViewPlateVelocity
+  , BaseViewVegetation
+  , BaseViewTerrainForm
+  ]
+
+allBuiltinSkyOverlayModes :: [SkyOverlayMode]
+allBuiltinSkyOverlayModes =
+  [ SkyOverlayWeatherTemperature
+  , SkyOverlayPrecipitation
+  , SkyOverlayCloud
+  ]
+
+baseViewModeToText :: BaseViewMode -> Text
+baseViewModeToText BaseViewElevation = "elevation"
+baseViewModeToText BaseViewBiome = "biome"
+baseViewModeToText BaseViewMoisture = "moisture"
+baseViewModeToText BaseViewPlateId = "plate_id"
+baseViewModeToText BaseViewPlateBoundary = "plate_boundary"
+baseViewModeToText BaseViewPlateHardness = "plate_hardness"
+baseViewModeToText BaseViewPlateCrust = "plate_crust"
+baseViewModeToText BaseViewPlateAge = "plate_age"
+baseViewModeToText BaseViewPlateHeight = "plate_height"
+baseViewModeToText BaseViewPlateVelocity = "plate_velocity"
+baseViewModeToText BaseViewVegetation = "vegetation"
+baseViewModeToText BaseViewTerrainForm = "terrain_form"
+
+baseViewModeFromText :: Text -> Maybe BaseViewMode
+baseViewModeFromText raw = case Text.toLower raw of
+  "elevation" -> Just BaseViewElevation
+  "biome" -> Just BaseViewBiome
+  "moisture" -> Just BaseViewMoisture
+  "plate_id" -> Just BaseViewPlateId
+  "plate-id" -> Just BaseViewPlateId
+  "plate_boundary" -> Just BaseViewPlateBoundary
+  "plate-boundary" -> Just BaseViewPlateBoundary
+  "plate_hardness" -> Just BaseViewPlateHardness
+  "plate-hardness" -> Just BaseViewPlateHardness
+  "plate_crust" -> Just BaseViewPlateCrust
+  "plate-crust" -> Just BaseViewPlateCrust
+  "plate_age" -> Just BaseViewPlateAge
+  "plate-age" -> Just BaseViewPlateAge
+  "plate_height" -> Just BaseViewPlateHeight
+  "plate-height" -> Just BaseViewPlateHeight
+  "plate_velocity" -> Just BaseViewPlateVelocity
+  "plate-velocity" -> Just BaseViewPlateVelocity
+  "vegetation" -> Just BaseViewVegetation
+  "terrain_form" -> Just BaseViewTerrainForm
+  "terrain-form" -> Just BaseViewTerrainForm
+  _ -> Nothing
+
+baseViewModeToViewMode :: BaseViewMode -> ViewMode
+baseViewModeToViewMode BaseViewElevation = ViewElevation
+baseViewModeToViewMode BaseViewBiome = ViewBiome
+baseViewModeToViewMode BaseViewMoisture = ViewMoisture
+baseViewModeToViewMode BaseViewPlateId = ViewPlateId
+baseViewModeToViewMode BaseViewPlateBoundary = ViewPlateBoundary
+baseViewModeToViewMode BaseViewPlateHardness = ViewPlateHardness
+baseViewModeToViewMode BaseViewPlateCrust = ViewPlateCrust
+baseViewModeToViewMode BaseViewPlateAge = ViewPlateAge
+baseViewModeToViewMode BaseViewPlateHeight = ViewPlateHeight
+baseViewModeToViewMode BaseViewPlateVelocity = ViewPlateVelocity
+baseViewModeToViewMode BaseViewVegetation = ViewVegetation
+baseViewModeToViewMode BaseViewTerrainForm = ViewTerrainForm
+
+baseViewModeFromViewMode :: ViewMode -> Maybe BaseViewMode
+baseViewModeFromViewMode ViewElevation = Just BaseViewElevation
+baseViewModeFromViewMode ViewBiome = Just BaseViewBiome
+baseViewModeFromViewMode ViewMoisture = Just BaseViewMoisture
+baseViewModeFromViewMode ViewPlateId = Just BaseViewPlateId
+baseViewModeFromViewMode ViewPlateBoundary = Just BaseViewPlateBoundary
+baseViewModeFromViewMode ViewPlateHardness = Just BaseViewPlateHardness
+baseViewModeFromViewMode ViewPlateCrust = Just BaseViewPlateCrust
+baseViewModeFromViewMode ViewPlateAge = Just BaseViewPlateAge
+baseViewModeFromViewMode ViewPlateHeight = Just BaseViewPlateHeight
+baseViewModeFromViewMode ViewPlateVelocity = Just BaseViewPlateVelocity
+baseViewModeFromViewMode ViewVegetation = Just BaseViewVegetation
+baseViewModeFromViewMode ViewTerrainForm = Just BaseViewTerrainForm
+baseViewModeFromViewMode _ = Nothing
+
+baseViewModeLabel :: BaseViewMode -> Text
+baseViewModeLabel = viewModeLabel . baseViewModeToViewMode
+
+baseViewModeMetadataToJSON :: BaseViewMode -> Value
+baseViewModeMetadataToJSON = object . baseViewModeMetadataFields
+
+baseViewModeSummaryToJSON :: Bool -> BaseViewMode -> Value
+baseViewModeSummaryToJSON active mode = object (("active" .= active) : baseViewModeMetadataFields mode)
+
+baseViewModeMetadataFields :: BaseViewMode -> [Pair]
+baseViewModeMetadataFields mode =
+  let legacyMode = baseViewModeToViewMode mode
+      legacyField = "legacy_view_mode" .= viewModeToText legacyMode
+  in case viewModeMetadata legacyMode of
+       Just meta -> legacyField : viewModeMetadataFields meta
+       Nothing ->
+         [ "name" .= baseViewModeToText mode
+         , "label" .= baseViewModeLabel mode
+         , legacyField
+         ]
+
+skyOverlayModeToText :: SkyOverlayMode -> Text
+skyOverlayModeToText SkyOverlayWeatherTemperature = "weather"
+skyOverlayModeToText SkyOverlayPrecipitation = "precipitation"
+skyOverlayModeToText SkyOverlayCloud = "cloud"
+skyOverlayModeToText (SkyOverlayPlugin name _idx) = "overlay:" <> name
+
+skyOverlayModeFromText :: Text -> Maybe SkyOverlayMode
+skyOverlayModeFromText raw = case Text.toLower raw of
+  "weather" -> Just SkyOverlayWeatherTemperature
+  "climate" -> Just SkyOverlayWeatherTemperature
+  "temperature" -> Just SkyOverlayWeatherTemperature
+  "weather_temperature" -> Just SkyOverlayWeatherTemperature
+  "weather-temperature" -> Just SkyOverlayWeatherTemperature
+  "precip" -> Just SkyOverlayPrecipitation
+  "precipitation" -> Just SkyOverlayPrecipitation
+  "current_precipitation" -> Just SkyOverlayPrecipitation
+  "precipitation_current" -> Just SkyOverlayPrecipitation
+  "cloud" -> Just SkyOverlayCloud
+  "cloud_typical" -> Just SkyOverlayCloud
+  "typical_cloud" -> Just SkyOverlayCloud
+  _
+    | Just rest <- Text.stripPrefix "overlay:" raw
+    , not (Text.null rest) -> Just (SkyOverlayPlugin rest 0)
+    | otherwise -> Nothing
+
+skyOverlayModeLabel :: SkyOverlayMode -> Text
+skyOverlayModeLabel SkyOverlayWeatherTemperature = "Weather Temperature"
+skyOverlayModeLabel SkyOverlayPrecipitation = "Precipitation"
+skyOverlayModeLabel SkyOverlayCloud = "Cloud / Storm"
+skyOverlayModeLabel (SkyOverlayPlugin name _idx) = "Overlay: " <> name
+
+skyOverlayModeToViewMode :: WeatherBasis -> SkyOverlayMode -> Maybe ViewMode
+skyOverlayModeToViewMode basis overlay = case (overlay, basis) of
+  (SkyOverlayWeatherTemperature, WeatherBasisAverage) -> Just ViewClimate
+  (SkyOverlayWeatherTemperature, WeatherBasisCurrent) -> Just ViewWeather
+  (SkyOverlayPrecipitation, WeatherBasisAverage) -> Just ViewPrecip
+  (SkyOverlayPrecipitation, WeatherBasisCurrent) -> Just ViewPrecipCurrent
+  (SkyOverlayCloud, WeatherBasisAverage) -> Just ViewCloudTypical
+  (SkyOverlayCloud, WeatherBasisCurrent) -> Just ViewCloud
+  (SkyOverlayPlugin name idx, _) -> Just (ViewOverlay name idx)
+
+skyOverlayModeFromViewMode :: ViewMode -> Maybe (SkyOverlayMode, WeatherBasis)
+skyOverlayModeFromViewMode ViewClimate = Just (SkyOverlayWeatherTemperature, WeatherBasisAverage)
+skyOverlayModeFromViewMode ViewWeather = Just (SkyOverlayWeatherTemperature, WeatherBasisCurrent)
+skyOverlayModeFromViewMode ViewPrecip = Just (SkyOverlayPrecipitation, WeatherBasisAverage)
+skyOverlayModeFromViewMode ViewPrecipCurrent = Just (SkyOverlayPrecipitation, WeatherBasisCurrent)
+skyOverlayModeFromViewMode ViewCloud = Just (SkyOverlayCloud, WeatherBasisCurrent)
+skyOverlayModeFromViewMode ViewCloudTypical = Just (SkyOverlayCloud, WeatherBasisAverage)
+skyOverlayModeFromViewMode (ViewOverlay name idx) = Just (SkyOverlayPlugin name idx, WeatherBasisCurrent)
+skyOverlayModeFromViewMode _ = Nothing
+
+skyOverlayModeMetadataToJSON :: SkyOverlayMode -> Value
+skyOverlayModeMetadataToJSON = object . skyOverlayModeMetadataFields WeatherBasisCurrent
+
+skyOverlayModeSummaryToJSON :: Bool -> WeatherBasis -> SkyOverlayMode -> Value
+skyOverlayModeSummaryToJSON active basis overlay = object (("active" .= active) : skyOverlayModeMetadataFields basis overlay)
+
+skyOverlayModeMetadataFields :: WeatherBasis -> SkyOverlayMode -> [Pair]
+skyOverlayModeMetadataFields basis overlay =
+  [ "name" .= skyOverlayModeToText overlay
+  , "label" .= skyOverlayModeLabel overlay
+  , "weather_basis_supported" .= skyOverlayBasisLabels overlay
+  , "legacy_view_mode" .= fmap viewModeToText (skyOverlayModeToViewMode basis overlay)
+  , "temporal_basis" .= temporalBasisToText (weatherOverlayTemporalBasis overlay basis)
+  ]
+
+skyOverlayBasisLabels :: SkyOverlayMode -> [Text]
+skyOverlayBasisLabels (SkyOverlayPlugin _ _) = []
+skyOverlayBasisLabels _ = map weatherBasisToText [WeatherBasisAverage, WeatherBasisCurrent]
+
+weatherBasisToText :: WeatherBasis -> Text
+weatherBasisToText WeatherBasisAverage = "average"
+weatherBasisToText WeatherBasisCurrent = "current"
+
+weatherBasisFromText :: Text -> Maybe WeatherBasis
+weatherBasisFromText raw = case temporalBasisFromText raw of
+  Just InstantaneousCurrent -> Just WeatherBasisCurrent
+  Just LongRunAverage -> Just WeatherBasisAverage
+  Just TypicalNormal -> Just WeatherBasisAverage
+  Nothing -> case Text.toLower raw of
+    "average" -> Just WeatherBasisAverage
+    "avg" -> Just WeatherBasisAverage
+    "current" -> Just WeatherBasisCurrent
+    _ -> Nothing
+
+weatherOverlayTemporalBasis :: SkyOverlayMode -> WeatherBasis -> TemporalBasis
+weatherOverlayTemporalBasis SkyOverlayCloud WeatherBasisAverage = TypicalNormal
+weatherOverlayTemporalBasis _ WeatherBasisAverage = LongRunAverage
+weatherOverlayTemporalBasis _ WeatherBasisCurrent = InstantaneousCurrent
+
+legacyViewModeToLayeredViewState :: ViewMode -> LayeredViewState
+legacyViewModeToLayeredViewState mode =
+  case baseViewModeFromViewMode mode of
+    Just base -> defaultLayeredViewState { lvsBaseView = base }
+    Nothing -> case skyOverlayModeFromViewMode mode of
+      Just (overlay, basis) -> defaultLayeredViewState
+        { lvsSkyOverlay = Just overlay
+        , lvsWeatherBasis = basis
+        }
+      Nothing -> defaultLayeredViewState
+
+viewModeToLayeredViewState :: ViewMode -> LayeredViewState
+viewModeToLayeredViewState = legacyViewModeToLayeredViewState
+
+layeredViewStateToViewMode :: LayeredViewState -> Maybe ViewMode
+layeredViewStateToViewMode selection =
+  case lvsSkyOverlay selection of
+    Nothing -> Just (baseViewModeToViewMode (lvsBaseView selection))
+    Just overlay -> skyOverlayModeToViewMode (lvsWeatherBasis selection) overlay
+
+layeredViewStateToJSON :: LayeredViewState -> Value
+layeredViewStateToJSON selection = object
+  [ "base" .= baseViewModeToText (lvsBaseView selection)
+  , "base_label" .= baseViewModeLabel (lvsBaseView selection)
+  , "overlay" .= fmap skyOverlayModeToText (lvsSkyOverlay selection)
+  , "overlay_label" .= fmap skyOverlayModeLabel (lvsSkyOverlay selection)
+  , "weather_basis" .= weatherBasisToText (lvsWeatherBasis selection)
+  , "overlay_opacity" .= lvsOverlayOpacity selection
+  , "legacy_view_mode" .= fmap viewModeToText (layeredViewStateToViewMode selection)
+  ]
 
 -- | Scalar modes use a continuous color scale; categorical modes map stable
 -- domain codes/names to discrete legend entries.
@@ -850,6 +1172,7 @@ data UiState = UiState
   { uiSeed :: !Word64
   , uiGenerating :: !Bool
   , uiViewMode :: !ViewMode
+  , uiViewSelection :: !LayeredViewState
   , uiChunkSize :: !Int
   , uiShowConfig :: !Bool
   , uiShowLeftPanel :: !Bool
@@ -1118,6 +1441,7 @@ emptyUiState = UiState
   { uiSeed = 0
   , uiGenerating = False
   , uiViewMode = ViewElevation
+  , uiViewSelection = defaultLayeredViewState
   , uiChunkSize = 64
   , uiShowConfig = False
   , uiShowLeftPanel = True
@@ -1398,6 +1722,11 @@ data UiUpdate
   = SetSeed !Word64
   | SetGenerating !Bool
   | SetViewMode !ViewMode
+  | SetViewSelection !LayeredViewState
+  | SetBaseViewMode !BaseViewMode
+  | SetSkyOverlayMode !(Maybe SkyOverlayMode)
+  | SetWeatherBasis !WeatherBasis
+  | SetOverlayOpacity !Float
   | SetChunkSize !Int
   | SetShowConfig !Bool
   | SetShowLeftPanel !Bool
@@ -1458,7 +1787,12 @@ applyUpdate :: UiUpdate -> UiState -> UiState
 applyUpdate upd st = case upd of
   SetSeed v -> st { uiSeed = v }
   SetGenerating v -> st { uiGenerating = v }
-  SetViewMode v -> st { uiViewMode = v }
+  SetViewMode v -> st { uiViewMode = v, uiViewSelection = viewModeToLayeredViewState v }
+  SetViewSelection v -> applyLayeredViewState v st
+  SetBaseViewMode v -> applyLayeredViewState ((uiViewSelection st) { lvsBaseView = v }) st
+  SetSkyOverlayMode v -> applyLayeredViewState ((uiViewSelection st) { lvsSkyOverlay = v }) st
+  SetWeatherBasis v -> applyLayeredViewState ((uiViewSelection st) { lvsWeatherBasis = v }) st
+  SetOverlayOpacity v -> applyLayeredViewState ((uiViewSelection st) { lvsOverlayOpacity = v }) st
   SetChunkSize v -> st { uiChunkSize = clampChunk v }
   SetShowConfig v -> st { uiShowConfig = v }
   SetShowLeftPanel v -> st { uiShowLeftPanel = v }
@@ -1521,6 +1855,18 @@ applyUpdate upd st = case upd of
   SetDataBrowser v -> st { uiDataBrowser = v }
   SetDataResources v -> st { uiDataResources = v }
   SetEditor v -> st { uiEditor = v }
+
+applyLayeredViewState :: LayeredViewState -> UiState -> UiState
+applyLayeredViewState selection st =
+  let selection' = normalizeLayeredViewState selection
+  in st
+       { uiViewSelection = selection'
+       , uiViewMode = maybe (uiViewMode st) id (layeredViewStateToViewMode selection')
+       }
+
+normalizeLayeredViewState :: LayeredViewState -> LayeredViewState
+normalizeLayeredViewState selection =
+  selection { lvsOverlayOpacity = clamp01 (lvsOverlayOpacity selection) }
 
 data SliderStateBinding = SliderStateBinding
   { sliderStateGet :: UiState -> Float

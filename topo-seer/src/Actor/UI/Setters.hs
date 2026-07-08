@@ -8,6 +8,11 @@ module Actor.UI.Setters
   ( setUiSeed
   , setUiGenerating
   , setUiViewMode
+  , setUiViewSelection
+  , setUiBaseViewMode
+  , setUiSkyOverlayMode
+  , setUiWeatherBasis
+  , setUiOverlayOpacity
   , setUiChunkSize
   , setUiShowConfig
   , setUiConfigScroll
@@ -287,14 +292,18 @@ import Topo.Plugin.DataResource (DataResourceSchema)
 import UI.WidgetTree (WidgetId)
 
 import Actor.UI.State
-  ( ConfigTab
+  ( BaseViewMode
+  , ConfigTab
   , DataBrowserState
+  , LayeredViewState
   , PipelineStageRunState
   , LeftTab
+  , SkyOverlayMode
   , Ui
   , UiMenuMode
   , UiUpdate(..)
   , ViewMode
+  , WeatherBasis
   )
 
 type UiHandle = ActorHandle Ui (Protocol Ui)
@@ -317,7 +326,25 @@ sendSlider sliderIdValue handle value =
 
 setUiSeed = sendUnary SetSeed
 setUiGenerating = sendUnary SetGenerating
+
+setUiViewMode :: UiHandle -> ViewMode -> IO ()
 setUiViewMode = sendUnary SetViewMode
+
+setUiViewSelection :: UiHandle -> LayeredViewState -> IO ()
+setUiViewSelection = sendUnary SetViewSelection
+
+setUiBaseViewMode :: UiHandle -> BaseViewMode -> IO ()
+setUiBaseViewMode = sendUnary SetBaseViewMode
+
+setUiSkyOverlayMode :: UiHandle -> Maybe SkyOverlayMode -> IO ()
+setUiSkyOverlayMode = sendUnary SetSkyOverlayMode
+
+setUiWeatherBasis :: UiHandle -> WeatherBasis -> IO ()
+setUiWeatherBasis = sendUnary SetWeatherBasis
+
+setUiOverlayOpacity :: UiHandle -> Float -> IO ()
+setUiOverlayOpacity = sendUnary SetOverlayOpacity
+
 setUiChunkSize = sendUnary SetChunkSize
 setUiShowConfig = sendUnary SetShowConfig
 setUiConfigScroll = sendUnary SetConfigScroll

@@ -5,14 +5,30 @@ module Spec.ViewModeRegistry (spec) where
 import Control.Monad (filterM)
 
 import Actor.UI.State
-  ( SourceKind(..)
+  ( BaseViewMode(..)
+  , LayeredViewState(..)
+  , SkyOverlayMode(..)
+  , SourceKind(..)
   , TemporalBasis(..)
   , ViewMode(..)
   , ViewModeDataSemantics(..)
   , ViewModeLegend(..)
   , ViewModeMetadata(..)
+  , WeatherBasis(..)
+  , allBaseViewModes
+  , allBuiltinSkyOverlayModes
   , allBuiltinViewModes
+  , baseViewModeFromText
+  , baseViewModeLabel
+  , baseViewModeSummaryToJSON
+  , baseViewModeToText
   , builtinViewModeFromText
+  , defaultLayeredViewState
+  , layeredViewStateToJSON
+  , layeredViewStateToViewMode
+  , skyOverlayModeFromText
+  , skyOverlayModeSummaryToJSON
+  , skyOverlayModeToText
   , sourceKindToText
   , temporalBasisToText
   , viewModeDataSemantics
@@ -22,7 +38,11 @@ import Actor.UI.State
   , viewModeMetadata
   , viewModeMetadataToJSON
   , viewModeSummaryToJSON
+  , viewModeToLayeredViewState
   , viewModeToText
+  , weatherBasisFromText
+  , weatherBasisToText
+  , weatherOverlayTemporalBasis
   , vmlcColor
   , vmlcLabel
   , vmlcValue
@@ -31,6 +51,7 @@ import Actor.UI.State
   , vmlsValue
   )
 import Data.Aeson (Value(..))
+import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import Data.List (nub)
 import Data.Maybe (mapMaybe)
@@ -64,6 +85,58 @@ spec = describe "view mode registry" $ do
   it "exposes HTTP metadata, legends, export mappings, and data semantics in JSON summaries" $ do
     let metas = mapMaybe viewModeMetadata allBuiltinViewModes
     mapM_ assertSummaryJson metas
+
+  it "exposes layered base/overlay parsers and JSON summaries" $ do
+    mapM_ (\mode -> baseViewModeFromText (baseViewModeToText mode) `shouldBe` Just mode) allBaseViewModes
+    mapM_ (\mode -> skyOverlayModeFromText (skyOverlayModeToText mode) `shouldBe` Just mode) allBuiltinSkyOverlayModes
+    baseViewModeFromText "plate-boundary" `shouldBe` Just BaseViewPlateBoundary
+    skyOverlayModeFromText "overlay:roads" `shouldBe` Just (SkyOverlayPlugin "roads" 0)
+    baseViewModeLabel BaseViewElevation `shouldBe` "Elevation"
+    skyOverlayModeToText SkyOverlayCloud `shouldBe` "cloud"
+    weatherBasisToText WeatherBasisAverage `shouldBe` "average"
+    weatherBasisToText WeatherBasisCurrent `shouldBe` "current"
+    weatherBasisFromText "typical_normal" `shouldBe` Just WeatherBasisAverage
+    weatherOverlayTemporalBasis SkyOverlayCloud WeatherBasisAverage `shouldBe` TypicalNormal
+    assertObjectHas
+      [ "active", "name", "label", "legacy_view_mode", "kind" ]
+      (baseViewModeSummaryToJSON True BaseViewElevation)
+    assertObjectHas
+      [ "active", "name", "label", "weather_basis_supported", "legacy_view_mode", "temporal_basis" ]
+      (skyOverlayModeSummaryToJSON True WeatherBasisCurrent SkyOverlayCloud)
+
+  it "adapts legacy view modes to layered selections and back" $ do
+    let roundTrip mode = layeredViewStateToViewMode (viewModeToLayeredViewState mode) `shouldBe` Just mode
+    mapM_ roundTrip allBuiltinViewModes
+    roundTrip (ViewOverlay "roads" 2)
+    viewModeToLayeredViewState ViewElevation `shouldBe` defaultLayeredViewState
+    viewModeToLayeredViewState ViewWeather `shouldBe` defaultLayeredViewState
+      { lvsSkyOverlay = Just SkyOverlayWeatherTemperature
+      , lvsWeatherBasis = WeatherBasisCurrent
+      }
+    viewModeToLayeredViewState ViewClimate `shouldBe` defaultLayeredViewState
+      { lvsSkyOverlay = Just SkyOverlayWeatherTemperature
+      , lvsWeatherBasis = WeatherBasisAverage
+      }
+    viewModeToLayeredViewState ViewCloudTypical `shouldBe` defaultLayeredViewState
+      { lvsSkyOverlay = Just SkyOverlayCloud
+      , lvsWeatherBasis = WeatherBasisAverage
+      }
+    layeredViewStateToViewMode defaultLayeredViewState
+      { lvsBaseView = BaseViewBiome
+      , lvsSkyOverlay = Just SkyOverlayPrecipitation
+      , lvsWeatherBasis = WeatherBasisCurrent
+      } `shouldBe` Just ViewPrecipCurrent
+    case layeredViewStateToJSON defaultLayeredViewState
+      { lvsBaseView = BaseViewBiome
+      , lvsSkyOverlay = Just SkyOverlayCloud
+      , lvsWeatherBasis = WeatherBasisCurrent
+      } of
+      Object o -> do
+        KM.lookup "base" o `shouldBe` Just (String "biome")
+        KM.lookup "overlay" o `shouldBe` Just (String "cloud")
+        KM.lookup "weather_basis" o `shouldBe` Just (String "current")
+        KM.lookup "legacy_view_mode" o `shouldBe` Just (String "cloud")
+      _ -> expectationFailure "expected layered view JSON object"
 
   it "maps climate and weather view modes to explicit data-basis semantics" $ do
     let semanticsText mode = do
@@ -145,6 +218,11 @@ assertComplete meta = do
   vmmInspectorFields meta `shouldSatisfy` (not . null)
   vmmExportFields meta `shouldSatisfy` (not . null)
   vmmHttpMetadata meta `shouldSatisfy` (not . null)
+
+assertObjectHas :: [Text] -> Value -> Expectation
+assertObjectHas keys value = case value of
+  Object o -> mapM_ (\key -> Key.fromText key `shouldSatisfy` (`KM.member` o)) keys
+  _ -> expectationFailure "expected JSON object"
 
 assertSummaryJson :: ViewModeMetadata -> Expectation
 assertSummaryJson meta = do

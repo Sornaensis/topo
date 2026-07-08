@@ -11,6 +11,36 @@ module Actor.UI
   , LeftTab(..)
   , UiMenuMode(..)
   , ViewMode(..)
+  , BaseViewMode(..)
+  , SkyOverlayMode(..)
+  , WeatherBasis(..)
+  , LayeredViewState(..)
+  , ViewSelection
+  , defaultOverlayOpacity
+  , defaultLayeredViewState
+  , allBaseViewModes
+  , allBuiltinSkyOverlayModes
+  , baseViewModeToText
+  , baseViewModeFromText
+  , baseViewModeLabel
+  , baseViewModeToViewMode
+  , baseViewModeFromViewMode
+  , baseViewModeMetadataToJSON
+  , baseViewModeSummaryToJSON
+  , skyOverlayModeToText
+  , skyOverlayModeFromText
+  , skyOverlayModeLabel
+  , skyOverlayModeToViewMode
+  , skyOverlayModeFromViewMode
+  , skyOverlayModeMetadataToJSON
+  , skyOverlayModeSummaryToJSON
+  , weatherBasisToText
+  , weatherBasisFromText
+  , weatherOverlayTemporalBasis
+  , layeredViewStateToJSON
+  , viewModeToLayeredViewState
+  , legacyViewModeToLayeredViewState
+  , layeredViewStateToViewMode
   , PipelineStageRunState(..)
   , UiState(..)
   , emptyUiState
@@ -27,7 +57,8 @@ module Actor.UI
 
 import Actor.UI.Setters
 import Actor.UI.State
-  ( ConfigTab(..)
+  ( BaseViewMode(..)
+  , ConfigTab(..)
   , DataBrowserState(..)
   , emptyDataBrowserState
   , LeftTab(..)
@@ -35,19 +66,48 @@ import Actor.UI.State
   , UiMenuMode(..)
   , UiSnapshotReply
   , UiSnapshotRef
+  , LayeredViewState(..)
   , PipelineStageRunState(..)
+  , SkyOverlayMode(..)
   , UiState(..)
   , ViewMode(..)
+  , ViewSelection
+  , WeatherBasis(..)
+  , allBaseViewModes
+  , allBuiltinSkyOverlayModes
+  , baseViewModeFromText
+  , baseViewModeFromViewMode
+  , baseViewModeLabel
+  , baseViewModeMetadataToJSON
+  , baseViewModeSummaryToJSON
+  , baseViewModeToText
+  , baseViewModeToViewMode
   , builtinStageRowCount
   , configRowCount
+  , defaultLayeredViewState
+  , defaultOverlayOpacity
   , pluginRowIndex
   , pluginRowsWithParams
   , emptyUiState
   , getUiSnapshot
+  , layeredViewStateToJSON
+  , layeredViewStateToViewMode
+  , legacyViewModeToLayeredViewState
+  , skyOverlayModeFromText
+  , skyOverlayModeFromViewMode
+  , skyOverlayModeLabel
+  , skyOverlayModeMetadataToJSON
+  , skyOverlayModeSummaryToJSON
+  , skyOverlayModeToText
+  , skyOverlayModeToViewMode
   , newUiSnapshotRef
   , readUiSnapshotRef
   , requestUiSnapshot
   , setUiSnapshotRef
   , uiActorDef
   , uiWorldTime
+  , viewModeToLayeredViewState
+  , weatherBasisFromText
+  , weatherBasisToText
+  , weatherOverlayTemporalBasis
   )

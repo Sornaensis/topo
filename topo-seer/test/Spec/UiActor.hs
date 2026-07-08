@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Spec.UiActor (spec) where
@@ -40,6 +41,7 @@ spec = describe "UiActor" $ do
     snapshot <- getUiSnapshot handle
     uiSeed snapshot `shouldBe` 99
     uiViewMode snapshot `shouldBe` ViewBiome
+    uiViewSelection snapshot `shouldBe` viewModeToLayeredViewState ViewBiome
     uiChunkSize snapshot `shouldBe` 96
     uiShowConfig snapshot `shouldBe` True
     uiConfigTab snapshot `shouldBe` ConfigClimate
@@ -58,6 +60,40 @@ spec = describe "UiActor" $ do
     uiGenWarpScale snapshot `shouldBe` 0.7
     uiGenWarpStrength snapshot `shouldBe` 0.5
     uiHoverHex snapshot `shouldBe` Just (3, -2)
+
+  it "updates layered view fields and compatibility view mode" $ withSystem $ \system -> do
+    handle <- get @Ui system
+    setUiBaseViewMode handle BaseViewBiome
+    setUiSkyOverlayMode handle (Just SkyOverlayCloud)
+    setUiWeatherBasis handle WeatherBasisCurrent
+    setUiOverlayOpacity handle 1.4
+    snapshot <- getUiSnapshot handle
+    uiViewMode snapshot `shouldBe` ViewCloud
+    uiViewSelection snapshot `shouldBe` defaultLayeredViewState
+      { lvsBaseView = BaseViewBiome
+      , lvsSkyOverlay = Just SkyOverlayCloud
+      , lvsWeatherBasis = WeatherBasisCurrent
+      , lvsOverlayOpacity = 1.0
+      }
+    setUiSkyOverlayMode handle Nothing
+    snapshotNoOverlay <- getUiSnapshot handle
+    uiViewMode snapshotNoOverlay `shouldBe` ViewBiome
+    uiViewSelection snapshotNoOverlay `shouldBe` defaultLayeredViewState
+      { lvsBaseView = BaseViewBiome
+      , lvsSkyOverlay = Nothing
+      , lvsWeatherBasis = WeatherBasisCurrent
+      , lvsOverlayOpacity = 1.0
+      }
+    setUiViewSelection handle defaultLayeredViewState
+      { lvsSkyOverlay = Just (SkyOverlayPlugin "roads" 2)
+      , lvsOverlayOpacity = -0.5
+      }
+    snapshotPlugin <- getUiSnapshot handle
+    uiViewMode snapshotPlugin `shouldBe` ViewOverlay "roads" 2
+    uiViewSelection snapshotPlugin `shouldBe` defaultLayeredViewState
+      { lvsSkyOverlay = Just (SkyOverlayPlugin "roads" 2)
+      , lvsOverlayOpacity = 0.0
+      }
 
   it "updates generation flag" $ withSystem $ \system -> do
     handle <- get @Ui system
