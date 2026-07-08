@@ -10,6 +10,8 @@ import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
 import Data.Maybe (isNothing)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
+import qualified Data.Vector.Unboxed as U
+import Data.Word (Word64)
 import Foreign.Ptr (Ptr, intPtrToPtr)
 import Linear (V2(..))
 import qualified SDL
@@ -40,7 +42,7 @@ import Seer.Render.Frame
 import Seer.Render.Terrain (TerrainCache(..), buildTerrainCache)
 import Seer.Render.ZoomStage (ZoomStage(..), stageForZoom)
 import Test.Hspec
-import Topo (WorldConfig(..), emptyTerrainChunk)
+import Topo (WeatherChunk(..), WorldConfig(..), emptyTerrainChunk)
 import Topo.Calendar (WorldTime(..), simulationTickSeconds)
 import Topo.Overlay (emptyOverlayStore)
 import Topo.Calendar (defaultWorldTime)
@@ -202,6 +204,20 @@ spec = describe "render-loop atlas maintenance wakeups" $ do
     afspShouldDrainAtlas atlasPolicy `shouldBe` False
     afspShouldScheduleAtlas atlasPolicy `shouldBe` False
 
+  it "wakes fallback maintenance for visible ViewCloud weather-version changes without render targets" $ do
+    let terrainSnapOld = fallbackCloudTerrainSnapshot 1 0.20 0.10 0.00
+        terrainSnapNew = fallbackCloudTerrainSnapshot 2 0.85 0.70 0.65
+        uiCloud = emptyUiState { uiViewMode = ViewCloud, uiDayNightEnabled = False }
+        oldCache = buildTerrainCache uiCloud terrainSnapOld
+        scale = zsAtlasScale (stageForZoom (uiZoom uiCloud))
+        oldTextures = chunkTexturesFor scale oldCache
+        fallbackDue = fallbackFrameMaintenanceDue False uiCloud terrainSnapNew scale oldCache oldTextures
+        atlasPolicy = atlasFrameStepPolicy 101 atlasDrainPollMs atlasSchedulePollMs False False False noAtlasQueuedWork False (Just 100) (Just 100)
+    fallbackDue `shouldBe` True
+    afspAtlasMaintenanceDue atlasPolicy `shouldBe` False
+    afspShouldDrainAtlas atlasPolicy `shouldBe` False
+    afspShouldScheduleAtlas atlasPolicy `shouldBe` False
+
   it "updates atlas timestamps only for attempted drain and schedule steps" $ do
     let skipped = applyAtlasFrameStepTimestamps 100 (AtlasFrameStepPolicy False False False) (Just 10) (Just 20)
         drained = applyAtlasFrameStepTimestamps 101 (AtlasFrameStepPolicy True False True) (Just 10) (Just 20)
@@ -256,6 +272,30 @@ spec = describe "render-loop atlas maintenance wakeups" $ do
     atlasResolveNeedsRetry completeStatus `shouldBe` False
     fmap length (getCurrentCompleteAtlasForTarget (Just freshness) weatherKey targetHex 1 completeResolvedCache) `shouldBe` Just 2
     afspAtlasMaintenanceDue completePolicy `shouldBe` False
+
+fallbackCloudTerrainSnapshot :: Word64 -> Float -> Float -> Float -> TerrainSnapshot
+fallbackCloudTerrainSnapshot weatherVersion cover water precip = renderableFallbackTerrainSnapshot
+  { tsWeatherVersion = weatherVersion
+  , tsWeatherChunks = IntMap.singleton 0 (fallbackWeatherChunk cover water precip)
+  }
+
+fallbackWeatherChunk :: Float -> Float -> Float -> WeatherChunk
+fallbackWeatherChunk cover water precip = WeatherChunk
+  { wcTemp = U.singleton 0.45
+  , wcHumidity = U.singleton 0.50
+  , wcWindDir = U.singleton 0
+  , wcWindSpd = U.singleton 0
+  , wcPressure = U.singleton 0.5
+  , wcPrecip = U.singleton precip
+  , wcCloudCover = U.singleton cover
+  , wcCloudWater = U.singleton water
+  , wcCloudCoverLow = U.singleton (cover * 0.60)
+  , wcCloudCoverMid = U.singleton (cover * 0.25)
+  , wcCloudCoverHigh = U.singleton (cover * 0.15)
+  , wcCloudWaterLow = U.singleton (water * 0.60)
+  , wcCloudWaterMid = U.singleton (water * 0.25)
+  , wcCloudWaterHigh = U.singleton (water * 0.15)
+  }
 
 renderableFallbackTerrainSnapshot :: TerrainSnapshot
 renderableFallbackTerrainSnapshot = TerrainSnapshot

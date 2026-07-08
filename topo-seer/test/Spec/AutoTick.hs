@@ -454,6 +454,57 @@ spec = describe "AutoTick scheduler" $ do
       all ((== ViewWeather) . ajViewMode) jobs `shouldBe` True
       all ((== tsWeatherVersion terrainSnap) . atlasKeyVersion . ajKey) jobs `shouldBe` True
 
+  it "flushes skipped ViewCloud publication when disabled while an auto tick is in-flight" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      workerStarted <- newEmptyMVar
+      runCountRef <- newIORef (0 :: Int)
+      installResponsiveWorldWithDelay 80000 app workerStarted runCountRef
+      let handles = appHandles app
+      setUiZoom (ahUiHandle handles) 2.5
+
+      viewRsp <- dispatch app "set_view_mode" (object ["mode" .= (Text.pack "cloud")])
+      srSuccess viewRsp `shouldBe` True
+      uiBeforeAuto <- getUiSnapshot (ahUiHandle handles)
+      let currentStage = stageForZoom (uiZoom uiBeforeAuto)
+          expectedCurrent = zoomStagePair currentStage
+          expectedBackfill = map zoomStagePair (orderedZoomStagesForZoom (uiZoom uiBeforeAuto))
+          waterLevel = uiRenderWaterLevel uiBeforeAuto
+      _ <- drainAtlasJobs (ahAtlasManagerHandle handles)
+
+      rsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (1.0 :: Double)])
+      srSuccess rsp `shouldBe` True
+      firstPublished <- awaitTrue 100 $ do
+        ui <- getUiSnapshot (ahUiHandle handles)
+        pure (uiSimTickCount ui >= 1)
+      firstPublished `shouldBe` True
+      publishedSnap1 <- readTerrainSnapshot (ahTerrainSnapshotRef handles)
+      firstJobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+      length firstJobs `shouldBe` 1
+      map ajViewMode firstJobs `shouldBe` [ViewCloud]
+      map atlasJobStage firstJobs `shouldBe` [expectedCurrent]
+      map ajKey firstJobs `shouldBe` [atlasKeyFor ViewCloud waterLevel publishedSnap1]
+
+      secondStarted <- awaitTrue 100 $ do
+        runs <- readRunCount runCountRef
+        pure (runs >= 2)
+      secondStarted `shouldBe` True
+
+      stopRsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= False])
+      srSuccess stopRsp `shouldBe` True
+      idle <- awaitStoppedAutoTickIdle handles runCountRef
+      idle `shouldBe` True
+
+      terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
+      publishedSnap <- readTerrainSnapshot (ahTerrainSnapshotRef handles)
+      tsWeatherVersion publishedSnap `shouldBe` tsWeatherVersion terrainSnap
+      let latestCloudKey = atlasKeyFor ViewCloud waterLevel publishedSnap
+      jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+      length jobs `shouldBe` length allZoomStages
+      map ajViewMode jobs `shouldBe` replicate (length allZoomStages) ViewCloud
+      map atlasJobStage jobs `shouldBe` expectedBackfill
+      map ajKey jobs `shouldSatisfy` all (== latestCloudKey)
+      all ((== tsWeatherVersion terrainSnap) . atlasKeyVersion . ajKey) jobs `shouldBe` True
+
   it "keeps commands responsive and atlas queues bounded while max-rate auto ticking" $ do
     completed <- timeout 7000000 $
       withHeadlessApp defaultHeadlessConfig $ \app -> do

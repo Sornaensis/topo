@@ -6,24 +6,41 @@ module Spec.WeatherAtlasFlicker (spec) where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (bracket)
+import Data.IORef (newIORef)
 import qualified Data.IntMap.Strict as IntMap
-import Data.Maybe (isNothing)
+import Data.Maybe (isNothing, listToMaybe)
 import qualified Data.Map.Strict as Map
+import qualified Data.Vector.Storable as SV
 import qualified Data.Vector.Unboxed as U
+import Data.Word (Word8)
 import Foreign.Ptr (Ptr, intPtrToPtr)
-import Hyperspace.Actor (ActorHandle, ActorSystem, Protocol, get, newActorSystem, shutdownActorSystem)
+import Hyperspace.Actor (ActorHandle, ActorSystem, Protocol, get, newActorSystem, shutdownActorSystem, spawnActor)
 import Linear (V2(..))
 import qualified SDL
+import qualified SDL.Raw.Types as Raw
 import Test.Hspec
 import Unsafe.Coerce (unsafeCoerce)
 
 import Actor.AtlasCache (AtlasKey(..), atlasKeyFor, atlasKeyVersion, terrainSnapshotViewVersion)
-import Actor.AtlasManager (AtlasJob(..), AtlasManager, drainAtlasJobs)
+import Actor.AtlasManager (AtlasJob(..), AtlasManager, drainAtlasJobs, setAtlasManagerFreshnessRef)
 import Actor.AtlasResult (AtlasBuildId(..), AtlasBuildResult(..), AtlasTileSetManifest(..), atlasManifestTarget)
-import Actor.AtlasResultBroker (atlasResultsPending, drainFreshResultsN, newAtlasResultRef, pushAtlasResult)
-import Actor.AtlasScheduler (AtlasFreshness(..))
+import Actor.AtlasResultBroker (AtlasResultRef, atlasResultsPending, drainFreshResultsN, newAtlasResultRef, pushAtlasResult)
+import Actor.AtlasScheduleBroker (newAtlasScheduleRef)
+import Actor.AtlasScheduler
+  ( AtlasFreshness(..)
+  , AtlasFreshnessRef
+  , AtlasScheduleRequest(..)
+  , AtlasScheduler
+  , AtlasSchedulerHandles(..)
+  , atlasSchedulerConfigured
+  , newAtlasFreshnessRef
+  , requestAtlasSchedule
+  , setAtlasSchedulerHandles
+  )
+import Actor.AtlasWorker (AtlasWorkerLoad(..), AtlasWorkerLoadRef, atlasWorkerActorDef, newAtlasWorkerLoadRef, readAtlasWorkerLoad)
 import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..), defaultTerrainGeoContext, getTerrainSnapshot, replaceTerrainData)
-import Actor.Log (Log)
+import Actor.Log (Log, getLogSnapshot)
+import Actor.Render (RenderSnapshot(..))
 import Actor.Simulation
   ( AutoTickStepResult(..)
   , Simulation
@@ -47,6 +64,7 @@ import Actor.SnapshotReceiver
   )
 import Actor.UI
   ( Ui
+  , UiState(..)
   , ViewMode(..)
   , getUiSnapshot
   , setUiSimAutoTick
@@ -64,6 +82,7 @@ import Seer.Render.Atlas
   , emptyAtlasTextureCache
   , getCurrentCompleteAtlasForTarget
   , resolveAtlasPureWithFreshness
+  , resolveAtlasPureWithCoverage
   , setAtlasKey
   , storeAtlasTileSet
   )
@@ -91,7 +110,7 @@ import Topo.Overlay (Overlay(..), OverlayData(..), OverlayProvenance(..), emptyO
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice)
 import Topo.Weather (weatherChunkToOverlay, weatherOverlaySchema)
 import Topo.World (TerrainWorld(..))
-import UI.TerrainAtlas (AtlasTileGeometry(..), TerrainAtlasTile(..))
+import UI.TerrainAtlas (AtlasChunkGeometry(..), AtlasTileGeometry(..), TerrainAtlasTile(..))
 import UI.Widgets (Rect(..))
 
 spec :: Spec
@@ -242,6 +261,65 @@ spec = describe "headless weather/cloud atlas flicker regressions" $ do
 
       isNothing (getCurrentCompleteAtlasForTarget (Just (mkFreshness staleManifest)) latestCloudKey (zsHexRadius currentStage) (zsAtlasScale currentStage) oldResolvedCache) `shouldBe` True
 
+  it "drives ViewCloud auto ticks through atlas scheduling, worker results, and latest render-cache promotion" $
+    withConfiguredAtlasPipelineSimulation $ \simHandle dataHandle uiHandle terrainSnapshotRef snapshotVersionRef atlasHandle schedulerHandle resultRef _freshnessRef workerLoadRef logHandle -> do
+      _ <- installWeatherWorld dataHandle simHandle
+      setUiViewMode uiHandle ViewCloud
+      setUiZoom uiHandle 4.5
+      setUiSimAutoTick uiHandle True
+      setUiSimTickRate uiHandle 1.0
+      uiInitial <- getUiSnapshot uiHandle
+      let waterLevel = uiRenderWaterLevel uiInitial
+          currentStage = stageForZoom (uiZoom uiInitial)
+          targetHex = zsHexRadius currentStage
+          targetScale = zsAtlasScale currentStage
+      _ <- drainAtlasJobs atlasHandle
+
+      autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 1
+      version1 <- readSnapshotVersion snapshotVersionRef
+      publishedSnap1 <- readTerrainSnapshot terrainSnapshotRef
+      uiPublished1 <- getUiSnapshot uiHandle
+      let cloudKey1 = atlasKeyFor ViewCloud waterLevel publishedSnap1
+      terrainSnapshotViewVersion ViewCloud publishedSnap1 `shouldBe` tsWeatherVersion publishedSnap1
+      atlasKeyVersion cloudKey1 `shouldBe` tsWeatherVersion publishedSnap1
+
+      results1 <- scheduleAndDrainAtlasResults schedulerHandle resultRef workerLoadRef logHandle uiPublished1 publishedSnap1 version1 1 cloudKey1
+      assertAtlasResultsCompleteFor cloudKey1 version1 currentStage results1
+      colors1 <- requireAtlasResultColors "first ViewCloud build" results1
+      let freshness1 = atlasFreshnessFromResults results1
+          cache1 = foldl storeResultTile ((emptyAtlasTextureCache 30) { atcKey = Just cloudKey1 }) results1
+          (tiles1, status1, resolvedCache1) =
+            resolveAtlasPureWithCoverage freshness1 emptyAtlasViewportCoverage True True cloudKey1 targetHex targetScale cache1
+      status1 `shouldBe` CompleteExact
+      fmap length tiles1 `shouldBe` Just (length results1)
+      fmap fst (atcLast resolvedCache1) `shouldBe` Just cloudKey1
+
+      waitPastAutoWeatherPublishInterval
+      autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 2
+      version2 <- readSnapshotVersion snapshotVersionRef
+      publishedSnap2 <- readTerrainSnapshot terrainSnapshotRef
+      uiPublished2 <- getUiSnapshot uiHandle
+      let cloudKey2 = atlasKeyFor ViewCloud waterLevel publishedSnap2
+      version2 `shouldSatisfy` (> version1)
+      tsWeatherVersion publishedSnap2 `shouldSatisfy` (> tsWeatherVersion publishedSnap1)
+      cloudKey2 `shouldNotBe` cloudKey1
+      terrainSnapshotViewVersion ViewCloud publishedSnap2 `shouldBe` tsWeatherVersion publishedSnap2
+      atlasKeyVersion cloudKey2 `shouldBe` tsWeatherVersion publishedSnap2
+
+      results2 <- scheduleAndDrainAtlasResults schedulerHandle resultRef workerLoadRef logHandle uiPublished2 publishedSnap2 version2 2 cloudKey2
+      assertAtlasResultsCompleteFor cloudKey2 version2 currentStage results2
+      colors2 <- requireAtlasResultColors "latest ViewCloud build" results2
+      colors2 `shouldNotBe` colors1
+      let freshness2 = atlasFreshnessFromResults results2
+          cache2 = foldl storeResultTile (setAtlasKey cloudKey2 resolvedCache1) results2
+          (tiles2, status2, resolvedCache2) =
+            resolveAtlasPureWithCoverage freshness2 emptyAtlasViewportCoverage True True cloudKey2 targetHex targetScale cache2
+      status2 `shouldBe` CompleteExact
+      fmap length tiles2 `shouldBe` Just (length results2)
+      fmap fst (atcLast resolvedCache2) `shouldBe` Just cloudKey2
+      fmap length (getCurrentCompleteAtlasForTarget freshness2 cloudKey2 targetHex targetScale resolvedCache2) `shouldBe` Just (length results2)
+      isNothing (getCurrentCompleteAtlasForTarget freshness2 cloudKey1 targetHex targetScale resolvedCache2) `shouldBe` True
+
   it "keeps unchanged snapshots idle unless pending atlas results or due retry scheduling make work actionable" $ do
     resultRef <- newAtlasResultRef
     let key = AtlasKey ViewElevation 0 44
@@ -322,6 +400,53 @@ withConfiguredSimulation action = withSystem $ \system -> do
   setSimHandles simHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasHandle
   action simHandle dataHandle uiHandle terrainSnapshotRef snapshotVersionRef atlasHandle
 
+withConfiguredAtlasPipelineSimulation
+  :: ( ActorHandle Simulation (Protocol Simulation)
+     -> ActorHandle Data (Protocol Data)
+     -> ActorHandle Ui (Protocol Ui)
+     -> TerrainSnapshotRef
+     -> SnapshotVersionRef
+     -> ActorHandle AtlasManager (Protocol AtlasManager)
+     -> ActorHandle AtlasScheduler (Protocol AtlasScheduler)
+     -> AtlasResultRef
+     -> AtlasFreshnessRef
+     -> AtlasWorkerLoadRef
+     -> ActorHandle Log (Protocol Log)
+     -> IO a
+     )
+  -> IO a
+withConfiguredAtlasPipelineSimulation action = withSystem $ \system -> do
+  simHandle <- get @Simulation system
+  dataHandle <- get @Data system
+  logHandle <- get @Log system
+  uiHandle <- get @Ui system
+  dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
+  terrainSnapshotRef <- newTerrainSnapshotRef emptyTerrainSnap
+  snapshotVersionRef <- newSnapshotVersionRef
+  atlasHandle <- get @AtlasManager system
+  schedulerHandle <- get @AtlasScheduler system
+  workerHandle <- spawnActor atlasWorkerActorDef
+  workerNextRef <- newIORef (0 :: Int)
+  workerLoadRef <- newAtlasWorkerLoadRef
+  resultRef <- newAtlasResultRef
+  scheduleRef <- newAtlasScheduleRef
+  freshnessRef <- newAtlasFreshnessRef
+
+  setAtlasManagerFreshnessRef atlasHandle freshnessRef
+  setAtlasSchedulerHandles schedulerHandle AtlasSchedulerHandles
+    { ashManager = atlasHandle
+    , ashWorkers = [workerHandle]
+    , ashWorkerNext = workerNextRef
+    , ashWorkerLoadRef = workerLoadRef
+    , ashResultRef = resultRef
+    , ashScheduleRef = scheduleRef
+    , ashFreshnessRef = freshnessRef
+    }
+  schedulerReady <- atlasSchedulerConfigured schedulerHandle
+  schedulerReady `shouldBe` True
+  setSimHandles simHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasHandle
+  action simHandle dataHandle uiHandle terrainSnapshotRef snapshotVersionRef atlasHandle schedulerHandle resultRef freshnessRef workerLoadRef logHandle
+
 installWeatherWorld
   :: ActorHandle Data (Protocol Data)
   -> ActorHandle Simulation (Protocol Simulation)
@@ -337,6 +462,85 @@ installWeatherWorld dataHandle simHandle = do
 waitPastAutoWeatherPublishInterval :: IO ()
 waitPastAutoWeatherPublishInterval =
   threadDelay (fromIntegral (autoTickWeatherPublishIntervalNs `div` 1000 + 20000))
+
+awaitTrue :: Int -> IO Bool -> IO Bool
+awaitTrue 0 action = action
+awaitTrue retries action = do
+  ok <- action
+  if ok
+    then pure True
+    else do
+      threadDelay 20000
+      awaitTrue (retries - 1) action
+
+scheduleAndDrainAtlasResults
+  :: ActorHandle AtlasScheduler (Protocol AtlasScheduler)
+  -> AtlasResultRef
+  -> AtlasWorkerLoadRef
+  -> ActorHandle Log (Protocol Log)
+  -> UiState
+  -> TerrainSnapshot
+  -> SnapshotVersion
+  -> Int
+  -> AtlasKey
+  -> IO [AtlasBuildResult]
+scheduleAndDrainAtlasResults schedulerHandle resultRef workerLoadRef logHandle uiSnap terrainSnap snapshotVersion minStarted expectedKey = do
+  logSnap <- getLogSnapshot logHandle
+  requestAtlasSchedule schedulerHandle AtlasScheduleRequest
+    { asqSnapshotVersion = snapshotVersion
+    , asqRenderTargetOk = True
+    , asqDataReady = True
+    , asqSnapshot = RenderSnapshot
+        { rsUi = uiSnap
+        , rsLog = logSnap
+        , rsData = DataSnapshot 0 0 Nothing
+        , rsTerrain = terrainSnap
+        }
+    , asqWindowSize = (640, 480)
+    , asqRefreshCurrentViewport = False
+    , asqRefreshStage = Just (stageForZoom (uiZoom uiSnap))
+    }
+  finished <- awaitTrue 200 $ do
+    load <- readAtlasWorkerLoad workerLoadRef
+    pure (awlBuildStarted load >= minStarted && awlInFlight load == 0)
+  finished `shouldBe` True
+  pending <- atlasResultsPending resultRef
+  pending `shouldBe` True
+  (results, staleCount) <- drainFreshResultsN resultRef isExpected 100
+  staleCount `shouldBe` 0
+  length results `shouldSatisfy` (> 0)
+  pure results
+  where
+    isExpected result = abrKey result == expectedKey && abrSnapshotVersion result == snapshotVersion
+
+assertAtlasResultsCompleteFor :: AtlasKey -> SnapshotVersion -> ZoomStage -> [AtlasBuildResult] -> IO ()
+assertAtlasResultsCompleteFor expectedKey snapshotVersion stage results = do
+  length results `shouldSatisfy` (> 0)
+  map abrKey results `shouldSatisfy` all (== expectedKey)
+  map abrSnapshotVersion results `shouldSatisfy` all (== snapshotVersion)
+  map abrHexRadius results `shouldSatisfy` all (== zsHexRadius stage)
+  map (atsmAtlasScale . abrManifest) results `shouldSatisfy` all (== zsAtlasScale stage)
+  map (atsmExpectedTileCount . abrManifest) results `shouldSatisfy` all (== length results)
+
+atlasFreshnessFromResults :: [AtlasBuildResult] -> Maybe AtlasFreshness
+atlasFreshnessFromResults results = mkFreshness . abrManifest <$> listToMaybe results
+
+requireAtlasResultColors :: String -> [AtlasBuildResult] -> IO [(Word8, Word8, Word8, Word8)]
+requireAtlasResultColors label results =
+  case atlasResultColors results of
+    colors@(_:_) -> pure colors
+    [] -> expectationFailure ("Expected at least one vertex colour in " <> label) >> pure []
+
+atlasResultColors :: [AtlasBuildResult] -> [(Word8, Word8, Word8, Word8)]
+atlasResultColors results =
+  [ rawVertexColor vertex
+  | result <- results
+  , chunk <- atgChunks (abrTile result)
+  , vertex <- SV.toList (acgVertices chunk)
+  ]
+
+rawVertexColor :: Raw.Vertex -> (Word8, Word8, Word8, Word8)
+rawVertexColor (Raw.Vertex _ (Raw.Color r g b a) _) = (r, g, b, a)
 
 data LatestCompletionCase = LatestCompletionCase
   { lccCurrentKey :: !AtlasKey
