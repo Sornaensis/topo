@@ -11,8 +11,9 @@ module Seer.Render.Frame
   ) where
 
 import Actor.AtlasFreshness (readAtlasFreshnessRef)
+import Actor.AtlasManager (AtlasManagerQueueState, formatAtlasManagerQueueState)
 import Actor.AtlasResultBroker (AtlasResultDrainStats(..), AtlasResultRef, formatAtlasResultDrainStats)
-import Actor.AtlasScheduleBroker (AtlasScheduleRef)
+import Actor.AtlasScheduleBroker (AtlasScheduleRef, AtlasScheduleReport(..), formatAtlasScheduleReport)
 import Actor.AtlasScheduler (AtlasScheduler)
 import Actor.Data (DataSnapshot(..), TerrainSnapshot(..))
 import Actor.Log (Log, LogEntry(..), LogLevel(..), appendLog)
@@ -52,7 +53,7 @@ import Seer.Render.Atlas
   , AtlasTextureCache(..)
   , AtlasTileSetSummary(..)
   , atlasCacheSummary
-  , atlasResolveDiagnostic
+  , atlasResolveDiagnosticWithCoverage
   , atlasResolveNeedsRetry
   , dayNightOverlayNeedsRetry
   , drawAtlas
@@ -71,7 +72,7 @@ import Seer.Render.Atlas
   )
 import Seer.Render.ZoomStage (ZoomStage(..), stageForZoom)
 import Seer.Render.Context (RenderContext(..))
-import Seer.Render.Viewport (currentAtlasViewportCoverage)
+import Seer.Render.Viewport (AtlasViewportCoverage, currentAtlasViewportCoverage)
 import Seer.Render.Terrain
   ( TerrainCache(..)
   , chunkTextureCacheNeedsUpdate
@@ -102,6 +103,7 @@ data RenderFrameOutcome = RenderFrameOutcome
   , rfoAtlasTextureCache :: !AtlasTextureCache
   , rfoAtlasResolveStatus :: !AtlasResolveStatus
   , rfoAtlasDrainStats :: !(Maybe AtlasResultDrainStats)
+  , rfoAtlasScheduleReport :: !(Maybe AtlasScheduleReport)
   , rfoDidLog :: !Bool
   }
 
@@ -200,6 +202,7 @@ renderFrame context = do
       scheduleRef = rcAtlasScheduleRef context
       resultRef = rcAtlasResultRef context
       freshnessRef = rcAtlasFreshnessRef context
+      atlasQueueState = rcAtlasQueueState context
       atlasUploadsPerFrame = rcAtlasUploadsPerFrame context
       shouldDrainAtlas = rcShouldDrainAtlas context
       shouldScheduleAtlas = rcShouldScheduleAtlas context
@@ -262,16 +265,19 @@ renderFrame context = do
       coverageFor targetStage = if dataReady
         then Just (currentAtlasViewportCoverage (WorldConfig { wcChunkSize = tsChunkSize terrainSnap }) (uiPanOffset (rsUi snapshot)) (uiZoom (rsUi snapshot)) windowSize terrainSnap targetStage)
         else Nothing
-  (scheduleJobCount, loggedSchedule, loggedScheduleDrain, loggedScheduleEnqueue) <-
+  (mbScheduleReport, loggedSchedule, loggedScheduleDrain, loggedScheduleEnqueue) <-
     if shouldScheduleAtlas
       then do
-        (jobCount, drainMs, enqueueMs) <- scheduleAtlasBuilds renderTargetOk dataReady shouldRefreshViewportAtlas stage atlasSchedulerHandle scheduleRef snapshotVersion snapshot windowSize
-        let totalMs = drainMs + enqueueMs
+        scheduleReport <- scheduleAtlasBuilds renderTargetOk dataReady shouldRefreshViewportAtlas stage atlasSchedulerHandle scheduleRef snapshotVersion snapshot windowSize
+        let jobCount = asrJobCount scheduleReport
+            drainMs = asrDrainMs scheduleReport
+            enqueueMs = asrEnqueueMs scheduleReport
+            totalMs = drainMs + enqueueMs
         totalLogged <- logTiming logHandle timingLogThresholdMs (Text.pack "atlas schedule") totalMs (Just jobCount)
         drainLogged <- logTiming logHandle timingLogThresholdMs (Text.pack "atlas schedule drain") drainMs (Just jobCount)
         enqueueLogged <- logTiming logHandle timingLogThresholdMs (Text.pack "atlas schedule enqueue") enqueueMs (Just jobCount)
-        pure (jobCount, totalLogged, drainLogged, enqueueLogged)
-      else pure (0, False, False, False)
+        pure (Just scheduleReport, totalLogged, drainLogged, enqueueLogged)
+      else pure (Nothing, False, False, False)
   tAfterSchedule <- getMonotonicTimeNSec
   (atlasCache', uploadCount, uploadMs, uploadTextureMs, mbDrainStats) <- if shouldDrainAtlas
     then do
@@ -450,7 +456,9 @@ renderFrame context = do
     atlasCacheForOverlay
     shouldDrainAtlas
     shouldScheduleAtlas
-    scheduleJobCount
+    mbScheduleReport
+    atlasQueueState
+    (coverageFor stage)
     uploadCount
     mbDrainStats
   let totalMs = nsToMs tStart tEnd
@@ -487,6 +495,7 @@ renderFrame context = do
     , rfoAtlasTextureCache = atlasCacheForOverlay
     , rfoAtlasResolveStatus = atlasResolveStatus
     , rfoAtlasDrainStats = mbDrainStats
+    , rfoAtlasScheduleReport = mbScheduleReport
     , rfoDidLog = didLog
     }
 
@@ -503,21 +512,25 @@ traceAtlasFrame
   -> AtlasTextureCache
   -> Bool
   -> Bool
-  -> Int
+  -> Maybe AtlasScheduleReport
+  -> AtlasManagerQueueState
+  -> Maybe AtlasViewportCoverage
   -> Int
   -> Maybe AtlasResultDrainStats
   -> IO Bool
-traceAtlasFrame Nothing _ _ _ _ _ _ _ _ _ _ _ _ _ _ = pure False
-traceAtlasFrame traceH@(Just h) logHandle oldStage newStage expectedKey stage resolveStatus atlasToDraw cacheBeforeResolve cacheAfterResolve drainAttempted scheduleAttempted scheduleJobCount uploadCount mbDrainStats = do
-  let resolveDiag = atlasResolveDiagnostic expectedKey stage resolveStatus atlasToDraw cacheBeforeResolve cacheAfterResolve
+traceAtlasFrame Nothing _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ = pure False
+traceAtlasFrame traceH@(Just h) logHandle oldStage newStage expectedKey stage resolveStatus atlasToDraw cacheBeforeResolve cacheAfterResolve drainAttempted scheduleAttempted mbScheduleReport atlasQueueState requiredCoverage uploadCount mbDrainStats = do
+  let resolveDiag = atlasResolveDiagnosticWithCoverage requiredCoverage expectedKey stage resolveStatus atlasToDraw cacheBeforeResolve cacheAfterResolve
       cacheSummaryBeforeResolve = atlasCacheSummary (Just expectedKey) (Just stage) cacheBeforeResolve
       cacheSummary = atlasCacheSummary (Just expectedKey) (Just stage) cacheAfterResolve
   loggedStageChange <- logAtlasStageChange traceH logHandle oldStage newStage (acsLastGood cacheSummary)
   loggedPromotion <- logAtlasPromotion traceH logHandle (acsLastGood cacheSummaryBeforeResolve) (acsLastGood cacheSummary)
   hPutStrLn h $ "  ATLAS drainAttempted=" <> show drainAttempted
     <> " scheduleAttempted=" <> show scheduleAttempted
-    <> " scheduleJobs=" <> show scheduleJobCount
+    <> " scheduleJobs=" <> maybe "0" (show . asrJobCount) mbScheduleReport
     <> " uploadCount=" <> show uploadCount
+    <> maybe "" ((" " <>) . formatAtlasScheduleReport) mbScheduleReport
+    <> " " <> formatAtlasManagerQueueState atlasQueueState
     <> maybe "" ((" " <>) . formatAtlasResultDrainStats) mbDrainStats
     <> " " <> formatAtlasResolveDiagnostic resolveDiag
     <> " " <> formatAtlasCacheSummary cacheSummary

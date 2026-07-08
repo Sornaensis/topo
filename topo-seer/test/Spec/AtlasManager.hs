@@ -16,6 +16,7 @@ import Actor.AtlasManager
   , AtlasJob(..)
   , AtlasManager
   , AtlasManagerQueueState(..)
+  , AtlasQueuedTarget(..)
   , atlasManagerHasQueuedWorkFor
   , atlasManagerQueuedCount
   , atlasManagerQueuedRevision
@@ -100,6 +101,22 @@ spec = describe "AtlasManager" $ do
     atlasManagerHasQueuedWorkFor queueRef (ajKey job) `shouldReturn` True
     queueState <- atlasManagerQueuedState queueRef
     Map.lookup (ajKey job) (amqsQueuedByKey queueState) `shouldBe` Just 1
+    fmap aqtViewMode (amqsQueuedTargets queueState) `shouldBe` [ViewElevation]
+    fmap aqtKeyVersion (amqsQueuedTargets queueState) `shouldBe` [1]
+    fmap aqtSnapshotVersion (amqsQueuedTargets queueState) `shouldBe` [SnapshotVersion 1]
+    fmap aqtHexRadius (amqsQueuedTargets queueState) `shouldBe` [6]
+    fmap aqtAtlasScale (amqsQueuedTargets queueState) `shouldBe` [1]
+    fmap aqtCurrentStageVisible (amqsQueuedTargets queueState) `shouldBe` [False]
+    amqsLatestAcceptedBuildId queueState `shouldSatisfy` maybe False (const True)
+
+    enqueueAtlasBuild managerHandle job
+    enqueueAtlasBuild managerHandle (atlasJobFor ViewElevation 0)
+    waitForManagerCasts
+    dropState <- atlasManagerQueuedState queueRef
+    amqsDuplicateEnqueueDrops dropState `shouldBe` 1
+    amqsStaleEnqueueDrops dropState `shouldBe` 1
+    amqsLatestWinsPrunes dropState `shouldBe` 0
+    atlasManagerQueuedCount queueRef `shouldReturn` 1
 
     jobs <- drainAtlasJobs managerHandle
     length jobs `shouldBe` 1
@@ -118,6 +135,8 @@ spec = describe "AtlasManager" $ do
     waitForManagerCasts
     revision2 <- atlasManagerQueuedRevision queueRef
     atlasManagerQueuedCount queueRef `shouldReturn` 1
+    replacementState <- atlasManagerQueuedState queueRef
+    amqsLatestWinsPrunes replacementState `shouldBe` 1
     revision2 `shouldSatisfy` (> revision1)
 
     enqueueVersion 1

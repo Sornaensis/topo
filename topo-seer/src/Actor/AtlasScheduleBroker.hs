@@ -5,6 +5,8 @@
 module Actor.AtlasScheduleBroker
   ( AtlasScheduleReport(..)
   , AtlasScheduleRef
+  , emptyAtlasScheduleReport
+  , formatAtlasScheduleReport
   , newAtlasScheduleRef
   , writeAtlasScheduleReport
   , readAtlasScheduleRef
@@ -20,7 +22,60 @@ data AtlasScheduleReport = AtlasScheduleReport
   , asrJobCount :: !Int
   , asrDrainMs :: !Word32
   , asrEnqueueMs :: !Word32
+  , asrJobsAvailable :: !Int
+  , asrJobsDispatched :: !Int
+  , asrJobsDeferred :: !Int
+  , asrJobsDroppedStale :: !Int
+  , asrCurrentStageDispatches :: !Int
+  , asrBackfillDispatches :: !Int
+  , asrWorkerCapacity :: !Int
+  , asrWorkerAvailable :: !Int
+  , asrWorkerInFlight :: !Int
+  , asrWorkerStarted :: !Int
+  , asrWorkerCompleted :: !Int
+  , asrWorkerStaleSkippedAtStart :: !Int
+  , asrWorkerStaleCancelledDuringGeometry :: !Int
+  , asrWorkerStaleCancelledBeforePublish :: !Int
   } deriving (Eq, Show)
+
+emptyAtlasScheduleReport :: SnapshotVersion -> AtlasScheduleReport
+emptyAtlasScheduleReport snapshotVersion = AtlasScheduleReport
+  { asrSnapshotVersion = snapshotVersion
+  , asrJobCount = 0
+  , asrDrainMs = 0
+  , asrEnqueueMs = 0
+  , asrJobsAvailable = 0
+  , asrJobsDispatched = 0
+  , asrJobsDeferred = 0
+  , asrJobsDroppedStale = 0
+  , asrCurrentStageDispatches = 0
+  , asrBackfillDispatches = 0
+  , asrWorkerCapacity = 0
+  , asrWorkerAvailable = 0
+  , asrWorkerInFlight = 0
+  , asrWorkerStarted = 0
+  , asrWorkerCompleted = 0
+  , asrWorkerStaleSkippedAtStart = 0
+  , asrWorkerStaleCancelledDuringGeometry = 0
+  , asrWorkerStaleCancelledBeforePublish = 0
+  }
+
+formatAtlasScheduleReport :: AtlasScheduleReport -> String
+formatAtlasScheduleReport report =
+  "jobsAvailable=" <> show (asrJobsAvailable report)
+    <> " jobsDispatched=" <> show (asrJobsDispatched report)
+    <> " jobsDeferred=" <> show (asrJobsDeferred report)
+    <> " jobsStaleDropped=" <> show (asrJobsDroppedStale report)
+    <> " currentStageDispatches=" <> show (asrCurrentStageDispatches report)
+    <> " backfillDispatches=" <> show (asrBackfillDispatches report)
+    <> " workerCapacity=" <> show (asrWorkerCapacity report)
+    <> " workerAvailable=" <> show (asrWorkerAvailable report)
+    <> " workerInFlight=" <> show (asrWorkerInFlight report)
+    <> " workerStarted=" <> show (asrWorkerStarted report)
+    <> " workerCompleted=" <> show (asrWorkerCompleted report)
+    <> " workerStaleStart=" <> show (asrWorkerStaleSkippedAtStart report)
+    <> " workerStaleGeometry=" <> show (asrWorkerStaleCancelledDuringGeometry report)
+    <> " workerStalePublish=" <> show (asrWorkerStaleCancelledBeforePublish report)
 
 -- | Shared reference for lock-free render-thread reads.
 type AtlasScheduleRef = IORef (Maybe AtlasScheduleReport)

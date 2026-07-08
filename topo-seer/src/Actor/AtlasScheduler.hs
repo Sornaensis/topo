@@ -36,23 +36,27 @@ import Actor.AtlasManager
   ( AtlasJob(..)
   , AtlasDispatchJob(..)
   , AtlasFreshDrainRequest(..)
+  , AtlasFreshDrainStats(..)
   , AtlasManager
-  , drainFreshAtlasJobsLimited
+  , drainFreshAtlasJobsLimitedWithStats
   , enqueueAtlasBuild
+  , inspectFreshAtlasJobs
   )
 import Actor.AtlasResultBroker (AtlasResultRef)
 import Actor.AtlasScheduleBroker
   ( AtlasScheduleRef
   , AtlasScheduleReport(..)
+  , emptyAtlasScheduleReport
   , writeAtlasScheduleReport
   )
 import Actor.AtlasWorker
   ( AtlasBuild(..)
   , AtlasWorker
+  , AtlasWorkerLoad(..)
   , AtlasWorkerLoadRef
-  , atlasWorkerLoadAvailable
   , atlasWorkerLoadStart
   , enqueueAtlasBuildWork
+  , readAtlasWorkerLoad
   )
 import Actor.Data (TerrainSnapshot(..))
 import Actor.Render (RenderSnapshot(..))
@@ -60,6 +64,7 @@ import Actor.SnapshotReceiver (SnapshotVersion)
 import Actor.UI (UiState(..))
 import Control.Monad (forM_)
 import Data.IORef (IORef, atomicModifyIORef')
+import Data.Word (Word32)
 import UI.DayNight (DayNightSpec, mkDayNightSpec)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
@@ -181,6 +186,37 @@ atlasViewportCoverageFor snapshot windowSize stage =
         stage
     else Nothing
 
+scheduleReportFromStats
+  :: SnapshotVersion
+  -> Int
+  -> Int
+  -> AtlasWorkerLoad
+  -> AtlasFreshDrainStats
+  -> Word32
+  -> Word32
+  -> AtlasScheduleReport
+scheduleReportFromStats snapshotVersion workerCount workerCapacity workerLoad stats drainMs enqueueMs =
+  AtlasScheduleReport
+    { asrSnapshotVersion = snapshotVersion
+    , asrJobCount = afdsJobsDispatched stats
+    , asrDrainMs = drainMs
+    , asrEnqueueMs = enqueueMs
+    , asrJobsAvailable = afdsJobsAvailable stats
+    , asrJobsDispatched = afdsJobsDispatched stats
+    , asrJobsDeferred = afdsJobsDeferred stats
+    , asrJobsDroppedStale = afdsJobsDroppedStale stats
+    , asrCurrentStageDispatches = afdsCurrentStageDispatches stats
+    , asrBackfillDispatches = afdsBackfillDispatches stats
+    , asrWorkerCapacity = workerCount
+    , asrWorkerAvailable = workerCapacity
+    , asrWorkerInFlight = awlInFlight workerLoad
+    , asrWorkerStarted = awlBuildStarted workerLoad
+    , asrWorkerCompleted = awlBuildCompleted workerLoad
+    , asrWorkerStaleSkippedAtStart = awlStaleSkippedAtStart workerLoad
+    , asrWorkerStaleCancelledDuringGeometry = awlStaleCancelledDuringGeometry workerLoad
+    , asrWorkerStaleCancelledBeforePublish = awlStaleCancelledBeforePublish workerLoad
+    }
+
 runSchedule :: AtlasSchedulerHandles -> AtlasScheduleRequest -> IO ()
 runSchedule handles req = do
   let snapshot = asqSnapshot req
@@ -201,19 +237,23 @@ runSchedule handles req = do
           viewportRefreshJob = (atlasViewportRefreshJob (asqSnapshotVersion req) snapshot refreshStage)
             { ajViewportCoverage = dispatchCoverage }
           preferredTarget = Just (zsHexRadius refreshStage, zsAtlasScale refreshStage)
-      workerCapacity <- atlasWorkerLoadAvailable (ashWorkerLoadRef handles) workerCount
-      (jobs, drainMs) <- timedMs $ do
-        if asqRefreshCurrentViewport req
-          then enqueueAtlasBuild (ashManager handles) viewportRefreshJob
-          else pure ()
-        if workerCapacity > 0
-          then drainFreshAtlasJobsLimited (ashManager handles) AtlasFreshDrainRequest
+      workerLoadBefore <- readAtlasWorkerLoad (ashWorkerLoadRef handles)
+      let workerCapacity = max 0 (workerCount - awlInFlight workerLoadBefore)
+          drainRequest = AtlasFreshDrainRequest
             { afdrFreshness = currentFreshness
             , afdrLimit = workerCapacity
             , afdrPreferredTarget = preferredTarget
             , afdrDispatchCoverage = dispatchCoverage
             }
-          else pure []
+      ((jobs, drainStats), drainMs) <- timedMs $ do
+        if asqRefreshCurrentViewport req
+          then enqueueAtlasBuild (ashManager handles) viewportRefreshJob
+          else pure ()
+        if workerCapacity > 0
+          then drainFreshAtlasJobsLimitedWithStats (ashManager handles) drainRequest
+          else do
+            stats <- inspectFreshAtlasJobs (ashManager handles) drainRequest
+            pure ([], stats)
       (_, enqueueMs) <- timedMs $ do
         atlasWorkerLoadStart (ashWorkerLoadRef handles) (length jobs)
         forM_ jobs $ \dispatchJob -> do
@@ -237,19 +277,27 @@ runSchedule handles req = do
             , abDayNightSpec = dayNightSpec
             , abWorkerLoadRef = Just (ashWorkerLoadRef handles)
             }
-      let report = AtlasScheduleReport
-            { asrSnapshotVersion = asqSnapshotVersion req
-            , asrJobCount = length jobs
-            , asrDrainMs = drainMs
-            , asrEnqueueMs = enqueueMs
-            }
+      let report = scheduleReportFromStats
+            (asqSnapshotVersion req)
+            workerCount
+            workerCapacity
+            workerLoadBefore
+            drainStats
+            drainMs
+            enqueueMs
       writeAtlasScheduleReport (ashScheduleRef handles) report
     else do
       writeAtlasFreshnessKey (ashFreshnessRef handles) currentKey
-      let report = AtlasScheduleReport
-            { asrSnapshotVersion = asqSnapshotVersion req
-            , asrJobCount = 0
-            , asrDrainMs = 0
-            , asrEnqueueMs = 0
+      workerLoad <- readAtlasWorkerLoad (ashWorkerLoadRef handles)
+      let workerCapacity = max 0 (workerCount - awlInFlight workerLoad)
+          report = (emptyAtlasScheduleReport (asqSnapshotVersion req))
+            { asrWorkerCapacity = workerCount
+            , asrWorkerAvailable = workerCapacity
+            , asrWorkerInFlight = awlInFlight workerLoad
+            , asrWorkerStarted = awlBuildStarted workerLoad
+            , asrWorkerCompleted = awlBuildCompleted workerLoad
+            , asrWorkerStaleSkippedAtStart = awlStaleSkippedAtStart workerLoad
+            , asrWorkerStaleCancelledDuringGeometry = awlStaleCancelledDuringGeometry workerLoad
+            , asrWorkerStaleCancelledBeforePublish = awlStaleCancelledBeforePublish workerLoad
             }
       writeAtlasScheduleReport (ashScheduleRef handles) report

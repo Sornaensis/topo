@@ -4,6 +4,7 @@ module Seer.Render.Context
   ) where
 
 import Actor.AtlasFreshness (AtlasFreshnessRef)
+import Actor.AtlasManager (AtlasManagerQueueState)
 import Actor.AtlasResultBroker (AtlasResultRef)
 import Actor.AtlasScheduleBroker (AtlasScheduleRef)
 import Actor.AtlasScheduler (AtlasScheduler)
@@ -35,6 +36,7 @@ data RenderContext = RenderContext
   , rcAtlasScheduleRef :: !AtlasScheduleRef
   , rcAtlasResultRef :: !AtlasResultRef
   , rcAtlasFreshnessRef :: !AtlasFreshnessRef
+  , rcAtlasQueueState :: !AtlasManagerQueueState
   , rcAtlasUploadsPerFrame :: !Int
   , rcShouldDrainAtlas :: !Bool
   , rcShouldScheduleAtlas :: !Bool

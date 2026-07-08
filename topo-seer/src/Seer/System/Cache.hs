@@ -10,7 +10,9 @@ module Seer.System.Cache
   ) where
 
 import Actor.AtlasCache (atlasKeyFor)
+import Actor.AtlasManager (AtlasManagerQueueState(..), emptyAtlasManagerQueueState, formatAtlasManagerQueueState)
 import Actor.AtlasResultBroker (AtlasResultDrainStats(..), formatAtlasResultDrainStats)
+import Actor.AtlasScheduleBroker (AtlasScheduleReport(..), formatAtlasScheduleReport)
 import Actor.Data (TerrainSnapshot(..))
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion(..))
@@ -64,7 +66,9 @@ data RenderCacheState = RenderCacheState
   , rcsLastAtlasDrainStats :: !(Maybe AtlasResultDrainStats)
   , rcsLastAtlasDrainAttempted :: !Bool
   , rcsLastAtlasScheduleAttempted :: !Bool
+  , rcsLastAtlasScheduleReport :: !(Maybe AtlasScheduleReport)
   , rcsLastAtlasPendingCount :: !Int
+  , rcsLastAtlasQueueState :: !AtlasManagerQueueState
   , rcsLastAtlasQueuedCount :: !Int
   , rcsLastAtlasQueuedRevision :: !(Maybe Word64)
   , rcsLastAtlasQueuedRevisionScheduled :: !(Maybe Word64)
@@ -90,7 +94,9 @@ initialRenderCacheState atlasCacheEntries = RenderCacheState
   , rcsLastAtlasDrainStats = Nothing
   , rcsLastAtlasDrainAttempted = False
   , rcsLastAtlasScheduleAttempted = False
+  , rcsLastAtlasScheduleReport = Nothing
   , rcsLastAtlasPendingCount = 0
+  , rcsLastAtlasQueueState = emptyAtlasManagerQueueState
   , rcsLastAtlasQueuedCount = 0
   , rcsLastAtlasQueuedRevision = Nothing
   , rcsLastAtlasQueuedRevisionScheduled = Nothing
@@ -194,7 +200,10 @@ renderAtlasDiagnosticSummary snap cacheState =
     <> " atlasQueuedScheduledRev=" <> maybe "none" show (rcsLastAtlasQueuedRevisionScheduled cacheState)
     <> " atlasDrainAttempted=" <> show (rcsLastAtlasDrainAttempted cacheState)
     <> " atlasScheduleAttempted=" <> show (rcsLastAtlasScheduleAttempted cacheState)
+    <> " scheduleJobs=" <> maybe "none" (show . asrJobCount) (rcsLastAtlasScheduleReport cacheState)
     <> " lastSnapshotDecision=" <> lastSnapshotDecision
+    <> maybe "" ((" " <>) . formatAtlasScheduleReport) (rcsLastAtlasScheduleReport cacheState)
+    <> " " <> formatAtlasManagerQueueState (rcsLastAtlasQueueState cacheState)
     <> maybe "" ((" " <>) . formatAtlasResultDrainStats) (rcsLastAtlasDrainStats cacheState)
     <> " " <> formatAtlasCacheSummary cacheSummary
 

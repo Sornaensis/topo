@@ -10,12 +10,15 @@ module Actor.AtlasWorker
   , AtlasBuild(..)
   , AtlasBuildResult(..)
   , AtlasWorkerLoad(..)
+  , AtlasWorkerBuildOutcome(..)
   , AtlasWorkerLoadRef
   , newAtlasWorkerLoadRef
   , readAtlasWorkerLoad
   , atlasWorkerLoadAvailable
   , atlasWorkerLoadStart
+  , atlasWorkerLoadBegin
   , atlasWorkerLoadFinish
+  , atlasWorkerLoadFinishOutcome
   , atlasWorkerActorDef
   , atlasWorkerPaddedViewport
   , atlasBuildResultsForTiles
@@ -74,7 +77,20 @@ data AtlasWorkerLoad = AtlasWorkerLoad
   { awlInFlight :: !Int
   , awlFinished :: !Int
   , awlStaleSkipped :: !Int
+  , awlBuildStarted :: !Int
+  , awlBuildCompleted :: !Int
+  , awlStaleSkippedAtStart :: !Int
+  , awlStaleCancelledDuringGeometry :: !Int
+  , awlStaleCancelledBeforePublish :: !Int
   } deriving (Eq, Show)
+
+data AtlasWorkerBuildOutcome
+  = AtlasWorkerBuildCompleted
+  | AtlasWorkerBuildStaleAtStart
+  | AtlasWorkerBuildStaleDuringGeometry
+  | AtlasWorkerBuildStaleBeforePublish
+  | AtlasWorkerBuildFailed
+  deriving (Eq, Show)
 
 type AtlasWorkerLoadRef = IORef AtlasWorkerLoad
 
@@ -83,6 +99,11 @@ emptyAtlasWorkerLoad = AtlasWorkerLoad
   { awlInFlight = 0
   , awlFinished = 0
   , awlStaleSkipped = 0
+  , awlBuildStarted = 0
+  , awlBuildCompleted = 0
+  , awlStaleSkippedAtStart = 0
+  , awlStaleCancelledDuringGeometry = 0
+  , awlStaleCancelledBeforePublish = 0
   }
 
 newAtlasWorkerLoadRef :: IO AtlasWorkerLoadRef
@@ -103,15 +124,45 @@ atlasWorkerLoadStart ref count
   | otherwise = atomicModifyIORef' ref $ \load ->
       (load { awlInFlight = awlInFlight load + count }, ())
 
-atlasWorkerLoadFinish :: Maybe AtlasWorkerLoadRef -> Bool -> IO ()
-atlasWorkerLoadFinish Nothing _ = pure ()
-atlasWorkerLoadFinish (Just ref) staleSkipped =
+atlasWorkerLoadBegin :: Maybe AtlasWorkerLoadRef -> IO ()
+atlasWorkerLoadBegin Nothing = pure ()
+atlasWorkerLoadBegin (Just ref) =
   atomicModifyIORef' ref $ \load ->
-    let staleDelta = if staleSkipped then 1 else 0
+    (load { awlBuildStarted = awlBuildStarted load + 1 }, ())
+
+atlasWorkerLoadFinish :: Maybe AtlasWorkerLoadRef -> Bool -> IO ()
+atlasWorkerLoadFinish ref staleSkipped =
+  atlasWorkerLoadFinishOutcome ref $
+    if staleSkipped then AtlasWorkerBuildStaleAtStart else AtlasWorkerBuildCompleted
+
+atlasWorkerLoadFinishOutcome :: Maybe AtlasWorkerLoadRef -> AtlasWorkerBuildOutcome -> IO ()
+atlasWorkerLoadFinishOutcome Nothing _ = pure ()
+atlasWorkerLoadFinishOutcome (Just ref) outcome =
+  atomicModifyIORef' ref $ \load ->
+    let staleDelta = case outcome of
+          AtlasWorkerBuildCompleted -> 0
+          AtlasWorkerBuildFailed -> 0
+          _ -> 1
+        completedDelta = case outcome of
+          AtlasWorkerBuildCompleted -> 1
+          _ -> 0
+        staleStartDelta = case outcome of
+          AtlasWorkerBuildStaleAtStart -> 1
+          _ -> 0
+        staleGeometryDelta = case outcome of
+          AtlasWorkerBuildStaleDuringGeometry -> 1
+          _ -> 0
+        stalePublishDelta = case outcome of
+          AtlasWorkerBuildStaleBeforePublish -> 1
+          _ -> 0
     in ( load
           { awlInFlight = max 0 (awlInFlight load - 1)
           , awlFinished = awlFinished load + 1
           , awlStaleSkipped = awlStaleSkipped load + staleDelta
+          , awlBuildCompleted = awlBuildCompleted load + completedDelta
+          , awlStaleSkippedAtStart = awlStaleSkippedAtStart load + staleStartDelta
+          , awlStaleCancelledDuringGeometry = awlStaleCancelledDuringGeometry load + staleGeometryDelta
+          , awlStaleCancelledBeforePublish = awlStaleCancelledBeforePublish load + stalePublishDelta
           }
        , ()
        )
@@ -186,21 +237,21 @@ traverseFresh job = go []
           go (y:acc) xs action
         else pure Nothing
 
-forFresh_ :: AtlasBuild -> [a] -> (a -> IO ()) -> IO ()
+forFresh_ :: AtlasBuild -> [a] -> (a -> IO ()) -> IO Bool
 forFresh_ job = go
   where
-    go [] _ = pure ()
+    go [] _ = pure True
     go (x:xs) action = do
       fresh <- atlasBuildIsCurrent job
       if fresh
         then action x >> go xs action
-        else pure ()
+        else pure False
 
-runAtlasBuild :: AtlasBuild -> IO Bool
+runAtlasBuild :: AtlasBuild -> IO AtlasWorkerBuildOutcome
 runAtlasBuild job = do
   freshAtStart <- atlasBuildIsCurrent job
   if not freshAtStart
-    then pure True
+    then pure AtlasWorkerBuildStaleAtStart
     else do
       let terrainSnap = abTerrain job
           config = WorldConfig { wcChunkSize = tsChunkSize terrainSnap }
@@ -242,7 +293,7 @@ runAtlasBuild job = do
         threadDelay 100  -- 0.1ms, releases capability
         pure (k, geom)
       case mbGeomPairs of
-        Nothing -> pure True
+        Nothing -> pure AtlasWorkerBuildStaleDuringGeometry
         Just geomPairs -> do
           -- Build day/night overlay geometry when a brightness function is provided.
           -- This produces an independent overlay (black + alpha) that can be
@@ -255,11 +306,11 @@ runAtlasBuild job = do
               threadDelay 100
               pure (k, geom)
           case mbDayNightGeomPairs of
-            Nothing -> pure True
+            Nothing -> pure AtlasWorkerBuildStaleDuringGeometry
             Just dayNightGeomPairs -> do
               freshBeforeCompose <- atlasBuildIsCurrent job
               if not freshBeforeCompose
-                then pure True
+                then pure AtlasWorkerBuildStaleBeforePublish
                 else do
                   let geometryMap = IntMap.fromList geomPairs
                       dayNightGeometryMap = IntMap.fromList dayNightGeomPairs
@@ -283,9 +334,9 @@ runAtlasBuild job = do
                       coverage = atlasViewportCoverageFromKeys (map fst chunkPairs)
                       results = atlasBuildResultsForTiles (abBuildId job) (abKey job) (abSnapshotVersion job) (abHexRadius job) (abAtlasScale job) coverage tiles dayNightTiles
                   if null tiles
-                    then threadDelay 100 >> pure False
+                    then threadDelay 100 >> pure AtlasWorkerBuildCompleted
                     else do
-                      forFresh_ job results $ \result -> do
+                      allPublished <- forFresh_ job results $ \result -> do
                         let tile = abrTile result
                             mbDnTile = abrDayNightTile result
                         -- Pre-merge terrain + river chunks into a single geometry
@@ -316,7 +367,9 @@ runAtlasBuild job = do
                         pushAtlasResult (abResultRef job) r
                       freshAfterPublish <- atlasBuildIsCurrent job
                       threadDelay 100
-                      pure (not freshAfterPublish)
+                      pure $ if allPublished && freshAfterPublish
+                        then AtlasWorkerBuildCompleted
+                        else AtlasWorkerBuildStaleBeforePublish
 
 [hyperspace|
 actor AtlasWorker
@@ -330,8 +383,9 @@ actor AtlasWorker
 
   initial ()
   on_ build = \job st -> do
-    staleSkipped <- runAtlasBuild job `onException` atlasWorkerLoadFinish (abWorkerLoadRef job) False
-    atlasWorkerLoadFinish (abWorkerLoadRef job) staleSkipped
+    atlasWorkerLoadBegin (abWorkerLoadRef job)
+    outcome <- runAtlasBuild job `onException` atlasWorkerLoadFinishOutcome (abWorkerLoadRef job) AtlasWorkerBuildFailed
+    atlasWorkerLoadFinishOutcome (abWorkerLoadRef job) outcome
     pure st
 |]
 

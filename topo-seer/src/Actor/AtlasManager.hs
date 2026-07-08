@@ -10,13 +10,17 @@ module Actor.AtlasManager
   , AtlasJob(..)
   , AtlasDispatchJob(..)
   , AtlasFreshDrainRequest(..)
+  , AtlasFreshDrainStats(..)
+  , AtlasQueuedTarget(..)
   , AtlasManagerQueueRef
   , AtlasManagerQueueState(..)
+  , emptyAtlasManagerQueueState
   , newAtlasManagerQueueRef
   , atlasManagerQueuedState
   , atlasManagerQueuedCount
   , atlasManagerQueuedRevision
   , atlasManagerHasQueuedWorkFor
+  , formatAtlasManagerQueueState
   , atlasManagerActorDef
   , setAtlasManagerFreshnessRef
   , setAtlasManagerQueueRef
@@ -24,6 +28,8 @@ module Actor.AtlasManager
   , drainAtlasJobs
   , drainFreshAtlasJobs
   , drainFreshAtlasJobsLimited
+  , drainFreshAtlasJobsLimitedWithStats
+  , inspectFreshAtlasJobs
   ) where
 
 import Actor.AtlasCache (AtlasKey(..), atlasKeyVersion)
@@ -33,6 +39,7 @@ import Actor.Data (TerrainSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion)
 import Actor.UI (ViewMode(..))
 import Control.Monad (when)
+import Data.List (intercalate)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -68,21 +75,52 @@ data AtlasFreshDrainRequest = AtlasFreshDrainRequest
   , afdrDispatchCoverage :: !(Maybe AtlasViewportCoverage)
   }
 
+-- | Non-mutating diagnostics produced from the same freshness filter used by
+-- scheduler drains.
+data AtlasFreshDrainStats = AtlasFreshDrainStats
+  { afdsJobsAvailable :: !Int
+  , afdsJobsDispatched :: !Int
+  , afdsJobsDeferred :: !Int
+  , afdsJobsDroppedStale :: !Int
+  , afdsCurrentStageDispatches :: !Int
+  , afdsBackfillDispatches :: !Int
+  } deriving (Eq, Show)
 
 data AtlasJobSlot = AtlasJobSlot !ViewMode !Float !Int !Int
   deriving (Eq, Ord, Show)
 
 data AtlasAcceptedJob = AtlasAcceptedJob
-  { aajKeyVersion :: !Word64
+  { aajBuildId :: !AtlasBuildId
+  , aajKeyVersion :: !Word64
   , aajSnapshotVersion :: !SnapshotVersion
   , aajCoverage :: !(Maybe AtlasViewportCoverage)
   }
 
--- | Non-destructive summary of manager queue state for render-loop wakeups.
+-- | Per-slot target details for queued manager work.  The boolean is true for
+-- jobs that carry current viewport coverage, which identifies the visible-stage
+-- refresh path separately from non-visible backfill work.
+data AtlasQueuedTarget = AtlasQueuedTarget
+  { aqtBuildId :: !AtlasBuildId
+  , aqtViewMode :: !ViewMode
+  , aqtWaterLevel :: !Float
+  , aqtKeyVersion :: !Word64
+  , aqtSnapshotVersion :: !SnapshotVersion
+  , aqtHexRadius :: !Int
+  , aqtAtlasScale :: !Int
+  , aqtCurrentStageVisible :: !Bool
+  } deriving (Eq, Show)
+
+-- | Non-destructive summary of manager queue state for render-loop wakeups and
+-- trace diagnostics.
 data AtlasManagerQueueState = AtlasManagerQueueState
   { amqsQueuedCount :: !Int
   , amqsQueuedRevision :: !Word64
   , amqsQueuedByKey :: !(Map.Map AtlasKey Int)
+  , amqsQueuedTargets :: ![AtlasQueuedTarget]
+  , amqsLatestAcceptedBuildId :: !(Maybe AtlasBuildId)
+  , amqsStaleEnqueueDrops :: !Int
+  , amqsDuplicateEnqueueDrops :: !Int
+  , amqsLatestWinsPrunes :: !Int
   } deriving (Eq, Show)
 
 type AtlasManagerQueueRef = IORef AtlasManagerQueueState
@@ -92,6 +130,11 @@ emptyAtlasManagerQueueState = AtlasManagerQueueState
   { amqsQueuedCount = 0
   , amqsQueuedRevision = 0
   , amqsQueuedByKey = Map.empty
+  , amqsQueuedTargets = []
+  , amqsLatestAcceptedBuildId = Nothing
+  , amqsStaleEnqueueDrops = 0
+  , amqsDuplicateEnqueueDrops = 0
+  , amqsLatestWinsPrunes = 0
   }
 
 newAtlasManagerQueueRef :: IO AtlasManagerQueueRef
@@ -111,6 +154,31 @@ atlasManagerHasQueuedWorkFor ref key = do
   summary <- readIORef ref
   pure $ maybe False (> 0) (Map.lookup key (amqsQueuedByKey summary))
 
+formatAtlasManagerQueueState :: AtlasManagerQueueState -> String
+formatAtlasManagerQueueState state =
+  "managerQueued=" <> show (amqsQueuedCount state)
+    <> " managerQueueRev=" <> show (amqsQueuedRevision state)
+    <> " managerLatestBuild=" <> maybe "none" show (amqsLatestAcceptedBuildId state)
+    <> " managerStaleDrops=" <> show (amqsStaleEnqueueDrops state)
+    <> " managerDuplicateDrops=" <> show (amqsDuplicateEnqueueDrops state)
+    <> " managerLatestWinsPrunes=" <> show (amqsLatestWinsPrunes state)
+    <> " managerTargets=" <> formatQueuedTargets (amqsQueuedTargets state)
+
+formatQueuedTargets :: [AtlasQueuedTarget] -> String
+formatQueuedTargets [] = "none"
+formatQueuedTargets targets = intercalate ";" (map formatQueuedTarget targets)
+
+formatQueuedTarget :: AtlasQueuedTarget -> String
+formatQueuedTarget target =
+  "build=" <> show (aqtBuildId target)
+    <> "/mode=" <> show (aqtViewMode target)
+    <> "/water=" <> show (aqtWaterLevel target)
+    <> "/keyVer=" <> show (aqtKeyVersion target)
+    <> "/snap=" <> show (aqtSnapshotVersion target)
+    <> "/hex=" <> show (aqtHexRadius target)
+    <> "/scale=" <> show (aqtAtlasScale target)
+    <> "/visible=" <> show (aqtCurrentStageVisible target)
+
 data AtlasManagerState = AtlasManagerState
   { amKey :: !(Maybe AtlasKey)
   , amQueue :: ![AtlasDispatchJob]
@@ -120,6 +188,10 @@ data AtlasManagerState = AtlasManagerState
   , amLatestAccepted :: !(Map.Map AtlasJobSlot AtlasAcceptedJob)
   , amQueuedBuildIds :: !(Map.Map AtlasJobSlot AtlasBuildId)
   , amDispatchedBuildIds :: !(Map.Map AtlasJobSlot AtlasBuildId)
+  , amLatestAcceptedBuildId :: !(Maybe AtlasBuildId)
+  , amStaleEnqueueDrops :: !Int
+  , amDuplicateEnqueueDrops :: !Int
+  , amLatestWinsPrunes :: !Int
   , amNextBuildId :: !Word64
   }
 
@@ -133,6 +205,10 @@ emptyAtlasManagerState = AtlasManagerState
   , amLatestAccepted = Map.empty
   , amQueuedBuildIds = Map.empty
   , amDispatchedBuildIds = Map.empty
+  , amLatestAcceptedBuildId = Nothing
+  , amStaleEnqueueDrops = 0
+  , amDuplicateEnqueueDrops = 0
+  , amLatestWinsPrunes = 0
   , amNextBuildId = 1
   }
 
@@ -147,9 +223,10 @@ atlasJobTarget job = AtlasBuildTarget
   , abtAtlasScale = ajAtlasScale job
   }
 
-atlasJobAccepted :: AtlasJob -> AtlasAcceptedJob
-atlasJobAccepted job = AtlasAcceptedJob
-  { aajKeyVersion = atlasKeyVersion (ajKey job)
+atlasJobAccepted :: AtlasBuildId -> AtlasJob -> AtlasAcceptedJob
+atlasJobAccepted buildId job = AtlasAcceptedJob
+  { aajBuildId = buildId
+  , aajKeyVersion = atlasKeyVersion (ajKey job)
   , aajSnapshotVersion = ajSnapshotVersion job
   , aajCoverage = ajViewportCoverage job
   }
@@ -174,13 +251,20 @@ sameStampRedundant accepted job =
     (Nothing, Nothing) -> True
     _ -> False
 
-acceptedMakesJobRedundant :: Bool -> AtlasAcceptedJob -> AtlasJob -> Bool
-acceptedMakesJobRedundant queuedForSlot accepted job =
+data AtlasEnqueueDropReason = AtlasEnqueueStale | AtlasEnqueueDuplicate
+  deriving (Eq, Show)
+
+enqueueDropReason :: Bool -> AtlasAcceptedJob -> AtlasJob -> Maybe AtlasEnqueueDropReason
+enqueueDropReason queuedForSlot accepted job =
   let acceptedStamp = acceptedVersionStamp accepted
       jobStamp = jobVersionStamp job
-  in acceptedStamp > jobStamp
-    || (acceptedStamp == jobStamp && sameStampRedundant accepted job)
-    || (queuedForSlot && acceptedCoversJob accepted job)
+  in if acceptedStamp > jobStamp
+      then Just AtlasEnqueueStale
+      else if acceptedStamp == jobStamp && sameStampRedundant accepted job
+        then Just AtlasEnqueueDuplicate
+        else if queuedForSlot && acceptedCoversJob accepted job
+          then Just AtlasEnqueueDuplicate
+          else Nothing
 
 restampDispatchJob :: SnapshotVersion -> Maybe AtlasViewportCoverage -> AtlasDispatchJob -> AtlasDispatchJob
 restampDispatchJob snapshotVersion mbDispatchCoverage dispatchJob = dispatchJob
@@ -200,17 +284,37 @@ publishDispatchFreshness ref key snapshotVersion dispatchJobs = do
     publishBuild dispatchJob =
       writeAtlasFreshnessBuild ref (atlasJobTarget (adjJob dispatchJob)) (adjBuildId dispatchJob)
 
-publishQueueState :: Maybe AtlasManagerQueueRef -> Word64 -> [AtlasDispatchJob] -> IO ()
-publishQueueState Nothing _ _ = pure ()
-publishQueueState (Just ref) revision queue =
-  writeIORef ref AtlasManagerQueueState
-    { amqsQueuedCount = length queue
-    , amqsQueuedRevision = revision
-    , amqsQueuedByKey = Map.fromListWith (+)
-        [ (ajKey (adjJob dispatchJob), 1 :: Int)
-        | dispatchJob <- queue
-        ]
+queuedTargetFromDispatch :: AtlasDispatchJob -> AtlasQueuedTarget
+queuedTargetFromDispatch dispatchJob =
+  let job = adjJob dispatchJob
+  in AtlasQueuedTarget
+    { aqtBuildId = adjBuildId dispatchJob
+    , aqtViewMode = ajViewMode job
+    , aqtWaterLevel = ajWaterLevel job
+    , aqtKeyVersion = atlasKeyVersion (ajKey job)
+    , aqtSnapshotVersion = ajSnapshotVersion job
+    , aqtHexRadius = ajHexRadius job
+    , aqtAtlasScale = ajAtlasScale job
+    , aqtCurrentStageVisible = maybe False (const True) (ajViewportCoverage job)
     }
+
+publishQueueState :: AtlasManagerState -> IO ()
+publishQueueState st = case amQueueRef st of
+  Nothing -> pure ()
+  Just ref ->
+    writeIORef ref AtlasManagerQueueState
+      { amqsQueuedCount = length (amQueue st)
+      , amqsQueuedRevision = amQueueRevision st
+      , amqsQueuedByKey = Map.fromListWith (+)
+          [ (ajKey (adjJob dispatchJob), 1 :: Int)
+          | dispatchJob <- amQueue st
+          ]
+      , amqsQueuedTargets = map queuedTargetFromDispatch (amQueue st)
+      , amqsLatestAcceptedBuildId = amLatestAcceptedBuildId st
+      , amqsStaleEnqueueDrops = amStaleEnqueueDrops st
+      , amqsDuplicateEnqueueDrops = amDuplicateEnqueueDrops st
+      , amqsLatestWinsPrunes = amLatestWinsPrunes st
+      }
 
 queueSignature :: [AtlasDispatchJob] -> [(AtlasBuildId, AtlasKey, SnapshotVersion, AtlasJobSlot)]
 queueSignature = map $ \dispatchJob ->
@@ -252,7 +356,7 @@ droppedUndispatchedSlots oldQueue fresh queue' =
 selectFreshDrain
   :: AtlasFreshDrainRequest
   -> [AtlasDispatchJob]
-  -> ([AtlasDispatchJob], [AtlasDispatchJob])
+  -> ([AtlasDispatchJob], [AtlasDispatchJob], AtlasFreshDrainStats)
 selectFreshDrain req queue =
   let freshness = afdrFreshness req
       key = afKey freshness
@@ -283,7 +387,29 @@ selectFreshDrain req queue =
         | Set.member (adjBuildId queued) selectedIds = False
         | isDispatchable queued = not hasFutureWork && not (isStaleForRequest queued) && Set.member (adjBuildId queued) deferredIds
         | otherwise = isFuture queued
-  in (map (restampDispatchJob requestSnapshotVersion (afdrDispatchCoverage req)) selected, filter shouldKeep queue)
+      queue' = filter shouldKeep queue
+      droppedCount = length queue - length selected - length queue'
+      currentStageDispatches = length (filter (dispatchMatchesPreferred (afdrPreferredTarget req)) selected)
+      stats = AtlasFreshDrainStats
+        { afdsJobsAvailable = length dispatchable
+        , afdsJobsDispatched = length selected
+        , afdsJobsDeferred = Set.size deferredIds
+        , afdsJobsDroppedStale = max 0 droppedCount
+        , afdsCurrentStageDispatches = currentStageDispatches
+        , afdsBackfillDispatches = length selected - currentStageDispatches
+        }
+  in (map (restampDispatchJob requestSnapshotVersion (afdrDispatchCoverage req)) selected, queue', stats)
+
+inspectFreshDrain :: AtlasFreshDrainRequest -> [AtlasDispatchJob] -> AtlasFreshDrainStats
+inspectFreshDrain req queue =
+  let (_, _, stats) = selectFreshDrain req { afdrLimit = 0 } queue
+  in stats { afdsJobsDroppedStale = 0 }
+
+dispatchMatchesPreferred :: Maybe (Int, Int) -> AtlasDispatchJob -> Bool
+dispatchMatchesPreferred Nothing _ = False
+dispatchMatchesPreferred (Just (preferredHex, preferredScale)) dispatchJob =
+  let job = adjJob dispatchJob
+  in ajHexRadius job == preferredHex && ajAtlasScale job == preferredScale
 
 [hyperspace|
 actor AtlasManager
@@ -299,12 +425,15 @@ actor AtlasManager
   call drainJobs :: () -> [AtlasJob]
   call drainFreshJobs :: AtlasFreshness -> [AtlasDispatchJob]
   call drainFreshJobsLimited :: AtlasFreshDrainRequest -> [AtlasDispatchJob]
+  call drainFreshJobsLimitedWithStats :: AtlasFreshDrainRequest -> ([AtlasDispatchJob], AtlasFreshDrainStats)
+  call inspectFreshJobs :: AtlasFreshDrainRequest -> AtlasFreshDrainStats
 
   initial emptyAtlasManagerState
   onPure_ setFreshnessRef = \ref st -> st { amFreshnessRef = Just ref }
   on_ setQueueRef = \ref st -> do
-    publishQueueState (Just ref) (amQueueRevision st) (amQueue st)
-    pure st { amQueueRef = Just ref }
+    let st' = st { amQueueRef = Just ref }
+    publishQueueState st'
+    pure st'
   on_ enqueue = \job st -> do
     -- Latest-wins per view/water/scale slot: a newer terrain/layer version
     -- for the same atlas slot replaces older queued or already-dispatched
@@ -313,29 +442,40 @@ actor AtlasManager
     -- the current complete atlas is still usable.
     let slot = atlasJobSlot job
         queuedForSlot = Map.member slot (amQueuedBuildIds st)
-        redundant = maybe False (\accepted -> acceptedMakesJobRedundant queuedForSlot accepted job) (Map.lookup slot (amLatestAccepted st))
-    if redundant
-      then pure st
-      else do
+        dropReason = Map.lookup slot (amLatestAccepted st) >>= \accepted -> enqueueDropReason queuedForSlot accepted job
+    case dropReason of
+      Just AtlasEnqueueStale -> do
+        let st' = st { amStaleEnqueueDrops = amStaleEnqueueDrops st + 1 }
+        publishQueueState st'
+        pure st'
+      Just AtlasEnqueueDuplicate -> do
+        let st' = st { amDuplicateEnqueueDrops = amDuplicateEnqueueDrops st + 1 }
+        publishQueueState st'
+        pure st'
+      Nothing -> do
         let buildId = AtlasBuildId (amNextBuildId st)
             dispatchJob = AtlasDispatchJob buildId job
         case amFreshnessRef st of
           Just ref -> writeAtlasFreshnessBuild ref (atlasJobTarget job) buildId
           Nothing -> pure ()
         let pruned = filter (\queued -> atlasJobSlot (adjJob queued) /= slot) (amQueue st)
+            prunedCount = length (amQueue st) - length pruned
             queue' = pruned ++ [dispatchJob]
             queueRevision' = amQueueRevision st + 1
-            latestAccepted' = Map.insert slot (atlasJobAccepted job) (amLatestAccepted st)
+            latestAccepted' = Map.insert slot (atlasJobAccepted buildId job) (amLatestAccepted st)
             queuedBuildIds' = Map.insert slot buildId (amQueuedBuildIds st)
-        publishQueueState (amQueueRef st) queueRevision' queue'
-        pure st
-          { amKey = Just (ajKey job)
-          , amQueue = queue'
-          , amQueueRevision = queueRevision'
-          , amLatestAccepted = latestAccepted'
-          , amQueuedBuildIds = queuedBuildIds'
-          , amNextBuildId = amNextBuildId st + 1
-          }
+            st' = st
+              { amKey = Just (ajKey job)
+              , amQueue = queue'
+              , amQueueRevision = queueRevision'
+              , amLatestAccepted = latestAccepted'
+              , amQueuedBuildIds = queuedBuildIds'
+              , amLatestAcceptedBuildId = Just buildId
+              , amLatestWinsPrunes = amLatestWinsPrunes st + prunedCount
+              , amNextBuildId = amNextBuildId st + 1
+              }
+        publishQueueState st'
+        pure st'
   on drainJobs = \() st -> do
     let queue = amQueue st
         queueRevision' = if null queue then amQueueRevision st else amQueueRevision st + 1
@@ -343,16 +483,15 @@ actor AtlasManager
           (\dispatchJob buildIds -> Map.insert (atlasJobSlot (adjJob dispatchJob)) (adjBuildId dispatchJob) buildIds)
           (amDispatchedBuildIds st)
           queue
-    when (not (null queue)) $
-      publishQueueState (amQueueRef st) queueRevision' []
-    pure ( st
+        st' = st
           { amQueue = []
           , amQueueRevision = queueRevision'
           , amQueuedBuildIds = Map.empty
           , amDispatchedBuildIds = dispatchedBuildIds'
           }
-         , map adjJob queue
-         )
+    when (not (null queue)) $
+      publishQueueState st'
+    pure (st', map adjJob queue)
   on drainFreshJobs = \freshness st -> do
     let request = AtlasFreshDrainRequest
           { afdrFreshness = freshness
@@ -360,7 +499,7 @@ actor AtlasManager
           , afdrPreferredTarget = Nothing
           , afdrDispatchCoverage = Nothing
           }
-        (fresh, queue') = selectFreshDrain request (amQueue st)
+        (fresh, queue', _stats) = selectFreshDrain request (amQueue st)
         key = afKey freshness
         requestSnapshotVersion = afSnapshotVersion freshness
         queueChanged = queueSignature queue' /= queueSignature (amQueue st)
@@ -368,29 +507,28 @@ actor AtlasManager
         droppedSlots = droppedUndispatchedSlots (amQueue st) fresh queue'
         latestAcceptedBase = foldr Map.delete (amLatestAccepted st) droppedSlots
         latestAccepted' = foldr
-          (\dispatchJob accepted -> Map.insert (atlasJobSlot (adjJob dispatchJob)) (atlasJobAccepted (adjJob dispatchJob)) accepted)
+          (\dispatchJob accepted -> Map.insert (atlasJobSlot (adjJob dispatchJob)) (atlasJobAccepted (adjBuildId dispatchJob) (adjJob dispatchJob)) accepted)
           latestAcceptedBase
           fresh
         dispatchedBuildIds' = foldr
           (\dispatchJob buildIds -> Map.insert (atlasJobSlot (adjJob dispatchJob)) (adjBuildId dispatchJob) buildIds)
           (amDispatchedBuildIds st)
           fresh
-    case amFreshnessRef st of
-      Just ref | not (null fresh) -> publishDispatchFreshness ref key requestSnapshotVersion fresh
-      _ -> pure ()
-    when queueChanged $
-      publishQueueState (amQueueRef st) queueRevision' queue'
-    pure ( st
+        st' = st
           { amQueue = queue'
           , amQueueRevision = queueRevision'
           , amLatestAccepted = latestAccepted'
           , amQueuedBuildIds = queuedBuildIdsFor queue'
           , amDispatchedBuildIds = dispatchedBuildIds'
           }
-         , fresh
-         )
+    case amFreshnessRef st of
+      Just ref | not (null fresh) -> publishDispatchFreshness ref key requestSnapshotVersion fresh
+      _ -> pure ()
+    when queueChanged $
+      publishQueueState st'
+    pure (st', fresh)
   on drainFreshJobsLimited = \request st -> do
-    let (fresh, queue') = selectFreshDrain request (amQueue st)
+    let (fresh, queue', _stats) = selectFreshDrain request (amQueue st)
         freshness = afdrFreshness request
         key = afKey freshness
         requestSnapshotVersion = afSnapshotVersion freshness
@@ -399,27 +537,57 @@ actor AtlasManager
         droppedSlots = droppedUndispatchedSlots (amQueue st) fresh queue'
         latestAcceptedBase = foldr Map.delete (amLatestAccepted st) droppedSlots
         latestAccepted' = foldr
-          (\dispatchJob accepted -> Map.insert (atlasJobSlot (adjJob dispatchJob)) (atlasJobAccepted (adjJob dispatchJob)) accepted)
+          (\dispatchJob accepted -> Map.insert (atlasJobSlot (adjJob dispatchJob)) (atlasJobAccepted (adjBuildId dispatchJob) (adjJob dispatchJob)) accepted)
           latestAcceptedBase
           fresh
         dispatchedBuildIds' = foldr
           (\dispatchJob buildIds -> Map.insert (atlasJobSlot (adjJob dispatchJob)) (adjBuildId dispatchJob) buildIds)
           (amDispatchedBuildIds st)
           fresh
-    case amFreshnessRef st of
-      Just ref | not (null fresh) -> publishDispatchFreshness ref key requestSnapshotVersion fresh
-      _ -> pure ()
-    when queueChanged $
-      publishQueueState (amQueueRef st) queueRevision' queue'
-    pure ( st
+        st' = st
           { amQueue = queue'
           , amQueueRevision = queueRevision'
           , amLatestAccepted = latestAccepted'
           , amQueuedBuildIds = queuedBuildIdsFor queue'
           , amDispatchedBuildIds = dispatchedBuildIds'
           }
-         , fresh
-         )
+    case amFreshnessRef st of
+      Just ref | not (null fresh) -> publishDispatchFreshness ref key requestSnapshotVersion fresh
+      _ -> pure ()
+    when queueChanged $
+      publishQueueState st'
+    pure (st', fresh)
+  on drainFreshJobsLimitedWithStats = \request st -> do
+    let (fresh, queue', stats) = selectFreshDrain request (amQueue st)
+        freshness = afdrFreshness request
+        key = afKey freshness
+        requestSnapshotVersion = afSnapshotVersion freshness
+        queueChanged = queueSignature queue' /= queueSignature (amQueue st)
+        queueRevision' = if queueChanged then amQueueRevision st + 1 else amQueueRevision st
+        droppedSlots = droppedUndispatchedSlots (amQueue st) fresh queue'
+        latestAcceptedBase = foldr Map.delete (amLatestAccepted st) droppedSlots
+        latestAccepted' = foldr
+          (\dispatchJob accepted -> Map.insert (atlasJobSlot (adjJob dispatchJob)) (atlasJobAccepted (adjBuildId dispatchJob) (adjJob dispatchJob)) accepted)
+          latestAcceptedBase
+          fresh
+        dispatchedBuildIds' = foldr
+          (\dispatchJob buildIds -> Map.insert (atlasJobSlot (adjJob dispatchJob)) (adjBuildId dispatchJob) buildIds)
+          (amDispatchedBuildIds st)
+          fresh
+        st' = st
+          { amQueue = queue'
+          , amQueueRevision = queueRevision'
+          , amLatestAccepted = latestAccepted'
+          , amQueuedBuildIds = queuedBuildIdsFor queue'
+          , amDispatchedBuildIds = dispatchedBuildIds'
+          }
+    case amFreshnessRef st of
+      Just ref | not (null fresh) -> publishDispatchFreshness ref key requestSnapshotVersion fresh
+      _ -> pure ()
+    when queueChanged $
+      publishQueueState st'
+    pure (st', (fresh, stats))
+  onPure inspectFreshJobs = \request st -> (st, inspectFreshDrain request (amQueue st))
 |]
 
 setAtlasManagerFreshnessRef :: ActorHandle AtlasManager (Protocol AtlasManager) -> AtlasFreshnessRef -> IO ()
@@ -445,3 +613,11 @@ drainFreshAtlasJobs handle freshness =
 drainFreshAtlasJobsLimited :: ActorHandle AtlasManager (Protocol AtlasManager) -> AtlasFreshDrainRequest -> IO [AtlasDispatchJob]
 drainFreshAtlasJobsLimited handle request =
   call @"drainFreshJobsLimited" handle #drainFreshJobsLimited request
+
+drainFreshAtlasJobsLimitedWithStats :: ActorHandle AtlasManager (Protocol AtlasManager) -> AtlasFreshDrainRequest -> IO ([AtlasDispatchJob], AtlasFreshDrainStats)
+drainFreshAtlasJobsLimitedWithStats handle request =
+  call @"drainFreshJobsLimitedWithStats" handle #drainFreshJobsLimitedWithStats request
+
+inspectFreshAtlasJobs :: ActorHandle AtlasManager (Protocol AtlasManager) -> AtlasFreshDrainRequest -> IO AtlasFreshDrainStats
+inspectFreshAtlasJobs handle request =
+  call @"inspectFreshJobs" handle #inspectFreshJobs request

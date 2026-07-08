@@ -10,9 +10,9 @@ module Seer.System.RenderFrame
 
 import Actor.AtlasCache (atlasKeyFor)
 import Actor.AtlasFreshness (AtlasFreshnessRef)
-import Actor.AtlasManager (AtlasManagerQueueRef, AtlasManagerQueueState(..), atlasManagerQueuedState)
+import Actor.AtlasManager (AtlasManagerQueueRef, AtlasManagerQueueState(..), atlasManagerQueuedState, emptyAtlasManagerQueueState)
 import Actor.AtlasResultBroker (AtlasResultRef, atlasResultsPendingCount)
-import Actor.AtlasScheduleBroker (AtlasScheduleRef)
+import Actor.AtlasScheduleBroker (AtlasScheduleRef, AtlasScheduleReport(..))
 import Actor.AtlasScheduler (AtlasScheduler)
 import Actor.Log (Log, LogEntry(..), LogLevel(..), appendLog)
 import Actor.Render (RenderSnapshot(..))
@@ -95,7 +95,14 @@ data RenderFrameMaintenanceDiagnostics = RenderFrameMaintenanceDiagnostics
   , rfmdAtlasQueuedWake :: !Bool
   , rfmdAtlasQueuedCount :: !Int
   , rfmdAtlasQueuedRevision :: !(Maybe Word64)
+  , rfmdAtlasQueuedStaleDrops :: !Int
+  , rfmdAtlasQueuedDuplicateDrops :: !Int
+  , rfmdAtlasQueuedLatestWinsPrunes :: !Int
   , rfmdAtlasScheduleRetryWake :: !Bool
+  , rfmdAtlasScheduleDeferred :: !Int
+  , rfmdAtlasScheduleDroppedStale :: !Int
+  , rfmdAtlasWorkerCapacity :: !Int
+  , rfmdAtlasWorkerInFlight :: !Int
   , rfmdFallbackTerrainWake :: !Bool
   , rfmdDrainAttempted :: !Bool
   , rfmdScheduleAttempted :: !Bool
@@ -149,7 +156,14 @@ renderFrameStepMaintenance settings renderTargetOk nowMs atlasPending atlasQueue
     , rfmdAtlasQueuedWake = atlasQueuedWake
     , rfmdAtlasQueuedCount = amqsQueuedCount atlasQueueState
     , rfmdAtlasQueuedRevision = Just (amqsQueuedRevision atlasQueueState)
+    , rfmdAtlasQueuedStaleDrops = amqsStaleEnqueueDrops atlasQueueState
+    , rfmdAtlasQueuedDuplicateDrops = amqsDuplicateEnqueueDrops atlasQueueState
+    , rfmdAtlasQueuedLatestWinsPrunes = amqsLatestWinsPrunes atlasQueueState
     , rfmdAtlasScheduleRetryWake = scheduleRetryWake
+    , rfmdAtlasScheduleDeferred = maybe 0 asrJobsDeferred (rcsLastAtlasScheduleReport cacheState)
+    , rfmdAtlasScheduleDroppedStale = maybe 0 asrJobsDroppedStale (rcsLastAtlasScheduleReport cacheState)
+    , rfmdAtlasWorkerCapacity = maybe 0 asrWorkerCapacity (rcsLastAtlasScheduleReport cacheState)
+    , rfmdAtlasWorkerInFlight = maybe 0 asrWorkerInFlight (rcsLastAtlasScheduleReport cacheState)
     , rfmdFallbackTerrainWake = fallbackMaintenanceDue
     , rfmdDrainAttempted = afspShouldDrainAtlas atlasPolicy
     , rfmdScheduleAttempted = afspShouldScheduleAtlas atlasPolicy
@@ -172,11 +186,7 @@ renderFrameStepMaintenanceDue settings renderTargetOk nowMs atlasPending atlasQu
     renderFrameStepMaintenance settings renderTargetOk nowMs atlasPending atlasQueueState renderSnap cacheState
 
 emptyQueueState :: AtlasManagerQueueState
-emptyQueueState = AtlasManagerQueueState
-  { amqsQueuedCount = 0
-  , amqsQueuedRevision = 0
-  , amqsQueuedByKey = mempty
-  }
+emptyQueueState = emptyAtlasManagerQueueState
 
 atlasQueuedWorkForSnapshot :: AtlasManagerQueueState -> RenderSnapshot -> Maybe Word64 -> AtlasQueuedWork
 atlasQueuedWorkForSnapshot queueState renderSnap lastScheduledRevision =
@@ -280,6 +290,7 @@ renderFrameStep env settings nowMs snapVersion renderSnap cacheState0 = do
       , rcAtlasScheduleRef = rfeAtlasScheduleRef env
       , rcAtlasResultRef = rfeAtlasResultRef env
       , rcAtlasFreshnessRef = rfeAtlasFreshnessRef env
+      , rcAtlasQueueState = atlasQueueState
       , rcAtlasUploadsPerFrame = rfsetAtlasUploadsPerFrame settings
       , rcShouldDrainAtlas = shouldDrainAtlas
       , rcShouldScheduleAtlas = shouldScheduleAtlas
@@ -312,7 +323,9 @@ renderFrameStep env settings nowMs snapVersion renderSnap cacheState0 = do
         , rcsLastAtlasDrainStats = rfoAtlasDrainStats frameOutcome
         , rcsLastAtlasDrainAttempted = shouldDrainAtlas
         , rcsLastAtlasScheduleAttempted = shouldScheduleAtlas
+        , rcsLastAtlasScheduleReport = rfoAtlasScheduleReport frameOutcome
         , rcsLastAtlasPendingCount = atlasPendingCount
+        , rcsLastAtlasQueueState = atlasQueueState
         , rcsLastAtlasQueuedCount = amqsQueuedCount atlasQueueState
         , rcsLastAtlasQueuedRevision = Just (amqsQueuedRevision atlasQueueState)
         , rcsLastAtlasQueuedRevisionScheduled = queuedRevisionScheduled

@@ -4,7 +4,7 @@ module Seer.System.MainLoop
   ( runMainLoop
   ) where
 
-import Actor.AtlasManager (AtlasManagerQueueState(..), atlasManagerQueuedState)
+import Actor.AtlasManager (AtlasManagerQueueState, atlasManagerQueuedState, emptyAtlasManagerQueueState)
 import Actor.AtlasResultBroker (atlasResultsPendingCount)
 import Actor.Log (LogEntry(..), LogLevel(..), appendLog)
 import Actor.Render (RenderSnapshot(..))
@@ -42,17 +42,20 @@ import System.FilePath ((</>))
 import System.IO (IOMode(..), hFlush, hPutStrLn, openFile)
 
 emptyAtlasQueueStateForMainLoop :: AtlasManagerQueueState
-emptyAtlasQueueStateForMainLoop = AtlasManagerQueueState
-  { amqsQueuedCount = 0
-  , amqsQueuedRevision = 0
-  , amqsQueuedByKey = mempty
-  }
+emptyAtlasQueueStateForMainLoop = emptyAtlasManagerQueueState
 
 renderMaintenanceWakeSummary :: Int -> RenderFrameMaintenanceDiagnostics -> String
 renderMaintenanceWakeSummary atlasPendingCount diag =
   "render maintenance wake: pendingAtlasResults=" <> show atlasPendingCount
     <> " queuedAtlasJobs=" <> show (rfmdAtlasQueuedCount diag)
     <> " queuedAtlasRev=" <> maybe "none" show (rfmdAtlasQueuedRevision diag)
+    <> " queuedStaleDrops=" <> show (rfmdAtlasQueuedStaleDrops diag)
+    <> " queuedDuplicateDrops=" <> show (rfmdAtlasQueuedDuplicateDrops diag)
+    <> " queuedLatestWinsPrunes=" <> show (rfmdAtlasQueuedLatestWinsPrunes diag)
+    <> " scheduleDeferred=" <> show (rfmdAtlasScheduleDeferred diag)
+    <> " scheduleStaleDropped=" <> show (rfmdAtlasScheduleDroppedStale diag)
+    <> " workerCapacity=" <> show (rfmdAtlasWorkerCapacity diag)
+    <> " workerInFlight=" <> show (rfmdAtlasWorkerInFlight diag)
     <> " pendingAtlasWake=" <> show (rfmdAtlasPendingWake diag)
     <> " queuedAtlasWake=" <> show (rfmdAtlasQueuedWake diag)
     <> " scheduleRetryWake=" <> show (rfmdAtlasScheduleRetryWake diag)

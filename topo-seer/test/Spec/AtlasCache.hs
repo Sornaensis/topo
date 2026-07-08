@@ -23,6 +23,7 @@ import Seer.Render.Atlas
   , AtlasTileSetSummary(..)
   , atlasCacheSummary
   , atlasResolveDiagnostic
+  , atlasResolveDiagnosticWithCoverage
   , atlasResolveNeedsRetry
   , dayNightOverlayNeedsRetry
   , emptyAtlasTextureCache
@@ -260,6 +261,21 @@ spec = describe "AtlasTextureCache" $ do
       status `shouldBe` ViewportCoverageMissing
       atlasResolveNeedsRetry status `shouldBe` True
       isNothing (atcLast cache2) `shouldBe` True
+
+    it "formats viewport coverage gap diagnostics with required and cached summaries" $ do
+      let targetStage = ZoomStage 6 1 0 1
+          cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          manifest = mkManifestWithCoverage 1 22 keyA 6 [testRect, testRect2] (atlasViewportCoverageFromKeys [10, 11])
+          cache1 = storeAtlasTileSet manifest [mkTile 1 6 testRect, mkTile 2 6 testRect2] cache0
+          requiredCoverage = atlasViewportCoverageFromKeys [10, 99]
+          (tiles, status, cache2) = resolveAtlasPureWithCoverage (Just (mkFreshness manifest)) requiredCoverage True True keyA 6 1 cache1
+          diag = atlasResolveDiagnosticWithCoverage (Just requiredCoverage) keyA targetStage status tiles cache1 cache2
+          formatted = formatAtlasResolveDiagnostic diag
+      status `shouldBe` ViewportCoverageMissing
+      ardRetryReason diag `shouldBe` "viewport-coverage-missing"
+      formatted `shouldContain` "retryReason=viewport-coverage-missing"
+      formatted `shouldContain` "requiredCoverage=chunks=2"
+      formatted `shouldContain` "cachedCoverage=chunks=2"
 
     it "draws last-good fallback and suppresses promotion on viewport coverage gaps" $ do
       let lastTiles = [mkTile 90 6 testRect]

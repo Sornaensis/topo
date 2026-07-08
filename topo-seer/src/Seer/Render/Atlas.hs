@@ -6,6 +6,7 @@ module Seer.Render.Atlas
   , DayNightOverlayStatus(..)
   , AtlasTileSetSummary(..)
   , AtlasCacheSummary(..)
+  , AtlasViewportCoverageSummary(..)
   , AtlasResolveDiagnostic(..)
   , atlasResolveNeedsRetry
   , atlasResolveNeedsViewportRefresh
@@ -16,6 +17,7 @@ module Seer.Render.Atlas
   , atlasCacheSummary
   , formatAtlasCacheSummary
   , atlasResolveDiagnostic
+  , atlasResolveDiagnosticWithCoverage
   , formatAtlasResolveDiagnostic
   , emptyAtlasTextureCache
   , collectAtlasTextures
@@ -67,6 +69,7 @@ import Actor.AtlasResultBroker
 import Actor.AtlasScheduleBroker
   ( AtlasScheduleReport(..)
   , AtlasScheduleRef
+  , emptyAtlasScheduleReport
   , readAtlasScheduleRef
   )
 import Actor.AtlasScheduler
@@ -217,6 +220,11 @@ data AtlasCacheSummary = AtlasCacheSummary
   , acsTargetTileSet :: !(Maybe AtlasTileSetSummary)
   } deriving (Eq, Show)
 
+data AtlasViewportCoverageSummary = AtlasViewportCoverageSummary
+  { avcsChunkCount :: !Int
+  , avcsBounds :: !(Maybe AtlasChunkBounds)
+  } deriving (Eq, Show)
+
 -- | Per-frame resolve diagnostic built from the resolver's production status.
 data AtlasResolveDiagnostic = AtlasResolveDiagnostic
   { ardStatus :: !AtlasResolveStatus
@@ -230,6 +238,8 @@ data AtlasResolveDiagnostic = AtlasResolveDiagnostic
   , ardStaleKeyFallback :: !Bool
   , ardPromotionAccepted :: !Bool
   , ardPromotionSuppressed :: !Bool
+  , ardRequiredCoverage :: !(Maybe AtlasViewportCoverageSummary)
+  , ardCachedManifestCoverage :: !(Maybe AtlasViewportCoverageSummary)
   } deriving (Eq, Show)
 
 -- | Render-thread-owned cache of atlas textures keyed by (AtlasKey, scale).
@@ -325,7 +335,18 @@ atlasResolveDiagnostic
   -> AtlasTextureCache
   -> AtlasTextureCache
   -> AtlasResolveDiagnostic
-atlasResolveDiagnostic expectedKey targetStage status atlasToDraw cacheBefore cacheAfter =
+atlasResolveDiagnostic = atlasResolveDiagnosticWithCoverage Nothing
+
+atlasResolveDiagnosticWithCoverage
+  :: Maybe AtlasViewportCoverage
+  -> AtlasKey
+  -> ZoomStage
+  -> AtlasResolveStatus
+  -> Maybe [TerrainAtlasTile]
+  -> AtlasTextureCache
+  -> AtlasTextureCache
+  -> AtlasResolveDiagnostic
+atlasResolveDiagnosticWithCoverage requiredCoverage expectedKey targetStage status atlasToDraw cacheBefore cacheAfter =
   let selectedTiles = maybe [] id atlasToDraw
       selectedHex = case selectedTiles of
         tile:_ -> Just (tatHexRadius tile)
@@ -350,6 +371,9 @@ atlasResolveDiagnostic expectedKey targetStage status atlasToDraw cacheBefore ca
         && not (null selectedTiles)
         && lastGoodSummary cacheBefore /= lastGoodSummary cacheAfter
       promotionSuppressed = status /= CompleteExact && not (null selectedTiles)
+      targetCoverage = lookupTargetCoverageSummary expectedKey targetStage cacheBefore
+        `orMaybe` lookupTargetCoverageSummary expectedKey targetStage cacheAfter
+      includeCoverage = atlasResolveNeedsRetry status
   in AtlasResolveDiagnostic
     { ardStatus = status
     , ardRetryReason = atlasRetryReason status staleKeyFallback
@@ -362,6 +386,8 @@ atlasResolveDiagnostic expectedKey targetStage status atlasToDraw cacheBefore ca
     , ardStaleKeyFallback = staleKeyFallback
     , ardPromotionAccepted = promotionAccepted
     , ardPromotionSuppressed = promotionSuppressed
+    , ardRequiredCoverage = if includeCoverage then coverageSummary <$> requiredCoverage else Nothing
+    , ardCachedManifestCoverage = if includeCoverage then targetCoverage else Nothing
     }
 
 formatAtlasResolveDiagnostic :: AtlasResolveDiagnostic -> String
@@ -376,6 +402,8 @@ formatAtlasResolveDiagnostic diag =
     <> " selectedTiles=" <> show (ardSelectedTileCount diag)
     <> " staleKeyFallback=" <> show (ardStaleKeyFallback diag)
     <> " promotion=" <> promotionText diag
+    <> " requiredCoverage=" <> maybe "none" formatAtlasViewportCoverageSummary (ardRequiredCoverage diag)
+    <> " cachedCoverage=" <> maybe "none" formatAtlasViewportCoverageSummary (ardCachedManifestCoverage diag)
 
 -- | Hysteresis threshold: do not switch zoom stage until the camera has
 -- been in the new range for at least this many nanoseconds (300 ms).
@@ -523,7 +551,7 @@ scheduleAtlasBuilds
   -> SnapshotVersion
   -> RenderSnapshot
   -> (Int, Int)
-  -> IO (Int, Word32, Word32)
+  -> IO AtlasScheduleReport
 scheduleAtlasBuilds renderTargetOk dataReady refreshCurrentViewport refreshStage atlasSchedulerHandle scheduleRef snapshotVersion snapshot windowSize = do
   requestAtlasSchedule atlasSchedulerHandle AtlasScheduleRequest
     { asqSnapshotVersion = snapshotVersion
@@ -537,8 +565,8 @@ scheduleAtlasBuilds renderTargetOk dataReady refreshCurrentViewport refreshStage
   mbReport <- readAtlasScheduleRef scheduleRef
   case mbReport of
     Just report | asrSnapshotVersion report == snapshotVersion ->
-      pure (asrJobCount report, asrDrainMs report, asrEnqueueMs report)
-    _ -> pure (0, 0, 0)
+      pure report
+    _ -> pure (emptyAtlasScheduleReport snapshotVersion)
 
 -- | Resolve which atlas tiles to draw and clean up pending textures.
 --
@@ -950,6 +978,17 @@ getCurrentCompleteAtlasForTargetWithCoverage latestFreshness requiredCoverage ke
     then Just (catsTiles set)
     else Nothing
 
+coverageSummary :: AtlasViewportCoverage -> AtlasViewportCoverageSummary
+coverageSummary coverage = AtlasViewportCoverageSummary
+  { avcsChunkCount = length (avcChunkKeys coverage)
+  , avcsBounds = avcChunkBounds coverage
+  }
+
+lookupTargetCoverageSummary :: AtlasKey -> ZoomStage -> AtlasTextureCache -> Maybe AtlasViewportCoverageSummary
+lookupTargetCoverageSummary key stage cache = do
+  set <- lookupAtlasSet key (zsHexRadius stage) cache
+  pure (coverageSummary (catsCoverage set))
+
 tileSetSummary :: AtlasKey -> CachedAtlasTileSet -> AtlasTileSetSummary
 tileSetSummary key set =
   let manifest = catsManifest set
@@ -1020,6 +1059,11 @@ formatMaybeTileSetSummary (Just summary) =
 formatChunkBounds :: AtlasChunkBounds -> String
 formatChunkBounds bounds =
   show (acbMinChunkX bounds, acbMinChunkY bounds, acbMaxChunkX bounds, acbMaxChunkY bounds)
+
+formatAtlasViewportCoverageSummary :: AtlasViewportCoverageSummary -> String
+formatAtlasViewportCoverageSummary summary =
+  "chunks=" <> show (avcsChunkCount summary)
+    <> "/bounds=" <> maybe "none" formatChunkBounds (avcsBounds summary)
 
 formatZoomStage :: ZoomStage -> String
 formatZoomStage stage =

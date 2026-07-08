@@ -22,6 +22,7 @@ import Actor.AtlasResultBroker (atlasResultsPending, newAtlasResultRef)
 import Actor.AtlasScheduleBroker
   ( AtlasScheduleRef
   , AtlasScheduleReport(..)
+  , emptyAtlasScheduleReport
   , newAtlasScheduleRef
   , readAtlasScheduleRef
   )
@@ -39,11 +40,13 @@ import Actor.AtlasScheduler
   )
 import Actor.AtlasWorker
   ( AtlasBuild(..)
+  , AtlasWorkerBuildOutcome(..)
   , AtlasWorkerLoad(..)
   , AtlasWorkerLoadRef
   , atlasBuildIsCurrent
   , atlasWorkerActorDef
   , atlasWorkerLoadFinish
+  , atlasWorkerLoadFinishOutcome
   , atlasWorkerLoadStart
   , enqueueAtlasBuildWork
   , newAtlasWorkerLoadRef
@@ -142,6 +145,11 @@ spec = describe "AtlasScheduler" $ do
       }
     report <- awaitReport scheduleRef version
     asrJobCount report `shouldBe` 1
+    asrJobsAvailable report `shouldBe` 1
+    asrJobsDispatched report `shouldBe` 1
+    asrJobsDeferred report `shouldBe` 0
+    asrWorkerCapacity report `shouldBe` 1
+    asrWorkerAvailable report `shouldBe` 1
 
   it "dispatches a job queued after an empty schedule pass on the next schedule request" $ withSystem $ \system -> do
     managerHandle <- get @AtlasManager system
@@ -508,6 +516,11 @@ spec = describe "AtlasScheduler" $ do
       }
     report <- awaitReport scheduleRef version
     asrJobCount report `shouldBe` 1
+    asrJobsAvailable report `shouldBe` 2
+    asrJobsDispatched report `shouldBe` 1
+    asrJobsDeferred report `shouldBe` 1
+    asrCurrentStageDispatches report `shouldBe` 1
+    asrBackfillDispatches report `shouldBe` 0
     leftovers <- drainAtlasJobs managerHandle
     map atlasJobStage leftovers `shouldBe` [zoomStagePair backfillStage]
 
@@ -553,6 +566,11 @@ spec = describe "AtlasScheduler" $ do
     mapM_ (requestAtlasSchedule schedulerHandle . (`mkReq` True)) [1..20 :: Word64]
     saturatedReport <- awaitReportMatching scheduleRef (SnapshotVersion 20) ((== 0) . asrJobCount)
     asrJobCount saturatedReport `shouldBe` 0
+    asrJobsAvailable saturatedReport `shouldBe` 1
+    asrJobsDeferred saturatedReport `shouldBe` 1
+    asrWorkerCapacity saturatedReport `shouldBe` 1
+    asrWorkerAvailable saturatedReport `shouldBe` 0
+    asrWorkerInFlight saturatedReport `shouldBe` 1
     threadDelay 50000
     atlasManagerQueuedCount queueRef `shouldReturn` 1
 
@@ -560,6 +578,7 @@ spec = describe "AtlasScheduler" $ do
     requestAtlasSchedule schedulerHandle (mkReq 20 False)
     dispatchReport <- awaitReportMatching scheduleRef (SnapshotVersion 20) ((== 1) . asrJobCount)
     asrJobCount dispatchReport `shouldBe` 1
+    asrJobsDeferred dispatchReport `shouldBe` 0
     atlasManagerQueuedCount queueRef `shouldReturn` 0
 
   it "stale worker messages decrement load and skip result publication" $ withSystem $ \system -> do
@@ -596,7 +615,25 @@ spec = describe "AtlasScheduler" $ do
     enqueueAtlasBuildWork workerHandle build
     skipped <- awaitWorkerLoad workerLoadRef (\load -> awlInFlight load == 0 && awlStaleSkipped load == 1)
     skipped `shouldBe` True
+    load <- readAtlasWorkerLoad workerLoadRef
+    awlBuildStarted load `shouldBe` 1
+    awlBuildCompleted load `shouldBe` 0
+    awlStaleSkippedAtStart load `shouldBe` 1
     atlasResultsPending resultRef `shouldReturn` False
+
+  it "tracks worker stale cancellation outcome counters" $ do
+    workerLoadRef <- newAtlasWorkerLoadRef
+    atlasWorkerLoadStart workerLoadRef 3
+    atlasWorkerLoadFinishOutcome (Just workerLoadRef) AtlasWorkerBuildStaleDuringGeometry
+    atlasWorkerLoadFinishOutcome (Just workerLoadRef) AtlasWorkerBuildStaleBeforePublish
+    atlasWorkerLoadFinishOutcome (Just workerLoadRef) AtlasWorkerBuildCompleted
+    load <- readAtlasWorkerLoad workerLoadRef
+    awlInFlight load `shouldBe` 0
+    awlFinished load `shouldBe` 3
+    awlStaleSkipped load `shouldBe` 2
+    awlBuildCompleted load `shouldBe` 1
+    awlStaleCancelledDuringGeometry load `shouldBe` 1
+    awlStaleCancelledBeforePublish load `shouldBe` 1
 
   it "marks worker builds stale when the scheduler freshness key advances" $ do
     freshnessRef <- newAtlasFreshnessRef
@@ -724,9 +761,4 @@ awaitReportMatching scheduleRef version predicate = do
         _ -> do
           threadDelay pollDelayUs
           pollUntil target
-    fallback = AtlasScheduleReport
-      { asrSnapshotVersion = version
-      , asrJobCount = 0
-      , asrDrainMs = 0
-      , asrEnqueueMs = 0
-      }
+    fallback = emptyAtlasScheduleReport version
