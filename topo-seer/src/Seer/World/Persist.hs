@@ -13,6 +13,7 @@
 module Seer.World.Persist
   ( -- * Types (re-exported from "Seer.World.Persist.Types")
     WorldExternalDataSourceSnapshot(..)
+  , WorldWeatherLayerManifest(..)
   , WorldSaveManifest(..)
     -- * Directory helpers
   , worldDir
@@ -41,6 +42,7 @@ import Data.Ord (Down(..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time.Clock (getCurrentTime)
+import Data.Word (Word64)
 import System.Directory
   ( copyFile
   , createDirectoryIfMissing
@@ -59,11 +61,22 @@ import Seer.Config.Snapshot (snapshotFromUi, loadSnapshot)
 import Seer.Config.Snapshot.Types (ConfigSnapshot)
 import Seer.World.Persist.Types
   ( WorldExternalDataSourceSnapshot(..)
+  , WorldWeatherLayerManifest(..)
   , WorldSaveManifest(..)
   )
 import Topo.Calendar (defaultPlanetAge)
 import Topo.Metadata (emptyMetadataStore)
-import Topo.Overlay (OverlayChunk, emptyOverlayStore, overlayNames)
+import Topo.Overlay
+  ( Overlay(..)
+  , OverlayChunk
+  , OverlayData(..)
+  , OverlayProvenance(..)
+  , OverlayStore
+  , emptyOverlayStore
+  , insertOverlay
+  , lookupOverlay
+  , overlayNames
+  )
 import Topo.Overlay.Storage
   ( loadOverlayChunk
   , overlayDirPath
@@ -81,7 +94,8 @@ import Topo.Persistence.WorldBundle
   , saveWorldBundleWithProvenance
   , loadWorldBundleWithProvenance
   )
-import Topo.Types (WorldConfig(..))
+import Topo.Types (WeatherChunk, WorldConfig(..))
+import Topo.Weather (weatherChunkToOverlay, weatherOverlaySchema)
 import Topo.World (TerrainWorld(..))
 import Topo.WorldGen (WorldGenConfig(..))
 
@@ -169,6 +183,7 @@ saveNamedWorldWithPluginsAndExternalData name uiSnap world pluginDirs externalDa
           , wsmCreatedAt  = now
           , wsmChunkCount = chunkCount worldForSave
           , wsmOverlayNames = twOverlayManifest worldForSave
+          , wsmWeatherLayers = weatherLayersForWorld worldForSave
           , wsmPluginData = pluginDataEntries
           , wsmExternalDataSources = externalDataSources
           }
@@ -289,8 +304,8 @@ snapshotToWorld uiSnap ts = TerrainWorld
   , twPlanetAge   = defaultPlanetAge
   , twGenConfig   = Just (toJSON genCfg)
   , twUnitScales  = defaultUnitScales
-  , twOverlays    = tsOverlayStore ts
-  , twOverlayManifest = overlayNames (tsOverlayStore ts)
+  , twOverlays    = snapshotOverlayStore uiSnap ts
+  , twOverlayManifest = overlayNames (snapshotOverlayStore uiSnap ts)
   }
   where
     wc = WorldConfig { wcChunkSize = tsChunkSize ts }
@@ -300,6 +315,44 @@ snapshotToWorld uiSnap ts = TerrainWorld
       , worldSlice = tgcSlice geo
       , worldHexGrid = tgcHexGrid geo
       }
+
+snapshotOverlayStore :: UiState -> TerrainSnapshot -> OverlayStore
+snapshotOverlayStore uiSnap ts =
+  ensureWeatherOverlayFromSnapshot (uiSeed uiSnap) (tsWeatherChunks ts) (tsOverlayStore ts)
+
+ensureWeatherOverlayFromSnapshot :: Word64 -> IntMap.IntMap WeatherChunk -> OverlayStore -> OverlayStore
+ensureWeatherOverlayFromSnapshot seed weatherChunks store
+  | IntMap.null weatherChunks = store
+  | otherwise = case lookupOverlay "weather" store of
+      Just _ -> store
+      Nothing -> insertOverlay weatherOverlay store
+  where
+    weatherOverlay = Overlay
+      { ovSchema = weatherOverlaySchema
+      , ovData = DenseData (IntMap.map weatherChunkToOverlay weatherChunks)
+      , ovProvenance = OverlayProvenance
+          { opSeed = seed
+          , opVersion = 1
+          , opSource = "weather"
+          , opSchedule = Nothing
+          }
+      }
+
+weatherLayersForWorld :: TerrainWorld -> [WorldWeatherLayerManifest]
+weatherLayersForWorld world = climateLayer ++ overlayLayer "weather" currentBasis simulatedWeather ++ overlayLayer "weather_normals" typicalBasis generatedClimate
+  where
+    names = overlayNames (twOverlays world)
+    climateLayer
+      | IntMap.null (twClimate world) = []
+      | otherwise = [WorldWeatherLayerManifest "climate" averageBasis generatedClimate "core_topo"]
+    overlayLayer name basis source
+      | name `elem` names = [WorldWeatherLayerManifest name basis source "overlay_sidecar"]
+      | otherwise = []
+    averageBasis = "long_run_average"
+    currentBasis = "instantaneous_current"
+    typicalBasis = "typical_normal"
+    generatedClimate = "generated_climate"
+    simulatedWeather = "simulated_generated_weather"
 
 -------------------------------------------------------------------------------
 -- Listing

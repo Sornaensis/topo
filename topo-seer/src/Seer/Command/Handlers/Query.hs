@@ -26,6 +26,7 @@ import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
 import Seer.World.Persist (snapshotToWorld)
 import Topo.Biome.Name (biomeDisplayName)
+import Topo.Export (canonicalBasisQualifiedExportFields, legacyBasisExportAliases)
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 import Topo.Mesh (Mesh(..), meshPatch)
 import Topo.Sample (TerrainSampleReal(..), convertSample, sampleTerrain)
@@ -112,7 +113,7 @@ handleExportTerrainData ctx reqId params = do
         , "available_fields" .= allViewModeExportFields
         , "data"        .= object
             [ Key.fromText (Text.pack (show cid)) .= val | (cid, val) <- chunkEntries ]
-        , "diagnostics" .= [diagnostic "info" "terrain_export_ready" "terrain export JSON payload built"]
+        , "diagnostics" .= exportDiagnostics
         ]
 
 -- | Handle @export_mesh_data@ — export a rectangular terrain mesh patch.
@@ -282,6 +283,21 @@ diagnostic level code message = object
   , "code" .= code
   , "message" .= message
   ]
+
+exportDiagnostics :: [Value]
+exportDiagnostics =
+  [ diagnostic "info" "terrain_export_ready" "terrain export JSON payload built"
+  , diagnostic "info" "basis_qualified_fields"
+      ("canonical climate/weather export fields include: "
+        <> Text.intercalate ", " canonicalBasisQualifiedExportFields)
+  , diagnostic "warn" "legacy_basis_aliases"
+      ("legacy export aliases remain available for compatibility: " <> aliasSummary)
+  ]
+  where
+    aliasSummary = Text.intercalate ", "
+      [ alias <> " -> " <> canonical
+      | (alias, canonical) <- legacyBasisExportAliases
+      ]
 
 -- =====================================================================
 -- find_hexes implementation
@@ -461,6 +477,11 @@ exportField cid tc snap field = (Key.fromText field, val)
       "terrain_form_code" -> Aeson.toJSON [ terrainFormToCode f | f <- U.toList (tcTerrainForm tc) ]
       "temperature"  -> climateJson ccTempAvg
       "precipitation" -> climateJson ccPrecipAvg
+      "climate_temp_avg" -> climateJson ccTempAvg
+      "climate_precip_avg" -> climateJson ccPrecipAvg
+      "climate_humidity_avg" -> climateJson ccHumidityAvg
+      "climate_wind_dir_avg" -> climateJson ccWindDirAvg
+      "climate_wind_spd_avg" -> climateJson ccWindSpdAvg
       "plate_id" -> Aeson.toJSON (U.toList (tcPlateId tc))
       "plate_boundary" -> Aeson.toJSON [ plateBoundaryDisplayName b | b <- U.toList (tcPlateBoundary tc) ]
       "plate_boundary_code" -> Aeson.toJSON [ plateBoundaryToCode b | b <- U.toList (tcPlateBoundary tc) ]
@@ -473,28 +494,55 @@ exportField cid tc snap field = (Key.fromText field, val)
       "plate_velocity_x" -> Aeson.toJSON (U.toList (tcPlateVelX tc))
       "plate_velocity_y" -> Aeson.toJSON (U.toList (tcPlateVelY tc))
       "weather_temperature" -> weatherJson wcTemp
+      "weather_temp_current" -> weatherJson wcTemp
       "weather_humidity" -> weatherJson wcHumidity
+      "weather_humidity_current" -> weatherJson wcHumidity
+      "weather_wind_dir_current" -> weatherJson wcWindDir
       "weather_wind_speed" -> weatherJson wcWindSpd
+      "weather_wind_spd_current" -> weatherJson wcWindSpd
       "weather_pressure" -> weatherJson wcPressure
+      "weather_pressure_current" -> weatherJson wcPressure
       "weather_precipitation" -> weatherJson wcPrecip
+      "weather_precip_current" -> weatherJson wcPrecip
       "cloud_cover" -> weatherJson wcCloudCover
+      "weather_cloud_cover_current" -> weatherJson wcCloudCover
       "cloud_water" -> weatherJson wcCloudWater
+      "weather_cloud_water_current" -> weatherJson wcCloudWater
       "cloud_cover_low" -> weatherJson wcCloudCoverLow
+      "weather_cloud_cover_low_current" -> weatherJson wcCloudCoverLow
       "cloud_cover_mid" -> weatherJson wcCloudCoverMid
+      "weather_cloud_cover_mid_current" -> weatherJson wcCloudCoverMid
       "cloud_cover_high" -> weatherJson wcCloudCoverHigh
+      "weather_cloud_cover_high_current" -> weatherJson wcCloudCoverHigh
+      "weather_cloud_water_low_current" -> weatherJson wcCloudWaterLow
+      "weather_cloud_water_mid_current" -> weatherJson wcCloudWaterMid
+      "weather_cloud_water_high_current" -> weatherJson wcCloudWaterHigh
       "normal_temperature" -> normalsJson wncTemp
+      "weather_temp_typical" -> normalsJson wncTemp
       "normal_humidity" -> normalsJson wncHumidity
+      "weather_humidity_typical" -> normalsJson wncHumidity
       "normal_wind_dir" -> normalsJson wncWindDir
+      "weather_wind_dir_typical" -> normalsJson wncWindDir
       "normal_wind_speed" -> normalsJson wncWindSpd
+      "weather_wind_spd_typical" -> normalsJson wncWindSpd
       "normal_precipitation" -> normalsJson wncPrecip
+      "weather_precip_typical" -> normalsJson wncPrecip
       "normal_cloud_cover" -> normalsJson wncCloudCover
+      "weather_cloud_cover_typical" -> normalsJson wncCloudCover
       "normal_cloud_water" -> normalsJson wncCloudWater
+      "weather_cloud_water_typical" -> normalsJson wncCloudWater
       "normal_cloud_cover_low" -> normalsJson wncCloudCoverLow
+      "weather_cloud_cover_low_typical" -> normalsJson wncCloudCoverLow
       "normal_cloud_cover_mid" -> normalsJson wncCloudCoverMid
+      "weather_cloud_cover_mid_typical" -> normalsJson wncCloudCoverMid
       "normal_cloud_cover_high" -> normalsJson wncCloudCoverHigh
+      "weather_cloud_cover_high_typical" -> normalsJson wncCloudCoverHigh
       "normal_cloud_water_low" -> normalsJson wncCloudWaterLow
+      "weather_cloud_water_low_typical" -> normalsJson wncCloudWaterLow
       "normal_cloud_water_mid" -> normalsJson wncCloudWaterMid
+      "weather_cloud_water_mid_typical" -> normalsJson wncCloudWaterMid
       "normal_cloud_water_high" -> normalsJson wncCloudWaterHigh
+      "weather_cloud_water_high_typical" -> normalsJson wncCloudWaterHigh
       "vegetation_cover" -> vegetationJson vegCover
       "vegetation_density" -> vegetationJson vegDensity
       "vegetation_albedo" -> vegetationJson vegAlbedo

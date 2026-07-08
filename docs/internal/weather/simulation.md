@@ -26,7 +26,14 @@ Initialises from `initWeatherStage`.
 Low-level grid operators: advection, diffusion, condensation,
 pressure-gradient wind, angle normalization/interpolation.
 
-## Determinism
+## Determinism and Source Boundaries
 
-Weather is deterministic given the same seed and tick sequence.
-Seed derivation uses `deriveOverlaySeed(worldSeed, tick)`.
+Weather is deterministic given the same seed and tick sequence. Seed derivation
+uses `deriveOverlaySeed(worldSeed, tick)`.
+
+The built-in simulation produces generated/simulated weather only. API and export
+DTOs label this current basis as `instantaneous_current` with source kind
+`simulated_generated_weather`. Typical normals are generated from climate and
+labelled `typical_normal`/`generated_climate`. Neither path represents external
+live weather data unless a future external data-source integration is explicitly
+configured and surfaced with a distinct source kind.

@@ -233,6 +233,7 @@ handleGetHex ctx reqId params =
                         Nothing -> Null
                         Just cc -> object
                           [ "temporal_basis"      .= temporalBasisToText LongRunAverage
+                          , "basis"               .= temporalBasisToText LongRunAverage
                           , "source_kind"         .= sourceKindToText GeneratedClimate
                           , "temp_avg"            .= safeIndex (ccTempAvg cc) tileIdx
                           , "precip_avg"          .= safeIndex (ccPrecipAvg cc) tileIdx
@@ -247,21 +248,38 @@ handleGetHex ctx reqId params =
                         Nothing -> Null
                         Just wc -> object
                           [ "temporal_basis" .= temporalBasisToText InstantaneousCurrent
+                          , "basis" .= temporalBasisToText InstantaneousCurrent
                           , "source_kind" .= sourceKindToText SimulatedWeather
                           , "temp"     .= safeIndex (wcTemp wc) tileIdx
+                          , "temp_current" .= safeIndex (wcTemp wc) tileIdx
+                          , "temperature_current" .= safeIndex (wcTemp wc) tileIdx
                           , "humidity" .= safeIndex (wcHumidity wc) tileIdx
+                          , "humidity_current" .= safeIndex (wcHumidity wc) tileIdx
                           , "wind_dir" .= safeIndex (wcWindDir wc) tileIdx
+                          , "wind_dir_current" .= safeIndex (wcWindDir wc) tileIdx
                           , "wind_spd" .= safeIndex (wcWindSpd wc) tileIdx
+                          , "wind_spd_current" .= safeIndex (wcWindSpd wc) tileIdx
                           , "pressure" .= safeIndex (wcPressure wc) tileIdx
+                          , "pressure_current" .= safeIndex (wcPressure wc) tileIdx
                           , "precip"   .= safeIndex (wcPrecip wc) tileIdx
+                          , "precip_current" .= safeIndex (wcPrecip wc) tileIdx
+                          , "precipitation_current" .= safeIndex (wcPrecip wc) tileIdx
                           , "cloud_cover" .= safeIndex (wcCloudCover wc) tileIdx
+                          , "cloud_cover_current" .= safeIndex (wcCloudCover wc) tileIdx
                           , "cloud_water" .= safeIndex (wcCloudWater wc) tileIdx
+                          , "cloud_water_current" .= safeIndex (wcCloudWater wc) tileIdx
                           , "cloud_cover_low" .= safeIndex (wcCloudCoverLow wc) tileIdx
+                          , "cloud_cover_low_current" .= safeIndex (wcCloudCoverLow wc) tileIdx
                           , "cloud_cover_mid" .= safeIndex (wcCloudCoverMid wc) tileIdx
+                          , "cloud_cover_mid_current" .= safeIndex (wcCloudCoverMid wc) tileIdx
                           , "cloud_cover_high" .= safeIndex (wcCloudCoverHigh wc) tileIdx
+                          , "cloud_cover_high_current" .= safeIndex (wcCloudCoverHigh wc) tileIdx
                           , "cloud_water_low" .= safeIndex (wcCloudWaterLow wc) tileIdx
+                          , "cloud_water_low_current" .= safeIndex (wcCloudWaterLow wc) tileIdx
                           , "cloud_water_mid" .= safeIndex (wcCloudWaterMid wc) tileIdx
+                          , "cloud_water_mid_current" .= safeIndex (wcCloudWaterMid wc) tileIdx
                           , "cloud_water_high" .= safeIndex (wcCloudWaterHigh wc) tileIdx
+                          , "cloud_water_high_current" .= safeIndex (wcCloudWaterHigh wc) tileIdx
                           ]
 
                       weatherNormalsLayer = weatherNormalsLayerJSON weatherNormalsChunk tileIdx
@@ -928,21 +946,37 @@ weatherNormalsLayerJSON (Just normals) tileIdx = object
   , "basis" .= temporalBasisToText TypicalNormal
   , "source_kind" .= sourceKindToText GeneratedClimate
   , "temp" .= safeIndex (wncTemp normals) tileIdx
+  , "temp_typical" .= safeIndex (wncTemp normals) tileIdx
   , "temperature" .= safeIndex (wncTemp normals) tileIdx
+  , "temperature_typical" .= safeIndex (wncTemp normals) tileIdx
   , "humidity" .= safeIndex (wncHumidity normals) tileIdx
+  , "humidity_typical" .= safeIndex (wncHumidity normals) tileIdx
   , "wind_dir" .= safeIndex (wncWindDir normals) tileIdx
+  , "wind_dir_typical" .= safeIndex (wncWindDir normals) tileIdx
   , "wind_spd" .= safeIndex (wncWindSpd normals) tileIdx
+  , "wind_spd_typical" .= safeIndex (wncWindSpd normals) tileIdx
   , "wind_speed" .= safeIndex (wncWindSpd normals) tileIdx
+  , "wind_speed_typical" .= safeIndex (wncWindSpd normals) tileIdx
   , "precip" .= safeIndex (wncPrecip normals) tileIdx
+  , "precip_typical" .= safeIndex (wncPrecip normals) tileIdx
   , "precipitation" .= safeIndex (wncPrecip normals) tileIdx
+  , "precipitation_typical" .= safeIndex (wncPrecip normals) tileIdx
   , "cloud_cover" .= safeIndex (wncCloudCover normals) tileIdx
+  , "cloud_cover_typical" .= safeIndex (wncCloudCover normals) tileIdx
   , "cloud_water" .= safeIndex (wncCloudWater normals) tileIdx
+  , "cloud_water_typical" .= safeIndex (wncCloudWater normals) tileIdx
   , "cloud_cover_low" .= safeIndex (wncCloudCoverLow normals) tileIdx
+  , "cloud_cover_low_typical" .= safeIndex (wncCloudCoverLow normals) tileIdx
   , "cloud_cover_mid" .= safeIndex (wncCloudCoverMid normals) tileIdx
+  , "cloud_cover_mid_typical" .= safeIndex (wncCloudCoverMid normals) tileIdx
   , "cloud_cover_high" .= safeIndex (wncCloudCoverHigh normals) tileIdx
+  , "cloud_cover_high_typical" .= safeIndex (wncCloudCoverHigh normals) tileIdx
   , "cloud_water_low" .= safeIndex (wncCloudWaterLow normals) tileIdx
+  , "cloud_water_low_typical" .= safeIndex (wncCloudWaterLow normals) tileIdx
   , "cloud_water_mid" .= safeIndex (wncCloudWaterMid normals) tileIdx
+  , "cloud_water_mid_typical" .= safeIndex (wncCloudWaterMid normals) tileIdx
   , "cloud_water_high" .= safeIndex (wncCloudWaterHigh normals) tileIdx
+  , "cloud_water_high_typical" .= safeIndex (wncCloudWaterHigh normals) tileIdx
   ]
 
 safeIndexVentType :: U.Vector VentType -> Int -> Maybe VentType

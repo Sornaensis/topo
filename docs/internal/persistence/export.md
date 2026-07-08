@@ -37,6 +37,24 @@ Persisted/exportable formats have UI actions, AppService methods, HTTP routes, a
 
 Save/load responses include the persisted world bundle formats (`world.topo`, `world.topolay`, `config.json`, `meta.json`) and success diagnostics; failures propagate as service/HTTP error envelopes with the failed operation context.
 
+## Weather/Climate Field Basis
+
+Terrain JSON exports list both canonical basis-qualified fields and legacy
+compatibility aliases in `available_fields`. Prefer the canonical names:
+
+| Canonical field | Basis/source | Legacy alias |
+|-----------------|--------------|--------------|
+| `climate_temp_avg` | generated climate long-run average | `temperature` |
+| `climate_precip_avg` | generated climate long-run average | `precipitation` |
+| `weather_temp_current` | simulated generated current weather | `weather_temperature` |
+| `weather_precip_current` | simulated generated current weather | `weather_precipitation` |
+| `weather_cloud_cover_current` | simulated generated current weather | `cloud_cover` |
+| `weather_cloud_cover_typical` | generated typical normal overlay | `normal_cloud_cover` |
+
+Export diagnostics include a `basis_qualified_fields` info entry and a
+`legacy_basis_aliases` compatibility warning. Built-in weather values are
+simulated/generated, not external live weather observations.
+
 ## Design Notes
 
 At 1087 LOC this module is a refactoring candidate. Could be split

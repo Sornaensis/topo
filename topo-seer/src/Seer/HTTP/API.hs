@@ -549,6 +549,7 @@ worldSummarySchema = inlineObjectSchema
   , ("chunk_size", integerSchema)
   , ("chunk_count", integerSchema)
   , ("overlay_names", arraySchema stringSchema)
+  , ("weather_layers", arraySchema weatherLayerManifestSchema)
   , ("created_at", stringSchema)
   ]
 
@@ -561,12 +562,12 @@ terrainHexResponseSchema = objectSchema "TerrainHexResponse"
   , ("hypsometry", freeObjectSchema)
   , ("terrain_form_metrics", freeObjectSchema)
   , ("hydrology", freeObjectSchema)
-  , ("climate", nullableSchema freeObjectSchema)
+  , ("climate", nullableSchema terrainClimateLayerSchema)
   , ("climate_diagnostics", freeObjectSchema)
-  , ("weather", nullableSchema freeObjectSchema)
-  , ("weather_snapshot", nullableSchema freeObjectSchema)
-  , ("weather_normals", freeObjectSchema)
-  , ("weather_typical", freeObjectSchema)
+  , ("weather", nullableSchema terrainWeatherCurrentLayerSchema)
+  , ("weather_snapshot", nullableSchema terrainWeatherCurrentLayerSchema)
+  , ("weather_normals", terrainWeatherTypicalLayerSchema)
+  , ("weather_typical", terrainWeatherTypicalLayerSchema)
   , ("weather_timeline", freeObjectSchema)
   , ("river", nullableSchema freeObjectSchema)
   , ("water_body", nullableSchema freeObjectSchema)
@@ -773,6 +774,111 @@ terrainActiveViewSchema = inlineObjectSchema
   , ("inspector_fields", arraySchema stringSchema)
   , ("export_fields", arraySchema stringSchema)
   , ("values", freeObjectSchema)
+  ]
+
+terrainClimateLayerSchema :: Value
+terrainClimateLayerSchema = inlineObjectSchema
+  [ "temporal_basis", "basis", "source_kind" ]
+  [ ("temporal_basis", temporalBasisSchema)
+  , ("basis", temporalBasisSchema)
+  , ("source_kind", sourceKindSchema)
+  , ("temp_avg", nullableSchema numberSchema)
+  , ("precip_avg", nullableSchema numberSchema)
+  , ("wind_dir_avg", nullableSchema numberSchema)
+  , ("wind_spd_avg", nullableSchema numberSchema)
+  , ("humidity_avg", nullableSchema numberSchema)
+  , ("temp_range", nullableSchema numberSchema)
+  , ("precip_seasonality", nullableSchema numberSchema)
+  ]
+
+terrainWeatherCurrentLayerSchema :: Value
+terrainWeatherCurrentLayerSchema = inlineObjectSchema
+  [ "temporal_basis", "basis", "source_kind" ]
+  [ ("temporal_basis", temporalBasisSchema)
+  , ("basis", temporalBasisSchema)
+  , ("source_kind", sourceKindSchema)
+  , ("temp", nullableSchema numberSchema)
+  , ("temp_current", nullableSchema numberSchema)
+  , ("temperature_current", nullableSchema numberSchema)
+  , ("humidity", nullableSchema numberSchema)
+  , ("humidity_current", nullableSchema numberSchema)
+  , ("wind_dir", nullableSchema numberSchema)
+  , ("wind_dir_current", nullableSchema numberSchema)
+  , ("wind_spd", nullableSchema numberSchema)
+  , ("wind_spd_current", nullableSchema numberSchema)
+  , ("pressure", nullableSchema numberSchema)
+  , ("pressure_current", nullableSchema numberSchema)
+  , ("precip", nullableSchema numberSchema)
+  , ("precip_current", nullableSchema numberSchema)
+  , ("precipitation_current", nullableSchema numberSchema)
+  , ("cloud_cover", nullableSchema numberSchema)
+  , ("cloud_cover_current", nullableSchema numberSchema)
+  , ("cloud_water", nullableSchema numberSchema)
+  , ("cloud_water_current", nullableSchema numberSchema)
+  , ("cloud_cover_low", nullableSchema numberSchema)
+  , ("cloud_cover_low_current", nullableSchema numberSchema)
+  , ("cloud_cover_mid", nullableSchema numberSchema)
+  , ("cloud_cover_mid_current", nullableSchema numberSchema)
+  , ("cloud_cover_high", nullableSchema numberSchema)
+  , ("cloud_cover_high_current", nullableSchema numberSchema)
+  , ("cloud_water_low", nullableSchema numberSchema)
+  , ("cloud_water_low_current", nullableSchema numberSchema)
+  , ("cloud_water_mid", nullableSchema numberSchema)
+  , ("cloud_water_mid_current", nullableSchema numberSchema)
+  , ("cloud_water_high", nullableSchema numberSchema)
+  , ("cloud_water_high_current", nullableSchema numberSchema)
+  ]
+
+terrainWeatherTypicalLayerSchema :: Value
+terrainWeatherTypicalLayerSchema = inlineObjectSchema
+  [ "loaded", "status", "temporal_basis", "basis", "source_kind" ]
+  [ ("loaded", booleanSchema)
+  , ("status", stringSchema)
+  , ("reason", stringSchema)
+  , ("temporal_basis", temporalBasisSchema)
+  , ("basis", temporalBasisSchema)
+  , ("source_kind", sourceKindSchema)
+  , ("temp", nullableSchema numberSchema)
+  , ("temp_typical", nullableSchema numberSchema)
+  , ("temperature", nullableSchema numberSchema)
+  , ("temperature_typical", nullableSchema numberSchema)
+  , ("humidity", nullableSchema numberSchema)
+  , ("humidity_typical", nullableSchema numberSchema)
+  , ("wind_dir", nullableSchema numberSchema)
+  , ("wind_dir_typical", nullableSchema numberSchema)
+  , ("wind_spd", nullableSchema numberSchema)
+  , ("wind_spd_typical", nullableSchema numberSchema)
+  , ("wind_speed", nullableSchema numberSchema)
+  , ("wind_speed_typical", nullableSchema numberSchema)
+  , ("precip", nullableSchema numberSchema)
+  , ("precip_typical", nullableSchema numberSchema)
+  , ("precipitation", nullableSchema numberSchema)
+  , ("precipitation_typical", nullableSchema numberSchema)
+  , ("cloud_cover", nullableSchema numberSchema)
+  , ("cloud_cover_typical", nullableSchema numberSchema)
+  , ("cloud_water", nullableSchema numberSchema)
+  , ("cloud_water_typical", nullableSchema numberSchema)
+  , ("cloud_cover_low", nullableSchema numberSchema)
+  , ("cloud_cover_low_typical", nullableSchema numberSchema)
+  , ("cloud_cover_mid", nullableSchema numberSchema)
+  , ("cloud_cover_mid_typical", nullableSchema numberSchema)
+  , ("cloud_cover_high", nullableSchema numberSchema)
+  , ("cloud_cover_high_typical", nullableSchema numberSchema)
+  , ("cloud_water_low", nullableSchema numberSchema)
+  , ("cloud_water_low_typical", nullableSchema numberSchema)
+  , ("cloud_water_mid", nullableSchema numberSchema)
+  , ("cloud_water_mid_typical", nullableSchema numberSchema)
+  , ("cloud_water_high", nullableSchema numberSchema)
+  , ("cloud_water_high_typical", nullableSchema numberSchema)
+  ]
+
+weatherLayerManifestSchema :: Value
+weatherLayerManifestSchema = inlineObjectSchema
+  [ "name", "basis", "source_kind", "storage" ]
+  [ ("name", stringSchema)
+  , ("basis", temporalBasisSchema)
+  , ("source_kind", sourceKindSchema)
+  , ("storage", enumStringSchema ["core_topo", "overlay_sidecar"])
   ]
 
 terrainInspectorSectionSchema :: Value

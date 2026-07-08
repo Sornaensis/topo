@@ -10,6 +10,7 @@ import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Text as Text
 import Data.Time.Clock (UTCTime, getCurrentTime, addUTCTime)
 import qualified Data.Vector as V
+import qualified Data.Vector.Unboxed as U
 import System.Directory
   ( createDirectoryIfMissing
   , removeDirectoryRecursive
@@ -25,6 +26,7 @@ import Seer.Config.Snapshot (snapshotFromUi)
 import Seer.Config.Snapshot.Types (ConfigSnapshot(..), defaultSnapshot)
 import Seer.World.Persist
   ( WorldExternalDataSourceSnapshot(..)
+  , WorldWeatherLayerManifest(..)
   , WorldSaveManifest(..)
   , saveNamedWorld
   , saveNamedWorldWithPluginsAndExternalData
@@ -67,8 +69,15 @@ import Topo.Overlay
   , ovData
   )
 import Topo.Simulation.Schedule (SimulationCatchUpPolicy(..), SimulationScheduleState(..))
-import Topo.Types (WorldConfig(..))
-import Topo.World (TerrainWorld(..), emptyWorld)
+import Topo.Types (ChunkId(..), ClimateChunk(..), WeatherChunk(..), WorldConfig(..), chunkTileCount)
+import Topo.Weather
+  ( defaultWeatherConfig
+  , getWeatherChunk
+  , getWeatherNormalsChunkFromStore
+  , weatherNormalsChunkFromClimate
+  , weatherNormalsOverlayFromClimate
+  )
+import Topo.World (TerrainWorld(..), emptyTerrainChunk, emptyWorld)
 import Topo.WorldGen (WorldGenConfig(..))
 
 -- ---------------------------------------------------------------------------
@@ -97,6 +106,9 @@ manifestJsonSpec = describe "WorldSaveManifest JSON round-trip" $ do
           , wsmCreatedAt  = now
           , wsmChunkCount = 16
           , wsmOverlayNames = ["weather", "persist_sparse_test"]
+          , wsmWeatherLayers =
+              [ WorldWeatherLayerManifest "weather" "instantaneous_current" "simulated_generated_weather" "overlay_sidecar"
+              ]
           , wsmPluginData = []
           , wsmExternalDataSources = [testExternalDataSourceSnapshot]
           }
@@ -113,6 +125,7 @@ manifestJsonSpec = describe "WorldSaveManifest JSON round-trip" $ do
         wsmCreatedAt m `shouldBe` defaultManifestTime
         wsmChunkCount m `shouldBe` 0
         wsmOverlayNames m `shouldBe` []
+        wsmWeatherLayers m `shouldBe` []
         wsmExternalDataSources m `shouldBe` []
 
 -- ---------------------------------------------------------------------------
@@ -385,6 +398,71 @@ worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
                     opSchedule (ovProvenance loadedOverlay) `shouldBe` Just scheduleFixture
         )
 
+    it "round-trips current weather and generated typical normals with manifest semantics" $
+      bracket
+        (pure ())
+        (\_ -> do
+            _ <- deleteNamedWorld testWorldName
+            pure ()
+        )
+        (\_ -> do
+            let cfg = WorldConfig { wcChunkSize = 64 }
+                n = chunkTileCount cfg
+                chunkId@(ChunkId chunkKey) = ChunkId 0
+                climate = ClimateChunk
+                  { ccTempAvg = U.replicate n 0.55
+                  , ccPrecipAvg = U.replicate n 0.35
+                  , ccWindDirAvg = U.replicate n 0.10
+                  , ccWindSpdAvg = U.replicate n 0.20
+                  , ccHumidityAvg = U.replicate n 0.65
+                  , ccTempRange = U.replicate n 0.15
+                  , ccPrecipSeasonality = U.replicate n 0.25
+                  }
+                currentWeather = WeatherChunk
+                  { wcTemp = U.replicate n 0.70
+                  , wcHumidity = U.replicate n 0.60
+                  , wcWindDir = U.replicate n 0.30
+                  , wcWindSpd = U.replicate n 0.40
+                  , wcPressure = U.replicate n 0.50
+                  , wcPrecip = U.replicate n 0.45
+                  , wcCloudCover = U.replicate n 0.80
+                  , wcCloudWater = U.replicate n 0.20
+                  , wcCloudCoverLow = U.replicate n 0.50
+                  , wcCloudCoverMid = U.replicate n 0.25
+                  , wcCloudCoverHigh = U.replicate n 0.10
+                  , wcCloudWaterLow = U.replicate n 0.12
+                  , wcCloudWaterMid = U.replicate n 0.05
+                  , wcCloudWaterHigh = U.replicate n 0.03
+                  }
+                normals = weatherNormalsChunkFromClimate defaultWeatherConfig climate
+                normalsOverlay = weatherNormalsOverlayFromClimate 42 defaultWeatherConfig (IntMap.singleton chunkKey climate)
+                terrainSnap = (emptyTerrainSnapshot 64)
+                  { tsTerrainChunks = IntMap.singleton chunkKey (emptyTerrainChunk cfg)
+                  , tsClimateChunks = IntMap.singleton chunkKey climate
+                  , tsWeatherChunks = IntMap.singleton chunkKey currentWeather
+                  , tsOverlayStore = insertOverlay normalsOverlay emptyOverlayStore
+                  }
+                ui = emptyUiState { uiSeed = 42, uiChunkSize = 64 }
+                world = snapshotToWorld ui terrainSnap
+
+            saveResult <- saveNamedWorld testWorldName ui world
+            saveResult `shouldBe` Right ()
+
+            loadResult <- loadNamedWorld testWorldName
+            case loadResult of
+              Left err -> expectationFailure (Text.unpack err)
+              Right (manifest, _snapshot, loadedWorld) -> do
+                wsmOverlayNames manifest `shouldSatisfy` (\names -> all (`elem` names) ["weather", "weather_normals"])
+                wsmWeatherLayers manifest `shouldSatisfy` elem
+                  (WorldWeatherLayerManifest "climate" "long_run_average" "generated_climate" "core_topo")
+                wsmWeatherLayers manifest `shouldSatisfy` elem
+                  (WorldWeatherLayerManifest "weather" "instantaneous_current" "simulated_generated_weather" "overlay_sidecar")
+                wsmWeatherLayers manifest `shouldSatisfy` elem
+                  (WorldWeatherLayerManifest "weather_normals" "typical_normal" "generated_climate" "overlay_sidecar")
+                getWeatherChunk chunkId loadedWorld `shouldBe` Just currentWeather
+                getWeatherNormalsChunkFromStore chunkId (twOverlays loadedWorld) `shouldBe` Just normals
+        )
+
     it "preserves external data-source reference metadata in the save manifest" $
       bracket
         (pure ())
@@ -432,6 +510,7 @@ worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
                   , wsmCreatedAt = defaultManifestTime
                   , wsmChunkCount = 0
                   , wsmOverlayNames = []
+                  , wsmWeatherLayers = []
                   , wsmPluginData = []
                   , wsmExternalDataSources = []
                   }

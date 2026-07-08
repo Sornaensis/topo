@@ -125,6 +125,18 @@ Rainforest consistently appears at 0.4–6.7% of land tiles (previously
 0.002–0.05%). Ocean-heavy worlds (seed 7777777) naturally have fewer
 equatorial land tiles and thus lower absolute RF counts.
 
+## Average Weather Basis
+
+Climate outputs are generated long-run averages. Export and API surfaces expose
+this basis explicitly as `long_run_average` with source kind `generated_climate`.
+Canonical export fields use `climate_*_avg` names (for example
+`climate_temp_avg` and `climate_precip_avg`). Legacy names `temperature` and
+`precipitation` remain compatibility aliases for those average climate fields.
+
+Current weather (`weather_*_current`) and typical generated normals
+(`weather_*_typical`) are separate weather overlays and should not be interpreted
+as external live observations.
+
 ## Pipeline Stage
 
 `generateClimateStage` — runs the full climate model over the terrain.

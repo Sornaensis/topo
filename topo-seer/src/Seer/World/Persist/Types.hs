@@ -9,6 +9,7 @@
 -- 'Seer.World.Persist' to import it freely.
 module Seer.World.Persist.Types
   ( WorldExternalDataSourceSnapshot(..)
+  , WorldWeatherLayerManifest(..)
   , WorldSaveManifest(..)
   , defaultManifestTime
   , manifestJsonOptions
@@ -62,6 +63,39 @@ instance FromJSON WorldExternalDataSourceSnapshot where
       <*> o .:? "provided_sources" .!= []
       <*> o .:? "consumed_refs" .!= []
 
+-- | Durable climate/weather data-layer semantics recorded in @meta.json@.
+--
+-- The manifest describes where persisted weather-oriented values came from and
+-- how clients should interpret their temporal basis.  It is additive metadata;
+-- the actual data remains in the core @.topo@ climate chunks or overlay
+-- sidecar payloads named in 'wsmOverlayNames'.
+data WorldWeatherLayerManifest = WorldWeatherLayerManifest
+  { wwlmName :: Text
+    -- ^ Data layer name, e.g. @climate@, @weather@, or @weather_normals@.
+  , wwlmBasis :: Text
+    -- ^ Temporal basis such as @long_run_average@ or @instantaneous_current@.
+  , wwlmSourceKind :: Text
+    -- ^ Source kind such as @generated_climate@ or @simulated_generated_weather@.
+  , wwlmStorage :: Text
+    -- ^ Storage location: @core_topo@ or @overlay_sidecar@.
+  } deriving (Eq, Show, Generic)
+
+instance ToJSON WorldWeatherLayerManifest where
+  toJSON layer = object
+    [ "name" .= wwlmName layer
+    , "basis" .= wwlmBasis layer
+    , "source_kind" .= wwlmSourceKind layer
+    , "storage" .= wwlmStorage layer
+    ]
+
+instance FromJSON WorldWeatherLayerManifest where
+  parseJSON = withObject "WorldWeatherLayerManifest" $ \o ->
+    WorldWeatherLayerManifest
+      <$> o .:? "name" .!= ""
+      <*> o .:? "basis" .!= ""
+      <*> o .:? "source_kind" .!= ""
+      <*> o .:? "storage" .!= ""
+
 -- | Metadata recorded alongside each saved world.
 data WorldSaveManifest = WorldSaveManifest
   { wsmName       :: Text
@@ -76,6 +110,11 @@ data WorldSaveManifest = WorldSaveManifest
     -- ^ Terrain chunk count at save time.
   , wsmOverlayNames :: [Text]
     -- ^ Overlay names persisted in the unified world bundle.
+  , wsmWeatherLayers :: [WorldWeatherLayerManifest]
+    -- ^ Climate/weather data-layer semantics for core climate chunks and
+    -- weather-oriented overlays.  Forward-compatible clients can use this to
+    -- distinguish generated long-run averages, generated typical normals, and
+    -- simulated current weather.
   , wsmPluginData :: [(Text, Text)]
     -- ^ @(pluginName, relativeDataDir)@ pairs for plugins whose data
     -- directories were bundled with this world save.
@@ -107,6 +146,7 @@ instance FromJSON WorldSaveManifest where
       <*> o .:? "created_at"  .!= defaultManifestTime
       <*> o .:? "chunk_count" .!= 0
       <*> o .:? "overlay_names" .!= []
+      <*> o .:? "weather_layers" .!= []
       <*> o .:? "plugin_data"   .!= []
       <*> o .:? "external_data_sources" .!= []
 

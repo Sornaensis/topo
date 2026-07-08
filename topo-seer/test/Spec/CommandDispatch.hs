@@ -105,6 +105,7 @@ import Seer.Service.Types
   )
 import Topo
   ( ClimateChunk(..)
+  , WeatherChunk(..)
   , WorldConfig(..)
   , chunkIdFromCoord
   , chunkTileCount
@@ -866,6 +867,27 @@ spec = describe "CommandDispatch" $ do
             _ -> expectationFailure "expected active_view.values object"
         _ -> expectationFailure "expected active_view object"
 
+    it "returns explicit basis/source fields for current weather and typical normals" $ withCtx $ \ctx -> do
+      _chunkKey <- writeSingleChunkTerrainWithClimateWeatherAndNormals ctx
+      rsp <- dispatch ctx "get_hex" (object ["q" .= (0 :: Int), "r" .= (0 :: Int)])
+      srSuccess rsp `shouldBe` True
+      case lookupKey "weather" (srResult rsp) of
+        Just (Object weather) -> do
+          KM.lookup "basis" weather `shouldBe` Just (String "instantaneous_current")
+          KM.lookup "source_kind" weather `shouldBe` Just (String "simulated_generated_weather")
+          KM.member "temp_current" weather `shouldBe` True
+          KM.member "precip_current" weather `shouldBe` True
+          KM.member "cloud_cover_current" weather `shouldBe` True
+        _ -> expectationFailure "expected weather object"
+      case lookupKey "weather_normals" (srResult rsp) of
+        Just (Object normals) -> do
+          KM.lookup "basis" normals `shouldBe` Just (String "typical_normal")
+          KM.lookup "source_kind" normals `shouldBe` Just (String "generated_climate")
+          KM.member "temp_typical" normals `shouldBe` True
+          KM.member "precip_typical" normals `shouldBe` True
+          KM.member "cloud_cover_typical" normals `shouldBe` True
+        _ -> expectationFailure "expected weather_normals object"
+
     it "reports typical cloud normals as unavailable rather than falling back to current clouds" $ withCtx $ \ctx -> do
       viewRsp <- dispatch ctx "set_view_mode" (object ["mode" .= ("cloud" :: Text), "basis" .= ("typical" :: Text)])
       srSuccess viewRsp `shouldBe` True
@@ -943,6 +965,45 @@ spec = describe "CommandDispatch" $ do
             Just (Object fields) -> do
               KM.lookup "normal_temperature" fields `shouldSatisfy` isArrayValue
               KM.lookup "normal_cloud_cover" fields `shouldSatisfy` isArrayValue
+            _ -> expectationFailure "expected exported chunk object"
+        _ -> expectationFailure "expected export data object"
+
+    it "exports basis-qualified canonical fields alongside legacy aliases" $ withCtx $ \ctx -> do
+      chunkKey <- writeSingleChunkTerrainWithClimateWeatherAndNormals ctx
+      rsp <- dispatch ctx "export_terrain_data" (object
+        [ "chunks" .= [chunkKey]
+        , "fields" .=
+            [ "climate_temp_avg" :: Text
+            , "temperature"
+            , "weather_temp_current"
+            , "weather_temperature"
+            , "weather_cloud_cover_current"
+            , "cloud_cover"
+            , "weather_cloud_cover_typical"
+            , "normal_cloud_cover"
+            ]
+        ])
+      srSuccess rsp `shouldBe` True
+      case lookupKey "available_fields" (srResult rsp) of
+        Just (Array fields) -> do
+          toList fields `shouldSatisfy` elem (String "climate_temp_avg")
+          toList fields `shouldSatisfy` elem (String "weather_temp_current")
+          toList fields `shouldSatisfy` elem (String "weather_cloud_cover_current")
+          toList fields `shouldSatisfy` elem (String "weather_cloud_cover_typical")
+          toList fields `shouldSatisfy` elem (String "temperature")
+        _ -> expectationFailure "expected available_fields array"
+      case lookupKey "diagnostics" (srResult rsp) of
+        Just (Array diagnostics) -> mapMaybe diagnosticCode (toList diagnostics)
+          `shouldSatisfy` (\codes -> all (`elem` codes) ["terrain_export_ready", "basis_qualified_fields", "legacy_basis_aliases"])
+        _ -> expectationFailure "expected diagnostics array"
+      case lookupKey "data" (srResult rsp) of
+        Just (Object chunks) ->
+          case KM.lookup (Key.fromText (Text.pack (show chunkKey))) chunks of
+            Just (Object fields) -> do
+              KM.lookup "climate_temp_avg" fields `shouldBe` KM.lookup "temperature" fields
+              KM.lookup "weather_temp_current" fields `shouldBe` KM.lookup "weather_temperature" fields
+              KM.lookup "weather_cloud_cover_current" fields `shouldBe` KM.lookup "cloud_cover" fields
+              KM.lookup "weather_cloud_cover_typical" fields `shouldBe` KM.lookup "normal_cloud_cover" fields
             _ -> expectationFailure "expected exported chunk object"
         _ -> expectationFailure "expected export data object"
 
@@ -1681,6 +1742,69 @@ writeSingleChunkTerrainWithNormals ctx = do
   writeTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx)) snap
   pure chunkKey
 
+writeSingleChunkTerrainWithClimateWeatherAndNormals :: CommandContext -> IO Int
+writeSingleChunkTerrainWithClimateWeatherAndNormals ctx = do
+  let cfg = WorldConfig { wcChunkSize = 64 }
+      n = chunkTileCount cfg
+      chunkId = chunkIdFromCoord (ChunkCoord 0 0)
+      ChunkId chunkKey = chunkId
+      climate = ClimateChunk
+        { ccTempAvg = U.replicate n 0.5
+        , ccPrecipAvg = U.replicate n 0.4
+        , ccWindDirAvg = U.replicate n 0.2
+        , ccWindSpdAvg = U.replicate n 0.3
+        , ccHumidityAvg = U.replicate n 0.7
+        , ccTempRange = U.replicate n 0.1
+        , ccPrecipSeasonality = U.replicate n 0.25
+        }
+      weather = WeatherChunk
+        { wcTemp = U.replicate n 0.61
+        , wcHumidity = U.replicate n 0.62
+        , wcWindDir = U.replicate n 0.63
+        , wcWindSpd = U.replicate n 0.64
+        , wcPressure = U.replicate n 0.65
+        , wcPrecip = U.replicate n 0.66
+        , wcCloudCover = U.replicate n 0.67
+        , wcCloudWater = U.replicate n 0.68
+        , wcCloudCoverLow = U.replicate n 0.69
+        , wcCloudCoverMid = U.replicate n 0.70
+        , wcCloudCoverHigh = U.replicate n 0.71
+        , wcCloudWaterLow = U.replicate n 0.72
+        , wcCloudWaterMid = U.replicate n 0.73
+        , wcCloudWaterHigh = U.replicate n 0.74
+        }
+      normals = weatherNormalsChunkFromClimate defaultWeatherConfig climate
+      normalsOverlay = Overlay
+        { ovSchema = weatherNormalsOverlaySchema
+        , ovData = DenseData (IntMap.singleton chunkKey (weatherNormalsChunkToOverlay normals))
+        , ovProvenance = OverlayProvenance
+            { opSeed = 0
+            , opVersion = 1
+            , opSource = "weather_normals"
+            , opSchedule = Nothing
+            }
+        }
+      snap = TerrainSnapshot
+        1
+        1
+        1
+        0
+        1
+        (wcChunkSize cfg)
+        (IntMap.singleton chunkKey (emptyTerrainChunk cfg))
+        (IntMap.singleton chunkKey climate)
+        (IntMap.singleton chunkKey weather)
+        mempty
+        mempty
+        mempty
+        mempty
+        mempty
+        mempty
+        (insertOverlay normalsOverlay emptyOverlayStore)
+        defaultTerrainGeoContext
+  writeTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx)) snap
+  pure chunkKey
+
 writeReadyTerrainData :: CommandContext -> IO TerrainSnapshot
 writeReadyTerrainData ctx = do
   let handles = ccActorHandles ctx
@@ -1926,6 +2050,11 @@ nonEmptyArray _ = False
 isArrayValue :: Maybe Value -> Bool
 isArrayValue (Just (Array _)) = True
 isArrayValue _ = False
+
+diagnosticCode :: Value -> Maybe Text
+diagnosticCode value = case lookupKey "code" value of
+  Just (String code) -> Just code
+  _ -> Nothing
 
 valueHasNodesAndEdges :: Value -> Bool
 valueHasNodesAndEdges value = valueHasKey "nodes" value && valueHasKey "edges" value

@@ -473,6 +473,7 @@ manifestToJSON m = object
   , "chunk_size"    .= wsmChunkSize m
   , "chunk_count"   .= wsmChunkCount m
   , "overlay_names" .= wsmOverlayNames m
+  , "weather_layers" .= wsmWeatherLayers m
   , "created_at"    .= show (wsmCreatedAt m)
   ]
 

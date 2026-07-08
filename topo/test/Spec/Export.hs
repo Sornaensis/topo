@@ -1,11 +1,31 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Spec.Export (spec) where
 
 import Test.Hspec
+import qualified Data.Text as Text
 import qualified Data.Vector.Unboxed as U
 import Topo
 
 spec :: Spec
 spec = describe "Export" $ do
+  it "defines canonical basis-qualified weather/climate export fields and legacy aliases" $ do
+    canonicalBasisQualifiedExportFields `shouldSatisfy` (\fields -> all (`elem` fields)
+      [ "climate_temp_avg"
+      , "climate_precip_avg"
+      , "weather_temp_current"
+      , "weather_precip_current"
+      , "weather_cloud_cover_current"
+      , "weather_cloud_cover_typical"
+      ])
+    legacyBasisExportAliases `shouldSatisfy` (\aliases -> all (`elem` aliases)
+      [ ("temperature", "climate_temp_avg")
+      , ("precipitation", "climate_precip_avg")
+      , ("weather_temperature", "weather_temp_current")
+      , ("cloud_cover", "weather_cloud_cover_current")
+      ])
+    map fst legacyBasisExportAliases `shouldSatisfy` all (not . Text.isSuffixOf "_current")
+
   it "selects chunks that intersect a region" $ do
     let config = WorldConfig { wcChunkSize = 4 }
         world0 = emptyWorld config defaultHexGridMeta

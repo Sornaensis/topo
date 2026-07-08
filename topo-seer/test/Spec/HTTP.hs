@@ -503,8 +503,14 @@ spec = describe "Seer.HTTP.Server" $ do
     componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("active_view" `elem`)
     let activeViewProps = inlinePropertyNames =<< componentProperty doc "TerrainHexResponse" "active_view"
         terrainProps = inlinePropertyNames =<< componentProperty doc "TerrainHexResponse" "terrain"
+        climateProps = inlinePropertyNames =<< componentProperty doc "TerrainHexResponse" "climate"
+        weatherProps = inlinePropertyNames =<< componentProperty doc "TerrainHexResponse" "weather"
+        weatherNormalsProps = inlinePropertyNames =<< componentProperty doc "TerrainHexResponse" "weather_normals"
     activeViewProps `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["basis", "color_scale", "export_fields", "inspector_fields", "label", "mode", "source_kind", "temporal_basis", "tooltip_fields", "unit", "values"])
     terrainProps `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["plate_boundary", "plate_boundary_code", "plate_crust", "plate_crust_code"])
+    climateProps `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["basis", "source_kind", "temporal_basis", "temp_avg", "precip_avg"])
+    weatherProps `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["basis", "source_kind", "temporal_basis", "temp_current", "precip_current", "cloud_cover_current"])
+    weatherNormalsProps `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["basis", "source_kind", "temporal_basis", "temp_typical", "precip_typical", "cloud_cover_typical"])
     componentPropertyNames doc "TerrainExportResponse" `shouldSatisfy` maybe False ("available_fields" `elem`)
     schemaComponentNames doc `shouldSatisfy` elem "ErrorEnvelope"
 
