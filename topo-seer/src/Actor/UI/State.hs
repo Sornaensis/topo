@@ -35,8 +35,11 @@ module Actor.UI.State
   , viewModeSummaryToJSON
   , viewModeKindToText
   , temporalBasisToText
+  , temporalBasisFromText
   , sourceKindToText
   , viewModeDataSemantics
+  , viewModeWithBasis
+  , viewModeFromTextWithBasis
   , viewModeLegendTitle
   , viewModeToText
   , viewModeFromText
@@ -107,6 +110,8 @@ data ViewMode
   | ViewVegetation
   | ViewTerrainForm
   | ViewCloud
+  | ViewPrecipCurrent
+  | ViewCloudTypical
   | ViewOverlay !Text !Int
   deriving (Eq, Ord, Show)
 
@@ -179,6 +184,8 @@ allBuiltinViewModes =
   , ViewCloud
   , ViewMoisture
   , ViewPrecip
+  , ViewPrecipCurrent
+  , ViewCloudTypical
   , ViewPlateId
   , ViewPlateBoundary
   , ViewPlateHardness
@@ -214,6 +221,8 @@ viewModeToText ViewPlateVelocity = "plate_velocity"
 viewModeToText ViewVegetation    = "vegetation"
 viewModeToText ViewTerrainForm   = "terrain_form"
 viewModeToText ViewCloud         = "cloud"
+viewModeToText ViewPrecipCurrent = "precipitation_current"
+viewModeToText ViewCloudTypical  = "cloud_typical"
 viewModeToText (ViewOverlay name _idx) = "overlay:" <> name
 
 builtinViewModeFromText :: Text -> Maybe ViewMode
@@ -230,18 +239,57 @@ builtinViewModeFromText "plate_crust"    = Just ViewPlateCrust
 builtinViewModeFromText "plate_age"      = Just ViewPlateAge
 builtinViewModeFromText "plate_height"   = Just ViewPlateHeight
 builtinViewModeFromText "plate_velocity" = Just ViewPlateVelocity
-builtinViewModeFromText "vegetation"     = Just ViewVegetation
-builtinViewModeFromText "terrain_form"   = Just ViewTerrainForm
-builtinViewModeFromText "cloud"          = Just ViewCloud
-builtinViewModeFromText _                = Nothing
+builtinViewModeFromText "vegetation"            = Just ViewVegetation
+builtinViewModeFromText "terrain_form"          = Just ViewTerrainForm
+builtinViewModeFromText "cloud"                 = Just ViewCloud
+builtinViewModeFromText "precipitation_current" = Just ViewPrecipCurrent
+builtinViewModeFromText "current_precipitation" = Just ViewPrecipCurrent
+builtinViewModeFromText "cloud_typical"         = Just ViewCloudTypical
+builtinViewModeFromText "typical_cloud"         = Just ViewCloudTypical
+builtinViewModeFromText _                       = Nothing
 
 viewModeFromText :: Text -> Maybe Int -> Maybe ViewMode
-viewModeFromText name mIdx = case builtinViewModeFromText name of
-  Just mode -> Just mode
-  Nothing
-    | Just rest <- Text.stripPrefix "overlay:" name
-    , not (Text.null rest) -> Just (ViewOverlay rest (maybe 0 id mIdx))
-    | otherwise -> Nothing
+viewModeFromText name = viewModeFromTextWithBasis name Nothing
+
+viewModeFromTextWithBasis :: Text -> Maybe TemporalBasis -> Maybe Int -> Maybe ViewMode
+viewModeFromTextWithBasis name mBasis mIdx = do
+  mode <- case builtinViewModeFromText name of
+    Just mode -> Just mode
+    Nothing
+      | Just rest <- Text.stripPrefix "overlay:" name
+      , not (Text.null rest) -> Just (ViewOverlay rest (maybe 0 id mIdx))
+      | otherwise -> Nothing
+  case mBasis of
+    Nothing -> Just mode
+    Just basis -> viewModeWithBasis mode basis
+
+viewModeWithBasis :: ViewMode -> TemporalBasis -> Maybe ViewMode
+viewModeWithBasis mode basis = case (weatherViewFamily mode, basis) of
+  (Just WeatherTemperatureFamily, InstantaneousCurrent) -> Just ViewWeather
+  (Just WeatherTemperatureFamily, LongRunAverage)       -> Just ViewClimate
+  (Just WeatherTemperatureFamily, TypicalNormal)        -> Nothing
+  (Just WeatherPrecipFamily, InstantaneousCurrent)      -> Just ViewPrecipCurrent
+  (Just WeatherPrecipFamily, LongRunAverage)            -> Just ViewPrecip
+  (Just WeatherPrecipFamily, TypicalNormal)             -> Nothing
+  (Just WeatherCloudFamily, InstantaneousCurrent)       -> Just ViewCloud
+  (Just WeatherCloudFamily, LongRunAverage)             -> Just ViewCloudTypical
+  (Just WeatherCloudFamily, TypicalNormal)              -> Just ViewCloudTypical
+  (Nothing, _)                                          -> Nothing
+
+data WeatherViewFamily
+  = WeatherTemperatureFamily
+  | WeatherPrecipFamily
+  | WeatherCloudFamily
+  deriving (Eq, Show)
+
+weatherViewFamily :: ViewMode -> Maybe WeatherViewFamily
+weatherViewFamily ViewClimate = Just WeatherTemperatureFamily
+weatherViewFamily ViewWeather = Just WeatherTemperatureFamily
+weatherViewFamily ViewPrecip = Just WeatherPrecipFamily
+weatherViewFamily ViewPrecipCurrent = Just WeatherPrecipFamily
+weatherViewFamily ViewCloud = Just WeatherCloudFamily
+weatherViewFamily ViewCloudTypical = Just WeatherCloudFamily
+weatherViewFamily _ = Nothing
 
 viewModeLabel :: ViewMode -> Text
 viewModeLabel mode = case viewModeMetadata mode of
@@ -259,6 +307,22 @@ temporalBasisToText LongRunAverage = "long_run_average"
 temporalBasisToText TypicalNormal = "typical_normal"
 temporalBasisToText InstantaneousCurrent = "instantaneous_current"
 
+temporalBasisFromText :: Text -> Maybe TemporalBasis
+temporalBasisFromText raw = case Text.toLower raw of
+  "average" -> Just LongRunAverage
+  "avg" -> Just LongRunAverage
+  "long_run_average" -> Just LongRunAverage
+  "long-run-average" -> Just LongRunAverage
+  "typical" -> Just TypicalNormal
+  "normal" -> Just TypicalNormal
+  "typical_normal" -> Just TypicalNormal
+  "typical-normal" -> Just TypicalNormal
+  "current" -> Just InstantaneousCurrent
+  "instantaneous" -> Just InstantaneousCurrent
+  "instantaneous_current" -> Just InstantaneousCurrent
+  "instantaneous-current" -> Just InstantaneousCurrent
+  _ -> Nothing
+
 sourceKindToText :: SourceKind -> Text
 sourceKindToText GeneratedClimate = "generated_climate"
 sourceKindToText SimulatedWeather = "simulated_generated_weather"
@@ -267,8 +331,10 @@ sourceKindToText ExternalLive = "external_live"
 viewModeDataSemantics :: ViewMode -> Maybe ViewModeDataSemantics
 viewModeDataSemantics ViewClimate = climateSemantics
 viewModeDataSemantics ViewPrecip = climateSemantics
+viewModeDataSemantics ViewPrecipCurrent = weatherSemantics
 viewModeDataSemantics ViewWeather = weatherSemantics
 viewModeDataSemantics ViewCloud = weatherSemantics
+viewModeDataSemantics ViewCloudTypical = normalsSemantics
 viewModeDataSemantics (ViewOverlay "weather" _) = weatherSemantics
 viewModeDataSemantics (ViewOverlay "weather_normals" _) = normalsSemantics
 viewModeDataSemantics _ = Nothing
@@ -364,8 +430,8 @@ viewModeRegistry =
       ["biome", "terrain_form", "elevation_m"]
       ["terrain.biome", "terrain.biome_code", "biome_refinement.family"]
       ["biome", "biome_code"]
-  , scalar ViewClimate "climate" "Climate"
-      "Long-run average climate temperature with precipitation context."
+  , scalar ViewClimate "climate" "Average Climate Temp"
+      "Long-run average generated climate temperature with precipitation context."
       (Just "degC") "heat"
       (gradient "Average temperature"
         [ stop "0.00" "cold" "#802f33"
@@ -375,8 +441,8 @@ viewModeRegistry =
       ["temp_avg_c", "precip_avg_mm_year"]
       ["climate_diagnostics.temp_avg_c", "climate_diagnostics.precip_avg_mm_year"]
       ["temperature"]
-  , scalar ViewWeather "weather" "Weather Temp"
-      "Current simulated weather temperature with humidity, wind, pressure, and precipitation context; use Cloud/Storm for aggregate cloud cover and storm tint."
+  , scalar ViewWeather "weather" "Current Weather Temp"
+      "Current simulated weather temperature with humidity, wind, pressure, and precipitation context; use Current Cloud/Storm for aggregate cloud cover and storm tint."
       (Just "degC") "weather-heat"
       (gradient "Current weather temperature"
         [ stop "0.00" "cold" "#802f33"
@@ -388,8 +454,8 @@ viewModeRegistry =
       [ "weather_temperature", "weather_humidity", "weather_wind_speed", "weather_pressure", "weather_precipitation"
       , "normal_temperature", "normal_humidity", "normal_wind_dir", "normal_wind_speed", "normal_precipitation"
       ]
-  , scalar ViewCloud "cloud" "Cloud/Storm"
-      "Renders aggregate cloud cover and cloud-water density with precipitation-derived storm tint; low/mid/high layer fields are inspector/API context, not separate rendered layers."
+  , scalar ViewCloud "cloud" "Current Cloud/Storm"
+      "Current simulated aggregate cloud cover and cloud-water density with precipitation-derived storm tint; low/mid/high layer fields are inspector/API context, not separate rendered layers."
       (Just "% cover") "cloud-storm"
       (gradient "Aggregate cloud cover"
         [ stop "0.00" "clear" "#242428"
@@ -417,8 +483,8 @@ viewModeRegistry =
       ["moisture_pct", "soil_depth_m"]
       ["terrain.moisture", "soil.soil_depth_m", "soil.soil_moisture"]
       ["moisture"]
-  , scalar ViewPrecip "precipitation" "Precipitation"
-      "Long-run average precipitation with humidity context."
+  , scalar ViewPrecip "precipitation" "Average Precipitation"
+      "Long-run average generated climate precipitation with humidity context."
       (Just "mm/yr") "precipitation-moisture"
       (gradient "Average precipitation"
         [ stop "0.00" "arid" "#1a4d66"
@@ -428,6 +494,34 @@ viewModeRegistry =
       ["precip_avg_mm_year", "humidity_pct"]
       ["climate_diagnostics.precip_avg_mm_year", "climate_diagnostics.humidity_avg_pct"]
       ["precipitation"]
+  , scalar ViewPrecipCurrent "precipitation_current" "Current Precipitation"
+      "Current simulated weather precipitation from the instantaneous WeatherChunk."
+      (Just "mm/yr") "precipitation-moisture"
+      (gradient "Current simulated precipitation"
+        [ stop "0.00" "dry" "#1a4d66"
+        , stop "0.50" "showers" "#337fb3"
+        , stop "1.00" "storm" "#4dccff"
+        ])
+      ["precip_mm_year", "humidity_pct"]
+      ["weather.precip", "weather.humidity"]
+      ["weather_precipitation", "weather_humidity"]
+  , scalar ViewCloudTypical "cloud_typical" "Typical Cloud Normal"
+      "Typical generated cloud normal from the weather_normals layer; reports unavailable when generated normals are missing."
+      (Just "% cover") "cloud-storm"
+      (gradient "Typical generated cloud normal"
+        [ stop "0.00" "clear" "#242428"
+        , stop "0.50" "cloudy" "#a0a0a0"
+        , stop "1.00" "storm" "#4c408c"
+        ])
+      ["normal_cloud_cover_pct", "normal_cloud_water", "normal_storm_intensity"]
+      [ "weather_normals.cloud_cover", "weather_normals.cloud_water", "weather_normals.precip"
+      , "weather_normals.cloud_cover_low", "weather_normals.cloud_cover_mid", "weather_normals.cloud_cover_high"
+      , "weather_normals.cloud_water_low", "weather_normals.cloud_water_mid", "weather_normals.cloud_water_high"
+      ]
+      [ "normal_cloud_cover", "normal_cloud_water"
+      , "normal_cloud_cover_low", "normal_cloud_cover_mid", "normal_cloud_cover_high"
+      , "normal_cloud_water_low", "normal_cloud_water_mid", "normal_cloud_water_high"
+      ]
   , categorical ViewPlateId "plate_id" "Plate ID"
       "Discrete tectonic plate identifier palette."
       "categorical-id-palette"

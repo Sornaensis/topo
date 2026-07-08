@@ -134,6 +134,13 @@ spec = describe "terrain inspector view model" $ do
     tivLines view `shouldSatisfy` elem "Current simulated clouds/storm aggregate render"
     tivLines view `shouldSatisfy` elem "  Layer fields: context only"
 
+  it "reports typical cloud normals as unavailable without falling back to current clouds" $ do
+    let ui = emptyUiState { uiHoverHex = Just (0, 0), uiViewMode = ViewCloudTypical }
+        Just view = terrainInspectorView ui terrainSnapshotWithDomainLayers
+    tivLines view `shouldSatisfy` elem "Typical weather normals unavailable"
+    tivLines view `shouldSatisfy` elem "No weather_normals overlay is loaded; not using current clouds as a fallback"
+    tivPanelLines view `shouldSatisfy` any (Text.isInfixOf "unavailable")
+
   it "uses the render geo/time context for solar inspector lines" $ do
     let snap = solarTerrainSnapshot
         ui = emptyUiState { uiViewMode = ViewElevation }
@@ -207,6 +214,7 @@ spec = describe "terrain inspector view model" $ do
         Just view = terrainInspectorView ui terrainSnapshotWithDomainLayers
     map tisKey (tivSections view) `shouldSatisfy` elem "climate_weather"
     map tisKey (tivSections view) `shouldSatisfy` elem "weather_snapshot"
+    map tisKey (tivSections view) `shouldSatisfy` elem "weather_normals"
     map tisKey (tivSections view) `shouldSatisfy` elem "biome_refinement"
     map tisKey (tivSections view) `shouldSatisfy` elem "soil"
     map tisKey (tivSections view) `shouldSatisfy` elem "vegetation"
@@ -215,6 +223,7 @@ spec = describe "terrain inspector view model" $ do
     map tisKey (tivSections view) `shouldSatisfy` elem "ocean_currents"
     tivLines view `shouldSatisfy` elem "--- Average Climate ---"
     tivLines view `shouldSatisfy` elem "--- Current Simulated Weather ---"
+    tivLines view `shouldSatisfy` elem "--- Typical Weather Normals ---"
     tivLines view `shouldSatisfy` any (Text.isInfixOf "Avg climate temp")
     tivLines view `shouldSatisfy` any (Text.isInfixOf "Current cloud")
     tivLines view `shouldSatisfy` any (Text.isInfixOf "Basis long_run_average")
@@ -284,6 +293,7 @@ canonicalInspectorSectionKeys =
   , "water_table"
   , "climate_weather"
   , "weather_snapshot"
+  , "weather_normals"
   , "weather_timeline"
   , "biome_refinement"
   , "soil"

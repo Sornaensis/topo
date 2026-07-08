@@ -23,6 +23,7 @@ import Linear (V2(..), V4(..))
 import qualified SDL
 import qualified SDL.Raw.Types as Raw
 import Topo (ChunkCoord(..), ChunkId(..), ClimateChunk(..), TerrainChunk(..), VegetationChunk(..), WeatherChunk(..), TileCoord(..), TileIndex(..), WorldConfig(..), chunkCoordFromId, chunkOriginTile, tileCoordFromIndex)
+import Topo.Weather (WeatherNormalsChunk(..))
 import UI.DayNight (dayNightMinBrightness)
 import UI.HexGeometry (hexCenterF, hexChunkBounds, hexCornerOffsets, renderHexRadiusPx)
 import UI.TerrainColor (terrainColor)
@@ -52,12 +53,13 @@ data ChunkTexture = ChunkTexture
 --
 -- Uses pre-allocated storable vectors and direct writes to avoid the
 -- overhead of building intermediate lists and calling @SV.fromList@.
-buildChunkGeometry :: Int -> WorldConfig -> ViewMode -> Float -> IntMap ClimateChunk -> IntMap WeatherChunk -> IntMap VegetationChunk -> Maybe (U.Vector Float) -> Int -> TerrainChunk -> ChunkGeometry
-buildChunkGeometry hexRadiusPx config mode waterLevel climateMap weatherMap vegMap mOverlayVec key chunk =
+buildChunkGeometry :: Int -> WorldConfig -> ViewMode -> Float -> IntMap ClimateChunk -> IntMap WeatherChunk -> IntMap WeatherNormalsChunk -> IntMap VegetationChunk -> Maybe (U.Vector Float) -> Int -> TerrainChunk -> ChunkGeometry
+buildChunkGeometry hexRadiusPx config mode waterLevel climateMap weatherMap weatherNormalsMap vegMap mOverlayVec key chunk =
   let ChunkCoord cx cy = chunkCoordFromId (ChunkId key)
       TileCoord ox oy = chunkOriginTile config (ChunkCoord cx cy)
       climateChunk = IntMap.lookup key climateMap
       weatherChunk = IntMap.lookup key weatherMap
+      weatherNormalsChunk = IntMap.lookup key weatherNormalsMap
       vegChunk = IntMap.lookup key vegMap
       total = U.length (tcElevation chunk)
       (minX, minY, maxX, maxY) = chunkBounds config hexRadiusPx (ChunkCoord cx cy)
@@ -80,7 +82,7 @@ buildChunkGeometry hexRadiusPx config mode waterLevel climateMap weatherMap vegM
                       overlayVal = case mOverlayVec of
                         Just vec | idx < U.length vec -> Just (vec U.! idx)
                         _ -> Nothing
-                      baseColor = terrainColor mode waterLevel chunk climateChunk weatherChunk vegChunk overlayVal idx
+                      baseColor = terrainColor mode waterLevel chunk climateChunk weatherChunk weatherNormalsChunk vegChunk overlayVal idx
                       rawColor = toRawColor baseColor
                       base = idx * 7
                   SM.unsafeWrite mv base (Raw.Vertex (Raw.FPoint centerX centerY) rawColor zeroTex)

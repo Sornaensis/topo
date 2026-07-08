@@ -6,8 +6,11 @@ import Actor.TerrainCacheWorker (TerrainCacheKey(..), terrainCacheKeyFrom)
 import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
 import Topo (WeatherChunk(..), WorldConfig(..), emptyTerrainChunk)
 import Topo.Calendar (WorldTime(..), simulationTickSeconds)
-import Topo.Overlay (emptyOverlayStore)
+import Topo.Overlay (Overlay(..), OverlayProvenance(..), OverlayStore, emptyOverlay, emptyOverlayStore, insertOverlay)
+import Topo.Weather (weatherNormalsOverlaySchema)
 import Data.IntMap.Strict (IntMap)
+import qualified Data.Text as Text
+import Data.Word (Word32)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Vector.Unboxed as U
 import Foreign.Ptr (Ptr, intPtrToPtr)
@@ -73,6 +76,31 @@ spec = describe "Cache properties" $ do
     atlasKeyFor ViewCloud waterLevel terrainSnap1 `shouldNotBe` cloudKey0
     terrainSnapshotViewVersion ViewCloud terrainSnapBaseNewer `shouldBe` 11
     atlasKeyVersion (atlasKeyFor ViewCloud waterLevel terrainSnapBaseNewer) `shouldBe` 11
+
+  it "uses weather versions for current precipitation atlas keys" $ do
+    let waterLevel = 0.4
+        terrainSnap0 = emptyTerrainSnapshot { tsVersion = 3, tsWeatherVersion = 7 }
+        terrainSnap1 = terrainSnap0 { tsWeatherVersion = 8 }
+        precipKey0 = atlasKeyFor ViewPrecipCurrent waterLevel terrainSnap0
+    terrainSnapshotViewVersion ViewPrecipCurrent terrainSnap0 `shouldBe` 7
+    atlasKeyVersion precipKey0 `shouldBe` 7
+    atlasKeyFor ViewPrecipCurrent waterLevel terrainSnap1 `shouldNotBe` precipKey0
+
+  it "keeps typical cloud atlas keys stable across weather ticks and tracks normals stamp changes" $ do
+    let waterLevel = 0.4
+        terrainSnap0 = emptyTerrainSnapshot { tsVersion = 3, tsClimateVersion = 5, tsWeatherVersion = 7 }
+        terrainSnapWeather = terrainSnap0 { tsWeatherVersion = 8 }
+        terrainSnapClimate = terrainSnap0 { tsClimateVersion = 6 }
+        terrainSnapNormals0 = terrainSnap0 { tsOverlayStore = weatherNormalsStore 1 }
+        terrainSnapNormals1 = terrainSnap0 { tsOverlayStore = weatherNormalsStore 2 }
+        typicalKey0 = atlasKeyFor ViewCloudTypical waterLevel terrainSnap0
+        typicalNormalsKey0 = atlasKeyFor ViewCloudTypical waterLevel terrainSnapNormals0
+    terrainSnapshotViewVersion ViewCloudTypical terrainSnapWeather `shouldBe` terrainSnapshotViewVersion ViewCloudTypical terrainSnap0
+    atlasKeyFor ViewCloudTypical waterLevel terrainSnapWeather `shouldBe` typicalKey0
+    terrainSnapshotViewVersion ViewCloudTypical terrainSnapClimate `shouldNotBe` terrainSnapshotViewVersion ViewCloudTypical terrainSnap0
+    atlasKeyFor ViewCloudTypical waterLevel terrainSnapClimate `shouldNotBe` typicalKey0
+    terrainSnapshotViewVersion ViewCloudTypical terrainSnapNormals1 `shouldNotBe` terrainSnapshotViewVersion ViewCloudTypical terrainSnapNormals0
+    atlasKeyFor ViewCloudTypical waterLevel terrainSnapNormals1 `shouldNotBe` typicalNormalsKey0
 
   it "refreshes ViewCloud terrain cache when weather version changes" $ do
     let uiCloud = emptyUiState { uiViewMode = ViewCloud }
@@ -223,6 +251,19 @@ mockChunkTexture key = ChunkTexture
 mockTexture :: Int -> SDL.Texture
 mockTexture n = unsafeCoerce (intPtrToPtr (fromIntegral (max 1 n)) :: Ptr ())
 
+weatherNormalsStore :: Word32 -> OverlayStore
+weatherNormalsStore version =
+  insertOverlay normalsOverlay emptyOverlayStore
+  where
+    normalsOverlay = (emptyOverlay weatherNormalsOverlaySchema)
+      { ovProvenance = OverlayProvenance
+          { opSeed = 42
+          , opVersion = version
+          , opSource = Text.pack "weather_normals"
+          , opSchedule = Nothing
+          }
+      }
+
 emptyTerrainSnapshot :: TerrainSnapshot
 emptyTerrainSnapshot = TerrainSnapshot
   { tsVersion = 0
@@ -258,6 +299,8 @@ viewModes =
   , ViewWeather
   , ViewMoisture
   , ViewPrecip
+  , ViewPrecipCurrent
+  , ViewCloudTypical
   , ViewPlateId
   , ViewPlateBoundary
   , ViewPlateHardness

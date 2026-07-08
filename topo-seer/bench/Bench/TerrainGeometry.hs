@@ -42,6 +42,7 @@ buildGeo vm = buildChunkGeometry
   0.3                            -- water level
   (IntMap.singleton 0 benchClimateChunk)
   (IntMap.singleton 0 benchWeatherChunk)
+  IntMap.empty                   -- no weather normals data
   (IntMap.singleton 0 benchVegetationChunk)
   Nothing                        -- no overlay data
   0                              -- chunk id
@@ -54,6 +55,7 @@ buildGeoDayNight vm = buildChunkGeometry
   0.3
   (IntMap.singleton 0 benchClimateChunk)
   (IntMap.singleton 0 benchWeatherChunk)
+  IntMap.empty
   (IntMap.singleton 0 benchVegetationChunk)
   Nothing
   0
@@ -79,6 +81,7 @@ buildGeoOverlay mOvl = buildChunkGeometry
   0.3
   (IntMap.singleton 0 benchClimateChunk)
   (IntMap.singleton 0 benchWeatherChunk)
+  IntMap.empty
   (IntMap.singleton 0 benchVegetationChunk)
   mOvl
   0

@@ -204,10 +204,11 @@ viewModeLabel mode =
   case mode of
     ViewElevation -> "Elevation"
     ViewBiome -> "Biome"
-    ViewClimate -> "Climate"
-    ViewWeather -> "Weather Temp"
+    ViewClimate -> "Avg Temp"
+    ViewWeather -> "Cur Temp"
     ViewMoisture -> "Moisture"
-    ViewPrecip -> "Precip"
+    ViewPrecip -> "Avg Precip"
+    ViewPrecipCurrent -> "Cur Precip"
     ViewPlateId -> "PlateId"
     ViewPlateBoundary -> "PlateBoundary"
     ViewPlateHardness -> "PlateHardness"
@@ -217,7 +218,8 @@ viewModeLabel mode =
     ViewPlateVelocity -> "PlateVelocity"
     ViewVegetation -> "Vegetation"
     ViewTerrainForm -> "TerrainForm"
-    ViewCloud -> "Cloud/Storm"
+    ViewCloud -> "Cur Cloud"
+    ViewCloudTypical -> "Typ Cloud"
     ViewOverlay name _fieldIdx -> "Overlay:" <> name
 
 startGeneration :: UiActionRequest -> IO ()

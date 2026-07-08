@@ -98,6 +98,7 @@ componentForWidget wid = case wid of
   WidgetViewWeather -> componentViewPanel
   WidgetViewMoisture -> componentViewPanel
   WidgetViewPrecip -> componentViewPanel
+  WidgetViewPrecipCurrent -> componentViewPanel
   WidgetViewVegetation -> componentViewPanel
   WidgetViewTerrainForm -> componentViewPanel
   WidgetViewPlateId -> componentViewPanel
@@ -108,6 +109,7 @@ componentForWidget wid = case wid of
   WidgetViewPlateHeight -> componentViewPanel
   WidgetViewPlateVelocity -> componentViewPanel
   WidgetViewCloud -> componentViewPanel
+  WidgetViewCloudTypical -> componentViewPanel
   WidgetDayNightToggle -> componentViewPanel
   WidgetViewOverlayPrev -> componentViewPanel
   WidgetViewOverlayNext -> componentViewPanel

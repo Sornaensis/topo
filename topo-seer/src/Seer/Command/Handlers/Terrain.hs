@@ -20,6 +20,7 @@ import qualified Data.Text as Text
 import Data.Word (Word16, Word32, Word64)
 import qualified Data.Vector.Unboxed as U
 
+import Actor.AtlasCache (terrainSnapshotViewVersion)
 import Actor.Data
   ( TerrainGeoContext(..)
   , TerrainSnapshot(..)
@@ -534,6 +535,11 @@ handleGetHex ctx reqId params =
                           , "precip_avg_mm_year" .= fmap (normToMmYear units) (climateChunk >>= \cc -> safeIndex (ccPrecipAvg cc) tileIdx)
                           , "humidity_pct" .= fmap normToRH (climateChunk >>= \cc -> safeIndex (ccHumidityAvg cc) tileIdx)
                           ]
+                        ViewPrecipCurrent -> object
+                          [ "precip" .= (weatherChunk >>= \wc -> safeIndex (wcPrecip wc) tileIdx)
+                          , "precip_mm_year" .= fmap (normToMmYear units) (weatherChunk >>= \wc -> safeIndex (wcPrecip wc) tileIdx)
+                          , "humidity_pct" .= fmap normToRH (weatherChunk >>= \wc -> safeIndex (wcHumidity wc) tileIdx)
+                          ]
                         ViewPlateId -> object
                           [ "plate_id" .= safeIndexW16 (tcPlateId tc) tileIdx ]
                         ViewPlateBoundary -> object
@@ -580,6 +586,19 @@ handleGetHex ctx reqId params =
                           , "cloud_water_mid" .= (weatherChunk >>= \wc -> safeIndex (wcCloudWaterMid wc) tileIdx)
                           , "cloud_water_high" .= (weatherChunk >>= \wc -> safeIndex (wcCloudWaterHigh wc) tileIdx)
                           , "storm_intensity" .= stormIntensityAt weatherChunk tileIdx
+                          ]
+                        ViewCloudTypical -> object
+                          [ "status" .= maybe ("unavailable" :: Text) (const "available") weatherNormalsChunk
+                          , "cloud_cover" .= (weatherNormalsChunk >>= \wn -> safeIndex (wncCloudCover wn) tileIdx)
+                          , "cloud_cover_pct" .= fmap (* 100) (weatherNormalsChunk >>= \wn -> safeIndex (wncCloudCover wn) tileIdx)
+                          , "cloud_water" .= (weatherNormalsChunk >>= \wn -> safeIndex (wncCloudWater wn) tileIdx)
+                          , "cloud_cover_low" .= (weatherNormalsChunk >>= \wn -> safeIndex (wncCloudCoverLow wn) tileIdx)
+                          , "cloud_cover_mid" .= (weatherNormalsChunk >>= \wn -> safeIndex (wncCloudCoverMid wn) tileIdx)
+                          , "cloud_cover_high" .= (weatherNormalsChunk >>= \wn -> safeIndex (wncCloudCoverHigh wn) tileIdx)
+                          , "cloud_water_low" .= (weatherNormalsChunk >>= \wn -> safeIndex (wncCloudWaterLow wn) tileIdx)
+                          , "cloud_water_mid" .= (weatherNormalsChunk >>= \wn -> safeIndex (wncCloudWaterMid wn) tileIdx)
+                          , "cloud_water_high" .= (weatherNormalsChunk >>= \wn -> safeIndex (wncCloudWaterHigh wn) tileIdx)
+                          , "storm_intensity" .= normalStormIntensityAt weatherNormalsChunk tileIdx
                           ]
                         ViewOverlay overlayName fieldIndex -> object
                           [ "overlay_name" .= overlayName
@@ -886,6 +905,13 @@ stormIntensityAt weatherChunk tileIdx = do
   precip <- safeIndex (wcPrecip wc) tileIdx
   pure (water * min 1 (precip * 3))
 
+normalStormIntensityAt :: Maybe WeatherNormalsChunk -> Int -> Maybe Float
+normalStormIntensityAt weatherNormalsChunk tileIdx = do
+  wn <- weatherNormalsChunk
+  water <- safeIndex (wncCloudWater wn) tileIdx
+  precip <- safeIndex (wncPrecip wn) tileIdx
+  pure (water * min 1 (precip * 3))
+
 weatherNormalsLayerJSON :: Maybe WeatherNormalsChunk -> Int -> Value
 weatherNormalsLayerJSON Nothing _ = object
   [ "loaded" .= False
@@ -1115,6 +1141,8 @@ inspectorMaybeBoolField key label = maybe (inspectorMissingField key label) (ins
 activeWeatherVersion :: ViewMode -> TerrainSnapshot -> Maybe Word64
 activeWeatherVersion ViewWeather snap = Just (tsWeatherVersion snap)
 activeWeatherVersion ViewCloud snap = Just (tsWeatherVersion snap)
+activeWeatherVersion ViewPrecipCurrent snap = Just (tsWeatherVersion snap)
+activeWeatherVersion ViewCloudTypical snap = Just (terrainSnapshotViewVersion ViewCloudTypical snap)
 activeWeatherVersion (ViewOverlay "weather" _) snap = Just (tsWeatherVersion snap)
 activeWeatherVersion (ViewOverlay "weather_normals" _) snap = Just (tsOverlayVersion snap)
 activeWeatherVersion _ _ = Nothing

@@ -496,13 +496,14 @@ spec = describe "Seer.HTTP.Server" $ do
     componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("soil" `elem`)
     componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("ocean_currents" `elem`)
     componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("weather_snapshot" `elem`)
+    componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("weather_normals" `elem`)
     componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("weather_timeline" `elem`)
     componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("water_bodies" `elem`)
     componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("glacier_snow_ice" `elem`)
     componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("active_view" `elem`)
     let activeViewProps = inlinePropertyNames =<< componentProperty doc "TerrainHexResponse" "active_view"
         terrainProps = inlinePropertyNames =<< componentProperty doc "TerrainHexResponse" "terrain"
-    activeViewProps `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["color_scale", "export_fields", "inspector_fields", "label", "mode", "source_kind", "temporal_basis", "tooltip_fields", "unit", "values"])
+    activeViewProps `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["basis", "color_scale", "export_fields", "inspector_fields", "label", "mode", "source_kind", "temporal_basis", "tooltip_fields", "unit", "values"])
     terrainProps `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["plate_boundary", "plate_boundary_code", "plate_crust", "plate_crust_code"])
     componentPropertyNames doc "TerrainExportResponse" `shouldSatisfy` maybe False ("available_fields" `elem`)
     schemaComponentNames doc `shouldSatisfy` elem "ErrorEnvelope"

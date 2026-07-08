@@ -73,6 +73,7 @@ viewColor mode terrainCount biomeCount =
     ViewWeather -> (180, 90, 90 + scale biomeCount)
     ViewMoisture -> (60, 140 + scale biomeCount, 120)
     ViewPrecip -> (60, 110 + scale biomeCount, 150)
+    ViewPrecipCurrent -> (70, 130 + scale biomeCount, 180)
     ViewPlateId -> (100, 120 + scale biomeCount, 160)
     ViewPlateBoundary -> (140, 110 + scale biomeCount, 90)
     ViewPlateHardness -> (120, 100 + scale biomeCount, 70)
@@ -83,6 +84,7 @@ viewColor mode terrainCount biomeCount =
     ViewVegetation -> (70, 150 + scale biomeCount, 50)
     ViewTerrainForm -> (150, 130 + scale terrainCount, 90)
     ViewCloud -> (200, 200, 220 + scale biomeCount)
+    ViewCloudTypical -> (170, 170, 210 + scale biomeCount)
     ViewOverlay _ _ -> (180, 120 + scale biomeCount, 200)
   where
     scale n = fromIntegral (min 75 (n * 5))
@@ -348,10 +350,11 @@ drawUiLabels renderer fontCache ui layout = do
           drawCentered fontCache labelColor buttonRect "Generate"
         LeftView -> do
           let viewLabels =
-                [ "Elevation", "Biome", "Climate", "Weather Temp"
-                , "Cloud/Storm", "Moisture", "Precip", "Vegetation"
-                , "Terr. Form", "Plate ID", "Boundary", "Hardness"
-                , "Crust", "Age", "Plt. Height", "Plt. Vel."
+                [ "Elevation", "Biome", "Avg Temp", "Cur Temp"
+                , "Avg Precip", "Cur Precip", "Cur Cloud", "Typ Cloud"
+                , "Moisture", "Vegetation", "Terr. Form", "Plate ID"
+                , "Boundary", "Hardness", "Crust", "Age"
+                , "Plt. Height", "Plt. Vel."
                 ]
               scrollY = uiLeftViewScroll ui
               shiftY (Rect (V2 rx ry, V2 rw rh)) = Rect (V2 rx (ry - scrollY), V2 rw rh)

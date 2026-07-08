@@ -48,6 +48,7 @@ import UI.RiverRender (RiverGeometry(..), buildChunkRiverGeometry, defaultRiverR
 import UI.TerrainAtlas (AtlasChunkGeometry(..), AtlasTileGeometry(..), attachRiverOverlay, composeTilesFromGeometry, mergeChunkGeometry)
 import UI.DayNight (DayNightKey, DayNightSpec)
 import UI.TerrainRender (ChunkGeometry, buildChunkGeometry, buildDayNightGeometry)
+import Topo.Weather (getWeatherNormalsFromStore)
 
 
 -- | Payload for CPU-side atlas builds executed by pooled workers.
@@ -259,6 +260,7 @@ runAtlasBuild job = do
           waterLevel = abWaterLevel job
           climateChunks = tsClimateChunks terrainSnap
           weatherChunks = tsWeatherChunks terrainSnap
+          weatherNormalsChunks = getWeatherNormalsFromStore (tsOverlayStore terrainSnap)
           vegChunks = tsVegetationChunks terrainSnap
           -- Build geometry for visible-viewport chunks plus extra padding
           -- (2 chunk-rings beyond the base viewport). This avoids processing
@@ -288,7 +290,7 @@ runAtlasBuild job = do
       -- removes the green thread entirely, guaranteeing the bound main
       -- thread (render loop) can reclaim its capability.
       mbGeomPairs <- traverseFresh job chunkPairs $ \(k, chunk) -> do
-        let geom = buildChunkGeometry (abHexRadius job) config mode waterLevel climateChunks weatherChunks vegChunks (IntMap.lookup k overlayMap) k chunk
+        let geom = buildChunkGeometry (abHexRadius job) config mode waterLevel climateChunks weatherChunks weatherNormalsChunks vegChunks (IntMap.lookup k overlayMap) k chunk
         _ <- evaluate geom
         threadDelay 100  -- 0.1ms, releases capability
         pure (k, geom)

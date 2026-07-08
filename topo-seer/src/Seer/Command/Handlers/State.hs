@@ -20,8 +20,12 @@ import Actor.UI.State
   , DataBrowserState(..)
   , UiSnapshotRef
   , ViewMode(..)
+  , ViewModeDataSemantics(..)
   , ConfigTab(..)
   , allBuiltinViewModes
+  , sourceKindToText
+  , temporalBasisToText
+  , viewModeDataSemantics
   , viewModeMetadata
   , viewModeSummaryToJSON
   , viewModeToText
@@ -97,6 +101,7 @@ handleGetUiState ctx reqId _params = do
     Just ref -> Just <$> readLogSnapshotRef ref
   let editor = uiEditor ui
       dbs    = uiDataBrowser ui
+      activeSemantics = viewModeDataSemantics (uiViewMode ui)
   pure $ okResponse reqId $ object
     [ "seed"        .= uiSeed ui
     , "generating"  .= uiGenerating ui
@@ -104,6 +109,8 @@ handleGetUiState ctx reqId _params = do
     , "chunk_size"  .= uiChunkSize ui
     , "view" .= object
         [ "mode"           .= viewModeToText (uiViewMode ui)
+        , "temporal_basis" .= fmap (temporalBasisToText . vmdsTemporalBasis) activeSemantics
+        , "source_kind"    .= fmap (sourceKindToText . vmdsSourceKind) activeSemantics
         , "overlay_name"   .= case uiViewMode ui of
             ViewOverlay n _ -> Just n
             _               -> Nothing

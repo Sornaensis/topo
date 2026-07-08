@@ -76,7 +76,7 @@ cleanupSDLEnv env = do
 geoMap16 :: IntMap.IntMap ChunkGeometry
 geoMap16 = IntMap.mapWithKey (\k tc ->
   buildChunkGeometry 6 benchWorldConfig ViewElevation 0.3
-    climateMap16 weatherMap16 vegMap16
+    climateMap16 weatherMap16 IntMap.empty vegMap16
     Nothing k tc) terrainMap16
 
 riverGeoMap :: IntMap.IntMap RiverGeometry
@@ -123,7 +123,7 @@ sampleTileGeometry64 =
 geoMap64 :: IntMap.IntMap ChunkGeometry
 geoMap64 = IntMap.mapWithKey (\k tc ->
   buildChunkGeometry 6 benchWorldConfig ViewElevation 0.3
-    climateMap64 weatherMap64 vegMap64
+    climateMap64 weatherMap64 IntMap.empty vegMap64
     Nothing k tc) terrainMap64
 
 ------------------------------------------------------------------------

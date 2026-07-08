@@ -16,6 +16,7 @@ import Actor.UI.State
   , sourceKindToText
   , temporalBasisToText
   , viewModeDataSemantics
+  , viewModeFromTextWithBasis
   , viewModeKindToText
   , viewModeLegendTitle
   , viewModeMetadata
@@ -53,10 +54,11 @@ spec = describe "view mode registry" $ do
   it "round-trips built-in mode names through the registry parser" $
     mapM_ (\mode -> builtinViewModeFromText (viewModeToText mode) `shouldBe` Just mode) allBuiltinViewModes
 
-  it "places Cloud/Storm immediately after Weather in built-in/API order" $
-    take 6 allBuiltinViewModes `shouldBe`
+  it "places explicit average/current weather controls in built-in/API order" $
+    take 8 allBuiltinViewModes `shouldBe`
       [ ViewElevation, ViewBiome, ViewClimate
       , ViewWeather, ViewCloud, ViewMoisture
+      , ViewPrecip, ViewPrecipCurrent
       ]
 
   it "exposes HTTP metadata, legends, export mappings, and data semantics in JSON summaries" $ do
@@ -74,19 +76,27 @@ spec = describe "view mode registry" $ do
     semanticsText ViewPrecip `shouldBe` Just ("long_run_average", "generated_climate")
     semanticsText ViewWeather `shouldBe` Just ("instantaneous_current", "simulated_generated_weather")
     semanticsText ViewCloud `shouldBe` Just ("instantaneous_current", "simulated_generated_weather")
+    semanticsText ViewPrecipCurrent `shouldBe` Just ("instantaneous_current", "simulated_generated_weather")
+    semanticsText ViewCloudTypical `shouldBe` Just ("typical_normal", "generated_climate")
     semanticsText (ViewOverlay "weather" 0) `shouldBe` Just ("instantaneous_current", "simulated_generated_weather")
     viewModeDataSemantics ViewMoisture `shouldBe` Nothing
     temporalBasisToText TypicalNormal `shouldBe` "typical_normal"
     sourceKindToText ExternalLive `shouldBe` "external_live"
+    viewModeFromTextWithBasis "weather" (Just LongRunAverage) Nothing `shouldBe` Just ViewClimate
+    viewModeFromTextWithBasis "weather" (Just InstantaneousCurrent) Nothing `shouldBe` Just ViewWeather
+    viewModeFromTextWithBasis "weather" (Just TypicalNormal) Nothing `shouldBe` Nothing
+    viewModeFromTextWithBasis "precipitation" (Just InstantaneousCurrent) Nothing `shouldBe` Just ViewPrecipCurrent
+    viewModeFromTextWithBasis "precipitation" (Just TypicalNormal) Nothing `shouldBe` Nothing
+    viewModeFromTextWithBasis "cloud" (Just TypicalNormal) Nothing `shouldBe` Just ViewCloudTypical
 
   it "presents weather as current temperature and redirects cloud/storm expectations" $ do
     let cloudOrStorm field = Text.isInfixOf "cloud" field || Text.isInfixOf "storm" field
     case viewModeMetadata ViewWeather of
       Just meta -> do
         vmmName meta `shouldBe` "weather"
-        vmmLabel meta `shouldBe` "Weather Temp"
+        vmmLabel meta `shouldBe` "Current Weather Temp"
         vmmDescription meta `shouldBe`
-          "Current simulated weather temperature with humidity, wind, pressure, and precipitation context; use Cloud/Storm for aggregate cloud cover and storm tint."
+          "Current simulated weather temperature with humidity, wind, pressure, and precipitation context; use Current Cloud/Storm for aggregate cloud cover and storm tint."
         viewModeLegendTitle (vmmLegend meta) `shouldBe` "Current weather temperature"
         Text.toLower (vmmLabel meta <> " " <> viewModeLegendTitle (vmmLegend meta))
           `shouldNotSatisfy` cloudOrStorm
@@ -98,14 +108,24 @@ spec = describe "view mode registry" $ do
     case viewModeMetadata ViewCloud of
       Just meta -> do
         vmmName meta `shouldBe` "cloud"
-        vmmLabel meta `shouldBe` "Cloud/Storm"
+        vmmLabel meta `shouldBe` "Current Cloud/Storm"
         vmmDescription meta `shouldBe`
-          "Renders aggregate cloud cover and cloud-water density with precipitation-derived storm tint; low/mid/high layer fields are inspector/API context, not separate rendered layers."
+          "Current simulated aggregate cloud cover and cloud-water density with precipitation-derived storm tint; low/mid/high layer fields are inspector/API context, not separate rendered layers."
         viewModeLegendTitle (vmmLegend meta) `shouldBe` "Aggregate cloud cover"
         vmmTooltipFields meta `shouldBe` ["cloud_cover_pct", "cloud_water", "storm_intensity"]
         vmmInspectorFields meta `shouldSatisfy` elem "weather.cloud_cover_low"
         vmmInspectorFields meta `shouldSatisfy` elem "weather.cloud_water_high"
       Nothing -> expectationFailure "missing ViewCloud metadata"
+
+  it "describes typical cloud normals as generated and distinct from current clouds" $ do
+    case viewModeMetadata ViewCloudTypical of
+      Just meta -> do
+        vmmName meta `shouldBe` "cloud_typical"
+        vmmLabel meta `shouldBe` "Typical Cloud Normal"
+        vmmTemporalBasis meta `shouldBe` Just TypicalNormal
+        vmmSourceKind meta `shouldBe` Just GeneratedClimate
+        vmmInspectorFields meta `shouldSatisfy` elem "weather_normals.cloud_cover"
+      Nothing -> expectationFailure "missing ViewCloudTypical metadata"
 
   it "matches the golden legend fixture" $ do
     path <- locateGolden

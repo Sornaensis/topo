@@ -552,6 +552,7 @@
           "Topo.Climate.Precipitation",
           "Topo.BiomeConfig",
           "Topo.Weather",
+          "Topo.Weather.Normals",
           "Topo.Biome",
           "Topo.Biome.Name",
           "Topo.Biome.Refine",

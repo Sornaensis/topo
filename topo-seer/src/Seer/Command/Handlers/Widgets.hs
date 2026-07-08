@@ -108,6 +108,7 @@ widgetIdToText wid = case wid of
   WidgetViewWeather            -> "WidgetViewWeather"
   WidgetViewMoisture           -> "WidgetViewMoisture"
   WidgetViewPrecip             -> "WidgetViewPrecip"
+  WidgetViewPrecipCurrent      -> "WidgetViewPrecipCurrent"
   WidgetViewVegetation         -> "WidgetViewVegetation"
   WidgetViewTerrainForm        -> "WidgetViewTerrainForm"
   WidgetViewPlateId            -> "WidgetViewPlateId"
@@ -118,6 +119,7 @@ widgetIdToText wid = case wid of
   WidgetViewPlateHeight        -> "WidgetViewPlateHeight"
   WidgetViewPlateVelocity      -> "WidgetViewPlateVelocity"
   WidgetViewCloud               -> "WidgetViewCloud"
+  WidgetViewCloudTypical        -> "WidgetViewCloudTypical"
   WidgetDayNightToggle           -> "WidgetDayNightToggle"
   WidgetViewOverlayPrev        -> "WidgetViewOverlayPrev"
   WidgetViewOverlayNext        -> "WidgetViewOverlayNext"
@@ -281,6 +283,7 @@ nullaryWidgetMap = Map.fromList
   , ("WidgetViewWeather",       WidgetViewWeather)
   , ("WidgetViewMoisture",      WidgetViewMoisture)
   , ("WidgetViewPrecip",        WidgetViewPrecip)
+  , ("WidgetViewPrecipCurrent", WidgetViewPrecipCurrent)
   , ("WidgetViewVegetation",    WidgetViewVegetation)
   , ("WidgetViewTerrainForm",   WidgetViewTerrainForm)
   , ("WidgetViewPlateId",       WidgetViewPlateId)
@@ -291,6 +294,7 @@ nullaryWidgetMap = Map.fromList
   , ("WidgetViewPlateHeight",   WidgetViewPlateHeight)
   , ("WidgetViewPlateVelocity", WidgetViewPlateVelocity)
   , ("WidgetViewCloud",         WidgetViewCloud)
+  , ("WidgetViewCloudTypical",  WidgetViewCloudTypical)
   , ("WidgetDayNightToggle",    WidgetDayNightToggle)
   , ("WidgetViewOverlayPrev",   WidgetViewOverlayPrev)
   , ("WidgetViewOverlayNext",   WidgetViewOverlayNext)
@@ -453,6 +457,7 @@ executeWidgetClick ctx wid = do
     WidgetViewWeather       -> setView ctx ViewWeather
     WidgetViewMoisture      -> setView ctx ViewMoisture
     WidgetViewPrecip        -> setView ctx ViewPrecip
+    WidgetViewPrecipCurrent -> setView ctx ViewPrecipCurrent
     WidgetViewVegetation    -> setView ctx ViewVegetation
     WidgetViewTerrainForm   -> setView ctx ViewTerrainForm
     WidgetViewPlateId       -> setView ctx ViewPlateId
@@ -463,6 +468,7 @@ executeWidgetClick ctx wid = do
     WidgetViewPlateHeight   -> setView ctx ViewPlateHeight
     WidgetViewPlateVelocity -> setView ctx ViewPlateVelocity
     WidgetViewCloud          -> setView ctx ViewCloud
+    WidgetViewCloudTypical   -> setView ctx ViewCloudTypical
 
     -- ----- Day/night toggle -----
     WidgetDayNightToggle -> do
@@ -804,8 +810,10 @@ handleListWidgets ctx reqId _params = do
         , ("WidgetViewClimate",       leftView)
         , ("WidgetViewWeather",       leftView)
         , ("WidgetViewCloud",         leftView)
+        , ("WidgetViewCloudTypical",  leftView)
         , ("WidgetViewMoisture",      leftView)
         , ("WidgetViewPrecip",        leftView)
+        , ("WidgetViewPrecipCurrent", leftView)
         , ("WidgetViewVegetation",    leftView)
         , ("WidgetViewTerrainForm",   leftView)
         , ("WidgetViewPlateId",       leftView)

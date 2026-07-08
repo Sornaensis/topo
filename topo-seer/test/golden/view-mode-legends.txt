@@ -38,6 +38,16 @@ precipitation|scalar|mm/yr|precipitation-moisture|long_run_average|generated_cli
   stop 0.00 arid #1a4d66
   stop 0.50 seasonal #337fb3
   stop 1.00 wet #4dccff
+precipitation_current|scalar|mm/yr|precipitation-moisture|instantaneous_current|simulated_generated_weather
+  Current simulated precipitation
+  stop 0.00 dry #1a4d66
+  stop 0.50 showers #337fb3
+  stop 1.00 storm #4dccff
+cloud_typical|scalar|% cover|cloud-storm|typical_normal|generated_climate
+  Typical generated cloud normal
+  stop 0.00 clear #242428
+  stop 0.50 cloudy #a0a0a0
+  stop 1.00 storm #4c408c
 plate_id|categorical|unitless|categorical-id-palette|no_temporal_basis|no_source_kind
   Plate IDs
   category 0 Plate 0 #5ac85a

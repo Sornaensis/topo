@@ -21,7 +21,7 @@ import GHC.Clock (getMonotonicTimeNSec)
 import System.Timeout (timeout)
 import Test.Hspec
 
-import Actor.AtlasCache (atlasKeyFor, atlasKeyVersion)
+import Actor.AtlasCache (atlasKeyFor, atlasKeyVersion, terrainSnapshotViewVersion)
 import Actor.AtlasManager (AtlasJob(..), drainAtlasJobs)
 import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..), getTerrainSnapshot, replaceTerrainData)
 import Actor.Simulation
@@ -185,6 +185,33 @@ spec = describe "AutoTick scheduler" $ do
 
       stopRsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= False])
       srSuccess stopRsp `shouldBe` True
+
+  it "keeps typical cloud normals stable and unqueued during weather auto-tick" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      installWorld app
+      let handles = appHandles app
+      viewRsp <- dispatch app "set_view_mode" (object ["mode" .= (Text.pack "cloud"), "basis" .= (Text.pack "typical")])
+      srSuccess viewRsp `shouldBe` True
+      ui <- getUiSnapshot (ahUiHandle handles)
+      uiViewMode ui `shouldBe` ViewCloudTypical
+      _ <- drainAtlasJobs (ahAtlasManagerHandle handles)
+
+      terrainSnap0 <- getTerrainSnapshot (ahDataHandle handles)
+      let typicalVersion0 = terrainSnapshotViewVersion ViewCloudTypical terrainSnap0
+          weatherVersion0 = tsWeatherVersion terrainSnap0
+      rsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (1.0 :: Double)])
+      srSuccess rsp `shouldBe` True
+      advanced <- awaitTrue 100 $ do
+        snap <- getTerrainSnapshot (ahDataHandle handles)
+        pure (tsWeatherVersion snap > weatherVersion0)
+      advanced `shouldBe` True
+
+      stopRsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= False])
+      srSuccess stopRsp `shouldBe` True
+      terrainSnap1 <- getTerrainSnapshot (ahDataHandle handles)
+      terrainSnapshotViewVersion ViewCloudTypical terrainSnap1 `shouldBe` typicalVersion0
+      jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+      length jobs `shouldBe` 0
 
   it "backfills all stages current-first when high-rate auto tick is disabled" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do

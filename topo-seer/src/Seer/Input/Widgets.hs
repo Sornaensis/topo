@@ -228,6 +228,7 @@ handleClick inputContext (SDL.P (V2 x y)) = do
           ; Just WidgetViewWeather -> whenLeftView (submit (UiActionSetViewMode ViewWeather))
           ; Just WidgetViewMoisture -> whenLeftView (submit (UiActionSetViewMode ViewMoisture))
           ; Just WidgetViewPrecip -> whenLeftView (submit (UiActionSetViewMode ViewPrecip))
+          ; Just WidgetViewPrecipCurrent -> whenLeftView (submit (UiActionSetViewMode ViewPrecipCurrent))
           ; Just WidgetViewVegetation -> whenLeftView (submit (UiActionSetViewMode ViewVegetation))
           ; Just WidgetViewTerrainForm -> whenLeftView (submit (UiActionSetViewMode ViewTerrainForm))
           ; Just WidgetViewPlateId -> whenLeftView (submit (UiActionSetViewMode ViewPlateId))
@@ -238,6 +239,7 @@ handleClick inputContext (SDL.P (V2 x y)) = do
           ; Just WidgetViewPlateHeight -> whenLeftView (submit (UiActionSetViewMode ViewPlateHeight))
           ; Just WidgetViewPlateVelocity -> whenLeftView (submit (UiActionSetViewMode ViewPlateVelocity))
           ; Just WidgetViewCloud -> whenLeftView (submit (UiActionSetViewMode ViewCloud))
+          ; Just WidgetViewCloudTypical -> whenLeftView (submit (UiActionSetViewMode ViewCloudTypical))
           ; Just WidgetDayNightToggle -> whenLeftView (submit UiActionToggleDayNight)
           -- Overlay cycling: prev/next overlay name, prev/next field
           ; Just WidgetViewOverlayPrev -> whenLeftView $ cycleOverlay uiSnap uiHandle (ieTerrainSnapshot widgetEnv) (-1) submit

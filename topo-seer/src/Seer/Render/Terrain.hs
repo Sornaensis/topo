@@ -28,6 +28,7 @@ import UI.TerrainRender (ChunkGeometry(..), ChunkTexture(..), buildChunkGeometry
 import UI.Widgets (Rect(..))
 import UI.WidgetsDraw (rectToSDL)
 import Topo (ClimateChunk(..), TerrainChunk(..), WeatherChunk(..), WorldConfig(..))
+import Topo.Weather (getWeatherNormalsFromStore)
 
 -- | Cached per-chunk geometry for the current renderable terrain state.
 --
@@ -113,9 +114,11 @@ buildTerrainCache uiSnap terrainSnap =
             Just m  -> m
             Nothing -> IntMap.empty
         _ -> IntMap.empty
+      weatherNormalsChunks = getWeatherNormalsFromStore (tsOverlayStore terrainSnap)
       mkGeom k chunk = buildChunkGeometry renderHexRadiusPx config mode waterLevel
                          (tsClimateChunks terrainSnap)
                          (tsWeatherChunks terrainSnap)
+                         weatherNormalsChunks
                          (tsVegetationChunks terrainSnap)
                          (IntMap.lookup k overlayMap)
                          k chunk

@@ -149,6 +149,7 @@ import Topo.Simulation.Pipeline
 import Topo (ChunkId(..), WeatherChunk(..), getWeatherFromOverlay)
 import Topo.World (TerrainWorld(..))
 import Topo.Overlay (Overlay(..), OverlayProvenance(..), OverlayStore, insertOverlay, lookupOverlay, overlayNames)
+import Topo.Weather (weatherNormalsOverlayName)
 import Topo.WorldGen (WorldGenConfig(..))
 import Topo.Types (WorldConfig(..))
 import Data.Aeson (fromJSON, Result(..), Value)
@@ -1213,6 +1214,7 @@ chunkList = map (\(k, v) -> (ChunkId k, v)) . IntMap.toList
 activeWeatherAtlasView :: ViewMode -> Maybe Text
 activeWeatherAtlasView ViewWeather = Just "weather"
 activeWeatherAtlasView ViewCloud = Just "cloud"
+activeWeatherAtlasView ViewPrecipCurrent = Just "precipitation_current"
 activeWeatherAtlasView _ = Nothing
 
 weatherNodeScheduleDiagnostic
@@ -1331,6 +1333,8 @@ commonChunkCount before after =
   IntMap.size (IntMap.intersection before after)
 
 selectedOverlayChanged :: ViewMode -> OverlayStore -> OverlayStore -> Bool
+selectedOverlayChanged ViewCloudTypical before after =
+  lookupOverlay weatherNormalsOverlayName before /= lookupOverlay weatherNormalsOverlayName after
 selectedOverlayChanged (ViewOverlay name _) before after =
   lookupOverlay name before /= lookupOverlay name after
 selectedOverlayChanged _ _ _ = False
@@ -1345,11 +1349,13 @@ viewAffectedBySimulationPublication
   -> Bool
 viewAffectedBySimulationPublication mode terrainChanged climateChanged weatherChanged vegetationChanged overlayChanged =
   case mode of
-    ViewClimate    -> terrainChanged || climateChanged
-    ViewPrecip     -> terrainChanged || climateChanged
-    ViewWeather    -> terrainChanged || weatherChanged
-    ViewCloud      -> terrainChanged || weatherChanged
-    ViewVegetation -> terrainChanged || vegetationChanged
+    ViewClimate      -> terrainChanged || climateChanged
+    ViewPrecip       -> terrainChanged || climateChanged
+    ViewCloudTypical -> terrainChanged || climateChanged || overlayChanged
+    ViewWeather      -> terrainChanged || weatherChanged
+    ViewCloud        -> terrainChanged || weatherChanged
+    ViewPrecipCurrent -> terrainChanged || weatherChanged
+    ViewVegetation   -> terrainChanged || vegetationChanged
     ViewOverlay{}  -> terrainChanged || overlayChanged
     _              -> terrainChanged
 
@@ -1476,11 +1482,13 @@ immediatePublicationAffected
   -> Bool
 immediatePublicationAffected mode terrainChanged climateChanged vegetationChanged overlayChanged =
   case mode of
-    ViewClimate    -> terrainChanged || climateChanged
-    ViewPrecip     -> terrainChanged || climateChanged
-    ViewWeather    -> terrainChanged
-    ViewCloud      -> terrainChanged
-    ViewVegetation -> terrainChanged || vegetationChanged
+    ViewClimate      -> terrainChanged || climateChanged
+    ViewPrecip       -> terrainChanged || climateChanged
+    ViewCloudTypical -> terrainChanged || climateChanged || overlayChanged
+    ViewWeather      -> terrainChanged
+    ViewCloud        -> terrainChanged
+    ViewPrecipCurrent -> terrainChanged
+    ViewVegetation   -> terrainChanged || vegetationChanged
     ViewOverlay{}  -> terrainChanged || overlayChanged
     _              -> terrainChanged
 
@@ -1489,9 +1497,10 @@ weatherPublicationAffected st uiSnap weatherChanged =
   uiDayNightEnabled uiSnap || weatherViewAffected
   where
     weatherViewAffected = case uiViewMode uiSnap of
-      ViewWeather -> weatherChanged || ssAutoWeatherPublicationPending st
-      ViewCloud   -> weatherChanged || ssAutoWeatherPublicationPending st
-      _           -> False
+      ViewWeather       -> weatherChanged || ssAutoWeatherPublicationPending st
+      ViewCloud         -> weatherChanged || ssAutoWeatherPublicationPending st
+      ViewPrecipCurrent -> weatherChanged || ssAutoWeatherPublicationPending st
+      _                 -> False
 
 autoWeatherPublicationDue :: Word64 -> SimState -> Bool
 autoWeatherPublicationDue now st =
@@ -1565,6 +1574,7 @@ simulationAtlasCurrentStageOnlyEligible uiSnap =
   uiDayNightEnabled uiSnap || case uiViewMode uiSnap of
     ViewWeather -> True
     ViewCloud -> True
+    ViewPrecipCurrent -> True
     ViewOverlay name _ -> name == "weather"
     _ -> False
 
@@ -1635,6 +1645,7 @@ flushWeatherPublicationViewAffected _ uiSnap =
   uiDayNightEnabled uiSnap || case uiViewMode uiSnap of
     ViewWeather -> True
     ViewCloud   -> True
+    ViewPrecipCurrent -> True
     ViewOverlay name _ -> name == "weather"
     _           -> False
 
@@ -1644,6 +1655,7 @@ flushWeatherPublicationNeeded st uiSnap latest published
   | otherwise = case uiViewMode uiSnap of
       ViewWeather -> ssAutoWeatherPublicationPending st || terrainSnapshotViewVersion ViewWeather latest /= terrainSnapshotViewVersion ViewWeather published
       ViewCloud   -> ssAutoWeatherPublicationPending st || terrainSnapshotViewVersion ViewCloud latest /= terrainSnapshotViewVersion ViewCloud published
+      ViewPrecipCurrent -> ssAutoWeatherPublicationPending st || terrainSnapshotViewVersion ViewPrecipCurrent latest /= terrainSnapshotViewVersion ViewPrecipCurrent published
       mode@(ViewOverlay name _) ->
         name == "weather"
           && ( ssAutoWeatherPublicationPending st

@@ -35,6 +35,7 @@ data WidgetId
   | WidgetViewWeather
   | WidgetViewMoisture
   | WidgetViewPrecip
+  | WidgetViewPrecipCurrent
   | WidgetViewVegetation
   | WidgetViewTerrainForm
   | WidgetViewPlateId
@@ -45,6 +46,7 @@ data WidgetId
   | WidgetViewPlateHeight
   | WidgetViewPlateVelocity
   | WidgetViewCloud
+  | WidgetViewCloudTypical
   | WidgetDayNightToggle
   | WidgetViewOverlayPrev
   -- ^ Previous overlay in the overlay store.

@@ -11,6 +11,7 @@ import Linear (V2(..))
 import qualified SDL.Raw.Types as Raw
 import Topo (WorldConfig(..), TerrainChunk(..), WeatherChunk(..), zeroDirSlope)
 import Topo.Types (pattern BiomeDesert, pattern FormFlat, pattern PlateBoundaryNone)
+import Topo.Weather (WeatherNormalsChunk(..))
 import Actor.UI (ViewMode(..))
 import UI.DayNight (dayNightMinBrightness)
 import UI.HexGeometry (hexCenterF, renderHexRadiusPx)
@@ -23,7 +24,7 @@ spec = describe "Terrain render geometry" $ do
     let size = 2
         config = WorldConfig { wcChunkSize = size }
         chunk = emptyTerrainChunk size
-        geometry = buildChunkGeometry renderHexRadiusPx config ViewElevation 0 IntMap.empty IntMap.empty IntMap.empty Nothing 0 chunk
+        geometry = buildChunkGeometry renderHexRadiusPx config ViewElevation 0 IntMap.empty IntMap.empty IntMap.empty IntMap.empty Nothing 0 chunk
         tileCount = size * size
     SV.length (cgVertices geometry) `shouldBe` tileCount * 7
     SV.length (cgIndices geometry) `shouldBe` tileCount * 18
@@ -32,7 +33,7 @@ spec = describe "Terrain render geometry" $ do
     let size = 3
         config = WorldConfig { wcChunkSize = size }
         chunk = emptyTerrainChunk size
-        geometry = buildChunkGeometry renderHexRadiusPx config ViewElevation 0 IntMap.empty IntMap.empty IntMap.empty Nothing 0 chunk
+        geometry = buildChunkGeometry renderHexRadiusPx config ViewElevation 0 IntMap.empty IntMap.empty IntMap.empty IntMap.empty Nothing 0 chunk
         Rect (V2 _ _ , V2 w h) = cgBounds geometry
     w `shouldSatisfy` (> 0)
     h `shouldSatisfy` (> 0)
@@ -41,7 +42,7 @@ spec = describe "Terrain render geometry" $ do
     let size = 1
         config = WorldConfig { wcChunkSize = size }
         chunk = emptyTerrainChunk size
-        geometry = buildChunkGeometry renderHexRadiusPx config ViewElevation 0 IntMap.empty IntMap.empty IntMap.empty Nothing 0 chunk
+        geometry = buildChunkGeometry renderHexRadiusPx config ViewElevation 0 IntMap.empty IntMap.empty IntMap.empty IntMap.empty Nothing 0 chunk
         Rect (V2 bx by, _) = cgBounds geometry
         Raw.Vertex (Raw.FPoint localX localY) _ _ = cgVertices geometry SV.! 0
         (centerX, centerY) = hexCenterF renderHexRadiusPx 0 0
@@ -76,6 +77,22 @@ spec = describe "Terrain render geometry" $ do
     let clear = viewColor ViewWeather (testWeatherChunk 1 0.45 0.00 0.00 0.00)
         storm = viewColor ViewWeather (testWeatherChunk 1 0.45 0.95 1.00 0.90)
     storm `shouldBe` clear
+
+  it "renders current precipitation from WeatherChunk precipitation" $ do
+    let dry = viewColor ViewPrecipCurrent (testWeatherChunk 1 0.45 0.00 0.00 0.00)
+        storm = viewColor ViewPrecipCurrent (testWeatherChunk 1 0.45 0.00 0.00 0.90)
+    storm `shouldNotBe` dry
+    channelSum storm `shouldSatisfy` (> channelSum dry)
+
+  it "renders typical cloud normals from weather_normals and never falls back to current clouds" $ do
+    let currentStorm = testWeatherChunk 1 0.45 0.95 1.00 0.90
+        typicalClear = testWeatherNormalsChunk 1 0.05 0.05 0.00
+        currentColor = viewColor ViewCloud currentStorm
+        typicalColor = viewColorWithNormals ViewCloudTypical (Just currentStorm) (Just typicalClear)
+        missingColor = viewColorWithNormals ViewCloudTypical (Just currentStorm) Nothing
+    typicalColor `shouldNotBe` currentColor
+    missingColor `shouldNotBe` currentColor
+    typicalColor `shouldNotBe` missingColor
 
   it "builds a transparent black day/night overlay at full brightness" $ do
     let size = 1
@@ -136,7 +153,17 @@ viewColor mode weather =
   let size = 1
       config = WorldConfig { wcChunkSize = size }
       chunk = emptyTerrainChunk size
-      geometry = buildChunkGeometry renderHexRadiusPx config mode 0 IntMap.empty (IntMap.singleton 0 weather) IntMap.empty Nothing 0 chunk
+      geometry = buildChunkGeometry renderHexRadiusPx config mode 0 IntMap.empty (IntMap.singleton 0 weather) IntMap.empty IntMap.empty Nothing 0 chunk
+  in vertexColor (cgVertices geometry SV.! 0)
+
+viewColorWithNormals :: ViewMode -> Maybe WeatherChunk -> Maybe WeatherNormalsChunk -> (Word8, Word8, Word8, Word8)
+viewColorWithNormals mode mWeather mNormals =
+  let size = 1
+      config = WorldConfig { wcChunkSize = size }
+      chunk = emptyTerrainChunk size
+      weatherMap = maybe IntMap.empty (IntMap.singleton 0) mWeather
+      normalMap = maybe IntMap.empty (IntMap.singleton 0) mNormals
+      geometry = buildChunkGeometry renderHexRadiusPx config mode 0 IntMap.empty weatherMap normalMap IntMap.empty Nothing 0 chunk
   in vertexColor (cgVertices geometry SV.! 0)
 
 testWeatherChunk :: Int -> Float -> Float -> Float -> Float -> WeatherChunk
@@ -157,6 +184,25 @@ testWeatherChunk total temp cover water precip =
       , wcCloudWaterLow  = v (water * 0.60)
       , wcCloudWaterMid  = v (water * 0.25)
       , wcCloudWaterHigh = v (water * 0.15)
+      }
+
+testWeatherNormalsChunk :: Int -> Float -> Float -> Float -> WeatherNormalsChunk
+testWeatherNormalsChunk total cover water precip =
+  let v value = U.replicate total value
+  in WeatherNormalsChunk
+      { wncTemp = v 0.45
+      , wncHumidity = v 0.5
+      , wncWindDir = v 0
+      , wncWindSpd = v 0
+      , wncPrecip = v precip
+      , wncCloudCover = v cover
+      , wncCloudWater = v water
+      , wncCloudCoverLow  = v (cover * 0.60)
+      , wncCloudCoverMid  = v (cover * 0.25)
+      , wncCloudCoverHigh = v (cover * 0.15)
+      , wncCloudWaterLow  = v (water * 0.60)
+      , wncCloudWaterMid  = v (water * 0.25)
+      , wncCloudWaterHigh = v (water * 0.15)
       }
 
 channelSum :: (Word8, Word8, Word8, Word8) -> Int

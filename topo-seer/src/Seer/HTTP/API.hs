@@ -319,6 +319,8 @@ uiStateResponseSchema = objectSchema "UiStateResponse"
   , ("chunk_size", integerSchema)
   , ("view", inlineObjectSchema ["mode", "overlay_names"]
       [ ("mode", viewModeSchema)
+      , ("temporal_basis", nullableSchema temporalBasisSchema)
+      , ("source_kind", nullableSchema sourceKindSchema)
       , ("overlay_name", nullableSchema stringSchema)
       , ("overlay_field", nullableSchema integerSchema)
       , ("overlay_names", arraySchema stringSchema)
@@ -552,7 +554,7 @@ worldSummarySchema = inlineObjectSchema
 
 terrainHexResponseSchema :: JsonSchema
 terrainHexResponseSchema = objectSchema "TerrainHexResponse"
-  [ "q", "r", "terrain", "hypsometry", "terrain_form_metrics", "hydrology", "climate", "climate_diagnostics", "weather", "weather_snapshot", "weather_timeline", "river", "water_body", "water_bodies", "water_table", "soil", "biome_refinement", "vegetation", "glacier", "glacier_snow_ice", "volcanism", "ocean_currents", "units", "active_view", "sections" ]
+  [ "q", "r", "terrain", "hypsometry", "terrain_form_metrics", "hydrology", "climate", "climate_diagnostics", "weather", "weather_snapshot", "weather_normals", "weather_typical", "weather_timeline", "river", "water_body", "water_bodies", "water_table", "soil", "biome_refinement", "vegetation", "glacier", "glacier_snow_ice", "volcanism", "ocean_currents", "units", "active_view", "sections" ]
   [ ("q", integerSchema)
   , ("r", integerSchema)
   , ("terrain", terrainLayerSchema)
@@ -563,6 +565,8 @@ terrainHexResponseSchema = objectSchema "TerrainHexResponse"
   , ("climate_diagnostics", freeObjectSchema)
   , ("weather", nullableSchema freeObjectSchema)
   , ("weather_snapshot", nullableSchema freeObjectSchema)
+  , ("weather_normals", freeObjectSchema)
+  , ("weather_typical", freeObjectSchema)
   , ("weather_timeline", freeObjectSchema)
   , ("river", nullableSchema freeObjectSchema)
   , ("water_body", nullableSchema freeObjectSchema)
@@ -760,6 +764,7 @@ terrainActiveViewSchema = inlineObjectSchema
   [ ("mode", viewModeSchema)
   , ("label", stringSchema)
   , ("description", nullableSchema stringSchema)
+  , ("basis", nullableSchema temporalBasisSchema)
   , ("temporal_basis", nullableSchema temporalBasisSchema)
   , ("source_kind", nullableSchema sourceKindSchema)
   , ("unit", nullableSchema stringSchema)
@@ -1832,6 +1837,8 @@ uiViewModeSetRequestSchema :: JsonSchema
 uiViewModeSetRequestSchema = objectSchema "UiViewModeSetRequest"
   [ "mode" ]
   [ ("mode", viewModeSchema)
+  , ("basis", temporalBasisSchema)
+  , ("temporal_basis", temporalBasisSchema)
   , ("field_index", integerSchema)
   ]
 
@@ -1839,6 +1846,8 @@ uiViewModeSetResponseSchema :: JsonSchema
 uiViewModeSetResponseSchema = objectSchema "UiViewModeSetResponse"
   [ "view_mode" ]
   [ ("view_mode", viewModeSchema)
+  , ("temporal_basis", nullableSchema temporalBasisSchema)
+  , ("source_kind", nullableSchema sourceKindSchema)
   ]
 
 uiConfigTabSetRequestSchema :: JsonSchema

@@ -215,6 +215,7 @@ simulationAtlasBackfillViewAffected ui =
   uiDayNightEnabled ui || case uiViewMode ui of
     ViewWeather -> True
     ViewCloud -> True
+    ViewPrecipCurrent -> True
     ViewOverlay name _ -> name == "weather"
     _ -> False
 

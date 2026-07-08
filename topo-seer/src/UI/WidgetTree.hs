@@ -474,8 +474,9 @@ buildViewModeWidgets layout scrollY =
     shiftY dy (Rect (V2 x y, V2 w h)) = Rect (V2 x (y + dy), V2 w h)
     viewWidgetIds =
       [ WidgetViewElevation, WidgetViewBiome, WidgetViewClimate
-      , WidgetViewWeather, WidgetViewCloud, WidgetViewMoisture
-      , WidgetViewPrecip, WidgetViewVegetation, WidgetViewTerrainForm
+      , WidgetViewWeather, WidgetViewPrecip, WidgetViewPrecipCurrent
+      , WidgetViewCloud, WidgetViewCloudTypical, WidgetViewMoisture
+      , WidgetViewVegetation, WidgetViewTerrainForm
       , WidgetViewPlateId, WidgetViewPlateBoundary
       , WidgetViewPlateHardness, WidgetViewPlateCrust
       , WidgetViewPlateAge, WidgetViewPlateHeight
@@ -499,6 +500,7 @@ isLeftViewWidget wid = case wid of
   WidgetViewWeather       -> True
   WidgetViewMoisture      -> True
   WidgetViewPrecip        -> True
+  WidgetViewPrecipCurrent -> True
   WidgetViewVegetation    -> True
   WidgetViewTerrainForm   -> True
   WidgetViewPlateId       -> True
@@ -509,6 +511,7 @@ isLeftViewWidget wid = case wid of
   WidgetViewPlateHeight   -> True
   WidgetViewPlateVelocity -> True
   WidgetViewCloud         -> True
+  WidgetViewCloudTypical  -> True
   WidgetDayNightToggle    -> True
   WidgetViewOverlayPrev   -> True
   WidgetViewOverlayNext   -> True

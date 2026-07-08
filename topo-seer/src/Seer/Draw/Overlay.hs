@@ -120,6 +120,7 @@ import Topo.Hex (HexGridMeta(..))
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), formatLatLon, tileLatLon)
 import Topo.Calendar (CalendarConfig(..), WorldTime(..), mkCalendarConfig, tickToDate, yearFraction, CalendarDate(..))
 import Topo.Solar (SolarPosition(..), DayInfo(..), tileSolarPos, tileDayInfo, defaultSolarConfig, tileIrradiance, localSolarHour)
+import Topo.Weather (WeatherNormalsChunk(..), getWeatherNormalsChunkFromStore)
 import Topo.Units
   ( defaultUnitScales
   , normSlopeToDeg
@@ -456,12 +457,19 @@ modeInspectorPanelLines ui terrainSnap hexCoord sample sections =
       [ "temp_avg_c", "precip_avg_mm_year", "humidity_avg_pct", "wind_spd_avg_ms" ]
     ViewPrecip -> fields "climate_weather"
       [ "precip_avg_mm_year", "humidity_avg_pct", "temp_avg_c", "precip_seasonality" ]
+    ViewPrecipCurrent -> fields "weather_snapshot"
+      [ "precip_mm_year", "humidity_pct", "temp_c", "pressure_hpa" ]
     ViewWeather -> fields "weather_snapshot"
       [ "temp_c", "humidity_pct", "wind_spd_ms", "pressure_hpa", "precip_mm_year" ]
     ViewCloud -> fields "weather_snapshot"
       [ "cloud_cover", "cloud_water"
       , "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"
       , "cloud_water_low", "cloud_water_mid", "cloud_water_high"
+      ]
+    ViewCloudTypical -> fields "weather_normals"
+      [ "normal_cloud_cover", "normal_cloud_water"
+      , "normal_cloud_cover_low", "normal_cloud_cover_mid", "normal_cloud_cover_high"
+      , "normal_cloud_water_low", "normal_cloud_water_mid", "normal_cloud_water_high"
       ]
     ViewMoisture -> fields "soil"
       [ "soil_moisture", "soil_depth_m", "fertility" ]
@@ -683,6 +691,11 @@ modeContextLines ui terrainSnap (q, r) sample = modeLines (uiViewMode ui) sample
       [ "Average climate precipitation " <> fmtU (normToMmYear units (hsPrecipAvg sample')) "mm/yr"
       , "Average climate humidity " <> fmtU (normToRH (hsHumidity sample')) "% RH"
       ]
+    modeLines ViewPrecipCurrent sample' =
+      [ "Current weather precipitation " <> fmtU (normToMmYear units (hsWeatherPrecip sample')) "mm/yr"
+      , "Current weather humidity " <> fmtU (normToRH (hsWeatherHumidity sample')) "% RH"
+      , "Current weather temp " <> fmtU (normToC units (hsWeatherTemp sample')) "°C"
+      ] ++ solarLines q r
     modeLines ViewPlateId sample' = ["Plate " <> Text.pack (show (hsPlateId sample'))]
     modeLines ViewPlateBoundary sample' = ["Boundary " <> plateBoundaryDisplayName (hsPlateBoundary sample')]
     modeLines ViewPlateHardness sample' = ["Hardness " <> fmtF (hsPlateHardness sample')]
@@ -719,6 +732,29 @@ modeContextLines ui terrainSnap (q, r) sample = modeLines (uiViewMode ui) sample
          , "WindS " <> fmtU (normToWindMs units (hsWeatherWindSpd sample')) "m/s"
          , "Storm " <> fmtF stormI
          ] ++ solarLines q r
+    modeLines ViewCloudTypical sample' =
+      case hsWeatherNormalsChunk sample' of
+        Nothing ->
+          [ "Typical weather normals unavailable"
+          , "No weather_normals overlay is loaded; not using current clouds as a fallback"
+          ]
+        Just wn ->
+          let idx = hsTileIndex sample'
+              value accessor = maybe 0 id (safeIndexMaybe (accessor wn) idx)
+              pct v = fmtU (v * 100) "%"
+              cover = value wncCloudCover
+              water = value wncCloudWater
+              precip = value wncPrecip
+              stormI = water * min 1 (precip * 3)
+          in [ "Typical generated clouds/storm normal"
+             , "Typical cloud " <> pct cover <> "  Water " <> fmtF water
+             , "  Layer fields: context only"
+             , "  Low  " <> pct (value wncCloudCoverLow) <> "  " <> fmtF (value wncCloudWaterLow)
+             , "  Mid  " <> pct (value wncCloudCoverMid) <> "  " <> fmtF (value wncCloudWaterMid)
+             , "  High " <> pct (value wncCloudCoverHigh) <> "  " <> fmtF (value wncCloudWaterHigh)
+             , "Typical precip " <> fmtU (normToMmYear units precip) "mm/yr"
+             , "Storm " <> fmtF stormI
+             ] ++ solarLines q r
     modeLines (ViewOverlay overlayName fieldIndex) sample' =
       case lookupOverlay overlayName (tsOverlayStore terrainSnap) of
         Nothing -> ["Overlay " <> overlayName, "(not loaded)"]
@@ -777,6 +813,7 @@ inspectorSections pluginData ui terrainSnap (q, r) sample =
   , waterTableSection
   , climateSection
   , weatherSection
+  , weatherNormalsSection
   , weatherTimelineSection
   , biomeSection
   , soilSection
@@ -945,6 +982,30 @@ inspectorSections pluginData ui terrainSnap (q, r) sample =
           , maybeFloatField "cloud_water_low" "Current cloud water low" (safeIndexMaybe (wcCloudWaterLow wc) tileIdx)
           , maybeFloatField "cloud_water_mid" "Current cloud water mid" (safeIndexMaybe (wcCloudWaterMid wc) tileIdx)
           , maybeFloatField "cloud_water_high" "Current cloud water high" (safeIndexMaybe (wcCloudWaterHigh wc) tileIdx)
+          ]
+
+    weatherNormalsSection = section "weather_normals" "Typical Weather Normals" $
+      case hsWeatherNormalsChunk sample of
+        Nothing ->
+          [ statusField "unavailable"
+          , temporalBasisField TypicalNormal
+          , sourceKindField GeneratedClimate
+          , textField "reason" "Reason" "weather_normals overlay not present"
+          ]
+        Just wn ->
+          [ temporalBasisField TypicalNormal
+          , sourceKindField GeneratedClimate
+          , maybeUnitField "normal_temp_c" "Typical temp" (normToC units) "°C" (safeIndexMaybe (wncTemp wn) tileIdx)
+          , maybeUnitField "normal_humidity_pct" "Typical humid" normToRH "% RH" (safeIndexMaybe (wncHumidity wn) tileIdx)
+          , maybeUnitField "normal_precip_mm_year" "Typical precip" (normToMmYear units) "mm/yr" (safeIndexMaybe (wncPrecip wn) tileIdx)
+          , maybeFloatField "normal_cloud_cover" "Typical cloud" (safeIndexMaybe (wncCloudCover wn) tileIdx)
+          , maybeFloatField "normal_cloud_water" "Typical cloud water" (safeIndexMaybe (wncCloudWater wn) tileIdx)
+          , maybeFloatField "normal_cloud_cover_low" "Typical cloud low" (safeIndexMaybe (wncCloudCoverLow wn) tileIdx)
+          , maybeFloatField "normal_cloud_cover_mid" "Typical cloud mid" (safeIndexMaybe (wncCloudCoverMid wn) tileIdx)
+          , maybeFloatField "normal_cloud_cover_high" "Typical cloud high" (safeIndexMaybe (wncCloudCoverHigh wn) tileIdx)
+          , maybeFloatField "normal_cloud_water_low" "Typical cloud water low" (safeIndexMaybe (wncCloudWaterLow wn) tileIdx)
+          , maybeFloatField "normal_cloud_water_mid" "Typical cloud water mid" (safeIndexMaybe (wncCloudWaterMid wn) tileIdx)
+          , maybeFloatField "normal_cloud_water_high" "Typical cloud water high" (safeIndexMaybe (wncCloudWaterHigh wn) tileIdx)
           ]
 
     weatherTimelineSection = section "weather_timeline" "Weather Timeline"
@@ -1652,6 +1713,7 @@ data HexSample = HexSample
   , hsTerrainForm :: !TerrainForm
   , hsClimateChunk :: !(Maybe ClimateChunk)
   , hsWeatherChunk :: !(Maybe WeatherChunk)
+  , hsWeatherNormalsChunk :: !(Maybe WeatherNormalsChunk)
   , hsRiverChunk :: !(Maybe RiverChunk)
   , hsGroundwaterChunk :: !(Maybe GroundwaterChunk)
   , hsVolcanismChunk :: !(Maybe VolcanismChunk)
@@ -1672,6 +1734,7 @@ sampleAt terrainSnap (q, r)
       terrainChunk <- IntMap.lookup key (tsTerrainChunks terrainSnap)
       let climateChunk = IntMap.lookup key (tsClimateChunks terrainSnap)
           weatherChunk = IntMap.lookup key (tsWeatherChunks terrainSnap)
+          weatherNormalsChunk = getWeatherNormalsChunkFromStore (ChunkId key) (tsOverlayStore terrainSnap)
           riverChunk = IntMap.lookup key (tsRiverChunks terrainSnap)
           groundwaterChunk = IntMap.lookup key (tsGroundwaterChunks terrainSnap)
           volcanismChunk = IntMap.lookup key (tsVolcanismChunks terrainSnap)
@@ -1733,6 +1796,7 @@ sampleAt terrainSnap (q, r)
         , hsTerrainForm = tcTerrainForm terrainChunk U.! idx
         , hsClimateChunk = climateChunk
         , hsWeatherChunk = weatherChunk
+        , hsWeatherNormalsChunk = weatherNormalsChunk
         , hsRiverChunk = riverChunk
         , hsGroundwaterChunk = groundwaterChunk
         , hsVolcanismChunk = volcanismChunk

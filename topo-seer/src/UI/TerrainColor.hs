@@ -13,14 +13,15 @@ import Data.Word (Word8, Word16)
 import Linear (V4(..))
 import qualified Data.Vector.Unboxed as U
 import Topo (BiomeId, PlateBoundary, ClimateChunk(..), TerrainChunk(..), VegetationChunk(..), WeatherChunk(..), biomeIdToCode, plateBoundaryToCode, terrainFormToCode)
+import Topo.Weather (WeatherNormalsChunk(..))
 import Actor.UI (ViewMode(..))
 
 -- | Compute the display color for a single hex tile.
 --
 -- The @Maybe Float@ parameter supplies an overlay field value when
 -- 'ViewOverlay' mode is active.  For all other modes it is ignored.
-terrainColor :: ViewMode -> Float -> TerrainChunk -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe VegetationChunk -> Maybe Float -> Int -> V4 Word8
-terrainColor mode waterLevel chunk climateChunk weatherChunk vegChunk mOverlayVal idx =
+terrainColor :: ViewMode -> Float -> TerrainChunk -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe WeatherNormalsChunk -> Maybe VegetationChunk -> Maybe Float -> Int -> V4 Word8
+terrainColor mode waterLevel chunk climateChunk weatherChunk weatherNormalsChunk vegChunk mOverlayVal idx =
   case mode of
     ViewElevation -> elevationColor waterLevel (tcElevation chunk U.! idx)
     ViewBiome -> paletteById (biomeIdToCode (tcFlags chunk U.! idx))
@@ -33,6 +34,9 @@ terrainColor mode waterLevel chunk climateChunk weatherChunk vegChunk mOverlayVa
     ViewMoisture -> gradientMoisture (tcMoisture chunk U.! idx)
     ViewPrecip ->
       let value = maybe 0 (\c -> ccPrecipAvg c U.! idx) climateChunk
+      in gradientMoisture value
+    ViewPrecipCurrent ->
+      let value = maybe 0 (\w -> wcPrecip w U.! idx) weatherChunk
       in gradientMoisture value
     ViewPlateId -> paletteById (tcPlateId chunk U.! idx)
     ViewPlateBoundary -> boundaryColor (plateBoundaryToCode (tcPlateBoundary chunk U.! idx))
@@ -52,6 +56,8 @@ terrainColor mode waterLevel chunk climateChunk weatherChunk vegChunk mOverlayVa
         else formCol
     ViewCloud ->
       cloudColor chunk weatherChunk idx
+    ViewCloudTypical ->
+      cloudNormalColor chunk weatherNormalsChunk idx
     ViewOverlay _ _ ->
       case mOverlayVal of
         Just v  -> overlayFieldColor v
@@ -308,6 +314,36 @@ cloudColor terrain mWeather idx =
           r = baseR * (1 - cover) + cover * (cloudR * (1 - storm) + stormR * storm)
           g = baseG * (1 - cover) + cover * (cloudG * (1 - storm) + stormG * storm)
           b = baseB * (1 - cover) + cover * (cloudB * (1 - storm) + stormB * storm)
+      in V4 (toByte r) (toByte g) (toByte b) 255
+
+-- | Cloud/storm visualization for generated typical weather normals.
+-- Missing normals deliberately render as an unavailable slate marker rather
+-- than falling back to current simulated weather.
+cloudNormalColor :: TerrainChunk -> Maybe WeatherNormalsChunk -> Int -> V4 Word8
+cloudNormalColor terrain mNormals idx =
+  case mNormals of
+    Nothing ->
+      let elev = tcElevation terrain U.! idx
+          r = toByte (0.18 + elev * 0.08)
+          g = toByte (0.16 + elev * 0.08)
+          b = toByte (0.28 + elev * 0.18)
+      in V4 r g b 255
+    Just normals ->
+      let cover = clamp01 (wncCloudCover normals U.! idx)
+          water = clamp01 (wncCloudWater normals U.! idx)
+          prec  = clamp01 (wncPrecip normals U.! idx)
+          storm = clamp01 water * clamp01 (prec * 3)
+          elev  = tcElevation terrain U.! idx
+          baseR = 0.14 + elev * 0.10
+          baseG = 0.14 + elev * 0.10
+          baseB = 0.17 + elev * 0.10
+          cloudBright = 0.95 - water * 0.45
+          stormR = 0.28
+          stormG = 0.26
+          stormB = 0.58
+          r = baseR * (1 - cover) + cover * (cloudBright * (1 - storm) + stormR * storm)
+          g = baseG * (1 - cover) + cover * (cloudBright * (1 - storm) + stormG * storm)
+          b = baseB * (1 - cover) + cover * (cloudBright * (1 - storm) + stormB * storm)
       in V4 (toByte r) (toByte g) (toByte b) 255
 
 -- | Apply day/night brightness dimming to a hex color.

@@ -25,6 +25,7 @@ import qualified SDL
 import qualified SDL.Raw.Types as Raw
 import Topo (ClimateChunk(..), TerrainChunk(..), VegetationChunk(..), WeatherChunk(..), WorldConfig(..))
 import Topo.Overlay (OverlayStore)
+import Topo.Weather (getWeatherNormalsFromStore)
 import UI.OverlayExtract (extractOverlayField)
 import UI.RiverRender (RiverGeometry(..))
 import UI.TerrainRender (ChunkGeometry(..), buildChunkGeometry)
@@ -78,7 +79,8 @@ buildAtlasTileGeometry mode waterLevel terrainChunks climateChunks weatherChunks
             Just m  -> m
             Nothing -> IntMap.empty
         _ -> IntMap.empty
-      geometryMap = IntMap.mapWithKey (\k -> buildChunkGeometry hexRadiusPx config mode waterLevel climateChunks weatherChunks vegChunks (IntMap.lookup k overlayMap) k) terrainChunks
+      weatherNormalsChunks = getWeatherNormalsFromStore overlayStore
+      geometryMap = IntMap.mapWithKey (\k -> buildChunkGeometry hexRadiusPx config mode waterLevel climateChunks weatherChunks weatherNormalsChunks vegChunks (IntMap.lookup k overlayMap) k) terrainChunks
   in composeTilesFromGeometry geometryMap hexRadiusPx atlasScale
 
 -- | Compose atlas tiles from a pre-built chunk geometry map.

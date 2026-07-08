@@ -114,8 +114,8 @@ spec = do
 
     it "returns Just for all view mode widgets" $ do
       for_ [ WidgetViewElevation, WidgetViewBiome, WidgetViewClimate
-           , WidgetViewWeather, WidgetViewCloud, WidgetViewMoisture
-           , WidgetViewPrecip, WidgetViewVegetation, WidgetViewTerrainForm
+           , WidgetViewWeather, WidgetViewCloud, WidgetViewCloudTypical, WidgetViewMoisture
+           , WidgetViewPrecip, WidgetViewPrecipCurrent, WidgetViewVegetation, WidgetViewTerrainForm
            , WidgetViewPlateId, WidgetViewPlateBoundary
            , WidgetViewPlateHardness, WidgetViewPlateCrust
            , WidgetViewPlateAge, WidgetViewPlateHeight
@@ -125,11 +125,11 @@ spec = do
 
     it "describes the weather view as current temperature and redirects cloud expectations" $
       tooltipForWidget WidgetViewWeather
-        `shouldBe` Just "Current weather temperature; use Cloud/Storm for aggregate cloud cover and storm tint"
+        `shouldBe` Just "Current weather temperature; use Current Cloud for aggregate cloud cover and storm tint"
 
     it "describes Cloud/Storm as aggregate cloud cover plus storm tint" $
       tooltipForWidget WidgetViewCloud
-        `shouldBe` Just "Aggregate cloud cover/cloud water with precipitation storm tint"
+        `shouldBe` Just "Current aggregate cloud cover/cloud water with precipitation storm tint"
 
   describe "water level separation" $ do
     it "changing uiWaterLevel does not affect uiRenderWaterLevel" $

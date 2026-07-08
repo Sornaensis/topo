@@ -180,7 +180,7 @@ leftSeedValueRectFor inputs (Rect (V2 x _, V2 w _)) controlsTop =
   in Rect (V2 valueX top, V2 valueW rowHeight)
 
 leftViewRowCountFor :: Int
-leftViewRowCountFor = 8
+leftViewRowCountFor = 9
 
 leftViewContentHeightFor :: Int
 leftViewContentHeightFor =
@@ -199,7 +199,7 @@ leftViewRectsFor (Rect (V2 x _, V2 w _)) controlsTop =
       gap = 8
       buttonH = 28
       buttonW = (w - pad * 2 - gap) `div` 2
-      viewCount = 16
+      viewCount = 18
       gridPos i = (i `div` 2, i `mod` 2)
       rect (row, col) = Rect (V2 (x + pad + col * (buttonW + gap)) (controlsTop + row * (buttonH + gap)), V2 buttonW buttonH)
   in map (rect . gridPos) [0 .. viewCount - 1]

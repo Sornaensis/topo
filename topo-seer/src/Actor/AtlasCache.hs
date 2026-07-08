@@ -20,6 +20,8 @@ module Actor.AtlasCache
 import Actor.Data (TerrainSnapshot(..))
 import Actor.UI (ViewMode(..))
 import Data.Word (Word64)
+import Topo.Overlay (Overlay(..), OverlayProvenance(..), lookupOverlay)
+import Topo.Weather (weatherNormalsOverlayName)
 
 -- | Lightweight atlas cache key for O(1) equality checks.
 --
@@ -42,13 +44,27 @@ atlasKeyVersion (AtlasKey _ _ v) = v
 -- elevation/biome keys stable.
 terrainSnapshotViewVersion :: ViewMode -> TerrainSnapshot -> Word64
 terrainSnapshotViewVersion mode terrainSnap = case mode of
-  ViewClimate    -> max (tsVersion terrainSnap) (tsClimateVersion terrainSnap)
-  ViewPrecip     -> max (tsVersion terrainSnap) (tsClimateVersion terrainSnap)
-  ViewWeather    -> max (tsVersion terrainSnap) (tsWeatherVersion terrainSnap)
-  ViewCloud      -> max (tsVersion terrainSnap) (tsWeatherVersion terrainSnap)
-  ViewVegetation -> max (tsVersion terrainSnap) (tsVegetationVersion terrainSnap)
-  ViewOverlay{}  -> max (tsVersion terrainSnap) (tsOverlayVersion terrainSnap)
-  _              -> tsVersion terrainSnap
+  ViewClimate      -> max (tsVersion terrainSnap) (tsClimateVersion terrainSnap)
+  ViewPrecip       -> max (tsVersion terrainSnap) (tsClimateVersion terrainSnap)
+  ViewPrecipCurrent -> max (tsVersion terrainSnap) (tsWeatherVersion terrainSnap)
+  ViewWeather      -> max (tsVersion terrainSnap) (tsWeatherVersion terrainSnap)
+  ViewCloud        -> max (tsVersion terrainSnap) (tsWeatherVersion terrainSnap)
+  ViewCloudTypical -> weatherNormalsViewVersion terrainSnap
+  ViewVegetation   -> max (tsVersion terrainSnap) (tsVegetationVersion terrainSnap)
+  ViewOverlay{}    -> max (tsVersion terrainSnap) (tsOverlayVersion terrainSnap)
+  _                -> tsVersion terrainSnap
+
+weatherNormalsViewVersion :: TerrainSnapshot -> Word64
+weatherNormalsViewVersion terrainSnap =
+  let base = max (tsVersion terrainSnap) (tsClimateVersion terrainSnap)
+      -- Use the weather_normals overlay's own provenance stamp so current
+      -- weather overlay ticks do not invalidate typical-normal atlas keys.
+      normalsStamp = case lookupOverlay weatherNormalsOverlayName (tsOverlayStore terrainSnap) of
+        Nothing -> 0
+        Just overlay ->
+          let provenance = ovProvenance overlay
+          in 1 + opSeed provenance * 16777619 + fromIntegral (opVersion provenance)
+  in base * 16777619 + normalsStamp
 
 atlasKeyFor :: ViewMode -> Float -> TerrainSnapshot -> AtlasKey
 atlasKeyFor mode waterLevel terrainSnap =

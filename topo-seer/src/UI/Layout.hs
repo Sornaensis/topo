@@ -383,7 +383,7 @@ leftSeedValueRect :: Layout -> Rect
 leftSeedValueRect layout =
   leftPanelSeedValueBounds (uiLeftPanelGeometry (layoutGeometry layout))
 
--- | Number of rows used by view-mode buttons (ceil(15/2) = 8).
+-- | Number of rows used by view-mode buttons (ceil(18/2) = 9).
 -- | Total pixel height of the content in the left View tab
 -- (view mode buttons + overlay selector rows).
 leftViewContentHeight :: Layout -> Int
@@ -397,7 +397,7 @@ leftViewScrollMax layout =
   leftPanelViewScrollMaxPx (uiLeftPanelGeometry (layoutGeometry layout))
 
 leftViewRowCount :: Int
-leftViewRowCount = 8
+leftViewRowCount = 9
 
 leftViewRects :: Layout -> [Rect]
 leftViewRects layout =

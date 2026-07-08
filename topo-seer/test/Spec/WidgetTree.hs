@@ -39,32 +39,34 @@ spec = describe "UI.WidgetTree" $ do
     let layout = layoutFor (V2 800 600) 160
         widgets = buildViewModeWidgets layout 0
         viewRects = leftViewRects layout
-        moistureRect = viewRects !! 5  -- index 5: Moisture, after Cloud/Storm
+        moistureRect = viewRects !! 8  -- index 8: Moisture, after explicit weather-basis controls
     hitTest widgets (rectHitPoint moistureRect) `shouldBe` Just WidgetViewMoisture
 
-  it "orders Cloud/Storm immediately after Weather in the View widget tree" $ do
+  it "orders explicit average/current weather controls in the View widget tree" $ do
     let layout = layoutFor (V2 800 1200) 160
         viewIds = map widgetId (buildViewModeWidgets layout 0)
-    take 6 viewIds `shouldBe`
+    take 8 viewIds `shouldBe`
       [ WidgetViewElevation, WidgetViewBiome, WidgetViewClimate
-      , WidgetViewWeather, WidgetViewCloud, WidgetViewMoisture
+      , WidgetViewWeather, WidgetViewPrecip, WidgetViewPrecipCurrent
+      , WidgetViewCloud, WidgetViewCloudTypical
       ]
 
-  it "hit tests all 16 view mode buttons" $ do
+  it "hit tests all 18 view mode buttons" $ do
     let layout = layoutFor (V2 800 1200) 160
         widgets = buildWidgets layout
         viewRects = leftViewRects layout
         expectedIds =
           [ WidgetViewElevation, WidgetViewBiome, WidgetViewClimate
-          , WidgetViewWeather, WidgetViewCloud, WidgetViewMoisture
-          , WidgetViewPrecip, WidgetViewVegetation, WidgetViewTerrainForm
+          , WidgetViewWeather, WidgetViewPrecip, WidgetViewPrecipCurrent
+          , WidgetViewCloud, WidgetViewCloudTypical, WidgetViewMoisture
+          , WidgetViewVegetation, WidgetViewTerrainForm
           , WidgetViewPlateId, WidgetViewPlateBoundary
           , WidgetViewPlateHardness, WidgetViewPlateCrust
           , WidgetViewPlateAge, WidgetViewPlateHeight
           , WidgetViewPlateVelocity
           ]
-    length viewRects `shouldBe` 16
-    -- Rows 5-7 (indices 10-14) are below LeftTopo controls and can be
+    length viewRects `shouldBe` 18
+    -- Rows 5-8 (indices 10-17) are below LeftTopo controls and can be
     -- hit-tested unambiguously.  Rows 0-4 overlap LeftTopo widgets
     -- (chunk, seed, generate) which shadow view buttons in the
     -- unfiltered hit list; the runtime click handler guards by active

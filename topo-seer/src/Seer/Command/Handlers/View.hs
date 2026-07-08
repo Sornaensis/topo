@@ -15,6 +15,7 @@ module Seer.Command.Handlers.View
   , handleCycleOverlayField
   ) where
 
+import Control.Applicative ((<|>))
 import Data.Aeson (Value(..), object, (.=), (.:), (.:?))
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KM
@@ -30,7 +31,7 @@ import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom)
 import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.UI (getUiSnapshot)
-import Actor.UI.State (ViewMode(..), ConfigTab(..), UiState(..), readUiSnapshotRef, uiRenderWaterLevel, viewModeFromText, viewModeToText)
+import Actor.UI.State (ViewMode(..), ConfigTab(..), TemporalBasis, ViewModeDataSemantics(..), UiState(..), readUiSnapshotRef, uiRenderWaterLevel, sourceKindToText, temporalBasisFromText, temporalBasisToText, viewModeDataSemantics, viewModeFromTextWithBasis, viewModeToText)
 import Actor.SnapshotReceiver (readSnapshotVersion, readTerrainSnapshot)
 import Actor.UI.Setters (setUiSeed, setUiSeedInput, setUiViewMode, setUiConfigScroll, setUiConfigTab, setUiContextHex, setUiHexTooltipPinned, setUiOverlayFields)
 import Seer.Command.Context (CommandContext(..))
@@ -55,19 +56,22 @@ handleSetSeed ctx reqId params = do
 -- Now also supports @"overlay:name"@ syntax and optional @field_index@.
 handleSetViewMode :: CommandContext -> Int -> Value -> IO SeerResponse
 handleSetViewMode ctx reqId params = do
-  case Aeson.parseMaybe parseModeName params of
+  case Aeson.parseMaybe parseViewModeRequest params of
     Nothing ->
-      pure $ errResponse reqId "missing or invalid 'mode' parameter"
-    Just modeName -> do
-      let mFieldIdx = Aeson.parseMaybe parseFieldIndex params
-      case viewModeFromText modeName mFieldIdx of
+      pure $ errResponse reqId "missing or invalid view mode parameters"
+    Just (ViewModeRequest modeName mBasis mFieldIdx) -> do
+      case viewModeFromTextWithBasis modeName mBasis mFieldIdx of
         Nothing ->
-          pure $ errResponse reqId ("unknown view mode: " <> modeName)
+          pure $ errResponse reqId ("unknown view mode or basis combination: " <> modeName)
         Just vm -> do
           let handles = ccActorHandles ctx
           setUiViewMode (ahUiHandle handles) vm
           scheduleAtlasRebuild handles vm
-          pure $ okResponse reqId $ object ["view_mode" .= viewModeToText vm]
+          pure $ okResponse reqId $ object
+            [ "view_mode" .= viewModeToText vm
+            , "temporal_basis" .= fmap (temporalBasisToText . vmdsTemporalBasis) (viewModeDataSemantics vm)
+            , "source_kind" .= fmap (sourceKindToText . vmdsSourceKind) (viewModeDataSemantics vm)
+            ]
 
 -- | Handle @set_config_tab@ — switch the config panel tab.
 handleSetConfigTab :: CommandContext -> Int -> Value -> IO SeerResponse
@@ -152,8 +156,20 @@ scheduleAtlasRebuild handles mode = do
 parseSeed :: Value -> Aeson.Parser Word64
 parseSeed = Aeson.withObject "params" (.: "seed")
 
-parseModeName :: Value -> Aeson.Parser Text
-parseModeName = Aeson.withObject "params" (.: "mode")
+data ViewModeRequest = ViewModeRequest !Text !(Maybe TemporalBasis) !(Maybe Int)
+
+parseViewModeRequest :: Value -> Aeson.Parser ViewModeRequest
+parseViewModeRequest = Aeson.withObject "params" $ \o -> do
+  modeName <- o .: "mode"
+  mBasisText <- o .:? "basis"
+  mTemporalBasisText <- o .:? "temporal_basis"
+  mBasis <- case mBasisText <|> mTemporalBasisText of
+    Nothing -> pure Nothing
+    Just basisText -> case temporalBasisFromText basisText of
+      Just basis -> pure (Just basis)
+      Nothing -> fail "invalid 'basis' parameter"
+  mFieldIdx <- o .:? "field_index"
+  pure (ViewModeRequest modeName mBasis mFieldIdx)
 
 parseFieldIndex :: Value -> Aeson.Parser Int
 parseFieldIndex = Aeson.withObject "params" (.: "field_index")
