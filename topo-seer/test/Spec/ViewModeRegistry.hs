@@ -5,11 +5,17 @@ module Spec.ViewModeRegistry (spec) where
 import Control.Monad (filterM)
 
 import Actor.UI.State
-  ( ViewMode(..)
+  ( SourceKind(..)
+  , TemporalBasis(..)
+  , ViewMode(..)
+  , ViewModeDataSemantics(..)
   , ViewModeLegend(..)
   , ViewModeMetadata(..)
   , allBuiltinViewModes
   , builtinViewModeFromText
+  , sourceKindToText
+  , temporalBasisToText
+  , viewModeDataSemantics
   , viewModeKindToText
   , viewModeLegendTitle
   , viewModeMetadata
@@ -53,9 +59,25 @@ spec = describe "view mode registry" $ do
       , ViewWeather, ViewCloud, ViewMoisture
       ]
 
-  it "exposes HTTP metadata, legends, and export mappings in JSON summaries" $ do
+  it "exposes HTTP metadata, legends, export mappings, and data semantics in JSON summaries" $ do
     let metas = mapMaybe viewModeMetadata allBuiltinViewModes
     mapM_ assertSummaryJson metas
+
+  it "maps climate and weather view modes to explicit data-basis semantics" $ do
+    let semanticsText mode = do
+          semantics <- viewModeDataSemantics mode
+          pure
+            ( temporalBasisToText (vmdsTemporalBasis semantics)
+            , sourceKindToText (vmdsSourceKind semantics)
+            )
+    semanticsText ViewClimate `shouldBe` Just ("long_run_average", "generated_climate")
+    semanticsText ViewPrecip `shouldBe` Just ("long_run_average", "generated_climate")
+    semanticsText ViewWeather `shouldBe` Just ("instantaneous_current", "simulated_weather")
+    semanticsText ViewCloud `shouldBe` Just ("instantaneous_current", "simulated_weather")
+    semanticsText (ViewOverlay "weather" 0) `shouldBe` Just ("instantaneous_current", "simulated_weather")
+    viewModeDataSemantics ViewMoisture `shouldBe` Nothing
+    temporalBasisToText TypicalNormal `shouldBe` "typical_normal"
+    sourceKindToText ExternalLive `shouldBe` "external_live"
 
   it "presents weather as current temperature and redirects cloud/storm expectations" $ do
     let cloudOrStorm field = Text.isInfixOf "cloud" field || Text.isInfixOf "storm" field
@@ -108,12 +130,25 @@ assertSummaryJson :: ViewModeMetadata -> Expectation
 assertSummaryJson meta = do
   case viewModeSummaryToJSON False meta of
     Object o -> mapM_ (`shouldSatisfy` (`KM.member` o))
-      [ "active", "name", "label", "kind", "unit", "color_scale"
-      , "legend", "tooltip_fields", "inspector_fields", "export_fields", "http"
+      [ "active", "name", "label", "kind", "temporal_basis", "source_kind"
+      , "unit", "color_scale", "legend", "tooltip_fields", "inspector_fields"
+      , "export_fields", "http"
       ]
     _ -> expectationFailure "expected view mode summary JSON object"
   case viewModeMetadataToJSON meta of
-    Object o -> KM.member "legend" o `shouldBe` True
+    Object o -> do
+      KM.member "legend" o `shouldBe` True
+      case vmmMode meta of
+        ViewClimate -> do
+          KM.lookup "temporal_basis" o `shouldBe` Just (String "long_run_average")
+          KM.lookup "source_kind" o `shouldBe` Just (String "generated_climate")
+        ViewWeather -> do
+          KM.lookup "temporal_basis" o `shouldBe` Just (String "instantaneous_current")
+          KM.lookup "source_kind" o `shouldBe` Just (String "simulated_weather")
+        ViewElevation -> do
+          KM.lookup "temporal_basis" o `shouldBe` Just Null
+          KM.lookup "source_kind" o `shouldBe` Just Null
+        _ -> pure ()
     _ -> expectationFailure "expected view mode metadata JSON object"
 
 legendEntryCount :: ViewModeLegend -> Int
@@ -125,9 +160,12 @@ renderLegendGolden = Text.unlines (concatMap renderOne (mapMaybe viewModeMetadat
   where
     renderOne meta =
       [ vmmName meta <> "|" <> viewModeKindToText (vmmKind meta) <> "|" <> unitText meta <> "|" <> vmmColorScale meta
+          <> "|" <> basisText meta <> "|" <> sourceText meta
       , "  " <> viewModeLegendTitle (vmmLegend meta)
       ] <> renderLegend (vmmLegend meta)
     unitText meta = maybe "unitless" id (vmmUnitLabel meta)
+    basisText meta = maybe "no_temporal_basis" temporalBasisToText (vmmTemporalBasis meta)
+    sourceText meta = maybe "no_source_kind" sourceKindToText (vmmSourceKind meta)
 
 renderLegend :: ViewModeLegend -> [Text]
 renderLegend (ViewModeGradientLegend _ stops) =

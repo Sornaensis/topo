@@ -32,9 +32,16 @@ import Actor.SnapshotReceiver (readTerrainSnapshot)
 import Actor.UI.State
   ( UiState(..)
   , ViewMode(..)
+  , SourceKind(..)
+  , TemporalBasis(..)
   , readUiSnapshotRef
+  , sourceKindToText
+  , temporalBasisToText
+  , viewModeDataSemantics
   , viewModeMetadata
   , viewModeToText
+  , vmdsSourceKind
+  , vmdsTemporalBasis
   , vmmColorScale
   , vmmDescription
   , vmmExportFields
@@ -202,7 +209,9 @@ handleGetHex ctx reqId params =
                       climateLayer = case climateChunk of
                         Nothing -> Null
                         Just cc -> object
-                          [ "temp_avg"            .= safeIndex (ccTempAvg cc) tileIdx
+                          [ "temporal_basis"      .= temporalBasisToText LongRunAverage
+                          , "source_kind"         .= sourceKindToText GeneratedClimate
+                          , "temp_avg"            .= safeIndex (ccTempAvg cc) tileIdx
                           , "precip_avg"          .= safeIndex (ccPrecipAvg cc) tileIdx
                           , "wind_dir_avg"        .= safeIndex (ccWindDirAvg cc) tileIdx
                           , "wind_spd_avg"        .= safeIndex (ccWindSpdAvg cc) tileIdx
@@ -214,7 +223,9 @@ handleGetHex ctx reqId params =
                       weatherLayer = case weatherChunk of
                         Nothing -> Null
                         Just wc -> object
-                          [ "temp"     .= safeIndex (wcTemp wc) tileIdx
+                          [ "temporal_basis" .= temporalBasisToText InstantaneousCurrent
+                          , "source_kind" .= sourceKindToText SimulatedWeather
+                          , "temp"     .= safeIndex (wcTemp wc) tileIdx
                           , "humidity" .= safeIndex (wcHumidity wc) tileIdx
                           , "wind_dir" .= safeIndex (wcWindDir wc) tileIdx
                           , "wind_spd" .= safeIndex (wcWindSpd wc) tileIdx
@@ -370,10 +381,14 @@ handleGetHex ctx reqId params =
                         Nothing -> object
                           [ "loaded" .= False
                           , "status" .= ("not_loaded" :: Text)
+                          , "temporal_basis" .= temporalBasisToText LongRunAverage
+                          , "source_kind" .= sourceKindToText GeneratedClimate
                           ]
                         Just cc -> object
                           [ "loaded" .= True
                           , "status" .= ("loaded" :: Text)
+                          , "temporal_basis" .= temporalBasisToText LongRunAverage
+                          , "source_kind" .= sourceKindToText GeneratedClimate
                           , "temp_avg" .= safeIndex (ccTempAvg cc) tileIdx
                           , "temp_avg_c" .= fmap (normToC units) (safeIndex (ccTempAvg cc) tileIdx)
                           , "precip_avg" .= safeIndex (ccPrecipAvg cc) tileIdx
@@ -392,6 +407,8 @@ handleGetHex ctx reqId params =
                         , "auto_tick" .= uiSimAutoTick ui
                         , "tick_rate" .= uiSimTickRate ui
                         , "source" .= ("simulation_tick" :: Text)
+                        , "temporal_basis" .= temporalBasisToText InstantaneousCurrent
+                        , "source_kind" .= sourceKindToText SimulatedWeather
                         ]
 
                       oceanCurrentLayer = object
@@ -426,10 +443,13 @@ handleGetHex ctx reqId params =
                         ]
 
                       activeMetadata = viewModeMetadata (uiViewMode ui)
+                      activeSemantics = viewModeDataSemantics (uiViewMode ui)
                       activeViewLayer = object
                         [ "mode" .= viewModeToText (uiViewMode ui)
                         , "label" .= maybe (viewModeToText (uiViewMode ui)) vmmLabel activeMetadata
                         , "description" .= maybe Null (Aeson.toJSON . vmmDescription) activeMetadata
+                        , "temporal_basis" .= fmap (temporalBasisToText . vmdsTemporalBasis) activeSemantics
+                        , "source_kind" .= fmap (sourceKindToText . vmdsSourceKind) activeSemantics
                         , "unit" .= maybe Null (maybe Null Aeson.toJSON . vmmUnitLabel) activeMetadata
                         , "color_scale" .= maybe Null (Aeson.toJSON . vmmColorScale) activeMetadata
                         , "tooltip_fields" .= maybe [] vmmTooltipFields activeMetadata

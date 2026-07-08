@@ -120,18 +120,18 @@ spec = describe "terrain inspector view model" $ do
         climatePanel = panelFor ViewClimate
         platePanel = panelFor ViewPlateId
         biomePanel = panelFor ViewBiome
-    climatePanel `shouldSatisfy` any (Text.isInfixOf "Temp avg")
-    climatePanel `shouldSatisfy` any (Text.isInfixOf "Precip")
+    climatePanel `shouldSatisfy` any (Text.isInfixOf "Avg climate temp")
+    climatePanel `shouldSatisfy` any (Text.isInfixOf "Avg climate precip")
     climatePanel `shouldNotSatisfy` any (Text.isInfixOf "Plate ")
     platePanel `shouldSatisfy` any (Text.isInfixOf "Plate 0")
-    platePanel `shouldNotSatisfy` any (Text.isInfixOf "Temp avg")
+    platePanel `shouldNotSatisfy` any (Text.isInfixOf "Avg climate temp")
     biomePanel `shouldSatisfy` any (Text.isInfixOf "Biome")
     biomePanel `shouldNotSatisfy` any (Text.isInfixOf "Pressure")
 
-  it "clarifies Cloud/Storm aggregate render and layer context in inspector lines" $ do
+  it "clarifies current simulated Cloud/Storm aggregate render and layer context in inspector lines" $ do
     let ui = emptyUiState { uiHoverHex = Just (0, 0), uiViewMode = ViewCloud }
         Just view = terrainInspectorView ui terrainSnapshotWithDomainLayers
-    tivLines view `shouldSatisfy` elem "Cloud/Storm aggregate render"
+    tivLines view `shouldSatisfy` elem "Current simulated clouds/storm aggregate render"
     tivLines view `shouldSatisfy` elem "  Layer fields: context only"
 
   it "uses the render geo/time context for solar inspector lines" $ do
@@ -213,8 +213,12 @@ spec = describe "terrain inspector view model" $ do
     map tisKey (tivSections view) `shouldSatisfy` elem "glacier_snow_ice"
     map tisKey (tivSections view) `shouldSatisfy` elem "volcanism"
     map tisKey (tivSections view) `shouldSatisfy` elem "ocean_currents"
-    tivLines view `shouldSatisfy` any (Text.isInfixOf "Temp avg")
-    tivLines view `shouldSatisfy` any (Text.isInfixOf "Cloud")
+    tivLines view `shouldSatisfy` elem "--- Average Climate ---"
+    tivLines view `shouldSatisfy` elem "--- Current Simulated Weather ---"
+    tivLines view `shouldSatisfy` any (Text.isInfixOf "Avg climate temp")
+    tivLines view `shouldSatisfy` any (Text.isInfixOf "Current cloud")
+    tivLines view `shouldSatisfy` any (Text.isInfixOf "Basis long_run_average")
+    tivLines view `shouldSatisfy` any (Text.isInfixOf "Source simulated_weather")
     tivLines view `shouldSatisfy` any (Text.isInfixOf "Family Rainforest")
     tivLines view `shouldSatisfy` any (Text.isInfixOf "Depth 3.0 m")
     tivLines view `shouldSatisfy` any (Text.isInfixOf "Cover 0.67")

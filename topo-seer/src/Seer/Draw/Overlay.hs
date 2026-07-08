@@ -26,6 +26,7 @@ module Seer.Draw.Overlay
 import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..))
 import Actor.PluginManager.Types (PluginLifecycleSnapshot(..), pluginLifecycleStateText)
 import Actor.UI (UiState(..), ViewMode(..))
+import Actor.UI.State (SourceKind(..), TemporalBasis(..), sourceKindToText, temporalBasisToText)
 import Data.Aeson (Value(..), object, toJSON, (.=))
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
@@ -654,33 +655,33 @@ modeContextLines ui terrainSnap (q, r) sample = modeLines (uiViewMode ui) sample
       , "Elev   " <> fmtU (normToMetres units (hsElevation sample')) "m"
       , "Slope  " <> fmtU (normSlopeToDeg units (hsSlope sample')) "°"
       , "Precip " <> fmtU (normToMmYear units (hsPrecipAvg sample')) "mm/yr"
-      , "Humid  " <> fmtU (normToRH (hsHumidity sample')) "% RH"
+      , "Avg climate humidity " <> fmtU (normToRH (hsHumidity sample')) "% RH"
       , "Fert   " <> fmtF (hsFertility sample')
       , "Veg    " <> fmtF (hsVegCover sample')
       , "VDen   " <> fmtF (hsVegDensity sample')
       ] ++ solarLines q r
     modeLines ViewClimate sample' =
-      [ "Temp  " <> fmtU (normToC units (hsTemp sample')) "°C"
-      , "Precip " <> fmtU (normToMmYear units (hsPrecipAvg sample')) "mm/yr"
+      [ "Average climate temperature " <> fmtU (normToC units (hsTemp sample')) "°C"
+      , "Average climate precipitation " <> fmtU (normToMmYear units (hsPrecipAvg sample')) "mm/yr"
       ] ++ solarLines q r
     modeLines ViewWeather sample' =
       [ "Biome " <> biomeDisplayName (hsBiome sample')
       , "Elev  " <> fmtU (normToMetres units (hsElevation sample')) "m"
       , "Slope " <> fmtU (normSlopeToDeg units (hsSlope sample')) "° avg"
-      , "Temp  " <> fmtU (normToC units (hsWeatherTemp sample')) "°C"
-      , "Humid " <> fmtU (normToRH (hsWeatherHumidity sample')) "% RH"
-      , "WindD " <> fmtU (hsWeatherWindDir sample') "rad"
-      , "WindS " <> fmtU (normToWindMs units (hsWeatherWindSpd sample')) "m/s"
-      , "Press " <> fmtU (normToHPa units (hsWeatherPressure sample')) "hPa"
-      , "Precp " <> fmtU (normToMmYear units (hsWeatherPrecip sample')) "mm/yr"
+      , "Current weather temp " <> fmtU (normToC units (hsWeatherTemp sample')) "°C"
+      , "Current weather humid " <> fmtU (normToRH (hsWeatherHumidity sample')) "% RH"
+      , "Current weather windD " <> fmtU (hsWeatherWindDir sample') "rad"
+      , "Current weather windS " <> fmtU (normToWindMs units (hsWeatherWindSpd sample')) "m/s"
+      , "Current weather press " <> fmtU (normToHPa units (hsWeatherPressure sample')) "hPa"
+      , "Current weather precip " <> fmtU (normToMmYear units (hsWeatherPrecip sample')) "mm/yr"
       ] ++ solarLines q r
     modeLines ViewMoisture sample' =
       [ "Moist " <> fmtU (normToRH (hsMoisture sample')) "%"
       , "Soil  " <> fmtU (normToSoilM units (hsSoilDepth sample')) "m"
       ]
     modeLines ViewPrecip sample' =
-      [ "Precip " <> fmtU (normToMmYear units (hsPrecipAvg sample')) "mm/yr"
-      , "Humid " <> fmtU (normToRH (hsHumidity sample')) "% RH"
+      [ "Average climate precipitation " <> fmtU (normToMmYear units (hsPrecipAvg sample')) "mm/yr"
+      , "Average climate humidity " <> fmtU (normToRH (hsHumidity sample')) "% RH"
       ]
     modeLines ViewPlateId sample' = ["Plate " <> Text.pack (show (hsPlateId sample'))]
     modeLines ViewPlateBoundary sample' = ["Boundary " <> plateBoundaryDisplayName (hsPlateBoundary sample')]
@@ -707,8 +708,8 @@ modeContextLines ui terrainSnap (q, r) sample = modeLines (uiViewMode ui) sample
     modeLines ViewCloud sample' =
       let pct v = fmtU (v * 100) "%"
           stormI = hsCloudWater sample' * min 1 (hsWeatherPrecip sample' * 3)
-      in [ "Cloud/Storm aggregate render"
-         , "Cloud " <> pct (hsCloudCover sample') <> "  Water " <> fmtF (hsCloudWater sample')
+      in [ "Current simulated clouds/storm aggregate render"
+         , "Current cloud " <> pct (hsCloudCover sample') <> "  Water " <> fmtF (hsCloudWater sample')
          , "  Layer fields: context only"
          , "  Low  " <> pct (hsCloudCoverLow sample') <> "  " <> fmtF (hsCloudWaterLow sample')
          , "  Mid  " <> pct (hsCloudCoverMid sample') <> "  " <> fmtF (hsCloudWaterMid sample')
@@ -906,39 +907,43 @@ inspectorSections pluginData ui terrainSnap (q, r) sample =
           , maybeFloatField "root_zone_moisture" "Root moist" (safeIndexMaybe (gwRootZoneMoisture gw) tileIdx)
           ]
 
-    climateSection = section "climate_weather" "Climate / Averages" $
+    climateSection = section "climate_weather" "Average Climate" $
       case hsClimateChunk sample of
-        Nothing -> [statusField "not_loaded"]
+        Nothing -> [statusField "not_loaded", temporalBasisField LongRunAverage, sourceKindField GeneratedClimate]
         Just cc ->
-          [ maybeFloatField "temp_avg_norm" "Temp avg n" (safeIndexMaybe (ccTempAvg cc) tileIdx)
-          , maybeUnitField "temp_avg_c" "Temp avg" (normToC units) "°C" (safeIndexMaybe (ccTempAvg cc) tileIdx)
-          , maybeFloatField "precip_avg_norm" "Precip n" (safeIndexMaybe (ccPrecipAvg cc) tileIdx)
-          , maybeUnitField "precip_avg_mm_year" "Precip" (normToMmYear units) "mm/yr" (safeIndexMaybe (ccPrecipAvg cc) tileIdx)
-          , maybeUnitField "humidity_avg_pct" "Humid avg" normToRH "% RH" (safeIndexMaybe (ccHumidityAvg cc) tileIdx)
-          , maybeUnitField "wind_spd_avg_ms" "Wind avg" (normToWindMs units) "m/s" (safeIndexMaybe (ccWindSpdAvg cc) tileIdx)
-          , maybeUnitField "wind_dir_avg_rad" "Wind dir" id "rad" (safeIndexMaybe (ccWindDirAvg cc) tileIdx)
+          [ temporalBasisField LongRunAverage
+          , sourceKindField GeneratedClimate
+          , maybeFloatField "temp_avg_norm" "Avg climate temp n" (safeIndexMaybe (ccTempAvg cc) tileIdx)
+          , maybeUnitField "temp_avg_c" "Avg climate temp" (normToC units) "°C" (safeIndexMaybe (ccTempAvg cc) tileIdx)
+          , maybeFloatField "precip_avg_norm" "Avg climate precip n" (safeIndexMaybe (ccPrecipAvg cc) tileIdx)
+          , maybeUnitField "precip_avg_mm_year" "Avg climate precip" (normToMmYear units) "mm/yr" (safeIndexMaybe (ccPrecipAvg cc) tileIdx)
+          , maybeUnitField "humidity_avg_pct" "Avg climate humid" normToRH "% RH" (safeIndexMaybe (ccHumidityAvg cc) tileIdx)
+          , maybeUnitField "wind_spd_avg_ms" "Avg climate wind" (normToWindMs units) "m/s" (safeIndexMaybe (ccWindSpdAvg cc) tileIdx)
+          , maybeUnitField "wind_dir_avg_rad" "Avg climate wind dir" id "rad" (safeIndexMaybe (ccWindDirAvg cc) tileIdx)
           , maybeFloatField "temp_range_norm" "Temp range" (safeIndexMaybe (ccTempRange cc) tileIdx)
           , maybeFloatField "precip_seasonality" "Seasonality" (safeIndexMaybe (ccPrecipSeasonality cc) tileIdx)
           ]
 
-    weatherSection = section "weather_snapshot" "Weather / Snapshot" $
+    weatherSection = section "weather_snapshot" "Current Simulated Weather" $
       case hsWeatherChunk sample of
-        Nothing -> [statusField "not_loaded"]
+        Nothing -> [statusField "not_loaded", temporalBasisField InstantaneousCurrent, sourceKindField SimulatedWeather]
         Just wc ->
-          [ maybeUnitField "temp_c" "Temp" (normToC units) "°C" (safeIndexMaybe (wcTemp wc) tileIdx)
-          , maybeUnitField "humidity_pct" "Humid" normToRH "% RH" (safeIndexMaybe (wcHumidity wc) tileIdx)
-          , maybeUnitField "wind_dir_rad" "Wind dir" id "rad" (safeIndexMaybe (wcWindDir wc) tileIdx)
-          , maybeUnitField "wind_spd_ms" "Wind" (normToWindMs units) "m/s" (safeIndexMaybe (wcWindSpd wc) tileIdx)
-          , maybeUnitField "pressure_hpa" "Pressure" (normToHPa units) "hPa" (safeIndexMaybe (wcPressure wc) tileIdx)
-          , maybeUnitField "precip_mm_year" "Precip" (normToMmYear units) "mm/yr" (safeIndexMaybe (wcPrecip wc) tileIdx)
-          , maybeFloatField "cloud_cover" "Cloud" (safeIndexMaybe (wcCloudCover wc) tileIdx)
-          , maybeFloatField "cloud_water" "Cloud water" (safeIndexMaybe (wcCloudWater wc) tileIdx)
-          , maybeFloatField "cloud_cover_low" "Cloud low" (safeIndexMaybe (wcCloudCoverLow wc) tileIdx)
-          , maybeFloatField "cloud_cover_mid" "Cloud mid" (safeIndexMaybe (wcCloudCoverMid wc) tileIdx)
-          , maybeFloatField "cloud_cover_high" "Cloud high" (safeIndexMaybe (wcCloudCoverHigh wc) tileIdx)
-          , maybeFloatField "cloud_water_low" "Water low" (safeIndexMaybe (wcCloudWaterLow wc) tileIdx)
-          , maybeFloatField "cloud_water_mid" "Water mid" (safeIndexMaybe (wcCloudWaterMid wc) tileIdx)
-          , maybeFloatField "cloud_water_high" "Water high" (safeIndexMaybe (wcCloudWaterHigh wc) tileIdx)
+          [ temporalBasisField InstantaneousCurrent
+          , sourceKindField SimulatedWeather
+          , maybeUnitField "temp_c" "Current temp" (normToC units) "°C" (safeIndexMaybe (wcTemp wc) tileIdx)
+          , maybeUnitField "humidity_pct" "Current humid" normToRH "% RH" (safeIndexMaybe (wcHumidity wc) tileIdx)
+          , maybeUnitField "wind_dir_rad" "Current wind dir" id "rad" (safeIndexMaybe (wcWindDir wc) tileIdx)
+          , maybeUnitField "wind_spd_ms" "Current wind" (normToWindMs units) "m/s" (safeIndexMaybe (wcWindSpd wc) tileIdx)
+          , maybeUnitField "pressure_hpa" "Current pressure" (normToHPa units) "hPa" (safeIndexMaybe (wcPressure wc) tileIdx)
+          , maybeUnitField "precip_mm_year" "Current precip" (normToMmYear units) "mm/yr" (safeIndexMaybe (wcPrecip wc) tileIdx)
+          , maybeFloatField "cloud_cover" "Current cloud" (safeIndexMaybe (wcCloudCover wc) tileIdx)
+          , maybeFloatField "cloud_water" "Current cloud water" (safeIndexMaybe (wcCloudWater wc) tileIdx)
+          , maybeFloatField "cloud_cover_low" "Current cloud low" (safeIndexMaybe (wcCloudCoverLow wc) tileIdx)
+          , maybeFloatField "cloud_cover_mid" "Current cloud mid" (safeIndexMaybe (wcCloudCoverMid wc) tileIdx)
+          , maybeFloatField "cloud_cover_high" "Current cloud high" (safeIndexMaybe (wcCloudCoverHigh wc) tileIdx)
+          , maybeFloatField "cloud_water_low" "Current cloud water low" (safeIndexMaybe (wcCloudWaterLow wc) tileIdx)
+          , maybeFloatField "cloud_water_mid" "Current cloud water mid" (safeIndexMaybe (wcCloudWaterMid wc) tileIdx)
+          , maybeFloatField "cloud_water_high" "Current cloud water high" (safeIndexMaybe (wcCloudWaterHigh wc) tileIdx)
           ]
 
     biomeSection = section "biome_refinement" "Biome / Refinement"
@@ -949,8 +954,8 @@ inspectorSections pluginData ui terrainSnap (q, r) sample =
       , textField "terrain_form" "Form" (Text.pack (terrainFormDisplayName (hsTerrainForm sample)))
       , maybeTextField "water_type" "Water" waterBodyDisplayName (hsWaterBodyChunk sample >>= \wb -> safeIndexMaybe (wbType wb) tileIdx)
       , maybeTextField "adjacent_water_type" "Adj water" waterBodyDisplayName (hsWaterBodyChunk sample >>= \wb -> safeIndexMaybe (wbAdjacentType wb) tileIdx)
-      , floatUnitField "temp_avg_c" "Temp avg" (normToC units (hsTemp sample)) "°C"
-      , floatUnitField "precip_avg_mm_year" "Precip" (normToMmYear units (hsPrecipAvg sample)) "mm/yr"
+      , floatUnitField "temp_avg_c" "Avg climate temp" (normToC units (hsTemp sample)) "°C"
+      , floatUnitField "precip_avg_mm_year" "Avg climate precip" (normToMmYear units (hsPrecipAvg sample)) "mm/yr"
       , floatField "moisture" "Moist" (hsMoisture sample)
       , floatField "fertility" "Fert" (hsFertility sample)
       ]
@@ -989,7 +994,7 @@ inspectorSections pluginData ui terrainSnap (q, r) sample =
           , maybeFloatField "flow" "Flow" (safeIndexMaybe (glFlow gl) tileIdx)
           , maybeFloatField "erosion_potential" "Erode" (safeIndexMaybe (glErosionPotential gl) tileIdx)
           , maybeFloatField "deposit_potential" "Deposit" (safeIndexMaybe (glDepositPotential gl) tileIdx)
-          , floatUnitField "temp_avg_c" "Temp avg" (normToC units (hsTemp sample)) "°C"
+          , floatUnitField "temp_avg_c" "Avg climate temp" (normToC units (hsTemp sample)) "°C"
           , floatUnitField "elevation_m" "Elev" elevationM "m"
           , textField "biome" "Biome" (biomeDisplayName (hsBiome sample))
           ]
@@ -1056,11 +1061,11 @@ inspectorSections pluginData ui terrainSnap (q, r) sample =
       , conversionField "water_level" "Water level" waterLevel (normToMetres units waterLevel) "m"
       , conversionField "relative_water_level" "Sea delta" (hsElevation sample - waterLevel) relativeWaterM "m"
       , conversionField "slope_avg" "Slope avg" (hsSlope sample) (slopeDeg (hsSlope sample)) "°"
-      , conversionField "temp_avg" "Temp avg" (hsTemp sample) (normToC units (hsTemp sample)) "°C"
-      , conversionField "precip_avg" "Precip avg" (hsPrecipAvg sample) (normToMmYear units (hsPrecipAvg sample)) "mm/yr"
-      , conversionField "humidity" "Humidity" (hsHumidity sample) (normToRH (hsHumidity sample)) "% RH"
-      , conversionField "weather_wind_spd" "Wind speed" (hsWeatherWindSpd sample) (normToWindMs units (hsWeatherWindSpd sample)) "m/s"
-      , conversionField "weather_pressure" "Pressure" (hsWeatherPressure sample) (normToHPa units (hsWeatherPressure sample)) "hPa"
+      , conversionField "temp_avg" "Avg climate temp" (hsTemp sample) (normToC units (hsTemp sample)) "°C"
+      , conversionField "precip_avg" "Avg climate precip" (hsPrecipAvg sample) (normToMmYear units (hsPrecipAvg sample)) "mm/yr"
+      , conversionField "humidity" "Avg climate humidity" (hsHumidity sample) (normToRH (hsHumidity sample)) "% RH"
+      , conversionField "weather_wind_spd" "Current wind speed" (hsWeatherWindSpd sample) (normToWindMs units (hsWeatherWindSpd sample)) "m/s"
+      , conversionField "weather_pressure" "Current pressure" (hsWeatherPressure sample) (normToHPa units (hsWeatherPressure sample)) "hPa"
       , conversionField "soil_depth" "Soil depth" (hsSoilDepth sample) (normToSoilM units (hsSoilDepth sample)) "m"
       ]
 
@@ -1084,6 +1089,12 @@ textField key label value = TerrainInspectorField key label value (String value)
 
 statusField :: Text -> TerrainInspectorField
 statusField status = textField "status" "Status" status
+
+temporalBasisField :: TemporalBasis -> TerrainInspectorField
+temporalBasisField basis = textField "temporal_basis" "Basis" (temporalBasisToText basis)
+
+sourceKindField :: SourceKind -> TerrainInspectorField
+sourceKindField source = textField "source_kind" "Source" (sourceKindToText source)
 
 boolField :: Text -> Text -> Bool -> TerrainInspectorField
 boolField key label value = TerrainInspectorField key label (if value then "yes" else "no") (toJSON value)
@@ -1685,7 +1696,7 @@ sampleAt terrainSnap (q, r)
         , hsBiome = tcFlags terrainChunk U.! idx
         , hsTemp = fromMaybeChunk ccTempAvg climateChunk
         , hsPrecipAvg = fromMaybeChunk ccPrecipAvg climateChunk
-        , hsHumidity = fromMaybeChunk wcHumidity weatherChunk
+        , hsHumidity = fromMaybeChunk ccHumidityAvg climateChunk
         , hsWeatherTemp = fromMaybeChunk wcTemp weatherChunk
         , hsWeatherHumidity = fromMaybeChunk wcHumidity weatherChunk
         , hsWeatherWindDir = fromMaybeChunk wcWindDir weatherChunk

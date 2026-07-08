@@ -756,10 +756,12 @@ overlayImportValidateResponseSchema = objectSchema "OverlayImportValidateRespons
 
 terrainActiveViewSchema :: Value
 terrainActiveViewSchema = inlineObjectSchema
-  [ "mode", "label", "description", "tooltip_fields", "inspector_fields", "export_fields", "values" ]
+  [ "mode", "label", "description", "temporal_basis", "source_kind", "tooltip_fields", "inspector_fields", "export_fields", "values" ]
   [ ("mode", viewModeSchema)
   , ("label", stringSchema)
   , ("description", nullableSchema stringSchema)
+  , ("temporal_basis", nullableSchema temporalBasisSchema)
+  , ("source_kind", nullableSchema sourceKindSchema)
   , ("unit", nullableSchema stringSchema)
   , ("color_scale", nullableSchema stringSchema)
   , ("tooltip_fields", arraySchema stringSchema)
@@ -2164,12 +2166,14 @@ dataBrowserStateSchema = inlineObjectSchema
 
 viewModeEntrySchema :: Value
 viewModeEntrySchema = inlineObjectSchema
-  [ "name", "active", "label", "kind", "color_scale", "legend", "tooltip_fields", "inspector_fields", "export_fields", "http" ]
+  [ "name", "active", "label", "kind", "temporal_basis", "source_kind", "color_scale", "legend", "tooltip_fields", "inspector_fields", "export_fields", "http" ]
   [ ("name", viewModeSchema)
   , ("active", booleanSchema)
   , ("label", stringSchema)
   , ("description", stringSchema)
   , ("kind", enumStringSchema ["scalar", "categorical"])
+  , ("temporal_basis", nullableSchema temporalBasisSchema)
+  , ("source_kind", nullableSchema sourceKindSchema)
   , ("unit", nullableSchema stringSchema)
   , ("color_scale", stringSchema)
   , ("legend", freeObjectSchema)
@@ -2298,6 +2302,12 @@ leftTabSchema = enumStringSchema ["topo", "view"]
 
 logLevelSchema :: Value
 logLevelSchema = enumStringSchema ["debug", "info", "warn", "error"]
+
+temporalBasisSchema :: Value
+temporalBasisSchema = enumStringSchema ["long_run_average", "typical_normal", "instantaneous_current"]
+
+sourceKindSchema :: Value
+sourceKindSchema = enumStringSchema ["generated_climate", "simulated_weather", "external_live"]
 
 editorToolSchema :: Value
 editorToolSchema = enumStringSchema

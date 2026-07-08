@@ -499,7 +499,7 @@ spec = describe "Seer.HTTP.Server" $ do
     componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("active_view" `elem`)
     let activeViewProps = inlinePropertyNames =<< componentProperty doc "TerrainHexResponse" "active_view"
         terrainProps = inlinePropertyNames =<< componentProperty doc "TerrainHexResponse" "terrain"
-    activeViewProps `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["color_scale", "export_fields", "inspector_fields", "label", "mode", "tooltip_fields", "unit", "values"])
+    activeViewProps `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["color_scale", "export_fields", "inspector_fields", "label", "mode", "source_kind", "temporal_basis", "tooltip_fields", "unit", "values"])
     terrainProps `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["plate_boundary", "plate_boundary_code", "plate_crust", "plate_crust_code"])
     componentPropertyNames doc "TerrainExportResponse" `shouldSatisfy` maybe False ("available_fields" `elem`)
     schemaComponentNames doc `shouldSatisfy` elem "ErrorEnvelope"
@@ -624,6 +624,10 @@ spec = describe "Seer.HTTP.Server" $ do
       lookupNestedText ["error", "code"] (hresBody deleteRecord) `shouldNotBe` Just "validation_failed"
       isRouteMiss deleteRecord `shouldBe` False
 
+      setWeatherView <- request app (mkRequest "POST" ["ui", "view-mode"])
+        { hreqBody = Just (object ["mode" .= ("weather" :: Text)]) }
+      hresStatusCode setWeatherView `shouldBe` 200
+
       hexRsp <- request app (mkRequest "GET" ["terrain", "hex"])
         { hreqQuery = [("q", Just "0"), ("r", Just "0")] }
       hresStatusCode hexRsp `shouldBe` 200
@@ -643,6 +647,12 @@ spec = describe "Seer.HTTP.Server" $ do
         , "ocean_currents"
         , "units"
         ] `shouldBe` replicate 12 True
+      lookupNestedText ["active_view", "temporal_basis"] (hresBody hexRsp) `shouldBe` Just "instantaneous_current"
+      lookupNestedText ["active_view", "source_kind"] (hresBody hexRsp) `shouldBe` Just "simulated_weather"
+      lookupNestedText ["weather_timeline", "temporal_basis"] (hresBody hexRsp) `shouldBe` Just "instantaneous_current"
+      lookupNestedText ["weather_timeline", "source_kind"] (hresBody hexRsp) `shouldBe` Just "simulated_weather"
+      lookupNestedText ["climate_diagnostics", "temporal_basis"] (hresBody hexRsp) `shouldBe` Just "long_run_average"
+      lookupNestedText ["climate_diagnostics", "source_kind"] (hresBody hexRsp) `shouldBe` Just "generated_climate"
 
   it "serves overlay manager, schema/provenance, import validation, mesh, and sample export routes" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do

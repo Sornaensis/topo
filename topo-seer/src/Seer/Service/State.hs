@@ -67,6 +67,8 @@ data StateViewModeSummary = StateViewModeSummary
   , stateViewModeLabel :: !Text
   , stateViewModeDescription :: !Text
   , stateViewModeKind :: !Text
+  , stateViewModeTemporalBasis :: !(Maybe Text)
+  , stateViewModeSourceKind :: !(Maybe Text)
   , stateViewModeUnit :: !(Maybe Text)
   , stateViewModeColorScale :: !Text
   , stateViewModeLegend :: !Value

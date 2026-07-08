@@ -21,6 +21,9 @@ module Actor.UI.State
   , UiMenuMode(..)
   , ViewMode(..)
   , ViewModeKind(..)
+  , TemporalBasis(..)
+  , SourceKind(..)
+  , ViewModeDataSemantics(..)
   , ViewModeLegend(..)
   , ViewModeLegendStop(..)
   , ViewModeLegendCategory(..)
@@ -31,6 +34,9 @@ module Actor.UI.State
   , viewModeMetadataToJSON
   , viewModeSummaryToJSON
   , viewModeKindToText
+  , temporalBasisToText
+  , sourceKindToText
+  , viewModeDataSemantics
   , viewModeLegendTitle
   , viewModeToText
   , viewModeFromText
@@ -111,6 +117,25 @@ data ViewModeKind
   | ViewModeCategorical
   deriving (Eq, Show)
 
+-- | Time basis for data shown by climate/weather-oriented views.
+data TemporalBasis
+  = LongRunAverage
+  | TypicalNormal
+  | InstantaneousCurrent
+  deriving (Eq, Ord, Show)
+
+-- | Origin of the data shown by climate/weather-oriented views.
+data SourceKind
+  = GeneratedClimate
+  | SimulatedWeather
+  | ExternalLive
+  deriving (Eq, Ord, Show)
+
+data ViewModeDataSemantics = ViewModeDataSemantics
+  { vmdsTemporalBasis :: !TemporalBasis
+  , vmdsSourceKind    :: !SourceKind
+  } deriving (Eq, Show)
+
 data ViewModeLegendStop = ViewModeLegendStop
   { vmlsValue :: !Text
   , vmlsLabel :: !Text
@@ -134,6 +159,8 @@ data ViewModeMetadata = ViewModeMetadata
   , vmmLabel           :: !Text
   , vmmDescription     :: !Text
   , vmmKind            :: !ViewModeKind
+  , vmmTemporalBasis   :: !(Maybe TemporalBasis)
+  , vmmSourceKind      :: !(Maybe SourceKind)
   , vmmUnitLabel       :: !(Maybe Text)
   , vmmColorScale      :: !Text
   , vmmLegend          :: !ViewModeLegend
@@ -227,6 +254,30 @@ viewModeKindToText :: ViewModeKind -> Text
 viewModeKindToText ViewModeScalar = "scalar"
 viewModeKindToText ViewModeCategorical = "categorical"
 
+temporalBasisToText :: TemporalBasis -> Text
+temporalBasisToText LongRunAverage = "long_run_average"
+temporalBasisToText TypicalNormal = "typical_normal"
+temporalBasisToText InstantaneousCurrent = "instantaneous_current"
+
+sourceKindToText :: SourceKind -> Text
+sourceKindToText GeneratedClimate = "generated_climate"
+sourceKindToText SimulatedWeather = "simulated_weather"
+sourceKindToText ExternalLive = "external_live"
+
+viewModeDataSemantics :: ViewMode -> Maybe ViewModeDataSemantics
+viewModeDataSemantics ViewClimate = climateSemantics
+viewModeDataSemantics ViewPrecip = climateSemantics
+viewModeDataSemantics ViewWeather = weatherSemantics
+viewModeDataSemantics ViewCloud = weatherSemantics
+viewModeDataSemantics (ViewOverlay "weather" _) = weatherSemantics
+viewModeDataSemantics _ = Nothing
+
+climateSemantics :: Maybe ViewModeDataSemantics
+climateSemantics = Just (ViewModeDataSemantics LongRunAverage GeneratedClimate)
+
+weatherSemantics :: Maybe ViewModeDataSemantics
+weatherSemantics = Just (ViewModeDataSemantics InstantaneousCurrent SimulatedWeather)
+
 viewModeLegendTitle :: ViewModeLegend -> Text
 viewModeLegendTitle (ViewModeGradientLegend title _) = title
 viewModeLegendTitle (ViewModeCategoricalLegend title _) = title
@@ -243,6 +294,8 @@ viewModeMetadataFields meta =
   , "label" .= vmmLabel meta
   , "description" .= vmmDescription meta
   , "kind" .= viewModeKindToText (vmmKind meta)
+  , "temporal_basis" .= fmap temporalBasisToText (vmmTemporalBasis meta)
+  , "source_kind" .= fmap sourceKindToText (vmmSourceKind meta)
   , "unit" .= vmmUnitLabel meta
   , "color_scale" .= vmmColorScale meta
   , "legend" .= viewModeLegendToJSON (vmmLegend meta)
@@ -473,11 +526,41 @@ viewModeRegistry =
 
 scalar :: ViewMode -> Text -> Text -> Text -> Maybe Text -> Text -> ViewModeLegend -> [Text] -> [Text] -> [Text] -> ViewModeMetadata
 scalar mode name label description unitLabel colorScale legend tooltipFields inspectorFields exportFields =
-  ViewModeMetadata mode name label description ViewModeScalar unitLabel colorScale legend tooltipFields inspectorFields exportFields standardViewModeHttp
+  let semantics = viewModeDataSemantics mode
+  in ViewModeMetadata
+       mode
+       name
+       label
+       description
+       ViewModeScalar
+       (fmap vmdsTemporalBasis semantics)
+       (fmap vmdsSourceKind semantics)
+       unitLabel
+       colorScale
+       legend
+       tooltipFields
+       inspectorFields
+       exportFields
+       standardViewModeHttp
 
 categorical :: ViewMode -> Text -> Text -> Text -> Text -> ViewModeLegend -> [Text] -> [Text] -> [Text] -> ViewModeMetadata
 categorical mode name label description colorScale legend tooltipFields inspectorFields exportFields =
-  ViewModeMetadata mode name label description ViewModeCategorical Nothing colorScale legend tooltipFields inspectorFields exportFields standardViewModeHttp
+  let semantics = viewModeDataSemantics mode
+  in ViewModeMetadata
+       mode
+       name
+       label
+       description
+       ViewModeCategorical
+       (fmap vmdsTemporalBasis semantics)
+       (fmap vmdsSourceKind semantics)
+       Nothing
+       colorScale
+       legend
+       tooltipFields
+       inspectorFields
+       exportFields
+       standardViewModeHttp
 
 gradient :: Text -> [ViewModeLegendStop] -> ViewModeLegend
 gradient = ViewModeGradientLegend
