@@ -192,6 +192,7 @@ rebuildAtlas handles terrainSnap uiSnap = do
           , ajTerrain    = terrainSnap
           , ajHexRadius  = zsHexRadius stage
           , ajAtlasScale = zsAtlasScale stage
+          , ajViewportCoverage = Nothing
           }
   -- Build only the current view mode (5 jobs for 5 zoom stages).
   -- Other modes build on-demand when the user switches to them.

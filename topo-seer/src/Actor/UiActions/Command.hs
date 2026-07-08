@@ -42,6 +42,7 @@ import Actor.PluginManager.PipelineIntegrator
   )
 import Actor.Simulation (Simulation, clearSimWorld)
 import Actor.AtlasManager (AtlasJob(..), AtlasManager, enqueueAtlasBuild)
+import Seer.Render.Viewport (AtlasViewportCoverage, currentAtlasViewportCoverage)
 import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom, stageForZoom)
 import Actor.Data
   ( Data
@@ -137,7 +138,7 @@ data UiAction
   | UiActionSetViewMode !ViewMode
   | UiActionRebuildAtlas !ViewMode
   | UiActionToggleDayNight
-  | UiActionRefreshViewport !ViewMode
+  | UiActionRefreshViewport !ViewMode !(Maybe (Int, Int))
   | UiActionBrushStroke !(Int, Int)
     -- ^ Apply the current editor brush at the given hex @(q, r)@.
   | UiActionClearFlattenRef
@@ -170,8 +171,8 @@ runUiAction req =
       logTimed req ("Rebuild Atlas " <> viewModeLabel mode) (rebuildAtlasFor req mode)
     UiActionToggleDayNight ->
       logTimed req "Toggle Day/Night" (toggleDayNight req)
-    UiActionRefreshViewport mode ->
-      logTimed req ("Refresh Viewport " <> viewModeLabel mode) (refreshViewport req)
+    UiActionRefreshViewport mode mbWindowSize ->
+      logTimed req ("Refresh Viewport " <> viewModeLabel mode) (refreshViewport req mbWindowSize)
     UiActionBrushStroke hex ->
       logTimed req "Brush Stroke" (applyBrush req hex)
     UiActionClearFlattenRef ->
@@ -357,6 +358,7 @@ enqueueAtlasRebuildForTerrain handles mode uiSnap snapshotVersion terrainSnap = 
         , ajTerrain    = terrainSnap
         , ajHexRadius  = zsHexRadius stage
         , ajAtlasScale = zsAtlasScale stage
+        , ajViewportCoverage = Nothing
         }
   mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles) . job) orderedStages
 
@@ -365,19 +367,24 @@ enqueueAtlasRebuildForTerrain handles mode uiSnap snapshotVersion terrainSnap = 
 -- Used for zoom scroll and pan drag-release where the atlas key has not
 -- changed — only the viewport moved.  This avoids enqueueing work for
 -- all 5 zoom stages when only the visible one needs new tiles.
-refreshViewport :: UiActionRequest -> IO ()
-refreshViewport req = do
-  _ <- enqueueViewportRefreshForCurrentUi (uarActorHandles req)
+refreshViewport :: UiActionRequest -> Maybe (Int, Int) -> IO ()
+refreshViewport req mbWindowSize = do
+  _ <- enqueueViewportRefreshForCurrentUiWithWindow (uarActorHandles req) mbWindowSize
   pure ()
 
 enqueueViewportRefreshForCurrentUi :: ActorHandles -> IO SnapshotVersion
-enqueueViewportRefreshForCurrentUi handles = do
+enqueueViewportRefreshForCurrentUi handles =
+  enqueueViewportRefreshForCurrentUiWithWindow handles Nothing
+
+enqueueViewportRefreshForCurrentUiWithWindow :: ActorHandles -> Maybe (Int, Int) -> IO SnapshotVersion
+enqueueViewportRefreshForCurrentUiWithWindow handles mbWindowSize = do
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap <- getUiSnapshot (ahUiHandle handles)
   snapshotVersion <- bumpSnapshotVersionAndRead (ahSnapshotVersionRef handles)
   let mode = uiViewMode uiSnap
       atlasKey = atlasKeyFor mode (uiRenderWaterLevel uiSnap) terrainSnap
       currentStage = stageForZoom (uiZoom uiSnap)
+      viewportCoverage = viewportCoverageFor terrainSnap uiSnap mbWindowSize currentStage
       job stage = AtlasJob
         { ajKey        = atlasKey
         , ajViewMode   = mode
@@ -386,9 +393,24 @@ enqueueViewportRefreshForCurrentUi handles = do
         , ajTerrain    = terrainSnap
         , ajHexRadius  = zsHexRadius stage
         , ajAtlasScale = zsAtlasScale stage
+        , ajViewportCoverage = viewportCoverage
         }
   enqueueAtlasBuild (ahAtlasManagerHandle handles) (job currentStage)
   pure snapshotVersion
+
+viewportCoverageFor :: TerrainSnapshot -> UiState -> Maybe (Int, Int) -> ZoomStage -> Maybe AtlasViewportCoverage
+viewportCoverageFor terrainSnap uiSnap mbWindowSize stage = do
+  windowSize <- mbWindowSize
+  if tsChunkSize terrainSnap > 0
+    then Just $
+      currentAtlasViewportCoverage
+        (WorldConfig { wcChunkSize = tsChunkSize terrainSnap })
+        (uiPanOffset uiSnap)
+        (uiZoom uiSnap)
+        windowSize
+        terrainSnap
+        stage
+    else Nothing
 
 setViewMode :: UiActionRequest -> ViewMode -> IO ()
 setViewMode req mode =

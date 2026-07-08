@@ -141,6 +141,7 @@ scheduleAtlasRebuild handles mode = do
         , ajTerrain    = terrainSnap
         , ajHexRadius  = zsHexRadius stage
         , ajAtlasScale = zsAtlasScale stage
+        , ajViewportCoverage = Nothing
         }
   mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles) . job) orderedStages
 

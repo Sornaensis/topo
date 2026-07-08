@@ -1336,6 +1336,7 @@ enqueueAtlasJobsForPublication handles completion uiSnap terrainSnap snapshotVer
         , ajTerrain = terrainSnap
         , ajHexRadius = zsHexRadius stage
         , ajAtlasScale = zsAtlasScale stage
+        , ajViewportCoverage = Nothing
         }
   mapM_
     (enqueueAtlasBuild (shAtlasHandle handles) . mkJob)

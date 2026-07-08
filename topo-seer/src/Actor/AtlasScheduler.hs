@@ -32,14 +32,28 @@ import Actor.AtlasFreshness
   , writeAtlasFreshness
   , writeAtlasFreshnessKey
   )
-import Actor.AtlasManager (AtlasJob(..), AtlasDispatchJob(..), AtlasManager, drainFreshAtlasJobs, enqueueAtlasBuild)
+import Actor.AtlasManager
+  ( AtlasJob(..)
+  , AtlasDispatchJob(..)
+  , AtlasFreshDrainRequest(..)
+  , AtlasManager
+  , drainFreshAtlasJobsLimited
+  , enqueueAtlasBuild
+  )
 import Actor.AtlasResultBroker (AtlasResultRef)
 import Actor.AtlasScheduleBroker
   ( AtlasScheduleRef
   , AtlasScheduleReport(..)
   , writeAtlasScheduleReport
   )
-import Actor.AtlasWorker (AtlasBuild(..), AtlasWorker, enqueueAtlasBuildWork)
+import Actor.AtlasWorker
+  ( AtlasBuild(..)
+  , AtlasWorker
+  , AtlasWorkerLoadRef
+  , atlasWorkerLoadAvailable
+  , atlasWorkerLoadStart
+  , enqueueAtlasBuildWork
+  )
 import Actor.Data (TerrainSnapshot(..))
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion)
@@ -49,14 +63,17 @@ import Data.IORef (IORef, atomicModifyIORef')
 import UI.DayNight (DayNightSpec, mkDayNightSpec)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
+import Seer.Render.Viewport (AtlasViewportCoverage, currentAtlasViewportCoverage)
 import Seer.Render.ZoomStage (ZoomStage(..), stageForZoom)
 import Seer.Timing (timedMs)
+import Topo (WorldConfig(..))
 
 -- | Handles required by the atlas scheduler.
 data AtlasSchedulerHandles = AtlasSchedulerHandles
   { ashManager :: !(ActorHandle AtlasManager (Protocol AtlasManager))
   , ashWorkers :: ![ActorHandle AtlasWorker (Protocol AtlasWorker)]
   , ashWorkerNext :: !(IORef Int)
+  , ashWorkerLoadRef :: !AtlasWorkerLoadRef
   , ashResultRef :: !AtlasResultRef
   , ashScheduleRef :: !AtlasScheduleRef
   , ashFreshnessRef :: !AtlasFreshnessRef
@@ -146,7 +163,23 @@ atlasViewportRefreshJob snapshotVersion snapshot stage =
     , ajTerrain = terrainSnap
     , ajHexRadius = zsHexRadius stage
     , ajAtlasScale = zsAtlasScale stage
+    , ajViewportCoverage = Nothing
     }
+
+atlasViewportCoverageFor :: RenderSnapshot -> (Int, Int) -> ZoomStage -> Maybe AtlasViewportCoverage
+atlasViewportCoverageFor snapshot windowSize stage =
+  let uiSnap = rsUi snapshot
+      terrainSnap = rsTerrain snapshot
+  in if tsChunkSize terrainSnap > 0
+    then Just $
+      currentAtlasViewportCoverage
+        (WorldConfig { wcChunkSize = tsChunkSize terrainSnap })
+        (uiPanOffset uiSnap)
+        (uiZoom uiSnap)
+        windowSize
+        terrainSnap
+        stage
+    else Nothing
 
 runSchedule :: AtlasSchedulerHandles -> AtlasScheduleRequest -> IO ()
 runSchedule handles req = do
@@ -164,13 +197,25 @@ runSchedule handles req = do
     then do
       let currentFreshness = emptyAtlasFreshness currentKey (asqSnapshotVersion req)
           refreshStage = maybe (stageForZoom (uiZoom uiSnap)) id (asqRefreshStage req)
-          viewportRefreshJob = atlasViewportRefreshJob (asqSnapshotVersion req) snapshot refreshStage
+          dispatchCoverage = atlasViewportCoverageFor snapshot (asqWindowSize req) refreshStage
+          viewportRefreshJob = (atlasViewportRefreshJob (asqSnapshotVersion req) snapshot refreshStage)
+            { ajViewportCoverage = dispatchCoverage }
+          preferredTarget = Just (zsHexRadius refreshStage, zsAtlasScale refreshStage)
+      workerCapacity <- atlasWorkerLoadAvailable (ashWorkerLoadRef handles) workerCount
       (jobs, drainMs) <- timedMs $ do
         if asqRefreshCurrentViewport req
           then enqueueAtlasBuild (ashManager handles) viewportRefreshJob
           else pure ()
-        drainFreshAtlasJobs (ashManager handles) currentFreshness
-      (_, enqueueMs) <- timedMs $
+        if workerCapacity > 0
+          then drainFreshAtlasJobsLimited (ashManager handles) AtlasFreshDrainRequest
+            { afdrFreshness = currentFreshness
+            , afdrLimit = workerCapacity
+            , afdrPreferredTarget = preferredTarget
+            , afdrDispatchCoverage = dispatchCoverage
+            }
+          else pure []
+      (_, enqueueMs) <- timedMs $ do
+        atlasWorkerLoadStart (ashWorkerLoadRef handles) (length jobs)
         forM_ jobs $ \dispatchJob -> do
           idx <- atomicModifyIORef' (ashWorkerNext handles) (\i -> (i + 1, i))
           let worker = workers !! (idx `mod` workerCount)
@@ -190,6 +235,7 @@ runSchedule handles req = do
             , abResultRef  = ashResultRef handles
             , abFreshnessRef = ashFreshnessRef handles
             , abDayNightSpec = dayNightSpec
+            , abWorkerLoadRef = Just (ashWorkerLoadRef handles)
             }
       let report = AtlasScheduleReport
             { asrSnapshotVersion = asqSnapshotVersion req

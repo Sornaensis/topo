@@ -22,7 +22,7 @@ import Actor.AtlasScheduler
   , AtlasSchedulerHandles(..)
   , setAtlasSchedulerHandles
   )
-import Actor.AtlasWorker (atlasWorkerActorDef)
+import Actor.AtlasWorker (atlasWorkerActorDef, newAtlasWorkerLoadRef)
 import Actor.Data
   ( Data
   , DataSnapshot(..)
@@ -129,6 +129,7 @@ initialiseAppActors runtimeCfg = do
   atlasManagerHandle <- get @AtlasManager system
   atlasWorkerHandles <- replicateM (cfgAtlasWorkerCount runtimeCfg) (spawnActor atlasWorkerActorDef)
   atlasWorkerNextRef <- newIORef (0 :: Int)
+  atlasWorkerLoadRef <- newAtlasWorkerLoadRef
   atlasSchedulerHandle <- get @AtlasScheduler system
   terrainCacheWorkerHandle <- get @TerrainCacheWorker system
   atlasResultRef <- newAtlasResultRef
@@ -142,6 +143,7 @@ initialiseAppActors runtimeCfg = do
     { ashManager = atlasManagerHandle
     , ashWorkers = atlasWorkerHandles
     , ashWorkerNext = atlasWorkerNextRef
+    , ashWorkerLoadRef = atlasWorkerLoadRef
     , ashResultRef = atlasResultRef
     , ashScheduleRef = atlasScheduleRef
     , ashFreshnessRef = atlasFreshnessRef

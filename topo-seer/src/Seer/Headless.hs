@@ -31,7 +31,7 @@ import Actor.AtlasScheduler
   , atlasSchedulerConfigured
   , setAtlasSchedulerHandles
   )
-import Actor.AtlasWorker (AtlasWorker, atlasWorkerActorDef)
+import Actor.AtlasWorker (AtlasWorker, atlasWorkerActorDef, newAtlasWorkerLoadRef)
 import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..))
 import Actor.Log
   ( Log
@@ -216,6 +216,7 @@ startHeadlessAppWithSystem cfg system = do
   atlasManagerHandle <- get @AtlasManager system
   atlasWorkerHandles <- replicateM (cfgAtlasWorkerCount runtimeCfg) (spawnActor atlasWorkerActorDef)
   atlasWorkerNextRef <- newIORef (0 :: Int)
+  atlasWorkerLoadRef <- newAtlasWorkerLoadRef
   atlasSchedulerHandle <- get @AtlasScheduler system
   atlasResultRef <- newAtlasResultRef
   atlasScheduleRef <- newAtlasScheduleRef
@@ -225,6 +226,7 @@ startHeadlessAppWithSystem cfg system = do
     { ashManager = atlasManagerHandle
     , ashWorkers = atlasWorkerHandles
     , ashWorkerNext = atlasWorkerNextRef
+    , ashWorkerLoadRef = atlasWorkerLoadRef
     , ashResultRef = atlasResultRef
     , ashScheduleRef = atlasScheduleRef
     , ashFreshnessRef = atlasFreshnessRef

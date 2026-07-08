@@ -12,6 +12,7 @@ import Test.Hspec
 import Actor.AtlasCache (AtlasKey(..), atlasKeyVersion)
 import Actor.AtlasManager
   ( AtlasDispatchJob(..)
+  , AtlasFreshDrainRequest(..)
   , AtlasJob(..)
   , AtlasManager
   , AtlasManagerQueueState(..)
@@ -21,6 +22,7 @@ import Actor.AtlasManager
   , atlasManagerQueuedState
   , drainAtlasJobs
   , drainFreshAtlasJobs
+  , drainFreshAtlasJobsLimited
   , enqueueAtlasBuild
   , newAtlasManagerQueueRef
   , setAtlasManagerFreshnessRef
@@ -37,6 +39,7 @@ import Hyperspace.Actor
   , newActorSystem
   , shutdownActorSystem
   )
+import Seer.Render.Viewport (atlasViewportCoverageFromKeys)
 import Topo.Overlay (emptyOverlayStore)
 
 withSystem :: (ActorSystem -> IO a) -> IO a
@@ -61,6 +64,7 @@ atlasJobFor mode version =
     , ajTerrain = terrainSnap
     , ajHexRadius = 6
     , ajAtlasScale = 1
+    , ajViewportCoverage = Nothing
     }
 
 freshnessFor :: AtlasKey -> SnapshotVersion -> AtlasFreshness
@@ -124,6 +128,73 @@ spec = describe "AtlasManager" $ do
     length jobs `shouldBe` 1
     map (atlasKeyVersion . ajKey) jobs `shouldBe` [2]
 
+  it "coalesces duplicate same-coverage viewport refreshes without build-id churn" $ withSystem $ \system -> do
+    managerHandle <- get @AtlasManager system
+    queueRef <- newAtlasManagerQueueRef
+    freshnessRef <- newAtlasFreshnessRef
+    setAtlasManagerQueueRef managerHandle queueRef
+    setAtlasManagerFreshnessRef managerHandle freshnessRef
+    let coverage = Just (atlasViewportCoverageFromKeys [1, 2, 3])
+        job1 = (atlasJobFor ViewElevation 1) { ajViewportCoverage = coverage }
+        job2 = job1 { ajSnapshotVersion = SnapshotVersion 2 }
+    enqueueAtlasBuild managerHandle job1
+    waitForManagerCasts
+    revision1 <- atlasManagerQueuedRevision queueRef
+    latest1 <- readIORef freshnessRef
+    let build1 = latest1 >>= \freshness -> Map.lookup (targetFor job1) (afLatestBuildIds freshness)
+    atlasManagerQueuedCount queueRef `shouldReturn` 1
+
+    enqueueAtlasBuild managerHandle job2
+    waitForManagerCasts
+    revision2 <- atlasManagerQueuedRevision queueRef
+    latest2 <- readIORef freshnessRef
+    let build2 = latest2 >>= \freshness -> Map.lookup (targetFor job1) (afLatestBuildIds freshness)
+    revision2 `shouldBe` revision1
+    atlasManagerQueuedCount queueRef `shouldReturn` 1
+    build2 `shouldBe` build1
+
+  it "does not coalesce newer same-coverage refreshes after the slot was dispatched" $ withSystem $ \system -> do
+    managerHandle <- get @AtlasManager system
+    queueRef <- newAtlasManagerQueueRef
+    setAtlasManagerQueueRef managerHandle queueRef
+    let coverage = Just (atlasViewportCoverageFromKeys [1, 2, 3])
+        job1 = (atlasJobFor ViewElevation 1) { ajViewportCoverage = coverage }
+        job2 = job1 { ajSnapshotVersion = SnapshotVersion 2 }
+    enqueueAtlasBuild managerHandle job1
+    waitForManagerCasts
+    dispatched <- drainFreshAtlasJobs managerHandle (freshnessFor (ajKey job1) (SnapshotVersion 1))
+    length dispatched `shouldBe` 1
+    revisionAfterDispatch <- atlasManagerQueuedRevision queueRef
+
+    enqueueAtlasBuild managerHandle job2
+    waitForManagerCasts
+    revisionAfterRefresh <- atlasManagerQueuedRevision queueRef
+    revisionAfterRefresh `shouldSatisfy` (> revisionAfterDispatch)
+    atlasManagerQueuedCount queueRef `shouldReturn` 1
+
+  it "accepts same-snapshot viewport refreshes when required coverage changes" $ withSystem $ \system -> do
+    managerHandle <- get @AtlasManager system
+    queueRef <- newAtlasManagerQueueRef
+    freshnessRef <- newAtlasFreshnessRef
+    setAtlasManagerQueueRef managerHandle queueRef
+    setAtlasManagerFreshnessRef managerHandle freshnessRef
+    let job1 = (atlasJobFor ViewElevation 1) { ajViewportCoverage = Just (atlasViewportCoverageFromKeys [1]) }
+        job2 = job1 { ajViewportCoverage = Just (atlasViewportCoverageFromKeys [2]) }
+    enqueueAtlasBuild managerHandle job1
+    waitForManagerCasts
+    revision1 <- atlasManagerQueuedRevision queueRef
+    latest1 <- readIORef freshnessRef
+    let build1 = latest1 >>= \freshness -> Map.lookup (targetFor job1) (afLatestBuildIds freshness)
+
+    enqueueAtlasBuild managerHandle job2
+    waitForManagerCasts
+    revision2 <- atlasManagerQueuedRevision queueRef
+    latest2 <- readIORef freshnessRef
+    let build2 = latest2 >>= \freshness -> Map.lookup (targetFor job2) (afLatestBuildIds freshness)
+    atlasManagerQueuedCount queueRef `shouldReturn` 1
+    revision2 `shouldSatisfy` (> revision1)
+    build2 `shouldSatisfy` (/= build1)
+
   it "clears queued summary and advances revision when fresh jobs drain" $ withSystem $ \system -> do
     managerHandle <- get @AtlasManager system
     queueRef <- newAtlasManagerQueueRef
@@ -139,6 +210,62 @@ spec = describe "AtlasManager" $ do
     atlasManagerHasQueuedWorkFor queueRef (ajKey job) `shouldReturn` False
     revisionAfterDrain <- atlasManagerQueuedRevision queueRef
     revisionAfterDrain `shouldSatisfy` (> revisionBeforeDrain)
+
+  it "limited fresh drain dispatches the preferred target and leaves deferred work queued" $ withSystem $ \system -> do
+    managerHandle <- get @AtlasManager system
+    queueRef <- newAtlasManagerQueueRef
+    setAtlasManagerQueueRef managerHandle queueRef
+    let preferred = atlasJobFor ViewElevation 1
+        backfill = preferred { ajHexRadius = 10, ajAtlasScale = 1 }
+        dispatchCoverage = atlasViewportCoverageFromKeys [99]
+    enqueueAtlasBuild managerHandle backfill
+    enqueueAtlasBuild managerHandle preferred
+    waitForManagerCasts
+
+    dispatchJobs <- drainFreshAtlasJobsLimited managerHandle AtlasFreshDrainRequest
+      { afdrFreshness = freshnessFor (ajKey preferred) (SnapshotVersion 1)
+      , afdrLimit = 1
+      , afdrPreferredTarget = Just (ajHexRadius preferred, ajAtlasScale preferred)
+      , afdrDispatchCoverage = Just dispatchCoverage
+      }
+    map (\dispatchJob -> (ajHexRadius (adjJob dispatchJob), ajAtlasScale (adjJob dispatchJob))) dispatchJobs `shouldBe` [(6, 1)]
+    map (ajViewportCoverage . adjJob) dispatchJobs `shouldBe` [Just dispatchCoverage]
+    atlasManagerQueuedCount queueRef `shouldReturn` 1
+    leftovers <- drainAtlasJobs managerHandle
+    map (\job -> (ajHexRadius job, ajAtlasScale job)) leftovers `shouldBe` [(10, 1)]
+
+  it "limited newer drain drops stale deferred backfill instead of preserving it" $ withSystem $ \system -> do
+    managerHandle <- get @AtlasManager system
+    let current = (atlasJobFor ViewElevation 1) { ajSnapshotVersion = SnapshotVersion 2 }
+        staleBackfill = (atlasJobFor ViewElevation 1) { ajHexRadius = 10, ajAtlasScale = 1 }
+    enqueueAtlasBuild managerHandle staleBackfill
+    enqueueAtlasBuild managerHandle current
+
+    dispatchJobs <- drainFreshAtlasJobsLimited managerHandle AtlasFreshDrainRequest
+      { afdrFreshness = freshnessFor (ajKey current) (SnapshotVersion 2)
+      , afdrLimit = 1
+      , afdrPreferredTarget = Just (ajHexRadius current, ajAtlasScale current)
+      , afdrDispatchCoverage = Nothing
+      }
+    map (\dispatchJob -> (ajSnapshotVersion (adjJob dispatchJob), ajHexRadius (adjJob dispatchJob))) dispatchJobs `shouldBe` [(SnapshotVersion 2, 6)]
+    leftovers <- drainAtlasJobs managerHandle
+    length leftovers `shouldBe` 0
+
+  it "unrelated higher-version queued keys do not block current-key drains" $ withSystem $ \system -> do
+    managerHandle <- get @AtlasManager system
+    let current = atlasJobFor ViewElevation 1
+        unrelatedWeather = atlasJobFor ViewWeather 50
+    enqueueAtlasBuild managerHandle unrelatedWeather
+    enqueueAtlasBuild managerHandle current
+
+    dispatchJobs <- drainFreshAtlasJobs managerHandle (freshnessFor (ajKey current) (SnapshotVersion 1))
+    map (ajViewMode . adjJob) dispatchJobs `shouldBe` [ViewElevation]
+    leftovers <- drainAtlasJobs managerHandle
+    length leftovers `shouldBe` 0
+
+    enqueueAtlasBuild managerHandle unrelatedWeather
+    weatherDispatch <- drainFreshAtlasJobs managerHandle (freshnessFor (ajKey unrelatedWeather) (SnapshotVersion 50))
+    map (ajViewMode . adjJob) weatherDispatch `shouldBe` [ViewWeather]
 
   it "restamps same-key queued jobs to the requested snapshot and publishes build freshness" $ withSystem $ \system -> do
     managerHandle <- get @AtlasManager system
@@ -160,6 +287,17 @@ spec = describe "AtlasManager" $ do
             && afSnapshotVersion freshness == requestedVersion
             && Map.lookup restampedTarget (afLatestBuildIds freshness) == Just (adjBuildId dispatchJob))
       _ -> expectationFailure ("expected one dispatch job, got " <> show (length dispatchJobs))
+
+  it "does not drain stale backfill when newer same-key work is queued" $ withSystem $ \system -> do
+    managerHandle <- get @AtlasManager system
+    let current = (atlasJobFor ViewElevation 1) { ajSnapshotVersion = SnapshotVersion 2 }
+        staleBackfill = (atlasJobFor ViewElevation 1) { ajHexRadius = 10, ajAtlasScale = 1 }
+    enqueueAtlasBuild managerHandle staleBackfill
+    enqueueAtlasBuild managerHandle current
+    staleDispatch <- drainFreshAtlasJobs managerHandle (freshnessFor (ajKey current) (SnapshotVersion 1))
+    length staleDispatch `shouldBe` 0
+    leftovers <- drainAtlasJobs managerHandle
+    map (\job -> (ajSnapshotVersion job, ajHexRadius job, ajAtlasScale job)) leftovers `shouldBe` [(SnapshotVersion 2, 6, 1)]
 
   it "leaves newer same-key jobs queued when the scheduler request is stale" $ withSystem $ \system -> do
     managerHandle <- get @AtlasManager system

@@ -8,9 +8,17 @@ import Data.IORef (newIORef)
 import System.Timeout (timeout)
 import Test.Hspec
 import Actor.AtlasCache (AtlasKey(..), atlasKeyVersion)
-import Actor.AtlasManager (AtlasManager, AtlasJob(..), enqueueAtlasBuild, drainAtlasJobs)
+import Actor.AtlasManager
+  ( AtlasManager
+  , AtlasJob(..)
+  , atlasManagerQueuedCount
+  , drainAtlasJobs
+  , enqueueAtlasBuild
+  , newAtlasManagerQueueRef
+  , setAtlasManagerQueueRef
+  )
 import Actor.AtlasResult (AtlasBuildId(..))
-import Actor.AtlasResultBroker (newAtlasResultRef)
+import Actor.AtlasResultBroker (atlasResultsPending, newAtlasResultRef)
 import Actor.AtlasScheduleBroker
   ( AtlasScheduleRef
   , AtlasScheduleReport(..)
@@ -29,14 +37,25 @@ import Actor.AtlasScheduler
   , setAtlasSchedulerHandles
   , writeAtlasFreshness
   )
-import Actor.AtlasWorker (AtlasBuild(..), atlasBuildIsCurrent, atlasWorkerActorDef)
+import Actor.AtlasWorker
+  ( AtlasBuild(..)
+  , AtlasWorkerLoad(..)
+  , AtlasWorkerLoadRef
+  , atlasBuildIsCurrent
+  , atlasWorkerActorDef
+  , atlasWorkerLoadFinish
+  , atlasWorkerLoadStart
+  , enqueueAtlasBuildWork
+  , newAtlasWorkerLoadRef
+  , readAtlasWorkerLoad
+  )
 import Actor.Data (DataSnapshot(..), TerrainSnapshot(..))
 import Topo.Overlay (emptyOverlayStore)
 import Actor.Log (LogLevel(..), LogSnapshot(..))
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion(..))
 import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
-import Seer.Render.ZoomStage (allZoomStages, ZoomStage(..))
+import Seer.Render.ZoomStage (allZoomStages, ZoomStage(..), stageForZoom)
 import UI.DayNight (mkDayNightKey)
 import Data.Word (Word64)
 import Hyperspace.Actor
@@ -69,6 +88,7 @@ atlasJobFor mode version stage =
     , ajTerrain = terrainSnap
     , ajHexRadius = zsHexRadius stage
     , ajAtlasScale = zsAtlasScale stage
+    , ajViewportCoverage = Nothing
     }
 
 spec :: Spec
@@ -77,6 +97,7 @@ spec = describe "AtlasScheduler" $ do
     managerHandle <- get @AtlasManager system
     workerHandle <- spawnActor atlasWorkerActorDef
     workerNextRef <- newIORef (0 :: Int)
+    workerLoadRef <- newAtlasWorkerLoadRef
     resultRef <- newAtlasResultRef
     scheduleRef <- newAtlasScheduleRef
     freshnessRef <- newAtlasFreshnessRef
@@ -85,6 +106,7 @@ spec = describe "AtlasScheduler" $ do
       { ashManager = managerHandle
       , ashWorkers = [workerHandle]
       , ashWorkerNext = workerNextRef
+      , ashWorkerLoadRef = workerLoadRef
       , ashResultRef = resultRef
       , ashScheduleRef = scheduleRef
       , ashFreshnessRef = freshnessRef
@@ -100,6 +122,7 @@ spec = describe "AtlasScheduler" $ do
           , ajTerrain = terrainSnap
           , ajHexRadius  = 6
           , ajAtlasScale = 1
+          , ajViewportCoverage = Nothing
           }
     enqueueAtlasBuild managerHandle job
     let snapshot = RenderSnapshot
@@ -124,6 +147,7 @@ spec = describe "AtlasScheduler" $ do
     managerHandle <- get @AtlasManager system
     workerHandle <- spawnActor atlasWorkerActorDef
     workerNextRef <- newIORef (0 :: Int)
+    workerLoadRef <- newAtlasWorkerLoadRef
     resultRef <- newAtlasResultRef
     scheduleRef <- newAtlasScheduleRef
     freshnessRef <- newAtlasFreshnessRef
@@ -132,6 +156,7 @@ spec = describe "AtlasScheduler" $ do
       { ashManager = managerHandle
       , ashWorkers = [workerHandle]
       , ashWorkerNext = workerNextRef
+      , ashWorkerLoadRef = workerLoadRef
       , ashResultRef = resultRef
       , ashScheduleRef = scheduleRef
       , ashFreshnessRef = freshnessRef
@@ -169,6 +194,7 @@ spec = describe "AtlasScheduler" $ do
     managerHandle <- get @AtlasManager system
     workerHandle <- spawnActor atlasWorkerActorDef
     workerNextRef <- newIORef (0 :: Int)
+    workerLoadRef <- newAtlasWorkerLoadRef
     resultRef <- newAtlasResultRef
     scheduleRef <- newAtlasScheduleRef
     freshnessRef <- newAtlasFreshnessRef
@@ -177,6 +203,7 @@ spec = describe "AtlasScheduler" $ do
       { ashManager = managerHandle
       , ashWorkers = [workerHandle]
       , ashWorkerNext = workerNextRef
+      , ashWorkerLoadRef = workerLoadRef
       , ashResultRef = resultRef
       , ashScheduleRef = scheduleRef
       , ashFreshnessRef = freshnessRef
@@ -222,6 +249,7 @@ spec = describe "AtlasScheduler" $ do
             , ajTerrain = terrainSnap
             , ajHexRadius  = zsHexRadius stage
             , ajAtlasScale = zsAtlasScale stage
+            , ajViewportCoverage = Nothing
             }
     -- Enqueue one job per zoom stage (single-mode rebuild)
     mapM_ (enqueueAtlasBuild managerHandle . mkJob) allZoomStages
@@ -243,6 +271,7 @@ spec = describe "AtlasScheduler" $ do
             , ajTerrain = terrainSnap
             , ajHexRadius  = zsHexRadius stage
             , ajAtlasScale = zsAtlasScale stage
+            , ajViewportCoverage = Nothing
             }
     -- Enqueue elevation only (simulating single-mode rebuild)
     mapM_ (enqueueAtlasBuild managerHandle . mkJobFor ViewElevation) allZoomStages
@@ -259,6 +288,7 @@ spec = describe "AtlasScheduler" $ do
     w2 <- spawnActor atlasWorkerActorDef
     w3 <- spawnActor atlasWorkerActorDef
     workerNextRef <- newIORef (0 :: Int)
+    workerLoadRef <- newAtlasWorkerLoadRef
     resultRef <- newAtlasResultRef
     scheduleRef <- newAtlasScheduleRef
     freshnessRef <- newAtlasFreshnessRef
@@ -267,6 +297,7 @@ spec = describe "AtlasScheduler" $ do
       { ashManager = managerHandle
       , ashWorkers = [w1, w2, w3]
       , ashWorkerNext = workerNextRef
+      , ashWorkerLoadRef = workerLoadRef
       , ashResultRef = resultRef
       , ashScheduleRef = scheduleRef
       , ashFreshnessRef = freshnessRef
@@ -282,6 +313,7 @@ spec = describe "AtlasScheduler" $ do
             , ajTerrain = terrainSnap
             , ajHexRadius  = 6 + i
             , ajAtlasScale = 1
+            , ajViewportCoverage = Nothing
             }
     -- Enqueue 3 jobs so each worker gets one
     mapM_ (enqueueAtlasBuild managerHandle . mkJob) [0, 1, 2 :: Int]
@@ -334,6 +366,7 @@ spec = describe "AtlasScheduler" $ do
     managerHandle <- get @AtlasManager system
     workerHandle <- spawnActor atlasWorkerActorDef
     workerNextRef <- newIORef (0 :: Int)
+    workerLoadRef <- newAtlasWorkerLoadRef
     resultRef <- newAtlasResultRef
     scheduleRef <- newAtlasScheduleRef
     freshnessRef <- newAtlasFreshnessRef
@@ -342,6 +375,7 @@ spec = describe "AtlasScheduler" $ do
       { ashManager = managerHandle
       , ashWorkers = [workerHandle]
       , ashWorkerNext = workerNextRef
+      , ashWorkerLoadRef = workerLoadRef
       , ashResultRef = resultRef
       , ashScheduleRef = scheduleRef
       , ashFreshnessRef = freshnessRef
@@ -386,6 +420,7 @@ spec = describe "AtlasScheduler" $ do
     managerHandle <- get @AtlasManager system
     workerHandle <- spawnActor atlasWorkerActorDef
     workerNextRef <- newIORef (0 :: Int)
+    workerLoadRef <- newAtlasWorkerLoadRef
     resultRef <- newAtlasResultRef
     scheduleRef <- newAtlasScheduleRef
     freshnessRef <- newAtlasFreshnessRef
@@ -394,6 +429,7 @@ spec = describe "AtlasScheduler" $ do
       { ashManager = managerHandle
       , ashWorkers = [workerHandle]
       , ashWorkerNext = workerNextRef
+      , ashWorkerLoadRef = workerLoadRef
       , ashResultRef = resultRef
       , ashScheduleRef = scheduleRef
       , ashFreshnessRef = freshnessRef
@@ -428,6 +464,140 @@ spec = describe "AtlasScheduler" $ do
         leftovers <- drainAtlasJobs managerHandle
         length leftovers `shouldBe` 0
 
+  it "dispatches the current-stage job before backfill when capacity is limited" $ withSystem $ \system -> do
+    managerHandle <- get @AtlasManager system
+    workerHandle <- spawnActor atlasWorkerActorDef
+    workerNextRef <- newIORef (0 :: Int)
+    workerLoadRef <- newAtlasWorkerLoadRef
+    resultRef <- newAtlasResultRef
+    scheduleRef <- newAtlasScheduleRef
+    freshnessRef <- newAtlasFreshnessRef
+    schedulerHandle <- get @AtlasScheduler system
+    setAtlasSchedulerHandles schedulerHandle AtlasSchedulerHandles
+      { ashManager = managerHandle
+      , ashWorkers = [workerHandle]
+      , ashWorkerNext = workerNextRef
+      , ashWorkerLoadRef = workerLoadRef
+      , ashResultRef = resultRef
+      , ashScheduleRef = scheduleRef
+      , ashFreshnessRef = freshnessRef
+      }
+    let terrainSnap = emptyTerrainSnapshotWithVersion 9
+        version = SnapshotVersion 9
+        ui = emptyUiState { uiZoom = 1.5 }
+        currentStage = stageForZoom (uiZoom ui)
+        backfillStage = case filter ((/= (zsHexRadius currentStage, zsAtlasScale currentStage)) . zoomStagePair) allZoomStages of
+          stage:_ -> stage
+          [] -> currentStage { zsHexRadius = zsHexRadius currentStage + 4 }
+        snapshot = RenderSnapshot
+          { rsUi = ui
+          , rsLog = LogSnapshot [] False 0 LogDebug
+          , rsData = DataSnapshot 0 0 Nothing
+          , rsTerrain = terrainSnap
+          }
+    enqueueAtlasBuild managerHandle (atlasJobFor ViewElevation 9 backfillStage)
+    enqueueAtlasBuild managerHandle (atlasJobFor ViewElevation 9 currentStage)
+    requestAtlasSchedule schedulerHandle AtlasScheduleRequest
+      { asqSnapshotVersion = version
+      , asqRenderTargetOk = True
+      , asqDataReady = True
+      , asqSnapshot = snapshot
+      , asqWindowSize = (800, 600)
+      , asqRefreshCurrentViewport = False
+      , asqRefreshStage = Nothing
+      }
+    report <- awaitReport scheduleRef version
+    asrJobCount report `shouldBe` 1
+    leftovers <- drainAtlasJobs managerHandle
+    map atlasJobStage leftovers `shouldBe` [zoomStagePair backfillStage]
+
+  it "keeps viewport refresh backlog bounded while worker capacity is saturated" $ withSystem $ \system -> do
+    managerHandle <- get @AtlasManager system
+    queueRef <- newAtlasManagerQueueRef
+    setAtlasManagerQueueRef managerHandle queueRef
+    workerHandle <- spawnActor atlasWorkerActorDef
+    workerNextRef <- newIORef (0 :: Int)
+    workerLoadRef <- newAtlasWorkerLoadRef
+    resultRef <- newAtlasResultRef
+    scheduleRef <- newAtlasScheduleRef
+    freshnessRef <- newAtlasFreshnessRef
+    schedulerHandle <- get @AtlasScheduler system
+    setAtlasSchedulerHandles schedulerHandle AtlasSchedulerHandles
+      { ashManager = managerHandle
+      , ashWorkers = [workerHandle]
+      , ashWorkerNext = workerNextRef
+      , ashWorkerLoadRef = workerLoadRef
+      , ashResultRef = resultRef
+      , ashScheduleRef = scheduleRef
+      , ashFreshnessRef = freshnessRef
+      }
+    atlasWorkerLoadStart workerLoadRef 1
+    let terrainSnap = (emptyTerrainSnapshotWithVersion 10) { tsChunkSize = 16 }
+        ui = emptyUiState { uiZoom = 1.5 }
+        currentStage = stageForZoom (uiZoom ui)
+        snapshot = RenderSnapshot
+          { rsUi = ui
+          , rsLog = LogSnapshot [] False 0 LogDebug
+          , rsData = DataSnapshot 0 0 Nothing
+          , rsTerrain = terrainSnap
+          }
+        mkReq version refresh = AtlasScheduleRequest
+          { asqSnapshotVersion = SnapshotVersion version
+          , asqRenderTargetOk = True
+          , asqDataReady = True
+          , asqSnapshot = snapshot
+          , asqWindowSize = (800, 600)
+          , asqRefreshCurrentViewport = refresh
+          , asqRefreshStage = Just currentStage
+          }
+    mapM_ (requestAtlasSchedule schedulerHandle . (`mkReq` True)) [1..20 :: Word64]
+    saturatedReport <- awaitReportMatching scheduleRef (SnapshotVersion 20) ((== 0) . asrJobCount)
+    asrJobCount saturatedReport `shouldBe` 0
+    threadDelay 50000
+    atlasManagerQueuedCount queueRef `shouldReturn` 1
+
+    atlasWorkerLoadFinish (Just workerLoadRef) False
+    requestAtlasSchedule schedulerHandle (mkReq 20 False)
+    dispatchReport <- awaitReportMatching scheduleRef (SnapshotVersion 20) ((== 1) . asrJobCount)
+    asrJobCount dispatchReport `shouldBe` 1
+    atlasManagerQueuedCount queueRef `shouldReturn` 0
+
+  it "stale worker messages decrement load and skip result publication" $ withSystem $ \system -> do
+    workerHandle <- spawnActor atlasWorkerActorDef
+    workerLoadRef <- newAtlasWorkerLoadRef
+    freshnessRef <- newAtlasFreshnessRef
+    resultRef <- newAtlasResultRef
+    let terrainSnap = emptyTerrainSnapshotWithVersion 1
+        key1 = AtlasKey ViewElevation defaultWaterLevel 1
+        key2 = AtlasKey ViewElevation defaultWaterLevel 2
+        build = AtlasBuild
+          { abBuildId = AtlasBuildId 1
+          , abKey = key1
+          , abViewMode = ViewElevation
+          , abWaterLevel = defaultWaterLevel
+          , abTerrain = terrainSnap
+          , abHexRadius = 6
+          , abAtlasScale = 1
+          , abPanOffset = (0, 0)
+          , abZoom = 1
+          , abWindowSize = (800, 600)
+          , abSnapshotVersion = SnapshotVersion 1
+          , abResultRef = resultRef
+          , abFreshnessRef = freshnessRef
+          , abDayNightSpec = Nothing
+          , abWorkerLoadRef = Just workerLoadRef
+          }
+    writeAtlasFreshness freshnessRef AtlasFreshness
+      { afKey = key2
+      , afSnapshotVersion = SnapshotVersion 2
+      , afLatestBuildIds = mempty
+      }
+    atlasWorkerLoadStart workerLoadRef 1
+    enqueueAtlasBuildWork workerHandle build
+    skipped <- awaitWorkerLoad workerLoadRef (\load -> awlInFlight load == 0 && awlStaleSkipped load == 1)
+    skipped `shouldBe` True
+    atlasResultsPending resultRef `shouldReturn` False
+
   it "marks worker builds stale when the scheduler freshness key advances" $ do
     freshnessRef <- newAtlasFreshnessRef
     resultRef <- newAtlasResultRef
@@ -449,6 +619,7 @@ spec = describe "AtlasScheduler" $ do
           , abResultRef = resultRef
           , abFreshnessRef = freshnessRef
           , abDayNightSpec = Nothing
+          , abWorkerLoadRef = Nothing
           }
     writeAtlasFreshness freshnessRef AtlasFreshness
       { afKey = key1
@@ -490,6 +661,7 @@ spec = describe "AtlasScheduler" $ do
           , abResultRef = resultRef
           , abFreshnessRef = freshnessRef
           , abDayNightSpec = spec
+          , abWorkerLoadRef = Nothing
           }
     case (expectedKey, atlasSchedulerDayNightSpec ui terrainSnap) of
       (Just key, Just (actualKey, fn)) -> do
@@ -504,6 +676,26 @@ spec = describe "AtlasScheduler" $ do
     case atlasSchedulerDayNightSpec ui (terrainSnap { tsChunkSize = 0 }) of
       Nothing -> pure ()
       Just _ -> expectationFailure "expected scheduler day/night spec to require terrain chunk size"
+
+atlasJobStage :: AtlasJob -> (Int, Int)
+atlasJobStage job = (ajHexRadius job, ajAtlasScale job)
+
+zoomStagePair :: ZoomStage -> (Int, Int)
+zoomStagePair stage = (zsHexRadius stage, zsAtlasScale stage)
+
+awaitWorkerLoad :: AtlasWorkerLoadRef -> (AtlasWorkerLoad -> Bool) -> IO Bool
+awaitWorkerLoad loadRef predicate = do
+  result <- timeout 500000 (pollUntil 0)
+  pure (maybe False id result)
+  where
+    pollDelayUs = 1000
+    pollUntil retries = do
+      load <- readAtlasWorkerLoad loadRef
+      if predicate load
+        then pure True
+        else if retries >= (500 :: Int)
+          then pure False
+          else threadDelay pollDelayUs >> pollUntil (retries + 1)
 
 awaitReport
   :: AtlasScheduleRef
