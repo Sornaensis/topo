@@ -27,9 +27,11 @@ import Seer.Render.Atlas
   )
 import Seer.Render.Frame
   ( AtlasFrameStepPolicy(..)
+  , AtlasQueuedWork(..)
   , applyAtlasFrameStepTimestamps
   , atlasFrameStepPolicy
   , fallbackFrameMaintenanceDue
+  , noAtlasQueuedWork
   )
 import Seer.Render.Terrain (TerrainCache(..), buildTerrainCache)
 import Seer.Render.ZoomStage (ZoomStage(..), stageForZoom)
@@ -51,7 +53,7 @@ spec = describe "render-loop atlas maintenance wakeups" $ do
     atlasPending <- atlasResultsPending resultRef
 
     let nowMs = 110
-        policy = atlasFrameStepPolicy nowMs atlasDrainPollMs atlasSchedulePollMs False True atlasPending False (Just 109) (Just 109)
+        policy = atlasFrameStepPolicy nowMs atlasDrainPollMs atlasSchedulePollMs False True atlasPending noAtlasQueuedWork False (Just 109) (Just 109)
 
     lastSnapshot `shouldBe` Just snapVersion
     afspAtlasMaintenanceDue policy `shouldBe` True
@@ -64,7 +66,7 @@ spec = describe "render-loop atlas maintenance wakeups" $ do
 
     atlasPending <- atlasResultsPending resultRef
     let nowMs = 250
-        policy = atlasFrameStepPolicy nowMs atlasDrainPollMs atlasSchedulePollMs False True atlasPending False (Just 249) (Just 249)
+        policy = atlasFrameStepPolicy nowMs atlasDrainPollMs atlasSchedulePollMs False True atlasPending noAtlasQueuedWork False (Just 249) (Just 249)
     afspShouldDrainAtlas policy `shouldBe` True
 
     (drained, staleCount) <- drainFreshResultsN resultRef (const True) atlasUploadsPerFrame
@@ -75,17 +77,44 @@ spec = describe "render-loop atlas maintenance wakeups" $ do
     leftoversPending `shouldBe` True
     let (lastDrainAfter, lastScheduleAfter) = applyAtlasFrameStepTimestamps nowMs policy (Just 249) (Just 249)
         nextNowMs = nowMs + 1
-        nextPolicy = atlasFrameStepPolicy nextNowMs atlasDrainPollMs atlasSchedulePollMs False True leftoversPending False lastDrainAfter lastScheduleAfter
+        nextPolicy = atlasFrameStepPolicy nextNowMs atlasDrainPollMs atlasSchedulePollMs False True leftoversPending noAtlasQueuedWork False lastDrainAfter lastScheduleAfter
     lastDrainAfter `shouldBe` Just nowMs
     afspAtlasMaintenanceDue nextPolicy `shouldBe` True
     afspShouldDrainAtlas nextPolicy `shouldBe` True
 
+  it "wakes queued manager work once per revision and then waits for poll or a new revision" $ do
+    let queuedRevision = AtlasQueuedWork
+          { aqwQueuedForCurrentKey = True
+          , aqwQueueRevision = Just 7
+          , aqwLastScheduledRevision = Just 6
+          }
+        firstPolicy = atlasFrameStepPolicy 150 atlasDrainPollMs atlasSchedulePollMs False True False queuedRevision False (Just 100) (Just 100)
+
+    afspAtlasMaintenanceDue firstPolicy `shouldBe` True
+    afspShouldDrainAtlas firstPolicy `shouldBe` False
+    afspShouldScheduleAtlas firstPolicy `shouldBe` True
+
+    let (_lastDrainAfter, lastScheduleAfter) = applyAtlasFrameStepTimestamps 150 firstPolicy (Just 100) (Just 100)
+        sameRevision = queuedRevision { aqwLastScheduledRevision = Just 7 }
+        sameRevisionPolicy = atlasFrameStepPolicy 151 atlasDrainPollMs atlasSchedulePollMs False True False sameRevision False (Just 100) lastScheduleAfter
+        pollDuePolicy = atlasFrameStepPolicy 250 atlasDrainPollMs atlasSchedulePollMs False True False sameRevision False (Just 100) lastScheduleAfter
+        nextRevision = sameRevision { aqwQueueRevision = Just 8 }
+        nextRevisionPolicy = atlasFrameStepPolicy 151 atlasDrainPollMs atlasSchedulePollMs False True False nextRevision False (Just 100) lastScheduleAfter
+
+    lastScheduleAfter `shouldBe` Just 150
+    afspAtlasMaintenanceDue sameRevisionPolicy `shouldBe` False
+    afspShouldScheduleAtlas sameRevisionPolicy `shouldBe` False
+    afspAtlasMaintenanceDue pollDuePolicy `shouldBe` True
+    afspShouldScheduleAtlas pollDuePolicy `shouldBe` True
+    afspAtlasMaintenanceDue nextRevisionPolicy `shouldBe` True
+    afspShouldScheduleAtlas nextRevisionPolicy `shouldBe` True
+
   it "does not busy-loop when no atlas work is pending and only wakes retry at the schedule poll interval" $ do
     let beforePollMs = 150
         dueMs = 200
-        idlePolicy = atlasFrameStepPolicy beforePollMs atlasDrainPollMs atlasSchedulePollMs False True False False (Just 100) (Just 100)
-        retryBeforePolicy = atlasFrameStepPolicy beforePollMs atlasDrainPollMs atlasSchedulePollMs False True False True (Just 100) (Just 100)
-        retryDuePolicy = atlasFrameStepPolicy dueMs atlasDrainPollMs atlasSchedulePollMs False True False True (Just 100) (Just 100)
+        idlePolicy = atlasFrameStepPolicy beforePollMs atlasDrainPollMs atlasSchedulePollMs False True False noAtlasQueuedWork False (Just 100) (Just 100)
+        retryBeforePolicy = atlasFrameStepPolicy beforePollMs atlasDrainPollMs atlasSchedulePollMs False True False noAtlasQueuedWork True (Just 100) (Just 100)
+        retryDuePolicy = atlasFrameStepPolicy dueMs atlasDrainPollMs atlasSchedulePollMs False True False noAtlasQueuedWork True (Just 100) (Just 100)
 
     afspAtlasMaintenanceDue idlePolicy `shouldBe` False
     afspAtlasMaintenanceDue retryBeforePolicy `shouldBe` False
@@ -93,7 +122,7 @@ spec = describe "render-loop atlas maintenance wakeups" $ do
     afspShouldScheduleAtlas retryDuePolicy `shouldBe` True
 
     let (lastDrainAfter, lastScheduleAfter) = applyAtlasFrameStepTimestamps dueMs retryDuePolicy (Just 100) (Just 100)
-        afterSchedulePolicy = atlasFrameStepPolicy (dueMs + 1) atlasDrainPollMs atlasSchedulePollMs False True False True lastDrainAfter lastScheduleAfter
+        afterSchedulePolicy = atlasFrameStepPolicy (dueMs + 1) atlasDrainPollMs atlasSchedulePollMs False True False noAtlasQueuedWork True lastDrainAfter lastScheduleAfter
     lastScheduleAfter `shouldBe` Just dueMs
     afspAtlasMaintenanceDue afterSchedulePolicy `shouldBe` False
     afspShouldScheduleAtlas afterSchedulePolicy `shouldBe` False
@@ -111,8 +140,8 @@ spec = describe "render-loop atlas maintenance wakeups" $ do
           ((emptyAtlasTextureCache 30) { atcKey = Just keyElevation })
         (_, overlayStatus) = resolveDayNightOverlayForTarget (Just freshness) True True CompleteExact (Just testDayNightKey) targetStage cacheWithBase
         overlayRetry = dayNightOverlayNeedsRetry overlayStatus
-        beforePoll = atlasFrameStepPolicy 150 atlasDrainPollMs atlasSchedulePollMs False True False overlayRetry (Just 100) (Just 100)
-        atPoll = atlasFrameStepPolicy 200 atlasDrainPollMs atlasSchedulePollMs False True False overlayRetry (Just 100) (Just 100)
+        beforePoll = atlasFrameStepPolicy 150 atlasDrainPollMs atlasSchedulePollMs False True False noAtlasQueuedWork overlayRetry (Just 100) (Just 100)
+        atPoll = atlasFrameStepPolicy 200 atlasDrainPollMs atlasSchedulePollMs False True False noAtlasQueuedWork overlayRetry (Just 100) (Just 100)
 
     overlayStatus `shouldBe` DayNightOverlayMissing
     overlayRetry `shouldBe` True
@@ -130,7 +159,7 @@ spec = describe "render-loop atlas maintenance wakeups" $ do
         oldCache = buildTerrainCache uiOld terrainSnap
         scale = zsAtlasScale (stageForZoom (uiZoom uiNew))
         fallbackDue = fallbackFrameMaintenanceDue False uiNew terrainSnap scale oldCache (chunkTexturesFor scale oldCache)
-        atlasPolicy = atlasFrameStepPolicy 101 atlasDrainPollMs atlasSchedulePollMs False False False False (Just 100) (Just 100)
+        atlasPolicy = atlasFrameStepPolicy 101 atlasDrainPollMs atlasSchedulePollMs False False False noAtlasQueuedWork False (Just 100) (Just 100)
     fallbackDue `shouldBe` True
     afspAtlasMaintenanceDue atlasPolicy `shouldBe` False
     afspShouldDrainAtlas atlasPolicy `shouldBe` False
@@ -169,7 +198,7 @@ spec = describe "render-loop atlas maintenance wakeups" $ do
 
     pushAtlasResult resultRef (mkBuildResult weatherKey snapVersion targetHex 1 testRect2 77)
     pendingSecondTile <- atlasResultsPending resultRef
-    let partialPolicy = atlasFrameStepPolicy 500 atlasDrainPollMs atlasSchedulePollMs False True pendingSecondTile (atlasResolveNeedsRetry partialStatus) (Just 499) (Just 499)
+    let partialPolicy = atlasFrameStepPolicy 500 atlasDrainPollMs atlasSchedulePollMs False True pendingSecondTile noAtlasQueuedWork (atlasResolveNeedsRetry partialStatus) (Just 499) (Just 499)
     lastSnapshot `shouldBe` Just snapVersion
     pendingSecondTile `shouldBe` True
     afspAtlasMaintenanceDue partialPolicy `shouldBe` True
@@ -184,7 +213,7 @@ spec = describe "render-loop atlas maintenance wakeups" $ do
     let completeAtlasCache = storeAtlasTileSet manifest [mkTile 11 targetHex testRect2] partialResolvedCache
         (completeTiles, completeStatus, completeResolvedCache) =
           resolveAtlasPureWithFreshness (Just freshness) True True weatherKey targetHex completeAtlasCache
-        completePolicy = atlasFrameStepPolicy 501 atlasDrainPollMs atlasSchedulePollMs False True brokerEmpty (atlasResolveNeedsRetry completeStatus) (Just 500) (Just 499)
+        completePolicy = atlasFrameStepPolicy 501 atlasDrainPollMs atlasSchedulePollMs False True brokerEmpty noAtlasQueuedWork (atlasResolveNeedsRetry completeStatus) (Just 500) (Just 499)
     fmap length completeTiles `shouldBe` Just 2
     completeStatus `shouldBe` CompleteExact
     atlasResolveNeedsRetry completeStatus `shouldBe` False

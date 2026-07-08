@@ -11,6 +11,7 @@ module Actor.UiActions.Command
   , UiActionRequest(..)
   , runUiAction
   , enqueueAtlasRebuildForTerrain
+  , enqueueViewportRefreshForCurrentUi
   , isElevationTool
   ) where
 
@@ -366,10 +367,14 @@ enqueueAtlasRebuildForTerrain handles mode uiSnap snapshotVersion terrainSnap = 
 -- all 5 zoom stages when only the visible one needs new tiles.
 refreshViewport :: UiActionRequest -> IO ()
 refreshViewport req = do
-  let handles = uarActorHandles req
+  _ <- enqueueViewportRefreshForCurrentUi (uarActorHandles req)
+  pure ()
+
+enqueueViewportRefreshForCurrentUi :: ActorHandles -> IO SnapshotVersion
+enqueueViewportRefreshForCurrentUi handles = do
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap <- getUiSnapshot (ahUiHandle handles)
-  snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
+  snapshotVersion <- bumpSnapshotVersionAndRead (ahSnapshotVersionRef handles)
   let mode = uiViewMode uiSnap
       atlasKey = atlasKeyFor mode (uiRenderWaterLevel uiSnap) terrainSnap
       currentStage = stageForZoom (uiZoom uiSnap)
@@ -383,6 +388,7 @@ refreshViewport req = do
         , ajAtlasScale = zsAtlasScale stage
         }
   enqueueAtlasBuild (ahAtlasManagerHandle handles) (job currentStage)
+  pure snapshotVersion
 
 setViewMode :: UiActionRequest -> ViewMode -> IO ()
 setViewMode req mode =

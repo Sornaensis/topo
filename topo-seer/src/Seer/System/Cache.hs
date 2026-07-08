@@ -28,7 +28,7 @@ import Actor.UI (UiState(..))
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
-import Data.Word (Word32)
+import Data.Word (Word32, Word64)
 import Hyperspace.Actor (ActorHandle, Protocol)
 import Seer.Render (TerrainCache(..), emptyTerrainCache, terrainCacheNeedsRefresh)
 import Seer.Render.Atlas
@@ -65,6 +65,9 @@ data RenderCacheState = RenderCacheState
   , rcsLastAtlasDrainAttempted :: !Bool
   , rcsLastAtlasScheduleAttempted :: !Bool
   , rcsLastAtlasPendingCount :: !Int
+  , rcsLastAtlasQueuedCount :: !Int
+  , rcsLastAtlasQueuedRevision :: !(Maybe Word64)
+  , rcsLastAtlasQueuedRevisionScheduled :: !(Maybe Word64)
   , rcsLastChunkTexturePoll :: !(Maybe Word32)
   }
 
@@ -88,6 +91,9 @@ initialRenderCacheState atlasCacheEntries = RenderCacheState
   , rcsLastAtlasDrainAttempted = False
   , rcsLastAtlasScheduleAttempted = False
   , rcsLastAtlasPendingCount = 0
+  , rcsLastAtlasQueuedCount = 0
+  , rcsLastAtlasQueuedRevision = Nothing
+  , rcsLastAtlasQueuedRevisionScheduled = Nothing
   , rcsLastChunkTexturePoll = Nothing
   }
 
@@ -183,6 +189,9 @@ renderAtlasDiagnosticSummary snap cacheState =
   in "atlasRetry=" <> show (rcsAtlasNeedsRetry cacheState)
     <> " atlasResolve=" <> atlasResolveStatusLabel (rcsLastAtlasResolveStatus cacheState)
     <> " atlasPending=" <> show (rcsLastAtlasPendingCount cacheState)
+    <> " atlasQueued=" <> show (rcsLastAtlasQueuedCount cacheState)
+    <> " atlasQueuedRev=" <> maybe "none" show (rcsLastAtlasQueuedRevision cacheState)
+    <> " atlasQueuedScheduledRev=" <> maybe "none" show (rcsLastAtlasQueuedRevisionScheduled cacheState)
     <> " atlasDrainAttempted=" <> show (rcsLastAtlasDrainAttempted cacheState)
     <> " atlasScheduleAttempted=" <> show (rcsLastAtlasScheduleAttempted cacheState)
     <> " lastSnapshotDecision=" <> lastSnapshotDecision

@@ -64,7 +64,7 @@ import Actor.UiActions.Command (UiAction(..), UiActionRequest(..), runUiAction)
 import Seer.Command.AppServiceAdapter (commandAppService, runAppServiceOperation)
 import Seer.Command.Dispatch (CommandContext(..), dispatchCommand)
 import Seer.Editor.History (emptyHistory)
-import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom)
+import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom, stageForZoom)
 import Seer.Screenshot (ScreenshotRequest(..), newScreenshotRequestRef)
 import Seer.Service.AppService
   ( AppService(..)
@@ -1060,6 +1060,47 @@ spec = describe "CommandDispatch" $ do
       map atlasJobStage jobs `shouldBe` expectedStages
       map ajSnapshotVersion jobs `shouldSatisfy` all (== versionFinal)
 
+  describe "camera and viewport atlas refreshes" $ do
+    it "set_camera bumps the snapshot and queues a current-stage viewport refresh" $ withCtx $ \ctx -> do
+      expectViewportRefreshForCommand ctx "set_camera" (object
+        [ "x" .= (12.0 :: Double)
+        , "y" .= ((-4.0) :: Double)
+        , "zoom" .= (1.5 :: Double)
+        ])
+
+    it "zoom_to_chunk bumps the snapshot and queues a current-stage viewport refresh" $ withCtx $ \ctx -> do
+      let ChunkId chunkKey = chunkIdFromCoord (ChunkCoord 0 0)
+      expectViewportRefreshForCommand ctx "zoom_to_chunk" (object ["chunk" .= chunkKey])
+
+    it "viewport_scroll bumps the snapshot and queues a current-stage viewport refresh" $ withCtx $ \ctx -> do
+      expectViewportRefreshForCommand ctx "viewport_scroll" (object
+        [ "delta" .= (1 :: Int)
+        , "x" .= (320 :: Int)
+        , "y" .= (240 :: Int)
+        ])
+
+    it "viewport_drag bumps the snapshot and queues a current-stage viewport refresh" $ withCtx $ \ctx -> do
+      expectViewportRefreshForCommand ctx "viewport_drag" (object
+        [ "x1" .= (0 :: Int)
+        , "y1" .= (0 :: Int)
+        , "x2" .= (30 :: Int)
+        , "y2" .= ((-10) :: Int)
+        ])
+
+    it "viewport_hover does not enqueue a viewport atlas refresh" $ withCtx $ \ctx -> do
+      _ <- writeReadyTerrainData ctx
+      let handles = ccActorHandles ctx
+          atlasH = ahAtlasManagerHandle handles
+      _ <- drainAtlasJobs atlasH
+      version0 <- readSnapshotVersion (ahSnapshotVersionRef handles)
+
+      rsp <- dispatch ctx "viewport_hover" (object ["x" .= (0 :: Int), "y" .= (0 :: Int)])
+      srSuccess rsp `shouldBe` True
+
+      readSnapshotVersion (ahSnapshotVersionRef handles) `shouldReturn` version0
+      jobs <- drainAtlasJobs atlasH
+      length jobs `shouldBe` 0
+
   describe "set_sim_auto_tick" $ do
     it "sets and clamps the normalized auto tick rate" $ withCtx $ \ctx -> do
       highRsp <- dispatch ctx "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (5.0 :: Double)])
@@ -1250,6 +1291,29 @@ expectQueuedAtlasJobsForVersion ctx version = do
   map ajSnapshotVersion jobs `shouldSatisfy` all (== version)
   map ajWaterLevel jobs `shouldSatisfy` all (== uiRenderWaterLevel ui)
   map (tsChunkSize . ajTerrain) jobs `shouldSatisfy` all (== 64)
+
+expectViewportRefreshForCommand :: CommandContext -> Text -> Value -> IO ()
+expectViewportRefreshForCommand ctx method params = do
+  _ <- writeReadyTerrainData ctx
+  let handles = ccActorHandles ctx
+      atlasH = ahAtlasManagerHandle handles
+  _ <- drainAtlasJobs atlasH
+  version0 <- readSnapshotVersion (ahSnapshotVersionRef handles)
+
+  rsp <- dispatch ctx method params
+  srSuccess rsp `shouldBe` True
+
+  version1 <- readSnapshotVersion (ahSnapshotVersionRef handles)
+  version1 `shouldSatisfy` (> version0)
+  ui <- getUiSnapshot (ahUiHandle handles)
+  jobs <- drainAtlasJobs atlasH
+  let currentStage = zoomStagePair (stageForZoom (uiZoom ui))
+  length jobs `shouldBe` 1
+  map ajViewMode jobs `shouldBe` [uiViewMode ui]
+  map atlasJobStage jobs `shouldBe` [currentStage]
+  map ajSnapshotVersion jobs `shouldBe` [version1]
+  map ajWaterLevel jobs `shouldBe` [uiRenderWaterLevel ui]
+  map (tsChunkSize . ajTerrain) jobs `shouldBe` [64]
 
 -- | Bracket that creates a full actor system with all handles needed
 -- for a 'CommandContext'.

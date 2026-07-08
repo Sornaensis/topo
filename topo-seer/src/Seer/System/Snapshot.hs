@@ -44,10 +44,12 @@ pollRenderSnapshot
   :: SnapshotPollEnv
   -> Word32
   -> Bool
+  -> Bool
   -> RenderCacheState
   -> IO (SnapshotVersion, RenderSnapshot, RenderCacheState, Word32)
-pollRenderSnapshot env nowMs hasEvents cacheState = do
-  let shouldPollSnapshot = hasEvents
+pollRenderSnapshot env nowMs hasEvents forcePoll cacheState = do
+  let shouldPollSnapshot = forcePoll
+        || hasEvents
         || shouldPoll nowMs (speSnapshotPollMs env) (rcsLastSnapshotPoll cacheState)
         || rcsLastSnapshotData cacheState == Nothing
   case (shouldPollSnapshot, rcsLastSnapshotData cacheState, rcsLastPolledSnapshot cacheState) of

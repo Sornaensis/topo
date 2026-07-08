@@ -2,6 +2,8 @@ module Seer.Render.Frame
   ( RenderContext(..)
   , RenderFrameOutcome(..)
   , AtlasFrameStepPolicy(..)
+  , AtlasQueuedWork(..)
+  , noAtlasQueuedWork
   , applyAtlasFrameStepTimestamps
   , atlasFrameStepPolicy
   , fallbackFrameMaintenanceDue
@@ -108,6 +110,20 @@ data AtlasFrameStepPolicy = AtlasFrameStepPolicy
   , afspAtlasMaintenanceDue :: !Bool
   } deriving (Eq, Show)
 
+-- | Non-destructive manager-queue signal used to wake unchanged snapshots.
+data AtlasQueuedWork = AtlasQueuedWork
+  { aqwQueuedForCurrentKey :: !Bool
+  , aqwQueueRevision :: !(Maybe Word64)
+  , aqwLastScheduledRevision :: !(Maybe Word64)
+  } deriving (Eq, Show)
+
+noAtlasQueuedWork :: AtlasQueuedWork
+noAtlasQueuedWork = AtlasQueuedWork
+  { aqwQueuedForCurrentKey = False
+  , aqwQueueRevision = Nothing
+  , aqwLastScheduledRevision = Nothing
+  }
+
 atlasFrameStepPolicy
   :: Word32
   -> Int
@@ -115,19 +131,23 @@ atlasFrameStepPolicy
   -> Bool
   -> Bool
   -> Bool
+  -> AtlasQueuedWork
   -> Bool
   -> Maybe Word32
   -> Maybe Word32
   -> AtlasFrameStepPolicy
-atlasFrameStepPolicy nowMs drainPollMs schedulePollMs generating renderTargetOk atlasPending atlasNeedsRetry lastDrain lastSchedule =
+atlasFrameStepPolicy nowMs drainPollMs schedulePollMs generating renderTargetOk atlasPending queuedWork atlasNeedsRetry lastDrain lastSchedule =
   let scheduleDue = atlasPolicyShouldPoll nowMs schedulePollMs lastSchedule
+      queuedRevisionNew = aqwQueuedForCurrentKey queuedWork
+        && maybe False (\rev -> Just rev /= aqwLastScheduledRevision queuedWork) (aqwQueueRevision queuedWork)
+      queuedScheduleDue = aqwQueuedForCurrentKey queuedWork && (queuedRevisionNew || scheduleDue)
   in AtlasFrameStepPolicy
     { afspShouldDrainAtlas = not generating
         && (atlasPending || atlasPolicyShouldPoll nowMs drainPollMs lastDrain)
-    , afspShouldScheduleAtlas = not generating && scheduleDue
+    , afspShouldScheduleAtlas = not generating && (scheduleDue || queuedRevisionNew)
     , afspAtlasMaintenanceDue = not generating
         && renderTargetOk
-        && (atlasPending || (atlasNeedsRetry && scheduleDue))
+        && (atlasPending || queuedScheduleDue || (atlasNeedsRetry && scheduleDue))
     }
 
 applyAtlasFrameStepTimestamps

@@ -71,6 +71,7 @@ import Seer.Render.Frame
   ( AtlasFrameStepPolicy(..)
   , applyAtlasFrameStepTimestamps
   , atlasFrameStepPolicy
+  , noAtlasQueuedWork
   )
 import Seer.Render.ZoomStage (ZoomStage(..), allZoomStages, orderedZoomStagesForZoom, stageForZoom)
 import Topo
@@ -249,7 +250,7 @@ spec = describe "headless weather/cloud atlas flicker regressions" $ do
         lastSchedule = Just 100
         nowMs = 150
         dueMs = 200
-        mkPolicy pending retry now = atlasFrameStepPolicy now atlasDrainPollMs atlasSchedulePollMs False True pending retry lastDrain lastSchedule
+        mkPolicy pending retry now = atlasFrameStepPolicy now atlasDrainPollMs atlasSchedulePollMs False True pending noAtlasQueuedWork retry lastDrain lastSchedule
         idlePolicy = mkPolicy False False nowMs
         retryBeforePolicy = mkPolicy False True nowMs
         retryDuePolicy = mkPolicy False True dueMs
@@ -274,7 +275,7 @@ spec = describe "headless weather/cloud atlas flicker regressions" $ do
       ]
     pending0 <- atlasResultsPending resultRef
     pending0 `shouldBe` True
-    let pendingPolicy = atlasFrameStepPolicy nowMs atlasDrainPollMs atlasSchedulePollMs False True pending0 False lastDrain lastSchedule
+    let pendingPolicy = atlasFrameStepPolicy nowMs atlasDrainPollMs atlasSchedulePollMs False True pending0 noAtlasQueuedWork False lastDrain lastSchedule
     afspAtlasMaintenanceDue pendingPolicy `shouldBe` True
     afspShouldDrainAtlas pendingPolicy `shouldBe` True
     applyAtlasFrameStepTimestamps nowMs pendingPolicy lastDrain lastSchedule `shouldBe` (Just nowMs, lastSchedule)
@@ -284,14 +285,14 @@ spec = describe "headless weather/cloud atlas flicker regressions" $ do
     length drained1 `shouldBe` atlasUploadsPerFrame
     pending1 <- atlasResultsPending resultRef
     pending1 `shouldBe` True
-    let nextPolicy = atlasFrameStepPolicy (nowMs + 1) atlasDrainPollMs atlasSchedulePollMs False True pending1 False (Just nowMs) lastSchedule
+    let nextPolicy = atlasFrameStepPolicy (nowMs + 1) atlasDrainPollMs atlasSchedulePollMs False True pending1 noAtlasQueuedWork False (Just nowMs) lastSchedule
     afspAtlasMaintenanceDue nextPolicy `shouldBe` True
     afspShouldDrainAtlas nextPolicy `shouldBe` True
 
     (_drained2, _staleCount2) <- drainFreshResultsN resultRef (const True) 2
     pending2 <- atlasResultsPending resultRef
     pending2 `shouldBe` False
-    let emptyAfterDrainPolicy = atlasFrameStepPolicy (nowMs + 2) atlasDrainPollMs atlasSchedulePollMs False True pending2 False (Just (nowMs + 1)) lastSchedule
+    let emptyAfterDrainPolicy = atlasFrameStepPolicy (nowMs + 2) atlasDrainPollMs atlasSchedulePollMs False True pending2 noAtlasQueuedWork False (Just (nowMs + 1)) lastSchedule
     afspAtlasMaintenanceDue emptyAfterDrainPolicy `shouldBe` False
 
 withSystem :: (ActorSystem -> IO a) -> IO a
@@ -372,7 +373,7 @@ assertConstrainedLatestCompletion tc = do
   let partialCache = foldl storeResultTile (lccSeedCache tc) drained1
       (partialTiles, partialStatus, partialResolvedCache) =
         resolveAtlasPureWithFreshness (Just currentFreshness) True True (lccCurrentKey tc) (lccTargetHexRadius tc) partialCache
-      partialPolicy = atlasFrameStepPolicy 500 atlasDrainPollMs atlasSchedulePollMs False True pendingAfterFirstBudget (atlasResolveNeedsRetry partialStatus) (Just 499) (Just 499)
+      partialPolicy = atlasFrameStepPolicy 500 atlasDrainPollMs atlasSchedulePollMs False True pendingAfterFirstBudget noAtlasQueuedWork (atlasResolveNeedsRetry partialStatus) (Just 499) (Just 499)
       unchangedSnapshot = Just (lccCurrentSnapshotVersion tc)
   unchangedSnapshot `shouldBe` Just (lccCurrentSnapshotVersion tc)
   fmap length partialTiles `shouldSatisfy` maybe False (> 0)
@@ -391,7 +392,7 @@ assertConstrainedLatestCompletion tc = do
   let completeCache = foldl storeResultTile partialResolvedCache drained2
       (completeTiles, completeStatus, completeResolvedCache) =
         resolveAtlasPureWithFreshness (Just currentFreshness) True True (lccCurrentKey tc) (lccTargetHexRadius tc) completeCache
-      completePolicy = atlasFrameStepPolicy 501 atlasDrainPollMs atlasSchedulePollMs False True brokerEmpty (atlasResolveNeedsRetry completeStatus) (Just 500) (Just 499)
+      completePolicy = atlasFrameStepPolicy 501 atlasDrainPollMs atlasSchedulePollMs False True brokerEmpty noAtlasQueuedWork (atlasResolveNeedsRetry completeStatus) (Just 500) (Just 499)
   fmap length completeTiles `shouldBe` Just 2
   completeStatus `shouldBe` CompleteExact
   atlasResolveNeedsRetry completeStatus `shouldBe` False

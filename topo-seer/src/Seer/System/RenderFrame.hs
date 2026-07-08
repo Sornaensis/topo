@@ -8,7 +8,9 @@ module Seer.System.RenderFrame
   , renderFrameStepMaintenanceDue
   ) where
 
+import Actor.AtlasCache (atlasKeyFor)
 import Actor.AtlasFreshness (AtlasFreshnessRef)
+import Actor.AtlasManager (AtlasManagerQueueRef, AtlasManagerQueueState(..), atlasManagerQueuedState)
 import Actor.AtlasResultBroker (AtlasResultRef, atlasResultsPendingCount)
 import Actor.AtlasScheduleBroker (AtlasScheduleRef)
 import Actor.AtlasScheduler (AtlasScheduler)
@@ -18,8 +20,9 @@ import Actor.SnapshotReceiver (SnapshotVersion)
 import Actor.TerrainCacheBroker (TerrainCacheRef)
 import Actor.TerrainCacheWorker (TerrainCacheWorker)
 import Actor.UI (UiState(..))
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
-import Data.Word (Word32)
+import Data.Word (Word32, Word64)
 import GHC.Clock (getMonotonicTimeNSec)
 import Hyperspace.Actor (ActorHandle, Protocol)
 import qualified SDL
@@ -33,9 +36,11 @@ import Seer.Render
 import Seer.Render.Atlas (AtlasTextureCache(..))
 import Seer.Render.Frame
   ( AtlasFrameStepPolicy(..)
+  , AtlasQueuedWork(..)
   , applyAtlasFrameStepTimestamps
   , atlasFrameStepPolicy
   , fallbackFrameMaintenanceDue
+  , noAtlasQueuedWork
   )
 import Seer.Render.ZoomStage (ZoomStage(..), stageForZoom)
 import Seer.Screenshot.Request (ScreenshotRequestRef)
@@ -63,6 +68,7 @@ data RenderFrameEnv = RenderFrameEnv
   , rfeAtlasScheduleRef :: !AtlasScheduleRef
   , rfeAtlasResultRef :: !AtlasResultRef
   , rfeAtlasFreshnessRef :: !AtlasFreshnessRef
+  , rfeAtlasQueueRef :: !AtlasManagerQueueRef
   , rfeScreenshotRef :: !ScreenshotRequestRef
   , rfeTraceHandle :: !(Maybe Handle)
   }
@@ -86,6 +92,9 @@ data RenderFrameStepResult = RenderFrameStepResult
 
 data RenderFrameMaintenanceDiagnostics = RenderFrameMaintenanceDiagnostics
   { rfmdAtlasPendingWake :: !Bool
+  , rfmdAtlasQueuedWake :: !Bool
+  , rfmdAtlasQueuedCount :: !Int
+  , rfmdAtlasQueuedRevision :: !(Maybe Word64)
   , rfmdAtlasScheduleRetryWake :: !Bool
   , rfmdFallbackTerrainWake :: !Bool
   , rfmdDrainAttempted :: !Bool
@@ -100,10 +109,11 @@ renderFrameStepMaintenance
   -> Bool
   -> Word32
   -> Bool
+  -> AtlasManagerQueueState
   -> RenderSnapshot
   -> RenderCacheState
   -> RenderFrameMaintenanceDiagnostics
-renderFrameStepMaintenance settings renderTargetOk nowMs atlasPending renderSnap cacheState =
+renderFrameStepMaintenance settings renderTargetOk nowMs atlasPending atlasQueueState renderSnap cacheState =
   let generating = uiGenerating (rsUi renderSnap)
       fallbackMaintenanceDue = fallbackFrameMaintenanceDue
         renderTargetOk
@@ -112,6 +122,7 @@ renderFrameStepMaintenance settings renderTargetOk nowMs atlasPending renderSnap
         (fallbackTextureScale renderSnap (rcsAtlasCache cacheState))
         (rcsTerrainCache cacheState)
         (rcsChunkTextures cacheState)
+      queuedWork = atlasQueuedWorkForSnapshot atlasQueueState renderSnap (rcsLastAtlasQueuedRevisionScheduled cacheState)
       atlasPolicy = atlasFrameStepPolicy
         nowMs
         (rfsetAtlasDrainPollMs settings)
@@ -119,6 +130,7 @@ renderFrameStepMaintenance settings renderTargetOk nowMs atlasPending renderSnap
         generating
         renderTargetOk
         atlasPending
+        queuedWork
         (rcsAtlasNeedsRetry cacheState)
         (rcsLastAtlasDrain cacheState)
         (rcsLastAtlasSchedule cacheState)
@@ -127,9 +139,16 @@ renderFrameStepMaintenance settings renderTargetOk nowMs atlasPending renderSnap
         && rcsAtlasNeedsRetry cacheState
         && afspShouldScheduleAtlas atlasPolicy
       atlasPendingWake = not generating && renderTargetOk && atlasPending && afspShouldDrainAtlas atlasPolicy
+      atlasQueuedWake = not generating
+        && renderTargetOk
+        && aqwQueuedForCurrentKey queuedWork
+        && afspShouldScheduleAtlas atlasPolicy
       maintenanceDue = not generating && (fallbackMaintenanceDue || afspAtlasMaintenanceDue atlasPolicy)
   in RenderFrameMaintenanceDiagnostics
     { rfmdAtlasPendingWake = atlasPendingWake
+    , rfmdAtlasQueuedWake = atlasQueuedWake
+    , rfmdAtlasQueuedCount = amqsQueuedCount atlasQueueState
+    , rfmdAtlasQueuedRevision = Just (amqsQueuedRevision atlasQueueState)
     , rfmdAtlasScheduleRetryWake = scheduleRetryWake
     , rfmdFallbackTerrainWake = fallbackMaintenanceDue
     , rfmdDrainAttempted = afspShouldDrainAtlas atlasPolicy
@@ -144,12 +163,33 @@ renderFrameStepMaintenanceDue
   -> Bool
   -> Word32
   -> Bool
+  -> AtlasManagerQueueState
   -> RenderSnapshot
   -> RenderCacheState
   -> Bool
-renderFrameStepMaintenanceDue settings renderTargetOk nowMs atlasPending renderSnap cacheState =
+renderFrameStepMaintenanceDue settings renderTargetOk nowMs atlasPending atlasQueueState renderSnap cacheState =
   rfmdMaintenanceDue $
-    renderFrameStepMaintenance settings renderTargetOk nowMs atlasPending renderSnap cacheState
+    renderFrameStepMaintenance settings renderTargetOk nowMs atlasPending atlasQueueState renderSnap cacheState
+
+emptyQueueState :: AtlasManagerQueueState
+emptyQueueState = AtlasManagerQueueState
+  { amqsQueuedCount = 0
+  , amqsQueuedRevision = 0
+  , amqsQueuedByKey = mempty
+  }
+
+atlasQueuedWorkForSnapshot :: AtlasManagerQueueState -> RenderSnapshot -> Maybe Word64 -> AtlasQueuedWork
+atlasQueuedWorkForSnapshot queueState renderSnap lastScheduledRevision =
+  let uiSnap = rsUi renderSnap
+      currentKey = atlasKeyFor (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) (rsTerrain renderSnap)
+      queuedForCurrent = maybe False (> 0) (Map.lookup currentKey (amqsQueuedByKey queueState))
+  in if queuedForCurrent
+      then AtlasQueuedWork
+        { aqwQueuedForCurrentKey = True
+        , aqwQueueRevision = Just (amqsQueuedRevision queueState)
+        , aqwLastScheduledRevision = lastScheduledRevision
+        }
+      else noAtlasQueuedWork { aqwLastScheduledRevision = lastScheduledRevision }
 
 fallbackTextureScale :: RenderSnapshot -> AtlasTextureCache -> Int
 fallbackTextureScale renderSnap atlasCache =
@@ -173,7 +213,11 @@ renderFrameStep env settings nowMs snapVersion renderSnap cacheState0 = do
   atlasPendingCount <- if generating
     then pure 0
     else atlasResultsPendingCount (rfeAtlasResultRef env)
+  atlasQueueState <- if generating
+    then pure emptyQueueState
+    else atlasManagerQueuedState (rfeAtlasQueueRef env)
   let atlasPending = atlasPendingCount > 0
+      queuedWork = atlasQueuedWorkForSnapshot atlasQueueState renderSnap (rcsLastAtlasQueuedRevisionScheduled cacheState0)
   let fallbackTerrainStale = not (rfeRenderTargetOk env)
         && terrainCacheNeedsRefresh (rsUi renderSnap) (rsTerrain renderSnap) (rcsTerrainCache cacheState0)
       shouldPollTerrain = not generating
@@ -185,11 +229,15 @@ renderFrameStep env settings nowMs snapVersion renderSnap cacheState0 = do
         generating
         (rfeRenderTargetOk env)
         atlasPending
+        queuedWork
         (rcsAtlasNeedsRetry cacheState0)
         (rcsLastAtlasDrain cacheState0)
         (rcsLastAtlasSchedule cacheState0)
       shouldDrainAtlas = afspShouldDrainAtlas atlasPolicy
       shouldScheduleAtlas = afspShouldScheduleAtlas atlasPolicy
+      queuedRevisionScheduled = if shouldScheduleAtlas && aqwQueuedForCurrentKey queuedWork
+        then aqwQueueRevision queuedWork
+        else rcsLastAtlasQueuedRevisionScheduled cacheState0
   tAfterLets <- getMonotonicTimeNSec
   (cacheState', terrainElapsed) <-
     if shouldPollTerrain
@@ -263,6 +311,9 @@ renderFrameStep env settings nowMs snapVersion renderSnap cacheState0 = do
         , rcsLastAtlasDrainAttempted = shouldDrainAtlas
         , rcsLastAtlasScheduleAttempted = shouldScheduleAtlas
         , rcsLastAtlasPendingCount = atlasPendingCount
+        , rcsLastAtlasQueuedCount = amqsQueuedCount atlasQueueState
+        , rcsLastAtlasQueuedRevision = Just (amqsQueuedRevision atlasQueueState)
+        , rcsLastAtlasQueuedRevisionScheduled = queuedRevisionScheduled
         , rcsLastSnapshot = if fallbackNeedsRetry then Nothing else Just snapVersion
         , rcsLastSnapshotData = Just renderSnap
         , rcsLastChunkTexturePoll = if shouldUpdateChunkTextures then Just nowMs else rcsLastChunkTexturePoll cacheState'

@@ -4,6 +4,7 @@ module Seer.System.MainLoop
   ( runMainLoop
   ) where
 
+import Actor.AtlasManager (AtlasManagerQueueState(..), atlasManagerQueuedState)
 import Actor.AtlasResultBroker (atlasResultsPendingCount)
 import Actor.Log (LogEntry(..), LogLevel(..), appendLog)
 import Actor.Render (RenderSnapshot(..))
@@ -40,10 +41,20 @@ import System.Directory (getHomeDirectory)
 import System.FilePath ((</>))
 import System.IO (IOMode(..), hFlush, hPutStrLn, openFile)
 
+emptyAtlasQueueStateForMainLoop :: AtlasManagerQueueState
+emptyAtlasQueueStateForMainLoop = AtlasManagerQueueState
+  { amqsQueuedCount = 0
+  , amqsQueuedRevision = 0
+  , amqsQueuedByKey = mempty
+  }
+
 renderMaintenanceWakeSummary :: Int -> RenderFrameMaintenanceDiagnostics -> String
 renderMaintenanceWakeSummary atlasPendingCount diag =
   "render maintenance wake: pendingAtlasResults=" <> show atlasPendingCount
+    <> " queuedAtlasJobs=" <> show (rfmdAtlasQueuedCount diag)
+    <> " queuedAtlasRev=" <> maybe "none" show (rfmdAtlasQueuedRevision diag)
     <> " pendingAtlasWake=" <> show (rfmdAtlasPendingWake diag)
+    <> " queuedAtlasWake=" <> show (rfmdAtlasQueuedWake diag)
     <> " scheduleRetryWake=" <> show (rfmdAtlasScheduleRetryWake diag)
     <> " fallbackTerrainWake=" <> show (rfmdFallbackTerrainWake diag)
     <> " drainAttempted=" <> show (rfmdDrainAttempted diag)
@@ -108,6 +119,7 @@ runMainLoop runtimeCfg actors sdl = do
         , rfeAtlasScheduleRef = aaAtlasScheduleRef actors
         , rfeAtlasResultRef = aaAtlasResultRef actors
         , rfeAtlasFreshnessRef = aaAtlasFreshnessRef actors
+        , rfeAtlasQueueRef = aaAtlasManagerQueueRef actors
         , rfeScreenshotRef = aaScreenshotRef actors
         , rfeTraceHandle = traceH
         }
@@ -130,7 +142,7 @@ runMainLoop runtimeCfg actors sdl = do
         nowMs <- SDL.ticks
         let hasEvents = not (null events)
         (snapVersion, renderSnap, cacheState0, snapshotElapsed) <-
-          pollRenderSnapshot snapshotEnv nowMs hasEvents cacheState
+          pollRenderSnapshot snapshotEnv nowMs hasEvents False cacheState
         tSnap <- getMonotonicTimeNSec
         quitFlag <- readIORef quitRef
         let quit = quitFlag || hasQuitEvent events
@@ -140,6 +152,9 @@ runMainLoop runtimeCfg actors sdl = do
         atlasPendingCount <- if generating
           then pure 0
           else atlasResultsPendingCount (aaAtlasResultRef actors)
+        atlasQueueState <- if generating
+          then pure (emptyAtlasQueueStateForMainLoop)
+          else atlasManagerQueuedState (aaAtlasManagerQueueRef actors)
         let atlasPending = atlasPendingCount > 0
             isVersionUnchanged = rcsLastSnapshot cacheState0 == Just snapVersion
             maintenanceDiagnostics = renderFrameStepMaintenance
@@ -147,6 +162,7 @@ runMainLoop runtimeCfg actors sdl = do
               (srRenderTargetOk sdl)
               nowMs
               atlasPending
+              atlasQueueState
               renderSnap
               cacheState0
             maintenanceDue = rfmdMaintenanceDue maintenanceDiagnostics
@@ -183,11 +199,15 @@ runMainLoop runtimeCfg actors sdl = do
             forM_ traceH $ \h -> when (isVersionUnchanged && maintenanceDue) $ do
               hPutStrLn h ("WAKE " <> renderMaintenanceWakeSummary atlasPendingCount maintenanceDiagnostics <> " v=" <> show (unSnapshotVersion snapVersion))
               hFlush h
+            (frameSnapVersion, frameRenderSnap, frameCacheState0, snapshotElapsedForSummary) <-
+              if isVersionUnchanged && rfmdAtlasQueuedWake maintenanceDiagnostics
+                then pollRenderSnapshot snapshotEnv nowMs False True cacheState0
+                else pure (snapVersion, renderSnap, cacheState0, snapshotElapsed)
             tElseBranch <- getMonotonicTimeNSec
             writeIORef lastSnapshotChangeNs =<< getMonotonicTimeNSec
             writeIORef staleLoggedRef False
             tAfterWrite <- getMonotonicTimeNSec
-            frameResult <- renderFrameStep renderFrameEnv renderFrameSettings nowMs snapVersion renderSnap cacheState0
+            frameResult <- renderFrameStep renderFrameEnv renderFrameSettings nowMs frameSnapVersion frameRenderSnap frameCacheState0
             let cacheState' = rfrCacheState frameResult
                 terrainElapsed = rfrTerrainElapsed frameResult
                 frameElapsed = rfrFrameElapsed frameResult
@@ -199,11 +219,11 @@ runMainLoop runtimeCfg actors sdl = do
             let delayElapsed = nsToMs delayStart delayEnd
             tPostDelay <- getMonotonicTimeNSec
             when renderTraceEnabled $
-              appendLog (aaLogHandle actors) (LogEntry LogInfo (Text.pack (renderStepSummary eventsElapsed snapshotElapsed handleElapsed terrainElapsed frameElapsed delayElapsed False)))
+              appendLog (aaLogHandle actors) (LogEntry LogInfo (Text.pack (renderStepSummary eventsElapsed snapshotElapsedForSummary handleElapsed terrainElapsed frameElapsed delayElapsed False)))
             tEnd <- getMonotonicTimeNSec
             let loopMs = nsToMs loopStart tEnd
             when (loopMs >= 100) $ forM_ traceH $ \h -> do
-              hPutStrLn h $ "RENDER loop=" <> show loopMs <> "ms poll=" <> show (nsToMs loopStart tPoll) <> " snap=" <> show (nsToMs tPoll tSnap) <> " handle=" <> show (nsToMs tSnap tHandle) <> " branch=" <> show (nsToMs tHandle tElseBranch) <> " write=" <> show (nsToMs tElseBranch tAfterWrite) <> " lets=" <> show letsElapsed <> " tPoll=" <> show terrainElapsed <> " tLet=0 terrain=" <> show terrainElapsed <> " frame=" <> show frameElapsed <> " postFrame=" <> show postFrameElapsed <> " delay=" <> show delayElapsed <> " postDelay=" <> show (nsToMs tPostDelay tEnd) <> " events=" <> show (length events) <> " v=" <> show (unSnapshotVersion snapVersion)
+              hPutStrLn h $ "RENDER loop=" <> show loopMs <> "ms poll=" <> show (nsToMs loopStart tPoll) <> " snap=" <> show (nsToMs tPoll tSnap) <> " handle=" <> show (nsToMs tSnap tHandle) <> " branch=" <> show (nsToMs tHandle tElseBranch) <> " write=" <> show (nsToMs tElseBranch tAfterWrite) <> " lets=" <> show letsElapsed <> " tPoll=" <> show terrainElapsed <> " tLet=0 terrain=" <> show terrainElapsed <> " frame=" <> show frameElapsed <> " postFrame=" <> show postFrameElapsed <> " delay=" <> show delayElapsed <> " postDelay=" <> show (nsToMs tPostDelay tEnd) <> " events=" <> show (length events) <> " v=" <> show (unSnapshotVersion frameSnapVersion)
               hFlush h
             if quit
               then pure cacheState'

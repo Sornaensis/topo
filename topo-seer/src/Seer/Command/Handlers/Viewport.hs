@@ -23,6 +23,7 @@ import Actor.Terrain (TerrainReplyOps)
 import Actor.UI.Setters (setUiPanOffset, setUiZoom, setUiHoverHex, setUiContextHex, setUiHexTooltipPinned)
 import Actor.UI.State (UiState(..), readUiSnapshotRef)
 import Actor.UiActions (UiAction(..), UiActionRequest(..), submitUiAction)
+import Actor.UiActions.Command (enqueueViewportRefreshForCurrentUi)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Hyperspace.Actor (replyTo)
 import Seer.Command.Context (CommandContext(..))
@@ -98,6 +99,7 @@ handleViewportScroll ctx reqId params = do
             )
       setUiZoom uiH newZoom
       setUiPanOffset uiH newOffset
+      _ <- enqueueViewportRefreshForCurrentUi handles
       let (nx, ny) = newOffset
       pure $ okResponse reqId $ object
         [ "zoom"   .= newZoom
@@ -186,6 +188,7 @@ handleViewportDrag ctx reqId params = do
           dy = fromIntegral (y2 - y1) :: Float
           newOffset = (ox + dx / zoom, oy + dy / zoom)
       setUiPanOffset uiH newOffset
+      _ <- enqueueViewportRefreshForCurrentUi handles
       let (nx, ny) = newOffset
       pure $ okResponse reqId $ object
         [ "pan_x"  .= nx

@@ -8,7 +8,13 @@ module Seer.System.Actors
   ) where
 
 import Actor.AtlasFreshness (AtlasFreshnessRef, newAtlasFreshnessRef)
-import Actor.AtlasManager (AtlasManager, setAtlasManagerFreshnessRef)
+import Actor.AtlasManager
+  ( AtlasManager
+  , AtlasManagerQueueRef
+  , newAtlasManagerQueueRef
+  , setAtlasManagerFreshnessRef
+  , setAtlasManagerQueueRef
+  )
 import Actor.AtlasResultBroker (AtlasResultRef, newAtlasResultRef)
 import Actor.AtlasScheduleBroker (AtlasScheduleRef, newAtlasScheduleRef)
 import Actor.AtlasScheduler
@@ -102,6 +108,7 @@ data AppActors = AppActors
   , aaAtlasScheduleRef :: !AtlasScheduleRef
   , aaAtlasResultRef :: !AtlasResultRef
   , aaAtlasFreshnessRef :: !AtlasFreshnessRef
+  , aaAtlasManagerQueueRef :: !AtlasManagerQueueRef
   , aaScreenshotRef :: !ScreenshotRequestRef
   , aaAutoTickScheduler :: !AutoTickScheduler
   }
@@ -127,8 +134,10 @@ initialiseAppActors runtimeCfg = do
   atlasResultRef <- newAtlasResultRef
   atlasScheduleRef <- newAtlasScheduleRef
   atlasFreshnessRef <- newAtlasFreshnessRef
+  atlasManagerQueueRef <- newAtlasManagerQueueRef
   terrainCacheRef <- newTerrainCacheRef
   setAtlasManagerFreshnessRef atlasManagerHandle atlasFreshnessRef
+  setAtlasManagerQueueRef atlasManagerHandle atlasManagerQueueRef
   setAtlasSchedulerHandles atlasSchedulerHandle AtlasSchedulerHandles
     { ashManager = atlasManagerHandle
     , ashWorkers = atlasWorkerHandles
@@ -180,6 +189,7 @@ initialiseAppActors runtimeCfg = do
     , aaAtlasScheduleRef = atlasScheduleRef
     , aaAtlasResultRef = atlasResultRef
     , aaAtlasFreshnessRef = atlasFreshnessRef
+    , aaAtlasManagerQueueRef = atlasManagerQueueRef
     , aaScreenshotRef = screenshotRef
     , aaAutoTickScheduler = autoTickScheduler
     }

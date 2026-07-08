@@ -19,6 +19,7 @@ import qualified Data.IntMap.Strict as IntMap
 import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot)
 import Actor.UI.Setters (setUiPanOffset, setUiZoom)
 import Actor.UI.State (UiState(..), readUiSnapshotRef)
+import Actor.UiActions.Command (enqueueViewportRefreshForCurrentUi)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
 import Topo (ChunkCoord(..), ChunkId(..), TileCoord(..), chunkCoordFromId)
@@ -50,6 +51,7 @@ handleSetCamera ctx reqId params = do
       case mZoom of
         Just z -> setUiZoom uiH (clampZoom z)
         Nothing -> pure ()
+      _ <- enqueueViewportRefreshForCurrentUi handles
       pure $ okResponse reqId $ object
         [ "x" .= x
         , "y" .= y
@@ -101,6 +103,7 @@ handleZoomToChunk ctx reqId params = do
                 uiH = ahUiHandle handles
             setUiPanOffset uiH (panX, panY)
             setUiZoom uiH newZoom
+            _ <- enqueueViewportRefreshForCurrentUi handles
             pure $ okResponse reqId $ object
               [ "chunk"  .= chunkId
               , "x"      .= panX

@@ -117,6 +117,49 @@ spec = describe "AtlasScheduler" $ do
     report <- awaitReport scheduleRef version
     asrJobCount report `shouldBe` 1
 
+  it "dispatches a job queued after an empty schedule pass on the next schedule request" $ withSystem $ \system -> do
+    managerHandle <- get @AtlasManager system
+    workerHandle <- spawnActor atlasWorkerActorDef
+    workerNextRef <- newIORef (0 :: Int)
+    resultRef <- newAtlasResultRef
+    scheduleRef <- newAtlasScheduleRef
+    freshnessRef <- newAtlasFreshnessRef
+    schedulerHandle <- get @AtlasScheduler system
+    setAtlasSchedulerHandles schedulerHandle AtlasSchedulerHandles
+      { ashManager = managerHandle
+      , ashWorkers = [workerHandle]
+      , ashWorkerNext = workerNextRef
+      , ashResultRef = resultRef
+      , ashScheduleRef = scheduleRef
+      , ashFreshnessRef = freshnessRef
+      }
+    case allZoomStages of
+      [] -> expectationFailure "expected at least one zoom stage"
+      currentStage:_ -> do
+        let terrainSnap = emptyTerrainSnapshotWithVersion 1
+            version = SnapshotVersion 1
+            snapshot = RenderSnapshot
+              { rsUi = emptyUiState
+              , rsLog = LogSnapshot [] False 0 LogDebug
+              , rsData = DataSnapshot 0 0 Nothing
+              , rsTerrain = terrainSnap
+              }
+            req = AtlasScheduleRequest
+              { asqSnapshotVersion = version
+              , asqRenderTargetOk = True
+              , asqDataReady = True
+              , asqSnapshot = snapshot
+              , asqWindowSize = (800, 600)
+              }
+        requestAtlasSchedule schedulerHandle req
+        emptyReport <- awaitReportMatching scheduleRef version ((== 0) . asrJobCount)
+        asrJobCount emptyReport `shouldBe` 0
+
+        enqueueAtlasBuild managerHandle (atlasJobFor ViewElevation 1 currentStage)
+        requestAtlasSchedule schedulerHandle req
+        report <- awaitReportMatching scheduleRef version ((== 1) . asrJobCount)
+        asrJobCount report `shouldBe` 1
+
   it "single-mode rebuild enqueues exactly one job per zoom stage" $ withSystem $ \system -> do
     managerHandle <- get @AtlasManager system
     let terrainSnap = emptyTerrainSnapshotWithVersion 0
@@ -409,7 +452,15 @@ awaitReport
   :: AtlasScheduleRef
   -> SnapshotVersion
   -> IO AtlasScheduleReport
-awaitReport scheduleRef version = do
+awaitReport scheduleRef version =
+  awaitReportMatching scheduleRef version (const True)
+
+awaitReportMatching
+  :: AtlasScheduleRef
+  -> SnapshotVersion
+  -> (AtlasScheduleReport -> Bool)
+  -> IO AtlasScheduleReport
+awaitReportMatching scheduleRef version predicate = do
   let timeoutUs = 500000
   result <- timeout timeoutUs (pollUntil version)
   case result of
@@ -420,7 +471,7 @@ awaitReport scheduleRef version = do
     pollUntil target = do
       mbReport <- readAtlasScheduleRef scheduleRef
       case mbReport of
-        Just report | asrSnapshotVersion report == target -> pure report
+        Just report | asrSnapshotVersion report == target && predicate report -> pure report
         _ -> do
           threadDelay pollDelayUs
           pollUntil target
