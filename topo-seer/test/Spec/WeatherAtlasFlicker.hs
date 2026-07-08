@@ -67,6 +67,7 @@ import Seer.Render.Atlas
   , setAtlasKey
   , storeAtlasTileSet
   )
+import Seer.Render.Viewport (emptyAtlasViewportCoverage)
 import Seer.Render.Frame
   ( AtlasFrameStepPolicy(..)
   , applyAtlasFrameStepTimestamps
@@ -421,6 +422,7 @@ mkManifest snapshotVersion buildId key hexRadius atlasScale bounds = AtlasTileSe
   , atsmAtlasScale = atlasScale
   , atsmExpectedTileCount = length bounds
   , atsmExpectedBounds = bounds
+  , atsmCoverage = emptyAtlasViewportCoverage
   }
 
 mkBuildResult :: AtlasKey -> SnapshotVersion -> AtlasBuildId -> Int -> Int -> Int -> Rect -> [Rect] -> AtlasBuildResult

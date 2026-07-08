@@ -18,13 +18,17 @@ import Seer.Render.Atlas
   , AtlasTextureCache(..)
   , DayNightOverlayStatus(..)
   , atlasResolveNeedsRetry
+  , atlasResolveNeedsViewportRefresh
   , dayNightOverlayNeedsRetry
   , emptyAtlasTextureCache
   , getCurrentCompleteAtlasForTarget
+  , getCurrentCompleteAtlasForTargetWithCoverage
   , resolveAtlasPureWithFreshness
+  , resolveAtlasPureWithCoverage
   , resolveDayNightOverlayForTarget
   , storeAtlasTileSet
   )
+import Seer.Render.Viewport (atlasViewportCoverageFromKeys, emptyAtlasViewportCoverage)
 import Seer.Render.Frame
   ( AtlasFrameStepPolicy(..)
   , AtlasQueuedWork(..)
@@ -126,6 +130,32 @@ spec = describe "render-loop atlas maintenance wakeups" $ do
     lastScheduleAfter `shouldBe` Just dueMs
     afspAtlasMaintenanceDue afterSchedulePolicy `shouldBe` False
     afspShouldScheduleAtlas afterSchedulePolicy `shouldBe` False
+
+  it "keeps viewport coverage gaps retrying until a current-stage refresh can be scheduled" $ do
+    let targetHex = 6
+        manifest = (mkManifest (AtlasBuildId 66) keyElevation targetHex 1 [testRect])
+          { atsmCoverage = atlasViewportCoverageFromKeys [1] }
+        freshness = AtlasFreshness
+          { afKey = keyElevation
+          , afSnapshotVersion = snapVersion
+          , afLatestBuildIds = Map.singleton (atlasManifestTarget manifest) (AtlasBuildId 66)
+          }
+        cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyElevation }
+        completeOldViewport = storeAtlasTileSet manifest [mkTile 66 targetHex testRect] cache0
+        requiredCoverage = atlasViewportCoverageFromKeys [1, 2]
+        (tiles, status, resolvedCache) =
+          resolveAtlasPureWithCoverage (Just freshness) requiredCoverage True True keyElevation targetHex 1 completeOldViewport
+        beforePoll = atlasFrameStepPolicy 150 atlasDrainPollMs atlasSchedulePollMs False True False noAtlasQueuedWork (atlasResolveNeedsRetry status) (Just 100) (Just 100)
+        atPoll = atlasFrameStepPolicy 200 atlasDrainPollMs atlasSchedulePollMs False True False noAtlasQueuedWork (atlasResolveNeedsRetry status) (Just 100) (Just 100)
+    fmap length tiles `shouldBe` Just 1
+    status `shouldBe` ViewportCoverageMissing
+    atlasResolveNeedsRetry status `shouldBe` True
+    atlasResolveNeedsViewportRefresh status `shouldBe` True
+    isNothing (getCurrentCompleteAtlasForTargetWithCoverage (Just freshness) (Just requiredCoverage) keyElevation targetHex 1 resolvedCache) `shouldBe` True
+    afspAtlasMaintenanceDue beforePoll `shouldBe` False
+    afspShouldScheduleAtlas beforePoll `shouldBe` False
+    afspAtlasMaintenanceDue atPoll `shouldBe` True
+    afspShouldScheduleAtlas atPoll `shouldBe` True
 
   it "wakes missing day/night overlay retry at the atlas schedule poll interval" $ do
     let targetHex = 6
@@ -322,6 +352,7 @@ mkManifestFor snapshotVersion buildId key hexRadius atlasScale bounds = AtlasTil
   , atsmAtlasScale = atlasScale
   , atsmExpectedTileCount = length bounds
   , atsmExpectedBounds = bounds
+  , atsmCoverage = emptyAtlasViewportCoverage
   }
 
 mkTileGeometry :: Int -> Int -> Rect -> AtlasTileGeometry

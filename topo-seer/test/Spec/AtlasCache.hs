@@ -43,6 +43,7 @@ import Seer.Render.Atlas
   , resolveAtlasPure
   , resolveAtlasPureWithStatus
   , resolveAtlasPureWithFreshness
+  , resolveAtlasPureWithCoverage
   , resolveDayNightOverlayForTarget
   , resolveEffectiveStage
   , collectAtlasTextures
@@ -50,6 +51,7 @@ import Seer.Render.Atlas
   , formatAtlasResolveDiagnostic
   , formatDayNightOverlayStatus
   )
+import Seer.Render.Viewport (AtlasViewportCoverage, atlasViewportCoverageFromKeys, emptyAtlasViewportCoverage)
 import Seer.Render.ZoomStage (ZoomStage(..))
 import UI.DayNight (DayNightKey(..), mkDayNightKey)
 import UI.TerrainAtlas (TerrainAtlasTile(..))
@@ -98,7 +100,11 @@ mkManifest :: Int -> AtlasKey -> Int -> [Rect] -> AtlasTileSetManifest
 mkManifest = mkManifestWithAtlasScale 1
 
 mkManifestWithAtlasScale :: Int -> Int -> AtlasKey -> Int -> [Rect] -> AtlasTileSetManifest
-mkManifestWithAtlasScale atlasScale buildId key hexRadius bounds = AtlasTileSetManifest
+mkManifestWithAtlasScale atlasScale buildId key hexRadius bounds =
+  mkManifestWithCoverage atlasScale buildId key hexRadius bounds emptyAtlasViewportCoverage
+
+mkManifestWithCoverage :: Int -> Int -> AtlasKey -> Int -> [Rect] -> AtlasViewportCoverage -> AtlasTileSetManifest
+mkManifestWithCoverage atlasScale buildId key hexRadius bounds coverage = AtlasTileSetManifest
   { atsmBuildId = AtlasBuildId (fromIntegral buildId)
   , atsmKey = key
   , atsmSnapshotVersion = SnapshotVersion 1
@@ -106,6 +112,7 @@ mkManifestWithAtlasScale atlasScale buildId key hexRadius bounds = AtlasTileSetM
   , atsmAtlasScale = atlasScale
   , atsmExpectedTileCount = length bounds
   , atsmExpectedBounds = bounds
+  , atsmCoverage = coverage
   }
 
 mkFreshness :: AtlasTileSetManifest -> AtlasFreshness
@@ -231,6 +238,43 @@ spec = describe "AtlasTextureCache" $ do
       atlasResolveNeedsRetry status `shouldBe` False
       fmap fst (atcLast cache3) `shouldBe` Just keyA
       fmap length (getCompleteAtlas keyA 6 cache3) `shouldBe` Just 2
+
+    it "accepts complete exact tile sets whose coverage contains the current viewport" $ do
+      let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          manifest = mkManifestWithCoverage 1 1 keyA 6 [testRect, testRect2] (atlasViewportCoverageFromKeys [10, 11, 12])
+          cache1 = storeAtlasTileSet manifest [mkTile 1 6 testRect, mkTile 2 6 testRect2] cache0
+          requiredCoverage = atlasViewportCoverageFromKeys [10, 12]
+          (tiles, status, cache2) = resolveAtlasPureWithCoverage (Just (mkFreshness manifest)) requiredCoverage True True keyA 6 1 cache1
+      fmap length tiles `shouldBe` Just 2
+      status `shouldBe` CompleteExact
+      atlasResolveNeedsRetry status `shouldBe` False
+      fmap fst (atcLast cache2) `shouldBe` Just keyA
+
+    it "keeps complete exact tile sets retrying when viewport coverage is missing" $ do
+      let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }
+          manifest = mkManifestWithCoverage 1 2 keyA 6 [testRect, testRect2] (atlasViewportCoverageFromKeys [10, 11])
+          cache1 = storeAtlasTileSet manifest [mkTile 1 6 testRect, mkTile 2 6 testRect2] cache0
+          requiredCoverage = atlasViewportCoverageFromKeys [10, 99]
+          (tiles, status, cache2) = resolveAtlasPureWithCoverage (Just (mkFreshness manifest)) requiredCoverage True True keyA 6 1 cache1
+      fmap length tiles `shouldBe` Just 2
+      status `shouldBe` ViewportCoverageMissing
+      atlasResolveNeedsRetry status `shouldBe` True
+      isNothing (atcLast cache2) `shouldBe` True
+
+    it "draws last-good fallback and suppresses promotion on viewport coverage gaps" $ do
+      let lastTiles = [mkTile 90 6 testRect]
+          cache0 = (emptyAtlasTextureCache 30)
+            { atcKey = Just keyA
+            , atcLast = Just (keyA, lastTiles)
+            }
+          manifest = mkManifestWithCoverage 1 3 keyA 6 [testRect, testRect2] (atlasViewportCoverageFromKeys [1, 2])
+          cache1 = storeAtlasTileSet manifest [mkTile 1 6 testRect, mkTile 2 6 testRect2] cache0
+          requiredCoverage = atlasViewportCoverageFromKeys [1, 3]
+          (tiles, status, cache2) = resolveAtlasPureWithCoverage (Just (mkFreshness manifest)) requiredCoverage True True keyA 6 1 cache1
+      (fmap (map tatTexture) tiles == Just (map tatTexture lastTiles)) `shouldBe` True
+      status `shouldBe` ViewportCoverageMissing
+      atlasResolveNeedsRetry status `shouldBe` True
+      (fmap (map tatTexture . snd) (atcLast cache2) == Just (map tatTexture lastTiles)) `shouldBe` True
 
     it "requires both hex radius and atlas scale for complete current lookup" $ do
       let cache0 = (emptyAtlasTextureCache 30) { atcKey = Just keyA }

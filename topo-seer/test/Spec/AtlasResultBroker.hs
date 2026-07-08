@@ -29,6 +29,7 @@ import Topo.Overlay (emptyOverlayStore)
 import Actor.UI (ViewMode(..), emptyUiState)
 import Linear (V2(..))
 import qualified SDL
+import Seer.Render.Viewport (atlasViewportCoverageFromKeys, emptyAtlasViewportCoverage)
 import Seer.Render.Atlas
   ( AtlasResolveStatus(..)
   , AtlasTextureCache(..)
@@ -56,6 +57,7 @@ mkResult key snapshotVersion hexRadius tile =
         , atsmAtlasScale = atgScale tile
         , atsmExpectedTileCount = 1
         , atsmExpectedBounds = [bounds]
+        , atsmCoverage = emptyAtlasViewportCoverage
         }
   in AtlasBuildResult
     { abrKey = key
@@ -127,7 +129,8 @@ spec = describe "AtlasResultBroker" $ do
         atlasScale = 1
         baseTiles = [mkTileGeometry hexRadius atlasScale testRect, mkTileGeometry hexRadius atlasScale testRect2]
         dayNightTiles = [mkTileGeometry hexRadius atlasScale testRect]
-        results = atlasBuildResultsForTiles buildId key snapshotVersion hexRadius atlasScale baseTiles (Just (testDayNightKey, dayNightTiles))
+        coverage = atlasViewportCoverageFromKeys [101, 202]
+        results = atlasBuildResultsForTiles buildId key snapshotVersion hexRadius atlasScale coverage baseTiles (Just (testDayNightKey, dayNightTiles))
     length results `shouldBe` 2
     map abrTileIndex results `shouldBe` [0, 1]
     map (fmap (atgBounds . adntTile) . abrDayNightTile) results `shouldBe` [Just testRect, Nothing]
@@ -151,6 +154,7 @@ spec = describe "AtlasResultBroker" $ do
         map abrTileIndex drained `shouldBe` [0, 1]
         map (fmap (atgBounds . adntTile) . abrDayNightTile) drained `shouldBe` [Just testRect, Nothing]
         map (fmap adntKey . abrDayNightTile) drained `shouldBe` [Just testDayNightKey, Nothing]
+        atsmCoverage (abrManifest firstResult) `shouldBe` coverage
         stats `shouldBe` AtlasResultDrainStats
           { ardsPendingBefore = 2
           , ardsPendingAfter = 0
@@ -177,7 +181,7 @@ spec = describe "AtlasResultBroker" $ do
         hexRadius = 6
         atlasScale = 1
         baseTiles = [mkTileGeometry hexRadius atlasScale testRect]
-        results = atlasBuildResultsForTiles buildId key snapshotVersion hexRadius atlasScale baseTiles Nothing
+        results = atlasBuildResultsForTiles buildId key snapshotVersion hexRadius atlasScale (atlasViewportCoverageFromKeys [303]) baseTiles Nothing
     map (maybe False (const True) . abrDayNightTile) results `shouldBe` [False]
 
   it "drains results in FIFO order" $ do

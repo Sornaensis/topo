@@ -8,6 +8,7 @@ module Seer.Render.Atlas
   , AtlasCacheSummary(..)
   , AtlasResolveDiagnostic(..)
   , atlasResolveNeedsRetry
+  , atlasResolveNeedsViewportRefresh
   , atlasResolveStatusLabel
   , dayNightOverlayNeedsRetry
   , resolveDayNightOverlayForTarget
@@ -25,10 +26,12 @@ module Seer.Render.Atlas
   , getCompleteAtlas
   , getCurrentCompleteAtlas
   , getCurrentCompleteAtlasForTarget
+  , getCurrentCompleteAtlasForTargetWithCoverage
   , resolveAtlasTiles
   , resolveAtlasPure
   , resolveAtlasPureWithStatus
   , resolveAtlasPureWithFreshness
+  , resolveAtlasPureWithCoverage
   , resolveAtlasFallback
   , resolveEffectiveStage
   , scheduleAtlasBuilds
@@ -84,6 +87,13 @@ import GHC.Clock (getMonotonicTimeNSec)
 import Hyperspace.Actor (ActorHandle, Protocol)
 import Linear (V2(..))
 import qualified SDL
+import Seer.Render.Viewport
+  ( AtlasChunkBounds(..)
+  , AtlasViewportCoverage(..)
+  , atlasViewportCoverageCovers
+  , currentAtlasViewportCoverage
+  , emptyAtlasViewportCoverage
+  )
 import Seer.Render.ZoomStage (ZoomStage(..))
 import Seer.Timing (nsToMs, timedMs)
 import UI.DayNight (DayNightKey)
@@ -91,6 +101,7 @@ import UI.HexGeometry (transformWorldRect)
 import UI.TerrainAtlas (TerrainAtlasTile(..), renderAtlasTileTextures)
 import UI.TexturePool (TexturePool, releaseTexture)
 import UI.Widgets (Rect(..))
+import Topo (WorldConfig(..))
 import UI.WidgetsDraw (rectToSDL)
 
 -- | Cached render-thread tile set for one @(AtlasKey, hex-radius)@ bucket.
@@ -101,6 +112,7 @@ import UI.WidgetsDraw (rectToSDL)
 -- 'atcLast'.
 data CachedAtlasTileSet = CachedAtlasTileSet
   { catsManifest :: !AtlasTileSetManifest
+  , catsCoverage :: !AtlasViewportCoverage
   , catsTiles :: ![TerrainAtlasTile]
   , catsComplete :: !Bool
   }
@@ -112,6 +124,7 @@ data AtlasResolveStatus
   | NearestScaleFallback
   | StaleExactFallback
   | LastGoodFallback
+  | ViewportCoverageMissing
   | Missing
   deriving (Eq, Show)
 
@@ -137,12 +150,17 @@ atlasResolveNeedsRetry :: AtlasResolveStatus -> Bool
 atlasResolveNeedsRetry CompleteExact = False
 atlasResolveNeedsRetry _ = True
 
+atlasResolveNeedsViewportRefresh :: AtlasResolveStatus -> Bool
+atlasResolveNeedsViewportRefresh ViewportCoverageMissing = True
+atlasResolveNeedsViewportRefresh _ = False
+
 atlasResolveStatusLabel :: AtlasResolveStatus -> String
 atlasResolveStatusLabel CompleteExact = "complete-exact"
 atlasResolveStatusLabel PartialExact = "partial-exact"
 atlasResolveStatusLabel NearestScaleFallback = "nearest-scale-fallback"
 atlasResolveStatusLabel StaleExactFallback = "stale-exact-fallback"
 atlasResolveStatusLabel LastGoodFallback = "last-good-fallback"
+atlasResolveStatusLabel ViewportCoverageMissing = "viewport-coverage-missing"
 atlasResolveStatusLabel Missing = "missing"
 
 dayNightOverlayNeedsRetry :: DayNightOverlayStatus -> Bool
@@ -183,6 +201,8 @@ data AtlasTileSetSummary = AtlasTileSetSummary
   , atssTileCount :: !Int
   , atssExpectedTileCount :: !Int
   , atssComplete :: !Bool
+  , atssCoveredChunkCount :: !Int
+  , atssCoverageBounds :: !(Maybe AtlasChunkBounds)
   } deriving (Eq, Show)
 
 data AtlasCacheSummary = AtlasCacheSummary
@@ -312,6 +332,10 @@ atlasResolveDiagnostic expectedKey targetStage status atlasToDraw cacheBefore ca
         [] -> Nothing
       selectedKey = case status of
         LastGoodFallback -> fmap fst (atcLast cacheBefore)
+        ViewportCoverageMissing -> case atcLast cacheBefore of
+          Just (lastKey, lastTiles) | sameTileTextures selectedTiles lastTiles -> Just lastKey
+          _ | null selectedTiles -> Nothing
+            | otherwise -> Just expectedKey
         Missing -> Nothing
         _ | null selectedTiles -> Nothing
           | otherwise -> Just expectedKey
@@ -320,7 +344,7 @@ atlasResolveDiagnostic expectedKey targetStage status atlasToDraw cacheBefore ca
         hexRadius <- selectedHex
         lookupBuildId key hexRadius cacheBefore `orMaybe` lookupBuildId key hexRadius cacheAfter
       staleKeyFallback = case selectedKey of
-        Just key -> status == LastGoodFallback && key /= expectedKey
+        Just key -> status `elem` [LastGoodFallback, ViewportCoverageMissing] && key /= expectedKey
         Nothing -> False
       promotionAccepted = status == CompleteExact
         && not (null selectedTiles)
@@ -492,19 +516,23 @@ drainAtlasBuildResults renderTargetOk perFrame pool renderer atlasCache resultRe
 scheduleAtlasBuilds
   :: Bool
   -> Bool
+  -> Bool
+  -> ZoomStage
   -> ActorHandle AtlasScheduler (Protocol AtlasScheduler)
   -> AtlasScheduleRef
   -> SnapshotVersion
   -> RenderSnapshot
   -> (Int, Int)
   -> IO (Int, Word32, Word32)
-scheduleAtlasBuilds renderTargetOk dataReady atlasSchedulerHandle scheduleRef snapshotVersion snapshot windowSize = do
+scheduleAtlasBuilds renderTargetOk dataReady refreshCurrentViewport refreshStage atlasSchedulerHandle scheduleRef snapshotVersion snapshot windowSize = do
   requestAtlasSchedule atlasSchedulerHandle AtlasScheduleRequest
     { asqSnapshotVersion = snapshotVersion
     , asqRenderTargetOk = renderTargetOk
     , asqDataReady = dataReady
     , asqSnapshot = snapshot
     , asqWindowSize = windowSize
+    , asqRefreshCurrentViewport = refreshCurrentViewport
+    , asqRefreshStage = if refreshCurrentViewport then Just refreshStage else Nothing
     }
   mbReport <- readAtlasScheduleRef scheduleRef
   case mbReport of
@@ -522,13 +550,18 @@ resolveAtlasTiles
   -> RenderSnapshot
   -> AtlasTextureCache
   -> ZoomStage
+  -> (Int, Int)
   -> IO (Maybe [TerrainAtlasTile], AtlasResolveStatus, AtlasTextureCache)
-resolveAtlasTiles latestFreshness renderTargetOk pool snapshot atlasCache stage = do
+resolveAtlasTiles latestFreshness renderTargetOk pool snapshot atlasCache stage windowSize = do
   let terrainSnap = rsTerrain snapshot
-      atlasKey = atlasKeyFor (uiViewMode (rsUi snapshot)) (uiRenderWaterLevel (rsUi snapshot)) terrainSnap
+      uiSnap = rsUi snapshot
+      atlasKey = atlasKeyFor (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) terrainSnap
       dataReady = tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
+      requiredCoverage = if dataReady
+        then Just (currentAtlasViewportCoverage (WorldConfig { wcChunkSize = tsChunkSize terrainSnap }) (uiPanOffset uiSnap) (uiZoom uiSnap) windowSize terrainSnap stage)
+        else Nothing
       (atlasToDraw, status, cacheResolved) =
-        resolveAtlasPureForTarget latestFreshness renderTargetOk dataReady atlasKey (zsHexRadius stage) (zsAtlasScale stage) atlasCache
+        resolveAtlasPureForTarget latestFreshness requiredCoverage renderTargetOk dataReady atlasKey (zsHexRadius stage) (zsAtlasScale stage) atlasCache
       (pending, cacheDrained) = drainAtlasPending cacheResolved
       -- Protect textures that atcLast still references from being
       -- released.  Only truly orphaned textures may be destroyed.
@@ -586,10 +619,11 @@ resolveAtlasPureWithFreshness
   -> AtlasTextureCache
   -> (Maybe [TerrainAtlasTile], AtlasResolveStatus, AtlasTextureCache)
 resolveAtlasPureWithFreshness latestFreshness renderTargetOk dataReady atlasKey hexRadius atlasCache =
-  resolveAtlasPureForTarget latestFreshness renderTargetOk dataReady atlasKey hexRadius 1 atlasCache
+  resolveAtlasPureForTarget latestFreshness Nothing renderTargetOk dataReady atlasKey hexRadius 1 atlasCache
 
-resolveAtlasPureForTarget
+resolveAtlasPureWithCoverage
   :: Maybe AtlasFreshness
+  -> AtlasViewportCoverage
   -> Bool
   -> Bool
   -> AtlasKey
@@ -597,8 +631,21 @@ resolveAtlasPureForTarget
   -> Int
   -> AtlasTextureCache
   -> (Maybe [TerrainAtlasTile], AtlasResolveStatus, AtlasTextureCache)
-resolveAtlasPureForTarget latestFreshness renderTargetOk dataReady atlasKey hexRadius atlasScale atlasCache =
-  let (atlasToDraw, status, touchEntry) = resolveAtlasSelection latestFreshness renderTargetOk dataReady atlasKey hexRadius atlasScale atlasCache
+resolveAtlasPureWithCoverage latestFreshness requiredCoverage renderTargetOk dataReady atlasKey hexRadius atlasScale atlasCache =
+  resolveAtlasPureForTarget latestFreshness (Just requiredCoverage) renderTargetOk dataReady atlasKey hexRadius atlasScale atlasCache
+
+resolveAtlasPureForTarget
+  :: Maybe AtlasFreshness
+  -> Maybe AtlasViewportCoverage
+  -> Bool
+  -> Bool
+  -> AtlasKey
+  -> Int
+  -> Int
+  -> AtlasTextureCache
+  -> (Maybe [TerrainAtlasTile], AtlasResolveStatus, AtlasTextureCache)
+resolveAtlasPureForTarget latestFreshness requiredCoverage renderTargetOk dataReady atlasKey hexRadius atlasScale atlasCache =
+  let (atlasToDraw, status, touchEntry) = resolveAtlasSelection latestFreshness requiredCoverage renderTargetOk dataReady atlasKey hexRadius atlasScale atlasCache
       cacheWithLast = case (status, atlasToDraw) of
         (CompleteExact, Just tiles) | not (null tiles) ->
           atlasCache { atcLast = Just (atlasKey, tiles) }
@@ -608,6 +655,7 @@ resolveAtlasPureForTarget latestFreshness renderTargetOk dataReady atlasKey hexR
 
 resolveAtlasSelection
   :: Maybe AtlasFreshness
+  -> Maybe AtlasViewportCoverage
   -> Bool
   -> Bool
   -> AtlasKey
@@ -615,17 +663,24 @@ resolveAtlasSelection
   -> Int
   -> AtlasTextureCache
   -> (Maybe [TerrainAtlasTile], AtlasResolveStatus, Maybe (AtlasKey, Int))
-resolveAtlasSelection latestFreshness renderTargetOk dataReady atlasKey hexRadius atlasScale atlasCache =
+resolveAtlasSelection latestFreshness requiredCoverage renderTargetOk dataReady atlasKey hexRadius atlasScale atlasCache =
   let canUseCache = renderTargetOk && dataReady
       rawExactSet = if canUseCache then lookupAtlasSet atlasKey hexRadius atlasCache else Nothing
       exactSet = rawExactSet >>= \set -> if cachedSetIsCurrentFor latestFreshness hexRadius atlasScale set then Just set else Nothing
       staleExactSet = rawExactSet >>= \set -> if cachedSetIsCurrentFor latestFreshness hexRadius atlasScale set then Nothing else Just set
+      coverageOk set = cachedSetCovers requiredCoverage set
       touchFor key tiles = case tiles of
         t:_ -> Just (key, tatHexRadius t)
         [] -> Nothing
+      coverageGap set = case atcLast atlasCache of
+        Just (lastKey, lastTiles) | not (null lastTiles) ->
+          (Just lastTiles, ViewportCoverageMissing, touchFor lastKey lastTiles)
+        _ -> (Just (catsTiles set), ViewportCoverageMissing, touchFor atlasKey (catsTiles set))
   in case exactSet of
-      Just set | catsComplete set && not (null (catsTiles set)) ->
+      Just set | catsComplete set && not (null (catsTiles set)) && coverageOk set ->
         (Just (catsTiles set), CompleteExact, touchFor atlasKey (catsTiles set))
+      Just set | catsComplete set && not (null (catsTiles set)) ->
+        coverageGap set
       _ | renderTargetOk -> case atcLast atlasCache of
         Just (lastKey, lastTiles) | not (null lastTiles) ->
           (Just lastTiles, LastGoodFallback, touchFor lastKey lastTiles)
@@ -696,6 +751,7 @@ legacyManifest key scale tiles = AtlasTileSetManifest
       [] -> 1
   , atsmExpectedTileCount = length tiles
   , atsmExpectedBounds = map tatBounds tiles
+  , atsmCoverage = emptyAtlasViewportCoverage
   }
 
 -- | Store freshly-built atlas tiles with their worker manifest.
@@ -881,9 +937,16 @@ getCurrentCompleteAtlas latestFreshness key target cache =
   getCurrentCompleteAtlasForTarget latestFreshness key target 1 cache
 
 getCurrentCompleteAtlasForTarget :: Maybe AtlasFreshness -> AtlasKey -> Int -> Int -> AtlasTextureCache -> Maybe [TerrainAtlasTile]
-getCurrentCompleteAtlasForTarget latestFreshness key targetHex targetAtlasScale cache = do
+getCurrentCompleteAtlasForTarget latestFreshness key targetHex targetAtlasScale cache =
+  getCurrentCompleteAtlasForTargetWithCoverage latestFreshness Nothing key targetHex targetAtlasScale cache
+
+getCurrentCompleteAtlasForTargetWithCoverage :: Maybe AtlasFreshness -> Maybe AtlasViewportCoverage -> AtlasKey -> Int -> Int -> AtlasTextureCache -> Maybe [TerrainAtlasTile]
+getCurrentCompleteAtlasForTargetWithCoverage latestFreshness requiredCoverage key targetHex targetAtlasScale cache = do
   set <- lookupAtlasSet key targetHex cache
-  if cachedSetIsCurrentFor latestFreshness targetHex targetAtlasScale set && catsComplete set && not (null (catsTiles set))
+  if cachedSetIsCurrentFor latestFreshness targetHex targetAtlasScale set
+      && catsComplete set
+      && not (null (catsTiles set))
+      && cachedSetCovers requiredCoverage set
     then Just (catsTiles set)
     else Nothing
 
@@ -898,6 +961,8 @@ tileSetSummary key set =
     , atssTileCount = length (catsTiles set)
     , atssExpectedTileCount = atsmExpectedTileCount manifest
     , atssComplete = catsComplete set
+    , atssCoveredChunkCount = length (avcChunkKeys (catsCoverage set))
+    , atssCoverageBounds = avcChunkBounds (catsCoverage set)
     }
 
 lastGoodSummary :: AtlasTextureCache -> Maybe AtlasTileSetSummary
@@ -920,6 +985,8 @@ lastGoodSummary cache = do
             , atssTileCount = length tiles
             , atssExpectedTileCount = length tiles
             , atssComplete = True
+            , atssCoveredChunkCount = 0
+            , atssCoverageBounds = Nothing
             }
       in fromBucket `orMaybe` fallback
 
@@ -947,6 +1014,12 @@ formatMaybeTileSetSummary (Just summary) =
     <> "/build=" <> maybe "unknown" show (atssBuildId summary)
     <> "/tiles=" <> show (atssTileCount summary) <> "/" <> show (atssExpectedTileCount summary)
     <> "/complete=" <> show (atssComplete summary)
+    <> "/coverageChunks=" <> show (atssCoveredChunkCount summary)
+    <> "/coverageBounds=" <> maybe "none" formatChunkBounds (atssCoverageBounds summary)
+
+formatChunkBounds :: AtlasChunkBounds -> String
+formatChunkBounds bounds =
+  show (acbMinChunkX bounds, acbMinChunkY bounds, acbMaxChunkX bounds, acbMaxChunkY bounds)
 
 formatZoomStage :: ZoomStage -> String
 formatZoomStage stage =
@@ -959,6 +1032,7 @@ atlasRetryReason NearestScaleFallback _ = "nearest-scale-fallback"
 atlasRetryReason StaleExactFallback _ = "obsolete-build-or-stale-exact"
 atlasRetryReason LastGoodFallback True = "stale-key-last-good-fallback"
 atlasRetryReason LastGoodFallback False = "last-good-while-current-incomplete"
+atlasRetryReason ViewportCoverageMissing _ = "viewport-coverage-missing"
 atlasRetryReason Missing _ = "missing-current-atlas"
 
 promotionText :: AtlasResolveDiagnostic -> String
@@ -973,6 +1047,11 @@ cachedSetIsCurrentFor latestFreshness targetHex targetAtlasScale set =
   in atsmHexRadius manifest == targetHex
     && atsmAtlasScale manifest == targetAtlasScale
     && atlasTargetBuildIsFresh latestFreshness (atlasManifestTarget manifest) (atsmBuildId manifest)
+
+cachedSetCovers :: Maybe AtlasViewportCoverage -> CachedAtlasTileSet -> Bool
+cachedSetCovers Nothing _ = True
+cachedSetCovers (Just requiredCoverage) set =
+  catsCoverage set `atlasViewportCoverageCovers` requiredCoverage
 
 cachedDayNightSetIsCurrentFor :: Maybe AtlasFreshness -> DayNightKey -> Int -> Int -> CachedDayNightTileSet -> Bool
 cachedDayNightSetIsCurrentFor latestFreshness dnKey targetHex targetAtlasScale set =
@@ -1130,6 +1209,7 @@ mergeTiles existing manifest newTiles =
   let existingPayload = (\old -> (catsManifest old, catsTiles old)) <$> existing
       mkSet setManifest mergedTiles = CachedAtlasTileSet
         { catsManifest = setManifest
+        , catsCoverage = atsmCoverage setManifest
         , catsTiles = mergedTiles
         , catsComplete = tileSetComplete setManifest mergedTiles
         }

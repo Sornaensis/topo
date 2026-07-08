@@ -60,7 +60,7 @@ import Seer.Render.Atlas
   , drainAtlasBuildResults
   , formatAtlasCacheSummary
   , formatAtlasResolveDiagnostic
-  , getCurrentCompleteAtlasForTarget
+  , getCurrentCompleteAtlasForTargetWithCoverage
   , resolveDayNightOverlayForTarget
   , retireDayNightOverlaysExcept
   , resolveAtlasTiles
@@ -71,6 +71,7 @@ import Seer.Render.Atlas
   )
 import Seer.Render.ZoomStage (ZoomStage(..), stageForZoom)
 import Seer.Render.Context (RenderContext(..))
+import Seer.Render.Viewport (currentAtlasViewportCoverage)
 import Seer.Render.Terrain
   ( TerrainCache(..)
   , chunkTextureCacheNeedsUpdate
@@ -92,6 +93,7 @@ import UI.DayNight (mkDayNightKey)
 import UI.TerrainAtlas (TerrainAtlasTile(..))
 import UI.Widgets (Rect(..))
 import UI.WidgetsDraw (rectToSDL)
+import Topo (WorldConfig(..))
 
 data RenderFrameOutcome = RenderFrameOutcome
   { rfoAtlasNeedsRetry :: !Bool
@@ -202,6 +204,7 @@ renderFrame context = do
       shouldDrainAtlas = rcShouldDrainAtlas context
       shouldScheduleAtlas = rcShouldScheduleAtlas context
       shouldUpdateChunkTextures = rcShouldUpdateChunkTextures context
+      shouldRefreshViewportAtlas = rcShouldRefreshViewportAtlas context
       timingLogThresholdMs = rcTimingLogThresholdMs context
       fontCache = rcFontCache context
       renderTargetOk = rcRenderTargetOk context
@@ -255,10 +258,14 @@ renderFrame context = do
       expectedAtlasKey = atlasKeyFor mode (uiRenderWaterLevel (rsUi snapshot)) terrainSnap
       atlasCacheKeyed = setAtlasKey expectedAtlasKey atlasCacheWithStage
       dataReady = tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
+      windowSize = (fromIntegral winW, fromIntegral winH)
+      coverageFor targetStage = if dataReady
+        then Just (currentAtlasViewportCoverage (WorldConfig { wcChunkSize = tsChunkSize terrainSnap }) (uiPanOffset (rsUi snapshot)) (uiZoom (rsUi snapshot)) windowSize terrainSnap targetStage)
+        else Nothing
   (scheduleJobCount, loggedSchedule, loggedScheduleDrain, loggedScheduleEnqueue) <-
     if shouldScheduleAtlas
       then do
-        (jobCount, drainMs, enqueueMs) <- scheduleAtlasBuilds renderTargetOk dataReady atlasSchedulerHandle scheduleRef snapshotVersion snapshot (fromIntegral winW, fromIntegral winH)
+        (jobCount, drainMs, enqueueMs) <- scheduleAtlasBuilds renderTargetOk dataReady shouldRefreshViewportAtlas stage atlasSchedulerHandle scheduleRef snapshotVersion snapshot windowSize
         let totalMs = drainMs + enqueueMs
         totalLogged <- logTiming logHandle timingLogThresholdMs (Text.pack "atlas schedule") totalMs (Just jobCount)
         drainLogged <- logTiming logHandle timingLogThresholdMs (Text.pack "atlas schedule drain") drainMs (Just jobCount)
@@ -284,7 +291,7 @@ renderFrame context = do
   tAfterDrain <- getMonotonicTimeNSec
   latestAtlasFreshness <- readAtlasFreshnessRef freshnessRef
   (atlasToDraw, atlasResolveStatus, atlasCache'', loggedAtlasResolve) <- do
-    ((resolvedTiles, resolveStatus, resolvedCache), elapsed) <- timedMs (resolveAtlasTiles latestAtlasFreshness renderTargetOk pool snapshot atlasCache' stage)
+    ((resolvedTiles, resolveStatus, resolvedCache), elapsed) <- timedMs (resolveAtlasTiles latestAtlasFreshness renderTargetOk pool snapshot atlasCache' stage windowSize)
     logged <- logTiming logHandle timingLogThresholdMs (Text.pack "atlas resolve") elapsed Nothing
     pure (resolvedTiles, resolveStatus, resolvedCache, logged)
   let currentDayNightKey =
@@ -307,7 +314,7 @@ renderFrame context = do
         else pure (textureCache, False)
   let mbDrawnCrossFadeTarget = case (atlasToDraw, mbBlend) of
         (Just _, Just (targetStage, blend)) | blend > 0 -> do
-          targetTiles <- getCurrentCompleteAtlasForTarget latestAtlasFreshness expectedAtlasKey (zsHexRadius targetStage) (zsAtlasScale targetStage) atlasCache''
+          targetTiles <- getCurrentCompleteAtlasForTargetWithCoverage latestAtlasFreshness (coverageFor targetStage) expectedAtlasKey (zsHexRadius targetStage) (zsAtlasScale targetStage) atlasCache''
           if null targetTiles
             then Nothing
             else Just (targetStage, blend, targetTiles)
@@ -565,6 +572,7 @@ formatTileSet (Just summary) =
     <> "/scale=" <> show (atssAtlasScale summary)
     <> "/build=" <> maybe "unknown" show (atssBuildId summary)
     <> "/tiles=" <> show (atssTileCount summary) <> "/" <> show (atssExpectedTileCount summary)
+    <> "/coverageChunks=" <> show (atssCoveredChunkCount summary)
 
 logTiming :: ActorHandle Log (Protocol Log) -> Word32 -> Text.Text -> Word32 -> Maybe Int -> IO Bool
 logTiming handle thresholdMs label elapsed maybeCount =

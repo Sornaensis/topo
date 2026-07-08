@@ -23,6 +23,7 @@ import Actor.AtlasScheduler
   , AtlasScheduler
   , AtlasSchedulerHandles(..)
   , atlasSchedulerDayNightSpec
+  , atlasViewportRefreshJob
   , newAtlasFreshnessRef
   , requestAtlasSchedule
   , setAtlasSchedulerHandles
@@ -113,6 +114,8 @@ spec = describe "AtlasScheduler" $ do
       , asqDataReady = True
       , asqSnapshot = snapshot
       , asqWindowSize = (800, 600)
+      , asqRefreshCurrentViewport = False
+      , asqRefreshStage = Nothing
       }
     report <- awaitReport scheduleRef version
     asrJobCount report `shouldBe` 1
@@ -150,6 +153,8 @@ spec = describe "AtlasScheduler" $ do
               , asqDataReady = True
               , asqSnapshot = snapshot
               , asqWindowSize = (800, 600)
+              , asqRefreshCurrentViewport = False
+              , asqRefreshStage = Nothing
               }
         requestAtlasSchedule schedulerHandle req
         emptyReport <- awaitReportMatching scheduleRef version ((== 0) . asrJobCount)
@@ -159,6 +164,50 @@ spec = describe "AtlasScheduler" $ do
         requestAtlasSchedule schedulerHandle req
         report <- awaitReportMatching scheduleRef version ((== 1) . asrJobCount)
         asrJobCount report `shouldBe` 1
+
+  it "queues only the current zoom stage for a viewport coverage refresh" $ withSystem $ \system -> do
+    managerHandle <- get @AtlasManager system
+    workerHandle <- spawnActor atlasWorkerActorDef
+    workerNextRef <- newIORef (0 :: Int)
+    resultRef <- newAtlasResultRef
+    scheduleRef <- newAtlasScheduleRef
+    freshnessRef <- newAtlasFreshnessRef
+    schedulerHandle <- get @AtlasScheduler system
+    setAtlasSchedulerHandles schedulerHandle AtlasSchedulerHandles
+      { ashManager = managerHandle
+      , ashWorkers = [workerHandle]
+      , ashWorkerNext = workerNextRef
+      , ashResultRef = resultRef
+      , ashScheduleRef = scheduleRef
+      , ashFreshnessRef = freshnessRef
+      }
+    let terrainSnap = (emptyTerrainSnapshotWithVersion 3) { tsChunkSize = 16 }
+        version = SnapshotVersion 3
+        ui = emptyUiState { uiZoom = 1.5 }
+        snapshot = RenderSnapshot
+          { rsUi = ui
+          , rsLog = LogSnapshot [] False 0 LogDebug
+          , rsData = DataSnapshot 0 0 Nothing
+          , rsTerrain = terrainSnap
+          }
+        requestedStage = ZoomStage 6 1 0 1
+        req = AtlasScheduleRequest
+          { asqSnapshotVersion = version
+          , asqRenderTargetOk = True
+          , asqDataReady = True
+          , asqSnapshot = snapshot
+          , asqWindowSize = (800, 600)
+          , asqRefreshCurrentViewport = True
+          , asqRefreshStage = Just requestedStage
+          }
+    let refreshJob = atlasViewportRefreshJob version snapshot requestedStage
+    (ajHexRadius refreshJob, ajAtlasScale refreshJob) `shouldBe` (6, 1)
+    requestAtlasSchedule schedulerHandle req
+    report <- awaitReport scheduleRef version
+    threadDelay 10000
+    leftovers <- drainAtlasJobs managerHandle
+    asrJobCount report + length leftovers `shouldBe` 1
+    map (\job -> (ajHexRadius job, ajAtlasScale job)) leftovers `shouldSatisfy` all (== (6, 1))
 
   it "single-mode rebuild enqueues exactly one job per zoom stage" $ withSystem $ \system -> do
     managerHandle <- get @AtlasManager system
@@ -249,6 +298,8 @@ spec = describe "AtlasScheduler" $ do
       , asqDataReady = True
       , asqSnapshot = snapshot
       , asqWindowSize = (800, 600)
+      , asqRefreshCurrentViewport = False
+      , asqRefreshStage = Nothing
       }
     report <- awaitReport scheduleRef version
     -- All 3 jobs should have been dispatched
@@ -314,6 +365,8 @@ spec = describe "AtlasScheduler" $ do
           , asqDataReady = True
           , asqSnapshot = snapshot
           , asqWindowSize = (800, 600)
+          , asqRefreshCurrentViewport = False
+          , asqRefreshStage = Nothing
           }
         staleReport <- awaitReport scheduleRef (SnapshotVersion 1)
         asrJobCount staleReport `shouldBe` 0
@@ -323,6 +376,8 @@ spec = describe "AtlasScheduler" $ do
           , asqDataReady = True
           , asqSnapshot = snapshot
           , asqWindowSize = (800, 600)
+          , asqRefreshCurrentViewport = False
+          , asqRefreshStage = Nothing
           }
         currentReport <- awaitReport scheduleRef (SnapshotVersion 2)
         asrJobCount currentReport `shouldBe` 1
@@ -365,6 +420,8 @@ spec = describe "AtlasScheduler" $ do
           , asqDataReady = True
           , asqSnapshot = snapshot
           , asqWindowSize = (800, 600)
+          , asqRefreshCurrentViewport = False
+          , asqRefreshStage = Nothing
           }
         report <- awaitReport scheduleRef version
         asrJobCount report `shouldBe` 1

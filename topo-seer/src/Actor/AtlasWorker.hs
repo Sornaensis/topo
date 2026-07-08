@@ -30,9 +30,9 @@ import qualified Data.IntMap.Strict as IntMap
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
 import Topo (WorldConfig(..))
-import Seer.Render.Viewport (visibleChunkKeys)
+import Seer.Render.Viewport (AtlasViewportCoverage, atlasPaddedViewport, atlasViewportCoverageFromKeys, visibleChunkKeys)
 import UI.OverlayExtract (extractOverlayField)
-import UI.HexGeometry (normalizeHexBounds, renderHexRadiusPx)
+import UI.HexGeometry (normalizeHexBounds)
 import UI.RiverRender (RiverGeometry(..), buildChunkRiverGeometry, defaultRiverRenderConfig, scaleRiverWidths)
 import UI.TerrainAtlas (AtlasChunkGeometry(..), AtlasTileGeometry(..), attachRiverOverlay, composeTilesFromGeometry, mergeChunkGeometry)
 import UI.DayNight (DayNightKey, DayNightSpec)
@@ -58,15 +58,7 @@ data AtlasBuild = AtlasBuild
   }
 
 atlasWorkerPaddedViewport :: WorldConfig -> (Float, Float) -> Float -> (Int, Int) -> ((Float, Float), Float, (Int, Int))
-atlasWorkerPaddedViewport config (panX, panY) zoom (winW, winH) =
-  let chunkPxSize = wcChunkSize config * renderHexRadiusPx * 2
-      padWorld = fromIntegral (chunkPxSize * 2) :: Float
-      zoom' = max 0.001 zoom
-      paddedWin = ( winW + ceiling (2 * padWorld * zoom')
-                  , winH + ceiling (2 * padWorld * zoom')
-                  )
-      paddedPan = (panX + padWorld, panY + padWorld)
-  in (paddedPan, zoom', paddedWin)
+atlasWorkerPaddedViewport = atlasPaddedViewport
 
 atlasBuildTarget :: AtlasBuild -> AtlasBuildTarget
 atlasBuildTarget job = AtlasBuildTarget
@@ -84,10 +76,11 @@ atlasBuildResultsForTiles
   -> SnapshotVersion
   -> Int
   -> Int
+  -> AtlasViewportCoverage
   -> [AtlasTileGeometry]
   -> Maybe (DayNightKey, [AtlasTileGeometry])
   -> [AtlasBuildResult]
-atlasBuildResultsForTiles buildId key snapshotVersion hexRadius atlasScale tiles dayNightTiles =
+atlasBuildResultsForTiles buildId key snapshotVersion hexRadius atlasScale coverage tiles dayNightTiles =
   let normalisedBounds tile = normalizeHexBounds hexRadius (atgBounds tile)
       expectedBounds = map normalisedBounds tiles
       manifest = AtlasTileSetManifest
@@ -98,6 +91,7 @@ atlasBuildResultsForTiles buildId key snapshotVersion hexRadius atlasScale tiles
         , atsmAtlasScale = atlasScale
         , atsmExpectedTileCount = length tiles
         , atsmExpectedBounds = expectedBounds
+        , atsmCoverage = coverage
         }
       dayNightLookup = case dayNightTiles of
         Nothing -> []
@@ -237,7 +231,8 @@ actor AtlasWorker
                           Just (dnKey, _) | not (IntMap.null dayNightGeometryMap) ->
                             Just (dnKey, composeTilesFromGeometry dayNightGeometryMap (abHexRadius job) (abAtlasScale job))
                           _ -> Nothing
-                        results = atlasBuildResultsForTiles (abBuildId job) (abKey job) (abSnapshotVersion job) (abHexRadius job) (abAtlasScale job) tiles dayNightTiles
+                        coverage = atlasViewportCoverageFromKeys (map fst chunkPairs)
+                        results = atlasBuildResultsForTiles (abBuildId job) (abKey job) (abSnapshotVersion job) (abHexRadius job) (abAtlasScale job) coverage tiles dayNightTiles
                     if null tiles
                       then threadDelay 100 >> pure st
                       else do

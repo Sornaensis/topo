@@ -5,12 +5,97 @@
 -- coordinate frame so that results are consistent regardless of the bake-time
 -- hex radius used by the current zoom stage.
 module Seer.Render.Viewport
-  ( visibleChunkKeys
+  ( AtlasChunkBounds(..)
+  , AtlasViewportCoverage(..)
+  , atlasPaddedViewport
+  , atlasViewportCoverageCovers
+  , atlasViewportCoverageFromKeys
+  , currentAtlasViewportCoverage
+  , emptyAtlasViewportCoverage
+  , visibleChunkKeys
   ) where
 
+import Actor.Data (TerrainSnapshot(..))
 import qualified Data.IntMap.Strict as IntMap
-import Topo (ChunkCoord(..), ChunkId(..), WorldConfig(..), chunkIdFromCoord)
+import qualified Data.IntSet as IntSet
+import Seer.Render.ZoomStage (ZoomStage)
+import Topo (ChunkCoord(..), ChunkId(..), WorldConfig(..), chunkCoordFromId, chunkIdFromCoord)
 import UI.HexGeometry (renderHexRadiusPx, hexOriginX, hexOriginY)
+
+-- | Inclusive chunk-coordinate bounds covered by an atlas build.
+data AtlasChunkBounds = AtlasChunkBounds
+  { acbMinChunkX :: !Int
+  , acbMinChunkY :: !Int
+  , acbMaxChunkX :: !Int
+  , acbMaxChunkY :: !Int
+  } deriving (Eq, Show)
+
+-- | Compact proof that an atlas build was generated from a specific set of
+-- terrain chunks.  The render resolver compares the current viewport's
+-- required chunks against this set before treating a complete atlas as ready.
+data AtlasViewportCoverage = AtlasViewportCoverage
+  { avcChunkKeys :: ![Int]
+  , avcChunkBounds :: !(Maybe AtlasChunkBounds)
+  } deriving (Eq, Show)
+
+emptyAtlasViewportCoverage :: AtlasViewportCoverage
+emptyAtlasViewportCoverage = atlasViewportCoverageFromKeys []
+
+atlasViewportCoverageFromKeys :: [Int] -> AtlasViewportCoverage
+atlasViewportCoverageFromKeys keys =
+  let uniqueKeys = IntSet.toAscList (IntSet.fromList keys)
+      bounds = chunkBounds uniqueKeys
+  in AtlasViewportCoverage
+    { avcChunkKeys = uniqueKeys
+    , avcChunkBounds = bounds
+    }
+
+atlasViewportCoverageCovers :: AtlasViewportCoverage -> AtlasViewportCoverage -> Bool
+atlasViewportCoverageCovers covered required =
+  let coveredSet = IntSet.fromList (avcChunkKeys covered)
+  in all (`IntSet.member` coveredSet) (avcChunkKeys required)
+
+chunkBounds :: [Int] -> Maybe AtlasChunkBounds
+chunkBounds [] = Nothing
+chunkBounds keys =
+  let coords = map (chunkCoordFromId . ChunkId) keys
+      xs = [x | ChunkCoord x _ <- coords]
+      ys = [y | ChunkCoord _ y <- coords]
+  in Just AtlasChunkBounds
+    { acbMinChunkX = minimum xs
+    , acbMinChunkY = minimum ys
+    , acbMaxChunkX = maximum xs
+    , acbMaxChunkY = maximum ys
+    }
+
+-- | Expand a camera viewport symmetrically in the base world frame before
+-- culling chunks for atlas worker builds.
+atlasPaddedViewport :: WorldConfig -> (Float, Float) -> Float -> (Int, Int) -> ((Float, Float), Float, (Int, Int))
+atlasPaddedViewport config (panX, panY) zoom (winW, winH) =
+  let chunkPxSize = wcChunkSize config * renderHexRadiusPx * 2
+      padWorld = fromIntegral (chunkPxSize * 2) :: Float
+      zoom' = max 0.001 zoom
+      paddedWin = ( winW + ceiling (2 * padWorld * zoom')
+                  , winH + ceiling (2 * padWorld * zoom')
+                  )
+      paddedPan = (panX + padWorld, panY + padWorld)
+  in (paddedPan, zoom', paddedWin)
+
+-- | Required chunk coverage for the currently visible viewport.  This uses the
+-- unexpanded render viewport, while workers record coverage from the expanded
+-- atlas viewport; panning inside the worker padding therefore stays ready.
+currentAtlasViewportCoverage
+  :: WorldConfig
+  -> (Float, Float)
+  -> Float
+  -> (Int, Int)
+  -> TerrainSnapshot
+  -> ZoomStage
+  -> AtlasViewportCoverage
+currentAtlasViewportCoverage config pan zoom windowSize terrainSnap _stage
+  | wcChunkSize config <= 0 = emptyAtlasViewportCoverage
+  | otherwise = atlasViewportCoverageFromKeys $
+      visibleChunkKeys config pan zoom windowSize (tsTerrainChunks terrainSnap)
 
 -- | Return the 'IntMap' keys of chunks whose coordinates place them in or
 -- near the camera viewport.

@@ -17,6 +17,7 @@ module Actor.AtlasResult
 import Actor.AtlasCache (AtlasKey)
 import Actor.SnapshotReceiver (SnapshotVersion)
 import Data.Word (Word64)
+import Seer.Render.Viewport (AtlasViewportCoverage)
 import UI.DayNight (DayNightKey)
 import UI.TerrainAtlas (AtlasTileGeometry)
 import UI.Widgets (Rect)
@@ -50,6 +51,7 @@ data AtlasTileSetManifest = AtlasTileSetManifest
   , atsmAtlasScale :: !Int
   , atsmExpectedTileCount :: !Int
   , atsmExpectedBounds :: ![Rect]
+  , atsmCoverage :: !AtlasViewportCoverage
   } deriving (Eq, Show)
 
 atlasManifestTarget :: AtlasTileSetManifest -> AtlasBuildTarget

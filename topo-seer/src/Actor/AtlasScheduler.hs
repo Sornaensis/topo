@@ -17,6 +17,7 @@ module Actor.AtlasScheduler
   , atlasSchedulerConfigured
   , requestAtlasSchedule
   , atlasSchedulerDayNightSpec
+  , atlasViewportRefreshJob
   , newAtlasFreshnessRef
   , writeAtlasFreshness
   , writeAtlasFreshnessKey
@@ -31,7 +32,7 @@ import Actor.AtlasFreshness
   , writeAtlasFreshness
   , writeAtlasFreshnessKey
   )
-import Actor.AtlasManager (AtlasJob(..), AtlasDispatchJob(..), AtlasManager, drainFreshAtlasJobs)
+import Actor.AtlasManager (AtlasJob(..), AtlasDispatchJob(..), AtlasManager, drainFreshAtlasJobs, enqueueAtlasBuild)
 import Actor.AtlasResultBroker (AtlasResultRef)
 import Actor.AtlasScheduleBroker
   ( AtlasScheduleRef
@@ -48,6 +49,7 @@ import Data.IORef (IORef, atomicModifyIORef')
 import UI.DayNight (DayNightSpec, mkDayNightSpec)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
+import Seer.Render.ZoomStage (ZoomStage(..), stageForZoom)
 import Seer.Timing (timedMs)
 
 -- | Handles required by the atlas scheduler.
@@ -67,6 +69,8 @@ data AtlasScheduleRequest = AtlasScheduleRequest
   , asqDataReady :: !Bool
   , asqSnapshot :: !RenderSnapshot
   , asqWindowSize :: !(Int, Int)
+  , asqRefreshCurrentViewport :: !Bool
+  , asqRefreshStage :: !(Maybe ZoomStage)
   }
 
 newtype AtlasSchedulerState = AtlasSchedulerState
@@ -129,6 +133,21 @@ atlasSchedulerDayNightSpec ui terrain
   | uiDayNightEnabled ui = mkDayNightSpec ui (tsChunkSize terrain)
   | otherwise = Nothing
 
+atlasViewportRefreshJob :: SnapshotVersion -> RenderSnapshot -> ZoomStage -> AtlasJob
+atlasViewportRefreshJob snapshotVersion snapshot stage =
+  let uiSnap = rsUi snapshot
+      terrainSnap = rsTerrain snapshot
+      currentKey = atlasKeyFor (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) terrainSnap
+  in AtlasJob
+    { ajKey = currentKey
+    , ajViewMode = uiViewMode uiSnap
+    , ajWaterLevel = uiRenderWaterLevel uiSnap
+    , ajSnapshotVersion = snapshotVersion
+    , ajTerrain = terrainSnap
+    , ajHexRadius = zsHexRadius stage
+    , ajAtlasScale = zsAtlasScale stage
+    }
+
 runSchedule :: AtlasSchedulerHandles -> AtlasScheduleRequest -> IO ()
 runSchedule handles req = do
   let snapshot = asqSnapshot req
@@ -144,7 +163,13 @@ runSchedule handles req = do
   if shouldSchedule && workerCount > 0
     then do
       let currentFreshness = emptyAtlasFreshness currentKey (asqSnapshotVersion req)
-      (jobs, drainMs) <- timedMs (drainFreshAtlasJobs (ashManager handles) currentFreshness)
+          refreshStage = maybe (stageForZoom (uiZoom uiSnap)) id (asqRefreshStage req)
+          viewportRefreshJob = atlasViewportRefreshJob (asqSnapshotVersion req) snapshot refreshStage
+      (jobs, drainMs) <- timedMs $ do
+        if asqRefreshCurrentViewport req
+          then enqueueAtlasBuild (ashManager handles) viewportRefreshJob
+          else pure ()
+        drainFreshAtlasJobs (ashManager handles) currentFreshness
       (_, enqueueMs) <- timedMs $
         forM_ jobs $ \dispatchJob -> do
           idx <- atomicModifyIORef' (ashWorkerNext handles) (\i -> (i + 1, i))

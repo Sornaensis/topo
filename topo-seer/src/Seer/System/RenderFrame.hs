@@ -33,7 +33,7 @@ import Seer.Render
   , renderFrame
   , terrainCacheNeedsRefresh
   )
-import Seer.Render.Atlas (AtlasTextureCache(..))
+import Seer.Render.Atlas (AtlasTextureCache(..), atlasResolveNeedsViewportRefresh)
 import Seer.Render.Frame
   ( AtlasFrameStepPolicy(..)
   , AtlasQueuedWork(..)
@@ -235,6 +235,7 @@ renderFrameStep env settings nowMs snapVersion renderSnap cacheState0 = do
         (rcsLastAtlasSchedule cacheState0)
       shouldDrainAtlas = afspShouldDrainAtlas atlasPolicy
       shouldScheduleAtlas = afspShouldScheduleAtlas atlasPolicy
+      shouldRefreshViewportAtlas = atlasResolveNeedsViewportRefresh (rcsLastAtlasResolveStatus cacheState0)
       queuedRevisionScheduled = if shouldScheduleAtlas && aqwQueuedForCurrentKey queuedWork
         then aqwQueueRevision queuedWork
         else rcsLastAtlasQueuedRevisionScheduled cacheState0
@@ -282,6 +283,7 @@ renderFrameStep env settings nowMs snapVersion renderSnap cacheState0 = do
       , rcAtlasUploadsPerFrame = rfsetAtlasUploadsPerFrame settings
       , rcShouldDrainAtlas = shouldDrainAtlas
       , rcShouldScheduleAtlas = shouldScheduleAtlas
+      , rcShouldRefreshViewportAtlas = shouldRefreshViewportAtlas
       , rcShouldUpdateChunkTextures = shouldUpdateChunkTextures
       , rcTimingLogThresholdMs = rfsetTimingLogThresholdMs settings
       , rcFontCache = rfeFontCache env
