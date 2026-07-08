@@ -9,7 +9,7 @@ import qualified Data.Vector.Unboxed as U
 import Test.Hspec
 import Linear (V2(..))
 import qualified SDL.Raw.Types as Raw
-import Topo (WorldConfig(..), TerrainChunk(..), zeroDirSlope)
+import Topo (WorldConfig(..), TerrainChunk(..), WeatherChunk(..), zeroDirSlope)
 import Topo.Types (pattern BiomeDesert, pattern FormFlat, pattern PlateBoundaryNone)
 import Actor.UI (ViewMode(..))
 import UI.DayNight (dayNightMinBrightness)
@@ -47,6 +47,35 @@ spec = describe "Terrain render geometry" $ do
         (centerX, centerY) = hexCenterF renderHexRadiusPx 0 0
     realToFrac bx + realToFrac localX `shouldSatisfy` closeTo centerX
     realToFrac by + realToFrac localY `shouldSatisfy` closeTo centerY
+
+  it "maps clear, cloudy, and storm fixtures to ordered ViewCloud colours" $ do
+    let clear = viewColor ViewCloud (testWeatherChunk 1 0.45 0.00 0.00 0.00)
+        cloudy = viewColor ViewCloud (testWeatherChunk 1 0.45 0.60 0.25 0.00)
+        storm = viewColor ViewCloud (testWeatherChunk 1 0.45 0.95 1.00 0.80)
+    clear `shouldNotBe` cloudy
+    cloudy `shouldNotBe` storm
+    channelSum cloudy `shouldSatisfy` (> channelSum clear + 250)
+    storm `shouldSatisfy` blueDominant
+    vertexAlphaTuple clear `shouldBe` 255
+    vertexAlphaTuple cloudy `shouldBe` 255
+    vertexAlphaTuple storm `shouldBe` 255
+
+  it "changes ViewCloud geometry colours for cover, water, and precipitation deltas" $ do
+    let base = viewColor ViewCloud (testWeatherChunk 1 0.45 0.55 0.20 0.00)
+        moreCover = viewColor ViewCloud (testWeatherChunk 1 0.45 0.80 0.20 0.00)
+        moreWater = viewColor ViewCloud (testWeatherChunk 1 0.45 0.55 0.70 0.00)
+        morePrecip = viewColor ViewCloud (testWeatherChunk 1 0.45 0.55 0.70 0.70)
+    moreCover `shouldNotBe` base
+    moreWater `shouldNotBe` base
+    morePrecip `shouldNotBe` moreWater
+    channelSum moreCover `shouldSatisfy` (> channelSum base + 100)
+    channelSum moreWater `shouldSatisfy` (< channelSum base - 80)
+    blueDominance morePrecip `shouldSatisfy` (> blueDominance moreWater + 20)
+
+  it "keeps ViewWeather geometry temperature-only when cloud fields change" $ do
+    let clear = viewColor ViewWeather (testWeatherChunk 1 0.45 0.00 0.00 0.00)
+        storm = viewColor ViewWeather (testWeatherChunk 1 0.45 0.95 1.00 0.90)
+    storm `shouldBe` clear
 
   it "builds a transparent black day/night overlay at full brightness" $ do
     let size = 1
@@ -101,6 +130,46 @@ vertexColor (Raw.Vertex _ (Raw.Color r g b a) _) = (r, g, b, a)
 
 vertexAlpha :: Raw.Vertex -> Word8
 vertexAlpha (Raw.Vertex _ (Raw.Color _ _ _ a) _) = a
+
+viewColor :: ViewMode -> WeatherChunk -> (Word8, Word8, Word8, Word8)
+viewColor mode weather =
+  let size = 1
+      config = WorldConfig { wcChunkSize = size }
+      chunk = emptyTerrainChunk size
+      geometry = buildChunkGeometry renderHexRadiusPx config mode 0 IntMap.empty (IntMap.singleton 0 weather) IntMap.empty Nothing 0 chunk
+  in vertexColor (cgVertices geometry SV.! 0)
+
+testWeatherChunk :: Int -> Float -> Float -> Float -> Float -> WeatherChunk
+testWeatherChunk total temp cover water precip =
+  let v value = U.replicate total value
+  in WeatherChunk
+      { wcTemp = v temp
+      , wcHumidity = v 0.5
+      , wcWindDir = v 0
+      , wcWindSpd = v 0
+      , wcPressure = v 0.5
+      , wcPrecip = v precip
+      , wcCloudCover = v cover
+      , wcCloudWater = v water
+      , wcCloudCoverLow  = v (cover * 0.60)
+      , wcCloudCoverMid  = v (cover * 0.25)
+      , wcCloudCoverHigh = v (cover * 0.15)
+      , wcCloudWaterLow  = v (water * 0.60)
+      , wcCloudWaterMid  = v (water * 0.25)
+      , wcCloudWaterHigh = v (water * 0.15)
+      }
+
+channelSum :: (Word8, Word8, Word8, Word8) -> Int
+channelSum (r, g, b, _) = fromIntegral r + fromIntegral g + fromIntegral b
+
+blueDominance :: (Word8, Word8, Word8, Word8) -> Int
+blueDominance (r, g, b, _) = fromIntegral b - max (fromIntegral r) (fromIntegral g)
+
+blueDominant :: (Word8, Word8, Word8, Word8) -> Bool
+blueDominant color = blueDominance color > 45
+
+vertexAlphaTuple :: (Word8, Word8, Word8, Word8) -> Word8
+vertexAlphaTuple (_, _, _, a) = a
 
 closeTo :: Float -> Float -> Bool
 closeTo expected actual = abs (actual - expected) < 0.001

@@ -12,6 +12,7 @@ import qualified Data.Vector.Unboxed as U
 import Spec.Support.FloatApprox (approxEqAbs)
 import Topo
 import Topo.Calendar (WorldTime(..))
+import Topo.Overlay (Overlay(..), OverlayData(..), OverlayProvenance(..), insertOverlay)
 import Topo.Planet (defaultPlanetConfig, defaultWorldSlice, PlanetConfig(..), WorldSlice(..))
 import Topo.Weather (cloudFraction, seasonalITCZLatitude, weatherSeasonalPhase,
                      weatherOverlaySchema, overlayToWeatherChunk, weatherFieldCount,
@@ -72,6 +73,57 @@ spec = describe "Weather" $ do
     case firstWeatherTemp worldTicked of
       Nothing -> expectationFailure "missing ticked weather temperature"
       Just temps -> temps `shouldNotBe` tempInit
+
+  it "changes cloud cover and cloud water on a due weather tick" $ do
+    let config = WorldConfig { wcChunkSize = 4 }
+        n = chunkTileCount config
+        climate = ClimateChunk
+          { ccTempAvg = U.replicate n 0.5
+          , ccPrecipAvg = U.replicate n 0.4
+          , ccWindDirAvg = U.replicate n 0
+          , ccWindSpdAvg = U.replicate n 0
+          , ccHumidityAvg = U.replicate n 0.9
+          , ccTempRange = U.replicate n 0
+          , ccPrecipSeasonality = U.replicate n 0
+          }
+        seededWeather = constantWeatherChunk n 0.5 0.1 0.0 0.0 0.0
+        world0 = withWeatherOverlay
+          (setClimateChunk (ChunkId 0) climate (emptyWorld config defaultHexGridMeta))
+          seededWeather
+        weatherCfg = defaultWeatherConfig
+          { wcSeasonAmplitude = 0
+          , wcJitterAmplitude = 0
+          , wcHumidityNoiseScale = 0
+          , wcPrecipNoiseScale = 0
+          , wcITCZPrecipBoost = 0
+          , wcCloudPrecipBoost = 0
+          , wcCloudFormationRate = 1
+          , wcCloudDissipationRate = 0
+          , wcCloudSaturationThreshold = 0.2
+          , wcConvectiveThreshold = 1
+          , wcSubsidenceDissipation = 0
+          , wcAutoconversionThreshold = 1
+          , wcPrecipEfficiency = 0
+          , wcTempDiffuseIterations = 0
+          , wcTempDiffuseFactor = 0
+          , wcAdvectDt = 0
+          , wcClimatePullStrength = 1
+          , wcWeatherDiffuseFactor = 0
+          , wcSeasonalBase = 1
+          , wcSeasonalRange = 0
+          }
+    before <- case getWeatherChunk (ChunkId 0) world0 of
+      Nothing -> expectationFailure "missing seeded weather chunk" >> pure seededWeather
+      Just wk -> pure wk
+    worldTicked <- runWeatherTick weatherCfg world0
+    wtTick (twWorldTime worldTicked) `shouldBe` wtTick (twWorldTime world0) + 1
+    case getWeatherChunk (ChunkId 0) worldTicked of
+      Nothing -> expectationFailure "missing ticked weather chunk"
+      Just after -> do
+        averageField (wcCloudCover after) `shouldSatisfy` (> averageField (wcCloudCover before) + 0.30)
+        averageField (wcCloudWater after) `shouldSatisfy` (> averageField (wcCloudWater before) + 0.30)
+        U.toList (wcCloudCover after) `shouldNotBe` U.toList (wcCloudCover before)
+        U.toList (wcCloudWater after) `shouldNotBe` U.toList (wcCloudWater before)
 
   it "skips non-due weather ticks until the configured cadence fires" $ do
     let config = WorldConfig { wcChunkSize = 4 }
@@ -1078,6 +1130,44 @@ firstWeatherTemp :: TerrainWorld -> Maybe [Float]
 firstWeatherTemp world = do
   chunk <- getWeatherChunk (ChunkId 0) world
   pure (U.toList (wcTemp chunk))
+
+withWeatherOverlay :: TerrainWorld -> WeatherChunk -> TerrainWorld
+withWeatherOverlay world weather =
+  world { twOverlays = insertOverlay weatherOverlay (twOverlays world) }
+  where
+    weatherOverlay = Overlay
+      { ovSchema = weatherOverlaySchema
+      , ovData = DenseData (IntMap.singleton 0 (weatherChunkToOverlay weather))
+      , ovProvenance = OverlayProvenance
+          { opSeed = 0
+          , opVersion = 1
+          , opSource = "weather-cloud-delta-spec"
+          , opSchedule = Nothing
+          }
+      }
+
+constantWeatherChunk :: Int -> Float -> Float -> Float -> Float -> Float -> WeatherChunk
+constantWeatherChunk n temp humidity precip cloudCover cloudWater =
+  let v value = U.replicate n value
+  in WeatherChunk
+      { wcTemp = v temp
+      , wcHumidity = v humidity
+      , wcWindDir = v 0
+      , wcWindSpd = v 0
+      , wcPressure = v 0.5
+      , wcPrecip = v precip
+      , wcCloudCover = v cloudCover
+      , wcCloudWater = v cloudWater
+      , wcCloudCoverLow  = v (cloudCover * 0.60)
+      , wcCloudCoverMid  = v (cloudCover * 0.25)
+      , wcCloudCoverHigh = v (cloudCover * 0.15)
+      , wcCloudWaterLow  = v (cloudWater * 0.60)
+      , wcCloudWaterMid  = v (cloudWater * 0.25)
+      , wcCloudWaterHigh = v (cloudWater * 0.15)
+      }
+
+averageField :: U.Vector Float -> Float
+averageField values = U.sum values / fromIntegral (U.length values)
 
 runWeatherTick :: WeatherConfig -> TerrainWorld -> IO TerrainWorld
 runWeatherTick weatherCfg world =

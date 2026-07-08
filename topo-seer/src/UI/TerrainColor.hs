@@ -286,8 +286,10 @@ cloudColor terrain mWeather idx =
           water = clamp01 (wcCloudWater wc U.! idx)
           -- Precipitation (0–1 normalized)
           prec  = clamp01 (wcPrecip wc U.! idx)
-          -- Storm intensity: high cloud water AND high precipitation
-          storm = clamp01 (water * 2) * clamp01 (prec * 3)
+          -- Storm intensity mirrors the inspector: cloud water scaled by
+          -- precipitation, so the rendered storm tint tracks the reported
+          -- storm_intensity field.
+          storm = clamp01 water * clamp01 (prec * 3)
           -- Base terrain (dim): dark grey proportional to elevation
           elev  = tcElevation terrain U.! idx
           baseR = 0.12 + elev * 0.12
