@@ -23,6 +23,7 @@ import Linear (V2(..), V4(..))
 import qualified SDL
 import qualified SDL.Raw.Types as Raw
 import Topo (ChunkCoord(..), ChunkId(..), ClimateChunk(..), TerrainChunk(..), VegetationChunk(..), WeatherChunk(..), TileCoord(..), TileIndex(..), WorldConfig(..), chunkCoordFromId, chunkOriginTile, tileCoordFromIndex)
+import UI.DayNight (dayNightMinBrightness)
 import UI.HexGeometry (hexCenterF, hexChunkBounds, hexCornerOffsets, renderHexRadiusPx)
 import UI.TerrainColor (terrainColor)
 import UI.Widgets (Rect(..))
@@ -109,10 +110,12 @@ buildChunkGeometry hexRadiusPx config mode waterLevel climateMap weatherMap vegM
 -- | Build a day\/night overlay mesh for a terrain chunk.
 --
 -- The overlay uses the same hex mesh layout as 'buildChunkGeometry'
--- but every vertex is black (@RGB = 0,0,0@) with alpha proportional
--- to shadow darkness: @alpha = round ((1 - brightness) * 255)@.
--- Fully-lit hexes (@brightness = 1.0@) are fully transparent;
--- night-side hexes (@brightness = 0.15@) are almost opaque black.
+-- but every vertex is black (@RGB = 0,0,0@) with alpha normalized
+-- from full daylight to the deep-night brightness floor and capped at
+-- @160/255@.  Fully-lit hexes (@brightness = 1.0@) are fully
+-- transparent; night-side hexes (@brightness = dayNightMinBrightness@)
+-- remain dark but leave enough base terrain visible for twilight and
+-- terminator detail.
 --
 -- Drawn on top of the base atlas tiles using alpha blending, this
 -- produces the day\/night dimming effect without baking brightness
@@ -139,8 +142,7 @@ buildDayNightGeometry hexRadiusPx config dayNightFn key chunk =
                       centerX = realToFrac (scx - fromIntegral minX) :: CFloat
                       centerY = realToFrac (scy - fromIntegral minY) :: CFloat
                       brightness = dayNightFn q r
-                      alpha = fromIntegral (round ((1 - max 0 (min 1 brightness)) * 255) :: Int) :: Word8
-                      rawColor = Raw.Color 0 0 0 alpha
+                      rawColor = dayNightOverlayColor brightness
                       base = idx * 7
                   SM.unsafeWrite mv base (Raw.Vertex (Raw.FPoint centerX centerY) rawColor zeroTex)
                   writeHexCorners mv base centerX centerY rawColor zeroTex corners
@@ -164,6 +166,22 @@ buildDayNightGeometry hexRadiusPx config dayNightFn key chunk =
       , cgVertices = vertices
       , cgIndices = indices
       }
+
+-- | Maximum opacity for the visual day/night dimming overlay.
+--
+-- Keeping the night-side overlay below roughly two-thirds opacity preserves
+-- terrain contrast while retaining a clear day/night separation.
+dayNightOverlayMaxAlpha :: Int
+dayNightOverlayMaxAlpha = 160
+
+-- | Map a physical brightness multiplier to the visual overlay colour.
+dayNightOverlayColor :: Float -> Raw.Color
+dayNightOverlayColor brightness = Raw.Color 0 0 0 alpha
+  where
+    clampedBrightness = max dayNightMinBrightness (min 1 brightness)
+    darkness = (1 - clampedBrightness) / (1 - dayNightMinBrightness)
+    alpha = fromIntegral (round (darkness * fromIntegral dayNightOverlayMaxAlpha) :: Int) :: Word8
+{-# INLINE dayNightOverlayColor #-}
 
 -- | Write 6 corner vertices for a hex at the given base offset.
 writeHexCorners :: SM.MVector s Raw.Vertex -> Int -> CFloat -> CFloat -> Raw.Color -> Raw.FPoint -> [Raw.FPoint] -> ST s ()

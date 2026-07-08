@@ -6,6 +6,7 @@ module UI.DayNight
   , mkDayNightKey
   , mkDayNightSpec
   , mkDayNightFn
+  , dayNightMinBrightness
   ) where
 
 import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..))
@@ -113,6 +114,10 @@ dayNightFnFromInputs inputs q r =
       altDeg = spAltitude sp * 180 / pi
   in solarBrightness altDeg
 
+-- | Deep-night floor for day/night brightness.
+dayNightMinBrightness :: Float
+dayNightMinBrightness = 0.15
+
 -- | Map solar altitude (degrees) to a brightness multiplier.
 --
 -- @>= 30@°: 1.0 (full daylight).
@@ -123,5 +128,6 @@ solarBrightness :: Float -> Float
 solarBrightness altDeg
   | altDeg >= 30  = 1.0
   | altDeg >= 0   = 0.4 + 0.6 * (altDeg / 30)
-  | altDeg >= -18 = 0.15 + 0.25 * ((altDeg + 18) / 18)
-  | otherwise     = 0.15
+  | altDeg >= -18 =
+      dayNightMinBrightness + (0.4 - dayNightMinBrightness) * ((altDeg + 18) / 18)
+  | otherwise     = dayNightMinBrightness

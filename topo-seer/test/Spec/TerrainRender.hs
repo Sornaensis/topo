@@ -12,6 +12,7 @@ import qualified SDL.Raw.Types as Raw
 import Topo (WorldConfig(..), TerrainChunk(..), zeroDirSlope)
 import Topo.Types (pattern BiomeDesert, pattern FormFlat, pattern PlateBoundaryNone)
 import Actor.UI (ViewMode(..))
+import UI.DayNight (dayNightMinBrightness)
 import UI.HexGeometry (hexCenterF, renderHexRadiusPx)
 import UI.TerrainRender (ChunkGeometry(..), buildChunkGeometry, buildDayNightGeometry)
 import UI.Widgets (Rect(..))
@@ -54,15 +55,52 @@ spec = describe "Terrain render geometry" $ do
         geometry = buildDayNightGeometry renderHexRadiusPx config (\_ _ -> 1.0) 0 chunk
     map vertexColor (SV.toList (cgVertices geometry)) `shouldSatisfy` all (== (0, 0, 0, 0))
 
-  it "builds a high-alpha black day/night overlay for deep night" $ do
+  it "builds a capped-alpha black day/night overlay for deep night" $ do
     let size = 1
         config = WorldConfig { wcChunkSize = size }
         chunk = emptyTerrainChunk size
-        geometry = buildDayNightGeometry renderHexRadiusPx config (\_ _ -> 0.15) 0 chunk
-    map vertexColor (SV.toList (cgVertices geometry)) `shouldSatisfy` all (== (0, 0, 0, 217))
+        geometry = buildDayNightGeometry renderHexRadiusPx config (\_ _ -> dayNightMinBrightness) 0 chunk
+    map vertexColor (SV.toList (cgVertices geometry)) `shouldSatisfy` all (== (0, 0, 0, 160))
+
+  it "keeps twilight overlay alpha distinguishable from day and deep night" $ do
+    let size = 1
+        config = WorldConfig { wcChunkSize = size }
+        chunk = emptyTerrainChunk size
+        vertexAlphas brightness =
+          let geometry = buildDayNightGeometry renderHexRadiusPx config (\_ _ -> brightness) 0 chunk
+          in map vertexAlpha (SV.toList (cgVertices geometry))
+        deepNight = vertexAlphas dayNightMinBrightness
+        twilight = vertexAlphas 0.4
+        daylight = vertexAlphas 1.0
+    deepNight `shouldSatisfy` all (== 160)
+    twilight `shouldSatisfy` all (\a -> a > 0 && a < 160)
+    daylight `shouldSatisfy` all (== 0)
+
+  it "keeps overlay alpha monotonic as brightness increases" $ do
+    let size = 1
+        config = WorldConfig { wcChunkSize = size }
+        chunk = emptyTerrainChunk size
+        alphaFor brightness =
+          let geometry = buildDayNightGeometry renderHexRadiusPx config (\_ _ -> brightness) 0 chunk
+          in vertexAlpha (cgVertices geometry SV.! 0)
+        alphas = map alphaFor [dayNightMinBrightness, 0.25, 0.4, 0.7, 1.0]
+    zipWith (>=) alphas (drop 1 alphas) `shouldSatisfy` and
+
+  it "clamps out-of-range overlay inputs to the visual alpha bounds" $ do
+    let size = 1
+        config = WorldConfig { wcChunkSize = size }
+        chunk = emptyTerrainChunk size
+        vertexAlphas brightness =
+          let geometry = buildDayNightGeometry renderHexRadiusPx config (\_ _ -> brightness) 0 chunk
+          in map vertexAlpha (SV.toList (cgVertices geometry))
+    vertexAlphas 0.0 `shouldSatisfy` all (== 160)
+    vertexAlphas 2.0 `shouldSatisfy` all (== 0)
 
 vertexColor :: Raw.Vertex -> (Word8, Word8, Word8, Word8)
 vertexColor (Raw.Vertex _ (Raw.Color r g b a) _) = (r, g, b, a)
+
+vertexAlpha :: Raw.Vertex -> Word8
+vertexAlpha (Raw.Vertex _ (Raw.Color _ _ _ a) _) = a
 
 closeTo :: Float -> Float -> Bool
 closeTo expected actual = abs (actual - expected) < 0.001
