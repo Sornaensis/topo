@@ -118,7 +118,7 @@ import Topo.Plugin.RPC.DataService
   )
 import Topo.Hex (HexGridMeta(..))
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), formatLatLon, tileLatLon)
-import Topo.Calendar (CalendarConfig(..), mkCalendarConfig, tickToDate, yearFraction, CalendarDate(..))
+import Topo.Calendar (CalendarConfig(..), WorldTime(..), mkCalendarConfig, tickToDate, yearFraction, CalendarDate(..))
 import Topo.Solar (SolarPosition(..), DayInfo(..), tileSolarPos, tileDayInfo, defaultSolarConfig, tileIrradiance, localSolarHour)
 import Topo.Units
   ( defaultUnitScales
@@ -777,6 +777,7 @@ inspectorSections pluginData ui terrainSnap (q, r) sample =
   , waterTableSection
   , climateSection
   , weatherSection
+  , weatherTimelineSection
   , biomeSection
   , soilSection
   , vegetationSection
@@ -945,6 +946,14 @@ inspectorSections pluginData ui terrainSnap (q, r) sample =
           , maybeFloatField "cloud_water_mid" "Current cloud water mid" (safeIndexMaybe (wcCloudWaterMid wc) tileIdx)
           , maybeFloatField "cloud_water_high" "Current cloud water high" (safeIndexMaybe (wcCloudWaterHigh wc) tileIdx)
           ]
+
+    weatherTimelineSection = section "weather_timeline" "Weather Timeline"
+      [ temporalBasisField InstantaneousCurrent
+      , sourceKindField SimulatedWeather
+      , word64Field "tick" "Tick" (wtTick (tgcWorldTime (tsGeoContext terrainSnap)))
+      , word64Field "weather_version" "Weather version" (tsWeatherVersion terrainSnap)
+      , word64Field "published_weather_version" "Published weather version" (tsWeatherVersion terrainSnap)
+      ]
 
     biomeSection = section "biome_refinement" "Biome / Refinement"
       [ word16Field "biome_code" "Code" (biomeIdToCode (hsBiome sample))

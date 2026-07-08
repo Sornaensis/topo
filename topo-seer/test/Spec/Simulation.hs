@@ -24,11 +24,14 @@ import Actor.Data (Data, DataSnapshot(..), TerrainGeoContext(..), TerrainSnapsho
 import Actor.Log (Log, getLogSnapshot, leMessage, lsEntries)
 import Actor.Simulation
   ( AutoTickStepResult(..)
+  , CloudDeltaSummary(..)
   , Simulation
   , SimulationDagNodeSnapshot(..)
   , SimulationDagSnapshot(..)
   , SimulationNodeBinding(..)
   , SimulationTickLogEntry(..)
+  , WeatherNodeScheduleDiagnostic(..)
+  , WeatherPublicationDiagnostic(..)
   , autoTickStep
   , autoTickWeatherPublishIntervalNs
   , flushSimWeatherPublication
@@ -38,6 +41,7 @@ import Actor.Simulation
   , setSimHandles
   , setSimWorld
   , setSimWorldWithNodes
+  , weatherPublicationKindToText
   )
 import Actor.SnapshotReceiver
   ( SnapshotVersionRef
@@ -514,6 +518,77 @@ spec = describe "Simulation actor" $ do
     sdsAvailable dagSnapshot `shouldBe` True
     map sdnsStatus (sdsNodes dagSnapshot) `shouldSatisfy` elem (Text.pack "completed")
     map stleStatus (sdsTickLogs dagSnapshot) `shouldSatisfy` elem (Text.pack "completed")
+    case sdsWeatherNodeStatus dagSnapshot of
+      Just weatherNode -> do
+        wnsStatus weatherNode `shouldBe` Text.pack "completed"
+        wnsCadenceTicks weatherNode `shouldBe` Just 1
+        wnsSkipReason weatherNode `shouldBe` Nothing
+      Nothing -> expectationFailure "expected weather-node schedule diagnostic"
+    case sdsLastCloudDelta dagSnapshot of
+      Just cloudDelta -> do
+        cdsChanged cloudDelta `shouldBe` True
+        cdsComparedSamples cloudDelta `shouldSatisfy` (> 0)
+      Nothing -> expectationFailure "expected cloud delta diagnostic"
+    case sdsLastWeatherPublication dagSnapshot of
+      Just publication -> do
+        wpdTick publication `shouldBe` 2
+        weatherPublicationKindToText (wpdKind publication) `shouldBe` Text.pack "manual"
+        wpdWeatherVersionBefore publication `shouldBe` tsWeatherVersion terrainSnap
+        wpdWeatherVersionAfter publication `shouldBe` tsWeatherVersion terrainSnap2
+        wpdPublishedWeatherVersion publication `shouldBe` tsWeatherVersion terrainSnap2
+        wpdDataPublished publication `shouldBe` True
+      Nothing -> expectationFailure "expected weather publication diagnostic"
+
+  it "reports skipped weather cadence diagnostics without cloud deltas" $ withConfiguredSimulation $ \simHandle dataHandle uiHandle _terrainSnapshotRef _snapshotVersionRef _atlasHandle -> do
+    let config = WorldConfig { wcChunkSize = 8 }
+        chunk = generateTerrainChunk config (const 0.5)
+        climate0 = emptyClimateChunk config
+        tileCount = U.length (ccTempAvg climate0)
+        climate = climate0
+          { ccTempAvg = U.replicate tileCount 0.6
+          , ccPrecipAvg = U.replicate tileCount 0.5
+          , ccWindDirAvg = U.replicate tileCount 0.4
+          , ccWindSpdAvg = U.replicate tileCount 0.35
+          , ccHumidityAvg = U.replicate tileCount 0.5
+          }
+        weatherCfg = defaultWeatherConfig { wcTickSeconds = 3 }
+        genCfg = defaultWorldGenConfig { worldWeather = weatherCfg }
+        world0 = (emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice)
+          { twGenConfig = Just (toJSON genCfg) }
+        world1 = withSeedWeather
+          (setClimateChunk (ChunkId 0) climate (setTerrainChunk (ChunkId 0) chunk world0))
+          (ChunkId 0)
+          climate
+
+    replaceTerrainData dataHandle world1
+    initialTerrainSnap <- getTerrainSnapshot dataHandle
+    setSimWorld simHandle world1
+    setUiViewMode uiHandle ViewCloud
+    requestSimTick simHandle 1
+
+    tickAdvanced <- awaitTrue 500 $ do
+      uiSnap <- getUiSnapshot uiHandle
+      pure (uiSimTickCount uiSnap >= 1)
+    tickAdvanced `shouldBe` True
+
+    terrainSnap <- getTerrainSnapshot dataHandle
+    tsWeatherVersion terrainSnap `shouldBe` tsWeatherVersion initialTerrainSnap
+    dagSnapshot <- getSimDagSnapshot simHandle
+    case sdsWeatherNodeStatus dagSnapshot of
+      Just weatherNode -> do
+        wnsStatus weatherNode `shouldBe` Text.pack "skipped"
+        wnsCadenceTicks weatherNode `shouldBe` Just 3
+        wnsNextFireTick weatherNode `shouldBe` Just 3
+        wnsSkipReason weatherNode `shouldSatisfy` maybe False (Text.isInfixOf (Text.pack "not due until tick 3"))
+      Nothing -> expectationFailure "expected skipped weather-node diagnostic"
+    sdsLastCloudDelta dagSnapshot `shouldBe` Nothing
+    case sdsLastWeatherPublication dagSnapshot of
+      Just publication -> do
+        wpdTick publication `shouldBe` 1
+        wpdWeatherChanged publication `shouldBe` False
+        wpdWeatherVersionBefore publication `shouldBe` tsWeatherVersion initialTerrainSnap
+        wpdWeatherVersionAfter publication `shouldBe` tsWeatherVersion initialTerrainSnap
+      Nothing -> expectationFailure "expected weather publication diagnostic for skipped tick"
 
   it "coalesces rapid visible ViewWeather auto ticks and eventually publishes the latest weather" $
     withConfiguredSimulation $ \simHandle dataHandle uiHandle terrainSnapshotRef snapshotVersionRef atlasHandle -> do
@@ -557,6 +632,17 @@ spec = describe "Simulation actor" $ do
       uiSimTickCount uiAfterRapid `shouldBe` 3
       dagAfterRapid <- getSimDagSnapshot simHandle
       sdsLastTick dagAfterRapid `shouldBe` 3
+      case sdsLastWeatherPublication dagAfterRapid of
+        Just publication -> do
+          weatherPublicationKindToText (wpdKind publication) `shouldBe` Text.pack "auto_coalesced"
+          wpdWeatherVersionBefore publication `shouldBe` tsWeatherVersion terrainSnap2
+          wpdWeatherVersionAfter publication `shouldBe` tsWeatherVersion terrainSnap3
+          wpdPublishedWeatherVersion publication `shouldBe` tsWeatherVersion publishedSnap1
+          wpdDataPublished publication `shouldBe` False
+          wpdPublicationPending publication `shouldBe` True
+          wpdAtlasWorkEnqueued publication `shouldBe` False
+          wpdAtlasActiveWeatherView publication `shouldBe` Just (Text.pack "weather")
+        Nothing -> expectationFailure "expected coalesced weather publication diagnostic"
 
       rapidJobs <- drainAtlasJobs atlasHandle
       length rapidJobs `shouldBe` 1
@@ -685,6 +771,17 @@ spec = describe "Simulation actor" $ do
       mkDayNightKey latestPublishedSnap `shouldNotBe` publishedDayNightKey1
       let latestDayNightKey = mkDayNightKey latestPublishedSnap
           latestPublishedWorldTime = tgcWorldTime (tsGeoContext latestPublishedSnap)
+      dagAfterFlush <- getSimDagSnapshot simHandle
+      case sdsLastWeatherPublication dagAfterFlush of
+        Just publication -> do
+          weatherPublicationKindToText (wpdKind publication) `shouldBe` Text.pack "flush"
+          wpdWeatherVersionBefore publication `shouldBe` tsWeatherVersion publishedSnap3
+          wpdWeatherVersionAfter publication `shouldBe` tsWeatherVersion latestTerrainSnap
+          wpdPublishedWeatherVersion publication `shouldBe` tsWeatherVersion latestTerrainSnap
+          wpdDataPublished publication `shouldBe` True
+          wpdPublicationPending publication `shouldBe` False
+          wpdAtlasWorkEnqueued publication `shouldBe` True
+        Nothing -> expectationFailure "expected flush publication diagnostic"
       flushedJobs <- drainAtlasJobs atlasHandle
       length flushedJobs `shouldBe` length allZoomStages
       map ajViewMode flushedJobs `shouldBe` replicate (length allZoomStages) ViewElevation

@@ -17,16 +17,29 @@ import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Data.Word (Word16, Word32)
+import Data.Word (Word16, Word32, Word64)
 import qualified Data.Vector.Unboxed as U
 
 import Actor.Data
   ( TerrainGeoContext(..)
   , TerrainSnapshot(..)
+  , getTerrainSnapshot
   )
 import Actor.PluginManager
   ( getPluginDataResources
   , queryPluginResource
+  )
+import Actor.Simulation
+  ( CloudDeltaMetric(..)
+  , CloudDeltaSummary(..)
+  , SimulationDagSnapshot(..)
+  , WeatherNodeScheduleDiagnostic(..)
+  , WeatherPublicationDiagnostic(..)
+  , getSimDagSnapshot
+  , sdsLastCloudDelta
+  , sdsLastWeatherPublication
+  , sdsWeatherNodeStatus
+  , weatherPublicationKindToText
   )
 import Actor.SnapshotReceiver (readTerrainSnapshot)
 import Actor.UI.State
@@ -55,11 +68,15 @@ import Seer.Command.Context (CommandContext(..))
 import Seer.Config.SliderConversion (sliderToDomainFloat)
 import Seer.Config.SliderRegistry (SliderId(..))
 import Seer.Draw.Overlay
-  ( TerrainInspectorPluginData(..)
+  ( TerrainInspectorField(..)
+  , TerrainInspectorPluginData(..)
+  , TerrainInspectorSection(..)
+  , TerrainInspectorView(..)
   , terrainInspectorSectionsObject
   , terrainInspectorViewAtWithPluginData
   )
 import Topo.Biome.Name (biomeDisplayName)
+import Topo.Calendar (WorldTime(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 import Topo.Plugin.DataResource (DataOperations(..), DataPagination(..), DataResourceSchema(..))
 import Topo.Grid.HexDirection (traceIndexInDirection)
@@ -121,7 +138,10 @@ handleGetHex ctx reqId params =
     Nothing ->
       pure $ errResponse reqId "missing or invalid 'q' and/or 'r' parameters"
     Just (q, r) -> do
-      snap <- readTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx))
+      let handles = ccActorHandles ctx
+      snap <- readTerrainSnapshot (ahTerrainSnapshotRef handles)
+      latestSnap <- getTerrainSnapshot (ahDataHandle handles)
+      simDag <- getSimDagSnapshot (ahSimulationHandle handles)
       ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
       let chunkSize = tsChunkSize snap
       if chunkSize <= 0
@@ -306,6 +326,7 @@ handleGetHex ctx reqId params =
                           ]
 
                       inspector = terrainInspectorViewAtWithPluginData pluginData ui snap (q, r)
+                      inspectorWithWeatherDiagnostics = appendWeatherTimelineDiagnostics latestSnap simDag inspector
 
                       vegLayer = case vegetationChunk of
                         Nothing -> Null
@@ -404,11 +425,20 @@ handleGetHex ctx reqId params =
                         [ "loaded" .= maybe False (const True) weatherChunk
                         , "status" .= (if maybe False (const True) weatherChunk then "loaded" else "not_loaded" :: Text)
                         , "tick" .= uiSimTickCount ui
+                        , "world_tick" .= wtTick (tgcWorldTime (tsGeoContext snap))
                         , "auto_tick" .= uiSimAutoTick ui
                         , "tick_rate" .= uiSimTickRate ui
                         , "source" .= ("simulation_tick" :: Text)
+                        , "basis" .= temporalBasisToText InstantaneousCurrent
                         , "temporal_basis" .= temporalBasisToText InstantaneousCurrent
                         , "source_kind" .= sourceKindToText SimulatedWeather
+                        , "weather_version" .= tsWeatherVersion snap
+                        , "published_weather_version" .= tsWeatherVersion snap
+                        , "data_weather_version" .= tsWeatherVersion latestSnap
+                        , "weather_node_status" .= fmap wnsStatus (sdsWeatherNodeStatus simDag)
+                        , "weather_node" .= maybe Null weatherNodeScheduleDiagnosticJSON (sdsWeatherNodeStatus simDag)
+                        , "last_publication" .= maybe Null weatherPublicationDiagnosticJSON (sdsLastWeatherPublication simDag)
+                        , "cloud_delta" .= maybe Null cloudDeltaSummaryJSON (sdsLastCloudDelta simDag)
                         ]
 
                       oceanCurrentLayer = object
@@ -448,8 +478,12 @@ handleGetHex ctx reqId params =
                         [ "mode" .= viewModeToText (uiViewMode ui)
                         , "label" .= maybe (viewModeToText (uiViewMode ui)) vmmLabel activeMetadata
                         , "description" .= maybe Null (Aeson.toJSON . vmmDescription) activeMetadata
+                        , "basis" .= fmap (temporalBasisToText . vmdsTemporalBasis) activeSemantics
                         , "temporal_basis" .= fmap (temporalBasisToText . vmdsTemporalBasis) activeSemantics
                         , "source_kind" .= fmap (sourceKindToText . vmdsSourceKind) activeSemantics
+                        , "weather_version" .= activeWeatherVersion (uiViewMode ui) snap
+                        , "published_weather_version" .= activeWeatherVersion (uiViewMode ui) snap
+                        , "data_weather_version" .= activeWeatherVersion (uiViewMode ui) latestSnap
                         , "unit" .= maybe Null (maybe Null Aeson.toJSON . vmmUnitLabel) activeMetadata
                         , "color_scale" .= maybe Null (Aeson.toJSON . vmmColorScale) activeMetadata
                         , "tooltip_fields" .= maybe [] vmmTooltipFields activeMetadata
@@ -573,7 +607,7 @@ handleGetHex ctx reqId params =
                     , "ocean_currents" .= oceanCurrentLayer
                     , "units"      .= unitsLayer
                     , "active_view" .= activeViewLayer
-                    , "sections"   .= terrainInspectorSectionsObject inspector
+                    , "sections"   .= terrainInspectorSectionsObject inspectorWithWeatherDiagnostics
                     ]
 
 terrainInspectorPluginDataForHex :: CommandContext -> Int -> Int -> IO [TerrainInspectorPluginData]
@@ -985,6 +1019,111 @@ hasLandAlongChunk terrainSnap waterLevel chunkKey startIdx direction =
     landAt terrainChunk step =
       let tracedIdx = traceIndexInDirection chunkSize chunkSize direction step startIdx
       in tracedIdx /= startIdx && maybe False (>= waterLevel) (safeIndex (tcElevation terrainChunk) tracedIdx)
+
+appendWeatherTimelineDiagnostics :: TerrainSnapshot -> SimulationDagSnapshot -> TerrainInspectorView -> TerrainInspectorView
+appendWeatherTimelineDiagnostics latestSnap simDag inspector = inspector
+  { tivSections = map appendToWeatherTimeline (tivSections inspector)
+  }
+  where
+    appendToWeatherTimeline section
+      | tisKey section == "weather_timeline" = section
+          { tisFields = tisFields section <> weatherTimelineInspectorFields latestSnap simDag
+          }
+      | otherwise = section
+
+weatherTimelineInspectorFields :: TerrainSnapshot -> SimulationDagSnapshot -> [TerrainInspectorField]
+weatherTimelineInspectorFields latestSnap simDag =
+  [ inspectorWord64Field "data_weather_version" "Data weather version" (tsWeatherVersion latestSnap)
+  , inspectorMaybeTextField "weather_node_status" "Weather node" (wnsStatus <$> sdsWeatherNodeStatus simDag)
+  , inspectorMaybeWord64Field "next_fire_tick" "Next fire" (sdsWeatherNodeStatus simDag >>= wnsNextFireTick)
+  , inspectorMaybeWord64Field "cadence_ticks" "Cadence" (sdsWeatherNodeStatus simDag >>= wnsCadenceTicks)
+  , inspectorMaybeTextField "skip_reason" "Skip reason" (sdsWeatherNodeStatus simDag >>= wnsSkipReason)
+  , inspectorMaybeTextField "publication_kind" "Publish kind" (weatherPublicationKindToText . wpdKind <$> sdsLastWeatherPublication simDag)
+  , inspectorMaybeBoolField "data_published" "Data published" (wpdDataPublished <$> sdsLastWeatherPublication simDag)
+  , inspectorMaybeBoolField "publication_pending" "Publish pending" (wpdPublicationPending <$> sdsLastWeatherPublication simDag)
+  , inspectorMaybeBoolField "atlas_work_enqueued" "Atlas queued" (wpdAtlasWorkEnqueued <$> sdsLastWeatherPublication simDag)
+  , inspectorMaybeBoolField "cloud_delta_changed" "Cloud delta" (cdsChanged <$> sdsLastCloudDelta simDag)
+  , inspectorMaybeIntField "cloud_delta_samples" "Cloud samples" (cdsComparedSamples <$> sdsLastCloudDelta simDag)
+  ]
+
+inspectorTextField :: Text -> Text -> Text -> TerrainInspectorField
+inspectorTextField key label value = TerrainInspectorField key label value (String value)
+
+inspectorWord64Field :: Text -> Text -> Word64 -> TerrainInspectorField
+inspectorWord64Field key label value = TerrainInspectorField key label (Text.pack (show value)) (Aeson.toJSON value)
+
+inspectorIntField :: Text -> Text -> Int -> TerrainInspectorField
+inspectorIntField key label value = TerrainInspectorField key label (Text.pack (show value)) (Aeson.toJSON value)
+
+inspectorBoolField :: Text -> Text -> Bool -> TerrainInspectorField
+inspectorBoolField key label value = TerrainInspectorField key label (if value then "yes" else "no") (Aeson.toJSON value)
+
+inspectorMissingField :: Text -> Text -> TerrainInspectorField
+inspectorMissingField key label = TerrainInspectorField key label "-" Null
+
+inspectorMaybeTextField :: Text -> Text -> Maybe Text -> TerrainInspectorField
+inspectorMaybeTextField key label = maybe (inspectorMissingField key label) (inspectorTextField key label)
+
+inspectorMaybeWord64Field :: Text -> Text -> Maybe Word64 -> TerrainInspectorField
+inspectorMaybeWord64Field key label = maybe (inspectorMissingField key label) (inspectorWord64Field key label)
+
+inspectorMaybeIntField :: Text -> Text -> Maybe Int -> TerrainInspectorField
+inspectorMaybeIntField key label = maybe (inspectorMissingField key label) (inspectorIntField key label)
+
+inspectorMaybeBoolField :: Text -> Text -> Maybe Bool -> TerrainInspectorField
+inspectorMaybeBoolField key label = maybe (inspectorMissingField key label) (inspectorBoolField key label)
+
+activeWeatherVersion :: ViewMode -> TerrainSnapshot -> Maybe Word64
+activeWeatherVersion ViewWeather snap = Just (tsWeatherVersion snap)
+activeWeatherVersion ViewCloud snap = Just (tsWeatherVersion snap)
+activeWeatherVersion (ViewOverlay "weather" _) snap = Just (tsWeatherVersion snap)
+activeWeatherVersion _ _ = Nothing
+
+weatherNodeScheduleDiagnosticJSON :: WeatherNodeScheduleDiagnostic -> Value
+weatherNodeScheduleDiagnosticJSON diag = object
+  [ "status" .= wnsStatus diag
+  , "next_fire_tick" .= wnsNextFireTick diag
+  , "cadence_ticks" .= wnsCadenceTicks diag
+  , "skip_reason" .= wnsSkipReason diag
+  ]
+
+weatherPublicationDiagnosticJSON :: WeatherPublicationDiagnostic -> Value
+weatherPublicationDiagnosticJSON diag = object
+  [ "tick" .= wpdTick diag
+  , "world_time" .= worldTimeJSON (wpdWorldTime diag)
+  , "weather_version_before" .= wpdWeatherVersionBefore diag
+  , "weather_version_after" .= wpdWeatherVersionAfter diag
+  , "published_weather_version" .= wpdPublishedWeatherVersion diag
+  , "publication_kind" .= weatherPublicationKindToText (wpdKind diag)
+  , "weather_changed" .= wpdWeatherChanged diag
+  , "data_published" .= wpdDataPublished diag
+  , "publication_pending" .= wpdPublicationPending diag
+  , "atlas_work_enqueued" .= wpdAtlasWorkEnqueued diag
+  , "atlas_active_weather_view" .= wpdAtlasActiveWeatherView diag
+  ]
+
+cloudDeltaSummaryJSON :: CloudDeltaSummary -> Value
+cloudDeltaSummaryJSON summary = object
+  [ "changed" .= cdsChanged summary
+  , "compared_chunks" .= cdsComparedChunks summary
+  , "compared_samples" .= cdsComparedSamples summary
+  , "cloud_cover" .= cloudDeltaMetricJSON (cdsCloudCover summary)
+  , "cloud_water" .= cloudDeltaMetricJSON (cdsCloudWater summary)
+  , "precip" .= cloudDeltaMetricJSON (cdsPrecip summary)
+  ]
+
+cloudDeltaMetricJSON :: CloudDeltaMetric -> Value
+cloudDeltaMetricJSON metric = object
+  [ "min_delta" .= cdmMinDelta metric
+  , "max_delta" .= cdmMaxDelta metric
+  , "mean_abs_delta" .= cdmMeanAbsDelta metric
+  ]
+
+worldTimeJSON :: WorldTime -> Value
+worldTimeJSON worldTime = object
+  [ "tick" .= wtTick worldTime
+  , "tick_rate" .= wtTickRate worldTime
+  ]
 
 -- | Brief summary of a chunk for listing.
 chunkSummaryBrief :: Int -> (Int, TerrainChunk) -> Value

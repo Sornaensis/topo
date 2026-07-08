@@ -27,19 +27,25 @@ import Actor.PluginManager
   )
 import Actor.SnapshotReceiver (bumpSnapshotVersion, readSnapshotVersion, readTerrainSnapshot)
 import Actor.Simulation
-  ( SimulationDagNodeSnapshot(..)
+  ( CloudDeltaMetric(..)
+  , CloudDeltaSummary(..)
+  , SimulationDagNodeSnapshot(..)
   , SimulationDagSnapshot(..)
   , SimulationTickLogEntry(..)
+  , WeatherNodeScheduleDiagnostic(..)
+  , WeatherPublicationDiagnostic(..)
   , flushSimWeatherPublication
   , getSimDagSnapshot
   , requestSimTick
   , simulationAtlasBackfillRateThreshold
+  , weatherPublicationKindToText
   )
 import Actor.UI.Setters (setUiSimAutoTick, setUiSimTickRate)
 import Actor.UI.State (UiState(..), ViewMode(..), getUiSnapshot, readUiSnapshotRef)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
 import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom)
+import Topo.Calendar (WorldTime(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 
 -- | Handle @get_sim_state@ — return current simulation state.
@@ -148,6 +154,9 @@ handleGetSimDag ctx reqId _params = do
     , "last_tick" .= sdsLastTick snapshot
     , "pending_tick" .= sdsPendingTick snapshot
     , "tick_logs" .= map tickLogToJSON (sdsTickLogs snapshot)
+    , "weather_node_status" .= maybe Null weatherNodeScheduleDiagnosticJSON (sdsWeatherNodeStatus snapshot)
+    , "last_weather_publication" .= maybe Null weatherPublicationDiagnosticJSON (sdsLastWeatherPublication snapshot)
+    , "cloud_delta" .= maybe Null cloudDeltaSummaryJSON (sdsLastCloudDelta snapshot)
       -- Backward-compatible aliases: these are plugin simulation declaration
       -- diagnostics, not the authoritative actor-bound DAG node list.
     , "plugin_nodes" .= pluginDeclarationValues
@@ -239,6 +248,52 @@ simulationStatusMessage dataSnap dag
   | dsTerrainChunks dataSnap <= 0 = Just "no terrain loaded"
   | not (sdsAvailable dag) = Just "simulation DAG unavailable"
   | otherwise = Nothing
+
+weatherNodeScheduleDiagnosticJSON :: WeatherNodeScheduleDiagnostic -> Value
+weatherNodeScheduleDiagnosticJSON diag = object
+  [ "status" .= wnsStatus diag
+  , "next_fire_tick" .= wnsNextFireTick diag
+  , "cadence_ticks" .= wnsCadenceTicks diag
+  , "skip_reason" .= wnsSkipReason diag
+  ]
+
+weatherPublicationDiagnosticJSON :: WeatherPublicationDiagnostic -> Value
+weatherPublicationDiagnosticJSON diag = object
+  [ "tick" .= wpdTick diag
+  , "world_time" .= worldTimeJSON (wpdWorldTime diag)
+  , "weather_version_before" .= wpdWeatherVersionBefore diag
+  , "weather_version_after" .= wpdWeatherVersionAfter diag
+  , "published_weather_version" .= wpdPublishedWeatherVersion diag
+  , "publication_kind" .= weatherPublicationKindToText (wpdKind diag)
+  , "weather_changed" .= wpdWeatherChanged diag
+  , "data_published" .= wpdDataPublished diag
+  , "publication_pending" .= wpdPublicationPending diag
+  , "atlas_work_enqueued" .= wpdAtlasWorkEnqueued diag
+  , "atlas_active_weather_view" .= wpdAtlasActiveWeatherView diag
+  ]
+
+cloudDeltaSummaryJSON :: CloudDeltaSummary -> Value
+cloudDeltaSummaryJSON summary = object
+  [ "changed" .= cdsChanged summary
+  , "compared_chunks" .= cdsComparedChunks summary
+  , "compared_samples" .= cdsComparedSamples summary
+  , "cloud_cover" .= cloudDeltaMetricJSON (cdsCloudCover summary)
+  , "cloud_water" .= cloudDeltaMetricJSON (cdsCloudWater summary)
+  , "precip" .= cloudDeltaMetricJSON (cdsPrecip summary)
+  ]
+
+cloudDeltaMetricJSON :: CloudDeltaMetric -> Value
+cloudDeltaMetricJSON metric = object
+  [ "min_delta" .= cdmMinDelta metric
+  , "max_delta" .= cdmMaxDelta metric
+  , "mean_abs_delta" .= cdmMeanAbsDelta metric
+  ]
+
+worldTimeJSON :: WorldTime -> Value
+worldTimeJSON worldTime = object
+  [ "tick" .= wtTick worldTime
+  , "tick_rate" .= wtTickRate worldTime
+  ]
 
 dagNodeToJSON :: SimulationDagNodeSnapshot -> Value
 dagNodeToJSON node = object

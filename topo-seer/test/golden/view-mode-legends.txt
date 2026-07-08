@@ -18,12 +18,12 @@ climate|scalar|degC|heat|long_run_average|generated_climate
   stop 0.00 cold #802f33
   stop 0.50 temperate #b35c5c
   stop 1.00 hot #ff9966
-weather|scalar|degC|weather-heat|instantaneous_current|simulated_weather
+weather|scalar|degC|weather-heat|instantaneous_current|simulated_generated_weather
   Current weather temperature
   stop 0.00 cold #802f33
   stop 0.50 mild #b35c5c
   stop 1.00 hot #ff9966
-cloud|scalar|% cover|cloud-storm|instantaneous_current|simulated_weather
+cloud|scalar|% cover|cloud-storm|instantaneous_current|simulated_generated_weather
   Aggregate cloud cover
   stop 0.00 clear #242428
   stop 0.50 cloudy #a0a0a0

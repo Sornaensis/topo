@@ -39,6 +39,12 @@ module Actor.Simulation
   , SimulationDagNodeSnapshot(..)
   , SimulationNodeBinding(..)
   , SimulationTickLogEntry(..)
+  , WeatherPublicationKind(..)
+  , WeatherPublicationDiagnostic(..)
+  , WeatherNodeScheduleDiagnostic(..)
+  , CloudDeltaMetric(..)
+  , CloudDeltaSummary(..)
+  , weatherPublicationKindToText
   , getSimDagSnapshot
     -- * Handles setup
   , setSimHandles
@@ -53,6 +59,7 @@ import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
+import qualified Data.Vector.Unboxed as U
 import GHC.Clock (getMonotonicTimeNSec)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
@@ -68,6 +75,7 @@ import Actor.AtlasManager
   )
 import Actor.Data
   ( Data
+  , TerrainGeoContext(..)
   , TerrainSnapshot(..)
   , getTerrainSnapshot
   , setOverlayStoreData
@@ -138,7 +146,7 @@ import Topo.Simulation.Pipeline
   , SimulationTickPipelineResult(..)
   , runSimulationTickPipeline
   )
-import Topo (ChunkId(..), getWeatherFromOverlay)
+import Topo (ChunkId(..), WeatherChunk(..), getWeatherFromOverlay)
 import Topo.World (TerrainWorld(..))
 import Topo.Overlay (Overlay(..), OverlayProvenance(..), OverlayStore, insertOverlay, lookupOverlay, overlayNames)
 import Topo.WorldGen (WorldGenConfig(..))
@@ -192,6 +200,55 @@ data SimulationTickLogEntry = SimulationTickLogEntry
   , stleStatus :: !Text
   , stleMessage :: !Text
   , stleElapsedMs :: !(Maybe Double)
+  } deriving (Eq, Show)
+
+data WeatherPublicationKind
+  = WeatherPublicationManual
+  | WeatherPublicationAutoImmediate
+  | WeatherPublicationAutoCoalesced
+  | WeatherPublicationFlush
+  deriving (Eq, Show)
+
+weatherPublicationKindToText :: WeatherPublicationKind -> Text
+weatherPublicationKindToText WeatherPublicationManual = "manual"
+weatherPublicationKindToText WeatherPublicationAutoImmediate = "auto_immediate"
+weatherPublicationKindToText WeatherPublicationAutoCoalesced = "auto_coalesced"
+weatherPublicationKindToText WeatherPublicationFlush = "flush"
+
+data WeatherPublicationDiagnostic = WeatherPublicationDiagnostic
+  { wpdTick :: !Word64
+  , wpdWorldTime :: !WorldTime
+  , wpdWeatherVersionBefore :: !Word64
+  , wpdWeatherVersionAfter :: !Word64
+  , wpdPublishedWeatherVersion :: !Word64
+  , wpdKind :: !WeatherPublicationKind
+  , wpdWeatherChanged :: !Bool
+  , wpdDataPublished :: !Bool
+  , wpdPublicationPending :: !Bool
+  , wpdAtlasWorkEnqueued :: !Bool
+  , wpdAtlasActiveWeatherView :: !(Maybe Text)
+  } deriving (Eq, Show)
+
+data WeatherNodeScheduleDiagnostic = WeatherNodeScheduleDiagnostic
+  { wnsStatus :: !Text
+  , wnsNextFireTick :: !(Maybe Word64)
+  , wnsCadenceTicks :: !(Maybe Word64)
+  , wnsSkipReason :: !(Maybe Text)
+  } deriving (Eq, Show)
+
+data CloudDeltaMetric = CloudDeltaMetric
+  { cdmMinDelta :: !Float
+  , cdmMaxDelta :: !Float
+  , cdmMeanAbsDelta :: !Float
+  } deriving (Eq, Show)
+
+data CloudDeltaSummary = CloudDeltaSummary
+  { cdsChanged :: !Bool
+  , cdsComparedChunks :: !Int
+  , cdsComparedSamples :: !Int
+  , cdsCloudCover :: !CloudDeltaMetric
+  , cdsCloudWater :: !CloudDeltaMetric
+  , cdsPrecip :: !CloudDeltaMetric
   } deriving (Eq, Show)
 
 data AutoTickSkipReason
@@ -283,6 +340,9 @@ data SimulationDagSnapshot = SimulationDagSnapshot
   , sdsPendingTick :: !(Maybe Word64)
   , sdsWorldEpoch :: !Word64
   , sdsTickLogs :: ![SimulationTickLogEntry]
+  , sdsLastWeatherPublication :: !(Maybe WeatherPublicationDiagnostic)
+  , sdsWeatherNodeStatus :: !(Maybe WeatherNodeScheduleDiagnostic)
+  , sdsLastCloudDelta :: !(Maybe CloudDeltaSummary)
   } deriving (Eq, Show)
 
 -- | Internal simulation state.
@@ -324,6 +384,12 @@ data SimState = SimState
     -- ^ Last render-facing weather/cloud/day-night publication during auto-tick.
   , ssAutoWeatherPublicationPending :: !Bool
     -- ^ True when a coalesced weather/cloud/day-night publication was skipped.
+  , ssLastWeatherPublication :: !(Maybe WeatherPublicationDiagnostic)
+    -- ^ Bounded last weather/cloud publication diagnostic for UI/API surfaces.
+  , ssWeatherNodeStatus :: !(Maybe WeatherNodeScheduleDiagnostic)
+    -- ^ Latest weather-node schedule outcome from the actor DAG.
+  , ssLastCloudDelta :: !(Maybe CloudDeltaSummary)
+    -- ^ Latest due-tick aggregate cloud delta computed inside this actor.
   }
 
 emptySimState :: SimState
@@ -345,6 +411,9 @@ emptySimState = SimState
   , ssLastAutoStatusPublishNs = 0
   , ssLastAutoWeatherPublishNs = 0
   , ssAutoWeatherPublicationPending = False
+  , ssLastWeatherPublication = Nothing
+  , ssWeatherNodeStatus = Nothing
+  , ssLastCloudDelta = Nothing
   }
 
 -- ---------------------------------------------------------------------------
@@ -405,6 +474,9 @@ actor Simulation
       , ssLastAutoStatusPublishNs = 0
       , ssLastAutoWeatherPublishNs = 0
       , ssAutoWeatherPublicationPending = False
+      , ssLastWeatherPublication = Nothing
+      , ssWeatherNodeStatus = Nothing
+      , ssLastCloudDelta = Nothing
       }
     , ()
     )
@@ -416,6 +488,9 @@ actor Simulation
       , ssLastAutoStatusPublishNs = 0
       , ssLastAutoWeatherPublishNs = 0
       , ssAutoWeatherPublicationPending = False
+      , ssLastWeatherPublication = Nothing
+      , ssWeatherNodeStatus = Nothing
+      , ssLastCloudDelta = Nothing
       }
     , ()
     )
@@ -567,6 +642,9 @@ simulationDagSnapshotFromState st = case ssDAG st of
     , sdsPendingTick = pendingTickTarget st
     , sdsWorldEpoch = ssWorldEpoch st
     , sdsTickLogs = ssTickLogs st
+    , sdsLastWeatherPublication = ssLastWeatherPublication st
+    , sdsWeatherNodeStatus = ssWeatherNodeStatus st
+    , sdsLastCloudDelta = ssLastCloudDelta st
     }
   Just dag -> SimulationDagSnapshot
     { sdsAvailable = True
@@ -579,6 +657,9 @@ simulationDagSnapshotFromState st = case ssDAG st of
     , sdsPendingTick = pendingTickTarget st
     , sdsWorldEpoch = ssWorldEpoch st
     , sdsTickLogs = ssTickLogs st
+    , sdsLastWeatherPublication = ssLastWeatherPublication st
+    , sdsWeatherNodeStatus = ssWeatherNodeStatus st
+    , sdsLastCloudDelta = ssLastCloudDelta st
     }
 
 pendingTickTarget :: SimState -> Maybe Word64
@@ -746,6 +827,9 @@ bindWorld world pluginBindings st = do
                    , ssLastAutoStatusPublishNs = 0
                    , ssLastAutoWeatherPublishNs = 0
                    , ssAutoWeatherPublicationPending = False
+                   , ssLastWeatherPublication = Nothing
+                   , ssWeatherNodeStatus = Nothing
+                   , ssLastCloudDelta = Nothing
                    }
       if drainPending then maybeProcessPendingTick st' else pure st' { ssPendingTick = Nothing }
     Right dag -> do
@@ -765,6 +849,9 @@ bindWorld world pluginBindings st = do
                    , ssLastAutoStatusPublishNs = 0
                    , ssLastAutoWeatherPublishNs = 0
                    , ssAutoWeatherPublicationPending = False
+                   , ssLastWeatherPublication = Nothing
+                   , ssWeatherNodeStatus = Nothing
+                   , ssLastCloudDelta = Nothing
                    }
       if drainPending then maybeProcessPendingTick st' else pure st' { ssPendingTick = Nothing }
 
@@ -1038,8 +1125,11 @@ integrateFreshTickResult result st
               weatherChunksBefore = getWeatherFromOverlay baseWorld
               weatherChunksAfter = getWeatherFromOverlay world'
               weatherChanged = weatherChunksBefore /= weatherChunksAfter
+              weatherNodeDiag = weatherNodeScheduleDiagnostic appliedTick (strNodeStatuses result) world'
+              cloudDelta = cloudDeltaSummaryForTick weatherNodeDiag weatherChunksBefore weatherChunksAfter
               overlayChanged = newStore /= twOverlays baseWorld
               overlayNamesChanged = overlayNames newStore /= overlayNames (twOverlays baseWorld)
+          terrainSnapBefore <- getTerrainSnapshot (shDataHandle handles)
           when terrainChanged $
             updateTerrainChunkData (shDataHandle handles) chunkSize (twrTerrain terrainWrites)
           when climateChanged $
@@ -1067,19 +1157,40 @@ integrateFreshTickResult result st
             weatherChanged
             vegetationChanged
             visibleOverlayChanged
+          let atlasShouldEnqueue = case (tprTerrainSnapshot publication, tprSnapshotVersion publication) of
+                (Just _terrainSnap, Just _snapshotVersion) ->
+                  atlasPublicationAffected
+                    (tprCoalescedWeatherAffected publication)
+                    uiSnap
+                    terrainChanged
+                    climateChanged
+                    weatherChanged
+                    vegetationChanged
+                    visibleOverlayChanged
+                _ -> False
           case (tprTerrainSnapshot publication, tprSnapshotVersion publication) of
             (Just terrainSnap, Just snapshotVersion)
-              | atlasPublicationAffected
-                  (tprCoalescedWeatherAffected publication)
-                  uiSnap
-                  terrainChanged
-                  climateChanged
-                  weatherChanged
-                  vegetationChanged
-                  visibleOverlayChanged ->
+              | atlasShouldEnqueue ->
                   enqueueAtlasJobsForPublication handles (strCompletion result) uiSnap terrainSnap snapshotVersion
             _ -> pure ()
-          let stPublished = tprState publication
+          terrainSnapAfter <- getTerrainSnapshot (shDataHandle handles)
+          publishedTerrainSnap <- case tprTerrainSnapshot publication of
+            Just terrainSnap -> pure terrainSnap
+            Nothing -> readTerrainSnapshot (shTerrainSnapshotRef handles)
+          let publicationDiag = WeatherPublicationDiagnostic
+                { wpdTick = appliedTick
+                , wpdWorldTime = twWorldTime world'
+                , wpdWeatherVersionBefore = tsWeatherVersion terrainSnapBefore
+                , wpdWeatherVersionAfter = tsWeatherVersion terrainSnapAfter
+                , wpdPublishedWeatherVersion = tsWeatherVersion publishedTerrainSnap
+                , wpdKind = tprPublicationKind publication
+                , wpdWeatherChanged = weatherChanged
+                , wpdDataPublished = maybe False (const True) (tprTerrainSnapshot publication)
+                , wpdPublicationPending = ssAutoWeatherPublicationPending (tprState publication)
+                , wpdAtlasWorkEnqueued = atlasShouldEnqueue
+                , wpdAtlasActiveWeatherView = activeWeatherAtlasView (uiViewMode uiSnap)
+                }
+              stPublished = tprState publication
               completeMsg = "simulation: tick " <> Text.pack (show appliedTick)
                 <> " completed in " <> Text.pack (show (round (strElapsedMs result) :: Int)) <> "ms"
               completeLog = SimulationTickLogEntry appliedTick Nothing "completed" completeMsg (Just (strElapsedMs result))
@@ -1088,6 +1199,9 @@ integrateFreshTickResult result st
                 , ssLastTick = appliedTick
                 , ssNodeStatuses = strNodeStatuses result
                 , ssTickLogs = boundedTickLogs (ssTickLogs stPublished <> strProgressLogs result <> [completeLog])
+                , ssLastWeatherPublication = Just publicationDiag
+                , ssWeatherNodeStatus = weatherNodeDiag
+                , ssLastCloudDelta = cloudDelta
                 }
           appendLog (shLogHandle handles) (LogEntry LogInfo completeMsg)
           completeTickRequest (strCompletion result) (AutoTickApplied appliedTick)
@@ -1095,6 +1209,126 @@ integrateFreshTickResult result st
 
 chunkList :: IntMap.IntMap a -> [(ChunkId, a)]
 chunkList = map (\(k, v) -> (ChunkId k, v)) . IntMap.toList
+
+activeWeatherAtlasView :: ViewMode -> Maybe Text
+activeWeatherAtlasView ViewWeather = Just "weather"
+activeWeatherAtlasView ViewCloud = Just "cloud"
+activeWeatherAtlasView _ = Nothing
+
+weatherNodeScheduleDiagnostic
+  :: Word64
+  -> Map.Map Text (Text, Maybe Text)
+  -> TerrainWorld
+  -> Maybe WeatherNodeScheduleDiagnostic
+weatherNodeScheduleDiagnostic appliedTick statuses world =
+  case (Map.lookup weatherNodeId statuses, weatherScheduleState world) of
+    (Nothing, Nothing) -> Nothing
+    (statusEntry, scheduleState) -> Just WeatherNodeScheduleDiagnostic
+      { wnsStatus = statusText statusEntry scheduleState
+      , wnsNextFireTick = schedNextFireTick <$> scheduleState
+      , wnsCadenceTicks = schedIntervalTicks <$> scheduleState
+      , wnsSkipReason = skipReason statusEntry scheduleState
+      }
+  where
+    statusText (Just (status, _)) _ = status
+    statusText Nothing (Just schedule)
+      | scheduleDue appliedTick schedule = "due"
+      | otherwise = "idle"
+    statusText Nothing Nothing = "idle"
+
+    skipReason (Just ("skipped", detail)) scheduleState =
+      case detail of
+        Just reason -> Just reason
+        Nothing -> notDueReason <$> scheduleState
+    skipReason _ _ = Nothing
+
+    notDueReason schedule = "not due until tick " <> Text.pack (show (schedNextFireTick schedule))
+
+weatherNodeId :: Text
+weatherNodeId = "weather"
+
+weatherScheduleState :: TerrainWorld -> Maybe SimulationScheduleState
+weatherScheduleState world =
+  normalizeScheduleState <$> (lookupOverlay weatherNodeId (twOverlays world) >>= opSchedule . ovProvenance)
+
+cloudDeltaSummaryForTick
+  :: Maybe WeatherNodeScheduleDiagnostic
+  -> IntMap.IntMap WeatherChunk
+  -> IntMap.IntMap WeatherChunk
+  -> Maybe CloudDeltaSummary
+cloudDeltaSummaryForTick (Just nodeDiag) before after
+  | wnsStatus nodeDiag == "completed" = Just $
+      let cloudCover = weatherDeltaMetric wcCloudCover before after
+          cloudWater = weatherDeltaMetric wcCloudWater before after
+          precip = weatherDeltaMetric wcPrecip before after
+      in CloudDeltaSummary
+        { cdsChanged = metricChanged cloudCover || metricChanged cloudWater || metricChanged precip
+        , cdsComparedChunks = commonChunkCount before after
+        , cdsComparedSamples = cdmSampleCount cloudCover
+        , cdsCloudCover = stripMetricCount cloudCover
+        , cdsCloudWater = stripMetricCount cloudWater
+        , cdsPrecip = stripMetricCount precip
+        }
+cloudDeltaSummaryForTick _ _ _ = Nothing
+
+data CountedCloudDeltaMetric = CountedCloudDeltaMetric
+  { cdmMetric :: !CloudDeltaMetric
+  , cdmSampleCount :: !Int
+  }
+
+stripMetricCount :: CountedCloudDeltaMetric -> CloudDeltaMetric
+stripMetricCount = cdmMetric
+
+metricChanged :: CountedCloudDeltaMetric -> Bool
+metricChanged counted =
+  let metric = cdmMetric counted
+  in cdmMinDelta metric /= 0 || cdmMaxDelta metric /= 0
+
+data DeltaAccumulator
+  = DeltaAccumulatorEmpty
+  | DeltaAccumulator !Float !Float !Double !Int
+
+weatherDeltaMetric
+  :: (WeatherChunk -> U.Vector Float)
+  -> IntMap.IntMap WeatherChunk
+  -> IntMap.IntMap WeatherChunk
+  -> CountedCloudDeltaMetric
+weatherDeltaMetric field before after = finalizeDeltaAccumulator $
+  IntMap.foldlWithKey' step DeltaAccumulatorEmpty before
+  where
+    step acc chunkKey beforeChunk = case IntMap.lookup chunkKey after of
+      Nothing -> acc
+      Just afterChunk -> accumulateVectorDeltas acc (field beforeChunk) (field afterChunk)
+
+accumulateVectorDeltas :: DeltaAccumulator -> U.Vector Float -> U.Vector Float -> DeltaAccumulator
+accumulateVectorDeltas acc before after =
+  U.ifoldl' step acc before
+  where
+    limit = min (U.length before) (U.length after)
+    step current idx beforeValue
+      | idx >= limit = current
+      | otherwise = recordDelta current (after U.! idx - beforeValue)
+
+recordDelta :: DeltaAccumulator -> Float -> DeltaAccumulator
+recordDelta DeltaAccumulatorEmpty delta = DeltaAccumulator delta delta (realToFrac (abs delta)) 1
+recordDelta (DeltaAccumulator minDelta maxDelta sumAbs count) delta =
+  DeltaAccumulator
+    (min minDelta delta)
+    (max maxDelta delta)
+    (sumAbs + realToFrac (abs delta))
+    (count + 1)
+
+finalizeDeltaAccumulator :: DeltaAccumulator -> CountedCloudDeltaMetric
+finalizeDeltaAccumulator DeltaAccumulatorEmpty =
+  CountedCloudDeltaMetric (CloudDeltaMetric 0 0 0) 0
+finalizeDeltaAccumulator (DeltaAccumulator minDelta maxDelta sumAbs count) =
+  CountedCloudDeltaMetric
+    (CloudDeltaMetric minDelta maxDelta (realToFrac (sumAbs / fromIntegral count)))
+    count
+
+commonChunkCount :: IntMap.IntMap WeatherChunk -> IntMap.IntMap WeatherChunk -> Int
+commonChunkCount before after =
+  IntMap.size (IntMap.intersection before after)
 
 selectedOverlayChanged :: ViewMode -> OverlayStore -> OverlayStore -> Bool
 selectedOverlayChanged (ViewOverlay name _) before after =
@@ -1130,6 +1364,7 @@ autoTickFlushOnIdleCompletion (SimulationTickAutoCompletion flushOnIdle _) = flu
 data SimulationPublicationPlan = SimulationPublicationPlan
   { sppPublishData :: !Bool
   , sppCoalescedWeatherAffected :: !Bool
+  , sppPublicationKind :: !WeatherPublicationKind
   }
 
 data TickPublicationResult = TickPublicationResult
@@ -1137,6 +1372,7 @@ data TickPublicationResult = TickPublicationResult
   , tprTerrainSnapshot :: !(Maybe TerrainSnapshot)
   , tprSnapshotVersion :: !(Maybe SnapshotVersion)
   , tprCoalescedWeatherAffected :: !Bool
+  , tprPublicationKind :: !WeatherPublicationKind
   }
 
 publishTickSnapshot
@@ -1173,6 +1409,7 @@ publishTickSnapshot handles st isAutoTick flushOnIdle uiSnap terrainChanged clim
         , tprTerrainSnapshot = Just terrainSnap
         , tprSnapshotVersion = Just snapshotVersion
         , tprCoalescedWeatherAffected = sppCoalescedWeatherAffected plan
+        , tprPublicationKind = sppPublicationKind plan
         }
     else if sppCoalescedWeatherAffected plan
       -- Do not emit a status-only snapshot bump for a coalesced weather or
@@ -1183,6 +1420,7 @@ publishTickSnapshot handles st isAutoTick flushOnIdle uiSnap terrainChanged clim
         , tprTerrainSnapshot = Nothing
         , tprSnapshotVersion = Nothing
         , tprCoalescedWeatherAffected = True
+        , tprPublicationKind = sppPublicationKind plan
         }
       else do
         stStatus <- publishStatusSnapshot handles st now
@@ -1191,6 +1429,7 @@ publishTickSnapshot handles st isAutoTick flushOnIdle uiSnap terrainChanged clim
           , tprTerrainSnapshot = Nothing
           , tprSnapshotVersion = Nothing
           , tprCoalescedWeatherAffected = False
+          , tprPublicationKind = sppPublicationKind plan
           }
 
 simulationPublicationPlan
@@ -1209,6 +1448,7 @@ simulationPublicationPlan st isAutoTick now flushOnIdle uiSnap terrainChanged cl
   SimulationPublicationPlan
     { sppPublishData = publishData
     , sppCoalescedWeatherAffected = coalescedWeatherAffected
+    , sppPublicationKind = publicationKind
     }
   where
     immediateAffected = immediatePublicationAffected
@@ -1222,6 +1462,10 @@ simulationPublicationPlan st isAutoTick now flushOnIdle uiSnap terrainChanged cl
       not isAutoTick
         || immediateAffected
         || (coalescedWeatherAffected && (autoWeatherPublicationDue now st || (flushOnIdle && autoWeatherPublicationFlushBeforeIdle uiSnap)))
+    publicationKind
+      | not isAutoTick = WeatherPublicationManual
+      | coalescedWeatherAffected && not publishData = WeatherPublicationAutoCoalesced
+      | otherwise = WeatherPublicationAutoImmediate
 
 immediatePublicationAffected
   :: ViewMode
@@ -1371,7 +1615,20 @@ flushLatestWeatherPublication st =
                   now <- getMonotonicTimeNSec
                   (st', snapshotVersion) <- publishDataSnapshot handles st True now latest
                   enqueueAtlasJobsForPublication handles SimulationTickNoCompletion uiSnap latest snapshotVersion
-                  pure (st', True)
+                  let publicationDiag = WeatherPublicationDiagnostic
+                        { wpdTick = ssLastTick st
+                        , wpdWorldTime = tgcWorldTime (tsGeoContext latest)
+                        , wpdWeatherVersionBefore = tsWeatherVersion published
+                        , wpdWeatherVersionAfter = tsWeatherVersion latest
+                        , wpdPublishedWeatherVersion = tsWeatherVersion latest
+                        , wpdKind = WeatherPublicationFlush
+                        , wpdWeatherChanged = tsWeatherVersion latest /= tsWeatherVersion published
+                        , wpdDataPublished = True
+                        , wpdPublicationPending = False
+                        , wpdAtlasWorkEnqueued = True
+                        , wpdAtlasActiveWeatherView = activeWeatherAtlasView (uiViewMode uiSnap)
+                        }
+                  pure (st' { ssLastWeatherPublication = Just publicationDiag }, True)
 
 flushWeatherPublicationViewAffected :: SimState -> UiState -> Bool
 flushWeatherPublicationViewAffected _ uiSnap =

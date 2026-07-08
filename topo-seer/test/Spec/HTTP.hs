@@ -143,6 +143,9 @@ spec = describe "Seer.HTTP.Server" $ do
       objectHasKey "world_bound" (hresBody dag) `shouldBe` True
       objectHasKey "overlay_names" (hresBody dag) `shouldBe` True
       objectHasKey "tick_logs" (hresBody dag) `shouldBe` True
+      objectHasKey "weather_node_status" (hresBody dag) `shouldBe` True
+      objectHasKey "last_weather_publication" (hresBody dag) `shouldBe` True
+      objectHasKey "cloud_delta" (hresBody dag) `shouldBe` True
       objectHasKey "plugin_nodes" (hresBody dag) `shouldBe` True
       objectHasKey "plugin_declarations" (hresBody dag) `shouldBe` True
       objectHasKey "plugin_simulation_declarations" (hresBody dag) `shouldBe` True
@@ -648,9 +651,11 @@ spec = describe "Seer.HTTP.Server" $ do
         , "units"
         ] `shouldBe` replicate 12 True
       lookupNestedText ["active_view", "temporal_basis"] (hresBody hexRsp) `shouldBe` Just "instantaneous_current"
-      lookupNestedText ["active_view", "source_kind"] (hresBody hexRsp) `shouldBe` Just "simulated_weather"
+      lookupNestedText ["active_view", "source_kind"] (hresBody hexRsp) `shouldBe` Just "simulated_generated_weather"
+      lookupNestedText ["weather_timeline", "basis"] (hresBody hexRsp) `shouldBe` Just "instantaneous_current"
       lookupNestedText ["weather_timeline", "temporal_basis"] (hresBody hexRsp) `shouldBe` Just "instantaneous_current"
-      lookupNestedText ["weather_timeline", "source_kind"] (hresBody hexRsp) `shouldBe` Just "simulated_weather"
+      lookupNestedText ["weather_timeline", "source_kind"] (hresBody hexRsp) `shouldBe` Just "simulated_generated_weather"
+      fmap (objectHasKey "published_weather_version") (lookupValue "weather_timeline" (hresBody hexRsp)) `shouldBe` Just True
       lookupNestedText ["climate_diagnostics", "temporal_basis"] (hresBody hexRsp) `shouldBe` Just "long_run_average"
       lookupNestedText ["climate_diagnostics", "source_kind"] (hresBody hexRsp) `shouldBe` Just "generated_climate"
 

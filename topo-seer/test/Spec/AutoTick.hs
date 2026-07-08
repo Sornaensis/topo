@@ -5,9 +5,13 @@ module Spec.AutoTick (spec) where
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, tryPutMVar)
 import Control.Monad (forM_)
+import Data.Foldable (toList)
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
+import Data.List (find)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Aeson (Value(..), object, (.=))
+import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -149,6 +153,38 @@ spec = describe "AutoTick scheduler" $ do
       dag <- getSimDagSnapshot (ahSimulationHandle handles)
       sdsPendingTick dag `shouldBe` Nothing
       map stleStatus (sdsTickLogs dag) `shouldSatisfy` elem (Text.pack "completed")
+
+  it "exposes ViewCloud auto-tick weather publication diagnostics" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      installWorld app
+      let handles = appHandles app
+      viewRsp <- dispatch app "set_view_mode" (object ["mode" .= (Text.pack "cloud")])
+      srSuccess viewRsp `shouldBe` True
+      rsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (1.0 :: Double)])
+      srSuccess rsp `shouldBe` True
+
+      advanced <- awaitTrue 100 $ do
+        ui <- getUiSnapshot (ahUiHandle handles)
+        pure (uiSimTickCount ui >= 1)
+      advanced `shouldBe` True
+
+      hexRsp <- dispatch app "get_hex" (object ["q" .= (0 :: Int), "r" .= (0 :: Int)])
+      srSuccess hexRsp `shouldBe` True
+      lookupNestedText ["weather_timeline", "source_kind"] (srResult hexRsp) `shouldBe` Just "simulated_generated_weather"
+      lookupNestedText ["weather_timeline", "basis"] (srResult hexRsp) `shouldBe` Just "instantaneous_current"
+      lookupNestedText ["weather_timeline", "weather_node_status"] (srResult hexRsp) `shouldBe` Just "completed"
+      lookupNestedText ["weather_timeline", "last_publication", "atlas_active_weather_view"] (srResult hexRsp) `shouldBe` Just "cloud"
+      lookupNestedText ["weather_timeline", "last_publication", "publication_kind"] (srResult hexRsp)
+        `shouldSatisfy` maybe False (`elem` ["auto_immediate", "auto_coalesced"])
+      lookupNestedValue ["weather_timeline", "published_weather_version"] (srResult hexRsp) `shouldSatisfy` maybe False isNumberValue
+      sectionFieldText "weather_timeline" "source_kind" (srResult hexRsp) `shouldBe` Just "simulated_generated_weather"
+      sectionFieldText "weather_timeline" "weather_node_status" (srResult hexRsp) `shouldBe` Just "completed"
+      sectionFieldText "weather_timeline" "publication_kind" (srResult hexRsp)
+        `shouldSatisfy` maybe False (`elem` ["auto_immediate", "auto_coalesced"])
+      sectionFieldText "weather_timeline" "cloud_delta_changed" (srResult hexRsp) `shouldSatisfy` maybe False (`elem` ["yes", "no"])
+
+      stopRsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= False])
+      srSuccess stopRsp `shouldBe` True
 
   it "backfills all stages current-first when high-rate auto tick is disabled" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
@@ -470,6 +506,44 @@ spec = describe "AutoTick scheduler" $ do
         sdsPendingTick dag `shouldBe` Nothing
         map stleStatus (sdsTickLogs dag) `shouldSatisfy` notElem (Text.pack "failed")
     completed `shouldBe` Just ()
+
+lookupNestedText :: [Text] -> Value -> Maybe Text
+lookupNestedText path value = case lookupNestedValue path value of
+  Just (String text) -> Just text
+  _ -> Nothing
+
+sectionFieldText :: Text -> Text -> Value -> Maybe Text
+sectionFieldText sectionKey fieldKey value = case sectionFieldValue sectionKey fieldKey value of
+  Just (Object field) -> case KM.lookup "value" field of
+    Just (String text) -> Just text
+    _ -> Nothing
+  _ -> Nothing
+
+sectionFieldValue :: Text -> Text -> Value -> Maybe Value
+sectionFieldValue sectionKey fieldKey (Object obj) = do
+  Array sections <- KM.lookup "sections" obj
+  section <- find (sectionMatches sectionKey) (toList sections)
+  Object sectionObj <- pure section
+  Array fields <- KM.lookup "fields" sectionObj
+  find (fieldMatches fieldKey) (toList fields)
+sectionFieldValue _ _ _ = Nothing
+
+sectionMatches :: Text -> Value -> Bool
+sectionMatches expected (Object obj) = KM.lookup "key" obj == Just (String expected)
+sectionMatches _ _ = False
+
+fieldMatches :: Text -> Value -> Bool
+fieldMatches expected (Object obj) = KM.lookup "key" obj == Just (String expected)
+fieldMatches _ _ = False
+
+lookupNestedValue :: [Text] -> Value -> Maybe Value
+lookupNestedValue [] value = Just value
+lookupNestedValue (key:rest) (Object obj) = KM.lookup (Key.fromText key) obj >>= lookupNestedValue rest
+lookupNestedValue _ _ = Nothing
+
+isNumberValue :: Value -> Bool
+isNumberValue Number{} = True
+isNumberValue _ = False
 
 appHandles :: HeadlessApp -> ActorHandles
 appHandles app = ccActorHandles (headlessCommandContext app)

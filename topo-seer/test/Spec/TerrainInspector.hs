@@ -218,7 +218,8 @@ spec = describe "terrain inspector view model" $ do
     tivLines view `shouldSatisfy` any (Text.isInfixOf "Avg climate temp")
     tivLines view `shouldSatisfy` any (Text.isInfixOf "Current cloud")
     tivLines view `shouldSatisfy` any (Text.isInfixOf "Basis long_run_average")
-    tivLines view `shouldSatisfy` any (Text.isInfixOf "Source simulated_weather")
+    tivLines view `shouldSatisfy` any (Text.isInfixOf "Source simulated_generated_weather")
+    tivLines view `shouldSatisfy` any (Text.isInfixOf "Weather version")
     tivLines view `shouldSatisfy` any (Text.isInfixOf "Family Rainforest")
     tivLines view `shouldSatisfy` any (Text.isInfixOf "Depth 3.0 m")
     tivLines view `shouldSatisfy` any (Text.isInfixOf "Cover 0.67")
@@ -283,6 +284,7 @@ canonicalInspectorSectionKeys =
   , "water_table"
   , "climate_weather"
   , "weather_snapshot"
+  , "weather_timeline"
   , "biome_refinement"
   , "soil"
   , "vegetation"

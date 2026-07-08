@@ -72,9 +72,9 @@ spec = describe "view mode registry" $ do
             )
     semanticsText ViewClimate `shouldBe` Just ("long_run_average", "generated_climate")
     semanticsText ViewPrecip `shouldBe` Just ("long_run_average", "generated_climate")
-    semanticsText ViewWeather `shouldBe` Just ("instantaneous_current", "simulated_weather")
-    semanticsText ViewCloud `shouldBe` Just ("instantaneous_current", "simulated_weather")
-    semanticsText (ViewOverlay "weather" 0) `shouldBe` Just ("instantaneous_current", "simulated_weather")
+    semanticsText ViewWeather `shouldBe` Just ("instantaneous_current", "simulated_generated_weather")
+    semanticsText ViewCloud `shouldBe` Just ("instantaneous_current", "simulated_generated_weather")
+    semanticsText (ViewOverlay "weather" 0) `shouldBe` Just ("instantaneous_current", "simulated_generated_weather")
     viewModeDataSemantics ViewMoisture `shouldBe` Nothing
     temporalBasisToText TypicalNormal `shouldBe` "typical_normal"
     sourceKindToText ExternalLive `shouldBe` "external_live"
@@ -144,7 +144,7 @@ assertSummaryJson meta = do
           KM.lookup "source_kind" o `shouldBe` Just (String "generated_climate")
         ViewWeather -> do
           KM.lookup "temporal_basis" o `shouldBe` Just (String "instantaneous_current")
-          KM.lookup "source_kind" o `shouldBe` Just (String "simulated_weather")
+          KM.lookup "source_kind" o `shouldBe` Just (String "simulated_generated_weather")
         ViewElevation -> do
           KM.lookup "temporal_basis" o `shouldBe` Just Null
           KM.lookup "source_kind" o `shouldBe` Just Null

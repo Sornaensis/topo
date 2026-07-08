@@ -261,7 +261,7 @@ temporalBasisToText InstantaneousCurrent = "instantaneous_current"
 
 sourceKindToText :: SourceKind -> Text
 sourceKindToText GeneratedClimate = "generated_climate"
-sourceKindToText SimulatedWeather = "simulated_weather"
+sourceKindToText SimulatedWeather = "simulated_generated_weather"
 sourceKindToText ExternalLive = "external_live"
 
 viewModeDataSemantics :: ViewMode -> Maybe ViewModeDataSemantics

@@ -1627,6 +1627,9 @@ simulationDagResponseSchema = objectSchema "SimulationDagResponse"
   , ("last_tick", integerSchema)
   , ("pending_tick", nullableSchema integerSchema)
   , ("tick_logs", arraySchema simulationTickLogSchema)
+  , ("weather_node_status", nullableSchema weatherNodeScheduleDiagnosticSchema)
+  , ("last_weather_publication", nullableSchema weatherPublicationDiagnosticSchema)
+  , ("cloud_delta", nullableSchema cloudDeltaSummarySchema)
   , ("plugin_nodes", describedSchema "Backward-compatible alias for plugin_simulation_declarations; these are plugin declaration diagnostics, not the authoritative actor-bound DAG node list." (arraySchema simulationPluginDeclarationSchema))
   , ("plugin_node_count", describedSchema "Backward-compatible count of plugin simulation declarations, not actor-bound plugin DAG nodes." integerSchema)
   , ("plugin_declarations", describedSchema "Alias for plugin_simulation_declarations." (arraySchema simulationPluginDeclarationSchema))
@@ -1710,12 +1713,60 @@ diagnosticScheduleIntervalSchema = integerMinimumSchema 0
 simulationCatchUpSchema :: Value
 simulationCatchUpSchema = enumStringSchema ["run_once_if_due", "skip_missed"]
 
+weatherNodeScheduleDiagnosticSchema :: Value
+weatherNodeScheduleDiagnosticSchema = inlineObjectSchema
+  [ "status" ]
+  [ ("status", enumStringSchema ["due", "skipped", "completed", "ready", "running", "idle", "failed"])
+  , ("next_fire_tick", nullableSchema (integerMinimumSchema 0))
+  , ("cadence_ticks", nullableSchema diagnosticScheduleIntervalSchema)
+  , ("skip_reason", nullableSchema stringSchema)
+  ]
+
+weatherPublicationDiagnosticSchema :: Value
+weatherPublicationDiagnosticSchema = inlineObjectSchema
+  [ "tick", "weather_version_before", "weather_version_after", "published_weather_version", "publication_kind" ]
+  [ ("tick", integerSchema)
+  , ("world_time", inlineObjectSchema
+      [ "tick", "tick_rate" ]
+      [ ("tick", integerSchema)
+      , ("tick_rate", numberSchema)
+      ])
+  , ("weather_version_before", integerSchema)
+  , ("weather_version_after", integerSchema)
+  , ("published_weather_version", integerSchema)
+  , ("publication_kind", enumStringSchema ["manual", "auto_immediate", "auto_coalesced", "flush"])
+  , ("weather_changed", booleanSchema)
+  , ("data_published", booleanSchema)
+  , ("publication_pending", booleanSchema)
+  , ("atlas_work_enqueued", booleanSchema)
+  , ("atlas_active_weather_view", nullableSchema (enumStringSchema ["weather", "cloud"]))
+  ]
+
+cloudDeltaSummarySchema :: Value
+cloudDeltaSummarySchema = inlineObjectSchema
+  [ "changed", "cloud_cover", "cloud_water", "precip" ]
+  [ ("changed", booleanSchema)
+  , ("compared_chunks", integerSchema)
+  , ("compared_samples", integerSchema)
+  , ("cloud_cover", cloudDeltaMetricSchema)
+  , ("cloud_water", cloudDeltaMetricSchema)
+  , ("precip", cloudDeltaMetricSchema)
+  ]
+
+cloudDeltaMetricSchema :: Value
+cloudDeltaMetricSchema = inlineObjectSchema
+  [ "min_delta", "max_delta", "mean_abs_delta" ]
+  [ ("min_delta", numberSchema)
+  , ("max_delta", numberSchema)
+  , ("mean_abs_delta", numberSchema)
+  ]
+
 simulationTickLogSchema :: Value
 simulationTickLogSchema = inlineObjectSchema
   [ "tick", "status", "message" ]
   [ ("tick", integerSchema)
   , ("node_id", nullableSchema stringSchema)
-  , ("status", enumStringSchema ["deferred", "running", "completed", "failed"])
+  , ("status", enumStringSchema ["deferred", "running", "completed", "skipped", "failed"])
   , ("message", stringSchema)
   , ("elapsed_ms", nullableSchema numberSchema)
   ]
@@ -2307,7 +2358,7 @@ temporalBasisSchema :: Value
 temporalBasisSchema = enumStringSchema ["long_run_average", "typical_normal", "instantaneous_current"]
 
 sourceKindSchema :: Value
-sourceKindSchema = enumStringSchema ["generated_climate", "simulated_weather", "external_live"]
+sourceKindSchema = enumStringSchema ["generated_climate", "simulated_generated_weather", "simulated_weather", "external_live"]
 
 editorToolSchema :: Value
 editorToolSchema = enumStringSchema
