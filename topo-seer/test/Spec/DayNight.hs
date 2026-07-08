@@ -4,6 +4,7 @@ import Test.Hspec
 
 import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext)
 import qualified Data.IntMap.Strict as IntMap
+import Data.Word (Word64)
 import Topo.Calendar (WorldTime(..), defaultWorldTime)
 import Topo.Hex (HexGridMeta(..))
 import Topo.Overlay (emptyOverlayStore)
@@ -75,20 +76,36 @@ spec = describe "DayNight" $ do
 
   it "gives west/centre/east tiles physically distinct brightness near the terminator" $ do
     let centre = 8
-        snap = (emptyTerrainSnapshot 16)
-          { tsGeoContext = defaultTerrainGeoContext
-              { tgcWorldTime = WorldTime 6 3600
-              , tgcPlanet = defaultPlanetConfig { pcAxialTilt = 0 }
-              , tgcSlice = defaultWorldSlice { wsLatCenter = 0, wsLonCenter = 0 }
-              , tgcHexGrid = HexGridMeta 1000
-              }
-          }
+        snap = thousandsKmEquinoxSnap 6
         Just fn = mkDayNightFn snap
         west = fn (centre - 4) centre
         mid = fn centre centre
         east = fn (centre + 4) centre
     west `shouldSatisfy` (< mid)
     mid `shouldSatisfy` (< east)
+
+  it "varies thousands-km north/south samples and changes with time of day" $ do
+    let centre = 8
+        Just nightFn = mkDayNightFn (thousandsKmEquinoxSnap 0)
+        Just morningFn = mkDayNightFn (thousandsKmEquinoxSnap 7)
+        Just noonFn = mkDayNightFn (thousandsKmEquinoxSnap 12)
+        north = morningFn (centre + 2) (centre - 4)
+        mid = morningFn centre centre
+        south = morningFn (centre - 2) (centre + 4)
+    mid `shouldSatisfy` (> north)
+    mid `shouldSatisfy` (> south)
+    mid `shouldSatisfy` (> nightFn centre centre)
+    noonFn centre centre `shouldSatisfy` (> mid)
+
+thousandsKmEquinoxSnap :: Word64 -> TerrainSnapshot
+thousandsKmEquinoxSnap tick = (emptyTerrainSnapshot 16)
+  { tsGeoContext = defaultTerrainGeoContext
+      { tgcWorldTime = WorldTime tick 3600
+      , tgcPlanet = defaultPlanetConfig { pcAxialTilt = 0 }
+      , tgcSlice = defaultWorldSlice { wsLatCenter = 0, wsLonCenter = 0 }
+      , tgcHexGrid = HexGridMeta 1000
+      }
+  }
 
 emptyTerrainSnapshot :: Int -> TerrainSnapshot
 emptyTerrainSnapshot chunkSize = TerrainSnapshot

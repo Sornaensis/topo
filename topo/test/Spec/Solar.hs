@@ -70,6 +70,9 @@ spec = describe "Solar" $ do
     it "longitude −90 offsets by −6 hours" $
       localSolarHour 24.0 12.0 (-90.0) `shouldSatisfy` approxEqAbs hourTol 6.0
 
+    it "longitude +90 offsets by +6 hours so dawn there is local noon" $
+      localSolarHour 24.0 6.0 90.0 `shouldSatisfy` approxEqAbs hourTol 12.0
+
     it "wraps into [0, hoursPerDay)" $ do
       let h = localSolarHour 24.0 1.0 (-180.0)
       h `shouldSatisfy` (\x -> x >= 0 && x < 24)
@@ -132,6 +135,14 @@ spec = describe "Solar" $ do
       let pos = tileSolarPos 23.44 0.0 24.0 12.0 0.0 0.0
       spAltitude pos `shouldSatisfy` approxEqAbs angTol (pi / 2)
 
+    it "treats calendar noon at lon 0 and longitude-shifted hours as local noon" $ do
+      let lon0Noon = tileSolarPos 0.0 0.0 24.0 12.0 0.0 0.0
+          eastNoon = tileSolarPos 0.0 0.0 24.0 6.0 0.0 90.0
+          westNoon = tileSolarPos 0.0 0.0 24.0 18.0 0.0 (-90.0)
+      spAltitude lon0Noon `shouldSatisfy` approxEqAbs angTol (pi / 2)
+      spAltitude eastNoon `shouldSatisfy` approxEqAbs angTol (pi / 2)
+      spAltitude westNoon `shouldSatisfy` approxEqAbs angTol (pi / 2)
+
   describe "tileDayInfo" $ do
     it "matches dayInfo at equator equinox" $ do
       let di = tileDayInfo 23.44 0.0 24.0 0.0
@@ -182,6 +193,13 @@ spec = describe "Solar" $ do
     it "returns 0 at equator midnight" $ do
       let cfg = defaultSolarConfig
       tileIrradiance cfg 23.44 0.0 24.0 0.0 0.0 0.0 `shouldSatisfy` (== 0)
+
+    it "separates equinox noon brightness from equinox midnight at lon 0" $ do
+      let cfg = defaultSolarConfig
+          noon = tileIrradiance cfg 0.0 0.0 24.0 12.0 0.0 0.0
+          midnight = tileIrradiance cfg 0.0 0.0 24.0 0.0 0.0 0.0
+      noon `shouldSatisfy` (> 0.9)
+      midnight `shouldBe` 0
 
     it "noon irradiance > morning irradiance at same latitude" $ do
       let cfg = defaultSolarConfig

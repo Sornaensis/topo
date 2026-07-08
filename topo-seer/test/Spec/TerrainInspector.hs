@@ -4,7 +4,7 @@
 module Spec.TerrainInspector (spec) where
 
 import Control.Monad (forM_)
-import Actor.Data (TerrainSnapshot(..), defaultTerrainGeoContext)
+import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
 import Actor.UI.State (allBuiltinViewModes)
 import Data.Aeson (Value(..))
@@ -24,10 +24,16 @@ import Seer.Draw.Overlay
   , terrainInspectorPanelLinesForHeight
   , terrainInspectorPinnedView
   , terrainInspectorView
+  , terrainInspectorViewAt
   , terrainInspectorViewAtWithPluginData
   )
 import Spec.Support.OverlayFixtures (mkSparseFloatOverlay)
 import Test.Hspec
+import Topo.Calendar (CalendarConfig(..), CalendarDate(..), WorldTime(..), mkCalendarConfig, tickToDate)
+import Topo.Hex (HexGridMeta(..))
+import Topo.Planet (PlanetConfig(..), WorldSlice(..), defaultPlanetConfig, defaultWorldSlice, tileLatLon)
+import Topo.Solar (localSolarHour)
+import UI.DayNight (mkDayNightFn)
 import Topo
   ( ClimateChunk(..)
   , GlacierChunk(..)
@@ -52,7 +58,9 @@ import Topo.Plugin.DataResource
   )
 import Topo.Plugin.RPC.DataService (DataRecord(..), QueryResult(..))
 import Topo.Types
-  ( pattern BiomeDesert
+  ( TileCoord(..)
+  , WorldConfig(..)
+  , pattern BiomeDesert
   , pattern BiomeTempRainforest
   , pattern FormFlat
   , pattern PlateBoundaryConvergent
@@ -125,6 +133,20 @@ spec = describe "terrain inspector view model" $ do
         Just view = terrainInspectorView ui terrainSnapshotWithDomainLayers
     tivLines view `shouldSatisfy` elem "Cloud/Storm aggregate render"
     tivLines view `shouldSatisfy` elem "  Layer fields: context only"
+
+  it "uses the render geo/time context for solar inspector lines" $ do
+    let snap = solarTerrainSnapshot
+        ui = emptyUiState { uiViewMode = ViewElevation }
+        centerView = terrainInspectorViewAt ui snap (8, 8)
+        eastView = terrainInspectorViewAt ui snap (12, 8)
+        Just dayNightFn = mkDayNightFn snap
+        centerLocalLine = expectedLocalLine snap 8 8
+        eastLocalLine = expectedLocalLine snap 12 8
+    centerLocalLine `shouldNotBe` eastLocalLine
+    tivLines centerView `shouldSatisfy` elem "--- Sun ---"
+    tivLines centerView `shouldSatisfy` elem centerLocalLine
+    tivLines eastView `shouldSatisfy` elem eastLocalLine
+    dayNightFn 12 8 `shouldSatisfy` (> dayNightFn 8 8)
 
   it "clips compact panel lines by available height and truncates long display values" $ do
     let longOverlay = Text.replicate 140 "x"
@@ -312,6 +334,35 @@ terrainSnapshotWithChunk = TerrainSnapshot
   , tsOverlayStore = emptyOverlayStore
   , tsGeoContext = defaultTerrainGeoContext
   }
+
+solarTerrainSnapshot :: TerrainSnapshot
+solarTerrainSnapshot = terrainSnapshotWithChunk
+  { tsChunkSize = 16
+  , tsTerrainChunks = IntMap.singleton 0 (emptyTerrainChunk 16)
+  , tsGeoContext = defaultTerrainGeoContext
+      { tgcWorldTime = WorldTime 6 3600
+      , tgcPlanet = defaultPlanetConfig { pcAxialTilt = 0 }
+      , tgcSlice = defaultWorldSlice { wsLatCenter = 0, wsLonCenter = 0 }
+      , tgcHexGrid = HexGridMeta 1000
+      }
+  }
+
+expectedLocalLine :: TerrainSnapshot -> Int -> Int -> Text
+expectedLocalLine snap tileQ tileR = "Local " <> formatInspectorHour localHour
+  where
+    geo = tsGeoContext snap
+    planet = tgcPlanet geo
+    calCfg = mkCalendarConfig planet
+    calDate = tickToDate calCfg (tgcWorldTime geo)
+    worldConfig = WorldConfig { wcChunkSize = tsChunkSize snap }
+    (_, lonDeg) = tileLatLon planet (tgcHexGrid geo) (tgcSlice geo) worldConfig (TileCoord tileQ tileR)
+    localHour = localSolarHour (realToFrac (ccHoursPerDay calCfg)) (realToFrac (cdHourOfDay calDate)) lonDeg
+
+formatInspectorHour :: Float -> Text
+formatInspectorHour hour =
+  let hrs = floor hour :: Int
+      mins = round ((hour - fromIntegral hrs) * 60) :: Int
+  in Text.pack (show hrs) <> ":" <> (if mins < 10 then "0" else "") <> Text.pack (show mins)
 
 terrainSnapshotWithWater :: TerrainSnapshot
 terrainSnapshotWithWater = terrainSnapshotWithChunk

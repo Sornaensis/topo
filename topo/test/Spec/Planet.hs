@@ -110,6 +110,28 @@ spec = describe "Planet" $ do
       seE - centerE `shouldSatisfy` approx 4.0
       seN - centerN `shouldSatisfy` approx (negate (8.0 * sqrt 3 / 2))
 
+    it "converts pointy axial offsets to lat/lon using physical kilometre scale" $ do
+      let planet = defaultPlanetConfig
+          slice = defaultWorldSlice { wsLatCenter = 0, wsLonCenter = 0 }
+          config = WorldConfig { wcChunkSize = 16 }
+          hex = HexGridMeta 1000
+          center = TileCoord 8 8
+          east = TileCoord 9 8
+          southEast = TileCoord 8 9
+          kmPerDegLat = 2 * pi * pcRadius planet / 360
+          (latC, lonC) = tileLatLon planet hex slice config center
+          (latE, lonE) = tileLatLon planet hex slice config east
+          (latSE, lonSE) = tileLatLon planet hex slice config southEast
+          expectedEastLon = 1000 / kmPerDegLat
+          expectedSeLat = negate (1000 * sqrt 3 / 2 / kmPerDegLat)
+          expectedSeLon = 500 / (kmPerDegLat * cos (expectedSeLat * pi / 180))
+      latC `shouldSatisfy` approxDeg 0
+      lonC `shouldSatisfy` approxDeg 0
+      latE `shouldSatisfy` approxDeg 0
+      lonE - lonC `shouldSatisfy` approxDeg expectedEastLon
+      latSE - latC `shouldSatisfy` approxDeg expectedSeLat
+      lonSE - lonC `shouldSatisfy` approxDeg expectedSeLon
+
     it "large local slices have real longitude spread" $ do
       let planet = defaultPlanetConfig
           slice  = defaultWorldSlice { wsLatCenter = 0, wsLonCenter = 0 }
@@ -284,6 +306,9 @@ inWritDefaultRange km = km >= 1900 && km <= 2100
 
 approx :: Float -> Float -> Bool
 approx expected actual = abs (actual - expected) < 0.001
+
+approxDeg :: Float -> Float -> Bool
+approxDeg expected actual = abs (actual - expected) < 0.02
 
 isLeft :: Either a b -> Bool
 isLeft (Left _) = True

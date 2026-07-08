@@ -17,7 +17,7 @@ import GHC.Clock (getMonotonicTimeNSec)
 import System.Timeout (timeout)
 import Test.Hspec
 
-import Actor.AtlasCache (atlasKeyVersion)
+import Actor.AtlasCache (atlasKeyFor, atlasKeyVersion)
 import Actor.AtlasManager (AtlasJob(..), drainAtlasJobs)
 import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..), getTerrainSnapshot, replaceTerrainData)
 import Actor.Simulation
@@ -239,6 +239,7 @@ spec = describe "AutoTick scheduler" $ do
       length firstJobs `shouldBe` 1
       map ajViewMode firstJobs `shouldBe` [ViewElevation]
       map atlasJobStage firstJobs `shouldBe` [expectedCurrent]
+      map ajKey firstJobs `shouldBe` [atlasKeyFor ViewElevation (uiRenderWaterLevel uiBeforeAuto) firstPublished]
       map (mkDayNightKey . ajTerrain) firstJobs `shouldBe` [mkDayNightKey firstPublished]
 
       slowRsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (0.1 :: Double)])
@@ -253,8 +254,59 @@ spec = describe "AutoTick scheduler" $ do
       length jobs `shouldBe` length allZoomStages
       map ajViewMode jobs `shouldBe` replicate (length allZoomStages) ViewElevation
       map atlasJobStage jobs `shouldBe` expectedBackfill
+      map ajKey jobs `shouldSatisfy` all (== atlasKeyFor ViewElevation (uiRenderWaterLevel slowedUi) publishedSnap)
       map (tgcWorldTime . tsGeoContext . ajTerrain) jobs `shouldSatisfy` all (== tgcWorldTime (tsGeoContext publishedSnap))
       map (mkDayNightKey . ajTerrain) jobs `shouldSatisfy` all (== mkDayNightKey publishedSnap)
+
+  it "flushes latest day/night overlay jobs when high-rate auto tick is disabled" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      workerStarted <- newEmptyMVar
+      runCountRef <- newIORef (0 :: Int)
+      installResponsiveWorldWithDelay 80000 app workerStarted runCountRef
+      let handles = appHandles app
+      setUiZoom (ahUiHandle handles) 2.5
+      setUiDayNightEnabled (ahUiHandle handles) True
+      uiBeforeAuto <- getUiSnapshot (ahUiHandle handles)
+      let currentStage = stageForZoom (uiZoom uiBeforeAuto)
+          expectedCurrent = zoomStagePair currentStage
+          expectedBackfill = map zoomStagePair (orderedZoomStagesForZoom (uiZoom uiBeforeAuto))
+      _ <- drainAtlasJobs (ahAtlasManagerHandle handles)
+
+      rsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (1.0 :: Double)])
+      srSuccess rsp `shouldBe` True
+      firstPublished <- awaitTrue 100 $ do
+        ui <- getUiSnapshot (ahUiHandle handles)
+        pure (uiSimTickCount ui >= 1)
+      firstPublished `shouldBe` True
+      publishedSnap1 <- readTerrainSnapshot (ahTerrainSnapshotRef handles)
+      firstJobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+      length firstJobs `shouldBe` 1
+      map ajViewMode firstJobs `shouldBe` [ViewElevation]
+      map atlasJobStage firstJobs `shouldBe` [expectedCurrent]
+      map ajKey firstJobs `shouldBe` [atlasKeyFor ViewElevation (uiRenderWaterLevel uiBeforeAuto) publishedSnap1]
+      map (tgcWorldTime . tsGeoContext . ajTerrain) firstJobs `shouldBe` [tgcWorldTime (tsGeoContext publishedSnap1)]
+      map (mkDayNightKey . ajTerrain) firstJobs `shouldBe` [mkDayNightKey publishedSnap1]
+
+      secondStarted <- awaitTrue 100 $ do
+        runs <- readRunCount runCountRef
+        pure (runs >= 2)
+      secondStarted `shouldBe` True
+      stopRsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= False])
+      srSuccess stopRsp `shouldBe` True
+      idle <- awaitStoppedAutoTickIdle handles runCountRef
+      idle `shouldBe` True
+
+      latestTerrainSnap <- getTerrainSnapshot (ahDataHandle handles)
+      latestPublishedSnap <- readTerrainSnapshot (ahTerrainSnapshotRef handles)
+      tgcWorldTime (tsGeoContext latestPublishedSnap) `shouldBe` tgcWorldTime (tsGeoContext latestTerrainSnap)
+      mkDayNightKey latestPublishedSnap `shouldBe` mkDayNightKey latestTerrainSnap
+      jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+      length jobs `shouldBe` length allZoomStages
+      map ajViewMode jobs `shouldBe` replicate (length allZoomStages) ViewElevation
+      map atlasJobStage jobs `shouldBe` expectedBackfill
+      map ajKey jobs `shouldSatisfy` all (== atlasKeyFor ViewElevation (uiRenderWaterLevel uiBeforeAuto) latestPublishedSnap)
+      map (tgcWorldTime . tsGeoContext . ajTerrain) jobs `shouldSatisfy` all (== tgcWorldTime (tsGeoContext latestPublishedSnap))
+      map (mkDayNightKey . ajTerrain) jobs `shouldSatisfy` all (== mkDayNightKey latestPublishedSnap)
 
   it "does not enqueue disable backfill for unaffected non-weather views" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do

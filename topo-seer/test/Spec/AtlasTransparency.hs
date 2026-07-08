@@ -75,16 +75,23 @@ spec = describe "atlas alpha compositing" $ do
 
   it "composites day-night overlay alpha without erasing the base atlas" $
     withDummyRenderer $ \renderer ->
-      withTexture renderer (4, 4) [(Rect (V2 0 0, V2 4 4), baseTerrain)] $ \baseTexture ->
-      withTexture renderer (4, 4) [(Rect (V2 1 1, V2 2 2), V4 0 0 0 128)] $ \overlayTexture -> do
-        clearFrame renderer backgroundGreen
+      withTexture renderer (4, 4) [(Rect (V2 0 0, V2 4 4), baseTerrain)] $ \baseTexture -> do
         let bounds = Rect (V2 0 0, V2 4 4)
-        drawAtlas renderer [mkTile baseTexture bounds] (0, 0) 1 (V2 frameW frameH)
-        drawAtlas renderer [mkTile overlayTexture bounds] (0, 0) 1 (V2 frameW frameH)
-        pixels <- capturePixels renderer frameW frameH
-        pixelAt pixels 0 0 `shouldSatisfy` closeToColor baseTerrain 1
-        pixelAt pixels 1 1 `shouldSatisfy` closeToColor (blendOver 128 (V4 0 0 0 255) baseTerrain) 3
-        assertTextureReadyForReuse overlayTexture
+            overlayCases =
+              [ (0, baseTerrain)
+              , (96, blendOver 96 (V4 0 0 0 255) baseTerrain)
+              , (160, blendOver 160 (V4 0 0 0 255) baseTerrain)
+              ]
+        forM_ overlayCases $ \(alpha, expectedCenter) ->
+          withTexture renderer (4, 4) [(Rect (V2 1 1, V2 2 2), V4 0 0 0 alpha)] $ \overlayTexture -> do
+            clearFrame renderer backgroundGreen
+            drawAtlas renderer [mkTile baseTexture bounds] (0, 0) 1 (V2 frameW frameH)
+            drawAtlas renderer [mkTile overlayTexture bounds] (0, 0) 1 (V2 frameW frameH)
+            pixels <- capturePixels renderer frameW frameH
+            pixelAt pixels 0 0 `shouldSatisfy` closeToColor baseTerrain 1
+            pixelAt pixels 1 1 `shouldSatisfy` closeToColor expectedCenter 3
+            pixelAt pixels 1 1 `shouldSatisfy` (not . isBlack)
+            assertTextureReadyForReuse overlayTexture
 
   it "leaves the framebuffer unchanged for an empty/loading atlas tile set" $
     withDummyRenderer $ \renderer -> do
