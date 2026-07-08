@@ -17,6 +17,11 @@ import Topo.Planet (defaultPlanetConfig, defaultWorldSlice, PlanetConfig(..), Wo
 import Topo.Weather (cloudFraction, seasonalITCZLatitude, weatherSeasonalPhase,
                      weatherOverlaySchema, overlayToWeatherChunk, weatherFieldCount,
                      weatherChunkToOverlay,
+                     WeatherNormalsChunk(..), weatherNormalsOverlayName,
+                     weatherNormalsOverlaySchema, weatherNormalsFieldCount,
+                     weatherNormalsChunkFromClimate, weatherNormalsChunkToOverlay,
+                     overlayToWeatherNormalsChunk, getWeatherNormalsChunk,
+                     getWeatherNormalsFromOverlay,
                      initWeatherStage, weatherSimNode,
                      getWeatherChunk, getWeatherFromOverlay)
 
@@ -991,6 +996,96 @@ spec = describe "Weather" $ do
                       && U.toList (wcPressure wc') == U.toList (wcPressure wc)
                       && U.toList (wcPrecip wc')   == U.toList (wcPrecip wc)
               )
+
+  describe "weather normals overlay" $ do
+    it "defines a versioned dense schema for generated typical weather" $ do
+      weatherNormalsOverlayName `shouldBe` "weather_normals"
+      weatherNormalsFieldCount `shouldBe` 13
+      osName weatherNormalsOverlaySchema `shouldBe` "weather_normals"
+      osVersion weatherNormalsOverlaySchema `shouldBe` "1.0.0"
+      osStorage weatherNormalsOverlaySchema `shouldBe` StorageDense
+      map ofdName (osFields weatherNormalsOverlaySchema) `shouldBe`
+        [ "temperature", "humidity", "wind_dir", "wind_speed", "precipitation"
+        , "cloud_cover", "cloud_water"
+        , "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"
+        , "cloud_water_low", "cloud_water_mid", "cloud_water_high"
+        ]
+
+    it "derives deterministic typical weather normals from climate averages" $ do
+      let config = WorldConfig { wcChunkSize = 4 }
+          n = chunkTileCount config
+          climate = ClimateChunk
+            { ccTempAvg = U.generate n (\i -> fromIntegral i / fromIntegral n)
+            , ccPrecipAvg = U.replicate n 0.6
+            , ccWindDirAvg = U.replicate n 1.25
+            , ccWindSpdAvg = U.replicate n 0.4
+            , ccHumidityAvg = U.replicate n 0.8
+            , ccTempRange = U.replicate n 0.3
+            , ccPrecipSeasonality = U.replicate n 0.5
+            }
+          normalsA = weatherNormalsChunkFromClimate defaultWeatherConfig climate
+          normalsB = weatherNormalsChunkFromClimate defaultWeatherConfig climate
+      U.toList (wncTemp normalsA) `shouldBe` U.toList (ccTempAvg climate)
+      U.toList (wncPrecip normalsA) `shouldBe` U.toList (ccPrecipAvg climate)
+      U.toList (wncWindDir normalsA) `shouldBe` U.toList (ccWindDirAvg climate)
+      U.toList (wncWindSpd normalsA) `shouldBe` U.toList (ccWindSpdAvg climate)
+      U.toList (wncCloudCover normalsA) `shouldBe` U.toList (wncCloudCover normalsB)
+      U.all (\v -> v >= 0 && v <= 1) (wncCloudCover normalsA) `shouldBe` True
+      U.all (\v -> v >= 0 && v <= 1) (wncCloudWater normalsA) `shouldBe` True
+
+    it "round-trips weather normals dense overlay chunks" $ do
+      let n = 16
+          normals = WeatherNormalsChunk
+            { wncTemp = U.replicate n 0.5
+            , wncHumidity = U.replicate n 0.7
+            , wncWindDir = U.replicate n 1.0
+            , wncWindSpd = U.replicate n 0.3
+            , wncPrecip = U.replicate n 0.4
+            , wncCloudCover = U.replicate n 0.6
+            , wncCloudWater = U.replicate n 0.35
+            , wncCloudCoverLow = U.replicate n 0.36
+            , wncCloudCoverMid = U.replicate n 0.15
+            , wncCloudCoverHigh = U.replicate n 0.09
+            , wncCloudWaterLow = U.replicate n 0.21
+            , wncCloudWaterMid = U.replicate n 0.0875
+            , wncCloudWaterHigh = U.replicate n 0.0525
+            }
+      case overlayToWeatherNormalsChunk (weatherNormalsChunkToOverlay normals) of
+        Nothing -> expectationFailure "weather normals round-trip returned Nothing"
+        Just normals' -> do
+          U.toList (wncTemp normals') `shouldBe` U.toList (wncTemp normals)
+          U.toList (wncCloudCoverLow normals') `shouldBe` U.toList (wncCloudCoverLow normals)
+          U.toList (wncCloudWaterHigh normals') `shouldBe` U.toList (wncCloudWaterHigh normals)
+
+    it "initWeatherStage also inserts unscheduled generated weather normals" $ do
+      let config = WorldConfig { wcChunkSize = 4 }
+          n = chunkTileCount config
+          climate = ClimateChunk
+            { ccTempAvg = U.replicate n 0.5
+            , ccPrecipAvg = U.replicate n 0.4
+            , ccWindDirAvg = U.replicate n 0.2
+            , ccWindSpdAvg = U.replicate n 0.3
+            , ccHumidityAvg = U.replicate n 0.7
+            , ccTempRange = U.replicate n 0.1
+            , ccPrecipSeasonality = U.replicate n 0.25
+            }
+          world0 = setClimateChunk (ChunkId 0) climate (emptyWorld config defaultHexGridMeta)
+      world <- initWeatherOnly defaultWeatherConfig world0
+      case lookupOverlay "weather_normals" (twOverlays world) of
+        Nothing -> expectationFailure "weather_normals overlay not found"
+        Just ov -> do
+          ovSchema ov `shouldBe` weatherNormalsOverlaySchema
+          opSource (ovProvenance ov) `shouldBe` "weather_normals"
+          opSchedule (ovProvenance ov) `shouldBe` Nothing
+          case ovData ov of
+            DenseData chunks -> IntMap.member 0 chunks `shouldBe` True
+            SparseData _ -> expectationFailure "expected DenseData"
+      IntMap.null (getWeatherNormalsFromOverlay world) `shouldBe` False
+      case getWeatherNormalsChunk (ChunkId 0) world of
+        Nothing -> expectationFailure "missing generated weather normals chunk"
+        Just normals -> do
+          U.toList (wncTemp normals) `shouldBe` U.toList (ccTempAvg climate)
+          U.toList (wncHumidity normals) `shouldBe` U.toList (ccHumidityAvg climate)
 
   -- Phase: Cloud layer separation (low/mid/high)
   describe "cloud layers" $ do

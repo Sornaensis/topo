@@ -116,6 +116,7 @@ import Topo.Types
   , ventTypeToCode
   , waterBodyToCode
   )
+import Topo.Weather (WeatherNormalsChunk(..), getWeatherNormalsChunkFromStore)
 import Topo.Units
   ( defaultUnitScales
   , normDepthToMetres
@@ -175,6 +176,7 @@ handleGetHex ctx reqId params =
                       (latDeg, lonDeg) = latLonValuesForApi ui snap q r
                       climateChunk = IntMap.lookup chunkId (tsClimateChunks snap)
                       weatherChunk = IntMap.lookup chunkId (tsWeatherChunks snap)
+                      weatherNormalsChunk = getWeatherNormalsChunkFromStore (ChunkId chunkId) (tsOverlayStore snap)
                       riverChunk = IntMap.lookup chunkId (tsRiverChunks snap)
                       groundwaterChunk = IntMap.lookup chunkId (tsGroundwaterChunks snap)
                       waterBodyChunk = IntMap.lookup chunkId (tsWaterBodyChunks snap)
@@ -260,6 +262,8 @@ handleGetHex ctx reqId params =
                           , "cloud_water_mid" .= safeIndex (wcCloudWaterMid wc) tileIdx
                           , "cloud_water_high" .= safeIndex (wcCloudWaterHigh wc) tileIdx
                           ]
+
+                      weatherNormalsLayer = weatherNormalsLayerJSON weatherNormalsChunk tileIdx
 
                       riverLayer = case riverChunk of
                         Nothing -> Null
@@ -593,6 +597,8 @@ handleGetHex ctx reqId params =
                     , "climate_diagnostics" .= climateDiagnosticsLayer
                     , "weather"    .= weatherLayer
                     , "weather_snapshot" .= weatherLayer
+                    , "weather_normals" .= weatherNormalsLayer
+                    , "weather_typical" .= weatherNormalsLayer
                     , "weather_timeline" .= weatherTimelineLayer
                     , "river"      .= riverLayer
                     , "water_body" .= waterBodyLayer
@@ -880,6 +886,39 @@ stormIntensityAt weatherChunk tileIdx = do
   precip <- safeIndex (wcPrecip wc) tileIdx
   pure (water * min 1 (precip * 3))
 
+weatherNormalsLayerJSON :: Maybe WeatherNormalsChunk -> Int -> Value
+weatherNormalsLayerJSON Nothing _ = object
+  [ "loaded" .= False
+  , "status" .= ("unavailable" :: Text)
+  , "reason" .= ("weather_normals overlay not present" :: Text)
+  , "temporal_basis" .= temporalBasisToText TypicalNormal
+  , "basis" .= temporalBasisToText TypicalNormal
+  , "source_kind" .= sourceKindToText GeneratedClimate
+  ]
+weatherNormalsLayerJSON (Just normals) tileIdx = object
+  [ "loaded" .= True
+  , "status" .= ("loaded" :: Text)
+  , "temporal_basis" .= temporalBasisToText TypicalNormal
+  , "basis" .= temporalBasisToText TypicalNormal
+  , "source_kind" .= sourceKindToText GeneratedClimate
+  , "temp" .= safeIndex (wncTemp normals) tileIdx
+  , "temperature" .= safeIndex (wncTemp normals) tileIdx
+  , "humidity" .= safeIndex (wncHumidity normals) tileIdx
+  , "wind_dir" .= safeIndex (wncWindDir normals) tileIdx
+  , "wind_spd" .= safeIndex (wncWindSpd normals) tileIdx
+  , "wind_speed" .= safeIndex (wncWindSpd normals) tileIdx
+  , "precip" .= safeIndex (wncPrecip normals) tileIdx
+  , "precipitation" .= safeIndex (wncPrecip normals) tileIdx
+  , "cloud_cover" .= safeIndex (wncCloudCover normals) tileIdx
+  , "cloud_water" .= safeIndex (wncCloudWater normals) tileIdx
+  , "cloud_cover_low" .= safeIndex (wncCloudCoverLow normals) tileIdx
+  , "cloud_cover_mid" .= safeIndex (wncCloudCoverMid normals) tileIdx
+  , "cloud_cover_high" .= safeIndex (wncCloudCoverHigh normals) tileIdx
+  , "cloud_water_low" .= safeIndex (wncCloudWaterLow normals) tileIdx
+  , "cloud_water_mid" .= safeIndex (wncCloudWaterMid normals) tileIdx
+  , "cloud_water_high" .= safeIndex (wncCloudWaterHigh normals) tileIdx
+  ]
+
 safeIndexVentType :: U.Vector VentType -> Int -> Maybe VentType
 safeIndexVentType v i
   | i >= 0 && i < U.length v = Just (v U.! i)
@@ -1077,6 +1116,7 @@ activeWeatherVersion :: ViewMode -> TerrainSnapshot -> Maybe Word64
 activeWeatherVersion ViewWeather snap = Just (tsWeatherVersion snap)
 activeWeatherVersion ViewCloud snap = Just (tsWeatherVersion snap)
 activeWeatherVersion (ViewOverlay "weather" _) snap = Just (tsWeatherVersion snap)
+activeWeatherVersion (ViewOverlay "weather_normals" _) snap = Just (tsOverlayVersion snap)
 activeWeatherVersion _ _ = Nothing
 
 weatherNodeScheduleDiagnosticJSON :: WeatherNodeScheduleDiagnostic -> Value

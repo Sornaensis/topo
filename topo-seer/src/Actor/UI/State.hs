@@ -270,6 +270,7 @@ viewModeDataSemantics ViewPrecip = climateSemantics
 viewModeDataSemantics ViewWeather = weatherSemantics
 viewModeDataSemantics ViewCloud = weatherSemantics
 viewModeDataSemantics (ViewOverlay "weather" _) = weatherSemantics
+viewModeDataSemantics (ViewOverlay "weather_normals" _) = normalsSemantics
 viewModeDataSemantics _ = Nothing
 
 climateSemantics :: Maybe ViewModeDataSemantics
@@ -277,6 +278,9 @@ climateSemantics = Just (ViewModeDataSemantics LongRunAverage GeneratedClimate)
 
 weatherSemantics :: Maybe ViewModeDataSemantics
 weatherSemantics = Just (ViewModeDataSemantics InstantaneousCurrent SimulatedWeather)
+
+normalsSemantics :: Maybe ViewModeDataSemantics
+normalsSemantics = Just (ViewModeDataSemantics TypicalNormal GeneratedClimate)
 
 viewModeLegendTitle :: ViewModeLegend -> Text
 viewModeLegendTitle (ViewModeGradientLegend title _) = title
@@ -381,7 +385,9 @@ viewModeRegistry =
         ])
       ["temp_c", "humidity_pct", "wind_spd_ms"]
       ["weather.temp", "weather.humidity", "weather.wind_spd", "weather.pressure", "weather.precip"]
-      ["weather_temperature", "weather_humidity", "weather_wind_speed", "weather_pressure", "weather_precipitation"]
+      [ "weather_temperature", "weather_humidity", "weather_wind_speed", "weather_pressure", "weather_precipitation"
+      , "normal_temperature", "normal_humidity", "normal_wind_dir", "normal_wind_speed", "normal_precipitation"
+      ]
   , scalar ViewCloud "cloud" "Cloud/Storm"
       "Renders aggregate cloud cover and cloud-water density with precipitation-derived storm tint; low/mid/high layer fields are inspector/API context, not separate rendered layers."
       (Just "% cover") "cloud-storm"
@@ -395,7 +401,11 @@ viewModeRegistry =
       , "weather.cloud_cover_low", "weather.cloud_cover_mid", "weather.cloud_cover_high"
       , "weather.cloud_water_low", "weather.cloud_water_mid", "weather.cloud_water_high"
       ]
-      ["cloud_cover", "cloud_water", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"]
+      [ "cloud_cover", "cloud_water", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"
+      , "normal_cloud_cover", "normal_cloud_water"
+      , "normal_cloud_cover_low", "normal_cloud_cover_mid", "normal_cloud_cover_high"
+      , "normal_cloud_water_low", "normal_cloud_water_mid", "normal_cloud_water_high"
+      ]
   , scalar ViewMoisture "moisture" "Moisture"
       "Terrain soil moisture, shown as relative humidity percent in hover and inspector values."
       (Just "%") "moisture"

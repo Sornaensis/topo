@@ -53,7 +53,8 @@ import Topo.Simulation.Schedule
   ( SimulationCatchUpPolicy(..)
   , SimulationScheduleState(..)
   )
-import Topo.Types (ChunkId(..), TileCoord(..), WorldConfig(..))
+import Topo.Types (ChunkId(..), TileCoord(..), WorldConfig(..), ClimateChunk(..), chunkTileCount)
+import Topo.Weather (WeatherNormalsChunk(..), defaultWeatherConfig, getWeatherNormalsChunk, weatherNormalsOverlayFromClimate)
 import Topo.World (TerrainWorld(..), emptyWorld, generateTerrainChunk, getElevationAt, setTerrainChunk)
 
 spec :: Spec
@@ -99,6 +100,46 @@ spec = describe "WorldBundle" $ do
             Just ov -> case ovData ov of
               DenseData chunks -> IntMap.member 0 chunks `shouldBe` True
               SparseData _ -> expectationFailure "expected dense overlay"
+
+  it "round-trips the generated weather normals overlay" $
+    withSystemTempDirectory "topo-world-bundle-weather-normals" $ \tmp -> do
+      let topoPath = tmp </> "world.topo"
+          config = WorldConfig { wcChunkSize = 4 }
+          n = chunkTileCount config
+          climate = ClimateChunk
+            { ccTempAvg = U.replicate n 0.5
+            , ccPrecipAvg = U.replicate n 0.4
+            , ccWindDirAvg = U.replicate n 0.2
+            , ccWindSpdAvg = U.replicate n 0.3
+            , ccHumidityAvg = U.replicate n 0.7
+            , ccTempRange = U.replicate n 0.1
+            , ccPrecipSeasonality = U.replicate n 0.25
+            }
+          base = emptyWorld config defaultHexGridMeta
+          normalsOverlay = weatherNormalsOverlayFromClimate 99 defaultWeatherConfig (IntMap.singleton 0 climate)
+          world0 = base { twOverlays = insertOverlay normalsOverlay emptyOverlayStore }
+
+      saveResult <- saveWorldBundle topoPath world0
+      case saveResult of
+        Left err -> expectationFailure (show err)
+        Right () -> pure ()
+
+      loadResult <- loadWorldBundle StrictManifest topoPath
+      case loadResult of
+        Left err -> expectationFailure (show err)
+        Right world1 -> do
+          twOverlayManifest world1 `shouldBe` ["weather_normals"]
+          case lookupOverlay "weather_normals" (twOverlays world1) of
+            Nothing -> expectationFailure "expected weather_normals dense overlay"
+            Just ov -> do
+              opSource (ovProvenance ov) `shouldBe` "weather_normals"
+              opSchedule (ovProvenance ov) `shouldBe` Nothing
+              case ovData ov of
+                DenseData chunks -> IntMap.member 0 chunks `shouldBe` True
+                SparseData _ -> expectationFailure "expected dense overlay"
+          case getWeatherNormalsChunk (ChunkId 0) world1 of
+            Nothing -> expectationFailure "expected decoded weather normals"
+            Just normals -> U.toList (wncTemp normals) `shouldBe` U.toList (ccTempAvg climate)
 
   it "round-trips sparse plugin-style overlay with weather overlay together" $
     withSystemTempDirectory "topo-world-bundle-weather-sparse" $ \tmp -> do

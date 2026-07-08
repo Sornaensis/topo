@@ -160,10 +160,10 @@ Diagnostics: Pseudo-stage for diagnostics; concrete runs appear as repeated clim
 
 
 ## weather — Weather
-Initializes weather overlays and weather tick state for the generated world.
+Initializes weather and generated-normal overlays for the generated world.
 Dependencies: climate, biomes
 Config: world.weather
-Outputs: weather, weather_snapshot, weather_timeline, weather
+Outputs: weather, weather_normals, weather_snapshot, weather_timeline, weather, weather_normals
 Diagnostics: Requires climate and biomes so weather starts from classified terrain.
 <!-- END GENERATED: pipeline-stage-registry -->
 

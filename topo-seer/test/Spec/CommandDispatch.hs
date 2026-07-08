@@ -18,6 +18,7 @@ import Control.Monad (forM_)
 import qualified Data.ByteString.Lazy as BL
 import Data.Aeson (Value(..), object, (.=), Key)
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
@@ -28,6 +29,7 @@ import Data.Maybe (mapMaybe)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Vector.Unboxed as U
 import System.Directory (createDirectoryIfMissing, getTemporaryDirectory, removePathForcibly)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.FilePath ((</>))
@@ -101,10 +103,20 @@ import Seer.Service.Types
   , serviceErrorDetails
   , serviceErrorKind
   )
-import Topo (WorldConfig(..), chunkIdFromCoord, emptyTerrainChunk)
+import Topo
+  ( ClimateChunk(..)
+  , WorldConfig(..)
+  , chunkIdFromCoord
+  , chunkTileCount
+  , defaultWeatherConfig
+  , emptyTerrainChunk
+  , weatherNormalsChunkFromClimate
+  , weatherNormalsChunkToOverlay
+  , weatherNormalsOverlaySchema
+  )
 import Topo.Calendar (WorldTime(..), simulationTickSeconds)
 import Topo.Command.Types (SeerCommand(..), SeerResponse(..))
-import Topo.Overlay (emptyOverlayStore)
+import Topo.Overlay (Overlay(..), OverlayData(..), OverlayProvenance(..), emptyOverlayStore, insertOverlay)
 import Topo.Pipeline.Stage (StageId(..))
 import Topo.Plugin.RPC.Manifest
   ( RPCParamSpec(..)
@@ -801,6 +813,31 @@ spec = describe "CommandDispatch" $ do
             _ -> expectationFailure "expected active_view.values object"
         _ -> expectationFailure "expected active_view object"
 
+    it "reports weather normals as unavailable when the overlay is missing" $ withCtx $ \ctx -> do
+      _chunkKey <- writeSingleChunkTerrain ctx
+      rsp <- dispatch ctx "get_hex" (object ["q" .= (0 :: Int), "r" .= (0 :: Int)])
+      srSuccess rsp `shouldBe` True
+      case lookupKey "weather_normals" (srResult rsp) of
+        Just (Object normals) -> do
+          KM.lookup "loaded" normals `shouldBe` Just (Bool False)
+          KM.lookup "status" normals `shouldBe` Just (String "unavailable")
+          KM.lookup "temporal_basis" normals `shouldBe` Just (String "typical_normal")
+        _ -> expectationFailure "expected weather_normals object"
+
+    it "returns generated typical weather normals separately from current weather" $ withCtx $ \ctx -> do
+      _chunkKey <- writeSingleChunkTerrainWithNormals ctx
+      rsp <- dispatch ctx "get_hex" (object ["q" .= (0 :: Int), "r" .= (0 :: Int)])
+      srSuccess rsp `shouldBe` True
+      lookupKey "weather" (srResult rsp) `shouldBe` Just Null
+      case lookupKey "weather_normals" (srResult rsp) of
+        Just (Object normals) -> do
+          KM.lookup "loaded" normals `shouldBe` Just (Bool True)
+          KM.lookup "temporal_basis" normals `shouldBe` Just (String "typical_normal")
+          KM.member "temp" normals `shouldBe` True
+          KM.member "precip" normals `shouldBe` True
+          KM.member "cloud_cover" normals `shouldBe` True
+        _ -> expectationFailure "expected weather_normals object"
+
     it "returns error when params are missing" $ withCtx $ \ctx -> do
       rsp <- dispatch ctx "get_hex" Null
       srSuccess rsp `shouldBe` False
@@ -817,8 +854,27 @@ spec = describe "CommandDispatch" $ do
         ])
       srSuccess rsp `shouldBe` True
       case lookupKey "available_fields" (srResult rsp) of
-        Just (Array fields) -> toList fields `shouldSatisfy` elem (String "plate_boundary_code")
+        Just (Array fields) -> do
+          toList fields `shouldSatisfy` elem (String "plate_boundary_code")
+          toList fields `shouldSatisfy` elem (String "normal_temperature")
+          toList fields `shouldSatisfy` elem (String "normal_cloud_cover")
         _ -> expectationFailure "expected available_fields array"
+
+    it "exports generated weather normal fields when present" $ withCtx $ \ctx -> do
+      chunkKey <- writeSingleChunkTerrainWithNormals ctx
+      rsp <- dispatch ctx "export_terrain_data" (object
+        [ "chunks" .= [chunkKey]
+        , "fields" .= ["normal_temperature" :: Text, "normal_cloud_cover"]
+        ])
+      srSuccess rsp `shouldBe` True
+      case lookupKey "data" (srResult rsp) of
+        Just (Object chunks) ->
+          case KM.lookup (Key.fromText (Text.pack (show chunkKey))) chunks of
+            Just (Object fields) -> do
+              KM.lookup "normal_temperature" fields `shouldSatisfy` isArrayValue
+              KM.lookup "normal_cloud_cover" fields `shouldSatisfy` isArrayValue
+            _ -> expectationFailure "expected exported chunk object"
+        _ -> expectationFailure "expected export data object"
 
   -- -------------------------------------------------------------------
   -- get_terrain_stats (empty terrain)
@@ -1506,6 +1562,53 @@ writeSingleChunkTerrain ctx = do
   writeTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx)) snap
   pure chunkKey
 
+writeSingleChunkTerrainWithNormals :: CommandContext -> IO Int
+writeSingleChunkTerrainWithNormals ctx = do
+  let cfg = WorldConfig { wcChunkSize = 64 }
+      n = chunkTileCount cfg
+      chunkId = chunkIdFromCoord (ChunkCoord 0 0)
+      ChunkId chunkKey = chunkId
+      climate = ClimateChunk
+        { ccTempAvg = U.replicate n 0.5
+        , ccPrecipAvg = U.replicate n 0.4
+        , ccWindDirAvg = U.replicate n 0.2
+        , ccWindSpdAvg = U.replicate n 0.3
+        , ccHumidityAvg = U.replicate n 0.7
+        , ccTempRange = U.replicate n 0.1
+        , ccPrecipSeasonality = U.replicate n 0.25
+        }
+      normals = weatherNormalsChunkFromClimate defaultWeatherConfig climate
+      normalsOverlay = Overlay
+        { ovSchema = weatherNormalsOverlaySchema
+        , ovData = DenseData (IntMap.singleton chunkKey (weatherNormalsChunkToOverlay normals))
+        , ovProvenance = OverlayProvenance
+            { opSeed = 0
+            , opVersion = 1
+            , opSource = "weather_normals"
+            , opSchedule = Nothing
+            }
+        }
+      snap = TerrainSnapshot
+        1
+        0
+        0
+        0
+        1
+        (wcChunkSize cfg)
+        (IntMap.singleton chunkKey (emptyTerrainChunk cfg))
+        mempty
+        mempty
+        mempty
+        mempty
+        mempty
+        mempty
+        mempty
+        mempty
+        (insertOverlay normalsOverlay emptyOverlayStore)
+        defaultTerrainGeoContext
+  writeTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx)) snap
+  pure chunkKey
+
 writeReadyTerrainData :: CommandContext -> IO TerrainSnapshot
 writeReadyTerrainData ctx = do
   let handles = ccActorHandles ctx
@@ -1747,6 +1850,10 @@ valueHasKey _ _ = False
 nonEmptyArray :: Value -> Bool
 nonEmptyArray (Array values) = not (null (toList values))
 nonEmptyArray _ = False
+
+isArrayValue :: Maybe Value -> Bool
+isArrayValue (Just (Array _)) = True
+isArrayValue _ = False
 
 valueHasNodesAndEdges :: Value -> Bool
 valueHasNodesAndEdges value = valueHasKey "nodes" value && valueHasKey "edges" value

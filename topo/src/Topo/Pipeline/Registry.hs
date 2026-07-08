@@ -189,10 +189,10 @@ docForBuiltin sid = case sid of
     ["climate", "biome", "vegetation"]
     []
     ["Pseudo-stage for diagnostics; concrete runs appear as repeated climate/biome/feedback stages."]
-  StageWeather -> doc sid "Weather" "Initializes weather overlays and weather tick state for the generated world." "initWeather"
+  StageWeather -> doc sid "Weather" "Initializes weather and generated-normal overlays for the generated world." "initWeather"
     ["world.weather"]
-    ["weather", "weather_snapshot", "weather_timeline"]
-    ["weather"]
+    ["weather", "weather_normals", "weather_snapshot", "weather_timeline"]
+    ["weather", "weather_normals"]
     ["Requires climate and biomes so weather starts from classified terrain."]
   StageBaseHeight -> fromMaybe (fallbackDoc sid) (stageDocFor StageBaseHeight)
   StageTectonics -> fromMaybe (fallbackDoc sid) (stageDocFor StageTectonics)

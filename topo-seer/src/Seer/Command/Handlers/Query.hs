@@ -30,6 +30,7 @@ import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 import Topo.Mesh (Mesh(..), meshPatch)
 import Topo.Sample (TerrainSampleReal(..), convertSample, sampleTerrain)
 import Topo.World (TerrainWorld(..))
+import Topo.Weather (WeatherNormalsChunk(..), getWeatherNormalsChunkFromStore)
 import Topo.Types
   ( TerrainChunk(..)
   , ClimateChunk(..)
@@ -46,6 +47,7 @@ import Topo.Types
   , Vec3(..)
   , WorldConfig(..)
   , WorldPos(..)
+  , ChunkId(..)
   , biomeIdToCode
   , biomeIdFromCode
   , plateBoundaryToCode
@@ -480,6 +482,19 @@ exportField cid tc snap field = (Key.fromText field, val)
       "cloud_cover_low" -> weatherJson wcCloudCoverLow
       "cloud_cover_mid" -> weatherJson wcCloudCoverMid
       "cloud_cover_high" -> weatherJson wcCloudCoverHigh
+      "normal_temperature" -> normalsJson wncTemp
+      "normal_humidity" -> normalsJson wncHumidity
+      "normal_wind_dir" -> normalsJson wncWindDir
+      "normal_wind_speed" -> normalsJson wncWindSpd
+      "normal_precipitation" -> normalsJson wncPrecip
+      "normal_cloud_cover" -> normalsJson wncCloudCover
+      "normal_cloud_water" -> normalsJson wncCloudWater
+      "normal_cloud_cover_low" -> normalsJson wncCloudCoverLow
+      "normal_cloud_cover_mid" -> normalsJson wncCloudCoverMid
+      "normal_cloud_cover_high" -> normalsJson wncCloudCoverHigh
+      "normal_cloud_water_low" -> normalsJson wncCloudWaterLow
+      "normal_cloud_water_mid" -> normalsJson wncCloudWaterMid
+      "normal_cloud_water_high" -> normalsJson wncCloudWaterHigh
       "vegetation_cover" -> vegetationJson vegCover
       "vegetation_density" -> vegetationJson vegDensity
       "vegetation_albedo" -> vegetationJson vegAlbedo
@@ -493,6 +508,9 @@ exportField cid tc snap field = (Key.fromText field, val)
     weatherJson accessor = case IntMap.lookup cid (tsWeatherChunks snap) of
       Nothing -> Null
       Just wc -> Aeson.toJSON (U.toList (accessor wc))
+    normalsJson accessor = case getWeatherNormalsChunkFromStore (ChunkId cid) (tsOverlayStore snap) of
+      Nothing -> Null
+      Just normals -> Aeson.toJSON (U.toList (accessor normals))
     vegetationJson accessor = case IntMap.lookup cid (tsVegetationChunks snap) of
       Nothing -> Null
       Just vc -> Aeson.toJSON (U.toList (accessor vc))

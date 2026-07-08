@@ -63,6 +63,7 @@ library
       Topo.Climate.Precipitation
       Topo.BiomeConfig
       Topo.Weather
+      Topo.Weather.Normals
       Topo.Math
       Topo.Grid.Diffusion
       Topo.Grid.HexDirection

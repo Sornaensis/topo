@@ -20,13 +20,14 @@ import Topo.Types
 import Topo.Simulation.Schedule (initialScheduleAt)
 import Topo.Weather.Config (WeatherConfig(..), weatherScheduleDecl, weatherSeasonalPhase)
 import Topo.Weather.Grid (weatherChunkToOverlay, weatherOverlaySchema)
+import Topo.Weather.Normals (weatherNormalsOverlayForWorld)
 import Topo.World (TerrainWorld(..))
 
 -- | Initialise weather overlay from climate fields without stochastic
 -- jitter.
 initWeatherStage :: WeatherConfig -> PipelineStage
 initWeatherStage cfg = PipelineStage StageWeather "initWeather" "initWeather" Nothing [] Nothing $ do
-  logInfo "initWeather: deriving initial weather from climate"
+  logInfo "initWeather: deriving initial weather and generated normals from climate"
   modifyWorldP $ \world ->
     let config = twConfig world
         climateMap = twClimate world
@@ -61,7 +62,9 @@ initWeatherStage cfg = PipelineStage StageWeather "initWeather" "initWeather" No
               , opSchedule = Just (initialScheduleAt (wtTick worldTime) (weatherScheduleDecl cfg))
               }
           }
-        overlays' = insertOverlay weatherOverlay (twOverlays world)
+        normalsOverlay = weatherNormalsOverlayForWorld cfg world
+        overlays' = insertOverlay normalsOverlay $
+          insertOverlay weatherOverlay (twOverlays world)
     in world { twOverlays = overlays' }
 
 buildInitialWeatherChunk
