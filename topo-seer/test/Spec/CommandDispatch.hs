@@ -52,8 +52,13 @@ import Actor.SnapshotReceiver
   )
 import Actor.Terrain (Terrain, TerrainReplyOps)
 import Actor.UI
-  ( Ui
+  ( BaseViewMode(..)
+  , LayeredViewState(..)
+  , SkyOverlayMode(..)
+  , Ui
   , UiState(..)
+  , ViewMode(..)
+  , WeatherBasis(..)
   , getUiSnapshot
   , newUiSnapshotRef
   , setUiDayNightEnabled
@@ -1202,6 +1207,66 @@ spec = describe "CommandDispatch" $ do
       srSuccess rsp `shouldBe` True
       ui <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
       (Map.lookup "example" (uiPluginParams ui) >>= Map.lookup "enabled") `shouldBe` Just (Bool False)
+
+  describe "click_widget layered view controls" $ do
+    it "selects base view, weather overlay, and basis independently" $ withCtx $ \ctx -> do
+      let uiH = ahUiHandle (ccActorHandles ctx)
+      baseRsp <- dispatch ctx "click_widget" (object
+        [ "widget_id" .= ("WidgetViewBaseBiome" :: Text) ])
+      srSuccess baseRsp `shouldBe` True
+      (awaitTrue 50 $ do
+        ui <- getUiSnapshot uiH
+        pure (lvsBaseView (uiViewSelection ui) == BaseViewBiome))
+        `shouldReturn` True
+
+      overlayRsp <- dispatch ctx "click_widget" (object
+        [ "widget_id" .= ("WidgetViewOverlayTemperature" :: Text) ])
+      srSuccess overlayRsp `shouldBe` True
+      (awaitTrue 50 $ do
+        ui <- getUiSnapshot uiH
+        pure (lvsBaseView (uiViewSelection ui) == BaseViewBiome
+          && lvsSkyOverlay (uiViewSelection ui) == Just SkyOverlayWeatherTemperature))
+        `shouldReturn` True
+
+      basisRsp <- dispatch ctx "click_widget" (object
+        [ "widget_id" .= ("WidgetViewBasisAverage" :: Text) ])
+      srSuccess basisRsp `shouldBe` True
+      (awaitTrue 50 $ do
+        ui <- getUiSnapshot uiH
+        pure (lvsBaseView (uiViewSelection ui) == BaseViewBiome
+          && lvsSkyOverlay (uiViewSelection ui) == Just SkyOverlayWeatherTemperature
+          && lvsWeatherBasis (uiViewSelection ui) == WeatherBasisAverage))
+        `shouldReturn` True
+
+    it "keeps legacy weather widget ids accepted as full-mode compatibility" $ withCtx $ \ctx -> do
+      let uiH = ahUiHandle (ccActorHandles ctx)
+      seedRsp <- dispatch ctx "click_widget" (object
+        [ "widget_id" .= ("WidgetViewBaseBiome" :: Text) ])
+      srSuccess seedRsp `shouldBe` True
+      overlayRsp <- dispatch ctx "click_widget" (object
+        [ "widget_id" .= ("WidgetViewOverlayTemperature" :: Text) ])
+      srSuccess overlayRsp `shouldBe` True
+
+      rsp <- dispatch ctx "click_widget" (object
+        [ "widget_id" .= ("WidgetViewPrecipCurrent" :: Text) ])
+      srSuccess rsp `shouldBe` True
+      (awaitTrue 50 $ do
+        ui <- getUiSnapshot uiH
+        pure (uiViewMode ui == ViewPrecipCurrent
+          && lvsBaseView (uiViewSelection ui) == BaseViewElevation
+          && lvsSkyOverlay (uiViewSelection ui) == Just SkyOverlayPrecipitation
+          && lvsWeatherBasis (uiViewSelection ui) == WeatherBasisCurrent))
+        `shouldReturn` True
+
+      clearRsp <- dispatch ctx "click_widget" (object
+        [ "widget_id" .= ("WidgetViewElevation" :: Text) ])
+      srSuccess clearRsp `shouldBe` True
+      (awaitTrue 50 $ do
+        ui <- getUiSnapshot uiH
+        pure (uiViewMode ui == ViewElevation
+          && lvsBaseView (uiViewSelection ui) == BaseViewElevation
+          && lvsSkyOverlay (uiViewSelection ui) == Nothing))
+        `shouldReturn` True
 
   describe "click_widget day/night" $ do
     it "routes the toggle through UiActions, bumps the snapshot version, and enqueues current atlas jobs" $ withCtx $ \ctx -> do

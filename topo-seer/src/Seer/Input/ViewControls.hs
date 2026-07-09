@@ -3,10 +3,12 @@ module Seer.Input.ViewControls
   ( ZoomSettings(..)
   , defaultZoomSettings
   , applyZoomAtCursor
+  , ViewHotkey(..)
+  , viewHotkeyForKey
   , viewModeForKey
   ) where
 
-import Actor.UI (UiState(..), ViewMode(..))
+import Actor.UI (BaseViewMode(..), SkyOverlayMode(..), UiState(..), ViewMode(..))
 import qualified SDL
 import Seer.Render.ZoomStage (maxCameraZoom)
 
@@ -51,7 +53,39 @@ applyZoomAtCursor settings uiSnap (mx, my) dy =
         )
   in (newZoom, newOffset)
 
--- | Map keycodes to view modes.
+-- | Layered View-tab hotkeys.  Number keys select base terrain views;
+-- letter keys control the independent sky/weather overlay selection.
+data ViewHotkey
+  = ViewHotkeySetBase !BaseViewMode
+  | ViewHotkeySetOverlay !(Maybe SkyOverlayMode)
+  | ViewHotkeyCycleOverlay
+  | ViewHotkeyCycleWeatherBasis
+  deriving (Eq, Show)
+
+viewHotkeyForKey :: SDL.Keycode -> Maybe ViewHotkey
+viewHotkeyForKey key =
+  case key of
+    SDL.Keycode1 -> Just (ViewHotkeySetBase BaseViewElevation)
+    SDL.Keycode2 -> Just (ViewHotkeySetBase BaseViewBiome)
+    SDL.Keycode3 -> Just (ViewHotkeySetBase BaseViewMoisture)
+    SDL.Keycode4 -> Just (ViewHotkeySetBase BaseViewVegetation)
+    SDL.Keycode5 -> Just (ViewHotkeySetBase BaseViewTerrainForm)
+    SDL.Keycode6 -> Just (ViewHotkeySetBase BaseViewPlateId)
+    SDL.Keycode7 -> Just (ViewHotkeySetBase BaseViewPlateBoundary)
+    SDL.Keycode8 -> Just (ViewHotkeySetBase BaseViewPlateHardness)
+    SDL.Keycode9 -> Just (ViewHotkeySetBase BaseViewPlateCrust)
+    SDL.Keycode0 -> Just (ViewHotkeySetBase BaseViewPlateAge)
+    SDL.KeycodeH -> Just (ViewHotkeySetBase BaseViewPlateHeight)
+    SDL.KeycodeV -> Just (ViewHotkeySetBase BaseViewPlateVelocity)
+    SDL.KeycodeN -> Just (ViewHotkeySetOverlay Nothing)
+    SDL.KeycodeT -> Just (ViewHotkeySetOverlay (Just SkyOverlayWeatherTemperature))
+    SDL.KeycodeP -> Just (ViewHotkeySetOverlay (Just SkyOverlayPrecipitation))
+    SDL.KeycodeK -> Just (ViewHotkeySetOverlay (Just SkyOverlayCloud))
+    SDL.KeycodeO -> Just ViewHotkeyCycleOverlay
+    SDL.KeycodeB -> Just ViewHotkeyCycleWeatherBasis
+    _ -> Nothing
+
+-- | Legacy one-dimensional number-key mapping retained for compatibility.
 viewModeForKey :: SDL.Keycode -> Maybe ViewMode
 viewModeForKey key =
   case key of

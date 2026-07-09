@@ -326,7 +326,9 @@ drawUiLabels renderer fontCache ui layout = do
       seedLabel = configSeedLabelRect layout
       seedValue = configSeedValueRect layout
       seedRandom = configSeedRandomRect layout
-      viewRects = leftViewRects layout
+      baseViewRects = leftBaseViewRects layout
+      weatherOverlayRects = leftWeatherOverlayRects layout
+      weatherBasisRects = leftWeatherBasisRects layout
       logHeader = logHeaderRect layout
       labelColor = textPrimary
   let configLabel = if uiShowConfig ui then ">>" else "<<"
@@ -349,24 +351,37 @@ drawUiLabels renderer fontCache ui layout = do
           drawCentered fontCache labelColor seedValue seedText
           drawCentered fontCache labelColor buttonRect "Generate"
         LeftView -> do
-          let viewLabels =
-                [ "Elevation", "Biome", "Avg Temp", "Cur Temp"
-                , "Avg Precip", "Cur Precip", "Cur Cloud", "Typ Cloud"
-                , "Moisture", "Vegetation", "Terr. Form", "Plate ID"
-                , "Boundary", "Hardness", "Crust", "Age"
-                , "Plt. Height", "Plt. Vel."
+          let baseLabels =
+                [ "Elevation", "Biome", "Moisture", "Vegetation"
+                , "Terr. Form", "Plate ID", "Boundary", "Hardness"
+                , "Crust", "Age", "Plt. Height", "Plt. Vel."
                 ]
+              overlayLabels = ["Overlay Off", "Temp", "Precip", "Cloud"]
+              basisLabels = ["Average", "Current"]
               scrollY = uiLeftViewScroll ui
               shiftY (Rect (V2 rx ry, V2 rw rh)) = Rect (V2 rx (ry - scrollY), V2 rw rh)
-              scrolledViewRects = map shiftY viewRects
+              scrolledBaseRects = map shiftY baseViewRects
+              scrolledOverlayRects = map shiftY weatherOverlayRects
+              scrolledBasisRects = map shiftY weatherBasisRects
               Rect (V2 lpx _, V2 lpw _) = leftPanelRect layout
               Rect (V2 _ lpy, V2 _ lpH) = leftPanelRect layout
               ctop = leftControlsTop layout
               clipR = Rect (V2 lpx ctop, V2 lpw (lpy + lpH - ctop))
+              sectionLabel y label = drawTextLine fontCache (V2 (lpx + 12) (y - scrollY)) labelColor label
+              sectionY rects = case rects of
+                Rect (V2 _ y, _) : _ -> y - 16
+                [] -> ctop
           SDL.rendererClipRect renderer SDL.$= Just (rectToSDL clipR)
-          mapM_ (\(rect, label) -> drawCentered fontCache labelColor rect label) (zip scrolledViewRects viewLabels)
+          sectionLabel (sectionY baseViewRects) "Base / terrain view"
+          mapM_ (\(rect, label) -> drawCentered fontCache labelColor rect label) (zip scrolledBaseRects baseLabels)
+          sectionLabel (sectionY weatherOverlayRects) "Weather / sky overlay"
+          mapM_ (\(rect, label) -> drawCentered fontCache labelColor rect label) (zip scrolledOverlayRects overlayLabels)
+          sectionLabel (sectionY weatherBasisRects) "Weather basis"
+          mapM_ (\(rect, label) -> drawCentered fontCache labelColor rect label) (zip scrolledBasisRects basisLabels)
           let dnLabel = if uiDayNightEnabled ui then "Day/Night ON" else "Day/Night OFF"
           drawCentered fontCache labelColor (shiftY (dayNightToggleRect layout)) dnLabel
+          let (op, _on, _fp, _fn) = overlayViewRects layout
+          sectionLabel (sectionY [op]) "Plugin overlays"
           SDL.rendererClipRect renderer SDL.$= Nothing
   drawConfigLabels renderer fontCache ui layout
 

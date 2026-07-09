@@ -92,6 +92,24 @@ componentForWidget wid = case wid of
   WidgetChunkMinus -> componentLeftPanel
   WidgetChunkPlus -> componentLeftPanel
 
+  WidgetViewBaseElevation -> componentViewPanel
+  WidgetViewBaseBiome -> componentViewPanel
+  WidgetViewBaseMoisture -> componentViewPanel
+  WidgetViewBaseVegetation -> componentViewPanel
+  WidgetViewBaseTerrainForm -> componentViewPanel
+  WidgetViewBasePlateId -> componentViewPanel
+  WidgetViewBasePlateBoundary -> componentViewPanel
+  WidgetViewBasePlateHardness -> componentViewPanel
+  WidgetViewBasePlateCrust -> componentViewPanel
+  WidgetViewBasePlateAge -> componentViewPanel
+  WidgetViewBasePlateHeight -> componentViewPanel
+  WidgetViewBasePlateVelocity -> componentViewPanel
+  WidgetViewOverlayNone -> componentViewPanel
+  WidgetViewOverlayTemperature -> componentViewPanel
+  WidgetViewOverlayPrecipitation -> componentViewPanel
+  WidgetViewOverlayCloud -> componentViewPanel
+  WidgetViewBasisAverage -> componentViewPanel
+  WidgetViewBasisCurrent -> componentViewPanel
   WidgetViewElevation -> componentViewPanel
   WidgetViewBiome -> componentViewPanel
   WidgetViewClimate -> componentViewPanel

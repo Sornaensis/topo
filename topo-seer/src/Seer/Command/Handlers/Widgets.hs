@@ -33,11 +33,16 @@ import Actor.Terrain (TerrainReplyOps)
 import Actor.UiActions (UiAction(..), UiActionRequest(..), submitUiAction)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.UI.State
-  ( ConfigTab(..)
+  ( BaseViewMode(..)
+  , ConfigTab(..)
   , DataBrowserState(..)
+  , LayeredViewState(..)
   , LeftTab(..)
+  , SkyOverlayMode(..)
   , UiState(..)
   , ViewMode(..)
+  , WeatherBasis(..)
+  , effectiveViewSelection
   , getUiSnapshot
   , readUiSnapshotRef
   )
@@ -102,6 +107,24 @@ widgetIdToText wid = case wid of
   WidgetConfigPresetLoad       -> "WidgetConfigPresetLoad"
   WidgetConfigReset            -> "WidgetConfigReset"
   WidgetConfigRevert           -> "WidgetConfigRevert"
+  WidgetViewBaseElevation      -> "WidgetViewBaseElevation"
+  WidgetViewBaseBiome          -> "WidgetViewBaseBiome"
+  WidgetViewBaseMoisture       -> "WidgetViewBaseMoisture"
+  WidgetViewBaseVegetation     -> "WidgetViewBaseVegetation"
+  WidgetViewBaseTerrainForm    -> "WidgetViewBaseTerrainForm"
+  WidgetViewBasePlateId        -> "WidgetViewBasePlateId"
+  WidgetViewBasePlateBoundary  -> "WidgetViewBasePlateBoundary"
+  WidgetViewBasePlateHardness  -> "WidgetViewBasePlateHardness"
+  WidgetViewBasePlateCrust     -> "WidgetViewBasePlateCrust"
+  WidgetViewBasePlateAge       -> "WidgetViewBasePlateAge"
+  WidgetViewBasePlateHeight    -> "WidgetViewBasePlateHeight"
+  WidgetViewBasePlateVelocity  -> "WidgetViewBasePlateVelocity"
+  WidgetViewOverlayNone        -> "WidgetViewOverlayNone"
+  WidgetViewOverlayTemperature -> "WidgetViewOverlayTemperature"
+  WidgetViewOverlayPrecipitation -> "WidgetViewOverlayPrecipitation"
+  WidgetViewOverlayCloud       -> "WidgetViewOverlayCloud"
+  WidgetViewBasisAverage       -> "WidgetViewBasisAverage"
+  WidgetViewBasisCurrent       -> "WidgetViewBasisCurrent"
   WidgetViewElevation          -> "WidgetViewElevation"
   WidgetViewBiome              -> "WidgetViewBiome"
   WidgetViewClimate            -> "WidgetViewClimate"
@@ -277,6 +300,24 @@ nullaryWidgetMap = Map.fromList
   , ("WidgetConfigPresetLoad",  WidgetConfigPresetLoad)
   , ("WidgetConfigReset",       WidgetConfigReset)
   , ("WidgetConfigRevert",      WidgetConfigRevert)
+  , ("WidgetViewBaseElevation", WidgetViewBaseElevation)
+  , ("WidgetViewBaseBiome", WidgetViewBaseBiome)
+  , ("WidgetViewBaseMoisture", WidgetViewBaseMoisture)
+  , ("WidgetViewBaseVegetation", WidgetViewBaseVegetation)
+  , ("WidgetViewBaseTerrainForm", WidgetViewBaseTerrainForm)
+  , ("WidgetViewBasePlateId", WidgetViewBasePlateId)
+  , ("WidgetViewBasePlateBoundary", WidgetViewBasePlateBoundary)
+  , ("WidgetViewBasePlateHardness", WidgetViewBasePlateHardness)
+  , ("WidgetViewBasePlateCrust", WidgetViewBasePlateCrust)
+  , ("WidgetViewBasePlateAge", WidgetViewBasePlateAge)
+  , ("WidgetViewBasePlateHeight", WidgetViewBasePlateHeight)
+  , ("WidgetViewBasePlateVelocity", WidgetViewBasePlateVelocity)
+  , ("WidgetViewOverlayNone", WidgetViewOverlayNone)
+  , ("WidgetViewOverlayTemperature", WidgetViewOverlayTemperature)
+  , ("WidgetViewOverlayPrecipitation", WidgetViewOverlayPrecipitation)
+  , ("WidgetViewOverlayCloud", WidgetViewOverlayCloud)
+  , ("WidgetViewBasisAverage", WidgetViewBasisAverage)
+  , ("WidgetViewBasisCurrent", WidgetViewBasisCurrent)
   , ("WidgetViewElevation",     WidgetViewElevation)
   , ("WidgetViewBiome",         WidgetViewBiome)
   , ("WidgetViewClimate",       WidgetViewClimate)
@@ -391,6 +432,21 @@ executeWidgetClick ctx wid = do
   let dataBrowserResult message action = do
         result <- applyDataBrowserClick ctx uiSnap action
         pure (result *> Right message)
+      setBase baseMode = do
+        submitAction ctx (UiActionSetBaseViewMode baseMode)
+        pure $ Right "base view set"
+      setOverlay overlayMode = do
+        submitAction ctx (UiActionSetSkyOverlayMode overlayMode)
+        pure $ Right "sky/weather overlay set"
+      setBasis basis =
+        if weatherBasisEnabled uiSnap
+          then do
+            submitAction ctx (UiActionSetWeatherBasis basis)
+            pure $ Right "weather basis set"
+          else pure $ Left "weather basis requires an active builtin weather overlay"
+      setLegacyView mode = do
+        submitAction ctx (UiActionSetViewMode mode)
+        pure $ Right "view mode set"
   case wid of
     -- ----- Left panel & tabs -----
     WidgetLeftToggle -> do
@@ -450,25 +506,45 @@ executeWidgetClick ctx wid = do
       dataResult <- applyDataBrowserClick ctx uiSnap DataBrowser.DataBrowserLoadPlugins
       pure (dataResult *> tabResult)
 
-    -- ----- View modes -----
-    WidgetViewElevation     -> setView ctx ViewElevation
-    WidgetViewBiome         -> setView ctx ViewBiome
-    WidgetViewClimate       -> setView ctx ViewClimate
-    WidgetViewWeather       -> setView ctx ViewWeather
-    WidgetViewMoisture      -> setView ctx ViewMoisture
-    WidgetViewPrecip        -> setView ctx ViewPrecip
-    WidgetViewPrecipCurrent -> setView ctx ViewPrecipCurrent
-    WidgetViewVegetation    -> setView ctx ViewVegetation
-    WidgetViewTerrainForm   -> setView ctx ViewTerrainForm
-    WidgetViewPlateId       -> setView ctx ViewPlateId
-    WidgetViewPlateBoundary -> setView ctx ViewPlateBoundary
-    WidgetViewPlateHardness -> setView ctx ViewPlateHardness
-    WidgetViewPlateCrust    -> setView ctx ViewPlateCrust
-    WidgetViewPlateAge      -> setView ctx ViewPlateAge
-    WidgetViewPlateHeight   -> setView ctx ViewPlateHeight
-    WidgetViewPlateVelocity -> setView ctx ViewPlateVelocity
-    WidgetViewCloud          -> setView ctx ViewCloud
-    WidgetViewCloudTypical   -> setView ctx ViewCloudTypical
+    -- ----- Layered View tab controls -----
+    WidgetViewBaseElevation -> setBase BaseViewElevation
+    WidgetViewBaseBiome -> setBase BaseViewBiome
+    WidgetViewBaseMoisture -> setBase BaseViewMoisture
+    WidgetViewBaseVegetation -> setBase BaseViewVegetation
+    WidgetViewBaseTerrainForm -> setBase BaseViewTerrainForm
+    WidgetViewBasePlateId -> setBase BaseViewPlateId
+    WidgetViewBasePlateBoundary -> setBase BaseViewPlateBoundary
+    WidgetViewBasePlateHardness -> setBase BaseViewPlateHardness
+    WidgetViewBasePlateCrust -> setBase BaseViewPlateCrust
+    WidgetViewBasePlateAge -> setBase BaseViewPlateAge
+    WidgetViewBasePlateHeight -> setBase BaseViewPlateHeight
+    WidgetViewBasePlateVelocity -> setBase BaseViewPlateVelocity
+    WidgetViewOverlayNone -> setOverlay Nothing
+    WidgetViewOverlayTemperature -> setOverlay (Just SkyOverlayWeatherTemperature)
+    WidgetViewOverlayPrecipitation -> setOverlay (Just SkyOverlayPrecipitation)
+    WidgetViewOverlayCloud -> setOverlay (Just SkyOverlayCloud)
+    WidgetViewBasisAverage -> setBasis WeatherBasisAverage
+    WidgetViewBasisCurrent -> setBasis WeatherBasisCurrent
+
+    -- Legacy single-mode widget IDs are still accepted by click_widget.
+    WidgetViewElevation     -> setLegacyView ViewElevation
+    WidgetViewBiome         -> setLegacyView ViewBiome
+    WidgetViewClimate       -> setLegacyView ViewClimate
+    WidgetViewWeather       -> setLegacyView ViewWeather
+    WidgetViewMoisture      -> setLegacyView ViewMoisture
+    WidgetViewPrecip        -> setLegacyView ViewPrecip
+    WidgetViewPrecipCurrent -> setLegacyView ViewPrecipCurrent
+    WidgetViewVegetation    -> setLegacyView ViewVegetation
+    WidgetViewTerrainForm   -> setLegacyView ViewTerrainForm
+    WidgetViewPlateId       -> setLegacyView ViewPlateId
+    WidgetViewPlateBoundary -> setLegacyView ViewPlateBoundary
+    WidgetViewPlateHardness -> setLegacyView ViewPlateHardness
+    WidgetViewPlateCrust    -> setLegacyView ViewPlateCrust
+    WidgetViewPlateAge      -> setLegacyView ViewPlateAge
+    WidgetViewPlateHeight   -> setLegacyView ViewPlateHeight
+    WidgetViewPlateVelocity -> setLegacyView ViewPlateVelocity
+    WidgetViewCloud          -> setLegacyView ViewCloud
+    WidgetViewCloudTypical   -> setLegacyView ViewCloudTypical
 
     -- ----- Day/night toggle -----
     WidgetDayNightToggle -> do
@@ -671,10 +747,11 @@ setTab uiH tab = do
     tabToText ConfigPipeline = "pipeline"
     tabToText ConfigData     = "data"
 
-setView :: CommandContext -> ViewMode -> IO (Either Text Text)
-setView ctx vm = do
-  submitAction ctx (UiActionSetViewMode vm)
-  pure $ Right "view mode set"
+weatherBasisEnabled :: UiState -> Bool
+weatherBasisEnabled uiSnap = case lvsSkyOverlay (effectiveViewSelection uiSnap) of
+  Just (SkyOverlayPlugin _ _) -> False
+  Just _ -> True
+  Nothing -> False
 
 submitAction :: CommandContext -> UiAction -> IO ()
 submitAction ctx action = do
@@ -805,24 +882,24 @@ handleListWidgets ctx reqId _params = do
         , ("WidgetConfigRevert",      configOpen)
         ]
       viewModes = filter snd
-        [ ("WidgetViewElevation",     leftView)
-        , ("WidgetViewBiome",         leftView)
-        , ("WidgetViewClimate",       leftView)
-        , ("WidgetViewWeather",       leftView)
-        , ("WidgetViewCloud",         leftView)
-        , ("WidgetViewCloudTypical",  leftView)
-        , ("WidgetViewMoisture",      leftView)
-        , ("WidgetViewPrecip",        leftView)
-        , ("WidgetViewPrecipCurrent", leftView)
-        , ("WidgetViewVegetation",    leftView)
-        , ("WidgetViewTerrainForm",   leftView)
-        , ("WidgetViewPlateId",       leftView)
-        , ("WidgetViewPlateBoundary", leftView)
-        , ("WidgetViewPlateHardness", leftView)
-        , ("WidgetViewPlateCrust",    leftView)
-        , ("WidgetViewPlateAge",      leftView)
-        , ("WidgetViewPlateHeight",   leftView)
-        , ("WidgetViewPlateVelocity", leftView)
+        [ ("WidgetViewBaseElevation", leftView)
+        , ("WidgetViewBaseBiome", leftView)
+        , ("WidgetViewBaseMoisture", leftView)
+        , ("WidgetViewBaseVegetation", leftView)
+        , ("WidgetViewBaseTerrainForm", leftView)
+        , ("WidgetViewBasePlateId", leftView)
+        , ("WidgetViewBasePlateBoundary", leftView)
+        , ("WidgetViewBasePlateHardness", leftView)
+        , ("WidgetViewBasePlateCrust", leftView)
+        , ("WidgetViewBasePlateAge", leftView)
+        , ("WidgetViewBasePlateHeight", leftView)
+        , ("WidgetViewBasePlateVelocity", leftView)
+        , ("WidgetViewOverlayNone", leftView)
+        , ("WidgetViewOverlayTemperature", leftView)
+        , ("WidgetViewOverlayPrecipitation", leftView)
+        , ("WidgetViewOverlayCloud", leftView)
+        , ("WidgetViewBasisAverage", leftView)
+        , ("WidgetViewBasisCurrent", leftView)
         , ("WidgetDayNightToggle",    leftView)
         , ("WidgetViewOverlayPrev",   leftView)
         , ("WidgetViewOverlayNext",   leftView)
@@ -994,6 +1071,24 @@ widgetState uiSnap wid = object $ base ++ specific
         [ "active" .= uiSimAutoTick uiSnap ]
       WidgetDayNightToggle ->
         [ "active" .= uiDayNightEnabled uiSnap ]
+      WidgetViewBaseElevation -> baseActive BaseViewElevation
+      WidgetViewBaseBiome -> baseActive BaseViewBiome
+      WidgetViewBaseMoisture -> baseActive BaseViewMoisture
+      WidgetViewBaseVegetation -> baseActive BaseViewVegetation
+      WidgetViewBaseTerrainForm -> baseActive BaseViewTerrainForm
+      WidgetViewBasePlateId -> baseActive BaseViewPlateId
+      WidgetViewBasePlateBoundary -> baseActive BaseViewPlateBoundary
+      WidgetViewBasePlateHardness -> baseActive BaseViewPlateHardness
+      WidgetViewBasePlateCrust -> baseActive BaseViewPlateCrust
+      WidgetViewBasePlateAge -> baseActive BaseViewPlateAge
+      WidgetViewBasePlateHeight -> baseActive BaseViewPlateHeight
+      WidgetViewBasePlateVelocity -> baseActive BaseViewPlateVelocity
+      WidgetViewOverlayNone -> overlayActive Nothing
+      WidgetViewOverlayTemperature -> overlayActive (Just SkyOverlayWeatherTemperature)
+      WidgetViewOverlayPrecipitation -> overlayActive (Just SkyOverlayPrecipitation)
+      WidgetViewOverlayCloud -> overlayActive (Just SkyOverlayCloud)
+      WidgetViewBasisAverage -> basisState WeatherBasisAverage
+      WidgetViewBasisCurrent -> basisState WeatherBasisCurrent
       WidgetPipelineToggle name ->
         case parseStageId name of
           Just sid -> [ "enabled" .= not (Set.member sid (uiDisabledStages uiSnap)) ]
@@ -1007,3 +1102,10 @@ widgetState uiSnap wid = object $ base ++ specific
       WidgetDataDeleteBtn ->
         [ "confirm_shown" .= dbsDeleteConfirm (uiDataBrowser uiSnap) ]
       _ -> []
+    selection = effectiveViewSelection uiSnap
+    baseActive baseMode = [ "active" .= (lvsBaseView selection == baseMode) ]
+    overlayActive overlayMode = [ "active" .= (lvsSkyOverlay selection == overlayMode) ]
+    basisState basis =
+      [ "active" .= (lvsWeatherBasis selection == basis && weatherBasisEnabled uiSnap)
+      , "enabled" .= weatherBasisEnabled uiSnap
+      ]

@@ -31,9 +31,13 @@ module UI.Layout
   , leftChunkMinusRect
   , leftChunkPlusRect
   , leftViewRects
+  , leftBaseViewRects
+  , leftWeatherOverlayRects
+  , leftWeatherBasisRects
   , leftViewRowCount
   , leftViewContentHeight
   , leftViewScrollMax
+  , leftViewContentClipRect
   , leftControlsTop
   , overlayViewRects
   , overlayActionRects
@@ -383,64 +387,159 @@ leftSeedValueRect :: Layout -> Rect
 leftSeedValueRect layout =
   leftPanelSeedValueBounds (uiLeftPanelGeometry (layoutGeometry layout))
 
--- | Number of rows used by view-mode buttons (ceil(18/2) = 9).
--- | Total pixel height of the content in the left View tab
--- (view mode buttons + overlay selector rows).
+leftViewButtonHeight :: Int
+leftViewButtonHeight = 28
+
+leftViewButtonGap :: Int
+leftViewButtonGap = 8
+
+leftViewSectionHeaderHeight :: Int
+leftViewSectionHeaderHeight = 18
+
+leftViewSectionGap :: Int
+leftViewSectionGap = 8
+
+leftViewRowStride :: Int
+leftViewRowStride = leftViewButtonHeight + leftViewButtonGap
+
+-- | Number of rows used by base/terrain view buttons (ceil(12/2) = 6).
+leftViewRowCount :: Int
+leftViewRowCount = 6
+
+leftBaseViewRowCount :: Int
+leftBaseViewRowCount = leftViewRowCount
+
+leftWeatherOverlayRowCount :: Int
+leftWeatherOverlayRowCount = 2
+
+leftViewTwoColumnRects :: Int -> Int -> Layout -> [Rect]
+leftViewTwoColumnRects count top layout =
+  let Rect (V2 x _, V2 w _) = leftPanelRect layout
+      pad = 12
+      buttonW = (w - pad * 2 - leftViewButtonGap) `div` 2
+      gridPos i = (i `div` 2, i `mod` 2)
+      rect (row, col) = Rect
+        ( V2 (x + pad + col * (buttonW + leftViewButtonGap))
+             (top + row * leftViewRowStride)
+        , V2 buttonW leftViewButtonHeight
+        )
+  in map (rect . gridPos) [0 .. count - 1]
+
+leftViewFullWidthRectAt :: Int -> Layout -> Rect
+leftViewFullWidthRectAt top layout =
+  let Rect (V2 x _, V2 w _) = leftPanelRect layout
+      pad = 12
+  in Rect (V2 (x + pad) top, V2 (w - pad * 2) leftViewButtonHeight)
+
+leftBaseViewTop :: Layout -> Int
+leftBaseViewTop layout =
+  leftControlsTop layout + leftViewSectionHeaderHeight
+
+leftWeatherOverlaySectionTop :: Layout -> Int
+leftWeatherOverlaySectionTop layout =
+  leftBaseViewTop layout + leftBaseViewRowCount * leftViewRowStride + leftViewSectionGap
+
+leftWeatherOverlayTop :: Layout -> Int
+leftWeatherOverlayTop layout =
+  leftWeatherOverlaySectionTop layout + leftViewSectionHeaderHeight
+
+leftWeatherBasisSectionTop :: Layout -> Int
+leftWeatherBasisSectionTop layout =
+  leftWeatherOverlayTop layout + leftWeatherOverlayRowCount * leftViewRowStride + leftViewSectionGap
+
+leftWeatherBasisTop :: Layout -> Int
+leftWeatherBasisTop layout =
+  leftWeatherBasisSectionTop layout + leftViewSectionHeaderHeight
+
+leftDayNightTop :: Layout -> Int
+leftDayNightTop layout =
+  leftWeatherBasisTop layout + leftViewRowStride
+
+leftPluginOverlaySectionTop :: Layout -> Int
+leftPluginOverlaySectionTop layout =
+  leftDayNightTop layout + leftViewRowStride + leftViewSectionGap
+
+leftPluginOverlayTop :: Layout -> Int
+leftPluginOverlayTop layout =
+  leftPluginOverlaySectionTop layout + leftViewSectionHeaderHeight
+
+leftOverlayActionTop :: Layout -> Int
+leftOverlayActionTop layout =
+  leftPluginOverlayTop layout + 2 * leftViewRowStride + leftViewSectionGap
+
+-- | Base/terrain selector button rects in the left View panel.
+leftBaseViewRects :: Layout -> [Rect]
+leftBaseViewRects layout =
+  leftViewTwoColumnRects 12 (leftBaseViewTop layout) layout
+
+-- | Weather/sky overlay selector rects: off, temperature, precipitation, cloud.
+leftWeatherOverlayRects :: Layout -> [Rect]
+leftWeatherOverlayRects layout =
+  leftViewTwoColumnRects 4 (leftWeatherOverlayTop layout) layout
+
+-- | Weather basis selector rects: average/typical and current.
+leftWeatherBasisRects :: Layout -> [Rect]
+leftWeatherBasisRects layout =
+  leftViewTwoColumnRects 2 (leftWeatherBasisTop layout) layout
+
+-- | Compatibility alias for callers that still expect the old view rect list.
+leftViewRects :: Layout -> [Rect]
+leftViewRects = leftBaseViewRects
+
+-- | Total pixel height of the scrollable content in the left View tab.
 leftViewContentHeight :: Layout -> Int
 leftViewContentHeight layout =
-  leftPanelViewContentHeightPx (uiLeftPanelGeometry (layoutGeometry layout))
+  case reverse (overlayActionRects layout) of
+    lastRect : _ -> rectTop lastRect + rectHeight lastRect - leftControlsTop layout + leftViewButtonGap
+    [] -> 0
 
 -- | Maximum scroll offset for the left View tab content.
 -- Returns 0 when the content fits within the panel.
 leftViewScrollMax :: Layout -> Int
 leftViewScrollMax layout =
-  leftPanelViewScrollMaxPx (uiLeftPanelGeometry (layoutGeometry layout))
+  let Rect (_, V2 _ usable) = leftViewContentClipRect layout
+  in max 0 (leftViewContentHeight layout - usable)
 
-leftViewRowCount :: Int
-leftViewRowCount = 9
+-- | Screen-space clipping rect for scrollable left View tab content.
+leftViewContentClipRect :: Layout -> Rect
+leftViewContentClipRect layout =
+  let Rect (V2 x panelY, V2 w panelH) = leftPanelRect layout
+      top = leftControlsTop layout
+  in Rect (V2 x top, V2 w (panelY + panelH - top))
 
-leftViewRects :: Layout -> [Rect]
-leftViewRects layout =
-  leftPanelViewButtons (uiLeftPanelGeometry (layoutGeometry layout))
-
--- | Overlay selector button rects in the left View panel.
+-- | Plugin overlay selector button rects in the left View panel.
 --
 -- Returns @(overlayPrev, overlayNext, fieldPrev, fieldNext)@ positioned
--- below the view mode buttons.
+-- after the builtin base/overlay/weather-basis sections.
 overlayViewRects :: Layout -> (Rect, Rect, Rect, Rect)
 overlayViewRects layout =
-  overlayViewGeometryToTuple (leftPanelOverlayButtons (uiLeftPanelGeometry (layoutGeometry layout)))
+  case leftViewTwoColumnRects 4 (leftPluginOverlayTop layout) layout of
+    [overlayPrev, overlayNext, fieldPrev, fieldNext] -> (overlayPrev, overlayNext, fieldPrev, fieldNext)
+    _ -> error "overlayViewRects: expected four rects"
 
 -- | Overlay action button rects in the left View panel.
---
--- The buttons are placed after the base view grid, overlay selector rows,
--- and day/night toggle, in scrollable content space.
 overlayActionRects :: Layout -> [Rect]
 overlayActionRects layout =
   let Rect (V2 x _, V2 w _) = leftPanelRect layout
       pad = 12
-      gap = 8
-      buttonH = 28
-      buttonW = (w - pad * 2 - gap) `div` 2
+      buttonW = (w - pad * 2 - leftViewButtonGap) `div` 2
       fullW = w - pad * 2
-      rowStride = buttonH + gap
-      row0 = leftControlsTop layout + rowStride * (leftViewRowCount + 3)
-      row1 = row0 + rowStride
-      row2 = row1 + rowStride
+      row0 = leftOverlayActionTop layout
+      row1 = row0 + leftViewRowStride
+      row2 = row1 + leftViewRowStride
       leftX = x + pad
-      rightX = x + pad + buttonW + gap
-  in [ Rect (V2 leftX row0, V2 fullW buttonH)
-     , Rect (V2 leftX row1, V2 buttonW buttonH)
-     , Rect (V2 rightX row1, V2 buttonW buttonH)
-     , Rect (V2 leftX row2, V2 buttonW buttonH)
-     , Rect (V2 rightX row2, V2 buttonW buttonH)
+      rightX = x + pad + buttonW + leftViewButtonGap
+  in [ Rect (V2 leftX row0, V2 fullW leftViewButtonHeight)
+     , Rect (V2 leftX row1, V2 buttonW leftViewButtonHeight)
+     , Rect (V2 rightX row1, V2 buttonW leftViewButtonHeight)
+     , Rect (V2 leftX row2, V2 buttonW leftViewButtonHeight)
+     , Rect (V2 rightX row2, V2 buttonW leftViewButtonHeight)
      ]
 
--- | Day/night toggle button rect, positioned after the overlay selector rows
--- in the left View tab.
+-- | Day/night toggle button rect, positioned after the weather basis row.
 dayNightToggleRect :: Layout -> Rect
 dayNightToggleRect layout =
-  leftPanelDayNightToggleButton (uiLeftPanelGeometry (layoutGeometry layout))
+  leftViewFullWidthRectAt (leftDayNightTop layout) layout
 
 logPanelRect :: Layout -> Rect
 logPanelRect layout =

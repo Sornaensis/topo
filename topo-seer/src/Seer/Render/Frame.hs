@@ -248,7 +248,9 @@ renderFrame context = do
       chunkPlus = leftChunkPlusRect layout
       chunkValue = configChunkValueRect layout
       logFilters = logFilterRects layout
-      viewRects = leftViewRects layout
+      baseViewRects = leftBaseViewRects layout
+      weatherOverlayRects = leftWeatherOverlayRects layout
+      weatherBasisRects = leftWeatherBasisRects layout
       buttonLabel = if uiGenerating (rsUi snapshot) then V4 120 120 120 255 else V4 80 160 240 255
   tAfterLet <- getMonotonicTimeNSec
   SDL.rendererDrawColor renderer SDL.$= V4 r g b 255
@@ -447,11 +449,13 @@ renderFrame context = do
                 clipR = SDL.Rectangle (SDL.P (V2 (fromIntegral lpx) (fromIntegral ctop)))
                                       (V2 (fromIntegral lpw) (fromIntegral (lpy + lpH - ctop)))
                 shiftY dy (Rect (V2 rx ry, V2 rw rh)) = Rect (V2 rx (ry - dy), V2 rw rh)
-                scrolledViewRects = map (shiftY scrollY) viewRects
+                scrolledBaseRects = map (shiftY scrollY) baseViewRects
+                scrolledWeatherOverlayRects = map (shiftY scrollY) weatherOverlayRects
+                scrolledWeatherBasisRects = map (shiftY scrollY) weatherBasisRects
                 (op, on, fp, fn) = overlayViewRects layout
                 scrolledOR = (shiftY scrollY op, shiftY scrollY on, shiftY scrollY fp, shiftY scrollY fn)
             SDL.rendererClipRect renderer SDL.$= Just clipR
-            drawViewModeButtons renderer mode scrolledViewRects
+            drawViewModeButtons renderer (rsUi snapshot) scrolledBaseRects scrolledWeatherOverlayRects scrolledWeatherBasisRects
             drawDayNightToggle renderer (uiDayNightEnabled (rsUi snapshot)) (shiftY scrollY (dayNightToggleRect layout))
             drawOverlayButtons renderer fontCache (rsUi snapshot) scrolledOR
             drawOverlayActionButtons renderer fontCache (map (shiftY scrollY) (overlayActionRects layout))

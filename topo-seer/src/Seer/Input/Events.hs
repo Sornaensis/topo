@@ -13,10 +13,14 @@ import Actor.Log (LogSnapshot(..), getLogSnapshot, setLogCollapsed, setLogScroll
 import Actor.UI
   ( ConfigTab(..)
   , DataBrowserState(..)
+  , LayeredViewState(..)
   , LeftTab(..)
   , Ui
   , UiMenuMode(..)
+  , SkyOverlayMode(..)
   , UiState(..)
+  , WeatherBasis(..)
+  , effectiveViewSelection
   , getUiSnapshot
   , setUiConfigScroll
   , setUiContextHex
@@ -58,9 +62,10 @@ import Seer.Input.Context (DragState(..), InputContext(..), TooltipHover)
 import Seer.Input.Modal (handleModalListKey, handleModalTextKey, handleModalTextInput)
 import Seer.Input.Seed (bumpSeed, handleSeedKey, handleSeedTextInput)
 import Seer.Input.ViewControls
-  ( applyZoomAtCursor
+  ( ViewHotkey(..)
+  , applyZoomAtCursor
   , defaultZoomSettings
-  , viewModeForKey
+  , viewHotkeyForKey
   )
 import Seer.DataBrowser.Model (clearAdtSiblingEditValues)
 import Topo (ChunkCoord(..), ChunkId(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
@@ -164,17 +169,21 @@ handleEvent inputContext event = do
                         then hitTest activeRows scrolledPoint
                         else Nothing
                | otherwise = Nothing
-             -- Chrome widgets (screen-space): editor toolbar or reopen,
-             -- and view mode buttons when the view tab is active.
+             -- Chrome widgets are screen-space; scrolled View-tab widgets
+             -- share the rendered content clip so off-screen buttons do not
+             -- produce tooltips over the panel tabs/toggle.
              chromeWidgets =
-               (if editorActive editor
-                  then buildEditorWidgets hoverLayout (editorTool editor)
-                  else buildEditorReopenWidget hoverLayout)
-               ++ (if uiShowLeftPanel uiSnap && uiLeftTab uiSnap == LeftView
-                     then buildViewModeWidgets hoverLayout (uiLeftViewScroll uiSnap)
-                     else [])
+               if editorActive editor
+                 then buildEditorWidgets hoverLayout (editorTool editor)
+                 else buildEditorReopenWidget hoverLayout
+             viewHoverHit
+               | uiShowLeftPanel uiSnap
+                   && uiLeftTab uiSnap == LeftView
+                   && containsPoint (leftViewContentClipRect hoverLayout) point =
+                   hitTest (buildViewModeWidgets hoverLayout (uiLeftViewScroll uiSnap)) point
+               | otherwise = Nothing
              chromeHit = hitTest chromeWidgets point
-             hoverResult = sliderHit <|> chromeHit
+             hoverResult = sliderHit <|> viewHoverHit <|> chromeHit
          -- Record which widget the cursor is over and reset the
          -- deadline.  The actual tooltip is fired by
          -- 'tickTooltipHover' once wall-clock time passes the deadline.
@@ -363,8 +372,8 @@ handleEvent inputContext event = do
                                       logSnap <- getLogSnapshot logHandle
                                       setLogCollapsed logHandle (not (lsCollapsed logSnap))
                                     _ ->
-                                      case viewModeForKey keycode of
-                                        Just mode -> submitAction inputEnv (UiActionSetViewMode mode)
+                                      case viewHotkeyForKey keycode of
+                                        Just hotkey -> handleViewHotkey uiSnap2 hotkey
                                         Nothing -> pure ()
     _ -> pure ()
   where
@@ -470,6 +479,40 @@ handleEvent inputContext event = do
       uiSnap <- getUiSnapshot uiHandle
       let editor = uiEditor uiSnap
       setEditorActive (not (editorActive editor))
+
+    handleViewHotkey :: UiState -> ViewHotkey -> IO ()
+    handleViewHotkey uiSnap hotkey =
+      case hotkey of
+        ViewHotkeySetBase baseMode ->
+          submitAction inputEnv (UiActionSetBaseViewMode baseMode)
+        ViewHotkeySetOverlay overlayMode ->
+          submitAction inputEnv (UiActionSetSkyOverlayMode overlayMode)
+        ViewHotkeyCycleOverlay ->
+          submitAction inputEnv (UiActionSetSkyOverlayMode (nextBuiltinOverlay selection))
+        ViewHotkeyCycleWeatherBasis ->
+          when (weatherBasisEnabled selection) $
+            submitAction inputEnv (UiActionSetWeatherBasis (nextWeatherBasis (lvsWeatherBasis selection)))
+      where
+        selection = effectiveViewSelection uiSnap
+
+    nextBuiltinOverlay :: LayeredViewState -> Maybe SkyOverlayMode
+    nextBuiltinOverlay selection = case lvsSkyOverlay selection of
+      Nothing -> Just SkyOverlayWeatherTemperature
+      Just SkyOverlayWeatherTemperature -> Just SkyOverlayPrecipitation
+      Just SkyOverlayPrecipitation -> Just SkyOverlayCloud
+      Just SkyOverlayCloud -> Nothing
+      Just (SkyOverlayPlugin _ _) -> Just SkyOverlayWeatherTemperature
+
+    weatherBasisEnabled :: LayeredViewState -> Bool
+    weatherBasisEnabled selection = case lvsSkyOverlay selection of
+      Just (SkyOverlayPlugin _ _) -> False
+      Just _ -> True
+      Nothing -> False
+
+    nextWeatherBasis :: WeatherBasis -> WeatherBasis
+    nextWeatherBasis WeatherBasisAverage = WeatherBasisCurrent
+    nextWeatherBasis WeatherBasisCurrent = WeatherBasisAverage
+
     handleEditorKey :: EditorState -> SDL.Keycode -> IO ()
     handleEditorKey editor keycode = case keycode of
       SDL.KeycodeEscape ->

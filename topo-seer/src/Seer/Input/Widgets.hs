@@ -10,14 +10,19 @@ import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshot(..), appendLog, getLog
 import Data.Aeson (Value(..), object, (.=))
 
 import Actor.UI
-  ( ConfigTab(..)
+  ( BaseViewMode(..)
+  , ConfigTab(..)
   , DataBrowserState(..)
   , LeftTab(..)
   , Ui
   , UiMenuMode(..)
+  , SkyOverlayMode(..)
   , UiState(..)
   , ViewMode(..)
+  , WeatherBasis(..)
+  , LayeredViewState(..)
   , configRowCount
+  , effectiveViewSelection
   , getUiSnapshot
   , setUiConfigScroll
   , setUiContextHex
@@ -64,8 +69,6 @@ import Seer.Draw (seedMaxDigits)
 import Seer.Config.Snapshot (listSnapshots)
 import Seer.World.Persist (listWorlds)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
-import Seer.Input.ViewControls
-  ()
 import Topo.Pipeline.Stage (parseStageId)
 import qualified Seer.DataBrowser.AppService as DataBrowser
 import Seer.DataBrowser.Model (DataBrowserPageAction(..))
@@ -151,8 +154,10 @@ handleClick inputContext (SDL.P (V2 x y)) = do
           else widgetsAll
       isConfigSliderWidget = isJust . sliderDefForWidget
       (configSliderWidgets, nonSliderWidgets) = partition (isConfigSliderWidget . widgetId) widgets
+      leftPanelBounds = leftPanelRect layout
       inLeftViewPanel = uiShowLeftPanel uiSnap && uiLeftTab uiSnap == LeftView
-                        && containsPoint (leftPanelRect layout) point
+                        && containsPoint leftPanelBounds point
+      inLeftViewContent = inLeftViewPanel && containsPoint (leftViewContentClipRect layout) point
       leftViewAdjPoint = V2 (fromIntegral x) (fromIntegral y + uiLeftViewScroll uiSnap)
       (leftViewWidgets, otherWidgets) = partition (isLeftViewWidget . widgetId) nonSliderWidgets
       (pipelineWidgets, nonPipelineWidgets) = partition (isPipelineScrollWidget . widgetId) otherWidgets
@@ -162,10 +167,12 @@ handleClick inputContext (SDL.P (V2 x y)) = do
           then case hitTest configSliderWidgets scrollPoint <|> hitTest pipelineWidgets scrollPoint of
             Just wid -> Just wid
             Nothing ->
-              let viewHit = if inLeftViewPanel then hitTest leftViewWidgets leftViewAdjPoint else Nothing
+              let viewHit = if inLeftViewContent then hitTest leftViewWidgets leftViewAdjPoint else Nothing
               in viewHit <|> hitTest nonPipelineWidgets point
-          else if inLeftViewPanel
+          else if inLeftViewContent
             then hitTest leftViewWidgets leftViewAdjPoint <|> hitTest otherWidgets point
+            else if inLeftViewPanel
+              then hitTest otherWidgets point
             else hitTest widgets point
       configWidgetAllowed tab widget =
         case sliderDefForWidget (widgetId widget) of
@@ -222,24 +229,42 @@ handleClick inputContext (SDL.P (V2 x y)) = do
           ; Just wid
           | isBespokeConfigWidget wid ->
               handleBespokeConfigWidget layout wid scrollPoint whenConfigVisible uiSnap
-          ; Just WidgetViewElevation -> whenLeftView (submit (UiActionSetViewMode ViewElevation))
-          ; Just WidgetViewBiome -> whenLeftView (submit (UiActionSetViewMode ViewBiome))
-          ; Just WidgetViewClimate -> whenLeftView (submit (UiActionSetViewMode ViewClimate))
-          ; Just WidgetViewWeather -> whenLeftView (submit (UiActionSetViewMode ViewWeather))
-          ; Just WidgetViewMoisture -> whenLeftView (submit (UiActionSetViewMode ViewMoisture))
-          ; Just WidgetViewPrecip -> whenLeftView (submit (UiActionSetViewMode ViewPrecip))
-          ; Just WidgetViewPrecipCurrent -> whenLeftView (submit (UiActionSetViewMode ViewPrecipCurrent))
-          ; Just WidgetViewVegetation -> whenLeftView (submit (UiActionSetViewMode ViewVegetation))
-          ; Just WidgetViewTerrainForm -> whenLeftView (submit (UiActionSetViewMode ViewTerrainForm))
-          ; Just WidgetViewPlateId -> whenLeftView (submit (UiActionSetViewMode ViewPlateId))
-          ; Just WidgetViewPlateBoundary -> whenLeftView (submit (UiActionSetViewMode ViewPlateBoundary))
-          ; Just WidgetViewPlateHardness -> whenLeftView (submit (UiActionSetViewMode ViewPlateHardness))
-          ; Just WidgetViewPlateCrust -> whenLeftView (submit (UiActionSetViewMode ViewPlateCrust))
-          ; Just WidgetViewPlateAge -> whenLeftView (submit (UiActionSetViewMode ViewPlateAge))
-          ; Just WidgetViewPlateHeight -> whenLeftView (submit (UiActionSetViewMode ViewPlateHeight))
-          ; Just WidgetViewPlateVelocity -> whenLeftView (submit (UiActionSetViewMode ViewPlateVelocity))
-          ; Just WidgetViewCloud -> whenLeftView (submit (UiActionSetViewMode ViewCloud))
-          ; Just WidgetViewCloudTypical -> whenLeftView (submit (UiActionSetViewMode ViewCloudTypical))
+          ; Just WidgetViewBaseElevation -> whenLeftView (selectBase BaseViewElevation)
+          ; Just WidgetViewBaseBiome -> whenLeftView (selectBase BaseViewBiome)
+          ; Just WidgetViewBaseMoisture -> whenLeftView (selectBase BaseViewMoisture)
+          ; Just WidgetViewBaseVegetation -> whenLeftView (selectBase BaseViewVegetation)
+          ; Just WidgetViewBaseTerrainForm -> whenLeftView (selectBase BaseViewTerrainForm)
+          ; Just WidgetViewBasePlateId -> whenLeftView (selectBase BaseViewPlateId)
+          ; Just WidgetViewBasePlateBoundary -> whenLeftView (selectBase BaseViewPlateBoundary)
+          ; Just WidgetViewBasePlateHardness -> whenLeftView (selectBase BaseViewPlateHardness)
+          ; Just WidgetViewBasePlateCrust -> whenLeftView (selectBase BaseViewPlateCrust)
+          ; Just WidgetViewBasePlateAge -> whenLeftView (selectBase BaseViewPlateAge)
+          ; Just WidgetViewBasePlateHeight -> whenLeftView (selectBase BaseViewPlateHeight)
+          ; Just WidgetViewBasePlateVelocity -> whenLeftView (selectBase BaseViewPlateVelocity)
+          ; Just WidgetViewOverlayNone -> whenLeftView (selectOverlay Nothing)
+          ; Just WidgetViewOverlayTemperature -> whenLeftView (selectOverlay (Just SkyOverlayWeatherTemperature))
+          ; Just WidgetViewOverlayPrecipitation -> whenLeftView (selectOverlay (Just SkyOverlayPrecipitation))
+          ; Just WidgetViewOverlayCloud -> whenLeftView (selectOverlay (Just SkyOverlayCloud))
+          ; Just WidgetViewBasisAverage -> whenLeftView (selectBasis WeatherBasisAverage)
+          ; Just WidgetViewBasisCurrent -> whenLeftView (selectBasis WeatherBasisCurrent)
+          ; Just WidgetViewElevation -> whenLeftView (selectLegacyView ViewElevation)
+          ; Just WidgetViewBiome -> whenLeftView (selectLegacyView ViewBiome)
+          ; Just WidgetViewClimate -> whenLeftView (selectLegacyView ViewClimate)
+          ; Just WidgetViewWeather -> whenLeftView (selectLegacyView ViewWeather)
+          ; Just WidgetViewMoisture -> whenLeftView (selectLegacyView ViewMoisture)
+          ; Just WidgetViewPrecip -> whenLeftView (selectLegacyView ViewPrecip)
+          ; Just WidgetViewPrecipCurrent -> whenLeftView (selectLegacyView ViewPrecipCurrent)
+          ; Just WidgetViewVegetation -> whenLeftView (selectLegacyView ViewVegetation)
+          ; Just WidgetViewTerrainForm -> whenLeftView (selectLegacyView ViewTerrainForm)
+          ; Just WidgetViewPlateId -> whenLeftView (selectLegacyView ViewPlateId)
+          ; Just WidgetViewPlateBoundary -> whenLeftView (selectLegacyView ViewPlateBoundary)
+          ; Just WidgetViewPlateHardness -> whenLeftView (selectLegacyView ViewPlateHardness)
+          ; Just WidgetViewPlateCrust -> whenLeftView (selectLegacyView ViewPlateCrust)
+          ; Just WidgetViewPlateAge -> whenLeftView (selectLegacyView ViewPlateAge)
+          ; Just WidgetViewPlateHeight -> whenLeftView (selectLegacyView ViewPlateHeight)
+          ; Just WidgetViewPlateVelocity -> whenLeftView (selectLegacyView ViewPlateVelocity)
+          ; Just WidgetViewCloud -> whenLeftView (selectLegacyView ViewCloud)
+          ; Just WidgetViewCloudTypical -> whenLeftView (selectLegacyView ViewCloudTypical)
           ; Just WidgetDayNightToggle -> whenLeftView (submit UiActionToggleDayNight)
           -- Overlay cycling: prev/next overlay name, prev/next field
           ; Just WidgetViewOverlayPrev -> whenLeftView $ cycleOverlay uiSnap uiHandle (ieTerrainSnapshot widgetEnv) (-1) submit
@@ -610,6 +635,19 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       setUiShowConfig uiHandle (not (uiShowConfig uiSnap))
     submit action =
       submitAction widgetEnv action
+    selectBase baseMode =
+      submit (UiActionSetBaseViewMode baseMode)
+    selectOverlay overlayMode =
+      submit (UiActionSetSkyOverlayMode overlayMode)
+    selectBasis basis =
+      let uiState = ieUiSnapshot widgetEnv
+      in when (weatherBasisEnabled uiState) (submit (UiActionSetWeatherBasis basis))
+    selectLegacyView mode =
+      submit (UiActionSetViewMode mode)
+    weatherBasisEnabled uiState = case lvsSkyOverlay (effectiveViewSelection uiState) of
+      Just (SkyOverlayPlugin _ _) -> False
+      Just _ -> True
+      Nothing -> False
     runService method params =
       runInputService widgetEnv method params >> pure ()
     runServiceWithLog label method params = do
@@ -655,16 +693,17 @@ handleClick inputContext (SDL.P (V2 x y)) = do
 -- | Cycle through available overlay names by @dir@ (+1 or -1).
 --
 -- When no overlays are available, does nothing.  When cycling past the
--- end, wraps to ViewElevation (no overlay); from ViewElevation, wraps to
+-- end, clears the overlay; from no overlay, wraps to
 -- the first overlay.
 cycleOverlay :: UiState -> ActorHandle Ui (Protocol Ui) -> TerrainSnapshot -> Int -> (UiAction -> IO ()) -> IO ()
 cycleOverlay uiSnap uiHandle terrainSnap dir submit = do
   let names = availableOverlayNames uiSnap terrainSnap
+      selection = effectiveViewSelection uiSnap
   if null names
     then pure ()
     else do
-      let currentIdx = case uiViewMode uiSnap of
-            ViewOverlay name _ ->
+      let currentIdx = case lvsSkyOverlay selection of
+            Just (SkyOverlayPlugin name _) ->
               case findIndex (== name) names of
                 Just i  -> i + 1  -- +1 because index 0 = "no overlay"
                 Nothing -> 0
@@ -672,21 +711,21 @@ cycleOverlay uiSnap uiHandle terrainSnap dir submit = do
           total = length names + 1  -- +1 for "no overlay" position
           newIdx = (currentIdx + dir) `mod` total
       if newIdx == 0
-        then submit (UiActionSetViewMode ViewElevation)
+        then submit (UiActionSetViewSelection selection { lvsSkyOverlay = Nothing })
         else do
           let overlayName = names !! (newIdx - 1)
               fields = fieldsForOverlayName uiSnap terrainSnap overlayName
           setUiOverlayFields uiHandle fields
-          -- Reset to first field when switching overlay
-          submit (UiActionSetViewMode (ViewOverlay overlayName 0))
+          -- Reset to first field when switching plugin overlay.
+          submit (UiActionSetViewSelection selection { lvsSkyOverlay = Just (SkyOverlayPlugin overlayName 0) })
 
 -- | Cycle through fields within the currently-selected overlay.
 --
--- Only effective when in 'ViewOverlay' mode with fields available.
+-- Only effective when a plugin sky overlay with fields is selected.
 cycleOverlayField :: UiState -> ActorHandle Ui (Protocol Ui) -> TerrainSnapshot -> Int -> (UiAction -> IO ()) -> IO ()
 cycleOverlayField uiSnap uiHandle terrainSnap dir submit =
-  case uiViewMode uiSnap of
-    ViewOverlay name fieldIdx -> do
+  case lvsSkyOverlay selection of
+    Just (SkyOverlayPlugin name fieldIdx) -> do
       let fields = fieldsForOverlayName uiSnap terrainSnap name
           fieldCount = length fields
       if fieldCount <= 0
@@ -694,8 +733,10 @@ cycleOverlayField uiSnap uiHandle terrainSnap dir submit =
         else do
           let newIdx = (fieldIdx + dir) `mod` fieldCount
           setUiOverlayFields uiHandle fields
-          submit (UiActionSetViewMode (ViewOverlay name newIdx))
+          submit (UiActionSetViewSelection selection { lvsSkyOverlay = Just (SkyOverlayPlugin name newIdx) })
     _ -> pure ()
+  where
+    selection = effectiveViewSelection uiSnap
 
 availableOverlayNames :: UiState -> TerrainSnapshot -> [Text.Text]
 availableOverlayNames uiSnap terrainSnap =
@@ -703,8 +744,8 @@ availableOverlayNames uiSnap terrainSnap =
 
 currentOverlayName :: UiState -> TerrainSnapshot -> Maybe Text.Text
 currentOverlayName uiSnap terrainSnap =
-  case uiViewMode uiSnap of
-    ViewOverlay name _ -> Just name
+  case lvsSkyOverlay (effectiveViewSelection uiSnap) of
+    Just (SkyOverlayPlugin name _) -> Just name
     _ -> listToMaybe (availableOverlayNames uiSnap terrainSnap)
 
 fieldsForOverlayName :: UiState -> TerrainSnapshot -> Text.Text -> [(Text.Text, OverlayFieldType)]

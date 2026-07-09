@@ -34,6 +34,7 @@ import qualified Spec.Simulation
 import qualified Spec.AutoTick
 import qualified Spec.Widgets
 import qualified Spec.WidgetTree
+import qualified Spec.ViewControls
 import qualified Spec.SliderSpec
 import qualified Spec.WorldPersist
 import qualified Spec.CommandDispatch
@@ -92,6 +93,7 @@ main = do
         Spec.AutoTick.spec
         Spec.Widgets.spec
         Spec.WidgetTree.spec
+        Spec.ViewControls.spec
         Spec.WorldPersist.spec
         Spec.CommandDispatch.spec
         Spec.Component.spec

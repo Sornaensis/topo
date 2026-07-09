@@ -113,7 +113,15 @@ spec = do
       tooltipForWidget WidgetEditorReopen `shouldSatisfy` isNonEmptyTip
 
     it "returns Just for all view mode widgets" $ do
-      for_ [ WidgetViewElevation, WidgetViewBiome, WidgetViewClimate
+      for_ [ WidgetViewBaseElevation, WidgetViewBaseBiome, WidgetViewBaseMoisture
+           , WidgetViewBaseVegetation, WidgetViewBaseTerrainForm
+           , WidgetViewBasePlateId, WidgetViewBasePlateBoundary
+           , WidgetViewBasePlateHardness, WidgetViewBasePlateCrust
+           , WidgetViewBasePlateAge, WidgetViewBasePlateHeight
+           , WidgetViewBasePlateVelocity, WidgetViewOverlayNone
+           , WidgetViewOverlayTemperature, WidgetViewOverlayPrecipitation
+           , WidgetViewOverlayCloud, WidgetViewBasisAverage, WidgetViewBasisCurrent
+           , WidgetViewElevation, WidgetViewBiome, WidgetViewClimate
            , WidgetViewWeather, WidgetViewCloud, WidgetViewCloudTypical, WidgetViewMoisture
            , WidgetViewPrecip, WidgetViewPrecipCurrent, WidgetViewVegetation, WidgetViewTerrainForm
            , WidgetViewPlateId, WidgetViewPlateBoundary

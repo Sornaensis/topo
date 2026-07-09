@@ -179,14 +179,67 @@ leftSeedValueRectFor inputs (Rect (V2 x _, V2 w _)) controlsTop =
       valueX = x + (w - valueW) `div` 2
   in Rect (V2 valueX top, V2 valueW rowHeight)
 
+leftViewButtonHeightFor :: Int
+leftViewButtonHeightFor = 28
+
+leftViewButtonGapFor :: Int
+leftViewButtonGapFor = 8
+
+leftViewSectionHeaderHeightFor :: Int
+leftViewSectionHeaderHeightFor = 18
+
+leftViewSectionGapFor :: Int
+leftViewSectionGapFor = 8
+
+leftViewRowStrideFor :: Int
+leftViewRowStrideFor = leftViewButtonHeightFor + leftViewButtonGapFor
+
 leftViewRowCountFor :: Int
-leftViewRowCountFor = 9
+leftViewRowCountFor = 6
+
+leftWeatherOverlayRowCountFor :: Int
+leftWeatherOverlayRowCountFor = 2
+
+leftBaseViewTopFor :: Int -> Int
+leftBaseViewTopFor controlsTop = controlsTop + leftViewSectionHeaderHeightFor
+
+leftWeatherOverlaySectionTopFor :: Int -> Int
+leftWeatherOverlaySectionTopFor controlsTop =
+  leftBaseViewTopFor controlsTop + leftViewRowCountFor * leftViewRowStrideFor + leftViewSectionGapFor
+
+leftWeatherOverlayTopFor :: Int -> Int
+leftWeatherOverlayTopFor controlsTop =
+  leftWeatherOverlaySectionTopFor controlsTop + leftViewSectionHeaderHeightFor
+
+leftWeatherBasisSectionTopFor :: Int -> Int
+leftWeatherBasisSectionTopFor controlsTop =
+  leftWeatherOverlayTopFor controlsTop + leftWeatherOverlayRowCountFor * leftViewRowStrideFor + leftViewSectionGapFor
+
+leftWeatherBasisTopFor :: Int -> Int
+leftWeatherBasisTopFor controlsTop =
+  leftWeatherBasisSectionTopFor controlsTop + leftViewSectionHeaderHeightFor
+
+leftDayNightTopFor :: Int -> Int
+leftDayNightTopFor controlsTop =
+  leftWeatherBasisTopFor controlsTop + leftViewRowStrideFor
+
+leftPluginOverlaySectionTopFor :: Int -> Int
+leftPluginOverlaySectionTopFor controlsTop =
+  leftDayNightTopFor controlsTop + leftViewRowStrideFor + leftViewSectionGapFor
+
+leftPluginOverlayTopFor :: Int -> Int
+leftPluginOverlayTopFor controlsTop =
+  leftPluginOverlaySectionTopFor controlsTop + leftViewSectionHeaderHeightFor
+
+leftOverlayActionTopFor :: Int -> Int
+leftOverlayActionTopFor controlsTop =
+  leftPluginOverlayTopFor controlsTop + 2 * leftViewRowStrideFor + leftViewSectionGapFor
 
 leftViewContentHeightFor :: Int
 leftViewContentHeightFor =
-  let buttonH = 28
-      gap = 8
-  in leftViewRowCountFor * (buttonH + gap) + 2 * (buttonH + gap) + 1 * (buttonH + gap) + 3 * (buttonH + gap)
+  let actionRow2Top = leftOverlayActionTopFor 0 + 2 * leftViewRowStrideFor
+      actionBottom = actionRow2Top + leftViewButtonHeightFor
+  in actionBottom + leftViewButtonGapFor
 
 leftViewScrollMaxFor :: Rect -> Int -> Int -> Int
 leftViewScrollMaxFor (Rect (V2 _ panelY, V2 _ panelH)) controlsTop contentHeight =
@@ -194,38 +247,34 @@ leftViewScrollMaxFor (Rect (V2 _ panelY, V2 _ panelH)) controlsTop contentHeight
   in max 0 (contentHeight - usable)
 
 leftViewRectsFor :: Rect -> Int -> [Rect]
-leftViewRectsFor (Rect (V2 x _, V2 w _)) controlsTop =
+leftViewRectsFor bounds controlsTop =
+  leftTwoColumnRectsFor bounds 12 (leftBaseViewTopFor controlsTop)
+
+leftTwoColumnRectsFor :: Rect -> Int -> Int -> [Rect]
+leftTwoColumnRectsFor (Rect (V2 x _, V2 w _)) count top =
   let pad = 12
-      gap = 8
-      buttonH = 28
-      buttonW = (w - pad * 2 - gap) `div` 2
-      viewCount = 18
+      buttonW = (w - pad * 2 - leftViewButtonGapFor) `div` 2
       gridPos i = (i `div` 2, i `mod` 2)
-      rect (row, col) = Rect (V2 (x + pad + col * (buttonW + gap)) (controlsTop + row * (buttonH + gap)), V2 buttonW buttonH)
-  in map (rect . gridPos) [0 .. viewCount - 1]
+      rect (row, col) = Rect
+        ( V2 (x + pad + col * (buttonW + leftViewButtonGapFor))
+             (top + row * leftViewRowStrideFor)
+        , V2 buttonW leftViewButtonHeightFor
+        )
+  in map (rect . gridPos) [0 .. count - 1]
 
 overlayViewGeometryFor :: Rect -> Int -> OverlayViewGeometry
-overlayViewGeometryFor (Rect (V2 x _, V2 w _)) controlsTop =
-  let pad = 12
-      gap = 8
-      buttonH = 28
-      buttonW = (w - pad * 2 - gap) `div` 2
-      rowAfterViews = controlsTop + (buttonH + gap) * leftViewRowCountFor
-      row2Y = rowAfterViews + (buttonH + gap)
-      overlayPrev = Rect (V2 (x + pad) rowAfterViews, V2 buttonW buttonH)
-      overlayNext = Rect (V2 (x + pad + buttonW + gap) rowAfterViews, V2 buttonW buttonH)
-      fieldPrev = Rect (V2 (x + pad) row2Y, V2 buttonW buttonH)
-      fieldNext = Rect (V2 (x + pad + buttonW + gap) row2Y, V2 buttonW buttonH)
-  in OverlayViewGeometry overlayPrev overlayNext fieldPrev fieldNext
+overlayViewGeometryFor bounds controlsTop =
+  case leftTwoColumnRectsFor bounds 4 (leftPluginOverlayTopFor controlsTop) of
+    [overlayPrev, overlayNext, fieldPrev, fieldNext] ->
+      OverlayViewGeometry overlayPrev overlayNext fieldPrev fieldNext
+    _ -> error "overlayViewGeometryFor: expected four rects"
 
 dayNightToggleRectFor :: Rect -> Int -> Rect
 dayNightToggleRectFor (Rect (V2 x _, V2 w _)) controlsTop =
   let pad = 12
-      gap = 8
-      buttonH = 28
       buttonW = w - pad * 2
-      rowY = controlsTop + (buttonH + gap) * (leftViewRowCountFor + 2)
-  in Rect (V2 (x + pad) rowY, V2 buttonW buttonH)
+      rowY = leftDayNightTopFor controlsTop
+  in Rect (V2 (x + pad) rowY, V2 buttonW leftViewButtonHeightFor)
 
 configPanelGeometryFor :: LayoutInputs -> LeftPanelGeometry -> ConfigPanelGeometry
 configPanelGeometryFor inputs leftGeometry =

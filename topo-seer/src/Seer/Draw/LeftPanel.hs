@@ -13,7 +13,7 @@ module Seer.Draw.LeftPanel
   ) where
 
 import Actor.Data (DataSnapshot(..))
-import Actor.UI (LeftTab(..), UiState(..), ViewMode(..))
+import Actor.UI (BaseViewMode(..), LayeredViewState(..), LeftTab(..), SkyOverlayMode(..), UiState(..), ViewMode(..), WeatherBasis(..), effectiveViewSelection)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word8)
@@ -39,36 +39,61 @@ drawLeftTabs renderer ui (tabTopo, tabView) = do
       SDL.rendererDrawColor renderer SDL.$= fill
       SDL.fillRect renderer (Just (rectToSDL rect))
 
-drawViewModeButtons :: SDL.Renderer -> ViewMode -> [Rect] -> IO ()
-drawViewModeButtons renderer currentMode rects =
-  mapM_ drawOne (zip viewModeButtonStyles rects)
+drawViewModeButtons :: SDL.Renderer -> UiState -> [Rect] -> [Rect] -> [Rect] -> IO ()
+drawViewModeButtons renderer ui baseRects overlayRects basisRects = do
+  mapM_ (drawActiveButton (lvsBaseView selection)) (zip baseViewButtonStyles baseRects)
+  mapM_ (drawActiveButton (lvsSkyOverlay selection)) (zip skyOverlayButtonStyles overlayRects)
+  mapM_ drawBasisButton (zip basisButtonStyles basisRects)
   where
-    drawOne ((targetMode, colorFn), rect) = do
-      SDL.rendererDrawColor renderer SDL.$= colorFn (modeColor targetMode currentMode)
+    selection = effectiveViewSelection ui
+    basisEnabled = supportsWeatherBasis (lvsSkyOverlay selection)
+    drawActiveButton current ((target, colorFn), rect) = do
+      let brightness = if target == current then 200 else 110
+      SDL.rendererDrawColor renderer SDL.$= colorFn brightness
+      SDL.fillRect renderer (Just (rectToSDL rect))
+    drawBasisButton ((target, colorFn), rect) = do
+      let brightness
+            | not basisEnabled = 70
+            | target == lvsWeatherBasis selection = 200
+            | otherwise = 110
+      SDL.rendererDrawColor renderer SDL.$= colorFn brightness
       SDL.fillRect renderer (Just (rectToSDL rect))
 
--- | (ViewMode, Word8 -> V4 Word8) where the function builds the button
+supportsWeatherBasis :: Maybe SkyOverlayMode -> Bool
+supportsWeatherBasis (Just (SkyOverlayPlugin _ _)) = False
+supportsWeatherBasis (Just _) = True
+supportsWeatherBasis Nothing = False
+
+-- | (BaseViewMode, Word8 -> V4 Word8) where the function builds the button
 -- color from the active/inactive brightness.
-viewModeButtonStyles :: [(ViewMode, Word8 -> V4 Word8)]
-viewModeButtonStyles =
-  [ (ViewElevation,     \mc -> V4 mc  90  90  255)
-  , (ViewBiome,         \mc -> V4 90  mc  90  255)
-  , (ViewClimate,       \mc -> V4 90  90  mc  255)
-  , (ViewWeather,       \mc -> V4 170 90  mc  255)
-  , (ViewPrecip,        \mc -> V4 90  140 mc  255)
-  , (ViewPrecipCurrent, \mc -> V4 90  mc  190 255)
-  , (ViewCloud,         \mc -> V4 mc  mc  mc  255)
-  , (ViewCloudTypical,  \mc -> V4 120 120 mc  255)
-  , (ViewMoisture,      \mc -> V4 mc  90  140 255)
-  , (ViewVegetation,    \mc -> V4 90  mc  120 255)
-  , (ViewTerrainForm,   \mc -> V4 mc  120 90  255)
-  , (ViewPlateId,       \mc -> V4 90  mc  170 255)
-  , (ViewPlateBoundary, \mc -> V4 90  mc  140 255)
-  , (ViewPlateHardness, \mc -> V4 90  mc  120 255)
-  , (ViewPlateCrust,    \mc -> V4 90  mc  110 255)
-  , (ViewPlateAge,      \mc -> V4 90  mc  100 255)
-  , (ViewPlateHeight,   \mc -> V4 90  mc  120 255)
-  , (ViewPlateVelocity, \mc -> V4 90  mc  140 255)
+baseViewButtonStyles :: [(BaseViewMode, Word8 -> V4 Word8)]
+baseViewButtonStyles =
+  [ (BaseViewElevation,     \mc -> V4 mc  90  90  255)
+  , (BaseViewBiome,         \mc -> V4 90  mc  90  255)
+  , (BaseViewMoisture,      \mc -> V4 mc  90  140 255)
+  , (BaseViewVegetation,    \mc -> V4 90  mc  120 255)
+  , (BaseViewTerrainForm,   \mc -> V4 mc  120 90  255)
+  , (BaseViewPlateId,       \mc -> V4 90  mc  170 255)
+  , (BaseViewPlateBoundary, \mc -> V4 90  mc  140 255)
+  , (BaseViewPlateHardness, \mc -> V4 90  mc  120 255)
+  , (BaseViewPlateCrust,    \mc -> V4 90  mc  110 255)
+  , (BaseViewPlateAge,      \mc -> V4 90  mc  100 255)
+  , (BaseViewPlateHeight,   \mc -> V4 90  mc  120 255)
+  , (BaseViewPlateVelocity, \mc -> V4 90  mc  140 255)
+  ]
+
+skyOverlayButtonStyles :: [(Maybe SkyOverlayMode, Word8 -> V4 Word8)]
+skyOverlayButtonStyles =
+  [ (Nothing,                         \mc -> V4 mc  mc  mc  255)
+  , (Just SkyOverlayWeatherTemperature, \mc -> V4 170 90  mc  255)
+  , (Just SkyOverlayPrecipitation,      \mc -> V4 90  140 mc  255)
+  , (Just SkyOverlayCloud,              \mc -> V4 mc  mc  mc  255)
+  ]
+
+basisButtonStyles :: [(WeatherBasis, Word8 -> V4 Word8)]
+basisButtonStyles =
+  [ (WeatherBasisAverage, \mc -> V4 120 120 mc  255)
+  , (WeatherBasisCurrent, \mc -> V4 90  mc  190 255)
   ]
 
 drawDayNightToggle :: SDL.Renderer -> Bool -> Rect -> IO ()
@@ -79,8 +104,8 @@ drawDayNightToggle renderer enabled rect = do
 
 drawOverlayButtons :: SDL.Renderer -> Maybe FontCache -> UiState -> (Rect, Rect, Rect, Rect) -> IO ()
 drawOverlayButtons renderer fontCache ui (oPrev, oNext, fPrev, fNext) = do
-  let isOverlay = case uiViewMode ui of
-        ViewOverlay _ _ -> True
+  let isOverlay = case lvsSkyOverlay (effectiveViewSelection ui) of
+        Just (SkyOverlayPlugin _ _) -> True
         _ -> False
       activeColor = colOverlayActive
       passiveColor = colOverlayInactive

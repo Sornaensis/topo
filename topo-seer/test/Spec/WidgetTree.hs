@@ -14,7 +14,7 @@ import Topo.Pipeline.Stage (allBuiltinStageIds)
 import Topo.Plugin.DataResource (DataConstructorDef(..), DataFieldDef(..), DataFieldType(..))
 import UI.Layout
 import UI.WidgetTree
-import UI.Widgets (Rect(..))
+import UI.Widgets (Rect(..), containsPoint)
 
 rectHitPoint :: Rect -> V2 Int
 rectHitPoint (Rect (V2 x y, V2 w h)) = V2 (x + w `div` 2) (y + h `div` 2)
@@ -35,44 +35,66 @@ spec = describe "UI.WidgetTree" $ do
     hitTest widgets (rectHitPoint (leftChunkMinusRect layout)) `shouldBe` Just WidgetChunkMinus
     hitTest widgets (rectHitPoint (leftChunkPlusRect layout)) `shouldBe` Just WidgetChunkPlus
 
-  it "hit tests moisture view button" $ do
+  it "hit tests a base view button" $ do
     let layout = layoutFor (V2 800 600) 160
         widgets = buildViewModeWidgets layout 0
-        viewRects = leftViewRects layout
-        moistureRect = viewRects !! 8  -- index 8: Moisture, after explicit weather-basis controls
-    hitTest widgets (rectHitPoint moistureRect) `shouldBe` Just WidgetViewMoisture
+        baseRects = leftBaseViewRects layout
+        moistureRect = baseRects !! 2
+    hitTest widgets (rectHitPoint moistureRect) `shouldBe` Just WidgetViewBaseMoisture
 
-  it "orders explicit average/current weather controls in the View widget tree" $ do
+  it "orders base, weather overlay, and basis controls in the View widget tree" $ do
     let layout = layoutFor (V2 800 1200) 160
         viewIds = map widgetId (buildViewModeWidgets layout 0)
-    take 8 viewIds `shouldBe`
-      [ WidgetViewElevation, WidgetViewBiome, WidgetViewClimate
-      , WidgetViewWeather, WidgetViewPrecip, WidgetViewPrecipCurrent
-      , WidgetViewCloud, WidgetViewCloudTypical
+    take 12 viewIds `shouldBe`
+      [ WidgetViewBaseElevation, WidgetViewBaseBiome, WidgetViewBaseMoisture
+      , WidgetViewBaseVegetation, WidgetViewBaseTerrainForm, WidgetViewBasePlateId
+      , WidgetViewBasePlateBoundary, WidgetViewBasePlateHardness, WidgetViewBasePlateCrust
+      , WidgetViewBasePlateAge, WidgetViewBasePlateHeight, WidgetViewBasePlateVelocity
       ]
+    take 4 (drop 12 viewIds) `shouldBe`
+      [ WidgetViewOverlayNone, WidgetViewOverlayTemperature
+      , WidgetViewOverlayPrecipitation, WidgetViewOverlayCloud
+      ]
+    drop 16 viewIds `shouldBe`
+      [ WidgetViewBasisAverage, WidgetViewBasisCurrent ]
 
-  it "hit tests all 18 view mode buttons" $ do
+  it "hit tests all layered View tab selector buttons" $ do
     let layout = layoutFor (V2 800 1200) 160
-        widgets = buildWidgets layout
-        viewRects = leftViewRects layout
+        widgets = buildViewModeWidgets layout 0
+        selectorRects = leftBaseViewRects layout ++ leftWeatherOverlayRects layout ++ leftWeatherBasisRects layout
         expectedIds =
-          [ WidgetViewElevation, WidgetViewBiome, WidgetViewClimate
-          , WidgetViewWeather, WidgetViewPrecip, WidgetViewPrecipCurrent
-          , WidgetViewCloud, WidgetViewCloudTypical, WidgetViewMoisture
-          , WidgetViewVegetation, WidgetViewTerrainForm
-          , WidgetViewPlateId, WidgetViewPlateBoundary
-          , WidgetViewPlateHardness, WidgetViewPlateCrust
-          , WidgetViewPlateAge, WidgetViewPlateHeight
-          , WidgetViewPlateVelocity
+          [ WidgetViewBaseElevation, WidgetViewBaseBiome, WidgetViewBaseMoisture
+          , WidgetViewBaseVegetation, WidgetViewBaseTerrainForm, WidgetViewBasePlateId
+          , WidgetViewBasePlateBoundary, WidgetViewBasePlateHardness, WidgetViewBasePlateCrust
+          , WidgetViewBasePlateAge, WidgetViewBasePlateHeight, WidgetViewBasePlateVelocity
+          , WidgetViewOverlayNone, WidgetViewOverlayTemperature
+          , WidgetViewOverlayPrecipitation, WidgetViewOverlayCloud
+          , WidgetViewBasisAverage, WidgetViewBasisCurrent
           ]
-    length viewRects `shouldBe` 18
-    -- Rows 5-8 (indices 10-17) are below LeftTopo controls and can be
-    -- hit-tested unambiguously.  Rows 0-4 overlap LeftTopo widgets
-    -- (chunk, seed, generate) which shadow view buttons in the
-    -- unfiltered hit list; the runtime click handler guards by active
-    -- tab so the overlap is harmless.
+    length selectorRects `shouldBe` 18
     mapM_ (\(rect, wid) -> hitTest widgets (rectHitPoint rect) `shouldBe` Just wid)
-      (drop 10 (zip viewRects expectedIds))
+      (zip selectorRects expectedIds)
+
+  it "clips scrolled left View hits to content below chrome" $ do
+    let layout = layoutFor (V2 800 360) 80
+        scrollY = leftViewScrollMax layout
+        viewWidgets = filter (isLeftViewWidget . widgetId) (buildWidgets layout)
+        clipR = leftViewContentClipRect layout
+        candidates =
+          [ p
+          | Widget _ rect <- viewWidgets
+          , let V2 px py = rectHitPoint rect
+                p = V2 px (py - scrollY)
+          , containsPoint (leftPanelRect layout) p
+          , not (containsPoint clipR p)
+          ]
+    scrollY `shouldSatisfy` (> 0)
+    case candidates of
+      [] -> expectationFailure "expected a scrolled View widget candidate above the content clip"
+      p : _ -> do
+        let adjusted = p + V2 0 scrollY
+        hitTest viewWidgets adjusted `shouldSatisfy` (/= Nothing)
+        (if containsPoint clipR p then hitTest viewWidgets adjusted else Nothing) `shouldBe` Nothing
 
   it "hit tests overlay action buttons" $ do
     let layout = layoutFor (V2 800 1200) 160

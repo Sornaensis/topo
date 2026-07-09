@@ -464,23 +464,42 @@ buildEditorReopenWidget :: Layout -> [Widget]
 buildEditorReopenWidget layout =
   [ Widget WidgetEditorReopen (editorReopenRect layout) ]
 
--- | Build widgets for the view mode buttons in the left panel.
+-- | Build widgets for the layered View tab controls in the left panel.
 -- The @scrollY@ offset is subtracted from each button's y position so
 -- the returned rects are in screen space.
 buildViewModeWidgets :: Layout -> Int -> [Widget]
 buildViewModeWidgets layout scrollY =
-  zipWith Widget viewWidgetIds (map (shiftY (-scrollY)) (leftViewRects layout))
+  map shiftWidget unscrolled
   where
     shiftY dy (Rect (V2 x y, V2 w h)) = Rect (V2 x (y + dy), V2 w h)
-    viewWidgetIds =
-      [ WidgetViewElevation, WidgetViewBiome, WidgetViewClimate
-      , WidgetViewWeather, WidgetViewPrecip, WidgetViewPrecipCurrent
-      , WidgetViewCloud, WidgetViewCloudTypical, WidgetViewMoisture
-      , WidgetViewVegetation, WidgetViewTerrainForm
-      , WidgetViewPlateId, WidgetViewPlateBoundary
-      , WidgetViewPlateHardness, WidgetViewPlateCrust
-      , WidgetViewPlateAge, WidgetViewPlateHeight
-      , WidgetViewPlateVelocity
+    shiftWidget (Widget wid rect) = Widget wid (shiftY (-scrollY) rect)
+    unscrolled =
+      zipWith Widget baseWidgetIds (leftBaseViewRects layout)
+      ++ zipWith Widget overlayWidgetIds (leftWeatherOverlayRects layout)
+      ++ zipWith Widget basisWidgetIds (leftWeatherBasisRects layout)
+    baseWidgetIds =
+      [ WidgetViewBaseElevation
+      , WidgetViewBaseBiome
+      , WidgetViewBaseMoisture
+      , WidgetViewBaseVegetation
+      , WidgetViewBaseTerrainForm
+      , WidgetViewBasePlateId
+      , WidgetViewBasePlateBoundary
+      , WidgetViewBasePlateHardness
+      , WidgetViewBasePlateCrust
+      , WidgetViewBasePlateAge
+      , WidgetViewBasePlateHeight
+      , WidgetViewBasePlateVelocity
+      ]
+    overlayWidgetIds =
+      [ WidgetViewOverlayNone
+      , WidgetViewOverlayTemperature
+      , WidgetViewOverlayPrecipitation
+      , WidgetViewOverlayCloud
+      ]
+    basisWidgetIds =
+      [ WidgetViewBasisAverage
+      , WidgetViewBasisCurrent
       ]
 
 hitTest :: [Widget] -> V2 Int -> Maybe WidgetId
@@ -494,6 +513,24 @@ hitTest widgets point =
 -- subject to left-view scroll offset.
 isLeftViewWidget :: WidgetId -> Bool
 isLeftViewWidget wid = case wid of
+  WidgetViewBaseElevation -> True
+  WidgetViewBaseBiome -> True
+  WidgetViewBaseMoisture -> True
+  WidgetViewBaseVegetation -> True
+  WidgetViewBaseTerrainForm -> True
+  WidgetViewBasePlateId -> True
+  WidgetViewBasePlateBoundary -> True
+  WidgetViewBasePlateHardness -> True
+  WidgetViewBasePlateCrust -> True
+  WidgetViewBasePlateAge -> True
+  WidgetViewBasePlateHeight -> True
+  WidgetViewBasePlateVelocity -> True
+  WidgetViewOverlayNone -> True
+  WidgetViewOverlayTemperature -> True
+  WidgetViewOverlayPrecipitation -> True
+  WidgetViewOverlayCloud -> True
+  WidgetViewBasisAverage -> True
+  WidgetViewBasisCurrent -> True
   WidgetViewElevation     -> True
   WidgetViewBiome         -> True
   WidgetViewClimate       -> True

@@ -66,10 +66,14 @@ import Actor.Terrain
   , startTerrainGen
   )
 import Actor.UI
-  ( ConfigTab(..)
+  ( BaseViewMode
+  , ConfigTab(..)
+  , LayeredViewState(..)
+  , SkyOverlayMode
   , Ui
   , UiState(..)
   , ViewMode(..)
+  , WeatherBasis
   , effectiveViewSelection
   , emptyUiState
   , getUiSnapshot
@@ -98,6 +102,7 @@ import Actor.UI
   , setUiDisabledPlugins
   , setUiOverlayNames
   , setUiViewMode
+  , setUiViewSelection
   , uiViewMode
   , uiWaterLevel
   , uiWorldConfig
@@ -137,6 +142,11 @@ data UiAction
   | UiActionReset
   | UiActionRevert
   | UiActionSetViewMode !ViewMode
+  | UiActionSetViewSelection !LayeredViewState
+  | UiActionSetBaseViewMode !BaseViewMode
+  | UiActionSetSkyOverlayMode !(Maybe SkyOverlayMode)
+  | UiActionSetWeatherBasis !WeatherBasis
+  | UiActionSetOverlayOpacity !Float
   | UiActionRebuildAtlas !ViewMode
   | UiActionToggleDayNight
   | UiActionRefreshViewport !ViewMode !(Maybe (Int, Int))
@@ -168,6 +178,16 @@ runUiAction req =
       logTimed req "Config Revert" (revertConfig req)
     UiActionSetViewMode mode ->
       logTimed req ("View " <> viewModeLabel mode) (setViewModeAndRebuild req mode)
+    UiActionSetViewSelection selection ->
+      logTimed req "View selection" (setViewSelectionAndRebuild req selection)
+    UiActionSetBaseViewMode base ->
+      logTimed req "View base" (mutateViewSelectionAndRebuild req (\selection -> selection { lvsBaseView = base }))
+    UiActionSetSkyOverlayMode overlay ->
+      logTimed req "View overlay" (mutateViewSelectionAndRebuild req (\selection -> selection { lvsSkyOverlay = overlay }))
+    UiActionSetWeatherBasis basis ->
+      logTimed req "View weather basis" (mutateViewSelectionAndRebuild req (\selection -> selection { lvsWeatherBasis = basis }))
+    UiActionSetOverlayOpacity opacity ->
+      logTimed req "View overlay opacity" (mutateViewSelectionAndRebuild req (\selection -> selection { lvsOverlayOpacity = opacity }))
     UiActionRebuildAtlas mode ->
       logTimed req ("Rebuild Atlas " <> viewModeLabel mode) (rebuildAtlasFor req mode)
     UiActionToggleDayNight ->
@@ -437,6 +457,25 @@ setViewModeAndRebuild req mode = do
       uiHandle = ahUiHandle handles
   previousUi <- getUiSnapshot uiHandle
   setUiViewMode uiHandle mode
+  uiSnap <- getUiSnapshot uiHandle
+  terrainSnap <- publishLatestTerrainSnapshot handles
+  snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
+  enqueueAtlasTransitionForTerrain handles previousUi uiSnap snapshotVersion terrainSnap
+
+setViewSelectionAndRebuild :: UiActionRequest -> LayeredViewState -> IO ()
+setViewSelectionAndRebuild req selection =
+  setViewSelectionFromPrevious req (const selection)
+
+mutateViewSelectionAndRebuild :: UiActionRequest -> (LayeredViewState -> LayeredViewState) -> IO ()
+mutateViewSelectionAndRebuild req mutate =
+  setViewSelectionFromPrevious req (mutate . effectiveViewSelection)
+
+setViewSelectionFromPrevious :: UiActionRequest -> (UiState -> LayeredViewState) -> IO ()
+setViewSelectionFromPrevious req chooseSelection = do
+  let handles = uarActorHandles req
+      uiHandle = ahUiHandle handles
+  previousUi <- getUiSnapshot uiHandle
+  setUiViewSelection uiHandle (chooseSelection previousUi)
   uiSnap <- getUiSnapshot uiHandle
   terrainSnap <- publishLatestTerrainSnapshot handles
   snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)

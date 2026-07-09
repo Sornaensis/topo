@@ -29,6 +29,25 @@ data WidgetId
   -- Slider minus/plus buttons, parameterized by SliderId
   | WidgetSliderMinus !SliderId
   | WidgetSliderPlus !SliderId
+  | WidgetViewBaseElevation
+  | WidgetViewBaseBiome
+  | WidgetViewBaseMoisture
+  | WidgetViewBaseVegetation
+  | WidgetViewBaseTerrainForm
+  | WidgetViewBasePlateId
+  | WidgetViewBasePlateBoundary
+  | WidgetViewBasePlateHardness
+  | WidgetViewBasePlateCrust
+  | WidgetViewBasePlateAge
+  | WidgetViewBasePlateHeight
+  | WidgetViewBasePlateVelocity
+  | WidgetViewOverlayNone
+  | WidgetViewOverlayTemperature
+  | WidgetViewOverlayPrecipitation
+  | WidgetViewOverlayCloud
+  | WidgetViewBasisAverage
+  | WidgetViewBasisCurrent
+  -- Legacy single-mode IDs kept for click_widget/API compatibility.
   | WidgetViewElevation
   | WidgetViewBiome
   | WidgetViewClimate
