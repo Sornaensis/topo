@@ -136,6 +136,13 @@ arbitrary data layers to the hex grid. Overlays can be sparse (per-tile
 struct) or dense (per-field unboxed vector). They are persisted as
 `.topolay` sidecar files alongside the core `.topo` world file.
 
+### Layered Viewer Model
+
+Topo-seer renders one base atlas layer plus optional weather/sky/plugin and
+day/night overlays. The contributor-facing ownership map and legacy
+`ViewMode` API migration plan live in the
+[layered view state guide](../migration/layered-view-state.md).
+
 ### Plugin Isolation
 
 Plugins run as separate OS processes communicating over length-prefixed

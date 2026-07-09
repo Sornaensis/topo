@@ -58,6 +58,7 @@ when translating old MCP tool or resource names.
 | 1.0 release notes | [release-notes/1.0.md](release-notes/1.0.md) |
 | Release packaging and tag guide | [release.md](release.md) |
 | Pre-1.0 migration guide | [migration/pre-1.0-to-1.0.md](migration/pre-1.0-to-1.0.md) |
+| Layered view state migration | [migration/layered-view-state.md](migration/layered-view-state.md) |
 | Architecture overview | [internal/architecture.md](internal/architecture.md) |
 | Current architecture baseline | [architecture/current.md](architecture/current.md) |
 | Target architecture for 1.0 | [architecture/target.md](architecture/target.md) |

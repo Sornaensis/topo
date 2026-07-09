@@ -112,8 +112,9 @@ The UI already has substantial feature surface:
 
 - render-thread SDL loop;
 - actor-isolated background work;
-- view modes for elevation, biome, climate/weather, moisture, precipitation,
-  plate attributes, vegetation, terrain form, clouds, and overlays;
+- layered view controls for base terrain modes plus weather/sky/plugin overlays,
+  with legacy `view_mode` compatibility documented in
+  [layered-view-state.md](../migration/layered-view-state.md);
 - config tabs for terrain, planet, climate, weather, biome, erosion, pipeline,
   and data;
 - data-browser state for plugin/resource selection, records, pagination,

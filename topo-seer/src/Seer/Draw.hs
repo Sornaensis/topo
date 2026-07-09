@@ -356,8 +356,8 @@ drawUiLabels renderer fontCache ui layout = do
                 , "Terr. Form", "Plate ID", "Boundary", "Hardness"
                 , "Crust", "Age", "Plt. Height", "Plt. Vel."
                 ]
-              overlayLabels = ["Overlay Off", "Temp", "Precip", "Cloud"]
-              basisLabels = ["Average", "Current"]
+              overlayLabels = ["No Overlay", "Temp", "Precip", "Cloud"]
+              basisLabels = ["Avg/Normal", "Current"]
               scrollY = uiLeftViewScroll ui
               shiftY (Rect (V2 rx ry, V2 rw rh)) = Rect (V2 rx (ry - scrollY), V2 rw rh)
               scrolledBaseRects = map shiftY baseViewRects
@@ -376,7 +376,7 @@ drawUiLabels renderer fontCache ui layout = do
           mapM_ (\(rect, label) -> drawCentered fontCache labelColor rect label) (zip scrolledBaseRects baseLabels)
           sectionLabel (sectionY weatherOverlayRects) "Weather / sky overlay"
           mapM_ (\(rect, label) -> drawCentered fontCache labelColor rect label) (zip scrolledOverlayRects overlayLabels)
-          sectionLabel (sectionY weatherBasisRects) "Weather basis"
+          sectionLabel (sectionY weatherBasisRects) "Weather basis / source"
           mapM_ (\(rect, label) -> drawCentered fontCache labelColor rect label) (zip scrolledBasisRects basisLabels)
           let dnLabel = if uiDayNightEnabled ui then "Day/Night ON" else "Day/Night OFF"
           drawCentered fontCache labelColor (shiftY (dayNightToggleRect layout)) dnLabel

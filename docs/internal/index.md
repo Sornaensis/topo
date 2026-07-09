@@ -117,6 +117,14 @@ Extensible user-defined data layers.
 | [Overlay Indexing](overlay/indexing.md) | `Topo.Overlay.Index`, `Topo.Overlay.Indexed` |
 | [Overlay Provenance](overlay/provenance.md) | `Topo.Overlay.Provenance` |
 
+### Topo-seer View Architecture
+
+Layered base/overlay view state, rendering, and API migration.
+
+| Document | Modules |
+|----------|---------|
+| [Layered View State Migration](../migration/layered-view-state.md) | `Actor.UI.State`, `Actor.AtlasCache`, `UI.TerrainColor`, `Seer.Command.Handlers.View` |
+
 ### Simulation Engine
 
 DAG-based overlay simulation.

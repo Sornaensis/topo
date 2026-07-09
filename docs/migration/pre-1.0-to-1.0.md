@@ -60,6 +60,26 @@ in-repo compatibility and tests while service extraction continues. They are
 not a public 1.0 automation path and are not a migration target for client
 integrations.
 
+## View-mode automation to layered views
+
+Pre-1.0 clients usually treated `view_mode` as a single enum. Topo 1.0 keeps
+those legacy names as compatibility aliases, but the authoritative state is now
+the layered `view` object: base terrain view, optional weather/sky/plugin
+overlay, weather basis, and overlay opacity.
+
+Migration targets:
+
+| Pre-1.0 usage | 1.0 preferred replacement |
+|---|---|
+| Read `view_mode` from state | Read `view` from `GET /state` or `GET /state/views` |
+| List `get_view_modes` / `/state/view-modes` | Use `GET /state/views` for base modes, overlay modes, weather bases, plugin overlay choices, and legacy aliases |
+| Set `set_view_mode` / `POST /ui/view-mode` | Use `POST /ui/view` with `base_mode`, `overlay_mode`, `weather_basis`, `plugin_overlay`, and `field_index` |
+
+The legacy `view_mode` and `legacy_view_mode` fields are compatibility surfaces
+for API v1, not the model new clients should persist. See the
+[layered view state migration guide](layered-view-state.md) for exact legacy name
+mappings, source/basis semantics, persistence behavior, and deprecation timing.
+
 ## Plugin authors: manifest v3 and RPC protocol v4
 
 Topo 1.0 supports manifest v3 and RPC protocol v4 as the public plugin

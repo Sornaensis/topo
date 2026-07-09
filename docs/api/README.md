@@ -19,6 +19,20 @@ Loopback binds are intended for local automation. Non-loopback binds require `--
 - **Errors:** Error responses use `ErrorEnvelope` and may include `invalid_json`, `invalid_request`, `validation_failed`, auth/not-found/rejected/unavailable/internal codes, and standardized data-resource codes such as `schema_validation_failed`, `permission_denied`, `operation_not_supported`, and `timeout`. Responses echo `X-Request-Id` when supplied.
 - **Versioning:** `info.version` is the public HTTP API version (`1.0.0`), while `GET /version` exposes `api_version=1` plus the application package version. API major version 1 permits additive routes, fields, enum values, and schemas; breaking route, payload, auth, or error-envelope changes require a new major API version or documented migration window.
 
+## Layered view migration
+
+View selection is now layered: `view.base_mode` selects the terrain/base atlas,
+`view.overlay_mode` optionally selects weather, sky, or plugin overlay data, and
+`view.weather_basis` chooses average/typical versus current weather sources.
+Prefer `GET /state/views` and `POST /ui/view` for new clients. The legacy
+`view_mode`, `legacy_view_mode`, `GET /state/view-modes`, and
+`POST /ui/view-mode` surfaces remain compatibility aliases for API v1 but lose
+layered information such as a biome base with a cloud overlay.
+
+See the [layered view state migration guide](../migration/layered-view-state.md)
+for route mapping, legacy name mapping, source/basis semantics, persistence
+behavior, and deprecation timing.
+
 ## Simulation and plugin declaration terminology
 
 `GET /simulation/dag` distinguishes `nodes` (actor-bound DAG nodes) from plugin
