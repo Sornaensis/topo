@@ -48,7 +48,7 @@ import System.Directory
   )
 import System.Environment (getArgs, getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.Exit (die, exitFailure)
-import System.FilePath ((</>))
+import System.FilePath ((</>), takeDirectory)
 import System.Info (os)
 import System.IO (stdin, stdout)
 import System.Process
@@ -441,8 +441,9 @@ spec = describe "PluginManager" $ do
         assertHeartbeatStops heartbeatPath
 
   it "exposes Starting while public refreshManifests performs supervisor work" $ do
-    withExecutablePluginDir refreshTransientPluginName refreshTransientManifestJSON "slow" $ do
+    withExecutablePluginDir refreshTransientPluginName refreshTransientManifestJSON "wait-for-start-signal" $ do
       withPluginManager $ \pluginManagerHandle -> do
+        releasePath <- fixtureDataFile refreshTransientPluginName refreshTransientStartSignalFileName
         discoverPlugins pluginManagerHandle
         done <- forkLifecycleAction (refreshManifests pluginManagerHandle)
         starting <- waitForPluginLifecycleState
@@ -451,9 +452,11 @@ spec = describe "PluginManager" $ do
           LifecycleStarting
           pluginManagerHandle
         pluginLifecycleStates refreshTransientPluginName starting `shouldSatisfy` elem LifecycleStarting
+        createDirectoryIfMissing True (takeDirectory releasePath)
+        writeFile releasePath "go\n"
         waitForLifecycleAction (refreshTransientPluginName <> " refresh") done
-        failed <- getLoadedPlugins pluginManagerHandle
-        pluginLifecycleStates refreshTransientPluginName failed `shouldSatisfy` elem LifecycleFailed
+        ready <- getLoadedPlugins pluginManagerHandle
+        pluginLifecycleStates refreshTransientPluginName ready `shouldSatisfy` elem LifecycleReady
 
   it "cleans up unpublished subprocesses when refreshManifests is interrupted" $ do
     withExecutablePluginDir interruptedRefreshPluginName interruptedRefreshManifestJSON "slow" $ do
@@ -1736,7 +1739,7 @@ normalizeFixtureMode :: String -> String
 normalizeFixtureMode = takeWhile (`notElem` ['\r', '\n'])
 
 fixtureUsage :: IO a
-fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|auth-missing|auth-mismatch|malformed-json|bad-handshake|early-exit|slow|handshake-stall|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|exit-on-generator|exit-on-simulation|external-provider|external-consumer|windows-process-tree|windows-heartbeat-child>"
+fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|auth-missing|auth-mismatch|malformed-json|bad-handshake|early-exit|slow|wait-for-start-signal|handshake-stall|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|exit-on-generator|exit-on-simulation|external-provider|external-consumer|windows-process-tree|windows-heartbeat-child>"
 
 runFixtureMode :: String -> IO ()
 runFixtureMode = \case
@@ -1749,6 +1752,7 @@ runFixtureMode = \case
   "bad-handshake" -> runBadHandshakeFixture
   "early-exit" -> exitFailure
   "slow" -> threadDelay 2000000 >> runOkFixture
+  "wait-for-start-signal" -> runWaitForStartSignalFixture
   "handshake-stall" -> runHandshakeStallFixture
   "slow-shutdown" -> runSlowShutdownFixture
   "flaky-start" -> runFlakyStartFixture
@@ -1770,6 +1774,23 @@ runEnvContractFixture :: IO ()
 runEnvContractFixture = do
   verifyLaunchEnvironment
   runOkFixture
+
+runWaitForStartSignalFixture :: IO ()
+runWaitForStartSignalFixture = do
+  dataRoot <- requireEnv pluginDataRootEnv
+  waitForFixtureSignal (dataRoot </> refreshTransientStartSignalFileName)
+  runOkFixture
+
+waitForFixtureSignal :: FilePath -> IO ()
+waitForFixtureSignal path = go (1000 :: Int)
+  where
+    go attemptsLeft = do
+      exists <- doesFileExist path
+      if exists
+        then pure ()
+        else if attemptsLeft <= 0
+          then die ("timed out waiting for fixture signal " <> path)
+          else threadDelay 10000 >> go (attemptsLeft - 1)
 
 runOkFixture :: IO ()
 runOkFixture = do
@@ -2481,7 +2502,15 @@ refreshTransientPluginName :: String
 refreshTransientPluginName = "copilot-test-plugin-refresh-transient"
 
 refreshTransientManifestJSON :: BS.ByteString
-refreshTransientManifestJSON = manifestFor refreshTransientPluginName
+refreshTransientManifestJSON = manifestWithStartPolicyFor refreshTransientPluginName
+  [ "    \"restart_mode\": \"never\","
+  , "    \"startup_timeout_ms\": 8000,"
+  , "    \"request_timeout_ms\": 300,"
+  , "    \"shutdown_timeout_ms\": 300"
+  ]
+
+refreshTransientStartSignalFileName :: String
+refreshTransientStartSignalFileName = "refresh-start.release"
 
 interruptedRefreshPluginName :: String
 interruptedRefreshPluginName = "copilot-test-plugin-refresh-interrupted"
