@@ -20,7 +20,7 @@ import Actor.Log (Log, LogEntry(..), LogLevel(..), appendLog)
 import Actor.Log (LogSnapshot(..))
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion)
-import Actor.UI (LeftTab(..), UiState(..), ViewMode(..), effectiveViewSelection)
+import Actor.UI (LayeredViewState(..), LeftTab(..), UiState(..), ViewMode(..), effectiveViewSelection)
 import Control.Monad (forM_, when)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Maybe (isNothing)
@@ -46,7 +46,7 @@ import Seer.Draw
   , seedMaxDigits
   , viewColor
   )
-import Actor.AtlasCache (AtlasKey, atlasKeyForSelection)
+import Actor.AtlasCache (AtlasKey, atlasBaseKeyForSelection, atlasOverlayKeyForSelection)
 import Seer.Render.Atlas
   ( AtlasCacheSummary(..)
   , AtlasResolveStatus
@@ -64,10 +64,11 @@ import Seer.Render.Atlas
   , getCurrentCompleteAtlasForTargetWithCoverage
   , resolveDayNightOverlayForTarget
   , retireDayNightOverlaysExcept
+  , resolveAtlasOverlayTiles
   , resolveAtlasTiles
   , resolveEffectiveStage
   , scheduleAtlasBuilds
-  , setAtlasKey
+  , setAtlasLayerKeys
   , zoomTextureScale
   )
 import Seer.Render.ZoomStage (ZoomStage(..), stageForZoom)
@@ -255,11 +256,13 @@ renderFrame context = do
   tAfterClear <- getMonotonicTimeNSec
   let rawStage = stageForZoom (uiZoom (rsUi snapshot))
       (stage, mbBlend, atlasCacheWithStage) = resolveEffectiveStage tAfterClear rawStage atlasCache
-      -- Synchronise the render-thread cache key with the current UI state
+      -- Synchronise the render-thread cache keys with the current UI state
       -- BEFORE draining results.  This ensures stale worker results (from a
-      -- superseded view mode) are discarded rather than thrashing the key.
-      expectedAtlasKey = atlasKeyForSelection (effectiveViewSelection (rsUi snapshot)) (uiRenderWaterLevel (rsUi snapshot)) terrainSnap
-      atlasCacheKeyed = setAtlasKey expectedAtlasKey atlasCacheWithStage
+      -- superseded layer) are discarded rather than thrashing the key.
+      viewSelection = effectiveViewSelection (rsUi snapshot)
+      expectedAtlasKey = atlasBaseKeyForSelection viewSelection (uiRenderWaterLevel (rsUi snapshot)) terrainSnap
+      expectedOverlayKey = atlasOverlayKeyForSelection viewSelection terrainSnap
+      atlasCacheKeyed = setAtlasLayerKeys expectedAtlasKey expectedOverlayKey atlasCacheWithStage
       dataReady = tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
       windowSize = (fromIntegral winW, fromIntegral winH)
       coverageFor targetStage = if dataReady
@@ -296,10 +299,17 @@ renderFrame context = do
       else pure False
   tAfterDrain <- getMonotonicTimeNSec
   latestAtlasFreshness <- readAtlasFreshnessRef freshnessRef
-  (atlasToDraw, atlasResolveStatus, atlasCache'', loggedAtlasResolve) <- do
+  (atlasToDraw, atlasResolveStatus, atlasCacheBaseResolved, loggedAtlasResolve) <- do
     ((resolvedTiles, resolveStatus, resolvedCache), elapsed) <- timedMs (resolveAtlasTiles latestAtlasFreshness renderTargetOk pool snapshot atlasCache' stage windowSize)
     logged <- logTiming logHandle timingLogThresholdMs (Text.pack "atlas resolve") elapsed Nothing
     pure (resolvedTiles, resolveStatus, resolvedCache, logged)
+  (overlayToDraw, overlayResolveStatus, atlasCache'', loggedOverlayResolve) <- case expectedOverlayKey of
+    Nothing -> pure (Nothing, Nothing, atlasCacheBaseResolved, False)
+    Just overlayKey -> do
+      ((resolvedTiles, resolveStatus, resolvedCache), elapsed) <- timedMs $
+        pure (resolveAtlasOverlayTiles latestAtlasFreshness renderTargetOk dataReady (coverageFor stage) overlayKey stage atlasCacheBaseResolved)
+      logged <- logTiming logHandle timingLogThresholdMs (Text.pack "atlas overlay resolve") elapsed Nothing
+      pure (resolvedTiles, Just resolveStatus, resolvedCache, logged)
   let currentDayNightKey =
         if uiDayNightEnabled (rsUi snapshot)
           then mkDayNightKey terrainSnap
@@ -325,6 +335,14 @@ renderFrame context = do
             then Nothing
             else Just (targetStage, blend, targetTiles)
         _ -> Nothing
+      mbTargetOverlay = do
+        overlayKey <- expectedOverlayKey
+        (targetStage, blend, _) <- mbDrawnCrossFadeTarget
+        targetTiles <- getCurrentCompleteAtlasForTargetWithCoverage latestAtlasFreshness (coverageFor targetStage) overlayKey (zsHexRadius targetStage) (zsAtlasScale targetStage) atlasCache''
+        if null targetTiles
+          then Nothing
+          else Just (targetStage, blend, targetTiles)
+      overlayOpacity = clamp01 (lvsOverlayOpacity viewSelection)
       (dayNightTiles, dayNightStatus) =
         resolveDayNightOverlayForTarget latestAtlasFreshness renderTargetOk dataReady atlasResolveStatus currentDayNightKey stage atlasCacheForOverlay
       mbTargetDayNight = do
@@ -354,6 +372,24 @@ renderFrame context = do
       (_, elapsed) <- timedMs (drawTerrain renderer terrainSnap terrainCache textureCache' (uiPanOffset (rsUi snapshot)) (uiZoom (rsUi snapshot)) (V2 (fromIntegral winW) (fromIntegral winH)))
       logTiming logHandle timingLogThresholdMs (Text.pack "draw terrain") elapsed Nothing
   tAfterDraw <- getMonotonicTimeNSec
+  -- Draw sky/weather overlay only on top of atlas base tiles.  When atlas tiles
+  -- are unavailable, drawTerrain handles the non-render-target fallback path.
+  case atlasToDraw of
+    Just _ | overlayOpacity > 0 -> do
+      let pan = uiPanOffset (rsUi snapshot)
+          z = uiZoom (rsUi snapshot)
+          win = V2 (fromIntegral winW) (fromIntegral winH)
+          overlayAlpha factor = alphaByte (overlayOpacity * factor)
+      case (overlayToDraw, mbTargetOverlay) of
+        (Just currentTiles, Just (_targetStage, blend, targetTiles)) -> do
+          drawAtlasAlpha renderer currentTiles pan z win (overlayAlpha (1.0 - blend))
+          drawAtlasAlpha renderer targetTiles pan z win (overlayAlpha blend)
+        (Just currentTiles, Nothing) ->
+          drawAtlasAlpha renderer currentTiles pan z win (overlayAlpha 1.0)
+        (Nothing, Just (_targetStage, blend, targetTiles)) ->
+          drawAtlasAlpha renderer targetTiles pan z win (overlayAlpha blend)
+        _ -> pure ()
+    _ -> pure ()
   -- Draw day/night overlay only on top of atlas base tiles.  When atlas tiles
   -- are unavailable, drawTerrain handles the non-render-target fallback overlay.
   case atlasToDraw of
@@ -482,10 +518,11 @@ renderFrame context = do
       <> " uploadCount=" <> show uploadCount
       <> " budgetExhausted=" <> maybe "False" (show . ardsBudgetExhausted) mbDrainStats
     hFlush h
-  let didLog = loggedWindowSize || loggedSchedule || loggedScheduleDrain || loggedScheduleEnqueue || loggedUpload || loggedTextureCreate || loggedAtlasResolve || loggedAtlasTraceEvents || loggedChunkTexture || loggedDraw || loggedHover || loggedChrome || loggedUi || loggedPresent
+  let didLog = loggedWindowSize || loggedSchedule || loggedScheduleDrain || loggedScheduleEnqueue || loggedUpload || loggedTextureCreate || loggedAtlasResolve || loggedOverlayResolve || loggedAtlasTraceEvents || loggedChunkTexture || loggedDraw || loggedHover || loggedChrome || loggedUi || loggedPresent
       baseAtlasNeedsRetry = renderTargetOk && dataReady && atlasResolveNeedsRetry atlasResolveStatus
+      overlayAtlasNeedsRetry = renderTargetOk && dataReady && maybe False atlasResolveNeedsRetry overlayResolveStatus
       dayNightNeedsRetry = not generating && any dayNightOverlayNeedsRetry dayNightStatuses
-      atlasNeedsRetry = baseAtlasNeedsRetry || dayNightNeedsRetry
+      atlasNeedsRetry = baseAtlasNeedsRetry || overlayAtlasNeedsRetry || dayNightNeedsRetry
       fallbackChunkNeedsRetry = not renderTargetOk
         && chunkTextureCacheNeedsUpdate terrainCache (zsAtlasScale stage) textureCache'
   pure RenderFrameOutcome
@@ -586,6 +623,12 @@ formatTileSet (Just summary) =
     <> "/build=" <> maybe "unknown" show (atssBuildId summary)
     <> "/tiles=" <> show (atssTileCount summary) <> "/" <> show (atssExpectedTileCount summary)
     <> "/coverageChunks=" <> show (atssCoveredChunkCount summary)
+
+clamp01 :: Float -> Float
+clamp01 value = max 0 (min 1 value)
+
+alphaByte :: Float -> Word8
+alphaByte value = fromIntegral (round (clamp01 value * 255) :: Int)
 
 logTiming :: ActorHandle Log (Protocol Log) -> Word32 -> Text.Text -> Word32 -> Maybe Int -> IO Bool
 logTiming handle thresholdMs label elapsed maybeCount =

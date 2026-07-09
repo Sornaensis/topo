@@ -1,124 +1,163 @@
 -- | Atlas cache key type shared across the atlas pipeline.
 --
--- Base atlas tiles are day\/night-agnostic: the brightness overlay is
--- stored and drawn as a separate layer (see 'Seer.Render.Atlas').
--- Removing the @Bool@ from the key means that switching day\/night
--- does not invalidate view-mode tiles, effectively doubling cache
--- capacity.
---
--- With the multi-key 'Seer.Render.Atlas.AtlasTextureCache', switching
--- any component of the key is an O(1) pointer update — tiles for the
--- previous key remain cached and are available instantly if the user
--- switches back.
+-- Base terrain tiles and sky/weather overlay tiles are keyed independently so
+-- weather ticks, overlay basis changes, and plugin overlay refreshes do not
+-- invalidate unchanged base terrain atlas tiles.  Day/night remains a separate
+-- top overlay (see 'Seer.Render.Atlas').
 module Actor.AtlasCache
-  ( AtlasKey(..)
+  ( AtlasLayer(..)
+  , AtlasKey(..)
+  , atlasKeyLayer
+  , atlasKeyIsBase
   , atlasKeyVersion
   , atlasKeyDataVersion
   , atlasKeySelectionTag
   , atlasKeyViewMode
   , atlasKeyWaterLevel
+  , terrainSnapshotBaseVersion
+  , terrainSnapshotOverlayVersion
   , terrainSnapshotViewVersion
   , terrainSnapshotSelectionVersion
   , atlasKeyFor
+  , atlasBaseKeyForSelection
+  , atlasOverlayKeyForSelection
+  , atlasKeysForSelection
   , atlasKeyForSelection
   ) where
 
 import Actor.Data (TerrainSnapshot(..))
-import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), ViewMode(..), WeatherBasis(..), baseViewModeToViewMode, layeredViewStateToViewMode, legacyViewModeToLayeredViewState, skyOverlayModeToViewMode)
+import Actor.UI
+  ( BaseViewMode(..)
+  , LayeredViewState(..)
+  , SkyOverlayMode(..)
+  , ViewMode(..)
+  , WeatherBasis(..)
+  , baseViewModeFromViewMode
+  , baseViewModeToViewMode
+  , layeredViewStateToViewMode
+  , legacyViewModeToLayeredViewState
+  , skyOverlayModeFromViewMode
+  , skyOverlayModeToViewMode
+  )
 import Data.Bits (xor)
 import Data.Word (Word64)
 import GHC.Float (castFloatToWord32)
 import qualified Data.Text as Text
-import Topo.Overlay (Overlay(..), OverlayProvenance(..), lookupOverlay)
-import Topo.Weather (weatherNormalsOverlayName)
+
+-- | Which independently-scheduled atlas layer a key targets.
+data AtlasLayer
+  = AtlasBaseLayer
+  | AtlasOverlayLayer
+  | AtlasLegacyLayer
+  deriving (Eq, Ord, Show)
 
 -- | Lightweight atlas cache key for O(1) equality checks.
 --
--- Stores the view-specific data version stamp rather than the full snapshot,
--- avoiding deep structural equality on every frame.
---
--- Legacy fields: @ViewMode@, @waterLevel@, @viewDataVersion@.
--- Explicit layered fields additionally carry comparable data version and
--- selection tag so queue freshness never has to infer them from the raw stamp.
+-- New render paths use 'BaseAtlasKey' and 'OverlayAtlasKey'.  The legacy
+-- constructors remain accepted for older tests and callers that still build a
+-- single pre-composited atlas, but layered scheduling no longer depends on
+-- overlay/weather stamps in base keys.
 data AtlasKey
-  = AtlasKey !ViewMode !Float !Word64
+  = BaseAtlasKey !BaseViewMode !Float !Word64
+  | OverlayAtlasKey !SkyOverlayMode !WeatherBasis !Bool !Word64
+    -- ^ Overlay mode, temporal basis, legacy-opaque rendering policy, and the
+    -- layer data version.  Opacity is intentionally not part of the key: the
+    -- render loop applies it as a draw-time alpha multiplier.
+  | AtlasKey !ViewMode !Float !Word64
   | LayeredAtlasKey !ViewMode !Float !Word64 !Word64 !Word64
   deriving (Eq, Ord, Show)
 
--- | Extract the view-specific version from an 'AtlasKey'.
+atlasKeyLayer :: AtlasKey -> AtlasLayer
+atlasKeyLayer BaseAtlasKey{} = AtlasBaseLayer
+atlasKeyLayer OverlayAtlasKey{} = AtlasOverlayLayer
+atlasKeyLayer _ = AtlasLegacyLayer
+
+atlasKeyIsBase :: AtlasKey -> Bool
+atlasKeyIsBase key = atlasKeyLayer key == AtlasBaseLayer || atlasKeyLayer key == AtlasLegacyLayer
+
+-- | Extract the layer-specific version from an 'AtlasKey'.
 atlasKeyVersion :: AtlasKey -> Word64
+atlasKeyVersion (BaseAtlasKey _ _ v) = v
+atlasKeyVersion (OverlayAtlasKey _ _ _ v) = v
 atlasKeyVersion (AtlasKey _ _ v) = v
 atlasKeyVersion (LayeredAtlasKey _ _ v _ _) = v
 
 -- | Extract the monotonically comparable data-version component from an atlas
--- key.  Explicit layered keys keep this separate from their selection tag so
+-- key. Explicit layered keys keep this separate from their selection tag so
 -- manager freshness comparisons do not infer structure from arbitrary legacy
 -- version bits.
 atlasKeyDataVersion :: AtlasKey -> Word64
+atlasKeyDataVersion (BaseAtlasKey _ _ v) = v
+atlasKeyDataVersion (OverlayAtlasKey _ _ _ v) = v
 atlasKeyDataVersion (AtlasKey _ _ v) = v
 atlasKeyDataVersion (LayeredAtlasKey _ _ _ dataVersion _) = dataVersion
 
--- | Stable tag for the base/overlay/opacity part of a key.  Legacy keys use 0;
--- explicit layered keys use a non-zero tag so atlas-manager stale/future
--- comparisons do not treat different compositions of the same legacy 'ViewMode'
--- as the same key family.
+-- | Stable tag for the key family used by latest-wins queue comparisons.
 atlasKeySelectionTag :: AtlasKey -> Word64
+atlasKeySelectionTag (BaseAtlasKey base _ _) = baseFingerprint base
+atlasKeySelectionTag (OverlayAtlasKey overlay basis legacyOpaque _) =
+  foldl mix64 3337565984
+    [ overlayFingerprint overlay
+    , weatherBasisFingerprint basis
+    , if legacyOpaque then 1 else 2
+    ]
 atlasKeySelectionTag AtlasKey{} = 0
-atlasKeySelectionTag (LayeredAtlasKey _ _ _ _ selectionTag) = selectionTag
+atlasKeySelectionTag (LayeredAtlasKey _ _ _ _ selectionTag') = selectionTag'
 
 atlasKeyViewMode :: AtlasKey -> ViewMode
+atlasKeyViewMode (BaseAtlasKey base _ _) = baseViewModeToViewMode base
+atlasKeyViewMode (OverlayAtlasKey overlay basis _ _) =
+  maybe ViewElevation id (skyOverlayModeToViewMode basis overlay)
 atlasKeyViewMode (AtlasKey mode _ _) = mode
 atlasKeyViewMode (LayeredAtlasKey mode _ _ _ _) = mode
 
 atlasKeyWaterLevel :: AtlasKey -> Float
+atlasKeyWaterLevel (BaseAtlasKey _ waterLevel _) = waterLevel
+atlasKeyWaterLevel OverlayAtlasKey{} = 0
 atlasKeyWaterLevel (AtlasKey _ waterLevel _) = waterLevel
 atlasKeyWaterLevel (LayeredAtlasKey _ waterLevel _ _ _) = waterLevel
 
--- | Choose the version stamp relevant to a view mode.
+-- | Version stamp for base terrain atlas layers.
+terrainSnapshotBaseVersion :: BaseViewMode -> TerrainSnapshot -> Word64
+terrainSnapshotBaseVersion base terrainSnap = case base of
+  BaseViewVegetation -> max (tsVersion terrainSnap) (tsVegetationVersion terrainSnap)
+  _ -> tsVersion terrainSnap
+
+-- | Version stamp for sky/weather overlay atlas layers.
+terrainSnapshotOverlayVersion :: SkyOverlayMode -> WeatherBasis -> TerrainSnapshot -> Word64
+terrainSnapshotOverlayVersion overlay basis terrainSnap = case overlay of
+  SkyOverlayWeatherTemperature -> basisVersion basis
+  SkyOverlayPrecipitation -> basisVersion basis
+  SkyOverlayCloud -> case basis of
+    WeatherBasisAverage -> max (tsClimateVersion terrainSnap) (tsOverlayVersion terrainSnap)
+    WeatherBasisCurrent -> tsWeatherVersion terrainSnap
+  SkyOverlayPlugin{} -> tsOverlayVersion terrainSnap
+  where
+    basisVersion WeatherBasisAverage = tsClimateVersion terrainSnap
+    basisVersion WeatherBasisCurrent = tsWeatherVersion terrainSnap
+
+-- | Choose the version stamp relevant to a legacy view mode.
 --
--- Layer-specific views depend on the base terrain chunk layout plus their own
--- data layer.  All layer stamps come from one monotonic counter, so 'max'
--- changes when either dependency changes while overlay/weather ticks leave
--- elevation/biome keys stable.
+-- This is now a layer selector rather than a pre-composited selector:
+-- base modes return base versions, current weather modes return
+-- 'tsWeatherVersion', average climate modes return 'tsClimateVersion', and
+-- plugin overlays return 'tsOverlayVersion'.
 terrainSnapshotViewVersion :: ViewMode -> TerrainSnapshot -> Word64
-terrainSnapshotViewVersion mode terrainSnap = case mode of
-  ViewClimate      -> max (tsVersion terrainSnap) (tsClimateVersion terrainSnap)
-  ViewPrecip       -> max (tsVersion terrainSnap) (tsClimateVersion terrainSnap)
-  ViewPrecipCurrent -> max (tsVersion terrainSnap) (tsWeatherVersion terrainSnap)
-  ViewWeather      -> max (tsVersion terrainSnap) (tsWeatherVersion terrainSnap)
-  ViewCloud        -> max (tsVersion terrainSnap) (tsWeatherVersion terrainSnap)
-  ViewCloudTypical -> weatherNormalsViewVersion terrainSnap
-  ViewVegetation   -> max (tsVersion terrainSnap) (tsVegetationVersion terrainSnap)
-  ViewOverlay{}    -> max (tsVersion terrainSnap) (tsOverlayVersion terrainSnap)
-  _                -> tsVersion terrainSnap
+terrainSnapshotViewVersion mode terrainSnap =
+  case baseViewModeFromViewMode mode of
+    Just base -> terrainSnapshotBaseVersion base terrainSnap
+    Nothing -> case skyOverlayModeFromViewMode mode of
+      Just (overlay, basis) -> terrainSnapshotOverlayVersion overlay basis terrainSnap
+      Nothing -> tsVersion terrainSnap
 
-weatherNormalsViewVersion :: TerrainSnapshot -> Word64
-weatherNormalsViewVersion terrainSnap =
-  let base = max (tsVersion terrainSnap) (tsClimateVersion terrainSnap)
-      -- Use the weather_normals overlay's own provenance stamp so current
-      -- weather overlay ticks do not invalidate typical-normal atlas keys.
-      normalsStamp = case lookupOverlay weatherNormalsOverlayName (tsOverlayStore terrainSnap) of
-        Nothing -> 0
-        Just overlay ->
-          let provenance = ovProvenance overlay
-          in 1 + opSeed provenance * 16777619 + fromIntegral (opVersion provenance)
-  in base * 16777619 + normalsStamp
-
--- | Version stamp for an explicit layered selection.
---
--- Legacy adapter-equivalent selections deliberately keep the old per-'ViewMode'
--- version so existing keys and weather-tick invalidation behaviour remain
--- stable.  Truly layered selections salt the relevant data-layer version with
--- the base/overlay/opacity choice so base or opacity changes cannot reuse an
--- atlas built for another composition.
+-- | Version stamp for an explicit layered selection used by non-render-target
+-- fallback geometry and compatibility code that still stores a composited
+-- terrain cache.  It intentionally combines base, overlay, opacity, and
+-- selection identity; render-target atlas scheduling uses the split base and
+-- overlay keys above instead.
 terrainSnapshotSelectionVersion :: LayeredViewState -> TerrainSnapshot -> Word64
 terrainSnapshotSelectionVersion selection terrainSnap =
-  case lvsSkyOverlay selection of
-    Nothing -> terrainSnapshotViewVersion (baseViewModeToViewMode (lvsBaseView selection)) terrainSnap
-    Just _
-      | selectionIsLegacyEquivalent selection ->
-          terrainSnapshotViewVersion (legacyModeForSelection selection) terrainSnap
-      | otherwise -> selectionVersionSalt selection (layeredDataVersion selection terrainSnap)
+  selectionVersionSalt selection (layeredDataVersion selection terrainSnap)
 
 selectionIsLegacyEquivalent :: LayeredViewState -> Bool
 selectionIsLegacyEquivalent selection =
@@ -126,19 +165,13 @@ selectionIsLegacyEquivalent selection =
     Just legacyMode -> selection == legacyViewModeToLayeredViewState legacyMode
     Nothing -> False
 
-legacyModeForSelection :: LayeredViewState -> ViewMode
-legacyModeForSelection selection =
-  case layeredViewStateToViewMode selection of
-    Just legacyMode -> legacyMode
-    Nothing -> baseViewModeToViewMode (lvsBaseView selection)
-
 layeredDataVersion :: LayeredViewState -> TerrainSnapshot -> Word64
 layeredDataVersion selection terrainSnap =
-  let baseVersion = terrainSnapshotViewVersion (baseViewModeToViewMode (lvsBaseView selection)) terrainSnap
-      overlayVersion = case lvsSkyOverlay selection >>= skyOverlayModeToViewMode (lvsWeatherBasis selection) of
+  let baseVersion = terrainSnapshotBaseVersion (lvsBaseView selection) terrainSnap
+      overlayVersion = case lvsSkyOverlay selection of
         Nothing -> 0
-        Just overlayMode -> terrainSnapshotViewVersion overlayMode terrainSnap
-  in max baseVersion overlayVersion
+        Just overlay -> terrainSnapshotOverlayVersion overlay (lvsWeatherBasis selection) terrainSnap
+  in mix64 baseVersion overlayVersion
 
 selectionVersionSalt :: LayeredViewState -> Word64 -> Word64
 selectionVersionSalt selection dataVersion =
@@ -194,18 +227,46 @@ mix64 a b = (a `xor` b) * 1099511628211
 clamp01 :: Float -> Float
 clamp01 value = max 0 (min 1 value)
 
+-- | Build the split base key for a layered selection.
+atlasBaseKeyForSelection :: LayeredViewState -> Float -> TerrainSnapshot -> AtlasKey
+atlasBaseKeyForSelection selection waterLevel terrainSnap =
+  BaseAtlasKey (lvsBaseView selection) waterLevel (terrainSnapshotBaseVersion (lvsBaseView selection) terrainSnap)
+
+-- | Build the split overlay key for a layered selection, if any.
+atlasOverlayKeyForSelection :: LayeredViewState -> TerrainSnapshot -> Maybe AtlasKey
+atlasOverlayKeyForSelection selection terrainSnap = do
+  overlay <- lvsSkyOverlay selection
+  let basis = lvsWeatherBasis selection
+      legacyOpaque = selectionIsLegacyEquivalent selection
+      version = terrainSnapshotOverlayVersion overlay basis terrainSnap
+  pure (OverlayAtlasKey overlay basis legacyOpaque version)
+
+-- | All atlas keys needed to draw a layered selection, ordered base first and
+-- overlay second.  This order gives the visible base stage first chance at
+-- limited worker capacity while still allowing overlay-only refreshes to be
+-- scheduled independently when the base key is unchanged.
+atlasKeysForSelection :: LayeredViewState -> Float -> TerrainSnapshot -> [AtlasKey]
+atlasKeysForSelection selection waterLevel terrainSnap =
+  atlasBaseKeyForSelection selection waterLevel terrainSnap
+    : maybe [] (:[]) (atlasOverlayKeyForSelection selection terrainSnap)
+
+-- | Compatibility key for a legacy view mode.  Base modes produce base-layer
+-- keys; weather/climate/plugin modes produce legacy-opaque overlay-layer keys.
 atlasKeyFor :: ViewMode -> Float -> TerrainSnapshot -> AtlasKey
 atlasKeyFor mode waterLevel terrainSnap =
-  AtlasKey mode waterLevel (terrainSnapshotViewVersion mode terrainSnap)
+  case baseViewModeFromViewMode mode of
+    Just base -> BaseAtlasKey base waterLevel (terrainSnapshotBaseVersion base terrainSnap)
+    Nothing -> case skyOverlayModeFromViewMode mode of
+      Just (overlay, basis) ->
+        OverlayAtlasKey overlay basis True (terrainSnapshotOverlayVersion overlay basis terrainSnap)
+      Nothing -> AtlasKey mode waterLevel (terrainSnapshotViewVersion mode terrainSnap)
 
+-- | Compatibility selector for callers that still expect a single key for a
+-- layered selection.  It returns the overlay key when an overlay is active and
+-- the base key otherwise.  New render/scheduler code should use
+-- 'atlasKeysForSelection' (or the base/overlay selectors) instead.
 atlasKeyForSelection :: LayeredViewState -> Float -> TerrainSnapshot -> AtlasKey
 atlasKeyForSelection selection waterLevel terrainSnap =
-  let mode = case layeredViewStateToViewMode selection of
-        Just legacyMode -> legacyMode
-        Nothing -> baseViewModeToViewMode (lvsBaseView selection)
-      keyVersion = terrainSnapshotSelectionVersion selection terrainSnap
-  in if lvsSkyOverlay selection == Nothing || selectionIsLegacyEquivalent selection
-      then AtlasKey mode waterLevel keyVersion
-      else
-        let dataVersion = layeredDataVersion selection terrainSnap
-        in LayeredAtlasKey mode waterLevel keyVersion dataVersion (selectionTag selection)
+  case atlasOverlayKeyForSelection selection terrainSnap of
+    Just overlayKey -> overlayKey
+    Nothing -> atlasBaseKeyForSelection selection waterLevel terrainSnap

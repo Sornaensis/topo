@@ -12,6 +12,9 @@ module Actor.AtlasManager
   , AtlasFreshDrainRequest(..)
   , AtlasFreshDrainStats(..)
   , AtlasQueuedTarget(..)
+  , atlasJobsForSelection
+  , atlasJobsForSelectionTransition
+  , atlasJobsForKeys
   , AtlasManagerQueueRef
   , AtlasManagerQueueState(..)
   , emptyAtlasManagerQueueState
@@ -32,10 +35,10 @@ module Actor.AtlasManager
   , inspectFreshAtlasJobs
   ) where
 
-import Actor.AtlasCache (AtlasKey, atlasKeyDataVersion, atlasKeySelectionTag, atlasKeyVersion, atlasKeyViewMode, atlasKeyWaterLevel)
-import Actor.AtlasFreshness (AtlasFreshness(..), AtlasFreshnessRef, writeAtlasFreshnessBuild, writeAtlasFreshnessCurrent)
+import Actor.AtlasCache (AtlasKey, atlasKeyDataVersion, atlasKeySelectionTag, atlasKeyVersion, atlasKeyViewMode, atlasKeyWaterLevel, atlasKeysForSelection)
+import Actor.AtlasFreshness (AtlasFreshness(..), AtlasFreshnessRef, writeAtlasFreshnessBuild)
 import Actor.AtlasResult (AtlasBuildId(..), AtlasBuildTarget(..))
-import Actor.Data (TerrainSnapshot(..))
+import Actor.Data (TerrainGeoContext, TerrainSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion)
 import Actor.UI (LayeredViewState, ViewMode(..))
 import Control.Monad (when)
@@ -47,6 +50,7 @@ import Data.Word (Word64)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
 import Seer.Render.Viewport (AtlasViewportCoverage, atlasViewportCoverageCovers)
+import Seer.Render.ZoomStage (ZoomStage(..))
 
 
 data AtlasJob = AtlasJob
@@ -59,6 +63,7 @@ data AtlasJob = AtlasJob
   , ajHexRadius  :: !Int
   , ajAtlasScale :: !Int
   , ajViewportCoverage :: !(Maybe AtlasViewportCoverage)
+  , ajForceRebuild :: !Bool
   }
 
 data AtlasDispatchJob = AtlasDispatchJob
@@ -97,6 +102,7 @@ data AtlasAcceptedJob = AtlasAcceptedJob
   , aajKeyDataVersion :: !Word64
   , aajKeySelectionTag :: !Word64
   , aajSnapshotVersion :: !SnapshotVersion
+  , aajGeoContext :: !TerrainGeoContext
   , aajCoverage :: !(Maybe AtlasViewportCoverage)
   }
 
@@ -227,6 +233,65 @@ atlasJobTarget job = AtlasBuildTarget
   , abtAtlasScale = ajAtlasScale job
   }
 
+-- | Build atlas jobs for all split layer keys needed by a selection.
+--
+-- Stages are the outer loop so the current visible stage remains ahead of
+-- backfill stages even when a selection has both base and overlay work.
+atlasJobsForSelection
+  :: SnapshotVersion
+  -> LayeredViewState
+  -> Float
+  -> TerrainSnapshot
+  -> [ZoomStage]
+  -> Maybe AtlasViewportCoverage
+  -> [AtlasJob]
+atlasJobsForSelection snapshotVersion selection waterLevel terrainSnap =
+  atlasJobsForKeys snapshotVersion selection waterLevel terrainSnap (atlasKeysForSelection selection waterLevel terrainSnap)
+
+-- | Build jobs only for keys introduced by a view-selection transition.
+-- This keeps overlay/weather UI changes from re-enqueueing unchanged base work.
+atlasJobsForSelectionTransition
+  :: SnapshotVersion
+  -> LayeredViewState
+  -> Float
+  -> LayeredViewState
+  -> Float
+  -> TerrainSnapshot
+  -> [ZoomStage]
+  -> Maybe AtlasViewportCoverage
+  -> [AtlasJob]
+atlasJobsForSelectionTransition snapshotVersion oldSelection oldWaterLevel newSelection newWaterLevel terrainSnap =
+  let oldKeys = atlasKeysForSelection oldSelection oldWaterLevel terrainSnap
+      newKeys = atlasKeysForSelection newSelection newWaterLevel terrainSnap
+      changedKeys = filter (`notElem` oldKeys) newKeys
+  in atlasJobsForKeys snapshotVersion newSelection newWaterLevel terrainSnap changedKeys
+
+atlasJobsForKeys
+  :: SnapshotVersion
+  -> LayeredViewState
+  -> Float
+  -> TerrainSnapshot
+  -> [AtlasKey]
+  -> [ZoomStage]
+  -> Maybe AtlasViewportCoverage
+  -> [AtlasJob]
+atlasJobsForKeys snapshotVersion selection _waterLevel terrainSnap keys stages viewportCoverage =
+  [ AtlasJob
+      { ajKey = key
+      , ajViewMode = atlasKeyViewMode key
+      , ajViewSelection = selection
+      , ajWaterLevel = atlasKeyWaterLevel key
+      , ajSnapshotVersion = snapshotVersion
+      , ajTerrain = terrainSnap
+      , ajHexRadius = zsHexRadius stage
+      , ajAtlasScale = zsAtlasScale stage
+      , ajViewportCoverage = viewportCoverage
+      , ajForceRebuild = False
+      }
+  | stage <- stages
+  , key <- keys
+  ]
+
 atlasJobAccepted :: AtlasBuildId -> AtlasJob -> AtlasAcceptedJob
 atlasJobAccepted buildId job = AtlasAcceptedJob
   { aajBuildId = buildId
@@ -235,6 +300,7 @@ atlasJobAccepted buildId job = AtlasAcceptedJob
   , aajKeyDataVersion = atlasKeyDataVersion (ajKey job)
   , aajKeySelectionTag = atlasKeySelectionTag (ajKey job)
   , aajSnapshotVersion = ajSnapshotVersion job
+  , aajGeoContext = tsGeoContext (ajTerrain job)
   , aajCoverage = ajViewportCoverage job
   }
 
@@ -244,9 +310,13 @@ acceptedVersionStamp accepted = (aajKeyDataVersion accepted, aajSnapshotVersion 
 jobVersionStamp :: AtlasJob -> (Word64, SnapshotVersion)
 jobVersionStamp job = (atlasKeyDataVersion (ajKey job), ajSnapshotVersion job)
 
+acceptedGeoMatchesJob :: AtlasAcceptedJob -> AtlasJob -> Bool
+acceptedGeoMatchesJob accepted job = aajGeoContext accepted == tsGeoContext (ajTerrain job)
+
 acceptedCoversJob :: AtlasAcceptedJob -> AtlasJob -> Bool
 acceptedCoversJob accepted job =
   aajKey accepted == ajKey job
+    && acceptedGeoMatchesJob accepted job
     && case (aajCoverage accepted, ajViewportCoverage job) of
       (Just covered, Just required) -> atlasViewportCoverageCovers covered required
       _ -> False
@@ -254,6 +324,7 @@ acceptedCoversJob accepted job =
 sameStampRedundant :: AtlasAcceptedJob -> AtlasJob -> Bool
 sameStampRedundant accepted job =
   aajKey accepted == ajKey job
+    && acceptedGeoMatchesJob accepted job
     && case (aajCoverage accepted, ajViewportCoverage job) of
       (Just covered, Just required) -> atlasViewportCoverageCovers covered required
       (Nothing, Nothing) -> True
@@ -268,10 +339,12 @@ enqueueDropReason queuedForSlot accepted job =
       jobStamp = jobVersionStamp job
       sameSelection = aajKeySelectionTag accepted == atlasKeySelectionTag (ajKey job)
   in if sameSelection && acceptedStamp > jobStamp
-      then Just AtlasEnqueueStale
-      else if sameSelection && acceptedStamp == jobStamp && sameStampRedundant accepted job
+    then Just AtlasEnqueueStale
+    else if ajForceRebuild job
+      then Nothing
+      else if sameSelection && sameStampRedundant accepted job && (not queuedForSlot || acceptedStamp == jobStamp)
         then Just AtlasEnqueueDuplicate
-        else if sameSelection && queuedForSlot && acceptedCoversJob accepted job
+        else if sameSelection && queuedForSlot && acceptedStamp == jobStamp && acceptedCoversJob accepted job
           then Just AtlasEnqueueDuplicate
           else Nothing
 
@@ -285,10 +358,8 @@ restampDispatchJob snapshotVersion mbDispatchCoverage dispatchJob = dispatchJob
       }
   }
 
-publishDispatchFreshness :: AtlasFreshnessRef -> AtlasKey -> SnapshotVersion -> [AtlasDispatchJob] -> IO ()
-publishDispatchFreshness ref key snapshotVersion dispatchJobs = do
-  writeAtlasFreshnessCurrent ref key snapshotVersion
-  mapM_ publishBuild dispatchJobs
+publishDispatchFreshness :: AtlasFreshnessRef -> [AtlasDispatchJob] -> IO ()
+publishDispatchFreshness ref dispatchJobs = mapM_ publishBuild dispatchJobs
   where
     publishBuild dispatchJob =
       writeAtlasFreshnessBuild ref (atlasJobTarget (adjJob dispatchJob)) (adjBuildId dispatchJob)
@@ -397,7 +468,8 @@ selectFreshDrain req queue =
       shouldKeep queued
         | Set.member (adjBuildId queued) selectedIds = False
         | isDispatchable queued = not hasFutureWork && not (isStaleForRequest queued) && Set.member (adjBuildId queued) deferredIds
-        | otherwise = isFuture queued
+        | sameKeyFamily (adjJob queued) = isFuture queued
+        | otherwise = True
       queue' = filter shouldKeep queue
       droppedCount = length queue - length selected - length queue'
       currentStageDispatches = length (filter (dispatchMatchesPreferred (afdrPreferredTarget req)) selected)
@@ -511,8 +583,6 @@ actor AtlasManager
           , afdrDispatchCoverage = Nothing
           }
         (fresh, queue', _stats) = selectFreshDrain request (amQueue st)
-        key = afKey freshness
-        requestSnapshotVersion = afSnapshotVersion freshness
         queueChanged = queueSignature queue' /= queueSignature (amQueue st)
         queueRevision' = if queueChanged then amQueueRevision st + 1 else amQueueRevision st
         droppedSlots = droppedUndispatchedSlots (amQueue st) fresh queue'
@@ -533,16 +603,13 @@ actor AtlasManager
           , amDispatchedBuildIds = dispatchedBuildIds'
           }
     case amFreshnessRef st of
-      Just ref | not (null fresh) -> publishDispatchFreshness ref key requestSnapshotVersion fresh
+      Just ref | not (null fresh) -> publishDispatchFreshness ref fresh
       _ -> pure ()
     when queueChanged $
       publishQueueState st'
     pure (st', fresh)
   on drainFreshJobsLimited = \request st -> do
     let (fresh, queue', _stats) = selectFreshDrain request (amQueue st)
-        freshness = afdrFreshness request
-        key = afKey freshness
-        requestSnapshotVersion = afSnapshotVersion freshness
         queueChanged = queueSignature queue' /= queueSignature (amQueue st)
         queueRevision' = if queueChanged then amQueueRevision st + 1 else amQueueRevision st
         droppedSlots = droppedUndispatchedSlots (amQueue st) fresh queue'
@@ -563,16 +630,13 @@ actor AtlasManager
           , amDispatchedBuildIds = dispatchedBuildIds'
           }
     case amFreshnessRef st of
-      Just ref | not (null fresh) -> publishDispatchFreshness ref key requestSnapshotVersion fresh
+      Just ref | not (null fresh) -> publishDispatchFreshness ref fresh
       _ -> pure ()
     when queueChanged $
       publishQueueState st'
     pure (st', fresh)
   on drainFreshJobsLimitedWithStats = \request st -> do
     let (fresh, queue', stats) = selectFreshDrain request (amQueue st)
-        freshness = afdrFreshness request
-        key = afKey freshness
-        requestSnapshotVersion = afSnapshotVersion freshness
         queueChanged = queueSignature queue' /= queueSignature (amQueue st)
         queueRevision' = if queueChanged then amQueueRevision st + 1 else amQueueRevision st
         droppedSlots = droppedUndispatchedSlots (amQueue st) fresh queue'
@@ -593,7 +657,7 @@ actor AtlasManager
           , amDispatchedBuildIds = dispatchedBuildIds'
           }
     case amFreshnessRef st of
-      Just ref | not (null fresh) -> publishDispatchFreshness ref key requestSnapshotVersion fresh
+      Just ref | not (null fresh) -> publishDispatchFreshness ref fresh
       _ -> pure ()
     when queueChanged $
       publishQueueState st'

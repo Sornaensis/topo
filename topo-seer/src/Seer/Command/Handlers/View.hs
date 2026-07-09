@@ -25,9 +25,8 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
 
-import Actor.AtlasCache (atlasKeyForSelection, atlasKeyViewMode)
-import Actor.AtlasManager (AtlasJob(..), enqueueAtlasBuild)
-import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom)
+import Actor.AtlasManager (atlasJobsForSelection, atlasJobsForSelectionTransition, enqueueAtlasBuild)
+import Seer.Render.ZoomStage (orderedZoomStagesForZoom)
 import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.UI (getUiSnapshot)
@@ -65,8 +64,10 @@ handleSetViewMode ctx reqId params = do
           pure $ errResponse reqId ("unknown view mode or basis combination: " <> modeName)
         Just vm -> do
           let handles = ccActorHandles ctx
-          setUiViewMode (ahUiHandle handles) vm
-          scheduleAtlasRebuild handles vm
+              uiHandle = ahUiHandle handles
+          previousUi <- getUiSnapshot uiHandle
+          setUiViewMode uiHandle vm
+          scheduleAtlasTransitionRebuild handles previousUi vm
           pure $ okResponse reqId $ object
             [ "view_mode" .= viewModeToText vm
             , "temporal_basis" .= fmap (temporalBasisToText . vmdsTemporalBasis) (viewModeDataSemantics vm)
@@ -138,21 +139,30 @@ scheduleAtlasRebuild handles mode = do
   let selection = if uiViewMode uiSnap == mode
         then effectiveViewSelection uiSnap
         else legacyViewModeToLayeredViewState mode
-      atlasKey = atlasKeyForSelection selection (uiRenderWaterLevel uiSnap) terrainSnap
-      keyMode = atlasKeyViewMode atlasKey
       orderedStages = orderedZoomStagesForZoom (uiZoom uiSnap)
-      job stage = AtlasJob
-        { ajKey        = atlasKey
-        , ajViewMode   = keyMode
-        , ajViewSelection = selection
-        , ajWaterLevel = uiRenderWaterLevel uiSnap
-        , ajSnapshotVersion = snapshotVersion
-        , ajTerrain    = terrainSnap
-        , ajHexRadius  = zsHexRadius stage
-        , ajAtlasScale = zsAtlasScale stage
-        , ajViewportCoverage = Nothing
-        }
-  mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles) . job) orderedStages
+      jobs = atlasJobsForSelection snapshotVersion selection (uiRenderWaterLevel uiSnap) terrainSnap orderedStages Nothing
+  mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles)) jobs
+
+-- | Enqueue only layer keys that changed while switching views/overlays.
+scheduleAtlasTransitionRebuild :: ActorHandles -> UiState -> ViewMode -> IO ()
+scheduleAtlasTransitionRebuild handles previousUi mode = do
+  terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
+  uiSnap      <- getUiSnapshot (ahUiHandle handles)
+  snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
+  let selection = if uiViewMode uiSnap == mode
+        then effectiveViewSelection uiSnap
+        else legacyViewModeToLayeredViewState mode
+      orderedStages = orderedZoomStagesForZoom (uiZoom uiSnap)
+      jobs = atlasJobsForSelectionTransition
+        snapshotVersion
+        (effectiveViewSelection previousUi)
+        (uiRenderWaterLevel previousUi)
+        selection
+        (uiRenderWaterLevel uiSnap)
+        terrainSnap
+        orderedStages
+        Nothing
+  mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles)) jobs
 
 -- --------------------------------------------------------------------------
 -- Parsers
@@ -265,7 +275,7 @@ handleSetOverlay ctx reqId params = do
                   uiHandle = ahUiHandle handles
               setUiOverlayFields uiHandle fields
               setUiViewMode uiHandle vm
-              scheduleAtlasRebuild handles vm
+              scheduleAtlasTransitionRebuild handles ui vm
               pure $ okResponse reqId $ object
                 [ "overlay"     .= overlayName
                 , "field_index" .= fieldIdx
@@ -322,7 +332,7 @@ handleCycleOverlay ctx reqId params = do
             then do
               let handles = ccActorHandles ctx
               setUiViewMode (ahUiHandle handles) ViewElevation
-              scheduleAtlasRebuild handles ViewElevation
+              scheduleAtlasTransitionRebuild handles ui ViewElevation
               pure $ okResponse reqId $ object
                 [ "view_mode" .= ("elevation" :: Text)
                 , "overlay"   .= Null
@@ -335,7 +345,7 @@ handleCycleOverlay ctx reqId params = do
                   fields = maybe (uiOverlayFields ui) id (overlayFieldsForName snap overlayName)
               setUiOverlayFields uiHandle fields
               setUiViewMode uiHandle vm
-              scheduleAtlasRebuild handles vm
+              scheduleAtlasTransitionRebuild handles ui vm
               pure $ okResponse reqId $ object
                 [ "view_mode" .= viewModeToText vm
                 , "overlay"   .= overlayName
@@ -368,7 +378,7 @@ handleCycleOverlayField ctx reqId params = do
                   uiHandle = ahUiHandle handles
               setUiOverlayFields uiHandle fields
               setUiViewMode uiHandle vm
-              scheduleAtlasRebuild handles vm
+              scheduleAtlasTransitionRebuild handles ui vm
               let (fname, ftype) = fields !! newIdx
               pure $ okResponse reqId $ object
                 [ "overlay"     .= name

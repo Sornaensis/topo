@@ -26,7 +26,7 @@ module Actor.AtlasWorker
   , enqueueAtlasBuildWork
   ) where
 
-import Actor.AtlasCache (AtlasKey)
+import Actor.AtlasCache (AtlasKey(..), atlasKeyIsBase)
 import Actor.AtlasFreshness (AtlasFreshnessRef, atlasTargetBuildIsFresh, readAtlasFreshnessRef)
 import Actor.AtlasResult (AtlasBuildId, AtlasBuildResult(..), AtlasBuildTarget(..), AtlasDayNightTile(..), AtlasTileSetManifest(..))
 import Actor.AtlasResultBroker (AtlasResultRef, pushAtlasResult)
@@ -47,7 +47,7 @@ import UI.HexGeometry (normalizeHexBounds)
 import UI.RiverRender (RiverGeometry(..), buildChunkRiverGeometry, defaultRiverRenderConfig, scaleRiverWidths)
 import UI.TerrainAtlas (AtlasChunkGeometry(..), AtlasTileGeometry(..), attachRiverOverlay, composeTilesFromGeometry, mergeChunkGeometry)
 import UI.DayNight (DayNightKey, DayNightSpec)
-import UI.TerrainRender (ChunkGeometry, buildChunkGeometryForSelection, buildDayNightGeometry)
+import UI.TerrainRender (ChunkGeometry, buildChunkBaseGeometry, buildChunkGeometryForSelection, buildChunkSkyOverlayGeometryForSelection, buildDayNightGeometry)
 import Topo.Weather (getWeatherNormalsFromStore)
 
 
@@ -291,7 +291,13 @@ runAtlasBuild job = do
       -- removes the green thread entirely, guaranteeing the bound main
       -- thread (render loop) can reclaim its capability.
       mbGeomPairs <- traverseFresh job chunkPairs $ \(k, chunk) -> do
-        let geom = buildChunkGeometryForSelection (abHexRadius job) config selection waterLevel climateChunks weatherChunks weatherNormalsChunks vegChunks (IntMap.lookup k overlayMap) k chunk
+        let geom = case abKey job of
+              BaseAtlasKey base _ _ ->
+                buildChunkBaseGeometry (abHexRadius job) config base waterLevel climateChunks weatherChunks weatherNormalsChunks vegChunks (IntMap.lookup k overlayMap) k chunk
+              OverlayAtlasKey{} ->
+                buildChunkSkyOverlayGeometryForSelection (abHexRadius job) config selection waterLevel climateChunks weatherChunks weatherNormalsChunks vegChunks (IntMap.lookup k overlayMap) k chunk
+              _ ->
+                buildChunkGeometryForSelection (abHexRadius job) config selection waterLevel climateChunks weatherChunks weatherNormalsChunks vegChunks (IntMap.lookup k overlayMap) k chunk
         _ <- evaluate geom
         threadDelay 100  -- 0.1ms, releases capability
         pure (k, geom)
@@ -301,9 +307,10 @@ runAtlasBuild job = do
           -- Build day/night overlay geometry when a brightness function is provided.
           -- This produces an independent overlay (black + alpha) that can be
           -- cached and drawn separately from the base view-mode tiles.
-          mbDayNightGeomPairs <- case abDayNightSpec job of
-            Nothing -> pure (Just [])
-            Just (_, dnFn) -> traverseFresh job chunkPairs $ \(k, chunk) -> do
+          mbDayNightGeomPairs <- case (atlasKeyIsBase (abKey job), abDayNightSpec job) of
+            (_, Nothing) -> pure (Just [])
+            (False, Just _) -> pure (Just [])
+            (True, Just (_, dnFn)) -> traverseFresh job chunkPairs $ \(k, chunk) -> do
               let geom = buildDayNightGeometry (abHexRadius job) config dnFn k chunk
               _ <- evaluate geom
               threadDelay 100
@@ -321,8 +328,11 @@ runAtlasBuild job = do
                       -- padded viewport). Cross-chunk neighbour lookups still use the
                       -- full tsTerrainChunks map for correct boundary rendering.
                       visibleTerrainChunks = IntMap.fromList chunkPairs
-                      riverGeoMap = case lvsBaseView selection of
-                        BaseViewBiome -> IntMap.mapMaybeWithKey
+                      riverGeoMap = case abKey job of
+                        BaseAtlasKey BaseViewBiome _ _ -> IntMap.mapMaybeWithKey
+                          (\ cid _chunk -> buildChunkRiverGeometry (scaleRiverWidths (abHexRadius job) defaultRiverRenderConfig) config (abHexRadius job) cid (tsRiverChunks terrainSnap) (tsTerrainChunks terrainSnap))
+                          visibleTerrainChunks
+                        _ | atlasKeyIsBase (abKey job) && lvsBaseView selection == BaseViewBiome -> IntMap.mapMaybeWithKey
                           (\ cid _chunk -> buildChunkRiverGeometry (scaleRiverWidths (abHexRadius job) defaultRiverRenderConfig) config (abHexRadius job) cid (tsRiverChunks terrainSnap) (tsTerrainChunks terrainSnap))
                           visibleTerrainChunks
                         _ -> IntMap.empty
@@ -330,8 +340,8 @@ runAtlasBuild job = do
                       tiles = attachRiverOverlay riverGeoMap baseTiles
                       -- Day/night overlay tiles share the same tiling structure but
                       -- have no river overlay.
-                      dayNightTiles = case abDayNightSpec job of
-                        Just (dnKey, _) | not (IntMap.null dayNightGeometryMap) ->
+                      dayNightTiles = case (atlasKeyIsBase (abKey job), abDayNightSpec job) of
+                        (True, Just (dnKey, _)) | not (IntMap.null dayNightGeometryMap) ->
                           Just (dnKey, composeTilesFromGeometry dayNightGeometryMap (abHexRadius job) (abAtlasScale job))
                         _ -> Nothing
                       coverage = atlasViewportCoverageFromKeys (map fst chunkPairs)

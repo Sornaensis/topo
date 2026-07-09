@@ -7,7 +7,7 @@ import Control.Exception (bracket)
 import Data.IORef (newIORef)
 import System.Timeout (timeout)
 import Test.Hspec
-import Actor.AtlasCache (AtlasKey(..), atlasKeyVersion)
+import Actor.AtlasCache (AtlasKey(..), atlasKeyFor, atlasKeyVersion)
 import Actor.AtlasManager
   ( AtlasManager
   , AtlasJob(..)
@@ -77,12 +77,12 @@ defaultWaterLevel = uiRenderWaterLevel emptyUiState
 
 emptyTerrainSnapshotWithVersion :: Word64 -> TerrainSnapshot
 emptyTerrainSnapshotWithVersion version =
-  TerrainSnapshot version 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore defaultTerrainGeoContext
+  TerrainSnapshot version version version version version 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore defaultTerrainGeoContext
 
 atlasJobFor :: ViewMode -> Word64 -> ZoomStage -> AtlasJob
 atlasJobFor mode version stage =
   let terrainSnap = emptyTerrainSnapshotWithVersion version
-      atlasKey = AtlasKey mode defaultWaterLevel version
+      atlasKey = atlasKeyFor mode defaultWaterLevel terrainSnap
   in AtlasJob
     { ajKey = atlasKey
     , ajViewMode = mode
@@ -93,6 +93,7 @@ atlasJobFor mode version stage =
     , ajHexRadius = zsHexRadius stage
     , ajAtlasScale = zsAtlasScale stage
     , ajViewportCoverage = Nothing
+    , ajForceRebuild = False
     }
 
 spec :: Spec
@@ -117,7 +118,7 @@ spec = describe "AtlasScheduler" $ do
       }
     let terrainSnap = emptyTerrainSnapshotWithVersion 0
         version = SnapshotVersion 1
-        atlasKey = AtlasKey ViewElevation defaultWaterLevel (tsVersion terrainSnap)
+        atlasKey = atlasKeyFor ViewElevation defaultWaterLevel terrainSnap
         job = AtlasJob
           { ajKey = atlasKey
           , ajViewMode = ViewElevation
@@ -128,6 +129,7 @@ spec = describe "AtlasScheduler" $ do
           , ajHexRadius  = 6
           , ajAtlasScale = 1
           , ajViewportCoverage = Nothing
+          , ajForceRebuild = False
           }
     enqueueAtlasBuild managerHandle job
     let snapshot = RenderSnapshot
@@ -250,7 +252,7 @@ spec = describe "AtlasScheduler" $ do
     managerHandle <- get @AtlasManager system
     let terrainSnap = emptyTerrainSnapshotWithVersion 0
         mkJob stage =
-          let atlasKey = AtlasKey ViewElevation defaultWaterLevel (tsVersion terrainSnap)
+          let atlasKey = atlasKeyFor ViewElevation defaultWaterLevel terrainSnap
           in AtlasJob
             { ajKey = atlasKey
             , ajViewMode = ViewElevation
@@ -261,6 +263,7 @@ spec = describe "AtlasScheduler" $ do
             , ajHexRadius  = zsHexRadius stage
             , ajAtlasScale = zsAtlasScale stage
             , ajViewportCoverage = Nothing
+            , ajForceRebuild = False
             }
     -- Enqueue one job per zoom stage (single-mode rebuild)
     mapM_ (enqueueAtlasBuild managerHandle . mkJob) allZoomStages
@@ -273,7 +276,7 @@ spec = describe "AtlasScheduler" $ do
     managerHandle <- get @AtlasManager system
     let terrainSnap = emptyTerrainSnapshotWithVersion 0
         mkJobFor mode stage =
-          let atlasKey = AtlasKey mode defaultWaterLevel (tsVersion terrainSnap)
+          let atlasKey = atlasKeyFor mode defaultWaterLevel terrainSnap
           in AtlasJob
             { ajKey = atlasKey
             , ajViewMode = mode
@@ -284,6 +287,7 @@ spec = describe "AtlasScheduler" $ do
             , ajHexRadius  = zsHexRadius stage
             , ajAtlasScale = zsAtlasScale stage
             , ajViewportCoverage = Nothing
+            , ajForceRebuild = False
             }
     -- Enqueue elevation only (simulating single-mode rebuild)
     mapM_ (enqueueAtlasBuild managerHandle . mkJobFor ViewElevation) allZoomStages
@@ -316,7 +320,7 @@ spec = describe "AtlasScheduler" $ do
       }
     let terrainSnap = emptyTerrainSnapshotWithVersion 0
         mkJob i =
-          let atlasKey = AtlasKey ViewElevation defaultWaterLevel (tsVersion terrainSnap)
+          let atlasKey = atlasKeyFor ViewElevation defaultWaterLevel terrainSnap
           in AtlasJob
             { ajKey = atlasKey
             , ajViewMode = ViewElevation
@@ -327,6 +331,7 @@ spec = describe "AtlasScheduler" $ do
             , ajHexRadius  = 6 + i
             , ajAtlasScale = 1
             , ajViewportCoverage = Nothing
+            , ajForceRebuild = False
             }
     -- Enqueue 3 jobs so each worker gets one
     mapM_ (enqueueAtlasBuild managerHandle . mkJob) [0, 1, 2 :: Int]
@@ -475,7 +480,7 @@ spec = describe "AtlasScheduler" $ do
         report <- awaitReport scheduleRef version
         asrJobCount report `shouldBe` 1
         leftovers <- drainAtlasJobs managerHandle
-        length leftovers `shouldBe` 0
+        map ajViewMode leftovers `shouldBe` [ViewBiome]
 
   it "dispatches the current-stage job before backfill when capacity is limited" $ withSystem $ \system -> do
     managerHandle <- get @AtlasManager system
@@ -592,8 +597,8 @@ spec = describe "AtlasScheduler" $ do
     freshnessRef <- newAtlasFreshnessRef
     resultRef <- newAtlasResultRef
     let terrainSnap = emptyTerrainSnapshotWithVersion 1
-        key1 = AtlasKey ViewElevation defaultWaterLevel 1
-        key2 = AtlasKey ViewElevation defaultWaterLevel 2
+        key1 = atlasKeyFor ViewElevation defaultWaterLevel terrainSnap
+        key2 = atlasKeyFor ViewElevation defaultWaterLevel (terrainSnap { tsVersion = 2 })
         build = AtlasBuild
           { abBuildId = AtlasBuildId 1
           , abKey = key1
@@ -641,12 +646,12 @@ spec = describe "AtlasScheduler" $ do
     awlStaleCancelledDuringGeometry load `shouldBe` 1
     awlStaleCancelledBeforePublish load `shouldBe` 1
 
-  it "marks worker builds stale when the scheduler freshness key advances" $ do
+  it "keeps unchanged-key worker builds fresh across unrelated snapshot advances" $ do
     freshnessRef <- newAtlasFreshnessRef
     resultRef <- newAtlasResultRef
     let terrainSnap = emptyTerrainSnapshotWithVersion 1
-        key1 = AtlasKey ViewElevation defaultWaterLevel 1
-        key2 = AtlasKey ViewElevation defaultWaterLevel 2
+        key1 = atlasKeyFor ViewElevation defaultWaterLevel terrainSnap
+        key2 = atlasKeyFor ViewElevation defaultWaterLevel (terrainSnap { tsVersion = 2 })
         build = AtlasBuild
           { abBuildId = AtlasBuildId 1
           , abKey = key1
@@ -676,7 +681,7 @@ spec = describe "AtlasScheduler" $ do
       , afSnapshotVersion = SnapshotVersion 2
       , afLatestBuildIds = mempty
       }
-    atlasBuildIsCurrent build `shouldReturn` False
+    atlasBuildIsCurrent build `shouldReturn` True
     writeAtlasFreshness freshnessRef AtlasFreshness
       { afKey = key2
       , afSnapshotVersion = SnapshotVersion 2
@@ -692,7 +697,7 @@ spec = describe "AtlasScheduler" $ do
         expectedKey = mkDayNightKey terrainSnap
         buildWith spec = AtlasBuild
           { abBuildId = AtlasBuildId 2
-          , abKey = AtlasKey ViewElevation defaultWaterLevel (tsVersion terrainSnap)
+          , abKey = atlasKeyFor ViewElevation defaultWaterLevel terrainSnap
           , abViewMode = ViewElevation
           , abViewSelection = uiViewSelection emptyUiState
           , abWaterLevel = defaultWaterLevel

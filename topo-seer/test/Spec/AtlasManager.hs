@@ -10,7 +10,7 @@ import qualified Data.Map.Strict as Map
 import Data.Word (Word64)
 import Test.Hspec
 
-import Actor.AtlasCache (AtlasKey(..), atlasKeyDataVersion, atlasKeyForSelection, atlasKeySelectionTag, atlasKeyVersion, atlasKeyViewMode)
+import Actor.AtlasCache (AtlasKey(..), atlasKeyDataVersion, atlasKeyFor, atlasKeyForSelection, atlasKeySelectionTag, atlasKeyVersion, atlasKeyViewMode, atlasKeyWaterLevel, atlasKeysForSelection)
 import Actor.AtlasManager
   ( AtlasDispatchJob(..)
   , AtlasFreshDrainRequest(..)
@@ -24,6 +24,7 @@ import Actor.AtlasManager
   , atlasManagerQueuedState
   , drainAtlasJobs
   , drainFreshAtlasJobs
+  , atlasJobsForSelectionTransition
   , drainFreshAtlasJobsLimited
   , enqueueAtlasBuild
   , newAtlasManagerQueueRef
@@ -31,7 +32,7 @@ import Actor.AtlasManager
   , setAtlasManagerQueueRef
   )
 import Actor.AtlasResult (AtlasBuildTarget(..))
-import Actor.AtlasScheduler (AtlasFreshness(..), newAtlasFreshnessRef)
+import Actor.AtlasScheduler (AtlasFreshness(..), atlasKeyIsCurrent, atlasTargetBuildIsFresh, newAtlasFreshnessRef, writeAtlasFreshnessCurrentKeys)
 import Actor.Data (TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.SnapshotReceiver (SnapshotVersion(..))
 import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), UiState(..), ViewMode(..), WeatherBasis(..), defaultLayeredViewState, emptyUiState, legacyViewModeToLayeredViewState)
@@ -42,6 +43,7 @@ import Hyperspace.Actor
   , shutdownActorSystem
   )
 import Seer.Render.Viewport (atlasViewportCoverageFromKeys)
+import Seer.Render.ZoomStage (ZoomStage(..))
 import Topo.Overlay (emptyOverlayStore)
 
 withSystem :: (ActorSystem -> IO a) -> IO a
@@ -52,22 +54,23 @@ defaultWaterLevel = uiRenderWaterLevel emptyUiState
 
 emptyTerrainSnapshotWithVersion :: Word64 -> TerrainSnapshot
 emptyTerrainSnapshotWithVersion version =
-  TerrainSnapshot version 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore defaultTerrainGeoContext
+  TerrainSnapshot version version version version version 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore defaultTerrainGeoContext
 
 atlasJobFor :: ViewMode -> Word64 -> AtlasJob
 atlasJobFor mode version =
   let terrainSnap = emptyTerrainSnapshotWithVersion version
-      atlasKey = AtlasKey mode defaultWaterLevel version
+      atlasKey = atlasKeyFor mode defaultWaterLevel terrainSnap
   in AtlasJob
     { ajKey = atlasKey
-    , ajViewMode = mode
+    , ajViewMode = atlasKeyViewMode atlasKey
     , ajViewSelection = legacyViewModeToLayeredViewState mode
-    , ajWaterLevel = defaultWaterLevel
+    , ajWaterLevel = atlasKeyWaterLevel atlasKey
     , ajSnapshotVersion = SnapshotVersion version
     , ajTerrain = terrainSnap
     , ajHexRadius = 6
     , ajAtlasScale = 1
     , ajViewportCoverage = Nothing
+    , ajForceRebuild = False
     }
 
 atlasJobForSelection :: LayeredViewState -> Word64 -> AtlasJob
@@ -79,13 +82,28 @@ atlasJobForSelection selection version =
     { ajKey = atlasKey
     , ajViewMode = keyMode
     , ajViewSelection = selection
-    , ajWaterLevel = defaultWaterLevel
+    , ajWaterLevel = atlasKeyWaterLevel atlasKey
     , ajSnapshotVersion = SnapshotVersion version
     , ajTerrain = terrainSnap
     , ajHexRadius = 6
     , ajAtlasScale = 1
     , ajViewportCoverage = Nothing
+    , ajForceRebuild = False
     }
+
+atlasJobForKey :: LayeredViewState -> SnapshotVersion -> TerrainSnapshot -> AtlasKey -> AtlasJob
+atlasJobForKey selection snapshotVersion terrainSnap atlasKey = AtlasJob
+  { ajKey = atlasKey
+  , ajViewMode = atlasKeyViewMode atlasKey
+  , ajViewSelection = selection
+  , ajWaterLevel = atlasKeyWaterLevel atlasKey
+  , ajSnapshotVersion = snapshotVersion
+  , ajTerrain = terrainSnap
+  , ajHexRadius = 6
+  , ajAtlasScale = 1
+  , ajViewportCoverage = Nothing
+  , ajForceRebuild = False
+  }
 
 freshnessFor :: AtlasKey -> SnapshotVersion -> AtlasFreshness
 freshnessFor key snapshotVersion = AtlasFreshness
@@ -112,6 +130,32 @@ spec = describe "AtlasManager" $ do
         key = AtlasKey ViewCloudTypical defaultWaterLevel version
     atlasKeyDataVersion key `shouldBe` version
     atlasKeySelectionTag key `shouldBe` 0
+
+  it "builds transition jobs only for layer keys that changed" $ do
+    let terrainSnap = emptyTerrainSnapshotWithVersion 1
+        stage = ZoomStage 6 1 0 1
+        elevationSelection = legacyViewModeToLayeredViewState ViewElevation
+        weatherSelection = legacyViewModeToLayeredViewState ViewWeather
+        weatherJobs = atlasJobsForSelectionTransition
+          (SnapshotVersion 1)
+          elevationSelection
+          defaultWaterLevel
+          weatherSelection
+          defaultWaterLevel
+          terrainSnap
+          [stage]
+          Nothing
+        elevationJobs = atlasJobsForSelectionTransition
+          (SnapshotVersion 2)
+          weatherSelection
+          defaultWaterLevel
+          elevationSelection
+          defaultWaterLevel
+          terrainSnap
+          [stage]
+          Nothing
+    map ajViewMode weatherJobs `shouldBe` [ViewWeather]
+    length elevationJobs `shouldBe` 0
 
   it "publishes non-destructive queued count and revision helpers" $ withSystem $ \system -> do
     managerHandle <- get @AtlasManager system
@@ -172,7 +216,7 @@ spec = describe "AtlasManager" $ do
     length jobs `shouldBe` 1
     map (atlasKeyVersion . ajKey) jobs `shouldBe` [2]
 
-  it "coalesces duplicate same-coverage viewport refreshes without build-id churn" $ withSystem $ \system -> do
+  it "replaces queued same-coverage refreshes with the newest snapshot" $ withSystem $ \system -> do
     managerHandle <- get @AtlasManager system
     queueRef <- newAtlasManagerQueueRef
     freshnessRef <- newAtlasFreshnessRef
@@ -192,12 +236,12 @@ spec = describe "AtlasManager" $ do
     waitForManagerCasts
     revision2 <- atlasManagerQueuedRevision queueRef
     latest2 <- readIORef freshnessRef
-    let build2 = latest2 >>= \freshness -> Map.lookup (targetFor job1) (afLatestBuildIds freshness)
-    revision2 `shouldBe` revision1
+    let build2 = latest2 >>= \freshness -> Map.lookup (targetFor job2) (afLatestBuildIds freshness)
+    revision2 `shouldSatisfy` (> revision1)
     atlasManagerQueuedCount queueRef `shouldReturn` 1
-    build2 `shouldBe` build1
+    build2 `shouldSatisfy` (/= build1)
 
-  it "does not coalesce newer same-coverage refreshes after the slot was dispatched" $ withSystem $ \system -> do
+  it "coalesces newer same-coverage refreshes when the atlas key is unchanged after dispatch" $ withSystem $ \system -> do
     managerHandle <- get @AtlasManager system
     queueRef <- newAtlasManagerQueueRef
     setAtlasManagerQueueRef managerHandle queueRef
@@ -213,8 +257,8 @@ spec = describe "AtlasManager" $ do
     enqueueAtlasBuild managerHandle job2
     waitForManagerCasts
     revisionAfterRefresh <- atlasManagerQueuedRevision queueRef
-    revisionAfterRefresh `shouldSatisfy` (> revisionAfterDispatch)
-    atlasManagerQueuedCount queueRef `shouldReturn` 1
+    revisionAfterRefresh `shouldBe` revisionAfterDispatch
+    atlasManagerQueuedCount queueRef `shouldReturn` 0
 
   it "accepts same-snapshot viewport refreshes when required coverage changes" $ withSystem $ \system -> do
     managerHandle <- get @AtlasManager system
@@ -305,11 +349,7 @@ spec = describe "AtlasManager" $ do
     dispatchJobs <- drainFreshAtlasJobs managerHandle (freshnessFor (ajKey current) (SnapshotVersion 1))
     map (ajViewMode . adjJob) dispatchJobs `shouldBe` [ViewElevation]
     leftovers <- drainAtlasJobs managerHandle
-    length leftovers `shouldBe` 0
-
-    enqueueAtlasBuild managerHandle unrelatedWeather
-    weatherDispatch <- drainFreshAtlasJobs managerHandle (freshnessFor (ajKey unrelatedWeather) (SnapshotVersion 50))
-    map (ajViewMode . adjJob) weatherDispatch `shouldBe` [ViewWeather]
+    map ajViewMode leftovers `shouldBe` [ViewWeather]
 
   it "different layered compositions with the same base mode do not block current drains" $ withSystem $ \system -> do
     managerHandle <- get @AtlasManager system
@@ -319,7 +359,7 @@ spec = describe "AtlasManager" $ do
           , lvsWeatherBasis = WeatherBasisCurrent
           , lvsOverlayOpacity = 0.25
           }
-        selectionB = selectionA { lvsOverlayOpacity = 0.75 }
+        selectionB = selectionA { lvsSkyOverlay = Just SkyOverlayCloud, lvsOverlayOpacity = 0.75 }
         unrelatedFuture = (atlasJobForSelection selectionA 50) { ajHexRadius = 10 }
         current = atlasJobForSelection selectionB 7
     enqueueAtlasBuild managerHandle unrelatedFuture
@@ -328,7 +368,7 @@ spec = describe "AtlasManager" $ do
     dispatchJobs <- drainFreshAtlasJobs managerHandle (freshnessFor (ajKey current) (SnapshotVersion 7))
     map (ajKey . adjJob) dispatchJobs `shouldBe` [ajKey current]
     leftovers <- drainAtlasJobs managerHandle
-    length leftovers `shouldBe` 0
+    map (ajKey) leftovers `shouldBe` [ajKey unrelatedFuture]
 
   it "restamps same-key queued jobs to the requested snapshot and publishes build freshness" $ withSystem $ \system -> do
     managerHandle <- get @AtlasManager system
@@ -350,6 +390,127 @@ spec = describe "AtlasManager" $ do
             && afSnapshotVersion freshness == requestedVersion
             && Map.lookup restampedTarget (afLatestBuildIds freshness) == Just (adjBuildId dispatchJob))
       _ -> expectationFailure ("expected one dispatch job, got " <> show (length dispatchJobs))
+
+  it "preserves base build freshness while draining overlay work" $ withSystem $ \system -> do
+    managerHandle <- get @AtlasManager system
+    freshnessRef <- newAtlasFreshnessRef
+    setAtlasManagerFreshnessRef managerHandle freshnessRef
+    let selection = defaultLayeredViewState { lvsSkyOverlay = Just SkyOverlayWeatherTemperature }
+        baseSnap = emptyTerrainSnapshotWithVersion 1
+        weatherSnap = baseSnap { tsWeatherVersion = 2 }
+        keys = atlasKeysForSelection selection defaultWaterLevel weatherSnap
+    case keys of
+      [baseKey, overlayKey] -> do
+        let baseJob = atlasJobForKey selection (SnapshotVersion 1) baseSnap baseKey
+            overlayJob = atlasJobForKey selection (SnapshotVersion 2) weatherSnap overlayKey
+        enqueueAtlasBuild managerHandle baseJob
+        waitForManagerCasts
+        latestBase <- readIORef freshnessRef
+        case latestBase >>= Map.lookup (targetFor baseJob) . afLatestBuildIds of
+          Nothing -> expectationFailure "expected queued base build id"
+          Just baseBuildId -> do
+            writeAtlasFreshnessCurrentKeys freshnessRef keys (SnapshotVersion 2)
+            enqueueAtlasBuild managerHandle overlayJob
+            waitForManagerCasts
+            dispatchJobs <- drainFreshAtlasJobs managerHandle (freshnessFor overlayKey (SnapshotVersion 2))
+            map (ajKey . adjJob) dispatchJobs `shouldBe` [overlayKey]
+            latest <- readIORef freshnessRef
+            latest `shouldSatisfy` \freshness ->
+              atlasKeyIsCurrent freshness baseKey
+                && atlasKeyIsCurrent freshness overlayKey
+                && atlasTargetBuildIsFresh freshness (targetFor baseJob) baseBuildId
+      _ -> expectationFailure ("expected base and overlay keys, got " <> show keys)
+
+  it "ignores stale current-key freshness writes after newer weather keys" $ do
+    freshnessRef <- newAtlasFreshnessRef
+    let selection = defaultLayeredViewState { lvsSkyOverlay = Just SkyOverlayWeatherTemperature }
+        baseSnap = emptyTerrainSnapshotWithVersion 1
+        weatherSnap = baseSnap { tsWeatherVersion = 2 }
+        oldKeys = atlasKeysForSelection selection defaultWaterLevel baseSnap
+        newKeys = atlasKeysForSelection selection defaultWaterLevel weatherSnap
+    writeAtlasFreshnessCurrentKeys freshnessRef newKeys (SnapshotVersion 2)
+    writeAtlasFreshnessCurrentKeys freshnessRef oldKeys (SnapshotVersion 1)
+    latest <- readIORef freshnessRef
+    latest `shouldSatisfy` \freshness ->
+      maybe False ((== SnapshotVersion 2) . afSnapshotVersion) freshness
+        && all (atlasKeyIsCurrent freshness) newKeys
+
+  it "preserves overlay freshness when a base build advances the snapshot" $ withSystem $ \system -> do
+    managerHandle <- get @AtlasManager system
+    freshnessRef <- newAtlasFreshnessRef
+    setAtlasManagerFreshnessRef managerHandle freshnessRef
+    let selection = defaultLayeredViewState { lvsSkyOverlay = Just SkyOverlayWeatherTemperature }
+        terrainSnap = emptyTerrainSnapshotWithVersion 1
+        keys = atlasKeysForSelection selection defaultWaterLevel terrainSnap
+    case keys of
+      [baseKey, overlayKey] -> do
+        let overlayJob = atlasJobForKey selection (SnapshotVersion 1) terrainSnap overlayKey
+            baseJob = atlasJobForKey selection (SnapshotVersion 2) terrainSnap baseKey
+        writeAtlasFreshnessCurrentKeys freshnessRef keys (SnapshotVersion 1)
+        enqueueAtlasBuild managerHandle overlayJob
+        waitForManagerCasts
+        latestOverlay <- readIORef freshnessRef
+        case latestOverlay >>= Map.lookup (targetFor overlayJob) . afLatestBuildIds of
+          Nothing -> expectationFailure "expected queued overlay build id"
+          Just overlayBuildId -> do
+            enqueueAtlasBuild managerHandle baseJob
+            waitForManagerCasts
+            latest <- readIORef freshnessRef
+            latest `shouldSatisfy` \freshness ->
+              maybe False ((== SnapshotVersion 2) . afSnapshotVersion) freshness
+                && atlasKeyIsCurrent freshness baseKey
+                && atlasKeyIsCurrent freshness overlayKey
+                && atlasTargetBuildIsFresh freshness (targetFor overlayJob) overlayBuildId
+      _ -> expectationFailure ("expected base and overlay keys, got " <> show keys)
+
+  it "does not accept duplicate base work for unchanged base keys across weather snapshots" $ withSystem $ \system -> do
+    managerHandle <- get @AtlasManager system
+    let selection = defaultLayeredViewState { lvsSkyOverlay = Just SkyOverlayWeatherTemperature }
+        baseSnap = emptyTerrainSnapshotWithVersion 1
+        weatherSnap = baseSnap { tsWeatherVersion = 2 }
+        keys = atlasKeysForSelection selection defaultWaterLevel weatherSnap
+    case keys of
+      [baseKey, _overlayKey] -> do
+        let baseJob1 = atlasJobForKey selection (SnapshotVersion 1) baseSnap baseKey
+            baseJob2 = atlasJobForKey selection (SnapshotVersion 2) weatherSnap baseKey
+        enqueueAtlasBuild managerHandle baseJob1
+        dispatched <- drainFreshAtlasJobs managerHandle (freshnessFor baseKey (SnapshotVersion 1))
+        length dispatched `shouldBe` 1
+        enqueueAtlasBuild managerHandle baseJob2
+        waitForManagerCasts
+        leftover <- drainAtlasJobs managerHandle
+        length leftover `shouldBe` 0
+      _ -> expectationFailure ("expected base and overlay keys, got " <> show keys)
+
+  it "accepts forced base rebuilds for day/night toggles after a complete base build" $ withSystem $ \system -> do
+    managerHandle <- get @AtlasManager system
+    let baseSnap = emptyTerrainSnapshotWithVersion 1
+        baseKey = atlasKeyFor ViewElevation defaultWaterLevel baseSnap
+        baseJob1 = atlasJobForKey (legacyViewModeToLayeredViewState ViewElevation) (SnapshotVersion 1) baseSnap baseKey
+        baseJob2 = (atlasJobForKey (legacyViewModeToLayeredViewState ViewElevation) (SnapshotVersion 2) baseSnap baseKey)
+          { ajForceRebuild = True }
+    enqueueAtlasBuild managerHandle baseJob1
+    dispatched <- drainFreshAtlasJobs managerHandle (freshnessFor baseKey (SnapshotVersion 1))
+    length dispatched `shouldBe` 1
+    enqueueAtlasBuild managerHandle baseJob2
+    waitForManagerCasts
+    forced <- drainAtlasJobs managerHandle
+    map ajSnapshotVersion forced `shouldBe` [SnapshotVersion 2]
+
+  it "does not let forced stale jobs replace newer same-key work" $ withSystem $ \system -> do
+    managerHandle <- get @AtlasManager system
+    let baseSnap = emptyTerrainSnapshotWithVersion 1
+        baseKey = atlasKeyFor ViewElevation defaultWaterLevel baseSnap
+        newerJob = atlasJobForKey (legacyViewModeToLayeredViewState ViewElevation) (SnapshotVersion 2) baseSnap baseKey
+        staleForcedJob = (atlasJobForKey (legacyViewModeToLayeredViewState ViewElevation) (SnapshotVersion 1) baseSnap baseKey)
+          { ajForceRebuild = True }
+    enqueueAtlasBuild managerHandle newerJob
+    dispatched <- drainFreshAtlasJobs managerHandle (freshnessFor baseKey (SnapshotVersion 2))
+    length dispatched `shouldBe` 1
+    enqueueAtlasBuild managerHandle staleForcedJob
+    waitForManagerCasts
+    leftover <- drainAtlasJobs managerHandle
+    length leftover `shouldBe` 0
 
   it "does not drain stale backfill when newer same-key work is queued" $ withSystem $ \system -> do
     managerHandle <- get @AtlasManager system

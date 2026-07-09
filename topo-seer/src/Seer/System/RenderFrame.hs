@@ -8,7 +8,7 @@ module Seer.System.RenderFrame
   , renderFrameStepMaintenanceDue
   ) where
 
-import Actor.AtlasCache (atlasKeyForSelection)
+import Actor.AtlasCache (atlasKeysForSelection)
 import Actor.AtlasFreshness (AtlasFreshnessRef)
 import Actor.AtlasManager (AtlasManagerQueueRef, AtlasManagerQueueState(..), atlasManagerQueuedState, emptyAtlasManagerQueueState)
 import Actor.AtlasResultBroker (AtlasResultRef, atlasResultsPendingCount)
@@ -191,8 +191,8 @@ emptyQueueState = emptyAtlasManagerQueueState
 atlasQueuedWorkForSnapshot :: AtlasManagerQueueState -> RenderSnapshot -> Maybe Word64 -> AtlasQueuedWork
 atlasQueuedWorkForSnapshot queueState renderSnap lastScheduledRevision =
   let uiSnap = rsUi renderSnap
-      currentKey = atlasKeyForSelection (effectiveViewSelection uiSnap) (uiRenderWaterLevel uiSnap) (rsTerrain renderSnap)
-      queuedForCurrent = maybe False (> 0) (Map.lookup currentKey (amqsQueuedByKey queueState))
+      currentKeys = atlasKeysForSelection (effectiveViewSelection uiSnap) (uiRenderWaterLevel uiSnap) (rsTerrain renderSnap)
+      queuedForCurrent = any (\key -> maybe False (> 0) (Map.lookup key (amqsQueuedByKey queueState))) currentKeys
   in if queuedForCurrent
       then AtlasQueuedWork
         { aqwQueuedForCurrentKey = True

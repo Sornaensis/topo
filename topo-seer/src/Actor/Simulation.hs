@@ -67,10 +67,10 @@ import Hyperspace.Actor.Spec (OpTag(..))
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 
-import Actor.AtlasCache (atlasKeyForSelection, atlasKeyViewMode, terrainSnapshotSelectionVersion)
+import Actor.AtlasCache (AtlasLayer(..), AtlasKey, atlasKeyLayer, atlasKeysForSelection, terrainSnapshotSelectionVersion)
 import Actor.AtlasManager
   ( AtlasManager
-  , AtlasJob(..)
+  , atlasJobsForKeys
   , enqueueAtlasBuild
   )
 import Actor.Data
@@ -1177,7 +1177,17 @@ integrateFreshTickResult result st
           case (tprTerrainSnapshot publication, tprSnapshotVersion publication) of
             (Just terrainSnap, Just snapshotVersion)
               | atlasShouldEnqueue ->
-                  enqueueAtlasJobsForPublication handles (strCompletion result) uiSnap terrainSnap snapshotVersion
+                  enqueueAtlasJobsForPublication
+                    handles
+                    (strCompletion result)
+                    uiSnap
+                    terrainSnap
+                    snapshotVersion
+                    terrainChanged
+                    climateChanged
+                    weatherChanged
+                    vegetationChanged
+                    visibleOverlayChanged
             _ -> pure ()
           terrainSnapAfter <- getTerrainSnapshot (shDataHandle handles)
           publishedTerrainSnap <- case tprTerrainSnapshot publication of
@@ -1512,10 +1522,16 @@ selectionUsesCurrentWeather selection = case lvsSkyOverlay selection of
   Just (SkyOverlayPlugin name _) -> name == "weather"
   Nothing -> False
 
+selectionUsesWeatherPublication :: LayeredViewState -> Bool
+selectionUsesWeatherPublication selection =
+  selectionUsesCurrentWeather selection || case lvsSkyOverlay selection of
+    Just SkyOverlayCloud -> lvsWeatherBasis selection == WeatherBasisAverage
+    _ -> False
+
 weatherPublicationAffected :: SimState -> UiState -> Bool -> Bool
 weatherPublicationAffected st uiSnap weatherChanged =
   uiDayNightEnabled uiSnap
-    || (selectionUsesCurrentWeather (effectiveViewSelection uiSnap) && (weatherChanged || ssAutoWeatherPublicationPending st))
+    || (selectionUsesWeatherPublication (effectiveViewSelection uiSnap) && (weatherChanged || ssAutoWeatherPublicationPending st))
 
 autoWeatherPublicationDue :: Word64 -> SimState -> Bool
 autoWeatherPublicationDue now st =
@@ -1586,7 +1602,7 @@ simulationAtlasCurrentStageOnly completion uiSnap =
 
 simulationAtlasCurrentStageOnlyEligible :: UiState -> Bool
 simulationAtlasCurrentStageOnlyEligible uiSnap =
-  uiDayNightEnabled uiSnap || selectionUsesCurrentWeather (effectiveViewSelection uiSnap)
+  uiDayNightEnabled uiSnap || selectionUsesWeatherPublication (effectiveViewSelection uiSnap)
 
 simulationAtlasStagesForTick :: SimulationTickCompletion -> UiState -> [ZoomStage]
 simulationAtlasStagesForTick completion uiSnap
@@ -1599,25 +1615,35 @@ enqueueAtlasJobsForPublication
   -> UiState
   -> TerrainSnapshot
   -> SnapshotVersion
+  -> Bool
+  -> Bool
+  -> Bool
+  -> Bool
+  -> Bool
   -> IO ()
-enqueueAtlasJobsForPublication handles completion uiSnap terrainSnap snapshotVersion = do
+enqueueAtlasJobsForPublication handles completion uiSnap terrainSnap snapshotVersion terrainChanged climateChanged weatherChanged vegetationChanged overlayChanged = do
   let selection = effectiveViewSelection uiSnap
-      atlasKey = atlasKeyForSelection selection (uiRenderWaterLevel uiSnap) terrainSnap
-      keyMode = atlasKeyViewMode atlasKey
-      mkJob stage = AtlasJob
-        { ajKey = atlasKey
-        , ajViewMode = keyMode
-        , ajViewSelection = selection
-        , ajWaterLevel = uiRenderWaterLevel uiSnap
-        , ajSnapshotVersion = snapshotVersion
-        , ajTerrain = terrainSnap
-        , ajHexRadius = zsHexRadius stage
-        , ajAtlasScale = zsAtlasScale stage
-        , ajViewportCoverage = Nothing
-        }
+      waterLevel = uiRenderWaterLevel uiSnap
+      keys = filter (atlasKeyAffectedByPublication uiSnap selection terrainChanged climateChanged weatherChanged vegetationChanged overlayChanged)
+        (atlasKeysForSelection selection waterLevel terrainSnap)
+      jobs = atlasJobsForKeys
+        snapshotVersion
+        selection
+        waterLevel
+        terrainSnap
+        keys
+        (simulationAtlasStagesForTick completion uiSnap)
+        Nothing
   mapM_
-    (enqueueAtlasBuild (shAtlasHandle handles) . mkJob)
-    (simulationAtlasStagesForTick completion uiSnap)
+    (enqueueAtlasBuild (shAtlasHandle handles))
+    jobs
+
+atlasKeyAffectedByPublication :: UiState -> LayeredViewState -> Bool -> Bool -> Bool -> Bool -> Bool -> AtlasKey -> Bool
+atlasKeyAffectedByPublication uiSnap selection terrainChanged climateChanged weatherChanged vegetationChanged overlayChanged key =
+  case atlasKeyLayer key of
+    AtlasBaseLayer -> uiDayNightEnabled uiSnap || baseLayerAffected selection terrainChanged vegetationChanged
+    AtlasOverlayLayer -> overlayLayerAffected True selection climateChanged weatherChanged overlayChanged
+    AtlasLegacyLayer -> viewAffectedBySimulationPublication selection terrainChanged climateChanged weatherChanged vegetationChanged overlayChanged
 
 flushLatestWeatherPublication :: SimState -> IO (SimState, Bool)
 flushLatestWeatherPublication st =
@@ -1637,7 +1663,12 @@ flushLatestWeatherPublication st =
                 else do
                   now <- getMonotonicTimeNSec
                   (st', snapshotVersion) <- publishDataSnapshot handles st True now latest
-                  enqueueAtlasJobsForPublication handles SimulationTickNoCompletion uiSnap latest snapshotVersion
+                  let terrainChanged = tsVersion latest /= tsVersion published
+                      climateChanged = tsClimateVersion latest /= tsClimateVersion published
+                      weatherChanged = ssAutoWeatherPublicationPending st || tsWeatherVersion latest /= tsWeatherVersion published
+                      vegetationChanged = tsVegetationVersion latest /= tsVegetationVersion published
+                      overlayChanged = selectedOverlayChanged (effectiveViewSelection uiSnap) (tsOverlayStore published) (tsOverlayStore latest)
+                  enqueueAtlasJobsForPublication handles SimulationTickNoCompletion uiSnap latest snapshotVersion terrainChanged climateChanged weatherChanged vegetationChanged overlayChanged
                   let publicationDiag = WeatherPublicationDiagnostic
                         { wpdTick = ssLastTick st
                         , wpdWorldTime = tgcWorldTime (tsGeoContext latest)
@@ -1655,12 +1686,12 @@ flushLatestWeatherPublication st =
 
 flushWeatherPublicationViewAffected :: SimState -> UiState -> Bool
 flushWeatherPublicationViewAffected _ uiSnap =
-  uiDayNightEnabled uiSnap || selectionUsesCurrentWeather (effectiveViewSelection uiSnap)
+  uiDayNightEnabled uiSnap || selectionUsesWeatherPublication (effectiveViewSelection uiSnap)
 
 flushWeatherPublicationNeeded :: SimState -> UiState -> TerrainSnapshot -> TerrainSnapshot -> Bool
 flushWeatherPublicationNeeded st uiSnap latest published
   | uiDayNightEnabled uiSnap = True
-  | selectionUsesCurrentWeather selection =
+  | selectionUsesWeatherPublication selection =
       ssAutoWeatherPublicationPending st
         || terrainSnapshotSelectionVersion selection latest /= terrainSnapshotSelectionVersion selection published
   | otherwise = False

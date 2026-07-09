@@ -12,7 +12,7 @@ import Actor.AtlasCache (AtlasKey(..))
 import Actor.AtlasResult (AtlasBuildId(..), AtlasTileSetManifest(..), atlasManifestTarget)
 import Actor.SnapshotReceiver (SnapshotVersion(..))
 import Actor.AtlasScheduler (AtlasFreshness(..))
-import Actor.UI (ViewMode(..))
+import Actor.UI (BaseViewMode(..), SkyOverlayMode(..), ViewMode(..), WeatherBasis(..))
 import Seer.Render.Atlas
   ( AtlasTextureCache(..)
   , CachedAtlasTileSet
@@ -166,6 +166,19 @@ spec = describe "AtlasTextureCache" $ do
           cache1 = setAtlasKey keyB cache0
       fmap fst (atcLast cache1) `shouldBe` Just keyA
       fmap (length . snd) (atcLast cache1) `shouldBe` Just 1
+
+    it "switches overlay targets without evicting unchanged base atlas tiles" $ do
+      let baseKey = BaseAtlasKey BaseViewBiome 0 3
+          overlayCurrent = OverlayAtlasKey SkyOverlayCloud WeatherBasisCurrent False 7
+          overlayAverage = OverlayAtlasKey SkyOverlayCloud WeatherBasisAverage False 5
+          manifest = mkManifest 1 baseKey 6 [testRect]
+          cache0 = (emptyAtlasTextureCache 30) { atcKey = Just baseKey, atcOverlayKey = Just overlayCurrent }
+          cache1 = storeAtlasTileSet manifest [mkTile 33 6 testRect] cache0
+          cache2 = cache1 { atcKey = Just baseKey, atcOverlayKey = Just overlayAverage }
+      fmap length (getCompleteAtlas baseKey 6 cache2) `shouldBe` Just 1
+      atcKey cache2 `shouldBe` Just baseKey
+      atcOverlayKey cache2 `shouldBe` Just overlayAverage
+      length (atcPending cache2) `shouldBe` 0
 
   -- -------------------------------------------------------------------
   -- storeAtlasTiles (multi-key nested Map)

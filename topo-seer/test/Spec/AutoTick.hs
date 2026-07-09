@@ -186,7 +186,7 @@ spec = describe "AutoTick scheduler" $ do
       stopRsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= False])
       srSuccess stopRsp `shouldBe` True
 
-  it "keeps typical cloud normals stable and unqueued during weather auto-tick" $
+  it "refreshes typical cloud normals during weather auto-tick without base work" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       installWorld app
       let handles = appHandles app
@@ -209,11 +209,12 @@ spec = describe "AutoTick scheduler" $ do
       stopRsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= False])
       srSuccess stopRsp `shouldBe` True
       terrainSnap1 <- getTerrainSnapshot (ahDataHandle handles)
-      terrainSnapshotViewVersion ViewCloudTypical terrainSnap1 `shouldBe` typicalVersion0
+      terrainSnapshotViewVersion ViewCloudTypical terrainSnap1 `shouldSatisfy` (> typicalVersion0)
       jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
-      length jobs `shouldBe` 0
+      length jobs `shouldSatisfy` (> 0)
+      all ((== ViewCloudTypical) . ajViewMode) jobs `shouldBe` True
 
-  it "backfills all stages current-first when high-rate auto tick is disabled" $
+  it "backfills remaining stages when high-rate auto tick is disabled" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       installWorld app
       let handles = appHandles app
@@ -224,6 +225,7 @@ spec = describe "AutoTick scheduler" $ do
       let currentStage = stageForZoom (uiZoom uiBeforeAuto)
           expectedCurrent = zoomStagePair currentStage
           expectedBackfill = map zoomStagePair (orderedZoomStagesForZoom (uiZoom uiBeforeAuto))
+          expectedRemaining = filter (/= expectedCurrent) expectedBackfill
       _ <- drainAtlasJobs (ahAtlasManagerHandle handles)
 
       rsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (1.0 :: Double)])
@@ -242,12 +244,12 @@ spec = describe "AutoTick scheduler" $ do
       srSuccess stopRsp `shouldBe` True
       publishedSnap <- readTerrainSnapshot (ahTerrainSnapshotRef handles)
       jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
-      length jobs `shouldBe` length allZoomStages
-      map ajViewMode jobs `shouldBe` replicate (length allZoomStages) ViewWeather
-      map atlasJobStage jobs `shouldBe` expectedBackfill
+      length jobs `shouldBe` length expectedRemaining
+      map ajViewMode jobs `shouldBe` replicate (length expectedRemaining) ViewWeather
+      map atlasJobStage jobs `shouldBe` expectedRemaining
       all ((== tsWeatherVersion publishedSnap) . atlasKeyVersion . ajKey) jobs `shouldBe` True
 
-  it "backfills all stages current-first when high-rate auto tick is slowed" $
+  it "backfills remaining stages when high-rate auto tick is slowed" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       installWorld app
       let handles = appHandles app
@@ -255,7 +257,10 @@ spec = describe "AutoTick scheduler" $ do
       viewRsp <- dispatch app "set_view_mode" (object ["mode" .= (Text.pack "weather")])
       srSuccess viewRsp `shouldBe` True
       uiBeforeAuto <- getUiSnapshot (ahUiHandle handles)
-      let expectedBackfill = map zoomStagePair (orderedZoomStagesForZoom (uiZoom uiBeforeAuto))
+      let currentStage = stageForZoom (uiZoom uiBeforeAuto)
+          expectedCurrent = zoomStagePair currentStage
+          expectedBackfill = map zoomStagePair (orderedZoomStagesForZoom (uiZoom uiBeforeAuto))
+          expectedRemaining = filter (/= expectedCurrent) expectedBackfill
       _ <- drainAtlasJobs (ahAtlasManagerHandle handles)
 
       rsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (1.0 :: Double)])
@@ -274,12 +279,12 @@ spec = describe "AutoTick scheduler" $ do
       uiSimTickRate slowedUi `shouldBe` 0.1
       publishedSnap <- readTerrainSnapshot (ahTerrainSnapshotRef handles)
       jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
-      length jobs `shouldBe` length allZoomStages
-      map ajViewMode jobs `shouldBe` replicate (length allZoomStages) ViewWeather
-      map atlasJobStage jobs `shouldBe` expectedBackfill
+      length jobs `shouldBe` length expectedRemaining
+      map ajViewMode jobs `shouldBe` replicate (length expectedRemaining) ViewWeather
+      map atlasJobStage jobs `shouldBe` expectedRemaining
       all ((== tsWeatherVersion publishedSnap) . atlasKeyVersion . ajKey) jobs `shouldBe` True
 
-  it "backfills latest day/night world time when high-rate auto tick is slowed" $
+  it "backfills remaining day/night stages when high-rate auto tick is slowed" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       installWorld app
       let handles = appHandles app
@@ -289,6 +294,7 @@ spec = describe "AutoTick scheduler" $ do
       let currentStage = stageForZoom (uiZoom uiBeforeAuto)
           expectedCurrent = zoomStagePair currentStage
           expectedBackfill = map zoomStagePair (orderedZoomStagesForZoom (uiZoom uiBeforeAuto))
+          expectedRemaining = filter (/= expectedCurrent) expectedBackfill
       _ <- drainAtlasJobs (ahAtlasManagerHandle handles)
 
       rsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (1.0 :: Double)])
@@ -314,9 +320,9 @@ spec = describe "AutoTick scheduler" $ do
       publishedSnap <- readTerrainSnapshot (ahTerrainSnapshotRef handles)
       tgcWorldTime (tsGeoContext publishedSnap) `shouldBe` tgcWorldTime (tsGeoContext latestTerrainSnap)
       jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
-      length jobs `shouldBe` length allZoomStages
-      map ajViewMode jobs `shouldBe` replicate (length allZoomStages) ViewElevation
-      map atlasJobStage jobs `shouldBe` expectedBackfill
+      length jobs `shouldBe` length expectedRemaining
+      map ajViewMode jobs `shouldBe` replicate (length expectedRemaining) ViewElevation
+      map atlasJobStage jobs `shouldBe` expectedRemaining
       map ajKey jobs `shouldSatisfy` all (== atlasKeyFor ViewElevation (uiRenderWaterLevel slowedUi) publishedSnap)
       map (tgcWorldTime . tsGeoContext . ajTerrain) jobs `shouldSatisfy` all (== tgcWorldTime (tsGeoContext publishedSnap))
       map (mkDayNightKey . ajTerrain) jobs `shouldSatisfy` all (== mkDayNightKey publishedSnap)

@@ -30,6 +30,7 @@ module Seer.Render.Atlas
   , getCurrentCompleteAtlasForTarget
   , getCurrentCompleteAtlasForTargetWithCoverage
   , resolveAtlasTiles
+  , resolveAtlasOverlayTiles
   , resolveAtlasPure
   , resolveAtlasPureWithStatus
   , resolveAtlasPureWithFreshness
@@ -38,6 +39,7 @@ module Seer.Render.Atlas
   , resolveEffectiveStage
   , scheduleAtlasBuilds
   , setAtlasKey
+  , setAtlasLayerKeys
   , storeAtlasTiles
   , storeAtlasTileSet
   , storeDayNightTiles
@@ -51,7 +53,7 @@ module Seer.Render.Atlas
   , zoomTextureScale
   ) where
 
-import Actor.AtlasCache (AtlasKey, atlasKeyForSelection, atlasKeyVersion)
+import Actor.AtlasCache (AtlasKey, atlasBaseKeyForSelection, atlasKeyLayer, atlasKeyVersion)
 import Actor.AtlasFreshness (AtlasFreshness, AtlasFreshnessRef, atlasTargetBuildIsFresh, readAtlasFreshnessRef)
 import Actor.AtlasResult
   ( AtlasBuildId(..)
@@ -261,11 +263,13 @@ data CachedDayNightTileSet = CachedDayNightTileSet
 
 data AtlasTextureCache = AtlasTextureCache
   { atcKey :: !(Maybe AtlasKey)
+  , atcOverlayKey :: !(Maybe AtlasKey)
   , atcCaches :: !(Map.Map AtlasKey (IntMap.IntMap CachedAtlasTileSet))
   , atcMaxEntries :: !Int
   , atcLru :: ![(AtlasKey, Int)]
   , atcPending :: ![SDL.Texture]
   , atcLast :: !(Maybe (AtlasKey, [TerrainAtlasTile]))
+  , atcOverlayLast :: !(Maybe (AtlasKey, [TerrainAtlasTile]))
   , atcCommittedStage :: !(Maybe ZoomStage)
   , atcStageChangeNs :: !Word64
   , atcDayNight :: !(IntMap.IntMap (IntMap.IntMap [CachedDayNightTileSet]))
@@ -278,11 +282,13 @@ data AtlasTextureCache = AtlasTextureCache
 emptyAtlasTextureCache :: Int -> AtlasTextureCache
 emptyAtlasTextureCache maxEntries = AtlasTextureCache
   { atcKey = Nothing
+  , atcOverlayKey = Nothing
   , atcCaches = Map.empty
   , atcMaxEntries = maxEntries
   , atcLru = []
   , atcPending = []
   , atcLast = Nothing
+  , atcOverlayLast = Nothing
   , atcCommittedStage = Nothing
   , atcStageChangeNs = 0
   , atcDayNight = IntMap.empty
@@ -501,9 +507,7 @@ drainAtlasBuildResults renderTargetOk perFrame pool renderer atlasCache resultRe
       latestFreshness <- readAtlasFreshnessRef freshnessRef
       let isFresh r =
             let manifest = abrManifest r
-                keyMatches = case atcKey atlasCache of
-                  Just currentKey -> abrKey r == currentKey
-                  Nothing -> True
+                keyMatches = atlasCacheHasCurrentKey (abrKey r) atlasCache
                 resultMatchesManifest = abrKey r == atsmKey manifest
                   && abrSnapshotVersion r == atsmSnapshotVersion manifest
                   && abrHexRadius r == atsmHexRadius manifest
@@ -583,7 +587,7 @@ resolveAtlasTiles
 resolveAtlasTiles latestFreshness renderTargetOk pool snapshot atlasCache stage windowSize = do
   let terrainSnap = rsTerrain snapshot
       uiSnap = rsUi snapshot
-      atlasKey = atlasKeyForSelection (effectiveViewSelection uiSnap) (uiRenderWaterLevel uiSnap) terrainSnap
+      atlasKey = atlasBaseKeyForSelection (effectiveViewSelection uiSnap) (uiRenderWaterLevel uiSnap) terrainSnap
       dataReady = tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
       requiredCoverage = if dataReady
         then Just (currentAtlasViewportCoverage (WorldConfig { wcChunkSize = tsChunkSize terrainSnap }) (uiPanOffset uiSnap) (uiZoom uiSnap) windowSize terrainSnap stage)
@@ -593,9 +597,7 @@ resolveAtlasTiles latestFreshness renderTargetOk pool snapshot atlasCache stage 
       (pending, cacheDrained) = drainAtlasPending cacheResolved
       -- Protect textures that atcLast still references from being
       -- released.  Only truly orphaned textures may be destroyed.
-      aliveTextures = case atcLast cacheDrained of
-        Just (_key, tiles) -> map tatTexture tiles
-        _                  -> []
+      aliveTextures = lastTextures (atcLast cacheDrained) ++ lastTextures (atcOverlayLast cacheDrained)
       (keepAlive, destroyNow) =
         if null aliveTextures
           then ([], pending)
@@ -605,6 +607,25 @@ resolveAtlasTiles latestFreshness renderTargetOk pool snapshot atlasCache stage 
   unless (null destroyNow) $
     mapM_ (releaseTexture pool) destroyNow
   pure (atlasToDraw, status, cacheFinal)
+
+lastTextures :: Maybe (AtlasKey, [TerrainAtlasTile]) -> [SDL.Texture]
+lastTextures Nothing = []
+lastTextures (Just (_key, tiles)) = map tatTexture tiles
+
+-- | Resolve a transparent sky/weather overlay atlas layer without touching
+-- pending texture releases; the base resolve step owns release safety for both
+-- base and overlay last-good tiles.
+resolveAtlasOverlayTiles
+  :: Maybe AtlasFreshness
+  -> Bool
+  -> Bool
+  -> Maybe AtlasViewportCoverage
+  -> AtlasKey
+  -> ZoomStage
+  -> AtlasTextureCache
+  -> (Maybe [TerrainAtlasTile], AtlasResolveStatus, AtlasTextureCache)
+resolveAtlasOverlayTiles latestFreshness renderTargetOk dataReady requiredCoverage overlayKey stage atlasCache =
+  resolveAtlasOverlayPureForTarget latestFreshness requiredCoverage renderTargetOk dataReady overlayKey (zsHexRadius stage) (zsAtlasScale stage) atlasCache
 
 -- | Backwards-compatible pure resolver returning the legacy key-mismatch flag.
 resolveAtlasPure
@@ -681,6 +702,25 @@ resolveAtlasPureForTarget latestFreshness requiredCoverage renderTargetOk dataRe
       cacheTouched = maybe cacheWithLast (`touchResolvedEntry` cacheWithLast) touchEntry
   in (atlasToDraw, status, cacheTouched)
 
+resolveAtlasOverlayPureForTarget
+  :: Maybe AtlasFreshness
+  -> Maybe AtlasViewportCoverage
+  -> Bool
+  -> Bool
+  -> AtlasKey
+  -> Int
+  -> Int
+  -> AtlasTextureCache
+  -> (Maybe [TerrainAtlasTile], AtlasResolveStatus, AtlasTextureCache)
+resolveAtlasOverlayPureForTarget latestFreshness requiredCoverage renderTargetOk dataReady atlasKey hexRadius atlasScale atlasCache =
+  let (atlasToDraw, status, touchEntry) = resolveAtlasOverlaySelection latestFreshness requiredCoverage renderTargetOk dataReady atlasKey hexRadius atlasScale atlasCache
+      cacheWithLast = case (status, atlasToDraw) of
+        (CompleteExact, Just tiles) | not (null tiles) ->
+          atlasCache { atcOverlayLast = Just (atlasKey, tiles) }
+        _ -> atlasCache
+      cacheTouched = maybe cacheWithLast (`touchResolvedEntry` cacheWithLast) touchEntry
+  in (atlasToDraw, status, cacheTouched)
+
 resolveAtlasSelection
   :: Maybe AtlasFreshness
   -> Maybe AtlasViewportCoverage
@@ -726,6 +766,51 @@ resolveAtlasSelection latestFreshness requiredCoverage renderTargetOk dataReady 
               else (Nothing, Missing, Nothing)
       _ -> (Nothing, Missing, Nothing)
 
+resolveAtlasOverlaySelection
+  :: Maybe AtlasFreshness
+  -> Maybe AtlasViewportCoverage
+  -> Bool
+  -> Bool
+  -> AtlasKey
+  -> Int
+  -> Int
+  -> AtlasTextureCache
+  -> (Maybe [TerrainAtlasTile], AtlasResolveStatus, Maybe (AtlasKey, Int))
+resolveAtlasOverlaySelection latestFreshness requiredCoverage renderTargetOk dataReady atlasKey hexRadius atlasScale atlasCache =
+  let canUseCache = renderTargetOk && dataReady
+      rawExactSet = if canUseCache then lookupAtlasSet atlasKey hexRadius atlasCache else Nothing
+      exactSet = rawExactSet >>= \set -> if cachedSetIsCurrentFor latestFreshness hexRadius atlasScale set then Just set else Nothing
+      staleExactSet = rawExactSet >>= \set -> if cachedSetIsCurrentFor latestFreshness hexRadius atlasScale set then Nothing else Just set
+      coverageOk set = cachedSetCovers requiredCoverage set
+      touchFor key tiles = case tiles of
+        t:_ -> Just (key, tatHexRadius t)
+        [] -> Nothing
+      coverageGap set = case atcOverlayLast atlasCache of
+        Just (lastKey, lastTiles) | not (null lastTiles) ->
+          (Just lastTiles, ViewportCoverageMissing, touchFor lastKey lastTiles)
+        _ -> (Just (catsTiles set), ViewportCoverageMissing, touchFor atlasKey (catsTiles set))
+  in case exactSet of
+      Just set | catsComplete set && not (null (catsTiles set)) && coverageOk set ->
+        (Just (catsTiles set), CompleteExact, touchFor atlasKey (catsTiles set))
+      Just set | catsComplete set && not (null (catsTiles set)) ->
+        coverageGap set
+      _ | renderTargetOk -> case atcOverlayLast atlasCache of
+        Just (lastKey, lastTiles) | not (null lastTiles) ->
+          (Just lastTiles, LastGoodFallback, touchFor lastKey lastTiles)
+        _ -> case exactSet of
+          Just set | not (null (catsTiles set)) ->
+            (Just (catsTiles set), PartialExact, touchFor atlasKey (catsTiles set))
+          _ -> case staleExactSet of
+            Just set | not (null (catsTiles set)) ->
+              (Just (catsTiles set), StaleExactFallback, touchFor atlasKey (catsTiles set))
+            _ -> if canUseCache
+              then case getNearestAtlasSet atlasKey hexRadius atlasCache of
+                Just set | not (null (catsTiles set)) ->
+                  (Just (catsTiles set), NearestScaleFallback, touchFor atlasKey (catsTiles set))
+                _ -> (Nothing, Missing, Nothing)
+              else (Nothing, Missing, Nothing)
+      _ -> (Nothing, Missing, Nothing)
+
 zoomTextureScale :: Float -> Int
 zoomTextureScale zoom =
   let target = ceiling (zoom * 2)
@@ -754,13 +839,18 @@ resolveAtlasFallback expectedKey atlasTiles cache =
       Just (lastKey, tiles) | not (null tiles) -> (Just tiles, lastKey /= expectedKey)
       _ -> (Nothing, False)
 
--- | Select the active atlas key.
+-- | Select the active base atlas key.
 --
 -- With multi-key caching this is an O(1) pointer update — no textures
 -- are flushed.  Tiles for the previous key remain in the cache and can
 -- be looked up again if the user switches back.
 setAtlasKey :: AtlasKey -> AtlasTextureCache -> AtlasTextureCache
-setAtlasKey key cache = cache { atcKey = Just key }
+setAtlasKey key cache = cache { atcKey = Just key, atcOverlayKey = Nothing }
+
+-- | Select active base and optional overlay atlas keys without flushing cached
+-- textures from either layer.
+setAtlasLayerKeys :: AtlasKey -> Maybe AtlasKey -> AtlasTextureCache -> AtlasTextureCache
+setAtlasLayerKeys baseKey overlayKey cache = cache { atcKey = Just baseKey, atcOverlayKey = overlayKey }
 
 -- | Legacy helper for tests and callers that already have a complete tile list.
 -- Production worker results should call 'storeAtlasTileSet' with the manifest.
@@ -794,9 +884,7 @@ storeAtlasTileSet :: AtlasTileSetManifest -> [TerrainAtlasTile] -> AtlasTextureC
 storeAtlasTileSet manifest tiles cache =
   let key = atsmKey manifest
       scale = atsmHexRadius manifest
-      isStale = case atcKey cache of
-        Just currentKey -> atlasKeyVersion key /= atlasKeyVersion currentKey
-        Nothing -> False
+      isStale = not (atlasCacheAcceptsStoredKey key cache)
   in if isStale
     then cache { atcPending = map tatTexture tiles ++ atcPending cache }
     else
@@ -1043,6 +1131,20 @@ lookupBuildId key hexRadius cache =
 orMaybe :: Maybe a -> Maybe a -> Maybe a
 orMaybe (Just x) _ = Just x
 orMaybe Nothing y = y
+
+atlasCacheCurrentKeys :: AtlasTextureCache -> [AtlasKey]
+atlasCacheCurrentKeys cache = maybe [] (:[]) (atcKey cache) ++ maybe [] (:[]) (atcOverlayKey cache)
+
+atlasCacheHasCurrentKey :: AtlasKey -> AtlasTextureCache -> Bool
+atlasCacheHasCurrentKey key cache =
+  let currentKeys = atlasCacheCurrentKeys cache
+  in null currentKeys || key `elem` currentKeys
+
+atlasCacheAcceptsStoredKey :: AtlasKey -> AtlasTextureCache -> Bool
+atlasCacheAcceptsStoredKey key cache =
+  let sameLayerCurrent = filter ((== atlasKeyLayer key) . atlasKeyLayer) (atlasCacheCurrentKeys cache)
+  in null sameLayerCurrent
+    || any (\currentKey -> key == currentKey || atlasKeyVersion key == atlasKeyVersion currentKey) sameLayerCurrent
 
 formatMaybeTileSetSummary :: Maybe AtlasTileSetSummary -> String
 formatMaybeTileSetSummary Nothing = "none"

@@ -18,19 +18,26 @@ module Actor.AtlasScheduler
   , requestAtlasSchedule
   , atlasSchedulerDayNightSpec
   , atlasViewportRefreshJob
+  , atlasViewportRefreshJobs
   , newAtlasFreshnessRef
   , writeAtlasFreshness
+  , writeAtlasFreshnessCurrentKeys
   , writeAtlasFreshnessKey
+  , atlasKeyIsCurrent
+  , atlasTargetBuildIsFresh
   ) where
 
-import Actor.AtlasCache (atlasKeyForSelection, atlasKeyViewMode)
+import Actor.AtlasCache (AtlasKey, atlasKeyIsBase, atlasKeysForSelection)
 import Actor.AtlasFreshness
   ( AtlasFreshness(..)
   , AtlasFreshnessRef
   , emptyAtlasFreshness
   , newAtlasFreshnessRef
   , writeAtlasFreshness
+  , writeAtlasFreshnessCurrentKeys
   , writeAtlasFreshnessKey
+  , atlasKeyIsCurrent
+  , atlasTargetBuildIsFresh
   )
 import Actor.AtlasManager
   ( AtlasJob(..)
@@ -38,6 +45,7 @@ import Actor.AtlasManager
   , AtlasFreshDrainRequest(..)
   , AtlasFreshDrainStats(..)
   , AtlasManager
+  , atlasJobsForSelection
   , drainFreshAtlasJobsLimitedWithStats
   , enqueueAtlasBuild
   , inspectFreshAtlasJobs
@@ -157,22 +165,22 @@ atlasSchedulerDayNightSpec ui terrain
 
 atlasViewportRefreshJob :: SnapshotVersion -> RenderSnapshot -> ZoomStage -> AtlasJob
 atlasViewportRefreshJob snapshotVersion snapshot stage =
+  case atlasViewportRefreshJobs snapshotVersion snapshot stage of
+    job:_ -> job
+    [] -> error "atlasViewportRefreshJob: expected at least a base atlas job"
+
+atlasViewportRefreshJobs :: SnapshotVersion -> RenderSnapshot -> ZoomStage -> [AtlasJob]
+atlasViewportRefreshJobs snapshotVersion snapshot stage =
   let uiSnap = rsUi snapshot
       terrainSnap = rsTerrain snapshot
       selection = effectiveViewSelection uiSnap
-      currentKey = atlasKeyForSelection selection (uiRenderWaterLevel uiSnap) terrainSnap
-      keyMode = atlasKeyViewMode currentKey
-  in AtlasJob
-    { ajKey = currentKey
-    , ajViewMode = keyMode
-    , ajViewSelection = selection
-    , ajWaterLevel = uiRenderWaterLevel uiSnap
-    , ajSnapshotVersion = snapshotVersion
-    , ajTerrain = terrainSnap
-    , ajHexRadius = zsHexRadius stage
-    , ajAtlasScale = zsAtlasScale stage
-    , ajViewportCoverage = Nothing
-    }
+  in atlasJobsForSelection
+      snapshotVersion
+      selection
+      (uiRenderWaterLevel uiSnap)
+      terrainSnap
+      [stage]
+      Nothing
 
 atlasViewportCoverageFor :: RenderSnapshot -> (Int, Int) -> ZoomStage -> Maybe AtlasViewportCoverage
 atlasViewportCoverageFor snapshot windowSize stage =
@@ -220,12 +228,61 @@ scheduleReportFromStats snapshotVersion workerCount workerCapacity workerLoad st
     , asrWorkerStaleCancelledBeforePublish = awlStaleCancelledBeforePublish workerLoad
     }
 
+emptyFreshDrainStats :: AtlasFreshDrainStats
+emptyFreshDrainStats = AtlasFreshDrainStats
+  { afdsJobsAvailable = 0
+  , afdsJobsDispatched = 0
+  , afdsJobsDeferred = 0
+  , afdsJobsDroppedStale = 0
+  , afdsCurrentStageDispatches = 0
+  , afdsBackfillDispatches = 0
+  }
+
+appendFreshDrainStats :: AtlasFreshDrainStats -> AtlasFreshDrainStats -> AtlasFreshDrainStats
+appendFreshDrainStats a b = AtlasFreshDrainStats
+  { afdsJobsAvailable = afdsJobsAvailable a + afdsJobsAvailable b
+  , afdsJobsDispatched = afdsJobsDispatched a + afdsJobsDispatched b
+  , afdsJobsDeferred = afdsJobsDeferred a + afdsJobsDeferred b
+  , afdsJobsDroppedStale = afdsJobsDroppedStale a + afdsJobsDroppedStale b
+  , afdsCurrentStageDispatches = afdsCurrentStageDispatches a + afdsCurrentStageDispatches b
+  , afdsBackfillDispatches = afdsBackfillDispatches a + afdsBackfillDispatches b
+  }
+
+drainFreshForKeys
+  :: AtlasSchedulerHandles
+  -> [AtlasKey]
+  -> SnapshotVersion
+  -> Int
+  -> Maybe (Int, Int)
+  -> Maybe AtlasViewportCoverage
+  -> IO ([AtlasDispatchJob], AtlasFreshDrainStats)
+drainFreshForKeys handles keys snapshotVersion capacity preferredTarget dispatchCoverage =
+  go (max 0 capacity) [] emptyFreshDrainStats keys
+  where
+    go _ jobs stats [] = pure (jobs, stats)
+    go remaining jobs stats (key:rest)
+      | remaining <= 0 = do
+          inspected <- inspectFreshAtlasJobs (ashManager handles) (requestFor key 0)
+          go 0 jobs (appendFreshDrainStats stats inspected) rest
+      | otherwise = do
+          (drained, drainedStats) <- drainFreshAtlasJobsLimitedWithStats (ashManager handles) (requestFor key remaining)
+          let remaining' = max 0 (remaining - length drained)
+          go remaining' (jobs <> drained) (appendFreshDrainStats stats drainedStats) rest
+
+    requestFor key limit = AtlasFreshDrainRequest
+      { afdrFreshness = emptyAtlasFreshness key snapshotVersion
+      , afdrLimit = limit
+      , afdrPreferredTarget = preferredTarget
+      , afdrDispatchCoverage = dispatchCoverage
+      }
+
 runSchedule :: AtlasSchedulerHandles -> AtlasScheduleRequest -> IO ()
 runSchedule handles req = do
   let snapshot = asqSnapshot req
       uiSnap = rsUi snapshot
       terrainSnap = rsTerrain snapshot
-      currentKey = atlasKeyForSelection (effectiveViewSelection uiSnap) (uiRenderWaterLevel uiSnap) terrainSnap
+      selection = effectiveViewSelection uiSnap
+      currentKeys = atlasKeysForSelection selection (uiRenderWaterLevel uiSnap) terrainSnap
       shouldSchedule = asqRenderTargetOk req
         && asqDataReady req
         && not (uiGenerating uiSnap)
@@ -234,29 +291,21 @@ runSchedule handles req = do
       dayNightSpec = atlasSchedulerDayNightSpec uiSnap terrainSnap
   if shouldSchedule && workerCount > 0
     then do
-      let currentFreshness = emptyAtlasFreshness currentKey (asqSnapshotVersion req)
-          refreshStage = maybe (stageForZoom (uiZoom uiSnap)) id (asqRefreshStage req)
+      let refreshStage = maybe (stageForZoom (uiZoom uiSnap)) id (asqRefreshStage req)
           dispatchCoverage = atlasViewportCoverageFor snapshot (asqWindowSize req) refreshStage
-          viewportRefreshJob = (atlasViewportRefreshJob (asqSnapshotVersion req) snapshot refreshStage)
-            { ajViewportCoverage = dispatchCoverage }
+          viewportRefreshJobs =
+            [ job { ajViewportCoverage = dispatchCoverage }
+            | job <- atlasViewportRefreshJobs (asqSnapshotVersion req) snapshot refreshStage
+            ]
           preferredTarget = Just (zsHexRadius refreshStage, zsAtlasScale refreshStage)
       workerLoadBefore <- readAtlasWorkerLoad (ashWorkerLoadRef handles)
       let workerCapacity = max 0 (workerCount - awlInFlight workerLoadBefore)
-          drainRequest = AtlasFreshDrainRequest
-            { afdrFreshness = currentFreshness
-            , afdrLimit = workerCapacity
-            , afdrPreferredTarget = preferredTarget
-            , afdrDispatchCoverage = dispatchCoverage
-            }
       ((jobs, drainStats), drainMs) <- timedMs $ do
         if asqRefreshCurrentViewport req
-          then enqueueAtlasBuild (ashManager handles) viewportRefreshJob
+          then mapM_ (enqueueAtlasBuild (ashManager handles)) viewportRefreshJobs
           else pure ()
-        if workerCapacity > 0
-          then drainFreshAtlasJobsLimitedWithStats (ashManager handles) drainRequest
-          else do
-            stats <- inspectFreshAtlasJobs (ashManager handles) drainRequest
-            pure ([], stats)
+        drainFreshForKeys handles currentKeys (asqSnapshotVersion req) workerCapacity preferredTarget dispatchCoverage
+      writeAtlasFreshnessCurrentKeys (ashFreshnessRef handles) currentKeys (asqSnapshotVersion req)
       (_, enqueueMs) <- timedMs $ do
         atlasWorkerLoadStart (ashWorkerLoadRef handles) (length jobs)
         forM_ jobs $ \dispatchJob -> do
@@ -278,7 +327,7 @@ runSchedule handles req = do
             , abSnapshotVersion = ajSnapshotVersion job
             , abResultRef  = ashResultRef handles
             , abFreshnessRef = ashFreshnessRef handles
-            , abDayNightSpec = dayNightSpec
+            , abDayNightSpec = if atlasKeyIsBase (ajKey job) then dayNightSpec else Nothing
             , abWorkerLoadRef = Just (ashWorkerLoadRef handles)
             }
       let report = scheduleReportFromStats
@@ -291,7 +340,7 @@ runSchedule handles req = do
             enqueueMs
       writeAtlasScheduleReport (ashScheduleRef handles) report
     else do
-      writeAtlasFreshnessKey (ashFreshnessRef handles) currentKey
+      writeAtlasFreshnessCurrentKeys (ashFreshnessRef handles) currentKeys (asqSnapshotVersion req)
       workerLoad <- readAtlasWorkerLoad (ashWorkerLoadRef handles)
       let workerCapacity = max 0 (workerCount - awlInFlight workerLoad)
           report = (emptyAtlasScheduleReport (asqSnapshotVersion req))

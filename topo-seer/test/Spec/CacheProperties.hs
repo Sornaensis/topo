@@ -1,9 +1,9 @@
 module Spec.CacheProperties (spec) where
 
-import Actor.AtlasCache (atlasKeyFor, atlasKeyVersion, terrainSnapshotViewVersion)
+import Actor.AtlasCache (AtlasKey(..), atlasKeyFor, atlasKeyVersion, terrainSnapshotSelectionVersion, terrainSnapshotViewVersion)
 import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.TerrainCacheWorker (TerrainCacheKey(..), terrainCacheKeyFrom)
-import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), UiState(..), ViewMode(..), WeatherBasis(..), defaultLayeredViewState, emptyUiState)
+import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), UiState(..), ViewMode(..), WeatherBasis(..), defaultLayeredViewState, effectiveViewSelection, emptyUiState)
 import Topo (WeatherChunk(..), WorldConfig(..), emptyTerrainChunk)
 import Topo.Calendar (WorldTime(..), simulationTickSeconds)
 import Topo.Overlay (Overlay(..), OverlayProvenance(..), OverlayStore, emptyOverlay, emptyOverlayStore, insertOverlay)
@@ -74,8 +74,8 @@ spec = describe "Cache properties" $ do
     atlasKeyVersion cloudKey0 `shouldBe` 7
     terrainSnapshotViewVersion ViewCloud terrainSnap1 `shouldBe` 8
     atlasKeyFor ViewCloud waterLevel terrainSnap1 `shouldNotBe` cloudKey0
-    terrainSnapshotViewVersion ViewCloud terrainSnapBaseNewer `shouldBe` 11
-    atlasKeyVersion (atlasKeyFor ViewCloud waterLevel terrainSnapBaseNewer) `shouldBe` 11
+    terrainSnapshotViewVersion ViewCloud terrainSnapBaseNewer `shouldBe` 7
+    atlasKeyVersion (atlasKeyFor ViewCloud waterLevel terrainSnapBaseNewer) `shouldBe` 7
 
   it "keys async fallback terrain builds by layered selection" $ do
     let terrainSnap = renderableTerrainSnapshot 3 7 sampleWeatherChunkA
@@ -100,13 +100,13 @@ spec = describe "Cache properties" $ do
     atlasKeyVersion precipKey0 `shouldBe` 7
     atlasKeyFor ViewPrecipCurrent waterLevel terrainSnap1 `shouldNotBe` precipKey0
 
-  it "keeps typical cloud atlas keys stable across weather ticks and tracks normals stamp changes" $ do
+  it "keeps typical cloud atlas keys stable across weather ticks but tracks climate and normal overlay changes" $ do
     let waterLevel = 0.4
         terrainSnap0 = emptyTerrainSnapshot { tsVersion = 3, tsClimateVersion = 5, tsWeatherVersion = 7 }
         terrainSnapWeather = terrainSnap0 { tsWeatherVersion = 8 }
         terrainSnapClimate = terrainSnap0 { tsClimateVersion = 6 }
-        terrainSnapNormals0 = terrainSnap0 { tsOverlayStore = weatherNormalsStore 1 }
-        terrainSnapNormals1 = terrainSnap0 { tsOverlayStore = weatherNormalsStore 2 }
+        terrainSnapNormals0 = terrainSnap0 { tsOverlayVersion = 9, tsOverlayStore = weatherNormalsStore 1 }
+        terrainSnapNormals1 = terrainSnap0 { tsOverlayVersion = 10, tsOverlayStore = weatherNormalsStore 2 }
         typicalKey0 = atlasKeyFor ViewCloudTypical waterLevel terrainSnap0
         typicalNormalsKey0 = atlasKeyFor ViewCloudTypical waterLevel terrainSnapNormals0
     terrainSnapshotViewVersion ViewCloudTypical terrainSnapWeather `shouldBe` terrainSnapshotViewVersion ViewCloudTypical terrainSnap0
@@ -116,15 +116,31 @@ spec = describe "Cache properties" $ do
     terrainSnapshotViewVersion ViewCloudTypical terrainSnapNormals1 `shouldNotBe` terrainSnapshotViewVersion ViewCloudTypical terrainSnapNormals0
     atlasKeyFor ViewCloudTypical waterLevel terrainSnapNormals1 `shouldNotBe` typicalNormalsKey0
 
+  it "keeps split base atlas keys stable when only current weather changes" $ do
+    let waterLevel = 0.4
+        selection = defaultLayeredViewState
+          { lvsBaseView = BaseViewBiome
+          , lvsSkyOverlay = Just SkyOverlayCloud
+          , lvsWeatherBasis = WeatherBasisCurrent
+          }
+        terrainSnap0 = emptyTerrainSnapshot { tsVersion = 3, tsWeatherVersion = 7 }
+        terrainSnapWeather = terrainSnap0 { tsWeatherVersion = 8 }
+        terrainSnapBase = terrainSnap0 { tsVersion = 4 }
+        baseKey0 = BaseAtlasKey (lvsBaseView selection) waterLevel (tsVersion terrainSnap0)
+        overlayKey0 = atlasKeyFor ViewCloud waterLevel terrainSnap0
+    BaseAtlasKey (lvsBaseView selection) waterLevel (tsVersion terrainSnapWeather) `shouldBe` baseKey0
+    atlasKeyFor ViewCloud waterLevel terrainSnapWeather `shouldNotBe` overlayKey0
+    BaseAtlasKey (lvsBaseView selection) waterLevel (tsVersion terrainSnapBase) `shouldNotBe` baseKey0
+
   it "refreshes ViewCloud terrain cache when weather version changes" $ do
     let uiCloud = emptyUiState { uiViewMode = ViewCloud }
         terrainSnap0 = renderableTerrainSnapshot 1 3 sampleWeatherChunkA
         terrainSnap1 = renderableTerrainSnapshot 1 4 sampleWeatherChunkB
         cache0 = buildTerrainCache uiCloud terrainSnap0
         cache1 = updateTerrainCache uiCloud terrainSnap1 cache0
-    tcVersion cache0 `shouldBe` terrainSnapshotViewVersion ViewCloud terrainSnap0
+    tcVersion cache0 `shouldBe` terrainSnapshotSelectionVersion (effectiveViewSelection uiCloud) terrainSnap0
     terrainCacheNeedsRefresh uiCloud terrainSnap1 cache0 `shouldBe` True
-    tcVersion cache1 `shouldBe` terrainSnapshotViewVersion ViewCloud terrainSnap1
+    tcVersion cache1 `shouldBe` terrainSnapshotSelectionVersion (effectiveViewSelection uiCloud) terrainSnap1
     sameTerrainCache cache1 cache0 `shouldBe` False
 
   it "invalidates terrain cache when water level changes" $

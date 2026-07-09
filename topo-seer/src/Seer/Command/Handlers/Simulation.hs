@@ -16,8 +16,8 @@ import qualified Data.IntMap.Strict as IntMap
 import Data.List (find)
 import Data.Text (Text)
 
-import Actor.AtlasCache (atlasKeyForSelection, atlasKeyViewMode)
-import Actor.AtlasManager (AtlasJob(..), enqueueAtlasBuild)
+import Actor.AtlasCache (AtlasKey, AtlasLayer(..), atlasKeyLayer, atlasKeysForSelection)
+import Actor.AtlasManager (atlasJobsForKeys, enqueueAtlasBuild)
 import Actor.Data (DataSnapshot(..), TerrainSnapshot(..), getDataSnapshot)
 import Actor.Log (LogEntry(..), LogLevel(..), appendLog)
 import Actor.PluginManager
@@ -44,7 +44,7 @@ import Actor.UI.Setters (setUiSimAutoTick, setUiSimTickRate)
 import Actor.UI.State (LayeredViewState(..), SkyOverlayMode(..), UiState(..), ViewMode(..), WeatherBasis(..), effectiveViewSelection, getUiSnapshot, readUiSnapshotRef)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
-import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom)
+import Seer.Render.ZoomStage (orderedZoomStagesForZoom)
 import Topo.Calendar (WorldTime(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 
@@ -196,29 +196,26 @@ enqueueLatestSimulationAtlasBackfill handles ui
           (simulationAtlasBackfillStillCurrent ui terrainSnap latestUi latestTerrainSnap) $ do
             snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
             let selection = effectiveViewSelection ui
-                atlasKey = atlasKeyForSelection selection (uiRenderWaterLevel ui) terrainSnap
-                keyMode = atlasKeyViewMode atlasKey
-                mkJob stage = AtlasJob
-                  { ajKey = atlasKey
-                  , ajViewMode = keyMode
-                  , ajViewSelection = selection
-                  , ajWaterLevel = uiRenderWaterLevel ui
-                  , ajSnapshotVersion = snapshotVersion
-                  , ajTerrain = terrainSnap
-                  , ajHexRadius = zsHexRadius stage
-                  , ajAtlasScale = zsAtlasScale stage
-                  , ajViewportCoverage = Nothing
-                  }
+                waterLevel = uiRenderWaterLevel ui
+                keys = filter (simulationBackfillKeyAffected ui) (atlasKeysForSelection selection waterLevel terrainSnap)
+                jobs = atlasJobsForKeys
+                  snapshotVersion
+                  selection
+                  waterLevel
+                  terrainSnap
+                  keys
+                  (orderedZoomStagesForZoom (uiZoom ui))
+                  Nothing
             mapM_
-              (enqueueAtlasBuild (ahAtlasManagerHandle handles) . mkJob)
-              (orderedZoomStagesForZoom (uiZoom ui))
+              (enqueueAtlasBuild (ahAtlasManagerHandle handles))
+              jobs
 
 simulationAtlasBackfillViewAffected :: UiState -> Bool
 simulationAtlasBackfillViewAffected ui =
   uiDayNightEnabled ui || case lvsSkyOverlay (effectiveViewSelection ui) of
     Just SkyOverlayWeatherTemperature -> lvsWeatherBasis (effectiveViewSelection ui) == WeatherBasisCurrent
     Just SkyOverlayPrecipitation -> lvsWeatherBasis (effectiveViewSelection ui) == WeatherBasisCurrent
-    Just SkyOverlayCloud -> lvsWeatherBasis (effectiveViewSelection ui) == WeatherBasisCurrent
+    Just SkyOverlayCloud -> True
     Just (SkyOverlayPlugin name _) -> name == "weather"
     Nothing -> case uiViewMode ui of
       ViewWeather -> True
@@ -226,6 +223,12 @@ simulationAtlasBackfillViewAffected ui =
       ViewPrecipCurrent -> True
       ViewOverlay name _ -> name == "weather"
       _ -> False
+
+simulationBackfillKeyAffected :: UiState -> AtlasKey -> Bool
+simulationBackfillKeyAffected ui key = case atlasKeyLayer key of
+  AtlasBaseLayer -> uiDayNightEnabled ui
+  AtlasOverlayLayer -> True
+  AtlasLegacyLayer -> True
 
 simulationAtlasBackfillSnapshotReady :: TerrainSnapshot -> Bool
 simulationAtlasBackfillSnapshotReady terrainSnap =
@@ -242,8 +245,8 @@ simulationAtlasBackfillStillCurrent requestedUi requestedTerrain latestUi latest
     && uiRenderWaterLevel requestedUi == uiRenderWaterLevel latestUi
     && uiZoom requestedUi == uiZoom latestUi
     && uiDayNightEnabled requestedUi == uiDayNightEnabled latestUi
-    && atlasKeyForSelection (effectiveViewSelection requestedUi) (uiRenderWaterLevel requestedUi) requestedTerrain
-       == atlasKeyForSelection (effectiveViewSelection latestUi) (uiRenderWaterLevel latestUi) latestTerrain
+    && atlasKeysForSelection (effectiveViewSelection requestedUi) (uiRenderWaterLevel requestedUi) requestedTerrain
+       == atlasKeysForSelection (effectiveViewSelection latestUi) (uiRenderWaterLevel latestUi) latestTerrain
 
 simulationPhase :: DataSnapshot -> SimulationDagSnapshot -> Text
 simulationPhase dataSnap dag

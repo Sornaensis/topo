@@ -16,7 +16,6 @@ module Actor.UiActions.Command
   ) where
 
 import Actor.UiActions.Handles (ActorHandles(..))
-import Actor.AtlasCache (atlasKeyForSelection, atlasKeyViewMode)
 import Actor.PluginManager
   ( LoadedPlugin(..)
   , PluginManager
@@ -41,7 +40,7 @@ import Actor.PluginManager.PipelineIntegrator
   , pluginPipelineAvailableDependencyKeys
   )
 import Actor.Simulation (Simulation, clearSimWorld)
-import Actor.AtlasManager (AtlasJob(..), AtlasManager, enqueueAtlasBuild)
+import Actor.AtlasManager (AtlasJob(..), atlasJobsForSelection, atlasJobsForSelectionTransition, enqueueAtlasBuild)
 import Seer.Render.Viewport (AtlasViewportCoverage, currentAtlasViewportCoverage)
 import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom, stageForZoom)
 import Actor.Data
@@ -168,7 +167,7 @@ runUiAction req =
     UiActionRevert ->
       logTimed req "Config Revert" (revertConfig req)
     UiActionSetViewMode mode ->
-      logTimed req ("View " <> viewModeLabel mode) (setViewMode req mode >> rebuildAtlas req)
+      logTimed req ("View " <> viewModeLabel mode) (setViewModeAndRebuild req mode)
     UiActionRebuildAtlas mode ->
       logTimed req ("Rebuild Atlas " <> viewModeLabel mode) (rebuildAtlasFor req mode)
     UiActionToggleDayNight ->
@@ -341,7 +340,7 @@ toggleDayNight req = do
   postToggle <- getUiSnapshot uiHandle
   terrainSnap <- publishLatestTerrainSnapshot handles
   snapshotVersion <- bumpSnapshotVersionAndRead (ahSnapshotVersionRef handles)
-  enqueueAtlasRebuildForTerrain handles (uiViewMode postToggle) postToggle snapshotVersion terrainSnap
+  enqueueAtlasRebuildForTerrainWithForce True handles (uiViewMode postToggle) postToggle snapshotVersion terrainSnap
 
 publishLatestTerrainSnapshot :: ActorHandles -> IO TerrainSnapshot
 publishLatestTerrainSnapshot handles = do
@@ -356,27 +355,37 @@ enqueueAtlasRebuildFor handles mode uiSnap snapshotVersion = do
 
 -- | Enqueue a full ordered atlas rebuild using an already-captured terrain snapshot.
 enqueueAtlasRebuildForTerrain :: ActorHandles -> ViewMode -> UiState -> SnapshotVersion -> TerrainSnapshot -> IO ()
-enqueueAtlasRebuildForTerrain handles mode uiSnap snapshotVersion terrainSnap = do
+enqueueAtlasRebuildForTerrain handles mode uiSnap snapshotVersion terrainSnap =
+  enqueueAtlasRebuildForTerrainWithForce False handles mode uiSnap snapshotVersion terrainSnap
+
+enqueueAtlasRebuildForTerrainWithForce :: Bool -> ActorHandles -> ViewMode -> UiState -> SnapshotVersion -> TerrainSnapshot -> IO ()
+enqueueAtlasRebuildForTerrainWithForce forceRebuild handles mode uiSnap snapshotVersion terrainSnap = do
   let selection = if uiViewMode uiSnap == mode
         then effectiveViewSelection uiSnap
         else legacyViewModeToLayeredViewState mode
-      atlasKey = atlasKeyForSelection selection (uiRenderWaterLevel uiSnap) terrainSnap
-      keyMode = atlasKeyViewMode atlasKey
       -- Enqueue the current zoom stage first so the visible tiles are
       -- prioritised by the scheduler's round-robin dispatch.
       orderedStages = orderedZoomStagesForZoom (uiZoom uiSnap)
-      job stage = AtlasJob
-        { ajKey        = atlasKey
-        , ajViewMode   = keyMode
-        , ajViewSelection = selection
-        , ajWaterLevel = uiRenderWaterLevel uiSnap
-        , ajSnapshotVersion = snapshotVersion
-        , ajTerrain    = terrainSnap
-        , ajHexRadius  = zsHexRadius stage
-        , ajAtlasScale = zsAtlasScale stage
-        , ajViewportCoverage = Nothing
-        }
-  mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles) . job) orderedStages
+      jobs = map (\job -> job { ajForceRebuild = forceRebuild || ajForceRebuild job }) $
+        atlasJobsForSelection snapshotVersion selection (uiRenderWaterLevel uiSnap) terrainSnap orderedStages Nothing
+  mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles)) jobs
+
+-- | Enqueue only the layer keys that changed during a view-selection transition.
+enqueueAtlasTransitionForTerrain :: ActorHandles -> UiState -> UiState -> SnapshotVersion -> TerrainSnapshot -> IO ()
+enqueueAtlasTransitionForTerrain handles previousUi uiSnap snapshotVersion terrainSnap = do
+  let previousSelection = effectiveViewSelection previousUi
+      selection = effectiveViewSelection uiSnap
+      orderedStages = orderedZoomStagesForZoom (uiZoom uiSnap)
+      jobs = atlasJobsForSelectionTransition
+        snapshotVersion
+        previousSelection
+        (uiRenderWaterLevel previousUi)
+        selection
+        (uiRenderWaterLevel uiSnap)
+        terrainSnap
+        orderedStages
+        Nothing
+  mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles)) jobs
 
 -- | Viewport-only atlas refresh: only rebuild the current zoom stage.
 --
@@ -398,22 +407,10 @@ enqueueViewportRefreshForCurrentUiWithWindow handles mbWindowSize = do
   uiSnap <- getUiSnapshot (ahUiHandle handles)
   snapshotVersion <- bumpSnapshotVersionAndRead (ahSnapshotVersionRef handles)
   let selection = effectiveViewSelection uiSnap
-      atlasKey = atlasKeyForSelection selection (uiRenderWaterLevel uiSnap) terrainSnap
-      keyMode = atlasKeyViewMode atlasKey
       currentStage = stageForZoom (uiZoom uiSnap)
       viewportCoverage = viewportCoverageFor terrainSnap uiSnap mbWindowSize currentStage
-      job stage = AtlasJob
-        { ajKey        = atlasKey
-        , ajViewMode   = keyMode
-        , ajViewSelection = selection
-        , ajWaterLevel = uiRenderWaterLevel uiSnap
-        , ajSnapshotVersion = snapshotVersion
-        , ajTerrain    = terrainSnap
-        , ajHexRadius  = zsHexRadius stage
-        , ajAtlasScale = zsAtlasScale stage
-        , ajViewportCoverage = viewportCoverage
-        }
-  enqueueAtlasBuild (ahAtlasManagerHandle handles) (job currentStage)
+      jobs = atlasJobsForSelection snapshotVersion selection (uiRenderWaterLevel uiSnap) terrainSnap [currentStage] viewportCoverage
+  mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles)) jobs
   pure snapshotVersion
 
 viewportCoverageFor :: TerrainSnapshot -> UiState -> Maybe (Int, Int) -> ZoomStage -> Maybe AtlasViewportCoverage
@@ -433,6 +430,17 @@ viewportCoverageFor terrainSnap uiSnap mbWindowSize stage = do
 setViewMode :: UiActionRequest -> ViewMode -> IO ()
 setViewMode req mode =
   setUiViewMode (ahUiHandle (uarActorHandles req)) mode
+
+setViewModeAndRebuild :: UiActionRequest -> ViewMode -> IO ()
+setViewModeAndRebuild req mode = do
+  let handles = uarActorHandles req
+      uiHandle = ahUiHandle handles
+  previousUi <- getUiSnapshot uiHandle
+  setUiViewMode uiHandle mode
+  uiSnap <- getUiSnapshot uiHandle
+  terrainSnap <- publishLatestTerrainSnapshot handles
+  snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
+  enqueueAtlasTransitionForTerrain handles previousUi uiSnap snapshotVersion terrainSnap
 
 -- | Revert config sliders to the values captured at the last generation.
 -- No-op if no world has been generated yet.

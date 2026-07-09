@@ -4,13 +4,21 @@ module UI.TerrainRender
   , ChunkTexture(..)
   , buildChunkGeometry
   , buildChunkGeometryForSelection
+  , buildChunkBaseGeometry
+  , buildChunkSkyOverlayGeometryForSelection
   , buildDayNightGeometry
   , buildChunkTexture
   , chunkBounds
   , destroyChunkTexture
   ) where
 
-import Actor.UI (LayeredViewState, ViewMode(..))
+import Actor.UI
+  ( BaseViewMode
+  , LayeredViewState(..)
+  , ViewMode(..)
+  , layeredViewStateToViewMode
+  , legacyViewModeToLayeredViewState
+  )
 import Control.Monad.ST (ST)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
@@ -27,7 +35,7 @@ import Topo (ChunkCoord(..), ChunkId(..), ClimateChunk(..), TerrainChunk(..), Ve
 import Topo.Weather (WeatherNormalsChunk(..))
 import UI.DayNight (dayNightMinBrightness)
 import UI.HexGeometry (hexCenterF, hexChunkBounds, hexCornerOffsets, renderHexRadiusPx)
-import UI.TerrainColor (terrainColor, terrainColorForSelection)
+import UI.TerrainColor (terrainBaseColor, terrainColor, terrainColorForSelection, terrainSkyOverlayColor)
 import UI.Widgets (Rect(..))
 
 -- | Triangle mesh for a single terrain chunk, ready for rendering.
@@ -62,6 +70,36 @@ buildChunkGeometry hexRadiusPx config mode =
 buildChunkGeometryForSelection :: Int -> WorldConfig -> LayeredViewState -> Float -> IntMap ClimateChunk -> IntMap WeatherChunk -> IntMap WeatherNormalsChunk -> IntMap VegetationChunk -> Maybe (U.Vector Float) -> Int -> TerrainChunk -> ChunkGeometry
 buildChunkGeometryForSelection hexRadiusPx config selection =
   buildChunkGeometryWithColor (terrainColorForSelection selection) hexRadiusPx config
+
+-- | Build only the opaque physical base layer for a chunk.
+buildChunkBaseGeometry :: Int -> WorldConfig -> BaseViewMode -> Float -> IntMap ClimateChunk -> IntMap WeatherChunk -> IntMap WeatherNormalsChunk -> IntMap VegetationChunk -> Maybe (U.Vector Float) -> Int -> TerrainChunk -> ChunkGeometry
+buildChunkBaseGeometry hexRadiusPx config base =
+  buildChunkGeometryWithColor baseColor hexRadiusPx config
+  where
+    baseColor waterLevel chunk _climate _weather _normals vegChunk _overlayVal idx =
+      terrainBaseColor base waterLevel chunk vegChunk idx
+
+-- | Build only the sky/weather overlay layer for a chunk.
+--
+-- Legacy-equivalent selections keep their historical opaque appearance by
+-- rendering the legacy view-mode colour into a transparent overlay texture;
+-- explicit layered selections render translucent overlay colours and let the
+-- render loop apply the UI opacity as a draw-time alpha multiplier.
+buildChunkSkyOverlayGeometryForSelection :: Int -> WorldConfig -> LayeredViewState -> Float -> IntMap ClimateChunk -> IntMap WeatherChunk -> IntMap WeatherNormalsChunk -> IntMap VegetationChunk -> Maybe (U.Vector Float) -> Int -> TerrainChunk -> ChunkGeometry
+buildChunkSkyOverlayGeometryForSelection hexRadiusPx config selection =
+  buildChunkGeometryWithColor overlayColor hexRadiusPx config
+  where
+    legacyMode = layeredViewStateToViewMode selection
+    legacyOpaque = maybe False (\mode -> selection == legacyViewModeToLayeredViewState mode) legacyMode
+    overlayColor waterLevel chunk climate weather normals vegChunk overlayVal idx =
+      case lvsSkyOverlay selection of
+        Nothing -> V4 0 0 0 0
+        Just overlay
+          | legacyOpaque
+          , Just mode <- legacyMode ->
+              terrainColor mode waterLevel chunk climate weather normals vegChunk overlayVal idx
+          | otherwise ->
+              terrainSkyOverlayColor overlay (lvsWeatherBasis selection) waterLevel chunk climate weather normals overlayVal idx
 
 type TileColorFn = Float -> TerrainChunk -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe WeatherNormalsChunk -> Maybe VegetationChunk -> Maybe Float -> Int -> V4 Word8
 
