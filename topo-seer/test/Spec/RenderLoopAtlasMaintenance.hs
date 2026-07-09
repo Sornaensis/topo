@@ -37,6 +37,7 @@ import Seer.Render.Frame
   , applyAtlasFrameStepTimestamps
   , atlasFrameStepPolicy
   , atlasRetryShouldRefreshViewport
+  , dayNightOverlayRetryActive
   , fallbackFrameMaintenanceDue
   , noAtlasQueuedWork
   )
@@ -192,6 +193,15 @@ spec = describe "render-loop atlas maintenance wakeups" $ do
     atlasRetryShouldRefreshViewport CompleteExact True True True `shouldBe` False
     atlasRetryShouldRefreshViewport CompleteExact False True False `shouldBe` False
     atlasRetryShouldRefreshViewport ViewportCoverageMissing True True True `shouldBe` True
+
+  it "keeps day/night overlay retry active while forced repair freshness is provisional" $ do
+    let blockedByStaleBase = dayNightOverlayRetryActive False True [DayNightOverlayBaseAtlasNotReady StaleExactFallback]
+    blockedByStaleBase `shouldBe` True
+    dayNightOverlayRetryActive False True [DayNightOverlayBaseAtlasNotReady LastGoodFallback] `shouldBe` True
+    dayNightOverlayRetryActive False False [DayNightOverlayBaseAtlasNotReady StaleExactFallback] `shouldBe` False
+    dayNightOverlayRetryActive False True [DayNightOverlayCompleteExact] `shouldBe` False
+    dayNightOverlayRetryActive True True [DayNightOverlayMissing] `shouldBe` False
+    atlasRetryShouldRefreshViewport StaleExactFallback True blockedByStaleBase False `shouldBe` True
 
   it "wakes fallback maintenance for stale day/night overlay without atlas maintenance when render targets are unavailable" $ do
     let terrainSnapOld = renderableFallbackTerrainSnapshot

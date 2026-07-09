@@ -8,6 +8,7 @@ module Seer.Render.Frame
   , atlasFrameStepPolicy
   , atlasRetryShouldRefreshDayNightOverlay
   , atlasRetryShouldRefreshViewport
+  , dayNightOverlayRetryActive
   , fallbackFrameMaintenanceDue
   , renderFrame
   ) where
@@ -54,7 +55,7 @@ import Seer.Render.Atlas
   , AtlasResolveStatus
   , AtlasTextureCache(..)
   , AtlasTileSetSummary(..)
-  , DayNightOverlayStatus
+  , DayNightOverlayStatus(..)
   , atlasCacheSummary
   , atlasResolveDiagnosticWithCoverage
   , atlasResolveNeedsRetry
@@ -207,6 +208,20 @@ atlasRetryShouldRefreshViewport baseStatus dayNightEnabled dayNightOverlayNeedsR
   atlasResolveNeedsViewportRefresh baseStatus
     || atlasRetryShouldRefreshDayNightOverlay dayNightEnabled dayNightOverlayNeedsRetry atlasPending
 
+-- | Keep an overlay retry active while a forced repair makes base freshness
+-- provisional.  A day/night self-heal restamps base freshness before worker
+-- results arrive; if that worker then fails or is cancelled, the previous
+-- overlay retry must be able to force another bounded base rebuild.
+dayNightOverlayRetryActive :: Bool -> Bool -> [DayNightOverlayStatus] -> Bool
+dayNightOverlayRetryActive generating previousRetry statuses =
+  not generating &&
+    ( any dayNightOverlayNeedsRetry statuses
+      || (previousRetry && any retryBlockedByBase statuses)
+    )
+  where
+    retryBlockedByBase (DayNightOverlayBaseAtlasNotReady status) = atlasResolveNeedsRetry status
+    retryBlockedByBase _ = False
+
 -- | Render one UI frame and schedule atlas work if needed.
 renderFrame
   :: RenderContext
@@ -231,6 +246,7 @@ renderFrame context = do
       shouldUpdateChunkTextures = rcShouldUpdateChunkTextures context
       shouldRefreshViewportAtlas = rcShouldRefreshViewportAtlas context
       shouldRefreshDayNightOverlay = rcShouldRefreshDayNightOverlay context
+      previousDayNightOverlayNeedsRetry = rcPreviousDayNightOverlayNeedsRetry context
       timingLogThresholdMs = rcTimingLogThresholdMs context
       fontCache = rcFontCache context
       renderTargetOk = rcRenderTargetOk context
@@ -547,7 +563,7 @@ renderFrame context = do
   let didLog = loggedWindowSize || loggedSchedule || loggedScheduleDrain || loggedScheduleEnqueue || loggedUpload || loggedTextureCreate || loggedAtlasResolve || loggedOverlayResolve || loggedAtlasTraceEvents || loggedChunkTexture || loggedDraw || loggedHover || loggedChrome || loggedUi || loggedPresent
       baseAtlasNeedsRetry = renderTargetOk && dataReady && atlasResolveNeedsRetry atlasResolveStatus
       overlayAtlasNeedsRetry = renderTargetOk && dataReady && maybe False atlasResolveNeedsRetry overlayResolveStatus
-      dayNightNeedsRetry = not generating && any dayNightOverlayNeedsRetry dayNightStatuses
+      dayNightNeedsRetry = dayNightOverlayRetryActive generating previousDayNightOverlayNeedsRetry dayNightStatuses
       atlasNeedsRetry = baseAtlasNeedsRetry || overlayAtlasNeedsRetry || dayNightNeedsRetry
       fallbackChunkNeedsRetry = not renderTargetOk
         && chunkTextureCacheNeedsUpdate terrainCache (zsAtlasScale stage) textureCache'

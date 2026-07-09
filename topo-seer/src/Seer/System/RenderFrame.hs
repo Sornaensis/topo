@@ -320,6 +320,7 @@ renderFrameStep env settings nowMs snapVersion renderSnap cacheState0 = do
       , rcShouldScheduleAtlas = shouldScheduleAtlas
       , rcShouldRefreshViewportAtlas = shouldRefreshViewportAtlas
       , rcShouldRefreshDayNightOverlay = shouldRefreshDayNightOverlay
+      , rcPreviousDayNightOverlayNeedsRetry = rcsDayNightOverlayNeedsRetry cacheState'
       , rcShouldUpdateChunkTextures = shouldUpdateChunkTextures
       , rcTimingLogThresholdMs = rfsetTimingLogThresholdMs settings
       , rcFontCache = rfeFontCache env
