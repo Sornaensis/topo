@@ -54,7 +54,7 @@ import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import Data.Text (Text)
 
-import Actor.UI.State (allBuiltinViewModes, viewModeToText)
+import Actor.UI.State (allBaseViewModes, allBuiltinSkyOverlayModes, allBuiltinViewModes, baseViewModeToText, skyOverlayModeToText, viewModeToText)
 import Seer.HTTP.OpenAPI (HttpRouteSpec(..), JsonSchema(..))
 
 -- Route annotation -----------------------------------------------------------
@@ -115,6 +115,7 @@ requestSchemasByOperation =
   , ("screenshots.take", screenshotTakeRequestSchema)
   , ("ui.seed.set", uiSeedSetRequestSchema)
   , ("ui.viewMode.set", uiViewModeSetRequestSchema)
+  , ("ui.view.set", uiViewSetRequestSchema)
   , ("ui.configTab.set", uiConfigTabSetRequestSchema)
   , ("ui.hex.select", uiSelectHexRequestSchema)
   , ("ui.overlay.set", uiOverlaySetRequestSchema)
@@ -149,6 +150,7 @@ responseSchemasByOperation =
   , ("events.list", eventsListResponseSchema)
   , ("state.get", appStateResponseSchema)
   , ("state.viewModes", stateViewModesResponseSchema)
+  , ("state.views", stateViewsResponseSchema)
   , ("ui.state", uiStateResponseSchema)
   , ("config.sliders.list", slidersListResponseSchema)
   , ("config.sliders.get", sliderResponseSchema)
@@ -211,6 +213,7 @@ responseSchemasByOperation =
   , ("screenshots.take", screenshotTakeResponseSchema)
   , ("ui.seed.set", uiSeedSetResponseSchema)
   , ("ui.viewMode.set", uiViewModeSetResponseSchema)
+  , ("ui.view.set", uiViewSetResponseSchema)
   , ("ui.configTab.set", uiConfigTabSetResponseSchema)
   , ("ui.hex.select", uiSelectHexResponseSchema)
   , ("ui.overlay.set", uiOverlaySetResponseSchema)
@@ -293,9 +296,10 @@ eventEnvelopeSchema = inlineObjectSchema
 
 appStateResponseSchema :: JsonSchema
 appStateResponseSchema = objectSchema "AppStateResponse"
-  [ "seed", "view_mode", "config_tab", "generating", "chunk_size", "show_config", "world_name" ]
+  [ "seed", "view_mode", "view", "config_tab", "generating", "chunk_size", "show_config", "world_name" ]
   [ ("seed", integerSchema)
   , ("view_mode", viewModeSchema)
+  , ("view", layeredViewSelectionSchema)
   , ("config_tab", configTabSchema)
   , ("generating", booleanSchema)
   , ("chunk_size", integerSchema)
@@ -308,16 +312,33 @@ stateViewModesResponseSchema :: JsonSchema
 stateViewModesResponseSchema = objectSchema "StateViewModesResponse"
   [ "view_modes" ]
   [ ("view_modes", arraySchema viewModeEntrySchema)
+  , ("view", layeredViewSelectionSchema)
+  ]
+
+stateViewsResponseSchema :: JsonSchema
+stateViewsResponseSchema = objectSchema "StateViewsResponse"
+  [ "view", "base_modes", "overlay_modes", "weather_bases", "overlay_names", "legacy_modes" ]
+  [ ("view", layeredViewSelectionSchema)
+  , ("legacy_view_mode", viewModeSchema)
+  , ("base_modes", arraySchema baseViewEntrySchema)
+  , ("overlay_modes", arraySchema overlayViewEntrySchema)
+  , ("weather_bases", arraySchema weatherBasisEntrySchema)
+  , ("overlay_names", arraySchema stringSchema)
+  , ("legacy_modes", arraySchema viewModeEntrySchema)
   ]
 
 layeredViewSelectionSchema :: Value
 layeredViewSelectionSchema = inlineObjectSchema
-  [ "base", "weather_basis", "overlay_opacity", "legacy_view_mode" ]
-  [ ("base", stringSchema)
+  [ "base", "base_mode", "weather_basis", "overlay_opacity", "legacy_view_mode" ]
+  [ ("base", baseViewModeSchema)
+  , ("base_mode", baseViewModeSchema)
   , ("base_label", stringSchema)
   , ("overlay", nullableSchema stringSchema)
+  , ("overlay_mode", nullableSchema overlayModeSchema)
+  , ("plugin_overlay", nullableSchema stringSchema)
+  , ("overlay_field", nullableSchema integerSchema)
   , ("overlay_label", nullableSchema stringSchema)
-  , ("weather_basis", enumStringSchema ["average", "current"])
+  , ("weather_basis", weatherBasisSchema)
   , ("temporal_basis", nullableSchema temporalBasisSchema)
   , ("source_kind", nullableSchema sourceKindSchema)
   , ("overlay_opacity", numberSchema)
@@ -331,8 +352,14 @@ uiStateResponseSchema = objectSchema "UiStateResponse"
   , ("generating", booleanSchema)
   , ("world_name", stringSchema)
   , ("chunk_size", integerSchema)
-  , ("view", inlineObjectSchema ["mode", "selection", "overlay_names"]
+  , ("view", inlineObjectSchema ["mode", "base_mode", "weather_basis", "selection", "overlay_names"]
       [ ("mode", viewModeSchema)
+      , ("base_mode", baseViewModeSchema)
+      , ("overlay_mode", nullableSchema overlayModeSchema)
+      , ("plugin_overlay", nullableSchema stringSchema)
+      , ("weather_basis", weatherBasisSchema)
+      , ("overlay_opacity", numberSchema)
+      , ("legacy_view_mode", nullableSchema viewModeSchema)
       , ("temporal_basis", nullableSchema temporalBasisSchema)
       , ("source_kind", nullableSchema sourceKindSchema)
       , ("selection", layeredViewSelectionSchema)
@@ -776,13 +803,44 @@ overlayImportValidateResponseSchema = objectSchema "OverlayImportValidateRespons
 
 terrainActiveViewSchema :: Value
 terrainActiveViewSchema = inlineObjectSchema
-  [ "mode", "label", "description", "temporal_basis", "source_kind", "tooltip_fields", "inspector_fields", "export_fields", "values" ]
+  [ "mode", "base_mode", "weather_basis", "label", "description", "temporal_basis", "source_kind", "tooltip_fields", "inspector_fields", "export_fields", "active_base", "values" ]
   [ ("mode", viewModeSchema)
+  , ("base_mode", baseViewModeSchema)
+  , ("overlay_mode", nullableSchema overlayModeSchema)
+  , ("plugin_overlay", nullableSchema stringSchema)
+  , ("overlay_field", nullableSchema integerSchema)
+  , ("weather_basis", weatherBasisSchema)
+  , ("overlay_opacity", numberSchema)
+  , ("legacy_view_mode", nullableSchema viewModeSchema)
   , ("label", stringSchema)
   , ("description", nullableSchema stringSchema)
   , ("basis", nullableSchema temporalBasisSchema)
   , ("temporal_basis", nullableSchema temporalBasisSchema)
   , ("source_kind", nullableSchema sourceKindSchema)
+  , ("unit", nullableSchema stringSchema)
+  , ("color_scale", nullableSchema stringSchema)
+  , ("tooltip_fields", arraySchema stringSchema)
+  , ("inspector_fields", arraySchema stringSchema)
+  , ("export_fields", arraySchema stringSchema)
+  , ("active_base", terrainActiveLayerSchema)
+  , ("active_overlay", nullableSchema terrainActiveLayerSchema)
+  , ("values", freeObjectSchema)
+  ]
+
+terrainActiveLayerSchema :: Value
+terrainActiveLayerSchema = inlineObjectSchema
+  [ "mode", "label", "values" ]
+  [ ("mode", viewModeSchema)
+  , ("plugin_overlay", nullableSchema stringSchema)
+  , ("field_index", nullableSchema integerSchema)
+  , ("label", stringSchema)
+  , ("description", nullableSchema stringSchema)
+  , ("basis", nullableSchema temporalBasisSchema)
+  , ("temporal_basis", nullableSchema temporalBasisSchema)
+  , ("source_kind", nullableSchema sourceKindSchema)
+  , ("weather_version", nullableSchema integerSchema)
+  , ("published_weather_version", nullableSchema integerSchema)
+  , ("data_weather_version", nullableSchema integerSchema)
   , ("unit", nullableSchema stringSchema)
   , ("color_scale", nullableSchema stringSchema)
   , ("tooltip_fields", arraySchema stringSchema)
@@ -1969,6 +2027,43 @@ uiViewModeSetResponseSchema = objectSchema "UiViewModeSetResponse"
   [ ("view_mode", viewModeSchema)
   , ("temporal_basis", nullableSchema temporalBasisSchema)
   , ("source_kind", nullableSchema sourceKindSchema)
+  , ("view", layeredViewSelectionSchema)
+  , ("base_mode", baseViewModeSchema)
+  , ("overlay_mode", nullableSchema overlayModeSchema)
+  , ("plugin_overlay", nullableSchema stringSchema)
+  , ("weather_basis", weatherBasisSchema)
+  , ("overlay_opacity", numberSchema)
+  , ("legacy_view_mode", nullableSchema viewModeSchema)
+  ]
+
+uiViewSetRequestSchema :: JsonSchema
+uiViewSetRequestSchema = objectSchema "UiViewSetRequest"
+  []
+  [ ("base_mode", baseViewModeSchema)
+  , ("base", baseViewModeSchema)
+  , ("overlay_mode", nullableSchema overlayModeSchema)
+  , ("overlay", nullableSchema overlayModeSchema)
+  , ("plugin_overlay", nullableSchema stringSchema)
+  , ("weather_basis", weatherBasisSchema)
+  , ("basis", weatherBasisSchema)
+  , ("temporal_basis", temporalBasisSchema)
+  , ("overlay_opacity", numberSchema)
+  , ("field_index", integerSchema)
+  , ("overlay_field", nullableSchema integerSchema)
+  ]
+
+uiViewSetResponseSchema :: JsonSchema
+uiViewSetResponseSchema = objectSchema "UiViewSetResponse"
+  [ "view" ]
+  [ ("view", layeredViewSelectionSchema)
+  , ("view_mode", nullableSchema viewModeSchema)
+  , ("base_mode", baseViewModeSchema)
+  , ("overlay_mode", nullableSchema overlayModeSchema)
+  , ("plugin_overlay", nullableSchema stringSchema)
+  , ("overlay_field", nullableSchema integerSchema)
+  , ("weather_basis", weatherBasisSchema)
+  , ("overlay_opacity", numberSchema)
+  , ("legacy_view_mode", nullableSchema viewModeSchema)
   ]
 
 uiConfigTabSetRequestSchema :: JsonSchema
@@ -2345,6 +2440,43 @@ dataBrowserStateSchema = inlineObjectSchema
   , ("has_selection", booleanSchema)
   ]
 
+baseViewEntrySchema :: Value
+baseViewEntrySchema = inlineObjectSchema
+  [ "name", "active", "label", "legacy_view_mode" ]
+  [ ("name", baseViewModeSchema)
+  , ("active", booleanSchema)
+  , ("label", stringSchema)
+  , ("legacy_view_mode", viewModeSchema)
+  , ("description", stringSchema)
+  , ("kind", enumStringSchema ["scalar", "categorical"])
+  , ("color_scale", stringSchema)
+  , ("legend", freeObjectSchema)
+  ]
+
+overlayViewEntrySchema :: Value
+overlayViewEntrySchema = inlineObjectSchema
+  [ "name", "active", "label" ]
+  [ ("name", overlayModeSchema)
+  , ("overlay_mode", overlayModeSchema)
+  , ("active", booleanSchema)
+  , ("label", stringSchema)
+  , ("legacy_view_mode", nullableSchema viewModeSchema)
+  , ("plugin_overlay", nullableSchema stringSchema)
+  , ("field_index", nullableSchema integerSchema)
+  , ("weather_basis_supported", arraySchema weatherBasisSchema)
+  , ("temporal_basis", nullableSchema temporalBasisSchema)
+  , ("source_kind", nullableSchema sourceKindSchema)
+  ]
+
+weatherBasisEntrySchema :: Value
+weatherBasisEntrySchema = inlineObjectSchema
+  [ "name", "active" ]
+  [ ("name", weatherBasisSchema)
+  , ("active", booleanSchema)
+  , ("temporal_basis", nullableSchema temporalBasisSchema)
+  , ("source_kind", nullableSchema sourceKindSchema)
+  ]
+
 viewModeEntrySchema :: Value
 viewModeEntrySchema = inlineObjectSchema
   [ "name", "active", "label", "kind", "temporal_basis", "source_kind", "color_scale", "legend", "tooltip_fields", "inspector_fields", "export_fields", "http" ]
@@ -2469,6 +2601,24 @@ viewModeSchema = object
           ]
       ]
   ]
+
+baseViewModeSchema :: Value
+baseViewModeSchema = enumStringSchema (map baseViewModeToText allBaseViewModes)
+
+overlayModeSchema :: Value
+overlayModeSchema = object
+  [ "description" .= ("Built-in overlay mode, plugin overlay selector, or none." :: Text)
+  , "oneOf" .=
+      [ enumStringSchema ("none" : "plugin" : map skyOverlayModeToText allBuiltinSkyOverlayModes)
+      , object
+          [ "type" .= ("string" :: Text)
+          , "pattern" .= ("^overlay:.+" :: Text)
+          ]
+      ]
+  ]
+
+weatherBasisSchema :: Value
+weatherBasisSchema = enumStringSchema ["average", "current"]
 
 configTabSchema :: Value
 configTabSchema = enumStringSchema

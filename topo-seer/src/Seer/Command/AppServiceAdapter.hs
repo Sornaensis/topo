@@ -65,6 +65,7 @@ commandAppService = AppService
   { appState = StateService
       { stateGetState = commandServiceHandler stateGetStateOperation HState.handleGetState
       , stateGetViewModes = commandServiceHandler stateGetViewModesOperation HState.handleGetViewModes
+      , stateGetViews = commandServiceHandler stateGetViewsOperation HState.handleGetViews
       , stateGetUiState = commandServiceHandler stateGetUiStateOperation HState.handleGetUiState
       }
   , appConfig = ConfigService
@@ -150,6 +151,7 @@ commandAppService = AppService
   , appUi = UiService
       { uiSetSeed = commandServiceHandler uiSetSeedOperation HView.handleSetSeed
       , uiSetViewMode = commandServiceHandler uiSetViewModeOperation HView.handleSetViewMode
+      , uiSetView = commandServiceHandler uiSetViewOperation HView.handleSetView
       , uiSetConfigTab = commandServiceHandler uiSetConfigTabOperation HView.handleSetConfigTab
       , uiSelectHex = commandServiceHandler uiSelectHexOperation HView.handleSelectHex
       , uiSetOverlay = commandServiceHandler uiSetOverlayOperation HView.handleSetOverlay

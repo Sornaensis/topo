@@ -105,7 +105,6 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
-import qualified Data.Text as Text
 import Data.Word (Word64)
 import Hyperspace.Actor hiding (stop)
 import Hyperspace.Actor.QQ (hyperspace)
@@ -440,8 +439,12 @@ layeredViewStateToViewMode selection =
 layeredViewStateToJSON :: LayeredViewState -> Value
 layeredViewStateToJSON selection = object
   [ "base" .= baseViewModeToText (lvsBaseView selection)
+  , "base_mode" .= baseViewModeToText (lvsBaseView selection)
   , "base_label" .= baseViewModeLabel (lvsBaseView selection)
   , "overlay" .= fmap skyOverlayModeToText (lvsSkyOverlay selection)
+  , "overlay_mode" .= overlayModeName (lvsSkyOverlay selection)
+  , "plugin_overlay" .= pluginOverlayName (lvsSkyOverlay selection)
+  , "overlay_field" .= pluginOverlayField (lvsSkyOverlay selection)
   , "overlay_label" .= fmap skyOverlayModeLabel (lvsSkyOverlay selection)
   , "weather_basis" .= weatherBasisToText (lvsWeatherBasis selection)
   , "temporal_basis" .= fmap (temporalBasisToText . vmdsTemporalBasis) semantics
@@ -450,6 +453,13 @@ layeredViewStateToJSON selection = object
   , "legacy_view_mode" .= fmap viewModeToText (layeredViewStateToViewMode selection)
   ]
   where
+    overlayModeName Nothing = Nothing
+    overlayModeName (Just (SkyOverlayPlugin _ _)) = Just ("plugin" :: Text)
+    overlayModeName (Just overlayMode) = Just (skyOverlayModeToText overlayMode)
+    pluginOverlayName (Just (SkyOverlayPlugin name _)) = Just name
+    pluginOverlayName _ = Nothing
+    pluginOverlayField (Just (SkyOverlayPlugin _ fieldIndex)) = Just fieldIndex
+    pluginOverlayField _ = Nothing
     semantics = layeredViewStateDataSemantics selection
 
 layeredViewStateDataSemantics :: LayeredViewState -> Maybe ViewModeDataSemantics
@@ -1821,10 +1831,10 @@ applyUpdate upd st = case upd of
   SetGenerating v -> st { uiGenerating = v }
   SetViewMode v -> st { uiViewMode = v, uiViewSelection = viewModeToLayeredViewState v }
   SetViewSelection v -> applyLayeredViewState v st
-  SetBaseViewMode v -> applyLayeredViewState ((uiViewSelection st) { lvsBaseView = v }) st
-  SetSkyOverlayMode v -> applyLayeredViewState ((uiViewSelection st) { lvsSkyOverlay = v }) st
-  SetWeatherBasis v -> applyLayeredViewState ((uiViewSelection st) { lvsWeatherBasis = v }) st
-  SetOverlayOpacity v -> applyLayeredViewState ((uiViewSelection st) { lvsOverlayOpacity = v }) st
+  SetBaseViewMode v -> applyLayeredViewState ((effectiveViewSelection st) { lvsBaseView = v }) st
+  SetSkyOverlayMode v -> applyLayeredViewState ((effectiveViewSelection st) { lvsSkyOverlay = v }) st
+  SetWeatherBasis v -> applyLayeredViewState ((effectiveViewSelection st) { lvsWeatherBasis = v }) st
+  SetOverlayOpacity v -> applyLayeredViewState ((effectiveViewSelection st) { lvsOverlayOpacity = v }) st
   SetChunkSize v -> st { uiChunkSize = clampChunk v }
   SetShowConfig v -> st { uiShowConfig = v }
   SetShowLeftPanel v -> st { uiShowLeftPanel = v }

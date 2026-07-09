@@ -4,6 +4,7 @@ GET /openapi.json meta.openapi
 GET /events events.list
 GET /state state.get
 GET /state/view-modes state.viewModes
+GET /state/views state.views
 GET /ui/state ui.state
 GET /config/sliders config.sliders.list
 POST /config/sliders/get config.sliders.get
@@ -75,6 +76,7 @@ GET /logs logs.get
 POST /screenshots screenshots.take
 POST /ui/seed ui.seed.set
 POST /ui/view-mode ui.viewMode.set
+POST /ui/view ui.view.set
 POST /ui/config-tab ui.configTab.set
 POST /ui/select-hex ui.hex.select
 POST /ui/overlay ui.overlay.set

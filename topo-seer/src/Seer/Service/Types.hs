@@ -447,7 +447,20 @@ appServiceRequestValidators =
   , ("sim_tick", fields "sim_tick" [optionalInt "count"])
 
   , ("set_seed", fields "set_seed" [requiredWord64 "seed"])
-  , ("set_view_mode", fields "set_view_mode" [requiredText "mode", optionalInt "field_index"])
+  , ("set_view_mode", fields "set_view_mode" [requiredText "mode", optionalText "basis", optionalText "temporal_basis", optionalInt "field_index"])
+  , ("set_view", fields "set_view"
+      [ optionalText "base_mode"
+      , optionalText "base"
+      , optionalAny "overlay_mode"
+      , optionalAny "overlay"
+      , optionalAny "plugin_overlay"
+      , optionalText "weather_basis"
+      , optionalText "basis"
+      , optionalText "temporal_basis"
+      , optionalNumber "overlay_opacity"
+      , optionalInt "field_index"
+      , optionalAny "overlay_field"
+      ])
   , ("set_config_tab", fields "set_config_tab" [requiredText "tab"])
   , ("select_hex", fields "select_hex" [optionalInt "q", optionalInt "r"])
   , ("set_overlay", fields "set_overlay" [requiredText "overlay", optionalInt "field_index"])

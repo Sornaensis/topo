@@ -44,16 +44,26 @@ import Actor.Simulation
   )
 import Actor.SnapshotReceiver (readTerrainSnapshot)
 import Actor.UI.State
-  ( UiState(..)
+  ( BaseViewMode
+  , LayeredViewState(..)
+  , SkyOverlayMode(..)
+  , UiState(..)
   , ViewMode(..)
   , SourceKind(..)
   , TemporalBasis(..)
+  , baseViewModeToText
+  , baseViewModeToViewMode
+  , effectiveViewSelection
+  , layeredViewStateToViewMode
   , readUiSnapshotRef
+  , skyOverlayModeToText
+  , skyOverlayModeToViewMode
   , sourceKindToText
   , temporalBasisToText
   , viewModeDataSemantics
   , viewModeMetadata
   , viewModeToText
+  , weatherBasisToText
   , vmdsSourceKind
   , vmdsTemporalBasis
   , vmmColorScale
@@ -495,10 +505,20 @@ handleGetHex ctx reqId params =
                         , "water_depth" .= object ["normalized" .= (waterBodyChunk >>= \wb -> safeIndex (wbDepth wb) tileIdx), "converted" .= fmap (negate . normDepthToMetres units) (waterBodyChunk >>= \wb -> safeIndex (wbDepth wb) tileIdx), "unit" .= ("m" :: Text)]
                         ]
 
+                      activeSelection = effectiveViewSelection ui
                       activeMetadata = viewModeMetadata (uiViewMode ui)
                       activeSemantics = viewModeDataSemantics (uiViewMode ui)
+                      activeBaseMode = baseViewModeToViewMode (lvsBaseView activeSelection)
+                      activeOverlayMode = lvsSkyOverlay activeSelection >>= skyOverlayModeToViewMode (lvsWeatherBasis activeSelection)
                       activeViewLayer = object
                         [ "mode" .= viewModeToText (uiViewMode ui)
+                        , "base_mode" .= baseViewModeToText (lvsBaseView activeSelection)
+                        , "overlay_mode" .= overlayModeName (lvsSkyOverlay activeSelection)
+                        , "plugin_overlay" .= pluginOverlayName (lvsSkyOverlay activeSelection)
+                        , "overlay_field" .= pluginOverlayField (lvsSkyOverlay activeSelection)
+                        , "weather_basis" .= weatherBasisToText (lvsWeatherBasis activeSelection)
+                        , "overlay_opacity" .= lvsOverlayOpacity activeSelection
+                        , "legacy_view_mode" .= fmap viewModeToText (layeredViewStateToViewMode activeSelection)
                         , "label" .= maybe (viewModeToText (uiViewMode ui)) vmmLabel activeMetadata
                         , "description" .= maybe Null (Aeson.toJSON . vmmDescription) activeMetadata
                         , "basis" .= fmap (temporalBasisToText . vmdsTemporalBasis) activeSemantics
@@ -512,9 +532,11 @@ handleGetHex ctx reqId params =
                         , "tooltip_fields" .= maybe [] vmmTooltipFields activeMetadata
                         , "inspector_fields" .= maybe [] vmmInspectorFields activeMetadata
                         , "export_fields" .= maybe [] vmmExportFields activeMetadata
-                        , "values" .= activeViewValues
+                        , "active_base" .= activeLayerObject snap latestSnap activeBaseMode (activeViewValuesFor activeBaseMode)
+                        , "active_overlay" .= fmap (\mode -> activeLayerObject snap latestSnap mode (activeViewValuesFor mode)) activeOverlayMode
+                        , "values" .= activeViewValuesFor (uiViewMode ui)
                         ]
-                      activeViewValues = case uiViewMode ui of
+                      activeViewValuesFor mode = case mode of
                         ViewElevation -> object
                           [ "elevation_norm" .= elevationNorm
                           , "elevation_m" .= elevationM
@@ -1171,6 +1193,51 @@ inspectorMaybeIntField key label = maybe (inspectorMissingField key label) (insp
 
 inspectorMaybeBoolField :: Text -> Text -> Maybe Bool -> TerrainInspectorField
 inspectorMaybeBoolField key label = maybe (inspectorMissingField key label) (inspectorBoolField key label)
+
+activeLayerObject :: TerrainSnapshot -> TerrainSnapshot -> ViewMode -> Value -> Value
+activeLayerObject snap latestSnap mode values = object
+  [ "mode" .= viewModeToText mode
+  , "plugin_overlay" .= legacyPluginOverlayName mode
+  , "field_index" .= legacyOverlayFieldIndex mode
+  , "label" .= maybe (viewModeToText mode) vmmLabel metadata
+  , "description" .= maybe Null (Aeson.toJSON . vmmDescription) metadata
+  , "basis" .= fmap (temporalBasisToText . vmdsTemporalBasis) semantics
+  , "temporal_basis" .= fmap (temporalBasisToText . vmdsTemporalBasis) semantics
+  , "source_kind" .= fmap (sourceKindToText . vmdsSourceKind) semantics
+  , "weather_version" .= activeWeatherVersion mode snap
+  , "published_weather_version" .= activeWeatherVersion mode snap
+  , "data_weather_version" .= activeWeatherVersion mode latestSnap
+  , "unit" .= maybe Null (maybe Null Aeson.toJSON . vmmUnitLabel) metadata
+  , "color_scale" .= maybe Null (Aeson.toJSON . vmmColorScale) metadata
+  , "tooltip_fields" .= maybe [] vmmTooltipFields metadata
+  , "inspector_fields" .= maybe [] vmmInspectorFields metadata
+  , "export_fields" .= maybe [] vmmExportFields metadata
+  , "values" .= values
+  ]
+  where
+    metadata = viewModeMetadata mode
+    semantics = viewModeDataSemantics mode
+
+overlayModeName :: Maybe SkyOverlayMode -> Maybe Text
+overlayModeName Nothing = Nothing
+overlayModeName (Just (SkyOverlayPlugin _ _)) = Just "plugin"
+overlayModeName (Just overlayMode) = Just (skyOverlayModeToText overlayMode)
+
+pluginOverlayName :: Maybe SkyOverlayMode -> Maybe Text
+pluginOverlayName (Just (SkyOverlayPlugin name _)) = Just name
+pluginOverlayName _ = Nothing
+
+pluginOverlayField :: Maybe SkyOverlayMode -> Maybe Int
+pluginOverlayField (Just (SkyOverlayPlugin _ fieldIndex)) = Just fieldIndex
+pluginOverlayField _ = Nothing
+
+legacyPluginOverlayName :: ViewMode -> Maybe Text
+legacyPluginOverlayName (ViewOverlay name _) = Just name
+legacyPluginOverlayName _ = Nothing
+
+legacyOverlayFieldIndex :: ViewMode -> Maybe Int
+legacyOverlayFieldIndex (ViewOverlay _ fieldIndex) = Just fieldIndex
+legacyOverlayFieldIndex _ = Nothing
 
 activeWeatherVersion :: ViewMode -> TerrainSnapshot -> Maybe Word64
 activeWeatherVersion ViewWeather snap = Just (tsWeatherVersion snap)

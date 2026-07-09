@@ -120,6 +120,7 @@ appServiceOperations :: AppService -> [AppServiceOperation]
 appServiceOperations app = concat
   [ [ appOperation stateGetStateOperation (stateGetState stateSvc)
     , appOperation stateGetViewModesOperation (stateGetViewModes stateSvc)
+    , appOperation stateGetViewsOperation (stateGetViews stateSvc)
     , appOperation stateGetUiStateOperation (stateGetUiState stateSvc)
     ]
   , [ appOperation configGetSlidersOperation (configGetSliders configSvc)
@@ -194,6 +195,7 @@ appServiceOperations app = concat
     ]
   , [ appOperation uiSetSeedOperation (uiSetSeed uiSvc)
     , appOperation uiSetViewModeOperation (uiSetViewMode uiSvc)
+    , appOperation uiSetViewOperation (uiSetView uiSvc)
     , appOperation uiSetConfigTabOperation (uiSetConfigTab uiSvc)
     , appOperation uiSelectHexOperation (uiSelectHex uiSvc)
     , appOperation uiSetOverlayOperation (uiSetOverlay uiSvc)

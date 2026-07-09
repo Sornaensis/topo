@@ -346,6 +346,31 @@ spec = describe "CommandDispatch" $ do
         _ -> expectationFailure "expected view_modes array"
 
   -- -------------------------------------------------------------------
+  -- get_views
+  -- -------------------------------------------------------------------
+  describe "get_views" $ do
+    it "returns layered view choices and legacy mode summaries" $ withCtx $ \ctx -> do
+      _ <- writeSingleChunkTerrainWithNormals ctx
+      rsp <- dispatch ctx "get_views" Null
+      srSuccess rsp `shouldBe` True
+      lookupKey "view" (srResult rsp) `shouldSatisfy` maybe False (const True)
+      case lookupKey "base_modes" (srResult rsp) of
+        Just (Array arr) -> length arr `shouldSatisfy` (> 0)
+        _ -> expectationFailure "expected base_modes array"
+      case lookupKey "overlay_modes" (srResult rsp) of
+        Just (Array arr) -> length arr `shouldSatisfy` (> 0)
+        _ -> expectationFailure "expected overlay_modes array"
+      case lookupKey "weather_bases" (srResult rsp) of
+        Just (Array arr) -> length arr `shouldBe` 2
+        _ -> expectationFailure "expected weather_bases array"
+      case lookupKey "overlay_names" (srResult rsp) of
+        Just (Array arr) -> toList arr `shouldContain` [String "weather_normals"]
+        _ -> expectationFailure "expected overlay_names array"
+      case lookupKey "legacy_modes" (srResult rsp) of
+        Just (Array arr) -> length arr `shouldSatisfy` (> 0)
+        _ -> expectationFailure "expected legacy_modes array"
+
+  -- -------------------------------------------------------------------
   -- get_sliders
   -- -------------------------------------------------------------------
   describe "get_sliders" $ do
@@ -524,6 +549,74 @@ spec = describe "CommandDispatch" $ do
 
     it "returns error when mode is missing" $ withCtx $ \ctx -> do
       rsp <- dispatch ctx "set_view_mode" Null
+      srSuccess rsp `shouldBe` False
+
+  -- -------------------------------------------------------------------
+  -- set_view
+  -- -------------------------------------------------------------------
+  describe "set_view" $ do
+    it "accepts nullable overlay fields when clearing layered overlays" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "set_view" (object
+        [ "base_mode" .= ("elevation" :: Text)
+        , "overlay_mode" .= Null
+        , "plugin_overlay" .= Null
+        , "overlay_field" .= Null
+        ])
+      srSuccess rsp `shouldBe` True
+      lookupKey "overlay_mode" (srResult rsp) `shouldBe` Just Null
+      lookupKey "plugin_overlay" (srResult rsp) `shouldBe` Just Null
+
+    it "uses overlay_field as a plugin field alias" $ withCtx $ \ctx -> do
+      _ <- writeSingleChunkTerrainWithNormals ctx
+      rsp <- dispatch ctx "set_view" (object
+        [ "base_mode" .= ("biome" :: Text)
+        , "overlay_mode" .= ("plugin" :: Text)
+        , "plugin_overlay" .= ("weather_normals" :: Text)
+        , "overlay_field" .= (1 :: Int)
+        ])
+      srSuccess rsp `shouldBe` True
+      ui <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
+      lvsBaseView (uiViewSelection ui) `shouldBe` BaseViewBiome
+      lvsSkyOverlay (uiViewSelection ui) `shouldBe` Just (SkyOverlayPlugin "weather_normals" 1)
+      lookupKey "overlay_field" (srResult rsp) `shouldBe` Just (Number 1)
+
+    it "treats plugin_overlay without overlay_mode as a plugin overlay selection" $ withCtx $ \ctx -> do
+      _ <- writeSingleChunkTerrainWithNormals ctx
+      rsp <- dispatch ctx "set_view" (object
+        [ "plugin_overlay" .= ("weather_normals" :: Text)
+        , "field_index" .= (1 :: Int)
+        ])
+      srSuccess rsp `shouldBe` True
+      ui <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
+      lvsSkyOverlay (uiViewSelection ui) `shouldBe` Just (SkyOverlayPlugin "weather_normals" 1)
+      lookupKey "overlay_mode" (srResult rsp) `shouldBe` Just (String "plugin")
+      lookupKey "plugin_overlay" (srResult rsp) `shouldBe` Just (String "weather_normals")
+
+    it "updates the active plugin overlay field without resending the overlay name" $ withCtx $ \ctx -> do
+      _ <- writeSingleChunkTerrainWithNormals ctx
+      firstRsp <- dispatch ctx "set_view" (object
+        [ "plugin_overlay" .= ("weather_normals" :: Text)
+        , "field_index" .= (0 :: Int)
+        ])
+      srSuccess firstRsp `shouldBe` True
+
+      rsp <- dispatch ctx "set_view" (object ["overlay_field" .= (1 :: Int)])
+      srSuccess rsp `shouldBe` True
+      ui <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
+      lvsSkyOverlay (uiViewSelection ui) `shouldBe` Just (SkyOverlayPlugin "weather_normals" 1)
+      lookupKey "overlay_mode" (srResult rsp) `shouldBe` Just (String "plugin")
+      lookupKey "plugin_overlay" (srResult rsp) `shouldBe` Just (String "weather_normals")
+      lookupKey "overlay_field" (srResult rsp) `shouldBe` Just (Number 1)
+
+    it "rejects plugin overlay field changes without an active plugin overlay" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "set_view" (object ["overlay_field" .= (1 :: Int)])
+      srSuccess rsp `shouldBe` False
+
+    it "rejects unknown plugin overlays" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "set_view" (object
+        [ "overlay_mode" .= ("plugin" :: Text)
+        , "plugin_overlay" .= ("__missing_overlay__" :: Text)
+        ])
       srSuccess rsp `shouldBe` False
 
   -- -------------------------------------------------------------------
@@ -2025,6 +2118,7 @@ serviceOperationCases :: [ServiceOperationCase]
 serviceOperationCases =
   [ serviceCase "get_state" Null ExpectServiceSuccess
   , serviceCase "get_view_modes" Null ExpectServiceSuccess
+  , serviceCase "get_views" Null ExpectServiceSuccess
   , serviceCase "get_ui_state" Null ExpectServiceSuccess
   , serviceCase "get_sliders" Null ExpectServiceSuccess
   , serviceCase "get_slider" (object ["name" .= ("SliderGenScale" :: String)]) ExpectServiceSuccess
@@ -2099,6 +2193,7 @@ serviceOperationCases =
       writeIORef (ccScreenshotRef ctx) (Just (ScreenshotRequest busy))
   , serviceCase "set_seed" (object ["seed" .= (2468 :: Int)]) ExpectServiceSuccess
   , serviceCase "set_view_mode" (object ["mode" .= ("biome" :: String)]) ExpectServiceSuccess
+  , serviceCase "set_view" (object ["base_mode" .= ("biome" :: String)]) ExpectServiceSuccess
   , serviceCase "set_config_tab" (object ["tab" .= ("climate" :: String)]) ExpectServiceSuccess
   , serviceCase "select_hex" (object ["q" .= (0 :: Int), "r" .= (5 :: Int)]) ExpectServiceSuccess
   , serviceCase "set_overlay" (object ["overlay" .= ("__missing_overlay__" :: String)]) ExpectServiceFailure

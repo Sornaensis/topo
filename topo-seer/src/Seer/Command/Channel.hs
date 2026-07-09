@@ -268,6 +268,7 @@ commandCategory method = case method of
   "reset_sliders"    -> CatMutation
   "set_seed"         -> CatMutation
   "set_view_mode"    -> CatMutation
+  "set_view"         -> CatMutation
   "set_config_tab"   -> CatMutation
   "select_hex"       -> CatMutation
   "generate"         -> CatMutation

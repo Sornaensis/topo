@@ -9,6 +9,8 @@ module Seer.Service.UI
   , UiSetSeedResponse(..)
   , UiSetViewModeRequest(..)
   , UiSetViewModeResponse(..)
+  , UiSetViewRequest(..)
+  , UiSetViewResponse(..)
   , UiSetConfigTabRequest(..)
   , UiSetConfigTabResponse(..)
   , UiSelectHexRequest(..)
@@ -68,6 +70,7 @@ module Seer.Service.UI
   , UiSendKeyResponse(..)
   , uiSetSeedOperation
   , uiSetViewModeOperation
+  , uiSetViewOperation
   , uiSetConfigTabOperation
   , uiSelectHexOperation
   , uiSetOverlayOperation
@@ -110,6 +113,7 @@ import Topo.Types (ChunkId)
 data UiService = UiService
   { uiSetSeed :: !(ServiceHandler UiSetSeedRequest UiSetSeedResponse)
   , uiSetViewMode :: !(ServiceHandler UiSetViewModeRequest UiSetViewModeResponse)
+  , uiSetView :: !(ServiceHandler UiSetViewRequest UiSetViewResponse)
   , uiSetConfigTab :: !(ServiceHandler UiSetConfigTabRequest UiSetConfigTabResponse)
   , uiSelectHex :: !(ServiceHandler UiSelectHexRequest UiSelectHexResponse)
   , uiSetOverlay :: !(ServiceHandler UiSetOverlayRequest UiSetOverlayResponse)
@@ -159,11 +163,27 @@ newtype UiSetSeedResponse = UiSetSeedResponse
 
 data UiSetViewModeRequest = UiSetViewModeRequest
   { uiSetViewModeRequestName :: !Text
+  , uiSetViewModeRequestBasis :: !(Maybe Text)
   , uiSetViewModeRequestFieldIndex :: !(Maybe Int)
   } deriving (Eq, Show)
 
-newtype UiSetViewModeResponse = UiSetViewModeResponse
-  { uiSetViewModeResponseName :: Text
+data UiSetViewModeResponse = UiSetViewModeResponse
+  { uiSetViewModeResponseName :: !Text
+  , uiSetViewModeResponseView :: !Value
+  } deriving (Eq, Show)
+
+data UiSetViewRequest = UiSetViewRequest
+  { uiSetViewRequestBaseMode :: !(Maybe Text)
+  , uiSetViewRequestOverlayMode :: !(Maybe Text)
+  , uiSetViewRequestPluginOverlay :: !(Maybe Text)
+  , uiSetViewRequestWeatherBasis :: !(Maybe Text)
+  , uiSetViewRequestOverlayOpacity :: !(Maybe Float)
+  , uiSetViewRequestFieldIndex :: !(Maybe Int)
+  } deriving (Eq, Show)
+
+data UiSetViewResponse = UiSetViewResponse
+  { uiSetViewResponseViewMode :: !(Maybe Text)
+  , uiSetViewResponseView :: !Value
   } deriving (Eq, Show)
 
 newtype UiSetConfigTabRequest = UiSetConfigTabRequest
@@ -470,6 +490,7 @@ uiServiceOperationSpecs :: [ServiceOperationSpec]
 uiServiceOperationSpecs =
   [ typedServiceOperationSpec uiSetSeedOperation
   , typedServiceOperationSpec uiSetViewModeOperation
+  , typedServiceOperationSpec uiSetViewOperation
   , typedServiceOperationSpec uiSetConfigTabOperation
   , typedServiceOperationSpec uiSelectHexOperation
   , typedServiceOperationSpec uiSetOverlayOperation
@@ -506,6 +527,10 @@ uiSetSeedOperation = typedOperation $
 uiSetViewModeOperation :: TypedServiceOperation UiSetViewModeRequest UiSetViewModeResponse
 uiSetViewModeOperation = typedOperation $
   operationSpec "ui.viewMode.set" "set_view_mode" "Set active terrain view mode."
+
+uiSetViewOperation :: TypedServiceOperation UiSetViewRequest UiSetViewResponse
+uiSetViewOperation = typedOperation $
+  operationSpec "ui.view.set" "set_view" "Set active layered terrain view selection."
 
 uiSetConfigTabOperation :: TypedServiceOperation UiSetConfigTabRequest UiSetConfigTabResponse
 uiSetConfigTabOperation = typedOperation $

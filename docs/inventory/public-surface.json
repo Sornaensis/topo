@@ -165,6 +165,7 @@
       "routes": [
         {"operationId": "state.get", "method": "GET", "path": "/state"},
         {"operationId": "state.viewModes", "method": "GET", "path": "/state/view-modes"},
+        {"operationId": "state.views", "method": "GET", "path": "/state/views"},
         {"operationId": "ui.state", "method": "GET", "path": "/ui/state"}
       ]
     },
@@ -243,6 +244,7 @@
         {"operationId": "editor.redo", "method": "POST", "path": "/editor/redo"},
         {"operationId": "ui.seed.set", "method": "POST", "path": "/ui/seed"},
         {"operationId": "ui.viewMode.set", "method": "POST", "path": "/ui/view-mode"},
+        {"operationId": "ui.view.set", "method": "POST", "path": "/ui/view"},
         {"operationId": "ui.configTab.set", "method": "POST", "path": "/ui/config-tab"},
         {"operationId": "ui.hex.select", "method": "POST", "path": "/ui/select-hex"},
         {"operationId": "ui.overlay.set", "method": "POST", "path": "/ui/overlay"},
@@ -305,6 +307,7 @@
       "operations": [
         {"name": "state.get", "method": "get_state"},
         {"name": "state.viewModes", "method": "get_view_modes"},
+        {"name": "state.views", "method": "get_views"},
         {"name": "state.ui", "method": "get_ui_state"}
       ]
     },
@@ -375,6 +378,7 @@
         {"name": "editor.state", "method": "editor_get_state"},
         {"name": "ui.seed.set", "method": "set_seed"},
         {"name": "ui.viewMode.set", "method": "set_view_mode"},
+        {"name": "ui.view.set", "method": "set_view"},
         {"name": "ui.configTab.set", "method": "set_config_tab"},
         {"name": "ui.hex.select", "method": "select_hex"},
         {"name": "ui.overlay.set", "method": "set_overlay"},

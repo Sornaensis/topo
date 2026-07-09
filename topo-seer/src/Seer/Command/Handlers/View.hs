@@ -2,11 +2,13 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Handlers for view / seed mutation commands:
--- @set_seed@, @set_view_mode@, @set_config_tab@, @select_hex@,
--- @set_overlay@, @list_overlay_fields@, @cycle_overlay@, @cycle_overlay_field@.
+-- @set_seed@, @set_view_mode@, @set_view@, @set_config_tab@,
+-- @select_hex@, @set_overlay@, @list_overlay_fields@,
+-- @cycle_overlay@, @cycle_overlay_field@.
 module Seer.Command.Handlers.View
   ( handleSetSeed
   , handleSetViewMode
+  , handleSetView
   , handleSetConfigTab
   , handleSelectHex
   , handleSetOverlay
@@ -18,6 +20,7 @@ module Seer.Command.Handlers.View
 import Control.Applicative ((<|>))
 import Data.Aeson (Value(..), object, (.=), (.:), (.:?))
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Aeson.Types as Aeson
 import Data.List (findIndex)
@@ -30,9 +33,37 @@ import Seer.Render.ZoomStage (orderedZoomStagesForZoom)
 import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.UI (getUiSnapshot)
-import Actor.UI.State (ViewMode(..), ConfigTab(..), TemporalBasis, ViewModeDataSemantics(..), UiState(..), effectiveViewSelection, legacyViewModeToLayeredViewState, readUiSnapshotRef, uiRenderWaterLevel, sourceKindToText, temporalBasisFromText, temporalBasisToText, viewModeDataSemantics, viewModeFromTextWithBasis, viewModeToText)
+import Actor.UI.State
+  ( BaseViewMode
+  , ConfigTab(..)
+  , LayeredViewState(..)
+  , SkyOverlayMode(..)
+  , TemporalBasis
+  , UiState(..)
+  , ViewMode(..)
+  , ViewModeDataSemantics(..)
+  , WeatherBasis
+  , baseViewModeFromText
+  , baseViewModeToText
+  , effectiveViewSelection
+  , layeredViewStateToJSON
+  , layeredViewStateToViewMode
+  , legacyViewModeToLayeredViewState
+  , readUiSnapshotRef
+  , skyOverlayModeFromText
+  , skyOverlayModeToText
+  , sourceKindToText
+  , temporalBasisFromText
+  , temporalBasisToText
+  , uiRenderWaterLevel
+  , viewModeDataSemantics
+  , viewModeFromTextWithBasis
+  , viewModeToText
+  , weatherBasisFromText
+  , weatherBasisToText
+  )
 import Actor.SnapshotReceiver (readSnapshotVersion, readTerrainSnapshot)
-import Actor.UI.Setters (setUiSeed, setUiSeedInput, setUiViewMode, setUiConfigScroll, setUiConfigTab, setUiContextHex, setUiHexTooltipPinned, setUiOverlayFields)
+import Actor.UI.Setters (setUiSeed, setUiSeedInput, setUiViewMode, setUiViewSelection, setUiConfigScroll, setUiConfigTab, setUiContextHex, setUiHexTooltipPinned, setUiOverlayFields)
 import Seer.Command.Context (CommandContext(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 import Topo.Overlay (Overlay(..), lookupOverlay, overlayNames)
@@ -68,11 +99,36 @@ handleSetViewMode ctx reqId params = do
           previousUi <- getUiSnapshot uiHandle
           setUiViewMode uiHandle vm
           scheduleAtlasTransitionRebuild handles previousUi vm
-          pure $ okResponse reqId $ object
+          pure $ okResponse reqId $ layeredViewResponseFields (legacyViewModeToLayeredViewState vm)
             [ "view_mode" .= viewModeToText vm
             , "temporal_basis" .= fmap (temporalBasisToText . vmdsTemporalBasis) (viewModeDataSemantics vm)
             , "source_kind" .= fmap (sourceKindToText . vmdsSourceKind) (viewModeDataSemantics vm)
             ]
+
+-- | Handle @set_view@ — switch the layered base/overlay view selection.
+handleSetView :: CommandContext -> Int -> Value -> IO SeerResponse
+handleSetView ctx reqId params = do
+  case Aeson.parseMaybe parseLayeredViewRequest params of
+    Nothing ->
+      pure $ errResponse reqId "missing or invalid layered view parameters"
+    Just request -> do
+      let handles = ccActorHandles ctx
+          uiHandle = ahUiHandle handles
+      previousUi <- getUiSnapshot uiHandle
+      case applyLayeredViewRequest request (effectiveViewSelection previousUi) of
+        Left err -> pure $ errResponse reqId err
+        Right selection -> do
+          validation <- validateLayeredViewSelection previousUi handles selection
+          case validation of
+            Left err -> pure $ errResponse reqId err
+            Right mOverlayFields -> case layeredViewStateToViewMode selection of
+              Nothing -> pure $ errResponse reqId "layered view selection is not representable by the current renderer"
+              Just vm -> do
+                maybe (pure ()) (setUiOverlayFields uiHandle) mOverlayFields
+                setUiViewSelection uiHandle selection
+                scheduleAtlasTransitionRebuild handles previousUi vm
+                pure $ okResponse reqId $ layeredViewResponseFields selection
+                  [ "view_mode" .= viewModeToText vm ]
 
 -- | Handle @set_config_tab@ — switch the config panel tab.
 handleSetConfigTab :: CommandContext -> Int -> Value -> IO SeerResponse
@@ -185,6 +241,148 @@ parseViewModeRequest = Aeson.withObject "params" $ \o -> do
       Nothing -> fail "invalid 'basis' parameter"
   mFieldIdx <- o .:? "field_index"
   pure (ViewModeRequest modeName mBasis mFieldIdx)
+
+data OverlayMutation
+  = OverlayUnchanged
+  | OverlaySet !(Maybe SkyOverlayMode)
+  | OverlayFieldSet !Int
+
+data LayeredViewRequest = LayeredViewRequest
+  { lvrBaseMode :: !(Maybe BaseViewMode)
+  , lvrOverlayMode :: !OverlayMutation
+  , lvrWeatherBasis :: !(Maybe WeatherBasis)
+  , lvrOverlayOpacity :: !(Maybe Float)
+  }
+
+parseLayeredViewRequest :: Value -> Aeson.Parser LayeredViewRequest
+parseLayeredViewRequest = Aeson.withObject "params" $ \o -> do
+  mBaseModeText <- o .:? "base_mode"
+  mBaseAliasText <- o .:? "base"
+  let mBaseText = mBaseModeText <|> mBaseAliasText
+  mBase <- case mBaseText of
+    Nothing -> pure Nothing
+    Just baseText -> case baseViewModeFromText baseText of
+      Just baseMode -> pure (Just baseMode)
+      Nothing -> fail "invalid 'base_mode' parameter"
+  mWeatherBasisText <- o .:? "weather_basis"
+  mBasisAliasText <- o .:? "basis"
+  mTemporalBasisText <- o .:? "temporal_basis"
+  let mBasisText = mWeatherBasisText <|> mBasisAliasText <|> mTemporalBasisText
+  mBasis <- case mBasisText of
+    Nothing -> pure Nothing
+    Just basisText -> case weatherBasisFromText basisText of
+      Just basis -> pure (Just basis)
+      Nothing -> fail "invalid 'weather_basis' parameter"
+  mFieldIndex <- o .:? "field_index"
+  mOverlayField <- o .:? "overlay_field"
+  let mFieldIdx = mFieldIndex <|> mOverlayField
+  case mFieldIdx of
+    Just idx | idx < 0 -> fail "invalid 'field_index' parameter"
+    _ -> pure ()
+  overlayMutation <- parseOverlayMutation o mFieldIdx
+  mOpacity <- o .:? "overlay_opacity"
+  pure LayeredViewRequest
+    { lvrBaseMode = mBase
+    , lvrOverlayMode = overlayMutation
+    , lvrWeatherBasis = mBasis
+    , lvrOverlayOpacity = fmap clampOpacity mOpacity
+    }
+
+parseOverlayMutation :: Aeson.Object -> Maybe Int -> Aeson.Parser OverlayMutation
+parseOverlayMutation o mFieldIdx
+  | Just overlayValue <- lookupField "overlay_mode" <|> lookupField "overlay" =
+      case overlayValue of
+        Null -> pure (OverlaySet Nothing)
+        String overlayText -> parseOverlayText overlayText
+        _ -> fail "invalid 'overlay_mode' parameter"
+  | Just pluginValue <- lookupField "plugin_overlay" =
+      case pluginValue of
+        Null -> pure (OverlaySet Nothing)
+        String pluginName
+          | Text.null pluginName -> fail "invalid 'plugin_overlay' parameter"
+          | otherwise -> pure (OverlaySet (Just (SkyOverlayPlugin pluginName (maybe 0 id mFieldIdx))))
+        _ -> fail "invalid 'plugin_overlay' parameter"
+  | Just fieldIdx <- mFieldIdx = pure (OverlayFieldSet fieldIdx)
+  | otherwise = pure OverlayUnchanged
+  where
+    lookupField name = KM.lookup (Key.fromText name) o
+    parseOverlayText raw
+      | Text.toLower raw `elem` ["none", "off", "null", ""] = pure (OverlaySet Nothing)
+      | Text.toLower raw == "plugin" =
+          case lookupField "plugin_overlay" of
+            Just (String pluginName) | not (Text.null pluginName) ->
+              pure (OverlaySet (Just (SkyOverlayPlugin pluginName (maybe 0 id mFieldIdx))))
+            _ -> fail "overlay_mode 'plugin' requires 'plugin_overlay'"
+      | otherwise = case skyOverlayModeFromText raw of
+          Just (SkyOverlayPlugin name _) -> pure (OverlaySet (Just (SkyOverlayPlugin name (maybe 0 id mFieldIdx))))
+          Just overlay -> pure (OverlaySet (Just overlay))
+          Nothing -> fail "invalid 'overlay_mode' parameter"
+
+applyLayeredViewRequest :: LayeredViewRequest -> LayeredViewState -> Either Text LayeredViewState
+applyLayeredViewRequest request current =
+  case applyOverlayMutation (lvrOverlayMode request) (lvsSkyOverlay current) of
+    Left err -> Left err
+    Right overlayMode -> Right current
+      { lvsBaseView = maybe (lvsBaseView current) id (lvrBaseMode request)
+      , lvsSkyOverlay = overlayMode
+      , lvsWeatherBasis = maybe (lvsWeatherBasis current) id (lvrWeatherBasis request)
+      , lvsOverlayOpacity = maybe (lvsOverlayOpacity current) id (lvrOverlayOpacity request)
+      }
+
+applyOverlayMutation :: OverlayMutation -> Maybe SkyOverlayMode -> Either Text (Maybe SkyOverlayMode)
+applyOverlayMutation OverlayUnchanged currentOverlay = Right currentOverlay
+applyOverlayMutation (OverlaySet overlayMode) _ = Right overlayMode
+applyOverlayMutation (OverlayFieldSet fieldIdx) (Just (SkyOverlayPlugin name _)) =
+  Right (Just (SkyOverlayPlugin name fieldIdx))
+applyOverlayMutation (OverlayFieldSet _) _ =
+  Left "overlay_field requires an active plugin overlay"
+
+clampOpacity :: Float -> Float
+clampOpacity = max 0 . min 1
+
+layeredViewResponseFields :: LayeredViewState -> [Aeson.Pair] -> Value
+layeredViewResponseFields selection extraFields = object $
+  extraFields <>
+    [ "view" .= layeredViewStateToJSON selection
+    , "base_mode" .= baseViewModeToText (lvsBaseView selection)
+    , "overlay_mode" .= overlayModeName (lvsSkyOverlay selection)
+    , "plugin_overlay" .= pluginOverlayName (lvsSkyOverlay selection)
+    , "overlay_field" .= pluginOverlayField (lvsSkyOverlay selection)
+    , "weather_basis" .= weatherBasisToText (lvsWeatherBasis selection)
+    , "overlay_opacity" .= lvsOverlayOpacity selection
+    , "legacy_view_mode" .= fmap viewModeToText (layeredViewStateToViewMode selection)
+    ]
+
+validateLayeredViewSelection :: UiState -> ActorHandles -> LayeredViewState -> IO (Either Text (Maybe [(Text, OverlayFieldType)]))
+validateLayeredViewSelection previousUi handles selection =
+  case lvsSkyOverlay selection of
+    Just (SkyOverlayPlugin overlayName fieldIdx) -> do
+      snap <- readTerrainSnapshot (ahTerrainSnapshotRef handles)
+      let storeNames = overlayNamesFromSnapshot snap
+          availableNames = uiOverlayNames previousUi ++ [n | n <- storeNames, n `notElem` uiOverlayNames previousUi]
+      if overlayName `notElem` availableNames
+        then pure $ Left ("unknown overlay: " <> overlayName
+                  <> "; available: " <> Text.intercalate ", " availableNames)
+        else do
+          let fields = maybe (uiOverlayFields previousUi) overlayFieldsFromOverlay (lookupOverlay overlayName (tsOverlayStore snap))
+              fieldCount = length fields
+          if fieldIdx < 0 || (fieldCount > 0 && fieldIdx >= fieldCount)
+            then pure $ Left ("field_index out of range for overlay " <> overlayName)
+            else pure $ Right (Just fields)
+    _ -> pure (Right Nothing)
+
+overlayModeName :: Maybe SkyOverlayMode -> Maybe Text
+overlayModeName Nothing = Nothing
+overlayModeName (Just (SkyOverlayPlugin _ _)) = Just "plugin"
+overlayModeName (Just overlayMode) = Just (skyOverlayModeToText overlayMode)
+
+pluginOverlayName :: Maybe SkyOverlayMode -> Maybe Text
+pluginOverlayName (Just (SkyOverlayPlugin name _)) = Just name
+pluginOverlayName _ = Nothing
+
+pluginOverlayField :: Maybe SkyOverlayMode -> Maybe Int
+pluginOverlayField (Just (SkyOverlayPlugin _ fieldIndex)) = Just fieldIndex
+pluginOverlayField _ = Nothing
 
 parseFieldIndex :: Value -> Aeson.Parser Int
 parseFieldIndex = Aeson.withObject "params" (.: "field_index")
