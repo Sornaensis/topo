@@ -186,7 +186,7 @@ leftViewButtonGapFor :: Int
 leftViewButtonGapFor = 8
 
 leftViewSectionHeaderHeightFor :: Int
-leftViewSectionHeaderHeightFor = 18
+leftViewSectionHeaderHeightFor = 24
 
 leftViewSectionGapFor :: Int
 leftViewSectionGapFor = 8

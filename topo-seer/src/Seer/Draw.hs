@@ -368,21 +368,23 @@ drawUiLabels renderer fontCache ui layout = do
               Rect (V2 _ lpy, V2 _ lpH) = leftPanelRect layout
               ctop = leftControlsTop layout
               clipR = Rect (V2 lpx ctop, V2 lpw (lpy + lpH - ctop))
-              sectionLabel y label = drawTextLine fontCache (V2 (lpx + 12) (y - scrollY)) labelColor label
-              sectionY rects = case rects of
-                Rect (V2 _ y, _) : _ -> y - 16
-                [] -> ctop
+              sectionLabelGap = 4
+              sectionLabel label rects = case (fontCache, rects) of
+                (Just cache, Rect (V2 _ y, _) : _) -> do
+                  V2 _ th <- textSize cache labelColor label
+                  drawTextLine fontCache (V2 (lpx + 12) (y - scrollY - th - sectionLabelGap)) labelColor label
+                _ -> drawTextLine fontCache (V2 (lpx + 12) (ctop - scrollY)) labelColor label
           SDL.rendererClipRect renderer SDL.$= Just (rectToSDL clipR)
-          sectionLabel (sectionY baseViewRects) "Base / terrain view"
+          sectionLabel "Base / terrain view" baseViewRects
           mapM_ (\(rect, label) -> drawCentered fontCache labelColor rect label) (zip scrolledBaseRects baseLabels)
-          sectionLabel (sectionY weatherOverlayRects) "Weather / sky overlay"
+          sectionLabel "Weather / sky overlay" weatherOverlayRects
           mapM_ (\(rect, label) -> drawCentered fontCache labelColor rect label) (zip scrolledOverlayRects overlayLabels)
-          sectionLabel (sectionY weatherBasisRects) "Weather basis / source"
+          sectionLabel "Weather basis / source" weatherBasisRects
           mapM_ (\(rect, label) -> drawCentered fontCache labelColor rect label) (zip scrolledBasisRects basisLabels)
           let dnLabel = if uiDayNightEnabled ui then "Day/Night ON" else "Day/Night OFF"
           drawCentered fontCache labelColor (shiftY (dayNightToggleRect layout)) dnLabel
           let (op, _on, _fp, _fn) = overlayViewRects layout
-          sectionLabel (sectionY [op]) "Plugin overlays"
+          sectionLabel "Plugin overlays" [op]
           SDL.rendererClipRect renderer SDL.$= Nothing
   drawConfigLabels renderer fontCache ui layout
 

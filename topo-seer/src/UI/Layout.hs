@@ -394,7 +394,7 @@ leftViewButtonGap :: Int
 leftViewButtonGap = 8
 
 leftViewSectionHeaderHeight :: Int
-leftViewSectionHeaderHeight = 18
+leftViewSectionHeaderHeight = 24
 
 leftViewSectionGap :: Int
 leftViewSectionGap = 8

@@ -208,6 +208,12 @@ spec = describe "UI.Layout" $ do
     let layout = layoutFor (V2 minUsableWindowWidth 480) 160
     leftViewScrollMax layout `shouldSatisfy` (> 0)
 
+  it "reserves enough left View header space for measured section labels" $ do
+    let layout = layoutFor (V2 800 600) 160
+        Rect (V2 _ firstBaseTop, _) : _ = leftBaseViewRects layout
+        headerHeight = firstBaseTop - leftControlsTop layout
+    headerHeight `shouldSatisfy` (>= 24)
+
   describe "typed UiGeometry" $ do
     it "matches legacy layout helpers for primary panels" $ do
       let layout = layoutForSeed (V2 800 600) 160 140
@@ -232,6 +238,15 @@ spec = describe "UI.Layout" $ do
       Geometry.editorToolbarBounds editor `shouldBe` editorToolbarRect layout
       Geometry.editorRadiusPlusButton editor `shouldBe` editorRadiusPlusRect layout
       Geometry.editorParamBarBounds editor `shouldBe` editorParamBarRect layout
+
+    it "keeps typed left View geometry aligned with legacy helpers" $ do
+      let layout = layoutForSeed (V2 800 600) 160 140
+          leftPanel = Geometry.uiLeftPanelGeometry (layoutGeometry layout)
+      Geometry.leftPanelViewButtons leftPanel `shouldBe` leftBaseViewRects layout
+      Geometry.overlayViewGeometryToTuple (Geometry.leftPanelOverlayButtons leftPanel) `shouldBe` overlayViewRects layout
+      Geometry.leftPanelDayNightToggleButton leftPanel `shouldBe` dayNightToggleRect layout
+      Geometry.leftPanelViewContentHeightPx leftPanel `shouldBe` leftViewContentHeight layout
+      Geometry.leftPanelViewScrollMaxPx leftPanel `shouldBe` leftViewScrollMax layout
 
     it "keeps typed primary panel geometry inside common window sizes" $
       mapM_ assertCommonWindowGeometry commonWindowSizes
