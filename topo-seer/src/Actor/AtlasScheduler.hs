@@ -100,6 +100,7 @@ data AtlasScheduleRequest = AtlasScheduleRequest
   , asqSnapshot :: !RenderSnapshot
   , asqWindowSize :: !(Int, Int)
   , asqRefreshCurrentViewport :: !Bool
+  , asqRefreshDayNightOverlay :: !Bool
   , asqRefreshStage :: !(Maybe ZoomStage)
   }
 
@@ -291,17 +292,24 @@ runSchedule handles req = do
       dayNightSpec = atlasSchedulerDayNightSpec uiSnap terrainSnap
   if shouldSchedule && workerCount > 0
     then do
-      let refreshStage = maybe (stageForZoom (uiZoom uiSnap)) id (asqRefreshStage req)
+      workerLoadBefore <- readAtlasWorkerLoad (ashWorkerLoadRef handles)
+      let workerCapacity = max 0 (workerCount - awlInFlight workerLoadBefore)
+          refreshStage = maybe (stageForZoom (uiZoom uiSnap)) id (asqRefreshStage req)
           dispatchCoverage = atlasViewportCoverageFor snapshot (asqWindowSize req) refreshStage
+          forceDayNightBaseRefresh = asqRefreshDayNightOverlay req
+            && maybe False (const True) dayNightSpec
+            && awlInFlight workerLoadBefore == 0
+          shouldEnqueueViewportRefresh = asqRefreshCurrentViewport req || forceDayNightBaseRefresh
           viewportRefreshJobs =
-            [ job { ajViewportCoverage = dispatchCoverage }
+            [ job
+                { ajViewportCoverage = dispatchCoverage
+                , ajForceRebuild = ajForceRebuild job || (forceDayNightBaseRefresh && atlasKeyIsBase (ajKey job))
+                }
             | job <- atlasViewportRefreshJobs (asqSnapshotVersion req) snapshot refreshStage
             ]
           preferredTarget = Just (zsHexRadius refreshStage, zsAtlasScale refreshStage)
-      workerLoadBefore <- readAtlasWorkerLoad (ashWorkerLoadRef handles)
-      let workerCapacity = max 0 (workerCount - awlInFlight workerLoadBefore)
       ((jobs, drainStats), drainMs) <- timedMs $ do
-        if asqRefreshCurrentViewport req
+        if shouldEnqueueViewportRefresh
           then mapM_ (enqueueAtlasBuild (ashManager handles)) viewportRefreshJobs
           else pure ()
         drainFreshForKeys handles currentKeys (asqSnapshotVersion req) workerCapacity preferredTarget dispatchCoverage

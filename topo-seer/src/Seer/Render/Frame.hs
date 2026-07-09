@@ -6,6 +6,8 @@ module Seer.Render.Frame
   , noAtlasQueuedWork
   , applyAtlasFrameStepTimestamps
   , atlasFrameStepPolicy
+  , atlasRetryShouldRefreshDayNightOverlay
+  , atlasRetryShouldRefreshViewport
   , fallbackFrameMaintenanceDue
   , renderFrame
   ) where
@@ -52,9 +54,11 @@ import Seer.Render.Atlas
   , AtlasResolveStatus
   , AtlasTextureCache(..)
   , AtlasTileSetSummary(..)
+  , DayNightOverlayStatus
   , atlasCacheSummary
   , atlasResolveDiagnosticWithCoverage
   , atlasResolveNeedsRetry
+  , atlasResolveNeedsViewportRefresh
   , dayNightOverlayNeedsRetry
   , drawAtlas
   , drawAtlasAlpha
@@ -99,6 +103,8 @@ import Topo (WorldConfig(..))
 
 data RenderFrameOutcome = RenderFrameOutcome
   { rfoAtlasNeedsRetry :: !Bool
+  , rfoDayNightOverlayNeedsRetry :: !Bool
+  , rfoDayNightOverlayStatus :: !DayNightOverlayStatus
   , rfoFallbackNeedsRetry :: !Bool
   , rfoChunkTextureCache :: !ChunkTextureCache
   , rfoAtlasTextureCache :: !AtlasTextureCache
@@ -186,6 +192,21 @@ atlasPolicyShouldPoll nowMs pollMs lastPoll =
     Nothing -> True
     Just prev -> nowMs - prev >= fromIntegral pollMs
 
+-- | Decide whether a retrying day/night overlay should force a current-stage
+-- base rebuild.  Day/night retries are deliberately suppressed while atlas
+-- results are already pending because the frame drains results after scheduling;
+-- a new forced overlay build would otherwise obsolete the result being awaited.
+atlasRetryShouldRefreshDayNightOverlay :: Bool -> Bool -> Bool -> Bool
+atlasRetryShouldRefreshDayNightOverlay dayNightEnabled dayNightOverlayNeedsRetry atlasPending =
+  dayNightEnabled && dayNightOverlayNeedsRetry && not atlasPending
+
+-- | Decide whether a retrying atlas state must enqueue a current-viewport
+-- refresh for either normal base coverage or day/night overlay self-healing.
+atlasRetryShouldRefreshViewport :: AtlasResolveStatus -> Bool -> Bool -> Bool -> Bool
+atlasRetryShouldRefreshViewport baseStatus dayNightEnabled dayNightOverlayNeedsRetry atlasPending =
+  atlasResolveNeedsViewportRefresh baseStatus
+    || atlasRetryShouldRefreshDayNightOverlay dayNightEnabled dayNightOverlayNeedsRetry atlasPending
+
 -- | Render one UI frame and schedule atlas work if needed.
 renderFrame
   :: RenderContext
@@ -209,6 +230,7 @@ renderFrame context = do
       shouldScheduleAtlas = rcShouldScheduleAtlas context
       shouldUpdateChunkTextures = rcShouldUpdateChunkTextures context
       shouldRefreshViewportAtlas = rcShouldRefreshViewportAtlas context
+      shouldRefreshDayNightOverlay = rcShouldRefreshDayNightOverlay context
       timingLogThresholdMs = rcTimingLogThresholdMs context
       fontCache = rcFontCache context
       renderTargetOk = rcRenderTargetOk context
@@ -273,7 +295,7 @@ renderFrame context = do
   (mbScheduleReport, loggedSchedule, loggedScheduleDrain, loggedScheduleEnqueue) <-
     if shouldScheduleAtlas
       then do
-        scheduleReport <- scheduleAtlasBuilds renderTargetOk dataReady shouldRefreshViewportAtlas stage atlasSchedulerHandle scheduleRef snapshotVersion snapshot windowSize
+        scheduleReport <- scheduleAtlasBuilds renderTargetOk dataReady shouldRefreshViewportAtlas shouldRefreshDayNightOverlay stage atlasSchedulerHandle scheduleRef snapshotVersion snapshot windowSize
         let jobCount = asrJobCount scheduleReport
             drainMs = asrDrainMs scheduleReport
             enqueueMs = asrEnqueueMs scheduleReport
@@ -531,6 +553,8 @@ renderFrame context = do
         && chunkTextureCacheNeedsUpdate terrainCache (zsAtlasScale stage) textureCache'
   pure RenderFrameOutcome
     { rfoAtlasNeedsRetry = atlasNeedsRetry
+    , rfoDayNightOverlayNeedsRetry = dayNightNeedsRetry
+    , rfoDayNightOverlayStatus = dayNightStatus
     , rfoFallbackNeedsRetry = fallbackChunkNeedsRetry
     , rfoChunkTextureCache = textureCache'
     , rfoAtlasTextureCache = atlasCacheForOverlay

@@ -549,6 +549,7 @@ scheduleAtlasBuilds
   :: Bool
   -> Bool
   -> Bool
+  -> Bool
   -> ZoomStage
   -> ActorHandle AtlasScheduler (Protocol AtlasScheduler)
   -> AtlasScheduleRef
@@ -556,7 +557,7 @@ scheduleAtlasBuilds
   -> RenderSnapshot
   -> (Int, Int)
   -> IO AtlasScheduleReport
-scheduleAtlasBuilds renderTargetOk dataReady refreshCurrentViewport refreshStage atlasSchedulerHandle scheduleRef snapshotVersion snapshot windowSize = do
+scheduleAtlasBuilds renderTargetOk dataReady refreshCurrentViewport refreshDayNightOverlay refreshStage atlasSchedulerHandle scheduleRef snapshotVersion snapshot windowSize = do
   requestAtlasSchedule atlasSchedulerHandle AtlasScheduleRequest
     { asqSnapshotVersion = snapshotVersion
     , asqRenderTargetOk = renderTargetOk
@@ -564,7 +565,8 @@ scheduleAtlasBuilds renderTargetOk dataReady refreshCurrentViewport refreshStage
     , asqSnapshot = snapshot
     , asqWindowSize = windowSize
     , asqRefreshCurrentViewport = refreshCurrentViewport
-    , asqRefreshStage = if refreshCurrentViewport then Just refreshStage else Nothing
+    , asqRefreshDayNightOverlay = refreshDayNightOverlay
+    , asqRefreshStage = if refreshCurrentViewport || refreshDayNightOverlay then Just refreshStage else Nothing
     }
   mbReport <- readAtlasScheduleRef scheduleRef
   case mbReport of

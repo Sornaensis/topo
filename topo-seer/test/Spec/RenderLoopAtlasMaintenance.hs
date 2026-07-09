@@ -36,6 +36,7 @@ import Seer.Render.Frame
   , AtlasQueuedWork(..)
   , applyAtlasFrameStepTimestamps
   , atlasFrameStepPolicy
+  , atlasRetryShouldRefreshViewport
   , fallbackFrameMaintenanceDue
   , noAtlasQueuedWork
   )
@@ -185,6 +186,12 @@ spec = describe "render-loop atlas maintenance wakeups" $ do
     afspAtlasMaintenanceDue atPoll `shouldBe` True
     afspShouldDrainAtlas atPoll `shouldBe` False
     afspShouldScheduleAtlas atPoll `shouldBe` True
+
+  it "suppresses day/night refresh restamps while atlas results are pending" $ do
+    atlasRetryShouldRefreshViewport CompleteExact True True False `shouldBe` True
+    atlasRetryShouldRefreshViewport CompleteExact True True True `shouldBe` False
+    atlasRetryShouldRefreshViewport CompleteExact False True False `shouldBe` False
+    atlasRetryShouldRefreshViewport ViewportCoverageMissing True True True `shouldBe` True
 
   it "wakes fallback maintenance for stale day/night overlay without atlas maintenance when render targets are unavailable" $ do
     let terrainSnapOld = renderableFallbackTerrainSnapshot

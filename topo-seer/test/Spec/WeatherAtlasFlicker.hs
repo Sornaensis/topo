@@ -598,6 +598,7 @@ scheduleAndDrainAtlasResults schedulerHandle resultRef workerLoadRef logHandle u
         }
     , asqWindowSize = (640, 480)
     , asqRefreshCurrentViewport = False
+    , asqRefreshDayNightOverlay = False
     , asqRefreshStage = Just (stageForZoom (uiZoom uiSnap))
     }
   finished <- awaitTrue 200 $ do

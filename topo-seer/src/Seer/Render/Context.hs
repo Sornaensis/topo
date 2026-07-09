@@ -41,6 +41,7 @@ data RenderContext = RenderContext
   , rcShouldDrainAtlas :: !Bool
   , rcShouldScheduleAtlas :: !Bool
   , rcShouldRefreshViewportAtlas :: !Bool
+  , rcShouldRefreshDayNightOverlay :: !Bool
   , rcShouldUpdateChunkTextures :: !Bool
   , rcTimingLogThresholdMs :: !Word32
   , rcFontCache :: !(Maybe FontCache)

@@ -4,6 +4,7 @@ module Spec.AtlasScheduler (spec) where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (bracket)
+import qualified Data.IntMap.Strict as IntMap
 import Data.IORef (newIORef)
 import System.Timeout (timeout)
 import Test.Hspec
@@ -13,6 +14,7 @@ import Actor.AtlasManager
   , AtlasJob(..)
   , atlasManagerQueuedCount
   , drainAtlasJobs
+  , drainFreshAtlasJobs
   , enqueueAtlasBuild
   , newAtlasManagerQueueRef
   , setAtlasManagerQueueRef
@@ -58,7 +60,9 @@ import Actor.Log (LogLevel(..), LogSnapshot(..))
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion(..))
 import Actor.UI (UiState(..), ViewMode(..), emptyUiState, legacyViewModeToLayeredViewState)
+import Seer.Render.Viewport (currentAtlasViewportCoverage)
 import Seer.Render.ZoomStage (allZoomStages, ZoomStage(..), stageForZoom)
+import Topo (WorldConfig(..), emptyTerrainChunk)
 import UI.DayNight (mkDayNightKey)
 import Data.Word (Word64)
 import Hyperspace.Actor
@@ -145,6 +149,7 @@ spec = describe "AtlasScheduler" $ do
       , asqSnapshot = snapshot
       , asqWindowSize = (800, 600)
       , asqRefreshCurrentViewport = False
+      , asqRefreshDayNightOverlay = False
       , asqRefreshStage = Nothing
       }
     report <- awaitReport scheduleRef version
@@ -191,6 +196,7 @@ spec = describe "AtlasScheduler" $ do
               , asqSnapshot = snapshot
               , asqWindowSize = (800, 600)
               , asqRefreshCurrentViewport = False
+              , asqRefreshDayNightOverlay = False
               , asqRefreshStage = Nothing
               }
         requestAtlasSchedule schedulerHandle req
@@ -237,6 +243,7 @@ spec = describe "AtlasScheduler" $ do
           , asqSnapshot = snapshot
           , asqWindowSize = (800, 600)
           , asqRefreshCurrentViewport = True
+          , asqRefreshDayNightOverlay = False
           , asqRefreshStage = Just requestedStage
           }
     let refreshJob = atlasViewportRefreshJob version snapshot requestedStage
@@ -247,6 +254,90 @@ spec = describe "AtlasScheduler" $ do
     leftovers <- drainAtlasJobs managerHandle
     asrJobCount report + length leftovers `shouldBe` 1
     map (\job -> (ajHexRadius job, ajAtlasScale job)) leftovers `shouldSatisfy` all (== (6, 1))
+
+  it "forces one current-stage base rebuild to self-heal day/night overlays without restamping in-flight work" $ withSystem $ \system -> do
+    managerHandle <- get @AtlasManager system
+    queueRef <- newAtlasManagerQueueRef
+    setAtlasManagerQueueRef managerHandle queueRef
+    workerHandle <- spawnActor atlasWorkerActorDef
+    spareWorkerHandle <- spawnActor atlasWorkerActorDef
+    workerNextRef <- newIORef (0 :: Int)
+    workerLoadRef <- newAtlasWorkerLoadRef
+    resultRef <- newAtlasResultRef
+    scheduleRef <- newAtlasScheduleRef
+    freshnessRef <- newAtlasFreshnessRef
+    schedulerHandle <- get @AtlasScheduler system
+    setAtlasSchedulerHandles schedulerHandle AtlasSchedulerHandles
+      { ashManager = managerHandle
+      , ashWorkers = [workerHandle, spareWorkerHandle]
+      , ashWorkerNext = workerNextRef
+      , ashWorkerLoadRef = workerLoadRef
+      , ashResultRef = resultRef
+      , ashScheduleRef = scheduleRef
+      , ashFreshnessRef = freshnessRef
+      }
+    let terrainSnap = (emptyTerrainSnapshotWithVersion 12)
+          { tsChunkSize = 1
+          , tsTerrainChunks = IntMap.singleton 0 (emptyTerrainChunk (WorldConfig { wcChunkSize = 1 }))
+          }
+        version = SnapshotVersion 12
+        windowSize = (800, 600)
+        mkUi enabled = emptyUiState { uiZoom = 1.5, uiDayNightEnabled = enabled }
+        snapshot enabled = RenderSnapshot
+          { rsUi = mkUi enabled
+          , rsLog = LogSnapshot [] False 0 LogDebug
+          , rsData = DataSnapshot 0 0 Nothing
+          , rsTerrain = terrainSnap
+          }
+        stage = stageForZoom (uiZoom (mkUi True))
+        coverage = currentAtlasViewportCoverage
+          (WorldConfig { wcChunkSize = tsChunkSize terrainSnap })
+          (uiPanOffset (mkUi True))
+          (uiZoom (mkUi True))
+          windowSize
+          terrainSnap
+          stage
+        acceptedBaseJob = (atlasViewportRefreshJob version (snapshot True) stage)
+          { ajViewportCoverage = Just coverage }
+        currentFreshness = AtlasFreshness
+          { afKey = ajKey acceptedBaseJob
+          , afSnapshotVersion = version
+          , afLatestBuildIds = mempty
+          }
+        request enabled = AtlasScheduleRequest
+          { asqSnapshotVersion = version
+          , asqRenderTargetOk = True
+          , asqDataReady = True
+          , asqSnapshot = snapshot enabled
+          , asqWindowSize = windowSize
+          , asqRefreshCurrentViewport = False
+          , asqRefreshDayNightOverlay = enabled
+          , asqRefreshStage = Just stage
+          }
+    enqueueAtlasBuild managerHandle acceptedBaseJob
+    threadDelay 10000
+    accepted <- drainFreshAtlasJobs managerHandle currentFreshness
+    length accepted `shouldBe` 1
+
+    requestAtlasSchedule schedulerHandle (request False)
+    disabledReport <- awaitReportMatching scheduleRef version ((== 0) . asrJobCount)
+    asrJobCount disabledReport `shouldBe` 0
+    threadDelay 10000
+    atlasManagerQueuedCount queueRef `shouldReturn` 0
+
+    atlasWorkerLoadStart workerLoadRef 1
+    requestAtlasSchedule schedulerHandle (request True)
+    saturatedReport <- awaitReportMatching scheduleRef version (\report -> asrJobCount report == 0 && asrWorkerInFlight report == 1)
+    asrJobCount saturatedReport `shouldBe` 0
+    asrWorkerAvailable saturatedReport `shouldBe` 1
+    threadDelay 10000
+    atlasManagerQueuedCount queueRef `shouldReturn` 0
+    atlasWorkerLoadFinish (Just workerLoadRef) False
+
+    requestAtlasSchedule schedulerHandle (request True)
+    enabledReport <- awaitReportMatching scheduleRef version ((== 1) . asrJobCount)
+    asrJobCount enabledReport `shouldBe` 1
+    asrJobsAvailable enabledReport `shouldBe` 1
 
   it "single-mode rebuild enqueues exactly one job per zoom stage" $ withSystem $ \system -> do
     managerHandle <- get @AtlasManager system
@@ -349,6 +440,7 @@ spec = describe "AtlasScheduler" $ do
       , asqSnapshot = snapshot
       , asqWindowSize = (800, 600)
       , asqRefreshCurrentViewport = False
+      , asqRefreshDayNightOverlay = False
       , asqRefreshStage = Nothing
       }
     report <- awaitReport scheduleRef version
@@ -418,6 +510,7 @@ spec = describe "AtlasScheduler" $ do
           , asqSnapshot = snapshot
           , asqWindowSize = (800, 600)
           , asqRefreshCurrentViewport = False
+          , asqRefreshDayNightOverlay = False
           , asqRefreshStage = Nothing
           }
         staleReport <- awaitReport scheduleRef (SnapshotVersion 1)
@@ -429,6 +522,7 @@ spec = describe "AtlasScheduler" $ do
           , asqSnapshot = snapshot
           , asqWindowSize = (800, 600)
           , asqRefreshCurrentViewport = False
+          , asqRefreshDayNightOverlay = False
           , asqRefreshStage = Nothing
           }
         currentReport <- awaitReport scheduleRef (SnapshotVersion 2)
@@ -475,6 +569,7 @@ spec = describe "AtlasScheduler" $ do
           , asqSnapshot = snapshot
           , asqWindowSize = (800, 600)
           , asqRefreshCurrentViewport = False
+          , asqRefreshDayNightOverlay = False
           , asqRefreshStage = Nothing
           }
         report <- awaitReport scheduleRef version
@@ -522,6 +617,7 @@ spec = describe "AtlasScheduler" $ do
       , asqSnapshot = snapshot
       , asqWindowSize = (800, 600)
       , asqRefreshCurrentViewport = False
+      , asqRefreshDayNightOverlay = False
       , asqRefreshStage = Nothing
       }
     report <- awaitReport scheduleRef version
@@ -571,6 +667,7 @@ spec = describe "AtlasScheduler" $ do
           , asqSnapshot = snapshot
           , asqWindowSize = (800, 600)
           , asqRefreshCurrentViewport = refresh
+          , asqRefreshDayNightOverlay = False
           , asqRefreshStage = Just currentStage
           }
     mapM_ (requestAtlasSchedule schedulerHandle . (`mkReq` True)) [1..20 :: Word64]

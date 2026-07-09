@@ -37,11 +37,13 @@ import Seer.Render.Atlas
   ( AtlasResolveStatus(..)
   , AtlasTextureCache(..)
   , CachedAtlasTileSet(..)
+  , DayNightOverlayStatus(..)
   , atlasCacheSummary
   , atlasResolveStatusLabel
   , collectAtlasTextures
   , emptyAtlasTextureCache
   , formatAtlasCacheSummary
+  , formatDayNightOverlayStatus
   )
 import Seer.Render.ZoomStage (stageForZoom)
 import UI.TerrainCache (ChunkTextureCache(..), emptyChunkTextureCache)
@@ -62,7 +64,9 @@ data RenderCacheState = RenderCacheState
   , rcsLastAtlasDrain :: !(Maybe Word32)
   , rcsLastAtlasSchedule :: !(Maybe Word32)
   , rcsAtlasNeedsRetry :: !Bool
+  , rcsDayNightOverlayNeedsRetry :: !Bool
   , rcsLastAtlasResolveStatus :: !AtlasResolveStatus
+  , rcsLastDayNightOverlayStatus :: !DayNightOverlayStatus
   , rcsLastAtlasDrainStats :: !(Maybe AtlasResultDrainStats)
   , rcsLastAtlasDrainAttempted :: !Bool
   , rcsLastAtlasScheduleAttempted :: !Bool
@@ -90,7 +94,9 @@ initialRenderCacheState atlasCacheEntries = RenderCacheState
   , rcsLastAtlasDrain = Nothing
   , rcsLastAtlasSchedule = Nothing
   , rcsAtlasNeedsRetry = False
+  , rcsDayNightOverlayNeedsRetry = False
   , rcsLastAtlasResolveStatus = Missing
+  , rcsLastDayNightOverlayStatus = DayNightOverlayDisabled
   , rcsLastAtlasDrainStats = Nothing
   , rcsLastAtlasDrainAttempted = False
   , rcsLastAtlasScheduleAttempted = False
@@ -194,6 +200,8 @@ renderAtlasDiagnosticSummary snap cacheState =
         Just (SnapshotVersion v) -> "committed:" <> show v
   in "atlasRetry=" <> show (rcsAtlasNeedsRetry cacheState)
     <> " atlasResolve=" <> atlasResolveStatusLabel (rcsLastAtlasResolveStatus cacheState)
+    <> " dayNightOverlayRetry=" <> show (rcsDayNightOverlayNeedsRetry cacheState)
+    <> " " <> formatDayNightOverlayStatus (rcsLastDayNightOverlayStatus cacheState)
     <> " atlasPending=" <> show (rcsLastAtlasPendingCount cacheState)
     <> " atlasQueued=" <> show (rcsLastAtlasQueuedCount cacheState)
     <> " atlasQueuedRev=" <> maybe "none" show (rcsLastAtlasQueuedRevision cacheState)

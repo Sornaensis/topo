@@ -39,6 +39,8 @@ import Seer.Render.Frame
   , AtlasQueuedWork(..)
   , applyAtlasFrameStepTimestamps
   , atlasFrameStepPolicy
+  , atlasRetryShouldRefreshDayNightOverlay
+  , atlasRetryShouldRefreshViewport
   , fallbackFrameMaintenanceDue
   , noAtlasQueuedWork
   )
@@ -99,6 +101,8 @@ data RenderFrameMaintenanceDiagnostics = RenderFrameMaintenanceDiagnostics
   , rfmdAtlasQueuedDuplicateDrops :: !Int
   , rfmdAtlasQueuedLatestWinsPrunes :: !Int
   , rfmdAtlasScheduleRetryWake :: !Bool
+  , rfmdAtlasDayNightOverlayRetryWake :: !Bool
+  , rfmdAtlasRefreshViewport :: !Bool
   , rfmdAtlasScheduleDeferred :: !Int
   , rfmdAtlasScheduleDroppedStale :: !Int
   , rfmdAtlasWorkerCapacity :: !Int
@@ -130,6 +134,8 @@ renderFrameStepMaintenance settings renderTargetOk nowMs atlasPending atlasQueue
         (rcsTerrainCache cacheState)
         (rcsChunkTextures cacheState)
       queuedWork = atlasQueuedWorkForSnapshot atlasQueueState renderSnap (rcsLastAtlasQueuedRevisionScheduled cacheState)
+      refreshViewportAtlas = renderFrameShouldRefreshViewportAtlas atlasPending renderSnap cacheState
+      refreshDayNightOverlay = renderFrameShouldRefreshDayNightOverlay atlasPending renderSnap cacheState
       atlasPolicy = atlasFrameStepPolicy
         nowMs
         (rfsetAtlasDrainPollMs settings)
@@ -160,6 +166,8 @@ renderFrameStepMaintenance settings renderTargetOk nowMs atlasPending atlasQueue
     , rfmdAtlasQueuedDuplicateDrops = amqsDuplicateEnqueueDrops atlasQueueState
     , rfmdAtlasQueuedLatestWinsPrunes = amqsLatestWinsPrunes atlasQueueState
     , rfmdAtlasScheduleRetryWake = scheduleRetryWake
+    , rfmdAtlasDayNightOverlayRetryWake = renderTargetOk && refreshDayNightOverlay && afspShouldScheduleAtlas atlasPolicy
+    , rfmdAtlasRefreshViewport = renderTargetOk && (refreshViewportAtlas || refreshDayNightOverlay)
     , rfmdAtlasScheduleDeferred = maybe 0 asrJobsDeferred (rcsLastAtlasScheduleReport cacheState)
     , rfmdAtlasScheduleDroppedStale = maybe 0 asrJobsDroppedStale (rcsLastAtlasScheduleReport cacheState)
     , rfmdAtlasWorkerCapacity = maybe 0 asrWorkerCapacity (rcsLastAtlasScheduleReport cacheState)
@@ -200,6 +208,21 @@ atlasQueuedWorkForSnapshot queueState renderSnap lastScheduledRevision =
         , aqwLastScheduledRevision = lastScheduledRevision
         }
       else noAtlasQueuedWork { aqwLastScheduledRevision = lastScheduledRevision }
+
+renderFrameShouldRefreshViewportAtlas :: Bool -> RenderSnapshot -> RenderCacheState -> Bool
+renderFrameShouldRefreshViewportAtlas atlasPending renderSnap cacheState =
+  atlasRetryShouldRefreshViewport
+    (rcsLastAtlasResolveStatus cacheState)
+    (uiDayNightEnabled (rsUi renderSnap))
+    (rcsDayNightOverlayNeedsRetry cacheState)
+    atlasPending
+
+renderFrameShouldRefreshDayNightOverlay :: Bool -> RenderSnapshot -> RenderCacheState -> Bool
+renderFrameShouldRefreshDayNightOverlay atlasPending renderSnap cacheState =
+  atlasRetryShouldRefreshDayNightOverlay
+    (uiDayNightEnabled (rsUi renderSnap))
+    (rcsDayNightOverlayNeedsRetry cacheState)
+    atlasPending
 
 fallbackTextureScale :: RenderSnapshot -> AtlasTextureCache -> Int
 fallbackTextureScale renderSnap atlasCache =
@@ -246,6 +269,7 @@ renderFrameStep env settings nowMs snapVersion renderSnap cacheState0 = do
       shouldDrainAtlas = afspShouldDrainAtlas atlasPolicy
       shouldScheduleAtlas = afspShouldScheduleAtlas atlasPolicy
       shouldRefreshViewportAtlas = atlasResolveNeedsViewportRefresh (rcsLastAtlasResolveStatus cacheState0)
+      shouldRefreshDayNightOverlay = renderFrameShouldRefreshDayNightOverlay atlasPending renderSnap cacheState0
       queuedRevisionScheduled = if shouldScheduleAtlas && aqwQueuedForCurrentKey queuedWork
         then aqwQueueRevision queuedWork
         else rcsLastAtlasQueuedRevisionScheduled cacheState0
@@ -295,6 +319,7 @@ renderFrameStep env settings nowMs snapVersion renderSnap cacheState0 = do
       , rcShouldDrainAtlas = shouldDrainAtlas
       , rcShouldScheduleAtlas = shouldScheduleAtlas
       , rcShouldRefreshViewportAtlas = shouldRefreshViewportAtlas
+      , rcShouldRefreshDayNightOverlay = shouldRefreshDayNightOverlay
       , rcShouldUpdateChunkTextures = shouldUpdateChunkTextures
       , rcTimingLogThresholdMs = rfsetTimingLogThresholdMs settings
       , rcFontCache = rfeFontCache env
@@ -319,7 +344,9 @@ renderFrameStep env settings nowMs snapVersion renderSnap cacheState0 = do
         { rcsChunkTextures = nextChunkTextures
         , rcsAtlasCache = nextAtlasCache
         , rcsAtlasNeedsRetry = rfoAtlasNeedsRetry frameOutcome
+        , rcsDayNightOverlayNeedsRetry = rfoDayNightOverlayNeedsRetry frameOutcome
         , rcsLastAtlasResolveStatus = rfoAtlasResolveStatus frameOutcome
+        , rcsLastDayNightOverlayStatus = rfoDayNightOverlayStatus frameOutcome
         , rcsLastAtlasDrainStats = rfoAtlasDrainStats frameOutcome
         , rcsLastAtlasDrainAttempted = shouldDrainAtlas
         , rcsLastAtlasScheduleAttempted = shouldScheduleAtlas
