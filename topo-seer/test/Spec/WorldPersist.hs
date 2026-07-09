@@ -5,6 +5,8 @@ module Spec.WorldPersist (spec) where
 
 import Control.Exception (bracket, try, IOException)
 import Data.Aeson (Value(..), encode, eitherDecodeStrict', object, toJSON, (.=))
+import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Text as Text
@@ -20,7 +22,16 @@ import Test.Hspec
 import Spec.Support.OverlayFixtures (mkSparseFloatOverlay)
 
 import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext)
-import Actor.UI (emptyUiState, UiState(..))
+import Actor.UI
+  ( BaseViewMode(..)
+  , LayeredViewState(..)
+  , SkyOverlayMode(..)
+  , UiState(..)
+  , ViewMode(..)
+  , WeatherBasis(..)
+  , defaultLayeredViewState
+  , emptyUiState
+  )
 import Seer.Config (configFromUi, unmapRange)
 import Seer.Config.Snapshot (snapshotFromUi)
 import Seer.Config.Snapshot.Types (ConfigSnapshot(..), defaultSnapshot)
@@ -158,6 +169,54 @@ manifestJsonSpec = describe "WorldSaveManifest JSON round-trip" $ do
         , WorldWeatherLayerManifest "weather" "instantaneous_current" "weather_snapshot" "overlay_sidecar"
         , WorldWeatherLayerManifest "weather_normals" "typical_normal" "weather_normals" "overlay_sidecar"
         ]
+
+  it "keeps layered view state out of saved config snapshots" $ do
+    let ui = emptyUiState
+          { uiSeed = 707
+          , uiChunkSize = 64
+          , uiViewMode = ViewCloudTypical
+          , uiViewSelection = defaultLayeredViewState
+              { lvsBaseView = BaseViewBiome
+              , lvsSkyOverlay = Just SkyOverlayCloud
+              , lvsWeatherBasis = WeatherBasisAverage
+              , lvsOverlayOpacity = 0.25
+              }
+          }
+        bytes = BSL.toStrict (encode (snapshotFromUi ui "layered-ui-only"))
+    case eitherDecodeStrict' @Value bytes of
+      Left err -> expectationFailure err
+      Right (Object obj) -> do
+        let hasKey key = KM.member (Key.fromText key) obj
+        map hasKey (["view", "view_mode", "viewMode", "viewSelection", "overlay_opacity", "overlayOpacity", "weather_basis"] :: [Text.Text])
+          `shouldBe` replicate 7 False
+      Right _ -> expectationFailure "expected snapshot JSON object"
+    case eitherDecodeStrict' @ConfigSnapshot bytes of
+      Left err -> expectationFailure err
+      Right snapshot -> do
+        csName snapshot `shouldBe` "layered-ui-only"
+        csSeed snapshot `shouldBe` 707
+        csChunkSize snapshot `shouldBe` 64
+
+  it "ignores legacy layered view keys when reading config snapshots" $ do
+    let legacy = object
+          [ "name" .= ("legacy-layered" :: Text.Text)
+          , "seed" .= (808 :: Int)
+          , "chunkSize" .= (32 :: Int)
+          , "view_mode" .= ("cloud_typical" :: Text.Text)
+          , "view" .= object
+              [ "base_mode" .= ("biome" :: Text.Text)
+              , "overlay_mode" .= ("cloud" :: Text.Text)
+              , "weather_basis" .= ("average" :: Text.Text)
+              , "overlay_opacity" .= (0.25 :: Double)
+              ]
+          ]
+    case eitherDecodeStrict' @ConfigSnapshot (BSL.toStrict (encode legacy)) of
+      Left err -> expectationFailure err
+      Right snapshot -> do
+        csName snapshot `shouldBe` "legacy-layered"
+        csSeed snapshot `shouldBe` 808
+        csChunkSize snapshot `shouldBe` 32
+        csRenderWaterLevel snapshot `shouldBe` csRenderWaterLevel defaultSnapshot
 
 -- ---------------------------------------------------------------------------
 -- saveNamedWorld / loadNamedWorld round-trip

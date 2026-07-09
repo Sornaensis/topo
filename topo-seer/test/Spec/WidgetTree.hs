@@ -19,6 +19,12 @@ import UI.Widgets (Rect(..), containsPoint)
 rectHitPoint :: Rect -> V2 Int
 rectHitPoint (Rect (V2 x y, V2 w h)) = V2 (x + w `div` 2) (y + h `div` 2)
 
+rectTop :: Rect -> Int
+rectTop (Rect (V2 _ y, _)) = y
+
+rectBottom :: Rect -> Int
+rectBottom (Rect (V2 _ y, V2 _ h)) = y + h
+
 spec :: Spec
 spec = describe "UI.WidgetTree" $ do
   it "hit tests generate button in left panel" $ do
@@ -58,6 +64,26 @@ spec = describe "UI.WidgetTree" $ do
     drop 16 viewIds `shouldBe`
       [ WidgetViewBasisAverage, WidgetViewBasisCurrent ]
 
+  it "lays out layered View tab sections in scroll order" $ do
+    let layout = layoutFor (V2 800 1200) 160
+        baseRects = leftBaseViewRects layout
+        overlayRects = leftWeatherOverlayRects layout
+        basisRects = leftWeatherBasisRects layout
+        dayNightRect = dayNightToggleRect layout
+        (pluginPrevRect, _pluginNextRect, _fieldPrevRect, _fieldNextRect) = overlayViewRects layout
+        actionRects = overlayActionRects layout
+        sectionTops = map rectTop
+          [ head baseRects
+          , head overlayRects
+          , head basisRects
+          , dayNightRect
+          , pluginPrevRect
+          , head actionRects
+          ]
+    sectionTops `shouldSatisfy` strictlyIncreasing
+    rectBottom (last actionRects) - leftControlsTop layout
+      `shouldSatisfy` (<= leftViewContentHeight layout)
+
   it "hit tests all layered View tab selector buttons" $ do
     let layout = layoutFor (V2 800 1200) 160
         widgets = buildViewModeWidgets layout 0
@@ -95,6 +121,27 @@ spec = describe "UI.WidgetTree" $ do
         let adjusted = p + V2 0 scrollY
         hitTest viewWidgets adjusted `shouldSatisfy` (/= Nothing)
         (if containsPoint clipR p then hitTest viewWidgets adjusted else Nothing) `shouldBe` Nothing
+
+  it "keeps bottom View controls reachable after scrolling" $ do
+    let layout = layoutFor (V2 800 360) 80
+        scrollY = leftViewScrollMax layout
+        viewWidgets = filter (isLeftViewWidget . widgetId) (buildWidgets layout)
+        screenPoint = rectHitPoint (last (overlayActionRects layout)) - V2 0 scrollY
+        contentPoint = screenPoint + V2 0 scrollY
+    scrollY `shouldSatisfy` (> 0)
+    containsPoint (leftViewContentClipRect layout) screenPoint `shouldBe` True
+    hitTest viewWidgets contentPoint `shouldBe` Just WidgetOverlayImportValidate
+
+  it "keeps legacy View widget ids classified with the View tab" $ do
+    let ids =
+          [ WidgetViewElevation, WidgetViewBiome, WidgetViewClimate, WidgetViewWeather
+          , WidgetViewMoisture, WidgetViewPrecip, WidgetViewPrecipCurrent
+          , WidgetViewVegetation, WidgetViewTerrainForm, WidgetViewPlateId
+          , WidgetViewPlateBoundary, WidgetViewPlateHardness, WidgetViewPlateCrust
+          , WidgetViewPlateAge, WidgetViewPlateHeight, WidgetViewPlateVelocity
+          , WidgetViewCloud, WidgetViewCloudTypical
+          ]
+    map isLeftViewWidget ids `shouldBe` replicate (length ids) True
 
   it "hit tests overlay action buttons" $ do
     let layout = layoutFor (V2 800 1200) 160
@@ -331,3 +378,6 @@ assertDenseRowRects :: Layout -> [Widget] -> Expectation
 assertDenseRowRects layout widgets =
   map widgetRect widgets `shouldBe`
     map (configParamRowHitRect . (`configParamRects` layout)) [0 .. length widgets - 1]
+
+strictlyIncreasing :: [Int] -> Bool
+strictlyIncreasing values = and (zipWith (<) values (drop 1 values))

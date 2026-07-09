@@ -18,7 +18,7 @@ import Actor.PluginManager
   , pluginLifecycleSnapshot
   , pluginPanelDiagnosticLines
   )
-import Data.Aeson (Value(..))
+import Data.Aeson (Value(..), object, (.=))
 import Data.List (nub, sort)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -98,6 +98,10 @@ import Seer.Service.AppService
   , UiPanelTabState(..)
   , UiPanelsResponse(..)
   , UiOverlayFieldSummary(..)
+  , UiSetViewModeRequest(..)
+  , UiSetViewModeResponse(..)
+  , UiSetViewRequest(..)
+  , UiSetViewResponse(..)
   , UiViewportClickResponse(..)
   , WorldGenerationStatusResponse(..)
   , WorldMetaResponse(..)
@@ -449,6 +453,21 @@ spec = describe "AppService surface" $ do
     uiCameraSnapshotZoom uiCameraContract `shouldBe` 1.25
     uiPanelTabName (uiPanelsLeftPanel uiPanelsContract) `shouldBe` "topo"
     uiLogPanelLevel (uiPanelsLogPanel uiPanelsContract) `shouldBe` "info"
+
+  it "keeps layered view command contracts typed" $ do
+    uiSetViewModeRequestName uiSetViewModeRequestContract `shouldBe` "cloud"
+    uiSetViewModeRequestBasis uiSetViewModeRequestContract `shouldBe` Just "typical_normal"
+    uiSetViewModeRequestFieldIndex uiSetViewModeRequestContract `shouldBe` Nothing
+    uiSetViewModeResponseName uiSetViewModeResponseContract `shouldBe` "cloud_typical"
+    uiSetViewModeResponseView uiSetViewModeResponseContract `shouldBe` layeredViewValueContract
+    uiSetViewRequestBaseMode uiSetViewRequestContract `shouldBe` Just "biome"
+    uiSetViewRequestOverlayMode uiSetViewRequestContract `shouldBe` Just "cloud"
+    uiSetViewRequestPluginOverlay uiSetViewRequestContract `shouldBe` Nothing
+    uiSetViewRequestWeatherBasis uiSetViewRequestContract `shouldBe` Just "average"
+    uiSetViewRequestOverlayOpacity uiSetViewRequestContract `shouldBe` Just 0.5
+    uiSetViewRequestFieldIndex uiSetViewRequestContract `shouldBe` Nothing
+    uiSetViewResponseViewMode uiSetViewResponseContract `shouldBe` Just "cloud_typical"
+    uiSetViewResponseView uiSetViewResponseContract `shouldBe` layeredViewValueContract
 
   it "keeps the simulation DAG contract typed and command-backed" $ do
     typedOperationMethod simulationDagOperation `shouldBe` "get_sim_dag"
@@ -810,6 +829,44 @@ stateViewsContract = StateViewsResponse
       ]
   , stateViewsOverlayNames = ["roads"]
   , stateViewsLegacyModes = stateViewModes stateViewModesContract
+  }
+
+layeredViewValueContract :: Value
+layeredViewValueContract = object
+  [ "base_mode" .= ("biome" :: Text)
+  , "overlay_mode" .= ("cloud" :: Text)
+  , "weather_basis" .= ("average" :: Text)
+  , "overlay_opacity" .= (0.5 :: Double)
+  , "legacy_view_mode" .= ("cloud_typical" :: Text)
+  ]
+
+uiSetViewModeRequestContract :: UiSetViewModeRequest
+uiSetViewModeRequestContract = UiSetViewModeRequest
+  { uiSetViewModeRequestName = "cloud"
+  , uiSetViewModeRequestBasis = Just "typical_normal"
+  , uiSetViewModeRequestFieldIndex = Nothing
+  }
+
+uiSetViewModeResponseContract :: UiSetViewModeResponse
+uiSetViewModeResponseContract = UiSetViewModeResponse
+  { uiSetViewModeResponseName = "cloud_typical"
+  , uiSetViewModeResponseView = layeredViewValueContract
+  }
+
+uiSetViewRequestContract :: UiSetViewRequest
+uiSetViewRequestContract = UiSetViewRequest
+  { uiSetViewRequestBaseMode = Just "biome"
+  , uiSetViewRequestOverlayMode = Just "cloud"
+  , uiSetViewRequestPluginOverlay = Nothing
+  , uiSetViewRequestWeatherBasis = Just "average"
+  , uiSetViewRequestOverlayOpacity = Just 0.5
+  , uiSetViewRequestFieldIndex = Nothing
+  }
+
+uiSetViewResponseContract :: UiSetViewResponse
+uiSetViewResponseContract = UiSetViewResponse
+  { uiSetViewResponseViewMode = Just "cloud_typical"
+  , uiSetViewResponseView = layeredViewValueContract
   }
 
 configSliderContract :: ConfigSliderSummary

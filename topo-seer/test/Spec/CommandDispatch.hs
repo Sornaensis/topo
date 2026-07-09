@@ -566,6 +566,24 @@ spec = describe "CommandDispatch" $ do
       lookupKey "overlay_mode" (srResult rsp) `shouldBe` Just Null
       lookupKey "plugin_overlay" (srResult rsp) `shouldBe` Just Null
 
+    it "sets builtin layered base, overlay, basis, and opacity together" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "set_view" (object
+        [ "base" .= ("biome" :: Text)
+        , "overlay" .= ("cloud" :: Text)
+        , "basis" .= ("average" :: Text)
+        , "overlay_opacity" .= (0.42 :: Double)
+        ])
+      srSuccess rsp `shouldBe` True
+      ui <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
+      lvsBaseView (uiViewSelection ui) `shouldBe` BaseViewBiome
+      lvsSkyOverlay (uiViewSelection ui) `shouldBe` Just SkyOverlayCloud
+      lvsWeatherBasis (uiViewSelection ui) `shouldBe` WeatherBasisAverage
+      lvsOverlayOpacity (uiViewSelection ui) `shouldSatisfy` (\opacity -> abs (opacity - 0.42) < 0.0001)
+      lookupKey "view_mode" (srResult rsp) `shouldBe` Just (String "cloud_typical")
+      lookupKey "base_mode" (srResult rsp) `shouldBe` Just (String "biome")
+      lookupKey "overlay_mode" (srResult rsp) `shouldBe` Just (String "cloud")
+      lookupKey "weather_basis" (srResult rsp) `shouldBe` Just (String "average")
+
     it "uses overlay_field as a plugin field alias" $ withCtx $ \ctx -> do
       _ <- writeSingleChunkTerrainWithNormals ctx
       rsp <- dispatch ctx "set_view" (object

@@ -161,6 +161,89 @@ spec = describe "Seer.HTTP.Server" $ do
       lookupText "source" (hresBody screenshot) `shouldBe` Just "headless"
       lookupText "image_base64" (hresBody screenshot) `shouldSatisfy` maybe False (not . Text.null)
 
+  it "serves layered view state and legacy compatibility routes in headless mode" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      state0 <- request app (mkRequest "GET" ["state"])
+      hresStatusCode state0 `shouldBe` 200
+      lookupNestedText ["view", "base_mode"] (hresBody state0) `shouldBe` Just "elevation"
+      lookupNestedValue ["view", "overlay_mode"] (hresBody state0) `shouldBe` Just Null
+
+      viewModes <- request app (mkRequest "GET" ["state", "view-modes"])
+      hresStatusCode viewModes `shouldBe` 200
+      objectHasKey "view_modes" (hresBody viewModes) `shouldBe` True
+      lookupNestedText ["view", "weather_basis"] (hresBody viewModes) `shouldBe` Just "current"
+
+      views0 <- request app (mkRequest "GET" ["state", "views"])
+      hresStatusCode views0 `shouldBe` 200
+      map (`objectHasKey` hresBody views0)
+        [ "view", "base_modes", "overlay_modes", "weather_bases", "overlay_names", "legacy_modes" ]
+        `shouldBe` replicate 6 True
+      lookupText "legacy_view_mode" (hresBody views0) `shouldBe` Just "elevation"
+
+      legacy <- request app (mkRequest "POST" ["ui", "view-mode"])
+        { hreqBody = Just (object ["mode" .= ("cloud" :: Text), "basis" .= ("typical" :: Text)]) }
+      hresStatusCode legacy `shouldBe` 200
+      lookupText "view_mode" (hresBody legacy) `shouldBe` Just "cloud_typical"
+      lookupNestedText ["view", "overlay_mode"] (hresBody legacy) `shouldBe` Just "cloud"
+      lookupNestedText ["view", "weather_basis"] (hresBody legacy) `shouldBe` Just "average"
+      lookupNestedText ["view", "temporal_basis"] (hresBody legacy) `shouldBe` Just "typical_normal"
+
+      layered <- request app (mkRequest "POST" ["ui", "view"])
+        { hreqBody = Just (object
+            [ "base_mode" .= ("biome" :: Text)
+            , "overlay_mode" .= ("cloud" :: Text)
+            , "weather_basis" .= ("current" :: Text)
+            , "overlay_opacity" .= (0.25 :: Double)
+            ]) }
+      hresStatusCode layered `shouldBe` 200
+      lookupText "view_mode" (hresBody layered) `shouldBe` Just "cloud"
+      lookupNestedText ["view", "base_mode"] (hresBody layered) `shouldBe` Just "biome"
+      lookupNestedText ["view", "overlay_mode"] (hresBody layered) `shouldBe` Just "cloud"
+      lookupNestedText ["view", "weather_basis"] (hresBody layered) `shouldBe` Just "current"
+      lookupNestedValue ["view", "overlay_opacity"] (hresBody layered) `shouldBe` Just (Number 0.25)
+
+      uiState <- request app (mkRequest "GET" ["ui", "state"])
+      hresStatusCode uiState `shouldBe` 200
+      lookupNestedText ["view", "base_mode"] (hresBody uiState) `shouldBe` Just "biome"
+      lookupNestedText ["view", "selection", "base_mode"] (hresBody uiState) `shouldBe` Just "biome"
+      lookupNestedText ["view", "overlay_mode"] (hresBody uiState) `shouldBe` Just "cloud"
+      lookupNestedValue ["view", "overlay_opacity"] (hresBody uiState) `shouldBe` Just (Number 0.25)
+
+      state1 <- request app (mkRequest "GET" ["state"])
+      hresStatusCode state1 `shouldBe` 200
+      lookupText "view_mode" (hresBody state1) `shouldBe` Just "cloud"
+      lookupNestedText ["view", "base_mode"] (hresBody state1) `shouldBe` Just "biome"
+
+      clear <- request app (mkRequest "POST" ["ui", "view-mode"])
+        { hreqBody = Just (object ["mode" .= ("elevation" :: Text)]) }
+      hresStatusCode clear `shouldBe` 200
+      lookupText "view_mode" (hresBody clear) `shouldBe` Just "elevation"
+      lookupNestedText ["view", "base_mode"] (hresBody clear) `shouldBe` Just "elevation"
+      lookupNestedValue ["view", "overlay_mode"] (hresBody clear) `shouldBe` Just Null
+
+  it "keeps headless screenshot responses stable while a layered view is active" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      setView <- request app (mkRequest "POST" ["ui", "view"])
+        { hreqBody = Just (object
+            [ "base_mode" .= ("biome" :: Text)
+            , "overlay_mode" .= ("cloud" :: Text)
+            , "weather_basis" .= ("current" :: Text)
+            , "overlay_opacity" .= (0.5 :: Double)
+            ]) }
+      hresStatusCode setView `shouldBe` 200
+
+      before <- request app (mkRequest "GET" ["ui", "state"])
+      screenshot <- request app (mkRequest "POST" ["screenshots"])
+      after <- request app (mkRequest "GET" ["ui", "state"])
+      hresStatusCode screenshot `shouldBe` 200
+      map (`objectHasKey` hresBody screenshot) ["image_base64", "format", "source"]
+        `shouldBe` replicate 3 True
+      objectHasKey "view" (hresBody screenshot) `shouldBe` False
+      lookupText "format" (hresBody screenshot) `shouldBe` Just "png"
+      lookupText "source" (hresBody screenshot) `shouldBe` Just "headless"
+      lookupText "image_base64" (hresBody screenshot) `shouldSatisfy` maybe False (not . Text.null)
+      lookupValue "view" (hresBody after) `shouldBe` lookupValue "view" (hresBody before)
+
   it "buffers HTTP service events and serves them as SSE" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       seedSet <- request app (mkRequest "POST" ["ui", "seed"])
@@ -438,7 +521,11 @@ spec = describe "Seer.HTTP.Server" $ do
   it "publishes component schemas for resource route groups" $ do
     let doc = openApiDocument publicHttpRouteSpecs
         responseRefs =
-          [ ("/presets", "get", "PresetsListResponse")
+          [ ("/state", "get", "AppStateResponse")
+          , ("/state/view-modes", "get", "StateViewModesResponse")
+          , ("/state/views", "get", "StateViewsResponse")
+          , ("/ui/state", "get", "UiStateResponse")
+          , ("/presets", "get", "PresetsListResponse")
           , ("/presets", "post", "PresetsSaveResponse")
           , ("/presets/load", "post", "PresetsLoadResponse")
           , ("/pipeline", "get", "PipelineGetResponse")
@@ -463,6 +550,8 @@ spec = describe "Seer.HTTP.Server" $ do
           , ("/simulation/tick", "post", "SimulationTickResponse")
           , ("/logs", "get", "LogGetResponse")
           , ("/screenshots", "post", "ScreenshotTakeResponse")
+          , ("/ui/view-mode", "post", "UiViewModeSetResponse")
+          , ("/ui/view", "post", "UiViewSetResponse")
           , ("/terrain/hex", "get", "TerrainHexResponse")
           ] :: [(Text, Text, Text)]
         requestRefs =
@@ -478,6 +567,8 @@ spec = describe "Seer.HTTP.Server" $ do
           , ("/simulation/auto-tick", "post", "SimulationAutoTickRequest")
           , ("/simulation/tick", "post", "SimulationTickRequest")
           , ("/screenshots", "post", "ScreenshotTakeRequest")
+          , ("/ui/view-mode", "post", "UiViewModeSetRequest")
+          , ("/ui/view", "post", "UiViewSetRequest")
           ] :: [(Text, Text, Text)]
     forM_ responseRefs $ \(path, routeMethod, schemaName) -> do
       operationResponseSchemaRef doc path routeMethod "200" `shouldBe` Just schemaName
@@ -493,6 +584,16 @@ spec = describe "Seer.HTTP.Server" $ do
     componentPropertyNullable doc "DataRecordsListResponse" "total_count" `shouldBe` Just True
     sort <$> componentPropertyNames doc "ScreenshotTakeResponse"
       `shouldBe` Just ["format", "image_base64", "saved_path", "source"]
+    componentPropertyNames doc "StateViewsResponse"
+      `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["view", "base_modes", "overlay_modes", "weather_bases", "overlay_names", "legacy_modes"])
+    let layeredViewProps = inlinePropertyNames =<< componentProperty doc "StateViewsResponse" "view"
+        uiStateViewProps = inlinePropertyNames =<< componentProperty doc "UiStateResponse" "view"
+    layeredViewProps `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["base", "base_mode", "overlay", "overlay_mode", "plugin_overlay", "overlay_field", "weather_basis", "temporal_basis", "source_kind", "overlay_opacity", "legacy_view_mode"])
+    uiStateViewProps `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["mode", "base_mode", "overlay_mode", "plugin_overlay", "weather_basis", "overlay_opacity", "legacy_view_mode", "temporal_basis", "source_kind", "selection", "overlay_names"])
+    componentPropertyNames doc "UiViewSetRequest"
+      `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["base_mode", "base", "overlay_mode", "overlay", "plugin_overlay", "weather_basis", "basis", "temporal_basis", "overlay_opacity", "field_index", "overlay_field"])
+    componentPropertyNames doc "UiViewSetResponse"
+      `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["view", "view_mode", "base_mode", "overlay_mode", "plugin_overlay", "overlay_field", "weather_basis", "overlay_opacity", "legacy_view_mode"])
     componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("soil" `elem`)
     componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("ocean_currents" `elem`)
     componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("weather_snapshot" `elem`)
@@ -670,6 +771,18 @@ spec = describe "Seer.HTTP.Server" $ do
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       installTerrainFixture app
       installOverlayFixture app
+
+      setPluginView <- request app (mkRequest "POST" ["ui", "view"])
+        { hreqBody = Just (object
+            [ "overlay_mode" .= ("plugin" :: Text)
+            , "plugin_overlay" .= ("weather" :: Text)
+            , "overlay_field" .= (0 :: Int)
+            , "overlay_opacity" .= (0.5 :: Double)
+            ]) }
+      hresStatusCode setPluginView `shouldBe` 200
+      lookupNestedText ["view", "overlay_mode"] (hresBody setPluginView) `shouldBe` Just "plugin"
+      lookupNestedText ["view", "plugin_overlay"] (hresBody setPluginView) `shouldBe` Just "weather"
+      lookupNestedValue ["view", "overlay_field"] (hresBody setPluginView) `shouldBe` Just (Number 0)
 
       overlays <- request app (mkRequest "GET" ["overlays"])
       hresStatusCode overlays `shouldBe` 200
@@ -1259,6 +1372,11 @@ lookupNestedText :: [Text] -> Value -> Maybe Text
 lookupNestedText [] _ = Nothing
 lookupNestedText [key] value = lookupText key value
 lookupNestedText (key:rest) value = lookupValue key value >>= lookupNestedText rest
+
+lookupNestedValue :: [Text] -> Value -> Maybe Value
+lookupNestedValue [] value = Just value
+lookupNestedValue [key] value = lookupValue key value
+lookupNestedValue (key:rest) value = lookupValue key value >>= lookupNestedValue rest
 
 lookupValue :: Text -> Value -> Maybe Value
 lookupValue key (Object obj) = KM.lookup (Key.fromText key) obj
