@@ -20,15 +20,20 @@ import Actor.UI.State
   , allBuiltinViewModes
   , baseViewModeFromText
   , baseViewModeLabel
+  , baseViewModeMetadataToJSON
   , baseViewModeSummaryToJSON
   , baseViewModeToText
+  , baseViewModeToViewMode
   , builtinViewModeFromText
   , defaultLayeredViewState
   , layeredViewStateToJSON
   , layeredViewStateToViewMode
   , skyOverlayModeFromText
+  , skyOverlayModeLabel
+  , skyOverlayModeMetadataToJSON
   , skyOverlayModeSummaryToJSON
   , skyOverlayModeToText
+  , skyOverlayModeToViewMode
   , sourceKindToText
   , temporalBasisToText
   , viewModeDataSemantics
@@ -42,6 +47,7 @@ import Actor.UI.State
   , viewModeToText
   , weatherBasisFromText
   , weatherBasisToText
+  , weatherOverlaySourceKind
   , weatherOverlayTemporalBasis
   , vmlcColor
   , vmlcLabel
@@ -92,6 +98,7 @@ spec = describe "view mode registry" $ do
     baseViewModeFromText "plate-boundary" `shouldBe` Just BaseViewPlateBoundary
     skyOverlayModeFromText "overlay:roads" `shouldBe` Just (SkyOverlayPlugin "roads" 0)
     baseViewModeLabel BaseViewElevation `shouldBe` "Elevation"
+    skyOverlayModeLabel SkyOverlayCloud `shouldBe` "Cloud / Storm"
     skyOverlayModeToText SkyOverlayCloud `shouldBe` "cloud"
     weatherBasisToText WeatherBasisAverage `shouldBe` "average"
     weatherBasisToText WeatherBasisCurrent `shouldBe` "current"
@@ -101,13 +108,58 @@ spec = describe "view mode registry" $ do
       [ "active", "name", "label", "legacy_view_mode", "kind" ]
       (baseViewModeSummaryToJSON True BaseViewElevation)
     assertObjectHas
+      [ "name", "label", "legacy_view_mode", "kind", "legend", "tooltip_fields", "inspector_fields" ]
+      (baseViewModeMetadataToJSON BaseViewBiome)
+    assertObjectHas
       [ "active", "name", "label", "weather_basis_supported", "legacy_view_mode", "temporal_basis", "source_kind" ]
       (skyOverlayModeSummaryToJSON True WeatherBasisCurrent SkyOverlayCloud)
+    assertObjectHas
+      [ "name", "label", "weather_basis_supported", "legacy_view_mode", "temporal_basis", "source_kind" ]
+      (skyOverlayModeMetadataToJSON SkyOverlayCloud)
     case skyOverlayModeSummaryToJSON False WeatherBasisAverage SkyOverlayCloud of
       Object o -> do
         KM.lookup "temporal_basis" o `shouldBe` Just (String "typical_normal")
         KM.lookup "source_kind" o `shouldBe` Just (String "weather_normals")
       _ -> expectationFailure "expected sky overlay summary JSON object"
+
+  it "has stable layered names and complete legacy metadata for every base and built-in overlay" $ do
+    map baseViewModeToText allBaseViewModes `shouldBe`
+      [ "elevation", "biome", "moisture", "plate_id", "plate_boundary", "plate_hardness"
+      , "plate_crust", "plate_age", "plate_height", "plate_velocity", "vegetation", "terrain_form"
+      ]
+    map skyOverlayModeToText allBuiltinSkyOverlayModes `shouldBe`
+      [ "weather", "precipitation", "cloud" ]
+    let assertBase mode = do
+          let legacyMode = baseViewModeToViewMode mode
+          layeredViewStateToViewMode defaultLayeredViewState
+            { lvsBaseView = mode
+            , lvsSkyOverlay = Nothing
+            } `shouldBe` Just legacyMode
+          case viewModeMetadata legacyMode of
+            Just meta -> do
+              assertComplete meta
+              vmmName meta `shouldBe` baseViewModeToText mode
+              vmmTemporalBasis meta `shouldBe` Nothing
+              vmmSourceKind meta `shouldBe` Nothing
+            Nothing -> expectationFailure ("missing base metadata for " <> Text.unpack (baseViewModeToText mode))
+        assertOverlay overlay basis = do
+          let expectedMode = skyOverlayModeToViewMode basis overlay
+          layeredViewStateToViewMode defaultLayeredViewState
+            { lvsSkyOverlay = Just overlay
+            , lvsWeatherBasis = basis
+            } `shouldBe` expectedMode
+          case expectedMode >>= viewModeMetadata of
+            Just meta -> do
+              assertComplete meta
+              vmmName meta `shouldBe` viewModeToText (vmmMode meta)
+              vmmTemporalBasis meta `shouldBe` Just (weatherOverlayTemporalBasis overlay basis)
+              vmmSourceKind meta `shouldBe` weatherOverlaySourceKind overlay basis
+              assertObjectHas
+                [ "name", "label", "weather_basis_supported", "legacy_view_mode", "temporal_basis", "source_kind" ]
+                (skyOverlayModeSummaryToJSON False basis overlay)
+            Nothing -> expectationFailure ("missing overlay metadata for " <> Text.unpack (skyOverlayModeToText overlay))
+    mapM_ assertBase allBaseViewModes
+    mapM_ (\overlay -> mapM_ (assertOverlay overlay) [WeatherBasisAverage, WeatherBasisCurrent]) allBuiltinSkyOverlayModes
 
   it "adapts legacy view modes to layered selections and back" $ do
     let roundTrip mode = layeredViewStateToViewMode (viewModeToLayeredViewState mode) `shouldBe` Just mode

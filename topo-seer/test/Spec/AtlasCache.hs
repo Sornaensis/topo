@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Spec.AtlasCache (spec) where
 
 import Test.Hspec
@@ -8,11 +10,19 @@ import Foreign.Ptr (Ptr, intPtrToPtr)
 import Linear (V2(..))
 import qualified SDL
 import Unsafe.Coerce (unsafeCoerce)
-import Actor.AtlasCache (AtlasKey(..))
+import Actor.AtlasCache
+  ( AtlasKey(..)
+  , atlasBaseKeyForSelection
+  , atlasKeyForSelection
+  , atlasKeysForSelection
+  , atlasOverlayKeyForSelection
+  )
+import Actor.AtlasManager (AtlasJob(..), atlasJobsForSelectionTransition)
+import Actor.Data (TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.AtlasResult (AtlasBuildId(..), AtlasTileSetManifest(..), atlasManifestTarget)
 import Actor.SnapshotReceiver (SnapshotVersion(..))
 import Actor.AtlasScheduler (AtlasFreshness(..))
-import Actor.UI (BaseViewMode(..), SkyOverlayMode(..), ViewMode(..), WeatherBasis(..))
+import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), ViewMode(..), WeatherBasis(..), defaultLayeredViewState)
 import Seer.Render.Atlas
   ( AtlasTextureCache(..)
   , CachedAtlasTileSet
@@ -55,9 +65,11 @@ import Seer.Render.Atlas
 import Seer.Render.Viewport (AtlasViewportCoverage, atlasViewportCoverageFromKeys, emptyAtlasViewportCoverage)
 import Seer.Render.ZoomStage (ZoomStage(..))
 import Topo.Calendar (defaultWorldTime)
+import Topo.Overlay (emptyOverlayStore)
 import UI.DayNight (DayNightKey(..))
 import UI.TerrainAtlas (TerrainAtlasTile(..))
 import UI.Widgets (Rect(..))
+import Data.Word (Word64)
 
 -- | Create a distinguishable mock SDL.Texture from an integer tag.
 -- These MUST NOT be passed to any real SDL function.
@@ -96,6 +108,27 @@ testDayNightKey = DayNightKey defaultWorldTime 16 6371 23.44 8 35 0
 testDayNightKey2 :: DayNightKey
 testDayNightKey2 = testDayNightKey { dnkChunkSize = dnkChunkSize testDayNightKey + 1 }
 
+testTerrainSnapshotWithVersions :: Word64 -> Word64 -> Word64 -> Word64 -> Word64 -> TerrainSnapshot
+testTerrainSnapshotWithVersions terrainVersion climateVersion weatherVersion vegetationVersion overlayVersion = TerrainSnapshot
+  { tsVersion = terrainVersion
+  , tsClimateVersion = climateVersion
+  , tsWeatherVersion = weatherVersion
+  , tsVegetationVersion = vegetationVersion
+  , tsOverlayVersion = overlayVersion
+  , tsChunkSize = 1
+  , tsTerrainChunks = IntMap.empty
+  , tsClimateChunks = IntMap.empty
+  , tsWeatherChunks = IntMap.empty
+  , tsRiverChunks = IntMap.empty
+  , tsGroundwaterChunks = IntMap.empty
+  , tsVolcanismChunks = IntMap.empty
+  , tsGlacierChunks = IntMap.empty
+  , tsWaterBodyChunks = IntMap.empty
+  , tsVegetationChunks = IntMap.empty
+  , tsOverlayStore = emptyOverlayStore
+  , tsGeoContext = defaultTerrainGeoContext
+  }
+
 mkManifest :: Int -> AtlasKey -> Int -> [Rect] -> AtlasTileSetManifest
 mkManifest = mkManifestWithAtlasScale 1
 
@@ -128,6 +161,70 @@ totalScales = sum . map IntMap.size . Map.elems
 
 spec :: Spec
 spec = describe "AtlasTextureCache" $ do
+
+  describe "split layered atlas keys" $ do
+    it "derives base and overlay keys from independent layer version stamps" $ do
+      let snap0 = testTerrainSnapshotWithVersions 10 20 30 40 50
+          snapWeather = testTerrainSnapshotWithVersions 10 20 31 40 50
+          waterLevel = 0.25
+          currentCloud = defaultLayeredViewState
+            { lvsBaseView = BaseViewBiome
+            , lvsSkyOverlay = Just SkyOverlayCloud
+            , lvsWeatherBasis = WeatherBasisCurrent
+            , lvsOverlayOpacity = 0.5
+            }
+          averageTemperature = defaultLayeredViewState
+            { lvsBaseView = BaseViewPlateBoundary
+            , lvsSkyOverlay = Just SkyOverlayWeatherTemperature
+            , lvsWeatherBasis = WeatherBasisAverage
+            , lvsOverlayOpacity = 0.5
+            }
+          pluginOverlay = defaultLayeredViewState
+            { lvsBaseView = BaseViewBiome
+            , lvsSkyOverlay = Just (SkyOverlayPlugin "roads" 2)
+            , lvsWeatherBasis = WeatherBasisCurrent
+            , lvsOverlayOpacity = 0.5
+            }
+          expectedBase = BaseAtlasKey BaseViewBiome waterLevel 10
+          expectedCurrentCloud0 = OverlayAtlasKey SkyOverlayCloud WeatherBasisCurrent False 30
+          expectedCurrentCloud1 = OverlayAtlasKey SkyOverlayCloud WeatherBasisCurrent False 31
+      atlasBaseKeyForSelection currentCloud waterLevel snap0 `shouldBe` expectedBase
+      atlasBaseKeyForSelection currentCloud waterLevel snapWeather `shouldBe` expectedBase
+      atlasOverlayKeyForSelection currentCloud snap0 `shouldBe` Just expectedCurrentCloud0
+      atlasOverlayKeyForSelection currentCloud snapWeather `shouldBe` Just expectedCurrentCloud1
+      atlasOverlayKeyForSelection averageTemperature snap0
+        `shouldBe` Just (OverlayAtlasKey SkyOverlayWeatherTemperature WeatherBasisAverage False 20)
+      atlasOverlayKeyForSelection pluginOverlay snap0
+        `shouldBe` Just (OverlayAtlasKey (SkyOverlayPlugin "roads" 2) WeatherBasisCurrent False 50)
+      atlasKeysForSelection currentCloud waterLevel snap0 `shouldBe` [expectedBase, expectedCurrentCloud0]
+      atlasKeyForSelection currentCloud waterLevel snap0 `shouldBe` expectedCurrentCloud0
+
+    it "schedules only new overlay targets when a layered transition leaves the base key unchanged" $ do
+      let snap = testTerrainSnapshotWithVersions 10 20 30 40 50
+          oldSelection = defaultLayeredViewState
+            { lvsBaseView = BaseViewBiome
+            , lvsSkyOverlay = Nothing
+            }
+          newSelection = oldSelection
+            { lvsSkyOverlay = Just SkyOverlayCloud
+            , lvsWeatherBasis = WeatherBasisCurrent
+            , lvsOverlayOpacity = 0.5
+            }
+          stage = ZoomStage 6 1 0 1
+          expectedOverlay = OverlayAtlasKey SkyOverlayCloud WeatherBasisCurrent False 30
+          jobs = atlasJobsForSelectionTransition
+            (SnapshotVersion 8)
+            oldSelection
+            0.25
+            newSelection
+            0.25
+            snap
+            [stage]
+            Nothing
+      map ajKey jobs `shouldBe` [expectedOverlay]
+      map ajViewMode jobs `shouldBe` [ViewCloud]
+      map ajWaterLevel jobs `shouldBe` [0]
+      map (\job -> (ajHexRadius job, ajAtlasScale job)) jobs `shouldBe` [(6, 1)]
 
   -- -------------------------------------------------------------------
   -- setAtlasKey (multi-key: O(1) pointer update, no flushing)

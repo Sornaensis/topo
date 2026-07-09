@@ -6,7 +6,7 @@ import Actor.AtlasResultBroker (atlasResultsPending, drainFreshResultsN, newAtla
 import Actor.AtlasScheduler (AtlasFreshness(..))
 import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.SnapshotReceiver (SnapshotVersion(..))
-import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
+import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), UiState(..), ViewMode(..), WeatherBasis(..), defaultLayeredViewState, emptyUiState)
 import Data.Maybe (isNothing)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
@@ -217,6 +217,28 @@ spec = describe "render-loop atlas maintenance wakeups" $ do
     afspAtlasMaintenanceDue atlasPolicy `shouldBe` False
     afspShouldDrainAtlas atlasPolicy `shouldBe` False
     afspShouldScheduleAtlas atlasPolicy `shouldBe` False
+
+  it "wakes fallback maintenance for composite layered current-cloud selections without render targets" $ do
+    let terrainSnapOld = fallbackCloudTerrainSnapshot 1 0.20 0.10 0.00
+        terrainSnapNew = fallbackCloudTerrainSnapshot 2 0.85 0.70 0.65
+        selection = defaultLayeredViewState
+          { lvsBaseView = BaseViewBiome
+          , lvsSkyOverlay = Just SkyOverlayCloud
+          , lvsWeatherBasis = WeatherBasisCurrent
+          , lvsOverlayOpacity = 0.5
+          }
+        uiLayered = emptyUiState
+          { uiViewMode = ViewCloud
+          , uiViewSelection = selection
+          , uiDayNightEnabled = False
+          }
+        oldCache = buildTerrainCache uiLayered terrainSnapOld
+        scale = zsAtlasScale (stageForZoom (uiZoom uiLayered))
+        oldTextures = chunkTexturesFor scale oldCache
+        fallbackDue = fallbackFrameMaintenanceDue False uiLayered terrainSnapNew scale oldCache oldTextures
+    tcViewSelection oldCache `shouldBe` selection
+    tcDayNightKey oldCache `shouldBe` Nothing
+    fallbackDue `shouldBe` True
 
   it "updates atlas timestamps only for attempted drain and schedule steps" $ do
     let skipped = applyAtlasFrameStepTimestamps 100 (AtlasFrameStepPolicy False False False) (Just 10) (Just 20)

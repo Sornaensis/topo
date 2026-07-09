@@ -116,6 +116,51 @@ spec = describe "Terrain render geometry" $ do
           vertexAlphaTuple blended `shouldBe` 255
     mapM_ check [BaseViewElevation, BaseViewBiome, BaseViewPlateBoundary]
 
+  it "respects explicit overlay opacity without changing the base-only color path" $ do
+    let weather = testWeatherChunk 1 0.9 0.00 0.00 0.00
+        baseOnly = selectionColor defaultLayeredViewState
+          { lvsBaseView = BaseViewBiome
+          , lvsSkyOverlay = Nothing
+          } Nothing (Just weather) Nothing Nothing
+        transparentOverlay = selectionColor defaultLayeredViewState
+          { lvsBaseView = BaseViewBiome
+          , lvsSkyOverlay = Just SkyOverlayWeatherTemperature
+          , lvsWeatherBasis = WeatherBasisCurrent
+          , lvsOverlayOpacity = 0
+          } Nothing (Just weather) Nothing Nothing
+        opaqueOverlay = selectionColor defaultLayeredViewState
+          { lvsBaseView = BaseViewBiome
+          , lvsSkyOverlay = Just SkyOverlayWeatherTemperature
+          , lvsWeatherBasis = WeatherBasisCurrent
+          , lvsOverlayOpacity = 1
+          } Nothing (Just weather) Nothing Nothing
+    transparentOverlay `shouldBe` baseOnly
+    opaqueOverlay `shouldNotBe` baseOnly
+    vertexAlphaTuple opaqueOverlay `shouldBe` 255
+
+  it "renders unavailable average-cloud overlays independently from current storm data" $ do
+    let currentStorm = testWeatherChunk 1 0.45 0.95 1.00 0.90
+        currentClear = testWeatherChunk 1 0.45 0.00 0.00 0.00
+        typicalClear = testWeatherNormalsChunk 1 0.05 0.05 0.00
+        averageCloudSelection = defaultLayeredViewState
+          { lvsBaseView = BaseViewBiome
+          , lvsSkyOverlay = Just SkyOverlayCloud
+          , lvsWeatherBasis = WeatherBasisAverage
+          , lvsOverlayOpacity = 1
+          }
+        currentCloudSelection = averageCloudSelection
+          { lvsWeatherBasis = WeatherBasisCurrent
+          }
+        missingWithStorm = selectionColor averageCloudSelection Nothing (Just currentStorm) Nothing Nothing
+        missingWithClear = selectionColor averageCloudSelection Nothing (Just currentClear) Nothing Nothing
+        typicalColor = selectionColor averageCloudSelection Nothing (Just currentStorm) (Just typicalClear) Nothing
+        currentStormColor = selectionColor currentCloudSelection Nothing (Just currentStorm) Nothing Nothing
+    missingWithStorm `shouldBe` missingWithClear
+    missingWithStorm `shouldNotBe` currentStormColor
+    typicalColor `shouldNotBe` missingWithStorm
+    typicalColor `shouldNotBe` currentStormColor
+    vertexAlphaTuple missingWithStorm `shouldBe` 255
+
   it "keeps legacy scalar climate and weather modes opaque" $ do
     let climate = testClimateChunk 1 0.2 0.75 0.4 0.3
         weather = testWeatherChunk 1 0.85 0.00 0.00 0.65

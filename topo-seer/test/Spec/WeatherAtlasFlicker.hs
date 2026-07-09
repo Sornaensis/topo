@@ -21,7 +21,14 @@ import qualified SDL.Raw.Types as Raw
 import Test.Hspec
 import Unsafe.Coerce (unsafeCoerce)
 
-import Actor.AtlasCache (AtlasKey(..), atlasKeyFor, atlasKeyVersion, terrainSnapshotViewVersion)
+import Actor.AtlasCache
+  ( AtlasKey(..)
+  , atlasBaseKeyForSelection
+  , atlasKeyFor
+  , atlasKeyVersion
+  , atlasOverlayKeyForSelection
+  , terrainSnapshotViewVersion
+  )
 import Actor.AtlasManager (AtlasJob(..), AtlasManager, drainAtlasJobs, setAtlasManagerFreshnessRef)
 import Actor.AtlasResult (AtlasBuildId(..), AtlasBuildResult(..), AtlasTileSetManifest(..), atlasManifestTarget)
 import Actor.AtlasResultBroker (AtlasResultRef, atlasResultsPending, drainFreshResultsN, newAtlasResultRef, pushAtlasResult)
@@ -63,13 +70,20 @@ import Actor.SnapshotReceiver
   , readTerrainSnapshot
   )
 import Actor.UI
-  ( Ui
+  ( BaseViewMode(..)
+  , LayeredViewState(..)
+  , SkyOverlayMode(..)
+  , Ui
   , UiState(..)
   , ViewMode(..)
+  , WeatherBasis(..)
+  , defaultLayeredViewState
   , getUiSnapshot
+  , setUiDayNightEnabled
   , setUiSimAutoTick
   , setUiSimTickRate
   , setUiViewMode
+  , setUiViewSelection
   , setUiZoom
   , uiRenderWaterLevel
   , uiSimTickCount
@@ -179,6 +193,92 @@ spec = describe "headless weather/cloud atlas flicker regressions" $ do
           , lccExpectedPartialStatus = PartialExact
           , lccSeedCache = (emptyAtlasTextureCache 30) { atcKey = Just latestWeatherKey }
           , lccFinalAtcLastKey = latestWeatherKey
+          }
+
+  it "keeps rapid layered current-cloud ticks on overlay keys without rebuilding the unchanged base" $
+    withConfiguredSimulation $ \simHandle dataHandle uiHandle terrainSnapshotRef snapshotVersionRef atlasHandle -> do
+      _ <- installWeatherWorld dataHandle simHandle
+      let selection = defaultLayeredViewState
+            { lvsBaseView = BaseViewBiome
+            , lvsSkyOverlay = Just SkyOverlayCloud
+            , lvsWeatherBasis = WeatherBasisCurrent
+            , lvsOverlayOpacity = 0.5
+            }
+      setUiDayNightEnabled uiHandle False
+      setUiViewSelection uiHandle selection
+      setUiZoom uiHandle 4.5
+      setUiSimAutoTick uiHandle True
+      setUiSimTickRate uiHandle 1.0
+      uiSnap <- getUiSnapshot uiHandle
+      uiViewSelection uiSnap `shouldBe` selection
+      let waterLevel = uiRenderWaterLevel uiSnap
+          currentStage = stageForZoom (uiZoom uiSnap)
+          currentStagePair = zoomStagePair currentStage
+          expectedBackfillStages = map zoomStagePair (orderedZoomStagesForZoom (uiZoom uiSnap))
+      _ <- drainAtlasJobs atlasHandle
+
+      autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 1
+      baselineVersion <- readSnapshotVersion snapshotVersionRef
+      baselinePublishedSnap <- readTerrainSnapshot terrainSnapshotRef
+      let baselineBaseKey = atlasBaseKeyForSelection selection waterLevel baselinePublishedSnap
+      _ <- drainAtlasJobs atlasHandle
+
+      waitPastAutoWeatherPublishInterval
+      autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 2
+      version1 <- readSnapshotVersion snapshotVersionRef
+      version1 `shouldSatisfy` (> baselineVersion)
+      publishedSnap1 <- readTerrainSnapshot terrainSnapshotRef
+      let staleBaseKey = atlasBaseKeyForSelection selection waterLevel publishedSnap1
+          Just staleOverlayKey = atlasOverlayKeyForSelection selection publishedSnap1
+      staleBaseKey `shouldBe` baselineBaseKey
+      terrainSnapshotViewVersion ViewCloud publishedSnap1 `shouldBe` tsWeatherVersion publishedSnap1
+      atlasKeyVersion staleOverlayKey `shouldBe` tsWeatherVersion publishedSnap1
+
+      autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 3
+      autoTickStep simHandle Nothing `shouldReturn` AutoTickApplied 4
+      latestUnpublishedSnap <- getTerrainSnapshot dataHandle
+      tsWeatherVersion latestUnpublishedSnap `shouldSatisfy` (> tsWeatherVersion publishedSnap1)
+
+      rapidJobs <- drainAtlasJobs atlasHandle
+      length rapidJobs `shouldBe` 1
+      map ajViewMode rapidJobs `shouldBe` [ViewCloud]
+      map ajKey rapidJobs `shouldBe` [staleOverlayKey]
+      map atlasJobStage rapidJobs `shouldBe` [currentStagePair]
+      map ajSnapshotVersion rapidJobs `shouldBe` [version1]
+      staleBaseKey `shouldNotSatisfy` (`elem` map ajKey rapidJobs)
+
+      setUiSimAutoTick uiHandle False
+      flushed <- flushSimWeatherPublication simHandle
+      flushed `shouldBe` True
+      versionAfterFlush <- readSnapshotVersion snapshotVersionRef
+      latestTerrainSnap <- getTerrainSnapshot dataHandle
+      latestPublishedSnap <- readTerrainSnapshot terrainSnapshotRef
+      tsWeatherVersion latestPublishedSnap `shouldBe` tsWeatherVersion latestTerrainSnap
+      let latestBaseKey = atlasBaseKeyForSelection selection waterLevel latestTerrainSnap
+          Just latestOverlayKey = atlasOverlayKeyForSelection selection latestTerrainSnap
+      latestBaseKey `shouldBe` staleBaseKey
+      latestOverlayKey `shouldNotBe` staleOverlayKey
+      atlasKeyVersion latestOverlayKey `shouldBe` tsWeatherVersion latestTerrainSnap
+
+      backfillJobs <- drainAtlasJobs atlasHandle
+      length backfillJobs `shouldBe` length allZoomStages
+      map ajViewMode backfillJobs `shouldBe` replicate (length allZoomStages) ViewCloud
+      map atlasJobStage backfillJobs `shouldBe` expectedBackfillStages
+      map ajKey backfillJobs `shouldSatisfy` all (== latestOverlayKey)
+      map ajSnapshotVersion backfillJobs `shouldSatisfy` all (== versionAfterFlush)
+      latestBaseKey `shouldNotSatisfy` (`elem` map ajKey backfillJobs)
+
+      assertConstrainedLatestCompletion
+        LatestCompletionCase
+          { lccCurrentKey = latestOverlayKey
+          , lccCurrentSnapshotVersion = versionAfterFlush
+          , lccStaleKey = staleOverlayKey
+          , lccStaleSnapshotVersion = version1
+          , lccTargetHexRadius = zsHexRadius currentStage
+          , lccTargetAtlasScale = zsAtlasScale currentStage
+          , lccExpectedPartialStatus = PartialExact
+          , lccSeedCache = (emptyAtlasTextureCache 30) { atcKey = Just latestBaseKey, atcOverlayKey = Just latestOverlayKey }
+          , lccFinalAtcLastKey = latestOverlayKey
           }
 
   it "keeps rapid ViewCloud auto ticks on weather-version keys and promotes only the latest constrained completion" $
