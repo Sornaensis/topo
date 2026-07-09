@@ -33,7 +33,7 @@ uses `deriveOverlaySeed(worldSeed, tick)`.
 
 The built-in simulation produces generated/simulated weather only. API and export
 DTOs label this current basis as `instantaneous_current` with source kind
-`simulated_generated_weather`. Typical normals are generated from climate and
-labelled `typical_normal`/`generated_climate`. Neither path represents external
+`weather_snapshot`. Typical normals are generated from climate and labelled
+`typical_normal`/`weather_normals`. Neither path represents external
 live weather data unless a future external data-source integration is explicitly
 configured and surfaced with a distinct source kind.

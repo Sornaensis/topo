@@ -10,7 +10,7 @@ Conversion between weather overlay data and global weather grids.
 ## Overlay Schemas
 
 Current simulated weather uses the dense `weather` overlay. It is the
-`instantaneous_current` basis with `simulated_generated_weather` source kind.
+`instantaneous_current` basis with `weather_snapshot` source kind.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -25,7 +25,7 @@ Current simulated weather uses the dense `weather` overlay. It is the
 | cloud_water_low/mid/high | Float | Current cloud water by altitude band |
 
 Generated typical normals use a separate dense `weather_normals` overlay. It is
-the `typical_normal` basis with `generated_climate` source kind and mirrors the
+the `typical_normal` basis with `weather_normals` source kind and mirrors the
 weather fields except that values are deterministic normals derived from climate
 averages and `WeatherConfig`.
 

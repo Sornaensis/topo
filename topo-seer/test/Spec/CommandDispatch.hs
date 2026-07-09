@@ -13,7 +13,7 @@ module Spec.CommandDispatch (spec) where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar)
-import Control.Exception (bracket, catch)
+import Control.Exception (bracket, catch, finally)
 import Control.Monad (forM_)
 import qualified Data.ByteString.Lazy as BL
 import Data.Aeson (Value(..), object, (.=), Key)
@@ -69,6 +69,7 @@ import Seer.Command.Dispatch (CommandContext(..), dispatchCommand)
 import Seer.Editor.History (emptyHistory)
 import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom, stageForZoom)
 import Seer.Screenshot (ScreenshotRequest(..), newScreenshotRequestRef)
+import Seer.World.Persist (deleteNamedWorld)
 import Seer.Service.AppService
   ( AppService(..)
   , ConfigListPresetsRequest(..)
@@ -497,7 +498,12 @@ spec = describe "CommandDispatch" $ do
         Just (Object view) -> do
           KM.lookup "mode" view `shouldBe` Just (String "cloud_typical")
           KM.lookup "temporal_basis" view `shouldBe` Just (String "typical_normal")
-          KM.lookup "source_kind" view `shouldBe` Just (String "generated_climate")
+          KM.lookup "source_kind" view `shouldBe` Just (String "weather_normals")
+          case KM.lookup "selection" view of
+            Just (Object selection) -> do
+              KM.lookup "weather_basis" selection `shouldBe` Just (String "average")
+              KM.lookup "source_kind" selection `shouldBe` Just (String "weather_normals")
+            _ -> expectationFailure "expected get_ui_state.view.selection object"
         _ -> expectationFailure "expected get_ui_state.view object"
 
     it "rejects unsupported typical basis for average-only temperature and precipitation views" $ withCtx $ \ctx -> do
@@ -874,7 +880,7 @@ spec = describe "CommandDispatch" $ do
       case lookupKey "weather" (srResult rsp) of
         Just (Object weather) -> do
           KM.lookup "basis" weather `shouldBe` Just (String "instantaneous_current")
-          KM.lookup "source_kind" weather `shouldBe` Just (String "simulated_generated_weather")
+          KM.lookup "source_kind" weather `shouldBe` Just (String "weather_snapshot")
           KM.member "temp_current" weather `shouldBe` True
           KM.member "precip_current" weather `shouldBe` True
           KM.member "cloud_cover_current" weather `shouldBe` True
@@ -882,7 +888,7 @@ spec = describe "CommandDispatch" $ do
       case lookupKey "weather_normals" (srResult rsp) of
         Just (Object normals) -> do
           KM.lookup "basis" normals `shouldBe` Just (String "typical_normal")
-          KM.lookup "source_kind" normals `shouldBe` Just (String "generated_climate")
+          KM.lookup "source_kind" normals `shouldBe` Just (String "weather_normals")
           KM.member "temp_typical" normals `shouldBe` True
           KM.member "precip_typical" normals `shouldBe` True
           KM.member "cloud_cover_typical" normals `shouldBe` True
@@ -1421,6 +1427,34 @@ spec = describe "CommandDispatch" $ do
     it "returns error for non-existent world" $ withCtx $ \ctx -> do
       rsp <- dispatch ctx "load_world" (object ["name" .= ("__nonexistent_test_world__" :: String)])
       srSuccess rsp `shouldBe` False
+
+    it "resets UI-only layered view selection to defaults after load" $ withCtx $ \ctx -> do
+      let worldName = "__topo_command_dispatch_load_reset__"
+      _ <- deleteNamedWorld worldName
+      (do
+        _ <- writeReadyTerrainData ctx
+        saveRsp <- dispatch ctx "save_world" (object ["name" .= worldName])
+        srSuccess saveRsp `shouldBe` True
+
+        viewRsp <- dispatch ctx "set_view_mode" (object ["mode" .= ("cloud" :: Text), "basis" .= ("typical" :: Text)])
+        srSuccess viewRsp `shouldBe` True
+
+        loadRsp <- dispatch ctx "load_world" (object ["name" .= worldName])
+        srSuccess loadRsp `shouldBe` True
+
+        uiRsp <- dispatch ctx "get_ui_state" Null
+        srSuccess uiRsp `shouldBe` True
+        case lookupKey "view" (srResult uiRsp) of
+          Just (Object view) -> do
+            KM.lookup "mode" view `shouldBe` Just (String "elevation")
+            case KM.lookup "selection" view of
+              Just (Object selection) -> do
+                KM.lookup "base" selection `shouldBe` Just (String "elevation")
+                KM.lookup "overlay" selection `shouldBe` Just Null
+                KM.lookup "weather_basis" selection `shouldBe` Just (String "current")
+              _ -> expectationFailure "expected get_ui_state.view.selection object"
+          _ -> expectationFailure "expected get_ui_state.view object")
+        `finally` (deleteNamedWorld worldName >> pure ())
 
   -- -------------------------------------------------------------------
   -- take_screenshot

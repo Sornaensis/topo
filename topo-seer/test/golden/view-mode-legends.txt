@@ -13,17 +13,17 @@ biome|categorical|unitless|biome-palette|no_temporal_basis|no_source_kind
   category tundra Tundra #828c96
   category rainforest Rainforest #286e50
   category snow_ice Snow / ice #e6ebf0
-climate|scalar|degC|heat|long_run_average|generated_climate
+climate|scalar|degC|heat|long_run_average|climate_average
   Average temperature
   stop 0.00 cold #802f33
   stop 0.50 temperate #b35c5c
   stop 1.00 hot #ff9966
-weather|scalar|degC|weather-heat|instantaneous_current|simulated_generated_weather
+weather|scalar|degC|weather-heat|instantaneous_current|weather_snapshot
   Current weather temperature
   stop 0.00 cold #802f33
   stop 0.50 mild #b35c5c
   stop 1.00 hot #ff9966
-cloud|scalar|% cover|cloud-storm|instantaneous_current|simulated_generated_weather
+cloud|scalar|% cover|cloud-storm|instantaneous_current|weather_snapshot
   Aggregate cloud cover
   stop 0.00 clear #242428
   stop 0.50 cloudy #a0a0a0
@@ -33,17 +33,17 @@ moisture|scalar|%|moisture|no_temporal_basis|no_source_kind
   stop 0.00 dry #1a4d66
   stop 0.50 moist #337fb3
   stop 1.00 saturated #4dccff
-precipitation|scalar|mm/yr|precipitation-moisture|long_run_average|generated_climate
+precipitation|scalar|mm/yr|precipitation-moisture|long_run_average|climate_average
   Average precipitation
   stop 0.00 arid #1a4d66
   stop 0.50 seasonal #337fb3
   stop 1.00 wet #4dccff
-precipitation_current|scalar|mm/yr|precipitation-moisture|instantaneous_current|simulated_generated_weather
+precipitation_current|scalar|mm/yr|precipitation-moisture|instantaneous_current|weather_snapshot
   Current simulated precipitation
   stop 0.00 dry #1a4d66
   stop 0.50 showers #337fb3
   stop 1.00 storm #4dccff
-cloud_typical|scalar|% cover|cloud-storm|typical_normal|generated_climate
+cloud_typical|scalar|% cover|cloud-storm|typical_normal|weather_normals
   Typical generated cloud normal
   stop 0.00 clear #242428
   stop 0.50 cloudy #a0a0a0

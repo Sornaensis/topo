@@ -7,7 +7,10 @@
 -- A 'ConfigSnapshot' bundles a 'WorldGenConfig' (real domain-value
 -- generation config from the @topo@ library) together with the handful
 -- of UI-only parameters that are not part of the generation pipeline
--- (seed, chunk size, render water level).
+-- (seed, chunk size, render water level). View selection, including layered
+-- base/sky overlays and average/current weather basis, is intentionally
+-- UI-only and is not persisted here; after load, UI state starts from the
+-- normal empty/default layered view selection.
 --
 -- This module is kept free of 'Actor.UI' imports to avoid module
 -- cycles.  Conversion functions live in "Seer.Config.Snapshot".

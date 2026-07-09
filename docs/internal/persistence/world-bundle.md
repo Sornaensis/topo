@@ -39,7 +39,11 @@ snapshots carry current `tsWeatherChunks` but no sidecar overlay has been
 materialized yet, save conversion creates the dense `weather` overlay so the
 current simulated state survives load. Generated typical normals remain in the
 `weather_normals` overlay. Both overlays carry overlay provenance, and the save
-manifest declares their basis/source metadata.
+manifest declares their basis/source metadata (`climate_average`,
+`weather_snapshot`, or `weather_normals`). Layered view selection is UI-only:
+load does not restore the previously selected base/sky overlay or average/current
+weather basis, so the UI starts from its default elevation base with no sky
+overlay and current weather basis.
 
 ## Load Policies
 

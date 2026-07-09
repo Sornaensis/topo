@@ -50,14 +50,14 @@ import Actor.SnapshotReceiver
   , bumpSnapshotVersion
   )
 import Actor.Terrain (TerrainReplyOps)
-import Actor.UI.Setters (setUiWorldName, setUiWorldConfig, setUiOverlayNames, setUiSimTickCount)
+import Actor.UI.Setters (setUiWorldName, setUiWorldConfig, setUiOverlayNames, setUiSimTickCount, setUiViewSelection)
 import Actor.UiActions
   ( UiAction(..)
   , UiActionRequest(..)
   , submitUiAction
   )
 import Actor.UiActions.Handles (ActorHandles(..))
-import Actor.UI.State (UiState(..), ViewMode(..), readUiSnapshotRef)
+import Actor.UI.State (UiState(..), ViewMode(..), defaultLayeredViewState, getUiSnapshot, readUiSnapshotRef)
 import Hyperspace.Actor (replyTo)
 import Seer.Command.Context (CommandContext(..))
 import Seer.Config.Snapshot (snapshotFromUi, applySnapshotToUi)
@@ -304,8 +304,11 @@ handleLoadWorld ctx reqId params = do
               writeDataSnapshot (ahDataSnapshotRef handles) dataSnap
               writeTerrainSnapshot (ahTerrainSnapshotRef handles) terrainSnap'
               bumpSnapshotVersion (ahSnapshotVersionRef handles)
-              -- Apply config snapshot
+              -- Apply config snapshot. Layered view selection is UI-only, so
+              -- loading a world resets it to the normal default instead of
+              -- carrying an old overlay/basis into the newly loaded data.
               applySnapshotToUi snapshot uiH
+              setUiViewSelection uiH defaultLayeredViewState
               setUiSimTickCount uiH (wtTick (twWorldTime world))
               setUiWorldName uiH name
               setUiWorldConfig uiH (Just snapshot)
@@ -313,8 +316,8 @@ handleLoadWorld ctx reqId params = do
               wDir <- worldDir
               notifyWorldChanged (ahPluginManagerHandle handles)
                                  (Just (Text.pack (wDir </> Text.unpack name)))
-              -- Trigger atlas rebuild
-              ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
+              -- Trigger atlas rebuild after the queued UI reset has been applied.
+              ui <- getUiSnapshot uiH
               let req = UiActionRequest
                     { uarAction = UiActionRebuildAtlas (uiViewMode ui)
                     , uarActorHandles = handles

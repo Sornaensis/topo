@@ -128,7 +128,7 @@ equatorial land tiles and thus lower absolute RF counts.
 ## Average Weather Basis
 
 Climate outputs are generated long-run averages. Export and API surfaces expose
-this basis explicitly as `long_run_average` with source kind `generated_climate`.
+this basis explicitly as `long_run_average` with source kind `climate_average`.
 Canonical export fields use `climate_*_avg` names (for example
 `climate_temp_avg` and `climate_precip_avg`). Legacy names `temperature` and
 `precipitation` remain compatibility aliases for those average climate fields.

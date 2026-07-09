@@ -40,9 +40,9 @@ Consumers should prefer basis-qualified names:
 
 | Basis | Source kind | Storage | Canonical examples |
 |-------|-------------|---------|--------------------|
-| `long_run_average` | `generated_climate` | core `.topo` climate chunks | `climate_temp_avg`, `climate_precip_avg` |
-| `instantaneous_current` | `simulated_generated_weather` | `weather` overlay sidecar | `weather_temp_current`, `weather_precip_current`, `weather_cloud_cover_current` |
-| `typical_normal` | `generated_climate` | `weather_normals` overlay sidecar | `weather_temp_typical`, `weather_cloud_cover_typical` |
+| `long_run_average` | `climate_average` | core `.topo` climate chunks | `climate_temp_avg`, `climate_precip_avg` |
+| `instantaneous_current` | `weather_snapshot` | `weather` overlay sidecar | `weather_temp_current`, `weather_precip_current`, `weather_cloud_cover_current` |
+| `typical_normal` | `weather_normals` | `weather_normals` overlay sidecar | `weather_temp_typical`, `weather_cloud_cover_typical` |
 
 Legacy export names such as `temperature`, `precipitation`,
 `weather_temperature`, and `cloud_cover` remain aliases for compatibility, but

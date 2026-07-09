@@ -46,7 +46,9 @@ module Actor.UI.State
   , weatherBasisToText
   , weatherBasisFromText
   , weatherOverlayTemporalBasis
+  , weatherOverlaySourceKind
   , layeredViewStateToJSON
+  , layeredViewStateDataSemantics
   , viewModeToLayeredViewState
   , legacyViewModeToLayeredViewState
   , layeredViewStateToViewMode
@@ -381,6 +383,7 @@ skyOverlayModeMetadataFields basis overlay =
   , "weather_basis_supported" .= skyOverlayBasisLabels overlay
   , "legacy_view_mode" .= fmap viewModeToText (skyOverlayModeToViewMode basis overlay)
   , "temporal_basis" .= temporalBasisToText (weatherOverlayTemporalBasis overlay basis)
+  , "source_kind" .= fmap sourceKindToText (weatherOverlaySourceKind overlay basis)
   ]
 
 skyOverlayBasisLabels :: SkyOverlayMode -> [Text]
@@ -406,6 +409,12 @@ weatherOverlayTemporalBasis :: SkyOverlayMode -> WeatherBasis -> TemporalBasis
 weatherOverlayTemporalBasis SkyOverlayCloud WeatherBasisAverage = TypicalNormal
 weatherOverlayTemporalBasis _ WeatherBasisAverage = LongRunAverage
 weatherOverlayTemporalBasis _ WeatherBasisCurrent = InstantaneousCurrent
+
+weatherOverlaySourceKind :: SkyOverlayMode -> WeatherBasis -> Maybe SourceKind
+weatherOverlaySourceKind (SkyOverlayPlugin _ _) _ = Nothing
+weatherOverlaySourceKind SkyOverlayCloud WeatherBasisAverage = Just WeatherNormals
+weatherOverlaySourceKind _ WeatherBasisAverage = Just GeneratedClimate
+weatherOverlaySourceKind _ WeatherBasisCurrent = Just SimulatedWeather
 
 legacyViewModeToLayeredViewState :: ViewMode -> LayeredViewState
 legacyViewModeToLayeredViewState mode =
@@ -434,9 +443,17 @@ layeredViewStateToJSON selection = object
   , "overlay" .= fmap skyOverlayModeToText (lvsSkyOverlay selection)
   , "overlay_label" .= fmap skyOverlayModeLabel (lvsSkyOverlay selection)
   , "weather_basis" .= weatherBasisToText (lvsWeatherBasis selection)
+  , "temporal_basis" .= fmap (temporalBasisToText . vmdsTemporalBasis) semantics
+  , "source_kind" .= fmap (sourceKindToText . vmdsSourceKind) semantics
   , "overlay_opacity" .= lvsOverlayOpacity selection
   , "legacy_view_mode" .= fmap viewModeToText (layeredViewStateToViewMode selection)
   ]
+  where
+    semantics = layeredViewStateDataSemantics selection
+
+layeredViewStateDataSemantics :: LayeredViewState -> Maybe ViewModeDataSemantics
+layeredViewStateDataSemantics selection =
+  layeredViewStateToViewMode selection >>= viewModeDataSemantics
 
 -- | Scalar modes use a continuous color scale; categorical modes map stable
 -- domain codes/names to discrete legend entries.
@@ -456,6 +473,7 @@ data TemporalBasis
 data SourceKind
   = GeneratedClimate
   | SimulatedWeather
+  | WeatherNormals
   | ExternalLive
   deriving (Eq, Ord, Show)
 
@@ -647,8 +665,9 @@ temporalBasisFromText raw = case Text.toLower raw of
   _ -> Nothing
 
 sourceKindToText :: SourceKind -> Text
-sourceKindToText GeneratedClimate = "generated_climate"
-sourceKindToText SimulatedWeather = "simulated_generated_weather"
+sourceKindToText GeneratedClimate = "climate_average"
+sourceKindToText SimulatedWeather = "weather_snapshot"
+sourceKindToText WeatherNormals = "weather_normals"
 sourceKindToText ExternalLive = "external_live"
 
 viewModeDataSemantics :: ViewMode -> Maybe ViewModeDataSemantics
@@ -669,7 +688,7 @@ weatherSemantics :: Maybe ViewModeDataSemantics
 weatherSemantics = Just (ViewModeDataSemantics InstantaneousCurrent SimulatedWeather)
 
 normalsSemantics :: Maybe ViewModeDataSemantics
-normalsSemantics = Just (ViewModeDataSemantics TypicalNormal GeneratedClimate)
+normalsSemantics = Just (ViewModeDataSemantics TypicalNormal WeatherNormals)
 
 viewModeLegendTitle :: ViewModeLegend -> Text
 viewModeLegendTitle (ViewModeGradientLegend title _) = title

@@ -75,7 +75,7 @@ data WorldWeatherLayerManifest = WorldWeatherLayerManifest
   , wwlmBasis :: Text
     -- ^ Temporal basis such as @long_run_average@ or @instantaneous_current@.
   , wwlmSourceKind :: Text
-    -- ^ Source kind such as @generated_climate@ or @simulated_generated_weather@.
+    -- ^ Source kind such as @climate_average@, @weather_snapshot@, or @weather_normals@.
   , wwlmStorage :: Text
     -- ^ Storage location: @core_topo@ or @overlay_sidecar@.
   } deriving (Eq, Show, Generic)
@@ -89,12 +89,29 @@ instance ToJSON WorldWeatherLayerManifest where
     ]
 
 instance FromJSON WorldWeatherLayerManifest where
-  parseJSON = withObject "WorldWeatherLayerManifest" $ \o ->
-    WorldWeatherLayerManifest
-      <$> o .:? "name" .!= ""
-      <*> o .:? "basis" .!= ""
-      <*> o .:? "source_kind" .!= ""
-      <*> o .:? "storage" .!= ""
+  parseJSON = withObject "WorldWeatherLayerManifest" $ \o -> do
+    name <- o .:? "name" .!= ""
+    basis <- o .:? "basis" .!= ""
+    sourceKind <- o .:? "source_kind" .!= ""
+    storage <- o .:? "storage" .!= ""
+    pure WorldWeatherLayerManifest
+      { wwlmName = name
+      , wwlmBasis = basis
+      , wwlmSourceKind = normalizeWeatherLayerSourceKind name basis sourceKind
+      , wwlmStorage = storage
+      }
+
+-- | Read old manifests into the current semantic labels without changing the
+-- stored overlay data or layer names.
+normalizeWeatherLayerSourceKind :: Text -> Text -> Text -> Text
+normalizeWeatherLayerSourceKind name basis sourceKind =
+  case sourceKind of
+    "generated_climate"
+      | name == "weather_normals" || basis == "typical_normal" -> "weather_normals"
+      | otherwise -> "climate_average"
+    "simulated_generated_weather" -> "weather_snapshot"
+    "simulated_weather" -> "weather_snapshot"
+    _ -> sourceKind
 
 -- | Metadata recorded alongside each saved world.
 data WorldSaveManifest = WorldSaveManifest

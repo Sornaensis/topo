@@ -23,6 +23,7 @@ import Actor.UI.State
   , ViewModeDataSemantics(..)
   , ConfigTab(..)
   , allBuiltinViewModes
+  , layeredViewStateToJSON
   , sourceKindToText
   , temporalBasisToText
   , viewModeDataSemantics
@@ -111,6 +112,7 @@ handleGetUiState ctx reqId _params = do
         [ "mode"           .= viewModeToText (uiViewMode ui)
         , "temporal_basis" .= fmap (temporalBasisToText . vmdsTemporalBasis) activeSemantics
         , "source_kind"    .= fmap (sourceKindToText . vmdsSourceKind) activeSemantics
+        , "selection"      .= layeredViewStateToJSON (uiViewSelection ui)
         , "overlay_name"   .= case uiViewMode ui of
             ViewOverlay n _ -> Just n
             _               -> Nothing

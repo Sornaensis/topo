@@ -107,7 +107,7 @@ manifestJsonSpec = describe "WorldSaveManifest JSON round-trip" $ do
           , wsmChunkCount = 16
           , wsmOverlayNames = ["weather", "persist_sparse_test"]
           , wsmWeatherLayers =
-              [ WorldWeatherLayerManifest "weather" "instantaneous_current" "simulated_generated_weather" "overlay_sidecar"
+              [ WorldWeatherLayerManifest "weather" "instantaneous_current" "weather_snapshot" "overlay_sidecar"
               ]
           , wsmPluginData = []
           , wsmExternalDataSources = [testExternalDataSourceSnapshot]
@@ -127,6 +127,37 @@ manifestJsonSpec = describe "WorldSaveManifest JSON round-trip" $ do
         wsmOverlayNames m `shouldBe` []
         wsmWeatherLayers m `shouldBe` []
         wsmExternalDataSources m `shouldBe` []
+
+  it "normalizes legacy weather layer source kinds on read" $ do
+    let legacy = object
+          [ "weather_layers" .=
+              [ object
+                  [ "name" .= ("climate" :: Text.Text)
+                  , "basis" .= ("long_run_average" :: Text.Text)
+                  , "source_kind" .= ("generated_climate" :: Text.Text)
+                  , "storage" .= ("core_topo" :: Text.Text)
+                  ]
+              , object
+                  [ "name" .= ("weather" :: Text.Text)
+                  , "basis" .= ("instantaneous_current" :: Text.Text)
+                  , "source_kind" .= ("simulated_generated_weather" :: Text.Text)
+                  , "storage" .= ("overlay_sidecar" :: Text.Text)
+                  ]
+              , object
+                  [ "name" .= ("weather_normals" :: Text.Text)
+                  , "basis" .= ("typical_normal" :: Text.Text)
+                  , "source_kind" .= ("generated_climate" :: Text.Text)
+                  , "storage" .= ("overlay_sidecar" :: Text.Text)
+                  ]
+              ]
+          ]
+    case eitherDecodeStrict' @WorldSaveManifest (BSL.toStrict (encode legacy)) of
+      Left err -> expectationFailure err
+      Right m -> wsmWeatherLayers m `shouldBe`
+        [ WorldWeatherLayerManifest "climate" "long_run_average" "climate_average" "core_topo"
+        , WorldWeatherLayerManifest "weather" "instantaneous_current" "weather_snapshot" "overlay_sidecar"
+        , WorldWeatherLayerManifest "weather_normals" "typical_normal" "weather_normals" "overlay_sidecar"
+        ]
 
 -- ---------------------------------------------------------------------------
 -- saveNamedWorld / loadNamedWorld round-trip
@@ -454,11 +485,11 @@ worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
               Right (manifest, _snapshot, loadedWorld) -> do
                 wsmOverlayNames manifest `shouldSatisfy` (\names -> all (`elem` names) ["weather", "weather_normals"])
                 wsmWeatherLayers manifest `shouldSatisfy` elem
-                  (WorldWeatherLayerManifest "climate" "long_run_average" "generated_climate" "core_topo")
+                  (WorldWeatherLayerManifest "climate" "long_run_average" "climate_average" "core_topo")
                 wsmWeatherLayers manifest `shouldSatisfy` elem
-                  (WorldWeatherLayerManifest "weather" "instantaneous_current" "simulated_generated_weather" "overlay_sidecar")
+                  (WorldWeatherLayerManifest "weather" "instantaneous_current" "weather_snapshot" "overlay_sidecar")
                 wsmWeatherLayers manifest `shouldSatisfy` elem
-                  (WorldWeatherLayerManifest "weather_normals" "typical_normal" "generated_climate" "overlay_sidecar")
+                  (WorldWeatherLayerManifest "weather_normals" "typical_normal" "weather_normals" "overlay_sidecar")
                 getWeatherChunk chunkId loadedWorld `shouldBe` Just currentWeather
                 getWeatherNormalsChunkFromStore chunkId (twOverlays loadedWorld) `shouldBe` Just normals
         )

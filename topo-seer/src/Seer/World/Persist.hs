@@ -339,7 +339,7 @@ ensureWeatherOverlayFromSnapshot seed weatherChunks store
       }
 
 weatherLayersForWorld :: TerrainWorld -> [WorldWeatherLayerManifest]
-weatherLayersForWorld world = climateLayer ++ overlayLayer "weather" currentBasis simulatedWeather ++ overlayLayer "weather_normals" typicalBasis generatedClimate
+weatherLayersForWorld world = climateLayer ++ overlayLayer "weather" currentBasis simulatedWeather ++ overlayLayer "weather_normals" typicalBasis weatherNormals
   where
     names = overlayNames (twOverlays world)
     climateLayer
@@ -351,8 +351,9 @@ weatherLayersForWorld world = climateLayer ++ overlayLayer "weather" currentBasi
     averageBasis = "long_run_average"
     currentBasis = "instantaneous_current"
     typicalBasis = "typical_normal"
-    generatedClimate = "generated_climate"
-    simulatedWeather = "simulated_generated_weather"
+    generatedClimate = "climate_average"
+    simulatedWeather = "weather_snapshot"
+    weatherNormals = "weather_normals"
 
 -------------------------------------------------------------------------------
 -- Listing

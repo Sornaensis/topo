@@ -658,13 +658,13 @@ spec = describe "Seer.HTTP.Server" $ do
         , "units"
         ] `shouldBe` replicate 12 True
       lookupNestedText ["active_view", "temporal_basis"] (hresBody hexRsp) `shouldBe` Just "instantaneous_current"
-      lookupNestedText ["active_view", "source_kind"] (hresBody hexRsp) `shouldBe` Just "simulated_generated_weather"
+      lookupNestedText ["active_view", "source_kind"] (hresBody hexRsp) `shouldBe` Just "weather_snapshot"
       lookupNestedText ["weather_timeline", "basis"] (hresBody hexRsp) `shouldBe` Just "instantaneous_current"
       lookupNestedText ["weather_timeline", "temporal_basis"] (hresBody hexRsp) `shouldBe` Just "instantaneous_current"
-      lookupNestedText ["weather_timeline", "source_kind"] (hresBody hexRsp) `shouldBe` Just "simulated_generated_weather"
+      lookupNestedText ["weather_timeline", "source_kind"] (hresBody hexRsp) `shouldBe` Just "weather_snapshot"
       fmap (objectHasKey "published_weather_version") (lookupValue "weather_timeline" (hresBody hexRsp)) `shouldBe` Just True
       lookupNestedText ["climate_diagnostics", "temporal_basis"] (hresBody hexRsp) `shouldBe` Just "long_run_average"
-      lookupNestedText ["climate_diagnostics", "source_kind"] (hresBody hexRsp) `shouldBe` Just "generated_climate"
+      lookupNestedText ["climate_diagnostics", "source_kind"] (hresBody hexRsp) `shouldBe` Just "climate_average"
 
   it "serves overlay manager, schema/provenance, import validation, mesh, and sample export routes" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do

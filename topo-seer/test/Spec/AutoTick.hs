@@ -170,14 +170,14 @@ spec = describe "AutoTick scheduler" $ do
 
       hexRsp <- dispatch app "get_hex" (object ["q" .= (0 :: Int), "r" .= (0 :: Int)])
       srSuccess hexRsp `shouldBe` True
-      lookupNestedText ["weather_timeline", "source_kind"] (srResult hexRsp) `shouldBe` Just "simulated_generated_weather"
+      lookupNestedText ["weather_timeline", "source_kind"] (srResult hexRsp) `shouldBe` Just "weather_snapshot"
       lookupNestedText ["weather_timeline", "basis"] (srResult hexRsp) `shouldBe` Just "instantaneous_current"
       lookupNestedText ["weather_timeline", "weather_node_status"] (srResult hexRsp) `shouldBe` Just "completed"
       lookupNestedText ["weather_timeline", "last_publication", "atlas_active_weather_view"] (srResult hexRsp) `shouldBe` Just "cloud"
       lookupNestedText ["weather_timeline", "last_publication", "publication_kind"] (srResult hexRsp)
         `shouldSatisfy` maybe False (`elem` ["auto_immediate", "auto_coalesced"])
       lookupNestedValue ["weather_timeline", "published_weather_version"] (srResult hexRsp) `shouldSatisfy` maybe False isNumberValue
-      sectionFieldText "weather_timeline" "source_kind" (srResult hexRsp) `shouldBe` Just "simulated_generated_weather"
+      sectionFieldText "weather_timeline" "source_kind" (srResult hexRsp) `shouldBe` Just "weather_snapshot"
       sectionFieldText "weather_timeline" "weather_node_status" (srResult hexRsp) `shouldBe` Just "completed"
       sectionFieldText "weather_timeline" "publication_kind" (srResult hexRsp)
         `shouldSatisfy` maybe False (`elem` ["auto_immediate", "auto_coalesced"])

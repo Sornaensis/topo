@@ -937,14 +937,14 @@ weatherNormalsLayerJSON Nothing _ = object
   , "reason" .= ("weather_normals overlay not present" :: Text)
   , "temporal_basis" .= temporalBasisToText TypicalNormal
   , "basis" .= temporalBasisToText TypicalNormal
-  , "source_kind" .= sourceKindToText GeneratedClimate
+  , "source_kind" .= sourceKindToText WeatherNormals
   ]
 weatherNormalsLayerJSON (Just normals) tileIdx = object
   [ "loaded" .= True
   , "status" .= ("loaded" :: Text)
   , "temporal_basis" .= temporalBasisToText TypicalNormal
   , "basis" .= temporalBasisToText TypicalNormal
-  , "source_kind" .= sourceKindToText GeneratedClimate
+  , "source_kind" .= sourceKindToText WeatherNormals
   , "temp" .= safeIndex (wncTemp normals) tileIdx
   , "temp_typical" .= safeIndex (wncTemp normals) tileIdx
   , "temperature" .= safeIndex (wncTemp normals) tileIdx

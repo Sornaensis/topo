@@ -101,8 +101,13 @@ spec = describe "view mode registry" $ do
       [ "active", "name", "label", "legacy_view_mode", "kind" ]
       (baseViewModeSummaryToJSON True BaseViewElevation)
     assertObjectHas
-      [ "active", "name", "label", "weather_basis_supported", "legacy_view_mode", "temporal_basis" ]
+      [ "active", "name", "label", "weather_basis_supported", "legacy_view_mode", "temporal_basis", "source_kind" ]
       (skyOverlayModeSummaryToJSON True WeatherBasisCurrent SkyOverlayCloud)
+    case skyOverlayModeSummaryToJSON False WeatherBasisAverage SkyOverlayCloud of
+      Object o -> do
+        KM.lookup "temporal_basis" o `shouldBe` Just (String "typical_normal")
+        KM.lookup "source_kind" o `shouldBe` Just (String "weather_normals")
+      _ -> expectationFailure "expected sky overlay summary JSON object"
 
   it "adapts legacy view modes to layered selections and back" $ do
     let roundTrip mode = layeredViewStateToViewMode (viewModeToLayeredViewState mode) `shouldBe` Just mode
@@ -135,8 +140,29 @@ spec = describe "view mode registry" $ do
         KM.lookup "base" o `shouldBe` Just (String "biome")
         KM.lookup "overlay" o `shouldBe` Just (String "cloud")
         KM.lookup "weather_basis" o `shouldBe` Just (String "current")
+        KM.lookup "temporal_basis" o `shouldBe` Just (String "instantaneous_current")
+        KM.lookup "source_kind" o `shouldBe` Just (String "weather_snapshot")
         KM.lookup "legacy_view_mode" o `shouldBe` Just (String "cloud")
       _ -> expectationFailure "expected layered view JSON object"
+
+    let reservedWeather = defaultLayeredViewState
+          { lvsSkyOverlay = Just (SkyOverlayPlugin "weather" 0)
+          , lvsWeatherBasis = WeatherBasisAverage
+          }
+    case layeredViewStateToJSON reservedWeather of
+      Object o -> do
+        KM.lookup "temporal_basis" o `shouldBe` Just (String "instantaneous_current")
+        KM.lookup "source_kind" o `shouldBe` Just (String "weather_snapshot")
+      _ -> expectationFailure "expected reserved weather overlay JSON object"
+
+    let reservedNormals = defaultLayeredViewState
+          { lvsSkyOverlay = Just (SkyOverlayPlugin "weather_normals" 0)
+          }
+    case layeredViewStateToJSON reservedNormals of
+      Object o -> do
+        KM.lookup "temporal_basis" o `shouldBe` Just (String "typical_normal")
+        KM.lookup "source_kind" o `shouldBe` Just (String "weather_normals")
+      _ -> expectationFailure "expected reserved weather normals overlay JSON object"
 
   it "maps climate and weather view modes to explicit data-basis semantics" $ do
     let semanticsText mode = do
@@ -145,13 +171,13 @@ spec = describe "view mode registry" $ do
             ( temporalBasisToText (vmdsTemporalBasis semantics)
             , sourceKindToText (vmdsSourceKind semantics)
             )
-    semanticsText ViewClimate `shouldBe` Just ("long_run_average", "generated_climate")
-    semanticsText ViewPrecip `shouldBe` Just ("long_run_average", "generated_climate")
-    semanticsText ViewWeather `shouldBe` Just ("instantaneous_current", "simulated_generated_weather")
-    semanticsText ViewCloud `shouldBe` Just ("instantaneous_current", "simulated_generated_weather")
-    semanticsText ViewPrecipCurrent `shouldBe` Just ("instantaneous_current", "simulated_generated_weather")
-    semanticsText ViewCloudTypical `shouldBe` Just ("typical_normal", "generated_climate")
-    semanticsText (ViewOverlay "weather" 0) `shouldBe` Just ("instantaneous_current", "simulated_generated_weather")
+    semanticsText ViewClimate `shouldBe` Just ("long_run_average", "climate_average")
+    semanticsText ViewPrecip `shouldBe` Just ("long_run_average", "climate_average")
+    semanticsText ViewWeather `shouldBe` Just ("instantaneous_current", "weather_snapshot")
+    semanticsText ViewCloud `shouldBe` Just ("instantaneous_current", "weather_snapshot")
+    semanticsText ViewPrecipCurrent `shouldBe` Just ("instantaneous_current", "weather_snapshot")
+    semanticsText ViewCloudTypical `shouldBe` Just ("typical_normal", "weather_normals")
+    semanticsText (ViewOverlay "weather" 0) `shouldBe` Just ("instantaneous_current", "weather_snapshot")
     viewModeDataSemantics ViewMoisture `shouldBe` Nothing
     temporalBasisToText TypicalNormal `shouldBe` "typical_normal"
     sourceKindToText ExternalLive `shouldBe` "external_live"
@@ -196,7 +222,7 @@ spec = describe "view mode registry" $ do
         vmmName meta `shouldBe` "cloud_typical"
         vmmLabel meta `shouldBe` "Typical Cloud Normal"
         vmmTemporalBasis meta `shouldBe` Just TypicalNormal
-        vmmSourceKind meta `shouldBe` Just GeneratedClimate
+        fmap sourceKindToText (vmmSourceKind meta) `shouldBe` Just "weather_normals"
         vmmInspectorFields meta `shouldSatisfy` elem "weather_normals.cloud_cover"
       Nothing -> expectationFailure "missing ViewCloudTypical metadata"
 
@@ -239,10 +265,10 @@ assertSummaryJson meta = do
       case vmmMode meta of
         ViewClimate -> do
           KM.lookup "temporal_basis" o `shouldBe` Just (String "long_run_average")
-          KM.lookup "source_kind" o `shouldBe` Just (String "generated_climate")
+          KM.lookup "source_kind" o `shouldBe` Just (String "climate_average")
         ViewWeather -> do
           KM.lookup "temporal_basis" o `shouldBe` Just (String "instantaneous_current")
-          KM.lookup "source_kind" o `shouldBe` Just (String "simulated_generated_weather")
+          KM.lookup "source_kind" o `shouldBe` Just (String "weather_snapshot")
         ViewElevation -> do
           KM.lookup "temporal_basis" o `shouldBe` Just Null
           KM.lookup "source_kind" o `shouldBe` Just Null

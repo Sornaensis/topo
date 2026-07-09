@@ -310,6 +310,20 @@ stateViewModesResponseSchema = objectSchema "StateViewModesResponse"
   [ ("view_modes", arraySchema viewModeEntrySchema)
   ]
 
+layeredViewSelectionSchema :: Value
+layeredViewSelectionSchema = inlineObjectSchema
+  [ "base", "weather_basis", "overlay_opacity", "legacy_view_mode" ]
+  [ ("base", stringSchema)
+  , ("base_label", stringSchema)
+  , ("overlay", nullableSchema stringSchema)
+  , ("overlay_label", nullableSchema stringSchema)
+  , ("weather_basis", enumStringSchema ["average", "current"])
+  , ("temporal_basis", nullableSchema temporalBasisSchema)
+  , ("source_kind", nullableSchema sourceKindSchema)
+  , ("overlay_opacity", numberSchema)
+  , ("legacy_view_mode", nullableSchema viewModeSchema)
+  ]
+
 uiStateResponseSchema :: JsonSchema
 uiStateResponseSchema = objectSchema "UiStateResponse"
   [ "seed", "generating", "world_name", "chunk_size", "view", "panels", "editor", "data_browser", "hex_selection", "simulation" ]
@@ -317,10 +331,11 @@ uiStateResponseSchema = objectSchema "UiStateResponse"
   , ("generating", booleanSchema)
   , ("world_name", stringSchema)
   , ("chunk_size", integerSchema)
-  , ("view", inlineObjectSchema ["mode", "overlay_names"]
+  , ("view", inlineObjectSchema ["mode", "selection", "overlay_names"]
       [ ("mode", viewModeSchema)
       , ("temporal_basis", nullableSchema temporalBasisSchema)
       , ("source_kind", nullableSchema sourceKindSchema)
+      , ("selection", layeredViewSelectionSchema)
       , ("overlay_name", nullableSchema stringSchema)
       , ("overlay_field", nullableSchema integerSchema)
       , ("overlay_names", arraySchema stringSchema)
@@ -2473,7 +2488,7 @@ temporalBasisSchema :: Value
 temporalBasisSchema = enumStringSchema ["long_run_average", "typical_normal", "instantaneous_current"]
 
 sourceKindSchema :: Value
-sourceKindSchema = enumStringSchema ["generated_climate", "simulated_generated_weather", "simulated_weather", "external_live"]
+sourceKindSchema = enumStringSchema ["climate_average", "weather_snapshot", "weather_normals", "external_live"]
 
 editorToolSchema :: Value
 editorToolSchema = enumStringSchema

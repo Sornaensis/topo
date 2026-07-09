@@ -989,12 +989,12 @@ inspectorSections pluginData ui terrainSnap (q, r) sample =
         Nothing ->
           [ statusField "unavailable"
           , temporalBasisField TypicalNormal
-          , sourceKindField GeneratedClimate
+          , sourceKindField WeatherNormals
           , textField "reason" "Reason" "weather_normals overlay not present"
           ]
         Just wn ->
           [ temporalBasisField TypicalNormal
-          , sourceKindField GeneratedClimate
+          , sourceKindField WeatherNormals
           , maybeUnitField "normal_temp_c" "Typical temp" (normToC units) "°C" (safeIndexMaybe (wncTemp wn) tileIdx)
           , maybeUnitField "normal_humidity_pct" "Typical humid" normToRH "% RH" (safeIndexMaybe (wncHumidity wn) tileIdx)
           , maybeUnitField "normal_precip_mm_year" "Typical precip" (normToMmYear units) "mm/yr" (safeIndexMaybe (wncPrecip wn) tileIdx)
