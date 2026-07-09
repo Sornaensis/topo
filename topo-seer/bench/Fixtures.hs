@@ -54,6 +54,8 @@ instance NFData ChunkGeometry where
 
 instance NFData AtlasKey where
   rnf (AtlasKey vm wl v) = rwhnf vm `seq` rnf wl `seq` rnf v
+  rnf (LayeredAtlasKey vm wl v dataVersion selectionTag) =
+    rwhnf vm `seq` rnf wl `seq` rnf v `seq` rnf dataVersion `seq` rnf selectionTag
 
 -- | World config with chunk size 8 (64 tiles per chunk).
 benchWorldConfig :: WorldConfig

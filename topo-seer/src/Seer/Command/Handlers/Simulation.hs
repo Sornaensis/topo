@@ -16,7 +16,7 @@ import qualified Data.IntMap.Strict as IntMap
 import Data.List (find)
 import Data.Text (Text)
 
-import Actor.AtlasCache (atlasKeyFor)
+import Actor.AtlasCache (atlasKeyForSelection, atlasKeyViewMode)
 import Actor.AtlasManager (AtlasJob(..), enqueueAtlasBuild)
 import Actor.Data (DataSnapshot(..), TerrainSnapshot(..), getDataSnapshot)
 import Actor.Log (LogEntry(..), LogLevel(..), appendLog)
@@ -41,7 +41,7 @@ import Actor.Simulation
   , weatherPublicationKindToText
   )
 import Actor.UI.Setters (setUiSimAutoTick, setUiSimTickRate)
-import Actor.UI.State (UiState(..), ViewMode(..), getUiSnapshot, readUiSnapshotRef)
+import Actor.UI.State (LayeredViewState(..), SkyOverlayMode(..), UiState(..), ViewMode(..), WeatherBasis(..), effectiveViewSelection, getUiSnapshot, readUiSnapshotRef)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
 import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom)
@@ -195,10 +195,13 @@ enqueueLatestSimulationAtlasBackfill handles ui
         when
           (simulationAtlasBackfillStillCurrent ui terrainSnap latestUi latestTerrainSnap) $ do
             snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
-            let atlasKey = atlasKeyFor (uiViewMode ui) (uiRenderWaterLevel ui) terrainSnap
+            let selection = effectiveViewSelection ui
+                atlasKey = atlasKeyForSelection selection (uiRenderWaterLevel ui) terrainSnap
+                keyMode = atlasKeyViewMode atlasKey
                 mkJob stage = AtlasJob
                   { ajKey = atlasKey
-                  , ajViewMode = uiViewMode ui
+                  , ajViewMode = keyMode
+                  , ajViewSelection = selection
                   , ajWaterLevel = uiRenderWaterLevel ui
                   , ajSnapshotVersion = snapshotVersion
                   , ajTerrain = terrainSnap
@@ -212,12 +215,17 @@ enqueueLatestSimulationAtlasBackfill handles ui
 
 simulationAtlasBackfillViewAffected :: UiState -> Bool
 simulationAtlasBackfillViewAffected ui =
-  uiDayNightEnabled ui || case uiViewMode ui of
-    ViewWeather -> True
-    ViewCloud -> True
-    ViewPrecipCurrent -> True
-    ViewOverlay name _ -> name == "weather"
-    _ -> False
+  uiDayNightEnabled ui || case lvsSkyOverlay (effectiveViewSelection ui) of
+    Just SkyOverlayWeatherTemperature -> lvsWeatherBasis (effectiveViewSelection ui) == WeatherBasisCurrent
+    Just SkyOverlayPrecipitation -> lvsWeatherBasis (effectiveViewSelection ui) == WeatherBasisCurrent
+    Just SkyOverlayCloud -> lvsWeatherBasis (effectiveViewSelection ui) == WeatherBasisCurrent
+    Just (SkyOverlayPlugin name _) -> name == "weather"
+    Nothing -> case uiViewMode ui of
+      ViewWeather -> True
+      ViewCloud -> True
+      ViewPrecipCurrent -> True
+      ViewOverlay name _ -> name == "weather"
+      _ -> False
 
 simulationAtlasBackfillSnapshotReady :: TerrainSnapshot -> Bool
 simulationAtlasBackfillSnapshotReady terrainSnap =
@@ -234,8 +242,8 @@ simulationAtlasBackfillStillCurrent requestedUi requestedTerrain latestUi latest
     && uiRenderWaterLevel requestedUi == uiRenderWaterLevel latestUi
     && uiZoom requestedUi == uiZoom latestUi
     && uiDayNightEnabled requestedUi == uiDayNightEnabled latestUi
-    && atlasKeyFor (uiViewMode requestedUi) (uiRenderWaterLevel requestedUi) requestedTerrain
-       == atlasKeyFor (uiViewMode latestUi) (uiRenderWaterLevel latestUi) latestTerrain
+    && atlasKeyForSelection (effectiveViewSelection requestedUi) (uiRenderWaterLevel requestedUi) requestedTerrain
+       == atlasKeyForSelection (effectiveViewSelection latestUi) (uiRenderWaterLevel latestUi) latestTerrain
 
 simulationPhase :: DataSnapshot -> SimulationDagSnapshot -> Text
 simulationPhase dataSnap dag

@@ -1,5 +1,12 @@
 module UI.TerrainColor
   ( terrainColor
+  , terrainColorForSelection
+  , terrainBaseColor
+  , terrainSkyOverlayColor
+  , WeatherOverlayVariable(..)
+  , weatherOverlayColor
+  , composeTerrainColor
+  , alphaBlend
   , applyDayNight
   , overlayFieldColor
   , gradientBlueGreen
@@ -12,56 +19,245 @@ module UI.TerrainColor
 import Data.Word (Word8, Word16)
 import Linear (V4(..))
 import qualified Data.Vector.Unboxed as U
-import Topo (BiomeId, PlateBoundary, ClimateChunk(..), TerrainChunk(..), VegetationChunk(..), WeatherChunk(..), biomeIdToCode, plateBoundaryToCode, terrainFormToCode)
+import Topo (ClimateChunk(..), TerrainChunk(..), VegetationChunk(..), WeatherChunk(..), biomeIdToCode, plateBoundaryToCode, terrainFormToCode)
 import Topo.Weather (WeatherNormalsChunk(..))
-import Actor.UI (ViewMode(..))
+import Actor.UI
+  ( BaseViewMode(..)
+  , LayeredViewState(..)
+  , SkyOverlayMode(..)
+  , ViewMode(..)
+  , WeatherBasis(..)
+  , layeredViewStateToViewMode
+  , legacyViewModeToLayeredViewState
+  )
 
--- | Compute the display color for a single hex tile.
+-- | Weather/climate variables that can be rendered as composable RGBA
+-- overlays.  The current public UI exposes temperature, precipitation, cloud,
+-- and plugin overlays, but the scalar cases here keep humidity, wind, and
+-- pressure sampling in one place for future overlay controls and tests.
+data WeatherOverlayVariable
+  = WeatherOverlayTemperature
+  | WeatherOverlayPrecipitation
+  | WeatherOverlayHumidity
+  | WeatherOverlayWindSpeed
+  | WeatherOverlayPressure
+  | WeatherOverlayCloudStorm
+  | WeatherOverlayPluginField
+  deriving (Eq, Ord, Show)
+
+data OverlayRenderPolicy = OverlayRenderPolicy
+  { orpOpacity :: !Float
+  , orpLegacyOpaque :: !Bool
+  }
+
+-- | Compute the display color for a single hex tile in a legacy 'ViewMode'.
 --
--- The @Maybe Float@ parameter supplies an overlay field value when
--- 'ViewOverlay' mode is active.  For all other modes it is ignored.
+-- Legacy weather/climate view modes are adapted to the composable layer path
+-- with an opaque overlay policy so the old full-view visuals are preserved.
 terrainColor :: ViewMode -> Float -> TerrainChunk -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe WeatherNormalsChunk -> Maybe VegetationChunk -> Maybe Float -> Int -> V4 Word8
-terrainColor mode waterLevel chunk climateChunk weatherChunk weatherNormalsChunk vegChunk mOverlayVal idx =
+terrainColor mode =
+  terrainColorWithPolicy legacyPolicy (legacyViewModeToLayeredViewState mode)
+  where
+    legacyPolicy = OverlayRenderPolicy
+      { orpOpacity = 1
+      , orpLegacyOpaque = True
+      }
+
+-- | Compute a tile color from an explicit base-plus-overlay selection.
+--
+-- Unlike 'terrainColor', this uses the overlay alpha carried by the overlay
+-- color and multiplies it by the selection opacity, allowing weather layers to
+-- sit over any physical base view.
+terrainColorForSelection :: LayeredViewState -> Float -> TerrainChunk -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe WeatherNormalsChunk -> Maybe VegetationChunk -> Maybe Float -> Int -> V4 Word8
+terrainColorForSelection selection =
+  terrainColorWithPolicy policy selection
+  where
+    policy
+      | isLegacyLayeredSelection selection = OverlayRenderPolicy
+          { orpOpacity = 1
+          , orpLegacyOpaque = True
+          }
+      | otherwise = OverlayRenderPolicy
+          { orpOpacity = lvsOverlayOpacity selection
+          , orpLegacyOpaque = False
+          }
+
+isLegacyLayeredSelection :: LayeredViewState -> Bool
+isLegacyLayeredSelection selection =
+  case layeredViewStateToViewMode selection of
+    Just legacyMode -> selection == legacyViewModeToLayeredViewState legacyMode
+    Nothing -> False
+
+terrainColorWithPolicy :: OverlayRenderPolicy -> LayeredViewState -> Float -> TerrainChunk -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe WeatherNormalsChunk -> Maybe VegetationChunk -> Maybe Float -> Int -> V4 Word8
+terrainColorWithPolicy policy selection waterLevel chunk climateChunk weatherChunk weatherNormalsChunk vegChunk mOverlayVal idx =
+  let baseColor = terrainBaseColor (lvsBaseView selection) waterLevel chunk vegChunk idx
+  in case lvsSkyOverlay selection of
+       Nothing -> baseColor
+       Just overlayMode ->
+         let overlayColor = terrainSkyOverlayColorWithLegacy (orpLegacyOpaque policy) overlayMode (lvsWeatherBasis selection) waterLevel chunk climateChunk weatherChunk weatherNormalsChunk mOverlayVal idx
+             adjustedOverlay = applyOverlayPolicy policy overlayColor
+         in composeTerrainColor baseColor (Just adjustedOverlay)
+
+-- | Base color for physical terrain layers.  These cases intentionally mirror
+-- the pre-composition 'ViewMode' colors for non-weather modes.
+terrainBaseColor :: BaseViewMode -> Float -> TerrainChunk -> Maybe VegetationChunk -> Int -> V4 Word8
+terrainBaseColor mode waterLevel chunk vegChunk idx =
   case mode of
-    ViewElevation -> elevationColor waterLevel (tcElevation chunk U.! idx)
-    ViewBiome -> paletteById (biomeIdToCode (tcFlags chunk U.! idx))
-    ViewClimate ->
-      let value = maybe 0 (\c -> ccTempAvg c U.! idx) climateChunk
-      in gradientHeat value
-    ViewWeather ->
-      let value = maybe 0 (\w -> wcTemp w U.! idx) weatherChunk
-      in gradientHeat value
-    ViewMoisture -> gradientMoisture (tcMoisture chunk U.! idx)
-    ViewPrecip ->
-      let value = maybe 0 (\c -> ccPrecipAvg c U.! idx) climateChunk
-      in gradientMoisture value
-    ViewPrecipCurrent ->
-      let value = maybe 0 (\w -> wcPrecip w U.! idx) weatherChunk
-      in gradientMoisture value
-    ViewPlateId -> paletteById (tcPlateId chunk U.! idx)
-    ViewPlateBoundary -> boundaryColor (plateBoundaryToCode (tcPlateBoundary chunk U.! idx))
-    ViewPlateHardness -> gradientHeat (tcPlateHardness chunk U.! idx)
-    ViewPlateCrust -> crustColor (tcPlateCrust chunk U.! idx)
-    ViewPlateAge -> gradientHeat (tcPlateAge chunk U.! idx)
-    ViewPlateHeight -> gradientBlueGreen (tcPlateHeight chunk U.! idx)
-    ViewPlateVelocity -> gradientHeat (plateVelocityMag chunk idx)
-    ViewVegetation ->
+    BaseViewElevation -> elevationColor waterLevel (tcElevation chunk U.! idx)
+    BaseViewBiome -> paletteById (biomeIdToCode (tcFlags chunk U.! idx))
+    BaseViewMoisture -> gradientMoisture (tcMoisture chunk U.! idx)
+    BaseViewPlateId -> paletteById (tcPlateId chunk U.! idx)
+    BaseViewPlateBoundary -> boundaryColor (plateBoundaryToCode (tcPlateBoundary chunk U.! idx))
+    BaseViewPlateHardness -> gradientHeat (tcPlateHardness chunk U.! idx)
+    BaseViewPlateCrust -> crustColor (tcPlateCrust chunk U.! idx)
+    BaseViewPlateAge -> gradientHeat (tcPlateAge chunk U.! idx)
+    BaseViewPlateHeight -> gradientBlueGreen (tcPlateHeight chunk U.! idx)
+    BaseViewPlateVelocity -> gradientHeat (plateVelocityMag chunk idx)
+    BaseViewVegetation ->
       let value = maybe 0 (\v -> vegCover v U.! idx) vegChunk
       in gradientVegetation value
-    ViewTerrainForm ->
+    BaseViewTerrainForm ->
       let formCol = terrainFormColor (terrainFormToCode (tcTerrainForm chunk U.! idx))
           elev = tcElevation chunk U.! idx
       in if elev < waterLevel
         then submergedTint (clamp01 ((waterLevel - elev) / 0.15)) formCol
         else formCol
-    ViewCloud ->
-      cloudColor chunk weatherChunk idx
-    ViewCloudTypical ->
-      cloudNormalColor chunk weatherNormalsChunk idx
-    ViewOverlay _ _ ->
+
+-- | RGBA overlay color for a public sky/weather overlay selection.
+terrainSkyOverlayColor :: SkyOverlayMode -> WeatherBasis -> Float -> TerrainChunk -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe WeatherNormalsChunk -> Maybe Float -> Int -> V4 Word8
+terrainSkyOverlayColor = terrainSkyOverlayColorWithLegacy False
+
+terrainSkyOverlayColorWithLegacy :: Bool -> SkyOverlayMode -> WeatherBasis -> Float -> TerrainChunk -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe WeatherNormalsChunk -> Maybe Float -> Int -> V4 Word8
+terrainSkyOverlayColorWithLegacy legacy overlayMode basis _waterLevel chunk climateChunk weatherChunk weatherNormalsChunk mOverlayVal idx =
+  case overlayMode of
+    SkyOverlayWeatherTemperature ->
+      scalarWeatherOverlayColor legacy WeatherOverlayTemperature basis climateChunk weatherChunk weatherNormalsChunk mOverlayVal idx
+    SkyOverlayPrecipitation ->
+      scalarWeatherOverlayColor legacy WeatherOverlayPrecipitation basis climateChunk weatherChunk weatherNormalsChunk mOverlayVal idx
+    SkyOverlayCloud
+      | legacy -> case basis of
+          WeatherBasisAverage -> cloudNormalColor chunk weatherNormalsChunk idx
+          WeatherBasisCurrent -> cloudColor chunk weatherChunk idx
+      | otherwise -> weatherOverlayColor WeatherOverlayCloudStorm basis chunk climateChunk weatherChunk weatherNormalsChunk mOverlayVal idx
+    SkyOverlayPlugin _name _fieldIdx ->
       case mOverlayVal of
-        Just v  -> overlayFieldColor v
-        Nothing -> V4 50 50 50 255  -- no data: dark grey
+        Just value -> withAlpha defaultWeatherOverlayAlpha (overlayFieldColor value)
+        Nothing
+          | legacy -> noDataColor
+          | otherwise -> noDataOverlayColor
+
+-- | RGBA overlay color for a weather/climate variable.  Average scalar weather
+-- variables sample 'ClimateChunk'; current scalar variables sample
+-- 'WeatherChunk'.  Average cloud/storm samples generated weather normals and
+-- renders a no-data marker when normals are unavailable.
+weatherOverlayColor :: WeatherOverlayVariable -> WeatherBasis -> TerrainChunk -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe WeatherNormalsChunk -> Maybe Float -> Int -> V4 Word8
+weatherOverlayColor variable basis _chunk climateChunk weatherChunk weatherNormalsChunk mOverlayVal idx =
+  case variable of
+    WeatherOverlayCloudStorm ->
+      case basis of
+        WeatherBasisAverage ->
+          case weatherNormalsChunk of
+            Nothing -> noDataOverlayColor
+            Just normals ->
+              cloudOverlayColor
+                (wncCloudCover normals U.! idx)
+                (wncCloudWater normals U.! idx)
+                (wncPrecip normals U.! idx)
+        WeatherBasisCurrent ->
+          case weatherChunk of
+            Nothing -> noDataOverlayColor
+            Just weather ->
+              cloudOverlayColor
+                (wcCloudCover weather U.! idx)
+                (wcCloudWater weather U.! idx)
+                (wcPrecip weather U.! idx)
+    WeatherOverlayPluginField ->
+      maybe noDataOverlayColor (withAlpha defaultWeatherOverlayAlpha . overlayFieldColor) mOverlayVal
+    _ ->
+      case weatherOverlayScalarValue variable basis climateChunk weatherChunk weatherNormalsChunk mOverlayVal idx of
+        Nothing -> noDataOverlayColor
+        Just value -> withAlpha defaultWeatherOverlayAlpha (weatherScalarColor variable value)
+
+scalarWeatherOverlayColor :: Bool -> WeatherOverlayVariable -> WeatherBasis -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe WeatherNormalsChunk -> Maybe Float -> Int -> V4 Word8
+scalarWeatherOverlayColor legacy variable basis climateChunk weatherChunk weatherNormalsChunk mOverlayVal idx
+  | legacy =
+      let value = maybe 0 id (weatherOverlayScalarValue variable basis climateChunk weatherChunk weatherNormalsChunk mOverlayVal idx)
+      in weatherScalarColor variable value
+  | otherwise =
+      case weatherOverlayScalarValue variable basis climateChunk weatherChunk weatherNormalsChunk mOverlayVal idx of
+        Nothing -> noDataOverlayColor
+        Just value -> withAlpha defaultWeatherOverlayAlpha (weatherScalarColor variable value)
+
+weatherOverlayScalarValue :: WeatherOverlayVariable -> WeatherBasis -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe WeatherNormalsChunk -> Maybe Float -> Int -> Maybe Float
+weatherOverlayScalarValue variable basis climateChunk weatherChunk _weatherNormalsChunk mOverlayVal idx =
+  case variable of
+    WeatherOverlayTemperature -> case basis of
+      WeatherBasisAverage -> (U.! idx) . ccTempAvg <$> climateChunk
+      WeatherBasisCurrent -> (U.! idx) . wcTemp <$> weatherChunk
+    WeatherOverlayPrecipitation -> case basis of
+      WeatherBasisAverage -> (U.! idx) . ccPrecipAvg <$> climateChunk
+      WeatherBasisCurrent -> (U.! idx) . wcPrecip <$> weatherChunk
+    WeatherOverlayHumidity -> case basis of
+      WeatherBasisAverage -> (U.! idx) . ccHumidityAvg <$> climateChunk
+      WeatherBasisCurrent -> (U.! idx) . wcHumidity <$> weatherChunk
+    WeatherOverlayWindSpeed -> case basis of
+      WeatherBasisAverage -> (U.! idx) . ccWindSpdAvg <$> climateChunk
+      WeatherBasisCurrent -> (U.! idx) . wcWindSpd <$> weatherChunk
+    WeatherOverlayPressure -> case basis of
+      WeatherBasisAverage -> Nothing
+      WeatherBasisCurrent -> (U.! idx) . wcPressure <$> weatherChunk
+    WeatherOverlayPluginField -> mOverlayVal
+    WeatherOverlayCloudStorm -> Nothing
+
+weatherScalarColor :: WeatherOverlayVariable -> Float -> V4 Word8
+weatherScalarColor variable value =
+  case variable of
+    WeatherOverlayTemperature -> gradientHeat value
+    WeatherOverlayPrecipitation -> gradientMoisture value
+    WeatherOverlayHumidity -> gradientMoisture value
+    WeatherOverlayWindSpeed -> gradientHeat value
+    WeatherOverlayPressure -> gradientBlueGreen value
+    WeatherOverlayPluginField -> overlayFieldColor value
+    WeatherOverlayCloudStorm -> overlayFieldColor value
+
+-- | Compose an optional RGBA overlay over an opaque base color.
+composeTerrainColor :: V4 Word8 -> Maybe (V4 Word8) -> V4 Word8
+composeTerrainColor base Nothing = base
+composeTerrainColor base (Just overlay) = alphaBlend base overlay
+
+-- | Source-over alpha blend for byte RGBA colors.
+alphaBlend :: V4 Word8 -> V4 Word8 -> V4 Word8
+alphaBlend (V4 br bg bb ba) (V4 or' og ob oa) =
+  let af = fromIntegral oa / 255
+      bf = fromIntegral ba / 255
+      outA = af + bf * (1 - af)
+      blendChannel base overlay =
+        if outA <= 0
+          then 0
+          else toByteRaw ((fromIntegral overlay * af + fromIntegral base * bf * (1 - af)) / outA / 255)
+  in V4 (blendChannel br or') (blendChannel bg og) (blendChannel bb ob) (toByteRaw outA)
+
+applyOverlayPolicy :: OverlayRenderPolicy -> V4 Word8 -> V4 Word8
+applyOverlayPolicy policy color@(V4 _ _ _ a)
+  | orpLegacyOpaque policy = setAlphaByte 255 color
+  | otherwise =
+      let scaledAlpha = fromIntegral a / 255 * clamp01 (orpOpacity policy)
+      in setAlphaByte (toByteRaw scaledAlpha) color
+
+withAlpha :: Float -> V4 Word8 -> V4 Word8
+withAlpha alpha color = setAlphaByte (toByteRaw alpha) color
+
+setAlphaByte :: Word8 -> V4 Word8 -> V4 Word8
+setAlphaByte alpha (V4 r g b _) = V4 r g b alpha
+
+noDataColor :: V4 Word8
+noDataColor = V4 50 50 50 255
+
+noDataOverlayColor :: V4 Word8
+noDataOverlayColor = V4 70 65 95 220
+
+defaultWeatherOverlayAlpha :: Float
+defaultWeatherOverlayAlpha = 0.62
 
 elevationColor :: Float -> Float -> V4 Word8
 elevationColor waterLevel elev
@@ -272,6 +468,29 @@ clamp01 value =
 toByte :: Float -> Word8
 toByte value =
   fromIntegral (round (clamp01 value * 255))
+
+toByteRaw :: Float -> Word8
+toByteRaw value =
+  fromIntegral (round (clamp01 value * 255) :: Int)
+
+-- | Translucent cloud/storm overlay color.  Clear sky is transparent; cloud
+-- cover raises alpha and cloud water/storm intensity shifts the color toward a
+-- darker blue-purple.
+cloudOverlayColor :: Float -> Float -> Float -> V4 Word8
+cloudOverlayColor cover0 water0 precip0 =
+  let cover = clamp01 cover0
+      water = clamp01 water0
+      prec = clamp01 precip0
+      storm = water * clamp01 (prec * 3)
+      cloudBright = 1.0 - water * 0.5
+      stormR = 0.3
+      stormG = 0.25
+      stormB = 0.55
+      r = cloudBright * (1 - storm) + stormR * storm
+      g = cloudBright * (1 - storm) + stormG * storm
+      b = cloudBright * (1 - storm) + stormB * storm
+      alpha = clamp01 (cover * 0.72 + storm * 0.23)
+  in V4 (toByte r) (toByte g) (toByte b) (toByteRaw alpha)
 
 -- | Cloud/storm visualization color.
 --

@@ -9,7 +9,7 @@ module Seer.System.Cache
   , shouldPoll
   ) where
 
-import Actor.AtlasCache (atlasKeyFor)
+import Actor.AtlasCache (atlasKeyForSelection)
 import Actor.AtlasManager (AtlasManagerQueueState(..), emptyAtlasManagerQueueState, formatAtlasManagerQueueState)
 import Actor.AtlasResultBroker (AtlasResultDrainStats(..), formatAtlasResultDrainStats)
 import Actor.AtlasScheduleBroker (AtlasScheduleReport(..), formatAtlasScheduleReport)
@@ -26,7 +26,7 @@ import Actor.TerrainCacheWorker
   , tcrResultKey
   , terrainCacheKeyFrom
   )
-import Actor.UI (UiState(..))
+import Actor.UI (UiState(..), effectiveViewSelection)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
@@ -187,7 +187,7 @@ renderAtlasDiagnosticSummary snap cacheState =
       terrainSnap = rsTerrain snap
       rawStage = stageForZoom (uiZoom uiSnap)
       targetStage = maybe rawStage id (atcCommittedStage (rcsAtlasCache cacheState))
-      targetKey = atlasKeyFor (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) terrainSnap
+      targetKey = atlasKeyForSelection (effectiveViewSelection uiSnap) (uiRenderWaterLevel uiSnap) terrainSnap
       cacheSummary = atlasCacheSummary (Just targetKey) (Just targetStage) (rcsAtlasCache cacheState)
       lastSnapshotDecision = case rcsLastSnapshot cacheState of
         Nothing -> "retry"

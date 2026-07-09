@@ -25,13 +25,13 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
 
-import Actor.AtlasCache (atlasKeyFor)
+import Actor.AtlasCache (atlasKeyForSelection, atlasKeyViewMode)
 import Actor.AtlasManager (AtlasJob(..), enqueueAtlasBuild)
 import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom)
 import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.UI (getUiSnapshot)
-import Actor.UI.State (ViewMode(..), ConfigTab(..), TemporalBasis, ViewModeDataSemantics(..), UiState(..), readUiSnapshotRef, uiRenderWaterLevel, sourceKindToText, temporalBasisFromText, temporalBasisToText, viewModeDataSemantics, viewModeFromTextWithBasis, viewModeToText)
+import Actor.UI.State (ViewMode(..), ConfigTab(..), TemporalBasis, ViewModeDataSemantics(..), UiState(..), effectiveViewSelection, legacyViewModeToLayeredViewState, readUiSnapshotRef, uiRenderWaterLevel, sourceKindToText, temporalBasisFromText, temporalBasisToText, viewModeDataSemantics, viewModeFromTextWithBasis, viewModeToText)
 import Actor.SnapshotReceiver (readSnapshotVersion, readTerrainSnapshot)
 import Actor.UI.Setters (setUiSeed, setUiSeedInput, setUiViewMode, setUiConfigScroll, setUiConfigTab, setUiContextHex, setUiHexTooltipPinned, setUiOverlayFields)
 import Seer.Command.Context (CommandContext(..))
@@ -135,11 +135,16 @@ scheduleAtlasRebuild handles mode = do
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap      <- getUiSnapshot (ahUiHandle handles)
   snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
-  let atlasKey = atlasKeyFor mode (uiRenderWaterLevel uiSnap) terrainSnap
+  let selection = if uiViewMode uiSnap == mode
+        then effectiveViewSelection uiSnap
+        else legacyViewModeToLayeredViewState mode
+      atlasKey = atlasKeyForSelection selection (uiRenderWaterLevel uiSnap) terrainSnap
+      keyMode = atlasKeyViewMode atlasKey
       orderedStages = orderedZoomStagesForZoom (uiZoom uiSnap)
       job stage = AtlasJob
         { ajKey        = atlasKey
-        , ajViewMode   = mode
+        , ajViewMode   = keyMode
+        , ajViewSelection = selection
         , ajWaterLevel = uiRenderWaterLevel uiSnap
         , ajSnapshotVersion = snapshotVersion
         , ajTerrain    = terrainSnap

@@ -23,7 +23,7 @@ module Actor.AtlasScheduler
   , writeAtlasFreshnessKey
   ) where
 
-import Actor.AtlasCache (atlasKeyFor)
+import Actor.AtlasCache (atlasKeyForSelection, atlasKeyViewMode)
 import Actor.AtlasFreshness
   ( AtlasFreshness(..)
   , AtlasFreshnessRef
@@ -61,7 +61,7 @@ import Actor.AtlasWorker
 import Actor.Data (TerrainSnapshot(..))
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion)
-import Actor.UI (UiState(..))
+import Actor.UI (UiState(..), effectiveViewSelection)
 import Control.Monad (forM_)
 import Data.IORef (IORef, atomicModifyIORef')
 import Data.Word (Word32)
@@ -159,10 +159,13 @@ atlasViewportRefreshJob :: SnapshotVersion -> RenderSnapshot -> ZoomStage -> Atl
 atlasViewportRefreshJob snapshotVersion snapshot stage =
   let uiSnap = rsUi snapshot
       terrainSnap = rsTerrain snapshot
-      currentKey = atlasKeyFor (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) terrainSnap
+      selection = effectiveViewSelection uiSnap
+      currentKey = atlasKeyForSelection selection (uiRenderWaterLevel uiSnap) terrainSnap
+      keyMode = atlasKeyViewMode currentKey
   in AtlasJob
     { ajKey = currentKey
-    , ajViewMode = uiViewMode uiSnap
+    , ajViewMode = keyMode
+    , ajViewSelection = selection
     , ajWaterLevel = uiRenderWaterLevel uiSnap
     , ajSnapshotVersion = snapshotVersion
     , ajTerrain = terrainSnap
@@ -222,7 +225,7 @@ runSchedule handles req = do
   let snapshot = asqSnapshot req
       uiSnap = rsUi snapshot
       terrainSnap = rsTerrain snapshot
-      currentKey = atlasKeyFor (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) terrainSnap
+      currentKey = atlasKeyForSelection (effectiveViewSelection uiSnap) (uiRenderWaterLevel uiSnap) terrainSnap
       shouldSchedule = asqRenderTargetOk req
         && asqDataReady req
         && not (uiGenerating uiSnap)
@@ -264,6 +267,7 @@ runSchedule handles req = do
             { abBuildId   = adjBuildId dispatchJob
             , abKey        = ajKey job
             , abViewMode   = ajViewMode job
+            , abViewSelection = ajViewSelection job
             , abWaterLevel = ajWaterLevel job
             , abTerrain    = ajTerrain job
             , abHexRadius  = ajHexRadius job

@@ -4,12 +4,13 @@ module Spec.AtlasManager (spec) where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (bracket)
+import Data.Bits (shiftL)
 import Data.IORef (readIORef)
 import qualified Data.Map.Strict as Map
 import Data.Word (Word64)
 import Test.Hspec
 
-import Actor.AtlasCache (AtlasKey(..), atlasKeyVersion)
+import Actor.AtlasCache (AtlasKey(..), atlasKeyDataVersion, atlasKeyForSelection, atlasKeySelectionTag, atlasKeyVersion, atlasKeyViewMode)
 import Actor.AtlasManager
   ( AtlasDispatchJob(..)
   , AtlasFreshDrainRequest(..)
@@ -33,7 +34,7 @@ import Actor.AtlasResult (AtlasBuildTarget(..))
 import Actor.AtlasScheduler (AtlasFreshness(..), newAtlasFreshnessRef)
 import Actor.Data (TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.SnapshotReceiver (SnapshotVersion(..))
-import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
+import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), UiState(..), ViewMode(..), WeatherBasis(..), defaultLayeredViewState, emptyUiState, legacyViewModeToLayeredViewState)
 import Hyperspace.Actor
   ( ActorSystem
   , get
@@ -60,6 +61,24 @@ atlasJobFor mode version =
   in AtlasJob
     { ajKey = atlasKey
     , ajViewMode = mode
+    , ajViewSelection = legacyViewModeToLayeredViewState mode
+    , ajWaterLevel = defaultWaterLevel
+    , ajSnapshotVersion = SnapshotVersion version
+    , ajTerrain = terrainSnap
+    , ajHexRadius = 6
+    , ajAtlasScale = 1
+    , ajViewportCoverage = Nothing
+    }
+
+atlasJobForSelection :: LayeredViewState -> Word64 -> AtlasJob
+atlasJobForSelection selection version =
+  let terrainSnap = emptyTerrainSnapshotWithVersion version
+      atlasKey = atlasKeyForSelection selection defaultWaterLevel terrainSnap
+      keyMode = atlasKeyViewMode atlasKey
+  in AtlasJob
+    { ajKey = atlasKey
+    , ajViewMode = keyMode
+    , ajViewSelection = selection
     , ajWaterLevel = defaultWaterLevel
     , ajSnapshotVersion = SnapshotVersion version
     , ajTerrain = terrainSnap
@@ -88,6 +107,12 @@ waitForManagerCasts = threadDelay 10000
 
 spec :: Spec
 spec = describe "AtlasManager" $ do
+  it "treats high-bit legacy atlas versions as legacy comparable versions" $ do
+    let version = (1 `shiftL` 63) + 99 :: Word64
+        key = AtlasKey ViewCloudTypical defaultWaterLevel version
+    atlasKeyDataVersion key `shouldBe` version
+    atlasKeySelectionTag key `shouldBe` 0
+
   it "publishes non-destructive queued count and revision helpers" $ withSystem $ \system -> do
     managerHandle <- get @AtlasManager system
     queueRef <- newAtlasManagerQueueRef
@@ -285,6 +310,25 @@ spec = describe "AtlasManager" $ do
     enqueueAtlasBuild managerHandle unrelatedWeather
     weatherDispatch <- drainFreshAtlasJobs managerHandle (freshnessFor (ajKey unrelatedWeather) (SnapshotVersion 50))
     map (ajViewMode . adjJob) weatherDispatch `shouldBe` [ViewWeather]
+
+  it "different layered compositions with the same base mode do not block current drains" $ withSystem $ \system -> do
+    managerHandle <- get @AtlasManager system
+    let selectionA = defaultLayeredViewState
+          { lvsBaseView = BaseViewBiome
+          , lvsSkyOverlay = Just SkyOverlayWeatherTemperature
+          , lvsWeatherBasis = WeatherBasisCurrent
+          , lvsOverlayOpacity = 0.25
+          }
+        selectionB = selectionA { lvsOverlayOpacity = 0.75 }
+        unrelatedFuture = (atlasJobForSelection selectionA 50) { ajHexRadius = 10 }
+        current = atlasJobForSelection selectionB 7
+    enqueueAtlasBuild managerHandle unrelatedFuture
+    enqueueAtlasBuild managerHandle current
+
+    dispatchJobs <- drainFreshAtlasJobs managerHandle (freshnessFor (ajKey current) (SnapshotVersion 7))
+    map (ajKey . adjJob) dispatchJobs `shouldBe` [ajKey current]
+    leftovers <- drainAtlasJobs managerHandle
+    length leftovers `shouldBe` 0
 
   it "restamps same-key queued jobs to the requested snapshot and publishes build freshness" $ withSystem $ \system -> do
     managerHandle <- get @AtlasManager system

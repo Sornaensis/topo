@@ -15,9 +15,9 @@ module Actor.TerrainCacheWorker
   , terrainCacheKeyFrom
   ) where
 
-import Actor.AtlasCache (terrainSnapshotViewVersion)
+import Actor.AtlasCache (terrainSnapshotSelectionVersion)
 import Actor.Data (TerrainSnapshot(..))
-import Actor.UI (UiState(..), ViewMode(..))
+import Actor.UI (LayeredViewState, UiState(..), ViewMode(..), effectiveViewSelection)
 import Control.Exception (evaluate)
 import qualified Data.IntMap.Strict as IntMap
 import Data.IORef (IORef, writeIORef)
@@ -34,6 +34,7 @@ import UI.DayNight (DayNightKey, mkDayNightKey)
 -- thread.
 data TerrainCacheKey = TerrainCacheKey
   { tckViewMode :: !ViewMode
+  , tckViewSelection :: !LayeredViewState
   , tckWaterLevel :: !Float
   , tckDayNightKey :: !(Maybe DayNightKey)
   , tckChunkSize :: !Int
@@ -98,11 +99,14 @@ terrainCacheKeyFrom uiSnap terrainSnap
   | tsChunkSize terrainSnap <= 0 = Nothing
   | otherwise = Just TerrainCacheKey
       { tckViewMode = uiViewMode uiSnap
+      , tckViewSelection = selection
       , tckWaterLevel = uiRenderWaterLevel uiSnap
       , tckDayNightKey =
           if uiDayNightEnabled uiSnap
             then mkDayNightKey terrainSnap
             else Nothing
       , tckChunkSize = tsChunkSize terrainSnap
-      , tckVersion = terrainSnapshotViewVersion (uiViewMode uiSnap) terrainSnap
+      , tckVersion = terrainSnapshotSelectionVersion selection terrainSnap
       }
+  where
+    selection = effectiveViewSelection uiSnap

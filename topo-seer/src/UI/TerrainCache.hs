@@ -3,14 +3,17 @@ module UI.TerrainCache
   , emptyChunkTextureCache
   ) where
 
-import Actor.UI (ViewMode(..))
+import Actor.UI (LayeredViewState, ViewMode(..), defaultLayeredViewState)
 import Data.IntMap.Strict (IntMap)
+import Data.Word (Word64)
 import Topo (ClimateChunk, TerrainChunk, WeatherChunk)
 import UI.TerrainRender (ChunkTexture)
 
 
 data ChunkTextureCache = ChunkTextureCache
-  { ctcViewMode :: !ViewMode
+  { ctcVersion :: !Word64
+  , ctcViewMode :: !ViewMode
+  , ctcViewSelection :: !LayeredViewState
   , ctcWaterLevel :: !Float
   , ctcChunkSize :: !Int
   , ctcScale :: !Int
@@ -22,7 +25,9 @@ data ChunkTextureCache = ChunkTextureCache
 
 emptyChunkTextureCache :: ChunkTextureCache
 emptyChunkTextureCache = ChunkTextureCache
-  { ctcViewMode = ViewElevation
+  { ctcVersion = 0
+  , ctcViewMode = ViewElevation
+  , ctcViewSelection = defaultLayeredViewState
   , ctcWaterLevel = 0
   , ctcChunkSize = 0
   , ctcScale = 1

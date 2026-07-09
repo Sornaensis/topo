@@ -57,7 +57,7 @@ import Topo.Overlay (emptyOverlayStore)
 import Actor.Log (LogLevel(..), LogSnapshot(..))
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion(..))
-import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
+import Actor.UI (UiState(..), ViewMode(..), emptyUiState, legacyViewModeToLayeredViewState)
 import Seer.Render.ZoomStage (allZoomStages, ZoomStage(..), stageForZoom)
 import UI.DayNight (mkDayNightKey)
 import Data.Word (Word64)
@@ -86,6 +86,7 @@ atlasJobFor mode version stage =
   in AtlasJob
     { ajKey = atlasKey
     , ajViewMode = mode
+    , ajViewSelection = legacyViewModeToLayeredViewState mode
     , ajWaterLevel = defaultWaterLevel
     , ajSnapshotVersion = SnapshotVersion version
     , ajTerrain = terrainSnap
@@ -120,6 +121,7 @@ spec = describe "AtlasScheduler" $ do
         job = AtlasJob
           { ajKey = atlasKey
           , ajViewMode = ViewElevation
+          , ajViewSelection = legacyViewModeToLayeredViewState ViewElevation
           , ajWaterLevel = defaultWaterLevel
           , ajSnapshotVersion = version
           , ajTerrain = terrainSnap
@@ -252,6 +254,7 @@ spec = describe "AtlasScheduler" $ do
           in AtlasJob
             { ajKey = atlasKey
             , ajViewMode = ViewElevation
+            , ajViewSelection = legacyViewModeToLayeredViewState ViewElevation
             , ajWaterLevel = defaultWaterLevel
             , ajSnapshotVersion = SnapshotVersion 0
             , ajTerrain = terrainSnap
@@ -274,6 +277,7 @@ spec = describe "AtlasScheduler" $ do
           in AtlasJob
             { ajKey = atlasKey
             , ajViewMode = mode
+            , ajViewSelection = legacyViewModeToLayeredViewState mode
             , ajWaterLevel = defaultWaterLevel
             , ajSnapshotVersion = SnapshotVersion 0
             , ajTerrain = terrainSnap
@@ -316,6 +320,7 @@ spec = describe "AtlasScheduler" $ do
           in AtlasJob
             { ajKey = atlasKey
             , ajViewMode = ViewElevation
+            , ajViewSelection = legacyViewModeToLayeredViewState ViewElevation
             , ajWaterLevel = defaultWaterLevel
             , ajSnapshotVersion = SnapshotVersion 1
             , ajTerrain = terrainSnap
@@ -593,6 +598,7 @@ spec = describe "AtlasScheduler" $ do
           { abBuildId = AtlasBuildId 1
           , abKey = key1
           , abViewMode = ViewElevation
+          , abViewSelection = uiViewSelection emptyUiState
           , abWaterLevel = defaultWaterLevel
           , abTerrain = terrainSnap
           , abHexRadius = 6
@@ -645,6 +651,7 @@ spec = describe "AtlasScheduler" $ do
           { abBuildId = AtlasBuildId 1
           , abKey = key1
           , abViewMode = ViewElevation
+          , abViewSelection = uiViewSelection emptyUiState
           , abWaterLevel = defaultWaterLevel
           , abTerrain = terrainSnap
           , abHexRadius = 6
@@ -687,6 +694,7 @@ spec = describe "AtlasScheduler" $ do
           { abBuildId = AtlasBuildId 2
           , abKey = AtlasKey ViewElevation defaultWaterLevel (tsVersion terrainSnap)
           , abViewMode = ViewElevation
+          , abViewSelection = uiViewSelection emptyUiState
           , abWaterLevel = defaultWaterLevel
           , abTerrain = terrainSnap
           , abHexRadius = 6

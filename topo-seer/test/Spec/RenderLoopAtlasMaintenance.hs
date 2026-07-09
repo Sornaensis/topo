@@ -320,7 +320,9 @@ renderableFallbackTerrainSnapshot = TerrainSnapshot
 
 chunkTexturesFor :: Int -> TerrainCache -> ChunkTextureCache
 chunkTexturesFor scale cache = ChunkTextureCache
-  { ctcViewMode = tcViewMode cache
+  { ctcVersion = tcVersion cache
+  , ctcViewMode = tcViewMode cache
+  , ctcViewSelection = tcViewSelection cache
   , ctcWaterLevel = tcWaterLevel cache
   , ctcChunkSize = tcChunkSize cache
   , ctcScale = scale

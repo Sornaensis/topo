@@ -51,7 +51,7 @@ module Seer.Render.Atlas
   , zoomTextureScale
   ) where
 
-import Actor.AtlasCache (AtlasKey, atlasKeyFor, atlasKeyVersion)
+import Actor.AtlasCache (AtlasKey, atlasKeyForSelection, atlasKeyVersion)
 import Actor.AtlasFreshness (AtlasFreshness, AtlasFreshnessRef, atlasTargetBuildIsFresh, readAtlasFreshnessRef)
 import Actor.AtlasResult
   ( AtlasBuildId(..)
@@ -80,7 +80,7 @@ import Actor.AtlasScheduler
 import Actor.Data (TerrainSnapshot(..))
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion(..))
-import Actor.UI (UiState(..))
+import Actor.UI (UiState(..), effectiveViewSelection)
 import Control.Monad (foldM, forM_, unless)
 import Data.List (find, partition)
 import qualified Data.IntMap.Strict as IntMap
@@ -583,7 +583,7 @@ resolveAtlasTiles
 resolveAtlasTiles latestFreshness renderTargetOk pool snapshot atlasCache stage windowSize = do
   let terrainSnap = rsTerrain snapshot
       uiSnap = rsUi snapshot
-      atlasKey = atlasKeyFor (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) terrainSnap
+      atlasKey = atlasKeyForSelection (effectiveViewSelection uiSnap) (uiRenderWaterLevel uiSnap) terrainSnap
       dataReady = tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
       requiredCoverage = if dataReady
         then Just (currentAtlasViewportCoverage (WorldConfig { wcChunkSize = tsChunkSize terrainSnap }) (uiPanOffset uiSnap) (uiZoom uiSnap) windowSize terrainSnap stage)

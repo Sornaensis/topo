@@ -32,7 +32,7 @@ import Actor.AtlasResult (AtlasBuildId, AtlasBuildResult(..), AtlasBuildTarget(.
 import Actor.AtlasResultBroker (AtlasResultRef, pushAtlasResult)
 import Actor.Data (TerrainSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion)
-import Actor.UI (ViewMode(..))
+import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), ViewMode(..))
 import Control.Concurrent (threadDelay)
 import Control.Exception (evaluate, onException)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
@@ -47,7 +47,7 @@ import UI.HexGeometry (normalizeHexBounds)
 import UI.RiverRender (RiverGeometry(..), buildChunkRiverGeometry, defaultRiverRenderConfig, scaleRiverWidths)
 import UI.TerrainAtlas (AtlasChunkGeometry(..), AtlasTileGeometry(..), attachRiverOverlay, composeTilesFromGeometry, mergeChunkGeometry)
 import UI.DayNight (DayNightKey, DayNightSpec)
-import UI.TerrainRender (ChunkGeometry, buildChunkGeometry, buildDayNightGeometry)
+import UI.TerrainRender (ChunkGeometry, buildChunkGeometryForSelection, buildDayNightGeometry)
 import Topo.Weather (getWeatherNormalsFromStore)
 
 
@@ -56,6 +56,7 @@ data AtlasBuild = AtlasBuild
   { abBuildId    :: !AtlasBuildId
   , abKey        :: AtlasKey
   , abViewMode   :: ViewMode
+  , abViewSelection :: !LayeredViewState
   , abWaterLevel :: Float
   , abTerrain    :: TerrainSnapshot
   , abHexRadius  :: Int
@@ -256,7 +257,7 @@ runAtlasBuild job = do
     else do
       let terrainSnap = abTerrain job
           config = WorldConfig { wcChunkSize = tsChunkSize terrainSnap }
-          mode = abViewMode job
+          selection = abViewSelection job
           waterLevel = abWaterLevel job
           climateChunks = tsClimateChunks terrainSnap
           weatherChunks = tsWeatherChunks terrainSnap
@@ -277,8 +278,8 @@ runAtlasBuild job = do
                         | k <- visibleKeys
                         , Just chunk <- [IntMap.lookup k (tsTerrainChunks terrainSnap)]
                         ]
-          overlayMap = case mode of
-            ViewOverlay name fieldIdx ->
+          overlayMap = case lvsSkyOverlay selection of
+            Just (SkyOverlayPlugin name fieldIdx) ->
               case extractOverlayField name fieldIdx (wcChunkSize config * wcChunkSize config) (tsOverlayStore terrainSnap) of
                 Just m  -> m
                 Nothing -> IntMap.empty
@@ -290,7 +291,7 @@ runAtlasBuild job = do
       -- removes the green thread entirely, guaranteeing the bound main
       -- thread (render loop) can reclaim its capability.
       mbGeomPairs <- traverseFresh job chunkPairs $ \(k, chunk) -> do
-        let geom = buildChunkGeometry (abHexRadius job) config mode waterLevel climateChunks weatherChunks weatherNormalsChunks vegChunks (IntMap.lookup k overlayMap) k chunk
+        let geom = buildChunkGeometryForSelection (abHexRadius job) config selection waterLevel climateChunks weatherChunks weatherNormalsChunks vegChunks (IntMap.lookup k overlayMap) k chunk
         _ <- evaluate geom
         threadDelay 100  -- 0.1ms, releases capability
         pure (k, geom)
@@ -320,8 +321,8 @@ runAtlasBuild job = do
                       -- padded viewport). Cross-chunk neighbour lookups still use the
                       -- full tsTerrainChunks map for correct boundary rendering.
                       visibleTerrainChunks = IntMap.fromList chunkPairs
-                      riverGeoMap = case mode of
-                        ViewBiome -> IntMap.mapMaybeWithKey
+                      riverGeoMap = case lvsBaseView selection of
+                        BaseViewBiome -> IntMap.mapMaybeWithKey
                           (\ cid _chunk -> buildChunkRiverGeometry (scaleRiverWidths (abHexRadius job) defaultRiverRenderConfig) config (abHexRadius job) cid (tsRiverChunks terrainSnap) (tsTerrainChunks terrainSnap))
                           visibleTerrainChunks
                         _ -> IntMap.empty

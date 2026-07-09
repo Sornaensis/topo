@@ -3,7 +3,7 @@ module Spec.CacheProperties (spec) where
 import Actor.AtlasCache (atlasKeyFor, atlasKeyVersion, terrainSnapshotViewVersion)
 import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.TerrainCacheWorker (TerrainCacheKey(..), terrainCacheKeyFrom)
-import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
+import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), UiState(..), ViewMode(..), WeatherBasis(..), defaultLayeredViewState, emptyUiState)
 import Topo (WeatherChunk(..), WorldConfig(..), emptyTerrainChunk)
 import Topo.Calendar (WorldTime(..), simulationTickSeconds)
 import Topo.Overlay (Overlay(..), OverlayProvenance(..), OverlayStore, emptyOverlay, emptyOverlayStore, insertOverlay)
@@ -76,6 +76,20 @@ spec = describe "Cache properties" $ do
     atlasKeyFor ViewCloud waterLevel terrainSnap1 `shouldNotBe` cloudKey0
     terrainSnapshotViewVersion ViewCloud terrainSnapBaseNewer `shouldBe` 11
     atlasKeyVersion (atlasKeyFor ViewCloud waterLevel terrainSnapBaseNewer) `shouldBe` 11
+
+  it "keys async fallback terrain builds by layered selection" $ do
+    let terrainSnap = renderableTerrainSnapshot 3 7 sampleWeatherChunkA
+        selectionA = defaultLayeredViewState
+          { lvsBaseView = BaseViewBiome
+          , lvsSkyOverlay = Just SkyOverlayWeatherTemperature
+          , lvsWeatherBasis = WeatherBasisCurrent
+          , lvsOverlayOpacity = 0.25
+          }
+        selectionB = selectionA { lvsOverlayOpacity = 0.75 }
+        uiA = emptyUiState { uiViewMode = ViewWeather, uiViewSelection = selectionA }
+        uiB = emptyUiState { uiViewMode = ViewWeather, uiViewSelection = selectionB }
+    fmap tckViewSelection (terrainCacheKeyFrom uiA terrainSnap) `shouldBe` Just selectionA
+    terrainCacheKeyFrom uiA terrainSnap `shouldNotBe` terrainCacheKeyFrom uiB terrainSnap
 
   it "uses weather versions for current precipitation atlas keys" $ do
     let waterLevel = 0.4
@@ -232,7 +246,9 @@ sampleWeatherChunk value = WeatherChunk
 
 chunkTexturesFor :: Int -> TerrainCache -> ChunkTextureCache
 chunkTexturesFor scale cache = ChunkTextureCache
-  { ctcViewMode = tcViewMode cache
+  { ctcVersion = tcVersion cache
+  , ctcViewMode = tcViewMode cache
+  , ctcViewSelection = tcViewSelection cache
   , ctcWaterLevel = tcWaterLevel cache
   , ctcChunkSize = tcChunkSize cache
   , ctcScale = scale

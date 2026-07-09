@@ -49,6 +49,7 @@ module Actor.UI.State
   , weatherOverlaySourceKind
   , layeredViewStateToJSON
   , layeredViewStateDataSemantics
+  , effectiveViewSelection
   , viewModeToLayeredViewState
   , legacyViewModeToLayeredViewState
   , layeredViewStateToViewMode
@@ -1733,6 +1734,18 @@ uiWorldTime ui = WorldTime
   { wtTick = uiSimTickCount ui
   , wtTickRate = simulationTickSeconds
   }
+
+-- | Return a layered selection consistent with the compatibility 'uiViewMode'.
+-- Tests and older call sites sometimes update the legacy mode field directly;
+-- this adapter keeps render/cache paths from using a stale layered selection in
+-- those states while preserving explicit layered selections that do not have a
+-- legacy 'ViewMode' equivalent.
+effectiveViewSelection :: UiState -> LayeredViewState
+effectiveViewSelection ui =
+  case layeredViewStateToViewMode (uiViewSelection ui) of
+    Just mode | mode == uiViewMode ui -> uiViewSelection ui
+    Just _ -> legacyViewModeToLayeredViewState (uiViewMode ui)
+    Nothing -> uiViewSelection ui
 
 sliderDefault :: SliderId -> Float
 sliderDefault = sliderDefaultValueForId

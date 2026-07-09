@@ -38,6 +38,7 @@ module Actor.UI
   , weatherBasisFromText
   , weatherOverlayTemporalBasis
   , layeredViewStateToJSON
+  , effectiveViewSelection
   , viewModeToLayeredViewState
   , legacyViewModeToLayeredViewState
   , layeredViewStateToViewMode
@@ -89,6 +90,7 @@ import Actor.UI.State
   , pluginRowIndex
   , pluginRowsWithParams
   , emptyUiState
+  , effectiveViewSelection
   , getUiSnapshot
   , layeredViewStateToJSON
   , layeredViewStateToViewMode

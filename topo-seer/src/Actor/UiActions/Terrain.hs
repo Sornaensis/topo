@@ -11,7 +11,7 @@ module Actor.UiActions.Terrain
   , applyTerrainResult
   ) where
 
-import Actor.AtlasCache (atlasKeyFor)
+import Actor.AtlasCache (atlasKeyForSelection, atlasKeyViewMode)
 import Actor.AtlasManager (AtlasJob(..), AtlasManager, enqueueAtlasBuild)
 import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom)
 import Actor.Data
@@ -51,6 +51,7 @@ import Actor.UI
   ( PipelineStageRunState(..)
   , Ui
   , UiState(..)
+  , effectiveViewSelection
   , getUiSnapshot
   , setUiGenerating
   , setUiOverlayNames
@@ -181,15 +182,17 @@ rebuildAtlas :: UiActionHandles -> TerrainSnapshot -> UiState -> IO ()
 rebuildAtlas handles terrainSnap uiSnap = do
   start <- getMonotonicTimeNSec
   snapshotVersion <- readSnapshotVersion (uahSnapshotVersionRef handles)
-  let currentMode = uiViewMode uiSnap
+  let selection = effectiveViewSelection uiSnap
       -- Enqueue the current zoom stage first so the visible tiles are
       -- prioritised by the scheduler's round-robin dispatch.
       orderedStages = orderedZoomStagesForZoom (uiZoom uiSnap)
       mkJob stage =
-        let atlasKey = atlasKeyFor currentMode (uiRenderWaterLevel uiSnap) terrainSnap
+        let atlasKey = atlasKeyForSelection selection (uiRenderWaterLevel uiSnap) terrainSnap
+            keyMode = atlasKeyViewMode atlasKey
         in AtlasJob
           { ajKey        = atlasKey
-          , ajViewMode   = currentMode
+          , ajViewMode   = keyMode
+          , ajViewSelection = selection
           , ajWaterLevel = uiRenderWaterLevel uiSnap
           , ajSnapshotVersion = snapshotVersion
           , ajTerrain    = terrainSnap

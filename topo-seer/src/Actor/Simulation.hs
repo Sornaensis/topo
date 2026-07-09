@@ -67,7 +67,7 @@ import Hyperspace.Actor.Spec (OpTag(..))
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 
-import Actor.AtlasCache (atlasKeyFor, terrainSnapshotViewVersion)
+import Actor.AtlasCache (atlasKeyForSelection, atlasKeyViewMode, terrainSnapshotSelectionVersion)
 import Actor.AtlasManager
   ( AtlasManager
   , AtlasJob(..)
@@ -103,9 +103,14 @@ import Actor.SnapshotReceiver
   , bumpSnapshotVersion
   )
 import Actor.UI
-  ( Ui
+  ( BaseViewMode(..)
+  , LayeredViewState(..)
+  , SkyOverlayMode(..)
+  , Ui
   , UiState(..)
   , ViewMode(..)
+  , WeatherBasis(..)
+  , effectiveViewSelection
   , getUiSnapshot
   , setUiSimTickCount
   , setUiOverlayNames
@@ -1146,7 +1151,7 @@ integrateFreshTickResult result st
             setUiOverlayNames (shUiHandle handles) (overlayNames newStore)
           setUiSimTickCount (shUiHandle handles) appliedTick
           uiSnap <- getUiSnapshot (shUiHandle handles)
-          let visibleOverlayChanged = selectedOverlayChanged (uiViewMode uiSnap) (twOverlays baseWorld) newStore
+          let visibleOverlayChanged = selectedOverlayChanged (effectiveViewSelection uiSnap) (twOverlays baseWorld) newStore
           publication <- publishTickSnapshot
             handles
             st
@@ -1332,32 +1337,26 @@ commonChunkCount :: IntMap.IntMap WeatherChunk -> IntMap.IntMap WeatherChunk -> 
 commonChunkCount before after =
   IntMap.size (IntMap.intersection before after)
 
-selectedOverlayChanged :: ViewMode -> OverlayStore -> OverlayStore -> Bool
-selectedOverlayChanged ViewCloudTypical before after =
-  lookupOverlay weatherNormalsOverlayName before /= lookupOverlay weatherNormalsOverlayName after
-selectedOverlayChanged (ViewOverlay name _) before after =
-  lookupOverlay name before /= lookupOverlay name after
-selectedOverlayChanged _ _ _ = False
+selectedOverlayChanged :: LayeredViewState -> OverlayStore -> OverlayStore -> Bool
+selectedOverlayChanged selection before after =
+  case lvsSkyOverlay selection of
+    Just SkyOverlayCloud | lvsWeatherBasis selection == WeatherBasisAverage ->
+      lookupOverlay weatherNormalsOverlayName before /= lookupOverlay weatherNormalsOverlayName after
+    Just (SkyOverlayPlugin name _) ->
+      lookupOverlay name before /= lookupOverlay name after
+    _ -> False
 
 viewAffectedBySimulationPublication
-  :: ViewMode
+  :: LayeredViewState
   -> Bool
   -> Bool
   -> Bool
   -> Bool
   -> Bool
   -> Bool
-viewAffectedBySimulationPublication mode terrainChanged climateChanged weatherChanged vegetationChanged overlayChanged =
-  case mode of
-    ViewClimate      -> terrainChanged || climateChanged
-    ViewPrecip       -> terrainChanged || climateChanged
-    ViewCloudTypical -> terrainChanged || climateChanged || overlayChanged
-    ViewWeather      -> terrainChanged || weatherChanged
-    ViewCloud        -> terrainChanged || weatherChanged
-    ViewPrecipCurrent -> terrainChanged || weatherChanged
-    ViewVegetation   -> terrainChanged || vegetationChanged
-    ViewOverlay{}  -> terrainChanged || overlayChanged
-    _              -> terrainChanged
+viewAffectedBySimulationPublication selection terrainChanged climateChanged weatherChanged vegetationChanged overlayChanged =
+  baseLayerAffected selection terrainChanged vegetationChanged
+    || overlayLayerAffected True selection climateChanged weatherChanged overlayChanged
 
 isAutoTickCompletion :: SimulationTickCompletion -> Bool
 isAutoTickCompletion SimulationTickNoCompletion = False
@@ -1458,7 +1457,7 @@ simulationPublicationPlan st isAutoTick now flushOnIdle uiSnap terrainChanged cl
     }
   where
     immediateAffected = immediatePublicationAffected
-      (uiViewMode uiSnap)
+      (effectiveViewSelection uiSnap)
       terrainChanged
       climateChanged
       vegetationChanged
@@ -1474,33 +1473,49 @@ simulationPublicationPlan st isAutoTick now flushOnIdle uiSnap terrainChanged cl
       | otherwise = WeatherPublicationAutoImmediate
 
 immediatePublicationAffected
-  :: ViewMode
+  :: LayeredViewState
   -> Bool
   -> Bool
   -> Bool
   -> Bool
   -> Bool
-immediatePublicationAffected mode terrainChanged climateChanged vegetationChanged overlayChanged =
-  case mode of
-    ViewClimate      -> terrainChanged || climateChanged
-    ViewPrecip       -> terrainChanged || climateChanged
-    ViewCloudTypical -> terrainChanged || climateChanged || overlayChanged
-    ViewWeather      -> terrainChanged
-    ViewCloud        -> terrainChanged
-    ViewPrecipCurrent -> terrainChanged
-    ViewVegetation   -> terrainChanged || vegetationChanged
-    ViewOverlay{}  -> terrainChanged || overlayChanged
-    _              -> terrainChanged
+immediatePublicationAffected selection terrainChanged climateChanged vegetationChanged overlayChanged =
+  baseLayerAffected selection terrainChanged vegetationChanged
+    || overlayLayerAffected False selection climateChanged False overlayChanged
+
+baseLayerAffected :: LayeredViewState -> Bool -> Bool -> Bool
+baseLayerAffected selection terrainChanged vegetationChanged =
+  terrainChanged || case lvsBaseView selection of
+    BaseViewVegetation -> vegetationChanged
+    _ -> False
+
+overlayLayerAffected :: Bool -> LayeredViewState -> Bool -> Bool -> Bool -> Bool
+overlayLayerAffected includeCurrentWeather selection climateChanged weatherChanged overlayChanged =
+  case lvsSkyOverlay selection of
+    Nothing -> False
+    Just SkyOverlayWeatherTemperature -> case lvsWeatherBasis selection of
+      WeatherBasisAverage -> climateChanged
+      WeatherBasisCurrent -> includeCurrentWeather && weatherChanged
+    Just SkyOverlayPrecipitation -> case lvsWeatherBasis selection of
+      WeatherBasisAverage -> climateChanged
+      WeatherBasisCurrent -> includeCurrentWeather && weatherChanged
+    Just SkyOverlayCloud -> case lvsWeatherBasis selection of
+      WeatherBasisAverage -> climateChanged || overlayChanged
+      WeatherBasisCurrent -> includeCurrentWeather && weatherChanged
+    Just SkyOverlayPlugin{} -> overlayChanged
+
+selectionUsesCurrentWeather :: LayeredViewState -> Bool
+selectionUsesCurrentWeather selection = case lvsSkyOverlay selection of
+  Just SkyOverlayWeatherTemperature -> lvsWeatherBasis selection == WeatherBasisCurrent
+  Just SkyOverlayPrecipitation -> lvsWeatherBasis selection == WeatherBasisCurrent
+  Just SkyOverlayCloud -> lvsWeatherBasis selection == WeatherBasisCurrent
+  Just (SkyOverlayPlugin name _) -> name == "weather"
+  Nothing -> False
 
 weatherPublicationAffected :: SimState -> UiState -> Bool -> Bool
 weatherPublicationAffected st uiSnap weatherChanged =
-  uiDayNightEnabled uiSnap || weatherViewAffected
-  where
-    weatherViewAffected = case uiViewMode uiSnap of
-      ViewWeather       -> weatherChanged || ssAutoWeatherPublicationPending st
-      ViewCloud         -> weatherChanged || ssAutoWeatherPublicationPending st
-      ViewPrecipCurrent -> weatherChanged || ssAutoWeatherPublicationPending st
-      _                 -> False
+  uiDayNightEnabled uiSnap
+    || (selectionUsesCurrentWeather (effectiveViewSelection uiSnap) && (weatherChanged || ssAutoWeatherPublicationPending st))
 
 autoWeatherPublicationDue :: Word64 -> SimState -> Bool
 autoWeatherPublicationDue now st =
@@ -1550,7 +1565,7 @@ atlasPublicationAffected
 atlasPublicationAffected coalescedWeatherAffected uiSnap terrainChanged climateChanged weatherChanged vegetationChanged overlayChanged =
   uiDayNightEnabled uiSnap
     || coalescedWeatherAffected
-    || viewAffectedBySimulationPublication (uiViewMode uiSnap) terrainChanged climateChanged weatherChanged vegetationChanged overlayChanged
+    || viewAffectedBySimulationPublication (effectiveViewSelection uiSnap) terrainChanged climateChanged weatherChanged vegetationChanged overlayChanged
 
 -- | Normalized auto-tick rates at or below this value are slow enough to
 -- backfill all zoom stages whenever a weather/cloud/day-night publication is
@@ -1571,12 +1586,7 @@ simulationAtlasCurrentStageOnly completion uiSnap =
 
 simulationAtlasCurrentStageOnlyEligible :: UiState -> Bool
 simulationAtlasCurrentStageOnlyEligible uiSnap =
-  uiDayNightEnabled uiSnap || case uiViewMode uiSnap of
-    ViewWeather -> True
-    ViewCloud -> True
-    ViewPrecipCurrent -> True
-    ViewOverlay name _ -> name == "weather"
-    _ -> False
+  uiDayNightEnabled uiSnap || selectionUsesCurrentWeather (effectiveViewSelection uiSnap)
 
 simulationAtlasStagesForTick :: SimulationTickCompletion -> UiState -> [ZoomStage]
 simulationAtlasStagesForTick completion uiSnap
@@ -1591,10 +1601,13 @@ enqueueAtlasJobsForPublication
   -> SnapshotVersion
   -> IO ()
 enqueueAtlasJobsForPublication handles completion uiSnap terrainSnap snapshotVersion = do
-  let atlasKey = atlasKeyFor (uiViewMode uiSnap) (uiRenderWaterLevel uiSnap) terrainSnap
+  let selection = effectiveViewSelection uiSnap
+      atlasKey = atlasKeyForSelection selection (uiRenderWaterLevel uiSnap) terrainSnap
+      keyMode = atlasKeyViewMode atlasKey
       mkJob stage = AtlasJob
         { ajKey = atlasKey
-        , ajViewMode = uiViewMode uiSnap
+        , ajViewMode = keyMode
+        , ajViewSelection = selection
         , ajWaterLevel = uiRenderWaterLevel uiSnap
         , ajSnapshotVersion = snapshotVersion
         , ajTerrain = terrainSnap
@@ -1642,26 +1655,17 @@ flushLatestWeatherPublication st =
 
 flushWeatherPublicationViewAffected :: SimState -> UiState -> Bool
 flushWeatherPublicationViewAffected _ uiSnap =
-  uiDayNightEnabled uiSnap || case uiViewMode uiSnap of
-    ViewWeather -> True
-    ViewCloud   -> True
-    ViewPrecipCurrent -> True
-    ViewOverlay name _ -> name == "weather"
-    _           -> False
+  uiDayNightEnabled uiSnap || selectionUsesCurrentWeather (effectiveViewSelection uiSnap)
 
 flushWeatherPublicationNeeded :: SimState -> UiState -> TerrainSnapshot -> TerrainSnapshot -> Bool
 flushWeatherPublicationNeeded st uiSnap latest published
   | uiDayNightEnabled uiSnap = True
-  | otherwise = case uiViewMode uiSnap of
-      ViewWeather -> ssAutoWeatherPublicationPending st || terrainSnapshotViewVersion ViewWeather latest /= terrainSnapshotViewVersion ViewWeather published
-      ViewCloud   -> ssAutoWeatherPublicationPending st || terrainSnapshotViewVersion ViewCloud latest /= terrainSnapshotViewVersion ViewCloud published
-      ViewPrecipCurrent -> ssAutoWeatherPublicationPending st || terrainSnapshotViewVersion ViewPrecipCurrent latest /= terrainSnapshotViewVersion ViewPrecipCurrent published
-      mode@(ViewOverlay name _) ->
-        name == "weather"
-          && ( ssAutoWeatherPublicationPending st
-               || terrainSnapshotViewVersion mode latest /= terrainSnapshotViewVersion mode published
-             )
-      _           -> False
+  | selectionUsesCurrentWeather selection =
+      ssAutoWeatherPublicationPending st
+        || terrainSnapshotSelectionVersion selection latest /= terrainSnapshotSelectionVersion selection published
+  | otherwise = False
+  where
+    selection = effectiveViewSelection uiSnap
 
 autoTickWeatherPublishIntervalNs :: Word64
 autoTickWeatherPublishIntervalNs = 250000000

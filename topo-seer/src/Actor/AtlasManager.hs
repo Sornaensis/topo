@@ -32,12 +32,12 @@ module Actor.AtlasManager
   , inspectFreshAtlasJobs
   ) where
 
-import Actor.AtlasCache (AtlasKey(..), atlasKeyVersion)
+import Actor.AtlasCache (AtlasKey, atlasKeyDataVersion, atlasKeySelectionTag, atlasKeyVersion, atlasKeyViewMode, atlasKeyWaterLevel)
 import Actor.AtlasFreshness (AtlasFreshness(..), AtlasFreshnessRef, writeAtlasFreshnessBuild, writeAtlasFreshnessCurrent)
 import Actor.AtlasResult (AtlasBuildId(..), AtlasBuildTarget(..))
 import Actor.Data (TerrainSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion)
-import Actor.UI (ViewMode(..))
+import Actor.UI (LayeredViewState, ViewMode(..))
 import Control.Monad (when)
 import Data.List (intercalate)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
@@ -52,6 +52,7 @@ import Seer.Render.Viewport (AtlasViewportCoverage, atlasViewportCoverageCovers)
 data AtlasJob = AtlasJob
   { ajKey        :: !AtlasKey
   , ajViewMode   :: !ViewMode
+  , ajViewSelection :: !LayeredViewState
   , ajWaterLevel :: !Float
   , ajSnapshotVersion :: !SnapshotVersion
   , ajTerrain    :: !TerrainSnapshot
@@ -91,7 +92,10 @@ data AtlasJobSlot = AtlasJobSlot !ViewMode !Float !Int !Int
 
 data AtlasAcceptedJob = AtlasAcceptedJob
   { aajBuildId :: !AtlasBuildId
+  , aajKey :: !AtlasKey
   , aajKeyVersion :: !Word64
+  , aajKeyDataVersion :: !Word64
+  , aajKeySelectionTag :: !Word64
   , aajSnapshotVersion :: !SnapshotVersion
   , aajCoverage :: !(Maybe AtlasViewportCoverage)
   }
@@ -226,30 +230,34 @@ atlasJobTarget job = AtlasBuildTarget
 atlasJobAccepted :: AtlasBuildId -> AtlasJob -> AtlasAcceptedJob
 atlasJobAccepted buildId job = AtlasAcceptedJob
   { aajBuildId = buildId
+  , aajKey = ajKey job
   , aajKeyVersion = atlasKeyVersion (ajKey job)
+  , aajKeyDataVersion = atlasKeyDataVersion (ajKey job)
+  , aajKeySelectionTag = atlasKeySelectionTag (ajKey job)
   , aajSnapshotVersion = ajSnapshotVersion job
   , aajCoverage = ajViewportCoverage job
   }
 
 acceptedVersionStamp :: AtlasAcceptedJob -> (Word64, SnapshotVersion)
-acceptedVersionStamp accepted = (aajKeyVersion accepted, aajSnapshotVersion accepted)
+acceptedVersionStamp accepted = (aajKeyDataVersion accepted, aajSnapshotVersion accepted)
 
 jobVersionStamp :: AtlasJob -> (Word64, SnapshotVersion)
-jobVersionStamp job = (atlasKeyVersion (ajKey job), ajSnapshotVersion job)
+jobVersionStamp job = (atlasKeyDataVersion (ajKey job), ajSnapshotVersion job)
 
 acceptedCoversJob :: AtlasAcceptedJob -> AtlasJob -> Bool
 acceptedCoversJob accepted job =
-  aajKeyVersion accepted == atlasKeyVersion (ajKey job)
+  aajKey accepted == ajKey job
     && case (aajCoverage accepted, ajViewportCoverage job) of
       (Just covered, Just required) -> atlasViewportCoverageCovers covered required
       _ -> False
 
 sameStampRedundant :: AtlasAcceptedJob -> AtlasJob -> Bool
 sameStampRedundant accepted job =
-  case (aajCoverage accepted, ajViewportCoverage job) of
-    (Just covered, Just required) -> atlasViewportCoverageCovers covered required
-    (Nothing, Nothing) -> True
-    _ -> False
+  aajKey accepted == ajKey job
+    && case (aajCoverage accepted, ajViewportCoverage job) of
+      (Just covered, Just required) -> atlasViewportCoverageCovers covered required
+      (Nothing, Nothing) -> True
+      _ -> False
 
 data AtlasEnqueueDropReason = AtlasEnqueueStale | AtlasEnqueueDuplicate
   deriving (Eq, Show)
@@ -258,11 +266,12 @@ enqueueDropReason :: Bool -> AtlasAcceptedJob -> AtlasJob -> Maybe AtlasEnqueueD
 enqueueDropReason queuedForSlot accepted job =
   let acceptedStamp = acceptedVersionStamp accepted
       jobStamp = jobVersionStamp job
-  in if acceptedStamp > jobStamp
+      sameSelection = aajKeySelectionTag accepted == atlasKeySelectionTag (ajKey job)
+  in if sameSelection && acceptedStamp > jobStamp
       then Just AtlasEnqueueStale
-      else if acceptedStamp == jobStamp && sameStampRedundant accepted job
+      else if sameSelection && acceptedStamp == jobStamp && sameStampRedundant accepted job
         then Just AtlasEnqueueDuplicate
-        else if queuedForSlot && acceptedCoversJob accepted job
+        else if sameSelection && queuedForSlot && acceptedCoversJob accepted job
           then Just AtlasEnqueueDuplicate
           else Nothing
 
@@ -360,21 +369,23 @@ selectFreshDrain
 selectFreshDrain req queue =
   let freshness = afdrFreshness req
       key = afKey freshness
-      requestKeyVersion = atlasKeyVersion key
+      requestKeyVersion = atlasKeyDataVersion key
       requestSnapshotVersion = afSnapshotVersion freshness
       safeLimit = max 0 (afdrLimit req)
-      sameKeyFamily job = case key of
-        AtlasKey mode waterLevel _ -> ajViewMode job == mode && ajWaterLevel job == waterLevel
+      sameKeyFamily job =
+        ajViewMode job == atlasKeyViewMode key
+          && ajWaterLevel job == atlasKeyWaterLevel key
+          && atlasKeySelectionTag (ajKey job) == atlasKeySelectionTag key
       isDispatchable queued =
         let job = adjJob queued
         in ajKey job == key && ajSnapshotVersion job <= requestSnapshotVersion
       isFuture queued =
         let job = adjJob queued
         in sameKeyFamily job
-          && (ajSnapshotVersion job > requestSnapshotVersion || atlasKeyVersion (ajKey job) > requestKeyVersion)
+          && (ajSnapshotVersion job > requestSnapshotVersion || atlasKeyDataVersion (ajKey job) > requestKeyVersion)
       isStaleForRequest queued =
         let job = adjJob queued
-        in ajSnapshotVersion job < requestSnapshotVersion || atlasKeyVersion (ajKey job) < requestKeyVersion
+        in ajSnapshotVersion job < requestSnapshotVersion || atlasKeyDataVersion (ajKey job) < requestKeyVersion
       hasFutureWork = any isFuture queue
       dispatchable = if hasFutureWork
         then []

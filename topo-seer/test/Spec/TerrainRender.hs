@@ -9,13 +9,13 @@ import qualified Data.Vector.Unboxed as U
 import Test.Hspec
 import Linear (V2(..))
 import qualified SDL.Raw.Types as Raw
-import Topo (WorldConfig(..), TerrainChunk(..), WeatherChunk(..), zeroDirSlope)
+import Topo (ClimateChunk(..), WorldConfig(..), TerrainChunk(..), VegetationChunk(..), WeatherChunk(..), zeroDirSlope)
 import Topo.Types (pattern BiomeDesert, pattern FormFlat, pattern PlateBoundaryNone)
 import Topo.Weather (WeatherNormalsChunk(..))
-import Actor.UI (ViewMode(..))
+import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), ViewMode(..), WeatherBasis(..), baseViewModeToViewMode, defaultLayeredViewState)
 import UI.DayNight (dayNightMinBrightness)
 import UI.HexGeometry (hexCenterF, renderHexRadiusPx)
-import UI.TerrainRender (ChunkGeometry(..), buildChunkGeometry, buildDayNightGeometry)
+import UI.TerrainRender (ChunkGeometry(..), buildChunkGeometry, buildChunkGeometryForSelection, buildDayNightGeometry)
 import UI.Widgets (Rect(..))
 
 spec :: Spec
@@ -48,6 +48,82 @@ spec = describe "Terrain render geometry" $ do
         (centerX, centerY) = hexCenterF renderHexRadiusPx 0 0
     realToFrac bx + realToFrac localX `shouldSatisfy` closeTo centerX
     realToFrac by + realToFrac localY `shouldSatisfy` closeTo centerY
+
+  it "matches legacy base colors for base-only layered selections" $ do
+    let veg = Just (testVegetationChunk 1 0.7)
+        check baseMode = do
+          let legacyMode = baseViewModeToViewMode baseMode
+              selection = defaultLayeredViewState
+                { lvsBaseView = baseMode
+                , lvsSkyOverlay = Nothing
+                }
+              layered = selectionColor selection Nothing Nothing Nothing veg
+              legacy = viewColorWithData legacyMode Nothing Nothing Nothing veg
+          layered `shouldBe` legacy
+    mapM_ check
+      [ BaseViewElevation
+      , BaseViewBiome
+      , BaseViewMoisture
+      , BaseViewPlateId
+      , BaseViewPlateBoundary
+      , BaseViewPlateHardness
+      , BaseViewPlateCrust
+      , BaseViewPlateAge
+      , BaseViewPlateHeight
+      , BaseViewPlateVelocity
+      , BaseViewVegetation
+      , BaseViewTerrainForm
+      ]
+
+  it "keeps production layered legacy weather selections opaque" $ do
+    let weather = testWeatherChunk 1 0.85 0.00 0.00 0.65
+        climate = testClimateChunk 1 0.2 0.75 0.4 0.3
+        check mode selection =
+          selectionColor selection (Just climate) (Just weather) Nothing Nothing
+            `shouldBe` viewColorWithData mode (Just climate) (Just weather) Nothing Nothing
+    check ViewWeather defaultLayeredViewState
+      { lvsSkyOverlay = Just SkyOverlayWeatherTemperature
+      , lvsWeatherBasis = WeatherBasisCurrent
+      }
+    check ViewClimate defaultLayeredViewState
+      { lvsSkyOverlay = Just SkyOverlayWeatherTemperature
+      , lvsWeatherBasis = WeatherBasisAverage
+      }
+    check ViewPrecipCurrent defaultLayeredViewState
+      { lvsSkyOverlay = Just SkyOverlayPrecipitation
+      , lvsWeatherBasis = WeatherBasisCurrent
+      }
+    check ViewCloud defaultLayeredViewState
+      { lvsSkyOverlay = Just SkyOverlayCloud
+      , lvsWeatherBasis = WeatherBasisCurrent
+      }
+
+  it "alpha-composites current temperature over elevation, biome, and plate boundary bases" $ do
+    let weather = testWeatherChunk 1 0.9 0.00 0.00 0.00
+        check baseMode = do
+          let legacyMode = baseViewModeToViewMode baseMode
+              selection = defaultLayeredViewState
+                { lvsBaseView = baseMode
+                , lvsSkyOverlay = Just SkyOverlayWeatherTemperature
+                , lvsWeatherBasis = WeatherBasisCurrent
+                , lvsOverlayOpacity = 0.5
+                }
+              blended = selectionColor selection Nothing (Just weather) Nothing Nothing
+              baseOnly = viewColorWithData legacyMode Nothing (Just weather) Nothing Nothing
+              legacyWeather = viewColorWithData ViewWeather Nothing (Just weather) Nothing Nothing
+          blended `shouldNotBe` baseOnly
+          blended `shouldNotBe` legacyWeather
+          vertexAlphaTuple blended `shouldBe` 255
+    mapM_ check [BaseViewElevation, BaseViewBiome, BaseViewPlateBoundary]
+
+  it "keeps legacy scalar climate and weather modes opaque" $ do
+    let climate = testClimateChunk 1 0.2 0.75 0.4 0.3
+        weather = testWeatherChunk 1 0.85 0.00 0.00 0.65
+        legacy mode = viewColorWithData mode (Just climate) (Just weather) Nothing Nothing
+    legacy ViewClimate `shouldBe` heatTuple 0.2
+    legacy ViewWeather `shouldBe` heatTuple 0.85
+    legacy ViewPrecip `shouldBe` moistureTuple 0.75
+    legacy ViewPrecipCurrent `shouldBe` moistureTuple 0.65
 
   it "maps clear, cloudy, and storm fixtures to ordered ViewCloud colours" $ do
     let clear = viewColor ViewCloud (testWeatherChunk 1 0.45 0.00 0.00 0.00)
@@ -150,20 +226,34 @@ vertexAlpha (Raw.Vertex _ (Raw.Color _ _ _ a) _) = a
 
 viewColor :: ViewMode -> WeatherChunk -> (Word8, Word8, Word8, Word8)
 viewColor mode weather =
-  let size = 1
-      config = WorldConfig { wcChunkSize = size }
-      chunk = emptyTerrainChunk size
-      geometry = buildChunkGeometry renderHexRadiusPx config mode 0 IntMap.empty (IntMap.singleton 0 weather) IntMap.empty IntMap.empty Nothing 0 chunk
-  in vertexColor (cgVertices geometry SV.! 0)
+  viewColorWithData mode Nothing (Just weather) Nothing Nothing
 
 viewColorWithNormals :: ViewMode -> Maybe WeatherChunk -> Maybe WeatherNormalsChunk -> (Word8, Word8, Word8, Word8)
 viewColorWithNormals mode mWeather mNormals =
+  viewColorWithData mode Nothing mWeather mNormals Nothing
+
+viewColorWithData :: ViewMode -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe WeatherNormalsChunk -> Maybe VegetationChunk -> (Word8, Word8, Word8, Word8)
+viewColorWithData mode mClimate mWeather mNormals mVeg =
   let size = 1
       config = WorldConfig { wcChunkSize = size }
       chunk = emptyTerrainChunk size
+      climateMap = maybe IntMap.empty (IntMap.singleton 0) mClimate
       weatherMap = maybe IntMap.empty (IntMap.singleton 0) mWeather
       normalMap = maybe IntMap.empty (IntMap.singleton 0) mNormals
-      geometry = buildChunkGeometry renderHexRadiusPx config mode 0 IntMap.empty weatherMap normalMap IntMap.empty Nothing 0 chunk
+      vegMap = maybe IntMap.empty (IntMap.singleton 0) mVeg
+      geometry = buildChunkGeometry renderHexRadiusPx config mode 0 climateMap weatherMap normalMap vegMap Nothing 0 chunk
+  in vertexColor (cgVertices geometry SV.! 0)
+
+selectionColor :: LayeredViewState -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe WeatherNormalsChunk -> Maybe VegetationChunk -> (Word8, Word8, Word8, Word8)
+selectionColor selection mClimate mWeather mNormals mVeg =
+  let size = 1
+      config = WorldConfig { wcChunkSize = size }
+      chunk = emptyTerrainChunk size
+      climateMap = maybe IntMap.empty (IntMap.singleton 0) mClimate
+      weatherMap = maybe IntMap.empty (IntMap.singleton 0) mWeather
+      normalMap = maybe IntMap.empty (IntMap.singleton 0) mNormals
+      vegMap = maybe IntMap.empty (IntMap.singleton 0) mVeg
+      geometry = buildChunkGeometryForSelection renderHexRadiusPx config selection 0 climateMap weatherMap normalMap vegMap Nothing 0 chunk
   in vertexColor (cgVertices geometry SV.! 0)
 
 testWeatherChunk :: Int -> Float -> Float -> Float -> Float -> WeatherChunk
@@ -204,6 +294,52 @@ testWeatherNormalsChunk total cover water precip =
       , wncCloudWaterMid  = v (water * 0.25)
       , wncCloudWaterHigh = v (water * 0.15)
       }
+
+testClimateChunk :: Int -> Float -> Float -> Float -> Float -> ClimateChunk
+testClimateChunk total temp precip humidity windSpd =
+  let v value = U.replicate total value
+  in ClimateChunk
+      { ccTempAvg = v temp
+      , ccPrecipAvg = v precip
+      , ccWindDirAvg = v 0
+      , ccWindSpdAvg = v windSpd
+      , ccHumidityAvg = v humidity
+      , ccTempRange = v 0
+      , ccPrecipSeasonality = v 0
+      }
+
+testVegetationChunk :: Int -> Float -> VegetationChunk
+testVegetationChunk total cover =
+  let v value = U.replicate total value
+  in VegetationChunk
+      { vegCover = v cover
+      , vegAlbedo = v 0.2
+      , vegDensity = v cover
+      }
+
+heatTuple :: Float -> (Word8, Word8, Word8, Word8)
+heatTuple value =
+  let v = clamp01Local value
+  in ( toByteLocal (0.5 + v * 0.5)
+     , toByteLocal (0.2 + v * 0.4)
+     , toByteLocal (0.2 + v * 0.2)
+     , 255
+     )
+
+moistureTuple :: Float -> (Word8, Word8, Word8, Word8)
+moistureTuple value =
+  let v = clamp01Local value
+  in ( toByteLocal (0.1 + v * 0.2)
+     , toByteLocal (0.3 + v * 0.5)
+     , toByteLocal (0.4 + v * 0.6)
+     , 255
+     )
+
+toByteLocal :: Float -> Word8
+toByteLocal value = fromIntegral (round (clamp01Local value * 255) :: Int)
+
+clamp01Local :: Float -> Float
+clamp01Local value = max 0 (min 1 value)
 
 channelSum :: (Word8, Word8, Word8, Word8) -> Int
 channelSum (r, g, b, _) = fromIntegral r + fromIntegral g + fromIntegral b

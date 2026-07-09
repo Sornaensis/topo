@@ -3,13 +3,14 @@ module UI.TerrainRender
   ( ChunkGeometry(..)
   , ChunkTexture(..)
   , buildChunkGeometry
+  , buildChunkGeometryForSelection
   , buildDayNightGeometry
   , buildChunkTexture
   , chunkBounds
   , destroyChunkTexture
   ) where
 
-import Actor.UI (ViewMode(..))
+import Actor.UI (LayeredViewState, ViewMode(..))
 import Control.Monad.ST (ST)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
@@ -26,7 +27,7 @@ import Topo (ChunkCoord(..), ChunkId(..), ClimateChunk(..), TerrainChunk(..), Ve
 import Topo.Weather (WeatherNormalsChunk(..))
 import UI.DayNight (dayNightMinBrightness)
 import UI.HexGeometry (hexCenterF, hexChunkBounds, hexCornerOffsets, renderHexRadiusPx)
-import UI.TerrainColor (terrainColor)
+import UI.TerrainColor (terrainColor, terrainColorForSelection)
 import UI.Widgets (Rect(..))
 
 -- | Triangle mesh for a single terrain chunk, ready for rendering.
@@ -54,7 +55,18 @@ data ChunkTexture = ChunkTexture
 -- Uses pre-allocated storable vectors and direct writes to avoid the
 -- overhead of building intermediate lists and calling @SV.fromList@.
 buildChunkGeometry :: Int -> WorldConfig -> ViewMode -> Float -> IntMap ClimateChunk -> IntMap WeatherChunk -> IntMap WeatherNormalsChunk -> IntMap VegetationChunk -> Maybe (U.Vector Float) -> Int -> TerrainChunk -> ChunkGeometry
-buildChunkGeometry hexRadiusPx config mode waterLevel climateMap weatherMap weatherNormalsMap vegMap mOverlayVec key chunk =
+buildChunkGeometry hexRadiusPx config mode =
+  buildChunkGeometryWithColor (terrainColor mode) hexRadiusPx config
+
+-- | Build chunk geometry from an explicit composable base/overlay selection.
+buildChunkGeometryForSelection :: Int -> WorldConfig -> LayeredViewState -> Float -> IntMap ClimateChunk -> IntMap WeatherChunk -> IntMap WeatherNormalsChunk -> IntMap VegetationChunk -> Maybe (U.Vector Float) -> Int -> TerrainChunk -> ChunkGeometry
+buildChunkGeometryForSelection hexRadiusPx config selection =
+  buildChunkGeometryWithColor (terrainColorForSelection selection) hexRadiusPx config
+
+type TileColorFn = Float -> TerrainChunk -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe WeatherNormalsChunk -> Maybe VegetationChunk -> Maybe Float -> Int -> V4 Word8
+
+buildChunkGeometryWithColor :: TileColorFn -> Int -> WorldConfig -> Float -> IntMap ClimateChunk -> IntMap WeatherChunk -> IntMap WeatherNormalsChunk -> IntMap VegetationChunk -> Maybe (U.Vector Float) -> Int -> TerrainChunk -> ChunkGeometry
+buildChunkGeometryWithColor tileColor hexRadiusPx config waterLevel climateMap weatherMap weatherNormalsMap vegMap mOverlayVec key chunk =
   let ChunkCoord cx cy = chunkCoordFromId (ChunkId key)
       TileCoord ox oy = chunkOriginTile config (ChunkCoord cx cy)
       climateChunk = IntMap.lookup key climateMap
@@ -82,7 +94,7 @@ buildChunkGeometry hexRadiusPx config mode waterLevel climateMap weatherMap weat
                       overlayVal = case mOverlayVec of
                         Just vec | idx < U.length vec -> Just (vec U.! idx)
                         _ -> Nothing
-                      baseColor = terrainColor mode waterLevel chunk climateChunk weatherChunk weatherNormalsChunk vegChunk overlayVal idx
+                      baseColor = tileColor waterLevel chunk climateChunk weatherChunk weatherNormalsChunk vegChunk overlayVal idx
                       rawColor = toRawColor baseColor
                       base = idx * 7
                   SM.unsafeWrite mv base (Raw.Vertex (Raw.FPoint centerX centerY) rawColor zeroTex)

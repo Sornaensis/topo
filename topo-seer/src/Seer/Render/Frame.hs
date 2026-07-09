@@ -20,7 +20,7 @@ import Actor.Log (Log, LogEntry(..), LogLevel(..), appendLog)
 import Actor.Log (LogSnapshot(..))
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion)
-import Actor.UI (LeftTab(..), UiState(..), ViewMode(..))
+import Actor.UI (LeftTab(..), UiState(..), ViewMode(..), effectiveViewSelection)
 import Control.Monad (forM_, when)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Maybe (isNothing)
@@ -46,7 +46,7 @@ import Seer.Draw
   , seedMaxDigits
   , viewColor
   )
-import Actor.AtlasCache (AtlasKey, atlasKeyFor)
+import Actor.AtlasCache (AtlasKey, atlasKeyForSelection)
 import Seer.Render.Atlas
   ( AtlasCacheSummary(..)
   , AtlasResolveStatus
@@ -258,7 +258,7 @@ renderFrame context = do
       -- Synchronise the render-thread cache key with the current UI state
       -- BEFORE draining results.  This ensures stale worker results (from a
       -- superseded view mode) are discarded rather than thrashing the key.
-      expectedAtlasKey = atlasKeyFor mode (uiRenderWaterLevel (rsUi snapshot)) terrainSnap
+      expectedAtlasKey = atlasKeyForSelection (effectiveViewSelection (rsUi snapshot)) (uiRenderWaterLevel (rsUi snapshot)) terrainSnap
       atlasCacheKeyed = setAtlasKey expectedAtlasKey atlasCacheWithStage
       dataReady = tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
       windowSize = (fromIntegral winW, fromIntegral winH)

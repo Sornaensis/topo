@@ -16,7 +16,7 @@ module Actor.UiActions.Command
   ) where
 
 import Actor.UiActions.Handles (ActorHandles(..))
-import Actor.AtlasCache (atlasKeyFor)
+import Actor.AtlasCache (atlasKeyForSelection, atlasKeyViewMode)
 import Actor.PluginManager
   ( LoadedPlugin(..)
   , PluginManager
@@ -71,8 +71,10 @@ import Actor.UI
   , Ui
   , UiState(..)
   , ViewMode(..)
+  , effectiveViewSelection
   , emptyUiState
   , getUiSnapshot
+  , legacyViewModeToLayeredViewState
   , uiChunkSize
   , uiConfigTab
   , uiDisabledStages
@@ -355,13 +357,18 @@ enqueueAtlasRebuildFor handles mode uiSnap snapshotVersion = do
 -- | Enqueue a full ordered atlas rebuild using an already-captured terrain snapshot.
 enqueueAtlasRebuildForTerrain :: ActorHandles -> ViewMode -> UiState -> SnapshotVersion -> TerrainSnapshot -> IO ()
 enqueueAtlasRebuildForTerrain handles mode uiSnap snapshotVersion terrainSnap = do
-  let atlasKey = atlasKeyFor mode (uiRenderWaterLevel uiSnap) terrainSnap
+  let selection = if uiViewMode uiSnap == mode
+        then effectiveViewSelection uiSnap
+        else legacyViewModeToLayeredViewState mode
+      atlasKey = atlasKeyForSelection selection (uiRenderWaterLevel uiSnap) terrainSnap
+      keyMode = atlasKeyViewMode atlasKey
       -- Enqueue the current zoom stage first so the visible tiles are
       -- prioritised by the scheduler's round-robin dispatch.
       orderedStages = orderedZoomStagesForZoom (uiZoom uiSnap)
       job stage = AtlasJob
         { ajKey        = atlasKey
-        , ajViewMode   = mode
+        , ajViewMode   = keyMode
+        , ajViewSelection = selection
         , ajWaterLevel = uiRenderWaterLevel uiSnap
         , ajSnapshotVersion = snapshotVersion
         , ajTerrain    = terrainSnap
@@ -390,13 +397,15 @@ enqueueViewportRefreshForCurrentUiWithWindow handles mbWindowSize = do
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap <- getUiSnapshot (ahUiHandle handles)
   snapshotVersion <- bumpSnapshotVersionAndRead (ahSnapshotVersionRef handles)
-  let mode = uiViewMode uiSnap
-      atlasKey = atlasKeyFor mode (uiRenderWaterLevel uiSnap) terrainSnap
+  let selection = effectiveViewSelection uiSnap
+      atlasKey = atlasKeyForSelection selection (uiRenderWaterLevel uiSnap) terrainSnap
+      keyMode = atlasKeyViewMode atlasKey
       currentStage = stageForZoom (uiZoom uiSnap)
       viewportCoverage = viewportCoverageFor terrainSnap uiSnap mbWindowSize currentStage
       job stage = AtlasJob
         { ajKey        = atlasKey
-        , ajViewMode   = mode
+        , ajViewMode   = keyMode
+        , ajViewSelection = selection
         , ajWaterLevel = uiRenderWaterLevel uiSnap
         , ajSnapshotVersion = snapshotVersion
         , ajTerrain    = terrainSnap
