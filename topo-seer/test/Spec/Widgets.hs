@@ -1,7 +1,11 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Spec.Widgets (spec) where
 
+import qualified Data.Text as Text
 import Test.Hspec
 import Linear (V2(..))
+import UI.Font (boundedTextWithEllipsis)
 import UI.Widgets
 
 spec :: Spec
@@ -16,3 +20,12 @@ spec = describe "UI.Widgets" $ do
     let rect = Rect (V2 0 0, V2 20 20)
         Rect (V2 x y, V2 w h) = insetRect 2 rect
     (x, y, w, h) `shouldBe` (2, 2, 16, 16)
+
+  it "bounds text for rendering with an ellipsis" $ do
+    let (bounded, clipped) = boundedTextWithEllipsis 8 (Text.replicate 100 "x")
+    clipped `shouldBe` True
+    Text.length bounded `shouldBe` 8
+    bounded `shouldSatisfy` Text.isSuffixOf "\x2026"
+
+  it "leaves non-pathological text unchanged when bounding" $ do
+    boundedTextWithEllipsis 8 "short" `shouldBe` ("short", False)

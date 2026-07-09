@@ -15,7 +15,14 @@ import Data.Word (Word8)
 import Foreign.C.Types (CInt)
 import Linear (V2(..), V4(..))
 import qualified SDL
-import UI.Font (FontCache, drawText, drawTextCentered, textSize)
+import UI.Font
+  ( FontCache
+  , boundedTextWithEllipsis
+  , drawText
+  , drawTextCentered
+  , fontTextRenderCharLimit
+  , textSize
+  )
 import UI.Widgets (Rect(..))
 
 rectToSDL :: Rect -> SDL.Rectangle CInt
@@ -57,18 +64,32 @@ drawLabelLeft (Just cache) color (Rect (V2 x y, V2 _w h)) label = do
 -- | Truncate @text@ to fit within @maxWidth@ pixels, appending @"\x2026"@
 -- (horizontal ellipsis) when the text is clipped.
 truncateToWidth :: FontCache -> V4 Word8 -> Int -> Text -> IO Text
-truncateToWidth cache color maxWidth text = do
-  V2 tw _ <- textSize cache color text
-  if tw <= maxWidth
-    then pure text
-    else go (Text.length text)
+truncateToWidth cache color maxWidth text
+  | maxWidth <= 0 = pure Text.empty
+  | otherwise = do
+      let (bounded, clippedByChars) = boundedTextWithEllipsis fontTextRenderCharLimit text
+          base = if clippedByChars then Text.dropEnd (Text.length ellipsis) bounded else bounded
+      V2 tw _ <- textSize cache color bounded
+      if tw <= maxWidth
+        then pure bounded
+        else fitBase base
   where
-    ellipsis = Text.pack "\x2026"
-    go 0 = pure ellipsis
-    go n = do
-      let candidate = Text.take (n - 1) text <> ellipsis
-      V2 w _ <- textSize cache color candidate
-      if w <= maxWidth then pure candidate else go (n - 1)
+    ellipsis = Text.singleton '\x2026'
+    fitBase base = do
+      best <- findBest 0 (Text.length base) 0
+      if best <= 0
+        then pure ellipsis
+        else pure (Text.take best base <> ellipsis)
+      where
+        findBest lo hi best
+          | lo > hi = pure best
+          | otherwise = do
+              let mid = (lo + hi) `div` 2
+                  candidate = Text.take mid base <> ellipsis
+              V2 w _ <- textSize cache color candidate
+              if w <= maxWidth
+                then findBest (mid + 1) hi mid
+                else findBest lo (mid - 1) best
 
 -- | Like 'drawTextLine' but clips the text to @maxWidth@ pixels,
 -- appending an ellipsis character when truncation occurs.

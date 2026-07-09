@@ -5,6 +5,8 @@ module UI.Font
   , destroyFontCache
   , drawText
   , drawTextCentered
+  , fontTextRenderCharLimit
+  , boundedTextWithEllipsis
   , textSize
   ) where
 
@@ -41,6 +43,30 @@ data CachedText = CachedText
 -- is evicted and its SDL texture freed.
 fontCacheMaxEntries :: Int
 fontCacheMaxEntries = 512
+
+-- | Maximum number of characters sent to SDL_ttf for any single text
+-- surface.  Wider UI-specific truncation happens before drawing, but this
+-- hard cap keeps all text rendering paths from creating pathological
+-- surfaces/textures.
+fontTextRenderCharLimit :: Int
+fontTextRenderCharLimit = 1024
+
+ellipsisText :: Text
+ellipsisText = Text.singleton '\x2026'
+
+-- | Bound text by characters without inspecting an unbounded full input.
+-- The Boolean reports whether an ellipsis was appended.
+boundedTextWithEllipsis :: Int -> Text -> (Text, Bool)
+boundedTextWithEllipsis maxChars text
+  | maxChars <= 0 = (Text.empty, not (Text.null text))
+  | Text.length sample <= maxChars = (sample, False)
+  | otherwise = (Text.take prefixLimit sample <> ellipsisText, True)
+  where
+    sample = Text.take (maxChars + 1) text
+    prefixLimit = max 0 (maxChars - Text.length ellipsisText)
+
+boundedTextForRendering :: Text -> Text
+boundedTextForRendering = fst . boundedTextWithEllipsis fontTextRenderCharLimit
 
 data FontCache = FontCache
   { fcFont     :: Font.Font
@@ -94,36 +120,57 @@ evictLRU m
       pure (Map.delete lruKey m)
 
 getCachedText :: FontCache -> V4 Word8 -> Text -> IO (Maybe CachedText)
-getCachedText _cache _color text
-  | Text.null (Text.strip text) = pure Nothing
-getCachedText cache color text = do
-  let key = CacheKey (text, color)
-  cached <- readIORef (fcCache cache)
-  gen    <- readIORef (fcNextGen cache)
-  let gen' = gen + 1
-  writeIORef (fcNextGen cache) gen'
-  case Map.lookup key cached of
-    Just hit -> do
-      -- Refresh generation so this entry is not evicted as LRU.
-      let updated = hit { ctGen = gen' }
-      writeIORef (fcCache cache) (Map.insert key updated cached)
-      pure (Just updated)
-    Nothing -> do
-      surface <- Font.blended (fcFont cache) color text
-      texture <- SDL.createTextureFromSurface (fcRenderer cache) surface
-      SDL.textureBlendMode texture SDL.$= SDL.BlendAlphaBlend
+getCachedText cache color text
+  | Text.null (Text.strip renderText) = pure Nothing
+  | otherwise = do
+      let key = CacheKey (renderText, color)
+      cached <- readIORef (fcCache cache)
+      gen    <- readIORef (fcNextGen cache)
+      let gen' = gen + 1
+      writeIORef (fcNextGen cache) gen'
+      case Map.lookup key cached of
+        Just hit -> do
+          -- Refresh generation so this entry is not evicted as LRU.
+          let updated = hit { ctGen = gen' }
+          writeIORef (fcCache cache) (Map.insert key updated cached)
+          pure (Just updated)
+        Nothing -> do
+          rendered <- renderTextTexture cache color renderText gen'
+          case rendered of
+            Nothing -> pure Nothing
+            Just entry -> do
+              let withNew = Map.insert key entry cached
+              evicted <-
+                if Map.size withNew > fontCacheMaxEntries
+                  then evictLRU withNew
+                  else pure withNew
+              writeIORef (fcCache cache) evicted
+              pure (Just entry)
+  where
+    renderText = boundedTextForRendering text
+
+renderTextTexture :: FontCache -> V4 Word8 -> Text -> Word32 -> IO (Maybe CachedText)
+renderTextTexture cache color text gen = do
+  surfaceResult <- try (Font.blended (fcFont cache) color text) :: IO (Either SomeException SDL.Surface)
+  case surfaceResult of
+    Left _ -> pure Nothing
+    Right surface -> do
+      textureResult <- try (SDL.createTextureFromSurface (fcRenderer cache) surface) :: IO (Either SomeException SDL.Texture)
       SDL.freeSurface surface
-      info <- SDL.queryTexture texture
-      let w = fromIntegral (SDL.textureWidth info)
-          h = fromIntegral (SDL.textureHeight info)
-          entry   = CachedText { ctTexture = texture, ctSize = V2 w h, ctGen = gen' }
-          withNew = Map.insert key entry cached
-      evicted <-
-        if Map.size withNew > fontCacheMaxEntries
-          then evictLRU withNew
-          else pure withNew
-      writeIORef (fcCache cache) evicted
-      pure (Just entry)
+      case textureResult of
+        Left _ -> pure Nothing
+        Right texture -> do
+          setupResult <- try (do
+            SDL.textureBlendMode texture SDL.$= SDL.BlendAlphaBlend
+            SDL.queryTexture texture) :: IO (Either SomeException SDL.TextureInfo)
+          case setupResult of
+            Left _ -> do
+              SDL.destroyTexture texture
+              pure Nothing
+            Right info -> do
+              let w = fromIntegral (SDL.textureWidth info)
+                  h = fromIntegral (SDL.textureHeight info)
+              pure (Just CachedText { ctTexture = texture, ctSize = V2 w h, ctGen = gen })
 
 drawText :: FontCache -> V4 Word8 -> V2 Int -> Text -> IO ()
 drawText cache color (V2 x y) text = do

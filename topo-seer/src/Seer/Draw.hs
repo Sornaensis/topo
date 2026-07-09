@@ -59,7 +59,7 @@ import UI.Widgets (Rect(..))
 import Seer.Draw.Dialog (drawDialogButton, drawDialogPanel, drawDialogTitle, drawListSelection, drawTextInputField)
 import Seer.Draw.Config (drawConfigPanel, drawConfigTabs, drawDataDetailPopover)
 import Seer.Draw.Config.Labels (drawConfigLabels)
-import UI.WidgetsDraw (drawCentered, drawLabelAbove, drawLeft, drawTextLine, rectToSDL)
+import UI.WidgetsDraw (drawCentered, drawLabelAbove, drawLeft, drawTextLine, drawTextLineTruncated, rectToSDL)
 
 seedMaxDigits :: Int
 seedMaxDigits = 20
@@ -147,7 +147,8 @@ drawLogLine :: SDL.Renderer -> Maybe FontCache -> Int -> Int -> Int -> Int -> In
 drawLogLine renderer fontCache x y w h textYOffset entry = do
   SDL.rendererDrawColor renderer SDL.$= logLineColor (leLevel entry)
   SDL.fillRect renderer (Just (rectToSDL (Rect (V2 x y, V2 w h))))
-  drawTextLine fontCache (V2 (x + 2) (y + textYOffset)) (logTextColor (leLevel entry)) (leMessage entry)
+  let textMaxW = max 0 (w - 4)
+  drawTextLineTruncated fontCache (V2 (x + 2) (y + textYOffset)) (logTextColor (leLevel entry)) textMaxW (leMessage entry)
 
 drawLogScrollbar :: SDL.Renderer -> Maybe FontCache -> LogSnapshot -> Rect -> IO ()
 drawLogScrollbar renderer fontCache logSnap (Rect (V2 x y, V2 w h)) = do
