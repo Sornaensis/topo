@@ -233,7 +233,7 @@
     },
     "externalStatus": {
       "type": "object",
-      "description": "Provider-declared, backend-neutral status that topo may surface in diagnostics while leaving backend repair, migration, schema, connection, and consistency details to the provider or external system. Optional metadata can identify the provider, availability, health, access mode, capability scope, version/compatibility marker, and opaque diagnostics without requiring backend-specific settings.",
+      "description": "Provider-declared, backend-neutral status that topo may surface in diagnostics while leaving backend repair, migration, schema, connection, and consistency details to the provider or external system. Optional metadata can identify the provider, availability, health, access mode, capability scope, version/compatibility marker, host observation freshness, and opaque diagnostics without requiring backend-specific settings.",
       "required": ["state"],
       "properties": {
         "state": { "type": "string", "enum": ["unknown", "unconfigured", "ready", "degraded", "unavailable"] },
@@ -245,7 +245,9 @@
         "capabilityScope": { "type": "array", "items": { "type": "string", "enum": ["query", "mutate", "subscribe", "migrate", "health"] } },
         "version": { "type": "string" },
         "compatibility": { "type": "string" },
-        "diagnostics": { "$ref": "#/$defs/opaqueMetadata" }
+        "diagnostics": { "$ref": "#/$defs/opaqueMetadata" },
+        "observedAt": { "type": "string", "format": "date-time" },
+        "fresh": { "type": "boolean" }
       }
     },
     "opaqueMetadata": {

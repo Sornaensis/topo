@@ -76,6 +76,7 @@ import Topo.Plugin.Dependency
   , defaultDependencyResolverInput
   , dependencyStartupOrder
   , driAvailableCapabilities
+  , driRequireExternalStatusCurrent
   , manifestDependencyDecls
   , resolveExternalDataSourceBindings
   )
@@ -191,6 +192,7 @@ externalDataSourceStartupDecisions plugins = Map.fromListWith selectExternalData
     providers = map loadedPluginDependencyProvider (Map.elems plugins)
     resolverInput = (defaultDependencyResolverInput providers)
       { driAvailableCapabilities = Set.fromList allHostCapabilities
+      , driRequireExternalStatusCurrent = False
       }
     resolution = resolveExternalDataSourceBindings resolverInput
     providerDecisions =
@@ -407,6 +409,7 @@ orderLoadedPluginsByDependencies plugins =
       providers = map loadedPluginDependencyProvider loaded
       resolverInput = (defaultDependencyResolverInput providers)
         { driAvailableCapabilities = Set.fromList allHostCapabilities
+        , driRequireExternalStatusCurrent = False
         }
       dependencyOrder = dependencyStartupOrder resolverInput
       ordered = [p | name <- dependencyOrder, Just p <- [Map.lookup name byName]]
@@ -466,10 +469,14 @@ dependencyExternalDataSourceProvider source = DependencyExternalDataSourceProvid
   { despName = redsdName source
   , despCapabilities = redsdCapabilities source
   , despResources = redsdResources source
-  , despStatus = redssState (redsdStatus source)
-  , despBrokerable = externalDataSourceStatusReady (redsdStatus source)
+  , despStatus = redssState status
+  , despObservedAt = redssObservedAt status
+  , despFresh = redssFresh status
+  , despBrokerable = externalDataSourceStatusReady status
   , despGrants = map dependencyExternalDataSourceGrant (redsdGrants source)
   }
+  where
+    status = redsdStatus source
 
 dependencyExternalDataSourceGrant :: RPCExternalDataSourceGrant -> DependencyExternalDataSourceGrant
 dependencyExternalDataSourceGrant grant = DependencyExternalDataSourceGrant
@@ -477,9 +484,13 @@ dependencyExternalDataSourceGrant grant = DependencyExternalDataSourceGrant
   , desgAccess = redsgAccess grant
   , desgCapabilities = redsgCapabilities grant
   , desgResources = redsgResources grant
-  , desgStatus = redssState (redsgStatus grant)
-  , desgBrokerable = externalDataSourceStatusReady (redsgStatus grant)
+  , desgStatus = redssState status
+  , desgObservedAt = redssObservedAt status
+  , desgFresh = redssFresh status
+  , desgBrokerable = externalDataSourceStatusReady status
   }
+  where
+    status = redsgStatus grant
 
 externalDataSourceStatusReady :: RPCExternalDataSourceStatus -> Bool
 externalDataSourceStatusReady status =

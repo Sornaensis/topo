@@ -16,7 +16,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Data.Time (getCurrentTime)
+import Data.Time (UTCTime, getCurrentTime)
 
 import Actor.PluginManager.PluginSupervisor
   ( allHostCapabilities
@@ -60,7 +60,6 @@ import Topo.Plugin.RPC
   , RPCExternalDataSourceHealth(..)
   , RPCExternalDataSourceRef(..)
   , RPCExternalDataSourceStatus(..)
-  , RPCExternalDataSourceStatusEntry(..)
   , RPCExternalDataSourceStatusReport(..)
   , RPCExternalDataSourceStatusRequest(..)
   , RPCExternalDataSourceStatusState(..)
@@ -68,6 +67,7 @@ import Topo.Plugin.RPC
   , defaultRPCExternalDataSourceStatus
   , externalDataSourceStatusBlocksStartup
   , externalDataSourceStatusDegradesStartup
+  , applyExternalDataSourceStatusReport
   , requestExternalDataSourceStatus
   , revokedExternalDataSourceStatus
   , rpcErrorText
@@ -118,7 +118,7 @@ grantNeedsRefresh :: ExternalDataSourceGrantBrokerState -> ExternalDataSourceGra
 grantNeedsRefresh oldGrant newGrant =
   not terminalFailureMadeConsumerUnbrokerable
     && ( edsgbsRequired oldGrant /= edsgbsRequired newGrant
-      || edsgbsMessage oldGrant /= edsgbsMessage newGrant
+      || grantMessageNeedsRefresh (edsgbsMessage oldGrant) (edsgbsMessage newGrant)
       || edsgbsConsumerReadyAt oldGrant /= edsgbsConsumerReadyAt newGrant
       || edsgbsProviderReadyAt oldGrant /= edsgbsProviderReadyAt newGrant
       || brokerPhaseNeedsRefresh (edsgbsState oldGrant) (edsgbsState newGrant)
@@ -141,6 +141,18 @@ grantNeedsRefresh oldGrant newGrant =
         && edsgbsState newGrant == ExternalDataSourceGrantUnavailable
         && maybe False (consumerUnbrokerableReasonForKey (edsgbsKey oldGrant)) (edsgbsReason newGrant)
 
+grantMessageNeedsRefresh :: RPCExternalDataSourceGrantMessage -> RPCExternalDataSourceGrantMessage -> Bool
+grantMessageNeedsRefresh oldMessage newMessage =
+  normalizeGrantMessageFreshness oldMessage /= normalizeGrantMessageFreshness newMessage
+
+normalizeGrantMessageFreshness :: RPCExternalDataSourceGrantMessage -> RPCExternalDataSourceGrantMessage
+normalizeGrantMessageFreshness message = message
+  { redsgmStatus = (redsgmStatus message)
+      { redssObservedAt = Nothing
+      , redssFresh = True
+      }
+  }
+
 -- | Revoke every active grant in a state. Used before shutdown starts closing
 -- consumer transports.
 revokeExternalDataSourceBrokeredGrants :: PluginManagerState -> Text -> IO PluginManagerState
@@ -160,7 +172,9 @@ refreshProviderStatuses st = do
           Just conn -> do
             result <- requestExternalDataSourceStatus conn statusRequest
             case result of
-              Right report -> pure (applyStatusReport report lp)
+              Right report -> do
+                observedAt <- getCurrentTime
+                pure (applyStatusReport observedAt report lp)
               Left _ -> do
                 writeIORef (rpcRuntimeFailure conn) Nothing
                 pure lp
@@ -195,37 +209,11 @@ providerHasConsumerRef st provider = any referencesProvider (Map.elems (pmsPlugi
       redsrSource ref `Set.member` providerSources
         && maybe True (== lpName provider) (redsrProvider ref)
 
-applyStatusReport :: RPCExternalDataSourceStatusReport -> LoadedPlugin -> LoadedPlugin
-applyStatusReport report lp = lp { lpManifest = manifest' , lpConnection = fmap syncConn (lpConnection lp) }
+applyStatusReport :: UTCTime -> RPCExternalDataSourceStatusReport -> LoadedPlugin -> LoadedPlugin
+applyStatusReport observedAt report lp = lp { lpManifest = manifest' , lpConnection = fmap syncConn (lpConnection lp) }
   where
-    manifest = lpManifest lp
-    entries = redssReportStatuses report
-    manifest' = manifest { rmExternalDataSources = map updateSource (rmExternalDataSources manifest) }
+    manifest' = applyExternalDataSourceStatusReport observedAt (lpName lp) report (lpManifest lp)
     syncConn conn = conn { rpcManifest = manifest' }
-
-    updateSource source = source
-      { redsdStatus = fromMaybe (redsdStatus source) (entryStatus Nothing (redsdName source))
-      , redsdConnection = fromMaybe (redsdConnection source) (entryReference Nothing (redsdName source))
-      , redsdConfigRefs = fromMaybe (redsdConfigRefs source) (nonEmptyConfigRefs Nothing (redsdName source))
-      , redsdGrants = map (updateGrant (redsdName source)) (redsdGrants source)
-      }
-
-    updateGrant sourceName grant = grant
-      { redsgStatus = fromMaybe (redsgStatus grant) (entryStatus (Just (redsgName grant)) sourceName)
-      , redsgReference = fromMaybe (redsgReference grant) (entryReference (Just (redsgName grant)) sourceName)
-      , redsgConfigRefs = fromMaybe (redsgConfigRefs grant) (nonEmptyConfigRefs (Just (redsgName grant)) sourceName)
-      }
-
-    matchingEntry mGrant sourceName = find
-      (\entry -> redsstProviderId entry == lpName lp
-        && redsstSource entry == sourceName
-        && redsstGrant entry == mGrant)
-      entries
-    entryStatus mGrant sourceName = redsstStatus <$> matchingEntry mGrant sourceName
-    entryReference mGrant sourceName = redsstReference <$> matchingEntry mGrant sourceName
-    nonEmptyConfigRefs mGrant sourceName = do
-      refs <- redsstConfigRefs <$> matchingEntry mGrant sourceName
-      if null refs then Nothing else Just refs
 
 desiredBrokeredGrants
   :: PluginManagerState

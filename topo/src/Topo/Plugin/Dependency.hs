@@ -69,6 +69,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Time (UTCTime)
 import GHC.Generics (Generic)
 
 import Topo.Pipeline.Stage (StageId(..), allBuiltinStageIds, parseStageId, stageCanonicalName)
@@ -418,6 +419,8 @@ data DependencyExternalDataSourceGrant = DependencyExternalDataSourceGrant
   , desgCapabilities :: ![RPCExternalDataSourceCapability]
   , desgResources :: ![Text]
   , desgStatus :: !RPCExternalDataSourceStatusState
+  , desgObservedAt :: !(Maybe UTCTime)
+  , desgFresh :: !Bool
   , desgBrokerable :: !Bool
   } deriving (Eq, Ord, Show, Read, Generic)
 
@@ -431,6 +434,8 @@ data DependencyExternalDataSourceProvider = DependencyExternalDataSourceProvider
   , despCapabilities :: ![RPCExternalDataSourceCapability]
   , despResources :: ![Text]
   , despStatus :: !RPCExternalDataSourceStatusState
+  , despObservedAt :: !(Maybe UTCTime)
+  , despFresh :: !Bool
   , despBrokerable :: !Bool
   , despGrants :: ![DependencyExternalDataSourceGrant]
   } deriving (Eq, Ord, Show, Read, Generic)
@@ -492,6 +497,7 @@ data DependencyResolverInput = DependencyResolverInput
   , driAvailableCapabilities :: !(Set Capability)
   , driDisabledCapabilities :: !(Set Capability)
   , driDisabledPlugins :: !(Set Text)
+  , driRequireExternalStatusCurrent :: !Bool
   } deriving (Eq, Show, Generic)
 
 -- | Resolver defaults: built-in stages are present and no plugins are
@@ -504,6 +510,7 @@ defaultDependencyResolverInput providers = DependencyResolverInput
   , driAvailableCapabilities = Set.empty
   , driDisabledCapabilities = Set.empty
   , driDisabledPlugins = Set.empty
+  , driRequireExternalStatusCurrent = True
   }
 
 -- | Availability state for one dependency declaration.
@@ -654,32 +661,34 @@ resolveExternalDataSourceBindings input = DependencyExternalDataSourceBindingRes
     eligibleOrder = droStartupOrder order
     eligibleSet = Set.fromList eligibleOrder
     consumers = driProviders input
-    resolved = concatMap (bindingsForConsumer providerMap eligibleOrder eligibleSet) consumers
+    resolved = concatMap (bindingsForConsumer input providerMap eligibleOrder eligibleSet) consumers
     bindings = [binding | Left binding <- resolved]
     diagnostics = [diagnostic | Right diagnostic <- resolved]
 
 bindingsForConsumer
-  :: Map Text DependencyProvider
+  :: DependencyResolverInput
+  -> Map Text DependencyProvider
   -> [Text]
   -> Set Text
   -> DependencyProvider
   -> [Either DependencyExternalDataSourceBinding DependencyExternalDataSourceBindingDiagnostic]
-bindingsForConsumer providerMap eligibleOrder eligibleSet consumer =
-  [ bindingForDependency providerMap eligibleOrder eligibleSet consumer dep externalDep
+bindingsForConsumer input providerMap eligibleOrder eligibleSet consumer =
+  [ bindingForDependency input providerMap eligibleOrder eligibleSet consumer dep externalDep
   | dep <- dpDependencies consumer
   , DependencyExternalDataSource externalDep <- [ddTarget dep]
   ]
 
 bindingForDependency
-  :: Map Text DependencyProvider
+  :: DependencyResolverInput
+  -> Map Text DependencyProvider
   -> [Text]
   -> Set Text
   -> DependencyProvider
   -> DependencyDecl
   -> ExternalDataSourceDependency
   -> Either DependencyExternalDataSourceBinding DependencyExternalDataSourceBindingDiagnostic
-bindingForDependency providerMap eligibleOrder eligibleSet consumer dep externalDep =
-  case selectedBindingCandidate providerMap eligibleOrder eligibleSet externalDep of
+bindingForDependency input providerMap eligibleOrder eligibleSet consumer dep externalDep =
+  case selectedBindingCandidate input providerMap eligibleOrder eligibleSet externalDep of
     Just (providerName, source, grant) -> Left DependencyExternalDataSourceBinding
       { desbConsumer = dpName consumer
       , desbRef = externalDependencyRefName dep externalDep
@@ -706,36 +715,38 @@ bindingForDependency providerMap eligibleOrder eligibleSet consumer dep external
       }
 
 selectedBindingCandidate
-  :: Map Text DependencyProvider
+  :: DependencyResolverInput
+  -> Map Text DependencyProvider
   -> [Text]
   -> Set Text
   -> ExternalDataSourceDependency
   -> Maybe (Text, DependencyExternalDataSourceProvider, DependencyExternalDataSourceGrant)
-selectedBindingCandidate providerMap eligibleOrder eligibleSet dep = case edsdProvider dep of
+selectedBindingCandidate input providerMap eligibleOrder eligibleSet dep = case edsdProvider dep of
   Just providerName -> do
     provider <- Map.lookup providerName providerMap
     if Set.member providerName eligibleSet
-      then concreteBindingCandidate dep provider
+      then concreteBindingCandidate input dep provider
       else Nothing
   Nothing -> listToMaybe
     [ candidate
     | providerName <- eligibleOrder
     , Just provider <- [Map.lookup providerName providerMap]
-    , Just candidate <- [concreteBindingCandidate dep provider]
+    , Just candidate <- [concreteBindingCandidate input dep provider]
     ]
 
 concreteBindingCandidate
-  :: ExternalDataSourceDependency
+  :: DependencyResolverInput
+  -> ExternalDataSourceDependency
   -> DependencyProvider
   -> Maybe (Text, DependencyExternalDataSourceProvider, DependencyExternalDataSourceGrant)
-concreteBindingCandidate dep provider = listToMaybe
+concreteBindingCandidate input dep provider = listToMaybe
   [ (dpName provider, source, grant)
   | source <- dpExternalDataSources provider
   , despName source == edsdSource dep
-  , sourceReadyAndCompatible dep source
+  , sourceReadyAndCompatible input dep source
   , grant <- despGrants source
   , maybe True (== desgName grant) (edsdGrant dep)
-  , grantSatisfiesExternalDataSourceDependency dep source grant
+  , grantSatisfiesExternalDataSourceDependency input dep source grant
   ]
 
 externalDependencyRefName :: DependencyDecl -> ExternalDataSourceDependency -> Text
@@ -1240,13 +1251,13 @@ resolveExternalDataSource input consumer dep = case edsdProvider dep of
     input
     consumer
     providerName
-    (providerHasExternalDataSource dep)
+    (providerHasExternalDataSource input dep)
     "external data-source"
     (edsdSource dep)
   Nothing -> resolveUnqualifiedProvider
     input
     consumer
-    (providerHasExternalDataSource dep)
+    (providerHasExternalDataSource input dep)
     "external data-source"
     (edsdSource dep)
 
@@ -1315,31 +1326,38 @@ providerHasResource dep provider = any matches (dpResources provider)
         && maybe True (\overlay -> drpOverlay resource == Just overlay) (rdepOverlay dep)
         && all (`elem` drpOperations resource) (rdepOperations dep)
 
-providerHasExternalDataSource :: ExternalDataSourceDependency -> DependencyProvider -> Bool
-providerHasExternalDataSource dep provider = any matches (dpExternalDataSources provider)
+providerHasExternalDataSource :: DependencyResolverInput -> ExternalDataSourceDependency -> DependencyProvider -> Bool
+providerHasExternalDataSource input dep provider = any matches (dpExternalDataSources provider)
   where
     matches source =
       despName source == edsdSource dep
-        && sourceReadyAndCompatible dep source
+        && sourceReadyAndCompatible input dep source
         && sourceGrantSatisfies source
 
     sourceGrantSatisfies source = case edsdGrant dep of
-      Just grantName -> any (grantSatisfiesExternalDataSourceDependency dep source) (filter ((== grantName) . desgName) (despGrants source))
-      Nothing -> any (grantSatisfiesExternalDataSourceDependency dep source) (despGrants source)
+      Just grantName -> any (grantSatisfiesExternalDataSourceDependency input dep source) (filter ((== grantName) . desgName) (despGrants source))
+      Nothing -> any (grantSatisfiesExternalDataSourceDependency input dep source) (despGrants source)
 
-sourceReadyAndCompatible :: ExternalDataSourceDependency -> DependencyExternalDataSourceProvider -> Bool
-sourceReadyAndCompatible dep source =
+sourceReadyAndCompatible :: DependencyResolverInput -> ExternalDataSourceDependency -> DependencyExternalDataSourceProvider -> Bool
+sourceReadyAndCompatible input dep source =
   despStatus source == ExternalStatusReady
+    && dependencyExternalDataSourceStatusCurrent input (despObservedAt source) (despFresh source)
     && despBrokerable source
     && all (`elem` despResources source) (edsdResources dep)
 
+dependencyExternalDataSourceStatusCurrent :: DependencyResolverInput -> Maybe UTCTime -> Bool -> Bool
+dependencyExternalDataSourceStatusCurrent input observedAt fresh =
+  not (driRequireExternalStatusCurrent input) || (fresh && maybe False (const True) observedAt)
+
 grantSatisfiesExternalDataSourceDependency
-  :: ExternalDataSourceDependency
+  :: DependencyResolverInput
+  -> ExternalDataSourceDependency
   -> DependencyExternalDataSourceProvider
   -> DependencyExternalDataSourceGrant
   -> Bool
-grantSatisfiesExternalDataSourceDependency dep source grant =
+grantSatisfiesExternalDataSourceDependency input dep source grant =
   desgStatus grant == ExternalStatusReady
+    && dependencyExternalDataSourceStatusCurrent input (desgObservedAt grant) (desgFresh grant)
     && desgBrokerable grant
     && all (`elem` desgAccess grant) (edsdAccess dep)
     && all (`elem` despCapabilities source) (desgCapabilities grant)

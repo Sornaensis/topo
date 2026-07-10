@@ -22,6 +22,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Time (UTCTime)
 import Data.Word (Word64)
 import System.Directory (doesFileExist, doesPathExist, getCurrentDirectory)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
@@ -943,6 +944,21 @@ spec = describe "Plugin.RPC" $ do
       rejectNull "version"
       rejectNull "compatibility"
       rejectNull "diagnostics"
+      rejectNull "observedAt"
+      rejectNull "observed_at"
+      rejectNull "fresh"
+
+    it "parses optional external data-source freshness metadata" $ do
+      let encoded = object
+            [ "state" .= ("ready" :: Text)
+            , "observedAt" .= ("2026-07-10T12:34:56Z" :: Text)
+            , "fresh" .= False
+            ]
+      case Aeson.fromJSON encoded :: Aeson.Result RPCExternalDataSourceStatus of
+        Aeson.Success status -> do
+          redssObservedAt status `shouldSatisfy` maybe False (const True)
+          redssFresh status `shouldBe` False
+        Aeson.Error err -> expectationFailure err
 
     it "validates backend-neutral external data-source status metadata" $ do
       let source = RPCExternalDataSourceDecl
@@ -1115,6 +1131,78 @@ spec = describe "Plugin.RPC" $ do
               grantReport = externalDataSourceStatusReportFromManifest providerManifest grantRequest
           map redsstGrant (redssReportStatuses grantReport) `shouldBe` [Just "settlement-read"]
           map redsstDiagnostics (redssReportStatuses grantReport) `shouldBe` [Just (object ["grant" .= ("settlement-read" :: Text)])]
+
+    it "stamps applied external data-source reports and marks omitted entries stale" $ do
+      let observedAt = read "1970-01-01 00:00:00 UTC" :: UTCTime
+          readyStatus = defaultRPCExternalDataSourceStatus { redssState = ExternalStatusReady }
+          grant name = RPCExternalDataSourceGrant
+            { redsgName = name
+            , redsgAccess = [ExternalAccessRead]
+            , redsgCapabilities = [ExternalSourceQuery]
+            , redsgResources = ["records"]
+            , redsgStatus = readyStatus
+            , redsgReference = Nothing
+            , redsgConfigRefs = []
+            }
+          source = RPCExternalDataSourceDecl
+            { redsdName = "ledger"
+            , redsdLabel = "Ledger"
+            , redsdDescription = ""
+            , redsdKind = "catalog"
+            , redsdCapabilities = [ExternalSourceQuery]
+            , redsdResources = ["records"]
+            , redsdStatus = readyStatus
+            , redsdConnection = Nothing
+            , redsdConfigRefs = []
+            , redsdGrants = [grant "included", grant "omitted"]
+            , redsdUiHints = defaultRPCUIHints
+            }
+          entry mGrant = RPCExternalDataSourceStatusEntry
+            { redsstProviderId = "provider"
+            , redsstConsumerId = Nothing
+            , redsstSource = "ledger"
+            , redsstGrant = mGrant
+            , redsstAccess = maybe [] (const [ExternalAccessRead]) mGrant
+            , redsstResources = ["records"]
+            , redsstCapabilityScope = [ExternalSourceQuery]
+            , redsstStatus = readyStatus
+            , redsstReference = Nothing
+            , redsstConfigRefs = []
+            , redsstDiagnostics = Nothing
+            }
+          report = RPCExternalDataSourceStatusReport
+            { redssReportStatuses = [entry Nothing, entry (Just "included")]
+            , redssReportDiagnostics = Nothing
+            }
+          consumerOnlyReport = RPCExternalDataSourceStatusReport
+            { redssReportStatuses = [(entry (Just "included")) { redsstConsumerId = Just "consumer" }]
+            , redssReportDiagnostics = Nothing
+            }
+          manifest = baseManifest { rmExternalDataSources = [source] }
+          applied = applyExternalDataSourceStatusReport observedAt "provider" report manifest
+          consumerOnlyApplied = applyExternalDataSourceStatusReport observedAt "provider" consumerOnlyReport manifest
+      case rmExternalDataSources applied of
+        [appliedSource] -> do
+          redssObservedAt (redsdStatus appliedSource) `shouldBe` Just observedAt
+          redssFresh (redsdStatus appliedSource) `shouldBe` True
+          case redsdGrants appliedSource of
+            [included, omitted] -> do
+              redssObservedAt (redsgStatus included) `shouldBe` Just observedAt
+              redssFresh (redsgStatus included) `shouldBe` True
+              redssObservedAt (redsgStatus omitted) `shouldBe` Nothing
+              redssFresh (redsgStatus omitted) `shouldBe` False
+              redssState (redsgStatus omitted) `shouldBe` ExternalStatusReady
+            other -> expectationFailure ("expected two grants, got " <> show other)
+        other -> expectationFailure ("expected one source, got " <> show other)
+      case rmExternalDataSources consumerOnlyApplied of
+        [consumerOnlySource] -> do
+          redssFresh (redsdStatus consumerOnlySource) `shouldBe` False
+          case redsdGrants consumerOnlySource of
+            [included, _omitted] -> do
+              redssObservedAt (redsgStatus included) `shouldBe` Nothing
+              redssFresh (redsgStatus included) `shouldBe` False
+            other -> expectationFailure ("expected two consumer-only grants, got " <> show other)
+        other -> expectationFailure ("expected one consumer-only source, got " <> show other)
 
     it "classifies external data-source availability for startup gates" $ do
       case Aeson.fromJSON manifestV3ConsumerExample of

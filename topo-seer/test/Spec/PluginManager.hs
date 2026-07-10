@@ -1425,21 +1425,31 @@ assertStartedBefore first second order =
 expectProviderStatusReport :: RPCExternalDataSourceStatusReport -> Expectation
 expectProviderStatusReport report =
   case redssReportStatuses report of
-    [entry] -> do
-      redsstProviderId entry `shouldBe` externalProviderPluginNameText
-      redsstConsumerId entry `shouldBe` Nothing
-      redsstSource entry `shouldBe` externalSourceName
-      redsstGrant entry `shouldBe` Just externalGrantName
-      redsstAccess entry `shouldBe` externalReadAccess
-      redsstResources entry `shouldBe` externalSharedResources
-      redsstCapabilityScope entry `shouldBe` externalCapabilities
-      redssState (redsstStatus entry) `shouldBe` ExternalStatusReady
-      redssAvailability (redsstStatus entry) `shouldBe` Just ExternalAvailabilityAvailable
-      redssHealth (redsstStatus entry) `shouldBe` Just ExternalHealthHealthy
-      redssAccessMode (redsstStatus entry) `shouldBe` Just ExternalAccessModeReadOnly
-      redsstDiagnostics entry `shouldBe` Just externalDiagnostics
-      shouldNotMentionSQLite entry
-    other -> expectationFailure ("expected one provider status entry, got " <> show other)
+    [sourceEntry, grantEntry] -> do
+      redsstProviderId sourceEntry `shouldBe` externalProviderPluginNameText
+      redsstConsumerId sourceEntry `shouldBe` Nothing
+      redsstSource sourceEntry `shouldBe` externalSourceName
+      redsstGrant sourceEntry `shouldBe` Nothing
+      redsstAccess sourceEntry `shouldBe` []
+      redsstResources sourceEntry `shouldBe` externalSharedResources
+      redsstCapabilityScope sourceEntry `shouldBe` externalCapabilities
+      redssState (redsstStatus sourceEntry) `shouldBe` ExternalStatusReady
+      redsstDiagnostics sourceEntry `shouldBe` Just externalDiagnostics
+      redsstProviderId grantEntry `shouldBe` externalProviderPluginNameText
+      redsstConsumerId grantEntry `shouldBe` Nothing
+      redsstSource grantEntry `shouldBe` externalSourceName
+      redsstGrant grantEntry `shouldBe` Just externalGrantName
+      redsstAccess grantEntry `shouldBe` externalReadAccess
+      redsstResources grantEntry `shouldBe` externalSharedResources
+      redsstCapabilityScope grantEntry `shouldBe` externalCapabilities
+      redssState (redsstStatus grantEntry) `shouldBe` ExternalStatusReady
+      redssAvailability (redsstStatus grantEntry) `shouldBe` Just ExternalAvailabilityAvailable
+      redssHealth (redsstStatus grantEntry) `shouldBe` Just ExternalHealthHealthy
+      redssAccessMode (redsstStatus grantEntry) `shouldBe` Just ExternalAccessModeReadOnly
+      redsstDiagnostics grantEntry `shouldBe` Just externalDiagnostics
+      shouldNotMentionSQLite sourceEntry
+      shouldNotMentionSQLite grantEntry
+    other -> expectationFailure ("expected source and grant provider status entries, got " <> show other)
 
 expectConsumerStatusReport :: RPCExternalDataSourceStatusReport -> Expectation
 expectConsumerStatusReport report =
@@ -1487,6 +1497,8 @@ expectExternalSnapshots snapshots = do
         redsdConnection source `shouldBe` Just externalSourceReference
         redsdConfigRefs source `shouldBe` [externalProviderConfigRef]
         redssState (redsdStatus source) `shouldBe` ExternalStatusReady
+        redssObservedAt (redsdStatus source) `shouldSatisfy` maybe False (const True)
+        redssFresh (redsdStatus source) `shouldBe` True
         case redsdGrants source of
           [grant] -> do
             redsgName grant `shouldBe` externalGrantName
@@ -1494,6 +1506,8 @@ expectExternalSnapshots snapshots = do
             redsgCapabilities grant `shouldBe` externalCapabilities
             redsgReference grant `shouldBe` Just externalGrantReference
             redsgConfigRefs grant `shouldBe` [externalGrantConfigRef]
+            redssObservedAt (redsgStatus grant) `shouldSatisfy` maybe False (const True)
+            redssFresh (redsgStatus grant) `shouldBe` True
           other -> expectationFailure ("expected one provider grant, got " <> show other)
       other -> expectationFailure ("expected one provided source, got " <> show other)
   case findExternalSnapshot externalConsumerPluginNameText snapshots of
@@ -2213,7 +2227,10 @@ externalStatusEnvelope requestId report = RPCEnvelope
 
 externalProviderStatusReport :: Bool -> RPCExternalDataSourceStatusReport
 externalProviderStatusReport includeDiagnostics = RPCExternalDataSourceStatusReport
-  { redssReportStatuses = [externalProviderStatusEntry includeDiagnostics]
+  { redssReportStatuses =
+      [ externalProviderSourceStatusEntry includeDiagnostics
+      , externalProviderGrantStatusEntry includeDiagnostics
+      ]
   , redssReportDiagnostics = if includeDiagnostics then Just externalDiagnostics else Nothing
   }
 
@@ -2223,8 +2240,23 @@ externalConsumerStatusReport includeDiagnostics = RPCExternalDataSourceStatusRep
   , redssReportDiagnostics = if includeDiagnostics then Just externalDiagnostics else Nothing
   }
 
-externalProviderStatusEntry :: Bool -> RPCExternalDataSourceStatusEntry
-externalProviderStatusEntry includeDiagnostics = RPCExternalDataSourceStatusEntry
+externalProviderSourceStatusEntry :: Bool -> RPCExternalDataSourceStatusEntry
+externalProviderSourceStatusEntry includeDiagnostics = RPCExternalDataSourceStatusEntry
+  { redsstProviderId = externalProviderPluginNameText
+  , redsstConsumerId = Nothing
+  , redsstSource = externalSourceName
+  , redsstGrant = Nothing
+  , redsstAccess = []
+  , redsstResources = externalSharedResources
+  , redsstCapabilityScope = externalCapabilities
+  , redsstStatus = statusWithOptionalDiagnostics includeDiagnostics
+  , redsstReference = Just externalSourceReference
+  , redsstConfigRefs = [externalProviderConfigRef]
+  , redsstDiagnostics = if includeDiagnostics then Just externalDiagnostics else Nothing
+  }
+
+externalProviderGrantStatusEntry :: Bool -> RPCExternalDataSourceStatusEntry
+externalProviderGrantStatusEntry includeDiagnostics = RPCExternalDataSourceStatusEntry
   { redsstProviderId = externalProviderPluginNameText
   , redsstConsumerId = Nothing
   , redsstSource = externalSourceName
@@ -2239,7 +2271,7 @@ externalProviderStatusEntry includeDiagnostics = RPCExternalDataSourceStatusEntr
   }
 
 externalConsumerStatusEntry :: Bool -> RPCExternalDataSourceStatusEntry
-externalConsumerStatusEntry includeDiagnostics = (externalProviderStatusEntry includeDiagnostics)
+externalConsumerStatusEntry includeDiagnostics = (externalProviderGrantStatusEntry includeDiagnostics)
   { redsstConsumerId = Just externalSourceName
   , redsstReference = Just externalConsumerReference
   , redsstConfigRefs = [externalConsumerConfigRef]

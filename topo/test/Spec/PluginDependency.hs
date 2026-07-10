@@ -6,6 +6,7 @@ import Data.Aeson (FromJSON, Result(..), ToJSON, Value, fromJSON, object, toJSON
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Time (UTCTime)
 import Test.Hspec
 
 import Topo.Pipeline.Stage (StageId(..))
@@ -215,6 +216,8 @@ spec = describe "PluginDependency" $ do
                   , desgCapabilities = [ExternalSourceQuery]
                   , desgResources = ["settlements"]
                   , desgStatus = ExternalStatusReady
+                  , desgObservedAt = observedAtFixture
+                  , desgFresh = True
                   , desgBrokerable = True
                   }
               ]
@@ -243,6 +246,8 @@ spec = describe "PluginDependency" $ do
                   , desgCapabilities = [ExternalSourceQuery]
                   , desgResources = ["settlements"]
                   , desgStatus = ExternalStatusUnavailable
+                  , desgObservedAt = observedAtFixture
+                  , desgFresh = True
                   , desgBrokerable = False
                   }
               ]
@@ -273,6 +278,8 @@ spec = describe "PluginDependency" $ do
                   , desgCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
                   , desgResources = ["settlements"]
                   , desgStatus = ExternalStatusReady
+                  , desgObservedAt = observedAtFixture
+                  , desgFresh = True
                   , desgBrokerable = False
                   }
               ]
@@ -292,6 +299,33 @@ spec = describe "PluginDependency" $ do
     map dgdStatus diagnostics `shouldBe` [DependencyMissing, DependencyMissing]
     map dgdBlocking diagnostics `shouldBe` [True, True]
     desbrBindings bindings `shouldBe` []
+
+  it "refuses stale or unobserved ready external data-source statuses" $ do
+    let unobservedSource = (externalProvider "ledger" ["settlements"])
+          { despObservedAt = Nothing
+          }
+        freshArchive = externalProvider "archive" ["settlements"]
+        staleGrant = freshArchive
+          { despGrants =
+              [ grant { desgFresh = False }
+              | grant <- despGrants freshArchive
+              ]
+          }
+        providerPlugin = (provider "geo" [])
+          { dpExternalDataSources = [unobservedSource, staleGrant]
+          }
+        sourceConsumer = provider "source-consumer"
+          [ required (DependencyExternalDataSource (ExternalDataSourceDependency (Just "geo") "source-consumer" "ledger" (Just "read") [ExternalAccessRead] ["settlements"]))
+          ]
+        grantConsumer = provider "grant-consumer"
+          [ required (DependencyExternalDataSource (ExternalDataSourceDependency (Just "geo") "grant-consumer" "archive" (Just "read") [ExternalAccessRead] ["settlements"]))
+          ]
+        resolution = resolveExternalDataSourceBindings (defaultDependencyResolverInput [providerPlugin, sourceConsumer, grantConsumer])
+        diagnostics = validateDependencies (defaultDependencyResolverInput [providerPlugin, sourceConsumer, grantConsumer])
+
+    desbrBindings resolution `shouldBe` []
+    map dgdStatus diagnostics `shouldBe` [DependencyMissing, DependencyMissing]
+    map dgdBlocking diagnostics `shouldBe` [True, True]
 
   it "detects required dependency cycles through plugin, resource, and external data-source provider edges" $ do
     let pluginA = (provider "a" [required (DependencyPlugin (PluginDependency "b" VersionAny))])
@@ -469,6 +503,8 @@ externalProvider name resources = DependencyExternalDataSourceProvider
   , despCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
   , despResources = resources
   , despStatus = ExternalStatusReady
+  , despObservedAt = observedAtFixture
+  , despFresh = True
   , despBrokerable = True
   , despGrants =
       [ DependencyExternalDataSourceGrant
@@ -477,10 +513,15 @@ externalProvider name resources = DependencyExternalDataSourceProvider
           , desgCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
           , desgResources = resources
           , desgStatus = ExternalStatusReady
+          , desgObservedAt = observedAtFixture
+          , desgFresh = True
           , desgBrokerable = True
           }
       ]
   }
+
+observedAtFixture :: Maybe UTCTime
+observedAtFixture = Just (read "1970-01-01 00:00:00 UTC")
 
 required :: DependencyTarget -> DependencyDecl
 required target = DependencyDecl

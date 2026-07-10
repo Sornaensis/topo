@@ -63,6 +63,9 @@ module Topo.Plugin.RPC.Manifest
   , RPCExternalDataSourceAccessMode(..)
   , RPCExternalDataSourceStatus(..)
   , defaultRPCExternalDataSourceStatus
+  , externalDataSourceStatusCurrent
+  , observeExternalDataSourceStatus
+  , staleExternalDataSourceStatus
   , RPCExternalDataSourceGrant(..)
   , RPCExternalDataSourceDecl(..)
   , RPCExternalDataSourceRef(..)
@@ -107,6 +110,7 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Time (UTCTime)
 import Data.Word (Word64)
 import GHC.Generics (Generic)
 import Topo.Plugin (Capability(..))
@@ -876,6 +880,8 @@ data RPCExternalDataSourceStatus = RPCExternalDataSourceStatus
   , redssVersion         :: !(Maybe Text)
   , redssCompatibility   :: !(Maybe Text)
   , redssDiagnostics     :: !(Maybe Value)
+  , redssObservedAt      :: !(Maybe UTCTime)
+  , redssFresh           :: !Bool
   } deriving (Eq, Show, Generic)
 
 defaultRPCExternalDataSourceStatus :: RPCExternalDataSourceStatus
@@ -890,6 +896,8 @@ defaultRPCExternalDataSourceStatus = RPCExternalDataSourceStatus
   , redssVersion = Nothing
   , redssCompatibility = Nothing
   , redssDiagnostics = Nothing
+  , redssObservedAt = Nothing
+  , redssFresh = True
   }
 
 instance FromJSON RPCExternalDataSourceStatus where
@@ -905,6 +913,8 @@ instance FromJSON RPCExternalDataSourceStatus where
       <*> optionalNonNullField o ["version"]
       <*> optionalNonNullField o ["compatibility"]
       <*> optionalNonNullField o ["diagnostics"]
+      <*> optionalNonNullField o ["observedAt", "observed_at"]
+      <*> optionalPolicyField o ["fresh"] True
 
 instance ToJSON RPCExternalDataSourceStatus where
   toJSON status = object $
@@ -917,7 +927,28 @@ instance ToJSON RPCExternalDataSourceStatus where
     [ "capabilityScope" .= redssCapabilityScope status | not (null (redssCapabilityScope status)) ] <>
     [ "version" .= version | Just version <- [redssVersion status] ] <>
     [ "compatibility" .= compatibility | Just compatibility <- [redssCompatibility status] ] <>
-    [ "diagnostics" .= diagnostics | Just diagnostics <- [redssDiagnostics status] ]
+    [ "diagnostics" .= diagnostics | Just diagnostics <- [redssDiagnostics status] ] <>
+    [ "observedAt" .= observedAt | Just observedAt <- [redssObservedAt status] ] <>
+    [ "fresh" .= redssFresh status | not (redssFresh status) ]
+
+-- | A status is current only after the host has observed it in the latest
+-- successful provider report. Manifest-declared ready statuses remain
+-- diagnostics until a report stamps them with 'observeExternalDataSourceStatus'.
+externalDataSourceStatusCurrent :: RPCExternalDataSourceStatus -> Bool
+externalDataSourceStatusCurrent status =
+  redssFresh status && maybe False (const True) (redssObservedAt status)
+
+-- | Stamp a provider-reported status with host observation metadata.
+observeExternalDataSourceStatus :: UTCTime -> RPCExternalDataSourceStatus -> RPCExternalDataSourceStatus
+observeExternalDataSourceStatus observedAt status = status
+  { redssObservedAt = Just observedAt
+  , redssFresh = True
+  }
+
+-- | Preserve the last status payload as diagnostic history while marking it
+-- stale for brokerability and diagnostics.
+staleExternalDataSourceStatus :: RPCExternalDataSourceStatus -> RPCExternalDataSourceStatus
+staleExternalDataSourceStatus status = status { redssFresh = False }
 
 -- | Backend-neutral grant offered for a provider-owned external data source.
 --
@@ -1423,7 +1454,7 @@ manifestV3Schema = object
           ]
       , "externalStatus" .= object
           [ "type" .= ("object" :: Text)
-          , "description" .= ("Provider-declared, backend-neutral status that topo may surface in diagnostics while leaving backend repair, migration, schema, connection, and consistency details to the provider or external system. Optional metadata can identify the provider, availability, health, access mode, capability scope, version/compatibility marker, and opaque diagnostics without requiring backend-specific settings." :: Text)
+          , "description" .= ("Provider-declared, backend-neutral status that topo may surface in diagnostics while leaving backend repair, migration, schema, connection, and consistency details to the provider or external system. Optional metadata can identify the provider, availability, health, access mode, capability scope, version/compatibility marker, host observation freshness, and opaque diagnostics without requiring backend-specific settings." :: Text)
           , "required" .= (["state"] :: [Text])
           , "properties" .= object
               [ "state" .= enumSchema externalStatusNames
@@ -1436,6 +1467,8 @@ manifestV3Schema = object
               , "version" .= stringSchema
               , "compatibility" .= stringSchema
               , "diagnostics" .= schemaRef "opaqueMetadata"
+              , "observedAt" .= dateTimeSchema
+              , "fresh" .= booleanSchema
               ]
           ]
       , "opaqueMetadata" .= object
@@ -1672,6 +1705,12 @@ manifestV3ConsumerExample = object
 
 stringSchema :: Value
 stringSchema = object ["type" .= ("string" :: Text)]
+
+dateTimeSchema :: Value
+dateTimeSchema = object
+  [ "type" .= ("string" :: Text)
+  , "format" .= ("date-time" :: Text)
+  ]
 
 integerSchema :: Value
 integerSchema = object ["type" .= ("integer" :: Text)]

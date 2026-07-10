@@ -19,6 +19,7 @@ module Topo.Plugin.RPC.ExternalDataSource
   , RPCExternalDataSourceStatusRequest(..)
   , RPCExternalDataSourceStatusEntry(..)
   , RPCExternalDataSourceStatusReport(..)
+  , applyExternalDataSourceStatusReport
   , externalDataSourceStatusReportFromManifest
   , externalDataSourceGrantStatusEntry
   , externalDataSourceRefStatusEntry
@@ -46,10 +47,11 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import Data.Aeson.Types (Parser)
-import Data.List (nub)
+import Data.List (find, nub)
 import Data.Maybe (fromMaybe, listToMaybe, maybeToList)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Time (UTCTime)
 import Data.Word (Word64)
 import GHC.Generics (Generic)
 
@@ -67,6 +69,8 @@ import Topo.Plugin.RPC.Manifest
   , RPCExternalDataSourceStatusState(..)
   , RPCManifest(..)
   , defaultRPCExternalDataSourceStatus
+  , observeExternalDataSourceStatus
+  , staleExternalDataSourceStatus
   )
 
 ------------------------------------------------------------------------
@@ -423,6 +427,52 @@ instance ToJSON RPCExternalDataSourceStatusReport where
   toJSON report = object $
     [ "statuses" .= redssReportStatuses report ] <>
     [ "diagnostics" .= diagnostics | Just diagnostics <- [redssReportDiagnostics report] ]
+
+-- | Apply a successful provider status report to a manifest snapshot.
+-- Reported source/grant entries are stamped with the host observation time.
+-- Declared source/grant entries missing from the report are retained only as
+-- stale diagnostic history and must not be considered brokerable.
+applyExternalDataSourceStatusReport
+  :: UTCTime
+  -> Text
+  -> RPCExternalDataSourceStatusReport
+  -> RPCManifest
+  -> RPCManifest
+applyExternalDataSourceStatusReport observedAt providerId report manifest =
+  manifest { rmExternalDataSources = map updateSource (rmExternalDataSources manifest) }
+  where
+    entries = redssReportStatuses report
+
+    updateSource source = source
+      { redsdStatus = entryStatus Nothing (redsdName source) (redsdStatus source)
+      , redsdConnection = fromMaybe (redsdConnection source) (entryReference Nothing (redsdName source))
+      , redsdConfigRefs = fromMaybe (redsdConfigRefs source) (nonEmptyConfigRefs Nothing (redsdName source))
+      , redsdGrants = map (updateGrant (redsdName source)) (redsdGrants source)
+      }
+
+    updateGrant sourceName grant = grant
+      { redsgStatus = entryStatus (Just (redsgName grant)) sourceName (redsgStatus grant)
+      , redsgReference = fromMaybe (redsgReference grant) (entryReference (Just (redsgName grant)) sourceName)
+      , redsgConfigRefs = fromMaybe (redsgConfigRefs grant) (nonEmptyConfigRefs (Just (redsgName grant)) sourceName)
+      }
+
+    matchingEntry mGrant sourceName = find
+      (\entry -> redsstProviderId entry == providerId
+        && redsstConsumerId entry == Nothing
+        && redsstSource entry == sourceName
+        && redsstGrant entry == mGrant)
+      entries
+
+    entryStatus mGrant sourceName currentStatus =
+      case matchingEntry mGrant sourceName of
+        Just entry -> observeExternalDataSourceStatus observedAt (redsstStatus entry)
+        Nothing -> staleExternalDataSourceStatus currentStatus
+
+    entryReference mGrant sourceName = redsstReference <$> matchingEntry mGrant sourceName
+
+    nonEmptyConfigRefs mGrant sourceName = do
+      refs <- redsstConfigRefs <$> matchingEntry mGrant sourceName
+      if null refs then Nothing else Just refs
 
 -- | Produce a status report from a manifest snapshot and request filters.
 -- This is used by the SDK's default status handler and keeps status reporting

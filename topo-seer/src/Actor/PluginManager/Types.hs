@@ -309,6 +309,8 @@ data PluginExternalDataSourceStatusDiagnostic = PluginExternalDataSourceStatusDi
   , pedssCapabilityScope :: ![RPCExternalDataSourceCapability]
   , pedssVersion :: !(Maybe Text)
   , pedssCompatibility :: !(Maybe Text)
+  , pedssObservedAt :: !(Maybe UTCTime)
+  , pedssFresh :: !Bool
   } deriving (Eq, Show)
 
 instance ToJSON PluginExternalDataSourceStatusDiagnostic where
@@ -322,7 +324,9 @@ instance ToJSON PluginExternalDataSourceStatusDiagnostic where
     [ "health" .= health | Just health <- [pedssHealth status] ] <>
     [ "accessMode" .= accessMode | Just accessMode <- [pedssAccessMode status] ] <>
     [ "version" .= version | Just version <- [pedssVersion status] ] <>
-    [ "compatibility" .= compatibility | Just compatibility <- [pedssCompatibility status] ]
+    [ "compatibility" .= compatibility | Just compatibility <- [pedssCompatibility status] ] <>
+    [ "observedAt" .= observedAt | Just observedAt <- [pedssObservedAt status] ] <>
+    [ "fresh" .= pedssFresh status | not (pedssFresh status) ]
 
 -- | One grant offered by a provider-owned external data source.
 data PluginExternalDataSourceGrantDiagnostic = PluginExternalDataSourceGrantDiagnostic
@@ -737,11 +741,14 @@ statusDiagnostic status = PluginExternalDataSourceStatusDiagnostic
   , pedssCapabilityScope = redssCapabilityScope status
   , pedssVersion = redssVersion status
   , pedssCompatibility = redssCompatibility status
+  , pedssObservedAt = redssObservedAt status
+  , pedssFresh = redssFresh status
   }
 
 statusAvailable :: RPCExternalDataSourceStatus -> Bool
 statusAvailable status =
   redssState status == ExternalStatusReady
+  && statusCurrent status
   && redssAvailability status `notElem`
       [ Just ExternalAvailabilityUnknown
       , Just ExternalAvailabilityUnconfigured
@@ -754,6 +761,7 @@ statusAvailable status =
 statusFailureReason :: RPCExternalDataSourceStatus -> Maybe Text
 statusFailureReason status
   | statusAvailable status = Nothing
+  | redssState status == ExternalStatusReady && not (statusCurrent status) = Just (statusFreshnessSummary status)
   | Just message <- redssMessage status = Just message
   | otherwise = Just (statusSummary status)
 
@@ -764,6 +772,7 @@ statusSummary status = Text.intercalate ", " $ filter (not . Text.null)
   , maybe "" (("health=" <>) . externalHealthText) (redssHealth status)
   , maybe "" (("access_mode=" <>) . externalAccessModeText) (redssAccessMode status)
   , capabilitiesSummary (redssCapabilityScope status)
+  , statusFreshnessSummary status
   , maybe "" ("message=" <>) (redssMessage status)
   ]
 
@@ -771,6 +780,16 @@ capabilitiesSummary :: [RPCExternalDataSourceCapability] -> Text
 capabilitiesSummary [] = ""
 capabilitiesSummary capabilities =
   "capabilities=" <> Text.intercalate "," (map externalCapabilityText capabilities)
+
+statusCurrent :: RPCExternalDataSourceStatus -> Bool
+statusCurrent status = redssFresh status && maybe False (const True) (redssObservedAt status)
+
+statusFreshnessSummary :: RPCExternalDataSourceStatus -> Text
+statusFreshnessSummary status
+  | not (redssFresh status) = "fresh=false"
+  | redssObservedAt status == Nothing && redssState status == ExternalStatusReady = "observed=unobserved"
+  | Just observedAt <- redssObservedAt status = "observed_at=" <> Text.pack (show observedAt)
+  | otherwise = ""
 
 statusAvailabilityText :: RPCExternalDataSourceStatus -> Text
 statusAvailabilityText status = case redssAvailability status of
