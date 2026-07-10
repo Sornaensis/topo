@@ -4,13 +4,15 @@ module Spec.AppService (spec) where
 
 import Actor.Log (LogLevel(..))
 import Actor.PluginManager
-  ( LoadedPlugin(..)
+  ( ExternalDataSourceGrantBrokerPhase(..)
+  , LoadedPlugin(..)
   , PluginDiagnosticState(..)
   , PluginExternalDataSourceGrantDiagnostic(..)
   , PluginExternalDataSourceDiagnostic(..)
   , PluginLifecycleSnapshot(..)
   , PluginLifecycleState(..)
   , PluginStatus(..)
+  , externalDataSourceGrantBrokerPhaseText
   , pluginAvailableDependencyKeys
   , pluginDiagnosticState
   , pluginExternalDataSourceDiagnostics
@@ -421,6 +423,23 @@ spec = describe "AppService surface" $ do
     map pedsFailureReason disabledSources `shouldBe` [Just "plugin is disabled", Just "plugin is disabled"]
     let bareStageOnlyPanel = pluginPanelDiagnosticLines Set.empty (Set.singleton "weather") diagnosticReadyPlugin
     bareStageOnlyPanel `shouldSatisfy` any (Text.isInfixOf "provider plugin is unavailable")
+
+  it "uses typed external data-source broker phase labels" $ do
+    map externalDataSourceGrantBrokerPhaseText
+      [ ExternalDataSourceGrantPending
+      , ExternalDataSourceGrantAcked
+      , ExternalDataSourceGrantFailed
+      , ExternalDataSourceRevokePending
+      , ExternalDataSourceRevokeFailed
+      , ExternalDataSourceGrantUnavailable
+      ] `shouldBe`
+        [ "grant_pending"
+        , "grant_acked"
+        , "grant_failed"
+        , "revoke_pending"
+        , "revoke_failed"
+        , "unavailable"
+        ]
 
   it "keeps logs, screenshots, async status, and event hooks typed" $ do
     logGetMinLevel logRequestContract `shouldBe` Just LogWarn

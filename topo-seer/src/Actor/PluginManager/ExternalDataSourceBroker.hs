@@ -25,15 +25,17 @@ import Actor.PluginManager.PluginSupervisor
   , markExternalDataSourceDegraded
   )
 import Actor.PluginManager.Types
-  ( ExternalDataSourceGrantBrokerState(..)
+  ( ExternalDataSourceGrantBrokerPhase(..)
+  , ExternalDataSourceGrantBrokerState(..)
   , ExternalDataSourceGrantKey(..)
   , LoadedPlugin(..)
   , PluginLifecycleSnapshot(..)
   , PluginLifecycleState(..)
   , PluginManagerState(..)
   , PluginStatus(..)
-  , manifestLifecycleResources
-  , pluginLifecycleSnapshot
+  , externalDataSourceGrantBrokerPhaseApplied
+  , externalDataSourceGrantBrokerPhaseRevocable
+  , externalDataSourceGrantBrokerPhaseText
   )
 import Topo.Plugin.Dependency
   ( DependencyExternalDataSourceBinding(..)
@@ -73,15 +75,16 @@ import Topo.Plugin.RPC
   , sendExternalDataSourceGrantRevocation
   )
 
--- | Reconcile old sent grants with the current plugin snapshot: revoke stale
--- grants, send new grants, and annotate consumer refs with brokered status.
+-- | Reconcile old brokered grants with the current plugin snapshot: revoke
+-- stale grants, send new grants, and annotate consumer refs with brokered
+-- status.
 reconcileExternalDataSourceBrokering :: PluginManagerState -> PluginManagerState -> IO PluginManagerState
 reconcileExternalDataSourceBrokering oldSt newSt = do
   statusSt <- refreshProviderStatuses newSt
   let (desired, bindingDiagnostics) = desiredBrokeredGrants statusSt
       desiredMap = Map.fromList [(edsgbsKey grant, grant) | grant <- desired]
       oldActive = pmsExternalDataSourceGrants oldSt
-      oldSent = Map.filter ((== "sent") . edsgbsState) oldActive
+      oldRevocable = Map.filter (externalDataSourceGrantBrokerPhaseRevocable . edsgbsState) oldActive
       removedKeys = Map.keysSet oldActive `Set.difference` Map.keysSet desiredMap
       changedKeys = Set.fromList
         [ key
@@ -90,8 +93,8 @@ reconcileExternalDataSourceBrokering oldSt newSt = do
         , grantNeedsRefresh oldGrant newGrant
         ]
       revokedKeys = Set.union removedKeys changedKeys
-  stAfterRevokes <- foldM revokeOne statusSt (mapMaybe (`Map.lookup` oldSent) (Set.toList revokedKeys))
-  let dropWithoutRevokeKeys = Set.toList (revokedKeys `Set.difference` Map.keysSet oldSent)
+  stAfterRevokes <- foldM revokeOne statusSt (mapMaybe (`Map.lookup` oldRevocable) (Set.toList revokedKeys))
+  let dropWithoutRevokeKeys = Set.toList (revokedKeys `Set.difference` Map.keysSet oldRevocable)
       stAfterDrops = stAfterRevokes
         { pmsExternalDataSourceGrants = foldr Map.delete (pmsExternalDataSourceGrants stAfterRevokes) dropWithoutRevokeKeys
         }
@@ -113,21 +116,37 @@ reconcileExternalDataSourceBrokering oldSt newSt = do
 
 grantNeedsRefresh :: ExternalDataSourceGrantBrokerState -> ExternalDataSourceGrantBrokerState -> Bool
 grantNeedsRefresh oldGrant newGrant =
-  edsgbsRequired oldGrant /= edsgbsRequired newGrant
-    || edsgbsMessage oldGrant /= edsgbsMessage newGrant
-    || edsgbsConsumerReadyAt oldGrant /= edsgbsConsumerReadyAt newGrant
-    || edsgbsProviderReadyAt oldGrant /= edsgbsProviderReadyAt newGrant
-    || normalizedBrokerState (edsgbsState oldGrant) /= normalizedBrokerState (edsgbsState newGrant)
+  not terminalFailureMadeConsumerUnbrokerable
+    && ( edsgbsRequired oldGrant /= edsgbsRequired newGrant
+      || edsgbsMessage oldGrant /= edsgbsMessage newGrant
+      || edsgbsConsumerReadyAt oldGrant /= edsgbsConsumerReadyAt newGrant
+      || edsgbsProviderReadyAt oldGrant /= edsgbsProviderReadyAt newGrant
+      || brokerPhaseNeedsRefresh (edsgbsState oldGrant) (edsgbsState newGrant)
+      || unavailableReasonChanged
+      )
   where
-    normalizedBrokerState "sent" = "resolved"
-    normalizedBrokerState state = state
+    -- Desired sendable grants are represented as pending.  Previously acked or
+    -- failed grants do not need to be resent until their binding/lifecycle
+    -- inputs change; broader retry policy is handled by a follow-on task.
+    brokerPhaseNeedsRefresh ExternalDataSourceGrantAcked ExternalDataSourceGrantPending = False
+    brokerPhaseNeedsRefresh ExternalDataSourceGrantFailed ExternalDataSourceGrantPending = False
+    brokerPhaseNeedsRefresh oldPhase newPhase = oldPhase /= newPhase
+
+    unavailableReasonChanged =
+      edsgbsState newGrant == ExternalDataSourceGrantUnavailable
+        && edsgbsReason oldGrant /= edsgbsReason newGrant
+
+    terminalFailureMadeConsumerUnbrokerable =
+      edsgbsState oldGrant `elem` [ExternalDataSourceGrantFailed, ExternalDataSourceRevokeFailed]
+        && edsgbsState newGrant == ExternalDataSourceGrantUnavailable
+        && maybe False (consumerUnbrokerableReasonForKey (edsgbsKey oldGrant)) (edsgbsReason newGrant)
 
 -- | Revoke every active grant in a state. Used before shutdown starts closing
 -- consumer transports.
 revokeExternalDataSourceBrokeredGrants :: PluginManagerState -> Text -> IO PluginManagerState
 revokeExternalDataSourceBrokeredGrants st reason = do
-  let sentGrants = filter ((== "sent") . edsgbsState) (Map.elems (pmsExternalDataSourceGrants st))
-  foldM (revokeOneWithReason reason) st sentGrants
+  let revocableGrants = filter (externalDataSourceGrantBrokerPhaseRevocable . edsgbsState) (Map.elems (pmsExternalDataSourceGrants st))
+  foldM (revokeOneWithReason reason) st revocableGrants
 
 refreshProviderStatuses :: PluginManagerState -> IO PluginManagerState
 refreshProviderStatuses st = do
@@ -234,7 +253,7 @@ bindingToGrant st binding = do
     , edsgbsMessage = grantMessage binding ref grant
     , edsgbsConsumerReadyAt = plsUpdatedAt (lpLifecycle consumer)
     , edsgbsProviderReadyAt = plsUpdatedAt (lpLifecycle provider)
-    , edsgbsState = if sendable then "resolved" else "unavailable"
+    , edsgbsState = if sendable then ExternalDataSourceGrantPending else ExternalDataSourceGrantUnavailable
     , edsgbsReason = if sendable then Nothing else Just (unsendableGrantReason st consumer provider)
     }
 
@@ -257,6 +276,10 @@ unsendableGrantReason st consumer provider
   | not (pluginConnectionBrokerable consumer) =
       "consumer plugin '" <> lpName consumer <> "' is not brokerable"
   | otherwise = "consumer connection is unavailable"
+
+consumerUnbrokerableReasonForKey :: ExternalDataSourceGrantKey -> Text -> Bool
+consumerUnbrokerableReasonForKey key reason =
+  ("consumer plugin '" <> edsgkConsumer key <> "' is not brokerable") `Text.isInfixOf` reason
 
 findRef :: DependencyExternalDataSourceBinding -> LoadedPlugin -> Maybe RPCExternalDataSourceRef
 findRef binding consumer = find ((== desbRef binding) . redsrName) (rmExternalDataSourceRefs (lpManifest consumer))
@@ -304,45 +327,68 @@ grantMessage binding ref grant = RPCExternalDataSourceGrantMessage
 
 sendOneGrant :: PluginManagerState -> ExternalDataSourceGrantBrokerState -> IO PluginManagerState
 sendOneGrant st grantState
-  | edsgbsState grantState == "unavailable" && edsgbsRequired grantState =
-      let reason = fromMaybe "required external data-source grant is unavailable" (edsgbsReason grantState)
-          stWithDiagnostic = recordGrantDiagnostic "unavailable" (Just reason) grantState st
-      in blockConsumer key reason stWithDiagnostic
-  | edsgbsState grantState == "unavailable" =
-      let reason = fromMaybe "optional external data-source grant is unavailable" (edsgbsReason grantState)
-          stWithDiagnostic = recordGrantDiagnostic "unavailable" (Just reason) grantState st
-      in degradeConsumer key reason stWithDiagnostic
   | Map.member key (pmsExternalDataSourceGrants st) = pure st
+  | Just staleRevoke <- unresolvedRevokeForRef key st =
+      let reason = "external data-source revoke is unresolved for previous grant: "
+            <> grantKeyDependency (edsgbsKey staleRevoke)
+            <> maybe "" (": " <>) (edsgbsReason staleRevoke)
+      in if edsgbsRequired grantState
+        then blockConsumer key reason st
+        else degradeConsumer key reason st
+  | edsgbsState grantState == ExternalDataSourceGrantUnavailable && edsgbsRequired grantState =
+      let reason = fromMaybe "required external data-source grant is unavailable" (edsgbsReason grantState)
+          stWithDiagnostic = recordGrantDiagnostic ExternalDataSourceGrantUnavailable (Just reason) grantState st
+      in blockConsumer key reason stWithDiagnostic
+  | edsgbsState grantState == ExternalDataSourceGrantUnavailable =
+      let reason = fromMaybe "optional external data-source grant is unavailable" (edsgbsReason grantState)
+          stWithDiagnostic = recordGrantDiagnostic ExternalDataSourceGrantUnavailable (Just reason) grantState st
+      in degradeConsumer key reason stWithDiagnostic
   | otherwise = case consumerConnection st key of
-      Nothing -> if edsgbsRequired grantState
-        then blockConsumer key "external data-source consumer is not connected for grant send" st
-        else
-          let reason = "external data-source consumer is not connected for optional grant send"
-              stWithDiagnostic = recordGrantDiagnostic "unavailable" (Just reason) grantState st
-          in degradeConsumer key reason stWithDiagnostic
+      Nothing ->
+        let reason = if edsgbsRequired grantState
+              then "external data-source consumer is not connected for grant send"
+              else "external data-source consumer is not connected for optional grant send"
+            stWithDiagnostic = recordGrantDiagnostic ExternalDataSourceGrantFailed (Just reason) grantState st
+        in if edsgbsRequired grantState
+          then blockConsumer key reason stWithDiagnostic
+          else degradeConsumer key reason stWithDiagnostic
       Just conn -> do
+        let pendingSt = recordGrantDiagnostic ExternalDataSourceGrantPending Nothing grantState st
         result <- sendExternalDataSourceGrant conn (edsgbsMessage grantState)
         case result of
-          Right () -> pure st
+          Right () -> pure pendingSt
             { pmsExternalDataSourceGrants = Map.insert key grantState
-                { edsgbsState = "sent", edsgbsReason = Nothing }
-                (pmsExternalDataSourceGrants st)
+                { edsgbsState = ExternalDataSourceGrantAcked, edsgbsReason = Nothing }
+                (pmsExternalDataSourceGrants pendingSt)
             }
-          Left err
-            | edsgbsRequired grantState -> blockConsumer key ("failed to send required external data-source grant: " <> rpcErrorText err) st
-            | otherwise ->
-                let reason = "failed to send optional external data-source grant: " <> rpcErrorText err
-                    stWithDiagnostic = recordGrantDiagnostic "unavailable" (Just reason) grantState st
-                in degradeConsumer key reason stWithDiagnostic
+          Left err ->
+            let reasonPrefix = if edsgbsRequired grantState
+                  then "failed to send required external data-source grant: "
+                  else "failed to send optional external data-source grant: "
+                reason = reasonPrefix <> rpcErrorText err
+                stWithDiagnostic = recordGrantDiagnostic ExternalDataSourceGrantFailed (Just reason) grantState pendingSt
+            in if edsgbsRequired grantState
+              then blockConsumer key reason stWithDiagnostic
+              else degradeConsumer key reason stWithDiagnostic
   where
     key = edsgbsKey grantState
 
-recordGrantDiagnostic :: Text -> Maybe Text -> ExternalDataSourceGrantBrokerState -> PluginManagerState -> PluginManagerState
+recordGrantDiagnostic :: ExternalDataSourceGrantBrokerPhase -> Maybe Text -> ExternalDataSourceGrantBrokerState -> PluginManagerState -> PluginManagerState
 recordGrantDiagnostic state reason grantState st = st
   { pmsExternalDataSourceGrants = Map.insert (edsgbsKey grantState)
       grantState { edsgbsState = state, edsgbsReason = reason }
       (pmsExternalDataSourceGrants st)
   }
+
+unresolvedRevokeForRef :: ExternalDataSourceGrantKey -> PluginManagerState -> Maybe ExternalDataSourceGrantBrokerState
+unresolvedRevokeForRef key st = find matches (Map.elems (pmsExternalDataSourceGrants st))
+  where
+    matches grantState =
+      let staleKey = edsgbsKey grantState
+      in edsgkConsumer staleKey == edsgkConsumer key
+        && edsgkRef staleKey == edsgkRef key
+        && staleKey /= key
+        && edsgbsState grantState `elem` [ExternalDataSourceRevokePending, ExternalDataSourceRevokeFailed]
 
 consumerConnection :: PluginManagerState -> ExternalDataSourceGrantKey -> Maybe RPCConnection
 consumerConnection st key = do
@@ -353,7 +399,9 @@ blockConsumer :: ExternalDataSourceGrantKey -> Text -> PluginManagerState -> IO 
 blockConsumer key reason st = case Map.lookup (edsgkConsumer key) (pmsPlugins st) of
   Nothing -> pure st
   Just consumer
-    | plsErrorCode (lpLifecycle consumer) == Just "external_data_source_blocked" -> pure st
+    | lifecycleHasExternalDataSourceError "external_data_source_blocked" "external data-source startup blocked: " key reason consumer -> pure st
+    | plsErrorCode (lpLifecycle consumer) == Just "external_data_source_blocked"
+      && consumerUnbrokerableReasonForKey key reason -> pure st
     | otherwise -> do
         blocked <- markExternalDataSourceBlocked (grantKeyDependency key) reason consumer
         pure st { pmsPlugins = Map.insert (lpName blocked) blocked (pmsPlugins st) }
@@ -363,10 +411,18 @@ degradeConsumer key reason st = case Map.lookup (edsgkConsumer key) (pmsPlugins 
   Nothing -> pure st
   Just consumer
     | plsState (lpLifecycle consumer) == LifecycleFailed -> pure st
-    | plsErrorCode (lpLifecycle consumer) == Just "external_data_source_degraded" -> pure st
+    | lifecycleHasExternalDataSourceError "external_data_source_degraded" "external data-source degraded: " key reason consumer -> pure st
     | otherwise -> do
         degraded <- markExternalDataSourceDegraded (grantKeyDependency key) reason consumer
         pure st { pmsPlugins = Map.insert (lpName degraded) degraded (pmsPlugins st) }
+
+lifecycleHasExternalDataSourceError :: Text -> Text -> ExternalDataSourceGrantKey -> Text -> LoadedPlugin -> Bool
+lifecycleHasExternalDataSourceError code messagePrefix key reason consumer =
+  plsErrorCode lifecycle == Just code
+    && plsBlockingDependency lifecycle == Just (grantKeyDependency key)
+    && plsErrorMessage lifecycle == Just (messagePrefix <> reason)
+  where
+    lifecycle = lpLifecycle consumer
 
 blockRequiredBindingDiagnostic :: PluginManagerState -> DependencyExternalDataSourceBindingDiagnostic -> IO PluginManagerState
 blockRequiredBindingDiagnostic st diag =
@@ -445,20 +501,29 @@ revokeOne = revokeOneWithReason "external data-source binding is no longer broke
 revokeOneWithReason :: Text -> PluginManagerState -> ExternalDataSourceGrantBrokerState -> IO PluginManagerState
 revokeOneWithReason reason st grantState = do
   let key = edsgbsKey grantState
-  case consumerConnection st key of
-    Nothing -> pure abandonActive
+      pendingSt = recordGrantDiagnostic ExternalDataSourceRevokePending (Just reason) grantState st
+      removeActive = pendingSt
+        { pmsExternalDataSourceGrants = Map.delete key (pmsExternalDataSourceGrants pendingSt)
+        }
+      -- If there is no live consumer transport, there is no path to obtain a
+      -- revoke ACK; the host explicitly abandons the active grant handle.
+      abandonActive = removeActive
+  case consumerConnection pendingSt key of
+    Nothing
+      | edsgbsState grantState `elem` [ExternalDataSourceRevokePending, ExternalDataSourceRevokeFailed] -> pure st
+      | otherwise -> pure abandonActive
     Just conn -> do
       result <- sendExternalDataSourceGrantRevocation conn (revocationMessage reason grantState)
       case result of
         Right () -> pure removeActive
-        Left err -> pure (recordGrantDiagnostic "sent" (Just ("failed to revoke external data-source grant: " <> rpcErrorText err)) grantState st)
-  where
-    removeActive = st
-      { pmsExternalDataSourceGrants = Map.delete (edsgbsKey grantState) (pmsExternalDataSourceGrants st)
-      }
-    -- If there is no live consumer transport, there is no path to obtain a
-    -- revoke ACK; the host explicitly abandons the active grant handle.
-    abandonActive = removeActive
+        Left err ->
+          let failureReason = if edsgbsRequired grantState
+                then "failed to revoke required external data-source grant: " <> rpcErrorText err
+                else "failed to revoke optional external data-source grant: " <> rpcErrorText err
+              failedSt = recordGrantDiagnostic ExternalDataSourceRevokeFailed (Just failureReason) grantState pendingSt
+          in if edsgbsRequired grantState
+            then blockConsumer key failureReason failedSt
+            else degradeConsumer key failureReason failedSt
 
 revocationMessage :: Text -> ExternalDataSourceGrantBrokerState -> RPCExternalDataSourceGrantRevocation
 revocationMessage reason grantState = RPCExternalDataSourceGrantRevocation
@@ -498,14 +563,14 @@ annotateConsumerRefs bindingDiagnostics st = st { pmsPlugins = Map.map annotateP
 
     annotateRef lp ref = case findGrantState (lpName lp) ref of
       Just grantState
-        | edsgbsState grantState == "sent" -> ref
+        | externalDataSourceGrantBrokerPhaseApplied (edsgbsState grantState) -> ref
             { redsrStatus = (redsgmStatus (edsgbsMessage grantState))
                 { redssProviderId = Just (edsgkProvider (edsgbsKey grantState)) }
             }
         | otherwise -> ref
             { redsrStatus = unavailableRefStatus
                 (edsgkProvider (edsgbsKey grantState))
-                (fromMaybe "external data-source grant was not sent" (edsgbsReason grantState))
+                (fromMaybe ("external data-source broker state is " <> externalDataSourceGrantBrokerPhaseText (edsgbsState grantState)) (edsgbsReason grantState))
                 (redsrStatus ref)
             }
       Nothing -> case findDiagnostic (lpName lp) ref of
@@ -514,11 +579,17 @@ annotateConsumerRefs bindingDiagnostics st = st { pmsPlugins = Map.map annotateP
           }
         Nothing -> ref
 
-    findGrantState consumerName ref = find
-      (\grantState -> let key = edsgbsKey grantState in
-        edsgkConsumer key == consumerName
-          && edsgkRef key == redsrName ref)
-      (Map.elems active)
+    findGrantState consumerName ref =
+      let matches = filter
+            (\grantState -> let key = edsgbsKey grantState in
+              edsgkConsumer key == consumerName
+                && edsgkRef key == redsrName ref)
+            (Map.elems active)
+      in case find (externalDataSourceGrantBrokerPhaseApplied . edsgbsState) matches of
+        Just applied -> Just applied
+        Nothing -> case matches of
+          grantState:_ -> Just grantState
+          [] -> Nothing
 
     findDiagnostic consumerName ref = find
       (\diag -> desbdRef diag == redsrName ref

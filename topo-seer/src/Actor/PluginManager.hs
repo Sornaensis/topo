@@ -24,6 +24,7 @@ module Actor.PluginManager
   , PluginExternalDataSourceStatusDiagnostic(..)
   , PluginExternalDataSourceGrantDiagnostic(..)
   , PluginExternalDataSourceDiagnostic(..)
+  , ExternalDataSourceGrantBrokerPhase(..)
   , PluginParamUpdateError(..)
   , PluginStatus(..)
   , pluginLifecycleSnapshot
@@ -36,6 +37,7 @@ module Actor.PluginManager
   , pluginDependencyDiagnostics
   , pluginExternalDataSourceDiagnostics
   , pluginExternalDataSourceDiagnosticsFor
+  , externalDataSourceGrantBrokerPhaseText
   , pluginPanelDiagnosticLines
   , pluginResourceNames
   , pluginCapabilitiesText
@@ -115,6 +117,7 @@ import Actor.PluginManager.Types
   , PluginExternalDataSourceStatusDiagnostic(..)
   , PluginExternalDataSourceGrantDiagnostic(..)
   , PluginExternalDataSourceDiagnostic(..)
+  , ExternalDataSourceGrantBrokerPhase(..)
   , PluginParamUpdateError(..)
   , PluginManagerState(..)
   , PluginStatus(..)
@@ -129,6 +132,7 @@ import Actor.PluginManager.Types
   , pluginDependencyDiagnostics
   , pluginExternalDataSourceDiagnostics
   , pluginExternalDataSourceDiagnosticsFor
+  , externalDataSourceGrantBrokerPhaseText
   , pluginPanelDiagnosticLines
   , pluginResourceNames
   , pluginCapabilitiesText

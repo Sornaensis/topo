@@ -823,6 +823,14 @@ spec = describe "PluginManager" $ do
         pluginStatuses externalConsumerPluginName loaded `shouldSatisfy` elem PluginConnected
         pluginLifecycleStates externalConsumerPluginName loaded `shouldSatisfy` elem LifecycleDegraded
         pluginLifecycleErrorCodes externalConsumerPluginName loaded `shouldSatisfy` elem (Just "external_data_source_degraded")
+        snapshots <- getPluginExternalDataSources pluginManagerHandle
+        case findExternalSnapshot externalConsumerPluginNameText snapshots of
+          Nothing -> expectationFailure "missing optional consumer snapshot after rejected grant"
+          Just snapshot -> case wedssConsumedRefs snapshot of
+            [ref] -> do
+              redssState (redsrStatus ref) `shouldBe` ExternalStatusUnavailable
+              redssMessage (redsrStatus ref) `shouldSatisfy` maybe False (Text.isInfixOf "consumer rejected grant")
+            other -> expectationFailure ("expected one optional consumed ref, got " <> show other)
 
   it "degrades optional consumers when providers are disabled after startup" $
     withExecutablePluginDirs
@@ -855,6 +863,22 @@ spec = describe "PluginManager" $ do
         pluginStatuses externalConsumerPluginName disabled `shouldSatisfy` anyPluginErrorContaining "external data-source startup blocked"
         pluginLifecycleStates externalConsumerPluginName disabled `shouldSatisfy` elem LifecycleFailed
         pluginLifecycleErrorCodes externalConsumerPluginName disabled `shouldSatisfy` elem (Just "external_data_source_blocked")
+
+  it "degrades optional consumers when revoke ACKs are rejected after provider disable" $
+    withExecutablePluginDirs
+      [ (externalConsumerPluginName, externalOptionalConsumerManifestJSON, "external-consumer-reject-revoke")
+      , (externalProviderPluginName, externalProviderManifestJSON, "external-provider")
+      ] $ withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        grantedBinding <- expectRight "initial optional granted binding query" =<<
+          expectWithin "initial optional granted binding query" (queryPluginResource pluginManagerHandle externalConsumerPluginNameText externalBindingQuery)
+        expectBindingStatus "granted" grantedBinding
+        setDisabledPlugins pluginManagerHandle (Set.singleton externalProviderPluginNameText)
+        disabled <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses externalConsumerPluginName disabled `shouldSatisfy` elem PluginConnected
+        pluginLifecycleStates externalConsumerPluginName disabled `shouldSatisfy` elem LifecycleDegraded
+        pluginLifecycleErrorCodes externalConsumerPluginName disabled `shouldSatisfy` elem (Just "external_data_source_degraded")
 
   it "reports malformed handshake JSON as a plugin error" $ do
     withExecutablePluginDir malformedPluginName malformedManifestJSON "malformed-json" $ do

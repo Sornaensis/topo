@@ -17,7 +17,11 @@ module Actor.PluginManager.Types
   , PluginExternalDataSourceDiagnostic(..)
   , PluginParamUpdateError(..)
   , ExternalDataSourceGrantKey(..)
+  , ExternalDataSourceGrantBrokerPhase(..)
   , ExternalDataSourceGrantBrokerState(..)
+  , externalDataSourceGrantBrokerPhaseText
+  , externalDataSourceGrantBrokerPhaseApplied
+  , externalDataSourceGrantBrokerPhaseRevocable
   , LoadedPlugin(..)
   , PluginManagerState(..)
   , emptyPluginManagerState
@@ -546,7 +550,7 @@ providerExternalDataSourceDiagnostic pluginName statusOverride source =
     , pedsDescription = nonEmptyText (redsdDescription source)
     , pedsRequired = Nothing
     , pedsResolvedProvider = Just pluginName
-    , pedsBrokerState = if statusAvailable status then "available" else "unavailable"
+    , pedsBrokerState = if statusAvailable status then "available" else externalDataSourceGrantBrokerPhaseText ExternalDataSourceGrantUnavailable
     , pedsBrokerReason = statusFailureReason status
     , pedsAccess = []
     , pedsCapabilities = redsdCapabilities source
@@ -608,11 +612,10 @@ consumerExternalDataSourceDiagnostic pluginName statusForRef ref =
     }
 
 consumerBrokerState :: Text -> RPCExternalDataSourceStatus -> RPCExternalDataSourceRef -> Text
-consumerBrokerState providerName status ref
+consumerBrokerState providerName status _ref
   | providerName == "unresolved" = "unresolved"
-  | statusAvailable status = "sent"
-  | redssState status == ExternalStatusUnavailable && redsrRequired ref = "unavailable"
-  | redssState status == ExternalStatusUnavailable = "unavailable"
+  | statusAvailable status = externalDataSourceGrantBrokerPhaseText ExternalDataSourceGrantAcked
+  | redssState status == ExternalStatusUnavailable = externalDataSourceGrantBrokerPhaseText ExternalDataSourceGrantUnavailable
   | otherwise = "unresolved"
 
 grantDiagnostic :: Maybe (RPCExternalDataSourceStatus -> RPCExternalDataSourceStatus) -> RPCExternalDataSourceGrant -> PluginExternalDataSourceGrantDiagnostic
@@ -948,6 +951,37 @@ data ExternalDataSourceGrantKey = ExternalDataSourceGrantKey
   , edsgkGrant :: !Text
   } deriving (Eq, Ord, Show)
 
+-- | Host-side phase for a brokered external data-source grant.  Only
+-- 'ExternalDataSourceGrantAcked' represents a grant that has been accepted and
+-- applied by the consumer.
+data ExternalDataSourceGrantBrokerPhase
+  = ExternalDataSourceGrantPending
+  | ExternalDataSourceGrantAcked
+  | ExternalDataSourceGrantFailed
+  | ExternalDataSourceRevokePending
+  | ExternalDataSourceRevokeFailed
+  | ExternalDataSourceGrantUnavailable
+  deriving (Eq, Ord, Show)
+
+externalDataSourceGrantBrokerPhaseText :: ExternalDataSourceGrantBrokerPhase -> Text
+externalDataSourceGrantBrokerPhaseText ExternalDataSourceGrantPending = "grant_pending"
+externalDataSourceGrantBrokerPhaseText ExternalDataSourceGrantAcked = "grant_acked"
+externalDataSourceGrantBrokerPhaseText ExternalDataSourceGrantFailed = "grant_failed"
+externalDataSourceGrantBrokerPhaseText ExternalDataSourceRevokePending = "revoke_pending"
+externalDataSourceGrantBrokerPhaseText ExternalDataSourceRevokeFailed = "revoke_failed"
+externalDataSourceGrantBrokerPhaseText ExternalDataSourceGrantUnavailable = "unavailable"
+
+externalDataSourceGrantBrokerPhaseApplied :: ExternalDataSourceGrantBrokerPhase -> Bool
+externalDataSourceGrantBrokerPhaseApplied ExternalDataSourceGrantAcked = True
+externalDataSourceGrantBrokerPhaseApplied _ = False
+
+externalDataSourceGrantBrokerPhaseRevocable :: ExternalDataSourceGrantBrokerPhase -> Bool
+-- Acked grants and unresolved revokes must not be dropped without a revoke ACK.
+externalDataSourceGrantBrokerPhaseRevocable ExternalDataSourceGrantAcked = True
+externalDataSourceGrantBrokerPhaseRevocable ExternalDataSourceRevokePending = True
+externalDataSourceGrantBrokerPhaseRevocable ExternalDataSourceRevokeFailed = True
+externalDataSourceGrantBrokerPhaseRevocable _ = False
+
 -- | Host-side send/revocation state for a brokered external data-source grant.
 data ExternalDataSourceGrantBrokerState = ExternalDataSourceGrantBrokerState
   { edsgbsKey :: !ExternalDataSourceGrantKey
@@ -955,7 +989,7 @@ data ExternalDataSourceGrantBrokerState = ExternalDataSourceGrantBrokerState
   , edsgbsMessage :: !RPCExternalDataSourceGrantMessage
   , edsgbsConsumerReadyAt :: !UTCTime
   , edsgbsProviderReadyAt :: !UTCTime
-  , edsgbsState :: !Text
+  , edsgbsState :: !ExternalDataSourceGrantBrokerPhase
   , edsgbsReason :: !(Maybe Text)
   } deriving (Eq, Show)
 

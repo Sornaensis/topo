@@ -20,6 +20,7 @@ import Actor.PluginManager.Types
   , PluginLifecycleState(..)
   , PluginManagerState(..)
   , PluginStatus(..)
+  , externalDataSourceGrantBrokerPhaseApplied
   )
 import Seer.World.Persist.Types (WorldExternalDataSourceSnapshot(..))
 import Topo.Plugin.DataResource (DataResourceSchema)
@@ -103,7 +104,7 @@ collectPluginExternalDataSources st =
     activeGrantForRef lp ref =
       let matches grantState =
             let key = edsgbsKey grantState
-            in edsgbsState grantState == "sent"
+            in externalDataSourceGrantBrokerPhaseApplied (edsgbsState grantState)
               && edsgkConsumer key == lpName lp
               && edsgkRef key == redsrName ref
       in case filter matches (Map.elems activeGrants) of
