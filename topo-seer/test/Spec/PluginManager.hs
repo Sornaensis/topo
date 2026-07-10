@@ -20,7 +20,7 @@ import Control.Exception
   )
 import Control.Monad (unless)
 import Data.List (elemIndex)
-import Data.Maybe (isJust)
+import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Aeson as Aeson
 import Data.Aeson (Value(..), (.=), object)
 import qualified Data.ByteString as BS
@@ -126,6 +126,8 @@ import Topo.Plugin.RPC
   , RPCExternalDataSourceGrant(..)
   , RPCExternalDataSourceGrantMessage(..)
   , RPCExternalDataSourceGrantRevocation(..)
+  , RPCExternalDataSourceOperation(..)
+  , RPCExternalDataSourceOperationResult(..)
   , RPCExternalDataSourceHealth(..)
   , RPCExternalDataSourceRef(..)
   , RPCExternalDataSourceStatus(..)
@@ -745,6 +747,34 @@ spec = describe "PluginManager" $ do
                 recoveredBinding <- expectRight "provider-recovered granted consumer binding query" =<<
                   expectWithin "provider-recovered granted consumer binding query" (queryPluginResource pluginManagerHandle externalConsumerPluginNameText externalBindingQuery)
                 expectBindingStatus "granted" recoveredBinding))
+
+  it "surfaces external data-source grant ACK rejections to required consumers" $
+    withExecutablePluginDirs
+      [ (externalConsumerPluginName, externalConsumerManifestJSON, "external-consumer-reject-grant")
+      , (externalProviderPluginName, externalProviderManifestJSON, "external-provider")
+      ] $ withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses externalProviderPluginName loaded `shouldSatisfy` elem PluginConnected
+        pluginStatuses externalConsumerPluginName loaded `shouldSatisfy` anyPluginErrorContaining "consumer rejected grant"
+        pluginLifecycleStates externalConsumerPluginName loaded `shouldSatisfy` elem LifecycleFailed
+        pluginLifecycleErrorCodes externalConsumerPluginName loaded `shouldSatisfy` elem (Just "external_data_source_blocked")
+
+  it "keeps grants active when revoke ACKs are rejected" $
+    withExecutablePluginDirs
+      [ (externalConsumerPluginName, externalConsumerManifestJSON, "external-consumer-reject-revoke")
+      , (externalProviderPluginName, externalProviderManifestJSON, "external-provider")
+      ] $ withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        grantedBinding <- expectRight "initial granted binding query" =<<
+          expectWithin "initial granted binding query" (queryPluginResource pluginManagerHandle externalConsumerPluginNameText externalBindingQuery)
+        expectBindingStatus "granted" grantedBinding
+        setDisabledPlugins pluginManagerHandle (Set.singleton externalProviderPluginNameText)
+        retainedBinding <- expectRight "revoke-rejected retained binding query" =<<
+          expectWithin "revoke-rejected retained binding query" (queryPluginResource pluginManagerHandle externalConsumerPluginNameText externalBindingQuery)
+        expectBindingStatus "granted" retainedBinding
 
   it "reports malformed handshake JSON as a plugin error" $ do
     withExecutablePluginDir malformedPluginName malformedManifestJSON "malformed-json" $ do
@@ -1739,7 +1769,7 @@ normalizeFixtureMode :: String -> String
 normalizeFixtureMode = takeWhile (`notElem` ['\r', '\n'])
 
 fixtureUsage :: IO a
-fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|auth-missing|auth-mismatch|malformed-json|bad-handshake|early-exit|slow|wait-for-start-signal|handshake-stall|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|exit-on-generator|exit-on-simulation|external-provider|external-consumer|windows-process-tree|windows-heartbeat-child>"
+fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|auth-missing|auth-mismatch|malformed-json|bad-handshake|early-exit|slow|wait-for-start-signal|handshake-stall|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|exit-on-generator|exit-on-simulation|external-provider|external-consumer|external-consumer-reject-grant|external-consumer-reject-revoke|windows-process-tree|windows-heartbeat-child>"
 
 runFixtureMode :: String -> IO ()
 runFixtureMode = \case
@@ -1766,6 +1796,8 @@ runFixtureMode = \case
   "exit-on-simulation" -> runExitOnSimulationFixture
   "external-provider" -> runExternalProviderFixture
   "external-consumer" -> runExternalConsumerFixture
+  "external-consumer-reject-grant" -> runExternalConsumerRejectGrantFixture
+  "external-consumer-reject-revoke" -> runExternalConsumerRejectRevokeFixture
   "windows-process-tree" -> runWindowsProcessTreeFixture
   "windows-heartbeat-child" -> runWindowsHeartbeatChild
   unknown -> die ("unknown plugin-manager fixture: " <> unknown)
@@ -1966,7 +1998,16 @@ runExternalProviderFixture = do
               _ -> loop transport
 
 runExternalConsumerFixture :: IO ()
-runExternalConsumerFixture = do
+runExternalConsumerFixture = runExternalConsumerFixtureWith False False
+
+runExternalConsumerRejectGrantFixture :: IO ()
+runExternalConsumerRejectGrantFixture = runExternalConsumerFixtureWith True False
+
+runExternalConsumerRejectRevokeFixture :: IO ()
+runExternalConsumerRejectRevokeFixture = runExternalConsumerFixtureWith False True
+
+runExternalConsumerFixtureWith :: Bool -> Bool -> IO ()
+runExternalConsumerFixtureWith rejectGrant rejectRevoke = do
   recordExternalStartup externalConsumerPluginName
   connectPluginFromEnvironment "plugin-manager-external-consumer-fixture" stdin stdout >>= \case
     Left _ -> exitFailure
@@ -1989,8 +2030,18 @@ runExternalConsumerFixture = do
                   (envRequestId envelope)
                   (externalConsumerStatusReport includeDiagnostics)))
                 loop transport bindingStatus
-              MsgExternalDataSourceGrant -> loop transport "granted"
-              MsgExternalDataSourceRevoke -> loop transport "revoked"
+              MsgExternalDataSourceGrant ->
+                case Aeson.fromJSON (envPayload envelope) of
+                  Aeson.Error _ -> loop transport bindingStatus
+                  Aeson.Success grant -> do
+                    sendExternalGrantResult transport envelope grant (not rejectGrant)
+                    loop transport (if rejectGrant then bindingStatus else "granted")
+              MsgExternalDataSourceRevoke ->
+                case Aeson.fromJSON (envPayload envelope) of
+                  Aeson.Error _ -> loop transport bindingStatus
+                  Aeson.Success revocation -> do
+                    sendExternalRevokeResult transport envelope revocation (not rejectRevoke)
+                    loop transport (if rejectRevoke then bindingStatus else "revoked")
               MsgQueryResource -> do
                 _ <- sendMessage transport (encodeMessage (queryResultEnvelope
                   (envRequestId envelope)
@@ -1998,6 +2049,51 @@ runExternalConsumerFixture = do
                 loop transport bindingStatus
               MsgShutdown -> closeTransport transport
               _ -> loop transport bindingStatus
+
+sendExternalGrantResult :: Transport -> RPCEnvelope -> RPCExternalDataSourceGrantMessage -> Bool -> IO ()
+sendExternalGrantResult transport envelope grant accepted =
+  sendExternalOperationResult transport envelope RPCExternalDataSourceOperationResult
+    { redsoOperationId = fromMaybe "missing-grant-operation-id" (redsgmOperationId grant)
+    , redsoOperationEpoch = redsgmOperationEpoch grant
+    , redsoOperation = ExternalDataSourceGrantOperation
+    , redsoProviderId = redsgmProviderId grant
+    , redsoConsumerId = fromMaybe externalConsumerPluginNameText (redsgmConsumerId grant)
+    , redsoSource = redsgmSource grant
+    , redsoGrant = redsgmGrant grant
+    , redsoAccepted = accepted
+    , redsoApplied = accepted
+    , redsoStatus = if accepted then "applied" else "failed"
+    , redsoMessage = if accepted then Just "external data-source grant applied" else Nothing
+    , redsoError = if accepted then Nothing else Just "consumer rejected grant"
+    , redsoDiagnostics = Nothing
+    }
+
+sendExternalRevokeResult :: Transport -> RPCEnvelope -> RPCExternalDataSourceGrantRevocation -> Bool -> IO ()
+sendExternalRevokeResult transport envelope revocation accepted =
+  sendExternalOperationResult transport envelope RPCExternalDataSourceOperationResult
+    { redsoOperationId = fromMaybe "missing-revoke-operation-id" (redsrvOperationId revocation)
+    , redsoOperationEpoch = redsrvOperationEpoch revocation
+    , redsoOperation = ExternalDataSourceRevokeOperation
+    , redsoProviderId = redsrvProviderId revocation
+    , redsoConsumerId = fromMaybe externalConsumerPluginNameText (redsrvConsumerId revocation)
+    , redsoSource = redsrvSource revocation
+    , redsoGrant = redsrvGrant revocation
+    , redsoAccepted = accepted
+    , redsoApplied = accepted
+    , redsoStatus = if accepted then "applied" else "failed"
+    , redsoMessage = if accepted then Just "external data-source revocation applied" else Nothing
+    , redsoError = if accepted then Nothing else Just "consumer rejected revoke"
+    , redsoDiagnostics = Nothing
+    }
+
+sendExternalOperationResult :: Transport -> RPCEnvelope -> RPCExternalDataSourceOperationResult -> IO ()
+sendExternalOperationResult transport envelope operationResult = do
+  _ <- sendMessage transport (encodeMessage RPCEnvelope
+    { envType = MsgExternalDataSourceOperationResult
+    , envPayload = Aeson.toJSON operationResult
+    , envRequestId = envRequestId envelope
+    })
+  pure ()
 
 requestIncludesDiagnostics :: RPCEnvelope -> Bool
 requestIncludesDiagnostics envelope = case Aeson.fromJSON (envPayload envelope) of

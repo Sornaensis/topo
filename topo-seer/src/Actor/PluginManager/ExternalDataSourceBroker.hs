@@ -88,8 +88,9 @@ reconcileExternalDataSourceBrokering oldSt newSt = do
         ]
       revokedKeys = Set.union removedKeys changedKeys
   stAfterRevokes <- foldM revokeOne statusSt (mapMaybe (`Map.lookup` oldSent) (Set.toList revokedKeys))
-  let stAfterDrops = stAfterRevokes
-        { pmsExternalDataSourceGrants = foldr Map.delete (pmsExternalDataSourceGrants stAfterRevokes) (Set.toList revokedKeys)
+  let dropWithoutRevokeKeys = Set.toList (revokedKeys `Set.difference` Map.keysSet oldSent)
+      stAfterDrops = stAfterRevokes
+        { pmsExternalDataSourceGrants = foldr Map.delete (pmsExternalDataSourceGrants stAfterRevokes) dropWithoutRevokeKeys
         }
   stAfterGrants <- foldM sendOneGrant stAfterDrops (Map.elems desiredMap)
   let active = pmsExternalDataSourceGrants stAfterGrants
@@ -118,8 +119,7 @@ grantNeedsRefresh oldGrant newGrant =
 revokeExternalDataSourceBrokeredGrants :: PluginManagerState -> Text -> IO PluginManagerState
 revokeExternalDataSourceBrokeredGrants st reason = do
   let sentGrants = filter ((== "sent") . edsgbsState) (Map.elems (pmsExternalDataSourceGrants st))
-  st' <- foldM (revokeOneWithReason reason) st sentGrants
-  pure st' { pmsExternalDataSourceGrants = Map.empty }
+  foldM (revokeOneWithReason reason) st sentGrants
 
 refreshProviderStatuses :: PluginManagerState -> IO PluginManagerState
 refreshProviderStatuses st = do
@@ -334,9 +334,11 @@ consumerConnection st key = do
 blockConsumer :: ExternalDataSourceGrantKey -> Text -> PluginManagerState -> IO PluginManagerState
 blockConsumer key reason st = case Map.lookup (edsgkConsumer key) (pmsPlugins st) of
   Nothing -> pure st
-  Just consumer -> do
-    blocked <- markExternalDataSourceBlocked (grantKeyDependency key) reason consumer
-    pure st { pmsPlugins = Map.insert (lpName blocked) blocked (pmsPlugins st) }
+  Just consumer
+    | plsErrorCode (lpLifecycle consumer) == Just "external_data_source_blocked" -> pure st
+    | otherwise -> do
+        blocked <- markExternalDataSourceBlocked (grantKeyDependency key) reason consumer
+        pure st { pmsPlugins = Map.insert (lpName blocked) blocked (pmsPlugins st) }
 
 blockRequiredBindingDiagnostic :: PluginManagerState -> DependencyExternalDataSourceBindingDiagnostic -> IO PluginManagerState
 blockRequiredBindingDiagnostic st diag =
@@ -371,14 +373,19 @@ revokeOneWithReason :: Text -> PluginManagerState -> ExternalDataSourceGrantBrok
 revokeOneWithReason reason st grantState = do
   let key = edsgbsKey grantState
   case consumerConnection st key of
-    Nothing -> pure removeActive
+    Nothing -> pure abandonActive
     Just conn -> do
-      _ <- sendExternalDataSourceGrantRevocation conn (revocationMessage reason grantState)
-      pure removeActive
+      result <- sendExternalDataSourceGrantRevocation conn (revocationMessage reason grantState)
+      case result of
+        Right () -> pure removeActive
+        Left err -> pure (recordGrantDiagnostic "sent" (Just ("failed to revoke external data-source grant: " <> rpcErrorText err)) grantState st)
   where
     removeActive = st
       { pmsExternalDataSourceGrants = Map.delete (edsgbsKey grantState) (pmsExternalDataSourceGrants st)
       }
+    -- If there is no live consumer transport, there is no path to obtain a
+    -- revoke ACK; the host explicitly abandons the active grant handle.
+    abandonActive = removeActive
 
 revocationMessage :: Text -> ExternalDataSourceGrantBrokerState -> RPCExternalDataSourceGrantRevocation
 revocationMessage reason grantState = RPCExternalDataSourceGrantRevocation

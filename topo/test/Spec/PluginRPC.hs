@@ -50,6 +50,8 @@ import Topo.Plugin.RPC
   , performHandshakeWithAuth
   , queryResource
   , rpcErrorText
+  , sendExternalDataSourceGrant
+  , sendExternalDataSourceGrantRevocation
   , sendHeartbeat
   )
 import Topo.Plugin.RPC.Manifest
@@ -1539,6 +1541,55 @@ spec = describe "Plugin.RPC" $ do
         health <- takeHealthResult done
         hstMessage health `shouldBe` "after-ignored-ack"
 
+    it "waits for correlated external data-source grant ACKs" $
+      withConnectedTransports "rpc-external-grant-ack" $ \host plugin -> do
+        let conn = newRPCConnection baseManifest host Map.empty
+        done <- newEmptyMVar
+        _ <- forkIO (sendExternalDataSourceGrant conn externalGrantMessageFixture >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgExternalDataSourceGrant
+        _ <- requireRequestId request
+        sendEnvelopeTo plugin (externalOperationResultEnvelope request ExternalDataSourceGrantOperation True Nothing)
+        result <- timeout transportTestTimeoutMicros (takeMVar done)
+        result `shouldBe` Just (Right ())
+
+    it "surfaces external data-source grant rejection ACKs" $
+      withConnectedTransports "rpc-external-grant-rejected" $ \host plugin -> do
+        let conn = newRPCConnection baseManifest host Map.empty
+        done <- newEmptyMVar
+        _ <- forkIO (sendExternalDataSourceGrant conn externalGrantMessageFixture >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgExternalDataSourceGrant
+        sendEnvelopeTo plugin (externalOperationResultEnvelope request ExternalDataSourceGrantOperation False (Just "consumer rejected grant"))
+        result <- timeout transportTestTimeoutMicros (takeMVar done)
+        case result of
+          Just (Left (RPCPluginError _ msg)) -> msg `shouldSatisfy` Text.isInfixOf "consumer rejected grant"
+          other -> expectationFailure ("expected rejected grant ACK, got " <> show other)
+
+    it "reports mismatched external data-source operation ACKs as protocol errors" $
+      withConnectedTransports "rpc-external-revoke-protocol-error" $ \host plugin -> do
+        let conn = newRPCConnection baseManifest host Map.empty
+        done <- newEmptyMVar
+        _ <- forkIO (sendExternalDataSourceGrantRevocation conn externalRevocationFixture >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgExternalDataSourceRevoke
+        sendEnvelopeTo plugin (externalOperationResultEnvelope request ExternalDataSourceGrantOperation True Nothing)
+        result <- timeout transportTestTimeoutMicros (takeMVar done)
+        case result of
+          Just (Left (RPCProtocolError msg)) -> msg `shouldSatisfy` Text.isInfixOf "operation mismatch"
+          other -> expectationFailure ("expected external revoke protocol error, got " <> show other)
+
+    it "times out external data-source grants without ACKs" $
+      withConnectedTransports "rpc-external-grant-timeout" $ \host _plugin -> do
+        let manifest = baseManifest
+              { rmStartPolicy = defaultRPCStartPolicy { rspRequestTimeoutMs = 50 }
+              }
+            conn = newRPCConnection manifest host Map.empty
+        result <- timeout 500000 (sendExternalDataSourceGrant conn externalGrantMessageFixture)
+        case result of
+          Just (Left (RPCTimeout msg)) -> msg `shouldSatisfy` Text.isInfixOf "external data-source grant"
+          other -> expectationFailure ("expected external grant timeout, got " <> show other)
+
     it "round-trips heartbeat responses with correlation ids" $
       withConnectedTransports "rpc-heartbeat" $ \host plugin -> do
         let conn = newRPCConnection baseManifest host Map.empty
@@ -2079,6 +2130,36 @@ healthResponse request message = RPCEnvelope
   , envRequestId = envRequestId request
   }
 
+externalOperationResultEnvelope
+  :: RPCEnvelope
+  -> RPCExternalDataSourceOperation
+  -> Bool
+  -> Maybe Text
+  -> RPCEnvelope
+externalOperationResultEnvelope request operation accepted mError = RPCEnvelope
+  { envType = MsgExternalDataSourceOperationResult
+  , envPayload = Aeson.toJSON RPCExternalDataSourceOperationResult
+      { redsoOperationId = operationId
+      , redsoOperationEpoch = operationEpoch
+      , redsoOperation = operation
+      , redsoProviderId = "provider"
+      , redsoConsumerId = "consumer"
+      , redsoSource = "source"
+      , redsoGrant = "grant"
+      , redsoAccepted = accepted
+      , redsoApplied = accepted
+      , redsoStatus = if accepted then "applied" else "failed"
+      , redsoMessage = if accepted then Just "operation applied" else Nothing
+      , redsoError = mError
+      , redsoDiagnostics = Nothing
+      }
+  , envRequestId = envRequestId request
+  }
+  where
+    (operationId, operationEpoch) = case operation of
+      ExternalDataSourceGrantOperation -> ("grant-op-test", Just 1)
+      ExternalDataSourceRevokeOperation -> ("revoke-op-test", Just 2)
+
 takeHealthResult :: MVar (Either RPCError HealthStatus) -> IO HealthStatus
 takeHealthResult done = do
   result <- timeout transportTestTimeoutMicros (takeMVar done)
@@ -2249,6 +2330,37 @@ baseManifest = RPCManifest
   , rmExternalDataSources = []
   , rmExternalDataSourceRefs = []
   , rmStartPolicy   = defaultRPCStartPolicy
+  }
+
+externalGrantMessageFixture :: RPCExternalDataSourceGrantMessage
+externalGrantMessageFixture = RPCExternalDataSourceGrantMessage
+  { redsgmOperationId = Just "grant-op-test"
+  , redsgmOperationEpoch = Just 1
+  , redsgmProviderId = "provider"
+  , redsgmConsumerId = Just "consumer"
+  , redsgmSource = "source"
+  , redsgmGrant = "grant"
+  , redsgmAccess = [ExternalAccessRead]
+  , redsgmResources = ["records"]
+  , redsgmCapabilityScope = [ExternalSourceQuery]
+  , redsgmStatus = defaultRPCExternalDataSourceStatus { redssState = ExternalStatusReady }
+  , redsgmReference = Nothing
+  , redsgmConfigRefs = []
+  , redsgmDiagnostics = Nothing
+  }
+
+externalRevocationFixture :: RPCExternalDataSourceGrantRevocation
+externalRevocationFixture = RPCExternalDataSourceGrantRevocation
+  { redsrvOperationId = Just "revoke-op-test"
+  , redsrvOperationEpoch = Just 2
+  , redsrvProviderId = "provider"
+  , redsrvConsumerId = Just "consumer"
+  , redsrvSource = "source"
+  , redsrvGrant = "grant"
+  , redsrvReason = Just "test revoke"
+  , redsrvStatus = revokedExternalDataSourceStatus "provider" (Just "test revoke")
+  , redsrvReference = Nothing
+  , redsrvDiagnostics = Nothing
   }
 
 simulationProgressManifest :: RPCManifest

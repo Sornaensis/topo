@@ -375,12 +375,18 @@ dispatchIncomingEnvelope session envelope =
   case envType envelope of
     MsgProgress -> lookupPending session envelope >>= maybe (pure ()) (`handleInterimEnvelope` envelope)
     MsgLog -> lookupPending session envelope >>= maybe (pure ()) (`handleInterimEnvelope` envelope)
-    MsgExternalDataSourceOperationResult -> pure ()
-    _ -> do
-      mPending <- removePendingForEnvelope session envelope
-      case mPending of
+    MsgExternalDataSourceOperationResult ->
+      case envRequestId envelope of
         Nothing -> pure ()
-        Just pending -> handleFinalEnvelope pending envelope
+        Just _ -> dispatchFinalEnvelope session envelope
+    _ -> dispatchFinalEnvelope session envelope
+
+dispatchFinalEnvelope :: RPCSession -> RPCEnvelope -> IO ()
+dispatchFinalEnvelope session envelope = do
+  mPending <- removePendingForEnvelope session envelope
+  case mPending of
+    Nothing -> pure ()
+    Just pending -> handleFinalEnvelope pending envelope
 
 lookupPending :: RPCSession -> RPCEnvelope -> IO (Maybe RPCPending)
 lookupPending session envelope =
@@ -737,30 +743,55 @@ checkHealth conn = do
       MsgHealthStatus -> decodeRPCPayload env
       other -> pure (Left (RPCProtocolError ("unexpected health response: " <> Text.pack (show other))))
 
--- | Notify a plugin that the host has brokered an external data-source grant.
+-- | Notify a plugin that the host has brokered an external data-source grant
+-- and wait for the correlated ACK/result.
 sendExternalDataSourceGrant
   :: RPCConnection
   -> RPCExternalDataSourceGrantMessage
   -> IO (Either RPCError ())
-sendExternalDataSourceGrant conn grant =
-  sendOneWay conn RPCEnvelope
-    { envType = MsgExternalDataSourceGrant
-    , envPayload = Aeson.toJSON grant
-    , envRequestId = Nothing
-    }
+sendExternalDataSourceGrant conn grant = do
+  let envelope = RPCEnvelope
+        { envType = MsgExternalDataSourceGrant
+        , envPayload = Aeson.toJSON grant
+        , envRequestId = Nothing
+        }
+  result <- rpcCall (Just (rpcRuntimeFailure conn)) (rpcRequestTimeoutMicros conn) "plugin external data-source grant timed out" conn envelope
+  case result of
+    Left err -> pure (Left err)
+    Right env -> validateExternalDataSourceOperationResult
+      ExternalDataSourceGrantOperation
+      (redsgmOperationId grant)
+      (redsgmOperationEpoch grant)
+      (redsgmProviderId grant)
+      (redsgmConsumerId grant)
+      (redsgmSource grant)
+      (redsgmGrant grant)
+      env
 
 -- | Notify a plugin that a previously brokered external data-source grant has
--- been revoked or marked unusable.
+-- been revoked or marked unusable, and wait for the correlated ACK/result.
 sendExternalDataSourceGrantRevocation
   :: RPCConnection
   -> RPCExternalDataSourceGrantRevocation
   -> IO (Either RPCError ())
-sendExternalDataSourceGrantRevocation conn revocation =
-  sendOneWay conn RPCEnvelope
-    { envType = MsgExternalDataSourceRevoke
-    , envPayload = Aeson.toJSON revocation
-    , envRequestId = Nothing
-    }
+sendExternalDataSourceGrantRevocation conn revocation = do
+  let envelope = RPCEnvelope
+        { envType = MsgExternalDataSourceRevoke
+        , envPayload = Aeson.toJSON revocation
+        , envRequestId = Nothing
+        }
+  result <- rpcCall (Just (rpcRuntimeFailure conn)) (rpcRequestTimeoutMicros conn) "plugin external data-source revocation timed out" conn envelope
+  case result of
+    Left err -> pure (Left err)
+    Right env -> validateExternalDataSourceOperationResult
+      ExternalDataSourceRevokeOperation
+      (redsrvOperationId revocation)
+      (redsrvOperationEpoch revocation)
+      (redsrvProviderId revocation)
+      (redsrvConsumerId revocation)
+      (redsrvSource revocation)
+      (redsrvGrant revocation)
+      env
 
 -- | Alias for 'sendExternalDataSourceGrantRevocation'.
 revokeExternalDataSourceGrant
@@ -768,6 +799,103 @@ revokeExternalDataSourceGrant
   -> RPCExternalDataSourceGrantRevocation
   -> IO (Either RPCError ())
 revokeExternalDataSourceGrant = sendExternalDataSourceGrantRevocation
+
+validateExternalDataSourceOperationResult
+  :: RPCExternalDataSourceOperation
+  -> Maybe Text
+  -> Maybe Word64
+  -> Text
+  -> Maybe Text
+  -> Text
+  -> Text
+  -> RPCEnvelope
+  -> IO (Either RPCError ())
+validateExternalDataSourceOperationResult expectedOperation expectedOperationId expectedEpoch expectedProvider expectedConsumer expectedSource expectedGrant env =
+  case envType env of
+    MsgExternalDataSourceOperationResult ->
+      case Aeson.fromJSON (envPayload env) of
+        Aeson.Error err -> pure (Left (RPCProtocolError
+          ("invalid external data-source operation result payload: " <> Text.pack err)))
+        Aeson.Success operationResult ->
+          case externalOperationProtocolError
+              expectedOperation
+              expectedOperationId
+              expectedEpoch
+              expectedProvider
+              expectedConsumer
+              expectedSource
+              expectedGrant
+              operationResult of
+            Just err -> pure (Left (RPCProtocolError err))
+            Nothing
+              | redsoAccepted operationResult && redsoApplied operationResult -> pure (Right ())
+              | otherwise -> pure (Left (RPCPluginError 409
+                  (externalOperationRejectedMessage expectedOperation operationResult)))
+    other -> pure (Left (RPCProtocolError
+      ("unexpected external data-source " <> externalOperationText expectedOperation
+        <> " response: " <> Text.pack (show other))))
+
+externalOperationProtocolError
+  :: RPCExternalDataSourceOperation
+  -> Maybe Text
+  -> Maybe Word64
+  -> Text
+  -> Maybe Text
+  -> Text
+  -> Text
+  -> RPCExternalDataSourceOperationResult
+  -> Maybe Text
+externalOperationProtocolError expectedOperation expectedOperationId expectedEpoch expectedProvider expectedConsumer expectedSource expectedGrant operationResult = firstJust
+  [ expectOperation expectedOperation (redsoOperation operationResult)
+  , expectMaybeText "operationId" expectedOperationId (redsoOperationId operationResult)
+  , expectMaybeWord64 "operationEpoch" expectedEpoch (redsoOperationEpoch operationResult)
+  , expectText "providerId" expectedProvider (redsoProviderId operationResult)
+  , expectMaybeText "consumerId" expectedConsumer (redsoConsumerId operationResult)
+  , expectText "source" expectedSource (redsoSource operationResult)
+  , expectText "grant" expectedGrant (redsoGrant operationResult)
+  ]
+
+expectOperation :: RPCExternalDataSourceOperation -> RPCExternalDataSourceOperation -> Maybe Text
+expectOperation expected actual
+  | actual == expected = Nothing
+  | otherwise = Just
+      ("external data-source operation result operation mismatch: expected "
+        <> externalOperationText expected <> ", got " <> externalOperationText actual)
+
+expectText :: Text -> Text -> Text -> Maybe Text
+expectText field expected actual
+  | actual == expected = Nothing
+  | otherwise = Just
+      ("external data-source operation result " <> field <> " mismatch: expected "
+        <> expected <> ", got " <> actual)
+
+expectMaybeText :: Text -> Maybe Text -> Text -> Maybe Text
+expectMaybeText _ Nothing _ = Nothing
+expectMaybeText field (Just expected) actual = expectText field expected actual
+
+expectMaybeWord64 :: Text -> Maybe Word64 -> Maybe Word64 -> Maybe Text
+expectMaybeWord64 _ Nothing _ = Nothing
+expectMaybeWord64 field (Just expected) actual
+  | actual == Just expected = Nothing
+  | otherwise = Just
+      ("external data-source operation result " <> field <> " mismatch: expected "
+        <> Text.pack (show expected) <> ", got " <> Text.pack (show actual))
+
+externalOperationRejectedMessage :: RPCExternalDataSourceOperation -> RPCExternalDataSourceOperationResult -> Text
+externalOperationRejectedMessage operation operationResult =
+  "external data-source " <> externalOperationText operation <> " rejected" <> reasonSuffix
+  where
+    reasonSuffix = case firstJust
+      [ redsoError operationResult
+      , redsoMessage operationResult
+      , if Text.null (redsoStatus operationResult) then Nothing else Just (redsoStatus operationResult)
+      ] of
+        Nothing -> ""
+        Just reason -> ": " <> reason
+
+externalOperationText :: RPCExternalDataSourceOperation -> Text
+externalOperationText ExternalDataSourceGrantOperation = "grant"
+externalOperationText ExternalDataSourceRevokeOperation = "revoke"
 
 -- | Request a backend-neutral status snapshot for a plugin's external
 -- data-source declarations, grants, and consumer references.
