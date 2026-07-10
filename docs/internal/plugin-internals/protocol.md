@@ -64,6 +64,7 @@ emit the canonical tags below.
 | `MsgHealthStatus` | `health_status` | Plugin → Host | `HealthStatus` |
 | `MsgExternalDataSourceGrant` | `external_data_source_grant` | Host → Plugin | `RPCExternalDataSourceGrantMessage` |
 | `MsgExternalDataSourceRevoke` | `external_data_source_revoke` | Host → Plugin | `RPCExternalDataSourceGrantRevocation` |
+| `MsgExternalDataSourceOperationResult` | `external_data_source_operation_result` | Plugin → Host | `RPCExternalDataSourceOperationResult` |
 | `MsgExternalDataSourceStatusRequest` | `external_data_source_status_request` | Host → Plugin | `RPCExternalDataSourceStatusRequest` |
 | `MsgExternalDataSourceStatus` | `external_data_source_status` | Plugin → Host | `RPCExternalDataSourceStatusReport` |
 
@@ -150,8 +151,9 @@ process.
 
 | Message | Payload | Purpose |
 | --- | --- | --- |
-| `external_data_source_grant` | `RPCExternalDataSourceGrantMessage` | One-way host notification that a provider-owned grant has been brokered to a consumer plugin. |
-| `external_data_source_revoke` | `RPCExternalDataSourceGrantRevocation` | One-way host notification that a grant is revoked/unusable. |
+| `external_data_source_grant` | `RPCExternalDataSourceGrantMessage` | Host notification that a provider-owned grant has been brokered to a consumer plugin; new payloads carry `operationId` and optional `operationEpoch`. |
+| `external_data_source_revoke` | `RPCExternalDataSourceGrantRevocation` | Host notification that a grant is revoked/unusable; new payloads carry `operationId` and optional `operationEpoch`. |
+| `external_data_source_operation_result` | `RPCExternalDataSourceOperationResult` | Plugin ACK/result for grant or revoke with `operationId`, optional `operationEpoch`, `operation`, `providerId`, `consumerId`, `source`, `grant`, `accepted`, `applied`, `status`, `message`, `error`, and `diagnostics`. |
 | `external_data_source_status_request` | `RPCExternalDataSourceStatusRequest` | Request source, grant, and consumer-reference status entries. |
 | `external_data_source_status` | `RPCExternalDataSourceStatusReport` | Return backend-neutral status entries and optional diagnostics. |
 
@@ -159,16 +161,19 @@ Status reports are derived from manifests by
 `externalDataSourceStatusReportFromManifest` for the SDK default path. Entries
 include `providerId`, optional `consumerId`, `source`, optional `grant`,
 `access`, `resources`, `capabilityScope`, `status`, optional opaque
-`reference`, `configRefs`, and optional opaque `diagnostics`.
+`reference`, `configRefs`, and optional opaque `diagnostics`. Grant/revoke
+payloads accept older JSON without `operationId`, but broker-generated payloads
+set it so `RPCExternalDataSourceOperationResult` can be correlated without
+mistaking host transport success for consumer-applied state.
 
 PluginManager brokers declared consumer refs automatically. The dependency
 resolver selects an exact provider when `provider` is present, otherwise an
 eligible provider in deterministic dependency/startup order. A required ref only
 blocks startup when no ready, capability/access/resource-compatible provider
 source+grant can be resolved; optional unresolved refs become diagnostics. After
-the refresh is committed and the consumer is connected, the host sends one-way
-`external_data_source_grant` messages and tracks them by
-consumer/provider/source/grant so disable/failure/shutdown/restart or
+the refresh is committed and the consumer is connected, the host sends
+`external_data_source_grant` messages with stable operation IDs and tracks them
+by consumer/provider/source/grant so disable/failure/shutdown/restart or
 source/grant incompatibility can produce `external_data_source_revoke`. Provider
 crash, transport failure, provider-reported failure, shutdown, or restart-limit
 failure should revoke routing by marking provider/grant availability unavailable

@@ -133,6 +133,8 @@ module Topo.Plugin.SDK
   , RPCExternalDataSourceRef(..)
   , RPCExternalDataSourceGrantMessage(..)
   , RPCExternalDataSourceGrantRevocation(..)
+  , RPCExternalDataSourceOperation(..)
+  , RPCExternalDataSourceOperationResult(..)
   , RPCExternalDataSourceStatusRequest(..)
   , RPCExternalDataSourceStatusEntry(..)
   , RPCExternalDataSourceStatusReport(..)
@@ -207,6 +209,8 @@ import Topo.Plugin.RPC.Manifest
 import Topo.Plugin.RPC.ExternalDataSource
   ( RPCExternalDataSourceGrantMessage(..)
   , RPCExternalDataSourceGrantRevocation(..)
+  , RPCExternalDataSourceOperation(..)
+  , RPCExternalDataSourceOperationResult(..)
   , RPCExternalDataSourceStatusRequest(..)
   , RPCExternalDataSourceStatusEntry(..)
   , RPCExternalDataSourceStatusReport(..)

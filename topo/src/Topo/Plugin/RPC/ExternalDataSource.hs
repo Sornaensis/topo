@@ -5,14 +5,16 @@
 -- | Backend-neutral external data-source protocol payloads.
 --
 -- These messages let the host broker provider-owned external data-source
--- grants and status snapshots without learning backend-specific connection,
--- migration, schema, locking, or consistency details.  Opaque references and
--- diagnostics are preserved as JSON values for providers, consumers, and UI
--- diagnostics to interpret outside topo core.
+-- grants, grant/revoke ACK results, and status snapshots without learning
+-- backend-specific connection, migration, schema, locking, or consistency
+-- details. Opaque references and diagnostics are preserved as JSON values for
+-- providers, consumers, and UI diagnostics to interpret outside topo core.
 module Topo.Plugin.RPC.ExternalDataSource
   ( -- * Grant and revocation protocol payloads
     RPCExternalDataSourceGrantMessage(..)
   , RPCExternalDataSourceGrantRevocation(..)
+  , RPCExternalDataSourceOperation(..)
+  , RPCExternalDataSourceOperationResult(..)
     -- * Status protocol payloads
   , RPCExternalDataSourceStatusRequest(..)
   , RPCExternalDataSourceStatusEntry(..)
@@ -38,6 +40,7 @@ import Data.Aeson
   , (.=)
   , object
   , withObject
+  , withText
   )
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
@@ -47,6 +50,7 @@ import Data.List (nub)
 import Data.Maybe (fromMaybe, listToMaybe, maybeToList)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Word (Word64)
 import GHC.Generics (Generic)
 
 import Topo.Plugin.RPC.Manifest
@@ -75,7 +79,12 @@ import Topo.Plugin.RPC.Manifest
 -- consumer can receive a concrete binding at startup without requiring topo to
 -- interpret the provider's opaque reference metadata.
 data RPCExternalDataSourceGrantMessage = RPCExternalDataSourceGrantMessage
-  { redsgmProviderId      :: !Text
+  { redsgmOperationId    :: !(Maybe Text)
+    -- ^ Stable host/broker operation identifier used by ACK/result payloads.
+    -- Older grant messages may omit this and decode as 'Nothing'.
+  , redsgmOperationEpoch :: !(Maybe Word64)
+    -- ^ Optional broker epoch for hosts that version replayed grant sends.
+  , redsgmProviderId      :: !Text
   , redsgmConsumerId      :: !(Maybe Text)
   , redsgmSource          :: !Text
   , redsgmGrant           :: !Text
@@ -90,6 +99,8 @@ data RPCExternalDataSourceGrantMessage = RPCExternalDataSourceGrantMessage
 
 instance FromJSON RPCExternalDataSourceGrantMessage where
   parseJSON = withObject "RPCExternalDataSourceGrantMessage" $ \o -> do
+    operationId <- optionalNonNullField o ["operationId", "operation_id", "brokerOperationId", "broker_operation_id"]
+    operationEpoch <- optionalNonNullField o ["operationEpoch", "operation_epoch", "epoch"]
     providerId <- requiredAliasedField o ["providerId", "provider_id", "provider"]
     consumerId <- optionalNonNullField o ["consumerId", "consumer_id", "consumer"]
     source <- requiredAliasedField o ["source", "sourceName", "source_name"]
@@ -102,7 +113,9 @@ instance FromJSON RPCExternalDataSourceGrantMessage where
     configRefs <- optionalNonNullListField o ["configRefs", "config_refs"]
     diagnostics <- optionalNonNullField o ["diagnostics"]
     pure RPCExternalDataSourceGrantMessage
-      { redsgmProviderId = providerId
+      { redsgmOperationId = operationId
+      , redsgmOperationEpoch = operationEpoch
+      , redsgmProviderId = providerId
       , redsgmConsumerId = consumerId
       , redsgmSource = source
       , redsgmGrant = grant
@@ -117,6 +130,8 @@ instance FromJSON RPCExternalDataSourceGrantMessage where
 
 instance ToJSON RPCExternalDataSourceGrantMessage where
   toJSON grant = object $
+    [ "operationId" .= operationId | Just operationId <- [redsgmOperationId grant] ] <>
+    [ "operationEpoch" .= operationEpoch | Just operationEpoch <- [redsgmOperationEpoch grant] ] <>
     [ "providerId" .= redsgmProviderId grant
     , "source" .= redsgmSource grant
     , "grant" .= redsgmGrant grant
@@ -132,7 +147,12 @@ instance ToJSON RPCExternalDataSourceGrantMessage where
 
 -- | Host notification that a previously brokered grant is no longer usable.
 data RPCExternalDataSourceGrantRevocation = RPCExternalDataSourceGrantRevocation
-  { redsrvProviderId  :: !Text
+  { redsrvOperationId    :: !(Maybe Text)
+    -- ^ Stable host/broker operation identifier used by ACK/result payloads.
+    -- Older revocation messages may omit this and decode as 'Nothing'.
+  , redsrvOperationEpoch :: !(Maybe Word64)
+    -- ^ Optional broker epoch for hosts that version replayed revocations.
+  , redsrvProviderId  :: !Text
   , redsrvConsumerId  :: !(Maybe Text)
   , redsrvSource      :: !Text
   , redsrvGrant       :: !Text
@@ -144,6 +164,8 @@ data RPCExternalDataSourceGrantRevocation = RPCExternalDataSourceGrantRevocation
 
 instance FromJSON RPCExternalDataSourceGrantRevocation where
   parseJSON = withObject "RPCExternalDataSourceGrantRevocation" $ \o -> do
+    operationId <- optionalNonNullField o ["operationId", "operation_id", "brokerOperationId", "broker_operation_id"]
+    operationEpoch <- optionalNonNullField o ["operationEpoch", "operation_epoch", "epoch"]
     providerId <- requiredAliasedField o ["providerId", "provider_id", "provider"]
     consumerId <- optionalNonNullField o ["consumerId", "consumer_id", "consumer"]
     source <- requiredAliasedField o ["source", "sourceName", "source_name"]
@@ -153,7 +175,9 @@ instance FromJSON RPCExternalDataSourceGrantRevocation where
     reference <- optionalNonNullField o ["reference"]
     diagnostics <- optionalNonNullField o ["diagnostics"]
     pure RPCExternalDataSourceGrantRevocation
-      { redsrvProviderId = providerId
+      { redsrvOperationId = operationId
+      , redsrvOperationEpoch = operationEpoch
+      , redsrvProviderId = providerId
       , redsrvConsumerId = consumerId
       , redsrvSource = source
       , redsrvGrant = grant
@@ -165,6 +189,8 @@ instance FromJSON RPCExternalDataSourceGrantRevocation where
 
 instance ToJSON RPCExternalDataSourceGrantRevocation where
   toJSON revocation = object $
+    [ "operationId" .= operationId | Just operationId <- [redsrvOperationId revocation] ] <>
+    [ "operationEpoch" .= operationEpoch | Just operationEpoch <- [redsrvOperationEpoch revocation] ] <>
     [ "providerId" .= redsrvProviderId revocation
     , "source" .= redsrvSource revocation
     , "grant" .= redsrvGrant revocation
@@ -174,6 +200,98 @@ instance ToJSON RPCExternalDataSourceGrantRevocation where
     [ "reason" .= reason | Just reason <- [redsrvReason revocation] ] <>
     [ "reference" .= reference | Just reference <- [redsrvReference revocation] ] <>
     [ "diagnostics" .= diagnostics | Just diagnostics <- [redsrvDiagnostics revocation] ]
+
+-- | External data-source operation kind acknowledged by a plugin result.
+data RPCExternalDataSourceOperation
+  = ExternalDataSourceGrantOperation
+  | ExternalDataSourceRevokeOperation
+  deriving (Eq, Ord, Show, Read, Generic)
+
+instance FromJSON RPCExternalDataSourceOperation where
+  parseJSON = withText "RPCExternalDataSourceOperation" $ \t -> case t of
+    "grant"      -> pure ExternalDataSourceGrantOperation
+    "granted"    -> pure ExternalDataSourceGrantOperation
+    "revoke"     -> pure ExternalDataSourceRevokeOperation
+    "revocation" -> pure ExternalDataSourceRevokeOperation
+    "revoked"    -> pure ExternalDataSourceRevokeOperation
+    _            -> fail ("unknown external data-source operation: " <> Text.unpack t)
+
+instance ToJSON RPCExternalDataSourceOperation where
+  toJSON ExternalDataSourceGrantOperation = "grant"
+  toJSON ExternalDataSourceRevokeOperation = "revoke"
+
+-- | Plugin ACK/result for a host-brokered external data-source grant or revoke.
+--
+-- This payload is intentionally only a protocol shape. Host state-machine
+-- handling of pending/applied/failed operations is implemented separately.
+data RPCExternalDataSourceOperationResult = RPCExternalDataSourceOperationResult
+  { redsoOperationId    :: !Text
+    -- ^ Stable operation identifier from the grant/revoke payload.
+  , redsoOperationEpoch :: !(Maybe Word64)
+    -- ^ Optional broker epoch echoed from the grant/revoke payload.
+  , redsoOperation      :: !RPCExternalDataSourceOperation
+  , redsoProviderId     :: !Text
+  , redsoConsumerId     :: !Text
+  , redsoSource         :: !Text
+  , redsoGrant          :: !Text
+  , redsoAccepted       :: !Bool
+    -- ^ The consumer accepted the operation for processing.
+  , redsoApplied        :: !Bool
+    -- ^ The consumer applied the grant/revoke to its runtime state.
+  , redsoStatus         :: !Text
+    -- ^ Stable status text such as @accepted@, @applied@, @rejected@, or @failed@.
+  , redsoMessage        :: !(Maybe Text)
+  , redsoError          :: !(Maybe Text)
+  , redsoDiagnostics    :: !(Maybe Value)
+  } deriving (Eq, Show, Generic)
+
+instance FromJSON RPCExternalDataSourceOperationResult where
+  parseJSON = withObject "RPCExternalDataSourceOperationResult" $ \o -> do
+    operationId <- requiredAliasedField o ["operationId", "operation_id", "brokerOperationId", "broker_operation_id"]
+    operationEpoch <- optionalNonNullField o ["operationEpoch", "operation_epoch", "epoch"]
+    operation <- requiredAliasedField o ["operation", "operationType", "operation_type", "action"]
+    providerId <- requiredAliasedField o ["providerId", "provider_id", "provider"]
+    consumerId <- requiredAliasedField o ["consumerId", "consumer_id", "consumer"]
+    source <- requiredAliasedField o ["source", "sourceName", "source_name"]
+    grant <- requiredAliasedField o ["grant", "grantName", "grant_name"]
+    accepted <- requiredAliasedField o ["accepted"]
+    applied <- requiredAliasedField o ["applied"]
+    status <- requiredAliasedField o ["status"]
+    message <- optionalNullableField o ["message", "reason"]
+    err <- optionalNullableField o ["error", "errorMessage", "error_message"]
+    diagnostics <- optionalNonNullField o ["diagnostics"]
+    pure RPCExternalDataSourceOperationResult
+      { redsoOperationId = operationId
+      , redsoOperationEpoch = operationEpoch
+      , redsoOperation = operation
+      , redsoProviderId = providerId
+      , redsoConsumerId = consumerId
+      , redsoSource = source
+      , redsoGrant = grant
+      , redsoAccepted = accepted
+      , redsoApplied = applied
+      , redsoStatus = status
+      , redsoMessage = message
+      , redsoError = err
+      , redsoDiagnostics = diagnostics
+      }
+
+instance ToJSON RPCExternalDataSourceOperationResult where
+  toJSON result = object $
+    [ "operationId" .= redsoOperationId result
+    , "operation" .= redsoOperation result
+    , "providerId" .= redsoProviderId result
+    , "consumerId" .= redsoConsumerId result
+    , "source" .= redsoSource result
+    , "grant" .= redsoGrant result
+    , "accepted" .= redsoAccepted result
+    , "applied" .= redsoApplied result
+    , "status" .= redsoStatus result
+    , "message" .= redsoMessage result
+    , "error" .= redsoError result
+    ] <>
+    [ "operationEpoch" .= operationEpoch | Just operationEpoch <- [redsoOperationEpoch result] ] <>
+    [ "diagnostics" .= diagnostics | Just diagnostics <- [redsoDiagnostics result] ]
 
 -- | Canonical unavailable status used when the host revokes a grant.
 revokedExternalDataSourceStatus :: Text -> Maybe Text -> RPCExternalDataSourceStatus
@@ -579,6 +697,13 @@ optionalNonNullListField o aliases =
     Nothing -> pure []
     Just (alias, Null) -> fail (Text.unpack alias <> " must not be null")
     Just (_, value) -> parseJSON value
+
+optionalNullableField :: FromJSON a => Aeson.Object -> [Text] -> Parser (Maybe a)
+optionalNullableField o aliases =
+  case lookupAliasedField o aliases of
+    Nothing -> pure Nothing
+    Just (_, Null) -> pure Nothing
+    Just (_, value) -> Just <$> parseJSON value
 
 requiredAliasedField :: FromJSON a => Aeson.Object -> [Text] -> Parser a
 requiredAliasedField o aliases =

@@ -1175,7 +1175,9 @@ externalReadyStatus = defaultRPCExternalDataSourceStatus
 
 externalGrantMessage :: RPCExternalDataSourceGrantMessage
 externalGrantMessage = RPCExternalDataSourceGrantMessage
-  { redsgmProviderId = "external-status"
+  { redsgmOperationId = Just "sdk-runner-grant-op"
+  , redsgmOperationEpoch = Just 1
+  , redsgmProviderId = "external-status"
   , redsgmConsumerId = Just "external-callback"
   , redsgmSource = "terrain.catalog"
   , redsgmGrant = "terrain-catalog-read"
@@ -1190,7 +1192,9 @@ externalGrantMessage = RPCExternalDataSourceGrantMessage
 
 externalGrantRevocation :: RPCExternalDataSourceGrantRevocation
 externalGrantRevocation = RPCExternalDataSourceGrantRevocation
-  { redsrvProviderId = "external-status"
+  { redsrvOperationId = Just "sdk-runner-revoke-op"
+  , redsrvOperationEpoch = Just 2
+  , redsrvProviderId = "external-status"
   , redsrvConsumerId = Just "external-callback"
   , redsrvSource = "terrain.catalog"
   , redsrvGrant = "terrain-catalog-read"

@@ -326,10 +326,12 @@ data PluginDef = PluginDef
   , pdOnExternalDataSourceGrant :: !(Maybe (RPCExternalDataSourceGrantMessage -> IO ()))
     -- ^ Optional callback invoked when the host brokers an external data-source
     -- grant for this plugin. The payload remains backend-neutral and carries
-    -- provider identity, capability scope, opaque references, and diagnostics.
+    -- operation identity, provider identity, capability scope, opaque
+    -- references, and diagnostics.
   , pdOnExternalDataSourceRevocation :: !(Maybe (RPCExternalDataSourceGrantRevocation -> IO ()))
     -- ^ Optional callback invoked when the host revokes or disables a brokered
-    -- external data-source grant.
+    -- external data-source grant. The revocation payload carries the broker
+    -- operation identity needed by ACK/result messages.
   , pdStartPolicy :: !RPCStartPolicy
     -- ^ Host-side process supervision policy emitted into manifest v3 when it
     -- differs from the default policy.

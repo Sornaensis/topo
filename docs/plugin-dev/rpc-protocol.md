@@ -134,8 +134,9 @@ messages, but new plugins should emit the canonical tags below.
 | `heartbeat` | Host ↔ Plugin | `Heartbeat` | `heartbeat` |
 | `health_check` | Host → Plugin | Empty object | `health_status` or `error` |
 | `health_status` | Plugin → Host | `HealthStatus` | Final health response |
-| `external_data_source_grant` | Host → Plugin | `RPCExternalDataSourceGrantMessage` | One-way grant notification |
-| `external_data_source_revoke` | Host → Plugin | `RPCExternalDataSourceGrantRevocation` | One-way revocation notification |
+| `external_data_source_grant` | Host → Plugin | `RPCExternalDataSourceGrantMessage` | Grant notification carrying an `operationId` |
+| `external_data_source_revoke` | Host → Plugin | `RPCExternalDataSourceGrantRevocation` | Revocation notification carrying an `operationId` |
+| `external_data_source_operation_result` | Plugin → Host | `RPCExternalDataSourceOperationResult` | ACK/result for grant or revoke application |
 | `external_data_source_status_request` | Host → Plugin | `RPCExternalDataSourceStatusRequest` | `external_data_source_status` or `error` |
 | `external_data_source_status` | Plugin → Host | `RPCExternalDataSourceStatusReport` | Final status response |
 
@@ -390,14 +391,17 @@ intentionally carry provider/source names, generic capabilities, status, opaque
 references, and opaque config references; they do not define a database engine,
 connection string format, migration table, lock protocol, writer policy, or host
 schema authority. Plugin authors normally declare providers/consumers in the
-manifest and let topo broker grants automatically after refresh/handshake; the
-low-level grant/revoke RPC helpers are host, SDK, and protocol test primitives,
-not an application-level acknowledgement protocol.
+manifest and let topo broker grants automatically after refresh/handshake. The
+low-level grant/revoke RPC helpers expose a stable `operationId` and optional
+`operationEpoch` so plugins can emit an `external_data_source_operation_result`;
+host retry/state-machine behavior is layered above this protocol shape.
 
 ### `external_data_source_grant`
 
 ```json
 {
+  "operationId": "external-data-source:grant:trade-routes:settlements:civilization:settlement-ledger:settlement-read",
+  "operationEpoch": 1,
   "providerId": "civilization",
   "consumerId": "trade-routes",
   "source": "settlement-ledger",
@@ -416,6 +420,8 @@ not an application-level acknowledgement protocol.
 
 ```json
 {
+  "operationId": "external-data-source:revoke:trade-routes:settlements:civilization:settlement-ledger:settlement-read",
+  "operationEpoch": 2,
   "providerId": "civilization",
   "consumerId": "trade-routes",
   "source": "settlement-ledger",
@@ -424,6 +430,34 @@ not an application-level acknowledgement protocol.
   "status": { "state": "unavailable", "providerId": "civilization" }
 }
 ```
+
+### `external_data_source_operation_result`
+
+```json
+{
+  "operationId": "external-data-source:grant:trade-routes:settlements:civilization:settlement-ledger:settlement-read",
+  "operationEpoch": 1,
+  "operation": "grant",
+  "providerId": "civilization",
+  "consumerId": "trade-routes",
+  "source": "settlement-ledger",
+  "grant": "settlement-read",
+  "accepted": true,
+  "applied": true,
+  "status": "applied",
+  "message": "grant applied",
+  "error": null,
+  "diagnostics": { "reportedBy": "consumer" }
+}
+```
+
+`operation` is `grant` or `revoke`. `accepted` means the consumer accepted the
+operation for processing; `applied` means the grant/revoke took effect in the
+consumer runtime. `status` is stable text such as `accepted`, `applied`,
+`rejected`, or `failed`; `message`, `error`, and `diagnostics` are optional.
+Older grant/revoke payloads without `operationId` remain accepted for decoding,
+but new brokered payloads should include it so ACK/result messages can be
+correlated without relying on transport send success.
 
 ### `external_data_source_status_request`
 
@@ -462,9 +496,9 @@ source, grant, and consumer reference.
 Status states are `unknown`, `unconfigured`, `ready`, `degraded`, and
 `unavailable`. Only `ready` is brokerable for provider/grant routing; other
 states are surfaced as diagnostics until the provider reports readiness again.
-Grant messages are one-way host-sent state. A sent grant means topo selected and
-notified the consumer; it does not imply consumer-acknowledged acceptance unless
-a future protocol adds an explicit acknowledgement.
+A transport-level send only means topo wrote the grant/revoke envelope to the
+consumer transport. Consumer acceptance/application is represented separately by
+`external_data_source_operation_result` and the matching `operationId`.
 
 ## See also
 

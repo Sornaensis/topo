@@ -260,13 +260,26 @@ grantKey binding = ExternalDataSourceGrantKey
   , edsgkGrant = desbGrant binding
   }
 
+brokerOperationId :: Text -> ExternalDataSourceGrantKey -> Text
+brokerOperationId operation key = Text.intercalate ":"
+  [ "external-data-source"
+  , operation
+  , edsgkConsumer key
+  , edsgkRef key
+  , edsgkProvider key
+  , edsgkSource key
+  , edsgkGrant key
+  ]
+
 grantMessage
   :: DependencyExternalDataSourceBinding
   -> RPCExternalDataSourceRef
   -> RPCExternalDataSourceGrant
   -> RPCExternalDataSourceGrantMessage
 grantMessage binding ref grant = RPCExternalDataSourceGrantMessage
-  { redsgmProviderId = desbProvider binding
+  { redsgmOperationId = Just (brokerOperationId "grant" (grantKey binding))
+  , redsgmOperationEpoch = Nothing
+  , redsgmProviderId = desbProvider binding
   , redsgmConsumerId = Just (desbConsumer binding)
   , redsgmSource = desbSource binding
   , redsgmGrant = desbGrant binding
@@ -369,7 +382,9 @@ revokeOneWithReason reason st grantState = do
 
 revocationMessage :: Text -> ExternalDataSourceGrantBrokerState -> RPCExternalDataSourceGrantRevocation
 revocationMessage reason grantState = RPCExternalDataSourceGrantRevocation
-  { redsrvProviderId = redsgmProviderId message
+  { redsrvOperationId = Just (brokerOperationId "revoke" (edsgbsKey grantState))
+  , redsrvOperationEpoch = redsgmOperationEpoch message
+  , redsrvProviderId = redsgmProviderId message
   , redsrvConsumerId = redsgmConsumerId message
   , redsrvSource = redsgmSource message
   , redsrvGrant = redsgmGrant message

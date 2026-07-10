@@ -2995,7 +2995,9 @@ externalBindingQuery = QueryResource
 
 externalGrantMessage :: RPCExternalDataSourceGrantMessage
 externalGrantMessage = RPCExternalDataSourceGrantMessage
-  { redsgmProviderId = externalProviderPluginNameText
+  { redsgmOperationId = Just "seer-plugin-manager-grant-op"
+  , redsgmOperationEpoch = Just 1
+  , redsgmProviderId = externalProviderPluginNameText
   , redsgmConsumerId = Just externalConsumerPluginNameText
   , redsgmSource = externalSourceName
   , redsgmGrant = externalGrantName
@@ -3010,7 +3012,9 @@ externalGrantMessage = RPCExternalDataSourceGrantMessage
 
 externalGrantRevocation :: RPCExternalDataSourceGrantRevocation
 externalGrantRevocation = RPCExternalDataSourceGrantRevocation
-  { redsrvProviderId = externalProviderPluginNameText
+  { redsrvOperationId = Just "seer-plugin-manager-revoke-op"
+  , redsrvOperationEpoch = Just 2
+  , redsrvProviderId = externalProviderPluginNameText
   , redsrvConsumerId = Just externalConsumerPluginNameText
   , redsrvSource = externalSourceName
   , redsrvGrant = externalGrantName

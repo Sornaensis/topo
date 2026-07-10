@@ -123,6 +123,7 @@ rpcMessageTypes =
   , MsgExternalDataSourceRevoke
   , MsgExternalDataSourceStatusRequest
   , MsgExternalDataSourceStatus
+  , MsgExternalDataSourceOperationResult
   ]
 
 rpcMessageTags :: [Text]
@@ -183,6 +184,7 @@ rpcPayloadSamples =
   , ("MutateResult", toJSON (MutateResult False (Just "unavailable") Nothing (Just ExternalDataSourceUnavailable)))
   , ("RPCExternalDataSourceGrantMessage", toJSON sampleExternalGrant)
   , ("RPCExternalDataSourceGrantRevocation", toJSON sampleExternalRevocation)
+  , ("RPCExternalDataSourceOperationResult", toJSON sampleExternalOperationResult)
   , ("RPCExternalDataSourceStatusRequest", toJSON sampleExternalStatusRequest)
   , ("RPCExternalDataSourceStatusEntry", toJSON sampleExternalStatusEntry)
   , ("RPCExternalDataSourceStatusReport", toJSON (RPCExternalDataSourceStatusReport [sampleExternalStatusEntry] (Just (object []))))
@@ -200,7 +202,9 @@ sampleExternalStatus = defaultRPCExternalDataSourceStatus
 
 sampleExternalGrant :: RPCExternalDataSourceGrantMessage
 sampleExternalGrant = RPCExternalDataSourceGrantMessage
-  { redsgmProviderId = "provider"
+  { redsgmOperationId = Just "grant-op-1"
+  , redsgmOperationEpoch = Just 1
+  , redsgmProviderId = "provider"
   , redsgmConsumerId = Just "consumer"
   , redsgmSource = "source"
   , redsgmGrant = "grant"
@@ -215,7 +219,9 @@ sampleExternalGrant = RPCExternalDataSourceGrantMessage
 
 sampleExternalRevocation :: RPCExternalDataSourceGrantRevocation
 sampleExternalRevocation = RPCExternalDataSourceGrantRevocation
-  { redsrvProviderId = "provider"
+  { redsrvOperationId = Just "revoke-op-1"
+  , redsrvOperationEpoch = Just 2
+  , redsrvProviderId = "provider"
   , redsrvConsumerId = Just "consumer"
   , redsrvSource = "source"
   , redsrvGrant = "grant"
@@ -223,6 +229,23 @@ sampleExternalRevocation = RPCExternalDataSourceGrantRevocation
   , redsrvStatus = sampleExternalStatus { redssState = ExternalStatusUnavailable }
   , redsrvReference = Just (object [])
   , redsrvDiagnostics = Just (object [])
+  }
+
+sampleExternalOperationResult :: RPCExternalDataSourceOperationResult
+sampleExternalOperationResult = RPCExternalDataSourceOperationResult
+  { redsoOperationId = "grant-op-1"
+  , redsoOperationEpoch = Just 1
+  , redsoOperation = ExternalDataSourceGrantOperation
+  , redsoProviderId = "provider"
+  , redsoConsumerId = "consumer"
+  , redsoSource = "source"
+  , redsoGrant = "grant"
+  , redsoAccepted = True
+  , redsoApplied = True
+  , redsoStatus = "applied"
+  , redsoMessage = Just "grant applied"
+  , redsoError = Nothing
+  , redsoDiagnostics = Just (object [])
   }
 
 sampleExternalStatusRequest :: RPCExternalDataSourceStatusRequest

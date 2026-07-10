@@ -303,7 +303,8 @@ Consumers declare dependencies with `externalDataSourceRefs`:
 Grant names are provider-defined and backend-neutral. In the normal 1.0 path,
 topo automatically resolves each consumer `externalDataSourceRefs` entry to a
 ready provider source/grant during plugin refresh and sends the resulting
-`external_data_source_grant` notification after the consumer handshake. Exact
+`external_data_source_grant` notification, including a stable broker
+`operationId`, after the consumer handshake. Exact
 `provider` refs bind only to that plugin; omitted `provider` refs use the same
 deterministic dependency ordering as startup. Topo only brokers a requested
 access mode when the source and grant are `ready`, resource-compatible, and the
@@ -326,8 +327,9 @@ summaries are brokerable only when status is `ready`. Required refs that cannot
 be resolved to a ready grant block startup with `external_data_source_blocked`;
 optional refs start with diagnostics. On provider disable, plugin crash,
 transport failure, provider-reported failure, shutdown, restart, or refreshed
-source/grant incompatibility, topo sends `external_data_source_revoke` for any
-active brokered grants and treats provider sources and grants as
+source/grant incompatibility, topo sends `external_data_source_revoke` with a
+stable broker `operationId` for any active brokered grants and treats provider
+sources and grants as
 unavailable/revoked for dependency routing until a fresh ready manifest/runtime
 status is available. It does not delete provider data or run backend cleanup.
 

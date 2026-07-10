@@ -375,6 +375,7 @@ dispatchIncomingEnvelope session envelope =
   case envType envelope of
     MsgProgress -> lookupPending session envelope >>= maybe (pure ()) (`handleInterimEnvelope` envelope)
     MsgLog -> lookupPending session envelope >>= maybe (pure ()) (`handleInterimEnvelope` envelope)
+    MsgExternalDataSourceOperationResult -> pure ()
     _ -> do
       mPending <- removePendingForEnvelope session envelope
       case mPending of

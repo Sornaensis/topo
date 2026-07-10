@@ -68,9 +68,11 @@ other correlated message completes the request; `error` becomes an `RPCError`.
 Timeout, transport failure, or decode failure removes the pending request and
 records a runtime failure.
 
-Uncorrelated one-way sends (`sendOneWay`) are used for `shutdown`,
-`world_changed`, `external_data_source_grant`, and
-`external_data_source_revoke`.
+Uncorrelated one-way transport writes (`sendOneWay`) are used for `shutdown`,
+`world_changed`, `external_data_source_grant`, and `external_data_source_revoke`.
+Grant/revoke payloads now carry stable operation identifiers so future broker
+state can correlate `external_data_source_operation_result` ACK/result messages
+without treating a transport write as consumer-applied state.
 
 ## Public operation groups
 
@@ -84,9 +86,10 @@ Uncorrelated one-way sends (`sendOneWay`) are used for `shutdown`,
 | `invokeSimulation` | `invoke_simulation` → `simulation_result` | Sends capability-scoped terrain/overlay payloads; accepts interim progress/log. |
 | `queryResource` | `query_resource` → `query_result` | Host query into plugin-owned data resource. |
 | `mutateResource` | `mutate_resource` → `mutate_result` | Host mutation into plugin-owned data resource. |
-| `sendExternalDataSourceGrant` | `external_data_source_grant` | One-way backend-neutral grant notification. |
-| `sendExternalDataSourceGrantRevocation` / `revokeExternalDataSourceGrant` | `external_data_source_revoke` | One-way backend-neutral revocation notification. |
+| `sendExternalDataSourceGrant` | `external_data_source_grant` | Backend-neutral grant notification carrying `operationId`/optional epoch. |
+| `sendExternalDataSourceGrantRevocation` / `revokeExternalDataSourceGrant` | `external_data_source_revoke` | Backend-neutral revocation notification carrying `operationId`/optional epoch. |
 | `requestExternalDataSourceStatus` / `checkExternalDataSourceStatus` | `external_data_source_status_request` → `external_data_source_status` | Backend-neutral source/grant/ref status probe. |
+| Future ACK handling | `external_data_source_operation_result` | Plugin result payload with `operationId`, optional `operationEpoch`, provider/consumer/source/grant, `accepted`, `applied`, `status`, `message`, `error`, and `diagnostics`. |
 | `rpcShutdown` | `shutdown` | One-way clean shutdown request. |
 
 ## Pipeline integration
@@ -149,10 +152,13 @@ HTTP, command, and UI layers can share stable failure text.
 
 External data-source functions broker provider-owned coordination data only.
 `RPCExternalDataSourceGrantMessage`, `RPCExternalDataSourceGrantRevocation`,
-`RPCExternalDataSourceStatusRequest`, and `RPCExternalDataSourceStatusReport`
-carry provider IDs, sources, grants, generic access/capability scopes,
-resources, backend-neutral status, opaque `reference` objects, opaque
-`configRefs`, and opaque diagnostics.
+`RPCExternalDataSourceOperationResult`, `RPCExternalDataSourceStatusRequest`,
+and `RPCExternalDataSourceStatusReport` carry provider IDs, sources, grants,
+generic access/capability scopes, resources, backend-neutral status, opaque
+`reference` objects, opaque `configRefs`, and opaque diagnostics. Grant/revoke
+payloads add stable broker `operationId` values (and optional epochs); operation
+results echo the ID and report `accepted`, `applied`, `status`, `message`, and
+`error` without requiring the host to know backend internals.
 
 This module must not add backend-specific migration tables, schema names,
 connection-string parsing, lock protocols, consistency rules, cleanup routines,

@@ -124,6 +124,7 @@ instance Arbitrary RPCMessageType where
     , MsgExternalDataSourceRevoke
     , MsgExternalDataSourceStatusRequest
     , MsgExternalDataSourceStatus
+    , MsgExternalDataSourceOperationResult
     ]
 
 instance Arbitrary RPCEnvelope where
@@ -968,9 +969,12 @@ spec = describe "Plugin.RPC" $ do
       Aeson.fromJSON (String "external_data_source_grant") `shouldBe` Aeson.Success MsgExternalDataSourceGrant
       Aeson.fromJSON (String "external_data_source_grant_revoked") `shouldBe` Aeson.Success MsgExternalDataSourceRevoke
       Aeson.fromJSON (String "external_data_source_status_check") `shouldBe` Aeson.Success MsgExternalDataSourceStatusRequest
+      Aeson.fromJSON (String "external_data_source_grant_ack") `shouldBe` Aeson.Success MsgExternalDataSourceOperationResult
+      Aeson.fromJSON (String "external_data_source_revoke_result") `shouldBe` Aeson.Success MsgExternalDataSourceOperationResult
       Aeson.toJSON MsgExternalDataSourceStatus `shouldBe` String "external_data_source_status"
+      Aeson.toJSON MsgExternalDataSourceOperationResult `shouldBe` String "external_data_source_operation_result"
 
-    it "encodes backend-neutral external data-source grant and revocation payloads" $ do
+    it "encodes backend-neutral external data-source grant, revocation, and operation result payloads" $ do
       let status = defaultRPCExternalDataSourceStatus
             { redssState = ExternalStatusReady
             , redssProviderId = Just "civilization"
@@ -981,7 +985,9 @@ spec = describe "Plugin.RPC" $ do
             , redssDiagnostics = Just (object ["reportedBy" .= ("provider" :: Text)])
             }
           grant = RPCExternalDataSourceGrantMessage
-            { redsgmProviderId = "civilization"
+            { redsgmOperationId = Just "grant-op-1"
+            , redsgmOperationEpoch = Just 1
+            , redsgmProviderId = "civilization"
             , redsgmConsumerId = Just "trade-routes"
             , redsgmSource = "settlement-ledger"
             , redsgmGrant = "settlement-read"
@@ -995,7 +1001,9 @@ spec = describe "Plugin.RPC" $ do
             }
       eitherDecode (encode grant) `shouldBe` Right grant
       let revoked = RPCExternalDataSourceGrantRevocation
-            { redsrvProviderId = "civilization"
+            { redsrvOperationId = Just "revoke-op-1"
+            , redsrvOperationEpoch = Just 2
+            , redsrvProviderId = "civilization"
             , redsrvConsumerId = Just "trade-routes"
             , redsrvSource = "settlement-ledger"
             , redsrvGrant = "settlement-read"
@@ -1006,6 +1014,81 @@ spec = describe "Plugin.RPC" $ do
             }
       eitherDecode (encode revoked) `shouldBe` Right revoked
       redssAccessMode (redsrvStatus revoked) `shouldBe` Just ExternalAccessModeDisabled
+      let operationResult = RPCExternalDataSourceOperationResult
+            { redsoOperationId = "grant-op-1"
+            , redsoOperationEpoch = Just 1
+            , redsoOperation = ExternalDataSourceGrantOperation
+            , redsoProviderId = "civilization"
+            , redsoConsumerId = "trade-routes"
+            , redsoSource = "settlement-ledger"
+            , redsoGrant = "settlement-read"
+            , redsoAccepted = True
+            , redsoApplied = True
+            , redsoStatus = "applied"
+            , redsoMessage = Just "grant applied"
+            , redsoError = Nothing
+            , redsoDiagnostics = Just (object ["reportedBy" .= ("consumer" :: Text)])
+            }
+      eitherDecode (encode operationResult) `shouldBe` Right operationResult
+      let legacyGrant = object
+            [ "providerId" .= ("civilization" :: Text)
+            , "consumerId" .= ("trade-routes" :: Text)
+            , "source" .= ("settlement-ledger" :: Text)
+            , "grant" .= ("settlement-read" :: Text)
+            , "status" .= status
+            ]
+      case Aeson.fromJSON legacyGrant of
+        Aeson.Success decodedGrant -> do
+          redsgmOperationId decodedGrant `shouldBe` Nothing
+          redsgmOperationEpoch decodedGrant `shouldBe` Nothing
+        Aeson.Error err -> expectationFailure err
+      let aliasedGrant = object
+            [ "broker_operation_id" .= ("grant-op-alias" :: Text)
+            , "epoch" .= (7 :: Word64)
+            , "provider" .= ("civilization" :: Text)
+            , "consumer" .= ("trade-routes" :: Text)
+            , "sourceName" .= ("settlement-ledger" :: Text)
+            , "grantName" .= ("settlement-read" :: Text)
+            , "status" .= status
+            ]
+      case Aeson.fromJSON aliasedGrant of
+        Aeson.Success decodedGrant -> do
+          redsgmOperationId decodedGrant `shouldBe` Just "grant-op-alias"
+          redsgmOperationEpoch decodedGrant `shouldBe` Just 7
+        Aeson.Error err -> expectationFailure err
+      let legacyRevocation = object
+            [ "providerId" .= ("civilization" :: Text)
+            , "consumerId" .= ("trade-routes" :: Text)
+            , "source" .= ("settlement-ledger" :: Text)
+            , "grant" .= ("settlement-read" :: Text)
+            ]
+      case Aeson.fromJSON legacyRevocation of
+        Aeson.Success decodedRevocation -> do
+          redsrvOperationId decodedRevocation `shouldBe` Nothing
+          redsrvOperationEpoch decodedRevocation `shouldBe` Nothing
+        Aeson.Error err -> expectationFailure err
+      let aliasedOperationResult = object
+            [ "operation_id" .= ("revoke-op-alias" :: Text)
+            , "operation_epoch" .= (8 :: Word64)
+            , "action" .= ("revoked" :: Text)
+            , "provider" .= ("civilization" :: Text)
+            , "consumer" .= ("trade-routes" :: Text)
+            , "sourceName" .= ("settlement-ledger" :: Text)
+            , "grantName" .= ("settlement-read" :: Text)
+            , "accepted" .= True
+            , "applied" .= True
+            , "status" .= ("applied" :: Text)
+            , "message" .= Null
+            , "errorMessage" .= Null
+            ]
+      case Aeson.fromJSON aliasedOperationResult of
+        Aeson.Success decodedResult -> do
+          redsoOperationId decodedResult `shouldBe` "revoke-op-alias"
+          redsoOperationEpoch decodedResult `shouldBe` Just 8
+          redsoOperation decodedResult `shouldBe` ExternalDataSourceRevokeOperation
+          redsoMessage decodedResult `shouldBe` Nothing
+          redsoError decodedResult `shouldBe` Nothing
+        Aeson.Error err -> expectationFailure err
 
     it "reports external data-source status snapshots from manifests without backend internals" $ do
       case Aeson.fromJSON manifestV3ProviderExample of
@@ -1423,6 +1506,38 @@ spec = describe "Plugin.RPC" $ do
         sendEnvelopeTo plugin ((healthResponse secondReq "after-cancel") { envRequestId = Nothing })
         secondResult <- takeHealthResult secondDone
         hstMessage secondResult `shouldBe` "after-cancel"
+
+    it "ignores uncorrelated external data-source operation results while an RPC is pending" $
+      withConnectedTransports "rpc-external-operation-result-ignored" $ \host plugin -> do
+        let conn = newRPCConnection baseManifest host Map.empty
+        done <- newEmptyMVar
+        _ <- forkIO (checkHealth conn >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgHealthCheck
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgExternalDataSourceOperationResult
+          , envPayload = Aeson.toJSON (RPCExternalDataSourceOperationResult
+              { redsoOperationId = "ignored-op"
+              , redsoOperationEpoch = Nothing
+              , redsoOperation = ExternalDataSourceGrantOperation
+              , redsoProviderId = "provider"
+              , redsoConsumerId = "consumer"
+              , redsoSource = "source"
+              , redsoGrant = "grant"
+              , redsoAccepted = True
+              , redsoApplied = True
+              , redsoStatus = "applied"
+              , redsoMessage = Nothing
+              , redsoError = Nothing
+              , redsoDiagnostics = Nothing
+              })
+          , envRequestId = Nothing
+          }
+        premature <- timeout 200000 (takeMVar done)
+        premature `shouldBe` Nothing
+        sendEnvelopeTo plugin (healthResponse request "after-ignored-ack")
+        health <- takeHealthResult done
+        hstMessage health `shouldBe` "after-ignored-ack"
 
     it "round-trips heartbeat responses with correlation ids" $
       withConnectedTransports "rpc-heartbeat" $ \host plugin -> do

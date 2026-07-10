@@ -187,9 +187,10 @@ Protocol v4 message groups (v3 messages plus launch auth/session proof):
 - **Data resources:** `query_resource`, `query_result`, `mutate_resource`, and
   `mutate_result` for plugin-owned schemas declared in the manifest/handshake.
 - **Backend-neutral external data sources:** `external_data_source_grant`,
-  `external_data_source_revoke`, `external_data_source_status_request`, and
-  `external_data_source_status` for provider-owned sources, grants, status,
-  opaque references, and opaque config refs.
+  `external_data_source_revoke`, `external_data_source_operation_result`,
+  `external_data_source_status_request`, and `external_data_source_status` for
+  provider-owned sources, grants, ACK/result payloads, status, opaque
+  references, and opaque config refs.
 
 See [Plugin Dev: RPC Protocol](plugin-dev/rpc-protocol.md) for the full
 contract-tested wire reference.

@@ -15,7 +15,8 @@
 --                 external_data_source_grant, external_data_source_revoke,
 --                 external_data_source_status_request
 -- Plugin → Host:  progress, log, generator_result, simulation_result, error, heartbeat,
---                 health_status, external_data_source_status
+--                 health_status, external_data_source_status,
+--                 external_data_source_operation_result
 -- @
 module Topo.Plugin.RPC.Protocol
   ( -- * Message envelope
@@ -98,6 +99,7 @@ data RPCMessageType
   | MsgExternalDataSourceRevoke
   | MsgExternalDataSourceStatusRequest
   | MsgExternalDataSourceStatus
+  | MsgExternalDataSourceOperationResult
   deriving (Eq, Ord, Show, Read, Generic)
 
 instance FromJSON RPCMessageType where
@@ -117,18 +119,27 @@ instance FromJSON RPCMessageType where
     "query_result"      -> pure MsgQueryResult
     "mutate_resource"   -> pure MsgMutateResource
     "mutate_result"     -> pure MsgMutateResult
-    "heartbeat"                           -> pure MsgHeartbeat
-    "health_check"                        -> pure MsgHealthCheck
-    "health_status"                       -> pure MsgHealthStatus
-    "external_data_source_grant"          -> pure MsgExternalDataSourceGrant
-    "external_data_source_granted"        -> pure MsgExternalDataSourceGrant
-    "external_data_source_revoke"         -> pure MsgExternalDataSourceRevoke
-    "external_data_source_revocation"     -> pure MsgExternalDataSourceRevoke
-    "external_data_source_grant_revoked"  -> pure MsgExternalDataSourceRevoke
-    "external_data_source_status_request" -> pure MsgExternalDataSourceStatusRequest
-    "external_data_source_status_check"   -> pure MsgExternalDataSourceStatusRequest
-    "external_data_source_status"         -> pure MsgExternalDataSourceStatus
-    _                                     -> fail ("unknown message type: " <> Text.unpack t)
+    "heartbeat"                              -> pure MsgHeartbeat
+    "health_check"                           -> pure MsgHealthCheck
+    "health_status"                          -> pure MsgHealthStatus
+    "external_data_source_grant"             -> pure MsgExternalDataSourceGrant
+    "external_data_source_granted"           -> pure MsgExternalDataSourceGrant
+    "external_data_source_revoke"            -> pure MsgExternalDataSourceRevoke
+    "external_data_source_revocation"        -> pure MsgExternalDataSourceRevoke
+    "external_data_source_grant_revoked"     -> pure MsgExternalDataSourceRevoke
+    "external_data_source_status_request"    -> pure MsgExternalDataSourceStatusRequest
+    "external_data_source_status_check"      -> pure MsgExternalDataSourceStatusRequest
+    "external_data_source_status"            -> pure MsgExternalDataSourceStatus
+    "external_data_source_operation_result"  -> pure MsgExternalDataSourceOperationResult
+    "external_data_source_result"            -> pure MsgExternalDataSourceOperationResult
+    "external_data_source_ack"               -> pure MsgExternalDataSourceOperationResult
+    "external_data_source_grant_result"      -> pure MsgExternalDataSourceOperationResult
+    "external_data_source_grant_ack"         -> pure MsgExternalDataSourceOperationResult
+    "external_data_source_revoke_result"     -> pure MsgExternalDataSourceOperationResult
+    "external_data_source_revoke_ack"        -> pure MsgExternalDataSourceOperationResult
+    "external_data_source_revocation_result" -> pure MsgExternalDataSourceOperationResult
+    "external_data_source_revocation_ack"    -> pure MsgExternalDataSourceOperationResult
+    _                                        -> fail ("unknown message type: " <> Text.unpack t)
 
 instance ToJSON RPCMessageType where
   toJSON MsgInvokeGenerator  = "invoke_generator"
@@ -146,13 +157,14 @@ instance ToJSON RPCMessageType where
   toJSON MsgQueryResult      = "query_result"
   toJSON MsgMutateResource   = "mutate_resource"
   toJSON MsgMutateResult     = "mutate_result"
-  toJSON MsgHeartbeat                       = "heartbeat"
-  toJSON MsgHealthCheck                     = "health_check"
-  toJSON MsgHealthStatus                    = "health_status"
-  toJSON MsgExternalDataSourceGrant         = "external_data_source_grant"
-  toJSON MsgExternalDataSourceRevoke        = "external_data_source_revoke"
-  toJSON MsgExternalDataSourceStatusRequest = "external_data_source_status_request"
-  toJSON MsgExternalDataSourceStatus        = "external_data_source_status"
+  toJSON MsgHeartbeat                         = "heartbeat"
+  toJSON MsgHealthCheck                       = "health_check"
+  toJSON MsgHealthStatus                      = "health_status"
+  toJSON MsgExternalDataSourceGrant           = "external_data_source_grant"
+  toJSON MsgExternalDataSourceRevoke          = "external_data_source_revoke"
+  toJSON MsgExternalDataSourceStatusRequest   = "external_data_source_status_request"
+  toJSON MsgExternalDataSourceStatus          = "external_data_source_status"
+  toJSON MsgExternalDataSourceOperationResult = "external_data_source_operation_result"
 
 ------------------------------------------------------------------------
 -- Envelope

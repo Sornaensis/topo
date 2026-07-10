@@ -355,7 +355,9 @@ expectExternalStatusEntry consumerId entry = do
 
 externalGrantMessage :: RPCExternalDataSourceGrantMessage
 externalGrantMessage = RPCExternalDataSourceGrantMessage
-  { redsgmProviderId = externalProviderPluginName
+  { redsgmOperationId = Just "fixture-grant-op"
+  , redsgmOperationEpoch = Just 1
+  , redsgmProviderId = externalProviderPluginName
   , redsgmConsumerId = Just externalConsumerPluginName
   , redsgmSource = externalSourceName
   , redsgmGrant = externalGrantName
@@ -378,7 +380,9 @@ externalGrantMessage = RPCExternalDataSourceGrantMessage
 
 externalGrantRevocation :: RPCExternalDataSourceGrantRevocation
 externalGrantRevocation = RPCExternalDataSourceGrantRevocation
-  { redsrvProviderId = externalProviderPluginName
+  { redsrvOperationId = Just "fixture-revoke-op"
+  , redsrvOperationEpoch = Just 2
+  , redsrvProviderId = externalProviderPluginName
   , redsrvConsumerId = Just externalConsumerPluginName
   , redsrvSource = externalSourceName
   , redsrvGrant = externalGrantName
