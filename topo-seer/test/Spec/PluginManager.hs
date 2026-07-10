@@ -23,6 +23,8 @@ import Data.List (elemIndex)
 import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import qualified Data.Aeson as Aeson
 import Data.Aeson (Value(..), (.=), object)
+import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BL
@@ -67,6 +69,7 @@ import Actor.UI (UiState(..), emptyUiState)
 import Actor.PluginManager
   ( LoadedPlugin(..)
   , PluginDiagnosticState(..)
+  , PluginExternalDataSourceDiagnostic(..)
   , PluginLifecycleSnapshot(..)
   , PluginLifecycleState(..)
   , PluginManager
@@ -84,6 +87,7 @@ import Actor.PluginManager
   , mutatePluginResource
   , pluginDependencyDiagnostics
   , pluginDiagnosticState
+  , pluginExternalDataSourceDiagnosticsFor
   , pluginLifecycleSnapshot
   , queryPluginResource
   , refreshManifests
@@ -778,6 +782,7 @@ spec = describe "PluginManager" $ do
                 pluginStatuses externalConsumerPluginName loaded `shouldSatisfy` elem PluginConnected
                 pluginLifecycleStates externalProviderPluginName loaded `shouldSatisfy` elem LifecycleReady
                 pluginLifecycleStates externalConsumerPluginName loaded `shouldSatisfy` elem LifecycleReady
+                expectConsumerDiagnosticBrokerState Set.empty "grant_acked" (Just True) (Just True) (Just "applied") Nothing loaded
                 startupOrder <- readExternalStartupOrder
                 assertStartedBefore externalProviderPluginName externalConsumerPluginName startupOrder
 
@@ -813,6 +818,7 @@ spec = describe "PluginManager" $ do
                 pluginStatuses externalConsumerPluginName disabled `shouldSatisfy` anyPluginErrorContaining "external data-source startup blocked"
                 pluginLifecycleStates externalConsumerPluginName disabled `shouldSatisfy` elem LifecycleFailed
                 pluginLifecycleErrorCodes externalConsumerPluginName disabled `shouldSatisfy` elem (Just "external_data_source_blocked")
+                expectConsumerDiagnosticBrokerState (Set.singleton externalProviderPluginNameText) "revoke_acked" (Just True) (Just True) (Just "applied") Nothing disabled
                 unavailableSnapshots <- getPluginExternalDataSources pluginManagerHandle
                 expectProviderUnavailableSnapshots unavailableSnapshots
 
@@ -834,6 +840,16 @@ spec = describe "PluginManager" $ do
         pluginStatuses externalConsumerPluginName loaded `shouldSatisfy` anyPluginErrorContaining "consumer rejected grant"
         pluginLifecycleStates externalConsumerPluginName loaded `shouldSatisfy` elem LifecycleFailed
         pluginLifecycleErrorCodes externalConsumerPluginName loaded `shouldSatisfy` elem (Just "external_data_source_blocked")
+        expectConsumerDiagnosticBrokerState Set.empty "grant_failed" (Just False) (Just False) (Just "failed") (Just "consumer rejected grant") loaded
+        snapshots <- getPluginExternalDataSources pluginManagerHandle
+        case findExternalSnapshot externalConsumerPluginNameText snapshots of
+          Nothing -> expectationFailure "missing required consumer snapshot after rejected grant"
+          Just snapshot -> case wedssConsumedRefs snapshot of
+            [ref] -> do
+              redssState (redsrStatus ref) `shouldBe` ExternalStatusUnavailable
+              redssMessage (redsrStatus ref) `shouldSatisfy` maybe False (Text.isInfixOf "consumer rejected grant")
+              expectBrokerOperationDiagnostics "grant_failed" (Just False) (Just False) (Just "failed") (Just "consumer rejected grant") (redssDiagnostics (redsrStatus ref))
+            other -> expectationFailure ("expected one required consumed ref, got " <> show other)
 
   it "degrades optional consumers when external data-source grant ACKs are rejected" $
     withExecutablePluginDirs
@@ -847,6 +863,7 @@ spec = describe "PluginManager" $ do
         pluginStatuses externalConsumerPluginName loaded `shouldSatisfy` elem PluginConnected
         pluginLifecycleStates externalConsumerPluginName loaded `shouldSatisfy` elem LifecycleDegraded
         pluginLifecycleErrorCodes externalConsumerPluginName loaded `shouldSatisfy` elem (Just "external_data_source_degraded")
+        expectConsumerDiagnosticBrokerState Set.empty "grant_failed" (Just False) (Just False) (Just "failed") (Just "consumer rejected grant") loaded
         snapshots <- getPluginExternalDataSources pluginManagerHandle
         case findExternalSnapshot externalConsumerPluginNameText snapshots of
           Nothing -> expectationFailure "missing optional consumer snapshot after rejected grant"
@@ -854,6 +871,7 @@ spec = describe "PluginManager" $ do
             [ref] -> do
               redssState (redsrStatus ref) `shouldBe` ExternalStatusUnavailable
               redssMessage (redsrStatus ref) `shouldSatisfy` maybe False (Text.isInfixOf "consumer rejected grant")
+              expectBrokerOperationDiagnostics "grant_failed" (Just False) (Just False) (Just "failed") (Just "consumer rejected grant") (redssDiagnostics (redsrStatus ref))
             other -> expectationFailure ("expected one optional consumed ref, got " <> show other)
 
   it "degrades optional consumers when providers are disabled after startup" $
@@ -887,6 +905,9 @@ spec = describe "PluginManager" $ do
         pluginStatuses externalConsumerPluginName disabled `shouldSatisfy` anyPluginErrorContaining "external data-source startup blocked"
         pluginLifecycleStates externalConsumerPluginName disabled `shouldSatisfy` elem LifecycleFailed
         pluginLifecycleErrorCodes externalConsumerPluginName disabled `shouldSatisfy` elem (Just "external_data_source_blocked")
+        expectConsumerDiagnosticBrokerState (Set.singleton externalProviderPluginNameText) "revoke_failed" (Just False) (Just False) (Just "failed") (Just "consumer rejected revoke") disabled
+        snapshots <- getPluginExternalDataSources pluginManagerHandle
+        expectRejectedRevokeSnapshot snapshots
 
   it "degrades optional consumers when revoke ACKs are rejected after provider disable" $
     withExecutablePluginDirs
@@ -903,6 +924,9 @@ spec = describe "PluginManager" $ do
         pluginStatuses externalConsumerPluginName disabled `shouldSatisfy` elem PluginConnected
         pluginLifecycleStates externalConsumerPluginName disabled `shouldSatisfy` elem LifecycleDegraded
         pluginLifecycleErrorCodes externalConsumerPluginName disabled `shouldSatisfy` elem (Just "external_data_source_degraded")
+        expectConsumerDiagnosticBrokerState (Set.singleton externalProviderPluginNameText) "revoke_failed" (Just False) (Just False) (Just "failed") (Just "consumer rejected revoke") disabled
+        snapshots <- getPluginExternalDataSources pluginManagerHandle
+        expectRejectedRevokeSnapshot snapshots
 
   it "reports malformed handshake JSON as a plugin error" $ do
     withExecutablePluginDir malformedPluginName malformedManifestJSON "malformed-json" $ do
@@ -1607,6 +1631,14 @@ expectExternalSnapshots snapshots = do
         redsrReference ref `shouldBe` Just externalConsumerReference
         redsrConfigRefs ref `shouldBe` [externalConsumerConfigRef]
         redssState (redsrStatus ref) `shouldBe` ExternalStatusReady
+        redssMessage (redsrStatus ref) `shouldBe` Just "external data-source grant applied"
+        expectBrokerOperationDiagnostics
+          "grant_acked"
+          (Just True)
+          (Just True)
+          (Just "applied")
+          Nothing
+          (redssDiagnostics (redsrStatus ref))
       other -> expectationFailure ("expected one consumed ref, got " <> show other)
   shouldNotMentionSQLite snapshots
 
@@ -1622,7 +1654,7 @@ expectProviderUnavailableSnapshots snapshots = do
   case findExternalSnapshot externalConsumerPluginNameText snapshots of
     Nothing -> expectationFailure "missing consumer snapshot after provider disable"
     Just snapshot -> case wedssConsumedRefs snapshot of
-      [ref] -> expectUnavailableStatus externalProviderPluginNameText (redsrStatus ref)
+      [ref] -> expectRevokedConsumerStatus (redsrStatus ref)
       other -> expectationFailure ("expected one unavailable consumed ref, got " <> show other)
   shouldNotMentionSQLite snapshots
 
@@ -1635,6 +1667,84 @@ expectUnavailableStatus providerName status = do
   redssAccessMode status `shouldBe` Just ExternalAccessModeDisabled
   redssMessage status `shouldBe` Just "provider plugin is unavailable"
   shouldNotMentionSQLite status
+
+expectRevokedConsumerStatus :: RPCExternalDataSourceStatus -> Expectation
+expectRevokedConsumerStatus status = do
+  redssState status `shouldBe` ExternalStatusUnavailable
+  redssProviderId status `shouldBe` Just externalProviderPluginNameText
+  redssAvailability status `shouldBe` Just ExternalAvailabilityUnavailable
+  redssHealth status `shouldBe` Just ExternalHealthUnhealthy
+  redssAccessMode status `shouldBe` Just ExternalAccessModeDisabled
+  redssMessage status `shouldBe` Just "external data-source revocation applied"
+  expectBrokerOperationDiagnostics
+    "revoke_acked"
+    (Just True)
+    (Just True)
+    (Just "applied")
+    Nothing
+    (redssDiagnostics status)
+  shouldNotMentionSQLite status
+
+expectRejectedRevokeSnapshot :: [WorldExternalDataSourceSnapshot] -> Expectation
+expectRejectedRevokeSnapshot snapshots =
+  case findExternalSnapshot externalConsumerPluginNameText snapshots of
+    Nothing -> expectationFailure "missing consumer snapshot after rejected revoke"
+    Just snapshot -> case wedssConsumedRefs snapshot of
+      [ref] -> do
+        redssState (redsrStatus ref) `shouldBe` ExternalStatusUnavailable
+        redssMessage (redsrStatus ref) `shouldSatisfy` maybe False (Text.isInfixOf "consumer rejected revoke")
+        expectBrokerOperationDiagnostics
+          "revoke_failed"
+          (Just False)
+          (Just False)
+          (Just "failed")
+          (Just "consumer rejected revoke")
+          (redssDiagnostics (redsrStatus ref))
+      other -> expectationFailure ("expected one rejected revoke consumed ref, got " <> show other)
+
+expectBrokerOperationDiagnostics
+  :: Text
+  -> Maybe Bool
+  -> Maybe Bool
+  -> Maybe Text
+  -> Maybe Text
+  -> Maybe Value
+  -> Expectation
+expectBrokerOperationDiagnostics expectedPhase expectedAccepted expectedApplied expectedStatus expectedError diagnostics =
+  case diagnostics of
+    Just (Object fields) -> do
+      KM.lookup (Key.fromText "brokerPhase") fields `shouldBe` Just (String expectedPhase)
+      forM_ expectedAccepted $ \accepted ->
+        KM.lookup (Key.fromText "accepted") fields `shouldBe` Just (Bool accepted)
+      forM_ expectedApplied $ \applied ->
+        KM.lookup (Key.fromText "applied") fields `shouldBe` Just (Bool applied)
+      forM_ expectedStatus $ \status ->
+        KM.lookup (Key.fromText "status") fields `shouldBe` Just (String status)
+      forM_ expectedError $ \err ->
+        KM.lookup (Key.fromText "error") fields `shouldBe` Just (String err)
+    other -> expectationFailure ("expected broker operation diagnostics object, got " <> show other)
+
+expectConsumerDiagnosticBrokerState
+  :: Set.Set Text
+  -> Text
+  -> Maybe Bool
+  -> Maybe Bool
+  -> Maybe Text
+  -> Maybe Text
+  -> [LoadedPlugin]
+  -> Expectation
+expectConsumerDiagnosticBrokerState disabled expectedPhase expectedAccepted expectedApplied expectedStatus expectedError plugins =
+  case findLoadedPlugin externalConsumerPluginNameText plugins of
+    Nothing -> expectationFailure "missing consumer plugin for external diagnostic check"
+    Just consumer ->
+      case filter ((== "consumer") . pedsRole) (pluginExternalDataSourceDiagnosticsFor disabled plugins consumer) of
+        [diag] -> do
+          pedsBrokerState diag `shouldBe` expectedPhase
+          pedsBrokerAccepted diag `shouldBe` expectedAccepted
+          pedsBrokerApplied diag `shouldBe` expectedApplied
+          pedsBrokerOperationStatus diag `shouldBe` expectedStatus
+          pedsBrokerOperationError diag `shouldBe` expectedError
+        other -> expectationFailure ("expected one consumer external data-source diagnostic, got " <> show other)
 
 findExternalSnapshot :: Text -> [WorldExternalDataSourceSnapshot] -> Maybe WorldExternalDataSourceSnapshot
 findExternalSnapshot pluginName snapshots = case filter ((== pluginName) . wedssPlugin) snapshots of

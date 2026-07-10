@@ -51,7 +51,9 @@ module Actor.PluginManager.Types
   , setParamOnPlugin
   ) where
 
-import Data.Aeson (ToJSON(..), Value, object, (.=))
+import Data.Aeson (ToJSON(..), Value(..), object, (.=))
+import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KM
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust)
@@ -79,6 +81,7 @@ import Topo.Plugin.RPC
   , RPCExternalDataSourceGrant(..)
   , RPCExternalDataSourceGrantMessage(..)
   , RPCExternalDataSourceHealth(..)
+  , RPCExternalDataSourceOperationResult(..)
   , RPCExternalDataSourceRef(..)
   , RPCExternalDataSourceStatus(..)
   , RPCExternalDataSourceStatusState(..)
@@ -381,6 +384,13 @@ data PluginExternalDataSourceDiagnostic = PluginExternalDataSourceDiagnostic
   , pedsResolvedProvider :: !(Maybe Text)
   , pedsBrokerState :: !Text
   , pedsBrokerReason :: !(Maybe Text)
+  , pedsBrokerAccepted :: !(Maybe Bool)
+  , pedsBrokerApplied :: !(Maybe Bool)
+  , pedsBrokerOperation :: !(Maybe Text)
+  , pedsBrokerOperationStatus :: !(Maybe Text)
+  , pedsBrokerOperationMessage :: !(Maybe Text)
+  , pedsBrokerOperationError :: !(Maybe Text)
+  , pedsBrokerOperationDiagnostics :: !(Maybe Value)
   , pedsAccess :: ![RPCExternalDataSourceAccess]
   , pedsCapabilities :: ![RPCExternalDataSourceCapability]
   , pedsResources :: ![Text]
@@ -443,6 +453,13 @@ instance ToJSON PluginExternalDataSourceDiagnostic where
     [ "required" .= required | Just required <- [pedsRequired source] ] <>
     [ "resolved_provider" .= provider | Just provider <- [pedsResolvedProvider source] ] <>
     [ "broker_reason" .= reason | Just reason <- [pedsBrokerReason source] ] <>
+    [ "broker_accepted" .= accepted | Just accepted <- [pedsBrokerAccepted source] ] <>
+    [ "broker_applied" .= applied | Just applied <- [pedsBrokerApplied source] ] <>
+    [ "broker_operation" .= operation | Just operation <- [pedsBrokerOperation source] ] <>
+    [ "broker_operation_status" .= status | Just status <- [pedsBrokerOperationStatus source] ] <>
+    [ "broker_operation_message" .= message | Just message <- [pedsBrokerOperationMessage source] ] <>
+    [ "broker_operation_error" .= err | Just err <- [pedsBrokerOperationError source] ] <>
+    [ "broker_operation_diagnostics" .= diagnostics | Just diagnostics <- [pedsBrokerOperationDiagnostics source] ] <>
     [ "health" .= health | Just health <- [pedsHealth source] ] <>
     [ "access_mode" .= accessMode | Just accessMode <- [pedsAccessMode source] ] <>
     [ "failure_reason" .= reason | Just reason <- [pedsFailureReason source] ]
@@ -556,6 +573,13 @@ providerExternalDataSourceDiagnostic pluginName statusOverride source =
     , pedsResolvedProvider = Just pluginName
     , pedsBrokerState = if statusAvailable status then "available" else externalDataSourceGrantBrokerPhaseText ExternalDataSourceGrantUnavailable
     , pedsBrokerReason = statusFailureReason status
+    , pedsBrokerAccepted = Nothing
+    , pedsBrokerApplied = Nothing
+    , pedsBrokerOperation = Nothing
+    , pedsBrokerOperationStatus = Nothing
+    , pedsBrokerOperationMessage = Nothing
+    , pedsBrokerOperationError = Nothing
+    , pedsBrokerOperationDiagnostics = Nothing
     , pedsAccess = []
     , pedsCapabilities = redsdCapabilities source
     , pedsResources = redsdResources source
@@ -595,6 +619,13 @@ consumerExternalDataSourceDiagnostic pluginName statusForRef ref =
     , pedsResolvedProvider = Just providerName
     , pedsBrokerState = consumerBrokerState providerName status ref
     , pedsBrokerReason = statusFailureReason status
+    , pedsBrokerAccepted = brokerStatusAccepted status
+    , pedsBrokerApplied = brokerStatusApplied status
+    , pedsBrokerOperation = brokerStatusOperation status
+    , pedsBrokerOperationStatus = brokerStatusResultStatus status
+    , pedsBrokerOperationMessage = brokerStatusMessage status
+    , pedsBrokerOperationError = brokerStatusError status
+    , pedsBrokerOperationDiagnostics = brokerStatusDiagnostics status
     , pedsAccess = redsrAccess ref
     , pedsCapabilities = redssCapabilityScope status
     , pedsResources = redsrResources ref
@@ -617,10 +648,53 @@ consumerExternalDataSourceDiagnostic pluginName statusForRef ref =
 
 consumerBrokerState :: Text -> RPCExternalDataSourceStatus -> RPCExternalDataSourceRef -> Text
 consumerBrokerState providerName status _ref
+  | Just phase <- brokerStatusPhase status = phase
   | providerName == "unresolved" = "unresolved"
   | statusAvailable status = externalDataSourceGrantBrokerPhaseText ExternalDataSourceGrantAcked
   | redssState status == ExternalStatusUnavailable = externalDataSourceGrantBrokerPhaseText ExternalDataSourceGrantUnavailable
   | otherwise = "unresolved"
+
+brokerStatusPhase :: RPCExternalDataSourceStatus -> Maybe Text
+brokerStatusPhase = brokerTextField "brokerPhase"
+
+brokerStatusAccepted :: RPCExternalDataSourceStatus -> Maybe Bool
+brokerStatusAccepted = brokerBoolField "accepted"
+
+brokerStatusApplied :: RPCExternalDataSourceStatus -> Maybe Bool
+brokerStatusApplied = brokerBoolField "applied"
+
+brokerStatusOperation :: RPCExternalDataSourceStatus -> Maybe Text
+brokerStatusOperation = brokerOperationTextField
+
+brokerStatusResultStatus :: RPCExternalDataSourceStatus -> Maybe Text
+brokerStatusResultStatus = brokerTextField "status"
+
+brokerStatusMessage :: RPCExternalDataSourceStatus -> Maybe Text
+brokerStatusMessage = brokerTextField "message"
+
+brokerStatusError :: RPCExternalDataSourceStatus -> Maybe Text
+brokerStatusError = brokerTextField "error"
+
+brokerStatusDiagnostics :: RPCExternalDataSourceStatus -> Maybe Value
+brokerStatusDiagnostics = brokerValueField "diagnostics"
+
+brokerOperationTextField :: RPCExternalDataSourceStatus -> Maybe Text
+brokerOperationTextField = brokerTextField "operation"
+
+brokerTextField :: Text -> RPCExternalDataSourceStatus -> Maybe Text
+brokerTextField field status = case brokerValueField field status of
+  Just (String value) -> Just value
+  _ -> Nothing
+
+brokerBoolField :: Text -> RPCExternalDataSourceStatus -> Maybe Bool
+brokerBoolField field status = case brokerValueField field status of
+  Just (Bool value) -> Just value
+  _ -> Nothing
+
+brokerValueField :: Text -> RPCExternalDataSourceStatus -> Maybe Value
+brokerValueField field status = do
+  Object fields <- redssDiagnostics status
+  KM.lookup (Key.fromText field) fields
 
 grantDiagnostic :: Maybe (RPCExternalDataSourceStatus -> RPCExternalDataSourceStatus) -> RPCExternalDataSourceGrant -> PluginExternalDataSourceGrantDiagnostic
 grantDiagnostic statusOverride grant =
@@ -681,14 +755,16 @@ applyStatusOverride Nothing status = status
 applyStatusOverride (Just override) status = override status
 
 consumerStatusFor :: Map Text Bool -> Maybe (RPCExternalDataSourceStatus -> RPCExternalDataSourceStatus) -> RPCExternalDataSourceRef -> RPCExternalDataSourceStatus
-consumerStatusFor providerReady ownOverride ref =
-  case ownOverride of
-    Just override -> override (redsrStatus ref)
-    Nothing -> case redsrProvider ref of
-      Just providerName
-        | not (Map.findWithDefault False providerName providerReady) ->
-            unavailableExternalStatus providerName "provider plugin is unavailable" (redsrStatus ref)
-      _ -> redsrStatus ref
+consumerStatusFor providerReady ownOverride ref
+  | brokerStatusPhase (redsrStatus ref) /= Nothing = redsrStatus ref
+  | otherwise =
+      case ownOverride of
+        Just override -> override (redsrStatus ref)
+        Nothing -> case redsrProvider ref of
+          Just providerName
+            | not (Map.findWithDefault False providerName providerReady) ->
+                unavailableExternalStatus providerName "provider plugin is unavailable" (redsrStatus ref)
+          _ -> redsrStatus ref
 
 externalPluginReady :: Set Text -> LoadedPlugin -> Bool
 externalPluginReady disabled lp =
@@ -978,6 +1054,7 @@ data ExternalDataSourceGrantBrokerPhase
   | ExternalDataSourceGrantAcked
   | ExternalDataSourceGrantFailed
   | ExternalDataSourceRevokePending
+  | ExternalDataSourceRevokeAcked
   | ExternalDataSourceRevokeFailed
   | ExternalDataSourceGrantUnavailable
   deriving (Eq, Ord, Show)
@@ -987,6 +1064,7 @@ externalDataSourceGrantBrokerPhaseText ExternalDataSourceGrantPending = "grant_p
 externalDataSourceGrantBrokerPhaseText ExternalDataSourceGrantAcked = "grant_acked"
 externalDataSourceGrantBrokerPhaseText ExternalDataSourceGrantFailed = "grant_failed"
 externalDataSourceGrantBrokerPhaseText ExternalDataSourceRevokePending = "revoke_pending"
+externalDataSourceGrantBrokerPhaseText ExternalDataSourceRevokeAcked = "revoke_acked"
 externalDataSourceGrantBrokerPhaseText ExternalDataSourceRevokeFailed = "revoke_failed"
 externalDataSourceGrantBrokerPhaseText ExternalDataSourceGrantUnavailable = "unavailable"
 
@@ -1010,6 +1088,8 @@ data ExternalDataSourceGrantBrokerState = ExternalDataSourceGrantBrokerState
   , edsgbsProviderReadyAt :: !UTCTime
   , edsgbsState :: !ExternalDataSourceGrantBrokerPhase
   , edsgbsReason :: !(Maybe Text)
+  , edsgbsGrantResult :: !(Maybe RPCExternalDataSourceOperationResult)
+  , edsgbsRevokeResult :: !(Maybe RPCExternalDataSourceOperationResult)
   } deriving (Eq, Show)
 
 -- | A discovered plugin with its manifest and current state.

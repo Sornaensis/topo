@@ -430,6 +430,7 @@ spec = describe "AppService surface" $ do
       , ExternalDataSourceGrantAcked
       , ExternalDataSourceGrantFailed
       , ExternalDataSourceRevokePending
+      , ExternalDataSourceRevokeAcked
       , ExternalDataSourceRevokeFailed
       , ExternalDataSourceGrantUnavailable
       ] `shouldBe`
@@ -437,6 +438,7 @@ spec = describe "AppService surface" $ do
         , "grant_acked"
         , "grant_failed"
         , "revoke_pending"
+        , "revoke_acked"
         , "revoke_failed"
         , "unavailable"
         ]

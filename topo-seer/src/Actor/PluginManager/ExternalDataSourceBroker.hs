@@ -7,6 +7,9 @@ module Actor.PluginManager.ExternalDataSourceBroker
   ) where
 
 import Control.Monad (foldM)
+import Data.Aeson (Value(..), object, (.=))
+import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KM
 import Data.List (find)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -52,11 +55,13 @@ import Topo.Plugin.RPC
   , RPCError(..)
   , RPCExternalDataSourceAccessMode(..)
   , RPCExternalDataSourceAvailability(..)
+  , RPCExternalDataSourceCapability(..)
   , RPCExternalDataSourceDecl(..)
   , RPCExternalDataSourceGrant(..)
   , RPCExternalDataSourceGrantMessage(..)
   , RPCExternalDataSourceGrantRevocation(..)
   , RPCExternalDataSourceHealth(..)
+  , RPCExternalDataSourceOperationResult(..)
   , RPCExternalDataSourceRef(..)
   , RPCExternalDataSourceStatus(..)
   , RPCExternalDataSourceStatusReport(..)
@@ -281,6 +286,8 @@ bindingToGrant st binding = do
     , edsgbsProviderReadyAt = plsUpdatedAt (lpLifecycle provider)
     , edsgbsState = if sendable then ExternalDataSourceGrantPending else ExternalDataSourceGrantUnavailable
     , edsgbsReason = if sendable then Nothing else Just (unsendableGrantReason st consumer provider)
+    , edsgbsGrantResult = Nothing
+    , edsgbsRevokeResult = Nothing
     }
 
 consumerGrantSendable :: PluginManagerState -> LoadedPlugin -> LoadedPlugin -> Bool
@@ -361,6 +368,12 @@ sendOneGrant st grantState
       in if edsgbsRequired grantState
         then blockConsumer key reason st
         else degradeConsumer key reason st
+  | edsgbsState grantState == ExternalDataSourceGrantUnavailable
+      && consumerRefHasBrokerPhase key ExternalDataSourceRevokeAcked st =
+      let reason = fromMaybe "external data-source grant is unavailable after revoke" (edsgbsReason grantState)
+      in if edsgbsRequired grantState
+        then blockConsumer key reason st
+        else degradeConsumer key reason st
   | edsgbsState grantState == ExternalDataSourceGrantUnavailable && edsgbsRequired grantState =
       let reason = fromMaybe "required external data-source grant is unavailable" (edsgbsReason grantState)
           stWithDiagnostic = recordGrantDiagnostic ExternalDataSourceGrantUnavailable (Just reason) grantState st
@@ -382,11 +395,27 @@ sendOneGrant st grantState
         let pendingSt = recordGrantDiagnostic ExternalDataSourceGrantPending Nothing grantState st
         result <- sendExternalDataSourceGrant conn (edsgbsMessage grantState)
         case result of
-          Right () -> pure pendingSt
-            { pmsExternalDataSourceGrants = Map.insert key grantState
-                { edsgbsState = ExternalDataSourceGrantAcked, edsgbsReason = Nothing }
-                (pmsExternalDataSourceGrants pendingSt)
-            }
+          Right operationResult
+            | operationResultApplied operationResult ->
+                let appliedGrant = grantState
+                      { edsgbsState = ExternalDataSourceGrantAcked
+                      , edsgbsReason = Nothing
+                      , edsgbsGrantResult = Just operationResult
+                      }
+                in pure pendingSt
+                  { pmsExternalDataSourceGrants = Map.insert key appliedGrant
+                      (pmsExternalDataSourceGrants pendingSt)
+                  }
+            | otherwise -> do
+                let reasonPrefix = if edsgbsRequired grantState
+                      then "required external data-source grant was not applied by consumer: "
+                      else "optional external data-source grant was not applied by consumer: "
+                    reason = reasonPrefix <> operationResultReasonText operationResult
+                    failedGrant = grantState { edsgbsGrantResult = Just operationResult }
+                    stWithDiagnostic = recordGrantDiagnostic ExternalDataSourceGrantFailed (Just reason) failedGrant pendingSt
+                if edsgbsRequired grantState
+                  then blockConsumer key reason stWithDiagnostic
+                  else degradeConsumer key reason stWithDiagnostic
           Left err ->
             let reasonPrefix = if edsgbsRequired grantState
                   then "failed to send required external data-source grant: "
@@ -420,6 +449,18 @@ consumerConnection :: PluginManagerState -> ExternalDataSourceGrantKey -> Maybe 
 consumerConnection st key = do
   consumer <- Map.lookup (edsgkConsumer key) (pmsPlugins st)
   lpConnection consumer
+
+consumerRefHasBrokerPhase :: ExternalDataSourceGrantKey -> ExternalDataSourceGrantBrokerPhase -> PluginManagerState -> Bool
+consumerRefHasBrokerPhase key phase st = case Map.lookup (edsgkConsumer key) (pmsPlugins st) of
+  Nothing -> False
+  Just consumer -> any refMatches (rmExternalDataSourceRefs (lpManifest consumer))
+  where
+    expectedPhase = externalDataSourceGrantBrokerPhaseText phase
+    refMatches ref = redsrName ref == edsgkRef key
+      && redsrSource ref == edsgkSource key
+      && maybe True (== edsgkProvider key) (redsrProvider ref)
+      && maybe True (== edsgkGrant key) (redsrGrant ref)
+      && brokerStatusPhaseText (redsrStatus ref) == Just expectedPhase
 
 blockConsumer :: ExternalDataSourceGrantKey -> Text -> PluginManagerState -> IO PluginManagerState
 blockConsumer key reason st = case Map.lookup (edsgkConsumer key) (pmsPlugins st) of
@@ -542,7 +583,18 @@ revokeOneWithReason reason st grantState = do
     Just conn -> do
       result <- sendExternalDataSourceGrantRevocation conn (revocationMessage reason grantState)
       case result of
-        Right () -> pure removeActive
+        Right operationResult
+          | operationResultApplied operationResult ->
+              pure (recordRevocationResultOnConsumerRef reason operationResult grantState removeActive)
+          | otherwise -> do
+              let failureReason = if edsgbsRequired grantState
+                    then "required external data-source revoke was not applied by consumer: " <> operationResultReasonText operationResult
+                    else "optional external data-source revoke was not applied by consumer: " <> operationResultReasonText operationResult
+                  failedGrant = grantState { edsgbsRevokeResult = Just operationResult }
+                  failedSt = recordGrantDiagnostic ExternalDataSourceRevokeFailed (Just failureReason) failedGrant pendingSt
+              if edsgbsRequired grantState
+                then blockConsumer key failureReason failedSt
+                else degradeConsumer key failureReason failedSt
         Left err ->
           let failureReason = if edsgbsRequired grantState
                 then "failed to revoke required external data-source grant: " <> rpcErrorText err
@@ -591,19 +643,25 @@ annotateConsumerRefs bindingDiagnostics st = st { pmsPlugins = Map.map annotateP
     annotateRef lp ref = case findGrantState (lpName lp) ref of
       Just grantState
         | externalDataSourceGrantBrokerPhaseApplied (edsgbsState grantState) -> ref
-            { redsrStatus = (redsgmStatus (edsgbsMessage grantState))
-                { redssProviderId = Just (edsgkProvider (edsgbsKey grantState)) }
+            { redsrProvider = Just (edsgkProvider (edsgbsKey grantState))
+            , redsrStatus = appliedGrantRefStatus grantState (redsrStatus ref)
             }
         | otherwise -> ref
-            { redsrStatus = unavailableRefStatus
+            { redsrProvider = Just (edsgkProvider (edsgbsKey grantState))
+            , redsrStatus = unavailableBrokerRefStatus
+                (edsgbsState grantState)
+                (grantStateOperationResult grantState)
                 (edsgkProvider (edsgbsKey grantState))
                 (fromMaybe ("external data-source broker state is " <> externalDataSourceGrantBrokerPhaseText (edsgbsState grantState)) (edsgbsReason grantState))
                 (redsrStatus ref)
             }
       Nothing -> case findDiagnostic (lpName lp) ref of
-        Just diag -> ref
-          { redsrStatus = unavailableRefStatus (fromMaybe "unresolved" (desbdProvider diag)) (desbdMessage diag) (redsrStatus ref)
-          }
+        Just diag
+          | brokerStatusPhaseText (redsrStatus ref) == Just (externalDataSourceGrantBrokerPhaseText ExternalDataSourceRevokeAcked) -> ref
+          | otherwise -> ref
+              { redsrProvider = desbdProvider diag
+              , redsrStatus = unavailableRefStatus (fromMaybe "unresolved" (desbdProvider diag)) (desbdMessage diag) (redsrStatus ref)
+              }
         Nothing -> ref
 
     findGrantState consumerName ref =
@@ -625,6 +683,175 @@ annotateConsumerRefs bindingDiagnostics st = st { pmsPlugins = Map.map annotateP
         && maybe True (\providerName -> redsrProvider ref == Just providerName) (desbdProvider diag)
         && maybe True (\grantName -> redsrGrant ref == Just grantName) (desbdGrant diag))
       (Map.findWithDefault [] consumerName unresolvedByConsumer)
+
+recordRevocationResultOnConsumerRef
+  :: Text
+  -> RPCExternalDataSourceOperationResult
+  -> ExternalDataSourceGrantBrokerState
+  -> PluginManagerState
+  -> PluginManagerState
+recordRevocationResultOnConsumerRef reason operationResult grantState st = st
+  { pmsPlugins = Map.adjust annotatePlugin (edsgkConsumer key) (pmsPlugins st)
+  }
+  where
+    key = edsgbsKey grantState
+    providerName = edsgkProvider key
+    message = edsgbsMessage grantState
+    baseStatus = (revokedExternalDataSourceStatus providerName (Just (operationResultReasonText operationResult)))
+      { redssCompatibility = redssCompatibility (redsgmStatus message)
+      , redssDiagnostics = redssDiagnostics (redsgmStatus message)
+      }
+    revokedStatus = unavailableOperationStatus
+      ExternalDataSourceRevokeAcked
+      (Just operationResult)
+      providerName
+      (fromMaybe reason (operationResultReason operationResult))
+      baseStatus
+
+    annotatePlugin lp = lp { lpManifest = manifest', lpConnection = fmap syncConn (lpConnection lp) }
+      where
+        manifest = lpManifest lp
+        refs = map annotateRef (rmExternalDataSourceRefs manifest)
+        manifest' = manifest { rmExternalDataSourceRefs = refs }
+        syncConn conn = conn { rpcManifest = manifest' }
+
+    annotateRef ref
+      | redsrName ref == edsgkRef key = ref
+          { redsrProvider = Just providerName
+          , redsrStatus = revokedStatus
+          }
+      | otherwise = ref
+
+appliedGrantRefStatus :: ExternalDataSourceGrantBrokerState -> RPCExternalDataSourceStatus -> RPCExternalDataSourceStatus
+appliedGrantRefStatus grantState _currentStatus =
+  readyOperationStatus
+    ExternalDataSourceGrantAcked
+    (edsgbsGrantResult grantState)
+    (edsgkProvider key)
+    (redsgmCapabilityScope message)
+    (redsgmStatus message)
+  where
+    key = edsgbsKey grantState
+    message = edsgbsMessage grantState
+
+unavailableBrokerRefStatus
+  :: ExternalDataSourceGrantBrokerPhase
+  -> Maybe RPCExternalDataSourceOperationResult
+  -> Text
+  -> Text
+  -> RPCExternalDataSourceStatus
+  -> RPCExternalDataSourceStatus
+unavailableBrokerRefStatus phase operationResult providerName reason =
+  unavailableOperationStatus phase operationResult providerName reason
+
+readyOperationStatus
+  :: ExternalDataSourceGrantBrokerPhase
+  -> Maybe RPCExternalDataSourceOperationResult
+  -> Text
+  -> [RPCExternalDataSourceCapability]
+  -> RPCExternalDataSourceStatus
+  -> RPCExternalDataSourceStatus
+readyOperationStatus phase operationResult providerName capabilityScope status = status
+  { redssState = ExternalStatusReady
+  , redssMessage = operationResult >>= operationResultReason
+  , redssProviderId = Just providerName
+  , redssAvailability = Just ExternalAvailabilityAvailable
+  , redssHealth = Just ExternalHealthHealthy
+  , redssAccessMode = readyAccessMode (redssAccessMode status)
+  , redssCapabilityScope = if null (redssCapabilityScope status) then capabilityScope else redssCapabilityScope status
+  , redssDiagnostics = Just (brokerOperationDiagnostics phase operationResult (redssDiagnostics status))
+  }
+
+unavailableOperationStatus
+  :: ExternalDataSourceGrantBrokerPhase
+  -> Maybe RPCExternalDataSourceOperationResult
+  -> Text
+  -> Text
+  -> RPCExternalDataSourceStatus
+  -> RPCExternalDataSourceStatus
+unavailableOperationStatus phase operationResult providerName reason status = status
+  { redssState = ExternalStatusUnavailable
+  , redssMessage = Just reason
+  , redssProviderId = Just providerName
+  , redssAvailability = Just ExternalAvailabilityUnavailable
+  , redssHealth = Just ExternalHealthUnhealthy
+  , redssAccessMode = Just ExternalAccessModeDisabled
+  , redssCapabilityScope = []
+  , redssDiagnostics = Just (brokerOperationDiagnostics phase operationResult (redssDiagnostics status))
+  }
+
+readyAccessMode :: Maybe RPCExternalDataSourceAccessMode -> Maybe RPCExternalDataSourceAccessMode
+readyAccessMode (Just ExternalAccessModeDisabled) = Just ExternalAccessModeProviderManaged
+readyAccessMode (Just accessMode) = Just accessMode
+readyAccessMode Nothing = Just ExternalAccessModeProviderManaged
+
+grantStateOperationResult :: ExternalDataSourceGrantBrokerState -> Maybe RPCExternalDataSourceOperationResult
+grantStateOperationResult grantState = case edsgbsState grantState of
+  ExternalDataSourceGrantFailed -> edsgbsGrantResult grantState
+  ExternalDataSourceRevokeFailed -> edsgbsRevokeResult grantState
+  ExternalDataSourceRevokeAcked -> edsgbsRevokeResult grantState
+  _ -> Nothing
+
+operationResultApplied :: RPCExternalDataSourceOperationResult -> Bool
+operationResultApplied operationResult = redsoAccepted operationResult && redsoApplied operationResult
+
+operationResultReasonText :: RPCExternalDataSourceOperationResult -> Text
+operationResultReasonText operationResult = fromMaybe (redsoStatus operationResult) (operationResultReason operationResult)
+
+operationResultReason :: RPCExternalDataSourceOperationResult -> Maybe Text
+operationResultReason operationResult = firstJust
+  [ redsoError operationResult
+  , redsoMessage operationResult
+  , nonEmptyText (redsoStatus operationResult)
+  ]
+
+brokerOperationDiagnostics
+  :: ExternalDataSourceGrantBrokerPhase
+  -> Maybe RPCExternalDataSourceOperationResult
+  -> Maybe Value
+  -> Value
+brokerOperationDiagnostics phase operationResult providerDiagnostics = object $
+  [ "brokerPhase" .= externalDataSourceGrantBrokerPhaseText phase ] <>
+  [ "providerDiagnostics" .= diagnostics | Just diagnostics <- [providerDiagnostics >>= originalProviderDiagnostics] ] <>
+  case operationResult of
+    Nothing -> []
+    Just result ->
+      [ "operationId" .= redsoOperationId result
+      , "operation" .= redsoOperation result
+      , "providerId" .= redsoProviderId result
+      , "consumerId" .= redsoConsumerId result
+      , "source" .= redsoSource result
+      , "grant" .= redsoGrant result
+      , "accepted" .= redsoAccepted result
+      , "applied" .= redsoApplied result
+      , "status" .= redsoStatus result
+      ] <>
+      [ "operationEpoch" .= epoch | Just epoch <- [redsoOperationEpoch result] ] <>
+      [ "message" .= message | Just message <- [redsoMessage result] ] <>
+      [ "error" .= err | Just err <- [redsoError result] ] <>
+      [ "diagnostics" .= diagnostics | Just diagnostics <- [redsoDiagnostics result] ]
+
+originalProviderDiagnostics :: Value -> Maybe Value
+originalProviderDiagnostics diagnostics@(Object fields)
+  | KM.member (Key.fromText "brokerPhase") fields = KM.lookup (Key.fromText "providerDiagnostics") fields
+  | otherwise = Just diagnostics
+originalProviderDiagnostics diagnostics = Just diagnostics
+
+brokerStatusPhaseText :: RPCExternalDataSourceStatus -> Maybe Text
+brokerStatusPhaseText status = do
+  Object fields <- redssDiagnostics status
+  String phase <- KM.lookup (Key.fromText "brokerPhase") fields
+  pure phase
+
+nonEmptyText :: Text -> Maybe Text
+nonEmptyText value
+  | Text.null value = Nothing
+  | otherwise = Just value
+
+firstJust :: [Maybe a] -> Maybe a
+firstJust [] = Nothing
+firstJust (Nothing:xs) = firstJust xs
+firstJust (Just value:_) = Just value
 
 unavailableRefStatus :: Text -> Text -> RPCExternalDataSourceStatus -> RPCExternalDataSourceStatus
 unavailableRefStatus providerName reason status = status

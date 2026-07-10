@@ -1642,9 +1642,16 @@ spec = describe "Plugin.RPC" $ do
         _ <- requireRequestId request
         sendEnvelopeTo plugin (externalOperationResultEnvelope request ExternalDataSourceGrantOperation True Nothing)
         result <- timeout transportTestTimeoutMicros (takeMVar done)
-        result `shouldBe` Just (Right ())
+        case result of
+          Just (Right operationResult) -> do
+            redsoOperation operationResult `shouldBe` ExternalDataSourceGrantOperation
+            redsoAccepted operationResult `shouldBe` True
+            redsoApplied operationResult `shouldBe` True
+            redsoStatus operationResult `shouldBe` "applied"
+            redsoMessage operationResult `shouldBe` Just "operation applied"
+          other -> expectationFailure ("expected successful external grant ACK result, got " <> show other)
 
-    it "surfaces external data-source grant rejection ACKs" $
+    it "preserves external data-source grant rejection ACK details" $
       withConnectedTransports "rpc-external-grant-rejected" $ \host plugin -> do
         let conn = newRPCConnection baseManifest host Map.empty
         done <- newEmptyMVar
@@ -1654,8 +1661,12 @@ spec = describe "Plugin.RPC" $ do
         sendEnvelopeTo plugin (externalOperationResultEnvelope request ExternalDataSourceGrantOperation False (Just "consumer rejected grant"))
         result <- timeout transportTestTimeoutMicros (takeMVar done)
         case result of
-          Just (Left (RPCPluginError _ msg)) -> msg `shouldSatisfy` Text.isInfixOf "consumer rejected grant"
-          other -> expectationFailure ("expected rejected grant ACK, got " <> show other)
+          Just (Right operationResult) -> do
+            redsoAccepted operationResult `shouldBe` False
+            redsoApplied operationResult `shouldBe` False
+            redsoStatus operationResult `shouldBe` "failed"
+            redsoError operationResult `shouldBe` Just "consumer rejected grant"
+          other -> expectationFailure ("expected rejected grant ACK result, got " <> show other)
 
     it "reports mismatched external data-source operation ACKs as protocol errors" $
       withConnectedTransports "rpc-external-revoke-protocol-error" $ \host plugin -> do

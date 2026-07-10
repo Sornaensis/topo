@@ -748,7 +748,7 @@ checkHealth conn = do
 sendExternalDataSourceGrant
   :: RPCConnection
   -> RPCExternalDataSourceGrantMessage
-  -> IO (Either RPCError ())
+  -> IO (Either RPCError RPCExternalDataSourceOperationResult)
 sendExternalDataSourceGrant conn grant = do
   let envelope = RPCEnvelope
         { envType = MsgExternalDataSourceGrant
@@ -773,7 +773,7 @@ sendExternalDataSourceGrant conn grant = do
 sendExternalDataSourceGrantRevocation
   :: RPCConnection
   -> RPCExternalDataSourceGrantRevocation
-  -> IO (Either RPCError ())
+  -> IO (Either RPCError RPCExternalDataSourceOperationResult)
 sendExternalDataSourceGrantRevocation conn revocation = do
   let envelope = RPCEnvelope
         { envType = MsgExternalDataSourceRevoke
@@ -797,7 +797,7 @@ sendExternalDataSourceGrantRevocation conn revocation = do
 revokeExternalDataSourceGrant
   :: RPCConnection
   -> RPCExternalDataSourceGrantRevocation
-  -> IO (Either RPCError ())
+  -> IO (Either RPCError RPCExternalDataSourceOperationResult)
 revokeExternalDataSourceGrant = sendExternalDataSourceGrantRevocation
 
 validateExternalDataSourceOperationResult
@@ -809,7 +809,7 @@ validateExternalDataSourceOperationResult
   -> Text
   -> Text
   -> RPCEnvelope
-  -> IO (Either RPCError ())
+  -> IO (Either RPCError RPCExternalDataSourceOperationResult)
 validateExternalDataSourceOperationResult expectedOperation expectedOperationId expectedEpoch expectedProvider expectedConsumer expectedSource expectedGrant env =
   case envType env of
     MsgExternalDataSourceOperationResult ->
@@ -827,10 +827,7 @@ validateExternalDataSourceOperationResult expectedOperation expectedOperationId 
               expectedGrant
               operationResult of
             Just err -> pure (Left (RPCProtocolError err))
-            Nothing
-              | redsoAccepted operationResult && redsoApplied operationResult -> pure (Right ())
-              | otherwise -> pure (Left (RPCPluginError 409
-                  (externalOperationRejectedMessage expectedOperation operationResult)))
+            Nothing -> pure (Right operationResult)
     other -> pure (Left (RPCProtocolError
       ("unexpected external data-source " <> externalOperationText expectedOperation
         <> " response: " <> Text.pack (show other))))
@@ -880,18 +877,6 @@ expectMaybeWord64 field (Just expected) actual
   | otherwise = Just
       ("external data-source operation result " <> field <> " mismatch: expected "
         <> Text.pack (show expected) <> ", got " <> Text.pack (show actual))
-
-externalOperationRejectedMessage :: RPCExternalDataSourceOperation -> RPCExternalDataSourceOperationResult -> Text
-externalOperationRejectedMessage operation operationResult =
-  "external data-source " <> externalOperationText operation <> " rejected" <> reasonSuffix
-  where
-    reasonSuffix = case firstJust
-      [ redsoError operationResult
-      , redsoMessage operationResult
-      , if Text.null (redsoStatus operationResult) then Nothing else Just (redsoStatus operationResult)
-      ] of
-        Nothing -> ""
-        Just reason -> ": " <> reason
 
 externalOperationText :: RPCExternalDataSourceOperation -> Text
 externalOperationText ExternalDataSourceGrantOperation = "grant"

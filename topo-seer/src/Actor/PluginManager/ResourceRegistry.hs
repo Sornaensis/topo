@@ -7,6 +7,9 @@ module Actor.PluginManager.ResourceRegistry
   , collectPluginExternalDataSources
   ) where
 
+import Data.Aeson (Value(..))
+import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KM
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -90,10 +93,12 @@ collectPluginExternalDataSources st =
     markConsumedRefUnavailable lp ref = case activeGrantForRef lp ref of
       Just grantState -> ref
         { redsrProvider = Just (edsgkProvider (edsgbsKey grantState))
-        , redsrStatus = redsgmStatus (edsgbsMessage grantState)
+        , redsrStatus = (redsrStatus ref)
+            { redssProviderId = Just (edsgkProvider (edsgbsKey grantState)) }
         }
       Nothing -> case redsrProvider ref of
         Just providerName
+          | brokerStatusPhase (redsrStatus ref) /= Nothing -> ref
           | Map.findWithDefault False providerName providerReady -> ref
           | otherwise ->
               ref
@@ -111,6 +116,12 @@ collectPluginExternalDataSources st =
       in case filter matches (Map.elems activeGrants) of
         grantState:_ -> Just grantState
         [] -> Nothing
+
+brokerStatusPhase :: RPCExternalDataSourceStatus -> Maybe Text
+brokerStatusPhase status = do
+  Object fields <- redssDiagnostics status
+  String phase <- KM.lookup (Key.fromText "brokerPhase") fields
+  pure phase
 
 pluginExternalProviderReady :: Set.Set Text -> LoadedPlugin -> Bool
 pluginExternalProviderReady disabled lp =
