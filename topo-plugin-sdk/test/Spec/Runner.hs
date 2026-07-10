@@ -78,6 +78,8 @@ import Topo.Plugin.RPC.Manifest
 import Topo.Plugin.RPC.ExternalDataSource
   ( RPCExternalDataSourceGrantMessage(..)
   , RPCExternalDataSourceGrantRevocation(..)
+  , RPCExternalDataSourceOperation(..)
+  , RPCExternalDataSourceOperationResult(..)
   , RPCExternalDataSourceStatusEntry(..)
   , RPCExternalDataSourceStatusReport(..)
   , RPCExternalDataSourceStatusRequest(..)
@@ -500,7 +502,7 @@ spec = describe "SDK runner pipe integration" $ do
             other -> expectationFailure ("expected one status entry, got " <> show other)
       shutdownAndWait host done
 
-  it "dispatches external data-source grants and revocations to SDK callbacks" $
+  it "dispatches uncorrelated external data-source grants and revocations to callbacks without ACKs" $
     withTransportPair $ \host plugin -> do
       grantSeen <- newEmptyMVar
       revocationSeen <- newEmptyMVar
@@ -513,29 +515,180 @@ spec = describe "SDK runner pipe integration" $ do
       receivedGrant <- timeout 1000000 (takeMVar grantSeen)
       receivedGrant `shouldBe` Just externalGrantMessage
       sendEnvelope host (RPCEnvelope
+        { envType = MsgHeartbeat
+        , envPayload = Aeson.toJSON (Heartbeat { hbStatus = "ping" })
+        , envRequestId = Just 510
+        })
+      heartbeat <- recvEnvelope host
+      envType heartbeat `shouldBe` MsgHeartbeat
+      envRequestId heartbeat `shouldBe` Just 510
+      sendEnvelope host (RPCEnvelope
         { envType = MsgExternalDataSourceRevoke
         , envPayload = Aeson.toJSON externalGrantRevocation
         , envRequestId = Nothing
         })
       receivedRevocation <- timeout 1000000 (takeMVar revocationSeen)
       receivedRevocation `shouldBe` Just externalGrantRevocation
+      sendEnvelope host (RPCEnvelope
+        { envType = MsgHealthCheck
+        , envPayload = object []
+        , envRequestId = Just 511
+        })
+      health <- recvEnvelope host
+      envType health `shouldBe` MsgHealthStatus
+      envRequestId health `shouldBe` Just 511
       shutdownAndWait host done
 
-  it "correlates external grant callback failures when a request id is supplied" $
+  it "sends success ACKs for correlated external data-source grants and revocations" $
     withTransportPair $ \host plugin -> do
-      done <- startSession externalFailingCallbackPlugin plugin
+      grantSeen <- newEmptyMVar
+      revocationSeen <- newEmptyMVar
+      done <- startSession (externalCallbackPlugin grantSeen revocationSeen) plugin
       sendEnvelope host (RPCEnvelope
         { envType = MsgExternalDataSourceGrant
         , envPayload = Aeson.toJSON externalGrantMessage
         , envRequestId = Just 504
         })
+      receivedGrant <- timeout 1000000 (takeMVar grantSeen)
+      receivedGrant `shouldBe` Just externalGrantMessage
+      grantAck <- recvExternalOperationResult host
+      envRequestId grantAck `shouldBe` Just 504
+      expectExternalOperationResult
+        grantAck
+        ExternalDataSourceGrantOperation
+        "sdk-runner-grant-op"
+        (Just 1)
+        True
+        True
+        "applied"
+        Nothing
+      sendEnvelope host (RPCEnvelope
+        { envType = MsgExternalDataSourceRevoke
+        , envPayload = Aeson.toJSON externalGrantRevocation
+        , envRequestId = Just 505
+        })
+      receivedRevocation <- timeout 1000000 (takeMVar revocationSeen)
+      receivedRevocation `shouldBe` Just externalGrantRevocation
+      revokeAck <- recvExternalOperationResult host
+      envRequestId revokeAck `shouldBe` Just 505
+      expectExternalOperationResult
+        revokeAck
+        ExternalDataSourceRevokeOperation
+        "sdk-runner-revoke-op"
+        (Just 2)
+        True
+        True
+        "applied"
+        Nothing
+      shutdownAndWait host done
+
+  it "returns negative ACKs for correlated external grant callback failures" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession externalFailingCallbackPlugin plugin
+      sendEnvelope host (RPCEnvelope
+        { envType = MsgExternalDataSourceGrant
+        , envPayload = Aeson.toJSON externalGrantMessage
+        , envRequestId = Just 506
+        })
+      failureAck <- recvExternalOperationResult host
+      envRequestId failureAck `shouldBe` Just 506
+      result <- decodeExternalOperationResult failureAck
+      redsoOperation result `shouldBe` ExternalDataSourceGrantOperation
+      redsoOperationId result `shouldBe` "sdk-runner-grant-op"
+      redsoAccepted result `shouldBe` False
+      redsoApplied result `shouldBe` False
+      redsoStatus result `shouldBe` "failed"
+      redsoError result `shouldSatisfy` maybe False (Text.isInfixOf "grant handler failed")
+      shutdownAndWait host done
+
+  it "returns negative ACKs for correlated external revocation callback failures" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession externalRevocationFailingCallbackPlugin plugin
+      sendEnvelope host (RPCEnvelope
+        { envType = MsgExternalDataSourceRevoke
+        , envPayload = Aeson.toJSON externalGrantRevocation
+        , envRequestId = Just 507
+        })
+      failureAck <- recvExternalOperationResult host
+      envRequestId failureAck `shouldBe` Just 507
+      result <- decodeExternalOperationResult failureAck
+      redsoOperation result `shouldBe` ExternalDataSourceRevokeOperation
+      redsoOperationId result `shouldBe` "sdk-runner-revoke-op"
+      redsoAccepted result `shouldBe` False
+      redsoApplied result `shouldBe` False
+      redsoStatus result `shouldBe` "failed"
+      redsoError result `shouldSatisfy` maybe False (Text.isInfixOf "revocation handler failed")
+      shutdownAndWait host done
+
+  it "falls back to MsgError for correlated legacy external grant failures without operation ids" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession externalFailingCallbackPlugin plugin
+      sendEnvelope host (RPCEnvelope
+        { envType = MsgExternalDataSourceGrant
+        , envPayload = Aeson.toJSON legacyExternalGrantMessage
+        , envRequestId = Just 508
+        })
       errEnv <- recvEnvelope host
       envType errEnv `shouldBe` MsgError
-      envRequestId errEnv `shouldBe` Just 504
+      envRequestId errEnv `shouldBe` Just 508
       case Aeson.fromJSON (envPayload errEnv) of
         Aeson.Error err -> expectationFailure err
         Aeson.Success (pluginErr :: PluginError) ->
           peMessage pluginErr `shouldSatisfy` Text.isInfixOf "grant handler failed"
+      shutdownAndWait host done
+
+  it "falls back to MsgError for correlated legacy external revocation failures without operation ids" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession externalRevocationFailingCallbackPlugin plugin
+      sendEnvelope host (RPCEnvelope
+        { envType = MsgExternalDataSourceRevoke
+        , envPayload = Aeson.toJSON legacyExternalGrantRevocation
+        , envRequestId = Just 509
+        })
+      errEnv <- recvEnvelope host
+      envType errEnv `shouldBe` MsgError
+      envRequestId errEnv `shouldBe` Just 509
+      case Aeson.fromJSON (envPayload errEnv) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success (pluginErr :: PluginError) ->
+          peMessage pluginErr `shouldSatisfy` Text.isInfixOf "revocation handler failed"
+      shutdownAndWait host done
+
+  it "keeps legacy uncorrelated external data-source grant and revoke callbacks silent" $
+    withTransportPair $ \host plugin -> do
+      grantSeen <- newEmptyMVar
+      revocationSeen <- newEmptyMVar
+      done <- startSession (externalCallbackPlugin grantSeen revocationSeen) plugin
+      sendEnvelope host (RPCEnvelope
+        { envType = MsgExternalDataSourceGrant
+        , envPayload = Aeson.toJSON legacyExternalGrantMessage
+        , envRequestId = Nothing
+        })
+      receivedGrant <- timeout 1000000 (takeMVar grantSeen)
+      receivedGrant `shouldBe` Just legacyExternalGrantMessage
+      sendEnvelope host (RPCEnvelope
+        { envType = MsgHeartbeat
+        , envPayload = Aeson.toJSON (Heartbeat { hbStatus = "ping" })
+        , envRequestId = Just 508
+        })
+      heartbeat <- recvEnvelope host
+      envType heartbeat `shouldBe` MsgHeartbeat
+      envRequestId heartbeat `shouldBe` Just 508
+      sendEnvelope host (RPCEnvelope
+        { envType = MsgExternalDataSourceRevoke
+        , envPayload = Aeson.toJSON legacyExternalGrantRevocation
+        , envRequestId = Nothing
+        })
+      receivedRevocation <- timeout 1000000 (takeMVar revocationSeen)
+      receivedRevocation `shouldBe` Just legacyExternalGrantRevocation
+      sendEnvelope host (RPCEnvelope
+        { envType = MsgHealthCheck
+        , envPayload = object []
+        , envRequestId = Just 509
+        })
+      health <- recvEnvelope host
+      envType health `shouldBe` MsgHealthStatus
+      envRequestId health `shouldBe` Just 509
       shutdownAndWait host done
 
   it "dispatches query_resource to the correct data handler" $
@@ -791,6 +944,36 @@ recvEnvelope transport = do
         Left err -> expectationFailure ("decode failed: " <> Text.unpack err) >> fail "decode"
         Right env -> pure env
 
+recvExternalOperationResult :: Transport -> IO RPCEnvelope
+recvExternalOperationResult transport = do
+  envelope <- recvEnvelope transport
+  envType envelope `shouldBe` MsgExternalDataSourceOperationResult
+  pure envelope
+
+expectExternalOperationResult
+  :: RPCEnvelope
+  -> RPCExternalDataSourceOperation
+  -> Text
+  -> Maybe Word64
+  -> Bool
+  -> Bool
+  -> Text
+  -> Maybe Text
+  -> IO ()
+expectExternalOperationResult envelope operation operationId operationEpoch accepted applied status expectedError = do
+  result <- decodeExternalOperationResult envelope
+  redsoOperation result `shouldBe` operation
+  redsoOperationId result `shouldBe` operationId
+  redsoOperationEpoch result `shouldBe` operationEpoch
+  redsoProviderId result `shouldBe` "external-status"
+  redsoConsumerId result `shouldBe` "external-callback"
+  redsoSource result `shouldBe` "terrain.catalog"
+  redsoGrant result `shouldBe` "terrain-catalog-read"
+  redsoAccepted result `shouldBe` accepted
+  redsoApplied result `shouldBe` applied
+  redsoStatus result `shouldBe` status
+  redsoError result `shouldBe` expectedError
+
 expectDataResourceError :: RPCEnvelope -> DataResourceErrorCode -> IO ()
 expectDataResourceError envelope expected =
   AesonTypes.parseMaybe (Aeson.withObject "PluginError" (.: "data_resource_error")) (envPayload envelope)
@@ -807,6 +990,12 @@ decodeProgress envelope =
   case Aeson.fromJSON (envPayload envelope) of
     Aeson.Error err -> expectationFailure err >> fail "progress decode"
     Aeson.Success progress -> pure progress
+
+decodeExternalOperationResult :: RPCEnvelope -> IO RPCExternalDataSourceOperationResult
+decodeExternalOperationResult envelope =
+  case Aeson.fromJSON (envPayload envelope) of
+    Aeson.Error err -> expectationFailure err >> fail "external operation result decode"
+    Aeson.Success result -> pure result
 
 generatorInvoke :: Word64 -> RPCEnvelope
 generatorInvoke seed = generatorInvokeWithTerrain seed minimalTerrainPayload
@@ -1161,6 +1350,12 @@ externalFailingCallbackPlugin = externalStatusPlugin
   , pdOnExternalDataSourceGrant = Just (\_ -> fail "grant callback failed")
   }
 
+externalRevocationFailingCallbackPlugin :: PluginDef
+externalRevocationFailingCallbackPlugin = externalStatusPlugin
+  { pdName = "external-callback-revocation-failing"
+  , pdOnExternalDataSourceRevocation = Just (\_ -> fail "revocation callback failed")
+  }
+
 externalReadyStatus :: RPCExternalDataSourceStatus
 externalReadyStatus = defaultRPCExternalDataSourceStatus
   { redssState = ExternalStatusReady
@@ -1202,6 +1397,18 @@ externalGrantRevocation = RPCExternalDataSourceGrantRevocation
   , redsrvStatus = revokedExternalDataSourceStatus "external-status" (Just "provider unavailable")
   , redsrvReference = Just (object ["grant" .= ("terrain-catalog-read" :: Text)])
   , redsrvDiagnostics = Just (object ["reportedBy" .= ("host" :: Text)])
+  }
+
+legacyExternalGrantMessage :: RPCExternalDataSourceGrantMessage
+legacyExternalGrantMessage = externalGrantMessage
+  { redsgmOperationId = Nothing
+  , redsgmOperationEpoch = Nothing
+  }
+
+legacyExternalGrantRevocation :: RPCExternalDataSourceGrantRevocation
+legacyExternalGrantRevocation = externalGrantRevocation
+  { redsrvOperationId = Nothing
+  , redsrvOperationEpoch = Nothing
   }
 
 -- | Plugin with a read-only data resource (no mutate handler).
