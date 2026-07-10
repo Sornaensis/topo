@@ -1191,16 +1191,19 @@ spec = describe "Plugin.RPC" $ do
               redssFresh (redsgStatus included) `shouldBe` True
               redssObservedAt (redsgStatus omitted) `shouldBe` Nothing
               redssFresh (redsgStatus omitted) `shouldBe` False
+              redssMessage (redsgStatus omitted) `shouldSatisfy` maybe False (Text.isInfixOf "omitted grant")
               redssState (redsgStatus omitted) `shouldBe` ExternalStatusReady
             other -> expectationFailure ("expected two grants, got " <> show other)
         other -> expectationFailure ("expected one source, got " <> show other)
       case rmExternalDataSources consumerOnlyApplied of
         [consumerOnlySource] -> do
           redssFresh (redsdStatus consumerOnlySource) `shouldBe` False
+          redssMessage (redsdStatus consumerOnlySource) `shouldSatisfy` maybe False (Text.isInfixOf "omitted source")
           case redsdGrants consumerOnlySource of
             [included, _omitted] -> do
               redssObservedAt (redsgStatus included) `shouldBe` Nothing
               redssFresh (redsgStatus included) `shouldBe` False
+              redssMessage (redsgStatus included) `shouldSatisfy` maybe False (Text.isInfixOf "omitted grant")
             other -> expectationFailure ("expected two consumer-only grants, got " <> show other)
         other -> expectationFailure ("expected one consumer-only source, got " <> show other)
 

@@ -7,7 +7,6 @@ module Actor.PluginManager.ExternalDataSourceBroker
   ) where
 
 import Control.Monad (foldM)
-import Data.IORef (writeIORef)
 import Data.List (find)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -64,8 +63,8 @@ import Topo.Plugin.RPC
   , RPCExternalDataSourceStatusRequest(..)
   , RPCExternalDataSourceStatusState(..)
   , RPCManifest(..)
-  , defaultRPCExternalDataSourceStatus
   , externalDataSourceStatusBlocksStartup
+  , externalDataSourceStatusCurrent
   , externalDataSourceStatusDegradesStartup
   , applyExternalDataSourceStatusReport
   , requestExternalDataSourceStatus
@@ -175,9 +174,9 @@ refreshProviderStatuses st = do
               Right report -> do
                 observedAt <- getCurrentTime
                 pure (applyStatusReport observedAt report lp)
-              Left _ -> do
-                writeIORef (rpcRuntimeFailure conn) Nothing
-                pure lp
+              Left err -> do
+                observedAt <- getCurrentTime
+                pure (markProviderStatusRefreshFailure observedAt err lp)
 
     statusRequest = RPCExternalDataSourceStatusRequest
       { redssrProviderId = Nothing
@@ -214,6 +213,45 @@ applyStatusReport observedAt report lp = lp { lpManifest = manifest' , lpConnect
   where
     manifest' = applyExternalDataSourceStatusReport observedAt (lpName lp) report (lpManifest lp)
     syncConn conn = conn { rpcManifest = manifest' }
+
+markProviderStatusRefreshFailure :: UTCTime -> RPCError -> LoadedPlugin -> LoadedPlugin
+markProviderStatusRefreshFailure observedAt err lp = lp { lpManifest = manifest' , lpConnection = fmap syncConn (lpConnection lp) }
+  where
+    manifest = lpManifest lp
+    manifest' = manifest { rmExternalDataSources = map markSource (rmExternalDataSources manifest) }
+    syncConn conn = conn { rpcManifest = manifest' }
+
+    markSource source = source
+      { redsdStatus = failureStatus (redsdStatus source)
+      , redsdGrants = map markGrant (redsdGrants source)
+      }
+
+    markGrant grant = grant { redsgStatus = failureStatus (redsgStatus grant) }
+
+    failureStatus status = status
+      { redssState = ExternalStatusUnavailable
+      , redssMessage = Just failureMessage
+      , redssProviderId = Just (lpName lp)
+      , redssAvailability = Just ExternalAvailabilityUnavailable
+      , redssHealth = Just ExternalHealthUnhealthy
+      , redssAccessMode = Just ExternalAccessModeDisabled
+      , redssCapabilityScope = []
+      , redssObservedAt = Just observedAt
+      , redssFresh = False
+      }
+
+    failureMessage = "external data-source status refresh failed ("
+      <> providerStatusRefreshFailureClass err <> "): " <> rpcErrorText err
+
+providerStatusRefreshFailureClass :: RPCError -> Text
+providerStatusRefreshFailureClass err = case err of
+  RPCTimeout _ -> "timeout"
+  RPCTransportError _ -> "transport"
+  RPCProtocolError message
+    | "unexpected external data-source status response" `Text.isPrefixOf` message -> "unexpected response"
+    | otherwise -> "protocol/decode"
+  RPCPluginError _ _ -> "plugin error"
+  RPCDataResourceError _ _ -> "plugin error"
 
 desiredBrokeredGrants
   :: PluginManagerState
@@ -436,6 +474,7 @@ data BindingDiagnosticStatusClass
 bindingDiagnosticStatusClass :: PluginManagerState -> DependencyExternalDataSourceBindingDiagnostic -> Maybe BindingDiagnosticStatusClass
 bindingDiagnosticStatusClass st diag
   | bindingDiagnosticProviderHardUnavailable st diag = Just BindingDiagnosticHard
+  | any (not . externalDataSourceStatusCurrent) candidateStatuses = Just BindingDiagnosticHard
   | any externalDataSourceStatusBlocksStartup candidateStatuses = Just BindingDiagnosticHard
   | any externalDataSourceStatusDegradesStartup candidateStatuses = Just BindingDiagnosticSoft
   | otherwise = Nothing

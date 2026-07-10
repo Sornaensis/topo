@@ -912,9 +912,12 @@ requestExternalDataSourceStatus conn request = do
   result <- rpcCall (Just (rpcRuntimeFailure conn)) (rpcRequestTimeoutMicros conn) "plugin external data-source status request timed out" conn envelope
   case result of
     Left err -> pure (Left err)
-    Right env -> case envType env of
-      MsgExternalDataSourceStatus -> decodeRPCPayload env
-      other -> pure (Left (RPCProtocolError ("unexpected external data-source status response: " <> Text.pack (show other))))
+    Right env -> do
+      decoded <- case envType env of
+        MsgExternalDataSourceStatus -> decodeRPCPayload env
+        other -> pure (Left (RPCProtocolError ("unexpected external data-source status response: " <> Text.pack (show other))))
+      recordResultFailure (Just (rpcRuntimeFailure conn)) decoded
+      pure decoded
 
 -- | Alias for 'requestExternalDataSourceStatus'.
 checkExternalDataSourceStatus

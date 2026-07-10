@@ -466,7 +466,17 @@ applyExternalDataSourceStatusReport observedAt providerId report manifest =
     entryStatus mGrant sourceName currentStatus =
       case matchingEntry mGrant sourceName of
         Just entry -> observeExternalDataSourceStatus observedAt (redsstStatus entry)
-        Nothing -> staleExternalDataSourceStatus currentStatus
+        Nothing -> omittedStatus mGrant sourceName currentStatus
+
+    omittedStatus mGrant sourceName currentStatus = (staleExternalDataSourceStatus currentStatus)
+      { redssObservedAt = Nothing
+      , redssMessage = Just (omittedStatusMessage mGrant sourceName)
+      }
+
+    omittedStatusMessage Nothing sourceName =
+      "external data-source status report omitted source '" <> sourceName <> "'"
+    omittedStatusMessage (Just grantName) sourceName =
+      "external data-source status report omitted grant '" <> grantName <> "' for source '" <> sourceName <> "'"
 
     entryReference mGrant sourceName = redsstReference <$> matchingEntry mGrant sourceName
 

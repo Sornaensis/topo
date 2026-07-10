@@ -11,6 +11,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
+import qualified Data.Text as Text
 
 import Actor.PluginManager.Types
   ( ExternalDataSourceGrantBrokerState(..)
@@ -133,10 +134,18 @@ markGrantUnavailable providerName reason grant = grant
 unavailableStatus :: Text -> Text -> RPCExternalDataSourceStatus -> RPCExternalDataSourceStatus
 unavailableStatus providerName reason status = status
   { redssState = ExternalStatusUnavailable
-  , redssMessage = Just reason
+  , redssMessage = Just (unavailableStatusReason reason status)
   , redssProviderId = Just providerName
   , redssAvailability = Just ExternalAvailabilityUnavailable
   , redssHealth = Just ExternalHealthUnhealthy
   , redssAccessMode = Just ExternalAccessModeDisabled
   , redssCapabilityScope = []
   }
+
+unavailableStatusReason :: Text -> RPCExternalDataSourceStatus -> Text
+unavailableStatusReason fallback status =
+  case redssMessage status of
+    Just message
+      | redssState status == ExternalStatusUnavailable
+        && "external data-source status refresh failed" `Text.isPrefixOf` message -> message
+    _ -> fallback

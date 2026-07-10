@@ -18,9 +18,9 @@ import Control.Exception
   , throwIO
   , try
   )
-import Control.Monad (unless)
+import Control.Monad (forM_, unless)
 import Data.List (elemIndex)
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import qualified Data.Aeson as Aeson
 import Data.Aeson (Value(..), (.=), object)
 import qualified Data.ByteString as BS
@@ -737,6 +737,30 @@ spec = describe "PluginManager" $ do
         pluginLifecycleStates externalConsumerPluginName blocked `shouldSatisfy` elem LifecycleFailed
         pluginLifecycleErrorCodes externalConsumerPluginName blocked `shouldSatisfy` elem (Just "external_data_source_blocked")
 
+  forM_ externalProviderStatusFailureModes $ \(modeName, expectedClass) ->
+    it ("blocks required consumers when provider status refresh reports " <> modeName) $
+      expectRequiredStatusRefreshFailure modeName expectedClass
+
+  it "degrades optional consumers when provider status refresh reports plugin errors" $
+    expectOptionalStatusRefreshFailure "plugin-error" "plugin error"
+
+  it "does not broker stale ready grants when a provider status report omits a grant" $
+    withExecutablePluginDirs
+      [ (externalConsumerPluginName, externalConsumerManifestJSON, "external-consumer")
+      , (externalProviderPluginName, externalProviderManifestJSON, "external-provider-controlled-status")
+      ] $ withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        grantedBinding <- expectRight "initial granted binding query" =<<
+          expectWithin "initial granted binding query" (queryPluginResource pluginManagerHandle externalConsumerPluginNameText externalBindingQuery)
+        expectBindingStatus "granted" grantedBinding
+        writeExternalProviderStatusMode "omit-grant"
+        blocked <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses externalConsumerPluginName blocked `shouldSatisfy` anyPluginErrorContaining "external data-source startup blocked"
+        pluginLifecycleStates externalConsumerPluginName blocked `shouldSatisfy` elem LifecycleFailed
+        providerSnapshots <- getPluginExternalDataSources pluginManagerHandle
+        expectProviderStatusMessage externalProviderPluginNameText "omitted grant" providerSnapshots
+
   it "integrates shared external data-source provider and consumer fixtures without backend assumptions" $
     withExecutablePluginDirs
       [ (externalConsumerPluginName, externalConsumerManifestJSON, "external-consumer")
@@ -1422,6 +1446,65 @@ assertStartedBefore first second order =
     (Just firstIndex, Just secondIndex) -> firstIndex `shouldSatisfy` (< secondIndex)
     _ -> expectationFailure ("startup order did not contain expected plugins: " <> show order)
 
+externalProviderStatusFailureModes :: [(String, Text)]
+externalProviderStatusFailureModes =
+  [ ("timeout", "timeout")
+  , ("transport", "transport")
+  , ("malformed", "protocol/decode")
+  , ("unexpected", "unexpected response")
+  , ("plugin-error", "plugin error")
+  ]
+
+expectRequiredStatusRefreshFailure :: String -> Text -> IO ()
+expectRequiredStatusRefreshFailure modeName expectedClass =
+  withExecutablePluginDirs
+    [ (externalConsumerPluginName, externalConsumerManifestJSON, "external-consumer")
+    , (externalProviderPluginName, externalProviderManifestJSON, "external-provider-controlled-status")
+    ] $ do
+      writeExternalProviderStatusMode modeName
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses externalConsumerPluginName loaded `shouldSatisfy` anyPluginErrorContaining "external data-source startup blocked"
+        pluginLifecycleStates externalConsumerPluginName loaded `shouldSatisfy` elem LifecycleFailed
+        pluginLifecycleErrorCodes externalConsumerPluginName loaded `shouldSatisfy` elem (Just "external_data_source_blocked")
+        providerSnapshots <- getPluginExternalDataSources pluginManagerHandle
+        expectProviderStatusMessage externalProviderPluginNameText expectedClass providerSnapshots
+
+expectOptionalStatusRefreshFailure :: String -> Text -> IO ()
+expectOptionalStatusRefreshFailure modeName expectedClass =
+  withExecutablePluginDirs
+    [ (externalConsumerPluginName, externalOptionalConsumerManifestJSON, "external-consumer")
+    , (externalProviderPluginName, externalProviderManifestJSON, "external-provider-controlled-status")
+    ] $ do
+      writeExternalProviderStatusMode modeName
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses externalConsumerPluginName loaded `shouldSatisfy` elem PluginConnected
+        pluginLifecycleStates externalConsumerPluginName loaded `shouldSatisfy` elem LifecycleDegraded
+        pluginLifecycleErrorCodes externalConsumerPluginName loaded `shouldSatisfy` elem (Just "external_data_source_degraded")
+        providerSnapshots <- getPluginExternalDataSources pluginManagerHandle
+        expectProviderStatusMessage externalProviderPluginNameText expectedClass providerSnapshots
+
+expectProviderStatusMessage :: Text -> Text -> [WorldExternalDataSourceSnapshot] -> Expectation
+expectProviderStatusMessage providerName expectedNeedle snapshots =
+  case findExternalSnapshot providerName snapshots of
+    Nothing -> expectationFailure "missing provider external data-source snapshot"
+    Just snapshot -> do
+      let statuses = map redsdStatus (wedssProvidedSources snapshot)
+            <> concatMap (map redsgStatus . redsdGrants) (wedssProvidedSources snapshot)
+          messages = mapMaybe redssMessage statuses
+      messages `shouldSatisfy` any (expectedNeedle `Text.isInfixOf`)
+
+writeExternalProviderStatusMode :: String -> IO ()
+writeExternalProviderStatusMode modeName = do
+  modePath <- fixtureDataFile externalProviderPluginName externalProviderStatusModeFileName
+  createDirectoryIfMissing True (takeDirectory modePath)
+  writeFile modePath modeName
+
 expectProviderStatusReport :: RPCExternalDataSourceStatusReport -> Expectation
 expectProviderStatusReport report =
   case redssReportStatuses report of
@@ -1887,7 +1970,7 @@ normalizeFixtureMode :: String -> String
 normalizeFixtureMode = takeWhile (`notElem` ['\r', '\n'])
 
 fixtureUsage :: IO a
-fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|auth-missing|auth-mismatch|malformed-json|bad-handshake|early-exit|slow|wait-for-start-signal|handshake-stall|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|exit-on-generator|exit-on-simulation|external-provider|external-consumer|external-consumer-reject-grant|external-consumer-reject-revoke|windows-process-tree|windows-heartbeat-child>"
+fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|auth-missing|auth-mismatch|malformed-json|bad-handshake|early-exit|slow|wait-for-start-signal|handshake-stall|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|exit-on-generator|exit-on-simulation|external-provider|external-provider-controlled-status|external-consumer|external-consumer-reject-grant|external-consumer-reject-revoke|windows-process-tree|windows-heartbeat-child>"
 
 runFixtureMode :: String -> IO ()
 runFixtureMode = \case
@@ -1913,6 +1996,7 @@ runFixtureMode = \case
   "exit-on-generator" -> runExitOnGeneratorFixture
   "exit-on-simulation" -> runExitOnSimulationFixture
   "external-provider" -> runExternalProviderFixture
+  "external-provider-controlled-status" -> runExternalProviderControlledStatusFixture
   "external-consumer" -> runExternalConsumerFixture
   "external-consumer-reject-grant" -> runExternalConsumerRejectGrantFixture
   "external-consumer-reject-revoke" -> runExternalConsumerRejectRevokeFixture
@@ -2084,7 +2168,13 @@ runProviderFailedFixture = do
               _ -> loop transport
 
 runExternalProviderFixture :: IO ()
-runExternalProviderFixture = do
+runExternalProviderFixture = runExternalProviderFixtureWith (pure "ok")
+
+runExternalProviderControlledStatusFixture :: IO ()
+runExternalProviderControlledStatusFixture = runExternalProviderFixtureWith readExternalProviderStatusMode
+
+runExternalProviderFixtureWith :: IO Text -> IO ()
+runExternalProviderFixtureWith readStatusMode = do
   recordExternalStartup externalProviderPluginName
   connectPluginFromEnvironment "plugin-manager-external-provider-fixture" stdin stdout >>= \case
     Left _ -> exitFailure
@@ -2102,11 +2192,9 @@ runExternalProviderFixture = do
                 _ <- sendMessage transport (encodeMessage ack)
                 loop transport
               MsgExternalDataSourceStatusRequest -> do
-                let includeDiagnostics = requestIncludesDiagnostics envelope
-                _ <- sendMessage transport (encodeMessage (externalStatusEnvelope
-                  (envRequestId envelope)
-                  (externalProviderStatusReport includeDiagnostics)))
-                loop transport
+                modeName <- readStatusMode
+                continue <- sendExternalProviderStatusResponse transport envelope modeName
+                if continue then loop transport else pure ()
               MsgQueryResource -> do
                 _ <- sendMessage transport (encodeMessage (queryResultEnvelope
                   (envRequestId envelope)
@@ -2114,6 +2202,61 @@ runExternalProviderFixture = do
                 loop transport
               MsgShutdown -> closeTransport transport
               _ -> loop transport
+
+readExternalProviderStatusMode :: IO Text
+readExternalProviderStatusMode = do
+  dataRoot <- requireEnv pluginDataRootEnv
+  let modePath = dataRoot </> externalProviderStatusModeFileName
+  exists <- doesFileExist modePath
+  if exists
+    then Text.strip . Text.pack <$> readFile modePath
+    else pure "ok"
+
+sendExternalProviderStatusResponse :: Transport -> RPCEnvelope -> Text -> IO Bool
+sendExternalProviderStatusResponse transport envelope modeName =
+  case modeName of
+    "timeout" -> threadDelay 2000000 >> pure True
+    "transport" -> closeTransport transport >> pure False
+    "malformed" -> do
+      _ <- sendMessage transport (encodeMessage (malformedExternalStatusEnvelope (envRequestId envelope)))
+      pure True
+    "unexpected" -> do
+      _ <- sendMessage transport (encodeMessage (queryResultEnvelope
+        (envRequestId envelope)
+        (QueryResult externalProviderResource [externalProviderRecord] (Just 1))))
+      pure True
+    "plugin-error" -> do
+      _ <- sendMessage transport (encodeMessage (pluginErrorEnvelope
+        (envRequestId envelope)
+        503
+        "provider status unavailable"))
+      pure True
+    "omit-grant" -> do
+      let includeDiagnostics = requestIncludesDiagnostics envelope
+      _ <- sendMessage transport (encodeMessage (externalStatusEnvelope
+        (envRequestId envelope)
+        (externalProviderStatusReportOmittingGrant includeDiagnostics)))
+      pure True
+    _ -> do
+      let includeDiagnostics = requestIncludesDiagnostics envelope
+      _ <- sendMessage transport (encodeMessage (externalStatusEnvelope
+        (envRequestId envelope)
+        (externalProviderStatusReport includeDiagnostics)))
+      pure True
+
+malformedExternalStatusEnvelope :: Maybe Word64 -> RPCEnvelope
+malformedExternalStatusEnvelope requestId = RPCEnvelope
+  { envType = MsgExternalDataSourceStatus
+  , envPayload = object
+      [ "statuses" .=
+          [ object
+              [ "providerId" .= externalProviderPluginNameText
+              , "source" .= externalSourceName
+              ]
+          ]
+      ]
+  , envRequestId = requestId
+  }
 
 runExternalConsumerFixture :: IO ()
 runExternalConsumerFixture = runExternalConsumerFixtureWith False False
@@ -2231,6 +2374,12 @@ externalProviderStatusReport includeDiagnostics = RPCExternalDataSourceStatusRep
       [ externalProviderSourceStatusEntry includeDiagnostics
       , externalProviderGrantStatusEntry includeDiagnostics
       ]
+  , redssReportDiagnostics = if includeDiagnostics then Just externalDiagnostics else Nothing
+  }
+
+externalProviderStatusReportOmittingGrant :: Bool -> RPCExternalDataSourceStatusReport
+externalProviderStatusReportOmittingGrant includeDiagnostics = RPCExternalDataSourceStatusReport
+  { redssReportStatuses = [externalProviderSourceStatusEntry includeDiagnostics]
   , redssReportDiagnostics = if includeDiagnostics then Just externalDiagnostics else Nothing
   }
 
@@ -3126,6 +3275,9 @@ externalGrantName = "terrain-catalog-read"
 
 externalBindingResource :: Text
 externalBindingResource = "source_bindings"
+
+externalProviderStatusModeFileName :: String
+externalProviderStatusModeFileName = "external-status-mode.txt"
 
 externalProviderResource :: Text
 externalProviderResource = "shared_sources"
