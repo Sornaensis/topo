@@ -928,6 +928,107 @@ spec = describe "PluginManager" $ do
         snapshots <- getPluginExternalDataSources pluginManagerHandle
         expectRejectedRevokeSnapshot snapshots
 
+  it "retries external data-source grants with the same operation id after ACK timeouts" $
+    withExecutablePluginDirs
+      [ (externalConsumerPluginName, externalConsumerManifestJSON, "external-consumer-timeout-grant-once")
+      , (externalProviderPluginName, externalProviderManifestJSON, "external-provider")
+      ] $ withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        timedOut <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses externalConsumerPluginName timedOut `shouldSatisfy` anyPluginErrorContaining "plugin external data-source grant timed out"
+        pluginLifecycleStates externalConsumerPluginName timedOut `shouldSatisfy` elem LifecycleFailed
+        pluginLifecycleErrorCodes externalConsumerPluginName timedOut `shouldSatisfy` elem (Just "external_data_source_blocked")
+        expectConsumerDiagnosticBrokerState Set.empty "grant_failed" Nothing Nothing Nothing Nothing timedOut
+        operationsAfterTimeout <- readExternalConsumerOperationLog
+        operationsAfterTimeout `shouldBe` [externalBrokerOperationLogLine "grant"]
+        refreshManifests pluginManagerHandle
+        recovered <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses externalProviderPluginName recovered `shouldSatisfy` elem PluginConnected
+        pluginStatuses externalConsumerPluginName recovered `shouldSatisfy` elem PluginConnected
+        pluginLifecycleStates externalConsumerPluginName recovered `shouldSatisfy` elem LifecycleReady
+        expectConsumerDiagnosticBrokerState Set.empty "grant_acked" (Just True) (Just True) (Just "applied") Nothing recovered
+        operationsAfterRetry <- readExternalConsumerOperationLog
+        operationsAfterRetry `shouldBe` replicate 2 (externalBrokerOperationLogLine "grant")
+
+  it "retries timed-out revokes before regranting stale external data-source bindings" $
+    withExecutablePluginDirs
+      [ (externalConsumerPluginName, externalConsumerManifestJSON, "external-consumer-timeout-revoke-once")
+      , (externalProviderPluginName, externalProviderManifestJSON, "external-provider")
+      ] $ withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        ready <- getLoadedPlugins pluginManagerHandle
+        pluginLifecycleStates externalConsumerPluginName ready `shouldSatisfy` elem LifecycleReady
+        setDisabledPlugins pluginManagerHandle (Set.singleton externalProviderPluginNameText)
+        disabled <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses externalConsumerPluginName disabled `shouldSatisfy` anyPluginError
+        pluginLifecycleStates externalConsumerPluginName disabled `shouldSatisfy` elem LifecycleFailed
+        expectConsumerDiagnosticBrokerState (Set.singleton externalProviderPluginNameText) "revoke_failed" Nothing Nothing Nothing Nothing disabled
+        operationsAfterTimeout <- readExternalConsumerOperationLog
+        operationsAfterTimeout `shouldBe`
+          [ externalBrokerOperationLogLine "grant"
+          , externalBrokerOperationLogLine "revoke"
+          ]
+        setDisabledPlugins pluginManagerHandle Set.empty
+        refreshManifests pluginManagerHandle
+        recovered <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses externalConsumerPluginName recovered `shouldSatisfy` elem PluginConnected
+        pluginLifecycleStates externalConsumerPluginName recovered `shouldSatisfy` elem LifecycleReady
+        expectConsumerDiagnosticBrokerState Set.empty "grant_acked" (Just True) (Just True) (Just "applied") Nothing recovered
+        operationsAfterRetry <- readExternalConsumerOperationLog
+        operationsAfterRetry `shouldBe`
+          [ externalBrokerOperationLogLine "grant"
+          , externalBrokerOperationLogLine "revoke"
+          , externalBrokerOperationLogLine "revoke"
+          , externalBrokerOperationLogLine "grant"
+          ]
+
+  it "orders revokes before regrants across provider disable/re-enable and status replacement" $
+    withExecutablePluginDirs
+      [ (externalConsumerPluginName, externalConsumerManifestJSON, "external-consumer")
+      , (externalProviderPluginName, externalProviderManifestJSON, "external-provider-controlled-status")
+      ] $ withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        setDisabledPlugins pluginManagerHandle (Set.singleton externalProviderPluginNameText)
+        disabled <- getLoadedPlugins pluginManagerHandle
+        expectConsumerDiagnosticBrokerState (Set.singleton externalProviderPluginNameText) "revoke_acked" (Just True) (Just True) (Just "applied") Nothing disabled
+        setDisabledPlugins pluginManagerHandle Set.empty
+        refreshManifests pluginManagerHandle
+        recovered <- getLoadedPlugins pluginManagerHandle
+        pluginLifecycleStates externalConsumerPluginName recovered `shouldSatisfy` elem LifecycleReady
+        writeExternalProviderStatusMode "replacement"
+        replaced <- getLoadedPlugins pluginManagerHandle
+        pluginLifecycleStates externalConsumerPluginName replaced `shouldSatisfy` elem LifecycleReady
+        expectConsumerDiagnosticBrokerState Set.empty "grant_acked" (Just True) (Just True) (Just "applied") Nothing replaced
+        operations <- readExternalConsumerOperationLog
+        operations `shouldBe`
+          [ externalBrokerOperationLogLine "grant"
+          , externalBrokerOperationLogLine "revoke"
+          , externalBrokerOperationLogLine "grant"
+          , externalBrokerOperationLogLine "revoke"
+          , externalBrokerOperationLogLine "grant"
+          ]
+
+  it "observes consumer crashes after external grant ACK transport writes" $
+    withExecutablePluginDirs
+      [ (externalConsumerPluginName, externalConsumerManifestJSON, "external-consumer-crash-after-grant-ack")
+      , (externalProviderPluginName, externalProviderManifestJSON, "external-provider")
+      ] $ withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        crashed <- waitForLoadedPlugins
+          (externalConsumerPluginName <> " crash after grant ACK")
+          pluginManagerHandle
+          (\loaded -> anyPluginErrorContaining "process exited" (pluginStatuses externalConsumerPluginName loaded)
+            || anyPluginErrorContaining "not brokerable" (pluginStatuses externalConsumerPluginName loaded))
+        pluginLifecycleStates externalConsumerPluginName crashed `shouldSatisfy` elem LifecycleFailed
+        pluginLifecycleErrorCodes externalConsumerPluginName crashed `shouldSatisfy`
+          any (`elem` [Just "process_exited", Just "external_data_source_blocked"])
+        operations <- readExternalConsumerOperationLog
+        operations `shouldBe` [externalBrokerOperationLogLine "grant"]
+
   it "reports malformed handshake JSON as a plugin error" $ do
     withExecutablePluginDir malformedPluginName malformedManifestJSON "malformed-json" $ do
       withPluginManager $ \pluginManagerHandle -> do
@@ -2080,7 +2181,7 @@ normalizeFixtureMode :: String -> String
 normalizeFixtureMode = takeWhile (`notElem` ['\r', '\n'])
 
 fixtureUsage :: IO a
-fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|auth-missing|auth-mismatch|malformed-json|bad-handshake|early-exit|slow|wait-for-start-signal|handshake-stall|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|exit-on-generator|exit-on-simulation|external-provider|external-provider-controlled-status|external-consumer|external-consumer-reject-grant|external-consumer-reject-revoke|windows-process-tree|windows-heartbeat-child>"
+fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|auth-missing|auth-mismatch|malformed-json|bad-handshake|early-exit|slow|wait-for-start-signal|handshake-stall|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|exit-on-generator|exit-on-simulation|external-provider|external-provider-controlled-status|external-consumer|external-consumer-reject-grant|external-consumer-reject-revoke|external-consumer-timeout-grant-once|external-consumer-timeout-revoke-once|external-consumer-crash-after-grant-ack|windows-process-tree|windows-heartbeat-child>"
 
 runFixtureMode :: String -> IO ()
 runFixtureMode = \case
@@ -2110,6 +2211,9 @@ runFixtureMode = \case
   "external-consumer" -> runExternalConsumerFixture
   "external-consumer-reject-grant" -> runExternalConsumerRejectGrantFixture
   "external-consumer-reject-revoke" -> runExternalConsumerRejectRevokeFixture
+  "external-consumer-timeout-grant-once" -> runExternalConsumerTimeoutGrantOnceFixture
+  "external-consumer-timeout-revoke-once" -> runExternalConsumerTimeoutRevokeOnceFixture
+  "external-consumer-crash-after-grant-ack" -> runExternalConsumerCrashAfterGrantAckFixture
   "windows-process-tree" -> runWindowsProcessTreeFixture
   "windows-heartbeat-child" -> runWindowsHeartbeatChild
   unknown -> die ("unknown plugin-manager fixture: " <> unknown)
@@ -2347,6 +2451,12 @@ sendExternalProviderStatusResponse transport envelope modeName =
         (envRequestId envelope)
         (externalProviderStatusReportOmittingGrant includeDiagnostics)))
       pure True
+    "replacement" -> do
+      let includeDiagnostics = requestIncludesDiagnostics envelope
+      _ <- sendMessage transport (encodeMessage (externalStatusEnvelope
+        (envRequestId envelope)
+        (externalProviderReplacementStatusReport includeDiagnostics)))
+      pure True
     _ -> do
       let includeDiagnostics = requestIncludesDiagnostics envelope
       _ <- sendMessage transport (encodeMessage (externalStatusEnvelope
@@ -2369,21 +2479,38 @@ malformedExternalStatusEnvelope requestId = RPCEnvelope
   }
 
 runExternalConsumerFixture :: IO ()
-runExternalConsumerFixture = runExternalConsumerFixtureWith False False
+runExternalConsumerFixture = runExternalConsumerFixtureWith False False False False False
 
 runExternalConsumerRejectGrantFixture :: IO ()
-runExternalConsumerRejectGrantFixture = runExternalConsumerFixtureWith True False
+runExternalConsumerRejectGrantFixture = runExternalConsumerFixtureWith True False False False False
 
 runExternalConsumerRejectRevokeFixture :: IO ()
-runExternalConsumerRejectRevokeFixture = runExternalConsumerFixtureWith False True
+runExternalConsumerRejectRevokeFixture = runExternalConsumerFixtureWith False True False False False
 
-runExternalConsumerFixtureWith :: Bool -> Bool -> IO ()
-runExternalConsumerFixtureWith rejectGrant rejectRevoke = do
+runExternalConsumerTimeoutGrantOnceFixture :: IO ()
+runExternalConsumerTimeoutGrantOnceFixture = runExternalConsumerFixtureWith False False True False False
+
+runExternalConsumerTimeoutRevokeOnceFixture :: IO ()
+runExternalConsumerTimeoutRevokeOnceFixture = runExternalConsumerFixtureWith False False False True False
+
+runExternalConsumerCrashAfterGrantAckFixture :: IO ()
+runExternalConsumerCrashAfterGrantAckFixture = runExternalConsumerFixtureWith False False False False True
+
+runExternalConsumerFixtureWith :: Bool -> Bool -> Bool -> Bool -> Bool -> IO ()
+runExternalConsumerFixtureWith rejectGrant rejectRevoke timeoutGrantOnce timeoutRevokeOnce crashAfterGrantAck = do
   recordExternalStartup externalConsumerPluginName
   connectPluginFromEnvironment "plugin-manager-external-consumer-fixture" stdin stdout >>= \case
     Left _ -> exitFailure
     Right transport -> loop transport "declared"
   where
+    shouldTimeoutExternalGrant
+      | timeoutGrantOnce = (<= 1) <$> incrementFixtureCount "external-grant-timeout"
+      | otherwise = pure False
+
+    shouldTimeoutExternalRevoke
+      | timeoutRevokeOnce = (<= 1) <$> incrementFixtureCount "external-revoke-timeout"
+      | otherwise = pure False
+
     loop transport bindingStatus = do
       recvMessage transport >>= \case
         Left _ -> closeTransport transport
@@ -2405,14 +2532,26 @@ runExternalConsumerFixtureWith rejectGrant rejectRevoke = do
                 case Aeson.fromJSON (envPayload envelope) of
                   Aeson.Error _ -> loop transport bindingStatus
                   Aeson.Success grant -> do
-                    sendExternalGrantResult transport envelope grant (not rejectGrant)
-                    loop transport (if rejectGrant then bindingStatus else "granted")
+                    recordExternalConsumerOperation "grant" (redsgmOperationId grant)
+                    timedOut <- shouldTimeoutExternalGrant
+                    if timedOut
+                      then threadDelay 1500000 >> loop transport bindingStatus
+                      else do
+                        sendExternalGrantResult transport envelope grant (not rejectGrant)
+                        if crashAfterGrantAck
+                          then exitFailure
+                          else loop transport (if rejectGrant then bindingStatus else "granted")
               MsgExternalDataSourceRevoke ->
                 case Aeson.fromJSON (envPayload envelope) of
                   Aeson.Error _ -> loop transport bindingStatus
                   Aeson.Success revocation -> do
-                    sendExternalRevokeResult transport envelope revocation (not rejectRevoke)
-                    loop transport (if rejectRevoke then bindingStatus else "revoked")
+                    recordExternalConsumerOperation "revoke" (redsrvOperationId revocation)
+                    timedOut <- shouldTimeoutExternalRevoke
+                    if timedOut
+                      then threadDelay 1500000 >> loop transport bindingStatus
+                      else do
+                        sendExternalRevokeResult transport envelope revocation (not rejectRevoke)
+                        loop transport (if rejectRevoke then bindingStatus else "revoked")
               MsgQueryResource -> do
                 _ <- sendMessage transport (encodeMessage (queryResultEnvelope
                   (envRequestId envelope)
@@ -2493,6 +2632,19 @@ externalProviderStatusReportOmittingGrant includeDiagnostics = RPCExternalDataSo
   , redssReportDiagnostics = if includeDiagnostics then Just externalDiagnostics else Nothing
   }
 
+externalProviderReplacementStatusReport :: Bool -> RPCExternalDataSourceStatusReport
+externalProviderReplacementStatusReport includeDiagnostics = RPCExternalDataSourceStatusReport
+  { redssReportStatuses =
+      [ (externalProviderSourceStatusEntry includeDiagnostics)
+          { redsstReference = Just (object ["handle" .= ("fixture://provider/terrain.catalog.replacement" :: Text)])
+          }
+      , (externalProviderGrantStatusEntry includeDiagnostics)
+          { redsstReference = Just (object ["grant" .= ("terrain-catalog-read-replacement" :: Text)])
+          }
+      ]
+  , redssReportDiagnostics = if includeDiagnostics then Just externalDiagnostics else Nothing
+  }
+
 externalConsumerStatusReport :: Bool -> RPCExternalDataSourceStatusReport
 externalConsumerStatusReport includeDiagnostics = RPCExternalDataSourceStatusReport
   { redssReportStatuses = [externalConsumerStatusEntry includeDiagnostics]
@@ -2568,6 +2720,39 @@ readExternalStartupOrder = do
   if exists
     then lines <$> readFile path
     else pure []
+
+recordExternalConsumerOperation :: Text -> Maybe Text -> IO ()
+recordExternalConsumerOperation operation operationId = do
+  baseDir <- requireEnv testPluginDirEnv
+  appendFile (baseDir </> externalConsumerOperationLogFileName) $
+    Text.unpack operation <> ":" <> maybe "" Text.unpack operationId <> "\n"
+
+readExternalConsumerOperationLog :: IO [String]
+readExternalConsumerOperationLog = do
+  baseDir <- currentPluginBaseDir
+  let path = baseDir </> externalConsumerOperationLogFileName
+  exists <- doesFileExist path
+  if exists
+    then lines <$> readFile path
+    else pure []
+
+externalBrokerOperationLogLine :: Text -> String
+externalBrokerOperationLogLine operation =
+  Text.unpack operation <> ":" <> Text.unpack (externalBrokerOperationId operation)
+
+externalBrokerOperationId :: Text -> Text
+externalBrokerOperationId operation = Text.intercalate ":"
+  [ "external-data-source"
+  , operation
+  , externalConsumerPluginNameText
+  , externalSourceName
+  , externalProviderPluginNameText
+  , externalSourceName
+  , externalGrantName
+  ]
+
+externalConsumerOperationLogFileName :: String
+externalConsumerOperationLogFileName = "external-consumer-operations.log"
 
 runValidationOkFixture :: IO ()
 runValidationOkFixture = do

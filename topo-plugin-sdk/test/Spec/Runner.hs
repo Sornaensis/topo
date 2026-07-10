@@ -582,6 +582,101 @@ spec = describe "SDK runner pipe integration" $ do
         Nothing
       shutdownAndWait host done
 
+  it "deduplicates correlated external grant and revoke retries by operation id" $
+    withTransportPair $ \host plugin -> do
+      grantSeen <- newEmptyMVar
+      revocationSeen <- newEmptyMVar
+      done <- startSession (externalCallbackPlugin grantSeen revocationSeen) plugin
+      sendEnvelope host (RPCEnvelope
+        { envType = MsgExternalDataSourceGrant
+        , envPayload = Aeson.toJSON externalGrantMessage
+        , envRequestId = Just 604
+        })
+      firstGrantAck <- recvExternalOperationResult host
+      expectExternalOperationResult
+        firstGrantAck
+        ExternalDataSourceGrantOperation
+        "sdk-runner-grant-op"
+        (Just 1)
+        True
+        True
+        "applied"
+        Nothing
+      sendEnvelope host (RPCEnvelope
+        { envType = MsgExternalDataSourceGrant
+        , envPayload = Aeson.toJSON externalGrantMessage
+        , envRequestId = Just 605
+        })
+      duplicateGrantAck <- recvExternalOperationResult host
+      envRequestId duplicateGrantAck `shouldBe` Just 605
+      expectExternalOperationResult
+        duplicateGrantAck
+        ExternalDataSourceGrantOperation
+        "sdk-runner-grant-op"
+        (Just 1)
+        True
+        True
+        "applied"
+        Nothing
+      receivedGrant <- timeout 1000000 (takeMVar grantSeen)
+      receivedGrant `shouldBe` Just externalGrantMessage
+      duplicateGrant <- timeout 100000 (takeMVar grantSeen)
+      duplicateGrant `shouldBe` Nothing
+      sendEnvelope host (RPCEnvelope
+        { envType = MsgExternalDataSourceRevoke
+        , envPayload = Aeson.toJSON externalGrantRevocation
+        , envRequestId = Just 606
+        })
+      firstRevokeAck <- recvExternalOperationResult host
+      expectExternalOperationResult
+        firstRevokeAck
+        ExternalDataSourceRevokeOperation
+        "sdk-runner-revoke-op"
+        (Just 2)
+        True
+        True
+        "applied"
+        Nothing
+      sendEnvelope host (RPCEnvelope
+        { envType = MsgExternalDataSourceRevoke
+        , envPayload = Aeson.toJSON externalGrantRevocation
+        , envRequestId = Just 607
+        })
+      duplicateRevokeAck <- recvExternalOperationResult host
+      envRequestId duplicateRevokeAck `shouldBe` Just 607
+      expectExternalOperationResult
+        duplicateRevokeAck
+        ExternalDataSourceRevokeOperation
+        "sdk-runner-revoke-op"
+        (Just 2)
+        True
+        True
+        "applied"
+        Nothing
+      receivedRevocation <- timeout 1000000 (takeMVar revocationSeen)
+      receivedRevocation `shouldBe` Just externalGrantRevocation
+      duplicateRevocation <- timeout 100000 (takeMVar revocationSeen)
+      duplicateRevocation `shouldBe` Nothing
+      sendEnvelope host (RPCEnvelope
+        { envType = MsgExternalDataSourceGrant
+        , envPayload = Aeson.toJSON externalGrantMessage
+        , envRequestId = Just 608
+        })
+      regrantAck <- recvExternalOperationResult host
+      envRequestId regrantAck `shouldBe` Just 608
+      expectExternalOperationResult
+        regrantAck
+        ExternalDataSourceGrantOperation
+        "sdk-runner-grant-op"
+        (Just 1)
+        True
+        True
+        "applied"
+        Nothing
+      receivedRegrant <- timeout 1000000 (takeMVar grantSeen)
+      receivedRegrant `shouldBe` Just externalGrantMessage
+      shutdownAndWait host done
+
   it "returns negative ACKs for correlated external grant callback failures" $
     withTransportPair $ \host plugin -> do
       done <- startSession externalFailingCallbackPlugin plugin

@@ -42,6 +42,7 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as BL
+import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -53,6 +54,7 @@ import System.Environment (getArgs, lookupEnv)
 import System.Exit (exitFailure)
 import System.FilePath ((</>), takeDirectory)
 import System.IO (stderr, stdin, stdout)
+import System.IO.Unsafe (unsafePerformIO)
 
 import Topo.Plugin.RPC.Manifest
   ( Capability(..)
@@ -329,7 +331,55 @@ runPluginWithManifestCommand pd = do
 -- Intended for in-process integration tests and hosts that manage
 -- transport lifecycle externally.
 runPluginSession :: PluginDef -> Transport -> Map Text Value -> IO ()
-runPluginSession pd transport params = messageLoop pd transport params Nothing
+runPluginSession pd transport params = do
+  resetExternalOperationCache pd
+  messageLoop pd transport params Nothing
+
+type ExternalOperationKey = (RPCExternalDataSourceOperation, Text)
+
+type ExternalOperationCache = Map ExternalOperationKey RPCExternalDataSourceOperationResult
+
+externalOperationCaches :: IORef (Map Text ExternalOperationCache)
+externalOperationCaches = unsafePerformIO (newIORef Map.empty)
+{-# NOINLINE externalOperationCaches #-}
+
+resetExternalOperationCache :: PluginDef -> IO ()
+resetExternalOperationCache pd =
+  atomicModifyIORef' externalOperationCaches $ \caches ->
+    (Map.delete (pdName pd) caches, ())
+
+lookupExternalOperationResult
+  :: PluginDef
+  -> RPCExternalDataSourceOperation
+  -> Maybe Text
+  -> IO (Maybe RPCExternalDataSourceOperationResult)
+lookupExternalOperationResult _ _ Nothing = pure Nothing
+lookupExternalOperationResult pd operation (Just operationId) =
+  atomicModifyIORef' externalOperationCaches $ \caches ->
+    (caches, Map.lookup (operation, operationId) =<< Map.lookup (pdName pd) caches)
+
+cacheExternalOperationResult :: PluginDef -> RPCExternalDataSourceOperationResult -> IO ()
+cacheExternalOperationResult pd result
+  | not (redsoAccepted result && redsoApplied result) = pure ()
+  | otherwise =
+      atomicModifyIORef' externalOperationCaches $ \caches ->
+        let pluginName = pdName pd
+            cache = Map.findWithDefault Map.empty pluginName caches
+            key = (redsoOperation result, redsoOperationId result)
+            cache' = Map.filter (not . invalidatedByAppliedOperation result) cache
+        in (Map.insert pluginName (Map.insert key result cache') caches, ())
+
+invalidatedByAppliedOperation :: RPCExternalDataSourceOperationResult -> RPCExternalDataSourceOperationResult -> Bool
+invalidatedByAppliedOperation applied cached =
+  redsoOperation applied /= redsoOperation cached
+    && sameExternalOperationBinding applied cached
+
+sameExternalOperationBinding :: RPCExternalDataSourceOperationResult -> RPCExternalDataSourceOperationResult -> Bool
+sameExternalOperationBinding a b =
+  redsoProviderId a == redsoProviderId b
+    && redsoConsumerId a == redsoConsumerId b
+    && redsoSource a == redsoSource b
+    && redsoGrant a == redsoGrant b
 
 data LaunchAuth = LaunchAuth
   { laSessionId :: !Text
@@ -590,10 +640,17 @@ messageLoop pd transport params worldPath = do
               sendErrorResponseIfCorrelated transport envelope 11 ("Invalid external data-source grant payload: " <> Text.pack err)
               messageLoop pd transport params worldPath
             Aeson.Success (grant :: RPCExternalDataSourceGrantMessage) -> do
-              handlerResult <- runExternalDataSourceGrantHandler pd grant
-              case handlerResult of
-                Left err -> sendExternalDataSourceGrantFailure transport envelope pd grant err
-                Right () -> sendExternalDataSourceGrantSuccess transport envelope pd grant
+              cachedResult <- case envRequestId envelope of
+                Nothing -> pure Nothing
+                Just _ -> lookupExternalOperationResult pd ExternalDataSourceGrantOperation (redsgmOperationId grant)
+              case cachedResult of
+                Just result -> sendCachedExternalDataSourceOperationResult transport envelope result
+                Nothing -> do
+                  handlerResult <- runExternalDataSourceGrantHandler pd grant
+                  operationResult <- case handlerResult of
+                    Left err -> sendExternalDataSourceGrantFailure transport envelope pd grant err
+                    Right () -> sendExternalDataSourceGrantSuccess transport envelope pd grant
+                  mapM_ (cacheExternalOperationResult pd) operationResult
               messageLoop pd transport params worldPath
 
         MsgExternalDataSourceRevoke -> do
@@ -602,10 +659,17 @@ messageLoop pd transport params worldPath = do
               sendErrorResponseIfCorrelated transport envelope 12 ("Invalid external data-source revocation payload: " <> Text.pack err)
               messageLoop pd transport params worldPath
             Aeson.Success (revocation :: RPCExternalDataSourceGrantRevocation) -> do
-              handlerResult <- runExternalDataSourceRevocationHandler pd revocation
-              case handlerResult of
-                Left err -> sendExternalDataSourceRevocationFailure transport envelope pd revocation err
-                Right () -> sendExternalDataSourceRevocationSuccess transport envelope pd revocation
+              cachedResult <- case envRequestId envelope of
+                Nothing -> pure Nothing
+                Just _ -> lookupExternalOperationResult pd ExternalDataSourceRevokeOperation (redsrvOperationId revocation)
+              case cachedResult of
+                Just result -> sendCachedExternalDataSourceOperationResult transport envelope result
+                Nothing -> do
+                  handlerResult <- runExternalDataSourceRevocationHandler pd revocation
+                  operationResult <- case handlerResult of
+                    Left err -> sendExternalDataSourceRevocationFailure transport envelope pd revocation err
+                    Right () -> sendExternalDataSourceRevocationSuccess transport envelope pd revocation
+                  mapM_ (cacheExternalOperationResult pd) operationResult
               messageLoop pd transport params worldPath
 
         -- Ignore unknown message types
@@ -635,95 +699,109 @@ runExternalDataSourceRevocationHandler pd revocation =
 -- External data-source ACK helpers
 ------------------------------------------------------------------------
 
-sendExternalDataSourceGrantSuccess :: Transport -> RPCEnvelope -> PluginDef -> RPCExternalDataSourceGrantMessage -> IO ()
+sendExternalDataSourceGrantSuccess :: Transport -> RPCEnvelope -> PluginDef -> RPCExternalDataSourceGrantMessage -> IO (Maybe RPCExternalDataSourceOperationResult)
 sendExternalDataSourceGrantSuccess transport request pd grant =
   case (envRequestId request, redsgmOperationId grant) of
-    (Nothing, _) -> pure ()
-    (Just requestId, Nothing) ->
+    (Nothing, _) -> pure Nothing
+    (Just requestId, Nothing) -> do
       sendErrorResponse transport (Just requestId) 11 "External data-source grant payload is missing operationId"
-    (Just requestId, Just operationId) ->
-      sendExternalDataSourceOperationResult transport (Just requestId) RPCExternalDataSourceOperationResult
-        { redsoOperationId = operationId
-        , redsoOperationEpoch = redsgmOperationEpoch grant
-        , redsoOperation = ExternalDataSourceGrantOperation
-        , redsoProviderId = redsgmProviderId grant
-        , redsoConsumerId = externalGrantConsumerId pd grant
-        , redsoSource = redsgmSource grant
-        , redsoGrant = redsgmGrant grant
-        , redsoAccepted = True
-        , redsoApplied = True
-        , redsoStatus = "applied"
-        , redsoMessage = Just "external data-source grant applied"
-        , redsoError = Nothing
-        , redsoDiagnostics = Nothing
-        }
+      pure Nothing
+    (Just requestId, Just operationId) -> do
+      let result = RPCExternalDataSourceOperationResult
+            { redsoOperationId = operationId
+            , redsoOperationEpoch = redsgmOperationEpoch grant
+            , redsoOperation = ExternalDataSourceGrantOperation
+            , redsoProviderId = redsgmProviderId grant
+            , redsoConsumerId = externalGrantConsumerId pd grant
+            , redsoSource = redsgmSource grant
+            , redsoGrant = redsgmGrant grant
+            , redsoAccepted = True
+            , redsoApplied = True
+            , redsoStatus = "applied"
+            , redsoMessage = Just "external data-source grant applied"
+            , redsoError = Nothing
+            , redsoDiagnostics = Nothing
+            }
+      sendExternalDataSourceOperationResult transport (Just requestId) result
+      pure (Just result)
 
-sendExternalDataSourceGrantFailure :: Transport -> RPCEnvelope -> PluginDef -> RPCExternalDataSourceGrantMessage -> Text -> IO ()
+sendExternalDataSourceGrantFailure :: Transport -> RPCEnvelope -> PluginDef -> RPCExternalDataSourceGrantMessage -> Text -> IO (Maybe RPCExternalDataSourceOperationResult)
 sendExternalDataSourceGrantFailure transport request pd grant err =
   case (envRequestId request, redsgmOperationId grant) of
-    (Nothing, _) -> pure ()
-    (Just requestId, Nothing) -> sendErrorResponse transport (Just requestId) 13 err
-    (Just requestId, Just operationId) ->
-      sendExternalDataSourceOperationResult transport (Just requestId) RPCExternalDataSourceOperationResult
-        { redsoOperationId = operationId
-        , redsoOperationEpoch = redsgmOperationEpoch grant
-        , redsoOperation = ExternalDataSourceGrantOperation
-        , redsoProviderId = redsgmProviderId grant
-        , redsoConsumerId = externalGrantConsumerId pd grant
-        , redsoSource = redsgmSource grant
-        , redsoGrant = redsgmGrant grant
-        , redsoAccepted = False
-        , redsoApplied = False
-        , redsoStatus = "failed"
-        , redsoMessage = Nothing
-        , redsoError = Just err
-        , redsoDiagnostics = Nothing
-        }
+    (Nothing, _) -> pure Nothing
+    (Just requestId, Nothing) -> do
+      sendErrorResponse transport (Just requestId) 13 err
+      pure Nothing
+    (Just requestId, Just operationId) -> do
+      let result = RPCExternalDataSourceOperationResult
+            { redsoOperationId = operationId
+            , redsoOperationEpoch = redsgmOperationEpoch grant
+            , redsoOperation = ExternalDataSourceGrantOperation
+            , redsoProviderId = redsgmProviderId grant
+            , redsoConsumerId = externalGrantConsumerId pd grant
+            , redsoSource = redsgmSource grant
+            , redsoGrant = redsgmGrant grant
+            , redsoAccepted = False
+            , redsoApplied = False
+            , redsoStatus = "failed"
+            , redsoMessage = Nothing
+            , redsoError = Just err
+            , redsoDiagnostics = Nothing
+            }
+      sendExternalDataSourceOperationResult transport (Just requestId) result
+      pure (Just result)
 
-sendExternalDataSourceRevocationSuccess :: Transport -> RPCEnvelope -> PluginDef -> RPCExternalDataSourceGrantRevocation -> IO ()
+sendExternalDataSourceRevocationSuccess :: Transport -> RPCEnvelope -> PluginDef -> RPCExternalDataSourceGrantRevocation -> IO (Maybe RPCExternalDataSourceOperationResult)
 sendExternalDataSourceRevocationSuccess transport request pd revocation =
   case (envRequestId request, redsrvOperationId revocation) of
-    (Nothing, _) -> pure ()
-    (Just requestId, Nothing) ->
+    (Nothing, _) -> pure Nothing
+    (Just requestId, Nothing) -> do
       sendErrorResponse transport (Just requestId) 12 "External data-source revocation payload is missing operationId"
-    (Just requestId, Just operationId) ->
-      sendExternalDataSourceOperationResult transport (Just requestId) RPCExternalDataSourceOperationResult
-        { redsoOperationId = operationId
-        , redsoOperationEpoch = redsrvOperationEpoch revocation
-        , redsoOperation = ExternalDataSourceRevokeOperation
-        , redsoProviderId = redsrvProviderId revocation
-        , redsoConsumerId = externalRevocationConsumerId pd revocation
-        , redsoSource = redsrvSource revocation
-        , redsoGrant = redsrvGrant revocation
-        , redsoAccepted = True
-        , redsoApplied = True
-        , redsoStatus = "applied"
-        , redsoMessage = Just "external data-source revocation applied"
-        , redsoError = Nothing
-        , redsoDiagnostics = Nothing
-        }
+      pure Nothing
+    (Just requestId, Just operationId) -> do
+      let result = RPCExternalDataSourceOperationResult
+            { redsoOperationId = operationId
+            , redsoOperationEpoch = redsrvOperationEpoch revocation
+            , redsoOperation = ExternalDataSourceRevokeOperation
+            , redsoProviderId = redsrvProviderId revocation
+            , redsoConsumerId = externalRevocationConsumerId pd revocation
+            , redsoSource = redsrvSource revocation
+            , redsoGrant = redsrvGrant revocation
+            , redsoAccepted = True
+            , redsoApplied = True
+            , redsoStatus = "applied"
+            , redsoMessage = Just "external data-source revocation applied"
+            , redsoError = Nothing
+            , redsoDiagnostics = Nothing
+            }
+      sendExternalDataSourceOperationResult transport (Just requestId) result
+      pure (Just result)
 
-sendExternalDataSourceRevocationFailure :: Transport -> RPCEnvelope -> PluginDef -> RPCExternalDataSourceGrantRevocation -> Text -> IO ()
+sendExternalDataSourceRevocationFailure :: Transport -> RPCEnvelope -> PluginDef -> RPCExternalDataSourceGrantRevocation -> Text -> IO (Maybe RPCExternalDataSourceOperationResult)
 sendExternalDataSourceRevocationFailure transport request pd revocation err =
   case (envRequestId request, redsrvOperationId revocation) of
-    (Nothing, _) -> pure ()
-    (Just requestId, Nothing) -> sendErrorResponse transport (Just requestId) 14 err
-    (Just requestId, Just operationId) ->
-      sendExternalDataSourceOperationResult transport (Just requestId) RPCExternalDataSourceOperationResult
-        { redsoOperationId = operationId
-        , redsoOperationEpoch = redsrvOperationEpoch revocation
-        , redsoOperation = ExternalDataSourceRevokeOperation
-        , redsoProviderId = redsrvProviderId revocation
-        , redsoConsumerId = externalRevocationConsumerId pd revocation
-        , redsoSource = redsrvSource revocation
-        , redsoGrant = redsrvGrant revocation
-        , redsoAccepted = False
-        , redsoApplied = False
-        , redsoStatus = "failed"
-        , redsoMessage = Nothing
-        , redsoError = Just err
-        , redsoDiagnostics = Nothing
-        }
+    (Nothing, _) -> pure Nothing
+    (Just requestId, Nothing) -> do
+      sendErrorResponse transport (Just requestId) 14 err
+      pure Nothing
+    (Just requestId, Just operationId) -> do
+      let result = RPCExternalDataSourceOperationResult
+            { redsoOperationId = operationId
+            , redsoOperationEpoch = redsrvOperationEpoch revocation
+            , redsoOperation = ExternalDataSourceRevokeOperation
+            , redsoProviderId = redsrvProviderId revocation
+            , redsoConsumerId = externalRevocationConsumerId pd revocation
+            , redsoSource = redsrvSource revocation
+            , redsoGrant = redsrvGrant revocation
+            , redsoAccepted = False
+            , redsoApplied = False
+            , redsoStatus = "failed"
+            , redsoMessage = Nothing
+            , redsoError = Just err
+            , redsoDiagnostics = Nothing
+            }
+      sendExternalDataSourceOperationResult transport (Just requestId) result
+      pure (Just result)
 
 externalGrantConsumerId :: PluginDef -> RPCExternalDataSourceGrantMessage -> Text
 externalGrantConsumerId pd grant = case redsgmConsumerId grant of
@@ -734,6 +812,12 @@ externalRevocationConsumerId :: PluginDef -> RPCExternalDataSourceGrantRevocatio
 externalRevocationConsumerId pd revocation = case redsrvConsumerId revocation of
   Just consumerId -> consumerId
   Nothing -> pdName pd
+
+sendCachedExternalDataSourceOperationResult :: Transport -> RPCEnvelope -> RPCExternalDataSourceOperationResult -> IO ()
+sendCachedExternalDataSourceOperationResult transport request result =
+  case envRequestId request of
+    Nothing -> pure ()
+    Just requestId -> sendExternalDataSourceOperationResult transport (Just requestId) result
 
 sendExternalDataSourceOperationResult :: Transport -> Maybe Word64 -> RPCExternalDataSourceOperationResult -> IO ()
 sendExternalDataSourceOperationResult transport requestId result = do
