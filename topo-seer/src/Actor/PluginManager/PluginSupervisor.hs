@@ -12,6 +12,7 @@ module Actor.PluginManager.PluginSupervisor
   , loadedPluginDependencyProvider
   , allHostCapabilities
   , markExternalDataSourceBlocked
+  , markExternalDataSourceDegraded
   , connectLoadedPlugin
   , observePluginRuntime
   , handlePluginRuntimeFailure
@@ -92,7 +93,8 @@ import Topo.Plugin.RPC
   , RPCManifest(..)
   , RPCStartPolicy(..)
   , dataResourceErrorCodeText
-  , externalDataSourceManifestStartupDecision
+  , externalDataSourceStatusBlocksStartup
+  , externalDataSourceStatusDegradesStartup
   , newRPCConnection
   , rpcShutdown
   )
@@ -154,34 +156,198 @@ publishExceptionCleanupDecision connected err handlePublishException = do
 
 connectAndTrackRefreshRuntimes :: IORef [LoadedPlugin] -> Map Text LoadedPlugin -> IO (Map Text LoadedPlugin)
 connectAndTrackRefreshRuntimes ownedRef refreshed = do
-  let startupBlocks = externalDataSourceStartupBlocks refreshed
-  connected <- traverse (connectAndTrackRefreshRuntime ownedRef startupBlocks) (orderLoadedPluginsByDependencies refreshed)
+  let startupDecisions = externalDataSourceStartupDecisions refreshed
+  connected <- traverse (connectAndTrackRefreshRuntime ownedRef startupDecisions) (orderLoadedPluginsByDependencies refreshed)
   pure (Map.fromList [(lpName p, p) | p <- connected])
 
-connectAndTrackRefreshRuntime :: IORef [LoadedPlugin] -> Map Text (Text, Text) -> LoadedPlugin -> IO LoadedPlugin
-connectAndTrackRefreshRuntime ownedRef startupBlocks lp = mask $ \restore -> do
+connectAndTrackRefreshRuntime :: IORef [LoadedPlugin] -> Map Text RPCExternalDataSourceStartupDecision -> LoadedPlugin -> IO LoadedPlugin
+connectAndTrackRefreshRuntime ownedRef startupDecisions lp = mask $ \restore -> do
   before <- runtimeIdentity lp
-  lp' <- restore $ case Map.lookup (lpName lp) startupBlocks of
-    Just (dependency, reason)
-      | isNothing (lpConnection lp) -> markExternalDataSourceBlocked dependency reason lp
-    _ -> ensurePluginConnection lp
+  let startupDecision = Map.findWithDefault ExternalDataSourceStartupReady (lpName lp) startupDecisions
+  lp' <- restore (applyExternalDataSourceStartupDecision startupDecision lp)
   after <- runtimeIdentity lp'
   when (refreshOwnsRuntime before after) (modifyIORef' ownedRef (lp':))
   pure lp'
 
-externalDataSourceStartupBlocks :: Map Text LoadedPlugin -> Map Text (Text, Text)
-externalDataSourceStartupBlocks plugins = Map.fromList
-  [ (desbdConsumer diag, (dependency, dependency <> ": " <> desbdMessage diag))
-  | diag <- desbrDiagnostics resolution
-  , let dependency = externalBindingDiagnosticDependency diag
-  , desbdRequired diag
-  ]
+applyExternalDataSourceStartupDecision :: RPCExternalDataSourceStartupDecision -> LoadedPlugin -> IO LoadedPlugin
+applyExternalDataSourceStartupDecision decision lp = case decision of
+  ExternalDataSourceStartupReady -> ensurePluginConnection lp
+  ExternalDataSourceStartupBlocked dependency reason ->
+    markExternalDataSourceBlocked dependency reason lp
+  ExternalDataSourceStartupDegraded dependency reason -> do
+    connected <- ensurePluginConnection lp
+    if canMarkExternalDataSourceDegraded connected
+      then markExternalDataSourceDegraded dependency reason connected
+      else pure connected
+
+canMarkExternalDataSourceDegraded :: LoadedPlugin -> Bool
+canMarkExternalDataSourceDegraded lp =
+  plsState (lpLifecycle lp) == LifecycleReady || lpStatus lp == PluginConnected
+
+externalDataSourceStartupDecisions :: Map Text LoadedPlugin -> Map Text RPCExternalDataSourceStartupDecision
+externalDataSourceStartupDecisions plugins = Map.fromListWith selectExternalDataSourceStartupDecision $
+  providerDecisions <> diagnosticDecisions
   where
     providers = map loadedPluginDependencyProvider (Map.elems plugins)
     resolverInput = (defaultDependencyResolverInput providers)
       { driAvailableCapabilities = Set.fromList allHostCapabilities
       }
     resolution = resolveExternalDataSourceBindings resolverInput
+    providerDecisions =
+      [ (lpName lp, decision)
+      | lp <- Map.elems plugins
+      , decision <- externalDataSourceProviderStartupDecisions (lpManifest lp)
+      ]
+    diagnosticDecisions =
+      [ (desbdConsumer diag, externalDataSourceDiagnosticStartupDecision plugins diag)
+      | diag <- desbrDiagnostics resolution
+      ]
+
+selectExternalDataSourceStartupDecision
+  :: RPCExternalDataSourceStartupDecision
+  -> RPCExternalDataSourceStartupDecision
+  -> RPCExternalDataSourceStartupDecision
+selectExternalDataSourceStartupDecision a b
+  | externalDataSourceStartupDecisionPriority a >= externalDataSourceStartupDecisionPriority b = a
+  | otherwise = b
+
+externalDataSourceStartupDecisionPriority :: RPCExternalDataSourceStartupDecision -> Int
+externalDataSourceStartupDecisionPriority ExternalDataSourceStartupReady = 0
+externalDataSourceStartupDecisionPriority ExternalDataSourceStartupDegraded{} = 1
+externalDataSourceStartupDecisionPriority ExternalDataSourceStartupBlocked{} = 2
+
+externalDataSourceProviderStartupDecisions :: RPCManifest -> [RPCExternalDataSourceStartupDecision]
+externalDataSourceProviderStartupDecisions manifest = sourceDecisions <> grantDecisions
+  where
+    sourceDecisions =
+      [ ExternalDataSourceStartupDegraded
+          (redsdName source)
+          (externalDataSourceStatusReason "external data-source provider declaration is degraded" (redsdName source) (redsdStatus source))
+      | source <- rmExternalDataSources manifest
+      , externalDataSourceStatusUnavailableOrDegraded (redsdStatus source)
+      ]
+    grantDecisions =
+      [ ExternalDataSourceStartupDegraded
+          (redsdName source <> ":" <> redsgName grant)
+          (externalDataSourceStatusReason "external data-source grant is degraded" (redsdName source <> ":" <> redsgName grant) (redsgStatus grant))
+      | source <- rmExternalDataSources manifest
+      , grant <- redsdGrants source
+      , externalDataSourceStatusUnavailableOrDegraded (redsgStatus grant)
+      ]
+
+externalDataSourceDiagnosticStartupDecision
+  :: Map Text LoadedPlugin
+  -> DependencyExternalDataSourceBindingDiagnostic
+  -> RPCExternalDataSourceStartupDecision
+externalDataSourceDiagnosticStartupDecision plugins diag =
+  case (desbdRequired diag, externalDataSourceDiagnosticStatusClass plugins diag) of
+    (True, Just (ExternalStatusHard reason)) -> ExternalDataSourceStartupBlocked dependency reason
+    (True, Just (ExternalStatusSoft reason)) -> ExternalDataSourceStartupDegraded dependency reason
+    (True, Nothing) -> ExternalDataSourceStartupBlocked dependency fallbackReason
+    (False, Just (ExternalStatusHard reason)) -> ExternalDataSourceStartupDegraded dependency reason
+    (False, Just (ExternalStatusSoft reason)) -> ExternalDataSourceStartupDegraded dependency reason
+    (False, Nothing) -> ExternalDataSourceStartupDegraded dependency optionalReason
+  where
+    dependency = externalBindingDiagnosticDependency diag
+    fallbackReason = dependency <> ": " <> desbdMessage diag
+    optionalReason = "optional external data-source unavailable: " <> fallbackReason
+
+data ExternalStatusClass
+  = ExternalStatusHard !Text
+  | ExternalStatusSoft !Text
+
+externalDataSourceDiagnosticStatusClass
+  :: Map Text LoadedPlugin
+  -> DependencyExternalDataSourceBindingDiagnostic
+  -> Maybe ExternalStatusClass
+externalDataSourceDiagnosticStatusClass plugins diag =
+  case hardReasons of
+    reason:_ -> Just (ExternalStatusHard reason)
+    [] -> case softReasons of
+      reason:_ -> Just (ExternalStatusSoft reason)
+      [] -> Nothing
+  where
+    classes = diagnosticCandidateStatusClasses plugins diag
+    hardReasons = [reason | ExternalStatusHard reason <- classes]
+    softReasons = [reason | ExternalStatusSoft reason <- classes]
+
+externalDataSourceStatusUnavailableOrDegraded :: RPCExternalDataSourceStatus -> Bool
+externalDataSourceStatusUnavailableOrDegraded status =
+  externalDataSourceStatusBlocksStartup status || externalDataSourceStatusDegradesStartup status
+
+diagnosticCandidateStatusClasses
+  :: Map Text LoadedPlugin
+  -> DependencyExternalDataSourceBindingDiagnostic
+  -> [ExternalStatusClass]
+diagnosticCandidateStatusClasses plugins diag = sourceClasses <> grantClasses
+  where
+    sourceClasses =
+      [ statusClass
+      | (providerName, provider) <- Map.toList plugins
+      , diagnosticProviderMatches providerName
+      , source <- rmExternalDataSources (lpManifest provider)
+      , redsdName source == desbdSource diag
+      , Just statusClass <- [externalDataSourceStatusClass (providerName <> ":" <> redsdName source) (redsdStatus source)]
+      ]
+    grantClasses =
+      [ statusClass
+      | (providerName, provider) <- Map.toList plugins
+      , diagnosticProviderMatches providerName
+      , source <- rmExternalDataSources (lpManifest provider)
+      , redsdName source == desbdSource diag
+      , grant <- redsdGrants source
+      , maybe True (== redsgName grant) (desbdGrant diag)
+      , Just statusClass <- [externalDataSourceStatusClass (providerName <> ":" <> redsdName source <> ":" <> redsgName grant) (redsgStatus grant)]
+      ]
+    diagnosticProviderMatches providerName = maybe True (== providerName) (desbdProvider diag)
+
+externalDataSourceStatusClass :: Text -> RPCExternalDataSourceStatus -> Maybe ExternalStatusClass
+externalDataSourceStatusClass dependency status
+  | externalDataSourceStatusBlocksStartup status =
+      Just (ExternalStatusHard (externalDataSourceStatusReason "external data-source unavailable" dependency status))
+  | externalDataSourceStatusDegradesStartup status =
+      Just (ExternalStatusSoft (externalDataSourceStatusReason "external data-source degraded" dependency status))
+  | otherwise = Nothing
+
+externalDataSourceStatusReason :: Text -> Text -> RPCExternalDataSourceStatus -> Text
+externalDataSourceStatusReason prefix dependency status =
+  prefix <> ": " <> dependency <> " (" <> externalDataSourceStatusSummary status <> ")"
+
+externalDataSourceStatusSummary :: RPCExternalDataSourceStatus -> Text
+externalDataSourceStatusSummary status = Text.intercalate ", " $ filter (not . Text.null)
+  [ "state=" <> externalStatusStateLabel (redssState status)
+  , maybe "" (("availability=" <>) . externalAvailabilityLabel) (redssAvailability status)
+  , maybe "" (("health=" <>) . externalHealthLabel) (redssHealth status)
+  , maybe "" (("access_mode=" <>) . externalAccessModeLabel) (redssAccessMode status)
+  , maybe "" ("message=" <>) (redssMessage status)
+  ]
+
+externalStatusStateLabel :: RPCExternalDataSourceStatusState -> Text
+externalStatusStateLabel ExternalStatusUnknown = "unknown"
+externalStatusStateLabel ExternalStatusUnconfigured = "unconfigured"
+externalStatusStateLabel ExternalStatusReady = "ready"
+externalStatusStateLabel ExternalStatusDegraded = "degraded"
+externalStatusStateLabel ExternalStatusUnavailable = "unavailable"
+
+externalAvailabilityLabel :: RPCExternalDataSourceAvailability -> Text
+externalAvailabilityLabel ExternalAvailabilityUnknown = "unknown"
+externalAvailabilityLabel ExternalAvailabilityAvailable = "available"
+externalAvailabilityLabel ExternalAvailabilityDegraded = "degraded"
+externalAvailabilityLabel ExternalAvailabilityUnavailable = "unavailable"
+externalAvailabilityLabel ExternalAvailabilityUnconfigured = "unconfigured"
+
+externalHealthLabel :: RPCExternalDataSourceHealth -> Text
+externalHealthLabel ExternalHealthUnknown = "unknown"
+externalHealthLabel ExternalHealthHealthy = "healthy"
+externalHealthLabel ExternalHealthDegraded = "degraded"
+externalHealthLabel ExternalHealthUnhealthy = "unhealthy"
+
+externalAccessModeLabel :: RPCExternalDataSourceAccessMode -> Text
+externalAccessModeLabel ExternalAccessModeReadOnly = "read_only"
+externalAccessModeLabel ExternalAccessModeReadWrite = "read_write"
+externalAccessModeLabel ExternalAccessModeAdmin = "admin"
+externalAccessModeLabel ExternalAccessModeDisabled = "disabled"
+externalAccessModeLabel ExternalAccessModeProviderManaged = "provider_managed"
 
 externalBindingDiagnosticDependency :: DependencyExternalDataSourceBindingDiagnostic -> Text
 externalBindingDiagnosticDependency diag =
@@ -620,21 +786,21 @@ markExternalDataSourceBlocked dependency reason lp = do
 
 markExternalDataSourceDegraded :: Text -> Text -> LoadedPlugin -> IO LoadedPlugin
 markExternalDataSourceDegraded dependency reason lp = do
-  stopped <- shutdownPlugin lp
   now <- getCurrentTime
   let message = "external data-source degraded: " <> reason
-  pure $ preserveRuntimeHandles stopped lp
-    { lpStatus = PluginError message
+      status
+        | isJust (lpConnection lp) = PluginConnected
+        | otherwise = PluginError message
+  pure lp
+    { lpStatus = status
     , lpLifecycle = pluginLifecycleSnapshot now LifecycleDegraded
         (Just "external data-source degraded")
         (Just "external_data_source_degraded")
         (Just message)
         (Just dependency)
-        Nothing
-        Nothing
+        (plsProcessId (lpLifecycle lp))
+        (plsProtocolVersion (lpLifecycle lp))
         (manifestLifecycleResources (lpManifest lp))
-    , lpConnection = Nothing
-    , lpProcessHandle = Nothing
     , lpRestartHistory = pruneRestartHistory (lpStartPolicy lp) now (lpRestartHistory lp)
     }
 
@@ -658,7 +824,8 @@ restartCrashedPlugin lp = do
 
 observePluginRuntime :: LoadedPlugin -> IO LoadedPlugin
 observePluginRuntime lp
-  | plsState (lpLifecycle lp) `elem` [LifecycleDegraded, LifecycleStopping] = pure lp
+  | plsState (lpLifecycle lp) == LifecycleStopping = pure lp
+  | plsState (lpLifecycle lp) == LifecycleDegraded && lpStatus lp /= PluginConnected = pure lp
   | lpStatus lp /= PluginConnected = pure lp
   | otherwise = case lpConnection lp of
       Nothing -> pure lp

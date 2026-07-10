@@ -586,7 +586,7 @@ externalDataSourceManifestStartupDecision manifest =
       , redsrRequired ref
       , externalDataSourceStatusBlocksStartup (redsrStatus ref)
       ]
-    degradations = providerDegradations <> optionalRefDegradations
+    degradations = providerDegradations <> requiredRefDegradations <> optionalRefDegradations
     providerDegradations =
       [ (redsdName source, providerReason "external data-source provider declaration is degraded" (redsdStatus source))
       | source <- rmExternalDataSources manifest
@@ -597,12 +597,17 @@ externalDataSourceManifestStartupDecision manifest =
       , grant <- redsdGrants source
       , providerStatusUnavailableOrDegraded (redsgStatus grant)
       ]
+    requiredRefDegradations =
+      [ (externalRefDependencyName ref, externalRefReason "required external data source is degraded" ref)
+      | ref <- rmExternalDataSourceRefs manifest
+      , redsrRequired ref
+      , externalDataSourceStatusDegradesStartup (redsrStatus ref)
+      ]
     optionalRefDegradations =
       [ (externalRefDependencyName ref, externalRefReason "optional external data source is degraded" ref)
       | ref <- rmExternalDataSourceRefs manifest
       , not (redsrRequired ref)
       , providerStatusUnavailableOrDegraded (redsrStatus ref)
-          || externalDataSourceStatusDegradesStartup (redsrStatus ref)
       ]
 
 externalDataSourceStartupDecisionReason :: RPCExternalDataSourceStartupDecision -> Maybe Text
@@ -615,14 +620,8 @@ externalDataSourceStartupDecisionBlockingDependency decision = Just (edssdDepend
 
 providerStatusUnavailableOrDegraded :: RPCExternalDataSourceStatus -> Bool
 providerStatusUnavailableOrDegraded status =
-  redssState status `elem` [ExternalStatusUnconfigured, ExternalStatusUnavailable, ExternalStatusDegraded]
-    || redssAvailability status `elem`
-      [ Just ExternalAvailabilityUnconfigured
-      , Just ExternalAvailabilityUnavailable
-      , Just ExternalAvailabilityDegraded
-      ]
-    || redssHealth status `elem` [Just ExternalHealthUnhealthy, Just ExternalHealthDegraded]
-    || redssAccessMode status == Just ExternalAccessModeDisabled
+  externalDataSourceStatusBlocksStartup status
+    || externalDataSourceStatusDegradesStartup status
 
 externalRefDependencyName :: RPCExternalDataSourceRef -> Text
 externalRefDependencyName ref =

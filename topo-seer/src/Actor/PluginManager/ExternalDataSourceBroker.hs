@@ -22,6 +22,7 @@ import Actor.PluginManager.PluginSupervisor
   ( allHostCapabilities
   , loadedPluginDependencyProvider
   , markExternalDataSourceBlocked
+  , markExternalDataSourceDegraded
   )
 import Actor.PluginManager.Types
   ( ExternalDataSourceGrantBrokerState(..)
@@ -63,6 +64,8 @@ import Topo.Plugin.RPC
   , RPCExternalDataSourceStatusState(..)
   , RPCManifest(..)
   , defaultRPCExternalDataSourceStatus
+  , externalDataSourceStatusBlocksStartup
+  , externalDataSourceStatusDegradesStartup
   , requestExternalDataSourceStatus
   , revokedExternalDataSourceStatus
   , rpcErrorText
@@ -95,13 +98,18 @@ reconcileExternalDataSourceBrokering oldSt newSt = do
   stAfterGrants <- foldM sendOneGrant stAfterDrops (Map.elems desiredMap)
   let active = pmsExternalDataSourceGrants stAfterGrants
       annotated = annotateConsumerRefs bindingDiagnostics stAfterGrants { pmsExternalDataSourceGrants = active }
-      blockingDiagnostics =
+      requiredDiagnostics =
         [ diag
         | diag <- bindingDiagnostics
         , desbdRequired diag
-        , not (diagnosticHadActiveGrant oldActive diag)
         ]
-  foldM blockRequiredBindingDiagnostic annotated blockingDiagnostics
+      optionalDiagnostics =
+        [ diag
+        | diag <- bindingDiagnostics
+        , not (desbdRequired diag)
+        ]
+  requiredSt <- foldM blockRequiredBindingDiagnostic annotated requiredDiagnostics
+  foldM degradeOptionalBindingDiagnostic requiredSt optionalDiagnostics
 
 grantNeedsRefresh :: ExternalDataSourceGrantBrokerState -> ExternalDataSourceGrantBrokerState -> Bool
 grantNeedsRefresh oldGrant newGrant =
@@ -150,10 +158,14 @@ refreshProviderStatuses st = do
 providerQueryable :: PluginManagerState -> LoadedPlugin -> Bool
 providerQueryable st lp =
   not (Set.member (lpName lp) (pmsDisabledPlugins st))
-    && lpStatus lp == PluginConnected
-    && plsState (lpLifecycle lp) == LifecycleReady
+    && pluginConnectionBrokerable lp
     && not (null (rmExternalDataSources (lpManifest lp)))
     && providerHasConsumerRef st lp
+
+pluginConnectionBrokerable :: LoadedPlugin -> Bool
+pluginConnectionBrokerable lp =
+  lpStatus lp == PluginConnected
+    && plsState (lpLifecycle lp) `elem` [LifecycleReady, LifecycleDegraded]
 
 providerHasConsumerRef :: PluginManagerState -> LoadedPlugin -> Bool
 providerHasConsumerRef st provider = any referencesProvider (Map.elems (pmsPlugins st))
@@ -230,10 +242,8 @@ consumerGrantSendable :: PluginManagerState -> LoadedPlugin -> LoadedPlugin -> B
 consumerGrantSendable st consumer provider =
   not (Set.member (lpName consumer) (pmsDisabledPlugins st))
     && not (Set.member (lpName provider) (pmsDisabledPlugins st))
-    && lpStatus consumer == PluginConnected
-    && lpStatus provider == PluginConnected
-    && plsState (lpLifecycle consumer) == LifecycleReady
-    && plsState (lpLifecycle provider) == LifecycleReady
+    && pluginConnectionBrokerable consumer
+    && pluginConnectionBrokerable provider
     && maybe False (const True) (lpConnection consumer)
 
 unsendableGrantReason :: PluginManagerState -> LoadedPlugin -> LoadedPlugin -> Text
@@ -242,10 +252,10 @@ unsendableGrantReason st consumer provider
       "provider plugin '" <> lpName provider <> "' is disabled"
   | Set.member (lpName consumer) (pmsDisabledPlugins st) =
       "consumer plugin '" <> lpName consumer <> "' is disabled"
-  | lpStatus provider /= PluginConnected || plsState (lpLifecycle provider) /= LifecycleReady =
-      "provider plugin '" <> lpName provider <> "' is not ready"
-  | lpStatus consumer /= PluginConnected || plsState (lpLifecycle consumer) /= LifecycleReady =
-      "consumer plugin '" <> lpName consumer <> "' is not ready"
+  | not (pluginConnectionBrokerable provider) =
+      "provider plugin '" <> lpName provider <> "' is not brokerable"
+  | not (pluginConnectionBrokerable consumer) =
+      "consumer plugin '" <> lpName consumer <> "' is not brokerable"
   | otherwise = "consumer connection is unavailable"
 
 findRef :: DependencyExternalDataSourceBinding -> LoadedPlugin -> Maybe RPCExternalDataSourceRef
@@ -299,12 +309,17 @@ sendOneGrant st grantState
           stWithDiagnostic = recordGrantDiagnostic "unavailable" (Just reason) grantState st
       in blockConsumer key reason stWithDiagnostic
   | edsgbsState grantState == "unavailable" =
-      pure (recordGrantDiagnostic "unavailable" (edsgbsReason grantState) grantState st)
+      let reason = fromMaybe "optional external data-source grant is unavailable" (edsgbsReason grantState)
+          stWithDiagnostic = recordGrantDiagnostic "unavailable" (Just reason) grantState st
+      in degradeConsumer key reason stWithDiagnostic
   | Map.member key (pmsExternalDataSourceGrants st) = pure st
   | otherwise = case consumerConnection st key of
       Nothing -> if edsgbsRequired grantState
         then blockConsumer key "external data-source consumer is not connected for grant send" st
-        else pure (recordGrantDiagnostic "unavailable" (Just "consumer is not connected") grantState st)
+        else
+          let reason = "external data-source consumer is not connected for optional grant send"
+              stWithDiagnostic = recordGrantDiagnostic "unavailable" (Just reason) grantState st
+          in degradeConsumer key reason stWithDiagnostic
       Just conn -> do
         result <- sendExternalDataSourceGrant conn (edsgbsMessage grantState)
         case result of
@@ -315,7 +330,10 @@ sendOneGrant st grantState
             }
           Left err
             | edsgbsRequired grantState -> blockConsumer key ("failed to send required external data-source grant: " <> rpcErrorText err) st
-            | otherwise -> pure (recordGrantDiagnostic "unavailable" (Just (rpcErrorText err)) grantState st)
+            | otherwise ->
+                let reason = "failed to send optional external data-source grant: " <> rpcErrorText err
+                    stWithDiagnostic = recordGrantDiagnostic "unavailable" (Just reason) grantState st
+                in degradeConsumer key reason stWithDiagnostic
   where
     key = edsgbsKey grantState
 
@@ -340,22 +358,77 @@ blockConsumer key reason st = case Map.lookup (edsgkConsumer key) (pmsPlugins st
         blocked <- markExternalDataSourceBlocked (grantKeyDependency key) reason consumer
         pure st { pmsPlugins = Map.insert (lpName blocked) blocked (pmsPlugins st) }
 
+degradeConsumer :: ExternalDataSourceGrantKey -> Text -> PluginManagerState -> IO PluginManagerState
+degradeConsumer key reason st = case Map.lookup (edsgkConsumer key) (pmsPlugins st) of
+  Nothing -> pure st
+  Just consumer
+    | plsState (lpLifecycle consumer) == LifecycleFailed -> pure st
+    | plsErrorCode (lpLifecycle consumer) == Just "external_data_source_degraded" -> pure st
+    | otherwise -> do
+        degraded <- markExternalDataSourceDegraded (grantKeyDependency key) reason consumer
+        pure st { pmsPlugins = Map.insert (lpName degraded) degraded (pmsPlugins st) }
+
 blockRequiredBindingDiagnostic :: PluginManagerState -> DependencyExternalDataSourceBindingDiagnostic -> IO PluginManagerState
 blockRequiredBindingDiagnostic st diag =
-  blockConsumer key (grantKeyDependency key <> ": " <> desbdMessage diag) st
+  case bindingDiagnosticStatusClass st diag of
+    Just BindingDiagnosticSoft -> degradeConsumer key degradedReason st
+    _ -> blockConsumer key blockedReason st
   where
     key = diagnosticGrantKey diag
+    blockedReason = grantKeyDependency key <> ": " <> desbdMessage diag
+    degradedReason = "required external data-source binding degraded: " <> blockedReason
 
-diagnosticHadActiveGrant :: Map ExternalDataSourceGrantKey ExternalDataSourceGrantBrokerState -> DependencyExternalDataSourceBindingDiagnostic -> Bool
-diagnosticHadActiveGrant active diag = any matches (Map.toList active)
+degradeOptionalBindingDiagnostic :: PluginManagerState -> DependencyExternalDataSourceBindingDiagnostic -> IO PluginManagerState
+degradeOptionalBindingDiagnostic st diag =
+  degradeConsumer key reason st
   where
-    diagnosticKey = diagnosticGrantKey diag
-    matches (key, grantState) = edsgbsState grantState == "sent"
-      && edsgkConsumer key == edsgkConsumer diagnosticKey
-      && edsgkRef key == edsgkRef diagnosticKey
-      && edsgkSource key == edsgkSource diagnosticKey
-      && (edsgkProvider diagnosticKey == "unresolved" || edsgkProvider key == edsgkProvider diagnosticKey)
-      && (edsgkGrant diagnosticKey == "unresolved" || edsgkGrant key == edsgkGrant diagnosticKey)
+    key = diagnosticGrantKey diag
+    reason = "optional external data-source unavailable: " <> grantKeyDependency key <> ": " <> desbdMessage diag
+
+data BindingDiagnosticStatusClass
+  = BindingDiagnosticHard
+  | BindingDiagnosticSoft
+
+bindingDiagnosticStatusClass :: PluginManagerState -> DependencyExternalDataSourceBindingDiagnostic -> Maybe BindingDiagnosticStatusClass
+bindingDiagnosticStatusClass st diag
+  | bindingDiagnosticProviderHardUnavailable st diag = Just BindingDiagnosticHard
+  | any externalDataSourceStatusBlocksStartup candidateStatuses = Just BindingDiagnosticHard
+  | any externalDataSourceStatusDegradesStartup candidateStatuses = Just BindingDiagnosticSoft
+  | otherwise = Nothing
+  where
+    candidateStatuses = bindingDiagnosticCandidateStatuses st diag
+
+bindingDiagnosticProviderHardUnavailable :: PluginManagerState -> DependencyExternalDataSourceBindingDiagnostic -> Bool
+bindingDiagnosticProviderHardUnavailable st diag = any providerHardUnavailable (Map.toList (pmsPlugins st))
+  where
+    providerHardUnavailable (providerName, provider) =
+      diagnosticProviderMatches providerName
+        && providerDeclaresDiagnosticSource provider
+        && (Set.member providerName (pmsDisabledPlugins st) || not (pluginConnectionBrokerable provider))
+    diagnosticProviderMatches providerName = maybe True (== providerName) (desbdProvider diag)
+    providerDeclaresDiagnosticSource provider =
+      any ((== desbdSource diag) . redsdName) (rmExternalDataSources (lpManifest provider))
+
+bindingDiagnosticCandidateStatuses :: PluginManagerState -> DependencyExternalDataSourceBindingDiagnostic -> [RPCExternalDataSourceStatus]
+bindingDiagnosticCandidateStatuses st diag = sourceStatuses <> grantStatuses
+  where
+    sourceStatuses =
+      [ redsdStatus source
+      | (providerName, provider) <- Map.toList (pmsPlugins st)
+      , diagnosticProviderMatches providerName
+      , source <- rmExternalDataSources (lpManifest provider)
+      , redsdName source == desbdSource diag
+      ]
+    grantStatuses =
+      [ redsgStatus grant
+      | (providerName, provider) <- Map.toList (pmsPlugins st)
+      , diagnosticProviderMatches providerName
+      , source <- rmExternalDataSources (lpManifest provider)
+      , redsdName source == desbdSource diag
+      , grant <- redsdGrants source
+      , maybe True (== redsgName grant) (desbdGrant diag)
+      ]
+    diagnosticProviderMatches providerName = maybe True (== providerName) (desbdProvider diag)
 
 diagnosticGrantKey :: DependencyExternalDataSourceBindingDiagnostic -> ExternalDataSourceGrantKey
 diagnosticGrantKey diag = ExternalDataSourceGrantKey
