@@ -260,9 +260,16 @@ requestParams spec req = do
 
 queryObject :: HttpRouteSpec -> [(Text, Maybe Text)] -> Either HttpResponse Value
 queryObject spec query = do
+  validateDuplicateDeclaredQueryParams spec query
   validateRequiredQueryParams spec query
   fields <- traverse (queryField spec) query
   pure (object fields)
+
+validateDuplicateDeclaredQueryParams :: HttpRouteSpec -> [(Text, Maybe Text)] -> Either HttpResponse ()
+validateDuplicateDeclaredQueryParams spec query =
+  case duplicateDeclaredQueryParamName spec query of
+    Just name -> Left (duplicateQueryParamError name)
+    Nothing -> Right ()
 
 validateRequiredQueryParams :: HttpRouteSpec -> [(Text, Maybe Text)] -> Either HttpResponse ()
 validateRequiredQueryParams spec query =
@@ -285,6 +292,15 @@ queryParamSpec :: HttpRouteSpec -> Text -> Maybe QueryParamSpec
 queryParamSpec spec key = case [param | param <- hrsQueryParams spec, qpsName param == key] of
   param:_ -> Just param
   [] -> Nothing
+
+duplicateDeclaredQueryParamName :: HttpRouteSpec -> [(Text, Maybe Text)] -> Maybe Text
+duplicateDeclaredQueryParamName spec = go []
+  where
+    go _ [] = Nothing
+    go seen ((key, _):rest)
+      | Nothing <- queryParamSpec spec key = go seen rest
+      | key `elem` seen = Just key
+      | otherwise = go (key:seen) rest
 
 queryValueFor :: QueryParamSpec -> Text -> Either HttpResponse Value
 queryValueFor param value =
@@ -332,6 +348,11 @@ invalidQueryParamError :: Text -> Text -> HttpResponse
 invalidQueryParamError name expectation = queryParamPolicyError
   "invalid_query_param"
   ("query parameter '" <> name <> "' " <> expectation)
+
+duplicateQueryParamError :: Text -> HttpResponse
+duplicateQueryParamError name = queryParamPolicyError
+  "duplicate_query_param"
+  ("query parameter '" <> name <> "' must be provided at most once")
 
 queryParamPolicyError :: Text -> Text -> HttpResponse
 queryParamPolicyError detailCode message =

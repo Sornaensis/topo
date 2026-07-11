@@ -472,6 +472,11 @@ spec = describe "Seer.HTTP.Server" $ do
                   { hreqQuery = [("q", Just "0")] }
               , ExpectQueryParserError "missing_query_param"
               )
+            , ( "terrain-hex-duplicate-q"
+              , (mkRequest "GET" ["terrain", "hex"])
+                  { hreqQuery = [("q", Just "0"), ("q", Just "1"), ("r", Just "0")] }
+              , ExpectQueryParserError "duplicate_query_param"
+              )
             , ( "terrain-chunk-valid-int"
               , (mkRequest "GET" ["terrain", "chunk-summary"])
                   { hreqQuery = [("chunk", Just "+42")] }
@@ -518,6 +523,11 @@ spec = describe "Seer.HTTP.Server" $ do
             , ( "config-sliders-missing-optional"
               , mkRequest "GET" ["config", "sliders"]
               , ExpectQueryParserSuccess []
+              )
+            , ( "config-sliders-duplicate-tab"
+              , (mkRequest "GET" ["config", "sliders"])
+                  { hreqQuery = [("tab", Just "terrain"), ("tab", Just "plugins")] }
+              , ExpectQueryParserError "duplicate_query_param"
               )
             , ( "data-records-strings-and-ints"
               , (mkRequest "GET" ["data", "records"])
@@ -571,6 +581,17 @@ spec = describe "Seer.HTTP.Server" $ do
                   }
               , ExpectQueryParserError "invalid_query_param"
               )
+            , ( "data-records-duplicate-page-size"
+              , (mkRequest "GET" ["data", "records"])
+                  { hreqQuery =
+                      [ ("plugin", Just "plugin")
+                      , ("resource", Just "records")
+                      , ("page_size", Just "3")
+                      , ("page_size", Just "4")
+                      ]
+                  }
+              , ExpectQueryParserError "duplicate_query_param"
+              )
             , ( "logs-strings-and-ints"
               , (mkRequest "GET" ["logs"])
                   { hreqQuery = [("level", Just "warn"), ("limit", Just "5"), ("offset", Just "0")] }
@@ -610,12 +631,27 @@ spec = describe "Seer.HTTP.Server" $ do
                   { hreqQuery = [("limit", Just "1.5")] }
               , ExpectQueryParserError "invalid_query_param"
               )
+            , ( "events-duplicate-stream"
+              , (mkRequest "GET" ["events"])
+                  { hreqQuery = [("stream", Just "false"), ("stream", Just "true")] }
+              , ExpectQueryParserError "duplicate_query_param"
+              )
             , ( "events-missing-optional"
               , mkRequest "GET" ["events"]
               , ExpectQueryParserSuccess []
               )
             ]
       forM_ cases (assertQueryParserCase app echoQueryAppService)
+
+  it "returns JSON error envelopes for duplicate declared query params" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      let cfg = defaultHttpServerConfig { hscBindPort = 7379 }
+      tid <- forkHttpServer cfg headlessHttpAppService (headlessServiceContext app)
+      manager <- newManager defaultManagerSettings
+      eventually_ (assertDuplicateDeclaredQueryParamErrors manager)
+        `finally` (do
+          killThread tid
+          threadDelay 100000)
 
   it "returns JSON error envelopes for malformed UTF-8 query bytes" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
@@ -2261,6 +2297,34 @@ assertEventStream manager expectedTopic = do
   let body = TextEncoding.decodeUtf8 (LBS.toStrict (responseBody rsp))
   body `shouldSatisfy` Text.isInfixOf ("event: " <> expectedTopic)
   body `shouldSatisfy` Text.isInfixOf "data:"
+
+assertDuplicateDeclaredQueryParamErrors :: Manager -> IO ()
+assertDuplicateDeclaredQueryParamErrors manager =
+  forM_
+    [ ( "duplicate-terrain-q"
+      , "http://127.0.0.1:7379/terrain/hex?q=0&q=1&r=0"
+      , []
+      )
+    , ( "duplicate-config-tab"
+      , "http://127.0.0.1:7379/config/sliders?tab=terrain&tab=plugins"
+      , []
+      )
+    , ( "duplicate-events-stream"
+      , "http://127.0.0.1:7379/events?stream=false&stream=true"
+      , [("Accept", "text/event-stream")]
+      )
+    , ( "duplicate-data-page-size"
+      , "http://127.0.0.1:7379/data/records?plugin=plugin&resource=records&page_size=3&page_size=4"
+      , []
+      )
+    ] $ \(caseName, url, extraHeaders) -> do
+      let requestId = "wai-query-duplicate-" <> caseName
+      response <- waiJsonRequest manager requestId "GET" url "" extraHeaders
+      hresStatusCode response `shouldBe` 400
+      lookupHeaderText "x-request-id" (hresHeaders response) `shouldBe` Just requestId
+      lookupNestedText ["error", "code"] (hresBody response) `shouldBe` Just "validation_failed"
+      errorDetailCode (hresBody response) `shouldBe` Just "duplicate_query_param"
+      lookupNestedText ["error", "request_id"] (hresBody response) `shouldBe` Just requestId
 
 assertMalformedUtf8QueryErrors :: Manager -> IO ()
 assertMalformedUtf8QueryErrors manager =
