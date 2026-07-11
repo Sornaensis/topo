@@ -34,6 +34,9 @@ module Topo.Plugin.RPC.Transport
   , defaultTransportConfig
   , TransportEndpointKind(..)
   , TransportEndpoint(..)
+  , TransportPeerIdentity(..)
+  , TransportPeerPolicy(..)
+  , transportPeerPolicyAny
   , TransportServer(..)
   , endpointKindText
   , parseEndpointKind
@@ -72,6 +75,7 @@ import Control.Exception
   , SomeException
   , catch
   , evaluate
+  , finally
   , fromException
   , onException
   , throwIO
@@ -84,7 +88,7 @@ import Data.Binary.Put (putWord32le, runPut)
 import Data.Char (ord)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Data.Word (Word32)
+import Data.Word (Word32, Word64)
 import Numeric (showHex)
 import System.Directory
   ( createDirectory
@@ -112,10 +116,14 @@ import Data.Bits ((.|.))
 import Data.IORef (IORef, atomicModifyIORef', newIORef, writeIORef)
 import Data.Unique (hashUnique, newUnique)
 import Foreign.C.String (withCString)
-import Foreign.C.Types (CChar, CInt(..))
+#endif
+import Foreign.C.Types (CInt(..), CUInt(..))
+import Foreign.Marshal.Alloc (allocaBytes)
 import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (Ptr, nullPtr, plusPtr)
-import Foreign.Storable (peek)
+import Foreign.Storable (peek, peekByteOff, pokeByteOff, sizeOf)
+#if defined(mingw32_HOST_OS)
+import Foreign.C.Types (CChar)
 import GHC.IO.Handle.FD (fdToHandle)
 #else
 import qualified Network.Socket as Socket
@@ -195,10 +203,35 @@ data TransportEndpoint = TransportEndpoint
   , teAddress :: !FilePath
   } deriving (Eq, Show)
 
+-- | Peer credentials captured from an accepted production endpoint.
+data TransportPeerIdentity = TransportPeerIdentity
+  { tpiProcessId :: !(Maybe Word64)
+    -- ^ Client process id when the platform exposes it.
+  , tpiUserId    :: !(Maybe Word64)
+    -- ^ Client user id when the platform exposes it.
+  } deriving (Eq, Show)
+
+-- | Host-side policy for the process allowed to consume a plugin endpoint.
+data TransportPeerPolicy = TransportPeerPolicy
+  { tppExpectedProcessId :: !(Maybe Word64)
+    -- ^ Exact launched process id required when set.
+  , tppExpectedUserId    :: !(Maybe Word64)
+    -- ^ Same-user fallback required when set.
+  } deriving (Eq, Show)
+
+transportPeerPolicyAny :: TransportPeerPolicy
+transportPeerPolicyAny = TransportPeerPolicy
+  { tppExpectedProcessId = Nothing
+  , tppExpectedUserId = Nothing
+  }
+
 -- | A listening host endpoint awaiting one plugin connection.
 data TransportServer = TransportServer
   { tsEndpoint :: !TransportEndpoint
   , tsAccept   :: IO (Either TransportError Transport)
+    -- ^ Accept with the permissive policy used by in-process tests.
+  , tsAcceptWithPeerPolicy :: TransportPeerPolicy -> IO (Either TransportError Transport)
+    -- ^ Accept while requiring the captured peer identity to match policy.
   , tsClose    :: IO ()
   }
 
@@ -252,6 +285,36 @@ parseEndpointKind raw = case Text.toLower raw of
   "named_pipe" -> Just TransportEndpointNamedPipe
   "pipe" -> Just TransportEndpointNamedPipe
   _ -> Nothing
+
+validateTransportPeerIdentity :: Text -> TransportPeerPolicy -> TransportPeerIdentity -> Either TransportError ()
+validateTransportPeerIdentity pluginName policy identity =
+  case peerPolicyMismatches policy identity of
+    [] -> Right ()
+    mismatches -> Left (TransportConnectionFailed
+      ("plugin endpoint peer identity mismatch for " <> pluginName <> ": "
+       <> Text.intercalate "; " mismatches))
+
+peerPolicyMismatches :: TransportPeerPolicy -> TransportPeerIdentity -> [Text]
+peerPolicyMismatches policy identity =
+  pidMismatch <> uidMismatch
+  where
+    pidMismatch = expectedPeerFieldMismatch
+      "pid"
+      (tppExpectedProcessId policy)
+      (tpiProcessId identity)
+    uidMismatch = expectedPeerFieldMismatch
+      "uid"
+      (tppExpectedUserId policy)
+      (tpiUserId identity)
+
+expectedPeerFieldMismatch :: Text -> Maybe Word64 -> Maybe Word64 -> [Text]
+expectedPeerFieldMismatch _ Nothing _ = []
+expectedPeerFieldMismatch label (Just expected) actual
+  | actual == Just expected = []
+  | otherwise =
+      [ "expected " <> label <> " " <> Text.pack (show expected)
+        <> ", got " <> label <> " " <> maybe "unknown" (Text.pack . show) actual
+      ]
 
 ------------------------------------------------------------------------
 -- Pipe name generation
@@ -485,6 +548,20 @@ foreign import ccall unsafe "windows.h GetCurrentProcess"
 foreign import ccall unsafe "windows.h GetCurrentProcessId"
   c_GetCurrentProcessId :: IO Word32
 
+foreign import ccall unsafe "windows.h GetNamedPipeClientProcessId"
+  c_GetNamedPipeClientProcessId :: HANDLE -> Ptr Word32 -> IO CInt
+
+foreign import ccall unsafe "sddl.h ConvertStringSecurityDescriptorToSecurityDescriptorA"
+  c_ConvertStringSecurityDescriptorToSecurityDescriptor
+    :: Ptr CChar -- StringSecurityDescriptor
+    -> Word32    -- StringSDRevision
+    -> Ptr (Ptr ())
+    -> Ptr Word32
+    -> IO CInt
+
+foreign import ccall unsafe "windows.h LocalFree"
+  c_LocalFree :: Ptr () -> IO (Ptr ())
+
 -- | Convert a Win32 HANDLE to a C file descriptor.
 foreign import ccall unsafe "_open_osfhandle"
   c_open_osfhandle :: HANDLE -> CInt -> IO CInt
@@ -503,6 +580,57 @@ errorPipeListening = 536
 
 invalidHandleValue :: HANDLE
 invalidHandleValue = nullPtr `plusPtr` (-1)
+
+withRestrictivePipeSecurityAttributes :: (Ptr () -> IO a) -> IO (Either Word32 a)
+withRestrictivePipeSecurityAttributes action =
+  withCString restrictiveNamedPipeSecurityDescriptor $ \sddlPtr ->
+    with nullPtr $ \securityDescriptorPtrPtr -> do
+      converted <- c_ConvertStringSecurityDescriptorToSecurityDescriptor
+        sddlPtr
+        sddlRevision1
+        securityDescriptorPtrPtr
+        nullPtr
+      if converted == 0
+        then Left <$> c_GetLastError
+        else do
+          securityDescriptorPtr <- peek securityDescriptorPtrPtr
+          result <- (allocaBytes securityAttributesSize $ \(securityAttributesPtr :: Ptr ()) -> do
+            pokeByteOff securityAttributesPtr securityAttributesLengthOffset
+              (fromIntegral securityAttributesSize :: Word32)
+            pokeByteOff securityAttributesPtr securityAttributesDescriptorOffset securityDescriptorPtr
+            pokeByteOff securityAttributesPtr securityAttributesInheritOffset (0 :: CInt)
+            action securityAttributesPtr)
+            `finally` freeLocalSecurityDescriptor securityDescriptorPtr
+          pure (Right result)
+
+-- The server pipe object is limited to the current object owner, LocalSystem,
+-- and Administrators instead of inheriting a broad process default DACL.
+restrictiveNamedPipeSecurityDescriptor :: String
+restrictiveNamedPipeSecurityDescriptor = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)"
+
+freeLocalSecurityDescriptor :: Ptr () -> IO ()
+freeLocalSecurityDescriptor securityDescriptorPtr = do
+  _ <- c_LocalFree securityDescriptorPtr
+  pure ()
+
+sddlRevision1 :: Word32
+sddlRevision1 = 1
+
+securityAttributesLengthOffset :: Int
+securityAttributesLengthOffset = 0
+
+securityAttributesDescriptorOffset :: Int
+securityAttributesDescriptorOffset
+  | sizeOf (undefined :: Ptr ()) == 8 = 8
+  | otherwise = 4
+
+securityAttributesInheritOffset :: Int
+securityAttributesInheritOffset = securityAttributesDescriptorOffset + sizeOf (undefined :: Ptr ())
+
+securityAttributesSize :: Int
+securityAttributesSize
+  | sizeOf (undefined :: Ptr ()) == 8 = 24
+  | otherwise = 12
 
 openNamedPipeServer :: TransportConfig -> Text -> IO (Either TransportError TransportServer)
 openNamedPipeServer cfg pluginName = catchSync go handler
@@ -527,9 +655,13 @@ openNamedPipeServer cfg pluginName = catchSync go handler
                     { teKind = TransportEndpointNamedPipe
                     , teAddress = encodeNamedPipePair hostReadPipeName hostWritePipeName
                     }
-                , tsAccept = acceptNamedPipeTransportPair cfg pluginName
+                , tsAccept = acceptNamedPipeTransportPair cfg pluginName transportPeerPolicyAny
                     readOwned readPipeH hostReadPipeName
                     writeOwned writePipeH hostWritePipeName
+                , tsAcceptWithPeerPolicy = \peerPolicy ->
+                    acceptNamedPipeTransportPair cfg pluginName peerPolicy
+                      readOwned readPipeH hostReadPipeName
+                      writeOwned writePipeH hostWritePipeName
                 , tsClose = do
                     closeOwnedNamedPipe readOwned readPipeH
                     closeOwnedNamedPipe writeOwned writePipeH
@@ -539,22 +671,27 @@ openNamedPipeServer cfg pluginName = catchSync go handler
 
 createNamedPipeEndpoint :: FilePath -> IO (Either TransportError HANDLE)
 createNamedPipeEndpoint pipeName = do
-  pipeH <- withCString pipeName $ \namePtr ->
-    c_CreateNamedPipe
-      namePtr
-      pipeAccessDuplex
-      pipeByteModeNonblocking
-      1       -- one client per host-created endpoint
-      65536   -- output buffer size
-      65536   -- input buffer size
-      0       -- default timeout
-      nullPtr -- default security attributes
-  if pipeH == invalidHandleValue
-    then do
-      err <- c_GetLastError
-      pure (Left (TransportConnectionFailed
-        ("CreateNamedPipe failed for " <> Text.pack pipeName <> " (GetLastError=" <> Text.pack (show err) <> ")")))
-    else pure (Right pipeH)
+  securityResult <- withRestrictivePipeSecurityAttributes $ \securityAttributesPtr ->
+    withCString pipeName $ \namePtr ->
+      c_CreateNamedPipe
+        namePtr
+        pipeAccessDuplex
+        pipeByteModeNonblocking
+        1       -- one client per host-created endpoint
+        65536   -- output buffer size
+        65536   -- input buffer size
+        0       -- default timeout
+        securityAttributesPtr
+  case securityResult of
+    Left err -> pure (Left (TransportConnectionFailed
+      ("failed to build restrictive named-pipe security descriptor for "
+       <> Text.pack pipeName <> " (GetLastError=" <> Text.pack (show err) <> ")")))
+    Right pipeH
+      | pipeH == invalidHandleValue -> do
+          err <- c_GetLastError
+          pure (Left (TransportConnectionFailed
+            ("CreateNamedPipe failed for " <> Text.pack pipeName <> " (GetLastError=" <> Text.pack (show err) <> ")")))
+      | otherwise -> pure (Right pipeH)
 
 encodeNamedPipePair :: FilePath -> FilePath -> FilePath
 encodeNamedPipePair hostReadPipeName hostWritePipeName = hostReadPipeName <> "|" <> hostWritePipeName
@@ -601,19 +738,25 @@ allocateNamedPipeName pluginName = do
 acceptNamedPipeTransport
   :: TransportConfig
   -> Text
+  -> TransportPeerPolicy
   -> IORef Bool
   -> HANDLE
   -> FilePath
   -> IO (Either TransportError Transport)
-acceptNamedPipeTransport cfg pluginName owned pipeH pipeName = do
+acceptNamedPipeTransport cfg pluginName peerPolicy owned pipeH pipeName = do
   connectResult <- waitForNamedPipeConnection cfg owned pipeH pipeName
   case connectResult of
     Left err -> pure (Left err)
-    Right () -> convertNamedPipeHandle owned pipeH pluginName pipeName
+    Right () -> do
+      peerResult <- validateSingleNamedPipePeer pluginName peerPolicy pipeH pipeName
+      case peerResult of
+        Left err -> closeOwnedNamedPipe owned pipeH >> pure (Left err)
+        Right () -> convertNamedPipeHandle owned pipeH pluginName pipeName
 
 acceptNamedPipeTransportPair
   :: TransportConfig
   -> Text
+  -> TransportPeerPolicy
   -> IORef Bool
   -> HANDLE
   -> FilePath
@@ -621,7 +764,7 @@ acceptNamedPipeTransportPair
   -> HANDLE
   -> FilePath
   -> IO (Either TransportError Transport)
-acceptNamedPipeTransportPair cfg pluginName readOwned readPipeH readPipeName writeOwned writePipeH writePipeName = do
+acceptNamedPipeTransportPair cfg pluginName peerPolicy readOwned readPipeH readPipeName writeOwned writePipeH writePipeName = do
   readConnectResult <- waitForNamedPipeConnection cfg readOwned readPipeH readPipeName
   case readConnectResult of
     Left err -> do
@@ -633,10 +776,65 @@ acceptNamedPipeTransportPair cfg pluginName readOwned readPipeH readPipeName wri
         Left err -> do
           closeOwnedNamedPipe readOwned readPipeH
           pure (Left err)
-        Right () -> convertNamedPipeHandlePair
-          readOwned readPipeH readPipeName
-          writeOwned writePipeH writePipeName
-          pluginName
+        Right () -> do
+          peerResult <- validateNamedPipePeerPair pluginName peerPolicy readPipeH readPipeName writePipeH writePipeName
+          case peerResult of
+            Left err -> do
+              closeOwnedNamedPipe readOwned readPipeH
+              closeOwnedNamedPipe writeOwned writePipeH
+              pure (Left err)
+            Right () -> convertNamedPipeHandlePair
+              readOwned readPipeH readPipeName
+              writeOwned writePipeH writePipeName
+              pluginName
+
+validateSingleNamedPipePeer :: Text -> TransportPeerPolicy -> HANDLE -> FilePath -> IO (Either TransportError ())
+validateSingleNamedPipePeer pluginName peerPolicy pipeH pipeName = do
+  peerResult <- namedPipePeerIdentity pipeH pipeName
+  pure (peerResult >>= validateTransportPeerIdentity pluginName peerPolicy)
+
+validateNamedPipePeerPair
+  :: Text
+  -> TransportPeerPolicy
+  -> HANDLE
+  -> FilePath
+  -> HANDLE
+  -> FilePath
+  -> IO (Either TransportError ())
+validateNamedPipePeerPair pluginName peerPolicy readPipeH readPipeName writePipeH writePipeName = do
+  readPeerResult <- namedPipePeerIdentity readPipeH readPipeName
+  case readPeerResult of
+    Left err -> pure (Left err)
+    Right readPeer -> do
+      writePeerResult <- namedPipePeerIdentity writePipeH writePipeName
+      case writePeerResult of
+        Left err -> pure (Left err)
+        Right writePeer
+          | tpiProcessId readPeer /= tpiProcessId writePeer ->
+              pure (Left (TransportConnectionFailed
+                ("named-pipe peer identity mismatch between pipe handles for "
+                 <> pluginName <> ": " <> Text.pack readPipeName <> " has pid "
+                 <> maybe "unknown" (Text.pack . show) (tpiProcessId readPeer)
+                 <> ", " <> Text.pack writePipeName <> " has pid "
+                 <> maybe "unknown" (Text.pack . show) (tpiProcessId writePeer))))
+          | otherwise -> pure (validateTransportPeerIdentity pluginName peerPolicy readPeer)
+
+namedPipePeerIdentity :: HANDLE -> FilePath -> IO (Either TransportError TransportPeerIdentity)
+namedPipePeerIdentity pipeH pipeName =
+  with (0 :: Word32) $ \pidPtr -> do
+    ok <- c_GetNamedPipeClientProcessId pipeH pidPtr
+    if ok == 0
+      then do
+        err <- c_GetLastError
+        pure (Left (TransportConnectionFailed
+          ("GetNamedPipeClientProcessId failed for " <> Text.pack pipeName
+           <> " (GetLastError=" <> Text.pack (show err) <> ")")))
+      else do
+        pid <- peek pidPtr
+        pure (Right TransportPeerIdentity
+          { tpiProcessId = Just (fromIntegral pid)
+          , tpiUserId = Nothing
+          })
 
 waitForNamedPipeConnection
   :: TransportConfig
@@ -892,6 +1090,16 @@ openExistingNamedPipe pipeName = do
 #endif
 
 #if !defined(mingw32_HOST_OS)
+#if defined(linux_HOST_OS)
+foreign import ccall unsafe "sys/socket.h getsockopt"
+  c_getsockopt :: CInt -> CInt -> CInt -> Ptr () -> Ptr CUInt -> IO CInt
+#endif
+
+#if defined(darwin_HOST_OS)
+foreign import ccall unsafe "unistd.h getpeereid"
+  c_getpeereid :: CInt -> Ptr CUInt -> Ptr CUInt -> IO CInt
+#endif
+
 openUnixSocketServer :: TransportConfig -> Text -> IO (Either TransportError TransportServer)
 openUnixSocketServer cfg pluginName = catchSync go handler
   where
@@ -921,7 +1129,9 @@ openUnixSocketServer cfg pluginName = catchSync go handler
                   { teKind = TransportEndpointUnixSocket
                   , teAddress = socketPath
                   }
-              , tsAccept = acceptUnixSocketTransport cfg pluginName sock socketPath
+              , tsAccept = acceptUnixSocketTransport cfg pluginName transportPeerPolicyAny sock socketPath
+              , tsAcceptWithPeerPolicy = \peerPolicy ->
+                  acceptUnixSocketTransport cfg pluginName peerPolicy sock socketPath
               , tsClose = cleanup
               }))
     handler (err :: SomeException) =
@@ -941,10 +1151,11 @@ allocateUnixSocketPath cfg _pluginName = do
 acceptUnixSocketTransport
   :: TransportConfig
   -> Text
+  -> TransportPeerPolicy
   -> Socket.Socket
   -> FilePath
   -> IO (Either TransportError Transport)
-acceptUnixSocketTransport cfg pluginName sock socketPath = do
+acceptUnixSocketTransport cfg pluginName peerPolicy sock socketPath = do
   let cleanup = do
         safeCloseSocket sock
         removeUnixSocketPath socketPath
@@ -962,15 +1173,83 @@ acceptUnixSocketTransport cfg pluginName sock socketPath = do
       pure (Left (TransportConnectionFailed
         ("timed out waiting for plugin connection on " <> Text.pack socketPath)))
     Right (Just (conn, _addr)) -> do
-      safeCloseSocket sock
-      removeUnixSocketPath socketPath
-      handleResult <- trySync ((Socket.socketToHandle conn ReadWriteMode >>= \h -> mkTransport pluginName h h True) `onException` safeCloseSocket conn)
-        :: IO (Either SomeException Transport)
-      case handleResult of
+      peerResult <- unixSocketPeerIdentity conn
+      case peerResult >>= validateTransportPeerIdentity pluginName peerPolicy of
         Left err -> do
           safeCloseSocket conn
-          pure (Left (TransportConnectionFailed (Text.pack (show err))))
-        Right transport -> pure (Right transport)
+          cleanup
+          pure (Left err)
+        Right () -> do
+          safeCloseSocket sock
+          removeUnixSocketPath socketPath
+          handleResult <- trySync ((Socket.socketToHandle conn ReadWriteMode >>= \h -> mkTransport pluginName h h True) `onException` safeCloseSocket conn)
+            :: IO (Either SomeException Transport)
+          case handleResult of
+            Left err -> do
+              safeCloseSocket conn
+              pure (Left (TransportConnectionFailed (Text.pack (show err))))
+            Right transport -> pure (Right transport)
+
+unixSocketPeerIdentity :: Socket.Socket -> IO (Either TransportError TransportPeerIdentity)
+unixSocketPeerIdentity sock =
+#if defined(linux_HOST_OS)
+  Socket.withFdSocket sock linuxSocketPeerIdentity
+#elif defined(darwin_HOST_OS)
+  Socket.withFdSocket sock darwinSocketPeerIdentity
+#else
+  pure (Right TransportPeerIdentity
+    { tpiProcessId = Nothing
+    , tpiUserId = Nothing
+    })
+#endif
+
+#if defined(linux_HOST_OS)
+linuxSocketPeerIdentity :: CInt -> IO (Either TransportError TransportPeerIdentity)
+linuxSocketPeerIdentity fd =
+  allocaBytes linuxUCredSize $ \(credPtr :: Ptr ()) ->
+    with (fromIntegral linuxUCredSize :: CUInt) $ \lenPtr -> do
+      ok <- c_getsockopt fd solSocket soPeerCred credPtr lenPtr
+      if ok /= 0
+        then pure (Left (TransportConnectionFailed "getsockopt(SO_PEERCRED) failed for Unix socket peer"))
+        else do
+          pid <- peekByteOff credPtr linuxUCredPidOffset :: IO CInt
+          uid <- peekByteOff credPtr linuxUCredUidOffset :: IO CUInt
+          pure (Right TransportPeerIdentity
+            { tpiProcessId = if pid > 0 then Just (fromIntegral pid) else Nothing
+            , tpiUserId = Just (fromIntegral uid)
+            })
+
+solSocket :: CInt
+solSocket = 1
+
+soPeerCred :: CInt
+soPeerCred = 17
+
+linuxUCredPidOffset :: Int
+linuxUCredPidOffset = 0
+
+linuxUCredUidOffset :: Int
+linuxUCredUidOffset = 4
+
+linuxUCredSize :: Int
+linuxUCredSize = 12
+#endif
+
+#if defined(darwin_HOST_OS)
+darwinSocketPeerIdentity :: CInt -> IO (Either TransportError TransportPeerIdentity)
+darwinSocketPeerIdentity fd =
+  with (0 :: CUInt) $ \uidPtr ->
+    with (0 :: CUInt) $ \gidPtr -> do
+      ok <- c_getpeereid fd uidPtr gidPtr
+      if ok /= 0
+        then pure (Left (TransportConnectionFailed "getpeereid failed for Unix socket peer"))
+        else do
+          uid <- peek uidPtr
+          pure (Right TransportPeerIdentity
+            { tpiProcessId = Nothing
+            , tpiUserId = Just (fromIntegral uid)
+            })
+#endif
 
 connectUnixSocketEndpoint :: Text -> FilePath -> IO (Either TransportError Transport)
 connectUnixSocketEndpoint name socketPath = do

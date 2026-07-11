@@ -69,6 +69,7 @@ import Topo.Plugin.RPC.Transport
   , TransportConfig(..)
   , TransportEndpoint(..)
   , TransportError(..)
+  , TransportPeerPolicy(..)
   , TransportServer(..)
   , closeTransport
   , connectPluginEndpoint
@@ -2482,6 +2483,9 @@ spec = describe "Plugin.RPC" $ do
           Right transport -> closeTransport transport >> expectationFailure "accept unexpectedly succeeded"
         doesPathExist socketPath `shouldReturn` False
 
+    it "rejects Unix socket clients that do not match the peer policy" $
+      onUnix $ expectPeerPolicyRejects "socket-peer-policy-reject"
+
     it "allocates distinct Unix socket endpoints for concurrent plugin startup" $
       onUnix $ withTransportServer "same-plugin" $ \serverA ->
         withTransportServer "same-plugin" $ \serverB -> do
@@ -2521,6 +2525,9 @@ spec = describe "Plugin.RPC" $ do
         shouldReturnWithin "host receive pipe pong" (recvMessage host) (Right "pong")
         closeTransport host
         takeClientResult done `shouldReturn` Right ()
+
+    it "rejects Windows named-pipe clients that do not match the peer policy" $
+      onWindows $ expectPeerPolicyRejects "pipe-peer-policy-reject"
 
     it "connects from TOPO_PLUGIN_* endpoint environment to a Windows named pipe" $
       onWindows $ withTransportServer "pipe-env" $ \server -> do
@@ -2813,6 +2820,36 @@ requireAccept server = do
   case acceptResult of
     Left err -> expectationFailure ("accept failed: " <> show err) >> fail "accept"
     Right transport -> pure transport
+
+expectPeerPolicyRejects :: Text -> IO ()
+expectPeerPolicyRejects name = withTransportServer name $ \server -> do
+  done <- newEmptyMVar
+  _ <- forkIO (clientExpectEndpointClose (name <> "-client") (tsEndpoint server) done)
+  acceptResult <- tsAcceptWithPeerPolicy server TransportPeerPolicy
+    { tppExpectedProcessId = Just 0
+    , tppExpectedUserId = Nothing
+    }
+  case acceptResult of
+    Left (TransportConnectionFailed msg) -> msg `shouldSatisfy` Text.isInfixOf "peer identity"
+    Left err -> expectationFailure ("expected peer identity rejection, got " <> show err)
+    Right transport -> closeTransport transport >> expectationFailure "accept unexpectedly passed peer policy"
+  takeClientResult done `shouldReturn` Right ()
+
+clientExpectEndpointClose :: Text -> TransportEndpoint -> MVarResult -> IO ()
+clientExpectEndpointClose name endpoint done = do
+  result <- try $ do
+    connection <- connectPluginEndpoint name endpoint
+    case connection of
+      Left _ -> pure (Right ())
+      Right transport -> do
+        received <- recvMessage transport
+        closeTransport transport
+        pure $ case received of
+          Left _ -> Right ()
+          Right payload -> Left ("unexpected payload before peer-policy rejection: " <> show payload)
+  case result of
+    Left (err :: SomeException) -> putMVar done (Left (show err))
+    Right outcome -> putMVar done outcome
 
 clientEcho :: Text -> TransportEndpoint -> BS.ByteString -> BS.ByteString -> MVarResult -> IO ()
 clientEcho name endpoint expected reply done = do

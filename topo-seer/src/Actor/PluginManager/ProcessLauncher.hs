@@ -34,12 +34,8 @@ import qualified Data.ByteString as BS
 import Crypto.Random (getRandomBytes)
 import Data.Char (toLower)
 import Data.Text (Text)
-#if defined(mingw32_HOST_OS)
-import Data.Word (Word8, Word32)
-#else
-import Data.Word (Word8)
-#endif
-import Foreign.C.Types (CInt(..))
+import Data.Word (Word8, Word32, Word64)
+import Foreign.C.Types (CInt(..), CUInt(..))
 #if defined(mingw32_HOST_OS)
 import Foreign.Marshal.Alloc (allocaBytes)
 import Foreign.Marshal.Utils (fillBytes)
@@ -73,6 +69,7 @@ import Topo.Plugin.RPC.Transport
   ( Transport
   , TransportConfig(..)
   , TransportEndpoint(..)
+  , TransportPeerPolicy(..)
   , TransportServer(..)
   , defaultTransportConfig
   , endpointKindText
@@ -87,6 +84,11 @@ import Topo.Plugin.RPC.Transport
   , pluginStdioCompatibilityEnv
   , pluginWorldIdEnv
   )
+
+#if !defined(mingw32_HOST_OS) && !defined(linux_HOST_OS)
+foreign import ccall unsafe "unistd.h geteuid"
+  c_geteuid :: IO CUInt
+#endif
 
 resolvePluginExecutable :: FilePath -> Text -> IO (Maybe FilePath)
 resolvePluginExecutable pluginDir pluginName =
@@ -184,19 +186,25 @@ launchPluginTransportViaEndpoint executablePath workingDir pluginName startupTim
                   else do
                     _ <- safeTerminateProcess processHandle
                     pure ()
-          acceptResult <- restore (tsAccept server) `onException` cleanupLaunched
-          case acceptResult of
-            Left transportErr -> do
-              safeCloseServer server
-              terminated <- safeTerminateProcess processHandle
-              let mProcessHandle = if terminated then Nothing else Just processHandle
-              pure (Left (Text.pack (show transportErr), mProcessHandle))
-            Right transport -> pure (Right LaunchPluginResult
-              { lprTransport = transport
-              , lprProcessHandle = processHandle
-              , lprSessionId = leSessionId launchEnvironment
-              , lprAuthToken = leAuthToken launchEnvironment
-              })
+              failLaunched message = do
+                safeCloseServer server
+                terminated <- safeTerminateProcess processHandle
+                let mProcessHandle = if terminated then Nothing else Just processHandle
+                pure (Left (message, mProcessHandle))
+          peerPolicyResult <- expectedPeerPolicyForLaunchedProcess processHandle
+          case peerPolicyResult of
+            Left message -> failLaunched message
+            Right peerPolicy -> do
+              acceptResult <- restore (tsAcceptWithPeerPolicy server peerPolicy) `onException` cleanupLaunched
+              case acceptResult of
+                Left transportErr ->
+                  failLaunched (Text.pack (show transportErr))
+                Right transport -> pure (Right LaunchPluginResult
+                  { lprTransport = transport
+                  , lprProcessHandle = processHandle
+                  , lprSessionId = leSessionId launchEnvironment
+                  , lprAuthToken = leAuthToken launchEnvironment
+                  })
 
 data LaunchEnvironment = LaunchEnvironment
   { leVariables :: ![(String, String)]
@@ -251,6 +259,34 @@ byteToHex :: Word8 -> String
 byteToHex byte = case showHex byte "" of
   [digit] -> ['0', digit]
   digits  -> digits
+
+expectedPeerPolicyForLaunchedProcess :: ProcessHandle -> IO (Either Text TransportPeerPolicy)
+#if defined(mingw32_HOST_OS) || defined(linux_HOST_OS)
+expectedPeerPolicyForLaunchedProcess processHandle = do
+  mPid <- processHandlePidWord64 processHandle
+  pure $ case mPid of
+    Nothing -> Left "could not determine launched plugin process id for endpoint peer check"
+    Just pid -> Right TransportPeerPolicy
+      { tppExpectedProcessId = Just pid
+      , tppExpectedUserId = Nothing
+      }
+#else
+expectedPeerPolicyForLaunchedProcess _ = do
+  -- Portable Unix APIs expose the peer uid more consistently than the peer pid.
+  -- Exact pid remains enforced on Linux; other Unix hosts require same-owner
+  -- endpoints and same-uid peers so wrapper descendants cannot be confused with
+  -- arbitrary local users.
+  uid <- c_geteuid
+  pure (Right TransportPeerPolicy
+    { tppExpectedProcessId = Nothing
+    , tppExpectedUserId = Just (fromIntegral uid)
+    })
+#endif
+
+processHandlePidWord64 :: ProcessHandle -> IO (Maybe Word64)
+processHandlePidWord64 processHandle = do
+  mPid <- getPid processHandle
+  pure (mPid >>= readMaybe . show)
 
 unsavedWorldId :: String
 unsavedWorldId = "unsaved"

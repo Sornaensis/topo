@@ -166,6 +166,9 @@ library
   if os(linux) || os(darwin)
     build-depends:
         unix
+  if os(windows)
+    extra-libraries:
+        advapi32
 
 test-suite topo-test
   type: exitcode-stdio-1.0

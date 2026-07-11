@@ -131,6 +131,9 @@ library:
     - condition: os(linux) || os(darwin)
       dependencies:
         - unix
+    - condition: os(windows)
+      extra-libraries:
+        - advapi32
 
 tests:
   topo-test:
