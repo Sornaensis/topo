@@ -3549,7 +3549,7 @@ unsupportedMutationPluginName :: String
 unsupportedMutationPluginName = "copilot-test-plugin-unsupported-mutation"
 
 unsupportedMutationManifestJSON :: BS.ByteString
-unsupportedMutationManifestJSON = dataResourceManifestFor unsupportedMutationPluginName
+unsupportedMutationManifestJSON = readWriteDataResourceManifestFor unsupportedMutationPluginName
   [ "    \"restart_mode\": \"never\","
   , "    \"startup_timeout_ms\": 1000,"
   , "    \"request_timeout_ms\": 300,"
@@ -4136,14 +4136,20 @@ simulationManifestWithStartPolicyFor name policyLines = BSC.pack $
     <> "\n}\n"
 
 dataResourceManifestFor :: String -> [String] -> BS.ByteString
-dataResourceManifestFor name policyLines = BSC.pack $
+dataResourceManifestFor name = dataResourceManifestWithCapabilitiesFor name "[\"dataRead\"]"
+
+readWriteDataResourceManifestFor :: String -> [String] -> BS.ByteString
+readWriteDataResourceManifestFor name = dataResourceManifestWithCapabilitiesFor name "[\"dataRead\", \"dataWrite\"]"
+
+dataResourceManifestWithCapabilitiesFor :: String -> String -> [String] -> BS.ByteString
+dataResourceManifestWithCapabilitiesFor name capabilities policyLines = BSC.pack $
   "{\n"
     <> "  \"manifestVersion\": 3,\n"
     <> "  \"name\": \"" <> name <> "\",\n"
     <> "  \"version\": \"0.1.0\",\n"
     <> runtimeProtocolLine
     <> "  \"generator\": { \"insertAfter\": \"erosion\" },\n"
-    <> "  \"capabilities\": [\"dataRead\"],\n"
+    <> "  \"capabilities\": " <> capabilities <> ",\n"
     <> "  \"dataResources\": [\n"
     <> "    {\n"
     <> "      \"name\": \"records\",\n"

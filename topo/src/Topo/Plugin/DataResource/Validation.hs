@@ -37,6 +37,7 @@ import Topo.Plugin.DataResource
   , DataFieldDef(..)
   , DataFieldType(..)
   , DataOperations(..)
+  , DataPagination(..)
   , DataResourceSchema(..)
   , dataFieldTypeName
   )
@@ -234,26 +235,45 @@ queryResourceSupportFailure schema qr
       Just (DataResourceFailure ResourceNotFound ("unknown resource: " <> qrResource qr))
   | hasPageRequest qr && not (doPage ops) =
       Just (DataResourceFailure QueryUnsupported ("resource '" <> name <> "' does not support paged queries"))
-  | otherwise = case qrQuery qr of
-      QueryAll
-        | doList ops -> Nothing
-        | otherwise -> unsupported OperationNotSupported "list"
-      QueryByKey key
-        | not (doGet ops) -> unsupported OperationNotSupported "get"
-        | otherwise -> validateKeyValue schema key
-      QueryByHex _ _
-        | drsHexBound schema && doQueryByHex ops -> Nothing
-        | otherwise -> unsupported QueryUnsupported "hex"
-      QueryByField field value
-        | not (doQueryByField ops) -> unsupported QueryUnsupported "field"
-        | otherwise -> case fieldDefinition schema field of
-            Nothing -> Just (DataResourceFailure SchemaValidationFailed ("unknown field '" <> field <> "'"))
-            Just fieldDef -> validationFailure (validateFieldValue [field] (dfType fieldDef) value)
+  | otherwise = firstFailure
+      [ queryPaginationFailure schema qr
+      , case qrQuery qr of
+          QueryAll
+            | doList ops -> Nothing
+            | otherwise -> unsupported OperationNotSupported "list"
+          QueryByKey key
+            | not (doGet ops) -> unsupported OperationNotSupported "get"
+            | otherwise -> validateKeyValue schema key
+          QueryByHex _ _
+            | drsHexBound schema && doQueryByHex ops -> Nothing
+            | otherwise -> unsupported QueryUnsupported "hex"
+          QueryByField field value
+            | not (doQueryByField ops) -> unsupported QueryUnsupported "field"
+            | otherwise -> case fieldDefinition schema field of
+                Nothing -> Just (DataResourceFailure SchemaValidationFailed ("unknown field '" <> field <> "'"))
+                Just fieldDef -> validationFailure (validateFieldValue [field] (dfType fieldDef) value)
+      ]
   where
     ops = drsOperations schema
     name = drsName schema
     hasPageRequest request = qrPageSize request /= Nothing || qrPageOffset request /= Nothing
     unsupported code op = Just (DataResourceFailure code ("resource '" <> name <> "' does not support " <> op <> " queries"))
+
+queryPaginationFailure :: DataResourceSchema -> QueryResource -> Maybe DataResourceFailure
+queryPaginationFailure schema qr = firstFailure
+  [ case qrPageSize qr of
+      Just pageSize
+        | pageSize <= 0 -> Just (DataResourceFailure SchemaValidationFailed "page_size must be greater than 0")
+        | pageSize > dpMaxPageSize pagination -> Just (DataResourceFailure SchemaValidationFailed
+            ("page_size exceeds max_page_size " <> Text.pack (show (dpMaxPageSize pagination))))
+      _ -> Nothing
+  , case qrPageOffset qr of
+      Just pageOffset
+        | pageOffset < 0 -> Just (DataResourceFailure SchemaValidationFailed "page_offset must be greater than or equal to 0")
+      _ -> Nothing
+  ]
+  where
+    pagination = drsPagination schema
 
 mutateResourceSupportFailure :: DataResourceSchema -> MutateResource -> Maybe DataResourceFailure
 mutateResourceSupportFailure schema mr

@@ -12,6 +12,7 @@ import Actor.PluginManager
   , PluginStatus(..)
   , getPluginDataResources
   , pluginLifecycleSnapshot
+  , queryPluginResource
   )
 import Actor.UiActions (ActorHandles(..))
 import Actor.UI.Setters
@@ -107,6 +108,44 @@ spec = describe "DataResource CRUD service/API/UI e2e" $ do
     result <- timeout 30000000 (withCrudFixtureApp exerciseCrudFixture)
     case result of
       Nothing -> expectationFailure "CRUD e2e fixture test timed out"
+      Just () -> pure ()
+
+  it "denies direct service/API data calls without manifest capabilities" $ do
+    readResult <- timeout 30000000 $ withCrudFixturePlugin readlessCrudManifest [crudSchema] $ \app -> do
+      denied <- serviceResult app "data_list_records" $ object
+        [ "plugin" .= crudPluginName
+        , "resource" .= crudResourceName
+        ]
+      expectServiceErrorCode "permission_denied" denied
+    case readResult of
+      Nothing -> expectationFailure "read capability denial test timed out"
+      Just () -> pure ()
+
+    writeResult <- timeout 30000000 $ withCrudFixturePlugin writelessCrudManifest [crudSchema] $ \app -> do
+      denied <- request app (mkRequest "POST" ["data", "records"])
+        { hreqBody = Just $ object
+            [ "plugin" .= crudPluginName
+            , "resource" .= crudResourceName
+            , "fields" .= completeRecordObject "blocked" "Blocked" 2 3 "built" "blocked-etag"
+            ]
+        }
+      hresStatusCode denied `shouldBe` 403
+      lookupNestedText ["error", "code"] (hresBody denied) `shouldBe` Just "permission_denied"
+    case writeResult of
+      Nothing -> expectationFailure "write capability denial test timed out"
+      Just () -> pure ()
+
+  it "validates pagination at the plugin-manager router" $ do
+    result <- timeout 30000000 $ withCrudFixturePlugin crudManifest [crudSchema] $ \app -> do
+      let pluginHandle = ahPluginManagerHandle (ccActorHandles (headlessCommandContext (cfaHeadlessApp app)))
+          invalidPageSize = QueryResource crudResourceName QueryAll (Just 0) (Just 0)
+          invalidPageOffset = QueryResource crudResourceName QueryAll (Just 1) (Just (-1))
+          excessivePageSize = QueryResource crudResourceName QueryAll (Just (pageSize + 1)) (Just 0)
+      expectDataResourceErrorCode "schema_validation_failed" =<< queryPluginResource pluginHandle crudPluginName invalidPageSize
+      expectDataResourceErrorCode "schema_validation_failed" =<< queryPluginResource pluginHandle crudPluginName invalidPageOffset
+      expectDataResourceErrorCode "schema_validation_failed" =<< queryPluginResource pluginHandle crudPluginName excessivePageSize
+    case result of
+      Nothing -> expectationFailure "router pagination validation test timed out"
       Just () -> pure ()
 
 data CrudFixtureApp = CrudFixtureApp
@@ -256,9 +295,9 @@ exerciseCrudFixture app = do
 
 withCrudFixtureApp :: (CrudFixtureApp -> IO a) -> IO a
 withCrudFixtureApp action =
-  withHeadlessApp defaultHeadlessConfig $ \headlessApp -> do
-    installCrudFixturePlugin headlessApp
-    let handles = ccActorHandles (headlessCommandContext headlessApp)
+  withCrudFixturePlugin crudManifest [crudSchema] $ \app -> do
+    let headlessApp = cfaHeadlessApp app
+        handles = ccActorHandles (headlessCommandContext headlessApp)
         pluginHandle = ahPluginManagerHandle handles
         uiHandle = ahUiHandle handles
     resources <- getPluginDataResources pluginHandle
@@ -266,17 +305,23 @@ withCrudFixtureApp action =
     setUiDataResources uiHandle resources
     setUiShowConfig uiHandle True
     setUiConfigTab uiHandle ConfigData
-    waitForWidgets (CrudFixtureApp headlessApp) ("WidgetDataPluginSelect:" <> crudPluginName)
+    waitForWidgets app ("WidgetDataPluginSelect:" <> crudPluginName)
+    action app
+
+withCrudFixturePlugin :: RPCManifest -> [DataResourceSchema] -> (CrudFixtureApp -> IO a) -> IO a
+withCrudFixturePlugin manifest negotiatedResources action =
+  withHeadlessApp defaultHeadlessConfig $ \headlessApp -> do
+    installCrudFixturePlugin headlessApp manifest negotiatedResources
     action (CrudFixtureApp headlessApp)
 
-installCrudFixturePlugin :: HeadlessApp -> IO ()
-installCrudFixturePlugin headlessApp = do
+installCrudFixturePlugin :: HeadlessApp -> RPCManifest -> [DataResourceSchema] -> IO ()
+installCrudFixturePlugin headlessApp manifest negotiatedResources = do
   recordsRef <- newIORef crudInitialRecords
-  (hostTransport, pluginTransport) <- createTransportPair crudPluginName
+  (hostTransport, pluginTransport) <- createTransportPair (rmName manifest)
   _ <- forkIO (crudFixtureRpcLoop recordsRef pluginTransport)
   now <- getCurrentTime
-  let conn = (newRPCConnection crudManifest hostTransport Map.empty)
-        { rpcResources = [crudSchema]
+  let conn = (newRPCConnection manifest hostTransport Map.empty)
+        { rpcResources = negotiatedResources
         , rpcProtocolVersion = currentProtocolVersion
         }
       lifecycle = pluginLifecycleSnapshot
@@ -288,10 +333,10 @@ installCrudFixturePlugin headlessApp = do
         Nothing
         Nothing
         (Just currentProtocolVersion)
-        [crudResourceName]
+        (map drsName negotiatedResources)
       loaded = LoadedPlugin
-        { lpName = crudPluginName
-        , lpManifest = crudManifest
+        { lpName = rmName manifest
+        , lpManifest = manifest
         , lpParams = Map.empty
         , lpStatus = PluginConnected
         , lpLifecycle = lifecycle
@@ -447,6 +492,16 @@ serviceOk app method params = do
 serviceResult :: CrudFixtureApp -> Text -> Value -> IO (Either ServiceError ServiceResponse)
 serviceResult app method params =
   runServiceOperation headlessHttpAppService (crudServiceContext app) method params
+
+expectServiceErrorCode :: Text -> Either ServiceError ServiceResponse -> Expectation
+expectServiceErrorCode expected result = case result of
+  Left err -> serviceErrorCode err `shouldBe` expected
+  Right _ -> expectationFailure ("expected service error code " <> Text.unpack expected)
+
+expectDataResourceErrorCode :: Text -> Either Text a -> Expectation
+expectDataResourceErrorCode expected result = case result of
+  Left err -> err `shouldSatisfy` Text.isInfixOf expected
+  Right _ -> expectationFailure ("expected data-resource error code " <> Text.unpack expected)
 
 crudServiceContext :: CrudFixtureApp -> ServiceContext
 crudServiceContext app = headlessServiceContext (cfaHeadlessApp app)
@@ -611,6 +666,17 @@ crudManifest = RPCManifest
   , rmExternalDataSources = []
   , rmExternalDataSourceRefs = []
   , rmStartPolicy = defaultRPCStartPolicy
+  }
+
+readlessCrudManifest :: RPCManifest
+readlessCrudManifest = crudManifest
+  { rmCapabilities = []
+  , rmDataResources = []
+  }
+
+writelessCrudManifest :: RPCManifest
+writelessCrudManifest = crudManifest
+  { rmCapabilities = [CapDataRead]
   }
 
 crudSchema :: DataResourceSchema
