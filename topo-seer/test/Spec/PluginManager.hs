@@ -4482,6 +4482,7 @@ externalProviderManifestWithStatusesAndGrantResourcesFor name sourceStatusJSON g
     <> "  \"version\": \"0.1.0\",\n"
     <> "  \"runtime\": { \"protocol\": { \"min\": " <> show currentProtocolVersion <> ", \"max\": " <> show currentProtocolVersion <> " } },\n"
     <> "  \"capabilities\": [\"dataRead\"],\n"
+    <> "  \"dataDirectory\": \"external-provider-data\",\n"
     <> "  \"dataResources\": [\n"
     <> "    {\n"
     <> "      \"name\": \"shared_sources\",\n"
@@ -4537,6 +4538,7 @@ externalConsumerManifestWithRequiredFor name providerName required = BSC.pack $
     <> "  \"version\": \"0.1.0\",\n"
     <> "  \"runtime\": { \"protocol\": { \"min\": " <> show currentProtocolVersion <> ", \"max\": " <> show currentProtocolVersion <> " } },\n"
     <> "  \"capabilities\": [\"dataRead\"],\n"
+    <> "  \"dataDirectory\": \"external-consumer-data\",\n"
     <> externalConsumerDataResourcesJSON
     <> "  \"externalDataSourceRefs\": [\n"
     <> externalConsumerRefJSON "terrain.catalog" providerName "terrain.catalog" required (externalUnknownStatusJSON providerName) "fixture://consumer/terrain.catalog"
@@ -4552,6 +4554,7 @@ externalMixedConsumerManifestFor name providerName = BSC.pack $
     <> "  \"version\": \"0.1.0\",\n"
     <> "  \"runtime\": { \"protocol\": { \"min\": " <> show currentProtocolVersion <> ", \"max\": " <> show currentProtocolVersion <> " } },\n"
     <> "  \"capabilities\": [\"dataRead\"],\n"
+    <> "  \"dataDirectory\": \"external-consumer-data\",\n"
     <> externalConsumerDataResourcesJSON
     <> "  \"externalDataSourceRefs\": [\n"
     <> externalConsumerRefJSON "terrain.catalog" providerName "terrain.catalog" True (externalUnknownStatusJSON providerName) "fixture://consumer/terrain.catalog"

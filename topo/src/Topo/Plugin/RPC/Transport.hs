@@ -269,6 +269,9 @@ pluginWorldIdEnv :: String
 pluginWorldIdEnv = "TOPO_PLUGIN_WORLD_ID"
 
 -- | Environment variable containing the plugin's writable data root.
+--
+-- The host creates this directory for convenience and save bundling metadata,
+-- but it is not a sandbox or filesystem confinement boundary.
 pluginDataRootEnv :: String
 pluginDataRootEnv = "TOPO_PLUGIN_DATA_ROOT"
 

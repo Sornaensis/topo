@@ -217,6 +217,8 @@ endpointEnvironment endpoint pluginName workingDir = do
   inherited <- getEnvironment
   launchSession <- Text.pack <$> freshLaunchSecret "session"
   authToken <- Text.pack <$> freshLaunchSecret "auth"
+  -- The data root is host-created and later used as the save-bundling source,
+  -- but it is advisory process metadata rather than filesystem confinement.
   let dataRoot = workingDir </> "data"
       launchVars =
         [ (pluginIdEnv, Text.unpack pluginName)

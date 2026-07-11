@@ -112,15 +112,20 @@ Both payloads reject unsupported `payload_version` values at JSON parse time.
 
 ### Handshake payloads
 
-`Handshake` carries `protocol_version`, optional `world_path`,
-`host_capabilities`, and optional `auth_challenge`. Production launches include
-`launch_auth` in `host_capabilities` and set `auth_challenge`; explicit stdio or
-in-process test sessions may omit it. `HandshakeAck` echoes `protocol_version`,
-may return a relative `data_directory`, may return `resources`
-(`DataResourceSchema` values), and must include `session_id` plus `auth_proof`
-when challenged. The proof is `handshakeAuthProof` over the launch session id,
+`Handshake` carries `protocol_version`, optional advisory `world_path`,
+`host_capabilities`, and optional `auth_challenge`. `world_path` is convenience
+metadata, not filesystem confinement. Production launches include `launch_auth`
+in `host_capabilities` and set `auth_challenge`; explicit stdio or in-process
+test sessions may omit it. `HandshakeAck` echoes `protocol_version`, may return
+a safe relative `data_directory` that matches or narrows manifest
+`dataDirectory`, may return `resources` (`DataResourceSchema` values), and must
+include `session_id` plus `auth_proof` when challenged. The host uses
+`data_directory` as an archive destination only; save bundling copies from the
+host-created `TOPO_PLUGIN_DATA_ROOT`, not from the raw handshake string. The
+proof is `handshakeAuthProof` over the launch session id,
 `TOPO_PLUGIN_AUTH_TOKEN`, and challenge; the token is not sent on the wire.
-`WorldChanged` carries a new optional `world_path` and expects no response.
+`WorldChanged` carries a new optional advisory `world_path` and expects no
+response.
 
 ## Data-service protocol
 

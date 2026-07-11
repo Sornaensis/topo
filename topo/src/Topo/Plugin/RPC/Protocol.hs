@@ -467,8 +467,9 @@ data Handshake = Handshake
   { hsProtocolVersion  :: !Int
     -- ^ Protocol version the host speaks.
   , hsWorldPath        :: !(Maybe Text)
-    -- ^ Absolute path to the current world save directory, or
-    --   'Nothing' if no world is loaded yet.
+    -- ^ Advisory absolute path to the current world save directory, or
+    --   'Nothing' if no world is loaded yet. This is convenience metadata for
+    --   plugins, not a filesystem confinement boundary.
   , hsHostCapabilities :: ![Text]
     -- ^ Host-side capabilities (e.g. @\"query\"@, @\"mutate\"@).
   , hsAuthChallenge    :: !(Maybe Text)
@@ -495,13 +496,15 @@ instance ToJSON Handshake where
 -- | Handshake acknowledgement sent by the plugin in response to
 -- 'Handshake'.
 --
--- Declares the plugin's data directory (relative to the world save)
--- and any data resource schemas the plugin manages.
+-- Declares the plugin's validated data archive directory and any data resource
+-- schemas the plugin manages.
 data HandshakeAck = HandshakeAck
   { haProtocolVersion :: !Int
     -- ^ Protocol version the plugin speaks.
   , haDataDirectory   :: !(Maybe Text)
-    -- ^ Data subdirectory relative to world path, or 'Nothing'.
+    -- ^ Safe relative archive directory matching or narrowing manifest
+    --   @dataDirectory@, or 'Nothing'. The host bundles from its own
+    --   launch-created data root, not from this plugin-supplied text.
   , haResources       :: ![DataResourceSchema]
     -- ^ Data resource schemas the plugin manages.
   , haSessionId       :: !(Maybe Text)

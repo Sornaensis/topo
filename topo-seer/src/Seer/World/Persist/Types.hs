@@ -8,7 +8,8 @@
 -- without depending on 'Actor.UI', allowing both 'Actor.UI' and
 -- 'Seer.World.Persist' to import it freely.
 module Seer.World.Persist.Types
-  ( WorldExternalDataSourceSnapshot(..)
+  ( WorldPluginDataDirectory(..)
+  , WorldExternalDataSourceSnapshot(..)
   , WorldWeatherLayerManifest(..)
   , WorldSaveManifest(..)
   , defaultManifestTime
@@ -35,6 +36,21 @@ import Topo.Plugin.RPC.Manifest
   ( RPCExternalDataSourceDecl
   , RPCExternalDataSourceRef
   )
+
+-- | Runtime description of a plugin data directory to bundle with a world save.
+--
+-- The source directory is host-derived (the plugin's launched
+-- @TOPO_PLUGIN_DATA_ROOT@), while the archive directory is a validated relative
+-- destination recorded in 'WorldSaveManifest'.  The source path is never read
+-- from the plugin handshake.
+data WorldPluginDataDirectory = WorldPluginDataDirectory
+  { wpddPlugin :: Text
+    -- ^ Plugin whose data is being bundled.
+  , wpddSourceDirectory :: FilePath
+    -- ^ Host-derived absolute source directory to copy from.
+  , wpddArchiveDirectory :: Text
+    -- ^ Safe relative destination below the world save @plugins/@ directory.
+  } deriving (Eq, Show)
 
 -- | Opaque external data-source declarations and references captured with a
 -- world save.  Topo preserves this metadata for compatibility checks and

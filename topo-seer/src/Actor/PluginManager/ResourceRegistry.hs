@@ -15,6 +15,9 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
+import System.Directory (canonicalizePath, createDirectoryIfMissing, pathIsSymbolicLink)
+import System.FilePath (normalise, splitDirectories, (</>))
+import System.Info (os)
 
 import Actor.PluginManager.Types
   ( ExternalDataSourceGrantBrokerState(..)
@@ -26,7 +29,10 @@ import Actor.PluginManager.Types
   , PluginStatus(..)
   , externalDataSourceGrantBrokerPhaseApplied
   )
-import Seer.World.Persist.Types (WorldExternalDataSourceSnapshot(..))
+import Seer.World.Persist.Types
+  ( WorldExternalDataSourceSnapshot(..)
+  , WorldPluginDataDirectory(..)
+  )
 import Topo.Plugin.DataResource (DataResourceSchema)
 import Topo.Plugin.RPC
   ( RPCConnection(..)
@@ -53,16 +59,63 @@ buildPluginDataResources st =
         [] -> Nothing
         rs -> Just rs
 
--- | Collect @(pluginName, dataDir)@ pairs from all plugins that
--- declared a data directory via the handshake.
-collectPluginDataDirs :: PluginManagerState -> [(Text, FilePath)]
-collectPluginDataDirs st =
-  [ (lpName lp, dir)
-  | lp <- Map.elems (pmsPlugins st)
-  , lpStatus lp == PluginConnected
-  , Just conn <- [lpConnection lp]
-  , Just dir <- [rpcDataDirectory conn]
-  ]
+-- | Collect host-derived plugin data roots for connected plugins whose
+-- handshake negotiated a data archive directory.
+--
+-- The handshake value is only used as the validated archive destination. The
+-- source path is always the canonical host-created @TOPO_PLUGIN_DATA_ROOT@
+-- below the plugin directory, never a plugin-supplied path.
+collectPluginDataDirs :: PluginManagerState -> IO [WorldPluginDataDirectory]
+collectPluginDataDirs st = do
+  dirs <- traverse pluginDataDirectory (Map.elems (pmsPlugins st))
+  pure [dir | Just dir <- dirs]
+  where
+    pluginDataDirectory lp
+      | lpStatus lp /= PluginConnected = pure Nothing
+      | otherwise = case lpConnection lp of
+          Nothing -> pure Nothing
+          Just conn -> case rpcDataDirectory conn of
+            Nothing -> pure Nothing
+            Just archiveDir -> do
+              mSourceRoot <- canonicalPluginDataRoot lp
+              pure $ do
+                sourceRoot <- mSourceRoot
+                pure WorldPluginDataDirectory
+                  { wpddPlugin = lpName lp
+                  , wpddSourceDirectory = sourceRoot
+                  , wpddArchiveDirectory = Text.pack archiveDir
+                  }
+
+canonicalPluginDataRoot :: LoadedPlugin -> IO (Maybe FilePath)
+canonicalPluginDataRoot lp = do
+  let pluginDir = lpDirectory lp
+      dataRoot = pluginDir </> "data"
+  createDirectoryIfMissing True dataRoot
+  dataRootIsLink <- pathIsSymbolicLink dataRoot
+  if dataRootIsLink
+    then pure Nothing
+    else do
+      canonicalPluginDir <- canonicalizePath pluginDir
+      canonicalDataRoot <- canonicalizePath dataRoot
+      let pluginKey = pathBoundaryKey canonicalPluginDir
+          dataKey = pathBoundaryKey canonicalDataRoot
+      pure $ if pathWithin pluginKey dataKey
+        then Just canonicalDataRoot
+        else Nothing
+
+pathWithin :: [FilePath] -> [FilePath] -> Bool
+pathWithin parent child =
+  length child > length parent && parent == take (length parent) child
+
+pathBoundaryKey :: FilePath -> [FilePath]
+pathBoundaryKey path =
+  let segments = splitDirectories (normalise path)
+  in if os == "mingw32" then map (map toLowerChar) segments else segments
+
+toLowerChar :: Char -> Char
+toLowerChar ch
+  | 'A' <= ch && ch <= 'Z' = toEnum (fromEnum ch + 32)
+  | otherwise = ch
 
 -- | Collect backend-neutral external data-source declarations and references
 -- from loaded plugin manifests for world-save metadata.

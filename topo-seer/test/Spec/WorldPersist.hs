@@ -15,7 +15,9 @@ import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import System.Directory
   ( createDirectoryIfMissing
+  , doesFileExist
   , removeDirectoryRecursive
+  , removePathForcibly
   )
 import System.FilePath ((</>))
 import Test.Hspec
@@ -36,7 +38,8 @@ import Seer.Config (configFromUi, unmapRange)
 import Seer.Config.Snapshot (snapshotFromUi)
 import Seer.Config.Snapshot.Types (ConfigSnapshot(..), defaultSnapshot)
 import Seer.World.Persist
-  ( WorldExternalDataSourceSnapshot(..)
+  ( WorldPluginDataDirectory(..)
+  , WorldExternalDataSourceSnapshot(..)
   , WorldWeatherLayerManifest(..)
   , WorldSaveManifest(..)
   , saveNamedWorld
@@ -225,6 +228,20 @@ manifestJsonSpec = describe "WorldSaveManifest JSON round-trip" $ do
 -- | Unique test world name to avoid collisions with user data.
 testWorldName :: Text.Text
 testWorldName = "__topo_test_world_roundtrip__"
+
+createPluginDataSource :: IO FilePath
+createPluginDataSource = do
+  dir <- worldDir
+  let source = dir </> "__topo_test_plugin_data_source__"
+  cleanupPath source
+  createDirectoryIfMissing True source
+  writeFile (source </> "state.txt") "plugin-state"
+  pure source
+
+cleanupPath :: FilePath -> IO ()
+cleanupPath path = do
+  _ <- try @IOException (removePathForcibly path)
+  pure ()
 
 emptyTerrainSnapshot :: Int -> TerrainSnapshot
 emptyTerrainSnapshot chunkSize = TerrainSnapshot
@@ -574,6 +591,74 @@ worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
               Left err -> expectationFailure (Text.unpack err)
               Right (manifest, _snapshot, _loadedWorld) -> do
                 wsmExternalDataSources manifest `shouldBe` [testExternalDataSourceSnapshot]
+        )
+
+    it "bundles plugin data from host source roots into validated archive directories" $
+      bracket
+        createPluginDataSource
+        (\source -> do
+            _ <- deleteNamedWorld testWorldName
+            cleanupPath source
+        )
+        (\source -> do
+            let config = WorldConfig { wcChunkSize = 64 }
+                world = emptyWorld config defaultHexGridMeta
+                ui = emptyUiState { uiSeed = 42, uiChunkSize = 64 }
+                pluginData = WorldPluginDataDirectory
+                  { wpddPlugin = "plugin-a"
+                  , wpddSourceDirectory = source
+                  , wpddArchiveDirectory = "safe\\archive"
+                  }
+
+            saveResult <- saveNamedWorldWithPluginsAndExternalData
+              testWorldName ui world [pluginData] []
+            saveResult `shouldBe` Right ()
+
+            worlds <- worldDir
+            let savedFile = worlds </> Text.unpack testWorldName </> "plugins" </> "safe" </> "archive" </> "state.txt"
+            doesFileExist savedFile `shouldReturn` True
+
+            loadResult <- loadNamedWorld testWorldName
+            case loadResult of
+              Left err -> expectationFailure (Text.unpack err)
+              Right (manifest, _snapshot, _loadedWorld) ->
+                wsmPluginData manifest `shouldBe` [("plugin-a", "safe/archive")]
+        )
+
+    it "rejects unsafe or colliding plugin archive directories" $
+      bracket
+        createPluginDataSource
+        (\source -> do
+            _ <- deleteNamedWorld testWorldName
+            cleanupPath source
+        )
+        (\source -> do
+            let config = WorldConfig { wcChunkSize = 64 }
+                world = emptyWorld config defaultHexGridMeta
+                ui = emptyUiState { uiSeed = 42, uiChunkSize = 64 }
+                pluginData archiveDir = WorldPluginDataDirectory
+                  { wpddPlugin = "plugin-a"
+                  , wpddSourceDirectory = source
+                  , wpddArchiveDirectory = archiveDir
+                  }
+
+            unsafeResult <- saveNamedWorldWithPluginsAndExternalData
+              testWorldName ui world [pluginData "../escape"] []
+            case unsafeResult of
+              Left err -> err `shouldSatisfy` Text.isInfixOf "safe relative path"
+              Right () -> expectationFailure "unsafe plugin archive directory was accepted"
+
+            collisionResult <- saveNamedWorldWithPluginsAndExternalData
+              testWorldName
+              ui
+              world
+              [ pluginData "shared"
+              , (pluginData "shared/child") { wpddPlugin = "plugin-b" }
+              ]
+              []
+            case collisionResult of
+              Left err -> err `shouldSatisfy` Text.isInfixOf "collide"
+              Right () -> expectationFailure "colliding plugin archive directories were accepted"
         )
 
     it "loads old-format world directories without sidecar when manifest is empty" $

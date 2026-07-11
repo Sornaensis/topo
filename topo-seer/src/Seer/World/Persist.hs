@@ -12,7 +12,8 @@
 -- * @meta.json@ — 'WorldSaveManifest' with seed, chunk size, etc.
 module Seer.World.Persist
   ( -- * Types (re-exported from "Seer.World.Persist.Types")
-    WorldExternalDataSourceSnapshot(..)
+    WorldPluginDataDirectory(..)
+  , WorldExternalDataSourceSnapshot(..)
   , WorldWeatherLayerManifest(..)
   , WorldSaveManifest(..)
     -- * Directory helpers
@@ -33,6 +34,7 @@ module Seer.World.Persist
 
 import Control.Exception (IOException, try)
 import Control.Monad (when)
+import Data.Char (toLower)
 import Data.Aeson (FromJSON(..), eitherDecodeStrict', encode, toJSON)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
@@ -50,9 +52,11 @@ import System.Directory
   , doesFileExist
   , getHomeDirectory
   , listDirectory
+  , pathIsSymbolicLink
   , removeDirectoryRecursive
   )
-import System.FilePath ((</>), takeFileName)
+import System.FilePath (isAbsolute, (</>))
+import System.Info (os)
 
 import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..))
 import Actor.UI (UiState(..))
@@ -60,7 +64,8 @@ import Seer.Config (configFromUi)
 import Seer.Config.Snapshot (snapshotFromUi, loadSnapshot)
 import Seer.Config.Snapshot.Types (ConfigSnapshot)
 import Seer.World.Persist.Types
-  ( WorldExternalDataSourceSnapshot(..)
+  ( WorldPluginDataDirectory(..)
+  , WorldExternalDataSourceSnapshot(..)
   , WorldWeatherLayerManifest(..)
   , WorldSaveManifest(..)
   )
@@ -131,14 +136,14 @@ saveNamedWorld name uiSnap world =
 -- | Save a named world including plugin data directories.
 --
 -- In addition to the base @world.topo@, @config.json@, and @meta.json@,
--- copies each plugin's data directory into a @plugins\/\<name\>\/@ subdirectory
--- of the world save path and records the mapping in the manifest.
+-- copies each plugin's host-created data root into its validated archive
+-- directory below @plugins\/@ and records the mapping in the manifest.
 saveNamedWorldWithPlugins
   :: Text             -- ^ World name
   -> UiState          -- ^ Current UI state (config snapshot source)
   -> TerrainWorld     -- ^ Terrain data to persist
-  -> [(Text, FilePath)]
-  -- ^ @(pluginName, absoluteDataDir)@ — plugin data directories to bundle
+  -> [WorldPluginDataDirectory]
+  -- ^ Host-derived plugin data roots and safe archive destinations to bundle.
   -> IO (Either Text ())
 saveNamedWorldWithPlugins name uiSnap world pluginDirs =
   saveNamedWorldWithPluginsAndExternalData name uiSnap world pluginDirs []
@@ -153,8 +158,8 @@ saveNamedWorldWithPluginsAndExternalData
   :: Text             -- ^ World name
   -> UiState          -- ^ Current UI state (config snapshot source)
   -> TerrainWorld     -- ^ Terrain data to persist
-  -> [(Text, FilePath)]
-  -- ^ @(pluginName, absoluteDataDir)@ — plugin data directories to bundle
+  -> [WorldPluginDataDirectory]
+  -- ^ Host-derived plugin data roots and safe archive destinations to bundle.
   -> [WorldExternalDataSourceSnapshot]
   -- ^ Opaque external data-source declarations/references to preserve
   -> IO (Either Text ())
@@ -170,11 +175,10 @@ saveNamedWorldWithPluginsAndExternalData name uiSnap world pluginDirs externalDa
         snapshot = snapshotFromUi uiSnap name
         worldForSave = normalizeSaveWorldManifest world
     now <- getCurrentTime
-    -- Deduplicate plugin data directories (multiple plugins may share one)
-    let uniqueDirs = deduplicatePluginDirs pluginDirs
-        pluginDataEntries =
-          [ (pName, Text.pack relDir)
-          | (pName, _absDir, relDir) <- uniqueDirs
+    preparedDirs <- either (fail . Text.unpack) pure (preparePluginDataDirs pluginDirs)
+    let pluginDataEntries =
+          [ (pName, archiveDir)
+          | PreparedPluginDataDir pName _sourceDir archiveDir <- preparedDirs
           ]
     let manifest = WorldSaveManifest
           { wsmName       = name
@@ -195,8 +199,8 @@ saveNamedWorldWithPluginsAndExternalData name uiSnap world pluginDirs externalDa
     case topoResult of
       Left err -> fail ("Terrain+overlay save failed: " <> show err)
       Right () -> pure ()
-    -- Copy plugin data directories into the world save
-    mapM_ (copyPluginDataDir worldPath) uniqueDirs
+    -- Copy plugin data directories into the world save.
+    mapM_ (copyPluginDataDir worldPath) preparedDirs
 
   pure $ case result of
     Left err -> Left (Text.pack (show err))
@@ -457,43 +461,107 @@ uniquePreserving = foldr addUnique []
 -- Plugin data directory helpers
 -------------------------------------------------------------------------------
 
--- | Deduplicate plugin data directories.
---
--- Multiple plugins may share the same directory. Returns
--- @(pluginName, absoluteDir, relativeSubdir)@ triples where
--- @relativeSubdir@ is the last path component used as the
--- subdirectory name inside the world save.
-deduplicatePluginDirs :: [(Text, FilePath)] -> [(Text, FilePath, String)]
-deduplicatePluginDirs dirs =
-  let withRel = [ (pName, absDir, takeFileName absDir)
-                | (pName, absDir) <- dirs
-                ]
-      -- Keep only the first occurrence of each absolute directory
-      go seen [] = (seen, [])
-      go seen ((pName, absDir, rel):rest)
-        | absDir `elem` map snd3 seen = go seen rest
-        | otherwise = go ((pName, absDir, rel) : seen) rest
-      (unique, _) = go [] withRel
-  in reverse unique
+data PreparedPluginDataDir = PreparedPluginDataDir
+  { ppddPlugin :: !Text
+  , ppddSourceDirectory :: !FilePath
+  , ppddArchiveDirectory :: !Text
+  }
+
+preparePluginDataDirs :: [WorldPluginDataDirectory] -> Either Text [PreparedPluginDataDir]
+preparePluginDataDirs dirs = do
+  prepared <- traverse prepareOne dirs
+  case archiveCollision prepared of
+    Just (left, right) -> Left
+      ("plugin data archive directories collide: " <> quote left <> " and " <> quote right)
+    Nothing -> Right prepared
   where
-    snd3 (_, b, _) = b
+    prepareOne entry = do
+      archiveDir <- normalizeSafeArchiveDirectory (wpddArchiveDirectory entry)
+      whenLeft (not (isAbsolute (wpddSourceDirectory entry)))
+        ("plugin data source for " <> quote (wpddPlugin entry)
+          <> " must be an absolute host-derived path")
+      pure PreparedPluginDataDir
+        { ppddPlugin = wpddPlugin entry
+        , ppddSourceDirectory = wpddSourceDirectory entry
+        , ppddArchiveDirectory = archiveDir
+        }
+
+archiveCollision :: [PreparedPluginDataDir] -> Maybe (Text, Text)
+archiveCollision [] = Nothing
+archiveCollision (entry:rest) =
+  case [ (ppddArchiveDirectory entry, ppddArchiveDirectory other)
+       | other <- rest
+       , archiveDirsCollide (ppddArchiveDirectory entry) (ppddArchiveDirectory other)
+       ] of
+    collision:_ -> Just collision
+    [] -> archiveCollision rest
+
+archiveDirsCollide :: Text -> Text -> Bool
+archiveDirsCollide left right =
+  let leftKey = archiveCollisionKey left
+      rightKey = archiveCollisionKey right
+  in leftKey == rightKey
+    || (leftKey <> "/") `Text.isPrefixOf` rightKey
+    || (rightKey <> "/") `Text.isPrefixOf` leftKey
+
+archiveCollisionKey :: Text -> Text
+archiveCollisionKey
+  | os == "mingw32" = Text.map toLower
+  | otherwise = id
+
+normalizeSafeArchiveDirectory :: Text -> Either Text Text
+normalizeSafeArchiveDirectory raw
+  | Text.null raw = Left "plugin data archive directory must be non-empty"
+  | Text.isPrefixOf "/" raw || Text.isPrefixOf "\\" raw = unsafeArchive
+  | Text.any (== ':') raw = unsafeArchive
+  | otherwise = case normalizedSegments raw of
+      [] -> unsafeArchive
+      segments
+        | any unsafeSegment segments -> unsafeArchive
+        | otherwise -> Right (Text.intercalate "/" segments)
+  where
+    unsafeArchive = Left
+      ("plugin data archive directory must be a safe relative path: " <> quote raw)
+
+normalizedSegments :: Text -> [Text]
+normalizedSegments = Text.splitOn "/" . Text.replace "\\" "/"
+
+unsafeSegment :: Text -> Bool
+unsafeSegment segment = Text.null segment || segment == "." || segment == ".."
+
+whenLeft :: Bool -> Text -> Either Text ()
+whenLeft True message = Left message
+whenLeft False _ = Right ()
+
+quote :: Text -> Text
+quote value = "'" <> value <> "'"
+
+archiveDestination :: FilePath -> Text -> FilePath
+archiveDestination worldPath archiveDir =
+  foldl (</>) (worldPath </> "plugins") (map Text.unpack (normalizedSegments archiveDir))
 
 -- | Copy a single plugin data directory into the world save.
 --
--- Creates @worldPath\/plugins\/\<relDir\>\/@ and recursively copies
--- files from the source directory.
-copyPluginDataDir :: FilePath -> (Text, FilePath, String) -> IO ()
-copyPluginDataDir worldPath (_pluginName, srcDir, relDir) = do
+-- Creates @worldPath\/plugins\/\<archiveDir\>\/@ and recursively copies files
+-- from the host-derived source directory. Symbolic links are rejected instead
+-- of followed so a plugin cannot bundle files outside its data root via link
+-- traversal.
+copyPluginDataDir :: FilePath -> PreparedPluginDataDir -> IO ()
+copyPluginDataDir worldPath entry = do
   exists <- doesDirectoryExist srcDir
   when exists $ do
-    let destDir = worldPath </> "plugins" </> relDir
+    srcIsLink <- pathIsSymbolicLink srcDir
+    when srcIsLink (fail ("plugin data source is a symbolic link: " <> srcDir))
+    let destDir = archiveDestination worldPath (ppddArchiveDirectory entry)
     createDirectoryIfMissing True destDir
     copyDirectoryRecursive srcDir destDir
+  where
+    srcDir = ppddSourceDirectory entry
 
 -- | Recursively copy the contents of one directory to another.
 --
--- The destination directory must already exist. Existing files in
--- the destination are overwritten.
+-- The destination directory must already exist. Existing files in the
+-- destination are overwritten. Symbolic links are rejected instead of followed.
 copyDirectoryRecursive :: FilePath -> FilePath -> IO ()
 copyDirectoryRecursive src dest = do
   entries <- listDirectory src
@@ -502,6 +570,8 @@ copyDirectoryRecursive src dest = do
     copyEntry entry = do
       let srcPath  = src </> entry
           destPath = dest </> entry
+      isLink <- pathIsSymbolicLink srcPath
+      when isLink (fail ("plugin data entry is a symbolic link: " <> srcPath))
       isDir <- doesDirectoryExist srcPath
       if isDir
         then do

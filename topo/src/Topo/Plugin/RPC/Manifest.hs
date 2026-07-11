@@ -1129,7 +1129,9 @@ data RPCManifest = RPCManifest
   , rmDataResources :: ![DataResourceSchema]
     -- ^ Plugin-declared data resource schemas.
   , rmDataDirectory :: !(Maybe Text)
-    -- ^ Data subdirectory relative to the world save path.
+    -- ^ Safe relative plugin-data archive directory under the world save. The
+    --   host bundles from its launch-created data root, not from this text as a
+    --   source path.
   , rmExternalDataSources :: ![RPCExternalDataSourceDecl]
     -- ^ Provider-owned external data sources advertised by this plugin.
   , rmExternalDataSourceRefs :: ![RPCExternalDataSourceRef]

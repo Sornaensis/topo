@@ -35,7 +35,7 @@ separate M6/M7 responsibilities and should not be added to this module.
 | `capabilities` | `rmCapabilities` | Host permissions requested by plugin |
 | `config.parameters` | `rmParameters` | User-facing parameter specs |
 | `dataResources` | `rmDataResources` | Plugin data-service schemas |
-| `dataDirectory` | `rmDataDirectory` | Relative world-save data directory |
+| `dataDirectory` | `rmDataDirectory` | Safe relative plugin-data archive directory; source is host-created `TOPO_PLUGIN_DATA_ROOT` |
 | `externalDataSources` | `rmExternalDataSources` | Provider-owned source declarations |
 | `externalDataSourceRefs` | `rmExternalDataSourceRefs` | Consumer references to provider-owned sources |
 | `startPolicy` | `rmStartPolicy` | Process supervision defaults/overrides |

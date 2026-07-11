@@ -39,7 +39,7 @@ schema field.
 | `capabilities` | No | `rmCapabilities` | Host permissions requested by the plugin. |
 | `config` | No | `rmParameters` | User-facing `parameters`. |
 | `dataResources` | No | `rmDataResources` | Plugin-owned data-service schemas. |
-| `dataDirectory` | No | `rmDataDirectory` | Relative data directory under the world save. |
+| `dataDirectory` | No | `rmDataDirectory` | Safe relative plugin-data archive directory recorded under the world save; bundled from the host-created `TOPO_PLUGIN_DATA_ROOT`. |
 | `externalDataSources` | No | `rmExternalDataSources` | Provider-owned external source declarations. |
 | `externalDataSourceRefs` | No | `rmExternalDataSourceRefs` | Consumer references to provider-owned sources/grants. |
 | `startPolicy` | No | `rmStartPolicy` | Host process supervision overrides. |

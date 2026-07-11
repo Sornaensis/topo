@@ -67,6 +67,7 @@ module Actor.PluginManager
   , queryPluginResource
   , mutatePluginResource
     -- * World lifecycle
+  , WorldPluginDataDirectory(..)
   , notifyWorldChanged
   , getPluginDataDirectories
   , getPluginExternalDataSources
@@ -104,7 +105,7 @@ import Actor.PluginManager.SimulationIntegrator
   , PluginSimulationNodeDiagnostic(..)
   , buildPluginSimulationPlan
   )
-import Seer.World.Persist.Types (WorldExternalDataSourceSnapshot)
+import Seer.World.Persist.Types (WorldExternalDataSourceSnapshot, WorldPluginDataDirectory)
 import Actor.PluginManager.Types
   ( LoadedPlugin(..)
   , PluginLifecycleSnapshot(..)
@@ -306,13 +307,11 @@ notifyWorldChanged
 notifyWorldChanged handle mWorldPath =
   cast @"notifyWorld" handle #notifyWorld mWorldPath
 
--- | Get the data directories declared by connected plugins.
---
--- Returns @(pluginName, absoluteDataDirPath)@ pairs for all plugins
--- whose handshake declared a data directory.
+-- | Get host-derived data roots for connected plugins with validated data
+-- archive destinations from the handshake/manifest contract.
 getPluginDataDirectories
   :: ActorHandle PluginManager (Protocol PluginManager)
-  -> IO [(Text, FilePath)]
+  -> IO [WorldPluginDataDirectory]
 getPluginDataDirectories handle =
   call @"getDataDirs" handle #getDataDirs ()
 

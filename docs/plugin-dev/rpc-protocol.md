@@ -56,8 +56,8 @@ they must not invent a fixed pipe/socket name.
 | `TOPO_PLUGIN_ENDPOINT_KIND` | `named-pipe` on Windows, `unix` on Linux/macOS. |
 | `TOPO_PLUGIN_SESSION` | Opaque launch/session identifier. |
 | `TOPO_PLUGIN_AUTH_TOKEN` | Opaque launch token for the session. |
-| `TOPO_PLUGIN_WORLD_ID` | Active world identifier or a host sentinel; host-provided metadata for plugin authors/diagnostics, not currently host-enforced behavior. |
-| `TOPO_PLUGIN_DATA_ROOT` | Writable plugin data root selected and created by the host; metadata for plugin authors/diagnostics unless a future contract assigns host-enforced behavior. |
+| `TOPO_PLUGIN_WORLD_ID` | Active world identifier or a host sentinel; advisory metadata for plugin authors/diagnostics, not a confinement boundary. |
+| `TOPO_PLUGIN_DATA_ROOT` | Writable plugin data root selected and created by the host; advisory convenience metadata and the host's save-bundling source, not a sandbox or confinement boundary. |
 
 `TOPO_PLUGIN_STDIO_COMPAT=1` is only an explicit test/development compatibility
 mode and is stripped from production plugin launches. Production launch uses
@@ -155,10 +155,12 @@ Sent by the host immediately after transport connection:
 }
 ```
 
-`world_path` may be absent or `null` when no world is loaded. Host capabilities
-are backend-neutral capabilities for host-brokered services, not storage engine
-identifiers. Production launches include `launch_auth` and `auth_challenge`;
-in-process tests or explicit stdio compatibility may omit them.
+`world_path` may be absent or `null` when no world is loaded. It is advisory
+convenience metadata for plugins and diagnostics, not a filesystem confinement
+boundary. Host capabilities are backend-neutral capabilities for host-brokered
+services, not storage engine identifiers. Production launches include
+`launch_auth` and `auth_challenge`; in-process tests or explicit stdio
+compatibility may omit them.
 
 ### `handshake_ack`
 
@@ -174,8 +176,12 @@ Returned by the plugin:
 }
 ```
 
-The protocol version must equal 4. `data_directory` is relative to the world
-save path. `resources` contains `DataResourceSchema` values also valid in
+The protocol version must equal 4. `data_directory`, when present, must be a
+safe relative archive directory that matches or narrows manifest v3
+`dataDirectory`; absolute paths, drive prefixes, empty segments, `.`, and `..`
+are rejected. The host records this value as the world-save destination but
+bundles from its own host-created `TOPO_PLUGIN_DATA_ROOT`, never from the raw
+handshake string. `resources` contains `DataResourceSchema` values also valid in
 manifest v3 `dataResources`. When `auth_challenge` is present, `session_id` must
 match `TOPO_PLUGIN_SESSION` and `auth_proof` must be
 `HMAC-SHA256(TOPO_PLUGIN_AUTH_TOKEN, "topo-plugin-launch-auth-v1\n4\n" <> session_id <> "\n" <> auth_challenge)` encoded as lowercase hex. The auth token itself is never sent.

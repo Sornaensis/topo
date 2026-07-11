@@ -1834,6 +1834,46 @@ spec = describe "Plugin.RPC" $ do
           Just (Left (RPCProtocolError msg)) -> msg `shouldSatisfy` Text.isInfixOf "auth proof"
           _ -> expectationFailure "expected mismatched auth proof rejection"
 
+    it "accepts handshake data directories that match or narrow the manifest declaration" $ do
+      let manifest = baseManifest { rmDataDirectory = Just "plugin-data" }
+      exact <- performTestHandshakeAckWithDataDirectory
+        "rpc-handshake-data-dir-exact" manifest (Just "plugin-data") []
+      case exact of
+        Right conn' -> rpcDataDirectory conn' `shouldBe` Just "plugin-data"
+        Left err -> expectationFailure ("expected exact data_directory success, got " <> show err)
+      narrowed <- performTestHandshakeAckWithDataDirectory
+        "rpc-handshake-data-dir-narrow" manifest (Just "plugin-data\\runtime") []
+      case narrowed of
+        Right conn' -> rpcDataDirectory conn' `shouldBe` Just "plugin-data/runtime"
+        Left err -> expectationFailure ("expected narrowed data_directory success, got " <> show err)
+
+    it "rejects unsafe handshake data directory values" $ do
+      let manifest = baseManifest { rmDataDirectory = Just "plugin-data" }
+          unsafeCases =
+            [ ("absolute", "/tmp/escape")
+            , ("drive", "C:\\escape")
+            , ("dot", ".")
+            , ("dotdot", "..")
+            , ("parent", "plugin-data/../escape")
+            , ("empty-segment", "plugin-data//runtime")
+            ]
+      mapM_ (expectHandshakeDataDirectoryRejection manifest) unsafeCases
+
+    it "rejects handshake data directories not declared by the manifest" $ do
+      result <- performTestHandshakeAckWithDataDirectory
+        "rpc-handshake-data-dir-undeclared" baseManifest (Just "plugin-data") []
+      case result of
+        Left (RPCProtocolError msg) -> msg `shouldSatisfy` Text.isInfixOf "manifest does not declare dataDirectory"
+        other -> expectationFailure ("expected undeclared data_directory rejection, got " <> handshakeResultSummary other)
+
+    it "rejects handshake data directories that widen the manifest declaration" $ do
+      let manifest = baseManifest { rmDataDirectory = Just "plugin-data" }
+      result <- performTestHandshakeAckWithDataDirectory
+        "rpc-handshake-data-dir-widen" manifest (Just "plugin-data-other") []
+      case result of
+        Left (RPCProtocolError msg) -> msg `shouldSatisfy` Text.isInfixOf "must match or narrow"
+        other -> expectationFailure ("expected widened data_directory rejection, got " <> handshakeResultSummary other)
+
     it "accepts handshake data resources that stay within the manifest declaration" $ do
       let manifest = baseManifest
             { rmCapabilities = [CapDataRead, CapDataWrite]
@@ -2625,10 +2665,14 @@ sendEnvelopeTo transport envelope = do
     Right () -> pure ()
 
 performTestHandshakeAck :: Text -> RPCManifest -> [DataResourceSchema] -> IO (Either RPCError RPCConnection)
-performTestHandshakeAck name manifest resources =
+performTestHandshakeAck name manifest =
+  performTestHandshakeAckWithDataDirectory name manifest Nothing
+
+performTestHandshakeAckWithDataDirectory :: Text -> RPCManifest -> Maybe Text -> [DataResourceSchema] -> IO (Either RPCError RPCConnection)
+performTestHandshakeAckWithDataDirectory name manifest mDataDirectory resources =
   withConnectedTransports name $ \host plugin -> do
     let conn = newRPCConnection manifest host Map.empty
-        ack = HandshakeAck currentProtocolVersion Nothing resources Nothing Nothing
+        ack = HandshakeAck currentProtocolVersion mDataDirectory resources Nothing Nothing
     done <- newEmptyMVar
     _ <- forkIO (performHandshakeWithAuth conn Nothing Nothing >>= putMVar done)
     request <- recvEnvelopeFrom plugin
@@ -2642,6 +2686,15 @@ performTestHandshakeAck name manifest resources =
     case result of
       Nothing -> expectationFailure "timed out waiting for handshake result" >> fail "handshake result timeout"
       Just value -> pure value
+
+expectHandshakeDataDirectoryRejection :: RPCManifest -> (Text, Text) -> IO ()
+expectHandshakeDataDirectoryRejection manifest (label, dataDirectory) = do
+  result <- performTestHandshakeAckWithDataDirectory
+    ("rpc-handshake-data-dir-unsafe-" <> label) manifest (Just dataDirectory) []
+  case result of
+    Left (RPCProtocolError msg) -> msg `shouldSatisfy` Text.isInfixOf "invalid handshake data_directory"
+    other -> expectationFailure ("expected unsafe data_directory rejection for "
+      <> Text.unpack dataDirectory <> ", got " <> handshakeResultSummary other)
 
 handshakeResultSummary :: Either RPCError RPCConnection -> String
 handshakeResultSummary (Left err) = "Left " <> show err

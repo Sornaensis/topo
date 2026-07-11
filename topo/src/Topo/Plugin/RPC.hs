@@ -186,7 +186,9 @@ data RPCConnection = RPCConnection
   , rpcProtocolVersion  :: !Int
     -- ^ Negotiated protocol version from handshake.
   , rpcDataDirectory    :: !(Maybe FilePath)
-    -- ^ Resolved absolute path to the plugin's data directory.
+    -- ^ Validated relative archive directory from the handshake. This is never
+    -- used as a source path; the host derives the source from its launch data
+    -- root.
   , rpcResources        :: ![DataResourceSchema]
     -- ^ Data resource schemas received from handshake.
   , rpcRequestTimeoutMicros :: !(Maybe Int)
@@ -683,11 +685,13 @@ performHandshakeWithAuth conn worldPath mAuth = do
             , not (null resourceErrors) ->
                 pure (Left (RPCProtocolError
                   ("invalid handshake data resources: " <> renderManifestErrors resourceErrors)))
-            | otherwise -> pure (Right conn
-                { rpcProtocolVersion = haProtocolVersion ack
-                , rpcDataDirectory   = fmap Text.unpack (haDataDirectory ack)
-                , rpcResources       = haResources ack
-                })
+            | otherwise -> case validateHandshakeDataDirectory (rpcManifest conn) (haDataDirectory ack) of
+                Left dirErr -> pure (Left (RPCProtocolError dirErr))
+                Right normalizedDataDirectory -> pure (Right conn
+                  { rpcProtocolVersion = haProtocolVersion ack
+                  , rpcDataDirectory   = fmap Text.unpack normalizedDataDirectory
+                  , rpcResources       = haResources ack
+                  })
           Aeson.Error err -> pure (Left (RPCProtocolError (Text.pack err)))
       MsgError ->
         pure (Left (decodePluginErrorPayload (envPayload env)))
@@ -703,6 +707,48 @@ validateHandshakeAuth (Just expected) ack
   | haAuthProof ack /= Just (hacExpectedProof expected) =
       Just "plugin launch auth proof missing or mismatched during handshake"
   | otherwise = Nothing
+
+validateHandshakeDataDirectory :: RPCManifest -> Maybe Text -> Either Text (Maybe Text)
+validateHandshakeDataDirectory _ Nothing = Right Nothing
+validateHandshakeDataDirectory manifest (Just rawDir) = do
+  normalizedDir <- normalizeSafeHandshakeDataDirectory rawDir
+  normalizedManifestDir <- case rmDataDirectory manifest of
+    Nothing -> Left
+      ("invalid handshake data_directory: manifest does not declare dataDirectory")
+    Just manifestDir -> normalizeSafeHandshakeDataDirectory manifestDir
+  if normalizedDir == normalizedManifestDir || childOf normalizedManifestDir normalizedDir
+    then Right (Just normalizedDir)
+    else Left
+      ("invalid handshake data_directory: " <> quoteText normalizedDir
+        <> " must match or narrow manifest dataDirectory " <> quoteText normalizedManifestDir)
+
+normalizeSafeHandshakeDataDirectory :: Text -> Either Text Text
+normalizeSafeHandshakeDataDirectory raw
+  | Text.null raw = unsafeDirectory
+  | Text.isPrefixOf "/" raw || Text.isPrefixOf "\\" raw = unsafeDirectory
+  | Text.any (== ':') raw = unsafeDirectory
+  | otherwise = case handshakePathSegments raw of
+      [] -> unsafeDirectory
+      segments
+        | any unsafeHandshakePathSegment segments -> unsafeDirectory
+        | otherwise -> Right (Text.intercalate "/" segments)
+  where
+    unsafeDirectory = Left
+      ("invalid handshake data_directory: must be a safe relative path without absolute roots, drive prefixes, '.', or '..' segments: "
+        <> quoteText raw)
+
+handshakePathSegments :: Text -> [Text]
+handshakePathSegments = Text.splitOn "/" . Text.replace "\\" "/"
+
+unsafeHandshakePathSegment :: Text -> Bool
+unsafeHandshakePathSegment segment =
+  Text.null segment || segment == "." || segment == ".."
+
+childOf :: Text -> Text -> Bool
+childOf parent child = (parent <> "/") `Text.isPrefixOf` child
+
+quoteText :: Text -> Text
+quoteText value = "'" <> value <> "'"
 
 -- | Notify the plugin that the world save path has changed.
 --

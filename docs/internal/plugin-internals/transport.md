@@ -37,8 +37,8 @@ accidental/malicious local clients.
 | `TOPO_PLUGIN_STDIO_COMPAT` | `pluginStdioCompatibilityEnv` | Explicit stdio test/development opt-in. |
 | `TOPO_PLUGIN_SESSION` | `pluginSessionEnv` | Opaque launch session ID. |
 | `TOPO_PLUGIN_AUTH_TOKEN` | `pluginAuthTokenEnv` | Opaque launch token. |
-| `TOPO_PLUGIN_WORLD_ID` | `pluginWorldIdEnv` | Active world identifier or sentinel; host-provided launch metadata for plugin authors/diagnostics, not currently host-enforced behavior. |
-| `TOPO_PLUGIN_DATA_ROOT` | `pluginDataRootEnv` | Writable plugin data root selected and created by the host; metadata unless a future contract gives it host-enforced behavior. |
+| `TOPO_PLUGIN_WORLD_ID` | `pluginWorldIdEnv` | Active world identifier or sentinel; advisory launch metadata for plugin authors/diagnostics, not a confinement boundary. |
+| `TOPO_PLUGIN_DATA_ROOT` | `pluginDataRootEnv` | Writable plugin data root selected and created by the host; advisory metadata and save-bundling source, not a sandbox or confinement boundary. |
 
 `endpointKindText` emits `unix` or `named-pipe`; `parseEndpointKind` also accepts
 legacy spellings such as `unix_socket`, `named_pipe`, and `pipe`.
