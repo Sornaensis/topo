@@ -29,6 +29,7 @@ import Control.Monad (forever)
 import Data.Aeson (Value(..), eitherDecode, object, (.=))
 import Data.Char (toLower)
 import qualified Data.Aeson as Aeson
+import Data.Aeson.Types (Pair)
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as BL
@@ -38,7 +39,7 @@ import qualified Data.ByteString.Char8 as BSC
 import Data.ByteString.Builder (Builder, byteString, lazyByteString, stringUtf8)
 import Data.Foldable (asum, toList)
 import Data.Maybe (fromMaybe)
-import Data.Scientific (fromFloatDigits, scientific)
+import Data.Scientific (scientific)
 import Data.String (fromString)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -132,21 +133,24 @@ httpApplication cfg app ctx request respond = do
             Left rsp -> respond (waiResponse (withReqId rsp))
             Right mBody -> case validateHttpRequestBody spec mBody of
               Left rsp -> respond (waiResponse (withReqId rsp))
-              Right ()
-                | hrsOperationId spec == "events.list"
-                , eventStreamRequested request -> do
-                    response <- eventStreamWaiResponse ctx (requestIdFromHeaders headers) (Wai.queryString request)
-                    respond response
-                | otherwise -> do
-                    let httpReq = HttpRequest
-                          { hreqMethod = method
-                          , hreqPath = path
-                          , hreqQuery = map decodeQueryParam (Wai.queryString request)
-                          , hreqHeaders = headers
-                          , hreqBody = mBody
-                          }
-                    rsp <- handleHttpRequest cfg app ctx httpReq
-                    respond (waiResponse rsp)
+              Right () -> do
+                let httpReq = HttpRequest
+                      { hreqMethod = method
+                      , hreqPath = path
+                      , hreqQuery = map decodeQueryParam (Wai.queryString request)
+                      , hreqHeaders = headers
+                      , hreqBody = mBody
+                      }
+                case requestParams spec httpReq of
+                  Left rsp -> respond (waiResponse (withReqId rsp))
+                  Right _
+                    | hrsOperationId spec == "events.list"
+                    , eventStreamRequested request -> do
+                        response <- eventStreamWaiResponse ctx (requestIdFromHeaders headers) (Wai.queryString request)
+                        respond response
+                    | otherwise -> do
+                        rsp <- handleHttpRequest cfg app ctx httpReq
+                        respond (waiResponse rsp)
 
 -- | Pure request shape for route tests without opening a socket.
 data HttpRequest = HttpRequest
@@ -174,9 +178,11 @@ handleHttpRequest cfg app ctx req =
           pure (jsonResponse 401 (errorEnvelope "unauthorized" "missing or invalid bearer token" []))
       | otherwise -> case validateHttpRequestBody spec (hreqBody req) of
           Left rsp -> pure rsp
-          Right () -> handleRoute spec
+          Right () -> case requestParams spec req of
+            Left rsp -> pure rsp
+            Right params -> handleRoute spec params
   where
-    handleRoute spec = case hrsOperationId spec of
+    handleRoute spec params = case hrsOperationId spec of
       "meta.health" -> pure (jsonResponse 200 (object ["status" .= ("ok" :: Text)]))
       "meta.version" -> pure (jsonResponse 200 (object
         [ "name" .= ("topo-seer" :: Text)
@@ -192,7 +198,7 @@ handleHttpRequest cfg app ctx req =
           ]))
       _ -> case hrsServiceMethod spec of
         Nothing -> pure (jsonResponse 500 (errorEnvelope "internal_error" "route has no handler" []))
-        Just _method -> invokeService app ctx spec req (requestParams spec req)
+        Just _method -> invokeService app ctx spec req params
 
 isPublicRoute :: HttpRouteSpec -> Bool
 isPublicRoute spec = hrsOperationId spec == "meta.health"
@@ -235,35 +241,93 @@ requestBodyPolicyError :: Text -> Text -> HttpResponse
 requestBodyPolicyError detailCode message =
   jsonResponse 400 (errorEnvelope "validation_failed" "validation failed" [errorDetail detailCode message])
 
-requestParams :: HttpRouteSpec -> HttpRequest -> Value
-requestParams spec req =
+requestParams :: HttpRouteSpec -> HttpRequest -> Either HttpResponse Value
+requestParams spec req = do
+  queryParams <- queryObject spec (hreqQuery req)
   case hreqBody req of
-    Just value -> value
+    Just value -> Right value
     Nothing
-      | hrsMethod spec == "GET" -> queryObject spec (hreqQuery req)
-      | otherwise -> Null
+      | hrsMethod spec == "GET" -> Right queryParams
+      | otherwise -> Right Null
 
-queryObject :: HttpRouteSpec -> [(Text, Maybe Text)] -> Value
-queryObject spec query = object
-  [ Key.fromText key .= maybe Null (queryValueFor spec key) value
-  | (key, value) <- query
-  ]
+queryObject :: HttpRouteSpec -> [(Text, Maybe Text)] -> Either HttpResponse Value
+queryObject spec query = do
+  validateRequiredQueryParams spec query
+  fields <- traverse (queryField spec) query
+  pure (object fields)
 
-queryValueFor :: HttpRouteSpec -> Text -> Text -> Value
-queryValueFor spec key value
-  -- Data-resource keys and field values are schema-owned; preserve exact
-  -- query text so values like "007" are not coerced to JSON numbers.
-  | hrsServiceMethod spec == Just "data_list_records"
-  , key == "key" || key == "value" = String value
-  | otherwise = queryValue value
+validateRequiredQueryParams :: HttpRouteSpec -> [(Text, Maybe Text)] -> Either HttpResponse ()
+validateRequiredQueryParams spec query =
+  case [param | param <- hrsQueryParams spec, missingRequired param] of
+    param:_ -> Left (missingQueryParamError param)
+    [] -> Right ()
+  where
+    missingRequired param =
+      qpsRequired param && not (queryHasValue (qpsName param))
+    queryHasValue name = any (\(key, value) -> key == name && value /= Nothing) query
 
-queryValue :: Text -> Value
-queryValue value =
-  case (readMaybe (Text.unpack value) :: Maybe Integer) of
-    Just integer -> Number (scientific integer 0)
-    Nothing -> case (readMaybe (Text.unpack value) :: Maybe Double) of
-      Just number -> Number (fromFloatDigits number)
-      Nothing -> String value
+queryField :: HttpRouteSpec -> (Text, Maybe Text) -> Either HttpResponse Pair
+queryField spec (key, value) = do
+  coerced <- case value of
+    Nothing -> maybe (Right Null) (Left . missingQueryValueError) (queryParamSpec spec key)
+    Just raw -> maybe (Right (String raw)) (`queryValueFor` raw) (queryParamSpec spec key)
+  pure (Key.fromText key .= coerced)
+
+queryParamSpec :: HttpRouteSpec -> Text -> Maybe QueryParamSpec
+queryParamSpec spec key = case [param | param <- hrsQueryParams spec, qpsName param == key] of
+  param:_ -> Just param
+  [] -> Nothing
+
+queryValueFor :: QueryParamSpec -> Text -> Either HttpResponse Value
+queryValueFor param value =
+  case querySchemaType (qpsSchema param) of
+    Just "integer" -> case parseQueryInteger value of
+      Just integer -> Right (Number (scientific integer 0))
+      Nothing -> Left (invalidQueryParamError (qpsName param) "must be a base-10 integer")
+    Just "boolean" -> case parseQueryBoolean value of
+      Just boolean -> Right (Bool boolean)
+      Nothing -> Left (invalidQueryParamError (qpsName param) "must be true or false")
+    _ -> Right (String value)
+
+querySchemaType :: Value -> Maybe Text
+querySchemaType (Object schema) = case KM.lookup "type" schema of
+  Just (String schemaType) -> Just schemaType
+  _ -> Nothing
+querySchemaType _ = Nothing
+
+parseQueryInteger :: Text -> Maybe Integer
+parseQueryInteger value
+  | Text.null digits = Nothing
+  | Text.all asciiDigit digits = applySign <$> readMaybe (Text.unpack digits)
+  | otherwise = Nothing
+  where
+    (applySign, digits) = case Text.uncons value of
+      Just ('-', rest) -> (negate, rest)
+      Just ('+', rest) -> (id, rest)
+      _ -> (id, value)
+    asciiDigit c = c >= '0' && c <= '9'
+
+parseQueryBoolean :: Text -> Maybe Bool
+parseQueryBoolean "true" = Just True
+parseQueryBoolean "false" = Just False
+parseQueryBoolean _ = Nothing
+
+missingQueryParamError :: QueryParamSpec -> HttpResponse
+missingQueryParamError param = queryParamPolicyError
+  "missing_query_param"
+  ("missing required query parameter '" <> qpsName param <> "'")
+
+missingQueryValueError :: QueryParamSpec -> HttpResponse
+missingQueryValueError param = invalidQueryParamError (qpsName param) "requires a value"
+
+invalidQueryParamError :: Text -> Text -> HttpResponse
+invalidQueryParamError name expectation = queryParamPolicyError
+  "invalid_query_param"
+  ("query parameter '" <> name <> "' " <> expectation)
+
+queryParamPolicyError :: Text -> Text -> HttpResponse
+queryParamPolicyError detailCode message =
+  jsonResponse 400 (errorEnvelope "validation_failed" "validation failed" [errorDetail detailCode message])
 
 invokeService :: AppService -> ServiceContext -> HttpRouteSpec -> HttpRequest -> Value -> IO HttpResponse
 invokeService app ctx spec req params = do
@@ -698,10 +762,12 @@ friendlyHttpRouteSpecs = map annotateHttpRouteSpec
   , service "PATCH" ["world", "name"] "world.name.set" "world" "set_world_name" "Set world name." RequiredJsonRequestBody
 
   , serviceWithQuery "GET" ["terrain", "hex"] "terrain.hex" "terrain" "get_hex" "Read one hex." NoRequestBody
-      [requiredQuery "q" "Axial q coordinate.", requiredQuery "r" "Axial r coordinate."]
+      [ requiredQueryWithSchema "q" "Axial q coordinate." queryIntegerSchema
+      , requiredQueryWithSchema "r" "Axial r coordinate." queryIntegerSchema
+      ]
   , service "GET" ["terrain", "chunks"] "terrain.chunks" "terrain" "get_chunks" "List chunks." NoRequestBody
   , serviceWithQuery "GET" ["terrain", "chunk-summary"] "terrain.chunkSummary" "terrain" "get_chunk_summary" "Read chunk summary." NoRequestBody
-      [requiredQuery "chunk" "Chunk id."]
+      [requiredQueryWithSchema "chunk" "Chunk id." queryIntegerSchema]
   , service "GET" ["terrain", "stats"] "terrain.stats" "terrain" "get_terrain_stats" "Read terrain stats." NoRequestBody
   , service "GET" ["terrain", "overlays"] "terrain.overlays" "terrain" "get_overlays" "List overlays." NoRequestBody
 
@@ -893,7 +959,10 @@ serviceWithQuery method path operationId tag serviceMethod summary body queryPar
   }
 
 requiredQuery :: Text -> Text -> QueryParamSpec
-requiredQuery name description = QueryParamSpec name True description queryStringSchema
+requiredQuery name description = requiredQueryWithSchema name description queryStringSchema
+
+requiredQueryWithSchema :: Text -> Text -> Value -> QueryParamSpec
+requiredQueryWithSchema name description schema = QueryParamSpec name True description schema
 
 optionalQuery :: Text -> Text -> QueryParamSpec
 optionalQuery name description = QueryParamSpec name False description queryStringSchema

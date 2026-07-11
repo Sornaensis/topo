@@ -75,8 +75,9 @@ import Seer.Service.AppService
   , DataResourceService(..)
   , appServiceOperationMethods
   , dataResourceCreateRecordOperation
+  , dataResourceListRecordsOperation
   )
-import Seer.Service.Types (ServiceError(..), rawServiceHandler)
+import Seer.Service.Types (ServiceError(..), ServiceRequest(..), ServiceResponse(..), rawServiceHandler)
 import Seer.System (runApp)
 import Spec.Support.OverlayFixtures (mkSparseFloatOverlay)
 import System.Directory
@@ -368,11 +369,67 @@ spec = describe "Seer.HTTP.Server" $ do
           assertWeatherOverlayAvailable loadApp
           assertBackendNeutralPluginDataSurfaces loadApp
 
-  it "coerces signed numeric query parameters before service validation" $
+  it "coerces query params by declared route schema before service dispatch" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
-      rsp <- request app (mkRequest "GET" ["terrain", "hex"])
-        { hreqQuery = [("q", Just "-1"), ("r", Just "0")] }
-      lookupNestedText ["error", "code"] (hresBody rsp) `shouldNotBe` Just "validation_failed"
+      let echoApp = headlessHttpAppService
+            { appDataResources = (appDataResources headlessHttpAppService)
+                { dataListRecords = rawServiceHandler dataResourceListRecordsOperation $ \_ serviceReq ->
+                    pure . Right . ServiceResponse $
+                      case serviceRequestBody serviceReq of
+                        Just value -> value
+                        Nothing -> Null
+                }
+            }
+          ctx = headlessServiceContext app
+          recordsRequest query = (mkRequest "GET" ["data", "records"]) { hreqQuery = query }
+          baseRecordsQuery =
+            [ ("plugin", Just "plugin-007")
+            , ("resource", Just "records")
+            ]
+
+      coerced <- handleHttpRequest defaultHttpServerConfig echoApp ctx $
+        recordsRequest
+          ( baseRecordsQuery <>
+            [ ("query", Just "007")
+            , ("key", Just "007")
+            , ("chunk", Just "-12")
+            , ("page_size", Just "+3")
+            ]
+          )
+      hresStatusCode coerced `shouldBe` 200
+      lookupValue "plugin" (hresBody coerced) `shouldBe` Just (String "plugin-007")
+      lookupValue "query" (hresBody coerced) `shouldBe` Just (String "007")
+      lookupValue "key" (hresBody coerced) `shouldBe` Just (String "007")
+      lookupValue "chunk" (hresBody coerced) `shouldBe` Just (Number (-12))
+      lookupValue "page_size" (hresBody coerced) `shouldBe` Just (Number 3)
+
+      missing <- handleHttpRequest defaultHttpServerConfig echoApp ctx $
+        recordsRequest [("resource", Just "records")]
+      hresStatusCode missing `shouldBe` 400
+      lookupNestedText ["error", "code"] (hresBody missing) `shouldBe` Just "validation_failed"
+      errorDetailCode (hresBody missing) `shouldBe` Just "missing_query_param"
+
+      forM_
+        [ ("bad", Just "abc")
+        , ("null", Nothing)
+        , ("fraction", Just "1.5")
+        , ("exponent", Just "1e3")
+        ] $ \(_, rawPageSize) -> do
+          invalidInteger <- handleHttpRequest defaultHttpServerConfig echoApp ctx $
+            recordsRequest (baseRecordsQuery <> [("page_size", rawPageSize)])
+          hresStatusCode invalidInteger `shouldBe` 400
+          lookupNestedText ["error", "code"] (hresBody invalidInteger) `shouldBe` Just "validation_failed"
+          errorDetailCode (hresBody invalidInteger) `shouldBe` Just "invalid_query_param"
+
+      validBool <- request app (mkRequest "GET" ["events"])
+        { hreqQuery = [("stream", Just "false")] }
+      hresStatusCode validBool `shouldBe` 200
+
+      invalidBool <- request app (mkRequest "GET" ["events"])
+        { hreqQuery = [("stream", Just "yes")] }
+      hresStatusCode invalidBool `shouldBe` 400
+      lookupNestedText ["error", "code"] (hresBody invalidBool) `shouldBe` Just "validation_failed"
+      errorDetailCode (hresBody invalidBool) `shouldBe` Just "invalid_query_param"
 
   it "returns validation errors as HTTP 400 JSON envelopes" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
@@ -722,6 +779,9 @@ spec = describe "Seer.HTTP.Server" $ do
       `shouldBe` Just [("level", False), ("limit", False), ("offset", False)]
     queryParameterInfo doc "/events" "get"
       `shouldBe` Just [("stream", False), ("limit", False)]
+    queryParameterSchemaType doc "/terrain/hex" "get" "q" `shouldBe` Just "integer"
+    queryParameterSchemaType doc "/terrain/hex" "get" "r" `shouldBe` Just "integer"
+    queryParameterSchemaType doc "/terrain/chunk-summary" "get" "chunk" `shouldBe` Just "integer"
     queryParameterSchemaType doc "/data/records" "get" "page_size" `shouldBe` Just "integer"
     queryParameterSchemaType doc "/data/records" "get" "page_offset" `shouldBe` Just "integer"
     queryParameterSchemaType doc "/logs" "get" "limit" `shouldBe` Just "integer"
