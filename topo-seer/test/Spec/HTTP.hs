@@ -392,15 +392,15 @@ spec = describe "Seer.HTTP.Server" $ do
               )
             , ( "no-body-object"
               , (mkRequest "GET" ["state"]) { hreqBody = Just (object []) }
-              , ExpectBodyPolicyError 400 "invalid_request" "request_body_not_allowed"
+              , ExpectBodyPolicyError 400 "validation_failed" "unexpected_body"
               )
             , ( "no-body-non-object"
               , (mkRequest "GET" ["state"]) { hreqBody = Just (String "not-object") }
-              , ExpectBodyPolicyError 400 "invalid_request" "request_body_not_allowed"
+              , ExpectBodyPolicyError 400 "validation_failed" "unexpected_body"
               )
             , ( "no-body-null"
               , (mkRequest "GET" ["state"]) { hreqBody = Just Null }
-              , ExpectBodyPolicyError 400 "invalid_request" "request_body_not_allowed"
+              , ExpectBodyPolicyError 400 "validation_failed" "unexpected_body"
               )
             , ( "optional-empty"
               , mkRequest "POST" ["screenshots"]
@@ -412,15 +412,15 @@ spec = describe "Seer.HTTP.Server" $ do
               )
             , ( "optional-non-object"
               , (mkRequest "POST" ["screenshots"]) { hreqBody = Just (String "not-object") }
-              , ExpectBodyPolicyError 400 "invalid_request" "request_body_must_be_object"
+              , ExpectBodyPolicyError 400 "validation_failed" "invalid_body"
               )
             , ( "optional-null"
               , (mkRequest "POST" ["screenshots"]) { hreqBody = Just Null }
-              , ExpectBodyPolicyError 400 "invalid_request" "request_body_must_be_object"
+              , ExpectBodyPolicyError 400 "validation_failed" "invalid_body"
               )
             , ( "required-empty"
               , mkRequest "POST" ["ui", "seed"]
-              , ExpectBodyPolicyError 400 "invalid_request" "request_body_required"
+              , ExpectBodyPolicyError 400 "validation_failed" "missing_body"
               )
             , ( "required-object"
               , (mkRequest "POST" ["ui", "seed"]) { hreqBody = Just (object ["seed" .= (321 :: Int)]) }
@@ -428,11 +428,11 @@ spec = describe "Seer.HTTP.Server" $ do
               )
             , ( "required-non-object"
               , (mkRequest "POST" ["ui", "seed"]) { hreqBody = Just (String "not-object") }
-              , ExpectBodyPolicyError 400 "invalid_request" "request_body_must_be_object"
+              , ExpectBodyPolicyError 400 "validation_failed" "invalid_body"
               )
             , ( "required-null"
               , (mkRequest "POST" ["ui", "seed"]) { hreqBody = Just Null }
-              , ExpectBodyPolicyError 400 "invalid_request" "request_body_must_be_object"
+              , ExpectBodyPolicyError 400 "validation_failed" "invalid_body"
               )
             ]
       forM_ directCases (assertDirectBodyPolicyCase app)
@@ -715,6 +715,9 @@ spec = describe "Seer.HTTP.Server" $ do
       `shouldBe` Just [("tab", False)]
     operationRequestBodyRequired doc "/config/sliders/get" "post" `shouldBe` Just (Just True)
     operationRequestSchemaRef doc "/config/sliders/get" "post" `shouldBe` Just "SliderGetRequest"
+    operationRequestBodyRequired doc "/editor/brush" "patch" `shouldBe` Just (Just True)
+    operationRequestBodyRequired doc "/overlays/import/validate" "post" `shouldBe` Just (Just True)
+    operationRequestSchemaRef doc "/overlays/import/validate" "post" `shouldBe` Just "OverlayImportValidateRequest"
     queryParameterInfo doc "/logs" "get"
       `shouldBe` Just [("level", False), ("limit", False), ("offset", False)]
     queryParameterInfo doc "/events" "get"
@@ -747,6 +750,7 @@ spec = describe "Seer.HTTP.Server" $ do
       `shouldSatisfy` maybe False (\statuses -> all (`elem` statuses) ["400", "401", "403", "404", "405", "409", "422", "500", "503", "504"])
     errorCodeEnum doc
       `shouldSatisfy` maybe False (\codes -> all (`elem` codes) ["validation_failed", "schema_validation_failed", "permission_denied", "operation_not_supported", "timeout"])
+    errorCodeEnum doc `shouldSatisfy` maybe False (notElem "invalid_json")
 
   it "rejects unauthorized WAI requests before parsing protected bodies" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
@@ -886,6 +890,24 @@ spec = describe "Seer.HTTP.Server" $ do
       hresStatusCode badDenseImport `shouldBe` 200
       lookupValue "valid" (hresBody badDenseImport) `shouldBe` Just (Bool False)
       objectHasKey "diagnostics" (hresBody badDenseImport) `shouldBe` True
+
+      missingImportBody <- request app (withRequestIdHeader "overlay-import-missing-body" $
+        mkRequest "POST" ["overlays", "import", "validate"])
+      assertBodyPolicyResponse "overlay-import-missing-body"
+        (ExpectBodyPolicyError 400 "validation_failed" "missing_body")
+        missingImportBody
+
+      nonObjectImportBody <- request app (withRequestIdHeader "overlay-import-non-object" $
+        (mkRequest "POST" ["overlays", "import", "validate"]) { hreqBody = Just (String "not-object") })
+      assertBodyPolicyResponse "overlay-import-non-object"
+        (ExpectBodyPolicyError 400 "validation_failed" "invalid_body")
+        nonObjectImportBody
+
+      missingSchemaImport <- request app (mkRequest "POST" ["overlays", "import", "validate"])
+        { hreqBody = Just (object ["payload" .= object []]) }
+      hresStatusCode missingSchemaImport `shouldBe` 200
+      lookupValue "valid" (hresBody missingSchemaImport) `shouldBe` Just (Bool False)
+      arrayFieldContainsObjectWithText "diagnostics" "code" "missing_schema" (hresBody missingSchemaImport) `shouldBe` True
 
       missingFields <- request app (mkRequest "GET" ["overlays", "fields"])
         { hreqQuery = [("overlay", Just "missing")] }
@@ -1088,7 +1110,7 @@ assertDirectNoBodyQueryParamsUseQuery app = do
         { hreqBody = Just (object ["q" .= (99 :: Int), "r" .= (99 :: Int)]) }
   conflict <- request app (withRequestIdHeader conflictRequestId conflictRequest)
   assertBodyPolicyResponse conflictRequestId
-    (ExpectBodyPolicyError 400 "invalid_request" "request_body_not_allowed")
+    (ExpectBodyPolicyError 400 "validation_failed" "unexpected_body")
     conflict
 
 withRequestIdHeader :: Text -> HttpRequest -> HttpRequest
@@ -1505,6 +1527,17 @@ lookupValue _ _ = Nothing
 objectHasKey :: Text -> Value -> Bool
 objectHasKey key (Object obj) = KM.member (Key.fromText key) obj
 objectHasKey _ _ = False
+
+arrayFieldContainsObjectWithText :: Text -> Text -> Text -> Value -> Bool
+arrayFieldContainsObjectWithText arrayField objectField expected (Object obj) =
+  case KM.lookup (Key.fromText arrayField) obj of
+    Just (Array values) -> any objectFieldMatches (toList values)
+    _ -> False
+  where
+    objectFieldMatches (Object item) =
+      KM.lookup (Key.fromText objectField) item == Just (String expected)
+    objectFieldMatches _ = False
+arrayFieldContainsObjectWithText _ _ _ _ = False
 
 pipelineStagesExposeDiagnostics :: Value -> Bool
 pipelineStagesExposeDiagnostics (Object obj) = case KM.lookup "stages" obj of
@@ -1934,25 +1967,25 @@ assertWaiRouteBodyPolicyMatrix manager = do
           , "GET"
           , "http://127.0.0.1:7376/state"
           , "{not-json"
-          , ExpectBodyPolicyError 400 "invalid_request" "request_body_not_allowed"
+          , ExpectBodyPolicyError 400 "validation_failed" "unexpected_body"
           )
         , ( "no-body-object"
           , "GET"
           , "http://127.0.0.1:7376/state"
           , "{}"
-          , ExpectBodyPolicyError 400 "invalid_request" "request_body_not_allowed"
+          , ExpectBodyPolicyError 400 "validation_failed" "unexpected_body"
           )
         , ( "no-body-non-object"
           , "GET"
           , "http://127.0.0.1:7376/state"
           , "\"not-object\""
-          , ExpectBodyPolicyError 400 "invalid_request" "request_body_not_allowed"
+          , ExpectBodyPolicyError 400 "validation_failed" "unexpected_body"
           )
         , ( "no-body-null"
           , "GET"
           , "http://127.0.0.1:7376/state"
           , "null"
-          , ExpectBodyPolicyError 400 "invalid_request" "request_body_not_allowed"
+          , ExpectBodyPolicyError 400 "validation_failed" "unexpected_body"
           )
         , ( "optional-empty"
           , "POST"
@@ -1964,7 +1997,7 @@ assertWaiRouteBodyPolicyMatrix manager = do
           , "POST"
           , "http://127.0.0.1:7376/screenshots"
           , "{not-json"
-          , ExpectBodyPolicyError 400 "invalid_json" "request_body_malformed_json"
+          , ExpectBodyPolicyError 400 "validation_failed" "invalid_body"
           )
         , ( "optional-object"
           , "POST"
@@ -1976,25 +2009,25 @@ assertWaiRouteBodyPolicyMatrix manager = do
           , "POST"
           , "http://127.0.0.1:7376/screenshots"
           , "\"not-object\""
-          , ExpectBodyPolicyError 400 "invalid_request" "request_body_must_be_object"
+          , ExpectBodyPolicyError 400 "validation_failed" "invalid_body"
           )
         , ( "optional-null"
           , "POST"
           , "http://127.0.0.1:7376/screenshots"
           , "null"
-          , ExpectBodyPolicyError 400 "invalid_request" "request_body_must_be_object"
+          , ExpectBodyPolicyError 400 "validation_failed" "invalid_body"
           )
         , ( "required-empty"
           , "POST"
           , "http://127.0.0.1:7376/ui/seed"
           , ""
-          , ExpectBodyPolicyError 400 "invalid_request" "request_body_required"
+          , ExpectBodyPolicyError 400 "validation_failed" "missing_body"
           )
         , ( "required-malformed"
           , "POST"
           , "http://127.0.0.1:7376/ui/seed"
           , "{not-json"
-          , ExpectBodyPolicyError 400 "invalid_json" "request_body_malformed_json"
+          , ExpectBodyPolicyError 400 "validation_failed" "invalid_body"
           )
         , ( "required-object"
           , "POST"
@@ -2006,13 +2039,13 @@ assertWaiRouteBodyPolicyMatrix manager = do
           , "POST"
           , "http://127.0.0.1:7376/ui/seed"
           , "\"not-object\""
-          , ExpectBodyPolicyError 400 "invalid_request" "request_body_must_be_object"
+          , ExpectBodyPolicyError 400 "validation_failed" "invalid_body"
           )
         , ( "required-null"
           , "POST"
           , "http://127.0.0.1:7376/ui/seed"
           , "null"
-          , ExpectBodyPolicyError 400 "invalid_request" "request_body_must_be_object"
+          , ExpectBodyPolicyError 400 "validation_failed" "invalid_body"
           )
         ]
   forM_ waiCases (assertWaiBodyPolicyCase manager)
@@ -2036,7 +2069,7 @@ assertWaiNoBodyQueryParamsUseQuery manager = do
   let conflictRequestId = "wai-body-policy-query-conflict"
   conflict <- waiBodyPolicyRequest manager conflictRequestId "GET" url "{\"q\":99,\"r\":99}"
   assertBodyPolicyResponse conflictRequestId
-    (ExpectBodyPolicyError 400 "invalid_request" "request_body_not_allowed")
+    (ExpectBodyPolicyError 400 "validation_failed" "unexpected_body")
     conflict
 
 waiBodyPolicyRequest :: Manager -> Text -> BS.ByteString -> String -> LBS.ByteString -> IO HttpResponse

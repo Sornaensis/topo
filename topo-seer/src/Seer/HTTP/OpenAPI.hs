@@ -366,7 +366,7 @@ errorEnvelopeSchema = JsonSchema "ErrorEnvelope" $ object
           , "properties" .= object
               [ "code" .= object
                   [ "type" .= ("string" :: Text)
-                  , "enum" .= ([ "invalid_json", "invalid_request", "validation_failed", "unauthorized"
+                  , "enum" .= ([ "invalid_request", "validation_failed", "unauthorized"
                                 , "not_found", "rejected", "internal_error", "unavailable"
                                 , "resource_not_found", "operation_not_supported", "record_not_found"
                                 , "duplicate_key", "schema_validation_failed", "permission_denied"

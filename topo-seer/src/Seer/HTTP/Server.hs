@@ -218,22 +218,22 @@ validateJsonObject _ = Left requestBodyMustBeObjectError
 
 requestBodyNotAllowedError :: HttpResponse
 requestBodyNotAllowedError = requestBodyPolicyError
-  "request_body_not_allowed"
+  "unexpected_body"
   "request body is not allowed for this route"
 
 requestBodyRequiredError :: HttpResponse
 requestBodyRequiredError = requestBodyPolicyError
-  "request_body_required"
+  "missing_body"
   "JSON request body is required for this route"
 
 requestBodyMustBeObjectError :: HttpResponse
 requestBodyMustBeObjectError = requestBodyPolicyError
-  "request_body_must_be_object"
+  "invalid_body"
   "JSON request body must be an object"
 
 requestBodyPolicyError :: Text -> Text -> HttpResponse
 requestBodyPolicyError detailCode message =
-  jsonResponse 400 (errorEnvelope "invalid_request" message [errorDetail detailCode message])
+  jsonResponse 400 (errorEnvelope "validation_failed" "validation failed" [errorDetail detailCode message])
 
 requestParams :: HttpRouteSpec -> HttpRequest -> Value
 requestParams spec req =
@@ -560,7 +560,7 @@ decodeRequestBody body
 
 invalidJsonError :: Text -> HttpResponse
 invalidJsonError message =
-  jsonResponse 400 (errorEnvelope "invalid_json" message [errorDetail "request_body_malformed_json" message])
+  requestBodyPolicyError "invalid_body" ("request body is malformed JSON: " <> message)
 
 errorDetail :: Text -> Text -> Value
 errorDetail detailCode message = object
@@ -726,7 +726,7 @@ friendlyHttpRouteSpecs = map annotateHttpRouteSpec
   , service "GET" ["editor"] "editor.state" "editor" "editor_get_state" "Read editor state." NoRequestBody
   , service "POST" ["editor", "toggle"] "editor.toggle" "editor" "editor_toggle" "Toggle editor." OptionalJsonRequestBody
   , service "POST" ["editor", "tool"] "editor.tool.set" "editor" "editor_set_tool" "Set editor tool." RequiredJsonRequestBody
-  , service "PATCH" ["editor", "brush"] "editor.brush.set" "editor" "editor_set_brush" "Set editor brush." OptionalJsonRequestBody
+  , service "PATCH" ["editor", "brush"] "editor.brush.set" "editor" "editor_set_brush" "Set editor brush." RequiredJsonRequestBody
   , service "POST" ["editor", "brush-stroke"] "editor.brushStroke" "editor" "editor_brush_stroke" "Queue a brush stroke." RequiredJsonRequestBody
   , service "POST" ["editor", "brush-line"] "editor.brushLine" "editor" "editor_brush_line" "Queue a brush line." RequiredJsonRequestBody
   , service "POST" ["editor", "biome"] "editor.biome.set" "editor" "editor_set_biome" "Set editor biome." RequiredJsonRequestBody
