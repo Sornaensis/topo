@@ -1871,11 +1871,12 @@ spec = describe "Plugin.RPC" $ do
 
     it "does not require writeTerrain capability for generator terrain output" $
       withConnectedTransports "rpc-generator-implicit-terrain-write" $ \host plugin -> do
+        terrainPayload <- nonEmptyGeneratorTerrainPayload
         let manifest = baseManifest { rmCapabilities = [CapReadTerrain] }
             conn = newRPCConnection manifest host Map.empty
             caps = pluginCaps [CapLog, CapReadTerrain]
             generatorResult = GeneratorResult
-              { grTerrain = Null
+              { grTerrain = terrainPayload
               , grOverlay = Nothing
               , grMetadata = Nothing
               }
@@ -1884,8 +1885,9 @@ spec = describe "Plugin.RPC" $ do
         request <- recvEnvelopeFrom plugin
         envType request `shouldBe` MsgInvokeGenerator
         sendGeneratorResult plugin request generatorResult
-        (outcome, _) <- takeGeneratorStageResult done
+        (outcome, worldAfter) <- takeGeneratorStageResult done
         outcome `shouldBe` Right ()
+        twTerrain worldAfter `shouldBe` twTerrain generatorTerrainWriteWorld
 
     it "rejects generator overlay output without a manifest overlay declaration even when a same-name overlay exists" $
       withConnectedTransports "rpc-generator-overlay-no-decl" $ \host plugin -> do
@@ -2576,6 +2578,20 @@ expectPluginInvariantContaining expected outcome =
 
 generatorStageWorld :: TerrainWorld
 generatorStageWorld = emptyWorld (WorldConfig { wcChunkSize = 64 }) defaultHexGridMeta
+
+generatorTerrainWriteWorld :: TerrainWorld
+generatorTerrainWriteWorld =
+  setTerrainChunk (ChunkId 0) (emptyTerrainChunk config) generatorStageWorld
+  where
+    config = WorldConfig { wcChunkSize = 64 }
+
+nonEmptyGeneratorTerrainPayload :: IO Value
+nonEmptyGeneratorTerrainPayload =
+  case terrainWorldToPayload generatorTerrainWriteWorld of
+    Left err -> do
+      expectationFailure ("failed to encode generator terrain payload: " <> Text.unpack err)
+      fail "generator terrain payload"
+    Right payload -> pure payload
 
 nonEmptyTerrainWritesPayload :: IO Value
 nonEmptyTerrainWritesPayload =
