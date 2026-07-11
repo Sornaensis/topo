@@ -1000,12 +1000,14 @@ spec = describe "Seer.HTTP.Server" $ do
     operationResponseExample doc "/health" "get" "200" `shouldBe` Just (object ["status" .= ("ok" :: Text)])
     operationResponseErrorCode doc "/data/records" "post" "403" `shouldBe` Just "permission_denied"
     operationResponseErrorCode doc "/data/records" "post" "405" `shouldBe` Just "operation_not_supported"
+    operationResponseErrorCode doc "/data/records" "post" "415" `shouldBe` Just "unsupported_media_type"
+    operationResponseErrorCode doc "/data/records" "get" "415" `shouldBe` Nothing
     operationResponseErrorCode doc "/data/records" "post" "422" `shouldBe` Just "schema_validation_failed"
     operationResponseErrorCode doc "/data/records" "post" "504" `shouldBe` Just "timeout"
     operationResponseStatuses doc "/data/records" "post"
-      `shouldSatisfy` maybe False (\statuses -> all (`elem` statuses) ["400", "401", "403", "404", "405", "409", "422", "500", "503", "504"])
+      `shouldSatisfy` maybe False (\statuses -> all (`elem` statuses) ["400", "401", "403", "404", "405", "409", "415", "422", "500", "503", "504"])
     errorCodeEnum doc
-      `shouldSatisfy` maybe False (\codes -> all (`elem` codes) ["validation_failed", "schema_validation_failed", "permission_denied", "operation_not_supported", "timeout"])
+      `shouldSatisfy` maybe False (\codes -> all (`elem` codes) ["validation_failed", "schema_validation_failed", "permission_denied", "operation_not_supported", "unsupported_media_type", "timeout"])
     errorCodeEnum doc `shouldSatisfy` maybe False (notElem "invalid_json")
 
   it "rejects unauthorized WAI requests before checking protected body size or parsing" $
@@ -2425,6 +2427,7 @@ assertWaiRouteBodyPolicyMatrix manager = do
         ]
   forM_ waiCases (assertWaiBodyPolicyCase manager)
   assertWaiNoBodyQueryParamsUseQuery manager
+  assertWaiJsonContentTypePolicy manager
 
 assertWaiBodyPolicyCase :: Manager -> (Text, BS.ByteString, String, LBS.ByteString, BodyPolicyExpectation) -> IO ()
 assertWaiBodyPolicyCase manager (caseName, requestMethod, url, rawBody, expected) = do
@@ -2446,6 +2449,55 @@ assertWaiNoBodyQueryParamsUseQuery manager = do
   assertBodyPolicyResponse conflictRequestId
     (ExpectBodyPolicyError 400 "validation_failed" "unexpected_body")
     conflict
+
+assertWaiJsonContentTypePolicy :: Manager -> IO ()
+assertWaiJsonContentTypePolicy manager = do
+  let optionalUrl = "http://127.0.0.1:7376/screenshots"
+      requiredUrl = "http://127.0.0.1:7376/ui/seed"
+      noBodyUrl = "http://127.0.0.1:7376/state"
+
+  optionalMissing <- waiRawRequest manager "wai-content-type-optional-missing" "POST" optionalUrl "{}" []
+  assertUnsupportedMediaTypeResponse "wai-content-type-optional-missing" optionalMissing
+
+  optionalWrong <- waiRawRequest manager "wai-content-type-optional-wrong" "POST" optionalUrl "{}"
+    [("Content-Type", "text/plain")]
+  assertUnsupportedMediaTypeResponse "wai-content-type-optional-wrong" optionalWrong
+
+  optionalWithParams <- waiRawRequest manager "wai-content-type-optional-params" "POST" optionalUrl "{}"
+    [("Content-Type", "Application/JSON; Charset=utf-8")]
+  assertBodyPolicyResponse "wai-content-type-optional-params" ExpectBodyPolicySuccess optionalWithParams
+
+  optionalEmpty <- waiRawRequest manager "wai-content-type-optional-empty" "POST" optionalUrl "" []
+  assertBodyPolicyResponse "wai-content-type-optional-empty" ExpectBodyPolicySuccess optionalEmpty
+
+  requiredMissing <- waiRawRequest manager "wai-content-type-required-missing" "POST" requiredUrl "{\"seed\":987}" []
+  assertUnsupportedMediaTypeResponse "wai-content-type-required-missing" requiredMissing
+
+  requiredWrong <- waiRawRequest manager "wai-content-type-required-wrong" "POST" requiredUrl "{\"seed\":987}"
+    [("Content-Type", "application/x-json")]
+  assertUnsupportedMediaTypeResponse "wai-content-type-required-wrong" requiredWrong
+
+  requiredWithParams <- waiRawRequest manager "wai-content-type-required-params" "POST" requiredUrl "{\"seed\":987}"
+    [("Content-Type", "application/json; charset=utf-8")]
+  assertBodyPolicyResponse "wai-content-type-required-params" ExpectBodyPolicySuccess requiredWithParams
+
+  requiredEmpty <- waiRawRequest manager "wai-content-type-required-empty" "POST" requiredUrl "" []
+  assertBodyPolicyResponse "wai-content-type-required-empty"
+    (ExpectBodyPolicyError 400 "validation_failed" "missing_body")
+    requiredEmpty
+
+  noBodyWrong <- waiRawRequest manager "wai-content-type-no-body-wrong" "GET" noBodyUrl "{}"
+    [("Content-Type", "text/plain")]
+  assertBodyPolicyResponse "wai-content-type-no-body-wrong"
+    (ExpectBodyPolicyError 400 "validation_failed" "unexpected_body")
+    noBodyWrong
+
+assertUnsupportedMediaTypeResponse :: Text -> HttpResponse -> Expectation
+assertUnsupportedMediaTypeResponse requestId response = do
+  hresStatusCode response `shouldBe` 415
+  lookupHeaderText "x-request-id" (hresHeaders response) `shouldBe` Just requestId
+  lookupNestedText ["error", "code"] (hresBody response) `shouldBe` Just "unsupported_media_type"
+  lookupNestedText ["error", "request_id"] (hresBody response) `shouldBe` Just requestId
 
 waiBodyPolicyRequest :: Manager -> Text -> BS.ByteString -> String -> LBS.ByteString -> IO HttpResponse
 waiBodyPolicyRequest manager requestId requestMethod url rawBody =
@@ -2470,7 +2522,32 @@ waiJsonRequestWithBody
   -> RequestBody
   -> [Header]
   -> IO HttpResponse
-waiJsonRequestWithBody manager requestId requestMethod url rawBody extraHeaders = do
+waiJsonRequestWithBody manager requestId requestMethod url rawBody extraHeaders =
+  waiRawRequestWithBody manager requestId requestMethod url rawBody (jsonContentTypeHeader : extraHeaders)
+
+jsonContentTypeHeader :: Header
+jsonContentTypeHeader = ("Content-Type", "application/json")
+
+waiRawRequest
+  :: Manager
+  -> Text
+  -> BS.ByteString
+  -> String
+  -> LBS.ByteString
+  -> [Header]
+  -> IO HttpResponse
+waiRawRequest manager requestId requestMethod url rawBody extraHeaders =
+  waiRawRequestWithBody manager requestId requestMethod url (RequestBodyLBS rawBody) extraHeaders
+
+waiRawRequestWithBody
+  :: Manager
+  -> Text
+  -> BS.ByteString
+  -> String
+  -> RequestBody
+  -> [Header]
+  -> IO HttpResponse
+waiRawRequestWithBody manager requestId requestMethod url rawBody extraHeaders = do
   req0 <- parseRequest url
   let req = req0
         { method = requestMethod

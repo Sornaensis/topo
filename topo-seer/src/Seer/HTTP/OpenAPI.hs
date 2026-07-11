@@ -119,20 +119,25 @@ operationObject spec = object $ baseFields <> securityFields <> queryFields <> b
       [ "operationId" .= hrsOperationId spec
       , "summary" .= hrsSummary spec
       , "tags" .= [hrsTag spec]
-      , "responses" .= object
-          [ "200" .= okResponseObject spec
-          , "400" .= errorResponseObject "Invalid request or unsupported query" "invalid_request"
-          , "401" .= errorResponseObject "Unauthorized" "unauthorized"
-          , "403" .= errorResponseObject "Forbidden" "permission_denied"
-          , "404" .= errorResponseObject "Not found" "not_found"
-          , "405" .= errorResponseObject "Operation not supported" "operation_not_supported"
-          , "409" .= errorResponseObject "Conflict or rejected state change" "conflict"
-          , "422" .= errorResponseObject "Schema validation failed" "schema_validation_failed"
-          , "500" .= errorResponseObject "Internal server error" "internal_error"
-          , "503" .= errorResponseObject "Unavailable" "unavailable"
-          , "504" .= errorResponseObject "Data resource timeout" "timeout"
-          ]
+      , "responses" .= object (responseFields spec)
       ]
+    responseFields route =
+      [ "200" .= okResponseObject route
+      , "400" .= errorResponseObject "Invalid request or unsupported query" "invalid_request"
+      , "401" .= errorResponseObject "Unauthorized" "unauthorized"
+      , "403" .= errorResponseObject "Forbidden" "permission_denied"
+      , "404" .= errorResponseObject "Not found" "not_found"
+      , "405" .= errorResponseObject "Operation not supported" "operation_not_supported"
+      , "409" .= errorResponseObject "Conflict or rejected state change" "conflict"
+      ] <> unsupportedMediaTypeResponse route <>
+      [ "422" .= errorResponseObject "Schema validation failed" "schema_validation_failed"
+      , "500" .= errorResponseObject "Internal server error" "internal_error"
+      , "503" .= errorResponseObject "Unavailable" "unavailable"
+      , "504" .= errorResponseObject "Data resource timeout" "timeout"
+      ]
+    unsupportedMediaTypeResponse route = case hrsRequestBody route of
+      NoRequestBody -> []
+      _ -> ["415" .= errorResponseObject "Unsupported media type" "unsupported_media_type"]
     securityFields
       | hrsOperationId spec == "meta.health" = []
       | otherwise = ["security" .= [object ["bearerAuth" .= ([] :: [Value])]]]
@@ -370,8 +375,9 @@ errorEnvelopeSchema = JsonSchema "ErrorEnvelope" $ object
                                 , "not_found", "rejected", "internal_error", "unavailable"
                                 , "resource_not_found", "operation_not_supported", "record_not_found"
                                 , "duplicate_key", "schema_validation_failed", "permission_denied"
-                                , "conflict", "plugin_unavailable", "external_data_source_unavailable"
-                                , "query_unsupported", "timeout", "data_resource_error"
+                                , "conflict", "unsupported_media_type", "plugin_unavailable"
+                                , "external_data_source_unavailable", "query_unsupported", "timeout"
+                                , "data_resource_error"
                                 ] :: [Text])
                   ]
               , "message" .= object ["type" .= ("string" :: Text)]

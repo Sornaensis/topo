@@ -133,30 +133,32 @@ httpApplication cfg app ctx request respond = do
           bodyResult <- readHttpRequestBody (hscMaxRequestBodyBytes cfg) spec request
           case bodyResult of
             Left rsp -> respond (waiResponse (withReqId rsp))
-            Right body -> case decodeHttpRequestBody spec body of
+            Right body -> case validateJsonRequestContentType spec request body of
               Left rsp -> respond (waiResponse (withReqId rsp))
-              Right mBody -> case validateHttpRequestBody spec mBody of
+              Right () -> case decodeHttpRequestBody spec body of
                 Left rsp -> respond (waiResponse (withReqId rsp))
-                Right () -> case decodeQueryParams (Wai.queryString request) of
+                Right mBody -> case validateHttpRequestBody spec mBody of
                   Left rsp -> respond (waiResponse (withReqId rsp))
-                  Right query -> do
-                    let httpReq = HttpRequest
-                          { hreqMethod = method
-                          , hreqPath = path
-                          , hreqQuery = query
-                          , hreqHeaders = headers
-                          , hreqBody = mBody
-                          }
-                    case requestParams spec httpReq of
-                      Left rsp -> respond (waiResponse (withReqId rsp))
-                      Right _
-                        | hrsOperationId spec == "events.list"
-                        , eventStreamRequested query request -> do
-                            response <- eventStreamWaiResponse ctx (requestIdFromHeaders headers) query
-                            respond response
-                        | otherwise -> do
-                            rsp <- handleHttpRequest cfg app ctx httpReq
-                            respond (waiResponse rsp)
+                  Right () -> case decodeQueryParams (Wai.queryString request) of
+                    Left rsp -> respond (waiResponse (withReqId rsp))
+                    Right query -> do
+                      let httpReq = HttpRequest
+                            { hreqMethod = method
+                            , hreqPath = path
+                            , hreqQuery = query
+                            , hreqHeaders = headers
+                            , hreqBody = mBody
+                            }
+                      case requestParams spec httpReq of
+                        Left rsp -> respond (waiResponse (withReqId rsp))
+                        Right _
+                          | hrsOperationId spec == "events.list"
+                          , eventStreamRequested query request -> do
+                              response <- eventStreamWaiResponse ctx (requestIdFromHeaders headers) query
+                              respond response
+                          | otherwise -> do
+                              rsp <- handleHttpRequest cfg app ctx httpReq
+                              respond (waiResponse rsp)
 
 -- | Pure request shape for route tests without opening a socket.
 data HttpRequest = HttpRequest
@@ -652,6 +654,33 @@ payloadTooLargeError :: Int -> HttpResponse
 payloadTooLargeError maxBytes = jsonResponse 413 (errorEnvelope
   "payload_too_large"
   ("request body exceeds maximum size of " <> Text.pack (show maxBytes) <> " bytes")
+  [])
+
+validateJsonRequestContentType :: HttpRouteSpec -> Wai.Request -> LBS.ByteString -> Either HttpResponse ()
+validateJsonRequestContentType spec request body
+  | hrsRequestBody spec == NoRequestBody = Right ()
+  | LBS.null body = Right ()
+  | requestHasJsonContentType request = Right ()
+  | otherwise = Left unsupportedMediaTypeError
+
+requestHasJsonContentType :: Wai.Request -> Bool
+requestHasJsonContentType request =
+  maybe False isJsonContentType (lookup HTTP.hContentType (Wai.requestHeaders request))
+
+isJsonContentType :: BS.ByteString -> Bool
+isJsonContentType raw =
+  trimAscii (BSC.takeWhile (/= ';') (BSC.map toLower raw)) == "application/json"
+
+trimAscii :: BS.ByteString -> BS.ByteString
+trimAscii = trimEnd . BSC.dropWhile isHttpSpace
+  where
+    trimEnd = BSC.reverse . BSC.dropWhile isHttpSpace . BSC.reverse
+    isHttpSpace c = c == ' ' || c == '\t'
+
+unsupportedMediaTypeError :: HttpResponse
+unsupportedMediaTypeError = jsonResponse 415 (errorEnvelope
+  "unsupported_media_type"
+  "JSON request body requires Content-Type: application/json"
   [])
 
 decodeHttpRequestBody :: HttpRouteSpec -> LBS.ByteString -> Either HttpResponse (Maybe Value)
