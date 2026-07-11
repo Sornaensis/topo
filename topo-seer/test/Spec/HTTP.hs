@@ -1010,7 +1010,7 @@ spec = describe "Seer.HTTP.Server" $ do
       `shouldSatisfy` maybe False (\codes -> all (`elem` codes) ["validation_failed", "schema_validation_failed", "permission_denied", "operation_not_supported", "unsupported_media_type", "timeout"])
     errorCodeEnum doc `shouldSatisfy` maybe False (notElem "invalid_json")
 
-  it "rejects unauthorized WAI requests before checking protected body size or parsing" $
+  it "rejects unauthorized WAI requests before checking protected body size, content type, or parsing" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       let cfg = defaultHttpServerConfig
             { hscBindPort = 7374
@@ -1019,14 +1019,14 @@ spec = describe "Seer.HTTP.Server" $ do
             }
       tid <- forkHttpServer cfg headlessHttpAppService (headlessServiceContext app)
       manager <- newManager defaultManagerSettings
-      eventually_ (assertUnauthorizedInvalidJson manager)
+      eventually_ (assertUnauthorizedProtectedTransportErrors manager)
         `finally` (do
           killThread tid
           threadDelay 100000)
 
   it "rejects oversized WAI request bodies with JSON 413 envelopes" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
-      let cfg = defaultHttpServerConfig { hscBindPort = 7378, hscMaxRequestBodyBytes = 8 }
+      let cfg = defaultHttpServerConfig { hscBindPort = 7378, hscMaxRequestBodyBytes = 10 }
       tid <- forkHttpServer cfg headlessHttpAppService (headlessServiceContext app)
       manager <- newManager defaultManagerSettings
       eventually_ (assertWaiRequestBodySizeLimits manager)
@@ -2286,31 +2286,48 @@ assertMalformedUtf8QueryErrors manager =
       errorDetailCode (hresBody response) `shouldBe` Just "invalid_query_param"
       lookupNestedText ["error", "request_id"] (hresBody response) `shouldBe` Just requestId
 
-assertUnauthorizedInvalidJson :: Manager -> IO ()
-assertUnauthorizedInvalidJson manager = do
-  req0 <- parseRequest "http://127.0.0.1:7374/screenshots"
-  let req = req0
-        { method = "POST"
-        , requestBody = RequestBodyLBS "{not-json"
-        }
-  rsp <- httpLbs req manager
-  HTTP.statusCode (responseStatus rsp) `shouldBe` 401
+assertUnauthorizedProtectedTransportErrors :: Manager -> IO ()
+assertUnauthorizedProtectedTransportErrors manager = do
+  let cases :: [(Text, LBS.ByteString, [Header])]
+      cases =
+        [ ("wai-auth-precedence-malformed", "{", [jsonContentTypeHeader])
+        , ("wai-auth-precedence-oversize", LBS.fromStrict (BS.replicate 9 123), [jsonContentTypeHeader])
+        , ("wai-auth-precedence-wrong-content-type", "{}", [("Content-Type", "text/plain")])
+        ]
+  forM_ cases $ \(requestId, rawBody, extraHeaders) -> do
+    response <- waiRawRequest manager requestId "POST" "http://127.0.0.1:7374/screenshots" rawBody extraHeaders
+    assertUnauthorizedResponse requestId response
+
+assertUnauthorizedResponse :: Text -> HttpResponse -> Expectation
+assertUnauthorizedResponse requestId response = do
+  hresStatusCode response `shouldBe` 401
+  lookupHeaderText "x-request-id" (hresHeaders response) `shouldBe` Just requestId
+  lookupNestedText ["error", "code"] (hresBody response) `shouldBe` Just "unauthorized"
+  lookupNestedText ["error", "request_id"] (hresBody response) `shouldBe` Just requestId
 
 assertWaiRequestBodySizeLimits :: Manager -> IO ()
 assertWaiRequestBodySizeLimits manager = do
+  let underRequestId = "wai-body-limit-under"
+  under <- waiJsonRequest manager underRequestId "POST" "http://127.0.0.1:7378/screenshots" "{}" []
+  assertBodyPolicyResponse underRequestId ExpectBodyPolicySuccess under
+
+  let exactRequestId = "wai-body-limit-exact"
+  exact <- waiJsonRequest manager exactRequestId "POST" "http://127.0.0.1:7378/ui/seed" "{\"seed\":1}" []
+  assertBodyPolicyResponse exactRequestId ExpectBodyPolicySuccess exact
+
   let knownRequestId = "wai-body-limit-known"
   known <- waiJsonRequest manager knownRequestId "POST" "http://127.0.0.1:7378/ui/seed"
-    (LBS.fromStrict (BS.replicate 9 123)) []
+    (LBS.fromStrict (BS.replicate 11 123)) []
   assertPayloadTooLargeResponse knownRequestId known
 
   let streamedRequestId = "wai-body-limit-streamed"
   streamed <- waiJsonRequestWithBody manager streamedRequestId "POST" "http://127.0.0.1:7378/ui/seed"
-    (chunkedRequestBody [BS.replicate 4 123, BS.replicate 5 123]) []
+    (chunkedRequestBody [BS.replicate 5 123, BS.replicate 6 123]) []
   assertPayloadTooLargeResponse streamedRequestId streamed
 
   let noBodyRequestId = "wai-body-limit-no-body"
   noBody <- waiJsonRequest manager noBodyRequestId "GET" "http://127.0.0.1:7378/state"
-    (LBS.fromStrict (BS.replicate 9 123)) []
+    (LBS.fromStrict (BS.replicate 11 123)) []
   assertBodyPolicyResponse noBodyRequestId
     (ExpectBodyPolicyError 400 "validation_failed" "unexpected_body")
     noBody
