@@ -72,12 +72,27 @@ import Seer.HTTP.Server
 import Seer.Command.Dispatch (CommandContext(..))
 import Seer.Service.AppService
   ( AppService(..)
+  , ConfigService(..)
   , DataResourceService(..)
+  , LogService(..)
+  , TerrainService(..)
   , appServiceOperationMethods
+  , configGetEnumsOperation
+  , configGetSlidersOperation
   , dataResourceCreateRecordOperation
   , dataResourceListRecordsOperation
+  , logGetOperation
+  , terrainGetChunkSummaryOperation
+  , terrainGetHexOperation
   )
-import Seer.Service.Types (ServiceError(..), ServiceRequest(..), ServiceResponse(..), rawServiceHandler)
+import Seer.Service.Types
+  ( ServiceError(..)
+  , ServiceHandler
+  , ServiceRequest(..)
+  , ServiceResponse(..)
+  , TypedServiceOperation
+  , rawServiceHandler
+  )
 import Seer.System (runApp)
 import Spec.Support.OverlayFixtures (mkSparseFloatOverlay)
 import System.Directory
@@ -430,6 +445,175 @@ spec = describe "Seer.HTTP.Server" $ do
       hresStatusCode invalidBool `shouldBe` 400
       lookupNestedText ["error", "code"] (hresBody invalidBool) `shouldBe` Just "validation_failed"
       errorDetailCode (hresBody invalidBool) `shouldBe` Just "invalid_query_param"
+
+  it "enforces query parser error matrices across representative routes" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      let cases :: [(Text, HttpRequest, QueryParserExpectation)]
+          cases =
+            [ ( "terrain-hex-valid-ints"
+              , (mkRequest "GET" ["terrain", "hex"])
+                  { hreqQuery = [("q", Just "0"), ("r", Just "-1")] }
+              , ExpectQueryParserSuccess [("q", Number 0), ("r", Number (-1))]
+              )
+            , ( "terrain-hex-string-for-int"
+              , (mkRequest "GET" ["terrain", "hex"])
+                  { hreqQuery = [("q", Just "abc"), ("r", Just "0")] }
+              , ExpectQueryParserError "invalid_query_param"
+              )
+            , ( "terrain-hex-null-required"
+              , (mkRequest "GET" ["terrain", "hex"])
+                  { hreqQuery = [("q", Nothing), ("r", Just "0")] }
+              , ExpectQueryParserError "missing_query_param"
+              )
+            , ( "terrain-hex-missing-required"
+              , (mkRequest "GET" ["terrain", "hex"])
+                  { hreqQuery = [("q", Just "0")] }
+              , ExpectQueryParserError "missing_query_param"
+              )
+            , ( "terrain-chunk-valid-int"
+              , (mkRequest "GET" ["terrain", "chunk-summary"])
+                  { hreqQuery = [("chunk", Just "+42")] }
+              , ExpectQueryParserSuccess [("chunk", Number 42)]
+              )
+            , ( "terrain-chunk-string-for-int"
+              , (mkRequest "GET" ["terrain", "chunk-summary"])
+                  { hreqQuery = [("chunk", Just "chunk-42")] }
+              , ExpectQueryParserError "invalid_query_param"
+              )
+            , ( "terrain-chunk-null-required"
+              , (mkRequest "GET" ["terrain", "chunk-summary"])
+                  { hreqQuery = [("chunk", Nothing)] }
+              , ExpectQueryParserError "missing_query_param"
+              )
+            , ( "terrain-chunk-missing-required"
+              , mkRequest "GET" ["terrain", "chunk-summary"]
+              , ExpectQueryParserError "missing_query_param"
+              )
+            , ( "config-enums-string-preserved"
+              , (mkRequest "GET" ["config", "enums"])
+                  { hreqQuery = [("type", Just "007")] }
+              , ExpectQueryParserSuccess [("type", String "007")]
+              )
+            , ( "config-enums-null-required"
+              , (mkRequest "GET" ["config", "enums"])
+                  { hreqQuery = [("type", Nothing)] }
+              , ExpectQueryParserError "missing_query_param"
+              )
+            , ( "config-enums-missing-required"
+              , mkRequest "GET" ["config", "enums"]
+              , ExpectQueryParserError "missing_query_param"
+              )
+            , ( "config-sliders-string-preserved"
+              , (mkRequest "GET" ["config", "sliders"])
+                  { hreqQuery = [("tab", Just "terrain")] }
+              , ExpectQueryParserSuccess [("tab", String "terrain")]
+              )
+            , ( "config-sliders-null-optional"
+              , (mkRequest "GET" ["config", "sliders"])
+                  { hreqQuery = [("tab", Nothing)] }
+              , ExpectQueryParserError "invalid_query_param"
+              )
+            , ( "config-sliders-missing-optional"
+              , mkRequest "GET" ["config", "sliders"]
+              , ExpectQueryParserSuccess []
+              )
+            , ( "data-records-strings-and-ints"
+              , (mkRequest "GET" ["data", "records"])
+                  { hreqQuery =
+                      [ ("plugin", Just "plugin-007")
+                      , ("resource", Just "records")
+                      , ("query", Just "by_field")
+                      , ("key", Just "007")
+                      , ("value", Just "007")
+                      , ("chunk", Just "12")
+                      , ("page_size", Just "3")
+                      ]
+                  }
+              , ExpectQueryParserSuccess
+                  [ ("plugin", String "plugin-007")
+                  , ("resource", String "records")
+                  , ("query", String "by_field")
+                  , ("key", String "007")
+                  , ("value", String "007")
+                  , ("chunk", Number 12)
+                  , ("page_size", Number 3)
+                  ]
+              )
+            , ( "data-records-string-for-int"
+              , (mkRequest "GET" ["data", "records"])
+                  { hreqQuery =
+                      [ ("plugin", Just "plugin")
+                      , ("resource", Just "records")
+                      , ("chunk", Just "abc")
+                      ]
+                  }
+              , ExpectQueryParserError "invalid_query_param"
+              )
+            , ( "data-records-null-required"
+              , (mkRequest "GET" ["data", "records"])
+                  { hreqQuery = [("plugin", Nothing), ("resource", Just "records")] }
+              , ExpectQueryParserError "missing_query_param"
+              )
+            , ( "data-records-missing-required"
+              , (mkRequest "GET" ["data", "records"])
+                  { hreqQuery = [("resource", Just "records")] }
+              , ExpectQueryParserError "missing_query_param"
+              )
+            , ( "data-records-null-optional-int"
+              , (mkRequest "GET" ["data", "records"])
+                  { hreqQuery =
+                      [ ("plugin", Just "plugin")
+                      , ("resource", Just "records")
+                      , ("page_size", Nothing)
+                      ]
+                  }
+              , ExpectQueryParserError "invalid_query_param"
+              )
+            , ( "logs-strings-and-ints"
+              , (mkRequest "GET" ["logs"])
+                  { hreqQuery = [("level", Just "warn"), ("limit", Just "5"), ("offset", Just "0")] }
+              , ExpectQueryParserSuccess [("level", String "warn"), ("limit", Number 5), ("offset", Number 0)]
+              )
+            , ( "logs-string-for-int"
+              , (mkRequest "GET" ["logs"])
+                  { hreqQuery = [("limit", Just "many")] }
+              , ExpectQueryParserError "invalid_query_param"
+              )
+            , ( "logs-null-optional-int"
+              , (mkRequest "GET" ["logs"])
+                  { hreqQuery = [("offset", Nothing)] }
+              , ExpectQueryParserError "invalid_query_param"
+              )
+            , ( "logs-missing-optional"
+              , mkRequest "GET" ["logs"]
+              , ExpectQueryParserSuccess []
+              )
+            , ( "events-valid-bool-and-int"
+              , (mkRequest "GET" ["events"])
+                  { hreqQuery = [("stream", Just "false"), ("limit", Just "1")] }
+              , ExpectQueryParserSuccess []
+              )
+            , ( "events-string-for-bool"
+              , (mkRequest "GET" ["events"])
+                  { hreqQuery = [("stream", Just "yes")] }
+              , ExpectQueryParserError "invalid_query_param"
+              )
+            , ( "events-null-optional-bool"
+              , (mkRequest "GET" ["events"])
+                  { hreqQuery = [("stream", Nothing)] }
+              , ExpectQueryParserError "invalid_query_param"
+              )
+            , ( "events-string-for-int"
+              , (mkRequest "GET" ["events"])
+                  { hreqQuery = [("limit", Just "1.5")] }
+              , ExpectQueryParserError "invalid_query_param"
+              )
+            , ( "events-missing-optional"
+              , mkRequest "GET" ["events"]
+              , ExpectQueryParserSuccess []
+              )
+            ]
+      forM_ cases (assertQueryParserCase app echoQueryAppService)
 
   it "returns validation errors as HTTP 400 JSON envelopes" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
@@ -1143,6 +1327,53 @@ assertBackendNeutralPluginDataSurfaces app = do
 positiveNumber :: Value -> Bool
 positiveNumber (Number n) = n > 0
 positiveNumber _ = False
+
+data QueryParserExpectation
+  = ExpectQueryParserSuccess [(Text, Value)]
+  | ExpectQueryParserError Text
+  deriving (Eq, Show)
+
+echoQueryAppService :: AppService
+echoQueryAppService = headlessHttpAppService
+  { appConfig = (appConfig headlessHttpAppService)
+      { configGetSliders = echoServiceHandler configGetSlidersOperation
+      , configGetEnums = echoServiceHandler configGetEnumsOperation
+      }
+  , appTerrain = (appTerrain headlessHttpAppService)
+      { terrainGetHex = echoServiceHandler terrainGetHexOperation
+      , terrainGetChunkSummary = echoServiceHandler terrainGetChunkSummaryOperation
+      }
+  , appDataResources = (appDataResources headlessHttpAppService)
+      { dataListRecords = echoServiceHandler dataResourceListRecordsOperation
+      }
+  , appLogs = (appLogs headlessHttpAppService)
+      { logGet = echoServiceHandler logGetOperation
+      }
+  }
+
+echoServiceHandler :: TypedServiceOperation request response -> ServiceHandler request response
+echoServiceHandler operation = rawServiceHandler operation $ \_ serviceReq ->
+  pure . Right . ServiceResponse $ case serviceRequestBody serviceReq of
+    Just value -> value
+    Nothing -> Null
+
+assertQueryParserCase :: HeadlessApp -> AppService -> (Text, HttpRequest, QueryParserExpectation) -> IO ()
+assertQueryParserCase app appService (caseName, req, expected) = do
+  let requestId = "query-parser-" <> caseName
+  response <- handleHttpRequest defaultHttpServerConfig appService (headlessServiceContext app) $
+    withRequestIdHeader requestId req
+  case expected of
+    ExpectQueryParserSuccess expectedFields -> do
+      hresStatusCode response `shouldBe` 200
+      forM_ expectedFields $ \(field, value) ->
+        lookupValue field (hresBody response) `shouldBe` Just value
+    ExpectQueryParserError expectedDetailCode -> do
+      hresStatusCode response `shouldBe` 400
+      lookupHeaderText "content-type" (hresHeaders response) `shouldBe` Just "application/json"
+      lookupHeaderText "x-request-id" (hresHeaders response) `shouldBe` Just requestId
+      lookupNestedText ["error", "code"] (hresBody response) `shouldBe` Just "validation_failed"
+      errorDetailCode (hresBody response) `shouldBe` Just expectedDetailCode
+      lookupNestedText ["error", "request_id"] (hresBody response) `shouldBe` Just requestId
 
 data BodyPolicyExpectation
   = ExpectBodyPolicySuccess
