@@ -789,6 +789,57 @@ spec = describe "PluginManager" $ do
         providerSnapshots <- getPluginExternalDataSources pluginManagerHandle
         expectProviderStatusMessage externalProviderPluginNameText "omitted grant" providerSnapshots
 
+  it "normalizes brokered external grant messages to the runtime capability scope" $
+    withExecutablePluginDirs
+      [ (externalConsumerPluginName, externalConsumerManifestJSON, "external-consumer")
+      , (externalProviderPluginName, externalProviderManifestJSON, "external-provider-controlled-status")
+      ] $ do
+        writeExternalProviderStatusMode "grant-scope-query-only"
+        withPluginManager $ \pluginManagerHandle -> do
+          discoverPlugins pluginManagerHandle
+          refreshManifests pluginManagerHandle
+          loaded <- getLoadedPlugins pluginManagerHandle
+          pluginStatuses externalConsumerPluginName loaded `shouldSatisfy` elem PluginConnected
+          pluginLifecycleStates externalConsumerPluginName loaded `shouldSatisfy` elem LifecycleReady
+          grantScopes <- readExternalConsumerGrantScopeLog
+          grantScopes `shouldBe` ["top=query;status=query"]
+
+  it "blocks required consumers when runtime grant scope omits requested access capabilities" $
+    withExecutablePluginDirs
+      [ (externalConsumerPluginName, externalConsumerManifestJSON, "external-consumer")
+      , (externalProviderPluginName, externalProviderManifestJSON, "external-provider-controlled-status")
+      ] $ do
+        writeExternalProviderStatusMode "grant-scope-health-only"
+        withPluginManager $ \pluginManagerHandle -> do
+          discoverPlugins pluginManagerHandle
+          refreshManifests pluginManagerHandle
+          loaded <- getLoadedPlugins pluginManagerHandle
+          pluginStatuses externalConsumerPluginName loaded `shouldSatisfy` anyPluginErrorContaining "capability scope mismatch"
+          pluginLifecycleStates externalConsumerPluginName loaded `shouldSatisfy` elem LifecycleFailed
+          pluginLifecycleErrorCodes externalConsumerPluginName loaded `shouldSatisfy` elem (Just "external_data_source_blocked")
+          operations <- readExternalConsumerOperationLog
+          operations `shouldBe` []
+          snapshots <- getPluginExternalDataSources pluginManagerHandle
+          expectUnavailableConsumerBrokerSnapshot "unavailable" "capability scope mismatch" snapshots
+
+  it "degrades optional consumers when runtime grant scope widens beyond grant capabilities" $
+    withExecutablePluginDirs
+      [ (externalConsumerPluginName, externalOptionalConsumerManifestJSON, "external-consumer")
+      , (externalProviderPluginName, externalProviderManifestJSON, "external-provider-controlled-status")
+      ] $ do
+        writeExternalProviderStatusMode "grant-scope-query-mutate"
+        withPluginManager $ \pluginManagerHandle -> do
+          discoverPlugins pluginManagerHandle
+          refreshManifests pluginManagerHandle
+          loaded <- getLoadedPlugins pluginManagerHandle
+          pluginStatuses externalConsumerPluginName loaded `shouldSatisfy` elem PluginConnected
+          pluginLifecycleStates externalConsumerPluginName loaded `shouldSatisfy` elem LifecycleDegraded
+          pluginLifecycleErrorCodes externalConsumerPluginName loaded `shouldSatisfy` elem (Just "external_data_source_degraded")
+          operations <- readExternalConsumerOperationLog
+          operations `shouldBe` []
+          snapshots <- getPluginExternalDataSources pluginManagerHandle
+          expectUnavailableConsumerBrokerSnapshot "unavailable" "capability scope mismatch" snapshots
+
   it "integrates shared external data-source provider and consumer fixtures without backend assumptions" $
     withExecutablePluginDirs
       [ (externalConsumerPluginName, externalConsumerManifestJSON, "external-consumer")
@@ -2675,6 +2726,24 @@ sendExternalProviderStatusResponse transport envelope modeName =
         (envRequestId envelope)
         (externalProviderReplacementStatusReport includeDiagnostics)))
       pure True
+    "grant-scope-query-only" -> do
+      let includeDiagnostics = requestIncludesDiagnostics envelope
+      _ <- sendMessage transport (encodeMessage (externalStatusEnvelope
+        (envRequestId envelope)
+        (externalProviderStatusReportWithGrantScope [ExternalSourceQuery] includeDiagnostics)))
+      pure True
+    "grant-scope-health-only" -> do
+      let includeDiagnostics = requestIncludesDiagnostics envelope
+      _ <- sendMessage transport (encodeMessage (externalStatusEnvelope
+        (envRequestId envelope)
+        (externalProviderStatusReportWithGrantScope [ExternalSourceHealth] includeDiagnostics)))
+      pure True
+    "grant-scope-query-mutate" -> do
+      let includeDiagnostics = requestIncludesDiagnostics envelope
+      _ <- sendMessage transport (encodeMessage (externalStatusEnvelope
+        (envRequestId envelope)
+        (externalProviderStatusReportWithGrantScope [ExternalSourceQuery, ExternalSourceMutate] includeDiagnostics)))
+      pure True
     _ -> do
       let includeDiagnostics = requestIncludesDiagnostics envelope
       _ <- sendMessage transport (encodeMessage (externalStatusEnvelope
@@ -2754,6 +2823,7 @@ runExternalConsumerFixtureWith rejectGrant rejectRevoke timeoutGrantOnce timeout
                   Aeson.Error _ -> loop transport bindingStatus
                   Aeson.Success grant -> do
                     recordExternalConsumerOperation "grant" (redsgmOperationId grant)
+                    recordExternalConsumerGrantScope grant
                     timedOut <- shouldTimeoutExternalGrant
                     if timedOut
                       then threadDelay 1500000 >> loop transport bindingStatus
@@ -2871,6 +2941,18 @@ externalProviderReplacementStatusReport includeDiagnostics = RPCExternalDataSour
   , redssReportDiagnostics = if includeDiagnostics then Just externalDiagnostics else Nothing
   }
 
+externalProviderStatusReportWithGrantScope :: [RPCExternalDataSourceCapability] -> Bool -> RPCExternalDataSourceStatusReport
+externalProviderStatusReportWithGrantScope scope includeDiagnostics = RPCExternalDataSourceStatusReport
+  { redssReportStatuses =
+      [ externalProviderSourceStatusEntry includeDiagnostics
+      , (externalProviderGrantStatusEntry includeDiagnostics)
+          { redsstCapabilityScope = scope
+          , redsstStatus = (statusWithOptionalDiagnostics includeDiagnostics) { redssCapabilityScope = scope }
+          }
+      ]
+  , redssReportDiagnostics = if includeDiagnostics then Just externalDiagnostics else Nothing
+  }
+
 externalConsumerStatusReport :: Bool -> RPCExternalDataSourceStatusReport
 externalConsumerStatusReport includeDiagnostics = RPCExternalDataSourceStatusReport
   { redssReportStatuses = [externalConsumerStatusEntry includeDiagnostics]
@@ -2953,10 +3035,25 @@ recordExternalConsumerOperation operation operationId = do
   appendFile (baseDir </> externalConsumerOperationLogFileName) $
     Text.unpack operation <> ":" <> maybe "" Text.unpack operationId <> "\n"
 
+recordExternalConsumerGrantScope :: RPCExternalDataSourceGrantMessage -> IO ()
+recordExternalConsumerGrantScope grant = do
+  baseDir <- requireEnv testPluginDirEnv
+  appendFile (baseDir </> externalConsumerGrantScopeLogFileName) $
+    Text.unpack (externalGrantScopeLogLine grant) <> "\n"
+
 readExternalConsumerOperationLog :: IO [String]
 readExternalConsumerOperationLog = do
   baseDir <- currentPluginBaseDir
   let path = baseDir </> externalConsumerOperationLogFileName
+  exists <- doesFileExist path
+  if exists
+    then lines <$> readFile path
+    else pure []
+
+readExternalConsumerGrantScopeLog :: IO [String]
+readExternalConsumerGrantScopeLog = do
+  baseDir <- currentPluginBaseDir
+  let path = baseDir </> externalConsumerGrantScopeLogFileName
   exists <- doesFileExist path
   if exists
     then lines <$> readFile path
@@ -2986,8 +3083,28 @@ externalBrokerOperationId operation = Text.intercalate ":"
   , externalGrantName
   ]
 
+externalGrantScopeLogLine :: RPCExternalDataSourceGrantMessage -> Text
+externalGrantScopeLogLine grant = Text.intercalate ";"
+  [ "top=" <> externalCapabilityScopeLogText (redsgmCapabilityScope grant)
+  , "status=" <> externalCapabilityScopeLogText (redssCapabilityScope (redsgmStatus grant))
+  ]
+
+externalCapabilityScopeLogText :: [RPCExternalDataSourceCapability] -> Text
+externalCapabilityScopeLogText [] = "none"
+externalCapabilityScopeLogText capabilities = Text.intercalate "," (map externalCapabilityLogText capabilities)
+
+externalCapabilityLogText :: RPCExternalDataSourceCapability -> Text
+externalCapabilityLogText ExternalSourceQuery = "query"
+externalCapabilityLogText ExternalSourceMutate = "mutate"
+externalCapabilityLogText ExternalSourceSubscribe = "subscribe"
+externalCapabilityLogText ExternalSourceMigrate = "migrate"
+externalCapabilityLogText ExternalSourceHealth = "health"
+
 externalConsumerOperationLogFileName :: String
 externalConsumerOperationLogFileName = "external-consumer-operations.log"
+
+externalConsumerGrantScopeLogFileName :: String
+externalConsumerGrantScopeLogFileName = "external-consumer-grant-scopes.log"
 
 runValidationOkFixture :: IO ()
 runValidationOkFixture = do

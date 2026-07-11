@@ -54,6 +54,7 @@ import Topo.Plugin.Dependency
 import Topo.Plugin.RPC
   ( RPCConnection(..)
   , RPCError(..)
+  , RPCExternalDataSourceAccess(..)
   , RPCExternalDataSourceAccessMode(..)
   , RPCExternalDataSourceAvailability(..)
   , RPCExternalDataSourceCapability(..)
@@ -72,6 +73,7 @@ import Topo.Plugin.RPC
   , externalDataSourceStatusBlocksStartup
   , externalDataSourceStatusCurrent
   , externalDataSourceStatusDegradesStartup
+  , externalAccessRequiredCapabilities
   , applyExternalDataSourceStatusReport
   , requestExternalDataSourceStatus
   , revokedExternalDataSourceStatus
@@ -279,15 +281,18 @@ bindingToGrant st binding = do
   source <- find ((== desbSource binding) . redsdName) (rmExternalDataSources (lpManifest provider))
   grant <- find ((== desbGrant binding) . redsgName) (redsdGrants source)
   let key = grantKey binding
+      finalized = finalizeGrantMessage binding ref source grant
       sendable = consumerGrantSendable st consumer provider key
+        && fgmReason finalized == Nothing
+      unavailableReason = fromMaybe (unsendableGrantReason st consumer provider key) (fgmReason finalized)
   Just ExternalDataSourceGrantBrokerState
     { edsgbsKey = key
     , edsgbsRequired = desbRequired binding
-    , edsgbsMessage = grantMessage binding ref grant
+    , edsgbsMessage = fgmMessage finalized
     , edsgbsConsumerReadyAt = plsUpdatedAt (lpLifecycle consumer)
     , edsgbsProviderReadyAt = plsUpdatedAt (lpLifecycle provider)
     , edsgbsState = if sendable then ExternalDataSourceGrantPending else ExternalDataSourceGrantUnavailable
-    , edsgbsReason = if sendable then Nothing else Just (unsendableGrantReason st consumer provider key)
+    , edsgbsReason = if sendable then Nothing else Just unavailableReason
     , edsgbsGrantResult = Nothing
     , edsgbsRevokeResult = Nothing
     }
@@ -350,12 +355,34 @@ brokerOperationId operation key = Text.intercalate ":"
   , edsgkGrant key
   ]
 
+data FinalizedGrantMessage = FinalizedGrantMessage
+  { fgmMessage :: RPCExternalDataSourceGrantMessage
+  , fgmReason :: Maybe Text
+  }
+
+finalizeGrantMessage
+  :: DependencyExternalDataSourceBinding
+  -> RPCExternalDataSourceRef
+  -> RPCExternalDataSourceDecl
+  -> RPCExternalDataSourceGrant
+  -> FinalizedGrantMessage
+finalizeGrantMessage binding ref source grant = FinalizedGrantMessage
+  { fgmMessage = grantMessage binding ref grant effectiveScope
+  , fgmReason = finalGrantValidationReason binding ref source grant effectiveScope
+  }
+  where
+    statusScope = redssCapabilityScope (redsgStatus grant)
+    effectiveScope
+      | null statusScope = redsgCapabilities grant
+      | otherwise = statusScope
+
 grantMessage
   :: DependencyExternalDataSourceBinding
   -> RPCExternalDataSourceRef
   -> RPCExternalDataSourceGrant
+  -> [RPCExternalDataSourceCapability]
   -> RPCExternalDataSourceGrantMessage
-grantMessage binding ref grant = RPCExternalDataSourceGrantMessage
+grantMessage binding _ref grant effectiveScope = RPCExternalDataSourceGrantMessage
   { redsgmOperationId = Just (brokerOperationId "grant" (grantKey binding))
   , redsgmOperationEpoch = Nothing
   , redsgmProviderId = desbProvider binding
@@ -364,12 +391,104 @@ grantMessage binding ref grant = RPCExternalDataSourceGrantMessage
   , redsgmGrant = desbGrant binding
   , redsgmAccess = desbAccess binding
   , redsgmResources = desbResources binding
-  , redsgmCapabilityScope = desbCapabilityScope binding
-  , redsgmStatus = (redsgStatus grant) { redssProviderId = Just (desbProvider binding) }
+  , redsgmCapabilityScope = effectiveScope
+  , redsgmStatus = (redsgStatus grant)
+      { redssProviderId = Just (desbProvider binding)
+      , redssCapabilityScope = effectiveScope
+      }
   , redsgmReference = redsgReference grant
   , redsgmConfigRefs = redsgConfigRefs grant
   , redsgmDiagnostics = redssDiagnostics (redsgStatus grant)
   }
+
+finalGrantValidationReason
+  :: DependencyExternalDataSourceBinding
+  -> RPCExternalDataSourceRef
+  -> RPCExternalDataSourceDecl
+  -> RPCExternalDataSourceGrant
+  -> [RPCExternalDataSourceCapability]
+  -> Maybe Text
+finalGrantValidationReason binding ref source grant effectiveScope = firstJust
+  [ unlessValid (redsrSource ref == desbSource binding) $
+      validationFailed "consumer ref source no longer matches resolved source"
+  , unlessValid (maybe True (== desbProvider binding) (redsrProvider ref)) $
+      validationFailed "consumer ref provider no longer matches resolved provider"
+  , unlessValid (maybe True (== desbGrant binding) (redsrGrant ref)) $
+      validationFailed "consumer ref grant no longer matches resolved grant"
+  , unlessValid (redsrRequired ref == desbRequired binding) $
+      validationFailed "consumer ref required flag no longer matches resolved binding"
+  , unlessValid (sameSet (redsrAccess ref) (desbAccess binding)) $
+      validationFailed "consumer ref access no longer matches resolved binding access"
+  , unlessValid (sameSet requestedResources (desbResources binding)) $
+      validationFailed "consumer ref resources no longer match resolved binding resources"
+  , unlessValid (all (`elem` redsgAccess grant) (desbAccess binding)) $
+      validationFailed $ "requested access " <> accessListText (desbAccess binding)
+        <> " is not offered by provider grant access " <> accessListText (redsgAccess grant)
+  , unlessValid (all (`elem` redsdResources source) requestedResources) $
+      validationFailed $ "requested resources " <> textListText requestedResources
+        <> " are not all declared by provider source resources " <> textListText (redsdResources source)
+  , unlessValid (all (`elem` providerGrantResources) requestedResources) $
+      validationFailed $ "requested resources " <> textListText requestedResources
+        <> " are not all offered by provider grant resources " <> textListText providerGrantResources
+  , unlessValid (all (`elem` redsdCapabilities source) (redsgCapabilities grant)) $
+      scopeMismatch $ "provider grant capabilities " <> capabilityListText (redsgCapabilities grant)
+        <> " are not a subset of source capabilities " <> capabilityListText (redsdCapabilities source)
+  , unlessValid (sameSet (desbCapabilityScope binding) (redsgCapabilities grant)) $
+      scopeMismatch $ "resolved capability scope " <> capabilityListText (desbCapabilityScope binding)
+        <> " no longer matches provider grant capabilities " <> capabilityListText (redsgCapabilities grant)
+  , unlessValid (all (`elem` redsgCapabilities grant) effectiveScope) $
+      scopeMismatch $ "runtime scope " <> capabilityListText effectiveScope
+        <> " is not a subset of provider grant capabilities " <> capabilityListText (redsgCapabilities grant)
+  , unlessValid (all (`elem` effectiveScope) requiredCapabilities) $
+      scopeMismatch $ "runtime scope " <> capabilityListText effectiveScope
+        <> " does not include required capabilities " <> capabilityListText requiredCapabilities
+        <> " for requested access " <> accessListText (desbAccess binding)
+  ]
+  where
+    requestedResources = effectiveGrantResources source grant (redsrResources ref)
+    providerGrantResources = grantResourceScope source grant
+    requiredCapabilities = Set.toList (Set.fromList (concatMap externalAccessRequiredCapabilities (desbAccess binding)))
+    validationFailed detail = validationPrefix <> detail
+    scopeMismatch detail = validationPrefix <> "capability scope mismatch: " <> detail
+    validationPrefix = "external data-source grant validation failed for " <> grantKeyDependency (grantKey binding) <> ": "
+
+unlessValid :: Bool -> Text -> Maybe Text
+unlessValid True _ = Nothing
+unlessValid False reason = Just reason
+
+sameSet :: Ord a => [a] -> [a] -> Bool
+sameSet a b = Set.fromList a == Set.fromList b
+
+effectiveGrantResources :: RPCExternalDataSourceDecl -> RPCExternalDataSourceGrant -> [Text] -> [Text]
+effectiveGrantResources source grant requested
+  | not (null requested) = requested
+  | otherwise = grantResourceScope source grant
+
+grantResourceScope :: RPCExternalDataSourceDecl -> RPCExternalDataSourceGrant -> [Text]
+grantResourceScope source grant
+  | null (redsgResources grant) = redsdResources source
+  | otherwise = redsgResources grant
+
+capabilityListText :: [RPCExternalDataSourceCapability] -> Text
+capabilityListText capabilities = "[" <> Text.intercalate "," (map externalCapabilityText capabilities) <> "]"
+
+accessListText :: [RPCExternalDataSourceAccess] -> Text
+accessListText access = "[" <> Text.intercalate "," (map externalAccessText access) <> "]"
+
+textListText :: [Text] -> Text
+textListText values = "[" <> Text.intercalate "," values <> "]"
+
+externalCapabilityText :: RPCExternalDataSourceCapability -> Text
+externalCapabilityText ExternalSourceQuery = "query"
+externalCapabilityText ExternalSourceMutate = "mutate"
+externalCapabilityText ExternalSourceSubscribe = "subscribe"
+externalCapabilityText ExternalSourceMigrate = "migrate"
+externalCapabilityText ExternalSourceHealth = "health"
+
+externalAccessText :: RPCExternalDataSourceAccess -> Text
+externalAccessText ExternalAccessRead = "read"
+externalAccessText ExternalAccessWrite = "write"
+externalAccessText ExternalAccessAdmin = "admin"
 
 sendOneGrant :: PluginManagerState -> ExternalDataSourceGrantBrokerState -> IO PluginManagerState
 sendOneGrant st grantState
