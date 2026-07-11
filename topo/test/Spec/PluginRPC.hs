@@ -2264,6 +2264,51 @@ spec = describe "Plugin.RPC" $ do
         result <- timeout transportTestTimeoutMicros (takeMVar done)
         result `shouldBe` Just (Right mutateResult)
 
+    it "rejects a data-resource query response with the wrong message type" $
+      withConnectedTransports "rpc-query-wrong-response-type" $ \host plugin -> do
+        let conn = newRPCConnection baseManifest host Map.empty
+            requestPayload = QueryResource "records" QueryAll Nothing Nothing
+            queryResult = QueryResult "records" [DataRecord (Map.singleton "id" (String "alpha"))] (Just 1)
+        done <- newEmptyMVar
+        _ <- forkIO (queryResource conn requestPayload >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgQueryResource
+        requestId <- requireRequestId request
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgMutateResult
+          , envPayload = Aeson.toJSON queryResult
+          , envRequestId = Just requestId
+          }
+        result <- timeout transportTestTimeoutMicros (takeMVar done)
+        case result of
+          Just (Left (RPCProtocolError msg)) -> do
+            msg `shouldSatisfy` Text.isInfixOf "unexpected data query response"
+            msg `shouldSatisfy` Text.isInfixOf "MsgMutateResult"
+          other -> expectationFailure ("expected query response type rejection, got " <> show other)
+
+    it "rejects a data-resource mutation response with the wrong message type" $
+      withConnectedTransports "rpc-mutate-wrong-response-type" $ \host plugin -> do
+        let conn = newRPCConnection baseManifest host Map.empty
+            recordPayload = DataRecord (Map.singleton "id" (String "alpha"))
+            requestPayload = MutateResource "records" (MutCreate recordPayload)
+            mutateResult = MutateResult True Nothing (Just recordPayload) Nothing
+        done <- newEmptyMVar
+        _ <- forkIO (mutateResource conn requestPayload >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgMutateResource
+        requestId <- requireRequestId request
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgQueryResult
+          , envPayload = Aeson.toJSON mutateResult
+          , envRequestId = Just requestId
+          }
+        result <- timeout transportTestTimeoutMicros (takeMVar done)
+        case result of
+          Just (Left (RPCProtocolError msg)) -> do
+            msg `shouldSatisfy` Text.isInfixOf "unexpected data mutation response"
+            msg `shouldSatisfy` Text.isInfixOf "MsgQueryResult"
+          other -> expectationFailure ("expected mutation response type rejection, got " <> show other)
+
   ------------------------------------
   -- Protocol message round-trips
   ------------------------------------

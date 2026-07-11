@@ -944,10 +944,10 @@ queryResource conn qr = do
               (\_ -> pure ())
   case result of
     Left err  -> pure (Left err)
-    Right env ->
-      case Aeson.fromJSON (envPayload env) of
-        Aeson.Success r -> pure (Right r)
-        Aeson.Error err -> pure (Left (RPCProtocolError (Text.pack err)))
+    Right env -> case envType env of
+      MsgQueryResult -> decodeRPCPayload env
+      other -> pure (Left (RPCProtocolError
+        ("unexpected data query response: " <> Text.pack (show other))))
 
 -- | Mutate a plugin's data resource.
 --
@@ -967,10 +967,10 @@ mutateResource conn mr = do
               (\_ -> pure ())
   case result of
     Left err  -> pure (Left err)
-    Right env ->
-      case Aeson.fromJSON (envPayload env) of
-        Aeson.Success r -> pure (Right r)
-        Aeson.Error err -> pure (Left (RPCProtocolError (Text.pack err)))
+    Right env -> case envType env of
+      MsgMutateResult -> decodeRPCPayload env
+      other -> pure (Left (RPCProtocolError
+        ("unexpected data mutation response: " <> Text.pack (show other))))
 
 ------------------------------------------------------------------------
 -- Pipeline / DAG integration

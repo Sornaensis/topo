@@ -1319,6 +1319,37 @@ spec = describe "PluginManager" $ do
           Just (Right _) -> expectationFailure "unavailable data query after timeout unexpectedly succeeded"
         mapM_ (assertProcessExited hangQueryPluginName) handles
 
+  it "denies data-resource queries when the plugin lacks dataRead" $ do
+    withExecutablePluginDir noDataReadQueryPluginName noDataReadQueryManifestJSON "validation-ok" $ do
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses noDataReadQueryPluginName loaded `shouldSatisfy` elem PluginConnected
+        timed <- timeout 1000000 $ queryPluginResource pluginManagerHandle (Text.pack noDataReadQueryPluginName) testQuery
+        case timed of
+          Nothing -> expectationFailure "missing dataRead query hung"
+          Just (Left err) -> do
+            err `shouldSatisfy` Text.isInfixOf "permission_denied"
+            err `shouldSatisfy` Text.isInfixOf "dataRead"
+          Just (Right _) -> expectationFailure "query without dataRead unexpectedly succeeded"
+
+  it "denies data-resource mutations when the plugin lacks dataWrite" $ do
+    withExecutablePluginDir noDataWriteMutationPluginName noDataWriteMutationManifestJSON "validation-ok" $ do
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses noDataWriteMutationPluginName loaded `shouldSatisfy` elem PluginConnected
+        timed <- timeout 1000000 $ mutatePluginResource pluginManagerHandle (Text.pack noDataWriteMutationPluginName)
+          (MutateResource "records" (MutCreate (record [("id", String "alpha")])))
+        case timed of
+          Nothing -> expectationFailure "missing dataWrite mutation hung"
+          Just (Left err) -> do
+            err `shouldSatisfy` Text.isInfixOf "permission_denied"
+            err `shouldSatisfy` Text.isInfixOf "dataWrite"
+          Just (Right _) -> expectationFailure "mutation without dataWrite unexpectedly succeeded"
+
   it "rejects unsupported data-resource mutations before plugin calls" $ do
     withExecutablePluginDir unsupportedMutationPluginName unsupportedMutationManifestJSON "validation-ok" $ do
       withPluginManager $ \pluginManagerHandle -> do
@@ -1387,16 +1418,24 @@ spec = describe "PluginManager" $ do
           observed <- getLoadedPlugins pluginManagerHandle
           pluginStatuses negotiatedValidationPluginName observed `shouldSatisfy` elem PluginConnected)
 
-  it "rejects widening negotiated handshake data-resource schemas during startup" $ do
+  it "rejects widening/write-capable negotiated handshake data-resource schemas during startup" $ do
     withExecutablePluginDir wideningHandshakePluginName wideningHandshakeManifestJSON "widening-handshake" $ do
       withPluginManager $ \pluginManagerHandle -> do
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
         loaded <- getLoadedPlugins pluginManagerHandle
         pluginStatuses wideningHandshakePluginName loaded `shouldSatisfy` anyPluginErrorContaining "invalid handshake data resources"
+        pluginStatuses wideningHandshakePluginName loaded `shouldSatisfy` anyPluginErrorContaining "dataWrite"
+        pluginStatuses wideningHandshakePluginName loaded `shouldSatisfy` anyPluginErrorContaining "cannot add fields"
         pluginLifecycleStates wideningHandshakePluginName loaded `shouldSatisfy` elem LifecycleFailed
         pluginLifecycleErrorCodes wideningHandshakePluginName loaded `shouldSatisfy` elem (Just "protocol_error")
         length (pluginProcessHandles wideningHandshakePluginName loaded) `shouldBe` 0
+        mutation <- timeout 1000000 $ mutatePluginResource pluginManagerHandle (Text.pack wideningHandshakePluginName)
+          (MutateResource "records" (MutCreate (record [("id", String "alpha"), ("name", String "Alpha")])))
+        case mutation of
+          Nothing -> expectationFailure "failed handshake mutation hung"
+          Just (Left err) -> err `shouldSatisfy` Text.isInfixOf "plugin_unavailable"
+          Just (Right _) -> expectationFailure "write-capable handshake after read-only manifest unexpectedly mutated"
 
   it "surfaces generator crashes without hanging" $ do
     withExecutablePluginDir generatorCrashPluginName generatorCrashManifestJSON "exit-on-generator" $ do
@@ -3544,6 +3583,28 @@ windowsProcessTreeManifestJSON = manifestWithStartPolicyFor windowsProcessTreePl
 
 windowsHeartbeatFileName :: String
 windowsHeartbeatFileName = "windows-child-heartbeat.txt"
+
+noDataReadQueryPluginName :: String
+noDataReadQueryPluginName = "copilot-test-plugin-no-data-read-query"
+
+noDataReadQueryManifestJSON :: BS.ByteString
+noDataReadQueryManifestJSON = manifestWithStartPolicyFor noDataReadQueryPluginName
+  [ "    \"restart_mode\": \"never\","
+  , "    \"startup_timeout_ms\": 1000,"
+  , "    \"request_timeout_ms\": 300,"
+  , "    \"shutdown_timeout_ms\": 300"
+  ]
+
+noDataWriteMutationPluginName :: String
+noDataWriteMutationPluginName = "copilot-test-plugin-no-data-write-mutation"
+
+noDataWriteMutationManifestJSON :: BS.ByteString
+noDataWriteMutationManifestJSON = dataResourceManifestFor noDataWriteMutationPluginName
+  [ "    \"restart_mode\": \"never\","
+  , "    \"startup_timeout_ms\": 1000,"
+  , "    \"request_timeout_ms\": 300,"
+  , "    \"shutdown_timeout_ms\": 300"
+  ]
 
 unsupportedMutationPluginName :: String
 unsupportedMutationPluginName = "copilot-test-plugin-unsupported-mutation"
