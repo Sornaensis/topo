@@ -32,6 +32,7 @@ module Topo.Simulation
     -- * Terrain writes
   , TerrainWrites(..)
   , emptyTerrainWrites
+  , terrainWritesEmpty
   , mergeTerrainWrites
   , applyTerrainWrites
     -- * Progress reporting
@@ -214,6 +215,13 @@ emptyTerrainWrites = TerrainWrites
   , twrClimate    = IntMap.empty
   , twrVegetation = IntMap.empty
   }
+
+-- | Does this value contain no terrain mutations?
+terrainWritesEmpty :: TerrainWrites -> Bool
+terrainWritesEmpty writes =
+  IntMap.null (twrTerrain writes)
+    && IntMap.null (twrClimate writes)
+    && IntMap.null (twrVegetation writes)
 
 -- | Merge two 'TerrainWrites'.  Later writes (right argument) take
 -- precedence for the same chunk ID.

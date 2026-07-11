@@ -1057,7 +1057,9 @@ rpcSimNode conn =
               result <- invokeSimulation conn ctx overlay (reportSimulationProgress ctx name) ignoreLog
               pure $ case result of
                 Left err -> Left (rpcErrorText err)
-                Right sr -> preserveHostProvenance overlay <$> overlayFromJSON (ovSchema overlay) (srOverlay sr)
+                Right sr -> do
+                  rejectUnauthorizedTerrainWrites manifest (srTerrainWrites sr)
+                  preserveHostProvenance overlay <$> overlayFromJSON (ovSchema overlay) (srOverlay sr)
       }
   where
     reportSimulationProgress ctx pluginName progress =
@@ -1074,6 +1076,20 @@ formatPluginProgressDetail pluginName progress =
 preserveHostProvenance :: Overlay -> Overlay -> Overlay
 preserveHostProvenance existing decoded =
   decoded { ovProvenance = ovProvenance existing }
+
+rejectUnauthorizedTerrainWrites :: RPCManifest -> Maybe Value -> Either Text ()
+rejectUnauthorizedTerrainWrites manifest rawWrites =
+  case Payload.terrainWritesValueEmpty rawWrites of
+    Left err -> Left (unauthorizedTerrainWritesText manifest
+      <> " (could not verify terrain_writes were empty: " <> err <> ")")
+    Right True -> Right ()
+    Right False -> Left (unauthorizedTerrainWritesText manifest)
+
+unauthorizedTerrainWritesText :: RPCManifest -> Text
+unauthorizedTerrainWritesText manifest =
+  "unauthorized terrain write attempt via terrain_writes by plugin "
+    <> rmName manifest
+    <> ": manifest missing writeTerrain/writeWorld capability"
 
 hasCapability :: RPCManifest -> Capability -> Bool
 hasCapability manifest capability = capability `elem` rmCapabilities manifest

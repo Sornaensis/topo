@@ -53,9 +53,11 @@ import Topo.Plugin.RPC
   , queryResource
   , rpcErrorText
   , rpcGeneratorStage
+  , rpcSimNode
   , sendExternalDataSourceGrant
   , sendExternalDataSourceGrantRevocation
   , sendHeartbeat
+  , terrainWorldToPayload
   )
 import Topo.Plugin.RPC.Manifest
 import Topo.Plugin.RPC.Protocol
@@ -95,10 +97,10 @@ import Topo.Overlay.Schema
   , OverlayStorage(..)
   , emptyOverlayDeps
   )
-import Topo.Simulation (SimContext(..))
+import Topo.Simulation (SimContext(..), SimNode(..), terrainWritesEmpty)
 import Topo.Simulation.Schedule (SimulationCatchUpPolicy(..), SimulationScheduleDecl(..), defaultScheduleDecl)
-import Topo.Types (WorldConfig(..))
-import Topo.World (TerrainWorld(..), emptyWorld)
+import Topo.Types (ChunkId(..), WorldConfig(..))
+import Topo.World (TerrainWorld(..), emptyTerrainChunk, emptyWorld, setTerrainChunk)
 
 ------------------------------------------------------------------------
 -- Arbitrary instances for QuickCheck
@@ -2022,6 +2024,104 @@ spec = describe "Plugin.RPC" $ do
         ignored <- timeout 200000 (takeMVar progressSeen)
         ignored `shouldBe` Nothing
 
+    it "rejects simulation reader terrain_writes without writeTerrain or writeWorld" $
+      withConnectedTransports "rpc-simulation-reader-terrain-write-reject" $ \host plugin -> do
+        let conn = newRPCConnection simulationProgressManifest host Map.empty
+        writesPayload <- nonEmptyTerrainWritesPayload
+        done <- newEmptyMVar
+        case rpcSimNode conn of
+          SimNodeReader{snrReadTick = runTick} -> do
+            _ <- forkIO (runTick testSimContext testOverlay >>= putMVar done)
+            request <- recvEnvelopeFrom plugin
+            envType request `shouldBe` MsgInvokeSimulation
+            sendSimulationResult plugin request (simulationResultFixture
+              { srOverlay = overlayPayloadWithValue 23
+              , srTerrainWrites = Just writesPayload
+              })
+            result <- timeout transportTestTimeoutMicros (takeMVar done)
+            case result of
+              Just (Left msg) -> do
+                msg `shouldSatisfy` Text.isInfixOf "unauthorized terrain write attempt"
+                msg `shouldSatisfy` Text.isInfixOf "writeTerrain/writeWorld"
+              _ -> expectationFailure "expected terrain write rejection"
+          _ -> expectationFailure "expected SimNodeReader"
+
+    it "rejects malformed simulation reader terrain_writes without writeTerrain or writeWorld" $
+      withConnectedTransports "rpc-simulation-reader-terrain-write-malformed" $ \host plugin -> do
+        let conn = newRPCConnection simulationProgressManifest host Map.empty
+            malformedWrites = object
+              [ "encoding" .= ("base64" :: Text)
+              , "rivers" .= object ["0" .= ("AA==" :: Text)]
+              ]
+        done <- newEmptyMVar
+        case rpcSimNode conn of
+          SimNodeReader{snrReadTick = runTick} -> do
+            _ <- forkIO (runTick testSimContext testOverlay >>= putMVar done)
+            request <- recvEnvelopeFrom plugin
+            envType request `shouldBe` MsgInvokeSimulation
+            sendSimulationResult plugin request (simulationResultFixture
+              { srOverlay = overlayPayloadWithValue 25
+              , srTerrainWrites = Just malformedWrites
+              })
+            result <- timeout transportTestTimeoutMicros (takeMVar done)
+            case result of
+              Just (Left msg) -> do
+                msg `shouldSatisfy` Text.isInfixOf "unauthorized terrain write attempt"
+                msg `shouldSatisfy` Text.isInfixOf "unsupported keys"
+              _ -> expectationFailure "expected malformed terrain write rejection"
+          _ -> expectationFailure "expected SimNodeReader"
+
+    it "allows harmless empty simulation reader terrain_writes summaries" $
+      withConnectedTransports "rpc-simulation-reader-empty-terrain-writes" $ \host plugin -> do
+        let conn = newRPCConnection simulationProgressManifest host Map.empty
+            overlayPayload = overlayPayloadWithValue 29
+            emptyWritesSummary = object ["chunk_count" .= (0 :: Int), "encoding" .= ("base64" :: Text)]
+        done <- newEmptyMVar
+        case rpcSimNode conn of
+          SimNodeReader{snrReadTick = runTick} -> do
+            _ <- forkIO (runTick testSimContext testOverlay >>= putMVar done)
+            request <- recvEnvelopeFrom plugin
+            envType request `shouldBe` MsgInvokeSimulation
+            sendSimulationResult plugin request (simulationResultFixture
+              { srOverlay = overlayPayload
+              , srTerrainWrites = Just emptyWritesSummary
+              })
+            result <- timeout transportTestTimeoutMicros (takeMVar done)
+            case result of
+              Just (Right nextOverlay) -> overlayToJSON nextOverlay `shouldBe` overlayPayload
+              _ -> expectationFailure "expected successful reader overlay update"
+          _ -> expectationFailure "expected SimNodeReader"
+
+    it "keeps simulation writer terrain_writes enabled with writeTerrain and writeWorld" $ do
+      let runWriterCapability (terrainCapability, suffix) =
+            withConnectedTransports
+              ("rpc-simulation-writer-terrain-write-allowed-" <> suffix)
+              $ \host plugin -> do
+                let manifest = simulationProgressManifest
+                      { rmCapabilities = [CapWriteOverlay, terrainCapability]
+                      }
+                    conn = newRPCConnection manifest host Map.empty
+                writesPayload <- nonEmptyTerrainWritesPayload
+                done <- newEmptyMVar
+                case rpcSimNode conn of
+                  SimNodeWriter{snwWriteTick = runTick} -> do
+                    _ <- forkIO (runTick testSimContext testOverlay >>= putMVar done)
+                    request <- recvEnvelopeFrom plugin
+                    envType request `shouldBe` MsgInvokeSimulation
+                    sendSimulationResult plugin request (simulationResultFixture
+                      { srOverlay = overlayPayloadWithValue 31
+                      , srTerrainWrites = Just writesPayload
+                      })
+                    result <- timeout transportTestTimeoutMicros (takeMVar done)
+                    case result of
+                      Just (Right (_, writes)) -> terrainWritesEmpty writes `shouldBe` False
+                      _ -> expectationFailure "expected writer terrain writes"
+                  _ -> expectationFailure "expected SimNodeWriter"
+      mapM_ runWriterCapability
+        [ (CapWriteTerrain, "writeTerrain" :: Text)
+        , (CapWriteWorld, "writeWorld")
+        ]
+
     it "intentionally consumes and ignores data-resource query progress" $
       withConnectedTransports "rpc-query-progress-ignored" $ \host plugin -> do
         let conn = newRPCConnection baseManifest host Map.empty
@@ -2429,6 +2529,14 @@ sendGeneratorResult transport request generatorResult =
     , envRequestId = envRequestId request
     }
 
+sendSimulationResult :: Transport -> RPCEnvelope -> SimulationResult -> IO ()
+sendSimulationResult transport request simulationResult =
+  sendEnvelopeTo transport RPCEnvelope
+    { envType = MsgSimulationResult
+    , envPayload = Aeson.toJSON simulationResult
+    , envRequestId = envRequestId request
+    }
+
 pluginCaps :: [Capability] -> PluginCore.PluginCapabilities
 pluginCaps caps = PluginCore.PluginCapabilities (Set.fromList caps)
 
@@ -2468,6 +2576,18 @@ expectPluginInvariantContaining expected outcome =
 
 generatorStageWorld :: TerrainWorld
 generatorStageWorld = emptyWorld (WorldConfig { wcChunkSize = 64 }) defaultHexGridMeta
+
+nonEmptyTerrainWritesPayload :: IO Value
+nonEmptyTerrainWritesPayload =
+  case terrainWorldToPayload worldWithTerrainWrite of
+    Left err -> do
+      expectationFailure ("failed to encode terrain writes payload: " <> Text.unpack err)
+      fail "terrain writes payload"
+    Right payload -> pure payload
+  where
+    config = WorldConfig { wcChunkSize = 4 }
+    worldWithTerrainWrite =
+      setTerrainChunk (ChunkId 0) (emptyTerrainChunk config) (emptyWorld config defaultHexGridMeta)
 
 worldWithRegisteredOverlay :: Overlay -> TerrainWorld
 worldWithRegisteredOverlay overlay =

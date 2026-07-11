@@ -8,6 +8,7 @@ module Topo.Plugin.RPC.Payload
   ( terrainWorldToPayload
   , terrainWorldToCompletePayload
   , decodeTerrainWritesValue
+  , terrainWritesValueEmpty
   , applyGeneratorTerrainValue
   , encodeBase64Text
   , decodeBase64Text
@@ -215,6 +216,17 @@ metadataEntryToJSON (name, SomeMetadata version value) = object
 decodeTerrainWritesValue :: Maybe Value -> Either Text TerrainWrites
 decodeTerrainWritesValue = decodeTerrainWrites
 
+-- | Report whether an optional simulation @terrain_writes@ payload contains
+-- no actual terrain mutations.
+terrainWritesValueEmpty :: Maybe Value -> Either Text Bool
+terrainWritesValueEmpty Nothing = Right True
+terrainWritesValueEmpty (Just Null) = Right True
+terrainWritesValueEmpty (Just (Object obj))
+  | KM.null obj = Right True
+  | hasOnlySummaryKeys obj = Right True
+  | otherwise = terrainWritesObjectEmpty obj
+terrainWritesValueEmpty (Just _) = Left "terrain_writes payload must be an object"
+
 -- | Apply a generator terrain payload to a world by decoding and merging
 -- chunk updates.
 applyGeneratorTerrainValue :: Topo.World.TerrainWorld -> Value -> Either Text Topo.World.TerrainWorld
@@ -235,31 +247,55 @@ decodeTerrainWrites (Just (Object obj))
 decodeTerrainWrites (Just _) = Left "terrain_writes payload must be an object"
 
 hasOnlySummaryKeys :: KM.KeyMap Value -> Bool
-hasOnlySummaryKeys keyMap = all (`elem` allowedKeys) (map Key.toText (KM.keys keyMap))
+hasOnlySummaryKeys keyMap = all (`elem` terrainPayloadSummaryKeys) (map Key.toText (KM.keys keyMap))
+
+terrainPayloadSummaryKeys :: [Text]
+terrainPayloadSummaryKeys =
+  [ "chunk_count"
+  , "climate_count"
+  , "river_count"
+  , "groundwater_count"
+  , "volcanism_count"
+  , "glacier_count"
+  , "water_body_count"
+  , "vegetation_count"
+  , "biome_count"
+  , "weather_count"
+  , "overlay_count"
+  , "chunk_size"
+  , "seed"
+  , "world_time"
+  , "planet_age"
+  , "unit_scales"
+  , "gen_config"
+  , "overlay_manifest"
+  , "overlay_names"
+  , "encoding"
+  , "metadata"
+  ]
+
+terrainWriteSectionKeys :: [Text]
+terrainWriteSectionKeys = ["terrain", "climate", "vegetation"]
+
+terrainWritesObjectEmpty :: KM.KeyMap Value -> Either Text Bool
+terrainWritesObjectEmpty payload = do
+  ensureTerrainPayloadEncoding payload
+  let allowedKeys = terrainPayloadSummaryKeys <> terrainWriteSectionKeys
+      unsupportedKeys = filter (`notElem` allowedKeys) (map Key.toText (KM.keys payload))
+  case unsupportedKeys of
+    [] -> do
+      sectionsEmpty <- traverse terrainWriteSectionEmpty terrainWriteSectionKeys
+      Right (and sectionsEmpty)
+    _ -> Left
+      ("terrain_writes payload contains unsupported keys: "
+        <> Text.intercalate ", " unsupportedKeys)
   where
-    allowedKeys =
-      [ "chunk_count"
-      , "climate_count"
-      , "river_count"
-      , "groundwater_count"
-      , "volcanism_count"
-      , "glacier_count"
-      , "water_body_count"
-      , "vegetation_count"
-      , "biome_count"
-      , "weather_count"
-      , "overlay_count"
-      , "chunk_size"
-      , "seed"
-      , "world_time"
-      , "planet_age"
-      , "unit_scales"
-      , "gen_config"
-      , "overlay_manifest"
-      , "overlay_names"
-      , "encoding"
-      , "metadata"
-      ]
+    terrainWriteSectionEmpty fieldName =
+      case KM.lookup (Key.fromText fieldName) payload of
+        Nothing -> Right True
+        Just Null -> Right True
+        Just (Object chunks) -> Right (KM.null chunks)
+        Just _ -> Left (fieldName <> " payload must be an object")
 
 encodeChunkMap
   :: IntMap.IntMap a
