@@ -35,6 +35,7 @@ import Network.HTTP.Client
   , responseHeaders
   , responseStatus
   )
+import Network.HTTP.Types (Header)
 import qualified Network.HTTP.Types.Status as HTTP
 import Test.Hspec
 
@@ -614,6 +615,16 @@ spec = describe "Seer.HTTP.Server" $ do
               )
             ]
       forM_ cases (assertQueryParserCase app echoQueryAppService)
+
+  it "returns JSON error envelopes for malformed UTF-8 query bytes" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      let cfg = defaultHttpServerConfig { hscBindPort = 7377 }
+      tid <- forkHttpServer cfg headlessHttpAppService (headlessServiceContext app)
+      manager <- newManager defaultManagerSettings
+      eventually_ (assertMalformedUtf8QueryErrors manager)
+        `finally` (do
+          killThread tid
+          threadDelay 100000)
 
   it "returns validation errors as HTTP 400 JSON envelopes" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
@@ -2234,6 +2245,30 @@ assertEventStream manager expectedTopic = do
   body `shouldSatisfy` Text.isInfixOf ("event: " <> expectedTopic)
   body `shouldSatisfy` Text.isInfixOf "data:"
 
+assertMalformedUtf8QueryErrors :: Manager -> IO ()
+assertMalformedUtf8QueryErrors manager =
+  forM_
+    [ ( "bad-query-value"
+      , "http://127.0.0.1:7377/terrain/hex?q=%FF&r=0"
+      , []
+      )
+    , ( "bad-query-key"
+      , "http://127.0.0.1:7377/terrain/hex?%FF=0&r=0"
+      , []
+      )
+    , ( "bad-events-stream-value"
+      , "http://127.0.0.1:7377/events?stream=%FF"
+      , [("Accept", "text/event-stream")]
+      )
+    ] $ \(caseName, url, extraHeaders) -> do
+      let requestId = "wai-query-utf8-" <> caseName
+      response <- waiJsonRequest manager requestId "GET" url "" extraHeaders
+      hresStatusCode response `shouldBe` 400
+      lookupHeaderText "x-request-id" (hresHeaders response) `shouldBe` Just requestId
+      lookupNestedText ["error", "code"] (hresBody response) `shouldBe` Just "validation_failed"
+      errorDetailCode (hresBody response) `shouldBe` Just "invalid_query_param"
+      lookupNestedText ["error", "request_id"] (hresBody response) `shouldBe` Just requestId
+
 assertUnauthorizedInvalidJson :: Manager -> IO ()
 assertUnauthorizedInvalidJson manager = do
   req0 <- parseRequest "http://127.0.0.1:7374/screenshots"
@@ -2364,12 +2399,23 @@ assertWaiNoBodyQueryParamsUseQuery manager = do
     conflict
 
 waiBodyPolicyRequest :: Manager -> Text -> BS.ByteString -> String -> LBS.ByteString -> IO HttpResponse
-waiBodyPolicyRequest manager requestId requestMethod url rawBody = do
+waiBodyPolicyRequest manager requestId requestMethod url rawBody =
+  waiJsonRequest manager requestId requestMethod url rawBody []
+
+waiJsonRequest
+  :: Manager
+  -> Text
+  -> BS.ByteString
+  -> String
+  -> LBS.ByteString
+  -> [Header]
+  -> IO HttpResponse
+waiJsonRequest manager requestId requestMethod url rawBody extraHeaders = do
   req0 <- parseRequest url
   let req = req0
         { method = requestMethod
         , requestBody = RequestBodyLBS rawBody
-        , requestHeaders = [("X-Request-Id", TextEncoding.encodeUtf8 requestId)]
+        , requestHeaders = ("X-Request-Id", TextEncoding.encodeUtf8 requestId) : extraHeaders
         }
   rsp <- httpLbs req manager
   body <- decodeWaiJsonBody (responseBody rsp)

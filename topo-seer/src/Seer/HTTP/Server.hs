@@ -133,24 +133,26 @@ httpApplication cfg app ctx request respond = do
             Left rsp -> respond (waiResponse (withReqId rsp))
             Right mBody -> case validateHttpRequestBody spec mBody of
               Left rsp -> respond (waiResponse (withReqId rsp))
-              Right () -> do
-                let httpReq = HttpRequest
-                      { hreqMethod = method
-                      , hreqPath = path
-                      , hreqQuery = map decodeQueryParam (Wai.queryString request)
-                      , hreqHeaders = headers
-                      , hreqBody = mBody
-                      }
-                case requestParams spec httpReq of
-                  Left rsp -> respond (waiResponse (withReqId rsp))
-                  Right _
-                    | hrsOperationId spec == "events.list"
-                    , eventStreamRequested request -> do
-                        response <- eventStreamWaiResponse ctx (requestIdFromHeaders headers) (Wai.queryString request)
-                        respond response
-                    | otherwise -> do
-                        rsp <- handleHttpRequest cfg app ctx httpReq
-                        respond (waiResponse rsp)
+              Right () -> case decodeQueryParams (Wai.queryString request) of
+                Left rsp -> respond (waiResponse (withReqId rsp))
+                Right query -> do
+                  let httpReq = HttpRequest
+                        { hreqMethod = method
+                        , hreqPath = path
+                        , hreqQuery = query
+                        , hreqHeaders = headers
+                        , hreqBody = mBody
+                        }
+                  case requestParams spec httpReq of
+                    Left rsp -> respond (waiResponse (withReqId rsp))
+                    Right _
+                      | hrsOperationId spec == "events.list"
+                      , eventStreamRequested query request -> do
+                          response <- eventStreamWaiResponse ctx (requestIdFromHeaders headers) query
+                          respond response
+                      | otherwise -> do
+                          rsp <- handleHttpRequest cfg app ctx httpReq
+                          respond (waiResponse rsp)
 
 -- | Pure request shape for route tests without opening a socket.
 data HttpRequest = HttpRequest
@@ -632,29 +634,46 @@ errorDetail detailCode message = object
   , "message" .= message
   ]
 
-decodeQueryParam :: (BS.ByteString, Maybe BS.ByteString) -> (Text, Maybe Text)
-decodeQueryParam (key, value) = (Text.decodeUtf8 key, fmap Text.decodeUtf8 value)
+decodeQueryParams :: HTTP.Query -> Either HttpResponse [(Text, Maybe Text)]
+decodeQueryParams = traverse decodeQueryParam
+
+decodeQueryParam :: (BS.ByteString, Maybe BS.ByteString) -> Either HttpResponse (Text, Maybe Text)
+decodeQueryParam (key, value) = do
+  decodedKey <- decodeQueryBytes "query parameter name" key
+  decodedValue <- traverse (decodeQueryBytes ("query parameter '" <> decodedKey <> "' value")) value
+  pure (decodedKey, decodedValue)
+
+decodeQueryBytes :: Text -> BS.ByteString -> Either HttpResponse Text
+decodeQueryBytes context bytes =
+  case Text.decodeUtf8' bytes of
+    Left _ -> Left (invalidQueryUtf8Error context)
+    Right decoded -> Right decoded
+
+invalidQueryUtf8Error :: Text -> HttpResponse
+invalidQueryUtf8Error context = queryParamPolicyError
+  "invalid_query_param"
+  (context <> " must be valid UTF-8")
 
 decodeHeaders :: [HTTP.Header] -> [(Text, Text)]
 decodeHeaders headers =
   maybe [] (\value -> [("authorization", Text.decodeUtf8 value)]) (lookup HTTP.hAuthorization headers)
     <> maybe [] (\value -> [(requestIdHeader, Text.decodeUtf8 value)]) (lookup "X-Request-Id" headers)
 
-eventStreamRequested :: Wai.Request -> Bool
-eventStreamRequested request =
+eventStreamRequested :: [(Text, Maybe Text)] -> Wai.Request -> Bool
+eventStreamRequested query request =
   acceptsEventStream (lookup HTTP.hAccept (Wai.requestHeaders request))
-    || queryFlag "stream" (Wai.queryString request)
+    || queryFlag "stream" query
 
 acceptsEventStream :: Maybe BS.ByteString -> Bool
 acceptsEventStream = maybe False (BSC.isInfixOf "text/event-stream" . BSC.map toLower)
 
-queryFlag :: Text -> HTTP.Query -> Bool
-queryFlag name query = case lookup (Text.encodeUtf8 name) query of
+queryFlag :: Text -> [(Text, Maybe Text)] -> Bool
+queryFlag name query = case lookup name query of
   Just Nothing -> True
-  Just (Just value) -> Text.toLower (Text.decodeUtf8 value) `elem` ["1", "true", "yes", "sse"]
+  Just (Just value) -> Text.toLower value `elem` ["1", "true", "yes", "sse"]
   Nothing -> False
 
-eventStreamWaiResponse :: ServiceContext -> Maybe Text -> HTTP.Query -> IO Wai.Response
+eventStreamWaiResponse :: ServiceContext -> Maybe Text -> [(Text, Maybe Text)] -> IO Wai.Response
 eventStreamWaiResponse ctx requestId query =
   case svcEventBus ctx of
     Nothing -> pure $ Wai.responseStream (HTTP.mkStatus 200 "OK") (eventStreamHeaders requestId) $ \write flush -> do
@@ -672,10 +691,10 @@ eventStreamHeaders requestId =
   , ("X-Accel-Buffering", "no")
   ] <> maybe [] (\rid -> [("X-Request-Id", Text.encodeUtf8 rid)]) requestId
 
-eventStreamLimit :: HTTP.Query -> Maybe Int
+eventStreamLimit :: [(Text, Maybe Text)] -> Maybe Int
 eventStreamLimit query = do
-  raw <- lookup (Text.encodeUtf8 "limit") query >>= id
-  n <- readMaybe (Text.unpack (Text.decodeUtf8 raw))
+  raw <- lookup "limit" query >>= id
+  n <- readMaybe (Text.unpack raw)
   Just (max 0 n)
 
 streamEvents
