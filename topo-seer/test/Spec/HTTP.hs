@@ -7,6 +7,7 @@ import Control.Exception (SomeException, bracket, finally, throwIO, try)
 import Control.Monad (forM_)
 import Data.Aeson (Value(..), object, (.=))
 import qualified Data.Aeson as Aeson
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import Data.Foldable (toList)
 import qualified Data.Aeson.Key as Key
@@ -380,38 +381,67 @@ spec = describe "Seer.HTTP.Server" $ do
       hresStatusCode rsp `shouldBe` 400
       lookupNestedText ["error", "code"] (hresBody rsp) `shouldBe` Just "validation_failed"
 
-  it "enforces route body policies in direct and WAI request paths" $
+  it "enforces route body policy matrices in direct and WAI request paths" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
-      noRequestBody <- request app (mkRequest "GET" ["state"])
-        { hreqBody = Just (object []) }
-      assertInvalidRequest noRequestBody "request body is not allowed for this route"
-
-      requiredMissing <- request app (mkRequest "POST" ["ui", "seed"])
-      assertInvalidRequest requiredMissing "JSON request body is required for this route"
-
-      requiredNull <- request app (mkRequest "POST" ["ui", "seed"])
-        { hreqBody = Just Null }
-      assertInvalidRequest requiredNull "JSON request body must be an object"
-
-      optionalNonObject <- request app (mkRequest "POST" ["screenshots"])
-        { hreqBody = Just (String "not-object") }
-      assertInvalidRequest optionalNonObject "JSON request body must be an object"
-
-      optionalMissing <- request app (mkRequest "POST" ["screenshots"])
-      hresStatusCode optionalMissing `shouldBe` 200
-
-      withReqId <- request app (mkRequest "GET" ["state"])
-        { hreqHeaders = [("x-request-id", "body-policy-123")]
-        , hreqBody = Just (object [])
-        }
-      assertInvalidRequest withReqId "request body is not allowed for this route"
-      lookupHeaderText "x-request-id" (hresHeaders withReqId) `shouldBe` Just "body-policy-123"
-      lookupNestedText ["error", "request_id"] (hresBody withReqId) `shouldBe` Just "body-policy-123"
+      installTerrainFixture app
+      let directCases :: [(Text, HttpRequest, BodyPolicyExpectation)]
+          directCases =
+            [ ( "no-body-empty"
+              , mkRequest "GET" ["state"]
+              , ExpectBodyPolicySuccess
+              )
+            , ( "no-body-object"
+              , (mkRequest "GET" ["state"]) { hreqBody = Just (object []) }
+              , ExpectBodyPolicyError 400 "invalid_request" "request_body_not_allowed"
+              )
+            , ( "no-body-non-object"
+              , (mkRequest "GET" ["state"]) { hreqBody = Just (String "not-object") }
+              , ExpectBodyPolicyError 400 "invalid_request" "request_body_not_allowed"
+              )
+            , ( "no-body-null"
+              , (mkRequest "GET" ["state"]) { hreqBody = Just Null }
+              , ExpectBodyPolicyError 400 "invalid_request" "request_body_not_allowed"
+              )
+            , ( "optional-empty"
+              , mkRequest "POST" ["screenshots"]
+              , ExpectBodyPolicySuccess
+              )
+            , ( "optional-object"
+              , (mkRequest "POST" ["screenshots"]) { hreqBody = Just (object []) }
+              , ExpectBodyPolicySuccess
+              )
+            , ( "optional-non-object"
+              , (mkRequest "POST" ["screenshots"]) { hreqBody = Just (String "not-object") }
+              , ExpectBodyPolicyError 400 "invalid_request" "request_body_must_be_object"
+              )
+            , ( "optional-null"
+              , (mkRequest "POST" ["screenshots"]) { hreqBody = Just Null }
+              , ExpectBodyPolicyError 400 "invalid_request" "request_body_must_be_object"
+              )
+            , ( "required-empty"
+              , mkRequest "POST" ["ui", "seed"]
+              , ExpectBodyPolicyError 400 "invalid_request" "request_body_required"
+              )
+            , ( "required-object"
+              , (mkRequest "POST" ["ui", "seed"]) { hreqBody = Just (object ["seed" .= (321 :: Int)]) }
+              , ExpectBodyPolicySuccess
+              )
+            , ( "required-non-object"
+              , (mkRequest "POST" ["ui", "seed"]) { hreqBody = Just (String "not-object") }
+              , ExpectBodyPolicyError 400 "invalid_request" "request_body_must_be_object"
+              )
+            , ( "required-null"
+              , (mkRequest "POST" ["ui", "seed"]) { hreqBody = Just Null }
+              , ExpectBodyPolicyError 400 "invalid_request" "request_body_must_be_object"
+              )
+            ]
+      forM_ directCases (assertDirectBodyPolicyCase app)
+      assertDirectNoBodyQueryParamsUseQuery app
 
       let cfg = defaultHttpServerConfig { hscBindPort = 7376 }
       tid <- forkHttpServer cfg headlessHttpAppService (headlessServiceContext app)
       manager <- newManager defaultManagerSettings
-      eventually_ (assertWaiRouteBodyPolicy manager)
+      eventually_ (assertWaiRouteBodyPolicyMatrix manager)
         `finally` (do
           killThread tid
           threadDelay 100000)
@@ -1032,11 +1062,50 @@ positiveNumber :: Value -> Bool
 positiveNumber (Number n) = n > 0
 positiveNumber _ = False
 
-assertInvalidRequest :: HttpResponse -> Text -> Expectation
-assertInvalidRequest response expectedMessage = do
-  hresStatusCode response `shouldBe` 400
-  lookupNestedText ["error", "code"] (hresBody response) `shouldBe` Just "invalid_request"
-  lookupNestedText ["error", "message"] (hresBody response) `shouldBe` Just expectedMessage
+data BodyPolicyExpectation
+  = ExpectBodyPolicySuccess
+  | ExpectBodyPolicyError Int Text Text
+  deriving (Eq, Show)
+
+assertDirectBodyPolicyCase :: HeadlessApp -> (Text, HttpRequest, BodyPolicyExpectation) -> IO ()
+assertDirectBodyPolicyCase app (caseName, req, expected) = do
+  let requestId = "direct-body-policy-" <> caseName
+  response <- request app (withRequestIdHeader requestId req)
+  assertBodyPolicyResponse requestId expected response
+
+assertDirectNoBodyQueryParamsUseQuery :: HeadlessApp -> IO ()
+assertDirectNoBodyQueryParamsUseQuery app = do
+  let terrainQuery = [("q", Just "0"), ("r", Just "0")]
+      queryRequest = (mkRequest "GET" ["terrain", "hex"]) { hreqQuery = terrainQuery }
+      queryRequestId = "direct-body-policy-query-empty"
+  queryOnly <- request app (withRequestIdHeader queryRequestId queryRequest)
+  assertBodyPolicyResponse queryRequestId ExpectBodyPolicySuccess queryOnly
+  lookupValue "q" (hresBody queryOnly) `shouldBe` Just (Number 0)
+  lookupValue "r" (hresBody queryOnly) `shouldBe` Just (Number 0)
+
+  let conflictRequestId = "direct-body-policy-query-conflict"
+      conflictRequest = queryRequest
+        { hreqBody = Just (object ["q" .= (99 :: Int), "r" .= (99 :: Int)]) }
+  conflict <- request app (withRequestIdHeader conflictRequestId conflictRequest)
+  assertBodyPolicyResponse conflictRequestId
+    (ExpectBodyPolicyError 400 "invalid_request" "request_body_not_allowed")
+    conflict
+
+withRequestIdHeader :: Text -> HttpRequest -> HttpRequest
+withRequestIdHeader requestId req =
+  req { hreqHeaders = ("x-request-id", requestId) : hreqHeaders req }
+
+assertBodyPolicyResponse :: Text -> BodyPolicyExpectation -> HttpResponse -> Expectation
+assertBodyPolicyResponse requestId expected response = do
+  lookupHeaderText "x-request-id" (hresHeaders response) `shouldBe` Just requestId
+  case expected of
+    ExpectBodyPolicySuccess ->
+      hresStatusCode response `shouldBe` 200
+    ExpectBodyPolicyError expectedStatus expectedCode expectedDetailCode -> do
+      hresStatusCode response `shouldBe` expectedStatus
+      lookupNestedText ["error", "code"] (hresBody response) `shouldBe` Just expectedCode
+      errorDetailCode (hresBody response) `shouldBe` Just expectedDetailCode
+      lookupNestedText ["error", "request_id"] (hresBody response) `shouldBe` Just requestId
 
 arrayFieldContainsText :: Text -> Text -> Value -> Bool
 arrayFieldContainsText field expected (Object obj) = case KM.lookup (Key.fromText field) obj of
@@ -1394,6 +1463,15 @@ errorDetailPath (Object obj) = do
       _ -> Nothing
     _ -> Nothing
 errorDetailPath _ = Nothing
+
+errorDetailCode :: Value -> Maybe Text
+errorDetailCode (Object obj) = do
+  Object err <- KM.lookup "error" obj
+  Array details <- KM.lookup "details" err
+  case toList details of
+    Object detail:_ -> valueText =<< KM.lookup "code" detail
+    _ -> Nothing
+errorDetailCode _ = Nothing
 
 valueText :: Value -> Maybe Text
 valueText (String text) = Just text
@@ -1842,23 +1920,150 @@ assertUnauthorizedInvalidJson manager = do
   rsp <- httpLbs req manager
   HTTP.statusCode (responseStatus rsp) `shouldBe` 401
 
-assertWaiRouteBodyPolicy :: Manager -> IO ()
-assertWaiRouteBodyPolicy manager = do
-  req0 <- parseRequest "http://127.0.0.1:7376/state"
+assertWaiRouteBodyPolicyMatrix :: Manager -> IO ()
+assertWaiRouteBodyPolicyMatrix manager = do
+  let waiCases :: [(Text, BS.ByteString, String, LBS.ByteString, BodyPolicyExpectation)]
+      waiCases =
+        [ ( "no-body-empty"
+          , "GET"
+          , "http://127.0.0.1:7376/state"
+          , ""
+          , ExpectBodyPolicySuccess
+          )
+        , ( "no-body-malformed"
+          , "GET"
+          , "http://127.0.0.1:7376/state"
+          , "{not-json"
+          , ExpectBodyPolicyError 400 "invalid_request" "request_body_not_allowed"
+          )
+        , ( "no-body-object"
+          , "GET"
+          , "http://127.0.0.1:7376/state"
+          , "{}"
+          , ExpectBodyPolicyError 400 "invalid_request" "request_body_not_allowed"
+          )
+        , ( "no-body-non-object"
+          , "GET"
+          , "http://127.0.0.1:7376/state"
+          , "\"not-object\""
+          , ExpectBodyPolicyError 400 "invalid_request" "request_body_not_allowed"
+          )
+        , ( "no-body-null"
+          , "GET"
+          , "http://127.0.0.1:7376/state"
+          , "null"
+          , ExpectBodyPolicyError 400 "invalid_request" "request_body_not_allowed"
+          )
+        , ( "optional-empty"
+          , "POST"
+          , "http://127.0.0.1:7376/screenshots"
+          , ""
+          , ExpectBodyPolicySuccess
+          )
+        , ( "optional-malformed"
+          , "POST"
+          , "http://127.0.0.1:7376/screenshots"
+          , "{not-json"
+          , ExpectBodyPolicyError 400 "invalid_json" "request_body_malformed_json"
+          )
+        , ( "optional-object"
+          , "POST"
+          , "http://127.0.0.1:7376/screenshots"
+          , "{}"
+          , ExpectBodyPolicySuccess
+          )
+        , ( "optional-non-object"
+          , "POST"
+          , "http://127.0.0.1:7376/screenshots"
+          , "\"not-object\""
+          , ExpectBodyPolicyError 400 "invalid_request" "request_body_must_be_object"
+          )
+        , ( "optional-null"
+          , "POST"
+          , "http://127.0.0.1:7376/screenshots"
+          , "null"
+          , ExpectBodyPolicyError 400 "invalid_request" "request_body_must_be_object"
+          )
+        , ( "required-empty"
+          , "POST"
+          , "http://127.0.0.1:7376/ui/seed"
+          , ""
+          , ExpectBodyPolicyError 400 "invalid_request" "request_body_required"
+          )
+        , ( "required-malformed"
+          , "POST"
+          , "http://127.0.0.1:7376/ui/seed"
+          , "{not-json"
+          , ExpectBodyPolicyError 400 "invalid_json" "request_body_malformed_json"
+          )
+        , ( "required-object"
+          , "POST"
+          , "http://127.0.0.1:7376/ui/seed"
+          , "{\"seed\":654}"
+          , ExpectBodyPolicySuccess
+          )
+        , ( "required-non-object"
+          , "POST"
+          , "http://127.0.0.1:7376/ui/seed"
+          , "\"not-object\""
+          , ExpectBodyPolicyError 400 "invalid_request" "request_body_must_be_object"
+          )
+        , ( "required-null"
+          , "POST"
+          , "http://127.0.0.1:7376/ui/seed"
+          , "null"
+          , ExpectBodyPolicyError 400 "invalid_request" "request_body_must_be_object"
+          )
+        ]
+  forM_ waiCases (assertWaiBodyPolicyCase manager)
+  assertWaiNoBodyQueryParamsUseQuery manager
+
+assertWaiBodyPolicyCase :: Manager -> (Text, BS.ByteString, String, LBS.ByteString, BodyPolicyExpectation) -> IO ()
+assertWaiBodyPolicyCase manager (caseName, requestMethod, url, rawBody, expected) = do
+  let requestId = "wai-body-policy-" <> caseName
+  response <- waiBodyPolicyRequest manager requestId requestMethod url rawBody
+  assertBodyPolicyResponse requestId expected response
+
+assertWaiNoBodyQueryParamsUseQuery :: Manager -> IO ()
+assertWaiNoBodyQueryParamsUseQuery manager = do
+  let url = "http://127.0.0.1:7376/terrain/hex?q=0&r=0"
+      queryRequestId = "wai-body-policy-query-empty"
+  queryOnly <- waiBodyPolicyRequest manager queryRequestId "GET" url ""
+  assertBodyPolicyResponse queryRequestId ExpectBodyPolicySuccess queryOnly
+  lookupValue "q" (hresBody queryOnly) `shouldBe` Just (Number 0)
+  lookupValue "r" (hresBody queryOnly) `shouldBe` Just (Number 0)
+
+  let conflictRequestId = "wai-body-policy-query-conflict"
+  conflict <- waiBodyPolicyRequest manager conflictRequestId "GET" url "{\"q\":99,\"r\":99}"
+  assertBodyPolicyResponse conflictRequestId
+    (ExpectBodyPolicyError 400 "invalid_request" "request_body_not_allowed")
+    conflict
+
+waiBodyPolicyRequest :: Manager -> Text -> BS.ByteString -> String -> LBS.ByteString -> IO HttpResponse
+waiBodyPolicyRequest manager requestId requestMethod url rawBody = do
+  req0 <- parseRequest url
   let req = req0
-        { method = "GET"
-        , requestBody = RequestBodyLBS "{}"
-        , requestHeaders = [("X-Request-Id", "wai-body-123")]
+        { method = requestMethod
+        , requestBody = RequestBodyLBS rawBody
+        , requestHeaders = [("X-Request-Id", TextEncoding.encodeUtf8 requestId)]
         }
   rsp <- httpLbs req manager
-  HTTP.statusCode (responseStatus rsp) `shouldBe` 400
-  lookup "X-Request-Id" (responseHeaders rsp) `shouldBe` Just "wai-body-123"
-  case Aeson.decode (responseBody rsp) :: Maybe Value of
-    Nothing -> expectationFailure "route body policy response was not JSON"
-    Just body -> do
-      lookupNestedText ["error", "code"] body `shouldBe` Just "invalid_request"
-      lookupNestedText ["error", "message"] body `shouldBe` Just "request body is not allowed for this route"
-      lookupNestedText ["error", "request_id"] body `shouldBe` Just "wai-body-123"
+  body <- decodeWaiJsonBody (responseBody rsp)
+  pure HttpResponse
+    { hresStatusCode = HTTP.statusCode (responseStatus rsp)
+    , hresHeaders = decodeWaiResponseHeaders (responseHeaders rsp)
+    , hresBody = body
+    }
+
+decodeWaiJsonBody :: LBS.ByteString -> IO Value
+decodeWaiJsonBody bytes =
+  case Aeson.decode bytes of
+    Nothing -> expectationFailure "route body policy response was not JSON" >> pure Null
+    Just body -> pure body
+
+decodeWaiResponseHeaders headers =
+  maybe [] (\value -> [("x-request-id", TextEncoding.decodeUtf8 value)])
+    (lookup "X-Request-Id" headers)
 
 eventually_ :: IO () -> IO ()
 eventually_ action = go (30 :: Int)

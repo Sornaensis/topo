@@ -128,8 +128,8 @@ httpApplication cfg app ctx request respond = do
       , not (isAuthorized (hscBearerToken cfg) headers) -> respond (waiResponse (withReqId unauthorized))
       | otherwise -> do
           body <- Wai.strictRequestBody request
-          case decodeRequestBody body of
-            Left err -> respond (waiResponse (withReqId (jsonResponse 400 (errorEnvelope "invalid_json" err []))))
+          case decodeHttpRequestBody spec body of
+            Left rsp -> respond (waiResponse (withReqId rsp))
             Right mBody -> case validateHttpRequestBody spec mBody of
               Left rsp -> respond (waiResponse (withReqId rsp))
               Right ()
@@ -202,10 +202,10 @@ validateHttpRequestBody spec body =
   case hrsRequestBody spec of
     NoRequestBody -> case body of
       Nothing -> Right ()
-      Just _ -> Left (requestBodyPolicyError "request body is not allowed for this route")
+      Just _ -> Left requestBodyNotAllowedError
     OptionalJsonRequestBody -> validateOptionalJsonBody body
     RequiredJsonRequestBody -> case body of
-      Nothing -> Left (requestBodyPolicyError "JSON request body is required for this route")
+      Nothing -> Left requestBodyRequiredError
       Just value -> validateJsonObject value
 
 validateOptionalJsonBody :: Maybe Value -> Either HttpResponse ()
@@ -214,10 +214,26 @@ validateOptionalJsonBody (Just value) = validateJsonObject value
 
 validateJsonObject :: Value -> Either HttpResponse ()
 validateJsonObject (Object _) = Right ()
-validateJsonObject _ = Left (requestBodyPolicyError "JSON request body must be an object")
+validateJsonObject _ = Left requestBodyMustBeObjectError
 
-requestBodyPolicyError :: Text -> HttpResponse
-requestBodyPolicyError message = jsonResponse 400 (errorEnvelope "invalid_request" message [])
+requestBodyNotAllowedError :: HttpResponse
+requestBodyNotAllowedError = requestBodyPolicyError
+  "request_body_not_allowed"
+  "request body is not allowed for this route"
+
+requestBodyRequiredError :: HttpResponse
+requestBodyRequiredError = requestBodyPolicyError
+  "request_body_required"
+  "JSON request body is required for this route"
+
+requestBodyMustBeObjectError :: HttpResponse
+requestBodyMustBeObjectError = requestBodyPolicyError
+  "request_body_must_be_object"
+  "JSON request body must be an object"
+
+requestBodyPolicyError :: Text -> Text -> HttpResponse
+requestBodyPolicyError detailCode message =
+  jsonResponse 400 (errorEnvelope "invalid_request" message [errorDetail detailCode message])
 
 requestParams :: HttpRouteSpec -> HttpRequest -> Value
 requestParams spec req =
@@ -527,12 +543,30 @@ waiResponseHeaders headers =
     , Text.toLower name == requestIdHeader
     ]
 
+decodeHttpRequestBody :: HttpRouteSpec -> LBS.ByteString -> Either HttpResponse (Maybe Value)
+decodeHttpRequestBody spec body
+  | hrsRequestBody spec == NoRequestBody
+  , not (LBS.null body) = Left requestBodyNotAllowedError
+  | otherwise = case decodeRequestBody body of
+      Left err -> Left (invalidJsonError err)
+      Right value -> Right value
+
 decodeRequestBody :: LBS.ByteString -> Either Text (Maybe Value)
 decodeRequestBody body
   | LBS.null body = Right Nothing
   | otherwise = case eitherDecode body of
       Left err -> Left (Text.pack err)
       Right value -> Right (Just value)
+
+invalidJsonError :: Text -> HttpResponse
+invalidJsonError message =
+  jsonResponse 400 (errorEnvelope "invalid_json" message [errorDetail "request_body_malformed_json" message])
+
+errorDetail :: Text -> Text -> Value
+errorDetail detailCode message = object
+  [ "code" .= detailCode
+  , "message" .= message
+  ]
 
 decodeQueryParam :: (BS.ByteString, Maybe BS.ByteString) -> (Text, Maybe Text)
 decodeQueryParam (key, value) = (Text.decodeUtf8 key, fmap Text.decodeUtf8 value)
