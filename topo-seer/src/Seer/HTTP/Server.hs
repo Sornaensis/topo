@@ -126,24 +126,27 @@ httpApplication cfg app ctx request respond = do
     Just spec
       | not (isPublicRoute spec)
       , not (isAuthorized (hscBearerToken cfg) headers) -> respond (waiResponse (withReqId unauthorized))
-      | hrsOperationId spec == "events.list"
-      , eventStreamRequested request -> do
-          response <- eventStreamWaiResponse ctx (requestIdFromHeaders headers) (Wai.queryString request)
-          respond response
       | otherwise -> do
           body <- Wai.strictRequestBody request
           case decodeRequestBody body of
             Left err -> respond (waiResponse (withReqId (jsonResponse 400 (errorEnvelope "invalid_json" err []))))
-            Right mBody -> do
-              let httpReq = HttpRequest
-                    { hreqMethod = method
-                    , hreqPath = path
-                    , hreqQuery = map decodeQueryParam (Wai.queryString request)
-                    , hreqHeaders = headers
-                    , hreqBody = mBody
-                    }
-              rsp <- handleHttpRequest cfg app ctx httpReq
-              respond (waiResponse rsp)
+            Right mBody -> case validateHttpRequestBody spec mBody of
+              Left rsp -> respond (waiResponse (withReqId rsp))
+              Right ()
+                | hrsOperationId spec == "events.list"
+                , eventStreamRequested request -> do
+                    response <- eventStreamWaiResponse ctx (requestIdFromHeaders headers) (Wai.queryString request)
+                    respond response
+                | otherwise -> do
+                    let httpReq = HttpRequest
+                          { hreqMethod = method
+                          , hreqPath = path
+                          , hreqQuery = map decodeQueryParam (Wai.queryString request)
+                          , hreqHeaders = headers
+                          , hreqBody = mBody
+                          }
+                    rsp <- handleHttpRequest cfg app ctx httpReq
+                    respond (waiResponse rsp)
 
 -- | Pure request shape for route tests without opening a socket.
 data HttpRequest = HttpRequest
@@ -169,7 +172,9 @@ handleHttpRequest cfg app ctx req =
       | not (isPublicRoute spec)
       , not (isAuthorized (hscBearerToken cfg) (hreqHeaders req)) ->
           pure (jsonResponse 401 (errorEnvelope "unauthorized" "missing or invalid bearer token" []))
-      | otherwise -> handleRoute spec
+      | otherwise -> case validateHttpRequestBody spec (hreqBody req) of
+          Left rsp -> pure rsp
+          Right () -> handleRoute spec
   where
     handleRoute spec = case hrsOperationId spec of
       "meta.health" -> pure (jsonResponse 200 (object ["status" .= ("ok" :: Text)]))
@@ -191,6 +196,28 @@ handleHttpRequest cfg app ctx req =
 
 isPublicRoute :: HttpRouteSpec -> Bool
 isPublicRoute spec = hrsOperationId spec == "meta.health"
+
+validateHttpRequestBody :: HttpRouteSpec -> Maybe Value -> Either HttpResponse ()
+validateHttpRequestBody spec body =
+  case hrsRequestBody spec of
+    NoRequestBody -> case body of
+      Nothing -> Right ()
+      Just _ -> Left (requestBodyPolicyError "request body is not allowed for this route")
+    OptionalJsonRequestBody -> validateOptionalJsonBody body
+    RequiredJsonRequestBody -> case body of
+      Nothing -> Left (requestBodyPolicyError "JSON request body is required for this route")
+      Just value -> validateJsonObject value
+
+validateOptionalJsonBody :: Maybe Value -> Either HttpResponse ()
+validateOptionalJsonBody Nothing = Right ()
+validateOptionalJsonBody (Just value) = validateJsonObject value
+
+validateJsonObject :: Value -> Either HttpResponse ()
+validateJsonObject (Object _) = Right ()
+validateJsonObject _ = Left (requestBodyPolicyError "JSON request body must be an object")
+
+requestBodyPolicyError :: Text -> HttpResponse
+requestBodyPolicyError message = jsonResponse 400 (errorEnvelope "invalid_request" message [])
 
 requestParams :: HttpRouteSpec -> HttpRequest -> Value
 requestParams spec req =

@@ -380,6 +380,42 @@ spec = describe "Seer.HTTP.Server" $ do
       hresStatusCode rsp `shouldBe` 400
       lookupNestedText ["error", "code"] (hresBody rsp) `shouldBe` Just "validation_failed"
 
+  it "enforces route body policies in direct and WAI request paths" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      noRequestBody <- request app (mkRequest "GET" ["state"])
+        { hreqBody = Just (object []) }
+      assertInvalidRequest noRequestBody "request body is not allowed for this route"
+
+      requiredMissing <- request app (mkRequest "POST" ["ui", "seed"])
+      assertInvalidRequest requiredMissing "JSON request body is required for this route"
+
+      requiredNull <- request app (mkRequest "POST" ["ui", "seed"])
+        { hreqBody = Just Null }
+      assertInvalidRequest requiredNull "JSON request body must be an object"
+
+      optionalNonObject <- request app (mkRequest "POST" ["screenshots"])
+        { hreqBody = Just (String "not-object") }
+      assertInvalidRequest optionalNonObject "JSON request body must be an object"
+
+      optionalMissing <- request app (mkRequest "POST" ["screenshots"])
+      hresStatusCode optionalMissing `shouldBe` 200
+
+      withReqId <- request app (mkRequest "GET" ["state"])
+        { hreqHeaders = [("x-request-id", "body-policy-123")]
+        , hreqBody = Just (object [])
+        }
+      assertInvalidRequest withReqId "request body is not allowed for this route"
+      lookupHeaderText "x-request-id" (hresHeaders withReqId) `shouldBe` Just "body-policy-123"
+      lookupNestedText ["error", "request_id"] (hresBody withReqId) `shouldBe` Just "body-policy-123"
+
+      let cfg = defaultHttpServerConfig { hscBindPort = 7376 }
+      tid <- forkHttpServer cfg headlessHttpAppService (headlessServiceContext app)
+      manager <- newManager defaultManagerSettings
+      eventually_ (assertWaiRouteBodyPolicy manager)
+        `finally` (do
+          killThread tid
+          threadDelay 100000)
+
   it "maps plugin parameter validation and not-found errors to HTTP envelopes" $
     withHttpPluginDir $ do
       let cfg = defaultHeadlessConfig { hcDiscoverPlugins = True }
@@ -995,6 +1031,12 @@ assertBackendNeutralPluginDataSurfaces app = do
 positiveNumber :: Value -> Bool
 positiveNumber (Number n) = n > 0
 positiveNumber _ = False
+
+assertInvalidRequest :: HttpResponse -> Text -> Expectation
+assertInvalidRequest response expectedMessage = do
+  hresStatusCode response `shouldBe` 400
+  lookupNestedText ["error", "code"] (hresBody response) `shouldBe` Just "invalid_request"
+  lookupNestedText ["error", "message"] (hresBody response) `shouldBe` Just expectedMessage
 
 arrayFieldContainsText :: Text -> Text -> Value -> Bool
 arrayFieldContainsText field expected (Object obj) = case KM.lookup (Key.fromText field) obj of
@@ -1799,6 +1841,24 @@ assertUnauthorizedInvalidJson manager = do
         }
   rsp <- httpLbs req manager
   HTTP.statusCode (responseStatus rsp) `shouldBe` 401
+
+assertWaiRouteBodyPolicy :: Manager -> IO ()
+assertWaiRouteBodyPolicy manager = do
+  req0 <- parseRequest "http://127.0.0.1:7376/state"
+  let req = req0
+        { method = "GET"
+        , requestBody = RequestBodyLBS "{}"
+        , requestHeaders = [("X-Request-Id", "wai-body-123")]
+        }
+  rsp <- httpLbs req manager
+  HTTP.statusCode (responseStatus rsp) `shouldBe` 400
+  lookup "X-Request-Id" (responseHeaders rsp) `shouldBe` Just "wai-body-123"
+  case Aeson.decode (responseBody rsp) :: Maybe Value of
+    Nothing -> expectationFailure "route body policy response was not JSON"
+    Just body -> do
+      lookupNestedText ["error", "code"] body `shouldBe` Just "invalid_request"
+      lookupNestedText ["error", "message"] body `shouldBe` Just "request body is not allowed for this route"
+      lookupNestedText ["error", "request_id"] body `shouldBe` Just "wai-body-123"
 
 eventually_ :: IO () -> IO ()
 eventually_ action = go (30 :: Int)
