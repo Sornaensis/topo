@@ -12,6 +12,7 @@ import qualified Data.ByteString.Lazy as LBS
 import Data.Foldable (toList)
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
+import Data.IORef (atomicModifyIORef', newIORef)
 import Data.List (find, nub, sort)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -1007,12 +1008,26 @@ spec = describe "Seer.HTTP.Server" $ do
       `shouldSatisfy` maybe False (\codes -> all (`elem` codes) ["validation_failed", "schema_validation_failed", "permission_denied", "operation_not_supported", "timeout"])
     errorCodeEnum doc `shouldSatisfy` maybe False (notElem "invalid_json")
 
-  it "rejects unauthorized WAI requests before parsing protected bodies" $
+  it "rejects unauthorized WAI requests before checking protected body size or parsing" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
-      let cfg = defaultHttpServerConfig { hscBindPort = 7374, hscBearerToken = Just "secret" }
+      let cfg = defaultHttpServerConfig
+            { hscBindPort = 7374
+            , hscBearerToken = Just "secret"
+            , hscMaxRequestBodyBytes = 8
+            }
       tid <- forkHttpServer cfg headlessHttpAppService (headlessServiceContext app)
       manager <- newManager defaultManagerSettings
       eventually_ (assertUnauthorizedInvalidJson manager)
+        `finally` (do
+          killThread tid
+          threadDelay 100000)
+
+  it "rejects oversized WAI request bodies with JSON 413 envelopes" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      let cfg = defaultHttpServerConfig { hscBindPort = 7378, hscMaxRequestBodyBytes = 8 }
+      tid <- forkHttpServer cfg headlessHttpAppService (headlessServiceContext app)
+      manager <- newManager defaultManagerSettings
+      eventually_ (assertWaiRequestBodySizeLimits manager)
         `finally` (do
           killThread tid
           threadDelay 100000)
@@ -2279,6 +2294,40 @@ assertUnauthorizedInvalidJson manager = do
   rsp <- httpLbs req manager
   HTTP.statusCode (responseStatus rsp) `shouldBe` 401
 
+assertWaiRequestBodySizeLimits :: Manager -> IO ()
+assertWaiRequestBodySizeLimits manager = do
+  let knownRequestId = "wai-body-limit-known"
+  known <- waiJsonRequest manager knownRequestId "POST" "http://127.0.0.1:7378/ui/seed"
+    (LBS.fromStrict (BS.replicate 9 123)) []
+  assertPayloadTooLargeResponse knownRequestId known
+
+  let streamedRequestId = "wai-body-limit-streamed"
+  streamed <- waiJsonRequestWithBody manager streamedRequestId "POST" "http://127.0.0.1:7378/ui/seed"
+    (chunkedRequestBody [BS.replicate 4 123, BS.replicate 5 123]) []
+  assertPayloadTooLargeResponse streamedRequestId streamed
+
+  let noBodyRequestId = "wai-body-limit-no-body"
+  noBody <- waiJsonRequest manager noBodyRequestId "GET" "http://127.0.0.1:7378/state"
+    (LBS.fromStrict (BS.replicate 9 123)) []
+  assertBodyPolicyResponse noBodyRequestId
+    (ExpectBodyPolicyError 400 "validation_failed" "unexpected_body")
+    noBody
+
+assertPayloadTooLargeResponse :: Text -> HttpResponse -> Expectation
+assertPayloadTooLargeResponse requestId response = do
+  hresStatusCode response `shouldBe` 413
+  lookupHeaderText "x-request-id" (hresHeaders response) `shouldBe` Just requestId
+  lookupNestedText ["error", "code"] (hresBody response) `shouldBe` Just "payload_too_large"
+  lookupNestedText ["error", "request_id"] (hresBody response) `shouldBe` Just requestId
+
+chunkedRequestBody :: [BS.ByteString] -> RequestBody
+chunkedRequestBody chunks = RequestBodyStreamChunked $ \needsPopper -> do
+  remaining <- newIORef chunks
+  needsPopper $ atomicModifyIORef' remaining popChunk
+  where
+    popChunk [] = ([], BS.empty)
+    popChunk (chunk:rest) = (rest, chunk)
+
 assertWaiRouteBodyPolicyMatrix :: Manager -> IO ()
 assertWaiRouteBodyPolicyMatrix manager = do
   let waiCases :: [(Text, BS.ByteString, String, LBS.ByteString, BodyPolicyExpectation)]
@@ -2410,11 +2459,22 @@ waiJsonRequest
   -> LBS.ByteString
   -> [Header]
   -> IO HttpResponse
-waiJsonRequest manager requestId requestMethod url rawBody extraHeaders = do
+waiJsonRequest manager requestId requestMethod url rawBody extraHeaders =
+  waiJsonRequestWithBody manager requestId requestMethod url (RequestBodyLBS rawBody) extraHeaders
+
+waiJsonRequestWithBody
+  :: Manager
+  -> Text
+  -> BS.ByteString
+  -> String
+  -> RequestBody
+  -> [Header]
+  -> IO HttpResponse
+waiJsonRequestWithBody manager requestId requestMethod url rawBody extraHeaders = do
   req0 <- parseRequest url
   let req = req0
         { method = requestMethod
-        , requestBody = RequestBodyLBS rawBody
+        , requestBody = rawBody
         , requestHeaders = ("X-Request-Id", TextEncoding.encodeUtf8 requestId) : extraHeaders
         }
   rsp <- httpLbs req manager

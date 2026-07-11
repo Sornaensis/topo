@@ -65,6 +65,7 @@ data HttpServerConfig = HttpServerConfig
   { hscBindHost :: !String
   , hscBindPort :: !Int
   , hscBearerToken :: !(Maybe Text)
+  , hscMaxRequestBodyBytes :: !Int
   } deriving (Eq, Show)
 
 defaultHttpServerConfig :: HttpServerConfig
@@ -72,6 +73,7 @@ defaultHttpServerConfig = HttpServerConfig
   { hscBindHost = "127.0.0.1"
   , hscBindPort = 7373
   , hscBearerToken = Nothing
+  , hscMaxRequestBodyBytes = 8 * 1024 * 1024
   }
 
 -- | Parse @HOST:PORT@ bindings used by @topo-seer --http@.
@@ -128,31 +130,33 @@ httpApplication cfg app ctx request respond = do
       | not (isPublicRoute spec)
       , not (isAuthorized (hscBearerToken cfg) headers) -> respond (waiResponse (withReqId unauthorized))
       | otherwise -> do
-          body <- Wai.strictRequestBody request
-          case decodeHttpRequestBody spec body of
+          bodyResult <- readHttpRequestBody (hscMaxRequestBodyBytes cfg) spec request
+          case bodyResult of
             Left rsp -> respond (waiResponse (withReqId rsp))
-            Right mBody -> case validateHttpRequestBody spec mBody of
+            Right body -> case decodeHttpRequestBody spec body of
               Left rsp -> respond (waiResponse (withReqId rsp))
-              Right () -> case decodeQueryParams (Wai.queryString request) of
+              Right mBody -> case validateHttpRequestBody spec mBody of
                 Left rsp -> respond (waiResponse (withReqId rsp))
-                Right query -> do
-                  let httpReq = HttpRequest
-                        { hreqMethod = method
-                        , hreqPath = path
-                        , hreqQuery = query
-                        , hreqHeaders = headers
-                        , hreqBody = mBody
-                        }
-                  case requestParams spec httpReq of
-                    Left rsp -> respond (waiResponse (withReqId rsp))
-                    Right _
-                      | hrsOperationId spec == "events.list"
-                      , eventStreamRequested query request -> do
-                          response <- eventStreamWaiResponse ctx (requestIdFromHeaders headers) query
-                          respond response
-                      | otherwise -> do
-                          rsp <- handleHttpRequest cfg app ctx httpReq
-                          respond (waiResponse rsp)
+                Right () -> case decodeQueryParams (Wai.queryString request) of
+                  Left rsp -> respond (waiResponse (withReqId rsp))
+                  Right query -> do
+                    let httpReq = HttpRequest
+                          { hreqMethod = method
+                          , hreqPath = path
+                          , hreqQuery = query
+                          , hreqHeaders = headers
+                          , hreqBody = mBody
+                          }
+                    case requestParams spec httpReq of
+                      Left rsp -> respond (waiResponse (withReqId rsp))
+                      Right _
+                        | hrsOperationId spec == "events.list"
+                        , eventStreamRequested query request -> do
+                            response <- eventStreamWaiResponse ctx (requestIdFromHeaders headers) query
+                            respond response
+                        | otherwise -> do
+                            rsp <- handleHttpRequest cfg app ctx httpReq
+                            respond (waiResponse rsp)
 
 -- | Pure request shape for route tests without opening a socket.
 data HttpRequest = HttpRequest
@@ -608,6 +612,47 @@ waiResponseHeaders headers =
     | (name, requestId) <- headers
     , Text.toLower name == requestIdHeader
     ]
+
+readHttpRequestBody :: Int -> HttpRouteSpec -> Wai.Request -> IO (Either HttpResponse LBS.ByteString)
+readHttpRequestBody configuredMaxBytes spec request =
+  case hrsRequestBody spec of
+    NoRequestBody -> rejectNonEmptyRequestBody request
+    _ -> readBoundedRequestBody (max 0 configuredMaxBytes) request
+
+rejectNonEmptyRequestBody :: Wai.Request -> IO (Either HttpResponse LBS.ByteString)
+rejectNonEmptyRequestBody request =
+  case Wai.requestBodyLength request of
+    Wai.KnownLength 0 -> pure (Right LBS.empty)
+    Wai.KnownLength _ -> pure (Left requestBodyNotAllowedError)
+    Wai.ChunkedBody -> do
+      chunk <- Wai.getRequestBodyChunk request
+      pure $ if BS.null chunk
+        then Right LBS.empty
+        else Left requestBodyNotAllowedError
+
+readBoundedRequestBody :: Int -> Wai.Request -> IO (Either HttpResponse LBS.ByteString)
+readBoundedRequestBody maxBytes request =
+  case Wai.requestBodyLength request of
+    Wai.KnownLength contentLength
+      | contentLength > fromIntegral maxBytes -> pure (Left (payloadTooLargeError maxBytes))
+      | otherwise -> readChunks 0 id
+    Wai.ChunkedBody -> readChunks 0 id
+  where
+    readChunks total chunks = do
+      chunk <- Wai.getRequestBodyChunk request
+      if BS.null chunk
+        then pure (Right (LBS.fromChunks (chunks [])))
+        else do
+          let total' = total + BS.length chunk
+          if total' > maxBytes
+            then pure (Left (payloadTooLargeError maxBytes))
+            else readChunks total' (chunks . (chunk:))
+
+payloadTooLargeError :: Int -> HttpResponse
+payloadTooLargeError maxBytes = jsonResponse 413 (errorEnvelope
+  "payload_too_large"
+  ("request body exceeds maximum size of " <> Text.pack (show maxBytes) <> " bytes")
+  [])
 
 decodeHttpRequestBody :: HttpRouteSpec -> LBS.ByteString -> Either HttpResponse (Maybe Value)
 decodeHttpRequestBody spec body
