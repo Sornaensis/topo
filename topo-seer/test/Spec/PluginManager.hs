@@ -374,6 +374,28 @@ spec = describe "PluginManager" $ do
         psndStatusDetail diagnostic `shouldSatisfy` maybe False (Text.isInfixOf "weather is a host built-in simulation node")
       _ -> expectationFailure "expected one builtin-collision plugin simulation diagnostic"
 
+  it "marks simulation declarations without writeOverlay/writeWorld non-executable" $ do
+    let plugin = simulationPlanPlugin "overlay-updater" [] []
+        plan = buildPluginSimulationPlanForPlugins (Just ["overlay-updater"]) [plugin]
+    length (pspExecutableNodes plan) `shouldBe` 0
+    case pspDiagnostics plan of
+      [diagnostic] -> do
+        psndExecutable diagnostic `shouldBe` False
+        psndStatus diagnostic `shouldBe` "WaitingForDependencies"
+        psndStatusDetail diagnostic `shouldSatisfy` maybe False (Text.isInfixOf "writeOverlay/writeWorld")
+      _ -> expectationFailure "expected one missing-writeOverlay plugin simulation diagnostic"
+
+  it "treats writeWorld as sufficient for executable plugin simulation plans" $ do
+    let plugin = simulationPlanPlugin "world-writer" [] [CapWriteWorld]
+        plan = buildPluginSimulationPlanForPlugins (Just ["world-writer"]) [plugin]
+    length (pspExecutableNodes plan) `shouldBe` 1
+    case pspDiagnostics plan of
+      [diagnostic] -> do
+        psndExecutable diagnostic `shouldBe` True
+        psndWritesTerrain diagnostic `shouldBe` True
+        psndStatus diagnostic `shouldBe` "Ready"
+      _ -> expectationFailure "expected one executable writeWorld plugin simulation diagnostic"
+
   it "launches plugin subprocesses and exposes generator stages cross-platform" $ do
     withExecutablePluginDir testLaunchPluginName testLaunchManifestJSON "ok" $ do
       withPluginManager $ \pluginManagerHandle -> do

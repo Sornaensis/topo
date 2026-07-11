@@ -40,7 +40,7 @@ import System.IO (stdin, stdout)
 import System.Timeout (timeout)
 
 import Topo.Calendar (CalendarDate(..), WorldTime(..), simulationTickSeconds)
-import Topo.Overlay (emptyOverlay, emptyOverlayStore, insertOverlay)
+import Topo.Overlay (Overlay, emptyOverlay, emptyOverlayStore, insertOverlay)
 import Topo.Overlay.JSON (overlayToJSON)
 import Topo.Overlay.Schema (OverlaySchema(..), OverlayStorage(..), OverlayDeps(..))
 import Topo.Pipeline (PipelineConfig(..), PipelineStage(..), StageProgress(..), StageStatus(..), defaultPipelineConfig, runPipeline)
@@ -67,6 +67,7 @@ import Topo.Plugin.RPC
   , defaultRPCManifestRuntime
   , defaultRPCStartPolicy
   , defaultRPCUIHints
+  , invokeSimulation
   , manifestV3
   , newRPCConnection
   , rpcGeneratorStage
@@ -302,14 +303,35 @@ decodeSimulationRequest request = do
 
 sendSimulationResult :: Transport -> RPCEnvelope -> IO ()
 sendSimulationResult transport request =
+  sendSimulationResultValue transport request SimulationResult
+    { srOverlay = overlayToJSON (emptyOverlay testOverlaySchema)
+    , srTerrainWrites = Nothing
+    }
+
+sendSimulationResultValue :: Transport -> RPCEnvelope -> SimulationResult -> IO ()
+sendSimulationResultValue transport request result =
   sendEnvelopeTo transport RPCEnvelope
     { envType = MsgSimulationResult
-    , envPayload = Aeson.toJSON SimulationResult
-        { srOverlay = overlayToJSON (emptyOverlay testOverlaySchema)
-        , srTerrainWrites = Nothing
-        }
+    , envPayload = Aeson.toJSON result
     , envRequestId = envRequestId request
     }
+
+captureSimulationInvoke :: Text -> RPCManifest -> SimContext -> Overlay -> IO InvokeSimulation
+captureSimulationInvoke name manifest ctx overlay =
+  withConnectedTransports name $ \host plugin -> do
+    done <- newEmptyMVar
+    let conn = newRPCConnection manifest host Map.empty
+    _ <- forkIO (invokeSimulation conn ctx overlay (\_ -> pure ()) (\_ -> pure ()) >>= putMVar done)
+    request <- recvEnvelopeFrom plugin
+    invoke <- decodeSimulationRequest request
+    sendSimulationResultValue plugin request SimulationResult
+      { srOverlay = overlayToJSON overlay
+      , srTerrainWrites = Nothing
+      }
+    result <- takeMVarWithin "simulation invocation result" done
+    case result of
+      Left err -> expectationFailure ("simulation invocation failed: " <> show err) >> fail "simulation invocation failed"
+      Right _ -> pure invoke
 
 assertSimulationSuccess :: Either Text a -> IO ()
 assertSimulationSuccess (Right _) = pure ()
@@ -604,7 +626,41 @@ spec = describe "Plugin Integration" $ do
           conn = newRPCConnection manifest transport Map.empty
       simNodeSchedule (rpcSimNode conn) `shouldBe` schedule
 
-    it "rejects reader simulation tick without writeOverlay capability" $ do
+    it "minimizes simulation invoke payloads by declared read and write capabilities" $ do
+      let config = WorldConfig { wcChunkSize = 8 }
+          ownOverlay = emptyOverlay testOverlaySchema
+          weatherOverlay = emptyOverlay weatherOverlaySchema
+          ctx = (mkSimContext (mkTestWorld config))
+            { scOverlays = Map.fromList [("weather", weatherOverlay)]
+            }
+          manifestWith caps = civManifest { rmCapabilities = caps }
+      noReads <- captureSimulationInvoke "sim-payload-no-reads" (manifestWith []) ctx ownOverlay
+      isTerrain noReads `shouldBe` Null
+      isOverlays noReads `shouldBe` object []
+      isOwnOverlay noReads `shouldBe` Null
+
+      terrainRead <- captureSimulationInvoke "sim-payload-terrain-read" (manifestWith [CapReadTerrain]) ctx ownOverlay
+      case isTerrain terrainRead of
+        Object terrainObj -> KM.lookup "terrain" terrainObj `shouldNotBe` Nothing
+        _ -> expectationFailure "expected terrain payload object"
+      isOverlays terrainRead `shouldBe` object []
+      isOwnOverlay terrainRead `shouldBe` Null
+
+      overlayWrite <- captureSimulationInvoke "sim-payload-own-overlay-write" (manifestWith [CapWriteOverlay]) ctx ownOverlay
+      isTerrain overlayWrite `shouldBe` Null
+      isOverlays overlayWrite `shouldBe` object []
+      isOwnOverlay overlayWrite `shouldBe` overlayToJSON ownOverlay
+
+      overlayRead <- captureSimulationInvoke "sim-payload-overlay-read" (manifestWith [CapReadOverlay, CapWriteOverlay]) ctx ownOverlay
+      isTerrain overlayRead `shouldBe` Null
+      isOwnOverlay overlayRead `shouldBe` overlayToJSON ownOverlay
+      case isOverlays overlayRead of
+        Object overlays -> do
+          KM.lookup "weather" overlays `shouldBe` Just (overlayToJSON weatherOverlay)
+          KM.lookup "civilization" overlays `shouldBe` Nothing
+        _ -> expectationFailure "expected dependency overlays object"
+
+    it "rejects reader simulation tick without writeOverlay/writeWorld capability" $ do
       transport <- mockTransport "civilization"
       let manifest = civManifest { rmCapabilities = [CapReadTerrain, CapReadOverlay, CapLog] }
           conn = newRPCConnection manifest transport Map.empty
@@ -614,10 +670,10 @@ spec = describe "Plugin Integration" $ do
       case node of
         SimNodeReader { snrReadTick = readTick } -> do
           result <- readTick ctx overlay
-          result `shouldBe` Left "manifest missing writeOverlay capability"
+          result `shouldBe` Left "manifest missing writeOverlay/writeWorld capability"
         SimNodeWriter {} -> expectationFailure "expected SimNodeReader"
 
-    it "rejects writer simulation tick without writeOverlay capability" $ do
+    it "rejects writer simulation tick without writeOverlay/writeWorld capability" $ do
       transport <- mockTransport "terrain-writer"
       let manifest = writerManifest { rmCapabilities = [CapWriteTerrain, CapReadTerrain, CapLog] }
           conn = newRPCConnection manifest transport Map.empty
@@ -628,9 +684,61 @@ spec = describe "Plugin Integration" $ do
         SimNodeWriter { snwWriteTick = writeTick } -> do
           result <- writeTick ctx overlay
           case result of
-            Left err -> err `shouldBe` "manifest missing writeOverlay capability"
+            Left err -> err `shouldBe` "manifest missing writeOverlay/writeWorld capability"
             Right _ -> expectationFailure "expected capability rejection"
         SimNodeReader {} -> expectationFailure "expected SimNodeWriter"
+
+    it "rejects reader simulation terrain_writes without writeTerrain/writeWorld" $
+      withConnectedTransports "sim-reader-terrain-writes-reject" $ \host plugin -> do
+        let conn = newRPCConnection civManifest host Map.empty
+            ctx = mkSimContext (mkTestWorld (WorldConfig { wcChunkSize = 8 }))
+            overlay = emptyOverlay testOverlaySchema
+        writesPayload <- nonEmptyTerrainWritesPayload
+        done <- newEmptyMVar
+        case rpcSimNode conn of
+          SimNodeReader { snrReadTick = readTick } -> do
+            _ <- forkIO (readTick ctx overlay >>= putMVar done)
+            request <- recvEnvelopeFrom plugin
+            envType request `shouldBe` MsgInvokeSimulation
+            sendSimulationResultValue plugin request SimulationResult
+              { srOverlay = overlayToJSON overlay
+              , srTerrainWrites = Just writesPayload
+              }
+            result <- takeMVarWithin "reader terrain_writes rejection" done
+            case result of
+              Left err -> do
+                err `shouldSatisfy` Text.isInfixOf "unauthorized terrain write attempt"
+                err `shouldSatisfy` Text.isInfixOf "writeTerrain/writeWorld"
+              Right _ -> expectationFailure "expected terrain_writes capability rejection"
+          SimNodeWriter {} -> expectationFailure "expected SimNodeReader"
+
+    it "accepts writer simulation terrain_writes with writeTerrain or writeWorld" $ do
+      let runWriter (caps, suffix) =
+            withConnectedTransports ("sim-writer-terrain-writes-" <> suffix) $ \host plugin -> do
+              let manifest = writerManifest { rmCapabilities = caps }
+                  conn = newRPCConnection manifest host Map.empty
+                  ctx = mkSimContext (mkTestWorld (WorldConfig { wcChunkSize = 8 }))
+                  overlay = emptyOverlay writerOverlaySchema
+              writesPayload <- nonEmptyTerrainWritesPayload
+              done <- newEmptyMVar
+              case rpcSimNode conn of
+                SimNodeWriter { snwWriteTick = writeTick } -> do
+                  _ <- forkIO (writeTick ctx overlay >>= putMVar done)
+                  request <- recvEnvelopeFrom plugin
+                  envType request `shouldBe` MsgInvokeSimulation
+                  sendSimulationResultValue plugin request SimulationResult
+                    { srOverlay = overlayToJSON overlay
+                    , srTerrainWrites = Just writesPayload
+                    }
+                  result <- takeMVarWithin "writer terrain_writes result" done
+                  case result of
+                    Right (_, writes) -> IntMap.size (twrTerrain writes) `shouldBe` 1
+                    Left err -> expectationFailure ("expected accepted terrain_writes, got: " <> Text.unpack err)
+                SimNodeReader {} -> expectationFailure "expected SimNodeWriter"
+      mapM_ runWriter
+        [ ([CapWriteTerrain, CapWriteOverlay], "writeTerrain" :: Text)
+        , ([CapWriteWorld], "writeWorld")
+        ]
 
     it "surfaces plugin simulation progress as correlated simulation node diagnostics" $
       withConnectedTransports "sim-node-progress" $ \host plugin -> do
@@ -934,6 +1042,14 @@ encodeTerrainWritesPayload config chunks =
       (emptyWorldWithPlanet config defaultHexGridMeta defaultPlanetConfig defaultWorldSlice)
         { twTerrain = terrainMap
         }
+
+nonEmptyTerrainWritesPayload :: IO Value
+nonEmptyTerrainWritesPayload = do
+  let config = WorldConfig { wcChunkSize = 8 }
+      updatedChunk = generateTerrainChunk config (const 0.77)
+  case encodeTerrainWritesPayload config [(0, updatedChunk)] of
+    Left err -> expectationFailure err >> fail "encode terrain_writes failed"
+    Right payload -> pure payload
 
 mkSimContext :: TerrainWorld -> SimContext
 mkSimContext world = SimContext

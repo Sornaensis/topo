@@ -1031,7 +1031,7 @@ rpcSimNode conn =
       , snwSchedule     = schedule
       , snwWriteTick    = \ctx overlay -> do
           if not (sppRequireWriteOverlay policy)
-            then pure (Left "manifest missing writeOverlay capability")
+            then pure (Left "manifest missing writeOverlay/writeWorld capability")
             else do
               result <- invokeSimulation conn ctx overlay (reportSimulationProgress ctx name) ignoreLog
               case result of
@@ -1052,7 +1052,7 @@ rpcSimNode conn =
       , snrSchedule     = schedule
       , snrReadTick     = \ctx overlay -> do
           if not (sppRequireWriteOverlay policy)
-            then pure (Left "manifest missing writeOverlay capability")
+            then pure (Left "manifest missing writeOverlay/writeWorld capability")
             else do
               result <- invokeSimulation conn ctx overlay (reportSimulationProgress ctx name) ignoreLog
               pure $ case result of
