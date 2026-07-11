@@ -1387,6 +1387,17 @@ spec = describe "PluginManager" $ do
           observed <- getLoadedPlugins pluginManagerHandle
           pluginStatuses negotiatedValidationPluginName observed `shouldSatisfy` elem PluginConnected)
 
+  it "rejects widening negotiated handshake data-resource schemas during startup" $ do
+    withExecutablePluginDir wideningHandshakePluginName wideningHandshakeManifestJSON "widening-handshake" $ do
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses wideningHandshakePluginName loaded `shouldSatisfy` anyPluginErrorContaining "invalid handshake data resources"
+        pluginLifecycleStates wideningHandshakePluginName loaded `shouldSatisfy` elem LifecycleFailed
+        pluginLifecycleErrorCodes wideningHandshakePluginName loaded `shouldSatisfy` elem (Just "protocol_error")
+        length (pluginProcessHandles wideningHandshakePluginName loaded) `shouldBe` 0
+
   it "surfaces generator crashes without hanging" $ do
     withExecutablePluginDir generatorCrashPluginName generatorCrashManifestJSON "exit-on-generator" $ do
       withPluginManager $ \pluginManagerHandle -> do
@@ -2347,7 +2358,7 @@ normalizeFixtureMode :: String -> String
 normalizeFixtureMode = takeWhile (`notElem` ['\r', '\n'])
 
 fixtureUsage :: IO a
-fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|auth-missing|auth-mismatch|malformed-json|bad-handshake|early-exit|slow|wait-for-start-signal|handshake-stall|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|exit-on-generator|exit-on-simulation|external-provider|external-provider-controlled-status|external-consumer|external-consumer-reject-grant|external-consumer-reject-revoke|external-consumer-timeout-grant-once|external-consumer-timeout-revoke-once|external-consumer-query-external-unavailable|external-consumer-crash-after-grant-ack|windows-process-tree|windows-heartbeat-child>"
+fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|auth-missing|auth-mismatch|malformed-json|bad-handshake|early-exit|slow|wait-for-start-signal|handshake-stall|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|widening-handshake|exit-on-generator|exit-on-simulation|external-provider|external-provider-controlled-status|external-consumer|external-consumer-reject-grant|external-consumer-reject-revoke|external-consumer-timeout-grant-once|external-consumer-timeout-revoke-once|external-consumer-query-external-unavailable|external-consumer-crash-after-grant-ack|windows-process-tree|windows-heartbeat-child>"
 
 runFixtureMode :: String -> IO ()
 runFixtureMode = \case
@@ -2370,6 +2381,7 @@ runFixtureMode = \case
   "validation-ok" -> runValidationOkFixture
   "invalid-mutate" -> runInvalidMutateFixture
   "negotiated-validation" -> runNegotiatedValidationFixture
+  "widening-handshake" -> runWideningHandshakeFixture
   "exit-on-generator" -> runExitOnGeneratorFixture
   "exit-on-simulation" -> runExitOnSimulationFixture
   "external-provider" -> runExternalProviderFixture
@@ -3018,6 +3030,26 @@ runNegotiatedValidationFixture = do
               MsgShutdown -> closeTransport transport
               _ -> loop transport
 
+runWideningHandshakeFixture :: IO ()
+runWideningHandshakeFixture = do
+  connectPluginFromEnvironment "plugin-manager-widening-handshake-fixture" stdin stdout >>= \case
+    Left _ -> exitFailure
+    Right transport -> loop transport
+  where
+    loop transport = do
+      recvMessage transport >>= \case
+        Left _ -> closeTransport transport
+        Right bytes ->
+          case decodeMessage bytes of
+            Left _ -> loop transport
+            Right envelope -> case envType envelope of
+              MsgHandshake -> do
+                ack <- handshakeAckWithResourcesEnvelopeFor envelope currentProtocolVersion [negotiatedValidationSchema]
+                _ <- sendMessage transport (encodeMessage ack)
+                loop transport
+              MsgShutdown -> closeTransport transport
+              _ -> loop transport
+
 runExitOnGeneratorFixture :: IO ()
 runExitOnGeneratorFixture = do
   connectPluginFromEnvironment "plugin-manager-generator-crash-fixture" stdin stdout >>= \case
@@ -3578,6 +3610,17 @@ negotiatedValidationSchema = DataResourceSchema
   , drsPagination = defaultDataPagination
   }
 
+wideningHandshakePluginName :: String
+wideningHandshakePluginName = "copilot-test-plugin-widening-handshake"
+
+wideningHandshakeManifestJSON :: BS.ByteString
+wideningHandshakeManifestJSON = dataResourceManifestFor wideningHandshakePluginName
+  [ "    \"restart_mode\": \"never\","
+  , "    \"startup_timeout_ms\": 1000,"
+  , "    \"request_timeout_ms\": 300,"
+  , "    \"shutdown_timeout_ms\": 300"
+  ]
+
 generatorCrashPluginName :: String
 generatorCrashPluginName = "copilot-test-plugin-generator-crash"
 
@@ -4128,8 +4171,11 @@ negotiatedValidationManifestFor name policyLines = BSC.pack $
     <> "      \"name\": \"records\",\n"
     <> "      \"label\": \"Manifest Records\",\n"
     <> "      \"hexBound\": false,\n"
-    <> "      \"fields\": [ { \"name\": \"id\", \"type\": \"text\", \"label\": \"ID\" } ],\n"
-    <> "      \"operations\": { \"list\": true, \"page\": true },\n"
+    <> "      \"fields\": [\n"
+    <> "        { \"name\": \"id\", \"type\": \"text\", \"label\": \"ID\" },\n"
+    <> "        { \"name\": \"name\", \"type\": \"text\", \"label\": \"Name\" }\n"
+    <> "      ],\n"
+    <> "      \"operations\": { \"list\": true, \"create\": true, \"page\": true },\n"
     <> "      \"keyField\": \"id\"\n"
     <> "    }\n"
     <> "  ]"

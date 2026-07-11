@@ -510,6 +510,8 @@ data DataResourceError
   -- ^ 'doQueryByHex' is enabled but 'drsHexBound' is 'False'.
   | DREDuplicateField !Text
   -- ^ Two fields share the same name.
+  | DREEmptyFieldName
+  -- ^ A top-level field has an empty name.
   | DREOverlayNotHexBound
   -- ^ Overlay-backed resource must be hex-bound.
   | DREEmptyEnum !Text
@@ -539,6 +541,9 @@ validateDataResource drs = concat
   , [ DREOverlayNotHexBound
     | Just _ <- [drsOverlay drs]
     , not (drsHexBound drs)
+    ]
+  , [ DREEmptyFieldName
+    | any Text.null fieldNames
     ]
   , duplicateFieldErrors
   , concatMap validateFieldType (drsFields drs)

@@ -81,6 +81,7 @@ module Topo.Plugin.RPC.Manifest
   , manifestErrorMessage
   , renderManifestErrors
   , validateManifest
+  , validateHandshakeDataResources
     -- * Queries
   , manifestWritesTerrain
   , manifestHasGenerator
@@ -115,7 +116,9 @@ import Data.Word (Word64)
 import GHC.Generics (Generic)
 import Topo.Plugin (Capability(..))
 import Topo.Plugin.DataResource
-  ( DataOperations(..)
+  ( DataFieldDef(..)
+  , DataOperations(..)
+  , DataPagination(..)
   , DataResourceError(..)
   , DataResourceSchema(..)
   , validateDataResource
@@ -1922,9 +1925,147 @@ validateManifest rm = concat
   , validateExternalDataSourceRefs (rmExternalDataSourceRefs rm)
   ]
   where
-    hasWriteOps drs =
-      let ops = drsOperations drs
-      in doCreate ops || doUpdate ops || doDelete ops
+    hasWriteOps = dataResourceHasWriteOps
+
+-- | Validate data-resource schemas advertised by a runtime handshake.
+--
+-- Handshake resources may narrow the manifest declaration, but must never
+-- widen the host-routed data surface.  This keeps the manifest as the static
+-- authorization boundary while still allowing a runtime to omit unsupported
+-- resources or operations.
+validateHandshakeDataResources :: RPCManifest -> [DataResourceSchema] -> [ManifestError]
+validateHandshakeDataResources manifest resources
+  | null resources = []
+  | otherwise = concat
+      [ validateHandshakeResourceStructures resources
+      , [ ManifestInvalidField "handshake.resources" "handshake data resources require the manifest dataRead capability."
+        | CapDataRead `notElem` rmCapabilities manifest
+        ]
+      , [ ManifestInvalidField (handshakeResourcePath resource "operations") "write-capable handshake data resources require the manifest dataWrite capability."
+        | resource <- resources
+        , dataResourceHasWriteOps resource
+        , CapDataWrite `notElem` rmCapabilities manifest
+        ]
+      , concatMap validateAgainstManifest resources
+      ]
+  where
+    manifestResources = Map.fromList
+      [ (drsName resource, resource)
+      | resource <- rmDataResources manifest
+      ]
+
+    validateAgainstManifest resource
+      | Text.null (drsName resource) = []
+      | otherwise = case Map.lookup (drsName resource) manifestResources of
+          Nothing ->
+            [ ManifestInvalidField (handshakeResourcePath resource "name")
+                "resource must be declared by manifest dataResources before runtime negotiation."
+            ]
+          Just declared -> validateNonWideningResource declared resource
+
+validateHandshakeResourceStructures :: [DataResourceSchema] -> [ManifestError]
+validateHandshakeResourceStructures resources =
+  duplicateErrors "handshake.resources.name" (map drsName resources) <>
+  [ ManifestInvalidField (handshakeResourcePath resource "schema") (dataResourceErrorMessage err)
+  | resource <- resources
+  , err <- validateDataResource resource
+  ]
+
+validateNonWideningResource :: DataResourceSchema -> DataResourceSchema -> [ManifestError]
+validateNonWideningResource declared offered = concat
+  [ [ ManifestInvalidField (basePath <> ".schemaVersion")
+        "schemaVersion must match the manifest declaration."
+    | drsSchemaVersion offered /= drsSchemaVersion declared
+    ]
+  , [ ManifestInvalidField (basePath <> ".resourceVersion")
+        "resourceVersion must match the manifest declaration."
+    | drsResourceVersion offered /= drsResourceVersion declared
+    ]
+  , [ ManifestInvalidField (basePath <> ".keyField")
+        ("keyField cannot change from " <> quote (drsKeyField declared) <> " to " <> quote (drsKeyField offered) <> ".")
+    | drsKeyField offered /= drsKeyField declared
+    ]
+  , [ ManifestInvalidField (basePath <> ".overlay")
+        ("overlay cannot change from " <> maybeText (drsOverlay declared) <> " to " <> maybeText (drsOverlay offered) <> ".")
+    | drsOverlay offered /= drsOverlay declared
+    ]
+  , [ ManifestInvalidField (basePath <> ".hexBound")
+        "hexBound cannot change from the manifest declaration."
+    | drsHexBound offered /= drsHexBound declared
+    ]
+  , [ ManifestInvalidField (basePath <> ".fields")
+        ("cannot add fields not declared in the manifest: " <> Text.intercalate ", " (map quote newFieldNames) <> ".")
+    | not (null newFieldNames)
+    ]
+  , [ ManifestInvalidField (basePath <> ".fields." <> dfName offeredField <> ".type")
+        "field type must match the manifest declaration."
+    | offeredField <- drsFields offered
+    , Just declaredField <- [Map.lookup (dfName offeredField) declaredFieldMap]
+    , dfType offeredField /= dfType declaredField
+    ]
+  , [ ManifestInvalidField (basePath <> ".fields." <> dfName offeredField <> ".editable")
+        "editable=true cannot be negotiated unless the manifest declares the field editable."
+    | offeredField <- drsFields offered
+    , Just declaredField <- [Map.lookup (dfName offeredField) declaredFieldMap]
+    , dfEditable offeredField
+    , not (dfEditable declaredField)
+    ]
+  , [ ManifestInvalidField (basePath <> ".operations")
+        ("cannot enable operations not declared in the manifest: " <> Text.intercalate ", " (map quote widenedOperations) <> ".")
+    | not (null widenedOperations)
+    ]
+  , [ ManifestInvalidField (basePath <> ".pagination.maxPageSize")
+        ("maxPageSize cannot increase above the manifest limit " <> showText (dpMaxPageSize (drsPagination declared)) <> ".")
+    | dpMaxPageSize (drsPagination offered) > dpMaxPageSize (drsPagination declared)
+    ]
+  ]
+  where
+    basePath = "handshake.resources." <> nameOrPlaceholder (drsName offered)
+    declaredFieldMap = Map.fromList
+      [ (dfName field, field)
+      | field <- drsFields declared
+      ]
+    newFieldNames =
+      [ dfName field
+      | field <- drsFields offered
+      , Map.notMember (dfName field) declaredFieldMap
+      ]
+    widenedOperations = dataOperationWidenings (drsOperations declared) (drsOperations offered)
+
+handshakeResourcePath :: DataResourceSchema -> Text -> Text
+handshakeResourcePath resource field =
+  "handshake.resources." <> nameOrPlaceholder (drsName resource) <> "." <> field
+
+dataOperationWidenings :: DataOperations -> DataOperations -> [Text]
+dataOperationWidenings declared offered =
+  [ name
+  | (name, getter) <- dataOperationFlags
+  , getter offered
+  , not (getter declared)
+  ]
+
+dataOperationFlags :: [(Text, DataOperations -> Bool)]
+dataOperationFlags =
+  [ ("list", doList)
+  , ("get", doGet)
+  , ("create", doCreate)
+  , ("update", doUpdate)
+  , ("delete", doDelete)
+  , ("queryByHex", doQueryByHex)
+  , ("queryByField", doQueryByField)
+  , ("sort", doSort)
+  , ("filter", doFilter)
+  , ("page", doPage)
+  ]
+
+dataResourceHasWriteOps :: DataResourceSchema -> Bool
+dataResourceHasWriteOps drs =
+  let ops = drsOperations drs
+  in doCreate ops || doUpdate ops || doDelete ops
+
+maybeText :: Maybe Text -> Text
+maybeText Nothing = "<none>"
+maybeText (Just value) = quote value
 
 validatePluginName :: Text -> [ManifestError]
 validatePluginName name =
@@ -2293,6 +2434,7 @@ dataResourceErrorMessage DRENoFields = "resource must declare at least one field
 dataResourceErrorMessage (DREKeyFieldMissing keyField) = "keyField " <> quote keyField <> " must name one of the resource fields."
 dataResourceErrorMessage DREQueryByHexNotHexBound = "queryByHex requires hexBound=true."
 dataResourceErrorMessage (DREDuplicateField fieldName) = "duplicate field name " <> quote fieldName <> "."
+dataResourceErrorMessage DREEmptyFieldName = "field names must be non-empty."
 dataResourceErrorMessage DREOverlayNotHexBound = "overlay-backed resources must set hexBound=true."
 dataResourceErrorMessage (DREEmptyEnum fieldName) = "enum field " <> quote fieldName <> " must declare at least one choice."
 dataResourceErrorMessage (DRENullaryAdt fieldName) = "ADT field " <> quote fieldName <> " must declare at least one constructor."

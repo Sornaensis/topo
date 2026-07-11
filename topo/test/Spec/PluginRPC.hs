@@ -1817,6 +1817,99 @@ spec = describe "Plugin.RPC" $ do
           Just (Left (RPCProtocolError msg)) -> msg `shouldSatisfy` Text.isInfixOf "auth proof"
           _ -> expectationFailure "expected mismatched auth proof rejection"
 
+    it "accepts handshake data resources that stay within the manifest declaration" $ do
+      let manifest = baseManifest
+            { rmCapabilities = [CapDataRead, CapDataWrite]
+            , rmDataResources = [handshakeDataResourceFixture]
+            }
+      result <- performTestHandshakeAck "rpc-handshake-data-resource-valid" manifest [handshakeDataResourceFixture]
+      case result of
+        Right conn' -> rpcResources conn' `shouldBe` [handshakeDataResourceFixture]
+        Left err -> expectationFailure ("expected handshake success, got " <> show err)
+
+    it "rejects handshake data resources when the manifest lacks dataRead" $ do
+      let manifest = baseManifest
+            { rmCapabilities = []
+            , rmDataResources = [handshakeDataResourceFixture]
+            }
+      result <- performTestHandshakeAck "rpc-handshake-data-resource-no-read" manifest [handshakeDataResourceFixture]
+      case result of
+        Left (RPCProtocolError msg) -> msg `shouldSatisfy` Text.isInfixOf "dataRead"
+        other -> expectationFailure ("expected dataRead handshake rejection, got " <> handshakeResultSummary other)
+
+    it "rejects write-capable handshake data resources when the manifest lacks dataWrite" $ do
+      let readOnlyManifestResource = handshakeDataResourceFixture
+            { drsOperations = noOperations { doList = True, doGet = True, doPage = True }
+            }
+          manifest = baseManifest
+            { rmCapabilities = [CapDataRead]
+            , rmDataResources = [readOnlyManifestResource]
+            }
+      result <- performTestHandshakeAck "rpc-handshake-data-resource-no-write" manifest [handshakeDataResourceFixture]
+      case result of
+        Left (RPCProtocolError msg) -> do
+          msg `shouldSatisfy` Text.isInfixOf "dataWrite"
+          msg `shouldSatisfy` Text.isInfixOf "create"
+        other -> expectationFailure ("expected dataWrite handshake rejection, got " <> handshakeResultSummary other)
+
+    it "rejects handshake data resources not declared by the manifest" $ do
+      let manifest = baseManifest
+            { rmCapabilities = [CapDataRead]
+            , rmDataResources = [handshakeDataResourceFixture]
+            }
+          unknownResource = handshakeDataResourceFixture
+            { drsName = "unexpected_records"
+            }
+      result <- performTestHandshakeAck "rpc-handshake-data-resource-unknown" manifest [unknownResource]
+      case result of
+        Left (RPCProtocolError msg) -> msg `shouldSatisfy` Text.isInfixOf "declared by manifest"
+        other -> expectationFailure ("expected unknown resource handshake rejection, got " <> handshakeResultSummary other)
+
+    it "rejects handshake data-resource schema widening" $ do
+      let manifestResource = handshakeDataResourceFixture
+            { drsFields = [DataFieldDef "id" DFText "ID" False Nothing]
+            , drsOperations = noOperations { doList = True, doPage = True }
+            , drsPagination = defaultDataPagination { dpMaxPageSize = 50 }
+            }
+          widenedResource = handshakeDataResourceFixture
+            { drsPagination = defaultDataPagination { dpMaxPageSize = 100 }
+            }
+          manifest = baseManifest
+            { rmCapabilities = [CapDataRead, CapDataWrite]
+            , rmDataResources = [manifestResource]
+            }
+      result <- performTestHandshakeAck "rpc-handshake-data-resource-widen" manifest [widenedResource]
+      case result of
+        Left (RPCProtocolError msg) -> do
+          msg `shouldSatisfy` Text.isInfixOf "cannot add fields"
+          msg `shouldSatisfy` Text.isInfixOf "create"
+          msg `shouldSatisfy` Text.isInfixOf "maxPageSize"
+        other -> expectationFailure ("expected schema widening handshake rejection, got " <> handshakeResultSummary other)
+
+    it "rejects invalid or duplicate handshake data-resource schemas" $ do
+      let invalidResource = handshakeDataResourceFixture
+            { drsKeyField = "missing_id"
+            }
+          manifest = baseManifest
+            { rmCapabilities = [CapDataRead, CapDataWrite]
+            , rmDataResources = [handshakeDataResourceFixture]
+            }
+      invalidResult <- performTestHandshakeAck "rpc-handshake-data-resource-invalid" manifest [invalidResource]
+      case invalidResult of
+        Left (RPCProtocolError msg) -> msg `shouldSatisfy` Text.isInfixOf "keyField"
+        other -> expectationFailure ("expected invalid schema handshake rejection, got " <> handshakeResultSummary other)
+      let emptyFieldResource = handshakeDataResourceFixture
+            { drsFields = DataFieldDef "" DFText "Empty" False Nothing : drsFields handshakeDataResourceFixture
+            }
+      emptyFieldResult <- performTestHandshakeAck "rpc-handshake-data-resource-empty-field" manifest [emptyFieldResource]
+      case emptyFieldResult of
+        Left (RPCProtocolError msg) -> msg `shouldSatisfy` Text.isInfixOf "field names must be non-empty"
+        other -> expectationFailure ("expected empty field handshake rejection, got " <> handshakeResultSummary other)
+      duplicateResult <- performTestHandshakeAck "rpc-handshake-data-resource-duplicate" manifest [handshakeDataResourceFixture, handshakeDataResourceFixture]
+      case duplicateResult of
+        Left (RPCProtocolError msg) -> msg `shouldSatisfy` Text.isInfixOf "duplicate"
+        other -> expectationFailure ("expected duplicate resource handshake rejection, got " <> handshakeResultSummary other)
+
     it "sends the caller-provided seed and terrain in invoke_generator requests when readTerrain is declared" $
       withConnectedTransports "rpc-generator-seed" $ \host plugin -> do
         let explicitSeed = 0x123456789abcdef0 :: Word64
@@ -2461,6 +2554,29 @@ sendEnvelopeTo transport envelope = do
     Left err -> expectationFailure ("send failed: " <> show err)
     Right () -> pure ()
 
+performTestHandshakeAck :: Text -> RPCManifest -> [DataResourceSchema] -> IO (Either RPCError RPCConnection)
+performTestHandshakeAck name manifest resources =
+  withConnectedTransports name $ \host plugin -> do
+    let conn = newRPCConnection manifest host Map.empty
+        ack = HandshakeAck currentProtocolVersion Nothing resources Nothing Nothing
+    done <- newEmptyMVar
+    _ <- forkIO (performHandshakeWithAuth conn Nothing Nothing >>= putMVar done)
+    request <- recvEnvelopeFrom plugin
+    envType request `shouldBe` MsgHandshake
+    sendEnvelopeTo plugin RPCEnvelope
+      { envType = MsgHandshakeAck
+      , envPayload = Aeson.toJSON ack
+      , envRequestId = envRequestId request
+      }
+    result <- timeout transportTestTimeoutMicros (takeMVar done)
+    case result of
+      Nothing -> expectationFailure "timed out waiting for handshake result" >> fail "handshake result timeout"
+      Just value -> pure value
+
+handshakeResultSummary :: Either RPCError RPCConnection -> String
+handshakeResultSummary (Left err) = "Left " <> show err
+handshakeResultSummary (Right _) = "Right <connection>"
+
 healthResponse :: RPCEnvelope -> Text -> RPCEnvelope
 healthResponse request message = RPCEnvelope
   { envType = MsgHealthStatus
@@ -2776,6 +2892,28 @@ baseManifest = RPCManifest
   , rmExternalDataSources = []
   , rmExternalDataSourceRefs = []
   , rmStartPolicy   = defaultRPCStartPolicy
+  }
+
+handshakeDataResourceFixture :: DataResourceSchema
+handshakeDataResourceFixture = DataResourceSchema
+  { drsSchemaVersion = currentDataResourceSchemaVersion
+  , drsResourceVersion = defaultDataResourceVersion
+  , drsName = "records"
+  , drsLabel = "Records"
+  , drsHexBound = False
+  , drsFields =
+      [ DataFieldDef "id" DFText "ID" False Nothing
+      , DataFieldDef "name" DFText "Name" False Nothing
+      ]
+  , drsOperations = noOperations
+      { doList = True
+      , doGet = True
+      , doCreate = True
+      , doPage = True
+      }
+  , drsKeyField = "id"
+  , drsOverlay = Nothing
+  , drsPagination = defaultDataPagination
   }
 
 externalGrantMessageFixture :: RPCExternalDataSourceGrantMessage

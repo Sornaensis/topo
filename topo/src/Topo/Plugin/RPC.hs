@@ -679,6 +679,10 @@ performHandshakeWithAuth conn worldPath mAuth = do
                    <> Text.pack (show (haProtocolVersion ack)))))
             | Just authErr <- validateHandshakeAuth mAuth ack ->
                 pure (Left (RPCProtocolError authErr))
+            | let resourceErrors = validateHandshakeDataResources (rpcManifest conn) (haResources ack)
+            , not (null resourceErrors) ->
+                pure (Left (RPCProtocolError
+                  ("invalid handshake data resources: " <> renderManifestErrors resourceErrors)))
             | otherwise -> pure (Right conn
                 { rpcProtocolVersion = haProtocolVersion ack
                 , rpcDataDirectory   = fmap Text.unpack (haDataDirectory ack)
