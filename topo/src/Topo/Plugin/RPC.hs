@@ -103,7 +103,7 @@ import Topo.Overlay (Overlay(..), insertOverlay, lookupOverlay)
 import Topo.Overlay.JSON (overlayFromJSON, overlayToJSON)
 import Topo.Pipeline (PipelineStage(..))
 import Topo.Pipeline.Stage (StageId(..))
-import Topo.Plugin (Capability(..), PluginEnv(..), PluginError(..), PluginM, getWorldP, logInfo, putWorldP)
+import Topo.Plugin (Capability(..), PluginEnv(..), PluginError(..), getWorld, liftTopo, logInfo, putWorld)
 import Topo.Calendar (CalendarDate(..), WorldTime(..))
 import Topo.Simulation
   ( SimNode(..)
@@ -531,6 +531,7 @@ invokeGeneratorWithProgress
   -> IO (Either RPCError GeneratorResult)
 invokeGeneratorWithProgress conn seed terrainData onProgress onLog = do
   let manifest = rpcManifest conn
+      scopedTerrainData = generatorTerrainInputPayload manifest terrainData
       envelope = RPCEnvelope
         { envType = MsgInvokeGenerator
         , envPayload = Aeson.toJSON InvokeGenerator
@@ -538,7 +539,7 @@ invokeGeneratorWithProgress conn seed terrainData onProgress onLog = do
           , igStageId = "plugin:" <> rmName manifest
           , igSeed    = seed
           , igConfig  = rpcParams conn
-          , igTerrain = terrainData
+          , igTerrain = scopedTerrainData
           }
         , envRequestId = Nothing
         }
@@ -987,8 +988,8 @@ rpcGeneratorStage conn =
     , stageOverlaySchema = Nothing
     , stageRun  = do
         logInfo ("plugin:" <> rmName manifest <> ": invoking generator")
-        world <- getWorldP
-        case Payload.terrainWorldToPayload world of
+        world <- liftTopo getWorld
+        case generatorStageTerrainPayload manifest world of
           Left err ->
             throwError (PluginInvariantError ("rpc generator encode failed: " <> err))
           Right terrainPayload -> do
@@ -1004,7 +1005,7 @@ rpcGeneratorStage conn =
                   Left mergeErr ->
                     throwError (PluginInvariantError ("rpc generator merge failed: " <> mergeErr))
                   Right mergedWorld -> do
-                    putWorldP mergedWorld
+                    liftTopo (putWorld mergedWorld)
                     logInfo ("plugin:" <> rmName manifest <> ": generator complete")
     }
 
@@ -1080,6 +1081,16 @@ hasCapability manifest capability = capability `elem` rmCapabilities manifest
 canReadTerrain :: RPCManifest -> Bool
 canReadTerrain manifest =
   hasCapability manifest CapReadTerrain || hasCapability manifest CapReadWorld
+
+generatorTerrainInputPayload :: RPCManifest -> Value -> Value
+generatorTerrainInputPayload manifest terrainData
+  | canReadTerrain manifest = terrainData
+  | otherwise = Null
+
+generatorStageTerrainPayload :: RPCManifest -> Topo.World.TerrainWorld -> Either Text Value
+generatorStageTerrainPayload manifest world
+  | canReadTerrain manifest = Payload.terrainWorldToPayload world
+  | otherwise = Right Null
 
 canReadOverlay :: RPCManifest -> Bool
 canReadOverlay manifest =
@@ -1158,11 +1169,22 @@ applyGeneratorOverlayPayload
   -> Maybe Value
   -> Either Text Topo.World.TerrainWorld
 applyGeneratorOverlayPayload _ world Nothing = Right world
-applyGeneratorOverlayPayload manifest world (Just overlayValue) =
-  case lookupOverlay (rmName manifest) (Topo.World.twOverlays world) of
-    Nothing -> Left "generator returned overlay data but no host overlay is registered"
-    Just existingOverlay -> do
-      decodedOverlay <- overlayFromJSON (ovSchema existingOverlay) overlayValue
-      let nextOverlay = preserveHostProvenance existingOverlay decodedOverlay
-          nextOverlays = insertOverlay nextOverlay (Topo.World.twOverlays world)
-      Right world { Topo.World.twOverlays = nextOverlays }
+applyGeneratorOverlayPayload manifest world (Just overlayValue)
+  | not (manifestHasOverlay manifest) =
+      Left ("plugin " <> rmName manifest
+        <> " returned generator overlay output for overlay " <> rmName manifest
+        <> " but manifest is missing overlay declaration")
+  | not (canWriteOverlay manifest) =
+      Left ("plugin " <> rmName manifest
+        <> " returned generator overlay output for overlay " <> rmName manifest
+        <> " but manifest is missing writeOverlay/writeWorld capability")
+  | otherwise =
+      case lookupOverlay (rmName manifest) (Topo.World.twOverlays world) of
+        Nothing -> Left ("plugin " <> rmName manifest
+          <> " returned generator overlay output for overlay " <> rmName manifest
+          <> " but host has no registered overlay surface")
+        Just existingOverlay -> do
+          decodedOverlay <- overlayFromJSON (ovSchema existingOverlay) overlayValue
+          let nextOverlay = preserveHostProvenance existingOverlay decodedOverlay
+              nextOverlays = insertOverlay nextOverlay (Topo.World.twOverlays world)
+          Right world { Topo.World.twOverlays = nextOverlays }

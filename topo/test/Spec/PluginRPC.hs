@@ -20,6 +20,7 @@ import Data.Either (isLeft, isRight)
 import Data.List (isInfixOf, isPrefixOf)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time (UTCTime)
@@ -51,6 +52,7 @@ import Topo.Plugin.RPC
   , performHandshakeWithAuth
   , queryResource
   , rpcErrorText
+  , rpcGeneratorStage
   , sendExternalDataSourceGrant
   , sendExternalDataSourceGrantRevocation
   , sendHeartbeat
@@ -58,6 +60,8 @@ import Topo.Plugin.RPC
 import Topo.Plugin.RPC.Manifest
 import Topo.Plugin.RPC.Protocol
 import Topo.Plugin.RPC.ExternalDataSource
+import Topo.Pipeline (PipelineStage(..))
+import qualified Topo.Plugin as PluginCore
 import Topo.Plugin.RPC.Transport
   ( Transport
   , TransportConfig(..)
@@ -82,7 +86,8 @@ import Topo.Plugin.RPC.Transport
 import Topo.Plugin.DataResource
 import Topo.Calendar (CalendarDate(..), WorldTime(..), simulationTickSeconds)
 import Topo.Hex (defaultHexGridMeta)
-import Topo.Overlay (Overlay, emptyOverlay)
+import Topo.Overlay (Overlay, emptyOverlay, insertOverlay, lookupOverlay)
+import Topo.Overlay.JSON (overlayToJSON)
 import Topo.Overlay.Schema
   ( OverlayFieldDef(..)
   , OverlayFieldType(..)
@@ -93,7 +98,7 @@ import Topo.Overlay.Schema
 import Topo.Simulation (SimContext(..))
 import Topo.Simulation.Schedule (SimulationCatchUpPolicy(..), SimulationScheduleDecl(..), defaultScheduleDecl)
 import Topo.Types (WorldConfig(..))
-import Topo.World (emptyWorld)
+import Topo.World (TerrainWorld(..), emptyWorld)
 
 ------------------------------------------------------------------------
 -- Arbitrary instances for QuickCheck
@@ -1810,7 +1815,7 @@ spec = describe "Plugin.RPC" $ do
           Just (Left (RPCProtocolError msg)) -> msg `shouldSatisfy` Text.isInfixOf "auth proof"
           _ -> expectationFailure "expected mismatched auth proof rejection"
 
-    it "sends the caller-provided seed in invoke_generator requests" $
+    it "sends the caller-provided seed and terrain in invoke_generator requests when readTerrain is declared" $
       withConnectedTransports "rpc-generator-seed" $ \host plugin -> do
         let explicitSeed = 0x123456789abcdef0 :: Word64
             terrainPayload = object ["marker" .= ("terrain" :: Text)]
@@ -1819,7 +1824,8 @@ spec = describe "Plugin.RPC" $ do
               , grOverlay = Nothing
               , grMetadata = Just (object ["ok" .= True])
               }
-            conn = newRPCConnection baseManifest host Map.empty
+            manifest = baseManifest { rmCapabilities = [CapReadTerrain] }
+            conn = newRPCConnection manifest host Map.empty
         done <- newEmptyMVar
         _ <- forkIO (invokeGenerator conn explicitSeed terrainPayload >>= putMVar done)
         request <- recvEnvelopeFrom plugin
@@ -1836,6 +1842,137 @@ spec = describe "Plugin.RPC" $ do
           }
         result <- timeout transportTestTimeoutMicros (takeMVar done)
         result `shouldBe` Just (Right generatorResult)
+
+    it "omits generator terrain input without readTerrain or readWorld capability" $
+      withConnectedTransports "rpc-generator-no-terrain-read" $ \host plugin -> do
+        let terrainPayload = object ["marker" .= ("terrain" :: Text)]
+            generatorResult = GeneratorResult
+              { grTerrain = Null
+              , grOverlay = Nothing
+              , grMetadata = Nothing
+              }
+            conn = newRPCConnection baseManifest host Map.empty
+        done <- newEmptyMVar
+        _ <- forkIO (invokeGenerator conn 99 terrainPayload >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgInvokeGenerator
+        case Aeson.fromJSON (envPayload request) of
+          Aeson.Error err -> expectationFailure ("failed to decode invoke_generator payload: " <> err)
+          Aeson.Success invoke -> igTerrain invoke `shouldBe` Null
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgGeneratorResult
+          , envPayload = Aeson.toJSON generatorResult
+          , envRequestId = envRequestId request
+          }
+        result <- timeout transportTestTimeoutMicros (takeMVar done)
+        result `shouldBe` Just (Right generatorResult)
+
+    it "does not require writeTerrain capability for generator terrain output" $
+      withConnectedTransports "rpc-generator-implicit-terrain-write" $ \host plugin -> do
+        let manifest = baseManifest { rmCapabilities = [CapReadTerrain] }
+            conn = newRPCConnection manifest host Map.empty
+            caps = pluginCaps [CapLog, CapReadTerrain]
+            generatorResult = GeneratorResult
+              { grTerrain = Null
+              , grOverlay = Nothing
+              , grMetadata = Nothing
+              }
+        done <- newEmptyMVar
+        _ <- forkIO (runGeneratorStageWithCaps caps conn generatorStageWorld >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgInvokeGenerator
+        sendGeneratorResult plugin request generatorResult
+        (outcome, _) <- takeGeneratorStageResult done
+        outcome `shouldBe` Right ()
+
+    it "rejects generator overlay output without a manifest overlay declaration even when a same-name overlay exists" $
+      withConnectedTransports "rpc-generator-overlay-no-decl" $ \host plugin -> do
+        let schema = overlaySchemaNamed "test-plugin"
+            initialOverlay = emptyOverlay schema
+            world = worldWithRegisteredOverlay initialOverlay
+            conn = newRPCConnection baseManifest host Map.empty
+            overlayPayload = overlayPayloadWithValue 7
+            generatorResult = GeneratorResult
+              { grTerrain = Null
+              , grOverlay = Just overlayPayload
+              , grMetadata = Nothing
+              }
+        done <- newEmptyMVar
+        _ <- forkIO (runGeneratorStageWithCaps PluginCore.allowAllCapabilities conn world >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgInvokeGenerator
+        sendGeneratorResult plugin request generatorResult
+        (outcome, worldAfter) <- takeGeneratorStageResult done
+        expectPluginInvariantContaining "overlay declaration" outcome
+        lookupOverlay "test-plugin" (twOverlays worldAfter) `shouldBe` Just initialOverlay
+
+    it "rejects generator overlay output without writeOverlay or writeWorld capability" $
+      withConnectedTransports "rpc-generator-overlay-no-write" $ \host plugin -> do
+        let schema = overlaySchemaNamed "test-plugin"
+            initialOverlay = emptyOverlay schema
+            world = worldWithRegisteredOverlay initialOverlay
+            manifest = baseManifest
+              { rmOverlay = Just (RPCOverlayDecl "test-plugin.toposchema")
+              , rmCapabilities = []
+              }
+            conn = newRPCConnection manifest host Map.empty
+            generatorResult = GeneratorResult
+              { grTerrain = Null
+              , grOverlay = Just (overlayPayloadWithValue 11)
+              , grMetadata = Nothing
+              }
+        done <- newEmptyMVar
+        _ <- forkIO (runGeneratorStageWithCaps PluginCore.allowAllCapabilities conn world >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgInvokeGenerator
+        sendGeneratorResult plugin request generatorResult
+        (outcome, _) <- takeGeneratorStageResult done
+        expectPluginInvariantContaining "writeOverlay/writeWorld" outcome
+
+    it "rejects generator overlay output without a registered host overlay" $
+      withConnectedTransports "rpc-generator-overlay-no-host-overlay" $ \host plugin -> do
+        let manifest = baseManifest
+              { rmOverlay = Just (RPCOverlayDecl "test-plugin.toposchema")
+              , rmCapabilities = [CapWriteOverlay]
+              }
+            conn = newRPCConnection manifest host Map.empty
+            generatorResult = GeneratorResult
+              { grTerrain = Null
+              , grOverlay = Just (overlayPayloadWithValue 13)
+              , grMetadata = Nothing
+              }
+        done <- newEmptyMVar
+        _ <- forkIO (runGeneratorStageWithCaps PluginCore.allowAllCapabilities conn generatorStageWorld >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgInvokeGenerator
+        sendGeneratorResult plugin request generatorResult
+        (outcome, _) <- takeGeneratorStageResult done
+        expectPluginInvariantContaining "registered overlay surface" outcome
+
+    it "applies generator overlay output only with declaration, write capability, and registered host overlay" $
+      withConnectedTransports "rpc-generator-overlay-allowed" $ \host plugin -> do
+        let schema = overlaySchemaNamed "test-plugin"
+            initialOverlay = emptyOverlay schema
+            world = worldWithRegisteredOverlay initialOverlay
+            manifest = baseManifest
+              { rmOverlay = Just (RPCOverlayDecl "test-plugin.toposchema")
+              , rmCapabilities = [CapWriteOverlay]
+              }
+            conn = newRPCConnection manifest host Map.empty
+            overlayPayload = overlayPayloadWithValue 17
+            generatorResult = GeneratorResult
+              { grTerrain = Null
+              , grOverlay = Just overlayPayload
+              , grMetadata = Nothing
+              }
+        done <- newEmptyMVar
+        _ <- forkIO (runGeneratorStageWithCaps PluginCore.allowAllCapabilities conn world >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgInvokeGenerator
+        sendGeneratorResult plugin request generatorResult
+        (outcome, worldAfter) <- takeGeneratorStageResult done
+        outcome `shouldBe` Right ()
+        fmap overlayToJSON (lookupOverlay "test-plugin" (twOverlays worldAfter)) `shouldBe` Just overlayPayload
 
     it "routes correlated simulation progress to the invokeSimulation callback and completes" $
       withConnectedTransports "rpc-simulation-progress" $ \host plugin -> do
@@ -2283,6 +2420,77 @@ requireRequestId envelope =
   case envRequestId envelope of
     Nothing -> expectationFailure "expected correlated request id" >> fail "missing request id"
     Just requestId -> pure requestId
+
+sendGeneratorResult :: Transport -> RPCEnvelope -> GeneratorResult -> IO ()
+sendGeneratorResult transport request generatorResult =
+  sendEnvelopeTo transport RPCEnvelope
+    { envType = MsgGeneratorResult
+    , envPayload = Aeson.toJSON generatorResult
+    , envRequestId = envRequestId request
+    }
+
+pluginCaps :: [Capability] -> PluginCore.PluginCapabilities
+pluginCaps caps = PluginCore.PluginCapabilities (Set.fromList caps)
+
+runGeneratorStageWithCaps
+  :: PluginCore.PluginCapabilities
+  -> RPCConnection
+  -> TerrainWorld
+  -> IO (Either PluginCore.PluginError (), TerrainWorld)
+runGeneratorStageWithCaps caps conn world =
+  PluginCore.runTopoM topoEnv world $
+    PluginCore.runPluginM pluginEnv (stageRun (rpcGeneratorStage conn))
+  where
+    topoEnv = PluginCore.TopoEnv { PluginCore.teLogger = \_ -> pure () }
+    pluginEnv = PluginCore.PluginEnv
+      { PluginCore.peLogger = \_ -> pure ()
+      , PluginCore.peProgress = \_ -> pure ()
+      , PluginCore.peSeed = 123
+      , PluginCore.peCaps = caps
+      }
+
+takeGeneratorStageResult
+  :: MVar (Either PluginCore.PluginError (), TerrainWorld)
+  -> IO (Either PluginCore.PluginError (), TerrainWorld)
+takeGeneratorStageResult done = do
+  result <- timeout transportTestTimeoutMicros (takeMVar done)
+  case result of
+    Nothing -> expectationFailure "timed out waiting for generator stage result" >> fail "generator stage timeout"
+    Just outcome -> pure outcome
+
+expectPluginInvariantContaining :: Text -> Either PluginCore.PluginError () -> Expectation
+expectPluginInvariantContaining expected outcome =
+  case outcome of
+    Left (PluginCore.PluginInvariantError msg) -> do
+      msg `shouldSatisfy` Text.isInfixOf "test-plugin"
+      msg `shouldSatisfy` Text.isInfixOf expected
+    other -> expectationFailure ("expected plugin invariant containing " <> Text.unpack expected <> ", got " <> show other)
+
+generatorStageWorld :: TerrainWorld
+generatorStageWorld = emptyWorld (WorldConfig { wcChunkSize = 64 }) defaultHexGridMeta
+
+worldWithRegisteredOverlay :: Overlay -> TerrainWorld
+worldWithRegisteredOverlay overlay =
+  generatorStageWorld { twOverlays = insertOverlay overlay (twOverlays generatorStageWorld) }
+
+overlaySchemaNamed :: Text -> OverlaySchema
+overlaySchemaNamed name = testOverlaySchema { osName = name }
+
+overlayPayloadWithValue :: Double -> Value
+overlayPayloadWithValue value = object
+  [ "storage" .= ("sparse" :: Text)
+  , "chunks" .=
+      [ object
+          [ "chunk_id" .= (0 :: Int)
+          , "tiles" .=
+              [ object
+                  [ "tile" .= (0 :: Int)
+                  , "fields" .= [value]
+                  ]
+              ]
+          ]
+      ]
+  ]
 
 withTransportServer :: Text -> (TransportServer -> IO a) -> IO a
 withTransportServer pluginName = bracket acquire tsClose
