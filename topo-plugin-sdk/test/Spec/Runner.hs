@@ -21,10 +21,11 @@ import System.Directory
   , removePathForcibly
   , withCurrentDirectory
   )
-import System.Environment (lookupEnv, setEnv, unsetEnv, withArgs)
+import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv, withArgs)
+import System.Exit (ExitCode(..))
 import System.FilePath ((</>))
 import System.IO (BufferMode(NoBuffering), Handle, hClose, hSetBinaryMode, hSetBuffering, openTempFile)
-import System.Process (createPipe)
+import System.Process (CreateProcess(..), StdStream(..), createPipe, createProcess, proc, waitForProcess)
 import System.Timeout (timeout)
 import Test.Hspec
 
@@ -438,6 +439,7 @@ spec = describe "SDK runner pipe integration" $ do
                 Aeson.Success (ack :: HandshakeAck) -> do
                   haSessionId ack `shouldBe` Just "session-sdk"
                   haAuthProof ack `shouldBe` Just (handshakeAuthProof "session-sdk" "token-sdk" challenge)
+              assertLaunchAuthEnvironmentScrubbedForChildren
               shutdownAndWait host done)
               `finally` closeTransport host
 
@@ -967,6 +969,20 @@ requireServerAccept server = do
   case acceptResult of
     Left err -> expectationFailure ("accept failed: " <> show err) >> fail "accept"
     Right transport -> pure transport
+
+assertLaunchAuthEnvironmentScrubbedForChildren :: Expectation
+assertLaunchAuthEnvironmentScrubbedForChildren = do
+  lookupEnv pluginSessionEnv `shouldReturn` Nothing
+  lookupEnv pluginAuthTokenEnv `shouldReturn` Nothing
+  testExe <- getExecutablePath
+  (_, _, _, processHandle) <- createProcess
+    (proc testExe ["--topo-plugin-fixture", "assert-launch-auth-env-scrubbed"])
+      { std_in = NoStream
+      , std_out = NoStream
+      , std_err = NoStream
+      }
+  exitCode <- waitForProcess processHandle
+  exitCode `shouldBe` ExitSuccess
 
 withPluginLaunchEnvironment :: TransportEndpoint -> String -> String -> IO a -> IO a
 withPluginLaunchEnvironment endpoint sessionId authToken = bracket setup restore . const

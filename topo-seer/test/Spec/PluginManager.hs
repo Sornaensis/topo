@@ -430,16 +430,17 @@ spec = describe "PluginManager" $ do
         pluginLifecycleStates testLaunchPluginName loadedAfterShutdown `shouldSatisfy` elem LifecycleStopped
         mapM_ (assertProcessExited testLaunchPluginName) handles
 
-  it "launches plugins with the complete TOPO_PLUGIN environment over endpoint transport" $ do
+  it "launches plugins with explicit TOPO_PLUGIN env and no parent secrets" $ do
     withParentStdioCompatibilityFlag $ do
-      withExecutablePluginDir envContractPluginName envContractManifestJSON "env-contract" $ do
-        withPluginManager $ \pluginManagerHandle -> do
-          discoverPlugins pluginManagerHandle
-          refreshManifests pluginManagerHandle
-          loaded <- getLoadedPlugins pluginManagerHandle
-          pluginStatuses envContractPluginName loaded `shouldSatisfy` elem PluginConnected
-          pluginLifecycleStates envContractPluginName loaded `shouldSatisfy` elem LifecycleReady
-          pluginLifecycleProtocols envContractPluginName loaded `shouldSatisfy` elem (Just currentProtocolVersion)
+      withSensitiveParentEnvironment $ do
+        withExecutablePluginDir envContractPluginName envContractManifestJSON "env-contract" $ do
+          withPluginManager $ \pluginManagerHandle -> do
+            discoverPlugins pluginManagerHandle
+            refreshManifests pluginManagerHandle
+            loaded <- getLoadedPlugins pluginManagerHandle
+            pluginStatuses envContractPluginName loaded `shouldSatisfy` elem PluginConnected
+            pluginLifecycleStates envContractPluginName loaded `shouldSatisfy` elem LifecycleReady
+            pluginLifecycleProtocols envContractPluginName loaded `shouldSatisfy` elem (Just currentProtocolVersion)
 
   it "cleans up connected fixture subprocesses when the manager scope aborts" $ do
     withExecutablePluginDir cleanupAbortPluginName cleanupAbortManifestJSON "ok" $ do
@@ -2381,6 +2382,32 @@ withParentStdioCompatibilityFlag = bracket setup restore . const
       pure old
     restore = maybe (unsetEnv pluginStdioCompatibilityEnv) (setEnv pluginStdioCompatibilityEnv)
 
+withSensitiveParentEnvironment :: IO a -> IO a
+withSensitiveParentEnvironment = bracket setup restore . const
+  where
+    setup = traverse stashAndSet sensitiveParentEnvironment
+    stashAndSet (key, value) = do
+      old <- lookupEnv key
+      setEnv key value
+      pure (key, old)
+    restore = mapM_ (\(key, old) -> maybe (unsetEnv key) (setEnv key) old)
+
+sensitiveParentEnvironment :: [(String, String)]
+sensitiveParentEnvironment =
+  [ ("AWS_SECRET_ACCESS_KEY", "aws-secret-access-key")
+  , ("GH_TOKEN", "github-token")
+  , ("DATABASE_URL", "postgres://topo:secret@example.invalid/topo")
+  , ("TOPO_TEST_SECRET_TOKEN", "topo-test-secret-token")
+  , ("SERVICE_TOKEN", "service-token")
+  , ("APP_SECRET", "app-secret")
+  , ("DB_PASSWORD", "db-password")
+  , ("PRIVATE_KEY", "private-key")
+  , ("LC_SECRET_TOKEN", "locale-prefixed-secret-token")
+  ]
+
+sensitiveParentEnvKeys :: [String]
+sensitiveParentEnvKeys = map fst sensitiveParentEnvironment
+
 withExecutablePluginDir :: String -> BS.ByteString -> String -> IO a -> IO a
 withExecutablePluginDir pluginName manifestJSON fixtureMode action =
   withIsolatedPluginHome pluginName $
@@ -3244,7 +3271,7 @@ externalBindingRecord bindingStatus = record
 
 recordExternalStartup :: String -> IO ()
 recordExternalStartup pluginName = do
-  baseDir <- requireEnv testPluginDirEnv
+  baseDir <- launchedFixturePluginBaseDir
   appendFile (baseDir </> "external-startup.log") (pluginName <> "\n")
 
 readExternalStartupOrder :: IO [String]
@@ -3258,15 +3285,20 @@ readExternalStartupOrder = do
 
 recordExternalConsumerOperation :: Text -> Maybe Text -> IO ()
 recordExternalConsumerOperation operation operationId = do
-  baseDir <- requireEnv testPluginDirEnv
+  baseDir <- launchedFixturePluginBaseDir
   appendFile (baseDir </> externalConsumerOperationLogFileName) $
     Text.unpack operation <> ":" <> maybe "" Text.unpack operationId <> "\n"
 
 recordExternalConsumerGrantScope :: RPCExternalDataSourceGrantMessage -> IO ()
 recordExternalConsumerGrantScope grant = do
-  baseDir <- requireEnv testPluginDirEnv
+  baseDir <- launchedFixturePluginBaseDir
   appendFile (baseDir </> externalConsumerGrantScopeLogFileName) $
     Text.unpack (externalGrantScopeLogLine grant) <> "\n"
+
+launchedFixturePluginBaseDir :: IO FilePath
+launchedFixturePluginBaseDir = do
+  dataRoot <- requireEnv pluginDataRootEnv
+  pure (takeDirectory (takeDirectory dataRoot))
 
 readExternalConsumerOperationLog :: IO [String]
 readExternalConsumerOperationLog = do
@@ -3607,6 +3639,7 @@ verifyLaunchEnvironment = do
   worldId `shouldEqualOrDie` "unsaved"
   dataRoot `shouldNotBeEmptyOrDie` pluginDataRootEnv
   stdioCompat `shouldBeUnsetOrDie` pluginStdioCompatibilityEnv
+  mapM_ verifyParentSecretUnset sensitiveParentEnvKeys
   dataRootExists <- doesDirectoryExist dataRoot
   unless dataRootExists (die (pluginDataRootEnv <> " does not name an existing directory"))
 
@@ -3626,6 +3659,13 @@ shouldBeUnsetOrDie value label =
   case value of
     Nothing -> pure ()
     Just _ -> die (label <> " must not be set for production plugin launches")
+
+verifyParentSecretUnset :: String -> IO ()
+verifyParentSecretUnset key = do
+  value <- lookupEnv key
+  case value of
+    Nothing -> pure ()
+    Just _ -> die (key <> " leaked into production plugin launch environment")
 
 expectedEndpointKind :: String
 expectedEndpointKind =

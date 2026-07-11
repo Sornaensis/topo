@@ -50,7 +50,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
 import Data.Word (Word64)
 import System.Directory (createDirectoryIfMissing, getCurrentDirectory)
-import System.Environment (getArgs, lookupEnv)
+import System.Environment (getArgs, lookupEnv, unsetEnv)
 import System.Exit (exitFailure)
 import System.FilePath ((</>), takeDirectory)
 import System.IO (stderr, stdin, stdout)
@@ -411,6 +411,18 @@ launchAuthProof (Just launchAuth) (Just challenge) = Just
   )
 launchAuthProof _ _ = Nothing
 
+consumeLaunchAuthProofFromEnvironment :: Maybe Text -> IO (Maybe (Text, Text))
+consumeLaunchAuthProofFromEnvironment mChallenge = do
+  launchAuth <- readLaunchAuthFromEnvironment
+  let proof = launchAuthProof launchAuth mChallenge
+  scrubLaunchAuthEnvironment
+  pure proof
+
+scrubLaunchAuthEnvironment :: IO ()
+scrubLaunchAuthEnvironment = do
+  unsetEnv pluginSessionEnv
+  unsetEnv pluginAuthTokenEnv
+
 -- | Main message loop.  Reads RPC envelopes and dispatches them.
 messageLoop :: PluginDef -> Transport -> Map Text Value -> Maybe FilePath -> IO ()
 messageLoop pd transport params worldPath = do
@@ -436,9 +448,8 @@ messageLoop pd transport params worldPath = do
               sendErrorResponse transport (envRequestId envelope) 8 "Invalid handshake payload"
               messageLoop pd transport params worldPath
             Aeson.Success (hs :: Handshake) -> do
-              launchAuth <- readLaunchAuthFromEnvironment
+              mAuthProof <- consumeLaunchAuthProofFromEnvironment (hsAuthChallenge hs)
               let newWorldPath = fmap Text.unpack (hsWorldPath hs)
-                  mAuthProof = launchAuthProof launchAuth (hsAuthChallenge hs)
                   ack = HandshakeAck
                     { haProtocolVersion = currentProtocolVersion
                     , haDataDirectory   = fmap Text.pack (pdDataDirectory pd)

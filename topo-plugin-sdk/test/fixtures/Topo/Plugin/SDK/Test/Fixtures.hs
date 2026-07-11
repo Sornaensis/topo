@@ -22,7 +22,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
-import System.Environment (getArgs)
+import System.Environment (getArgs, lookupEnv)
 import System.Exit (die, exitFailure)
 import System.IO (stdin, stdout)
 
@@ -46,6 +46,8 @@ import Topo.Plugin.RPC.DataService
 import Topo.Plugin.RPC.Transport
   ( closeTransport
   , connectPlugin
+  , pluginAuthTokenEnv
+  , pluginSessionEnv
   , recvMessage
   , sendMessage
   )
@@ -62,6 +64,7 @@ fixtureNames =
   , "bad-handshake"
   , "slow"
   , "crashy"
+  , "assert-launch-auth-env-scrubbed"
   ]
 
 runFixtureCli :: IO ()
@@ -83,7 +86,16 @@ runNamedFixture = \case
   "bad-handshake" -> runBadHandshakeFixture
   "slow" -> runSlowFixture
   "crashy" -> exitFailure
+  "assert-launch-auth-env-scrubbed" -> assertLaunchAuthEnvironmentScrubbed
   unknown -> die ("unknown topo plugin fixture: " <> unknown)
+
+assertLaunchAuthEnvironmentScrubbed :: IO ()
+assertLaunchAuthEnvironmentScrubbed = do
+  mSession <- lookupEnv pluginSessionEnv
+  mAuthToken <- lookupEnv pluginAuthTokenEnv
+  case (mSession, mAuthToken) of
+    (Nothing, Nothing) -> pure ()
+    _ -> die "launch auth/session environment leaked to child process"
 
 externalProviderName :: Text
 externalProviderName = "fixture-external-provider"

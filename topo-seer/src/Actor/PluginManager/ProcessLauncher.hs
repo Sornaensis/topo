@@ -81,7 +81,6 @@ import Topo.Plugin.RPC.Transport
   , pluginIdEnv
   , pluginProtocolEnv
   , pluginSessionEnv
-  , pluginStdioCompatibilityEnv
   , pluginWorldIdEnv
   )
 
@@ -230,10 +229,12 @@ endpointEnvironment endpoint pluginName workingDir = do
         , (pluginWorldIdEnv, unsavedWorldId)
         , (pluginDataRootEnv, dataRoot)
         ]
-      -- Production launches always use the endpoint variables above; do not
-      -- leak a developer shell's stdio compatibility flag into plugin processes.
-      overridden = pluginStdioCompatibilityEnv : map fst launchVars
-      preserved = filter (not . isOverriddenEnvKey overridden . fst) inherited
+      -- Do not inherit the developer shell wholesale: it routinely contains
+      -- cloud, VCS, database, proxy, and tool tokens.  Plugins get only the
+      -- launch contract above plus a tiny platform/runtime allowlist below.
+      -- Plugins that need credentials should obtain them through explicit topo
+      -- configuration or external-data-source grants instead of ambient env.
+      preserved = filter (isAllowedInheritedRuntimeEnvKey . fst) inherited
   createDirectoryIfMissing True dataRoot
   pure LaunchEnvironment
     { leVariables = launchVars <> preserved
@@ -241,13 +242,56 @@ endpointEnvironment endpoint pluginName workingDir = do
     , leAuthToken = authToken
     }
 
-isOverriddenEnvKey :: [String] -> String -> Bool
-isOverriddenEnvKey overridden key = any (envKeyEquals key) overridden
+isAllowedInheritedRuntimeEnvKey :: String -> Bool
+isAllowedInheritedRuntimeEnvKey key =
+  any (envKeyEquals key) allowedInheritedRuntimeEnvKeys
+
+-- Minimal inherited runtime state needed for process startup, temp files, time
+-- zones, and locale/encoding behavior.  Keep this list conservative and exact
+-- so parent auth/session/secrets cannot leak into production plugin
+-- subprocesses; in particular TOPO_PLUGIN_STDIO_COMPAT is intentionally not
+-- allowlisted.
+allowedInheritedRuntimeEnvKeys :: [String]
+allowedInheritedRuntimeEnvKeys =
+  [ "PATH"
+  , "LANG"
+  , "LANGUAGE"
+  , "LC_ALL"
+  , "LC_COLLATE"
+  , "LC_CTYPE"
+  , "LC_MESSAGES"
+  , "LC_MONETARY"
+  , "LC_NUMERIC"
+  , "LC_TIME"
+  , "LC_ADDRESS"
+  , "LC_IDENTIFICATION"
+  , "LC_MEASUREMENT"
+  , "LC_NAME"
+  , "LC_PAPER"
+  , "LC_TELEPHONE"
+  , "TZ"
+  , "TMPDIR"
+  , "TEMP"
+  , "TMP"
+  ] <> windowsRuntimeEnvKeys
+
+windowsRuntimeEnvKeys :: [String]
+windowsRuntimeEnvKeys
+  | os == "mingw32" =
+      [ "SystemRoot"
+      , "WINDIR"
+      , "COMSPEC"
+      , "PATHEXT"
+      ]
+  | otherwise = []
 
 envKeyEquals :: String -> String -> Bool
-envKeyEquals left right
-  | os == "mingw32" = map toLower left == map toLower right
-  | otherwise = left == right
+envKeyEquals left right = normalizeEnvKey left == normalizeEnvKey right
+
+normalizeEnvKey :: String -> String
+normalizeEnvKey
+  | os == "mingw32" = map toLower
+  | otherwise = id
 
 freshLaunchSecret :: String -> IO String
 freshLaunchSecret label = do
