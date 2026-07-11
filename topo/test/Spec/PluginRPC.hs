@@ -1192,10 +1192,12 @@ spec = describe "Plugin.RPC" $ do
         [appliedSource] -> do
           redssObservedAt (redsdStatus appliedSource) `shouldBe` Just observedAt
           redssFresh (redsdStatus appliedSource) `shouldBe` True
+          redssCapabilityScope (redsdStatus appliedSource) `shouldBe` [ExternalSourceQuery]
           case redsdGrants appliedSource of
             [included, omitted] -> do
               redssObservedAt (redsgStatus included) `shouldBe` Just observedAt
               redssFresh (redsgStatus included) `shouldBe` True
+              redssCapabilityScope (redsgStatus included) `shouldBe` [ExternalSourceQuery]
               redssObservedAt (redsgStatus omitted) `shouldBe` Nothing
               redssFresh (redsgStatus omitted) `shouldBe` False
               redssMessage (redsgStatus omitted) `shouldSatisfy` maybe False (Text.isInfixOf "omitted grant")

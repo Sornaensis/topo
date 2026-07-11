@@ -840,6 +840,28 @@ spec = describe "PluginManager" $ do
           snapshots <- getPluginExternalDataSources pluginManagerHandle
           expectUnavailableConsumerBrokerSnapshot "unavailable" "capability scope mismatch" snapshots
 
+  it "blocks required consumers when provider status report widens grant access" $
+    expectRequiredStatusReportScopeMismatch "grant-access-widen" "reported grant access"
+
+  it "blocks required consumers when provider status report widens grant resources" $
+    expectRequiredStatusReportScopeMismatch "grant-resources-widen" "reported grant resources"
+
+  it "brokers status reports for grants inheriting source resources" $
+    withExecutablePluginDirs
+      [ (externalConsumerPluginName, externalConsumerManifestJSON, "external-consumer")
+      , (externalProviderPluginName, externalProviderInheritedGrantResourcesManifestJSON, "external-provider-controlled-status")
+      ] $ do
+        writeExternalProviderStatusMode "grant-resources-inherited"
+        withPluginManager $ \pluginManagerHandle -> do
+          discoverPlugins pluginManagerHandle
+          refreshManifests pluginManagerHandle
+          loaded <- getLoadedPlugins pluginManagerHandle
+          pluginStatuses externalConsumerPluginName loaded `shouldSatisfy` elem PluginConnected
+          pluginLifecycleStates externalConsumerPluginName loaded `shouldSatisfy` elem LifecycleReady
+          grantedBinding <- expectRight "inherited resource binding query" =<<
+            expectWithin "inherited resource binding query" (queryPluginResource pluginManagerHandle externalConsumerPluginNameText externalBindingQuery)
+          expectBindingStatus "granted" grantedBinding
+
   it "integrates shared external data-source provider and consumer fixtures without backend assumptions" $
     withExecutablePluginDirs
       [ (externalConsumerPluginName, externalConsumerManifestJSON, "external-consumer")
@@ -1856,6 +1878,27 @@ expectOptionalStatusRefreshFailure modeName expectedClass =
         providerSnapshots <- getPluginExternalDataSources pluginManagerHandle
         expectProviderStatusMessage externalProviderPluginNameText expectedClass providerSnapshots
 
+expectRequiredStatusReportScopeMismatch :: String -> Text -> IO ()
+expectRequiredStatusReportScopeMismatch modeName expectedNeedle =
+  withExecutablePluginDirs
+    [ (externalConsumerPluginName, externalConsumerManifestJSON, "external-consumer")
+    , (externalProviderPluginName, externalProviderManifestJSON, "external-provider-controlled-status")
+    ] $ do
+      writeExternalProviderStatusMode modeName
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses externalConsumerPluginName loaded `shouldSatisfy` anyPluginErrorContaining "external data-source startup blocked"
+        pluginStatuses externalConsumerPluginName loaded `shouldSatisfy` anyPluginErrorContaining expectedNeedle
+        pluginLifecycleStates externalConsumerPluginName loaded `shouldSatisfy` elem LifecycleFailed
+        pluginLifecycleErrorCodes externalConsumerPluginName loaded `shouldSatisfy` elem (Just "external_data_source_blocked")
+        operations <- readExternalConsumerOperationLog
+        operations `shouldBe` []
+        snapshots <- getPluginExternalDataSources pluginManagerHandle
+        expectProviderStatusMessage externalProviderPluginNameText expectedNeedle snapshots
+        expectUnavailableConsumerBrokerSnapshot "unavailable" expectedNeedle snapshots
+
 expectProviderStatusMessage :: Text -> Text -> [WorldExternalDataSourceSnapshot] -> Expectation
 expectProviderStatusMessage providerName expectedNeedle snapshots =
   case findExternalSnapshot providerName snapshots of
@@ -2744,6 +2787,24 @@ sendExternalProviderStatusResponse transport envelope modeName =
         (envRequestId envelope)
         (externalProviderStatusReportWithGrantScope [ExternalSourceQuery, ExternalSourceMutate] includeDiagnostics)))
       pure True
+    "grant-access-widen" -> do
+      let includeDiagnostics = requestIncludesDiagnostics envelope
+      _ <- sendMessage transport (encodeMessage (externalStatusEnvelope
+        (envRequestId envelope)
+        (externalProviderStatusReportWithGrantAccess [ExternalAccessRead, ExternalAccessAdmin] includeDiagnostics)))
+      pure True
+    "grant-resources-widen" -> do
+      let includeDiagnostics = requestIncludesDiagnostics envelope
+      _ <- sendMessage transport (encodeMessage (externalStatusEnvelope
+        (envRequestId envelope)
+        (externalProviderStatusReportWithGrantResources (externalSharedResources <> ["private_sources"]) includeDiagnostics)))
+      pure True
+    "grant-resources-inherited" -> do
+      let includeDiagnostics = requestIncludesDiagnostics envelope
+      _ <- sendMessage transport (encodeMessage (externalStatusEnvelope
+        (envRequestId envelope)
+        (externalProviderStatusReportWithGrantResources [] includeDiagnostics)))
+      pure True
     _ -> do
       let includeDiagnostics = requestIncludesDiagnostics envelope
       _ <- sendMessage transport (encodeMessage (externalStatusEnvelope
@@ -2949,6 +3010,24 @@ externalProviderStatusReportWithGrantScope scope includeDiagnostics = RPCExterna
           { redsstCapabilityScope = scope
           , redsstStatus = (statusWithOptionalDiagnostics includeDiagnostics) { redssCapabilityScope = scope }
           }
+      ]
+  , redssReportDiagnostics = if includeDiagnostics then Just externalDiagnostics else Nothing
+  }
+
+externalProviderStatusReportWithGrantAccess :: [RPCExternalDataSourceAccess] -> Bool -> RPCExternalDataSourceStatusReport
+externalProviderStatusReportWithGrantAccess access includeDiagnostics = RPCExternalDataSourceStatusReport
+  { redssReportStatuses =
+      [ externalProviderSourceStatusEntry includeDiagnostics
+      , (externalProviderGrantStatusEntry includeDiagnostics) { redsstAccess = access }
+      ]
+  , redssReportDiagnostics = if includeDiagnostics then Just externalDiagnostics else Nothing
+  }
+
+externalProviderStatusReportWithGrantResources :: [Text] -> Bool -> RPCExternalDataSourceStatusReport
+externalProviderStatusReportWithGrantResources resources includeDiagnostics = RPCExternalDataSourceStatusReport
+  { redssReportStatuses =
+      [ externalProviderSourceStatusEntry includeDiagnostics
+      , (externalProviderGrantStatusEntry includeDiagnostics) { redsstResources = resources }
       ]
   , redssReportDiagnostics = if includeDiagnostics then Just externalDiagnostics else Nothing
   }
@@ -4130,6 +4209,14 @@ externalProviderUnavailableManifestJSON =
     (externalUnavailableStatusJSON externalProviderPluginName)
     (externalUnavailableStatusJSON externalProviderPluginName)
 
+externalProviderInheritedGrantResourcesManifestJSON :: BS.ByteString
+externalProviderInheritedGrantResourcesManifestJSON =
+  externalProviderManifestWithStatusesAndGrantResourcesFor
+    externalProviderPluginName
+    (externalReadyStatusJSON externalProviderPluginName)
+    (externalReadyStatusJSON externalProviderPluginName)
+    ""
+
 externalConsumerManifestJSON :: BS.ByteString
 externalConsumerManifestJSON = externalConsumerManifestFor externalConsumerPluginName externalProviderPluginName
 
@@ -4144,7 +4231,15 @@ externalProviderManifestFor name =
   externalProviderManifestWithStatusesFor name (externalReadyStatusJSON name) (externalReadyStatusJSON name)
 
 externalProviderManifestWithStatusesFor :: String -> String -> String -> BS.ByteString
-externalProviderManifestWithStatusesFor name sourceStatusJSON grantStatusJSON = BSC.pack $
+externalProviderManifestWithStatusesFor name sourceStatusJSON grantStatusJSON =
+  externalProviderManifestWithStatusesAndGrantResourcesFor
+    name
+    sourceStatusJSON
+    grantStatusJSON
+    "          \"resources\": [\"shared_sources\"],\n"
+
+externalProviderManifestWithStatusesAndGrantResourcesFor :: String -> String -> String -> String -> BS.ByteString
+externalProviderManifestWithStatusesAndGrantResourcesFor name sourceStatusJSON grantStatusJSON grantResourcesJSON = BSC.pack $
   "{\n"
     <> "  \"manifestVersion\": 3,\n"
     <> "  \"name\": \"" <> name <> "\",\n"
@@ -4182,7 +4277,7 @@ externalProviderManifestWithStatusesFor name sourceStatusJSON grantStatusJSON = 
     <> "          \"name\": \"terrain-catalog-read\",\n"
     <> "          \"access\": [\"read\"],\n"
     <> "          \"capabilities\": [\"query\", \"health\"],\n"
-    <> "          \"resources\": [\"shared_sources\"],\n"
+    <> grantResourcesJSON
     <> "          \"status\": " <> grantStatusJSON <> ",\n"
     <> "          \"reference\": { \"grant\": \"terrain-catalog-read\" },\n"
     <> "          \"configRefs\": [\n"

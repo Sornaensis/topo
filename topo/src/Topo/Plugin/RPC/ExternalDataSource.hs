@@ -465,8 +465,12 @@ applyExternalDataSourceStatusReport observedAt providerId report manifest =
 
     entryStatus mGrant sourceName currentStatus =
       case matchingEntry mGrant sourceName of
-        Just entry -> observeExternalDataSourceStatus observedAt (redsstStatus entry)
+        Just entry -> observeExternalDataSourceStatus observedAt (entryStatusPayload entry)
         Nothing -> omittedStatus mGrant sourceName currentStatus
+
+    entryStatusPayload entry =
+      let status = redsstStatus entry
+      in status { redssCapabilityScope = effectiveCapabilityScope status (redsstCapabilityScope entry) }
 
     omittedStatus mGrant sourceName currentStatus = (staleExternalDataSourceStatus currentStatus)
       { redssObservedAt = Nothing

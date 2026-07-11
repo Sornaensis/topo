@@ -66,6 +66,7 @@ import Topo.Plugin.RPC
   , RPCExternalDataSourceOperationResult(..)
   , RPCExternalDataSourceRef(..)
   , RPCExternalDataSourceStatus(..)
+  , RPCExternalDataSourceStatusEntry(..)
   , RPCExternalDataSourceStatusReport(..)
   , RPCExternalDataSourceStatusRequest(..)
   , RPCExternalDataSourceStatusState(..)
@@ -181,7 +182,7 @@ refreshProviderStatuses st = do
             case result of
               Right report -> do
                 observedAt <- getCurrentTime
-                pure (applyStatusReport observedAt report lp)
+                pure (applyStatusReport st observedAt report lp)
               Left err -> do
                 observedAt <- getCurrentTime
                 pure (markProviderStatusRefreshFailure observedAt err lp)
@@ -216,11 +217,143 @@ providerHasConsumerRef st provider = any referencesProvider (Map.elems (pmsPlugi
       redsrSource ref `Set.member` providerSources
         && maybe True (== lpName provider) (redsrProvider ref)
 
-applyStatusReport :: UTCTime -> RPCExternalDataSourceStatusReport -> LoadedPlugin -> LoadedPlugin
-applyStatusReport observedAt report lp = lp { lpManifest = manifest' , lpConnection = fmap syncConn (lpConnection lp) }
+applyStatusReport :: PluginManagerState -> UTCTime -> RPCExternalDataSourceStatusReport -> LoadedPlugin -> LoadedPlugin
+applyStatusReport st observedAt report lp = lp { lpManifest = manifest' , lpConnection = fmap syncConn (lpConnection lp) }
   where
-    manifest' = applyExternalDataSourceStatusReport observedAt (lpName lp) report (lpManifest lp)
+    validatedReport = validateProviderStatusReport st lp report
+    manifest' = applyExternalDataSourceStatusReport observedAt (lpName lp) validatedReport (lpManifest lp)
     syncConn conn = conn { rpcManifest = manifest' }
+
+validateProviderStatusReport
+  :: PluginManagerState
+  -> LoadedPlugin
+  -> RPCExternalDataSourceStatusReport
+  -> RPCExternalDataSourceStatusReport
+validateProviderStatusReport st provider report = report
+  { redssReportStatuses = map validateEntry (redssReportStatuses report)
+  }
+  where
+    manifest = lpManifest provider
+    providerName = lpName provider
+
+    validateEntry entry
+      | redsstProviderId entry /= providerName = entry
+      | redsstConsumerId entry /= Nothing = entry
+      | otherwise = case find ((== redsstSource entry) . redsdName) (rmExternalDataSources manifest) of
+          Nothing -> entry
+          Just source -> case redsstGrant entry of
+            Nothing -> maybe entry (statusReportScopeFailure entry) (sourceEntryScopeMismatch source entry)
+            Just grantName -> case find ((== grantName) . redsgName) (redsdGrants source) of
+              Nothing -> entry
+              Just grant -> maybe entry (statusReportScopeFailure entry) (grantEntryScopeMismatch source grant entry)
+
+    sourceEntryScopeMismatch source entry = firstJust
+      [ unlessValid (reportedWithinDeclared (redsstResources entry) (redsdResources source)) $
+          statusReportScopeMessage entry $ "reported source resources " <> textListText (redsstResources entry)
+            <> " are not a subset of declared source resources " <> textListText (redsdResources source)
+      , unlessValid (reportedWithinDeclared (redsstCapabilityScope entry) (redsdCapabilities source)) $
+          statusReportScopeMessage entry $ "capability scope mismatch: reported source capability scope " <> capabilityListText (redsstCapabilityScope entry)
+            <> " is not a subset of declared source capabilities " <> capabilityListText (redsdCapabilities source)
+      ]
+
+    grantEntryScopeMismatch source grant entry = firstJust
+      [ unlessValid (reportedWithinDeclared (redsstAccess entry) (redsgAccess grant)) $
+          statusReportScopeMessage entry $ "reported grant access " <> accessListText (redsstAccess entry)
+            <> " is not a subset of declared grant access " <> accessListText (redsgAccess grant)
+      , unlessValid (reportedWithinDeclared reportedResources (grantResourceScope source grant)) $
+          statusReportScopeMessage entry $ "reported grant resources " <> textListText (redsstResources entry)
+            <> " are not a subset of declared grant resources " <> textListText (grantResourceScope source grant)
+      , unlessValid (reportedWithinDeclared (redsstCapabilityScope entry) (redsgCapabilities grant)) $
+          statusReportScopeMessage entry $ "capability scope mismatch: reported grant capability scope " <> capabilityListText (redsstCapabilityScope entry)
+            <> " is not a subset of declared grant capabilities " <> capabilityListText (redsgCapabilities grant)
+      , firstJust (map (requestedScopeMismatch source grant entry) (statusReportConsumerRefs source grant))
+      ]
+      where
+        reportedResources = reportedGrantResources source grant entry
+
+    requestedScopeMismatch source grant entry (consumerName, ref) = firstJust
+      [ unlessValid (all (`elem` redsstAccess entry) (redsrAccess ref)) $
+          statusReportScopeMessage entry $ "reported grant access " <> accessListText (redsstAccess entry)
+            <> " does not include requested access " <> accessListText (redsrAccess ref)
+            <> " for consumer ref '" <> consumerName <> ":" <> redsrName ref <> "'"
+      , unlessValid (all (`elem` reportedResources) requestedResources) $
+          statusReportScopeMessage entry $ "reported grant resources " <> textListText (redsstResources entry)
+            <> " do not include requested resources " <> textListText requestedResources
+            <> " for consumer ref '" <> consumerName <> ":" <> redsrName ref <> "'"
+      , unlessValid (null (redsstCapabilityScope entry) || all (`elem` redsstCapabilityScope entry) requiredCapabilities) $
+          statusReportScopeMessage entry $ "capability scope mismatch: reported grant capability scope "
+            <> capabilityListText (redsstCapabilityScope entry)
+            <> " does not include required capabilities " <> capabilityListText requiredCapabilities
+            <> " for requested access " <> accessListText (redsrAccess ref)
+            <> " on consumer ref '" <> consumerName <> ":" <> redsrName ref <> "'"
+      ]
+      where
+        requestedResources = effectiveGrantResources source grant (redsrResources ref)
+        reportedResources = reportedGrantResources source grant entry
+        requiredCapabilities = Set.toList (Set.fromList (concatMap externalAccessRequiredCapabilities (redsrAccess ref)))
+
+    statusReportConsumerRefs source grant =
+      [ (lpName consumer, ref)
+      | consumer <- Map.elems (pmsPlugins st)
+      , ref <- rmExternalDataSourceRefs (lpManifest consumer)
+      , redsrSource ref == redsdName source
+      , maybe True (== providerName) (redsrProvider ref)
+      , maybe True (== redsgName grant) (redsrGrant ref)
+      , grantStaticallySatisfiesRef source grant ref
+      ]
+
+    grantStaticallySatisfiesRef source grant ref =
+      all (`elem` redsgAccess grant) (redsrAccess ref)
+        && all (`elem` redsdResources source) (redsrResources ref)
+        && all (`elem` grantResourceScope source grant) (redsrResources ref)
+        && all (`elem` redsgCapabilities grant) requiredCapabilities
+      where
+        requiredCapabilities = concatMap externalAccessRequiredCapabilities (redsrAccess ref)
+
+reportedGrantResources :: RPCExternalDataSourceDecl -> RPCExternalDataSourceGrant -> RPCExternalDataSourceStatusEntry -> [Text]
+reportedGrantResources source grant entry
+  | null (redsstResources entry) = grantResourceScope source grant
+  | otherwise = redsstResources entry
+
+reportedWithinDeclared :: Eq a => [a] -> [a] -> Bool
+reportedWithinDeclared reported declared = null reported || all (`elem` declared) reported
+
+statusReportScopeMessage :: RPCExternalDataSourceStatusEntry -> Text -> Text
+statusReportScopeMessage entry detail =
+  "external data-source status report scope mismatch for " <> statusReportEntryName entry <> ": " <> detail
+
+statusReportEntryName :: RPCExternalDataSourceStatusEntry -> Text
+statusReportEntryName entry =
+  redsstProviderId entry <> ":" <> redsstSource entry <> maybe "" (":" <>) (redsstGrant entry)
+
+statusReportScopeFailure :: RPCExternalDataSourceStatusEntry -> Text -> RPCExternalDataSourceStatusEntry
+statusReportScopeFailure entry reason = entry
+  { redsstCapabilityScope = []
+  , redsstStatus = status
+      { redssState = ExternalStatusUnavailable
+      , redssMessage = Just reason
+      , redssProviderId = Just (redsstProviderId entry)
+      , redssAvailability = Just ExternalAvailabilityUnavailable
+      , redssHealth = Just ExternalHealthUnhealthy
+      , redssAccessMode = Just ExternalAccessModeDisabled
+      , redssCapabilityScope = []
+      , redssDiagnostics = Just (statusReportScopeDiagnostics entry reason (redssDiagnostics status))
+      }
+  }
+  where
+    status = redsstStatus entry
+
+statusReportScopeDiagnostics :: RPCExternalDataSourceStatusEntry -> Text -> Maybe Value -> Value
+statusReportScopeDiagnostics entry reason providerDiagnostics = object $
+  [ "statusReportValidation" .= object
+      [ "result" .= ("rejected" :: Text)
+      , "reason" .= reason
+      , "providerId" .= redsstProviderId entry
+      , "source" .= redsstSource entry
+      ]
+  ] <>
+  [ "grant" .= grant | Just grant <- [redsstGrant entry] ] <>
+  [ "providerDiagnostics" .= diagnostics | Just diagnostics <- [providerDiagnostics >>= originalProviderDiagnostics] ]
 
 markProviderStatusRefreshFailure :: UTCTime -> RPCError -> LoadedPlugin -> LoadedPlugin
 markProviderStatusRefreshFailure observedAt err lp = lp { lpManifest = manifest' , lpConnection = fmap syncConn (lpConnection lp) }
@@ -631,7 +764,8 @@ blockRequiredBindingDiagnostic st diag =
     _ -> blockConsumer key blockedReason st
   where
     key = diagnosticGrantKey diag
-    blockedReason = grantKeyDependency key <> ": " <> desbdMessage diag
+    detail = bindingDiagnosticDetailMessage st diag
+    blockedReason = grantKeyDependency key <> ": " <> detail
     degradedReason = "required external data-source binding degraded: " <> blockedReason
 
 degradeOptionalBindingDiagnostic :: PluginManagerState -> DependencyExternalDataSourceBindingDiagnostic -> IO PluginManagerState
@@ -639,7 +773,7 @@ degradeOptionalBindingDiagnostic st diag =
   degradeConsumer key reason st
   where
     key = diagnosticGrantKey diag
-    reason = "optional external data-source unavailable: " <> grantKeyDependency key <> ": " <> desbdMessage diag
+    reason = "optional external data-source unavailable: " <> grantKeyDependency key <> ": " <> bindingDiagnosticDetailMessage st diag
 
 data BindingDiagnosticStatusClass
   = BindingDiagnosticHard
@@ -686,6 +820,23 @@ bindingDiagnosticCandidateStatuses st diag = sourceStatuses <> grantStatuses
       , maybe True (== redsgName grant) (desbdGrant diag)
       ]
     diagnosticProviderMatches providerName = maybe True (== providerName) (desbdProvider diag)
+
+bindingDiagnosticDetailMessage :: PluginManagerState -> DependencyExternalDataSourceBindingDiagnostic -> Text
+bindingDiagnosticDetailMessage st diag =
+  fromMaybe (desbdMessage diag) (bindingDiagnosticCandidateStatusMessage st diag)
+
+bindingDiagnosticCandidateStatusMessage :: PluginManagerState -> DependencyExternalDataSourceBindingDiagnostic -> Maybe Text
+bindingDiagnosticCandidateStatusMessage st diag = firstJust
+  [ redssMessage status
+  | status <- bindingDiagnosticCandidateStatuses st diag
+  , bindingDiagnosticStatusActionable status
+  ]
+
+bindingDiagnosticStatusActionable :: RPCExternalDataSourceStatus -> Bool
+bindingDiagnosticStatusActionable status =
+  not (externalDataSourceStatusCurrent status)
+    || externalDataSourceStatusBlocksStartup status
+    || externalDataSourceStatusDegradesStartup status
 
 diagnosticGrantKey :: DependencyExternalDataSourceBindingDiagnostic -> ExternalDataSourceGrantKey
 diagnosticGrantKey diag = ExternalDataSourceGrantKey
@@ -800,7 +951,10 @@ annotateConsumerRefs bindingDiagnostics st = st { pmsPlugins = Map.map annotateP
           | brokerStatusPhaseText (redsrStatus ref) == Just (externalDataSourceGrantBrokerPhaseText ExternalDataSourceRevokeAcked) -> ref
           | otherwise -> ref
               { redsrProvider = desbdProvider diag
-              , redsrStatus = unavailableRefStatus (fromMaybe "unresolved" (desbdProvider diag)) (desbdMessage diag) (redsrStatus ref)
+              , redsrStatus = unavailableRefStatus
+                  (fromMaybe "unresolved" (desbdProvider diag))
+                  (bindingDiagnosticDetailMessage st diag)
+                  (redsrStatus ref)
               }
         Nothing -> ref
 
@@ -1002,6 +1156,7 @@ unavailableRefStatus providerName reason status = status
   , redssHealth = Just ExternalHealthUnhealthy
   , redssAccessMode = Just ExternalAccessModeDisabled
   , redssCapabilityScope = []
+  , redssDiagnostics = Just (brokerOperationDiagnostics ExternalDataSourceGrantUnavailable Nothing (redssDiagnostics status))
   }
 
 grantKeyDependency :: ExternalDataSourceGrantKey -> Text
