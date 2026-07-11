@@ -796,6 +796,31 @@ spec = describe "Seer.HTTP.Server" $ do
         hresStatusCode rsp `shouldBe` status
         lookupNestedText ["error", "code"] (hresBody rsp) `shouldBe` Just (dataResourceErrorCodeText code)
 
+  it "returns a stable internal-error envelope when a service handler throws" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      let rawExceptionText = "raw-handler-exception-secret" :: Text
+          throwingApp = headlessHttpAppService
+            { appConfig = (appConfig headlessHttpAppService)
+                { configGetSliders = rawServiceHandler configGetSlidersOperation $ \_ _ ->
+                    throwIO (userError (Text.unpack rawExceptionText))
+                }
+            }
+          requestId = "handler-exception-req-123"
+          req = (mkRequest "GET" ["config", "sliders"])
+            { hreqHeaders = [("x-request-id", requestId)] }
+          responseBodyText = TextEncoding.decodeUtf8 . LBS.toStrict . Aeson.encode . hresBody
+          isEmptyArray (Array values) = null (toList values)
+          isEmptyArray _ = False
+
+      rsp <- handleHttpRequest defaultHttpServerConfig throwingApp (headlessServiceContext app) req
+      hresStatusCode rsp `shouldBe` 500
+      lookupHeaderText "x-request-id" (hresHeaders rsp) `shouldBe` Just requestId
+      lookupNestedText ["error", "code"] (hresBody rsp) `shouldBe` Just "internal_error"
+      lookupNestedText ["error", "message"] (hresBody rsp) `shouldBe` Just "service handler exception"
+      lookupNestedText ["error", "request_id"] (hresBody rsp) `shouldBe` Just requestId
+      lookupNestedValue ["error", "details"] (hresBody rsp) `shouldSatisfy` maybe False isEmptyArray
+      responseBodyText rsp `shouldSatisfy` not . Text.isInfixOf rawExceptionText
+
   it "enforces optional bearer tokens on protected routes" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       let cfg = defaultHttpServerConfig { hscBearerToken = Just "secret" }
