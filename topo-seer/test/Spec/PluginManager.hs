@@ -817,17 +817,17 @@ spec = describe "PluginManager" $ do
           pluginStatuses externalConsumerPluginName loaded `shouldSatisfy` anyPluginErrorContaining "capability scope mismatch"
           pluginLifecycleStates externalConsumerPluginName loaded `shouldSatisfy` elem LifecycleFailed
           pluginLifecycleErrorCodes externalConsumerPluginName loaded `shouldSatisfy` elem (Just "external_data_source_blocked")
-          operations <- readExternalConsumerOperationLog
-          operations `shouldBe` []
+          expectNoExternalGrantCallback
           snapshots <- getPluginExternalDataSources pluginManagerHandle
+          expectProviderGrantStatusCapabilityScope [] snapshots
           expectUnavailableConsumerBrokerSnapshot "unavailable" "capability scope mismatch" snapshots
 
-  it "degrades optional consumers when runtime grant scope widens beyond grant capabilities" $
+  it "degrades optional consumers when runtime grant scope widens to migrate beyond read grant capabilities" $
     withExecutablePluginDirs
       [ (externalConsumerPluginName, externalOptionalConsumerManifestJSON, "external-consumer")
       , (externalProviderPluginName, externalProviderManifestJSON, "external-provider-controlled-status")
       ] $ do
-        writeExternalProviderStatusMode "grant-scope-query-mutate"
+        writeExternalProviderStatusMode "grant-scope-query-migrate"
         withPluginManager $ \pluginManagerHandle -> do
           discoverPlugins pluginManagerHandle
           refreshManifests pluginManagerHandle
@@ -835,9 +835,9 @@ spec = describe "PluginManager" $ do
           pluginStatuses externalConsumerPluginName loaded `shouldSatisfy` elem PluginConnected
           pluginLifecycleStates externalConsumerPluginName loaded `shouldSatisfy` elem LifecycleDegraded
           pluginLifecycleErrorCodes externalConsumerPluginName loaded `shouldSatisfy` elem (Just "external_data_source_degraded")
-          operations <- readExternalConsumerOperationLog
-          operations `shouldBe` []
+          expectNoExternalGrantCallback
           snapshots <- getPluginExternalDataSources pluginManagerHandle
+          expectProviderGrantStatusCapabilityScope [] snapshots
           expectUnavailableConsumerBrokerSnapshot "unavailable" "capability scope mismatch" snapshots
 
   it "blocks required consumers when provider status report widens grant access" $
@@ -1893,10 +1893,10 @@ expectRequiredStatusReportScopeMismatch modeName expectedNeedle =
         pluginStatuses externalConsumerPluginName loaded `shouldSatisfy` anyPluginErrorContaining expectedNeedle
         pluginLifecycleStates externalConsumerPluginName loaded `shouldSatisfy` elem LifecycleFailed
         pluginLifecycleErrorCodes externalConsumerPluginName loaded `shouldSatisfy` elem (Just "external_data_source_blocked")
-        operations <- readExternalConsumerOperationLog
-        operations `shouldBe` []
+        expectNoExternalGrantCallback
         snapshots <- getPluginExternalDataSources pluginManagerHandle
         expectProviderStatusMessage externalProviderPluginNameText expectedNeedle snapshots
+        expectProviderGrantStatusCapabilityScope [] snapshots
         expectUnavailableConsumerBrokerSnapshot "unavailable" expectedNeedle snapshots
 
 expectProviderStatusMessage :: Text -> Text -> [WorldExternalDataSourceSnapshot] -> Expectation
@@ -1908,6 +1908,25 @@ expectProviderStatusMessage providerName expectedNeedle snapshots =
             <> concatMap (map redsgStatus . redsdGrants) (wedssProvidedSources snapshot)
           messages = mapMaybe redssMessage statuses
       messages `shouldSatisfy` any (expectedNeedle `Text.isInfixOf`)
+
+expectProviderGrantStatusCapabilityScope :: [RPCExternalDataSourceCapability] -> [WorldExternalDataSourceSnapshot] -> Expectation
+expectProviderGrantStatusCapabilityScope expectedScope snapshots =
+  case findExternalSnapshot externalProviderPluginNameText snapshots of
+    Nothing -> expectationFailure "missing provider external data-source snapshot"
+    Just snapshot -> case wedssProvidedSources snapshot of
+      [source] -> case redsdGrants source of
+        [grant] -> do
+          redsgCapabilities grant `shouldBe` externalCapabilities
+          redssCapabilityScope (redsgStatus grant) `shouldBe` expectedScope
+        other -> expectationFailure ("expected one provider grant, got " <> show other)
+      other -> expectationFailure ("expected one provider source, got " <> show other)
+
+expectNoExternalGrantCallback :: IO ()
+expectNoExternalGrantCallback = do
+  operations <- readExternalConsumerOperationLog
+  operations `shouldBe` []
+  grantScopes <- readExternalConsumerGrantScopeLog
+  grantScopes `shouldBe` []
 
 writeExternalProviderStatusMode :: String -> IO ()
 writeExternalProviderStatusMode modeName = do
@@ -2096,6 +2115,7 @@ expectUnavailableConsumerBrokerSnapshot expectedPhase expectedMessageNeedle snap
       [ref] -> do
         redssState (redsrStatus ref) `shouldBe` ExternalStatusUnavailable
         redssMessage (redsrStatus ref) `shouldSatisfy` maybe False (Text.isInfixOf expectedMessageNeedle)
+        redssCapabilityScope (redsrStatus ref) `shouldBe` []
         expectBrokerOperationDiagnostics expectedPhase Nothing Nothing Nothing Nothing (redssDiagnostics (redsrStatus ref))
       other -> expectationFailure ("expected one unavailable consumed ref, got " <> show other)
 
@@ -2781,11 +2801,11 @@ sendExternalProviderStatusResponse transport envelope modeName =
         (envRequestId envelope)
         (externalProviderStatusReportWithGrantScope [ExternalSourceHealth] includeDiagnostics)))
       pure True
-    "grant-scope-query-mutate" -> do
+    "grant-scope-query-migrate" -> do
       let includeDiagnostics = requestIncludesDiagnostics envelope
       _ <- sendMessage transport (encodeMessage (externalStatusEnvelope
         (envRequestId envelope)
-        (externalProviderStatusReportWithGrantScope [ExternalSourceQuery, ExternalSourceMutate] includeDiagnostics)))
+        (externalProviderStatusReportWithGrantScope [ExternalSourceQuery, ExternalSourceMigrate] includeDiagnostics)))
       pure True
     "grant-access-widen" -> do
       let includeDiagnostics = requestIncludesDiagnostics envelope
