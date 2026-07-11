@@ -334,9 +334,13 @@ Full field reference, JSON Schema, and provider/consumer examples are in
 
 Capabilities are inferred from your `PluginDef` — generators get
 `readTerrain` + `log`, simulation nodes additionally get overlay access, and
-data-resource plugins get data capabilities matching their operations. Terrain
-writes are not inferred from every simulation; add `CapWriteTerrain` to
-`pdCapabilities` only for simulation plugins that return terrain writes.
+data-resource plugins get data capabilities matching their operations. Generator
+terrain output is implicit in `generator` participation and does not need
+`writeTerrain`. `readTerrain`/`readWorld` controls terrain input delivery.
+`writeTerrain`/`writeWorld` selects simulation terrain-writer nodes only; add
+`CapWriteTerrain` to `pdCapabilities` for simulation plugins that return terrain
+writes. Generator or simulation overlay output requires `writeOverlay` or
+`writeWorld`.
 
 Manifest v3 also supports backend-neutral `externalDataSources` and
 `externalDataSourceRefs` for provider-owned data shared between plugins. These

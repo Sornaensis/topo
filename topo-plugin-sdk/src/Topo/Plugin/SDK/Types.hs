@@ -135,9 +135,13 @@ data SimulationDef = SimulationDef
 -- | Result payload returned by a generator callback.
 data GeneratorTickResult = GeneratorTickResult
   { gtrTerrain  :: !Value
-    -- ^ Generator terrain payload for @generator_result.terrain@.
+    -- ^ Generator terrain payload for @generator_result.terrain@. The host
+    -- merges this for any manifest with @generator@ participation; it does not
+    -- require @writeTerrain@ or @writeWorld@.
   , gtrOverlay  :: !(Maybe Value)
-    -- ^ Optional overlay seed payload for @generator_result.overlay@.
+    -- ^ Optional overlay seed payload for @generator_result.overlay@. The host
+    -- applies it only when the manifest owns an overlay and has @writeOverlay@
+    -- or @writeWorld@.
   , gtrMetadata :: !(Maybe Value)
     -- ^ Optional metadata payload for @generator_result.metadata@.
   } deriving (Eq, Show)
@@ -304,7 +308,10 @@ data PluginDef = PluginDef
   , pdCapabilities :: ![RPCCapability]
     -- ^ Explicit additional manifest capabilities. The SDK adds these to its
     -- safe inferred capabilities. Use this for capabilities that cannot be
-    -- inferred statically, such as @writeTerrain@ for simulation terrain writes.
+    -- inferred statically, such as @writeTerrain@ for simulation terrain writes
+    -- or @writeOverlay@ for generator-only overlay output. @writeWorld@ also
+    -- satisfies host overlay-write checks on manifests that can request it.
+    -- Generator terrain output itself is implicit in @generator@ participation.
   , pdDataDirectory :: !(Maybe FilePath)
     -- ^ Data subdirectory relative to the world save path.
   , pdDataResources :: ![DataResourceDef]

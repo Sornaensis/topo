@@ -110,12 +110,20 @@ Capabilities are the permissions the plugin asks the host to grant:
 | --- | --- |
 | `log` | Send log messages to the host |
 | `noise` | Use host-provided deterministic noise helpers |
-| `readTerrain` / `readWorld` | Read terrain/world payloads |
-| `writeTerrain` / `writeWorld` | Return terrain/world writes |
+| `readTerrain` / `readWorld` | Receive terrain/world input payloads |
+| `writeTerrain` / `writeWorld` | Return simulation terrain/world writes and run as a simulation terrain writer |
 | `readOverlay` | Read dependency overlays |
 | `writeOverlay` | Write the plugin-owned overlay |
 | `dataRead` | Expose or consume readable data resources |
 | `dataWrite` | Expose writable data-resource operations |
+
+`generator` participation implicitly authorizes `generator_result.terrain`
+output; generator terrain output does not require `writeTerrain` or
+`writeWorld`. `readTerrain`/`readWorld` controls whether the host delivers
+terrain input to generator and simulation callbacks. `writeTerrain`/`writeWorld`
+selects simulation terrain-writer nodes and authorizes
+`simulation_result.terrain_writes`. Generator or simulation overlay output
+requires an owned `overlay` declaration and `writeOverlay` or `writeWorld`.
 
 The SDK infers common capabilities from `PluginDef`. Hand-written manifests
 should request only what the plugin needs.
@@ -131,7 +139,20 @@ should request only what the plugin needs.
 }
 ```
 
-`simulation` declares a plugin simulation node, separate from host built-in simulation nodes such as `weather`. Its `dependencies` list contains simulation node IDs, not generator stage names or plugin startup dependencies, and may reference host built-ins like `weather` when the plugin should tick after built-in weather. Missing schedule fields default to hourly (`interval_ticks: 1`, `phase_ticks: 0`, `catch_up: "run_once_if_due"`). `interval_ticks` must be at least `1`, `phase_ticks` must be non-negative and less than `interval_ticks`, and `catch_up` must be one of the documented enum values:
+`generator` participation also owns generator terrain output: the host merges
+`generator_result.terrain` back into the world even when the manifest does not
+request `writeTerrain` or `writeWorld`. `readTerrain`/`readWorld` only controls
+whether the current terrain is sent as generator input. Generator overlay output
+is separate and requires an owned `overlay` plus `writeOverlay` or `writeWorld`.
+
+`simulation` declares a plugin simulation node, separate from host built-in
+simulation nodes such as `weather`. Its `dependencies` list contains simulation
+node IDs, not generator stage names or plugin startup dependencies, and may
+reference host built-ins like `weather` when the plugin should tick after
+built-in weather. Missing schedule fields default to hourly (`interval_ticks:
+1`, `phase_ticks: 0`, `catch_up: "run_once_if_due"`). `interval_ticks` must be
+at least `1`, `phase_ticks` must be non-negative and less than
+`interval_ticks`, and `catch_up` must be one of the documented enum values:
 
 ```json
 "simulation": {
@@ -141,6 +162,11 @@ should request only what the plugin needs.
   "catch_up": "run_once_if_due"
 }
 ```
+
+For simulation callbacks, `readTerrain`/`readWorld` controls terrain input
+availability. `writeTerrain`/`writeWorld` is the signal that the simulation node
+returns `simulation_result.terrain_writes` and should be scheduled as a terrain
+writer rather than a reader.
 
 `overlay.schemaFile` points to the plugin-owned `.toposchema` file relative to
 the plugin directory. A simulation plugin that writes an overlay should declare
@@ -359,8 +385,12 @@ The generated manifest includes:
 - `pdDescription`, `pdUiHints`, and `pdStartPolicy` as manifest v3 metadata
   (with `ui.displayName` defaulting to `pdName`)
 - safe capabilities inferred from generator, simulation, and data-resource
-  fields, plus explicit `pdCapabilities` for non-inferable permissions such as
-  simulation terrain writes
+  fields: generator and simulation terrain inputs use `readTerrain`, generator
+  terrain output is implicit in `generator` participation, and
+  `writeTerrain`/`writeWorld` are left for simulation terrain writers
+- explicit `pdCapabilities` for non-inferable permissions such as simulation
+  terrain writes or generator-only overlay output (`writeOverlay`, or
+  `writeWorld` on manifests that can request it)
 - `pdExternalDataSources` and `pdExternalDataSourceRefs` copied into the
   manifest unchanged, including any opaque external data-source `configRefs`
 

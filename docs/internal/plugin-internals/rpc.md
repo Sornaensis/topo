@@ -82,7 +82,7 @@ without treating a transport write as consumer-applied state.
 | `sendWorldChanged` | `world_changed` | One-way notification after save/load/unload changes. |
 | `sendHeartbeat` | `heartbeat` → `heartbeat` | Liveness probe with timeout. |
 | `checkHealth` | `health_check` → `health_status` | Runtime health probe. |
-| `invokeGenerator` | `invoke_generator` → `generator_result` | Sends terrain payload and current params; accepts interim progress/log. |
+| `invokeGenerator` | `invoke_generator` → `generator_result` | Sends capability-scoped terrain input and current params; accepts interim progress/log. |
 | `invokeSimulation` | `invoke_simulation` → `simulation_result` | Sends capability-scoped terrain/overlay payloads; accepts interim progress/log. |
 | `queryResource` | `query_resource` → `query_result` | Host query into plugin-owned data resource. |
 | `mutateResource` | `mutate_resource` → `mutate_result` | Host mutation into plugin-owned data resource. |
@@ -100,14 +100,19 @@ without treating a transport write as consumer-applied state.
 - `stageName = rmName`;
 - `stageSeedTag = "plugin:" <> rmName`;
 - `stageOverlayProduces = Just rmName` when the manifest owns an overlay;
-- `stageRun` encodes the current world with `terrainWorldToPayload`, sends
-  `invoke_generator`, merges returned terrain with `applyGeneratorTerrainValue`,
-  and applies optional overlay payloads only for overlay-owning manifests.
+- `stageRun` sends `invoke_generator` with current terrain input only when the
+  manifest has `readTerrain` or `readWorld`; otherwise the terrain input is
+  `null`.
+- Returned `generator_result.terrain` is merged with
+  `applyGeneratorTerrainValue` because generator terrain output is implicit in
+  `generator` participation and does not require `writeTerrain` or `writeWorld`.
+- Optional generator overlay payloads are applied only when the manifest owns an
+  overlay and has `writeOverlay` or `writeWorld`.
 
 Generator payload delivery is capability-scoped by the manifest/SDK contract:
-plugins should request only the capabilities their callbacks require, and
-returned payloads are merged through typed terrain/overlay decoders rather than
-through ad-hoc JSON mutation.
+plugins should request only the input/overlay capabilities their callbacks
+require, and returned payloads are merged through typed terrain/overlay decoders
+rather than through ad-hoc JSON mutation.
 
 ## Simulation integration
 
@@ -117,7 +122,9 @@ through ad-hoc JSON mutation.
 - `SimNodeWriter` when `manifestWritesTerrain` sees `writeTerrain` or
   `writeWorld`.
 
-The simulation payload policy is derived from manifest capabilities:
+`writeTerrain`/`writeWorld` selects simulation terrain-writer nodes only; it is
+not required for generator terrain output. The simulation payload policy is
+derived from manifest capabilities:
 
 | Capability condition | Payload behavior |
 | --- | --- |

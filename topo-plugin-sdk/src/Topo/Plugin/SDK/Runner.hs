@@ -146,7 +146,9 @@ toRPCParamSpec pd = RPCParamSpec
 --
 -- Capabilities are safely inferred from the plugin's declared generator,
 -- simulation, and data resources, then merged with explicit capabilities from
--- 'pdCapabilities'.
+-- 'pdCapabilities'. Generator terrain output is implicit in generator
+-- participation; @writeTerrain@/@writeWorld@ are for simulation terrain
+-- writers.
 generateManifest :: PluginDef -> RPCManifest
 generateManifest pd = RPCManifest
   { rmManifestVersion = manifestV3
@@ -198,10 +200,15 @@ sdkCapabilities pd = nub (inferCapabilities pd <> pdCapabilities pd)
 
 -- | Infer safe capabilities from the plugin definition.
 --
--- Terrain writes are intentionally not inferred from the mere presence of a
--- simulation callback: ordinary simulation plugins usually update only their
--- owned overlay. Plugins that return terrain writes should request
--- 'CapWriteTerrain' explicitly via 'pdCapabilities'.
+-- Generator and simulation participation infer terrain input access. Generator
+-- terrain output is implicit in 'pdGenerator' participation, so it never needs
+-- inferred 'CapWriteTerrain' or 'CapWriteWorld'. Terrain writes are
+-- intentionally not inferred from the mere presence of a simulation callback:
+-- ordinary simulation plugins usually update only their owned overlay. Plugins
+-- that return simulation terrain writes should request 'CapWriteTerrain'
+-- explicitly via 'pdCapabilities'. Generator-only plugins that return overlay
+-- output should explicitly request 'CapWriteOverlay'; manifests that already
+-- have 'CapWriteWorld' also satisfy the host overlay-write check.
 inferCapabilities :: PluginDef -> [RPCCapability]
 inferCapabilities pd = concat
   [ [CapLog]

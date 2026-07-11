@@ -16,7 +16,11 @@ PluginM = ReaderT PluginEnv (StateT PluginState (ExceptT PluginError IO))
 
 ## Capabilities
 
-Operations are gated by declared capabilities:
+Operations are gated by declared capabilities. Generator terrain output is
+implicit in `generator` participation, `readTerrain`/`readWorld` controls terrain
+input delivery, `writeTerrain`/`writeWorld` selects simulation terrain writers,
+and generator or simulation overlay output requires `writeOverlay` or
+`writeWorld`.
 
 | Capability | Operations |
 |------------|-----------|

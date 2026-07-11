@@ -226,7 +226,7 @@ arrives.
 | `stage_id` | Canonical stage ID, normally `plugin:<manifest.name>`. |
 | `seed` | Deterministic generation seed supplied by the host path. |
 | `config` | Plugin parameter map keyed by manifest/SDK parameter name. |
-| `terrain` | Capability-scoped terrain payload from `terrainWorldToPayload`. |
+| `terrain` | Terrain input payload from `terrainWorldToPayload` when the manifest has `readTerrain` or `readWorld`; otherwise `null`. |
 
 ### `generator_result`
 
@@ -239,8 +239,10 @@ arrives.
 ```
 
 `terrain` is applied back to the world with `applyGeneratorTerrainValue`.
-`overlay` is optional and only meaningful for plugins that own an overlay.
-`metadata` is optional opaque JSON.
+Generator terrain output is implicit in `generator` participation and does not
+require `writeTerrain` or `writeWorld`. `overlay` is optional and only
+meaningful for plugins that own an overlay, and applying it requires
+`writeOverlay` or `writeWorld`. `metadata` is optional opaque JSON.
 
 ### `invoke_simulation`
 
@@ -271,7 +273,9 @@ arrives.
 
 Simulation plugins that return overlay updates must declare `writeOverlay` (or
 `writeWorld`). Plugins that return `terrain_writes` must also declare
-`writeTerrain` (or `writeWorld`) so the host inserts them as terrain writers.
+`writeTerrain` (or `writeWorld`) so the host inserts them as terrain writers;
+these write capabilities select simulation terrain writers and are not required
+for generator terrain output.
 
 ### `simulation_result`
 
