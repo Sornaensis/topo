@@ -7,6 +7,7 @@ module Actor.PluginManager.ExternalDataSourceBroker
   ) where
 
 import Control.Monad (foldM)
+import Data.IORef (writeIORef)
 import Data.Aeson (Value(..), object, (.=))
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
@@ -277,29 +278,31 @@ bindingToGrant st binding = do
   ref <- findRef binding consumer
   source <- find ((== desbSource binding) . redsdName) (rmExternalDataSources (lpManifest provider))
   grant <- find ((== desbGrant binding) . redsgName) (redsdGrants source)
-  let sendable = consumerGrantSendable st consumer provider
+  let key = grantKey binding
+      sendable = consumerGrantSendable st consumer provider key
   Just ExternalDataSourceGrantBrokerState
-    { edsgbsKey = grantKey binding
+    { edsgbsKey = key
     , edsgbsRequired = desbRequired binding
     , edsgbsMessage = grantMessage binding ref grant
     , edsgbsConsumerReadyAt = plsUpdatedAt (lpLifecycle consumer)
     , edsgbsProviderReadyAt = plsUpdatedAt (lpLifecycle provider)
     , edsgbsState = if sendable then ExternalDataSourceGrantPending else ExternalDataSourceGrantUnavailable
-    , edsgbsReason = if sendable then Nothing else Just (unsendableGrantReason st consumer provider)
+    , edsgbsReason = if sendable then Nothing else Just (unsendableGrantReason st consumer provider key)
     , edsgbsGrantResult = Nothing
     , edsgbsRevokeResult = Nothing
     }
 
-consumerGrantSendable :: PluginManagerState -> LoadedPlugin -> LoadedPlugin -> Bool
-consumerGrantSendable st consumer provider =
+consumerGrantSendable :: PluginManagerState -> LoadedPlugin -> LoadedPlugin -> ExternalDataSourceGrantKey -> Bool
+consumerGrantSendable st consumer provider key =
   not (Set.member (lpName consumer) (pmsDisabledPlugins st))
     && not (Set.member (lpName provider) (pmsDisabledPlugins st))
     && pluginConnectionBrokerable consumer
     && pluginConnectionBrokerable provider
     && maybe False (const True) (lpConnection consumer)
+    && not (consumerExternalDataSourceDataFailureBlocksGrant key consumer)
 
-unsendableGrantReason :: PluginManagerState -> LoadedPlugin -> LoadedPlugin -> Text
-unsendableGrantReason st consumer provider
+unsendableGrantReason :: PluginManagerState -> LoadedPlugin -> LoadedPlugin -> ExternalDataSourceGrantKey -> Text
+unsendableGrantReason st consumer provider key
   | Set.member (lpName provider) (pmsDisabledPlugins st) =
       "provider plugin '" <> lpName provider <> "' is disabled"
   | Set.member (lpName consumer) (pmsDisabledPlugins st) =
@@ -308,7 +311,17 @@ unsendableGrantReason st consumer provider
       "provider plugin '" <> lpName provider <> "' is not brokerable"
   | not (pluginConnectionBrokerable consumer) =
       "consumer plugin '" <> lpName consumer <> "' is not brokerable"
+  | consumerExternalDataSourceDataFailureBlocksGrant key consumer =
+      fromMaybe "consumer external data-source data operation failed" (plsErrorMessage (lpLifecycle consumer))
   | otherwise = "consumer connection is unavailable"
+
+consumerExternalDataSourceDataFailureBlocksGrant :: ExternalDataSourceGrantKey -> LoadedPlugin -> Bool
+consumerExternalDataSourceDataFailureBlocksGrant key consumer =
+  plsErrorCode lifecycle == Just "external_data_source_degraded"
+    && plsBlockingDependency lifecycle == Just (grantKeyDependency key)
+    && maybe False ("external data-source data operation failed" `Text.isInfixOf`) (plsErrorMessage lifecycle)
+  where
+    lifecycle = lpLifecycle consumer
 
 consumerUnbrokerableReasonForKey :: ExternalDataSourceGrantKey -> Text -> Bool
 consumerUnbrokerableReasonForKey key reason =
@@ -416,13 +429,14 @@ sendOneGrant st grantState
                 if edsgbsRequired grantState
                   then blockConsumer key reason stWithDiagnostic
                   else degradeConsumer key reason stWithDiagnostic
-          Left err ->
+          Left err -> do
+            clearBrokerTimeoutRuntimeFailure conn err
             let reasonPrefix = if edsgbsRequired grantState
                   then "failed to send required external data-source grant: "
                   else "failed to send optional external data-source grant: "
                 reason = reasonPrefix <> rpcErrorText err
                 stWithDiagnostic = recordGrantDiagnostic ExternalDataSourceGrantFailed (Just reason) grantState pendingSt
-            in if edsgbsRequired grantState
+            if edsgbsRequired grantState
               then blockConsumer key reason stWithDiagnostic
               else degradeConsumer key reason stWithDiagnostic
   where
@@ -595,14 +609,21 @@ revokeOneWithReason reason st grantState = do
               if edsgbsRequired grantState
                 then blockConsumer key failureReason failedSt
                 else degradeConsumer key failureReason failedSt
-        Left err ->
+        Left err -> do
+          clearBrokerTimeoutRuntimeFailure conn err
           let failureReason = if edsgbsRequired grantState
                 then "failed to revoke required external data-source grant: " <> rpcErrorText err
                 else "failed to revoke optional external data-source grant: " <> rpcErrorText err
               failedSt = recordGrantDiagnostic ExternalDataSourceRevokeFailed (Just failureReason) grantState pendingSt
-          in if edsgbsRequired grantState
+          if edsgbsRequired grantState
             then blockConsumer key failureReason failedSt
             else degradeConsumer key failureReason failedSt
+
+clearBrokerTimeoutRuntimeFailure :: RPCConnection -> RPCError -> IO ()
+clearBrokerTimeoutRuntimeFailure conn err =
+  case err of
+    RPCTimeout _ -> writeIORef (rpcRuntimeFailure conn) Nothing
+    _ -> pure ()
 
 revocationMessage :: Text -> ExternalDataSourceGrantBrokerState -> RPCExternalDataSourceGrantRevocation
 revocationMessage reason grantState = RPCExternalDataSourceGrantRevocation

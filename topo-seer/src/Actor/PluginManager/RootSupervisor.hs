@@ -47,6 +47,8 @@ import Actor.PluginManager.PipelineIntegrator
 import Actor.PluginManager.PluginSupervisor
   ( disconnectPlugin
   , handlePluginRuntimeFailure
+  , markExternalDataSourceBlocked
+  , markExternalDataSourceDegraded
   , markPluginStarting
   , markPluginStopping
   , observePluginRuntime
@@ -67,7 +69,10 @@ import Actor.PluginManager.SimulationIntegrator
   , notifyPluginsWorldChanged
   )
 import Actor.PluginManager.Types
-  ( LoadedPlugin(..)
+  ( ExternalDataSourceGrantBrokerPhase(..)
+  , ExternalDataSourceGrantBrokerState(..)
+  , ExternalDataSourceGrantKey(..)
+  , LoadedPlugin(..)
   , PluginLifecycleSnapshot(..)
   , PluginLifecycleState(..)
   , PluginManagerState(..)
@@ -86,11 +91,20 @@ import Topo.Plugin.RPC
   , MutateResult
   , QueryResource
   , QueryResult
+  , RPCConnection(..)
+  , RPCExternalDataSourceAccessMode(..)
+  , RPCExternalDataSourceAvailability(..)
+  , RPCExternalDataSourceHealth(..)
+  , RPCExternalDataSourceRef(..)
+  , RPCExternalDataSourceStatus(..)
+  , RPCExternalDataSourceStatusState(..)
   , dataResourceFailureFromText
   , drfCode
+  , externalDataSourceStatusBlocksStartup
   )
 import Topo.Plugin.RPC.Manifest
-  ( rmParameters
+  ( rmExternalDataSourceRefs
+  , rmParameters
   , validateRPCParamUpdate
   )
 
@@ -300,10 +314,133 @@ markRuntimeFailureOnConnectedDataError
   -> IO PluginManagerState
 markRuntimeFailureOnConnectedDataError pluginName errorCode result st =
   case result of
-    Left err
-      | dataResourceErrorMarksRuntimeFailure err ->
-          markRuntimeFailureOnConnectedError pluginName errorCode result st
+    Left err ->
+      case drfCode (dataResourceFailureFromText err) of
+        ExternalDataSourceUnavailable ->
+          markExternalDataSourceUnavailableOnConnectedDataError pluginName errorCode err st
+        code
+          | dataResourceErrorCodeMarksRuntimeFailure code ->
+              markRuntimeFailureOnConnectedError pluginName errorCode result st
+        _ -> pure st
     _ -> pure st
+
+markExternalDataSourceUnavailableOnConnectedDataError
+  :: Text
+  -> Text
+  -> Text
+  -> PluginManagerState
+  -> IO PluginManagerState
+markExternalDataSourceUnavailableOnConnectedDataError pluginName errorCode err st =
+  case Map.lookup pluginName (pmsPlugins st) of
+    Just lp@LoadedPlugin { lpStatus = PluginConnected, lpConnection = Just _ } ->
+      case externalDataSourceFailureRef lp of
+        Just (ref, True) -> do
+          let reason = externalDataSourceDataErrorReason err
+              lpWithUnavailableRef = markLoadedPluginExternalRefUnavailable ref reason lp
+          lp' <- markExternalDataSourceBlocked (externalDataSourceRefDependency ref) reason lpWithUnavailableRef
+          let stWithUnavailableGrant = markExternalDataSourceGrantUnavailableForRef
+                (lpName lp')
+                ref
+                reason
+                (plsUpdatedAt (lpLifecycle lp'))
+                st
+          pure stWithUnavailableGrant { pmsPlugins = Map.insert pluginName lp' (pmsPlugins stWithUnavailableGrant) }
+        Just (ref, False) -> do
+          let reason = externalDataSourceDataErrorReason err
+              lpWithUnavailableRef = markLoadedPluginExternalRefUnavailable ref reason lp
+          lp' <- markExternalDataSourceDegraded (externalDataSourceRefDependency ref) reason lpWithUnavailableRef
+          let stWithUnavailableGrant = markExternalDataSourceGrantUnavailableForRef
+                (lpName lp')
+                ref
+                reason
+                (plsUpdatedAt (lpLifecycle lp'))
+                st
+          pure stWithUnavailableGrant { pmsPlugins = Map.insert pluginName lp' (pmsPlugins stWithUnavailableGrant) }
+        Nothing -> markRuntimeFailureOnConnectedError pluginName errorCode (Left err) st
+    _ -> pure st
+
+externalDataSourceFailureRef :: LoadedPlugin -> Maybe (RPCExternalDataSourceRef, Bool)
+externalDataSourceFailureRef lp =
+  case (hardRequiredRefs, hardRefs, requiredRefs, refs) of
+    (ref:_, _, _, _) -> Just (ref, True)
+    ([], ref:_, _, _) -> Just (ref, redsrRequired ref)
+    ([], [], ref:_, _) -> Just (ref, True)
+    ([], [], [], ref:_) -> Just (ref, False)
+    _ -> Nothing
+  where
+    refs = rmExternalDataSourceRefs (lpManifest lp)
+    hardRefs = filter (externalDataSourceStatusBlocksStartup . redsrStatus) refs
+    hardRequiredRefs = filter redsrRequired hardRefs
+    requiredRefs = filter redsrRequired refs
+
+markLoadedPluginExternalRefUnavailable :: RPCExternalDataSourceRef -> Text -> LoadedPlugin -> LoadedPlugin
+markLoadedPluginExternalRefUnavailable targetRef reason lp = lp { lpManifest = manifest', lpConnection = fmap syncConn (lpConnection lp) }
+  where
+    manifest = lpManifest lp
+    refs = map markRef (rmExternalDataSourceRefs manifest)
+    manifest' = manifest { rmExternalDataSourceRefs = refs }
+    syncConn conn = conn { rpcManifest = manifest' }
+    markRef ref
+      | externalDataSourceRefMatches targetRef ref = ref { redsrStatus = externalDataSourceQueryFailureStatus ref reason }
+      | otherwise = ref
+
+markExternalDataSourceGrantUnavailableForRef
+  :: Text
+  -> RPCExternalDataSourceRef
+  -> Text
+  -> UTCTime
+  -> PluginManagerState
+  -> PluginManagerState
+markExternalDataSourceGrantUnavailableForRef consumerName ref reason consumerReadyAt st =
+  st { pmsExternalDataSourceGrants = Map.mapWithKey markGrant grants }
+  where
+    grants = pmsExternalDataSourceGrants st
+    hasMatchingGrant = any (externalDataSourceGrantKeyMatchesRef consumerName ref) (Map.keys grants)
+    fallbackToConsumerGrants = not hasMatchingGrant && not (externalDataSourceStatusBlocksStartup (redsrStatus ref))
+    markGrant key grantState
+      | externalDataSourceGrantKeyMatchesRef consumerName ref key || fallbackMatchesConsumer key = grantState
+          { edsgbsState = ExternalDataSourceGrantFailed
+          , edsgbsReason = Just reason
+          , edsgbsConsumerReadyAt = consumerReadyAt
+          }
+      | otherwise = grantState
+    fallbackMatchesConsumer key = fallbackToConsumerGrants && edsgkConsumer key == consumerName
+
+externalDataSourceQueryFailureStatus :: RPCExternalDataSourceRef -> Text -> RPCExternalDataSourceStatus
+externalDataSourceQueryFailureStatus ref reason = (redsrStatus ref)
+  { redssState = ExternalStatusUnavailable
+  , redssMessage = Just reason
+  , redssProviderId = redsrProvider ref
+  , redssAvailability = Just ExternalAvailabilityUnavailable
+  , redssHealth = Just ExternalHealthUnhealthy
+  , redssAccessMode = Just ExternalAccessModeDisabled
+  , redssCapabilityScope = []
+  }
+
+externalDataSourceRefMatches :: RPCExternalDataSourceRef -> RPCExternalDataSourceRef -> Bool
+externalDataSourceRefMatches expected actual =
+  redsrName expected == redsrName actual
+    && redsrSource expected == redsrSource actual
+    && redsrProvider expected == redsrProvider actual
+    && redsrGrant expected == redsrGrant actual
+
+externalDataSourceGrantKeyMatchesRef :: Text -> RPCExternalDataSourceRef -> ExternalDataSourceGrantKey -> Bool
+externalDataSourceGrantKeyMatchesRef consumerName ref key =
+  edsgkConsumer key == consumerName
+    && edsgkRef key == redsrName ref
+    && edsgkSource key == redsrSource ref
+    && maybe True (== edsgkProvider key) (redsrProvider ref)
+    && maybe True (== edsgkGrant key) (redsrGrant ref)
+
+externalDataSourceRefDependency :: RPCExternalDataSourceRef -> Text
+externalDataSourceRefDependency ref =
+  maybe "unresolved" id (redsrProvider ref)
+    <> ":" <> redsrSource ref
+    <> maybe "" (":" <>) (redsrGrant ref)
+
+externalDataSourceDataErrorReason :: Text -> Text
+externalDataSourceDataErrorReason err =
+  "external data-source data operation failed: " <> err
 
 markRuntimeFailureOnConnectedError
   :: Text
@@ -318,11 +455,10 @@ markRuntimeFailureOnConnectedError pluginName errorCode result st =
       pure st { pmsPlugins = Map.insert pluginName lp' (pmsPlugins st) }
     _ -> pure st
 
-dataResourceErrorMarksRuntimeFailure :: Text -> Bool
-dataResourceErrorMarksRuntimeFailure err =
-  case drfCode (dataResourceFailureFromText err) of
+dataResourceErrorCodeMarksRuntimeFailure :: DataResourceErrorCode -> Bool
+dataResourceErrorCodeMarksRuntimeFailure code =
+  case code of
     PluginUnavailable -> True
-    ExternalDataSourceUnavailable -> True
     DataResourceTimeout -> True
     DataResourceInternalError -> True
     _ -> False

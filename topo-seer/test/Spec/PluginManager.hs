@@ -160,10 +160,12 @@ import Topo.Plugin.RPC.DataService
   ( DataMutation(..)
   , DataQuery(..)
   , DataRecord(..)
+  , DataResourceErrorCode(..)
   , MutateResource(..)
   , MutateResult(..)
   , QueryResource(..)
   , QueryResult(..)
+  , dataResourceErrorRPCCode
   )
 import Topo.Plugin.RPC.Protocol
   ( Handshake(..)
@@ -874,6 +876,65 @@ spec = describe "PluginManager" $ do
               expectBrokerOperationDiagnostics "grant_failed" (Just False) (Just False) (Just "failed") (Just "consumer rejected grant") (redssDiagnostics (redsrStatus ref))
             other -> expectationFailure ("expected one optional consumed ref, got " <> show other)
 
+  it "blocks required consumers when data queries report external data-source unavailable" $
+    withExecutablePluginDirs
+      [ (externalConsumerPluginName, externalConsumerManifestJSON, "external-consumer-query-external-unavailable")
+      , (externalProviderPluginName, externalProviderManifestJSON, "external-provider")
+      ] $ withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        ready <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses externalConsumerPluginName ready `shouldSatisfy` elem PluginConnected
+        pluginLifecycleStates externalConsumerPluginName ready `shouldSatisfy` elem LifecycleReady
+        queryFailure <- expectWithin "required external unavailable query" $
+          queryPluginResource pluginManagerHandle externalConsumerPluginNameText externalBindingQuery
+        expectExternalDataSourceUnavailableError "required external unavailable query" queryFailure
+        observed <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses externalConsumerPluginName observed `shouldSatisfy` anyPluginErrorContaining "external data-source data operation failed"
+        pluginLifecycleStates externalConsumerPluginName observed `shouldSatisfy` elem LifecycleFailed
+        pluginLifecycleErrorCodes externalConsumerPluginName observed `shouldSatisfy` elem (Just "external_data_source_blocked")
+        snapshots <- getPluginExternalDataSources pluginManagerHandle
+        expectConsumerRefUnavailable snapshots
+
+  it "degrades optional consumers when data queries report external data-source unavailable" $
+    withExecutablePluginDirs
+      [ (externalConsumerPluginName, externalOptionalConsumerManifestJSON, "external-consumer-query-external-unavailable")
+      , (externalProviderPluginName, externalProviderManifestJSON, "external-provider")
+      ] $ withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        ready <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses externalConsumerPluginName ready `shouldSatisfy` elem PluginConnected
+        pluginLifecycleStates externalConsumerPluginName ready `shouldSatisfy` elem LifecycleReady
+        queryFailure <- expectWithin "optional external unavailable query" $
+          queryPluginResource pluginManagerHandle externalConsumerPluginNameText externalBindingQuery
+        expectExternalDataSourceUnavailableError "optional external unavailable query" queryFailure
+        observed <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses externalConsumerPluginName observed `shouldSatisfy` elem PluginConnected
+        pluginLifecycleStates externalConsumerPluginName observed `shouldSatisfy` elem LifecycleDegraded
+        pluginLifecycleErrorCodes externalConsumerPluginName observed `shouldSatisfy` elem (Just "external_data_source_degraded")
+        snapshots <- getPluginExternalDataSources pluginManagerHandle
+        expectConsumerRefUnavailable snapshots
+
+  it "keeps mixed required and optional query unavailability degraded instead of blocked" $
+    withExecutablePluginDirs
+      [ (externalConsumerPluginName, externalMixedConsumerManifestJSON, "external-consumer")
+      , (externalProviderPluginName, externalProviderManifestJSON, "external-provider")
+      ] $ withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        ready <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses externalConsumerPluginName ready `shouldSatisfy` elem PluginConnected
+        pluginLifecycleStates externalConsumerPluginName ready `shouldSatisfy` elem LifecycleDegraded
+        pluginLifecycleErrorCodes externalConsumerPluginName ready `shouldSatisfy` elem (Just "external_data_source_degraded")
+        queryFailure <- expectWithin "mixed required optional unavailable query" $
+          queryPluginResource pluginManagerHandle externalConsumerPluginNameText externalBindingQuery
+        expectExternalDataSourceUnavailableError "mixed required optional unavailable query" queryFailure
+        observed <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses externalConsumerPluginName observed `shouldSatisfy` elem PluginConnected
+        pluginLifecycleStates externalConsumerPluginName observed `shouldSatisfy` elem LifecycleDegraded
+        pluginLifecycleErrorCodes externalConsumerPluginName observed `shouldSatisfy` elem (Just "external_data_source_degraded")
+
   it "degrades optional consumers when providers are disabled after startup" $
     withExecutablePluginDirs
       [ (externalConsumerPluginName, externalOptionalConsumerManifestJSON, "external-consumer")
@@ -951,6 +1012,33 @@ spec = describe "PluginManager" $ do
         operationsAfterRetry <- readExternalConsumerOperationLog
         operationsAfterRetry `shouldBe` replicate 2 (externalBrokerOperationLogLine "grant")
 
+  it "degrades optional consumers when external data-source grant ACKs time out" $
+    withExecutablePluginDirs
+      [ (externalConsumerPluginName, externalOptionalConsumerManifestJSON, "external-consumer-timeout-grant-once")
+      , (externalProviderPluginName, externalProviderManifestJSON, "external-provider")
+      ] $ withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        timedOut <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses externalProviderPluginName timedOut `shouldSatisfy` elem PluginConnected
+        pluginStatuses externalConsumerPluginName timedOut `shouldSatisfy` elem PluginConnected
+        pluginLifecycleStates externalConsumerPluginName timedOut `shouldSatisfy` elem LifecycleDegraded
+        pluginLifecycleErrorCodes externalConsumerPluginName timedOut `shouldSatisfy` elem (Just "external_data_source_degraded")
+        expectConsumerDiagnosticBrokerState Set.empty "grant_failed" Nothing Nothing Nothing Nothing timedOut
+        operationsAfterTimeout <- readExternalConsumerOperationLog
+        operationsAfterTimeout `shouldBe` [externalBrokerOperationLogLine "grant"]
+        timeoutSnapshots <- getPluginExternalDataSources pluginManagerHandle
+        expectUnavailableConsumerBrokerSnapshot "grant_failed" "timed out" timeoutSnapshots
+        refreshManifests pluginManagerHandle
+        recovered <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses externalProviderPluginName recovered `shouldSatisfy` elem PluginConnected
+        pluginStatuses externalConsumerPluginName recovered `shouldSatisfy` elem PluginConnected
+        pluginLifecycleStates externalConsumerPluginName recovered `shouldSatisfy` elem LifecycleReady
+        expectConsumerDiagnosticBrokerState Set.empty "grant_acked" (Just True) (Just True) (Just "applied") Nothing recovered
+        operationsAfterRetry <- readExternalConsumerOperationLog
+        operationsAfterRetry `shouldSatisfy` all (== externalBrokerOperationLogLine "grant")
+        length operationsAfterRetry `shouldSatisfy` (>= (2 :: Int))
+
   it "retries timed-out revokes before regranting stale external data-source bindings" $
     withExecutablePluginDirs
       [ (externalConsumerPluginName, externalConsumerManifestJSON, "external-consumer-timeout-revoke-once")
@@ -970,6 +1058,8 @@ spec = describe "PluginManager" $ do
           [ externalBrokerOperationLogLine "grant"
           , externalBrokerOperationLogLine "revoke"
           ]
+        timeoutSnapshots <- getPluginExternalDataSources pluginManagerHandle
+        expectUnavailableConsumerBrokerSnapshot "revoke_failed" "timed out" timeoutSnapshots
         setDisabledPlugins pluginManagerHandle Set.empty
         refreshManifests pluginManagerHandle
         recovered <- getLoadedPlugins pluginManagerHandle
@@ -983,6 +1073,35 @@ spec = describe "PluginManager" $ do
           , externalBrokerOperationLogLine "revoke"
           , externalBrokerOperationLogLine "grant"
           ]
+
+  it "keeps optional timed-out revokes degraded and prevents stale bindings from reading usable" $
+    withExecutablePluginDirs
+      [ (externalConsumerPluginName, externalOptionalConsumerManifestJSON, "external-consumer-timeout-revoke-once")
+      , (externalProviderPluginName, externalProviderManifestJSON, "external-provider")
+      ] $ withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        ready <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses externalConsumerPluginName ready `shouldSatisfy` elem PluginConnected
+        pluginLifecycleStates externalConsumerPluginName ready `shouldSatisfy` elem LifecycleReady
+        grantedBinding <- expectRight "initial optional granted binding query before revoke timeout" =<<
+          expectWithin "initial optional granted binding query before revoke timeout" (queryPluginResource pluginManagerHandle externalConsumerPluginNameText externalBindingQuery)
+        expectBindingStatus "granted" grantedBinding
+        setDisabledPlugins pluginManagerHandle (Set.singleton externalProviderPluginNameText)
+        operationsAfterTimeout <- waitForExternalConsumerOperationLogLength 2
+        operationsAfterTimeout `shouldBe`
+          [ externalBrokerOperationLogLine "grant"
+          , externalBrokerOperationLogLine "revoke"
+          ]
+        staleQuery <- expectWithin "optional stale binding query after revoke timeout" $
+          queryPluginResource pluginManagerHandle externalConsumerPluginNameText externalBindingQuery
+        expectExternalDataSourceUnavailableError "optional stale binding query after revoke timeout" staleQuery
+        disabled <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses externalConsumerPluginName disabled `shouldSatisfy` elem PluginConnected
+        pluginLifecycleStates externalConsumerPluginName disabled `shouldSatisfy` elem LifecycleDegraded
+        pluginLifecycleErrorCodes externalConsumerPluginName disabled `shouldSatisfy` elem (Just "external_data_source_degraded")
+        timeoutSnapshots <- getPluginExternalDataSources pluginManagerHandle
+        expectConsumerRefUnavailable timeoutSnapshots
 
   it "orders revokes before regrants across provider disable/re-enable and status replacement" $
     withExecutablePluginDirs
@@ -1803,6 +1922,31 @@ expectRejectedRevokeSnapshot snapshots =
           (redssDiagnostics (redsrStatus ref))
       other -> expectationFailure ("expected one rejected revoke consumed ref, got " <> show other)
 
+expectUnavailableConsumerBrokerSnapshot :: Text -> Text -> [WorldExternalDataSourceSnapshot] -> Expectation
+expectUnavailableConsumerBrokerSnapshot expectedPhase expectedMessageNeedle snapshots =
+  case findExternalSnapshot externalConsumerPluginNameText snapshots of
+    Nothing -> expectationFailure "missing unavailable consumer snapshot"
+    Just snapshot -> case wedssConsumedRefs snapshot of
+      [ref] -> do
+        redssState (redsrStatus ref) `shouldBe` ExternalStatusUnavailable
+        redssMessage (redsrStatus ref) `shouldSatisfy` maybe False (Text.isInfixOf expectedMessageNeedle)
+        expectBrokerOperationDiagnostics expectedPhase Nothing Nothing Nothing Nothing (redssDiagnostics (redsrStatus ref))
+      other -> expectationFailure ("expected one unavailable consumed ref, got " <> show other)
+
+expectConsumerRefUnavailable :: [WorldExternalDataSourceSnapshot] -> Expectation
+expectConsumerRefUnavailable snapshots =
+  case findExternalSnapshot externalConsumerPluginNameText snapshots of
+    Nothing -> expectationFailure "missing consumer snapshot"
+    Just snapshot -> case wedssConsumedRefs snapshot of
+      [ref] -> redssState (redsrStatus ref) `shouldBe` ExternalStatusUnavailable
+      other -> expectationFailure ("expected one consumed ref, got " <> show other)
+
+expectExternalDataSourceUnavailableError :: Show a => String -> Either Text a -> Expectation
+expectExternalDataSourceUnavailableError label result =
+  case result of
+    Left err -> err `shouldSatisfy` Text.isInfixOf "external_data_source_unavailable"
+    Right value -> expectationFailure (label <> " unexpectedly succeeded: " <> show value)
+
 expectBrokerOperationDiagnostics
   :: Text
   -> Maybe Bool
@@ -2181,7 +2325,7 @@ normalizeFixtureMode :: String -> String
 normalizeFixtureMode = takeWhile (`notElem` ['\r', '\n'])
 
 fixtureUsage :: IO a
-fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|auth-missing|auth-mismatch|malformed-json|bad-handshake|early-exit|slow|wait-for-start-signal|handshake-stall|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|exit-on-generator|exit-on-simulation|external-provider|external-provider-controlled-status|external-consumer|external-consumer-reject-grant|external-consumer-reject-revoke|external-consumer-timeout-grant-once|external-consumer-timeout-revoke-once|external-consumer-crash-after-grant-ack|windows-process-tree|windows-heartbeat-child>"
+fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|auth-missing|auth-mismatch|malformed-json|bad-handshake|early-exit|slow|wait-for-start-signal|handshake-stall|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|exit-on-generator|exit-on-simulation|external-provider|external-provider-controlled-status|external-consumer|external-consumer-reject-grant|external-consumer-reject-revoke|external-consumer-timeout-grant-once|external-consumer-timeout-revoke-once|external-consumer-query-external-unavailable|external-consumer-crash-after-grant-ack|windows-process-tree|windows-heartbeat-child>"
 
 runFixtureMode :: String -> IO ()
 runFixtureMode = \case
@@ -2213,6 +2357,7 @@ runFixtureMode = \case
   "external-consumer-reject-revoke" -> runExternalConsumerRejectRevokeFixture
   "external-consumer-timeout-grant-once" -> runExternalConsumerTimeoutGrantOnceFixture
   "external-consumer-timeout-revoke-once" -> runExternalConsumerTimeoutRevokeOnceFixture
+  "external-consumer-query-external-unavailable" -> runExternalConsumerQueryExternalUnavailableFixture
   "external-consumer-crash-after-grant-ack" -> runExternalConsumerCrashAfterGrantAckFixture
   "windows-process-tree" -> runWindowsProcessTreeFixture
   "windows-heartbeat-child" -> runWindowsHeartbeatChild
@@ -2479,25 +2624,28 @@ malformedExternalStatusEnvelope requestId = RPCEnvelope
   }
 
 runExternalConsumerFixture :: IO ()
-runExternalConsumerFixture = runExternalConsumerFixtureWith False False False False False
+runExternalConsumerFixture = runExternalConsumerFixtureWith False False False False False False
 
 runExternalConsumerRejectGrantFixture :: IO ()
-runExternalConsumerRejectGrantFixture = runExternalConsumerFixtureWith True False False False False
+runExternalConsumerRejectGrantFixture = runExternalConsumerFixtureWith True False False False False False
 
 runExternalConsumerRejectRevokeFixture :: IO ()
-runExternalConsumerRejectRevokeFixture = runExternalConsumerFixtureWith False True False False False
+runExternalConsumerRejectRevokeFixture = runExternalConsumerFixtureWith False True False False False False
 
 runExternalConsumerTimeoutGrantOnceFixture :: IO ()
-runExternalConsumerTimeoutGrantOnceFixture = runExternalConsumerFixtureWith False False True False False
+runExternalConsumerTimeoutGrantOnceFixture = runExternalConsumerFixtureWith False False True False False False
 
 runExternalConsumerTimeoutRevokeOnceFixture :: IO ()
-runExternalConsumerTimeoutRevokeOnceFixture = runExternalConsumerFixtureWith False False False True False
+runExternalConsumerTimeoutRevokeOnceFixture = runExternalConsumerFixtureWith False False False True False False
+
+runExternalConsumerQueryExternalUnavailableFixture :: IO ()
+runExternalConsumerQueryExternalUnavailableFixture = runExternalConsumerFixtureWith False False False False False True
 
 runExternalConsumerCrashAfterGrantAckFixture :: IO ()
-runExternalConsumerCrashAfterGrantAckFixture = runExternalConsumerFixtureWith False False False False True
+runExternalConsumerCrashAfterGrantAckFixture = runExternalConsumerFixtureWith False False False False True False
 
-runExternalConsumerFixtureWith :: Bool -> Bool -> Bool -> Bool -> Bool -> IO ()
-runExternalConsumerFixtureWith rejectGrant rejectRevoke timeoutGrantOnce timeoutRevokeOnce crashAfterGrantAck = do
+runExternalConsumerFixtureWith :: Bool -> Bool -> Bool -> Bool -> Bool -> Bool -> IO ()
+runExternalConsumerFixtureWith rejectGrant rejectRevoke timeoutGrantOnce timeoutRevokeOnce crashAfterGrantAck queryExternalUnavailable = do
   recordExternalStartup externalConsumerPluginName
   connectPluginFromEnvironment "plugin-manager-external-consumer-fixture" stdin stdout >>= \case
     Left _ -> exitFailure
@@ -2553,9 +2701,14 @@ runExternalConsumerFixtureWith rejectGrant rejectRevoke timeoutGrantOnce timeout
                         sendExternalRevokeResult transport envelope revocation (not rejectRevoke)
                         loop transport (if rejectRevoke then bindingStatus else "revoked")
               MsgQueryResource -> do
-                _ <- sendMessage transport (encodeMessage (queryResultEnvelope
-                  (envRequestId envelope)
-                  (QueryResult externalBindingResource [externalBindingRecord bindingStatus] (Just 1))))
+                _ <- if queryExternalUnavailable
+                  then sendMessage transport (encodeMessage (pluginErrorEnvelope
+                    (envRequestId envelope)
+                    (dataResourceErrorRPCCode ExternalDataSourceUnavailable)
+                    "external data-source unavailable during fixture query"))
+                  else sendMessage transport (encodeMessage (queryResultEnvelope
+                    (envRequestId envelope)
+                    (QueryResult externalBindingResource [externalBindingRecord bindingStatus] (Just 1))))
                 loop transport bindingStatus
               MsgShutdown -> closeTransport transport
               _ -> loop transport bindingStatus
@@ -2735,6 +2888,15 @@ readExternalConsumerOperationLog = do
   if exists
     then lines <$> readFile path
     else pure []
+
+waitForExternalConsumerOperationLogLength :: Int -> IO [String]
+waitForExternalConsumerOperationLogLength expected = go (200 :: Int)
+  where
+    go attemptsLeft = do
+      operations <- readExternalConsumerOperationLog
+      if length operations >= expected || attemptsLeft <= 0
+        then pure operations
+        else threadDelay 10000 >> go (attemptsLeft - 1)
 
 externalBrokerOperationLogLine :: Text -> String
 externalBrokerOperationLogLine operation =
@@ -3731,6 +3893,9 @@ externalConsumerManifestJSON = externalConsumerManifestFor externalConsumerPlugi
 externalOptionalConsumerManifestJSON :: BS.ByteString
 externalOptionalConsumerManifestJSON = externalConsumerManifestWithRequiredFor externalConsumerPluginName externalProviderPluginName False
 
+externalMixedConsumerManifestJSON :: BS.ByteString
+externalMixedConsumerManifestJSON = externalMixedConsumerManifestFor externalConsumerPluginName externalProviderPluginName
+
 externalProviderManifestFor :: String -> BS.ByteString
 externalProviderManifestFor name =
   externalProviderManifestWithStatusesFor name (externalReadyStatusJSON name) (externalReadyStatusJSON name)
@@ -3798,7 +3963,33 @@ externalConsumerManifestWithRequiredFor name providerName required = BSC.pack $
     <> "  \"version\": \"0.1.0\",\n"
     <> "  \"runtime\": { \"protocol\": { \"min\": " <> show currentProtocolVersion <> ", \"max\": " <> show currentProtocolVersion <> " } },\n"
     <> "  \"capabilities\": [\"dataRead\"],\n"
-    <> "  \"dataResources\": [\n"
+    <> externalConsumerDataResourcesJSON
+    <> "  \"externalDataSourceRefs\": [\n"
+    <> externalConsumerRefJSON "terrain.catalog" providerName "terrain.catalog" required (externalUnknownStatusJSON providerName) "fixture://consumer/terrain.catalog"
+    <> "  ]"
+    <> externalIntegrationStartPolicy
+    <> "\n}\n"
+
+externalMixedConsumerManifestFor :: String -> String -> BS.ByteString
+externalMixedConsumerManifestFor name providerName = BSC.pack $
+  "{\n"
+    <> "  \"manifestVersion\": 3,\n"
+    <> "  \"name\": \"" <> name <> "\",\n"
+    <> "  \"version\": \"0.1.0\",\n"
+    <> "  \"runtime\": { \"protocol\": { \"min\": " <> show currentProtocolVersion <> ", \"max\": " <> show currentProtocolVersion <> " } },\n"
+    <> "  \"capabilities\": [\"dataRead\"],\n"
+    <> externalConsumerDataResourcesJSON
+    <> "  \"externalDataSourceRefs\": [\n"
+    <> externalConsumerRefJSON "terrain.catalog" providerName "terrain.catalog" True (externalUnknownStatusJSON providerName) "fixture://consumer/terrain.catalog"
+    <> "    ,\n"
+    <> externalConsumerRefJSON "terrain.catalog.optional" "missing-external-provider" "missing.catalog" False (externalUnavailableStatusJSON "missing-external-provider") "fixture://consumer/missing.catalog"
+    <> "  ]"
+    <> externalIntegrationStartPolicy
+    <> "\n}\n"
+
+externalConsumerDataResourcesJSON :: String
+externalConsumerDataResourcesJSON =
+  "  \"dataResources\": [\n"
     <> "    {\n"
     <> "      \"name\": \"source_bindings\",\n"
     <> "      \"label\": \"Source Bindings\",\n"
@@ -3813,24 +4004,23 @@ externalConsumerManifestWithRequiredFor name providerName required = BSC.pack $
     <> "      \"keyField\": \"source_id\"\n"
     <> "    }\n"
     <> "  ],\n"
-    <> "  \"externalDataSourceRefs\": [\n"
-    <> "    {\n"
-    <> "      \"name\": \"terrain.catalog\",\n"
+
+externalConsumerRefJSON :: String -> String -> String -> Bool -> String -> String -> String
+externalConsumerRefJSON refName providerName sourceName required statusJSON binding =
+  "    {\n"
+    <> "      \"name\": \"" <> refName <> "\",\n"
     <> "      \"provider\": \"" <> providerName <> "\",\n"
-    <> "      \"source\": \"terrain.catalog\",\n"
+    <> "      \"source\": \"" <> sourceName <> "\",\n"
     <> "      \"required\": " <> (if required then "true" else "false") <> ",\n"
     <> "      \"access\": [\"read\"],\n"
     <> "      \"resources\": [\"shared_sources\"],\n"
     <> "      \"grant\": \"terrain-catalog-read\",\n"
-    <> "      \"status\": " <> externalUnknownStatusJSON providerName <> ",\n"
-    <> "      \"reference\": { \"binding\": \"fixture://consumer/terrain.catalog\" },\n"
+    <> "      \"status\": " <> statusJSON <> ",\n"
+    <> "      \"reference\": { \"binding\": \"" <> binding <> "\" },\n"
     <> "      \"configRefs\": [\n"
-    <> "        { \"name\": \"terrain-catalog-consumer-binding\", \"origin\": \"deployment\", \"key\": \"fixture.consumer.terrain.catalog\", \"required\": true, \"compatibility\": \"manifest-v3\", \"metadata\": { \"binding\": \"fixture://consumer/terrain.catalog\" } }\n"
+    <> "        { \"name\": \"terrain-catalog-consumer-binding\", \"origin\": \"deployment\", \"key\": \"fixture.consumer.terrain.catalog\", \"required\": true, \"compatibility\": \"manifest-v3\", \"metadata\": { \"binding\": \"" <> binding <> "\" } }\n"
     <> "      ]\n"
     <> "    }\n"
-    <> "  ]"
-    <> externalIntegrationStartPolicy
-    <> "\n}\n"
 
 externalReadyStatusJSON :: String -> String
 externalReadyStatusJSON providerName =

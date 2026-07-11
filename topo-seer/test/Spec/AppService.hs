@@ -1080,6 +1080,8 @@ diagnosticExternalSource = RPCExternalDataSourceDecl
       , redssHealth = Just ExternalHealthHealthy
       , redssAccessMode = Just ExternalAccessModeReadOnly
       , redssCapabilityScope = [ExternalSourceQuery, ExternalSourceHealth]
+      , redssObservedAt = Just appServiceTestTime
+      , redssFresh = True
       }
   , redsdConnection = Nothing
   , redsdConfigRefs = [diagnosticExternalConfig "station-ledger-binding" ExternalConfigProvider]
@@ -1101,6 +1103,8 @@ diagnosticExternalGrant = RPCExternalDataSourceGrant
       , redssHealth = Just ExternalHealthDegraded
       , redssAccessMode = Just ExternalAccessModeReadOnly
       , redssCapabilityScope = [ExternalSourceQuery]
+      , redssObservedAt = Just appServiceTestTime
+      , redssFresh = True
       }
   , redsgReference = Nothing
   , redsgConfigRefs = [diagnosticExternalConfig "stations-read-binding" ExternalConfigProvider]

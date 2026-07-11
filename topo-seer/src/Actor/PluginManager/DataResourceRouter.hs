@@ -33,8 +33,11 @@ import Topo.Plugin.RPC
   , QueryResult(..)
   , RPCConnection(..)
   , RPCError
+  , RPCExternalDataSourceRef(..)
+  , RPCExternalDataSourceStatus(..)
   , RPCManifest(..)
   , dataResourceFailureText
+  , externalDataSourceStatusBlocksStartup
   , mutateResource
   , queryResource
   , rpcErrorDataResourceFailure
@@ -55,13 +58,15 @@ queryPluginDataResource pluginName qr st =
         Nothing -> pure (failureLeft (DataResourceFailure ResourceNotFound ("unknown resource: " <> qrResource qr)))
         Just schema -> case validateQueryResourceRequest schema qr of
           Just failure -> pure (failureLeft failure)
-          Nothing -> do
-            result <- queryResource conn qr
-            case result of
-              Left err -> pure (Left (renderRPCDataResourceError err))
-              Right qResult -> case validateQueryResult schema qr qResult of
-                Just failure -> pure (failureLeft failure)
-                Nothing -> pure (Right qResult)
+          Nothing -> case unavailableExternalDataSourceFailure lp of
+            Just failure -> pure (failureLeft failure)
+            Nothing -> do
+              result <- queryResource conn qr
+              case result of
+                Left err -> pure (Left (renderRPCDataResourceError err))
+                Right qResult -> case validateQueryResult schema qr qResult of
+                  Just failure -> pure (failureLeft failure)
+                  Nothing -> pure (Right qResult)
       _ -> pure (failureLeft (DataResourceFailure PluginUnavailable (pluginUnavailableMessage lp)))
 
 -- | Forward a data mutation to the named plugin without taking ownership
@@ -79,17 +84,37 @@ mutatePluginDataResource pluginName mr st =
         Nothing -> pure (failureLeft (DataResourceFailure ResourceNotFound ("unknown resource: " <> mrResource mr)))
         Just schema -> case validateMutateResourceRequest schema mr of
           Just failure -> pure (failureLeft failure)
-          Nothing -> do
-            result <- mutateResource conn mr
-            case result of
-              Left err -> pure (Left (renderRPCDataResourceError err))
-              Right mResult -> case validateMutateResult schema mr mResult of
-                Just failure -> pure (failureLeft failure)
-                Nothing -> pure (Right mResult)
+          Nothing -> case unavailableExternalDataSourceFailure lp of
+            Just failure -> pure (failureLeft failure)
+            Nothing -> do
+              result <- mutateResource conn mr
+              case result of
+                Left err -> pure (Left (renderRPCDataResourceError err))
+                Right mResult -> case validateMutateResult schema mr mResult of
+                  Just failure -> pure (failureLeft failure)
+                  Nothing -> pure (Right mResult)
       _ -> pure (failureLeft (DataResourceFailure PluginUnavailable (pluginUnavailableMessage lp)))
 
 failureLeft :: DataResourceFailure -> Either Text a
 failureLeft = Left . dataResourceFailureText
+
+unavailableExternalDataSourceFailure :: LoadedPlugin -> Maybe DataResourceFailure
+unavailableExternalDataSourceFailure lp =
+  case filter (externalDataSourceStatusBlocksStartup . redsrStatus) (rmExternalDataSourceRefs (lpManifest lp)) of
+    ref:_ -> Just (DataResourceFailure ExternalDataSourceUnavailable (externalDataSourceUnavailableMessage ref))
+    [] -> Nothing
+
+externalDataSourceUnavailableMessage :: RPCExternalDataSourceRef -> Text
+externalDataSourceUnavailableMessage ref =
+  "external data-source unavailable: " <> externalDataSourceRefDependency ref <> messageSuffix
+  where
+    messageSuffix = maybe "" (": " <>) (redssMessage (redsrStatus ref))
+
+externalDataSourceRefDependency :: RPCExternalDataSourceRef -> Text
+externalDataSourceRefDependency ref =
+  fromMaybe "unresolved" (redsrProvider ref)
+    <> ":" <> redsrSource ref
+    <> maybe "" (":" <>) (redsrGrant ref)
 
 renderRPCDataResourceError :: RPCError -> Text
 renderRPCDataResourceError err =
