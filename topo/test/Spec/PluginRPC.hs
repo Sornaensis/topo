@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -28,10 +29,23 @@ import Data.Word (Word64)
 import System.Directory (doesFileExist, doesPathExist, getCurrentDirectory)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Info (os)
-import System.FilePath ((</>))
+import System.FilePath ((</>), takeDirectory)
 import System.IO (stdin, stdout)
 import System.IO.Temp (withSystemTempFile)
 import System.Timeout (timeout)
+
+#if !defined(mingw32_HOST_OS)
+import System.Posix.Files
+  ( fileMode
+  , getFileStatus
+  , groupModes
+  , intersectFileModes
+  , nullFileMode
+  , otherModes
+  , ownerModes
+  , unionFileModes
+  )
+#endif
 
 import Topo.Plugin.RPC
   ( DataMutation(..)
@@ -2483,8 +2497,10 @@ spec = describe "Plugin.RPC" $ do
           Right transport -> closeTransport transport >> expectationFailure "accept unexpectedly succeeded"
         doesPathExist socketPath `shouldReturn` False
 
-    it "rejects Unix socket clients that do not match the peer policy" $
-      onUnix $ expectPeerPolicyRejects "socket-peer-policy-reject"
+    it "creates owner-only Unix socket launch dirs and rejects peer mismatches" $
+      onUnix $ withTransportServer "socket-peer-policy-reject" $ \server -> do
+        assertUnixSocketLaunchDirOwnerOnly (takeDirectory (teAddress (tsEndpoint server)))
+        expectPeerPolicyRejectsWithServer "socket-peer-policy-reject" server
 
     it "allocates distinct Unix socket endpoints for concurrent plugin startup" $
       onUnix $ withTransportServer "same-plugin" $ \serverA ->
@@ -2821,8 +2837,22 @@ requireAccept server = do
     Left err -> expectationFailure ("accept failed: " <> show err) >> fail "accept"
     Right transport -> pure transport
 
+assertUnixSocketLaunchDirOwnerOnly :: FilePath -> Expectation
+#if defined(mingw32_HOST_OS)
+assertUnixSocketLaunchDirOwnerOnly _ = pure ()
+#else
+assertUnixSocketLaunchDirOwnerOnly socketDir = do
+  status <- getFileStatus socketDir
+  let nonOwnerModes = groupModes `unionFileModes` otherModes
+  fileMode status `intersectFileModes` ownerModes `shouldBe` ownerModes
+  fileMode status `intersectFileModes` nonOwnerModes `shouldBe` nullFileMode
+#endif
+
 expectPeerPolicyRejects :: Text -> IO ()
-expectPeerPolicyRejects name = withTransportServer name $ \server -> do
+expectPeerPolicyRejects name = withTransportServer name (expectPeerPolicyRejectsWithServer name)
+
+expectPeerPolicyRejectsWithServer :: Text -> TransportServer -> IO ()
+expectPeerPolicyRejectsWithServer name server = do
   done <- newEmptyMVar
   _ <- forkIO (clientExpectEndpointClose (name <> "-client") (tsEndpoint server) done)
   acceptResult <- tsAcceptWithPeerPolicy server TransportPeerPolicy

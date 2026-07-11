@@ -128,7 +128,7 @@ library:
     - vector-th-unbox
     - zstd
   when:
-    - condition: os(linux) || os(darwin)
+    - condition: "!os(windows)"
       dependencies:
         - unix
     - condition: os(windows)
@@ -159,3 +159,7 @@ tests:
       - text
       - time
       - vector
+    when:
+      - condition: "!os(windows)"
+        dependencies:
+          - unix

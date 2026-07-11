@@ -163,7 +163,7 @@ library
     , vector-th-unbox
     , zstd
   default-language: Haskell2010
-  if os(linux) || os(darwin)
+  if !os(windows)
     build-depends:
         unix
   if os(windows)
@@ -265,3 +265,6 @@ test-suite topo-test
     , topo
     , vector
   default-language: Haskell2010
+  if !os(windows)
+    build-depends:
+        unix

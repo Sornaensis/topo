@@ -19,6 +19,7 @@ import Control.Exception
   , try
   )
 import Control.Monad (forM_, unless)
+import Data.Char (toLower)
 import Data.List (elemIndex)
 import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import qualified Data.Aeson as Aeson
@@ -48,7 +49,7 @@ import System.Directory
   , removePathForcibly
   , setPermissions
   )
-import System.Environment (getArgs, getExecutablePath, lookupEnv, setEnv, unsetEnv)
+import System.Environment (getArgs, getEnvironment, getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.Exit (die, exitFailure)
 import System.FilePath ((</>), takeDirectory)
 import System.Info (os)
@@ -179,8 +180,14 @@ import Topo.Plugin.RPC.Protocol
   )
 import Topo.Plugin.RPC.Transport
   ( Transport(..)
+  , TransportConfig(..)
+  , TransportEndpoint(..)
+  , TransportError(..)
+  , TransportPeerPolicy(..)
+  , TransportServer(..)
   , closeTransport
   , connectPluginFromEnvironment
+  , defaultTransportConfig
   , pluginAuthTokenEnv
   , pluginDataRootEnv
   , pluginEndpointEnv
@@ -190,6 +197,7 @@ import Topo.Plugin.RPC.Transport
   , pluginSessionEnv
   , pluginStdioCompatibilityEnv
   , pluginWorldIdEnv
+  , openPluginServer
   , recvMessage
   , sendMessage
   )
@@ -470,6 +478,24 @@ spec = describe "PluginManager" $ do
         mapM_ (assertProcessExited windowsProcessTreePluginName) handles
         assertHeartbeatStops heartbeatPath
 
+  it "rejects split Windows named-pipe endpoint clients from different processes" $ do
+    if os /= "mingw32"
+      then pure ()
+      else withPluginTransportServer "windows-split-pipe-mismatch" $ \server -> do
+        (hostReadPipeName, hostWritePipeName) <- expectWindowsNamedPipePair (teAddress (tsEndpoint server))
+        readClient <- launchSinglePipeFixtureClient hostReadPipeName
+        writeClient <- launchSinglePipeFixtureClient hostWritePipeName
+        acceptResult <- tsAcceptWithPeerPolicy server TransportPeerPolicy
+          { tppExpectedProcessId = Nothing
+          , tppExpectedUserId = Nothing
+          }
+        case acceptResult of
+          Left (TransportConnectionFailed msg) -> msg `shouldSatisfy` Text.isInfixOf "between pipe handles"
+          Left err -> expectationFailure ("expected split-pipe peer mismatch, got " <> show err)
+          Right transport -> closeTransport transport >> expectationFailure "split-pipe clients unexpectedly shared one peer identity"
+        assertProcessExited "windows split-pipe read client" readClient
+        assertProcessExited "windows split-pipe write client" writeClient
+
   it "exposes Starting while public refreshManifests performs supervisor work" $ do
     withExecutablePluginDir refreshTransientPluginName refreshTransientManifestJSON "wait-for-start-signal" $ do
       withPluginManager $ \pluginManagerHandle -> do
@@ -578,6 +604,26 @@ spec = describe "PluginManager" $ do
         pluginStatuses mismatchPluginName loaded `shouldSatisfy` anyPluginErrorContaining "protocol version mismatch"
         pluginLifecycleStates mismatchPluginName loaded `shouldSatisfy` elem LifecycleFailed
 
+  it "does not mark a plugin ready when a fake endpoint client races without auth" $ do
+    withExecutablePluginDir endpointRacePluginName endpointRaceManifestJSON "endpoint-race-parent" $ do
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses endpointRacePluginName loaded `shouldSatisfy` (not . elem PluginConnected)
+        pluginLifecycleStates endpointRacePluginName loaded `shouldSatisfy` elem LifecycleFailed
+        pluginLifecycleStates endpointRacePluginName loaded `shouldNotSatisfy` elem LifecycleReady
+        pluginLifecycleErrorCodes endpointRacePluginName loaded `shouldSatisfy`
+          any (`elem` [Just "launch_failed", Just "protocol_error"])
+        pluginStatuses endpointRacePluginName loaded `shouldSatisfy` \statuses ->
+          anyPluginErrorContaining "peer identity" statuses
+            || anyPluginErrorContaining "launch session" statuses
+        length (pluginProcessHandles endpointRacePluginName loaded) `shouldBe` 0
+        endpointRaceConnected <- doesFileExist =<< fixtureDataFile endpointRacePluginName endpointRaceConnectedFileName
+        endpointRaceConnected `shouldBe` True
+        token <- readFixtureToken endpointRacePluginName endpointRaceTokenFileName
+        assertSecretAbsentFromPluginDiagnostics endpointRacePluginName token loaded
+
   it "rejects missing launch auth proof before marking a plugin ready" $ do
     withExecutablePluginDir authMissingPluginName authMissingManifestJSON "auth-missing" $ do
       withPluginManager $ \pluginManagerHandle -> do
@@ -588,6 +634,8 @@ spec = describe "PluginManager" $ do
         pluginLifecycleStates authMissingPluginName loaded `shouldSatisfy` elem LifecycleFailed
         pluginLifecycleErrorCodes authMissingPluginName loaded `shouldSatisfy` elem (Just "protocol_error")
         length (pluginProcessHandles authMissingPluginName loaded) `shouldBe` 0
+        token <- readFixtureToken authMissingPluginName authMissingTokenFileName
+        assertSecretAbsentFromPluginDiagnostics authMissingPluginName token loaded
 
   it "rejects mismatched launch auth proof and cleans up the launched process" $ do
     withExecutablePluginDir authMismatchPluginName authMismatchManifestJSON "auth-mismatch" $ do
@@ -599,6 +647,8 @@ spec = describe "PluginManager" $ do
         pluginLifecycleStates authMismatchPluginName loaded `shouldSatisfy` elem LifecycleFailed
         pluginLifecycleErrorCodes authMismatchPluginName loaded `shouldSatisfy` elem (Just "protocol_error")
         length (pluginProcessHandles authMismatchPluginName loaded) `shouldBe` 0
+        token <- readFixtureToken authMismatchPluginName authMismatchTokenFileName
+        assertSecretAbsentFromPluginDiagnostics authMismatchPluginName token loaded
 
   it "surfaces manifest parse diagnostics for missing required fields" $ do
     let pluginName = "copilot-test-plugin-missing-runtime"
@@ -1570,6 +1620,32 @@ pluginLifecycleProtocols name = map plsProtocolVersion . pluginLifecycles name
 pluginLifecycleErrorCodes :: String -> [LoadedPlugin] -> [Maybe Text]
 pluginLifecycleErrorCodes name = map plsErrorCode . pluginLifecycles name
 
+assertSecretAbsentFromPluginDiagnostics :: String -> Text -> [LoadedPlugin] -> Expectation
+assertSecretAbsentFromPluginDiagnostics pluginName secret loaded = do
+  secret `shouldSatisfy` (not . Text.null)
+  mapM_ (`shouldNotSatisfy` Text.isInfixOf secret) diagnosticTexts
+  where
+    diagnosticTexts =
+      [ text
+      | plugin <- loaded
+      , lpName plugin == Text.pack pluginName
+      , text <- Text.pack (show (lpStatus plugin)) : lifecycleDiagnosticTexts (lpLifecycle plugin)
+      ]
+
+lifecycleDiagnosticTexts :: PluginLifecycleSnapshot -> [Text]
+lifecycleDiagnosticTexts snapshot =
+  [ text
+  | mText <-
+      [ plsReason snapshot
+      , plsErrorCode snapshot
+      , plsErrorMessage snapshot
+      , plsBlockingDependency snapshot
+      , plsProcessId snapshot
+      ]
+  , Just text <- [mText]
+  ] <> maybe [] (pure . Text.pack . show) (plsProtocolVersion snapshot)
+    <> plsResources snapshot
+
 pluginConnections :: String -> [LoadedPlugin] -> Maybe RPCConnection
 pluginConnections _ [] = Nothing
 pluginConnections name (plugin:rest)
@@ -2425,6 +2501,11 @@ readFixtureCount pluginName label = do
   path <- fixtureDataFile pluginName (label <> ".count")
   readCountFile path
 
+readFixtureToken :: String -> String -> IO Text
+readFixtureToken pluginName fileName = do
+  path <- fixtureDataFile pluginName fileName
+  Text.strip . Text.pack <$> readFile path
+
 fixtureDataFile :: String -> String -> IO FilePath
 fixtureDataFile pluginName fileName = do
   baseDir <- currentPluginBaseDir
@@ -2450,6 +2531,50 @@ readCountFile path = do
       pure $ case reads raw of
         [(value, "")] -> value
         _ -> 0
+
+withPluginTransportServer :: Text -> (TransportServer -> IO a) -> IO a
+withPluginTransportServer pluginName = bracket acquire tsClose
+  where
+    acquire = do
+      serverResult <- openPluginServer defaultTransportConfig { tcTimeout = 1000 } pluginName
+      case serverResult of
+        Left err -> expectationFailure ("openPluginServer failed: " <> show err) >> fail "openPluginServer"
+        Right server -> pure server
+
+expectWindowsNamedPipePair :: FilePath -> IO (FilePath, FilePath)
+expectWindowsNamedPipePair address =
+  case break (== '|') address of
+    (hostReadPipeName, '|':hostWritePipeName)
+      | not (null hostReadPipeName) && not (null hostWritePipeName) ->
+          pure (hostReadPipeName, hostWritePipeName)
+    _ -> expectationFailure ("expected split named-pipe endpoint, got " <> address) >> fail "named-pipe pair"
+
+launchSinglePipeFixtureClient :: FilePath -> IO ProcessHandle
+launchSinglePipeFixtureClient pipeName = do
+  testExe <- getExecutablePath
+  inherited <- getEnvironment
+  (_, _, _, processHandle) <- createProcess
+    (proc testExe ["--plugin-manager-fixture", "split-pipe-client"])
+      { env = Just (withEndpointEnv pipeName inherited)
+      , std_in = NoStream
+      , std_out = NoStream
+      , std_err = Inherit
+      }
+  pure processHandle
+
+withEndpointEnv :: FilePath -> [(String, String)] -> [(String, String)]
+withEndpointEnv endpoint inherited = overrides <> filter (not . overridden . fst) inherited
+  where
+    overrides =
+      [ (pluginEndpointEnv, endpoint)
+      , (pluginEndpointKindEnv, "named-pipe")
+      ]
+    overridden key = any (envKeyEqualsForHost key . fst) overrides
+
+envKeyEqualsForHost :: String -> String -> Bool
+envKeyEqualsForHost left right
+  | os == "mingw32" = map toLower left == map toLower right
+  | otherwise = left == right
 
 writePluginWrapper :: FilePath -> String -> String -> IO ()
 writePluginWrapper pluginDir pluginName fixtureMode = do
@@ -2511,7 +2636,7 @@ normalizeFixtureMode :: String -> String
 normalizeFixtureMode = takeWhile (`notElem` ['\r', '\n'])
 
 fixtureUsage :: IO a
-fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|auth-missing|auth-mismatch|malformed-json|bad-handshake|early-exit|slow|wait-for-start-signal|handshake-stall|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|widening-handshake|exit-on-generator|exit-on-simulation|external-provider|external-provider-controlled-status|external-consumer|external-consumer-reject-grant|external-consumer-reject-revoke|external-consumer-timeout-grant-once|external-consumer-timeout-revoke-once|external-consumer-query-external-unavailable|external-consumer-crash-after-grant-ack|windows-process-tree|windows-heartbeat-child>"
+fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|auth-missing|auth-mismatch|endpoint-race-parent|endpoint-race-fake|split-pipe-client|malformed-json|bad-handshake|early-exit|slow|wait-for-start-signal|handshake-stall|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|widening-handshake|exit-on-generator|exit-on-simulation|external-provider|external-provider-controlled-status|external-consumer|external-consumer-reject-grant|external-consumer-reject-revoke|external-consumer-timeout-grant-once|external-consumer-timeout-revoke-once|external-consumer-query-external-unavailable|external-consumer-crash-after-grant-ack|windows-process-tree|windows-heartbeat-child>"
 
 runFixtureMode :: String -> IO ()
 runFixtureMode = \case
@@ -2520,6 +2645,9 @@ runFixtureMode = \case
   "protocol-mismatch" -> runOneShotAckFixture (currentProtocolVersion + 1)
   "auth-missing" -> runMissingAuthAckFixture
   "auth-mismatch" -> runMismatchedAuthAckFixture
+  "endpoint-race-parent" -> runEndpointRaceParentFixture
+  "endpoint-race-fake" -> runEndpointRaceFakeFixture
+  "split-pipe-client" -> runSplitPipeClientFixture
   "malformed-json" -> runMalformedJsonFixture
   "bad-handshake" -> runBadHandshakeFixture
   "early-exit" -> exitFailure
@@ -3363,19 +3491,12 @@ runOneShotAckFixture protocolVersion = do
 
 runMissingAuthAckFixture :: IO ()
 runMissingAuthAckFixture = do
-  connectPluginFromEnvironment "plugin-manager-auth-missing-fixture" stdin stdout >>= \case
-    Left _ -> exitFailure
-    Right transport -> do
-      recvMessage transport >>= \case
-        Left _ -> closeTransport transport
-        Right bytes -> do
-          let requestId = either (const Nothing) envRequestId (decodeMessage bytes)
-          _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope requestId currentProtocolVersion))
-          threadDelay 2000000
-          closeTransport transport
+  recordLaunchAuthTokenProbe authMissingTokenFileName
+  runMissingAuthAckClient "plugin-manager-auth-missing-fixture" True
 
 runMismatchedAuthAckFixture :: IO ()
 runMismatchedAuthAckFixture = do
+  recordLaunchAuthTokenProbe authMismatchTokenFileName
   connectPluginFromEnvironment "plugin-manager-auth-mismatch-fixture" stdin stdout >>= \case
     Left _ -> exitFailure
     Right transport -> do
@@ -3384,15 +3505,87 @@ runMismatchedAuthAckFixture = do
         Right bytes -> do
           let requestId = either (const Nothing) envRequestId (decodeMessage bytes)
           sessionId <- Text.pack <$> requireEnv pluginSessionEnv
+          authToken <- Text.pack <$> requireEnv pluginAuthTokenEnv
           let ack = handshakeAckWithDataDirectoryAndAuthEnvelope
                 requestId
                 currentProtocolVersion
                 Nothing
                 []
-                (Just (sessionId, "wrong-proof"))
+                (Just (sessionId, authToken))
           _ <- sendMessage transport (encodeMessage ack)
           threadDelay 2000000
           closeTransport transport
+
+runEndpointRaceParentFixture :: IO ()
+runEndpointRaceParentFixture = do
+  launchEndpointRaceFakeClient
+  waitForever
+
+runEndpointRaceFakeFixture :: IO ()
+runEndpointRaceFakeFixture = do
+  recordLaunchAuthTokenProbe endpointRaceTokenFileName
+  runMissingAuthAckClientWith "plugin-manager-endpoint-race-fake" False (Just endpointRaceConnectedFileName)
+
+runMissingAuthAckClient :: Text -> Bool -> IO ()
+runMissingAuthAckClient clientName lingerAfterAck =
+  runMissingAuthAckClientWith clientName lingerAfterAck Nothing
+
+runMissingAuthAckClientWith :: Text -> Bool -> Maybe String -> IO ()
+runMissingAuthAckClientWith clientName lingerAfterAck mConnectedMarker = do
+  connectPluginFromEnvironment clientName stdin stdout >>= \case
+    Left _ -> exitFailure
+    Right transport -> do
+      maybe (pure ()) recordFixtureMarker mConnectedMarker
+      recvMessage transport >>= \case
+        Left _ -> closeTransport transport
+        Right bytes -> do
+          let requestId = either (const Nothing) envRequestId (decodeMessage bytes)
+          _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope requestId currentProtocolVersion))
+          if lingerAfterAck then threadDelay 2000000 else pure ()
+          closeTransport transport
+
+launchEndpointRaceFakeClient :: IO ()
+launchEndpointRaceFakeClient = do
+  testExe <- getExecutablePath
+  _ <- createProcess (proc testExe ["--plugin-manager-fixture", "endpoint-race-fake"])
+    { std_in = NoStream
+    , std_out = NoStream
+    , std_err = Inherit
+    }
+  pure ()
+
+runSplitPipeClientFixture :: IO ()
+runSplitPipeClientFixture = do
+  connectPluginFromEnvironment "plugin-manager-split-pipe-client" stdin stdout >>= \case
+    Left _ -> exitFailure
+    Right transport -> do
+      received <- recvMessage transport
+      closeTransport transport
+      case received of
+        Left _ -> pure ()
+        Right _ -> exitFailure
+
+recordLaunchAuthTokenProbe :: String -> IO ()
+recordLaunchAuthTokenProbe fileName = do
+  mDataRoot <- lookupEnv pluginDataRootEnv
+  mAuthToken <- lookupEnv pluginAuthTokenEnv
+  case (mDataRoot, mAuthToken) of
+    (Just dataRoot, Just authToken) -> do
+      createDirectoryIfMissing True dataRoot
+      writeFile (dataRoot </> fileName) authToken
+    _ -> pure ()
+
+recordFixtureMarker :: String -> IO ()
+recordFixtureMarker fileName = do
+  mDataRoot <- lookupEnv pluginDataRootEnv
+  case mDataRoot of
+    Just dataRoot -> do
+      createDirectoryIfMissing True dataRoot
+      writeFile (dataRoot </> fileName) "connected\n"
+    Nothing -> pure ()
+
+waitForever :: IO ()
+waitForever = threadDelay 1000000 >> waitForever
 
 verifyLaunchEnvironment :: IO ()
 verifyLaunchEnvironment = do
@@ -3605,6 +3798,23 @@ mismatchPluginName = "copilot-test-plugin-protocol-mismatch"
 mismatchManifestJSON :: BS.ByteString
 mismatchManifestJSON = manifestFor mismatchPluginName
 
+endpointRacePluginName :: String
+endpointRacePluginName = "copilot-test-plugin-endpoint-race"
+
+endpointRaceManifestJSON :: BS.ByteString
+endpointRaceManifestJSON = manifestWithStartPolicyFor endpointRacePluginName
+  [ "    \"restart_mode\": \"never\","
+  , "    \"startup_timeout_ms\": 1000,"
+  , "    \"request_timeout_ms\": 100,"
+  , "    \"shutdown_timeout_ms\": 100"
+  ]
+
+endpointRaceTokenFileName :: String
+endpointRaceTokenFileName = "endpoint-race-auth-token.txt"
+
+endpointRaceConnectedFileName :: String
+endpointRaceConnectedFileName = "endpoint-race-client-connected.txt"
+
 authMissingPluginName :: String
 authMissingPluginName = "copilot-test-plugin-auth-missing"
 
@@ -3616,6 +3826,9 @@ authMissingManifestJSON = manifestWithStartPolicyFor authMissingPluginName
   , "    \"shutdown_timeout_ms\": 100"
   ]
 
+authMissingTokenFileName :: String
+authMissingTokenFileName = "auth-missing-token.txt"
+
 authMismatchPluginName :: String
 authMismatchPluginName = "copilot-test-plugin-auth-mismatch"
 
@@ -3626,6 +3839,9 @@ authMismatchManifestJSON = manifestWithStartPolicyFor authMismatchPluginName
   , "    \"request_timeout_ms\": 100,"
   , "    \"shutdown_timeout_ms\": 100"
   ]
+
+authMismatchTokenFileName :: String
+authMismatchTokenFileName = "auth-mismatch-token.txt"
 
 malformedPluginName :: String
 malformedPluginName = "copilot-test-plugin-malformed-json"
