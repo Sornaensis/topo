@@ -228,6 +228,9 @@ library
     , wai
     , warp
   default-language: Haskell2010
+  if os(windows)
+    c-sources:
+        cbits/windows_process.c
 
 executable topo-seer
   main-is: Main.hs

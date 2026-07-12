@@ -1,3 +1,5 @@
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -34,7 +36,15 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time.Clock.POSIX (getPOSIXTime, posixSecondsToUTCTime)
-import Data.Word (Word64)
+import Data.Word (Word32, Word64)
+import Foreign.C.Types (CInt(..))
+#if !defined(mingw32_HOST_OS)
+import Foreign.C.Error (eSRCH, getErrno)
+#else
+import Foreign.Marshal.Alloc (alloca)
+import Foreign.Ptr (Ptr, nullPtr)
+import Foreign.Storable (peek)
+#endif
 import Hyperspace.Actor (ActorHandle, ActorSystem, Protocol, get, newActorSystem, shutdownActorSystem)
 import System.Directory
   ( Permissions(..)
@@ -467,6 +477,37 @@ spec = describe "PluginManager" $ do
             null (pluginOwnedProcesses testLaunchPluginName stopped) `shouldBe` True
             assertProcessExited testLaunchPluginName processHandle
 
+  it "fails Windows launch before plugin code when Job creation or configuration fails" $ do
+    if os /= "mingw32"
+      then pure ()
+      else forM_ ["create", "configure"] $ \failureMode ->
+        withEnvironmentValue "TOPO_TEST_PLUGIN_JOB_PREPARATION_FAILURE" failureMode $
+          withExecutablePluginDir testLaunchPluginName testLaunchManifestJSON "entry-marker" $
+            withPluginManager $ \pluginManagerHandle -> do
+              discoverPlugins pluginManagerHandle
+              refreshManifests pluginManagerHandle
+              loaded <- getLoadedPlugins pluginManagerHandle
+              pluginStatuses testLaunchPluginName loaded `shouldSatisfy`
+                anyPluginErrorContaining "before launch"
+              null (pluginOwnedProcesses testLaunchPluginName loaded) `shouldBe` True
+              markerCount <- readFixtureCount testLaunchPluginName "entry-marker"
+              markerCount `shouldBe` 0
+
+  it "fails Windows launch before plugin code when Job assignment fails" $ do
+    if os /= "mingw32"
+      then pure ()
+      else withEnvironmentValue "TOPO_TEST_PLUGIN_JOB_ASSIGNMENT_FAILURE" "1" $
+        withExecutablePluginDir testLaunchPluginName testLaunchManifestJSON "entry-marker" $
+          withPluginManager $ \pluginManagerHandle -> do
+            discoverPlugins pluginManagerHandle
+            refreshManifests pluginManagerHandle
+            loaded <- getLoadedPlugins pluginManagerHandle
+            pluginStatuses testLaunchPluginName loaded `shouldSatisfy`
+              anyPluginErrorContaining "Job assignment failed"
+            null (pluginOwnedProcesses testLaunchPluginName loaded) `shouldBe` True
+            markerCount <- readFixtureCount testLaunchPluginName "entry-marker"
+            markerCount `shouldBe` 0
+
   it "launches plugins with explicit TOPO_PLUGIN env and no parent secrets" $ do
     withParentStdioCompatibilityFlag $ do
       withSensitiveParentEnvironment $ do
@@ -479,8 +520,9 @@ spec = describe "PluginManager" $ do
             pluginLifecycleStates envContractPluginName loaded `shouldSatisfy` elem LifecycleReady
             pluginLifecycleProtocols envContractPluginName loaded `shouldSatisfy` elem (Just currentProtocolVersion)
 
-  it "cleans up connected fixture subprocesses when the manager scope aborts" $ do
-    withExecutablePluginDir cleanupAbortPluginName cleanupAbortManifestJSON "ok" $ do
+  it "cleans up the connected process tree when the manager scope aborts" $ do
+    withExecutablePluginDir cleanupAbortPluginName cleanupAbortManifestJSON "process-tree" $ do
+      heartbeatPath <- fixtureDataFile cleanupAbortPluginName processTreeHeartbeatFileName
       handleVar <- newEmptyMVar
       result <- try @FixtureCleanupProbe $
         withPluginManager $ \pluginManagerHandle -> do
@@ -489,6 +531,7 @@ spec = describe "PluginManager" $ do
           loaded <- getLoadedPlugins pluginManagerHandle
           pluginStatuses cleanupAbortPluginName loaded `shouldSatisfy` elem PluginConnected
           handles <- expectPluginProcessHandles cleanupAbortPluginName loaded
+          expectHeartbeatAdvances heartbeatPath
           case handles of
             processHandle:_ -> putMVar handleVar processHandle
             [] -> expectationFailure "expected a non-empty fixture process handle list"
@@ -498,23 +541,33 @@ spec = describe "PluginManager" $ do
       case captured of
         Nothing -> expectationFailure "did not capture a connected fixture process handle"
         Just processHandle -> assertProcessExited cleanupAbortPluginName processHandle
+      childPid <- readProcessTreeChildPid cleanupAbortPluginName
+      assertHeartbeatStops heartbeatPath
+      assertProcessTreeChildGone cleanupAbortPluginName [] childPid
 
-  it "cleans up Windows fixture child processes when the parent hangs during shutdown" $ do
-    if os /= "mingw32"
-      then pure ()
-      else withExecutablePluginDir windowsProcessTreePluginName windowsProcessTreeManifestJSON "windows-process-tree" $ do
-        heartbeatPath <- fixtureDataFile windowsProcessTreePluginName windowsHeartbeatFileName
-        handles <- withPluginManager $ \pluginManagerHandle -> do
-          discoverPlugins pluginManagerHandle
-          refreshManifests pluginManagerHandle
-          loaded <- getLoadedPlugins pluginManagerHandle
-          pluginStatuses windowsProcessTreePluginName loaded `shouldSatisfy` elem PluginConnected
-          pluginLifecycleStates windowsProcessTreePluginName loaded `shouldSatisfy` elem LifecycleReady
-          processHandles <- expectPluginProcessHandles windowsProcessTreePluginName loaded
-          expectHeartbeatAdvances heartbeatPath
-          pure processHandles
-        mapM_ (assertProcessExited windowsProcessTreePluginName) handles
-        assertHeartbeatStops heartbeatPath
+  it "waits for descendant teardown after the plugin leader exits" $ do
+    withExecutablePluginDir processTreePluginName processTreeManifestJSON "process-tree" $ do
+      heartbeatPath <- fixtureDataFile processTreePluginName processTreeHeartbeatFileName
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses processTreePluginName loaded `shouldSatisfy` elem PluginConnected
+        pluginLifecycleStates processTreePluginName loaded `shouldSatisfy` elem LifecycleReady
+        handles <- expectPluginProcessHandles processTreePluginName loaded
+        owners <- pure (pluginOwnedProcesses processTreePluginName loaded)
+        expectHeartbeatAdvances heartbeatPath
+        childPid <- readProcessTreeChildPid processTreePluginName
+        shutdownPlugins pluginManagerHandle
+        stopped <- waitForLoadedPlugins
+          (processTreePluginName <> " process-tree cleanup")
+          pluginManagerHandle
+          (null . pluginOwnedProcesses processTreePluginName)
+        pluginLifecycleStates processTreePluginName stopped `shouldSatisfy` elem LifecycleStopped
+        mapM_ (assertProcessExited processTreePluginName) handles
+        mapM_ assertOwnedCleanupComplete owners
+        assertProcessTreeChildGone processTreePluginName owners childPid
+      assertHeartbeatStops heartbeatPath
 
   it "rejects split Windows named-pipe endpoint clients from different processes" $ do
     if os /= "mingw32"
@@ -1914,7 +1967,7 @@ waitForHeartbeatChange :: FilePath -> Maybe String -> String -> IO String
 waitForHeartbeatChange path previous label = do
   result <- timeout 2000000 go
   case result of
-    Nothing -> expectationFailure ("windows fixture heartbeat did not " <> label) >> fail "heartbeat did not change"
+    Nothing -> expectationFailure ("process-tree fixture heartbeat did not " <> label) >> fail "heartbeat did not change"
     Just value -> pure value
   where
     go = do
@@ -1928,7 +1981,7 @@ assertHeartbeatStops path = do
   current <- readHeartbeat path
   result <- timeout 3000000 (waitForStableHeartbeat current (0 :: Int))
   case result of
-    Nothing -> expectationFailure "windows fixture child heartbeat kept changing after plugin teardown"
+    Nothing -> expectationFailure "process-tree fixture child heartbeat kept changing after plugin teardown"
     Just _ -> pure ()
   where
     waitForStableHeartbeat previous stableSamples
@@ -1947,6 +2000,90 @@ readHeartbeat path = do
   if not exists
     then pure Nothing
     else (Just . BSC.unpack <$> BS.readFile path) `catch` \(_ :: SomeException) -> pure Nothing
+
+readProcessTreeChildPid :: String -> IO Word64
+readProcessTreeChildPid pluginName = do
+  path <- fixtureDataFile pluginName processTreeChildPidFileName
+  result <- timeout 2000000 (waitForPid path)
+  case result of
+    Nothing -> expectationFailure
+      (pluginName <> " did not publish descendant pid at " <> path) >> fail "missing descendant pid"
+    Just pid -> pure pid
+  where
+    waitForPid path = do
+      exists <- doesFileExist path
+      if not exists
+        then threadDelay 25000 >> waitForPid path
+        else do
+          raw <- readFile path
+          case reads raw of
+            [(pid, _)] -> pure pid
+            _ -> threadDelay 25000 >> waitForPid path
+
+assertProcessTreeChildGone :: String -> [OwnedPluginProcess] -> Word64 -> IO ()
+assertProcessTreeChildGone label owners childPid = do
+  gone <- timeout 3000000 waitUntilGone
+  case gone of
+    Just () -> pure ()
+    Nothing -> expectationFailure $
+      label <> " descendant pid " <> show childPid
+        <> " remained after owned cleanup; owner identities="
+        <> show (map ownedPluginProcessId owners)
+  where
+    waitUntilGone = do
+      exists <- processIdExists childPid
+      if exists
+        then threadDelay 25000 >> waitUntilGone
+        else pure ()
+
+processIdExists :: Word64 -> IO Bool
+#if defined(mingw32_HOST_OS)
+processIdExists pid = do
+  processHandle <- c_OpenProcessForTest processQueryLimitedInformation 0 (fromIntegral pid)
+  if processHandle == nullPtr
+    then (/= invalidParameterError) <$> c_GetLastErrorForTest
+    else do
+      alloca $ \exitCodePtr -> do
+        queried <- c_GetExitCodeProcessForTest processHandle exitCodePtr
+        exitCode <- if queried == 0 then pure stillActiveExitCode else peek exitCodePtr
+        _ <- c_CloseHandleForTest processHandle
+        -- Query/access errors are conservative: only a successfully observed
+        -- non-STILL_ACTIVE status proves this PID is gone.
+        pure (queried == 0 || exitCode == stillActiveExitCode)
+
+foreign import ccall unsafe "windows.h GetCurrentProcessId"
+  c_GetCurrentProcessId :: IO Word32
+
+foreign import ccall unsafe "windows.h GetLastError"
+  c_GetLastErrorForTest :: IO Word32
+
+foreign import ccall unsafe "windows.h OpenProcess"
+  c_OpenProcessForTest :: Word32 -> CInt -> Word32 -> IO (Ptr ())
+
+foreign import ccall unsafe "windows.h GetExitCodeProcess"
+  c_GetExitCodeProcessForTest :: Ptr () -> Ptr Word32 -> IO CInt
+
+foreign import ccall unsafe "windows.h CloseHandle"
+  c_CloseHandleForTest :: Ptr () -> IO CInt
+
+processQueryLimitedInformation :: Word32
+processQueryLimitedInformation = 0x00001000
+
+stillActiveExitCode :: Word32
+stillActiveExitCode = 259
+
+invalidParameterError :: Word32
+invalidParameterError = 87
+#else
+processIdExists pid = do
+  result <- c_killForTest (fromIntegral pid) 0
+  if result == 0
+    then pure True
+    else (/= eSRCH) <$> getErrno
+
+foreign import ccall unsafe "kill"
+  c_killForTest :: CInt -> CInt -> IO CInt
+#endif
 
 expectPluginConnection :: String -> [LoadedPlugin] -> IO RPCConnection
 expectPluginConnection name loaded =
@@ -2732,11 +2869,12 @@ normalizeFixtureMode :: String -> String
 normalizeFixtureMode = takeWhile (`notElem` ['\r', '\n'])
 
 fixtureUsage :: IO a
-fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|env-contract|protocol-mismatch|auth-missing|auth-mismatch|endpoint-race-parent|endpoint-race-fake|split-pipe-client|malformed-json|bad-handshake|early-exit|slow|wait-for-start-signal|handshake-stall|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|widening-handshake|exit-on-generator|exit-on-simulation|external-provider|external-provider-controlled-status|external-consumer|external-consumer-reject-grant|external-consumer-reject-revoke|external-consumer-timeout-grant-once|external-consumer-timeout-revoke-once|external-consumer-query-external-unavailable|external-consumer-crash-after-grant-ack|windows-process-tree|windows-heartbeat-child>"
+fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|entry-marker|env-contract|protocol-mismatch|auth-missing|auth-mismatch|endpoint-race-parent|endpoint-race-fake|split-pipe-client|malformed-json|bad-handshake|early-exit|slow|wait-for-start-signal|handshake-stall|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|widening-handshake|exit-on-generator|exit-on-simulation|external-provider|external-provider-controlled-status|external-consumer|external-consumer-reject-grant|external-consumer-reject-revoke|external-consumer-timeout-grant-once|external-consumer-timeout-revoke-once|external-consumer-query-external-unavailable|external-consumer-crash-after-grant-ack|process-tree|heartbeat-child>"
 
 runFixtureMode :: String -> IO ()
 runFixtureMode = \case
   "ok" -> runOkFixture
+  "entry-marker" -> incrementFixtureCount "entry-marker" >> runOkFixture
   "env-contract" -> runEnvContractFixture
   "protocol-mismatch" -> runOneShotAckFixture (currentProtocolVersion + 1)
   "auth-missing" -> runMissingAuthAckFixture
@@ -2770,8 +2908,8 @@ runFixtureMode = \case
   "external-consumer-timeout-revoke-once" -> runExternalConsumerTimeoutRevokeOnceFixture
   "external-consumer-query-external-unavailable" -> runExternalConsumerQueryExternalUnavailableFixture
   "external-consumer-crash-after-grant-ack" -> runExternalConsumerCrashAfterGrantAckFixture
-  "windows-process-tree" -> runWindowsProcessTreeFixture
-  "windows-heartbeat-child" -> runWindowsHeartbeatChild
+  "process-tree" -> runProcessTreeFixture
+  "heartbeat-child" -> runHeartbeatChild
   unknown -> die ("unknown plugin-manager fixture: " <> unknown)
 
 runEnvContractFixture :: IO ()
@@ -2864,17 +3002,17 @@ runHangQueryFixture = do
               MsgShutdown -> closeTransport transport
               _ -> loop transport
 
-runWindowsProcessTreeFixture :: IO ()
-runWindowsProcessTreeFixture
-  | os /= "mingw32" = runOkFixture
-  | otherwise = do
-      connectPluginFromEnvironment "plugin-manager-windows-process-tree-fixture" stdin stdout >>= \case
-        Left _ -> exitFailure
-        Right transport -> loop transport False
+runProcessTreeFixture :: IO ()
+runProcessTreeFixture = do
+  connectPluginFromEnvironment "plugin-manager-process-tree-fixture" stdin stdout >>= \case
+    Left _ -> exitFailure
+    Right transport -> loop transport False
   where
     loop transport childStarted = do
       recvMessage transport >>= \case
-        Left _ -> threadDelay 1000000 >> loop transport childStarted
+        Left _
+          | os == "mingw32" -> threadDelay 1000000 >> loop transport childStarted
+          | otherwise -> closeTransport transport
         Right bytes ->
           case decodeMessage bytes of
             Left _ -> loop transport childStarted
@@ -2882,29 +3020,53 @@ runWindowsProcessTreeFixture
               MsgHandshake -> do
                 ack <- handshakeAckEnvelopeFor envelope currentProtocolVersion
                 _ <- sendMessage transport (encodeMessage ack)
-                unless childStarted startWindowsHeartbeatChild
+                unless childStarted startHeartbeatChild
                 loop transport True
-              MsgShutdown -> loop transport childStarted
+              MsgShutdown
+                | os == "mingw32" -> loop transport childStarted
+                | otherwise -> closeTransport transport
               _ -> loop transport childStarted
 
-startWindowsHeartbeatChild :: IO ()
-startWindowsHeartbeatChild = do
+startHeartbeatChild :: IO ()
+startHeartbeatChild = do
   dataRoot <- requireEnv pluginDataRootEnv
   createDirectoryIfMissing True dataRoot
-  testExe <- getExecutablePath
-  _ <- createProcess (proc testExe ["--plugin-manager-fixture", "windows-heartbeat-child"])
-    { cwd = Just dataRoot
-    , std_in = NoStream
-    , std_out = NoStream
-    , std_err = NoStream
-    }
-  pure ()
+  if os == "mingw32"
+    then do
+      testExe <- getExecutablePath
+      _ <- createProcess (proc testExe ["--plugin-manager-fixture", "heartbeat-child"])
+        { cwd = Just dataRoot
+        , std_in = NoStream
+        , std_out = NoStream
+        , std_err = NoStream
+        }
+      pure ()
+    else do
+      -- The child deliberately ignores TERM. It inherits the plugin launch
+      -- group, while the fixture leader exits on Shutdown, exercising stable
+      -- group identity and TERM-to-KILL escalation after leader exit.
+      _ <- createProcess (proc "/bin/sh"
+        [ "-c"
+        , "trap '' TERM; echo $$ > \"$TOPO_PLUGIN_DATA_ROOT/" <> processTreeChildPidFileName
+            <> "\"; n=0; while :; do n=$((n+1)); printf '%s' \"$n\" > \"$TOPO_PLUGIN_DATA_ROOT/"
+            <> processTreeHeartbeatFileName <> "\"; sleep 0.05; done"
+        ])
+        { cwd = Just dataRoot
+        , std_in = NoStream
+        , std_out = NoStream
+        , std_err = NoStream
+        }
+      pure ()
 
-runWindowsHeartbeatChild :: IO ()
-runWindowsHeartbeatChild = do
+runHeartbeatChild :: IO ()
+runHeartbeatChild = do
   dataRoot <- requireEnv pluginDataRootEnv
   createDirectoryIfMissing True dataRoot
-  let heartbeatPath = dataRoot </> windowsHeartbeatFileName
+#if defined(mingw32_HOST_OS)
+  childPid <- c_GetCurrentProcessId
+  writeFile (dataRoot </> processTreeChildPidFileName) (show childPid)
+#endif
+  let heartbeatPath = dataRoot </> processTreeHeartbeatFileName
       loop n = do
         BS.writeFile heartbeatPath (BSC.pack (show n))
         threadDelay 50000
@@ -4111,19 +4273,22 @@ hangQueryManifestJSON = dataResourceManifestFor hangQueryPluginName
   , "    \"backoff_ms\": 1"
   ]
 
-windowsProcessTreePluginName :: String
-windowsProcessTreePluginName = "copilot-test-plugin-windows-process-tree"
+processTreePluginName :: String
+processTreePluginName = "copilot-test-plugin-process-tree"
 
-windowsProcessTreeManifestJSON :: BS.ByteString
-windowsProcessTreeManifestJSON = manifestWithStartPolicyFor windowsProcessTreePluginName
+processTreeManifestJSON :: BS.ByteString
+processTreeManifestJSON = manifestWithStartPolicyFor processTreePluginName
   [ "    \"restart_mode\": \"never\","
   , "    \"startup_timeout_ms\": 1000,"
   , "    \"request_timeout_ms\": 300,"
   , "    \"shutdown_timeout_ms\": 100"
   ]
 
-windowsHeartbeatFileName :: String
-windowsHeartbeatFileName = "windows-child-heartbeat.txt"
+processTreeHeartbeatFileName :: String
+processTreeHeartbeatFileName = "child-heartbeat.txt"
+
+processTreeChildPidFileName :: String
+processTreeChildPidFileName = "child.pid"
 
 noDataReadQueryPluginName :: String
 noDataReadQueryPluginName = "copilot-test-plugin-no-data-read-query"

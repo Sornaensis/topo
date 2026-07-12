@@ -12,6 +12,10 @@ data-files:
 
 library:
   source-dirs: src
+  when:
+    - condition: os(windows)
+      c-sources:
+        - cbits/windows_process.c
   exposed-modules:
     - Actor.Data
     - Actor.Log

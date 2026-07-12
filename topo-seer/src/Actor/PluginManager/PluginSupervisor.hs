@@ -1099,7 +1099,7 @@ quoteText value = "'" <> value <> "'"
 
 executableHint :: Text
 executableHint
-  | os == "mingw32" = " (.exe, .cmd, and .bat wrappers are accepted on Windows)."
+  | os == "mingw32" = " (.exe plugins are accepted on Windows)."
   | otherwise = " and mark it executable."
 
 handshakeErrorCode :: PluginHandshakeError -> Text

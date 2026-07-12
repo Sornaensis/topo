@@ -1,6 +1,7 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
 
 -- | Plugin subprocess startup and production transport attachment.
@@ -30,14 +31,19 @@ import Control.Exception
 import qualified Data.ByteString as BS
 import Crypto.Random (getRandomBytes)
 import Data.Char (toLower)
+import Data.List (sortOn)
 import Data.Text (Text)
 import Data.Word (Word8, Word32, Word64)
-import Foreign.C.Types (CInt(..), CUInt(..))
+import Foreign.C.Types (CInt(..), CUInt(..), CWchar)
+#if !defined(mingw32_HOST_OS)
+import Foreign.C.Error (eINTR, eSRCH, getErrno)
+#endif
 #if defined(mingw32_HOST_OS)
-import Foreign.Marshal.Alloc (allocaBytes)
+import Foreign.C.String (withCWString)
+import Foreign.Marshal.Alloc (alloca, allocaBytes)
 import Foreign.Marshal.Utils (fillBytes)
 import Foreign.Ptr (IntPtr, Ptr, nullPtr)
-import Foreign.Storable (pokeByteOff, sizeOf)
+import Foreign.Storable (peek, peekByteOff, pokeByteOff, sizeOf)
 #endif
 import Numeric (showHex)
 import qualified Data.Text as Text
@@ -58,6 +64,9 @@ import System.Process
   )
 import System.Exit (ExitCode)
 import Text.Read (readMaybe)
+#if defined(mingw32_HOST_OS)
+import System.Process.Internals (PHANDLE, mkProcessHandle)
+#endif
 
 import Topo.Plugin.RPC.Protocol (currentProtocolVersion)
 import Topo.Plugin.RPC.Transport
@@ -90,12 +99,7 @@ resolvePluginExecutable pluginDir pluginName =
   where
     basePath = pluginDir </> Text.unpack pluginName
     candidates
-      | os == "mingw32" =
-          [ basePath <.> "exe"
-          , basePath <.> "cmd"
-          , basePath <.> "bat"
-          , basePath
-          ]
+      | os == "mingw32" = [basePath <.> "exe", basePath]
       | otherwise = [basePath]
 
 findFirstExisting :: [FilePath] -> IO (Maybe FilePath)
@@ -122,7 +126,9 @@ safeCloseServer server = do
 
 -- | Opaque ownership of a launched plugin process and its platform
 -- containment. The root handle and stable launch-tree identity never leave
--- this value as cleanup ownership.
+-- this value as cleanup ownership. A Windows kill-on-close Job gives an
+-- explicit parent-death guarantee after suspended assignment; portable Unix
+-- has no equivalent parent-death guarantee.
 data OwnedPluginProcess = OwnedPluginProcess
   { oppRootHandle :: !ProcessHandle
   , oppTreeIdentity :: !(Maybe Word64)
@@ -130,7 +136,7 @@ data OwnedPluginProcess = OwnedPluginProcess
   }
 
 data OwnedPluginProcessState = OwnedPluginProcessState
-  { oppsContainment :: !PlatformContainment
+  { oppsContainment :: !(Maybe PlatformContainment)
   , oppsCleanupComplete :: !Bool
   }
 
@@ -141,9 +147,14 @@ data OwnedPluginCleanupResult
   | OwnedPluginCleanupFailed !OwnedPluginProcess
 
 #if defined(mingw32_HOST_OS)
-data PlatformContainment = WindowsJob !HANDLE | NoPlatformContainment
+data PlatformContainment = WindowsJob !HANDLE
 #else
-data PlatformContainment = NoPlatformContainment
+-- A new session makes the root pid a stable process-group identity. This
+-- contains ordinary descendants even after the root exits. Unix does not
+-- provide a portable parent-death guarantee here, and a deliberately daemonized
+-- descendant can escape by changing its process group or creating another
+-- session; callers must not claim containment beyond the retained launch group.
+data PlatformContainment = PosixProcessGroup !Word64
 #endif
 
 -- | Observe the root process handle without transferring cleanup ownership.
@@ -190,58 +201,71 @@ launchPluginTransportViaEndpoint executablePath workingDir pluginName startupTim
   case serverResult of
     Left err -> pure (Left (Text.pack (show err), Nothing))
     Right server -> mask $ \restore -> do
-      processResult <- trySync $ do
-        launchEnvironment <- endpointEnvironment (tsEndpoint server) pluginName workingDir
-        (_, _, _, processHandle) <- createProcess
-          (pluginProcessSpec (proc executablePath [])
-            { cwd = Just workingDir
-            , env = Just (leVariables launchEnvironment)
-            , std_in = NoStream
-            , std_out = NoStream
-            , std_err = Inherit
-            })
-        ownershipResult <- establishProcessOwnership processHandle
-        pure (launchEnvironment, ownershipResult)
-      case processResult of
+      preparedResult <- trySync preparePlatformContainment
+      case preparedResult of
         Left err -> do
           safeCloseServer server
-          pure (Left (Text.pack (show err), Nothing))
-        Right (launchEnvironment, ownershipResult) ->
-          case ownershipResult of
-            Left (message, residualOwner) -> do
+          pure (Left ("plugin containment setup failed before launch: " <> Text.pack (show err), Nothing))
+        Right preparedContainment -> do
+          processResult <- trySync $ do
+            launchEnvironment <- endpointEnvironment (tsEndpoint server) pluginName workingDir
+            processHandle <- createContainedPluginProcess
+              preparedContainment
+              executablePath
+              workingDir
+              (leVariables launchEnvironment)
+            ownershipResult <- establishProcessOwnership preparedContainment processHandle
+            pure (launchEnvironment, ownershipResult)
+          case processResult of
+            Left err -> do
+              _ <- releasePlatformContainment preparedContainment
               safeCloseServer server
-              pure (Left (message, residualOwner))
-            Right ownedProcess -> do
-              let failLaunched message = do
-                    safeCloseServer server
-                    cleanupResult <- cleanupOwnedPluginProcess ownedProcess
-                    let residualOwner = case cleanupResult of
-                          OwnedPluginCleanupComplete -> Nothing
-                          OwnedPluginCleanupFailed retained -> Just retained
-                    pure (Left (message, residualOwner))
-                  handleAcceptException err = do
-                    safeCloseServer server
-                    cleanupResult <- cleanupOwnedPluginProcess ownedProcess
-                    case cleanupResult of
-                      OwnedPluginCleanupComplete -> throwIO err
-                      OwnedPluginCleanupFailed retained ->
-                        pure (Left (Text.pack (show err), Just retained))
-              peerPolicyResult <- expectedPeerPolicyForLaunchedProcess (ownedPluginProcessHandle ownedProcess)
-              case peerPolicyResult of
-                Left message -> failLaunched message
-                Right peerPolicy -> do
-                  acceptAttempt <- try @SomeException
-                    (restore (tsAcceptWithPeerPolicy server peerPolicy))
-                  case acceptAttempt of
-                    Left err -> handleAcceptException err
-                    Right (Left transportErr) ->
-                      failLaunched (Text.pack (show transportErr))
-                    Right (Right transport) -> pure (Right LaunchPluginResult
-                      { lprTransport = transport
-                      , lprOwnedProcess = ownedProcess
-                      , lprSessionId = leSessionId launchEnvironment
-                      , lprAuthToken = leAuthToken launchEnvironment
-                      })
+              pure (Left (Text.pack (show err), Nothing))
+            Right (launchEnvironment, ownershipResult) ->
+              finishOwnedLaunch restore server launchEnvironment ownershipResult
+
+finishOwnedLaunch
+  :: (forall a. IO a -> IO a)
+  -> TransportServer
+  -> LaunchEnvironment
+  -> Either (Text, Maybe OwnedPluginProcess) OwnedPluginProcess
+  -> IO (Either (Text, Maybe OwnedPluginProcess) LaunchPluginResult)
+finishOwnedLaunch restore server launchEnvironment ownershipResult =
+  case ownershipResult of
+    Left (message, residualOwner) -> do
+      safeCloseServer server
+      pure (Left (message, residualOwner))
+    Right ownedProcess -> do
+      let failLaunched message = do
+            safeCloseServer server
+            cleanupResult <- cleanupOwnedPluginProcess ownedProcess
+            let residualOwner = case cleanupResult of
+                  OwnedPluginCleanupComplete -> Nothing
+                  OwnedPluginCleanupFailed retained -> Just retained
+            pure (Left (message, residualOwner))
+          handleAcceptException err = do
+            safeCloseServer server
+            cleanupResult <- cleanupOwnedPluginProcess ownedProcess
+            case cleanupResult of
+              OwnedPluginCleanupComplete -> throwIO err
+              OwnedPluginCleanupFailed retained ->
+                pure (Left (Text.pack (show err), Just retained))
+      peerPolicyResult <- expectedPeerPolicyForLaunchedProcess (ownedPluginProcessHandle ownedProcess)
+      case peerPolicyResult of
+        Left message -> failLaunched message
+        Right peerPolicy -> do
+          acceptAttempt <- try @SomeException
+            (restore (tsAcceptWithPeerPolicy server peerPolicy))
+          case acceptAttempt of
+            Left err -> handleAcceptException err
+            Right (Left transportErr) ->
+              failLaunched (Text.pack (show transportErr))
+            Right (Right transport) -> pure (Right LaunchPluginResult
+              { lprTransport = transport
+              , lprOwnedProcess = ownedProcess
+              , lprSessionId = leSessionId launchEnvironment
+              , lprAuthToken = leAuthToken launchEnvironment
+              })
 
 data LaunchEnvironment = LaunchEnvironment
   { leVariables :: ![(String, String)]
@@ -375,38 +399,109 @@ processHandlePidWord64 processHandle = do
 unsavedWorldId :: String
 unsavedWorldId = "unsaved"
 
-pluginProcessSpec :: CreateProcess -> CreateProcess
+createContainedPluginProcess
+  :: Maybe PlatformContainment
+  -> FilePath
+  -> FilePath
+  -> [(String, String)]
+  -> IO ProcessHandle
 #if defined(mingw32_HOST_OS)
-pluginProcessSpec = id
+createContainedPluginProcess (Just (WindowsJob jobHandle)) executablePath workingDir environment = do
+  forcedFailure <- (== Just "1") <$> lookupEnv jobAssignmentFailureTestEnv
+  (application, commandLine) <- windowsApplicationAndCommand executablePath
+  alloca $ \processOut ->
+    alloca $ \pidOut ->
+      withCWString application $ \applicationPtr ->
+        withCWString commandLine $ \commandLinePtr ->
+          withCWString workingDir $ \workingDirPtr ->
+            withCWString (windowsEnvironmentBlock environment) $ \environmentPtr -> do
+              errorCode <- c_topoCreateAssignedProcess
+                applicationPtr
+                commandLinePtr
+                workingDirPtr
+                environmentPtr
+                jobHandle
+                (if forcedFailure then 1 else 0)
+                processOut
+                pidOut
+              if errorCode /= 0
+                then throwIO (userError
+                  ("suspended plugin creation/Job assignment failed with Windows error " <> show errorCode))
+                else do
+                  rawProcessHandle <- peek processOut
+                  if rawProcessHandle == nullPtr
+                    then throwIO (userError "suspended plugin creation returned no process handle")
+                    else mkProcessHandle rawProcessHandle False nullPtr
+createContainedPluginProcess Nothing _ _ _ =
+  throwIO (userError "missing pre-created plugin Job")
+
+windowsApplicationAndCommand :: FilePath -> IO (FilePath, String)
+windowsApplicationAndCommand executablePath =
+  pure (executablePath, quoteWindowsArgument executablePath)
+
+quoteWindowsArgument :: String -> String
+quoteWindowsArgument value = "\"" <> concatMap escape value <> "\""
+  where
+    escape '\"' = "\\\""
+    escape character = [character]
+
+windowsEnvironmentBlock :: [(String, String)] -> String
+windowsEnvironmentBlock variables =
+  concatMap (\(key, value) -> key <> "=" <> value <> "\0") ordered <> "\0"
+  where
+    ordered = sortOn (map toLower . fst) variables
+
+foreign import ccall unsafe "topo_create_assigned_process_w"
+  c_topoCreateAssignedProcess
+    :: Ptr CWchar
+    -> Ptr CWchar
+    -> Ptr CWchar
+    -> Ptr CWchar
+    -> HANDLE
+    -> CInt
+    -> Ptr PHANDLE
+    -> Ptr Word32
+    -> IO Word32
 #else
-pluginProcessSpec processSpec = processSpec { new_session = True }
+createContainedPluginProcess _ executablePath workingDir environment = do
+  (_, _, _, processHandle) <- createProcess
+    (proc executablePath [])
+      { cwd = Just workingDir
+      , env = Just environment
+      , std_in = NoStream
+      , std_out = NoStream
+      , std_err = Inherit
+      , new_session = True
+      }
+  pure processHandle
 #endif
 
 -- Process creation calls this while asynchronous exceptions are masked. The
 -- owner exists before pid discovery and containment attachment, so every setup
 -- failure can be cleaned or returned as that same residual owner.
 establishProcessOwnership
-  :: ProcessHandle
+  :: Maybe PlatformContainment
+  -> ProcessHandle
   -> IO (Either (Text, Maybe OwnedPluginProcess) OwnedPluginProcess)
-establishProcessOwnership processHandle = mask $ \_ -> do
+establishProcessOwnership preparedContainment processHandle = mask $ \_ -> do
   state <- newMVar OwnedPluginProcessState
-    { oppsContainment = NoPlatformContainment
+    { oppsContainment = preparedContainment
     , oppsCleanupComplete = False
     }
   identityResult <- trySync (processHandlePidWord64 processHandle)
   let mIdentity = either (const Nothing) id identityResult
       owned = OwnedPluginProcess processHandle mIdentity state
   setupResult <- trySync $ do
+    identity <- case mIdentity of
+      Nothing -> throwIO (userError "could not determine launched plugin process identity")
+      Just identity -> pure identity
+    containment <- attachPlatformContainment preparedContainment identity processHandle
+    modifyMVar state $ \ownershipState ->
+      pure (ownershipState { oppsContainment = Just containment }, ())
     forcedFailure <- lookupEnv containmentFailureTestEnv
     if forcedFailure == Just "1"
       then throwIO (userError "forced plugin containment setup failure")
       else pure ()
-    case mIdentity of
-      Nothing -> throwIO (userError "could not determine launched plugin process identity")
-      Just _ -> pure ()
-    containment <- attachPlatformContainment processHandle
-    modifyMVar state $ \ownershipState ->
-      pure (ownershipState { oppsContainment = containment }, ())
   case setupResult of
     Right () -> pure (Right owned)
     Left err -> do
@@ -422,15 +517,44 @@ containmentFailureTestEnv = "TOPO_TEST_PLUGIN_CONTAINMENT_FAILURE"
 cleanupFailureTestEnv :: String
 cleanupFailureTestEnv = "TOPO_TEST_PLUGIN_CLEANUP_FAILURE"
 
-attachPlatformContainment :: ProcessHandle -> IO PlatformContainment
+jobAssignmentFailureTestEnv :: String
+jobAssignmentFailureTestEnv = "TOPO_TEST_PLUGIN_JOB_ASSIGNMENT_FAILURE"
+
+jobPreparationFailureTestEnv :: String
+jobPreparationFailureTestEnv = "TOPO_TEST_PLUGIN_JOB_PREPARATION_FAILURE"
+
+preparePlatformContainment :: IO (Maybe PlatformContainment)
 #if defined(mingw32_HOST_OS)
-attachPlatformContainment processHandle = do
-  mJob <- attachProcessToKillOnCloseJob processHandle
-  case mJob of
-    Nothing -> throwIO (userError "could not attach launched plugin to a kill-on-close Job")
-    Just jobHandle -> pure (WindowsJob jobHandle)
+preparePlatformContainment = do
+  forcedFailure <- lookupEnv jobPreparationFailureTestEnv
+  if forcedFailure == Just "create"
+    then throwIO (userError "forced kill-on-close Job creation failure")
+    else pure ()
+  jobHandle <- createKillOnCloseJob
+  if jobHandle == nullPtr
+    then throwIO (userError "could not create/configure a kill-on-close Job")
+    else if forcedFailure == Just "configure"
+      then do
+        closeWindowsHandleIgnoring jobHandle
+        throwIO (userError "forced kill-on-close Job configuration failure")
+      else pure (Just (WindowsJob jobHandle))
 #else
-attachPlatformContainment _ = pure NoPlatformContainment
+preparePlatformContainment = pure Nothing
+#endif
+
+attachPlatformContainment
+  :: Maybe PlatformContainment
+  -> Word64
+  -> ProcessHandle
+  -> IO PlatformContainment
+#if defined(mingw32_HOST_OS)
+attachPlatformContainment (Just containment@(WindowsJob _)) _ _ =
+  -- The native launcher assigned the still-suspended root before resuming it.
+  pure containment
+attachPlatformContainment Nothing _ _ =
+  throwIO (userError "missing pre-created plugin Job")
+#else
+attachPlatformContainment _ identity _ = pure (PosixProcessGroup identity)
 #endif
 
 #if defined(mingw32_HOST_OS)
@@ -442,34 +566,14 @@ foreign import ccall unsafe "windows.h CreateJobObjectW"
 foreign import ccall unsafe "windows.h SetInformationJobObject"
   c_SetInformationJobObject :: HANDLE -> CInt -> Ptr () -> Word32 -> IO CInt
 
-foreign import ccall unsafe "windows.h AssignProcessToJobObject"
-  c_AssignProcessToJobObject :: HANDLE -> HANDLE -> IO CInt
-
-foreign import ccall unsafe "windows.h OpenProcess"
-  c_OpenProcess :: Word32 -> CInt -> Word32 -> IO HANDLE
-
 foreign import ccall unsafe "windows.h CloseHandle"
   c_CloseHandle :: HANDLE -> IO CInt
 
-attachProcessToKillOnCloseJob :: ProcessHandle -> IO (Maybe HANDLE)
-attachProcessToKillOnCloseJob processHandle = do
-  mPid <- processHandlePidWord32 processHandle
-  case mPid of
-    Nothing -> pure Nothing
-    Just pid -> do
-      jobHandle <- createKillOnCloseJob
-      if jobHandle == nullPtr
-        then pure Nothing
-        else do
-          processHandleForAssign <- c_OpenProcess processAssignJobRights 0 pid
-          if processHandleForAssign == nullPtr
-            then closeWindowsHandleIgnoring jobHandle >> pure Nothing
-            else do
-              assigned <- c_AssignProcessToJobObject jobHandle processHandleForAssign
-              closeWindowsHandleIgnoring processHandleForAssign
-              if assigned == 0
-                then closeWindowsHandleIgnoring jobHandle >> pure Nothing
-                else pure (Just jobHandle)
+foreign import ccall unsafe "windows.h TerminateJobObject"
+  c_TerminateJobObject :: HANDLE -> Word32 -> IO CInt
+
+foreign import ccall unsafe "windows.h QueryInformationJobObject"
+  c_QueryInformationJobObject :: HANDLE -> CInt -> Ptr () -> Word32 -> Ptr Word32 -> IO CInt
 
 createKillOnCloseJob :: IO HANDLE
 createKillOnCloseJob = do
@@ -489,11 +593,6 @@ createKillOnCloseJob = do
         then closeWindowsHandleIgnoring jobHandle >> pure nullPtr
         else pure jobHandle
 
-processHandlePidWord32 :: ProcessHandle -> IO (Maybe Word32)
-processHandlePidWord32 processHandle = do
-  mPid <- getPid processHandle
-  pure (mPid >>= readMaybe . show)
-
 closeWindowsHandleIgnoring :: HANDLE -> IO ()
 closeWindowsHandleIgnoring handle = do
   _ <- closeWindowsHandle handle
@@ -503,9 +602,6 @@ closeWindowsHandle :: HANDLE -> IO Bool
 closeWindowsHandle handle
   | handle == nullPtr = pure True
   | otherwise = (/= 0) <$> c_CloseHandle handle
-
-processAssignJobRights :: Word32
-processAssignJobRights = 0x00000101
 
 jobObjectExtendedLimitInformation :: CInt
 jobObjectExtendedLimitInformation = 9
@@ -537,7 +633,7 @@ cleanupOwnedPluginProcess owned = mask $ \_ ->
         terminationResult <- if forcedFailure == Just "1"
           then pure (Right False)
           else try @SomeException
-            (terminateProcessCascade (oppTreeIdentity owned) (oppRootHandle owned))
+            (terminateOwnedProcess (oppsContainment state) (oppRootHandle owned))
         case terminationResult of
           Right True -> do
             releaseResult <- try @SomeException
@@ -545,7 +641,7 @@ cleanupOwnedPluginProcess owned = mask $ \_ ->
             case releaseResult of
               Right True -> pure
                 ( state
-                    { oppsContainment = NoPlatformContainment
+                    { oppsContainment = Nothing
                     , oppsCleanupComplete = True
                     }
                 , OwnedPluginCleanupComplete
@@ -553,52 +649,47 @@ cleanupOwnedPluginProcess owned = mask $ \_ ->
               _ -> pure (state, OwnedPluginCleanupFailed owned)
           _ -> pure (state, OwnedPluginCleanupFailed owned)
 
-releasePlatformContainment :: PlatformContainment -> IO Bool
+releasePlatformContainment :: Maybe PlatformContainment -> IO Bool
+releasePlatformContainment Nothing = pure True
 #if defined(mingw32_HOST_OS)
-releasePlatformContainment (WindowsJob jobHandle) = closeWindowsHandle jobHandle
-releasePlatformContainment NoPlatformContainment = pure True
+releasePlatformContainment (Just (WindowsJob jobHandle)) = closeWindowsHandle jobHandle
 #else
-releasePlatformContainment NoPlatformContainment = pure True
+releasePlatformContainment (Just (PosixProcessGroup _)) = pure True
 #endif
 
-terminateProcessCascade :: Maybe Word64 -> ProcessHandle -> IO Bool
-terminateProcessCascade treeIdentity processHandle = do
-  alreadyExited <- waitForProcessExitPoll 0 processHandle
-  if alreadyExited
-    then terminateStableDescendants treeIdentity >> pure True
+terminateOwnedProcess :: Maybe PlatformContainment -> ProcessHandle -> IO Bool
+#if defined(mingw32_HOST_OS)
+terminateOwnedProcess (Just (WindowsJob jobHandle)) processHandle = do
+  -- The Job is the ownership boundary. Terminate and query that same Job; root
+  -- exit alone is never accepted as proof that descendants are gone.
+  terminated <- (/= 0) <$> c_TerminateJobObject jobHandle 1
+  ignoreSyncExceptions (terminateProcess processHandle)
+  rootGone <- waitForProcessExitPoll processKillWaitMicros processHandle
+  treeGone <- waitForWindowsJobEmpty processKillWaitMicros jobHandle
+  pure (terminated && rootGone && treeGone)
+terminateOwnedProcess Nothing processHandle = do
+  -- Only reachable while recovering a failed pre-assignment launch. It is not
+  -- a successful containment mode and cleanup failure retains the owner.
+  ignoreSyncExceptions (terminateProcess processHandle)
+  waitForProcessExitPoll processKillWaitMicros processHandle
+#else
+terminateOwnedProcess (Just (PosixProcessGroup groupIdentity)) processHandle = do
+  signalPosixProcessGroup sigTERM groupIdentity
+  terminated <- waitForPosixProcessGroupGone
+    processTerminationWaitMicros groupIdentity processHandle
+  treeGone <- if terminated
+    then pure True
     else do
-      terminateProcessGracefully treeIdentity processHandle
-      terminated <- waitForProcessExitPoll processTerminationWaitMicros processHandle
-      if terminated
-        then terminateStableDescendants treeIdentity >> pure True
-        else do
-          escalateProcessTermination treeIdentity processHandle
-          killed <- waitForProcessExitPoll processKillWaitMicros processHandle
-          if killed
-            then terminateStableDescendants treeIdentity >> pure True
-            else pure False
-
--- The stable POSIX session/group identity outlives the root. Signal it even
--- after root exit so cleanup does not silently skip surviving descendants.
--- Windows descendants remain contained by the owned Job until its token closes.
-terminateStableDescendants :: Maybe Word64 -> IO ()
-terminateStableDescendants treeIdentity
-  | os == "mingw32" = pure ()
-  | otherwise = terminatePosixProcessGroup sigKILL treeIdentity
-
-terminateProcessGracefully :: Maybe Word64 -> ProcessHandle -> IO ()
-terminateProcessGracefully treeIdentity processHandle = do
-  if os == "mingw32"
-    then terminateWindowsProcessTree processHandle
-    else terminatePosixProcessGroup sigTERM treeIdentity
+      signalPosixProcessGroup sigKILL groupIdentity
+      waitForPosixProcessGroupGone processKillWaitMicros groupIdentity processHandle
+  -- Reap/observe the root as a separate requirement. The launch group may
+  -- outlive its leader, so this check never substitutes for group teardown.
+  rootGone <- waitForProcessExitPoll processKillWaitMicros processHandle
+  pure (treeGone && rootGone)
+terminateOwnedProcess Nothing processHandle = do
   ignoreSyncExceptions (terminateProcess processHandle)
-
-escalateProcessTermination :: Maybe Word64 -> ProcessHandle -> IO ()
-escalateProcessTermination treeIdentity processHandle = do
-  if os == "mingw32"
-    then terminateWindowsProcessTree processHandle
-    else terminatePosixProcessGroup sigKILL treeIdentity
-  ignoreSyncExceptions (terminateProcess processHandle)
+  waitForProcessExitPoll processKillWaitMicros processHandle
+#endif
 
 ignoreSyncExceptions :: IO () -> IO ()
 ignoreSyncExceptions action = do
@@ -607,23 +698,41 @@ ignoreSyncExceptions action = do
     Left _ -> pure ()
     Right _ -> pure ()
 
-terminateWindowsProcessTree :: ProcessHandle -> IO ()
-terminateWindowsProcessTree processHandle = do
-  mPid <- getPid processHandle
-  case mPid of
-    Nothing -> pure ()
-    Just pid -> do
-      taskkillResult <- trySync $
-        createProcess (proc "taskkill" ["/PID", show pid, "/T", "/F"])
-          { std_in = NoStream
-          , std_out = NoStream
-          , std_err = NoStream
-          }
-      case taskkillResult of
-        Left _ -> pure ()
-        Right (_, _, _, taskkillHandle) -> do
-          _ <- waitForProcessExitPoll processTerminationWaitMicros taskkillHandle
-          pure ()
+#if defined(mingw32_HOST_OS)
+waitForWindowsJobEmpty :: Int -> HANDLE -> IO Bool
+waitForWindowsJobEmpty remainingMicros jobHandle = do
+  mActive <- windowsJobActiveProcessCount jobHandle
+  case mActive of
+    Just 0 -> pure True
+    _ | remainingMicros <= 0 -> pure False
+      | otherwise -> do
+          let delayMicros = min processPollDelayMicros remainingMicros
+          threadDelay delayMicros
+          waitForWindowsJobEmpty (remainingMicros - delayMicros) jobHandle
+
+windowsJobActiveProcessCount :: HANDLE -> IO (Maybe Word32)
+windowsJobActiveProcessCount jobHandle =
+  allocaBytes jobObjectBasicAccountingInformationSize $ \infoPtr -> do
+    fillBytes infoPtr 0 jobObjectBasicAccountingInformationSize
+    queried <- c_QueryInformationJobObject
+      jobHandle
+      jobObjectBasicAccountingInformation
+      infoPtr
+      (fromIntegral jobObjectBasicAccountingInformationSize)
+      nullPtr
+    if queried == 0
+      then pure Nothing
+      else Just <$> peekByteOff infoPtr jobObjectActiveProcessesOffset
+
+jobObjectBasicAccountingInformation :: CInt
+jobObjectBasicAccountingInformation = 1
+
+jobObjectBasicAccountingInformationSize :: Int
+jobObjectBasicAccountingInformationSize = 48
+
+jobObjectActiveProcessesOffset :: Int
+jobObjectActiveProcessesOffset = 40
+#endif
 
 waitForProcessExitPoll :: Int -> ProcessHandle -> IO Bool
 waitForProcessExitPoll remainingMicros processHandle = do
@@ -637,26 +746,51 @@ waitForProcessExitPoll remainingMicros processHandle = do
           threadDelay delayMicros
           waitForProcessExitPoll (remainingMicros - delayMicros) processHandle
 
-terminatePosixProcessGroup :: CInt -> Maybe Word64 -> IO ()
-#if defined(mingw32_HOST_OS)
-terminatePosixProcessGroup _ _ = pure ()
-#else
-terminatePosixProcessGroup signalNumber mTreeIdentity =
-  case fromIntegral <$> mTreeIdentity of
-    Nothing -> pure ()
-    Just pid -> ignoreSyncExceptions $ do
-      _ <- c_kill (negate pid) signalNumber
-      pure ()
+#if !defined(mingw32_HOST_OS)
+signalPosixProcessGroup :: CInt -> Word64 -> IO ()
+signalPosixProcessGroup signalNumber treeIdentity =
+  ignoreSyncExceptions $ do
+    _ <- c_kill (negate (fromIntegral treeIdentity)) signalNumber
+    pure ()
+
+waitForPosixProcessGroupGone :: Int -> Word64 -> ProcessHandle -> IO Bool
+waitForPosixProcessGroupGone remainingMicros treeIdentity processHandle = do
+  -- Reap the owned leader as soon as it exits; an unreaped zombie remains a
+  -- member of the group and would otherwise make verified cleanup fail once.
+  _ <- getProcessExitCode processHandle
+  exists <- posixProcessGroupExists treeIdentity
+  if not exists
+    then pure True
+    else if remainingMicros <= 0
+      then pure False
+      else do
+        let delayMicros = min processPollDelayMicros remainingMicros
+        threadDelay delayMicros
+        waitForPosixProcessGroupGone
+          (remainingMicros - delayMicros) treeIdentity processHandle
+
+posixProcessGroupExists :: Word64 -> IO Bool
+posixProcessGroupExists treeIdentity = do
+  result <- c_kill (negate (fromIntegral treeIdentity)) 0
+  if result == 0
+    then pure True
+    else do
+      err <- getErrno
+      if err == eSRCH
+        then pure False
+        else if err == eINTR
+          then posixProcessGroupExists treeIdentity
+          else pure True
 
 foreign import ccall unsafe "kill"
   c_kill :: CInt -> CInt -> IO CInt
-#endif
 
 sigTERM :: CInt
 sigTERM = 15
 
 sigKILL :: CInt
 sigKILL = 9
+#endif
 
 processTerminationWaitMicros :: Int
 processTerminationWaitMicros = 1000000
