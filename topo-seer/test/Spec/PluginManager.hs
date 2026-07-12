@@ -69,6 +69,8 @@ import Test.Hspec
 import Actor.UI (UiState(..), emptyUiState)
 import Actor.PluginManager
   ( LoadedPlugin(..)
+  , OwnedPluginCleanupResult(..)
+  , OwnedPluginProcess
   , PluginDiagnosticState(..)
   , PluginExternalDataSourceDiagnostic(..)
   , PluginLifecycleSnapshot(..)
@@ -79,6 +81,7 @@ import Actor.PluginManager
   , PluginSimulationPlan(..)
   , PluginStatus(..)
   , buildPluginSimulationPlanForPlugins
+  , cleanupOwnedPluginProcess
   , discoverPlugins
   , getDisabledPlugins
   , getLoadedPlugins
@@ -87,6 +90,8 @@ import Actor.PluginManager
   , getPluginOverlaySchemas
   , getPluginStages
   , mutatePluginResource
+  , ownedPluginProcessHandle
+  , ownedPluginProcessId
   , pluginDependencyDiagnostics
   , pluginDiagnosticState
   , pluginExternalDataSourceDiagnosticsFor
@@ -417,8 +422,9 @@ spec = describe "PluginManager" $ do
         pluginStatuses testLaunchPluginName loaded `shouldSatisfy` elem PluginConnected
         pluginLifecycleStates testLaunchPluginName loaded `shouldSatisfy` elem LifecycleReady
         pluginLifecycleProtocols testLaunchPluginName loaded `shouldSatisfy` elem (Just currentProtocolVersion)
-        let handles = pluginProcessHandles testLaunchPluginName loaded
-        null handles `shouldBe` False
+        let owners = pluginOwnedProcesses testLaunchPluginName loaded
+            handles = map ownedPluginProcessHandle owners
+        length owners `shouldBe` 1
         shutdownPlugins pluginManagerHandle
         shutdownPlugins pluginManagerHandle
         loadedAfterShutdown <- waitForLoadedPlugins
@@ -431,6 +437,35 @@ spec = describe "PluginManager" $ do
         pluginStatuses testLaunchPluginName loadedAfterShutdown `shouldSatisfy` elem PluginDisconnected
         pluginLifecycleStates testLaunchPluginName loadedAfterShutdown `shouldSatisfy` elem LifecycleStopped
         mapM_ (assertProcessExited testLaunchPluginName) handles
+        forM_ owners $ \owner -> do
+          assertOwnedCleanupComplete owner
+          assertOwnedCleanupComplete owner
+
+  it "retains the same owner when containment setup cleanup fails" $ do
+    withEnvironmentValue "TOPO_TEST_PLUGIN_CONTAINMENT_FAILURE" "1" $
+      withEnvironmentValue "TOPO_TEST_PLUGIN_CLEANUP_FAILURE" "1" $
+        withExecutablePluginDir testLaunchPluginName testLaunchManifestJSON "ok" $
+          withPluginManager $ \pluginManagerHandle -> do
+            discoverPlugins pluginManagerHandle
+            refreshManifests pluginManagerHandle
+            loaded <- getLoadedPlugins pluginManagerHandle
+            pluginStatuses testLaunchPluginName loaded `shouldSatisfy`
+              anyPluginErrorContaining "termination failed"
+            owner <- case pluginOwnedProcesses testLaunchPluginName loaded of
+              [ownedProcess] -> pure ownedProcess
+              owners -> expectationFailure
+                ("expected one retained process owner, got " <> show (length owners))
+                >> fail "missing retained process owner"
+            let stableIdentity = ownedPluginProcessId owner
+                processHandle = ownedPluginProcessHandle owner
+            retained <- getLoadedPlugins pluginManagerHandle
+            map ownedPluginProcessId (pluginOwnedProcesses testLaunchPluginName retained)
+              `shouldBe` [stableIdentity]
+            unsetEnv "TOPO_TEST_PLUGIN_CLEANUP_FAILURE"
+            shutdownPlugins pluginManagerHandle
+            stopped <- getLoadedPlugins pluginManagerHandle
+            null (pluginOwnedProcesses testLaunchPluginName stopped) `shouldBe` True
+            assertProcessExited testLaunchPluginName processHandle
 
   it "launches plugins with explicit TOPO_PLUGIN env and no parent secrets" $ do
     withParentStdioCompatibilityFlag $ do
@@ -1722,13 +1757,23 @@ simulationPlanOverlaySchema name = OverlaySchema
   , osFieldIndex = Map.empty
   }
 
-pluginProcessHandles :: String -> [LoadedPlugin] -> [ProcessHandle]
-pluginProcessHandles name loaded =
-  [ processHandle
+pluginOwnedProcesses :: String -> [LoadedPlugin] -> [OwnedPluginProcess]
+pluginOwnedProcesses name loaded =
+  [ ownedProcess
   | plugin <- loaded
   , lpName plugin == Text.pack name
-  , Just processHandle <- [lpProcessHandle plugin]
+  , Just ownedProcess <- [lpProcessHandle plugin]
   ]
+
+pluginProcessHandles :: String -> [LoadedPlugin] -> [ProcessHandle]
+pluginProcessHandles name = map ownedPluginProcessHandle . pluginOwnedProcesses name
+
+assertOwnedCleanupComplete :: OwnedPluginProcess -> IO ()
+assertOwnedCleanupComplete ownedProcess = do
+  cleanupResult <- cleanupOwnedPluginProcess ownedProcess
+  case cleanupResult of
+    OwnedPluginCleanupComplete -> pure ()
+    OwnedPluginCleanupFailed _ -> expectationFailure "owned plugin process cleanup did not complete"
 
 expectPluginProcessHandles :: String -> [LoadedPlugin] -> IO [ProcessHandle]
 expectPluginProcessHandles name loaded =
@@ -2396,6 +2441,15 @@ withParentStdioCompatibilityFlag = bracket setup restore . const
       setEnv pluginStdioCompatibilityEnv "1"
       pure old
     restore = maybe (unsetEnv pluginStdioCompatibilityEnv) (setEnv pluginStdioCompatibilityEnv)
+
+withEnvironmentValue :: String -> String -> IO a -> IO a
+withEnvironmentValue key value = bracket setup restore . const
+  where
+    setup = do
+      old <- lookupEnv key
+      setEnv key value
+      pure old
+    restore = maybe (unsetEnv key) (setEnv key)
 
 withSensitiveParentEnvironment :: IO a -> IO a
 withSensitiveParentEnvironment = bracket setup restore . const

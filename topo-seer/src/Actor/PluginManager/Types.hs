@@ -63,8 +63,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time (NominalDiffTime, UTCTime, diffUTCTime)
 import System.Info (os)
-import System.Process (ProcessHandle)
-
+import Actor.PluginManager.ProcessLauncher (OwnedPluginProcess)
 import Topo.Overlay.Schema (OverlaySchema(..))
 import Topo.Pipeline.Stage (allBuiltinStageIds, stageCanonicalName)
 import Topo.Plugin (Capability(..))
@@ -1106,8 +1105,8 @@ data LoadedPlugin = LoadedPlugin
     -- ^ Observable lifecycle diagnostics.
   , lpConnection :: !(Maybe RPCConnection)
     -- ^ Active RPC connection, if connected.
-  , lpProcessHandle :: !(Maybe ProcessHandle)
-    -- ^ Active plugin subprocess handle, if launched.
+  , lpProcessHandle :: !(Maybe OwnedPluginProcess)
+    -- ^ Sole owner of the active plugin subprocess and its containment.
   , lpStartPolicy :: !RPCStartPolicy
     -- ^ Host-side startup, restart, and timeout policy.
   , lpRestartHistory :: ![UTCTime]

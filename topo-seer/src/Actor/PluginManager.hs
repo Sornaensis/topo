@@ -14,6 +14,14 @@ module Actor.PluginManager
   , pluginManagerActorDef
     -- * Loaded plugin info
   , LoadedPlugin(..)
+  , OwnedPluginProcess
+  , OwnedPluginCleanupResult(..)
+  , ownedPluginProcessHandle
+  , ownedPluginProcessId
+  , ownedPluginProcessExitCode
+  , cleanupOwnedPluginProcess
+  , RefreshRuntimeCleanupFailed
+  , refreshRuntimeCleanupOwners
   , PluginLifecycleSnapshot(..)
   , PluginLifecycleState(..)
   , PluginStateLease(..)
@@ -79,7 +87,7 @@ module Actor.PluginManager
   ) where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException, mask, mask_, onException, try)
+import Control.Exception (SomeException, mask, mask_, onException, throwIO, try)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Aeson (Value)
 import Data.Map.Strict (Map)
@@ -88,6 +96,14 @@ import Data.Set (Set)
 import Data.Text (Text)
 import Hyperspace.Actor
 
+import Actor.PluginManager.ProcessLauncher
+  ( OwnedPluginCleanupResult(..)
+  , OwnedPluginProcess
+  , cleanupOwnedPluginProcess
+  , ownedPluginProcessExitCode
+  , ownedPluginProcessHandle
+  , ownedPluginProcessId
+  )
 import Actor.PluginManager.PipelineIntegrator
   ( PluginPipelineInput(..)
   , PluginPipelinePlan(..)
@@ -96,7 +112,9 @@ import Actor.PluginManager.PipelineIntegrator
   , buildPluginPipelinePlan
   )
 import Actor.PluginManager.PluginSupervisor
-  ( shutdownPlugin
+  ( RefreshRuntimeCleanupFailed
+  , refreshRuntimeCleanupOwners
+  , shutdownPlugin
   , withRefreshedManifestsHandlingPublishException
   )
 import Actor.PluginManager.RootSupervisor (PluginManager, pluginManagerActorDef)
@@ -220,19 +238,24 @@ refreshManifests handle = mask $ \restore -> do
     `onException` commitLifecycleTransition (call @"cancelRefresh" handle #cancelRefresh [])
   let cancelRefresh = commitLifecycleTransition $
         call @"cancelRefresh" handle #cancelRefresh plugins
-  restore
-    ( do
-        waitForLifecycleObservationLease plugins
-        withRefreshedManifestsHandlingPublishException
-          baseDir
-          (Map.fromList [(lpName p, p) | p <- plugins])
-          (\refreshed ->
-            commitLifecycleTransition $
-              call @"finishRefresh" handle #finishRefresh (Map.elems refreshed))
-          (\_ _ ->
-            commitLifecycleTransition $
-              call @"cancelRefresh" handle #cancelRefresh plugins)
-    ) `onException` cancelRefresh
+  refreshResult <- try @SomeException $ restore $ do
+    waitForLifecycleObservationLease plugins
+    withRefreshedManifestsHandlingPublishException
+      baseDir
+      (Map.fromList [(lpName p, p) | p <- plugins])
+      (\refreshed ->
+        commitLifecycleTransition $
+          call @"finishRefresh" handle #finishRefresh (Map.elems refreshed))
+      (\_ _ ->
+        commitLifecycleTransition $
+          call @"cancelRefresh" handle #cancelRefresh plugins)
+  case refreshResult of
+    Right () -> pure ()
+    Left err -> do
+      -- Never replace an ownership-carrying cleanup exception if rollback also
+      -- fails; callers must retain access to its residual process owners.
+      _ <- try @SomeException cancelRefresh
+      throwIO err
 
 -- | Shut down all connected plugins.
 shutdownPlugins

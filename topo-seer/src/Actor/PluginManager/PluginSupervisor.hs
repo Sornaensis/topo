@@ -20,11 +20,13 @@ module Actor.PluginManager.PluginSupervisor
   , markPluginStarting
   , markPluginStopping
   , disconnectPlugin
+  , RefreshRuntimeCleanupFailed
+  , refreshRuntimeCleanupOwners
   ) where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException, finally, mask, onException, throwIO, try)
-import Control.Monad (when)
+import Control.Exception (Exception, SomeException, finally, mask, onException, throwIO, try)
+import Control.Monad (unless, when)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -34,7 +36,6 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time (UTCTime, getCurrentTime)
 import System.Info (os)
-import System.Process (ProcessHandle, getPid, getProcessExitCode)
 
 import Actor.PluginManager.HandshakeSession
   ( ExpectedHandshakeCredentials(..)
@@ -43,9 +44,13 @@ import Actor.PluginManager.HandshakeSession
   )
 import Actor.PluginManager.ProcessLauncher
   ( LaunchPluginResult(..)
+  , OwnedPluginCleanupResult(..)
+  , OwnedPluginProcess
+  , cleanupOwnedPluginProcess
   , launchPluginTransport
+  , ownedPluginProcessExitCode
+  , ownedPluginProcessId
   , resolvePluginExecutable
-  , safeTerminateProcess
   )
 import Actor.PluginManager.Scanner (ManifestLoadFailure(..), loadManifestForHost)
 import Actor.PluginManager.Types
@@ -131,7 +136,12 @@ withRefreshedManifestsHandlingPublishException
   -> IO a
 withRefreshedManifestsHandlingPublishException baseDir plugins publish handlePublishException = mask $ \restore -> do
   ownedRef <- newIORef []
-  let cleanupOwned = cleanupTrackedRefreshRuntimes ownedRef
+  let cleanupOwned = do
+        retained <- cleanupTrackedRefreshRuntimes ownedRef
+        unless (null retained) $ do
+          let retainedState = foldr (\lp -> Map.insert (lpName lp) lp) plugins retained
+          _ <- try @SomeException (publish retainedState)
+          throwIO (RefreshRuntimeCleanupFailed retained)
   refreshed <- restore (Map.traverseWithKey (\_ lp -> refreshOneManifest baseDir lp) plugins)
     `onException` cleanupOwned
   connected <- restore (connectAndTrackRefreshRuntimes ownedRef refreshed)
@@ -377,26 +387,40 @@ refreshOwnsRuntime before after = runtimePresent after && before /= after
   where
     runtimePresent identity = riHasConnection identity || riHasProcess identity
 
-cleanupTrackedRefreshRuntimes :: IORef [LoadedPlugin] -> IO ()
+-- A failed unpublished-runtime cleanup remains reachable in the exception
+-- rather than being discarded with the refresh-local ownership list.
+data RefreshRuntimeCleanupFailed = RefreshRuntimeCleanupFailed ![LoadedPlugin]
+
+refreshRuntimeCleanupOwners :: RefreshRuntimeCleanupFailed -> [LoadedPlugin]
+refreshRuntimeCleanupOwners (RefreshRuntimeCleanupFailed plugins) = plugins
+
+instance Show RefreshRuntimeCleanupFailed where
+  show (RefreshRuntimeCleanupFailed plugins) =
+    "refresh runtime cleanup failed for: " <> show (map lpName plugins)
+
+instance Exception RefreshRuntimeCleanupFailed
+
+cleanupTrackedRefreshRuntimes :: IORef [LoadedPlugin] -> IO [LoadedPlugin]
 cleanupTrackedRefreshRuntimes ownedRef = do
   owned <- readIORef ownedRef
-  writeIORef ownedRef []
-  mapM_ cleanup owned
+  retained <- filter runtimeHandlesPresent <$> mapM cleanup owned
+  writeIORef ownedRef retained
+  pure retained
   where
     cleanup lp = do
       result <- try @SomeException (shutdownPlugin lp)
       case result of
-        Left _ -> pure ()
+        Left _ -> pure lp
         Right stopped -> retryTrackedCleanup 1 stopped
 
-retryTrackedCleanup :: Int -> LoadedPlugin -> IO ()
+retryTrackedCleanup :: Int -> LoadedPlugin -> IO LoadedPlugin
 retryTrackedCleanup attemptsLeft lp
-  | not (runtimeHandlesPresent lp) = pure ()
-  | attemptsLeft <= 0 = pure ()
+  | not (runtimeHandlesPresent lp) = pure lp
+  | attemptsLeft <= 0 = pure lp
   | otherwise = do
       result <- try @SomeException (shutdownPlugin lp)
       case result of
-        Left _ -> pure ()
+        Left _ -> pure lp
         Right stopped -> retryTrackedCleanup (attemptsLeft - 1) stopped
 
 runtimeHandlesPresent :: LoadedPlugin -> Bool
@@ -554,7 +578,7 @@ ensurePluginConnectionAfterExternalGate lp
   | otherwise =
       case (lpConnection lp, lpProcessHandle lp, lpStatus lp) of
         (_, Just processHandle, PluginError _) -> do
-          alive <- isNothing <$> getProcessExitCode processHandle
+          alive <- isNothing <$> ownedPluginProcessExitCode processHandle
           if alive
             then pure lp
             else restartCrashedPlugin lp
@@ -574,7 +598,7 @@ ensurePluginConnectionAfterExternalGate lp
             else restartCrashedPlugin lp
         (Nothing, Nothing, _) -> connectLoadedPlugin lp
         (Nothing, Just processHandle, _) -> do
-          alive <- isNothing <$> getProcessExitCode processHandle
+          alive <- isNothing <$> ownedPluginProcessExitCode processHandle
           if alive
             then pure lp
             else restartCrashedPlugin lp
@@ -631,14 +655,34 @@ connectLoadedPluginOnce executablePath lp = mask $ \restore -> do
         , lpProcessHandle = mProcessHandle
         , lpRestartHistory = pruneRestartHistory policy now (lpRestartHistory lp)
         }
-    Right launch ->
-      restore (connectLaunchedPlugin lp policy startupTimeoutMicros launch)
-        `onException` cleanupLaunchedPlugin policy (lprTransport launch) (lprProcessHandle launch)
+    Right launch -> do
+      connectResult <- try @SomeException
+        (restore (connectLaunchedPlugin lp policy startupTimeoutMicros launch))
+      case connectResult of
+        Right connected -> pure connected
+        Left err -> do
+          cleanupResult <- cleanupLaunchedPlugin policy (lprTransport launch) (lprOwnedProcess launch)
+          case cleanupResult of
+            OwnedPluginCleanupComplete -> throwIO err
+            OwnedPluginCleanupFailed retained -> do
+              now <- getCurrentTime
+              let message = "plugin cleanup failed after interrupted launch: " <> Text.pack (show err)
+              pure lp
+                { lpStatus = PluginError message
+                , lpLifecycle = failedLifecycle now "termination_failed" message
+                    (Just "process")
+                    (Text.pack . show <$> ownedPluginProcessId retained)
+                    Nothing
+                    (manifestLifecycleResources (lpManifest lp))
+                , lpConnection = Nothing
+                , lpProcessHandle = Just retained
+                , lpRestartHistory = pruneRestartHistory policy now (lpRestartHistory lp)
+                }
 
 connectLaunchedPlugin :: LoadedPlugin -> RPCStartPolicy -> Int -> LaunchPluginResult -> IO LoadedPlugin
 connectLaunchedPlugin lp policy startupTimeoutMicros launch = do
   let transport = lprTransport launch
-      processHandle = lprProcessHandle launch
+      processHandle = lprOwnedProcess launch
       expectedCredentials = ExpectedHandshakeCredentials
         { ehcSessionId = lprSessionId launch
         , ehcAuthToken = lprAuthToken launch
@@ -680,14 +724,16 @@ connectLaunchedPlugin lp policy startupTimeoutMicros launch = do
         , lpRestartHistory = pruneRestartHistory policy now (lpRestartHistory lp)
         }
 
-cleanupLaunchedPlugin :: RPCStartPolicy -> Transport -> ProcessHandle -> IO ()
-cleanupLaunchedPlugin policy transport processHandle = do
-  result <- try @SomeException (stopLaunchedPlugin policy transport processHandle)
-  case result of
-    Right False -> do
-      _ <- try @SomeException (safeTerminateProcess processHandle)
-      pure ()
-    _ -> pure ()
+cleanupLaunchedPlugin
+  :: RPCStartPolicy
+  -> Transport
+  -> OwnedPluginProcess
+  -> IO OwnedPluginCleanupResult
+cleanupLaunchedPlugin policy transport ownedProcess = do
+  cleanupResult <- try @SomeException (stopLaunchedPlugin policy transport ownedProcess)
+  case cleanupResult of
+    Right True -> pure OwnedPluginCleanupComplete
+    _ -> pure (OwnedPluginCleanupFailed ownedProcess)
 
 maybeRestartAfterFailure :: FilePath -> LoadedPlugin -> IO LoadedPlugin
 maybeRestartAfterFailure executablePath failedLp = do
@@ -712,11 +758,13 @@ clearExitedProcessHandle :: LoadedPlugin -> IO LoadedPlugin
 clearExitedProcessHandle lp =
   case lpProcessHandle lp of
     Nothing -> pure lp
-    Just processHandle -> do
-      alive <- isNothing <$> getProcessExitCode processHandle
-      pure $ if alive
-        then lp
-        else lp { lpProcessHandle = Nothing }
+    Just ownedProcess -> do
+      alive <- isNothing <$> ownedPluginProcessExitCode ownedProcess
+      if alive
+        then pure lp
+        else do
+          cleaned <- cleanupOwnedProcessComplete ownedProcess
+          pure $ if cleaned then lp { lpProcessHandle = Nothing } else lp
 
 markTerminationFailed :: UTCTime -> Text -> LoadedPlugin -> LoadedPlugin
 markTerminationFailed now context lp
@@ -873,16 +921,16 @@ handlePluginRuntimeFailure errorCode message lp = do
     Nothing -> pure failed
     Just executablePath -> maybeRestartAfterFailure executablePath failed
 
-stopLaunchedPlugin :: RPCStartPolicy -> Transport -> ProcessHandle -> IO Bool
-stopLaunchedPlugin _policy transport processHandle = do
+stopLaunchedPlugin :: RPCStartPolicy -> Transport -> OwnedPluginProcess -> IO Bool
+stopLaunchedPlugin _policy transport ownedProcess = do
   closeTransportIgnoring transport
-  safeTerminateProcess processHandle
+  cleanupOwnedProcessComplete ownedProcess
 
 stopLoadedPluginRuntime :: LoadedPlugin -> IO Bool
 stopLoadedPluginRuntime lp =
   (case lpProcessHandle lp of
     Nothing -> pure True
-    Just processHandle -> safeTerminateProcess processHandle)
+    Just ownedProcess -> cleanupOwnedProcessComplete ownedProcess)
     `finally` closePluginTransport lp
 
 closePluginTransport :: LoadedPlugin -> IO ()
@@ -913,7 +961,7 @@ pluginProcessAlive :: LoadedPlugin -> IO Bool
 pluginProcessAlive lp =
   case lpProcessHandle lp of
     Nothing -> pure True
-    Just processHandle -> isNothing <$> getProcessExitCode processHandle
+    Just ownedProcess -> isNothing <$> ownedPluginProcessExitCode ownedProcess
 
 markPluginStarting :: UTCTime -> LoadedPlugin -> LoadedPlugin
 markPluginStarting now lp = lp
@@ -934,7 +982,7 @@ shutdownPlugin lp = do
       pure ()
   terminated <- (case lpProcessHandle lp of
     Nothing -> pure True
-    Just processHandle -> waitForProcessExitOrTerminate (rspShutdownTimeoutMs (lpStartPolicy lp)) processHandle)
+    Just ownedProcess -> waitForProcessExitOrTerminate (rspShutdownTimeoutMs (lpStartPolicy lp)) ownedProcess)
     `finally` closePluginTransport lp
   let stopped = lp
         { lpConnection = Nothing
@@ -946,16 +994,14 @@ shutdownPlugin lp = do
       now <- getCurrentTime
       pure (markTerminationFailed now "plugin termination failed during shutdown" stopped)
 
-waitForProcessExitOrTerminate :: Int -> ProcessHandle -> IO Bool
-waitForProcessExitOrTerminate timeoutMillis processHandle = do
-  exited <- waitForProcessExitPoll (policyTimeoutMicros timeoutMillis) processHandle
-  if exited
-    then pure True
-    else safeTerminateProcess processHandle
+waitForProcessExitOrTerminate :: Int -> OwnedPluginProcess -> IO Bool
+waitForProcessExitOrTerminate timeoutMillis ownedProcess = do
+  _ <- waitForProcessExitPoll (policyTimeoutMicros timeoutMillis) ownedProcess
+  cleanupOwnedProcessComplete ownedProcess
 
-waitForProcessExitPoll :: Int -> ProcessHandle -> IO Bool
-waitForProcessExitPoll remainingMicros processHandle = do
-  mExit <- getProcessExitCode processHandle
+waitForProcessExitPoll :: Int -> OwnedPluginProcess -> IO Bool
+waitForProcessExitPoll remainingMicros ownedProcess = do
+  mExit <- ownedPluginProcessExitCode ownedProcess
   case mExit of
     Just _ -> pure True
     Nothing
@@ -963,7 +1009,7 @@ waitForProcessExitPoll remainingMicros processHandle = do
       | otherwise -> do
           let delayMicros = min processPollDelayMicros remainingMicros
           threadDelay delayMicros
-          waitForProcessExitPoll (remainingMicros - delayMicros) processHandle
+          waitForProcessExitPoll (remainingMicros - delayMicros) ownedProcess
 
 processPollDelayMicros :: Int
 processPollDelayMicros = 10000
@@ -1037,8 +1083,16 @@ connectionLifecycleResources conn =
        then manifestLifecycleResources (rpcManifest conn)
        else negotiated
 
-processHandleIdText :: ProcessHandle -> IO (Maybe Text)
-processHandleIdText processHandle = fmap (Text.pack . show) <$> getPid processHandle
+processHandleIdText :: OwnedPluginProcess -> IO (Maybe Text)
+processHandleIdText ownedProcess =
+  pure (Text.pack . show <$> ownedPluginProcessId ownedProcess)
+
+cleanupOwnedProcessComplete :: OwnedPluginProcess -> IO Bool
+cleanupOwnedProcessComplete ownedProcess = do
+  cleanupResult <- cleanupOwnedPluginProcess ownedProcess
+  pure $ case cleanupResult of
+    OwnedPluginCleanupComplete -> True
+    OwnedPluginCleanupFailed _ -> False
 
 quoteText :: Text -> Text
 quoteText value = "'" <> value <> "'"
