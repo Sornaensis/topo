@@ -51,7 +51,7 @@ import System.Directory
   )
 import System.Environment (getArgs, getEnvironment, getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.Exit (die, exitFailure)
-import System.FilePath ((</>), takeDirectory)
+import System.FilePath (isAbsolute, (</>), takeDirectory, takeFileName)
 import System.Info (os)
 import System.IO (stdin, stdout)
 import System.Process
@@ -82,6 +82,7 @@ import Actor.PluginManager
   , discoverPlugins
   , getDisabledPlugins
   , getLoadedPlugins
+  , getPluginDataDirectories
   , getPluginExternalDataSources
   , getPluginOverlaySchemas
   , getPluginStages
@@ -113,7 +114,8 @@ import Topo.Plugin.DataResource
   , noOperations
   )
 import Seer.World.Persist
-  ( WorldExternalDataSourceSnapshot(..)
+  ( WorldPluginDataDirectory(..)
+  , WorldExternalDataSourceSnapshot(..)
   , WorldSaveManifest(..)
   , deleteNamedWorld
   , loadNamedWorld
@@ -950,14 +952,27 @@ spec = describe "PluginManager" $ do
 
                 snapshots <- getPluginExternalDataSources pluginManagerHandle
                 expectExternalSnapshots snapshots
+                pluginDataDirs <- getPluginDataDirectories pluginManagerHandle
+                Set.fromList (map wpddPlugin pluginDataDirs) `shouldBe`
+                  Set.fromList [externalProviderPluginNameText, externalConsumerPluginNameText]
+                Set.fromList (map wpddArchiveDirectory pluginDataDirs) `shouldBe`
+                  Set.fromList ["external-provider-data", "external-consumer-data"]
+                pluginDataDirs `shouldSatisfy` all
+                  (\entry -> isAbsolute (wpddSourceDirectory entry)
+                    && takeFileName (wpddSourceDirectory entry) == "data")
                 let world = emptyWorld (WorldConfig 8) defaultHexGridMeta
                     ui = emptyUiState { uiSeed = 77, uiChunkSize = 8 }
-                saveResult <- expectWithin "save external integration world" (saveNamedWorldWithPluginsAndExternalData externalIntegrationWorldName ui world [] snapshots)
+                saveResult <- expectWithin "save external integration world"
+                  (saveNamedWorldWithPluginsAndExternalData externalIntegrationWorldName ui world pluginDataDirs snapshots)
                 saveResult `shouldBe` Right ()
                 loadResult <- expectWithin "load external integration world" (loadNamedWorld externalIntegrationWorldName)
                 case loadResult of
                   Left err -> expectationFailure (Text.unpack err)
                   Right (manifest, _snapshot, _loadedWorld) -> do
+                    Set.fromList (wsmPluginData manifest) `shouldBe` Set.fromList
+                      [ (externalProviderPluginNameText, "external-provider-data")
+                      , (externalConsumerPluginNameText, "external-consumer-data")
+                      ]
                     wsmExternalDataSources manifest `shouldBe` snapshots
                     shouldNotMentionSQLite (wsmExternalDataSources manifest)
 

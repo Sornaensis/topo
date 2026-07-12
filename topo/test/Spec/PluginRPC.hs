@@ -392,6 +392,10 @@ isInvalidSimulationScheduleField :: ManifestError -> Bool
 isInvalidSimulationScheduleField (ManifestInvalidField "simulation.schedule" _) = True
 isInvalidSimulationScheduleField _ = False
 
+isInvalidDataDirectoryField :: ManifestError -> Bool
+isInvalidDataDirectoryField (ManifestInvalidField "dataDirectory" _) = True
+isInvalidDataDirectoryField _ = False
+
 isExternalGrantCapabilityError :: ManifestError -> Bool
 isExternalGrantCapabilityError (ManifestInvalidField field detail) =
   "externalDataSources.ledger.grants.write.capabilities" `Text.isPrefixOf` field
@@ -1850,11 +1854,13 @@ spec = describe "Plugin.RPC" $ do
     it "rejects unsafe handshake data directory values" $ do
       let manifest = baseManifest { rmDataDirectory = Just "plugin-data" }
           unsafeCases =
-            [ ("absolute", "/tmp/escape")
+            [ ("empty", "")
+            , ("absolute", "/tmp/escape")
             , ("drive", "C:\\escape")
             , ("dot", ".")
             , ("dotdot", "..")
             , ("parent", "plugin-data/../escape")
+            , ("mixed-separator-parent", "plugin-data\\nested/../escape")
             , ("empty-segment", "plugin-data//runtime")
             ]
       mapM_ (expectHandshakeDataDirectoryRejection manifest) unsafeCases
@@ -1866,13 +1872,27 @@ spec = describe "Plugin.RPC" $ do
         Left (RPCProtocolError msg) -> msg `shouldSatisfy` Text.isInfixOf "manifest does not declare dataDirectory"
         other -> expectationFailure ("expected undeclared data_directory rejection, got " <> handshakeResultSummary other)
 
-    it "rejects handshake data directories that widen the manifest declaration" $ do
+    it "rejects handshake data directories that mismatch the manifest declaration" $ do
       let manifest = baseManifest { rmDataDirectory = Just "plugin-data" }
-      result <- performTestHandshakeAckWithDataDirectory
-        "rpc-handshake-data-dir-widen" manifest (Just "plugin-data-other") []
-      case result of
-        Left (RPCProtocolError msg) -> msg `shouldSatisfy` Text.isInfixOf "must match or narrow"
-        other -> expectationFailure ("expected widened data_directory rejection, got " <> handshakeResultSummary other)
+      mapM_ (expectHandshakeDataDirectoryMismatch manifest)
+        [ ("widen", "plugin-data-other")
+        , ("sibling", "other-plugin-data")
+        ]
+
+    it "validates unsafe manifest data directories" $ do
+      let unsafeManifestDirectories =
+            [ ""
+            , "/tmp/escape"
+            , "C:\\escape"
+            , "."
+            , ".."
+            , "plugin-data\\nested/../escape"
+            ]
+      mapM_
+        (\dataDirectory ->
+          validateManifest (baseManifest { rmDataDirectory = Just dataDirectory })
+            `shouldSatisfy` any isInvalidDataDirectoryField)
+        unsafeManifestDirectories
 
     it "accepts handshake data resources that stay within the manifest declaration" $ do
       let manifest = baseManifest
@@ -2694,6 +2714,15 @@ expectHandshakeDataDirectoryRejection manifest (label, dataDirectory) = do
   case result of
     Left (RPCProtocolError msg) -> msg `shouldSatisfy` Text.isInfixOf "invalid handshake data_directory"
     other -> expectationFailure ("expected unsafe data_directory rejection for "
+      <> Text.unpack dataDirectory <> ", got " <> handshakeResultSummary other)
+
+expectHandshakeDataDirectoryMismatch :: RPCManifest -> (Text, Text) -> IO ()
+expectHandshakeDataDirectoryMismatch manifest (label, dataDirectory) = do
+  result <- performTestHandshakeAckWithDataDirectory
+    ("rpc-handshake-data-dir-mismatch-" <> label) manifest (Just dataDirectory) []
+  case result of
+    Left (RPCProtocolError msg) -> msg `shouldSatisfy` Text.isInfixOf "must match or narrow"
+    other -> expectationFailure ("expected mismatched data_directory rejection for "
       <> Text.unpack dataDirectory <> ", got " <> handshakeResultSummary other)
 
 handshakeResultSummary :: Either RPCError RPCConnection -> String

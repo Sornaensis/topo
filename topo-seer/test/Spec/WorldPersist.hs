@@ -15,11 +15,14 @@ import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import System.Directory
   ( createDirectoryIfMissing
+  , createDirectoryLink
+  , createFileLink
   , doesFileExist
   , removeDirectoryRecursive
   , removePathForcibly
   )
 import System.FilePath ((</>))
+import System.Info (os)
 import Test.Hspec
 import Spec.Support.OverlayFixtures (mkSparseFloatOverlay)
 
@@ -625,7 +628,7 @@ worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
                 wsmPluginData manifest `shouldBe` [("plugin-a", "safe/archive")]
         )
 
-    it "rejects unsafe or colliding plugin archive directories" $
+    it "rejects unsafe plugin archive directories without escaping the world plugin tree" $
       bracket
         createPluginDataSource
         (\source -> do
@@ -641,25 +644,143 @@ worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
                   , wpddSourceDirectory = source
                   , wpddArchiveDirectory = archiveDir
                   }
+                unsafeArchives =
+                  [ ""
+                  , "/tmp/escape"
+                  , "C:\\escape"
+                  , "."
+                  , ".."
+                  , "safe\\nested/../escape"
+                  ]
 
-            unsafeResult <- saveNamedWorldWithPluginsAndExternalData
-              testWorldName ui world [pluginData "../escape"] []
-            case unsafeResult of
-              Left err -> err `shouldSatisfy` Text.isInfixOf "safe relative path"
-              Right () -> expectationFailure "unsafe plugin archive directory was accepted"
+            mapM_
+              (\archiveDir -> do
+                saveResult <- saveNamedWorldWithPluginsAndExternalData
+                  testWorldName ui world [pluginData archiveDir] []
+                case saveResult of
+                  Left err -> err `shouldSatisfy` \message ->
+                    Text.isInfixOf "non-empty" message || Text.isInfixOf "safe relative path" message
+                  Right () -> expectationFailure
+                    ("unsafe plugin archive directory was accepted: " <> Text.unpack archiveDir))
+              unsafeArchives
 
-            collisionResult <- saveNamedWorldWithPluginsAndExternalData
-              testWorldName
-              ui
-              world
-              [ pluginData "shared"
-              , (pluginData "shared/child") { wpddPlugin = "plugin-b" }
-              ]
-              []
-            case collisionResult of
-              Left err -> err `shouldSatisfy` Text.isInfixOf "collide"
-              Right () -> expectationFailure "colliding plugin archive directories were accepted"
+            worlds <- worldDir
+            let worldPath = worlds </> Text.unpack testWorldName
+            doesFileExist (worldPath </> "escape" </> "state.txt") `shouldReturn` False
+            doesFileExist (worldPath </> "plugins" </> "escape" </> "state.txt") `shouldReturn` False
         )
+
+    it "rejects exact, normalized, and ancestor plugin archive destination collisions" $
+      bracket
+        createPluginDataSource
+        (\source -> do
+            _ <- deleteNamedWorld testWorldName
+            cleanupPath source
+        )
+        (\source -> do
+            let config = WorldConfig { wcChunkSize = 64 }
+                world = emptyWorld config defaultHexGridMeta
+                ui = emptyUiState { uiSeed = 42, uiChunkSize = 64 }
+                pluginData pluginName archiveDir = WorldPluginDataDirectory
+                  { wpddPlugin = pluginName
+                  , wpddSourceDirectory = source
+                  , wpddArchiveDirectory = archiveDir
+                  }
+                collisionCases =
+                  [ ("shared", "shared")
+                  , ("shared/path", "shared\\path")
+                  , ("shared", "shared/child")
+                  ]
+
+            mapM_
+              (\(leftArchive, rightArchive) -> do
+                collisionResult <- saveNamedWorldWithPluginsAndExternalData
+                  testWorldName
+                  ui
+                  world
+                  [ pluginData "plugin-a" leftArchive
+                  , pluginData "plugin-b" rightArchive
+                  ]
+                  []
+                case collisionResult of
+                  Left err -> err `shouldSatisfy` Text.isInfixOf "collide"
+                  Right () -> expectationFailure
+                    ("colliding plugin archive directories were accepted: "
+                      <> Text.unpack leftArchive <> " and " <> Text.unpack rightArchive))
+              collisionCases
+        )
+
+    it "rejects symbolic links inside plugin data sources" $
+      if os == "mingw32"
+        then pure ()
+        else bracket
+          (do
+              source <- createPluginDataSource
+              worlds <- worldDir
+              let outsideFile = worlds </> "__topo_test_plugin_data_outside__.txt"
+              cleanupPath outsideFile
+              writeFile outsideFile "outside-state"
+              createFileLink outsideFile (source </> "linked-state.txt")
+              pure (source, outsideFile))
+          (\(source, outsideFile) -> do
+              _ <- deleteNamedWorld testWorldName
+              cleanupPath source
+              cleanupPath outsideFile)
+          (\(source, _outsideFile) -> do
+              let config = WorldConfig { wcChunkSize = 64 }
+                  world = emptyWorld config defaultHexGridMeta
+                  ui = emptyUiState { uiSeed = 42, uiChunkSize = 64 }
+                  pluginData = WorldPluginDataDirectory
+                    { wpddPlugin = "plugin-a"
+                    , wpddSourceDirectory = source
+                    , wpddArchiveDirectory = "archive"
+                    }
+              saveResult <- saveNamedWorldWithPluginsAndExternalData
+                testWorldName ui world [pluginData] []
+              case saveResult of
+                Left err -> err `shouldSatisfy` Text.isInfixOf "symbolic link"
+                Right () -> expectationFailure "symbolic-link plugin data entry was bundled"
+              worlds <- worldDir
+              doesFileExist
+                (worlds </> Text.unpack testWorldName </> "plugins" </> "archive" </> "linked-state.txt")
+                `shouldReturn` False)
+
+    it "does not follow pre-existing symbolic-link archive destinations while saving" $
+      if os == "mingw32"
+        then pure ()
+        else bracket
+          (do
+              source <- createPluginDataSource
+              worlds <- worldDir
+              let worldPath = worlds </> Text.unpack testWorldName
+                  outsideDir = worlds </> "__topo_test_plugin_archive_outside__"
+              _ <- deleteNamedWorld testWorldName
+              cleanupPath outsideDir
+              createDirectoryIfMissing True (worldPath </> "plugins")
+              createDirectoryIfMissing True outsideDir
+              createDirectoryLink outsideDir (worldPath </> "plugins" </> "archive")
+              pure (source, outsideDir))
+          (\(source, outsideDir) -> do
+              _ <- deleteNamedWorld testWorldName
+              cleanupPath source
+              cleanupPath outsideDir)
+          (\(source, outsideDir) -> do
+              let config = WorldConfig { wcChunkSize = 64 }
+                  world = emptyWorld config defaultHexGridMeta
+                  ui = emptyUiState { uiSeed = 42, uiChunkSize = 64 }
+                  pluginData = WorldPluginDataDirectory
+                    { wpddPlugin = "plugin-a"
+                    , wpddSourceDirectory = source
+                    , wpddArchiveDirectory = "archive"
+                    }
+              saveResult <- saveNamedWorldWithPluginsAndExternalData
+                testWorldName ui world [pluginData] []
+              saveResult `shouldBe` Right ()
+              doesFileExist (outsideDir </> "state.txt") `shouldReturn` False
+              worlds <- worldDir
+              doesFileExist
+                (worlds </> Text.unpack testWorldName </> "plugins" </> "archive" </> "state.txt")
+                `shouldReturn` True)
 
     it "loads old-format world directories without sidecar when manifest is empty" $
       bracket
