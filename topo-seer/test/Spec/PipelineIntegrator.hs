@@ -20,6 +20,7 @@ import Actor.PluginManager
   , PluginPipelinePlan(..)
   , PluginStatus(..)
   , buildPluginPipelinePlan
+  , newConnectionOnlyPluginRuntime
   , pluginLifecycleSnapshot
   )
 import Topo.Pipeline (PipelineConfig(..), PipelineStage(..), defaultPipelineConfig)
@@ -233,8 +234,8 @@ connectedPlugin name mGenerator = LoadedPlugin
   , lpParams = Map.empty
   , lpStatus = PluginConnected
   , lpLifecycle = pluginLifecycleSnapshot now LifecycleReady Nothing Nothing Nothing Nothing Nothing (Just currentProtocolVersion) []
-  , lpConnection = Just (newRPCConnection manifest (Transport stdin stdout name) Map.empty)
-  , lpProcessHandle = Nothing
+  , lpRuntime = Just (newConnectionOnlyPluginRuntime
+      (newRPCConnection manifest (Transport stdin stdout name) Map.empty))
   , lpStartPolicy = defaultRPCStartPolicy
   , lpRestartHistory = []
   , lpDirectory = ""

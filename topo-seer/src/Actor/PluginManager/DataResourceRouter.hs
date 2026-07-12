@@ -12,6 +12,7 @@ import Data.Text (Text)
 
 import Actor.PluginManager.Types
   ( LoadedPlugin(..)
+  , lpConnection
   , PluginLifecycleSnapshot(..)
   , PluginManagerState(..)
   , PluginStatus(..)

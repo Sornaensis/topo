@@ -114,8 +114,7 @@ tryLoadPlugin baseDir entry = do
             , lpLifecycle  = pluginLifecycleSnapshot now LifecycleDiscovered
                 (Just "manifest discovered") Nothing Nothing Nothing Nothing Nothing
                 (manifestLifecycleResources manifest)
-            , lpConnection = Nothing
-            , lpProcessHandle = Nothing
+            , lpRuntime = Nothing
             , lpStartPolicy = rmStartPolicy manifest
             , lpRestartHistory = []
             , lpDirectory  = pluginDir
@@ -193,8 +192,7 @@ loadedPluginFromFailure now pluginDir failure =
     , lpLifecycle  = pluginLifecycleSnapshot now LifecycleDegraded
         (Just "manifest load failed") (Just (mlfErrorCode failure)) (Just (mlfErrorMessage failure))
         Nothing Nothing Nothing (manifestLifecycleResources manifest)
-    , lpConnection = Nothing
-    , lpProcessHandle = Nothing
+    , lpRuntime = Nothing
     , lpStartPolicy = rmStartPolicy manifest
     , lpRestartHistory = []
     , lpDirectory  = pluginDir

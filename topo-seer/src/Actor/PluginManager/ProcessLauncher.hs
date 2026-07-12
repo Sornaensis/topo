@@ -8,7 +8,18 @@
 module Actor.PluginManager.ProcessLauncher
   ( OwnedPluginProcess
   , OwnedPluginCleanupResult(..)
+  , PluginRuntimeGeneration
+  , OwnedPluginRuntime
+  , OwnedPluginRuntimeCleanupResult(..)
   , LaunchPluginResult(..)
+  , freshPluginRuntimeGeneration
+  , newOwnedPluginRuntime
+  , newConnectionOnlyPluginRuntime
+  , ownedPluginRuntimeGeneration
+  , ownedPluginRuntimeConnection
+  , ownedPluginRuntimeProcess
+  , mapOwnedPluginRuntimeConnection
+  , cleanupOwnedPluginRuntime
   , ownedPluginProcessHandle
   , ownedPluginProcessId
   , ownedPluginProcessExitCode
@@ -33,6 +44,7 @@ import Crypto.Random (getRandomBytes)
 import Data.Char (toLower)
 import Data.List (sortOn)
 import Data.Text (Text)
+import Data.Unique (hashUnique, newUnique)
 import Data.Word (Word8, Word32, Word64)
 import Foreign.C.Types (CInt(..), CUInt(..), CWchar)
 #if !defined(mingw32_HOST_OS)
@@ -68,13 +80,16 @@ import Text.Read (readMaybe)
 import System.Process.Internals (PHANDLE, mkProcessHandle)
 #endif
 
+import Topo.Plugin.RPC (RPCConnection(..))
 import Topo.Plugin.RPC.Protocol (currentProtocolVersion)
 import Topo.Plugin.RPC.Transport
   ( Transport
   , TransportConfig(..)
+  , TransportError(..)
   , TransportEndpoint(..)
   , TransportPeerPolicy(..)
   , TransportServer(..)
+  , closeTransport
   , defaultTransportConfig
   , endpointKindText
   , openPluginServer
@@ -146,6 +161,77 @@ data OwnedPluginCleanupResult
   = OwnedPluginCleanupComplete
   | OwnedPluginCleanupFailed !OwnedPluginProcess
 
+-- | Opaque identity for one launch attempt. It is allocated before process
+-- creation and travels with any retained partial or fully handshaken runtime.
+newtype PluginRuntimeGeneration = PluginRuntimeGeneration Int
+  deriving (Eq)
+
+-- | Sole owner of the resources created by one plugin launch. A connection is
+-- absent only while retaining a process from a pre-accept failure; published
+-- ready runtimes always contain both the accepted RPC connection and process.
+data OwnedPluginRuntime = OwnedPluginRuntime
+  { oprGeneration :: !PluginRuntimeGeneration
+  , oprConnection :: !(Maybe RPCConnection)
+  , oprProcess :: !(Maybe OwnedPluginProcess)
+  }
+
+-- | Cleanup either completed or returned the same aggregate because process
+-- ownership could not yet be discharged. Transport closure is idempotent.
+data OwnedPluginRuntimeCleanupResult
+  = OwnedPluginRuntimeCleanupComplete
+  | OwnedPluginRuntimeCleanupFailed !OwnedPluginRuntime
+
+freshPluginRuntimeGeneration :: IO PluginRuntimeGeneration
+freshPluginRuntimeGeneration = PluginRuntimeGeneration . hashUnique <$> newUnique
+
+newOwnedPluginRuntime
+  :: PluginRuntimeGeneration
+  -> Maybe RPCConnection
+  -> OwnedPluginProcess
+  -> OwnedPluginRuntime
+newOwnedPluginRuntime generation connection process =
+  OwnedPluginRuntime generation connection (Just process)
+
+-- | Construct an aggregate for an in-process transport that has no launched
+-- subprocess. This is used by embedded hosts and deterministic RPC tests.
+newConnectionOnlyPluginRuntime :: RPCConnection -> OwnedPluginRuntime
+newConnectionOnlyPluginRuntime connection =
+  OwnedPluginRuntime (PluginRuntimeGeneration 0) (Just connection) Nothing
+
+ownedPluginRuntimeGeneration :: OwnedPluginRuntime -> PluginRuntimeGeneration
+ownedPluginRuntimeGeneration = oprGeneration
+
+ownedPluginRuntimeConnection :: OwnedPluginRuntime -> Maybe RPCConnection
+ownedPluginRuntimeConnection = oprConnection
+
+ownedPluginRuntimeProcess :: OwnedPluginRuntime -> Maybe OwnedPluginProcess
+ownedPluginRuntimeProcess = oprProcess
+
+mapOwnedPluginRuntimeConnection
+  :: (RPCConnection -> RPCConnection)
+  -> OwnedPluginRuntime
+  -> OwnedPluginRuntime
+mapOwnedPluginRuntimeConnection f runtime = runtime
+  { oprConnection = f <$> oprConnection runtime }
+
+-- | Close the accepted transport (when present) and terminate the owned
+-- process tree. A failed process cleanup retains the whole aggregate so no
+-- destructive partial cleanup can be mistaken for a live Ready runtime.
+cleanupOwnedPluginRuntime :: OwnedPluginRuntime -> IO OwnedPluginRuntimeCleanupResult
+cleanupOwnedPluginRuntime runtime = mask $ \_ -> do
+  case oprConnection runtime of
+    Nothing -> pure ()
+    Just conn -> do
+      _ <- try @SomeException (closeTransport (rpcTransport conn))
+      pure ()
+  processResult <- case oprProcess runtime of
+    Nothing -> pure OwnedPluginCleanupComplete
+    Just process -> cleanupOwnedPluginProcess process
+  pure $ case processResult of
+    OwnedPluginCleanupComplete -> OwnedPluginRuntimeCleanupComplete
+    OwnedPluginCleanupFailed _ -> OwnedPluginRuntimeCleanupFailed runtime
+      { oprConnection = Nothing }
+
 #if defined(mingw32_HOST_OS)
 data PlatformContainment = WindowsJob !HANDLE
 #else
@@ -194,13 +280,16 @@ launchPluginTransportViaEndpoint
   -> Text
   -> Int
   -> IO (Either (Text, Maybe OwnedPluginProcess) LaunchPluginResult)
-launchPluginTransportViaEndpoint executablePath workingDir pluginName startupTimeoutMillis = do
-  serverResult <- openPluginServer
-    defaultTransportConfig { tcTimeout = max 1 startupTimeoutMillis }
-    pluginName
+launchPluginTransportViaEndpoint executablePath workingDir pluginName startupTimeoutMillis = mask $ \restore -> do
+  listenerFailure <- startupFailureInjected "listener"
+  serverResult <- if listenerFailure
+    then pure (Left (TransportConnectionFailed "forced listener creation failure"))
+    else openPluginServer
+      defaultTransportConfig { tcTimeout = max 1 startupTimeoutMillis }
+      pluginName
   case serverResult of
     Left err -> pure (Left (Text.pack (show err), Nothing))
-    Right server -> mask $ \restore -> do
+    Right server -> do
       preparedResult <- trySync preparePlatformContainment
       case preparedResult of
         Left err -> do
@@ -208,6 +297,10 @@ launchPluginTransportViaEndpoint executablePath workingDir pluginName startupTim
           pure (Left ("plugin containment setup failed before launch: " <> Text.pack (show err), Nothing))
         Right preparedContainment -> do
           processResult <- trySync $ do
+            processFailure <- startupFailureInjected "process"
+            if processFailure
+              then throwIO (userError "forced process creation failure")
+              else pure ()
             launchEnvironment <- endpointEnvironment (tsEndpoint server) pluginName workingDir
             processHandle <- createContainedPluginProcess
               preparedContainment
@@ -230,7 +323,7 @@ finishOwnedLaunch
   -> LaunchEnvironment
   -> Either (Text, Maybe OwnedPluginProcess) OwnedPluginProcess
   -> IO (Either (Text, Maybe OwnedPluginProcess) LaunchPluginResult)
-finishOwnedLaunch restore server launchEnvironment ownershipResult =
+finishOwnedLaunch _restore server launchEnvironment ownershipResult =
   case ownershipResult of
     Left (message, residualOwner) -> do
       safeCloseServer server
@@ -254,8 +347,11 @@ finishOwnedLaunch restore server launchEnvironment ownershipResult =
       case peerPolicyResult of
         Left message -> failLaunched message
         Right peerPolicy -> do
-          acceptAttempt <- try @SomeException
-            (restore (tsAcceptWithPeerPolicy server peerPolicy))
+          acceptAttempt <- try @SomeException $ do
+            acceptFailure <- startupFailureInjected "accept"
+            if acceptFailure
+              then throwIO (userError "forced endpoint accept failure")
+              else tsAcceptWithPeerPolicy server peerPolicy
           case acceptAttempt of
             Left err -> handleAcceptException err
             Right (Left transportErr) ->
@@ -522,6 +618,12 @@ jobAssignmentFailureTestEnv = "TOPO_TEST_PLUGIN_JOB_ASSIGNMENT_FAILURE"
 
 jobPreparationFailureTestEnv :: String
 jobPreparationFailureTestEnv = "TOPO_TEST_PLUGIN_JOB_PREPARATION_FAILURE"
+
+startupFailureTestEnv :: String
+startupFailureTestEnv = "TOPO_TEST_PLUGIN_STARTUP_FAILURE"
+
+startupFailureInjected :: String -> IO Bool
+startupFailureInjected phase = (== Just phase) <$> lookupEnv startupFailureTestEnv
 
 preparePlatformContainment :: IO (Maybe PlatformContainment)
 #if defined(mingw32_HOST_OS)

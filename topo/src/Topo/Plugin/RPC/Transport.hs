@@ -77,6 +77,7 @@ import Control.Exception
   , evaluate
   , finally
   , fromException
+  , mask
   , onException
   , throwIO
   , try
@@ -471,15 +472,25 @@ mkTransport name readH writeH shared = do
   -- socket/pipe endpoints therefore duplicate the handle so the background RPC
   -- receiver cannot block concurrent sends on the same Handle lock.
   writeHandle <- if shared then hDuplicate readH else pure writeH
-  hSetBinaryMode readH True
-  hSetBinaryMode writeHandle True
-  hSetBuffering readH NoBuffering
-  hSetBuffering writeHandle NoBuffering
-  pure Transport
-    { tReadHandle  = readH
-    , tWriteHandle = writeHandle
-    , tPluginName  = name
-    }
+  let cleanupDuplicate
+        | shared = safeCloseTransportHandle writeHandle
+        | otherwise = pure ()
+  (do
+      hSetBinaryMode readH True
+      hSetBinaryMode writeHandle True
+      hSetBuffering readH NoBuffering
+      hSetBuffering writeHandle NoBuffering
+      pure Transport
+        { tReadHandle  = readH
+        , tWriteHandle = writeHandle
+        , tPluginName  = name
+        }
+    ) `onException` cleanupDuplicate
+
+safeCloseTransportHandle :: Handle -> IO ()
+safeCloseTransportHandle handle = do
+  _ <- try (hClose handle) :: IO (Either SomeException ())
+  pure ()
 
 -- | Close the transport connection.
 closeTransport :: Transport -> IO ()
@@ -636,7 +647,7 @@ securityAttributesSize
   | otherwise = 12
 
 openNamedPipeServer :: TransportConfig -> Text -> IO (Either TransportError TransportServer)
-openNamedPipeServer cfg pluginName = catchSync go handler
+openNamedPipeServer cfg pluginName = mask $ \_ -> catchSync go handler
   where
     go = do
       hostReadPipeName <- allocateNamedPipeName (pluginName <> "-host-read")
@@ -644,33 +655,58 @@ openNamedPipeServer cfg pluginName = catchSync go handler
       readPipeResult <- createNamedPipeEndpoint hostReadPipeName
       case readPipeResult of
         Left err -> pure (Left err)
-        Right readPipeH -> do
-          writePipeResult <- createNamedPipeEndpoint hostWritePipeName
-          case writePipeResult of
-            Left err -> do
-              closeRawHandle readPipeH
-              pure (Left err)
-            Right writePipeH -> do
-              readOwned <- newIORef True
-              writeOwned <- newIORef True
-              pure (Right TransportServer
-                { tsEndpoint = TransportEndpoint
-                    { teKind = TransportEndpointNamedPipe
-                    , teAddress = encodeNamedPipePair hostReadPipeName hostWritePipeName
-                    }
-                , tsAccept = acceptNamedPipeTransportPair cfg pluginName transportPeerPolicyAny
-                    readOwned readPipeH hostReadPipeName
-                    writeOwned writePipeH hostWritePipeName
-                , tsAcceptWithPeerPolicy = \peerPolicy ->
-                    acceptNamedPipeTransportPair cfg pluginName peerPolicy
-                      readOwned readPipeH hostReadPipeName
-                      writeOwned writePipeH hostWritePipeName
-                , tsClose = do
-                    closeOwnedNamedPipe readOwned readPipeH
-                    closeOwnedNamedPipe writeOwned writePipeH
-                })
+        Right readPipeH -> finishNamedPipeServer
+          cfg pluginName hostReadPipeName hostWritePipeName readPipeH
     handler (err :: SomeException) =
       pure (Left (TransportConnectionFailed (Text.pack (show err))))
+
+finishNamedPipeServer
+  :: TransportConfig
+  -> Text
+  -> FilePath
+  -> FilePath
+  -> HANDLE
+  -> IO (Either TransportError TransportServer)
+finishNamedPipeServer cfg pluginName hostReadPipeName hostWritePipeName readPipeH = do
+  readOwned <- newIORef True
+  let closeRead = closeOwnedNamedPipe readOwned readPipeH
+  (do
+      writePipeResult <- createNamedPipeEndpoint hostWritePipeName
+      case writePipeResult of
+        Left err -> closeRead >> pure (Left err)
+        Right writePipeH ->
+          buildNamedPipeServer cfg pluginName hostReadPipeName hostWritePipeName
+            readOwned readPipeH writePipeH
+            `onException` (closeRead >> closeRawHandle writePipeH)
+    ) `onException` closeRead
+
+buildNamedPipeServer
+  :: TransportConfig
+  -> Text
+  -> FilePath
+  -> FilePath
+  -> IORef Bool
+  -> HANDLE
+  -> HANDLE
+  -> IO (Either TransportError TransportServer)
+buildNamedPipeServer cfg pluginName hostReadPipeName hostWritePipeName readOwned readPipeH writePipeH = do
+  writeOwned <- newIORef True
+  pure (Right TransportServer
+    { tsEndpoint = TransportEndpoint
+        { teKind = TransportEndpointNamedPipe
+        , teAddress = encodeNamedPipePair hostReadPipeName hostWritePipeName
+        }
+    , tsAccept = acceptNamedPipeTransportPair cfg pluginName transportPeerPolicyAny
+        readOwned readPipeH hostReadPipeName
+        writeOwned writePipeH hostWritePipeName
+    , tsAcceptWithPeerPolicy = \peerPolicy ->
+        acceptNamedPipeTransportPair cfg pluginName peerPolicy
+          readOwned readPipeH hostReadPipeName
+          writeOwned writePipeH hostWritePipeName
+    , tsClose = do
+        closeOwnedNamedPipe readOwned readPipeH
+        closeOwnedNamedPipe writeOwned writePipeH
+    })
 
 createNamedPipeEndpoint :: FilePath -> IO (Either TransportError HANDLE)
 createNamedPipeEndpoint pipeName = do
@@ -746,8 +782,8 @@ acceptNamedPipeTransport
   -> HANDLE
   -> FilePath
   -> IO (Either TransportError Transport)
-acceptNamedPipeTransport cfg pluginName peerPolicy owned pipeH pipeName = do
-  connectResult <- waitForNamedPipeConnection cfg owned pipeH pipeName
+acceptNamedPipeTransport cfg pluginName peerPolicy owned pipeH pipeName = mask $ \restore -> do
+  connectResult <- restore (waitForNamedPipeConnection cfg owned pipeH pipeName)
   case connectResult of
     Left err -> pure (Left err)
     Right () -> do
@@ -767,14 +803,14 @@ acceptNamedPipeTransportPair
   -> HANDLE
   -> FilePath
   -> IO (Either TransportError Transport)
-acceptNamedPipeTransportPair cfg pluginName peerPolicy readOwned readPipeH readPipeName writeOwned writePipeH writePipeName = do
-  readConnectResult <- waitForNamedPipeConnection cfg readOwned readPipeH readPipeName
+acceptNamedPipeTransportPair cfg pluginName peerPolicy readOwned readPipeH readPipeName writeOwned writePipeH writePipeName = mask $ \restore -> do
+  readConnectResult <- restore (waitForNamedPipeConnection cfg readOwned readPipeH readPipeName)
   case readConnectResult of
     Left err -> do
       closeOwnedNamedPipe writeOwned writePipeH
       pure (Left err)
     Right () -> do
-      writeConnectResult <- waitForNamedPipeConnection cfg writeOwned writePipeH writePipeName
+      writeConnectResult <- restore (waitForNamedPipeConnection cfg writeOwned writePipeH writePipeName)
       case writeConnectResult of
         Left err -> do
           closeOwnedNamedPipe readOwned readPipeH
@@ -1104,7 +1140,7 @@ foreign import ccall unsafe "unistd.h getpeereid"
 #endif
 
 openUnixSocketServer :: TransportConfig -> Text -> IO (Either TransportError TransportServer)
-openUnixSocketServer cfg pluginName = catchSync go handler
+openUnixSocketServer cfg pluginName = mask $ \_ -> catchSync go handler
   where
     go = do
       socketPath <- allocateUnixSocketPath cfg pluginName
@@ -1141,15 +1177,21 @@ openUnixSocketServer cfg pluginName = catchSync go handler
       pure (Left (TransportConnectionFailed (Text.pack (show err))))
 
 allocateUnixSocketPath :: TransportConfig -> Text -> IO FilePath
-allocateUnixSocketPath cfg _pluginName = do
+allocateUnixSocketPath cfg _pluginName = mask $ \_ -> do
   let baseDir = if null (tcPipeDir cfg) then "/tmp" else tcPipeDir cfg
   createDirectoryIfMissing True baseDir
   (socketDir, handle) <- openBinaryTempFile baseDir "topo."
-  hClose handle
-  removeFileIfExists socketDir
-  createDirectory socketDir
-  setFileMode socketDir ownerModes
-  pure (socketDir </> "p.sock")
+  let cleanupPartial = do
+        safeCloseTransportHandle handle
+        removeFileIfExists socketDir
+        removeDirectoryIfExists socketDir
+      setup = do
+        hClose handle
+        removeFileIfExists socketDir
+        createDirectory socketDir
+        setFileMode socketDir ownerModes
+        pure (socketDir </> "p.sock")
+  setup `onException` cleanupPartial
 
 acceptUnixSocketTransport
   :: TransportConfig
@@ -1158,7 +1200,7 @@ acceptUnixSocketTransport
   -> Socket.Socket
   -> FilePath
   -> IO (Either TransportError Transport)
-acceptUnixSocketTransport cfg pluginName peerPolicy sock socketPath = do
+acceptUnixSocketTransport cfg pluginName peerPolicy sock socketPath = mask $ \restore -> do
   let cleanup = do
         safeCloseSocket sock
         removeUnixSocketPath socketPath
@@ -1166,7 +1208,7 @@ acceptUnixSocketTransport cfg pluginName peerPolicy sock socketPath = do
       waitForAccept
         | tcTimeout cfg <= 0 = Just <$> acceptOnce
         | otherwise = timeout (tcTimeout cfg * 1000) acceptOnce
-  acceptResult <- trySync waitForAccept :: IO (Either SomeException (Maybe (Socket.Socket, Socket.SockAddr)))
+  acceptResult <- trySync (restore waitForAccept) :: IO (Either SomeException (Maybe (Socket.Socket, Socket.SockAddr)))
   case acceptResult of
     Left err -> do
       cleanup
@@ -1185,13 +1227,18 @@ acceptUnixSocketTransport cfg pluginName peerPolicy sock socketPath = do
         Right () -> do
           safeCloseSocket sock
           removeUnixSocketPath socketPath
-          handleResult <- trySync ((Socket.socketToHandle conn ReadWriteMode >>= \h -> mkTransport pluginName h h True) `onException` safeCloseSocket conn)
-            :: IO (Either SomeException Transport)
-          case handleResult of
+          rawHandleResult <- trySync (Socket.socketToHandle conn ReadWriteMode)
+            :: IO (Either SomeException Handle)
+          case rawHandleResult of
             Left err -> do
               safeCloseSocket conn
               pure (Left (TransportConnectionFailed (Text.pack (show err))))
-            Right transport -> pure (Right transport)
+            Right handle -> do
+              handleResult <- trySync (mkTransport pluginName handle handle True `onException` safeCloseTransportHandle handle)
+                :: IO (Either SomeException Transport)
+              case handleResult of
+                Left err -> pure (Left (TransportConnectionFailed (Text.pack (show err))))
+                Right transport -> pure (Right transport)
 
 unixSocketPeerIdentity :: Socket.Socket -> IO (Either TransportError TransportPeerIdentity)
 unixSocketPeerIdentity sock =

@@ -28,6 +28,7 @@ import Data.Text (Text)
 import Actor.PluginManager.PluginSupervisor (loadedPluginDependencyProvider)
 import Actor.PluginManager.Types
   ( LoadedPlugin(..)
+  , lpConnection
   , PluginManagerState(..)
   , PluginStatus(..)
   , pluginAvailableDependencyKeys

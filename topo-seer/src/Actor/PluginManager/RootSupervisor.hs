@@ -16,7 +16,7 @@ module Actor.PluginManager.RootSupervisor
 import Data.Aeson (Value)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (isNothing)
+import Data.Maybe (isJust, isNothing)
 import Data.Set (Set)
 import Data.Text (Text)
 import Data.Time (UTCTime, getCurrentTime)
@@ -79,6 +79,9 @@ import Actor.PluginManager.Types
   , PluginParamUpdateError(..)
   , PluginStatus(..)
   , emptyPluginManagerState
+  , lpConnection
+  , lpProcessHandle
+  , mapLoadedPluginConnection
   , setParamOnPlugin
   )
 import Seer.World.Persist.Types (WorldExternalDataSourceSnapshot, WorldPluginDataDirectory)
@@ -333,7 +336,8 @@ markExternalDataSourceUnavailableOnConnectedDataError
   -> IO PluginManagerState
 markExternalDataSourceUnavailableOnConnectedDataError pluginName errorCode err st =
   case Map.lookup pluginName (pmsPlugins st) of
-    Just lp@LoadedPlugin { lpStatus = PluginConnected, lpConnection = Just _ } ->
+    Just lp
+      | lpStatus lp == PluginConnected && isJust (lpConnection lp) ->
       case externalDataSourceFailureRef lp of
         Just (ref, True) -> do
           let reason = externalDataSourceDataErrorReason err
@@ -375,7 +379,8 @@ externalDataSourceFailureRef lp =
     requiredRefs = filter redsrRequired refs
 
 markLoadedPluginExternalRefUnavailable :: RPCExternalDataSourceRef -> Text -> LoadedPlugin -> LoadedPlugin
-markLoadedPluginExternalRefUnavailable targetRef reason lp = lp { lpManifest = manifest', lpConnection = fmap syncConn (lpConnection lp) }
+markLoadedPluginExternalRefUnavailable targetRef reason lp =
+  mapLoadedPluginConnection syncConn lp { lpManifest = manifest' }
   where
     manifest = lpManifest lp
     refs = map markRef (rmExternalDataSourceRefs manifest)
@@ -451,7 +456,8 @@ markRuntimeFailureOnConnectedError
   -> IO PluginManagerState
 markRuntimeFailureOnConnectedError pluginName errorCode result st =
   case (result, Map.lookup pluginName (pmsPlugins st)) of
-    (Left err, Just lp@LoadedPlugin { lpStatus = PluginConnected, lpConnection = Just _ }) -> do
+    (Left err, Just lp)
+      | lpStatus lp == PluginConnected && isJust (lpConnection lp) -> do
       lp' <- handlePluginRuntimeFailure errorCode err lp
       pure st { pmsPlugins = Map.insert pluginName lp' (pmsPlugins st) }
     _ -> pure st

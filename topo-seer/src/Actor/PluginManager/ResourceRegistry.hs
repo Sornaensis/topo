@@ -23,6 +23,7 @@ import Actor.PluginManager.Types
   ( ExternalDataSourceGrantBrokerState(..)
   , ExternalDataSourceGrantKey(..)
   , LoadedPlugin(..)
+  , lpConnection
   , PluginLifecycleSnapshot(..)
   , PluginLifecycleState(..)
   , PluginManagerState(..)

@@ -32,6 +32,8 @@ import Actor.PluginManager.Types
   , ExternalDataSourceGrantBrokerState(..)
   , ExternalDataSourceGrantKey(..)
   , LoadedPlugin(..)
+  , lpConnection
+  , mapLoadedPluginConnection
   , PluginLifecycleSnapshot(..)
   , PluginLifecycleState(..)
   , PluginManagerState(..)
@@ -218,7 +220,8 @@ providerHasConsumerRef st provider = any referencesProvider (Map.elems (pmsPlugi
         && maybe True (== lpName provider) (redsrProvider ref)
 
 applyStatusReport :: PluginManagerState -> UTCTime -> RPCExternalDataSourceStatusReport -> LoadedPlugin -> LoadedPlugin
-applyStatusReport st observedAt report lp = lp { lpManifest = manifest' , lpConnection = fmap syncConn (lpConnection lp) }
+applyStatusReport st observedAt report lp =
+  mapLoadedPluginConnection syncConn lp { lpManifest = manifest' }
   where
     validatedReport = validateProviderStatusReport st lp report
     manifest' = applyExternalDataSourceStatusReport observedAt (lpName lp) validatedReport (lpManifest lp)
@@ -356,7 +359,8 @@ statusReportScopeDiagnostics entry reason providerDiagnostics = object $
   [ "providerDiagnostics" .= diagnostics | Just diagnostics <- [providerDiagnostics >>= originalProviderDiagnostics] ]
 
 markProviderStatusRefreshFailure :: UTCTime -> RPCError -> LoadedPlugin -> LoadedPlugin
-markProviderStatusRefreshFailure observedAt err lp = lp { lpManifest = manifest' , lpConnection = fmap syncConn (lpConnection lp) }
+markProviderStatusRefreshFailure observedAt err lp =
+  mapLoadedPluginConnection syncConn lp { lpManifest = manifest' }
   where
     manifest = lpManifest lp
     manifest' = manifest { rmExternalDataSources = map markSource (rmExternalDataSources manifest) }
@@ -924,7 +928,7 @@ annotateConsumerRefs bindingDiagnostics st = st { pmsPlugins = Map.map annotateP
       | diag <- bindingDiagnostics
       ]
 
-    annotatePlugin lp = lp { lpManifest = manifest', lpConnection = fmap syncConn (lpConnection lp) }
+    annotatePlugin lp = mapLoadedPluginConnection syncConn lp { lpManifest = manifest' }
       where
         manifest = lpManifest lp
         refs = map (annotateRef lp) (rmExternalDataSourceRefs manifest)
@@ -1002,7 +1006,7 @@ recordRevocationResultOnConsumerRef reason operationResult grantState st = st
       (fromMaybe reason (operationResultReason operationResult))
       baseStatus
 
-    annotatePlugin lp = lp { lpManifest = manifest', lpConnection = fmap syncConn (lpConnection lp) }
+    annotatePlugin lp = mapLoadedPluginConnection syncConn lp { lpManifest = manifest' }
       where
         manifest = lpManifest lp
         refs = map annotateRef (rmExternalDataSourceRefs manifest)

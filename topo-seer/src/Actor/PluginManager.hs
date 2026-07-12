@@ -16,12 +16,22 @@ module Actor.PluginManager
   , LoadedPlugin(..)
   , OwnedPluginProcess
   , OwnedPluginCleanupResult(..)
+  , OwnedPluginRuntime
+  , OwnedPluginRuntimeCleanupResult(..)
+  , PluginRuntimeGeneration
+  , cleanupOwnedPluginRuntime
+  , newConnectionOnlyPluginRuntime
+  , ownedPluginRuntimeConnection
+  , ownedPluginRuntimeProcess
+  , ownedPluginRuntimeGeneration
   , ownedPluginProcessHandle
   , ownedPluginProcessId
   , ownedPluginProcessExitCode
   , cleanupOwnedPluginProcess
   , RefreshRuntimeCleanupFailed
   , refreshRuntimeCleanupOwners
+  , lpConnection
+  , lpProcessHandle
   , PluginLifecycleSnapshot(..)
   , PluginLifecycleState(..)
   , PluginStateLease(..)
@@ -99,7 +109,15 @@ import Hyperspace.Actor
 import Actor.PluginManager.ProcessLauncher
   ( OwnedPluginCleanupResult(..)
   , OwnedPluginProcess
+  , OwnedPluginRuntime
+  , OwnedPluginRuntimeCleanupResult(..)
+  , PluginRuntimeGeneration
   , cleanupOwnedPluginProcess
+  , cleanupOwnedPluginRuntime
+  , newConnectionOnlyPluginRuntime
+  , ownedPluginRuntimeConnection
+  , ownedPluginRuntimeGeneration
+  , ownedPluginRuntimeProcess
   , ownedPluginProcessExitCode
   , ownedPluginProcessHandle
   , ownedPluginProcessId
@@ -113,6 +131,7 @@ import Actor.PluginManager.PipelineIntegrator
   )
 import Actor.PluginManager.PluginSupervisor
   ( RefreshRuntimeCleanupFailed
+  , finalizeInterruptedPluginCleanup
   , refreshRuntimeCleanupOwners
   , shutdownPlugin
   , withRefreshedManifestsHandlingPublishException
@@ -126,6 +145,8 @@ import Actor.PluginManager.SimulationIntegrator
 import Seer.World.Persist.Types (WorldExternalDataSourceSnapshot, WorldPluginDataDirectory)
 import Actor.PluginManager.Types
   ( LoadedPlugin(..)
+  , lpConnection
+  , lpProcessHandle
   , PluginLifecycleSnapshot(..)
   , PluginLifecycleState(..)
   , PluginStateLease(..)
@@ -186,11 +207,8 @@ trackStoppedPlugin stoppedRef plugin =
   modifyIORef' stoppedRef (Map.insert (lpName plugin) plugin)
 
 cleanupInterruptedShutdown :: (LoadedPlugin -> IO ()) -> LoadedPlugin -> IO ()
-cleanupInterruptedShutdown trackStopped plugin = do
-  result <- try @SomeException (shutdownPlugin plugin)
-  case result of
-    Left _ -> pure ()
-    Right stopped -> trackStopped stopped
+cleanupInterruptedShutdown trackStopped plugin =
+  finalizeInterruptedPluginCleanup plugin >>= trackStopped
 
 -- | Discover all plugins in the standard directory.
 -- This is asynchronous — use 'getLoadedPlugins' afterwards to

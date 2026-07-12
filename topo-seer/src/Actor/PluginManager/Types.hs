@@ -23,6 +23,9 @@ module Actor.PluginManager.Types
   , externalDataSourceGrantBrokerPhaseApplied
   , externalDataSourceGrantBrokerPhaseRevocable
   , LoadedPlugin(..)
+  , lpConnection
+  , lpProcessHandle
+  , mapLoadedPluginConnection
   , PluginManagerState(..)
   , emptyPluginManagerState
   , pluginStatusText
@@ -63,7 +66,13 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time (NominalDiffTime, UTCTime, diffUTCTime)
 import System.Info (os)
-import Actor.PluginManager.ProcessLauncher (OwnedPluginProcess)
+import Actor.PluginManager.ProcessLauncher
+  ( OwnedPluginProcess
+  , OwnedPluginRuntime
+  , mapOwnedPluginRuntimeConnection
+  , ownedPluginRuntimeConnection
+  , ownedPluginRuntimeProcess
+  )
 import Topo.Overlay.Schema (OverlaySchema(..))
 import Topo.Pipeline.Stage (allBuiltinStageIds, stageCanonicalName)
 import Topo.Plugin (Capability(..))
@@ -999,7 +1008,7 @@ pluginCapabilitiesText = map capabilityText . rmCapabilities
 
 pluginEndpointKind :: LoadedPlugin -> Maybe Text
 pluginEndpointKind lp
-  | isJust (lpConnection lp) || isJust (plsProcessId (lpLifecycle lp)) = Just productionEndpointKindText
+  | isJust (lpRuntime lp) = Just productionEndpointKindText
   | otherwise = Nothing
 
 pluginLastError :: LoadedPlugin -> Maybe Text
@@ -1103,10 +1112,9 @@ data LoadedPlugin = LoadedPlugin
     -- ^ Current lifecycle status.
   , lpLifecycle  :: !PluginLifecycleSnapshot
     -- ^ Observable lifecycle diagnostics.
-  , lpConnection :: !(Maybe RPCConnection)
-    -- ^ Active RPC connection, if connected.
-  , lpProcessHandle :: !(Maybe OwnedPluginProcess)
-    -- ^ Sole owner of the active plugin subprocess and its containment.
+  , lpRuntime :: !(Maybe OwnedPluginRuntime)
+    -- ^ Sole owner of this launch generation's accepted RPC transport and
+    -- process containment. Failed partial launches remain reachable here.
   , lpStartPolicy :: !RPCStartPolicy
     -- ^ Host-side startup, restart, and timeout policy.
   , lpRestartHistory :: ![UTCTime]
@@ -1116,6 +1124,19 @@ data LoadedPlugin = LoadedPlugin
   , lpOverlaySchema :: !(Maybe OverlaySchema)
     -- ^ Parsed overlay schema when the plugin declares one.
   }
+
+-- | Non-owning view of the active RPC connection.
+lpConnection :: LoadedPlugin -> Maybe RPCConnection
+lpConnection lp = lpRuntime lp >>= ownedPluginRuntimeConnection
+
+-- | Non-owning view of the active process owner.
+lpProcessHandle :: LoadedPlugin -> Maybe OwnedPluginProcess
+lpProcessHandle lp = lpRuntime lp >>= ownedPluginRuntimeProcess
+
+-- | Update connection metadata without splitting ownership out of the runtime.
+mapLoadedPluginConnection :: (RPCConnection -> RPCConnection) -> LoadedPlugin -> LoadedPlugin
+mapLoadedPluginConnection f lp = lp
+  { lpRuntime = mapOwnedPluginRuntimeConnection f <$> lpRuntime lp }
 
 -- | Plugin manager actor state.
 data PluginManagerState = PluginManagerState
@@ -1188,9 +1209,7 @@ withinRestartWindow now window startedAt =
 -- | Update a single parameter in a loaded plugin.
 setParamOnPlugin :: Text -> Value -> LoadedPlugin -> LoadedPlugin
 setParamOnPlugin paramName value lp =
-  lp
-    { lpParams = params'
-    , lpConnection = fmap (\conn -> conn { rpcParams = params' }) (lpConnection lp)
-    }
+  mapLoadedPluginConnection (\conn -> conn { rpcParams = params' }) lp
+    { lpParams = params' }
   where
     params' = sanitizeRPCManifestParams (lpManifest lp) (Map.insert paramName value (lpParams lp))

@@ -20,10 +20,10 @@ import Control.Exception
   , throwIO
   , try
   )
-import Control.Monad (forM_, unless)
+import Control.Monad (forM_, unless, when)
 import Data.Char (toLower)
 import Data.List (elemIndex)
-import Data.Maybe (fromMaybe, isJust, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, mapMaybe)
 import qualified Data.Aeson as Aeson
 import Data.Aeson (Value(..), (.=), object)
 import qualified Data.Aeson.Key as Key
@@ -81,6 +81,7 @@ import Actor.PluginManager
   ( LoadedPlugin(..)
   , OwnedPluginCleanupResult(..)
   , OwnedPluginProcess
+  , OwnedPluginRuntimeCleanupResult(..)
   , PluginDiagnosticState(..)
   , PluginExternalDataSourceDiagnostic(..)
   , PluginLifecycleSnapshot(..)
@@ -92,6 +93,7 @@ import Actor.PluginManager
   , PluginStatus(..)
   , buildPluginSimulationPlanForPlugins
   , cleanupOwnedPluginProcess
+  , cleanupOwnedPluginRuntime
   , discoverPlugins
   , getDisabledPlugins
   , getLoadedPlugins
@@ -99,9 +101,13 @@ import Actor.PluginManager
   , getPluginExternalDataSources
   , getPluginOverlaySchemas
   , getPluginStages
+  , lpConnection
+  , lpProcessHandle
   , mutatePluginResource
+  , newConnectionOnlyPluginRuntime
   , ownedPluginProcessHandle
   , ownedPluginProcessId
+  , ownedPluginRuntimeGeneration
   , pluginDependencyDiagnostics
   , pluginDiagnosticState
   , pluginExternalDataSourceDiagnosticsFor
@@ -366,8 +372,7 @@ spec = describe "PluginManager" $ do
           , lpParams = Map.empty
           , lpStatus = PluginConnected
           , lpLifecycle = pluginLifecycleSnapshot now LifecycleReady Nothing Nothing Nothing Nothing Nothing (Just currentProtocolVersion) []
-          , lpConnection = Nothing
-          , lpProcessHandle = Nothing
+          , lpRuntime = Nothing
           , lpStartPolicy = defaultRPCStartPolicy
           , lpRestartHistory = []
           , lpDirectory = ""
@@ -451,6 +456,57 @@ spec = describe "PluginManager" $ do
           assertOwnedCleanupComplete owner
           assertOwnedCleanupComplete owner
 
+  it "cleans every fault-injected startup handoff without losing runtime ownership" $ do
+    withExecutablePluginDir testLaunchPluginName testLaunchManifestJSON "ok" $
+      forM_ ["listener", "process", "accept", "handshake", "prepublication", "publication"] $ \phase ->
+        withEnvironmentValue "TOPO_TEST_PLUGIN_STARTUP_FAILURE" phase $
+          withPluginManager $ \pluginManagerHandle -> do
+            discoverPlugins pluginManagerHandle
+            _ <- try @SomeException (refreshManifests pluginManagerHandle)
+            loaded <- getLoadedPlugins pluginManagerHandle
+            let matching = filter ((== Text.pack testLaunchPluginName) . lpName) loaded
+            map (isNothing . lpRuntime) matching `shouldBe` [True]
+            forM_ matching $ \plugin ->
+              when (plsState (lpLifecycle plugin) == LifecycleStopped) $
+                isNothing (lpRuntime plugin) `shouldBe` True
+
+  it "retains failed runtime aggregates at destructive startup handoffs" $ do
+    withExecutablePluginDir testLaunchPluginName testLaunchManifestJSON "ok" $
+      forM_ ["accept", "handshake", "prepublication", "publication"] $ \phase ->
+        withEnvironmentValue "TOPO_TEST_PLUGIN_CLEANUP_FAILURE" "1" $
+          withEnvironmentValue "TOPO_TEST_PLUGIN_STARTUP_FAILURE" phase $
+            withPluginManager $ \pluginManagerHandle -> do
+              discoverPlugins pluginManagerHandle
+              _ <- try @SomeException (refreshManifests pluginManagerHandle)
+              loaded <- getLoadedPlugins pluginManagerHandle
+              let matching = filter ((== Text.pack testLaunchPluginName) . lpName) loaded
+              map (isJust . lpRuntime) matching `shouldBe` [True]
+              map (plsState . lpLifecycle) matching `shouldBe` [LifecycleFailed]
+              map lpStatus matching `shouldSatisfy` anyPluginError
+              unsetEnv "TOPO_TEST_PLUGIN_CLEANUP_FAILURE"
+              shutdownPlugins pluginManagerHandle
+
+  it "makes aggregate runtime cleanup idempotent" $ do
+    withExecutablePluginDir testLaunchPluginName testLaunchManifestJSON "ok" $
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        runtime <- case [owned | plugin <- loaded, lpName plugin == Text.pack testLaunchPluginName, Just owned <- [lpRuntime plugin]] of
+          [owned] -> pure owned
+          runtimes -> expectationFailure
+            ("expected one owned runtime, got " <> show (length runtimes))
+            >> fail "missing owned runtime"
+        firstCleanup <- cleanupOwnedPluginRuntime runtime
+        secondCleanup <- cleanupOwnedPluginRuntime runtime
+        case (firstCleanup, secondCleanup) of
+          (OwnedPluginRuntimeCleanupComplete, OwnedPluginRuntimeCleanupComplete) -> pure ()
+          _ -> expectationFailure "repeated aggregate runtime cleanup did not complete"
+        shutdownPlugins pluginManagerHandle
+        stopped <- getLoadedPlugins pluginManagerHandle
+        map (isNothing . lpRuntime) (filter ((== Text.pack testLaunchPluginName) . lpName) stopped)
+          `shouldBe` [True]
+
   it "retains the same owner when containment setup cleanup fails" $ do
     withEnvironmentValue "TOPO_TEST_PLUGIN_CONTAINMENT_FAILURE" "1" $
       withEnvironmentValue "TOPO_TEST_PLUGIN_CLEANUP_FAILURE" "1" $
@@ -466,8 +522,21 @@ spec = describe "PluginManager" $ do
               owners -> expectationFailure
                 ("expected one retained process owner, got " <> show (length owners))
                 >> fail "missing retained process owner"
+            runtime <- case [owned | plugin <- loaded, lpName plugin == Text.pack testLaunchPluginName, Just owned <- [lpRuntime plugin]] of
+              [owned] -> pure owned
+              runtimes -> expectationFailure
+                ("expected one retained runtime aggregate, got " <> show (length runtimes))
+                >> fail "missing retained runtime"
             let stableIdentity = ownedPluginProcessId owner
+                stableGeneration = ownedPluginRuntimeGeneration runtime
                 processHandle = ownedPluginProcessHandle owner
+            forM_ [1 :: Int, 2] $ \_ -> do
+              cleanupResult <- cleanupOwnedPluginRuntime runtime
+              case cleanupResult of
+                OwnedPluginRuntimeCleanupComplete ->
+                  expectationFailure "forced aggregate cleanup unexpectedly completed"
+                OwnedPluginRuntimeCleanupFailed retainedRuntime ->
+                  ownedPluginRuntimeGeneration retainedRuntime == stableGeneration `shouldBe` True
             retained <- getLoadedPlugins pluginManagerHandle
             map ownedPluginProcessId (pluginOwnedProcesses testLaunchPluginName retained)
               `shouldBe` [stableIdentity]
@@ -1767,8 +1836,8 @@ simulationPlanPlugin name deps capabilities = plugin
       , lpParams = Map.empty
       , lpStatus = PluginConnected
       , lpLifecycle = pluginLifecycleSnapshot (posixSecondsToUTCTime 0) LifecycleReady Nothing Nothing Nothing Nothing Nothing (Just currentProtocolVersion) []
-      , lpConnection = Just (newRPCConnection manifest (Transport stdin stdout name) Map.empty)
-      , lpProcessHandle = Nothing
+      , lpRuntime = Just (newConnectionOnlyPluginRuntime
+          (newRPCConnection manifest (Transport stdin stdout name) Map.empty))
       , lpStartPolicy = defaultRPCStartPolicy
       , lpRestartHistory = []
       , lpDirectory = ""

@@ -997,8 +997,7 @@ diagnosticPlugin manifest = LoadedPlugin
   , lpStatus = PluginConnected
   , lpLifecycle = pluginLifecycleSnapshot appServiceTestTime LifecycleReady
       (Just "handshake complete") Nothing Nothing Nothing (Just "1234") (Just 1) (map drsName (rmDataResources manifest))
-  , lpConnection = Nothing
-  , lpProcessHandle = Nothing
+  , lpRuntime = Nothing
   , lpStartPolicy = defaultRPCStartPolicy
   , lpRestartHistory = []
   , lpDirectory = ""

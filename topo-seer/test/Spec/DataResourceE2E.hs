@@ -11,6 +11,7 @@ import Actor.PluginManager
   , PluginLifecycleState(..)
   , PluginStatus(..)
   , getPluginDataResources
+  , newConnectionOnlyPluginRuntime
   , pluginLifecycleSnapshot
   , queryPluginResource
   )
@@ -340,8 +341,7 @@ installCrudFixturePlugin headlessApp manifest negotiatedResources = do
         , lpParams = Map.empty
         , lpStatus = PluginConnected
         , lpLifecycle = lifecycle
-        , lpConnection = Just conn
-        , lpProcessHandle = Nothing
+        , lpRuntime = Just (newConnectionOnlyPluginRuntime conn)
         , lpStartPolicy = defaultRPCStartPolicy
         , lpRestartHistory = []
         , lpDirectory = "<in-memory-crud-fixture>"

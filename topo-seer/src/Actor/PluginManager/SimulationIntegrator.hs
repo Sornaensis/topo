@@ -18,6 +18,7 @@ import qualified Data.Text as Text
 import Actor.PluginManager.PipelineIntegrator (orderPlugins)
 import Actor.PluginManager.Types
   ( LoadedPlugin(..)
+  , lpConnection
   , PluginLifecycleSnapshot(..)
   , PluginLifecycleState(..)
   , PluginManagerState(..)
