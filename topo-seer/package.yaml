@@ -289,3 +289,7 @@ tests:
       - hyperspace
       - text
       - vector
+    when:
+      - condition: '!os(windows)'
+        dependencies:
+          - unix

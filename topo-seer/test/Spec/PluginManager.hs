@@ -9,9 +9,22 @@
 
 module Spec.PluginManager (spec, runFixtureCli, runFixtureCliIfRequested) where
 
-import Control.Concurrent (MVar, ThreadId, forkIO, killThread, newEmptyMVar, putMVar, takeMVar, threadDelay)
+import Control.Concurrent
+  ( MVar
+  , ThreadId
+  , forkIO
+  , killThread
+  , modifyMVar_
+  , newEmptyMVar
+  , newMVar
+  , putMVar
+  , readMVar
+  , takeMVar
+  , threadDelay
+  )
 import Control.Exception
   ( Exception
+  , IOException
   , SomeAsyncException
   , SomeException
   , bracket
@@ -41,8 +54,9 @@ import Data.Time.Clock.POSIX (getPOSIXTime, posixSecondsToUTCTime)
 import Data.Word (Word32, Word64)
 import Foreign.C.Types (CInt(..))
 #if !defined(mingw32_HOST_OS)
-import Foreign.C.Error (eSRCH, getErrno)
-import System.Posix.Process (getProcessID)
+import System.IO.Error (isDoesNotExistError)
+import System.Posix.Process (createSession, getProcessID)
+import System.Posix.Signals (nullSignal, sigKILL, signalProcess, signalProcessGroup)
 #else
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, nullPtr)
@@ -61,6 +75,7 @@ import System.Directory
   , getPermissions
   , getTemporaryDirectory
   , removePathForcibly
+  , renameFile
   , setPermissions
   )
 import System.Environment (getArgs, getEnvironment, getExecutablePath, lookupEnv, setEnv, unsetEnv)
@@ -76,6 +91,7 @@ import System.Process
   , getPid
   , getProcessExitCode
   , proc
+  , terminateProcess
   )
 import System.Timeout (timeout)
 import Test.Hspec
@@ -682,6 +698,43 @@ spec = describe "PluginManager" $ do
             pluginStatuses envContractPluginName loaded `shouldSatisfy` elem PluginConnected
             pluginLifecycleStates envContractPluginName loaded `shouldSatisfy` elem LifecycleReady
             pluginLifecycleProtocols envContractPluginName loaded `shouldSatisfy` elem (Just currentProtocolVersion)
+
+  it "Windows kill-on-close Job contains descendants after actual-host-death" $ do
+    if os /= "mingw32"
+      then pure ()
+      else withActualHostDeathFixture $ \hostProcess diagnostics cleanupState -> do
+        assertHostDeathDiagnostics hostProcess diagnostics
+        expectHeartbeatAdvances (hddOrdinaryHeartbeat diagnostics)
+        expectHeartbeatAdvances (hddEscapedHeartbeat diagnostics)
+        terminateFixtureHost hostProcess
+        assertFixturePidGone cleanupState "Windows plugin leader after host death" diagnostics (hddLeaderPid diagnostics)
+        assertFixturePidGone cleanupState "Windows ordinary descendant after host death" diagnostics (hddOrdinaryPid diagnostics)
+        assertFixturePidGone cleanupState "Windows new-process-group descendant after host death" diagnostics (hddEscapedPid diagnostics)
+        assertHeartbeatStops (hddOrdinaryHeartbeat diagnostics)
+        assertHeartbeatStops (hddEscapedHeartbeat diagnostics)
+
+  it "POSIX actual-host-death exposes launch-group and new-session containment limits" $ do
+    if os == "mingw32"
+      then pure ()
+      else withActualHostDeathFixture $ \hostProcess diagnostics cleanupState -> do
+        assertHostDeathDiagnostics hostProcess diagnostics
+        expectHeartbeatAdvances (hddOrdinaryHeartbeat diagnostics)
+        expectHeartbeatAdvances (hddEscapedHeartbeat diagnostics)
+        terminateFixtureHost hostProcess
+        -- Closing the transport lets the cooperative leader exit, but portable
+        -- POSIX has no host-death primitive that signals its launch group.
+        assertFixturePidGone cleanupState "POSIX cooperative plugin leader after host death" diagnostics (hddLeaderPid diagnostics)
+        expectHeartbeatAdvances (hddOrdinaryHeartbeat diagnostics)
+        expectHeartbeatAdvances (hddEscapedHeartbeat diagnostics)
+        terminateFixtureLaunchGroup (hddLeaderPid diagnostics)
+        assertFixturePidGone cleanupState "POSIX launch-group descendant after group cleanup" diagnostics (hddOrdinaryPid diagnostics)
+        assertHeartbeatStops (hddOrdinaryHeartbeat diagnostics)
+        -- A deliberately daemonized/new-session descendant is outside that
+        -- group and therefore remains alive until separately terminated.
+        expectHeartbeatAdvances (hddEscapedHeartbeat diagnostics)
+        terminateFixtureLaunchGroup (hddEscapedPid diagnostics)
+        assertFixturePidGone cleanupState "POSIX escaped descendant after explicit cleanup" diagnostics (hddEscapedPid diagnostics)
+        assertHeartbeatStops (hddEscapedHeartbeat diagnostics)
 
   it "cleans up the connected process tree when the manager scope aborts" $ do
     withExecutablePluginDir cleanupAbortPluginName cleanupAbortManifestJSON "process-tree" $ do
@@ -2389,6 +2442,278 @@ cleanupPollAttempts = 100
 cleanupPollDelayMicros :: Int
 cleanupPollDelayMicros = 50000
 
+data HostDeathDiagnostics = HostDeathDiagnostics
+  { hddPlatform :: !String
+  , hddHostPid :: !Word64
+  , hddLeaderPid :: !Word64
+  , hddOrdinaryPid :: !Word64
+  , hddEscapedPid :: !Word64
+  , hddOrdinaryHeartbeat :: !FilePath
+  , hddEscapedHeartbeat :: !FilePath
+  } deriving (Eq, Show)
+
+type HostDeathCleanupState = MVar (Maybe (Set.Set Word64))
+
+withActualHostDeathFixture
+  :: (ProcessHandle -> HostDeathDiagnostics -> HostDeathCleanupState -> IO a)
+  -> IO a
+withActualHostDeathFixture action =
+  withExecutablePluginDir
+    hostDeathPluginName
+    hostDeathManifestJSON
+    "host-death-tree" $
+      bracket launch cleanup $ \(hostProcess, cleanupState) -> do
+        diagnostics <- waitForHostDeathDiagnostics
+        let fixturePids = Set.fromList
+              [ hddLeaderPid diagnostics
+              , hddOrdinaryPid diagnostics
+              , hddEscapedPid diagnostics
+              ]
+        modifyMVar_ cleanupState (const (pure (Just fixturePids)))
+        action hostProcess diagnostics cleanupState
+  where
+    launch = do
+      cleanupState <- newMVar Nothing
+      hostProcess <- launchHostDeathFixture
+      pure (hostProcess, cleanupState)
+    cleanup (hostProcess, cleanupState) =
+      cleanupHostDeathFixture hostProcess cleanupState
+
+launchHostDeathFixture :: IO ProcessHandle
+launchHostDeathFixture = do
+  testExe <- getExecutablePath
+  (_, _, _, processHandle) <- createProcess
+    (proc testExe ["--plugin-manager-fixture", "host-death-host"])
+      { std_in = NoStream
+      , std_out = NoStream
+      , std_err = Inherit
+      }
+  pure processHandle
+
+cleanupHostDeathFixture :: ProcessHandle -> HostDeathCleanupState -> IO ()
+cleanupHostDeathFixture hostProcess cleanupState = do
+  stopFixtureHostIfRunning hostProcess
+  tracked <- readMVar cleanupState
+  leader <- retainedHostDeathPid tracked hostDeathLeaderPidFileName
+#if defined(mingw32_HOST_OS)
+  ordinary <- retainedHostDeathPid tracked hostDeathOrdinaryPidFileName
+  escaped <- retainedHostDeathPid tracked hostDeathEscapedPidFileName
+  let remaining = [pid | Just pid <- [leader, ordinary, escaped]]
+  mapM_ terminateFixturePid remaining
+  verifyFixturePidsGone remaining
+#else
+  -- Kill and observe the leader before discovering descendants, then signal
+  -- the now-stable launch group again. This closes the fork race: every child
+  -- was either present for a group signal or published an escape PID before a
+  -- release that the dead leader can no longer issue.
+  forM_ leader $ \pid -> do
+    terminateFixtureLaunchGroup pid
+    verifyFixturePidsGone [pid]
+    terminateFixtureLaunchGroup pid
+  ordinary <- retainedHostDeathPid tracked hostDeathOrdinaryPidFileName
+  escaped <- retainedHostDeathPid tracked hostDeathEscapedPidFileName
+  when (isNothing leader) (forM_ ordinary terminateFixturePid)
+  forM_ escaped terminateFixtureLaunchGroup
+  verifyFixturePidsGone [pid | Just pid <- [ordinary, escaped]]
+#endif
+
+retainedHostDeathPid
+  :: Maybe (Set.Set Word64)
+  -> String
+  -> IO (Maybe Word64)
+retainedHostDeathPid tracked fileName = do
+  mPid <- readHostDeathPidMaybe fileName
+  pure $ mPid >>= \pid ->
+    if maybe True (Set.member pid) tracked then Just pid else Nothing
+
+verifyFixturePidsGone :: [Word64] -> IO ()
+verifyFixturePidsGone pids = forM_ pids $ \pid -> do
+  gone <- waitForFixturePidGone pid
+  unless gone $ throwIO (userError
+    ("could not clean host-death fixture pid " <> show pid))
+
+terminateFixtureHost :: ProcessHandle -> IO ()
+terminateFixtureHost processHandle = do
+  mExit <- getProcessExitCode processHandle
+  case mExit of
+    Just exitCode -> expectationFailure
+      ("external plugin host exited before forced host death: " <> show exitCode)
+    Nothing -> forceTerminateFixtureHost processHandle
+  assertFixtureHostExited processHandle
+
+stopFixtureHostIfRunning :: ProcessHandle -> IO ()
+stopFixtureHostIfRunning processHandle = do
+  mExit <- getProcessExitCode processHandle
+  when (isNothing mExit) (forceTerminateFixtureHost processHandle)
+  assertFixtureHostExited processHandle
+
+assertFixtureHostExited :: ProcessHandle -> IO ()
+assertFixtureHostExited processHandle = do
+  exited <- waitForProcessExitCode processExitAssertTimeoutMicros processHandle
+  unless exited $ do
+    mPid <- getPid processHandle
+    expectationFailure
+      ("external plugin host " <> maybe "<unknown pid>" show mPid
+        <> " did not exit after forced host termination")
+
+forceTerminateFixtureHost :: ProcessHandle -> IO ()
+#if defined(mingw32_HOST_OS)
+forceTerminateFixtureHost = terminateProcess
+#else
+forceTerminateFixtureHost processHandle = do
+  mPid <- getPid processHandle
+  case mPid of
+    Nothing -> terminateProcess processHandle
+    Just pid -> signalProcess sigKILL (fromIntegral pid)
+#endif
+
+waitForHostDeathDiagnostics :: IO HostDeathDiagnostics
+waitForHostDeathDiagnostics = do
+  readyPath <- fixtureDataFile hostDeathPluginName hostDeathReadyFileName
+  result <- timeout hostDeathReadyTimeoutMicros (poll readyPath)
+  case result of
+    Just diagnostics -> pure diagnostics
+    Nothing -> do
+      lastMarker <- readTextFileMaybe readyPath
+      expectationFailure
+        ("external plugin host did not publish ready diagnostics at " <> readyPath
+          <> "; last marker=" <> show lastMarker)
+      fail "missing host-death diagnostics"
+  where
+    poll readyPath = do
+      marker <- readTextFileMaybe readyPath
+      case marker >>= either (const Nothing) Just . parseHostDeathDiagnostics readyPath of
+        Just diagnostics -> pure diagnostics
+        Nothing -> case marker of
+          Just raw | "error=" `isPrefixOfString` raw ->
+            expectationFailure ("external plugin host setup failed: " <> raw)
+              >> fail "host-death fixture setup failed"
+          _ -> threadDelay 25000 >> poll readyPath
+
+parseHostDeathDiagnostics :: FilePath -> String -> Either String HostDeathDiagnostics
+parseHostDeathDiagnostics readyPath raw = do
+  platform <- requireDiagnostic "platform"
+  hostPid <- requirePid "host_pid"
+  leaderPid <- requirePid "leader_pid"
+  ordinaryPid <- requirePid "ordinary_pid"
+  escapedPid <- requirePid "escaped_pid"
+  let allPids = Set.fromList [hostPid, leaderPid, ordinaryPid, escapedPid]
+      dataRoot = takeDirectory readyPath
+  if Set.size allPids /= 4
+    then Left "host, leader, and descendant pids were not distinct"
+    else pure HostDeathDiagnostics
+      { hddPlatform = platform
+      , hddHostPid = hostPid
+      , hddLeaderPid = leaderPid
+      , hddOrdinaryPid = ordinaryPid
+      , hddEscapedPid = escapedPid
+      , hddOrdinaryHeartbeat = dataRoot </> hostDeathOrdinaryHeartbeatFileName
+      , hddEscapedHeartbeat = dataRoot </> hostDeathEscapedHeartbeatFileName
+      }
+  where
+    fields = map splitDiagnosticLine (lines raw)
+    requireDiagnostic key = case lookup key fields of
+      Just value | not (null value) -> Right value
+      _ -> Left ("missing " <> key)
+    requirePid key = do
+      rawPid <- requireDiagnostic key
+      case parseSafeFixturePid rawPid of
+        Just pid -> Right pid
+        Nothing -> Left ("invalid " <> key <> ": " <> rawPid)
+
+splitDiagnosticLine :: String -> (String, String)
+splitDiagnosticLine line = case break (== '=') line of
+  (key, '=':value) -> (key, value)
+  _ -> (line, "")
+
+isPrefixOfString :: String -> String -> Bool
+isPrefixOfString prefix value = take (length prefix) value == prefix
+
+readTextFileMaybe :: FilePath -> IO (Maybe String)
+readTextFileMaybe path = do
+  exists <- doesFileExist path
+  if exists
+    then (Just <$> readFile path) `catch` \(_ :: SomeException) -> pure Nothing
+    else pure Nothing
+
+writeAtomicTextFile :: FilePath -> String -> IO ()
+writeAtomicTextFile path content = do
+  writerPid <- currentProcessIdForTest
+  let temporaryPath = path <> ".tmp-" <> show writerPid
+  writeFile temporaryPath content
+  renameFile temporaryPath path
+
+readHostDeathPidMaybe :: String -> IO (Maybe Word64)
+readHostDeathPidMaybe fileName = do
+  path <- fixtureDataFile hostDeathPluginName fileName
+  raw <- readTextFileMaybe path
+  pure (raw >>= parseSafeFixturePid)
+
+parseSafeFixturePid :: String -> Maybe Word64
+parseSafeFixturePid raw = case reads raw of
+  [(pid, "")] | pid > 1 -> Just pid
+  _ -> Nothing
+
+assertHostDeathDiagnostics :: ProcessHandle -> HostDeathDiagnostics -> Expectation
+assertHostDeathDiagnostics hostProcess diagnostics = do
+  hddPlatform diagnostics `shouldBe` os
+  mHostPid <- getPid hostProcess
+  (mHostPid >>= parseSafeFixturePid . show) `shouldBe` Just (hddHostPid diagnostics)
+  hddLeaderPid diagnostics `shouldSatisfy` (> 0)
+  hddOrdinaryPid diagnostics `shouldSatisfy` (> 0)
+  hddEscapedPid diagnostics `shouldSatisfy` (> 0)
+
+assertFixturePidGone
+  :: HostDeathCleanupState
+  -> String
+  -> HostDeathDiagnostics
+  -> Word64
+  -> IO ()
+assertFixturePidGone cleanupState label diagnostics pid = do
+  gone <- waitForFixturePidGone pid
+  if gone
+    then modifyMVar_ cleanupState (pure . fmap (Set.delete pid))
+    else expectationFailure
+      (label <> ": pid " <> show pid <> " remained; diagnostics=" <> show diagnostics)
+
+waitForFixturePidGone :: Word64 -> IO Bool
+waitForFixturePidGone pid = isJust <$> timeout processExitAssertTimeoutMicros waitUntilGone
+  where
+    waitUntilGone = do
+      exists <- processIdExists pid
+      if exists
+        then threadDelay cleanupPollDelayMicros >> waitUntilGone
+        else pure ()
+
+terminateFixtureLaunchGroup :: Word64 -> IO ()
+#if defined(mingw32_HOST_OS)
+terminateFixtureLaunchGroup = terminateFixturePid
+#else
+terminateFixtureLaunchGroup pid =
+  ignoreMissingFixtureProcess (signalProcessGroup sigKILL (fromIntegral pid))
+#endif
+
+terminateFixturePid :: Word64 -> IO ()
+#if defined(mingw32_HOST_OS)
+terminateFixturePid pid = do
+  processHandle <- c_OpenProcessForTest processTerminateRight 0 (fromIntegral pid)
+  when (processHandle /= nullPtr) $ do
+    _ <- c_TerminateProcessForTest processHandle 1
+    _ <- c_CloseHandleForTest processHandle
+    pure ()
+#else
+terminateFixturePid pid =
+  ignoreMissingFixtureProcess (signalProcess sigKILL (fromIntegral pid))
+
+ignoreMissingFixtureProcess :: IO () -> IO ()
+ignoreMissingFixtureProcess action =
+  action `catch` \(err :: IOException) ->
+    unless (isDoesNotExistError err) (throwIO err)
+#endif
+
+hostDeathReadyTimeoutMicros :: Int
+hostDeathReadyTimeoutMicros = 10000000
+
 expectHeartbeatAdvances :: FilePath -> IO ()
 expectHeartbeatAdvances path = do
   first <- waitForHeartbeatChange path Nothing "start"
@@ -2498,8 +2823,14 @@ foreign import ccall unsafe "windows.h GetExitCodeProcess"
 foreign import ccall unsafe "windows.h CloseHandle"
   c_CloseHandleForTest :: Ptr () -> IO CInt
 
+foreign import ccall unsafe "windows.h TerminateProcess"
+  c_TerminateProcessForTest :: Ptr () -> Word32 -> IO CInt
+
 processQueryLimitedInformation :: Word32
 processQueryLimitedInformation = 0x00001000
+
+processTerminateRight :: Word32
+processTerminateRight = 0x00000001
 
 stillActiveExitCode :: Word32
 stillActiveExitCode = 259
@@ -2508,13 +2839,33 @@ invalidParameterError :: Word32
 invalidParameterError = 87
 #else
 processIdExists pid = do
-  result <- c_killForTest (fromIntegral pid) 0
-  if result == 0
-    then pure True
-    else (/= eSRCH) <$> getErrno
+  result <- try @IOException (signalProcess nullSignal (fromIntegral pid))
+  case result of
+    Right () ->
+#if defined(linux_HOST_OS)
+      linuxProcessIsRunning pid
+#else
+      pure True
+#endif
+    Left err -> pure (not (isDoesNotExistError err))
 
-foreign import ccall unsafe "kill"
-  c_killForTest :: CInt -> CInt -> IO CInt
+#if defined(linux_HOST_OS)
+linuxProcessIsRunning :: Word64 -> IO Bool
+linuxProcessIsRunning pid = do
+  stat <- readTextFileMaybe ("/proc/" <> show pid <> "/stat")
+  pure $ case stat >>= linuxProcessState of
+    Just state -> state `notElem` ['Z', 'X']
+    Nothing -> True
+
+linuxProcessState :: String -> Maybe Char
+linuxProcessState raw = case break (== ')') (reverse raw) of
+  (reversedAfterCommand, ')':_) -> case words (reverse reversedAfterCommand) of
+    state:_ -> case state of
+      [value] -> Just value
+      _ -> Nothing
+    [] -> Nothing
+  _ -> Nothing
+#endif
 #endif
 
 expectPluginConnection :: String -> [LoadedPlugin] -> IO RPCConnection
@@ -3343,7 +3694,7 @@ normalizeFixtureMode :: String -> String
 normalizeFixtureMode = takeWhile (`notElem` ['\r', '\n'])
 
 fixtureUsage :: IO a
-fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|startup-pause-probe|entry-marker|env-contract|protocol-mismatch|auth-missing|auth-mismatch|endpoint-race-parent|endpoint-race-fake|split-pipe-client|malformed-json|bad-handshake|early-exit|slow|wait-for-start-signal|handshake-stall|slow-shutdown|flaky-start|flaky-runtime-exit|flaky-runtime-exit-clean|controlled-runtime-tree-restart|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|widening-handshake|exit-on-generator|exit-on-simulation|external-provider|external-provider-controlled-status|external-consumer|external-consumer-reject-grant|external-consumer-reject-revoke|external-consumer-timeout-grant-once|external-consumer-timeout-revoke-once|external-consumer-query-external-unavailable|external-consumer-crash-after-grant-ack|process-tree|heartbeat-child>"
+fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|startup-pause-probe|entry-marker|env-contract|protocol-mismatch|auth-missing|auth-mismatch|endpoint-race-parent|endpoint-race-fake|split-pipe-client|malformed-json|bad-handshake|early-exit|slow|wait-for-start-signal|handshake-stall|slow-shutdown|flaky-start|flaky-runtime-exit|flaky-runtime-exit-clean|controlled-runtime-tree-restart|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|widening-handshake|exit-on-generator|exit-on-simulation|external-provider|external-provider-controlled-status|external-consumer|external-consumer-reject-grant|external-consumer-reject-revoke|external-consumer-timeout-grant-once|external-consumer-timeout-revoke-once|external-consumer-query-external-unavailable|external-consumer-crash-after-grant-ack|process-tree|heartbeat-child|host-death-host|host-death-tree|host-death-ordinary-child|host-death-escaped-child>"
 
 runFixtureMode :: String -> IO ()
 runFixtureMode = \case
@@ -3391,6 +3742,11 @@ runFixtureMode = \case
   "external-consumer-crash-after-grant-ack" -> runExternalConsumerCrashAfterGrantAckFixture
   "process-tree" -> runProcessTreeFixture
   "heartbeat-child" -> runHeartbeatChild
+  "host-death-host" -> runHostDeathHostFixture
+  "host-death-tree" -> runHostDeathTreeFixture
+  "host-death-ordinary-child" -> runHostDeathHeartbeatChild
+    hostDeathOrdinaryPidFileName hostDeathOrdinaryHeartbeatFileName
+  "host-death-escaped-child" -> runHostDeathEscapedChild
   unknown -> die ("unknown plugin-manager fixture: " <> unknown)
 
 runEnvContractFixture :: IO ()
@@ -3549,6 +3905,143 @@ runHangQueryFixture = do
               MsgQueryResource -> threadDelay 2000000 >> closeTransport transport
               MsgShutdown -> closeTransport transport
               _ -> loop transport
+
+runHostDeathHostFixture :: IO ()
+runHostDeathHostFixture = do
+  readyPath <- fixtureDataFile hostDeathPluginName hostDeathReadyFileName
+  createDirectoryIfMissing True (takeDirectory readyPath)
+  runHost readyPath `catch` \(err :: SomeException) -> do
+    writeAtomicTextFile readyPath ("error=" <> show err <> "\n")
+    throwIO err
+  where
+    runHost readyPath = withPluginManager $ \pluginManagerHandle -> do
+      discoverPlugins pluginManagerHandle
+      refreshManifests pluginManagerHandle
+      loaded <- getLoadedPlugins pluginManagerHandle
+      unless (PluginConnected `elem` pluginStatuses hostDeathPluginName loaded) $
+        fail ("host-death plugin did not connect: " <> summarizeLoadedPlugins loaded)
+      leaderPid <- case mapMaybe ownedPluginProcessId (pluginOwnedProcesses hostDeathPluginName loaded) of
+        [pid] -> pure pid
+        pids -> fail ("host-death fixture expected one leader pid, got " <> show pids)
+      ordinaryPid <- waitForPublishedFixturePid
+        hostDeathPluginName hostDeathOrdinaryPidFileName
+      escapedPid <- waitForPublishedFixturePid
+        hostDeathPluginName hostDeathEscapedPidFileName
+      ordinaryHeartbeat <- fixtureDataFile hostDeathPluginName hostDeathOrdinaryHeartbeatFileName
+      escapedHeartbeat <- fixtureDataFile hostDeathPluginName hostDeathEscapedHeartbeatFileName
+      expectHeartbeatAdvances ordinaryHeartbeat
+      expectHeartbeatAdvances escapedHeartbeat
+      hostPid <- currentProcessIdForTest
+      writeAtomicTextFile readyPath $ unlines
+        [ "platform=" <> os
+        , "host_pid=" <> show hostPid
+        , "leader_pid=" <> show leaderPid
+        , "ordinary_pid=" <> show ordinaryPid
+        , "escaped_pid=" <> show escapedPid
+        , "containment=" <> if os == "mingw32"
+            then "kill-on-close-job"
+            else "launch-process-group-only;no-portable-host-death;new-session-escapes"
+        ]
+      waitForever
+
+    waitForever = threadDelay 1000000 >> waitForever
+
+runHostDeathTreeFixture :: IO ()
+runHostDeathTreeFixture = do
+  dataRoot <- requireEnv pluginDataRootEnv
+  createDirectoryIfMissing True dataRoot
+  leaderPid <- currentProcessIdForTest
+  writeAtomicTextFile (dataRoot </> hostDeathLeaderPidFileName) (show leaderPid)
+  connectPluginFromEnvironment "plugin-manager-host-death-tree-fixture" stdin stdout >>= \case
+    Left _ -> exitFailure
+    Right transport -> loop transport False
+  where
+    loop transport childrenStarted = do
+      recvMessage transport >>= \case
+        Left _ -> closeTransport transport
+        Right bytes -> case decodeMessage bytes of
+          Left _ -> loop transport childrenStarted
+          Right envelope -> case envType envelope of
+            MsgHandshake -> do
+              ack <- handshakeAckEnvelopeFor envelope currentProtocolVersion
+              _ <- sendMessage transport (encodeMessage ack)
+              unless childrenStarted startHostDeathDescendants
+              loop transport True
+            MsgShutdown -> closeTransport transport
+            _ -> loop transport childrenStarted
+
+startHostDeathDescendants :: IO ()
+startHostDeathDescendants = do
+  dataRoot <- requireEnv pluginDataRootEnv
+  testExe <- getExecutablePath
+  let childSpec mode = (proc testExe ["--plugin-manager-fixture", mode])
+        { cwd = Just dataRoot
+        , std_in = NoStream
+        , std_out = NoStream
+        , std_err = NoStream
+        }
+  _ <- createProcess (childSpec "host-death-ordinary-child")
+#if defined(mingw32_HOST_OS)
+  _ <- createProcess
+    ((childSpec "host-death-escaped-child") { new_session = True })
+#else
+  -- The child first publishes its PID while still in the retained launch group.
+  -- Only then may it create the session that deliberately escapes that group.
+  _ <- createProcess (childSpec "host-death-escaped-child")
+  waitForFixtureSignal (dataRoot </> hostDeathPreEscapeReadyFileName)
+  writeAtomicTextFile (dataRoot </> hostDeathEscapeReleaseFileName) "escape\n"
+  waitForFixtureSignal (dataRoot </> hostDeathEscapeCompleteFileName)
+#endif
+  pure ()
+
+runHostDeathHeartbeatChild :: String -> String -> IO ()
+runHostDeathHeartbeatChild pidFileName heartbeatFileName = do
+  dataRoot <- requireEnv pluginDataRootEnv
+  createDirectoryIfMissing True dataRoot
+  childPid <- currentProcessIdForTest
+  writeAtomicTextFile (dataRoot </> pidFileName) (show childPid)
+  runHostDeathHeartbeatLoop dataRoot heartbeatFileName
+
+runHostDeathEscapedChild :: IO ()
+#if defined(mingw32_HOST_OS)
+runHostDeathEscapedChild = runHostDeathHeartbeatChild
+  hostDeathEscapedPidFileName hostDeathEscapedHeartbeatFileName
+#else
+runHostDeathEscapedChild = do
+  dataRoot <- requireEnv pluginDataRootEnv
+  createDirectoryIfMissing True dataRoot
+  childPid <- currentProcessIdForTest
+  writeAtomicTextFile (dataRoot </> hostDeathEscapedPidFileName) (show childPid)
+  writeAtomicTextFile (dataRoot </> hostDeathPreEscapeReadyFileName) "ready\n"
+  waitForFixtureSignal (dataRoot </> hostDeathEscapeReleaseFileName)
+  _ <- createSession
+  writeAtomicTextFile (dataRoot </> hostDeathEscapeCompleteFileName) "escaped\n"
+  runHostDeathHeartbeatLoop dataRoot hostDeathEscapedHeartbeatFileName
+#endif
+
+runHostDeathHeartbeatLoop :: FilePath -> String -> IO ()
+runHostDeathHeartbeatLoop dataRoot heartbeatFileName = do
+  let heartbeatPath = dataRoot </> heartbeatFileName
+      loop n = do
+        BS.writeFile heartbeatPath (BSC.pack (show n))
+        threadDelay 50000
+        loop (n + 1 :: Int)
+  loop (0 :: Int)
+
+waitForPublishedFixturePid :: String -> String -> IO Word64
+waitForPublishedFixturePid pluginName fileName = do
+  path <- fixtureDataFile pluginName fileName
+  result <- timeout 5000000 (poll path)
+  case result of
+    Just pid -> pure pid
+    Nothing -> fail ("fixture did not publish pid at " <> path)
+  where
+    poll path = do
+      raw <- readTextFileMaybe path
+      case raw >>= parsePublishedPid of
+        Just pid -> pure pid
+        Nothing -> threadDelay 25000 >> poll path
+    parsePublishedPid = parseSafeFixturePid
 
 runProcessTreeFixture :: IO ()
 runProcessTreeFixture = do
@@ -4950,6 +5443,44 @@ processTreeHeartbeatFileName = "child-heartbeat.txt"
 
 processTreeChildPidFileName :: String
 processTreeChildPidFileName = "child.pid"
+
+hostDeathPluginName :: String
+hostDeathPluginName = "copilot-test-plugin-host-death"
+
+hostDeathManifestJSON :: BS.ByteString
+hostDeathManifestJSON = manifestWithStartPolicyFor hostDeathPluginName
+  [ "    \"restart_mode\": \"never\","
+  , "    \"startup_timeout_ms\": 2000,"
+  , "    \"request_timeout_ms\": 300,"
+  , "    \"shutdown_timeout_ms\": 100"
+  ]
+
+hostDeathReadyFileName :: String
+hostDeathReadyFileName = "host-death-ready.txt"
+
+hostDeathLeaderPidFileName :: String
+hostDeathLeaderPidFileName = "host-death-leader.pid"
+
+hostDeathOrdinaryPidFileName :: String
+hostDeathOrdinaryPidFileName = "host-death-ordinary.pid"
+
+hostDeathEscapedPidFileName :: String
+hostDeathEscapedPidFileName = "host-death-escaped.pid"
+
+hostDeathOrdinaryHeartbeatFileName :: String
+hostDeathOrdinaryHeartbeatFileName = "host-death-ordinary-heartbeat.txt"
+
+hostDeathEscapedHeartbeatFileName :: String
+hostDeathEscapedHeartbeatFileName = "host-death-escaped-heartbeat.txt"
+
+hostDeathPreEscapeReadyFileName :: String
+hostDeathPreEscapeReadyFileName = "host-death-pre-escape.ready"
+
+hostDeathEscapeReleaseFileName :: String
+hostDeathEscapeReleaseFileName = "host-death-escape.release"
+
+hostDeathEscapeCompleteFileName :: String
+hostDeathEscapeCompleteFileName = "host-death-escape.complete"
 
 noDataReadQueryPluginName :: String
 noDataReadQueryPluginName = "copilot-test-plugin-no-data-read-query"

@@ -271,11 +271,12 @@ cleanupOwnedPluginRuntime runtime = mask $ \_ -> do
 #if defined(mingw32_HOST_OS)
 data PlatformContainment = WindowsJob !HANDLE
 #else
--- A new session makes the root pid a stable process-group identity. This
--- contains ordinary descendants even after the root exits. Unix does not
--- provide a portable parent-death guarantee here, and a deliberately daemonized
--- descendant can escape by changing its process group or creating another
--- session; callers must not claim containment beyond the retained launch group.
+-- A new session makes the root pid a stable process-group identity for explicit
+-- manager cleanup, including after the root exits. Actual host death closes no
+-- portable POSIX containment token, so the launch group can remain alive. A
+-- deliberately daemonized descendant can additionally escape explicit cleanup
+-- by changing its process group or creating another session; callers must not
+-- claim containment beyond the retained launch group.
 data PlatformContainment = PosixProcessGroup !Word64
 #endif
 

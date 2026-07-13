@@ -324,6 +324,9 @@ test-suite topo-seer-test
     , topo-seer
     , vector
   default-language: Haskell2010
+  if !os(windows)
+    build-depends:
+        unix
 
 benchmark topo-seer-bench
   type: exitcode-stdio-1.0

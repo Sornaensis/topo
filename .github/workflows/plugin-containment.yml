@@ -1,0 +1,60 @@
+name: Plugin containment
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/plugin-containment.yml'
+      - 'stack.yaml'
+      - 'stack.yaml.lock'
+      - 'topo-seer/package.yaml'
+      - 'topo-seer/topo-seer.cabal'
+      - 'topo-seer/cbits/windows_process.c'
+      - 'topo-seer/src/Actor/PluginManager/**'
+      - 'topo-seer/test/Spec/PluginManager.hs'
+      - 'topo-seer/test/Spec.hs'
+  pull_request:
+    paths:
+      - '.github/workflows/plugin-containment.yml'
+      - 'stack.yaml'
+      - 'stack.yaml.lock'
+      - 'topo-seer/package.yaml'
+      - 'topo-seer/topo-seer.cabal'
+      - 'topo-seer/cbits/windows_process.c'
+      - 'topo-seer/src/Actor/PluginManager/**'
+      - 'topo-seer/test/Spec/PluginManager.hs'
+      - 'topo-seer/test/Spec.hs'
+
+jobs:
+  actual-host-death:
+    name: Actual host death (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: haskell-actions/setup@v2
+        with:
+          enable-stack: true
+          stack-version: 'latest'
+      - name: Install native SDL dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libsdl2-dev libsdl2-ttf-dev
+      - name: Install native SDL dependencies (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-SDL2
+            mingw-w64-ucrt-x86_64-SDL2_ttf
+      - name: Add Windows SDL runtime to PATH
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Add-Content $env:GITHUB_PATH 'C:\msys64\ucrt64\bin'
+      - name: Run actual host-death containment integration tests
+        shell: bash
+        run: stack test topo-seer:topo-seer-test --fast --test-arguments '--match actual-host-death'
