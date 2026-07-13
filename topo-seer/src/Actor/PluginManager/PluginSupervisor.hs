@@ -62,6 +62,7 @@ import Actor.PluginManager.ProcessLauncher
   , launchPluginTransport
   , mapOwnedPluginRuntimeConnection
   , newOwnedPluginRuntime
+  , pausePluginStartupIfInjected
   , ownedPluginRuntimeConnection
   , ownedPluginRuntimeGeneration
   , ownedPluginRuntimeProcess
@@ -739,12 +740,14 @@ connectLaunchedPlugin lp policy startupTimeoutMicros runtime launch = do
         Just connection -> connection
         Nothing -> error "accepted plugin runtime is missing its RPC connection"
   mPid <- processHandleIdText processHandle
+  pausePluginStartupIfInjected "handshake" (maybe "pid=unknown" ("pid=" <>) mPid)
   injectStartupFailure "handshake"
   hsResult <- performPluginHandshakeWithTimeout startupTimeoutMicros (Just expectedCredentials) conn
   case hsResult of
     Nothing -> startupHandshakeFailure policy runtime lp
       "handshake_timeout" "plugin handshake timed out" mPid
     Just (Right conn') -> do
+      pausePluginStartupIfInjected "prepublication" (maybe "pid=unknown" ("pid=" <>) mPid)
       injectStartupFailure "prepublication"
       now <- getCurrentTime
       pure lp

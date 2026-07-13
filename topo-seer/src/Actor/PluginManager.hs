@@ -19,6 +19,8 @@ module Actor.PluginManager
   , OwnedPluginRuntime
   , OwnedPluginRuntimeCleanupResult(..)
   , PluginRuntimeGeneration
+  , RuntimeFailureNotice
+  , runtimeProcessExitNotice
   , cleanupOwnedPluginRuntime
   , newConnectionOnlyPluginRuntime
   , ownedPluginRuntimeConnection
@@ -62,6 +64,9 @@ module Actor.PluginManager
   , pluginEndpointKind
   , pluginLastError
   , pluginUptimeSeconds
+  , canRestartPlugin
+  , pruneRestartHistory
+  , recordPluginRestart
     -- * Pipeline generator integration
   , PluginPipelineInput(..)
   , PluginPipelinePlan(..)
@@ -97,9 +102,9 @@ module Actor.PluginManager
   ) where
 
 import Control.Concurrent (forkIO, threadDelay)
-import Control.Exception (SomeException, fromException, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
+import Control.Exception (SomeException, finally, fromException, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
 import Control.Monad (unless, when)
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Aeson (Value)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -107,6 +112,10 @@ import Data.Set (Set)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Hyperspace.Actor
+import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.Environment (lookupEnv)
+import System.Exit (ExitCode)
+import System.FilePath (takeDirectory)
 
 import Actor.PluginManager.ProcessLauncher
   ( OwnedPluginCleanupResult(..)
@@ -121,6 +130,7 @@ import Actor.PluginManager.ProcessLauncher
   , claimOwnedPluginRuntimeProcessMonitor
   , releaseOwnedPluginRuntimeProcessMonitor
   , newConnectionOnlyPluginRuntime
+  , pausePluginStartupIfInjected
   , ownedPluginRuntimeConnection
   , ownedPluginRuntimeGeneration
   , ownedPluginRuntimeProcess
@@ -195,6 +205,9 @@ import Actor.PluginManager.Types
   , pluginEndpointKind
   , pluginLastError
   , pluginUptimeSeconds
+  , canRestartPlugin
+  , pruneRestartHistory
+  , recordPluginRestart
   )
 import Topo.Overlay.Schema (OverlaySchema)
 import Topo.Pipeline (PipelineStage)
@@ -339,19 +352,21 @@ runRuntimeRestartDirective
   :: ActorHandle PluginManager (Protocol PluginManager)
   -> RuntimeRestartDirective
   -> IO ()
-runRuntimeRestartDirective handle directive = do
-  backoffResult <- try @SomeException
-    (call @"beginRuntimeRestartBackoff" handle #beginRuntimeRestartBackoff directive)
-  case backoffResult of
-    Left _ -> cancelMatchingRestart handle directive
-    Right False -> pure ()
-    Right True -> do
-      delayResult <- try @SomeException $
-        when (rrdBackoffMicros directive > 0) (threadDelay (rrdBackoffMicros directive))
-      case delayResult of
-        Left _ -> cancelMatchingRestart handle directive
-        Right () -> launchRestart
+runRuntimeRestartDirective handle directive =
+  run `finally` signalRuntimeRestartDirectiveComplete directive
   where
+    run = do
+      backoffResult <- try @SomeException
+        (call @"beginRuntimeRestartBackoff" handle #beginRuntimeRestartBackoff directive)
+      case backoffResult of
+        Left _ -> cancelMatchingRestart handle directive
+        Right False -> pure ()
+        Right True -> do
+          delayResult <- try @SomeException (waitForRuntimeRestartBackoff directive)
+          case delayResult of
+            Left _ -> cancelMatchingRestart handle directive
+            Right () -> launchRestart
+
     launchRestart = do
       seedResult <- try @SomeException
         (call @"beginRuntimeRestart" handle #beginRuntimeRestart directive)
@@ -370,6 +385,51 @@ runRuntimeRestartDirective handle directive = do
               monitorPublishedPluginRuntimes handle [restarted]
               maybe (pure ()) (runRuntimeRestartDirective handle) nextDirective
             _ -> cleanupUnpublishedRuntime restarted
+
+waitForRuntimeRestartBackoff :: RuntimeRestartDirective -> IO ()
+waitForRuntimeRestartBackoff directive = do
+  mMarker <- lookupEnv restartBackoffMarkerTestEnv
+  mRelease <- lookupEnv restartBackoffReleaseTestEnv
+  case (mMarker, mRelease) of
+    (Just marker, Just release) -> do
+      createDirectoryIfMissing True (takeDirectory marker)
+      writeFile marker (runtimeRestartDirectiveDiagnostic directive <> "\n")
+      waitForFile release
+    _ -> when (rrdBackoffMicros directive > 0) (threadDelay (rrdBackoffMicros directive))
+
+signalRuntimeRestartDirectiveComplete :: RuntimeRestartDirective -> IO ()
+signalRuntimeRestartDirectiveComplete directive = do
+  mComplete <- lookupEnv restartBackoffCompleteTestEnv
+  case mComplete of
+    Nothing -> pure ()
+    Just complete -> do
+      createDirectoryIfMissing True (takeDirectory complete)
+      writeFile complete (runtimeRestartDirectiveDiagnostic directive <> "\n")
+
+runtimeRestartDirectiveDiagnostic :: RuntimeRestartDirective -> String
+runtimeRestartDirectiveDiagnostic directive =
+  "plugin=" <> Text.unpack (rrdPluginName directive)
+    <> " generation=" <> show (rrdGeneration directive)
+    <> " operation_token=" <> show (rrdOperationToken directive)
+
+waitForFile :: FilePath -> IO ()
+waitForFile path = do
+  exists <- doesFileExist path
+  if exists then pure () else threadDelay 10000 >> waitForFile path
+
+restartBackoffMarkerTestEnv :: String
+restartBackoffMarkerTestEnv = "TOPO_TEST_PLUGIN_RESTART_BACKOFF_MARKER"
+
+restartBackoffReleaseTestEnv :: String
+restartBackoffReleaseTestEnv = "TOPO_TEST_PLUGIN_RESTART_BACKOFF_RELEASE"
+
+restartBackoffCompleteTestEnv :: String
+restartBackoffCompleteTestEnv = "TOPO_TEST_PLUGIN_RESTART_BACKOFF_COMPLETE"
+
+-- | Construct a process-exit monitor notice without exposing the rest of the
+-- internal actor protocol carried by 'RuntimeFailureNotice'.
+runtimeProcessExitNotice :: Text -> PluginRuntimeGeneration -> ExitCode -> RuntimeFailureNotice
+runtimeProcessExitNotice = RuntimeProcessExit
 
 cancelMatchingRestart
   :: ActorHandle PluginManager (Protocol PluginManager)
@@ -427,6 +487,7 @@ refreshManifests handle = mask $ \restore -> do
   (token, baseDir, plugins) <- case mOperation of
     Nothing -> throwIO (userError "plugin lifecycle operation already in progress")
     Just operation -> pure operation
+  publishCallStartedRef <- newIORef False
   let cancelRefresh = do
         (_, directives) <- commitLifecycleTransition $
           call @"cancelRefresh" handle #cancelRefresh (token, plugins)
@@ -438,15 +499,22 @@ refreshManifests handle = mask $ \restore -> do
       (Map.fromList [(lpName p, p) | p <- plugins])
       (\refreshed -> do
         let published = Map.elems refreshed
+        pausePluginStartupIfInjected "publication"
+          (Text.pack ("tracked_runtimes=" <> show (length (publishedRuntimeEntries published))))
+        writeIORef publishCallStartedRef True
         accepted <- commitLifecycleTransition $
           call @"finishRefresh" handle #finishRefresh (token, published)
         unless accepted (throwIO (userError "stale plugin refresh completion"))
         monitorPublishedPluginRuntimes handle published)
       (\connected _ -> do
-        (ownedPlugins, ownedGenerations) <-
-          resolvePublishedRuntimeOwnership handle (Map.elems connected)
-        monitorPublishedPluginRuntimes handle ownedPlugins
-        pure ownedGenerations)
+        publishCallStarted <- readIORef publishCallStartedRef
+        if not publishCallStarted
+          then pure []
+          else do
+            (ownedPlugins, ownedGenerations) <-
+              resolvePublishedRuntimeOwnership handle (Map.elems connected)
+            monitorPublishedPluginRuntimes handle ownedPlugins
+            pure ownedGenerations)
   case refreshResult of
     Right () -> pure ()
     Left err -> do

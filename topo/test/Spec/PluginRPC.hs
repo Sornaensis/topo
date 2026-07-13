@@ -11,6 +11,7 @@ import Test.QuickCheck
 
 import Control.Concurrent (MVar, forkIO, killThread, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (SomeException, bracket, finally, try)
+import Control.Monad (forM_)
 import Data.Char (toLower)
 import Data.Aeson (Value(..), (.=), object, encode, eitherDecode)
 import qualified Data.Aeson as Aeson
@@ -1632,6 +1633,36 @@ spec = describe "Plugin.RPC" $ do
         claimRPCFailureEvent conn event `shouldReturn` False
         peekRPCFailureEvent conn `shouldReturn` Nothing
 
+    it "coalesces concurrent transport failures into one identity-claimable event" $
+      withConnectedTransports "rpc-concurrent-failure-event" $ \host plugin -> do
+        let manifest = baseManifest
+              { rmStartPolicy = defaultRPCStartPolicy { rspRequestTimeoutMs = 10000 }
+              }
+            conn = newRPCConnection manifest host Map.empty
+        firstDone <- newEmptyMVar
+        secondDone <- newEmptyMVar
+        _ <- forkIO (checkHealth conn >>= putMVar firstDone)
+        firstRequest <- recvEnvelopeFrom plugin
+        _ <- forkIO (checkHealth conn >>= putMVar secondDone)
+        secondRequest <- recvEnvelopeFrom plugin
+        envRequestId firstRequest `shouldNotBe` envRequestId secondRequest
+        closeTransport plugin
+
+        event <- awaitRPCFailureEvent conn
+        rpfeSource event `shouldBe` RPCFailureTransport
+        rpfeError event `shouldSatisfy` \case
+          RPCTransportError _ -> True
+          _ -> False
+        forM_ [firstDone, secondDone] $ \done -> do
+          result <- timeout transportTestTimeoutMicros (takeMVar done)
+          result `shouldSatisfy` \case
+            Just (Left (RPCTransportError _)) -> True
+            _ -> False
+        peekRPCFailureEvent conn `shouldReturn` Just event
+        claimRPCFailureEvent conn event `shouldReturn` True
+        claimRPCFailureEvent conn event `shouldReturn` False
+        peekRPCFailureEvent conn `shouldReturn` Nothing
+
     it "keeps broker timeouts local while preserving a later transport failure" $
       withConnectedTransports "rpc-broker-timeout-transport-event" $ \host plugin -> do
         let manifest = baseManifest
@@ -2613,8 +2644,10 @@ spec = describe "Plugin.RPC" $ do
 
     it "connects over a host-created Unix socket endpoint" $
       onUnix $ withTransportServer "socket-smoke" $ \server -> do
-        pathExists <- doesPathExist (teAddress (tsEndpoint server))
-        pathExists `shouldBe` True
+        let socketPath = teAddress (tsEndpoint server)
+            socketDir = takeDirectory socketPath
+        doesPathExist socketPath `shouldReturn` True
+        doesPathExist socketDir `shouldReturn` True
         done <- newEmptyMVar
         _ <- forkIO (clientEcho "socket-smoke-client" (tsEndpoint server) "ping" "pong" done)
         host <- requireAccept server
@@ -2622,23 +2655,29 @@ spec = describe "Plugin.RPC" $ do
         shouldReturnWithin "host receive pong" (recvMessage host) (Right "pong")
         closeTransport host
         takeClientResult done `shouldReturn` Right ()
-        doesPathExist (teAddress (tsEndpoint server)) `shouldReturn` False
+        doesPathExist socketPath `shouldReturn` False
+        doesPathExist socketDir `shouldReturn` False
 
     it "removes stale Unix socket endpoints when accept times out" $
       onUnix $ bracket acquireTimingOutServer tsClose $ \server -> do
         let socketPath = teAddress (tsEndpoint server)
+            socketDir = takeDirectory socketPath
         doesPathExist socketPath `shouldReturn` True
+        doesPathExist socketDir `shouldReturn` True
         acceptResult <- tsAccept server
         case acceptResult of
           Left (TransportConnectionFailed msg) -> msg `shouldSatisfy` Text.isInfixOf "timed out"
           Left err -> expectationFailure ("expected accept timeout, got " <> show err)
           Right transport -> closeTransport transport >> expectationFailure "accept unexpectedly succeeded"
         doesPathExist socketPath `shouldReturn` False
+        doesPathExist socketDir `shouldReturn` False
 
     it "creates owner-only Unix socket launch dirs and rejects peer mismatches" $
       onUnix $ withTransportServer "socket-peer-policy-reject" $ \server -> do
-        assertUnixSocketLaunchDirOwnerOnly (takeDirectory (teAddress (tsEndpoint server)))
+        let socketDir = takeDirectory (teAddress (tsEndpoint server))
+        assertUnixSocketLaunchDirOwnerOnly socketDir
         expectPeerPolicyRejectsWithServer "socket-peer-policy-reject" server
+        doesPathExist socketDir `shouldReturn` False
 
     it "allocates distinct Unix socket endpoints for concurrent plugin startup" $
       onUnix $ withTransportServer "same-plugin" $ \serverA ->

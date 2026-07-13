@@ -9,7 +9,7 @@
 
 module Spec.PluginManager (spec, runFixtureCli, runFixtureCliIfRequested) where
 
-import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
+import Control.Concurrent (MVar, ThreadId, forkIO, killThread, newEmptyMVar, putMVar, takeMVar, threadDelay)
 import Control.Exception
   ( Exception
   , SomeAsyncException
@@ -42,6 +42,7 @@ import Data.Word (Word32, Word64)
 import Foreign.C.Types (CInt(..))
 #if !defined(mingw32_HOST_OS)
 import Foreign.C.Error (eSRCH, getErrno)
+import System.Posix.Process (getProcessID)
 #else
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, nullPtr)
@@ -54,6 +55,7 @@ import System.Directory
   , createDirectoryIfMissing
   , doesDirectoryExist
   , doesFileExist
+  , doesPathExist
   , getCurrentDirectory
   , getHomeDirectory
   , getPermissions
@@ -62,7 +64,7 @@ import System.Directory
   , setPermissions
   )
 import System.Environment (getArgs, getEnvironment, getExecutablePath, lookupEnv, setEnv, unsetEnv)
-import System.Exit (die, exitFailure)
+import System.Exit (ExitCode(..), die, exitFailure)
 import System.FilePath (isAbsolute, (</>), takeDirectory, takeFileName)
 import System.Info (os)
 import System.IO (stdin, stdout)
@@ -83,6 +85,7 @@ import Actor.PluginManager
   ( LoadedPlugin(..)
   , OwnedPluginCleanupResult(..)
   , OwnedPluginProcess
+  , OwnedPluginRuntime
   , OwnedPluginRuntimeCleanupResult(..)
   , PluginDiagnosticState(..)
   , PluginExternalDataSourceDiagnostic(..)
@@ -94,6 +97,7 @@ import Actor.PluginManager
   , PluginSimulationPlan(..)
   , PluginStatus(..)
   , buildPluginSimulationPlanForPlugins
+  , canRestartPlugin
   , cleanupOwnedPluginProcess
   , cleanupOwnedPluginRuntime
   , discoverPlugins
@@ -110,12 +114,16 @@ import Actor.PluginManager
   , ownedPluginProcessHandle
   , ownedPluginProcessId
   , ownedPluginRuntimeGeneration
+  , ownedPluginRuntimeProcess
   , pluginDependencyDiagnostics
   , pluginDiagnosticState
   , pluginExternalDataSourceDiagnosticsFor
   , pluginLifecycleSnapshot
+  , pruneRestartHistory
   , queryPluginResource
+  , recordPluginRestart
   , refreshManifests
+  , runtimeProcessExitNotice
   , setDisabledPlugins
   , setPluginParam
   , shutdownPlugins
@@ -170,6 +178,8 @@ import Topo.Plugin.RPC
   , RPCParamSpec(..)
   , RPCParamType(..)
   , RPCParamValidationError(..)
+  , RPCRestartMode(..)
+  , RPCStartPolicy(..)
   , RPCOverlayDecl(..)
   , RPCSimulationDecl(..)
   , defaultRPCExternalDataSourceStatus
@@ -207,10 +217,12 @@ import Topo.Plugin.RPC.Transport
   ( Transport(..)
   , TransportConfig(..)
   , TransportEndpoint(..)
+  , TransportEndpointKind(..)
   , TransportError(..)
   , TransportPeerPolicy(..)
   , TransportServer(..)
   , closeTransport
+  , connectPluginEndpoint
   , connectPluginFromEnvironment
   , defaultTransportConfig
   , pluginAuthTokenEnv
@@ -277,6 +289,23 @@ spec = describe "PluginManager" $ do
       cancelledStale `shouldBe` False
       length staleDirectives `shouldBe` 0
       call @"finishRefresh" pluginManagerHandle #finishRefresh (currentToken, currentPlugins) `shouldReturn` True
+
+  it "lifecycle-matrix enforces zero and one restart limits across rolling windows without sleeping" $ do
+    let epoch = posixSecondsToUTCTime 0
+        insideWindow = posixSecondsToUTCTime 0.05
+        outsideWindow = posixSecondsToUTCTime 0.2
+        oneRestart = defaultRPCStartPolicy
+          { rspRestartMode = RestartOnFailure
+          , rspMaxRestarts = 1
+          , rspRestartWindowMs = 100
+          }
+        zeroRestarts = oneRestart { rspMaxRestarts = 0 }
+        oneAttempt = recordPluginRestart oneRestart epoch []
+    canRestartPlugin zeroRestarts epoch [] `shouldBe` False
+    canRestartPlugin oneRestart epoch [] `shouldBe` True
+    canRestartPlugin oneRestart insideWindow oneAttempt `shouldBe` False
+    pruneRestartHistory oneRestart outsideWindow oneAttempt `shouldBe` []
+    canRestartPlugin oneRestart outsideWindow oneAttempt `shouldBe` True
 
   it "loads declared .toposchema files during discovery" $ do
     withTestPluginDir testPluginName testManifestJSON testSchemaJSON $ do
@@ -475,19 +504,65 @@ spec = describe "PluginManager" $ do
           assertOwnedCleanupComplete owner
           assertOwnedCleanupComplete owner
 
-  it "cleans every fault-injected startup handoff without losing runtime ownership" $ do
-    withExecutablePluginDir testLaunchPluginName testLaunchManifestJSON "ok" $
-      forM_ ["listener", "process", "accept", "handshake", "prepublication", "publication"] $ \phase ->
-        withEnvironmentValue "TOPO_TEST_PLUGIN_STARTUP_FAILURE" phase $
-          withPluginManager $ \pluginManagerHandle -> do
+  it "lifecycle-matrix startup handoffs report exact lifecycle and ownership for every injected phase" $
+    withExecutablePluginDir testLaunchPluginName startupHandoffManifestJSON "ok" $
+      withPluginManager $ \pluginManagerHandle -> do
+        forM_
+          [ ("listener", False)
+          , ("process", False)
+          , ("accept", True)
+          , ("handshake", True)
+          , ("prepublication", True)
+          , ("publication", True)
+          ] $ \(phase, rollsBack) -> do
             discoverPlugins pluginManagerHandle
-            _ <- try @SomeException (refreshManifests pluginManagerHandle)
+            result <- withEnvironmentValue "TOPO_TEST_PLUGIN_STARTUP_FAILURE" phase $
+              try @SomeException (refreshManifests pluginManagerHandle)
             loaded <- getLoadedPlugins pluginManagerHandle
-            let matching = filter ((== Text.pack testLaunchPluginName) . lpName) loaded
-            map (isNothing . lpRuntime) matching `shouldBe` [True]
-            forM_ matching $ \plugin ->
-              when (plsState (lpLifecycle plugin) == LifecycleStopped) $
-                isNothing (lpRuntime plugin) `shouldBe` True
+            assertStartupHandoffOutcome phase rollsBack result loaded
+
+        discoverPlugins pluginManagerHandle
+        containmentResult <- withEnvironmentValue "TOPO_TEST_PLUGIN_CONTAINMENT_FAILURE" "1" $
+          try @SomeException (refreshManifests pluginManagerHandle)
+        containment <- getLoadedPlugins pluginManagerHandle
+        assertStartupHandoffOutcome "containment" False containmentResult containment
+
+  forM_
+    [ "listener"
+    , "process"
+    , "accept"
+    , "handshake"
+    , "prepublication"
+    , "publication"
+    ] $ \phase ->
+      it ("lifecycle-cancellation-" <> phase <> " leaves no residual resources") $
+        withExecutablePluginDir testLaunchPluginName startupHandoffManifestJSON "startup-pause-probe" $
+          withPluginManager $ \pluginManagerHandle -> do
+            heartbeatPath <- fixtureDataFile testLaunchPluginName processTreeHeartbeatFileName
+            baseDir <- currentPluginBaseDir
+            let markerPath = baseDir </> ("startup-pause-" <> phase <> ".marker")
+                processExpected = phase `elem` ["accept", "handshake", "prepublication", "publication"]
+                endpointExpected = phase `elem` ["listener", "process", "accept"]
+            discoverPlugins pluginManagerHandle
+            (cancelled, diagnostic, mProcessPid) <- withEnvironmentValue startupPauseTestEnv phase $
+              withEnvironmentValue startupPauseMarkerTestEnv markerPath $ do
+                (worker, done) <- forkCancellableLifecycleAction
+                  (refreshManifests pluginManagerHandle)
+                expectWithin (phase <> " pause marker") (waitForFixtureSignal markerPath)
+                diagnostic <- Text.strip . Text.pack <$> readFile markerPath
+                mProcessPid <- if processExpected
+                  then expectHeartbeatAdvances heartbeatPath >> Just <$> readProcessTreeChildPid testLaunchPluginName
+                  else pure Nothing
+                killThread worker
+                cancelled <- waitForLifecycleActionResult (phase <> " cancellation") done
+                expectAsyncLifecycleCancellation phase cancelled
+                pure (cancelled, diagnostic, mProcessPid)
+            loaded <- getLoadedPlugins pluginManagerHandle
+            assertStartupHandoffOutcome phase True cancelled loaded
+            when processExpected $ do
+              assertHeartbeatStops heartbeatPath
+              forM_ mProcessPid (assertProcessTreeChildGone ("cancelled startup " <> phase) [])
+            when endpointExpected $ assertCancelledEndpointGone phase diagnostic
 
   it "retains failed runtime aggregates at destructive startup handoffs" $ do
     withExecutablePluginDir testLaunchPluginName testLaunchManifestJSON "ok" $
@@ -656,6 +731,38 @@ spec = describe "PluginManager" $ do
         mapM_ assertOwnedCleanupComplete owners
         assertProcessTreeChildGone processTreePluginName owners childPid
       assertHeartbeatStops heartbeatPath
+
+  it "lifecycle-matrix never publishes Stopped for a retained descendant and converges on repeated shutdown" $ do
+    withExecutablePluginDir processTreePluginName processTreeManifestJSON "process-tree" $
+      withPluginManager $ \pluginManagerHandle -> do
+        heartbeatPath <- fixtureDataFile processTreePluginName processTreeHeartbeatFileName
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        ready <- getLoadedPlugins pluginManagerHandle
+        owners <- pure (pluginOwnedProcesses processTreePluginName ready)
+        expectHeartbeatAdvances heartbeatPath
+        childPid <- readProcessTreeChildPid processTreePluginName
+        withEnvironmentValue "TOPO_TEST_PLUGIN_CLEANUP_FAILURE" "1" $ do
+          expectWithin "forced retained shutdown" (shutdownPlugins pluginManagerHandle)
+          retained <- getLoadedPlugins pluginManagerHandle
+          pluginLifecycleStates processTreePluginName retained `shouldSatisfy` elem LifecycleFailed
+          pluginLifecycleStates processTreePluginName retained `shouldNotSatisfy` elem LifecycleStopped
+          pluginLifecycleErrorCodes processTreePluginName retained `shouldBe` [Just "termination_failed"]
+          length (pluginOwnedProcesses processTreePluginName retained) `shouldBe` 1
+          expectHeartbeatAdvances heartbeatPath
+
+        expectWithin "repeated retained shutdown" (shutdownPlugins pluginManagerHandle)
+        stopped <- waitForLoadedPlugins
+          (processTreePluginName <> " repeated retained shutdown")
+          pluginManagerHandle
+          (\loaded -> LifecycleStopped `elem` pluginLifecycleStates processTreePluginName loaded
+            && null (pluginOwnedProcesses processTreePluginName loaded))
+        pluginLifecycleStates processTreePluginName stopped `shouldBe` [LifecycleStopped]
+        null [runtime | plugin <- stopped, lpName plugin == Text.pack processTreePluginName, runtime <- maybe [] pure (lpRuntime plugin)]
+          `shouldBe` True
+        mapM_ assertOwnedCleanupComplete owners
+        assertProcessTreeChildGone processTreePluginName owners childPid
+        assertHeartbeatStops heartbeatPath
 
   it "rejects split Windows named-pipe endpoint clients from different processes" $ do
     if os /= "mingw32"
@@ -1610,35 +1717,91 @@ spec = describe "PluginManager" $ do
         count <- readFixtureCount runtimeRestartPluginName "flaky-runtime-exit"
         count `shouldBe` 2
 
-  it "lets refresh supersede a queued autonomous restart without a stale launch" $
-    withExecutablePluginDir runtimeRestartPluginName runtimeRestartManifestJSON "flaky-runtime-exit" $ do
+  it "lifecycle-matrix tears down the old process tree before replacement and rejects its late generation" $ do
+    withExecutablePluginDir controlledRuntimePluginName controlledRuntimeManifestJSON "controlled-runtime-tree-restart" $
       withPluginManager $ \pluginManagerHandle -> do
+        heartbeatPath <- fixtureDataFile controlledRuntimePluginName processTreeHeartbeatFileName
+        crashRelease <- fixtureDataFile controlledRuntimePluginName controlledRuntimeCrashReleaseFileName
+        replacementStarted <- fixtureDataFile controlledRuntimePluginName controlledRuntimeReplacementStartedFileName
+        overlapProbe <- fixtureDataFile controlledRuntimePluginName controlledRuntimeOverlapProbeFileName
+        replacementRelease <- fixtureDataFile controlledRuntimePluginName controlledRuntimeReplacementReleaseFileName
         discoverPlugins pluginManagerHandle
         refreshManifests pluginManagerHandle
-        threadDelay 250000
-        backingOff <- getLoadedPlugins pluginManagerHandle
-        pluginLifecycleStates runtimeRestartPluginName backingOff `shouldSatisfy` elem LifecycleStarting
-        refreshManifests pluginManagerHandle
-        threadDelay 650000
-        loaded <- getLoadedPlugins pluginManagerHandle
-        pluginStatuses runtimeRestartPluginName loaded `shouldSatisfy` elem PluginConnected
-        count <- readFixtureCount runtimeRestartPluginName "flaky-runtime-exit"
-        count `shouldBe` 2
+        firstReady <- getLoadedPlugins pluginManagerHandle
+        oldRuntime <- expectPluginRuntime controlledRuntimePluginName firstReady
+        oldOwner <- case pluginOwnedProcesses controlledRuntimePluginName firstReady of
+          [owner] -> pure owner
+          owners -> expectationFailure
+            ("expected one old runtime owner, got " <> show (length owners)) >> fail "old owner"
+        let oldGeneration = ownedPluginRuntimeGeneration oldRuntime
+            oldProcess = ownedPluginProcessHandle oldOwner
+        expectHeartbeatAdvances heartbeatPath
+        childPid <- readProcessTreeChildPid controlledRuntimePluginName
+
+        writeFile crashRelease "crash\n"
+        expectWithin "replacement process start marker" (waitForFixtureSignal replacementStarted)
+        overlapState <- Text.strip . Text.pack <$> readFile overlapProbe
+        overlapState `shouldBe` "old-tree-gone"
+        assertProcessExited (controlledRuntimePluginName <> " old generation") oldProcess
+        assertProcessTreeChildGone controlledRuntimePluginName [oldOwner] childPid
+        assertHeartbeatStops heartbeatPath
+
+        writeFile replacementRelease "connect\n"
+        restarted <- waitForLoadedPlugins
+          (controlledRuntimePluginName <> " replacement ready")
+          pluginManagerHandle
+          (\loaded -> PluginConnected `elem` pluginStatuses controlledRuntimePluginName loaded
+            && LifecycleReady `elem` pluginLifecycleStates controlledRuntimePluginName loaded)
+        newRuntime <- expectPluginRuntime controlledRuntimePluginName restarted
+        let newGeneration = ownedPluginRuntimeGeneration newRuntime
+        newGeneration `shouldNotBe` oldGeneration
+        length (pluginOwnedProcesses controlledRuntimePluginName restarted) `shouldBe` 1
+        readFixtureCount controlledRuntimePluginName controlledRuntimeCountKey `shouldReturn` 2
+
+        (accepted, directive) <- call @"runtimeFailure" pluginManagerHandle #runtimeFailure
+          (runtimeProcessExitNotice (Text.pack controlledRuntimePluginName) oldGeneration (ExitFailure 77))
+        accepted `shouldBe` False
+        isNothing directive `shouldBe` True
+        afterLateNotice <- getLoadedPlugins pluginManagerHandle
+        currentRuntime <- expectPluginRuntime controlledRuntimePluginName afterLateNotice
+        ownedPluginRuntimeGeneration currentRuntime `shouldBe` newGeneration
+        pluginLifecycleStates controlledRuntimePluginName afterLateNotice `shouldBe` [LifecycleReady]
+
+  it "lets refresh supersede a queued autonomous restart without a stale launch" $
+    withExecutablePluginDir runtimeRestartPluginName runtimeRestartManifestJSON "flaky-runtime-exit" $
+      withRuntimeRestartBarrier runtimeRestartPluginName $ \barrier ->
+        withPluginManager $ \pluginManagerHandle -> do
+          discoverPlugins pluginManagerHandle
+          refreshManifests pluginManagerHandle
+          expectWithin "refresh-race queued restart" (waitForFixtureSignal (rrbMarker barrier))
+          backingOff <- getLoadedPlugins pluginManagerHandle
+          pluginLifecycleStates runtimeRestartPluginName backingOff `shouldSatisfy` elem LifecycleStarting
+          refreshManifests pluginManagerHandle
+          writeFile (rrbRelease barrier) "release\n"
+          expectWithin "refresh-race restart cancellation" (waitForFixtureSignal (rrbComplete barrier))
+          assertRestartBarrierDiagnostic barrier
+          loaded <- getLoadedPlugins pluginManagerHandle
+          pluginStatuses runtimeRestartPluginName loaded `shouldSatisfy` elem PluginConnected
+          count <- readFixtureCount runtimeRestartPluginName "flaky-runtime-exit"
+          count `shouldBe` 2
 
   it "lets shutdown suppress a queued autonomous restart" $
-    withExecutablePluginDir runtimeRestartPluginName runtimeRestartManifestJSON "flaky-runtime-exit" $ do
-      withPluginManager $ \pluginManagerHandle -> do
-        discoverPlugins pluginManagerHandle
-        refreshManifests pluginManagerHandle
-        threadDelay 250000
-        backingOff <- getLoadedPlugins pluginManagerHandle
-        pluginLifecycleStates runtimeRestartPluginName backingOff `shouldSatisfy` elem LifecycleStarting
-        shutdownPlugins pluginManagerHandle
-        threadDelay 650000
-        stopped <- getLoadedPlugins pluginManagerHandle
-        pluginLifecycleStates runtimeRestartPluginName stopped `shouldSatisfy` elem LifecycleStopped
-        count <- readFixtureCount runtimeRestartPluginName "flaky-runtime-exit"
-        count `shouldBe` 1
+    withExecutablePluginDir runtimeRestartPluginName runtimeRestartManifestJSON "flaky-runtime-exit" $
+      withRuntimeRestartBarrier runtimeRestartPluginName $ \barrier ->
+        withPluginManager $ \pluginManagerHandle -> do
+          discoverPlugins pluginManagerHandle
+          refreshManifests pluginManagerHandle
+          expectWithin "shutdown-race queued restart" (waitForFixtureSignal (rrbMarker barrier))
+          backingOff <- getLoadedPlugins pluginManagerHandle
+          pluginLifecycleStates runtimeRestartPluginName backingOff `shouldSatisfy` elem LifecycleStarting
+          shutdownPlugins pluginManagerHandle
+          writeFile (rrbRelease barrier) "release\n"
+          expectWithin "shutdown-race restart cancellation" (waitForFixtureSignal (rrbComplete barrier))
+          assertRestartBarrierDiagnostic barrier
+          stopped <- getLoadedPlugins pluginManagerHandle
+          pluginLifecycleStates runtimeRestartPluginName stopped `shouldSatisfy` elem LifecycleStopped
+          count <- readFixtureCount runtimeRestartPluginName "flaky-runtime-exit"
+          count `shouldBe` 1
 
   it "honors restart_mode=never for autonomous runtime failure" $
     withExecutablePluginDir runtimeNeverPluginName runtimeNeverManifestJSON "flaky-runtime-exit" $ do
@@ -1696,6 +1859,22 @@ spec = describe "PluginManager" $ do
         pluginLifecycleErrorCodes restartLimitPluginName loaded `shouldSatisfy` elem (Just "restart_limit_exceeded")
         count <- readFixtureCount restartLimitPluginName "counted-early-exit"
         count `shouldBe` 2
+
+  it "lifecycle-matrix preserves the originating failure after exhausting multiple restart attempts" $ do
+    withExecutablePluginDir restartLimitMultiplePluginName restartLimitMultipleManifestJSON "counted-early-exit" $
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        exhausted <- getLoadedPlugins pluginManagerHandle
+        pluginLifecycleStates restartLimitMultiplePluginName exhausted `shouldBe` [LifecycleFailed]
+        pluginLifecycleErrorCodes restartLimitMultiplePluginName exhausted `shouldBe` [Just "restart_limit_exceeded"]
+        pluginStatuses restartLimitMultiplePluginName exhausted `shouldSatisfy`
+          anyPluginErrorContaining "timed out waiting for plugin connection"
+        pluginStatuses restartLimitMultiplePluginName exhausted `shouldSatisfy`
+          anyPluginErrorContaining "restart limit exceeded"
+        null (pluginOwnedProcesses restartLimitMultiplePluginName exhausted) `shouldBe` True
+        count <- readFixtureCount restartLimitMultiplePluginName "counted-early-exit"
+        count `shouldBe` 3
 
   it "times out data-resource requests instead of hanging" $ do
     withExecutablePluginDir hangQueryPluginName hangQueryManifestJSON "hang-query" $ do
@@ -1905,6 +2084,38 @@ pluginLifecycleProtocols name = map plsProtocolVersion . pluginLifecycles name
 pluginLifecycleErrorCodes :: String -> [LoadedPlugin] -> [Maybe Text]
 pluginLifecycleErrorCodes name = map plsErrorCode . pluginLifecycles name
 
+assertStartupHandoffOutcome
+  :: String
+  -> Bool
+  -> Either SomeException ()
+  -> [LoadedPlugin]
+  -> Expectation
+assertStartupHandoffOutcome phase rollsBack result loaded = do
+  case (rollsBack, result) of
+    (True, Left _) -> pure ()
+    (True, Right ()) -> expectationFailure (phase <> " startup handoff unexpectedly completed")
+    (False, Left err) -> expectationFailure (phase <> " startup failure escaped supervisor: " <> show err)
+    (False, Right ()) -> pure ()
+  case filter ((== Text.pack testLaunchPluginName) . lpName) loaded of
+    [plugin] -> do
+      isNothing (lpRuntime plugin) `shouldBe` True
+      isNothing (lpConnection plugin) `shouldBe` True
+      isNothing (lpProcessHandle plugin) `shouldBe` True
+      if rollsBack
+        then do
+          lpStatus plugin `shouldBe` PluginIdle
+          plsState (lpLifecycle plugin) `shouldBe` LifecycleDiscovered
+          plsErrorCode (lpLifecycle plugin) `shouldBe` Nothing
+        else do
+          lpStatus plugin `shouldSatisfy` \case
+            PluginError message -> not (Text.null message)
+            _ -> False
+          plsState (lpLifecycle plugin) `shouldBe` LifecycleFailed
+          plsErrorCode (lpLifecycle plugin) `shouldBe` Just "launch_failed"
+    matching -> expectationFailure
+      (phase <> " expected exactly one plugin, got " <> show (length matching)
+        <> ". Full state:\n" <> summarizeLoadedPlugins loaded)
+
 assertSecretAbsentFromPluginDiagnostics :: String -> Text -> [LoadedPlugin] -> Expectation
 assertSecretAbsentFromPluginDiagnostics pluginName secret loaded = do
   secret `shouldSatisfy` (not . Text.null)
@@ -2016,18 +2227,55 @@ expectPluginProcessHandles name loaded =
     handles -> pure handles
 
 forkLifecycleAction :: IO () -> IO (MVar (Either SomeException ()))
-forkLifecycleAction action = do
+forkLifecycleAction action = snd <$> forkCancellableLifecycleAction action
+
+forkCancellableLifecycleAction :: IO () -> IO (ThreadId, MVar (Either SomeException ()))
+forkCancellableLifecycleAction action = do
   done <- newEmptyMVar
-  _ <- forkIO (try @SomeException action >>= putMVar done)
-  pure done
+  worker <- forkIO (try @SomeException action >>= putMVar done)
+  pure (worker, done)
 
 waitForLifecycleAction :: String -> MVar (Either SomeException ()) -> IO ()
 waitForLifecycleAction label done = do
+  result <- waitForLifecycleActionResult label done
+  case result of
+    Left err -> expectationFailure $ label <> " failed: " <> show err
+    Right () -> pure ()
+
+waitForLifecycleActionResult
+  :: String
+  -> MVar (Either SomeException ())
+  -> IO (Either SomeException ())
+waitForLifecycleActionResult label done = do
   result <- timeout lifecycleActionTimeoutMicros (takeMVar done)
   case result of
-    Nothing -> expectationFailure $ label <> " did not finish within bounded test timeout"
-    Just (Left err) -> expectationFailure $ label <> " failed: " <> show err
-    Just (Right ()) -> pure ()
+    Nothing -> expectationFailure (label <> " did not finish within bounded test timeout")
+      >> fail label
+    Just completed -> pure completed
+
+expectAsyncLifecycleCancellation :: String -> Either SomeException () -> Expectation
+expectAsyncLifecycleCancellation phase result =
+  case result of
+    Left err | isJust (fromException err :: Maybe SomeAsyncException) -> pure ()
+    Left err -> expectationFailure (phase <> " returned a non-async cancellation error: " <> show err)
+    Right () -> expectationFailure (phase <> " completed instead of observing cancellation")
+
+assertCancelledEndpointGone :: String -> Text -> IO ()
+assertCancelledEndpointGone phase diagnostic
+  | Text.null diagnostic = expectationFailure (phase <> " pause marker omitted endpoint diagnostics")
+  | os == "mingw32" = do
+      connection <- connectPluginEndpoint "cancelled-startup-probe" TransportEndpoint
+        { teKind = TransportEndpointNamedPipe
+        , teAddress = Text.unpack diagnostic
+        }
+      case connection of
+        Left _ -> pure ()
+        Right transport -> closeTransport transport
+          >> expectationFailure (phase <> " left named-pipe handles reachable")
+  | otherwise = do
+      let socketPath = Text.unpack diagnostic
+      doesPathExist socketPath `shouldReturn` False
+      doesPathExist (takeDirectory socketPath) `shouldReturn` False
 
 waitForPluginLifecycleState
   :: String
@@ -2093,6 +2341,9 @@ summarizeLoadedPlugin plugin =
     <> " lifecycle=" <> show (plsState (lpLifecycle plugin))
     <> " errorCode=" <> show (plsErrorCode (lpLifecycle plugin))
     <> " processId=" <> show (plsProcessId (lpLifecycle plugin))
+    <> " runtimeGeneration=" <> show (ownedPluginRuntimeGeneration <$> lpRuntime plugin)
+    <> " runtimeOwnerId=" <> show (lpRuntime plugin >>= ownedPluginRuntimeProcess >>= ownedPluginProcessId)
+    <> " hasRuntime=" <> show (isJust (lpRuntime plugin))
     <> " hasConnection=" <> show (isJust (lpConnection plugin))
     <> " hasProcess=" <> show (isJust (lpProcessHandle plugin))
 
@@ -2271,6 +2522,14 @@ expectPluginConnection name loaded =
   case pluginConnections name loaded of
     Just conn -> pure conn
     Nothing -> expectationFailure (name <> " did not expose an RPC connection") >> fail "missing plugin connection"
+
+expectPluginRuntime :: String -> [LoadedPlugin] -> IO OwnedPluginRuntime
+expectPluginRuntime name loaded =
+  case [runtime | plugin <- loaded, lpName plugin == Text.pack name, Just runtime <- [lpRuntime plugin]] of
+    [runtime] -> pure runtime
+    runtimes -> expectationFailure
+      (name <> " expected one runtime, got " <> show (length runtimes)
+        <> ". Full state:\n" <> summarizeLoadedPlugins loaded) >> fail "missing plugin runtime"
 
 expectRight :: Show e => String -> Either e a -> IO a
 expectRight label result = case result of
@@ -2769,6 +3028,40 @@ withEnvironmentValue key value = bracket setup restore . const
       pure old
     restore = maybe (unsetEnv key) (setEnv key)
 
+data RuntimeRestartBarrier = RuntimeRestartBarrier
+  { rrbMarker :: !FilePath
+  , rrbRelease :: !FilePath
+  , rrbComplete :: !FilePath
+  }
+
+withRuntimeRestartBarrier :: String -> (RuntimeRestartBarrier -> IO a) -> IO a
+withRuntimeRestartBarrier pluginName action = do
+  barrier <- RuntimeRestartBarrier
+    <$> fixtureDataFile pluginName "restart-backoff.waiting"
+    <*> fixtureDataFile pluginName "restart-backoff.release"
+    <*> fixtureDataFile pluginName "restart-backoff.complete"
+  withEnvironmentValue restartBackoffMarkerTestEnv (rrbMarker barrier) $
+    withEnvironmentValue restartBackoffReleaseTestEnv (rrbRelease barrier) $
+      withEnvironmentValue restartBackoffCompleteTestEnv (rrbComplete barrier) $
+        action barrier
+
+assertRestartBarrierDiagnostic :: RuntimeRestartBarrier -> Expectation
+assertRestartBarrierDiagnostic barrier = do
+  waiting <- Text.pack <$> readFile (rrbMarker barrier)
+  completed <- Text.pack <$> readFile (rrbComplete barrier)
+  forM_ [waiting, completed] $ \diagnostic -> do
+    diagnostic `shouldSatisfy` Text.isInfixOf "generation=PluginRuntimeGeneration"
+    diagnostic `shouldSatisfy` Text.isInfixOf "operation_token="
+
+restartBackoffMarkerTestEnv :: String
+restartBackoffMarkerTestEnv = "TOPO_TEST_PLUGIN_RESTART_BACKOFF_MARKER"
+
+restartBackoffReleaseTestEnv :: String
+restartBackoffReleaseTestEnv = "TOPO_TEST_PLUGIN_RESTART_BACKOFF_RELEASE"
+
+restartBackoffCompleteTestEnv :: String
+restartBackoffCompleteTestEnv = "TOPO_TEST_PLUGIN_RESTART_BACKOFF_COMPLETE"
+
 withSensitiveParentEnvironment :: IO a -> IO a
 withSensitiveParentEnvironment = bracket setup restore . const
   where
@@ -2882,7 +3175,7 @@ withIsolatedPluginHome label action =
     restoreEnv key = maybe (unsetEnv key) (setEnv key)
 
 removePathForciblyEventually :: FilePath -> IO ()
-removePathForciblyEventually path = go (20 :: Int)
+removePathForciblyEventually path = go (100 :: Int)
   where
     go attemptsLeft =
       removePathForcibly path `catch` \(err :: SomeException) ->
@@ -3050,11 +3343,15 @@ normalizeFixtureMode :: String -> String
 normalizeFixtureMode = takeWhile (`notElem` ['\r', '\n'])
 
 fixtureUsage :: IO a
-fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|entry-marker|env-contract|protocol-mismatch|auth-missing|auth-mismatch|endpoint-race-parent|endpoint-race-fake|split-pipe-client|malformed-json|bad-handshake|early-exit|slow|wait-for-start-signal|handshake-stall|slow-shutdown|flaky-start|flaky-runtime-exit|flaky-runtime-exit-clean|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|widening-handshake|exit-on-generator|exit-on-simulation|external-provider|external-provider-controlled-status|external-consumer|external-consumer-reject-grant|external-consumer-reject-revoke|external-consumer-timeout-grant-once|external-consumer-timeout-revoke-once|external-consumer-query-external-unavailable|external-consumer-crash-after-grant-ack|process-tree|heartbeat-child>"
+fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|startup-pause-probe|entry-marker|env-contract|protocol-mismatch|auth-missing|auth-mismatch|endpoint-race-parent|endpoint-race-fake|split-pipe-client|malformed-json|bad-handshake|early-exit|slow|wait-for-start-signal|handshake-stall|slow-shutdown|flaky-start|flaky-runtime-exit|flaky-runtime-exit-clean|controlled-runtime-tree-restart|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|widening-handshake|exit-on-generator|exit-on-simulation|external-provider|external-provider-controlled-status|external-consumer|external-consumer-reject-grant|external-consumer-reject-revoke|external-consumer-timeout-grant-once|external-consumer-timeout-revoke-once|external-consumer-query-external-unavailable|external-consumer-crash-after-grant-ack|process-tree|heartbeat-child>"
 
 runFixtureMode :: String -> IO ()
 runFixtureMode = \case
   "ok" -> runOkFixture
+  "startup-pause-probe" -> do
+    recordStartupPauseProbePid
+    _ <- forkIO runHeartbeatChild
+    runOkFixture
   "entry-marker" -> incrementFixtureCount "entry-marker" >> runOkFixture
   "env-contract" -> runEnvContractFixture
   "protocol-mismatch" -> runOneShotAckFixture (currentProtocolVersion + 1)
@@ -3073,6 +3370,7 @@ runFixtureMode = \case
   "flaky-start" -> runFlakyStartFixture
   "flaky-runtime-exit" -> runFlakyRuntimeExitFixture
   "flaky-runtime-exit-clean" -> runFlakyRuntimeCleanExitFixture
+  "controlled-runtime-tree-restart" -> runControlledRuntimeTreeRestartFixture
   "counted-early-exit" -> incrementFixtureCount "counted-early-exit" >> exitFailure
   "hang-query" -> runHangQueryFixture
   "provider-failed" -> runProviderFailedFixture
@@ -3194,6 +3492,43 @@ runFlakyRuntimeExitFixtureWith countKey finishFirst = do
             finishFirst
           _ -> waitForHandshake transport
 
+runControlledRuntimeTreeRestartFixture :: IO ()
+runControlledRuntimeTreeRestartFixture = do
+  count <- incrementFixtureCount controlledRuntimeCountKey
+  dataRoot <- requireEnv pluginDataRootEnv
+  if count > 1
+    then do
+      oldTreeAlive <- controlledOldTreeAlive dataRoot
+      writeFile
+        (dataRoot </> controlledRuntimeOverlapProbeFileName)
+        (if oldTreeAlive then "old-tree-alive\n" else "old-tree-gone\n")
+      recordFixtureMarker controlledRuntimeReplacementStartedFileName
+      waitForFixtureSignal (dataRoot </> controlledRuntimeReplacementReleaseFileName)
+      runOkFixture
+    else connectPluginFromEnvironment "plugin-manager-controlled-runtime-fixture" stdin stdout >>= \case
+      Left _ -> exitFailure
+      Right transport -> waitForHandshake dataRoot transport
+  where
+    waitForHandshake dataRoot transport = do
+      recvMessage transport >>= \case
+        Left _ -> exitFailure
+        Right bytes -> case decodeMessage bytes of
+          Right envelope | envType envelope == MsgHandshake -> do
+            ack <- handshakeAckEnvelopeFor envelope currentProtocolVersion
+            _ <- sendMessage transport (encodeMessage ack)
+            startHeartbeatChild
+            waitForFixtureSignal (dataRoot </> controlledRuntimeCrashReleaseFileName)
+            closeTransport transport
+            exitFailure
+          _ -> waitForHandshake dataRoot transport
+
+controlledOldTreeAlive :: FilePath -> IO Bool
+controlledOldTreeAlive dataRoot = do
+  raw <- readFile (dataRoot </> processTreeChildPidFileName)
+  case reads raw of
+    [(pid, _)] -> processIdExists pid
+    _ -> pure True
+
 runHangQueryFixture :: IO ()
 runHangQueryFixture = do
   connectPluginFromEnvironment "plugin-manager-hang-query-fixture" stdin stdout >>= \case
@@ -3270,6 +3605,20 @@ startHeartbeatChild = do
         , std_err = NoStream
         }
       pure ()
+
+recordStartupPauseProbePid :: IO ()
+recordStartupPauseProbePid = do
+  dataRoot <- requireEnv pluginDataRootEnv
+  createDirectoryIfMissing True dataRoot
+  pid <- currentProcessIdForTest
+  writeFile (dataRoot </> processTreeChildPidFileName) (show pid)
+
+currentProcessIdForTest :: IO Word64
+#if defined(mingw32_HOST_OS)
+currentProcessIdForTest = fromIntegral <$> c_GetCurrentProcessId
+#else
+currentProcessIdForTest = fromIntegral <$> getProcessID
+#endif
 
 runHeartbeatChild :: IO ()
 runHeartbeatChild = do
@@ -4258,11 +4607,25 @@ testSchemaJSON =
     <> "  ]\n"
     <> "}\n"
 
+startupPauseTestEnv :: String
+startupPauseTestEnv = "TOPO_TEST_PLUGIN_STARTUP_PAUSE"
+
+startupPauseMarkerTestEnv :: String
+startupPauseMarkerTestEnv = "TOPO_TEST_PLUGIN_STARTUP_PAUSE_MARKER"
+
 testLaunchPluginName :: String
 testLaunchPluginName = "copilot-test-plugin-launch"
 
 testLaunchManifestJSON :: BS.ByteString
 testLaunchManifestJSON = manifestFor testLaunchPluginName
+
+startupHandoffManifestJSON :: BS.ByteString
+startupHandoffManifestJSON = manifestWithStartPolicyFor testLaunchPluginName
+  [ "    \"restart_mode\": \"never\","
+  , "    \"startup_timeout_ms\": 1000,"
+  , "    \"request_timeout_ms\": 300,"
+  , "    \"shutdown_timeout_ms\": 300"
+  ]
 
 envContractPluginName :: String
 envContractPluginName = "copilot-test-plugin-env-contract"
@@ -4501,6 +4864,35 @@ runtimeAlwaysManifestJSON = manifestWithStartPolicyFor runtimeAlwaysPluginName
   , "    \"backoff_ms\": 10"
   ]
 
+controlledRuntimePluginName :: String
+controlledRuntimePluginName = "copilot-test-plugin-controlled-runtime-tree"
+
+controlledRuntimeManifestJSON :: BS.ByteString
+controlledRuntimeManifestJSON = manifestWithStartPolicyFor controlledRuntimePluginName
+  [ "    \"restart_mode\": \"on_failure\","
+  , "    \"max_restarts\": 1,"
+  , "    \"restart_window_ms\": 10000,"
+  , "    \"startup_timeout_ms\": 10000,"
+  , "    \"request_timeout_ms\": 300,"
+  , "    \"shutdown_timeout_ms\": 100,"
+  , "    \"backoff_ms\": 10"
+  ]
+
+controlledRuntimeCountKey :: String
+controlledRuntimeCountKey = "controlled-runtime-tree-restart"
+
+controlledRuntimeCrashReleaseFileName :: String
+controlledRuntimeCrashReleaseFileName = "controlled-runtime-crash.release"
+
+controlledRuntimeReplacementStartedFileName :: String
+controlledRuntimeReplacementStartedFileName = "controlled-runtime-replacement.started"
+
+controlledRuntimeOverlapProbeFileName :: String
+controlledRuntimeOverlapProbeFileName = "controlled-runtime-overlap.probe"
+
+controlledRuntimeReplacementReleaseFileName :: String
+controlledRuntimeReplacementReleaseFileName = "controlled-runtime-replacement.release"
+
 restartLimitPluginName :: String
 restartLimitPluginName = "copilot-test-plugin-restart-limit"
 
@@ -4508,6 +4900,20 @@ restartLimitManifestJSON :: BS.ByteString
 restartLimitManifestJSON = manifestWithStartPolicyFor restartLimitPluginName
   [ "    \"restart_mode\": \"on_failure\","
   , "    \"max_restarts\": 1,"
+  , "    \"restart_window_ms\": 10000,"
+  , "    \"startup_timeout_ms\": 50,"
+  , "    \"request_timeout_ms\": 100,"
+  , "    \"shutdown_timeout_ms\": 100,"
+  , "    \"backoff_ms\": 1"
+  ]
+
+restartLimitMultiplePluginName :: String
+restartLimitMultiplePluginName = "copilot-test-plugin-restart-limit-multiple"
+
+restartLimitMultipleManifestJSON :: BS.ByteString
+restartLimitMultipleManifestJSON = manifestWithStartPolicyFor restartLimitMultiplePluginName
+  [ "    \"restart_mode\": \"on_failure\","
+  , "    \"max_restarts\": 2,"
   , "    \"restart_window_ms\": 10000,"
   , "    \"startup_timeout_ms\": 50,"
   , "    \"request_timeout_ms\": 100,"

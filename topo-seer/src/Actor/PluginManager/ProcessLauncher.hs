@@ -30,6 +30,7 @@ module Actor.PluginManager.ProcessLauncher
   , cleanupOwnedPluginProcess
   , resolvePluginExecutable
   , launchPluginTransport
+  , pausePluginStartupIfInjected
   , safeCloseHandle
   ) where
 
@@ -40,10 +41,12 @@ import Control.Exception
   , SomeException
   , fromException
   , mask
+  , onException
   , throwIO
   , try
   )
 import qualified Data.ByteString as BS
+import Control.Monad (when)
 import Crypto.Random (getRandomBytes)
 import Data.Char (toLower)
 import Data.List (sortOn)
@@ -63,6 +66,7 @@ import Foreign.Storable (peek, peekByteOff, pokeByteOff, sizeOf)
 #endif
 import Numeric (showHex)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.Environment (getEnvironment, lookupEnv)
 import System.FilePath ((</>), (<.>))
@@ -173,7 +177,7 @@ data OwnedPluginCleanupResult
 -- | Opaque identity for one launch attempt. It is allocated before process
 -- creation and travels with any retained partial or fully handshaken runtime.
 newtype PluginRuntimeGeneration = PluginRuntimeGeneration Int
-  deriving (Eq)
+  deriving (Eq, Show)
 
 -- | Sole owner of the resources created by one plugin launch. A connection is
 -- absent only while retaining a process from a pre-accept failure; published
@@ -321,33 +325,38 @@ launchPluginTransportViaEndpoint executablePath workingDir pluginName startupTim
       pluginName
   case serverResult of
     Left err -> pure (Left (Text.pack (show err), Nothing))
-    Right server -> do
-      preparedResult <- trySync preparePlatformContainment
-      case preparedResult of
-        Left err -> do
-          safeCloseServer server
-          pure (Left ("plugin containment setup failed before launch: " <> Text.pack (show err), Nothing))
-        Right preparedContainment -> do
-          processResult <- trySync $ do
-            processFailure <- startupFailureInjected "process"
-            if processFailure
-              then throwIO (userError "forced process creation failure")
-              else pure ()
-            launchEnvironment <- endpointEnvironment (tsEndpoint server) pluginName workingDir
-            processHandle <- createContainedPluginProcess
-              preparedContainment
-              executablePath
-              workingDir
-              (leVariables launchEnvironment)
-            ownershipResult <- establishProcessOwnership preparedContainment processHandle
-            pure (launchEnvironment, ownershipResult)
-          case processResult of
-            Left err -> do
-              _ <- releasePlatformContainment preparedContainment
-              safeCloseServer server
-              pure (Left (Text.pack (show err), Nothing))
-            Right (launchEnvironment, ownershipResult) ->
-              finishOwnedLaunch restore server launchEnvironment ownershipResult
+    Right server ->
+      (do
+        let endpoint = Text.pack (teAddress (tsEndpoint server))
+        pausePluginStartupIfInjected "listener" endpoint
+        pausePluginStartupIfInjected "process" endpoint
+        preparedResult <- trySync preparePlatformContainment
+        case preparedResult of
+          Left err -> do
+            safeCloseServer server
+            pure (Left ("plugin containment setup failed before launch: " <> Text.pack (show err), Nothing))
+          Right preparedContainment -> do
+            processResult <- trySync $ do
+              processFailure <- startupFailureInjected "process"
+              if processFailure
+                then throwIO (userError "forced process creation failure")
+                else pure ()
+              launchEnvironment <- endpointEnvironment (tsEndpoint server) pluginName workingDir
+              processHandle <- createContainedPluginProcess
+                preparedContainment
+                executablePath
+                workingDir
+                (leVariables launchEnvironment)
+              ownershipResult <- establishProcessOwnership preparedContainment processHandle
+              pure (launchEnvironment, ownershipResult)
+            case processResult of
+              Left err -> do
+                _ <- releasePlatformContainment preparedContainment
+                safeCloseServer server
+                pure (Left (Text.pack (show err), Nothing))
+              Right (launchEnvironment, ownershipResult) ->
+                finishOwnedLaunch restore server launchEnvironment ownershipResult
+      ) `onException` safeCloseServer server
 
 finishOwnedLaunch
   :: (forall a. IO a -> IO a)
@@ -380,6 +389,7 @@ finishOwnedLaunch _restore server launchEnvironment ownershipResult =
         Left message -> failLaunched message
         Right peerPolicy -> do
           acceptAttempt <- try @SomeException $ do
+            pausePluginStartupIfInjected "accept" (Text.pack (teAddress (tsEndpoint server)))
             acceptFailure <- startupFailureInjected "accept"
             if acceptFailure
               then throwIO (userError "forced endpoint accept failure")
@@ -655,8 +665,29 @@ jobPreparationFailureTestEnv = "TOPO_TEST_PLUGIN_JOB_PREPARATION_FAILURE"
 startupFailureTestEnv :: String
 startupFailureTestEnv = "TOPO_TEST_PLUGIN_STARTUP_FAILURE"
 
+startupPauseTestEnv :: String
+startupPauseTestEnv = "TOPO_TEST_PLUGIN_STARTUP_PAUSE"
+
+startupPauseMarkerTestEnv :: String
+startupPauseMarkerTestEnv = "TOPO_TEST_PLUGIN_STARTUP_PAUSE_MARKER"
+
 startupFailureInjected :: String -> IO Bool
 startupFailureInjected phase = (== Just phase) <$> lookupEnv startupFailureTestEnv
+
+-- | Deterministic test-only barrier at a startup ownership handoff. The marker
+-- contains the endpoint or owner diagnostic supplied by the caller. Production
+-- launches do not set these environment variables and never enter the barrier.
+pausePluginStartupIfInjected :: String -> Text -> IO ()
+pausePluginStartupIfInjected phase diagnostic = do
+  requested <- (== Just phase) <$> lookupEnv startupPauseTestEnv
+  when requested $ do
+    marker <- lookupEnv startupPauseMarkerTestEnv >>= maybe
+      (throwIO (userError (startupPauseMarkerTestEnv <> " is required")))
+      pure
+    BS.writeFile marker (TextEncoding.encodeUtf8 (diagnostic <> "\n"))
+    waitForCancellation
+  where
+    waitForCancellation = threadDelay 1000000 >> waitForCancellation
 
 preparePlatformContainment :: IO (Maybe PlatformContainment)
 #if defined(mingw32_HOST_OS)
