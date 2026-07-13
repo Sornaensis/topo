@@ -348,7 +348,9 @@ installCrudFixturePlugin headlessApp manifest negotiatedResources = do
         , lpOverlaySchema = Nothing
         }
       pluginHandle = ahPluginManagerHandle (ccActorHandles (headlessCommandContext headlessApp))
-  call @"finishRefresh" pluginHandle #finishRefresh [loaded]
+  Just (token, _, _) <- call @"refresh" pluginHandle #refresh ()
+  accepted <- call @"finishRefresh" pluginHandle #finishRefresh (token, [loaded])
+  accepted `shouldBe` True
 
 createTransportPair :: Text -> IO (Transport, Transport)
 createTransportPair pluginName = do

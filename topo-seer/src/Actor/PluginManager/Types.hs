@@ -26,6 +26,10 @@ module Actor.PluginManager.Types
   , lpConnection
   , lpProcessHandle
   , mapLoadedPluginConnection
+  , PluginRefreshFailure(..)
+  , PluginManagerOperation(..)
+  , PluginRestartPhase(..)
+  , PluginRestartOperation(..)
   , PluginManagerState(..)
   , emptyPluginManagerState
   , pluginStatusText
@@ -65,10 +69,12 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time (NominalDiffTime, UTCTime, diffUTCTime)
+import Data.Word (Word64)
 import System.Info (os)
 import Actor.PluginManager.ProcessLauncher
   ( OwnedPluginProcess
   , OwnedPluginRuntime
+  , PluginRuntimeGeneration
   , mapOwnedPluginRuntimeConnection
   , ownedPluginRuntimeConnection
   , ownedPluginRuntimeProcess
@@ -1138,6 +1144,37 @@ mapLoadedPluginConnection :: (RPCConnection -> RPCConnection) -> LoadedPlugin ->
 mapLoadedPluginConnection f lp = lp
   { lpRuntime = mapOwnedPluginRuntimeConnection f <$> lpRuntime lp }
 
+-- | One current-generation failure observed while refresh owns the lifecycle
+-- gate. Recovery is scoped to this exact plugin/generation and disposition.
+data PluginRefreshFailure = PluginRefreshFailure
+  { prfGeneration :: !PluginRuntimeGeneration
+  , prfRestartAllowed :: !Bool
+  }
+
+-- | Identity and rollback snapshot for one externally initiated lifecycle
+-- operation. Late completion/cancellation is ignored unless this token still
+-- owns the corresponding transition.
+data PluginManagerOperation = PluginManagerOperation
+  { pmoToken :: !Word64
+  , pmoPlugins :: !(Map Text LoadedPlugin)
+  , pmoInvalidated :: !Bool
+  , pmoFailures :: !(Map Text PluginRefreshFailure)
+  }
+
+data PluginRestartPhase
+  = PluginRestartBackoff
+  | PluginRestartLaunching
+  deriving (Eq, Show)
+
+-- | Actor-owned restart claim for one failed launch generation.
+data PluginRestartOperation = PluginRestartOperation
+  { proToken :: !Word64
+  , proGeneration :: !PluginRuntimeGeneration
+  , proPhase :: !PluginRestartPhase
+  , proErrorCode :: !Text
+  , proErrorMessage :: !Text
+  }
+
 -- | Plugin manager actor state.
 data PluginManagerState = PluginManagerState
   { pmsPlugins    :: !(Map Text LoadedPlugin)
@@ -1148,10 +1185,14 @@ data PluginManagerState = PluginManagerState
     -- ^ Base directory for plugin discovery (@~\/.topo\/plugins\/@).
   , pmsDisabledPlugins :: !(Set Text)
     -- ^ Plugins the user has disabled in the pipeline.
-  , pmsPendingRefresh :: !(Maybe (Map Text LoadedPlugin))
-    -- ^ Pre-refresh snapshot used to roll back interrupted refreshes.
-  , pmsPendingShutdown :: !(Maybe (Map Text LoadedPlugin))
-    -- ^ Pre-shutdown snapshot used to roll back interrupted shutdowns.
+  , pmsPendingRefresh :: !(Maybe PluginManagerOperation)
+    -- ^ Token and pre-refresh snapshot used to arbitrate completion/rollback.
+  , pmsPendingShutdown :: !(Maybe PluginManagerOperation)
+    -- ^ Token and pre-shutdown snapshot used to arbitrate completion/rollback.
+  , pmsPendingRestarts :: !(Map Text PluginRestartOperation)
+    -- ^ Current actor-owned restart claim per plugin.
+  , pmsNextOperationToken :: !Word64
+    -- ^ Monotonic actor-local lifecycle operation identity.
   , pmsExternalDataSourceGrants :: !(Map ExternalDataSourceGrantKey ExternalDataSourceGrantBrokerState)
     -- ^ Grants the host has sent and must revoke deterministically.
   }
@@ -1164,6 +1205,8 @@ emptyPluginManagerState = PluginManagerState
   , pmsDisabledPlugins = Set.empty
   , pmsPendingRefresh = Nothing
   , pmsPendingShutdown = Nothing
+  , pmsPendingRestarts = Map.empty
+  , pmsNextOperationToken = 1
   , pmsExternalDataSourceGrants = Map.empty
   }
 

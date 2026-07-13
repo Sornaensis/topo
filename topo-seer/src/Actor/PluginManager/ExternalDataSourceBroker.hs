@@ -7,7 +7,6 @@ module Actor.PluginManager.ExternalDataSourceBroker
   ) where
 
 import Control.Monad (foldM)
-import Data.IORef (writeIORef)
 import Data.Aeson (Value(..), object, (.=))
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
@@ -686,7 +685,6 @@ sendOneGrant st grantState
                   then blockConsumer key reason stWithDiagnostic
                   else degradeConsumer key reason stWithDiagnostic
           Left err -> do
-            clearBrokerTimeoutRuntimeFailure conn err
             let reasonPrefix = if edsgbsRequired grantState
                   then "failed to send required external data-source grant: "
                   else "failed to send optional external data-source grant: "
@@ -884,7 +882,6 @@ revokeOneWithReason reason st grantState = do
                 then blockConsumer key failureReason failedSt
                 else degradeConsumer key failureReason failedSt
         Left err -> do
-          clearBrokerTimeoutRuntimeFailure conn err
           let failureReason = if edsgbsRequired grantState
                 then "failed to revoke required external data-source grant: " <> rpcErrorText err
                 else "failed to revoke optional external data-source grant: " <> rpcErrorText err
@@ -892,12 +889,6 @@ revokeOneWithReason reason st grantState = do
           if edsgbsRequired grantState
             then blockConsumer key failureReason failedSt
             else degradeConsumer key failureReason failedSt
-
-clearBrokerTimeoutRuntimeFailure :: RPCConnection -> RPCError -> IO ()
-clearBrokerTimeoutRuntimeFailure conn err =
-  case err of
-    RPCTimeout _ -> writeIORef (rpcRuntimeFailure conn) Nothing
-    _ -> pure ()
 
 revocationMessage :: Text -> ExternalDataSourceGrantBrokerState -> RPCExternalDataSourceGrantRevocation
 revocationMessage reason grantState = RPCExternalDataSourceGrantRevocation

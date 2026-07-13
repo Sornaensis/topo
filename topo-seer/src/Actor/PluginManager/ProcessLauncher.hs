@@ -19,6 +19,10 @@ module Actor.PluginManager.ProcessLauncher
   , ownedPluginRuntimeConnection
   , ownedPluginRuntimeProcess
   , mapOwnedPluginRuntimeConnection
+  , claimOwnedPluginRuntimeRPCMonitor
+  , releaseOwnedPluginRuntimeRPCMonitor
+  , claimOwnedPluginRuntimeProcessMonitor
+  , releaseOwnedPluginRuntimeProcessMonitor
   , cleanupOwnedPluginRuntime
   , ownedPluginProcessHandle
   , ownedPluginProcessId
@@ -30,7 +34,7 @@ module Actor.PluginManager.ProcessLauncher
   ) where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.MVar (MVar, modifyMVar, newMVar)
+import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar)
 import Control.Exception
   ( SomeAsyncException
   , SomeException
@@ -80,7 +84,11 @@ import Text.Read (readMaybe)
 import System.Process.Internals (PHANDLE, mkProcessHandle)
 #endif
 
-import Topo.Plugin.RPC (RPCConnection(..))
+import Topo.Plugin.RPC
+  ( RPCConnection(..)
+  , claimRPCSupervisorMonitor
+  , releaseRPCSupervisorMonitor
+  )
 import Topo.Plugin.RPC.Protocol (currentProtocolVersion)
 import Topo.Plugin.RPC.Transport
   ( Transport
@@ -153,6 +161,7 @@ data OwnedPluginProcess = OwnedPluginProcess
 data OwnedPluginProcessState = OwnedPluginProcessState
   { oppsContainment :: !(Maybe PlatformContainment)
   , oppsCleanupComplete :: !Bool
+  , oppsProcessMonitorClaimed :: !Bool
   }
 
 -- | Cleanup either completed, or failed while returning the same owner so the
@@ -213,6 +222,29 @@ mapOwnedPluginRuntimeConnection
   -> OwnedPluginRuntime
 mapOwnedPluginRuntimeConnection f runtime = runtime
   { oprConnection = f <$> oprConnection runtime }
+
+claimOwnedPluginRuntimeRPCMonitor :: OwnedPluginRuntime -> IO Bool
+claimOwnedPluginRuntimeRPCMonitor runtime =
+  maybe (pure False) claimRPCSupervisorMonitor (oprConnection runtime)
+
+releaseOwnedPluginRuntimeRPCMonitor :: OwnedPluginRuntime -> IO ()
+releaseOwnedPluginRuntimeRPCMonitor runtime =
+  maybe (pure ()) releaseRPCSupervisorMonitor (oprConnection runtime)
+
+claimOwnedPluginRuntimeProcessMonitor :: OwnedPluginRuntime -> IO Bool
+claimOwnedPluginRuntimeProcessMonitor runtime = case oprProcess runtime of
+  Nothing -> pure False
+  Just process -> modifyMVar (oppState process) $ \state ->
+    pure
+      ( state { oppsProcessMonitorClaimed = True }
+      , not (oppsProcessMonitorClaimed state)
+      )
+
+releaseOwnedPluginRuntimeProcessMonitor :: OwnedPluginRuntime -> IO ()
+releaseOwnedPluginRuntimeProcessMonitor runtime = case oprProcess runtime of
+  Nothing -> pure ()
+  Just process -> modifyMVar_ (oppState process) $ \state ->
+    pure state { oppsProcessMonitorClaimed = False }
 
 -- | Close the accepted transport (when present) and terminate the owned
 -- process tree. A failed process cleanup retains the whole aggregate so no
@@ -583,6 +615,7 @@ establishProcessOwnership preparedContainment processHandle = mask $ \_ -> do
   state <- newMVar OwnedPluginProcessState
     { oppsContainment = preparedContainment
     , oppsCleanupComplete = False
+    , oppsProcessMonitorClaimed = False
     }
   identityResult <- trySync (processHandlePidWord64 processHandle)
   let mIdentity = either (const Nothing) id identityResult

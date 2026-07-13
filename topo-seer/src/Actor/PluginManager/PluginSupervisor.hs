@@ -15,6 +15,10 @@ module Actor.PluginManager.PluginSupervisor
   , markExternalDataSourceDegraded
   , connectLoadedPlugin
   , observePluginRuntime
+  , failPluginRuntime
+  , failPluginProcessExit
+  , preparePluginRuntimeRestart
+  , restartLoadedPluginOnce
   , handlePluginRuntimeFailure
   , shutdownPlugin
   , finalizeInterruptedPluginCleanup
@@ -22,6 +26,8 @@ module Actor.PluginManager.PluginSupervisor
   , markPluginStopping
   , disconnectPlugin
   , RefreshRuntimeCleanupFailed
+  , RefreshRuntimeIdentity
+  , refreshRuntimeIdentity
   , refreshRuntimeCleanupOwners
   ) where
 
@@ -36,6 +42,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time (UTCTime, getCurrentTime)
+import Data.Word (Word64)
 import System.Environment (lookupEnv)
 import System.Info (os)
 
@@ -109,13 +116,17 @@ import Topo.Plugin.RPC
   , RPCExternalDataSourceStartupDecision(..)
   , RPCExternalDataSourceStatus(..)
   , RPCExternalDataSourceStatusState(..)
+  , RPCFailureEvent(..)
   , RPCManifest(..)
   , RPCStartPolicy(..)
+  , claimRPCFailureEvent
   , dataResourceErrorCodeText
   , externalDataSourceStatusBlocksStartup
   , externalDataSourceStatusDegradesStartup
   , newRPCConnection
+  , peekRPCFailureEvent
   , rpcShutdown
+  , sameRPCConnection
   )
 import Topo.Plugin.RPC.Manifest (sanitizeRPCManifestParams)
 
@@ -134,50 +145,49 @@ withRefreshedManifests
   -> (Map Text LoadedPlugin -> IO a)
   -> IO a
 withRefreshedManifests baseDir plugins publish =
-  withRefreshedManifestsHandlingPublishException baseDir plugins publish (\_ _ -> pure True)
+  withRefreshedManifestsHandlingPublishException baseDir plugins publish (\_ _ -> pure [])
 
--- | Variant of 'withRefreshedManifests' that lets the publisher decide whether
--- newly launched runtimes should still be cleaned up when publish is interrupted.
+-- | Variant of 'withRefreshedManifests' that resolves interrupted publication
+-- ownership per generation. Only generations not accepted by the actor are
+-- cleaned here.
 withRefreshedManifestsHandlingPublishException
   :: FilePath
   -> Map Text LoadedPlugin
   -> (Map Text LoadedPlugin -> IO a)
-  -> (Map Text LoadedPlugin -> SomeException -> IO Bool)
-     -- ^ Return 'True' when unpublished runtimes are still owned here and must
-     -- be cleaned up; return 'False' when the actor has already accepted them.
+  -> (Map Text LoadedPlugin -> SomeException -> IO [RefreshRuntimeIdentity])
   -> IO a
 withRefreshedManifestsHandlingPublishException baseDir plugins publish handlePublishException = mask $ \restore -> do
   ownedRef <- newIORef []
-  let cleanupOwned = do
-        retained <- cleanupTrackedRefreshRuntimes ownedRef
+  let cleanupOwned actorOwned = do
+        retained <- cleanupTrackedRefreshRuntimes actorOwned ownedRef
         unless (null retained) $ do
           let retainedState = foldr (\lp -> Map.insert (lpName lp) lp) plugins retained
           _ <- try @SomeException (publish retainedState)
           throwIO (RefreshRuntimeCleanupFailed retained)
   refreshed <- restore (Map.traverseWithKey (\_ lp -> refreshOneManifest baseDir lp) plugins)
-    `onException` cleanupOwned
+    `onException` cleanupOwned []
   connected <- restore (connectAndTrackRefreshRuntimes ownedRef refreshed)
-    `onException` cleanupOwned
+    `onException` cleanupOwned []
   publishResult <- try @SomeException (restore (do
     injectStartupFailure "publication"
     publish connected))
   case publishResult of
     Right value -> pure value
     Left err -> do
-      cleanupStillOwned <- publishExceptionCleanupDecision connected err handlePublishException
-      when cleanupStillOwned cleanupOwned
+      actorOwned <- publishExceptionOwnershipDecision connected err handlePublishException
+      cleanupOwned actorOwned
       throwIO err
 
-publishExceptionCleanupDecision
+publishExceptionOwnershipDecision
   :: Map Text LoadedPlugin
   -> SomeException
-  -> (Map Text LoadedPlugin -> SomeException -> IO Bool)
-  -> IO Bool
-publishExceptionCleanupDecision connected err handlePublishException = do
+  -> (Map Text LoadedPlugin -> SomeException -> IO [RefreshRuntimeIdentity])
+  -> IO [RefreshRuntimeIdentity]
+publishExceptionOwnershipDecision connected err handlePublishException = do
   decision <- try @SomeException (handlePublishException connected err)
   case decision of
-    Right cleanupStillOwned -> pure cleanupStillOwned
-    Left _ -> pure True
+    Right actorOwned -> pure actorOwned
+    Left _ -> pure []
 
 connectAndTrackRefreshRuntimes :: IORef [LoadedPlugin] -> Map Text LoadedPlugin -> IO (Map Text LoadedPlugin)
 connectAndTrackRefreshRuntimes ownedRef refreshed = do
@@ -390,6 +400,35 @@ refreshOwnsRuntime
   -> Bool
 refreshOwnsRuntime before after = isJust after && before /= after
 
+-- | Exact physical identity used to exclude only actor-owned runtimes from an
+-- interrupted refresh cleanup batch.
+data RefreshRuntimeIdentity = RefreshRuntimeIdentity
+  { rriPluginName :: !Text
+  , rriGeneration :: !PluginRuntimeGeneration
+  , rriConnection :: !(Maybe RPCConnection)
+  , rriProcessId :: !(Maybe Word64)
+  }
+
+refreshRuntimeIdentity :: LoadedPlugin -> Maybe RefreshRuntimeIdentity
+refreshRuntimeIdentity lp = do
+  runtime <- lpRuntime lp
+  pure RefreshRuntimeIdentity
+    { rriPluginName = lpName lp
+    , rriGeneration = ownedPluginRuntimeGeneration runtime
+    , rriConnection = ownedPluginRuntimeConnection runtime
+    , rriProcessId = ownedPluginRuntimeProcess runtime >>= ownedPluginProcessId
+    }
+
+sameRefreshRuntimeIdentity :: RefreshRuntimeIdentity -> RefreshRuntimeIdentity -> Bool
+sameRefreshRuntimeIdentity a b =
+  rriPluginName a == rriPluginName b
+    && rriGeneration a == rriGeneration b
+    && rriProcessId a == rriProcessId b
+    && case (rriConnection a, rriConnection b) of
+      (Just connectionA, Just connectionB) -> sameRPCConnection connectionA connectionB
+      (Nothing, Nothing) -> True
+      _ -> False
+
 -- A failed unpublished-runtime cleanup remains reachable in the exception
 -- rather than being discarded with the refresh-local ownership list.
 data RefreshRuntimeCleanupFailed = RefreshRuntimeCleanupFailed ![LoadedPlugin]
@@ -403,13 +442,16 @@ instance Show RefreshRuntimeCleanupFailed where
 
 instance Exception RefreshRuntimeCleanupFailed
 
-cleanupTrackedRefreshRuntimes :: IORef [LoadedPlugin] -> IO [LoadedPlugin]
-cleanupTrackedRefreshRuntimes ownedRef = do
-  owned <- readIORef ownedRef
+cleanupTrackedRefreshRuntimes :: [RefreshRuntimeIdentity] -> IORef [LoadedPlugin] -> IO [LoadedPlugin]
+cleanupTrackedRefreshRuntimes actorOwned ownedRef = do
+  owned <- filter (not . actorOwnsRuntime) <$> readIORef ownedRef
   retained <- filter runtimeHandlesPresent <$> mapM cleanup owned
   writeIORef ownedRef retained
   pure retained
   where
+    actorOwnsRuntime lp =
+      maybe False (\identity -> any (sameRefreshRuntimeIdentity identity) actorOwned)
+        (refreshRuntimeIdentity lp)
     cleanup lp = do
       result <- try @SomeException (shutdownPlugin lp)
       case result of
@@ -863,20 +905,77 @@ markExternalDataSourceDegraded dependency reason lp = do
 
 restartCrashedPlugin :: LoadedPlugin -> IO LoadedPlugin
 restartCrashedPlugin lp = do
-  retained <- cleanupLoadedPluginRuntime lp
-  now <- getCurrentTime
-  let failed = lp
-        { lpStatus = PluginError "plugin process exited"
-        , lpLifecycle = failedLifecycle now "process_exited" "plugin process exited"
-            (Just "process") (plsProcessId (lpLifecycle lp)) (plsProtocolVersion (lpLifecycle lp))
-            (plsResources (lpLifecycle lp))
-        , lpRuntime = retained
-        , lpRestartHistory = pruneRestartHistory (lpStartPolicy lp) now (lpRestartHistory lp)
-        }
+  failed <- failPluginProcessExit lp
   mExecutable <- resolvePluginExecutable (lpDirectory lp) (lpName lp)
   case mExecutable of
     Nothing -> pure failed
     Just executablePath -> maybeRestartAfterFailure executablePath failed
+
+-- | Publish a process-exit failure after completing cleanup of exactly the
+-- supplied generation. Restart scheduling is intentionally separate so the
+-- actor can expose the failed/starting transition before doing backoff work.
+failPluginProcessExit :: LoadedPlugin -> IO LoadedPlugin
+failPluginProcessExit lp = do
+  retained <- cleanupLoadedPluginRuntime lp
+  now <- getCurrentTime
+  let message
+        | plsErrorCode (lpLifecycle lp) == Just "termination_failed" =
+            "plugin process exited after retained cleanup failure"
+              <> maybe "" ("; originating failure: " <>) (plsErrorMessage (lpLifecycle lp))
+        | otherwise = "plugin process exited"
+  pure lp
+    { lpStatus = PluginError message
+    , lpLifecycle = failedLifecycle now "process_exited" message
+        (Just "process") (plsProcessId (lpLifecycle lp)) (plsProtocolVersion (lpLifecycle lp))
+        (plsResources (lpLifecycle lp))
+    , lpRuntime = retained
+    , lpRestartHistory = pruneRestartHistory (lpStartPolicy lp) now (lpRestartHistory lp)
+    }
+
+-- | Mark a failed plugin as observably starting during restart backoff. A
+-- retained aggregate blocks replacement until its process tree is confirmed
+-- gone and cleanup can discharge ownership.
+preparePluginRuntimeRestart :: UTCTime -> LoadedPlugin -> (LoadedPlugin, Maybe Int)
+preparePluginRuntimeRestart now lp
+  | isJust (lpRuntime lp) =
+      (markTerminationFailed now "plugin termination failed before restart" lp, Nothing)
+  | canRestartPlugin policy now history =
+      ( lp
+          { lpLifecycle = pluginLifecycleSnapshot now LifecycleStarting
+              (Just ("restart backoff after failure: " <> previous))
+              (plsErrorCode lifecycle)
+              (Just previous)
+              (plsBlockingDependency lifecycle)
+              Nothing
+              (plsProtocolVersion lifecycle)
+              (plsResources lifecycle)
+          , lpRestartHistory = recordPluginRestart policy now history
+          }
+      , Just (max 0 (rspBackoffMs policy) * 1000)
+      )
+  | otherwise = (markRestartLimitIfApplicable now lp, Nothing)
+  where
+    policy = lpStartPolicy lp
+    history = lpRestartHistory lp
+    lifecycle = lpLifecycle lp
+    previous = maybe "plugin failed" id (previousErrorMessage lp)
+
+-- | Perform one replacement launch attempt. Policy/backoff arbitration remains
+-- actor-owned and is never recursively hidden inside this operation.
+restartLoadedPluginOnce :: LoadedPlugin -> IO LoadedPlugin
+restartLoadedPluginOnce lp = do
+  mExecutable <- resolvePluginExecutable (lpDirectory lp) (lpName lp)
+  case mExecutable of
+    Nothing -> do
+      now <- getCurrentTime
+      let message = "plugin executable not found during restart"
+      pure lp
+        { lpStatus = PluginError message
+        , lpLifecycle = failedLifecycle now "executable_not_found" message
+            (Just (lpName lp)) Nothing Nothing (manifestLifecycleResources (lpManifest lp))
+        , lpRuntime = Nothing
+        }
+    Just executablePath -> connectLoadedPluginOnce executablePath lp
 
 observePluginRuntime :: LoadedPlugin -> IO LoadedPlugin
 observePluginRuntime lp
@@ -886,32 +985,41 @@ observePluginRuntime lp
   | otherwise = case lpConnection lp of
       Nothing -> pure lp
       Just conn -> do
-        mRuntimeFailure <- readIORef (rpcRuntimeFailure conn)
+        mRuntimeFailure <- peekRPCFailureEvent conn
         case mRuntimeFailure of
-          Just rpcErr -> do
-            writeIORef (rpcRuntimeFailure conn) Nothing
-            handlePluginRuntimeFailure (rpcErrorCode rpcErr) (rpcErrorMessage rpcErr) lp
+          Just event -> do
+            claimed <- claimRPCFailureEvent conn event
+            if claimed
+              then handlePluginRuntimeFailure
+                (rpcErrorCode (rpfeError event))
+                (rpcErrorMessage (rpfeError event))
+                lp
+              else pure lp
           Nothing -> do
             alive <- pluginProcessAlive lp
             if alive
               then pure lp
               else restartCrashedPlugin lp
 
-handlePluginRuntimeFailure :: Text -> Text -> LoadedPlugin -> IO LoadedPlugin
-handlePluginRuntimeFailure errorCode message lp = do
+failPluginRuntime :: Text -> Text -> LoadedPlugin -> IO LoadedPlugin
+failPluginRuntime errorCode message lp = do
   retained <- cleanupLoadedPluginRuntime lp
   now <- getCurrentTime
-  let failed = lp
-        { lpStatus = PluginError message
-        , lpLifecycle = pluginLifecycleSnapshot now LifecycleFailed
-            (Just "plugin runtime failed") (Just errorCode) (Just message)
-            Nothing
-            (plsProcessId (lpLifecycle lp))
-            (plsProtocolVersion (lpLifecycle lp))
-            (plsResources (lpLifecycle lp))
-        , lpRuntime = retained
-        , lpRestartHistory = pruneRestartHistory (lpStartPolicy lp) now (lpRestartHistory lp)
-        }
+  pure lp
+    { lpStatus = PluginError message
+    , lpLifecycle = pluginLifecycleSnapshot now LifecycleFailed
+        (Just "plugin runtime failed") (Just errorCode) (Just message)
+        Nothing
+        (plsProcessId (lpLifecycle lp))
+        (plsProtocolVersion (lpLifecycle lp))
+        (plsResources (lpLifecycle lp))
+    , lpRuntime = retained
+    , lpRestartHistory = pruneRestartHistory (lpStartPolicy lp) now (lpRestartHistory lp)
+    }
+
+handlePluginRuntimeFailure :: Text -> Text -> LoadedPlugin -> IO LoadedPlugin
+handlePluginRuntimeFailure errorCode message lp = do
+  failed <- failPluginRuntime errorCode message lp
   mExecutable <- resolvePluginExecutable (lpDirectory lp) (lpName lp)
   case mExecutable of
     Nothing -> pure failed

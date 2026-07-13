@@ -23,6 +23,14 @@ module Topo.Plugin.RPC
     RPCConnection(..)
   , RPCSession
   , newRPCConnection
+  , RPCFailureEvent(..)
+  , RPCFailureSource(..)
+  , awaitRPCFailureEvent
+  , peekRPCFailureEvent
+  , claimRPCFailureEvent
+  , sameRPCConnection
+  , claimRPCSupervisorMonitor
+  , releaseRPCSupervisorMonitor
     -- * Handshake
   , HandshakeAuthChallenge(..)
   , performHandshake
@@ -73,8 +81,10 @@ import Control.Concurrent
   , modifyMVar_
   , newEmptyMVar
   , newMVar
+  , readMVar
   , takeMVar
   , tryPutMVar
+  , tryTakeMVar
   )
 import Control.Exception (SomeException, mask, onException, try)
 import Control.Monad (forM_, when)
@@ -143,6 +153,81 @@ data RPCError
     -- ^ Plugin did not respond in time.
   deriving (Eq, Show)
 
+-- | Source identity for a fatal connection failure. Request identities let
+-- callers distinguish their own timeout from a concurrent transport failure.
+data RPCFailureSource
+  = RPCFailureTransport
+  | RPCFailureRequest !Word64
+  deriving (Eq, Show)
+
+-- | A level-triggered fatal runtime failure notification.
+data RPCFailureEvent = RPCFailureEvent
+  { rpfeIdentity :: !Word64
+  , rpfeSource :: !RPCFailureSource
+  , rpfeError :: !RPCError
+  } deriving (Eq, Show)
+
+data RPCFailureSlot = RPCFailureSlot
+  { rpfsCurrent :: !(MVar (Maybe RPCFailureEvent))
+  , rpfsWakeup :: !(MVar ())
+  , rpfsNextIdentity :: !(IORef Word64)
+  , rpfsSupervisorClaimed :: !(MVar Bool)
+  }
+
+newRPCFailureSlot :: IO RPCFailureSlot
+newRPCFailureSlot = RPCFailureSlot
+  <$> newMVar Nothing
+  <*> newEmptyMVar
+  <*> newIORef 1
+  <*> newMVar False
+
+-- | Block until this connection has an unclaimed fatal failure.
+awaitRPCFailureEvent :: RPCConnection -> IO RPCFailureEvent
+awaitRPCFailureEvent conn = loop
+  where
+    slot = rpcRuntimeFailure conn
+    loop = do
+      current <- readMVar (rpfsCurrent slot)
+      case current of
+        Just event -> pure event
+        Nothing -> takeMVar (rpfsWakeup slot) >> loop
+
+-- | Inspect the current fatal failure without claiming it.
+peekRPCFailureEvent :: RPCConnection -> IO (Maybe RPCFailureEvent)
+peekRPCFailureEvent = readMVar . rpfsCurrent . rpcRuntimeFailure
+
+-- | Claim exactly the supplied event. A stale event cannot clear a newer
+-- failure recorded by the receiver.
+claimRPCFailureEvent :: RPCConnection -> RPCFailureEvent -> IO Bool
+claimRPCFailureEvent conn expected = do
+  claimed <- modifyMVar (rpfsCurrent slot) $ \current ->
+    case current of
+      Just actual | rpfeIdentity actual == rpfeIdentity expected -> pure (Nothing, True)
+      _ -> pure (current, False)
+  when claimed $ do
+    _ <- tryTakeMVar (rpfsWakeup slot)
+    pure ()
+  pure claimed
+  where
+    slot = rpcRuntimeFailure conn
+
+-- | Physical connection identity used alongside runtime generations. This is
+-- required for embedded connection-only runtimes whose legacy generation is 0.
+sameRPCConnection :: RPCConnection -> RPCConnection -> Bool
+sameRPCConnection a b =
+  rpfsCurrent (rpcRuntimeFailure a) == rpfsCurrent (rpcRuntimeFailure b)
+
+-- | Claim installation of the single actor-facing monitor set for an embedded
+-- connection-only runtime.
+claimRPCSupervisorMonitor :: RPCConnection -> IO Bool
+claimRPCSupervisorMonitor conn =
+  modifyMVar (rpfsSupervisorClaimed (rpcRuntimeFailure conn)) $ \claimed ->
+    pure (True, not claimed)
+
+releaseRPCSupervisorMonitor :: RPCConnection -> IO ()
+releaseRPCSupervisorMonitor conn =
+  modifyMVar_ (rpfsSupervisorClaimed (rpcRuntimeFailure conn)) (const (pure False))
+
 -- | Shared session state for request correlation over one transport.
 data RPCSession = RPCSession
   { rpcsWriteLock :: !(MVar ())
@@ -195,8 +280,8 @@ data RPCConnection = RPCConnection
     -- ^ Per-request timeout budget. Nothing means no request timeout.
   , rpcSession :: !RPCSession
     -- ^ Shared request correlation and receive loop state.
-  , rpcRuntimeFailure :: !(IORef (Maybe RPCError))
-    -- ^ First unobserved transport/protocol timeout failure for supervisor handling.
+  , rpcRuntimeFailure :: !RPCFailureSlot
+    -- ^ First unclaimed fatal failure and its level-triggered notification.
   }
 
 -- | Create an 'RPCConnection' from a manifest and transport.
@@ -206,7 +291,7 @@ data RPCConnection = RPCConnection
 -- capabilities and receive data resource schemas.
 newRPCConnection :: RPCManifest -> Transport -> Map Text Value -> RPCConnection
 newRPCConnection manifest transport params = unsafePerformIO $ do
-  failureRef <- newIORef Nothing
+  failureSlot <- newRPCFailureSlot
   session <- newRPCSession
   let sanitizedParams = sanitizeRPCManifestParams manifest params
   pure RPCConnection
@@ -218,7 +303,7 @@ newRPCConnection manifest transport params = unsafePerformIO $ do
     , rpcResources       = []
     , rpcRequestTimeoutMicros = timeoutMicrosFromMs (rspRequestTimeoutMs (rmStartPolicy manifest))
     , rpcSession = session
-    , rpcRuntimeFailure = failureRef
+    , rpcRuntimeFailure = failureSlot
     }
 {-# NOINLINE newRPCConnection #-}
 
@@ -226,15 +311,17 @@ newRPCConnection manifest transport params = unsafePerformIO $ do
 -- Internal helpers
 ------------------------------------------------------------------------
 
--- | Send an envelope and wait for a correlated response envelope.
-rpcCall :: Maybe (IORef (Maybe RPCError)) -> Maybe Int -> Text -> RPCConnection -> RPCEnvelope -> IO (Either RPCError RPCEnvelope)
-rpcCall failureRef mTimeout timeoutMessage conn envelope =
-  rpcCallWithProgress failureRef mTimeout timeoutMessage conn envelope (\_ -> pure ()) (\_ -> pure ())
+-- | Send an envelope and wait for a correlated response envelope. The flag
+-- controls whether this operation's timeout is fatal to the runtime; transport
+-- and receiver protocol failures are always fatal.
+rpcCall :: Bool -> Maybe Int -> Text -> RPCConnection -> RPCEnvelope -> IO (Either RPCError RPCEnvelope)
+rpcCall fatalTimeout mTimeout timeoutMessage conn envelope =
+  rpcCallWithProgress fatalTimeout mTimeout timeoutMessage conn envelope (\_ -> pure ()) (\_ -> pure ())
 
 -- | Send an envelope, collecting correlated progress\/log messages until a
 -- final response envelope arrives.  Returns the final envelope.
 rpcCallWithProgress
-  :: Maybe (IORef (Maybe RPCError))
+  :: Bool
   -> Maybe Int
   -> Text
   -> RPCConnection
@@ -242,7 +329,7 @@ rpcCallWithProgress
   -> (PluginProgress -> IO ())
   -> (PluginLog -> IO ())
   -> IO (Either RPCError RPCEnvelope)
-rpcCallWithProgress failureRef mTimeout timeoutMessage conn envelope onProgress onLog = mask $ \restore -> do
+rpcCallWithProgress fatalTimeout mTimeout timeoutMessage conn envelope onProgress onLog = mask $ \restore -> do
   let session = rpcSession conn
       transport = rpcTransport conn
   requestId <- nextRPCRequestId session
@@ -257,21 +344,18 @@ rpcCallWithProgress failureRef mTimeout timeoutMessage conn envelope onProgress 
         _ <- removePending session requestId
         pure ()
   registerPending session requestId pending
-  restore (sendAndAwaitPendingResult failureRef mTimeout timeoutMessage conn transport session requestId done requestEnvelope)
+  restore (sendAndAwaitPendingResult fatalTimeout mTimeout timeoutMessage conn transport session requestId done requestEnvelope)
     `onException` cleanupPending
 
-startRPCReceiver :: Maybe (IORef (Maybe RPCError)) -> RPCConnection -> IO ()
-startRPCReceiver failureRef conn =
-  let receiverFailureRef = case failureRef of
-        Just ref -> Just ref
-        Nothing -> Just (rpcRuntimeFailure conn)
-  in modifyMVar_ (rpcsReceiverThread (rpcSession conn)) $ \mReceiver ->
+startRPCReceiver :: RPCConnection -> IO ()
+startRPCReceiver conn =
+  modifyMVar_ (rpcsReceiverThread (rpcSession conn)) $ \mReceiver ->
     case mReceiver of
       Just _ -> pure mReceiver
-      Nothing -> Just <$> forkIO (rpcReceiverLoop receiverFailureRef conn)
+      Nothing -> Just <$> forkIO (rpcReceiverLoop conn)
 
-rpcReceiverLoop :: Maybe (IORef (Maybe RPCError)) -> RPCConnection -> IO ()
-rpcReceiverLoop failureRef conn = loop
+rpcReceiverLoop :: RPCConnection -> IO ()
+rpcReceiverLoop conn = loop
   where
     session = rpcSession conn
     transport = rpcTransport conn
@@ -281,20 +365,25 @@ rpcReceiverLoop failureRef conn = loop
       case recvResult of
         Left err -> do
           let rpcErr = RPCTransportError err
-          recordRuntimeFailureIfNeeded failureRef rpcErr
+          recordRuntimeFailureIfNeeded conn RPCFailureTransport rpcErr
           completeAllPending session rpcErr
           closeTransport transport
           pure ()
         Right bs -> case decodeMessage bs of
           Left err -> do
             let rpcErr = RPCProtocolError err
-            recordRuntimeFailureIfNeeded failureRef rpcErr
+            recordRuntimeFailureIfNeeded conn RPCFailureTransport rpcErr
             completeAllPending session rpcErr
             closeTransport transport
             pure ()
           Right envelope -> do
-            dispatchIncomingEnvelope session envelope
-            loop
+            mProtocolFailure <- dispatchIncomingEnvelope session envelope
+            case mProtocolFailure of
+              Nothing -> loop
+              Just rpcErr -> do
+                recordRuntimeFailureIfNeeded conn RPCFailureTransport rpcErr
+                completeAllPending session rpcErr
+                closeTransport transport
 
 sendCorrelatedMessage :: RPCSession -> Transport -> RPCEnvelope -> IO (Either TransportError ())
 sendCorrelatedMessage session transport envelope =
@@ -308,12 +397,12 @@ sendOneWay conn envelope = do
   case result of
     Left err -> do
       let rpcErr = RPCTransportError err
-      recordRuntimeFailureIfNeeded (Just (rpcRuntimeFailure conn)) rpcErr
+      recordRuntimeFailureIfNeeded conn RPCFailureTransport rpcErr
       pure (Left rpcErr)
     Right () -> pure (Right ())
 
 sendAndAwaitPendingResult
-  :: Maybe (IORef (Maybe RPCError))
+  :: Bool
   -> Maybe Int
   -> Text
   -> RPCConnection
@@ -323,7 +412,7 @@ sendAndAwaitPendingResult
   -> MVar (Either RPCError RPCEnvelope)
   -> RPCEnvelope
   -> IO (Either RPCError RPCEnvelope)
-sendAndAwaitPendingResult failureRef mTimeout timeoutMessage conn transport session requestId done envelope = do
+sendAndAwaitPendingResult fatalTimeout mTimeout timeoutMessage conn transport session requestId done envelope = do
   result <- case mTimeout of
     Nothing -> Just <$> sendThenWait
     Just micros -> timeout micros sendThenWait
@@ -331,10 +420,13 @@ sendAndAwaitPendingResult failureRef mTimeout timeoutMessage conn transport sess
     Nothing -> do
       _ <- removePending session requestId
       let err = RPCTimeout timeoutMessage
-      recordRuntimeFailure failureRef err
+      when fatalTimeout (recordRuntimeFailure conn (RPCFailureRequest requestId) err)
       pure (Left err)
     Just value -> do
-      recordResultFailure failureRef value
+      let source = case value of
+            Left RPCTransportError{} -> RPCFailureTransport
+            _ -> RPCFailureRequest requestId
+      recordResultFailure conn source value
       pure value
   where
     sendThenWait = do
@@ -344,7 +436,7 @@ sendAndAwaitPendingResult failureRef mTimeout timeoutMessage conn transport sess
           _ <- removePending session requestId
           pure (Left (RPCTransportError err))
         Right () -> do
-          startRPCReceiver failureRef conn
+          startRPCReceiver conn
           takeMVar done
 
 nextRPCRequestId :: RPCSession -> IO Word64
@@ -372,16 +464,18 @@ completeAllPending session err = do
     _ <- tryPutMVar (rpResult pending) (Left err)
     pure ()
 
-dispatchIncomingEnvelope :: RPCSession -> RPCEnvelope -> IO ()
+dispatchIncomingEnvelope :: RPCSession -> RPCEnvelope -> IO (Maybe RPCError)
 dispatchIncomingEnvelope session envelope =
   case envType envelope of
-    MsgProgress -> lookupPending session envelope >>= maybe (pure ()) (`handleInterimEnvelope` envelope)
-    MsgLog -> lookupPending session envelope >>= maybe (pure ()) (`handleInterimEnvelope` envelope)
+    MsgProgress -> lookupPending session envelope >>= \pending ->
+      handleInterimEnvelope pending envelope
+    MsgLog -> lookupPending session envelope >>= \pending ->
+      handleInterimEnvelope pending envelope
     MsgExternalDataSourceOperationResult ->
       case envRequestId envelope of
-        Nothing -> pure ()
-        Just _ -> dispatchFinalEnvelope session envelope
-    _ -> dispatchFinalEnvelope session envelope
+        Nothing -> pure Nothing
+        Just _ -> dispatchFinalEnvelope session envelope >> pure Nothing
+    _ -> dispatchFinalEnvelope session envelope >> pure Nothing
 
 dispatchFinalEnvelope :: RPCSession -> RPCEnvelope -> IO ()
 dispatchFinalEnvelope session envelope = do
@@ -412,18 +506,24 @@ removeSolePending session =
       [pending] -> pure (Map.empty, Just pending)
       _ -> pure (pendingMap, Nothing)
 
-handleInterimEnvelope :: RPCPending -> RPCEnvelope -> IO ()
-handleInterimEnvelope pending envelope =
+handleInterimEnvelope :: Maybe RPCPending -> RPCEnvelope -> IO (Maybe RPCError)
+handleInterimEnvelope mPending envelope =
   case envType envelope of
     MsgProgress ->
       case Aeson.fromJSON (envPayload envelope) of
-        Aeson.Success progress -> ignoreCallbackException (rpOnProgress pending progress)
-        Aeson.Error _ -> pure ()
+        Aeson.Success progress -> do
+          maybe (pure ()) (\pending -> ignoreCallbackException (rpOnProgress pending progress)) mPending
+          pure Nothing
+        Aeson.Error err -> pure (Just (RPCProtocolError
+          ("invalid progress payload: " <> Text.pack err)))
     MsgLog ->
       case Aeson.fromJSON (envPayload envelope) of
-        Aeson.Success logMsg -> ignoreCallbackException (rpOnLog pending logMsg)
-        Aeson.Error _ -> pure ()
-    _ -> pure ()
+        Aeson.Success logMsg -> do
+          maybe (pure ()) (\pending -> ignoreCallbackException (rpOnLog pending logMsg)) mPending
+          pure Nothing
+        Aeson.Error err -> pure (Just (RPCProtocolError
+          ("invalid log payload: " <> Text.pack err)))
+    _ -> pure Nothing
 
 handleFinalEnvelope :: RPCPending -> RPCEnvelope -> IO ()
 handleFinalEnvelope pending envelope = do
@@ -438,23 +538,36 @@ ignoreCallbackException action = do
   _ <- try action :: IO (Either SomeException ())
   pure ()
 
-recordResultFailure :: Maybe (IORef (Maybe RPCError)) -> Either RPCError a -> IO ()
-recordResultFailure failureRef result =
+recordResultFailure :: RPCConnection -> RPCFailureSource -> Either RPCError a -> IO ()
+recordResultFailure conn source result =
   case result of
-    Left err -> recordRuntimeFailureIfNeeded failureRef err
+    Left err -> recordRuntimeFailureIfNeeded conn source err
     _ -> pure ()
 
-recordRuntimeFailureIfNeeded :: Maybe (IORef (Maybe RPCError)) -> RPCError -> IO ()
-recordRuntimeFailureIfNeeded failureRef err =
-  when (isRuntimeConnectionFailure err) (recordRuntimeFailure failureRef err)
+recordRuntimeFailureIfNeeded :: RPCConnection -> RPCFailureSource -> RPCError -> IO ()
+recordRuntimeFailureIfNeeded conn source err =
+  when (isRuntimeConnectionFailure err) (recordRuntimeFailure conn source err)
 
-recordRuntimeFailure :: Maybe (IORef (Maybe RPCError)) -> RPCError -> IO ()
-recordRuntimeFailure Nothing _ = pure ()
-recordRuntimeFailure (Just failureRef) err =
-  atomicModifyIORef' failureRef $ \current ->
+recordRuntimeFailure :: RPCConnection -> RPCFailureSource -> RPCError -> IO ()
+recordRuntimeFailure conn source err = do
+  let slot = rpcRuntimeFailure conn
+  eventIdentity <- atomicModifyIORef' (rpfsNextIdentity slot) $ \current ->
+    let next = if current == maxBound then 1 else current + 1
+    in (next, current)
+  inserted <- modifyMVar (rpfsCurrent slot) $ \current ->
     case current of
-      Nothing -> (Just err, ())
-      Just existing -> (Just existing, ())
+      Nothing -> pure
+        ( Just RPCFailureEvent
+            { rpfeIdentity = eventIdentity
+            , rpfeSource = source
+            , rpfeError = err
+            }
+        , True
+        )
+      Just existing -> pure (Just existing, False)
+  when inserted $ do
+    _ <- tryPutMVar (rpfsWakeup slot) ()
+    pure ()
 
 isRuntimeConnectionFailure :: RPCError -> Bool
 isRuntimeConnectionFailure rpcError = case rpcError of
@@ -545,13 +658,12 @@ invokeGeneratorWithProgress conn seed terrainData onProgress onLog = do
           }
         , envRequestId = Nothing
         }
-  result <- rpcCallWithProgress (Just (rpcRuntimeFailure conn)) (rpcRequestTimeoutMicros conn) "plugin generator request timed out" conn envelope onProgress onLog
+  result <- rpcCallWithProgress True (rpcRequestTimeoutMicros conn) "plugin generator request timed out" conn envelope onProgress onLog
   case result of
     Left err  -> pure (Left err)
-    Right env ->
-      case Aeson.fromJSON (envPayload env) of
-        Aeson.Success gr -> pure (Right gr)
-        Aeson.Error err  -> pure (Left (RPCProtocolError (Text.pack err)))
+    Right env -> trackRuntimeResult conn $ case Aeson.fromJSON (envPayload env) of
+      Aeson.Success gr -> Right gr
+      Aeson.Error err  -> Left (RPCProtocolError (Text.pack err))
 
 -- | Invoke the plugin's simulation tick.
 --
@@ -593,13 +705,12 @@ invokeSimulation conn ctx overlay onProgress onLog = do
                 }
             , envRequestId = Nothing
             }
-      result <- rpcCallWithProgress (Just (rpcRuntimeFailure conn)) (rpcRequestTimeoutMicros conn) "plugin simulation request timed out" conn envelope onProgress onLog
+      result <- rpcCallWithProgress True (rpcRequestTimeoutMicros conn) "plugin simulation request timed out" conn envelope onProgress onLog
       case result of
         Left err  -> pure (Left err)
-        Right env ->
-          case Aeson.fromJSON (envPayload env) of
-            Aeson.Success sr -> pure (Right sr)
-            Aeson.Error err  -> pure (Left (RPCProtocolError (Text.pack err)))
+        Right env -> trackRuntimeResult conn $ case Aeson.fromJSON (envPayload env) of
+          Aeson.Success sr -> Right sr
+          Aeson.Error err  -> Left (RPCProtocolError (Text.pack err))
 
 -- | Send a shutdown message to the plugin.
 rpcShutdown :: RPCConnection -> IO ()
@@ -662,7 +773,7 @@ performHandshakeWithAuth conn worldPath mAuth = do
         , envRequestId = Nothing
         }
   result <- rpcCall
-    (Just (rpcRuntimeFailure conn))
+    True
     (timeoutMicrosFromMs (rspStartupTimeoutMs (rmStartPolicy (rpcManifest conn))))
     "plugin handshake timed out"
     conn
@@ -772,12 +883,14 @@ sendHeartbeat conn = do
         , envPayload = Aeson.toJSON (Heartbeat { hbStatus = "ping" })
         , envRequestId = Nothing
         }
-  result <- rpcCall (Just (rpcRuntimeFailure conn)) (rpcRequestTimeoutMicros conn) "plugin heartbeat timed out" conn envelope
+  result <- rpcCall True (rpcRequestTimeoutMicros conn) "plugin heartbeat timed out" conn envelope
   case result of
     Left err -> pure (Left err)
-    Right env -> case envType env of
-      MsgHeartbeat -> decodeRPCPayload env
-      other -> pure (Left (RPCProtocolError ("unexpected heartbeat response: " <> Text.pack (show other))))
+    Right env -> do
+      decoded <- case envType env of
+        MsgHeartbeat -> decodeRPCPayload env
+        other -> pure (Left (RPCProtocolError ("unexpected heartbeat response: " <> Text.pack (show other))))
+      trackRuntimeResult conn decoded
 
 -- | Ask the plugin for a health snapshot.
 checkHealth :: RPCConnection -> IO (Either RPCError HealthStatus)
@@ -787,12 +900,14 @@ checkHealth conn = do
         , envPayload = object []
         , envRequestId = Nothing
         }
-  result <- rpcCall (Just (rpcRuntimeFailure conn)) (rpcRequestTimeoutMicros conn) "plugin health check timed out" conn envelope
+  result <- rpcCall True (rpcRequestTimeoutMicros conn) "plugin health check timed out" conn envelope
   case result of
     Left err -> pure (Left err)
-    Right env -> case envType env of
-      MsgHealthStatus -> decodeRPCPayload env
-      other -> pure (Left (RPCProtocolError ("unexpected health response: " <> Text.pack (show other))))
+    Right env -> do
+      decoded <- case envType env of
+        MsgHealthStatus -> decodeRPCPayload env
+        other -> pure (Left (RPCProtocolError ("unexpected health response: " <> Text.pack (show other))))
+      trackRuntimeResult conn decoded
 
 -- | Notify a plugin that the host has brokered an external data-source grant
 -- and wait for the correlated ACK/result.
@@ -806,7 +921,7 @@ sendExternalDataSourceGrant conn grant = do
         , envPayload = Aeson.toJSON grant
         , envRequestId = Nothing
         }
-  result <- rpcCall (Just (rpcRuntimeFailure conn)) (rpcRequestTimeoutMicros conn) "plugin external data-source grant timed out" conn envelope
+  result <- rpcCall False (rpcRequestTimeoutMicros conn) "plugin external data-source grant timed out" conn envelope
   case result of
     Left err -> pure (Left err)
     Right env -> validateExternalDataSourceOperationResult
@@ -817,7 +932,7 @@ sendExternalDataSourceGrant conn grant = do
       (redsgmConsumerId grant)
       (redsgmSource grant)
       (redsgmGrant grant)
-      env
+      env >>= trackRuntimeResult conn
 
 -- | Notify a plugin that a previously brokered external data-source grant has
 -- been revoked or marked unusable, and wait for the correlated ACK/result.
@@ -831,7 +946,7 @@ sendExternalDataSourceGrantRevocation conn revocation = do
         , envPayload = Aeson.toJSON revocation
         , envRequestId = Nothing
         }
-  result <- rpcCall (Just (rpcRuntimeFailure conn)) (rpcRequestTimeoutMicros conn) "plugin external data-source revocation timed out" conn envelope
+  result <- rpcCall False (rpcRequestTimeoutMicros conn) "plugin external data-source revocation timed out" conn envelope
   case result of
     Left err -> pure (Left err)
     Right env -> validateExternalDataSourceOperationResult
@@ -842,7 +957,7 @@ sendExternalDataSourceGrantRevocation conn revocation = do
       (redsrvConsumerId revocation)
       (redsrvSource revocation)
       (redsrvGrant revocation)
-      env
+      env >>= trackRuntimeResult conn
 
 -- | Alias for 'sendExternalDataSourceGrantRevocation'.
 revokeExternalDataSourceGrant
@@ -945,14 +1060,14 @@ requestExternalDataSourceStatus conn request = do
         , envPayload = Aeson.toJSON request
         , envRequestId = Nothing
         }
-  result <- rpcCall (Just (rpcRuntimeFailure conn)) (rpcRequestTimeoutMicros conn) "plugin external data-source status request timed out" conn envelope
+  result <- rpcCall False (rpcRequestTimeoutMicros conn) "plugin external data-source status request timed out" conn envelope
   case result of
     Left err -> pure (Left err)
     Right env -> do
       decoded <- case envType env of
         MsgExternalDataSourceStatus -> decodeRPCPayload env
         other -> pure (Left (RPCProtocolError ("unexpected external data-source status response: " <> Text.pack (show other))))
-      recordResultFailure (Just (rpcRuntimeFailure conn)) decoded
+      recordResultFailure conn RPCFailureTransport decoded
       pure decoded
 
 -- | Alias for 'requestExternalDataSourceStatus'.
@@ -961,6 +1076,11 @@ checkExternalDataSourceStatus
   -> RPCExternalDataSourceStatusRequest
   -> IO (Either RPCError RPCExternalDataSourceStatusReport)
 checkExternalDataSourceStatus = requestExternalDataSourceStatus
+
+trackRuntimeResult :: RPCConnection -> Either RPCError a -> IO (Either RPCError a)
+trackRuntimeResult conn result = do
+  recordResultFailure conn RPCFailureTransport result
+  pure result
 
 decodeRPCPayload :: Aeson.FromJSON a => RPCEnvelope -> IO (Either RPCError a)
 decodeRPCPayload env =
@@ -985,15 +1105,17 @@ queryResource conn qr = do
         , envPayload = Aeson.toJSON qr
         , envRequestId = Nothing
         }
-  result <- rpcCallWithProgress (Just (rpcRuntimeFailure conn)) (rpcRequestTimeoutMicros conn) "plugin data query timed out" conn envelope
+  result <- rpcCallWithProgress True (rpcRequestTimeoutMicros conn) "plugin data query timed out" conn envelope
               (\_ -> pure ())
               (\_ -> pure ())
   case result of
     Left err  -> pure (Left err)
-    Right env -> case envType env of
-      MsgQueryResult -> decodeRPCPayload env
-      other -> pure (Left (RPCProtocolError
-        ("unexpected data query response: " <> Text.pack (show other))))
+    Right env -> do
+      decoded <- case envType env of
+        MsgQueryResult -> decodeRPCPayload env
+        other -> pure (Left (RPCProtocolError
+          ("unexpected data query response: " <> Text.pack (show other))))
+      trackRuntimeResult conn decoded
 
 -- | Mutate a plugin's data resource.
 --
@@ -1008,15 +1130,17 @@ mutateResource conn mr = do
         , envPayload = Aeson.toJSON mr
         , envRequestId = Nothing
         }
-  result <- rpcCallWithProgress (Just (rpcRuntimeFailure conn)) (rpcRequestTimeoutMicros conn) "plugin data mutation timed out" conn envelope
+  result <- rpcCallWithProgress True (rpcRequestTimeoutMicros conn) "plugin data mutation timed out" conn envelope
               (\_ -> pure ())
               (\_ -> pure ())
   case result of
     Left err  -> pure (Left err)
-    Right env -> case envType env of
-      MsgMutateResult -> decodeRPCPayload env
-      other -> pure (Left (RPCProtocolError
-        ("unexpected data mutation response: " <> Text.pack (show other))))
+    Right env -> do
+      decoded <- case envType env of
+        MsgMutateResult -> decodeRPCPayload env
+        other -> pure (Left (RPCProtocolError
+          ("unexpected data mutation response: " <> Text.pack (show other))))
+      trackRuntimeResult conn decoded
 
 ------------------------------------------------------------------------
 -- Pipeline / DAG integration

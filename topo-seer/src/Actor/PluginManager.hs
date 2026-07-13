@@ -96,14 +96,16 @@ module Actor.PluginManager
   , getPluginSimulationPlan
   ) where
 
-import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException, mask, mask_, onException, throwIO, try)
+import Control.Concurrent (forkIO, threadDelay)
+import Control.Exception (SomeException, fromException, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
+import Control.Monad (unless, when)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Aeson (Value)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import Data.Text (Text)
+import qualified Data.Text as Text
 import Hyperspace.Actor
 
 import Actor.PluginManager.ProcessLauncher
@@ -114,6 +116,10 @@ import Actor.PluginManager.ProcessLauncher
   , PluginRuntimeGeneration
   , cleanupOwnedPluginProcess
   , cleanupOwnedPluginRuntime
+  , claimOwnedPluginRuntimeRPCMonitor
+  , releaseOwnedPluginRuntimeRPCMonitor
+  , claimOwnedPluginRuntimeProcessMonitor
+  , releaseOwnedPluginRuntimeProcessMonitor
   , newConnectionOnlyPluginRuntime
   , ownedPluginRuntimeConnection
   , ownedPluginRuntimeGeneration
@@ -131,12 +137,22 @@ import Actor.PluginManager.PipelineIntegrator
   )
 import Actor.PluginManager.PluginSupervisor
   ( RefreshRuntimeCleanupFailed
+  , RefreshRuntimeIdentity
   , finalizeInterruptedPluginCleanup
+  , failPluginRuntime
   , refreshRuntimeCleanupOwners
+  , refreshRuntimeIdentity
+  , restartLoadedPluginOnce
   , shutdownPlugin
   , withRefreshedManifestsHandlingPublishException
   )
-import Actor.PluginManager.RootSupervisor (PluginManager, pluginManagerActorDef)
+import Actor.PluginManager.RootSupervisor
+  ( PluginManager
+  , RuntimeFailureNotice(..)
+  , RuntimeRestartDirective(..)
+  , RuntimePublicationIdentity(..)
+  , pluginManagerActorDef
+  )
 import Actor.PluginManager.SimulationIntegrator
   ( PluginSimulationPlan(..)
   , PluginSimulationNodeDiagnostic(..)
@@ -184,7 +200,8 @@ import Topo.Overlay.Schema (OverlaySchema)
 import Topo.Pipeline (PipelineStage)
 import Topo.Plugin.DataResource (DataResourceSchema)
 import Topo.Plugin.RPC
-  ( MutateResource
+  ( awaitRPCFailureEvent
+  , MutateResource
   , MutateResult
   , QueryResource
   , QueryResult
@@ -247,32 +264,210 @@ getPluginOverlaySchemas
 getPluginOverlaySchemas handle =
   call @"getOverlaySchemas" handle #getOverlaySchemas ()
 
+-- | Attach generation-scoped monitors after a runtime has been accepted by the
+-- actor. Each monitor only reports facts; the actor exclusively claims failure
+-- events and restart operations.
+monitorPublishedPluginRuntimes
+  :: ActorHandle PluginManager (Protocol PluginManager)
+  -> [LoadedPlugin]
+  -> IO ()
+monitorPublishedPluginRuntimes handle = mask_ . mapM_ monitorOne
+  where
+    monitorOne lp = case lpRuntime lp of
+      Nothing -> pure ()
+      Just runtime -> do
+        let generation = ownedPluginRuntimeGeneration runtime
+            pluginName = lpName lp
+        rpcClaimed <- claimOwnedPluginRuntimeRPCMonitor runtime
+        when rpcClaimed $
+          installRPCMonitor pluginName generation runtime
+            `onException` releaseOwnedPluginRuntimeRPCMonitor runtime
+        processClaimed <- claimOwnedPluginRuntimeProcessMonitor runtime
+        when processClaimed $
+          installProcessMonitor pluginName generation runtime
+            `onException` releaseOwnedPluginRuntimeProcessMonitor runtime
+
+    installRPCMonitor pluginName generation runtime =
+      case ownedPluginRuntimeConnection runtime of
+        Nothing -> pure ()
+        Just conn -> do
+          _ <- forkIO $ do
+            event <- awaitRPCFailureEvent conn
+            superviseRuntimeNotice handle (RuntimeRPCFailure pluginName generation conn event)
+          pure ()
+
+    installProcessMonitor pluginName generation runtime =
+      case ownedPluginRuntimeProcess runtime of
+        Nothing -> pure ()
+        Just process -> do
+          _ <- forkIO $ do
+            exitCode <- waitForExit process
+            superviseProcessExit handle (RuntimeProcessExit pluginName generation exitCode)
+          pure ()
+
+    waitForExit process = do
+      mExit <- ownedPluginProcessExitCode process
+      case mExit of
+        Just exitCode -> pure exitCode
+        Nothing -> threadDelay 10000 >> waitForExit process
+
+superviseRuntimeNotice
+  :: ActorHandle PluginManager (Protocol PluginManager)
+  -> RuntimeFailureNotice
+  -> IO ()
+superviseRuntimeNotice handle notice = do
+  result <- try @SomeException (call @"runtimeFailure" handle #runtimeFailure notice)
+  case result of
+    Right (_, Just directive) -> runRuntimeRestartDirective handle directive
+    _ -> pure ()
+
+-- A retained aggregate may outlive its root process while descendants or
+-- containment are still draining. Re-submit the same confirmed exit until the
+-- actor discharges that generation or schedules policy recovery.
+superviseProcessExit
+  :: ActorHandle PluginManager (Protocol PluginManager)
+  -> RuntimeFailureNotice
+  -> IO ()
+superviseProcessExit handle notice = do
+  result <- try @SomeException (call @"runtimeFailure" handle #runtimeFailure notice)
+  case result of
+    Right (True, Just directive) -> runRuntimeRestartDirective handle directive
+    Right (True, Nothing) -> threadDelay 50000 >> superviseProcessExit handle notice
+    _ -> pure ()
+
+runRuntimeRestartDirective
+  :: ActorHandle PluginManager (Protocol PluginManager)
+  -> RuntimeRestartDirective
+  -> IO ()
+runRuntimeRestartDirective handle directive = do
+  backoffResult <- try @SomeException
+    (call @"beginRuntimeRestartBackoff" handle #beginRuntimeRestartBackoff directive)
+  case backoffResult of
+    Left _ -> cancelMatchingRestart handle directive
+    Right False -> pure ()
+    Right True -> do
+      delayResult <- try @SomeException $
+        when (rrdBackoffMicros directive > 0) (threadDelay (rrdBackoffMicros directive))
+      case delayResult of
+        Left _ -> cancelMatchingRestart handle directive
+        Right () -> launchRestart
+  where
+    launchRestart = do
+      seedResult <- try @SomeException
+        (call @"beginRuntimeRestart" handle #beginRuntimeRestart directive)
+      case seedResult of
+        Left _ -> cancelMatchingRestart handle directive
+        Right Nothing -> pure ()
+        Right (Just seed) -> do
+          attempt <- try @SomeException (restartLoadedPluginOnce seed)
+          restarted <- case attempt of
+            Right lp -> pure lp
+            Left err -> failPluginRuntime (Text.pack "restart_exception") (Text.pack (show err)) seed
+          completion <- try @SomeException $ uninterruptibleMask_
+            (call @"finishRuntimeRestart" handle #finishRuntimeRestart (directive, restarted))
+          case completion of
+            Right (True, nextDirective) -> do
+              monitorPublishedPluginRuntimes handle [restarted]
+              maybe (pure ()) (runRuntimeRestartDirective handle) nextDirective
+            _ -> cleanupUnpublishedRuntime restarted
+
+cancelMatchingRestart
+  :: ActorHandle PluginManager (Protocol PluginManager)
+  -> RuntimeRestartDirective
+  -> IO ()
+cancelMatchingRestart handle directive = do
+  _ <- try @SomeException $ uninterruptibleMask_
+    (call @"cancelRuntimeRestart" handle #cancelRuntimeRestart directive)
+  pure ()
+
+-- Keep rejected replacement ownership in this worker until cleanup succeeds;
+-- a stale completion must never leak or publish its transport.
+cleanupUnpublishedRuntime :: LoadedPlugin -> IO ()
+cleanupUnpublishedRuntime lp = do
+  stopped <- shutdownPlugin lp
+  case lpRuntime stopped of
+    Nothing -> pure ()
+    Just _ -> threadDelay 10000 >> cleanupUnpublishedRuntime stopped
+
+publishedRuntimeEntries :: [LoadedPlugin] -> [(LoadedPlugin, RuntimePublicationIdentity)]
+publishedRuntimeEntries plugins =
+  [ ( plugin
+    , RuntimePublicationIdentity
+        { rpiPluginName = lpName plugin
+        , rpiGeneration = ownedPluginRuntimeGeneration runtime
+        , rpiConnection = ownedPluginRuntimeConnection runtime
+        , rpiProcessId = ownedPluginRuntimeProcess runtime >>= ownedPluginProcessId
+        }
+    )
+  | plugin <- plugins
+  , Just runtime <- [lpRuntime plugin]
+  ]
+
+resolvePublishedRuntimeOwnership
+  :: ActorHandle PluginManager (Protocol PluginManager)
+  -> [LoadedPlugin]
+  -> IO ([LoadedPlugin], [RefreshRuntimeIdentity])
+resolvePublishedRuntimeOwnership handle plugins = uninterruptibleMask_ $ do
+  let entries = publishedRuntimeEntries plugins
+  ownership <- call @"ownsPublishedRuntimes" handle #ownsPublishedRuntimes (map snd entries)
+  let ownedPlugins = [plugin | ((plugin, _), True) <- zip entries ownership]
+      ownedIdentities =
+        [ identity
+        | plugin <- ownedPlugins
+        , Just identity <- [refreshRuntimeIdentity plugin]
+        ]
+  pure (ownedPlugins, ownedIdentities)
+
 -- | Re-read manifests for all loaded plugins (hot-reload).
 refreshManifests
   :: ActorHandle PluginManager (Protocol PluginManager)
   -> IO ()
 refreshManifests handle = mask $ \restore -> do
-  (baseDir, plugins) <- commitLifecycleTransition (call @"refresh" handle #refresh ())
-    `onException` commitLifecycleTransition (call @"cancelRefresh" handle #cancelRefresh [])
-  let cancelRefresh = commitLifecycleTransition $
-        call @"cancelRefresh" handle #cancelRefresh plugins
+  mOperation <- commitLifecycleTransition (call @"refresh" handle #refresh ())
+  (token, baseDir, plugins) <- case mOperation of
+    Nothing -> throwIO (userError "plugin lifecycle operation already in progress")
+    Just operation -> pure operation
+  let cancelRefresh = do
+        (_, directives) <- commitLifecycleTransition $
+          call @"cancelRefresh" handle #cancelRefresh (token, plugins)
+        mapM_ (runRuntimeRestartDirective handle) directives
   refreshResult <- try @SomeException $ restore $ do
     waitForLifecycleObservationLease plugins
     withRefreshedManifestsHandlingPublishException
       baseDir
       (Map.fromList [(lpName p, p) | p <- plugins])
-      (\refreshed ->
-        commitLifecycleTransition $
-          call @"finishRefresh" handle #finishRefresh (Map.elems refreshed))
-      (\_ _ ->
-        commitLifecycleTransition $
-          call @"cancelRefresh" handle #cancelRefresh plugins)
+      (\refreshed -> do
+        let published = Map.elems refreshed
+        accepted <- commitLifecycleTransition $
+          call @"finishRefresh" handle #finishRefresh (token, published)
+        unless accepted (throwIO (userError "stale plugin refresh completion"))
+        monitorPublishedPluginRuntimes handle published)
+      (\connected _ -> do
+        (ownedPlugins, ownedGenerations) <-
+          resolvePublishedRuntimeOwnership handle (Map.elems connected)
+        monitorPublishedPluginRuntimes handle ownedPlugins
+        pure ownedGenerations)
   case refreshResult of
     Right () -> pure ()
     Left err -> do
-      -- Never replace an ownership-carrying cleanup exception if rollback also
-      -- fails; callers must retain access to its residual process owners.
-      _ <- try @SomeException cancelRefresh
+      adopted <- case fromException err :: Maybe RefreshRuntimeCleanupFailed of
+        Nothing -> pure False
+        Just cleanupFailure -> do
+          let retained = refreshRuntimeCleanupOwners cleanupFailure
+          accepted <- commitLifecycleTransition $
+            call @"adoptRefreshCleanup" handle #adoptRefreshCleanup (token, retained)
+          if accepted
+            then monitorPublishedPluginRuntimes handle retained >> pure True
+            else do
+              (owned, _) <- resolvePublishedRuntimeOwnership handle retained
+              monitorPublishedPluginRuntimes handle owned
+              pure (length owned == length retained)
+      unless adopted $ do
+        -- Rollback only after unpublished cleanup has finished. A retained
+        -- cleanup exception is adopted by the actor instead of clearing its
+        -- overlap gate.
+        _ <- try @SomeException cancelRefresh
+        pure ()
       throwIO err
 
 -- | Shut down all connected plugins.
@@ -280,14 +475,17 @@ shutdownPlugins
   :: ActorHandle PluginManager (Protocol PluginManager)
   -> IO ()
 shutdownPlugins handle = mask $ \restore -> do
-  plugins <- commitLifecycleTransition (call @"shutdown" handle #shutdown ())
-    `onException` commitLifecycleTransition (call @"cancelShutdown" handle #cancelShutdown ([], []))
+  mOperation <- commitLifecycleTransition (call @"shutdown" handle #shutdown ())
+  (token, plugins) <- case mOperation of
+    Nothing -> throwIO (userError "plugin lifecycle operation already in progress")
+    Just operation -> pure operation
   stoppedRef <- newIORef Map.empty
   let trackStopped = trackStoppedPlugin stoppedRef
       cancelShutdown = do
         stopped <- Map.elems <$> readIORef stoppedRef
-        commitLifecycleTransition $
-          call @"cancelShutdown" handle #cancelShutdown (plugins, stopped)
+        _ <- commitLifecycleTransition $
+          call @"cancelShutdown" handle #cancelShutdown (token, plugins, stopped)
+        pure ()
       shutdownAndTrack plugin = mask $ \restoreOne -> do
         stopped <- restoreOne (shutdownPlugin plugin)
           `onException` cleanupInterruptedShutdown trackStopped plugin
@@ -298,8 +496,10 @@ shutdownPlugins handle = mask $ \restore -> do
         waitForLifecycleObservationLease plugins
         traverse shutdownAndTrack plugins
     ) `onException` cancelShutdown
-  commitLifecycleTransition (call @"finishShutdown" handle #finishShutdown stopped)
+  accepted <- commitLifecycleTransition
+    (call @"finishShutdown" handle #finishShutdown (token, stopped))
     `onException` cancelShutdown
+  unless accepted (throwIO (userError "stale plugin shutdown completion"))
 
 -- | Set the user-defined plugin order.
 setPluginOrder

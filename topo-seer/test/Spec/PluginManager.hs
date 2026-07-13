@@ -1,6 +1,8 @@
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedLabels #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -45,7 +47,7 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, nullPtr)
 import Foreign.Storable (peek)
 #endif
-import Hyperspace.Actor (ActorHandle, ActorSystem, Protocol, get, newActorSystem, shutdownActorSystem)
+import Hyperspace.Actor (ActorHandle, ActorSystem, Protocol, call, get, newActorSystem, shutdownActorSystem)
 import System.Directory
   ( Permissions(..)
   , copyFile
@@ -259,6 +261,23 @@ instance Exception FixtureCleanupProbe
 
 spec :: Spec
 spec = describe "PluginManager" $ do
+  it "rejects stale refresh completion and cancellation tokens" $
+    withPluginManager $ \pluginManagerHandle -> do
+      Just (oldToken, _, oldPlugins) <- call @"refresh" pluginManagerHandle #refresh ()
+      overlapping <- call @"refresh" pluginManagerHandle #refresh ()
+      case overlapping of
+        Nothing -> pure ()
+        Just _ -> expectationFailure "overlapping refresh was not rejected"
+      (cancelledOld, oldDirectives) <- call @"cancelRefresh" pluginManagerHandle #cancelRefresh (oldToken, oldPlugins)
+      cancelledOld `shouldBe` False
+      length oldDirectives `shouldBe` 0
+      Just (currentToken, _, currentPlugins) <- call @"refresh" pluginManagerHandle #refresh ()
+      call @"finishRefresh" pluginManagerHandle #finishRefresh (oldToken, []) `shouldReturn` False
+      (cancelledStale, staleDirectives) <- call @"cancelRefresh" pluginManagerHandle #cancelRefresh (oldToken, [])
+      cancelledStale `shouldBe` False
+      length staleDirectives `shouldBe` 0
+      call @"finishRefresh" pluginManagerHandle #finishRefresh (currentToken, currentPlugins) `shouldReturn` True
+
   it "loads declared .toposchema files during discovery" $ do
     withTestPluginDir testPluginName testManifestJSON testSchemaJSON $ do
       withPluginManager $ \pluginManagerHandle -> do
@@ -1459,10 +1478,11 @@ spec = describe "PluginManager" $ do
           (externalConsumerPluginName <> " crash after grant ACK")
           pluginManagerHandle
           (\loaded -> anyPluginErrorContaining "process exited" (pluginStatuses externalConsumerPluginName loaded)
+            || anyPluginErrorContaining "EOF reading message length" (pluginStatuses externalConsumerPluginName loaded)
             || anyPluginErrorContaining "not brokerable" (pluginStatuses externalConsumerPluginName loaded))
         pluginLifecycleStates externalConsumerPluginName crashed `shouldSatisfy` elem LifecycleFailed
         pluginLifecycleErrorCodes externalConsumerPluginName crashed `shouldSatisfy`
-          any (`elem` [Just "process_exited", Just "external_data_source_blocked"])
+          any (`elem` [Just "process_exited", Just "transport_error", Just "external_data_source_blocked"])
         operations <- readExternalConsumerOperationLog
         operations `shouldBe` [externalBrokerOperationLogLine "grant"]
 
@@ -1573,6 +1593,98 @@ spec = describe "PluginManager" $ do
         pluginStatuses flakyStartPluginName loaded `shouldSatisfy` elem PluginConnected
         count <- readFixtureCount flakyStartPluginName "flaky-start"
         count `shouldBe` 2
+
+  it "observes autonomous process exit and exposes restart backoff before replacement" $ do
+    withExecutablePluginDir runtimeRestartPluginName runtimeRestartManifestJSON "flaky-runtime-exit" $ do
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        threadDelay 250000
+        backingOff <- getLoadedPlugins pluginManagerHandle
+        pluginLifecycleStates runtimeRestartPluginName backingOff `shouldSatisfy` elem LifecycleStarting
+        restarted <- waitForLoadedPlugins
+          (runtimeRestartPluginName <> " autonomous restart")
+          pluginManagerHandle
+          (elem PluginConnected . pluginStatuses runtimeRestartPluginName)
+        pluginLifecycleStates runtimeRestartPluginName restarted `shouldSatisfy` elem LifecycleReady
+        count <- readFixtureCount runtimeRestartPluginName "flaky-runtime-exit"
+        count `shouldBe` 2
+
+  it "lets refresh supersede a queued autonomous restart without a stale launch" $
+    withExecutablePluginDir runtimeRestartPluginName runtimeRestartManifestJSON "flaky-runtime-exit" $ do
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        threadDelay 250000
+        backingOff <- getLoadedPlugins pluginManagerHandle
+        pluginLifecycleStates runtimeRestartPluginName backingOff `shouldSatisfy` elem LifecycleStarting
+        refreshManifests pluginManagerHandle
+        threadDelay 650000
+        loaded <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses runtimeRestartPluginName loaded `shouldSatisfy` elem PluginConnected
+        count <- readFixtureCount runtimeRestartPluginName "flaky-runtime-exit"
+        count `shouldBe` 2
+
+  it "lets shutdown suppress a queued autonomous restart" $
+    withExecutablePluginDir runtimeRestartPluginName runtimeRestartManifestJSON "flaky-runtime-exit" $ do
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        threadDelay 250000
+        backingOff <- getLoadedPlugins pluginManagerHandle
+        pluginLifecycleStates runtimeRestartPluginName backingOff `shouldSatisfy` elem LifecycleStarting
+        shutdownPlugins pluginManagerHandle
+        threadDelay 650000
+        stopped <- getLoadedPlugins pluginManagerHandle
+        pluginLifecycleStates runtimeRestartPluginName stopped `shouldSatisfy` elem LifecycleStopped
+        count <- readFixtureCount runtimeRestartPluginName "flaky-runtime-exit"
+        count `shouldBe` 1
+
+  it "honors restart_mode=never for autonomous runtime failure" $
+    withExecutablePluginDir runtimeNeverPluginName runtimeNeverManifestJSON "flaky-runtime-exit" $ do
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        threadDelay 350000
+        failed <- getLoadedPlugins pluginManagerHandle
+        pluginLifecycleStates runtimeNeverPluginName failed `shouldSatisfy` elem LifecycleFailed
+        count <- readFixtureCount runtimeNeverPluginName "flaky-runtime-exit"
+        count `shouldBe` 1
+
+  it "honors restart_mode=always after a clean autonomous exit" $
+    withExecutablePluginDir runtimeAlwaysPluginName runtimeAlwaysManifestJSON "flaky-runtime-exit-clean" $ do
+      withPluginManager $ \pluginManagerHandle -> do
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        threadDelay 300000
+        restarted <- waitForLoadedPlugins
+          (runtimeAlwaysPluginName <> " clean always restart")
+          pluginManagerHandle
+          (\loaded -> elem PluginConnected (pluginStatuses runtimeAlwaysPluginName loaded)
+            && length (pluginProcessHandles runtimeAlwaysPluginName loaded) == 1)
+        pluginLifecycleStates runtimeAlwaysPluginName restarted `shouldSatisfy` elem LifecycleReady
+        count <- readFixtureCount runtimeAlwaysPluginName "flaky-runtime-exit-clean"
+        count `shouldBe` 2
+
+  it "recovers a retained termination failure after delayed cleanup succeeds" $
+    withExecutablePluginDir runtimeRestartPluginName runtimeRestartManifestJSON "flaky-runtime-exit" $
+      withEnvironmentValue "TOPO_TEST_PLUGIN_CLEANUP_FAILURE" "1" $
+        withPluginManager $ \pluginManagerHandle -> do
+          discoverPlugins pluginManagerHandle
+          refreshManifests pluginManagerHandle
+          retained <- waitForLoadedPlugins
+            (runtimeRestartPluginName <> " retained termination failure")
+            pluginManagerHandle
+            (elem (Just "termination_failed") . pluginLifecycleErrorCodes runtimeRestartPluginName)
+          length (pluginProcessHandles runtimeRestartPluginName retained) `shouldSatisfy` (> 0)
+          unsetEnv "TOPO_TEST_PLUGIN_CLEANUP_FAILURE"
+          recovered <- waitForLoadedPlugins
+            (runtimeRestartPluginName <> " delayed cleanup recovery")
+            pluginManagerHandle
+            (elem PluginConnected . pluginStatuses runtimeRestartPluginName)
+          pluginLifecycleStates runtimeRestartPluginName recovered `shouldSatisfy` elem LifecycleReady
+          count <- readFixtureCount runtimeRestartPluginName "flaky-runtime-exit"
+          count `shouldBe` 2
 
   it "stops restarting startup failures after the max restart window is exhausted" $ do
     withExecutablePluginDir restartLimitPluginName restartLimitManifestJSON "counted-early-exit" $ do
@@ -2938,7 +3050,7 @@ normalizeFixtureMode :: String -> String
 normalizeFixtureMode = takeWhile (`notElem` ['\r', '\n'])
 
 fixtureUsage :: IO a
-fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|entry-marker|env-contract|protocol-mismatch|auth-missing|auth-mismatch|endpoint-race-parent|endpoint-race-fake|split-pipe-client|malformed-json|bad-handshake|early-exit|slow|wait-for-start-signal|handshake-stall|slow-shutdown|flaky-start|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|widening-handshake|exit-on-generator|exit-on-simulation|external-provider|external-provider-controlled-status|external-consumer|external-consumer-reject-grant|external-consumer-reject-revoke|external-consumer-timeout-grant-once|external-consumer-timeout-revoke-once|external-consumer-query-external-unavailable|external-consumer-crash-after-grant-ack|process-tree|heartbeat-child>"
+fixtureUsage = die "usage: topo-seer-test --plugin-manager-fixture <ok|entry-marker|env-contract|protocol-mismatch|auth-missing|auth-mismatch|endpoint-race-parent|endpoint-race-fake|split-pipe-client|malformed-json|bad-handshake|early-exit|slow|wait-for-start-signal|handshake-stall|slow-shutdown|flaky-start|flaky-runtime-exit|flaky-runtime-exit-clean|counted-early-exit|hang-query|provider-failed|validation-ok|invalid-mutate|negotiated-validation|widening-handshake|exit-on-generator|exit-on-simulation|external-provider|external-provider-controlled-status|external-consumer|external-consumer-reject-grant|external-consumer-reject-revoke|external-consumer-timeout-grant-once|external-consumer-timeout-revoke-once|external-consumer-query-external-unavailable|external-consumer-crash-after-grant-ack|process-tree|heartbeat-child>"
 
 runFixtureMode :: String -> IO ()
 runFixtureMode = \case
@@ -2959,6 +3071,8 @@ runFixtureMode = \case
   "handshake-stall" -> runHandshakeStallFixture
   "slow-shutdown" -> runSlowShutdownFixture
   "flaky-start" -> runFlakyStartFixture
+  "flaky-runtime-exit" -> runFlakyRuntimeExitFixture
+  "flaky-runtime-exit-clean" -> runFlakyRuntimeCleanExitFixture
   "counted-early-exit" -> incrementFixtureCount "counted-early-exit" >> exitFailure
   "hang-query" -> runHangQueryFixture
   "provider-failed" -> runProviderFailedFixture
@@ -3049,6 +3163,36 @@ runFlakyStartFixture = do
   if count <= 1
     then exitFailure
     else runOkFixture
+
+runFlakyRuntimeExitFixture :: IO ()
+runFlakyRuntimeExitFixture =
+  runFlakyRuntimeExitFixtureWith "flaky-runtime-exit" exitFailure
+
+runFlakyRuntimeCleanExitFixture :: IO ()
+runFlakyRuntimeCleanExitFixture =
+  runFlakyRuntimeExitFixtureWith "flaky-runtime-exit-clean" (pure ())
+
+runFlakyRuntimeExitFixtureWith :: String -> IO () -> IO ()
+runFlakyRuntimeExitFixtureWith countKey finishFirst = do
+  count <- incrementFixtureCount countKey
+  if count > 1
+    then runOkFixture
+    else do
+      connectPluginFromEnvironment "plugin-manager-flaky-runtime-fixture" stdin stdout >>= \case
+        Left _ -> exitFailure
+        Right transport -> waitForHandshake transport
+  where
+    waitForHandshake transport = do
+      recvMessage transport >>= \case
+        Left _ -> exitFailure
+        Right bytes -> case decodeMessage bytes of
+          Right envelope | envType envelope == MsgHandshake -> do
+            ack <- handshakeAckEnvelopeFor envelope currentProtocolVersion
+            _ <- sendMessage transport (encodeMessage ack)
+            threadDelay 150000
+            closeTransport transport
+            finishFirst
+          _ -> waitForHandshake transport
 
 runHangQueryFixture :: IO ()
 runHangQueryFixture = do
@@ -4313,6 +4457,48 @@ flakyStartManifestJSON = manifestWithStartPolicyFor flakyStartPluginName
   , "    \"request_timeout_ms\": 300,"
   , "    \"shutdown_timeout_ms\": 300,"
   , "    \"backoff_ms\": 5"
+  ]
+
+runtimeRestartPluginName :: String
+runtimeRestartPluginName = "copilot-test-plugin-runtime-restart"
+
+runtimeRestartManifestJSON :: BS.ByteString
+runtimeRestartManifestJSON = manifestWithStartPolicyFor runtimeRestartPluginName
+  [ "    \"restart_mode\": \"on_failure\","
+  , "    \"max_restarts\": 1,"
+  , "    \"restart_window_ms\": 10000,"
+  , "    \"startup_timeout_ms\": 1000,"
+  , "    \"request_timeout_ms\": 300,"
+  , "    \"shutdown_timeout_ms\": 300,"
+  , "    \"backoff_ms\": 500"
+  ]
+
+runtimeNeverPluginName :: String
+runtimeNeverPluginName = "copilot-test-plugin-runtime-never"
+
+runtimeNeverManifestJSON :: BS.ByteString
+runtimeNeverManifestJSON = manifestWithStartPolicyFor runtimeNeverPluginName
+  [ "    \"restart_mode\": \"never\","
+  , "    \"max_restarts\": 3,"
+  , "    \"restart_window_ms\": 10000,"
+  , "    \"startup_timeout_ms\": 1000,"
+  , "    \"request_timeout_ms\": 300,"
+  , "    \"shutdown_timeout_ms\": 300,"
+  , "    \"backoff_ms\": 10"
+  ]
+
+runtimeAlwaysPluginName :: String
+runtimeAlwaysPluginName = "copilot-test-plugin-runtime-always"
+
+runtimeAlwaysManifestJSON :: BS.ByteString
+runtimeAlwaysManifestJSON = manifestWithStartPolicyFor runtimeAlwaysPluginName
+  [ "    \"restart_mode\": \"always\","
+  , "    \"max_restarts\": 1,"
+  , "    \"restart_window_ms\": 10000,"
+  , "    \"startup_timeout_ms\": 1000,"
+  , "    \"request_timeout_ms\": 300,"
+  , "    \"shutdown_timeout_ms\": 300,"
+  , "    \"backoff_ms\": 10"
   ]
 
 restartLimitPluginName :: String

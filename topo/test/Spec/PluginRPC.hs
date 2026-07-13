@@ -1,4 +1,5 @@
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -58,12 +59,17 @@ import Topo.Plugin.RPC
   , RPCConnection(..)
   , HandshakeAuthChallenge(..)
   , RPCError(..)
+  , RPCFailureEvent(..)
+  , RPCFailureSource(..)
+  , awaitRPCFailureEvent
   , checkHealth
+  , claimRPCFailureEvent
   , invokeGenerator
   , invokeSimulation
   , mutateResource
   , newRPCConnection
   , performHandshakeWithAuth
+  , peekRPCFailureEvent
   , queryResource
   , rpcErrorText
   , rpcGeneratorStage
@@ -1607,6 +1613,78 @@ spec = describe "Plugin.RPC" $ do
             msg `shouldSatisfy` Text.isInfixOf "health check"
             rpcErrorText err `shouldSatisfy` Text.isInfixOf "timeout"
           Just other -> expectationFailure ("expected timeout, got " <> show other)
+
+    it "publishes and identity-claims fatal request timeout events" $
+      withConnectedTransports "rpc-timeout-failure-event" $ \host _plugin -> do
+        let manifest = baseManifest
+              { rmStartPolicy = defaultRPCStartPolicy { rspRequestTimeoutMs = 50 }
+              }
+            conn = newRPCConnection manifest host Map.empty
+        _ <- checkHealth conn
+        event <- awaitRPCFailureEvent conn
+        rpfeError event `shouldSatisfy` \case
+          RPCTimeout _ -> True
+          _ -> False
+        rpfeSource event `shouldSatisfy` \case
+          RPCFailureRequest _ -> True
+          _ -> False
+        claimRPCFailureEvent conn event `shouldReturn` True
+        claimRPCFailureEvent conn event `shouldReturn` False
+        peekRPCFailureEvent conn `shouldReturn` Nothing
+
+    it "keeps broker timeouts local while preserving a later transport failure" $
+      withConnectedTransports "rpc-broker-timeout-transport-event" $ \host plugin -> do
+        let manifest = baseManifest
+              { rmStartPolicy = defaultRPCStartPolicy { rspRequestTimeoutMs = 50 }
+              }
+            conn = newRPCConnection manifest host Map.empty
+        result <- sendExternalDataSourceGrant conn externalGrantMessageFixture
+        result `shouldSatisfy` \case
+          Left (RPCTimeout _) -> True
+          _ -> False
+        peekRPCFailureEvent conn `shouldReturn` Nothing
+        closeTransport plugin
+        event <- awaitRPCFailureEvent conn
+        rpfeSource event `shouldBe` RPCFailureTransport
+        rpfeError event `shouldSatisfy` \case
+          RPCTransportError _ -> True
+          _ -> False
+
+    it "autonomously publishes receiver protocol failures" $
+      withConnectedTransports "rpc-protocol-failure-event" $ \host plugin -> do
+        let conn = newRPCConnection baseManifest host Map.empty
+        done <- newEmptyMVar
+        _ <- forkIO (checkHealth conn >>= putMVar done)
+        _ <- recvEnvelopeFrom plugin
+        sendMessage plugin "not-json" `shouldReturn` Right ()
+        event <- awaitRPCFailureEvent conn
+        rpfeError event `shouldSatisfy` \case
+          RPCProtocolError _ -> True
+          _ -> False
+        result <- timeout transportTestTimeoutMicros (takeMVar done)
+        result `shouldSatisfy` \case
+          Just (Left (RPCProtocolError _)) -> True
+          _ -> False
+
+    it "treats malformed progress payloads as fatal protocol failures" $
+      withConnectedTransports "rpc-malformed-progress-event" $ \host plugin -> do
+        let conn = newRPCConnection baseManifest host Map.empty
+        done <- newEmptyMVar
+        _ <- forkIO (checkHealth conn >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgProgress
+          , envPayload = object ["message" .= (1 :: Int)]
+          , envRequestId = envRequestId request
+          }
+        event <- awaitRPCFailureEvent conn
+        rpfeError event `shouldSatisfy` \case
+          RPCProtocolError msg -> "progress" `Text.isInfixOf` msg
+          _ -> False
+        result <- timeout transportTestTimeoutMicros (takeMVar done)
+        result `shouldSatisfy` \case
+          Just (Left (RPCProtocolError _)) -> True
+          _ -> False
 
     it "removes cancelled pending requests before later legacy responses" $
       withConnectedTransports "rpc-cancelled-health" $ \host plugin -> do
