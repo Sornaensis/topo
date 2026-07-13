@@ -235,6 +235,9 @@ library
   if os(windows)
     c-sources:
         cbits/windows_process.c
+  if !os(windows)
+    build-depends:
+        unix
 
 executable topo-seer
   main-is: Main.hs
@@ -285,6 +288,7 @@ test-suite topo-seer-test
       Spec.PluginManager
       Spec.RenderLoopAtlasMaintenance
       Spec.RiverRender
+      Spec.ScreenshotStorage
       Spec.Simulation
       Spec.SliderSpec
       Spec.SnapshotReceiver

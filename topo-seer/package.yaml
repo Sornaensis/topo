@@ -18,6 +18,9 @@ library:
     - condition: os(windows)
       c-sources:
         - cbits/windows_process.c
+    - condition: '!os(windows)'
+      dependencies:
+        - unix
   exposed-modules:
     - Actor.Data
     - Actor.Log
