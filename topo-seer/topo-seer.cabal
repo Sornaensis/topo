@@ -185,6 +185,7 @@ library
       Seer.Config.SliderRegistry
       Seer.Config.SliderId
       Seer.Input.Context
+      Seer.World.PluginDataCopy
       Seer.System.Actors
       Seer.System.AutoTick
       Seer.System.Cache
@@ -201,6 +202,8 @@ library
       UI.TerrainColor
   hs-source-dirs:
       src
+  c-sources:
+      cbits/plugin_data_copy.c
   build-depends:
       JuicyPixels
     , aeson

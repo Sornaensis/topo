@@ -3,12 +3,14 @@
 
 module Spec.WorldPersist (spec) where
 
-import Control.Exception (bracket, try, IOException)
+import Control.Exception (bracket, throwIO, try, IOException)
+import Control.Monad (when)
 import Data.Aeson (Value(..), encode, eitherDecodeStrict', object, toJSON, (.=))
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.IntMap.Strict as IntMap
+import Data.IORef (atomicModifyIORef', newIORef)
 import qualified Data.Text as Text
 import Data.Time.Clock (UTCTime, getCurrentTime, addUTCTime)
 import qualified Data.Vector as V
@@ -17,9 +19,11 @@ import System.Directory
   ( createDirectoryIfMissing
   , createDirectoryLink
   , createFileLink
+  , doesDirectoryExist
   , doesFileExist
   , removeDirectoryRecursive
   , removePathForcibly
+  , renameDirectory
   )
 import System.FilePath ((</>))
 import System.Info (os)
@@ -43,10 +47,13 @@ import Seer.Config.Snapshot.Types (ConfigSnapshot(..), defaultSnapshot)
 import Seer.World.Persist
   ( WorldPluginDataDirectory(..)
   , WorldExternalDataSourceSnapshot(..)
+  , WorldSaveHooks(..)
+  , defaultWorldSaveHooks
   , WorldWeatherLayerManifest(..)
   , WorldSaveManifest(..)
   , saveNamedWorld
   , saveNamedWorldWithPluginsAndExternalData
+  , saveNamedWorldWithPluginsAndExternalDataAndHooks
   , loadNamedWorld
   , listWorlds
   , deleteNamedWorld
@@ -628,6 +635,163 @@ worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
                 wsmPluginData manifest `shouldBe` [("plugin-a", "safe/archive")]
         )
 
+    it "pins plugin root traversal against concurrent ancestor replacement" $
+      bracket
+        (do
+            worlds <- worldDir
+            let ancestor = worlds </> "__topo_test_plugin_data_ancestor__"
+                movedAncestor = ancestor <> ".moved"
+                source = ancestor </> "source"
+            cleanupPath ancestor
+            cleanupPath movedAncestor
+            createDirectoryIfMissing True source
+            writeFile (source </> "state.txt") "plugin-state"
+            pure (ancestor, movedAncestor, source))
+        (\(ancestor, movedAncestor, _source) -> do
+            _ <- deleteNamedWorld testWorldName
+            cleanupPath ancestor
+            cleanupPath movedAncestor)
+        (\(ancestor, movedAncestor, source) -> do
+            mutationDone <- newIORef False
+            let config = WorldConfig { wcChunkSize = 64 }
+                world = emptyWorld config defaultHexGridMeta
+                ui = emptyUiState { uiSeed = 42, uiChunkSize = 64 }
+                pluginData = WorldPluginDataDirectory
+                  { wpddPlugin = "plugin-a"
+                  , wpddSourceDirectory = source
+                  , wpddArchiveDirectory = "archive"
+                  }
+                hooks = defaultWorldSaveHooks
+                  { wshBeforePluginDataEntryOpen = \entryPath ->
+                      when (entryPath == source) $ do
+                        shouldMutate <- atomicModifyIORef' mutationDone (\done -> (True, not done))
+                        when shouldMutate $ do
+                          renameDirectory ancestor movedAncestor
+                          createDirectoryIfMissing True source
+                          writeFile (source </> "state.txt") "replacement-state"
+                  }
+
+            saveResult <- saveNamedWorldWithPluginsAndExternalDataAndHooks
+              hooks testWorldName ui world [pluginData] []
+            saveResult `shouldBe` Right ()
+
+            worlds <- worldDir
+            let savedFile = worlds </> Text.unpack testWorldName
+                  </> "plugins" </> "archive" </> "state.txt"
+            readFile savedFile `shouldReturn` "plugin-state"
+        )
+
+    it "pins plugin traversal to opened directory handles during source replacement" $
+      bracket
+        (do
+            source <- createPluginDataSource
+            let movedSource = source <> ".moved"
+            cleanupPath movedSource
+            pure (source, movedSource))
+        (\(source, movedSource) -> do
+            _ <- deleteNamedWorld testWorldName
+            cleanupPath source
+            cleanupPath movedSource)
+        (\(source, movedSource) -> do
+            mutationDone <- newIORef False
+            let config = WorldConfig { wcChunkSize = 64 }
+                world = emptyWorld config defaultHexGridMeta
+                ui = emptyUiState { uiSeed = 42, uiChunkSize = 64 }
+                pluginData = WorldPluginDataDirectory
+                  { wpddPlugin = "plugin-a"
+                  , wpddSourceDirectory = source
+                  , wpddArchiveDirectory = "archive"
+                  }
+                hooks = defaultWorldSaveHooks
+                  { wshBeforePluginDataEntryOpen = \entryPath ->
+                      when (entryPath == source </> "state.txt") $ do
+                        shouldMutate <- atomicModifyIORef' mutationDone (\done -> (True, not done))
+                        when shouldMutate $ do
+                          renameDirectory source movedSource
+                          createDirectoryIfMissing True source
+                          writeFile (source </> "state.txt") "replacement-state"
+                  }
+
+            saveResult <- saveNamedWorldWithPluginsAndExternalDataAndHooks
+              hooks testWorldName ui world [pluginData] []
+            saveResult `shouldBe` Right ()
+
+            worlds <- worldDir
+            let savedFile = worlds </> Text.unpack testWorldName
+                  </> "plugins" </> "archive" </> "state.txt"
+            readFile savedFile `shouldReturn` "plugin-state"
+        )
+
+    it "preserves the previously committed world when plugin copying fails" $
+      bracket
+        createPluginDataSource
+        (\source -> do
+            _ <- deleteNamedWorld testWorldName
+            cleanupPath source)
+        (\source -> do
+            let config = WorldConfig { wcChunkSize = 64 }
+                world = emptyWorld config defaultHexGridMeta
+                originalUi = emptyUiState { uiSeed = 42, uiChunkSize = 64 }
+                replacementUi = emptyUiState { uiSeed = 99, uiChunkSize = 64 }
+                pluginData = WorldPluginDataDirectory
+                  { wpddPlugin = "plugin-a"
+                  , wpddSourceDirectory = source
+                  , wpddArchiveDirectory = "archive"
+                  }
+
+            initialSave <- saveNamedWorldWithPluginsAndExternalData
+              testWorldName originalUi world [pluginData] []
+            initialSave `shouldBe` Right ()
+            writeFile (source </> "state.txt") "replacement-state"
+
+            let failingHooks = defaultWorldSaveHooks
+                  { wshBeforePluginDataEntryOpen = \entryPath ->
+                      when (entryPath == source </> "state.txt") $
+                        throwIO (userError "simulated plugin copy failure")
+                  }
+            failedSave <- saveNamedWorldWithPluginsAndExternalDataAndHooks
+              failingHooks testWorldName replacementUi world [pluginData] []
+            case failedSave of
+              Left err -> err `shouldSatisfy` Text.isInfixOf "simulated plugin copy failure"
+              Right () -> expectationFailure "plugin copy failure committed a replacement world"
+
+            loadResult <- loadNamedWorld testWorldName
+            case loadResult of
+              Left err -> expectationFailure (Text.unpack err)
+              Right (manifest, snapshot, _loadedWorld) -> do
+                wsmSeed manifest `shouldBe` 42
+                csSeed snapshot `shouldBe` 42
+            worlds <- worldDir
+            let worldPath = worlds </> Text.unpack testWorldName
+                savedFile = worldPath </> "plugins" </> "archive" </> "state.txt"
+            readFile savedFile `shouldReturn` "plugin-state"
+            doesDirectoryExist (worldPath <> ".saving") `shouldReturn` False
+            listed <- listWorlds
+            length (filter ((== testWorldName) . wsmName) listed) `shouldBe` 1
+        )
+
+    it "rejects NUL in plugin source paths before native traversal" $
+      bracket
+        createPluginDataSource
+        (\source -> do
+            _ <- deleteNamedWorld testWorldName
+            cleanupPath source)
+        (\source -> do
+            let config = WorldConfig { wcChunkSize = 64 }
+                world = emptyWorld config defaultHexGridMeta
+                ui = emptyUiState { uiSeed = 42, uiChunkSize = 64 }
+                pluginData = WorldPluginDataDirectory
+                  { wpddPlugin = "plugin-a"
+                  , wpddSourceDirectory = source <> "\NULalias"
+                  , wpddArchiveDirectory = "archive"
+                  }
+            saveResult <- saveNamedWorldWithPluginsAndExternalData
+              testWorldName ui world [pluginData] []
+            case saveResult of
+              Left err -> err `shouldSatisfy` Text.isInfixOf "NUL"
+              Right () -> expectationFailure "NUL-containing plugin source was accepted"
+        )
+
     it "rejects unsafe plugin archive directories without escaping the world plugin tree" $
       bracket
         createPluginDataSource
@@ -651,6 +815,7 @@ worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
                   , "."
                   , ".."
                   , "safe\\nested/../escape"
+                  , "safe\NULalias"
                   ]
 
             mapM_
@@ -690,6 +855,9 @@ worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
                   [ ("shared", "shared")
                   , ("shared/path", "shared\\path")
                   , ("shared", "shared/child")
+                  , ("Archive", "archive")
+                  , ("Shared/left", "shared/right")
+                  , ("Straße", "STRASSE")
                   ]
 
             mapM_
@@ -896,11 +1064,13 @@ listWorldsSpec = describe "listWorlds" $
       (\_ -> do
           _ <- deleteNamedWorld testListNameA
           _ <- deleteNamedWorld testListNameB
-          -- Clean up invalid directory manually
+          -- Clean up invalid and synthetic atomic directories manually.
           dir <- worldDir
-          _ <- try @IOException
-            (removeDirectoryRecursive (dir </> Text.unpack testListNameInvalid))
-          pure ()
+          mapM_ cleanupPath
+            [ dir </> Text.unpack testListNameInvalid
+            , dir </> Text.unpack testListNameA <> ".saving"
+            , dir </> Text.unpack testListNameA <> ".old"
+            ]
       )
       (\_ -> do
           let config = WorldConfig { wcChunkSize = 64 }
@@ -910,12 +1080,22 @@ listWorldsSpec = describe "listWorlds" $
           let uiA = emptyUiState { uiSeed = 100, uiChunkSize = 64 }
           _ <- saveNamedWorld testListNameA uiA world
 
+          -- Atomic staging/backup directories can contain valid manifests while
+          -- a save is active or after interruption, but are never saved worlds.
+          loadedA <- loadNamedWorld testListNameA
+          manifestA <- case loadedA of
+            Left err -> expectationFailure (Text.unpack err) >> fail "unreachable"
+            Right (manifest, _snapshot, _world) -> pure manifest
+          dir <- worldDir
+          let syntheticStaging = dir </> Text.unpack testListNameA <> ".saving"
+          createDirectoryIfMissing True syntheticStaging
+          BSL.writeFile (syntheticStaging </> "meta.json") (encode manifestA)
+
           -- Save world B second (will have a later timestamp)
           let uiB = emptyUiState { uiSeed = 200, uiChunkSize = 64 }
           _ <- saveNamedWorld testListNameB uiB world
 
           -- Create an invalid directory (no meta.json)
-          dir <- worldDir
           let invalidPath = dir </> Text.unpack testListNameInvalid
           createDirectoryIfMissing True invalidPath
 

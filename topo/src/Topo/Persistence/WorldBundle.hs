@@ -31,6 +31,7 @@ import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
   , doesFileExist
+  , removePathForcibly
   )
 import System.FilePath ((</>), takeDirectory, takeFileName)
 
@@ -70,12 +71,14 @@ data WorldBundleError
   deriving (Show)
 
 data BundleSaveHooks = BundleSaveHooks
-  { bshAfterBackupRename :: IO ()
+  { bshPopulateStaging :: FilePath -> IO ()
+  , bshAfterBackupRename :: IO ()
   }
 
 defaultBundleSaveHooks :: BundleSaveHooks
 defaultBundleSaveHooks = BundleSaveHooks
-  { bshAfterBackupRename = pure ()
+  { bshPopulateStaging = const (pure ())
+  , bshAfterBackupRename = pure ()
   }
 
 -- | Save a world bundle using empty provenance.
@@ -134,8 +137,16 @@ saveWorldBundleWithProvenanceAndHooks hooks topoPath prov extraFiles world = do
                   case extraResult of
                     Left err -> pure (Left err)
                     Right () -> do
-                      commitResult <- commitAtomicBundle hooks targetDir stagingDir backupDir
-                      pure commitResult
+                      populateResult <- safeIO "populate staging bundle"
+                        (bshPopulateStaging hooks stagingDir)
+                      case populateResult of
+                        Left err -> do
+                          _ <- safeIO "cleanup failed staging bundle"
+                            (removePathForcibly stagingDir)
+                          pure (Left err)
+                        Right () -> do
+                          commitResult <- commitAtomicBundle hooks targetDir stagingDir backupDir
+                          pure commitResult
 
 -- | Load a world bundle using a load policy.
 --

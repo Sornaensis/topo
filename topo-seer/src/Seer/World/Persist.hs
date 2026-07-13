@@ -19,9 +19,12 @@ module Seer.World.Persist
     -- * Directory helpers
   , worldDir
     -- * Save \/ Load
+  , WorldSaveHooks(..)
+  , defaultWorldSaveHooks
   , saveNamedWorld
   , saveNamedWorldWithPlugins
   , saveNamedWorldWithPluginsAndExternalData
+  , saveNamedWorldWithPluginsAndExternalDataAndHooks
   , loadNamedWorld
   , loadNamedSparseOverlayChunk
     -- * Snapshot conversion
@@ -34,7 +37,6 @@ module Seer.World.Persist
 
 import Control.Exception (IOException, try)
 import Control.Monad (when)
-import Data.Char (toLower)
 import Data.Aeson (FromJSON(..), eitherDecodeStrict', encode, toJSON)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
@@ -46,17 +48,14 @@ import qualified Data.Text as Text
 import Data.Time.Clock (getCurrentTime)
 import Data.Word (Word64)
 import System.Directory
-  ( copyFile
-  , createDirectoryIfMissing
+  ( createDirectoryIfMissing
   , doesDirectoryExist
   , doesFileExist
   , getHomeDirectory
   , listDirectory
-  , pathIsSymbolicLink
   , removeDirectoryRecursive
   )
 import System.FilePath (isAbsolute, (</>))
-import System.Info (os)
 
 import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..))
 import Actor.UI (UiState(..))
@@ -68,6 +67,11 @@ import Seer.World.Persist.Types
   , WorldExternalDataSourceSnapshot(..)
   , WorldWeatherLayerManifest(..)
   , WorldSaveManifest(..)
+  )
+import Seer.World.PluginDataCopy
+  ( PluginDataCopyHooks(..)
+  , defaultPluginDataCopyHooks
+  , copyPluginDataDirectory
   )
 import Topo.Calendar (defaultPlanetAge)
 import Topo.Metadata (emptyMetadataStore)
@@ -96,7 +100,9 @@ import Topo.Storage
   )
 import Topo.Persistence.WorldBundle
   ( BundleLoadPolicy(..)
-  , saveWorldBundleWithProvenance
+  , BundleSaveHooks(..)
+  , defaultBundleSaveHooks
+  , saveWorldBundleWithProvenanceAndHooks
   , loadWorldBundleWithProvenance
   )
 import Topo.Types (WeatherChunk, WorldConfig(..))
@@ -120,6 +126,17 @@ worldDir = do
 -------------------------------------------------------------------------------
 -- Save
 -------------------------------------------------------------------------------
+
+-- | Hooks for deterministic save fault and concurrent-mutation tests.
+-- Production callers should use 'defaultWorldSaveHooks'.
+data WorldSaveHooks = WorldSaveHooks
+  { wshBeforePluginDataEntryOpen :: FilePath -> IO ()
+  }
+
+defaultWorldSaveHooks :: WorldSaveHooks
+defaultWorldSaveHooks = WorldSaveHooks
+  { wshBeforePluginDataEntryOpen = const (pure ())
+  }
 
 -- | Save a named world: terrain data, config snapshot, and metadata.
 --
@@ -163,7 +180,22 @@ saveNamedWorldWithPluginsAndExternalData
   -> [WorldExternalDataSourceSnapshot]
   -- ^ Opaque external data-source declarations/references to preserve
   -> IO (Either Text ())
-saveNamedWorldWithPluginsAndExternalData name uiSnap world pluginDirs externalDataSources = do
+saveNamedWorldWithPluginsAndExternalData name uiSnap world pluginDirs externalDataSources =
+  saveNamedWorldWithPluginsAndExternalDataAndHooks
+    defaultWorldSaveHooks name uiSnap world pluginDirs externalDataSources
+
+-- | Hookable variant of 'saveNamedWorldWithPluginsAndExternalData'. Plugin
+-- data is populated inside the same staging directory as the core bundle, so
+-- any traversal or copy failure occurs before the old world is replaced.
+saveNamedWorldWithPluginsAndExternalDataAndHooks
+  :: WorldSaveHooks
+  -> Text
+  -> UiState
+  -> TerrainWorld
+  -> [WorldPluginDataDirectory]
+  -> [WorldExternalDataSourceSnapshot]
+  -> IO (Either Text ())
+saveNamedWorldWithPluginsAndExternalDataAndHooks hooks name uiSnap world pluginDirs externalDataSources = do
   dir <- worldDir
   let nameStr   = Text.unpack name
       worldPath = dir </> nameStr
@@ -195,12 +227,18 @@ saveNamedWorldWithPluginsAndExternalData name uiSnap world pluginDirs externalDa
           [ ("config.json", BSL.toStrict (encode snapshot))
           , ("meta.json", BSL.toStrict (encode manifest))
           ]
-    topoResult <- saveWorldBundleWithProvenance topoFile provenance extraFiles worldForSave
+        pluginCopyHooks = defaultPluginDataCopyHooks
+          { pdchBeforeEntryOpen = wshBeforePluginDataEntryOpen hooks
+          }
+        bundleHooks = defaultBundleSaveHooks
+          { bshPopulateStaging = \stagingPath ->
+              mapM_ (copyPluginDataDir pluginCopyHooks stagingPath) preparedDirs
+          }
+    topoResult <- saveWorldBundleWithProvenanceAndHooks
+      bundleHooks topoFile provenance extraFiles worldForSave
     case topoResult of
       Left err -> fail ("Terrain+overlay save failed: " <> show err)
       Right () -> pure ()
-    -- Copy plugin data directories into the world save.
-    mapM_ (copyPluginDataDir worldPath) preparedDirs
 
   pure $ case result of
     Left err -> Left (Text.pack (show err))
@@ -386,8 +424,15 @@ tryLoadManifest dir entry = do
     else do
       result <- loadJsonFile path
       case result of
-        Left _  -> pure Nothing
-        Right m -> pure (Just m)
+        Left _ -> pure Nothing
+        Right m
+          | isAtomicSaveDirectory entry m -> pure Nothing
+          | otherwise -> pure (Just m)
+
+isAtomicSaveDirectory :: FilePath -> WorldSaveManifest -> Bool
+isAtomicSaveDirectory entry manifest =
+  let committedName = Text.unpack (wsmName manifest)
+  in entry == committedName <> ".saving" || entry == committedName <> ".old"
 
 -------------------------------------------------------------------------------
 -- Deletion (stub)
@@ -477,6 +522,9 @@ preparePluginDataDirs dirs = do
   where
     prepareOne entry = do
       archiveDir <- normalizeSafeArchiveDirectory (wpddArchiveDirectory entry)
+      whenLeft ('\0' `elem` wpddSourceDirectory entry)
+        ("plugin data source for " <> quote (wpddPlugin entry)
+          <> " must not contain a NUL character")
       whenLeft (not (isAbsolute (wpddSourceDirectory entry)))
         ("plugin data source for " <> quote (wpddPlugin entry)
           <> " must be an absolute host-derived path")
@@ -503,15 +551,26 @@ archiveDirsCollide left right =
   in leftKey == rightKey
     || (leftKey <> "/") `Text.isPrefixOf` rightKey
     || (rightKey <> "/") `Text.isPrefixOf` leftKey
+    || sharedComponentAlias
+         (normalizedSegments left)
+         (normalizedSegments right)
 
+-- Destination archives must remain unambiguous on case-folding filesystems,
+-- even when the current host filesystem is case-sensitive.
 archiveCollisionKey :: Text -> Text
-archiveCollisionKey
-  | os == "mingw32" = Text.map toLower
-  | otherwise = id
+archiveCollisionKey = Text.toCaseFold
+
+sharedComponentAlias :: [Text] -> [Text] -> Bool
+sharedComponentAlias (left:leftRest) (right:rightRest)
+  | Text.toCaseFold left /= Text.toCaseFold right = False
+  | left /= right = True
+  | otherwise = sharedComponentAlias leftRest rightRest
+sharedComponentAlias _ _ = False
 
 normalizeSafeArchiveDirectory :: Text -> Either Text Text
 normalizeSafeArchiveDirectory raw
   | Text.null raw = Left "plugin data archive directory must be non-empty"
+  | Text.any (== '\0') raw = unsafeArchive
   | Text.isPrefixOf "/" raw || Text.isPrefixOf "\\" raw = unsafeArchive
   | Text.any (== ':') raw = unsafeArchive
   | otherwise = case normalizedSegments raw of
@@ -536,45 +595,20 @@ whenLeft False _ = Right ()
 quote :: Text -> Text
 quote value = "'" <> value <> "'"
 
-archiveDestination :: FilePath -> Text -> FilePath
-archiveDestination worldPath archiveDir =
-  foldl (</>) (worldPath </> "plugins") (map Text.unpack (normalizedSegments archiveDir))
-
 -- | Copy a single plugin data directory into the world save.
 --
 -- Creates @worldPath\/plugins\/\<archiveDir\>\/@ and recursively copies files
 -- from the host-derived source directory. Symbolic links are rejected instead
 -- of followed so a plugin cannot bundle files outside its data root via link
 -- traversal.
-copyPluginDataDir :: FilePath -> PreparedPluginDataDir -> IO ()
-copyPluginDataDir worldPath entry = do
-  exists <- doesDirectoryExist srcDir
-  when exists $ do
-    srcIsLink <- pathIsSymbolicLink srcDir
-    when srcIsLink (fail ("plugin data source is a symbolic link: " <> srcDir))
-    let destDir = archiveDestination worldPath (ppddArchiveDirectory entry)
-    createDirectoryIfMissing True destDir
-    copyDirectoryRecursive srcDir destDir
+copyPluginDataDir
+  :: PluginDataCopyHooks
+  -> FilePath
+  -> PreparedPluginDataDir
+  -> IO ()
+copyPluginDataDir hooks stagingPath entry =
+  copyPluginDataDirectory hooks srcDir stagingPath destinationComponents
   where
     srcDir = ppddSourceDirectory entry
-
--- | Recursively copy the contents of one directory to another.
---
--- The destination directory must already exist. Existing files in the
--- destination are overwritten. Symbolic links are rejected instead of followed.
-copyDirectoryRecursive :: FilePath -> FilePath -> IO ()
-copyDirectoryRecursive src dest = do
-  entries <- listDirectory src
-  mapM_ copyEntry entries
-  where
-    copyEntry entry = do
-      let srcPath  = src </> entry
-          destPath = dest </> entry
-      isLink <- pathIsSymbolicLink srcPath
-      when isLink (fail ("plugin data entry is a symbolic link: " <> srcPath))
-      isDir <- doesDirectoryExist srcPath
-      if isDir
-        then do
-          createDirectoryIfMissing True destPath
-          copyDirectoryRecursive srcPath destPath
-        else copyFile srcPath destPath
+    destinationComponents =
+      "plugins" : map Text.unpack (normalizedSegments (ppddArchiveDirectory entry))

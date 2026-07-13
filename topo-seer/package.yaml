@@ -12,6 +12,8 @@ data-files:
 
 library:
   source-dirs: src
+  c-sources:
+    - cbits/plugin_data_copy.c
   when:
     - condition: os(windows)
       c-sources:
@@ -183,6 +185,7 @@ library:
     - Seer.Config.SliderRegistry
     - Seer.Config.SliderId
     - Seer.Input.Context
+    - Seer.World.PluginDataCopy
     - Seer.System.Actors
     - Seer.System.AutoTick
     - Seer.System.Cache
