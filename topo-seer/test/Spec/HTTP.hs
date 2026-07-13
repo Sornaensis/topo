@@ -1313,7 +1313,7 @@ spec = describe "Seer.HTTP.Server" $ do
 
   it "starts topo-seer headless HTTP endpoints through the CLI" $ do
     tid <- forkIO $
-      withArgs ["--headless", "--http", "127.0.0.1:7373", "--test-mode"] runApp
+      withArgs ["--headless", "--http", "127.0.0.1:7392", "--test-mode"] runApp
     manager <- newManager defaultManagerSettings
     let endpoints = ["/health", "/version", "/openapi.json", "/state"]
     eventually_ (forM_ endpoints (assertEndpoint manager))
@@ -2308,7 +2308,7 @@ publishedOpenApiPath = do
 
 assertEndpoint :: Manager -> String -> IO ()
 assertEndpoint manager path = do
-  req <- parseRequest ("http://127.0.0.1:7373" <> path)
+  req <- parseRequest ("http://127.0.0.1:7392" <> path)
   rsp <- httpLbs req manager
   HTTP.statusCode (responseStatus rsp) `shouldBe` 200
 

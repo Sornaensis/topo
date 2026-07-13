@@ -16,6 +16,7 @@ import Actor.UI.State (UiSnapshotRef)
 import Hyperspace.Actor (ActorHandle, Protocol)
 import Seer.Service.Context (ServiceContext(..))
 import Seer.Screenshot.Request (ScreenshotRequestRef)
+import Seer.Screenshot.Storage (ScreenshotStoragePolicy)
 
 -- | Context shared by all command handlers.
 data CommandContext = CommandContext
@@ -23,6 +24,7 @@ data CommandContext = CommandContext
   , ccUiSnapshotRef   :: !UiSnapshotRef
   , ccUiActionsHandle :: !(ActorHandle UiActions (Protocol UiActions))
   , ccScreenshotRef   :: !ScreenshotRequestRef
+  , ccScreenshotStoragePolicy :: !ScreenshotStoragePolicy
   , ccLogSnapshotRef  :: !(Maybe LogSnapshotRef)
     -- ^ Log snapshot for @get_logs@.  'Nothing' only in tests.
   }
@@ -37,6 +39,7 @@ commandServiceContext ctx = ServiceContext
   , svcUiSnapshotRef = ccUiSnapshotRef ctx
   , svcUiActionsHandle = ccUiActionsHandle ctx
   , svcScreenshotRef = ccScreenshotRef ctx
+  , svcScreenshotStoragePolicy = ccScreenshotStoragePolicy ctx
   , svcLogSnapshotRef = ccLogSnapshotRef ctx
   , svcEventBus = Nothing
   }
@@ -51,5 +54,6 @@ serviceCommandContext ctx = CommandContext
   , ccUiSnapshotRef = svcUiSnapshotRef ctx
   , ccUiActionsHandle = svcUiActionsHandle ctx
   , ccScreenshotRef = svcScreenshotRef ctx
+  , ccScreenshotStoragePolicy = svcScreenshotStoragePolicy ctx
   , ccLogSnapshotRef = svcLogSnapshotRef ctx
   }

@@ -16,6 +16,7 @@ import Actor.UiActions.Handles (ActorHandles)
 import Actor.UI.State (UiSnapshotRef)
 import Hyperspace.Actor (ActorHandle, Protocol)
 import Seer.Screenshot.Request (ScreenshotRequestRef)
+import Seer.Screenshot.Storage (ScreenshotStoragePolicy)
 import Seer.Service.Events (ServiceEventBus)
 
 -- | Application host handles needed by concrete service implementations.
@@ -24,6 +25,8 @@ data ServiceContext = ServiceContext
   , svcUiSnapshotRef :: !UiSnapshotRef
   , svcUiActionsHandle :: !(ActorHandle UiActions (Protocol UiActions))
   , svcScreenshotRef :: !ScreenshotRequestRef
+  , svcScreenshotStoragePolicy :: !ScreenshotStoragePolicy
+    -- ^ Canonical, immutable authority for optional screenshot persistence.
   , svcLogSnapshotRef :: !(Maybe LogSnapshotRef)
     -- ^ Log snapshot for log reads. 'Nothing' is allowed for focused tests.
   , svcEventBus :: !(Maybe ServiceEventBus)

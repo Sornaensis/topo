@@ -7,16 +7,29 @@ import Data.Aeson (Value(..))
 import qualified Data.Aeson.KeyMap as KM
 import Linear (V2(..), V4(..))
 import qualified SDL
+import System.Directory
+  ( canonicalizePath
+  , createDirectory
+  , doesDirectoryExist
+  , getTemporaryDirectory
+  , removePathForcibly
+  )
 import System.Environment (lookupEnv, setEnv, unsetEnv)
+import System.FilePath ((</>))
+import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import Test.Hspec
 
-import Seer.Command.Dispatch (dispatchCommand)
+import Seer.Command.Dispatch (CommandContext(..), dispatchCommand)
+import Seer.Config.Runtime (TopoSeerConfig(..))
 import Seer.Headless
   ( HeadlessConfig(..)
   , defaultHeadlessConfig
   , headlessCommandContext
+  , headlessServiceContext
   , withHeadlessApp
   )
+import Seer.Screenshot.Storage (ScreenshotStoragePolicy(..))
+import Seer.Service.Context (ServiceContext(..))
 import Topo.Command.Types (SeerCommand(..), SeerResponse(..))
 import UI.DrawCommand (clearClip, clipTo, fillRect, line, strokeRect, textCentered)
 import UI.DrawCommand.SDL (interpretDrawCommands)
@@ -37,6 +50,27 @@ spec = describe "Seer.Headless" $ do
           KM.member "seed" result `shouldBe` True
           KM.member "view_mode" result `shouldBe` True
         _ -> expectationFailure "expected JSON object result"
+
+  it "defaults screenshot storage to disabled across runtime contexts" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      ccScreenshotStoragePolicy (headlessCommandContext app)
+        `shouldBe` ScreenshotStorageDisabled
+      svcScreenshotStoragePolicy (headlessServiceContext app)
+        `shouldBe` ScreenshotStorageDisabled
+
+  it "initialises one canonical screenshot root for headless contexts" $
+    withFreshTempDir $ \base -> do
+      let configuredRoot = base </> "screenshots" </> "."
+          runtimeCfg = (hcRuntimeConfig defaultHeadlessConfig)
+            { cfgScreenshotSaveDirectory = Just configuredRoot }
+          headlessCfg = defaultHeadlessConfig { hcRuntimeConfig = runtimeCfg }
+      withHeadlessApp headlessCfg $ \app -> do
+        canonicalRoot <- canonicalizePath configuredRoot
+        doesDirectoryExist configuredRoot `shouldReturn` True
+        ccScreenshotStoragePolicy (headlessCommandContext app)
+          `shouldBe` ScreenshotStorageEnabled canonicalRoot
+        svcScreenshotStoragePolicy (headlessServiceContext app)
+          `shouldBe` ScreenshotStorageEnabled canonicalRoot
 
   it "uses the configured deterministic seed for repeatable tests" $
     withHeadlessApp defaultHeadlessConfig { hcSeed = 123 } $ \app -> do
@@ -67,6 +101,13 @@ spec = describe "Seer.Headless" $ do
                   ]
                 SDL.present renderer
       drawSmoke `finally` SDL.quit
+
+withFreshTempDir :: (FilePath -> IO a) -> IO a
+withFreshTempDir action = do
+  temp <- getTemporaryDirectory
+  stamp <- round . (* (1000000 :: POSIXTime)) <$> getPOSIXTime
+  let root = temp </> ("topo-screenshot-headless-" <> show (stamp :: Integer))
+  bracket (createDirectory root >> pure root) removePathForcibly action
 
 withDummySdl :: IO a -> IO a
 withDummySdl action = do

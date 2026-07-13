@@ -96,6 +96,10 @@ import Seer.Service.Context (ServiceContext(..))
 import Seer.Service.Events (ServiceEventBus, newDefaultServiceEventBus)
 import Seer.Editor.History (EditHistory, emptyHistory)
 import Seer.Screenshot.Request (ScreenshotRequestRef, newScreenshotRequestRef)
+import Seer.Screenshot.Storage
+  ( ScreenshotStoragePolicy
+  , initialiseScreenshotStorage
+  )
 import Seer.System.AutoTick
   ( AutoTickHandles(..)
   , AutoTickScheduler
@@ -188,11 +192,18 @@ headlessRuntimeConfig = haRuntimeConfig
 -- 'stopHeadlessApp' or use 'withHeadlessApp'.
 startHeadlessApp :: HeadlessConfig -> IO HeadlessApp
 startHeadlessApp cfg = do
+  screenshotStoragePolicy <-
+    initialiseScreenshotStorage (cfgScreenshotSaveDirectory (hcRuntimeConfig cfg))
   system <- newActorSystem
-  startHeadlessAppWithSystem cfg system `onException` shutdownActorSystem system
+  startHeadlessAppWithSystem cfg screenshotStoragePolicy system
+    `onException` shutdownActorSystem system
 
-startHeadlessAppWithSystem :: HeadlessConfig -> ActorSystem -> IO HeadlessApp
-startHeadlessAppWithSystem cfg system = do
+startHeadlessAppWithSystem
+  :: HeadlessConfig
+  -> ScreenshotStoragePolicy
+  -> ActorSystem
+  -> IO HeadlessApp
+startHeadlessAppWithSystem cfg screenshotStoragePolicy system = do
   let runtimeCfg = hcRuntimeConfig cfg
   logHandle <- get @Log system
   logFileH <- if hcUseLogFile cfg
@@ -263,6 +274,7 @@ startHeadlessAppWithSystem cfg system = do
         , ccUiSnapshotRef = uiSnapshotRef
         , ccUiActionsHandle = uiActionsHandle
         , ccScreenshotRef = screenshotRef
+        , ccScreenshotStoragePolicy = screenshotStoragePolicy
         , ccLogSnapshotRef = Just logSnapshotRef
         }
       commandEnv = CommandChannelEnv
@@ -270,6 +282,7 @@ startHeadlessAppWithSystem cfg system = do
         , cceUiSnapshotRef = uiSnapshotRef
         , cceUiActionsHandle = uiActionsHandle
         , cceScreenshotRef = screenshotRef
+        , cceScreenshotStoragePolicy = screenshotStoragePolicy
         , cceLogSnapshotRef = Just logSnapshotRef
         }
   commandThread <- if hcStartCommandChannel cfg

@@ -31,6 +31,7 @@ import Topo.Command.Types (SeerCommand(..), SeerResponse(..), errResponse, comma
 import Topo.Plugin.RPC.Transport (Transport(..), sendMessage, recvMessage)
 import Seer.Command.Dispatch (dispatchCommand, CommandContext(..))
 import Seer.Screenshot.Request (ScreenshotRequestRef)
+import Seer.Screenshot.Storage (ScreenshotStoragePolicy)
 import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshotRef, appendLog)
 import Actor.UiActions (UiActions)
 import Actor.UiActions.Handles (ActorHandles(..))
@@ -57,6 +58,7 @@ data CommandChannelEnv = CommandChannelEnv
   , cceUiSnapshotRef   :: !UiSnapshotRef
   , cceUiActionsHandle :: !(ActorHandle UiActions (Protocol UiActions))
   , cceScreenshotRef   :: !ScreenshotRequestRef
+  , cceScreenshotStoragePolicy :: !ScreenshotStoragePolicy
   , cceLogSnapshotRef  :: !(Maybe LogSnapshotRef)
   }
 
@@ -217,6 +219,7 @@ handleClient env transport = do
       , ccUiSnapshotRef   = cceUiSnapshotRef env
       , ccUiActionsHandle = cceUiActionsHandle env
       , ccScreenshotRef   = cceScreenshotRef env
+      , ccScreenshotStoragePolicy = cceScreenshotStoragePolicy env
       , ccLogSnapshotRef  = cceLogSnapshotRef env
       }
 

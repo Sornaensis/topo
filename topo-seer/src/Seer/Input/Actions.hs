@@ -28,6 +28,7 @@ import Data.Text (Text)
 import Hyperspace.Actor (ActorHandle, Protocol, replyTo)
 import Seer.Command.AppServiceAdapter (commandAppService, runServiceOperation)
 import Seer.Screenshot.Request (ScreenshotRequestRef)
+import Seer.Screenshot.Storage (ScreenshotStoragePolicy)
 import Seer.Service.Context (ServiceContext(..))
 import Seer.Service.Types (ServiceResult)
 
@@ -37,6 +38,7 @@ data InputEnv = InputEnv
   , ieUiActionsHandle :: !(ActorHandle UiActions (Protocol UiActions))
   , ieUiSnapshotRef :: !UiSnapshotRef
   , ieScreenshotRef :: !ScreenshotRequestRef
+  , ieScreenshotStoragePolicy :: !ScreenshotStoragePolicy
   , ieLogSnapshotRef :: !(Maybe LogSnapshotRef)
   , ieUiSnapshot :: !UiState
   , ieLogSnapshot :: !LogSnapshot
@@ -50,18 +52,20 @@ mkInputEnv
   -> ActorHandle UiActions (Protocol UiActions)
   -> UiSnapshotRef
   -> ScreenshotRequestRef
+  -> ScreenshotStoragePolicy
   -> Maybe LogSnapshotRef
   -> UiState
   -> LogSnapshot
   -> DataSnapshot
   -> TerrainSnapshot
   -> InputEnv
-mkInputEnv actorHandles uiActionsHandle uiSnapshotRef screenshotRef logSnapshotRef uiSnapshot logSnapshot dataSnapshot terrainSnapshot =
+mkInputEnv actorHandles uiActionsHandle uiSnapshotRef screenshotRef screenshotStoragePolicy logSnapshotRef uiSnapshot logSnapshot dataSnapshot terrainSnapshot =
   InputEnv
     { ieActorHandles = actorHandles
     , ieUiActionsHandle = uiActionsHandle
     , ieUiSnapshotRef = uiSnapshotRef
     , ieScreenshotRef = screenshotRef
+    , ieScreenshotStoragePolicy = screenshotStoragePolicy
     , ieLogSnapshotRef = logSnapshotRef
     , ieUiSnapshot = uiSnapshot
     , ieLogSnapshot = logSnapshot
@@ -105,6 +109,7 @@ inputServiceContext env = ServiceContext
   , svcUiSnapshotRef = ieUiSnapshotRef env
   , svcUiActionsHandle = ieUiActionsHandle env
   , svcScreenshotRef = ieScreenshotRef env
+  , svcScreenshotStoragePolicy = ieScreenshotStoragePolicy env
   , svcLogSnapshotRef = ieLogSnapshotRef env
   , svcEventBus = Nothing
   }

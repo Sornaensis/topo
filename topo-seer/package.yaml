@@ -88,6 +88,7 @@ library:
     - Seer.Render.Viewport
     - Seer.Render.ZoomStage
     - Seer.Screenshot
+    - Seer.Screenshot.Storage
     - Seer.Service.AppService
     - Seer.Service.Config
     - Seer.Service.Context

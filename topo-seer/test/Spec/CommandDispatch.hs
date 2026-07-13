@@ -74,6 +74,7 @@ import Seer.Command.Dispatch (CommandContext(..), dispatchCommand)
 import Seer.Editor.History (emptyHistory)
 import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom, stageForZoom)
 import Seer.Screenshot (ScreenshotRequest(..), newScreenshotRequestRef)
+import Seer.Screenshot.Storage (ScreenshotStoragePolicy(..))
 import Seer.World.Persist (deleteNamedWorld)
 import Seer.Service.AppService
   ( AppService(..)
@@ -1757,6 +1758,7 @@ withCtx action = bracket newActorSystem shutdownActorSystem $ \system -> do
         , ccUiSnapshotRef   = uiSnapRef
         , ccUiActionsHandle = uiActionsH
         , ccScreenshotRef   = screenshotRef
+        , ccScreenshotStoragePolicy = ScreenshotStorageDisabled
         , ccLogSnapshotRef  = Nothing
         }
   action ctx
@@ -2091,6 +2093,7 @@ serviceContextFromCommand ctx = ServiceContext
   , svcUiSnapshotRef = ccUiSnapshotRef ctx
   , svcUiActionsHandle = ccUiActionsHandle ctx
   , svcScreenshotRef = ccScreenshotRef ctx
+  , svcScreenshotStoragePolicy = ccScreenshotStoragePolicy ctx
   , svcLogSnapshotRef = ccLogSnapshotRef ctx
   , svcEventBus = Nothing
   }

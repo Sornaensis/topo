@@ -94,6 +94,7 @@ runMainLoop runtimeCfg actors sdl = do
         , epeUiActionsHandle = aaUiActionsHandle actors
         , epeUiSnapshotRef = aaUiSnapshotRef actors
         , epeScreenshotRef = aaScreenshotRef actors
+        , epeScreenshotStoragePolicy = aaScreenshotStoragePolicy actors
         , epeLogSnapshotRef = Just (aaLogSnapshotRef actors)
         , epeQuitRef = quitRef
         , epeLineHeightRef = lineHeightRef

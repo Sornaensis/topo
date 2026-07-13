@@ -62,6 +62,9 @@ data TopoSeerConfig = TopoSeerConfig
   , cfgTimingLogThresholdMs  :: Int
     -- | When 'True', emit verbose render-step logs.
   , cfgRenderTraceEnabled    :: Bool
+    -- | Optional absolute root for screenshot persistence. 'Nothing' keeps
+    -- screenshot capture available without permitting filesystem writes.
+  , cfgScreenshotSaveDirectory :: Maybe FilePath
   } deriving (Eq, Show, Generic)
 
 -- | JSON field names drop the @cfg@ prefix and lower-case the first letter,
@@ -96,6 +99,7 @@ instance FromJSON TopoSeerConfig where
       <*> o .:? "snapshotPollMs"        .!= cfgSnapshotPollMs d
       <*> o .:? "timingLogThresholdMs"  .!= cfgTimingLogThresholdMs d
       <*> o .:? "renderTraceEnabled"    .!= cfgRenderTraceEnabled d
+      <*> o .:? "screenshotSaveDirectory" .!= cfgScreenshotSaveDirectory d
 
 -- | Sensible defaults matching the previous hard-coded values.
 defaultConfig :: TopoSeerConfig
@@ -111,6 +115,7 @@ defaultConfig = TopoSeerConfig
   , cfgSnapshotPollMs        = 30
   , cfgTimingLogThresholdMs  = 10
   , cfgRenderTraceEnabled    = False
+  , cfgScreenshotSaveDirectory = Nothing
   }
 
 -- | Clamp all fields to their documented minimums.
@@ -176,7 +181,8 @@ configReadme = unlines
   , ""
   , "  {"
   , "    \"frameDelayMs\": 16,"
-  , "    \"renderTraceEnabled\": true"
+  , "    \"renderTraceEnabled\": true,"
+  , "    \"screenshotSaveDirectory\": \"/absolute/path/to/screenshots\""
   , "  }"
   , ""
   , "Fields"
@@ -229,4 +235,11 @@ configReadme = unlines
   , "renderTraceEnabled    (Bool, default false)"
   , "  When true, emit a per-frame timing breakdown into the log."
   , "  Useful for profiling; noisy in production."
+  , ""
+  , "screenshotSaveDirectory (String or null, default null)"
+  , "  Absolute directory beneath which screenshot files may be saved."
+  , "  The directory is created and canonicalized at startup. A relative,"
+  , "  symlink/reparse-point, file-valued, or uncreatable root is an error."
+  , "  Omit this field or set it to null to disable screenshot filesystem"
+  , "  writes; screenshot capture without a path remains available."
   ]

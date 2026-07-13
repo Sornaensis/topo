@@ -22,6 +22,7 @@ import Seer.Input (handleEvent, isQuit, tickTooltipHover)
 import Seer.Input.Actions (mkInputEnv)
 import Seer.Input.Context (DragState, TooltipHover, mkInputContext)
 import Seer.Screenshot.Request (ScreenshotRequestRef)
+import Seer.Screenshot.Storage (ScreenshotStoragePolicy)
 import Seer.Timing (nsToMs)
 
 -- | Mutable state and actor endpoints needed to route SDL input.  Keeping this
@@ -33,6 +34,7 @@ data EventPumpEnv = EventPumpEnv
   , epeUiActionsHandle :: !(ActorHandle UiActions (Protocol UiActions))
   , epeUiSnapshotRef :: !UiSnapshotRef
   , epeScreenshotRef :: !ScreenshotRequestRef
+  , epeScreenshotStoragePolicy :: !ScreenshotStoragePolicy
   , epeLogSnapshotRef :: !(Maybe LogSnapshotRef)
   , epeQuitRef :: !(IORef Bool)
   , epeLineHeightRef :: !(IORef Int)
@@ -64,6 +66,7 @@ processEvents env timingLogThresholdMs events renderSnap =
             (epeUiActionsHandle env)
             (epeUiSnapshotRef env)
             (epeScreenshotRef env)
+            (epeScreenshotStoragePolicy env)
             (epeLogSnapshotRef env)
             (rsUi renderSnap)
             (rsLog renderSnap)

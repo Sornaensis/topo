@@ -8,6 +8,7 @@ import qualified Spec.Layout
 import qualified Spec.LogActor
 import qualified Spec.AppService
 import qualified Spec.CacheProperties
+import qualified Spec.ConfigRuntime
 import qualified Spec.ConfigSnapshot
 import qualified Spec.ConfigSliders
 import qualified Spec.PipelineControls
@@ -63,6 +64,7 @@ main = do
         Spec.AppService.spec
         Spec.LogActor.spec
         Spec.CacheProperties.spec
+        Spec.ConfigRuntime.spec
         Spec.ConfigSnapshot.spec
         Spec.ConfigSliders.spec
         Spec.PipelineControls.spec

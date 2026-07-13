@@ -83,6 +83,10 @@ import Seer.HTTP.Server (forkHttpServer)
 import Seer.Service.Context (ServiceContext(..))
 import Seer.Service.Events (newDefaultServiceEventBus)
 import Seer.Screenshot.Request (ScreenshotRequestRef, newScreenshotRequestRef)
+import Seer.Screenshot.Storage
+  ( ScreenshotStoragePolicy
+  , initialiseScreenshotStorage
+  )
 import Seer.System.AutoTick
   ( AutoTickHandles(..)
   , AutoTickScheduler
@@ -111,11 +115,14 @@ data AppActors = AppActors
   , aaAtlasFreshnessRef :: !AtlasFreshnessRef
   , aaAtlasManagerQueueRef :: !AtlasManagerQueueRef
   , aaScreenshotRef :: !ScreenshotRequestRef
+  , aaScreenshotStoragePolicy :: !ScreenshotStoragePolicy
   , aaAutoTickScheduler :: !AutoTickScheduler
   }
 
 initialiseAppActors :: TopoSeerConfig -> IO AppActors
 initialiseAppActors runtimeCfg = do
+  screenshotStoragePolicy <-
+    initialiseScreenshotStorage (cfgScreenshotSaveDirectory runtimeCfg)
   system <- newActorSystem
   logHandle <- get @Log system
   logFileH <- resetLogFile
@@ -194,6 +201,7 @@ initialiseAppActors runtimeCfg = do
     , aaAtlasFreshnessRef = atlasFreshnessRef
     , aaAtlasManagerQueueRef = atlasManagerQueueRef
     , aaScreenshotRef = screenshotRef
+    , aaScreenshotStoragePolicy = screenshotStoragePolicy
     , aaAutoTickScheduler = autoTickScheduler
     }
 
@@ -223,6 +231,7 @@ commandContextForActors actors = CommandContext
   , ccUiSnapshotRef = aaUiSnapshotRef actors
   , ccUiActionsHandle = aaUiActionsHandle actors
   , ccScreenshotRef = aaScreenshotRef actors
+  , ccScreenshotStoragePolicy = aaScreenshotStoragePolicy actors
   , ccLogSnapshotRef = Just (aaLogSnapshotRef actors)
   }
 
@@ -232,5 +241,6 @@ commandEnvForActors actors = CommandChannelEnv
   , cceUiSnapshotRef = aaUiSnapshotRef actors
   , cceUiActionsHandle = aaUiActionsHandle actors
   , cceScreenshotRef = aaScreenshotRef actors
+  , cceScreenshotStoragePolicy = aaScreenshotStoragePolicy actors
   , cceLogSnapshotRef = Just (aaLogSnapshotRef actors)
   }

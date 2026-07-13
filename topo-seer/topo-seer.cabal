@@ -88,6 +88,7 @@ library
       Seer.Render.Viewport
       Seer.Render.ZoomStage
       Seer.Screenshot
+      Seer.Screenshot.Storage
       Seer.Service.AppService
       Seer.Service.Config
       Seer.Service.Context
@@ -262,6 +263,7 @@ test-suite topo-seer-test
       Spec.CacheProperties
       Spec.CommandDispatch
       Spec.Component
+      Spec.ConfigRuntime
       Spec.ConfigSliders
       Spec.ConfigSnapshot
       Spec.DataBrowser
