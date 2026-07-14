@@ -242,7 +242,8 @@ commandContextForActors actors = CommandContext
 
 commandEnvForActors :: AppActors -> CommandChannelEnv
 commandEnvForActors actors = CommandChannelEnv
-  { cceActorHandles = aaActorHandles actors
+  { cceAppService = commandAppService
+  , cceActorHandles = aaActorHandles actors
   , cceUiSnapshotRef = aaUiSnapshotRef actors
   , cceUiActionsHandle = aaUiActionsHandle actors
   , cceScreenshotRef = aaScreenshotRef actors

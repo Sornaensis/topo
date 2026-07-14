@@ -41,6 +41,7 @@ import Seer.Command.Dispatch (CommandContext(..))
 import Seer.Headless
   ( HeadlessApp
   , defaultHeadlessConfig
+  , headlessAppService
   , headlessCommandContext
   , headlessServiceContext
   , withHeadlessApp
@@ -50,7 +51,6 @@ import Seer.HTTP.Server
   , HttpResponse(..)
   , defaultHttpServerConfig
   , handleHttpRequest
-  , headlessHttpAppService
   )
 import Seer.Service.AppService (runServiceOperation)
 import Seer.Service.Context (ServiceContext)
@@ -493,7 +493,7 @@ serviceOk app method params = do
 
 serviceResult :: CrudFixtureApp -> Text -> Value -> IO (Either ServiceError ServiceResponse)
 serviceResult app method params =
-  runServiceOperation headlessHttpAppService (crudServiceContext app) method params
+  runServiceOperation headlessAppService (crudServiceContext app) method params
 
 expectServiceErrorCode :: Text -> Either ServiceError ServiceResponse -> Expectation
 expectServiceErrorCode expected result = case result of
@@ -515,7 +515,7 @@ httpOk app req = do
   pure (hresBody rsp)
 
 request :: CrudFixtureApp -> HttpRequest -> IO HttpResponse
-request app req = handleHttpRequest defaultHttpServerConfig headlessHttpAppService (crudServiceContext app) req
+request app req = handleHttpRequest defaultHttpServerConfig headlessAppService (crudServiceContext app) req
 
 mkRequest :: Text -> [Text] -> HttpRequest
 mkRequest method path = HttpRequest

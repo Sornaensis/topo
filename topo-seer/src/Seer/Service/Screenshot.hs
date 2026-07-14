@@ -12,7 +12,9 @@ module Seer.Service.Screenshot
   , screenshotServiceOperationSpecs
   , decodeScreenshotTakeRequest
   , prepareScreenshotTake
+  , ScreenshotPngWriter
   , completeScreenshotTake
+  , completeScreenshotTakeWithWriter
   , encodeScreenshotTakeResponse
   , rendererScreenshotHandler
   , rendererScreenshotHandlerWithDeadline
@@ -116,6 +118,10 @@ prepareScreenshotTake policy value = do
       Left (ServiceUnavailable "screenshot persistence is disabled")
     _ -> Right request
 
+-- | Injectable persistence boundary for normalized screenshot PNG paths.
+type ScreenshotPngWriter =
+  FilePath -> Text -> ByteString.ByteString -> IO (Either ScreenshotSaveError Text)
+
 -- | Persist the captured PNG when requested and construct the shared response.
 -- The saved path is populated only after the writer commits successfully.
 completeScreenshotTake
@@ -124,14 +130,24 @@ completeScreenshotTake
   -> ScreenshotTakeRequest
   -> ByteString.ByteString
   -> IO (Either ServiceError ScreenshotTakeResponse)
-completeScreenshotTake policy source request pngBytes = do
+completeScreenshotTake = completeScreenshotTakeWithWriter saveScreenshotPng
+
+-- | Injectable writer variant used to verify stable service error mapping.
+completeScreenshotTakeWithWriter
+  :: ScreenshotPngWriter
+  -> ScreenshotStoragePolicy
+  -> ScreenshotSource
+  -> ScreenshotTakeRequest
+  -> ByteString.ByteString
+  -> IO (Either ServiceError ScreenshotTakeResponse)
+completeScreenshotTakeWithWriter writer policy source request pngBytes = do
   saved <- case screenshotTakeSavePath request of
     Nothing -> pure (Right Nothing)
     Just relativePath -> case policy of
       ScreenshotStorageDisabled ->
         pure (Left (ServiceUnavailable "screenshot persistence is disabled"))
       ScreenshotStorageEnabled root -> do
-        result <- saveScreenshotPng root relativePath pngBytes
+        result <- writer root relativePath pngBytes
         pure (Just <$> either (Left . screenshotSaveServiceError) Right result)
   pure $ do
     savedPath <- saved

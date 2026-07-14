@@ -18,10 +18,7 @@ module Seer.HTTP.Server
   , publicHttpRouteSpecs
   , friendlyHttpRouteSpecs
   , commandHttpRouteSpecs
-  , headlessHttpAppService
   ) where
-
-import Codec.Picture (Image(..), PixelRGBA8(..), encodePng)
 import Control.Concurrent (ThreadId, forkIO)
 import Control.Concurrent.STM (TChan, atomically, readTChan)
 import Control.Exception (SomeException, try)
@@ -32,7 +29,6 @@ import qualified Data.Aeson as Aeson
 import Data.Aeson.Types (Pair)
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
-import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import Data.ByteString.Builder (Builder, byteString, lazyByteString, stringUtf8)
@@ -43,14 +39,12 @@ import Data.String (fromString)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
-import qualified Data.Vector.Storable as VS
 import Text.Read (readMaybe)
 import qualified Network.HTTP.Types as HTTP
 import qualified Network.Wai as Wai
 import qualified Network.Wai.Handler.Warp as Warp
 import qualified Data.ByteString.Lazy as LBS
 
-import Seer.Command.AppServiceAdapter (commandAppService)
 import Seer.HTTP.Auth
 import Seer.HTTP.API
 import Seer.HTTP.OpenAPI
@@ -1098,36 +1092,3 @@ queryEnumSchema values = object
   , "enum" .= values
   ]
 
--- | Command-backed AppService with a deterministic headless screenshot handler.
--- The SDL render-loop screenshot path is still used by normal GUI runs; this
--- override makes headless HTTP smoke tests return a valid PNG instead of timing
--- out waiting for a renderer that was intentionally not started.
-headlessHttpAppService :: AppService
-headlessHttpAppService = commandAppService
-  { appScreenshots = ScreenshotService
-      { screenshotTake = headlessScreenshotHandler
-      }
-  }
-
-headlessScreenshotHandler :: ServiceHandler ScreenshotTakeRequest ScreenshotTakeResponse
-headlessScreenshotHandler = rawServiceHandler screenshotTakeOperation $ \ctx request ->
-  case prepareScreenshotTake
-      (svcScreenshotStoragePolicy ctx)
-      (serviceRequestBodyValue request) of
-    Left err -> pure (Left err)
-    Right typedRequest -> do
-      result <- completeScreenshotTake
-        (svcScreenshotStoragePolicy ctx)
-        ScreenshotSourceHeadless
-        typedRequest
-        blankPng
-      pure (ServiceResponse . encodeScreenshotTakeResponse <$> result)
-
-blankPng :: BS.ByteString
-blankPng = BL.toStrict $ encodePng image
-  where
-    image = Image
-      { imageWidth = 1
-      , imageHeight = 1
-      , imageData = VS.fromList [0, 0, 0, 255]
-      } :: Image PixelRGBA8

@@ -48,6 +48,7 @@ import qualified Spec.DataBrowserAppService
 import qualified Spec.DataDetailPopover
 import qualified Spec.DataResourceE2E
 import qualified Spec.Headless
+import qualified Spec.HeadlessScreenshot
 import qualified Spec.HTTP
 import qualified Spec.EditorBrush
 import qualified Spec.EditorHistory
@@ -109,6 +110,7 @@ main = do
         Spec.DataDetailPopover.spec
         Spec.DataResourceE2E.spec
         Spec.Headless.spec
+        Spec.HeadlessScreenshot.spec
         Spec.HTTP.spec
         Spec.EditorBrush.spec
         Spec.EditorHistory.spec

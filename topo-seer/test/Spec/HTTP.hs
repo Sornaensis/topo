@@ -44,6 +44,7 @@ import Seer.Headless
   ( HeadlessApp
   , HeadlessConfig(..)
   , defaultHeadlessConfig
+  , headlessAppService
   , headlessCommandContext
   , headlessServiceContext
   , withHeadlessApp
@@ -66,7 +67,6 @@ import Seer.HTTP.Server
   , forkHttpServer
   , friendlyHttpRouteSpecs
   , handleHttpRequest
-  , headlessHttpAppService
   , httpRouteSpecs
   , publicHttpRouteSpecs
   , parseHttpBind
@@ -360,7 +360,7 @@ spec = describe "Seer.HTTP.Server" $ do
       eventPayloadResultHasKey "data.resources.status" "external_data_sources" (hresBody events) `shouldBe` True
 
       let cfg = defaultHttpServerConfig { hscBindPort = 7375 }
-      tid <- forkHttpServer cfg headlessHttpAppService (headlessServiceContext app)
+      tid <- forkHttpServer cfg headlessAppService (headlessServiceContext app)
       manager <- newManager defaultManagerSettings
       eventually_ (assertEventStream manager "ui.state.changed")
         `finally` (do
@@ -453,8 +453,8 @@ spec = describe "Seer.HTTP.Server" $ do
 
   it "coerces query params by declared route schema before service dispatch" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
-      let echoApp = headlessHttpAppService
-            { appDataResources = (appDataResources headlessHttpAppService)
+      let echoApp = headlessAppService
+            { appDataResources = (appDataResources headlessAppService)
                 { dataListRecords = rawServiceHandler dataResourceListRecordsOperation $ \_ serviceReq ->
                     pure . Right . ServiceResponse $
                       case serviceRequestBody serviceReq of
@@ -711,7 +711,7 @@ spec = describe "Seer.HTTP.Server" $ do
   it "returns JSON error envelopes for duplicate declared query params" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       let cfg = defaultHttpServerConfig { hscBindPort = 7379 }
-      tid <- forkHttpServer cfg headlessHttpAppService (headlessServiceContext app)
+      tid <- forkHttpServer cfg headlessAppService (headlessServiceContext app)
       manager <- newManager defaultManagerSettings
       eventually_ (assertDuplicateDeclaredQueryParamErrors manager)
         `finally` (do
@@ -721,7 +721,7 @@ spec = describe "Seer.HTTP.Server" $ do
   it "returns JSON error envelopes for malformed UTF-8 query bytes" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       let cfg = defaultHttpServerConfig { hscBindPort = 7377 }
-      tid <- forkHttpServer cfg headlessHttpAppService (headlessServiceContext app)
+      tid <- forkHttpServer cfg headlessAppService (headlessServiceContext app)
       manager <- newManager defaultManagerSettings
       eventually_ (assertMalformedUtf8QueryErrors manager)
         `finally` (do
@@ -793,7 +793,7 @@ spec = describe "Seer.HTTP.Server" $ do
       assertDirectNoBodyQueryParamsUseQuery app
 
       let cfg = defaultHttpServerConfig { hscBindPort = 7376 }
-      tid <- forkHttpServer cfg headlessHttpAppService (headlessServiceContext app)
+      tid <- forkHttpServer cfg headlessAppService (headlessServiceContext app)
       manager <- newManager defaultManagerSettings
       eventually_ (assertWaiRouteBodyPolicyMatrix manager)
         `finally` (do
@@ -849,8 +849,8 @@ spec = describe "Seer.HTTP.Server" $ do
             , "resource" .= ("records" :: Text)
             , "fields" .= object []
             ]
-          appFor code = headlessHttpAppService
-            { appDataResources = (appDataResources headlessHttpAppService)
+          appFor code = headlessAppService
+            { appDataResources = (appDataResources headlessAppService)
                 { dataCreateRecord = rawServiceHandler dataResourceCreateRecordOperation $ \_ _ ->
                     pure (Left (ServiceDataResourceError code "failed" []))
                 }
@@ -864,8 +864,8 @@ spec = describe "Seer.HTTP.Server" $ do
   it "returns a stable internal-error envelope when a service handler throws" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       let rawExceptionText = "raw-handler-exception-secret" :: Text
-          throwingApp = headlessHttpAppService
-            { appConfig = (appConfig headlessHttpAppService)
+          throwingApp = headlessAppService
+            { appConfig = (appConfig headlessAppService)
                 { configGetSliders = rawServiceHandler configGetSlidersOperation $ \_ _ ->
                     throwIO (userError (Text.unpack rawExceptionText))
                 }
@@ -890,10 +890,10 @@ spec = describe "Seer.HTTP.Server" $ do
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       let cfg = defaultHttpServerConfig { hscBearerToken = Just "secret" }
           ctx = headlessServiceContext app
-      denied <- handleHttpRequest cfg headlessHttpAppService ctx (mkRequest "GET" ["state"])
+      denied <- handleHttpRequest cfg headlessAppService ctx (mkRequest "GET" ["state"])
       hresStatusCode denied `shouldBe` 401
 
-      allowed <- handleHttpRequest cfg headlessHttpAppService ctx
+      allowed <- handleHttpRequest cfg headlessAppService ctx
         (mkRequest "GET" ["state"]) { hreqHeaders = [("authorization", "Bearer secret")] }
       hresStatusCode allowed `shouldBe` 200
 
@@ -901,7 +901,7 @@ spec = describe "Seer.HTTP.Server" $ do
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       let cfg = defaultHttpServerConfig { hscBearerToken = Just "secret" }
           ctx = headlessServiceContext app
-      denied <- handleHttpRequest cfg headlessHttpAppService ctx
+      denied <- handleHttpRequest cfg headlessAppService ctx
         (mkRequest "GET" ["state"]) { hreqHeaders = [("x-request-id", "req-123")] }
       hresStatusCode denied `shouldBe` 401
       lookupHeaderText "x-request-id" (hresHeaders denied) `shouldBe` Just "req-123"
@@ -1151,7 +1151,7 @@ spec = describe "Seer.HTTP.Server" $ do
             , hscBearerToken = Just "secret"
             , hscMaxRequestBodyBytes = 8
             }
-      tid <- forkHttpServer cfg headlessHttpAppService (headlessServiceContext app)
+      tid <- forkHttpServer cfg headlessAppService (headlessServiceContext app)
       manager <- newManager defaultManagerSettings
       eventually_ (assertUnauthorizedProtectedTransportErrors manager)
         `finally` (do
@@ -1161,7 +1161,7 @@ spec = describe "Seer.HTTP.Server" $ do
   it "rejects oversized WAI request bodies with JSON 413 envelopes" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       let cfg = defaultHttpServerConfig { hscBindPort = 7378, hscMaxRequestBodyBytes = 10 }
-      tid <- forkHttpServer cfg headlessHttpAppService (headlessServiceContext app)
+      tid <- forkHttpServer cfg headlessAppService (headlessServiceContext app)
       manager <- newManager defaultManagerSettings
       eventually_ (assertWaiRequestBodySizeLimits manager)
         `finally` (do
@@ -1395,7 +1395,7 @@ spec = describe "Seer.HTTP.Server" $ do
         threadDelay 100000)
 
 request :: HeadlessApp -> HttpRequest -> IO HttpResponse
-request app req = handleHttpRequest defaultHttpServerConfig headlessHttpAppService (headlessServiceContext app) req
+request app req = handleHttpRequest defaultHttpServerConfig headlessAppService (headlessServiceContext app) req
 
 withScreenshotHttpRoot :: (FilePath -> IO a) -> IO a
 withScreenshotHttpRoot action = do
@@ -1515,19 +1515,19 @@ data QueryParserExpectation
   deriving (Eq, Show)
 
 echoQueryAppService :: AppService
-echoQueryAppService = headlessHttpAppService
-  { appConfig = (appConfig headlessHttpAppService)
+echoQueryAppService = headlessAppService
+  { appConfig = (appConfig headlessAppService)
       { configGetSliders = echoServiceHandler configGetSlidersOperation
       , configGetEnums = echoServiceHandler configGetEnumsOperation
       }
-  , appTerrain = (appTerrain headlessHttpAppService)
+  , appTerrain = (appTerrain headlessAppService)
       { terrainGetHex = echoServiceHandler terrainGetHexOperation
       , terrainGetChunkSummary = echoServiceHandler terrainGetChunkSummaryOperation
       }
-  , appDataResources = (appDataResources headlessHttpAppService)
+  , appDataResources = (appDataResources headlessAppService)
       { dataListRecords = echoServiceHandler dataResourceListRecordsOperation
       }
-  , appLogs = (appLogs headlessHttpAppService)
+  , appLogs = (appLogs headlessAppService)
       { logGet = echoServiceHandler logGetOperation
       }
   }

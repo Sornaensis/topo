@@ -6,13 +6,11 @@ import Seer.Config.Runtime (defaultConfig, loadConfig)
 import Seer.Headless
   ( HeadlessConfig(..)
   , defaultHeadlessConfig
+  , headlessAppService
   , headlessServiceContext
   , withHeadlessApp
   )
-import Seer.HTTP.Server
-  ( headlessHttpAppService
-  , runHttpServer
-  )
+import Seer.HTTP.Server (runHttpServer)
 import Seer.System.Runtime (RuntimeOptions(..))
 
 runHeadlessHttp :: RuntimeOptions -> IO ()
@@ -23,4 +21,4 @@ runHeadlessHttp opts =
       runtimeCfg <- if roTestMode opts then pure defaultConfig else loadConfig
       let headlessCfg = defaultHeadlessConfig { hcRuntimeConfig = runtimeCfg }
       withHeadlessApp headlessCfg $ \app ->
-        runHttpServer httpCfg headlessHttpAppService (headlessServiceContext app)
+        runHttpServer httpCfg headlessAppService (headlessServiceContext app)

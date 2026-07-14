@@ -13,8 +13,12 @@ module Seer.Headless
   ( HeadlessConfig(..)
   , defaultHeadlessConfig
   , HeadlessApp
+  , headlessAppService
+  , headlessAppServiceWithScreenshotWriter
+  , deterministicHeadlessPng
   , headlessCommandContext
   , headlessServiceContext
+  , headlessDispatchCommand
   , headlessRuntimeConfig
   , startHeadlessApp
   , stopHeadlessApp
@@ -89,10 +93,19 @@ import Hyperspace.Actor
   , shutdownActorSystem
   , spawnActor
   )
-import Seer.Command.Channel (CommandChannelEnv(..), runCommandChannel)
+import Seer.Command.Channel
+  ( CommandChannelEnv(..)
+  , dispatchCommandChannel
+  , runCommandChannel
+  )
 import Seer.Command.Context (CommandContext(..), commandServiceContext)
 import Seer.Config.Runtime (TopoSeerConfig(..), defaultConfig)
 import Seer.Service.Context (ServiceContext(..))
+import Seer.Service.Headless
+  ( deterministicHeadlessPng
+  , headlessAppService
+  , headlessAppServiceWithScreenshotWriter
+  )
 import Seer.Service.Events (ServiceEventBus, newDefaultServiceEventBus)
 import Seer.Editor.History (EditHistory, emptyHistory)
 import Seer.Screenshot.Request
@@ -111,6 +124,7 @@ import Seer.System.AutoTick
   , stopAutoTickScheduler
   )
 import System.IO (Handle, hClose)
+import Topo.Command.Types (SeerCommand, SeerResponse)
 import Topo.Overlay (emptyOverlayStore)
 
 -- | Options for constructing a headless topo-seer runtime.
@@ -172,6 +186,7 @@ data HeadlessApp = HeadlessApp
   , haEventBus :: !ServiceEventBus
   , haActorHandles :: !ActorHandles
   , haCommandContext :: !CommandContext
+  , haCommandChannelEnv :: !CommandChannelEnv
   , haCommandChannelThread :: !(Maybe ThreadId)
   , haAutoTickScheduler :: !AutoTickScheduler
   }
@@ -187,6 +202,11 @@ headlessServiceContext :: HeadlessApp -> ServiceContext
 headlessServiceContext app = (commandServiceContext (haCommandContext app))
   { svcEventBus = Just (haEventBus app)
   }
+
+-- | Dispatch a legacy envelope through the same service selected by the
+-- optional headless command channel.
+headlessDispatchCommand :: HeadlessApp -> SeerCommand -> IO SeerResponse
+headlessDispatchCommand app = dispatchCommandChannel (haCommandChannelEnv app)
 
 -- | Runtime configuration used to construct this headless runtime.
 headlessRuntimeConfig :: HeadlessApp -> TopoSeerConfig
@@ -282,7 +302,8 @@ startHeadlessAppWithSystem cfg screenshotStoragePolicy system = do
         , ccLogSnapshotRef = Just logSnapshotRef
         }
       commandEnv = CommandChannelEnv
-        { cceActorHandles = actorHandles
+        { cceAppService = headlessAppService
+        , cceActorHandles = actorHandles
         , cceUiSnapshotRef = uiSnapshotRef
         , cceUiActionsHandle = uiActionsHandle
         , cceScreenshotRef = screenshotRef
@@ -322,6 +343,7 @@ startHeadlessAppWithSystem cfg screenshotStoragePolicy system = do
     , haEventBus = eventBus
     , haActorHandles = actorHandles
     , haCommandContext = commandContext
+    , haCommandChannelEnv = commandEnv
     , haCommandChannelThread = commandThread
     , haAutoTickScheduler = autoTickScheduler
     }

@@ -18,6 +18,7 @@
 -- if nothing connects, it just sleeps in an accept loop.
 module Seer.Command.Channel
   ( CommandChannelEnv(..)
+  , dispatchCommandChannel
   , runCommandChannel
   ) where
 
@@ -29,7 +30,9 @@ import qualified Data.Text as Text
 import System.IO (Handle, hPutStrLn, stderr, hSetBinaryMode, hSetBuffering, BufferMode(..), hClose)
 import Topo.Command.Types (SeerCommand(..), SeerResponse(..), errResponse, commandPipeName)
 import Topo.Plugin.RPC.Transport (Transport(..), sendMessage, recvMessage)
-import Seer.Command.Dispatch (dispatchCommand, CommandContext(..))
+import Seer.Command.AppServiceAdapter (dispatchAppServiceCommand)
+import Seer.Command.Context (CommandContext(..))
+import Seer.Service.AppService (AppService)
 import Seer.Screenshot.Request (ScreenshotRequestRef)
 import Seer.Screenshot.Storage (ScreenshotStoragePolicy)
 import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshotRef, appendLog)
@@ -54,7 +57,8 @@ import System.IO (IOMode(..))
 
 -- | Environment for the command IPC listener.
 data CommandChannelEnv = CommandChannelEnv
-  { cceActorHandles    :: !ActorHandles
+  { cceAppService      :: !AppService
+  , cceActorHandles    :: !ActorHandles
   , cceUiSnapshotRef   :: !UiSnapshotRef
   , cceUiActionsHandle :: !(ActorHandle UiActions (Protocol UiActions))
   , cceScreenshotRef   :: !ScreenshotRequestRef
@@ -201,6 +205,21 @@ listenLoop env = bracket setup cleanup acceptLoop
 -- Client handler (platform-independent)
 -- --------------------------------------------------------------------------
 
+-- | Dispatch through the AppService injected by the owning runtime.
+dispatchCommandChannel :: CommandChannelEnv -> SeerCommand -> IO SeerResponse
+dispatchCommandChannel env =
+  dispatchAppServiceCommand (cceAppService env) (commandContext env)
+
+commandContext :: CommandChannelEnv -> CommandContext
+commandContext env = CommandContext
+  { ccActorHandles = cceActorHandles env
+  , ccUiSnapshotRef = cceUiSnapshotRef env
+  , ccUiActionsHandle = cceUiActionsHandle env
+  , ccScreenshotRef = cceScreenshotRef env
+  , ccScreenshotStoragePolicy = cceScreenshotStoragePolicy env
+  , ccLogSnapshotRef = cceLogSnapshotRef env
+  }
+
 -- | Handle a single client connection.
 --
 -- Reads commands in a loop, dispatches each, and writes the response.
@@ -213,15 +232,6 @@ handleClient env transport = do
   where
     logHandle = ahLogHandle (cceActorHandles env)
     logMsg level msg = appendLog logHandle (LogEntry level msg)
-
-    ctx = CommandContext
-      { ccActorHandles    = cceActorHandles env
-      , ccUiSnapshotRef   = cceUiSnapshotRef env
-      , ccUiActionsHandle = cceUiActionsHandle env
-      , ccScreenshotRef   = cceScreenshotRef env
-      , ccScreenshotStoragePolicy = cceScreenshotStoragePolicy env
-      , ccLogSnapshotRef  = cceLogSnapshotRef env
-      }
 
     loop = do
       result <- recvMessage transport
@@ -241,7 +251,7 @@ handleClient env transport = do
               loop
             Right cmd -> do
               let method = scMethod cmd
-              rsp <- dispatchCommand ctx cmd
+              rsp <- dispatchCommandChannel env cmd
                 `catch` \(e :: SomeException) -> do
                   logMsg LogError ("[command] " <> method <> " internal error: " <> Text.pack (show e))
                   pure (errResponse (scId cmd) (Text.pack ("internal error: " <> show e)))
