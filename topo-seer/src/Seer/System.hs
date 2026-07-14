@@ -7,6 +7,18 @@ module Seer.System
   , renderSnapshotForceRequired
   , RenderWakeInputs(..)
   , RenderFreshnessDecision(..)
+  , SnapshotGatePhase(..)
+  , SnapshotGateDiagnostic(..)
+  , SnapshotAdvanceState(..)
+  , SnapshotLagReasons(..)
+  , SnapshotLagState(..)
+  , initialSnapshotAdvanceState
+  , recordRenderedSnapshot
+  , snapshotAdvanceAgeMs
+  , initialSnapshotLagState
+  , snapshotLagTransition
+  , snapshotGateDiagnostic
+  , formatSnapshotGateDiagnostic
   , prepareRenderFreshnessDecision
   , retryPublicationRace
   ) where
@@ -29,6 +41,18 @@ import Seer.System.Headless (runHeadlessHttp)
 import Seer.System.MainLoop
   ( RenderFreshnessDecision(..)
   , RenderWakeInputs(..)
+  , SnapshotGatePhase(..)
+  , SnapshotGateDiagnostic(..)
+  , SnapshotAdvanceState(..)
+  , SnapshotLagReasons(..)
+  , SnapshotLagState(..)
+  , initialSnapshotAdvanceState
+  , recordRenderedSnapshot
+  , snapshotAdvanceAgeMs
+  , initialSnapshotLagState
+  , snapshotLagTransition
+  , snapshotGateDiagnostic
+  , formatSnapshotGateDiagnostic
   , atlasQueueSnapshotRefreshRequired
   , atlasQueueTargetsNewerThan
   , prepareRenderFreshnessDecision

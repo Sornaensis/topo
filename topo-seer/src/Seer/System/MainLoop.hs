@@ -8,6 +8,18 @@ module Seer.System.MainLoop
   , renderSnapshotForceRequired
   , RenderWakeInputs(..)
   , RenderFreshnessDecision(..)
+  , SnapshotGatePhase(..)
+  , SnapshotGateDiagnostic(..)
+  , SnapshotAdvanceState(..)
+  , SnapshotLagReasons(..)
+  , SnapshotLagState(..)
+  , initialSnapshotAdvanceState
+  , recordRenderedSnapshot
+  , snapshotAdvanceAgeMs
+  , initialSnapshotLagState
+  , snapshotLagTransition
+  , snapshotGateDiagnostic
+  , formatSnapshotGateDiagnostic
   , prepareRenderFreshnessDecision
   ) where
 
@@ -19,6 +31,7 @@ import Actor.SnapshotReceiver (SnapshotVersion(..))
 import Actor.UI (UiState(..))
 import Control.Monad (forM_, when)
 import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.List (intercalate)
 import Data.Maybe (isJust)
 import qualified Data.Text as Text
 import Data.Word (Word32, Word64)
@@ -43,7 +56,15 @@ import Seer.System.RenderFrame
   )
 import Seer.Screenshot.Request (ScreenshotClaim, claimScreenshotRequest)
 import Seer.System.Sdl (SdlResources(..))
-import Seer.System.Snapshot (SnapshotPollEnv(..), pollRenderSnapshot)
+import Seer.System.Snapshot
+  ( SnapshotPollEnv(..)
+  , SnapshotPollReasons(..)
+  , SnapshotPollRequest(..)
+  , SnapshotPollResult(..)
+  , noSnapshotPollRequest
+  , pollRenderSnapshot
+  , pollRenderSnapshotDetailed
+  )
 import Seer.Timing (nsToMs)
 import System.Directory (getHomeDirectory)
 import System.FilePath ((</>))
@@ -96,7 +117,244 @@ data RenderFreshnessDecision = RenderFreshnessDecision
   , rfdWakeInputs :: !RenderWakeInputs
   , rfdScreenshotClaim :: !(Maybe ScreenshotClaim)
   , rfdSnapshotElapsed :: !Word32
+  , rfdFinalSnapshotPollResult :: !SnapshotPollResult
+  , rfdSnapshotPollResults :: ![SnapshotPollResult]
   }
+
+data SnapshotGatePhase
+  = SnapshotGateSkip
+  | SnapshotGateWake
+  | SnapshotGateRender
+  deriving (Eq, Show)
+
+data SnapshotGateDiagnostic = SnapshotGateDiagnostic
+  { sgdPhase :: !SnapshotGatePhase
+  , sgdProbedPublishedVersion :: !SnapshotVersion
+  , sgdPublishedVersion :: !SnapshotVersion
+  , sgdPolledVersion :: !SnapshotVersion
+  , sgdLastPolledVersion :: !(Maybe SnapshotVersion)
+  , sgdRenderedVersion :: !(Maybe SnapshotVersion)
+  , sgdPollDidRead :: !Bool
+  , sgdPollReasons :: !SnapshotPollReasons
+  , sgdScreenshotPending :: !Bool
+  , sgdAtlasPendingCount :: !Int
+  , sgdAtlasQueuedCount :: !Int
+  , sgdAtlasQueueRevision :: !Word64
+  , sgdAtlasQueueVersionRange :: !(Maybe (SnapshotVersion, SnapshotVersion))
+  , sgdGenerating :: !Bool
+  , sgdMaintenanceDue :: !Bool
+  , sgdForcedGateSignalled :: !Bool
+  , sgdForcedGateSatisfied :: !Bool
+  , sgdSnapshotAdvanceAgeMs :: !Word64
+  } deriving (Eq, Show)
+
+data SnapshotAdvanceState = SnapshotAdvanceState
+  { sasLastRenderedVersion :: !(Maybe SnapshotVersion)
+  , sasLastVersionAdvanceNs :: !Word64
+  } deriving (Eq, Show)
+
+data SnapshotLagReasons = SnapshotLagReasons
+  { slrPublicationAheadOfPoll :: !Bool
+  , slrPublicationAheadOfRender :: !Bool
+  , slrForcedFreshGateFailed :: !Bool
+  } deriving (Eq, Show)
+
+data SnapshotLagState = SnapshotLagState
+  { slsActiveReasons :: !(Maybe SnapshotLagReasons)
+  , slsLagSinceNs :: !(Maybe Word64)
+  , slsLastWarningNs :: !(Maybe Word64)
+  } deriving (Eq, Show)
+
+initialSnapshotAdvanceState :: Word64 -> SnapshotAdvanceState
+initialSnapshotAdvanceState nowNs = SnapshotAdvanceState Nothing nowNs
+
+-- | Maintenance rendering of the same version must not pretend that snapshot
+-- freshness advanced. Only a strictly newer rendered version resets the age.
+recordRenderedSnapshot
+  :: Word64
+  -> SnapshotVersion
+  -> SnapshotAdvanceState
+  -> SnapshotAdvanceState
+recordRenderedSnapshot nowNs version state =
+  case sasLastRenderedVersion state of
+    Nothing -> SnapshotAdvanceState (Just version) nowNs
+    Just previous
+      | version > previous -> SnapshotAdvanceState (Just version) nowNs
+      | otherwise -> state
+
+snapshotAdvanceAgeMs :: Word64 -> SnapshotAdvanceState -> Word64
+snapshotAdvanceAgeMs nowNs state = (nowNs - sasLastVersionAdvanceNs state) `div` 1000000
+
+initialSnapshotLagState :: SnapshotLagState
+initialSnapshotLagState = SnapshotLagState Nothing Nothing Nothing
+
+snapshotLagTransition
+  :: Word64
+  -> Word64
+  -> Word64
+  -> SnapshotGateDiagnostic
+  -> SnapshotLagState
+  -> (SnapshotLagState, Maybe SnapshotLagReasons)
+snapshotLagTransition thresholdNs repeatNs nowNs diagnostic state =
+  let reasons = SnapshotLagReasons
+        { slrPublicationAheadOfPoll = sgdPublishedVersion diagnostic > sgdPolledVersion diagnostic
+        , slrPublicationAheadOfRender = maybe
+            True
+            (sgdPublishedVersion diagnostic >)
+            (sgdRenderedVersion diagnostic)
+        , slrForcedFreshGateFailed =
+            sgdForcedGateSignalled diagnostic && not (sgdForcedGateSatisfied diagnostic)
+        }
+      lagging = or
+        [ slrPublicationAheadOfPoll reasons
+        , slrPublicationAheadOfRender reasons
+        , slrForcedFreshGateFailed reasons
+        ]
+  in if not lagging
+      then (initialSnapshotLagState, Nothing)
+      else case slsLagSinceNs state of
+        Nothing ->
+          ( SnapshotLagState (Just reasons) (Just nowNs) Nothing
+          , Nothing
+          )
+        Just lagSince ->
+          let thresholdReached = nowNs - lagSince >= thresholdNs
+              rateLimitReached = maybe
+                True
+                (\lastWarning -> nowNs - lastWarning >= repeatNs)
+                (slsLastWarningNs state)
+              activeState = state { slsActiveReasons = Just reasons }
+          in if thresholdReached && rateLimitReached
+              then
+                ( activeState { slsLastWarningNs = Just nowNs }
+                , Just reasons
+                )
+              else (activeState, Nothing)
+
+snapshotGateDiagnostic
+  :: SnapshotGatePhase
+  -> SnapshotPollResult
+  -> Maybe SnapshotVersion
+  -> Bool
+  -> RenderWakeInputs
+  -> Bool
+  -> Word64
+  -> SnapshotGateDiagnostic
+snapshotGateDiagnostic phase pollResult renderedVersion screenshotPending wake maintenanceDue advanceAgeMs =
+  let queueState = rwiAtlasQueueState wake
+      targetVersions = map aqtSnapshotVersion (amqsQueuedTargets queueState)
+      versionRange = case targetVersions of
+        [] -> Nothing
+        versions -> Just (minimum versions, maximum versions)
+      polledVersion = spresCoherentVersion pollResult
+      probedPublishedVersion = spresProbedPublishedVersion pollResult
+      latestKnownPublishedVersion = max probedPublishedVersion polledVersion
+      pollReasons = spresReasons pollResult
+      futureAtlasTarget = maybe False ((> polledVersion) . snd) versionRange
+      screenshotGateSignalled = screenshotPending || sprForcedScreenshot pollReasons
+      atlasGateSignalled = sprFutureAtlasTarget pollReasons || futureAtlasTarget
+      forcedGateSignalled = screenshotGateSignalled || atlasGateSignalled
+      forcedGateSatisfied =
+        (not screenshotGateSignalled || spresDidReadCoherent pollResult)
+          && (not atlasGateSignalled || not futureAtlasTarget)
+  in SnapshotGateDiagnostic
+      { sgdPhase = phase
+      , sgdProbedPublishedVersion = probedPublishedVersion
+      , sgdPublishedVersion = latestKnownPublishedVersion
+      , sgdPolledVersion = polledVersion
+      , sgdLastPolledVersion = spresLastPolledVersion pollResult
+      , sgdRenderedVersion = renderedVersion
+      , sgdPollDidRead = spresDidReadCoherent pollResult
+      , sgdPollReasons = spresReasons pollResult
+      , sgdScreenshotPending = screenshotPending
+      , sgdAtlasPendingCount = rwiAtlasPendingCount wake
+      , sgdAtlasQueuedCount = amqsQueuedCount queueState
+      , sgdAtlasQueueRevision = amqsQueuedRevision queueState
+      , sgdAtlasQueueVersionRange = versionRange
+      , sgdGenerating = rwiGenerating wake
+      , sgdMaintenanceDue = maintenanceDue
+      , sgdForcedGateSignalled = forcedGateSignalled
+      , sgdForcedGateSatisfied = forcedGateSatisfied
+      , sgdSnapshotAdvanceAgeMs = advanceAgeMs
+      }
+
+formatSnapshotGateDiagnostic :: SnapshotGateDiagnostic -> String
+formatSnapshotGateDiagnostic diagnostic =
+  let versionText (SnapshotVersion version) = show version
+      maybeVersionText = maybe "none" versionText
+      (queueMin, queueMax) = case sgdAtlasQueueVersionRange diagnostic of
+        Nothing -> ("none", "none")
+        Just (minimumVersion, maximumVersion) ->
+          (versionText minimumVersion, versionText maximumVersion)
+      reasons = sgdPollReasons diagnostic
+      reasonLabels =
+        [ label
+        | (enabled, label) <-
+            [ (sprBootstrap reasons, "bootstrap")
+            , (sprPublishedVersionAdvanced reasons, "published-version-advanced")
+            , (sprForcedScreenshot reasons, "forced-screenshot")
+            , (sprFutureAtlasTarget reasons, "future-atlas-target")
+            , (sprIntervalHealthReread reasons, "interval-health-reread")
+            , (sprCacheReuse reasons, "cache-reuse")
+            ]
+        , enabled
+        ]
+      phaseText = case sgdPhase diagnostic of
+        SnapshotGateSkip -> "skip"
+        SnapshotGateWake -> "wake"
+        SnapshotGateRender -> "render"
+  in "snapshot-gate phase=" <> phaseText
+      <> " published=" <> versionText (sgdPublishedVersion diagnostic)
+      <> " probed=" <> versionText (sgdProbedPublishedVersion diagnostic)
+      <> " polled=" <> versionText (sgdPolledVersion diagnostic)
+      <> " lastPolled=" <> maybeVersionText (sgdLastPolledVersion diagnostic)
+      <> " rendered=" <> maybeVersionText (sgdRenderedVersion diagnostic)
+      <> " pollRead=" <> show (sgdPollDidRead diagnostic)
+      <> " pollReasons=" <> intercalate "," reasonLabels
+      <> " screenshot=" <> show (sgdScreenshotPending diagnostic)
+      <> " atlasPending=" <> show (sgdAtlasPendingCount diagnostic)
+      <> " atlasQueued=" <> show (sgdAtlasQueuedCount diagnostic)
+      <> " queueRevision=" <> show (sgdAtlasQueueRevision diagnostic)
+      <> " queueVersionMin=" <> queueMin
+      <> " queueVersionMax=" <> queueMax
+      <> " generating=" <> show (sgdGenerating diagnostic)
+      <> " maintenance=" <> show (sgdMaintenanceDue diagnostic)
+      <> " forcedGate=" <> show (sgdForcedGateSignalled diagnostic)
+      <> " forcedGateSatisfied=" <> show (sgdForcedGateSatisfied diagnostic)
+      <> " snapshotAdvanceAgeMs=" <> show (sgdSnapshotAdvanceAgeMs diagnostic)
+
+summarizeSnapshotPollResults
+  :: SnapshotPollResult
+  -> [SnapshotPollResult]
+  -> SnapshotPollResult
+summarizeSnapshotPollResults finalResult results =
+  let mergeReasons left right = SnapshotPollReasons
+        { sprBootstrap = sprBootstrap left || sprBootstrap right
+        , sprPublishedVersionAdvanced =
+            sprPublishedVersionAdvanced left || sprPublishedVersionAdvanced right
+        , sprForcedScreenshot = sprForcedScreenshot left || sprForcedScreenshot right
+        , sprFutureAtlasTarget = sprFutureAtlasTarget left || sprFutureAtlasTarget right
+        , sprIntervalHealthReread =
+            sprIntervalHealthReread left || sprIntervalHealthReread right
+        , sprCacheReuse = sprCacheReuse left || sprCacheReuse right
+        }
+      combinedReasons = foldr
+        (mergeReasons . spresReasons)
+        (spresReasons finalResult)
+        results
+      probedVersion = maximum
+        (spresProbedPublishedVersion finalResult
+          : map spresProbedPublishedVersion results)
+      firstLastPolled = case results of
+        firstResult : _ -> spresLastPolledVersion firstResult
+        [] -> spresLastPolledVersion finalResult
+  in finalResult
+      { spresProbedPublishedVersion = probedVersion
+      , spresLastPolledVersion = firstLastPolled
+      , spresElapsedMs = sum (map spresElapsedMs results)
+      , spresDidReadCoherent = any spresDidReadCoherent results
+      , spresReasons = combinedReasons
+      }
 
 -- | Run the post-event and final freshness gates with injectable wake and claim
 -- reads. Keeping this orchestration SDL-free makes the exact production order
@@ -109,8 +367,11 @@ prepareRenderFreshnessDecision
   -> RenderCacheState
   -> IO RenderFreshnessDecision
 prepareRenderFreshnessDecision snapshotEnv nowMs readWakeInputs claimScreenshot cacheState = do
-  (postEventVersion, postEventSnap, postEventCache, postEventElapsed) <-
-    pollRenderSnapshot snapshotEnv nowMs False cacheState
+  postEventPoll <- pollRenderSnapshotDetailed
+    snapshotEnv nowMs noSnapshotPollRequest cacheState
+  let postEventVersion = spresCoherentVersion postEventPoll
+      postEventSnap = spresRenderSnapshot postEventPoll
+      postEventCache = spresCacheState postEventPoll
   hintWake <- readWakeInputs postEventSnap
   hintScreenshotClaim <- claimScreenshot
   let hintQueueState = rwiAtlasQueueState hintWake
@@ -118,14 +379,17 @@ prepareRenderFreshnessDecision snapshotEnv nowMs readWakeInputs claimScreenshot 
         postEventVersion
         hintQueueState
         (rcsLastAtlasSnapshotPollRevision postEventCache)
-      hintForce = renderSnapshotForceRequired
-        (isJust hintScreenshotClaim)
-        postEventVersion
-        hintQueueState
-        (rcsLastAtlasSnapshotPollRevision postEventCache)
-  (finalVersion0, finalSnap0, finalCacheRaw0, finalElapsed0) <-
-    pollRenderSnapshot snapshotEnv nowMs hintForce postEventCache
-  let finalCache0 = markAtlasSnapshotPoll hintAtlasForce hintQueueState finalCacheRaw0
+      hintRequest = SnapshotPollRequest
+        { spqForcedScreenshot = isJust hintScreenshotClaim
+        , spqFutureAtlasTarget = hintAtlasForce
+        }
+  finalPollRaw0 <- pollRenderSnapshotDetailed
+    snapshotEnv nowMs hintRequest postEventCache
+  let finalCache0 = markAtlasSnapshotPoll
+        hintAtlasForce hintQueueState (spresCacheState finalPollRaw0)
+      finalPoll0 = finalPollRaw0 { spresCacheState = finalCache0 }
+      finalVersion0 = spresCoherentVersion finalPoll0
+      finalSnap0 = spresRenderSnapshot finalPoll0
   finalWake0 <- readWakeInputs finalSnap0
   lateScreenshotClaim <- case hintScreenshotClaim of
     Just _ -> pure Nothing
@@ -135,31 +399,48 @@ prepareRenderFreshnessDecision snapshotEnv nowMs readWakeInputs claimScreenshot 
         finalVersion0
         finalQueueState0
         (rcsLastAtlasSnapshotPollRevision finalCache0)
-      lateForce = isJust lateScreenshotClaim || lateAtlasForce
+      lateRequest = SnapshotPollRequest
+        { spqForcedScreenshot = isJust lateScreenshotClaim
+        , spqFutureAtlasTarget = lateAtlasForce
+        }
+      lateForce = spqForcedScreenshot lateRequest || spqFutureAtlasTarget lateRequest
       screenshotClaim = case hintScreenshotClaim of
         Just claim -> Just claim
         Nothing -> lateScreenshotClaim
   if lateForce
     then do
-      (version, snapshot, cacheRaw, lateElapsed) <-
-        pollRenderSnapshot snapshotEnv nowMs True finalCache0
-      let cache = markAtlasSnapshotPoll lateAtlasForce finalQueueState0 cacheRaw
+      latePollRaw <- pollRenderSnapshotDetailed
+        snapshotEnv nowMs lateRequest finalCache0
+      let cache = markAtlasSnapshotPoll
+            lateAtlasForce finalQueueState0 (spresCacheState latePollRaw)
+          latePoll = latePollRaw { spresCacheState = cache }
+          version = spresCoherentVersion latePoll
+          snapshot = spresRenderSnapshot latePoll
       wake <- readWakeInputs snapshot
+      let pollResults = [postEventPoll, finalPoll0, latePoll]
+          pollSummary = summarizeSnapshotPollResults latePoll pollResults
       pure RenderFreshnessDecision
         { rfdSnapshotVersion = version
         , rfdRenderSnapshot = snapshot
         , rfdCacheState = cache
         , rfdWakeInputs = wake
         , rfdScreenshotClaim = screenshotClaim
-        , rfdSnapshotElapsed = postEventElapsed + finalElapsed0 + lateElapsed
+        , rfdSnapshotElapsed = sum (map spresElapsedMs pollResults)
+        , rfdFinalSnapshotPollResult = pollSummary
+        , rfdSnapshotPollResults = pollResults
         }
-    else pure RenderFreshnessDecision
+    else
+      let pollResults = [postEventPoll, finalPoll0]
+          pollSummary = summarizeSnapshotPollResults finalPoll0 pollResults
+      in pure RenderFreshnessDecision
       { rfdSnapshotVersion = finalVersion0
       , rfdRenderSnapshot = finalSnap0
       , rfdCacheState = finalCache0
       , rfdWakeInputs = finalWake0
       , rfdScreenshotClaim = screenshotClaim
-      , rfdSnapshotElapsed = postEventElapsed + finalElapsed0
+      , rfdSnapshotElapsed = sum (map spresElapsedMs pollResults)
+      , rfdFinalSnapshotPollResult = pollSummary
+      , rfdSnapshotPollResults = pollResults
       }
   where
     markAtlasSnapshotPoll forced queueState state =
@@ -195,8 +476,9 @@ runMainLoop runtimeCfg actors sdl = do
   mousePosRef <- newIORef (0, 0)
   dragRef <- newIORef Nothing
   tooltipHoverRef <- newIORef Nothing
-  lastSnapshotChangeNs <- getMonotonicTimeNSec >>= newIORef
-  staleLoggedRef <- newIORef False
+  diagnosticStartNs <- getMonotonicTimeNSec
+  snapshotAdvanceRef <- newIORef (initialSnapshotAdvanceState diagnosticStartNs)
+  snapshotLagRef <- newIORef initialSnapshotLagState
   home <- getHomeDirectory
   traceH <- if cfgRenderTraceEnabled runtimeCfg
     then do
@@ -209,7 +491,8 @@ runMainLoop runtimeCfg actors sdl = do
   let frameDelayMs         = cfgFrameDelayMs runtimeCfg
       snapshotPollMs       = cfgSnapshotPollMs runtimeCfg
       timingLogThresholdMs = fromIntegral (cfgTimingLogThresholdMs runtimeCfg) :: Word32
-      renderTraceEnabled   = cfgRenderTraceEnabled runtimeCfg
+      snapshotLagThresholdNs = 1000000000
+      snapshotLagRepeatNs = 5000000000
       initialCacheState    = initialRenderCacheState (cfgAtlasCacheEntries runtimeCfg)
       eventPumpEnv = EventPumpEnv
         { epeWindow = srWindow sdl
@@ -271,6 +554,26 @@ runMainLoop runtimeCfg actors sdl = do
           , rwiAtlasQueueState = atlasQueueState
           }
 
+      writeTraceLine line = forM_ traceH $ \h -> do
+        hPutStrLn h line
+        hFlush h
+
+      observeSnapshotGate nowNs diagnostic = do
+        lagState <- readIORef snapshotLagRef
+        let (nextLagState, warning) = snapshotLagTransition
+              snapshotLagThresholdNs snapshotLagRepeatNs nowNs diagnostic lagState
+        writeIORef snapshotLagRef nextLagState
+        writeTraceLine (formatSnapshotGateDiagnostic diagnostic)
+        forM_ warning $ \reasons ->
+          writeTraceLine
+            ("WARN snapshot-gate lag publicationAheadPoll="
+              <> show (slrPublicationAheadOfPoll reasons)
+              <> " publicationAheadRender="
+              <> show (slrPublicationAheadOfRender reasons)
+              <> " forcedFreshGateFailed="
+              <> show (slrForcedFreshGateFailed reasons)
+              <> " " <> formatSnapshotGateDiagnostic diagnostic)
+
       loop cacheState = do
         loopStart <- getMonotonicTimeNSec
         events <- SDL.pollEvents
@@ -318,46 +621,56 @@ runMainLoop runtimeCfg actors sdl = do
               renderSnap
               cacheState0
             maintenanceDue = rfmdMaintenanceDue maintenanceDiagnostics
+            finalPollResult = rfdFinalSnapshotPollResult decision
         if shouldSkipUnchangedFrame
             isVersionUnchanged generating screenshotPending maintenanceDue
           then do
-            -- Stale-snapshot detection: log once if version unchanged for >1s.
-            now <- getMonotonicTimeNSec
-            lastChange <- readIORef lastSnapshotChangeNs
-            staleLogged <- readIORef staleLoggedRef
-            let staleSec = fromIntegral (now - lastChange) / (1e9 :: Double)
-            when (staleSec > 1.0 && not staleLogged) $ do
-              writeIORef staleLoggedRef True
-              appendLog (aaLogHandle actors) (LogEntry LogInfo (Text.pack
-                ("stale snapshot: version unchanged for " <> show (round staleSec :: Int) <> "s (v=" <> show (unSnapshotVersion snapVersion) <> ")")))
+            diagnosticNow <- getMonotonicTimeNSec
+            advanceState <- readIORef snapshotAdvanceRef
+            let gateDiagnostic = snapshotGateDiagnostic
+                  SnapshotGateSkip
+                  finalPollResult
+                  (sasLastRenderedVersion advanceState)
+                  screenshotPending
+                  wakeInputs
+                  maintenanceDue
+                  (snapshotAdvanceAgeMs diagnosticNow advanceState)
+            observeSnapshotGate diagnosticNow gateDiagnostic
             delayStart <- getMonotonicTimeNSec
             SDL.delay (fromIntegral frameDelayMs)
             delayEnd <- getMonotonicTimeNSec
             let delayElapsed = nsToMs delayStart delayEnd
-            when renderTraceEnabled $
-              appendLog (aaLogHandle actors) (LogEntry LogInfo (Text.pack (renderStepSummary eventsElapsed snapshotElapsed handleElapsed 0 0 delayElapsed True)))
+            writeTraceLine
+              (renderStepSummary eventsElapsed snapshotElapsed handleElapsed 0 0 delayElapsed True)
             tEnd <- getMonotonicTimeNSec
             let loopMs = nsToMs loopStart tEnd
             when (loopMs >= 100) $ forM_ traceH $ \h -> do
-              hPutStrLn h $ "IDLE loop=" <> show loopMs <> "ms poll=" <> show (nsToMs loopStart tPoll) <> " snap=" <> show (nsToMs tPoll tSnap) <> " handle=" <> show (nsToMs tSnap tHandle) <> " stale=" <> show (nsToMs tHandle tEnd) <> " events=" <> show (length events) <> " v=" <> show (unSnapshotVersion snapVersion)
+              hPutStrLn h $ "IDLE loop=" <> show loopMs <> "ms poll=" <> show (nsToMs loopStart tPoll) <> " snap=" <> show (nsToMs tPoll tSnap) <> " handle=" <> show (nsToMs tSnap tHandle) <> " delayBranch=" <> show (nsToMs tHandle tEnd) <> " events=" <> show (length events) <> " v=" <> show (unSnapshotVersion snapVersion)
               hFlush h
             if quit
               then pure cacheState0
               else loop cacheState0
           else do
-            -- Snapshot changed or render-thread maintenance is due; reset stale tracking before rendering.
-            when (renderTraceEnabled && isVersionUnchanged && maintenanceDue) $
-              appendLog (aaLogHandle actors) (LogEntry LogInfo (Text.pack (renderMaintenanceWakeSummary atlasPendingCount maintenanceDiagnostics)))
-            forM_ traceH $ \h -> when (isVersionUnchanged && maintenanceDue) $ do
-              hPutStrLn h ("WAKE " <> renderMaintenanceWakeSummary atlasPendingCount maintenanceDiagnostics <> " v=" <> show (unSnapshotVersion snapVersion))
-              hFlush h
+            wakeNow <- getMonotonicTimeNSec
+            advanceStateBefore <- readIORef snapshotAdvanceRef
+            let wakeDiagnostic = snapshotGateDiagnostic
+                  SnapshotGateWake
+                  finalPollResult
+                  (sasLastRenderedVersion advanceStateBefore)
+                  screenshotPending
+                  wakeInputs
+                  maintenanceDue
+                  (snapshotAdvanceAgeMs wakeNow advanceStateBefore)
+            observeSnapshotGate wakeNow wakeDiagnostic
+            when (isVersionUnchanged && maintenanceDue) $
+              writeTraceLine
+                ("WAKE " <> renderMaintenanceWakeSummary atlasPendingCount maintenanceDiagnostics
+                  <> " v=" <> show (unSnapshotVersion snapVersion))
             let frameSnapVersion = snapVersion
                 frameRenderSnap = renderSnap
                 frameCacheState0 = cacheState0
                 snapshotElapsedForSummary = snapshotElapsed
             tElseBranch <- getMonotonicTimeNSec
-            writeIORef lastSnapshotChangeNs =<< getMonotonicTimeNSec
-            writeIORef staleLoggedRef False
             tAfterWrite <- getMonotonicTimeNSec
             frameResult <- renderFrameStep
               renderFrameEnv
@@ -374,13 +687,26 @@ runMainLoop runtimeCfg actors sdl = do
                 frameElapsed = rfrFrameElapsed frameResult
                 letsElapsed = rfrLetsElapsed frameResult
                 postFrameElapsed = rfrPostFrameElapsed frameResult
+            renderedAt <- getMonotonicTimeNSec
+            let advanceStateAfter = recordRenderedSnapshot
+                  renderedAt frameSnapVersion advanceStateBefore
+                renderDiagnostic = snapshotGateDiagnostic
+                  SnapshotGateRender
+                  finalPollResult
+                  (sasLastRenderedVersion advanceStateAfter)
+                  screenshotPending
+                  wakeInputs
+                  maintenanceDue
+                  (snapshotAdvanceAgeMs renderedAt advanceStateAfter)
+            writeIORef snapshotAdvanceRef advanceStateAfter
+            observeSnapshotGate renderedAt renderDiagnostic
             delayStart <- getMonotonicTimeNSec
             SDL.delay (fromIntegral frameDelayMs)
             delayEnd <- getMonotonicTimeNSec
             let delayElapsed = nsToMs delayStart delayEnd
             tPostDelay <- getMonotonicTimeNSec
-            when renderTraceEnabled $
-              appendLog (aaLogHandle actors) (LogEntry LogInfo (Text.pack (renderStepSummary eventsElapsed snapshotElapsedForSummary handleElapsed terrainElapsed frameElapsed delayElapsed False)))
+            writeTraceLine
+              (renderStepSummary eventsElapsed snapshotElapsedForSummary handleElapsed terrainElapsed frameElapsed delayElapsed False)
             tEnd <- getMonotonicTimeNSec
             let loopMs = nsToMs loopStart tEnd
             when (loopMs >= 100) $ forM_ traceH $ \h -> do
