@@ -48,7 +48,7 @@ import Actor.PluginManager
 import Actor.Simulation (SimulationDagSnapshot(..), getSimDagSnapshot, rebindSimNodes)
 import Actor.UI.Setters (setUiDisabledPlugins, setUiPluginDiagnosticLines, setUiPluginDiagnosticStatuses, setUiPluginParam)
 import Actor.UI.State (UiState(..), readUiSnapshotRef)
-import Actor.UiActions.Handles (ActorHandles(..))
+import Actor.UiActions.Handles (ActorHandles(..), publishUiMutation)
 import Seer.Command.Context (CommandContext(..))
 import Seer.Service.Types
   ( ServiceError(..)
@@ -110,6 +110,7 @@ handleSetPluginEnabled ctx reqId params = do
       setUiPluginDiagnosticLines uiH diagnosticLines
       setUiPluginDiagnosticStatuses uiH diagnosticStatuses
       rebindSimulationForCurrentWorld handles
+      _ <- publishUiMutation handles
       pure $ okResponse reqId $ object
         [ "name"    .= name
         , "enabled" .= enabled
@@ -138,6 +139,7 @@ handleSetPluginParamService ctx params = do
         Right sanitized -> do
           setUiPluginParam (ahUiHandle handles) pluginName paramName sanitized
           rebindSimulationForCurrentWorld handles
+          _ <- publishUiMutation handles
           pure $ Right $ ServiceResponse $ object
             [ "plugin" .= pluginName
             , "param"  .= paramName

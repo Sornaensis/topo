@@ -30,7 +30,7 @@ import Actor.PluginManager
   )
 import Actor.Simulation (SimulationDagSnapshot(..), getSimDagSnapshot, rebindSimNodes)
 import Actor.Terrain (TerrainReplyOps)
-import Actor.UiActions (UiAction(..), UiActionRequest(..), submitUiAction)
+import Actor.UiActions (UiAction(..), UiActionRequest(..), submitUiActionSync)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.UI.State
   ( BaseViewMode(..)
@@ -762,7 +762,7 @@ submitAction ctx action = do
         , uarActorHandles = handles
         , uarTerrainReplyTo = replyTo @TerrainReplyOps uiActionsH
         }
-  submitUiAction uiActionsH request
+  submitUiActionSync uiActionsH request
 
 rebindSimulationForCurrentWorld :: ActorHandles -> IO ()
 rebindSimulationForCurrentWorld handles = do

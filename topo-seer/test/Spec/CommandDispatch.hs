@@ -38,15 +38,17 @@ import Hyperspace.Actor (ActorHandle, ActorSystem, Protocol, get, newActorSystem
 import Test.Hspec
 
 import Actor.AtlasManager (AtlasJob(..), AtlasManager, drainAtlasJobs)
-import Actor.Data (Data, DataSnapshot(..), TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext, getTerrainSnapshot, setTerrainChunkCount, setTerrainChunkData, setTerrainGeoContextData)
-import Actor.Log (Log, LogEntry(..), LogSnapshot(..), getLogSnapshot)
+import Actor.Data (Data, DataSnapshot(..), TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext, getTerrainSnapshot, setOverlayStoreData, setTerrainChunkCount, setTerrainChunkData, setTerrainGeoContextData)
+import Actor.Log (Log, LogEntry(..), LogSnapshot(..), getLogSnapshot, newLogSnapshotRef, setLogSnapshotRef)
 import Actor.PluginManager (LoadedPlugin(..), PluginManager, discoverPlugins, getLoadedPlugins)
 import Actor.Simulation (Simulation)
 import Actor.SnapshotReceiver
-  ( SnapshotVersion(..)
+  ( RenderSnapshot(..)
+  , SnapshotVersion(..)
   , newDataSnapshotRef
   , newTerrainSnapshotRef
-  , newSnapshotVersionRef
+  , newRenderSnapshotVersionRef
+  , readCommittedRenderSnapshot
   , readSnapshotVersion
   , readTerrainSnapshot
   , writeTerrainSnapshot
@@ -439,7 +441,7 @@ spec = describe "CommandDispatch" $ do
       rsp <- dispatch ctx "set_slider" (object ["name" .= ("SliderAxialTilt" :: String), "value" .= (0.9 :: Double)])
       srSuccess rsp `shouldBe` True
 
-      readSnapshotVersion (ahSnapshotVersionRef handles) `shouldReturn` version0
+      readSnapshotVersion (ahSnapshotVersionRef handles) `shouldReturnSatisfying` (> version0)
       jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
       length jobs `shouldBe` 0
 
@@ -451,7 +453,7 @@ spec = describe "CommandDispatch" $ do
       rsp <- dispatch ctx "set_slider" (object ["name" .= ("SliderInsolation" :: String), "value" .= (0.9 :: Double)])
       srSuccess rsp `shouldBe` True
 
-      readSnapshotVersion (ahSnapshotVersionRef handles) `shouldReturn` version0
+      readSnapshotVersion (ahSnapshotVersionRef handles) `shouldReturnSatisfying` (> version0)
       jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
       length jobs `shouldBe` 0
 
@@ -463,7 +465,7 @@ spec = describe "CommandDispatch" $ do
       rsp <- dispatch ctx "set_slider" (object ["name" .= ("SliderAxialTilt" :: String), "value" .= (0.9 :: Double)])
       srSuccess rsp `shouldBe` True
 
-      readSnapshotVersion (ahSnapshotVersionRef handles) `shouldReturn` version0
+      readSnapshotVersion (ahSnapshotVersionRef handles) `shouldReturnSatisfying` (> version0)
       jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
       length jobs `shouldBe` 0
 
@@ -477,7 +479,7 @@ spec = describe "CommandDispatch" $ do
       rsp <- dispatch ctx "set_slider" (object ["name" .= ("SliderAxialTilt" :: String), "value" .= (0.9 :: Double)])
       srSuccess rsp `shouldBe` True
 
-      readSnapshotVersion (ahSnapshotVersionRef handles) `shouldReturn` version0
+      readSnapshotVersion (ahSnapshotVersionRef handles) `shouldReturnSatisfying` (> version0)
       jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
       length jobs `shouldBe` 0
 
@@ -511,6 +513,9 @@ spec = describe "CommandDispatch" $ do
       rsp <- dispatch ctx "set_seed" (object ["seed" .= (12345 :: Int)])
       srSuccess rsp `shouldBe` True
       lookupKey "seed" (srResult rsp) `shouldBe` Just (Number 12345)
+      (_, committed) <- readCommittedRenderSnapshot
+        (ahSnapshotVersionRef (ccActorHandles ctx))
+      uiSeed (rsUi committed) `shouldBe` 12345
 
     it "returns error when seed is missing" $ withCtx $ \ctx -> do
       rsp <- dispatch ctx "set_seed" Null
@@ -1190,7 +1195,7 @@ spec = describe "CommandDispatch" $ do
       rsp <- dispatch ctx "set_sliders" args
       srSuccess rsp `shouldBe` True
 
-      readSnapshotVersion (ahSnapshotVersionRef handles) `shouldReturn` version0
+      readSnapshotVersion (ahSnapshotVersionRef handles) `shouldReturnSatisfying` (> version0)
       jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
       length jobs `shouldBe` 0
 
@@ -1236,7 +1241,7 @@ spec = describe "CommandDispatch" $ do
       rsp <- dispatch ctx "reset_sliders" Null
       srSuccess rsp `shouldBe` True
 
-      readSnapshotVersion (ahSnapshotVersionRef handles) `shouldReturn` versionBeforeReset
+      readSnapshotVersion (ahSnapshotVersionRef handles) `shouldReturnSatisfying` (> versionBeforeReset)
       jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
       length jobs `shouldBe` 0
 
@@ -1502,7 +1507,7 @@ spec = describe "CommandDispatch" $ do
       rsp <- dispatch ctx "viewport_hover" (object ["x" .= (0 :: Int), "y" .= (0 :: Int)])
       srSuccess rsp `shouldBe` True
 
-      readSnapshotVersion (ahSnapshotVersionRef handles) `shouldReturn` version0
+      readSnapshotVersion (ahSnapshotVersionRef handles) `shouldReturnSatisfying` (> version0)
       jobs <- drainAtlasJobs atlasH
       length jobs `shouldBe` 0
 
@@ -1836,11 +1841,15 @@ withCtx action = bracket newActorSystem shutdownActorSystem $ \system -> do
   uiActionsH <- get @UiActions system
   dataSnapRef    <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
   terrainSnapRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore defaultTerrainGeoContext)
-  versionRef     <- newSnapshotVersionRef
   uiSnapRef      <- newUiSnapshotRef
+  logSnapRef     <- newLogSnapshotRef
+  setUiSnapshotRef uiH uiSnapRef
+  setLogSnapshotRef logH logSnapRef
+  _ <- getUiSnapshot uiH
+  _ <- getLogSnapshot logH
+  versionRef     <- newRenderSnapshotVersionRef uiSnapRef logSnapRef dataSnapRef terrainSnapRef
   screenshotRef  <- newScreenshotRequestRef
   historyRef     <- newIORef (emptyHistory 50)
-  setUiSnapshotRef uiH uiSnapRef
   let handles = ActorHandles
         { ahUiHandle              = uiH
         , ahLogHandle             = logH
@@ -1860,7 +1869,7 @@ withCtx action = bracket newActorSystem shutdownActorSystem $ \system -> do
         , ccUiActionsHandle = uiActionsH
         , ccScreenshotRef   = screenshotRef
         , ccScreenshotStoragePolicy = ScreenshotStorageDisabled
-        , ccLogSnapshotRef  = Nothing
+        , ccLogSnapshotRef  = Just logSnapRef
         }
   action ctx
 
@@ -2034,25 +2043,12 @@ writeSingleChunkTerrainWithNormals ctx = do
             , opSchedule = Nothing
             }
         }
-      snap = TerrainSnapshot
-        1
-        0
-        0
-        0
-        1
-        (wcChunkSize cfg)
-        (IntMap.singleton chunkKey (emptyTerrainChunk cfg))
-        mempty
-        mempty
-        mempty
-        mempty
-        mempty
-        mempty
-        mempty
-        mempty
-        (insertOverlay normalsOverlay emptyOverlayStore)
-        defaultTerrainGeoContext
-  writeTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx)) snap
+  let handles = ccActorHandles ctx
+      dataH = ahDataHandle handles
+  setTerrainChunkData dataH (wcChunkSize cfg) [(chunkId, emptyTerrainChunk cfg)]
+  setOverlayStoreData dataH (insertOverlay normalsOverlay emptyOverlayStore)
+  authoritative <- getTerrainSnapshot dataH
+  writeTerrainSnapshot (ahTerrainSnapshotRef handles) authoritative
   pure chunkKey
 
 writeSingleChunkTerrainWithClimateWeatherAndNormals :: CommandContext -> IO Int
@@ -2325,7 +2321,7 @@ serviceOperationCases =
   , serviceCase "set_sim_auto_tick" (object ["enabled" .= False, "rate" .= (2.0 :: Double)]) ExpectServiceSuccess
   , serviceCase "sim_tick" Null ExpectServiceFailure
   , serviceCase "get_sim_dag" Null ExpectServiceSuccess
-  , serviceCase "get_logs" Null ExpectServiceFailure
+  , serviceCase "get_logs" Null ExpectServiceSuccess
   , ServiceOperationCase "take_screenshot" Null ExpectServiceFailure $ \ctx -> do
       submitted <- submitScreenshotRequest (ccScreenshotRef ctx)
       submitted `shouldSatisfy` either (const False) (const True)
@@ -2367,6 +2363,9 @@ serviceOperationCases =
   ]
 
 -- | Look up a key in a JSON object.
+shouldReturnSatisfying :: Show a => IO a -> (a -> Bool) -> Expectation
+shouldReturnSatisfying action predicate = action >>= (`shouldSatisfy` predicate)
+
 lookupKey :: Key -> Value -> Maybe Value
 lookupKey k (Object o) = KM.lookup k o
 lookupKey _ _          = Nothing

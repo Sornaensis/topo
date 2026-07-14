@@ -30,7 +30,7 @@ import Actor.PluginManager.PipelineIntegrator
 import Actor.SnapshotReceiver (readDataSnapshot)
 import Actor.UI.Setters (setUiDisabledStages, setUiExplicitDisabledStages)
 import Actor.UI.State (PipelineStageRunState(..), UiState(..), getUiSnapshot)
-import Actor.UiActions.Handles (ActorHandles(..))
+import Actor.UiActions.Handles (ActorHandles(..), publishUiMutation)
 import Data.Aeson (Value(..), object, (.=), (.:))
 import qualified Data.Aeson.Types as Aeson
 import qualified Data.Map.Strict as Map
@@ -155,6 +155,7 @@ handleSetStageEnabled ctx reqId params = do
               diagnostics = pipelineStageDiagnostics builtinDependencies allBuiltinStageIds toggled
           setUiExplicitDisabledStages uiH toggled
           setUiDisabledStages uiH disabled'
+          _ <- publishUiMutation handles
           pure $ okResponse reqId $ object
             [ "stage" .= stageName
             , "enabled" .= not (Set.member sid disabled')

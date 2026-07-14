@@ -18,7 +18,7 @@ module Seer.System.AutoTick
   , autoTickPeriodMicros
   ) where
 
-import Actor.Log (Log, LogEntry(..), LogLevel(..), appendLog)
+import Actor.Log (Log, LogEntry(..), LogLevel(..), appendLog, getLogSnapshot)
 import Actor.Simulation
   ( AutoTickStepResult(..)
   , Simulation
@@ -29,7 +29,9 @@ import Actor.Simulation
   )
 import Actor.SnapshotReceiver
   ( SnapshotVersionRef
-  , invalidatePublishedSnapshot
+  , publishSnapshot
+  , uiSnapshotUpdate
+  , withLogSnapshot
   )
 import Actor.UI
   ( Ui
@@ -200,12 +202,15 @@ disableAutoAfterFailure handles err = do
   setUiSimAutoTick (athUiHandle handles) False
   -- Barrier: make sure the UI actor has published the disabled state before
   -- bumping the shared snapshot version for render/HTTP readers.
-  _ <- getUiSnapshot (athUiHandle handles)
+  uiSnapshot <- getUiSnapshot (athUiHandle handles)
+  logSnapshot <- getLogSnapshot (athLogHandle handles)
   flushed <- flushSimWeatherPublication (athSimulationHandle handles)
   if flushed
     then pure ()
     else do
-      _ <- invalidatePublishedSnapshot (athSnapshotVersionRef handles)
+      _ <- publishSnapshot
+        (athSnapshotVersionRef handles)
+        (withLogSnapshot logSnapshot (uiSnapshotUpdate uiSnapshot))
       pure ()
 
 waitMicrosUntil :: Word64 -> Word64 -> Int

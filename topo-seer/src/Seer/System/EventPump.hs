@@ -5,15 +5,14 @@ module Seer.System.EventPump
   , coalesceMouseMotion
   ) where
 
-import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshotRef, appendLog)
+import Actor.Log (LogSnapshotRef, getLogSnapshot)
 import Actor.Render (RenderSnapshot(..))
-import Actor.SnapshotReceiver (invalidatePublishedSnapshot)
+import Actor.SnapshotReceiver (publishSnapshot, publishSnapshotIfVersion, readCommittedUiAndLog, uiSnapshotUpdate, withLogSnapshot)
 import Actor.UI (UiSnapshotRef, getUiSnapshot)
-import Actor.UiActions (UiActions)
+import Actor.UiActions (UiActions, awaitUiActions)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Control.Monad (forM_, when)
 import Data.IORef (IORef)
-import qualified Data.Text as Text
 import Data.Word (Word32)
 import GHC.Clock (getMonotonicTimeNSec)
 import Hyperspace.Actor (ActorHandle, Protocol)
@@ -47,7 +46,7 @@ hasQuitEvent :: [SDL.Event] -> Bool
 hasQuitEvent = any isQuit
 
 processEvents :: EventPumpEnv -> Word32 -> [SDL.Event] -> RenderSnapshot -> IO Word32
-processEvents env timingLogThresholdMs events renderSnap =
+processEvents env _timingLogThresholdMs events renderSnap =
   if null events
     then do
       -- Even when idle, tick the tooltip frame counter; if it fires we bump the
@@ -55,7 +54,7 @@ processEvents env timingLogThresholdMs events renderSnap =
       -- the next frame.
       fired <- tickTooltipHover (epeTooltipHoverRef env) (ahUiHandle (epeActorHandles env))
       when fired $
-        invalidateSnapshotFromEnv env
+        publishSnapshotFromEnvIfChanged env renderSnap
       pure 0
     else do
       handleStart <- getMonotonicTimeNSec
@@ -82,24 +81,43 @@ processEvents env timingLogThresholdMs events renderSnap =
             (epeTooltipHoverRef env)
       forM_ coalescedEvents (handleEvent inputContext)
       _ <- tickTooltipHover (epeTooltipHoverRef env) (ahUiHandle actorHandles)
-      afterEvents <- getMonotonicTimeNSec
-      invalidateSnapshotFromEnv env
+      -- A delegated UiActions mutation may publish terrain and enqueue atlas
+      -- work after its UI setter. Wait for actor ownership to finish before
+      -- comparing direct SDL mutations against the committed snapshot.
+      awaitUiActions (epeUiActionsHandle env)
+      publishSnapshotFromEnvIfChanged env renderSnap
       handleEnd <- getMonotonicTimeNSec
-      let elapsed = nsToMs handleStart handleEnd
-          eventsMs = nsToMs handleStart afterEvents
-          uiSnapMs = nsToMs afterEvents handleEnd
-      when (elapsed >= timingLogThresholdMs) $
-        appendLog (ahLogHandle actorHandles) (LogEntry LogInfo (Text.pack
-          ("handle events took " <> show elapsed <> "ms [" <> show (length events) <> " raw, " <> show (length coalescedEvents) <> " coalesced] dispatch=" <> show eventsMs <> "ms uiSnap=" <> show uiSnapMs <> "ms")))
-      pure elapsed
+      pure (nsToMs handleStart handleEnd)
 
-invalidateSnapshotFromEnv :: EventPumpEnv -> IO ()
-invalidateSnapshotFromEnv env = do
-  let handles = epeActorHandles env
-  -- Drain preceding UI casts before committing their invalidation epoch.
-  _ <- getUiSnapshot (ahUiHandle handles)
-  _ <- invalidatePublishedSnapshot (ahSnapshotVersionRef handles)
-  pure ()
+publishSnapshotFromEnvIfChanged :: EventPumpEnv -> RenderSnapshot -> IO ()
+publishSnapshotFromEnvIfChanged env previous = retry 3
+  where
+    handles = epeActorHandles env
+
+    -- Capture actor state against an observed committed epoch. If another
+    -- publisher wins, recapture instead of overwriting it with stale domains.
+    retry attempts = do
+      committed <- readCommittedUiAndLog (ahSnapshotVersionRef handles)
+      uiSnapshot <- getUiSnapshot (ahUiHandle handles)
+      logSnapshot <- getLogSnapshot (ahLogHandle handles)
+      case committed of
+        Nothing ->
+          when (uiSnapshot /= rsUi previous || logSnapshot /= rsLog previous) $ do
+            _ <- publishSnapshot
+              (ahSnapshotVersionRef handles)
+              (withLogSnapshot logSnapshot (uiSnapshotUpdate uiSnapshot))
+            pure ()
+        Just (expected, committedUi, committedLog)
+          | uiSnapshot == committedUi && logSnapshot == committedLog -> pure ()
+          | otherwise -> do
+              published <- publishSnapshotIfVersion
+                (ahSnapshotVersionRef handles)
+                expected
+                (withLogSnapshot logSnapshot (uiSnapshotUpdate uiSnapshot))
+              case published of
+                Just _ -> pure ()
+                Nothing | attempts > 1 -> retry (attempts - 1)
+                Nothing -> pure ()
 
 -- | Coalesce consecutive mouse motion events, keeping only the last one in
 -- each run of consecutive motions.  Non-motion events retain their original

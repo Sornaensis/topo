@@ -34,6 +34,7 @@ import qualified Data.Vector.Unboxed as U
 import System.FilePath ((</>))
 
 import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot, getDataSnapshot, replaceTerrainData)
+import Actor.Log (getLogSnapshot)
 import Actor.PluginManager
   ( PluginSimulationPlan(..)
   , getPluginDataDirectories
@@ -41,17 +42,18 @@ import Actor.PluginManager
   , getPluginSimulationPlan
   , notifyWorldChanged
   )
-import Actor.Simulation (beginSimWorldTransition, cancelSimWorldTransition, clearSimWorld, normalizeWorldSchedulesForBindings, setSimWorldWithNodes)
+import Actor.Simulation (beginSimWorldTransition, cancelSimWorldTransition, clearSimWorld, normalizeWorldSchedulesForBindings, setSimWorldWithNodesSync)
 import Actor.SnapshotReceiver
   ( dataAndTerrainSnapshotUpdate
   , publishSnapshot
   , readDataSnapshot
   , readTerrainSnapshot
+  , withLogSnapshot
   , withUiSnapshot
   )
 import Actor.UI.Setters (setUiWorldName, setUiWorldConfig, setUiOverlayNames, setUiSimTickCount, setUiViewSelection)
 import Actor.UiActions (enqueueAtlasRebuildForTerrain)
-import Actor.UiActions.Handles (ActorHandles(..))
+import Actor.UiActions.Handles (ActorHandles(..), publishUiMutation)
 import Actor.UI.State (UiState(..), ViewMode(..), defaultLayeredViewState, getUiSnapshot, readUiSnapshotRef)
 import Seer.Command.Context (CommandContext(..))
 import Seer.Config.Snapshot (snapshotFromUi, applySnapshotToUi)
@@ -251,6 +253,7 @@ handleSaveWorld ctx reqId params = do
                                  (Just (Text.pack (wDir </> Text.unpack name)))
               setUiWorldName (ahUiHandle handles) name
               setUiWorldConfig (ahUiHandle handles) (Just (snapshotFromUi ui name))
+              _ <- publishUiMutation handles
               pure $ okResponse reqId $ object
                 [ "name" .= name
                 , "saved" .= True
@@ -290,7 +293,6 @@ handleLoadWorld ctx reqId params = do
               -- Replace terrain data
               clearSimWorld simH ()
               replaceTerrainData (ahDataHandle handles) world
-              setSimWorldWithNodes (ahSimulationHandle handles) world (pspExecutableNodes simPlan)
               setUiOverlayNames uiH (overlayNames (twOverlays world))
               -- Capture authoritative data after the actor mutations. The
               -- refs are committed only after the matching UI barrier below.
@@ -308,16 +310,19 @@ handleLoadWorld ctx reqId params = do
               wDir <- worldDir
               notifyWorldChanged (ahPluginManagerHandle handles)
                                  (Just (Text.pack (wDir </> Text.unpack name)))
-              -- The synchronous UI request is the actor barrier for all casts
-              -- above. Commit data and terrain once, then stamp atlas work with
-              -- that exact returned version.
+              -- Bind while retaining the transition latch, then barrier every
+              -- final UI/log write into the same data+terrain publication.
+              setSimWorldWithNodesSync simH world (pspExecutableNodes simPlan)
               ui <- getUiSnapshot uiH
+              logSnapshot <- getLogSnapshot (ahLogHandle handles)
               snapshotVersion <- publishSnapshot
                 (ahSnapshotVersionRef handles)
-                (withUiSnapshot ui
-                  (dataAndTerrainSnapshotUpdate
-                    (ahDataSnapshotRef handles) dataSnap
-                    (ahTerrainSnapshotRef handles) terrainSnap'))
+                (withLogSnapshot logSnapshot
+                  (withUiSnapshot ui
+                    (dataAndTerrainSnapshotUpdate
+                      (ahDataSnapshotRef handles) dataSnap
+                      (ahTerrainSnapshotRef handles) terrainSnap')))
+              cancelSimWorldTransition simH
               enqueueAtlasRebuildForTerrain
                 handles (uiViewMode ui) ui snapshotVersion terrainSnap'
               pure $ okResponse reqId $ object
@@ -340,7 +345,9 @@ handleSetWorldName ctx reqId params = do
       | Text.null name ->
           pure $ errResponse reqId "world name must not be empty"
       | otherwise -> do
-          setUiWorldName (ahUiHandle (ccActorHandles ctx)) name
+          let handles = ccActorHandles ctx
+          setUiWorldName (ahUiHandle handles) name
+          _ <- publishUiMutation handles
           pure $ okResponse reqId $ object
             [ "name" .= name ]
 

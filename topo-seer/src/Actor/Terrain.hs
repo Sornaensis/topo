@@ -58,13 +58,16 @@ import Topo.Pipeline (PipelineConfig(..), StageProgress(..), StageStatus(..), ru
 import Topo.Pipeline.Stage (StageId)
 import Topo.Overlay (OverlayStore)
 import Topo.WorldGen (WorldGenConfig(..), buildFullPipelineConfig)
-import Actor.Simulation (Simulation, SimulationNodeBinding, normalizeWorldSchedulesForBindings, setSimWorldWithNodes)
+import Actor.Simulation (Simulation, SimulationNodeBinding, normalizeWorldSchedulesForBindings, setSimWorldWithNodesSync)
 
 progressTag :: OpTag "progress"
 progressTag = OpTag
 
 resultTag :: OpTag "result"
 resultTag = OpTag
+
+generationFailedTag :: OpTag "generationFailed"
+generationFailedTag = OpTag
 
 logMessageTag :: OpTag "logMessage"
 logMessageTag = OpTag
@@ -132,6 +135,7 @@ emptyTerrainState = TerrainState
 replyprotocol TerrainReplyOps =
   cast progress :: TerrainGenProgress
   cast result :: TerrainGenResult
+  cast generationFailed :: Text
   cast logMessage :: LogEntry
 
 actor Terrain
@@ -177,7 +181,9 @@ actor Terrain
     replyCast replyTo logMessageTag (LogEntry LogInfo (Text.pack ("terrain: total generation took " <> show totalElapsed <> "ms")))
     case runResult of
       Left err -> do
-        replyCast replyTo logMessageTag (LogEntry LogError (Text.pack ("terrain: pipeline failed: " <> show err)))
+        let failure = Text.pack ("terrain: pipeline failed: " <> show err)
+        replyCast replyTo logMessageTag (LogEntry LogError failure)
+        replyCast replyTo generationFailedTag failure
         pure st { tsRunning = False }
       Right (world1, _) -> do
         let scheduledWorld = prepareGeneratedWorldForSimulation cfg (tgrSimNodes req) world1
@@ -225,10 +231,10 @@ actor Terrain
               , tgrResultTerrainCount = terrainCount
               , tgrResultBiomeCount = biomeCount
               }
+        -- Bind the simulation world before completion can be published. The
+        -- synchronous call orders its UI/log writes ahead of the result epoch.
+        setSimWorldWithNodesSync (tgrSimHandle req) scheduledWorld (tgrSimNodes req)
         replyCast replyTo resultTag result
-        -- Send the full world to the Simulation actor so it can
-        -- run tick-based overlay simulation on demand.
-        setSimWorldWithNodes (tgrSimHandle req) scheduledWorld (tgrSimNodes req)
         pure st { tsLastSeed = Just (tgrSeed req), tsRunning = False }
 |]
 

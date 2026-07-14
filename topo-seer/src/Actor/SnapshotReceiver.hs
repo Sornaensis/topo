@@ -22,6 +22,8 @@ module Actor.SnapshotReceiver
     -- * Ordered publication
   , SnapshotVersionRef
   , SnapshotUpdate
+  , uiSnapshotUpdate
+  , logSnapshotUpdate
   , dataSnapshotUpdate
   , terrainSnapshotUpdate
   , dataAndTerrainSnapshotUpdate
@@ -31,14 +33,18 @@ module Actor.SnapshotReceiver
   , newRenderSnapshotVersionRef
   , readSnapshotVersion
   , publishSnapshot
+  , publishSnapshotIfVersion
   , invalidatePublishedSnapshot
   , readCommittedRenderSnapshot
+  , readCommittedUiAndLog
+  , publishChangedUiAndLog
   , withCommittedRenderSnapshot
   ) where
 
 import Actor.Data (DataSnapshot(..), TerrainSnapshot(..))
 import Actor.Log (LogSnapshot(..), LogSnapshotRef, readLogSnapshotRef)
 import Actor.UI (UiSnapshotRef, UiState(..), readUiSnapshotRef)
+import Control.Monad (void)
 import Control.Concurrent.MVar
   ( MVar
   , modifyMVarMasked
@@ -126,6 +132,16 @@ data SnapshotUpdate = SnapshotUpdate
   , suTerrain :: !(Maybe (TerrainSnapshotRef, TerrainSnapshot))
   }
 
+-- | Publish a mailbox-barrier UI snapshot without changing data or terrain.
+uiSnapshotUpdate :: UiState -> SnapshotUpdate
+uiSnapshotUpdate uiSnapshot =
+  SnapshotUpdate (Just uiSnapshot) Nothing Nothing Nothing
+
+-- | Publish a mailbox-barrier log snapshot without changing other domains.
+logSnapshotUpdate :: LogSnapshot -> SnapshotUpdate
+logSnapshotUpdate logSnapshot =
+  SnapshotUpdate Nothing (Just logSnapshot) Nothing Nothing
+
 dataSnapshotUpdate :: DataSnapshotRef -> DataSnapshot -> SnapshotUpdate
 dataSnapshotUpdate ref snapshot =
   SnapshotUpdate Nothing Nothing (Just (ref, snapshot)) Nothing
@@ -191,16 +207,40 @@ readSnapshotVersion (SnapshotVersionRef publicationRef) =
 publishSnapshot :: SnapshotVersionRef -> SnapshotUpdate -> IO SnapshotVersion
 publishSnapshot (SnapshotVersionRef publicationRef) update =
   modifyMVarMasked publicationRef $ \state -> do
-    mapM_ (uncurry writeIORef) (suData update)
-    mapM_ (uncurry writeIORef) (suTerrain update)
-    let committedSnapshot = applySnapshotUpdate update <$> spsCommittedRenderSnapshot state
-        SnapshotVersion version = spsVersion state
-        committed = SnapshotVersion (version + 1)
-        state' = state
-          { spsVersion = committed
-          , spsCommittedRenderSnapshot = committedSnapshot
-          }
+    (state', committed) <- commitSnapshotUpdate state update
     pure (state', committed)
+
+-- | Publish only if no other writer has advanced beyond the observed version.
+-- A failed conditional commit performs no ref writes and lets callers recapture
+-- actor state before retrying, preventing stale compensating publications.
+publishSnapshotIfVersion
+  :: SnapshotVersionRef
+  -> SnapshotVersion
+  -> SnapshotUpdate
+  -> IO (Maybe SnapshotVersion)
+publishSnapshotIfVersion (SnapshotVersionRef publicationRef) expected update =
+  modifyMVarMasked publicationRef $ \state ->
+    if spsVersion state /= expected
+      then pure (state, Nothing)
+      else do
+        (state', committed) <- commitSnapshotUpdate state update
+        pure (state', Just committed)
+
+commitSnapshotUpdate
+  :: SnapshotPublicationState
+  -> SnapshotUpdate
+  -> IO (SnapshotPublicationState, SnapshotVersion)
+commitSnapshotUpdate state update = do
+  mapM_ (uncurry writeIORef) (suData update)
+  mapM_ (uncurry writeIORef) (suTerrain update)
+  let committedSnapshot = applySnapshotUpdate update <$> spsCommittedRenderSnapshot state
+      SnapshotVersion version = spsVersion state
+      committed = SnapshotVersion (version + 1)
+      state' = state
+        { spsVersion = committed
+        , spsCommittedRenderSnapshot = committedSnapshot
+        }
+  pure (state', committed)
 
 -- | Commit an invalidation after UI/log actors have already published state.
 --
@@ -227,6 +267,59 @@ invalidatePublishedSnapshot (SnapshotVersionRef publicationRef) =
 readCommittedRenderSnapshot :: SnapshotVersionRef -> IO (SnapshotVersion, RenderSnapshot)
 readCommittedRenderSnapshot publicationRef =
   withCommittedRenderSnapshot publicationRef (\version snapshot -> pure (version, snapshot))
+
+-- | Read the committed UI/log domains when render refs are registered.
+-- Detached test coordinators return 'Nothing' rather than throwing.
+readCommittedUiAndLog
+  :: SnapshotVersionRef
+  -> IO (Maybe (SnapshotVersion, UiState, LogSnapshot))
+readCommittedUiAndLog (SnapshotVersionRef publicationRef) =
+  withMVar publicationRef $ \state -> pure $ do
+    snapshot <- spsCommittedRenderSnapshot state
+    pure (spsVersion state, rsUi snapshot, rsLog snapshot)
+
+-- | Publish UI and log domains changed since the supplied actor snapshots.
+--
+-- The committed tuple is observed before each pair of mailbox-barrier captures.
+-- A concurrent commit therefore makes the conditional publication fail and
+-- forces fresh captures, rather than allowing an older capture to overwrite a
+-- newer committed domain. UI and log are compared independently so an explicit
+-- publication of one domain cannot hide a still-unpublished change in the
+-- other.
+publishChangedUiAndLog
+  :: SnapshotVersionRef
+  -> UiState
+  -> LogSnapshot
+  -> IO UiState
+  -> IO LogSnapshot
+  -> IO ()
+publishChangedUiAndLog versionRef uiBefore logBefore captureUi captureLog = retry
+  where
+    retry = do
+      committed <- readCommittedUiAndLog versionRef
+      uiAfter <- captureUi
+      logAfter <- captureLog
+      case committed of
+        Nothing ->
+          if uiAfter /= uiBefore || logAfter /= logBefore
+            then void $ publishSnapshot versionRef
+              (withLogSnapshot logAfter (uiSnapshotUpdate uiAfter))
+            else pure ()
+        Just (expected, committedUi, committedLog) -> do
+          let uiMissing = uiAfter /= uiBefore && uiAfter /= committedUi
+              logMissing = logAfter /= logBefore && logAfter /= committedLog
+          if not (uiMissing || logMissing)
+            then pure ()
+            else do
+              let update = case (uiMissing, logMissing) of
+                    (True, True) -> withLogSnapshot logAfter (uiSnapshotUpdate uiAfter)
+                    (True, False) -> uiSnapshotUpdate uiAfter
+                    (False, True) -> logSnapshotUpdate logAfter
+                    (False, False) -> uiSnapshotUpdate uiAfter
+              published <- publishSnapshotIfVersion versionRef expected update
+              case published of
+                Just _ -> pure ()
+                Nothing -> retry
 
 -- | Run a short coherent read while excluding concurrent publishers.
 -- This callback form is primarily useful when a consumer must derive a value

@@ -19,7 +19,7 @@ import qualified Data.Aeson.Types as Aeson
 import Data.Text (Text)
 
 import Actor.Log (LogLevel(..), LogSnapshot(..), readLogSnapshotRef, setLogCollapsed, setLogMinLevel)
-import Actor.UiActions.Handles (ActorHandles(..))
+import Actor.UiActions.Handles (ActorHandles(..), publishLogMutation, publishUiMutation)
 import Actor.UI.State (ConfigTab(..), LeftTab(..), UiState(..), readUiSnapshotRef)
 import Actor.UI.Setters (setUiShowLeftPanel, setUiLeftTab, setUiShowConfig)
 import Seer.Command.Context (CommandContext(..))
@@ -36,6 +36,7 @@ handleSetLeftPanel ctx reqId params = do
     Just visible -> do
       let uiH = ahUiHandle (ccActorHandles ctx)
       setUiShowLeftPanel uiH visible
+      _ <- publishUiMutation (ccActorHandles ctx)
       pure $ okResponse reqId $ object ["visible" .= visible]
 
 -- | Handle @set_left_tab@ — switch the left panel tab.
@@ -57,6 +58,7 @@ handleSetLeftTab ctx reqId params = do
             then pure $ errResponse reqId "left panel is not visible; call set_left_panel first"
             else do
               setUiLeftTab uiH tab
+              _ <- publishUiMutation (ccActorHandles ctx)
               pure $ okResponse reqId $ object ["tab" .= tabName]
 
 -- | Handle @toggle_config_panel@ — toggle config panel visibility.
@@ -71,6 +73,7 @@ handleToggleConfigPanel ctx reqId params = do
         Just v  -> v
         Nothing -> not (uiShowConfig ui)
   setUiShowConfig uiH newState
+  _ <- publishUiMutation (ccActorHandles ctx)
   pure $ okResponse reqId $ object ["visible" .= newState]
 
 -- | Handle @set_log_collapsed@ — collapse or expand the log panel.
@@ -84,6 +87,7 @@ handleSetLogCollapsed ctx reqId params = do
     Just collapsed -> do
       let logH = ahLogHandle (ccActorHandles ctx)
       setLogCollapsed logH collapsed
+      _ <- publishLogMutation (ccActorHandles ctx)
       pure $ okResponse reqId $ object ["collapsed" .= collapsed]
 
 -- | Handle @set_log_level@ — set the minimum log level filter.
@@ -101,6 +105,7 @@ handleSetLogLevel ctx reqId params = do
         Just level -> do
           let logH = ahLogHandle (ccActorHandles ctx)
           setLogMinLevel logH level
+          _ <- publishLogMutation (ccActorHandles ctx)
           pure $ okResponse reqId $ object ["level" .= levelName]
 
 -- | Handle @get_ui_panels@ — query current panel visibility state.

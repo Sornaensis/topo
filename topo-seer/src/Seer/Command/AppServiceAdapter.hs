@@ -23,8 +23,12 @@ import qualified Data.Text as Text
 
 import Topo.Command.Types (SeerCommand(..), SeerResponse(..), errResponse, okResponse)
 
+import Actor.Log (getLogSnapshot)
+import Actor.SnapshotReceiver (publishChangedUiAndLog)
+import Actor.UI (getUiSnapshot)
+import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context
-  ( CommandContext
+  ( CommandContext(..)
   , commandServiceContext
   , serviceCommandContext
   )
@@ -197,8 +201,10 @@ appServiceCommandMethods = map fst . appServiceHandlersByMethod
 
 commandServiceHandler :: TypedServiceOperation request response -> RawCommandHandler -> ServiceHandler request response
 commandServiceHandler operation handler = validateServiceHandler operation $ \ctx request -> do
-  let params = serviceRequestBodyValue request
-  response <- handler (serviceCommandContext ctx) 0 params
+  let commandCtx = serviceCommandContext ctx
+      params = serviceRequestBodyValue request
+  response <- withMutationPublication commandCtx srSuccess $
+    handler commandCtx 0 params
   pure (commandResponseToServiceResult response)
 
 commandServiceResultHandler
@@ -206,8 +212,34 @@ commandServiceResultHandler
   -> (CommandContext -> Value -> IO ServiceResult)
   -> ServiceHandler request response
 commandServiceResultHandler operation handler = validateServiceHandler operation $ \ctx request -> do
-  let params = serviceRequestBodyValue request
-  handler (serviceCommandContext ctx) params
+  let commandCtx = serviceCommandContext ctx
+      params = serviceRequestBodyValue request
+  withMutationPublication commandCtx isServiceSuccess $
+    handler commandCtx params
+  where
+    isServiceSuccess (Right _) = True
+    isServiceSuccess (Left _) = False
+
+-- | Close legacy handler gaps centrally while each handler is migrated to
+-- explicit ordered publication. Mailbox barriers make a successful command's
+-- UI/log mutation observable before its response is returned. Handlers that
+-- already published (notably atlas-producing mutations) retain their epoch.
+withMutationPublication :: CommandContext -> (a -> Bool) -> IO a -> IO a
+withMutationPublication ctx succeeded action = do
+  let handles = ccActorHandles ctx
+  uiBefore <- getUiSnapshot (ahUiHandle handles)
+  logBefore <- getLogSnapshot (ahLogHandle handles)
+  result <- action
+  if not (succeeded result)
+    then pure result
+    else do
+      publishChangedUiAndLog
+        (ahSnapshotVersionRef handles)
+        uiBefore
+        logBefore
+        (getUiSnapshot (ahUiHandle handles))
+        (getLogSnapshot (ahLogHandle handles))
+      pure result
 
 commandResponseToServiceResult :: SeerResponse -> ServiceResult
 commandResponseToServiceResult response

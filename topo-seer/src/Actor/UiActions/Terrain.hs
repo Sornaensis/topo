@@ -8,6 +8,7 @@ module Actor.UiActions.Terrain
   ( UiActionHandles(..)
   , handleTerrainProgress
   , handleTerrainLog
+  , handleTerrainFailure
   , applyTerrainResult
   ) where
 
@@ -34,15 +35,19 @@ import Actor.Data
   , setWaterBodyChunkData
   , setWeatherChunkData
   )
-import Actor.Log (Log, LogEntry(..), LogLevel(..), appendLog)
+import Actor.Log (Log, LogEntry(..), LogLevel(..), appendLog, getLogSnapshot)
 import Actor.Render (RenderSnapshot(..))
+import Actor.Simulation (Simulation, cancelSimWorldTransition)
 import Actor.SnapshotReceiver
   ( DataSnapshotRef
   , SnapshotVersion
   , SnapshotVersionRef
   , TerrainSnapshotRef
   , dataAndTerrainSnapshotUpdate
+  , logSnapshotUpdate
   , publishSnapshot
+  , uiSnapshotUpdate
+  , withLogSnapshot
   , withUiSnapshot
   )
 import Actor.Terrain (TerrainGenProgress(..), TerrainGenResult(..))
@@ -58,10 +63,7 @@ import Actor.UI
   )
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Data.Word (Word64)
-import GHC.Clock (getMonotonicTimeNSec)
 import Hyperspace.Actor (ActorHandle, Protocol)
-import Seer.Timing (nsToMs)
 import Topo.Overlay (overlayNames)
 import Topo.Pipeline (StageStatus(..))
 
@@ -74,6 +76,7 @@ data UiActionHandles = UiActionHandles
   , uahDataSnapshotRef :: !DataSnapshotRef
   , uahTerrainSnapshotRef :: !TerrainSnapshotRef
   , uahSnapshotVersionRef :: !SnapshotVersionRef
+  , uahSimulation :: !(ActorHandle Simulation (Protocol Simulation))
   }
 
 handleTerrainProgress :: UiActionHandles -> TerrainGenProgress -> IO ()
@@ -86,10 +89,34 @@ handleTerrainProgress handles progressMsg = do
     , psrsDetail = tgpStageDetail progressMsg
     }
   appendLog (uahLog handles) (LogEntry LogInfo (renderTerrainProgress progressMsg))
+  uiSnapshot <- getUiSnapshot (uahUi handles)
+  logSnapshot <- getLogSnapshot (uahLog handles)
+  _ <- publishSnapshot
+    (uahSnapshotVersionRef handles)
+    (withLogSnapshot logSnapshot (uiSnapshotUpdate uiSnapshot))
+  pure ()
 
 handleTerrainLog :: UiActionHandles -> LogEntry -> IO ()
-handleTerrainLog handles entry =
+handleTerrainLog handles entry = do
   appendLog (uahLog handles) entry
+  logSnapshot <- getLogSnapshot (uahLog handles)
+  _ <- publishSnapshot
+    (uahSnapshotVersionRef handles)
+    (logSnapshotUpdate logSnapshot)
+  pure ()
+
+-- | Clear the generation/transition latches after a failed pipeline and commit
+-- the final UI plus all failure logs delivered earlier by the Terrain actor.
+handleTerrainFailure :: UiActionHandles -> Text -> IO ()
+handleTerrainFailure handles _ = do
+  setUiGenerating (uahUi handles) False
+  cancelSimWorldTransition (uahSimulation handles)
+  uiSnapshot <- getUiSnapshot (uahUi handles)
+  logSnapshot <- getLogSnapshot (uahLog handles)
+  _ <- publishSnapshot
+    (uahSnapshotVersionRef handles)
+    (withLogSnapshot logSnapshot (uiSnapshotUpdate uiSnapshot))
+  pure ()
 
 renderTerrainProgress :: TerrainGenProgress -> Text
 renderTerrainProgress progressMsg =
@@ -106,8 +133,6 @@ renderTerrainProgress progressMsg =
 
 applyTerrainResult :: UiActionHandles -> TerrainGenResult -> IO ()
 applyTerrainResult handles resultMsg = do
-  start <- getMonotonicTimeNSec
-  let logStep label stepStart stepEnd = appendLog (uahLog handles) (LogEntry LogDebug (label <> " took " <> Text.pack (show (nsToMs stepStart stepEnd)) <> "ms"))
   let chunkSize = tgrResultChunkSize resultMsg
       terrainChunks = tgrResultTerrainChunks resultMsg
       climateChunks = tgrResultClimateChunks resultMsg
@@ -156,33 +181,23 @@ applyTerrainResult handles resultMsg = do
   terrainSnap <- getTerrainSnapshot (uahData handles)
   dataSnap <- getDataSnapshot (uahData handles)
   setUiGenerating (uahUi handles) False
-  -- The synchronous UI request is both the value used by the atlas and the
-  -- mailbox barrier for the UI state included in this publication epoch.
+  appendLog (uahLog handles) (LogEntry LogInfo ("terrain: generation complete, awaiting render pipeline, chunks=" <> toText terrainCount))
+  -- These calls are mailbox barriers for every externally visible completion
+  -- write. The atlas is stamped with this same coherent publication epoch.
   uiSnapForAtlas <- getUiSnapshot (uahUi handles)
-  castStart <- getMonotonicTimeNSec
+  logSnapForAtlas <- getLogSnapshot (uahLog handles)
   snapshotVersion <- publishSnapshot
     (uahSnapshotVersionRef handles)
-    (withUiSnapshot uiSnapForAtlas
-      (dataAndTerrainSnapshotUpdate
-        (uahDataSnapshotRef handles) dataSnap
-        (uahTerrainSnapshotRef handles) terrainSnap))
-  castEnd <- getMonotonicTimeNSec
-  logStep "terrain: publish snapshot refs" castStart castEnd
-  atlasStart <- getMonotonicTimeNSec
+    (withLogSnapshot logSnapForAtlas
+      (withUiSnapshot uiSnapForAtlas
+        (dataAndTerrainSnapshotUpdate
+          (uahDataSnapshotRef handles) dataSnap
+          (uahTerrainSnapshotRef handles) terrainSnap)))
+  cancelSimWorldTransition (uahSimulation handles)
   rebuildAtlas handles snapshotVersion terrainSnap uiSnapForAtlas
-  atlasEnd <- getMonotonicTimeNSec
-  logStep "terrain: enqueue atlas" atlasStart atlasEnd
-  completeNs <- getMonotonicTimeNSec
-  appendLog (uahLog handles) (LogEntry LogInfo ("terrain: generation complete, awaiting render pipeline, chunks=" <> toText terrainCount <> " t=" <> nsText completeNs))
-  end <- getMonotonicTimeNSec
-  let elapsedMs :: Double
-      elapsedMs = fromIntegral (end - start) / 1e6
-      message = "terrain: apply result took " <> Text.pack (show elapsedMs) <> "ms t=" <> nsText end
-  appendLog (uahLog handles) (LogEntry LogDebug message)
 
 rebuildAtlas :: UiActionHandles -> SnapshotVersion -> TerrainSnapshot -> UiState -> IO ()
 rebuildAtlas handles snapshotVersion terrainSnap uiSnap = do
-  start <- getMonotonicTimeNSec
   let selection = effectiveViewSelection uiSnap
       -- Enqueue the current zoom stage first so the visible tiles are
       -- prioritised by the scheduler's round-robin dispatch.
@@ -191,8 +206,6 @@ rebuildAtlas handles snapshotVersion terrainSnap uiSnap = do
   -- Build only the current view selection's layers. Other modes build
   -- on-demand when the user switches to them.
   mapM_ (enqueueAtlasBuild (uahAtlas handles)) jobs
-  end <- getMonotonicTimeNSec
-  logElapsed (uahLog handles) "terrain: enqueue atlas jobs" start end
 
 toText :: Show a => a -> Text
 toText = Text.pack . show
@@ -203,12 +216,3 @@ stageStatusText StageRunning = "running"
 stageStatusText StageCompleted = "completed"
 stageStatusText StageSkipped = "skipped"
 
-logElapsed :: ActorHandle Log (Protocol Log) -> Text -> Word64 -> Word64 -> IO ()
-logElapsed logHandle label start end =
-  let elapsedMs :: Double
-      elapsedMs = fromIntegral (end - start) / 1e6
-      message = label <> " took " <> Text.pack (show elapsedMs) <> "ms"
-  in appendLog logHandle (LogEntry LogDebug message)
-
-nsText :: Word64 -> Text
-nsText ns = Text.pack (show ns)

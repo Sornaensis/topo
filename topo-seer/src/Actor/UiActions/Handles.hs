@@ -2,16 +2,28 @@
 module Actor.UiActions.Handles
   ( ActorHandles(..)
   , mkActorHandles
+  , publishUiMutation
+  , publishLogMutation
+  , publishUiAndLogMutation
   ) where
 
 import Actor.AtlasManager (AtlasManager)
 import Actor.Data (Data)
-import Actor.Log (Log)
+import Actor.Log (Log, LogSnapshot, getLogSnapshot)
 import Actor.PluginManager (PluginManager)
 import Actor.Simulation (Simulation)
-import Actor.SnapshotReceiver (DataSnapshotRef, TerrainSnapshotRef, SnapshotVersionRef)
+import Actor.SnapshotReceiver
+  ( DataSnapshotRef
+  , SnapshotVersion
+  , SnapshotVersionRef
+  , TerrainSnapshotRef
+  , logSnapshotUpdate
+  , publishSnapshot
+  , uiSnapshotUpdate
+  , withLogSnapshot
+  )
 import Actor.Terrain (Terrain)
-import Actor.UI (Ui)
+import Actor.UI (Ui, UiState, getUiSnapshot)
 import Data.IORef (IORef)
 import Hyperspace.Actor (ActorHandle, Protocol)
 import Seer.Editor.History (EditHistory)
@@ -60,3 +72,27 @@ mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle da
     , ahSimulationHandle = simulationHandle
     , ahHistoryRef = historyRef
     }
+
+-- | Drain the UI mailbox and publish the resulting state in one epoch.
+publishUiMutation :: ActorHandles -> IO (SnapshotVersion, UiState)
+publishUiMutation handles = do
+  uiSnapshot <- getUiSnapshot (ahUiHandle handles)
+  version <- publishSnapshot (ahSnapshotVersionRef handles) (uiSnapshotUpdate uiSnapshot)
+  pure (version, uiSnapshot)
+
+-- | Drain the log mailbox and publish the resulting state in one epoch.
+publishLogMutation :: ActorHandles -> IO (SnapshotVersion, LogSnapshot)
+publishLogMutation handles = do
+  logSnapshot <- getLogSnapshot (ahLogHandle handles)
+  version <- publishSnapshot (ahSnapshotVersionRef handles) (logSnapshotUpdate logSnapshot)
+  pure (version, logSnapshot)
+
+-- | Drain both actor mailboxes and publish their state in one epoch.
+publishUiAndLogMutation :: ActorHandles -> IO (SnapshotVersion, UiState, LogSnapshot)
+publishUiAndLogMutation handles = do
+  uiSnapshot <- getUiSnapshot (ahUiHandle handles)
+  logSnapshot <- getLogSnapshot (ahLogHandle handles)
+  version <- publishSnapshot
+    (ahSnapshotVersionRef handles)
+    (withLogSnapshot logSnapshot (uiSnapshotUpdate uiSnapshot))
+  pure (version, uiSnapshot, logSnapshot)

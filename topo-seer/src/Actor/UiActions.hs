@@ -13,6 +13,8 @@ module Actor.UiActions
   , UiActionRequest(..)
   , uiActionsActorDef
   , submitUiAction
+  , submitUiActionSync
+  , awaitUiActions
   , enqueueAtlasRebuildForTerrain
   ) where
 
@@ -32,9 +34,11 @@ import Actor.UiActions.Command
 import Actor.UiActions.Terrain
   ( UiActionHandles(..)
   , applyTerrainResult
+  , handleTerrainFailure
   , handleTerrainLog
   , handleTerrainProgress
   )
+import Data.Text (Text)
 import Hyperspace.Actor
 import Hyperspace.Actor.QQ (hyperspace)
 
@@ -62,19 +66,29 @@ actor UiActions
   mailbox Unbounded
 
   cast run :: UiActionRequest
+  call runSync :: UiActionRequest -> ()
+  call barrier :: () -> ()
   cast progress :: TerrainGenProgress
   cast result :: TerrainGenResult
+  cast generationFailed :: Text
   cast logMessage :: LogEntry
 
   initial emptyUiActionsState
   on_ run = \req st -> do
     runUiAction req
     pure (rememberHandles req st)
+  on runSync = \req st -> do
+    runUiAction req
+    pure (rememberHandles req st, ())
+  onPure barrier = \() st -> (st, ())
   on_ progress = \progressMsg st -> do
     withHandles st (\handles -> handleTerrainProgress handles progressMsg)
     pure st
   on_ result = \resultMsg st -> do
     withHandles st (\handles -> applyTerrainResult handles resultMsg)
+    pure st
+  on_ generationFailed = \err st -> do
+    withHandles st (\handles -> handleTerrainFailure handles err)
     pure st
   on_ logMessage = \entry st -> do
     withHandles st (\handles -> handleTerrainLog handles entry)
@@ -84,6 +98,18 @@ actor UiActions
 submitUiAction :: ActorHandle UiActions (Protocol UiActions) -> UiActionRequest -> IO ()
 submitUiAction handle req =
   cast @"run" handle #run req
+
+-- | Command/HTTP submission barrier. The response is not produced until the
+-- UiActions mailbox has applied and published the requested mutation.
+submitUiActionSync :: ActorHandle UiActions (Protocol UiActions) -> UiActionRequest -> IO ()
+submitUiActionSync handle req =
+  call @"runSync" handle #runSync req
+
+-- | Wait until all previously submitted UI actions have finished their
+-- actor-owned publication.
+awaitUiActions :: ActorHandle UiActions (Protocol UiActions) -> IO ()
+awaitUiActions handle =
+  call @"barrier" handle #barrier ()
 
 rememberHandles :: UiActionRequest -> UiActionsState -> UiActionsState
 rememberHandles req st =
@@ -96,6 +122,7 @@ rememberHandles req st =
         , uahDataSnapshotRef = ahDataSnapshotRef handles
         , uahTerrainSnapshotRef = ahTerrainSnapshotRef handles
         , uahSnapshotVersionRef = ahSnapshotVersionRef handles
+        , uahSimulation = ahSimulationHandle handles
         }
     }
   where

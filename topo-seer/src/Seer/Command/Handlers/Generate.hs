@@ -14,7 +14,7 @@ import Actor.Terrain (TerrainReplyOps)
 import Actor.UiActions
   ( UiAction(..)
   , UiActionRequest(..)
-  , submitUiAction
+  , submitUiActionSync
   )
 import Hyperspace.Actor (replyTo)
 import Seer.Command.Context (CommandContext(..))
@@ -36,5 +36,5 @@ handleGenerate ctx reqId _params = do
         , uarActorHandles   = actorHandles
         , uarTerrainReplyTo = replyTo @TerrainReplyOps uiActionsH
         }
-  submitUiAction uiActionsH request
+  submitUiActionSync uiActionsH request
   pure $ okResponse reqId $ object ["status" .= ("generating" :: Text)]

@@ -22,9 +22,9 @@ import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot)
 import Actor.Terrain (TerrainReplyOps)
 import Actor.UI.Setters (setUiPanOffset, setUiZoom, setUiHoverHex, setUiContextHex, setUiHexTooltipPinned)
 import Actor.UI.State (UiState(..), readUiSnapshotRef)
-import Actor.UiActions (UiAction(..), UiActionRequest(..), submitUiAction)
+import Actor.UiActions (UiAction(..), UiActionRequest(..), submitUiActionSync)
 import Actor.UiActions.Command (enqueueViewportRefreshForCurrentUi)
-import Actor.UiActions.Handles (ActorHandles(..))
+import Actor.UiActions.Handles (ActorHandles(..), publishUiMutation)
 import Hyperspace.Actor (replyTo)
 import Seer.Command.Context (CommandContext(..))
 import Seer.Editor.Types (EditorState(..))
@@ -149,7 +149,7 @@ handleViewportClick ctx reqId params = do
                       , uarActorHandles   = handles
                       , uarTerrainReplyTo = replyTo @TerrainReplyOps (ccUiActionsHandle ctx)
                       }
-                submitUiAction (ccUiActionsHandle ctx) request
+                submitUiActionSync (ccUiActionsHandle ctx) request
               pure $ okResponse reqId $ object
                 [ "button"  .= ("left" :: String)
                 , "hex_q"   .= q
@@ -218,6 +218,7 @@ handleViewportHover ctx reqId params = do
       if hexExists
         then do
           setUiHoverHex uiH (Just (q, r))
+          _ <- publishUiMutation handles
           pure $ okResponse reqId $ object
             [ "hex_q"  .= q
             , "hex_r"  .= r
@@ -225,6 +226,7 @@ handleViewportHover ctx reqId params = do
             ]
         else do
           setUiHoverHex uiH Nothing
+          _ <- publishUiMutation handles
           pure $ okResponse reqId $ object
             [ "hex_q"  .= q
             , "hex_r"  .= r

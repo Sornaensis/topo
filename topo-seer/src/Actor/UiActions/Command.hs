@@ -15,7 +15,11 @@ module Actor.UiActions.Command
   , isElevationTool
   ) where
 
-import Actor.UiActions.Handles (ActorHandles(..))
+import Actor.UiActions.Handles
+  ( ActorHandles(..)
+  , publishUiAndLogMutation
+  , publishUiMutation
+  )
 import Actor.PluginManager
   ( LoadedPlugin(..)
   , PluginManager
@@ -50,13 +54,13 @@ import Actor.Data
   , getTerrainSnapshot
   , setTerrainChunkData
   )
-import Actor.Log (Log, LogEntry(..), LogLevel(..), appendLog)
+import Actor.Log (Log, LogEntry(..), LogLevel(..), appendLog, getLogSnapshot)
 import Actor.SnapshotReceiver
   ( SnapshotVersion
   , dataAndTerrainSnapshotUpdate
-  , invalidatePublishedSnapshot
   , publishSnapshot
   , terrainSnapshotUpdate
+  , withLogSnapshot
   , withUiSnapshot
   )
 import Actor.Terrain
@@ -117,9 +121,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.IntMap.Strict as IntMap
 import Data.IORef (readIORef, writeIORef)
-import GHC.Clock (getMonotonicTimeNSec)
 import Hyperspace.Actor (ActorHandle, Protocol, ReplyTo)
-import Numeric (showFFloat)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Seer.Config (configFromUi, configSummary)
@@ -204,21 +206,7 @@ runUiAction req =
       logTimed req "Redo" (redoBrush req)
 
 logTimed :: UiActionRequest -> Text -> IO () -> IO ()
-logTimed req label action = do
-  start <- getMonotonicTimeNSec
-  action
-  end <- getMonotonicTimeNSec
-  let elapsedMs = fromIntegral (end - start) / nsPerMs
-      message = label <> " took " <> Text.pack (showFFloat (Just timingPrecisionDigits) elapsedMs "ms")
-  appendLog (ahLogHandle handles) (LogEntry LogDebug message)
-  where
-    handles = uarActorHandles req
-
-nsPerMs :: Double
-nsPerMs = 1e6
-
-timingPrecisionDigits :: Int
-timingPrecisionDigits = 2
+logTimed _ _ action = action
 
 viewModeLabel :: ViewMode -> Text
 viewModeLabel mode =
@@ -256,10 +244,6 @@ startGeneration req = do
   setUiRenderWaterLevel uiHandle (uiWaterLevel uiSnap)
   -- Capture config snapshot for revert support
   setUiWorldConfig uiHandle (Just (snapshotFromUi uiSnap "world"))
-  -- Synchronous actor request is the barrier required before invalidating
-  -- already-published UI state.
-  _ <- getUiSnapshot uiHandle
-  _ <- invalidatePublishedSnapshot (ahSnapshotVersionRef handles)
   appendLog logHandle (LogEntry LogInfo (configSummary uiSnap))
   -- Hot-reload plugin manifests and collect plugin metadata for pipeline planning.
   refreshManifests pluginHandle
@@ -329,6 +313,10 @@ startGeneration req = do
         , tgrSimNodes = pspExecutableNodes simulationPlan
         }
   startTerrainGen (ahTerrainHandle handles) (uarTerrainReplyTo req) request
+  -- UiActions owns publication for widget-triggered generation. Drain all UI
+  -- and log casts before exposing the generating state to render/API readers.
+  _ <- publishUiAndLogMutation handles
+  pure ()
 
 rebuildAtlas :: UiActionRequest -> IO ()
 rebuildAtlas req = do
@@ -349,6 +337,7 @@ toggleDayNight req = do
   let handles = uarActorHandles req
       uiHandle = ahUiHandle handles
   uiSnap <- getUiSnapshot uiHandle
+  appendLog (ahLogHandle handles) (LogEntry LogDebug "Toggle Day/Night")
   setUiDayNightEnabled uiHandle (not (uiDayNightEnabled uiSnap))
   postToggle <- getUiSnapshot uiHandle
   (terrainSnap, snapshotVersion) <- publishLatestTerrainSnapshot handles postToggle
@@ -357,10 +346,12 @@ toggleDayNight req = do
 publishLatestTerrainSnapshot :: ActorHandles -> UiState -> IO (TerrainSnapshot, SnapshotVersion)
 publishLatestTerrainSnapshot handles uiSnapshot = do
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
+  logSnapshot <- getLogSnapshot (ahLogHandle handles)
   snapshotVersion <- publishSnapshot
     (ahSnapshotVersionRef handles)
-    (withUiSnapshot uiSnapshot
-      (terrainSnapshotUpdate (ahTerrainSnapshotRef handles) terrainSnap))
+    (withLogSnapshot logSnapshot
+      (withUiSnapshot uiSnapshot
+        (terrainSnapshotUpdate (ahTerrainSnapshotRef handles) terrainSnap)))
   pure (terrainSnap, snapshotVersion)
 
 enqueueAtlasRebuildFor :: ActorHandles -> ViewMode -> UiState -> IO ()
@@ -487,11 +478,14 @@ revertConfig req = do
       appendLog logHandle (LogEntry LogInfo "Config reverted to last generation")
     Nothing ->
       appendLog logHandle (LogEntry LogWarn "No world config to revert to")
+  _ <- publishUiAndLogMutation handles
+  pure ()
 
 resetConfig :: UiActionRequest -> IO ()
 resetConfig req = do
   let defaults = emptyUiState
-      uiHandle = ahUiHandle (uarActorHandles req)
+      handles = uarActorHandles req
+      uiHandle = ahUiHandle handles
   setUiSeed uiHandle (uiSeed defaults)
   setUiSeedInput uiHandle (Text.pack (show (uiSeed defaults)))
   setUiSeedEditing uiHandle (uiSeedEditing defaults)
@@ -501,6 +495,8 @@ resetConfig req = do
   setUiConfigTab uiHandle (uiConfigTab defaults)
   setUiWorldConfig uiHandle Nothing
   resetSliderDefaults uiHandle
+  _ <- publishUiAndLogMutation handles
+  pure ()
 
 -- | Apply the current editor brush at the given hex coordinate.
 --
@@ -612,7 +608,11 @@ applyBrush req hex = do
                  ]
   -- Only write and rebuild if something changed
   case changed of
-    [] -> pure ()
+    [] -> do
+      -- Flatten/noise bookkeeping can mutate the editor even when the brush
+      -- produces no terrain delta; do not leave that UI state unpublished.
+      _ <- publishUiMutation handles
+      pure ()
     _  -> do
       -- Record undo action before writing
       let oldChanged = IntMap.fromList
@@ -690,7 +690,10 @@ clearFlattenRef req = do
   let editor = uiEditor uiSnap
   if editorFlattenRef editor == Nothing
     then pure ()
-    else setUiEditor uiHandle (editor { editorFlattenRef = Nothing })
+    else do
+      setUiEditor uiHandle (editor { editorFlattenRef = Nothing })
+      _ <- publishUiMutation (uarActorHandles req)
+      pure ()
 
 -- | Undo the most recent terrain edit by restoring the old chunk state.
 undoBrush :: UiActionRequest -> IO ()
@@ -699,7 +702,7 @@ undoBrush req = do
       histRef = ahHistoryRef handles
   hist <- readIORef histRef
   case undoEdit hist of
-    Nothing -> pure ()
+    Nothing -> publishUiMutation handles >> pure ()
     Just (action, hist') -> do
       writeIORef histRef hist'
       applyChunkRestore handles (eaOldChunks action)
@@ -711,7 +714,7 @@ redoBrush req = do
       histRef = ahHistoryRef handles
   hist <- readIORef histRef
   case redoEdit hist of
-    Nothing -> pure ()
+    Nothing -> publishUiMutation handles >> pure ()
     Just (action, hist') -> do
       writeIORef histRef hist'
       applyChunkRestore handles (eaNewChunks action)

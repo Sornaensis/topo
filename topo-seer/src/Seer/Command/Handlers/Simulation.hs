@@ -28,8 +28,9 @@ import Actor.PluginManager
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver
   ( SnapshotVersion
-  , invalidatePublishedSnapshot
+  , publishSnapshot
   , readCommittedRenderSnapshot
+  , uiSnapshotUpdate
   )
 import Actor.Simulation
   ( CloudDeltaMetric(..)
@@ -47,7 +48,7 @@ import Actor.Simulation
   )
 import Actor.UI.Setters (setUiSimAutoTick, setUiSimTickRate)
 import Actor.UI.State (LayeredViewState(..), SkyOverlayMode(..), UiState(..), ViewMode(..), WeatherBasis(..), effectiveViewSelection, getUiSnapshot, readUiSnapshotRef)
-import Actor.UiActions.Handles (ActorHandles(..))
+import Actor.UiActions.Handles (ActorHandles(..), publishLogMutation)
 import Seer.Command.Context (CommandContext(..))
 import Seer.Render.ZoomStage (orderedZoomStagesForZoom)
 import Topo.Calendar (WorldTime(..))
@@ -102,7 +103,9 @@ handleSetSimAutoTick ctx reqId params = do
       if flushed
         then pure ()
         else do
-          snapshotVersion <- invalidatePublishedSnapshot (ahSnapshotVersionRef handles)
+          snapshotVersion <- publishSnapshot
+            (ahSnapshotVersionRef handles)
+            (uiSnapshotUpdate ui)
           when shouldBackfill $
             enqueueLatestSimulationAtlasBackfill handles ui snapshotVersion
       pure $ okResponse reqId $ object
@@ -122,15 +125,18 @@ handleSimTick ctx reqId params = do
   if uiGenerating ui
     then do
       appendLog (ahLogHandle handles) (LogEntry LogWarn "sim tick ignored (world generation in progress)")
+      _ <- publishLogMutation handles
       pure $ errResponse reqId "world generation in progress"
     else if dsTerrainChunks dataSnap <= 0
       then do
         appendLog (ahLogHandle handles) (LogEntry LogWarn "sim tick ignored (no world terrain loaded yet)")
+        _ <- publishLogMutation handles
         pure $ errResponse reqId "no world terrain loaded yet"
       else do
         let currentTick = uiSimTickCount ui
             targetTick  = currentTick + fromIntegral (max 1 (min 100 count :: Int))
         requestSimTick (ahSimulationHandle handles) targetTick
+        _ <- getSimDagSnapshot (ahSimulationHandle handles)
         pure $ okResponse reqId $ object
           [ "requested_ticks" .= count
           , "target_tick"     .= targetTick

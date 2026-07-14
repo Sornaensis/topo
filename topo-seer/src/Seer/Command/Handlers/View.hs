@@ -31,7 +31,8 @@ import Data.Word (Word64)
 import Actor.AtlasManager (atlasJobsForSelection, atlasJobsForSelectionTransition, enqueueAtlasBuild)
 import Seer.Render.ZoomStage (orderedZoomStagesForZoom)
 import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot)
-import Actor.UiActions.Handles (ActorHandles(..))
+import Actor.Log (getLogSnapshot)
+import Actor.UiActions.Handles (ActorHandles(..), publishUiMutation)
 import Actor.UI (getUiSnapshot)
 import Actor.UI.State
   ( BaseViewMode
@@ -62,7 +63,13 @@ import Actor.UI.State
   , weatherBasisFromText
   , weatherBasisToText
   )
-import Actor.SnapshotReceiver (readSnapshotVersion, readTerrainSnapshot)
+import Actor.SnapshotReceiver
+  ( publishSnapshot
+  , readTerrainSnapshot
+  , terrainSnapshotUpdate
+  , withLogSnapshot
+  , withUiSnapshot
+  )
 import Actor.UI.Setters (setUiSeed, setUiSeedInput, setUiViewMode, setUiViewSelection, setUiConfigScroll, setUiConfigTab, setUiContextHex, setUiHexTooltipPinned, setUiOverlayFields)
 import Seer.Command.Context (CommandContext(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
@@ -79,6 +86,7 @@ handleSetSeed ctx reqId params = do
       let uiH = ahUiHandle (ccActorHandles ctx)
       setUiSeed uiH seed
       setUiSeedInput uiH (Text.pack (show seed))
+      _ <- publishUiMutation (ccActorHandles ctx)
       pure $ okResponse reqId $ object ["seed" .= seed]
 
 -- | Handle @set_view_mode@ — switch the hex map visualization.
@@ -146,6 +154,7 @@ handleSetConfigTab ctx reqId params = do
           -- to top when switching tabs.
           setUiConfigTab uiH tab
           setUiConfigScroll uiH 0
+          _ <- publishUiMutation (ccActorHandles ctx)
           pure $ okResponse reqId $ object ["config_tab" .= tabName]
 
 -- | Handle @select_hex@ — select a hex for inspection by axial coordinates.
@@ -163,6 +172,7 @@ handleSelectHex ctx reqId params = do
             Just (q :: Int, r :: Int) -> do
               setUiContextHex uiH (Just (q, r))
               setUiHexTooltipPinned uiH True
+              _ <- publishUiMutation (ccActorHandles ctx)
               pure $ okResponse reqId $ object
                 [ "q" .= q
                 , "r"  .= r
@@ -174,11 +184,13 @@ handleSelectHex ctx reqId params = do
           -- No q/r params — deselect
           setUiContextHex uiH Nothing
           setUiHexTooltipPinned uiH False
+          _ <- publishUiMutation (ccActorHandles ctx)
           pure $ okResponse reqId $ object ["selected" .= False]
     _ -> do
       -- Null or non-object — deselect
       setUiContextHex uiH Nothing
       setUiHexTooltipPinned uiH False
+      _ <- publishUiMutation (ccActorHandles ctx)
       pure $ okResponse reqId $ object ["selected" .= False]
 
 -- --------------------------------------------------------------------------
@@ -189,9 +201,14 @@ handleSelectHex ctx reqId params = do
 -- Mirrors the logic in 'Actor.UiActions.Command.rebuildAtlasFor'.
 scheduleAtlasRebuild :: ActorHandles -> ViewMode -> IO ()
 scheduleAtlasRebuild handles mode = do
+  uiSnap <- getUiSnapshot (ahUiHandle handles)
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
-  uiSnap      <- getUiSnapshot (ahUiHandle handles)
-  snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
+  logSnapshot <- getLogSnapshot (ahLogHandle handles)
+  snapshotVersion <- publishSnapshot
+    (ahSnapshotVersionRef handles)
+    (withLogSnapshot logSnapshot
+      (withUiSnapshot uiSnap
+        (terrainSnapshotUpdate (ahTerrainSnapshotRef handles) terrainSnap)))
   let selection = if uiViewMode uiSnap == mode
         then effectiveViewSelection uiSnap
         else legacyViewModeToLayeredViewState mode
@@ -202,9 +219,14 @@ scheduleAtlasRebuild handles mode = do
 -- | Enqueue only layer keys that changed while switching views/overlays.
 scheduleAtlasTransitionRebuild :: ActorHandles -> UiState -> ViewMode -> IO ()
 scheduleAtlasTransitionRebuild handles previousUi mode = do
+  uiSnap <- getUiSnapshot (ahUiHandle handles)
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
-  uiSnap      <- getUiSnapshot (ahUiHandle handles)
-  snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
+  logSnapshot <- getLogSnapshot (ahLogHandle handles)
+  snapshotVersion <- publishSnapshot
+    (ahSnapshotVersionRef handles)
+    (withLogSnapshot logSnapshot
+      (withUiSnapshot uiSnap
+        (terrainSnapshotUpdate (ahTerrainSnapshotRef handles) terrainSnap)))
   let selection = if uiViewMode uiSnap == mode
         then effectiveViewSelection uiSnap
         else legacyViewModeToLayeredViewState mode

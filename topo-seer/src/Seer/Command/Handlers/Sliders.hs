@@ -21,7 +21,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import Data.Text (Text)
 
-import Actor.UiActions.Handles (ActorHandles(..))
+import Actor.UiActions.Handles (ActorHandles(..), publishUiMutation)
 import Actor.UI.State
   ( UiState(..)
   , UiSnapshotRef
@@ -95,6 +95,7 @@ handleSetSlider ctx reqId params = do
           setUiSliderValue uiH sid normVal
           newUi <- getUiSnapshot uiH
           maybeEnqueueDayNightSliderRebuild handles oldUi newUi
+          _ <- publishUiMutation handles
           pure $ okResponse reqId $ object
             [ "name"  .= name
             , "value" .= normVal
@@ -121,6 +122,7 @@ handleSetSliders ctx reqId params = do
       results <- mapM go kvs
       newUi <- getUiSnapshot uiH
       maybeEnqueueDayNightSliderRebuild handles oldUi newUi
+      _ <- publishUiMutation handles
       let (errs, oks) = partitionEithers results
       pure $ okResponse reqId $ object
         [ "updated" .= oks
@@ -145,6 +147,7 @@ handleResetSliders ctx reqId params = do
   mapM_ (\d -> setUiSliderValue uiH (sliderId d) (sliderDefaultValueForId (sliderId d))) defs
   newUi <- getUiSnapshot uiH
   maybeEnqueueDayNightSliderRebuild handles oldUi newUi
+  _ <- publishUiMutation handles
   pure $ okResponse reqId $ object
     [ "reset_count" .= length defs
     , "tab"         .= fmap sliderTabToText maybeTab

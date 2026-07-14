@@ -18,6 +18,7 @@ module Actor.Simulation
     -- * World lifecycle
   , setSimWorld
   , setSimWorldWithNodes
+  , setSimWorldWithNodesSync
   , rebindSimNodes
   , normalizeWorldSchedulesForBindings
   , clearSimWorld
@@ -91,16 +92,19 @@ import Actor.Log
   , LogEntry(..)
   , LogLevel(..)
   , appendLog
+  , getLogSnapshot
   )
 import Actor.SnapshotReceiver
   ( DataSnapshotRef
   , TerrainSnapshotRef
   , SnapshotVersion
   , SnapshotVersionRef
-  , invalidatePublishedSnapshot
+  , logSnapshotUpdate
   , publishSnapshot
   , readTerrainSnapshot
   , terrainSnapshotUpdate
+  , uiSnapshotUpdate
+  , withLogSnapshot
   , withUiSnapshot
   )
 import Actor.UI
@@ -443,6 +447,7 @@ actor Simulation
 
   cast setWorld   :: TerrainWorld
   cast setWorldWithNodes :: (TerrainWorld, [SimulationNodeBinding])
+  call setWorldWithNodesSync :: (TerrainWorld, [SimulationNodeBinding]) -> ()
   call rebindNodes :: [SimulationNodeBinding] -> Bool
   call clearWorld :: () -> ()
   call beginTransition :: () -> ()
@@ -460,6 +465,9 @@ actor Simulation
     bindWorld world [] st
   on_ setWorldWithNodes = \(world, pluginNodes) st ->
     bindWorld world pluginNodes st
+  on setWorldWithNodesSync = \(world, pluginNodes) st -> do
+    st' <- bindWorld world pluginNodes st
+    pure (st' { ssWorldTransition = ssWorldTransition st }, ())
   on rebindNodes = \pluginNodes st ->
     case ssWorld st of
       Just world | not (ssWorldTransition st) -> do
@@ -548,6 +556,15 @@ setSimWorldWithNodes
   -> IO ()
 setSimWorldWithNodes handle world pluginNodes =
   cast @"setWorldWithNodes" handle #setWorldWithNodes (world, pluginNodes)
+
+-- | Bind a replacement world and wait until its simulation DAG is observable.
+setSimWorldWithNodesSync
+  :: ActorHandle Simulation (Protocol Simulation)
+  -> TerrainWorld
+  -> [SimulationNodeBinding]
+  -> IO ()
+setSimWorldWithNodesSync handle world pluginNodes =
+  call @"setWorldWithNodesSync" handle #setWorldWithNodesSync (world, pluginNodes)
 
 -- | Rebuild the current world's simulation DAG with a new executable plugin
 -- node set. Returns 'False' when no stable world is currently bound.
@@ -875,6 +892,17 @@ logMsg st msg =
     Nothing      -> pure ()
     Just handles -> appendLog (shLogHandle handles) (LogEntry LogInfo msg)
 
+publishLogForState :: SimState -> IO ()
+publishLogForState st =
+  case ssHandles st of
+    Nothing -> pure ()
+    Just handles -> do
+      logSnapshot <- getLogSnapshot (shLogHandle handles)
+      _ <- publishSnapshot
+        (shSnapshotVersionRef handles)
+        (logSnapshotUpdate logSnapshot)
+      pure ()
+
 -- | Progress callback that logs and records each simulation node's status.
 simProgressCb
   :: SimHandles
@@ -1109,6 +1137,7 @@ integrateFreshTickResult result st
       case strResult result of
         Left err -> do
           logMsg st ("simulation: tick failed: " <> err)
+          publishLogForState st
           let failureLog = SimulationTickLogEntry (strAppliedTick result) Nothing "failed" ("simulation: tick failed: " <> err) (Just (strElapsedMs result))
               st' = st
                 { ssNodeStatuses = strNodeStatuses result
@@ -1153,6 +1182,9 @@ integrateFreshTickResult result st
           setUiSimTickCount (shUiHandle handles) appliedTick
           uiSnap <- getUiSnapshot (shUiHandle handles)
           let visibleOverlayChanged = selectedOverlayChanged (effectiveViewSelection uiSnap) (twOverlays baseWorld) newStore
+              completeMsg = "simulation: tick " <> Text.pack (show appliedTick)
+                <> " completed in " <> Text.pack (show (round (strElapsedMs result) :: Int)) <> "ms"
+          appendLog (shLogHandle handles) (LogEntry LogInfo completeMsg)
           publication <- publishTickSnapshot
             handles
             st
@@ -1208,8 +1240,6 @@ integrateFreshTickResult result st
                 , wpdAtlasActiveWeatherView = activeWeatherAtlasView (uiViewMode uiSnap)
                 }
               stPublished = tprState publication
-              completeMsg = "simulation: tick " <> Text.pack (show appliedTick)
-                <> " completed in " <> Text.pack (show (round (strElapsedMs result) :: Int)) <> "ms"
               completeLog = SimulationTickLogEntry appliedTick Nothing "completed" completeMsg (Just (strElapsedMs result))
               st' = stPublished
                 { ssWorld = Just world'
@@ -1220,7 +1250,6 @@ integrateFreshTickResult result st
                 , ssWeatherNodeStatus = weatherNodeDiag
                 , ssLastCloudDelta = cloudDelta
                 }
-          appendLog (shLogHandle handles) (LogEntry LogInfo completeMsg)
           completeTickRequest (strCompletion result) (AutoTickApplied appliedTick)
           maybeProcessPendingTick st'
 
@@ -1439,7 +1468,7 @@ publishTickSnapshot handles st isAutoTick flushOnIdle uiSnap terrainChanged clim
         , tprPublicationKind = sppPublicationKind plan
         }
       else do
-        stStatus <- publishStatusSnapshot handles st now
+        stStatus <- publishStatusSnapshot handles st now uiSnap
         pure TickPublicationResult
           { tprState = stStatus
           , tprTerrainSnapshot = Nothing
@@ -1552,10 +1581,12 @@ publishDataSnapshot
   -> TerrainSnapshot
   -> IO (SimState, SnapshotVersion)
 publishDataSnapshot handles st isAutoTick now uiSnapshot terrainSnap = do
+  logSnapshot <- getLogSnapshot (shLogHandle handles)
   snapshotVersion <- publishSnapshot
     (shSnapshotVersionRef handles)
-    (withUiSnapshot uiSnapshot
-      (terrainSnapshotUpdate (shTerrainSnapshotRef handles) terrainSnap))
+    (withLogSnapshot logSnapshot
+      (withUiSnapshot uiSnapshot
+        (terrainSnapshotUpdate (shTerrainSnapshotRef handles) terrainSnap)))
   let st' = if isAutoTick
         then st
           { ssLastAutoStatusPublishNs = now
@@ -1565,10 +1596,13 @@ publishDataSnapshot handles st isAutoTick now uiSnapshot terrainSnap = do
         else st { ssAutoWeatherPublicationPending = False }
   pure (st', snapshotVersion)
 
-publishStatusSnapshot :: SimHandles -> SimState -> Word64 -> IO SimState
-publishStatusSnapshot handles st now
+publishStatusSnapshot :: SimHandles -> SimState -> Word64 -> UiState -> IO SimState
+publishStatusSnapshot handles st now uiSnapshot
   | now - ssLastAutoStatusPublishNs st >= autoTickStatusPublishIntervalNs = do
-      _ <- invalidatePublishedSnapshot (shSnapshotVersionRef handles)
+      logSnapshot <- getLogSnapshot (shLogHandle handles)
+      _ <- publishSnapshot
+        (shSnapshotVersionRef handles)
+        (withLogSnapshot logSnapshot (uiSnapshotUpdate uiSnapshot))
       pure st { ssLastAutoStatusPublishNs = now }
   | otherwise = pure st
 

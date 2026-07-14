@@ -14,7 +14,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import System.FilePath ((</>))
 
-import Actor.UiActions.Handles (ActorHandles(..))
+import Actor.UiActions.Handles (ActorHandles(..), publishUiMutation)
 import Actor.UI.State (readUiSnapshotRef)
 import Seer.Command.Context (CommandContext(..))
 import Seer.Config.Snapshot
@@ -76,7 +76,9 @@ handleLoadPreset ctx reqId params = do
           result <- loadSnapshot path
           case result of
             Right cs -> do
-              applySnapshotToUi cs (ahUiHandle (ccActorHandles ctx))
+              let handles = ccActorHandles ctx
+              applySnapshotToUi cs (ahUiHandle handles)
+              _ <- publishUiMutation handles
               pure $ okResponse reqId $ object
                 [ "name" .= name
                 , "loaded" .= True

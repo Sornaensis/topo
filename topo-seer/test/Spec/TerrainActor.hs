@@ -10,6 +10,7 @@ module Spec.TerrainActor (spec) where
 import Control.Concurrent (threadDelay)
 import Control.Exception (bracket)
 import Data.Aeson (toJSON)
+import Data.Text (Text)
 import Hyperspace.Actor (ActorSystem, call, get, newActorSystem, replyTo, shutdownActorSystem)
 import Hyperspace.Actor.QQ (hyperspace)
 import Test.Hspec
@@ -51,12 +52,14 @@ actor TerrainReplyTest
 
   cast progress :: TerrainGenProgress
   cast result :: TerrainGenResult
+  cast generationFailed :: Text
   cast logMessage :: LogEntry
   call snapshot :: () -> TerrainReplyState
 
   initial emptyTerrainReplyState
   on_ progress = \_ st -> pure st
   on_ result = \resultMsg st -> pure st { trsResult = Just resultMsg }
+  on_ generationFailed = \_ st -> pure st
   on_ logMessage = \_ st -> pure st
   onPure snapshot = \() st -> (st, st)
 |]

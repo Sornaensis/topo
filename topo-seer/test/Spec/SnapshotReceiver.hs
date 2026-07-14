@@ -13,11 +13,14 @@ import Actor.SnapshotReceiver
   , newRenderSnapshotVersionRef
   , newSnapshotVersionRef
   , newTerrainSnapshotRef
+  , publishChangedUiAndLog
   , publishSnapshot
+  , publishSnapshotIfVersion
   , readCommittedRenderSnapshot
   , readDataSnapshot
   , readSnapshotVersion
   , readTerrainSnapshot
+  , uiSnapshotUpdate
   , withCommittedRenderSnapshot
   , withLogSnapshot
   , withUiSnapshot
@@ -32,8 +35,8 @@ import Control.Concurrent.MVar
   , takeMVar
   , tryTakeMVar
   )
-import Control.Monad (forM, forM_)
-import Data.IORef (writeIORef)
+import Control.Monad (forM, forM_, when)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (sort)
 import Test.Hspec
 import Topo.Overlay (emptyOverlayStore)
@@ -67,6 +70,21 @@ spec = describe "SnapshotReceiver publication protocol" $ do
     observedVersion `shouldBe` committed
     observedData `shouldBe` dataFor 7
     observedTerrain `shouldBe` terrainFor 7
+
+  it "rejects stale conditional publications without writing refs" $ do
+    dataRef <- newDataSnapshotRef (dataFor 0)
+    terrainRef <- newTerrainSnapshotRef (terrainFor 0)
+    versionRef <- newSnapshotVersionRef
+    _ <- publishSnapshot versionRef
+      (dataAndTerrainSnapshotUpdate dataRef (dataFor 1) terrainRef (terrainFor 1))
+
+    result <- publishSnapshotIfVersion versionRef (SnapshotVersion 0)
+      (dataAndTerrainSnapshotUpdate dataRef (dataFor 2) terrainRef (terrainFor 2))
+
+    result `shouldBe` Nothing
+    readSnapshotVersion versionRef `shouldReturn` SnapshotVersion 1
+    readDataSnapshot dataRef `shouldReturn` dataFor 1
+    readTerrainSnapshot terrainRef `shouldReturn` terrainFor 1
 
   it "returns monotonic versions for publications and named invalidations" $ do
     dataRef <- newDataSnapshotRef (dataFor 0)
@@ -136,6 +154,64 @@ spec = describe "SnapshotReceiver publication protocol" $ do
     putMVar releaseReader ()
     takeMVar readerResult `shouldReturn` (SnapshotVersion 0, replicate 4 0)
     takeMVar publisherResult `shouldReturn` SnapshotVersion 1
+
+  it "recaptures UI/log after a concurrent commit instead of overwriting it" $ do
+    uiRef <- newUiSnapshotRef
+    logRef <- newLogSnapshotRef
+    dataRef <- newDataSnapshotRef (dataFor 0)
+    terrainRef <- newTerrainSnapshotRef (terrainFor 0)
+    versionRef <- newRenderSnapshotVersionRef uiRef logRef dataRef terrainRef
+    firstUiCapture <- newEmptyMVar
+    releaseFirstCapture <- newEmptyMVar
+    finished <- newEmptyMVar
+    isFirstCaptureRef <- newIORef True
+    writeIORef uiRef (uiFor 1)
+    writeIORef logRef (logFor 1)
+    let captureUi = do
+          captured <- readIORef uiRef
+          isFirst <- atomicModifyIORef' isFirstCaptureRef (\first -> (False, first))
+          when isFirst $ do
+            putMVar firstUiCapture ()
+            takeMVar releaseFirstCapture
+          pure captured
+
+    _ <- forkIO $ do
+      publishChangedUiAndLog
+        versionRef (uiFor 0) (logFor 0) captureUi (readIORef logRef)
+      putMVar finished ()
+    takeMVar firstUiCapture
+
+    -- The helper has captured UI 1 against generation zero. A newer complete
+    -- publication must make that stale conditional write fail and recapture.
+    writeIORef uiRef (uiFor 2)
+    writeIORef logRef (logFor 2)
+    publishSnapshot versionRef
+      (withLogSnapshot (logFor 2) (uiSnapshotUpdate (uiFor 2)))
+      `shouldReturn` SnapshotVersion 1
+    putMVar releaseFirstCapture ()
+    takeMVar finished
+
+    (version, snapshot) <- readCommittedRenderSnapshot versionRef
+    version `shouldBe` SnapshotVersion 1
+    renderMarkers snapshot `shouldBe` [2, 2, 0, 0]
+
+  it "publishes a changed log even when UI was explicitly published" $ do
+    uiRef <- newUiSnapshotRef
+    logRef <- newLogSnapshotRef
+    dataRef <- newDataSnapshotRef (dataFor 0)
+    terrainRef <- newTerrainSnapshotRef (terrainFor 0)
+    versionRef <- newRenderSnapshotVersionRef uiRef logRef dataRef terrainRef
+    writeIORef uiRef (uiFor 1)
+    writeIORef logRef (logFor 1)
+
+    publishSnapshot versionRef (uiSnapshotUpdate (uiFor 1))
+      `shouldReturn` SnapshotVersion 1
+    publishChangedUiAndLog
+      versionRef (uiFor 0) (logFor 0) (readIORef uiRef) (readIORef logRef)
+
+    (version, snapshot) <- readCommittedRenderSnapshot versionRef
+    version `shouldBe` SnapshotVersion 2
+    renderMarkers snapshot `shouldBe` [1, 1, 0, 0]
 
   it "does not absorb staged UI/log values into an unrelated data publication" $ do
     uiRef <- newUiSnapshotRef

@@ -29,14 +29,16 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word16, Word8)
 
+import Actor.Data (TerrainSnapshot(..))
+import Actor.SnapshotReceiver (readTerrainSnapshot)
 import Actor.Terrain (TerrainReplyOps)
 import Actor.UI (getUiSnapshot, setUiEditor, uiEditor)
 import Actor.UiActions
   ( UiAction(..)
   , UiActionRequest(..)
-  , submitUiAction
+  , submitUiActionSync
   )
-import Actor.UiActions.Handles (ActorHandles(..))
+import Actor.UiActions.Handles (ActorHandles(..), publishUiMutation)
 import Hyperspace.Actor (replyTo)
 import Seer.Command.Context (CommandContext(..))
 import Seer.Editor.Types (BrushSettings(..), EditorState(..), EditorTool(..), Falloff(..))
@@ -94,7 +96,7 @@ handleEditorBrushStroke ctx reqId params =
   case parseHexParams "q" "r" params of
     Left err -> pure (errResponse reqId err)
     Right hex -> do
-      enqueueEditorStrokeActions ctx [hex]
+      enqueueEditorStrokeActionsIfReady ctx [hex]
       pure $ okResponse reqId $ object
         [ "status" .= ("queued" :: Text)
         , "strokes_queued" .= (1 :: Int)
@@ -106,7 +108,7 @@ handleEditorBrushLine ctx reqId params =
     Left err -> pure (errResponse reqId err)
     Right (startHex, endHex) -> do
       let path = axialLine startHex endHex
-      enqueueEditorStrokeActions ctx path
+      enqueueEditorStrokeActionsIfReady ctx path
       pure $ okResponse reqId $ object
         [ "status" .= ("queued" :: Text)
         , "strokes_queued" .= length path
@@ -160,19 +162,23 @@ mutateEditorState ctx reqId mutate = do
     Left err -> pure (errResponse reqId err)
     Right editor' -> do
       setUiEditor uiHandle editor'
-      updated <- currentEditorState ctx
-      pure $ okResponse reqId (editorStateValue updated)
+      (_, publishedUi) <- publishUiMutation (ccActorHandles ctx)
+      pure $ okResponse reqId (editorStateValue (uiEditor publishedUi))
 
 currentEditorState :: CommandContext -> IO EditorState
 currentEditorState ctx = uiEditor <$> getUiSnapshot (ahUiHandle (ccActorHandles ctx))
 
-enqueueEditorStrokeActions :: CommandContext -> [(Int, Int)] -> IO ()
-enqueueEditorStrokeActions ctx hexes =
-  enqueueActions ctx (UiActionClearFlattenRef : map UiActionBrushStroke hexes <> [UiActionClearFlattenRef])
+enqueueEditorStrokeActionsIfReady :: CommandContext -> [(Int, Int)] -> IO ()
+enqueueEditorStrokeActionsIfReady ctx hexes = do
+  let handles = ccActorHandles ctx
+  terrainSnapshot <- readTerrainSnapshot (ahTerrainSnapshotRef handles)
+  if tsChunkSize terrainSnapshot <= 0
+    then publishUiMutation handles >> pure ()
+    else enqueueActions ctx (UiActionClearFlattenRef : map UiActionBrushStroke hexes <> [UiActionClearFlattenRef])
 
 enqueueActions :: CommandContext -> [UiAction] -> IO ()
 enqueueActions ctx actions =
-  mapM_ (submitUiAction uiActionsHandle . mkRequest) actions
+  mapM_ (submitUiActionSync uiActionsHandle . mkRequest) actions
   where
     actorHandles = ccActorHandles ctx
     uiActionsHandle = ccUiActionsHandle ctx
