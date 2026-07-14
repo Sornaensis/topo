@@ -33,6 +33,7 @@ import qualified Spec.UiActor
 import qualified Spec.DayNight
 import qualified Spec.Simulation
 import qualified Spec.ScreenshotStorage
+import qualified Spec.ScreenshotRequest
 import qualified Spec.AutoTick
 import qualified Spec.Widgets
 import qualified Spec.WidgetTree
@@ -94,6 +95,7 @@ main = do
         Spec.DayNight.spec
         Spec.Simulation.spec
         Spec.ScreenshotStorage.spec
+        Spec.ScreenshotRequest.spec
         Spec.AutoTick.spec
         Spec.Widgets.spec
         Spec.WidgetTree.spec

@@ -15,22 +15,26 @@ module Seer.Service.Screenshot
   , completeScreenshotTake
   , encodeScreenshotTakeResponse
   , rendererScreenshotHandler
+  , rendererScreenshotHandlerWithDeadline
+  , screenshotSubmitErrorToServiceError
+  , screenshotResultErrorToServiceError
   ) where
 
 import Actor.Log (LogEntry(..), LogLevel(..), appendLog)
 import Actor.UiActions.Handles (ActorHandles(..))
-import Control.Concurrent.MVar (newEmptyMVar, takeMVar)
 import Data.Aeson (Value(..), object, (.=))
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Base64 as Base64
-import Data.IORef (atomicModifyIORef')
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import System.Timeout (timeout)
-
-import Seer.Screenshot.Request (ScreenshotRequest(..))
+import Seer.Screenshot.Request
+  ( ScreenshotResultError(..)
+  , ScreenshotSubmitError(..)
+  , deadlineAfterMicros
+  , submitAndWaitScreenshot
+  )
 import Seer.Screenshot.Storage
   ( ScreenshotSaveError(..)
   , ScreenshotStoragePolicy(..)
@@ -174,61 +178,75 @@ screenshotSaveServiceError ScreenshotUnexpectedIO =
 -- | Renderer-backed service implementation used by GUI and command
 -- compatibility surfaces.
 rendererScreenshotHandler :: ServiceHandler ScreenshotTakeRequest ScreenshotTakeResponse
-rendererScreenshotHandler = rawServiceHandler screenshotTakeOperation $ \ctx request ->
-  case prepareScreenshotTake
-      (svcScreenshotStoragePolicy ctx)
-      (serviceRequestBodyValue request) of
-    Left err -> pure (Left err)
-    Right typedRequest -> captureRendererScreenshot ctx typedRequest
+rendererScreenshotHandler = rendererScreenshotHandlerWithDeadline
+  (deadlineAfterMicros screenshotTimeoutUs)
 
-captureRendererScreenshot :: ServiceContext -> ScreenshotTakeRequest -> IO ServiceResult
-captureRendererScreenshot ctx request = do
+-- | Injectable deadline variant used by deterministic service tests.
+rendererScreenshotHandlerWithDeadline
+  :: IO ()
+  -> ServiceHandler ScreenshotTakeRequest ScreenshotTakeResponse
+rendererScreenshotHandlerWithDeadline makeDeadline =
+  rawServiceHandler screenshotTakeOperation $ \ctx request ->
+    case prepareScreenshotTake
+        (svcScreenshotStoragePolicy ctx)
+        (serviceRequestBodyValue request) of
+      Left err -> pure (Left err)
+      Right typedRequest -> captureRendererScreenshot makeDeadline ctx typedRequest
+
+captureRendererScreenshot
+  :: IO ()
+  -> ServiceContext
+  -> ScreenshotTakeRequest
+  -> IO ServiceResult
+captureRendererScreenshot makeDeadline ctx request = do
   logMsg LogInfo "[command] screenshot requested"
-  result <- newEmptyMVar
-  let pendingRequest = ScreenshotRequest { ssrResult = result }
-  alreadyPending <- atomicModifyIORef' (svcScreenshotRef ctx) $ \previous ->
-    case previous of
-      Nothing -> (Just pendingRequest, False)
-      Just _ -> (previous, True)
-  if alreadyPending
-    then do
-      logMsg LogWarn "[command] screenshot rejected: already in progress"
-      pure (Left (ServiceRejected
-        "a screenshot is already in progress; please wait and retry"))
-    else do
-      captured <- timeout screenshotTimeoutUs (takeMVar result)
-      case captured of
-        Nothing -> do
-          atomicModifyIORef' (svcScreenshotRef ctx) $ \current ->
-            case current of
-              Just pending | ssrResult pending == result -> (Nothing, ())
-              _ -> (current, ())
-          logMsg LogError
-            "[command] screenshot timed out (render loop did not respond within 2s)"
-          pure (Left (ServiceUnavailable
-            "screenshot timed out: render loop did not respond within 2s"))
-        Just (Left err) -> do
-          logMsg LogError ("[command] screenshot failed: " <> err)
-          pure (Left (ServiceInternalError err))
-        Just (Right pngBytes) -> do
-          logMsg LogInfo
-            ("[command] screenshot captured ("
-              <> Text.pack (show (ByteString.length pngBytes)) <> " bytes)")
-          completed <- completeScreenshotTake
-            (svcScreenshotStoragePolicy ctx)
-            ScreenshotSourceRenderer
-            request
-            pngBytes
-          case completed of
-            Left err -> do
-              logMsg LogError ("[command] screenshot save failed: " <> serviceErrorText err)
-              pure (Left err)
-            Right response -> do
-              case screenshotTakeSavedPath response of
-                Nothing -> pure ()
-                Just savedPath ->
-                  logMsg LogInfo ("[command] screenshot saved to " <> savedPath)
-              pure (Right (ServiceResponse (encodeScreenshotTakeResponse response)))
+  captured <- submitAndWaitScreenshot (svcScreenshotRef ctx) makeDeadline
+  case captured of
+    Left submitError -> do
+      case submitError of
+        ScreenshotBusy ->
+          logMsg LogWarn "[command] screenshot rejected: already in progress"
+        ScreenshotClosed ->
+          logMsg LogError "[command] screenshot rejected: capture broker is closed"
+      pure (Left (screenshotSubmitErrorToServiceError submitError))
+    Right (Left resultError) -> do
+      case resultError of
+        ScreenshotUnavailable ->
+          logMsg LogError "[command] screenshot capture became unavailable"
+        ScreenshotInternalError ->
+          logMsg LogError "[command] screenshot capture failed"
+      pure (Left (screenshotResultErrorToServiceError resultError))
+    Right (Right pngBytes) -> do
+      logMsg LogInfo
+        ("[command] screenshot captured ("
+          <> Text.pack (show (ByteString.length pngBytes)) <> " bytes)")
+      completed <- completeScreenshotTake
+        (svcScreenshotStoragePolicy ctx)
+        ScreenshotSourceRenderer
+        request
+        pngBytes
+      case completed of
+        Left err -> do
+          logMsg LogError ("[command] screenshot save failed: " <> serviceErrorText err)
+          pure (Left err)
+        Right response -> do
+          case screenshotTakeSavedPath response of
+            Nothing -> pure ()
+            Just savedPath ->
+              logMsg LogInfo ("[command] screenshot saved to " <> savedPath)
+          pure (Right (ServiceResponse (encodeScreenshotTakeResponse response)))
   where
     logMsg level message =
       appendLog (ahLogHandle (svcActorHandles ctx)) (LogEntry level message)
+
+screenshotSubmitErrorToServiceError :: ScreenshotSubmitError -> ServiceError
+screenshotSubmitErrorToServiceError ScreenshotBusy = ServiceRejected
+  "a screenshot is already in progress; please wait and retry"
+screenshotSubmitErrorToServiceError ScreenshotClosed = ServiceUnavailable
+  "screenshot capture is unavailable"
+
+screenshotResultErrorToServiceError :: ScreenshotResultError -> ServiceError
+screenshotResultErrorToServiceError ScreenshotUnavailable = ServiceUnavailable
+  "screenshot capture is unavailable"
+screenshotResultErrorToServiceError ScreenshotInternalError = ServiceInternalError
+  "failed to capture screenshot"

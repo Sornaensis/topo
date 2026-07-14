@@ -12,7 +12,7 @@
 module Spec.CommandDispatch (spec) where
 
 import Control.Concurrent (forkIO, threadDelay)
-import Control.Concurrent.MVar (newEmptyMVar, putMVar)
+import Control.Concurrent.MVar (newEmptyMVar, takeMVar)
 import Control.Exception (bracket, catch, finally)
 import Control.Monad (forM_)
 import qualified Data.ByteString as BS
@@ -23,7 +23,7 @@ import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.IORef (newIORef, readIORef)
 import qualified Data.Map.Strict as Map
 import Data.List (nub, sort)
 import Data.Maybe (mapMaybe)
@@ -74,8 +74,18 @@ import Seer.Command.AppServiceAdapter (commandAppService, runAppServiceOperation
 import Seer.Command.Dispatch (CommandContext(..), dispatchCommand)
 import Seer.Editor.History (emptyHistory)
 import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom, stageForZoom)
-import Seer.Screenshot (ScreenshotRequest(..), newScreenshotRequestRef)
+import Seer.Screenshot.Request
+  ( ScreenshotDelivery(..)
+  , ScreenshotResultError(..)
+  , claimScreenshotRequest
+  , deliverScreenshotRequest
+  , newScreenshotRequestRef
+  , screenshotRequestActive
+  , shutdownScreenshotRequestRef
+  , submitScreenshotRequest
+  )
 import Seer.Screenshot.Storage (ScreenshotStoragePolicy(..))
+import Seer.Service.Screenshot (rendererScreenshotHandlerWithDeadline)
 import Seer.World.Persist (deleteNamedWorld)
 import Seer.Service.AppService
   ( AppService(..)
@@ -109,7 +119,9 @@ import Seer.Service.Types
   , runServiceHandler
   , serviceErrorCode
   , serviceErrorDetails
+  , serviceErrorHTTPStatus
   , serviceErrorKind
+  , serviceErrorText
   )
 import Topo
   ( ClimateChunk(..)
@@ -1652,10 +1664,65 @@ spec = describe "CommandDispatch" $ do
             _ -> False
 
     it "returns error when a screenshot is already in progress" $ withCtx $ \ctx -> do
-      busy <- newEmptyMVar
-      writeIORef (ccScreenshotRef ctx) (Just (ScreenshotRequest busy))
+      submitted <- submitScreenshotRequest (ccScreenshotRef ctx)
+      submitted `shouldSatisfy` either (const False) (const True)
       rsp <- dispatch ctx "take_screenshot" Null
+      srId rsp `shouldBe` 1
       srSuccess rsp `shouldBe` False
+      srError rsp `shouldBe` Just
+        "a screenshot is already in progress; please wait and retry"
+
+    it "maps broker outcomes through the real service handler" $ withCtx $ \ctx -> do
+      let run deadline body = runServiceHandler
+            (rendererScreenshotHandlerWithDeadline deadline)
+            (commandTestServiceContext ctx)
+            (ServiceRequest (Just body))
+          assertServiceError expectedStatus expectedCode expectedText result =
+            case result of
+              Left err -> do
+                serviceErrorHTTPStatus err `shouldBe` expectedStatus
+                serviceErrorCode err `shouldBe` expectedCode
+                serviceErrorText err `shouldBe` expectedText
+              Right _ -> expectationFailure "expected screenshot service error"
+
+      deadlineResult <- run (pure ()) Null
+      assertServiceError 503 "unavailable" "screenshot capture is unavailable"
+        deadlineResult
+
+      _ <- forkIO (serveScreenshotFailure ctx)
+      neverDeadline <- newEmptyMVar
+      failureResult <- run (takeMVar neverDeadline) Null
+      assertServiceError 500 "internal_error" "failed to capture screenshot"
+        failureResult
+
+    it "maps closed and busy brokers and allocates no ticket for pre-capture failures" $
+      withCtx $ \ctx -> do
+        let run body = runServiceHandler
+              (rendererScreenshotHandlerWithDeadline (pure ()))
+              (commandTestServiceContext ctx)
+              (ServiceRequest (Just body))
+        invalid <- run (object ["path" .= ("../escape.png" :: Text)])
+        invalid `shouldSatisfy` isServiceFailureWithStatus 400
+        screenshotRequestActive (ccScreenshotRef ctx) `shouldReturn` False
+        disabled <- run (object ["path" .= ("capture.png" :: Text)])
+        disabled `shouldSatisfy` isServiceFailureWithStatus 503
+        screenshotRequestActive (ccScreenshotRef ctx) `shouldReturn` False
+
+        _ <- submitScreenshotRequest (ccScreenshotRef ctx)
+        busy <- run Null
+        busy `shouldSatisfy` isServiceFailureWithStatus 409
+
+        -- Consume the busy request, then close permanently.
+        cancelBusy <- claimScreenshotRequest (ccScreenshotRef ctx)
+        cancelBusy `shouldSatisfy` maybe False (const True)
+        shutdownScreenshotRequestRef (ccScreenshotRef ctx)
+        closed <- run Null
+        case closed of
+          Left err -> do
+            serviceErrorHTTPStatus err `shouldBe` 503
+            serviceErrorCode err `shouldBe` "unavailable"
+            serviceErrorText err `shouldBe` "screenshot capture is unavailable"
+          Right _ -> expectationFailure "expected closed screenshot broker error"
 
   -- -------------------------------------------------------------------
   -- Unknown command
@@ -1673,13 +1740,24 @@ spec = describe "CommandDispatch" $ do
 -- =====================================================================
 
 serveScreenshotRequest :: CommandContext -> BS.ByteString -> IO ()
-serveScreenshotRequest ctx pngBytes = waitForRequest
+serveScreenshotRequest ctx pngBytes =
+  serveScreenshotResult ctx (Right pngBytes)
+
+serveScreenshotFailure :: CommandContext -> IO ()
+serveScreenshotFailure ctx =
+  serveScreenshotResult ctx (Left ScreenshotInternalError)
+
+serveScreenshotResult
+  :: CommandContext
+  -> Either ScreenshotResultError BS.ByteString
+  -> IO ()
+serveScreenshotResult ctx result = waitForRequest
   where
-    waitForRequest = readIORef (ccScreenshotRef ctx) >>= \case
+    waitForRequest = claimScreenshotRequest (ccScreenshotRef ctx) >>= \case
       Nothing -> threadDelay 1000 >> waitForRequest
-      Just request -> do
-        writeIORef (ccScreenshotRef ctx) Nothing
-        putMVar (ssrResult request) (Right pngBytes)
+      Just claim -> do
+        delivered <- deliverScreenshotRequest (ccScreenshotRef ctx) claim result
+        delivered `shouldBe` ScreenshotDelivered
 
 toggleLogCount :: ActorHandle Log (Protocol Log) -> IO Int
 toggleLogCount logH = do
@@ -2052,6 +2130,22 @@ writeReadyTerrainData ctx = do
 
 -- | Convenience: dispatch a command with a given method and params,
 -- using request id 1.
+commandTestServiceContext :: CommandContext -> ServiceContext
+commandTestServiceContext ctx = ServiceContext
+  { svcActorHandles = ccActorHandles ctx
+  , svcUiSnapshotRef = ccUiSnapshotRef ctx
+  , svcUiActionsHandle = ccUiActionsHandle ctx
+  , svcScreenshotRef = ccScreenshotRef ctx
+  , svcScreenshotStoragePolicy = ccScreenshotStoragePolicy ctx
+  , svcLogSnapshotRef = ccLogSnapshotRef ctx
+  , svcEventBus = Nothing
+  }
+
+isServiceFailureWithStatus :: Int -> ServiceResult -> Bool
+isServiceFailureWithStatus expected (Left err) =
+  serviceErrorHTTPStatus err == expected
+isServiceFailureWithStatus _ (Right _) = False
+
 dispatch :: CommandContext -> Text -> Value -> IO SeerResponse
 dispatch ctx method params = dispatchCommand ctx SeerCommand
   { scId     = 1
@@ -2233,8 +2327,8 @@ serviceOperationCases =
   , serviceCase "get_sim_dag" Null ExpectServiceSuccess
   , serviceCase "get_logs" Null ExpectServiceFailure
   , ServiceOperationCase "take_screenshot" Null ExpectServiceFailure $ \ctx -> do
-      busy <- newEmptyMVar
-      writeIORef (ccScreenshotRef ctx) (Just (ScreenshotRequest busy))
+      submitted <- submitScreenshotRequest (ccScreenshotRef ctx)
+      submitted `shouldSatisfy` either (const False) (const True)
   , serviceCase "set_seed" (object ["seed" .= (2468 :: Int)]) ExpectServiceSuccess
   , serviceCase "set_view_mode" (object ["mode" .= ("biome" :: String)]) ExpectServiceSuccess
   , serviceCase "set_view" (object ["base_mode" .= ("biome" :: String)]) ExpectServiceSuccess

@@ -82,7 +82,11 @@ import Seer.Editor.History (emptyHistory)
 import Seer.HTTP.Server (forkHttpServer)
 import Seer.Service.Context (ServiceContext(..))
 import Seer.Service.Events (newDefaultServiceEventBus)
-import Seer.Screenshot.Request (ScreenshotRequestRef, newScreenshotRequestRef)
+import Seer.Screenshot.Request
+  ( ScreenshotRequestRef
+  , newScreenshotRequestRef
+  , shutdownScreenshotRequestRef
+  )
 import Seer.Screenshot.Storage
   ( ScreenshotStoragePolicy
   , initialiseScreenshotStorage
@@ -220,6 +224,7 @@ startCommandServices opts actors = do
 
 shutdownAppActors :: AppActors -> IO ()
 shutdownAppActors actors = do
+  shutdownScreenshotRequestRef (aaScreenshotRef actors)
   waitForSimIdle <- beginSimShutdown (ahSimulationHandle (aaActorHandles actors))
   stopAutoTickScheduler (aaAutoTickScheduler actors)
   waitForSimIdle

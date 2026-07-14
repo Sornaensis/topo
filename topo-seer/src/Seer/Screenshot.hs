@@ -1,33 +1,21 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Screenshot capture types and pixel-readback logic.
+-- | Screenshot pixel readback and render-thread broker servicing.
 --
--- The screenshot mechanism uses an 'IORef'-based request\/response
--- pattern to bridge the IPC command thread and the render thread:
---
--- 1. The IPC handler writes a 'ScreenshotRequest' into the
---    'ScreenshotRequestRef' and blocks on the result 'MVar'.
--- 2. The render loop (main thread, which owns the SDL2 renderer)
---    checks the ref each frame, captures pixels via
---    @SDL_RenderReadPixels@, encodes them as PNG, and fills the
---    'MVar'.
---
--- This ensures that all SDL2 renderer calls happen on the thread
--- that created the renderer, as required by SDL2.
+-- The SDL-free broker in 'Seer.Screenshot.Request' atomically hands one queued
+-- request to this module. Pixel readback remains on the renderer-owning thread.
 module Seer.Screenshot
-  ( ScreenshotRequest(..)
-  , ScreenshotRequestRef
+  ( ScreenshotRequestRef
   , newScreenshotRequestRef
   , captureScreenshot
   , serviceScreenshotRequest
   ) where
 
 import Codec.Picture (Image(..), PixelRGBA8(..), encodePng)
-import Control.Concurrent.MVar (putMVar)
+import Control.Exception (bracket, evaluate)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
-import Data.IORef (readIORef, writeIORef)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector.Storable as VS
@@ -41,8 +29,9 @@ import qualified SDL.Raw.Enum as RawEnum
 import qualified SDL.Raw.Error as RawError
 import qualified SDL.Raw.Video as RawVideo
 import Seer.Screenshot.Request
-  ( ScreenshotRequest(..)
-  , ScreenshotRequestRef
+  ( ScreenshotRequestRef
+  , ScreenshotResultError(..)
+  , claimAndRunScreenshotCapture
   , newScreenshotRequestRef
   )
 
@@ -56,24 +45,26 @@ captureScreenshot (Renderer rawRenderer) w h = do
   let bytesPerPixel = 4 :: CInt    -- RGBA
       pitch         = w * bytesPerPixel
       bufSize       = fromIntegral (pitch * h)
-  buf <- mallocBytes bufSize
-  rc <- RawVideo.renderReadPixels
-          rawRenderer
-          nullPtr                         -- NULL = entire render target
-          RawEnum.SDL_PIXELFORMAT_ABGR8888  -- R-G-B-A byte order on LE
-          (castPtr buf)
-          pitch
-  if rc /= 0
-    then do
-      free buf
-      sdlErr <- RawError.getError >>= peekCString
-      pure (Left ("SDL_RenderReadPixels failed: " <> Text.pack sdlErr))
-    else do
-      -- Copy the foreign buffer into a storable vector, then free
-      -- the C allocation immediately.
-      rawBytes <- BS.packCStringLen (castPtr buf, bufSize)
-      free buf
-      pure (Right (encodeScreenshotPng (fromIntegral w) (fromIntegral h) rawBytes))
+  bracket (mallocBytes bufSize) free $ \buf -> do
+    rc <- RawVideo.renderReadPixels
+            rawRenderer
+            nullPtr                         -- NULL = entire render target
+            RawEnum.SDL_PIXELFORMAT_ABGR8888  -- R-G-B-A byte order on LE
+            (castPtr buf)
+            pitch
+    if rc /= 0
+      then do
+        sdlErr <- RawError.getError >>= peekCString
+        pure (Left ("SDL_RenderReadPixels failed: " <> Text.pack sdlErr))
+      else do
+        rawBytes <- BS.packCStringLen (castPtr buf, bufSize)
+        let pngBytes = encodeScreenshotPng
+              (fromIntegral w)
+              (fromIntegral h)
+              rawBytes
+        -- Drive the pure encoder before leaving broker exception handling.
+        _ <- evaluate (BS.length pngBytes)
+        pure (Right pngBytes)
 
 -- | Encode raw RGBA pixel data as a PNG 'ByteString'.
 --
@@ -89,10 +80,10 @@ encodeScreenshotPng width height rawBytes =
         } :: Image PixelRGBA8
   in BL.toStrict (encodePng img)
 
--- | Check the screenshot ref and, if a request is pending, capture
--- the current renderer contents and deliver the result.
---
--- Called by the render loop just before @SDL.present@.
+-- | Atomically claim queued work before performing SDL readback, then deliver
+-- at most once. Capture failures and synchronous exceptions become a fixed
+-- internal result; an async exception first terminalizes the waiter and is
+-- then rethrown. Called just before @SDL.present@.
 serviceScreenshotRequest
   :: ScreenshotRequestRef
   -> SDL.Renderer
@@ -100,10 +91,9 @@ serviceScreenshotRequest
   -> CInt         -- ^ Window height
   -> IO ()
 serviceScreenshotRequest ref renderer w h = do
-  mReq <- readIORef ref
-  case mReq of
-    Nothing  -> pure ()
-    Just req -> do
-      writeIORef ref Nothing       -- consume the request
-      result <- captureScreenshot renderer w h
-      putMVar (ssrResult req) result
+  _ <- claimAndRunScreenshotCapture ref $ do
+    captured <- captureScreenshot renderer w h
+    pure $ case captured of
+      Left _ -> Left ScreenshotInternalError
+      Right pngBytes -> Right pngBytes
+  pure ()

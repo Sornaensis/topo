@@ -1,16 +1,24 @@
 module Seer.System
   ( runApp
+  , runRendererWithScreenshotBroker
+  , shouldSkipUnchangedFrame
   ) where
 
+import Control.Exception (finally)
 import Seer.Config.Runtime (loadConfig)
 import Seer.System.Actors
-  ( initialiseAppActors
+  ( AppActors(..)
+  , initialiseAppActors
   , shutdownAppActors
   , startCommandServices
   )
+import Seer.Screenshot.Request
+  ( ScreenshotRequestRef
+  , shutdownScreenshotRequestRef
+  )
 import Seer.System.Cache (destroyRenderCacheState)
 import Seer.System.Headless (runHeadlessHttp)
-import Seer.System.MainLoop (runMainLoop)
+import Seer.System.MainLoop (runMainLoop, shouldSkipUnchangedFrame)
 import Seer.System.Runtime (RuntimeOptions(..), parseRuntimeOptions)
 import Seer.System.Sdl
   ( SdlResources(..)
@@ -37,7 +45,15 @@ runSdlApp opts = do
   actors <- initialiseAppActors runtimeCfg
   startCommandServices opts actors
   sdl <- initialiseSdlResources
-  finalState <- runMainLoop runtimeCfg actors sdl
+  finalState <- runRendererWithScreenshotBroker (aaScreenshotRef actors)
+    (runMainLoop runtimeCfg actors sdl)
   destroyRenderCacheState (srTexturePool sdl) finalState
   shutdownSdlResources sdl
   shutdownAppActors actors
+
+-- | Close capture under 'finally' before propagating any normal or exceptional
+-- renderer-loop exit. This also removes the async-exception window between a
+-- normal loop return and broker closure.
+runRendererWithScreenshotBroker :: ScreenshotRequestRef -> IO a -> IO a
+runRendererWithScreenshotBroker broker action =
+  action `finally` shutdownScreenshotRequestRef broker

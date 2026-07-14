@@ -91,6 +91,7 @@ library:
     - Seer.Render.Viewport
     - Seer.Render.ZoomStage
     - Seer.Screenshot
+    - Seer.Screenshot.Request
     - Seer.Screenshot.Storage
     - Seer.Service.AppService
     - Seer.Service.Config
@@ -202,7 +203,6 @@ library:
     - Seer.System.Sdl
     - Seer.System.Snapshot
     - Seer.Render.Context
-    - Seer.Screenshot.Request
     - UI.TerrainColor
   dependencies:
     - aeson
@@ -284,6 +284,7 @@ tests:
       - linear
       - process
       - sdl2
+      - stm
       - time
       - topo
       - topo-seer

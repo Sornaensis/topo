@@ -2,6 +2,7 @@
 
 module Seer.System.MainLoop
   ( runMainLoop
+  , shouldSkipUnchangedFrame
   ) where
 
 import Actor.AtlasManager (AtlasManagerQueueState, atlasManagerQueuedState, emptyAtlasManagerQueueState)
@@ -43,6 +44,12 @@ import System.IO (IOMode(..), hFlush, hPutStrLn, openFile)
 
 emptyAtlasQueueStateForMainLoop :: AtlasManagerQueueState
 emptyAtlasQueueStateForMainLoop = emptyAtlasManagerQueueState
+
+-- | Decide whether an unchanged frame can sleep. Queued screenshots always
+-- force one render even when the world snapshot itself has not changed.
+shouldSkipUnchangedFrame :: Bool -> Bool -> Bool -> Bool -> Bool
+shouldSkipUnchangedFrame unchanged generating screenshotPending maintenanceDue =
+  unchanged && not generating && not screenshotPending && not maintenanceDue
 
 renderMaintenanceWakeSummary :: Int -> RenderFrameMaintenanceDiagnostics -> String
 renderMaintenanceWakeSummary atlasPendingCount diag =
@@ -173,7 +180,8 @@ runMainLoop runtimeCfg actors sdl = do
               cacheState0
             maintenanceDue = rfmdMaintenanceDue maintenanceDiagnostics
         screenshotPending <- screenshotRequestPending (aaScreenshotRef actors)
-        if isVersionUnchanged && not generating && not screenshotPending && not maintenanceDue
+        if shouldSkipUnchangedFrame
+            isVersionUnchanged generating screenshotPending maintenanceDue
           then do
             -- Stale-snapshot detection: log once if version unchanged for >1s.
             now <- getMonotonicTimeNSec

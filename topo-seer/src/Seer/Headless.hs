@@ -95,7 +95,11 @@ import Seer.Config.Runtime (TopoSeerConfig(..), defaultConfig)
 import Seer.Service.Context (ServiceContext(..))
 import Seer.Service.Events (ServiceEventBus, newDefaultServiceEventBus)
 import Seer.Editor.History (EditHistory, emptyHistory)
-import Seer.Screenshot.Request (ScreenshotRequestRef, newScreenshotRequestRef)
+import Seer.Screenshot.Request
+  ( ScreenshotRequestRef
+  , newScreenshotRequestRef
+  , shutdownScreenshotRequestRef
+  )
 import Seer.Screenshot.Storage
   ( ScreenshotStoragePolicy
   , initialiseScreenshotStorage
@@ -325,6 +329,7 @@ startHeadlessAppWithSystem cfg screenshotStoragePolicy system = do
 -- | Stop a headless runtime and release actor resources.
 stopHeadlessApp :: HeadlessApp -> IO ()
 stopHeadlessApp app = do
+  shutdownScreenshotRequestRef (haScreenshotRef app)
   waitForSimIdle <- beginSimShutdown (haSimulationHandle app)
   stopAutoTickScheduler (haAutoTickScheduler app)
   waitForSimIdle
