@@ -1,6 +1,11 @@
 module Spec.RenderLoopAtlasMaintenance (spec) where
 
 import Actor.AtlasCache (AtlasKey(..))
+import Actor.AtlasManager
+  ( AtlasManagerQueueState(..)
+  , AtlasQueuedTarget(..)
+  , emptyAtlasManagerQueueState
+  )
 import Actor.AtlasResult (AtlasBuildId(..), AtlasBuildResult(..), AtlasTileSetManifest(..), atlasManifestTarget)
 import Actor.AtlasResultBroker (atlasResultsPending, drainFreshResultsN, newAtlasResultRef, pushAtlasResult)
 import Actor.AtlasScheduler (AtlasFreshness(..))
@@ -43,6 +48,10 @@ import Seer.Render.Frame
   )
 import Seer.Render.Terrain (TerrainCache(..), buildTerrainCache)
 import Seer.Render.ZoomStage (ZoomStage(..), stageForZoom)
+import Seer.System
+  ( atlasQueueSnapshotRefreshRequired
+  , atlasQueueTargetsNewerThan
+  )
 import Test.Hspec
 import Topo (WeatherChunk(..), WorldConfig(..), emptyTerrainChunk)
 import Topo.Calendar (WorldTime(..), simulationTickSeconds)
@@ -91,6 +100,34 @@ spec = describe "render-loop atlas maintenance wakeups" $ do
     lastDrainAfter `shouldBe` Just nowMs
     afspAtlasMaintenanceDue nextPolicy `shouldBe` True
     afspShouldDrainAtlas nextPolicy `shouldBe` True
+
+  it "forces one coherent refresh for a queued target newer than the polled snapshot" $ do
+    let queueV2 = queueStateFor 9 (SnapshotVersion 2) keyWeather
+
+    atlasQueueTargetsNewerThan (SnapshotVersion 1) queueV2 `shouldBe` True
+    -- This predicate is deliberately independent of cached uiGenerating.
+    atlasQueueSnapshotRefreshRequired (SnapshotVersion 1) queueV2 Nothing `shouldBe` True
+    -- The force is a freshness gate, not a maintenance wake by itself. Once
+    -- V2 is polled, normal current-key matching and scheduling take over.
+    atlasQueueTargetsNewerThan (SnapshotVersion 2) queueV2 `shouldBe` False
+    let queuedAtV2 = AtlasQueuedWork
+          { aqwQueuedForCurrentKey = True
+          , aqwQueueRevision = Just 9
+          , aqwLastScheduledRevision = Nothing
+          }
+        policyAtV2 = atlasFrameStepPolicy
+          101 atlasDrainPollMs atlasSchedulePollMs False True False
+          queuedAtV2 False (Just 100) (Just 100)
+    afspAtlasMaintenanceDue policyAtV2 `shouldBe` True
+    afspShouldScheduleAtlas policyAtV2 `shouldBe` True
+
+  it "does not busy-poll stale or already-probed atlas queue revisions" $ do
+    let staleQueue = queueStateFor 10 (SnapshotVersion 1) keyElevation
+        unrelatedFutureQueue = queueStateFor 11 (SnapshotVersion 3) keyWeather
+
+    atlasQueueSnapshotRefreshRequired (SnapshotVersion 2) staleQueue Nothing `shouldBe` False
+    atlasQueueSnapshotRefreshRequired (SnapshotVersion 2) unrelatedFutureQueue Nothing `shouldBe` True
+    atlasQueueSnapshotRefreshRequired (SnapshotVersion 2) unrelatedFutureQueue (Just 11) `shouldBe` False
 
   it "wakes queued manager work once per revision and then waits for poll or a new revision" $ do
     let queuedRevision = AtlasQueuedWork
@@ -388,6 +425,26 @@ atlasDrainPollMs = 1000
 
 atlasSchedulePollMs :: Int
 atlasSchedulePollMs = 100
+
+queueStateFor :: Word64 -> SnapshotVersion -> AtlasKey -> AtlasManagerQueueState
+queueStateFor revision snapshotVersion key@(AtlasKey mode waterLevel keyVersion) =
+  emptyAtlasManagerQueueState
+    { amqsQueuedCount = 1
+    , amqsQueuedRevision = revision
+    , amqsQueuedByKey = Map.singleton key 1
+    , amqsQueuedTargets =
+        [ AtlasQueuedTarget
+            { aqtBuildId = AtlasBuildId revision
+            , aqtViewMode = mode
+            , aqtWaterLevel = waterLevel
+            , aqtKeyVersion = keyVersion
+            , aqtSnapshotVersion = snapshotVersion
+            , aqtHexRadius = 6
+            , aqtAtlasScale = 1
+            , aqtCurrentStageVisible = True
+            }
+        ]
+    }
 
 snapVersion :: SnapshotVersion
 snapVersion = SnapshotVersion 1

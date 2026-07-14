@@ -19,6 +19,7 @@ import qualified Spec.AtlasScheduler
 import qualified Spec.AtlasManager
 import qualified Spec.AtlasCache
 import qualified Spec.RenderLoopAtlasMaintenance
+import qualified Spec.RenderLoopSnapshotFreshness
 import qualified Spec.WeatherAtlasFlicker
 import qualified Spec.AtlasTransparency
 import qualified Spec.SnapshotReceiver
@@ -79,6 +80,7 @@ main = do
         Spec.AtlasManager.spec
         Spec.AtlasCache.spec
         Spec.RenderLoopAtlasMaintenance.spec
+        Spec.RenderLoopSnapshotFreshness.spec
         Spec.WeatherAtlasFlicker.spec
         Spec.AtlasTransparency.spec
         Spec.HexPick.spec

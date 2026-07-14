@@ -77,6 +77,8 @@ library:
     - Seer.DataBrowser.AppService
     - Seer.DataBrowser.Model
     - Seer.System
+    - Seer.System.Cache
+    - Seer.System.Snapshot
     - Seer.System.ThreadPriority
     - Seer.Input.ConfigScroll
     - Seer.Input.Modal
@@ -195,7 +197,6 @@ library:
     - Seer.World.PluginDataCopy
     - Seer.System.Actors
     - Seer.System.AutoTick
-    - Seer.System.Cache
     - Seer.System.EventPump
     - Seer.System.Headless
     - Seer.System.MainLoop
@@ -203,7 +204,6 @@ library:
     - Seer.System.Runtime
     - Seer.System.Screenshot
     - Seer.System.Sdl
-    - Seer.System.Snapshot
     - Seer.Render.Context
     - UI.TerrainColor
   dependencies:

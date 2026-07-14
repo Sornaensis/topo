@@ -29,6 +29,8 @@ import Control.Exception
 import Control.Monad (replicateM)
 import Data.Aeson (Value(..), object, (.=))
 import qualified Data.ByteString as BS
+import Actor.AtlasManager (emptyAtlasManagerQueueState)
+import Actor.SnapshotReceiver (SnapshotVersion(..))
 import Data.Either (isLeft, isRight)
 import qualified Data.Text as Text
 import Test.Hspec
@@ -41,7 +43,8 @@ import Seer.Service.Screenshot
   )
 import Seer.Screenshot.Storage (ScreenshotStoragePolicy(..))
 import Seer.System
-  ( runRendererWithScreenshotBroker
+  ( renderSnapshotForceRequired
+  , runRendererWithScreenshotBroker
   , shouldSkipUnchangedFrame
   )
 import Seer.Service.Types
@@ -215,6 +218,38 @@ spec = describe "screenshot request broker" $ do
       submitScreenshotRequest broker `shouldReturn` Left ScreenshotClosed
 
   describe "10. pending wake transitions" $ do
+    it "selects a forced coherent snapshot read before screenshot capture" $ do
+      renderSnapshotForceRequired
+        True
+        (SnapshotVersion 4)
+        emptyAtlasManagerQueueState
+        Nothing
+        `shouldBe` True
+      renderSnapshotForceRequired
+        False
+        (SnapshotVersion 4)
+        emptyAtlasManagerQueueState
+        Nothing
+        `shouldBe` False
+      shouldSkipUnchangedFrame True False False False `shouldBe` True
+
+    it "leaves a request arriving after the frame claim queued for the next frame" $ do
+      broker <- newScreenshotRequestRef
+      ticketA <- submitOrFail broker
+      frameClaim <- claimOrFail broker
+      deliverScreenshotRequest broker frameClaim (Right "frame-a")
+        `shouldReturn` ScreenshotDelivered
+      waitNever broker ticketA `shouldReturn` Right "frame-a"
+
+      ticketB <- submitOrFail broker
+      runScreenshotCapture broker frameClaim (pure (Right "stale-frame"))
+        `shouldReturn` ScreenshotStale
+      screenshotRequestPending broker `shouldReturn` True
+      claimB <- claimOrFail broker
+      deliverScreenshotRequest broker claimB (Right "frame-b")
+        `shouldReturn` ScreenshotDelivered
+      waitNever broker ticketB `shouldReturn` Right "frame-b"
+
     it "is false -> true -> false across idle, queue, and atomic claim" $ do
       broker <- newScreenshotRequestRef
       screenshotRequestPending broker `shouldReturn` False

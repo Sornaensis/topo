@@ -10,8 +10,8 @@ module Seer.System.RenderFrame
 
 import Actor.AtlasCache (atlasKeysForSelection)
 import Actor.AtlasFreshness (AtlasFreshnessRef)
-import Actor.AtlasManager (AtlasManagerQueueRef, AtlasManagerQueueState(..), atlasManagerQueuedState, emptyAtlasManagerQueueState)
-import Actor.AtlasResultBroker (AtlasResultRef, atlasResultsPendingCount)
+import Actor.AtlasManager (AtlasManagerQueueState(..))
+import Actor.AtlasResultBroker (AtlasResultRef)
 import Actor.AtlasScheduleBroker (AtlasScheduleRef, AtlasScheduleReport(..))
 import Actor.AtlasScheduler (AtlasScheduler)
 import Actor.Log (Log, LogEntry(..), LogLevel(..), appendLog)
@@ -45,7 +45,7 @@ import Seer.Render.Frame
   , noAtlasQueuedWork
   )
 import Seer.Render.ZoomStage (ZoomStage(..), stageForZoom)
-import Seer.Screenshot.Request (ScreenshotRequestRef)
+import Seer.Screenshot.Request (ScreenshotClaim, ScreenshotRequestRef)
 import Seer.System.Cache
   ( RenderCacheState(..)
   , applyTerrainCacheUpdate
@@ -70,7 +70,6 @@ data RenderFrameEnv = RenderFrameEnv
   , rfeAtlasScheduleRef :: !AtlasScheduleRef
   , rfeAtlasResultRef :: !AtlasResultRef
   , rfeAtlasFreshnessRef :: !AtlasFreshnessRef
-  , rfeAtlasQueueRef :: !AtlasManagerQueueRef
   , rfeScreenshotRef :: !ScreenshotRequestRef
   , rfeTraceHandle :: !(Maybe Handle)
   }
@@ -193,9 +192,6 @@ renderFrameStepMaintenanceDue settings renderTargetOk nowMs atlasPending atlasQu
   rfmdMaintenanceDue $
     renderFrameStepMaintenance settings renderTargetOk nowMs atlasPending atlasQueueState renderSnap cacheState
 
-emptyQueueState :: AtlasManagerQueueState
-emptyQueueState = emptyAtlasManagerQueueState
-
 atlasQueuedWorkForSnapshot :: AtlasManagerQueueState -> RenderSnapshot -> Maybe Word64 -> AtlasQueuedWork
 atlasQueuedWorkForSnapshot queueState renderSnap lastScheduledRevision =
   let uiSnap = rsUi renderSnap
@@ -236,20 +232,17 @@ renderFrameStep
   -> Word32
   -> SnapshotVersion
   -> RenderSnapshot
+  -> Int
+  -> AtlasManagerQueueState
+  -> Maybe ScreenshotClaim
   -> RenderCacheState
   -> IO RenderFrameStepResult
-renderFrameStep env settings nowMs snapVersion renderSnap cacheState0 = do
+renderFrameStep env settings nowMs snapVersion renderSnap atlasPendingCount atlasQueueState screenshotClaim cacheState0 = do
   stepStart <- getMonotonicTimeNSec
-  -- Skip terrain cache, atlas, and chunk texture polling while generating; those
-  -- operations are no-ops then and can otherwise stall the SDL render thread.
+  -- MainLoop supplies queue and pending state observed behind the final
+  -- publication gate. Do not reread either source here and bypass that proof.
   let generating = uiGenerating (rsUi renderSnap)
-  atlasPendingCount <- if generating
-    then pure 0
-    else atlasResultsPendingCount (rfeAtlasResultRef env)
-  atlasQueueState <- if generating
-    then pure emptyQueueState
-    else atlasManagerQueuedState (rfeAtlasQueueRef env)
-  let atlasPending = atlasPendingCount > 0
+      atlasPending = atlasPendingCount > 0
       queuedWork = atlasQueuedWorkForSnapshot atlasQueueState renderSnap (rcsLastAtlasQueuedRevisionScheduled cacheState0)
   let fallbackTerrainStale = not (rfeRenderTargetOk env)
         && terrainCacheNeedsRefresh (rsUi renderSnap) (rsTerrain renderSnap) (rcsTerrainCache cacheState0)
@@ -327,6 +320,7 @@ renderFrameStep env settings nowMs snapVersion renderSnap cacheState0 = do
       , rcRenderTargetOk = rfeRenderTargetOk env
       , rcTraceHandle = rfeTraceHandle env
       , rcScreenshotRef = rfeScreenshotRef env
+      , rcScreenshotClaim = screenshotClaim
       , rcTexturePool = rfeTexturePool env
       }
   frameEnd <- getMonotonicTimeNSec

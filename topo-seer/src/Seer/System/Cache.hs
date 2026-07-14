@@ -76,6 +76,7 @@ data RenderCacheState = RenderCacheState
   , rcsLastAtlasQueuedCount :: !Int
   , rcsLastAtlasQueuedRevision :: !(Maybe Word64)
   , rcsLastAtlasQueuedRevisionScheduled :: !(Maybe Word64)
+  , rcsLastAtlasSnapshotPollRevision :: !(Maybe Word64)
   , rcsLastChunkTexturePoll :: !(Maybe Word32)
   }
 
@@ -106,6 +107,7 @@ initialRenderCacheState atlasCacheEntries = RenderCacheState
   , rcsLastAtlasQueuedCount = 0
   , rcsLastAtlasQueuedRevision = Nothing
   , rcsLastAtlasQueuedRevisionScheduled = Nothing
+  , rcsLastAtlasSnapshotPollRevision = Nothing
   , rcsLastChunkTexturePoll = Nothing
   }
 

@@ -3,62 +3,54 @@ module Seer.System.Snapshot
   , pollRenderSnapshot
   ) where
 
-import Actor.Log
-  ( Log
-  , LogEntry(..)
-  , LogLevel(..)
-  , LogSnapshotRef
-  , appendLog
-  )
-import Actor.Render (RenderSnapshot(..))
+import Actor.Render (RenderSnapshot)
 import Actor.SnapshotReceiver
-  ( DataSnapshotRef
-  , SnapshotVersion
+  ( SnapshotVersion
   , SnapshotVersionRef
-  , TerrainSnapshotRef
   , readCommittedRenderSnapshot
+  , readSnapshotVersion
   )
-import Actor.UI (UiSnapshotRef)
-import qualified Data.Text as Text
 import Data.Word (Word32)
 import GHC.Clock (getMonotonicTimeNSec)
-import Hyperspace.Actor (ActorHandle, Protocol)
 import Seer.System.Cache (RenderCacheState(..), shouldPoll)
 import Seer.Timing (nsToMs)
 
 data SnapshotPollEnv = SnapshotPollEnv
-  { speLogHandle :: !(ActorHandle Log (Protocol Log))
-  , speTimingLogThresholdMs :: !Word32
+  { speTimingLogThresholdMs :: !Word32
   , speSnapshotPollMs :: !Int
   , speSnapshotVersionRef :: !SnapshotVersionRef
-  , speDataSnapshotRef :: !DataSnapshotRef
-  , speTerrainSnapshotRef :: !TerrainSnapshotRef
-  , speLogSnapshotRef :: !LogSnapshotRef
-  , speUiSnapshotRef :: !UiSnapshotRef
+  , speLogSlowSnapshotPoll :: !(Word32 -> IO ())
   }
 
+-- | Probe publication on every decision. The interval remains a health check
+-- that periodically re-reads the coherent tuple even when its version is
+-- unchanged; it is not the freshness mechanism.
 pollRenderSnapshot
   :: SnapshotPollEnv
   -> Word32
   -> Bool
-  -> Bool
   -> RenderCacheState
   -> IO (SnapshotVersion, RenderSnapshot, RenderCacheState, Word32)
-pollRenderSnapshot env nowMs hasEvents forcePoll cacheState = do
-  let shouldPollSnapshot = forcePoll
-        || hasEvents
-        || shouldPoll nowMs (speSnapshotPollMs env) (rcsLastSnapshotPoll cacheState)
+pollRenderSnapshot env nowMs forcePoll cacheState = do
+  publishedVersion <- readSnapshotVersion (speSnapshotVersionRef env)
+  let committedChanged = rcsLastPolledSnapshot cacheState /= Just publishedVersion
+      fallbackPollDue = shouldPoll nowMs (speSnapshotPollMs env) (rcsLastSnapshotPoll cacheState)
+      shouldReadCoherent = forcePoll
+        || committedChanged
+        || fallbackPollDue
         || rcsLastSnapshotData cacheState == Nothing
-  case (shouldPollSnapshot, rcsLastSnapshotData cacheState, rcsLastPolledSnapshot cacheState) of
+  case (shouldReadCoherent, rcsLastSnapshotData cacheState, rcsLastPolledSnapshot cacheState) of
     (False, Just cachedSnap, Just cachedVersion) ->
       pure (cachedVersion, cachedSnap, cacheState, 0)
     _ -> do
       snapshotStart <- getMonotonicTimeNSec
+      -- Trust this version rather than the earlier probe: a publisher may have
+      -- committed between the two reads.
       (version, snap) <- readCommittedRenderSnapshot (speSnapshotVersionRef env)
       snapshotEnd <- getMonotonicTimeNSec
       let snapshotElapsed = nsToMs snapshotStart snapshotEnd
       if snapshotElapsed >= speTimingLogThresholdMs env
-        then appendLog (speLogHandle env) (LogEntry LogInfo (Text.pack ("snapshot poll took " <> show snapshotElapsed <> "ms")))
+        then speLogSlowSnapshotPoll env snapshotElapsed
         else pure ()
       pure (version, snap, cacheState
         { rcsLastPolledSnapshot = Just version

@@ -73,6 +73,8 @@ library
       Seer.DataBrowser.AppService
       Seer.DataBrowser.Model
       Seer.System
+      Seer.System.Cache
+      Seer.System.Snapshot
       Seer.System.ThreadPriority
       Seer.Input.ConfigScroll
       Seer.Input.Modal
@@ -191,7 +193,6 @@ library
       Seer.World.PluginDataCopy
       Seer.System.Actors
       Seer.System.AutoTick
-      Seer.System.Cache
       Seer.System.EventPump
       Seer.System.Headless
       Seer.System.MainLoop
@@ -199,7 +200,6 @@ library
       Seer.System.Runtime
       Seer.System.Screenshot
       Seer.System.Sdl
-      Seer.System.Snapshot
       Seer.Render.Context
       UI.TerrainColor
   hs-source-dirs:
@@ -290,6 +290,7 @@ test-suite topo-seer-test
       Spec.PipelineIntegrator
       Spec.PluginManager
       Spec.RenderLoopAtlasMaintenance
+      Spec.RenderLoopSnapshotFreshness
       Spec.RiverRender
       Spec.ScreenshotRequest
       Spec.ScreenshotStorage

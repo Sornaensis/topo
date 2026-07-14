@@ -29,10 +29,11 @@ import qualified SDL.Raw.Enum as RawEnum
 import qualified SDL.Raw.Error as RawError
 import qualified SDL.Raw.Video as RawVideo
 import Seer.Screenshot.Request
-  ( ScreenshotRequestRef
+  ( ScreenshotClaim
+  , ScreenshotRequestRef
   , ScreenshotResultError(..)
-  , claimAndRunScreenshotCapture
   , newScreenshotRequestRef
+  , runScreenshotCapture
   )
 
 -- | Capture the current renderer contents as a PNG-encoded 'ByteString'.
@@ -80,18 +81,18 @@ encodeScreenshotPng width height rawBytes =
         } :: Image PixelRGBA8
   in BL.toStrict (encodePng img)
 
--- | Atomically claim queued work before performing SDL readback, then deliver
--- at most once. Capture failures and synchronous exceptions become a fixed
--- internal result; an async exception first terminalizes the waiter and is
--- then rethrown. Called just before @SDL.present@.
+-- | Service the exact request claimed before the frame's coherent snapshot
+-- read. Requests arriving after that claim remain queued for the next frame
+-- instead of being captured from an older back-buffer.
 serviceScreenshotRequest
   :: ScreenshotRequestRef
+  -> ScreenshotClaim
   -> SDL.Renderer
   -> CInt         -- ^ Window width
   -> CInt         -- ^ Window height
   -> IO ()
-serviceScreenshotRequest ref renderer w h = do
-  _ <- claimAndRunScreenshotCapture ref $ do
+serviceScreenshotRequest ref claim renderer w h = do
+  _ <- runScreenshotCapture ref claim $ do
     captured <- captureScreenshot renderer w h
     pure $ case captured of
       Left _ -> Left ScreenshotInternalError

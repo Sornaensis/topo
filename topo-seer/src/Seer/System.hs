@@ -2,6 +2,13 @@ module Seer.System
   ( runApp
   , runRendererWithScreenshotBroker
   , shouldSkipUnchangedFrame
+  , atlasQueueTargetsNewerThan
+  , atlasQueueSnapshotRefreshRequired
+  , renderSnapshotForceRequired
+  , RenderWakeInputs(..)
+  , RenderFreshnessDecision(..)
+  , prepareRenderFreshnessDecision
+  , retryPublicationRace
   ) where
 
 import Control.Exception (finally)
@@ -17,8 +24,18 @@ import Seer.Screenshot.Request
   , shutdownScreenshotRequestRef
   )
 import Seer.System.Cache (destroyRenderCacheState)
+import Seer.System.EventPump (retryPublicationRace)
 import Seer.System.Headless (runHeadlessHttp)
-import Seer.System.MainLoop (runMainLoop, shouldSkipUnchangedFrame)
+import Seer.System.MainLoop
+  ( RenderFreshnessDecision(..)
+  , RenderWakeInputs(..)
+  , atlasQueueSnapshotRefreshRequired
+  , atlasQueueTargetsNewerThan
+  , prepareRenderFreshnessDecision
+  , renderSnapshotForceRequired
+  , runMainLoop
+  , shouldSkipUnchangedFrame
+  )
 import Seer.System.Runtime (RuntimeOptions(..), parseRuntimeOptions)
 import Seer.System.Sdl
   ( SdlResources(..)

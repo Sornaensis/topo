@@ -514,9 +514,10 @@ renderFrame context = do
     (_, elapsed) <- timedMs (drawUiOverlay renderer fontCache snapshot terrainSnap layout logFilters (V2 (fromIntegral winW) (fromIntegral winH)))
     logTiming logHandle timingLogThresholdMs (Text.pack "draw ui") elapsed Nothing
   tAfterUi <- getMonotonicTimeNSec
-  -- Service any pending screenshot request before presenting.
-  -- This reads the back-buffer while all drawing is complete.
-  serviceScreenshotRequest (rcScreenshotRef context) renderer (fromIntegral winW) (fromIntegral winH)
+  -- Service only the request claimed before this frame's coherent snapshot
+  -- read. This reads the back-buffer while all drawing is complete.
+  forM_ (rcScreenshotClaim context) $ \claim ->
+    serviceScreenshotRequest (rcScreenshotRef context) claim renderer (fromIntegral winW) (fromIntegral winH)
   loggedPresent <- do
     (_, elapsed) <- timedMs (SDL.present renderer)
     logTiming logHandle timingLogThresholdMs (Text.pack "present") elapsed Nothing
