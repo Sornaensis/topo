@@ -53,11 +53,11 @@ import Actor.Data
 import Actor.Log (Log, LogEntry(..), LogLevel(..), appendLog)
 import Actor.SnapshotReceiver
   ( SnapshotVersion
-  , bumpSnapshotVersion
-  , bumpSnapshotVersionAndRead
-  , readSnapshotVersion
-  , writeDataSnapshot
-  , writeTerrainSnapshot
+  , dataAndTerrainSnapshotUpdate
+  , invalidatePublishedSnapshot
+  , publishSnapshot
+  , terrainSnapshotUpdate
+  , withUiSnapshot
   )
 import Actor.Terrain
   ( Terrain
@@ -256,7 +256,10 @@ startGeneration req = do
   setUiRenderWaterLevel uiHandle (uiWaterLevel uiSnap)
   -- Capture config snapshot for revert support
   setUiWorldConfig uiHandle (Just (snapshotFromUi uiSnap "world"))
-  bumpSnapshotVersion (ahSnapshotVersionRef handles)
+  -- Synchronous actor request is the barrier required before invalidating
+  -- already-published UI state.
+  _ <- getUiSnapshot uiHandle
+  _ <- invalidatePublishedSnapshot (ahSnapshotVersionRef handles)
   appendLog logHandle (LogEntry LogInfo (configSummary uiSnap))
   -- Hot-reload plugin manifests and collect plugin metadata for pipeline planning.
   refreshManifests pluginHandle
@@ -331,23 +334,13 @@ rebuildAtlas :: UiActionRequest -> IO ()
 rebuildAtlas req = do
   let handles = uarActorHandles req
   uiSnap <- getUiSnapshot (ahUiHandle handles)
-  snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
-  enqueueAtlasRebuildFor handles (uiViewMode uiSnap) uiSnap snapshotVersion
+  enqueueAtlasRebuildFor handles (uiViewMode uiSnap) uiSnap
 
 rebuildAtlasFor :: UiActionRequest -> ViewMode -> IO ()
 rebuildAtlasFor req mode = do
   let handles = uarActorHandles req
   uiSnap <- getUiSnapshot (ahUiHandle handles)
-  snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
-  enqueueAtlasRebuildFor handles mode uiSnap snapshotVersion
-
--- | 'rebuildAtlasFor' variant that takes 'ActorHandles' directly
--- (used by undo\/redo which don't carry a 'UiActionRequest').
-rebuildAtlasFor' :: ActorHandles -> ViewMode -> IO ()
-rebuildAtlasFor' handles mode = do
-  uiSnap <- getUiSnapshot (ahUiHandle handles)
-  snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
-  enqueueAtlasRebuildFor handles mode uiSnap snapshotVersion
+  enqueueAtlasRebuildFor handles mode uiSnap
 
 -- | Toggle day/night through the UiActions actor so rapid clicks serialize
 -- against the latest UI state before publishing a rebuild version.
@@ -358,19 +351,21 @@ toggleDayNight req = do
   uiSnap <- getUiSnapshot uiHandle
   setUiDayNightEnabled uiHandle (not (uiDayNightEnabled uiSnap))
   postToggle <- getUiSnapshot uiHandle
-  terrainSnap <- publishLatestTerrainSnapshot handles
-  snapshotVersion <- bumpSnapshotVersionAndRead (ahSnapshotVersionRef handles)
+  (terrainSnap, snapshotVersion) <- publishLatestTerrainSnapshot handles postToggle
   enqueueAtlasRebuildForTerrainWithForce True handles (uiViewMode postToggle) postToggle snapshotVersion terrainSnap
 
-publishLatestTerrainSnapshot :: ActorHandles -> IO TerrainSnapshot
-publishLatestTerrainSnapshot handles = do
+publishLatestTerrainSnapshot :: ActorHandles -> UiState -> IO (TerrainSnapshot, SnapshotVersion)
+publishLatestTerrainSnapshot handles uiSnapshot = do
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
-  writeTerrainSnapshot (ahTerrainSnapshotRef handles) terrainSnap
-  pure terrainSnap
+  snapshotVersion <- publishSnapshot
+    (ahSnapshotVersionRef handles)
+    (withUiSnapshot uiSnapshot
+      (terrainSnapshotUpdate (ahTerrainSnapshotRef handles) terrainSnap))
+  pure (terrainSnap, snapshotVersion)
 
-enqueueAtlasRebuildFor :: ActorHandles -> ViewMode -> UiState -> SnapshotVersion -> IO ()
-enqueueAtlasRebuildFor handles mode uiSnap snapshotVersion = do
-  terrainSnap <- publishLatestTerrainSnapshot handles
+enqueueAtlasRebuildFor :: ActorHandles -> ViewMode -> UiState -> IO ()
+enqueueAtlasRebuildFor handles mode uiSnap = do
+  (terrainSnap, snapshotVersion) <- publishLatestTerrainSnapshot handles uiSnap
   enqueueAtlasRebuildForTerrain handles mode uiSnap snapshotVersion terrainSnap
 
 -- | Enqueue a full ordered atlas rebuild using an already-captured terrain snapshot.
@@ -423,9 +418,8 @@ enqueueViewportRefreshForCurrentUi handles =
 
 enqueueViewportRefreshForCurrentUiWithWindow :: ActorHandles -> Maybe (Int, Int) -> IO SnapshotVersion
 enqueueViewportRefreshForCurrentUiWithWindow handles mbWindowSize = do
-  terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   uiSnap <- getUiSnapshot (ahUiHandle handles)
-  snapshotVersion <- bumpSnapshotVersionAndRead (ahSnapshotVersionRef handles)
+  (terrainSnap, snapshotVersion) <- publishLatestTerrainSnapshot handles uiSnap
   let selection = effectiveViewSelection uiSnap
       currentStage = stageForZoom (uiZoom uiSnap)
       viewportCoverage = viewportCoverageFor terrainSnap uiSnap mbWindowSize currentStage
@@ -458,8 +452,7 @@ setViewModeAndRebuild req mode = do
   previousUi <- getUiSnapshot uiHandle
   setUiViewMode uiHandle mode
   uiSnap <- getUiSnapshot uiHandle
-  terrainSnap <- publishLatestTerrainSnapshot handles
-  snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
+  (terrainSnap, snapshotVersion) <- publishLatestTerrainSnapshot handles uiSnap
   enqueueAtlasTransitionForTerrain handles previousUi uiSnap snapshotVersion terrainSnap
 
 setViewSelectionAndRebuild :: UiActionRequest -> LayeredViewState -> IO ()
@@ -477,8 +470,7 @@ setViewSelectionFromPrevious req chooseSelection = do
   previousUi <- getUiSnapshot uiHandle
   setUiViewSelection uiHandle (chooseSelection previousUi)
   uiSnap <- getUiSnapshot uiHandle
-  terrainSnap <- publishLatestTerrainSnapshot handles
-  snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
+  (terrainSnap, snapshotVersion) <- publishLatestTerrainSnapshot handles uiSnap
   enqueueAtlasTransitionForTerrain handles previousUi uiSnap snapshotVersion terrainSnap
 
 -- | Revert config sliders to the values captured at the last generation.
@@ -647,10 +639,14 @@ applyBrush req hex = do
       -- Refresh the snapshot refs so the render pipeline picks up changes
       terrainSnap' <- getTerrainSnapshot dataHandle
       dataSnap' <- getDataSnapshot dataHandle
-      writeTerrainSnapshot (ahTerrainSnapshotRef handles) terrainSnap'
-      writeDataSnapshot (ahDataSnapshotRef handles) dataSnap'
-      bumpSnapshotVersion (ahSnapshotVersionRef handles)
-      rebuildAtlasFor req (uiViewMode uiSnap)
+      publishedUi <- getUiSnapshot uiHandle
+      snapshotVersion <- publishSnapshot
+        (ahSnapshotVersionRef handles)
+        (withUiSnapshot publishedUi
+          (dataAndTerrainSnapshotUpdate
+            (ahDataSnapshotRef handles) dataSnap'
+            (ahTerrainSnapshotRef handles) terrainSnap'))
+      enqueueAtlasRebuildForTerrain handles (uiViewMode publishedUi) publishedUi snapshotVersion terrainSnap'
 
 -- | Human-readable label for each editor tool.
 toolLabel :: EditorTool -> Text
@@ -731,11 +727,14 @@ applyChunkRestore handles chunks = do
     (IntMap.union chunks (tsTerrainChunks terrainSnap))
   terrainSnap' <- getTerrainSnapshot dataHandle
   dataSnap'    <- getDataSnapshot dataHandle
-  writeTerrainSnapshot (ahTerrainSnapshotRef handles) terrainSnap'
-  writeDataSnapshot (ahDataSnapshotRef handles) dataSnap'
-  bumpSnapshotVersion (ahSnapshotVersionRef handles)
   uiSnap <- getUiSnapshot uiHandle
-  rebuildAtlasFor' handles (uiViewMode uiSnap)
+  snapshotVersion <- publishSnapshot
+    (ahSnapshotVersionRef handles)
+    (withUiSnapshot uiSnap
+      (dataAndTerrainSnapshotUpdate
+        (ahDataSnapshotRef handles) dataSnap'
+        (ahTerrainSnapshotRef handles) terrainSnap'))
+  enqueueAtlasRebuildForTerrain handles (uiViewMode uiSnap) uiSnap snapshotVersion terrainSnap'
 
 writeTerrainChunkMap
   :: ActorHandle Data (Protocol Data)

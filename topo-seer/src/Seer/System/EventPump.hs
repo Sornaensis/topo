@@ -7,8 +7,8 @@ module Seer.System.EventPump
 
 import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshotRef, appendLog)
 import Actor.Render (RenderSnapshot(..))
-import Actor.SnapshotReceiver (bumpSnapshotVersion)
-import Actor.UI (UiSnapshotRef)
+import Actor.SnapshotReceiver (invalidatePublishedSnapshot)
+import Actor.UI (UiSnapshotRef, getUiSnapshot)
 import Actor.UiActions (UiActions)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Control.Monad (forM_, when)
@@ -55,7 +55,7 @@ processEvents env timingLogThresholdMs events renderSnap =
       -- the next frame.
       fired <- tickTooltipHover (epeTooltipHoverRef env) (ahUiHandle (epeActorHandles env))
       when fired $
-        bumpSnapshotVersionFromEnv env
+        invalidateSnapshotFromEnv env
       pure 0
     else do
       handleStart <- getMonotonicTimeNSec
@@ -83,7 +83,7 @@ processEvents env timingLogThresholdMs events renderSnap =
       forM_ coalescedEvents (handleEvent inputContext)
       _ <- tickTooltipHover (epeTooltipHoverRef env) (ahUiHandle actorHandles)
       afterEvents <- getMonotonicTimeNSec
-      bumpSnapshotVersionFromEnv env
+      invalidateSnapshotFromEnv env
       handleEnd <- getMonotonicTimeNSec
       let elapsed = nsToMs handleStart handleEnd
           eventsMs = nsToMs handleStart afterEvents
@@ -93,8 +93,13 @@ processEvents env timingLogThresholdMs events renderSnap =
           ("handle events took " <> show elapsed <> "ms [" <> show (length events) <> " raw, " <> show (length coalescedEvents) <> " coalesced] dispatch=" <> show eventsMs <> "ms uiSnap=" <> show uiSnapMs <> "ms")))
       pure elapsed
 
-bumpSnapshotVersionFromEnv :: EventPumpEnv -> IO ()
-bumpSnapshotVersionFromEnv env = bumpSnapshotVersion (ahSnapshotVersionRef (epeActorHandles env))
+invalidateSnapshotFromEnv :: EventPumpEnv -> IO ()
+invalidateSnapshotFromEnv env = do
+  let handles = epeActorHandles env
+  -- Drain preceding UI casts before committing their invalidation epoch.
+  _ <- getUiSnapshot (ahUiHandle handles)
+  _ <- invalidatePublishedSnapshot (ahSnapshotVersionRef handles)
+  pure ()
 
 -- | Coalesce consecutive mouse motion events, keeping only the last one in
 -- each run of consecutive motions.  Non-motion events retain their original

@@ -25,7 +25,12 @@ import Actor.PluginManager
   , PluginSimulationPlan(..)
   , getPluginSimulationPlan
   )
-import Actor.SnapshotReceiver (bumpSnapshotVersion, readSnapshotVersion, readTerrainSnapshot)
+import Actor.Render (RenderSnapshot(..))
+import Actor.SnapshotReceiver
+  ( SnapshotVersion
+  , invalidatePublishedSnapshot
+  , readCommittedRenderSnapshot
+  )
 import Actor.Simulation
   ( CloudDeltaMetric(..)
   , CloudDeltaSummary(..)
@@ -97,9 +102,9 @@ handleSetSimAutoTick ctx reqId params = do
       if flushed
         then pure ()
         else do
-          bumpSnapshotVersion (ahSnapshotVersionRef handles)
+          snapshotVersion <- invalidatePublishedSnapshot (ahSnapshotVersionRef handles)
           when shouldBackfill $
-            enqueueLatestSimulationAtlasBackfill handles ui
+            enqueueLatestSimulationAtlasBackfill handles ui snapshotVersion
       pure $ okResponse reqId $ object
         [ "auto_tick" .= uiSimAutoTick ui
         , "rate"      .= fmap (const (uiSimTickRate ui)) mRate
@@ -184,31 +189,32 @@ shouldBackfillAutoTickPublication ui =
   not (uiSimAutoTick ui)
     || uiSimTickRate ui <= simulationAtlasBackfillRateThreshold
 
-enqueueLatestSimulationAtlasBackfill :: ActorHandles -> UiState -> IO ()
-enqueueLatestSimulationAtlasBackfill handles ui
-  | not (simulationAtlasBackfillViewAffected ui) = pure ()
+enqueueLatestSimulationAtlasBackfill :: ActorHandles -> UiState -> SnapshotVersion -> IO ()
+enqueueLatestSimulationAtlasBackfill handles requestedUi snapshotVersion
+  | not (simulationAtlasBackfillViewAffected requestedUi) = pure ()
   | otherwise = do
-      terrainSnap <- readTerrainSnapshot (ahTerrainSnapshotRef handles)
-      when (simulationAtlasBackfillSnapshotReady terrainSnap) $ do
-        latestUi <- getUiSnapshot (ahUiHandle handles)
-        latestTerrainSnap <- readTerrainSnapshot (ahTerrainSnapshotRef handles)
-        when
-          (simulationAtlasBackfillStillCurrent ui terrainSnap latestUi latestTerrainSnap) $ do
-            snapshotVersion <- readSnapshotVersion (ahSnapshotVersionRef handles)
-            let selection = effectiveViewSelection ui
-                waterLevel = uiRenderWaterLevel ui
-                keys = filter (simulationBackfillKeyAffected ui) (atlasKeysForSelection selection waterLevel terrainSnap)
-                jobs = atlasJobsForKeys
-                  snapshotVersion
-                  selection
-                  waterLevel
-                  terrainSnap
-                  keys
-                  (orderedZoomStagesForZoom (uiZoom ui))
-                  Nothing
-            mapM_
-              (enqueueAtlasBuild (ahAtlasManagerHandle handles))
-              jobs
+      (currentVersion, renderSnapshot) <-
+        readCommittedRenderSnapshot (ahSnapshotVersionRef handles)
+      -- A newer publication owns its own atlas work; never stamp its terrain
+      -- with the invalidation version returned above.
+      when (currentVersion == snapshotVersion) $ do
+        let ui = rsUi renderSnapshot
+            terrainSnap = rsTerrain renderSnapshot
+        when (simulationAtlasBackfillSnapshotReady terrainSnap) $ do
+          let selection = effectiveViewSelection ui
+              waterLevel = uiRenderWaterLevel ui
+              keys = filter (simulationBackfillKeyAffected ui) (atlasKeysForSelection selection waterLevel terrainSnap)
+              jobs = atlasJobsForKeys
+                snapshotVersion
+                selection
+                waterLevel
+                terrainSnap
+                keys
+                (orderedZoomStagesForZoom (uiZoom ui))
+                Nothing
+          mapM_
+            (enqueueAtlasBuild (ahAtlasManagerHandle handles))
+            jobs
 
 simulationAtlasBackfillViewAffected :: UiState -> Bool
 simulationAtlasBackfillViewAffected ui =
@@ -233,20 +239,6 @@ simulationBackfillKeyAffected ui key = case atlasKeyLayer key of
 simulationAtlasBackfillSnapshotReady :: TerrainSnapshot -> Bool
 simulationAtlasBackfillSnapshotReady terrainSnap =
   tsChunkSize terrainSnap > 0 && not (IntMap.null (tsTerrainChunks terrainSnap))
-
-simulationAtlasBackfillStillCurrent
-  :: UiState
-  -> TerrainSnapshot
-  -> UiState
-  -> TerrainSnapshot
-  -> Bool
-simulationAtlasBackfillStillCurrent requestedUi requestedTerrain latestUi latestTerrain =
-  uiViewMode requestedUi == uiViewMode latestUi
-    && uiRenderWaterLevel requestedUi == uiRenderWaterLevel latestUi
-    && uiZoom requestedUi == uiZoom latestUi
-    && uiDayNightEnabled requestedUi == uiDayNightEnabled latestUi
-    && atlasKeysForSelection (effectiveViewSelection requestedUi) (uiRenderWaterLevel requestedUi) requestedTerrain
-       == atlasKeysForSelection (effectiveViewSelection latestUi) (uiRenderWaterLevel latestUi) latestTerrain
 
 simulationPhase :: DataSnapshot -> SimulationDagSnapshot -> Text
 simulationPhase dataSnap dag

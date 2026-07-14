@@ -38,12 +38,12 @@ import Actor.Log (Log, LogEntry(..), LogLevel(..), appendLog)
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver
   ( DataSnapshotRef
-  , TerrainSnapshotRef
+  , SnapshotVersion
   , SnapshotVersionRef
-  , writeDataSnapshot
-  , writeTerrainSnapshot
-  , bumpSnapshotVersion
-  , readSnapshotVersion
+  , TerrainSnapshotRef
+  , dataAndTerrainSnapshotUpdate
+  , publishSnapshot
+  , withUiSnapshot
   )
 import Actor.Terrain (TerrainGenProgress(..), TerrainGenResult(..))
 import Actor.UI
@@ -155,18 +155,21 @@ applyTerrainResult handles resultMsg = do
   -- stamp matches what rebuildAtlasFor (view-mode buttons) will see.
   terrainSnap <- getTerrainSnapshot (uahData handles)
   dataSnap <- getDataSnapshot (uahData handles)
-  -- Write per-domain snapshot refs directly — no actor roundtrip.
-  castStart <- getMonotonicTimeNSec
-  writeDataSnapshot (uahDataSnapshotRef handles) dataSnap
-  writeTerrainSnapshot (uahTerrainSnapshotRef handles) terrainSnap
-  bumpSnapshotVersion (uahSnapshotVersionRef handles)
-  castEnd <- getMonotonicTimeNSec
-  logStep "terrain: write snapshot refs" castStart castEnd
   setUiGenerating (uahUi handles) False
+  -- The synchronous UI request is both the value used by the atlas and the
+  -- mailbox barrier for the UI state included in this publication epoch.
   uiSnapForAtlas <- getUiSnapshot (uahUi handles)
-  bumpSnapshotVersion (uahSnapshotVersionRef handles)
+  castStart <- getMonotonicTimeNSec
+  snapshotVersion <- publishSnapshot
+    (uahSnapshotVersionRef handles)
+    (withUiSnapshot uiSnapForAtlas
+      (dataAndTerrainSnapshotUpdate
+        (uahDataSnapshotRef handles) dataSnap
+        (uahTerrainSnapshotRef handles) terrainSnap))
+  castEnd <- getMonotonicTimeNSec
+  logStep "terrain: publish snapshot refs" castStart castEnd
   atlasStart <- getMonotonicTimeNSec
-  rebuildAtlas handles terrainSnap uiSnapForAtlas
+  rebuildAtlas handles snapshotVersion terrainSnap uiSnapForAtlas
   atlasEnd <- getMonotonicTimeNSec
   logStep "terrain: enqueue atlas" atlasStart atlasEnd
   completeNs <- getMonotonicTimeNSec
@@ -177,10 +180,9 @@ applyTerrainResult handles resultMsg = do
       message = "terrain: apply result took " <> Text.pack (show elapsedMs) <> "ms t=" <> nsText end
   appendLog (uahLog handles) (LogEntry LogDebug message)
 
-rebuildAtlas :: UiActionHandles -> TerrainSnapshot -> UiState -> IO ()
-rebuildAtlas handles terrainSnap uiSnap = do
+rebuildAtlas :: UiActionHandles -> SnapshotVersion -> TerrainSnapshot -> UiState -> IO ()
+rebuildAtlas handles snapshotVersion terrainSnap uiSnap = do
   start <- getMonotonicTimeNSec
-  snapshotVersion <- readSnapshotVersion (uahSnapshotVersionRef handles)
   let selection = effectiveViewSelection uiSnap
       -- Enqueue the current zoom stage first so the visible tiles are
       -- prioritised by the scheduler's round-robin dispatch.

@@ -1,12 +1,11 @@
--- | Lock-free snapshot infrastructure for the render loop.
+-- | Ordered snapshot publication for the render loop.
 --
--- Each domain (UI, Log, Data, Terrain) publishes to its own 'IORef'.
--- A shared 'SnapshotVersionRef' is atomically bumped by any writer so
--- the render thread can detect changes with a single read.
---
--- The render loop composes a 'RenderSnapshot' by reading all four
--- domain refs each frame, eliminating the former SnapshotReceiver actor
--- and the data-clobbering risk of a single composite IORef.
+-- Each domain keeps its own 'IORef', while 'SnapshotVersionRef' is also the
+-- publication lock. Writers publish every ref belonging to one logical change
+-- under that lock and commit one version only after all writes complete.
+-- Each commit also captures an immutable five-domain 'RenderSnapshot'; readers
+-- acquire that snapshot and its version together, so live UI/log writes cannot
+-- leak into an older committed generation.
 module Actor.SnapshotReceiver
   ( RenderSnapshot(..)
   , SnapshotVersion(..)
@@ -20,18 +19,34 @@ module Actor.SnapshotReceiver
   , newTerrainSnapshotRef
   , writeTerrainSnapshot
   , readTerrainSnapshot
-    -- * Version counter
+    -- * Ordered publication
   , SnapshotVersionRef
+  , SnapshotUpdate
+  , dataSnapshotUpdate
+  , terrainSnapshotUpdate
+  , dataAndTerrainSnapshotUpdate
+  , withUiSnapshot
+  , withLogSnapshot
   , newSnapshotVersionRef
+  , newRenderSnapshotVersionRef
   , readSnapshotVersion
-  , bumpSnapshotVersion
-  , bumpSnapshotVersionAndRead
+  , publishSnapshot
+  , invalidatePublishedSnapshot
+  , readCommittedRenderSnapshot
+  , withCommittedRenderSnapshot
   ) where
 
 import Actor.Data (DataSnapshot(..), TerrainSnapshot(..))
-import Actor.Log (LogSnapshot(..))
-import Actor.UI (UiState(..))
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
+import Actor.Log (LogSnapshot(..), LogSnapshotRef, readLogSnapshotRef)
+import Actor.UI (UiSnapshotRef, UiState(..), readUiSnapshotRef)
+import Control.Concurrent.MVar
+  ( MVar
+  , modifyMVarMasked
+  , newMVar
+  , readMVar
+  , withMVar
+  )
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Word (Word64)
 
 -- | Composite render snapshot consumed by the render loop.
@@ -44,79 +59,205 @@ data RenderSnapshot = RenderSnapshot
   , rsTerrain :: !TerrainSnapshot
   } deriving (Eq, Show)
 
--- | Monotonic version for the latest cached snapshot.
+-- | Monotonic version for the latest committed snapshot publication.
 newtype SnapshotVersion = SnapshotVersion { unSnapshotVersion :: Word64 }
   deriving (Eq, Ord, Show)
 
 -- ---------------------------------------------------------------------------
--- Data snapshot
+-- Domain refs
 -- ---------------------------------------------------------------------------
 
--- | Lock-free ref for the latest 'DataSnapshot'.
 type DataSnapshotRef = IORef DataSnapshot
 
--- | Create a new 'DataSnapshotRef' with the given initial value.
 newDataSnapshotRef :: DataSnapshot -> IO DataSnapshotRef
 newDataSnapshotRef = newIORef
 
--- | Write a new 'DataSnapshot'.  Not atomic with respect to other
--- sub-snapshot refs — each domain ref is independent.
+-- | Low-level write for initialization and tests. Production publishers must
+-- use 'publishSnapshot' so ordering and the version commit cannot be split.
 writeDataSnapshot :: DataSnapshotRef -> DataSnapshot -> IO ()
 writeDataSnapshot = writeIORef
 
--- | Read the latest 'DataSnapshot'.
 readDataSnapshot :: DataSnapshotRef -> IO DataSnapshot
 readDataSnapshot = readIORef
 
--- ---------------------------------------------------------------------------
--- Terrain snapshot
--- ---------------------------------------------------------------------------
-
--- | Lock-free ref for the latest 'TerrainSnapshot'.
 type TerrainSnapshotRef = IORef TerrainSnapshot
 
--- | Create a new 'TerrainSnapshotRef' with the given initial value.
 newTerrainSnapshotRef :: TerrainSnapshot -> IO TerrainSnapshotRef
 newTerrainSnapshotRef = newIORef
 
--- | Write a new 'TerrainSnapshot'.
+-- | Low-level write for initialization and tests. Production publishers must
+-- use 'publishSnapshot' so ordering and the version commit cannot be split.
 writeTerrainSnapshot :: TerrainSnapshotRef -> TerrainSnapshot -> IO ()
 writeTerrainSnapshot = writeIORef
 
--- | Read the latest 'TerrainSnapshot'.
 readTerrainSnapshot :: TerrainSnapshotRef -> IO TerrainSnapshot
 readTerrainSnapshot = readIORef
 
 -- ---------------------------------------------------------------------------
--- Version counter
+-- Ordered publication
 -- ---------------------------------------------------------------------------
 
--- | Shared monotonic version counter bumped by any snapshot writer.
--- The render loop uses this for O(1) staleness detection.
-type SnapshotVersionRef = IORef SnapshotVersion
+-- | The committed version, optional render-domain registration, and the mutex
+-- serializing publishers with coherent readers. Keeping these as one opaque
+-- value prevents a publisher from committing a version without participating
+-- in the ordering protocol.
+newtype SnapshotVersionRef = SnapshotVersionRef (MVar SnapshotPublicationState)
 
--- | Create a new version counter starting at 0.
-newSnapshotVersionRef :: IO SnapshotVersionRef
-newSnapshotVersionRef = newIORef (SnapshotVersion 0)
+data SnapshotPublicationState = SnapshotPublicationState
+  { spsVersion :: !SnapshotVersion
+  , spsDomains :: !(Maybe SnapshotDomainRefs)
+  , spsCommittedRenderSnapshot :: !(Maybe RenderSnapshot)
+  }
 
--- | Read the current snapshot version.
-readSnapshotVersion :: SnapshotVersionRef -> IO SnapshotVersion
-readSnapshotVersion = readIORef
+data SnapshotDomainRefs = SnapshotDomainRefs
+  { sdrUi :: !UiSnapshotRef
+  , sdrLog :: !LogSnapshotRef
+  , sdrData :: !DataSnapshotRef
+  , sdrTerrain :: !TerrainSnapshotRef
+  }
 
--- | Atomically bump the version counter.  Safe to call from any thread.
+-- | All domain writes belonging to one logical publication.
 --
--- __Ordering contract__: when updating domain refs (e.g. 'writeDataSnapshot',
--- 'writeTerrainSnapshot'), call this /after/ the domain writes so the render
--- loop never observes a new version with stale domain data.  Bumping without
--- prior domain writes is fine for UI-only changes (the reader will simply
--- re-read unchanged refs).
-bumpSnapshotVersion :: SnapshotVersionRef -> IO ()
-bumpSnapshotVersion ref =
-  atomicModifyIORef' ref (\(SnapshotVersion v) -> (SnapshotVersion (v + 1), ()))
+-- Constructors are intentionally hidden; use the smart constructors below.
+data SnapshotUpdate = SnapshotUpdate
+  { suUi :: !(Maybe UiState)
+  , suLog :: !(Maybe LogSnapshot)
+  , suData :: !(Maybe (DataSnapshotRef, DataSnapshot))
+  , suTerrain :: !(Maybe (TerrainSnapshotRef, TerrainSnapshot))
+  }
 
--- | Atomically bump the version counter and return the newly-published version.
-bumpSnapshotVersionAndRead :: SnapshotVersionRef -> IO SnapshotVersion
-bumpSnapshotVersionAndRead ref =
-  atomicModifyIORef' ref $ \(SnapshotVersion v) ->
-    let next = SnapshotVersion (v + 1)
-    in (next, next)
+dataSnapshotUpdate :: DataSnapshotRef -> DataSnapshot -> SnapshotUpdate
+dataSnapshotUpdate ref snapshot =
+  SnapshotUpdate Nothing Nothing (Just (ref, snapshot)) Nothing
+
+terrainSnapshotUpdate :: TerrainSnapshotRef -> TerrainSnapshot -> SnapshotUpdate
+terrainSnapshotUpdate ref snapshot =
+  SnapshotUpdate Nothing Nothing Nothing (Just (ref, snapshot))
+
+dataAndTerrainSnapshotUpdate
+  :: DataSnapshotRef
+  -> DataSnapshot
+  -> TerrainSnapshotRef
+  -> TerrainSnapshot
+  -> SnapshotUpdate
+dataAndTerrainSnapshotUpdate dataRef dataSnapshot terrainRef terrainSnapshot =
+  SnapshotUpdate
+    Nothing
+    Nothing
+    (Just (dataRef, dataSnapshot))
+    (Just (terrainRef, terrainSnapshot))
+
+-- | Include UI state obtained from the actor mailbox barrier in this commit.
+withUiSnapshot :: UiState -> SnapshotUpdate -> SnapshotUpdate
+withUiSnapshot uiSnapshot update = update { suUi = Just uiSnapshot }
+
+-- | Include log state obtained from the actor mailbox barrier in this commit.
+withLogSnapshot :: LogSnapshot -> SnapshotUpdate -> SnapshotUpdate
+withLogSnapshot logSnapshot update = update { suLog = Just logSnapshot }
+
+-- | Create a detached publication counter for tests and non-render consumers.
+newSnapshotVersionRef :: IO SnapshotVersionRef
+newSnapshotVersionRef = SnapshotVersionRef <$> newMVar SnapshotPublicationState
+  { spsVersion = SnapshotVersion 0
+  , spsDomains = Nothing
+  , spsCommittedRenderSnapshot = Nothing
+  }
+
+-- | Create the production publication coordinator and capture generation zero.
+newRenderSnapshotVersionRef
+  :: UiSnapshotRef
+  -> LogSnapshotRef
+  -> DataSnapshotRef
+  -> TerrainSnapshotRef
+  -> IO SnapshotVersionRef
+newRenderSnapshotVersionRef uiRef logRef dataRef terrainRef = do
+  let domains = SnapshotDomainRefs uiRef logRef dataRef terrainRef
+  initialSnapshot <- captureRenderSnapshot domains
+  SnapshotVersionRef <$> newMVar SnapshotPublicationState
+    { spsVersion = SnapshotVersion 0
+    , spsDomains = Just domains
+    , spsCommittedRenderSnapshot = Just initialSnapshot
+    }
+
+-- | Read the latest committed version. This waits for an in-flight publication.
+readSnapshotVersion :: SnapshotVersionRef -> IO SnapshotVersion
+readSnapshotVersion (SnapshotVersionRef publicationRef) =
+  spsVersion <$> readMVar publicationRef
+
+-- | Publish one logical snapshot update and return its committed version.
+--
+-- Concurrent publishers are serialized. Every requested ref write and the
+-- complete committed-domain update happen before exactly one monotonic commit.
+publishSnapshot :: SnapshotVersionRef -> SnapshotUpdate -> IO SnapshotVersion
+publishSnapshot (SnapshotVersionRef publicationRef) update =
+  modifyMVarMasked publicationRef $ \state -> do
+    mapM_ (uncurry writeIORef) (suData update)
+    mapM_ (uncurry writeIORef) (suTerrain update)
+    let committedSnapshot = applySnapshotUpdate update <$> spsCommittedRenderSnapshot state
+        SnapshotVersion version = spsVersion state
+        committed = SnapshotVersion (version + 1)
+        state' = state
+          { spsVersion = committed
+          , spsCommittedRenderSnapshot = committedSnapshot
+          }
+    pure (state', committed)
+
+-- | Commit an invalidation after UI/log actors have already published state.
+--
+-- Actor setters are asynchronous casts. Callers /must/ first perform a
+-- synchronous request to every affected actor (for example 'getUiSnapshot') as
+-- a mailbox barrier. The returned request proves the preceding casts and their
+-- snapshot-ref writes happen-before this version commit.
+invalidatePublishedSnapshot :: SnapshotVersionRef -> IO SnapshotVersion
+invalidatePublishedSnapshot (SnapshotVersionRef publicationRef) =
+  modifyMVarMasked publicationRef $ \state -> do
+    committedSnapshot <- traverse captureRenderSnapshot (spsDomains state)
+    let SnapshotVersion version = spsVersion state
+        committed = SnapshotVersion (version + 1)
+        state' = state
+          { spsVersion = committed
+          , spsCommittedRenderSnapshot = committedSnapshot
+          }
+    pure (state', committed)
+
+-- | Read the immutable five-domain snapshot captured by the latest commit.
+-- UI/log actors may continue publishing their live refs concurrently, but
+-- readers only observe those values after an ordered publication copies the
+-- complete tuple into this committed slot.
+readCommittedRenderSnapshot :: SnapshotVersionRef -> IO (SnapshotVersion, RenderSnapshot)
+readCommittedRenderSnapshot publicationRef =
+  withCommittedRenderSnapshot publicationRef (\version snapshot -> pure (version, snapshot))
+
+-- | Run a short coherent read while excluding concurrent publishers.
+-- This callback form is primarily useful when a consumer must derive a value
+-- from one committed generation without copying or re-reading live refs.
+withCommittedRenderSnapshot
+  :: SnapshotVersionRef
+  -> (SnapshotVersion -> RenderSnapshot -> IO a)
+  -> IO a
+withCommittedRenderSnapshot (SnapshotVersionRef publicationRef) consume =
+  withMVar publicationRef $ \state ->
+    case spsCommittedRenderSnapshot state of
+      Just snapshot -> consume (spsVersion state) snapshot
+      Nothing -> fail "withCommittedRenderSnapshot: render domains are not registered"
+
+applySnapshotUpdate :: SnapshotUpdate -> RenderSnapshot -> RenderSnapshot
+applySnapshotUpdate update snapshot = snapshot
+  { rsUi = maybe (rsUi snapshot) id (suUi update)
+  , rsLog = maybe (rsLog snapshot) id (suLog update)
+  , rsData = maybe (rsData snapshot) snd (suData update)
+  , rsTerrain = maybe (rsTerrain snapshot) snd (suTerrain update)
+  }
+
+captureRenderSnapshot :: SnapshotDomainRefs -> IO RenderSnapshot
+captureRenderSnapshot domains = do
+  uiSnapshot <- readUiSnapshotRef (sdrUi domains)
+  logSnapshot <- readLogSnapshotRef (sdrLog domains)
+  dataSnapshot <- readDataSnapshot (sdrData domains)
+  terrainSnapshot <- readTerrainSnapshot (sdrTerrain domains)
+  pure RenderSnapshot
+    { rsUi = uiSnapshot
+    , rsLog = logSnapshot
+    , rsData = dataSnapshot
+    , rsTerrain = terrainSnapshot
+    }

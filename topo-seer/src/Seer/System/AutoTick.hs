@@ -29,7 +29,7 @@ import Actor.Simulation
   )
 import Actor.SnapshotReceiver
   ( SnapshotVersionRef
-  , bumpSnapshotVersion
+  , invalidatePublishedSnapshot
   )
 import Actor.UI
   ( Ui
@@ -204,7 +204,9 @@ disableAutoAfterFailure handles err = do
   flushed <- flushSimWeatherPublication (athSimulationHandle handles)
   if flushed
     then pure ()
-    else bumpSnapshotVersion (athSnapshotVersionRef handles)
+    else do
+      _ <- invalidatePublishedSnapshot (athSnapshotVersionRef handles)
+      pure ()
 
 waitMicrosUntil :: Word64 -> Word64 -> Int
 waitMicrosUntil now due

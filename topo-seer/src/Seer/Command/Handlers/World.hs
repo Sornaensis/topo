@@ -43,22 +43,16 @@ import Actor.PluginManager
   )
 import Actor.Simulation (beginSimWorldTransition, cancelSimWorldTransition, clearSimWorld, normalizeWorldSchedulesForBindings, setSimWorldWithNodes)
 import Actor.SnapshotReceiver
-  ( readTerrainSnapshot
+  ( dataAndTerrainSnapshotUpdate
+  , publishSnapshot
   , readDataSnapshot
-  , writeDataSnapshot
-  , writeTerrainSnapshot
-  , bumpSnapshotVersion
+  , readTerrainSnapshot
+  , withUiSnapshot
   )
-import Actor.Terrain (TerrainReplyOps)
 import Actor.UI.Setters (setUiWorldName, setUiWorldConfig, setUiOverlayNames, setUiSimTickCount, setUiViewSelection)
-import Actor.UiActions
-  ( UiAction(..)
-  , UiActionRequest(..)
-  , submitUiAction
-  )
+import Actor.UiActions (enqueueAtlasRebuildForTerrain)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.UI.State (UiState(..), ViewMode(..), defaultLayeredViewState, getUiSnapshot, readUiSnapshotRef)
-import Hyperspace.Actor (replyTo)
 import Seer.Command.Context (CommandContext(..))
 import Seer.Config.Snapshot (snapshotFromUi, applySnapshotToUi)
 import Seer.World.Persist
@@ -298,12 +292,10 @@ handleLoadWorld ctx reqId params = do
               replaceTerrainData (ahDataHandle handles) world
               setSimWorldWithNodes (ahSimulationHandle handles) world (pspExecutableNodes simPlan)
               setUiOverlayNames uiH (overlayNames (twOverlays world))
-              -- Update snapshot refs for readers
+              -- Capture authoritative data after the actor mutations. The
+              -- refs are committed only after the matching UI barrier below.
               dataSnap <- getDataSnapshot (ahDataHandle handles)
               terrainSnap' <- getTerrainSnapshot (ahDataHandle handles)
-              writeDataSnapshot (ahDataSnapshotRef handles) dataSnap
-              writeTerrainSnapshot (ahTerrainSnapshotRef handles) terrainSnap'
-              bumpSnapshotVersion (ahSnapshotVersionRef handles)
               -- Apply config snapshot. Layered view selection is UI-only, so
               -- loading a world resets it to the normal default instead of
               -- carrying an old overlay/basis into the newly loaded data.
@@ -316,14 +308,18 @@ handleLoadWorld ctx reqId params = do
               wDir <- worldDir
               notifyWorldChanged (ahPluginManagerHandle handles)
                                  (Just (Text.pack (wDir </> Text.unpack name)))
-              -- Trigger atlas rebuild after the queued UI reset has been applied.
+              -- The synchronous UI request is the actor barrier for all casts
+              -- above. Commit data and terrain once, then stamp atlas work with
+              -- that exact returned version.
               ui <- getUiSnapshot uiH
-              let req = UiActionRequest
-                    { uarAction = UiActionRebuildAtlas (uiViewMode ui)
-                    , uarActorHandles = handles
-                    , uarTerrainReplyTo = replyTo @TerrainReplyOps (ccUiActionsHandle ctx)
-                    }
-              submitUiAction (ccUiActionsHandle ctx) req
+              snapshotVersion <- publishSnapshot
+                (ahSnapshotVersionRef handles)
+                (withUiSnapshot ui
+                  (dataAndTerrainSnapshotUpdate
+                    (ahDataSnapshotRef handles) dataSnap
+                    (ahTerrainSnapshotRef handles) terrainSnap'))
+              enqueueAtlasRebuildForTerrain
+                handles (uiViewMode ui) ui snapshotVersion terrainSnap'
               pure $ okResponse reqId $ object
                 [ "name" .= name
                 , "loaded" .= True

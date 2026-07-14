@@ -9,7 +9,6 @@ import Actor.Log
   , LogLevel(..)
   , LogSnapshotRef
   , appendLog
-  , readLogSnapshotRef
   )
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver
@@ -17,11 +16,9 @@ import Actor.SnapshotReceiver
   , SnapshotVersion
   , SnapshotVersionRef
   , TerrainSnapshotRef
-  , readDataSnapshot
-  , readSnapshotVersion
-  , readTerrainSnapshot
+  , readCommittedRenderSnapshot
   )
-import Actor.UI (UiSnapshotRef, readUiSnapshotRef)
+import Actor.UI (UiSnapshotRef)
 import qualified Data.Text as Text
 import Data.Word (Word32)
 import GHC.Clock (getMonotonicTimeNSec)
@@ -57,17 +54,7 @@ pollRenderSnapshot env nowMs hasEvents forcePoll cacheState = do
       pure (cachedVersion, cachedSnap, cacheState, 0)
     _ -> do
       snapshotStart <- getMonotonicTimeNSec
-      version <- readSnapshotVersion (speSnapshotVersionRef env)
-      latestDataSnap <- readDataSnapshot (speDataSnapshotRef env)
-      latestTerrainSnap <- readTerrainSnapshot (speTerrainSnapshotRef env)
-      latestLogSnap <- readLogSnapshotRef (speLogSnapshotRef env)
-      latestUiSnap <- readUiSnapshotRef (speUiSnapshotRef env)
-      let snap = RenderSnapshot
-            { rsUi = latestUiSnap
-            , rsLog = latestLogSnap
-            , rsData = latestDataSnap
-            , rsTerrain = latestTerrainSnap
-            }
+      (version, snap) <- readCommittedRenderSnapshot (speSnapshotVersionRef env)
       snapshotEnd <- getMonotonicTimeNSec
       let snapshotElapsed = nsToMs snapshotStart snapshotEnd
       if snapshotElapsed >= speTimingLogThresholdMs env

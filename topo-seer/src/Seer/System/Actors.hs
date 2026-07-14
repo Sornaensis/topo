@@ -44,7 +44,7 @@ import Actor.SnapshotReceiver
   , SnapshotVersionRef
   , TerrainSnapshotRef
   , newDataSnapshotRef
-  , newSnapshotVersionRef
+  , newRenderSnapshotVersionRef
   , newTerrainSnapshotRef
   )
 import Actor.Terrain (Terrain)
@@ -168,7 +168,13 @@ initialiseAppActors runtimeCfg = do
       terrainSnap = TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore defaultTerrainGeoContext
   dataSnapshotRef <- newDataSnapshotRef dataSnap
   terrainSnapshotRef <- newTerrainSnapshotRef terrainSnap
-  snapshotVersionRef <- newSnapshotVersionRef
+  seed <- randomIO
+  setUiSeed uiHandle seed
+  setUiSeedInput uiHandle (Text.pack (show seed))
+  -- Synchronise seed initialization before capturing committed generation zero.
+  _ <- getUiSnapshot uiHandle
+  snapshotVersionRef <- newRenderSnapshotVersionRef
+    uiSnapshotRef logSnapshotRef dataSnapshotRef terrainSnapshotRef
   setSimHandles simulationHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasManagerHandle
   simReady <- simulationHandlesConfigured simulationHandle
   when (not simReady) (fail "topo-seer startup: simulation handles were not configured")
@@ -179,11 +185,6 @@ initialiseAppActors runtimeCfg = do
     , athLogHandle = logHandle
     , athSnapshotVersionRef = snapshotVersionRef
     }
-  seed <- randomIO
-  setUiSeed uiHandle seed
-  setUiSeedInput uiHandle (Text.pack (show seed))
-  -- Synchronise the async seed casts before render/HTTP readers use the UI snapshot.
-  _ <- getUiSnapshot uiHandle
   screenshotRef <- newScreenshotRequestRef
   historyRef <- newIORef (emptyHistory 50)
   let actorHandles = mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef pluginManagerHandle simulationHandle historyRef

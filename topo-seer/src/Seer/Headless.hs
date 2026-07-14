@@ -61,7 +61,7 @@ import Actor.SnapshotReceiver
   , SnapshotVersionRef
   , TerrainSnapshotRef
   , newDataSnapshotRef
-  , newSnapshotVersionRef
+  , newRenderSnapshotVersionRef
   , newTerrainSnapshotRef
   )
 import Actor.Terrain (Terrain)
@@ -277,7 +277,8 @@ startHeadlessAppWithSystem cfg screenshotStoragePolicy system = do
 
   dataSnapshotRef <- newDataSnapshotRef (DataSnapshot 0 0 Nothing)
   terrainSnapshotRef <- newTerrainSnapshotRef (TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore defaultTerrainGeoContext)
-  snapshotVersionRef <- newSnapshotVersionRef
+  snapshotVersionRef <- newRenderSnapshotVersionRef
+    uiSnapshotRef logSnapshotRef dataSnapshotRef terrainSnapshotRef
   setSimHandles simulationHandle dataHandle logHandle uiHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef atlasManagerHandle
   simReady <- simulationHandlesConfigured simulationHandle
   unless simReady (fail "topo-seer headless startup: simulation handles were not configured")

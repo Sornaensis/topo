@@ -13,6 +13,7 @@ module Actor.UiActions
   , UiActionRequest(..)
   , uiActionsActorDef
   , submitUiAction
+  , enqueueAtlasRebuildForTerrain
   ) where
 
 import Actor.Log (LogEntry)
@@ -25,6 +26,7 @@ import Actor.UiActions.Command
   ( ActorHandles(..)
   , UiAction(..)
   , UiActionRequest(..)
+  , enqueueAtlasRebuildForTerrain
   , runUiAction
   )
 import Actor.UiActions.Terrain

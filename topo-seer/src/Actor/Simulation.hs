@@ -97,10 +97,11 @@ import Actor.SnapshotReceiver
   , TerrainSnapshotRef
   , SnapshotVersion
   , SnapshotVersionRef
-  , readSnapshotVersion
+  , invalidatePublishedSnapshot
+  , publishSnapshot
   , readTerrainSnapshot
-  , writeTerrainSnapshot
-  , bumpSnapshotVersion
+  , terrainSnapshotUpdate
+  , withUiSnapshot
   )
 import Actor.UI
   ( BaseViewMode(..)
@@ -1418,7 +1419,7 @@ publishTickSnapshot handles st isAutoTick flushOnIdle uiSnap terrainChanged clim
   if sppPublishData plan
     then do
       terrainSnap <- getTerrainSnapshot (shDataHandle handles)
-      (st', snapshotVersion) <- publishDataSnapshot handles st isAutoTick now terrainSnap
+      (st', snapshotVersion) <- publishDataSnapshot handles st isAutoTick now uiSnap terrainSnap
       pure TickPublicationResult
         { tprState = st'
         , tprTerrainSnapshot = Just terrainSnap
@@ -1547,12 +1548,14 @@ publishDataSnapshot
   -> SimState
   -> Bool
   -> Word64
+  -> UiState
   -> TerrainSnapshot
   -> IO (SimState, SnapshotVersion)
-publishDataSnapshot handles st isAutoTick now terrainSnap = do
-  writeTerrainSnapshot (shTerrainSnapshotRef handles) terrainSnap
-  bumpSnapshotVersion (shSnapshotVersionRef handles)
-  snapshotVersion <- readSnapshotVersion (shSnapshotVersionRef handles)
+publishDataSnapshot handles st isAutoTick now uiSnapshot terrainSnap = do
+  snapshotVersion <- publishSnapshot
+    (shSnapshotVersionRef handles)
+    (withUiSnapshot uiSnapshot
+      (terrainSnapshotUpdate (shTerrainSnapshotRef handles) terrainSnap))
   let st' = if isAutoTick
         then st
           { ssLastAutoStatusPublishNs = now
@@ -1565,7 +1568,7 @@ publishDataSnapshot handles st isAutoTick now terrainSnap = do
 publishStatusSnapshot :: SimHandles -> SimState -> Word64 -> IO SimState
 publishStatusSnapshot handles st now
   | now - ssLastAutoStatusPublishNs st >= autoTickStatusPublishIntervalNs = do
-      bumpSnapshotVersion (shSnapshotVersionRef handles)
+      _ <- invalidatePublishedSnapshot (shSnapshotVersionRef handles)
       pure st { ssLastAutoStatusPublishNs = now }
   | otherwise = pure st
 
@@ -1662,7 +1665,7 @@ flushLatestWeatherPublication st =
                 then pure (st { ssAutoWeatherPublicationPending = False }, False)
                 else do
                   now <- getMonotonicTimeNSec
-                  (st', snapshotVersion) <- publishDataSnapshot handles st True now latest
+                  (st', snapshotVersion) <- publishDataSnapshot handles st True now uiSnap latest
                   let terrainChanged = tsVersion latest /= tsVersion published
                       climateChanged = tsClimateVersion latest /= tsClimateVersion published
                       weatherChanged = ssAutoWeatherPublicationPending st || tsWeatherVersion latest /= tsWeatherVersion published
