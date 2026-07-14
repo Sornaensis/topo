@@ -33,7 +33,6 @@ import Data.Aeson.Types (Pair)
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as BL
-import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import Data.ByteString.Builder (Builder, byteString, lazyByteString, stringUtf8)
@@ -1111,20 +1110,18 @@ headlessHttpAppService = commandAppService
   }
 
 headlessScreenshotHandler :: ServiceHandler ScreenshotTakeRequest ScreenshotTakeResponse
-headlessScreenshotHandler = rawServiceHandler screenshotTakeOperation $ \_ request -> do
-  let pngBytes = blankPng
-      body = fromMaybe Null (serviceRequestBody request)
-      mSavePath = case body of
-        Object obj -> case KM.lookup "path" obj of
-          Just (String path) -> Just (Text.unpack path)
-          _ -> Nothing
-        _ -> Nothing
-  mapM_ (BS.writeFile `flip` pngBytes) mSavePath
-  pure $ Right $ ServiceResponse $ object
-    [ "image_base64" .= Text.decodeUtf8 (Base64.encode pngBytes)
-    , "format" .= ("png" :: Text)
-    , "source" .= ("headless" :: Text)
-    ]
+headlessScreenshotHandler = rawServiceHandler screenshotTakeOperation $ \ctx request ->
+  case prepareScreenshotTake
+      (svcScreenshotStoragePolicy ctx)
+      (serviceRequestBodyValue request) of
+    Left err -> pure (Left err)
+    Right typedRequest -> do
+      result <- completeScreenshotTake
+        (svcScreenshotStoragePolicy ctx)
+        ScreenshotSourceHeadless
+        typedRequest
+        blankPng
+      pure (ServiceResponse . encodeScreenshotTakeResponse <$> result)
 
 blankPng :: BS.ByteString
 blankPng = BL.toStrict $ encodePng image

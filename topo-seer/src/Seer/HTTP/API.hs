@@ -1979,16 +1979,20 @@ logGetResponseSchema = objectSchema "LogGetResponse"
 screenshotTakeRequestSchema :: JsonSchema
 screenshotTakeRequestSchema = objectSchema "ScreenshotTakeRequest"
   []
-  [ ("path", stringSchema)
+  [ ( "path"
+    , describedSchema
+        "Optional nonempty sandbox-relative path ending in .png; omit for capture-only."
+        stringSchema
+    )
   ]
 
 screenshotTakeResponseSchema :: JsonSchema
 screenshotTakeResponseSchema = objectSchema "ScreenshotTakeResponse"
-  [ "image_base64", "format" ]
+  [ "image_base64", "format", "source", "saved_path" ]
   [ ("image_base64", stringSchema)
   , ("format", enumStringSchema ["png"])
-  , ("source", stringSchema)
-  , ("saved_path", stringSchema)
+  , ("source", enumStringSchema ["renderer", "headless"])
+  , ("saved_path", nullableSchema stringSchema)
   ]
 
 logEntrySchema :: Value

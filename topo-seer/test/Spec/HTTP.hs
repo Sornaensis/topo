@@ -72,6 +72,7 @@ import Seer.HTTP.Server
   , parseHttpBind
   )
 import Seer.Command.Dispatch (CommandContext(..))
+import Seer.Config.Runtime (TopoSeerConfig(..))
 import Seer.Service.AppService
   ( AppService(..)
   , ConfigService(..)
@@ -103,6 +104,7 @@ import System.Directory
   , doesFileExist
   , getCurrentDirectory
   , getTemporaryDirectory
+  , listDirectory
   , removeDirectoryRecursive
   )
 import System.Environment (lookupEnv, setEnv, unsetEnv, withArgs)
@@ -178,7 +180,70 @@ spec = describe "Seer.HTTP.Server" $ do
       hresStatusCode screenshot `shouldBe` 200
       lookupText "format" (hresBody screenshot) `shouldBe` Just "png"
       lookupText "source" (hresBody screenshot) `shouldBe` Just "headless"
+      lookupNestedValue ["saved_path"] (hresBody screenshot) `shouldBe` Just Null
       lookupText "image_base64" (hresBody screenshot) `shouldSatisfy` maybe False (not . Text.null)
+
+  it "shares screenshot path validation and disabled-write errors across HTTP surfaces" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      let requests =
+            [ (mkRequest "POST" ["screenshots"])
+                { hreqBody = Just (object ["path" .= Null]) }
+            , (mkRequest "POST" ["screenshots"])
+                { hreqBody = Just (object ["path" .= ("" :: Text)]) }
+            , (mkRequest "POST" ["commands", "take_screenshot"])
+                { hreqBody = Just (object ["path" .= ("../escape.png" :: Text)]) }
+            ]
+      forM_ requests $ \screenshotRequest -> do
+        response <- request app screenshotRequest
+        hresStatusCode response `shouldBe` 400
+        lookupNestedText ["error", "code"] (hresBody response)
+          `shouldBe` Just "validation_failed"
+        firstErrorDetailPath (hresBody response) `shouldBe` Just ["path"]
+
+      forM_ [["screenshots"], ["commands", "take_screenshot"]] $ \path -> do
+        response <- request app (mkRequest "POST" path)
+          { hreqBody = Just (object ["path" .= ("capture.png" :: Text)]) }
+        hresStatusCode response `shouldBe` 503
+        lookupNestedText ["error", "code"] (hresBody response)
+          `shouldBe` Just "unavailable"
+
+  it "persists normalized screenshot paths with one response contract across HTTP surfaces" $
+    withScreenshotHttpRoot $ \root -> do
+      let runtimeConfig = (hcRuntimeConfig defaultHeadlessConfig)
+            { cfgScreenshotSaveDirectory = Just root }
+          headlessConfig = defaultHeadlessConfig
+            { hcRuntimeConfig = runtimeConfig }
+      withHeadlessApp headlessConfig $ \app -> do
+        captureOnly <- request app (mkRequest "POST" ["screenshots"])
+        hresStatusCode captureOnly `shouldBe` 200
+        lookupNestedValue ["saved_path"] (hresBody captureOnly) `shouldBe` Just Null
+        listDirectory root `shouldReturn` []
+
+        let body = object ["path" .= ("nested/capture.png" :: Text)]
+        friendly <- request app (mkRequest "POST" ["screenshots"])
+          { hreqBody = Just body }
+        compatibility <- request app (mkRequest "POST" ["commands", "take_screenshot"])
+          { hreqBody = Just body }
+        hresStatusCode friendly `shouldBe` 200
+        hresStatusCode compatibility `shouldBe` 200
+        hresBody compatibility `shouldBe` hresBody friendly
+        map (`objectHasKey` hresBody friendly)
+          ["image_base64", "format", "source", "saved_path"]
+          `shouldBe` replicate 4 True
+        lookupText "format" (hresBody friendly) `shouldBe` Just "png"
+        lookupText "source" (hresBody friendly) `shouldBe` Just "headless"
+        lookupText "saved_path" (hresBody friendly)
+          `shouldBe` Just "nested/capture.png"
+        saved <- BS.readFile (root </> "nested" </> "capture.png")
+        saved `shouldSatisfy` not . BS.null
+
+        createDirectory (root </> "conflict.png")
+        forM_ [["screenshots"], ["commands", "take_screenshot"]] $ \path -> do
+          conflict <- request app (mkRequest "POST" path)
+            { hreqBody = Just (object ["path" .= ("conflict.png" :: Text)]) }
+          hresStatusCode conflict `shouldBe` 409
+          lookupNestedText ["error", "code"] (hresBody conflict)
+            `shouldBe` Just "rejected"
 
   it "serves layered view state and legacy compatibility routes in headless mode" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
@@ -964,6 +1029,14 @@ spec = describe "Seer.HTTP.Server" $ do
     componentPropertyNullable doc "DataRecordsListResponse" "total_count" `shouldBe` Just True
     sort <$> componentPropertyNames doc "ScreenshotTakeResponse"
       `shouldBe` Just ["format", "image_base64", "saved_path", "source"]
+    componentRequiredFields doc "ScreenshotTakeResponse"
+      `shouldBe` Just ["image_base64", "format", "source", "saved_path"]
+    componentPropertyNullable doc "ScreenshotTakeResponse" "saved_path"
+      `shouldBe` Just True
+    componentPropertyEnum doc "ScreenshotTakeResponse" "source"
+      `shouldBe` Just ["renderer", "headless"]
+    componentPropertyDescription doc "ScreenshotTakeRequest" "path"
+      `shouldSatisfy` maybe False (Text.isInfixOf "sandbox-relative")
     componentPropertyNames doc "StateViewsResponse"
       `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["view", "base_modes", "overlay_modes", "weather_bases", "overlay_names", "legacy_modes"])
     let layeredViewProps = inlinePropertyNames =<< componentProperty doc "StateViewsResponse" "view"
@@ -1323,6 +1396,25 @@ spec = describe "Seer.HTTP.Server" $ do
 
 request :: HeadlessApp -> HttpRequest -> IO HttpResponse
 request app req = handleHttpRequest defaultHttpServerConfig headlessHttpAppService (headlessServiceContext app) req
+
+withScreenshotHttpRoot :: (FilePath -> IO a) -> IO a
+withScreenshotHttpRoot action = do
+  temporary <- getTemporaryDirectory
+  stamp <- round . (* (1000000 :: POSIXTime)) <$> getPOSIXTime
+  let root = temporary </> ("topo-http-screenshots-" <> show (stamp :: Integer))
+  bracket (createDirectory root >> pure root) removeDirectoryRecursive action
+
+firstErrorDetailPath :: Value -> Maybe [Text]
+firstErrorDetailPath body = do
+  Array details <- lookupNestedValue ["error", "details"] body
+  Object detail <- case toList details of
+    first : _ -> Just first
+    [] -> Nothing
+  Array path <- KM.lookup "path" detail
+  traverse pathSegment (toList path)
+  where
+    pathSegment (String segment) = Just segment
+    pathSegment _ = Nothing
 
 withHttpSmokeTempHome :: (FilePath -> IO a) -> IO a
 withHttpSmokeTempHome action = do
@@ -2202,6 +2294,15 @@ componentPropertyNullable doc name property = do
   Object propertySchema <- componentProperty doc name property
   Bool nullable <- KM.lookup "nullable" propertySchema
   pure nullable
+
+componentPropertyEnum :: Value -> Text -> Text -> Maybe [Text]
+componentPropertyEnum doc name property = do
+  Object propertySchema <- componentProperty doc name property
+  Array values <- KM.lookup "enum" propertySchema
+  traverse enumText (toList values)
+  where
+    enumText (String value) = Just value
+    enumText _ = Nothing
 
 componentPropertyDescription :: Value -> Text -> Text -> Maybe Text
 componentPropertyDescription doc name property = do

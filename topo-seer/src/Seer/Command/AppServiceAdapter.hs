@@ -40,7 +40,6 @@ import qualified Seer.Command.Handlers.Pipeline as HPipeline
 import qualified Seer.Command.Handlers.Plugin as HPlugin
 import qualified Seer.Command.Handlers.Presets as HPresets
 import qualified Seer.Command.Handlers.Query as HQuery
-import qualified Seer.Command.Handlers.Screenshot as HScreenshot
 import qualified Seer.Command.Handlers.Simulation as HSimulation
 import qualified Seer.Command.Handlers.State as HState
 import qualified Seer.Command.Handlers.Sliders as HSliders
@@ -146,7 +145,7 @@ commandAppService = AppService
       { logGet = commandServiceHandler logGetOperation HLog.handleGetLogs
       }
   , appScreenshots = ScreenshotService
-      { screenshotTake = commandServiceHandler screenshotTakeOperation HScreenshot.handleTakeScreenshot
+      { screenshotTake = rendererScreenshotHandler
       }
   , appUi = UiService
       { uiSetSeed = commandServiceHandler uiSetSeedOperation HView.handleSetSeed

@@ -11,10 +11,11 @@
 -- the resulting 'SeerResponse'.
 module Spec.CommandDispatch (spec) where
 
-import Control.Concurrent (threadDelay)
-import Control.Concurrent.MVar (newEmptyMVar)
+import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar)
 import Control.Exception (bracket, catch, finally)
 import Control.Monad (forM_)
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.Aeson (Value(..), object, (.=), Key)
 import qualified Data.Aeson as Aeson
@@ -22,7 +23,7 @@ import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
-import Data.IORef (newIORef, writeIORef)
+import Data.IORef (newIORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import Data.List (nub, sort)
 import Data.Maybe (mapMaybe)
@@ -1637,6 +1638,19 @@ spec = describe "CommandDispatch" $ do
   -- take_screenshot
   -- -------------------------------------------------------------------
   describe "take_screenshot" $ do
+    it "returns the shared renderer response contract for capture-only commands" $
+      withCtx $ \ctx -> do
+        _ <- forkIO (serveScreenshotRequest ctx (BL.toStrict "png-bytes"))
+        rsp <- dispatch ctx "take_screenshot" Null
+        srSuccess rsp `shouldBe` True
+        lookupKey "format" (srResult rsp) `shouldBe` Just (String "png")
+        lookupKey "source" (srResult rsp) `shouldBe` Just (String "renderer")
+        lookupKey "saved_path" (srResult rsp) `shouldBe` Just Null
+        lookupKey "image_base64" (srResult rsp)
+          `shouldSatisfy` \case
+            Just (String encoded) -> not (Text.null encoded)
+            _ -> False
+
     it "returns error when a screenshot is already in progress" $ withCtx $ \ctx -> do
       busy <- newEmptyMVar
       writeIORef (ccScreenshotRef ctx) (Just (ScreenshotRequest busy))
@@ -1657,6 +1671,15 @@ spec = describe "CommandDispatch" $ do
 -- =====================================================================
 -- Test helpers
 -- =====================================================================
+
+serveScreenshotRequest :: CommandContext -> BS.ByteString -> IO ()
+serveScreenshotRequest ctx pngBytes = waitForRequest
+  where
+    waitForRequest = readIORef (ccScreenshotRef ctx) >>= \case
+      Nothing -> threadDelay 1000 >> waitForRequest
+      Just request -> do
+        writeIORef (ccScreenshotRef ctx) Nothing
+        putMVar (ssrResult request) (Right pngBytes)
 
 toggleLogCount :: ActorHandle Log (Protocol Log) -> IO Int
 toggleLogCount logH = do
